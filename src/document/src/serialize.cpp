@@ -1220,7 +1220,7 @@ private:
     std::sort(entityIds.begin(), entityIds.end());
     std::vector<std::pair<uint32_t, PatchNudge>> nv;
     for (const auto& [id, n] : v.patchNudges)
-      if (live(entityIds, id) && (n.dx != 0.0f || n.dy != 0.0f)) nv.emplace_back(id, n);
+      if (live(entityIds, id) && !n.empty()) nv.emplace_back(id, n);
     std::sort(nv.begin(), nv.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     if (!nv.empty()) {
       w_.key("patch");
@@ -1234,6 +1234,10 @@ private:
         w_.number(at, n.dx);
         w_.key("dy");
         w_.number(at, n.dy);
+        if (n.scale != 1.0f) {  // TX.resize: a block's scale, only when not 1 (older files and readers unchanged)
+          w_.key("scale");
+          w_.number(at, n.scale);
+        }
         w_.endObject();
       }
       w_.endArray();
@@ -3101,7 +3105,7 @@ private:
         r_.beginArray(list);
         for (size_t i = 0; r_.nextElement(list); ++i) {
           const PathSeg el(&list, i);
-          static constexpr std::string_view N[] = {"id", "dx", "dy"};
+          static constexpr std::string_view N[] = {"id", "dx", "dy", "scale"};
           RawNudge e{0, {}, r_.pos()};
           Members em(r_, el, N);
           for (int q; (q = em.next()) >= 0;) {
@@ -3109,6 +3113,11 @@ private:
             if (q == 0) e.id = ref(f);
             if (q == 1) e.nudge.dx = r_.readFloat(f);
             if (q == 2) e.nudge.dy = r_.readFloat(f);
+            if (q == 3) {  // TX.resize (optional)
+              e.nudge.scale = r_.readFloat(f);
+              if (!(e.nudge.scale >= kMinPatchScale && e.nudge.scale <= kMaxPatchScale))
+                r_.failValue(f, "a block's scale must be within 0.5 … 3");
+            }
           }
           em.require({0, 1, 2});
           v.nudges.push_back(e);

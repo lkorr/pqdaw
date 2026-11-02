@@ -40,15 +40,22 @@ struct LaneView {
 };
 // T4.13: a manual nudge of the project patch view's automatic layout (QUESTIONS Q129 item 7): world units (logical px
 // at zoom 1) added to where the layout puts a band (key: its track id) or a device block (key: its device id).
+// TX.resize (SPEC §15 2026-11-01 "resize, groups, and the free-device rack"): a device block's uniform scale (its face,
+// panel or plain block and everything on it in proportion; S-drag in the view), kMinPatchScale … kMaxPatchScale, 1 = its
+// own size. Bands keep 1. Saved as the entry's optional "scale" (written only when not 1); like the nudge, not undoable.
+inline constexpr float kMinPatchScale = 0.5f;
+inline constexpr float kMaxPatchScale = 3.0f;
 struct PatchNudge {
   float dx = 0.0f;
   float dy = 0.0f;
+  float scale = 1.0f;
+  bool empty() const noexcept { return dx == 0.0f && dy == 0.0f && scale == 1.0f; }
   friend bool operator==(const PatchNudge&, const PatchNudge&) noexcept = default;
 };
 struct ViewState {
   std::unordered_map<TrackId, TrackView> tracks;
   std::unordered_map<LaneId, LaneView> lanes;
-  std::unordered_map<uint32_t, PatchNudge> patchNudges;  // T4.13: by raw track or device id
+  std::unordered_map<uint32_t, PatchNudge> patchNudges;  // T4.13: by raw track or device id (TX.resize: + scale)
 };
 
 enum class StoreEventKind : uint8_t {

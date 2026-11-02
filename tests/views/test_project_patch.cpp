@@ -1632,7 +1632,7 @@ Vec2 controlAt(Ui& u, doc::DeviceId dev, std::string_view id) {
   REQUIRE(w->visible());
   const IRect r = w->rect();
   const Node& n = u.pp().nodes[u.deviceNode(dev)];
-  const float k = 1.0f / f->layoutScale();
+  const float k = n.scale / f->layoutScale();  // TX.resize: panel px → its own units → the (scaled) block's world units
   return u.dev(n.x + (static_cast<float>(r.x) + static_cast<float>(r.w) * 0.5f) * k,
                n.y + (static_cast<float>(r.y) + static_cast<float>(r.h) * 0.5f) * k);
 }
@@ -1911,6 +1911,9 @@ TEST_CASE("render: project-patch-free matches the golden image") { golden("proje
 // TX.panel-faces: closed stock devices as their Device-view panels (the default synth's generic panel, an Auto Filter, a
 // Utility with Bass Mono on), an LFO wired onto the Utility's gain.
 TEST_CASE("render: project-patch-panels matches the golden image") { golden("project-patch-panels"); }
+// TX.resize: a Wavetable face at 1.5×, an Auto Filter panel at 1.25×, a Wavetable at 0.6× below; note-velocity cables
+// onto the scaled Wavetable's position and the scaled filter's frequency.
+TEST_CASE("render: project-patch-resize matches the golden image") { golden("project-patch-resize"); }
 
 // ---- TX.mod-all: a modulation wire ends on the control it modulates ------------------------------------------------
 
@@ -2173,4 +2176,378 @@ TEST_CASE("project patch (TX.mod-all): 32 wires onto knobs — a full frame with
           << v.canvas().stats().panelsPainted << " panels, " << v.canvas().stats().wiresPainted << " wires painted)");
   CHECK(v.canvas().stats().panelsPainted >= 16);
   CHECK(with < without * 1.25 + 0.05);
+}
+
+// ---- TX.resize: S-drag scales a block ---------------------------------------------------------------------------------
+
+namespace {
+
+// warpSetup's track plus an Auto Filter after its Wavetable whose frequency the free modulator drives (a cable onto a
+// panel's knob).
+struct ResizeSetup {
+  WarpSetup w;
+  doc::DeviceId filter;
+  doc::WireId filterWire;
+};
+ResizeSetup resizeSetup(Ui& u) {
+  ResizeSetup r;
+  r.w = warpSetup(u);
+  doc::DocumentStore& st = u.ctx.store();
+  auto e = doc::ops::addDevice(*st.current(), st.ids(), r.w.track, "auto_filter", doc::DeviceKind::AudioEffect);
+  REQUIRE(e.ok());
+  REQUIRE(st.dispatch(e->command).ok());
+  r.filter = e->devices.at(0);
+  auto w = doc::ops::connectWire(*st.current(), st.ids(), r.w.mod, "out", r.filter, "freq");
+  REQUIRE(w.ok());
+  REQUIRE(st.dispatch(w->command).ok());
+  r.filterWire = doc::wiresOf(*st.current()).back().id;
+  return r;
+}
+
+// An S-drag on `dev`'s block from its centre by (dx, dy) device px: S pressed before, released after.
+void sDrag(Ui& u, doc::DeviceId dev, float dx, float dy, Mods m = mod::kNone) {
+  const Vec2 c = u.centre(u.deviceNode(dev));
+  u.d.keyDown('s');
+  u.d.move(c);
+  u.d.down(c, PointerButton::Left, m);
+  for (int i = 1; i <= 4; ++i) u.d.move({c.x + dx * static_cast<float>(i) / 4.0f, c.y + dy * static_cast<float>(i) / 4.0f}, m);
+  u.d.up({c.x + dx, c.y + dy}, PointerButton::Left, m);
+  u.d.keyUp('s');
+}
+
+}  // namespace
+
+// SPEC §15 2026-11-01 "resize, groups, and the free-device rack" (the user: "holding down s while hovering over a module
+// should let you resize it"): S over a block shows ⤡; a drag scales it uniformly, its top-left kept, its bottom-right
+// corner on the pointer along the diagonal; 0.5× … 3× with a detent at 1×, Shift in steps of 25 %; Esc cancels; the
+// layout makes room; S + double-click resets. View state: no undo step, but the project is dirty.
+TEST_CASE("project patch (TX.resize): S + drag scales a block uniformly — clamps, Shift steps, Esc, reset, room made") {
+  Ui u;
+  REQUIRE(u.d.enableGpu().ok());
+  const ResizeSetup r = resizeSetup(u);
+  u.show();
+  u.zoomTo("Lead WT");
+  u.d.advance(0.5);
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& cv = v.canvas();
+  const doc::DeviceId wt = r.w.wt;
+  const Node n0 = u.pp().nodes[u.deviceNode(wt)];
+  REQUIRE(n0.face != nullptr);
+  CHECK(n0.scale == 1.0f);
+  const Node f0 = u.pp().nodes[u.deviceNode(r.filter)];
+  const float bandH0 = u.pp().bands[n0.band].h;
+  const size_t h0 = u.history();
+  const float z = cv.deviceScale();
+  // Without S: what a press there does (the face's cursor or Move); with S held: ⤡ over any closed block, not elsewhere.
+  const Vec2 c = u.centre(u.deviceNode(wt));
+  u.d.move(c);
+  CHECK(u.d.tree().cursor() != Cursor::ResizeNWSE);
+  u.d.keyDown('s');
+  CHECK(u.d.tree().keyHeld('s'));
+  CHECK(cv.resizeHeld());
+  u.d.move(c);
+  CHECK(u.d.tree().cursor() == Cursor::ResizeNWSE);
+  CHECK(std::string(cv.info().title) == "Resize block");
+  u.d.move(u.centre(u.deviceNode(r.filter)));
+  CHECK(u.d.tree().cursor() == Cursor::ResizeNWSE);  // a panel too
+  u.d.move(u.dev(n0.x - 30.0f, n0.y - 30.0f));
+  CHECK(u.d.tree().cursor() != Cursor::ResizeNWSE);  // the band, not a block
+  u.d.keyUp('s');
+  CHECK_FALSE(cv.resizeHeld());
+  // Half the block's diagonal outwards: 1.5×.
+  sDrag(u, wt, n0.w * z * 0.5f, n0.h * z * 0.5f);
+  CHECK(v.blockScale(wt) == doctest::Approx(1.5f));
+  CHECK(u.history() == h0);  // view state: no undo step …
+  CHECK(u.ctx.dirty());      // … but saved
+  {
+    const Node& n = u.pp().nodes[u.deviceNode(wt)];
+    CHECK(n.scale == doctest::Approx(1.5f));
+    CHECK(n.w == doctest::Approx(n0.w * 1.5f));
+    CHECK(n.h == doctest::Approx(n0.h * 1.5f));
+    CHECK(n.x == doctest::Approx(n0.x));  // its top-left kept
+    CHECK(n.y == doctest::Approx(n0.y));
+    // Its pins' rows and its anchors in proportion; the chain's spine through its main pin (straight chain wires).
+    CHECK(pinOffset(n, 0) == doctest::Approx(pinOffset(n0, 0) * 1.5f));
+    const int32_t k = n.input("warp"), k0 = n0.input("warp");
+    REQUIRE(k >= 0);
+    REQUIRE(k0 >= 0);
+    CHECK(n.inputs[static_cast<size_t>(k)].ax == doctest::Approx(n0.inputs[static_cast<size_t>(k0)].ax * 1.5f));
+    CHECK(n.inputs[static_cast<size_t>(k)].ay == doctest::Approx(n0.inputs[static_cast<size_t>(k0)].ay * 1.5f));
+    uint32_t chains = 0;
+    for (const Edge& e : u.pp().edges)
+      if (e.kind == EdgeKind::Chain && (e.to == u.deviceNode(wt) || e.from == u.deviceNode(wt))) {
+        ++chains;
+        CHECK(e.points.front().y == doctest::Approx(e.points.back().y));
+        CHECK(e.points.back().y == doctest::Approx(n.y + pinOffset(n, 0)));
+      }
+    CHECK(chains == 2);
+    // Room made: the filter after it moved right by the growth, the band grew; the scene node draws the face at 1.5.
+    const Node& f = u.pp().nodes[u.deviceNode(r.filter)];
+    CHECK(f.x == doctest::Approx(f0.x + n0.w * 0.5f));
+    CHECK(f.x >= n.x + n.w + metrics::kNodeGap - 0.01f);
+    CHECK(u.pp().bands[n.band].h > bandH0);
+    CHECK(v.scene().scene->nodes[v.scene().sceneNode[u.deviceNode(wt)]].scale == doctest::Approx(1.5f));
+    CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
+    for (const Edge& e : u.pp().edges) CHECK(orthogonal(e.points));
+  }
+  // Clamped: far out 3×, far in 0.5×.
+  sDrag(u, wt, 4000.0f, 4000.0f);
+  CHECK(v.blockScale(wt) == doctest::Approx(doc::kMaxPatchScale));
+  sDrag(u, wt, -4000.0f, -4000.0f);
+  CHECK(v.blockScale(wt) == doctest::Approx(doc::kMinPatchScale));
+  // Shift: steps of 25 %.
+  sDrag(u, wt, 37.0f, 23.0f, mod::kShift);
+  const float stepped = v.blockScale(wt);
+  CHECK(std::fabs(stepped / 0.25f - std::round(stepped / 0.25f)) < 1e-5f);
+  CHECK(stepped > doc::kMinPatchScale);
+  // The detent at its own size: a drag that ends within 4 % of 1× is 1× (and the entry goes: nothing to save).
+  {
+    const Node& n = u.pp().nodes[u.deviceNode(wt)];
+    const float want = 1.02f / v.blockScale(wt) - 1.0f;  // the factor to ≈ 1.02×
+    const float zz = v.canvas().deviceScale();
+    sDrag(u, wt, n.w * zz * want, n.h * zz * want);
+  }
+  CHECK(v.blockScale(wt) == 1.0f);
+  CHECK(u.ctx.store().view().patchNudges.count(wt.value) == 0);
+  // Esc during the drag: back to the size at the press.
+  REQUIRE(v.setBlockScale(wt, 1.25f));
+  {
+    const Vec2 p = u.centre(u.deviceNode(wt));
+    u.d.keyDown('s');
+    u.d.move(p);
+    u.d.down(p);
+    u.d.move({p.x + 80.0f, p.y + 60.0f});
+    CHECK(v.blockScale(wt) > 1.3f);  // live while dragging
+    CHECK(u.d.tree().cursor() == Cursor::ResizeNWSE);
+    CHECK(cv.drag() == ProjectCanvas::Drag::Resize);
+    u.d.keyDown(key::kEscape);
+    CHECK(v.blockScale(wt) == doctest::Approx(1.25f));
+    u.d.up({p.x + 80.0f, p.y + 60.0f});
+    CHECK(v.blockScale(wt) == doctest::Approx(1.25f));
+    // S + double-click: its own size again.
+    const Vec2 q = u.centre(u.deviceNode(wt));
+    u.d.doubleClick(q);
+    CHECK(v.blockScale(wt) == 1.0f);
+    u.d.keyUp('s');
+  }
+  // The block menu's Reset Size (enabled only while scaled).
+  REQUIRE(v.setBlockScale(r.filter, 2.0f));
+  REQUIRE(v.openNodeMenu(u.deviceNode(r.filter), u.centre(u.deviceNode(r.filter))) != nullptr);
+  Menu* m = u.openMenu();
+  REQUIRE(m != nullptr);
+  u.choose(*m, "Reset Size");
+  CHECK(v.blockScale(r.filter) == 1.0f);
+  CHECK(u.pp().nodes[u.deviceNode(r.filter)].w == doctest::Approx(f0.w));
+  CHECK(u.history() == h0);
+  // Without S a drag on the block does what it did (here the face's own control under the pointer): no resize.
+  const float before = v.blockScale(wt);
+  const Vec2 g = u.grip(u.deviceNode(wt));
+  u.d.drag(g, {g.x + 6.0f, g.y + 4.0f}, 2);
+  CHECK(v.blockScale(wt) == before);
+  CHECK(cv.drag() == ProjectCanvas::Drag::None);
+  // A held S is forgotten when the window loses focus (its release may never come).
+  u.d.keyDown('s');
+  u.d.tree().cancelInteraction();
+  CHECK_FALSE(u.d.tree().keyHeld('s'));
+}
+
+// Save / load, the undo choice (view state like the nudges: never an undo step, untouched by undo / redo of document
+// edits), Reset Layout keeps sizes, a strict reader for the saved value, and the model alone (no view) laid out with it.
+TEST_CASE("project patch (TX.resize): a block's scale is saved view state — not undoable, loaded, validated, kept by Reset Layout") {
+  Ui u;
+  const ResizeSetup r = resizeSetup(u);
+  u.show();
+  ProjectPatchView& v = u.view();
+  const doc::DeviceId wt = r.w.wt;
+  const Node n0 = u.pp().nodes[u.deviceNode(wt)];
+  const size_t h0 = u.history();
+  REQUIRE(v.setBlockScale(wt, 1.75f));
+  REQUIRE(v.setBlockScale(r.filter, 0.5f));
+  CHECK_FALSE(v.setBlockScale(r.filter, 0.5f));  // unchanged: no re-layout
+  CHECK(v.setBlockScale(r.filter, 9.0f));        // clamped
+  CHECK(v.blockScale(r.filter) == doc::kMaxPatchScale);
+  REQUIRE(v.setBlockScale(r.filter, 0.5f));
+  v.nudge(wt.value, 12.0f, 0.0f);
+  CHECK(u.history() == h0);
+  CHECK(u.pp().nodes[u.deviceNode(wt)].w == doctest::Approx(n0.w * 1.75f));
+  // A document edit and its undo / redo leave the scales alone (they are not in the history).
+  REQUIRE(u.ctx.store().dispatch(doc::ops::setDeviceParam(*u.ctx.doc(), r.filter, "res", 0.5)->command).ok());
+  CHECK(u.history() == h0 + 1);
+  REQUIRE(u.ctx.undo());
+  CHECK(v.blockScale(wt) == doctest::Approx(1.75f));
+  REQUIRE(u.ctx.redo());
+  CHECK(v.blockScale(r.filter) == doctest::Approx(0.5f));
+  CHECK(u.pp().nodes[u.deviceNode(wt)].scale == doctest::Approx(1.75f));
+  // Saved and loaded with the project ("scale" on the entry; a scale-only entry keeps dx / dy 0).
+  auto text = doc::serializeProject(*u.ctx.doc(), u.ctx.store().view());
+  REQUIRE(text.ok());
+  CHECK(text->find("\"scale\": 1.75") != std::string::npos);
+  const std::string dir = pq::views::test::tempDir("project_patch_resize");
+  REQUIRE(u.ctx.saveProjectAs(dir).ok());
+  FakeTransport t2;
+  ViewContext other(t2);
+  REQUIRE(other.openProject(dir).ok());
+  const auto& n = other.store().view().patchNudges;
+  REQUIRE(n.count(wt.value) == 1);
+  CHECK(n.at(wt.value).scale == 1.75f);
+  CHECK(n.at(wt.value).dx == 12.0f);
+  REQUIRE(n.count(r.filter.value) == 1);
+  CHECK(n.at(r.filter.value).scale == 0.5f);
+  CHECK(n.at(r.filter.value).dx == 0.0f);
+  // The model laid out with the loaded view state (no view): the same scale.
+  {
+    LayoutOptions o;
+    o.nudges = &n;
+    const doc::LoweredProject low = lowerOf(*other.doc());
+    const ProjectPatch pp = buildProjectPatch(*other.doc(), low, &library().catalog(), o);
+    const uint32_t k = pp.nodeOf(wt);
+    REQUIRE(k != kNone);
+    CHECK(pp.nodes[k].scale == doctest::Approx(1.75f));
+    CHECK(checkAgainstGraph(pp, *other.doc(), low) == "");
+  }
+  // Strict reader: a scale outside 0.5 … 3 is a load error.
+  {
+    std::string bad = *text;
+    const size_t at = bad.find("\"scale\": 1.75");
+    REQUIRE(at != std::string::npos);
+    bad.replace(at, 13, "\"scale\": 4.5");
+    CHECK_FALSE(doc::parseProject(bad).ok());
+    std::string good = *text;
+    good.replace(good.find("\"scale\": 1.75"), 13, "\"scale\": 2.5");
+    CHECK(doc::parseProject(good).ok());
+  }
+  // Reset Layout: positions only, the sizes stay.
+  v.resetLayout();
+  CHECK(u.ctx.store().view().patchNudges.at(wt.value).dx == 0.0f);
+  CHECK(v.blockScale(wt) == doctest::Approx(1.75f));
+  // Back at 1: no entry, nothing written.
+  REQUIRE(v.setBlockScale(wt, 1.0f));
+  REQUIRE(v.setBlockScale(r.filter, 1.0f));
+  CHECK(u.ctx.store().view().patchNudges.empty());
+  auto plain = doc::serializeProject(*u.ctx.doc(), u.ctx.store().view());
+  REQUIRE(plain.ok());
+  CHECK(plain->find("\"scale\"") == std::string::npos);
+  CHECK(u.history() == h0 + 1);
+}
+
+// Scaled faces and panels stay interactive and crisp: the panel is laid out at the scaled px per unit (its fonts and
+// 1-px lines resolved at it) once the scale settles, the face's static layers are tiles at its own scale (not
+// stretched); a knob drag on either edits the document (one undo step); the cables end on the scaled controls.
+TEST_CASE("project patch (TX.resize): a scaled face and panel — crisp, interactive in place, cables on their controls") {
+  Ui u;
+  REQUIRE(u.d.enableGpu().ok());
+  const ResizeSetup r = resizeSetup(u);
+  u.show();
+  ProjectPatchView& v = u.view();
+  REQUIRE(v.setBlockScale(r.w.wt, 2.0f));
+  REQUIRE(v.setBlockScale(r.filter, 1.5f));
+  u.zoomTo("Lead WT");
+  u.d.advance(0.5);  // the scale and zoom settle: tiles and the panel's layout at the new scale
+  const float z = v.canvas().deviceScale();
+  // Crisp: the panel laid out at 1.5 × the canvas's px per unit; the face's layers from tiles, none stretched.
+  devices::PanelFace* pf = v.panelOf(r.filter);
+  REQUIRE(pf != nullptr);
+  CHECK(pf->layoutScale() == doctest::Approx(std::clamp(z * 1.5f, devices::PanelFace::kMinScale, devices::PanelFace::kMaxScale)));
+  CHECK(pf->worldSize().x == doctest::Approx(u.pp().nodes[u.deviceNode(r.filter)].w / 1.5f));
+  v.canvas().markDirty();
+  u.d.step();
+  CHECK(v.canvas().stats().faceLayersFromTiles > 0);
+  CHECK(v.canvas().stats().faceLayersStretched == 0);
+  CHECK(v.canvas().stats().panelsPainted >= 1);
+  CHECK_FALSE(v.canvas().tilesPending());
+  // The cable onto the scaled panel's knob: its anchor is the panel's control × 1.5, and the drawn end (the block's
+  // origin + the face's anchor × its scale) is on the knob where the panel shows it.
+  {
+    const Node& n = u.pp().nodes[u.deviceNode(r.filter)];
+    const int32_t k = n.input("freq");
+    REQUIRE(k >= 0);
+    const Port& p = n.inputs[static_cast<size_t>(k)];
+    REQUIRE(p.anchored);
+    const std::optional<ControlAnchor> a = pf->controlAnchor("freq");
+    REQUIRE(a.has_value());
+    CHECK(p.ax == doctest::Approx(a->at.x * 1.5f).epsilon(0.02));
+    CHECK(p.ay == doctest::Approx(a->at.y * 1.5f).epsilon(0.02));
+    const Vec2 knob = controlAt(u, r.filter, "freq");
+    const Vec2 drawn = u.dev(n.x + a->at.x * n.scale, n.y + a->at.y * n.scale);
+    CHECK(std::fabs(knob.x - drawn.x) < 2.0f);
+    CHECK(std::fabs(knob.y - drawn.y) < 2.0f);
+    const uint32_t w = sceneWireOf(v, r.filterWire);
+    REQUIRE(w != kNone);
+    const circuit::CircuitScene& sc = *v.scene().scene;
+    const graph::Point2 end = sc.points[sc.wires[w].firstPoint + sc.wires[w].pointCount - 1];
+    const graph::Point2 entry = inputEntry(n, static_cast<size_t>(k));
+    CHECK(end.x == doctest::Approx(entry.x));
+    CHECK(end.y == doctest::Approx(entry.y));
+    // The knob under the pointer turns (one undo step): hit-testing follows the scale.
+    const size_t h0 = u.history();
+    const double f0 = paramOf(u, r.filter, "freq");
+    u.d.drag(knob, {knob.x, knob.y - 40.0f}, 4);
+    CHECK(u.history() == h0 + 1);
+    CHECK(paramOf(u, r.filter, "freq") > f0);
+  }
+  // The scaled Wavetable face: the wire on warp ends on warp × 2; its fold knob where the face puts it × 2, and a drag
+  // there edits the Wavetable (one undo step).
+  {
+    const uint32_t mn = u.deviceNode(r.w.wt);
+    const Node& n = u.pp().nodes[mn];
+    const MetaFace* face = v.canvas().faceOn(v.scene().sceneNode[mn]);
+    REQUIRE(face != nullptr);
+    CHECK(face->worldSize().x * 2.0f <= n.w + 4.0f);
+    const std::optional<ControlAnchor> warp = face->controlAnchor("warp");
+    REQUIRE(warp.has_value());
+    const int32_t kw = n.input("warp");
+    REQUIRE(kw >= 0);
+    CHECK(n.inputs[static_cast<size_t>(kw)].ax == doctest::Approx(warp->at.x * 2.0f));
+    const std::optional<ControlAnchor> fold = face->controlAnchor("fold");
+    REQUIRE(fold.has_value());
+    const Vec2 at = u.dev(n.x + fold->at.x * 2.0f, n.y + fold->at.y * 2.0f);
+    auto foldOf = [&]() -> double {
+      const doc::Device* d = doc::findDevice(*u.ctx.doc(), r.w.wt).device;
+      REQUIRE(d != nullptr);
+      const doc::DeviceValue* fv = d->param("fold");  // a chain meta device's params are its device params
+      return fv != nullptr ? fv->value : -1.0;
+    };
+    const double fold0 = foldOf();
+    const size_t h0 = u.history();
+    u.d.drag(at, {at.x, at.y - 50.0f}, 5);
+    CHECK(u.history() == h0 + 1);
+    CHECK(foldOf() != fold0);
+  }
+}
+
+// Smooth while dragging: each S-drag step re-lays out the project (model + scene; no lowering) and paints. 64 tracks
+// with panels (Saturator / EQ Eight / Utility on every track): the step's cost, measured.
+TEST_CASE("project patch (TX.resize): 64 tracks — an S-drag step (re-layout + frame) within a 120 Hz frame" * doctest::test_suite("perf")) {
+  Ui u(false);
+  REQUIRE(buildWideProject(u.ctx.store(), 64).ok());
+  REQUIRE(u.d.enableGpu().ok());
+  u.show();
+  u.zoomTo("Track 9");
+  u.d.advance(1.0);
+  ProjectPatchView& v = u.view();
+  const doc::DeviceId dev = u.track("Track 9").devices[1]->id;
+  const Vec2 c = u.centre(u.deviceNode(dev));
+  u.d.keyDown('s');
+  u.d.move(c);
+  u.d.down(c);
+  std::vector<double> ms, lay;  // the steps that changed the scale (whole percent; the detent at 1× holds the first few)
+  for (int i = 1; i <= 40; ++i) {
+    const uint64_t before = v.stats().rescales;
+    const auto t0 = std::chrono::steady_clock::now();
+    u.d.move({c.x + static_cast<float>(i) * 3.0f, c.y + static_cast<float>(i) * 2.0f});
+    u.d.step();
+    const double t = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (v.stats().rescales == before) continue;
+    ms.push_back(t);
+    lay.push_back(v.stats().lastRelayoutMs);
+  }
+  REQUIRE(ms.size() >= 15);
+  u.d.up({c.x + 120.0f, c.y + 80.0f});
+  u.d.keyUp('s');
+  std::sort(ms.begin(), ms.end());
+  std::sort(lay.begin(), lay.end());
+  MESSAGE("64 tracks: S-drag step median " << ms[ms.size() / 2] << " ms, max " << ms.back() << " ms; re-layout median "
+                                           << lay[lay.size() / 2] << " ms (" << v.stats().rescales << " rescales, "
+                                           << v.canvas().panelCount() << " panels)");
+  CHECK(ms[ms.size() / 2] < 1000.0 / 120.0);
 }

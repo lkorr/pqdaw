@@ -36,6 +36,9 @@
 // main track (their sends arrive by buses), the master right of everything. Then the stored nudges (doc::ViewState::
 // patchNudges: by track id for a band, by device id for a block) and the wires' orthogonal routes (buses into each
 // summing input: every wire into one input shares its vertical channel, as a summing bus).
+// TX.resize: a scaled block (the nudge's scale) takes its scaled size in the layout — the blocks after it move right,
+// its band's spine moves down to its main pin and the band grows to hold it, the routes reach its scaled pins and
+// anchors — so neighbours make room (positions after a scaled block are not multiples of 4).
 //
 // Pure and UI-free (UI thread; ~O(tracks + devices + wires)). The scene for the canvas is buildProjectScene
 // (project_patch_view.h).
@@ -106,6 +109,9 @@ struct Node {
   graph::NodeId call;          // Device (lowered): the call node's NodeId in the track patch
   std::vector<Port> inputs, outputs;
   float x = 0, y = 0, w = 0, h = 0;  // world rect
+  // TX.resize: a device block's uniform scale (doc::PatchNudge::scale; 1 for every other node and an opened device): w, h,
+  // the pins' rows (pinOffset) and the anchors (Port::ax / ay) are already scaled; its face or panel is drawn at it.
+  float scale = 1.0f;
   int32_t input(std::string_view name) const noexcept;   // −1: none
   int32_t output(std::string_view name) const noexcept;
 };
@@ -233,6 +239,7 @@ inline float pinOffset(const Node& n, size_t i) noexcept {
     case NodeKind::Source:
       if (i > 0) return metrics::kPinTop + 4.0f + metrics::kNotePitch * static_cast<float>(i);
       return metrics::kPinTop;
+    case NodeKind::Device: return (metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i)) * n.scale;  // TX.resize
     default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
   }
 }

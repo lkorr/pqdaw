@@ -1709,6 +1709,50 @@ Status setupProjectPatchNotes(Shell& shell) {
   return Ok{};
 }
 
+// TX.resize (SPEC §15 2026-11-01 "resize, groups, and the free-device rack"): blocks scaled with S-drag — the Meta Lead
+// band of project_patch::buildMetaChainProject with its Wavetable face at 1.5× and its Auto Filter panel at 1.25×, Meta
+// Bass's Wavetable at 0.6×; the Lead's note velocity wired onto the scaled Wavetable's position and the scaled filter's
+// frequency (the cables end on the scaled controls); the same still voices as project-meta-chain. The Lead band framed.
+Status setupProjectPatchResize(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-patch-resize: no device library", {}};
+  project_patch::MetaChainIds ids;
+  if (Status s = project_patch::buildMetaChainProject(ctx.store(), &ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-resize: the view is not installed", {}};
+  const doc::Track* lead = doc::findTrackPtr(*ctx.doc(), ids.lead);
+  if (lead == nullptr || lead->devices.size() < 3) return Error{ErrorCode::NotFound, "project-patch-resize: no Lead chain", {}};
+  const doc::DeviceId filter = lead->devices[2]->id;
+  for (const auto& [to, param] : {std::pair{ids.wt, "position"}, std::pair{filter, "freq"}}) {
+    auto e = doc::ops::connectNoteWire(*ctx.doc(), ctx.store().ids(), ids.lead, "velocity", to, param);
+    if (!e) return std::move(e).error();
+    if (Status s = ctx.store().dispatch(e->command); !s) return s;
+  }
+  static SyntheticVoices accVoices, wtVoices;
+  accVoices.setVoices({{0, 4.0, 0.06}, {1, 5.0, 0.31}, {2, 6.0, 0.58}, {3, 7.5, 0.82}});
+  wtVoices.setVoices({{0, 4.0, 0.06, 0.35}, {1, 5.0, 0.31, 0.35}, {2, 6.0, 0.58, 0.35}, {3, 7.5, 0.82, 0.35}});
+  for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
+    sv->advance(1.0 / 60.0);
+    sv->freeze();
+  }
+  const doc::DeviceId acc = ids.acc, wt = ids.wt;
+  v->faceVoices = [acc, wt](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    if (!path.empty()) return nullptr;
+    return d == acc ? &accVoices : (d == wt ? &wtVoices : nullptr);
+  };
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  (void)v->setBlockScale(ids.wt, 1.5f);
+  (void)v->setBlockScale(filter, 1.25f);
+  (void)v->setBlockScale(ids.bassWt, 0.6f);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.lead, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TMM.11: still voices for the Envelope faces — six voices in every stage (rising, at the peak, decaying, sustained,
 // released early, near the end of the release), each with the levels its tap sampled during the last frame.
 class EnvelopeSceneVoices final : public VoiceTapReader {
@@ -2112,6 +2156,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-notes", 1280, 800, setupProjectPatchNotes},        // TMM.10-fix2
     {"project-patch-free", 1280, 800, setupProjectPatchFree},          // TX.patching
     {"project-patch-panels", 1600, 900, setupProjectPatchPanels},      // TX.panel-faces
+    {"project-patch-resize", 1600, 900, setupProjectPatchResize},      // TX.resize
     {"device-meta-envelope", 1280, 800, setupDeviceMetaEnvelope},      // TMM.11
     {"project-meta-envelope", 1280, 800, setupProjectMetaEnvelope},    // TMM.11
     {"device-meta-vca", 1280, 800, setupDeviceMetaVca},                // TMM.14

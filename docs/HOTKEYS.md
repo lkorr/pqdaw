@@ -231,8 +231,9 @@ T4.4-fix1 (SPEC §15 2026-10-26): the editor works on the project's devices — 
 | `0` | selected devices | toggle their activators |
 | click M / S on a mixer strip (`Ctrl`: additive solo) | canvas | the track's activator (mute) / solo |
 | drag a mixer strip's volume bar / pan / send bar sideways (`Shift`: fine) | canvas | volume / pan / send level (one undo step per drag; `Esc` cancels) |
-| drag a band's title strip, `Ctrl`+drag a device block | canvas | nudge the layout (view state, saved with the project, not undoable); band menu: Reset Layout |
-| right-click a band / a block / a wire | canvas | Add Device ▸, Open Band, Zoom to Band / Project, Reset Layout; Delete, Activate, Open to Atoms, Open in Circuit View (its band opened, framed on it), Edit Device Circuit, Output ▸; Delete Wire / Send to −inf / Sends Only |
+| drag a band's title strip, `Ctrl`+drag a device block | canvas | nudge the layout (view state, saved with the project, not undoable); band menu: Reset Layout (positions only: blocks keep their sizes) |
+| hold `S` over a device block (face, panel or plain block; not an opened one) and drag (`Shift`: steps of 25 %) | canvas | TX.resize: the cursor shows ⤡; the drag scales the block uniformly, its top-left kept, its bottom-right corner on the pointer (0.5× … 3×, a detent at 1×); the blocks after it make room; `Esc` cancels; view state like a nudge (saved, not undoable). `S` + double-click, or the block menu's Reset Size: its own size. `S` is held for the tree wherever the focus is (`UiTree::keyHeld`), so no click on the canvas is needed first; while a text field (a face's or panel's type-in) has the focus, `S` types |
+| right-click a band / a block / a wire | canvas | Add Device ▸, Open Band, Zoom to Band / Project, Reset Layout; Delete, Activate, Open to Atoms, Open in Circuit View (its band opened, framed on it), Edit Device Circuit, Reset Position, Reset Size, Output ▸; Delete Wire / Send to −inf / Sends Only |
 
 ## Open in Circuit View (T5.x-one-circuit: one circuit view)
 

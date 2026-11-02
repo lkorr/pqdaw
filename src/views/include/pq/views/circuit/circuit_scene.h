@@ -65,6 +65,10 @@ struct SceneNode {
   graph::NodeIndex node = graph::kNone;
   bool inactive = false;  // T4.15: switched off by a structural constant (drawn dimmed)
   bool hidden = false;    // … and hidden (not drawn, not hit)
+  // TX.resize: the node drawn `scale` times its own size (the project patch view's S-drag): the rect above is already the
+  // scaled one; a face or panel on it is drawn, hit-tested and laid out at scale × the canvas's px per world unit, in
+  // face-local units of its own size (local = (world − x, y) / scale). 1 everywhere else.
+  float scale = 1.0f;
 };
 
 struct SceneWire {

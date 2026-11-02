@@ -1227,19 +1227,52 @@ void ProjectPatchView::nudge(uint32_t entity, float dx, float dy) {
   doc::PatchNudge& n = ctx_.store().view().patchNudges[entity];
   n.dx = std::round(n.dx + dx);
   n.dy = std::round(n.dy + dy);
-  if (n.dx == 0.0f && n.dy == 0.0f) ctx_.store().view().patchNudges.erase(entity);
+  if (n.empty()) ctx_.store().view().patchNudges.erase(entity);  // TX.resize: a scaled block keeps its entry
   ctx_.viewStateChanged();
   stale_ = true;
   sync();
 }
 
 void ProjectPatchView::resetLayout() {
+  // TX.resize: the positions only; a block's size is the user's choice for that block (Reset Size / S + double-click).
   auto& nudges = ctx_.store().view().patchNudges;
-  if (nudges.empty()) return;
-  nudges.clear();
+  bool changed = false;
+  for (auto it = nudges.begin(); it != nudges.end();) {
+    if (it->second.dx != 0.0f || it->second.dy != 0.0f) changed = true;
+    it->second.dx = it->second.dy = 0.0f;
+    it = it->second.empty() ? nudges.erase(it) : std::next(it);
+  }
+  if (!changed) return;
   ctx_.viewStateChanged();
   stale_ = true;
   sync();
+}
+
+float ProjectPatchView::blockScale(doc::DeviceId device) const noexcept {
+  const auto& nudges = ctx_.store().view().patchNudges;
+  const auto it = nudges.find(device.value);
+  return it == nudges.end() ? 1.0f : it->second.scale;
+}
+
+float ProjectPatchView::clampBlockScale(float scale, bool snap) noexcept {
+  if (!std::isfinite(scale)) return 1.0f;
+  float k = std::clamp(scale, doc::kMinPatchScale, doc::kMaxPatchScale);
+  if (snap) return std::clamp(std::round(k / kBlockScaleStep) * kBlockScaleStep, doc::kMinPatchScale, doc::kMaxPatchScale);
+  if (std::fabs(k - 1.0f) < kBlockScaleDetent) return 1.0f;  // a detent at its own size
+  return std::round(k * 100.0f) / 100.0f;                    // whole percent (tidy files, fewer re-layouts)
+}
+
+bool ProjectPatchView::setBlockScale(doc::DeviceId device, float scale) {
+  const float k = clampBlockScale(scale, false);
+  if (k == blockScale(device)) return false;
+  auto& nudges = ctx_.store().view().patchNudges;
+  doc::PatchNudge& n = nudges[device.value];
+  n.scale = k;
+  if (n.empty()) nudges.erase(device.value);
+  ctx_.viewStateChanged();
+  ++stats_.rescales;
+  relayout();  // model + scene again (the lowering kept: view state is not the document)
+  return true;
 }
 
 // ---- menus ----------------------------------------------------------------------------------------------------------
@@ -1354,16 +1387,24 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
         const doc::DeviceId one[1] = {d};
         (void)apply(doc::ops::revertDevicesToStock(*ctx_.doc(), one), "Revert to Stock");
       }));
+    const auto& nudges0 = ctx_.store().view().patchNudges;
+    const auto own = nudges0.find(d.value);
     ui::MenuItem reset = ui::MenuItem::item("Reset Position", [this, d] {
       auto& nudges = ctx_.store().view().patchNudges;
-      if (nudges.erase(d.value) != 0) {
-        ctx_.viewStateChanged();
-        stale_ = true;
-        sync();
-      }
+      const auto it = nudges.find(d.value);
+      if (it == nudges.end()) return;
+      it->second.dx = it->second.dy = 0.0f;  // TX.resize: its size stays
+      if (it->second.empty()) nudges.erase(it);
+      ctx_.viewStateChanged();
+      stale_ = true;
+      sync();
     });
-    reset.enabled = ctx_.store().view().patchNudges.count(d.value) != 0;
+    reset.enabled = own != nudges0.end() && (own->second.dx != 0.0f || own->second.dy != 0.0f);
     items.push_back(std::move(reset));
+    // TX.resize: S-drag scales a block; this (or S + double-click) gives it its own size again.
+    ui::MenuItem size = ui::MenuItem::item("Reset Size", [this, d] { (void)setBlockScale(d, 1.0f); });
+    size.enabled = !n.expanded && blockScale(d) != 1.0f;
+    items.push_back(std::move(size));
   } else if (n.kind == NodeKind::Mixer) {
     const doc::TrackId t = patch_.bands[n.band].track;
     items.push_back(ui::MenuItem::item(mixerExpanded(t) ? "Collapse Mixer" : "Expand Mixer", [this, t] { setMixerExpanded(t, !mixerExpanded(t)); }));

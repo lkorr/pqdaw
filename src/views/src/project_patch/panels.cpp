@@ -118,7 +118,8 @@ std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
   for (const doc::DeviceValue& v : d.settings) values[v.name] = v.value;
   auto target = std::make_unique<PatchPanelTarget>(*this, d.id);
   PatchPanelTarget* tp = target.get();
-  auto face = std::make_unique<devices::PanelFace>(t->sig, t->desc, std::move(target), values, ui::Vec2{n.w, n.h});
+  // TX.resize: the panel in its own units (a scaled block draws it at its scale).
+  auto face = std::make_unique<devices::PanelFace>(t->sig, t->desc, std::move(target), values, ui::Vec2{n.w / n.scale, n.h / n.scale});
   devices::DevicePanel& p = face->panel();
   tp->panel = &p;
   p.setActive(d.active);
@@ -186,7 +187,7 @@ void ProjectPatchView::syncPanels() {
     const uint32_t mn = sn < scene_.modelNode.size() ? scene_.modelNode[sn] : kNone;
     if (mn >= patch_.nodes.size()) continue;
     const Node& n = patch_.nodes[mn];
-    face.setWorldSize({n.w, n.h});
+    face.setWorldSize({n.w / n.scale, n.h / n.scale});  // TX.resize: its own units
     const auto found = devices.find(n.device.value);
     if (found == devices.end()) continue;
     const doc::DevicePtr& now = *found->second;

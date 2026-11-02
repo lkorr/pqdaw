@@ -721,3 +721,26 @@ TEST_CASE("widgets: UiTree::mods follows modifier keys with the pointer still, s
   d.move({60, 50}, mod::kShift | mod::kAlt);
   CHECK(d.tree().mods() == (mod::kShift | mod::kAlt));
 }
+
+// TX.resize: a held letter (S over a project patch block) is known to the tree wherever the focus is — pressed until its
+// release, auto-repeat counted once, modifiers never — and forgotten when the window loses focus (cancelInteraction).
+TEST_CASE("widgets: UiTree::keyHeld follows held keys, not modifiers; cancelInteraction forgets them") {
+  TestDriver d(200, 100);
+  (void)d.setRoot<Probe>("a");
+  CHECK_FALSE(d.tree().keyHeld('s'));
+  (void)d.keyDown('s');
+  (void)d.keyDown('s', mod::kNone, true);  // auto-repeat
+  (void)d.keyDown('x');
+  (void)d.keyDown(key::kLShift);
+  CHECK(d.tree().keyHeld('s'));
+  CHECK(d.tree().keyHeld('x'));
+  CHECK_FALSE(d.tree().keyHeld(key::kLShift));
+  d.keyUp('s');
+  CHECK_FALSE(d.tree().keyHeld('s'));  // one release, whatever the repeats
+  CHECK(d.tree().keyHeld('x'));
+  d.tree().cancelInteraction();
+  CHECK_FALSE(d.tree().keyHeld('x'));
+  for (Key k = 'a'; k < 'a' + 12; ++k) (void)d.keyDown(k);  // more than kMaxHeldKeys: the rest are not tracked
+  CHECK(d.tree().keyHeld('a'));
+  CHECK_FALSE(d.tree().keyHeld('a' + 11));
+}

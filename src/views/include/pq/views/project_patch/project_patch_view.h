@@ -47,6 +47,15 @@
 //                            Sends Only
 //              Ctrl+drag a block or a band's title nudges it (view state, saved with the project, not undoable; the
 //              band menu's Reset Layout clears them).
+//   resize     (TX.resize) hold S over a device block (a meta face, a panel, a plain block; not an opened one): the
+//              cursor shows ⤡ and a drag scales the block uniformly, its top-left kept, its bottom-right corner
+//              following the pointer (0.5× … 3×, a detent at 1×; Shift: steps of 25 %); a face or panel and everything
+//              on it (controls, text, sockets, the cable ends on its knobs) in proportion, interactive and laid out at
+//              that size (a plain block: its box and pin rows; its labels keep the UI font, as at any zoom). Neighbours make
+//              room (the layout re-runs per change: blocks after it move right, the band's spine moves down to its
+//              main pin, the band grows). Esc cancels the drag. S + double-click or the block menu's Reset Size: its own
+//              size. View state like a nudge (saved, not undoable). S does nothing else in this view; while a text
+//              field (a face's or panel's type-in) has the focus, S types.
 //   morph      toggling animates between the views (kMorphSeconds): each lane keeps its vertical position and unfolds
 //              into its band, its clips collapse into the source node's strip, and back.
 //   readouts   resting on a wire shows what is known of its signal: a route / send the source track's meter level
@@ -146,8 +155,13 @@ public:
   // World rect → device rect.
   ui::Rect deviceRect(float x, float y, float w, float h) const;
 
-  enum class Drag : uint8_t { None, Wire, MaybeMoveDevice, MoveDevice, Nudge, Volume, Pan, Send };
+  enum class Drag : uint8_t { None, Wire, MaybeMoveDevice, MoveDevice, Nudge, Volume, Pan, Send, Resize };
   Drag drag() const noexcept { return drag_; }
+  // TX.resize: S is held (and no text field has the focus): a left press on a block resizes it; the block a press at
+  // `pos` would resize (a closed device block; kNone: none).
+  bool resizeHeld() const noexcept;
+  uint32_t resizableAt(ui::Vec2 pos) const;
+  static constexpr ui::Key kResizeKey = 's';
 
 protected:
   void paintUnderlay(ui::PaintContext& ctx) override;
@@ -172,6 +186,9 @@ private:
   uint32_t dragNode_ = kNone;      // the device / mixer being dragged
   uint32_t dragBand_ = kNone;      // a band's title being nudged
   uint32_t dragSend_ = 0;          // the send row of a Send drag
+  // TX.resize: the block being resized (by device: the model is rebuilt per step), its scale and size at the press.
+  doc::DeviceId resizeDevice_;
+  float resizeK0_ = 1.0f, resizeW0_ = 0.0f, resizeH0_ = 0.0f;
   double dragStart_ = 0.0;         // the value at the press (volume fader position, pan, send position)
   ui::Vec2 pointer_{0, 0};         // the last pointer position (the readout is drawn there)
   bool gesture_ = false;
@@ -295,7 +312,19 @@ public:
   void cancelValueGesture();
   // Nudges (view state; saved, not undoable): world units added to a band (track id) or a block (device id).
   void nudge(uint32_t entity, float dx, float dy);
+  // Reset Layout: every nudge's position (TX.resize: blocks keep their sizes).
   void resetLayout();
+  // TX.resize (SPEC §15 2026-11-01 "resize, groups, and the free-device rack"): a device block's uniform scale — its face,
+  // panel or plain block and everything on it in proportion (doc::PatchNudge::scale: view state like a nudge, saved with
+  // the project, not undoable). setBlockScale clamps (clampBlockScale) and re-lays out (neighbours make room); false:
+  // unchanged. 1 = its own size.
+  float blockScale(doc::DeviceId device) const noexcept;
+  bool setBlockScale(doc::DeviceId device, float scale);
+  // doc::kMinPatchScale … kMaxPatchScale; `snap`: to kBlockScaleStep (Shift while dragging); else whole percent, with a
+  // detent at 1 (within kBlockScaleDetent).
+  static float clampBlockScale(float scale, bool snap) noexcept;
+  static constexpr float kBlockScaleStep = 0.25f;
+  static constexpr float kBlockScaleDetent = 0.04f;
 
   // The selected devices / tracks (from the canvas selection), for tests and the menus.
   std::vector<doc::DeviceId> selectedDevices() const;
@@ -367,6 +396,7 @@ public:
     double lastRelayoutMs = 0.0;
     uint64_t playheadReads = 0;
     uint64_t lanesPainted = 0;
+    uint64_t rescales = 0;  // TX.resize: block scale changes (each a re-layout)
   };
   const Stats& stats() const noexcept { return stats_; }
 

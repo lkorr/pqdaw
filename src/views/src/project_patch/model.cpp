@@ -172,6 +172,22 @@ struct Builder {
 
   // ---- nodes ----------------------------------------------------------------------------------------------------
 
+  // TX.resize: a closed device block at its stored scale (ViewState::patchNudges' scale): its rect, its pins' rows
+  // (pinOffset) and its controls' anchors all `scale` times their own (what is drawn on it follows: SceneNode::scale).
+  // An opened device keeps its size (its frame holds the atoms at the canvas's zoom).
+  Node scaled(Node n) const {
+    if (n.expanded || opt.nudges == nullptr || opt.nudges->empty()) return n;
+    const auto it = opt.nudges->find(n.device.value);
+    if (it == opt.nudges->end() || it->second.scale == 1.0f || !std::isfinite(it->second.scale)) return n;
+    const float k = std::clamp(it->second.scale, doc::kMinPatchScale, doc::kMaxPatchScale);
+    n.scale = k;
+    n.w *= k;
+    n.h *= k;
+    for (Port& q : n.inputs)
+      if (q.anchored) q.ax *= k, q.ay *= k;
+    return n;
+  }
+
   uint32_t addNode(Node n) {
     out.nodes.push_back(std::move(n));
     return static_cast<uint32_t>(out.nodes.size() - 1);
@@ -397,7 +413,7 @@ struct Builder {
     }
     bandStages = doc::chainStages(t.devices, t.kind == doc::TrackKind::Midi);
     for (const doc::DevicePtr& d : t.devices) {
-      const uint32_t n = addNode(d->rack ? rackNode(bi, *d, tp) : deviceNode(bi, *d, tp));
+      const uint32_t n = addNode(scaled(d->rack ? rackNode(bi, *d, tp) : deviceNode(bi, *d, tp)));
       out.bands[bi].devices.push_back(n);
     }
     out.bands[bi].mixer = addNode(mixerNode(bi, t, lowered));
@@ -596,11 +612,15 @@ struct Builder {
       const float end = placeChain(out.master, retEnd + m::kBusGap + 8.0f);
       b.x1 = end + 12.0f;
     }
-    // y: lane order; every node's main pin on the band's spine.
+    // y: lane order; every node's main pin on the band's spine (TX.resize: low enough for the lowest main pin of a
+    // scaled block, whose top then meets the title strip).
     float y = 0.0f;
     for (Band& b : out.bands) {
       b.y = y;
-      const float spine = y + m::kTitle + m::kPinTop;
+      float pinTop = m::kPinTop;
+      for (const uint32_t d : b.devices)
+        if (!out.nodes[d].free) pinTop = std::max(pinTop, spineOf(out.nodes[d]));
+      const float spine = y + m::kTitle + pinTop;
       float bottom = y + m::kTitle + m::kSumH;
       auto place = [&](uint32_t n) {
         Node& nd = out.nodes[n];

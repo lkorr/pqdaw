@@ -466,6 +466,24 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       dl.addRectFilled(snapRect(m), th.circuit.selected);
     }
   }
+  if (drag_ == Drag::Resize) {  // TX.resize: the block's outline and its scale at its bottom-right corner
+    const uint32_t rn = pp.nodeOf(resizeDevice_);
+    if (rn != kNone) {
+      const Node& n = pp.nodes[rn];
+      const Rect r = snapRect(deviceRect(n.x, n.y, n.w, n.h));
+      dl.addRectStroke(r, th.circuit.selected, std::max(1.0f, std::round(us)));
+      if (ctx.res.uiFonts != nullptr && ctx.res.text != nullptr) {
+        char buf[16];
+        std::snprintf(buf, sizeof buf, "%d %%", static_cast<int>(std::lround(n.scale * 100.0f)));
+        const ui::FontId font = ctx.res.uiFonts->small;
+        const int32_t tw = ctx.res.text->shape(font, buf).advance;
+        const int32_t pad = static_cast<int32_t>(5.0f * us), lh = static_cast<int32_t>(std::round(15.0f * us));
+        const ui::IRect box{static_cast<int32_t>(r.x1) - tw - 2 * pad, static_cast<int32_t>(r.y1) + 4, tw + 2 * pad, lh};
+        paint::box(dl, box, 3.0f * us, th.circuit.probeBg, th.circuit.probeGrid);
+        paint::text(ctx, font, {box.x + pad, box.y, tw, lh}, buf, th.circuit.probeText, ui::TextAlign::Left);
+      }
+    }
+  }
   if (drag_ == Drag::Nudge) {
     const float dx = last_.x - press_.x, dy = last_.y - press_.y;
     Rect r{};
@@ -508,6 +526,26 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
     pointer_ = e.pos;
   }
   if (!scene()) return CircuitCanvas::onPointer(e);
+  // TX.resize: S + a left press on a block resizes it (before its face's controls: S-drag over a knob scales the block);
+  // S + double-click gives it its own size again.
+  if (drag_ == Drag::None && e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left &&
+      !(e.mods & ui::mod::kAlt) && resizeHeld())
+    if (const uint32_t node = resizableAt(e.pos); node != kNone) {
+      if (tree()) tree()->setFocus(this);
+      const Node& n = pp.nodes[node];
+      if (e.clickCount >= 2) {
+        (void)v.setBlockScale(n.device, 1.0f);
+        return true;
+      }
+      drag_ = Drag::Resize;
+      resizeDevice_ = n.device;
+      resizeK0_ = n.scale;
+      resizeW0_ = n.w;
+      resizeH0_ = n.h;
+      press_ = last_ = e.pos;
+      markDirty();
+      return true;
+    }
   if (drag_ == Drag::None && facePointer(e)) return true;  // TMM.4: a face's control (its drag, hover, wheel)
   switch (e.type) {
     case ui::PointerType::Wheel: {
@@ -682,6 +720,17 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           break;
         case Drag::MoveDevice:
         case Drag::Nudge: markDirty(); break;
+        case Drag::Resize: {
+          // The bottom-right corner follows the pointer along the block's diagonal (its top-left stays): the press-time
+          // size, so the re-laid-out block under the pointer does not feed back into the drag.
+          const float s = deviceScale();
+          const float dx = (e.pos.x - press_.x) / s, dy = (e.pos.y - press_.y) / s;
+          const float d2 = std::max(1.0f, resizeW0_ * resizeW0_ + resizeH0_ * resizeH0_);
+          const float k = resizeK0_ * (1.0f + (dx * resizeW0_ + dy * resizeH0_) / d2);
+          (void)v.setBlockScale(resizeDevice_, ProjectPatchView::clampBlockScale(k, (e.mods & ui::mod::kShift) != 0));
+          markDirty();
+          break;
+        }
         case Drag::MaybeMoveDevice:
           if (std::max(std::fabs(e.pos.x - press_.x), std::fabs(e.pos.y - press_.y)) >= drag::kClickSlop * us) {
             drag_ = Drag::MoveDevice;
@@ -753,6 +802,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         case Drag::Volume:
         case Drag::Pan:
         case Drag::Send: v.endValueGesture(); break;
+        case Drag::Resize: break;  // applied while dragging (view state: no gesture to commit)
         case Drag::None: break;
       }
       dragNode_ = dragBand_ = kNone;
@@ -801,8 +851,25 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
   return itsReturn ? nullptr : "Send: drop it on its return's input";
 }
 
+bool ProjectCanvas::resizeHeld() const noexcept {
+  const ui::UiTree* t = tree();
+  if (t == nullptr || !t->keyHeld(kResizeKey)) return false;
+  const ui::Widget* f = t->focus();
+  return f == nullptr || !f->acceptsTextInput();  // a text field (a face's type-in) takes S as a letter
+}
+
+uint32_t ProjectCanvas::resizableAt(Vec2 pos) const {
+  const uint32_t node = nodeAt(pos);
+  if (node == kNone) return kNone;
+  const Node& n = view_.patch().nodes[node];
+  return n.kind == NodeKind::Device && !n.expanded ? node : kNone;
+}
+
 ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
   if (faceDragging()) return faceCursor(pos);  // TMM.4
+  // TX.resize: S held over a block (what a press would do) and the resize drag itself.
+  if (drag_ == Drag::Resize || (drag_ == Drag::None && !panning() && resizeHeld() && resizableAt(pos) != kNone))
+    return ui::Cursor::ResizeNWSE;
   switch (drag_) {
     case Drag::Wire: return wireCursor_;
     case Drag::MoveDevice: return bandAt(pos) == kNone ? ui::Cursor::NotAllowed : ui::Cursor::Move;
@@ -811,6 +878,7 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
     case Drag::Volume:
     case Drag::Pan:
     case Drag::Send: return ui::Cursor::ResizeEW;
+    case Drag::Resize: return ui::Cursor::ResizeNWSE;
     case Drag::None: break;
   }
   if (panning() || altHeld() || !scene()) return CircuitCanvas::cursorAt(pos);
@@ -979,6 +1047,10 @@ void ProjectCanvas::onCaptureLost() {
 
 void ProjectCanvas::onInteractionCancelled() {
   if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.cancelValueGesture();
+  if (drag_ == Drag::Resize) {  // TX.resize: Esc / focus lost: back to the size at the press
+    drag_ = Drag::None;
+    (void)view_.setBlockScale(resizeDevice_, resizeK0_);
+  }
   if (drag_ != Drag::None) markDirty();
   drag_ = Drag::None;
   dragNode_ = dragBand_ = kNone;
@@ -987,6 +1059,10 @@ void ProjectCanvas::onInteractionCancelled() {
 }
 
 ui::InfoText ProjectCanvas::info() const {
+  if (drag_ == Drag::Resize || (drag_ == Drag::None && resizeHeld() && resizableAt(pointer_) != kNone))  // TX.resize
+    return {"Resize block",
+            "S-drag scales the block (0.5x to 3x; Shift: steps of 25 %); everything on it in proportion, the blocks after it "
+            "make room. S + double-click (or Reset Size in its menu) gives it its own size. Esc cancels the drag."};
   if (ui::InfoText t; faceInfo(t)) return t;  // TMM.4
   const ProjectPatchView::Readout& ro = view_.readout();
   if (ro.edge != kNone) return {ro.title, ro.value};

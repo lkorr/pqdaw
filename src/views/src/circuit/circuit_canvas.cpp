@@ -315,6 +315,8 @@ struct CircuitCanvas::Impl final : FaceHost {
     std::string path;
     bool bound = false;
     bool panel = false;  // TX.panel-faces: a device's panel (panelMaker), else a meta face
+    float scale = 1.0f;  // TX.resize: its node's SceneNode::scale (face-local units = world units / scale)
+    uint64_t tileSalt = 0;  // TX.resize: a scaled face's tiles are its own (0: shared by its type at scale 1)
     MetaFace* meta() const noexcept { return panel ? nullptr : static_cast<MetaFace*>(face.get()); }
   };
   std::vector<Hosted> faces;
@@ -336,8 +338,10 @@ struct CircuitCanvas::Impl final : FaceHost {
 
   bool faced(uint32_t v) const noexcept { return facesShown && v < faceOf.size() && faceOf[v] >= 0; }
   // A static layer's tile key: the type and layer, and the face's per-instance key (TMM.7: 0 = shared by the type).
-  static uint64_t faceKey(const Face& f, uint32_t layer) {
-    const uint64_t base = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(f.metaType())) << 3) ^ layer;
+  // TX.resize: a scaled face's tiles are rasterised at its own px per unit, so they are its own (Hosted::tileSalt: by
+  // instance, not by scale — while its scale changes, the tile it had is stretched, as for a zoom, until it settles).
+  static uint64_t faceKey(const Face& f, uint32_t layer, uint64_t salt) {
+    const uint64_t base = ((static_cast<uint64_t>(reinterpret_cast<uintptr_t>(f.metaType())) << 3) ^ layer) ^ (salt & ~7ull);
     const uint64_t inst = f.staticKey(layer);
     return inst == 0 ? base : (base ^ (inst * 0x9E3779B97F4A7C15ull)) | 1ull << 63;
   }
@@ -347,7 +351,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     std::unordered_map<uint64_t, ui::LayerTile> keep;
     for (const Hosted& h : faces)
       for (uint32_t layer = 0; layer < h.face->staticLayerCount(); ++layer) {
-        const uint64_t k = faceKey(*h.face, layer);
+        const uint64_t k = faceKey(*h.face, layer, h.tileSalt);
         auto it = faceTiles.find(k);
         if (it != faceTiles.end()) keep.emplace(k, it->second);
       }
@@ -365,7 +369,10 @@ struct CircuitCanvas::Impl final : FaceHost {
     return -1;
   }
 
+  bool rescaled = false;  // TX.resize: the last buildFaces kept a face whose node's scale changed
+
   void buildFaces() {
+    rescaled = false;
     std::vector<Hosted> old;
     old.swap(faces);
     auto ptrAt = [&](int32_t i) -> const Face* {
@@ -384,10 +391,12 @@ struct CircuitCanvas::Impl final : FaceHost {
       if (f.node >= scene->nodes.size() || (f.type == nullptr && !f.panel)) continue;
       std::unique_ptr<Face> face;
       bool reused = false;
+      float prevScale = 1.0f;
       for (Hosted& o : old)
         if (o.face && o.panel == f.panel && (f.panel || o.face->metaType() == f.type) && o.owner == f.owner && o.path == f.path) {
           face = std::move(o.face);
           reused = true;
+          prevScale = o.scale;
           break;
         }
       if (!face) {
@@ -405,10 +414,16 @@ struct CircuitCanvas::Impl final : FaceHost {
       h.panel = f.panel;
       h.face = std::move(face);
       const SceneNode& n = scene->nodes[f.node];
+      h.scale = n.scale > 0.0f ? n.scale : 1.0f;
+      if (h.scale != 1.0f)
+        h.tileSalt = (static_cast<uint64_t>(h.owner) * 0x9E3779B97F4A7C15ull ^ std::hash<std::string>()(h.path) * 0xC2B2AE3D27D4EB4Full) | 8ull;
+      // A kept face whose block was rescaled (an S-drag step): its tiles and a panel's layout wait until the scale
+      // settles, as for a zoom (stretched meanwhile).
+      if (reused && h.scale != prevScale) rescaled = true;
       for (uint32_t k = 0; k < n.pinCount; ++k) {
         const ScenePin& pin = scene->pins[n.firstPin + k];
         FaceJack j;
-        j.at = {pin.x - n.x, pin.y - n.y};
+        j.at = {(pin.x - n.x) / h.scale, (pin.y - n.y) / h.scale};
         j.input = pin.input;
         j.connected = pin.connected;
         j.visible = pin.visible;
@@ -454,19 +469,25 @@ struct CircuitCanvas::Impl final : FaceHost {
   }
 
   FacePointer pointerOf(int32_t i, const ui::PointerEvent& e, FacePointer::Kind kind) const {
-    const SceneNode& n = scene->nodes[faces[static_cast<size_t>(i)].node];
+    const Hosted& h = faces[static_cast<size_t>(i)];
     const Point2 w = self.toWorld(e.pos);
     FacePointer fp;
     fp.kind = kind;
-    fp.local = {w.x - n.x, w.y - n.y};
+    fp.local = localOf(h, w);
     fp.device = e.pos;
-    fp.pxPerUnit = s();
+    fp.pxPerUnit = s() * h.scale;
     fp.uiScale = uiScale();
     fp.mods = e.mods;
     fp.clicks = e.clickCount;
     fp.wheel = e.wheel;
     if (e.button != ui::PointerButton::None) fp.button = e.button;
     return fp;
+  }
+
+  // TX.resize: a world point in face `h`'s own units (its node may be scaled).
+  ui::Vec2 localOf(const Hosted& h, Point2 w) const noexcept {
+    const SceneNode& n = scene->nodes[h.node];
+    return {(w.x - n.x) / h.scale, (w.y - n.y) / h.scale};
   }
 
   bool faceVisible(const Hosted& h) const noexcept {
@@ -489,8 +510,10 @@ struct CircuitCanvas::Impl final : FaceHost {
         const SceneNode& n = scene->nodes[h.node];
         faceRects.clear();
         h.face->liveRects(faceRects);
+        const float k = h.scale;
         for (const ui::Rect& lr : faceRects) {
-          const ui::Rect d{devX(n.x + lr.x0) - 2.0f, devY(n.y + lr.y0) - 2.0f, devX(n.x + lr.x1) + 2.0f, devY(n.y + lr.y1) + 2.0f};
+          const ui::Rect d{devX(n.x + lr.x0 * k) - 2.0f, devY(n.y + lr.y0 * k) - 2.0f, devX(n.x + lr.x1 * k) + 2.0f,
+                           devY(n.y + lr.y1 * k) + 2.0f};
           const ui::Rect c{std::max(d.x0, static_cast<float>(cr.x)), std::max(d.y0, static_cast<float>(cr.y)),
                            std::min(d.x1, static_cast<float>(cr.right())), std::min(d.y1, static_cast<float>(cr.bottom()))};
           tr->damage().add(c);
@@ -505,11 +528,11 @@ struct CircuitCanvas::Impl final : FaceHost {
   void paintFaces(ui::PaintContext& ctx, const ui::IRect& clip, ui::TileAtlas* atlas, bool& missing) {
     if (!facesShown || faces.empty()) return;
     const ui::Theme& th = *ctx.res.theme;
-    const float sc = s();
     bool wantTimer = false;
     for (Hosted& h : faces) {
       const SceneNode& n = scene->nodes[h.node];
       if (n.hidden) continue;
+      const float sc = s() * h.scale;  // TX.resize: a scaled node's face at its own px per unit
       const float x0 = devX(n.x), y0 = devY(n.y), x1 = devX(n.x + n.w), y1 = devY(n.y + n.h);
       if (x1 < static_cast<float>(clip.x) - 2.0f || x0 > static_cast<float>(clip.right()) + 2.0f ||
           y1 < static_cast<float>(clip.y) - 2.0f || y0 > static_cast<float>(clip.bottom()) + 2.0f)
@@ -525,7 +548,7 @@ struct CircuitCanvas::Impl final : FaceHost {
         // directly until the drag ends, no tile built per step.
         const bool volatileLayer = f.dragging() && f.staticKey(layer) != 0;
         if (atlas && !volatileLayer) {
-          auto it = faceTiles.find(faceKey(f, layer));
+          auto it = faceTiles.find(faceKey(f, layer, h.tileSalt));
           if (it != faceTiles.end() && ui::layerReady(*atlas, it->second)) {
             ui::drawLayer(ctx.dl, *atlas, it->second, o, sc, col);
             drawn = true;
@@ -570,15 +593,15 @@ struct CircuitCanvas::Impl final : FaceHost {
   // Builds the visible faces' missing static-layer tiles at the current scale. True when it built any.
   bool buildFaceTiles(ui::TileAtlas& atlas) {
     if (!facesShown) return false;
-    const float sc = s();
     bool built = false;
     for (const Hosted& h : faces) {
       if (!faceVisible(h)) continue;
       const Face& f = *h.face;
+      const float sc = s() * h.scale;  // TX.resize
       const uint32_t layers = f.staticAt(sc) ? f.staticLayerCount() : 0;  // TX.panel-faces
       for (uint32_t layer = 0; layer < layers; ++layer) {
         if (f.dragging() && f.staticKey(layer) != 0) continue;
-        ui::LayerTile& t = faceTiles[faceKey(f, layer)];
+        ui::LayerTile& t = faceTiles[faceKey(f, layer, h.tileSalt)];
         if (t.scale == sc && (ui::layerReady(atlas, t) || t.failed)) continue;
         const ui::Vec2 ws = f.worldSize();
         ui::LayerTile fresh;
@@ -638,9 +661,10 @@ struct CircuitCanvas::Impl final : FaceHost {
   bool prepareFaces() {
     if (!facesShown || !scene) return false;
     bool any = false;
-    const float sc = s();
-    for (Hosted& h : faces)
+    for (Hosted& h : faces) {
+      const float sc = s() * h.scale;  // TX.resize
       if (faceVisible(h) && h.face->needsPrepare(sc) && h.face->prepare(sc)) any = true;
+    }
     return any;
   }
   // The focused face's text acceptance mirrored on the canvas (the host tree sends text only to a text input).
@@ -861,6 +885,7 @@ void CircuitCanvas::setScene(std::shared_ptr<const CircuitScene> scene, bool fit
   impl_->wireLit.clear();
   impl_->resetSelectionFlags();
   impl_->buildFaces();  // TMM.4
+  if (impl_->rescaled) impl_->zoomed();  // TX.resize: a rescaled face settles like a zoom (its tiles, a panel's layout)
   if (fit) {
     impl_->fitReadable = true;
     impl_->fit();
@@ -1374,7 +1399,9 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       if (!m.faced(v)) continue;
       const SceneNode& n = sc.nodes[v];
       if (n.hidden || n.x > w1.x + pad || n.x + n.w < w0.x - pad || n.y > w1.y + pad || n.y + n.h < w0.y - pad) continue;
-      const Face& f = *m.faces[static_cast<size_t>(m.faceOf[v])].face;
+      const auto& hosted = m.faces[static_cast<size_t>(m.faceOf[v])];
+      const Face& f = *hosted.face;
+      const float fk = hosted.scale;  // TX.resize: the face's units on a scaled node
       const Point2 e = sc.points[sw.firstPoint + sw.pointCount - 1];
       const bool emphasised = m.wireSel[w] || (m.hover.kind == CanvasHit::Kind::Wire && m.hover.index == w);
       const Rgba col = far && !emphasised ? m.farWireCol : wireColour(w);
@@ -1385,14 +1412,14 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
         continue;
       }
       // E → (along the entry direction to the control's row / column) → the control, the last leg cut at its rim.
-      const Point2 c{n.x + a->at.x, n.y + a->at.y};
+      const Point2 c{n.x + a->at.x * fk, n.y + a->at.y * fk};
       const bool vertical = std::fabs(e.y - n.y) < 0.5f || std::fabs(e.y - (n.y + n.h)) < 0.5f;  // a top / bottom entry
       Point2 path[3] = {e, vertical ? Point2{e.x, c.y} : Point2{c.x, e.y}, c};
       uint32_t count = 3;
       if (path[1].x == path[2].x && path[1].y == path[2].y) count = 2;
       // Stop `radius` short of the control along the path (a last leg shorter than that — the control moved a little
       // since the layout — goes, and the one before it is cut).
-      for (float rest = a->radius; rest > 0.0f && count >= 2;) {
+      for (float rest = a->radius * fk; rest > 0.0f && count >= 2;) {
         const float dx = path[count - 1].x - path[count - 2].x, dy = path[count - 1].y - path[count - 2].y;
         const float len = std::sqrt(dx * dx + dy * dy);
         if (len > rest) {
@@ -1934,10 +1961,9 @@ ui::Cursor CircuitCanvas::faceCursor(ui::Vec2 pos) const {
   }
   const int32_t i = m.faceUnder(pos);
   if (i < 0) return ui::Cursor::Inherit;
-  const SceneNode& n = m.scene->nodes[m.faces[static_cast<size_t>(i)].node];
-  const Point2 w = toWorld(pos);
-  const Face& f = *m.faces[static_cast<size_t>(i)].face;
-  return f.cursor(f.hitTest({w.x - n.x, w.y - n.y}, m.s()));
+  const auto& h = m.faces[static_cast<size_t>(i)];
+  const Face& f = *h.face;
+  return f.cursor(f.hitTest(m.localOf(h, toWorld(pos)), m.s() * h.scale));
 }
 
 CircuitCanvas::FaceParamHit CircuitCanvas::faceParamAt(ui::Vec2 pos) const {
@@ -1945,11 +1971,9 @@ CircuitCanvas::FaceParamHit CircuitCanvas::faceParamAt(ui::Vec2 pos) const {
   FaceParamHit out;
   const int32_t i = m.faceUnder(pos);
   if (i < 0) return out;
-  const uint32_t node = m.faces[static_cast<size_t>(i)].node;
-  const SceneNode& n = m.scene->nodes[node];
-  const Point2 w = toWorld(pos);
-  out.node = node;
-  out.param = m.faces[static_cast<size_t>(i)].face->paramAt({w.x - n.x, w.y - n.y});
+  const auto& h = m.faces[static_cast<size_t>(i)];
+  out.node = h.node;
+  out.param = h.face->paramAt(m.localOf(h, toWorld(pos)));
   return out;
 }
 

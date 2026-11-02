@@ -635,6 +635,12 @@ KeyResult UiTree::dispatchKey(const KeyEvent& e) {
     if (bit) m = static_cast<Mods>(e.down ? (m | bit) : (m & ~bit));
     mods_ = m;
   }
+  if (!isModifierKey(e.key) && e.key != key::kUnknown) {  // TX.resize: keyHeld()
+    uint32_t i = 0;
+    while (i < heldCount_ && held_[i] != e.key) ++i;
+    if (e.down && i == heldCount_ && heldCount_ < kMaxHeldKeys) held_[heldCount_++] = e.key;
+    else if (!e.down && i < heldCount_) held_[i] = held_[--heldCount_];
+  }
   // T5.7: Esc cancels an internal drag; modifier changes retarget it (Ctrl changes what a drop does).
   if (drag_ && !drag_->payload.external) {
     if (e.down && e.key == key::kEscape) {
@@ -723,7 +729,14 @@ void UiTree::removeObserver(TreeObserver* o) noexcept {
   observers_.erase(std::remove(observers_.begin(), observers_.end(), o), observers_.end());
 }
 
+bool UiTree::keyHeld(Key k) const noexcept {
+  for (uint32_t i = 0; i < heldCount_; ++i)
+    if (held_[i] == k) return true;
+  return false;
+}
+
 void UiTree::cancelInteraction() {
+  heldCount_ = 0;  // TX.resize: the releases of held keys may never arrive
   if (drag_ && !drag_->payload.external) endDrag(false);
   if (!captured_) return;
   captured_->onInteractionCancelled();

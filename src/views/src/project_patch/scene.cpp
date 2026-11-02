@@ -23,9 +23,10 @@ using graph::Point2;
 
 namespace {
 
+// TX.resize: sizes in quarter units (a scaled block's size is not a multiple of 4; two sizes never share a tile).
 uint64_t bodyKeyOf(const SymbolSpec& s) noexcept {
-  return static_cast<uint64_t>(s.symbol) | (static_cast<uint64_t>(s.glyph) << 8) | (static_cast<uint64_t>(s.w / 4.0f) << 16) |
-         (static_cast<uint64_t>(s.h / 4.0f) << 36);
+  return static_cast<uint64_t>(s.symbol) | (static_cast<uint64_t>(s.glyph) << 8) |
+         (static_cast<uint64_t>(std::lround(s.w * 4.0f)) << 16) | (static_cast<uint64_t>(std::lround(s.h * 4.0f)) << 36);
 }
 
 float pinYOf(const Node& n, size_t i) noexcept { return pinOffset(n, i); }
@@ -136,6 +137,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     sn.y = n.y;
     sn.w = n.w;
     sn.h = n.h;
+    sn.scale = n.scale;  // TX.resize: its face or panel drawn at it
     sn.spec = v;
     sn.node = v;
     sn.firstPin = static_cast<uint32_t>(sc.pins.size());

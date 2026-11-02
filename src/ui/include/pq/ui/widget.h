@@ -26,6 +26,7 @@
 //
 // UI thread only. Nothing here is RT-safe or meant for the audio thread.
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -558,6 +559,11 @@ public:
   // canvas: pan); the app re-applies the cursor after key events too, so the cursor follows a modifier with the pointer
   // still (T4.16-fix1).
   Mods mods() const noexcept { return mods_; }
+  // TX.resize: whether non-modifier key `k` is held now — pressed and not yet released, from every key event dispatched
+  // (wherever the focus is; a hold that does nothing else, like S over a project patch block, which then resizes it).
+  // cancelInteraction forgets them (the window lost focus: their releases may never arrive). At most kMaxHeldKeys.
+  bool keyHeld(Key k) const noexcept;
+  static constexpr uint32_t kMaxHeldKeys = 8;
   // `keyboard`: focus moved by the keyboard (Tab, menu navigation), so controls show a focus ring
   // (focusVisible()); focus from a pointer press does not.
   void setFocus(Widget* w, bool keyboard = false);
@@ -671,6 +677,8 @@ private:
   std::vector<TreeObserver*> observers_;
   uint8_t buttonsHeld_ = 0;  // bit (button - 1)
   Mods mods_ = mod::kNone;  // mods()
+  std::array<Key, kMaxHeldKeys> held_{};  // keyHeld()
+  uint32_t heldCount_ = 0;
   Vec2 pointer_{-1e9f, -1e9f};
   bool pointerInside_ = false;
 
