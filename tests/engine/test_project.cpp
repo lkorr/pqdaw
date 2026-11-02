@@ -260,21 +260,10 @@ TEST_CASE("project composition: a track's state keys do not depend on its unit")
   // TX.smooth: a param ramp is one per (stage, source): a source read in two units is one ramp where the units share
   // a stage, so ramps are compared as key sets (the same keys either way); every other entry one to one.
   auto isRamp = [](const graph::StateEntry& e) { return e.tag.kernel == static_cast<uint16_t>(pq::dsp::Atom::ParamRamp); };
-  // A stage's ramp rest summary (Schedule::rampSummary) belongs to its stage, which differs between the two: excluded
-  // (its value is rewritten in the first block of a new program, which checks every ramp).
-  auto summaries = [](const graph::Schedule& s) {
-    std::set<uint64_t> keys;
-    for (const uint32_t e : s.rampSummary)
-      if (e != graph::kNone) keys.insert(s.state.entries[e].key);
-    return keys;
-  };
-  const std::set<uint64_t> wholeSummaries = summaries(*whole.unit(0).schedule);
   uint32_t entries = 0, wholeEntries = 0;
   std::set<uint64_t> unitRamps, wholeRamps;
   for (uint32_t u = 0; u < perUnit.numUnits(); ++u) {
-    const std::set<uint64_t> unitSummaries = summaries(*perUnit.unit(u).schedule);
     for (const graph::StateEntry& e : perUnit.unit(u).schedule->state.entries) {
-      if (unitSummaries.count(e.key)) continue;
       const graph::StateEntry* w = all.find(e.key, e.channel, e.arena);
       REQUIRE(w != nullptr);
       CHECK(w->tag == e.tag);
@@ -284,8 +273,7 @@ TEST_CASE("project composition: a track's state keys do not depend on its unit")
     }
   }
   for (const graph::StateEntry& e : all.entries)
-    if (wholeSummaries.count(e.key)) continue;
-    else if (isRamp(e)) wholeRamps.insert(e.key);
+    if (isRamp(e)) wholeRamps.insert(e.key);
     else ++wholeEntries;
   CHECK(entries == wholeEntries);
   CHECK(unitRamps == wholeRamps);

@@ -87,6 +87,7 @@ struct SharedCode {
   llvm::orc::JITDylib* jd = nullptr;
   std::vector<detail::StageFn> fns;
   std::vector<detail::StageFn> pairFns;  // per stage: the two-group function or null (T1b.2)
+  std::vector<detail::StageFn> rampFns;  // TX.smooth-fix1: per stage, its ramp mode or null
   uint32_t pairedStages = 0;
   std::vector<const void*> fnSlots;  // pointer-table slots hostSlots…: functions (and data) inside the executable
   uint32_t hostSlots = 0;
@@ -415,6 +416,11 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
     t.insert(t.end(), code->fnSlots.begin(), code->fnSlots.end());
     image->fns_ = code->fns;
     image->pairFns_ = code->pairFns;
+    image->rampFns_ = code->rampFns;
+    // TX.smooth-fix1: the host runs a stage with ramps in its ramp mode now and then; it must exist.
+    for (size_t k = 0; k < schedule.rampStages.size() && !schedule.ramps.empty(); ++k)
+      if (schedule.rampStages[k].ramps && (k >= image->rampFns_.size() || image->rampFns_[k] == nullptr))
+        return Error{ErrorCode::Unknown, "jit: no ramp-mode function for stage " + std::to_string(k), {}};
     image->scalarLanes_ = go.scalarLanes;
     detail::finishPairs(*image, schedule);
     image->host_.setMeterUnits(detail::meterUnits(schedule, image->layout_, go));  // T4.5
@@ -471,7 +477,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
       const detail::ReadResult r = detail::readEntry(dir, k, writable, e);
       if (r == detail::ReadResult::Miss) return nullptr;
       bool ok = r == detail::ReadResult::Hit && e.hostSlots == hostSlots && e.stageFunctions.size() == schedule.stages.size() &&
-                e.pairFunctions.size() == schedule.stages.size();
+                e.pairFunctions.size() == schedule.stages.size() && e.rampFunctions.size() == schedule.stages.size();
       for (uint64_t off : e.fnOffsets) ok = ok && off < bin.size;
       if (!ok) {  // did not validate, or validated but does not describe this schedule (never expected)
         ++s.counters.rejected;
@@ -512,8 +518,10 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
       };
       code->fns.assign(e.stageFunctions.size(), nullptr);
       code->pairFns.assign(e.stageFunctions.size(), nullptr);
+      code->rampFns.assign(e.stageFunctions.size(), nullptr);
       for (size_t k2 = 0; linked && k2 < e.stageFunctions.size(); ++k2) {
         linked = lookUp(e.stageFunctions[k2], code->fns[k2]);
+        if (linked && !e.rampFunctions[k2].empty()) linked = lookUp(e.rampFunctions[k2], code->rampFns[k2]);
         if (linked && !e.pairFunctions[k2].empty()) {
           linked = lookUp(e.pairFunctions[k2], code->pairFns[k2]);
           ++code->pairedStages;
@@ -644,6 +652,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
   s.captured.clear();
   code->fns.assign(gen->stageFunctions.size(), nullptr);
   code->pairFns.assign(gen->stageFunctions.size(), nullptr);
+  code->rampFns.assign(gen->stageFunctions.size(), nullptr);
   for (size_t k = 0; k < gen->stageFunctions.size(); ++k) {
     auto sym = s.jit->lookup(*code->jd, gen->stageFunctions[k]);  // materialises (compiles) the module now, not on the audio thread
     if (!sym) {
@@ -651,6 +660,14 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
       return llvmError("looking up a stage function", sym.takeError());
     }
     code->fns[k] = sym->toPtr<detail::StageFn>();
+    if (!gen->rampFunctions[k].empty()) {  // TX.smooth-fix1
+      auto ramp = s.jit->lookup(*code->jd, gen->rampFunctions[k]);
+      if (!ramp) {
+        s.capture = false;
+        return llvmError("looking up a ramp-mode function", ramp.takeError());
+      }
+      code->rampFns[k] = ramp->toPtr<detail::StageFn>();
+    }
     if (gen->pairFunctions[k].empty()) continue;
     auto pair = s.jit->lookup(*code->jd, gen->pairFunctions[k]);
     if (!pair) {
@@ -675,6 +692,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
     detail::Entry e;
     e.stageFunctions = gen->stageFunctions;
     e.pairFunctions = gen->pairFunctions;
+    e.rampFunctions = gen->rampFunctions;
     e.hostSlots = hostSlots;
     for (const void* p : code->fnSlots) e.fnOffsets.push_back(reinterpret_cast<uintptr_t>(p) - bin.base);
     e.irHash = irHash;

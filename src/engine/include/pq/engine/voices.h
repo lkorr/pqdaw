@@ -164,6 +164,11 @@ struct VoiceBinding {
   AlignedBuffer<uint32_t> stateTemplate;
   std::byte* voiceState = nullptr;    // the image's voice state blocks (StateArena), voiceStateStride apart
   uint32_t voiceStateStride = 0;
+  // TX.smooth-fix1: the same for the ramp side table's voice blocks (StateArena::sideVoice; param_ramp states).
+  std::vector<Span> sideSpans;        // reset and moved alike (every word of a ramp lane is its own)
+  AlignedBuffer<uint32_t> sideTemplate;
+  std::byte* sideState = nullptr;
+  uint32_t sideStride = 0;
 };
 
 struct VoiceStats {
@@ -306,6 +311,7 @@ private:
   std::vector<uint8_t> carryDirty_;   // per group: re-render next block (pulses, onsets, fades, glides)
   std::vector<uint16_t> groupCount_;  // per group: non-free lanes
   std::vector<uint32_t> laneMask_;    // per group: bit l = lane l is not free
+  std::vector<uint32_t> startMask_;   // TX.smooth-fix1: per group, lanes reset for the next image run (startMask)
   std::vector<uint32_t> activeList_;  // scratch: occupied groups of the block
   std::vector<const float*> mixOut_, mixGain_;  // scratch: per occupied group, the mixed slot and its gain
 

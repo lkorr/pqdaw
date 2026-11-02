@@ -33,18 +33,22 @@ void JitImage::process(e::ProcessContext& ctx) noexcept {  // RT-safe
   const void* const* tab = tab_.data();
   const uint32_t frames = ctx.frames;
   const size_t stride = host_.layout().voiceStride;
-  auto global = [&](uint32_t k) noexcept { fns_[k](buf, aux, gstate, vstate, nullptr, ext, tab, frames, 0, 0, 0); };
+  // TX.smooth-fix1: `ramp` (ImageHost::run) picks the stage's ramp-mode function; at rest its ramp-free code runs.
+  auto fn = [&](uint32_t k, bool ramp) noexcept { return ramp ? rampFns_[k] : fns_[k]; };
+  auto global = [&](uint32_t k, bool ramp) noexcept {
+    fn(k, ramp)(buf, aux, gstate, vstate, nullptr, ext, tab, frames, 0, 0, 0);
+  };
   if (scalarLanes_) {  // the benchmark baseline: one call per voice lane
-    host_.run(ctx, global, [&](uint32_t k, uint32_t gi) noexcept {
-      for (uint32_t lane = 0; lane < 8; ++lane)
-        fns_[k](buf, aux, gstate, vstate + gi * stride, nullptr, ext, tab, frames, gi, 0, lane);
+    host_.run(ctx, global, [&](uint32_t k, uint32_t gi, bool ramp) noexcept {
+      const StageFn f = fn(k, ramp);
+      for (uint32_t lane = 0; lane < 8; ++lane) f(buf, aux, gstate, vstate + gi * stride, nullptr, ext, tab, frames, gi, 0, lane);
     });
     return;
   }
   host_.run(
       ctx, global,
-      [&](uint32_t k, uint32_t gi) noexcept {
-        fns_[k](buf, aux, gstate, vstate + gi * stride, nullptr, ext, tab, frames, gi, 0, 0);
+      [&](uint32_t k, uint32_t gi, bool ramp) noexcept {
+        fn(k, ramp)(buf, aux, gstate, vstate + gi * stride, nullptr, ext, tab, frames, gi, 0, 0);
       },
       [&](uint32_t k, uint32_t a, uint32_t b) noexcept {
         pairFns_[k](buf, aux, gstate, vstate + a * stride, vstate + b * stride, ext, tab, frames, a, b, 0);
@@ -186,6 +190,10 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   L.sleepOff = HL.sleepOff;
   L.meterOff = HL.meterOff;
   L.meterFlagOff = HL.meterFlagOff;
+  // TX.smooth-fix1: the ramp side table's bases, through the pointer table (generated code adds the group's block).
+  L.sideVoiceStride = HL.sideVoiceStride;
+  L.sideSlotGlobal = tab.slot(host.sideGlobalState());
+  L.sideSlotVoice = tab.slot(host.sideGlobalState() + HL.sideGlobalBytes);
   L.pairable = pairable;
   L.altOff = altOff;
   for (uint32_t& a : L.altOff)

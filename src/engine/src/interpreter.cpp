@@ -60,6 +60,7 @@ struct Swap {
   float* saved = nullptr;                // the cell's pattern pointer while it reads the ramp
   const dsp::ParamRampState* state = nullptr;
   uint32_t stride = 1;                   // floats per frame (the op's lanes)
+  bool checked = false;                  // TX.smooth-fix1: its source is not static (it may move in ramp-free blocks)
 };
 
 struct Reloc {
@@ -80,6 +81,13 @@ struct RegionRun {
   uint32_t firstRec = 0, numRec = 0;
   uint32_t firstItem = 0, numItems = 0;  // with solve blocks: rec index, or kSolveItem | solve index
   uint32_t firstRampRec = 0, numRampRec = 0;  // TX.smooth: its records with ramped inputs (into rampRecs_)
+  // TX.smooth-fix1: a region of param_ramp ops (its records whose ramp is not static: rampChecked_ [firstChecked,
+  // + numChecked)), whether some ramped input of the region is not static, and whether some record of it read its
+  // ramps in the last block it ran (ramp-free blocks then put the patterns back once).
+  bool rampOps = false;
+  bool anyChecked = false;
+  mutable bool rampDirty = false;
+  uint32_t firstChecked = 0, numChecked = 0;
 };
 
 struct OperandRef {  // element (frame t, lane l) = base[t·stride + l]; stride 0 = a pattern
@@ -151,6 +159,8 @@ public:
   std::vector<Reloc> relocs_;
   std::vector<Swap> swaps_;          // TX.smooth
   std::vector<uint32_t> rampRecs_;   // TX.smooth: record indices, per region
+  std::vector<uint32_t> rampChecked_;  // TX.smooth-fix1: the param_ramp records of non-static ramps, per region
+  bool rampMode_ = false;          // TX.smooth-fix1: the stage being run is in its ramp mode (ImageHost::run)
   std::vector<uint32_t> items_;
   std::vector<RegionRun> regions_;
   std::vector<StageRegions> stages_;
@@ -200,15 +210,20 @@ private:
 
 // TX.smooth: once per block before a region's records run. A record whose ramps all rest runs as scheduled (Spl
 // inputs); one with a moving ramp reads every ramp of it as a block (a resting one's buffer filled with its value).
+// TX.smooth-fix1: in a ramp-free block only the non-static ramps ran (their `active` is this block's); a static one
+// rests by construction (its last `active` is stale and ignored).
 void InterpretedImage::prepareRamps(const RegionRun& r, uint32_t frames) noexcept {  // RT-safe
+  bool dirty = false;
   for (uint32_t q = r.firstRampRec; q < r.firstRampRec + r.numRampRec; ++q) {
     Rec& rec = recs_[rampRecs_[q]];
     bool any = false;
-    for (uint32_t k = rec.firstSwap; k < rec.firstSwap + rec.numSwaps; ++k) any = any || swaps_[k].state->active != 0;
+    for (uint32_t k = rec.firstSwap; k < rec.firstSwap + rec.numSwaps; ++k)
+      any = any || ((rampMode_ || swaps_[k].checked) && swaps_[k].state->active != 0);
+    dirty = dirty || any;
     if (any) {
       for (uint32_t k = rec.firstSwap; k < rec.firstSwap + rec.numSwaps; ++k) {
         Swap& sw = swaps_[k];
-        if (sw.state->active == 0) dsp::paramRampHold(sw.state, sw.ramp, frames, sw.stride);
+        if (!((rampMode_ || sw.checked) && sw.state->active != 0)) dsp::paramRampHold(sw.state, sw.ramp, frames, sw.stride);
         if (pool_[sw.cell] != sw.ramp) {
           sw.saved = pool_[sw.cell];  // the pattern (an engine source's is rewritten every block)
           pool_[sw.cell] = sw.ramp;
@@ -227,11 +242,22 @@ void InterpretedImage::prepareRamps(const RegionRun& r, uint32_t frames) noexcep
       rec.rampMode = false;
     }
   }
+  r.rampDirty = dirty;
 }
 
 void InterpretedImage::runRegion(const RegionRun& r, uint32_t frames) noexcept {  // RT-safe
   frames *= r.factor;  // TMM.6 (Control regions have factor 1)
-  if (r.numRampRec != 0) prepareRamps(r, frames);
+  // TX.smooth-fix1: in a ramp-free block a region whose ramps are all static runs exactly as scheduled (its records
+  // were put back to their patterns by the first such block), and a param_ramp region runs only its non-static ramps.
+  if (r.numRampRec != 0 && (rampMode_ || r.anyChecked || r.rampDirty)) prepareRamps(r, frames);
+  if (r.rampOps && !rampMode_) {
+    for (uint32_t q = r.firstChecked; q < r.firstChecked + r.numChecked; ++q) {
+      Rec& rec = recs_[rampChecked_[q]];
+      rec.args.frames = frames;
+      rec.fn(rec.args);
+    }
+    return;
+  }
   switch (r.kind) {
     case g::RegionKind::Control:
       if (r.memo && paramsSame_) return;  // its buffers still hold this block's values
@@ -455,7 +481,8 @@ void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
   }
   host_.run(
       ctx,
-      [&](uint32_t k) noexcept {
+      [&](uint32_t k, bool ramp) noexcept {
+        rampMode_ = ramp;
         const StageRegions& st = stages_[k];
         for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
           const RegionRun& rr = regions_[r];
@@ -468,7 +495,8 @@ void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
             host_.countViolation();
         }
       },
-      [&](uint32_t k, uint32_t gi) noexcept {
+      [&](uint32_t k, uint32_t gi, bool ramp) noexcept {
+        rampMode_ = ramp;
         const StageRegions& st = stages_[k];
         const uint32_t base = st.firstRegion + gi * st.numRegions;
         for (uint32_t r = base; r < base + st.numRegions; ++r) runRegion(regions_[r], frames);
@@ -481,7 +509,8 @@ void InterpretedImage::runMetered(ProcessContext& ctx) noexcept {  // RT-safe
   const uint32_t frames = ctx.frames;
   host_.run(
       ctx,
-      [&](uint32_t k) noexcept {
+      [&](uint32_t k, bool ramp) noexcept {
+        rampMode_ = ramp;
         const StageRegions& st = stages_[k];
         for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
           const RegionRun& rr = regions_[r];
@@ -496,7 +525,8 @@ void InterpretedImage::runMetered(ProcessContext& ctx) noexcept {  // RT-safe
           host_.addRegionCycles(rr.schedRegion, __rdtsc() - t0);
         }
       },
-      [&](uint32_t k, uint32_t gi) noexcept {
+      [&](uint32_t k, uint32_t gi, bool ramp) noexcept {
+        rampMode_ = ramp;
         const StageRegions& st = stages_[k];
         const uint32_t base = st.firstRegion + gi * st.numRegions;
         for (uint32_t r = base; r < base + st.numRegions; ++r) {
@@ -598,6 +628,7 @@ private:
             sw.ramp = host().resolve(rp.out, gi);
             sw.state = reinterpret_cast<const dsp::ParamRampState*>(host().statePtr(s_.state.entries[s_.ops[rp.op].state], gi));
             sw.stride = op.lanes;
+            sw.checked = !rp.staticSource;
             im.swaps_.push_back(sw);
             ramped |= 1u << j;
           }
@@ -748,6 +779,20 @@ private:
           for (uint32_t q = rr.firstRec; q < rr.firstRec + rr.numRec; ++q)
             if (im.recs_[q].numSwaps != 0) im.rampRecs_.push_back(q);
           rr.numRampRec = static_cast<uint32_t>(im.rampRecs_.size()) - rr.firstRampRec;
+          // TX.smooth-fix1: what a ramp-free block runs of the region's ramps (runRegion).
+          for (uint32_t q = rr.firstRampRec; q < rr.firstRampRec + rr.numRampRec; ++q) {
+            const Rec& rec = im.recs_[im.rampRecs_[q]];
+            for (uint32_t k = rec.firstSwap; k < rec.firstSwap + rec.numSwaps; ++k)
+              rr.anyChecked = rr.anyChecked || im.swaps_[k].checked;
+          }
+          rr.rampOps = reg.numOps > 0 && s_.ops[reg.firstOp].kind == g::OpKind::Kernel &&
+                       s_.ops[reg.firstOp].kernel == dsp::Atom::ParamRamp;
+          rr.firstChecked = static_cast<uint32_t>(im.rampChecked_.size());
+          if (rr.rampOps)
+            for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
+              for (const g::Ramp& rp : s_.ramps)
+                if (rp.op == i && !rp.staticSource) im.rampChecked_.push_back(rr.firstRec + (i - reg.firstOp));
+          rr.numChecked = static_cast<uint32_t>(im.rampChecked_.size()) - rr.firstChecked;
           rr.memo = control && !voice && reg.numSolves == 0 && memoizable(reg);
           if (reg.numSolves > 0) {
             rr.firstItem = static_cast<uint32_t>(im.items_.size());

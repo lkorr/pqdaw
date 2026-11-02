@@ -175,13 +175,17 @@ void checkStructure(const Schedule& s, const TypedPatch& tp) {
   }
   for (const OutputRef& o : s.outputs) CHECK(valid(o.value));
   // State: entries inside their arena, 32-byte aligned, no overlap, unique (key, channel, arena).
-  for (int a = 0; a < 2; ++a) {
-    const Poly arena = a ? Poly::Voice : Poly::Global;
-    const uint32_t bytes = a ? s.state.voiceBytes : s.state.globalBytes;
+  // TX.smooth-fix1: the ramp side table's two parts (StateEntry::side: param_ramp states only) as well.
+  for (int a = 0; a < 4; ++a) {
+    const Poly arena = (a & 1) ? Poly::Voice : Poly::Global;
+    const bool side = a >= 2;
+    const uint32_t bytes = side ? ((a & 1) ? s.state.sideVoiceBytes : s.state.sideGlobalBytes)
+                                : ((a & 1) ? s.state.voiceBytes : s.state.globalBytes);
     CHECK(bytes % 64 == 0);
     std::vector<std::pair<uint32_t, uint32_t>> ranges;
     for (const StateEntry& e : s.state.entries) {
-      if (e.arena != arena) continue;
+      CHECK(e.side == (e.tag.kernel == static_cast<uint16_t>(dsp::Atom::ParamRamp)));
+      if (e.arena != arena || e.side != side) continue;
       CHECK(e.offset % dsp::kStateAlign == 0);
       CHECK(e.size % dsp::kStateAlign == 0);
       CHECK(e.offset + e.size <= bytes);
@@ -1580,6 +1584,77 @@ TEST_CASE("schedule: z1s on cycles that all pass through a delay line stay unspl
   CHECK(loops(ok(iir)) == std::vector<uint32_t>{1});
   CHECK(kernels(ok(iir), pq::dsp::Atom::Z1) == 0);
   CHECK(kernels(ok(iir), pq::dsp::Atom::Z1Read) == 2);
+}
+
+// TX.smooth-fix1 (schedule.h "Param ramps"): at rest the engine runs the ramp-free program on the ramp-free memory.
+// So, for every corpus patch, the schedule with ramps has the ramp-free schedule's buffers (the same list, ramp outputs
+// appended), state entries (same offsets in the same arenas; param_ramp states only in the side table, arena sizes
+// equal) and the same ops apart from the param_ramp ones, operand for operand; its ramp plan lists every stage.
+TEST_CASE("schedule: param ramps leave the ramp-free schedule's buffers and state as they are (corpus)") {
+  uint32_t checked = 0, withRamps = 0;
+  for (const CorpusPatch& cp : corpus(48000.0)) {
+    ScheduleOptions so;
+    so.sampleRate = 48000.0;
+    const ScheduleResult r = scheduleDetailed(cp.typed, so);
+    so.paramRamps = false;
+    const ScheduleResult p = scheduleDetailed(cp.typed, so);
+    if (!r.ok() || !p.ok()) continue;
+    INFO(cp.where);
+    const Schedule& a = r.schedule;
+    const Schedule& b = p.schedule;
+    ++checked;
+    if (a.ramps.empty()) {
+      CHECK(a.buffers.size() == b.buffers.size());
+      continue;
+    }
+    ++withRamps;
+    CHECK(a.rampStages.size() == a.stages.size());
+    REQUIRE(a.buffers.size() >= b.buffers.size());
+    for (size_t i = 0; i < b.buffers.size(); ++i) {
+      CHECK(a.buffers[i].cls == b.buffers[i].cls);
+      CHECK(a.buffers[i].lanes == b.buffers[i].lanes);
+      CHECK(a.buffers[i].perGroup == b.buffers[i].perGroup);
+      CHECK(a.buffers[i].factor == b.buffers[i].factor);
+    }
+    for (const Ramp& rp : a.ramps) CHECK(rp.out.index >= b.buffers.size());  // ramp outputs only after the others
+    CHECK(a.state.globalBytes == b.state.globalBytes);
+    CHECK(a.state.voiceBytes == b.state.voiceBytes);
+    CHECK(b.state.sideGlobalBytes + b.state.sideVoiceBytes == 0);
+    std::vector<const StateEntry*> mine;
+    for (const StateEntry& e : a.state.entries)
+      if (!e.side) mine.push_back(&e);
+    REQUIRE(mine.size() == b.state.entries.size());
+    for (size_t i = 0; i < mine.size(); ++i) {
+      CHECK(mine[i]->key == b.state.entries[i].key);
+      CHECK(mine[i]->arena == b.state.entries[i].arena);
+      CHECK(mine[i]->offset == b.state.entries[i].offset);
+      CHECK(mine[i]->size == b.state.entries[i].size);
+    }
+    // The ops without the param_ramp ones: the same kernels on the same operands (state by key: entry indices shift).
+    std::vector<uint32_t> ops;
+    for (uint32_t i = 0; i < a.ops.size(); ++i)
+      if (!(a.ops[i].kind == OpKind::Kernel && a.ops[i].kernel == dsp::Atom::ParamRamp)) ops.push_back(i);
+    REQUIRE(ops.size() == b.ops.size());
+    for (size_t q = 0; q < ops.size(); ++q) {
+      const Op& x = a.ops[ops[q]];
+      const Op& y = b.ops[q];
+      CHECK(x.kind == y.kind);
+      CHECK(x.kernel == y.kernel);
+      CHECK(x.splMask == y.splMask);
+      REQUIRE(x.numIn == y.numIn);
+      REQUIRE(x.numOut == y.numOut);
+      for (uint32_t j = 0; j < static_cast<uint32_t>(x.numIn) + x.numOut; ++j) {
+        const Operand& u = a.operands[x.firstOperand + j];
+        const Operand& v = b.operands[y.firstOperand + j];
+        CHECK(u.kind == v.kind);
+        if (u.kind != Operand::Kind::Const) CHECK(u.index == v.index);
+      }
+      CHECK((x.state == kNone) == (y.state == kNone));
+      if (x.state != kNone && y.state != kNone) CHECK(a.state.entries[x.state].offset == b.state.entries[y.state].offset);
+    }
+  }
+  MESSAGE("compared " << checked << " corpus patches, " << withRamps << " with param ramps");
+  CHECK(withRamps >= 20);
 }
 
 TEST_CASE("schedule: replay checker over the corpus: no buffer is overwritten while live") {

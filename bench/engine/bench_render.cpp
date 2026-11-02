@@ -20,7 +20,9 @@
 //                          worst case), and the same static patch scheduled without param ramps (what the ramps cost
 //                          while nothing moves: the other rows' patch has them)
 //   operator/stock-full <backend> x64 ramps A/B   the two (with / without ramps, params at rest) in interleaved rounds:
-//                          the median ratio (robust against the load other processes put on the machine)
+//                          the median ratio (robust against the load other processes put on the machine), four hosts
+//                          of each (placement); ramps A/A: the same method with the ramped schedule on both sides
+//                          (the noise floor)
 //   operator/meta-<config> <backend> xN, operator/stock-four …   TMM.12: the Meta Operator (bench/patches/
 //                          meta_operator_calibration.pqp: sine = algorithm 1 with feedback, hq = the same ×2, add =
 //                          algorithm 11) and the stock Operator doing the same work (four sines, algorithm 1, feedback)
@@ -340,9 +342,13 @@ void benchVoicePatch(bench::Context& c, const g::Schedule& s, bool jit, uint32_t
   c.record(ratio, "x steady block", "crossfade ratio");
 }
 
-// TX.smooth: two schedules of one patch (a: with param ramps, b: without) at 64 held voices, interleaved rounds of 100
-// blocks (the machine's load moves between separate rows); the median of the per-round ratios a / b.
-void benchRampsAB(bench::Context& c, const g::Schedule& sa, const g::Schedule& sb, bool jit) {
+// TX.smooth: two schedules of one patch (a: with param ramps, b: without) at 64 held voices. TX.smooth-fix1: four
+// hosts of each, built in alternating order (a b b a a b b a), so that where the allocator happens to put one image's
+// buffers and state (measured: up to ±3 % between two hosts of the same schedule) averages out instead of passing
+// for a difference; then interleaved rounds in which every host runs 50 blocks (the order rotates per round). A
+// round's ratio is the a hosts' summed time over the b hosts'; the median over the rounds is the row. `selfCheck`:
+// the b hosts run schedule a too (A/A: the noise floor of the method).
+void benchRampsAB(bench::Context& c, const g::Schedule& sa, const g::Schedule& sb, bool jit, bool selfCheck = false) {
   static uint32_t noteCount = 0;
   noteCount = kOperatorVoices;
   const uint32_t groups = e::voiceGroupsFor(kOperatorVoices);
@@ -360,41 +366,59 @@ void benchRampsAB(bench::Context& c, const g::Schedule& sa, const g::Schedule& s
     if (!host->publish(buildImage(s, jit, groups)).ok()) die("ramps A/B: publish failed");
     return host;
   };
-  auto ha = makeHost(sa), hb = makeHost(sb);
+  constexpr int kHosts = 4, kRounds = 120, kBlocks = 50;
+  struct H {
+    std::unique_ptr<e::ProgramHost> host;
+    bool a = false;
+    int64_t time = 0;
+  };
+  const g::Schedule& b = selfCheck ? sa : sb;
+  std::vector<H> hs;
+  for (int i = 0; i < kHosts; ++i) {
+    const bool aFirst = i % 2 == 0;
+    hs.push_back({makeHost(aFirst ? sa : b), aFirst, 0});
+    hs.push_back({makeHost(aFirst ? b : sa), !aFirst, 0});
+  }
   std::vector<float> o0(kBlock), o1(kBlock);
   float* outs[2] = {o0.data(), o1.data()};
-  int64_t ta0 = 0, tb0 = 0;
   DenormalGuard dg;
-  auto blocks = [&](e::ProgramHost& h, int64_t& time, int n) {
+  auto blocks = [&](H& h, int n) {
     const auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < n; ++i) {
       e::AudioBlock ab;
       ab.out = outs;
       ab.numOut = 2;
       ab.frames = kBlock;
-      ab.frameTime = time;
-      h.process(ab);
-      time += kBlock;
+      ab.frameTime = h.time;
+      h.host->process(ab);
+      h.time += kBlock;
       bench::doNotOptimize(o0[kBlock - 1]);
     }
     return std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / (n * kBlock);
   };
-  blocks(*ha, ta0, 16);
-  blocks(*hb, tb0, 16);
+  for (H& h : hs) blocks(h, 16);
   std::vector<double> ra, rb, ratio;
-  for (int round = 0; round < 60; ++round) {
-    const double x = round % 2 ? blocks(*ha, ta0, 100) : 0.0, y = blocks(*hb, tb0, 100),
-                 z = round % 2 ? 0.0 : blocks(*ha, ta0, 100);
-    ra.push_back(x + z);
-    rb.push_back(y);
-    ratio.push_back((x + z) / y);
+  const auto n = hs.size();
+  for (int round = 0; round < kRounds; ++round) {
+    double ta = 0.0, tb = 0.0;
+    for (size_t j = 0; j < n; ++j) {
+      H& h = hs[(j + static_cast<size_t>(round)) % n];
+      (h.a ? ta : tb) += blocks(h, kBlocks);
+    }
+    ra.push_back(ta / kHosts);
+    rb.push_back(tb / kHosts);
+    ratio.push_back(ta / tb);
   }
-  c.record(bench::summarize(ra), "ns/sample", "ramps");
-  c.record(bench::summarize(rb), "ns/sample", "no ramps");
+  const char* an = selfCheck ? "ramps (set 1)" : "ramps";
+  const char* bn = selfCheck ? "ramps (set 2)" : "no ramps";
+  c.record(bench::summarize(ra), "ns/sample", an);
+  c.record(bench::summarize(rb), "ns/sample", bn);
   const bench::Stats r = bench::summarize(ratio);
-  c.record(r, "ratio", "ramps/no ramps");
-  std::printf("  ramps / no ramps = %.4f (median of 60 interleaved rounds; min %.4f, max %.4f)\n", r.medianNs, r.minNs,
-              r.maxNs);
+  c.record(r, "ratio", selfCheck ? "A/A" : "ramps/no ramps");
+  std::vector<double> q = ratio;
+  std::sort(q.begin(), q.end());
+  std::printf("  %s / %s = %.4f (median of %d rounds over %d + %d hosts; quartiles %.4f … %.4f)\n", an, bn, r.medianNs,
+              kRounds, kHosts, kHosts, q[q.size() / 4], q[q.size() - 1 - q.size() / 4]);
 }
 
 const g::Schedule& plainFullSchedule() {
@@ -517,6 +541,8 @@ int main(int argc, char** argv) {
           [jit](bench::Context& c) { benchVoicePatch(c, plainFullSchedule(), jit, 64, false); });
     r.add(std::string("operator/stock-full ") + (jit ? "jit" : "interp") + " x64 ramps A/B",
           [jit](bench::Context& c) { benchRampsAB(c, stockSchedule("OpFull"), plainFullSchedule(), jit); });
+    r.add(std::string("operator/stock-full ") + (jit ? "jit" : "interp") + " x64 ramps A/A",
+          [jit](bench::Context& c) { benchRampsAB(c, stockSchedule("OpFull"), stockSchedule("OpFull"), jit, true); });
   }
   // TMM.12: the Meta Operator against the stock Operator doing the same work (operator/stock-four).
   static const Stock meta[] = {{"meta-sine", "MoSine"}, {"meta-hq", "MoHq"}, {"meta-add", "MoAdd"}, {"meta-nofb", "MoNoFb"}};

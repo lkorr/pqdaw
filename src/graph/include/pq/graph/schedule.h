@@ -97,11 +97,21 @@
 //     region of its own, right after the stage's Control region; 8 lanes in voice stages, per voice group, so a voice
 //     lane reset at note-on starts it at its value) with its state entry and a Block buffer, Schedule::ramps.
 //     Schedule::rampOf maps each such op input to its ramp. The ops themselves keep their Spl operands and masks.
-//   - At run time (both backends, the same values): a ramp that is moving writes its buffer (`active`); an op with a
-//     moving ramp among its inputs runs as if every ramped input were Blk (the kernel for splMask without those bits,
-//     the ramp buffers as the operands; a not-moving ramp's buffer is filled with its value, dsp::paramRampHold),
-//     otherwise as scheduled. A block in which nothing moves costs one compare per ramp: every Spl specialisation
-//     (and the JIT's hoisted invariants) stays.
+//   - Zero at rest by construction (TX.smooth-fix1): the ramps' states are in a side table (StateEntry::side), their
+//     output buffers come after every other buffer (allocated in a second pass), so state arenas and buffers are
+//     exactly the ramp-free schedule's. Each stage runs one of two codes per block (and voice group): its ramp-free
+//     code — the schedule without the param_ramp regions, every ramped input its pattern — or its RAMP MODE. The
+//     image host chooses, outside the stage code (ImageHost::decideRamps / run): ramp mode in a block in which a param
+//     or global param-rate external its static ramps follow (RampStage::firstParam / firstExt) changed, for the
+//     RampStage::frames after it, in the image's first block, and for a voice group in which a lane started a note
+//     (VoiceGroupIO::startMask: its reset
+//     lanes take their new values). Static ramps cannot move otherwise, so the ramp-free code is exact. A stage with
+//     ramps of other sources (RampStage::checked) also checks those after its Control region and enters ramp mode
+//     itself when one moves.
+//   - In ramp mode (both backends, the same values): the param_ramp ops run; a ramp that is moving writes its buffer
+//     (`active`); an op with a moving ramp among its inputs runs as if every ramped input were Blk (the kernel for
+//     splMask without those bits, the ramp buffers as the operands; a not-moving ramp's buffer is filled with its
+//     value, dsp::paramRampHold), otherwise as scheduled.
 //   - The ramp: linear over kParamRampSeconds (20 ms) from where it is to the new value, restarted from where it is
 //     by a later change. Its state is global or per voice group like any state (hot swap by key).
 // ScheduleOptions::paramRamps = false schedules no ramps (references, A/B measurements).
@@ -258,12 +268,17 @@ struct StateEntry {
   uint32_t size = 0;       // bytes, a multiple of dsp::kStateAlign
   dsp::StateInit init;     // what dsp::initState needs (seed already mixed with key and channel); zeros for a guess
   NodeIndex node = kNone;
+  // TX.smooth-fix1: a param_ramp's state, kept in the ramp side table (global, or one block per voice group, as
+  // `arena` says) instead of the arena itself: offsets are into that table. The arenas are then the ramp-free ones.
+  bool side = false;
 };
 
 struct StateLayout {
   std::vector<StateEntry> entries;  // in op order (the order the program touches them)
   uint32_t globalBytes = 0;         // arena size (multiple of 64)
   uint32_t voiceBytes = 0;          // per voice group (multiple of 64)
+  uint32_t sideGlobalBytes = 0;     // TX.smooth-fix1: the ramp side table's global part (multiple of 64)
+  uint32_t sideVoiceBytes = 0;      // and its block per voice group (multiple of 64)
   bool compacted = false;           // laid out afresh although a previous layout was given (fragmentation)
   // The entry with this key/channel/arena, or nullptr. O(n) (tests, tools); T1.9 builds its own index.
   const StateEntry* find(uint64_t key, uint16_t channel, Poly arena) const noexcept;
@@ -362,10 +377,20 @@ struct Ramp {
   Operand source;        // the pattern it follows (Param, pattern Buffer or param-rate External)
   Operand out;           // its Block buffer (lanes and factor of the ops reading it)
   // Its source can change only when a param does or a voice lane starts a note: params, constants, note-on-static
-  // voice signals (velocity, note Hz / degree, index, unison count) through stateless Control ops. The JIT skips the
-  // rest check of such ramps in a block whose params equal the previous block's while the stage's summary says every
-  // ramp of the group rested (Schedule::rampSummary).
+  // voice signals (velocity, note Hz / degree, index, unison count), global param-rate engine sources and root inputs
+  // (one value per block: transport.bpm) through stateless Control ops. Such a ramp moves only in blocks the host
+  // foresees (RampStage); the others are checked by the stage code itself.
   bool staticSource = false;
+};
+
+// TX.smooth-fix1: what the image host needs to choose, per stage and block, between the stage's ramp-free code and
+// its ramp mode (see "Param ramps" above).
+struct RampStage {
+  bool ramps = false;      // the stage has param ramps
+  bool checked = false;    // some of them have a source that is not static (the stage code checks those per block)
+  uint32_t firstParam = 0, numParams = 0;  // into Schedule::rampParams: the params its static ramps follow
+  uint32_t firstExt = 0, numExts = 0;      // into Schedule::rampExternals: the global param-rate externals they follow
+  uint32_t frames = 0;     // a ramp's length in frames of the block (at the base rate)
 };
 
 struct Schedule {
@@ -395,9 +420,10 @@ struct Schedule {
   // Parallel to `operands` (empty when there are no ramps): for an op input that reads a ramp while it moves, the
   // index into `ramps`; kNone otherwise.
   std::vector<uint32_t> rampOf;
-  // TX.smooth: per Schedule::stages position, a param_ramp-tagged state entry (kNone: no ramps) whose `started` words
-  // the JIT uses as the stage's per-lane "every ramp rested in the last block" summary (a voice's lane reset clears it).
-  std::vector<uint32_t> rampSummary;
+  // TX.smooth-fix1: per Schedule::stages position (empty when there are no ramps), and the param lists they index.
+  std::vector<RampStage> rampStages;
+  std::vector<uint32_t> rampParams;
+  std::vector<uint32_t> rampExternals;
 
   std::span<const Operand> inputs(const Op& op) const noexcept { return {operands.data() + op.firstOperand, op.numIn}; }
   std::span<const Operand> outputsOf(const Op& op) const noexcept {

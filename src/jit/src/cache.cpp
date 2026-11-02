@@ -137,13 +137,14 @@ static_assert(sizeof(g::StateTag) == 8, "graph::StateTag changed: update codegen
 // initialises the state, and the generated code never reads it (the kernels that do are called).
 static_assert(sizeof(dsp::StateInit) == 32, "dsp::StateInit changed: update codegenDigest");
 static_assert(sizeof(g::StateEntry) == 72, "graph::StateEntry changed: update codegenDigest");
-static_assert(sizeof(g::StateLayout) == 40, "graph::StateLayout changed: update codegenDigest");
-static_assert(sizeof(g::Schedule) == 496 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
+static_assert(sizeof(g::StateLayout) == 48, "graph::StateLayout changed: update codegenDigest");
+static_assert(sizeof(g::Schedule) == 552 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
 static_assert(sizeof(g::Ramp) == 24, "graph::Ramp changed: update codegenDigest");
 static_assert(sizeof(g::ProbeRef) == 28, "graph::ProbeRef changed: update codegenDigest");
 static_assert(sizeof(g::SleepPlan) == 152, "graph::SleepPlan changed: update codegenDigest");
 static_assert(sizeof(g::RegionSleep) == 12, "graph::RegionSleep changed: update codegenDigest");
-static_assert(sizeof(HostLayout) == 192, "HostLayout changed: update codegenDigest");  // (memoOff fills padding)
+static_assert(sizeof(HostLayout) == 208, "HostLayout changed: update codegenDigest");  // (memoOff fills padding)
+static_assert(sizeof(g::RampStage) == 24, "graph::RampStage changed: update codegenDigest");
 
 Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots) {
   Stream h;
@@ -228,9 +229,11 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
   h.put(s.state.entries.size());
   for (const g::StateEntry& x : s.state.entries) {
     h.put(x.channel), h.put(x.arena), h.put(x.tag.kernel), h.put(x.tag.lanes), h.put(x.tag.factor), h.put(x.tag.extra), h.put(x.offset);
+    h.put(x.side);  // TX.smooth-fix1
     h.put(x.size), h.put(x.init.sampleRate), h.put(x.init.lanes), h.put(x.init.maxDelayFrames), h.put(x.init.z1Init);
   }
   h.put(s.state.globalBytes), h.put(s.state.voiceBytes), h.put(s.sampleRate);
+  h.put(s.state.sideGlobalBytes), h.put(s.state.sideVoiceBytes);  // TX.smooth-fix1
   // The sleep plan (T1.x-silence): which regions are guarded by which segment's flag, and what they fill. Sources,
   // states and params are the host's (not code).
   h.put(s.sleep.regions.size());
@@ -245,7 +248,10 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
     h.put(x.staticSource);
   }
   h.putU32s(s.rampOf);
-  h.putU32s(s.rampSummary);
+  // TX.smooth-fix1: which stages have ramps and whether they check some (codegen emits their ramp modes, checks).
+  h.put(s.rampStages.size());
+  for (const g::RampStage& x : s.rampStages) h.put(x.ramps), h.put(x.checked);
+  h.put(L.sideSlotGlobal), h.put(L.sideSlotVoice), h.put(L.sideVoiceStride);
   h.put(L.sleepOff);
   h.put(L.meterOff), h.put(L.meterFlagOff);  // T4.5
   // Schedule::warnings, insertedDelays and rewritten are diagnostics and names: not read by code generation.
@@ -403,6 +409,13 @@ bool parsePayload(const uint8_t* p, size_t n, Entry& e) {
     if (!r.get(len) || len > 4096 || !r.bytes(len, b)) return false;
     name.assign(reinterpret_cast<const char*>(b), len);
   }
+  e.rampFunctions.assign(stages, {});
+  for (std::string& name : e.rampFunctions) {  // TX.smooth-fix1; empty: no ramps in that stage
+    uint32_t len = 0;
+    const uint8_t* b = nullptr;
+    if (!r.get(len) || len > 4096 || !r.bytes(len, b)) return false;
+    name.assign(reinterpret_cast<const char*>(b), len);
+  }
   uint32_t fns = 0;
   if (!r.get(e.hostSlots) || !r.get(fns) || fns > (1u << 20)) return false;
   e.fnOffsets.assign(fns, 0);
@@ -433,6 +446,12 @@ std::vector<uint8_t> payloadOf(const Entry& e) {
   for (size_t k = 0; k < e.stageFunctions.size(); ++k) {
     const std::string none;
     const std::string& name = k < e.pairFunctions.size() ? e.pairFunctions[k] : none;
+    s.put(static_cast<uint32_t>(name.size()));
+    for (char c : name) s.put(c);
+  }
+  for (size_t k = 0; k < e.stageFunctions.size(); ++k) {  // TX.smooth-fix1
+    const std::string none;
+    const std::string& name = k < e.rampFunctions.size() ? e.rampFunctions[k] : none;
     s.put(static_cast<uint32_t>(name.size()));
     for (char c : name) s.put(c);
   }

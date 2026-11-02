@@ -24,6 +24,7 @@
 #include <queue>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "pq/graph/kernel_map.h"
 
@@ -81,6 +82,7 @@ struct Val {
   uint32_t live = 0;
   uint32_t buffer = kNone;
   NodeIndex node = kNone; // the node whose op defines it (for dumps)
+  bool ramp = false;      // TX.smooth-fix1: a param_ramp's output (its buffers come after every other value's)
 };
 
 // A kernel input of an op: which registry input of the node feeds kernel input k.
@@ -2139,9 +2141,16 @@ private:
       s.buffers.push_back(b);
       return static_cast<uint32_t>(s.buffers.size() - 1);
     };
+    // TX.smooth-fix1: two passes. The first allocates every value but the param ramps' outputs, so those buffers are
+    // the ones the same patch gets without ramps (same indices, same sharing, same offsets: at rest the engine runs
+    // the ramp-free program on the ramp-free memory); the second gives the ramp outputs buffers of their own after
+    // them (shared among themselves), which only a block in which a ramp moves touches.
+    for (int pass = 0; pass < 2; ++pass) {
+    for (auto& fl : freeList) fl.clear();
+    const bool rampPass = pass == 1;
     for (uint32_t p = 0; p <= numOps + 1; ++p) {
       // In place: output 0 of an element-wise kernel takes the buffer of an input that dies here.
-      if (p < numOps) {
+      if (p < numOps && !rampPass) {
         const Op& op = s.ops[p];
         if (op.kind == OpKind::Kernel && op.numOut > 0 && dsp::kernelInfo(op.kernel).inPlaceOk) {
           const Operand out0 = s.operands[op.firstOperand + op.numIn];
@@ -2166,7 +2175,7 @@ private:
       }
       for (uint32_t k = defBegin[p]; k < defBegin[p + 1]; ++k) {
         Val& v = vals_[byDef[k]];
-        if (v.buffer != kNone) continue;
+        if (v.buffer != kNone || v.ramp != rampPass) continue;
         if (v.perGroup) {
           v.buffer = fresh(v);
           continue;
@@ -2182,9 +2191,10 @@ private:
       for (uint32_t k = lastBegin[p]; k < lastBegin[p + 1]; ++k) {
         const uint32_t vi = byLast[k];
         Val& v = vals_[vi];
-        if (v.perGroup || handed[vi] || v.buffer == kNone) continue;
+        if (v.perGroup || handed[vi] || v.buffer == kNone || v.ramp != rampPass) continue;
         freeList[cls(v)].push_back(v.buffer);
       }
+    }
     }
     auto fix = [&](Operand& o) {
       if (o.kind == Operand::Kind::Buffer) o.index = vals_[o.index].buffer;
@@ -2283,6 +2293,9 @@ private:
       case Operand::Kind::Const: return true;
       case Operand::Kind::External: {
         const External& e = s.externals[o.index];
+        // TX.smooth-fix1: a global param-rate source (transport.bpm, a param-rate root input) is one value per block
+        // that the host compares with the previous block's itself (RampStage::firstExt), like a param.
+        if (e.poly == Poly::Global && e.rate != Rate::Audio) return true;
         if (e.source != External::Source::Engine) return false;
         const std::string_view n = atomSignature(e.atom).name;
         return n == "voice.velocity" || n == "voice.noteHz" || n == "voice.noteDegree" || n == "voice.index" ||
@@ -2304,6 +2317,28 @@ private:
     }
   }
 
+  // TX.smooth-fix1: the params and global param-rate externals a ramp source is computed from (through the ops
+  // defining its pattern values; a value's inputs once). For a static source (Ramp::staticSource) these are all that
+  // can move it while no note starts.
+  void rampSourceInputs(const Operand& o, std::vector<uint32_t>& params, std::vector<uint32_t>& exts,
+                        std::unordered_set<uint32_t>& seen, uint32_t depth = 0) const {
+    const Schedule& s = S_const();
+    if (o.kind == Operand::Kind::Param) {
+      params.push_back(o.index);
+      return;
+    }
+    if (o.kind == Operand::Kind::External) {
+      const External& e = s.externals[o.index];
+      if (e.poly == Poly::Global && e.rate != Rate::Audio) exts.push_back(o.index);
+      return;
+    }
+    if (o.kind != Operand::Kind::Buffer || depth >= 64 || !seen.insert(o.index).second) return;
+    const Val& v = vals_[o.index];
+    if (!v.pattern || v.def == kNone || v.def >= s.ops.size()) return;
+    const Op& op = s.ops[v.def];
+    for (uint32_t j = 0; j < op.numIn; ++j) rampSourceInputs(s.operands[op.firstOperand + j], params, exts, seen, depth + 1);
+  }
+
   // After outputs() (values are still virtual; positions are op indices): finds the reads that get a ramp, puts one
   // param_ramp op per (stage, factor, source) into a Block region right after its stage's Control region, renumbers
   // everything that holds op or region positions, and records each ramp's output as read by its readers (so
@@ -2322,6 +2357,7 @@ private:
       std::vector<std::pair<uint32_t, uint32_t>> readers;  // (operand index, op)
       uint64_t key = 0;  // its source's structural key (before positions change)
       bool staticSource = false;
+      std::vector<uint32_t> params, exts;  // TX.smooth-fix1: the params / global param-rate externals it follows
     };
     std::unordered_map<uint32_t, uint8_t> staticMemo;
     std::unordered_map<uint32_t, uint64_t> keyMemo;
@@ -2356,7 +2392,11 @@ private:
             const uint64_t key = (uint64_t{k} << 48) | (uint64_t{reg.factor} << 40) |
                                  (static_cast<uint64_t>(o.kind) << 32) | o.index;
             auto [it, fresh] = wantOf.try_emplace(key, static_cast<uint32_t>(wants.size()));
-            if (fresh) wants.push_back({k, reg.factor, o, {}, rampSourceKey(o, keyMemo), staticRampSource(o, staticMemo)});
+            if (fresh) {
+              wants.push_back({k, reg.factor, o, {}, rampSourceKey(o, keyMemo), staticRampSource(o, staticMemo), {}});
+              std::unordered_set<uint32_t> seen;
+              rampSourceInputs(o, wants.back().params, wants.back().exts, seen);
+            }
             wants[it->second].readers.push_back({op.firstOperand + j, i});
           }
         }
@@ -2457,6 +2497,7 @@ private:
       Val& ov = vals_[out.index];
       ov.def = rampPos[w];
       ov.defStage = st.index;
+      ov.ramp = true;
       if (want.src.kind == Operand::Kind::Buffer) ov.node = vals_[want.src.index].node;
       else if (want.src.kind == Operand::Kind::Param) ov.node = s.params[want.src.index].node;
       else if (want.src.kind == Operand::Kind::External) ov.node = s.externals[want.src.index].node;
@@ -2488,23 +2529,34 @@ private:
     s.ops = std::move(ops);
     s.regions = std::move(regions);
     regionStage_ = std::move(regStage);
-    // The per-stage rest summaries (Schedule::rampSummary).
-    s.rampSummary.assign(s.stages.size(), kNone);
+    // TX.smooth-fix1: per stage, the params its static ramps follow (the host's per-block test) and whether it has
+    // ramps the host cannot foresee (Schedule::rampStages).
+    s.rampStages.assign(s.stages.size(), RampStage{});
     for (uint32_t k = 0; k < s.stages.size(); ++k) {
-      bool has = false;
-      for (const Want& w : wants) has = has || w.stage == k;
-      if (!has) continue;
-      const bool voice = s.stages[k].poly == Poly::Voice;
-      dsp::StateInit init;
-      init.sampleRate = opt_.sampleRate;
-      init.lanes = voice ? 8u : 1u;
-      StateTag tag;
-      tag.kernel = static_cast<uint16_t>(dsp::Atom::ParamRamp);
-      tag.lanes = voice ? 8 : 1;
-      const uint64_t key = mix64(0x53554D4D41525900ull ^ mix64((uint64_t{s.stages[k].index} << 1) | (voice ? 1u : 0u)));
-      pending_.push_back(PendingState{key, 0, voice ? Poly::Voice : Poly::Global, tag,
-                                      static_cast<uint32_t>(dsp::stateBytes(dsp::Atom::ParamRamp, init)), init, kNone});
-      s.rampSummary[k] = static_cast<uint32_t>(pending_.size() - 1);
+      RampStage& rs = s.rampStages[k];
+      std::vector<uint32_t> ps, xs;
+      for (uint32_t w = 0; w < wants.size(); ++w) {
+        const Want& want = wants[w];
+        if (want.stage != k) continue;
+        rs.ramps = true;
+        if (!want.staticSource) rs.checked = true;
+        ps.insert(ps.end(), want.params.begin(), want.params.end());
+        xs.insert(xs.end(), want.exts.begin(), want.exts.end());
+        // Its length in frames of the base rate (the kernel's `frames` is in samples of its region's factor).
+        const float len = s.constants[s.operands[s.ops[rampPos[w]].firstOperand + 1].index].value;
+        rs.frames = std::max(rs.frames, static_cast<uint32_t>(std::ceil(static_cast<double>(len) / want.factor)));
+      }
+      if (!rs.ramps) continue;
+      std::sort(ps.begin(), ps.end());
+      ps.erase(std::unique(ps.begin(), ps.end()), ps.end());
+      rs.firstParam = static_cast<uint32_t>(s.rampParams.size());
+      rs.numParams = static_cast<uint32_t>(ps.size());
+      s.rampParams.insert(s.rampParams.end(), ps.begin(), ps.end());
+      std::sort(xs.begin(), xs.end());
+      xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+      rs.firstExt = static_cast<uint32_t>(s.rampExternals.size());
+      rs.numExts = static_cast<uint32_t>(xs.size());
+      s.rampExternals.insert(s.rampExternals.end(), xs.begin(), xs.end());
     }
     s.rampOf.assign(s.operands.size(), kNone);
     for (uint32_t w = 0; w < wants.size(); ++w)
@@ -2529,13 +2581,15 @@ private:
       e.size = (ps.size + dsp::kStateAlign - 1) / dsp::kStateAlign * dsp::kStateAlign;
       e.init = ps.init;
       e.node = ps.node;
+      // TX.smooth-fix1: param_ramp states live in the ramp side table (schedule.h "Param ramps"), not the arenas.
+      e.side = ps.tag.kernel == static_cast<uint16_t>(dsp::Atom::ParamRamp);
       L.entries.push_back(e);  // in pending order: Op::state indexes them 1:1
     }
     // Each arena's total must fit its uint32 offsets with room for the stable layout's holes: reject (naming the
     // node whose state crosses the cap) rather than let an offset wrap and two states overlap.
-    uint64_t total[2] = {0, 0};
+    uint64_t total[4] = {0, 0, 0, 0};
     for (const StateEntry& e : L.entries) {
-      uint64_t& t = total[e.arena == Poly::Voice];
+      uint64_t& t = total[arenaIndex(e)];
       t += e.size;
       if (t > kMaxArenaBytes) {
         report(e.node, ErrorCode::Overflow,
@@ -2574,15 +2628,19 @@ private:
   static uint32_t round64(uint32_t x) noexcept { return (x + 63u) & ~63u; }
 
   void layoutFresh(StateLayout& L) {
-    uint32_t off[2] = {0, 0};
+    uint32_t off[4] = {0, 0, 0, 0};
     for (StateEntry& e : L.entries) {
-      uint32_t& o = off[e.arena == Poly::Voice];
+      uint32_t& o = off[arenaIndex(e)];
       e.offset = o;
       o += e.size;
     }
     L.globalBytes = round64(off[0]);
     L.voiceBytes = round64(off[1]);
+    L.sideGlobalBytes = round64(off[2]);
+    L.sideVoiceBytes = round64(off[3]);
   }
+  // 0 global, 1 voice, 2 / 3 the same in the ramp side table.
+  static int arenaIndex(const StateEntry& e) noexcept { return (e.arena == Poly::Voice ? 1 : 0) + (e.side ? 2 : 0); }
 
   // Keep the offsets of unchanged entries; place the rest first-fit into the holes between them, then at the end.
   bool layoutStable(StateLayout& L, const StateLayout& prev) {
@@ -2596,12 +2654,12 @@ private:
     struct Range {
       uint64_t begin, end;
     };
-    std::vector<Range> used[2];
+    std::vector<Range> used[4];
     std::vector<uint8_t> kept(L.entries.size(), 0);
-    uint64_t live[2] = {0, 0};
+    uint64_t live[4] = {0, 0, 0, 0};
     for (size_t i = 0; i < L.entries.size(); ++i) {
       StateEntry& e = L.entries[i];
-      const int a = e.arena == Poly::Voice;
+      const int a = arenaIndex(e);
       live[a] += e.size;
       const uint64_t id = slotId(e.key, e.channel, e.arena);
       const auto it = std::lower_bound(byKey.begin(), byKey.end(), std::pair<uint64_t, uint32_t>{id, 0});
@@ -2612,9 +2670,9 @@ private:
       kept[i] = 1;
       used[a].push_back({e.offset, uint64_t{e.offset} + e.size});
     }
-    uint64_t end[2] = {0, 0};
-    std::vector<Range> holes[2];
-    for (int a = 0; a < 2; ++a) {
+    uint64_t end[4] = {0, 0, 0, 0};
+    std::vector<Range> holes[4];
+    for (int a = 0; a < 4; ++a) {
       auto& u = used[a];
       std::sort(u.begin(), u.end(), [](const Range& x, const Range& y) { return x.begin < y.begin; });
       uint64_t at = 0;
@@ -2627,7 +2685,7 @@ private:
     for (size_t i = 0; i < L.entries.size(); ++i) {
       if (kept[i]) continue;
       StateEntry& e = L.entries[i];
-      const int a = e.arena == Poly::Voice;
+      const int a = arenaIndex(e);
       bool placed = false;
       for (Range& h : holes[a]) {
         if (h.end - h.begin < e.size) continue;
@@ -2646,13 +2704,15 @@ private:
       }
     }
     // Compact when holes dominate.
-    for (int a = 0; a < 2; ++a)
+    for (int a = 0; a < 4; ++a)
       if (end[a] > 2 * live[a] + 4096) {
         L.compacted = true;
         return false;
       }
     L.globalBytes = round64(static_cast<uint32_t>(end[0]));
     L.voiceBytes = round64(static_cast<uint32_t>(end[1]));
+    L.sideGlobalBytes = round64(static_cast<uint32_t>(end[2]));
+    L.sideVoiceBytes = round64(static_cast<uint32_t>(end[3]));
     return true;
   }
 

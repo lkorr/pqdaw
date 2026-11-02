@@ -360,6 +360,8 @@ inline Streams runReference(const Setup& st, uint32_t frames, std::string& why) 
 struct InterpRun {
   Streams streams;
   uint64_t rtViolations = 0;
+  uint64_t rampRuns = 0;                   // TX.smooth-fix1: SleepStats::rampRuns at the end
+  std::vector<uint64_t> rampRunsPerBlock;  // and per block
   std::string error;
 };
 
@@ -517,6 +519,10 @@ inline InterpRun runInterp(const Setup& st, uint32_t frames, uint32_t block, uin
       pq::DenormalGuard dg;
       img.process(ctx);
     });
+    // TX.smooth-fix1: how many stage runs of this block were in param-ramp mode.
+    const uint64_t runs = img.sleepStats() ? img.sleepStats()->rampRuns : 0;
+    res.rampRunsPerBlock.push_back(runs - res.rampRuns);
+    res.rampRuns = runs;
     // Record.
     for (uint32_t s = 0; s < face.globalOut.size(); ++s) {
       const bool isBool = c.typed.inputType(face.globalOut[s].node, 0).kind == Kind::Bool;

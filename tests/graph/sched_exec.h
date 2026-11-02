@@ -254,9 +254,10 @@ public:
     for (const External& e : s.externals)
       ext_.push_back(std::vector<float>(e.rate == Rate::Audio ? frames : 8, 0.0f));
     arena_ = std::make_unique<AlignedBlock>(s.state.globalBytes);
+    side_ = std::make_unique<AlignedBlock>(s.state.sideGlobalBytes);  // TX.smooth-fix1: the ramp side table
     for (const StateEntry& e : s.state.entries)
       if (e.tag.kernel != StateTag::kSolveGuess)
-        dsp::initState(static_cast<dsp::Atom>(e.tag.kernel), arena_->p + e.offset, e.init);
+        dsp::initState(static_cast<dsp::Atom>(e.tag.kernel), statePtr(e), e.init);
   }
 
   // One block starting at sample t0; returns per output the block of values.
@@ -315,7 +316,7 @@ private:
     dsp::KernelArgs a;
     a.in = ip.data();
     a.out = outp.data();
-    a.state = op.state != kNone ? arena_->p + s_.state.entries[op.state].offset : nullptr;
+    a.state = op.state != kNone ? statePtr(s_.state.entries[op.state]) : nullptr;
     a.frames = frames;
     a.numIn = op.numIn;
     a.numOut = op.numOut;
@@ -328,7 +329,8 @@ private:
   const Schedule& s_;
   uint32_t frames_;
   std::vector<std::vector<float>> bufs_, params_, consts_, ext_;
-  std::unique_ptr<AlignedBlock> arena_;
+  std::unique_ptr<AlignedBlock> arena_, side_;
+  char* statePtr(const StateEntry& e) const { return (e.side ? side_ : arena_)->p + e.offset; }
 };
 
 // Runs both for `blocks` blocks of `frames` samples; returns the largest |difference| / max(1, |naive|), or

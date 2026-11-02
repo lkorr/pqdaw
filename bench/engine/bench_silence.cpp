@@ -12,7 +12,8 @@
 //                                   sleep bookkeeping on non-silent playback (the source scans, per-region flags)
 //   idle/ramps A/B, awake/ramps A/B <backend>   TX.smooth: the same project with and without param ramps
 //                                   (ProjectCompileOptions::paramRamps), interleaved rounds as below: what the ramps
-//                                   cost while no param moves (idle: every unit asleep; awake: everything sounds)
+//                                   cost while no param moves (idle: every unit asleep; awake: everything sounds);
+//                                   three rigs of each (TX.smooth-fix1). …/ramps A/A: ramps on both sides (noise floor)
 // Backends: interp and jit (every unit's image from compile::jitUnitBackend()). ns per block; "% of a core" =
 // ns / 1 333 333 (one block period). Release / ship build. Usage: pq_bench_silence [runner options]
 #include <algorithm>
@@ -183,31 +184,53 @@ int main(int argc, char** argv) {
                   r.medianNs, r.minNs, r.maxNs);
     });
   }
-  // TX.smooth: ramps vs no ramps, interleaved (as the sleep A/B above).
-  for (bool idleProject : {true, false})
-    for (bool jit : {false, true}) {
-      const std::string name = std::string(idleProject ? "idle" : "awake") + "/ramps A/B " + (jit ? "jit" : "interp");
-      runner.add(name, [idleProject, jit, name](bench::Context& c) {
-        Rig a(idleProject, jit, true, false, true), b(idleProject, jit, true, false, false);
-        std::vector<double> ratio, ta, tb;
-        for (int round = 0; round < 60; ++round) {
+  // TX.smooth: ramps vs no ramps, interleaved. TX.smooth-fix1: three rigs of each, built in alternating order, every
+  // rig 50 blocks per round in a rotating order (where the allocator puts one program moves an A/A comparison of
+  // two single rigs by a few %); a round's ratio is the summed times. "ramps A/A": both sides with ramps (the
+  // method's noise floor).
+  for (bool selfCheck : {false, true})
+    for (bool idleProject : {true, false})
+      for (bool jit : {false, true}) {
+        const std::string name = std::string(idleProject ? "idle" : "awake") + (selfCheck ? "/ramps A/A " : "/ramps A/B ") +
+                                 (jit ? "jit" : "interp");
+        runner.add(name, [idleProject, jit, name, selfCheck](bench::Context& c) {
+          constexpr int kRigs = 3;
+          std::vector<std::unique_ptr<Rig>> rigs;
+          std::vector<uint8_t> isA;
+          for (int i = 0; i < kRigs; ++i) {
+            const bool aFirst = i % 2 == 0;
+            rigs.push_back(std::make_unique<Rig>(idleProject, jit, true, false, aFirst || selfCheck));
+            isA.push_back(aFirst ? 1 : 0);
+            rigs.push_back(std::make_unique<Rig>(idleProject, jit, true, false, !aFirst || selfCheck));
+            isA.push_back(aFirst ? 0 : 1);
+          }
           auto time = [](Rig& r) {
             const auto t0 = std::chrono::steady_clock::now();
-            for (int i = 0; i < 100; ++i) r.block();
-            return std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / 100.0;
+            for (int i = 0; i < 50; ++i) r.block();
+            return std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / 50.0;
           };
-          const double x = round % 2 ? time(a) : 0.0, y = time(b), z = round % 2 ? 0.0 : time(a);
-          ta.push_back(x + z);
-          tb.push_back(y);
-          ratio.push_back((x + z) / y);
-        }
-        c.record(bench::summarize(ta), "ns/block", "ramps");
-        c.record(bench::summarize(tb), "ns/block", "no ramps");
-        const bench::Stats r = bench::summarize(ratio);
-        c.record(r, "ratio", "ramps/no ramps");
-        std::printf("  %s: ramps / no ramps = %.4f (median of 60 interleaved rounds; min %.4f, max %.4f)\n", name.c_str(),
-                    r.medianNs, r.minNs, r.maxNs);
-      });
-    }
+          for (auto& r : rigs) time(*r);
+          std::vector<double> ratio, ta, tb;
+          for (int round = 0; round < 60; ++round) {
+            double x = 0.0, y = 0.0;
+            for (size_t j = 0; j < rigs.size(); ++j) {
+              const size_t q = (j + static_cast<size_t>(round)) % rigs.size();
+              (isA[q] ? x : y) += time(*rigs[q]);
+            }
+            ta.push_back(x / kRigs);
+            tb.push_back(y / kRigs);
+            ratio.push_back(x / y);
+          }
+          c.record(bench::summarize(ta), "ns/block", selfCheck ? "ramps (set 1)" : "ramps");
+          c.record(bench::summarize(tb), "ns/block", selfCheck ? "ramps (set 2)" : "no ramps");
+          const bench::Stats r = bench::summarize(ratio);
+          c.record(r, "ratio", selfCheck ? "A/A" : "ramps/no ramps");
+          std::vector<double> q = ratio;
+          std::sort(q.begin(), q.end());
+          std::printf("  %s: %s = %.4f (median of 60 rounds over %d + %d rigs; quartiles %.4f … %.4f)\n", name.c_str(),
+                      selfCheck ? "set 1 / set 2" : "ramps / no ramps", r.medianNs, kRigs, kRigs, q[q.size() / 4],
+                      q[q.size() - 1 - q.size() / 4]);
+        });
+      }
   return runner.main(argc, argv);
 }

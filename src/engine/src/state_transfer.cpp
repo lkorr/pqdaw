@@ -49,6 +49,10 @@ Result<TransferPlan> buildTransferPlan(const graph::StateLayout& from, const Sta
                        toArena.voiceGroups > 0;
   auto fits = [](const graph::StateEntry& e, const graph::StateLayout& L, const StateArena& A) {
     const uint64_t end = static_cast<uint64_t>(e.offset) + e.size;
+    if (e.side) {  // TX.smooth-fix1: the ramp side table
+      if (e.arena == graph::Poly::Global) return end <= L.sideGlobalBytes;
+      return end <= L.sideVoiceBytes && (A.sideVoice == nullptr || end <= A.sideVoiceStride);
+    }
     if (e.arena == graph::Poly::Global) return end <= L.globalBytes;
     return end <= L.voiceBytes && (A.voice == nullptr || end <= A.voiceStride);
   };
@@ -70,13 +74,18 @@ Result<TransferPlan> buildTransferPlan(const graph::StateLayout& from, const Sta
       continue;
     }
     const graph::StateEntry& o = from.entries[it->second];
-    if (!(o.tag == e.tag) || o.size != e.size || used[it->second]) {
+    if (!(o.tag == e.tag) || o.size != e.size || o.side != e.side || used[it->second]) {
       ++plan.mismatched;
       continue;
     }
     used[it->second] = 1;
     ++plan.matched;
     if (e.size == 0) continue;
+    if (e.side) {
+      if (e.arena == graph::Poly::Global) plan.sideGlobal.push_back({o.offset, e.offset, e.size});
+      else if (voiceOk) plan.sideVoice.push_back({o.offset, e.offset, e.size});
+      continue;
+    }
     if (e.arena == graph::Poly::Global) {
       plan.global.push_back({o.offset, e.offset, e.size});
       plan.globalBytes += e.size;
@@ -88,6 +97,8 @@ Result<TransferPlan> buildTransferPlan(const graph::StateLayout& from, const Sta
   for (uint8_t u : used) plan.dropped += u ? 0u : 1u;
   coalesce(plan.global);
   coalesce(plan.voice);
+  coalesce(plan.sideGlobal);
+  coalesce(plan.sideVoice);
   return plan;
 }
 
@@ -95,13 +106,23 @@ void executeTransfer(const TransferPlan& plan, const StateArena& from, const Sta
                      const uint32_t* groupMask, uint32_t maxGroups) noexcept {  // RT-safe
   if (from.global != nullptr && to.global != nullptr)
     for (const StateCopy& c : plan.global) std::memcpy(to.global + c.dst, from.global + c.src, c.size);
-  if (plan.voice.empty() || from.voice == nullptr || to.voice == nullptr) return;
+  if (from.sideGlobal != nullptr && to.sideGlobal != nullptr)
+    for (const StateCopy& c : plan.sideGlobal) std::memcpy(to.sideGlobal + c.dst, from.sideGlobal + c.src, c.size);
   const uint32_t groups = std::min({plan.voiceGroups, from.voiceGroups, to.voiceGroups, maxGroups});
-  for (uint32_t g = 0; g < groups; ++g) {
+  const bool voice = !plan.voice.empty() && from.voice != nullptr && to.voice != nullptr;
+  const bool side = !plan.sideVoice.empty() && from.sideVoice != nullptr && to.sideVoice != nullptr;
+  for (uint32_t g = 0; g < groups && (voice || side); ++g) {
     if (groupMask != nullptr && groupMask[g] == 0) continue;
-    const std::byte* src = from.voice + static_cast<size_t>(g) * from.voiceStride;
-    std::byte* dst = to.voice + static_cast<size_t>(g) * to.voiceStride;
-    for (const StateCopy& c : plan.voice) std::memcpy(dst + c.dst, src + c.src, c.size);
+    if (voice) {
+      const std::byte* src = from.voice + static_cast<size_t>(g) * from.voiceStride;
+      std::byte* dst = to.voice + static_cast<size_t>(g) * to.voiceStride;
+      for (const StateCopy& c : plan.voice) std::memcpy(dst + c.dst, src + c.src, c.size);
+    }
+    if (side) {
+      const std::byte* src = from.sideVoice + static_cast<size_t>(g) * from.sideVoiceStride;
+      std::byte* dst = to.sideVoice + static_cast<size_t>(g) * to.sideVoiceStride;
+      for (const StateCopy& c : plan.sideVoice) std::memcpy(dst + c.dst, src + c.src, c.size);
+    }
   }
 }
 

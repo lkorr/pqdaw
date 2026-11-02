@@ -59,7 +59,10 @@ struct HostLayout {
   // JitImage::process from ImageHost::paramsChanged): the memo Control regions (codegen.h) are then skipped, their
   // buffers still hold the values.
   uint32_t memoOff = 0;
-  std::vector<uint32_t> opInfo;              // per op: pointer-table slot of its resource / info record, or kNone
+  // TX.smooth-fix1: pointer-table slots of the ramp side table's global part and of its first voice block, and the
+  // voice blocks' stride (bytes): a param_ramp state is addressed there, not in the state arenas.
+  uint32_t sideSlotGlobal = 0, sideSlotVoice = 0, sideVoiceStride = 0;
+  std::vector<uint32_t> opInfo;             // per op: pointer-table slot of its resource / info record, or kNone
   // Pairs (T1b.2, codegen.h): per stage, whether it gets a two-group function; per buffer, the float offset of the
   // second group's copy of a pairable stage's own voice value (kNone: none); per op, the second group's record slot
   // (reducers).
@@ -114,6 +117,7 @@ public:
   HostLayout layout_;
   std::vector<StageFn> fns_;                 // per Schedule::stages entry (set by the Compiler)
   std::vector<StageFn> pairFns_;             // per stage: the two-group function, or null (T1b.2)
+  std::vector<StageFn> rampFns_;             // TX.smooth-fix1: per stage, its ramp mode (one group), or null
   bool scalarLanes_ = false;                 // the scalar baseline: voice stages run once per lane
   std::vector<const void*> tab_;
   // Releases the machine code (set by the Compiler; runs in the destructor, off the audio thread).

@@ -36,6 +36,7 @@ struct StateCopy {
 struct TransferPlan {
   std::vector<StateCopy> global;  // into StateArena::global
   std::vector<StateCopy> voice;   // into one voice block (StateArena::voice + g · voiceStride), per group
+  std::vector<StateCopy> sideGlobal, sideVoice;  // TX.smooth-fix1: the same for the ramp side table
   uint32_t voiceGroups = 0;       // groups copied at most: min(old, new) (0 when either has no voice arena)
   // What matched (for tests, tools and the T3.17 controller's diagnostics).
   uint32_t matched = 0;           // new entries that take old state
@@ -45,7 +46,7 @@ struct TransferPlan {
   uint64_t globalBytes = 0;       // bytes copied per swap in the global arena
   uint64_t voiceBytes = 0;        // bytes copied per voice group
 
-  bool empty() const noexcept { return global.empty() && voice.empty(); }
+  bool empty() const noexcept { return global.empty() && voice.empty() && sideGlobal.empty() && sideVoice.empty(); }
 };
 
 // Not RT-safe (allocates). The arenas are only checked for size (the layouts must fit them); their memory is not

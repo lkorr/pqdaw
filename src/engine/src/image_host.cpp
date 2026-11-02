@@ -312,6 +312,38 @@ Status ImageHost::build(const g::Schedule& s, const BuildOptions& o) {
     const auto* st = reinterpret_cast<const dsp::ParamRampState*>(statePtr(s.state.entries[op.state], 0));
     globalRampRem_.push_back(&st->rem[0]);
   }
+  // TX.smooth-fix1: the per-stage ramp plan (decideRamps).
+  const auto K = static_cast<uint32_t>(s.stages.size());
+  anyRamps_ = !s.ramps.empty();
+  rampStage_.assign(K, 0);
+  rampOn_.assign(K, 0);
+  rampLeft_.assign(K, 0);
+  rampFrames_.assign(K, 0);
+  rampFirst_.assign(K, 0);
+  rampCount_.assign(K, 0);
+  rampParams_.clear();
+  rampExtFirst_.assign(K, 0);
+  rampExtCount_.assign(K, 0);
+  rampExts_.clear();
+  rampWatch_.clear();
+  extBits_.assign(s.externals.size(), 0);
+  extChanged_.assign(s.externals.size(), 0);
+  if (anyRamps_) {
+    rampParams_ = s.rampParams;
+    rampExts_ = s.rampExternals;
+    for (uint32_t k = 0; k < K; ++k) {
+      const g::RampStage& rs = s.rampStages[k];
+      rampStage_[k] = rs.ramps ? 1 : 0;
+      rampFrames_[k] = rs.frames;
+      rampFirst_[k] = rs.firstParam;
+      rampCount_[k] = rs.numParams;
+      rampExtFirst_[k] = rs.firstExt;
+      rampExtCount_[k] = rs.numExts;
+    }
+    rampWatch_ = rampExts_;
+    std::sort(rampWatch_.begin(), rampWatch_.end());
+    rampWatch_.erase(std::unique(rampWatch_.begin(), rampWatch_.end()), rampWatch_.end());
+  }
   meterFlag_ = reinterpret_cast<uint32_t*>(auxMem_.data() + L_.meterFlagOff);
   *meterFlag_ = 0;
   meterUnits_.resize(numRegions_);
@@ -432,14 +464,18 @@ bool ImageHost::validate(const g::Schedule& s) {
 bool ImageHost::validateRamps(const g::Schedule& s) {
   if (s.ramps.empty() && s.rampOf.empty()) return true;
   if (s.rampOf.size() != s.operands.size()) return fail("ramp table does not match the operands");
-  if (!s.rampSummary.empty() && s.rampSummary.size() != s.stages.size()) return fail("ramp summaries do not match the stages");
-  for (uint32_t k = 0; k < s.rampSummary.size(); ++k) {
-    const uint32_t e = s.rampSummary[k];
-    if (e == g::kNone) continue;
-    if (e >= s.state.entries.size() || s.state.entries[e].tag.kernel != static_cast<uint16_t>(dsp::Atom::ParamRamp) ||
-        (s.state.entries[e].arena == g::Poly::Voice) != (s.stages[k].poly == g::Poly::Voice))
-      return fail("invalid ramp summary");
-  }
+  // TX.smooth-fix1: the host's per-stage ramp plan (RampStage).
+  if (s.rampStages.size() != s.stages.size()) return fail("ramp stages do not match the stages");
+  for (const g::RampStage& rs : s.rampStages)
+    if (static_cast<uint64_t>(rs.firstParam) + rs.numParams > s.rampParams.size() || (rs.ramps && rs.frames == 0))
+      return fail("invalid ramp stage");
+  for (const uint32_t p : s.rampParams)
+    if (p >= s.params.size()) return fail("ramp param out of range");
+  for (const g::RampStage& rs : s.rampStages)
+    if (static_cast<uint64_t>(rs.firstExt) + rs.numExts > s.rampExternals.size()) return fail("invalid ramp stage");
+  for (const uint32_t x : s.rampExternals)
+    if (x >= s.externals.size() || s.externals[x].poly != g::Poly::Global || s.externals[x].rate == g::Rate::Audio)
+      return fail("invalid ramp external");
   std::vector<uint32_t> regionOf(s.ops.size(), g::kNone), stageOf(s.regions.size(), g::kNone);
   for (uint32_t k = 0; k < s.stages.size(); ++k)
     for (uint32_t r = s.stages[k].firstRegion; r < s.stages[k].firstRegion + s.stages[k].numRegions; ++r) stageOf[r] = k;
@@ -453,6 +489,14 @@ bool ImageHost::validateRamps(const g::Schedule& s) {
     if (!(s.inputs(op)[0] == rp.source) || !(s.outputsOf(op)[0] == rp.out) || rp.out.kind != g::Operand::Kind::Buffer)
       return fail("ramp operands disagree with its op");
     if (s.regions[regionOf[rp.op]].kind == g::RegionKind::Control) return fail("ramp op in a Control region");
+    const uint32_t k = stageOf[regionOf[rp.op]];
+    if (k >= s.stages.size() || !s.rampStages[k].ramps || (!rp.staticSource && !s.rampStages[k].checked))
+      return fail("ramp missing from its stage's ramp plan");
+    const g::Operand len = s.inputs(op)[1];
+    const uint32_t factor = s.regions[regionOf[rp.op]].factor;
+    if (len.kind != g::Operand::Kind::Const || len.index >= s.constants.size() || factor == 0 ||
+        !(static_cast<double>(s.constants[len.index].value) <= static_cast<double>(s.rampStages[k].frames) * factor))
+      return fail("ramp longer than its stage's ramp plan");
   }
   for (uint32_t i = 0; i < s.ops.size(); ++i) {
     const g::Op& op = s.ops[i];
@@ -574,12 +618,20 @@ bool ImageHost::layoutMemory(const g::Schedule& s, uint32_t extraBufFloats) {
   L_.voiceStride = roundUp(SL.voiceBytes, 64);
   const size_t stateBytes = static_cast<size_t>(L_.globalStateBytes) + static_cast<size_t>(L_.voiceStride) * G;
   stateMem_ = AlignedBuffer<float>(std::max<size_t>(stateBytes / 4, 16));
+  // TX.smooth-fix1: the ramp side table, a separate allocation (global part, then one block per voice group).
+  L_.sideGlobalBytes = roundUp(SL.sideGlobalBytes, 64);
+  L_.sideVoiceStride = roundUp(SL.sideVoiceBytes, 64);
+  const size_t sideBytes = static_cast<size_t>(L_.sideGlobalBytes) + static_cast<size_t>(L_.sideVoiceStride) * G;
+  sideMem_ = sideBytes != 0 ? AlignedBuffer<float>(sideBytes / 4) : AlignedBuffer<float>();
   for (const g::StateEntry& e : SL.entries) {
-    if (e.offset + e.size > (e.arena == g::Poly::Voice ? SL.voiceBytes : SL.globalBytes)) return fail("state entry outside its arena");
+    const uint32_t limit = e.side ? (e.arena == g::Poly::Voice ? SL.sideVoiceBytes : SL.sideGlobalBytes)
+                                  : (e.arena == g::Poly::Voice ? SL.voiceBytes : SL.globalBytes);
+    if (e.offset + e.size > limit) return fail("state entry outside its arena");
+    if (e.side && e.tag.kernel != static_cast<uint16_t>(dsp::Atom::ParamRamp)) return fail("side state of another atom");
     if (e.tag.kernel == g::StateTag::kSolveGuess) continue;  // zeros
     const auto atom = static_cast<dsp::Atom>(e.tag.kernel);
     if (e.arena == g::Poly::Global) {
-      dsp::initState(atom, globalState() + e.offset, e.init);
+      dsp::initState(atom, statePtr(e, 0), e.init);
       continue;
     }
     for (uint32_t gi = 0; gi < G; ++gi) {
@@ -587,7 +639,7 @@ bool ImageHost::layoutMemory(const g::Schedule& s, uint32_t extraBufFloats) {
       // Voice groups get distinct noise: the group index is mixed into the seed (lanes are mixed by dsp).
       if (atom == dsp::Atom::Noise) init.seed += gi * 0x9E3779B9u;
       init.voiceGroup = gi;  // TMM.2: wavetable_pos / voice_tap write their group's tap record
-      dsp::initState(atom, voiceState(gi) + e.offset, init);
+      dsp::initState(atom, statePtr(e, gi), init);
     }
   }
   return true;
@@ -1431,6 +1483,7 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
   // (paramChanged_ is all 0 already): nothing to read, clamp or splat.
   if (ctx.paramsUnchanged && !firstBlock_ && !paramsChanged_) {
     resolveExternals(ctx, frames);
+    if (anyRamps_) decideRamps();
     return true;
   }
   bool anyChanged = firstBlock_;
@@ -1451,7 +1504,39 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
   }
   paramsChanged_ = anyChanged;
   resolveExternals(ctx, frames);
+  if (anyRamps_) decideRamps();
   return true;
+}
+
+// TX.smooth-fix1 (pq/graph/schedule.h "Param ramps"): which stages run their ramp mode this block. A static ramp
+// moves only from a block in which one of the params it follows changed, for the ramp's length after it. The first
+// block counts as such a change for every stage: a fresh state starts at its value, but a state carried over from the
+// previous image (hot swap) may be mid-ramp or meet a new value. (Voice groups whose lanes started a note are added
+// in run().) Cost at rest: one byte per stage with ramps; only after a param changed, a scan of that stage's params.
+void ImageHost::decideRamps() noexcept {  // RT-safe
+  // The global param-rate externals the ramps follow (transport.bpm, …): one value per block, compared bitwise.
+  bool extsChanged = false;
+  for (const uint32_t x : rampWatch_) {
+    const uint32_t bits = std::bit_cast<uint32_t>(extPtr_[static_cast<size_t>(x) * L_.groups][0]);
+    extChanged_[x] = bits != extBits_[x] ? 1 : 0;
+    extsChanged = extsChanged || bits != extBits_[x];
+    extBits_[x] = bits;
+  }
+  const auto K = static_cast<uint32_t>(rampStage_.size());
+  for (uint32_t k = 0; k < K; ++k) {
+    if (!rampStage_[k]) continue;
+    bool changed = firstBlock_;
+    if (!changed && paramsChanged_) {
+      const uint32_t* p = rampParams_.data() + rampFirst_[k];
+      for (uint32_t i = 0; i < rampCount_[k] && !changed; ++i) changed = paramChanged_[p[i]] != 0;
+    }
+    if (!changed && extsChanged) {
+      const uint32_t* x = rampExts_.data() + rampExtFirst_[k];
+      for (uint32_t i = 0; i < rampExtCount_[k] && !changed; ++i) changed = extChanged_[x[i]] != 0;
+    }
+    if (changed) rampLeft_[k] = rampFrames_[k];
+    rampOn_[k] = rampLeft_[k] != 0 ? 1 : 0;
+  }
 }
 
 void ImageHost::resolveExternals(const ProcessContext& ctx, uint32_t frames) noexcept {  // RT-safe

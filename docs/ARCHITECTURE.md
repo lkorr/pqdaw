@@ -221,6 +221,27 @@ namespace pq::graph {
   //   Host: validateRamps; dormant only once every global ramp has settled; idleAfterBlocks covers the longest global
   // ramp (project_compile.h globalRampFrames). The sleep plan ignores param_ramp state for dormantCapable; ramp
   // regions never sleep (one compare per ramp and block).
+  //   TX.smooth-fix1 (Q?-TX.smooth-fix1-a; supersedes the per-block rest checks, the rest summary and most of the
+  // pair bail above): zero at rest BY CONSTRUCTION. (1) Memory: param_ramp states live in a ramp side table
+  // (StateEntry::side; StateLayout::sideGlobalBytes / sideVoiceBytes; StateArena::sideGlobal / sideVoice /
+  // sideVoiceStride; ImageHost's own allocation; state transfer, VoiceEngine lane reset and lane move cover it) and
+  // the ramp outputs' buffers come after every other buffer (allocateBuffers' second pass), so the arenas, the voice
+  // stride and every buffer are the ramp-free schedule's (tests/graph test_schedule "leave the ramp-free schedule's
+  // buffers and state as they are"). (2) Code: a stage function is the ramp-free code (no checks, no ramp state);
+  // `<stage>_rampmode` (Control region + tail call of `<stage>_ramps`) is a second entry, emitted with every ramp
+  // function after all ramp-free ones (same order and placement as without ramps); pair functions are ramp-free only.
+  // (3) Choice, outside the stage code: Schedule::rampStages (per stage: has ramps, `checked`, the params and global
+  // param-rate externals its static ramps follow, the ramp length in frames). ImageHost::decideRamps (begin()) sets
+  // a stage's frames-left counter to the ramp length when one of those params / externals changed bitwise (the param
+  // pass already computes paramChanged_; the externals' lane 0 is compared) and in the first block; run() passes
+  // `ramp` = counter > 0, or for a voice group a lane reset this block (VoiceGroupIO::startMask, set by
+  // VoiceEngine::resetLaneState) to the backends, which call the ramp mode (JIT: JitImage::rampFns_; interpreter:
+  // InterpretedImage::rampMode_, which otherwise skips the param_ramp regions and prepareRamps). A group in ramp mode
+  // never pairs. Static sources (Ramp::staticSource: params, constants, note-on-static voice signals, global param-rate
+  // engine sources and root inputs such as transport.bpm, through stateless ops) cannot move otherwise, so held
+  // automation, a released knob or a held note costs nothing. Only ramps of other sources (a stateful Control op, a
+  // per-voice signal that moves) keep a per-block check after the Control region (`checked`; the stock Operator has
+  // none). SleepStats::rampRuns counts ramp-mode stage runs.
   ScheduleResult scheduleDetailed(const TypedPatch&, const ScheduleOptions& = {});  // + warnings in the Schedule
   Result<Schedule> schedule(const TypedPatch&, const ScheduleOptions& = {});
 }

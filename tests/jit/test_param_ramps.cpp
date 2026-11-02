@@ -196,3 +196,81 @@ TEST_CASE("param ramps: a voice's param-rate values ramp per lane, and resting p
   CHECK(interp.rtViolations == 0);
   CHECK(jit.rtViolations == 0);
 }
+
+// TX.smooth-fix1 (pq/graph/schedule.h "Param ramps"): zero at rest by construction. A stage runs its ramp mode only in
+// the blocks a change reaches (the first block, a changed param or global param-rate source, for the ramp's 20 ms);
+// otherwise the ramp-free code, whose output is the ramp-free schedule's bit for bit. A param held at its value
+// (automation holding a breakpoint, a knob let go) never starts one.
+namespace {
+Compiled withoutRampsHere(const Compiled& c) {
+  Compiled r;
+  r.file = c.file;
+  r.name = c.name;
+  r.typed = c.typed;
+  ScheduleOptions so;
+  so.sampleRate = c.sched.sampleRate;
+  so.paramRamps = false;
+  auto s = schedule(r.typed, so);
+  REQUIRE(s.ok());
+  r.sched = std::move(s.value());
+  return r;
+}
+}  // namespace
+
+TEST_CASE("param ramps: ramp mode only while a change ramps; at rest the ramp-free program, bit for bit (both backends)") {
+  constexpr uint32_t kRampBlocks = 960 / 64;  // 20 ms at 48 kHz in 64-frame blocks
+  const Compiled g = compileText(R"(patch S {
+  in x : audio
+  param g = 0.5 [0..1]
+  out y : audio
+  out z : audio
+  y = x * g
+  z = x * (g * transport.bpm / 120)
+})");
+  const Compiled v = compileText(R"(patch V {
+  param lvl = 0.5 [0..1]
+  out y : audio voice
+  y = sine(phasor(voice.hz)) * (lvl * voice.velocity)
+})");
+  REQUIRE(g.sched.ramps.size() == 2);
+  for (const RampStage& rs : g.sched.rampStages) CHECK_FALSE(rs.checked);  // transport.bpm: followed by the host
+  REQUIRE(v.sched.ramps.size() == 1);
+  for (int backend = 0; backend < 2; ++backend) {
+    INFO((backend ? "jit" : "interpreter"));
+    const ImageBuilder build = backend ? rigImageBuilder() : ImageBuilder{};
+    for (const Compiled* c : {&g, &v}) {
+      INFO(c->name);
+      const uint32_t runsPerBlock = c == &v ? 2u : 1u;  // the voice stage: two groups (11 voices)
+      const uint32_t voices = c == &v ? 11u : 0u;
+      {  // held: the same value every block
+        Setup st(*c, voices, 0);
+        st.paramAt = [](uint32_t, const ParamSlot&, uint64_t, float) { return 0.5f; };
+        const InterpRun r = runInterp(st, 64 * 60, 64, 1024, build);
+        REQUIRE(r.error.empty());
+        CHECK(r.rtViolations == 0);
+        REQUIRE(r.rampRunsPerBlock.size() == 60);
+        for (uint32_t b = 0; b < 60; ++b) CHECK(r.rampRunsPerBlock[b] == (b < kRampBlocks ? runsPerBlock : 0u));
+        Compiled plain = withoutRampsHere(*c);
+        Setup sp(plain, voices, 0);
+        sp.paramAt = st.paramAt;
+        const InterpRun p = runInterp(sp, 64 * 60, 64, 1024, build);
+        REQUIRE(p.error.empty());
+        CHECK(p.rampRuns == 0);
+        std::string where;
+        CHECK_MESSAGE(bitDiffs(r.streams, p.streams, where) == 0, "not the ramp-free output at " << where);
+      }
+      {  // a step at block 20: ramp mode for the 20 ms that follow, then the ramp-free code again
+        Setup st(*c, voices, 0);
+        st.paramAt = [](uint32_t, const ParamSlot&, uint64_t t0, float) { return t0 < 64 * 20 ? 0.5f : 0.75f; };
+        const InterpRun r = runInterp(st, 64 * 60, 64, 1024, build);
+        REQUIRE(r.error.empty());
+        CHECK(r.rtViolations == 0);
+        REQUIRE(r.rampRunsPerBlock.size() == 60);
+        for (uint32_t b = 0; b < 60; ++b) {
+          const bool on = b < kRampBlocks || (b >= 20 && b < 20 + kRampBlocks);
+          CHECK(r.rampRunsPerBlock[b] == (on ? runsPerBlock : 0u));
+        }
+      }
+    }
+  }
+}

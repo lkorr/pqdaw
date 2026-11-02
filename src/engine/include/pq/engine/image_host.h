@@ -140,7 +140,8 @@ struct Layout {
   uint32_t paramOff = 0, constOff = 0, zeroOff = 0, auxFloats = 0;
   std::vector<uint32_t> extOwnOff;        // per external: its own pattern / ramp in aux (global ones)
   uint32_t globalStateBytes = 0, voiceStride = 0;
-  uint32_t maxSolveN = 0;                 // unknowns of the largest solve block
+  uint32_t sideGlobalBytes = 0, sideVoiceStride = 0;  // TX.smooth-fix1: the ramp side table
+  uint32_t maxSolveN = 0;                // unknowns of the largest solve block
   uint32_t sleepOff = 0;                  // aux: one flag word per sleep segment (non-zero bits: skip its regions)
   uint32_t meterOff = 0;                  // buf: per schedule region two uint64: cycles, timings (4 floats), T4.5
   uint32_t meterFlagOff = 0;              // aux: one word, non-zero while this block is metered, T4.5
@@ -167,7 +168,13 @@ public:
   std::byte* voiceState(uint32_t group) noexcept {
     return globalState() + L_.globalStateBytes + static_cast<size_t>(group) * L_.voiceStride;
   }
+  // TX.smooth-fix1: the ramp side table (its own allocation: the state arenas stay the ramp-free ones).
+  std::byte* sideGlobalState() noexcept { return reinterpret_cast<std::byte*>(sideMem_.data()); }
+  std::byte* sideVoiceState(uint32_t group) noexcept {
+    return sideGlobalState() + L_.sideGlobalBytes + static_cast<size_t>(group) * L_.sideVoiceStride;
+  }
   std::byte* statePtr(const graph::StateEntry& e, uint32_t group) noexcept {
+    if (e.side) return e.arena == graph::Poly::Voice ? sideVoiceState(group) + e.offset : sideGlobalState() + e.offset;
     return e.arena == graph::Poly::Voice ? voiceState(group) + e.offset : globalState() + e.offset;
   }
   // A buffer / param / const operand's pointer for voice group `group` (externals: zeros(); they are resolved per
@@ -194,6 +201,11 @@ public:
     a.voice = globalState() + L_.globalStateBytes;
     a.voiceStride = L_.voiceStride;
     a.voiceGroups = io_.maxVoiceGroups;
+    if (!sideMem_.empty()) {
+      a.sideGlobal = sideGlobalState();
+      a.sideVoice = sideGlobalState() + L_.sideGlobalBytes;
+      a.sideVoiceStride = L_.sideVoiceStride;
+    }
     return a;
   }
   uint64_t rejectedBlocks() const noexcept { return rejected_; }
@@ -248,16 +260,19 @@ public:
     return extPtr_[static_cast<size_t>(ext) * L_.groups + group];
   }
   float* const* extTable() const noexcept { return extPtr_.data(); }  // RT-safe: [ext · maxVoiceGroups + group]
-  // Runs every stage (after a successful begin()): global(k) for global stage k, voice(k, g) for voice stage k and
-  // each occupied group g; reducers, RunCtx and output copies around them. RT-safe when the callables are.
+  // Runs every stage (after a successful begin()): global(k, ramp) for global stage k, voice(k, g, ramp) for voice
+  // stage k and each occupied group g; reducers, RunCtx and output copies around them. RT-safe when the callables are.
+  // `ramp` (TX.smooth-fix1, pq/graph/schedule.h "Param ramps"): run the stage's ramp mode, not its ramp-free code —
+  // a param its static ramps follow changed within a ramp's length (decideRamps), or (voice) a lane of the group
+  // started a note this block (VoiceGroupIO::startMask). Always false for a stage without ramps.
   // It also decides the sleep of each global stage's segments right before the stage, and writes ctx's silence
   // reports (outSilent, tailsDone, dormant) after the outputs.
   template <class GlobalStage, class VoiceStage>
   void run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice) noexcept {
     run(ctx, global, voice, [](uint32_t, uint32_t, uint32_t) noexcept {});
   }
-  // The same, with pair(k, a, b) for two occupied groups a < b of a pairable stage (enablePairs); a group left
-  // without a partner runs through voice(k, g).
+  // The same, with pair(k, a, b) for two occupied groups a < b of a pairable stage (enablePairs) when neither runs
+  // its ramp mode; a group left without a partner runs through voice(k, g, ramp).
   template <class GlobalStage, class VoiceStage, class PairStage>
   void run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voice, PairStage&& pair) noexcept;
 
@@ -352,6 +367,7 @@ private:
   bool validate(const graph::Schedule& s);
   bool validateFactors(const graph::Schedule& s, const graph::Region& reg, const graph::Op& op) const;  // TMM.6
   bool validateRamps(const graph::Schedule& s);  // TX.smooth
+  void decideRamps() noexcept;                   // TX.smooth-fix1 (begin())
   bool layoutMemory(const graph::Schedule& s, uint32_t extraBufFloats);
   bool externals(const graph::Schedule& s);
   void specialOps(const graph::Schedule& s);
@@ -425,6 +441,16 @@ private:
   bool paramsChanged_ = true;
   bool dormantCapable_ = false;
   std::vector<const float*> globalRampRem_;  // TX.smooth: lane 0's frames left of each global param ramp
+  // TX.smooth-fix1: param ramps, per stage (decideRamps): has ramps, ramp mode this block, frames of ramp mode left,
+  // a ramp's length, its static ramps' params (into rampParams_).
+  bool anyRamps_ = false;
+  std::vector<uint8_t> rampStage_, rampOn_;
+  std::vector<uint32_t> rampLeft_, rampFrames_, rampFirst_, rampCount_, rampParams_;
+  // ... and the global param-rate externals they follow (into rampExts_), every such external once (rampWatch_), and
+  // per external lane 0 of its value in the previous block / changed this block.
+  std::vector<uint32_t> rampExtFirst_, rampExtCount_, rampExts_, rampWatch_, extBits_;
+  std::vector<uint8_t> extChanged_;
+  AlignedBuffer<float> sideMem_;            // the ramp side table (graph::StateEntry::side)
   bool planSegments_ = false;              // the schedule has sleep segments (whatever the mode)
   SleepStats sleepStats_;
   // Inspection (T4.5).
@@ -480,13 +506,17 @@ void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voic
       run_.gain = nullptr;
       run_.lastLane = kNoVoice;
       if (stageSegFirst_[k] != stageSegFirst_[k + 1]) decideSleep(k, ctx, frames);
-      global(k);
+      const bool ramp = anyRamps_ && rampOn_[k] != 0;
+      sleepStats_.rampRuns += ramp ? 1u : 0u;
+      global(k, ramp);
       continue;
     }
     initReducers(st, frames, false);
     if (st.numProbes) probeStageBegin(st);
     bool any = false;
     const bool pairs = pairable(k);
+    const bool ramps = anyRamps_ && rampStage_[k] != 0, rampAll = ramps && rampOn_[k] != 0;
+    auto rampOf = [&](const VoiceGroupIO& g) noexcept { return rampAll || (ramps && (g.startMask & 0xFFu) != 0); };
     for (uint32_t gi = 0; gi < groups_; ++gi) {
       const VoiceGroupIO& gr = vt->groups[gi];
       if ((gr.laneMask & 0xFFu) == 0) continue;  // no voice in this group: not run (T1.8; its state holds)
@@ -495,8 +525,12 @@ void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voic
       uint32_t gb = gi + 1;
       if (pairs)
         while (gb < groups_ && (vt->groups[gb].laneMask & 0xFFu) == 0) ++gb;
-      if (!pairs || gb >= groups_) {
-        voice(k, gi);
+      const bool rampA = rampOf(gr);
+      if (!pairs || gb >= groups_ || rampA || rampOf(vt->groups[gb])) {
+        // TX.smooth-fix1: a group in ramp mode runs alone (a pair function is ramp-free code); its partner then
+        // pairs with the next group, or runs alone.
+        sleepStats_.rampRuns += rampA ? 1u : 0u;
+        voice(k, gi, rampA);
         copyGroupOut(st, gr, gi, frames, false);
         if (st.numProbes) probeGroup(st, gi, frames, false);
         continue;
@@ -506,11 +540,11 @@ void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voic
       // then run one by one.
       if constexpr (std::is_same_v<decltype(pair(k, gi, gb)), bool>) {
         if (!pair(k, gi, gb)) {
-          voice(k, gi);
+          voice(k, gi, false);
           copyGroupOut(st, gr, gi, frames, false);
           if (st.numProbes) probeGroup(st, gi, frames, false);
           setRun(run_, vt, gb);
-          voice(k, gb);
+          voice(k, gb, false);
           copyGroupOut(st, vt->groups[gb], gb, frames, false);
           if (st.numProbes) probeGroup(st, gb, frames, false);
           gi = gb;
@@ -531,6 +565,8 @@ void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voic
     if (!any) initReducers(st, frames, true);
     anyVoice = anyVoice || any;
   }
+  if (anyRamps_)  // TX.smooth-fix1: what is left of the ramps after this block
+    for (uint32_t k = 0; k < rampLeft_.size(); ++k) rampLeft_[k] -= rampLeft_[k] < frames ? rampLeft_[k] : frames;
   run_.laneMask = 0;
   run_.gain = nullptr;
   bool outsSilent = true;

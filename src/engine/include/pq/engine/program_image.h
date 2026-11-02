@@ -85,6 +85,9 @@ struct VoiceGroupIO {
   // lane's NaN never leaves the group (Q61 option A). voice_highest / lowest / loudest and bool reductions keep the
   // block's laneMask (their comparisons skip NaN). Null: the laneMask alone (block granular).
   const float* gain = nullptr;
+  // TX.smooth-fix1: lanes whose state was reset for this block (a note started on them; VoiceEngine): the image runs
+  // this group's param ramps for the block, so those lanes' ramps start at their new values.
+  uint32_t startMask = 0;
 };
 
 inline constexpr uint32_t kNoVoice = 0xFFFFFFFFu;
@@ -163,6 +166,9 @@ struct SleepStats {
   uint64_t asleepBlocks = 0;    // segment-blocks spent asleep
   uint64_t flushes = 0;         // states set to 0 when falling asleep (a residue ≤ ε that was not 0 yet)
   uint64_t violations = 0;      // Shadow: a region that would have been skipped produced something other than ±0
+  // TX.smooth-fix1: stage runs (a global stage, or one voice group of a voice stage) in their param-ramp mode, i.e.
+  // not the ramp-free code (pq/graph/schedule.h "Param ramps"). Constant while nothing changes.
+  uint64_t rampRuns = 0;
 };
 
 // One slot of the program's interface: a root `in`, `out` or `export` channel.
@@ -200,6 +206,11 @@ struct StateArena {
   std::byte* voice = nullptr;
   uint32_t voiceStride = 0;
   uint32_t voiceGroups = 0;
+  // TX.smooth-fix1: the ramp side table (graph::StateEntry::side): a global part and one block per voice group,
+  // sideVoiceStride bytes apart (null / 0: the layout has none).
+  std::byte* sideGlobal = nullptr;
+  std::byte* sideVoice = nullptr;
+  uint32_t sideVoiceStride = 0;
 };
 
 class ProgramImage {

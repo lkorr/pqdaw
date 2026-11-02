@@ -144,8 +144,26 @@ Result<std::unique_ptr<VoiceBinding>> VoiceEngine::makeBinding(ProgramImage* ima
   B.stateTemplate = AlignedBuffer<uint32_t>(std::max<size_t>(8, arena.voiceStride / 4));
   B.voiceState = arena.voice;  // fixed for the image's lifetime (allocated when it was built)
   B.voiceStateStride = arena.voiceStride;
+  B.sideTemplate = AlignedBuffer<uint32_t>(std::max<size_t>(8, arena.sideVoiceStride / 4));
+  B.sideState = arena.sideVoice;
+  B.sideStride = arena.sideVoiceStride;
   for (const graph::StateEntry& e : layout.entries) {
     if (e.arena != graph::Poly::Voice || e.size == 0 || e.tag.lanes != 8) continue;
+    if (e.side) {  // TX.smooth-fix1: a param_ramp state in the side table
+      if (arena.sideVoice == nullptr || e.offset + e.size > arena.sideVoiceStride) return bad("side state outside its block");
+      const auto atom = static_cast<dsp::Atom>(e.tag.kernel);
+      dsp::initState(atom, reinterpret_cast<std::byte*>(B.sideTemplate.data()) + e.offset, e.init);
+      const dsp::LaneStateInfo lane = dsp::laneStateInfo(atom);
+      if (lane.kind == dsp::LaneState::None || lane.kind == dsp::LaneState::DelayLine || lane.perLaneBytes > e.size)
+        return bad("unexpected side state lane layout");
+      if (lane.perLaneBytes == 0) continue;
+      const VoiceBinding::Span sp{e.offset / 4, lane.perLaneBytes / 4};
+      if (!B.sideSpans.empty() && B.sideSpans.back().firstWord + B.sideSpans.back().numWords == sp.firstWord)
+        B.sideSpans.back().numWords += sp.numWords;
+      else
+        B.sideSpans.push_back(sp);
+      continue;
+    }
     if (e.offset + e.size > arena.voiceStride) return bad("state entry outside the voice block");
     // Which words are per lane: dsp::laneStateInfo (M1 review L7; declared per atom next to the state structs).
     uint32_t size = e.size;
@@ -282,6 +300,7 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
   carryDirty_.assign(groups_, 1);
   groupCount_.assign(groups_, 0);
   laneMask_.assign(groups_, 0);
+  startMask_.assign(groups_, 0);
   activeList_.assign(groups_, 0);
   mixOut_.assign(groups_, nullptr);
   mixGain_.assign(groups_, nullptr);
@@ -679,7 +698,14 @@ void VoiceEngine::resetLaneState(uint32_t lane) noexcept {  // RT-safe
       for (uint32_t w = sp.firstWord + l; w < sp.firstWord + sp.numWords; w += 8) block[w] = tmpl[w];
     for (const VoiceBinding::DelaySpan& d : b->delays)  // the ring reads 0 before the current write position
       block[d.firstWord + kDlStart + l] = block[d.firstWord + kDlWritePos];
+    if (b->sideState != nullptr) {  // TX.smooth-fix1: the lane's param ramps start afresh (at their new values)
+      uint32_t* side = reinterpret_cast<uint32_t*>(b->sideState + static_cast<size_t>(lane >> 3) * b->sideStride);
+      const uint32_t* st = b->sideTemplate.data();
+      for (const VoiceBinding::Span& sp : b->sideSpans)
+        for (uint32_t w = sp.firstWord + l; w < sp.firstWord + sp.numWords; w += 8) side[w] = st[w];
+    }
   }
+  startMask_[lane >> 3] |= 1u << (lane & 7u);  // the image runs this group's ramps this block (VoiceGroupIO)
 }
 
 // Writes lane `lane`'s hz, cents, gate and gain for frames [from, to), advancing glides and fades. A constant
@@ -874,6 +900,12 @@ void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
     uint32_t* dst = reinterpret_cast<uint32_t*>(bd->voiceState + static_cast<size_t>(b >> 3) * bd->voiceStateStride);
     for (const VoiceBinding::Span& sp : bd->moveSpans)
       for (uint32_t w = sp.firstWord; w < sp.firstWord + sp.numWords; w += 8) dst[w + lb] = src[w + la];
+    if (bd->sideState != nullptr) {  // TX.smooth-fix1: its param ramps go with it
+      const uint32_t* ss = reinterpret_cast<const uint32_t*>(bd->sideState + static_cast<size_t>(a >> 3) * bd->sideStride);
+      uint32_t* sd = reinterpret_cast<uint32_t*>(bd->sideState + static_cast<size_t>(b >> 3) * bd->sideStride);
+      for (const VoiceBinding::Span& sp : bd->sideSpans)
+        for (uint32_t w = sp.firstWord; w < sp.firstWord + sp.numWords; w += 8) sd[w + lb] = ss[w + la];
+    }
     for (const VoiceBinding::DelaySpan& d : bd->delays) {  // DelayState: header, apY1[8], start[8], ring[capacity][8]
       const uint32_t* s = src + d.firstWord;
       uint32_t* t = dst + d.firstWord;
@@ -1154,7 +1186,11 @@ void VoiceEngine::process(ProcessContext& ctx, ProcessContext* fadeCtx) noexcept
       renderGroup(g, frames);
     }
     b_->gio[g].laneMask = laneMask_[g];
-    if (fade != nullptr) fade->gio[g].laneMask = laneMask_[g];
+    b_->gio[g].startMask = startMask_[g];
+    if (fade != nullptr) {
+      fade->gio[g].laneMask = laneMask_[g];
+      fade->gio[g].startMask = startMask_[g];
+    }
     if (laneMask_[g] != 0) {
       numGroups = g + 1;
       activeList_[na++] = g;
@@ -1178,6 +1214,7 @@ void VoiceEngine::process(ProcessContext& ctx, ProcessContext* fadeCtx) noexcept
     fade->image->process(*fadeCtx);
     mixOutputs(*fade, frames);
   }
+  std::fill(startMask_.begin(), startMask_.end(), 0u);  // TX.smooth-fix1: the images ran their ramps for them
   measure(frames);
   endVoices(frames);
   if (cfg_.compact) compact();
