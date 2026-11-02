@@ -31,6 +31,9 @@
 // Pointer events over a face's control go to the face in face-local world units (a drag at zoom 0.05 works as at 3);
 // over its frame they select / move / open the node as for any block. While a bound VoiceTapReader is live and its face
 // visible, a ≤ 60 Hz timer polls the readers and damages only the faces' live rects; otherwise nothing runs.
+// TX.panel-faces: the same path hosts device panels (SceneFace::panel, made by panelMaker: pq/views/devices/
+// panel_face.h) — any views::Face; a face with its own clock wakes the canvas (FaceHost::faceNeedsUpdate, Face::nextWake)
+// and is laid out again once a zoom settles (Face::prepare).
 //
 // UI thread only.
 

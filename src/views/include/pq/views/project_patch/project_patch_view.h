@@ -26,6 +26,10 @@
 //              whole project (the band's devices close again). Double-click a closed device to open it alone; what is
 //              drawn is what plays: a device's patch is edited in the circuit editor (a double-click inside its
 //              opened frame, or "Edit Device Circuit" in its menu).
+//   panels     (TX.panel-faces) a closed stock device is drawn as the panel the Device view shows (the same widgets at
+//              the canvas's zoom: devices::PanelFace), edited in place — a knob drag, a toggle, a chooser, a typed value:
+//              one undo step each; its title bar and body move / select / open the block; a wire dropped on a control
+//              drives that param. Opened, the device shows its atoms. Far out the panels are colour-layer miniatures.
 //   edits      (each one undo step, shown at once in the arrangement, mixer and Device view: one document)
 //                wire        drag a device's export pin (right side) onto a device → its params (a menu), or onto a
 //                            param pin: T4.7's modulation wire (ops::connectWire)

@@ -131,6 +131,7 @@ int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle, bool wavetable)
     stageTiles();
   };
   tree.layoutNow();
+  view->setPanelsShown(false);  // TX.panel-faces: the faces' A/B alone (the panels have their own rows above)
   view->setShown(true, false);
   settle();
   circuit::CircuitCanvas& c = view->canvas();
