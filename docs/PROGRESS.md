@@ -1247,3 +1247,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: group panel frame median 3.18 ms (window render + readback); scoped rebuild 1.27 ms; 64-track frames unchanged. Indicative.
 - CPU-efficiency check: a group adds no nodes (flattened); a grouped series is the same graph as the series.
 - Notes/blockers: refused for now (→ TX.groups-fix1): a series the notes/voices reach (a meta voice run at a MIDI track's head), switched-off/unplugged devices inside a series, loops whose z⁻¹ would move; nesting refused; the Device view's own Ctrl+G still makes a rack; group panel width not saved. Q196.
+
+## 2026-11-02 · TX.spectrogram 👁 · task/TX.spectrogram (merged; Q197)
+- Did: Spectrogram meta module (pass-through; tap beat, 0, L, R; options as instance data). dsp::Spectrogram: PQ Meter's reassigned analysis (Kaiser 6.2, 3 FFTs, 85 ms low chain < 200 Hz, leakage mask, consensus) emitting finished columns on the feed's worker thread; kWantSpectrogram, 512-column ring. Face: ring texture via a new ui::TexturePool (Renderer::images), only new columns (and gate-moved rows) coloured + uploaded; tilt, visual gate, floor/ceiling, gamma, fade, 10 colormaps by level/frequency/brightness, log/mel/linear axes, grid/ruler/hover/keyboard, Scroll servo, Loop by the beat; Scale lines (the track tuning's degrees). Not ported (Q197): DAW link, click/kick-sub detection, custom colormaps, keyboard settings, see-through, Stereo Spectrogram / Waterfall. Goldens device-/project-meta-spectrogram.
+- Verified: build.ps1 -Affected (EVERYTHING, check, default + slow): 0 warnings, 88/88. Orchestrator: looked at project-meta-spectrogram.
+- Perf: analysis 168 µs/column reassigned (≈1.6 % core per shown face), ship; 4 faces UI 0.53 ms median, 1.82 ms with analysis; uploads ≈ 95 KB/frame for 4 faces; engine block 5.44/5.56/5.73 µs none/unwatched/watched. Indicative.
+- CPU-efficiency check: analysis off the UI thread and only while shown; only new columns uploaded; gate recolours row-local and budgeted.
+- Notes/blockers: nested spectrogram in a device circuit has no tap; two displays of one instance share the larger one's analysis. Q197.
