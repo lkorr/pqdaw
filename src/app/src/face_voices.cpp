@@ -17,7 +17,9 @@ views::VoiceTapReader* FaceVoiceHub::voices(doc::DeviceId device, std::string_vi
                                                   views::TapVoices::TableSlotRef t;
                                                   t.slot = link->metaFrameTable(device, p, 0, t.modulated);
                                                   return t;
-                                                });
+                                                },
+                                                // TMM.17: increments per sample at the engine's rate (voice colours)
+                                                [link] { return link->config().sampleRate; });
     it = readers_.emplace(std::move(key), std::move(r)).first;
   }
   return it->second.get();

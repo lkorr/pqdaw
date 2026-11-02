@@ -16,7 +16,8 @@ double nowSeconds() {
 
 }  // namespace
 
-TapVoices::TapVoices(Resolve resolve, TableResolve table) : resolve_(std::move(resolve)), tableResolve_(std::move(table)) {
+TapVoices::TapVoices(Resolve resolve, TableResolve table, RateResolve rate)
+    : resolve_(std::move(resolve)), tableResolve_(std::move(table)), rateResolve_(std::move(rate)) {
   follow();
   readGen_ = seenGen_ = table_.slot ? tableGeneration() : 0;  // the table there now is not news (a face reads it)
   lastTableChange_ = -1e300;
@@ -110,6 +111,8 @@ uint32_t TapVoices::read(std::span<FaceVoice> out) {
   (void)reader_->poll(now);
   uint32_t n = 0;
   hist_.resize(FaceVoice::kMaxSamples);
+  const double rate = rateResolve_ ? rateResolve_() : 0.0;
+  const float rateF = rate > 0.0 && std::isfinite(rate) ? static_cast<float>(rate) : 0.0f;
   for (uint32_t s = 0; s < reader_->voiceSlots() && n < out.size(); ++s) {
     const pq::VoiceTapReader::Voice& v = reader_->voice(s);
     if (!v.active) {
@@ -121,6 +124,7 @@ uint32_t TapVoices::read(std::span<FaceVoice> out) {
     f.phase = v.value - std::floor(v.value);
     f.position = v.position;
     f.increment = v.increment;
+    f.rate = rateF;
     // The samples since this slot's last read: kVoiceTapSamples per record (at most one displayed frame's worth).
     const uint64_t records = seen_[s] != 0 && v.serial > seen_[s] ? v.serial - seen_[s] : 1;
     seen_[s] = v.serial;

@@ -94,6 +94,9 @@ struct FaceVoice {
   float phase = 0.0f;    // the newest sampled phase, 0..1
   float position = 0.0f; // TMM.7: the position the writer reported with it (a wavetable's frame position, 0..1)
   float increment = 0.0f; // TMM.16: the read's increment the writer reported (cycles per sample: its mip level)
+  // TMM.17: the samples per second the increment is per (the engine rate of the tap; 0: unknown). A phase signal's
+  // frequency is then |increment wrapped to ±0.5| · rate (the Phase accumulator's colour and orbit radius).
+  float rate = 0.0f;
   uint32_t sampleCount = 0;
   std::array<float, kMaxSamples> samples{};  // the phases sampled since the last read, oldest first
 };

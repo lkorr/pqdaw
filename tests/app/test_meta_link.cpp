@@ -28,6 +28,10 @@
 #include "pq/document/meta.h"
 #include "pq/engine/project_program.h"
 #include "pq/tuning/edo.h"
+#include "pq/app/face_voices.h"
+#include "pq/views/meta/meta_face.h"
+#include "pq/views/view_context.h"
+#include "../../src/views/src/meta/faces.h"  // TMM.17: faceVoiceHz (tests)
 
 using namespace pq;
 using namespace pq::doc;
@@ -616,4 +620,140 @@ TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 20 ms (no click;
   CHECK(link->stats().compiles == s0.compiles);
   CHECK(link->stats().unitCompiles == s0.unitCompiles);
   CHECK(link->stats().paramWrites >= s0.paramWrites + 3);
+}
+
+// ---- TMM.17 ---------------------------------------------------------------------------------------------------------
+
+// The engine error "voices: the patch has no voice stages" (bug_reports 2026-11-01_13-50-52 / 13-54-55): a MIDI track
+// whose instrument came or went kept its unit's voice context. ProjectCompiler::update compared only the units' tracks,
+// not their instrument member, so a track that lost its instrument (deleted, an Undo Add Device back to an empty track)
+// was recompiled as a voice unit with a patch that has no voice stages (the VoiceEngine refused the image, and the old
+// image played on: the deleted instrument kept sounding), and one that gained an instrument was compiled without a voice
+// context ("voice.hz is only available in a voice context": the track stayed silent, every later edit of it failed,
+// until something rebuilt the whole program).
+TEST_CASE("meta link (TMM.17): a MIDI track's instrument coming and going rebuilds its unit (no voice-context errors)") {
+  Keys k;  // BasicSynth and a held chord
+  auto link = makeLink(k.store.current());
+  [[maybe_unused]] const ListenerId sub = k.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  Driver d{*link};
+  link->play(0);
+  d.run(20);
+  CHECK(rms(d.out, d.out.size() - 640, d.out.size()) > 1e-3);
+  auto expectClean = [&](const char* what) {
+    INFO(std::string(what));
+    link->flush();
+    CHECK(link->stats().compileErrors == 0);
+    CHECK_MESSAGE(link->lastError().empty(), link->lastError());
+  };
+  auto replay = [&]() {  // the held chord again from its start (notes held before an instrument existed stay unheard)
+    link->stop();
+    d.run(10);
+    link->play(0);
+    d.run(30);
+    return rms(d.out, d.out.size() - 640, d.out.size());
+  };
+  // The instrument deleted: the track plays nothing, and its unit stops being a voice unit.
+  const uint64_t topo0 = link->stats().topologyChanges;
+  k.edit(ops::deleteDevices(*k.store.current(), std::vector<DeviceId>{k.inst}));
+  expectClean("instrument deleted");
+  CHECK(link->stats().topologyChanges == topo0 + 1);
+  CHECK(replay() == 0.0);
+  engine::ProjectProgram& program = *link->engine().program();
+  for (uint32_t u = 0; u < program.numUnits(); ++u) CHECK_FALSE(program.layout().units[u].voices);
+  // A Phase accumulator arrives as the instrument: a voice unit again, playing the chord.
+  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
+  expectClean("phase_acc added");
+  CHECK(replay() > 1e-3);
+  CHECK(program.voices(voiceUnit(program))->liveVoices() == 3);
+  // Undo Add Device: an empty track again; Redo: the accumulator plays again.
+  REQUIRE(k.store.undo());
+  expectClean("undo add");
+  CHECK(replay() == 0.0);
+  REQUIRE(k.store.redo());
+  expectClean("redo add");
+  CHECK(replay() > 1e-3);
+  // A stock instrument onto an empty track too.
+  REQUIRE(k.store.undo());
+  k.edit(ops::addDevice(*k.store.current(), k.store.ids(), k.track, "BasicSynth", DeviceKind::Instrument));
+  expectClean("BasicSynth added");
+  CHECK(replay() > 1e-3);
+}
+
+// The status line said "Device 'meta:phase_acc' is not available: it is bypassed" for every chain meta device (the same
+// reports): the check looked the device up in the library by its patch name, which a meta device is not in.
+TEST_CASE("meta link (TMM.17): chain meta devices are not reported as missing; a missing stock device still is") {
+  Keys k;
+  auto link = makeLink(k.store.current());
+  views::ViewContext ctx(*link);
+  ctx.store().reset(k.store.current());
+  ctx.store().ids().reserveThrough(k.store.ids().peek());
+  link->attach(ctx);
+  link->flush();
+  auto edit = [&](Result<ops::Edit> e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(ctx.store().dispatch(e->command).ok());
+    link->flush();
+  };
+  edit(ops::addMetaDevice(*ctx.doc(), ctx.store().ids(), k.track, "phase_acc", 0));
+  edit(ops::addMetaDevice(*ctx.doc(), ctx.store().ids(), k.track, "wavetable"));
+  edit(ops::addMetaDevice(*ctx.doc(), ctx.store().ids(), k.track, "vca"));
+  CHECK(ctx.status().find("not available") == std::string::npos);
+  edit(ops::addDevice(*ctx.doc(), ctx.store().ids(), k.track, "NoSuchDevice", DeviceKind::AudioEffect));
+  CHECK(ctx.status().find("Device 'NoSuchDevice' is not available") != std::string::npos);
+  CHECK(ctx.status().find("more") == std::string::npos);  // only that one
+  link->detach();
+}
+
+// TMM.17: the Phase accumulator face colours and sizes each voice by the frequency it plays: its tap's increment (the
+// phase step of the last sample) times the engine rate, which the hub's reader now reports with each voice.
+TEST_CASE("meta link (TMM.17): the face's voices carry the frequencies they play (a chord across octaves; unplugged)") {
+  Keys k;
+  k.edit(ops::deleteDevices(*k.store.current(), std::vector<DeviceId>{k.inst}));
+  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
+  // The chord spread over five octaves instead: C two octaves down, E, G two octaves up.
+  {
+    const Track& t = *findTrackPtr(*k.store.current(), k.track);
+    REQUIRE(t.clips.size() == 1);
+    Batch b{"spread", {}};
+    b.commands.push_back(RemoveClip{ClipRef{k.track, t.clips.front().id}});
+    std::vector<Note> notes;
+    notes.push_back(playback_fixture::note(k.store.ids(), 0, 64 * kPpq, 0, -2));
+    notes.push_back(playback_fixture::note(k.store.ids(), 0, 64 * kPpq, 4, 0));
+    notes.push_back(playback_fixture::note(k.store.ids(), 0, 64 * kPpq, 7, 2));
+    b.commands.push_back(AddClip{k.track, playback_fixture::clip(k.store.ids(), 0, 64 * kPpq, notes, "spread")});
+    REQUIRE(k.store.dispatch(b).ok());
+  }
+  const DeviceId acc = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
+  auto link = makeLink(k.store.current());
+  app::FaceVoiceHub hub(*link);
+  views::VoiceTapReader* voices = hub.voices(acc, "");
+  Driver d{*link};
+  link->play(0);
+  d.run(20);
+  std::array<views::FaceVoice, 16> buf{};
+  const uint32_t n = voices->read(buf);
+  REQUIRE(n == 3);
+  std::vector<double> hz;
+  for (uint32_t i = 0; i < n; ++i) {
+    CHECK(buf[i].rate == 48000.0f);
+    hz.push_back(views::faceVoiceHz(buf[i], -1.0));
+  }
+  std::sort(hz.begin(), hz.end());
+  const double c4 = 261.626;  // the project's 12-EDO reference
+  MESSAGE("voices play " << hz[0] << ", " << hz[1] << ", " << hz[2] << " Hz");
+  CHECK(hz[0] == doctest::Approx(c4 / 4.0).epsilon(1e-3));
+  CHECK(hz[1] == doctest::Approx(c4 * std::exp2(4.0 / 12.0)).epsilon(1e-3));
+  CHECK(hz[2] == doctest::Approx(c4 * 4.0 * std::exp2(7.0 / 12.0)).epsilon(1e-3));
+  // Unplugged at 100 Hz, an octave up by its pitch: one voice at 200 Hz.
+  k.edit(ops::setMetaParam(*k.store.current(), acc, "", "phase_acc", "freq", 100.0));
+  k.edit(ops::setMetaParam(*k.store.current(), acc, "", "phase_acc", "pitch", 1200.0));
+  k.edit(ops::setDeviceChainInput(*k.store.current(), acc, std::string(kChainUnplugged)));
+  auto link2 = makeLink(k.store.current());
+  app::FaceVoiceHub hub2(*link2);
+  views::VoiceTapReader* unplugged = hub2.voices(acc, "");
+  Driver d2{*link2};
+  link2->play(0);
+  d2.run(20);
+  REQUIRE(unplugged->read(buf) == 1);
+  CHECK(views::faceVoiceHz(buf[0], -1.0) == doctest::Approx(200.0).epsilon(1e-3));
 }

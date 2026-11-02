@@ -7,6 +7,9 @@
 // as a faint additive trail and a spoke from the hub. The output leaves through the gap between amplitude and pitch to
 // the jack on the right edge. While transposed (or while the pitch is dragged, hovered or typed), the pitch shows as
 // semitones + cents ("+7 st", "−12 st +14 ¢") in the bottom-right corner.
+// TMM.17: each voice is drawn in the colour of the frequency it plays (a log-frequency spectrum: red below 100 Hz,
+// purple, blue, cyan, green, yellow from 1 kHz up) on its own orbit, 1.25× the orbit at 20 Hz down to 0.25× at 10 kHz,
+// so a chord shows as coloured rings overlaying each other.
 //
 // Pitch gestures: drag up / down in whole semitones (keeping any cents offset; Ctrl: single cents, Shift: slower);
 // after a press on it, Up / Down step ±1 semitone, Shift ±12 (an octave), Ctrl ±1 cent, and typing a number enters a
@@ -28,6 +31,49 @@
 #include "pq/meta/phase_acc.h"
 
 namespace pq::views {
+
+// ---- TMM.17: voices by frequency ------------------------------------------------------------------------------------
+
+namespace {
+// The colour map's stops at log2(Hz), interpolated per channel in sRGB between neighbours (clamped at the ends): red
+// held to ~85 Hz, purple at 180 Hz (the middle of 100–300), blue 440, cyan 620, green 820, yellow from 1050 Hz up.
+struct HueStop {
+  float log2Hz;
+  ui::Rgba colour;
+};
+constexpr HueStop kHues[] = {
+    {4.9069f, ui::hex(0xE83434)},   //   30 Hz red
+    {6.4094f, ui::hex(0xF0405A)},   //   85 Hz red (a touch warmer toward purple)
+    {7.4919f, ui::hex(0xB054EC)},   //  180 Hz purple
+    {8.7814f, ui::hex(0x5078FF)},   //  440 Hz blue
+    {9.2761f, ui::hex(0x28C4EC)},   //  620 Hz cyan
+    {9.6795f, ui::hex(0x58DE78)},   //  820 Hz green
+    {10.0362f, ui::hex(0xFCDC40)},  // 1050 Hz yellow
+};
+}  // namespace
+
+ui::Rgba phaseAccVoiceColour(double hz) noexcept {
+  constexpr size_t n = std::size(kHues);
+  if (!(hz > 0.0)) return kHues[0].colour;
+  const float l = static_cast<float>(std::log2(hz));
+  if (l <= kHues[0].log2Hz) return kHues[0].colour;
+  for (size_t i = 1; i < n; ++i)
+    if (l < kHues[i].log2Hz)
+      return ui::lerp(kHues[i - 1].colour, kHues[i].colour, (l - kHues[i - 1].log2Hz) / (kHues[i].log2Hz - kHues[i - 1].log2Hz));
+  return kHues[n - 1].colour;
+}
+
+float phaseAccOrbitScale(double hz) noexcept {
+  if (!(hz > kPhaseAccLowHz)) return kPhaseAccOrbitMax;
+  const double t = std::log2(hz / kPhaseAccLowHz) / std::log2(kPhaseAccHighHz / kPhaseAccLowHz);
+  return std::max(kPhaseAccOrbitMin, kPhaseAccOrbitMax - (kPhaseAccOrbitMax - kPhaseAccOrbitMin) * static_cast<float>(t));
+}
+
+double faceVoiceHz(const FaceVoice& v, double fallbackHz) noexcept {
+  if (!(v.rate > 0.0f)) return fallbackHz;
+  const double inc = static_cast<double>(v.increment);
+  return std::fabs(inc - std::round(inc)) * static_cast<double>(v.rate);
+}
 
 namespace {
 
@@ -209,7 +255,7 @@ public:
   }
 
   void liveRects(std::vector<ui::Rect>& out) const override {
-    const float r = kOrbitR + 9.0f;
+    const float r = kOrbitR * kPhaseAccOrbitMax + 9.5f;  // the widest orbit and a dot's glow
     out.push_back({kC.x - r, kC.y - r, kC.x + r, kC.y + r});
   }
 
@@ -460,31 +506,45 @@ private:
     tg.end();
   }
 
-  void paintVoices(ui::FacePainter& p, const ui::Theme& th) {
+  // TMM.17: each voice in the colour of its frequency, on an orbit whose radius shrinks as it rises (phaseAccVoiceColour,
+  // phaseAccOrbitScale): its trail, a spoke and its dot. The frequency is what the voice
+  // plays (its tap's increment × the engine rate); without a known rate, the module's own frequency (bar × pitch: what
+  // an unplugged accumulator plays). Additive, so a chord's voices overlay.
+  void paintVoices(ui::FacePainter& p, const ui::Theme&) {
     if (voiceCount_ == 0) return;  // silent: nothing moves (pollVoices fills the voices, at ≤ 60 Hz)
     const Vec2 hub = kC;
+    const double own = std::max(0.0, value(kFreq, 0.0)) * meta::phaseAccPitchRatio(value(kPitch, 0.0));
+    std::array<ui::Rgba, kMaxVoices> col;
+    std::array<float, kMaxVoices> rad;
+    for (uint32_t v = 0; v < voiceCount_; ++v) {
+      const double hz = faceVoiceHz(voiceBuf_[v], own);
+      col[v] = phaseAccVoiceColour(hz);
+      rad[v] = kOrbitR * phaseAccOrbitScale(hz);
+    }
     p.beginGlow();
     // The trail: every phase sampled during the last frame, faint (where the reads landed).
     for (uint32_t v = 0; v < voiceCount_; ++v) {
       const FaceVoice& fv = voiceBuf_[v];
-      for (uint32_t s = 0; s < fv.sampleCount; ++s) p.glow(onOrbit(fv.samples[s]), 3.5f, ui::withAlpha(th.face.glow, 34));
+      const ui::Rgba c = ui::withAlpha(col[v], 34);
+      for (uint32_t s = 0; s < fv.sampleCount; ++s) p.glow(onOrbit(fv.samples[s], rad[v]), 3.5f, c);
     }
     for (uint32_t v = 0; v < voiceCount_; ++v) {
-      const Vec2 d = onOrbit(voiceBuf_[v].phase);
+      const Vec2 d = onOrbit(voiceBuf_[v].phase, rad[v]);
       const float dx = d.x - hub.x, dy = d.y - hub.y, l = std::sqrt(dx * dx + dy * dy);
-      const Vec2 from{hub.x + dx / l * (kHubR + 1.0f), hub.y + dy / l * (kHubR + 1.0f)};
-      p.line(from, d, 1.0f, ui::withAlpha(th.face.glow, 70));
-      p.glow(d, 9.0f, ui::withAlpha(th.face.glow, 150));
+      // From the hub's edge (an orbit inside the hub: no spoke; the same primitive either way).
+      const float k = l > kHubR + 1.0f ? (kHubR + 1.0f) / l : 1.0f;
+      p.line({hub.x + dx * k, hub.y + dy * k}, d, 1.0f, ui::withAlpha(col[v], 70));
+      p.glow(d, 9.0f, ui::withAlpha(col[v], 150));
     }
     p.endGlow();
     for (uint32_t v = 0; v < voiceCount_; ++v) {
-      const Vec2 d = onOrbit(voiceBuf_[v].phase);
-      p.disc(d, 2.4f, th.face.signal);
+      const Vec2 d = onOrbit(voiceBuf_[v].phase, rad[v]);
+      p.disc(d, 2.4f, col[v]);
       p.disc(d, 1.1f, ui::rgba(255, 255, 255));
     }
   }
 
-  static Vec2 onOrbit(float phase) noexcept { return polar(kOrbitR, -kPi * 0.5f + 2.0f * kPi * phase); }
+  static Vec2 onOrbit(float phase, float r) noexcept { return polar(r, -kPi * 0.5f + 2.0f * kPi * phase); }
 
   int32_t param_[kParts] = {-1, -1, -1, -1};
   int32_t dragPart_ = -1;

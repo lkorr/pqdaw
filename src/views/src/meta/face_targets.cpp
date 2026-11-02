@@ -139,6 +139,8 @@ uint32_t SyntheticVoices::read(std::span<FaceVoice> out) {
     f.slot = voices_[i].slot;
     f.phase = static_cast<float>(voices_[i].phase);
     f.position = static_cast<float>(voices_[i].position);
+    f.increment = static_cast<float>(voices_[i].increment);
+    f.rate = static_cast<float>(rate_);
     f.sampleCount = static_cast<uint32_t>(std::min<size_t>(pending_[i].size(), FaceVoice::kMaxSamples));
     std::copy_n(pending_[i].end() - f.sampleCount, f.sampleCount, f.samples.begin());
     pending_[i].clear();

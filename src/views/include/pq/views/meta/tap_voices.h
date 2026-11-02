@@ -40,8 +40,11 @@ public:
     std::vector<uint8_t> modulated;
   };
   using TableResolve = std::function<TableSlotRef()>;
+  // TMM.17: the engine's sample rate now (FaceVoice::rate: a voice's increment × it is its frequency; null or 0:
+  // unknown). Asked once per read.
+  using RateResolve = std::function<double()>;
   static constexpr double kTableLinger = 2.0;
-  explicit TapVoices(Resolve resolve, TableResolve table = {});
+  explicit TapVoices(Resolve resolve, TableResolve table = {}, RateResolve rate = {});
   ~TapVoices() override;
 
   uint32_t read(std::span<FaceVoice> out) override;
@@ -61,6 +64,7 @@ private:
   uint64_t tableGeneration() const noexcept;  // the slot's publishes (0 without one); notes when it changed
   Resolve resolve_;
   TableResolve tableResolve_;
+  RateResolve rateResolve_;
   mutable TableSlotRef table_;
   mutable uint64_t readGen_ = 0;            // tableGeneration() at the last read
   mutable uint64_t seenGen_ = 0;            // ... when last looked at

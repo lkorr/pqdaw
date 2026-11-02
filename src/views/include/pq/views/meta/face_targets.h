@@ -60,8 +60,11 @@ public:
     double hz = 0.0;     // phase increment per second (0: fixed)
     double phase = 0.0;  // the current phase, 0..1
     double position = 0.0;  // TMM.7: the position reported with it (a wavetable's frame position)
+    double increment = 0.0; // TMM.17: the increment reported with it (cycles per sample; kept by freeze())
   };
   void setVoices(std::vector<Voice> v);
+  // TMM.17: the rate FaceVoice::rate reports (samples per second the increments are per; 0, the default: unknown).
+  void setRate(double rate) noexcept { rate_ = rate; }
   const std::vector<Voice>& voicesNow() const noexcept { return voices_; }
   // Moves every voice on by `seconds` (records 8 phases per 64-frame block at 48 kHz, as the tap would).
   void advance(double seconds);
@@ -77,6 +80,7 @@ private:
   std::vector<Voice> voices_;
   std::vector<std::vector<float>> pending_;  // per voice: the phases sampled since the last read
   uint64_t serial_ = 1;
+  double rate_ = 0.0;
 };
 
 }  // namespace pq::views

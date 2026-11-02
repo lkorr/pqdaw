@@ -7,13 +7,18 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <memory>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "../../src/views/src/meta/faces.h"  // TMM.17: the voice colour / orbit maps (tests)
 #include "../ui/golden_check.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
@@ -25,6 +30,7 @@
 #include "pq/ui/renderer.h"
 #include "pq/ui/scene_textures.h"
 #include "pq/ui/test_driver.h"
+#include "pq/ui/theme.h"
 #include "pq/ui/tile_atlas.h"
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/circuit/circuit_editor.h"
@@ -755,4 +761,215 @@ TEST_CASE("render: project-meta-faces matches the golden image") {
   auto img = renderViewScene("project-meta-faces", {}, w, h, {}, o, &library());
   REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
   checkImage("project-meta-faces", *img);
+}
+
+// TMM.17: the live layer's cost with 8 voices across the octaves (each with ~96 sampled phases: one 60 Hz frame of
+// reads), one face and 16 faces per frame (each voice coloured and sized by its frequency).
+TEST_CASE("faces: the Phase accumulator live layer's paint cost (2x, 8 voices across octaves) and 16 faces (TMM.17)" *
+          doctest::test_suite("perf")) {  // wall-clock bounds: load-sensitive
+  auto theme = loadTheme(defaultThemePath());
+  REQUIRE(theme.ok());
+  std::unique_ptr<MetaFace> face = makeFace(phaseAcc());
+  REQUIRE(face != nullptr);
+  SyntheticVoices voices;
+  std::vector<SyntheticVoices::Voice> vs;
+  for (uint32_t v = 0; v < 8; ++v) {
+    const double hz = 27.5 * std::exp2(static_cast<double>(v));
+    vs.push_back({v, hz, 0.125 * v, 0.0, hz / 48000.0});
+  }
+  voices.setVoices(vs);
+  voices.setRate(48000.0);
+  face->bind(std::make_unique<FixedTarget>(), &voices);
+  FaceJack jacks[3];
+  jacks[0] = {{0.0f, 24.0f}, true, true, true, "hz"};
+  jacks[1] = {{0.0f, 40.0f}, true, false, true, "pm"};
+  jacks[2] = {{120.0f, 24.0f}, false, true, true, "out"};
+  FaceEnv env;
+  env.theme = &*theme;
+  env.uiScale = 2.0f;
+  env.jacks = jacks;
+  DrawList dl;
+  auto paintOnce = [&](uint32_t faces) {
+    dl.reset(2560, 1440);
+    for (uint32_t k = 0; k < faces; ++k) {
+      ui::FacePainter p(dl, {{static_cast<float>(20 + 420 * (k % 6)), static_cast<float>(20 + 280 * (k / 6))}, 2.0f});
+      face->paintLive(p, env);
+    }
+  };
+  std::vector<double> one, sixteen;
+  for (int i = 0; i < 220; ++i) {
+    voices.advance(1.0 / 60.0);
+    (void)face->pollVoices();
+    auto t0 = std::chrono::steady_clock::now();
+    paintOnce(1);
+    one.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    t0 = std::chrono::steady_clock::now();
+    paintOnce(16);
+    sixteen.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  }
+  std::sort(one.begin(), one.end());
+  std::sort(sixteen.begin(), sixteen.end());
+  MESSAGE("phase_acc live layer, 1 face (2x, 8 voices): median " << one[110] << " ms; 16 faces: median " << sixteen[110] << " ms");
+  CHECK(face->sounding().size() == 8u);
+#if PQ_OPTIMIZED
+  CHECK(one[110] < 0.1);
+  CHECK(sixteen[110] < 1.0);
+#endif
+}
+
+// ---- TMM.17: voices by frequency ------------------------------------------------------------------------------------
+
+TEST_CASE("faces (TMM.17): the voice colour map — red below 100 Hz, purple 100–300, blue, yellow from 1 kHz; smooth") {
+  auto ch = [](Rgba c) { return std::array<int, 3>{static_cast<int>(redOf(c)), static_cast<int>(greenOf(c)), static_cast<int>(blueOf(c))}; };
+  for (const double hz : {-5.0, 0.0, 10.0, 30.0, 60.0, 90.0}) {
+    CAPTURE(hz);
+    const auto c = ch(phaseAccVoiceColour(hz));
+    CHECK(c[0] >= 220);  // red
+    CHECK(c[1] < 80);
+    CHECK(c[2] < 110);
+  }
+  for (const double hz : {150.0, 180.0, 220.0}) {  // purple: red and blue, little green
+    CAPTURE(hz);
+    const auto c = ch(phaseAccVoiceColour(hz));
+    CHECK(c[0] > 130);
+    CHECK(c[2] > 180);
+    CHECK(c[1] < 100);
+  }
+  {
+    const auto c = ch(phaseAccVoiceColour(440.0));  // blue
+    CHECK(c[2] > 230);
+    CHECK(c[0] < 100);
+    CHECK(c[1] < 140);
+  }
+  for (const double hz : {1050.0, 2000.0, 8000.0, 20000.0}) {  // yellow
+    CAPTURE(hz);
+    const auto c = ch(phaseAccVoiceColour(hz));
+    CHECK(c[0] > 240);
+    CHECK(c[1] > 200);
+    CHECK(c[2] < 80);
+  }
+  CHECK(alphaOf(phaseAccVoiceColour(440.0)) == 255u);
+  // Continuous: 1/48-octave steps from 10 Hz to 20 kHz change no channel by more than 24 (no jumps between stops).
+  int worst = 0;
+  Rgba prev = phaseAccVoiceColour(10.0);
+  for (double l = std::log2(10.0); l <= std::log2(20000.0); l += 1.0 / 48.0) {
+    const Rgba c = phaseAccVoiceColour(std::exp2(l));
+    const auto a = ch(prev), b = ch(c);
+    for (int k = 0; k < 3; ++k) worst = std::max(worst, std::abs(a[k] - b[k]));
+    prev = c;
+  }
+  CHECK(worst <= 24);
+}
+
+TEST_CASE("faces (TMM.17): the orbit radius — 1.25x at 20 Hz and below, 0.25x at 10 kHz and above, log-linear") {
+  CHECK(phaseAccOrbitScale(-1.0) == 1.25f);
+  CHECK(phaseAccOrbitScale(0.0) == 1.25f);
+  CHECK(phaseAccOrbitScale(10.0) == 1.25f);
+  CHECK(phaseAccOrbitScale(20.0) == 1.25f);
+  CHECK(phaseAccOrbitScale(10000.0) == doctest::Approx(0.25f));
+  CHECK(phaseAccOrbitScale(22000.0) == 0.25f);
+  CHECK(phaseAccOrbitScale(std::sqrt(20.0 * 10000.0)) == doctest::Approx(0.75f).epsilon(1e-5));  // the log middle
+  float prev = 2.0f;
+  for (double hz = 20.0; hz <= 10000.0; hz *= 1.05) {
+    const float s = phaseAccOrbitScale(hz);
+    CHECK(s < prev);
+    prev = s;
+  }
+}
+
+TEST_CASE("faces (TMM.17): a voice's frequency is its increment times the rate (wraps either way); unknown rate: own") {
+  FaceVoice v;
+  v.rate = 48000.0f;
+  v.increment = static_cast<float>(440.0 / 48000.0);
+  CHECK(faceVoiceHz(v, -1.0) == doctest::Approx(440.0).epsilon(1e-5));
+  v.increment = static_cast<float>(440.0 / 48000.0 - 1.0);  // the phase wrapped between the two samples
+  CHECK(faceVoiceHz(v, -1.0) == doctest::Approx(440.0).epsilon(1e-4));
+  v.increment = static_cast<float>(-440.0 / 48000.0);  // running backwards (FM below 0 Hz): the same pitch
+  CHECK(faceVoiceHz(v, -1.0) == doctest::Approx(440.0).epsilon(1e-5));
+  v.increment = 0.0f;
+  CHECK(faceVoiceHz(v, -1.0) == 0.0);
+  v.rate = 0.0f;  // unknown: the caller's own frequency
+  v.increment = 0.25f;
+  CHECK(faceVoiceHz(v, 123.0) == 123.0);
+}
+
+namespace {
+// The dot of one voice in a face painted at the origin, scale 1: the mean position of the vertices in exactly `col`
+// (the dot's opaque disc), or nullopt.
+std::optional<Vec2> dotOf(const DrawList& dl, Rgba col) {
+  double x = 0.0, y = 0.0;
+  uint32_t n = 0;
+  for (const Vertex& v : dl.vertices())
+    if (v.col == col) {
+      x += v.pos.x;
+      y += v.pos.y;
+      ++n;
+    }
+  if (n == 0) return std::nullopt;
+  return Vec2{static_cast<float>(x / n), static_cast<float>(y / n)};
+}
+}  // namespace
+
+TEST_CASE("faces (TMM.17): each voice is drawn in its frequency's colour on its frequency's orbit; unknown rate: own") {
+  auto theme = loadTheme(defaultThemePath());
+  REQUIRE(theme.ok());
+  std::unique_ptr<MetaFace> face = makeFace(phaseAcc());
+  REQUIRE(face != nullptr);
+  SyntheticVoices voices;
+  face->bind(std::make_unique<FixedTarget>(), &voices);  // 440 Hz, pitch +7 st: its own frequency 659.26 Hz
+  FaceEnv env;
+  env.theme = &*theme;
+  DrawList dl;
+  const Vec2 centre{60.0f, 64.0f};
+  constexpr float kOrbit = 23.0f;
+  auto paint = [&]() {
+    (void)face->pollVoices();
+    dl.reset(400, 400);
+    ui::FacePainter p(dl, {{0.0f, 0.0f}, 1.0f});
+    face->paintLive(p, env);
+  };
+  // A 55 Hz voice at phase 0 (the top) and a 3520 Hz voice at phase 0.25 (3 o'clock).
+  voices.setRate(48000.0);
+  voices.setVoices({{0, 0.0, 0.0, 0.0, 55.0 / 48000.0}, {1, 0.0, 0.25, 0.0, 3520.0 / 48000.0}});
+  paint();
+  REQUIRE(face->sounding().size() == 2u);
+  const auto low = dotOf(dl, phaseAccVoiceColour(55.0));
+  const auto high = dotOf(dl, phaseAccVoiceColour(3520.0));
+  REQUIRE(low.has_value());
+  REQUIRE(high.has_value());
+  CHECK(low->x == doctest::Approx(centre.x).epsilon(1e-3));
+  CHECK(centre.y - low->y == doctest::Approx(kOrbit * phaseAccOrbitScale(55.0)).epsilon(1e-3));
+  CHECK(high->x - centre.x == doctest::Approx(kOrbit * phaseAccOrbitScale(3520.0)).epsilon(1e-3));
+  CHECK(high->y == doctest::Approx(centre.y).epsilon(1e-3));
+  CHECK(centre.y - low->y > high->x - centre.x);  // the low voice circles wider
+  // No rate (an unknown engine rate): the accumulator's own frequency, bar × pitch.
+  voices.setRate(0.0);
+  voices.setVoices({{0, 0.0, 0.0, 0.0, 0.0}});
+  paint();
+  const double own = 440.0 * std::exp2(7.0 / 12.0);
+  const auto mine = dotOf(dl, phaseAccVoiceColour(own));
+  REQUIRE(mine.has_value());
+  CHECK(centre.y - mine->y == doctest::Approx(kOrbit * phaseAccOrbitScale(own)).epsilon(1e-3));
+}
+
+TEST_CASE("faces (TMM.17): golden of a chord across seven octaves (each voice its colour and orbit), 1x and 2x") {
+  for (const float scale : {1.0f, 2.0f}) {
+    const double zoom = 3.0;
+    const uint32_t size = rigSize(zoom);
+    FaceRig rig(size, size, scale);
+    std::vector<SyntheticVoices::Voice> chord;
+    const double hz[] = {32.7, 98.0, 164.8, 261.6, 392.0, 659.3, 1318.5, 4186.0};  // C1 … C8
+    for (uint32_t v = 0; v < 8; ++v) chord.push_back({v, hz[v], 0.07 + 0.125 * v, 0.0, hz[v] / 48000.0});
+    rig.voices.setVoices(chord);
+    rig.voices.setRate(48000.0);
+    rig.voices.advance(1.0 / 60.0);
+    rig.voices.freeze();
+    rig.canvas->wakeFaces();
+    rig.centre(zoom);
+    rig.settle();
+    REQUIRE(rig.canvas->faceAt(0).sounding().size() == 8u);
+    const std::string name = "meta-phase-acc-chord-z3-" + zoomName(scale) + "x";
+    CAPTURE(name);
+    checkImage(name, rig.draw(rig.res));
+  }
 }
