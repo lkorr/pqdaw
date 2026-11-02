@@ -52,7 +52,7 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       // T3.17-fix2 (the mixer): smoothed gains.
       "gain", "gain_add",
       // TMM.2 (meta modules): the live frame-table read and the voice-tap sink.
-      "wavetable_pos", "voice_tap",
+      "wavetable_pos", "voice_tap", "signal_tap",
       // TMM.8: the Wavetable's live warp / fold / sync read and Shape mode's ADAA read.
       "wavetable_live", "wavetable_shape",
       // TMM.6: the oversample region's rate converters (compiler-inserted: atom_flags::kInternal).
