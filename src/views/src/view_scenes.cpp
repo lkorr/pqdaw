@@ -31,6 +31,7 @@
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/meta/face_targets.h"
+#include "meta/faces.h"  // TX.spectrogram: the face's analysis request (gramRequest)
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
 #include "pq/views/mos_wheel/mos_chart.h"
@@ -2153,6 +2154,172 @@ Status setupProjectMetaScope(Shell& shell) {
   return Ok{};
 }
 
+// ---- TX.spectrogram ---------------------------------------------------------------------------------------------------
+
+// An audio track "Spectra" with three Spectrograms over 3 s: a bright melody with hat ticks (Magma, log from 0 Hz), a
+// minor-seventh pad over a pitch-dropping sub kick (Inferno, the keyboard on the left), and a 16th-note arpeggio with a
+// kick on each beat in the Loop playhead over one bar (Pastel, coloured by frequency).
+struct GramIds {
+  doc::TrackId track;
+  doc::DeviceId melody, pad, loop;
+  meta::DataPtr dMelody, dPad, dLoop;
+};
+
+Status buildGramProject(doc::DocumentStore& store, GramIds& ids) {
+  const auto t = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Audio, {}, "Spectra",
+                                                      doc::Colour{0xB86BFF}));
+  if (!t || t->tracks.empty()) return Error{ErrorCode::Unknown, "spectrogram scene: no track", {}};
+  ids.track = t->tracks[0];
+  auto add = [&](std::vector<std::pair<std::string, double>> opts, meta::DataPtr& data) -> doc::DeviceId {
+    const auto e = runEdit(store, doc::ops::addMetaDevice(*store.current(), store.ids(), ids.track, "spectrogram"));
+    if (!e || e->devices.empty()) return {};
+    std::vector<std::pair<std::string, meta::DataValue>> f;
+    for (auto& [k, v] : opts) f.emplace_back(k, meta::DataValue::num(v));
+    data = std::make_shared<const meta::DataValue>(meta::DataValue::record(std::move(f)));
+    (void)runEdit(store, doc::ops::setMetaData(*store.current(), e->devices[0], "", "spectrogram", data));
+    return e->devices[0];
+  };
+  ids.melody = add({{"span", 3.0}}, ids.dMelody);
+  ids.pad = add({{"span", 3.0}, {"map", 1.0}, {"keys", 1.0}}, ids.dPad);
+  ids.loop = add({{"span", 2.0}, {"ph", 1.0}, {"map", 7.0}, {"src", 1.0}}, ids.dLoop);
+  if (!ids.melody.valid() || !ids.pad.valid() || !ids.loop.valid())
+    return Error{ErrorCode::Unknown, "spectrogram scene: no Spectrogram", {}};
+  return Ok{};
+}
+
+// 3.5 s of `gen(i, beat, l, r)` at 48 kHz into a 4-channel tap through a manual feed that computes the columns the face
+// will ask for (its request for a plot `plotPx` wide, made before it first paints), then held (deterministic).
+template <class Gen>
+ScopeSource makeGramSource(const meta::DataPtr& data, float plotPx, Gen gen) {
+  ScopeSource s;
+  s.tap = std::make_shared<TapRing>(4, 32768, 4096);
+  s.feed = std::make_shared<devices::SpectrumFeed>(*s.tap, devices::AnalysisHub::config(48000.0), devices::SpectrumFeed::Manual{});
+  s.feed->setSpectrogram(s.feed.get(), gramRequest(data.get(), plotPx, 48000.0));
+  s.feed->acquire(devices::kWantSpectrogram);
+  constexpr uint32_t kFrames = 168000, kChunk = 4096;
+  std::vector<float> ch[4];
+  for (auto& c : ch) c.resize(kChunk);
+  for (uint32_t i = 0; i < kFrames; i += kChunk) {
+    const uint32_t n = std::min(kChunk, kFrames - i);
+    for (uint32_t k = 0; k < n; ++k) {
+      ch[1][k] = 0.0f;
+      gen(i + k, ch[0][k], ch[2][k], ch[3][k]);
+    }
+    const float* p[4] = {ch[0].data(), ch[1].data(), ch[2].data(), ch[3].data()};
+    s.tap->write(p, 4, n);
+    s.feed->step(1.0 + static_cast<double>(i) / 48000.0);
+  }
+  s.feed->hold();
+  return s;
+}
+
+double gramPartials(double hz, double t, int n, double tilt) {
+  double v = 0.0;
+  for (int k = 1; k <= n; ++k) v += std::sin(2.0 * kScenePi * hz * k * t + 0.9 * k) * std::pow(static_cast<double>(k), -tilt);
+  return v;
+}
+
+Status adoptGramFeeds(ViewContext& ctx, const GramIds& ids, float plotPx) {
+  constexpr double kSr = 48000.0, kBeat = 2.0 / kSr;  // 120 bpm
+  // The melody: an A-minor pentatonic phrase of eighths, six harmonics, vibrato on the long last note; hat ticks.
+  ScopeSource melody = makeGramSource(ids.dMelody, plotPx, [seed = uint32_t{0x1357BDFu}, ph = 0.0](uint32_t i, float& b, float& l, float& r) mutable {
+    static const int kPhrase[] = {0, 3, 5, 7, 10, 7, 5, 12, 10, 7, 5, 3, 0, 0};
+    const double t = i / kSr;
+    b = static_cast<float>(i * kBeat);
+    const int step = std::min(13, static_cast<int>(t / 0.25));
+    double semis = kPhrase[step];
+    if (step == 13) semis += 0.35 * std::sin(2.0 * kScenePi * 5.5 * (t - 3.25));
+    const double hz = 220.0 * std::pow(2.0, semis / 12.0);
+    ph += hz / kSr;
+    const double inNote = t - 0.25 * step;
+    const double env = std::min(1.0, inNote / 0.01) * (step == 13 ? 1.0 : std::exp(-inNote / 0.35));
+    double v = 0.0;
+    for (int k = 1; k <= 6; ++k) v += std::sin(2.0 * kScenePi * k * ph) / k;
+    v *= 0.3 * env;
+    seed = seed * 1664525u + 1013904223u;
+    const double noise = static_cast<double>(seed >> 8) / 8388608.0 - 1.0;
+    const double tick = std::fmod(t + 0.125, 0.25);
+    v += 0.12 * noise * std::exp(-tick / 0.008);
+    l = r = static_cast<float>(v);
+  });
+  // The pad: A minor seventh, eight harmonics each, a slow swell; a sub kick (110 → 45 Hz) every half second.
+  ScopeSource pad = makeGramSource(ids.dPad, plotPx, [](uint32_t i, float& b, float& l, float& r) {
+    const double t = i / kSr;
+    b = static_cast<float>(i * kBeat);
+    const double roots[] = {220.0, 261.626, 329.628, 391.995};
+    double v = 0.0;
+    for (const double f : roots) v += gramPartials(f, t, 8, 1.2);
+    v *= 0.05 * (0.6 + 0.4 * std::sin(2.0 * kScenePi * 0.4 * t));
+    const double kt = std::fmod(t, 0.5);
+    const double kphase = 45.0 * kt + 65.0 * 0.04 * (1.0 - std::exp(-kt / 0.04));
+    v += 0.7 * std::exp(-kt / 0.18) * std::sin(2.0 * kScenePi * kphase);
+    l = static_cast<float>(v);
+    r = static_cast<float>(v * 0.9);
+  });
+  // The loop: a 16th arpeggio (A2 C3 E3 G3 A3 G3 E3 C3), a kick on each beat.
+  ScopeSource loop = makeGramSource(ids.dLoop, plotPx, [ph = 0.0](uint32_t i, float& b, float& l, float& r) mutable {
+    static const int kArp[] = {0, 3, 7, 10, 12, 10, 7, 3};
+    const double beatPos = i * kBeat;
+    b = static_cast<float>(beatPos);
+    const int sixteenth = static_cast<int>(beatPos * 4.0);
+    const double hz = 110.0 * std::pow(2.0, kArp[sixteenth % 8] / 12.0);
+    ph += hz / kSr;
+    const double inStep = (beatPos * 4.0 - sixteenth) * 0.125;
+    double v = 0.0;
+    for (int k = 1; k <= 7; ++k) v += std::sin(2.0 * kScenePi * k * ph) / (k * k * 0.6 + 0.4);
+    v *= 0.35 * std::exp(-inStep / 0.09);
+    const double kt = (beatPos - std::floor(beatPos)) * 0.5;
+    v += 0.6 * std::exp(-kt / 0.12) * std::sin(2.0 * kScenePi * (50.0 * kt + 60.0 * 0.03 * (1.0 - std::exp(-kt / 0.03))));
+    l = r = static_cast<float>(v);
+  });
+  const doc::DeviceId a = ids.melody, p = ids.pad, c = ids.loop;
+  ctx.setAnalysisSource(
+      [a, p, c, at = melody.tap, pt = pad.tap, ct = loop.tap](doc::DeviceId d) -> std::shared_ptr<TapRing> {
+        return d == a ? at : d == p ? pt : d == c ? ct : nullptr;
+      },
+      kSr);
+  if (ctx.analysisHub() == nullptr) return Error{ErrorCode::Unknown, "spectrogram scene: no analysis hub", {}};
+  ctx.analysisHub()->adopt(a, melody.tap, melody.feed);
+  ctx.analysisHub()->adopt(p, pad.tap, pad.feed);
+  ctx.analysisHub()->adopt(c, loop.tap, loop.feed);
+  return Ok{};
+}
+
+// The Device view of "Spectra": the three Spectrogram faces (the panel draws them at ≈ 1.48: the plot ≈ 421 device px).
+Status setupDeviceMetaSpectrogram(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  GramIds ids;
+  if (Status s = buildGramProject(ctx.store(), ids); !s) return s;
+  if (Status s = adoptGramFeeds(ctx, ids, 421.0f); !s) return s;
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-meta-spectrogram: the Device view is not installed", {}};
+  ctx.setSelectedTrack(ids.track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  v->rebuild();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// The same project in the project patch view: the band of "Spectra", its three faces as blocks (plots ≈ 254 px).
+Status setupProjectMetaSpectrogram(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  GramIds ids;
+  if (Status s = buildGramProject(ctx.store(), ids); !s) return s;
+  if (Status s = adoptGramFeeds(ctx, ids, 254.0f); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-spectrogram: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.track, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // The same project in the project patch view, "Trem" opened in place: acc1 → wt1 → vca1 (Bend 0 … 2), four voices
 // whose knob positions a modulation spreads.
 Status setupProjectMetaVca(Shell& shell) {
@@ -2352,6 +2519,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-meta-spectrum", 1280, 800, setupProjectMetaSpectrum},    // TX.spectrum
     {"device-meta-scope", 1280, 800, setupDeviceMetaScope},            // TX.scope
     {"project-meta-scope", 1280, 800, setupProjectMetaScope},          // TX.scope
+    {"device-meta-spectrogram", 1280, 800, setupDeviceMetaSpectrogram},    // TX.spectrogram
+    {"project-meta-spectrogram", 1280, 800, setupProjectMetaSpectrogram},  // TX.spectrogram
     {"meta-operator-device", 1760, 900, setupDeviceMetaOperator},      // TMM.12 (wider: the whole panel)
     {"meta-operator-circuit", 1600, 900, setupMetaOperatorCircuit},    // TMM.12
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8

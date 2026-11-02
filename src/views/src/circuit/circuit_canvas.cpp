@@ -577,6 +577,7 @@ struct CircuitCanvas::Impl final : FaceHost {
       env.jacks = h.jacks;
       ui::FacePainter p(ctx.dl, {o, sc});
       p.setText(ctx.res.text);
+      p.setImages(ctx.res.images);  // TX.spectrogram: a face with its own texture
       f.paintJacks(p, env);
       f.paintLive(p, env);
       if (h.panel) {

@@ -9,6 +9,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/meta/registry.h"
 #include "pq/document/meta.h"
+#include "pq/tuning/tuning.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views {
@@ -117,6 +118,37 @@ void DocTarget::setData(meta::DataPtr data) {
   }
   if (Status s = ctx_.store().dispatch(e->command); !s) ctx_.setStatus(s.error().message);
 }
+
+// TX.spectrogram: the effective tuning of the device's track, its degrees resolved over every equave that reaches the
+// range (a few hundred at most: a 53-EDO over ten octaves).
+void DocTarget::pitchGuides(float loHz, float hiHz, std::vector<PitchGuide>& out) const {
+  out.clear();
+  const doc::Project& p = *ctx_.doc();
+  const doc::DeviceLoc loc = doc::findDevice(p, device_);
+  if (loc.track == nullptr || !(hiHz > loHz)) return;
+  const std::optional<doc::TrackPath> path = doc::findTrack(p, loc.track->id);
+  if (!path) return;
+  const doc::TuningDef* def = doc::effectiveTuning(p, *path);
+  if (def == nullptr) return;
+  auto t = doc::buildTuning(*def);
+  if (!t) return;
+  const tuning::Tuning& tu = *t;
+  int32_t size = 0;
+  if (const tuning::Edo* e = tu.edo()) size = static_cast<int32_t>(e->n());
+  else if (const tuning::Mos* m = tu.mos()) size = m->size();
+  else if (const tuning::Scale* s = tu.scale()) size = s->size();
+  if (size <= 0 || size > 1200) return;
+  constexpr size_t kMaxGuides = 2048;
+  for (int32_t eq = -16; eq <= 16 && out.size() < kMaxGuides; ++eq)
+    for (int32_t d = 0; d < size && out.size() < kMaxGuides; ++d) {
+      const std::optional<double> hz = tuning::resolveHzDouble(tuning::PitchId::fromDegree(d, eq), tu, {});
+      if (!hz || *hz < loHz || *hz > hiHz) continue;
+      out.push_back({static_cast<float>(*hz), d, eq});
+    }
+  std::sort(out.begin(), out.end(), [](const PitchGuide& a, const PitchGuide& b) { return a.hz < b.hz; });
+}
+
+uint64_t DocTarget::guidesKey() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ctx_.doc().get())); }
 
 void DocTarget::notice(std::string_view message) { ctx_.setStatus(std::string(message)); }
 

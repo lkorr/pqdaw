@@ -47,6 +47,7 @@
 #include "pq/ui/draw_list.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
+#include "pq/ui/texture_pool.h"
 #include "pq/ui/tile_atlas.h"
 
 struct VmaAllocation_T;
@@ -123,6 +124,9 @@ public:
   // upload() creates the GPU images of newly opened pages, stages the tiles written since the last frame and calls
   // its beginFrame().
   const std::shared_ptr<TileAtlas>& tiles() const noexcept { return tiles_; }
+  // TX.spectrogram: the pool widgets create, update and destroy their own textures through while painting
+  // (pq/ui/texture_pool.h: the calls below, detached when the renderer goes).
+  const std::shared_ptr<TexturePool>& images() const noexcept { return images_; }
 
   // Creates an RGBA8 texture and queues its pixels for the next frame (no GPU wait). The id can be drawn from
   // the next frame on. Ids of destroyed textures are reused.
@@ -244,6 +248,7 @@ private:
   std::shared_ptr<Atlas> atlas_;
   uint32_t atlasPagesCreated_ = 0;
   std::shared_ptr<TileAtlas> tiles_;
+  std::shared_ptr<TexturePool> images_;
   uint32_t tilePagesCreated_ = 0;
 
   // Staging ring.

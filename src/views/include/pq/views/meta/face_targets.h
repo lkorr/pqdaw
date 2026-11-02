@@ -42,6 +42,9 @@ public:
   void setData(meta::DataPtr data) override;
   void notice(std::string_view message) override;
   const meta::Type* targetType() const noexcept override { return &type_; }
+  // TX.spectrogram: the degrees of the effective tuning of the track holding the device (doc::effectiveTuning).
+  void pitchGuides(float loHz, float hiHz, std::vector<PitchGuide>& out) const override;
+  uint64_t guidesKey() const override;
   doc::DeviceId device() const noexcept { return device_; }
   const std::string& path() const noexcept { return path_; }
 

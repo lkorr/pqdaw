@@ -72,8 +72,19 @@ void SpectrumFeed::acquire(uint32_t wants) {
         if (scope_[c].empty()) scope_[c].assign(kScopeFrames, c < 2 && tap_.channels() >= 4 ? std::nanf("") : 0.0f);
     }
     wantScope_.fetch_add(1, std::memory_order_relaxed);
-    if (wants == kWantScope) scopeOnly_.fetch_add(1, std::memory_order_relaxed);
   }
+  if (wants & kWantSpectrogram) {
+    {
+      std::lock_guard lock(gramMutex_);
+      if (gramRows_.empty()) {  // the ring, allocated by the first spectrogram consumer
+        gramRows_.assign(static_cast<size_t>(kGramRing) * kGramRows, 0.0f);
+        gramInfo_.assign(kGramRing, GramColumn{});
+      }
+    }
+    wantGram_.fetch_add(1, std::memory_order_relaxed);
+  }
+  // A consumer of the history or the columns only: no spectrum is computed for it.
+  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram)) == 0) noOutput_.fetch_add(1, std::memory_order_relaxed);
   if (wants & kWantInput) wantIn_.fetch_add(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_add(1, std::memory_order_relaxed);
   if (consumers_.fetch_add(1, std::memory_order_relaxed) == 0) {
@@ -89,8 +100,9 @@ void SpectrumFeed::acquire(uint32_t wants) {
 void SpectrumFeed::release(uint32_t wants) {
   if (wants & kWantScope) {
     wantScope_.fetch_sub(1, std::memory_order_relaxed);
-    if (wants == kWantScope) scopeOnly_.fetch_sub(1, std::memory_order_relaxed);
   }
+  if (wants & kWantSpectrogram) wantGram_.fetch_sub(1, std::memory_order_relaxed);
+  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram)) == 0) noOutput_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantInput) wantIn_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_sub(1, std::memory_order_relaxed);
   if (consumers_.fetch_sub(1, std::memory_order_relaxed) == 1) {
@@ -100,9 +112,10 @@ void SpectrumFeed::release(uint32_t wants) {
 }
 
 uint32_t SpectrumFeed::wants() const noexcept {
-  // The output spectrum for every consumer but a scope-only one (TX.scope).
-  uint32_t w = consumers_.load(std::memory_order_relaxed) > scopeOnly_.load(std::memory_order_relaxed) ? kWantOutput : 0u;
+  // The output spectrum for every consumer but a scope-only or spectrogram-only one (TX.scope, TX.spectrogram).
+  uint32_t w = consumers_.load(std::memory_order_relaxed) > noOutput_.load(std::memory_order_relaxed) ? kWantOutput : 0u;
   if (wantScope_.load(std::memory_order_relaxed) > 0) w |= kWantScope;
+  if (wantGram_.load(std::memory_order_relaxed) > 0) w |= kWantSpectrogram;
   if (tap_.channels() >= 4) {
     if (wantIn_.load(std::memory_order_relaxed) > 0) w |= kWantInput;
     if (wantResp_.load(std::memory_order_relaxed) > 0) w |= kWantResponse;
@@ -203,6 +216,106 @@ void SpectrumFeed::scopeAppend(const float* const* ch, uint32_t n, bool quiet) {
   scopeQuiet_ = quiet ? scopeQuiet_ + n : 0;
 }
 
+// ---- TX.spectrogram ----------------------------------------------------------------------------------------------------
+
+struct SpectrumFeed::GramSink final : dsp::Spectrogram::Sink {
+  SpectrumFeed& f;
+  explicit GramSink(SpectrumFeed& feed) : f(feed) {}
+  // Called with gramMutex_ held (gramPush, configure).
+  void column(const float* rows, uint64_t index, double centre) override {
+    const auto slot = static_cast<size_t>(index % kGramRing);
+    float peak = 0.0f;
+    for (uint32_t r = 0; r < kGramRows; ++r) peak = std::max(peak, rows[r]);
+    std::copy(rows, rows + kGramRows, f.gramRows_.begin() + static_cast<std::ptrdiff_t>(slot * kGramRows));
+    GramColumn& info = f.gramInfo_[slot];
+    info.centre = centre;
+    info.peak = peak;
+    // The tapped beat at the column's centre (the analysis stream is the tap's frames, in order).
+    const auto at = static_cast<uint64_t>(std::max(0.0, centre));
+    const uint64_t written = f.gram_ ? f.gram_->samples() : 0;
+    info.beat = !f.gramBeat_.empty() && at < written && written - at < f.gramBeat_.size()
+                    ? f.gramBeat_[at & (f.gramBeat_.size() - 1)]
+                    : std::nanf("");
+    f.gramQuiet_ = peak > 0.0f ? 0 : f.gramQuiet_ + 1;
+  }
+};
+
+void SpectrumFeed::setSpectrogram(const void* key, const SpectrogramRequest& request) {
+  std::lock_guard lock(gramMutex_);
+  gramRequests_[key] = request;
+  pickGram();
+}
+
+void SpectrumFeed::clearSpectrogram(const void* key) {
+  std::lock_guard lock(gramMutex_);
+  if (gramRequests_.erase(key) > 0 && !gramRequests_.empty()) pickGram();
+}
+
+void SpectrumFeed::pickGram() {
+  // The request with the most columns decides (ties: the one in force stays, so equal displays never flip it).
+  const SpectrogramRequest* best = nullptr;
+  for (const auto& [k, r] : gramRequests_) {
+    SpectrogramRequest rr = r;
+    rr.config.sampleRate = cfg_.sampleRate;
+    if (best == nullptr || r.columns > best->columns || (r.columns == best->columns && rr == gramWant_)) best = &r;
+  }
+  if (best == nullptr) return;
+  SpectrogramRequest want = *best;
+  want.config.sampleRate = cfg_.sampleRate;
+  if (!(want == gramWant_) || !gram_) {
+    gramWant_ = want;
+    gramDirty_ = true;
+  }
+}
+
+GramState SpectrumFeed::gramState() const {
+  GramState g;
+  {
+    std::lock_guard lock(mutex_);
+    g.settled = settled_;
+  }
+  std::lock_guard lock(gramMutex_);
+  if (!gram_) return g;
+  g.running = true;
+  g.end = gram_->columns();
+  g.oldest = g.end > kGramRing ? g.end - kGramRing : 0;
+  g.position = gram_->position();
+  g.mapping = gram_->mapping();
+  g.hop = gram_->hop();
+  g.fft = gram_->fftSize();
+  g.lowFft = gram_->lowFftSize();
+  g.fMin = gram_->fMin();
+  g.fMax = gram_->fMax();
+  return g;
+}
+
+uint32_t SpectrumFeed::gramRead(uint64_t from, uint32_t n, float* rows, GramColumn* info) const {
+  std::lock_guard lock(gramMutex_);
+  if (!gram_ || gramRows_.empty()) return 0;
+  const uint64_t end = gram_->columns(), oldest = end > kGramRing ? end - kGramRing : 0;
+  if (from < oldest || from >= end) return 0;
+  const auto k = static_cast<uint32_t>(std::min<uint64_t>(n, end - from));
+  for (uint32_t i = 0; i < k; ++i) {
+    const auto slot = static_cast<size_t>((from + i) % kGramRing);
+    if (rows != nullptr)
+      std::copy_n(gramRows_.begin() + static_cast<std::ptrdiff_t>(slot * kGramRows), kGramRows, rows + static_cast<size_t>(i) * kGramRows);
+    if (info != nullptr) info[i] = gramInfo_[slot];
+  }
+  return k;
+}
+
+void SpectrumFeed::gramPush(const float* mono, const float* beat, uint32_t n) {
+  std::lock_guard lock(gramMutex_);
+  if (!gram_) return;
+  // The beat by analysis-stream sample, for the columns' centres (they trail the newest sample by up to a window and
+  // the reach: well inside the ring).
+  const uint64_t at = gram_->samples();
+  const size_t mask = gramBeat_.size() - 1;
+  for (uint32_t i = 0; i < n; ++i) gramBeat_[(at + i) & mask] = beat != nullptr ? beat[i] : std::nanf("");
+  GramSink sink(*this);
+  gram_->push(mono, n, sink);
+}
+
 void SpectrumFeed::hold() {
   std::lock_guard lock(mutex_);
   settled_ = true;
@@ -220,13 +333,33 @@ uint32_t SpectrumFeed::work(double now) {
   const uint32_t oL = four ? 2 : 0, oR = four ? 3 : (tap_.channels() > 1 ? 1 : 0);
   const bool scope = (want & kWantScope) != 0;
   const bool readMonoIn = four && (want & (kWantInput | kWantResponse)) != 0;
-  const bool readIn = readMonoIn || (four && scope);  // a scope keeps every channel of the tap
+  const bool gram = (want & kWantSpectrogram) != 0;
+  // A scope keeps every channel of the tap; a spectrogram reads the beat in channel 0 (TX.spectrogram).
+  const bool readIn = readMonoIn || (four && (scope || gram));
   if ((want & kWantResponse) && four && !transfer_) {  // made when first wanted (a scope's feed never needs it)
     dsp::TransferConfig tc;
     tc.sampleRate = cfg_.sampleRate;
     std::vector<float> hz(cfg_.points);
     for (uint32_t p = 0; p < cfg_.points; ++p) hz[p] = std::max(axis_.pointHz(p), 1.0f);
     transfer_ = std::make_unique<dsp::TransferAnalyzer>(tc, hz);
+  }
+  if (gram) {  // TX.spectrogram: a new request (re)configures the analyser; the column sequence continues
+    std::lock_guard lock(gramMutex_);
+    if (gramDirty_ || !gram_) {
+      gramDirty_ = false;
+      gramChannel_ = gramWant_.channel;
+      gramCols_ = std::max<uint32_t>(1, gramWant_.columns);
+      dsp::SpectrogramConfig c = gramWant_.config;
+      c.sampleRate = cfg_.sampleRate;
+      if (!gram_) {
+        gram_ = std::make_unique<dsp::Spectrogram>(c);
+        gramBeat_.assign(size_t{1} << 16, std::nanf(""));
+        gramIn_.resize(std::max<size_t>(kChunk, mono_.size()));
+      } else {
+        GramSink sink(*this);
+        gram_->configure(c, sink);
+      }
+    }
   }
   bool wasSettled;
   {
@@ -253,7 +386,7 @@ uint32_t SpectrumFeed::work(double now) {
       for (uint32_t i = 0; i < k; ++i) monoIn_[i] = 0.5f * (ch_[0][i] + ch_[1][i]);
     // (A scope's channels 0 and 1 are a clock and a pitch, not a signal: they never count as sound.)
     // A scope shows L, R and side too: silence there is both channels silent (a pure side signal's mono is 0).
-    const bool quiet = (scope ? silent(ch_[oL].data(), k) && silent(ch_[oR].data(), k) : silent(mono_.data(), k)) &&
+    const bool quiet = (scope || gram ? silent(ch_[oL].data(), k) && silent(ch_[oR].data(), k) : silent(mono_.data(), k)) &&
                        (!readMonoIn || silent(monoIn_.data(), k));
     pos_ += k;
     data = true;
@@ -270,6 +403,16 @@ uint32_t SpectrumFeed::work(double now) {
       }
       scopeAppend(sc, k, quiet);
     }
+    if (gram) {
+      const float* src = mono_.data();  // mid
+      if (gramChannel_ == 1) src = ch_[oL].data();
+      else if (gramChannel_ == 2) src = ch_[oR].data();
+      else if (gramChannel_ == 3) {
+        for (uint32_t i = 0; i < k; ++i) gramIn_[i] = 0.5f * (ch_[oL][i] - ch_[oR][i]);
+        src = gramIn_.data();
+      }
+      gramPush(src, four ? ch_[0].data() : nullptr, k);
+    }
     if (want & kWantOutput) ran += out_.push(mono_.data(), k);
     if (want & kWantInput) in_.push(monoIn_.data(), k);
     if ((want & kWantResponse) && transfer_) transfer_->push(monoIn_.data(), mono_.data(), k);
@@ -280,7 +423,8 @@ uint32_t SpectrumFeed::work(double now) {
     decaying_ = false;
   } else if (now - lastData_ > kNoDataSeconds &&
              (((want & kWantOutput) && !out_.allBelow(kSettledDb)) ||
-              (scope && static_cast<double>(scopeQuiet_) < kScopeRestSeconds * cfg_.sampleRate))) {
+              (scope && static_cast<double>(scopeQuiet_) < kScopeRestSeconds * cfg_.sampleRate) ||
+              (gram && gramQuiet_ < gramCols_))) {
     // No input: silence paced in real time, so the release falls as it would on a silent signal.
     if (!decaying_) {
       decaying_ = true;
@@ -295,6 +439,7 @@ uint32_t SpectrumFeed::work(double now) {
         if (four) sc[0] = sc[1] = nullptr;
         scopeAppend(sc, frames, true);
       }
+      if (gram) gramPush(mono_.data(), nullptr, frames);  // the picture scrolls on in time (no clock: no beat)
       if (want & kWantOutput) ran += out_.push(mono_.data(), frames);
       if (want & kWantInput) in_.push(mono_.data(), frames);
       if ((want & kWantResponse) && transfer_) {
@@ -308,7 +453,8 @@ uint32_t SpectrumFeed::work(double now) {
   const bool rest = (!(want & kWantOutput) || out_.allBelow(kSettledDb)) &&
                     (!(want & kWantInput) || in_.allBelow(kSettledDb)) &&
                     (!(want & kWantResponse) || !transfer_ || !transfer_->anyConfident()) &&
-                    (!scope || static_cast<double>(scopeQuiet_) >= kScopeRestSeconds * cfg_.sampleRate);
+                    (!scope || static_cast<double>(scopeQuiet_) >= kScopeRestSeconds * cfg_.sampleRate) &&
+                    (!gram || gramQuiet_ >= gramCols_);
   const bool settledNow = !sound && rest && (data || now - lastData_ > kNoDataSeconds);
   bool post = false;
   if (ran > 0 || settledNow != wasSettled) {

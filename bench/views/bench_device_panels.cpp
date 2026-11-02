@@ -6,6 +6,7 @@
 //   - the analysis per hop (2048-point FFT, every other hop the 8192-point one, 1024 points, ballistics)
 //   - the audio side: the tap's write of a 128-frame stereo block, with a reader and without one
 //   - TX.scope: the scope tracker per frame (detected / note period), 4 Oscilloscope faces per 60 Hz frame
+//   - TX.spectrogram: the analysis per column, 4 Spectrogram faces per 60 Hz frame (with a GPU: the ring texture uploads)
 // Results → bench/RESULTS.md (ship).
 
 #include <algorithm>
@@ -26,8 +27,14 @@
 #include "pq/dsp/spectrum.h"
 #include "pq/dsp/atoms.h"
 #include "pq/dsp/scope.h"
+#include "pq/dsp/spectrogram.h"
 #include "pq/dsp/transfer.h"
 #include "pq/meta/oscilloscope.h"
+#include "pq/meta/spectrogram.h"
+#include "pq/ui/gpu.h"
+#include "pq/ui/offscreen.h"
+#include "pq/ui/renderer.h"
+#include "pq/ui/texture_pool.h"
 #include "pq/ui/face_painter.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/devices/spectrum_plot.h"
@@ -471,6 +478,119 @@ int main() {
         1);
     pq::bench::report("device.4 oscilloscope faces, a 60 Hz frame: 800 new frames each, poll (copy + pitch + align) + paint, 600 x 370 px",
                       stats, "ns/frame");
+  }
+
+  // ---- TX.spectrogram: the analysis per column, 4 Spectrogram faces (poll + colour + upload + paint) ----
+  {
+    const std::vector<float> sig = testSignal(48000 * 4);
+    struct Drop final : dsp::Spectrogram::Sink {
+      uint64_t n = 0;
+      void column(const float*, uint64_t, double) override { ++n; }
+    };
+    for (const bool reassign : {true, false}) {
+      dsp::SpectrogramConfig c;
+      c.hop = 500;
+      c.reassign = reassign;
+      dsp::Spectrogram g(c);
+      Drop drop;
+      g.push(sig.data(), 48000, drop);  // warm
+      std::vector<double> ns;
+      size_t at = 48000;
+      for (int i = 0; i < 400; ++i) {
+        if (at + 500 > sig.size()) at = 48000;
+        const uint64_t c0 = threadCycles();
+        g.push(sig.data() + at, 500, drop);  // one hop: one frame (main 2048 + low 4096 chains)
+        ns.push_back(static_cast<double>(threadCycles() - c0) * nsPerCycle);
+        at += 500;
+      }
+      pq::bench::reportStats(reassign ? "device.spectrogram analysis per column (hop 500: 2048 + 4096 Kaiser, 3 FFTs each, reassigned)"
+                                      : "device.spectrogram analysis per column (hop 500: 2048 + 4096 Kaiser, 1 FFT each, plain STFT)",
+                             pq::bench::summarize(ns), "ns CPU/column");
+    }
+    // The faces with a GPU texture pool when a GPU is there (the uploads' staging copies are then timed too).
+    std::unique_ptr<GpuContext> gpu;
+    std::unique_ptr<Renderer> renderer;
+    {
+      auto gc = GpuContext::create({});
+      if (gc) {
+        gpu = std::move(*gc);
+        auto r = Renderer::create(*gpu, OffscreenTarget::kFormat, 1);
+        if (r) renderer = std::move(*r);
+      }
+    }
+    TexturePool* pool = renderer ? renderer->images().get() : nullptr;
+    struct Rig {
+      TapRing tap{4, 32768, 4096};
+      SpectrumFeed feed{tap, AnalysisHub::config(48000.0), SpectrumFeed::Manual{}};
+      std::unique_ptr<views::MetaFace> face = views::makeFace(meta::spectrogramType());
+      uint64_t at = 0;
+      double now = 1.0;
+    };
+    std::vector<std::unique_ptr<Rig>> rigs;
+    auto feedRig = [&](Rig& r, uint32_t n) {
+      std::vector<float> b(n), z(n, 0.0f), l(n);
+      for (uint32_t i = 0; i < n; ++i) {
+        b[i] = static_cast<float>(static_cast<double>(r.at + i) * 2.0 / 48000.0);
+        l[i] = sig[(r.at + i) % sig.size()];
+      }
+      for (uint32_t i = 0; i < n; i += 4096) {
+        const uint32_t k = std::min<uint32_t>(4096, n - i);
+        const float* ch[4] = {b.data() + i, z.data() + i, l.data() + i, l.data() + i};
+        r.tap.write(ch, 4, k);
+        r.feed.step(r.now += static_cast<double>(k) / 48000.0);
+      }
+      r.at += n;
+    };
+    ui::DrawList faceDl;
+    const views::FaceEnv env{res.theme, 1.0f};
+    auto paintAll = [&] {
+      faceDl.reset(2560, 1440);
+      for (size_t i = 0; i < rigs.size(); ++i) {
+        (void)rigs[i]->face->pollVoices();
+        ui::FacePainter p(faceDl, {{20.0f + 620.0f * static_cast<float>(i % 2), 20.0f + 400.0f * static_cast<float>(i / 2)}, 2.0f});
+        p.setImages(pool);
+        rigs[i]->face->paintLive(p, env);  // a 300 x 170 face at 2x: 600 x 340 device px
+      }
+    };
+    for (int i = 0; i < 4; ++i) {
+      auto r = std::make_unique<Rig>();
+      r->face->bind(nullptr, nullptr);
+      Rig* raw = r.get();
+      r->face->setAnalysis([raw] { return &raw->feed; }, [] {});
+      rigs.push_back(std::move(r));
+    }
+    paintAll();  // shown: acquire, ask for the columns
+    for (auto& r : rigs) feedRig(*r, 48000);
+    paintAll();
+    const uint64_t bytes0 = pool ? pool->bytesUpdated() : 0;
+    uint64_t frames = 0;
+    auto stats = pq::bench::measure(
+        [&] {
+          for (auto& r : rigs) feedRig(*r, 800);  // a 60 Hz frame's audio (the analysis thread's side, timed too)
+          paintAll();
+          ++frames;
+        },
+        1);
+    char label[200];
+    std::snprintf(label, sizeof label,
+                  "device.4 spectrogram faces, a 60 Hz frame: 800 new frames each (analysis + poll + colour + upload + paint), 600 x 340 px%s",
+                  pool ? "" : " (no GPU: no upload)");
+    pq::bench::report(label, stats, "ns/frame");
+    if (pool && frames > 0)
+      std::printf("  uploads: %.0f bytes per frame for 4 faces (%llu frames)\n",
+                  static_cast<double>(pool->bytesUpdated() - bytes0) / static_cast<double>(frames), static_cast<unsigned long long>(frames));
+    // The UI side alone (the columns already analysed: poll + colour + upload + paint).
+    for (auto& r : rigs) feedRig(*r, 800);
+    std::vector<double> ns;
+    for (int i = 0; i < 300; ++i) {
+      for (auto& r : rigs) feedRig(*r, 800);
+      const uint64_t c0 = threadCycles();
+      paintAll();
+      ns.push_back(static_cast<double>(threadCycles() - c0) * nsPerCycle);
+    }
+    pq::bench::reportStats("device.4 spectrogram faces, the UI thread's part of a 60 Hz frame (poll + colour + upload + paint)",
+                           pq::bench::summarize(ns), "ns CPU/frame");
+    rigs.clear();  // the faces' textures go before the renderer
   }
   return 0;
 }

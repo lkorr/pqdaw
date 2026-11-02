@@ -49,6 +49,14 @@ class FrameTable;
 
 namespace pq::views {
 
+// TX.spectrogram: one pitch of the tuning the instance's track plays in (a scale degree), what an analysis face draws as
+// a guide line.
+struct PitchGuide {
+  float hz = 0.0f;
+  int32_t degree = 0;   // 0 … size − 1
+  int32_t equave = 0;   // degree 0 of equave 0 is the tuning's reference pitch
+};
+
 // What a face reads and edits: one instance's params (in meta::Type::params order).
 class MetaTarget {
 public:
@@ -74,6 +82,10 @@ public:
   virtual void notice(std::string_view /*message*/) {}
   // The type this target edits (null: unknown; the defaults above then read nothing).
   virtual const meta::Type* targetType() const noexcept { return nullptr; }
+  // TX.spectrogram: the degrees of the tuning the instance's track plays in, between loHz and hiHz, ascending (none:
+  // no track known, the default); guidesKey() changes whenever they may have (the face asks again).
+  virtual void pitchGuides(float /*loHz*/, float /*hiHz*/, std::vector<PitchGuide>& out) const { out.clear(); }
+  virtual uint64_t guidesKey() const { return 0; }
 };
 
 // The type's defaults, read-only (a standalone file in the viewer, an instance the host cannot address).

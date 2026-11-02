@@ -130,6 +130,7 @@ public:
     env.jacks = jacks_;
     ui::FacePainter p(ctx.dl, tr);
     p.setText(ctx.res.text);
+    p.setImages(ctx.res.images);  // TX.spectrogram: a face with its own texture
     face_->paintJacks(p, env);
     face_->paintLive(p, env);
     if (missing) {

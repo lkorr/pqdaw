@@ -48,6 +48,8 @@ struct SceneTextures {
   ThemeFonts uiFonts;
   // The renderer's tile cache (Renderer::tiles(); T3.8-fix1); null for createSceneText (no GPU).
   std::shared_ptr<TileAtlas> tiles;
+  // The renderer's widget-owned texture pool (Renderer::images(); TX.spectrogram); null for createSceneText.
+  std::shared_ptr<TexturePool> images;
 };
 
 // Creates the textures and a text system on the renderer's atlas, loading the fonts and the default theme

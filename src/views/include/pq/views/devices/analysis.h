@@ -17,6 +17,13 @@
 //              (the Oscilloscope module taps the transport's beat, the lowest voice's pitch, its L and R; pq/meta/
 //              oscilloscope.h), a 2-channel tap's two. kScopeFrames frames (5.5 s at 48 kHz). A consumer that wants
 //              only the scope costs no spectrum analysis.
+//   Spectrogram TX.spectrogram: finished columns of PQ Meter's reassigned spectrogram (pq/dsp/spectrogram.h: three
+//              FFTs per hop, the low chain, the leakage mask, consensus, the tent splat) on the channel the consumer asks
+//              for, at the hop its span and width ask for (setSpectrogram), kept in a ring of kGramRing columns with
+//              each column's centre and the tapped beat there (a 4-channel tap's channel 0: the Spectrogram module taps
+//              the transport's beat, for its Loop playhead). The UI reads only the columns it has not seen (gramRead),
+//              colours and uploads them. A consumer that wants only the spectrogram costs no spectrum analysis; it
+//              settles once as many silent columns as its display shows have passed.
 //
 // Costs nothing while hidden: with no consumer the worker blocks on a condition variable and the tap has no reader, so
 // the audio thread's write is one relaxed load. Shown: the worker runs at the display's rate (60 Hz) while the levels
@@ -46,13 +53,37 @@
 
 #include "pq/core/tap_ring.h"
 #include "pq/document/ids.h"
+#include "pq/dsp/spectrogram.h"
 #include "pq/dsp/spectrum.h"
 #include "pq/dsp/transfer.h"
 
 namespace pq::views::devices {
 
 // What a consumer of a feed draws (acquire's flags).
-inline constexpr uint32_t kWantOutput = 1u, kWantInput = 2u, kWantResponse = 4u, kWantScope = 8u;
+inline constexpr uint32_t kWantOutput = 1u, kWantInput = 2u, kWantResponse = 4u, kWantScope = 8u, kWantSpectrogram = 16u;
+
+// TX.spectrogram: what a spectrogram consumer asks the feed to compute (setSpectrogram).
+struct SpectrogramRequest {
+  dsp::SpectrogramConfig config;  // its sampleRate is replaced by the feed's
+  uint32_t channel = 0;           // 0 mid (L + R) / 2, 1 L, 2 R, 3 side (L − R) / 2
+  uint32_t columns = 512;         // the columns the display shows (silent this long: settled)
+  bool operator==(const SpectrogramRequest&) const = default;
+};
+// One column of the ring: its centre (the analysis stream's sample), the tapped beat there (NaN: none) and its peak.
+struct GramColumn {
+  double centre = 0.0;
+  float beat = 0.0f;
+  float peak = 0.0f;
+};
+// What the ring holds now (gramState).
+struct GramState {
+  uint64_t end = 0, oldest = 0;  // columns [oldest, end) are held
+  double position = 0.0;         // the scroll position in columns (dsp::Spectrogram::position)
+  uint32_t mapping = 0;          // bumps when the rows map other frequencies (the display clears)
+  uint32_t hop = 0, fft = 0, lowFft = 0;
+  float fMin = 0.0f, fMax = 0.0f;
+  bool settled = true, running = false;  // running: a spectrogram is computed
+};
 
 // One published state of a feed (per point of the analyser's axis).
 struct SpectrumSnapshot {
@@ -114,6 +145,18 @@ public:
   // the frames that were held.
   uint32_t scopeRead(uint64_t from, uint32_t n, float* const* out) const;
 
+  // ---- TX.spectrogram: the column ring (kWantSpectrogram) ----
+  static constexpr uint32_t kGramRing = 512;
+  static constexpr uint32_t kGramRows = dsp::Spectrogram::kRows;
+  // UI thread: a consumer's request (by key; the one asking for the most columns decides the analysis, so two displays
+  // of one instance at different sizes share one), and its removal (with its release).
+  void setSpectrogram(const void* key, const SpectrogramRequest& request);
+  void clearSpectrogram(const void* key);
+  GramState gramState() const;
+  // Copies columns [from, from + n) ∩ the held ones into rows (n · kGramRows floats, row 0 = fMax; null: skipped) and
+  // info (null: skipped), from its start; returns the columns copied (from < oldest copies nothing).
+  uint32_t gramRead(uint64_t from, uint32_t n, float* rows, GramColumn* info) const;
+
   // Tests: runs the worker's step synchronously instead of the thread (the thread is not started).
   struct Manual {};
   SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config, Manual);
@@ -132,6 +175,9 @@ private:
   bool peekSound();           // a settled watched feed: anything non-silent arrived (advances pos_)
   uint32_t wants() const noexcept;
   void scopeAppend(const float* const* ch, uint32_t n, bool quiet);  // the worker
+  void gramPush(const float* mono, const float* beat, uint32_t n);  // the worker (beat: null = none)
+  void pickGram();  // gramMutex_ held: the deciding request
+  struct GramSink;
 
   std::shared_ptr<TapRing> owner_;
   TapRing& tap_;
@@ -145,7 +191,7 @@ private:
   double lastData_ = 0.0, lastSilence_ = 0.0;
   bool decaying_ = false;
   uint32_t ranWants_ = 0;  // what the worker computed last (a new want restarts its analyser)
-  std::atomic<uint32_t> consumers_{0}, wantIn_{0}, wantResp_{0}, wantScope_{0}, scopeOnly_{0};
+  std::atomic<uint32_t> consumers_{0}, wantIn_{0}, wantResp_{0}, wantScope_{0}, wantGram_{0}, noOutput_{0};
   std::atomic<bool> live_{false}, watch_{false};
   std::atomic<uint64_t> hops_{0}, wakeups_{0}, posts_{0};
   std::function<void()> wakePost_;
@@ -160,6 +206,16 @@ private:
   std::vector<float> scope_[4];
   uint64_t scopeEnd_ = 0;
   uint64_t scopeQuiet_ = 0;  // frames appended since the last non-silent one (worker)
+  // TX.spectrogram: requests (UI, under gramMutex_), the analyser and the ring (worker writes, UI reads, gramMutex_).
+  mutable std::mutex gramMutex_;
+  std::map<const void*, SpectrogramRequest> gramRequests_;
+  SpectrogramRequest gramWant_;  // the deciding request
+  bool gramDirty_ = false;
+  std::unique_ptr<dsp::Spectrogram> gram_;
+  uint32_t gramChannel_ = 0, gramCols_ = 512;
+  std::vector<float> gramRows_, gramIn_, gramBeat_;  // the ring; the worker's channel buffer; the beat by stream sample
+  std::vector<GramColumn> gramInfo_;
+  uint64_t gramQuiet_ = 0;  // columns since the last one with anything in it (worker)
   bool quit_ = false;
   std::thread thread_;
 };

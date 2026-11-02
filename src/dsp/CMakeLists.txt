@@ -14,6 +14,7 @@ pq_add_module(pq_dsp
     src/spectrum.cpp
     src/transfer.cpp
     src/scope.cpp
+    src/spectrogram.cpp
     src/resample.cpp
     src/frame_table.cpp
     src/frame_table_read.cpp

@@ -140,6 +140,7 @@ Result<std::unique_ptr<Renderer>> Renderer::create(GpuContext& gpu, VkFormat col
     if (Status s = r->ensureAtlasPages(); !s) return std::move(s).error();
   }
   r->tiles_ = std::make_shared<TileAtlas>();  // pages (and their GPU images) open on first use
+  r->images_ = std::make_shared<TexturePool>(r.get());  // TX.spectrogram: widget-owned textures
   return r;
 }
 
@@ -238,6 +239,7 @@ Status Renderer::createPipelines() {
 }
 
 Renderer::~Renderer() {
+  if (images_) images_->renderer_ = nullptr;  // widgets still holding the pool: their calls become no-ops
   if (!gpu_) return;
   const VkDevice dev = gpu_->device();
   vkDeviceWaitIdle(dev);

@@ -24,7 +24,8 @@ struct Registry {
                                                                      {"envelope", &makeEnvelopeFace},
                                                                      {"vca", &makeVcaFace},
                                                                      {"spectrum", &makeSpectrumFace},  // TX.spectrum
-                                                                     {"oscilloscope", &makeScopeFace}};  // TX.scope
+                                                                     {"oscilloscope", &makeScopeFace},  // TX.scope
+                                                                     {"spectrogram", &makeSpectrogramFace}};  // TX.spectrogram
   // worldSize per type id, filled on first ask (a face's size never changes).
   std::vector<std::pair<std::string, ui::Vec2>> sizes;
 };

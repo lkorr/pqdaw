@@ -131,6 +131,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_meta_link.cpp  # TMM.3: meta modules through the link (a nested freq drag compiles nothing; chain instrument)
     app/test_analysis_link.cpp  # TX.spectrum: analysis taps through the link (watched / unwatched, pass-through, EQ measured vs exact)
     app/test_scope_link.cpp  # TX.scope: the Oscilloscope through the link (its tap: beat, note, signal; pass-through)
+    app/test_spectrogram_link.cpp  # TX.spectrogram: the Spectrogram through the link (its tap, RtScope, a feed's columns, pass-through)
     app/test_meta_wavetable.cpp  # TMM.5: the Wavetable through the link (off-thread tables, click-free, alias suite, golden; taps → face dots)
     golden/golden_audio.cpp
   DEPS pq_app)
@@ -149,6 +150,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_view_context.cpp
     views/test_spectrum_display.cpp  # TX.spectrum: the analysis feed, the spectrum plot, the Spectrum face, scenes, 8-display frame
     views/test_scope_display.cpp  # TX.scope: the feed's scope history, the Oscilloscope face, scenes, 4-scope frame
+    views/test_spectrogram_display.cpp  # TX.spectrogram: the feed's columns, the Spectrogram face, its ring texture, scenes, 4-spectrogram frame
     views/test_bug_report.cpp  # T5.x-bugreport: report.md round trip, the writer, the input ring, the pointer crop
     views/test_samples_ui.cpp  # T5.8: missing samples, relink, Collect All and Save through the ViewContext
     views/test_waveforms.cpp  # T5.5: the views' waveform overviews (sync / worker + poster, caches, windows)
@@ -354,6 +356,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_spectrum.cpp
     dsp/test_transfer.cpp  # TX.spectrum: the transfer-function estimate
     dsp/test_scope.cpp  # TX.scope: the oscilloscope's trigger, pitch lock and beat slots
+    dsp/test_spectrogram.cpp  # TX.spectrogram: the reassigned spectrogram's columns (sine, sweep, chord, sub, impulse, sequence)
     dsp/test_silence.cpp
     dsp/test_resample.cpp
     dsp/test_frame_table.cpp
@@ -377,6 +380,7 @@ pq_add_test(pq_tests_meta
     meta/test_vca.cpp  # TMM.14: the VCA (expansion, the curve law, DSP == law on both backends, audio-rate value, cost)
     meta/test_spectrum.cpp  # TX.spectrum: the Spectrum module (expansion, the tap, pass-through bit for bit on both backends)
     meta/test_oscilloscope.cpp  # TX.scope: the Oscilloscope module (expansion, the tap, data, pass-through bit for bit on both backends)
+    meta/test_spectrogram_module.cpp  # TX.spectrogram: the Spectrogram module (expansion, the tap, data, pass-through bit for bit on both backends)
   DEPS pq_meta pq_pqc)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.

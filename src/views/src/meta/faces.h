@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 
+#include "pq/views/devices/analysis.h"
 #include "pq/views/meta/meta_face.h"
 
 namespace pq::views {
@@ -16,6 +17,31 @@ std::unique_ptr<MetaFace> makeEnvelopeFace(const meta::Type& t);   // TMM.11
 std::unique_ptr<MetaFace> makeVcaFace(const meta::Type& t);        // TMM.14
 std::unique_ptr<MetaFace> makeSpectrumFace(const meta::Type& t);   // TX.spectrum
 std::unique_ptr<MetaFace> makeScopeFace(const meta::Type& t);      // TX.scope
+std::unique_ptr<MetaFace> makeSpectrogramFace(const meta::Type& t);  // TX.spectrogram
+
+// TX.spectrogram (tests): the Spectrogram face's picture as its last poll / paint left it. False: not a Spectrogram face.
+struct GramShown {
+  bool acquired = false, frozen = false, texture = false, loop = false;
+  uint32_t cols = 0, texCols = 0, texRows = 0, hop = 0, mapping = 0;
+  uint64_t read = 0;            // columns read from the feed (the newest is read − 1)
+  double display = -1.0;        // the servo's right edge, in columns
+  int64_t loopHead = -1;        // Loop: the slot written last
+  uint64_t requests = 0;        // analysis requests sent to the feed
+  devices::SpectrogramRequest request;  // the last one
+  uint64_t uploads = 0, uploadBytes = 0;  // paints that uploaded, bytes handed to the texture pool
+};
+bool gramShown(const MetaFace& f, GramShown& out);
+// Texel row y of column `column` (of the feed's sequence; scroll mode) as last coloured, its cached level (dB, before tilt
+// and gate) and the analysis row it came from (−1: empty). False: not held.
+bool gramTexel(const MetaFace& f, uint64_t column, uint32_t y, ui::Rgba& rgba, float& db, int& row);
+bool gramSlotTexel(const MetaFace& f, uint32_t slot, uint32_t y, ui::Rgba& rgba);  // by ring slot (Loop)
+float gramNoiseDb(const MetaFace& f, uint32_t y);  // the gate's noise floor estimate of texel row y
+// Sets one display option by its data key ("span", "ch", "map", …), or "freeze" / "sheet" (view state).
+bool gramTestControl(MetaFace& f, std::string_view key, double value);
+bool gramTestHover(MetaFace& f, ui::Vec2 local);  // the pointer over the plot (face-local; x < 0: none)
+// The analysis request a Spectrogram face with these options (its data) sends for a plot `plotDevicePx` wide (scenes:
+// a manual feed computes the columns before the face first paints). The plot is 284 world units wide.
+devices::SpectrogramRequest gramRequest(const meta::DataValue* data, float plotDevicePx, double sampleRate);
 
 // TX.scope (tests): the Oscilloscope face's frame as its last poll computed it. False: not an Oscilloscope face.
 struct ScopeShown {

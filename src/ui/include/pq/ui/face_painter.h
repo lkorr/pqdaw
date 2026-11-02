@@ -32,6 +32,7 @@
 namespace pq::ui {
 
 class TextSystem;
+class TexturePool;
 
 // world → device: device = origin + world · scale (scale = device px per world unit: zoom × UI scale).
 struct FaceTransform {
@@ -65,6 +66,10 @@ public:
     text_ = text;
     face_ = face;
   }
+  // TX.spectrogram: the host's widget-owned textures (PaintResources::images; null: none, e.g. without a GPU), for a
+  // face that keeps its own image (the Spectrogram's scrolling picture).
+  void setImages(TexturePool* images) noexcept { images_ = images; }
+  TexturePool* images() const noexcept { return images_; }
 
   // ---- primitives (positions, radii and thicknesses in world units; angles in radians, screen space: 0 = +x,
   // π/2 = down, increasing clockwise) ----
@@ -98,6 +103,7 @@ private:
   DrawList& dl_;
   FaceTransform t_;
   TextSystem* text_ = nullptr;
+  TexturePool* images_ = nullptr;
   uint32_t face_ = 0;
   uint32_t count_ = 0;
   Rgba tint_ = 0;

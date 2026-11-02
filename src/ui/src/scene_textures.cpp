@@ -70,6 +70,7 @@ Result<SceneTextures> createSceneTextures(Renderer& renderer, SceneTextures text
   if (!linear) return std::move(linear).error();
   t.checkerLinear = *linear;
   t.tiles = renderer.tiles();
+  t.images = renderer.images();
   return t;
 }
 
@@ -110,6 +111,7 @@ PaintResources paintResources(const SceneTextures& t) noexcept {
   r.theme = t.theme.get();
   r.uiFonts = &t.uiFonts;
   r.tiles = t.tiles.get();
+  r.images = t.images.get();
   return r;
 }
 

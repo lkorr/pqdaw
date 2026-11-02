@@ -7,6 +7,7 @@
 #include "pq/meta/envelope.h"
 #include "pq/meta/phase_acc.h"
 #include "pq/meta/oscilloscope.h"
+#include "pq/meta/spectrogram.h"
 #include "pq/meta/spectrum.h"
 #include "pq/meta/vca.h"
 #include "pq/meta/wavetable.h"
@@ -33,6 +34,7 @@ struct Registry {
     types.push_back(&vcaType());        // TMM.14
     types.push_back(&spectrumType());   // TX.spectrum
     types.push_back(&oscilloscopeType());  // TX.scope
+    types.push_back(&spectrogramType());   // TX.spectrogram
   }
 };
 
