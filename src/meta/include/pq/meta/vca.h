@@ -36,12 +36,13 @@
 // THE BEND CURVE: v = lo + (hi − lo)·g(p), g = (e^(Kp) − 1) / (e^K − 1), K = 8·bend (|K| < 1e-3: g = p). bend > 0
 // is exponential (fine at the low end), bend < 0 logarithmic (fine at the high end); presets: linear, exp, log.
 //
-// MODULATION acts in KNOB SPACE: `value` is the position, so automation, modulation wires (doc::paramTravel's linear
-// travel: pos + Σ amount · source, clipped to [0, 1]) and macros move the knob exactly as a hand would, through the
-// curve — fine near zero, coarse toward ±20 k — and the face shows it as each voice's dot on the knob. A wire whose
-// amount sweeps ±0.1 around 2 o'clock wobbles the gain around 1; in value space the same wire would have to be scaled
-// to ±20000 to reach the ends and would have no fine region. To multiply by a signal's own value, wire it into `in`
-// of a second VCA (or the module's own input).
+// MODULATION: automation and macros act in KNOB SPACE (`value` is the position: they move the knob as a hand would,
+// through the curve, and the face shows each voice's dot on the knob); migrated (Travel) wires too (doc::paramTravel's
+// linear travel: pos + Σ amount · source, clipped to [0, 1]). TX.patching (SPEC §15 2026-11-01 "a wire adds its value
+// in the target param's own units": reverses Q183's knob-space wires): a new wire into `value` adds to the MULTIPLIER
+// (ParamSpec::unitsInBody: the expansion gets `in value_add`, and value = clip(curve(pos) + Σ wires, min, max)), so a
+// signal of ±0.1 wobbles the gain by ±0.1 whatever the knob's position. To multiply by a signal's own value, wire it
+// into `in` (or chain two VCAs).
 //
 // COST: settled, one multiply per sample (the gain atom); the curve is param-rate arithmetic (once per block) unless
 // `value` is modulated at audio rate, then per sample: Log ≈ 22 ops + one exp, Bend ≈ 8 ops + one exp. Multiplying by

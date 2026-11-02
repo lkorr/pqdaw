@@ -292,6 +292,34 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // track, or across tracks: `export m<wire>` as for an export's wire). Inactive while the track plays no voices (no
 // lowered instrument at the start of its chain: voice terminals exist only in a voice context). It never closes a
 // cycle (the note source depends on nothing); across tracks the cycle-through-two-instruments rule applies as above.
+// TX.patching (SPEC §15 2026-11-01 "a wire adds its value in the target param's own units", "free patching in the
+// circuit"; model.h "Modulation wires"; QUESTIONS Q?-TX.patching-a). The source is ANY output of its device's callee
+// (an `out` — not a bool one such as `done` — or an export; a rack has none), the target a real param or a non-const
+// real `in` of the target's callee. Travel wires (migrated, schema ≤ 12) keep T4.7's ends exactly (an export into a
+// param; anything else is Invalid), so an old project lowers to the same IR. Add wires (every new wire):
+//   param   value = clip(centre + Σ src_i, lo, hi) in the param's normalised unit (Hz, seconds, linear gain for a dB
+//           param, cents …; lo / hi its declared range; no clip for a param marked @wrap — a phase its patch wraps),
+//           rounded for @steps; centre = the knob (the root param d<id>__<name>, param rate) or the mapped value, or the
+//           Travel wires' result when a param has both kinds. No amount param, no multiply. The tap is then in units:
+//           (max(v − centre, 0), max(centre − v, 0)) (ModulationTap::units; the views convert it to knob travel).
+//   input   the pin reads what it read before (the chain's signal) + Σ src_i in id order; an input nothing drove takes
+//           the wires alone (an unpatched input's default is what it reads only while no wire reaches it). On the
+//           source's own track the source keeps every channel (a stereo output into a stereo input); across tracks
+//           its first channel (export m<wire> / in m<wire>, as for params). No tap.
+//   units   a param whose patch adds its wires after its own law — an `in <param>_add` beside it (the VCA's `value`,
+//           meta::ParamSpec::unitsInBody: the knob is a position, the wire adds to the multiplier) — takes them there:
+//           the param stays the knob (param rate).
+//   meta    a chain meta device's inputs that Add wires reach become `in`s of its expansion (meta::ExpandContext::
+//           wired: an unwired chain keeps its expansion and key; under ChainNotes the chain input reads the note's
+//           signal plus the wires).
+// Audio rate end to end: a wire's signal reaches the pin as it is (the compiler raises the param's path to audio rate
+// where the source is; an unwired param stays a param-rate runtime param, its memoised path unchanged).
+// FREE devices (model.h Device::free): called in their track patch after the series (TrackDevs::free), never chained:
+// a stock device's first audio `in` reads −0 until a wire reaches it; a meta device plays its Nested form (every input
+// an `in` with its default, outputs of any poly) in the track's voice context when the track plays voices, so the
+// compiler runs it per voice exactly when a per-voice signal reaches it or its output feeds voice processing (pq/graph/
+// infer.h free-running sources); wires out of it into global targets go through their reducer (a reducer of a global
+// value is the value). A free device nothing reads is dropped by the compiler (its face's voice tap keeps a meta one).
 enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused };
 struct WireState {
   WireId id;
