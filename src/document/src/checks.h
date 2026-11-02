@@ -50,7 +50,10 @@ Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r, st
 // T4.1: a track's device chain: devices present with valid ids, unique in the chain; the chain rule (a MIDI track holds
 // at most one instrument, at index 0, then audio effects; other tracks audio effects only); each device's patch name
 // non-empty and its params / settings sorted by name, unique, named and finite.
-Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices);
+// TMM.13-fix1 M8 (`where`, optional): on a refusal, the location of the device it is about — its index in `devices`,
+// then for a device inside a rack the chain's index and the device's index in that chain, and so on (empty when the
+// list itself is refused).
+Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices, std::vector<size_t>* where = nullptr);
 // T4.8: where a device list lives: it decides whether it may start with an instrument.
 enum class ListKind : uint8_t { MidiTrack, OtherTrack, InstrumentRackChain, AudioRackChain };
 ListKind listKindOf(TrackKind kind) noexcept;
@@ -59,7 +62,7 @@ ListKind chainListKind(const Device& rack) noexcept;  // the kind of the lists i
 // and kind agree, chain ids valid and unique in the rack, chain mixers / zones valid, params only macros and the
 // selector (0 … 127), no settings, mappings sorted by id with valid fields onto devices inside the rack (or its own
 // selector), at most one mapping per target in the rack.
-Status checkList(ListKind kind, const std::vector<DevicePtr>& devices);
+Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vector<size_t>* where = nullptr);
 // T4.8: one rack (as checkList checks every rack of a list; the chains' lists included).
 Status checkRack(const Device& rack);
 // A rack's own fields (its chains, zones, mappings), not the devices in its chains (checkList queues those: M4 M9).

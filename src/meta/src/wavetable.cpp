@@ -184,6 +184,9 @@ std::string readRefs(const DataValue& v, DataRefs& out) {
     if (pos->number < prev) return at + ": keyframe positions must not decrease";
     prev = pos->number;
     if (cyc->floats.size() != dsp::kKeyframeCycle) return at + ": a cycle has 2048 samples";
+    for (size_t j = 0; j < cyc->floats.size(); ++j)  // TMM.13-fix1 M6 (the reader checks finiteness)
+      if (!(std::fabs(cyc->floats[j]) <= dsp::kMaxKeyframeSample))
+        return at + ": cycle sample " + std::to_string(j) + " is beyond ±64 (a cycle is audio)";
     out.keys.push_back(&k);
   }
   out.gaps = v.field("gaps");

@@ -284,8 +284,8 @@ Status checkParamCurves(const Device& d) {  // TX.knob-curves (model.h KnobCurve
   return ok();
 }
 
-Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices) {
-  return checkList(listKindOf(kind), devices);
+Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices, std::vector<size_t>* where) {
+  return checkList(listKindOf(kind), devices, where);
 }
 
 ListKind listKindOf(TrackKind kind) noexcept { return kind == TrackKind::Midi ? ListKind::MidiTrack : ListKind::OtherTrack; }
@@ -296,62 +296,86 @@ ListKind chainListKind(const Device& rack) noexcept {
 
 // M4 review M9: iterative (an explicit list of device lists still to check), so racks nest as deep as memory allows. A
 // rack's own fields are checked by checkRackOwn when it is met; its chains' lists are queued.
-Status checkList(ListKind kind, const std::vector<DevicePtr>& devices) {
-  std::vector<std::pair<ListKind, const std::vector<DevicePtr>*>> work{{kind, &devices}};
+// TMM.13-fix1 M8: a refusal says which device (`where`: the indices down to it, checks.h checkChain).
+Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vector<size_t>* where) {
+  struct Work {
+    ListKind kind;
+    const std::vector<DevicePtr>* list;
+    std::vector<size_t> at;  // the list's location (checkChain's `where`)
+  };
+  std::vector<Work> work;
+  work.push_back({kind, &devices, {}});
   while (!work.empty()) {
-    const auto [k, listPtr] = work.back();
+    const Work w = std::move(work.back());
     work.pop_back();
-    const std::vector<DevicePtr>& list = *listPtr;
+    const ListKind k = w.kind;
+    const std::vector<DevicePtr>& list = *w.list;
     size_t series = 0;  // TX.patching: devices of the series before this one (free devices are not in it)
     for (size_t i = 0; i < list.size(); ++i) {
-      const DevicePtr& d = list[i];
-      if (!d) return invalid("null device");
-      if (!d->id.valid()) return invalid("device has no id");
-      if (d->patch.empty()) return invalid("device has no patch");
-      for (size_t j = 0; j < i; ++j)
-        if (list[j]->id == d->id) return invalid("device id twice in a chain");
-      if (d->free) {  // TX.patching (model.h Device::free)
-        if (k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain)
-          return invalid("a free device sits in a track's circuit, not in a rack chain");
-        if (d->rack) return invalid("a rack cannot be free (it is a chain of its own)");
-        if (d->kind == DeviceKind::Instrument && !isMetaDevice(*d)) return invalid("a stock instrument cannot be free");
-        if (d->kind == DeviceKind::Instrument) return invalid("a free meta device is not where instruments go");
-      }
-      if (d->kind == DeviceKind::Instrument) {
-        if (k == ListKind::OtherTrack) return invalid("instruments go on MIDI tracks");
-        if (k == ListKind::AudioRackChain) return invalid("an Audio Effect Rack's chains hold audio effects only");
-        if (series != 0)
-          return invalid(k == ListKind::MidiTrack ? "the instrument must be the first device of a MIDI track"
-                                                  : "the instrument must be the first device of its chain");
-      }
-      if (!d->free) ++series;
-      const bool rackChain = k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain;
-      if (isGroupDevice(*d)) {  // TX.groups (model.h "Groups")
-        if (rackChain) return invalid("a group sits in a track's circuit, not in a rack chain");
-        if (d->kind != DeviceKind::AudioEffect) return invalid("a group is an audio effect");
-        if (!d->params.empty() || !d->settings.empty() || d->source || d->meta)
-          return invalid("a group has no params, settings, text or meta modules of its own");
-        if (d->group.valid()) return invalid("groups do not nest (a group cannot be in a group)");
-      }
-      if (d->group.valid()) {
-        if (rackChain) return invalid("a group member sits in a track's circuit, not in a rack chain");
-        if (!d->free) return invalid("a group member is free (a group has no chain order)");
-        const auto g = std::find_if(list.begin(), list.end(), [&](const DevicePtr& x) { return x && x->id == d->group; });
-        if (g == list.end()) return invalid("a group member's group is not in its track");
-        if (!isGroupDevice(**g)) return invalid("a group member's group is not a group");
-      }
-      PQ_DOC_TRY(checkValues(d->params, "params"));
-      PQ_DOC_TRY(checkValues(d->settings, "settings"));
-      PQ_DOC_TRY(checkParamCurves(*d));  // TX.knob-curves
-      PQ_DOC_TRY(checkDeviceMeta(*d));  // TMM.3
-      if (d->rack) {
-        PQ_DOC_TRY(checkRackOwn(*d));
-        for (size_t c = d->rack->chains.size(); c-- > 0;) work.emplace_back(chainListKind(*d), &d->rack->chains[c]->devices);
-      } else if (d->patch == kAudioEffectRack || d->patch == kInstrumentRack) {
-        return invalid("'" + d->patch + "' is a rack and needs its chains");
+      const Status st = [&]() -> Status {
+        const DevicePtr& d = list[i];
+        if (!d) return invalid("null device");
+        if (!d->id.valid()) return invalid("device has no id");
+        if (d->patch.empty()) return invalid("device has no patch");
+        for (size_t j = 0; j < i; ++j)
+          if (list[j]->id == d->id) return invalid("device id twice in a chain");
+        if (d->free) {  // TX.patching (model.h Device::free)
+          if (k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain)
+            return invalid("a free device sits in a track's circuit, not in a rack chain");
+          if (d->rack) return invalid("a rack cannot be free (it is a chain of its own)");
+          if (d->kind == DeviceKind::Instrument && !isMetaDevice(*d)) return invalid("a stock instrument cannot be free");
+          if (d->kind == DeviceKind::Instrument) return invalid("a free meta device is not where instruments go");
+        }
+        if (d->kind == DeviceKind::Instrument) {
+          if (k == ListKind::OtherTrack) return invalid("instruments go on MIDI tracks");
+          if (k == ListKind::AudioRackChain) return invalid("an Audio Effect Rack's chains hold audio effects only");
+          if (series != 0)
+            return invalid(k == ListKind::MidiTrack ? "the instrument must be the first device of a MIDI track"
+                                                    : "the instrument must be the first device of its chain");
+        }
+        if (!d->free) ++series;
+        const bool rackChain = k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain;
+        if (isGroupDevice(*d)) {  // TX.groups (model.h "Groups")
+          if (rackChain) return invalid("a group sits in a track's circuit, not in a rack chain");
+          if (d->kind != DeviceKind::AudioEffect) return invalid("a group is an audio effect");
+          if (!d->params.empty() || !d->settings.empty() || d->source || d->meta)
+            return invalid("a group has no params, settings, text or meta modules of its own");
+          if (d->group.valid()) return invalid("groups do not nest (a group cannot be in a group)");
+        }
+        if (d->group.valid()) {
+          if (rackChain) return invalid("a group member sits in a track's circuit, not in a rack chain");
+          if (!d->free) return invalid("a group member is free (a group has no chain order)");
+          const auto g = std::find_if(list.begin(), list.end(), [&](const DevicePtr& x) { return x && x->id == d->group; });
+          if (g == list.end()) return invalid("a group member's group is not in its track");
+          if (!isGroupDevice(**g)) return invalid("a group member's group is not a group");
+        }
+        PQ_DOC_TRY(checkValues(d->params, "params"));
+        PQ_DOC_TRY(checkValues(d->settings, "settings"));
+        PQ_DOC_TRY(checkParamCurves(*d));  // TX.knob-curves
+        PQ_DOC_TRY(checkDeviceMeta(*d));  // TMM.3
+        if (d->rack) {
+          PQ_DOC_TRY(checkRackOwn(*d));
+          for (size_t c = d->rack->chains.size(); c-- > 0;) {
+            std::vector<size_t> at = w.at;
+            at.push_back(i);
+            at.push_back(c);
+            work.push_back({chainListKind(*d), &d->rack->chains[c]->devices, std::move(at)});
+          }
+        } else if (d->patch == kAudioEffectRack || d->patch == kInstrumentRack) {
+          return invalid("'" + d->patch + "' is a rack and needs its chains");
+        }
+        return ok();
+      }();
+      if (!st) {
+        if (where != nullptr) {
+          *where = w.at;
+          where->push_back(i);
+        }
+        return st;
       }
     }
   }
+  if (where != nullptr) where->clear();
   return ok();
 }
 

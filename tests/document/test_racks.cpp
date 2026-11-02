@@ -338,6 +338,23 @@ TEST_CASE("racks: the project file (schema 6) round-trips racks; broken racks ar
   CHECK_FALSE(broken("\"keyUnit\": \"degree\"", "\"keyUnit\": \"mel\"").ok());
   CHECK_FALSE(broken("\"patch\": \"AudioEffectRack\"", "\"patch\": \"InstrumentRack\"").ok());
   CHECK_FALSE(broken("\"id\": " + std::to_string(c2.value), "\"id\": " + std::to_string(c1.value)).ok());  // duplicate
+  // TMM.13-fix1 M8: a device-list refusal names the device (it named the list: with 15 devices the user could not
+  // find the bad one), down into rack chains.
+  {
+    const auto top = broken("\"patch\": \"AudioEffectRack\"", "\"patch\": \"InstrumentRack\"");
+    REQUIRE_FALSE(top.ok());
+    MESSAGE(top.error().message);
+    CHECK(top.error().message.find("$.tracks[0].devices[1]: ") != std::string::npos);
+    std::string t = *text;
+    const std::string from = "\"patch\": \"AudioEffectRack\"";
+    const size_t first = t.find(from), second = t.find(from, first + 1);
+    REQUIRE(second != std::string::npos);
+    t.replace(second, from.size(), "\"patch\": \"InstrumentRack\"");
+    const auto nested = parseProject(t);
+    REQUIRE_FALSE(nested.ok());
+    MESSAGE(nested.error().message);
+    CHECK(nested.error().message.find("$.tracks[0].devices[1].rack.chains[1].devices[0]: ") != std::string::npos);
+  }
 
   // fixtures/schema4 … schema9 are fixtures/full as the schema-4 build (main at 9619d7a), the schema-5 build (main at
   // d2daf37: user devices), the schema-6 build (main at 70ce131: racks), the schema-7 build (main at bd44882: audio),

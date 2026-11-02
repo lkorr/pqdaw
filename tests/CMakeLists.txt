@@ -373,7 +373,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
 # meta (TMM.3): the meta-module framework (registry, expansion, prelude, data) and the Phase accumulator through pqc
 # (standalone check + render, bit-identity with frac(phasor(voice.hz)), pitch over 10 s, both backends); TMM.5: the
 # Wavetable type (data codec, expansion, table jobs, the off-thread TableBuilder, pqc render).
-pq_add_test(pq_tests_meta
+pq_add_test(pq_tests_meta PERF  # TMM.13-fix1 M2: the preview rate of a drag (wall-clock)
   SOURCES
     meta/test_meta.cpp
     meta/test_phase_acc.cpp

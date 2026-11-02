@@ -44,6 +44,7 @@ void TableBuilder::submit(uint32_t target, TableJob job) {
     if (!fresh) ++stats_.replaced;
     else order_.push_back(target);
     it->second.job = std::move(job);
+    it->second.seq = ++submitted_[target];
     it->second.preview = preview;
     it->second.submitted = now;
     it->second.notBefore = now;
@@ -73,15 +74,59 @@ bool TableBuilder::waitIdle(double timeoutSeconds) {
   return ok;
 }
 
+bool TableBuilder::waitFor(std::span<const uint32_t> targets, double timeoutSeconds) {
+  std::unique_lock lock(mutex_);
+  // What each target waits for: its newest job's seq (a target with nothing submitted, or already delivered, none).
+  std::vector<std::pair<uint32_t, uint64_t>> want;
+  for (const uint32_t t : targets) {
+    const auto s = submitted_.find(t);
+    if (s == submitted_.end()) continue;
+    const auto f = finished_.find(t);
+    if (f != finished_.end() && f->second >= s->second) continue;
+    want.emplace_back(t, s->second);
+  }
+  if (want.empty()) return true;
+  ++stats_.urgentWaits;
+  for (const auto& [t, seq] : want) {
+    urgent_.push_back(t);
+    if (auto q = queued_.find(t); q != queued_.end()) q->second.notBefore = q->second.submitted;  // not deferred
+  }
+  wake_.notify_all();
+  auto done = [&] {
+    if (quit_) return true;
+    for (const auto& [t, seq] : want) {
+      const auto f = finished_.find(t);
+      if (f == finished_.end() || f->second < seq) return false;
+    }
+    return true;
+  };
+  const bool ok = idleCv_.wait_for(lock, std::chrono::duration<double>(timeoutSeconds), done);
+  for (const auto& [t, seq] : want)
+    if (auto u = std::find(urgent_.begin(), urgent_.end(), t); u != urgent_.end()) urgent_.erase(u);
+  return ok;
+}
+
 TableBuilder::Stats TableBuilder::stats() const {
   std::lock_guard lock(mutex_);
   return stats_;
 }
 
 void TableBuilder::forget(uint32_t target) {
-  std::lock_guard lock(mutex_);
-  last_.erase(target);
-  ++epoch_[target];
+  TableJob dropped;  // released outside the lock
+  {
+    std::lock_guard lock(mutex_);
+    last_.erase(target);
+    ++epoch_[target];
+    // TMM.13-fix1 L18: a job still queued for the target was for its old user; built later, it would be delivered (and
+    // recorded as the target's last table) for whoever gets the id next.
+    if (auto node = queued_.extract(target)) {
+      dropped = std::move(node.mapped().job);
+      std::erase(order_, target);
+      ++stats_.replaced;
+      finished_[target] = std::max(finished_[target], node.mapped().seq);  // nobody waits for it any more
+      idleCv_.notify_all();
+    }
+  }
 }
 
 void TableBuilder::copyJob(const TableJob& from, TableJob& to) {
@@ -148,8 +193,13 @@ void TableBuilder::run() {
     for (auto it = order_.begin(); it != order_.end(); ++it) {
       const Clock::time_point nb = queued_.at(*it).notBefore;
       if (nb <= now) {
-        pick = it;
-        break;
+        if (pick == order_.end()) pick = it;
+        // TMM.13-fix1 H4: a target someone waits for (a new instance's first table) goes before older jobs.
+        if (urgent_.empty() || std::find(urgent_.begin(), urgent_.end(), *it) != urgent_.end()) {
+          pick = it;
+          break;
+        }
+        continue;
       }
       earliest = std::min(earliest, nb);
     }
@@ -247,11 +297,17 @@ void TableBuilder::run() {
       done_(target, job.key, std::move(table));
       lock.lock();
     }
-    if (deferFull && !quit_ && !queued_.contains(target)) {
+    {  // TMM.13-fix1 H4: this job's first table is out (or it failed): waitFor's condition
+      uint64_t& f = finished_[target];
+      f = std::max(f, q.seq);
+      idleCv_.notify_all();
+    }
+    if (deferFull && !quit_ && !queued_.contains(target) && epoch_[target] == epoch) {  // (forgotten: L18)
       // No newer job arrived meanwhile: the full build, once the target has been quiet for kPreviewSettle.
       // (Not while someone waits for idle: an offline render wants the full table now.)
       q.preview = false;
-      q.notBefore = waiters_ > 0 ? q.submitted
+      const bool urgent = std::find(urgent_.begin(), urgent_.end(), target) != urgent_.end();
+      q.notBefore = waiters_ > 0 || urgent ? q.submitted
                                  : q.submitted + std::chrono::duration_cast<Clock::duration>(
                                                      std::chrono::duration<double>(kPreviewSettle));
       queued_.emplace(target, std::move(q));

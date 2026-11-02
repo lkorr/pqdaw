@@ -46,6 +46,10 @@
 namespace pq::dsp {
 
 inline constexpr uint32_t kKeyframeCycle = 2048;
+// TMM.13-fix1 M6: the largest |sample| a keyframe cycle may hold (+36 dBFS). A cycle is audio (drawn, imported, ±1
+// in practice); beyond about 1e10 the float build loses the waveform and near FLT_MAX it overflows to NaN / Inf, so
+// the builder refuses larger values (and the Wavetable's data check refuses them when a file is read, naming it).
+inline constexpr float kMaxKeyframeSample = 64.0f;
 // TMM.16: two keyframes' phases of a harmonic this close to opposite (radians) count as exactly opposite (step 2).
 inline constexpr double kOppositePhaseTol = 1e-3;
 inline constexpr uint32_t kMaxKeyframes = 256;

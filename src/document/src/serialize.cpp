@@ -1935,7 +1935,24 @@ private:
     for (const ClipSlot& c : t->clips)  // T5.3
       if ((kind == TrackKind::Audio) != c.isAudio())
         failKey(kClips, kind == TrackKind::Audio ? "an audio track holds audio clips only" : "a MIDI track holds note clips only");
-    if (Status s = detail::checkChain(kind, t->devices); !s) failKey(kDevices, s.error().message);
+    // TMM.13-fix1 M8: at the device it is about ($.tracks[0].devices[3], …[3].rack.chains[1].devices[0]).
+    std::vector<size_t> where;
+    if (Status s = detail::checkChain(kind, t->devices, &where); !s) {
+      const PathSeg listAt(&at, K[static_cast<size_t>(kDevices)]);
+      std::deque<PathSeg> segs;
+      const PathSeg* cur = &listAt;
+      for (size_t i = 0; i < where.size(); ++i) {
+        if (i % 2 == 1) {  // a chain of the rack before it
+          cur = &segs.emplace_back(cur, std::string_view("rack"));
+          cur = &segs.emplace_back(cur, std::string_view("chains"));
+          cur = &segs.emplace_back(cur, where[i]);
+          cur = &segs.emplace_back(cur, std::string_view("devices"));
+        } else {
+          cur = &segs.emplace_back(cur, where[i]);
+        }
+      }
+      json::fail(*cur, s.error().message, ErrorCode::InvalidArgument, pos[static_cast<size_t>(kDevices)]);
+    }
     if (t->tuning.mode != TuningMode::Inherit && kind != TrackKind::Midi && kind != TrackKind::Group &&
         kind != TrackKind::Audio)
       failKey(kTuning, "only MIDI, audio and group tracks have a tuning");

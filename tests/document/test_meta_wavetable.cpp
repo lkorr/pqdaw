@@ -5,6 +5,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
@@ -21,6 +22,8 @@
 #include "pq/document/store.h"
 #include "pq/graph/atoms.h"
 #include "pq/meta/wavetable.h"
+#include "pq/dsp/frame_table_build.h"
+#include "pq/meta/data.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -120,6 +123,49 @@ TEST_CASE("wavetable document: keyframe cycles save -> load bit-exact; 64 keyfra
   Result<LoadedProject> rb = parseProject(bad);
   REQUIRE_FALSE(rb.ok());
   CHECK(rb.error().message.find("frames") != std::string::npos);
+}
+
+TEST_CASE("wavetable document: a huge finite cycle sample is refused when read, naming the instance (TMM.13-fix1 M6)") {
+  // The review's fuzz case 259: a cycle scaled to 3e38 (finite, so the reader took it) rendered 71,430 non-finite
+  // samples at the master; from about 1e10 the build already lost the waveform. Cycles are audio: |x| <= 64.
+  auto problemAt = [](float peak) {
+    meta::WavetableData d;
+    std::vector<float> c(pq::dsp::kKeyframeCycle);
+    for (size_t i = 0; i < c.size(); ++i) c[i] = peak * static_cast<float>(std::sin(6.283185307179586 * static_cast<double>(i) / c.size()));
+    c[100] = peak;
+    d.keyframes.push_back({0.0f, std::move(c)});
+    return meta::wavetableDataProblem(*meta::wavetableData(d));
+  };
+  CHECK(problemAt(64.0f).empty());
+  CHECK(problemAt(1.0f).empty());
+  CHECK_FALSE(problemAt(65.0f).empty());
+  const std::string problem = problemAt(3e38f);
+  CHECK(problem.find("beyond") != std::string::npos);
+  CHECK(problem.find("keyframe 0") != std::string::npos);
+  // In a file (written from a valid project, its samples then replaced: the store refuses invalid data): the reader
+  // refuses it with the instance's path.
+  const std::vector<float> half(pq::dsp::kKeyframeCycle, 0.5f), huge(pq::dsp::kKeyframeCycle, 3e38f);
+  Song s;
+  meta::WavetableData ok;
+  ok.keyframes.push_back({0.0f, half});
+  s.edit(ops::setMetaData(s.doc(), s.wt, "", "wavetable", meta::wavetableData(ok)));
+  Result<std::string> saved = serializeProject(s.doc(), s.store.view());
+  REQUIRE(saved.ok());
+  const std::string text = *saved;
+  const std::string from = meta::encodeFloats(half), to = meta::encodeFloats(huge);
+  Result<LoadedProject> rb = parseProject(replaced(text, from, to));
+  REQUIRE_FALSE(rb.ok());
+  CHECK(rb.error().message.find("beyond") != std::string::npos);
+  CHECK(rb.error().message.find("$.tracks") != std::string::npos);
+  // The builder refuses it too (data that reaches it another way never builds a non-finite table).
+  pq::dsp::Keyframe k{0.0f, huge};
+  pq::dsp::FrameTableSpec spec;
+  spec.keyframes = std::span<const pq::dsp::Keyframe>(&k, 1);
+  spec.denseFrames = 1;
+  pq::dsp::FrameTableBuilder b;
+  auto built = b.build(spec);
+  REQUIRE_FALSE(built.ok());
+  CHECK(built.error().message.find("64") != std::string::npos);
 }
 
 // TMM.8 (was TMM.5's "cannot be automated"): the live path lifts the refusal. In Phase mode fold / warp / sync take

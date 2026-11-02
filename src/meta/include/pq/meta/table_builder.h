@@ -94,6 +94,7 @@ public:
     uint64_t errors = 0;     // builds that failed (nothing delivered)
     uint64_t previews = 0;   // preview tables built and delivered (TMM.9)
     uint64_t focused = 0;    // ... of which focused on the frames read (TMM.16)
+    uint64_t urgentWaits = 0;  // waitFor calls that had something to wait for (TMM.13-fix1 H4)
     double lastBuildMs = 0, maxBuildMs = 0;
     double lastPreviewMs = 0, maxPreviewMs = 0;
   };
@@ -119,10 +120,16 @@ public:
   // Any thread but the worker's: waits until no job is queued or running (every `done` returned); deferred full
   // builds (after a preview) run at once. False on timeout.
   bool waitIdle(double timeoutSeconds = 60.0);
+  // TMM.13-fix1 H4: any thread but the worker's. Waits until each of `targets` that has a job queued or running now has
+  // had a table delivered for its newest job (a preview counts: what a new instance's first image needs is a table of
+  // its own state, not the full one; the full build follows as usual), and builds those targets before any other
+  // (urgent). Jobs of other targets (a drag on another instance) are not waited for. False on timeout.
+  bool waitFor(std::span<const uint32_t> targets, double timeoutSeconds);
   bool idle() const;
   Stats stats() const;
   // TMM.16: the caller no longer uses `target` (its id may go to another instance): a later preview for it never
-  // reuses this target's earlier table.
+  // reuses this target's earlier table, and (TMM.13-fix1 L18) a job still queued for it is dropped. A job already
+  // running is delivered (the caller's `done` drops what it no longer wants).
   void forget(uint32_t target);
   // The frames a focused preview of `job` rebuilds over an earlier table built from `before` (ascending; empty: no
   // focus known, or the frame counts differ). Exposed for tests.
@@ -134,6 +141,7 @@ private:
   using Clock = std::chrono::steady_clock;
   struct Queued {
     TableJob job;
+    uint64_t seq = 0;            // per target, counts submits (TMM.13-fix1 H4: what waitFor waits for)
     bool preview = false;        // build a preview first
     Clock::time_point submitted; // when the job was submitted
     Clock::time_point notBefore; // a deferred full build waits until then
@@ -155,6 +163,9 @@ private:
   std::unordered_map<uint64_t, std::weak_ptr<const dsp::FrameTable>> cache_;
   std::unordered_map<uint32_t, Last> last_;           // TMM.16: per target
   std::unordered_map<uint32_t, uint64_t> epoch_;      // TMM.16: per target, counts forget()
+  std::unordered_map<uint32_t, uint64_t> submitted_;  // TMM.13-fix1 H4: per target, the seq of the newest job
+  std::unordered_map<uint32_t, uint64_t> finished_;   // ... the seq of the newest job delivered (or failed, dropped)
+  std::vector<uint32_t> urgent_;                      // targets someone waits for (waitFor): built first
   std::vector<uint32_t> focus_;                       // worker only: a focused preview's frames
   bool running_ = false, quit_ = false;
   uint32_t waiters_ = 0;  // threads in waitIdle (deferred full builds are not deferred then)

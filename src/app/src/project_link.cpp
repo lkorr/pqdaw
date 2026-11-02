@@ -991,6 +991,9 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   {
     std::lock_guard lock(mutex_);
     metaDoc_ = next;
+    // TMM.13-fix1 H2: a Reset (New / Open) drops every meta slot at the next compile. Device ids restart per project,
+    // so a slot keyed by the old project's (device, path, index) would otherwise be the new instance's.
+    if (reset) metaReset_ = true;
   }
   // TMM.5: a MetaData edit, or a param (a baked knob), may change a meta module's table: rebuilt off-thread, no compile.
   // A structural change rebuilds after its compile (compileNow).
@@ -1416,6 +1419,15 @@ std::shared_ptr<const dsp::FrameTable> ProjectLink::metaDefaultTable() {  // mut
   return metaDefault_;
 }
 
+void ProjectLink::resetMetaSlotsLocked() {
+  for (const auto& [key, id] : metaIds_) {
+    metaSlots_[id].live = false;  // the next syncMetaSlots makes a new object for the id (images hold the old one)
+    metaFree_.push_back(id);
+    if (tables_) tables_->forget(id);  // and drops its queued job (L18): nothing built for A reaches B's instance
+  }
+  metaIds_.clear();
+}
+
 uint32_t ProjectLink::metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index) {
   std::lock_guard lock(mutex_);
   MetaKey key{device.value, std::string(path), index};
@@ -1444,7 +1456,7 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
       m = MetaSlot{};                           // images that hold it)
       m.kind = r.request.kind;
       if (m.kind == meta::ResourceKind::FrameTable) {
-        metaFresh_ = true;  // TMM.8-fix: its table is built before the image that reads it is published
+        metaFresh_.push_back(r.slot);  // TMM.8-fix: its table is built before the image that reads it is published
         m.table = std::make_shared<dsp::FrameTableSlot>(metaDefaultTable(), metaTapConfig());
         m.tap = m.table->sharedTap();
       } else if (m.kind == meta::ResourceKind::SignalTap) {  // TX.spectrum: written per engine block
@@ -1645,6 +1657,10 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   lo.clipSlotOf = lo.slotOf;
   lo.tuningTableOf = [this](doc::TuningId id, const doc::TuningDef& def) { return tuningTable(id, def); };
   // TMM.2: the meta-module resource slots (created / kept / released by syncMetaSlots below).
+  {
+    std::lock_guard lock(mutex_);
+    if (std::exchange(metaReset_, false)) resetMetaSlotsLocked();  // TMM.13-fix1 H2: a new document
+  }
   metaTouched_.clear();
   lo.metaSlotOf = [this](doc::DeviceId d, std::string_view path, uint32_t index) { return metaSlotFor(d, path, index); };
   auto lowered = doc::lower(*s, lo, lowered_ ? &*lowered_ : nullptr);
@@ -1656,7 +1672,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   };
   if (!lowered.ok()) return fail(lowered.error());
   doc::LoweredProject& lp = lowered.value();
-  metaFresh_ = false;
+  metaFresh_.clear();
   syncMetaSlots(lp.metaResources);  // before any image is built: resourceFor reads the slots by id
   if (std::exchange(tapsFresh_, false) && onAnalysisTaps) {  // TX.spectrum: displays waiting for a tap look again
     std::function<void(std::function<void()>)> post;
@@ -1669,9 +1685,12 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   refreshMetaTables();              // TMM.5: new instances, settings (the warp mode), the rate: their tables
   // TMM.8-fix: a new frame-table slot (a new instance, or a table variant: a control switching between the baked and
   // the live path, Shape mode) gets its table before the image that reads it plays, so the switch never plays the
-  // other path's table (the old image keeps its own slot until the swap). The compile path waits (≤ 2 s; the builds
-  // are 10 – 300 ms), never the audio thread.
-  if (metaFresh_) waitForMetaTables(2.0);
+  // other path's table (the old image keeps its own slot until the swap). The compile path waits, never the audio
+  // thread. TMM.13-fix1 H4: only for those slots, built before other jobs (a drag on another instance neither delays
+  // the compile nor is forced into full builds), and only for their first table: a baked instance's preview (its own
+  // state at 8 dense frames, ≈ 20 – 40 ms) lets the image play; its full table follows as a click-free swap. So
+  // opening a project with n baked Wavetables blocks for about n previews, not n full bakes. Bounded at 2 s.
+  if (!metaFresh_.empty() && tables_) (void)tables_->waitFor(metaFresh_, 2.0);
   std::vector<engine::ProjectParamLink> links;
   for (const doc::LoweredParam& p : lp.params) {
     const uint32_t slot = slotForParam(p.key);

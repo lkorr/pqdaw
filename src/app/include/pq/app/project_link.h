@@ -334,7 +334,9 @@ public:
   // lists it in LoweredProject::metaResources, and the link creates the object the request asks for: a
   // dsp::FrameTableSlot (holding a one-frame sine at the link's rate until a table is published) or a VoiceTap. Both
   // are Resources entries (frameTables / voiceTaps), kept alive by every image that reads them
-  // (ProjectCompileOptions::keepAlive). A freed id is reused last (FIFO). Taps: one group per voice group of a MIDI
+  // (ProjectCompileOptions::keepAlive). Freed ids are reused in the order they were freed (FIFO), before fresh ones
+  // (a freed slot's object keeps its table alive until its id is given out again). A Reset (New / Open) frees every
+  // id: device ids restart per project, so none of the old project's slots is the new one's (TMM.13-fix1 H2). Taps: one group per voice group of a MIDI
   // track's polyphony, a record per engine block. Any thread (mutex_).
   static constexpr uint32_t kMetaSlots = 4096;
   uint32_t metaSlot(doc::DeviceId device, std::string_view path, uint32_t index) const;  // 0: none
@@ -657,7 +659,11 @@ private:
   using MetaKey = std::tuple<uint32_t, std::string, uint32_t>;  // device, path, request index
   uint32_t metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index);  // compile path (allocates)
   uint32_t metaIdLocked(doc::DeviceId device, std::string_view path, uint32_t index) const;  // mutex_ held
-  bool metaFresh_ = false;  // TMM.8-fix: the last syncMetaSlots made a new frame-table slot (compile path)
+  bool metaReset_ = false;  // TMM.13-fix1 H2: a Reset arrived; the next compile drops every slot first (mutex_)
+  void resetMetaSlotsLocked();  // mutex_ held
+  // TMM.8-fix: the frame-table slots the last syncMetaSlots made (compile path). TMM.13-fix1 H4: the compile waits for
+  // these slots' first tables only (TableBuilder::waitFor), not for the whole builder.
+  std::vector<uint32_t> metaFresh_;
   bool tapsFresh_ = false;  // TX.spectrum: the last syncMetaSlots made a new analysis tap (compile path)
   void syncMetaSlots(const std::vector<doc::LoweredProject::MetaResource>& resources);  // compile path, after lower
   std::shared_ptr<const dsp::FrameTable> metaDefaultTable();                            // mutex_ held

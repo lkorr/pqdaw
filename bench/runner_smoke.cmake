@@ -35,6 +35,12 @@ execute_process(COMMAND "${EXE}" --list --filter "^atom/phasor" RESULT_VARIABLE 
 if(NOT rc EQUAL 0 OR NOT out MATCHES "atom/phasor \\(spl hz, spl reset\\)")
   message(FATAL_ERROR "--list failed (${rc}): ${out}")
 endif()
+# TMM.13-fix1 M3: the whole generic atom sweep runs (an atom the fixture has no resource for crashed it), each row once.
+execute_process(COMMAND "${EXE}" --filter "^atom/" --repeats 1 --warmup 0 --min-time 0 --no-pin
+                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(NOT rc EQUAL 0)
+  message(FATAL_ERROR "the atom sweep failed (${rc}): ${err}")
+endif()
 execute_process(COMMAND "${EXE}" --repeats zero RESULT_VARIABLE rc OUTPUT_QUIET ERROR_QUIET)
 if(NOT rc EQUAL 2)
   message(FATAL_ERROR "a bad option must exit 2, got ${rc}")

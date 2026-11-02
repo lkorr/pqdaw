@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <thread>
 #include <filesystem>
 #include <fstream>
@@ -323,7 +324,150 @@ TEST_CASE("wavetable: TableBuilder — builds off-thread, newest wins per target
   CHECK(tb.stats().built == st.built + 1);
 }
 
-TEST_CASE("wavetable: TableBuilder previews — a slow (baked) job is heard first as an 8-frame preview, the full table once the drag pauses") {
+// TMM.13-fix1 M2: the order and caching rules, without wall-clock: the steps arrive as fast as they are submitted, so
+// any interleaving with the worker is possible; what must hold in every one of them is checked.
+TEST_CASE("wavetable: TableBuilder previews — newest wins, the full table last, only full tables cached (any timing)") {
+  std::mutex m;
+  struct Got {
+    uint64_t key;
+    uint32_t frames;
+  };
+  std::vector<Got> got;
+  std::vector<std::shared_ptr<const dsp::FrameTable>> keep;
+  TableBuilder tb([&](uint32_t, uint64_t key, std::shared_ptr<const dsp::FrameTable> t) {
+    std::lock_guard lock(m);
+    got.push_back({key, t->frames()});
+    keep.push_back(std::move(t));
+  });
+  const DataPtr two = wavetableData(sawToSquare());
+  CHECK_FALSE(TableBuilder::wantsPreview(jobFor(two, {}).spec));
+  CHECK(TableBuilder::wantsPreview(jobFor(two, {0.0, 0.0, 0.3, 0.0, 0.0}).spec));
+  std::vector<uint64_t> sent;
+  for (int i = 1; i <= 30; ++i) {
+    TableJob j = jobFor(two, {0.0, 0.0, 0.02 * i, 0.0, 0.0});
+    sent.push_back(j.key);
+    tb.submit(7, std::move(j));
+  }
+  REQUIRE(tb.waitIdle());
+  std::lock_guard lock(m);
+  REQUIRE(!got.empty());
+  CHECK(got.back().key == sent.back());
+  CHECK(got.back().frames == kWtDefaultFrames);   // the full table last
+  CHECK(tb.cached(sent.back()) == keep.back());   // only full tables are cached
+  size_t previews = 0, full = 0;
+  for (const Got& g : got) {
+    previews += g.frames == TableBuilder::kPreviewFrames ? 1u : 0u;
+    full += g.frames == kWtDefaultFrames ? 1u : 0u;
+    CHECK(std::find(sent.begin(), sent.end(), g.key) != sent.end());
+  }
+  // Delivered in submission order (a key never comes back after a newer one).
+  for (size_t i = 1; i < got.size(); ++i)
+    CHECK(std::find(sent.begin(), sent.end(), got[i - 1].key) <= std::find(sent.begin(), sent.end(), got[i].key));
+  CHECK(previews >= 1u);  // the last step is always previewed before its full build
+  const TableBuilder::Stats st = tb.stats();
+  CHECK(st.built == full);
+  CHECK(st.built + st.shared + st.replaced == st.submitted);
+  CHECK(st.previews == previews);
+}
+
+TEST_CASE("wavetable: TableBuilder forget drops a job still queued for the target (TMM.13-fix1 L18)") {
+  // The worker is held inside target 1's delivery while target 2's job waits; forgetting 2 drops it, so a table for
+  // the id's old user never reaches (or becomes the preview base of) the next one.
+  std::mutex m;
+  std::condition_variable cv;
+  bool release = false, inDone = false;
+  std::vector<uint32_t> delivered;
+  TableBuilder tb([&](uint32_t target, uint64_t, std::shared_ptr<const dsp::FrameTable>) {
+    std::unique_lock lock(m);
+    delivered.push_back(target);
+    inDone = true;
+    cv.notify_all();
+    cv.wait(lock, [&] { return release; });
+  });
+  const DataPtr two = wavetableData(sawToSquare());
+  tb.submit(1, jobFor(two, {}));
+  {
+    std::unique_lock lock(m);
+    REQUIRE(cv.wait_for(lock, std::chrono::seconds(30), [&] { return inDone; }));
+  }
+  tb.submit(2, jobFor(two, {0.0, 0.0, 0.0, 0.25, 0.0}));
+  tb.submit(3, jobFor(two, {0.0, 0.0, 0.0, -0.25, 0.0}));
+  const uint64_t replaced = tb.stats().replaced;
+  tb.forget(2);
+  CHECK(tb.stats().replaced == replaced + 1);
+  {
+    std::lock_guard lock(m);
+    release = true;
+  }
+  cv.notify_all();
+  REQUIRE(tb.waitIdle());
+  std::lock_guard lock(m);
+  CHECK(std::count(delivered.begin(), delivered.end(), 2u) == 0);  // 3 may come twice (a preview, then its full table)
+  CHECK(delivered.front() == 1u);
+  CHECK(std::count(delivered.begin(), delivered.end(), 3u) >= 1);
+  const TableBuilder::Stats st = tb.stats();
+  CHECK(st.built + st.shared + st.replaced == st.submitted);
+}
+
+TEST_CASE("wavetable: TableBuilder waitFor waits for the named targets' first tables only, built first (TMM.13-fix1 H4)") {
+  // The compile path waits for a new instance's table. It used to wait for the whole builder (waitIdle): behind a drag
+  // on another instance (whose deferred full builds it then forced) and every other queued bake.
+  std::mutex m;
+  std::condition_variable cv;
+  bool release = false, inDone = false;
+  struct Got {
+    uint32_t target;
+    uint32_t frames;
+  };
+  std::vector<Got> got;
+  TableBuilder tb([&](uint32_t target, uint64_t, std::shared_ptr<const dsp::FrameTable> t) {
+    std::unique_lock lock(m);
+    got.push_back({target, t->frames()});
+    if (target == 1) {
+      inDone = true;
+      cv.notify_all();
+      cv.wait(lock, [&] { return release; });
+    }
+  });
+  const DataPtr two = wavetableData(sawToSquare());
+  CHECK(tb.waitFor(std::vector<uint32_t>{5}, 0.0));  // nothing submitted for it: nothing to wait for
+  tb.submit(1, jobFor(two, {}));
+  {
+    std::unique_lock lock(m);
+    REQUIRE(cv.wait_for(lock, std::chrono::seconds(30), [&] { return inDone; }));
+  }
+  // Queued while the worker is busy: a baked job for target 2 (an instance being dragged), then target 3's (new).
+  tb.submit(2, jobFor(two, {0.0, 0.0, 0.4, 0.0, 0.0}));
+  tb.submit(3, jobFor(wavetableData(sawToSquare()), {}));  // unbaked: one full build, no preview
+  bool waited = false;
+  std::thread waiter([&] { waited = tb.waitFor(std::vector<uint32_t>{3}, 30.0); });
+  while (tb.stats().urgentWaits == 0) std::this_thread::yield();  // the wait is registered: release the worker
+  {
+    std::lock_guard lock(m);
+    release = true;
+  }
+  cv.notify_all();
+  waiter.join();
+  CHECK(waited);
+  {
+    std::lock_guard lock(m);
+    // Target 3 was built before target 2, which was queued first; 2's job had not run when the wait returned.
+    REQUIRE(got.size() >= 2u);
+    CHECK(got[0].target == 1u);
+    CHECK(got[1].target == 3u);
+    for (const Got& g : got) CHECK(g.target != 2u);
+  }
+  CHECK(tb.waitFor(std::vector<uint32_t>{3}, 0.0));  // delivered: returns at once
+  REQUIRE(tb.waitIdle());
+  std::lock_guard lock(m);
+  CHECK(got.back().target == 2u);
+  CHECK(got.back().frames == kWtDefaultFrames);
+}
+
+// The rate a drag is heard at, wall-clock: the perf tier (TMM.13-fix1 M2: it failed the default tier under suite load,
+// 3 previews of 30 steps while the full bake took 956 ms).
+TEST_CASE("wavetable: TableBuilder previews — a slow (baked) job is heard first as an 8-frame preview, the full table once the drag pauses" *
+          doctest::test_suite("perf")) {
   using Clock = std::chrono::steady_clock;
   std::mutex m;
   struct Got {
@@ -383,7 +527,7 @@ TEST_CASE("wavetable: TableBuilder previews — a slow (baked) job is heard firs
                                            << lat.back() << " ms; preview build " << st.lastPreviewMs << " ms (max "
                                            << st.maxPreviewMs << "), full " << st.lastBuildMs << " ms");
   CHECK(st.built == 1);             // one full table: when the drag stopped
-  CHECK(previews >= 5);             // (load-tolerant here; the rate is measured above and in the app test)
+  CHECK(previews >= 5);
   CHECK(st.built + st.shared + st.replaced == st.submitted);
 }
 

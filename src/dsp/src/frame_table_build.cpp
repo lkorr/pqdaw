@@ -711,8 +711,10 @@ Status FrameTableBuilder::validate(const FrameTableSpec& spec, const FrameTable&
     if (!(kf.position >= prevPos && kf.position <= 1.0f))
       return invalid("keyframe positions must be in [0, 1] and non-decreasing");
     prevPos = kf.position;
-    for (const float v : kf.cycle)
+    for (const float v : kf.cycle) {
       if (!std::isfinite(v)) return invalid("keyframe cycle has a non-finite sample");
+      if (std::fabs(v) > kMaxKeyframeSample) return invalid("keyframe cycle has a sample beyond ±64");
+    }
   }
   if (spec.denseFrames < 1 || spec.denseFrames > kFrameTableMaxFrames) return invalid("dense frames must be 1 to 256");
   const FrameBake& b = spec.bake;

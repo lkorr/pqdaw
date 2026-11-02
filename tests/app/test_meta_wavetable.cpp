@@ -461,6 +461,51 @@ TEST_CASE("meta wavetable: offline renders wait for pending builds; identical sp
   CHECK(sa2->table()->frames() == meta::kWtDefaultFrames);
 }
 
+TEST_CASE("meta wavetable: File > Open of another project never plays the old project's table (TMM.13-fix1 H2)") {
+  // Device ids restart per project, so project B's first Wavetable has the id of A's. Meta slots were keyed by
+  // (device, path, index) and kept over a Reset: B's instance played A's table (and its first preview was built over
+  // it) until its own build arrived. A Reset now drops every slot: B's first block is what a fresh link plays.
+  WtSong a, b;
+  const DeviceId wa = a.track({{0, 4 * kPpq, 0}});
+  const DeviceId wb = b.track({{0, 4 * kPpq, 0}});
+  REQUIRE(wa == wb);
+  a.data(wa, sawToSquare());
+  b.data(wb, oneCycle(dsp::BasicCycle::Sine));
+  auto link = makeLink(a.store.current());
+  REQUIRE(link->waitForMetaTables());
+  const auto slotA = link->metaFrameTable(wa, "", 0);
+  REQUIRE(slotA != nullptr);
+  REQUIRE(slotA->table()->frames() == meta::kWtDefaultFrames);
+  const meta::TableBuilder::Stats before = link->metaTableStats();
+  const doc::ChangeSet none;
+  link->onDocumentChange(StoreEvent{StoreEventKind::Reset, a.store.current(), b.store.current(), none});
+  link->flush();
+  const auto slotB = link->metaFrameTable(wb, "", 0);
+  REQUIRE(slotB != nullptr);
+  CHECK(slotB != slotA);  // a new slot object: nothing of A's carries over
+  CHECK(slotB->table()->frames() == 1);  // B's own table, already there when its image plays (TMM.8-fix's wait)
+  CHECK(sameTable(*slotB->table(), *directTable(b.doc(), wb, "", 48000.0)));
+  CHECK(link->metaTableStats().previews == before.previews);  // no preview was built over A's table
+  // The first blocks after the swap are a fresh link's on B, sample for sample.
+  auto fresh = makeLink(b.store.current());
+  REQUIRE(fresh->waitForMetaTables());
+  Driver da{*link}, db{*fresh};
+  da.run(4);  // stopped: the new images become current (an instant swap)
+  db.run(4);
+  da.out.clear();
+  db.out.clear();
+  link->play(0);
+  fresh->play(0);
+  da.run(64);
+  db.run(64);
+  CHECK(peakOf(db.out, 0, db.out.size()) > 0.05);
+  size_t firstDiff = da.out.size();
+  for (size_t i = 0; i < da.out.size() && firstDiff == da.out.size(); ++i)
+    if (da.out[i] != db.out[i]) firstDiff = i;
+  MESSAGE("first differing sample: " << firstDiff << " of " << da.out.size());
+  CHECK(da.out == db.out);
+}
+
 TEST_CASE("meta wavetable: golden wavetable-morph (saw -> square spectral sweep, crossfade gap, baked warp per mode)") {
   WtSong s;
   constexpr Ticks q = kPpq;  // 0.5 s at 120 BPM

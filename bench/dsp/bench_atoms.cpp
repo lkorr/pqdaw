@@ -201,11 +201,17 @@ int main(int argc, char** argv) {
   };
   for (uint32_t ai = 0; ai < pq::dsp::kAtomCount; ++ai) {
     const auto a = static_cast<Atom>(ai);
-    // T2.6: tuning_hz needs a tuning table (pq_bench_tuning_signal measures it); TMM.2: wavetable_pos / voice_tap need
-    // a slot / tap (bench_frame_table.cpp measures them, watched and unwatched); TMM.6: the oversample converters need
-    // their factor (bench_oversample.cpp).
+    // Atoms whose resource this fixture has no instance of are measured where one exists, chosen by the kernel's
+    // resource field (TMM.13-fix1 M3: a name list missed TMM.8's wavetable_live / wavetable_shape, which then read a
+    // null frame table): a tuning table (tuning_hz: pq_bench_tuning_signal), a frame-table slot or a voice tap
+    // (wavetable_pos / _live / _shape, voice_tap: bench_frame_table.cpp, bench_wave_live.cpp, watched and unwatched).
+    // signal_tap stays: a null tap is its hidden case (a relaxed load). TMM.6: the oversample converters need their
+    // factor (bench_oversample.cpp).
+    const pq::dsp::Resource res = pq::dsp::kernelInfo(a).resource;
+    const bool noFixture =
+        res == pq::dsp::Resource::Tuning || res == pq::dsp::Resource::FrameTable || res == pq::dsp::Resource::VoiceTap;
     const bool converter = ai >= static_cast<uint32_t>(Atom::OversampleUp) && ai <= static_cast<uint32_t>(Atom::OversampleAny);
-    if (a != Atom::TuningHz && a != Atom::WavetablePos && a != Atom::VoiceTap && !converter) add(a, 0, "");
+    if (!noFixture && !converter) add(a, 0, "");
   }
   // Buffer ⊗ param: the second input is a Spl pattern (one vector load per block).
   for (Atom a : {Atom::Add, Atom::Mul, Atom::Div, Atom::Gt, Atom::CentsToHzFast}) add(a, 0b10, " (blk,spl)");
