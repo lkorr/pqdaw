@@ -1233,3 +1233,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: 64 tracks / 158 panels: S-drag step median 1.4–2.5 ms (re-layout 1.1–2.2 ms); existing frames unchanged. Indicative.
 - CPU-efficiency check: unscaled layouts cost nothing new; tiles rebuilt only once the scale settles.
 - Notes/blockers: plain-block labels keep UI font size; circuit-editor atoms, mixers, lane windows not resizable; a step re-lays out the whole project. Q194.
+
+## 2026-11-02 · TX.scope 👁 · task/TX.scope (merged; Q195)
+- Did: Oscilloscope meta module (pass-through; signal_tap(transport.beat, voice_lowest(voice.hz) | 0, L, R)); scope history on the analysis feed (scope-only feed runs no FFT; transfer analyser made lazily); dsp::ScopeTracker/ScopeBeat (PQ Meter's timebases Fixed/Pitch/Beat, locks, McLeod detector, shape alignment, edge trigger — PQ Meter's inverted edge fixed; note-locked period when voiced); the face (chips, SET sheet, persistence, glow, min/max envelope, readouts, freeze, Alt+wheel zoom/pan, Ctrl+drag measure; options = instance data, undoable). PQ Meter features: all but custom trace colours, the MiniMeters preset, measure-card corner/toggle, per-section resets (reasons in Q195). Goldens device-meta-scope, project-meta-scope.
+- Verified: build.ps1 -Affected (EVERYTHING, check, default+slow): 84/88; pq_tests_ui (known NVIDIA flake), pq_tests_playback_s0/s2 (waitForJit timeouts under load), pq_tests_views (SIGSEGV in a different GPU golden per run: browser, then vca face — not on the known-flake list) re-run alone: pass. Orchestrator: looked at device-meta-scope. GPU-golden SIGSEGVs in pq_tests_views are spreading beyond the known list: for TMM.13 to investigate.
+- Perf: ship (loaded): tracker 162 µs detected / 107 µs note per frame; 4 scopes 1.61 ms per 60 Hz frame; tap 1.95/63.3 ns per block hidden/watched; engine block 7.12/7.22 µs.
+- CPU-efficiency check: zero audio cost hidden; the beat tap keeps no region awake; analysis only while painted.
+- Notes/blockers: nested scope in a device circuit has no tap; note lock needs a per-voice expansion; chord common period not done; note names 12-EDO. Q195.
