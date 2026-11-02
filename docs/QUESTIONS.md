@@ -1897,7 +1897,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - Not done (honest remainder): face sliders do not draw a wired param's live modulation (the Device view's knob rings do, in units); nested meta instances inside a device's circuit (`acc1 = meta_phase_acc(…)` in a user patch) are not wire targets from the project view; the project view's wire router can put two wires in one vertical channel (they read as one net); the Device view's cable drag targets params only.
 - Status: open (user: 1, 3, 7; orchestrator: 2's dB choice).
 
-## Q?-TX.smooth-a · 2026-11-01 · TX.smooth · Param smoothing by default: where, which law, what is not smoothed
+## Q187 · 2026-11-01 · TX.smooth · Param smoothing by default: where, which law, what is not smoothed
 - Context: the user (bug 2026-11-01_12-12-09): params click when changed (knob drags, modulation); one generalised mechanism, "everything is smooth sounding by default whenever a new effect is made", no per-type rules.
 - Map of how a param reached the audio thread before: ProjectLink → `Engine::setParam` (SPSC ring, drained per device block) → project param slots → `ImageHost::begin` per 64-frame image block (clamped, splatted into 8-float patterns); automation lanes on device params write the same slots per block (`perSample = false`; only tuning lanes are audio-rate taps); macros are param math; modulation wires are graph values (audio or param rate). A param-rate value is constant over a block (kernels read Spl patterns at frame 0), so every change was a step at a block boundary; only `gain` / `gain_add` targets (2 ms one-pole, T4.x-fix-dsp) and a few device-local `smooth()` calls were smoothed.
 - Choices (provisional; each measured, bench/RESULTS.md TX.smooth):
