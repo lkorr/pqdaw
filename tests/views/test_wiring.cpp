@@ -198,8 +198,8 @@ TEST_CASE("wiring: a cable to another track: hovering its row shows its chain, t
 
 TEST_CASE("wiring: cables follow scrolling in the same frame and damage only themselves") {
   Ui u;
-  REQUIRE(u.ctx.store().dispatch(doc::ops::connectWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoB, "lfo", u.util, "width")->command).ok());
-  REQUIRE(u.ctx.store().dispatch(doc::ops::connectWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoA, "lfo", u.inst, "bright")->command).ok());
+  REQUIRE(u.ctx.store().dispatch(doc::ops::connectTravelWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoB, "lfo", u.util, "width")->command).ok());
+  REQUIRE(u.ctx.store().dispatch(doc::ops::connectTravelWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoA, "lfo", u.inst, "bright")->command).ok());
   u.d.step();
   u.d.step();
   const doc::WireId local = doc::wiresOf(*u.ctx.doc())[0].id;
@@ -246,8 +246,8 @@ TEST_CASE("wiring: cables follow scrolling in the same frame and damage only the
 
 TEST_CASE("wiring: the badge sets the amount (one undo step, Param only), Delete removes the wire; z⁻¹ on a loop") {
   Ui u;
-  REQUIRE(u.ctx.store().dispatch(doc::ops::connectWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoB, "lfo", u.util, "width")->command).ok());
-  REQUIRE(u.ctx.store().dispatch(doc::ops::connectWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoB, "lfo", u.lfoB, "rate", 0.2)->command).ok());
+  REQUIRE(u.ctx.store().dispatch(doc::ops::connectTravelWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoB, "lfo", u.util, "width")->command).ok());
+  REQUIRE(u.ctx.store().dispatch(doc::ops::connectTravelWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoB, "lfo", u.lfoB, "rate", 0.2)->command).ok());
   u.d.step();
   const doc::WireId w = doc::wiresOf(*u.ctx.doc())[0].id, loop = doc::wiresOf(*u.ctx.doc())[1].id;
   REQUIRE(u.cable(w) != nullptr);
@@ -277,7 +277,7 @@ TEST_CASE("wiring: the badge sets the amount (one undo step, Param only), Delete
 
 TEST_CASE("wiring: show / fade / hide (hidden: no cables, no work); the rings show the range and the sweeps") {
   Ui u;
-  REQUIRE(u.ctx.store().dispatch(doc::ops::connectWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoB, "lfo", u.util, "width", 0.25)->command).ok());
+  REQUIRE(u.ctx.store().dispatch(doc::ops::connectTravelWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoB, "lfo", u.util, "width", 0.25)->command).ok());
   u.d.step();
   CableLayer& l = u.layer();
   CHECK(l.mode() == CableMode::Show);

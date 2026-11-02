@@ -308,7 +308,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   const Migration table[] = {{0, migrate0to1}, builtinMigrations()[0], builtinMigrations()[1], builtinMigrations()[2],
                              builtinMigrations()[3], builtinMigrations()[4], builtinMigrations()[5],
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
-                             builtinMigrations()[9], builtinMigrations()[10]};
+                             builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11]};
   const std::string old = schema0Text();
   SUBCASE("an old file is migrated, then decoded") {
     Result<LoadedProject> r = parseProject(old, LoadOptions{table, "old.pqd"});
@@ -335,14 +335,14 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
   SUBCASE("a newer file is refused") {
     std::string newer = readFile(fixturePath("minimal/project.pqd"));
-    const size_t at = newer.find("\"schemaVersion\": 12");
+    const size_t at = newer.find("\"schemaVersion\": 13");
     REQUIRE(at != std::string::npos);
-    newer.replace(at, 19, "\"schemaVersion\": 13");
+    newer.replace(at, 19, "\"schemaVersion\": 14");
     Result<LoadedProject> r = parseProject(newer);
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().code == pq::ErrorCode::Unsupported);
     CHECK(r.error().message ==
-          "$.schemaVersion: the project was saved by a newer pqdaw (schema 13; this build reads up to 12)");
+          "$.schemaVersion: the project was saved by a newer pqdaw (schema 14; this build reads up to 13)");
   }
   SUBCASE("a migration's output is validated like any file") {
     const Migration broken[] = {{0, [](nlohmann::json& d) -> pq::Status {
@@ -354,7 +354,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                                 builtinMigrations()[0], builtinMigrations()[1], builtinMigrations()[2],
                                 builtinMigrations()[3], builtinMigrations()[4], builtinMigrations()[5],
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
-                             builtinMigrations()[9], builtinMigrations()[10]};
+                             builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11]};
     Result<LoadedProject> r = parseProject(old, LoadOptions{broken, {}});
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.rfind("$.timeline.tempo: ", 0) == 0);
@@ -444,7 +444,7 @@ StrippedDevices stripAllDevices(nlohmann::json& doc) {
 }
 
 TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as the current schema") {
-  static_assert(kSchemaVersion == 12);
+  static_assert(kSchemaVersion == 13);
   const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
   REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
 
@@ -453,7 +453,7 @@ TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick 
   CHECK(r->fileSchemaVersion == 1);
   Result<std::string> again = serializeProject(*r->project, r->view);
   REQUIRE(again.ok());
-  CHECK(again->rfind("{\n  \"schemaVersion\": 12,", 0) == 0);
+  CHECK(again->rfind("{\n  \"schemaVersion\": 13,", 0) == 0);
 
   nlohmann::json resaved = nlohmann::json::parse(*again);
   const StrippedDevices sd = stripAllDevices(resaved);  // 2 -> 3: checked on its own below
@@ -535,9 +535,9 @@ TEST_CASE("serialize: modulation wires round-trip and are validated") {
   });
   REQUIRE(devs.size() >= 2);
   Batch b{"wires", {}};
-  Wire a{ids.wire(), devs[0], "lfo", devs[1], "cutoff", -1.0 / 3.0, WireReducer::Sum};
-  Wire c{ids.wire(), devs[1], "out2", devs[1], "level", 1.0, WireReducer::Loudest};
-  Wire d{ids.wire(), devs[1], "x", devs[0], "q", -0.0, WireReducer::Highest};
+  Wire a{ids.wire(), devs[0], "lfo", devs[1], "cutoff", -1.0 / 3.0, WireReducer::Sum, {}, WireLaw::Travel};
+  Wire c{ids.wire(), devs[1], "out2", devs[1], "level", 1.0, WireReducer::Loudest, {}, WireLaw::Travel};
+  Wire d{ids.wire(), devs[1], "x", devs[0], "q", -0.0, WireReducer::Highest, {}, WireLaw::Travel};
   b.commands.push_back(AddWire{a});
   b.commands.push_back(AddWire{c});
   b.commands.push_back(AddWire{d});
@@ -585,12 +585,12 @@ TEST_CASE("serialize: wires from a note source (schema 12) round-trip and are va
   // Schema 11: the project as it is (device wires only) — the same text with the old version loads to the same project.
   {
     Batch b{"wire", {}};
-    b.commands.push_back(AddWire{Wire{ids.wire(), devs[0], "lfo", devs[1], "cutoff", 0.25, WireReducer::Sum}});
+    b.commands.push_back(AddWire{Wire{ids.wire(), devs[0], "lfo", devs[1], "cutoff", 0.25, WireReducer::Sum, {}, WireLaw::Travel}});
     REQUIRE(f.store.dispatch(b).ok());
     Result<std::string> text = serializeProject(f.doc(), f.store.view());
     REQUIRE(text.ok());
     std::string old = *text;
-    old.replace(old.find("\"schemaVersion\": 12"), 19, "\"schemaVersion\": 11");
+    old.replace(old.find("\"schemaVersion\": 13"), 19, "\"schemaVersion\": 11");
     Result<LoadedProject> r = parseProject(old);
     REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
     CHECK(r->fileSchemaVersion == 11);
@@ -603,6 +603,7 @@ TEST_CASE("serialize: wires from a note source (schema 12) round-trip and are va
   n.to = devs[1];
   n.param = "cutoff";
   n.amount = 0.125;
+  n.law = WireLaw::Travel;
   n.reducer = WireReducer::Highest;
   Batch b{"notes", {}};
   b.commands.push_back(AddWire{n});

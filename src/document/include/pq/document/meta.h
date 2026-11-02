@@ -74,12 +74,17 @@ struct ChainStage {
   ChainSignal in = ChainSignal::None;    // what reaches its chain input (a meta device: None when unplugged)
   ChainSignal out = ChainSignal::Audio;  // what it gives the next stage
   int32_t input = -1;                    // a meta device: the input its chain feeds (−1: none); else −1
+  // TX.patching: a free device (Device::free): not in the flow (in None, input −1; the next stage receives what this
+  // one would have received). A meta device then plays its ChainAudio form with nothing in (its inputs read their
+  // defaults, or the wires into them).
+  bool free = false;
 };
 // The ACTIVE devices of `list`, in order, with what flows between them. `notes`: the list starts at the note source (a
 // MIDI track's own chain, an Instrument Rack chain); else at audio. A meta device (of a known type): Notes in → Voices
 // out (meta::Form::ChainNotes), Voices → Voices (ChainVoice), Audio → Audio (ChainAudio), unplugged → Audio
 // (ChainAudio with nothing in: it runs once, freely). `voices` false (a rack chain, whose devices after its first the
-// lowering keeps global) delivers Audio where Voices would arrive. Any other device gives Audio.
+// lowering keeps global) delivers Audio where Voices would arrive. Any other device gives Audio. TX.patching: free
+// devices are listed (ChainStage::free) but take no part in the flow.
 std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool notes, bool voices = true);
 // The meta form of a stage (Nested for a device that is not a chain meta device or has no known type).
 meta::Form chainForm(const ChainStage& s);

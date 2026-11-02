@@ -14,7 +14,8 @@ constexpr std::array<InputSpec, 1> kInputs = {{
     {"in", "Signal in", InputDefault::One, graph::Kind::Real, Reads::Signal},
 }};
 constexpr std::array<ParamSpec, kVcaParams> kParams = {{
-    {"value", "Value", kVcaDefaultPos, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false},
+    // TX.patching: a position whose value (the multiplier) the body computes: added wires add to the multiplier.
+    {"value", "Value", kVcaDefaultPos, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, true},
     {"min", "Min", -kVcaRange, -kVcaRange, kVcaRange, graph::Unit::None, Curve::Linear, 0.0, false, false},
     {"max", "Max", kVcaRange, -kVcaRange, kVcaRange, graph::Unit::None, Curve::Linear, 0.0, false, false},
     {"zone", "Fine zone", 0.4, kVcaZoneMin, kVcaZoneMax, graph::Unit::None, Curve::Linear, 0.0, false, false},
@@ -126,6 +127,10 @@ Status body(Builder& bld) {
     const P fine = b.op("add", {fLo, b.op("mul", {b.op("sub", {pos, pN}), slope})});
     v = b.op("select", {b.op("gt", {u, b.k(0.0)}), outer, fine});
   }
+  // TX.patching (SPEC §15 2026-11-01 "a wire adds its value in the target param's own units"; reverses Q183's knob-space
+  // wires): a wire into `value` adds to the MULTIPLIER, clamped to [min, max] (the knob, automation and macros still
+  // move the position through the curve).
+  if (bld.unitsWired(kVcaValue)) v = b.op("clip", {bld.units(kVcaValue, v), lo, hi});
   // out = in · value: smoothed (2 ms) while a param-rate value moves, one multiply once settled; start 1: the first
   // block is at the value (no fade-in).
   bld.output(0, bld.atom("gain", {in, v, b.k(0.002), b.k(1.0)}, kGain));

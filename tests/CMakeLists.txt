@@ -116,6 +116,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_jit_aot.cpp
     app/test_device_chains.cpp  # T4.1: device chains through the link (migration bit-identity, unit compiles, hand-built graph)
     app/test_wires.cpp  # T4.7: modulation wires (audible LFO wire, hand-built graph diff 0, interpreter == JIT, loops, taps)
+    app/test_patching.cpp  # TX.patching: wires add in units, any output into any param / input at audio rate, free devices
     app/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit: one unit compile, state kept; save/load; wires)
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
     app/test_inspect_lifetime.cpp  # T4.x-fix-safety: cost meters and probe taps live as long as the images that write them
@@ -389,6 +390,7 @@ pq_add_test(pq_tests_document
     document/test_meta_modules.cpp  # TMM.3: meta-module state (file, builders, lowering goldens, renames)
     document/test_meta_wavetable.cpp  # TMM.5: the Wavetable's data in the file, its baked-only controls
     document/test_meta_devices.cpp  # TMM.10: meta devices in chains (voice runs, kinds, copy / presets keep state)
+    document/test_wire_laws.cpp  # TX.patching: wire laws, schema 13 + migration, any output / input, free devices
   DEPS pq_doc)
 
 # library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index

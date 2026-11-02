@@ -1093,10 +1093,10 @@ Status setupDeviceWiring(Shell& shell) {
   if (!lfoA || !lfoB || !util) return Error{ErrorCode::Unknown, "device-wiring: addDevice failed", {}};
   const doc::DeviceId a = lfoA->devices[0], b = lfoB->devices[0], u = util->devices[0];
   const doc::DeviceId inst = doc::findTrackPtr(*store.current(), keysT)->devices.at(0)->id;
-  if (!run(doc::ops::connectWire(*store.current(), store.ids(), b, "lfo", u, "width", 0.35)) ||
-      !run(doc::ops::connectWire(*store.current(), store.ids(), b, "lfo", u, "balance", -0.6)) ||
-      !run(doc::ops::connectWire(*store.current(), store.ids(), b, "lfo", b, "rate", 0.2)) ||
-      !run(doc::ops::connectWire(*store.current(), store.ids(), a, "lfo", inst, "bright", 0.4)))
+  if (!run(doc::ops::connectWire(*store.current(), store.ids(), b, "lfo", u, "width")) ||
+      !run(doc::ops::connectWire(*store.current(), store.ids(), b, "lfo", u, "balance")) ||
+      !run(doc::ops::connectTravelWire(*store.current(), store.ids(), b, "lfo", b, "rate", 0.2)) ||
+      !run(doc::ops::connectWire(*store.current(), store.ids(), a, "lfo", inst, "bright")))
     return Error{ErrorCode::Unknown, "device-wiring: connectWire failed", {}};
   static FixedModulationSource sweeps;
   sweeps = FixedModulationSource();
@@ -1599,7 +1599,7 @@ Status setupProjectPatchNotes(Shell& shell) {
   };
   for (const W& w : {W{ids.lead, "velocity", ids.wt, "position"}, W{ids.lead, "hz", filter, "freq"},
                      W{ids.lead, "gate", filter, "drive"}, W{ids.bass, "velocity", filter, "res"}}) {
-    auto e = doc::ops::connectNoteWire(*ctx.doc(), ctx.store().ids(), w.track, w.port, w.to, w.param, 0.25);
+    auto e = doc::ops::connectNoteWire(*ctx.doc(), ctx.store().ids(), w.track, w.port, w.to, w.param);
     if (!e) return std::move(e).error();
     if (Status s = ctx.store().dispatch(e->command); !s) return s;
   }

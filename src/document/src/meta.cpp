@@ -174,6 +174,13 @@ std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool not
     ChainStage st;
     st.device = &d;
     const meta::Type* t = isMetaDevice(d) ? meta::findType(metaDeviceType(d)) : nullptr;
+    if (d.free) {  // TX.patching: out of the series: nothing reaches it, the flow passes it by (s unchanged)
+      st.free = true;
+      st.in = ChainSignal::None;
+      st.out = ChainSignal::Audio;
+      out.push_back(st);
+      continue;
+    }
     if (t != nullptr) {
       st.input = metaChainInput(d, *t);
       st.in = st.input < 0 ? ChainSignal::None : s;
@@ -203,8 +210,10 @@ meta::Form chainForm(const ChainStage& s) {
 ChainSignal chainSignalAt(const std::vector<DevicePtr>& list, bool notes, uint32_t index) {
   const size_t at = std::min<size_t>(index, list.size());
   const std::vector<DevicePtr> before(list.begin(), list.begin() + static_cast<std::ptrdiff_t>(at));
-  const std::vector<ChainStage> st = chainStages(before, notes);
-  return st.empty() ? (notes ? ChainSignal::Notes : ChainSignal::Audio) : st.back().out;
+  ChainSignal s = notes ? ChainSignal::Notes : ChainSignal::Audio;
+  for (const ChainStage& st : chainStages(before, notes))
+    if (!st.free) s = st.out;  // TX.patching: a free device is not in the flow
+  return s;
 }
 
 std::vector<MetaRename> metaRenames(const graph::PatchFile& before, const graph::PatchFile& after, std::string_view root) {

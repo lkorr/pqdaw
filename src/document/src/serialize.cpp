@@ -44,6 +44,7 @@ constexpr std::array<std::string_view, 13> kParamKindNames = {
 // T4.18: a chain lane's "name" (ParamRef::chain(c, kChainVolume / kChainPan)).
 constexpr std::array<std::string_view, 2> kChainLaneNames = {"volume", "pan"};
 constexpr std::array<std::string_view, 5> kWireReducerNames = {"sum", "last", "highest", "lowest", "loudest"};
+constexpr std::array<std::string_view, 2> kWireLawNames = {"add", "travel"};  // TX.patching (schema 13)
 constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "audioEffect"};
 constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
 constexpr std::array<std::string_view, 3> kAnchorNames = {"reference", "note", "jiFundamental"};
@@ -577,8 +578,12 @@ private:
       w_.integer(wr.to.value);
       w_.key("param");
       w_.string(PathSeg(&el, "param"), wr.param);
-      w_.key("amount");
-      w_.number(PathSeg(&el, "amount"), wr.amount);
+      if (wr.travels()) {  // TX.patching (schema 13): only the legacy law has a depth, and says so
+        w_.key("law");
+        w_.string(el, kWireLawNames[static_cast<size_t>(wr.law)]);
+        w_.key("amount");
+        w_.number(PathSeg(&el, "amount"), wr.amount);
+      }
       if (wr.reducer != WireReducer::Sum) {
         w_.key("reducer");
         w_.string(el, kWireReducerNames[static_cast<size_t>(wr.reducer)]);
@@ -736,6 +741,10 @@ private:
     if (!d.active) {
       w_.key("active");
       w_.boolean(false);
+    }
+    if (d.free) {  // TX.patching (schema 13): out of the series
+      w_.key("free");
+      w_.boolean(true);
     }
     auto values = [&](const char* key, const std::vector<DeviceValue>& v) {
       if (v.empty()) return;
@@ -1920,7 +1929,7 @@ private:
   // so racks nest as deep as memory allows. Each level's own members are read by deviceKey / rackKey / chainKey.
   static constexpr std::string_view kDeviceKeys[] = {"id",       "patch",  "kind", "active", "params",
                                                      "settings", "source", "crlf", "rack", "name", "meta",
-                                                     "chainInput"};
+                                                     "chainInput", "free"};
   static constexpr std::string_view kRackKeys[] = {"chains",     "mappings",         "macroNames", "visibleMacros",
                                                    "variations", "randomizeExclude", "keyUnit",    "voiceChains",
                                                    "showChains", "showMacros"};
@@ -2101,6 +2110,7 @@ private:
         d.chainInput = str(f);
         if (d.chainInput.empty()) r_.failValue(f, "must not be empty (omit it for the type's own chain input)");
         break;
+      case 12: d.free = r_.readBool(f); break;  // TX.patching (schema 13)
     }
   }
 
@@ -2405,7 +2415,9 @@ private:
     for (size_t i = 0; r_.nextElement(at); ++i) {
       const PathSeg el(&at, i);
       // TMM.10-fix2 (schema 12): "notes" (a track's note source) instead of "from".
-      static constexpr std::string_view K[] = {"id", "from", "port", "to", "param", "amount", "reducer", "notes"};
+      // TX.patching (schema 13): "law": "travel" (with its "amount") for a wire migrated from schema ≤ 12; none: the wire
+      // adds in its target's units and has no amount.
+      static constexpr std::string_view K[] = {"id", "from", "port", "to", "param", "amount", "reducer", "notes", "law"};
       Wire w;
       Members m(r_, el, K);
       for (int k; (k = m.next()) >= 0;) {
@@ -2419,10 +2431,13 @@ private:
           case 5: w.amount = r_.readDouble(f); break;
           case 6: w.reducer = static_cast<WireReducer>(name(f, kWireReducerNames, "wire reducer")); break;
           case 7: w.noteSource = TrackId{ref(f)}; break;
+          case 8: w.law = static_cast<WireLaw>(name(f, kWireLawNames, "wire law")); break;
         }
       }
       if (m.has(1) && m.has(7)) json::fail(el, "a wire has either \"from\" (a device) or \"notes\" (a note source)");
-      m.require({0, 2, 3, 4, 5});
+      m.require({0, 2, 3, 4});
+      if (w.travels()) m.require({5});
+      else if (m.has(5)) json::fail(el, "a wire that adds in its target's units has no \"amount\"");
       if (!m.has(7)) m.require({1});
       check(el, detail::checkWire(w));
       if (!v.empty() && !(v.back().id < w.id)) r_.failValue(PathSeg(&el, "id"), "wires must be sorted by id");
@@ -3483,6 +3498,19 @@ Status migrateAddNoteWires(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 12 → 13 (TX.patching, SPEC §15 2026-11-01 "a wire adds its value in the target param's own units"): a schema-13
+// wire without "law" ADDS its signal in its target's units and has no amount; every schema-12 wire is the knob-travel
+// law (Q135), so each gets "law": "travel" and keeps its "amount" — an old project sounds exactly as it did. Devices may
+// carry "free" (out of the series; none in schema 12). Self-contained (renumber, do not merge, if another schema step
+// lands first).
+Status migrateWireLaws(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  if (auto it = doc.find("wires"); it != doc.end() && it->is_array())
+    for (nlohmann::json& w : *it)
+      if (w.is_object()) w["law"] = "travel";
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3495,6 +3523,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {9, migrateAddMetaModules},
     {10, migrateMetaChainSignals},
     {11, migrateAddNoteWires},
+    {12, migrateWireLaws},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

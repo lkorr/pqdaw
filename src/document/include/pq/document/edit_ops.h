@@ -386,6 +386,10 @@ Result<DeviceKind> metaDeviceKindAt(const Project& p, const meta::Type& type, Tr
 // TMM.10-fix1: which input of chain meta device `device` its chain feeds ("" the type's own, "-" unplugged, or an
 // input name; SetDeviceChainInput). One Structural step; an unchanged value is an empty edit.
 EditResult setDeviceChainInput(const Project& p, DeviceId device, std::string input);
+// TX.patching: takes the devices out of their track's series (free: they play only through wires) or puts them back
+// (SetDeviceFree; Device::free). One Structural step; the unchanged ones are skipped. Refused for a device in a rack
+// chain, a rack, or a stock instrument.
+EditResult setDevicesFree(const Project& p, std::span<const DeviceId> devices, bool free);
 EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::string_view type, uint32_t index = kAppend,
                          ChainId chain = {});
 // A param / setting / data of the instance (device, path; "" = the chain device itself). A nested call without state
@@ -428,14 +432,21 @@ EditResult placeClip(const Project& p, IdSource& ids, TrackId track, const ClipS
 
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------------
 // One Batch = one undo step each. Ports are not checked against the device patches (the views offer only real ones).
-// Wires `from`.`port` (an export) to `to`.`param`; a second wire between the same two ports is refused.
-EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to, std::string param,
-                       double amount = kDefaultWireAmount);
+// Wires `from`.`port` (TX.patching: any output, an `out` or an export) to `to`.`param` (a param or an input); a second
+// wire between the same two ports is refused. TX.patching: a new wire ADDS in its target's units (WireLaw::Add, no
+// amount: model.h "Modulation wires").
+EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to, std::string param);
 // TMM.10-fix2: wires the note source of MIDI track `track` (its note output `port`: kNoteOutputs) to `to`.`param`.
-EditResult connectNoteWire(const Project& p, IdSource& ids, TrackId track, std::string port, DeviceId to, std::string param,
-                           double amount = kDefaultWireAmount);
+EditResult connectNoteWire(const Project& p, IdSource& ids, TrackId track, std::string port, DeviceId to, std::string param);
+// TX.patching: a wire under the legacy knob-travel law (WireLaw::Travel, `amount` its depth, clamped to [−1, 1]) — what
+// a schema ≤ 12 file's wires load as. The views never offer it; tests and tools that rebuild such a project use it.
+EditResult connectTravelWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to,
+                             std::string param, double amount = kDefaultWireAmount);
+EditResult connectTravelNoteWire(const Project& p, IdSource& ids, TrackId track, std::string port, DeviceId to,
+                                 std::string param, double amount = kDefaultWireAmount);
 EditResult deleteWires(const Project& p, std::span<const WireId> wires);
-// One amount ([−1, 1], clamped). A drag is several of these inside one store gesture (Param: no compile).
+// One amount ([−1, 1], clamped) of a Travel wire (an Add wire has none: refused). A drag is several of these inside one
+// store gesture (Param: no compile).
 EditResult setWireAmount(const Project& p, WireId wire, double amount);
 EditResult setWireReducer(const Project& p, WireId wire, WireReducer reducer);
 // The wires into `device`.`param` / out of `device`.`port` (any order of the project's list: by id).

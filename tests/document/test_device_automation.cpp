@@ -49,7 +49,7 @@ struct Auto {
     lfo = add(a, "lfo_device");
     filter = add(a, "auto_filter");
     util = add(a, "utility");
-    wire = edit(ops::connectWire(doc(), store.ids(), lfo, "lfo", filter, "freq", 0.25)).wires.at(0);
+    wire = edit(ops::connectTravelWire(doc(), store.ids(), lfo, "lfo", filter, "freq", 0.25)).wires.at(0);
   }
   const Project& doc() const { return *store.current(); }
   const Track& track(TrackId id) const { return *findTrackPtr(doc(), id); }
@@ -239,7 +239,7 @@ TEST_CASE("device automation: the project file keeps device, macro, chain and wi
   f.lane(f.a, ParamRef::chain(chain, kChainPan), "", -1.0f, 1.0f);
   Result<std::string> text = serializeProject(f.doc());
   REQUIRE(text.ok());
-  CHECK(text->rfind("{\n  \"schemaVersion\": 12,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": 13,", 0) == 0);
   CHECK(text->find("\"kind\": \"deviceParam\", \"owner\": " + std::to_string(f.filter.value) + ", \"name\": \"freq\"") !=
         std::string::npos);
   CHECK(text->find("\"kind\": \"chainMixer\", \"owner\": " + std::to_string(chain.value) + ", \"name\": \"pan\"") !=

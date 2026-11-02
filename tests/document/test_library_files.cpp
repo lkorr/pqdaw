@@ -256,9 +256,9 @@ TEST_CASE("library: hot-swap keeps the id, the position, wires and mappings onto
   const DeviceId rack = l.edit(ops::groupDevices(l.doc(), l.store.ids(), grouped)).devices.at(0);
   l.edit(ops::mapMacro(l.doc(), l.store.ids(), rack, 0, sat, "drive"));
   l.edit(ops::mapMacro(l.doc(), l.store.ids(), rack, 1, sat, "output"));
-  const WireId in = l.edit(ops::connectWire(l.doc(), l.store.ids(), util, "out", sat, "drive")).wires.at(0);
-  const WireId gone = l.edit(ops::connectWire(l.doc(), l.store.ids(), util, "out", sat, "output")).wires.at(0);
-  const WireId outw = l.edit(ops::connectWire(l.doc(), l.store.ids(), sat, "env", util, "gain")).wires.at(0);
+  const WireId in = l.edit(ops::connectTravelWire(l.doc(), l.store.ids(), util, "out", sat, "drive")).wires.at(0);
+  const WireId gone = l.edit(ops::connectTravelWire(l.doc(), l.store.ids(), util, "out", sat, "output")).wires.at(0);
+  const WireId outw = l.edit(ops::connectTravelWire(l.doc(), l.store.ids(), sat, "env", util, "gain")).wires.at(0);
   const DeviceLoc before = findDevice(l.doc(), sat);
   const uint32_t index = before.index;
 

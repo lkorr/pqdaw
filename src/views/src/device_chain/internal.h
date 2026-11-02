@@ -110,6 +110,7 @@ struct DeviceChainView::Impl {
   // T4.7: the modulated params of the shown chain, the knob travel their wires sum to, their last sweeps.
   std::vector<ModTarget> ringTargets;
   std::vector<float> ringSpan;
+  std::vector<uint8_t> ringUnits;  // TX.patching: 1 = an added wire reaches it (its sweep is in the param's units)
   std::vector<ModSweep> ringSweeps;
   uint32_t ringTimer = 0;
   bool ringsLit = false;

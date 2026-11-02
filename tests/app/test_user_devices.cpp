@@ -356,7 +356,7 @@ TEST_CASE("user devices: a wire into a param an edit removed is reported and lef
   auto addLfo = ops::addDevice(*k.store.current(), k.store.ids(), k.a, "lfo_device", DeviceKind::AudioEffect);
   REQUIRE(k.store.dispatch(addLfo->command).ok());
   const DeviceId sat = addSat->devices.at(0), lfo = addLfo->devices.at(0);
-  REQUIRE(k.store.dispatch(ops::connectWire(*k.store.current(), k.store.ids(), lfo, "lfo", sat, "drive")->command).ok());
+  REQUIRE(k.store.dispatch(ops::connectTravelWire(*k.store.current(), k.store.ids(), lfo, "lfo", sat, "drive")->command).ok());
   link->flush();
   CHECK(link->stats().invalidWires == 0);
   REQUIRE(link->wireStates().size() == 1);

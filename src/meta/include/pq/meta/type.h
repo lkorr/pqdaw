@@ -54,6 +54,11 @@ struct ParamSpec {
   double curveK = 0.0;                   // Exp0's k
   bool wraps = false;                    // the face drags it around its range (a phase)
   bool bakeable = false;                 // static, it may be baked into table data (TMM.5); else always runtime
+  // TX.patching: the param stores a knob POSITION and the body computes its value (the VCA's `value`: position →
+  // multiplier through its curve). A wire adds in the param's own units, i.e. to that value, not to the position: the
+  // expansion then has an input `<name>_add` (ExpandContext::unitsWired) the body adds after its law (Builder::units),
+  // and the document lowering routes added wires there (pq/document/lower.h "Modulation wires").
+  bool unitsInBody = false;
 };
 double travelToValue(const ParamSpec& p, double t) noexcept;  // t clamped to [0, 1]
 double valueToTravel(const ParamSpec& p, double v) noexcept;  // v clamped to [min, max]
@@ -129,6 +134,13 @@ struct ExpandContext {
   int32_t chainInput = kTypeChainInput;   // chain forms: the input the chain feeds (−1: none; kTypeChainInput: the type's)
   std::span<const double> settings;    // per SettingSpec; empty: every default; a value is clamped to its range
   std::span<const uint8_t> modulated;  // per ParamSpec: 1 = automated, wired or macro-mapped (not static)
+  // TX.patching (chain forms): per InputSpec, 1 = wires reach it (pq/document/lower.h "Modulation wires"): an `in` of
+  // the expansion whatever the form, which reads its default while the call leaves it unconnected; the chain input
+  // under ChainNotes reads the note's signal PLUS that `in` (a wire adds to what the chain gives it). Empty: none.
+  std::span<const uint8_t> wired;
+  // TX.patching (any form; the lowering only): per ParamSpec with unitsInBody, 1 = added wires reach it: the expansion has the input
+  // `<name>_add` (−0 unconnected). Empty: none.
+  std::span<const uint8_t> unitsWired;
   std::span<const uint32_t> slots;     // per resource request index; missing: 0
 };
 
@@ -195,7 +207,10 @@ inline constexpr uint32_t kDefaultIdBase = 64;   // input i's default value
 inline constexpr uint32_t kParamIdBase = 128;    // param i
 inline constexpr uint32_t kOutputIdBase = 256;   // output i (kOutputIdBase + outputs: `done`)
 inline constexpr uint32_t kFixedIdBase = 384;    // the framework's own nodes (voice.gate, not; a Phase chain input
-                                                 // i's voice.hz under ChainNotes: kFixedIdBase + 32 + i)
+                                                 // i's voice.hz under ChainNotes: kFixedIdBase + 32 + i; TX.patching:
+                                                 // a wired chain input's −0 / sum + 64 / + 96 + i, a param's added
+                                                 // units + 112 + i; its `<name>_add` input kInputIdBase + 32 + i and
+                                                 // its −0 kDefaultIdBase + 32 + i)
 inline constexpr uint32_t kSlotIdBase = 512;     // resource slot constant i
 inline constexpr uint32_t kBodyIdBase = 1024;    // body node k: kBodyIdBase + k
 inline constexpr uint32_t kMaxBodyIds = 1u << 20;
@@ -211,6 +226,10 @@ public:
   PortRef param(size_t i) const noexcept { return params_[i]; }
   double setting(size_t i) const noexcept { return settings_[i]; }      // resolved (default when not given)
   bool modulated(size_t i) const noexcept;                               // ExpandContext::modulated
+  // TX.patching: whether added wires reach param i (ParamSpec::unitsInBody, ExpandContext::unitsWired), and `value` (the
+  // param's value in its units, as the body computed it) plus what they add — `value` itself when none reach it.
+  bool unitsWired(size_t i) const noexcept;
+  PortRef units(size_t i, PortRef value);
   PortRef slot(uint32_t index);                                          // the slot id as a constant
   PortRef atom(std::string_view atomName, std::initializer_list<PortRef> ins, uint32_t k, uint16_t repeat = 0);
   PortRef konst(double v, uint32_t k);
@@ -234,6 +253,7 @@ private:
   const ExpandContext* ctx_;
   graph::Patch p_;
   std::vector<PortRef> inputs_, params_;
+  std::vector<PortRef> unitsIn_;  // TX.patching: per param, its `<name>_add` input (kNone: none)
   std::vector<double> settings_;
   std::vector<graph::NodeIndex> outputs_;
   std::vector<uint16_t> outPorts_;

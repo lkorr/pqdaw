@@ -32,7 +32,7 @@ patch Midi5 {
 
 patch meta_phase_acc__d7__ca0ff6bcec569ed8 {
   param freq = 0Hz [0Hz..20000Hz] @label("Frequency") @curve(exp0, 14)
-  param phase = 0 [0..1] @label("Phase")
+  param phase = 0 [0..1] @label("Phase") @wrap
   param amp = 1 [0..4] @label("Amplitude")
   param pitch = 0c [-4800c..4800c] @label("Pitch")
   out out : audio voice mono

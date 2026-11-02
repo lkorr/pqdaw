@@ -99,8 +99,8 @@ Status buildSketchProject(doc::DocumentStore& store) {
   if (Status st = store.dispatch(doc::SetTrackVolume{pad, -4.5f}); !st) return st;
   if (Status st = store.dispatch(doc::SetTrackPan{keys, -0.35f}); !st) return st;
   // Modulation anywhere: the LFO into the group's width and into the keys' saturator drive.
-  (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", gutil, "width", 0.4));
-  (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", sat, "drive", 0.25));
+  (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", gutil, "width"));
+  (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", sat, "drive"));
   // Clips the source nodes show.
   r.clip(keys, 0, 4 * kTicksPerWhole, "Riff", {0, 4, 7, 11});
   r.clip(keys, 6 * kTicksPerWhole, 10 * kTicksPerWhole, "Riff 2", {2, 5, 9});

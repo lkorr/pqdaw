@@ -75,6 +75,9 @@ struct Node {
   bool edited = false;         // Device: a user device (its own patch text, T4.4-fix1); the title says "(edited)"
   bool instrument = false;     // Device: an instrument
   bool expanded = false;       // Device: drawn opened to its atoms (LayoutOptions::expanded)
+  // TX.patching: a free device (doc::Device::free: out of the series): no chain wire reaches or leaves it; placed after
+  // the band's chain until a nudge moves it.
+  bool free = false;
   // TMM.4: a chain meta device ("meta:<type>") whose type has a face: drawn as its face (the block's size), unless
   // opened to its atoms; `meta` is set for every chain meta device (its atoms are generated: opened, read-only).
   const meta::Type* face = nullptr;

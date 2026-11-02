@@ -33,7 +33,7 @@ patch Midi3 {
 }
 
 patch meta_wavetable__d6__3e40a23d87984209 {
-  param phase = 0 [0..1] @label("Phase")
+  param phase = 0 [0..1] @label("Phase") @wrap
   param position = 0 [0..1] @label("Position")
   param fold = 0 [0..1] @label("Fold")
   param warp = 0 [-1..1] @label("Warp")

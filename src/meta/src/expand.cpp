@@ -28,6 +28,8 @@ graph::ParamDecl paramDecl(const ParamSpec& s) {
   d.rangeMin = graph::Constant::real(s.min, s.unit);
   d.rangeMax = graph::Constant::real(s.max, s.unit);
   if (!s.label.empty()) d.attrs.push_back(graph::Attr{"label", {graph::AttrArg{{}, graph::AttrValue::string(std::string(s.label))}}});
+  // TX.patching: a phase the body wraps — a wire adding to it is not clamped to its range (doc lowering, the Add law).
+  if (s.wraps) d.attrs.push_back(graph::Attr{"wrap", {}});
   if (s.curve == Curve::Exp) {
     d.attrs.push_back(graph::Attr{"curve", {graph::AttrArg{{}, graph::AttrValue::ident("exp")}}});
   } else if (s.curve == Curve::Exp0) {
@@ -105,6 +107,16 @@ NodeIndex Builder::take(NodeIndex n, uint32_t id) {
 }
 
 bool Builder::modulated(size_t i) const noexcept { return i < ctx_->modulated.size() && ctx_->modulated[i] != 0; }
+
+bool Builder::unitsWired(size_t i) const noexcept { return i < unitsIn_.size() && unitsIn_[i].node != graph::kNone; }
+
+PortRef Builder::units(size_t i, PortRef value) {
+  if (!unitsWired(i) || value.node == graph::kNone) return value;
+  const NodeIndex sum = take(p_.addAtom(graph::atomId("add")), kFixedIdBase + 112 + static_cast<uint32_t>(i));
+  p_.connect(value, PortRef{sum, 0});
+  p_.connect(unitsIn_[i], PortRef{sum, 1});
+  return PortRef{sum, 0};
+}
 
 PortRef Builder::slot(uint32_t index) {
   const uint32_t id = kSlotIdBase + index;
@@ -238,15 +250,39 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
       def = b.take(p.addConst(graph::Constant::real(1.0)), kDefaultIdBase + static_cast<uint32_t>(i));
     } else
       def = b.take(p.addConst(graph::Constant::real(-0.0)), kDefaultIdBase + static_cast<uint32_t>(i));
-    if (ctx.form != Form::Nested) {
+    // TX.patching: a wired input of a chain form is an `in` too (of any poly: a global wire into a voice expansion).
+    const bool wired = ctx.form != Form::Nested && i < ctx.wired.size() && ctx.wired[i] != 0 && in.kind == graph::Kind::Real;
+    if (ctx.form != Form::Nested && !wired) {
       b.inputs_[i] = PortRef{def, 0};
       continue;
     }
     const graph::PortType inType = in.kind == graph::Kind::Bool ? graph::portType(graph::Kind::Bool, graph::Rate::Infer)
                                                                 : kAudio;
+    if (wired && notes != Reads::Signal) {
+      // The chain input at the note source: the note's signal plus what the wires add (the `in` reads −0 unwired).
+      const NodeIndex z = b.take(p.addConst(graph::Constant::real(-0.0)), kFixedIdBase + 64 + static_cast<uint32_t>(i));
+      const NodeIndex n = b.take(p.addInput(std::string(in.name), inType), kInputIdBase + static_cast<uint32_t>(i));
+      p.connect(PortRef{z, 0}, PortRef{n, 0});
+      const NodeIndex sum = b.take(p.addAtom(graph::atomId("add")), kFixedIdBase + 96 + static_cast<uint32_t>(i));
+      p.connect(PortRef{def, 0}, PortRef{sum, 0});
+      p.connect(PortRef{n, 0}, PortRef{sum, 1});
+      b.inputs_[i] = PortRef{sum, 0};
+      continue;
+    }
     const NodeIndex n = b.take(p.addInput(std::string(in.name), inType), kInputIdBase + static_cast<uint32_t>(i));
     p.connect(PortRef{def, 0}, PortRef{n, 0});
     b.inputs_[i] = PortRef{n, 0};
+  }
+  // TX.patching: the `<name>_add` inputs of params whose added wires the body adds after its law (after the type's own
+  // inputs; only when the lowering asks — a text call never does, so its signature is unchanged).
+  b.unitsIn_.assign(type.params.size(), PortRef{graph::kNone, 0});
+  for (size_t i = 0; i < type.params.size() && i < ctx.unitsWired.size() && i < 16; ++i) {
+    if (ctx.unitsWired[i] == 0 || !type.params[i].unitsInBody) continue;
+    const NodeIndex z = b.take(p.addConst(graph::Constant::real(-0.0)), kDefaultIdBase + 32 + static_cast<uint32_t>(i));
+    const NodeIndex n = b.take(p.addInput(std::string(type.params[i].name) + "_add", kAudio),
+                               kInputIdBase + 32 + static_cast<uint32_t>(i));
+    p.connect(PortRef{z, 0}, PortRef{n, 0});
+    b.unitsIn_[i] = PortRef{n, 0};
   }
   b.params_.resize(type.params.size());
   for (size_t i = 0; i < type.params.size(); ++i)
@@ -321,6 +357,16 @@ uint64_t expansionKey(const Type& type, const ExpandContext& ctx) noexcept {
     mix(std::bit_cast<uint64_t>(std::clamp(v, std::min(s.min, s.max), std::max(s.min, s.max)) + 0.0));
   }
   for (size_t i = 0; i < type.params.size(); ++i) mix(i < ctx.modulated.size() && ctx.modulated[i] != 0 ? 1 : 0);
+  // TX.patching: the wired inputs, only when there are any (an unwired chain keeps its earlier key).
+  if (ctx.form != Form::Nested && std::any_of(ctx.wired.begin(), ctx.wired.end(), [](uint8_t w) { return w != 0; })) {
+    mix(0x200000000ull);
+    for (size_t i = 0; i < type.inputs.size(); ++i) mix(i < ctx.wired.size() && ctx.wired[i] != 0 ? 1 : 0);
+  }
+  if (std::any_of(ctx.unitsWired.begin(), ctx.unitsWired.end(), [](uint8_t w) { return w != 0; })) {
+    mix(0x300000000ull);
+    for (size_t i = 0; i < type.params.size(); ++i)
+      mix(i < ctx.unitsWired.size() && ctx.unitsWired[i] != 0 && type.params[i].unitsInBody ? 1 : 0);
+  }
   mix(ctx.slots.size());
   for (const uint32_t s : ctx.slots) mix(s);
   return h;

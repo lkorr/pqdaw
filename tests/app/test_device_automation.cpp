@@ -273,7 +273,7 @@ TEST_CASE("device automation: an automated gain jump is click-free; the wire amo
       const DeviceId af = s.add("auto_filter");
       s.must(SetDeviceParam{lfo, "rate", 4.0});
       s.must(SetDeviceParam{af, "freq", 400.0});
-      auto w = ops::connectWire(*s.store.current(), s.store.ids(), lfo, "lfo", af, "freq", 0.0);
+      auto w = ops::connectTravelWire(*s.store.current(), s.store.ids(), lfo, "lfo", af, "freq", 0.0);
       REQUIRE(w.ok());
       s.must(w->command);
       if (laneOn)

@@ -280,7 +280,7 @@ TEST_CASE("project patch: deactivated tracks and devices, missing devices, neste
   run(doc::ops::setReturnSendsPreFader(*store.current(), echo, true));
   // A wire into a deactivated device: inactive (drawn dim, not in the graph).
   const doc::DeviceId lfo = named(*store.current(), "Mod")->devices[0]->id;
-  run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", util, "width", 0.3));
+  run(doc::ops::connectTravelWire(*store.current(), store.ids(), lfo, "lfo", util, "width", 0.3));
   // The group routed to sends only.
   REQUIRE(store.dispatch(doc::SetTrackOutput{grp, doc::Output{doc::OutputKind::None, {}}}).ok());
 
@@ -382,8 +382,8 @@ TEST_CASE("project patch: racks (nested, instrument, wired into and out of) matc
   const doc::DeviceId irack = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{padInst})).devices.at(0);
   // Wires from the Mod track's LFO into the nested Utility's width and into the outer rack's first macro.
   const doc::DeviceId lfo = named(*store.current(), "Mod")->devices[0]->id;
-  const doc::WireId toUtil = run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", util, "width", 0.3)).wires.at(0);
-  const doc::WireId toMacro = run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", rack, "macro1", 0.2)).wires.at(0);
+  const doc::WireId toUtil = run(doc::ops::connectTravelWire(*store.current(), store.ids(), lfo, "lfo", util, "width", 0.3)).wires.at(0);
+  const doc::WireId toMacro = run(doc::ops::connectTravelWire(*store.current(), store.ids(), lfo, "lfo", rack, "macro1", 0.2)).wires.at(0);
 
   const doc::Project& p = *store.current();
   const doc::LoweredProject low = lowerOf(p);
@@ -1052,9 +1052,9 @@ TEST_CASE("project patch (TMM.10-fix2): note-source wires on the band and across
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
     REQUIRE(store.dispatch(e->command).ok());
   };
-  run(doc::ops::connectNoteWire(*store.current(), store.ids(), ids.lead, "velocity", ids.wt, "position"));  // per voice
-  run(doc::ops::connectNoteWire(*store.current(), store.ids(), ids.lead, "hz", filter, "freq"));           // reduced
-  run(doc::ops::connectNoteWire(*store.current(), store.ids(), ids.bass, "gate", filter, "res"));          // across tracks
+  run(doc::ops::connectTravelNoteWire(*store.current(), store.ids(), ids.lead, "velocity", ids.wt, "position"));  // per voice
+  run(doc::ops::connectTravelNoteWire(*store.current(), store.ids(), ids.lead, "hz", filter, "freq"));           // reduced
+  run(doc::ops::connectTravelNoteWire(*store.current(), store.ids(), ids.bass, "gate", filter, "res"));          // across tracks
   // Saved and loaded: the same project (the wires' note sources included).
   Result<std::string> text = doc::serializeProject(*store.current(), store.view());
   REQUIRE(text.ok());

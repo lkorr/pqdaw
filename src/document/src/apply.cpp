@@ -2128,6 +2128,33 @@ Res apply_(const Snapshot& s, const SetDeviceChainInput& c, ChangeSet& cs) {  //
   });
 }
 
+Res apply_(const Snapshot& s, const SetDeviceFree& c, ChangeSet& cs) {  // TX.patching
+  const DeviceLoc loc = findDevice(*s, c.device);
+  if (!loc.track) return notFound("device not found");
+  if (loc.device->free == c.free) return s;
+  if (loc.chain != nullptr) return invalid("a free device sits in a track's circuit, not in a rack chain");
+  Result<ListAt> at = locateList(*s, loc.track->id, ChainId{});
+  if (!at) return std::move(at).error();
+  std::vector<DevicePtr> list = *at->list;
+  for (DevicePtr& d : list)
+    if (d->id == c.device) {
+      auto x = std::make_shared<Device>(*d);
+      x->free = c.free;
+      if (c.free && isMetaDevice(*x)) x->kind = DeviceKind::AudioEffect;  // out of the series: not where instruments go
+      d = std::move(x);
+    }
+  std::vector<DeviceId> rekinded;
+  normaliseMetaKinds(list, instrumentsGo(at->kind), &rekinded);  // the series' first device may change
+  PQ_DOC_TRY(checkList(at->kind, list));
+  Res r = editTrack(s, at->path, cs, kChangeStructural, [&](Track& t) {
+    t.devices = std::move(list);
+    return ok();
+  });
+  if (r) cs.devices.push_back(c.device);
+  if (r) cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
+  return r;
+}
+
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
 // np's wire list without the wires touching a device of `gone` (sorted); their ids into cs. No-op without such wires.
@@ -2404,7 +2431,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
-    "Edit Device Patch", "Rename Device", "Chain Input",
+    "Edit Device Patch", "Rename Device", "Chain Input", "Free Device",
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer",
     "Add Chain", "Delete Chain", "Move Chain", "Rename Chain", "Chain Mixer", "Activate Chain", "Solo Chain", "Chain Zone",
     "Map Macro", "Unmap Macro", "Edit Macro Mapping", "Rack Options",

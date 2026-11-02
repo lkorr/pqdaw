@@ -197,9 +197,12 @@ std::string_view metaDeviceType(const Device& d) noexcept {
 
 bool normaliseMetaKinds(std::vector<DevicePtr>& list, bool instrumentsGo, std::vector<DeviceId>* changed) {
   bool any = false;
+  // TX.patching: a free device is not in the series; the first device of the series is the first one not free.
+  size_t first = 0;
+  while (first < list.size() && list[first] && list[first]->free) ++first;
   for (size_t i = 0; i < list.size(); ++i) {
     if (!list[i] || !isMetaDevice(*list[i])) continue;
-    const DeviceKind want = i == 0 && instrumentsGo ? DeviceKind::Instrument : DeviceKind::AudioEffect;
+    const DeviceKind want = i == first && instrumentsGo ? DeviceKind::Instrument : DeviceKind::AudioEffect;
     if (list[i]->kind == want) continue;
     auto c = std::make_shared<Device>(*list[i]);
     c->kind = want;
@@ -287,7 +290,8 @@ bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
   return a.id == b.id && a.patch == b.patch && a.kind == b.kind && a.active == b.active && a.params == b.params &&
          a.settings == b.settings && deepEq(a.source, b.source) && (a.rack == nullptr) == (b.rack == nullptr) && a.name == b.name &&
          deepEq(a.meta, b.meta) &&  // TMM.3 (an empty map is always null: the commands keep it so)
-         a.chainInput == b.chainInput;  // TMM.10-fix1
+         a.chainInput == b.chainInput &&  // TMM.10-fix1
+         a.free == b.free;                // TX.patching
 }
 
 bool shallowChainEq(const Chain& a, const Chain& b) noexcept {

@@ -1456,17 +1456,22 @@ void DeviceChainView::refreshRings() {
   const doc::Project& p = *ctx_.doc();
   m.ringTargets.clear();
   m.ringSpan.clear();
+  m.ringUnits.clear();
   for (const doc::Wire& w : doc::wiresOf(p)) {
     if (m.frameOf(w.to) == nullptr) continue;
+    // TX.patching: an added wire has no amount: no static span (its reach is its signal's), only the live sweep.
+    const float span = w.travels() ? std::fabs(static_cast<float>(w.amount)) : 0.0f;
     bool found = false;
     for (size_t i = 0; i < m.ringTargets.size(); ++i)
       if (m.ringTargets[i].device == w.to && m.ringTargets[i].param == w.param) {
-        m.ringSpan[i] += std::fabs(static_cast<float>(w.amount));
+        m.ringSpan[i] += span;
+        if (!w.travels()) m.ringUnits[i] = 1;
         found = true;
       }
     if (!found) {
       m.ringTargets.push_back({w.to, w.param});
-      m.ringSpan.push_back(std::fabs(static_cast<float>(w.amount)));
+      m.ringSpan.push_back(span);
+      m.ringUnits.push_back(w.travels() ? 0 : 1);
     }
   }
   m.ringSweeps.resize(m.ringTargets.size());
@@ -1508,8 +1513,14 @@ void DeviceChainView::refreshRings() {
         ring.current = -1.0f;
         const ModSweep& s = m.ringSweeps[i];
         if (s.known && (s.up > 0.0f || s.down > 0.0f)) {
-          ring.liveLo = std::clamp(pk - s.down, 0.0f, 1.0f);
-          ring.liveHi = std::clamp(pk + s.up, 0.0f, 1.0f);
+          if (m.ringUnits[i] != 0) {  // TX.patching: the sweep is in the param's units: where those values sit
+            const double v = devices::fromPosition(info, pk);
+            ring.liveLo = std::clamp(static_cast<float>(devices::toPosition(info, v - s.down)), 0.0f, 1.0f);
+            ring.liveHi = std::clamp(static_cast<float>(devices::toPosition(info, v + s.up)), 0.0f, 1.0f);
+          } else {
+            ring.liveLo = std::clamp(pk - s.down, 0.0f, 1.0f);
+            ring.liveHi = std::clamp(pk + s.up, 0.0f, 1.0f);
+          }
           ring.current = 0.5f * (ring.liveLo + ring.liveHi);
         }
       }

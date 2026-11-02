@@ -182,15 +182,21 @@ struct RenameDevice { DeviceId device; std::string name; };
 // TMM.10-fix1: Structural. A chain meta device's chain input (Device::chainInput: "" the type's own, "-" unplugged, or
 // an input of its type by name): which input the previous stage's signal (or the note source) is wired into.
 struct SetDeviceChainInput { DeviceId device; std::string input; };
+// TX.patching: Structural. Takes a device of a track's own list out of the series (free: it plays only through wires)
+// or puts it back where it is in the list (model.h Device::free). Not in a rack chain; never a rack or a stock
+// instrument; a meta device's kind follows (a free one is never where instruments go).
+struct SetDeviceFree { DeviceId device; bool free = true; };
 
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------
-// Structural. Adds `wire` (its id pre-allocated). Both devices must exist; the amount must be in [−1, 1]; a wire with
-// the same source (device, export) and target (device, param) as an existing one is rejected. The ports are not
+// Structural. Adds `wire` (its id pre-allocated). Both devices must exist; a Travel wire's amount must be in [−1, 1], an
+// Add wire's is 1 (TX.patching); a wire with the same source (device, output) and target (device, param or input) as an
+// existing one is rejected. The ports are not
 // checked against the device patches (the document is library-free): a wire naming a port the patch does not have is
 // left out by the lowering.
 struct AddWire { Wire wire; };
 struct RemoveWire { WireId wire; };                                // Structural
-// Param (ParamRef::wireAmount): a runtime value, one param write, never a compile.
+// Param (ParamRef::wireAmount): a runtime value, one param write, never a compile. A Travel wire only (an Add wire has no
+// amount: refused).
 struct SetWireAmount { WireId wire; double amount = kDefaultWireAmount; };
 struct SetWireReducer { WireId wire; WireReducer reducer = WireReducer::Sum; };  // Structural
 
@@ -275,7 +281,7 @@ using CommandVariant = std::variant<
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch, RenameDevice,
-    SetDeviceChainInput, AddWire, RemoveWire, SetWireAmount, SetWireReducer,
+    SetDeviceChainInput, SetDeviceFree, AddWire, RemoveWire, SetWireAmount, SetWireReducer,
     AddChain, RemoveChain, MoveChain, RenameChain, SetChainMixer, SetChainActive, SetChainSolo, SetChainZone,
     AddMacroMapping, RemoveMacroMapping, SetMacroMapping, SetRackOptions,
     AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,

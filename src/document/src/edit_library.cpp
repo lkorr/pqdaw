@@ -19,6 +19,7 @@ EditResult replaceDevice(const Project& p, IdSource& ids, DeviceId device, const
   DevicePtr fresh = cloneDevice(with, ids);
   auto top = std::make_shared<Device>(*fresh);
   top->id = device;
+  top->free = loc.device->free && !top->rack;  // TX.patching: a free device stays out of the series
   Edit e = makeEdit("Hot-Swap Preset");
   e.devices.push_back(device);
   Batch& b = batchOf(e);

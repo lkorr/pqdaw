@@ -496,12 +496,12 @@ std::vector<Case> cases() {
   auto withWire = [withChain](Fixture& f) {
     withChain(f);
     wire = f.store.ids().wire();
-    REQUIRE(f.store.dispatch(AddWire{Wire{wire, chain.inst, "lfo", chain.fx, "width", 0.25, WireReducer::Sum}}).ok());
+    REQUIRE(f.store.dispatch(AddWire{Wire{wire, chain.inst, "lfo", chain.fx, "width", 0.25, WireReducer::Sum, {}, WireLaw::Travel}}).ok());
   };
   c.push_back({"AddWire", [withChain](Fixture& f) -> Command {
                  withChain(f);
                  wire = f.store.ids().wire();
-                 return AddWire{Wire{wire, chain.inst, "lfo", chain.fx, "width", -0.5, WireReducer::Last}};
+                 return AddWire{Wire{wire, chain.inst, "lfo", chain.fx, "width", -0.5, WireReducer::Last, {}, WireLaw::Travel}};
                }, S, [](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.wires == std::vector<WireId>{wire});
                  REQUIRE(findWire(f.doc(), wire));
@@ -804,6 +804,13 @@ std::vector<Case> cases() {
                }, S, [](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.devices == std::vector<DeviceId>{mt.dev});
                  CHECK(findDevice(f.doc(), mt.dev).device->chainInput == "-");
+               }});
+  c.push_back({"SetDeviceFree (TX.patching: out of the series)", [withChain](Fixture& f) -> Command {
+                 withChain(f);
+                 return SetDeviceFree{chain.fx, true};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(std::find(cs.devices.begin(), cs.devices.end(), chain.fx) != cs.devices.end());
+                 CHECK(findDevice(f.doc(), chain.fx).device->free);
                }});
   // ---- compound
   c.push_back({"Batch (param + sequence)", [](Fixture& f) -> Command {

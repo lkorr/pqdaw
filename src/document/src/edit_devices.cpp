@@ -399,37 +399,57 @@ EditResult setDeviceChainInput(const Project& p, DeviceId device, std::string in
   return e;
 }
 
+EditResult setDevicesFree(const Project& p, std::span<const DeviceId> devices, bool free) {  // TX.patching
+  Edit e = makeEdit(free ? "Take Out of Chain" : "Put Into Chain");
+  for (const DeviceId id : devices) {
+    const DeviceLoc l = findDevice(p, id);
+    if (!l.track) return notFound("device not found");
+    if (l.device->free == free) continue;
+    if (free) {
+      if (l.chain != nullptr) return invalid("a device in a rack chain stays in its chain");
+      if (l.device->rack) return invalid("a rack cannot be taken out of its chain");
+      if (l.device->kind == DeviceKind::Instrument && !isMetaDevice(*l.device))
+        return invalid("a stock instrument cannot be taken out of its chain");
+    }
+    e.devices.push_back(id);
+    if (std::find(e.tracks.begin(), e.tracks.end(), l.track->id) == e.tracks.end()) e.tracks.push_back(l.track->id);
+    batchOf(e).commands.push_back(SetDeviceFree{id, free});
+  }
+  return e;
+}
+
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
 namespace {
-// The "Add Wire" edit of `w` (its ends set; the source checked by the caller): a fresh id, the amount clamped.
+// The "Add Wire" edit of `w` (its ends and law set; the source checked by the caller): a fresh id; a Travel wire's
+// amount clamped.
 EditResult addWire(const Project& p, IdSource& ids, Wire w, double amount) {
   if (!findDevice(p, w.to).track) return notFound("wire target device not found");
   for (const Wire& x : wiresOf(p))
     if (x.sameEnds(w)) return invalid("these two ports are already wired");
   w.id = ids.wire();
-  w.amount = std::isfinite(amount) ? std::clamp(amount, -1.0, 1.0) : kDefaultWireAmount;
+  w.amount = !w.travels() ? 1.0 : std::isfinite(amount) ? std::clamp(amount, -1.0, 1.0) : kDefaultWireAmount;
   PQ_DOC_TRY(checkWire(w));
   Edit e = makeEdit("Add Wire");
   e.wires.push_back(w.id);
   batchOf(e).commands.push_back(AddWire{std::move(w)});
   return e;
 }
-}  // namespace
 
-EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to, std::string param,
-                       double amount) {
+EditResult deviceWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to, std::string param,
+                      WireLaw law, double amount) {
   if (!findDevice(p, from).track) return notFound("wire source device not found");
   Wire w;
   w.from = from;
   w.port = std::move(port);
   w.to = to;
   w.param = std::move(param);
+  w.law = law;
   return addWire(p, ids, std::move(w), amount);
 }
 
-EditResult connectNoteWire(const Project& p, IdSource& ids, TrackId track, std::string port, DeviceId to, std::string param,
-                           double amount) {
+EditResult noteWire(const Project& p, IdSource& ids, TrackId track, std::string port, DeviceId to, std::string param,
+                    WireLaw law, double amount) {
   const Track* t = findTrackPtr(p, track);
   if (t == nullptr) return notFound("wire source track not found");
   if (t->kind != TrackKind::Midi) return invalid("only a MIDI track has a note source");
@@ -438,7 +458,27 @@ EditResult connectNoteWire(const Project& p, IdSource& ids, TrackId track, std::
   w.port = std::move(port);
   w.to = to;
   w.param = std::move(param);
+  w.law = law;
   return addWire(p, ids, std::move(w), amount);
+}
+}  // namespace
+
+EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to, std::string param) {
+  return deviceWire(p, ids, from, std::move(port), to, std::move(param), WireLaw::Add, 1.0);
+}
+
+EditResult connectNoteWire(const Project& p, IdSource& ids, TrackId track, std::string port, DeviceId to, std::string param) {
+  return noteWire(p, ids, track, std::move(port), to, std::move(param), WireLaw::Add, 1.0);
+}
+
+EditResult connectTravelWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to,
+                             std::string param, double amount) {
+  return deviceWire(p, ids, from, std::move(port), to, std::move(param), WireLaw::Travel, amount);
+}
+
+EditResult connectTravelNoteWire(const Project& p, IdSource& ids, TrackId track, std::string port, DeviceId to,
+                                 std::string param, double amount) {
+  return noteWire(p, ids, track, std::move(port), to, std::move(param), WireLaw::Travel, amount);
 }
 
 EditResult deleteWires(const Project& p, std::span<const WireId> wires) {
@@ -454,7 +494,9 @@ EditResult deleteWires(const Project& p, std::span<const WireId> wires) {
 }
 
 EditResult setWireAmount(const Project& p, WireId wire, double amount) {
-  if (!findWire(p, wire)) return notFound("wire not found");
+  const Wire* w = findWire(p, wire);
+  if (!w) return notFound("wire not found");
+  if (!w->travels()) return invalid("a wire that adds in its target's units has no amount (scale its signal with a VCA)");
   if (!std::isfinite(amount)) return invalid("wire amount is not finite");
   Edit e = makeEdit("Wire Amount");
   e.wires.push_back(wire);

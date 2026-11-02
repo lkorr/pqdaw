@@ -225,6 +225,7 @@ Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r, st
         if (r.target != 0) return invalid("a wire amount has no target");
         const Wire* w = findWire(p, WireId{r.owner});
         if (w == nullptr) return notFound("automated wire not found");
+        if (!w->travels()) return invalid("a wire that adds in its target's units has no amount to automate");  // TX.patching
         if (!treeHasDevice(host.devices, w->to)) return invalid("a wire amount can only be automated on its target's track");
         return ok();
       }
@@ -289,6 +290,7 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices) {
     const auto [k, listPtr] = work.back();
     work.pop_back();
     const std::vector<DevicePtr>& list = *listPtr;
+    size_t series = 0;  // TX.patching: devices of the series before this one (free devices are not in it)
     for (size_t i = 0; i < list.size(); ++i) {
       const DevicePtr& d = list[i];
       if (!d) return invalid("null device");
@@ -296,13 +298,21 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices) {
       if (d->patch.empty()) return invalid("device has no patch");
       for (size_t j = 0; j < i; ++j)
         if (list[j]->id == d->id) return invalid("device id twice in a chain");
+      if (d->free) {  // TX.patching (model.h Device::free)
+        if (k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain)
+          return invalid("a free device sits in a track's circuit, not in a rack chain");
+        if (d->rack) return invalid("a rack cannot be free (it is a chain of its own)");
+        if (d->kind == DeviceKind::Instrument && !isMetaDevice(*d)) return invalid("a stock instrument cannot be free");
+        if (d->kind == DeviceKind::Instrument) return invalid("a free meta device is not where instruments go");
+      }
       if (d->kind == DeviceKind::Instrument) {
         if (k == ListKind::OtherTrack) return invalid("instruments go on MIDI tracks");
         if (k == ListKind::AudioRackChain) return invalid("an Audio Effect Rack's chains hold audio effects only");
-        if (i != 0)
+        if (series != 0)
           return invalid(k == ListKind::MidiTrack ? "the instrument must be the first device of a MIDI track"
                                                   : "the instrument must be the first device of its chain");
       }
+      if (!d->free) ++series;
       PQ_DOC_TRY(checkValues(d->params, "params"));
       PQ_DOC_TRY(checkValues(d->settings, "settings"));
       PQ_DOC_TRY(checkDeviceMeta(*d));  // TMM.3
@@ -438,7 +448,12 @@ Status checkWire(const Wire& w) {
   }
   PQ_DOC_TRY(checkDeviceValue(w.port, std::nullopt));
   PQ_DOC_TRY(checkDeviceValue(w.param, std::nullopt));
-  if (!finiteIn(w.amount, -1.0, 1.0)) return invalid("wire amount must be in [-1, 1]");
+  if (static_cast<uint8_t>(w.law) > static_cast<uint8_t>(WireLaw::Travel)) return invalid("unknown wire law");
+  if (w.travels()) {
+    if (!finiteIn(w.amount, -1.0, 1.0)) return invalid("wire amount must be in [-1, 1]");
+  } else if (w.amount != 1.0) {  // TX.patching: an added wire has no depth (model.h "Modulation wires")
+    return invalid("a wire that adds in its target's units has no amount (scale its signal with a VCA)");
+  }
   if (static_cast<uint8_t>(w.reducer) > static_cast<uint8_t>(WireReducer::Loudest)) return invalid("unknown wire reducer");
   return ok();
 }

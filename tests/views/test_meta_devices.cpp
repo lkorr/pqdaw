@@ -331,7 +331,7 @@ TEST_CASE("meta devices (views): a preset loads with its slot's kind (state kept
     REQUIRE(u.ctx.store().dispatch(e->command).ok());
     return e->devices.at(0);
   }();
-  auto w = doc::ops::connectWire(*u.ctx.doc(), u.ctx.store().ids(), lfo, "lfo", u.ids.acc, "freq");
+  auto w = doc::ops::connectTravelWire(*u.ctx.doc(), u.ctx.store().ids(), lfo, "lfo", u.ids.acc, "freq");
   REQUIRE_MESSAGE(w.ok(), (w.ok() ? "" : w.error().message));
   REQUIRE(u.ctx.store().dispatch(w->command).ok());
   REQUIRE(hotSwapDevice(u.ctx, u.ids.acc, catalogItemPath("meta:phase_acc")).ok());

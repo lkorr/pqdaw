@@ -143,7 +143,7 @@ TEST_CASE("wires: an LFO on track 1 wired into a filter cutoff on track 3 is aud
   // Wire it (between two notes): one undo step, a compile (both tracks change: an export on 1, an input on 3; the
   // wire merges their units, which start afresh: QUESTIONS Q135).
   const app::LinkStats s0 = link->stats();
-  auto e = ops::connectWire(*f.store.current(), f.store.ids(), f.lfo, "lfo", f.eq, "freq1", 0.6);
+  auto e = ops::connectTravelWire(*f.store.current(), f.store.ids(), f.lfo, "lfo", f.eq, "freq1", 0.6);
   REQUIRE(e.ok());
   const size_t h = f.store.history().cursor();
   REQUIRE(f.store.dispatch(e->command).ok());
@@ -291,9 +291,9 @@ TEST_CASE("wires: a lowered project with wires renders exactly like the hand-bui
   b.commands.push_back(SetDeviceSetting{eq, "type1", 6.0});
   b.commands.push_back(SetDeviceParam{eq, "freq1", 900.0});
   b.commands.push_back(SetDeviceParam{eq, "gain2", 2.0});  // +6 dB at 100 Hz (a linear gain)
-  b.commands.push_back(AddWire{Wire{w1, lfoA, "lfo", eq, "freq1", 0.4, WireReducer::Sum}});
-  b.commands.push_back(AddWire{Wire{w2, lfoB, "lfo", eq, "gain2", -0.3, WireReducer::Sum}});
-  b.commands.push_back(AddWire{Wire{w3, lfoB, "lfo", inst, "bright", 0.25, WireReducer::Sum}});
+  b.commands.push_back(AddWire{Wire{w1, lfoA, "lfo", eq, "freq1", 0.4, WireReducer::Sum, {}, WireLaw::Travel}});
+  b.commands.push_back(AddWire{Wire{w2, lfoB, "lfo", eq, "gain2", -0.3, WireReducer::Sum, {}, WireLaw::Travel}});
+  b.commands.push_back(AddWire{Wire{w3, lfoB, "lfo", inst, "bright", 0.25, WireReducer::Sum, {}, WireLaw::Travel}});
   REQUIRE(store.dispatch(b).ok());
   LowerOptions lo;
   lo.library = &(*lib)->library();
@@ -425,17 +425,17 @@ TEST_CASE("wires: a wire that closes a delay-free loop gets a 1-sample delay; an
   b.commands.push_back(AddDevice{other, makeDevice(lfo2, "lfo_device", DeviceKind::AudioEffect), kAppend});
   const WireId wLoop = ids.wire(), wSelf = ids.wire(), wBack = ids.wire(), wFeed = ids.wire(), wGroup = ids.wire();
   // saturator.wet depends on utility's output: wet → utility.gain closes a loop (delayed).
-  b.commands.push_back(AddWire{Wire{wLoop, sat, "wet", util, "gain", 0.2, WireReducer::Sum}});
+  b.commands.push_back(AddWire{Wire{wLoop, sat, "wet", util, "gain", 0.2, WireReducer::Sum, {}, WireLaw::Travel}});
   // the LFO's export reads its rate through the phasor's frequency, which the scheduler cannot split a loop at
   // (PATCH_LANGUAGE §3, Q43): a loop, delayed like any other.
-  b.commands.push_back(AddWire{Wire{wSelf, lfo, "lfo", lfo, "rate", 0.1, WireReducer::Sum}});
+  b.commands.push_back(AddWire{Wire{wSelf, lfo, "lfo", lfo, "rate", 0.1, WireReducer::Sum, {}, WireLaw::Travel}});
   // the LFO (last in the chain) into the first effect: its export does not depend on its audio input: not a loop.
-  b.commands.push_back(AddWire{Wire{wBack, lfo, "lfo", util, "width", 0.5, WireReducer::Sum}});
+  b.commands.push_back(AddWire{Wire{wBack, lfo, "lfo", util, "width", 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
   // across tracks: the saturator's wet into the group LFO's depth (Keys plays into the group: no loop yet); then the
   // group LFO into the saturator's drive closes Keys' saturator → group LFO → saturator (delayed; one instrument in
   // the track cycle, so the partition merges Keys and the group into one unit).
-  b.commands.push_back(AddWire{Wire{wFeed, sat, "wet", glfo, "depth", 0.5, WireReducer::Sum}});
-  b.commands.push_back(AddWire{Wire{wGroup, glfo, "lfo", sat, "drive", 0.3, WireReducer::Sum}});
+  b.commands.push_back(AddWire{Wire{wFeed, sat, "wet", glfo, "depth", 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
+  b.commands.push_back(AddWire{Wire{wGroup, glfo, "lfo", sat, "drive", 0.3, WireReducer::Sum, {}, WireLaw::Travel}});
   REQUIRE(store.dispatch(b).ok());
   const std::vector<WireState> st = wireStates(*store.current(), (*lib)->library());
   REQUIRE(st.size() == 5);
@@ -454,8 +454,8 @@ TEST_CASE("wires: a wire that closes a delay-free loop gets a 1-sample delay; an
   d.run(200);
   // A loop through two instrument tracks is refused (the engine runs one voice table per image, Q84).
   const WireId wa = ids.wire(), wb = ids.wire();
-  REQUIRE(store.dispatch(Batch{"cross", {AddWire{Wire{wa, lfo, "lfo", inst2, "bright", 0.2, WireReducer::Sum}},
-                                         AddWire{Wire{wb, lfo2, "lfo", inst, "bright", 0.2, WireReducer::Sum}}}})
+  REQUIRE(store.dispatch(Batch{"cross", {AddWire{Wire{wa, lfo, "lfo", inst2, "bright", 0.2, WireReducer::Sum, {}, WireLaw::Travel}},
+                                         AddWire{Wire{wb, lfo2, "lfo", inst, "bright", 0.2, WireReducer::Sum, {}, WireLaw::Travel}}}})
               .ok());
   const std::vector<WireState> st2 = wireStates(*store.current(), (*lib)->library());
   REQUIRE(st2.size() == 7);
@@ -499,7 +499,7 @@ patch Probe {
     b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend});
     b.commands.push_back(AddDevice{t, makeDevice(inst, "Probe", DeviceKind::Instrument), 0});
     b.commands.push_back(AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
-    b.commands.push_back(AddWire{Wire{ids.wire(), inst, "vel", util, "balance", 0.8, reducer}});
+    b.commands.push_back(AddWire{Wire{ids.wire(), inst, "vel", util, "balance", 0.8, reducer, {}, WireLaw::Travel}});
     REQUIRE(store.dispatch(b).ok());
     LowerOptions lo;
     lo.library = &plib;
@@ -543,10 +543,10 @@ TEST_CASE("wires: deleting a device deletes its wires, in one undo step") {
                                      AddDevice{t, makeDevice(lfo, "lfo_device", DeviceKind::AudioEffect), kAppend},
                                      AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend}}})
               .ok());
-  auto e = ops::connectWire(*store.current(), ids, lfo, "lfo", util, "balance", 1.0);
+  auto e = ops::connectTravelWire(*store.current(), ids, lfo, "lfo", util, "balance", 1.0);
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
-  CHECK_FALSE(ops::connectWire(*store.current(), ids, lfo, "lfo", util, "balance").ok());  // already wired
+  CHECK_FALSE(ops::connectTravelWire(*store.current(), ids, lfo, "lfo", util, "balance").ok());  // already wired
   REQUIRE(store.dispatch(ops::deleteDevices(*store.current(), std::vector<DeviceId>{lfo})->command).ok());
   CHECK(wiresOf(*store.current()).empty());
   REQUIRE(store.undo());
@@ -567,7 +567,7 @@ TEST_CASE("wires: a cross-track modulation keeps the target unit awake while it 
   b.commands.push_back(AddDevice{bt, makeDevice(utilB, "utility", DeviceKind::AudioEffect), kAppend});
   // Src plays a note 2.0–2.5 s; Dst never plays (two instruments: the wire stays a bus between their units, Q84).
   b.commands.push_back(AddClip{a, playback_fixture::clip(ids, 0, 16 * kPpq, {playback_fixture::note(ids, 4 * kPpq, kPpq, 0)}, "n")});
-  b.commands.push_back(AddWire{Wire{ids.wire(), utilA, "mid", utilB, "width", 0.5, WireReducer::Sum}});
+  b.commands.push_back(AddWire{Wire{ids.wire(), utilA, "mid", utilB, "width", 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
   REQUIRE(store.dispatch(b).ok());
   auto link = makeLink(store.current());
   REQUIRE(link->lastError().empty());
@@ -615,11 +615,11 @@ TEST_CASE("wires (TMM.10-fix2): the note source's outputs wired per voice and th
     b.commands.push_back(AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
     REQUIRE(store.dispatch(b).ok());
     if (velocityWire) {
-      auto e = ops::connectNoteWire(*store.current(), ids, t, "velocity", inst, "bright", 0.6);
+      auto e = ops::connectTravelNoteWire(*store.current(), ids, t, "velocity", inst, "bright", 0.6);
       REQUIRE(e.ok());
       REQUIRE(store.dispatch(e->command).ok());
     }
-    auto e = ops::connectNoteWire(*store.current(), ids, t, "velocity", util, "balance", 0.8);
+    auto e = ops::connectTravelNoteWire(*store.current(), ids, t, "velocity", util, "balance", 0.8);
     REQUIRE(e.ok());
     REQUIRE(store.dispatch(e->command).ok());
     REQUIRE(store.dispatch(ops::setWireReducer(*store.current(), e->wires.at(0), reducer)->command).ok());

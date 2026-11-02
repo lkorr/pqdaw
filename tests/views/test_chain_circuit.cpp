@@ -207,7 +207,7 @@ TEST_CASE("chain circuit: real wires from each device's out into the next device
   // A modulation wire (the Auto Filter's LFO → the Saturator's drive): dashed, from the export terminal to the param
   // terminal, through the gutter above every box.
   doc::DocumentStore& st = u.ctx.store();
-  const doc::ops::Edit w = run(st, doc::ops::connectWire(*st.current(), st.ids(), u.chain[1], "lfoSignal", u.chain[3], "drive"));
+  const doc::ops::Edit w = run(st, doc::ops::connectTravelWire(*st.current(), st.ids(), u.chain[1], "lfoSignal", u.chain[3], "drive"));
   REQUIRE(w.wires.size() == 1);
   const ChainCircuit m = buildTrackCircuit(*u.ctx.doc(), u.keys, u.options());
   const ChainLink* mod = linkBetween(m, ChainLink::Kind::Modulation, m.roots[1], m.roots[3]);

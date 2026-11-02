@@ -75,7 +75,7 @@ struct Ui {
     util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices[0];
     rack = run(doc::ops::groupDevices(*st.current(), st.ids(), std::vector<doc::DeviceId>{util})).devices[0];
     chain = doc::findDevice(*ctx.doc(), rack).device->rack->chains.at(0)->id;
-    wire = run(doc::ops::connectWire(*st.current(), st.ids(), lfo, "lfo", filter, "freq", 0.3)).wires[0];
+    wire = run(doc::ops::connectTravelWire(*st.current(), st.ids(), lfo, "lfo", filter, "freq", 0.3)).wires[0];
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);

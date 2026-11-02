@@ -561,7 +561,7 @@ WireStatus statusOf(const LoweredProject& lp, WireId w) {
 
 TEST_CASE("meta devices (fix2): the note source's Hz wired to a meta param of its voice run modulates it per voice") {
   MetaChain c;  // Phase accumulator (at the note source) → Wavetable (its voice run) → Auto Filter
-  const WireId w = c.edit(ops::connectNoteWire(c.doc(), c.store.ids(), c.track, "hz", c.wt, "position")).wires.at(0);
+  const WireId w = c.edit(ops::connectTravelNoteWire(c.doc(), c.store.ids(), c.track, "hz", c.wt, "position")).wires.at(0);
   Result<LoweredProject> lp = lowerIt(c.doc());
   REQUIRE_MESSAGE(lp.ok(), (lp.ok() ? std::string() : lp.error().message));
   CHECK(lp->deviceErrors.empty());
@@ -579,9 +579,9 @@ TEST_CASE("meta devices (fix2): the note source's Hz wired to a meta param of it
 
 TEST_CASE("meta devices (fix2): the note source into a stock (global) device param goes through the wire's reducer") {
   MetaChain c;
-  const WireId hz = c.edit(ops::connectNoteWire(c.doc(), c.store.ids(), c.track, "hz", c.filter, "freq")).wires.at(0);
-  const WireId vel = c.edit(ops::connectNoteWire(c.doc(), c.store.ids(), c.track, "velocity", c.filter, "res")).wires.at(0);
-  const WireId gate = c.edit(ops::connectNoteWire(c.doc(), c.store.ids(), c.track, "gate", c.filter, "drive")).wires.at(0);
+  const WireId hz = c.edit(ops::connectTravelNoteWire(c.doc(), c.store.ids(), c.track, "hz", c.filter, "freq")).wires.at(0);
+  const WireId vel = c.edit(ops::connectTravelNoteWire(c.doc(), c.store.ids(), c.track, "velocity", c.filter, "res")).wires.at(0);
+  const WireId gate = c.edit(ops::connectTravelNoteWire(c.doc(), c.store.ids(), c.track, "gate", c.filter, "drive")).wires.at(0);
   c.edit(ops::setWireReducer(c.doc(), vel, WireReducer::Highest));
   Result<LoweredProject> lp = lowerIt(c.doc());
   REQUIRE_MESSAGE(lp.ok(), (lp.ok() ? std::string() : lp.error().message));
@@ -614,7 +614,7 @@ TEST_CASE("meta devices (fix2): a note-source wire plays only while its track ha
   const TrackId a = d.track(TrackKind::Midi);  // BasicSynth: voices
   const TrackId b = d.track(TrackKind::Audio);
   const DeviceId fx = d.edit(ops::addDevice(d.doc(), d.store.ids(), b, "auto_filter", DeviceKind::AudioEffect)).devices.at(0);
-  const WireId w = d.edit(ops::connectNoteWire(d.doc(), d.store.ids(), a, "velocity", fx, "freq")).wires.at(0);
+  const WireId w = d.edit(ops::connectTravelNoteWire(d.doc(), d.store.ids(), a, "velocity", fx, "freq")).wires.at(0);
   {
     Result<LoweredProject> lp = d.lowered();
     CHECK(statusOf(*lp, w) == WireStatus::Lowered);
@@ -636,8 +636,8 @@ TEST_CASE("meta devices (fix2): a note-source wire plays only while its track ha
     CHECK(statusOf(*lp, w) == WireStatus::Inactive);
   }
   // A note-source wire comes only from a MIDI track, from one of its note outputs.
-  CHECK_FALSE(ops::connectNoteWire(d.doc(), d.store.ids(), b, "hz", fx, "freq").ok());
-  CHECK_FALSE(ops::connectNoteWire(d.doc(), d.store.ids(), a, "pitch", fx, "freq").ok());
+  CHECK_FALSE(ops::connectTravelNoteWire(d.doc(), d.store.ids(), b, "hz", fx, "freq").ok());
+  CHECK_FALSE(ops::connectTravelNoteWire(d.doc(), d.store.ids(), a, "pitch", fx, "freq").ok());
 }
 
 // Regression (bug report 2026-11-01_12-15-15, after TMM.10-fix1): meta → meta → … → stock chains lower to patches the

@@ -495,6 +495,13 @@ struct Device {
   // chain feeds — "" the type's own (meta::Type::chainInput), "-" none (unplugged: the module runs once, freely), else
   // an input of its type by name. Other devices: always "".
   std::string chainInput;
+  // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): placed in its track's circuit OUTSIDE the series.
+  // No chain signal reaches it and its output does not go on to the next device (the chain passes it by as if it were
+  // not in the list): it plays only through wires (into its inputs and params, out of its outputs), and costs nothing
+  // while nothing reads it. Its place in the list is only where the Device view shows it. Only in a track's own list
+  // (not in a rack chain); never a rack or a stock instrument (meta devices are fine: they take no chain signal).
+  // Structural (SetDeviceFree).
+  bool free = false;
   bool edited() const noexcept { return source != nullptr; }
   const MetaInstance* metaAt(std::string_view path) const noexcept;  // nullptr: no entry
   const DeviceValue* param(std::string_view key) const noexcept;    // nullptr: the patch's default
@@ -648,18 +655,34 @@ DevicePtr makeDefaultInstrument(DeviceId id);  // makeDevice(id, kDefaultInstrum
 // `port` is one of its note outputs (kNoteOutputs: "hz", "gate", "velocity"). The lowering reads that track's voice
 // terminals: per voice into a device that runs per voice on the same track, through the wire's reducer into any other
 // (a global device of the track, or a device on another track, as an export's wire). Removing the track removes them.
+//
+// TX.patching (SPEC §15 2026-11-01 "a wire adds its value in the target param's own units", "free patching in the
+// circuit"; QUESTIONS Q?-TX.patching-a): a wire's source is ANY output of its device (an `out` as well as an export: a
+// meta module's output, an effect's audio), and its target any real param or any non-const INPUT of its device
+// (`param` names either: a device's audio in, a meta module's frequency or phase-modulation input). The wire's LAW:
+//   Add      every new wire. Its signal is added to the target in the target's OWN units (Hz to a cutoff in Hz, dB to
+//            a gain in dB, a multiplier to a VCA's value, 0 … 1 to a 0 … 1 param), then clamped to the param's range
+//            (a param marked @wrap — a phase — is not clamped: its patch wraps it); into an input, added to what the
+//            input reads (the chain's signal; an unpatched input's default is what it reads only while no wire reaches
+//            it). Scaling is the patch's job (a VCA, a log, a divide): an Add wire has no amount (always 1).
+//   Travel   the law above (Q135), kept only for wires migrated from schema ≤ 12 so old projects sound the same; never
+//            offered for new wires. `amount` is its depth.
 enum class WireReducer : uint8_t { Sum, Last, Highest, Lowest, Loudest };
-inline constexpr double kDefaultWireAmount = 0.5;
+enum class WireLaw : uint8_t { Add, Travel };
+inline constexpr double kDefaultWireAmount = 0.5;  // a Travel wire's default depth (ops::connectTravelWire)
 
 struct Wire {
   WireId id;
   DeviceId from;      // the source device (invalid for a note-source wire)
-  std::string port;   // its export (a note-source wire: its note output)
+  std::string port;   // its output: an `out` or an export (a note-source wire: its note output)
   DeviceId to;        // the target device (may be `from` itself)
-  std::string param;  // its param
-  double amount = kDefaultWireAmount;  // [−1, 1]: knob travel per unit of source
+  std::string param;  // its param, or (TX.patching) one of its inputs
+  // Travel: [−1, 1], knob travel per unit of source. Add: always 1 (an added wire has no depth; a VCA scales it).
+  double amount = 1.0;
   WireReducer reducer = WireReducer::Sum;
   TrackId noteSource;  // TMM.10-fix2: valid: the source is this (MIDI) track's note source
+  WireLaw law = WireLaw::Add;  // TX.patching
+  bool travels() const noexcept { return law == WireLaw::Travel; }
   bool fromNoteSource() const noexcept { return noteSource.valid(); }
   // Whether two wires join the same two ports (a second such wire is refused).
   bool sameEnds(const Wire& o) const noexcept {

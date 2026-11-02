@@ -304,6 +304,9 @@ struct ModulationTap {
   std::string param;
   uint32_t track = 0;  // index into graph.tracks
   std::string port;    // "tap_d<id>_<param>"
+  // TX.patching: the tap is in the param's own units (a site with an added wire: how far the value moved), not in knob
+  // travel (a site with migrated Travel wires only).
+  bool units = false;
 };
 
 struct LoweredParam {

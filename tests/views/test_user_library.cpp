@@ -253,7 +253,7 @@ TEST_CASE("user library: hot-swap replaces the device's preset in place, keeping
   l.run(doc::ops::setDeviceParam(*l.ctx.doc(), l.sat, "drive", 0.9));
   REQUIRE(l.chain().savePreset(l.sat, false));  // "Saturator.pqpreset": drive 0.9
   l.run(doc::ops::setDeviceParam(*l.ctx.doc(), l.sat, "drive", 0.1));
-  const doc::WireId w = l.run(doc::ops::connectWire(*l.ctx.doc(), l.ctx.store().ids(), util, "out", l.sat, "drive")).wires[0];
+  const doc::WireId w = l.run(doc::ops::connectTravelWire(*l.ctx.doc(), l.ctx.store().ids(), util, "out", l.sat, "drive")).wires[0];
   l.reindex();
   if (l.browser().list().renaming()) l.browser().list().renameField()->onCancel();
   const uint32_t index = doc::findDevice(*l.ctx.doc(), l.sat).index;

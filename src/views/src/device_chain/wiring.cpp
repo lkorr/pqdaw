@@ -172,17 +172,25 @@ public:
     const ui::Rgba col = off ? th->text.disabled : rateColour(rate_);
     const float alpha = layer_.mode() == CableMode::Fade ? 0.4f : 1.0f;
     ctx.dl.addCircleFilled(c, rad, ui::withAlpha(ui::lerp(th->surface.raised, col, 0.25f), static_cast<uint32_t>(240 * alpha)));
-    // The amount as an arc from the top (clockwise positive), like a small bipolar knob.
-    const float a0 = -1.5707963f, a1 = a0 + 3.14159265f * static_cast<float>(w->amount);
-    if (std::fabs(a1 - a0) > 1e-3f)
-      ctx.dl.addArcStroke(c, rad - ctx.scale.exact(1.5f), std::min(a0, a1), std::max(a0, a1),
-                          ui::withAlpha(col, static_cast<uint32_t>(255 * alpha)), ctx.scale.exact(2.5f));
+    if (w->travels()) {
+      // The amount as an arc from the top (clockwise positive), like a small bipolar knob.
+      const float a0 = -1.5707963f, a1 = a0 + 3.14159265f * static_cast<float>(w->amount);
+      if (std::fabs(a1 - a0) > 1e-3f)
+        ctx.dl.addArcStroke(c, rad - ctx.scale.exact(1.5f), std::min(a0, a1), std::max(a0, a1),
+                            ui::withAlpha(col, static_cast<uint32_t>(255 * alpha)), ctx.scale.exact(2.5f));
+    } else {
+      // TX.patching: a wire that adds in its target's units has no amount: a plus (it adds), no arc.
+      const float k = rad * 0.5f, t = ctx.scale.exact(1.5f);
+      const ui::Rgba pc = ui::withAlpha(col, static_cast<uint32_t>(255 * alpha));
+      ctx.dl.addRectFilled(ui::Rect{c.x - k, c.y - 0.5f * t, c.x + k, c.y + 0.5f * t}, pc);
+      ctx.dl.addRectFilled(ui::Rect{c.x - 0.5f * t, c.y - k, c.x + 0.5f * t, c.y + k}, pc);
+    }
     // T4.16c: hovered (or selected), the ring is lit and thicker; the layer lights the cable too.
     ctx.dl.addCircleStroke(c, rad, ui::withAlpha(selected_ || focused() || hovered() ? th->accent.focus : col, static_cast<uint32_t>(220 * alpha)),
                            ctx.scale.exact(selected_ || hovered() ? 1.6f : 1.0f));
   }
-  // T4.16c: drag up / down sets the amount.
-  ui::Cursor cursorAt(ui::Vec2) const override { return ui::Cursor::ResizeNS; }
+  // T4.16c: drag up / down sets the amount (TX.patching: a Travel wire's; an added wire has none).
+  ui::Cursor cursorAt(ui::Vec2) const override { return travels() ? ui::Cursor::ResizeNS : ui::Cursor::Pointer; }
   void onHoverChanged(bool h) override {
     markDirty();
     layer_.hoverBadge(wire_, h);
@@ -198,6 +206,7 @@ public:
           return true;
         }
         if (e.button != ui::PointerButton::Left) return false;
+        if (!travels()) return true;  // TX.patching: selected; nothing to drag
         if (e.clickCount == 2) {
           setAmount(doc::kDefaultWireAmount, true);
           return true;
@@ -255,7 +264,7 @@ public:
       char amount[32];
       std::snprintf(amount, sizeof amount, "%+.0f %%", 100.0 * w->amount);
       tip_ = deviceName(ctx_, p, w->from) + " " + w->port + " \xE2\x86\x92 " + deviceName(ctx_, p, w->to) + " " +
-             paramLabel(ctx_, p, w->to, w->param) + "  " + amount;
+             paramLabel(ctx_, p, w->to, w->param) + "  " + (w->travels() ? std::string(amount) : std::string("(adds)"));
       switch (status_) {
         case doc::WireStatus::Delayed: tip_ += "  (closes a loop: delayed by 1 sample)"; break;
         case doc::WireStatus::Inactive: tip_ += "  (an end is switched off)"; break;
@@ -267,12 +276,20 @@ public:
     return tip_;
   }
   ui::InfoText info() const override {
+    if (!travels())
+      return {"Modulation Wire", "Adds its signal to the parameter in the parameter's own units (Hz to a frequency, "
+                                 "0 to 1 to a 0 to 1 knob), clamped to its range; scale it with a VCA. Delete removes it; "
+                                 "right-click for more. z-1: the wire closes a loop and is delayed by one sample."};
     return {"Modulation Wire", "Drag up or down to set how far it moves the knob (Shift: fine); double-click: 50 %. "
                                "Delete removes it; right-click for more. z-1: the wire closes a loop "
                                "and is delayed by one sample."};
   }
 
 private:
+  bool travels() const {
+    const doc::Wire* w = doc::findWire(*ctx_.doc(), wire_);
+    return w != nullptr && w->travels();
+  }
   void setAmount(double a, bool ownStep) {
     auto e = doc::ops::setWireAmount(*ctx_.doc(), wire_, a);
     if (!e || e->empty()) return;
@@ -287,6 +304,7 @@ private:
     ViewContext* ctx = &ctx_;
     const doc::WireId id = wire_;
     items.push_back(ui::MenuItem::item("Delete Wire", [layer] { layer->deleteSelected(); }, "Delete"));
+    if (w->travels()) {
     items.push_back(ui::MenuItem::item("Invert Amount", [ctx, id] {
       if (const doc::Wire* x = doc::findWire(*ctx->doc(), id))
         if (auto e = doc::ops::setWireAmount(*ctx->doc(), id, -x->amount); e && !e->empty()) (void)ctx->store().dispatch(e->command);
@@ -295,6 +313,7 @@ private:
       if (auto e = doc::ops::setWireAmount(*ctx->doc(), id, doc::kDefaultWireAmount); e && !e->empty())
         (void)ctx->store().dispatch(e->command);
     }));
+    }
     if (rate_ == 2) {  // a voice source: how its voices become one value (SPEC §7.4)
       static constexpr const char* kNames[] = {"Sum", "Last Voice", "Highest", "Lowest", "Loudest"};
       std::vector<ui::MenuItem> sub;

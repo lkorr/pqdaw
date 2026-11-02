@@ -160,7 +160,7 @@ TEST_CASE("racks: group, chains, mappings, variations — one undo step each") {
   const DeviceId lfo = r.add(r.midi, "lfo_device");
   const DeviceId sat = r.add(r.midi, "saturator");
   const DeviceId util = r.add(r.midi, "utility");
-  const WireId w = r.edit(ops::connectWire(r.doc(), ids, lfo, "lfo", sat, "drive", 0.25)).wires.at(0);
+  const WireId w = r.edit(ops::connectTravelWire(r.doc(), ids, lfo, "lfo", sat, "drive", 0.25)).wires.at(0);
   SUBCASE("Ctrl+G keeps ids, wires and order; the instrument makes an Instrument Rack") {
     const ops::Edit e = r.edit(ops::groupDevices(r.doc(), ids, std::vector<DeviceId>{util, sat}));
     const DeviceId rack = e.devices.at(0);
@@ -641,11 +641,11 @@ TEST_CASE("racks: Ungroup (T4.17) — a one-chain rack becomes its devices in pl
   const DeviceId sat = r.add(r.midi, "saturator");
   const DeviceId util = r.add(r.midi, "utility");
   const DeviceId tail = r.add(r.midi, "utility");
-  const WireId w = r.edit(ops::connectWire(r.doc(), ids, lfo, "lfo", sat, "drive", 0.25)).wires.at(0);
+  const WireId w = r.edit(ops::connectTravelWire(r.doc(), ids, lfo, "lfo", sat, "drive", 0.25)).wires.at(0);
   const DeviceId rack = r.edit(ops::groupDevices(r.doc(), ids, std::vector<DeviceId>{sat, util})).devices.at(0);
   r.edit(ops::mapMacro(r.doc(), ids, rack, 0, util, "width", 90.0));
   // A wire into the rack's own macro goes with the rack.
-  const WireId toMacro = r.edit(ops::connectWire(r.doc(), ids, lfo, "lfo", rack, "macro2", 0.5)).wires.at(0);
+  const WireId toMacro = r.edit(ops::connectTravelWire(r.doc(), ids, lfo, "lfo", rack, "macro2", 0.5)).wires.at(0);
   r.edit(ops::setDeviceParam(r.doc(), sat, "drive", 0.7));
   const Snapshot before = r.store.current();
 

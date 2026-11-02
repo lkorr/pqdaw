@@ -414,7 +414,7 @@ TEST_CASE("user devices: a wire into a param an edit removed is Invalid (kept, n
   REQUIRE(add.ok());
   REQUIRE(t.store.dispatch(add->command).ok());
   const DeviceId lfoDev = add->devices.at(0);
-  auto w = ops::connectWire(*t.store.current(), t.store.ids(), lfoDev, "lfo", t.sat, "drive");
+  auto w = ops::connectTravelWire(*t.store.current(), t.store.ids(), lfoDev, "lfo", t.sat, "drive");
   REQUIRE(w.ok());
   REQUIRE(t.store.dispatch(w->command).ok());
   const WireId wire = w->wires.at(0);

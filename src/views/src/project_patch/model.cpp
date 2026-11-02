@@ -236,15 +236,22 @@ struct Builder {
       if (n.instrument) break;
       if (sp.type.rate == graph::Rate::Const) continue;  // a structural setting (a literal at the call)
       if (params != nullptr && params->count(sp.name) != 0) continue;
-      n.inputs.push_back({sp.name, firstAudio ? std::string() : sp.name});
+      // TX.patching: `<param>_add` is where a param's added wires enter (the VCA's value): drawn as the param's pin.
+      if (params != nullptr && sp.name.size() > 4 && sp.name.ends_with("_add") &&
+          params->count(std::string_view(sp.name).substr(0, sp.name.size() - 4)) != 0)
+        continue;
+      // TX.patching: a free device's audio input carries no chain signal: named like its other inputs.
+      n.inputs.push_back({sp.name, firstAudio && !d.free ? std::string() : sp.name});
       firstAudio = false;
     }
     if (sig.inputs.empty() && !n.instrument) n.inputs.push_back({"in", ""});
     if (modIt != modulatedParams.end())
       for (const std::string& prm : modIt->second) {
+        if (n.input(prm) >= 0) continue;  // TX.patching: a wired input already has its pin
         const doc::DeviceParamInfo* pi = info ? info->param(prm) : nullptr;
         n.inputs.push_back({prm, pi && !pi->label.empty() ? pi->label : prm, true});
       }
+    n.free = d.free;  // TX.patching
     bool firstOut = true;
     for (const graph::SubcircuitPort& sp : sig.outputs) {
       n.outputs.push_back({sp.name, firstOut ? std::string() : sp.name});
@@ -417,8 +424,8 @@ struct Builder {
     } else {
       chain.push_back(b.source);
     }
-    for (const uint32_t d : b.devices)
-      if (out.nodes[d].lowered && !out.nodes[d].instrument) chain.push_back(d);
+    for (const uint32_t d : b.devices)  // TX.patching: free devices are not in the chain
+      if (out.nodes[d].lowered && !out.nodes[d].instrument && !out.nodes[d].free) chain.push_back(d);
     chain.push_back(b.mixer);
     for (size_t i = 0; i + 1 < chain.size(); ++i) {
       Edge e;
@@ -487,9 +494,13 @@ struct Builder {
     Band& b = out.bands[bi];
     std::vector<uint32_t> order;
     order.push_back(b.source);
-    order.insert(order.end(), b.devices.begin(), b.devices.end());
+    for (const uint32_t d : b.devices)
+      if (!out.nodes[d].free) order.push_back(d);
     order.push_back(b.mixer);
     if (b.output != kNone) order.push_back(b.output);
+    // TX.patching: free devices (out of the series) after the band's chain, in list order (a nudge moves them anywhere).
+    for (const uint32_t d : b.devices)
+      if (out.nodes[d].free) order.push_back(d);
     for (const uint32_t n : order) {
       out.nodes[n].x = x;
       x += out.nodes[n].w + m::kNodeGap;
@@ -873,8 +884,11 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
       }
       const auto call = tp.indexOf(callId);
       if (!call) return "a modulation wire into a block without a call";
-      const auto in = tp.findInput(*call, pin);
+      auto in = tp.findInput(*call, pin);
       if (!in) return "a modulation wire into a param the call does not have";
+      // TX.patching: a param whose patch adds its wires after its own law takes them at `<param>_add`.
+      if (tp.adjacency().driver[tp.flatInput(*call, *in)] == graph::kNone)
+        if (const auto units = tp.findInput(*call, pin + "_add")) in = units;
       if (tp.adjacency().driver[tp.flatInput(*call, *in)] == graph::kNone)
         return "a modulation wire into a param pin the track patch leaves unconnected";
     }

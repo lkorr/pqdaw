@@ -72,7 +72,11 @@ namespace pq::doc {
 // 12 = wires from the note source (TMM.10-fix2, model.h "Modulation wires"): a wire may carry "notes": <MIDI track id>
 // (its source is that track's note source, its "port" a note output: "hz", "gate", "velocity") instead of "from";
 // migration 11 → 12 changes nothing.
-inline constexpr int32_t kSchemaVersion = 12;
+// 13 = wire laws and free devices (TX.patching, model.h "Modulation wires", Device::free): a wire without "law" adds its
+// signal in its target's units and has no "amount"; "law": "travel" (with "amount") is the knob-travel law; a wire's
+// "port" may name any output of its device and its "param" any param or input. A device may carry "free": true (out of
+// its track's series). Migration 12 → 13 gives every wire "law": "travel" (old projects keep their sound).
+inline constexpr int32_t kSchemaVersion = 13;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader

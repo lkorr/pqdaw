@@ -13,6 +13,7 @@
 #include <span>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "pq/core/automation_curve.h"
 #include "pq/document/audibility.h"
@@ -81,6 +82,8 @@ struct Callees {
   std::unordered_map<uint32_t, std::shared_ptr<const std::vector<MetaSite>>> metaSites;
   // TMM.10-fix1: each active chain meta device's stage (what reaches its chain input: metaStages).
   std::unordered_map<uint32_t, ChainStage> metaStage;
+  // TX.patching: the free meta devices expanded in their track's voice context (MetaExpander::chainDevice).
+  std::unordered_set<uint32_t> freeVoiced;
   const ChainStage* stageOf(const Device& d) const noexcept {
     const auto it = metaStage.find(d.id.value);
     return it != metaStage.end() ? &it->second : nullptr;
@@ -160,8 +163,11 @@ public:
   }
 
   // A chain meta device's expansion, its form from what reaches its chain input (TMM.10-fix1: `stage`, pq/document/
-  // meta.h chainStages; never from its type or kind), or null when its type is unknown.
-  const graph::Patch* chainDevice(const Device& d, const Track& t, const ChainStage& stage) {
+  // meta.h chainStages; never from its type or kind), or null when its type is unknown. TX.patching: a FREE device
+  // (out of the series) plays its Nested form — every input an `in` with its default, outputs of any poly — in the
+  // track's voice context when the track plays voices (`voiced`), so polyphony follows its wires: the compiler runs it
+  // per voice exactly when a per-voice signal reaches it or its output feeds voice processing (pq/graph/infer.h).
+  const graph::Patch* chainDevice(const Device& d, const Track& t, const ChainStage& stage, bool voiced = false) {
     const meta::Type* type = meta::findType(metaDeviceType(d));
     if (type == nullptr) return nullptr;
     const std::vector<double> settings = metaSettings(d, "", *type);
@@ -171,6 +177,33 @@ public:
     c.form = chainForm(stage);
     c.voice = c.form == meta::Form::ChainNotes || c.form == meta::Form::ChainVoice;
     c.chainInput = stage.input;
+    if (d.free) {
+      c.form = meta::Form::Nested;
+      c.voice = voiced;
+      c.chainInput = meta::kTypeChainInput;
+    }
+    // TX.patching: the inputs wires reach become `in`s of the expansion (model.h "Modulation wires": the Add law; a
+    // Travel wire never targets an input).
+    std::vector<uint8_t> wired(type->inputs.size(), 0);
+    bool anyWired = false;
+    for (const Wire& w : wiresOf(p_))
+      if (w.to == d.id && !w.travels())
+        if (const int32_t i = type->inputIndex(w.param); i >= 0 && type->inputs[static_cast<size_t>(i)].kind == graph::Kind::Real) {
+          wired[static_cast<size_t>(i)] = 1;
+          anyWired = true;
+        }
+    if (anyWired) c.wired = wired;
+    // A param whose units the body computes (meta::ParamSpec::unitsInBody: the VCA's value) takes its added wires
+    // after its law, through the expansion's `<name>_add` input.
+    std::vector<uint8_t> units(type->params.size(), 0);
+    bool anyUnits = false;
+    for (const Wire& w : wiresOf(p_))
+      if (w.to == d.id && !w.travels())
+        if (const int32_t i = type->paramIndex(w.param); i >= 0 && type->params[static_cast<size_t>(i)].unitsInBody) {
+          units[static_cast<size_t>(i)] = 1;
+          anyUnits = true;
+        }
+    if (anyUnits) c.unitsWired = units;
     return expandInstance(d, t, "", *type, c, settings, modulated);
   }
 
@@ -352,7 +385,18 @@ UserCallees makeCallees(const Project& p, const graph::PatchLibrary* base, const
         st.in = st.input < 0 ? ChainSignal::None : d.kind == DeviceKind::Instrument ? ChainSignal::Notes : ChainSignal::Audio;
       }
       if (combined) {
-        u.callees.userRoot[d.id.value] = ex.chainDevice(d, t, st);
+        // TX.patching: a free meta device runs in its track's voice context when the track plays voices (its first
+        // active device in the series takes the notes); lowerTree checks that the track then really does.
+        bool voiced = false;
+        if (d.free && t.kind == TrackKind::Midi)
+          for (const DevicePtr& x : t.devices) {
+            if (!x->active || x->free) continue;
+            const ChainStage* xs = isMetaDevice(*x) ? u.callees.stageOf(*x) : nullptr;
+            voiced = isMetaDevice(*x) ? xs != nullptr && xs->in == ChainSignal::Notes : x->kind == DeviceKind::Instrument;
+            break;
+          }
+        if (voiced) u.callees.freeVoiced.insert(d.id.value);
+        u.callees.userRoot[d.id.value] = ex.chainDevice(d, t, st, voiced);
         return;
       }
       // The param fast path reads only the root's params: the prelude's form of the type has the same ones (the
@@ -544,6 +588,7 @@ enum Fixed : uint32_t {
   kZoneDegree = 82, kZoneDegreeOk, kZoneDegreeSafe,  // T4.17: voice.noteDegree, not NaN, NaN → 0 (Degree key zones)
   // TMM.10: a meta voice run's release (the declick ramp after note-off and the voice's end)
   kRelGate = 86, kRelNot, kRelRate, kRelSr, kRelStep, kRelPrev, kRelSub, kRelMax, kRelEnv, kRelMul, kRelLe, kRelDone,
+  kCFreeZero = 98,  // TX.patching: a free device's unwired audio input (−0: an added zero the optimiser removes)
   kLiteralPool = 256,  // T4.1: device setting literals take ids kLiteralPool … kEntityNodeBase − 1 (per track)
 };
 // Per entity (nodeIdFor): a tuning node's nodes, a send's nodes.
@@ -722,6 +767,56 @@ std::optional<ParamPin> realParamPin(const graph::Patch& callee, std::string_vie
   return std::nullopt;
 }
 
+// TX.patching: a param's declared range in its normalised unit (what the patch reads: Hz, seconds, linear gain for a dB
+// param, cents); false without one.
+bool paramRangeOf(const graph::ParamDecl& d, double& lo, double& hi) noexcept {
+  if (!d.hasRange) return false;
+  lo = d.rangeMin.value();
+  hi = d.rangeMax.value();
+  return std::isfinite(lo) && std::isfinite(hi) && hi >= lo;
+}
+// TX.patching: a param marked @wrap (a phase: its patch wraps it, so an added signal is not clamped to its range).
+bool paramWraps(const graph::ParamDecl& d) noexcept {
+  return std::any_of(d.attrs.begin(), d.attrs.end(), [](const graph::Attr& a) { return a.name == "wrap"; });
+}
+
+// TX.patching: the number of `out`s of a callee (its signature's outputs before its exports).
+uint32_t outputCount(const graph::Patch& callee) noexcept {
+  uint32_t n = 0;
+  for (NodeIndex v = 0; v < callee.nodeCount(); ++v) n += callee.node(v).kind == graph::NodeKind::Output ? 1u : 0u;
+  return n;
+}
+// TX.patching: the signature index (the `out`s, then the exports) of a callee's output named `name` that carries a
+// signal (not a bool `out`, such as `done`), or kNone.
+uint32_t signalOutput(const graph::Patch& callee, std::string_view name) noexcept {
+  const uint32_t outs = outputCount(callee);
+  uint32_t o = 0, e = 0;
+  for (NodeIndex v = 0; v < callee.nodeCount(); ++v) {
+    const graph::NodeKind k = callee.node(v).kind;
+    if (k == graph::NodeKind::Output) {
+      if (callee.nodeName(v) == name) return callee.inputType(v, 0).kind == graph::Kind::Bool ? graph::kNone : o;
+      ++o;
+    } else if (k == graph::NodeKind::Export) {
+      if (callee.nodeName(v) == name) return outs + e;
+      ++e;
+    }
+  }
+  return graph::kNone;
+}
+// TX.patching: the signature index of a callee's non-const, non-bool `in` named `name` (a wire target), or kNone.
+uint32_t signalInput(const graph::Patch& callee, std::string_view name) noexcept {
+  uint32_t ordinal = 0;
+  for (NodeIndex v = 0; v < callee.nodeCount(); ++v) {
+    if (callee.node(v).kind != graph::NodeKind::Input) continue;
+    if (callee.nodeName(v) == name) {
+      const graph::PortType& t = callee.outputType(v, 0);
+      return t.rate == graph::Rate::Const || t.kind == graph::Kind::Bool ? graph::kNone : ordinal;
+    }
+    ++ordinal;
+  }
+  return graph::kNone;
+}
+
 // T4.8: a rack's params as the lowering sees them: "macro1" … "macro16" then "select", each 0 … 127, default 0.
 constexpr uint32_t kRackParams = kMacroCount + 1;
 uint32_t rackParamIndex(std::string_view name) noexcept {  // kNone: not a rack param
@@ -767,6 +862,8 @@ struct LMapping {
 struct TrackDevs {
   std::vector<LDev> devs;
   std::vector<uint32_t> top;  // the track's own chain
+  std::vector<uint32_t> free;  // TX.patching: its free devices (Device::free: called, not in the chain), list order
+  std::vector<std::pair<const Device*, const graph::Patch*>> pendingFree;  // lowerList → lowerTree
   std::vector<LRack> racks;
   std::vector<LMapping> mappings;
   bool voices = false;  // the track's chain starts with a lowered instrument (a device, or a rack that plays)
@@ -808,7 +905,7 @@ bool listLowersInstrument(const std::vector<DevicePtr>& list, const Callees* lib
     const std::vector<DevicePtr>& l = *todo.back();
     todo.pop_back();
     for (const DevicePtr& d : l) {
-      if (!d->active) continue;
+      if (!d->active || d->free) continue;  // TX.patching: a free device is not in the series
       if (isMetaDevice(*d)) {  // TMM.10-fix1: it plays when its chain input takes the note source
         if (lib->readsNotes(*d) && lib->find(*d) != nullptr) return true;
         break;
@@ -894,6 +991,15 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
       }
       const DevicePtr& d = (*f.list)[f.next++];
       if (!d->active) continue;
+      if (d->free) {  // TX.patching: out of the series (a track's own list only: checkList); called, never chained
+        const graph::Patch* callee = lib != nullptr ? lib->find(*d) : nullptr;
+        if (callee == nullptr || (!isMetaDevice(*d) && calleeIsInstrument(*callee)) || d->rack) {
+          if (missing != nullptr) missing->push_back(d->id);
+          continue;
+        }
+        td.pendingFree.emplace_back(d.get(), callee);  // lowerTree adds it once it knows whether the track plays voices
+        continue;
+      }
       // TMM.10-fix1: a chain meta device is its list's instrument exactly when it takes the note source (its stage),
       // whatever its kind.
       const bool instrument = isMetaDevice(*d) ? lib != nullptr && lib->readsNotes(*d) : d->kind == DeviceKind::Instrument;
@@ -915,7 +1021,9 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
         continue;
       }
       const graph::Patch* callee = lib != nullptr ? lib->find(*d) : nullptr;
-      if (callee == nullptr || calleeIsInstrument(*callee) != instrument) {
+      // (A chain meta device is its list's instrument by its stage, not by its expansion's ports: TX.patching's wired inputs
+      // give a ChainNotes expansion `in`s.)
+      if (callee == nullptr || (!isMetaDevice(*d) && calleeIsInstrument(*callee) != instrument)) {
         if (missing != nullptr) missing->push_back(d->id);
         continue;
       }
@@ -987,6 +1095,19 @@ TrackDevs lowerTree(const Node& n, const Callees* lib, std::vector<DeviceId>* mi
       d.voice = d.metaVoice = true;
     }
   }
+  // TX.patching: the free devices, after every device of the series. A free meta device expanded in the track's voice
+  // context (Callees::freeVoiced) is a voice device there (wires into it stay per voice: the compiler decides what runs
+  // per voice); on a track that turned out to play no voices (its instrument is missing) it cannot play: bypassed.
+  for (const auto& [dev, callee] : td.pendingFree) {
+    const bool voiced = lib != nullptr && lib->freeVoiced.count(dev->id.value) != 0;
+    if (voiced && !td.voices) {
+      if (missing != nullptr) missing->push_back(dev->id);
+      continue;
+    }
+    td.free.push_back(static_cast<uint32_t>(td.devs.size()));
+    td.devs.push_back(LDev{dev, callee, -1, voiced});
+  }
+  td.pendingFree.clear();
   return td;
 }
 
@@ -1151,6 +1272,9 @@ struct LWire {
   bool reduce = false;                 // a voice source into a global target
   // TMM.10-fix2: a wire from track fromNode's note source (fromDev / fromPort unused): the voice terminal it reads.
   const NoteOutput* notes = nullptr;
+  // TX.patching: the target is an input of its callee (toPin its signature index among the `in`s), not a param; the
+  // source then keeps all its channels (on the same track: a stereo signal into a stereo input stays stereo).
+  bool input = false;
 };
 
 struct WirePlan {
@@ -1345,35 +1469,43 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     }
     std::tie(lw.toNode, lw.toDev) = b->second;
     const LDev& dd = devs[lw.toNode][lw.toDev];
-    // The source: an export (its signature index: outs first; a rack has none) or a note output; the target: a real
-    // param (a rack: a macro or its selector).
-    uint32_t outs = 0, exportIndex = graph::kNone, ordinal = 0;
+    // The source: an output of its callee (TX.patching: an `out` as well as an export; its signature index: outs first;
+    // a rack has none; a bool output is not a signal) or a note output; the target: a real param (a rack: a macro or
+    // its selector) or (TX.patching) a non-const real input of the callee.
+    uint32_t sourcePort = graph::kNone;
     if (w.fromNoteSource()) {
-      if (lw.notes != nullptr) exportIndex = 0;  // an unknown note output: Invalid
+      if (lw.notes != nullptr) sourcePort = 0;  // an unknown note output: Invalid
     } else if (const LDev& sd = devs[lw.fromNode][lw.fromDev]; sd.rack < 0) {
-      for (NodeIndex v = 0; v < sd.callee->nodeCount(); ++v) {
-        if (sd.callee->node(v).kind == graph::NodeKind::Output) ++outs;
-        if (sd.callee->node(v).kind == graph::NodeKind::Export) {
-          if (sd.callee->nodeName(v) == w.port) exportIndex = ordinal;
-          ++ordinal;
-        }
-      }
+      sourcePort = signalOutput(*sd.callee, w.port);
     }
     uint32_t pin = graph::kNone, point = graph::kNone;
     if (dd.rack >= 0) {
       pin = rackParamIndex(w.param);
       if (pin != graph::kNone) point = rackParamPoint(dd, pin);
+    } else if (const uint32_t units = w.travels() ? graph::kNone : signalInput(*dd.callee, w.param + "_add");
+               units != graph::kNone && realParamPin(*dd.callee, w.param)) {
+      // TX.patching: a param whose patch adds its wires after its own law (an input `<param>_add`: the VCA's value,
+      // meta::ParamSpec::unitsInBody): the wire goes there, the param stays the knob (param rate).
+      pin = point = units;
+      lw.input = true;
     } else if (const std::optional<ParamPin> pp = realParamPin(*dd.callee, w.param)) {
       pin = pp->pin;
       point = pp->pin;
       lw.paramNode = pp->node;
+    } else if (const uint32_t in = signalInput(*dd.callee, w.param); in != graph::kNone) {
+      pin = point = in;
+      lw.input = true;
     }
-    if (exportIndex == graph::kNone || pin == graph::kNone) {
+    // A migrated Travel wire keeps T4.7's ends (an export into a param): an old project lowers exactly as it did.
+    if (w.travels() && sourcePort != graph::kNone &&
+        (lw.input || (lw.notes == nullptr && sourcePort < outputCount(*devs[lw.fromNode][lw.fromDev].callee))))
+      sourcePort = graph::kNone;
+    if (sourcePort == graph::kNone || pin == graph::kNone) {
       st.status = WireStatus::Invalid;
       wp.states.push_back(st);
       continue;
     }
-    lw.fromPort = static_cast<uint16_t>(outs + exportIndex);
+    lw.fromPort = static_cast<uint16_t>(sourcePort);
     lw.toPin = static_cast<uint16_t>(pin);
     // A voice source (an instrument's export; TMM.10-fix2: a note output, always per voice) stays per voice only into a
     // device of its own track that runs per voice; anything else reads it through the wire's reducer.
@@ -1484,6 +1616,8 @@ struct Build {
   PortRef vel = kPending, lnHz = kPending, degree = kPending;  // shared voice values the zones read (made on first use)
   // TMM.10-fix2: the pitch the devices hear (the last tuning node's hz; kPending without tuning nodes: voice.hz is it).
   PortRef tunedHz = kPending;
+  // TX.patching: what a free device's audio input reads while no wire reaches it (a wire replaces it).
+  PortRef freeZero = kPending;
   PortRef c0() { return ir.konst(0.0, kC0); }
   PortRef c1() { return ir.konst(1.0, kC1); }
   PortRef time() { return ir.konst(static_cast<double>(o.smoothingMs) * 1e-3, kCTime); }
@@ -1802,7 +1936,10 @@ enum TargetK : uint32_t {
   kTKnob, kTPosA, kTPosB, kTPosC, kTAdd, kTClip, kTMapA, kTMapB, kTMapC, kTRoundAdd, kTFloor,
   kTUpSub, kTUpMax, kTDownSub, kTDownMax, kTPack, kTExport,
   kTPosD, kTPosE, kTMapD,  // TMM.3: the exp0 law's extra nodes
+  // TX.patching: the Add law's nodes (keyed by the site's first added wire)
+  kTUAdd, kTUClip, kTURoundAdd, kTUFloor, kTUUpSub, kTUUpMax, kTUDownSub, kTUDownMax, kTUPack, kTUExport,
 };
+static_assert(static_cast<uint32_t>(kWTarget) + static_cast<uint32_t>(kTUExport) < kWireNodeSlots, "a wire's nodes fit its NodeRole::Wire slots");
 
 std::string_view reducerAtom(WireReducer r) noexcept {
   switch (r) {
@@ -1847,6 +1984,8 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       if (w.notes->port == "hz" && b.tunedHz.node != graph::kNone) s = b.tunedHz;
       else s = ir.atom(w.notes->atom, {}, wid(w, kWNote));
       if (w.notes->boolean) s = ir.atom("gate_to_real", {s}, wid(w, kWNoteReal));
+    } else if (w.input && w.fromNode == w.toNode) {
+      s = PortRef{b.calls[w.fromDev], w.fromPort};  // TX.patching: into an input on its own track, every channel
     } else {
       s = ir.atom("channel", {PortRef{b.calls[w.fromDev], w.fromPort}, b.c0()}, wid(w, kWChannel));
     }
@@ -1855,6 +1994,47 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
   };
   for (const LWire& w : wp.wires)
     if (w.fromNode == node && w.toNode != node) ir.exportPort("m" + std::to_string(w.wire->id.value), source(w), wid(w, kWExport));
+  // A wire's signal where its target is (this patch): built here, or arriving across tracks; through a z1 when it
+  // closes a delay-free loop.
+  auto arriving = [&](const LWire& w) {
+    constexpr graph::PortType kAnyGlobal = graph::portType(graph::Kind::Real, graph::Rate::Infer, graph::Poly::Global, graph::kWidthMono);
+    const std::string id = std::to_string(w.wire->id.value);
+    PortRef src = w.fromNode == node ? source(w) : ir.input("m" + id, b.c0(), wid(w, kWIn), kAnyGlobal);
+    if (w.delayed) src = ir.atom("z1", {src}, wid(w, kWDelay));  // closes a loop: 1 sample (SPEC §15 2026-10-24)
+    return src;
+  };
+  // TX.patching: wires into INPUTS (model.h "Modulation wires", the Add law): the input reads what it read before (the
+  // chain's signal, when the chain feeds it) plus every wire into it, in id order; an input nothing drove takes the
+  // wires alone (a free device's placeholder zero goes).
+  {
+    std::vector<std::pair<uint32_t, uint16_t>> done;  // (device, pin) already summed
+    for (size_t i = 0; i < wp.wires.size(); ++i) {
+      const LWire& f = wp.wires[i];
+      if (f.toNode != node || !f.input) continue;
+      const std::pair<uint32_t, uint16_t> key{f.toDev, f.toPin};
+      if (std::find(done.begin(), done.end(), key) != done.end()) continue;
+      done.push_back(key);
+      const PortRef pin{b.calls[f.toDev], f.toPin};
+      graph::Patch& p = ir.patch();
+      PortRef sum = kPending;
+      for (graph::WireIndex x = 0; x < p.wireCount(); ++x)
+        if (p.wire(x).to == pin) {
+          const PortRef from = p.wire(x).from;
+          p.disconnect(x);
+          if (!(from == b.freeZero)) sum = from;
+          break;
+        }
+      bool first = true;
+      for (size_t j = i; j < wp.wires.size(); ++j) {
+        const LWire& w = wp.wires[j];
+        if (w.toNode != node || !w.input || w.toDev != f.toDev || w.toPin != f.toPin) continue;
+        const PortRef src = arriving(w);
+        sum = sum.node == graph::kNone ? src : ir.atom("add", {sum, src}, wid(w, first ? kWTerm : kWSum));
+        first = false;
+      }
+      p.connect(sum, pin);
+    }
+  }
   // The sites: the modulated params first, in the order of their first wire (T4.7), then mapped params and rack params.
   std::vector<Site> sites;
   auto siteOf = [&](uint32_t dev, std::string_view name) -> Site& {
@@ -1878,7 +2058,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
   };
   sites.reserve(wp.wires.size() + td.mappings.size() + b.rackPins.size());
   for (const LWire& w : wp.wires) {
-    if (w.toNode != node) continue;
+    if (w.toNode != node || w.input) continue;  // TX.patching: inputs were summed above
     const LDev& d = td[w.toDev];
     siteOf(w.toDev, d.rack >= 0 ? rackParamName(w.toPin) : d.callee->nodeName(w.paramNode)).wires.push_back(&w);
   }
@@ -1904,7 +2084,9 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     const std::string name = sites[si].name;
     const graph::ParamDecl& decl = *sites[si].decl;
     const LMapping* mapping = sites[si].mapping;
-    const std::vector<const LWire*> wires = sites[si].wires;
+    // TX.patching: the migrated wires keep T4.7's travel law (first, in knob travel); the added ones then add in units.
+    std::vector<const LWire*> wires, added;
+    for (const LWire* w : sites[si].wires) (w->wire->travels() ? wires : added).push_back(w);
     const LDev& d = td[dev];
     const ParamTravel tr = d.rack >= 0 ? ParamTravel{false, 0.0, kMacroMax, false} : paramTravel(decl);
     const bool travels = tr.hi > tr.lo && (!tr.log || tr.lo > 0.0);
@@ -1980,13 +2162,19 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
                                tid(kTMapC))
                      : ir.atom("add", {ir.atom("mul", {p, ir.literal(L)}, tid(kTMapA)), ir.literal(tr.lo)}, tid(kTMapB));
         if (tr.round) v = ir.atom("floor", {ir.atom("add", {v, ir.konst(0.5, kCHalf)}, tid(kTRoundAdd))}, tid(kTFloor));
-        // The tap: how far up and down the modulation moved the param (zero exactly when it does not move it).
-        const PortRef up = ir.atom("max", {ir.atom("sub", {p, pk}, tid(kTUpSub)), b.c0()}, tid(kTUpMax));
-        const PortRef down = ir.atom("max", {ir.atom("sub", {pk, p}, tid(kTDownSub)), b.c0()}, tid(kTDownMax));
-        const std::string port = tapPort(d.device->id, name);
-        ir.exportPort(port, ir.atom("pack", {up, down}, tid(kTPack), 2), tid(kTExport));
-        if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port});
+        // The tap: how far up and down the modulation moved the param (zero exactly when it does not move it). With
+        // added wires too, the tap is theirs (in units, below).
+        if (added.empty()) {
+          const PortRef up = ir.atom("max", {ir.atom("sub", {p, pk}, tid(kTUpSub)), b.c0()}, tid(kTUpMax));
+          const PortRef down = ir.atom("max", {ir.atom("sub", {pk, p}, tid(kTDownSub)), b.c0()}, tid(kTDownMax));
+          const std::string port = tapPort(d.device->id, name);
+          ir.exportPort(port, ir.atom("pack", {up, down}, tid(kTPack), 2), tid(kTExport));
+          if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port});
+        }
       }
+    } else if (!added.empty() && mapping == nullptr) {
+      // TX.patching: the knob is the centre the added wires add to (a runtime param, as an unmodulated param's).
+      v = ir.paramDecl("d" + std::to_string(d.device->id.value) + "__" + name, decl, wid(*added.front(), kWTarget + static_cast<uint32_t>(kTKnob)));
     } else if (mapping != nullptr) {
       // The mapped value: the travel map of the position.
       const MacroMapping& m = *mapping->m;
@@ -2012,6 +2200,28 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       const uint32_t pi = rackParamIndex(name);
       v = ir.paramDecl("d" + std::to_string(d.device->id.value) + "__" + name, decl,
                        nodeIdFor(NodeRole::Rack, d.device->id.value, pi));
+    }
+    if (!added.empty()) {
+      // TX.patching (model.h "Modulation wires", the Add law): value = clamp(centre + sum of the signals, lo, hi) in the
+      // param's own units (no clamp for an @wrap param: its patch wraps it), rounded for @steps; the tap is how far up /
+      // down the wires moved it, in units (zero exactly when they do not move it).
+      auto tid = [&](uint32_t k) { return wid(*added.front(), kWTarget + k); };
+      const PortRef centre = v;
+      PortRef sum = kPending;
+      for (size_t i = 0; i < added.size(); ++i) {
+        const PortRef src = arriving(*added[i]);
+        sum = i == 0 ? src : ir.atom("add", {sum, src}, wid(*added[i], kWSum));
+      }
+      v = ir.atom("add", {centre, sum}, tid(kTUAdd));
+      double lo = 0.0, hi = kMacroMax;
+      const bool ranged = d.rack >= 0 || paramRangeOf(decl, lo, hi);
+      if (ranged && !paramWraps(decl)) v = ir.atom("clip", {v, ir.literal(lo), ir.literal(hi)}, tid(kTUClip));
+      if (tr.round) v = ir.atom("floor", {ir.atom("add", {v, ir.konst(0.5, kCHalf)}, tid(kTURoundAdd))}, tid(kTUFloor));
+      const PortRef up = ir.atom("max", {ir.atom("sub", {v, centre}, tid(kTUUpSub)), b.c0()}, tid(kTUUpMax));
+      const PortRef down = ir.atom("max", {ir.atom("sub", {centre, v}, tid(kTUDownSub)), b.c0()}, tid(kTUDownMax));
+      const std::string port = tapPort(d.device->id, name);
+      ir.exportPort(port, ir.atom("pack", {up, down}, tid(kTUPack), 2), tid(kTUExport));
+      if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port, true});
     }
     sites[si].resolved = true;
     sites[si].value = v;
@@ -2196,6 +2406,18 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     x = ir.input("in", ir.konst(0.0, kC0), kIn);
   }
   x = chainOf(b, devs.top, firstEffect, x, width);
+  // TX.patching: the free devices (out of the series): called, the audio input the chain would feed (the first
+  // non-const `in`) reading zero until a wire reaches it, the other inputs their defaults; their outputs feed only
+  // wires (unread, the compiler drops them).
+  for (const uint32_t k : devs.free) {
+    const NodeIndex c = callDevice(ir, devs[k]);
+    b.calls[k] = c;
+    // (A free meta device plays its Nested form: every input has its default already.)
+    if (const uint32_t in = isMetaDevice(*devs[k].device) ? graph::kNone : audioInIndex(*devs[k].callee); in != graph::kNone) {
+      if (b.freeZero.node == graph::kNone) b.freeZero = ir.konst(-0.0, kCFreeZero);
+      ir.patch().connect(b.freeZero, PortRef{c, static_cast<uint16_t>(in)});
+    }
+  }
   gainStages(ir, n.kind, x, o.smoothingMs);
   lowerSites(b, index, track, wp, taps);  // T4.7, T4.8
   if (ir.literalOverflow())
@@ -2278,7 +2500,7 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
   const std::string id = std::to_string(t.id.value);
   // T4.7: the amount of every wire into this track (a param of the target's patch).
   for (const LWire& w : wp.wires)
-    if (w.toNode == index) {
+    if (w.toNode == index && w.wire->travels()) {  // TX.patching: an added wire has no amount
       const std::string wid = std::to_string(w.wire->id.value);
       out.push_back(LoweredParam{"wire" + wid + ":amount", index, "w" + wid, static_cast<float>(w.wire->amount),
                                  ParamRef::wireAmount(w.wire->id)});
