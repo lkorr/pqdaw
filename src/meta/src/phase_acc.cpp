@@ -13,7 +13,8 @@ constexpr std::array<InputSpec, 2> kInputs = {{
     {"pm", "Phase modulation", InputDefault::Zero, graph::Kind::Real, Reads::Phase},
 }};
 constexpr std::array<ParamSpec, 4> kParams = {{
-    {"freq", "Frequency", 0.0, 0.0, kPhaseAccMaxHz, graph::Unit::Hz, Curve::Exp0, kPhaseAccCurveK, false, false},
+    {"freq", "Frequency", 0.0, 0.0, kPhaseAccMaxHz, graph::Unit::Hz, Curve::Exp0, kPhaseAccCurveK, false, false,
+     false, true},  // TMM.18: signed — a wire below 0 Hz runs the phase backwards
     {"phase", "Phase", 0.0, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, true, false},
     {"amp", "Amplitude", 1.0, 0.0, 4.0, graph::Unit::None, Curve::Linear, 0.0, false, false},
     // TMM.15: last, so the earlier params keep their positions in the call signature (older texts and files: 0).

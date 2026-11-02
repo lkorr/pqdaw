@@ -779,6 +779,11 @@ bool paramRangeOf(const graph::ParamDecl& d, double& lo, double& hi) noexcept {
 bool paramWraps(const graph::ParamDecl& d) noexcept {
   return std::any_of(d.attrs.begin(), d.attrs.end(), [](const graph::Attr& a) { return a.name == "wrap"; });
 }
+// TMM.18: a param marked @signed (the Phase accumulator's frequency): an added signal may take it below its knob range,
+// to −max(|lo|, |hi|); it is clamped to ±max(|lo|, |hi|) instead of [lo, hi].
+bool paramSigned(const graph::ParamDecl& d) noexcept {
+  return std::any_of(d.attrs.begin(), d.attrs.end(), [](const graph::Attr& a) { return a.name == "signed"; });
+}
 
 // TX.patching: the number of `out`s of a callee (its signature's outputs before its exports).
 uint32_t outputCount(const graph::Patch& callee) noexcept {
@@ -2215,6 +2220,10 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       v = ir.atom("add", {centre, sum}, tid(kTUAdd));
       double lo = 0.0, hi = kMacroMax;
       const bool ranged = d.rack >= 0 || paramRangeOf(decl, lo, hi);
+      if (ranged && d.rack < 0 && paramSigned(decl)) {
+        hi = std::max(std::fabs(lo), std::fabs(hi));
+        lo = -hi;
+      }
       if (ranged && !paramWraps(decl)) v = ir.atom("clip", {v, ir.literal(lo), ir.literal(hi)}, tid(kTUClip));
       if (tr.round) v = ir.atom("floor", {ir.atom("add", {v, ir.konst(0.5, kCHalf)}, tid(kTURoundAdd))}, tid(kTUFloor));
       const PortRef up = ir.atom("max", {ir.atom("sub", {v, centre}, tid(kTUUpSub)), b.c0()}, tid(kTUUpMax));

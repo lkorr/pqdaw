@@ -52,7 +52,7 @@ patch BasicSynth__u4_0db0c13ccdfb86ab__m4_11209678932d5b9c {
 }
 
 patch meta_phase_acc__d4_acc1_3740f1cedba25005 {
-  param freq = 0Hz [0Hz..20000Hz] @label("Frequency") @curve(exp0, 14)
+  param freq = 0Hz [0Hz..20000Hz] @label("Frequency") @signed @curve(exp0, 14)
   param phase = 0 [0..1] @label("Phase") @wrap
   param amp = 1 [0..4] @label("Amplitude")
   param pitch = 0c [-4800c..4800c] @label("Pitch")

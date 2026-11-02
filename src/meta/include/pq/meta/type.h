@@ -59,6 +59,11 @@ struct ParamSpec {
   // expansion then has an input `<name>_add` (ExpandContext::unitsWired) the body adds after its law (Builder::units),
   // and the document lowering routes added wires there (pq/document/lower.h "Modulation wires").
   bool unitsInBody = false;
+  // TMM.18: the param's value is SIGNED beyond its knob range: the knob covers min … max, but what wires add may take
+  // it down to −max(|min|, |max|) (an `@signed` attribute on the expansion's param; the document lowering's Add law
+  // then clamps to ±max(|min|, |max|) instead of [min, max]). The Phase accumulator's frequency: a negative frequency
+  // runs the phase backwards (the same pitch, the ramp reversed), so a VCA multiplying the frequency by −1 reflects.
+  bool signedValue = false;
 };
 double travelToValue(const ParamSpec& p, double t) noexcept;  // t clamped to [0, 1]
 double valueToTravel(const ParamSpec& p, double v) noexcept;  // v clamped to [min, max]

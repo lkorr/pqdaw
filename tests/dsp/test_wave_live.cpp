@@ -297,6 +297,74 @@ TEST_CASE("wavetable_live: the alias proof against the 64x reference (48 kHz, 17
               {"bend", 8, -87}, {"mirror", 8, -107}, {"pulse width", 8, -84}, {"fold", 8, -89}, {"sync", 8, -65}});
 }
 
+TEST_CASE("wavetable_live (TMM.18): a backward phase (negative frequency) is the time-reversed output, corrections included") {
+  // Static controls: φ = frac(−k0·n / N) is the forward render mirrored in time (the region's sub-sample grid, the
+  // phase interpolation, the linear-phase residuals and the level rule are all symmetric; the half-bands are LTI), so
+  // the two spectra's magnitudes agree bin for bin. Audio-rate modulated controls (their time reversed too: a sine at
+  // −fm): the kernel's control deltas are backward differences, which time reversal turns into forward ones, so the
+  // renders are not exact mirrors; there the backward render's alias level against the (reversal-invariant) spectrum
+  // of the 64x reference must stay at the forward one's: within 2 dB at a 120 Hz modulator, within 6 dB at 2 kHz
+  // (measured: sync −69.3 vs −69.8 dBFS; pulse width −89.7 vs −95.1, the one residual difference, QUESTIONS
+  // Q?-TMM.18-a). Before TMM.18 the corrections assumed a forward phase (a backward wrap was no event, a backward kink
+  // no crossing): static backward renders differed from the forward ones by −73.7 … −86.8 dB, and the modulated
+  // backward renders aliased at −65.5 / −80.4 dBFS (120 Hz) and −35.2 / −50.9 dBFS (2 kHz).
+  constexpr uint32_t N = 1u << 14, k0 = 601;
+  const TablePtr t = build({ftfix::basic(BasicCycle::Saw)}, kSr);
+  struct Static {
+    const char* name;
+    WarpMode mode;
+    double warp, fold, sync;
+  };
+  const Static statics[] = {{"sync 0.37", WarpMode::Bend, 0, 0, 0.37},
+                            {"bend 0.8", WarpMode::Bend, 0.8, 0, 0},
+                            {"pulse width -0.6", WarpMode::PulseWidth, -0.6, 0, 0},
+                            {"mirror 0.6", WarpMode::Mirror, 0.6, 0, 0},
+                            {"pw 0.4 + sync 0.2 + fold 0.1", WarpMode::PulseWidth, 0.4, 0.1, 0.2}};
+  for (const Static& c : statics)
+    for (const bool corr : {true, false}) {
+      FrameTableSlot slot(t);
+      LiveRegion fwd(8, kSr, c.mode, corr, constant(c.warp), constant(c.fold), constant(c.sync));
+      LiveRegion bwd(8, kSr, c.mode, corr, constant(c.warp), constant(c.fold), constant(c.sync));
+      const double d =
+          compare(amplitudes(renderLive(bwd, slot, N - k0, N)), amplitudes(renderLive(fwd, slot, k0, N)), kSr, N).worstDb;
+      CAPTURE(std::string(c.name));
+      CAPTURE(corr);
+      MESSAGE("backward vs forward spectra (os 8, " << k0 * kSr / N << " Hz): " << std::string(c.name)
+                                                    << (corr ? std::string() : std::string(" (no corr)")) << ": " << d
+                                                    << " dB");
+      CHECK(d <= -120.0);
+    }
+  for (const auto& [km, margin] : {std::pair{41.0, 2.0}, std::pair{683.0, 6.0}}) {
+    const double fm = km / N;
+    struct Modulated {
+      const char* name;
+      WarpMode mode;
+      Ctl warp, sync, warpB, syncB;
+    };
+    const Modulated mods[] = {
+        {"sync", WarpMode::Bend, constant(0), sine(0.3, 0.4, fm), constant(0), sine(0.3, 0.4, -fm)},
+        {"pulse width", WarpMode::PulseWidth, sine(0.8, 0.0, fm), constant(0), sine(0.8, 0.0, -fm), constant(0)},
+    };
+    for (const Modulated& c : mods) {
+      FrameTableSlot slot(t);
+      LiveRegion fwd(8, kSr, c.mode, true, c.warp, constant(0), c.sync);
+      LiveRegion bwd(8, kSr, c.mode, true, c.warpB, constant(0), c.syncB);
+      Reference ref;
+      ref.os = 8;
+      ref.sampleRate = kSr;
+      const std::vector<double> want = ref.amplitudes(t->view(), c.mode, c.warp, constant(0), c.sync, k0, N);
+      const double af = compare(amplitudes(renderLive(fwd, slot, k0, N)), want, kSr, N).worstDb;
+      const double ab = compare(amplitudes(renderLive(bwd, slot, N - k0, N)), want, kSr, N).worstDb;
+      CAPTURE(std::string(c.name));
+      CAPTURE(km);
+      MESSAGE("alias against the 64x reference (os 8, " << k0 * kSr / N << " Hz, modulator " << km * kSr / N
+                                                         << " Hz): " << std::string(c.name) << ": forward " << af
+                                                         << " dBFS, backward " << ab << " dBFS");
+      CHECK(ab <= af + margin);
+    }
+  }
+}
+
 // The slow tier: 108 Hz … 12 kHz, os 4 / 8 / 16, one case per rate and modulator (each ≈ 20 s: the suite's shards
 // run them in parallel). Measured only (QUESTIONS TMM.8 records the table); the default case above guards regressions.
 void slowAliasProof(double sr, double fm) {

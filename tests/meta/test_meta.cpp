@@ -82,6 +82,7 @@ TEST_CASE("meta expansion: deterministic, fixed ids, prints and parses back") {
   REQUIRE(parsed->patches.size() == 1);
   CHECK(parsed->patches[0] == a.patch);
   CHECK(text.find("@curve(exp0, 14)") != std::string::npos);
+  CHECK(text.find("@signed @curve(exp0, 14)") != std::string::npos);  // TMM.18: freq is signed (wires may take it below 0)
   // TMM.10-fix1 (SPEC §15 2026-11-01 "notes are a signal"): hz defaults to 0 Hz in a voice context too (no implicit
   // note: the module plays a note only when one is wired into hz), so the voice context changes nothing but the key.
   ExpandContext g;

@@ -563,3 +563,56 @@ TEST_CASE("patching: an audio-rate wire costs per sample only where it is; an un
   CHECK(wired->key != plain->key);
   CHECK(wired->patch.findByName("pm").has_value());
 }
+
+TEST_CASE("patching (TMM.18): a negative frequency reflects — into the Phase accumulator's freq (@signed) or its hz input") {
+  // A free VCA as a constant ±440 (min ±440, max beyond it the other way: a constant min; its `in` unwired reads 1)
+  // wired into an unplugged Phase accumulator's `freq` (the Add law, clamped to ±20 kHz: @signed) or its `hz` input
+  // (inputs are never clamped). The phasor's uint32 increment at −440 is exactly the negated one (the start glides of
+  // TX.smooth are the same ramp mirrored), so the backward ramp is the forward one reversed: out(−f) + out(f) = the
+  // stage gain (1 − 2^−24 where the phase's low bits are not 0), sample for sample. Before TMM.18 the freq wire was
+  // clamped to [0, 20 kHz]: the accumulator stood at 0 Hz.
+  auto render = [](bool intoFreq, double hz, engine::UnitBackend backend) {
+    DocumentStore store;
+    IdSource& ids = store.ids();
+    const TrackId t = ids.track();
+    const DeviceId pa = ids.device(), vca = ids.device();
+    Batch b{"t", {}};
+    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend});
+    b.commands.push_back(AddDevice{t, metaDevice(pa, "phase_acc", DeviceKind::AudioEffect, false, "-"), kAppend});
+    b.commands.push_back(AddDevice{t, metaDevice(vca, "vca", DeviceKind::AudioEffect, true), kAppend});
+    b.commands.push_back(SetDeviceParam{vca, "min", hz});
+    b.commands.push_back(SetDeviceParam{vca, "max", hz < 0 ? hz - 60.0 : hz - 140.0});
+    REQUIRE(store.dispatch(b).ok());
+    auto e = ops::connectWire(*store.current(), ids, vca, "out", pa, intoFreq ? "freq" : "hz");
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+    const Lowered low = lowerIt(store);
+    for (const WireState& s : low.low.wires) CHECK(s.status == WireStatus::Lowered);
+    return renderGraph(low.low.graph, low.links, low.values, 9600, backend);
+  };
+  for (const bool intoFreq : {true, false}) {
+    CAPTURE(intoFreq);
+    const golden::Channels fwd = render(intoFreq, 440.0, {});
+    const golden::Channels bwd = render(intoFreq, -440.0, {});
+    CHECK(maxDiff(bwd, render(intoFreq, -440.0, compile::jitUnitBackend())) == 0.0);
+    float gain = 0.0f;
+    for (size_t i = 0; i < fwd[0].size(); ++i) gain = std::max(gain, fwd[0][i]);
+    REQUIRE(gain > 0.3f);
+    // From 50 ms on (the stage's fade-in is over): every sum is the stage gain g (to the truncation).
+    double lo = 1e9, hi = -1e9;
+    uint32_t compared = 0;
+    for (size_t i = 2400; i < fwd[0].size(); ++i) {
+      if (fwd[0][i] == 0.0f && bwd[0][i] == 0.0f) continue;  // the phase exactly 0
+      ++compared;
+      const double sum = static_cast<double>(fwd[0][i]) + bwd[0][i];
+      lo = std::min(lo, sum);
+      hi = std::max(hi, sum);
+    }
+    const double worst = hi - lo;
+    MESSAGE(std::string(intoFreq ? "freq" : "hz") << " wired at -440 Hz: out(-f) + out(f) in [" << lo << ", " << hi
+                                                     << "] (stage gain " << gain << ")");
+    CHECK(hi <= 1.0001 * gain / (1.0 - 440.0 / 48000.0));
+    CHECK(compared > 7000);
+    CHECK(worst <= 2.0 * gain * 5.9604644775390625e-08 + 1e-7);
+  }
+}

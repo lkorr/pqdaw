@@ -130,3 +130,54 @@ TEST_CASE("phasor: audio-rate frequency path accumulates exactly too") {
     }
   }
 }
+
+TEST_CASE("phasor (TMM.18): −f is f with the phase reversed, sample-exact, on the constant and the audio-rate paths") {
+  // A negative frequency runs the uint32 accumulator backwards: the increment is exactly −inc(f) (round to nearest
+  // is symmetric), so the phase after n samples is exactly −(inc·n) mod 2^32 — the forward phase reversed — and the
+  // output is its top 24 bits (frac(−x) to within the truncation: 1 − x − 2^−24 unless x's low bits are 0).
+  constexpr uint32_t kSr = 48000;
+  constexpr uint32_t kFrames = 5000;
+  for (const bool perSample : {false, true})
+    for (const uint32_t lanes : {1u, 8u}) {
+      CAPTURE(perSample);
+      CAPTURE(lanes);
+      // hz per lane l (and sample t on the audio-rate path), times `sign`.
+      auto hzAt = [&](float sign, uint32_t t, uint32_t l) {
+        return sign * static_cast<float>(perSample ? 30.0 + 7000.0 * (t % 700) / 700.0 + 13.0 * l : 261.626 + 101.0 * l);
+      };
+      auto run = [&](float sign, std::vector<float>& out) {
+        pq::dsp::StateInit init;
+        init.sampleRate = kSr;
+        init.lanes = lanes;
+        pq::dsp::PhasorState st{};
+        pq::dsp::initState(pq::dsp::Atom::Phasor, &st, init);
+        std::vector<float> hz(perSample ? static_cast<size_t>(kFrames) * lanes : 8);
+        for (size_t i = 0; i < hz.size(); ++i)
+          hz[i] = perSample ? hzAt(sign, static_cast<uint32_t>(i / lanes), static_cast<uint32_t>(i % lanes))
+                            : hzAt(sign, 0, lanes == 1 ? 0u : static_cast<uint32_t>(i));
+        out.assign(static_cast<size_t>(kFrames) * lanes, 0.0f);
+        alignas(32) float resetPat[8] = {};
+        const float* ins[] = {hz.data(), resetPat};
+        float* outs[] = {out.data()};
+        const uint32_t mask = perSample ? 0b10u : 0b11u;
+        pq::dsp::KernelArgs a{ins, outs, &st, nullptr, kFrames, 2, 1, mask};
+        pq::dsp::findKernel(pq::dsp::Atom::Phasor, lanes, mask)(a);
+        return st;
+      };
+      std::vector<float> outP, outN;
+      const pq::dsp::PhasorState sp = run(1.0f, outP), sn = run(-1.0f, outN);
+      bool exact = true;
+      for (uint32_t l = 0; l < lanes; ++l) {
+        uint32_t ph = 0;
+        for (uint32_t t = 0; t < kFrames; ++t) {
+          const size_t i = static_cast<size_t>(t) * lanes + l;
+          exact &= outP[i] == unitPhase(ph) && outN[i] == unitPhase(0u - ph);
+          const int64_t ep = exactIncrement(hzAt(1.0f, t, l), kSr), en = exactIncrement(hzAt(-1.0f, t, l), kSr);
+          exact &= en == -ep;
+          ph += static_cast<uint32_t>(ep);
+        }
+        CHECK(sn.phase[l] == 0u - sp.phase[l]);
+      }
+      CHECK(exact);
+    }
+}

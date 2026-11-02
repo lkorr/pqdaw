@@ -36,6 +36,10 @@
 // the previous sample's level pair, the right side at this sample's: a band change at a kink is corrected too; and
 // Mirror's corner where the warp crosses 0). For this the output is delayed by kLiveCorrHalf samples
 // (inside a region: kLiveCorrHalf / n base samples). With `corr` 0 there is no ring and no delay.
+// TMM.18: φ may run backwards (a negative frequency): the speeds are signed by the direction of the wrapped Δφ, a
+// wrap is either way, a kink is crossed either way, and each event steps from the value just before it in time to
+// the value just after it (backwards: from the right limit to the left one), so a backward phase at static controls
+// gives the forward output time-reversed (equal spectra within −130 dB).
 //
 // ---- wavetable_shape (x, position; table) ----------------------------------------------------------------------
 // Shape mode: the table as a transfer curve. u = (x + 1)/2, the curve g(u) = T(clamp(u, 0, 1)) (T the frame's cycle;

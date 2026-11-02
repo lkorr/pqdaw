@@ -56,12 +56,15 @@ std::vector<uint32_t> pitchBins(const FrameTableLayout& l, bool full) {
 }
 
 void play(const FrameTable& t, const FrameTableBuilder& b, float position, uint32_t k, double sr,
-          pq::test::AliasMeter& meter, std::vector<float>& phase, std::vector<float>& out, const char* what, Worst& w) {
+          pq::test::AliasMeter& meter, std::vector<float>& phase, std::vector<float>& out, const char* what, Worst& w,
+          bool backward) {
   // Exact phases (k·n mod N) / N, as a phasor at this bin-exact pitch produces them; the state as if it had been
   // running (the previous phase and delta), so the whole render is one steady level.
-  for (uint32_t n = 0; n < kN; ++n) phase[n] = static_cast<float>((static_cast<uint64_t>(k) * n) % kN) / kN;
+  // TMM.18: backward = a negative frequency, φ = frac(−k·n / N): the time-reversed wave, the same harmonic amplitudes.
+  const uint64_t step = backward ? kN - k : k;
+  for (uint32_t n = 0; n < kN; ++n) phase[n] = static_cast<float>((step * n) % kN) / kN;
   FrameReadState st{};
-  st.prevPhase[0] = static_cast<float>((static_cast<uint64_t>(kN) - k) % kN) / kN;
+  st.prevPhase[0] = static_cast<float>((static_cast<uint64_t>(kN) - step) % kN) / kN;
   st.prevDelta[0] = static_cast<float>(k) / kN;
   readFrameTableL1(t.view(), st, phase.data(), &position, false, kN, out.data());
   // Expected harmonics: the blend of the two dense frames at this position (the reader's frame choice).
@@ -82,7 +85,7 @@ void play(const FrameTable& t, const FrameTableBuilder& b, float position, uint3
   const double hz = k * sr / kN;
   ++w.renders;
   char where[160];
-  std::snprintf(where, sizeof where, "%s pos %.3f f0 %.2f Hz @ %.0f", what, position, hz, sr);
+  std::snprintf(where, sizeof where, "%s pos %.3f f0 %s%.2f Hz @ %.0f", what, position, backward ? "-" : "", hz, sr);
   if (r.worstAliasDb > w.alias) {
     w.alias = r.worstAliasDb;
     w.aliasHz = r.worstAliasHz;
@@ -96,7 +99,7 @@ void play(const FrameTable& t, const FrameTableBuilder& b, float position, uint3
   w.quiet = std::max(w.quiet, r.worstQuietError);
 }
 
-void suite(double sr, bool full) {
+void suite(double sr, bool full, bool backward = false) {
   auto layout = frameTableLayout(sr);
   REQUIRE(layout.ok());
   const auto bins = pitchBins(layout.value(), full);
@@ -109,7 +112,7 @@ void suite(double sr, bool full) {
     auto t = b.build(s.spec);
     REQUIRE(t.ok());
     for (const float u : positions)
-      for (const uint32_t k : bins) play(t.value(), b, u, k, sr, meter, phase, out, what, w);
+      for (const uint32_t k : bins) play(t.value(), b, u, k, sr, meter, phase, out, what, w, backward);
   };
   run({ftfix::basic(BasicCycle::Saw)}, 1, {0.0f}, "saw");
   if (full) {
@@ -122,7 +125,7 @@ void suite(double sr, bool full) {
   std::vector<float> fixturePos = full ? std::vector<float>{0.0f, 0.1f, 0.25f, 0.33f, 0.5f, 0.71f, 0.9f, 1.0f}
                                        : std::vector<float>{0.37f};
   run(ftfix::drawnFixture(64), 64, fixturePos, "drawn");
-  MESSAGE(sr << " Hz, " << w.renders << " renders: worst alias " << w.alias << " dBFS at " << w.aliasHz << " Hz ("
+  MESSAGE(sr << " Hz" << std::string(backward ? " (backward)" : "") << ", " << w.renders << " renders: worst alias " << w.alias << " dBFS at " << w.aliasHz << " Hz ("
               << w.aliasWhere << "); worst harmonic error " << w.harm << " dB (h " << w.harmH << ", " << w.harmWhere
               << "); quiet harmonics |err| ≤ " << w.quiet);
   CHECK(w.alias <= -100.0);
@@ -138,4 +141,13 @@ TEST_CASE("frame table alias suite (48 kHz subset): aliases ≤ −100 dBFS belo
 
 TEST_CASE("frame table alias suite: 44.1 / 48 / 96 kHz, every input, pitch and level switch" * doctest::test_suite("slow")) {
   for (const double sr : {44100.0, 48000.0, 96000.0}) suite(sr, true);
+}
+
+// TMM.18: a negative frequency (the phase running backwards) reads the same levels by |Δphase| and is as band-limited.
+TEST_CASE("frame table alias suite (48 kHz subset), negative increments: the same bounds backwards") {
+  suite(48000.0, false, true);
+}
+
+TEST_CASE("frame table alias suite: negative increments at 44.1 / 48 / 96 kHz, every input and pitch" * doctest::test_suite("slow")) {
+  for (const double sr : {44100.0, 48000.0, 96000.0}) suite(sr, true, true);
 }

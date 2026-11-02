@@ -30,6 +30,8 @@ graph::ParamDecl paramDecl(const ParamSpec& s) {
   if (!s.label.empty()) d.attrs.push_back(graph::Attr{"label", {graph::AttrArg{{}, graph::AttrValue::string(std::string(s.label))}}});
   // TX.patching: a phase the body wraps — a wire adding to it is not clamped to its range (doc lowering, the Add law).
   if (s.wraps) d.attrs.push_back(graph::Attr{"wrap", {}});
+  // TMM.18: a signed value — wires may take it below the knob range, to −max(|min|, |max|) (doc lowering, the Add law).
+  if (s.signedValue) d.attrs.push_back(graph::Attr{"signed", {}});
   if (s.curve == Curve::Exp) {
     d.attrs.push_back(graph::Attr{"curve", {graph::AttrArg{{}, graph::AttrValue::ident("exp")}}});
   } else if (s.curve == Curve::Exp0) {

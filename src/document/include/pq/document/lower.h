@@ -298,7 +298,9 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // real `in` of the target's callee. Travel wires (migrated, schema ≤ 12) keep T4.7's ends exactly (an export into a
 // param; anything else is Invalid), so an old project lowers to the same IR. Add wires (every new wire):
 //   param   value = clip(centre + Σ src_i, lo, hi) in the param's normalised unit (Hz, seconds, linear gain for a dB
-//           param, cents …; lo / hi its declared range; no clip for a param marked @wrap — a phase its patch wraps),
+//           param, cents …; lo / hi its declared range; no clip for a param marked @wrap — a phase its patch wraps;
+//           TMM.18: ±max(|lo|, |hi|) for a param marked @signed — the Phase accumulator's freq, a negative
+//           frequency running its phase backwards),
 //           rounded for @steps; centre = the knob (the root param d<id>__<name>, param rate) or the mapped value, or the
 //           Travel wires' result when a param has both kinds. No amount param, no multiply. The tap is then in units:
 //           (max(v − centre, 0), max(centre − v, 0)) (ModulationTap::units; the views convert it to knob travel).

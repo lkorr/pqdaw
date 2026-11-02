@@ -488,73 +488,119 @@ inline void stampEvent(WavetableLiveState& st, uint32_t lane, double d, double j
 void laneEvents(const FrameTableView& t, WavetableLiveState& st, uint32_t lane, WarpMode mode, float phi,
                 float prevPhi, float psi, float prevPsi, bool wrapped, float s, float warp, float fold, float inc,
                 float position, float psiRate, float speedA, float speedB, float prevSpeedA,
-                float prevSpeedB, float dW) noexcept {
+                float prevSpeedB, float dW, float psiRate0) noexcept {
   const LiveControls c{mode, warp, fold, (static_cast<double>(s) - 1.0) / (kSyncMaxRatio - 1.0)};
   const double sd = s;
-  const double rate = psiRate;  // ψ per sample
+  const double psiRateIn = psiRate;  // ψ per sample
   if (mode == WarpMode::Mirror && dW != 0.0f && (warp > 0.0f) != (warp - dW > 0.0f)) {
     // The warp crossed 0 (between the previous sample and this one): a corner in the mix.
     const double d = static_cast<double>(warp) / static_cast<double>(dW);
     stampEvent(st, lane, d, 0.0, static_cast<double>(dW) * liveMirrorCrossing(t, position, c, psi, warp > 0.0f, speedA, speedB));
   }
-  if (!(rate > 0.0) || !(inc > 0.0f)) return;
+  // TMM.18: φ moves forwards or backwards (a negative frequency): the sign of psiRate0 = ±inc·s, ψ's rate at φ = 0.
+  // ψ is handled in φ's direction and, as before for a forward φ, a sample where ψ moves against it (a sync falling
+  // faster than φ·s rises) has no events. An event at a breakpoint is the step from the value just BEFORE it in time
+  // (read at the previous sample's levels) to the value just AFTER it (this sample's levels): forwards from the left
+  // limit to the right one, backwards from the right limit to the left one. The slope jump is per sample of time,
+  // (g_after − g_before)·rate with the signed rate; the times since the events are distances in ψ over |rate|.
+  // Backwards is the forward case mirrored in time: at φ's wrap the forward case takes ψ's rate on the φ ≈ 0 side
+  // (after the reset), so the backward one takes it there too (before the reset: psiRate0, without φ·Δs).
+  // tests/dsp/test_wave_live.cpp: a reversed phase at static controls gives the forward spectrum within −130 dB.
+  if (!(inc > 0.0f) || psiRate0 == 0.0f) return;
+  const bool fwd = psiRate0 > 0.0f;
+  const bool backWrap = wrapped && !fwd;
+  const double rate = backWrap ? static_cast<double>(psiRate0) : psiRateIn;  // ψ per sample
+  if (!(fwd ? rate > 0.0 : rate < 0.0)) return;
+  const double ar = std::fabs(rate);
+  auto stepAt = [&](double before, int sideBefore, double after, int sideAfter, double& jump) {
+    double gb = 0, ga = 0;
+    const double yb = liveValueAtPsi(t, position, c, before, inc, sideBefore, &gb, prevSpeedA, prevSpeedB);
+    const double ya = liveValueAtPsi(t, position, c, after, inc, sideAfter, &ga, speedA, speedB);
+    jump = ya - yb;
+    return (ga - gb) * rate;
+  };
+  // A kink at k crossed in the direction of motion.
+  auto kinkStep = [&](double k, double& jump) { return fwd ? stepAt(k, -1, k, +1, jump) : stepAt(k, +1, k, -1, jump); };
   // The kink inside a sub-period (Mirror: ½, while the second tap is in; Pulse width: w).
   double kinkAt = -1.0;
   if (mode == WarpMode::Mirror && warp != 0.0f) kinkAt = 0.5;
   if (mode == WarpMode::PulseWidth && warp != 0.0f) kinkAt = pulseWidth(warp);
-  // The value jump and the slope jump (per sample) between the left limit at `left` (read at the previous sample's
-  // levels) and the right one at `right` (this sample's): the jump includes the band change a speed change makes.
-  auto slopeJump = [&](double left, double right, double& jump) {
-    double gl = 0, gr = 0;
-    const double yl = liveValueAtPsi(t, position, c, left, inc, -1, &gl, prevSpeedA, prevSpeedB);
-    const double yr = liveValueAtPsi(t, position, c, right, inc, +1, &gr, speedA, speedB);
-    jump = yr - yl;
-    return (gr - gl) * rate;
-  };
   const double dp = static_cast<double>(psi), dpp = static_cast<double>(prevPsi);
   if (wrapped) {
     // A sync reset at φ's wrap (also the plain cycle wrap when s = 1): d = time since it, in samples.
-    const double dphi = static_cast<double>(phi) + 1.0 - static_cast<double>(prevPhi);
-    const double d = dphi > 0.0 ? static_cast<double>(phi) / dphi : 0.0;
-    double end = sd - std::floor(sd);  // ψ just before the reset
+    double end = sd - std::floor(sd);  // ψ as φ → 1 (its left limit)
     if (end == 0.0) end = 1.0;
-    double jump = 0;
-    const double kink = slopeJump(end, 0.0, jump);
-    stampEvent(st, lane, d, jump, kink);
-    if (kinkAt > 0.0) {
-      double j2 = 0;
-      if (dp >= kinkAt) {
-        const double kk = slopeJump(kinkAt, kinkAt, j2);
-        stampEvent(st, lane, (dp - kinkAt) / rate, j2, kk);
+    double jump = 0, j2 = 0;
+    if (phi < prevPhi) {  // forwards: ψ ran dpp → end, reset to 0, ran on to dp
+      const double dphi = static_cast<double>(phi) + 1.0 - static_cast<double>(prevPhi);
+      const double d = dphi > 0.0 ? static_cast<double>(phi) / dphi : 0.0;
+      const double kink = stepAt(end, -1, 0.0, +1, jump);
+      stampEvent(st, lane, d, jump, kink);
+      if (kinkAt > 0.0) {
+        if (dp >= kinkAt) {
+          const double kk = kinkStep(kinkAt, j2);
+          stampEvent(st, lane, (dp - kinkAt) / ar, j2, kk);
+        }
+        if (dpp < kinkAt && kinkAt <= end) {
+          const double kk = kinkStep(kinkAt, j2);
+          stampEvent(st, lane, d + (end - kinkAt) / ar, j2, kk);
+        }
       }
-      if (dpp < kinkAt && kinkAt <= end) {
-        const double kk = slopeJump(kinkAt, kinkAt, j2);
-        stampEvent(st, lane, d + (end - kinkAt) / rate, j2, kk);
+    } else {  // backwards: ψ ran dpp → 0, jumped to end, ran down to dp
+      const double dphi = static_cast<double>(prevPhi) + 1.0 - static_cast<double>(phi);
+      const double d = dphi > 0.0 ? (1.0 - static_cast<double>(phi)) / dphi : 0.0;
+      const double kink = stepAt(0.0, +1, end, -1, jump);
+      stampEvent(st, lane, d, jump, kink);
+      if (kinkAt > 0.0) {
+        if (dp < kinkAt && kinkAt < end) {
+          const double kk = kinkStep(kinkAt, j2);
+          stampEvent(st, lane, (kinkAt - dp) / ar, j2, kk);
+        }
+        if (dpp >= kinkAt) {
+          const double kk = kinkStep(kinkAt, j2);
+          stampEvent(st, lane, d + kinkAt / ar, j2, kk);
+        }
       }
     }
     return;
   }
-  if (dp < dpp) {
+  if (fwd ? dp < dpp : dp > dpp) {
     // ψ wrapped (a sub-period boundary): its two ends' slopes.
-    const double span = dp + 1.0 - dpp;
     double j = 0;
-    const double kw = slopeJump(1.0, 0.0, j);
-    stampEvent(st, lane, span > 0.0 ? dp / span : 0.0, j, kw);
-    if (kinkAt > 0.0) {
-      if (dp >= kinkAt) {
-        const double kk = slopeJump(kinkAt, kinkAt, j);
-        stampEvent(st, lane, (dp - kinkAt) / rate, j, kk);
+    if (fwd) {
+      const double span = dp + 1.0 - dpp;
+      const double kw = stepAt(1.0, -1, 0.0, +1, j);
+      stampEvent(st, lane, span > 0.0 ? dp / span : 0.0, j, kw);
+      if (kinkAt > 0.0) {
+        if (dp >= kinkAt) {
+          const double kk = kinkStep(kinkAt, j);
+          stampEvent(st, lane, (dp - kinkAt) / ar, j, kk);
+        }
+        if (dpp < kinkAt) {
+          const double kk = kinkStep(kinkAt, j);
+          stampEvent(st, lane, (dp + 1.0 - kinkAt) / ar, j, kk);
+        }
       }
-      if (dpp < kinkAt) {
-        const double kk = slopeJump(kinkAt, kinkAt, j);
-        stampEvent(st, lane, (dp + 1.0 - kinkAt) / rate, j, kk);
+    } else {
+      const double span = dpp + 1.0 - dp;
+      const double kw = stepAt(0.0, +1, 1.0, -1, j);
+      stampEvent(st, lane, span > 0.0 ? (1.0 - dp) / span : 0.0, j, kw);
+      if (kinkAt > 0.0) {
+        if (dp < kinkAt) {
+          const double kk = kinkStep(kinkAt, j);
+          stampEvent(st, lane, (kinkAt - dp) / ar, j, kk);
+        }
+        if (dpp >= kinkAt) {
+          const double kk = kinkStep(kinkAt, j);
+          stampEvent(st, lane, (kinkAt + 1.0 - dp) / ar, j, kk);
+        }
       }
     }
     return;
   }
-  if (kinkAt > 0.0 && dpp < kinkAt && dp >= kinkAt) {
+  if (kinkAt > 0.0 && (fwd ? (dpp < kinkAt && dp >= kinkAt) : (dpp >= kinkAt && dp < kinkAt))) {
     double j = 0;
-    const double kk = slopeJump(kinkAt, kinkAt, j);
+    const double kk = kinkStep(kinkAt, j);
     stampEvent(st, lane, (dp - kinkAt) / (dp - dpp), j, kk);
   }
 }
@@ -584,6 +630,11 @@ void liveRun(const FrameTableView& t, WavetableLiveState& st, const LiveArgs& a,
     const F dl = detail::ft::phaseDelta<S>(phi, prevPhi);
     const F inc = S::min(dl, S::load(st.prevDelta));
     S::store(st.prevDelta, dl);
+    // TMM.18: the direction φ moves in (a negative frequency runs it backwards): the sign of this sample's wrapped Δφ.
+    // The speeds below are signed with it, so ψ′'s two parts (e·s and φ·Δs) add with their true signs.
+    const F d0 = S::sub(phi, prevPhi);
+    const F dir = S::select(S::lt(S::sub(d0, S::round(d0)), S::zero()), S::set(-1.0f), S::set(1.0f));
+    const F incDir = S::mul(inc, dir);
     // ψ = frac(φ·s) with the product's rounding error kept.
     const F s = S::fma(sync, S::set(static_cast<float>(kSyncMaxRatio - 1.0)), S::set(1.0f));
     const F prod = S::mul(phi, s);
@@ -623,7 +674,7 @@ void liveRun(const FrameTableView& t, WavetableLiveState& st, const LiveArgs& a,
     const F dW = S::select(primed, S::sub(warp, S::load(st.prevW)), S::zero());
     S::store(st.prevS, s);
     S::store(st.prevW, warp);
-    const F rate = S::fma(phi, dS, S::mul(inc, s));
+    const F rate = S::fma(phi, dS, S::mul(incDir, s));  // signed: ψ per sample
     F fold = S::zero(), theta = S::zero();
     // The read's band (wave_live.h "Level choice"): base-rate speeds from the representative increment of the base
     // level, scaled by kLiveBandScale and the fold's spread (1 + θ).
@@ -635,7 +686,7 @@ void liveRun(const FrameTableView& t, WavetableLiveState& st, const LiveArgs& a,
     }
     const F osF = S::set(a.os);
     const F incRep = S::gather(t.bucketTop, detail::ft::levelBucket<S>(S::mul(inc, osF)));
-    const F rateRep = S::fma(S::mul(phi, dS), osF, S::mul(incRep, s));  // base-rate ψ per sample
+    const F rateRep = S::fma(S::mul(phi, dS), osF, S::mul(S::mul(incRep, dir), s));  // base-rate ψ per sample (signed)
     // A tap's level speed: |a′·ψ′ + ∂a/∂w·Δw| (analytic: smooth except where a′ jumps, which the corrections
     // handle), scaled by the band headroom and the fold's spread.
     const F speedA = S::mul(S::abs(S::fma(S::mul(dadw, dW), osF, S::mul(rateRep, slopeA))), lvScale);
@@ -661,22 +712,26 @@ void liveRun(const FrameTableView& t, WavetableLiveState& st, const LiveArgs& a,
       float* slot = st.ring[st.ringPos];
       S::store(slot, S::add(S::load(slot), y));
       // Events: φ wrapped, ψ wrapped (sub-period count changed), or a kink crossed (the lane handler decides).
-      const F wrapped = S::band(primed, S::lt(S::sub(phi, prevPhi), S::set(-0.5f)));
+      // TMM.18: either way (a backward φ wraps from near 0 to near 1).
+      const F wrapped = S::band(primed, S::gt(S::abs(d0), S::set(0.5f)));
       const F prevSub = S::load(st.prevSub);
       F ev = S::bor(wrapped, S::band(primed, S::ne(sub, prevSub)));
       if constexpr (M != WarpMode::Bend) {
         const F prevPsi = S::load(st.prevPsi);
         const F k = M == WarpMode::Mirror ? half : S::fma(warp, S::set(static_cast<float>(-(0.5 - kPulseMinWidth))), half);
         const F on = M == WarpMode::Mirror ? S::ne(mix, S::zero()) : S::ne(warp, S::zero());
-        ev = S::bor(ev, S::band(S::band(primed, on), S::band(S::lt(prevPsi, k), S::ge(psi, k))));
+        // Crossed upwards (forward) or downwards (TMM.18: backward).
+        ev = S::bor(ev, S::band(S::band(primed, on), S::bor(S::band(S::lt(prevPsi, k), S::ge(psi, k)),
+                                                             S::band(S::ge(prevPsi, k), S::lt(psi, k)))));
         if constexpr (M == WarpMode::Mirror)  // the warp crossed 0
           ev = S::bor(ev, S::band(primed, S::bxor(S::gt(warp, S::zero()), S::gt(S::sub(warp, dW), S::zero()))));
       }
       if (S::any(ev)) {
         alignas(32) float m[8], vPhi[8], vPrevPhi[8], vPsi[8], vPrevPsi[8], vWrap[8], vS[8], vWarp[8], vFold[8], vInc[8],
             vPos[8], vSa[8], vSb[8];
-        alignas(32) float vRate[8], vPsa[8], vPsb[8], vDw[8];
+        alignas(32) float vRate[8], vPsa[8], vPsb[8], vDw[8], vDir[8];
         S::store(vDw, dW);
+        S::store(vDir, S::mul(incDir, s));  // ψ's rate at φ = 0 (its sign: φ's direction)
         S::store(vSa, speedA);
         S::store(vSb, speedB);
         S::store(vRate, rate);
@@ -696,7 +751,8 @@ void liveRun(const FrameTableView& t, WavetableLiveState& st, const LiveArgs& a,
         for (uint32_t l = 0; l < W; ++l)
           if (std::bit_cast<uint32_t>(m[l]) != 0)
             laneEvents(t, st, l, M, vPhi[l], vPrevPhi[l], vPsi[l], vPrevPsi[l], std::bit_cast<uint32_t>(vWrap[l]) != 0,
-                       vS[l], vWarp[l], vFold[l], vInc[l], vPos[l], vRate[l], vSa[l], vSb[l], vPsa[l], vPsb[l], vDw[l]);
+                       vS[l], vWarp[l], vFold[l], vInc[l], vPos[l], vRate[l], vSa[l], vSb[l], vPsa[l], vPsb[l], vDw[l],
+                       vDir[l]);
       }
       float* outSlot = st.ring[(st.ringPos + kD) & (kRing - 1)];
       S::store(out + o, S::load(outSlot));

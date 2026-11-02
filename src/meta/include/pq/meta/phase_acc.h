@@ -7,7 +7,9 @@
 // is wired into `hz` (the chain's wire from the note source, or `voice.hz` in a circuit).
 //
 //   inputs   hz  (Reads::Frequency, default 0; the chain input)   pm (Reads::Phase, added to the phase; default 0)
-//   params   freq   0 … 20 kHz, default 0 Hz, added to hz. Face law t → f = 20 kHz · (2^(14t) − 1)/(2^14 − 1): t = 0 is
+//   params   freq   0 … 20 kHz, default 0 Hz, added to hz. TMM.18: @signed (ParamSpec::signedValue) — wires may take it
+//                   down to −20 kHz, and hz is signed too: a negative frequency runs the phasor backwards (its uint32
+//                   increment exactly negated: the same pitch, the ramp reversed, i.e. polarity inverted). Face law t → f = 20 kHz · (2^(14t) − 1)/(2^14 − 1): t = 0 is
 //                   exactly 0 Hz (an incoming note plays exactly), t = 1 is 20 kHz (`@curve(exp0, 14)`).
 //            phase  0 … 1, default 0, wraps: the phase offset (the start phase: the per-voice phasor resets at note-on)
 //            amp    0 … 4, default 1: multiplies the output (SPEC: "a multiplier on the output"; QUESTIONS MM-1)
