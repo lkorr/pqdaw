@@ -27,8 +27,11 @@ const graph::Patch& scheduledPatch(const CompiledUnit& cu) {
 
 bool sameUnits(const graph::ProjectPartition& a, const graph::ProjectPartition& b) {
   if (a.units.size() != b.units.size() || a.buses.size() != b.buses.size()) return false;
+  // TMM.17: and the same instrument member. A MIDI track whose first device starts or stops being an instrument changes
+  // role (Instrument <-> Audio) without changing its unit's tracks: the unit must become a voice unit or stop being one
+  // (a new VoiceEngine: rebuild), never be recompiled against the old voice context.
   for (size_t u = 0; u < a.units.size(); ++u)
-    if (a.units[u].tracks != b.units[u].tracks) return false;
+    if (a.units[u].tracks != b.units[u].tracks || a.units[u].voiceTrack != b.units[u].voiceTrack) return false;
   for (size_t k = 0; k < a.buses.size(); ++k)
     if (!(a.buses[k].source == b.buses[k].source) || a.buses[k].producer != b.buses[k].producer ||
         a.buses[k].readers != b.buses[k].readers)

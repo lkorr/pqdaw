@@ -1114,7 +1114,9 @@ void ProjectLink::reportMissingDevices(const doc::Project& p) {
                 (r && r->stale ? "): its last good version plays" : "): it is bypassed");
       }
       missing.push_back(d.id);
-    } else if (devices_->library().find(d.patch) == nullptr) {
+    } else if (std::shared_ptr<const doc::ResolvedDevice> hold; devices_->patchOf(d, hold) == nullptr) {
+      // TMM.17: patchOf, not the library by name: a chain meta device ("meta:<type>") plays its type's expansion, which
+      // the library holds under another name (it was reported as missing while it played).
       if (missing.empty()) first = "Device '" + d.patch + "' is not available: it is bypassed";
       missing.push_back(d.id);
     }
