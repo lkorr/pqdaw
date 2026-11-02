@@ -77,6 +77,9 @@ namespace pq::views {
 
 class ArrangementView;
 class ViewContext;
+namespace arrangement {
+class EditSurface;  // TX.lane-edit (src/arrangement/edit_surface.h)
+}
 
 namespace automation_metrics {
 inline constexpr float kLaneHeight = 40.0f;      // default lane height (logical px)
@@ -217,6 +220,7 @@ struct AutomationBand {
   bool overClips = false;      // a track row in automation mode (else a lane)
   bool pinned = false;         // a return / master row (pinned at the bottom)
   int32_t laneIndex = -1;      // laneRows() index (lanes)
+  int32_t row = -1;            // TX.lane-edit: its row on its surface (whose time axis it is drawn on)
 };
 
 class ArrangementAutomation {
@@ -291,6 +295,17 @@ public:
   // track header: −1).
   ui::Menu* openMenu(ui::Vec2 at, const AutomationBand& b);
   ui::Menu* openChooser(ui::Widget& from, doc::TrackId t, int32_t laneIndex);
+  // TX.lane-edit: the chooser's entries for `t`'s parameter drawn over its clips (a lane window's menu); a pick chooses it
+  // and turns automation mode on.
+  std::vector<ui::MenuItem> parameterItems(doc::TrackId t);
+
+  // ---- other surfaces (TX.lane-edit) ------------------------------------------------------------------------------
+  // Pointer input, cursor and hover work on the surface bound by the caller (arrangement::Surfaces::Bind); a gesture
+  // keeps the surface it began on. In automation mode a surface's rows show their chosen envelopes over the clips:
+  // paintSurface paints those meeting `clip` (the caller binds nothing; the bands carry their rows).
+  void paintSurface(ui::PaintContext& ctx, arrangement::EditSurface& s, const ui::IRect& clip);
+  std::optional<AutomationBand> rowBandOn(const arrangement::EditSurface& s, int32_t row) const { return rowBand(s, row, false); }
+  const arrangement::EditSurface* dragSurface() const noexcept { return drag_.kind != DragKind::None ? drag_.surface : nullptr; }
 
   // ---- drag state (tests, the view) ----------------------------------------------------------------------------
   bool dragging() const noexcept;
@@ -365,6 +380,7 @@ private:
   enum class DragKind : uint8_t { None, Points, Curve, Range };
   struct Drag {
     DragKind kind = DragKind::None;
+    arrangement::EditSurface* surface = nullptr;  // TX.lane-edit: the surface the gesture began on
     AutomationBand band;
     ui::Vec2 press{};
     bool moved = false;
@@ -381,7 +397,10 @@ private:
     Ticks anchor = 0;                      // Range
     std::vector<doc::Breakpoint> preview;  // the lane's points as drawn now (sorted)
     bool previewValid = false;
-    int32_t damageX0 = 0, damageX1 = 0;    // columns damaged last frame
+    // The ticks damaged last frame (and the pads in device px beyond them); t0 > t1: whole bands. damaged: any.
+    double damageT0 = 0.0, damageT1 = 0.0;
+    int32_t damagePadL = 0, damagePadR = 0;
+    bool damaged = false;
   };
 
   TrackState& state(doc::TrackId t);
@@ -403,7 +422,10 @@ private:
   void release();
   void updatePreview();
   void damageDrag();
-  void damageColumns(const doc::ParamRef& p, int32_t x0, int32_t x1);
+  // The columns of ticks [t0, t1] plus padL / padR device px of every band showing `p` on every active surface (each on
+  // its row's axis); t0 > t1: the whole bands.
+  void damageTicks(const doc::ParamRef& p, double t0, double t1, int32_t padL, int32_t padR);
+  arrangement::EditSurface& geo() const noexcept;  // the drag's surface, else the bound one
   void damageSelection();
   bool commit(const doc::ops::EditResult& e, const AutomationBand& b, std::string_view what);
   // An edit on a band's lane: on an existing lane `make(project, laneId)`; a band without a lane gets one created
@@ -448,6 +470,8 @@ private:
                         EnvTile& e);
   AutomationBand laneBand(size_t laneIndex) const;
   std::optional<AutomationBand> rowBand(int32_t row, bool pinned) const;
+  AutomationBand laneBand(const arrangement::EditSurface& s, size_t laneIndex) const;
+  std::optional<AutomationBand> rowBand(const arrangement::EditSurface& s, int32_t row, bool pinned) const;
   Grid grid() const noexcept;
 
   ArrangementView& view_;
@@ -483,6 +507,7 @@ private:
   bool envTilesWanted_ = false;
   Stats stats_;
   uint64_t statsFrame_ = 0;  // PaintContext::frame the stats count (a frame may paint once per damage rect)
+  const arrangement::EditSurface* painting_ = nullptr;  // TX.lane-edit: the surface being painted (null: the lanes)
 };
 
 }  // namespace pq::views

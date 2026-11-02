@@ -1255,6 +1255,66 @@ Status setupProjectPatchLanes(Shell& shell) {
   return Ok{};
 }
 
+// TX.lane-edit: the lane windows as an editing surface (the sketch project): a time selection dragged over Keys and Pad
+// (bar 2 … 3.5: it selects the clips it touches, outlined, the windows lighter), and automation mode with Pad's volume
+// automated (a ramp and a curved fall) drawn over its clips, a breakpoint selected; the arrangement's painters throughout.
+Status setupProjectPatchLaneEdit(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-patch-lane-edit: no device library", {}};
+  if (Status s = project_patch::buildSketchProject(ctx.store()); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  auto* arr = dynamic_cast<ArrangementView*>(shell.slot(ShellSlot::TrackArea).find("arrangement"));
+  if (v == nullptr || arr == nullptr) return Error{ErrorCode::NotFound, "project-patch-lane-edit: the views are not installed", {}};
+  const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
+  const doc::Track* pad = namedTrack(*ctx.doc(), "Pad");
+  if (keys == nullptr || pad == nullptr) return Error{ErrorCode::NotFound, "project-patch-lane-edit: no Keys / Pad", {}};
+  const doc::TrackId padId = pad->id, keysId = keys->id;
+  doc::DocumentStore& store = ctx.store();
+  const Ticks bar = ticksPerBar(ctx.doc()->timeline->sigMap.signatureAt(0));
+  auto lane = std::make_shared<doc::AutomationLane>();
+  lane->id = store.ids().lane();
+  lane->param = doc::ParamRef::track(doc::ParamKind::TrackVolume, padId);
+  lane->points = {{0, -24.0f, 0.0f, store.ids().breakpoint()},
+                  {bar + bar / 2, 0.0f, 0.0f, store.ids().breakpoint()},
+                  {3 * bar, -6.0f, -0.6f, store.ids().breakpoint()},
+                  {4 * bar, -30.0f, 0.0f, store.ids().breakpoint()}};
+  const doc::BreakpointId picked = lane->points[1].id;
+  if (!store.dispatch(doc::AddAutomationLane{padId, lane}).ok()) return Error{ErrorCode::Unknown, "project-patch-lane-edit: lane", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->setLaneTime(0, 2 * v->laneDefaultSpan());  // 8 bars: twice the default width
+  const project_patch::ProjectPatch& pp = v->patch();
+  const uint32_t kb = pp.bandOf(keysId), pb = pp.bandOf(padId);
+  if (kb == project_patch::kNone || pb == project_patch::kNone) return Error{ErrorCode::NotFound, "project-patch-lane-edit: no bands", {}};
+  const project_patch::Node& kn = pp.nodes[pp.bands[kb].source];
+  const project_patch::Node& pn = pp.nodes[pp.bands[pb].source];
+  circuit::CircuitCanvas::View view;
+  view.zoom = 2.0;
+  view.x = static_cast<double>(kn.x) - 12.0;
+  view.y = static_cast<double>(std::min(kn.y, pn.y)) - 12.0;
+  v->canvas().setView(view);
+  shell.tree().layoutNow();
+  // The range over both windows (as a drag would leave it), then the automation (its own selection: the arrangement
+  // keeps one at a time, so the clips' range is set after it).
+  ArrangementAutomation& au = arr->automation();
+  au.choose(padId, lane->param);
+  au.setMode(true);
+  au.select(padId, lane->param, {picked});
+  ArrangementView::Selection sel;
+  sel.tracks = {keysId, padId};
+  sel.time = TickRange{bar, 3 * bar + bar / 2};
+  sel.range = true;
+  for (const doc::Track* t : {keys, pad}) {
+    const doc::Track* now = doc::findTrackPtr(*ctx.doc(), t->id);
+    for (const doc::ClipSlot& c : now->clips)
+      if (c.start() < sel.time->end && c.end() > sel.time->start) sel.clips.push_back({now->id, c.id});
+  }
+  arr->setSelection(std::move(sel), false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // T4.8: racks in the Device view. audio-rack: Keys = Basic Synth → an Audio Effect Rack [Dry: Utility | Crunch:
 // Saturator (shown) | Wide: Utility], Chain zones crossfading over the selector (the zone editor on its Chain tab),
 // macros named and mapped (Drive → Crunch's drive, Width → Wide's width, Blend → the rack's own selector).
@@ -2522,6 +2582,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-zoom", 1280, 800, setupProjectPatchZoom},     // T5.x-circuit-chain
     {"project-circuit-device", 1280, 800, setupProjectCircuitDevice},  // T5.x-one-circuit
     {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio
+    {"project-patch-lane-edit", 1280, 800, setupProjectPatchLaneEdit},  // TX.lane-edit: a range and automation in the windows
     {"project-meta-faces", 1280, 800, setupProjectMetaFaces},          // TMM.4
     {"project-meta-wavetable", 1280, 800, setupProjectMetaWavetable},  // TMM.7
     {"device-meta-chain", 1280, 800, setupDeviceMetaChain},            // TMM.10

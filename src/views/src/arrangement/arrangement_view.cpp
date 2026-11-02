@@ -67,6 +67,8 @@ ArrangementView::ArrangementView(ViewContext& ctx)
     : Widget("arrangement"),
       ctx_(ctx),
       model_(std::make_unique<Model>()),
+      ownSurface_(std::make_unique<arrangement::ArrangementSurface>(*this)),
+      surfaces_(std::make_unique<arrangement::Surfaces>(*ownSurface_)),
       editor_(std::make_unique<arrangement::Editor>(*this)),
       automation_(std::make_unique<ArrangementAutomation>(*this)),
       fileDrop_(std::make_unique<arrangement::FileDrop>(*this)) {
@@ -697,6 +699,59 @@ void ArrangementView::arrange(LayoutPass& pass) {
 }
 
 void ArrangementView::paint(PaintContext&) {}
+
+void ArrangementView::rowsChanged() {
+  rebuildRows();
+  surfaces_->damageOthers();
+}
+
+// --- the lanes as an edit surface (TX.lane-edit) ----------------------------------------------------------------
+
+namespace arrangement {
+
+Widget& ArrangementSurface::widget() const { return view_; }
+bool ArrangementSurface::active() const { return view_.visible() && view_.tree() != nullptr; }
+std::span<const ArrangementRow> ArrangementSurface::rows() const { return view_.rows(); }
+int32_t ArrangementSurface::rowAt(float y) const { return view_.rowAt(y); }
+
+// The row under y, clamped to the first / last row when y is above / below them; in a track's automation lanes
+// (T3.15): that track's row.
+int32_t ArrangementSurface::clampRow(float y) const {
+  const auto rs = view_.rows();
+  if (rs.empty()) return -1;
+  const int32_t r = view_.rowAt(y);
+  if (r >= 0) return r;
+  const float local = y - static_cast<float>(view_.rowLaneRect(0).y - rs.front().y);
+  const auto it = std::upper_bound(rs.begin(), rs.end(), local,
+                                   [](float v, const ArrangementRow& row) { return v < static_cast<float>(row.y + row.h + row.lanesH); });
+  if (it != rs.end() && local >= static_cast<float>(it->y)) return static_cast<int32_t>(it - rs.begin());
+  return y < static_cast<float>(view_.rowLaneRect(0).y) ? 0 : static_cast<int32_t>(rs.size() - 1);
+}
+
+IRect ArrangementSurface::rowLaneRect(int32_t row) const { return view_.rowLaneRect(row); }
+IRect ArrangementSurface::viewport() const { return view_.lanesViewport(); }
+TimeAxis ArrangementSurface::axis(int32_t) const {
+  return {static_cast<double>(view_.lanes().rect().x), view_.originTick(), view_.devicePxPerTick()};
+}
+double ArrangementSurface::gridPxPerTick() const { return view_.pxPerTick(); }
+int32_t ArrangementSurface::clipTitleHeight(int32_t) const {
+  return (view_.tree() ? view_.tree()->uiScale() : UiScale{}).px(am::kClipTitleHeight);
+}
+bool ArrangementSurface::zooming() const { return view_.zooming(); }
+void ArrangementSurface::revealTick(Ticks t) { view_.revealTick(t); }
+void ArrangementSurface::revealRow(int32_t row) { view_.revealRow(row); }
+std::span<const AutomationLaneRow> ArrangementSurface::laneRows() const { return view_.laneRows(); }
+IRect ArrangementSurface::laneRect(size_t i) const { return view_.laneRect(i); }
+std::span<const ArrangementRow> ArrangementSurface::bottomRows() const { return view_.bottomRows(); }
+IRect ArrangementSurface::pinnedRowRect(size_t i) const { return view_.pinnedRowRect(i); }
+IRect ArrangementSurface::bottomRect() const { return view_.bottomRect(); }
+void ArrangementSurface::damageAll() {
+  view_.lanes().markDirty();
+  if (const IRect b = view_.bottomRect(); !b.empty())
+    if (UiTree* tr = view_.tree()) tr->damage().add(b.toRect());
+}
+
+}  // namespace arrangement
 
 IRect ArrangementView::lanesViewport() const noexcept {
   const IRect sv = scroll_->rect();

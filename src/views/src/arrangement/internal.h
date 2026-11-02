@@ -24,8 +24,38 @@
 #include "pq/ui/widget.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/sample_drop.h"
+#include "edit_surface.h"
 
 namespace pq::views::arrangement {
+
+// TX.lane-edit: the arrangement's own lanes as an EditSurface (ArrangementView owns it).
+class ArrangementSurface final : public EditSurface {
+public:
+  explicit ArrangementSurface(ArrangementView& view) : view_(view) {}
+  ui::Widget& widget() const override;
+  bool active() const override;
+  std::span<const ArrangementRow> rows() const override;
+  int32_t rowAt(float deviceY) const override;
+  int32_t clampRow(float deviceY) const override;
+  ui::IRect rowLaneRect(int32_t row) const override;
+  ui::IRect viewport() const override;
+  TimeAxis axis(int32_t row) const override;
+  double gridPxPerTick() const override;
+  int32_t clipTitleHeight(int32_t row) const override;
+  bool tiles() const override { return true; }
+  bool zooming() const override;
+  void revealTick(Ticks t) override;
+  void revealRow(int32_t row) override;
+  std::span<const AutomationLaneRow> laneRows() const override;
+  ui::IRect laneRect(size_t i) const override;
+  std::span<const ArrangementRow> bottomRows() const override;
+  ui::IRect pinnedRowRect(size_t i) const override;
+  ui::IRect bottomRect() const override;
+  void damageAll() override;
+
+private:
+  ArrangementView& view_;
+};
 
 // A track's clips as sorted arrays (struct of arrays), rebuilt when the track's snapshot pointer changes. Clips are
 // sorted by start (the document keeps them so); maxEnd is the running maximum of the ends, so the first clip that
@@ -361,7 +391,11 @@ public:
   void afterDocumentChange(const doc::StoreEvent& e);
 
   // --- input (LaneCanvas forwards everything but the wheel) ---
+  // TX.lane-edit: on the surface bound now (Surfaces::Bind; the arrangement's when none); a gesture keeps the surface it
+  // began on until it ends.
   bool pointer(const ui::PointerEvent& e);
+  // The surface a drag runs on (null: no drag): its previews are drawn there only.
+  const EditSurface* dragSurface() const noexcept { return drag_.kind != DragKind::None ? drag_.surface : nullptr; }
   void cancelDrag();
   // T5.12: the clips being moved leave the arrangement: a Clips drag session (pq/ui/drag.h) takes over. False when none
   // could start (the move goes on).
@@ -450,12 +484,14 @@ public:
   // Selects exactly these tracks (after a track edit).
   void selectTracks(std::vector<doc::TrackId> tracks);
 
-  // Device rect of a clip on a row (window coordinates).
-  ui::IRect clipBox(int32_t row, Ticks start, Ticks end) const noexcept;
+  // Device rect of a clip on a row (window coordinates) of the current surface, and of a surface.
+  ui::IRect clipBox(int32_t row, Ticks start, Ticks end) const noexcept { return clipBox(geo(), row, start, end); }
+  static ui::IRect clipBox(const EditSurface& s, int32_t row, Ticks start, Ticks end) noexcept;
 
 private:
   struct Drag {
     DragKind kind = DragKind::None;
+    EditSurface* surface = nullptr;  // TX.lane-edit: the surface the gesture began on
     bool moved = false;
     bool copy = false;
     doc::ops::ClipEdge edge = doc::ops::ClipEdge::End;
@@ -487,13 +523,17 @@ private:
   };
   Hit hitTest(ui::Vec2 p) const;
   void setHover(HoverPart h);
+  // TX.lane-edit: the surface of the running gesture, else the bound one.
+  EditSurface& geo() const noexcept;
+  // A clip's box (with a crossfade's X) damaged on every active surface.
+  void damageClip(const doc::ClipRef& ref);
   // Clips of rows r0 … r1 (with selectedTracksOnly: only the selected tracks' rows) meeting [s, e), plus `base`;
   // sorted and de-duplicated by id.
   std::vector<doc::ClipRef> clipsMeeting(int32_t r0, int32_t r1, bool selectedTracksOnly, Ticks s, Ticks e,
                                          std::vector<doc::ClipRef> base) const;
   Grid grid() const noexcept;
   Ticks snapTick(Ticks t) const noexcept;
-  Ticks tickAt(float x) const noexcept;
+  Ticks tickAt(int32_t row, float x) const noexcept;  // on that row's time axis
   int32_t clampRow(float y) const noexcept;
   int32_t rowOf(doc::TrackId id) const noexcept;
   void press(const ui::PointerEvent& e);

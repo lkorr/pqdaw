@@ -66,7 +66,7 @@ void ArrangementAutomation::paintLanes(PaintContext& ctx, const IRect& canvas) {
     const auto rows = view_.rows();
     auto it = std::upper_bound(rows.begin(), rows.end(), localTop, [](int32_t y, const ArrangementRow& r) { return y < r.y + r.h; });
     for (; it != rows.end() && it->y < localBottom; ++it)
-      if (const auto b = rowBand(static_cast<int32_t>(it - rows.begin()), false)) paintBand(ctx, *b, c);
+      if (const auto b = rowBand(view_.surfaces().own(), static_cast<int32_t>(it - rows.begin()), false)) paintBand(ctx, *b, c);
   }
   // Lanes: separator, then the envelope.
   const auto lanes = view_.laneRows();
@@ -74,7 +74,7 @@ void ArrangementAutomation::paintLanes(PaintContext& ctx, const IRect& canvas) {
   for (; it != lanes.end() && it->y < localBottom; ++it) {
     const float y1 = static_cast<float>(top0 + it->y + it->h);
     ctx.dl.addRectFilled({static_cast<float>(c.x), y1 - 1.0f, static_cast<float>(c.right()), y1}, th->arrangement.separator);
-    paintBand(ctx, laneBand(static_cast<size_t>(it - lanes.begin())), c);
+    paintBand(ctx, laneBand(view_.surfaces().own(), static_cast<size_t>(it - lanes.begin())), c);
   }
 }
 
@@ -82,9 +82,22 @@ void ArrangementAutomation::paintPinned(PaintContext& ctx, const IRect& canvas) 
   if (!mode_) return;
   const IRect c = intersect(canvas, ctx.clip);
   if (c.empty()) return;
+  const arrangement::EditSurface& own = view_.surfaces().own();
+  painting_ = &own;
   const auto rows = view_.bottomRows();
   for (size_t i = 0; i < rows.size(); ++i)
-    if (const auto b = rowBand(static_cast<int32_t>(i), true)) paintBand(ctx, *b, c);
+    if (const auto b = rowBand(own, static_cast<int32_t>(i), true)) paintBand(ctx, *b, c);
+  painting_ = nullptr;
+}
+
+// TX.lane-edit: another surface's rows in automation mode (a lane window's envelope over its clips).
+void ArrangementAutomation::paintSurface(PaintContext& ctx, arrangement::EditSurface& s, const IRect& clip) {
+  if (!mode_ || ctx.res.theme == nullptr) return;
+  painting_ = &s;
+  const auto rows = s.rows();
+  for (size_t i = 0; i < rows.size(); ++i)
+    if (const auto b = rowBand(s, static_cast<int32_t>(i), false); b && !intersect(b->rect, clip).empty()) paintBand(ctx, *b, clip);
+  painting_ = nullptr;
 }
 
 void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b, const IRect& clip) {
@@ -94,6 +107,8 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
   const auto& at = th.automation;
   DrawList& dl = ctx.dl;
   ++stats_.bandsPainted;
+  const arrangement::EditSurface& surf = painting_ != nullptr ? *painting_ : view_.surfaces().own();
+  const arrangement::TimeAxis pax = surf.axis(b.row);  // TX.lane-edit: the band's surface and row
   const doc::Project& p = *view_.shown();
   const ParamDisplay disp = paramDisplay(p, b.param, ctx_.deviceLibrary());
   const auto yOf = [&](double v) {
@@ -105,9 +120,9 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
 
   // The time selection.
   if (selRange_ && selParam_ == b.param && selTrack_ == b.track) {
-    const float x0 = std::max(static_cast<float>(vis.x), std::floor(view_.xOfTick(static_cast<double>(selRange_->start))));
+    const float x0 = std::max(static_cast<float>(vis.x), std::floor(pax.x(static_cast<double>(selRange_->start))));
     const float x1 = std::min(static_cast<float>(vis.right()),
-                              selRange_->end > selRange_->start ? std::floor(view_.xOfTick(static_cast<double>(selRange_->end)))
+                              selRange_->end > selRange_->start ? std::floor(pax.x(static_cast<double>(selRange_->end)))
                                                                 : x0 + static_cast<float>(std::max(1, ctx.scale.px(1.0f))));
     if (x1 > x0) dl.addRectFilled({x0, static_cast<float>(b.rect.y), x1, static_cast<float>(b.rect.bottom())}, at.selection);
   }
@@ -128,9 +143,9 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
                        overridden ? at.lineOverridden : at.unautomated);
   } else {
     // Density from the band's whole width (not the painted part: partial and full repaints decide alike).
-    const auto bandFirst = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(view_.tickAtX(static_cast<float>(b.rect.x)))),
+    const auto bandFirst = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(pax.tick(static_cast<float>(b.rect.x)))),
                                             [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
-    const auto bandLast = std::upper_bound(bandFirst, pts.end(), static_cast<Ticks>(std::ceil(view_.tickAtX(static_cast<float>(b.rect.right())))),
+    const auto bandLast = std::upper_bound(bandFirst, pts.end(), static_cast<Ticks>(std::ceil(pax.tick(static_cast<float>(b.rect.right())))),
                                            [](Ticks t, const doc::Breakpoint& bp) { return t < bp.tick; });
     const auto count = static_cast<float>(bandLast - bandFirst);
     const float lineW = std::max(1.0f, au::kLineWidth * ctx.scale.factor);
@@ -138,19 +153,20 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
     // T3.x-fix-paint: the line from envelope tiles (rasterised once per lane snapshot and zoom, drawn as one quad per
     // chunk), else directly. Breakpoint handles then sit on the tiles' whole-pixel x mapping.
     double tileOffset = 0.0;
-    const bool tiled = b.lane && pts.data() == b.lane->points.data() && paintEnvelopeTiles(ctx, b, pts, vis, dense, lineCol, lineW, tileOffset);
+    const bool tiled = surf.tiles() && b.lane && pts.data() == b.lane->points.data() &&
+                       paintEnvelopeTiles(ctx, b, pts, vis, dense, lineCol, lineW, tileOffset);
     if (!tiled) paintEnvelopeDirect(ctx, b, pts, fallback, vis, dense, lineCol, lineW);
-    const double k = view_.devicePxPerTick();
+    const double k = pax.k;
     const auto xOf = [&](Ticks t) {
-      return tiled ? static_cast<float>(tileOffset + static_cast<double>(t) * k) : view_.xOfTick(static_cast<double>(t));
+      return tiled ? static_cast<float>(tileOffset + static_cast<double>(t) * k) : pax.x(static_cast<double>(t));
     };
 
     // Breakpoint handles (all of them while they are at least kHandleMinSpacing px apart on average, else only the
     // selected ones).
     const float reach = (au::kPointRadius + 2.0f) * ctx.scale.factor;
-    const auto first = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(view_.tickAtX(static_cast<float>(vis.x) - reach))),
+    const auto first = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(pax.tick(static_cast<float>(vis.x) - reach))),
                                         [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
-    const auto last = std::upper_bound(first, pts.end(), static_cast<Ticks>(std::ceil(view_.tickAtX(static_cast<float>(vis.right()) + reach))),
+    const auto last = std::upper_bound(first, pts.end(), static_cast<Ticks>(std::ceil(pax.tick(static_cast<float>(vis.right()) + reach))),
                                        [](Ticks t, const doc::Breakpoint& bp) { return t < bp.tick; });
     // Level of detail from the band's whole width (count above: partial and full repaints agree).
     const bool all = count * au::kHandleMinSpacing * ctx.scale.factor <= static_cast<float>(b.rect.w);
@@ -180,7 +196,7 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
         const TextRun run = ctx.res.text->shape(font, readoutText_);
         const int32_t pad = ctx.scale.px(3.0f), h = ctx.scale.px(14.0f);
         const int32_t w = run.advance + 2 * pad;
-        const float px = view_.xOfTick(static_cast<double>(bp.tick)), py = yOf(bp.value);
+        const float px = pax.x(static_cast<double>(bp.tick)), py = yOf(bp.value);
         int32_t x = static_cast<int32_t>(std::lround(px)) + ctx.scale.px(au::kPointRadius + 4.0f);
         int32_t y = static_cast<int32_t>(std::lround(py)) - h - ctx.scale.px(2.0f);
         if (x + w > b.rect.right()) x = static_cast<int32_t>(std::lround(px)) - ctx.scale.px(au::kPointRadius + 4.0f) - w;
@@ -198,6 +214,7 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
 void ArrangementAutomation::paintEnvelopeDirect(PaintContext& ctx, const AutomationBand& b, std::span<const doc::Breakpoint> pts,
                                                 double fallback, const IRect& vis, bool dense, Rgba lineCol, float lineW) {
   DrawList& dl = ctx.dl;
+  const arrangement::TimeAxis pax = (painting_ != nullptr ? *painting_ : view_.surfaces().own()).axis(b.row);
   const ParamDisplay disp = paramDisplay(*view_.shown(), b.param, ctx_.deviceLibrary());
   const auto yOf = [&](double v) {
     return static_cast<float>(static_cast<double>(b.bottom) - displayNorm(disp, v) * static_cast<double>(b.bottom - b.top));
@@ -210,13 +227,13 @@ void ArrangementAutomation::paintEnvelopeDirect(PaintContext& ctx, const Automat
     // and every breakpoint inside (value compares only; the display mapping runs at most twice per column). Each column
     // depends only on its own ticks, so partial and full repaints agree exactly.
     EnvelopeCursor cur(pts, fallback);
-    auto it = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(view_.tickAtX(static_cast<float>(vis.x)))),
+    auto it = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(pax.tick(static_cast<float>(vis.x)))),
                                [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
     uint32_t spans = 0;
-    double tl = view_.tickAtX(static_cast<float>(vis.x));
+    double tl = pax.tick(static_cast<float>(vis.x));
     double vl = cur.at(tl);  // the envelope at the column's left edge (the previous column's right edge)
     for (int32_t col = vis.x; col < vis.right(); ++col) {
-      const double tr = view_.tickAtX(static_cast<float>(col + 1));
+      const double tr = pax.tick(static_cast<float>(col + 1));
       double vmin = vl, vmax = vl;
       for (; it != pts.end() && static_cast<double>(it->tick) < tr; ++it) {
         if (static_cast<double>(it->tick) < tl) continue;
@@ -241,14 +258,14 @@ void ArrangementAutomation::paintEnvelopeDirect(PaintContext& ctx, const Automat
   // So the polyline starts at a breakpoint three device columns (and two breakpoints) before the painted part and
   // ends likewise after it, or at a fixed anchor just outside the band: from there on, its vertices, groups and
   // joins are the full repaint's.
-  const double k = view_.devicePxPerTick();
+  const double k = pax.k;
   const float margin = 8.0f * ctx.scale.factor, anchor = 64.0f * ctx.scale.factor;
-  const double lo = view_.tickAtX(static_cast<float>(b.rect.x) - anchor);
-  const double hi = view_.tickAtX(static_cast<float>(b.rect.right()) + anchor);
-  auto columnOf = [&](const doc::Breakpoint& bp) { return std::floor(view_.xOfTick(static_cast<double>(bp.tick))); };
+  const double lo = pax.tick(static_cast<float>(b.rect.x) - anchor);
+  const double hi = pax.tick(static_cast<float>(b.rect.right()) + anchor);
+  auto columnOf = [&](const doc::Breakpoint& bp) { return std::floor(pax.x(static_cast<double>(bp.tick))); };
   double t0 = lo;
   {
-    const double from = view_.tickAtX(static_cast<float>(vis.x) - margin);
+    const double from = pax.tick(static_cast<float>(vis.x) - margin);
     auto it = std::upper_bound(pts.begin(), pts.end(), from, [](double t, const doc::Breakpoint& bp) { return t < static_cast<double>(bp.tick); });
     if (it != pts.begin()) {
       size_t i = static_cast<size_t>(it - pts.begin()) - 1, steps = 0;
@@ -267,7 +284,7 @@ void ArrangementAutomation::paintEnvelopeDirect(PaintContext& ctx, const Automat
   }
   double t1 = hi;
   {
-    const double to = view_.tickAtX(static_cast<float>(vis.right()) + margin);
+    const double to = pax.tick(static_cast<float>(vis.right()) + margin);
     auto it = std::lower_bound(pts.begin(), pts.end(), to, [](const doc::Breakpoint& bp, double t) { return static_cast<double>(bp.tick) < t; });
     if (it != pts.end()) {
       size_t i = static_cast<size_t>(it - pts.begin()), steps = 0;
@@ -308,7 +325,7 @@ void ArrangementAutomation::paintEnvelopeDirect(PaintContext& ctx, const Automat
     poly_.push_back(last);
   };
   for (const EnvelopeVertex& v : verts_) {
-    const Vec2 q{view_.xOfTick(v.tick), yOf(v.value)};
+    const Vec2 q{pax.x(v.tick), yOf(v.value)};
     const auto col = static_cast<int32_t>(std::floor(q.x));
     if (col != column) {
       flush();

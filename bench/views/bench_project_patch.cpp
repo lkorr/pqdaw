@@ -34,6 +34,7 @@
 #include "pq/ui/text.h"
 #include "pq/ui/tile_atlas.h"
 #include "pq/ui/widget.h"
+#include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/chain_circuit.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/meta/face_targets.h"
@@ -412,6 +413,34 @@ int main() {
     std::vector<double> ls;
     for (int i = 0; i < 300; ++i) ls.push_back(timed([&] { view->scrollLanes(i % 2 == 0 ? 1.0 : -1.0); }));
     pq::bench::reportStats("one_circuit.lane scroll frame (one band framed, near) 64 tracks 2560x1440", pq::bench::summarize(ls), "ns CPU/frame");
+    // TX.lane-edit: the windows drawn by the arrangement's painters with the arrangement's editing state over them — a
+    // time selection on every MIDI track (their clips outlined) and automation mode (each window's volume envelope).
+    if (auto* arr = dynamic_cast<pq::views::ArrangementView*>((**shell).slot(pq::views::ShellSlot::TrackArea).find("arrangement"))) {
+      pq::views::ArrangementView::Selection sel;
+      const pq::Ticks bar = pq::ticksPerBar(ctx.doc()->timeline->sigMap.signatureAt(0));
+      doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+        if (t.kind != doc::TrackKind::Midi) return;
+        sel.tracks.push_back(t.id);
+        for (const doc::ClipSlot& c : t.clips)
+          if (c.start() < 3 * bar && c.end() > bar) sel.clips.push_back({t.id, c.id});
+      });
+      sel.time = pq::TickRange{bar, 3 * bar};
+      sel.range = true;
+      arr->setSelection(sel, false);
+      arr->automation().setMode(true);
+      settle();
+      fullPaint();
+      std::snprintf(name, sizeof name, "lane_edit.paint(full, one band, windows with a range + automation mode) 64 tracks %ux%u", w, h);
+      pq::bench::reportStats(name, pq::bench::measure(fullPaint, 1), "ns/frame");
+      std::vector<double> sf;  // a selection change: the selected tracks' windows damaged, repainted
+      for (int i = 0; i < 300; ++i) {
+        sel.time = pq::TickRange{bar, (i % 2 == 0 ? 2 : 3) * bar};
+        sf.push_back(timed([&] { arr->setSelection(sel, false); }));
+      }
+      pq::bench::reportStats("lane_edit.selection change frame (64 tracks selected, one band framed) 2560x1440", pq::bench::summarize(sf), "ns CPU/frame");
+      arr->automation().setMode(false);
+      arr->clearSelection();
+    }
     view->setShown(false, false);
     settle();
   }

@@ -327,7 +327,7 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
   const media::WaveformOverview* ov = ctx.waveforms().overview(own.sample);
   const bool detailed = cc.cx1 - cc.cx0 >= static_cast<float>(lp.ctx.scale.px(4.0f)) && bodyH >= 3;
   if (ov && detailed) {
-    TileAtlas* tiles = lp.ctx.res.tiles;
+    TileAtlas* tiles = lp.tiles();
     const double fpp = framesPerPx(*L, c, *L->tempo, lp.k);
     WaveformLevel lv[kMaxOverviewLevels];
     WaveformData data = waveformData(*ov, nullptr, lv);
@@ -346,7 +346,7 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
       } else if (!(t.matches(lp.k, bodyH, ov->builtFrames()) && t.state == PreviewTile::State::Failed)) {
         ++lp.m.stats.tilesMissing;
         lp.m.tilesMissing = true;
-        if (lp.view.zooming()) lp.m.tilesAfterZoom = true;
+        if (lp.zooming()) lp.m.tilesAfterZoom = true;
         if (ready && t.bodyH == bodyH) {  // the previous zoom's tile, stretched, until onFrame has built this one
           queueAudioTile(lp, *tiles, t, cc.cx0, cc.vx0, cc.vx1, by0, bodyH, waveCol);
           tiles->touch(t.tile.page);

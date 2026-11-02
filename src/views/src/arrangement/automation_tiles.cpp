@@ -275,11 +275,11 @@ bool ArrangementAutomation::buildEnvelopeTiles(TileAtlas* tiles, const IRect& ca
     const auto rows = view_.rows();
     auto it = std::upper_bound(rows.begin(), rows.end(), localTop, [](int32_t y, const ArrangementRow& r) { return y < r.y + r.h; });
     for (; it != rows.end() && it->y < localBottom; ++it)
-      if (const auto b = rowBand(static_cast<int32_t>(it - rows.begin()), false)) bands.push_back(*b);
+      if (const auto b = rowBand(view_.surfaces().own(), static_cast<int32_t>(it - rows.begin()), false)) bands.push_back(*b);
   }
   const auto lanes = view_.laneRows();
   auto lit = std::upper_bound(lanes.begin(), lanes.end(), localTop, [](int32_t y, const AutomationLaneRow& r) { return y < r.y + r.h; });
-  for (; lit != lanes.end() && lit->y < localBottom; ++lit) bands.push_back(laneBand(static_cast<size_t>(lit - lanes.begin())));
+  for (; lit != lanes.end() && lit->y < localBottom; ++lit) bands.push_back(laneBand(view_.surfaces().own(), static_cast<size_t>(lit - lanes.begin())));
 
   // Pass 1: the tiles in use stay (allocations below never evict them); pass 2 builds the missing ones.
   bool done = true;

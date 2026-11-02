@@ -665,7 +665,7 @@ bool paintNotes(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cl
   Model& m = lp.m;
   const doc::NoteClip& clip = *clipPtr;
   const doc::TuningDef* tdef = clipTuning(row, clip, lp.p);
-  TileAtlas* tiles = lp.ctx.res.tiles;
+  TileAtlas* tiles = lp.tiles();
   // A tile is the clip's own content at its own length; a moved clip (drag preview) draws the same tile.
   const bool ownContent = g.length == clip.length && g.contentStart == clip.contentStart;
   if (tiles && ownContent && wantsTile(*tiles, clip.notes.size(), localWidth(g.length, lp.k), bodyH)) {
@@ -687,7 +687,7 @@ bool paintNotes(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cl
     }
     ++m.stats.tilesMissing;
     m.tilesMissing = true;
-    if (lp.view.zooming()) m.tilesAfterZoom = true;
+    if (lp.zooming()) m.tilesAfterZoom = true;
     if (ready) {
       queueTile(lp, *tiles, *t, cx0, vx0, vx1, by0, bodyH, noteCol);
       tiles->touch(t->tile.page);
@@ -727,8 +727,10 @@ bool paintNotes(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cl
 // A clip: border, title strip with the name, body with the note preview (looped content repeated). `g` is where it
 // is drawn (its own bounds, or a drag preview's); a selected clip gets a light outline (T3.9). `hover` (T4.16b): the
 // part a press would grab, highlighted (0 the title strip, −1 / +1 an edge; kNoHover none).
+}  // namespace
+
 void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& clipPtr, float top, float bottom, bool trackActive,
-               const ClipGeom& g, bool selected, int hover = kNoHover) {
+               const ClipGeom& g, bool selected, int hover) {
   const doc::NoteClip& clip = *clipPtr;
   // Playback geometry for the segments: the clip itself, or (a preview) a copy of its timing without notes.
   std::optional<doc::NoteClip> moved;
@@ -756,7 +758,7 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
   const bool detailed = cc.cx1 - cc.cx0 >= static_cast<float>(lp.ctx.scale.px(12.0f));
   // While the zoom changes, clips denser than kZoomPreviewMinPxPerNote draw no notes directly (their notes are a few
   // pixels each there; the frame stays cheap however far out the zoom goes); the lanes repaint once it settles.
-  const bool dense = lp.view.zooming() &&
+  const bool dense = lp.zooming() &&
                      cc.cx1 - cc.cx0 < am::kZoomPreviewMinPxPerNote * static_cast<float>(clip.notes.size());
   // A tile quad and its clip's border go after the rows (flushTiles); everything else is drawn now.
   bool deferred = false;
@@ -764,6 +766,8 @@ void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cli
     deferred = paintNotes(lp, row, clipPtr, timing, g, cc.cx0, cc.cx1, cc.vx0, cc.vx1, by0, bodyH, dense, clipNoteColour(colour));
   paintClipBorder(lp, cc, top, bottom, titleB, selected, hover, deferred);
 }
+
+namespace {
 
 // The track's own activator and its groups' (a deactivated or muted group silences its members; T3.10: the
 // activator is the mute).
@@ -935,7 +939,8 @@ void LaneCanvas::paint(PaintContext& ctx) {
         if (ed.trackSelected(it->id))
           dl.addRectFilled({x0, static_cast<float>(r.y + it->y), x1, static_cast<float>(r.y + it->y + it->h - 1)}, col);
   }
-  for (const DragClip& dc : ed.dragClips()) {
+  // TX.lane-edit: previews of a drag on another surface (a lane window) are drawn there.
+  for (const DragClip& dc : ed.dragSurface() == &view_.surfaces().own() ? std::span<const DragClip>(ed.dragClips()) : std::span<const DragClip>{}) {
     int32_t ri = 0;
     ClipGeom g;
     if (!ed.preview(dc, ri, g)) continue;

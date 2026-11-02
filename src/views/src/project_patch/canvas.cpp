@@ -610,6 +610,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       markDirty();
       return true;
     }
+  if (lanePointer(e)) return true;  // TX.lane-edit: a window body is the arrangement's editing surface
   if (drag_ == Drag::None && facePointer(e)) return true;  // TMM.4: a face's control (its drag, hover, wheel)
   switch (e.type) {
     case ui::PointerType::Wheel: {
@@ -877,6 +878,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           }
           break;
         }
+        case Drag::Lane:
         case Drag::None: break;
       }
       return true;
@@ -920,6 +922,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         case Drag::Pan:
         case Drag::Send: v.endValueGesture(); break;
         case Drag::Resize: break;  // applied while dragging (view state: no gesture to commit)
+        case Drag::Lane:
         case Drag::None: break;
       }
       dragNode_ = dragBand_ = kNone;
@@ -996,8 +999,10 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
     case Drag::Pan:
     case Drag::Send: return ui::Cursor::ResizeEW;
     case Drag::Resize: return ui::Cursor::ResizeNWSE;
+    case Drag::Lane: return laneCursor_;  // TX.lane-edit: the arrangement's gesture cursor
     case Drag::None: break;
   }
+  if (laneHover_ && !panning() && scene()) return laneCursor_;  // TX.lane-edit: over a window body (Alt: copy / curve)
   if (panning() || altHeld() || !scene()) return CircuitCanvas::cursorAt(pos);
   return hoverCursor_;
 }
@@ -1180,14 +1185,85 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
   (void)v.moveDevice(moved.device, band.track, index);
 }
 
+// TX.lane-edit: a press in a window body goes to the arrangement's automation and editor (lane_edit.cpp: the surface
+// bound for the call); its drag keeps the pointer (Drag::Lane) until it ends. Over a body (no drag) the hover shows what a
+// press would grab, and laneCursor_ is its cursor. A double-click on a clip opens its editor (the piano roll, Clip View).
+bool ProjectCanvas::lanePointer(const ui::PointerEvent& e) {
+  ProjectPatchView& v = view_;
+  if (drag_ == Drag::Lane) {
+    if (e.type == ui::PointerType::Wheel) return false;
+    (void)v.lanePointer(e);
+    if (e.type == ui::PointerType::Move || e.type == ui::PointerType::Up) laneCursor_ = v.laneCursor(e.pos, e.mods);
+    if (!v.laneDragging()) {
+      drag_ = Drag::None;
+      laneHover_ = v.laneBodyAt(e.pos) != kNone;
+      if (laneHover_) v.laneHover(e.pos, e.mods);
+    }
+    return true;
+  }
+  switch (e.type) {
+    case ui::PointerType::Down: {
+      if (drag_ != Drag::None || (e.button != ui::PointerButton::Left && e.button != ui::PointerButton::Right) ||
+          v.laneBodyAt(e.pos) == kNone) {
+        if (e.button == ui::PointerButton::Left || e.button == ui::PointerButton::Right) laneFocus_ = false;
+        return false;
+      }
+      if (tree()) tree()->setFocus(this);
+      laneFocus_ = true;
+      clearSelection();  // one selection at a time: the window's (Delete, Ctrl+D … act on the clips)
+      v.selectGroup({});
+      if (e.button == ui::PointerButton::Left && e.clickCount >= 2 && (e.mods & (ui::mod::kCtrl | ui::mod::kShift)) == 0)
+        if (const doc::ClipRef ref = v.laneClipAt(e.pos); ref.clip.valid()) {
+          v.openClip(ref);
+          return true;
+        }
+      laneHover_ = false;
+      v.clearLaneHover();
+      (void)v.lanePointer(e);
+      if (v.laneDragging()) {
+        drag_ = Drag::Lane;
+        laneCursor_ = v.laneCursor(e.pos, e.mods);
+      }
+      return true;
+    }
+    case ui::PointerType::Move: {
+      if (drag_ != Drag::None) return false;
+      if (!panning() && v.laneBodyAt(e.pos) != kNone) {
+        v.laneHover(e.pos, e.mods);
+        laneCursor_ = v.laneCursor(e.pos, e.mods);
+        laneHover_ = true;
+      } else if (laneHover_) {
+        v.clearLaneHover();
+        laneHover_ = false;
+      }
+      return false;  // the canvas's own hover (readouts, info) goes on
+    }
+    case ui::PointerType::Leave:
+      if (laneHover_) {
+        v.clearLaneHover();
+        laneHover_ = false;
+      }
+      return false;
+    default: return false;
+  }
+}
+
 bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
   if (faceKey(e)) return true;  // TMM.7: the focused face first (a keyframe's Delete before the selection's)
   if (!e.down) return false;
   const ui::Mods mods = e.mods & ui::mod::kChordMask;
+  if (e.key == ui::key::kEscape && drag_ == Drag::Lane) {  // TX.lane-edit: the window's drag ends without an edit
+    view_.laneAbort();
+    drag_ = Drag::None;
+    markDirty();
+    return true;
+  }
   if (e.key == ui::key::kEscape && (drag_ != Drag::None || faceDragging())) {  // TMM.4: a face's drag too
     onInteractionCancelled();
     return true;
   }
+  // TX.lane-edit: after a press in a window, the arrangement's edit chords act there (Ctrl+Shift+M, Delete, Ctrl+D …).
+  if (laneFocus_ && view_.laneKey(e)) return true;
   if (mods == ui::mod::kNone && (e.key == ui::key::kDelete || e.key == ui::key::kBackspace)) {
     (void)view_.deleteSelection();
     return true;
@@ -1220,6 +1296,7 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
 
 void ProjectCanvas::onCaptureLost() {
   if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.endValueGesture();
+  if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit (as the arrangement's lanes: no partial edit)
   leaveOutside(last_);  // TX.free-rack
   if (drag_ != Drag::None) markDirty();
   drag_ = Drag::None;
@@ -1229,6 +1306,7 @@ void ProjectCanvas::onCaptureLost() {
 
 void ProjectCanvas::onInteractionCancelled() {
   if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.cancelValueGesture();
+  if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit
   leaveOutside(last_);  // TX.free-rack
   if (drag_ == Drag::Resize) {  // TX.resize: Esc / focus lost: back to the size at the press
     drag_ = Drag::None;
@@ -1274,7 +1352,9 @@ ui::InfoText ProjectCanvas::info() const {
           "device to wire it into a parameter, a mixer's output onto a group, return "
           "or the master to route it; double-click a band to open it (its devices opened to their atoms), a device to open it "
           "alone, inside an opened device to edit its circuit. Over a lane window the wheel scrolls time, Ctrl+wheel zooms it; "
-          "double-click a clip to edit it. Ctrl+G groups the selected blocks into a capsule (Ctrl+Shift+G ungroups). "
+          "double-click a clip to edit it; a window edits its track as the arrangement does (drag: a time selection, "
+          "Ctrl+Shift+M: a MIDI clip there, a clip's title moves it, Alt copies, its edges trim; A: automation). "
+          "Ctrl+G groups the selected blocks into a capsule (Ctrl+Shift+G ungroups). "
           "Ctrl+Alt+P returns to the arrangement."};
 }
 

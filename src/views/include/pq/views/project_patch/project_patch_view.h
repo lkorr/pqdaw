@@ -8,11 +8,14 @@
 //   bands      one per track in lane order, tinted in the track colour, its name in the title strip; a group is a
 //              container around its members; a mixer strip node ends every chain (volume bar, pan, mute and solo
 //              buttons; double-click opens it to show each send's level beside its pin).
-//   lanes      (T5.x-one-circuit) a MIDI or audio track's source node is a LANE WINDOW: the lane itself, display only —
-//              its clips (colours, names, MIDI notes, audio waveforms from the overview cache), bar and beat lines,
-//              the playhead — over one time window all windows share (4 bars by default; see laneStart). Wheel over
-//              a window scrolls time, Ctrl+wheel zooms it (zoomed out, the windows widen and the chains move right);
-//              double-click a clip opens its editor (a MIDI clip's piano roll, an audio clip's Clip View).
+//   lanes      (T5.x-one-circuit) a MIDI or audio track's source node is a LANE WINDOW: the lane itself — its clips
+//              (colours, names, MIDI notes, audio waveforms from the overview cache), bar and beat lines, the playhead —
+//              over one time window all windows share (4 bars by default; see laneStart). Wheel over a window scrolls
+//              time, Ctrl+wheel zooms it (zoomed out, the windows widen and the chains move right); double-click a clip
+//              opens its editor (a MIDI clip's piano roll, an audio clip's Clip View). TX.lane-edit: a window is an
+//              editing surface of its track run by the arrangement's own editor and automation (see "lane-window
+//              editing" below): select time, Ctrl+Shift+M / the menu make a MIDI clip, clips move / copy / trim / delete /
+//              duplicate, audio handles, automation mode (A) draws breakpoints over the clips.
 //   one view   (T5.x-one-circuit, SPEC §15 2026-10-31: the whole project is one circuit) every "Open in Circuit View"
 //              comes here (ViewContext::openProjectCircuit: openCircuit): the device's band opened, framed on the
 //              device and focused; zooming out shows the other bands, groups with their chains, returns, the master
@@ -111,8 +114,13 @@ struct PanelTemplate;
 namespace devices {
 class PanelFace;
 }
+namespace arrangement {
+class EditSurface;
+}
 
 namespace project_patch {
+
+class LaneEditSurface;  // TX.lane-edit (src/project_patch/internal.h)
 
 // The drawable scene of a project patch: model nodes become scene nodes in model order (an expanded device instead
 // contributes its inner patch's nodes after them), model edges become scene wires in edge order (then the wires inside
@@ -164,8 +172,11 @@ public:
   // World rect → device rect.
   ui::Rect deviceRect(float x, float y, float w, float h) const;
 
-  enum class Drag : uint8_t { None, Wire, MaybeMoveDevice, MoveDevice, Nudge, Volume, Pan, Send, Resize };
+  // Lane (TX.lane-edit): a press in a lane window's body went to the arrangement's editor / automation, whose drag runs.
+  enum class Drag : uint8_t { None, Wire, MaybeMoveDevice, MoveDevice, Nudge, Volume, Pan, Send, Resize, Lane };
   Drag drag() const noexcept { return drag_; }
+  // TX.lane-edit: the last press was in a lane window (the arrangement's edit chords act there: laneKey).
+  bool laneFocused() const noexcept { return laneFocus_; }
   // TX.resize: S is held (and no text field has the focus): a left press on a block resizes it; the block a press at
   // `pos` would resize (a closed device block; kNone: none).
   bool resizeHeld() const noexcept;
@@ -206,6 +217,11 @@ private:
   ui::Cursor hoverCursor_ = ui::Cursor::Arrow;     // T4.16c: pressCursor at the last move
   ui::Cursor wireCursor_ = ui::Cursor::Crosshair;  // T4.16c: during a wire drag
   mutable std::string infoTitle_;                  // TMM.10-fix2: a hovered note source's info (info() returns views)
+  // TX.lane-edit
+  bool laneFocus_ = false;   // the last press was in a lane window
+  bool laneHover_ = false;   // the pointer rests over a window body (laneCursor_ is what a press there would do)
+  ui::Cursor laneCursor_ = ui::Cursor::Arrow;
+  bool lanePointer(const ui::PointerEvent& e);  // the windows' share of onPointer (true: taken)
 };
 
 class ProjectPatchView : public ui::Widget {
@@ -329,6 +345,23 @@ public:
   std::function<void(const doc::ClipRef&)> onOpenClip;
   // The playhead the windows draw (read while playing; empty when stopped).
   const std::optional<Ticks>& lanePlayhead() const noexcept { return playhead_; }
+
+  // ---- lane-window editing (TX.lane-edit) ------------------------------------------------------------------------
+  // A window body is an editing surface of its track: the ARRANGEMENT's own editor and automation run there (one
+  // selection, one clipboard, one undo history; src/arrangement/edit_surface.h) — a drag selects time, the clip gestures
+  // are the arrangement's (title strip: move, Alt: copy, edges: trim, audio handles: fades / gain), the right-click menu
+  // is the arrangement's (Insert MIDI Clip = Ctrl+Shift+M …) plus Automation Mode and the parameter drawn over the clips;
+  // in automation mode (A) the chosen parameter's envelope is drawn and edited over the clips as in the arrangement. While
+  // the last press was in a window, the arrangement's edit chords (its keymap scope) act there (laneKey).
+  uint32_t laneBodyAt(ui::Vec2 device) const;    // the band whose window body is under a device point (kNone: none)
+  bool lanePointer(const ui::PointerEvent& e);   // a press / drag / release in a window (true: taken)
+  bool laneDragging() const noexcept;            // a clip, time-selection, handle or breakpoint drag runs in a window
+  void laneHover(ui::Vec2 device, ui::Mods mods);  // the part a press would grab, highlighted (and laneCursor's)
+  void clearLaneHover();
+  ui::Cursor laneCursor(ui::Vec2 device, ui::Mods mods) const;
+  bool laneKey(const ui::KeyEvent& e);           // an arrangement edit chord on the windows (true: it ran)
+  void laneAbort();                              // Esc / capture lost: the window's drag ends without an edit
+  arrangement::EditSurface* laneSurface() const noexcept;  // null: no arrangement next to the view (tests)
 
   // ---- edits (each one undo step through pq::doc::ops / commands; false and the reason in the status line when it
   // could not be done) ---------------------------------------------------------------------------------------------
@@ -487,6 +520,7 @@ public:
   std::unique_ptr<Face> makePanel(const circuit::SceneFace& f);
 
 private:
+  friend class LaneEditSurface;
   void onDocument(const doc::StoreEvent& e);
   void rebuild();
   void relayout();  // T5.x-one-circuit: the lane windows' width changed: model + scene again, the lowering kept
@@ -545,6 +579,12 @@ private:
   bool laneInit_ = false;
   std::optional<Ticks> playhead_;
   uint32_t playheadTimer_ = 0;
+  // TX.lane-edit: main view only, made and registered with the arrangement next to the view on first use; laneArr_ is
+  // that arrangement while the surface is registered (its Surfaces unregister it when the arrangement goes first).
+  mutable std::unique_ptr<LaneEditSurface> laneEdit_;
+  mutable ArrangementView* laneArr_ = nullptr;
+  LaneEditSurface* laneEditReady() const;  // null: embedded, or no arrangement
+  ArrangementView* laneArrangement() const;  // the arrangement laneEdit_ is registered with (null: none)
   bool valueGesture_ = false;
   Stats stats_;
   Readout readout_;

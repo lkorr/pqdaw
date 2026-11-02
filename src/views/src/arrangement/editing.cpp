@@ -147,68 +147,60 @@ void collectMidi(const doc::Track& t, std::vector<doc::TrackId>& out, bool audio
 
 Editor::Editor(ArrangementView& view) : view_(view), ctx_(view.context()) {}
 
-Grid Editor::grid() const noexcept { return Grid(ctx_.grid(), view_.shown()->timeline->sigMap, view_.pxPerTick()); }
+Grid Editor::grid() const noexcept { return Grid(ctx_.grid(), view_.shown()->timeline->sigMap, geo().gridPxPerTick()); }
 
 Ticks Editor::snapTick(Ticks t) const noexcept { return grid().snap(t); }
 
-Ticks Editor::tickAt(float x) const noexcept { return static_cast<Ticks>(std::llround(view_.tickAtX(x))); }
+Ticks Editor::tickAt(int32_t row, float x) const noexcept { return static_cast<Ticks>(std::llround(geo().axis(row).tick(x))); }
 
-int32_t Editor::rowOf(doc::TrackId id) const noexcept {
-  const auto rows = view_.rows();
-  for (size_t i = 0; i < rows.size(); ++i)
-    if (rows[i].id == id) return static_cast<int32_t>(i);
-  return -1;
+int32_t Editor::rowOf(doc::TrackId id) const noexcept { return geo().rowOf(id); }
+
+// The row under y, clamped to the first / last row when y is above / below them (the surface's rule).
+int32_t Editor::clampRow(float y) const noexcept { return geo().clampRow(y); }
+
+EditSurface& Editor::geo() const noexcept {
+  if (drag_.kind != DragKind::None && drag_.surface != nullptr) return *drag_.surface;
+  return view_.surfaces().current();
 }
 
-// The row under y, clamped to the first / last row when y is above / below them.
-int32_t Editor::clampRow(float y) const noexcept {
-  const auto rows = view_.rows();
-  if (rows.empty()) return -1;
-  const int32_t r = view_.rowAt(y);
-  if (r >= 0) return r;
-  // In a track's automation lanes (T3.15): that track's row.
-  const float local = y - static_cast<float>(view_.rowLaneRect(0).y - rows.front().y);
-  const auto it = std::upper_bound(rows.begin(), rows.end(), local,
-                                   [](float v, const ArrangementRow& row) { return v < static_cast<float>(row.y + row.h + row.lanesH); });
-  if (it != rows.end() && local >= static_cast<float>(it->y)) return static_cast<int32_t>(it - rows.begin());
-  return y < static_cast<float>(view_.rowLaneRect(0).y) ? 0 : static_cast<int32_t>(rows.size() - 1);
-}
-
-IRect Editor::clipBox(int32_t row, Ticks start, Ticks end) const noexcept {
-  const IRect lane = view_.rowLaneRect(row);
-  const IRect lv = view_.lanesViewport();
+IRect Editor::clipBox(const EditSurface& s, int32_t row, Ticks start, Ticks end) noexcept {
+  const IRect lane = s.rowLaneRect(row);
+  const IRect lv = s.viewport();
+  const TimeAxis ax = s.axis(row);
   const float lo = static_cast<float>(lv.x - 8), hi = static_cast<float>(lv.right() + 8);
-  const float x0 = std::clamp(std::round(view_.xOfTick(static_cast<double>(start))), lo, hi);
-  const float x1 = std::clamp(std::max(x0 + 1.0f, std::round(view_.xOfTick(static_cast<double>(end)))), lo, hi);
+  const float x0 = std::clamp(std::round(ax.x(static_cast<double>(start))), lo, hi);
+  const float x1 = std::clamp(std::max(x0 + 1.0f, std::round(ax.x(static_cast<double>(end)))), lo, hi);
   return {static_cast<int32_t>(x0), lane.y, std::max(1, static_cast<int32_t>(x1 - x0)), lane.h};
 }
 
 Editor::Hit Editor::hitTest(Vec2 p) const {
   Hit h;
-  h.row = view_.rowAt(p.y);
+  const EditSurface& g = geo();
+  h.row = g.rowAt(p.y);
   if (h.row < 0) return h;
-  const ArrangementRow& row = view_.rows()[static_cast<size_t>(h.row)];
+  const ArrangementRow& row = g.rows()[static_cast<size_t>(h.row)];
   if (row.group || row.track->clips.empty()) return h;
-  const IRect lane = view_.rowLaneRect(h.row);
+  const IRect lane = g.rowLaneRect(h.row);
   const float top = static_cast<float>(lane.y + 1), bottom = static_cast<float>(lane.bottom() - 1);
   if (p.y < top || p.y >= bottom) return h;
   const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
+  const TimeAxis ax = g.axis(h.row);
   const doc::Track& t = *row.track;
   const ClipIndex& ix = view_.model().clips(t);
-  const auto from = static_cast<Ticks>(std::floor(view_.tickAtX(p.x - 1.0f)));
-  const auto to = static_cast<Ticks>(std::ceil(view_.tickAtX(p.x + 1.0f))) + 1;
+  const auto from = static_cast<Ticks>(std::floor(ax.tick(p.x - 1.0f)));
+  const auto to = static_cast<Ticks>(std::ceil(ax.tick(p.x + 1.0f))) + 1;
   const auto [a, b] = ix.visible(from, to);
   for (size_t j = b; j-- > a;) {  // the last drawn is on top
-    const float x0 = std::round(view_.xOfTick(static_cast<double>(ix.start[j])));
-    const float x1 = std::max(x0 + 1.0f, std::round(view_.xOfTick(static_cast<double>(ix.end[j]))));
+    const float x0 = std::round(ax.x(static_cast<double>(ix.start[j])));
+    const float x1 = std::max(x0 + 1.0f, std::round(ax.x(static_cast<double>(ix.end[j]))));
     if (p.x < x0 || p.x >= x1) continue;
     h.clip = &t.clips[j];
     h.ref = {t.id, t.clips[j].id};
     const float edge = std::min(static_cast<float>(s.px(kEdgeGrab)), std::floor((x1 - x0) / 4.0f));
-    const float titleB = top + static_cast<float>(s.px(am::kClipTitleHeight));
+    const float titleB = top + static_cast<float>(g.clipTitleHeight(h.row));
     // T5.6: an audio clip's handles (fades, gain) at the top of its body take the press before the edges.
     if (const doc::AudioClipPtr& ac = t.clips[j].audio; ac && p.y >= titleB && ctx_.sampleAvailable(ac->sample)) {
-      const AudioHandleRects hr = audioHandles(*ac, x0, x1, titleB, bottom - 1.0f, view_.devicePxPerTick(), s.factor);
+      const AudioHandleRects hr = audioHandles(*ac, x0, x1, titleB, bottom - 1.0f, ax.k, s.factor);
       const float slop = std::max(1.0f, std::round(2.0f * s.factor));
       auto in = [&](const Rect& r) { return p.x >= r.x0 - slop && p.x < r.x1 + slop && p.y >= r.y0 - slop && p.y < r.y1 + slop; };
       if (hr.show) {
@@ -285,23 +277,28 @@ bool Editor::spanOf(const Selection& s, double& t0, double& t1) const {
 }
 
 // The selected tracks' rows: whole rows (their tint changes) or only the columns of [t0, t1].
+// TX.lane-edit: on every active surface (the arrangement and the lane windows show one selection).
 void Editor::damageRows(const Selection& s, double t0, double t1, bool fullRows) {
   UiTree* tr = view_.tree();
   if (!tr) return;
-  const IRect lv = view_.lanesViewport();
-  int32_t x0 = lv.x, x1 = lv.right();
-  if (!fullRows) {
-    const float lo = static_cast<float>(lv.x - 4), hi = static_cast<float>(lv.right() + 4);
-    x0 = std::max(lv.x, static_cast<int32_t>(std::clamp(std::floor(view_.xOfTick(t0)), lo, hi)) - 3);
-    x1 = std::min(lv.right(), static_cast<int32_t>(std::clamp(std::ceil(view_.xOfTick(t1)), lo, hi)) + 3);
-    if (x1 <= x0) return;
-  }
-  for (doc::TrackId t : s.tracks) {
-    const int32_t row = rowOf(t);
-    if (row < 0) continue;
-    const IRect lane = view_.rowLaneRect(row);
-    const IRect r = intersect(IRect{x0, lane.y, x1 - x0, lane.h}, lv);
-    if (!r.empty()) tr->damage().add(r.toRect());
+  for (EditSurface* surf : view_.surfaces().all()) {
+    if (!surf->active()) continue;
+    const IRect lv = surf->viewport();
+    for (doc::TrackId t : s.tracks) {
+      const int32_t row = surf->rowOf(t);
+      if (row < 0) continue;
+      const IRect lane = surf->rowLaneRect(row);
+      int32_t x0 = lane.x, x1 = lane.right();
+      if (!fullRows) {
+        const TimeAxis ax = surf->axis(row);
+        const float lo = static_cast<float>(lane.x - 4), hi = static_cast<float>(lane.right() + 4);
+        x0 = std::max(lane.x, static_cast<int32_t>(std::clamp(std::floor(ax.x(t0)), lo, hi)) - 3);
+        x1 = std::min(lane.right(), static_cast<int32_t>(std::clamp(std::ceil(ax.x(t1)), lo, hi)) + 3);
+        if (x1 <= x0) continue;
+      }
+      const IRect r = intersect(IRect{x0, lane.y, x1 - x0, lane.h}, lv);
+      if (!r.empty()) tr->damage().add(r.toRect());
+    }
   }
 }
 
@@ -369,7 +366,7 @@ void Editor::nudgeMarker(int32_t cells) {
   s.tracks = sel_.tracks;
   s.time = TickRange{t, t};
   setSelection(std::move(s), false);
-  view_.revealTick(t);
+  geo().revealTick(t);
 }
 
 // T4.16b: the clips move by whole grid cells measured from the earliest one's start (as the piano roll nudges notes);
@@ -401,7 +398,7 @@ bool Editor::nudgeClipsFine(int32_t dir) {
 bool Editor::moveClipsRows(int32_t dir) {
   if (sel_.clips.empty() || dir == 0) return false;
   const doc::Project& p = *ctx_.doc();
-  const auto rows = view_.rows();
+  const auto rows = geo().rows();
   struct Item {
     doc::ClipRef ref;
     int32_t row;
@@ -434,7 +431,7 @@ bool Editor::moveClipsRows(int32_t dir) {
     moves.reserve(items.size());
     for (const Item& it : items) moves.push_back({it.ref, rows[static_cast<size_t>(it.row + d)].id, it.start});
     if (!apply(doc::ops::moveClips(p, ctx_.store().ids(), moves), "Move", true)) return false;
-    view_.revealRow(std::clamp(items.front().row + d, 0, n - 1));
+    geo().revealRow(std::clamp(items.front().row + d, 0, n - 1));
     return true;
   }
   ctx_.setStatus(dir < 0 ? "No track above takes the selected clips" : "No track below takes the selected clips");
@@ -452,7 +449,7 @@ void Editor::markerTo(bool end) {
   s.tracks = sel_.tracks;
   s.time = TickRange{t, t};
   setSelection(std::move(s), false);
-  view_.revealTick(t);
+  geo().revealTick(t);
 }
 
 // Shift+Left / Right (Live): the time selection's end one grid cell later / earlier (never before its start); from
@@ -465,9 +462,9 @@ void Editor::extendTime(int32_t cells) {
   s.tracks = sel_.tracks;
   s.time = TickRange{start, e};
   s.range = e > start;
-  if (s.range) s.clips = clipsMeeting(0, static_cast<int32_t>(view_.rows().size()) - 1, true, start, e, {});
+  if (s.range) s.clips = clipsMeeting(0, static_cast<int32_t>(geo().rows().size()) - 1, true, start, e, {});
   setSelection(std::move(s), false);
-  view_.revealTick(e);
+  geo().revealTick(e);
 }
 
 bool Editor::deselect() {
@@ -480,7 +477,7 @@ bool Editor::deselect() {
 
 std::vector<doc::ClipRef> Editor::clipsMeeting(int32_t r0, int32_t r1, bool selectedTracksOnly, Ticks s, Ticks e,
                                                std::vector<doc::ClipRef> clips) const {
-  const auto rows = view_.rows();
+  const auto rows = geo().rows();
   if (e > s)
     for (int32_t i = std::max(0, r0); i <= r1 && static_cast<size_t>(i) < rows.size(); ++i) {
       const ArrangementRow& row = rows[static_cast<size_t>(i)];
@@ -520,23 +517,27 @@ Cursor Editor::cursorAt(Vec2 p) const {
 
 void Editor::setHover(HoverPart h) {
   if (h == hover_) return;
-  if (UiTree* tr = view_.tree()) {
-    const IRect lv = view_.lanesViewport();
-    const doc::Project& p = *view_.shown();
-    for (const HoverPart* x : {&hover_, &h}) {
-      if (!x->ref.clip.valid()) continue;
-      const int32_t row = rowOf(x->ref.track);
-      const doc::ClipSlot* c = row >= 0 ? findClip(p, x->ref) : nullptr;
-      if (!c) continue;
-      IRect b = clipBox(row, c->start(), c->end());
-      if (c->audio && c->audio->crossfadeIn > 0) {  // the X reaches into the previous clip
-        const auto xf = static_cast<int32_t>(std::ceil(static_cast<double>(c->audio->crossfadeIn) * view_.devicePxPerTick()));
-        b = {b.x - xf, b.y, b.w + xf, b.h};
-      }
-      if (const IRect v = intersect(IRect{b.x - 1, b.y, b.w + 2, b.h}, lv); !v.empty()) tr->damage().add(v.toRect());
-    }
-  }
+  if (hover_.ref.clip.valid()) damageClip(hover_.ref);
+  if (h.ref.clip.valid()) damageClip(h.ref);
   hover_ = h;
+}
+
+void Editor::damageClip(const doc::ClipRef& ref) {
+  UiTree* tr = view_.tree();
+  if (tr == nullptr) return;
+  const doc::ClipSlot* c = findClip(*view_.shown(), ref);
+  if (!c) return;
+  for (EditSurface* s : view_.surfaces().all()) {
+    if (!s->active()) continue;
+    const int32_t row = s->rowOf(ref.track);
+    if (row < 0) continue;
+    IRect b = clipBox(*s, row, c->start(), c->end());
+    if (c->audio && c->audio->crossfadeIn > 0) {  // the X reaches into the previous clip
+      const auto xf = static_cast<int32_t>(std::ceil(static_cast<double>(c->audio->crossfadeIn) * s->axis(row).k));
+      b = {b.x - xf, b.y, b.w + xf, b.h};
+    }
+    if (const IRect v = intersect(IRect{b.x - 1, b.y, b.w + 2, b.h}, s->viewport()); !v.empty()) tr->damage().add(v.toRect());
+  }
 }
 
 void Editor::hoverAt(Vec2 p) {
@@ -553,7 +554,7 @@ void Editor::hoverAt(Vec2 p) {
 void Editor::clearHover() { setHover({}); }
 
 void Editor::stepTrack(int32_t rows) {
-  const auto rs = view_.rows();
+  const auto rs = geo().rows();
   if (rs.empty() || rows == 0) return;
   int32_t cur = sel_.tracks.empty() ? (rows > 0 ? -1 : static_cast<int32_t>(rs.size())) : rowOf(rows > 0 ? sel_.tracks.back() : sel_.tracks.front());
   const int32_t next = std::clamp(cur + rows, 0, static_cast<int32_t>(rs.size()) - 1);
@@ -561,7 +562,7 @@ void Editor::stepTrack(int32_t rows) {
   s.tracks = {rs[static_cast<size_t>(next)].id};
   s.time = sel_.time;
   setSelection(std::move(s), false);
-  view_.revealRow(next);
+  geo().revealRow(next);
 }
 
 // --- pointer ------------------------------------------------------------------------------------------------
@@ -585,13 +586,15 @@ bool Editor::pointer(const PointerEvent& e) {
 }
 
 void Editor::press(const PointerEvent& e) {
-  if (UiTree* t = view_.tree()) t->setFocus(&view_);
   if (drag_.kind != DragKind::None) cancelDrag();
+  if (UiTree* t = view_.tree()) t->setFocus(&geo().widget());
   clearHover();  // the gesture shows its own preview
   pressSel_ = sel_;
   drag_ = {};
+  drag_.surface = &view_.surfaces().current();  // TX.lane-edit: the gesture stays on this surface
   drag_.press = e.pos;
   const Hit h = hitTest(e.pos);
+  drag_.pressRow = h.row;
   const bool toggle = (e.mods & mod::kCtrl) != 0, add = (e.mods & mod::kShift) != 0;
 
   if (e.button == PointerButton::Right) {
@@ -634,7 +637,7 @@ void Editor::press(const PointerEvent& e) {
     } else if (h.zone == 2) {
       // The body: select the clip and put the insert marker there; a drag makes a time selection (Live).
       Selection s = selectionOfClips({h.ref});
-      const Ticks m = std::max<Ticks>(0, snapTick(tickAt(e.pos.x)));
+      const Ticks m = std::max<Ticks>(0, snapTick(tickAt(h.row, e.pos.x)));
       s.time = TickRange{m, m};
       setSelection(std::move(s), true);
       drag_.kind = DragKind::Range;
@@ -658,7 +661,7 @@ void Editor::press(const PointerEvent& e) {
     setSelection({}, false);
     return;
   }
-  const Ticks t = std::max<Ticks>(0, snapTick(tickAt(e.pos.x)));
+  const Ticks t = std::max<Ticks>(0, snapTick(tickAt(h.row, e.pos.x)));
   drag_.kind = DragKind::Range;
   if (add && sel_.time) {
     // Shift+click extends the time selection to the click (and over the rows between).
@@ -674,7 +677,7 @@ void Editor::press(const PointerEvent& e) {
   drag_.additive = toggle;
   if (toggle) drag_.base = sel_.clips;
   Selection s;
-  s.tracks = {view_.rows()[static_cast<size_t>(h.row)].id};
+  s.tracks = {geo().rows()[static_cast<size_t>(h.row)].id};
   s.time = TickRange{t, t};
   setSelection(std::move(s), false);
 }
@@ -795,7 +798,7 @@ void Editor::audioDragTo(const PointerEvent& e) {
     if (!(fi == c.fadeIn) || !(fo == c.fadeOut)) (void)apply(doc::ops::setAudioClipFades(p, ref, fi, fo), "Clip Fade", false);
     return;
   }
-  const Ticks t = tickAt(e.pos.x);
+  const Ticks t = tickAt(drag_.pressRow, e.pos.x);
   const doc::Track* track = doc::findTrackPtr(p, ref.track);
   if (!track) return;
   if (in) {
@@ -855,17 +858,18 @@ void Editor::dragTo(const PointerEvent& e) {
   }
   // T5.12: clips dragged out of the arrangement (onto the browser, or out of the window to Explorer) become a Clips
   // drag session: the move is abandoned and the tree routes the payload to drop targets from here on.
-  if (drag_.kind == DragKind::Move && !view_.rect().contains(e.pos) && dragClipsOut()) return;
-  const Ticks raw = static_cast<Ticks>(std::llround(view_.tickAtX(e.pos.x) - view_.tickAtX(drag_.press.x)));
+  if (drag_.kind == DragKind::Move && !geo().widget().rect().contains(e.pos) && dragClipsOut()) return;
+  const TimeAxis ax = geo().axis(drag_.pressRow);
+  const Ticks raw = static_cast<Ticks>(std::llround(ax.tick(e.pos.x) - ax.tick(drag_.press.x)));
   const Grid g = grid();
   const Ticks dt = std::clamp(g.snapping() ? g.snapDelta(drag_.origin, raw) : raw, drag_.minDt, drag_.maxDt);
   int32_t drow = drag_.drow;
   bool copy = false;
   if (drag_.kind == DragKind::Move) {
     copy = (e.mods & mod::kAlt) != 0;
-    const int32_t r = view_.rowAt(e.pos.y);
+    const int32_t r = geo().rowAt(e.pos.y);
     if (r >= 0) {
-      const auto rows = view_.rows();
+      const auto rows = geo().rows();
       const int32_t cand = r - drag_.pressRow;
       const bool ok = std::all_of(drag_.clips.begin(), drag_.clips.end(), [&](const DragClip& c) {
         if (c.row < 0) return cand == 0;  // a clip of a hidden track only moves in time
@@ -907,13 +911,13 @@ bool Editor::preview(const DragClip& c, int32_t& row, ClipGeom& g) const noexcep
   } else {
     return false;
   }
-  return row >= 0 && static_cast<size_t>(row) < view_.rows().size();
+  return row >= 0 && static_cast<size_t>(row) < geo().rows().size();
 }
 
 void Editor::damageDragPreview() {
   UiTree* tr = view_.tree();
   if (!tr) return;
-  const IRect lv = view_.lanesViewport();
+  const IRect lv = geo().viewport();
   std::vector<IRect> now;
   now.reserve(std::min(drag_.clips.size(), kMaxPreviewRects));
   IRect box{};
@@ -940,11 +944,11 @@ void Editor::damageDragPreview() {
 }
 
 void Editor::updateRange(Vec2 p) {
-  const auto rows = view_.rows();
+  const auto rows = geo().rows();
   if (rows.empty()) return;
-  const Ticks t = std::max<Ticks>(0, snapTick(tickAt(p.x)));
-  const Ticks s = std::min(drag_.origin, t), e = std::max(drag_.origin, t);
   const int32_t r = clampRow(p.y);
+  const Ticks t = std::max<Ticks>(0, snapTick(tickAt(r, p.x)));
+  const Ticks s = std::min(drag_.origin, t), e = std::max(drag_.origin, t);
   const int32_t anchor = std::clamp(drag_.anchorRow, 0, static_cast<int32_t>(rows.size() - 1));
   const int32_t r0 = std::min(anchor, r), r1 = std::max(anchor, r);
   Selection sel;
@@ -1002,10 +1006,10 @@ void Editor::cancelDrag() {
   }
   const bool clipDrag = drag_.moved && drag_.kind != DragKind::Range;
   std::vector<IRect> rects = std::move(drag_.damage);
+  const IRect lv = geo().viewport();  // the drag's surface
   drag_ = {};
   if (!clipDrag) return;
   if (UiTree* tr = view_.tree()) {
-    const IRect lv = view_.lanesViewport();
     for (const IRect& r : rects)
       if (const IRect v = intersect(r, lv); !v.empty()) tr->damage().add(v.toRect());
   }
@@ -1024,7 +1028,7 @@ void Editor::commitDrag() {
   cancelDrag();  // the preview goes; the document change (if any) repaints the lanes
   const doc::Project& p = *ctx_.doc();
   doc::IdSource& ids = ctx_.store().ids();
-  const auto rows = view_.rows();
+  const auto rows = (d.surface ? *d.surface : geo()).rows();
   if (d.kind == DragKind::Move) {
     if (d.dt == 0 && d.drow == 0) return;  // also for a copy: a copy onto itself would overwrite the original
     std::vector<doc::ops::ClipMove> moves;
@@ -1098,7 +1102,7 @@ std::vector<doc::TrackId> Editor::clipTracks() const {
 
 std::vector<int32_t> Editor::midiRows() const {
   std::vector<int32_t> out;
-  const auto rows = view_.rows();
+  const auto rows = geo().rows();
   for (size_t i = 0; i < rows.size(); ++i)
     if (!rows[i].group) out.push_back(static_cast<int32_t>(i));
   return out;
@@ -1135,7 +1139,7 @@ bool Editor::deleteSelection() {
 bool Editor::fillClipboard(Clipboard& out) const {
   out = {};
   const std::vector<int32_t> mrows = midiRows();
-  const auto rows = view_.rows();
+  const auto rows = geo().rows();
   auto midiIndex = [&](doc::TrackId id) -> int32_t {
     for (size_t i = 0; i < mrows.size(); ++i)
       if (rows[static_cast<size_t>(mrows[i])].id == id) return static_cast<int32_t>(i);
@@ -1225,7 +1229,7 @@ bool Editor::cutSelection() {
 // under the pasted clips is overwritten. Selects the pasted clips over [at, at + length).
 bool Editor::pasteAt(const Clipboard& cb, Ticks at, int32_t firstMidi, std::string_view what, bool selectRange) {
   const std::vector<int32_t> mrows = midiRows();
-  const auto rows = view_.rows();
+  const auto rows = geo().rows();
   doc::IdSource& ids = ctx_.store().ids();
   Chain ch(ctx_.doc(), std::string(what));
   std::vector<doc::ClipRef> made;
@@ -1475,7 +1479,7 @@ void Editor::selectAll() {
   });
   Selection s = selectionOfClips(std::move(all));
   s.tracks.clear();
-  for (const ArrangementRow& r : view_.rows()) s.tracks.push_back(r.id);
+  for (const ArrangementRow& r : geo().rows()) s.tracks.push_back(r.id);
   setSelection(std::move(s), false);
 }
 
@@ -1560,7 +1564,13 @@ Menu* Editor::openContextMenu(Vec2 at) {
   });
   off.checked = g.off;
   items.push_back(std::move(off));
-  return ui::openContextMenu(view_, at, std::move(items));
+  // TX.lane-edit: the surface's own entries (a lane window: its automation).
+  EditSurface& s = geo();
+  if (std::vector<MenuItem> extra = s.menuItems(); !extra.empty()) {
+    items.push_back(MenuItem::sep());
+    for (MenuItem& m : extra) items.push_back(std::move(m));
+  }
+  return ui::openContextMenu(s.widget(), at, std::move(items));
 }
 
 }  // namespace pq::views::arrangement

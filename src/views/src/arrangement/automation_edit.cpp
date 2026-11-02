@@ -44,7 +44,12 @@ ArrangementAutomation::ArrangementAutomation(ArrangementView& view) : view_(view
 ArrangementAutomation::~ArrangementAutomation() = default;
 
 Grid ArrangementAutomation::grid() const noexcept {
-  return Grid(ctx_.grid(), view_.shown()->timeline->sigMap, view_.pxPerTick());
+  return Grid(ctx_.grid(), view_.shown()->timeline->sigMap, geo().gridPxPerTick());
+}
+
+arrangement::EditSurface& ArrangementAutomation::geo() const noexcept {
+  if (drag_.kind != DragKind::None && drag_.surface != nullptr) return *drag_.surface;
+  return view_.surfaces().current();
 }
 
 // ---- mode and lanes --------------------------------------------------------------------------------------------
@@ -240,27 +245,32 @@ void ArrangementAutomation::setLaneHeight(doc::TrackId t, const doc::ParamRef& p
 
 // ---- geometry ------------------------------------------------------------------------------------------------
 
-AutomationBand ArrangementAutomation::laneBand(size_t i) const {
-  const AutomationLaneRow& lr = view_.laneRows()[i];
+AutomationBand ArrangementAutomation::laneBand(size_t i) const { return laneBand(geo(), i); }
+
+std::optional<AutomationBand> ArrangementAutomation::rowBand(int32_t row, bool pinned) const { return rowBand(geo(), row, pinned); }
+
+AutomationBand ArrangementAutomation::laneBand(const arrangement::EditSurface& s, size_t i) const {
+  const AutomationLaneRow& lr = s.laneRows()[i];
   AutomationBand b;
   b.track = lr.track;
   b.param = lr.param;
   b.owner = lr.owner;
   b.lane = lr.lane;
   b.laneIndex = static_cast<int32_t>(i);
-  IRect r = view_.laneRect(i);
+  b.row = lr.row;
+  IRect r = s.laneRect(i);
   r.h = std::max(0, r.h - 1);  // the separator row
   b.rect = r;
-  const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
-  int32_t pad = s.px(au::kLanePad);
+  const UiScale us = view_.tree() ? view_.tree()->uiScale() : UiScale{};
+  int32_t pad = us.px(au::kLanePad);
   if (r.h - 2 * pad < 4) pad = std::max(0, (r.h - 4) / 2);
   b.top = static_cast<float>(r.y + pad);
   b.bottom = static_cast<float>(r.bottom() - pad - 1);
   return b;
 }
 
-std::optional<AutomationBand> ArrangementAutomation::rowBand(int32_t row, bool pinned) const {
-  const auto rows = pinned ? view_.bottomRows() : view_.rows();
+std::optional<AutomationBand> ArrangementAutomation::rowBand(const arrangement::EditSurface& surf, int32_t row, bool pinned) const {
+  const auto rows = pinned ? surf.bottomRows() : surf.rows();
   if (row < 0 || static_cast<size_t>(row) >= rows.size()) return std::nullopt;
   const ArrangementRow& ar = rows[static_cast<size_t>(row)];
   AutomationBand b;
@@ -271,12 +281,13 @@ std::optional<AutomationBand> ArrangementAutomation::rowBand(int32_t row, bool p
   b.lane = l.lane;
   b.overClips = true;
   b.pinned = pinned;
-  IRect r = pinned ? view_.pinnedRowRect(static_cast<size_t>(row)) : view_.rowLaneRect(row);
+  b.row = pinned ? -1 : row;
+  IRect r = pinned ? surf.pinnedRowRect(static_cast<size_t>(row)) : surf.rowLaneRect(row);
   r.h = std::max(0, r.h - 1);
   b.rect = r;
   const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
   // Under the clips' title strips (Live draws the envelope over the clip bodies), when the row is tall enough.
-  int32_t top = r.y + s.px(am::kClipTitleHeight) + s.px(2.0f);
+  int32_t top = r.y + surf.clipTitleHeight(row) + s.px(2.0f);
   int32_t bottom = r.bottom() - s.px(3.0f);
   if (bottom - top < s.px(8.0f)) {
     top = r.y + std::min(2, r.h / 4);
@@ -290,26 +301,28 @@ std::optional<AutomationBand> ArrangementAutomation::rowBand(int32_t row, bool p
 std::optional<AutomationBand> ArrangementAutomation::band(doc::TrackId t, const doc::ParamRef& p, bool overClips) const {
   if (overClips) {
     if (!mode_ || chosen(t) != p) return std::nullopt;
-    const auto rows = view_.rows();
+    const arrangement::EditSurface& s = geo();
+    const auto rows = s.rows();
     for (size_t i = 0; i < rows.size(); ++i)
       if (rows[i].id == t) return rowBand(static_cast<int32_t>(i), false);
-    const auto pinned = view_.bottomRows();
+    const auto pinned = s.bottomRows();
     for (size_t i = 0; i < pinned.size(); ++i)
       if (pinned[i].id == t) return rowBand(static_cast<int32_t>(i), true);
     return std::nullopt;
   }
-  const auto lanes = view_.laneRows();
+  const auto lanes = geo().laneRows();
   for (size_t i = 0; i < lanes.size(); ++i)
     if (lanes[i].track == t && lanes[i].param == p) return laneBand(i);
   return std::nullopt;
 }
 
 std::optional<AutomationBand> ArrangementAutomation::bandAt(Vec2 p) const {
-  const IRect lv = view_.lanesViewport();
+  const arrangement::EditSurface& s = geo();
+  const IRect lv = s.viewport();
   if (lv.contains(p)) {
-    const auto lanes = view_.laneRows();
+    const auto lanes = s.laneRows();
     if (!lanes.empty()) {
-      const int32_t top0 = view_.laneRect(0).y - lanes.front().y;  // the track content's top (window y)
+      const int32_t top0 = s.laneRect(0).y - lanes.front().y;  // the track content's top (window y)
       const auto local = static_cast<int32_t>(std::floor(p.y)) - top0;
       const auto it = std::upper_bound(lanes.begin(), lanes.end(), local,
                                        [](int32_t y, const AutomationLaneRow& r) { return y < r.y + r.h; });
@@ -317,7 +330,7 @@ std::optional<AutomationBand> ArrangementAutomation::bandAt(Vec2 p) const {
         return laneBand(static_cast<size_t>(it - lanes.begin()));
     }
     if (mode_) {
-      const int32_t row = view_.rowAt(p.y);
+      const int32_t row = s.rowAt(p.y);
       if (row >= 0) {
         std::optional<AutomationBand> b = rowBand(row, false);
         if (b && b->rect.contains(p)) return b;
@@ -326,10 +339,10 @@ std::optional<AutomationBand> ArrangementAutomation::bandAt(Vec2 p) const {
     return std::nullopt;
   }
   if (!mode_) return std::nullopt;
-  const auto pinned = view_.bottomRows();
+  const auto pinned = s.bottomRows();
   for (size_t i = 0; i < pinned.size(); ++i) {
     std::optional<AutomationBand> b = rowBand(static_cast<int32_t>(i), true);
-    if (b && b->rect.contains(p) && intersect(b->rect, view_.bottomRect()).contains(p)) return b;
+    if (b && b->rect.contains(p) && intersect(b->rect, s.bottomRect()).contains(p)) return b;
   }
   return std::nullopt;
 }
@@ -351,7 +364,7 @@ std::span<const doc::Breakpoint> ArrangementAutomation::pointsOf(const Automatio
 
 std::optional<Vec2> ArrangementAutomation::pointPos(const AutomationBand& b, doc::BreakpointId id) const {
   for (const doc::Breakpoint& pt : pointsOf(b))
-    if (pt.id == id) return Vec2{view_.xOfTick(static_cast<double>(pt.tick)), yOfValue(b, pt.value)};
+    if (pt.id == id) return Vec2{geo().axis(b.row).x(static_cast<double>(pt.tick)), yOfValue(b, pt.value)};
   return std::nullopt;
 }
 
@@ -384,55 +397,69 @@ void ArrangementAutomation::clearSelection() {
 
 // ---- damage ----------------------------------------------------------------------------------------------------
 
-void ArrangementAutomation::damageColumns(const doc::ParamRef& p, int32_t x0, int32_t x1) {
+namespace {
+constexpr double kOpenTick = 1e15;  // an open end of a damaged tick range (beyond any band)
+}  // namespace
+
+void ArrangementAutomation::damageTicks(const doc::ParamRef& p, double t0, double t1, int32_t padL, int32_t padR) {
   UiTree* tr = view_.tree();
-  if (!tr || x1 <= x0) return;
-  const IRect lv = view_.lanesViewport();
-  auto add = [&](const AutomationBand& b, const IRect& viewport) {
-    const IRect r = intersect(intersect(IRect{x0, b.rect.y, x1 - x0, b.rect.h}, b.rect), viewport);
-    if (!r.empty()) tr->damage().add(r.toRect());
-  };
-  const auto lanes = view_.laneRows();
-  for (size_t i = 0; i < lanes.size(); ++i)
-    if (lanes[i].param == p) add(laneBand(i), lv);
-  if (!mode_) return;
-  const auto rows = view_.rows();
-  for (size_t i = 0; i < rows.size(); ++i)
-    if (chosen(rows[i].id) == p)
-      if (const auto b = rowBand(static_cast<int32_t>(i), false)) add(*b, lv);
-  const auto pinned = view_.bottomRows();
-  for (size_t i = 0; i < pinned.size(); ++i)
-    if (chosen(pinned[i].id) == p)
-      if (const auto b = rowBand(static_cast<int32_t>(i), true)) add(*b, view_.bottomRect());
+  if (!tr) return;
+  const bool whole = t0 > t1;
+  for (arrangement::EditSurface* s : view_.surfaces().all()) {
+    if (!s->active()) continue;
+    auto add = [&](const AutomationBand& b, const IRect& viewport) {
+      IRect r = b.rect;
+      if (!whole) {
+        const arrangement::TimeAxis ax = s->axis(b.row);
+        const double lo = static_cast<double>(b.rect.x) - 1.0, hi = static_cast<double>(b.rect.right()) + 1.0;
+        const auto x0 = static_cast<int32_t>(std::floor(std::clamp(static_cast<double>(ax.x(t0)), lo, hi))) - padL;
+        const auto x1 = static_cast<int32_t>(std::ceil(std::clamp(static_cast<double>(ax.x(t1)), lo, hi))) + padR;
+        if (x1 <= x0) return;
+        r = intersect(IRect{x0, b.rect.y, x1 - x0, b.rect.h}, b.rect);
+      }
+      r = intersect(r, viewport);
+      if (!r.empty()) tr->damage().add(r.toRect());
+    };
+    const IRect lv = s->viewport();
+    const auto lanes = s->laneRows();
+    for (size_t i = 0; i < lanes.size(); ++i)
+      if (lanes[i].param == p) add(laneBand(*s, i), lv);
+    if (!mode_) continue;
+    const auto rows = s->rows();
+    for (size_t i = 0; i < rows.size(); ++i)
+      if (chosen(rows[i].id) == p)
+        if (const auto b = rowBand(*s, static_cast<int32_t>(i), false)) add(*b, lv);
+    const auto pinned = s->bottomRows();
+    for (size_t i = 0; i < pinned.size(); ++i)
+      if (chosen(pinned[i].id) == p)
+        if (const auto b = rowBand(*s, static_cast<int32_t>(i), true)) add(*b, s->bottomRect());
+  }
 }
 
 void ArrangementAutomation::damageSelection() {
   if (!hasSelection()) return;
-  const IRect lv = view_.lanesViewport();
-  damageColumns(selParam_, lv.x, lv.right());
+  damageTicks(selParam_, 1.0, 0.0, 0, 0);
 }
 
 void ArrangementAutomation::damageLanes(std::span<const doc::LaneId> lanes) {
-  const IRect lv = view_.lanesViewport();
   for (doc::LaneId id : lanes)
     for (const Model::LaneEntry& e : view_.model().laneIndex)
-      if (e.lane && e.lane->id == id) damageColumns(e.param, lv.x, lv.right());
+      if (e.lane && e.lane->id == id) damageTicks(e.param, 1.0, 0.0, 0, 0);
 }
 
 void ArrangementAutomation::damageAll() {
-  view_.lanes().markDirty();
-  if (const IRect b = view_.bottomRect(); !b.empty())
-    if (UiTree* tr = view_.tree()) tr->damage().add(b.toRect());
+  for (arrangement::EditSurface* s : view_.surfaces().all())
+    if (s == &view_.surfaces().own() || s->active()) s->damageAll();
 }
 
 // The columns a drag frame changes: from the unmoved neighbour left of the leftmost moved point to the one right of
 // the rightmost (the lane's edges when there is none: the envelope holds the end values out to them), plus the
-// handles and the value readout.
+// handles and the value readout. Damaged as ticks: every band showing the parameter, on every surface, on its axis.
 void ArrangementAutomation::damageDrag() {
   if (drag_.kind == DragKind::None) return;
-  const IRect lv = view_.lanesViewport();
   const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
-  int32_t x0 = lv.x, x1 = lv.right();
+  double t0 = -kOpenTick, t1 = kOpenTick;
+  int32_t padL = 0, padR = 0;
   const std::vector<doc::Breakpoint>& o = drag_.orig;
   if (drag_.kind == DragKind::Points && !o.empty()) {
     size_t lo = o.size(), hi = 0;
@@ -442,25 +469,27 @@ void ArrangementAutomation::damageDrag() {
         hi = std::max(hi, i);
       }
     if (lo < o.size()) {
-      if (lo > 0) x0 = static_cast<int32_t>(std::floor(view_.xOfTick(static_cast<double>(o[lo - 1].tick))));
-      if (hi + 1 < o.size()) x1 = static_cast<int32_t>(std::ceil(view_.xOfTick(static_cast<double>(o[hi + 1].tick))));
+      if (lo > 0) t0 = static_cast<double>(o[lo - 1].tick);
+      if (hi + 1 < o.size()) t1 = static_cast<double>(o[hi + 1].tick);
     }
-    x0 -= s.px(au::kPointGrab) + 2;
-    x1 += s.px(au::kPointGrab) + s.px(96.0f);  // the readout sits right of the point
+    padL = s.px(au::kPointGrab) + 2;
+    padR = s.px(au::kPointGrab) + s.px(96.0f);  // the readout sits right of the point
   } else if (drag_.kind == DragKind::Curve) {
     for (size_t i = 0; i + 1 < o.size(); ++i)
       if (o[i].id == drag_.segment) {
-        x0 = static_cast<int32_t>(std::floor(view_.xOfTick(static_cast<double>(o[i].tick)))) - 2;
-        x1 = static_cast<int32_t>(std::ceil(view_.xOfTick(static_cast<double>(o[i + 1].tick)))) + 2;
+        t0 = static_cast<double>(o[i].tick);
+        t1 = static_cast<double>(o[i + 1].tick);
+        padL = padR = 2;
       }
   }
-  x0 = std::clamp(x0, lv.x, lv.right());
-  x1 = std::clamp(x1, lv.x, lv.right());
-  const int32_t d0 = drag_.damageX1 > drag_.damageX0 ? std::min(x0, drag_.damageX0) : x0;
-  const int32_t d1 = drag_.damageX1 > drag_.damageX0 ? std::max(x1, drag_.damageX1) : x1;
-  damageColumns(drag_.band.param, d0, d1);
-  drag_.damageX0 = x0;
-  drag_.damageX1 = x1;
+  if (drag_.damaged)
+    damageTicks(drag_.band.param, drag_.damageT0, drag_.damageT1, drag_.damagePadL, drag_.damagePadR);
+  damageTicks(drag_.band.param, t0, t1, padL, padR);
+  drag_.damageT0 = t0;
+  drag_.damageT1 = t1;
+  drag_.damagePadL = padL;
+  drag_.damagePadR = padR;
+  drag_.damaged = true;
 }
 
 // ---- input -----------------------------------------------------------------------------------------------------
@@ -488,14 +517,14 @@ std::optional<AutomationBand> ArrangementAutomation::pressBand(Vec2 p) const {
   if (!b) return std::nullopt;
   if (b->overClips && !b->pinned) {
     // Over the clips the title strips stay the clips' (move, Alt-copy, select): T3.9's editor takes them.
-    const int32_t row = view_.rowAt(p.y);
-    const ArrangementRow& ar = view_.rows()[static_cast<size_t>(row)];
+    const arrangement::EditSurface& s = geo();
+    const int32_t row = s.rowAt(p.y);
+    const ArrangementRow& ar = s.rows()[static_cast<size_t>(row)];
     if (!ar.group && !ar.track->clips.empty()) {
-      const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
-      const IRect lane = view_.rowLaneRect(row);
-      if (p.y < static_cast<float>(lane.y + 1 + s.px(am::kClipTitleHeight))) {
+      const IRect lane = s.rowLaneRect(row);
+      if (p.y < static_cast<float>(lane.y + 1 + s.clipTitleHeight(row))) {
         const ClipIndex& ix = view_.model().clips(*ar.track);
-        const auto t = static_cast<Ticks>(std::floor(view_.tickAtX(p.x)));
+        const auto t = static_cast<Ticks>(std::floor(s.axis(row).tick(p.x)));
         const auto [a, z] = ix.visible(t, t + 1);
         if (a < z) return std::nullopt;
       }
@@ -509,11 +538,12 @@ int32_t ArrangementAutomation::pointAt(const AutomationBand& b, std::span<const 
   int32_t hit = -1;
   const float grab = static_cast<float>(s.px(au::kPointGrab));
   float best = grab * grab;
-  const auto t0 = static_cast<Ticks>(std::floor(view_.tickAtX(p.x - grab)));
-  const auto t1 = static_cast<Ticks>(std::ceil(view_.tickAtX(p.x + grab)));
+  const arrangement::TimeAxis ax = geo().axis(b.row);
+  const auto t0 = static_cast<Ticks>(std::floor(ax.tick(p.x - grab)));
+  const auto t1 = static_cast<Ticks>(std::ceil(ax.tick(p.x + grab)));
   auto it = std::lower_bound(pts.begin(), pts.end(), t0, [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
   for (; it != pts.end() && it->tick <= t1; ++it) {
-    const float dx = view_.xOfTick(static_cast<double>(it->tick)) - p.x;
+    const float dx = ax.x(static_cast<double>(it->tick)) - p.x;
     const float dy = yOfValue(b, it->value) - p.y;
     if (dx * dx + dy * dy <= best) {
       best = dx * dx + dy * dy;
@@ -531,7 +561,7 @@ bool ArrangementAutomation::segmentAt(std::span<const doc::Breakpoint> pts, doub
 
 bool ArrangementAutomation::onLine(const AutomationBand& b, std::span<const doc::Breakpoint> pts, Vec2 p) const {
   const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
-  const double tick = std::max(0.0, view_.tickAtX(p.x));
+  const double tick = std::max(0.0, geo().axis(b.row).tick(p.x));
   const double fallback = currentParamValue(*view_.shown(), b.param, ctx_.deviceLibrary());
   const double lineValue = pts.empty() ? fallback : pq::evalAutomation(pts, tick, fallback);
   return std::fabs(yOfValue(b, lineValue) - p.y) <= static_cast<float>(s.px(au::kLineGrab));
@@ -548,7 +578,7 @@ std::optional<Cursor> ArrangementAutomation::cursorAt(Vec2 p, Mods mods) const {
   if (!b) return std::nullopt;
   const std::span<const doc::Breakpoint> pts = b->lane ? std::span<const doc::Breakpoint>(b->lane->points) : std::span<const doc::Breakpoint>{};
   // The same order as press(): Alt bends a segment (or does nothing), a breakpoint moves, the line adds one.
-  if ((mods & mod::kAlt) && pts.size() >= 2) return segmentAt(pts, std::max(0.0, view_.tickAtX(p.x))) ? Cursor::ResizeNS : Cursor::Arrow;
+  if ((mods & mod::kAlt) && pts.size() >= 2) return segmentAt(pts, std::max(0.0, geo().axis(b->row).tick(p.x))) ? Cursor::ResizeNS : Cursor::Arrow;
   if (pointAt(*b, pts, p) >= 0) return Cursor::Move;
   if (!(mods & (mod::kCtrl | mod::kShift)) && onLine(*b, pts, p)) return Cursor::Pointer;
   return Cursor::Arrow;
@@ -561,8 +591,7 @@ void ArrangementAutomation::setHover(doc::TrackId track, const doc::ParamRef& pa
   const int32_t reach = s.px(au::kPointRadius + 4.0f) + 2;
   auto damage = [&](const Hover& h) {
     if (!h.valid()) return;
-    const auto x = static_cast<int32_t>(std::lround(view_.xOfTick(static_cast<double>(h.tick))));
-    damageColumns(h.param, x - reach, x + reach);
+    damageTicks(h.param, static_cast<double>(h.tick), static_cast<double>(h.tick), reach + 1, reach + 1);
   };
   damage(hover_);
   hover_ = {track, param, overClips, point, tick};
@@ -608,9 +637,10 @@ bool ArrangementAutomation::pointer(const PointerEvent& e) {
 }
 
 void ArrangementAutomation::press(const PointerEvent& e, const AutomationBand& b) {
-  if (UiTree* t = view_.tree()) t->setFocus(&view_);
   if (drag_.kind != DragKind::None) cancelDrag();
+  if (UiTree* t = view_.tree()) t->setFocus(&geo().widget());
   drag_ = {};
+  drag_.surface = &view_.surfaces().current();  // TX.lane-edit: the gesture stays on this surface
   const std::span<const doc::Breakpoint> pts = b.lane ? std::span<const doc::Breakpoint>(b.lane->points) : std::span<const doc::Breakpoint>{};
   const bool ctrl = (e.mods & mod::kCtrl) != 0, shift = (e.mods & mod::kShift) != 0, alt = (e.mods & mod::kAlt) != 0;
   const bool sameLane = selParam_ == b.param && selTrack_ == b.track;
@@ -627,7 +657,7 @@ void ArrangementAutomation::press(const PointerEvent& e, const AutomationBand& b
 
   drag_.band = b;
   drag_.press = e.pos;
-  const double tick = std::max(0.0, view_.tickAtX(e.pos.x));
+  const double tick = std::max(0.0, geo().axis(b.row).tick(e.pos.x));
   const double fallback = currentParamValue(*view_.shown(), b.param, ctx_.deviceLibrary());
 
   // Alt+drag on a segment: its curvature.
@@ -734,7 +764,8 @@ void ArrangementAutomation::dragTo(const PointerEvent& e) {
   const AutomationBand& b = drag_.band;
   switch (drag_.kind) {
     case DragKind::Points: {
-      const auto raw = static_cast<Ticks>(std::llround(view_.tickAtX(e.pos.x) - view_.tickAtX(drag_.press.x)));
+      const arrangement::TimeAxis ax = geo().axis(b.row);
+      const auto raw = static_cast<Ticks>(std::llround(ax.tick(e.pos.x) - ax.tick(drag_.press.x)));
       const Grid g = grid();
       const Ticks dt = std::clamp(g.snapping() ? g.snapDelta(drag_.pressed.tick, raw) : raw, drag_.minDt, drag_.maxDt);
       // The value moves in the lane's display scale (Live drags volume in fader positions).
@@ -756,7 +787,7 @@ void ArrangementAutomation::dragTo(const PointerEvent& e) {
       break;
     }
     case DragKind::Range: {
-      const Ticks t = std::max<Ticks>(0, grid().snap(static_cast<Ticks>(std::llround(std::max(0.0, view_.tickAtX(e.pos.x))))));
+      const Ticks t = std::max<Ticks>(0, grid().snap(static_cast<Ticks>(std::llround(std::max(0.0, geo().axis(b.row).tick(e.pos.x))))));
       const TickRange r{std::min(drag_.anchor, t), std::max(drag_.anchor, t)};
       std::vector<doc::BreakpointId> ids;
       if (b.lane)
@@ -920,7 +951,7 @@ bool ArrangementAutomation::nudgeSelected(int32_t cells, double steps) {
   if (first == std::numeric_limits<Ticks>::max()) return false;
   Ticks dt = 0;
   if (cells != 0) {
-    const Grid g(ctx_.grid(), view_.shown()->timeline->sigMap, view_.pxPerTick());
+    const Grid g(ctx_.grid(), view_.shown()->timeline->sigMap, geo().gridPxPerTick());
     dt = std::max<Ticks>(0, drag::stepByCells(g, first, cells)) - first;
   }
   double dv = 0.0;
@@ -1044,6 +1075,16 @@ Menu* ArrangementAutomation::openChooser(Widget& from, doc::TrackId t, int32_t l
   return ui::openContextMenu(view_, {static_cast<float>(r.x), static_cast<float>(r.bottom())}, std::move(items));
 }
 
+std::vector<MenuItem> ArrangementAutomation::parameterItems(doc::TrackId t) {
+  const doc::Project& p = *ctx_.doc();
+  const doc::Track* tr = doc::findTrackPtr(p, t);
+  if (!tr) return {};
+  return chooserItems(p, *tr, mode_ ? chosen(t) : doc::ParamRef{}, ctx_.deviceLibrary(), [this, t](doc::ParamRef r) {
+    choose(t, r);
+    setMode(true);
+  });
+}
+
 Menu* ArrangementAutomation::openMenu(Vec2 at, const AutomationBand& b) {
   const doc::Project& p = *ctx_.doc();
   const bool range = selRange_ && selRange_->end > selRange_->start && selParam_ == b.param;
@@ -1086,7 +1127,7 @@ Menu* ArrangementAutomation::openMenu(Vec2 at, const AutomationBand& b) {
   mode.action = "arrangement.toggleAutomationMode";
   mode.checked = mode_;
   items.push_back(std::move(mode));
-  return ui::openContextMenu(view_, at, std::move(items));
+  return ui::openContextMenu(geo().widget(), at, std::move(items));
 }
 
 }  // namespace pq::views

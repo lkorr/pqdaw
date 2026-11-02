@@ -83,6 +83,7 @@ void ProjectPatchView::setRackTrack(doc::TrackId track) {
 }
 
 ProjectPatchView::~ProjectPatchView() {
+  laneAbort();  // TX.lane-edit: no drag of the arrangement's editor may outlive the windows' surface
   if (valueGesture_ && ctx_.store().inGesture()) (void)ctx_.store().cancelGesture();
   if (embedded()) return;  // TX.groups / TX.free-rack: an embedded view bound no actions of the main one
   ctx_.clearViewAction("view.togglePatch");
@@ -123,6 +124,7 @@ void ProjectPatchView::setShown(bool on, bool animate) {
     if (hideOthers) hideOthers();
     slot->setVisible(true);
     initLaneTime();  // T5.x-one-circuit: the windows start where the arrangement is
+    (void)laneEditReady();  // TX.lane-edit: the windows get the arrangement's selection damage from now on
     stale_ = stale_ || built_ != ctx_.doc();
     sync();
     if (arr != nullptr && tree() != nullptr) {

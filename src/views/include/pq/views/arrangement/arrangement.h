@@ -127,6 +127,9 @@ class TrackStack;
 class BottomTracks;
 class LaneHeader;
 class ReenableButton;
+class EditSurface;
+class ArrangementSurface;
+class Surfaces;
 }  // namespace arrangement
 
 // Layout metrics in logical px.
@@ -424,7 +427,8 @@ public:
   ui::IRect laneRect(size_t laneIndex) const noexcept;
   ui::IRect pinnedRowRect(size_t bottomRow) const noexcept;
   // Rows, lanes and headers are laid out again (lanes shown / hidden, a lane resized).
-  void rowsChanged() { rebuildRows(); }
+  // TX.lane-edit: the other surfaces (the lane windows) repaint too (automation mode, a chosen parameter).
+  void rowsChanged();
 
   // ---- transport ---------------------------------------------------------------------------------------------
   // The playhead tick last read from the port while playing (nullopt when stopped).
@@ -475,6 +479,9 @@ public:
   arrangement::Editor& editor() const noexcept { return *editor_; }
   arrangement::LaneCanvas& lanes() const noexcept { return *lanes_; }
   arrangement::FileDrop& fileDrop() const noexcept { return *fileDrop_; }  // T5.7
+  // TX.lane-edit: the surfaces the editor and the automation edit on (the lanes, and the project patch view's lane
+  // windows registered there; src/arrangement/edit_surface.h).
+  arrangement::Surfaces& surfaces() const noexcept { return *surfaces_; }
   // T5.7: the plan of the files hovering over the lanes (empty: none) and whether a drag hovers (tests).
   const SampleDropPlan& dropPlan() const noexcept;
   bool dropHovering() const noexcept;
@@ -501,6 +508,8 @@ private:
 
   ViewContext& ctx_;
   std::unique_ptr<arrangement::Model> model_;
+  std::unique_ptr<arrangement::ArrangementSurface> ownSurface_;  // TX.lane-edit
+  std::unique_ptr<arrangement::Surfaces> surfaces_;
   std::unique_ptr<arrangement::Editor> editor_;
   std::unique_ptr<ArrangementAutomation> automation_;
   std::unique_ptr<arrangement::FileDrop> fileDrop_;  // T5.7

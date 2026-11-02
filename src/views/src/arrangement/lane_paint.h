@@ -27,8 +27,13 @@ struct LanePaint {
   int32_t titleH;
   ui::FontId font = ui::kNoFont;
   int32_t baselineOff = 0;  // title strip top → name baseline
+  // TX.lane-edit: false for another surface (a lane window): no TileAtlas tiles (they are keyed by the arrangement's
+  // zoom and built by its onFrame), never "zooming" (the arrangement's zoom state).
+  bool arrangementLanes = true;
 
   float X(double tick) const noexcept { return static_cast<float>(static_cast<double>(r.x) + (tick - origin) * k); }
+  ui::TileAtlas* tiles() const noexcept { return arrangementLanes ? ctx.res.tiles : nullptr; }
+  bool zooming() const noexcept { return arrangementLanes && view.zooming(); }
 };
 
 // Solid rects in one reservation.
@@ -48,6 +53,11 @@ float paintClipChrome(LanePaint& lp, const ClipCols& cc, float top, float bottom
 inline constexpr int kNoHover = -2;
 void paintClipBorder(LanePaint& lp, const ClipCols& cc, float top, float bottom, float titleB, bool selected, int hover,
                      bool deferred);
+
+// A note clip at geometry `g` (its own bounds, or a drag preview's): chrome, note preview, border (selected outline,
+// hover highlight; lanes.cpp). TX.lane-edit: the lane windows draw their clips with it.
+void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& clipPtr, float top, float bottom, bool trackActive,
+               const ClipGeom& g, bool selected, int hover = kNoHover);
 
 // T5.6 (audio_paint.cpp): an audio clip at geometry `g` (its own bounds, or a drag preview's). Returns true when its
 // waveform was queued as a tile (its overlays then wait for flushTiles).

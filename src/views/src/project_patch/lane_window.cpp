@@ -1,6 +1,13 @@
 // The project patch view's lane windows (T5.x-one-circuit, SPEC §15 2026-10-31): a MIDI or audio track's source node
 // shows the lane itself over the view's time window — bar and beat lines, the clips in their colours with their
-// names, MIDI notes, audio waveforms, the playhead. Display only. See pq/views/project_patch/project_patch_view.h.
+// names, MIDI notes, audio waveforms, the playhead. See pq/views/project_patch/project_patch_view.h.
+//
+// TX.lane-edit: with the arrangement next to the view (the app, its scenes) a window is the arrangement's editing surface
+// (lane_edit.cpp) and is drawn by the arrangement's own clip painters (src/arrangement/lane_paint.h: paintClip,
+// paintAudioClip) on the window's time axis, without its TileAtlas tiles (keyed by the arrangement's zoom) — so the
+// selection outline, the hovered part, audio fades / gain handles, drag previews and the time selection look the same in
+// both views; in automation mode the envelopes are the arrangement's bands. The plain path below is for a view without an
+// arrangement (tests of the model alone).
 //
 // What is reused: the MIDI notes are the arrangement's clip previews (arrangement::Model::preview: per clip snapshot
 // and tuning, notes as content ticks with a normalised row, independent of the zoom), so a clip shown in both views is
@@ -15,6 +22,7 @@
 #include <vector>
 
 #include "../arrangement/internal.h"
+#include "../arrangement/lane_paint.h"
 #include "../common/paint.h"
 #include "../common/waveform_data.h"
 #include "internal.h"
@@ -150,6 +158,9 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
   const TimeSigMap& sig = p.timeline->sigMap;
   ArrangementView* arr = view.arrangement();
   arrangement::Model* model = arr != nullptr ? &arr->model() : nullptr;
+  // TX.lane-edit: with the arrangement next to the view the windows are its editing surface, drawn by its painters.
+  auto* surf = static_cast<LaneEditSurface*>(view.laneSurface());
+  const arrangement::Editor* ed = surf != nullptr ? &arr->editor() : nullptr;
   bool begun = false;
   const float us = ctx.scale.factor;
   const float line = std::max(1.0f, std::round(us));
@@ -158,6 +169,8 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
   const float px = fonts ? static_cast<float>(ctx.res.text->metrics(font).pixelSize) : 11.0f;
   const bool header = fonts && canvas.lod() == circuit::CircuitCanvas::Lod::Near;
   const Rgba gridBar = ui::mulAlpha(th.arrangement.gridLine, 1.0f), gridBeat = ui::mulAlpha(th.arrangement.gridLine, 0.45f);
+  if (model != nullptr) model->overlay.reset(dl.targetWidth(), dl.targetHeight());  // audio fades / handles of this paint
+  bool anyWindow = false;
 
   for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
     const Band& band = pp.bands[bi];
@@ -170,10 +183,15 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
     const Rect body = laneBodyDevice(canvas, n);
     if (body.x1 - body.x0 < 2.0f || body.y1 - body.y0 < 1.0f) continue;
     ++view.mutableStats().lanesPainted;
+    anyWindow = true;
     const bool trackOn = band.active && !t->mixer.mute;
     const double k = static_cast<double>(body.x1 - body.x0) / static_cast<double>(span);  // device px per tick
     auto X = [&](Ticks tick) { return body.x0 + static_cast<float>(static_cast<double>(tick - start) * k); };
     dl.addRectFilled(body, trackOn ? th.arrangement.lane : th.arrangement.laneShade);
+    const int32_t row = surf != nullptr ? surf->rowOfBand(bi) : -1;
+    const bool editing = row >= 0 && model != nullptr;
+    // TX.lane-edit: the arrangement's selected tracks are lighter here too (one selection).
+    if (editing && ed->trackSelected(t->id)) dl.addRectFilled(body, th.arrangement.laneSelected);
 
     // Bar lines (and beat lines where they are at least 6 logical px apart).
     const int64_t bar0 = sig.ticksToBarBeat(start).bar;
@@ -207,8 +225,64 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
     }
     size_t i0 = 0, i1 = t->clips.size();
     if (model != nullptr) std::tie(i0, i1) = model->clips(*t).visible(start, end);
-    const int32_t bodyH = static_cast<int32_t>(body.y1 - body.y0);
-    const float titleH = bodyH >= static_cast<int32_t>(std::round(16.0f * us)) ? std::round(std::clamp(static_cast<float>(bodyH) * 0.28f, 3.0f * us, px + 3.0f * us)) : 0.0f;
+    const float titleH = laneClipTitleH(body.y1 - body.y0, us);
+
+    if (editing) {
+      // TX.lane-edit: the arrangement's clip painters over this window's time axis (no tiles: they are the arrangement's
+      // zoom), the selection outline, the hovered part, audio handles; then the time selection and a drag's previews.
+      const ui::IRect br = toIRect(body);
+      const ui::IRect bc = ui::intersect(br, clip);
+      if (bc.empty()) continue;
+      const ArrangementRow& arow = surf->rows()[static_cast<size_t>(row)];
+      arrangement::LanePaint lp{ctx, th, *model, *arr, p, br, bc, k, static_cast<double>(start),
+                                start + static_cast<Ticks>(std::floor((static_cast<double>(bc.x - br.x) - 1.0) / k)),
+                                start + static_cast<Ticks>(std::ceil((static_cast<double>(bc.right() - br.x) + 1.0) / k)),
+                                static_cast<int32_t>(titleH)};
+      lp.arrangementLanes = false;
+      if (fonts && titleH >= px + 1.0f) {
+        lp.font = font;
+        const auto cap = static_cast<int32_t>(std::lround(0.727 * static_cast<double>(px)));
+        lp.baselineOff = (lp.titleH + cap + 1) / 2;
+      }
+      const float top = body.y0, bottom = body.y1;
+      const arrangement::ClipIndex& ix = model->clips(*t);
+      const auto [a, b] = ix.visible(lp.from, lp.to);
+      const arrangement::Editor::HoverPart& hp = ed->hoverPart();
+      const bool hoverRow = !ed->dragging() && hp.ref.clip.valid() && hp.ref.track == t->id;
+      for (size_t j = a; j < b; ++j) {
+        const doc::ClipSlot& slot = t->clips[j];
+        if (ed->hiddenWhileDragging(slot.id)) continue;  // drawn at its drag target below
+        if (j > 0 && ix.start[j] < ix.maxEnd[j - 1]) arrangement::flushTiles(lp);  // overlapping: the earlier one complete
+        const int hover = hoverRow && slot.id == hp.ref.clip ? hp.zone : arrangement::kNoHover;
+        if (slot.audio) arrangement::paintAudioClip(lp, arow, slot.audio, {slot.audio->start, slot.audio->length, 0}, top, bottom, trackOn,
+                                                    ed->selected(slot.id), hover);
+        else arrangement::paintClip(lp, arow, slot.clip, top, bottom, trackOn, {slot.clip->start, slot.clip->length, slot.clip->contentStart},
+                                    ed->selected(slot.id), hover);
+      }
+      for (size_t j = b; j < t->clips.size() && j < b + 2; ++j)  // a crossfade X reaching back into the painted part
+        if (const doc::AudioClipPtr& next = t->clips[j].audio; next && !ed->hiddenWhileDragging(t->clips[j].id))
+          arrangement::paintAudioCrossfade(lp, *next, top, bottom, ed->selected(t->clips[j].id) || (hoverRow && t->clips[j].id == hp.ref.clip));
+      arrangement::flushTiles(lp);
+      // The time selection (the insert marker a line) over the selected tracks' windows, as in the arrangement.
+      if (const auto& ts = ed->selection().time; ts && ed->showTimeSelection() && ed->trackSelected(t->id)) {
+        const bool marker = ts->end <= ts->start;
+        const float x0 = std::max(static_cast<float>(bc.x), std::floor(lp.X(static_cast<double>(ts->start))));
+        const float x1 = std::min(static_cast<float>(bc.right()), marker ? x0 + std::max(1.0f, std::round(us))
+                                                                         : std::floor(lp.X(static_cast<double>(ts->end))));
+        if (x1 > x0) dl.addRectFilled({x0, top, x1, bottom}, ui::withAlpha(th.clip.selectedBorder, marker ? 200 : 46));
+      }
+      if (ed->dragSurface() == surf)
+        for (const arrangement::DragClip& dc : ed->dragClips()) {
+          int32_t ri = 0;
+          arrangement::ClipGeom g;
+          if (!ed->preview(dc, ri, g) || ri != row) continue;
+          if (dc.clip.audio) arrangement::paintAudioClip(lp, arow, dc.clip.audio, g, top, bottom, trackOn, true, arrangement::kNoHover);
+          else arrangement::paintClip(lp, arow, dc.clip.clip, top, bottom, trackOn, g, true);
+          arrangement::flushTiles(lp);
+        }
+      continue;
+    }
+
     for (size_t ci = i0; ci < i1; ++ci) {
       const doc::ClipSlot& c = t->clips[ci];
       if (c.end() <= start || c.start() >= end) continue;
@@ -239,22 +313,47 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
         if (model == nullptr || !view.context().sampleAvailable(ac.sample)) continue;
         const media::WaveformOverview* ov = view.context().waveforms().overview(ac.sample);
         if (ov == nullptr) continue;
-        ArrangementRow row;
-        row.id = t->id;
-        row.track = t;
-        const arrangement::AudioLayout& L = model->audioLayout(row, c.audio);
+        ArrangementRow arow;
+        arow.id = t->id;
+        arow.track = t;
+        const arrangement::AudioLayout& L = model->audioLayout(arow, c.audio);
         ui::WaveformLevel lv[kMaxOverviewLevels];
         const ui::WaveformData data = waveformData(*ov, nullptr, lv);
         paintWave(dl, data, ac, L, p.timeline->tempoMap, k, cx0, vx0, vx1, by0, by1, noteCol);
       }
     }
+  }
+  if (!anyWindow) return;
 
-    // The playhead.
-    if (const std::optional<Ticks>& ph = view.lanePlayhead(); ph && *ph >= start && *ph < end) {
+  // TX.lane-edit: in automation mode the chosen parameter's envelope over each window's clips (the arrangement's bands,
+  // on this surface), and its name in the window's title row.
+  if (surf != nullptr && arr->automation().mode()) {
+    arr->automation().paintSurface(ctx, *surf, clip);
+    if (header)
+      for (int32_t r = 0; r < static_cast<int32_t>(surf->rows().size()); ++r) {
+        const uint32_t bi = surf->bandOf(r);
+        const Node& n = pp.nodes[pp.bands[bi].source];
+        const Rect nr = canvas.deviceRect(n.x, n.y, n.w, n.h);
+        if (!overlaps(nr, clip)) continue;
+        const Rect body = laneBodyDevice(canvas, n);
+        const std::string label = paramShortName(p, arr->automation().chosen(surf->rows()[static_cast<size_t>(r)].id), view.context().deviceLibrary());
+        const float w = std::min(body.x1 - body.x0, 8.0f * px);
+        paint::text(ctx, font, toIRect({body.x1 - w, nr.y0 + 1.0f, body.x1, body.y0}), label, th.automation.line, ui::TextAlign::Right);
+      }
+  }
+
+  // The playheads, on top.
+  if (const std::optional<Ticks>& ph = view.lanePlayhead(); ph && *ph >= start && *ph < end)
+    for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
+      const Band& band = pp.bands[bi];
+      if (!hasLaneWindow(band) || band.source == kNone || view.bandTrack(bi) == nullptr) continue;
+      const Node& n = pp.nodes[band.source];
+      if (!overlaps(canvas.deviceRect(n.x, n.y, n.w, n.h), clip)) continue;
+      const Rect body = laneBodyDevice(canvas, n);
+      if (body.x1 - body.x0 < 2.0f || body.y1 - body.y0 < 1.0f) continue;
       const float x = lanePlayheadX(body, *ph, start, span);
       dl.addRectFilled({x, body.y0, x + std::max(1.0f, std::round(us)), body.y1}, th.arrangement.playhead);
     }
-  }
 }
 
 }  // namespace pq::views::project_patch
