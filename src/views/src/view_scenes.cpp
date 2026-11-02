@@ -2506,10 +2506,11 @@ struct MetaOperatorSceneVoices {
       for (uint32_t v = 0; v < 4; ++v) {
         const double hz = (3.0 + v) * kRatio[o];
         const double ph = std::fmod(0.11 + 0.23 * v + 0.37 * o * kRatio[o], 1.0);
-        a.push_back({v, hz, ph, 0.0});
+        a.push_back({v, hz, ph, 0.0, kSceneNoteInc[v] * kRatio[o]});  // TMM.13-fix2: the chord at its ratio (real colours)
         w.push_back({v, hz, ph, kPos[o]});
       }
       acc[o].setVoices(a);
+      acc[o].setRate(kSceneRate);
       wt[o].setVoices(w);
       for (SyntheticVoices* sv : {&acc[o], &wt[o]}) {
         sv->advance(1.0 / 60.0);

@@ -293,7 +293,7 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
         const std::string count = std::to_string(n.members.size()) + (n.members.size() == 1 ? " device" : " devices");
         if (adv > 0 && adv + gap + 12 < box.w)
           paint::text(ctx, font, {box.x + adv + gap, box.y, box.w - adv - gap, box.h}, count,
-                      ui::lerp(th.circuit.pinText, th.circuit.symbolText, 0.6f), ui::TextAlign::Left);  // TMM.13-fix2: was 2.79:1
+                      ui::lerp(th.circuit.pinText, th.circuit.symbolText, 0.85f), ui::TextAlign::Left);  // TMM.13-fix2: was 2.79:1
       }
     }
   }

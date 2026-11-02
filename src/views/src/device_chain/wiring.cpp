@@ -748,8 +748,8 @@ void CableLayer::paint(ui::PaintContext& ctx) {
       // font has no superscript minus).
       const ui::IRect tag{c.badge.right() + ctx.scale.px(3.0f), c.badge.y - ctx.scale.px(1.0f), ctx.scale.px(26.0f),
                           c.badge.h + ctx.scale.px(2.0f)};
-      paint::box(ctx.dl, tag, ctx.scale.exact(2.0f), ui::withAlpha(th->surface.raised, static_cast<uint32_t>(240 * alpha)), col);
-      paint::text(ctx, ctx.res.uiFonts->small, tag, "z-1", ui::withAlpha(th->text.primary, static_cast<uint32_t>(255 * alpha)),
+      paint::box(ctx.dl, tag, ctx.scale.exact(2.0f), ui::withAlpha(th->surface.raised, static_cast<uint32_t>(240 * modeAlpha)), ui::withAlpha(col, static_cast<uint32_t>(255 * modeAlpha)));  // legible when the cable is dimmed
+      paint::text(ctx, ctx.res.uiFonts->small, tag, "z-1", ui::withAlpha(th->text.primary, static_cast<uint32_t>(255 * modeAlpha)),
                   ui::TextAlign::Center);
     }
   }
