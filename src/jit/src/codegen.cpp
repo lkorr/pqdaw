@@ -204,7 +204,21 @@ private:
   bool wantsPair(uint32_t k) const {
     const g::Stage& st = s_.stages[k];
     return st.poly == g::Poly::Voice && !o_.scalarLanes && o_.pairs && k < L_.pairable.size() && L_.pairable[k] &&
-           !frameCalls(st) && chainCost_[k] <= (stageHasRamps(st) ? kMaxPairChainCostWithRamps : kMaxPairChainCost);
+           !frameCalls(st) &&
+           chainCost_[k] <= (stageHasRamps(st) && !pairCanBail(st) ? kMaxPairChainCostWithRamps : kMaxPairChainCost);
+  }
+  // TX.smooth: a pair function of a stage with ramps hands a block in which a ramp moves back to the host (which then
+  // runs the two groups one by one, in their ramp-mode code) when everything before its ramp check may run twice:
+  // a Control region of stateless kernels only. Its code at rest is then the pre-ramp pair code plus the checks.
+  bool pairCanBail(const g::Stage& st) const noexcept {
+    for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r) {
+      const g::Region& reg = s_.regions[r];
+      if (reg.kind != g::RegionKind::Control) break;
+      if (reg.numSolves != 0) return false;
+      for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
+        if (s_.ops[i].kind != g::OpKind::Kernel || s_.ops[i].state != g::kNone) return false;
+    }
+    return true;
   }
   bool stageHasRamps(const g::Stage& st) const noexcept {
     for (uint32_t r = st.firstRegion; r < st.firstRegion + st.numRegions; ++r)
@@ -519,7 +533,9 @@ private:
     if (vw == 16 && !lateStage) stagePairState(true);
     emitRegions(st.firstRegion, ctrlEnd);
     llvm::Function* rampFn = nullptr;
-    if (!stageRamps.empty()) rampFn = emitRampDispatch(stageRamps, name + "_ramps", lateStage);
+    const bool bail = vw == 16 && !stageRamps.empty() && pairCanBail(st);
+    if (bail) emitRampBail(stageRamps);
+    else if (!stageRamps.empty()) rampFn = emitRampDispatch(stageRamps, name + "_ramps", lateStage);
     if (lateStage) stagePairState(true);
     steady_ = !stageRamps.empty();  // every ramp of the stage at rest: no ramp handling in the code below
     emitRegions(split, end);
@@ -1007,6 +1023,24 @@ private:
     B_.CreateRetVoid();
     B_.SetInsertPoint(steady);
     return fn;
+  }
+  // A pair function's ramp check (pairCanBail): a ramp of either group not at rest → the bail word (jit_image.h,
+  // HostLayout::memoOff + 1) set and return; the host runs the two groups one by one.
+  void emitRampBail(const std::vector<uint32_t>& ramps) {
+    Value* any = nullptr;
+    for (const uint32_t r : ramps)
+      for (unsigned h = 0; h < 2; ++h) {
+        Value* a = B_.CreateNot(rampAtRest(r, h));
+        any = any ? B_.CreateOr(any, a) : a;
+      }
+    llvm::BasicBlock* moving = llvm::BasicBlock::Create(C_, "ramps_bail", F_);
+    llvm::BasicBlock* steady = llvm::BasicBlock::Create(C_, "ramps_steady", F_);
+    llvm::MDBuilder md(C_);
+    B_.CreateCondBr(any, moving, steady, md.createBranchWeights(1, 63));
+    B_.SetInsertPoint(moving);
+    B_.CreateAlignedStore(c32(1), B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.memoOff + 1), llvm::Align(4));
+    B_.CreateRetVoid();
+    B_.SetInsertPoint(steady);
   }
   Value* loadPattern(const g::Operand& o, unsigned w, bool hoist) {
     const auto key = std::make_tuple(static_cast<int>(o.kind), o.index, w);

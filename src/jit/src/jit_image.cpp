@@ -48,6 +48,11 @@ void JitImage::process(e::ProcessContext& ctx) noexcept {  // RT-safe
       },
       [&](uint32_t k, uint32_t a, uint32_t b) noexcept {
         pairFns_[k](buf, aux, gstate, vstate + a * stride, vstate + b * stride, ext, tab, frames, a, b, 0);
+        // TX.smooth: a param ramp moves in this block and the pair handed it back (codegen.cpp emitRampBail).
+        uint32_t& bail = *reinterpret_cast<uint32_t*>(buf + layout_.memoOff + 1);
+        if (bail == 0) return true;
+        bail = 0;
+        return false;
       });
 }
 
@@ -175,6 +180,7 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   L.callOff = HL.extraOff + solveFloats;
   L.callPtrs = wide;
   L.memoOff = HL.extraOff + solveFloats + callFloats;
+  reinterpret_cast<uint32_t*>(host.buf() + L.memoOff)[1] = 0;  // TX.smooth: a pair's bail word (codegen.cpp emitRampBail)
   L.paramOff = HL.paramOff;
   L.constOff = HL.constOff;
   L.sleepOff = HL.sleepOff;

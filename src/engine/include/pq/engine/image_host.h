@@ -60,6 +60,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "pq/core/aligned_buffer.h"
@@ -501,7 +502,23 @@ void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voic
         continue;
       }
       setRun(runB_, vt, gb);
-      pair(k, gi, gb);
+      // TX.smooth: a backend's pair may decline a block (returns false, before it changed anything): the two groups
+      // then run one by one.
+      if constexpr (std::is_same_v<decltype(pair(k, gi, gb)), bool>) {
+        if (!pair(k, gi, gb)) {
+          voice(k, gi);
+          copyGroupOut(st, gr, gi, frames, false);
+          if (st.numProbes) probeGroup(st, gi, frames, false);
+          setRun(run_, vt, gb);
+          voice(k, gb);
+          copyGroupOut(st, vt->groups[gb], gb, frames, false);
+          if (st.numProbes) probeGroup(st, gb, frames, false);
+          gi = gb;
+          continue;
+        }
+      } else {
+        pair(k, gi, gb);
+      }
       copyGroupOut(st, gr, gi, frames, false);
       copyGroupOut(st, vt->groups[gb], gb, frames, true);
       if (st.numProbes) {
