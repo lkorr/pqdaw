@@ -812,6 +812,17 @@ std::vector<Case> cases() {
                  CHECK(std::find(cs.devices.begin(), cs.devices.end(), chain.fx) != cs.devices.end());
                  CHECK(findDevice(f.doc(), chain.fx).device->free);
                }});
+  static DeviceId groupId;
+  c.push_back({"SetDeviceGroup (TX.groups: a free device into a group; Meta: no sound changes)", [withChain](Fixture& f) -> Command {
+                 withChain(f);
+                 groupId = f.store.ids().device();
+                 REQUIRE(f.store.dispatch(Batch{"group", {AddDevice{f.lead, makeGroup(groupId), kAppend},
+                                                          SetDeviceFree{chain.fx, true}}}).ok());
+                 return SetDeviceGroup{chain.fx, groupId};
+               }, M, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.devices == std::vector<DeviceId>{chain.fx});
+                 CHECK(findDevice(f.doc(), chain.fx).device->group == groupId);
+               }});
   // ---- compound
   c.push_back({"Batch (param + sequence)", [](Fixture& f) -> Command {
                  return Batch{"Mixed", {SetTrackVolume{f.lead, -1.0f},

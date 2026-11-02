@@ -308,7 +308,8 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   const Migration table[] = {{0, migrate0to1}, builtinMigrations()[0], builtinMigrations()[1], builtinMigrations()[2],
                              builtinMigrations()[3], builtinMigrations()[4], builtinMigrations()[5],
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
-                             builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11]};
+                             builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11],
+                             builtinMigrations()[12]};
   const std::string old = schema0Text();
   SUBCASE("an old file is migrated, then decoded") {
     Result<LoadedProject> r = parseProject(old, LoadOptions{table, "old.pqd"});
@@ -354,7 +355,8 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                                 builtinMigrations()[0], builtinMigrations()[1], builtinMigrations()[2],
                                 builtinMigrations()[3], builtinMigrations()[4], builtinMigrations()[5],
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
-                             builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11]};
+                             builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11],
+                             builtinMigrations()[12]};
     Result<LoadedProject> r = parseProject(old, LoadOptions{broken, {}});
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.rfind("$.timeline.tempo: ", 0) == 0);
