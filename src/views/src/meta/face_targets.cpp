@@ -40,13 +40,22 @@ DocTarget::~DocTarget() {
   if (gesture_) (void)ctx_.store().commitGesture();
 }
 
+const doc::Device* DocTarget::dev() const {
+  const doc::Snapshot& now = ctx_.doc();
+  if (now != seen_) {
+    seen_ = now;
+    seenDevice_ = now ? doc::findDevice(*now, device_).device : nullptr;
+  }
+  return seenDevice_;
+}
+
 double DocTarget::value(size_t param) const {
   if (param >= type_.params.size()) return 0.0;
-  const doc::Device* d = doc::findDevice(*ctx_.doc(), device_).device;
+  const doc::Device* d = dev();
   return d != nullptr ? doc::metaParamValue(*d, path_, type_, param) : type_.params[param].def;
 }
 
-bool DocTarget::editable() const noexcept { return doc::findDevice(*ctx_.doc(), device_).device != nullptr; }
+bool DocTarget::editable() const noexcept { return dev() != nullptr; }
 
 void DocTarget::begin(const char* label) {
   if (gesture_) return;
@@ -87,7 +96,7 @@ void DocTarget::reset(size_t param) {
 
 double DocTarget::setting(size_t i) const {
   if (i >= type_.settings.size()) return 0.0;
-  const doc::Device* d = doc::findDevice(*ctx_.doc(), device_).device;
+  const doc::Device* d = dev();
   if (d == nullptr) return type_.settings[i].def;
   const std::vector<double> s = doc::metaSettings(*d, path_, type_);
   return i < s.size() ? s[i] : type_.settings[i].def;
@@ -104,7 +113,7 @@ void DocTarget::setSetting(size_t i, double value) {
 }
 
 meta::DataPtr DocTarget::data() const {
-  const doc::Device* d = doc::findDevice(*ctx_.doc(), device_).device;
+  const doc::Device* d = dev();
   const doc::MetaInstance* inst = d != nullptr ? d->metaAt(path_) : nullptr;
   if (inst != nullptr && inst->data) return inst->data;
   return MetaTarget::data();  // the type's default (one pointer per type)
@@ -150,7 +159,7 @@ void DocTarget::pitchGuides(float loHz, float hiHz, std::vector<PitchGuide>& out
 
 doc::KnobCurve DocTarget::curve(size_t param) const {  // TX.knob-curves
   if (!path_.empty() || param >= type_.params.size()) return doc::KnobCurve::Default;
-  const doc::Device* d = doc::findDevice(*ctx_.doc(), device_).device;
+  const doc::Device* d = dev();
   return d != nullptr ? d->curve(type_.params[param].name) : doc::KnobCurve::Default;
 }
 

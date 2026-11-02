@@ -20,6 +20,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <windows.h>
@@ -210,12 +211,18 @@ int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle, bool wavetable)
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   const double nsPerCycle = tscNsPerCycle();
   auto lib = doc::loadDeviceLibrary(std::string(PQ_SOURCE_DIR) + "/stdlib");
   if (!lib) {
     std::printf("device library: %s\n", lib.error().message.c_str());
     return 1;
+  }
+  // TMM.13-fix2: `pq_bench_project_patch faces` runs only the TMM.4 / TMM.7 face rows (H5's A/B while iterating).
+  if (argc > 1 && std::string_view(argv[1]) == "faces") {
+    const int a = facesBench(**lib, nsPerCycle, false);
+    const int b = facesBench(**lib, nsPerCycle, true);
+    return a != 0 ? a : b;
   }
   FakeTransport port;
   ViewContext ctx(port);

@@ -50,11 +50,18 @@ public:
   const std::string& path() const noexcept { return path_; }
 
 private:
+  // TMM.13-fix2 (MM review H5): the instance's device in the current document, found once per snapshot (a face reads
+  // its values several times per paint; doc::findDevice walks the whole project each time). The snapshot is held, so a
+  // later one at the same address can never be mistaken for it.
+  const doc::Device* dev() const;
+
   ViewContext& ctx_;
   doc::DeviceId device_;
   std::string path_;
   const meta::Type& type_;
   bool gesture_ = false;
+  mutable doc::Snapshot seen_;
+  mutable const doc::Device* seenDevice_ = nullptr;
 };
 
 // TMM.10 / TX.panel-faces: the meta type of the instance at name path `path` of device `device` ("" = a chain meta
