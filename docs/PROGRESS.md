@@ -1198,3 +1198,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: ship A/B: far full paint 0.187 vs 0.047 ms (plain blocks), far pan 0.125 vs 0.032 ms; near band full paint 0.202 vs 0.128 ms; param edit frame 0.31 ms; first show (158 panels) 6.1 ms.
 - CPU-efficiency check: panels recorded only on change and replayed as a vertex copy; far out 4 tile quads per panel; idle panels get no frames or timers.
 - Notes/blockers: generated panels count as a GUI (Basic Synth too); wheel over a panel pans; not done: modulation rings, automated positions, EQ spectrum on circuit panels; wires pass under panels. Q189.
+
+## 2026-11-01 · TMM.18 · task/TMM.18-negative-freq-fm-alias (merged; Q190)
+- Did: negative frequencies reflect. @signed param attribute (meta::ParamSpec::signedValue; the Add wire law clamps to ±max(|lo|,|hi|)); Phase accumulator freq is @signed (wires to −20 kHz); hz input already signed (tested). wavetable_live corrections for a backward phase (signed speeds, wrap/kink detection either way); forward bit-identical. Tests: phasor −f sample-exact; frame-table alias suite backwards; live path backward vs time-reversed forward and alias vs 64x reference; document: VCA −440 into freq / hz, out(−f)+out(f) = gain, JIT == interpreter. Part 2 (feedback-FM aliasing) withdrawn by the user (it was clipping).
+- Verified: build.ps1 -Affected (check, default + slow; 16 test exes + pqdaw): 0 warnings, 76/76. ship link of pq_bench_dsp OK.
+- Perf: ship interleaved A/B (indicative, another worker benchmarking): wavelive region ×2 +6 %, ×4/×8/×16 within noise.
+- CPU-efficiency check: ~5 branch-free SIMD ops per live-region sample; event handling only on event samples.
+- Notes/blockers: backward with PW modulated at 2 kHz full depth aliases 5.4 dB more than forward (−89.7 vs −95.1 dBFS), unexplained (Q190 4; for TMM.13).
