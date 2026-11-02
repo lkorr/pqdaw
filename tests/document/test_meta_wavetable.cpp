@@ -1,7 +1,7 @@
 // TMM.5: the Wavetable meta module in the document — keyframe cycles save and load bit-exact (64 keyframes within
 // 20 ms), and its data reaches the lowering's resources for the link. TMM.8: fold / warp / sync take lanes, wires and
-// macros in Phase mode (the live path; the lowering says which params the table must not bake), Shape mode refuses
-// them with a reason, an effect Wavetable starts in Shape mode, a wired nested fold pin runs live.
+// macros (the live path; the lowering says which params the table must not bake; TX.mod-all: in Shape mode too —
+// it refused them before), an effect Wavetable starts in Shape mode, a wired nested fold pin runs live.
 #include <doctest/doctest.h>
 
 #include <algorithm>

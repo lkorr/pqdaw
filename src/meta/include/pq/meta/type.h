@@ -180,10 +180,11 @@ struct Type {
   Status (*frameTable)(const TableSource& source, uint32_t index, TableJob& out) = nullptr;
   // Whether a `bakeable` param may be modulated (an automation lane, a wire, a macro): the expansion then has a live
   // path for it. false: such params are baked only, and the document refuses to modulate them
-  // (doc::metaParamBakedOnly). TMM.8: the Wavetable's are live in Phase mode.
+  // (doc::metaParamBakedOnly). TMM.8: the Wavetable's are live (TX.mod-all: in either mode).
   bool liveBakeable = true;
   // TMM.8 (optional): with these (resolved) settings, why bakeable param `param` cannot be modulated ("" = it can):
-  // a type whose live path depends on a setting (the Wavetable's Shape mode bakes fold / warp / sync).
+  // a type whose live path depends on a setting (TX.mod-all: no type has one now: a wire into a param makes it live
+  // at audio rate, one rule).
   std::string (*bakedOnly)(std::span<const double> settings, uint32_t param) = nullptr;
   // TMM.8-fix (optional): a number for what of the instance's structural state its TABLE depends on (which params the
   // live path applies, the Wavetable's Shape mode). The lowering asks the link for the slot of (device, path,

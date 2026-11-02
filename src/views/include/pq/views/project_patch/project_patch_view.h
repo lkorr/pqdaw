@@ -32,7 +32,10 @@
 //              drives that param. Opened, the device shows its atoms. Far out the panels are colour-layer miniatures.
 //   edits      (each one undo step, shown at once in the arrangement, mixer and Device view: one document)
 //                wire        drag a device's export pin (right side) onto a device → its params (a menu), or onto a
-//                            param pin: T4.7's modulation wire (ops::connectWire)
+//                            param pin or a face's / panel's control: T4.7's modulation wire (ops::connectWire).
+//                            TX.mod-all: a wire into a face's or panel's param ends on its control (no pin): its
+//                            route reaches the block's edge nearest the control and the canvas draws on to the knob
+//                            or handle (project_patch.h Port::anchored, Face::controlAnchor)
 //                re-route    drag a mixer's `out` pin onto a group's or the master's Σ (SetTrackOutput), onto a return's
 //                            Σ (its send to 0 dB); drag a send pin onto its return's Σ (send to 0 dB)
 //                devices     right-click a band → Add Device ▸ (the device menu), Delete removes the selected blocks,

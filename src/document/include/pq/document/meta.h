@@ -51,7 +51,7 @@ std::vector<double> metaSettings(const Device& d, std::string_view path, const m
 // TMM.5: why chain meta device `d`'s param `param` cannot be modulated (an automation lane, a modulation wire, a macro
 // mapping), or "" when it can: a `bakeable` param of a type without a live path (meta::Type::liveBakeable false) is
 // baked into the module's table and only changes with its value; TMM.8: a type with a live path may still refuse with
-// some settings (meta::Type::bakedOnly: the Wavetable's Shape mode bakes fold / warp / sync).
+// some settings (meta::Type::bakedOnly; TX.mod-all: no type refuses now).
 std::string metaParamBakedOnly(const Device& d, std::string_view param);
 // A new instance of `t`: its version and default data, no values set.
 MetaInstance defaultMetaInstance(const meta::Type& t);
