@@ -107,6 +107,7 @@ struct ProjectCompileOptions {
   const Resources* resources = nullptr; // must outlive the images
   bool visualMode = true;               // delay-free cycles (also between merged tracks) get a z1 + warning
   bool sleep = true;                    // T1.x-silence: sleep plans (graph::ScheduleOptions::sleep; false: never sleep)
+  bool paramRamps = true;               // TX.smooth: graph::ScheduleOptions::paramRamps (false: benchmarks' A/B only)
   UnitBackend backend;
   std::vector<ProjectParamLink> paramLinks;
   // T2.6-fix4 (optional): the owner of resource `index` of `kind` (Tuning, and TMM.2's FrameTable / VoiceTap slots are

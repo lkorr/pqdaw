@@ -361,6 +361,11 @@ struct Ramp {
   uint32_t op = kNone;   // its param_ramp op (Schedule::ops)
   Operand source;        // the pattern it follows (Param, pattern Buffer or param-rate External)
   Operand out;           // its Block buffer (lanes and factor of the ops reading it)
+  // Its source can change only when a param does or a voice lane starts a note: params, constants, note-on-static
+  // voice signals (velocity, note Hz / degree, index, unison count) through stateless Control ops. The JIT skips the
+  // rest check of such ramps in a block whose params equal the previous block's while the stage's summary says every
+  // ramp of the group rested (Schedule::rampSummary).
+  bool staticSource = false;
 };
 
 struct Schedule {
@@ -390,6 +395,9 @@ struct Schedule {
   // Parallel to `operands` (empty when there are no ramps): for an op input that reads a ramp while it moves, the
   // index into `ramps`; kNone otherwise.
   std::vector<uint32_t> rampOf;
+  // TX.smooth: per Schedule::stages position, a param_ramp-tagged state entry (kNone: no ramps) whose `started` words
+  // the JIT uses as the stage's per-lane "every ramp rested in the last block" summary (a voice's lane reset clears it).
+  std::vector<uint32_t> rampSummary;
 
   std::span<const Operand> inputs(const Op& op) const noexcept { return {operands.data() + op.firstOperand, op.numIn}; }
   std::span<const Operand> outputsOf(const Op& op) const noexcept {

@@ -432,6 +432,14 @@ bool ImageHost::validate(const g::Schedule& s) {
 bool ImageHost::validateRamps(const g::Schedule& s) {
   if (s.ramps.empty() && s.rampOf.empty()) return true;
   if (s.rampOf.size() != s.operands.size()) return fail("ramp table does not match the operands");
+  if (!s.rampSummary.empty() && s.rampSummary.size() != s.stages.size()) return fail("ramp summaries do not match the stages");
+  for (uint32_t k = 0; k < s.rampSummary.size(); ++k) {
+    const uint32_t e = s.rampSummary[k];
+    if (e == g::kNone) continue;
+    if (e >= s.state.entries.size() || s.state.entries[e].tag.kernel != static_cast<uint16_t>(dsp::Atom::ParamRamp) ||
+        (s.state.entries[e].arena == g::Poly::Voice) != (s.stages[k].poly == g::Poly::Voice))
+      return fail("invalid ramp summary");
+  }
   std::vector<uint32_t> regionOf(s.ops.size(), g::kNone), stageOf(s.regions.size(), g::kNone);
   for (uint32_t k = 0; k < s.stages.size(); ++k)
     for (uint32_t r = s.stages[k].firstRegion; r < s.stages[k].firstRegion + s.stages[k].numRegions; ++r) stageOf[r] = k;

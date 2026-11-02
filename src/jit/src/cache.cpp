@@ -138,8 +138,8 @@ static_assert(sizeof(g::StateTag) == 8, "graph::StateTag changed: update codegen
 static_assert(sizeof(dsp::StateInit) == 32, "dsp::StateInit changed: update codegenDigest");
 static_assert(sizeof(g::StateEntry) == 72, "graph::StateEntry changed: update codegenDigest");
 static_assert(sizeof(g::StateLayout) == 40, "graph::StateLayout changed: update codegenDigest");
-static_assert(sizeof(g::Schedule) == 472 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
-static_assert(sizeof(g::Ramp) == 20, "graph::Ramp changed: update codegenDigest");
+static_assert(sizeof(g::Schedule) == 496 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
+static_assert(sizeof(g::Ramp) == 24, "graph::Ramp changed: update codegenDigest");
 static_assert(sizeof(g::ProbeRef) == 28, "graph::ProbeRef changed: update codegenDigest");
 static_assert(sizeof(g::SleepPlan) == 152, "graph::SleepPlan changed: update codegenDigest");
 static_assert(sizeof(g::RegionSleep) == 12, "graph::RegionSleep changed: update codegenDigest");
@@ -242,8 +242,10 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
     h.put(x.op);
     putOperand(h, x.source);
     putOperand(h, x.out);
+    h.put(x.staticSource);
   }
   h.putU32s(s.rampOf);
+  h.putU32s(s.rampSummary);
   h.put(L.sleepOff);
   h.put(L.meterOff), h.put(L.meterFlagOff);  // T4.5
   // Schedule::warnings, insertedDelays and rewritten are diagnostics and names: not read by code generation.

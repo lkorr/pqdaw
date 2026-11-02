@@ -10,6 +10,9 @@
 //   awake/30-track fixture <backend> sleep|nosleep   tests/engine/project_fixture.h (30 FM tracks × 28 effects, chords
 //                                   held): everything sounds, so every segment is awake every block: the cost of the
 //                                   sleep bookkeeping on non-silent playback (the source scans, per-region flags)
+//   idle/ramps A/B, awake/ramps A/B <backend>   TX.smooth: the same project with and without param ramps
+//                                   (ProjectCompileOptions::paramRamps), interleaved rounds as below: what the ramps
+//                                   cost while no param moves (idle: every unit asleep; awake: everything sounds)
 // Backends: interp and jit (every unit's image from compile::jitUnitBackend()). ns per block; "% of a core" =
 // ns / 1 333 333 (one block period). Release / ship build. Usage: pq_bench_silence [runner options]
 #include <algorithm>
@@ -47,7 +50,7 @@ struct Rig {
   int64_t time = 0;
   uint32_t units = 0;
 
-  Rig(bool idleProject, bool jit, bool sleep, bool links = false) {
+  Rig(bool idleProject, bool jit, bool sleep, bool links = false, bool ramps = true) {
     const graph::ProjectGraph* g = nullptr;
     uint32_t tracks = 30;
     if (idleProject) {
@@ -64,6 +67,7 @@ struct Rig {
     co.maxBlockFrames = kBlock;
     co.voice.maxVoices = 8;
     co.sleep = sleep;
+    co.paramRamps = ramps;
     if (jit) co.backend = compile::jitUnitBackend();
     uint32_t numParams = 0;
     if (links && idleProject) {  // vol, and every param of the synth and the EQ the track patch leaves unconnected
@@ -179,5 +183,31 @@ int main(int argc, char** argv) {
                   r.medianNs, r.minNs, r.maxNs);
     });
   }
+  // TX.smooth: ramps vs no ramps, interleaved (as the sleep A/B above).
+  for (bool idleProject : {true, false})
+    for (bool jit : {false, true}) {
+      const std::string name = std::string(idleProject ? "idle" : "awake") + "/ramps A/B " + (jit ? "jit" : "interp");
+      runner.add(name, [idleProject, jit, name](bench::Context& c) {
+        Rig a(idleProject, jit, true, false, true), b(idleProject, jit, true, false, false);
+        std::vector<double> ratio, ta, tb;
+        for (int round = 0; round < 60; ++round) {
+          auto time = [](Rig& r) {
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < 100; ++i) r.block();
+            return std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / 100.0;
+          };
+          const double x = round % 2 ? time(a) : 0.0, y = time(b), z = round % 2 ? 0.0 : time(a);
+          ta.push_back(x + z);
+          tb.push_back(y);
+          ratio.push_back((x + z) / y);
+        }
+        c.record(bench::summarize(ta), "ns/block", "ramps");
+        c.record(bench::summarize(tb), "ns/block", "no ramps");
+        const bench::Stats r = bench::summarize(ratio);
+        c.record(r, "ratio", "ramps/no ramps");
+        std::printf("  %s: ramps / no ramps = %.4f (median of 60 interleaved rounds; min %.4f, max %.4f)\n", name.c_str(),
+                    r.medianNs, r.minNs, r.maxNs);
+      });
+    }
   return runner.main(argc, argv);
 }

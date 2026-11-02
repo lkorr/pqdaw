@@ -19,10 +19,13 @@
 //                          Operator jumping to a new value every block (every param ramp moving all the time: the
 //                          worst case), and the same static patch scheduled without param ramps (what the ramps cost
 //                          while nothing moves: the other rows' patch has them)
+//   operator/stock-full <backend> x64 ramps A/B   the two (with / without ramps, params at rest) in interleaved rounds:
+//                          the median ratio (robust against the load other processes put on the machine)
 //   operator/meta-<config> <backend> xN, operator/stock-four …   TMM.12: the Meta Operator (bench/patches/
 //                          meta_operator_calibration.pqp: sine = algorithm 1 with feedback, hq = the same ×2, add =
 //                          algorithm 11) and the stock Operator doing the same work (four sines, algorithm 1, feedback)
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -337,6 +340,81 @@ void benchVoicePatch(bench::Context& c, const g::Schedule& s, bool jit, uint32_t
   c.record(ratio, "x steady block", "crossfade ratio");
 }
 
+// TX.smooth: two schedules of one patch (a: with param ramps, b: without) at 64 held voices, interleaved rounds of 100
+// blocks (the machine's load moves between separate rows); the median of the per-round ratios a / b.
+void benchRampsAB(bench::Context& c, const g::Schedule& sa, const g::Schedule& sb, bool jit) {
+  static uint32_t noteCount = 0;
+  noteCount = kOperatorVoices;
+  const uint32_t groups = e::voiceGroupsFor(kOperatorVoices);
+  auto makeHost = [&](const g::Schedule& s) {
+    e::HostConfig hc;
+    hc.sampleRate = kRate;
+    hc.maxBlockFrames = kBlock;
+    hc.numOut = 2;
+    hc.maxPending = 64;
+    hc.voices = true;
+    hc.voice.maxVoices = kOperatorVoices;
+    hc.voice.compact = false;
+    hc.events = {&operatorNotes, &noteCount};
+    auto host = std::make_unique<e::ProgramHost>(hc);
+    if (!host->publish(buildImage(s, jit, groups)).ok()) die("ramps A/B: publish failed");
+    return host;
+  };
+  auto ha = makeHost(sa), hb = makeHost(sb);
+  std::vector<float> o0(kBlock), o1(kBlock);
+  float* outs[2] = {o0.data(), o1.data()};
+  int64_t ta0 = 0, tb0 = 0;
+  DenormalGuard dg;
+  auto blocks = [&](e::ProgramHost& h, int64_t& time, int n) {
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < n; ++i) {
+      e::AudioBlock ab;
+      ab.out = outs;
+      ab.numOut = 2;
+      ab.frames = kBlock;
+      ab.frameTime = time;
+      h.process(ab);
+      time += kBlock;
+      bench::doNotOptimize(o0[kBlock - 1]);
+    }
+    return std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / (n * kBlock);
+  };
+  blocks(*ha, ta0, 16);
+  blocks(*hb, tb0, 16);
+  std::vector<double> ra, rb, ratio;
+  for (int round = 0; round < 60; ++round) {
+    const double x = round % 2 ? blocks(*ha, ta0, 100) : 0.0, y = blocks(*hb, tb0, 100),
+                 z = round % 2 ? 0.0 : blocks(*ha, ta0, 100);
+    ra.push_back(x + z);
+    rb.push_back(y);
+    ratio.push_back((x + z) / y);
+  }
+  c.record(bench::summarize(ra), "ns/sample", "ramps");
+  c.record(bench::summarize(rb), "ns/sample", "no ramps");
+  const bench::Stats r = bench::summarize(ratio);
+  c.record(r, "ratio", "ramps/no ramps");
+  std::printf("  ramps / no ramps = %.4f (median of 60 interleaved rounds; min %.4f, max %.4f)\n", r.medianNs, r.minNs,
+              r.maxNs);
+}
+
+const g::Schedule& plainFullSchedule() {
+  static const g::Schedule plain = [] {
+    auto src = pqc::SourceFile::load(std::filesystem::path(PQ_SOURCE_DIR) / "bench" / "patches" / "operator_calibration.pqp");
+    if (!src) die(src.error().message);
+    auto idx = (*src)->findPatch("OpFull");
+    if (!idx) die(idx.error().message);
+    auto compiled = pqc::compilePatch(**src, *idx);
+    if (!compiled) die(compiled.error().message);
+    g::ScheduleOptions so;
+    so.sampleRate = kRate;
+    so.paramRamps = false;
+    auto sc = g::schedule(compiled->optimised, so);
+    if (!sc) die(sc.error().message);
+    return std::move(sc.value());
+  }();
+  return plain;
+}
+
 void benchOperator(bench::Context& c, bool jit) { benchVoicePatch(c, operatorSchedule(), jit, kOperatorVoices, true); }
 
 void benchRender(bench::Context& c, const char* file, const char* notes, bool jit) {
@@ -435,23 +513,10 @@ int main(int argc, char** argv) {
   for (bool jit : {false, true}) {
     r.add(std::string("operator/stock-full ") + (jit ? "jit" : "interp") + " x64 moving",
           [jit](bench::Context& c) { benchVoicePatch(c, stockSchedule("OpFull"), jit, 64, false, true); });
-    r.add(std::string("operator/stock-full ") + (jit ? "jit" : "interp") + " x64 no-ramps", [jit](bench::Context& c) {
-      static const g::Schedule plain = [] {
-        auto src = pqc::SourceFile::load(std::filesystem::path(PQ_SOURCE_DIR) / "bench" / "patches" / "operator_calibration.pqp");
-        if (!src) die(src.error().message);
-        auto idx = (*src)->findPatch("OpFull");
-        if (!idx) die(idx.error().message);
-        auto compiled = pqc::compilePatch(**src, *idx);
-        if (!compiled) die(compiled.error().message);
-        g::ScheduleOptions so;
-        so.sampleRate = kRate;
-        so.paramRamps = false;
-        auto sc = g::schedule(compiled->optimised, so);
-        if (!sc) die(sc.error().message);
-        return std::move(sc.value());
-      }();
-      benchVoicePatch(c, plain, jit, 64, false);
-    });
+    r.add(std::string("operator/stock-full ") + (jit ? "jit" : "interp") + " x64 no-ramps",
+          [jit](bench::Context& c) { benchVoicePatch(c, plainFullSchedule(), jit, 64, false); });
+    r.add(std::string("operator/stock-full ") + (jit ? "jit" : "interp") + " x64 ramps A/B",
+          [jit](bench::Context& c) { benchRampsAB(c, stockSchedule("OpFull"), plainFullSchedule(), jit); });
   }
   // TMM.12: the Meta Operator against the stock Operator doing the same work (operator/stock-four).
   static const Stock meta[] = {{"meta-sine", "MoSine"}, {"meta-hq", "MoHq"}, {"meta-add", "MoAdd"}, {"meta-nofb", "MoNoFb"}};

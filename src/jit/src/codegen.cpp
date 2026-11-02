@@ -534,8 +534,9 @@ private:
     emitRegions(st.firstRegion, ctrlEnd);
     llvm::Function* rampFn = nullptr;
     const bool bail = vw == 16 && !stageRamps.empty() && pairCanBail(st);
-    if (bail) emitRampBail(stageRamps);
-    else if (!stageRamps.empty()) rampFn = emitRampDispatch(stageRamps, name + "_ramps", lateStage);
+    const uint32_t summary = k < s_.rampSummary.size() ? s_.rampSummary[k] : g::kNone;
+    if (bail) emitRampBail(stageRamps, summary);
+    else if (!stageRamps.empty()) rampFn = emitRampDispatch(stageRamps, name + "_ramps", lateStage, summary);
     if (lateStage) stagePairState(true);
     steady_ = !stageRamps.empty();  // every ramp of the stage at rest: no ramp handling in the code below
     emitRegions(split, end);
@@ -1001,14 +1002,9 @@ private:
   // TX.smooth: one branch per block on whether any of `ramps` moved (either half of a pair); if so, the rest of
   // the stage runs in the ramp-mode function (declared here, defined by stageFunction) and the stage function returns
   // (a pair function writes its staged voice state back first: the callee stages its own).
-  llvm::Function* emitRampDispatch(const std::vector<uint32_t>& ramps, const std::string& name, bool unstaged) {
-    const unsigned halves = voice_ && vw_ == 16 ? 2u : 1u;
-    Value* any = nullptr;
-    for (const uint32_t r : ramps)
-      for (unsigned h = 0; h < halves; ++h) {
-        Value* a = B_.CreateNot(rampAtRest(r, h));
-        any = any ? B_.CreateOr(any, a) : a;
-      }
+  llvm::Function* emitRampDispatch(const std::vector<uint32_t>& ramps, const std::string& name, bool unstaged,
+                                   uint32_t summary) {
+    Value* any = emitRampsMoving(ramps, summary);
     llvm::BasicBlock* moving = llvm::BasicBlock::Create(C_, "ramps_moving", F_);
     llvm::BasicBlock* steady = llvm::BasicBlock::Create(C_, "ramps_steady", F_);
     llvm::MDBuilder md(C_);
@@ -1026,13 +1022,69 @@ private:
   }
   // A pair function's ramp check (pairCanBail): a ramp of either group not at rest → the bail word (jit_image.h,
   // HostLayout::memoOff + 1) set and return; the host runs the two groups one by one.
-  void emitRampBail(const std::vector<uint32_t>& ramps) {
-    Value* any = nullptr;
-    for (const uint32_t r : ramps)
-      for (unsigned h = 0; h < 2; ++h) {
-        Value* a = B_.CreateNot(rampAtRest(r, h));
-        any = any ? B_.CreateOr(any, a) : a;
+  // i1: some ramp of `ramps` (either half of a pair) is not at rest. With the stage's summary: the ramps whose source
+  // only the params or a note-on change (Ramp::staticSource) are not checked in a block whose params equal the previous
+  // block's (the memo word) while the summary says every ramp of the group (each lane) rested in the last block; the
+  // summary is then rewritten (rest: started = 1 per lane; else 0). A lane's reset at note-on clears it.
+  Value* emitRampsMoving(const std::vector<uint32_t>& ramps, uint32_t summary) {
+    const unsigned halves = voice_ && vw_ == 16 ? 2u : 1u;
+    auto check = [&](bool staticOnes) {
+      Value* any = nullptr;
+      for (const uint32_t r : ramps) {
+        if (s_.ramps[r].staticSource != staticOnes) continue;
+        for (unsigned h = 0; h < halves; ++h) {
+          Value* a = B_.CreateNot(rampAtRest(r, h));
+          any = any ? B_.CreateOr(any, a) : a;
+        }
       }
+      return any;
+    };
+    Value* any = check(false);
+    bool anyStatic = false;
+    for (const uint32_t r : ramps) anyStatic = anyStatic || s_.ramps[r].staticSource;
+    if (!anyStatic) return any ? any : static_cast<Value*>(llvm::ConstantInt::getFalse(C_));
+    if (summary == g::kNone) {
+      Value* st = check(true);
+      return any ? B_.CreateOr(any, st) : st;
+    }
+    const unsigned L = voice_ ? 8u : 1u;
+    llvm::Type* i8 = llvm::Type::getInt8Ty(C_);
+    llvm::Type* fv = L == 1 ? static_cast<llvm::Type*>(f32_) : llvm::FixedVectorType::get(f32_, L);
+    auto summaryPtr = [&](unsigned h) {
+      return B_.CreateConstInBoundsGEP1_64(i8, statePtrHere(summary, h), offsetof(dsp::ParamRampState, started));
+    };
+    Value* rested = B_.CreateICmpNE(B_.CreateAlignedLoad(i32_, B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.memoOff),
+                                                         llvm::Align(4)),
+                                    c32(0));
+    for (unsigned h = 0; h < halves; ++h) {
+      Value* sv = B_.CreateFCmpUNE(B_.CreateAlignedLoad(fv, summaryPtr(h), llvm::Align(4)), llvm::Constant::getNullValue(fv));
+      if (L > 1) sv = B_.CreateAndReduce(sv);
+      rested = B_.CreateAnd(rested, sv);
+    }
+    llvm::BasicBlock* from = B_.GetInsertBlock();
+    llvm::BasicBlock* checkBB = llvm::BasicBlock::Create(C_, "ramps_check", F_);
+    llvm::BasicBlock* join = llvm::BasicBlock::Create(C_, "ramps_checked", F_);
+    llvm::MDBuilder md(C_);
+    B_.CreateCondBr(rested, join, checkBB, md.createBranchWeights(63, 1));
+    B_.SetInsertPoint(checkBB);
+    Value* st = check(true);
+    llvm::BasicBlock* checkEnd = B_.GetInsertBlock();
+    B_.CreateBr(join);
+    B_.SetInsertPoint(join);
+    llvm::PHINode* phi = B_.CreatePHI(llvm::Type::getInt1Ty(C_), 2);
+    phi->addIncoming(llvm::ConstantInt::getFalse(C_), from);
+    phi->addIncoming(st, checkEnd);
+    Value* moving = any ? B_.CreateOr(any, phi) : static_cast<Value*>(phi);
+    // The summary for the next block: 1.0 per lane when everything rests, else 0.
+    Value* val = B_.CreateSelect(moving, llvm::Constant::getNullValue(fv),
+                                 L == 1 ? static_cast<llvm::Constant*>(llvm::ConstantFP::get(f32_, 1.0))
+                                        : llvm::ConstantVector::getSplat(llvm::ElementCount::getFixed(L),
+                                                                         llvm::ConstantFP::get(f32_, 1.0)));
+    for (unsigned h = 0; h < halves; ++h) B_.CreateAlignedStore(val, summaryPtr(h), llvm::Align(4));
+    return moving;
+  }
+  void emitRampBail(const std::vector<uint32_t>& ramps, uint32_t summary) {
+    Value* any = emitRampsMoving(ramps, summary);
     llvm::BasicBlock* moving = llvm::BasicBlock::Create(C_, "ramps_bail", F_);
     llvm::BasicBlock* steady = llvm::BasicBlock::Create(C_, "ramps_steady", F_);
     llvm::MDBuilder md(C_);

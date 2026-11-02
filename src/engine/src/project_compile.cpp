@@ -248,6 +248,7 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   so.visualMode = opt_.visualMode;
   so.previous = previous;
   so.sleep = opt_.sleep;
+  so.paramRamps = opt_.paramRamps;
   std::vector<ProbePoint> points;
   if (!infd.probeSources.empty()) points = probePoints(opt.value().patch, infd.probeSources, valueMap, insp->ids);
   so.probes = points;

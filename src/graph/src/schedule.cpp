@@ -2275,6 +2275,35 @@ private:
     }
   }
 
+  // Whether a ramp source changes only with the params or at a voice's note-on (Ramp::staticSource).
+  bool staticRampSource(const Operand& o, std::unordered_map<uint32_t, uint8_t>& memo, uint32_t depth = 0) const {
+    const Schedule& s = S_const();
+    switch (o.kind) {
+      case Operand::Kind::Param:
+      case Operand::Kind::Const: return true;
+      case Operand::Kind::External: {
+        const External& e = s.externals[o.index];
+        if (e.source != External::Source::Engine) return false;
+        const std::string_view n = atomSignature(e.atom).name;
+        return n == "voice.velocity" || n == "voice.noteHz" || n == "voice.noteDegree" || n == "voice.index" ||
+               n == "voice.unisonCount";
+      }
+      case Operand::Kind::Buffer: {
+        if (auto it = memo.find(o.index); it != memo.end()) return it->second != 0;
+        bool ok = false;
+        const Val& v = vals_[o.index];
+        if (v.pattern && v.def != kNone && v.def < s.ops.size() && depth < 64) {
+          const Op& op = s.ops[v.def];
+          ok = op.kind == OpKind::Kernel && op.state == kNone;
+          for (uint32_t j = 0; ok && j < op.numIn; ++j) ok = staticRampSource(s.operands[op.firstOperand + j], memo, depth + 1);
+        }
+        memo.emplace(o.index, ok ? 1 : 0);
+        return ok;
+      }
+      default: return false;
+    }
+  }
+
   // After outputs() (values are still virtual; positions are op indices): finds the reads that get a ramp, puts one
   // param_ramp op per (stage, factor, source) into a Block region right after its stage's Control region, renumbers
   // everything that holds op or region positions, and records each ramp's output as read by its readers (so
@@ -2292,7 +2321,9 @@ private:
       Operand src;
       std::vector<std::pair<uint32_t, uint32_t>> readers;  // (operand index, op)
       uint64_t key = 0;  // its source's structural key (before positions change)
+      bool staticSource = false;
     };
+    std::unordered_map<uint32_t, uint8_t> staticMemo;
     std::unordered_map<uint32_t, uint64_t> keyMemo;
     std::vector<Want> wants;
     std::unordered_map<uint64_t, uint32_t> wantOf;
@@ -2325,7 +2356,7 @@ private:
             const uint64_t key = (uint64_t{k} << 48) | (uint64_t{reg.factor} << 40) |
                                  (static_cast<uint64_t>(o.kind) << 32) | o.index;
             auto [it, fresh] = wantOf.try_emplace(key, static_cast<uint32_t>(wants.size()));
-            if (fresh) wants.push_back({k, reg.factor, o, {}, rampSourceKey(o, keyMemo)});
+            if (fresh) wants.push_back({k, reg.factor, o, {}, rampSourceKey(o, keyMemo), staticRampSource(o, staticMemo)});
             wants[it->second].readers.push_back({op.firstOperand + j, i});
           }
         }
@@ -2452,11 +2483,29 @@ private:
       pending_.push_back(PendingState{key, 0, voice ? Poly::Voice : Poly::Global, tag,
                                       static_cast<uint32_t>(dsp::stateBytes(dsp::Atom::ParamRamp, init)), init, op.node});
       op.state = static_cast<uint32_t>(pending_.size() - 1);
-      s.ramps[w] = Ramp{rampPos[w], want.src, out};
+      s.ramps[w] = Ramp{rampPos[w], want.src, out, want.staticSource};
     }
     s.ops = std::move(ops);
     s.regions = std::move(regions);
     regionStage_ = std::move(regStage);
+    // The per-stage rest summaries (Schedule::rampSummary).
+    s.rampSummary.assign(s.stages.size(), kNone);
+    for (uint32_t k = 0; k < s.stages.size(); ++k) {
+      bool has = false;
+      for (const Want& w : wants) has = has || w.stage == k;
+      if (!has) continue;
+      const bool voice = s.stages[k].poly == Poly::Voice;
+      dsp::StateInit init;
+      init.sampleRate = opt_.sampleRate;
+      init.lanes = voice ? 8u : 1u;
+      StateTag tag;
+      tag.kernel = static_cast<uint16_t>(dsp::Atom::ParamRamp);
+      tag.lanes = voice ? 8 : 1;
+      const uint64_t key = mix64(0x53554D4D41525900ull ^ mix64((uint64_t{s.stages[k].index} << 1) | (voice ? 1u : 0u)));
+      pending_.push_back(PendingState{key, 0, voice ? Poly::Voice : Poly::Global, tag,
+                                      static_cast<uint32_t>(dsp::stateBytes(dsp::Atom::ParamRamp, init)), init, kNone});
+      s.rampSummary[k] = static_cast<uint32_t>(pending_.size() - 1);
+    }
     s.rampOf.assign(s.operands.size(), kNone);
     for (uint32_t w = 0; w < wants.size(); ++w)
       for (const auto& rd : wants[w].readers) s.rampOf[rd.first] = w;
