@@ -396,6 +396,14 @@ public:
     return part >= 0 ? ui::Cursor::ResizeNS : ui::Cursor::Inherit;
   }
 
+  // TX.mod-all: the arc's handle where the value is now (on the track).
+  std::optional<ControlAnchor> controlAnchor(std::string_view name) const override {
+    const int32_t k = type().paramIndex(name);
+    for (int32_t part = 0; part < kParts; ++part)
+      if (k >= 0 && param_[part] == k) return ControlAnchor{polar(kTrackR, arcAngle(part, travel(part))), kTrackW * 0.5f};
+    return std::nullopt;
+  }
+
   // TMM.10: each arc's band (the bounding box of the arc's sweep between the orbit and the body's edge).
   std::optional<ui::Rect> paramRect(size_t param) const noexcept override {
     for (int32_t part = 0; part < kParts; ++part) {

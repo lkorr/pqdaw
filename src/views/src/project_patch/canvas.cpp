@@ -109,6 +109,7 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
       const auto& ports = side == 0 ? n.inputs : n.outputs;
       const float px = side == 0 ? n.x : n.x + n.w;
       for (size_t k = 0; k < ports.size(); ++k) {
+        if (side == 0 && ports[k].anchored) continue;  // TX.mod-all: no pin (its wire ends on the face's control)
         const float dd = std::max(std::fabs(w.x - px), std::fabs(w.y - (n.y + pinY(n, k))));
         if (dd <= bestD) {
           bestD = dd;

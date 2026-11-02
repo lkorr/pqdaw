@@ -314,6 +314,20 @@ std::string PanelFace::paramAt(ui::Vec2 local) const {
   return panel_->paramAt(toPanel(local));
 }
 
+std::optional<ControlAnchor> PanelFace::controlAnchor(std::string_view param) const {
+  if (layScale_ == 0.0f) return std::nullopt;
+  const std::optional<DevicePanel::Anchor> a = panel_->controlAnchor(param);
+  if (!a) return std::nullopt;
+  const float k = 1.0f / layScale_;
+  return ControlAnchor{{a->at.x * k, a->at.y * k}, a->radius * k};
+}
+
+std::optional<ControlAnchor> PanelFace::controlHome(std::string_view param) const {
+  const std::optional<DevicePanel::Anchor> a = panel_->controlHome(param);
+  if (!a) return std::nullopt;
+  return ControlAnchor{a->at, a->radius};
+}
+
 bool PanelFace::setHoveredPart(int32_t part) noexcept {
   bool changed = Face::setHoveredPart(part);
   if (part == kNone && !pressed_) {

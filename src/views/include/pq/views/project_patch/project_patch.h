@@ -19,7 +19,9 @@
 //              port sum, graph::ProjectWire).
 //   device     one block per device of the chain (the call `d<id>` of the track patch, NodeId nodeIdFor(Device, id, 0));
 //              deactivated or missing devices stay in place, dim and bypassed (the chain wire passes under them).
-//              Pins: its audio in / out, its exports (the jacks), and the params a modulation wire drives.
+//              Pins: its audio in / out, its exports (the jacks), and the params a modulation wire drives (TX.mod-all:
+//              on a face or panel block a wired param whose control is visible has no pin: its wire ends on the control,
+//              Port::anchored).
 //   mixer      the compact mixer strip at the end of each chain (volume, pan, mute / solo drawn by the view): input
 //              `in`, outputs `out` (the routing) and one send pin per lowered send (to a return).
 //   output     the master's "Out" terminal after its mixer.
@@ -40,6 +42,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -63,6 +66,14 @@ struct Port {
   std::string name;   // the graph port (`in`, `out`, an export, a param, `notes`, a note output, "s<id>" for a send)
   std::string label;  // drawn next to the pin ("" = none)
   bool param = false;  // Device input: a param a modulation wire drives (a wire dropped on it targets that param)
+  // TX.mod-all (the user: "the cables actually touch on / go directly to the location of the knob or slider they are
+  // modulating itself instead of added made up input ports"): a param of a face or panel block whose control is
+  // visible has NO pin: its wires end on the control. (ax, ay) is the control's centre (node-local world units) when the
+  // layout was made (LayoutOptions::controlAnchor); the wire's route reaches the block's edge nearest to it
+  // (inputEntry), and the canvas draws the rest over the face to wherever the control is when it paints (Face::
+  // controlAnchor). Such ports take no pin row.
+  bool anchored = false;
+  float ax = 0, ay = 0;
 };
 
 struct Node {
@@ -185,7 +196,20 @@ struct LayoutOptions {
   // TX.panel-faces: the world size of a device's panel (a stock device that is not edited, not a rack, not a chain meta
   // device: those keep their block / face), {0, 0} for none. Unset: every device is a plain block.
   std::function<graph::Point2(const doc::Device&)> panelSize;
+  // TX.mod-all: the centre (node-local world units) of the control that shows `param` on a device's face or panel, or
+  // nullopt when none shows it (the param keeps a pin). Asked only for face and panel blocks' wired params. Unset: every
+  // wired param has a pin.
+  std::function<std::optional<graph::Point2>(const doc::Device&, std::string_view param)> controlAnchor;
 };
+
+// TX.mod-all: which edge of its block an anchored param's wire enters by (the one nearest the control; never the
+// right edge, which holds the outputs), and where (world units).
+enum class EntrySide : uint8_t { Left, Top, Bottom };
+inline EntrySide entrySide(const Node& n, const Port& p) noexcept {
+  const float dl = p.ax, dt = p.ay, db = n.h - p.ay;
+  if (dl <= dt && dl <= db) return EntrySide::Left;
+  return dt <= db ? EntrySide::Top : EntrySide::Bottom;
+}
 
 // A lane window's body (world units): where the lane's clips are drawn (`n` is a MIDI / audio source node).
 struct LaneRect {
@@ -211,6 +235,20 @@ inline float pinOffset(const Node& n, size_t i) noexcept {
       return metrics::kPinTop;
     default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
   }
+}
+
+// Where input `i`'s wires meet node `n` (world units): its pin on the left edge, or (TX.mod-all) for an anchored param
+// the point of the edge nearest its control, level with it (the canvas draws on from there to the control).
+inline graph::Point2 inputEntry(const Node& n, size_t i) noexcept {
+  if (i < n.inputs.size() && n.inputs[i].anchored) {
+    const Port& p = n.inputs[i];
+    switch (entrySide(n, p)) {
+      case EntrySide::Left: return {n.x, n.y + p.ay};
+      case EntrySide::Top: return {n.x + p.ax, n.y};
+      case EntrySide::Bottom: return {n.x + p.ax, n.y + n.h};
+    }
+  }
+  return {n.x, n.y + pinOffset(n, i)};
 }
 
 // The project patch of `project` as lowered into `lowered` (doc::lower with the same project; its library for device

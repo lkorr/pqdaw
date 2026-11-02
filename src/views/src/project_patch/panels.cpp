@@ -125,6 +125,42 @@ std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
   return face;
 }
 
+std::optional<graph::Point2> ProjectPatchView::controlAnchorOf(const doc::Device& d, std::string_view param) {
+  auto point = [](const std::optional<ControlAnchor>& a) -> std::optional<graph::Point2> {
+    if (!a) return std::nullopt;
+    return graph::Point2{a->at.x, a->at.y};
+  };
+  // The face shown now (the previous build's block of this device): its values (a meta face's handles), the control its
+  // panel shows now (Operator's LFO amount on the oscillator tab or in the LFO section), else the control's place.
+  const uint32_t mn = patch_.nodeOf(d.id);
+  if (mn != kNone && mn < scene_.sceneNode.size() && scene_.sceneNode[mn] != kNone) {
+    const uint32_t sn = scene_.sceneNode[mn];
+    if (const Face* f = canvas_->faceOn(sn)) return point(f->controlHome(param));
+    if (const Face* f = canvas_->panelOn(sn)) {
+      if (const std::optional<ControlAnchor> now = f->controlAnchor(param)) return point(now);
+      return point(f->controlHome(param));
+    }
+  }
+  // Not shown yet: a prototype of its kind.
+  if (doc::isMetaDevice(d)) {
+    const meta::Type* t = meta::findType(doc::metaDeviceType(d));
+    if (t == nullptr || !hasFace(*t)) return std::nullopt;
+    std::unique_ptr<MetaFace>& f = anchorFaces_[t];
+    if (!f) f = makeFace(*t);
+    if (!f) return std::nullopt;
+    f->bind(std::make_unique<DocTarget>(ctx_, d.id, std::string(), *t), nullptr);  // its values (a handle's place)
+    return point(f->controlHome(param));
+  }
+  // A panel's controls have their places in its description (no layout needed).
+  const PanelTemplate* t = panelTemplate(d);
+  if (t == nullptr) return std::nullopt;
+  std::unique_ptr<Face>& f = anchorPanels_[d.patch];
+  if (!f)
+    f = std::make_unique<devices::PanelFace>(t->sig, t->desc, std::make_unique<PatchPanelTarget>(*this, d.id),
+                                             std::map<std::string, double, std::less<>>{}, devices::PanelFace::sizeFor(t->desc));
+  return point(f->controlHome(param));
+}
+
 devices::PanelFace* ProjectPatchView::panelOf(doc::DeviceId device) const noexcept {
   const uint32_t mn = patch_.nodeOf(device);
   if (mn == kNone || mn >= scene_.sceneNode.size() || scene_.sceneNode[mn] == kNone) return nullptr;

@@ -16,6 +16,10 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/document/serialize.h"
+#include "pq/meta/envelope.h"
+#include "pq/meta/phase_acc.h"
+#include "pq/meta/vca.h"
+#include "pq/meta/wavetable.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
 #include "pq/ui/overlay.h"
@@ -30,6 +34,7 @@
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
+#include "../../src/views/src/common/panel_template.h"
 #include "../../src/views/src/shell/shell_widgets.h"
 #include "../ui/golden_check.h"
 #include "views_test_util.h"
@@ -972,6 +977,7 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
 // (per voice) and read on hover, the chain's own `notes` pin and a drop off the devices refused (NotAllowed, status).
 TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wires it — menu, undo, drawn, readable, refusals") {
   Ui u;
+  REQUIRE(u.d.enableGpu().ok());  // TX.mod-all: the canvas paints (the panels lay out: a drop onto a knob)
   u.show();
   const doc::Snapshot start = u.ctx.doc();
   const size_t h0 = u.history();
@@ -1025,10 +1031,22 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
   CHECK(u.view().readout().title.find("Keys notes: velocity") != std::string::npos);
   CHECK(u.view().readout().value.find("adds in the target's units") != std::string::npos);
   u.view().updateReadout(kNone);
-  // Hz onto the param pin the first wire made: that param directly (no menu), one step.
+  // Hz onto the param the first wire made: that param directly (no menu), one step. TX.mod-all: the Saturator is drawn
+  // as its panel and the param's knob is visible, so the param has no pin: the wire ends on the knob, and dropping
+  // onto the knob wires it.
   {
     const Node& tn = u.pp().nodes[e.to];
-    const Vec2 pin = u.dev(tn.x, tn.y + pinY(tn, e.toPort));
+    const Port& port = tn.inputs[e.toPort];
+    CHECK(port.anchored);
+    u.d.advance(0.5);  // the panel is laid out at this zoom
+    const Face* panel = u.view().canvas().panelOn(u.view().scene().sceneNode[e.to]);
+    REQUIRE(panel != nullptr);
+    const std::optional<ControlAnchor> knob = panel->controlAnchor(port.name);
+    REQUIRE(knob.has_value());
+    // The layout placed the wire's entry by the same control (a prototype of the panel, laid out at scale 1).
+    CHECK(std::fabs(port.ax - knob->at.x) <= 2.0f);
+    CHECK(std::fabs(port.ay - knob->at.y) <= 2.0f);
+    const Vec2 pin = u.dev(tn.x + knob->at.x, tn.y + knob->at.y);
     const size_t into = doc::ops::wiresInto(*u.ctx.doc(), sat, w.param).size();  // the sketch's LFO may drive it too
     u.d.drag(u.outPin(src, "hz"), pin, 6);
     CHECK(u.openMenu() == nullptr);
@@ -1893,3 +1911,266 @@ TEST_CASE("render: project-patch-free matches the golden image") { golden("proje
 // TX.panel-faces: closed stock devices as their Device-view panels (the default synth's generic panel, an Auto Filter, a
 // Utility with Bass Mono on), an LFO wired onto the Utility's gain.
 TEST_CASE("render: project-patch-panels matches the golden image") { golden("project-patch-panels"); }
+
+// ---- TX.mod-all: a modulation wire ends on the control it modulates ------------------------------------------------
+
+namespace {
+
+struct NullPanelTarget final : devices::DeviceTarget {
+  void setParam(std::string_view, double) override {}
+  void setConst(std::string_view, double) override {}
+  void setActive(bool) override {}
+};
+
+// A MIDI track "Lead WT": a Phase accumulator (the notes), a Wavetable, a free Phase accumulator (the modulator) wired
+// into the Wavetable's warp (the user's case: the bottom-middle knob).
+struct WarpSetup {
+  doc::TrackId track;
+  doc::DeviceId pa, wt, mod;
+  doc::WireId wire;
+};
+WarpSetup warpSetup(Ui& u) {
+  doc::DocumentStore& st = u.ctx.store();
+  WarpSetup s;
+  auto t = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Lead WT");
+  REQUIRE(t.ok());
+  REQUIRE(st.dispatch(t->command).ok());
+  s.track = t->tracks.at(0);
+  auto add = [&](std::string_view type, uint32_t index) {
+    auto e = doc::ops::addMetaDevice(*st.current(), st.ids(), s.track, type, index);
+    REQUIRE(e.ok());
+    REQUIRE(st.dispatch(e->command).ok());
+    return e->devices.at(0);
+  };
+  s.pa = add("phase_acc", 0);
+  s.wt = add("wavetable", doc::kAppend);
+  s.mod = add("phase_acc", doc::kAppend);
+  auto f = doc::ops::setDevicesFree(*st.current(), std::vector<doc::DeviceId>{s.mod}, true);
+  REQUIRE(f.ok());
+  REQUIRE(st.dispatch(f->command).ok());
+  auto w = doc::ops::connectWire(*st.current(), st.ids(), s.mod, "out", s.wt, "warp");
+  REQUIRE(w.ok());
+  REQUIRE(st.dispatch(w->command).ok());
+  s.wire = doc::wiresOf(*st.current()).back().id;
+  return s;
+}
+
+// The scene wire of document wire `id` (kNone: none).
+uint32_t sceneWireOf(const ProjectPatchView& v, doc::WireId id) {
+  for (uint32_t w = 0; w < v.scene().modelEdge.size(); ++w) {
+    const uint32_t e = v.scene().modelEdge[w];
+    if (e != kNone && e < v.patch().edges.size() && v.patch().edges[e].kind == EdgeKind::Modulation && v.patch().edges[e].wire == id)
+      return w;
+  }
+  return kNone;
+}
+
+}  // namespace
+
+// The user (TASKS TX.mod-all): "improve the cables so that the cables actually touch on / go directly to the location of
+// the knob or slider they are modulating itself instead of added made up input ports". A wire into a meta face's param
+// has no pin: the model's port is anchored at the control (the face's own controlAnchor), the scene's pin is invisible,
+// the scene wire stops on the block's edge nearest the control and names the param (the canvas draws on to the knob);
+// hovering, selecting and deleting the wire still work, and a drop onto another knob wires that param.
+TEST_CASE("project patch (TX.mod-all): a wire into the Wavetable's warp ends on the warp knob — no pin, hover, delete, drop") {
+  Ui u;
+  REQUIRE(u.d.enableGpu().ok());
+  const WarpSetup s = warpSetup(u);
+  u.show();
+  u.zoomTo("Lead WT");
+  u.d.advance(0.5);
+  ProjectPatchView& v = u.view();
+  CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
+  const uint32_t mn = u.deviceNode(s.wt);
+  const Node& n = u.pp().nodes[mn];
+  REQUIRE(n.face != nullptr);
+  const int32_t k = n.input("warp");
+  REQUIRE(k >= 0);
+  const Port& port = n.inputs[static_cast<size_t>(k)];
+  CHECK(port.param);
+  CHECK(port.anchored);
+  // The face's warp knob (the middle of the three along the bottom): the anchor the layout used and the face's now.
+  const uint32_t sn = v.scene().sceneNode[mn];
+  const MetaFace* face = v.canvas().faceOn(sn);
+  REQUIRE(face != nullptr);
+  const std::optional<ControlAnchor> knob = face->controlAnchor("warp");
+  REQUIRE(knob.has_value());
+  CHECK(knob->at.x == doctest::Approx(port.ax));
+  CHECK(knob->at.y == doctest::Approx(port.ay));
+  CHECK(knob->at.y > n.h * 0.75f);                           // bottom row
+  CHECK(std::fabs(knob->at.x - n.w * 0.5f) < n.w * 0.1f);  // middle
+  CHECK(knob->radius > 4.0f);
+  // No pin: the scene's pin for it is invisible; the face's block is no taller than the face.
+  const circuit::CircuitScene& sc = *v.scene().scene;
+  CHECK_FALSE(sc.pins[sc.nodes[sn].firstPin + static_cast<uint32_t>(k)].visible);
+  CHECK(n.h == doctest::Approx(std::ceil(faceSize(*n.face).y / 4.0f) * 4.0f));
+  // The scene wire: ends on the block's bottom edge under the knob, names the param.
+  const uint32_t w = sceneWireOf(v, s.wire);
+  REQUIRE(w != kNone);
+  const circuit::SceneWire& sw = sc.wires[w];
+  REQUIRE(sw.control != UINT32_MAX);
+  CHECK(sc.strings[sw.control] == "warp");
+  const graph::Point2 end = sc.points[sw.firstPoint + sw.pointCount - 1];
+  CHECK(end.x == doctest::Approx(n.x + knob->at.x));
+  CHECK(end.y == doctest::Approx(n.y + n.h));
+  CHECK(orthogonal(std::vector<graph::Point2>(sc.points.begin() + sw.firstPoint, sc.points.begin() + sw.firstPoint + sw.pointCount)));
+  // Hover: the wire's part outside the face (the middle of its next-to-last segment) is the wire.
+  REQUIRE(sw.pointCount >= 3);
+  const graph::Point2 a = sc.points[sw.firstPoint + sw.pointCount - 3], b = sc.points[sw.firstPoint + sw.pointCount - 2];
+  const Vec2 mid = u.dev((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+  u.d.move(mid);
+  CHECK(v.canvas().hovered().kind == circuit::CanvasHit::Kind::Wire);
+  CHECK(v.canvas().hovered().index == w);
+  // Select it and Delete: the document wire goes (one undo step).
+  const size_t h0 = u.history();
+  u.d.click(mid);
+  CHECK(v.canvas().wireSelected(w));
+  CHECK(u.d.press("Delete") != KeyResult::Unhandled);
+  CHECK(u.history() == h0 + 1);
+  for (const doc::Wire& x : doc::wiresOf(*u.ctx.doc())) CHECK(x.id != s.wire);
+  // A drop of the modulator's output onto the fold knob wires the fold (no menu), and that wire ends on the fold knob.
+  u.d.advance(0.5);
+  const uint32_t mn2 = u.deviceNode(s.wt);
+  const Node& n2 = u.pp().nodes[mn2];
+  const MetaFace* face2 = v.canvas().faceOn(v.scene().sceneNode[mn2]);
+  REQUIRE(face2 != nullptr);
+  const std::optional<ControlAnchor> fold = face2->controlAnchor("fold");
+  REQUIRE(fold.has_value());
+  u.d.drag(u.outPin(u.deviceNode(s.mod), "out"), u.dev(n2.x + fold->at.x, n2.y + fold->at.y), 6);
+  CHECK(u.openMenu() == nullptr);
+  CHECK(u.history() == h0 + 2);
+  const doc::Wire& nw = doc::wiresOf(*u.ctx.doc()).back();
+  CHECK(nw.from == s.mod);
+  CHECK(nw.to == s.wt);
+  CHECK(nw.param == "fold");
+  const Node& n3 = u.pp().nodes[u.deviceNode(s.wt)];
+  const int32_t kf = n3.input("fold");
+  REQUIRE(kf >= 0);
+  CHECK(n3.inputs[static_cast<size_t>(kf)].anchored);
+  CHECK(n3.input("warp") < 0);  // the deleted wire's param has no port any more
+}
+
+// Which params keep a pin: those no control shows. Every param of every stock device's panel (laid out with its
+// defaults: EQ Eight's first band selected) and every meta face's, asked for its control; the ones without one are
+// listed (they keep a pin on the block's left edge when wired).
+TEST_CASE("project patch (TX.mod-all): every face and panel param has a control to end on, except the listed ones") {
+  const doc::DeviceLibrary& lib = library();
+  std::vector<std::string> without;
+  uint32_t asked = 0, shownNow = 0;
+  for (const doc::DeviceInfo& info : lib.catalog().devices()) {
+    const doc::DevicePtr d = doc::makeDevice(doc::DeviceId{1}, info.patch, info.kind);
+    const std::unique_ptr<PanelTemplate> t = buildPanelTemplate(&lib, *d);
+    REQUIRE(t != nullptr);
+    devices::PanelFace f(t->sig, t->desc, std::make_unique<NullPanelTarget>(), {}, devices::PanelFace::sizeFor(t->desc));
+    REQUIRE(f.prepare(1.0f));
+    for (const doc::DeviceParamInfo& p : info.params) {
+      ++asked;
+      // Its place in the panel (whatever the tab, band or setting shows now); where it shows now, the laid-out control
+      // is there.
+      const std::optional<ControlAnchor> home = f.controlHome(p.name);
+      if (!home) {
+        without.push_back(info.name + " " + p.name);
+        continue;
+      }
+      CHECK(home->at.x >= 0.0f);
+      CHECK(home->at.y >= 0.0f);
+      CHECK(home->at.x <= f.worldSize().x);
+      CHECK(home->at.y <= f.worldSize().y);
+      if (const std::optional<ControlAnchor> now = f.controlAnchor(p.name)) {
+        ++shownNow;
+        // Operator's per-oscillator LFO / pitch-envelope switches have two controls (the oscillator's tab, shown by
+        // default, and the LFO / pitch section, the home): the view routes to the one shown when it lays out.
+        const bool twoControls = info.patch == "operator" && (p.name.starts_with("lfoTo") || p.name.starts_with("penvTo"));
+        CHECK_MESSAGE((twoControls || (std::fabs(now->at.x - home->at.x) <= 2.0f && std::fabs(now->at.y - home->at.y) <= 2.0f)),
+                      info.name << " " << p.name << ": shown at " << now->at.x << "," << now->at.y << ", placed at "
+                                << home->at.x << "," << home->at.y);
+      }
+    }
+  }
+  for (const meta::Type* type : {&meta::phaseAccType(), &meta::wavetableType(), &meta::envelopeType(), &meta::vcaType()}) {
+    std::unique_ptr<MetaFace> f = makeFace(*type);
+    REQUIRE(f != nullptr);
+    f->bind(std::make_unique<DefaultTarget>(*type), nullptr);
+    for (const meta::ParamSpec& p : type->params) {
+      ++asked;
+      const std::optional<ControlAnchor> a = f->controlAnchor(p.name);
+      if (!a) {
+        without.push_back(std::string(type->name) + " " + std::string(p.name));
+        continue;
+      }
+      CHECK(a->at.x >= 0.0f);
+      CHECK(a->at.y >= 0.0f);
+      CHECK(a->at.x <= f->worldSize().x);
+      CHECK(a->at.y <= f->worldSize().y);
+    }
+  }
+  std::string list;
+  for (const std::string& s : without) list += "\n  " + s;
+  MESSAGE(asked << " params asked (" << shownNow << " of the panels' shown in their default state); " << without.size()
+                << " have no control (a pin when wired):" << list);
+  CHECK(asked > 300);
+  CHECK(shownNow > 50);
+}
+
+// TX.mod-all's cost in the project patch frame: 16 tracks, each an LFO wired onto a Utility's gain knob and a Basic
+// Synth's brightness (32 wires ending on panel knobs), framed at the Mid level where all of them are drawn: the median
+// full frame with the legs over the panels, and with the same scene whose wires stop on the panels' edges (no legs).
+TEST_CASE("project patch (TX.mod-all): 32 wires onto knobs — a full frame with their legs vs without" * doctest::test_suite("perf")) {
+  Ui u(false);
+  doc::DocumentStore& st = u.ctx.store();
+  for (int i = 0; i < 16; ++i) {
+    auto t = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "T" + std::to_string(i));
+    REQUIRE(t.ok());
+    REQUIRE(st.dispatch(t->command).ok());
+    const doc::TrackId tr = t->tracks.at(0);
+    const doc::DeviceId synth = named(*st.current(), "T" + std::to_string(i))->devices.front()->id;
+    auto lfo = doc::ops::addDevice(*st.current(), st.ids(), tr, "lfo_device", doc::DeviceKind::AudioEffect);
+    REQUIRE(lfo.ok());
+    REQUIRE(st.dispatch(lfo->command).ok());
+    auto util = doc::ops::addDevice(*st.current(), st.ids(), tr, "utility", doc::DeviceKind::AudioEffect);
+    REQUIRE(util.ok());
+    REQUIRE(st.dispatch(util->command).ok());
+    for (const auto& [to, param] : {std::pair{util->devices.at(0), "gain"}, std::pair{synth, "bright"}}) {
+      auto w = doc::ops::connectWire(*st.current(), st.ids(), lfo->devices.at(0), "lfo", to, param);
+      REQUIRE(w.ok());
+      REQUIRE(st.dispatch(w->command).ok());
+    }
+  }
+  REQUIRE(u.d.enableGpu().ok());
+  u.show();
+  ProjectPatchView& v = u.view();
+  v.fitAll(false);
+  u.d.advance(1.0);
+  circuit::CircuitCanvas::View cv;  // the project's top-left part at 0.5
+  cv.x = v.patch().x0 - 20.0;
+  cv.y = v.patch().y0 - 20.0;
+  cv.zoom = 0.5;
+  v.canvas().setView(cv);
+  u.d.advance(1.0);
+  REQUIRE(v.canvas().lod() == circuit::CircuitCanvas::Lod::Mid);
+  uint32_t legs = 0;
+  for (const circuit::SceneWire& w : v.scene().scene->wires) legs += w.control != UINT32_MAX ? 1 : 0;
+  CHECK(legs == 32);
+  auto median = [&] {
+    std::vector<double> ms;
+    for (int i = 0; i < 60; ++i) {
+      v.canvas().markDirty();
+      const auto t0 = std::chrono::steady_clock::now();
+      u.d.step();
+      ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
+    std::sort(ms.begin(), ms.end());
+    return ms[ms.size() / 2];
+  };
+  const double with = median();
+  auto plain = std::make_shared<circuit::CircuitScene>(*v.scene().scene);
+  for (circuit::SceneWire& w : plain->wires) w.control = UINT32_MAX;
+  v.canvas().setScene(plain, false, true);
+  v.canvas().setView(cv);
+  u.d.advance(1.0);
+  const double without = median();
+  MESSAGE("32 wires onto knobs, Mid level: median full frame " << with << " ms with the legs, " << without << " ms without ("
+          << v.canvas().stats().panelsPainted << " panels, " << v.canvas().stats().wiresPainted << " wires painted)");
+  CHECK(v.canvas().stats().panelsPainted >= 16);
+  CHECK(with < without * 1.25 + 0.05);
+}

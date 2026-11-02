@@ -141,6 +141,14 @@ std::string MetaFace::paramAt(ui::Vec2 local) const {
   return {};
 }
 
+std::optional<ControlAnchor> MetaFace::controlAnchor(std::string_view param) const {
+  const int32_t k = type_->paramIndex(param);
+  if (k < 0) return std::nullopt;
+  const std::optional<ui::Rect> r = paramRect(static_cast<size_t>(k));
+  if (!r) return std::nullopt;
+  return ControlAnchor{{(r->x0 + r->x1) * 0.5f, (r->y0 + r->y1) * 0.5f}, 0.5f * std::min(r->x1 - r->x0, r->y1 - r->y0)};
+}
+
 bool Face::setHoveredPart(int32_t part) noexcept {
   if (hovered_ == part) return false;
   hovered_ = part;

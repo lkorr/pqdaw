@@ -319,6 +319,7 @@ struct CircuitCanvas::Impl final : FaceHost {
   };
   std::vector<Hosted> faces;
   std::vector<int32_t> faceOf;  // per scene node: index into faces, or -1
+  std::vector<uint32_t> controlWires;  // TX.mod-all: the scene wires that end on a face's control (SceneWire::control)
   std::vector<uint32_t> metaIdx, panelIdx;  // TX.panel-faces: faces' indices by kind (faceAt / panelAt)
   uint32_t pumpTimer = 0;     // TX.panel-faces: the faces' own clock (Face::nextWake)
   double pumpDue = std::numeric_limits<double>::infinity();
@@ -373,6 +374,9 @@ struct CircuitCanvas::Impl final : FaceHost {
     const Face *capture = ptrAt(faceCapture), *hoverFace = ptrAt(faceHover), *focus = ptrAt(faceFocus);
     faceCapture = faceHover = faceFocus = -1;
     faceOf.assign(scene ? scene->nodes.size() : 0, -1);
+    controlWires.clear();
+    for (uint32_t w = 0; scene && w < scene->wires.size(); ++w)
+      if (scene->wires[w].control != UINT32_MAX) controlWires.push_back(w);
     metaIdx.clear();
     panelIdx.clear();
     for (uint32_t e = 0; scene && e < scene->faces.size(); ++e) {
@@ -1352,6 +1356,66 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
 
   // ---- TMM.4: faces, at every level of detail ----
   m.paintFaces(ctx, clip, atlas, missing);
+
+  // ---- TX.mod-all: wires that end on a face's control, over the face ----
+  // The scene wire stops on the block's edge (its last point); from there the wire goes on, straight into the face and
+  // across to the control as the face places it now (a handle moves with its value, a panel's control with its layout),
+  // and stops at the control's rim with a plug dot. A control not shown now (another band selected): a socket at the
+  // edge. Drawn in the wire's own colour and style (hover and selection follow the wire), at every level of detail.
+  if (m.facesShown && !m.faces.empty() && !m.controlWires.empty()) {
+    const bool far = lod == Lod::Far;  // the Far picture's wires: thin, in its one colour (selection / hover over it)
+    const float t = far ? thin : thick;
+    for (const uint32_t w : m.controlWires) {
+      if (w >= sc.wires.size()) continue;
+      const SceneWire& sw = sc.wires[w];
+      if (sw.control == UINT32_MAX || sw.hidden || sw.pointCount < 2 || sw.toPin >= sc.pins.size()) continue;
+      const uint32_t v = sc.pins[sw.toPin].node;
+      if (!m.faced(v)) continue;
+      const SceneNode& n = sc.nodes[v];
+      if (n.hidden || n.x > w1.x + pad || n.x + n.w < w0.x - pad || n.y > w1.y + pad || n.y + n.h < w0.y - pad) continue;
+      const Face& f = *m.faces[static_cast<size_t>(m.faceOf[v])].face;
+      const Point2 e = sc.points[sw.firstPoint + sw.pointCount - 1];
+      const bool emphasised = m.wireSel[w] || (m.hover.kind == CanvasHit::Kind::Wire && m.hover.index == w);
+      const Rgba col = far && !emphasised ? m.farWireCol : wireColour(w);
+      const float plugR = std::max(1.0f, std::round(2.5f * us * std::min(1.0f, 1.25f * s)));  // small far out
+      const std::optional<ControlAnchor> a = f.controlAnchor(sc.strings[sw.control]);
+      if (!a) {
+        dl.addCircleFilled({snapCentre(m.devX(e.x), t), snapCentre(m.devY(e.y), t)}, plugR + t, col);
+        continue;
+      }
+      // E → (along the entry direction to the control's row / column) → the control, the last leg cut at its rim.
+      const Point2 c{n.x + a->at.x, n.y + a->at.y};
+      const bool vertical = std::fabs(e.y - n.y) < 0.5f || std::fabs(e.y - (n.y + n.h)) < 0.5f;  // a top / bottom entry
+      Point2 path[3] = {e, vertical ? Point2{e.x, c.y} : Point2{c.x, e.y}, c};
+      uint32_t count = 3;
+      if (path[1].x == path[2].x && path[1].y == path[2].y) count = 2;
+      // Stop `radius` short of the control along the path (a last leg shorter than that — the control moved a little
+      // since the layout — goes, and the one before it is cut).
+      for (float rest = a->radius; rest > 0.0f && count >= 2;) {
+        const float dx = path[count - 1].x - path[count - 2].x, dy = path[count - 1].y - path[count - 2].y;
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len > rest) {
+          path[count - 1] = {path[count - 1].x - dx / len * rest, path[count - 1].y - dy / len * rest};
+          break;
+        }
+        rest -= len;
+        if (count == 2) {
+          path[1] = path[0];
+          break;
+        }
+        --count;
+      }
+      float phase = 0.0f;
+      for (uint32_t i = 0; i + 1 < count; ++i) {
+        const Vec2 p0{snapCentre(m.devX(path[i].x), t), snapCentre(m.devY(path[i].y), t)};
+        const Vec2 p1{snapCentre(m.devX(path[i + 1].x), t), snapCentre(m.devY(path[i + 1].y), t)};
+        if (sw.style.modulation && !far) dashedSegment(dl, p0, p1, col, t, 6.0f * us, 4.0f * us, phase);
+        else crispSegment(dl, p0, p1, col, t);
+      }
+      const Point2 end = path[count - 1];
+      dl.addCircleFilled({snapCentre(m.devX(end.x), t), snapCentre(m.devY(end.y), t)}, plugR, col);
+    }
+  }
 
   // ---- labels ----
   if (lod == Lod::Near && ctx.res.text && ctx.res.uiFonts) {

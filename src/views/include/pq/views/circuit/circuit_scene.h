@@ -76,6 +76,10 @@ struct SceneWire {
   float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;  // bounding box
   bool inactive = false;  // T4.15 (see SceneNode)
   bool hidden = false;    // no points, no segments
+  // TX.mod-all: into strings — the param whose control on the face of the target pin's node the wire ends on (the
+  // project patch view's modulation wires; UINT32_MAX: none). Its points end on the node's edge; the canvas draws the
+  // rest over the face, from there to wherever the face's Face::controlAnchor puts the control when it paints.
+  uint32_t control = UINT32_MAX;
 };
 
 // Text drawn at a world position: centred in [x0, x1] at y (the cap-centre line) when it fits, else hidden.

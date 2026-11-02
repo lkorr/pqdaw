@@ -150,6 +150,15 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
         pin.node = v;
         pin.port = static_cast<uint16_t>(k);
         if (!pins[k].label.empty()) pin.label = addString(pins[k].label);
+        // TX.mod-all: an anchored param has no pin (its wire ends on the control): an invisible one where the wire
+        // meets the block, so the wire's end and the face's "driven" look (FaceJack::name) still find it.
+        if (side == 0 && n.inputs[k].anchored) {
+          const Point2 at = inputEntry(n, k);
+          pin.x = at.x;
+          pin.y = at.y;
+          pin.stub = 0.0f;
+          pin.visible = false;
+        }
         sc.pins.push_back(pin);
       }
     }
@@ -190,7 +199,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     if (title.node != UINT32_MAX) sc.labels.push_back(title);
     for (uint32_t k = 0; k < sn.pinCount; ++k) {
       const ScenePin& pin = sc.pins[sn.firstPin + k];
-      if (pin.label == UINT32_MAX) continue;
+      if (pin.label == UINT32_MAX || !pin.visible) continue;
       SceneLabel lb;
       const float half = (n.w - 16.0f) * 0.5f;
       lb.x0 = pin.input ? n.x + 11.0f : n.x + n.w - 8.0f - half;
@@ -239,6 +248,9 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     const uint32_t a = out.sceneNode[e.from], b = out.sceneNode[e.to];
     sw.fromPin = a != kNone ? sc.nodes[a].firstPin + static_cast<uint32_t>(pp.nodes[e.from].inputs.size()) + e.fromPort : 0;
     sw.toPin = b != kNone ? sc.nodes[b].firstPin + e.toPort : 0;
+    // TX.mod-all: it goes on over the face to the control of its param (CircuitCanvas draws that part).
+    if (b != kNone && e.toPort < pp.nodes[e.to].inputs.size() && pp.nodes[e.to].inputs[e.toPort].anchored)
+      sw.control = addString(pp.nodes[e.to].inputs[e.toPort].name);
   }
   // Pins are connected where an edge ends.
   for (const Edge& e : pp.edges) {

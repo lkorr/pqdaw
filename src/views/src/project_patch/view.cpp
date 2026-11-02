@@ -478,6 +478,9 @@ void ProjectPatchView::rebuild() {
   opt.expandedMixers = expandedMixers_;
   opt.nudges = &ctx_.store().view().patchNudges;
   if (panelsShown_) opt.panelSize = [this](const doc::Device& d) { return panelSize(d); };  // TX.panel-faces
+  // TX.mod-all: wires into a face's or panel's params end on their controls (no made-up pins).
+  if (canvas_->facesShown())
+    opt.controlAnchor = [this](const doc::Device& d, std::string_view param) { return controlAnchorOf(d, param); };
   // Keep the selection (devices, wires) across the rebuild.
   std::vector<doc::DeviceId> selDevices = selectedDevices();
   std::vector<doc::WireId> selWires;

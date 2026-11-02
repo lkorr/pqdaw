@@ -33,9 +33,12 @@ constexpr std::array<SettingSpec, 3> kSettings = {{
 constexpr std::array<OutputSpec, 1> kOutputs = {{{"out", graph::kWidthMono}}};
 
 // Body node ids (stable: the reading atom's state key is the call path plus its id).
-enum : uint32_t { kAddPhase, kFrac, kAddPos, kLo, kHi, kClip, kRead, kLive, kZero, kModeK, kCorrK, kShape, kAddX };
+enum : uint32_t {
+  kAddPhase, kFrac, kAddPos, kLo, kHi, kClip, kRead, kLive, kZero, kModeK, kCorrK, kShape, kAddX,
+  // TX.mod-all: Shape mode's live path (u = frac(clip((x + 1)/2, 0, 1)) inside the region, then wavetable_live).
+  kShapeOneK, kShapeHalfK, kShapeAdd1, kShapeHalf, kShapeClip, kShapeFrac
+};
 
-Error wtError(std::string m) { return Error{ErrorCode::Unsupported, std::move(m), {}}; }
 
 // Which controls the live path applies (wavetable.h "Live path"): sync comes before warp, so a live warp takes sync
 // along (a baked sync would be applied after the warp).
@@ -54,8 +57,8 @@ LiveSet liveSet(std::span<const uint8_t> modulated) {
 
 }  // namespace
 
-uint8_t wavetableLiveControls(std::span<const double> settings, std::span<const uint8_t> modulated) noexcept {
-  if (kWtMode < settings.size() && settings[kWtMode] >= 0.5) return 0;  // Shape mode bakes all three
+uint8_t wavetableLiveControls(std::span<const double> /*settings*/, std::span<const uint8_t> modulated) noexcept {
+  // TX.mod-all: Shape mode applies them live too (its curve is read through the same live path once one is modulated).
   const LiveSet l = liveSet(modulated);
   return static_cast<uint8_t>((l.fold ? kWtLiveFold : 0) | (l.warp ? kWtLiveWarp : 0) | (l.sync ? kWtLiveSync : 0));
 }
@@ -65,10 +68,12 @@ uint32_t wavetableOversampling(std::span<const double> settings, std::span<const
   const auto choice = static_cast<uint32_t>(std::clamp(std::round(v), 0.0, 4.0));
   if (choice > 0) return 1u << choice;
   const bool shape = kWtMode < settings.size() && settings[kWtMode] >= 0.5;
-  if (shape) return 2;
+  const LiveSet live = liveSet(modulated);
+  if (shape && !live.any()) return 2;
   // TMM.8-fix (measured, QUESTIONS TMM.8): ×16 whenever the read phase moves (a live warp or sync: their kinks and
   // steps at 4.4 kHz alias −89 … −94 dBFS at ×8 with an envelope at full depth, −105 at ×16); ×8 for fold alone.
-  return liveSet(modulated).sync ? 16u : 8u;
+  // TX.mod-all: Shape mode with a live control reads through the same live path, by the same rule.
+  return live.sync ? 16u : 8u;
 }
 
 namespace {
@@ -79,53 +84,65 @@ Status body(Builder& b) {
   std::vector<double> settings(kSettings.size());
   for (size_t i = 0; i < settings.size(); ++i) settings[i] = b.setting(i);
   const uint32_t os = wavetableOversampling(settings, modulated);
-  const auto pos = b.atom("clip", {b.atom("add", {b.param(kWtPosition), b.input(kWtInPos)}, kAddPos), b.konst(0.0, kLo),
-                                   b.konst(1.0, kHi)},
-                          kClip);
+  const auto lo = b.konst(0.0, kLo), hi = b.konst(1.0, kHi);
+  const auto pos = b.atom("clip", {b.atom("add", {b.param(kWtPosition), b.input(kWtInPos)}, kAddPos), lo, hi}, kClip);
+  // TX.mod-all ("a wire into a param makes it live at audio rate": one rule, pq/document/lower.h "Modulation wires"):
+  // every modulated fold / warp / sync is applied per sample, in Phase and in Shape mode; the unmodulated ones stay
+  // baked into the table.
+  const LiveSet live = liveSet(modulated);
+  // The live read of phase `ph`: the modulated controls wired, 0 for the others.
+  auto liveRead = [&](Builder::PortRef ph) {
+    const auto zero = b.konst(0.0, kZero);
+    const double wm = live.warp ? b.setting(kWtWarpMode) : 0.0;
+    return b.atom("wavetable_live",
+                  {ph, pos, live.warp ? b.param(kWtWarp) : zero, live.fold ? b.param(kWtFold) : zero,
+                   live.sync ? b.param(kWtSync) : zero, b.slot(0), b.konst(wm, kModeK),
+                   b.konst(live.warp || live.sync ? 1.0 : 0.0, kCorrK)},
+                  kLive);
+  };
   if (shape) {
     // Shape mode: x (plus the phase slider as a bias) through the table as a curve, ADAA, in its own region.
-    for (const uint32_t i : {kWtFold, kWtWarp, kWtSync})
-      if (b.modulated(i))
-        return wtError("'" + std::string(kParams[i].name) +
-                       "' is baked into the Wavetable's curve in Shape mode: switch to Phase mode to modulate it");
     const auto x = b.atom("add", {b.input(kWtInX), b.param(kWtPhase)}, kAddX);
-    const auto y = b.atom("wavetable_shape", {x, pos, b.slot(0)}, kShape);
-    b.inRegion(y, b.region(os, {}));
+    const uint16_t region = b.region(os, {});
+    if (!live.any()) {
+      const auto y = b.atom("wavetable_shape", {x, pos, b.slot(0)}, kShape);
+      b.inRegion(y, region);
+      b.output(0, y);
+      return Ok{};
+    }
+    // With a live control the curve is read through the live path: its read phase u = clip((x + 1)/2, 0, 1) is formed
+    // inside the region (x is up-converted as a signal, so a fast input never looks like a phase wrap), and the live
+    // read's band follows |Δu| as Phase mode's follows |Δφ| (the curve's k-th harmonic sits at k·|du/dt|); frac maps
+    // the clamp's top u = 1 to T(0) = T(1), as wavetable_shape's curve does. Not ADAA: the clamp's corner (|x| > 1) is
+    // not corrected (first-order ADAA only attenuated it).
+    const auto a1 = b.atom("add", {x, b.konst(1.0, kShapeOneK)}, kShapeAdd1);
+    const auto half = b.atom("mul", {a1, b.konst(0.5, kShapeHalfK)}, kShapeHalf);
+    const auto cu = b.atom("clip", {half, lo, hi}, kShapeClip);
+    const auto u = b.atom("frac", {cu}, kShapeFrac);
+    const auto y = liveRead(u);
+    for (const auto n : {a1, half, cu, u, y}) b.inRegion(n, region);
     b.output(0, y);
     return Ok{};
   }
   const auto ph = b.atom("frac", {b.atom("add", {b.input(kWtInX), b.param(kWtPhase)}, kAddPhase)}, kFrac);
-  const LiveSet live = liveSet(modulated);
   if (!live.any()) {
     b.output(0, b.atom("wavetable_pos", {ph, pos, b.slot(0)}, kRead));
     return Ok{};
   }
   // The live path: an oversample region around one wavetable_live read; the phase enters by interpolation.
   b.bind(ph, "ph");
-  const auto zero = b.konst(0.0, kZero);
-  const double wm = live.warp ? b.setting(kWtWarpMode) : 0.0;
-  const auto y = b.atom("wavetable_live",
-                        {ph, pos, live.warp ? b.param(kWtWarp) : zero, live.fold ? b.param(kWtFold) : zero,
-                         live.sync ? b.param(kWtSync) : zero, b.slot(0), b.konst(wm, kModeK),
-                         b.konst(live.warp || live.sync ? 1.0 : 0.0, kCorrK)},
-                        kLive);
+  const auto y = liveRead(ph);
   b.inRegion(y, b.region(os, {"ph"}));
   b.output(0, y);
   return Ok{};
 }
 
 // TMM.8-fix: the table depends on which controls the live path applies and on Shape mode (Type::tableVariant).
+// TX.mod-all: Shape mode with a live control reads the live path's table (the same variant as Phase mode's).
 uint32_t tableVariant(std::span<const double> settings, std::span<const uint8_t> modulated) {
-  if (kWtMode < settings.size() && settings[kWtMode] >= 0.5) return 8u;
   const LiveSet l = liveSet(modulated);
+  if (kWtMode < settings.size() && settings[kWtMode] >= 0.5 && !l.any()) return 8u;
   return (l.warp ? 1u : 0u) | (l.fold ? 2u : 0u) | (l.sync ? 4u : 0u);
-}
-
-std::string bakedOnly(std::span<const double> settings, uint32_t param) {
-  if (kWtMode < settings.size() && settings[kWtMode] >= 0.5)
-    return "the Wavetable's " + std::string(kParams[param].label) +
-           " is baked into its curve in Shape mode: switch to Phase mode to automate, wire or map it";
-  return {};
 }
 
 std::vector<ResourceRequest> resources(std::span<const double>) { return {ResourceRequest{ResourceKind::FrameTable, 0}}; }
@@ -221,14 +238,16 @@ Status frameTable(const TableSource& src, uint32_t index, TableJob& out) {
   // One keyframe: every dense frame would be the same, so build one (the readers' single-frame path).
   s.denseFrames = out.keys.size() == 1 ? 1u : refs.frames;
   // TMM.8: Phase mode bakes only the controls its live path does not apply; Shape mode bakes all three into the curve
-  // and builds the antiderivative arrays its ADAA reads.
+  // and builds the antiderivative arrays its ADAA reads. TX.mod-all: Shape mode with a live control reads through the
+  // live path, so its table is the live path's (the live band, the unmodulated controls baked, no antiderivative).
   const bool shape = kWtMode < src.settings.size() && src.settings[kWtMode] >= 0.5;
-  const LiveSet live = shape ? LiveSet{} : liveSet(src.modulated);
+  const LiveSet live = liveSet(src.modulated);
+  const bool adaa = shape && !live.any();
   s.bake.fold = live.fold ? 0.0f : param(kWtFold);
   s.bake.warp = live.warp ? 0.0f : param(kWtWarp);
   s.bake.sync = live.sync ? 0.0f : param(kWtSync);
-  s.antiderivative = shape;
-  s.liveBand = !shape;  // TMM.8-fix: baked with the live band limit, so baked <-> live switching is seamless
+  s.antiderivative = adaa;
+  s.liveBand = !adaa;  // TMM.8-fix: baked with the live band limit, so baked <-> live switching is seamless
   const double wm = kWtWarpMode < src.settings.size() ? src.settings[kWtWarpMode] : kSettings[kWtWarpMode].def;
   const auto mode = static_cast<uint32_t>(std::clamp(std::isfinite(wm) ? std::round(wm) : 0.0, 0.0, 2.0));
   // The warp mode matters only with a warp: an unwarped table is the same in every mode (shared).
@@ -270,7 +289,8 @@ Type makeType() {
   t.dataProblem = &dataProblemHook;
   t.frameTable = &frameTable;
   t.liveBakeable = true;  // TMM.8: the live path
-  t.bakedOnly = &bakedOnly;
+  // TX.mod-all: no bakedOnly hook: every mode applies a modulated fold / warp / sync live (Type::bakedOnly stays for types
+  // whose live path depends on a setting).
   t.tableVariant = &tableVariant;
   return t;
 }

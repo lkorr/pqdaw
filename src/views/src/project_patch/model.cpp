@@ -53,6 +53,15 @@ float textW(std::string_view s) noexcept { return 6.0f * static_cast<float>(s.si
 float pinY(const Node& n, size_t i) noexcept { return pinOffset(n, i); }
 // Where the spine (pin 0) sits from the node's top.
 float spineOf(const Node& n) noexcept { return pinY(n, 0); }
+// TX.mod-all: the pin rows a block needs (anchored params have none) and the height they take.
+size_t pinRows(const Node& n) noexcept {
+  size_t in = 0;
+  for (const Port& q : n.inputs) in += q.anchored ? 0 : 1;
+  return std::max<size_t>({in, n.outputs.size(), 1});
+}
+float rowsHeight(const Node& n) noexcept {
+  return std::max(48.0f, metrics::kPinTop + metrics::kPinPitch * static_cast<float>(pinRows(n) - 1) + 16.0f);
+}
 
 std::string sendLetter(size_t returnIndex) {
   std::string s;
@@ -271,10 +280,27 @@ struct Builder {
       }
     }
     // TX.panel-faces: a closed stock device with a panel is drawn as it (the Device view's panel at the block's size).
-    if (!n.meta && !n.expanded && !n.edited && !n.missing && opt.panelSize) {
-      const graph::Point2 ps = opt.panelSize(d);
+    graph::Point2 panelSize{0.0f, 0.0f};
+    if (!n.meta && !n.expanded && !n.edited && !n.missing && opt.panelSize) panelSize = opt.panelSize(d);
+    // TX.mod-all: on a face or a panel a wired param whose control is visible takes no pin: its wires end on the control.
+    // (Anchored ports are the last inputs, so the pins' rows stay where they were.)
+    if ((n.face != nullptr || (panelSize.x > 0.0f && panelSize.y > 0.0f)) && opt.controlAnchor) {
+      for (Port& q : n.inputs)
+        if (q.param)
+          if (const std::optional<graph::Point2> a = opt.controlAnchor(d, q.name)) {
+            q.anchored = true;
+            q.ax = a->x;
+            q.ay = a->y;
+          }
+      if (n.face != nullptr) {
+        const ui::Vec2 fs = faceSize(*n.face);
+        n.h = roundUp4(std::max(rowsHeight(n), fs.y));
+      }
+    }
+    {
+      const graph::Point2 ps = panelSize;
       if (ps.x > 0.0f && ps.y > 0.0f) {
-        const size_t rows = std::max<size_t>({n.inputs.size(), n.outputs.size(), 1});
+        const size_t rows = pinRows(n);
         n.panel = true;
         n.w = roundUp4(ps.x);
         n.h = roundUp4(std::max(ps.y, m::kPinTop + m::kPinPitch * static_cast<float>(rows - 1) + 16.0f));
@@ -672,7 +698,7 @@ struct Builder {
   // ---- routes ---------------------------------------------------------------------------------------------------
 
   graph::Point2 outPin(const Node& n, uint32_t i) const { return {n.x + n.w, n.y + pinY(n, i)}; }
-  graph::Point2 inPin(const Node& n, uint32_t i) const { return {n.x, n.y + pinY(n, i)}; }
+  graph::Point2 inPin(const Node& n, uint32_t i) const { return inputEntry(n, i); }
 
   static void simplify(std::vector<graph::Point2>& pts) {
     std::vector<graph::Point2> s;
@@ -703,6 +729,16 @@ struct Builder {
         x -= 8.0f * static_cast<float>(ri == returnIndex.end() ? 0 : ri->second);
       }
       busX[b.source] = x;
+    }
+    // TX.mod-all: the bottom of each band's chain row (a wire entering a block from below runs under the whole row, not
+    // under the shorter blocks only).
+    std::vector<float> rowBottom(out.bands.size(), 0.0f);
+    for (uint32_t i = 0; i < out.bands.size(); ++i) {
+      const Band& b = out.bands[i];
+      for (const uint32_t n : {b.source, b.mixer, b.output})
+        if (n != kNone) rowBottom[i] = std::max(rowBottom[i], out.nodes[n].y + out.nodes[n].h);
+      for (const uint32_t d : b.devices)
+        if (!out.nodes[d].free) rowBottom[i] = std::max(rowBottom[i], out.nodes[d].y + out.nodes[d].h);
     }
     uint32_t serial = 0;
     for (size_t k = 0; k < out.edges.size(); ++k) {
@@ -756,7 +792,19 @@ struct Builder {
           // TMM.10-fix2: a note output's wire always takes the title strip (straight across it would run under the
           // instrument's face), turning up in the gap beside the chain's note wire.
           const bool fromNotes = a.kind == NodeKind::Source;
-          if (a.band == b.band && t.x > s.x + 24.0f && !a.expanded && !b.expanded && !fromNotes) {
+          // TX.mod-all: into a control's anchor through the block's top or bottom edge: along the gutter above the
+          // target's band row (its title strip) or below it (under the chain row; a free block: under itself), then
+          // straight down / up onto the control's column (the canvas draws on over the face).
+          const Port* tp = e.toPort < b.inputs.size() ? &b.inputs[e.toPort] : nullptr;
+          const EntrySide side = tp != nullptr && tp->anchored ? entrySide(b, *tp) : EntrySide::Left;
+          if (side != EntrySide::Left) {
+            const float below = b.free ? b.y + b.h : std::max(b.y + b.h, rowBottom[b.band]);
+            const float gy = side == EntrySide::Top ? tb.y + 4.0f + o : below + 4.0f + std::round(o * 0.5f);
+            const float ux = s.x + (fromNotes ? 22.0f : 10.0f) + o;
+            pts.push_back({ux, s.y});
+            pts.push_back({ux, gy});
+            pts.push_back({t.x, gy});
+          } else if (a.band == b.band && t.x > s.x + 24.0f && !a.expanded && !b.expanded && !fromNotes) {
             const float mx = std::round((s.x + t.x) * 0.5f) + o;
             pts.push_back({mx, s.y});
             pts.push_back({mx, t.y});

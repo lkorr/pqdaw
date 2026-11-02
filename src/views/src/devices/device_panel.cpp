@@ -1081,6 +1081,87 @@ std::optional<ui::IRect> DevicePanel::controlRect(std::string_view param) const 
   return std::nullopt;
 }
 
+std::optional<DevicePanel::Anchor> DevicePanel::controlAnchor(std::string_view param) const {
+  if (folded_) return std::nullopt;
+  auto centreOf = [](const ui::IRect& r) {
+    return Anchor{{static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)},
+                  0.5f * static_cast<float>(std::min(r.w, r.h))};
+  };
+  // Of several shown controls for it, the one controlHome prefers (bound by name, then without conditions).
+  std::optional<Anchor> best, display;
+  int32_t bestScore = -1;
+  for (const Impl::Bound& b : impl_->bound) {
+    if (!b.widget->visible()) continue;
+    if (b.display) {
+      if (!display)
+        if (auto r = b.display->paramRect(param)) display = centreOf(*r);
+    } else if (b.param == param) {
+      const int32_t score = b.desc != nullptr ? (b.desc->param == param ? 2 : 0) + (b.desc->when.empty() ? 1 : 0) : 0;
+      if (score <= bestScore) continue;
+      bestScore = score;
+      const ui::IRect r = b.widget->rect();
+      if (dynamic_cast<const PanelKnob*>(b.widget) != nullptr) {
+        // PanelKnob::paint's arc: between the label and value rows, its outer edge at rad + thick / 2.
+        const float s = tree() != nullptr ? static_cast<float>(tree()->scale()) : 1.0f;
+        const auto lh = static_cast<int32_t>(std::lround(kLabelH * s));
+        const ui::IRect mid{r.x, r.y + lh, r.w, std::max(0, r.h - 2 * lh)};
+        Anchor a = centreOf(mid);
+        a.radius = std::max(0.0f, a.radius - 2.0f * s);
+        best = a;
+      } else {
+        best = centreOf(r);
+      }
+    }
+  }
+  return best ? best : display;
+}
+
+std::optional<DevicePanel::Anchor> DevicePanel::controlHome(std::string_view param) const {
+  // Every assignment of the selectors' values (a few: EQ Eight's band, Operator's oscillator).
+  std::vector<NameMap> assigns(1);
+  for (const SelectorDesc& s : desc_.selectors) {
+    if (s.values.empty() || assigns.size() * s.values.size() > 4096) continue;
+    std::vector<NameMap> next;
+    next.reserve(assigns.size() * s.values.size());
+    for (const NameMap& a : assigns)
+      for (const std::string& v : s.values) {
+        NameMap b = a;
+        b[s.name] = v;
+        next.push_back(std::move(b));
+      }
+    assigns = std::move(next);
+  }
+  auto names = [&](const std::string& templ) {
+    for (const NameMap& a : assigns)
+      if (resolveTemplate(templ, a) == param) return true;
+    return false;
+  };
+  const float top = (sig_.exports.empty() ? 0.0f : kJackStripH) + kTitleH + kPad;
+  // Of several controls for it (Operator's LFO amount per oscillator on the oscillator's tab and in the LFO section),
+  // the one shown most often: bound by name rather than through a selector, then without conditions.
+  std::optional<Anchor> best, display;
+  int32_t bestScore = -1;
+  for (const ControlDesc& c : desc_.controls) {
+    const ui::Vec2 centre{kPad + c.x + 0.5f * c.w, top + c.y + 0.5f * c.h};
+    if (!c.param.empty() && c.kind != ControlKind::Label && names(c.param)) {
+      const int32_t score = (c.param == param ? 2 : 0) + (c.when.empty() ? 1 : 0);
+      if (score <= bestScore) continue;
+      bestScore = score;
+      Anchor a{centre, 0.5f * std::min(c.w, c.h)};
+      if (c.kind == ControlKind::Knob) a.radius = std::max(0.0f, 0.5f * std::min(c.w, std::max(0.0f, c.h - 2.0f * kLabelH)) - 2.0f);
+      best = a;
+      continue;
+    }
+    if (!display)
+      for (const auto& [role, templ] : c.bind)
+        if (names(templ)) {
+          display = Anchor{centre, 0.0f};
+          break;
+        }
+  }
+  return best ? best : display;
+}
+
 void DevicePanel::wakeFaces() {
   for (Impl::Bound& b : impl_->bound)
     if (b.display) b.display->wake();

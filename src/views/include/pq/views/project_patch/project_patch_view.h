@@ -413,6 +413,10 @@ private:
   const PanelTemplate* panelTemplate(const doc::Device& d);
   graph::Point2 panelSize(const doc::Device& d);
   void syncPanels();
+  // TX.mod-all: the centre (block-local world units) of the control showing `param` on device `d`'s face or panel
+  // (LayoutOptions::controlAnchor): the shown face's (its values, its panel's layout and selection now), else a
+  // prototype's of the type / patch (the defaults' layout); nullopt: no visible control.
+  std::optional<graph::Point2> controlAnchorOf(const doc::Device& d, std::string_view param);
 
   ViewContext& ctx_;
   ViewContext::Subscription docSub_;
@@ -460,6 +464,9 @@ private:
   std::map<std::string, std::unique_ptr<PanelTemplate>, std::less<>> panelTemplates_;  // by patch
   const doc::DeviceLibrary* panelTemplatesFrom_ = nullptr;
   std::unordered_map<uint32_t, doc::DevicePtr> panelSynced_;  // per device: what its panel shows (unchanged: skipped)
+  // TX.mod-all: prototype faces (by meta type) and panels (by patch) for controlAnchorOf before a block is shown.
+  std::unordered_map<const meta::Type*, std::unique_ptr<MetaFace>> anchorFaces_;
+  std::map<std::string, std::unique_ptr<Face>, std::less<>> anchorPanels_;
 
   struct Morph {
     bool active = false;

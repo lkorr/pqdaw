@@ -12,7 +12,8 @@
 //            position  0 … 1: where between the keyframes the table is read (the vertical slider)
 //            fold      0 … 1   ┐ bakeable: a static value is baked into the table (dsp/wave_warp.h formulas); a drag
 //            warp     −1 … 1   │ rebuilds the table off-thread and crossfades it in, never a compile. TMM.8: a
-//            sync      0 … 1   ┘ modulated one (a lane, a wire, a macro) runs on the live path (Phase mode only)
+//            sync      0 … 1   ┘ modulated one (a lane, a wire, a macro) runs on the live path (TX.mod-all: in
+//                                  either mode)
 //   settings mode      0 Phase, 1 Shape (TMM.8)
 //            warpMode  0 Bend, 1 Mirror, 2 Pulse width (dsp::WarpMode)
 //            os        TMM.8: the live path's / Shape mode's oversampling: 0 auto, 1 … 4 = ×2 / ×4 / ×8 / ×16
@@ -23,8 +24,11 @@
 //            with the modulated controls wired (sync also whenever warp is: it comes first) and 0 for the others,
 //            which stay baked (fold always bakes; warp unless live; sync unless live). corr = warp or sync live.
 //            TMM.8, SHAPE MODE: oversample(n) { out = wavetable_shape(x + phase, pos, table) } over a table with its
-//            antiderivative arrays; fold / warp / sync are baked into the curve and cannot be modulated
-//            (Type::bakedOnly says why). The atoms write the slot's voice tap (the face's dots)
+//            antiderivative arrays (fold / warp / sync baked into the curve). TX.mod-all: with any of them modulated,
+//            oversample(n) { u = frac(clip((x + phase + 1)/2, 0, 1)); out = wavetable_live(u, pos, …) } over the
+//            live path's table (the same curve T(clamp(u)), the modulated controls applied per sample; the band
+//            follows |Δu|; no ADAA, so the clamp's corner for |x| > 1 is not corrected). The atoms write the slot's
+//            voice tap (the face's dots)
 //   data     WavetableData (below): 1 … 256 keyframes (position + a 2048-sample cycle), a gap mode per gap, the dense
 //            frame count, removeDc, normalise. Default: one sine keyframe.
 //   chain    any position: the chain's signal is x (the note's phase, a voice signal, audio); ops::addMetaDevice
@@ -53,13 +57,13 @@ enum WavetableInput : uint32_t { kWtInX = 0, kWtInPos = 1 };
 enum WavetableParam : uint32_t { kWtPhase = 0, kWtPosition = 1, kWtFold = 2, kWtWarp = 3, kWtSync = 4 };
 enum WavetableSetting : uint32_t { kWtMode = 0, kWtWarpMode = 1, kWtOversampling = 2 };
 // TMM.8: the factor of the live path's / Shape mode's oversample region for these settings and modulated params:
-// the `os` setting (1 … 4 = ×2 … ×16), or auto (0): Shape mode ×2; Phase mode ×16 with a modulated warp or sync, ×8
-// for fold alone (measured: tests/dsp/test_wave_live.cpp, QUESTIONS TMM.8).
+// the `os` setting (1 … 4 = ×2 … ×16), or auto (0): Shape mode ×2 with nothing modulated; otherwise ×16 with a
+// modulated warp or sync, ×8 for fold alone (measured: tests/dsp/test_wave_live.cpp, QUESTIONS TMM.8).
 uint32_t wavetableOversampling(std::span<const double> settings, std::span<const uint8_t> modulated) noexcept;
 inline constexpr uint32_t kWtDefaultFrames = 64;
 // TMM.16: which of fold / warp / sync the live path applies on top of the table (not baked into it) for these
-// settings and modulated params: bits kWtLiveFold | kWtLiveWarp | kWtLiveSync (sync whenever warp: it comes first);
-// 0 in Shape mode (everything baked). The face draws the table with these applied.
+// settings and modulated params: bits kWtLiveFold | kWtLiveWarp | kWtLiveSync (sync whenever warp: it comes first),
+// in either mode (TX.mod-all). The face draws the table with these applied.
 inline constexpr uint8_t kWtLiveFold = 1, kWtLiveWarp = 2, kWtLiveSync = 4;
 uint8_t wavetableLiveControls(std::span<const double> settings, std::span<const uint8_t> modulated) noexcept;
 

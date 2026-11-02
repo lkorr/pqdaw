@@ -105,6 +105,18 @@ public:
   // TMM.10: the device-px rect of the control showing `param`: its widget's (visible), or the part of a face that
   // edits it; nullopt when nothing shows it now. (controlFor answers for widgets only.)
   std::optional<ui::IRect> controlRect(std::string_view param) const;
+  // TX.mod-all: where a wire into `param` ends (device px): a knob's arc centre and the arc's outer radius, else the
+  // centre of controlRect and half its smaller side; nullopt as controlRect.
+  struct Anchor {
+    ui::Vec2 at{0.0f, 0.0f};
+    float radius = 0.0f;
+  };
+  std::optional<Anchor> controlAnchor(std::string_view param) const;
+  // TX.mod-all: where the control for `param` is placed when it shows (logical px from the panel's top-left, unfolded,
+  // as laid out at scale 1), whatever the selection and the conditions now: the description's control whose binding
+  // resolves to `param` for some selector value (a knob first, else a display binding it: the display's centre).
+  // nullopt: the panel has no control for it.
+  std::optional<Anchor> controlHome(std::string_view param) const;
   // T4.18 / TX.panel-faces: the param whose control is under device point `p` ("": none; a face's control too).
   std::string paramAt(ui::Vec2 p) const;
   // TX.panel-faces: whether a press at device point `p` goes to a part of the panel (a control, a display, the title

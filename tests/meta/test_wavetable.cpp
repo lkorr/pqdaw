@@ -67,8 +67,8 @@ TEST_CASE("wavetable: registered; controls, inputs, settings as planned") {
   CHECK(t.params[kWtWarp].bakeable);
   CHECK(t.params[kWtSync].bakeable);
   CHECK_FALSE(t.params[kWtPosition].bakeable);
-  CHECK(t.liveBakeable);  // TMM.8: the live path (Shape mode refuses through bakedOnly)
-  CHECK(t.bakedOnly != nullptr);
+  CHECK(t.liveBakeable);  // TMM.8: the live path; TX.mod-all: in Shape mode too (no bakedOnly refusal)
+  CHECK(t.bakedOnly == nullptr);
   CHECK(t.settingIndex("mode") == kWtMode);
   CHECK(t.settingIndex("warpMode") == kWtWarpMode);
   CHECK(t.settingIndex("os") == kWtOversampling);
@@ -144,8 +144,8 @@ TEST_CASE("wavetable: expansion — x unwired is phase 0 (no implicit note); ref
   CHECK(g->key != e->key);
   // TMM.8: Shape mode expands to wavetable_shape in an oversample(2) region (auto); a modulated fold / warp / sync in
   // Phase mode expands onto the live path (wavetable_live in an oversample region, ×8 auto for fold, ×16 with a moving
-  // read phase: warp or sync), and is
-  // refused in Shape mode with a reason.
+  // read phase: warp or sync). TX.mod-all: in Shape mode too — the curve's read phase u = frac(clip((x + 1)/2)) is formed
+  // inside the region and read by wavetable_live (no wavetable_shape), at the same factors.
   auto regionFactor = [&](const graph::Patch& p) -> uint32_t { return p.regions().empty() ? 0u : p.regions()[0].factor; };
   c.voice = true;
   const std::vector<double> shape{1.0, 0.0};
@@ -167,10 +167,14 @@ TEST_CASE("wavetable: expansion — x unwired is phase 0 (no implicit note); ref
     CHECK(m->key != e->key);
     c.settings = shape;
     auto ms = expand(t, c, "wt");
-    REQUIRE_FALSE(ms.ok());
-    CHECK(ms.error().message.find("Shape mode") != std::string::npos);
-    CHECK(t.bakedOnly(shape, i).find("Shape mode") != std::string::npos);
-    CHECK(t.bakedOnly(std::vector<double>{0.0, 0.0}, i).empty());
+    REQUIRE_MESSAGE(ms.ok(), (ms.ok() ? std::string() : ms.error().message));
+    CHECK(has(ms->patch, "wavetable_live"));
+    CHECK_FALSE(has(ms->patch, "wavetable_shape"));
+    CHECK(has(ms->patch, "clip"));
+    CHECK(regionFactor(ms->patch) == (i == kWtFold ? 8u : 16u));
+    CHECK(ms->key != m->key);
+    CHECK(wavetableLiveControls(shape, mod) == wavetableLiveControls({}, mod));
+    CHECK(wavetableLiveControls(shape, mod) != 0);
   }
   // The os setting picks the factor (1 … 4 = ×2 … ×16).
   {
@@ -248,11 +252,22 @@ TEST_CASE("wavetable: table jobs — identity keys, dense frames, bake values, w
     CHECK_FALSE(j.spec.antiderivative);
     const std::vector<double> shapeSettings{1.0, 0.0};
     src.settings = shapeSettings;
+    // TX.mod-all: Shape mode with a live warp reads the live path's table (the same job as Phase mode's).
     TableJob js;
     REQUIRE(wavetableType().frameTable(src, 0, js).ok());
-    CHECK(js.spec.bake.warp == 0.5f);
-    CHECK(js.spec.antiderivative);
-    CHECK(js.key != j.key);
+    CHECK(js.spec.bake.warp == 0.0f);
+    CHECK_FALSE(js.spec.antiderivative);
+    CHECK(js.spec.liveBand);
+    CHECK(js.key == j.key);
+    CHECK(wavetableType().tableVariant(shapeSettings, mod) == wavetableType().tableVariant({}, mod));
+    // Nothing modulated: Shape mode bakes all three and builds the antiderivative arrays.
+    src.modulated = {};
+    TableJob jb;
+    REQUIRE(wavetableType().frameTable(src, 0, jb).ok());
+    CHECK(jb.spec.bake.warp == 0.5f);
+    CHECK(jb.spec.antiderivative);
+    CHECK(jb.key != j.key);
+    CHECK(wavetableType().tableVariant(shapeSettings, {}) == 8u);
   }
   // A moved job keeps its spans valid.
   TableJob moved = std::move(b);

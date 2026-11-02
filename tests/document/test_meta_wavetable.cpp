@@ -124,7 +124,8 @@ TEST_CASE("wavetable document: keyframe cycles save -> load bit-exact; 64 keyfra
 
 // TMM.8 (was TMM.5's "cannot be automated"): the live path lifts the refusal. In Phase mode fold / warp / sync take
 // lanes, wires and macros, and the lowering expands the instance onto its live path (wavetable_live in an oversample
-// region) and tells the link which params its table must not bake; Shape mode still bakes them, and refuses.
+// region) and tells the link which params its table must not bake. TX.mod-all: Shape mode takes them too (its curve
+// is then read through the live path).
 bool expansionHas(const LoweredProject& lp, std::string_view atom) {
   if (!lp.metaPatches) return false;
   for (const pq::graph::Patch& p : lp.metaPatches->patches)
@@ -134,7 +135,7 @@ bool expansionHas(const LoweredProject& lp, std::string_view atom) {
 }
 
 TEST_CASE("wavetable document: fold / warp / sync are automated, wired and mapped in Phase mode (the live path); "
-          "Shape mode refuses with a reason") {
+          "Shape mode takes them too (TX.mod-all)") {
   Song s;
   auto laneFor = [&](DeviceId dev, TrackId track, const char* param) {
     auto lane = std::make_shared<AutomationLane>();
@@ -181,20 +182,28 @@ TEST_CASE("wavetable document: fold / warp / sync are automated, wired and mappe
   REQUIRE_MESSAGE(lm.ok(), (lm.ok() ? std::string() : lm.error().message));
   CHECK(lm->deviceErrors.empty());
   CHECK(expansionHas(*lm, "wavetable_live"));
-  // Shape mode: a Wavetable as an audio effect starts in Shape mode, and its fold cannot take a lane.
+  // Shape mode: a Wavetable as an audio effect starts in Shape mode; TX.mod-all: its fold takes a lane (before: refused,
+  // "baked into its curve in Shape mode"), and the lowering reads its curve through the live path.
   const DeviceId fx = s.edit(ops::addMetaDevice(s.doc(), s.store.ids(), s.synthTrack, "wavetable", 1)).devices.at(0);
   const Device& fd = *findDevice(s.doc(), fx).device;
   CHECK(fd.kind == DeviceKind::AudioEffect);
   REQUIRE(fd.setting("mode") != nullptr);
   CHECK(fd.setting("mode")->value == 1.0);
-  const auto r = laneFor(fx, s.synthTrack, "fold");
-  REQUIRE_FALSE(r.ok());
-  CHECK(r.error().message.find("Shape mode") != std::string::npos);
   CHECK(laneFor(fx, s.synthTrack, "position").ok());
   Result<LoweredProject> ls = lower(s.doc(), o);
   REQUIRE(ls.ok());
   CHECK(ls->deviceErrors.empty());
-  CHECK(expansionHas(*ls, "wavetable_shape"));
+  CHECK(expansionHas(*ls, "wavetable_shape"));  // position is a runtime param: still the ADAA curve
+  const auto r = laneFor(fx, s.synthTrack, "fold");
+  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
+  CHECK(metaParamBakedOnly(*findDevice(s.doc(), fx).device, "fold").empty());
+  Result<LoweredProject> lf = lower(s.doc(), o);
+  REQUIRE(lf.ok());
+  CHECK(lf->deviceErrors.empty());
+  bool shapeLive = false;
+  for (const LoweredProject::MetaResource& m : lf->metaResources)
+    if (m.device == fx) shapeLive = m.modulated.size() > meta::kWtFold && m.modulated[meta::kWtFold] == 1;
+  CHECK(shapeLive);
 }
 
 TEST_CASE("wavetable document: a nested Wavetable lowers with its data; a wired fold pin runs on the live path") {

@@ -502,6 +502,24 @@ public:
     }
   }
 
+  // TX.mod-all: a knob's centre (its rim at kKnobR), the phase and position sliders' handles where they are now.
+  std::optional<ControlAnchor> controlAnchor(std::string_view name) const override {
+    const int32_t k = type().paramIndex(name);
+    switch (k) {
+      case static_cast<int32_t>(meta::kWtPhase): {
+        const double v = param(meta::kWtPhase);
+        return ControlAnchor{{phaseX(static_cast<float>(v - std::floor(v))), kPhaseY}, 3.0f};
+      }
+      case static_cast<int32_t>(meta::kWtPosition):
+        return ControlAnchor{{kPosX, posY(std::clamp(static_cast<float>(param(meta::kWtPosition)), 0.0f, 1.0f))}, 3.0f};
+      case static_cast<int32_t>(meta::kWtFold):
+      case static_cast<int32_t>(meta::kWtWarp):
+      case static_cast<int32_t>(meta::kWtSync):
+        return ControlAnchor{{kKnobX[k - static_cast<int32_t>(meta::kWtFold)], kKnobY}, kKnobR};
+      default: return std::nullopt;
+    }
+  }
+
 protected:
   bool voicesPolled(bool changed) override;
 

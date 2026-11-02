@@ -92,6 +92,12 @@ public:
   ui::Cursor cursor(int32_t part) const noexcept override;
   void describe(int32_t part, std::string& title, std::string& body) const override;
   std::string paramAt(ui::Vec2 local) const override;
+  // TX.mod-all: the centre of the control showing `param` now (DevicePanel::controlRect: its knob, slider, box, or a
+  // display's handle), its radius half the control's smaller side; nullopt while nothing shows it (another band
+  // selected, a section folded away) or before the first layout.
+  std::optional<ControlAnchor> controlAnchor(std::string_view param) const override;
+  // TX.mod-all: DevicePanel::controlHome (no layout needed: the description's place at scale 1 = world units).
+  std::optional<ControlAnchor> controlHome(std::string_view param) const override;
   bool setHoveredPart(int32_t part) noexcept override;
   void attach(FaceHost* host) override;
   bool update(double now) override;

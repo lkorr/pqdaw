@@ -157,6 +157,16 @@ struct FacePointer {
   ui::PointerButton button = ui::PointerButton::Left;
 };
 
+// TX.mod-all: where a modulation wire into a param ends on a face — the control that shows the param (the user: "the
+// cables actually touch on / go directly to the location of the knob or slider they are modulating"): `at` is the
+// control's centre (a knob's), or a slider's handle where it is now, in face-local world units; `radius` how far
+// around it the control's body reaches (a knob's rim: the wire stops there and leaves the knob's value visible; 0: it
+// ends on the point).
+struct ControlAnchor {
+  ui::Vec2 at{0.0f, 0.0f};
+  float radius = 0.0f;
+};
+
 // TX.panel-faces: what a host canvas sees of anything drawn as a block's face in world units — a meta module's vector
 // face (MetaFace below) or a stock device's panel (pq/views/devices/panel_face.h: the Device view's panel, its widgets
 // laid out at the canvas's zoom). One hosting path (circuit::CircuitCanvas): culling, static-layer tiles, jacks, the
@@ -239,6 +249,14 @@ public:
   // TX.patching / TX.panel-faces: the param whose control is under face-local point `local` ("": none): a wire dropped
   // there drives that param.
   virtual std::string paramAt(ui::Vec2 /*local*/) const { return {}; }
+  // TX.mod-all: where a wire into param `param` ends (ControlAnchor); nullopt: no visible control shows it now (the host
+  // keeps a pin on the edge for it). Value- and state-dependent (a slider's handle, an envelope's breakpoint, the
+  // panel's selected band): the host asks again whenever it draws the wire.
+  virtual std::optional<ControlAnchor> controlAnchor(std::string_view /*param*/) const { return std::nullopt; }
+  // TX.mod-all: where the param's control is placed when it shows, whatever the face's state now (a panel's control on
+  // another tab or band, or one a setting hides: its place in the panel's description); the host lays the wire's
+  // route out to it. nullopt: the face has no control for it at all (the host keeps a pin). Default: controlAnchor.
+  virtual std::optional<ControlAnchor> controlHome(std::string_view param) const { return controlAnchor(param); }
   int32_t hoveredPart() const noexcept { return hovered_; }
   // Returns whether it changed (the host repaints the face).
   virtual bool setHoveredPart(int32_t part) noexcept;
@@ -283,6 +301,9 @@ public:
   virtual std::optional<ui::Rect> paramRect(size_t /*param*/) const noexcept { return std::nullopt; }
   // TX.panel-faces: the name of the param whose paramRect holds `local`.
   std::string paramAt(ui::Vec2 local) const override;
+  // TX.mod-all: by default the centre of the param's paramRect, its radius half the rect's smaller side (faces with
+  // knobs and handles say exactly where they are).
+  std::optional<ControlAnchor> controlAnchor(std::string_view param) const override;
 
   // The clock faces animate by (seconds; steady). Tests replace it (null: the steady clock again).
   static void setClock(double (*clock)());
