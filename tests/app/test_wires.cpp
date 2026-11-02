@@ -460,7 +460,7 @@ TEST_CASE("wires: a wire that closes a delay-free loop gets a 1-sample delay; an
   const std::vector<WireState> st2 = wireStates(*store.current(), (*lib)->library());
   REQUIRE(st2.size() == 7);
   CHECK(st2[5] == WireState{wa, WireStatus::Lowered});
-  CHECK(st2[6] == WireState{wb, WireStatus::Refused});
+  CHECK(st2[6] == WireState{wb, WireStatus::Refused, WireRefusal::TwoInstruments});
   // Deactivating a device leaves its wires out (inactive), and the project still compiles.
   REQUIRE(store.dispatch(SetDeviceActive{sat, false}).ok());
   const std::vector<WireState> st3 = wireStates(*store.current(), (*lib)->library());

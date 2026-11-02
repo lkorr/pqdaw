@@ -1459,6 +1459,14 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
   auto devIn = [&](uint32_t n, uint32_t k, uint32_t i) { return devBase[n][k] + i; };
   auto devOut = [&](uint32_t n, uint32_t k, uint32_t o) { return devBase[n][k] + insOf(n, k) + o; };
   std::vector<std::vector<uint32_t>> adj(points);
+  // TMM.13-fix1 H3: which signal points run per voice (1: a voice device's ins and outs), which globally (0: a global
+  // device's, a track's own in / out) and which as the compiler infers (2: a free device's: per voice when it feeds
+  // voice processing, TX.patching).
+  std::vector<uint8_t> voicePoint(points, 0);
+  for (uint32_t n = 0; n < nodes; ++n)
+    for (uint32_t k = 0; k < devs[n].size(); ++k)
+      if (const LDev& d = devs[n][k]; d.voice || d.device->free)
+        std::fill_n(voicePoint.begin() + devBase[n][k], insOf(n, k) + outsOf(n, k), static_cast<uint8_t>(d.device->free ? 2 : 1));
   for (uint32_t n = 0; n < nodes; ++n) {
     const TrackDevs& td = devs[n];
     for (uint32_t k = 0; k < td.size(); ++k) {  // inside each device
@@ -1697,6 +1705,7 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
           if ((fwd[v] && back[v]) || v == lw.fromNode || v == lw.toNode) instruments += isInstrumentNode(v) ? 1u : 0u;
         if (instruments > 1) {
           st.status = WireStatus::Refused;
+          st.reason = WireRefusal::TwoInstruments;
           wp.states.push_back(st);
           continue;
         }
@@ -1713,8 +1722,38 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     const uint32_t from = devOut(lw.fromNode, lw.fromDev, lw.fromPort), to = devIn(lw.toNode, lw.toDev, point);
     reach(adj, to, seen);
     lw.delayed = seen[from] != 0;
-    if (lw.delayed) st.status = WireStatus::Delayed;
-    else adj[from].push_back(to);
+    if (lw.delayed) {
+      // TMM.13-fix1 H3: a loop through both per-voice and global points passes a voice reducer (voice_sum: the voices
+      // summed into the track's signal, or a wire's reducer). Its z1 would need every voice group and the global part
+      // to alternate per sample, which the scheduler cannot run (schedule.h step 3): the whole unit would be refused
+      // and the track fall silent. So the wire is refused instead (not lowered; the status line and the views name
+      // it), and the rest of the track plays. E.g. a later effect's output back into a meta voice run's Phase
+      // accumulator `hz` (QUESTIONS Q?-TMM.13-fix1-a: why not per voice).
+      bool voice = false, global = false;
+      auto mark = [&](uint32_t v) {
+        voice = voice || voicePoint[v] == 1;
+        global = global || voicePoint[v] == 0;
+      };
+      mark(to);
+      mark(from);
+      if (!(voice && global)) {  // the points on the loop: reached from `to`, reaching `from`
+        std::vector<std::vector<uint32_t>> rev(points);
+        for (uint32_t v = 0; v < points; ++v)
+          for (uint32_t x : adj[v]) rev[x].push_back(v);
+        reach(rev, from, back);
+        for (uint32_t v = 0; v < points && !(voice && global); ++v)
+          if (seen[v] && back[v]) mark(v);
+      }
+      if (voice && global) {
+        st.status = WireStatus::Refused;
+        st.reason = WireRefusal::VoiceLoop;
+        wp.states.push_back(st);
+        continue;
+      }
+      st.status = WireStatus::Delayed;
+    } else {
+      adj[from].push_back(to);
+    }
     wp.states.push_back(st);
     wp.wires.push_back(lw);
   }

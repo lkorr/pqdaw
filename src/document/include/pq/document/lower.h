@@ -281,8 +281,13 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //             TX.groups-fix1: also a wire from a group's In at the note source into an input that reads no note signal
 //             (see GROUPS below), and a wire on a port of a switched-off free device other than its pass-through's two.
 //   Invalid   the port or param is not one of the patch's (an edited patch lost it), or the param is a bool.
-//   Refused   across tracks, it would close a cycle through two instrument tracks, which the engine cannot run (one
-//             voice table per image, QUESTIONS Q84): left out, and the status line says so.
+//   Refused   left out, and the status line and the views say why (WireState::reason):
+//             TwoInstruments: across tracks, it would close a cycle through two instrument tracks, which the engine
+//             cannot run (one voice table per image, QUESTIONS Q84).
+//             VoiceLoop (TMM.13-fix1 H3): it would close a loop through per-voice and global signals (a voice
+//             reducer inside the loop, e.g. a later effect's output back into a meta voice run's Phase accumulator
+//             `hz`), whose 1-sample delay needs the voices and the global part to alternate per sample: the
+//             scheduler refuses that (schedule.h step 3), which silenced the whole track.
 // The math, per modulated param of a device `d<id>` (all wires into it summed; the knob is the centre):
 //   knob = param d<id>__<name> (the device's param, now a root param of the track patch: the same key and value as
 //          an unmodulated param, dev<id>:<name>);  pk = its knob position (param rate: once per block)
@@ -382,9 +387,11 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // (tests/app/test_groups.cpp, "groups-fix1"). A hand-built group there follows the same rules whatever is inside it (a
 // stock device inside sums what reaches it, as everywhere; ops::groupInCircuit only groups stretches of the run).
 enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused };
+enum class WireRefusal : uint8_t { None, TwoInstruments, VoiceLoop };  // why a Refused wire is (see above)
 struct WireState {
   WireId id;
   WireStatus status = WireStatus::Lowered;
+  WireRefusal reason = WireRefusal::None;  // Refused only
   friend bool operator==(const WireState&, const WireState&) = default;
 };
 // A modulated param's tap: the export `port` of graph track `track`.

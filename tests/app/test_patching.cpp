@@ -478,6 +478,72 @@ TEST_CASE("patching: a wire from a later device's output into an earlier one's i
   (void)sameAsHand(low, *h, 24000, "loop through two inputs");
 }
 
+TEST_CASE("patching: a feedback wire through the voices' sum is refused, naming why; the track still plays (TMM.13-fix1 H3)") {
+  // The review's loop_voice: Phase accumulator (at the notes) → Wavetable → Saturator, with the Saturator's output
+  // wired back into the Phase accumulator's hz. The loop passes the voice run's voice_sum (per-voice → global), so its
+  // 1-sample delay would need the voices and the global part to alternate per sample: the scheduler refused the whole
+  // unit ("feedback loop through add#10 crosses the voice/global boundary") and the track fell silent while the wire
+  // showed as Delayed. Now the wire alone is refused (VoiceLoop) and everything else plays.
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const TrackId keys = ids.track();
+  const DeviceId pa = ids.device(), wt = ids.device(), sat = ids.device(), pa2 = ids.device();
+  Batch b{"keys", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys"), {}, kAppend});
+  b.commands.push_back(AddDevice{keys, metaDevice(pa, "phase_acc", DeviceKind::Instrument), kAppend});
+  b.commands.push_back(AddDevice{keys, metaDevice(wt, "wavetable", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(AddDevice{keys, metaDevice(pa2, "phase_acc", DeviceKind::AudioEffect, true), kAppend});
+  REQUIRE(store.dispatch(b).ok());
+  const Lowered plain = lowerIt(store);
+  const golden::Channels before = renderGraph(plain.low.graph, plain.links, plain.values, 12000);
+  CHECK(peakOf(before) > 0.01f);
+  auto e = ops::connectWire(*store.current(), ids, sat, "out", pa, "hz");
+  REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+  REQUIRE(store.dispatch(e->command).ok());
+  const WireId loop = doc::wiresOf(*store.current()).back().id;
+  {
+    const Lowered low = lowerIt(store);
+    const WireState* st = stateOf(low.low, loop);
+    REQUIRE(st != nullptr);
+    CHECK(st->status == WireStatus::Refused);
+    CHECK(st->reason == WireRefusal::VoiceLoop);
+    CHECK(wireStates(*store.current(), library()) == low.low.wires);
+    // It compiles (renderGraph requires it) and plays as without the wire.
+    const golden::Channels after = renderGraph(low.low.graph, low.links, low.values, 12000);
+    CHECK(maxDiff(before, after) == 0.0);
+  }
+  // A loop inside the voice run stays a per-voice delayed loop (the Wavetable's output into the Phase accumulator's
+  // hz: per-voice FM feedback), and so does one through a free device the voices feed (inferred per voice).
+  auto inRun = ops::connectWire(*store.current(), ids, wt, "out", pa, "hz");
+  REQUIRE(inRun.ok());
+  REQUIRE(store.dispatch(inRun->command).ok());
+  const WireId runLoop = doc::wiresOf(*store.current()).back().id;
+  auto toFree = ops::connectWire(*store.current(), ids, wt, "out", pa2, "hz");
+  REQUIRE(toFree.ok());
+  REQUIRE(store.dispatch(toFree->command).ok());
+  auto fromFree = ops::connectWire(*store.current(), ids, pa2, "out", pa, "pm");
+  REQUIRE(fromFree.ok());
+  REQUIRE(store.dispatch(fromFree->command).ok());
+  const WireId freeLoop = doc::wiresOf(*store.current()).back().id;
+  const Lowered low = lowerIt(store);
+  CHECK(stateOf(low.low, loop)->status == WireStatus::Refused);
+  CHECK(stateOf(low.low, runLoop)->status == WireStatus::Delayed);
+  CHECK(stateOf(low.low, freeLoop)->status == WireStatus::Delayed);
+  const golden::Channels fm = renderGraph(low.low.graph, low.links, low.values, 12000);
+  CHECK(peakOf(fm) > 0.01f);
+  CHECK(maxDiff(before, fm) > 0.0);  // the per-voice loops play
+  // Through the link: no compile error, the track plays, the refusal is counted.
+  app::LinkConfig c;
+  c.compileThread = false;
+  c.sleepAfterMs = 0.0f;
+  c.jit = false;
+  auto link = app::ProjectLink::create(c, store.current());
+  REQUIRE(link.ok());
+  CHECK((*link)->lastError().empty());
+  CHECK((*link)->stats().refusedWires == 1);
+}
+
 TEST_CASE("patching: a Units wire into a VCA's value adds to the multiplier (value space, clamped to its min / max)") {
   // TX.knob-curves: TX.patching's law, kept for migrated wires (a new Add wire into the Log curve's knob adds to the
   // position: tests/app/test_knob_curves.cpp).

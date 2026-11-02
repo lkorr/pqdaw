@@ -1928,7 +1928,7 @@ void ProjectPatchView::pollReadout() {
       }
       if (e.delayed) readout_.value += ", z\xE2\x81\xBB\xC2\xB9";
       if (e.status == doc::WireStatus::Inactive) readout_.value += ", inactive";
-      if (e.status == doc::WireStatus::Refused) readout_.value += ", refused (two instruments)";
+      if (e.status == doc::WireStatus::Refused) readout_.value += ", refused (a loop the engine cannot run)";
       if (ModulationSource* src = ctx_.modulationSource(); src != nullptr && w != nullptr) {
         const ModTarget t[1] = {{w->to, w->param}};
         ModSweep s[1];

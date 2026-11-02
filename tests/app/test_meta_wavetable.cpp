@@ -728,6 +728,117 @@ TEST_CASE("meta wavetable: a keyframe edit reaches the engine within 30 ms (64 f
 #endif
 }
 
+// TMM.13-fix1 M1: TMM.5's "≤ 160 ms with a bake", measured on what the criterion names — a keyframe edit while a knob
+// is baked, until the FULL table plays (the test above stops at the first publish, since TMM.9 / TMM.16 a focused
+// preview that is exact only where the voices read). Not met on this design: one worker builds the live-band bake
+// (TMM.8-fix) of 64 frames, after kPreviewSettle; QUESTIONS Q?-TMM.13-fix1-a records the numbers and the options.
+// may_fail until the user decides there: it runs, reports and checks, without failing the perf run.
+TEST_CASE("meta wavetable: a keyframe edit under a baked fold plays its full table within 160 ms (TMM.5)" *
+          doctest::test_suite("perf") * doctest::may_fail()) {
+  using Clock = std::chrono::steady_clock;
+  WtSong s;
+  const DeviceId wt = s.track({{0, 64 * kPpq, 0}});
+  s.data(wt, sawToSquare());
+  s.param(wt, "fold", 0.5);
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  const auto slot = link->metaFrameTable(wt, "", 0);
+  REQUIRE(slot != nullptr);
+  double bestFirst = 1e9, bestFull = 1e9, worstFull = 0;
+  for (int i = 0; i < 3; ++i) {
+    auto d = meta::parseWavetableData(*sawToSquare(i % 2 ? dsp::GapMode::Crossfade : dsp::GapMode::Spectral));
+    REQUIRE(d.ok());
+    for (uint32_t k = 300; k < 700; ++k) d->keyframes[1].cycle[k] = 0.1f * static_cast<float>(i + 1);
+    const meta::DataPtr next = meta::wavetableData(*d);
+    const uint64_t gen = slot->generation(), built = link->metaTableStats().built;
+    const auto t0 = Clock::now();
+    s.data(wt, next);
+    double first = -1.0, full = -1.0;
+    while (full < 0.0 && Clock::now() - t0 < std::chrono::seconds(10)) {
+      const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      if (first < 0.0 && slot->generation() != gen) first = ms;
+      // The full table: a full build finished and published (no waitIdle here: it would skip the settle a real edit
+      // waits for).
+      if (link->metaTableStats().built != built && slot->table()->frames() == meta::kWtDefaultFrames &&
+          slot->generation() != gen)
+        full = ms;
+      std::this_thread::yield();
+    }
+    REQUIRE(full >= 0.0);
+    CHECK(sameTable(*slot->table(), *directTable(s.doc(), wt, "", 48000.0)));
+    bestFirst = std::min(bestFirst, first);
+    bestFull = std::min(bestFull, full);
+    worstFull = std::max(worstFull, full);
+  }
+  const meta::TableBuilder::Stats st = link->metaTableStats();
+  MESSAGE("keyframe edit under a baked fold: first table (focused preview) " << bestFirst << " ms; full table best "
+          << bestFull << " ms, worst " << worstFull << " ms (settle " << meta::TableBuilder::kPreviewSettle * 1e3
+          << " ms + build " << st.lastBuildMs << " ms)");
+#if PQ_OPTIMIZED
+  CHECK(bestFirst <= 30.0);
+  CHECK(bestFull <= 160.0);
+#endif
+}
+
+// TMM.13-fix1 H4, wall-clock: a structural change (a new Wavetable track) while another instance's baked knob is dragged
+// compiles without waiting for that drag's builds, and opening a project with 12 baked Wavetables blocks for their
+// previews, not their full bakes (the review: 2100 ms and 2034 ms, both at the old 2-s wait for an idle builder).
+TEST_CASE("meta wavetable: a compile waits only for its new slots' tables (structural change during a drag, open)" *
+          doctest::test_suite("perf")) {
+  using Clock = std::chrono::steady_clock;
+  auto ms = [](Clock::time_point a) { return std::chrono::duration<double, std::milli>(Clock::now() - a).count(); };
+  {
+    WtSong s;
+    for (int i = 0; i < 12; ++i) {
+      const DeviceId d = s.track({{0, 4 * kPpq, 0}});
+      auto data = meta::parseWavetableData(*sawToSquare());
+      REQUIRE(data.ok());
+      data->keyframes[0].cycle[17] = 0.01f * static_cast<float>(i);  // distinct tables (no sharing)
+      s.data(d, meta::wavetableData(*data));
+      s.param(d, "fold", 0.5);
+    }
+    const auto t0 = Clock::now();
+    auto link = makeLink(s.store.current());
+    const double openMs = ms(t0);
+    uint32_t own = 0;
+    for (const DeviceId d : s.wts) own += link->metaFrameTable(d, "", 0)->table()->frames() > 1 ? 1u : 0u;
+    MESSAGE("open with 12 baked Wavetables: create " << openMs << " ms; " << own << " / 12 play their own table");
+    CHECK(own == 12u);  // none starts on the default sine
+#if PQ_OPTIMIZED
+    CHECK(openMs <= 1000.0);
+#endif
+    REQUIRE(link->waitForMetaTables());
+  }
+  WtSong s;
+  const DeviceId a = s.track({{0, 64 * kPpq, 0}});
+  s.data(a, sawToSquare());
+  s.param(a, "fold", 0.3);
+  auto link = makeLink(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForMetaTables());
+  const auto t0 = Clock::now();  // a drag: an edit per frame (each its own step here)
+  double compileMs = -1.0;
+  for (int step = 0; ms(t0) < 1000.0; ++step) {
+    s.param(a, "fold", 0.3 + 0.01 * (step % 40));
+    if (step == 20) {
+      const uint64_t c0 = link->stats().compiles;
+      const auto at = Clock::now();
+      const DeviceId b = s.track({{0, 4 * kPpq, 0}});
+      link->flush();  // the compile, on this thread
+      compileMs = ms(at);
+      CHECK(link->stats().compiles > c0);
+      REQUIRE(link->metaFrameTable(b, "", 0) != nullptr);
+      CHECK(link->metaFrameTable(b, "", 0)->table()->frames() > 1);  // its own table before its image plays
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+  }
+  MESSAGE("structural change during a 60 Hz baked drag: compile " << compileMs << " ms");
+#if PQ_OPTIMIZED
+  CHECK(compileMs <= 200.0);
+#endif
+}
+
 TEST_CASE("meta wavetable: a baked drag is heard at >= 30 Hz through preview tables; the full table when it stops; "
           "a drawn stroke is audible within 30 ms" * doctest::test_suite("perf")) {  // TMM.9 (Q173 9): wall-clock
   using Clock = std::chrono::steady_clock;

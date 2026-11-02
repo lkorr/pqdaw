@@ -326,7 +326,7 @@ public:
         case doc::WireStatus::Delayed: tip_ += "  (closes a loop: delayed by 1 sample)"; break;
         case doc::WireStatus::Inactive: tip_ += "  (an end is switched off)"; break;
         case doc::WireStatus::Invalid: tip_ += "  (the device has no such port)"; break;
-        case doc::WireStatus::Refused: tip_ += "  (not played: a loop through two instrument tracks)"; break;
+        case doc::WireStatus::Refused: tip_ += "  (not played: a loop the engine cannot run, through two instrument tracks or the voices' sum)"; break;
         default: break;
       }
     }
