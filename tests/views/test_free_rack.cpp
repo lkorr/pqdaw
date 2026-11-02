@@ -402,6 +402,53 @@ TEST_CASE("free rack: the cables — the chain's path, wires into inputs, onto k
   CHECK(links2[2]->label.find("Utility") != std::string::npos);
 }
 
+// TMM.13-fix2 (MM review H6, M10): the cables' colours by what they carry (the circuit's palette), the through-line of the
+// chain's audio path, and the collapsed rack's cables tucked (no fan from the tab: a badge beside the chain end's control,
+// the cable shown on hover).
+TEST_CASE("free rack: cable roles (audio, modulation, notes), the chain's through-line, cables tucked while collapsed") {
+  Ui u;
+  REQUIRE(u.ctx.store().dispatch(doc::ops::connectNoteWire(*u.ctx.doc(), u.ctx.store().ids(), u.ids.lead, "velocity", u.ids.util, "gain")->command).ok());
+  u.open();
+  u.layer().refresh();
+  const auto links = u.cablesOf(CableLayer::Kind::Chain);
+  REQUIRE(links.size() == 4);
+  CHECK(links[0]->role == 2);  // the notes into the synth: amber
+  for (size_t i = 1; i < links.size(); ++i) CHECK(links[i]->role == 1);  // the audio path: blue
+  CHECK_FALSE(links[0]->through);
+  for (size_t i = 1; i < links.size(); ++i) {
+    CHECK(links[i]->through);  // the device between this link and the one before it, along its foot
+    CHECK(links[i]->t0.x == doctest::Approx(links[i - 1]->b.x));
+    CHECK(links[i]->t1.x == doctest::Approx(links[i]->a.x));
+  }
+  const doc::WireId sc = u.wireBetween(u.ids.acc, u.ids.filter, "sc");
+  REQUIRE(u.cable(sc) != nullptr);
+  CHECK(u.cable(sc)->role == 1);  // into an input: a signal path
+  doc::WireId notes, lfo;
+  for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc())) {
+    if (w.fromNoteSource()) notes = w.id;
+    else if (w.from == u.ids.lfos[1]) lfo = w.id;
+  }
+  REQUIRE(u.cable(notes) != nullptr);
+  CHECK(u.cable(notes)->role == 2);
+  REQUIRE(u.cable(lfo) != nullptr);
+  CHECK(u.cable(lfo)->role == 0);  // modulation onto a knob: mint
+  for (const CableLayer::Cable& c : u.layer().cables()) CHECK_FALSE(c.tucked);  // open: every cable drawn (dimmed)
+  // Collapsed: every cable with an end in the rack is tucked, its badge beside the chain end; the others are not.
+  u.chain().setFreeRackOpen(false);
+  u.d.tree().layoutNow();
+  u.d.step();
+  u.layer().refresh();
+  const CableLayer::Cable* t = u.cable(lfo);
+  REQUIRE(t != nullptr);
+  CHECK(t->tucked);
+  CHECK(std::fabs(static_cast<float>(t->badge.x) - t->b.x) < 30.0f * u.d.tree().scale());
+  CHECK(std::fabs(static_cast<float>(t->badge.y) - t->b.y) < 30.0f * u.d.tree().scale());
+  REQUIRE(u.cable(sc) != nullptr);
+  CHECK(u.cable(sc)->tucked);
+  CHECK_FALSE(u.cable(notes)->tucked);
+  for (const CableLayer::Cable* k : u.cablesOf(CableLayer::Kind::Chain)) CHECK_FALSE(k->tucked);
+}
+
 TEST_CASE("free rack: a chain jack's cable can be dropped on an input socket or a block in the rack") {
   Ui u;
   // An LFO put into the chain has a jack; its cable onto the Auto Filter's sidechain socket, then onto the rack's
