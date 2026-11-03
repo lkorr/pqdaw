@@ -1302,3 +1302,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: above (check preset, perf cases by hand); ship pq_bench_dsp linked and the full suite ran end to end (load 100 %: no rows recorded).
 - CPU-efficiency check: H3 refused rather than per-sample voice/global alternation (≈10–30×); H4 waits for previews, not full bakes; M4/M11 move work out of locks the UI takes per frame; M12 removes per-frame lock+scan per reader.
 - Notes/blockers: Q203 asks the user: H3 per-voice lowering vs refusal; M1 restate the criterion ("first audible ≤ 30 ms, full table ≤ 350 ms") or multi-threaded bakes; M6's ±64 bound. MM milestone: all review findings handled (fixed or answered).
+
+## 2026-11-02 · TX.scope-sound · task/TX.scope-sound (merged; Q204)
+- Did: bug 2026-11-02_18-21-54 (Oscilloscope / Spectrogram / Spectrum in the path changed the sound). Root cause: a meta voice run's end followed its literal last stage; an analyser last (no end signal) ended voices 5 ms after note-off instead of by the Envelope's done, and the run's width came from the analyser. Fix (lower.cpp): a structural pass-through rule (a device whose first output is wired straight from an input) and a walk from the run's last stage back over pass-throughs (chain, a free device's single undelayed input wire, a group's Out/In) to the device whose signal the run outputs; it decides the end and the width. No per-analyser special case.
+- Verified: reported project before: max|diff| 0.349 from the first note-off, release cut (tail 39239 vs 50368 frames); after: 0, interpreter == JIT, for all three analysers. tests/app/test_pass_through.cpp (last, two in a row, between stages, after a Saturator, in groups, free, in the VCA loop; chord with releases; RtScope): failed before (13), pass after. build.ps1 -Affected (EVERYTHING, check, default + slow): 0 warnings, 98/99 (pq_tests_library progressive-scan race under load, passes alone 5/5).
+- Perf: n/a (lowering-time walk only).
+- CPU-efficiency check: nothing added to the audio path.
+- Notes/blockers: behaviour changes only for runs ending in a pass-through. Q204.
