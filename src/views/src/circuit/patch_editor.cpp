@@ -2,6 +2,7 @@
 // edit from either pane; one undo history; check + hot swap. See pq/views/circuit/patch_editor.h.
 
 #include "pq/views/circuit/patch_editor.h"
+#include "pq/views/circuit/node_catalog.h"
 
 #include <algorithm>
 #include <chrono>
@@ -605,7 +606,7 @@ void PatchEditor::replaceText(uint32_t offset, uint32_t length, std::string_view
   impl_->apply(offset, length, with, EditSource::TextPane, nullptr, true, typing);
 }
 
-Result<graph::NodeId> PatchEditor::addNode(size_t patch, std::string_view spec, graph::Point2 at) {
+Result<graph::NodeId> PatchEditor::addNode(size_t patch, std::string_view spec, graph::Point2 at, const AddLink* link) {
   Impl& m = *impl_;
   m.note.clear();
   if (Status s = m.needLowered(); !s) return std::move(s).error();
@@ -617,8 +618,24 @@ Result<graph::NodeId> PatchEditor::addNode(size_t patch, std::string_view spec, 
   std::vector<graph::SubcircuitRef> usable;
   for (const graph::SubcircuitRef& r : sigs)
     if (r.patch != p.name()) usable.push_back(r);  // a patch cannot call itself
-  auto n = graph::edit::addNode(p, spec, usable);
+  // TX.node-menu: `meta_<type>` (the add field's placeholder offers it; the parse knows the prelude as externals).
+  if (const std::shared_ptr<const meta::Prelude> pre = meta::prelude())
+    for (const graph::SubcircuitRef& r : pre->signatures) usable.push_back(r);
+  // TX.node-menu: an operator with a literal operand (`* 2`) is the operator and the literal wired into its second input.
+  const SpecParts parts = splitSpec(spec);
+  auto n = graph::edit::addNode(p, parts.node, usable);
   if (!n) return std::move(n).error();
+  if (!parts.operand.empty()) {
+    if (p.node(*n).kind != graph::NodeKind::Atom || p.node(*n).numInputs < 2) return refuse("an operand follows a binary operator (`* 2`)");
+    auto c = graph::edit::addNode(p, parts.operand, {});
+    if (!c || p.node(*c).kind != graph::NodeKind::Const) return refuse("`" + parts.operand + "` is not a literal");
+    if (auto w = graph::edit::connect(p, graph::PortRef{*c, 0}, graph::PortRef{*n, 1}); !w) return std::move(w).error();
+    graph::NodeLayout cl;
+    cl.placed = true;
+    cl.x = std::round((at.x - 48.0f) / 4.0f) * 4.0f;
+    cl.y = std::round((at.y + 24.0f) / 4.0f) * 4.0f;
+    p.setLayout(*c, cl);
+  }
   // TMM.10: a meta module added in the editor is a named instance (its state is keyed by the name path): acc1, wt1, …
   if (p.node(*n).kind == graph::NodeKind::Subcircuit)
     if (const meta::Type* t = meta::typeOfCall(p.subcircuit(*n).patch)) {
@@ -639,6 +656,19 @@ Result<graph::NodeId> PatchEditor::addNode(size_t patch, std::string_view spec, 
   l.x = std::round(at.x / 4.0f) * 4.0f;
   l.y = std::round(at.y / 4.0f) * 4.0f;
   p.setLayout(*n, l);
+  // TX.node-menu: wired from the cable it was dropped from (its first free input, or its first output).
+  if (link != nullptr) {
+    const graph::Adjacency adj = p.adjacency();
+    if (link->output) {
+      for (uint32_t i = 0; i < p.node(*n).numInputs; ++i)
+        if (adj.driver[p.flatInput(*n, i)] == graph::kNone) {
+          if (auto w = graph::edit::connect(p, link->port, graph::PortRef{*n, static_cast<uint16_t>(i)}); !w) return std::move(w).error();
+          break;
+        }
+    } else if (p.node(*n).numOutputs > 0) {
+      if (auto w = graph::edit::connect(p, graph::PortRef{*n, 0}, link->port); !w) return std::move(w).error();
+    }
+  }
   const graph::NodeId id = p.node(*n).id;
   std::vector<size_t> changed{patch};
   for (const size_t q : graph::edit::refreshCallers(work, patch)) changed.push_back(q);

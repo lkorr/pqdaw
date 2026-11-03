@@ -181,6 +181,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_project_patch.cpp  # T4.13: the project patch view (graph match, layout, edits, morph, zoom), goldens
     views/test_lane_edit.cpp  # TX.lane-edit: the lane windows as the arrangement's editing surface (gestures, keys, automation), golden, perf
     views/test_groups_view.cpp  # TX.groups: Ctrl+G / Ctrl+Shift+G in the circuit, capsules, the Device view group panel, goldens
+    views/test_node_menu.cpp  # TX.node-menu: catalog, search, the menu, spawn / insert / Z / splice / dissolve / Ctrl-release / push-apart, golden, perf
     views/test_free_rack.cpp  # TX.free-rack: the Device view's free-device rack (gestures, prefs), the signal-path cables, goldens, perf
     views/test_chain_circuit.cpp  # T5.x-circuit-chain: a track's chain as one circuit (boxes, wires, racks, view, band), goldens
     views/test_racks_view.cpp  # T4.8: racks in the Device view (chains, drops, map mode, macro / mixer / zone drags), goldens

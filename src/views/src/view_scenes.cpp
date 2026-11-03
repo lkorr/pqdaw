@@ -21,6 +21,7 @@
 #include "pq/views/browser/browser_panel.h"
 #include "pq/views/browser/demo_index.h"
 #include "pq/views/browser/library.h"
+#include "pq/views/circuit/node_menu.h"
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/circuit/device_circuit.h"
@@ -1723,6 +1724,22 @@ Status setupProjectPatchFree(Shell& shell) {
   return Ok{};
 }
 
+// TX.node-menu (SPEC §15 2026-11-02 "cables and the node menu"): the node menu open over the TX.patching scene (Tab at a
+// point of the Lead band), "filter" typed: Auto Filter highlighted, its preview (kind chip, counts, description, ports,
+// parameters in two columns), the other matches grouped below it.
+Status setupProjectNodeMenu(Shell& shell) {
+  if (Status s = setupProjectPatchFree(shell); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-node-menu: the view is not installed", {}};
+  circuit::clearRecentNodes();
+  const ui::IRect r = v->canvas().rect();
+  circuit::NodeMenu* m = v->openSpawnMenu({static_cast<float>(r.x) + static_cast<float>(r.w) * 0.22f, static_cast<float>(r.y) + static_cast<float>(r.h) * 0.18f});
+  if (m == nullptr) return Error{ErrorCode::NotFound, "project-node-menu: no overlay layer", {}};
+  m->setQuery("filter");
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TX.panel-faces (bug report 2026-11-01_12-15-15: "the utility in the circuit should just look like the utility ui in
 // the device list below"): closed stock devices drawn as their Device-view panels in the project patch view — "Keys"
 // plays the default synth (its generic panel) into an Auto Filter (frequency 600 Hz, resonance 0.4) and a Utility
@@ -2645,6 +2662,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-meta-chain", 1280, 800, setupProjectMetaChain},          // TMM.10
     {"project-patch-notes", 1280, 800, setupProjectPatchNotes},        // TMM.10-fix2
     {"project-patch-free", 1280, 800, setupProjectPatchFree},          // TX.patching
+    {"project-node-menu", 1280, 800, setupProjectNodeMenu},          // TX.node-menu
     {"project-patch-panels", 1600, 900, setupProjectPatchPanels},      // TX.panel-faces
     {"project-patch-resize", 1600, 900, setupProjectPatchResize},      // TX.resize
     {"project-patch-group", 1600, 900, setupProjectPatchGroup},        // TX.groups

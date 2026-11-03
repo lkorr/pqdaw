@@ -244,8 +244,10 @@ struct Builder {
     const doc::ResolvedDevice* user = d.edited() ? userDevice(d.id) : nullptr;
     const doc::DeviceInfo* info = user != nullptr && user->graph ? &user->info : catalog ? catalog->find(d.patch) : nullptr;
     n.edited = d.edited();
-    n.title = info ? info->name : d.patch;
-    if (n.edited) n.title += " (edited)";
+    // TX.node-menu: the device's own name when it has one (Ctrl+R; a node-menu device of one atom is named after it);
+    // "(edited)" marks a fork of a stock device only.
+    n.title = !d.name.empty() ? d.name : info ? info->name : d.patch;
+    if (n.edited && d.name.empty() && catalog != nullptr && catalog->find(d.patch) != nullptr) n.title += " (edited)";
     const graph::NodeIndex call = callOf(tp, d.id);
     n.lowered = call != graph::kNone;
     if (n.lowered) n.call = tp->node(call).id;
@@ -859,6 +861,22 @@ struct Builder {
       cn.x = x0, cn.y = y0, cn.w = x1 - x0, cn.h = y1 - y0;
       if (cn.groupIn != kNone) out.nodes[cn.groupIn].x = cn.x + m::kCapsulePad;
       if (cn.groupOut != kNone) out.nodes[cn.groupOut].x = cn.x + cn.w - m::kCapsulePad - out.nodes[cn.groupOut].w;
+    }
+    // TX.node-menu (SPEC §15 2026-11-02: "the band grows to fit blocks placed at its edge"): a band grows down to hold
+    // its blocks wherever their nudges put them (a block placed at or past its bottom edge, an opened capsule grown by
+    // its members); the bands below it move down by as much, with their blocks.
+    for (uint32_t i = 0; i < out.bands.size(); ++i) {
+      Band& b = out.bands[i];
+      const float oldBottom = b.y + b.h;
+      float bottom = oldBottom - m::kBandPad;
+      for (const uint32_t d : b.devices) bottom = std::max(bottom, out.nodes[d].y + out.nodes[d].h);
+      const float grow = roundUp4(bottom + m::kBandPad - oldBottom);
+      if (grow <= 0.0f) continue;
+      b.h += grow;
+      for (uint32_t j = 0; j < out.bands.size(); ++j)
+        if (j != i && out.bands[j].y >= oldBottom) out.bands[j].y += grow;
+      for (Node& n : out.nodes)
+        if (n.band != i && n.band < out.bands.size() && out.bands[n.band].y >= oldBottom + grow) n.y += grow;
     }
     // Bands reach their nodes (a nudged block stays inside its band's strip horizontally).
     for (Band& b : out.bands) {

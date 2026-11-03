@@ -96,7 +96,14 @@ public:
   // Text pane. `typing`: may coalesce with the previous typing step.
   void replaceText(uint32_t offset, uint32_t length, std::string_view with, bool typing = true);
   // Circuit edits on patch `patch` (node / wire indices of drawn(patch)).
-  Result<graph::NodeId> addNode(size_t patch, std::string_view spec, graph::Point2 at);
+  // TX.node-menu: `link` (optional) wires the new node in the same step: `port` is an output feeding the new node's first
+  // free input (output = true), or an input the new node's first output feeds (output = false); a node without such a
+  // port is placed unwired.
+  struct AddLink {
+    graph::PortRef port;
+    bool output = true;
+  };
+  Result<graph::NodeId> addNode(size_t patch, std::string_view spec, graph::Point2 at, const AddLink* link = nullptr);
   Status connect(size_t patch, graph::PortRef from, graph::PortRef to);
   Status erase(size_t patch, std::span<const graph::NodeIndex> nodes, std::span<const graph::WireIndex> wires);
   Status rename(size_t patch, graph::NodeIndex node, std::string name);

@@ -11,8 +11,10 @@
 // Canvas editing: drag a node (the selection) to move it; drag from a pin to a pin to connect (output → input or
 // input → output; dropping on a node's hidden optional input works: every pin of the node under the pointer shows
 // while dragging; a wire that would close a delay-free loop gets an explicit z1, and the status says so); double-click
-// empty space (or N) adds a node from a spec (`tanh`, `0.5`, `440Hz`, `*`, `svf`, `param cutoff = 1kHz`, `in x :
-// audio`, `out y`, `export e`); double-click a node renames it (Ctrl+R too; a subcircuit opens instead); Delete /
+// empty space (or N) adds a node from a spec (`tanh`, `0.5`, `440Hz`, `*`, `* 2`, `svf`, `param cutoff = 1kHz`, `in x :
+// audio`, `out y`, `export e`); Tab opens the node menu at the pointer (TX.node-menu, pq/views/circuit/node_menu.h: every
+// atom and meta module, searchable, or a typed spec) and places the choice there; a wire dragged from a pin and released
+// on empty space opens it too (nodes that connect first) and the node arrives wired to that pin; double-click a node renames it (Ctrl+R too; a subcircuit opens instead); Delete /
 // Backspace deletes the selected nodes and wires; Ctrl+G makes a subcircuit of the selection; P turns a selected
 // constant into a param pin; Enter on a selected subcircuit opens it, Backspace with nothing selected goes back. Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y undo and redo in either pane; Ctrl+S saves; Ctrl+Enter plays /
 // stops the shown patch. The text is checked ≈ 50 ms after the last edit (infer, optimise, schedule); while it plays a
@@ -56,6 +58,8 @@ class Shell;
 
 namespace pq::views::circuit {
 
+class NodeMenu;  // TX.node-menu (node_menu.h)
+
 // Syntax colours for .pqp text (state 1 = inside a block comment).
 uint32_t highlightPatchLine(std::string_view line, uint32_t state, std::vector<ui::CodeSpan>& out);
 
@@ -81,6 +85,8 @@ public:
   // A connection from an output pin to an input pin (scene pin indices; hidden pins included).
   std::function<void(uint32_t fromPin, uint32_t toPin)> onConnect;
   std::function<void(graph::Point2 world)> onAddAt;
+  // TX.node-menu: a wire dragged from scene pin `fromPin` released on empty space at device point `at`.
+  std::function<void(uint32_t fromPin, ui::Vec2 at)> onWireDropped;
   std::function<void(uint32_t node)> onRename;
 
   bool onPointer(const ui::PointerEvent& e) override;
@@ -127,7 +133,7 @@ public:
   bool readOnly() const noexcept { return !shown_.empty() && shownIndex() == graph::kNone; }
 
   // The editor's commands (the keys and gestures above call these; tests script them).
-  bool addAt(graph::Point2 world, std::string_view spec);
+  bool addAt(graph::Point2 world, std::string_view spec, const PatchEditor::AddLink* link = nullptr);
   bool deleteSelection();
   bool renameNode(uint32_t node, std::string name);
   bool makeSubcircuit(std::string name = {});
@@ -141,6 +147,11 @@ public:
   void checkNow();
   // Opens the add / rename type-in at a device point.
   void beginAdd(graph::Point2 world, ui::Vec2 device);
+  // TX.node-menu: the node menu at device point `at` (the pointer; outside the canvas: its centre); the choice is
+  // placed there (addAt: one history step). Null: read-only, or no overlay layer.
+  // `fromPin` (a scene pin; UINT32_MAX: none): a wire dropped there — nodes that connect to it first, the new node wired
+  // to it (PatchEditor::AddLink) in the same step.
+  NodeMenu* openAddMenu(ui::Vec2 at, uint32_t fromPin = UINT32_MAX);
   void beginRename(uint32_t node);
 
   // ---- T4.5: live probes and cost meters (pq/views/circuit/probes.h) ----

@@ -50,6 +50,29 @@
 //                            Sends Only
 //              Ctrl+drag a block or a band's title nudges it (view state, saved with the project, not undoable; the
 //              band menu's Reset Layout clears them).
+//   node menu  (TX.node-menu, SPEC §15 2026-11-02 "cables and the node menu"; pq/views/circuit/node_menu.h) Tab opens the
+//              node menu at the pointer; the chosen node SPAWNS THERE: on the band, opened group capsule or free rack
+//              under the pointer (else the nearest band) as a free block (atoms and typed specs as a free device of that
+//              one node; a stock instrument or a rack goes into the chain: the instrument first, a rack where the pointer
+//              is along the chain). A block in the way and the new one push each other apart (a short physics animation,
+//              nudges: view state), and the band grows to hold blocks at or past its edge. Each placement is one undo step.
+//                cable → menu   a cable from an output released on empty space opens the menu, nodes with an input
+//                               first; the node arrives wired from that output into its MAIN input (its first signal
+//                               input; none: not wired). Hold W and drag out of a param pin or a face's / panel's control:
+//                               a BACKWARDS cable (kBackWireKey) — dropped on an output pin it wires that output into the
+//                               param, on empty space the menu offers sources first and wires the new node's MAIN output
+//                               (its first) into the param.
+//                over a cable   Z inserts a VCA at 1 (meta:vca, its default: x1) between the cable's ends; Tab opens the
+//                               menu and inserts the chosen node there (a chain cable: as a device of the chain at that
+//                               place; a wire: the wire becomes source → main in, main out → target; a node without an
+//                               input or output connects only what it has). Notes, routes and sends are not cut.
+//                Shift-drag     a block with a main input and output dragged with Shift held over a cable highlights it;
+//                               releasing splices the block in (as an insert does; a chain block onto its own chain moves).
+//                Ctrl+Delete    dissolves the selected block (it needs a main input and output): it goes, and what fed its
+//                               main input is wired to what its main output fed (a chain device: the chain closes up).
+//                Ctrl-release   a cable released with Ctrl held connects and keeps a new cable from the same source on the
+//                               pointer (no button held): each click wires one more target (Ctrl+click keeps going, a plain
+//                               click ends, Esc drops it).
 //   resize     (TX.resize) hold S over a device block (a meta face, a panel, a plain block; not an opened one): the
 //              cursor shows ⤡ and a drag scales the block uniformly, its top-left kept, its bottom-right corner
 //              following the pointer (0.5× … 3×, a detent at 1×; Shift: steps of 25 %); a face or panel and everything
@@ -101,6 +124,7 @@
 #include "pq/views/circuit/chain_circuit.h"
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/circuit/circuit_scene.h"
+#include "pq/views/circuit/node_menu.h"
 #include "pq/views/project_patch/device_cost.h"
 #include "pq/views/project_patch/project_patch.h"
 #include "pq/views/view_context.h"
@@ -173,7 +197,8 @@ public:
   ui::Rect deviceRect(float x, float y, float w, float h) const;
 
   // Lane (TX.lane-edit): a press in a lane window's body went to the arrangement's editor / automation, whose drag runs.
-  enum class Drag : uint8_t { None, Wire, MaybeMoveDevice, MoveDevice, Nudge, Volume, Pan, Send, Resize, Lane };
+  // TX.node-menu: BackWire (a backwards cable out of a param), MaybeSplice / Splice (a Shift-drag of a block).
+  enum class Drag : uint8_t { None, Wire, MaybeMoveDevice, MoveDevice, Nudge, Volume, Pan, Send, Resize, Lane, BackWire, MaybeSplice, Splice };
   Drag drag() const noexcept { return drag_; }
   // TX.lane-edit: the last press was in a lane window (the arrangement's edit chords act there: laneKey).
   bool laneFocused() const noexcept { return laneFocus_; }
@@ -182,6 +207,16 @@ public:
   bool resizeHeld() const noexcept;
   uint32_t resizableAt(ui::Vec2 pos) const;
   static constexpr ui::Key kResizeKey = 's';
+  // TX.node-menu: W held (no text field focused): a left press on a param pin or a face's / panel's control starts a
+  // backwards cable out of that param.
+  static constexpr ui::Key kBackWireKey = 'w';
+  bool backWireHeld() const noexcept;
+  // TX.node-menu: a cable is held on the pointer after a Ctrl-release (no button held; a click wires the next target).
+  bool stickyWire() const noexcept { return sticky_; }
+  // The model edge of the cable under a device point (the canvas's wire hit test: TX.cables' curves), kNone: none.
+  uint32_t edgeAt(ui::Vec2 device) const;
+  // The model edge a Shift-drag would splice into now (kNone: none).
+  uint32_t spliceEdge() const noexcept { return spliceEdge_; }
 
 protected:
   void paintUnderlay(ui::PaintContext& ctx) override;
@@ -222,6 +257,23 @@ private:
   bool laneHover_ = false;   // the pointer rests over a window body (laneCursor_ is what a press there would do)
   ui::Cursor laneCursor_ = ui::Cursor::Arrow;
   bool lanePointer(const ui::PointerEvent& e);  // the windows' share of onPointer (true: taken)
+  // TX.node-menu
+  void finishBackWire(ui::Vec2 pos);
+  bool pressBackWire(const ui::PointerEvent& e);  // W + a press on a param pin / control (true: a backwards cable)
+  void updateSplice(ui::Vec2 pos);
+  void endSplice(bool apply, ui::Vec2 pos);
+  bool sticky_ = false;                  // a Ctrl-release keeps a cable on the pointer
+  bool swallowUp_ = false;               // the release of a held cable's click
+  doc::DeviceId fromDevice_;             // the held cable's source (re-resolved after each rebuild)
+  std::string fromPort_;
+  doc::TrackId fromNotes_;               // … or a note source's output
+  doc::DeviceId backDevice_;             // BackWire: the param's device and name, where the cable starts
+  std::string backParam_;
+  ui::Vec2 backStart_{0, 0};
+  uint32_t spliceEdge_ = kNone;          // Splice: the cable under the dragged block
+  Selection spliceKeep_;                 // the selection before the Shift-drag (the hovered cable is shown selected)
+  void rememberSource();                 // fromDevice_ / fromPort_ / fromNotes_ from from_
+  bool resolveSource();                  // from_ from them (false: the source is gone)
 };
 
 class ProjectPatchView : public ui::Widget {
@@ -409,6 +461,45 @@ public:
 
   // The selected devices / tracks (from the canvas selection, and a selected group's capsule), for tests and the menus.
   std::vector<doc::DeviceId> selectedDevices() const;
+
+  // ---- TX.node-menu (see the file comment; each one undo step; false + the reason in the status line when refused) -----
+  // What a menu choice places: a catalog entry (circuit::NodeItem and its id) or a typed spec (NodeItem::Spec).
+  struct NodeChoice {
+    circuit::NodeItem item = circuit::NodeItem::Spec;
+    std::string id;
+    std::string name;
+  };
+  static NodeChoice choiceOf(const circuit::NodeEntry& e);
+  static NodeChoice specChoice(std::string spec);
+  // How a spawned node arrives wired: from an output (a device's port, or a MIDI track's note output) into its main
+  // input, or its main output into a param (or input) of a device.
+  struct SpawnLink {
+    enum class Kind : uint8_t { None, FromOutput, IntoParam };
+    Kind kind = Kind::None;
+    doc::DeviceId device;  // FromOutput: the source (invalid with `notes`); IntoParam: the target
+    std::string port;      // FromOutput: the output; IntoParam: the param or input
+    doc::TrackId notes;    // FromOutput: a note source's track
+  };
+  // Places `c` at world point `at` (see "node menu" above), wired by `link`. The new device (invalid: refused).
+  doc::DeviceId spawnNode(const NodeChoice& c, graph::Point2 at, const SpawnLink& link = {});
+  // Over a cable (a model edge): `c` between its ends; Z: a VCA at 1.
+  bool insertOnEdge(uint32_t edge, const NodeChoice& c);
+  bool insertVca(uint32_t edge);
+  // Shift-splice: `device` (a main input and output) into the cable.
+  bool spliceIntoEdge(doc::DeviceId device, uint32_t edge);
+  // Ctrl+Delete: `device` goes, its main input's sources wired to its main output's targets.
+  bool dissolve(doc::DeviceId device);
+  // The menus: spawn at device point `at` (wired by `link`; its filter from the link), or insert on `edge`.
+  circuit::NodeMenu* openSpawnMenu(ui::Vec2 at, const SpawnLink& link = {});
+  circuit::NodeMenu* openInsertMenu(uint32_t edge, ui::Vec2 at);
+  // The main input / output of a device as it is now ("" = none), from its patch's signature (catalog facts).
+  circuit::MainPorts mainPorts(doc::DeviceId device) const;
+  // Push-apart (after a spawn): a short simulation of the blocks it moves (nudges, view state), one re-layout per frame
+  // while it runs; it stops when they are apart and at rest (no frames after). Off (tests, scenes): it settles at once.
+  bool pushing() const noexcept { return !push_.bodies.empty(); }
+  void setPushAnimated(bool on) noexcept { pushAnimated_ = on; }
+  static constexpr float kPushGap = 12.0f;  // world units between blocks pushed apart
+  uint64_t pushFrames() const noexcept { return push_.frames; }
 
   // ---- TX.groups (doc::ops::groupInCircuit / ungroupInCircuit; one undo step each; false + the reason in the status
   // line when refused) -----------------------------------------------------------------------------------------------
@@ -639,6 +730,30 @@ private:
     };
     std::vector<NodeGeom> nodes;
   } morph_;
+
+  // TX.node-menu: push-apart. Bodies are device blocks (by id) with their world rect at the start, offset, velocity.
+  struct Push {
+    struct Body {
+      doc::DeviceId device;
+      float x = 0, y = 0, w = 0, h = 0;  // world rect when the push began (before the offset)
+      float dx = 0, dy = 0, vx = 0, vy = 0;
+      float minY = 0;                    // its band's title bottom: never pushed above it
+      bool movable = true;
+      doc::PatchNudge base;              // its nudge when the push began
+    };
+    std::vector<Body> bodies;
+    double last = -1.0;  // frame time of the last step
+    uint64_t frames = 0;
+  } push_;
+  bool pushAnimated_ = true;
+  std::shared_ptr<int> alive_ = std::make_shared<int>(0);  // the node menu's callbacks check it (the view may go first)
+  void startPush(doc::DeviceId placed);
+  bool stepPush(double seconds);  // false: settled
+  void applyPush();
+  void finishPushNow();
+  void placeAt(doc::DeviceId device, graph::Point2 at);
+  bool dispatchSteps(const char* label, std::vector<doc::Command> steps);
+  bool insertImpl(uint32_t edge, const NodeChoice& c, bool plain);  // plain: Z's VCA (no default preset)
 
   struct ViewAnim {
     bool active = false;

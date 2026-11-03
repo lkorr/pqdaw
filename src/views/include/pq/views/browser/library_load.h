@@ -54,6 +54,9 @@ std::vector<const meta::Type*> metaModuleTypes();
 Result<doc::DeviceId> addCatalogDevice(ViewContext& ctx, std::string_view patch, doc::DeviceKind kind, DeviceSlot at);
 // Loads a catalog device, a preset or a user device into a chain. Returns the new device's id.
 Result<doc::DeviceId> loadDeviceItem(ViewContext& ctx, std::string_view path, DeviceSlot at);
+// TX.node-menu: the device a preset or user-device file holds (its own ids: give it fresh ones, e.g. through
+// doc::ops::pasteDevices), for callers that place it themselves.
+Result<doc::DevicePtr> libraryDeviceOf(std::string_view path);
 // Hot-swap: the preset (or user device) at `path` replaces `target` in place (doc::ops::replaceDevice; wires and macro
 // mappings onto params the new device still has are kept).
 Status hotSwapDevice(ViewContext& ctx, doc::DeviceId target, std::string_view path);

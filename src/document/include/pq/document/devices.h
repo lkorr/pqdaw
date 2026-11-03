@@ -133,6 +133,9 @@ inline constexpr std::string_view kAnalysisTapPath = "#analysis";
 // The hash covers what the program depends on (lower.h patchHash: nodes, ids, values, wires; not layout, comments or
 // formatting), so a layout or comment edit keeps the names: the track's lowered patch stays shared and its unit does
 // not recompile.
+// TX.node-menu: a user device whose Device::patch names no stock device (the node menu's free device of one atom, made
+// from no stock file) is resolved from its text alone: the same parse, imports relative to the stdlib root, no ids to
+// carry but its own previous parse.
 // A text that does not parse, has no patch named Device::patch, does not validate or is not a device of its kind is an
 // ERROR: the device keeps playing its last good text of this session (`stale`; the circuit editor's rule: nothing that
 // fails reaches the audio), or, without one (a loaded project), it is bypassed. Either way `error` says why and the

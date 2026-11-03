@@ -1,9 +1,12 @@
 // The circuit editor window (T4.4): canvas + text pane over one PatchEditor. See pq/views/circuit/circuit_editor.h.
 
 #include "pq/views/circuit/circuit_editor.h"
+#include "pq/views/circuit/node_menu.h"
+#include "pq/meta/registry.h"
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <cstdio>
 
 #include "pq/graph/atoms.h"
@@ -243,6 +246,8 @@ bool EditCanvas::onPointer(const ui::PointerEvent& e) {
         if (to != UINT32_MAX && onConnect) {
           const bool fromInput = sc.pins[fromPin_].input;
           onConnect(fromInput ? to : fromPin_, fromInput ? fromPin_ : to);
+        } else if (to == UINT32_MAX && onWireDropped && hitTest(e.pos).kind == CanvasHit::Kind::None && rect().contains(e.pos)) {
+          onWireDropped(fromPin_, e.pos);  // TX.node-menu: empty space
         }
         return true;
       }
@@ -492,6 +497,7 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
     beginAdd(w, d);
   };
   canvas_->onRename = [this](uint32_t node) { beginRename(node); };
+  canvas_->onWireDropped = [this](uint32_t fromPin, ui::Vec2 at) { (void)openAddMenu(at, fromPin); };
   canvas_->onHoverChanged = [this](const CanvasHit& h) { hoverChanged(h); };
   canvas_->setProbeOverlay(&overlay_);
   // T4.15: while hidden branches leave the visible nodes laid out on their own, circuit edits start from that layout.
@@ -770,13 +776,13 @@ void CircuitEditor::checkNow() {
   else if (s && doc_->playing()) setStatus("Playing " + doc_->playingPatch() + ": swapped in the edit");
 }
 
-bool CircuitEditor::addAt(graph::Point2 world, std::string_view spec) {
+bool CircuitEditor::addAt(graph::Point2 world, std::string_view spec, const PatchEditor::AddLink* link) {
   const size_t idx = shownIndex();
   if (idx == graph::kNone) {
     setStatus("An imported patch is read-only.");
     return false;
   }
-  auto id = doc_->addNode(idx, spec, world);
+  auto id = doc_->addNode(idx, spec, world, link);
   if (!id) {
     setStatus(id.error().message);
     return false;
@@ -955,6 +961,37 @@ void CircuitEditor::beginAdd(graph::Point2 world, ui::Vec2 device) {
   if (ui::UiTree* t = layer->tree()) t->setFocus(static_cast<TypeIn&>(opened).field);
 }
 
+NodeMenu* CircuitEditor::openAddMenu(ui::Vec2 at, uint32_t fromPin) {
+  if (readOnly()) {
+    setStatus("An imported patch is read-only.");
+    return nullptr;
+  }
+  const ui::IRect r = canvas_->rect();
+  if (!r.contains(at)) at = {static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + r.h / 2)};
+  const graph::Point2 world = canvas_->toWorld(at);
+  NodeMenuOptions o;
+  o.catalog = nodeCatalog(NodeCatalog::Scope::Circuit, nullptr);
+  o.callees = doc_->callees();
+  o.title = "Add";
+  // A wire's pin: the new node is wired to it (the pin's node and port as the shown patch numbers them now).
+  std::optional<PatchEditor::AddLink> link;
+  if (const auto& sc = canvas_->scene(); sc && fromPin < sc->pins.size()) {
+    const ScenePin& pin = sc->pins[fromPin];
+    link = PatchEditor::AddLink{graph::PortRef{pin.node, static_cast<uint16_t>(pin.port)}, !pin.input};
+    o.filter = pin.input ? NodeFilter::WithOutput : NodeFilter::WithInput;
+    o.title = pin.input ? "Drive" : "Connect";
+  }
+  std::weak_ptr<bool> alive = alive_;
+  o.onPick = [this, alive, world, link](const NodeEntry& e) {
+    if (alive.expired()) return;
+    (void)addAt(world, e.item == NodeItem::Meta ? std::string(meta::kCallPrefix) + e.id : e.id, link ? &*link : nullptr);
+  };
+  o.onSpec = [this, alive, world, link](const std::string& spec) {
+    if (!alive.expired()) (void)addAt(world, spec, link ? &*link : nullptr);
+  };
+  return openNodeMenu(*canvas_, at, std::move(o));
+}
+
 void CircuitEditor::beginRename(uint32_t node) {
   const graph::Patch* p = shownGraph();
   if (!p || node >= p->nodeCount() || readOnly()) return;
@@ -1005,6 +1042,10 @@ bool CircuitEditor::onKey(const ui::KeyEvent& e) {
       const ui::IRect r = canvas_->rect();
       const ui::Vec2 d{static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + r.h / 2)};
       beginAdd(canvas_->toWorld(d), d);
+      return true;
+    }
+    if (e.key == ui::key::kTab) {  // TX.node-menu
+      (void)openAddMenu(canvas_->pointer());
       return true;
     }
     if (e.key == 'p') return makeParam() || true;

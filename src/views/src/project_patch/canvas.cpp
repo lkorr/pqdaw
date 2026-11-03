@@ -559,6 +559,22 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       dl.addRectStroke(snapRect(deviceRect(tn.x, tn.y, tn.w, tn.h)), th.circuit.selected, std::max(1.0f, std::round(2.0f * us)));
     }
   }
+  // TX.node-menu: a backwards cable from its param to the pointer; a Shift-dragged block's outline.
+  if (drag_ == Drag::BackWire) {
+    const float t = std::max(1.0f, std::round(2.0f * us));
+    const Vec2 a = backStart_;
+    const float mx = std::round((a.x + last_.x) * 0.5f);
+    dl.addHLine(std::min(a.x, mx), std::max(a.x, mx), std::round(a.y), th.circuit.selected, t);
+    dl.addVLine(mx, std::min(a.y, last_.y), std::max(a.y, last_.y), th.circuit.selected, t);
+    dl.addHLine(std::min(mx, last_.x), std::max(mx, last_.x), std::round(last_.y), th.circuit.selected, t);
+  }
+  if (drag_ == Drag::Splice && dragNode_ != kNone && dragNode_ < pp.nodes.size()) {
+    const Node& n = pp.nodes[dragNode_];
+    const Rect r = deviceRect(n.x, n.y, n.w, n.h);
+    const float dx = last_.x - press_.x, dy = last_.y - press_.y;
+    dl.addRectStroke(snapRect({r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy}), spliceEdge_ != kNone ? th.circuit.selected : th.circuit.hover,
+                     std::max(1.0f, std::round((spliceEdge_ != kNone ? 2.0f : 1.0f) * us)));
+  }
   if (drag_ == Drag::MoveDevice && dragNode_ != kNone) {
     const Node& n = pp.nodes[dragNode_];
     const Rect r = deviceRect(n.x, n.y, n.w, n.h);
@@ -658,6 +674,33 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       markDirty();
       return true;
     }
+  // TX.node-menu: a cable held after a Ctrl-release: a click wires the next target (Ctrl+click keeps it), a right click
+  // or a click on nothing drops it.
+  if (sticky_ && e.type == ui::PointerType::Down) {
+    if (e.button != ui::PointerButton::Left) {
+      sticky_ = false;
+      drag_ = Drag::None;
+      from_ = {};
+      markDirty();
+      return true;
+    }
+    swallowUp_ = true;
+    const bool keep = (e.mods & ui::mod::kCtrl) != 0;
+    const doc::Snapshot before = v.context().doc();
+    finishWire(e.pos);
+    sticky_ = keep && v.context().doc() != before && resolveSource();
+    drag_ = sticky_ ? Drag::Wire : Drag::None;
+    if (!sticky_) from_ = {};
+    markDirty();
+    return true;
+  }
+  if (swallowUp_ && e.type == ui::PointerType::Up) {
+    swallowUp_ = false;
+    return true;
+  }
+  if (drag_ == Drag::None && e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && !(e.mods & ui::mod::kAlt) &&
+      backWireHeld() && pressBackWire(e))
+    return true;
   if (lanePointer(e)) return true;  // TX.lane-edit: a window body is the arrangement's editing surface
   if (drag_ == Drag::None && facePointer(e)) return true;  // TMM.4: a face's control (its drag, hover, wheel)
   switch (e.type) {
@@ -843,6 +886,15 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           dragNode_ = node;
           return true;
         }
+        // TX.node-menu: Shift + drag splices the block into the cable it is released over; a Shift+click adds it to the
+        // selection (on release).
+        if (!(pp.nodes[node].group && pp.nodes[node].groupOpen)) {
+          drag_ = Drag::MaybeSplice;
+          dragNode_ = node;
+          spliceKeep_ = selection();
+          spliceEdge_ = kNone;
+          return true;
+        }
       }
       return CircuitCanvas::onPointer(e);
     }
@@ -926,6 +978,14 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           }
           break;
         }
+        case Drag::BackWire: markDirty(); break;  // TX.node-menu
+        case Drag::MaybeSplice:
+          if (std::max(std::fabs(e.pos.x - press_.x), std::fabs(e.pos.y - press_.y)) >= drag::kClickSlop * us) {
+            drag_ = Drag::Splice;
+            updateSplice(e.pos);
+          }
+          break;
+        case Drag::Splice: updateSplice(e.pos); break;
         case Drag::Lane:
         case Drag::None: break;
       }
@@ -937,7 +997,28 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       if (d == Drag::None) return CircuitCanvas::onPointer(e);
       last_ = e.pos;
       switch (d) {
-        case Drag::Wire: finishWire(e.pos); break;
+        case Drag::Wire: {
+          // TX.node-menu: released with Ctrl held, a made connection keeps a new cable from the same source on the pointer.
+          rememberSource();
+          const doc::Snapshot before = v.context().doc();
+          finishWire(e.pos);
+          if ((e.mods & ui::mod::kCtrl) && v.context().doc() != before && resolveSource()) {
+            sticky_ = true;
+            drag_ = Drag::Wire;
+            last_ = e.pos;
+            markDirty();
+            return true;
+          }
+          break;
+        }
+        case Drag::BackWire: finishBackWire(e.pos); break;
+        case Drag::MaybeSplice:
+          if (dragNode_ < v.scene().sceneNode.size() && v.scene().sceneNode[dragNode_] != kNone) {  // a Shift+click: add it
+            const uint32_t one[1] = {v.scene().sceneNode[dragNode_]};
+            select(one, {}, true);
+          }
+          break;
+        case Drag::Splice: endSplice(true, e.pos); break;
         case Drag::MoveDevice: finishDeviceMove(e.pos); break;
         case Drag::MaybeMoveDevice: {
           // A click on a selected block selects only it.
@@ -1048,6 +1129,9 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
     case Drag::Send: return ui::Cursor::ResizeEW;
     case Drag::Resize: return ui::Cursor::ResizeNWSE;
     case Drag::Lane: return laneCursor_;  // TX.lane-edit: the arrangement's gesture cursor
+    case Drag::BackWire: return ui::Cursor::Crosshair;  // TX.node-menu
+    case Drag::MaybeSplice:
+    case Drag::Splice: return ui::Cursor::Move;
     case Drag::None: break;
   }
   if (laneHover_ && !panning() && scene()) return laneCursor_;  // TX.lane-edit: over a window body (Alt: copy / curve)
@@ -1086,6 +1170,25 @@ void ProjectCanvas::finishWire(Vec2 pos) {
   }
   const Node& a = pp.nodes[from_.node];
   const Band& fromBand = pp.bands[a.band];
+  // TX.node-menu: an output's cable released on empty space: the node menu (nodes with an input first); the node arrives
+  // wired from that output.
+  if ((a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isNoteSource(pp, a)) && nodeAt(pos) == kNone && !pinAt(pos).valid() &&
+      rect().contains(pos)) {
+    ProjectPatchView::SpawnLink link;
+    link.kind = ProjectPatchView::SpawnLink::Kind::FromOutput;
+    link.port = a.outputs[from_.port].name;
+    if (a.kind == NodeKind::Source) {
+      link.notes = fromBand.track;
+    } else {
+      link.device = a.device;
+      if (const size_t at = link.port.rfind('@'); at != std::string::npos && (a.rack || a.group)) {
+        link.device = doc::DeviceId{static_cast<uint32_t>(std::stoul(link.port.substr(at + 1)))};
+        link.port.resize(at);
+      }
+    }
+    (void)v.openSpawnMenu(pos, link);
+    return;
+  }
   // Any output of a device or (TMM.10-fix2) a note output: onto an input pin (an audio input, a wired input, a param a
   // wire drives), that port; TX.patching: onto a face's control, that param; onto a device anywhere else, a menu of its
   // params and inputs.
@@ -1312,6 +1415,36 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
   }
   // TX.lane-edit: after a press in a window, the arrangement's edit chords act there (Ctrl+Shift+M, Delete, Ctrl+D …).
   if (laneFocus_ && view_.laneKey(e)) return true;
+  // TX.node-menu: Esc drops a held cable; Tab opens the node menu at the pointer (over a cable: insert there); Z over a
+  // cable inserts a VCA at 1; Ctrl+Delete dissolves the selected block.
+  if (e.key == ui::key::kEscape && sticky_) {
+    sticky_ = false;
+    drag_ = Drag::None;
+    from_ = {};
+    markDirty();
+    return true;
+  }
+  if (drag_ == Drag::None && mods == ui::mod::kNone && (e.key == ui::key::kTab || e.key == 'z')) {
+    Vec2 at = pointer_;
+    if (!rect().contains(at)) at = {static_cast<float>(rect().x + rect().w / 2), static_cast<float>(rect().y + rect().h / 2)};
+    const uint32_t edge = edgeAt(at);
+    if (e.key == 'z') {
+      if (edge == kNone) return CircuitCanvas::onKey(e);
+      (void)view_.insertVca(edge);
+      return true;
+    }
+    if (edge != kNone) (void)view_.openInsertMenu(edge, at);
+    else (void)view_.openSpawnMenu(at);
+    return true;
+  }
+  if (mods == ui::mod::kCtrl && (e.key == ui::key::kDelete || e.key == ui::key::kBackspace)) {
+    const std::vector<doc::DeviceId> d = view_.selectedDevices();
+    if (d.size() != 1) {
+      view_.context().setStatus("Dissolve: select one block (Ctrl+Delete)");
+      return !view_.embedded();
+    }
+    return view_.dissolve(d.front()) || !view_.embedded();
+  }
   // TMM.13-fix2 (MM review M5): an embedded canvas (a group's panel, the free rack) reports these handled only when
   // they did something, so the Device view around it still gets Delete, Ctrl+G and Ctrl+Shift+G. The main view keeps
   // them (a Delete there must never fall through to the arrangement's selection behind it).
@@ -1338,6 +1471,8 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
 }
 
 void ProjectCanvas::onCaptureLost() {
+  if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
+  if (sticky_) return;  // TX.node-menu: a held cable has no capture (no button is down)
   if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.endValueGesture();
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit (as the arrangement's lanes: no partial edit)
   leaveOutside(last_);  // TX.free-rack
@@ -1348,6 +1483,8 @@ void ProjectCanvas::onCaptureLost() {
 }
 
 void ProjectCanvas::onInteractionCancelled() {
+  if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
+  sticky_ = false;
   if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.cancelValueGesture();
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit
   leaveOutside(last_);  // TX.free-rack
@@ -1360,6 +1497,171 @@ void ProjectCanvas::onInteractionCancelled() {
   dragNode_ = dragBand_ = kNone;
   from_ = {};
   CircuitCanvas::onInteractionCancelled();
+}
+
+// ---- TX.node-menu ----------------------------------------------------------------------------------------------------
+
+bool ProjectCanvas::backWireHeld() const noexcept {
+  const ui::UiTree* t = tree();
+  if (t == nullptr || !t->keyHeld(kBackWireKey)) return false;
+  const ui::Widget* f = t->focus();
+  return f == nullptr || !f->acceptsTextInput();
+}
+
+uint32_t ProjectCanvas::edgeAt(Vec2 device) const {
+  if (!scene() || !rect().contains(device)) return kNone;
+  const circuit::CanvasHit h = hitTest(device);
+  const ProjectScene& ps = view_.scene();
+  if (h.kind != circuit::CanvasHit::Kind::Wire || h.index >= ps.modelEdge.size()) return kNone;
+  return ps.modelEdge[h.index];
+}
+
+void ProjectCanvas::rememberSource() {
+  const ProjectPatch& pp = view_.patch();
+  fromDevice_ = {};
+  fromNotes_ = {};
+  fromPort_.clear();
+  if (!from_.valid() || from_.node >= pp.nodes.size()) return;
+  const Node& n = pp.nodes[from_.node];
+  if (from_.port < n.outputs.size()) fromPort_ = n.outputs[from_.port].name;
+  if (n.kind == NodeKind::Source) fromNotes_ = pp.bands[n.band].track;
+  else fromDevice_ = n.device;
+}
+
+bool ProjectCanvas::resolveSource() {
+  view_.sync();
+  const ProjectPatch& pp = view_.patch();
+  from_ = {};
+  uint32_t node = kNone;
+  if (fromNotes_.valid()) {
+    const uint32_t b = pp.bandOf(fromNotes_);
+    if (b != kNone) node = pp.bands[b].source;
+  } else if (fromDevice_.valid()) {
+    node = pp.nodeOf(fromDevice_);
+  }
+  if (node == kNone) return false;
+  const int32_t k = pp.nodes[node].output(fromPort_);
+  if (k < 0) return false;
+  from_ = {node, static_cast<uint32_t>(k), false};
+  return true;
+}
+
+bool ProjectCanvas::pressBackWire(const ui::PointerEvent& e) {
+  const ProjectPatch& pp = view_.patch();
+  backDevice_ = {};
+  backParam_.clear();
+  if (const PinHit pin = pinAt(e.pos); pin.valid() && pin.input && pin.node < pp.nodes.size()) {
+    const Node& t = pp.nodes[pin.node];
+    if (const Port* q = wireTarget(t, pin.port)) {
+      backParam_ = q->name;
+      backDevice_ = t.device;
+      if (const size_t at = backParam_.rfind('@'); at != std::string::npos && (t.rack || t.group)) {
+        backDevice_ = doc::DeviceId{static_cast<uint32_t>(std::stoul(backParam_.substr(at + 1)))};
+        backParam_.resize(at);
+      }
+      backStart_ = toDevice({t.x, t.y + pinY(t, pin.port)});
+    }
+  }
+  if (!backDevice_.valid())
+    if (const FaceParamHit fh = faceParamAt(e.pos); !fh.param.empty() && fh.node < view_.scene().modelNode.size()) {
+      const uint32_t mn = view_.scene().modelNode[fh.node];
+      if (mn < pp.nodes.size() && pp.nodes[mn].kind == NodeKind::Device) {
+        backDevice_ = pp.nodes[mn].device;
+        backParam_ = fh.param;
+        backStart_ = e.pos;
+      }
+    }
+  if (!backDevice_.valid()) return false;
+  if (tree()) tree()->setFocus(this);
+  drag_ = Drag::BackWire;
+  press_ = last_ = e.pos;
+  markDirty();
+  return true;
+}
+
+void ProjectCanvas::finishBackWire(Vec2 pos) {
+  ProjectPatchView& v = view_;
+  const ProjectPatch& pp = v.patch();
+  if (!backDevice_.valid()) return;
+  // Onto an output pin (a device's, a group's In, a note output): that output drives the param.
+  if (const PinHit pin = pinAt(pos); pin.valid() && !pin.input && pin.node < pp.nodes.size()) {
+    const Node& n = pp.nodes[pin.node];
+    std::string port = pin.port < n.outputs.size() ? n.outputs[pin.port].name : std::string();
+    if (isNoteSource(pp, n)) {
+      if (pin.port == 0) v.context().setStatus("Wire: drag from a note output (Hz, gate, velocity), not the notes");
+      else (void)v.connectNotes(pp.bands[n.band].track, port, backDevice_, backParam_);
+      return;
+    }
+    if (n.kind == NodeKind::Device || n.kind == NodeKind::Terminal) {
+      doc::DeviceId from = n.device;
+      if (const size_t at = port.rfind('@'); at != std::string::npos && (n.rack || n.group)) {
+        from = doc::DeviceId{static_cast<uint32_t>(std::stoul(port.substr(at + 1)))};
+        port.resize(at);
+      }
+      (void)v.connect(from, port, backDevice_, backParam_);
+      return;
+    }
+    v.context().setStatus("Wire: drop a backwards cable on a device's output");
+    return;
+  }
+  // Onto a block: its main output.
+  if (const uint32_t n = nodeAt(pos); n != kNone) {
+    const Node& nd = pp.nodes[n];
+    if (nd.kind != NodeKind::Device || nd.device == backDevice_) return;
+    const circuit::MainPorts mp = v.mainPorts(nd.device);
+    if (mp.out.empty()) {
+      v.context().setStatus("Wire: " + nd.title + " has no output");
+      return;
+    }
+    (void)v.connect(nd.device, mp.out, backDevice_, backParam_);
+    return;
+  }
+  if (!rect().contains(pos)) return;
+  // Empty space: the menu offers sources first; the new node's main output drives the param.
+  ProjectPatchView::SpawnLink link;
+  link.kind = ProjectPatchView::SpawnLink::Kind::IntoParam;
+  link.device = backDevice_;
+  link.port = backParam_;
+  (void)v.openSpawnMenu(pos, link);
+}
+
+void ProjectCanvas::updateSplice(Vec2 pos) {
+  last_ = pos;
+  const ProjectPatch& pp = view_.patch();
+  uint32_t edge = edgeAt(pos);
+  if (edge != kNone && edge < pp.edges.size()) {
+    const Edge& e = pp.edges[edge];
+    const bool own = e.from == dragNode_ || e.to == dragNode_;
+    const bool cuttable = e.kind == EdgeKind::Chain || e.kind == EdgeKind::Modulation;
+    if (own || !cuttable) edge = kNone;
+  }
+  if (edge != spliceEdge_) {
+    spliceEdge_ = edge;
+    // The cable it would go into is shown selected (the canvas's own highlight: straight or hanging, as drawn).
+    if (edge != kNone) {
+      const ProjectScene& ps = view_.scene();
+      for (uint32_t w = 0; w < ps.modelEdge.size(); ++w)
+        if (ps.modelEdge[w] == edge) {
+          const uint32_t one[1] = {w};
+          select({}, one);
+          break;
+        }
+    } else {
+      select(spliceKeep_.nodes, spliceKeep_.wires);
+    }
+  }
+  markDirty();
+}
+
+void ProjectCanvas::endSplice(bool apply, Vec2 pos) {
+  const uint32_t edge = spliceEdge_;
+  spliceEdge_ = kNone;
+  const ProjectPatch& pp = view_.patch();
+  const doc::DeviceId device = dragNode_ < pp.nodes.size() ? pp.nodes[dragNode_].device : doc::DeviceId{};
+  select(spliceKeep_.nodes, spliceKeep_.wires);
+  (void)pos;
+  if (apply && edge != kNone && device.valid()) (void)view_.spliceIntoEdge(device, edge);
+  markDirty();
 }
 
 ui::InfoText ProjectCanvas::info() const {

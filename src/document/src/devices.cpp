@@ -472,7 +472,12 @@ std::shared_ptr<const ResolvedDevice> DeviceLibrary::resolve(const Device& d) co
   r->source = d.source;
   const DeviceInfo* stockInfo = catalog_.find(d.patch);
   const std::string displayName = stockInfo ? stockInfo->name : d.patch;
-  if (!stock) {
+  // TX.node-menu: a device of its own (no stock device of that name: the node menu's device of one atom) resolves on its
+  // text alone (imports relative to the stdlib root); a stock device whose file is missing stays an error.
+  bool namesStock = false;
+  for (const StockDevice& sd : stockDevices()) namesStock = namesStock || sd.patch == d.patch;
+  const std::string ownKey = d.patch + ".pqp";
+  if (!stock && namesStock) {
     r->error = "the stock device '" + d.patch + "' it was made from is not in the library";
   } else {
     graph::ParseOptions po;
@@ -481,7 +486,7 @@ std::shared_ptr<const ResolvedDevice> DeviceLibrary::resolve(const Device& d) co
     po.previous = previous;
     po.lenientLayout = true;  // as the circuit editor parses (the same ids for the same text)
     po.deferMissingInputs = true;
-    graph::ParseResult pr = graph::parseDetailed(d.source->text, stock->key, po);
+    graph::ParseResult pr = graph::parseDetailed(d.source->text, stock ? stock->key : ownKey, po);
     if (!pr.lowered) {
       r->error = pr.diagnostics.empty() ? std::string("the text does not parse")
                                         : graph::formatDiagnostic(d.source->text, pr.diagnostics.front());

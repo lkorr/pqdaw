@@ -383,6 +383,49 @@ int main(int argc, char** argv) {
     }
   }
   view->setPanelsShown(true);
+  // TX.node-menu: the node menu over one band — opening it with the full catalog (Tab: the catalog shared, the search,
+  // the popup laid out and painted with the canvas under it), a keystroke (search again + repaint), and the push-apart
+  // after a spawn onto a block (a re-layout per frame until settled; then idle).
+  {
+    view->focusBand(snap->tracks[0]->children.at(3)->id, false);
+    settle();
+    const ui::IRect r = view->canvas().rect();
+    const Vec2 at{static_cast<float>(r.x + r.w / 3), static_cast<float>(r.y + r.h / 3)};
+    std::vector<double> open, key;
+    for (int i = 0; i < 60; ++i) {
+      circuit::NodeMenu* m = nullptr;
+      open.push_back(timed([&] { m = view->openSpawnMenu(at); }));
+      if (m == nullptr) return 1;
+      key.push_back(timed([&] { m->setQuery(i % 2 == 0 ? "sat" : "sa"); }));
+      tree.setFocus(&view->canvas());
+      ui::OverlayLayer::of(view->canvas())->closeAll();
+      settle();
+    }
+    pq::bench::reportStats("node_menu.open frame (Tab: full catalog, search, layout, paint) one band 2560x1440", pq::bench::summarize(open), "ns CPU/frame");
+    pq::bench::reportStats("node_menu.keystroke frame (search + repaint)", pq::bench::summarize(key), "ns CPU/frame");
+    // Push-apart: two one-atom devices spawned at the same spot of the band: the second lands on the first and the two
+    // push each other apart.
+    const doc::TrackId t = snap->tracks[0]->children.at(3)->id;
+    const ProjectPatch& pp = view->patch();
+    const Band& b = pp.bands[pp.bandOf(t)];
+    const graph::Point2 spot{b.x0 + 200.0f, b.y + b.h - 30.0f};
+    std::vector<double> push;
+    uint64_t frames = 0;
+    for (int round = 0; round < 5; ++round) {
+      const doc::DeviceId a = view->spawnNode(ProjectPatchView::specChoice("tanh"), spot);
+      settle();
+      const doc::DeviceId c = view->spawnNode(ProjectPatchView::specChoice("tanh"), spot);
+      if (!a.valid() || !c.valid()) return 1;
+      while (view->pushing()) {
+        push.push_back(timed([] {}));
+        if (push.size() > 100000) break;
+      }
+      frames += view->pushFrames();
+      settle();
+    }
+    std::printf("push-apart: %llu frames over 5 spawns (each a re-layout)\n", static_cast<unsigned long long>(frames));
+    pq::bench::reportStats("node_menu.push-apart frame (step + re-layout + paint) 64 tracks 2560x1440", pq::bench::summarize(push), "ns CPU/frame");
+  }
   // The morph: back to the arrangement and in again, every frame timed at 144 Hz.
   view->setShown(false, false);
   settle();

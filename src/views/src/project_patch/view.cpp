@@ -329,6 +329,17 @@ void ProjectPatchView::captureArrangement() {
 }
 
 void ProjectPatchView::onFrame(double now) {
+  // TX.node-menu: the push-apart after a spawn steps with the frame clock until the blocks are apart and at rest.
+  if (pushing()) {
+    if (push_.last < 0.0) push_.last = now - 1.0 / 60.0;
+    const double dt = std::clamp(now - push_.last, 0.0, 0.05);
+    push_.last = now;
+    const bool moving = stepPush(dt);
+    applyPush();
+    ++push_.frames;
+    if (moving && push_.frames < 240) requestFrame();
+    else push_.bodies.clear();
+  }
   if (morph_.active) {
     if (morph_.start < 0.0) morph_.start = now - static_cast<double>(morph_.resumeFrom) * kMorphSeconds;
     const float p = static_cast<float>(std::clamp((now - morph_.start) / kMorphSeconds, 0.0, 1.0));

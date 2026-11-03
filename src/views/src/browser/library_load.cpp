@@ -66,6 +66,8 @@ Result<doc::DevicePtr> deviceOfFile(std::string_view path) {
 
 }  // namespace
 
+Result<doc::DevicePtr> libraryDeviceOf(std::string_view path) { return deviceOfFile(path); }
+
 std::string catalogItemPath(std::string_view patch) { return std::string(kCatalogScheme) + std::string(patch); }
 
 std::string_view catalogPatchOf(std::string_view path) noexcept {

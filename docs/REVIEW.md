@@ -668,3 +668,15 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - What was matched against: docs/reviews/MM.md (H1, H5, H6, M5, M9, M10, L14, L21–L23, "UI and aesthetic" 1–11 and its contrast table) and SPEC §15 2026-11-01 / 02.
 - To judge (Q?-TMM.13-fix2-a): the palette (mint vs the boolean green, amber vs the selection); wires beside controls instead of through them; 35 % cables in the Device view and hover-only cables from the collapsed rack; the chain line along the frames' feet; the pitch arc's ±12 st middle; the capsule radius; faces up to 2× in the Device view.
 - Known gaps: no knock-out halo where a circuit wire still crosses text; Device-view cables are not routed around panels; the Wavetable's toolbar stays ≈ 8 px in the Device view; stock panels at fit zoom remain miniatures.
+
+## TX.node-menu The node menu: Tab, drop-to-spawn, insert on a cable · 2026-11-02 (👁)
+- What to look at: `docs/reviews/TX.node-menu/node-menu-1280.png` (= golden `tests/views/golden/project-node-menu.png`): the menu over the patch view, "filter" typed — tabs down the left, the search field focused (caret, magnifier), the list grouped by category (AUDIO EFFECTS first: the best match's group), the port dots (in → out, hollow: none), the preview (kind chip, "19 params, 2 in", description, PORTS, PARAMETERS in two columns).
+- Live (`pqdaw`, Ctrl+Alt+P):
+  - Tab over empty canvas: type `sat`, Enter — a Saturator lands at the pointer as a free block; Tab again on top of it: the two push apart (≈ 0.3 s, then still). Type `0.5` or `* 2`: "Place …" first; Enter places a one-node device.
+  - Drag a device's output to empty space: the menu (connectable first, the rest dimmed under "NOT CONNECTABLE"); the pick arrives wired. Hold W and drag out of a param pin or a knob: a backwards cable (onto an output, or empty space: sources first).
+  - Hover a chain cable and press Z: a VCA (×1) in the chain; over a wire: a free VCA between its ends. Tab over a cable: insert anything (an output-only `0.5` connects only its output).
+  - Shift-drag a free block over a wire (the wire shows selected), release: spliced. Select it, Ctrl+Delete: dissolved, the wire back.
+  - Drag an output onto an input with Ctrl held, release: a cable stays on the pointer; click more targets (Ctrl+click keeps it), Esc drops it.
+  - The circuit editor (Edit Device Circuit): Tab at the pointer; a wire dragged from a pin into empty space.
+- To judge (Q?-TX.node-menu-a): W as the backwards-cable key; chain blocks standing still in the push-apart (only free blocks move); a stock instrument / rack from Tab going into the chain (not free); the menu's size (720 × 440) and the descriptions' wording; Tab inside the menu cycling categories.
+- Known gaps: Recent lasts the session (not saved); the User Library entries show no params in the preview (the file is read only when placed); the push-apart re-lays out the whole patch per frame (≈ one relayout: see bench/RESULTS.md); TX.cables' curves are used for the cable hit tests once that task merges (the code asks the canvas's hit test).
