@@ -2144,7 +2144,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - A cable onto a control whose anchor moves (a slider's handle being dragged, a panel laid out again after a zoom) lands at once on its new rest shape instead of swinging (a layout change is no push, and a swinging end would twitch after every zoom).
 - Status: open (provisional; user to judge the look from docs/REVIEW.md).
 
-## Q?-TX.node-menu-fix1-a · 2026-11-03 · TX.node-menu-fix1 · The node menu's look, the cable on the pointer, small UX choices
+## Q207 · 2026-11-03 · TX.node-menu-fix1 · The node menu's look, the cable on the pointer, small UX choices
 - **Look**: built from the existing `face.*` theme tokens (body, hub, frame, track, ink, signal, glow, value) rather than new ones, so the menu follows the faces if the theme changes them. Alternative: a `nodeMenu.*` token group (only if it should diverge from the faces).
 - **Open animation**: 120 ms, a fade and a growth from 96 % about the corner nearest the pointer, eased out (`DrawList::fadeSince`; clip rects are not scaled during those frames: a few px of the list may clip for 0.1 s).
 - **Placement**: 12 px right of and below the pointer (left of it when there is no room), so the marked spawn point and a dropped cable's end stay visible. Before: its corner exactly at the pointer.
