@@ -327,6 +327,7 @@ TEST_CASE("adding a track: exactly one compile, a click-free swap; unchanged uni
   const app::LinkStats s0 = a->stats();
   const TrackId added = fa.store.ids().track();
   REQUIRE(fa.store.dispatch(AddTrack{playback_fixture::track(added, TrackKind::Midi, "New", fa.store.ids().device()), {}, kAppend}).ok());
+  playback_fixture::wireSeries(fa.store);  // TX.all-free: wired in series
   a->flush();
   CHECK(a->stats().compiles == s0.compiles + 1);
   CHECK(a->stats().topologyChanges == s0.topologyChanges + 1);
@@ -437,6 +438,7 @@ TEST_CASE("a structural edit on the compile thread is debounced into one compile
   // Three structural edits in quick succession (well inside the debounce): one compile.
   for (int i = 0; i < 3; ++i)
     REQUIRE(f.store.dispatch(AddTrack{playback_fixture::track(f.store.ids().track(), TrackKind::Midi, "T", f.store.ids().device()), {}, kAppend}).ok());
+    playback_fixture::wireSeries(f.store);  // TX.all-free: wired in series
   link->flush();
   CHECK(link->stats().compiles == s0.compiles + 1);
   CHECK(link->stats().compileErrors == 0);

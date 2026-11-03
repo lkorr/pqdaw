@@ -110,10 +110,10 @@ TEST_CASE("serialize errors: syntax") {
 }
 
 TEST_CASE("serialize errors: structure, types and ranges") {
-  expectError(replaced(minimalText(), "  \"schemaVersion\": 16,\n", ""), "$: missing key \"schemaVersion\"");
-  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 16", "\"schemaVersion\": \"3\"")).code ==
+  expectError(replaced(minimalText(), "  \"schemaVersion\": 17,\n", ""), "$: missing key \"schemaVersion\"");
+  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 17", "\"schemaVersion\": \"3\"")).code ==
         pq::ErrorCode::Type);
-  expectError(replaced(minimalText(), "\"schemaVersion\": 16", "\"schemaVersion\": \"3\""),
+  expectError(replaced(minimalText(), "\"schemaVersion\": 17", "\"schemaVersion\": \"3\""),
               "$.schemaVersion: expected an integer, found a string");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"bogus\": 1,"), "$.bogus: unknown key");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"tracks\": [],"), "$.tracks: duplicate key");
@@ -156,7 +156,9 @@ TEST_CASE("serialize errors: structure, types and ranges") {
   expectError(replaced(minimalText(), "\"mute\": false", "\"mute\": true"), "$.master.mixer: the master track has no mute or solo");
   expectError(replaced(minimalText(), "\"volumeDb\": 0.0", "\"volumeDb\": 7.0"),
               "$.master.mixer.volumeDb: parameter value out of range");
-  expectError(replaced(minimalText(), "\"id\": 2,", "\"id\": 1,"),
+  // (TX.all-free: the master's main link renamed with it, so the id clash is the only fault.)
+  expectError(replaced(replaced(minimalText(), "\"id\": 2,", "\"id\": 1,"), "\"notes\": 2, \"port\": \"\", \"mixer\": 2",
+                       "\"notes\": 1, \"port\": \"\", \"mixer\": 1"),
               "$.master: id 1 is used by more than one entity (also $.tunings[0])");
   expectError(replaced(minimalText(), "\"returns\": [],", "\"returns\": [], \"view\": {\"tracks\": [{\"id\": 5, \"folded\": true, \"height\": 0}], \"lanes\": []},"),
               "$.view.tracks[0].id: no track has this id");

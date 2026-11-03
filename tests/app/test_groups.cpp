@@ -32,6 +32,26 @@ using namespace pq::doc;
 
 namespace {
 
+// The chain links of group `g` in series order: from In, each next one from where the last one went (TX.all-free: a
+// link between two series devices keeps the id of the path link it stands for, so their order in the list is not the
+// series' order).
+WireList alongSeries(const Project& p, DeviceId g) {
+  WireList out;
+  DeviceId at = g;
+  bool more = true;
+  while (more) {
+    more = false;
+    for (const Wire& x : wiresOf(p))
+      if (x.chain && !x.fromNoteSource() && x.from == at && (out.empty() ? x.port == kGroupInPort : true)) {
+        out.push_back(x);
+        at = x.to;
+        more = x.to != g;
+        break;
+      }
+  }
+  return out;
+}
+
 constexpr uint32_t kBlock = 64;
 constexpr double kRate = 48000.0;
 
@@ -175,7 +195,7 @@ DeviceId roundTrip(DocumentStore& store, std::vector<DeviceId> devices, const st
   CHECK(*store.current() == *before);
   REQUIRE(store.redo());
   // Ungroup: the exact inverse.
-  auto u = ops::ungroupInCircuit(store.current(), library(), g);
+  auto u = ops::ungroupInCircuit(store.current(), store.ids(), library(), g);
   REQUIRE_MESSAGE(u.ok(), (u.ok() ? std::string() : u.error().message));
   REQUIRE(store.dispatch(u->command).ok());
   CHECK(*store.current() == *before);
@@ -204,20 +224,22 @@ TEST_CASE("groups: a series of stock effects grouped sounds the same, ungrouped 
   b.commands.push_back(SetDeviceSetting{eq, "type1", 6.0});
   b.commands.push_back(SetDeviceParam{eq, "freq1", 900.0});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   const DeviceId g = roundTrip(store, {util, sat}, "Utility → Saturator");
-  // The grouped document: the group where Utility was, both members free and in it, the series as three wires.
+  // The grouped document: the group where Utility was (on the main path), both members off it and in it, the series as
+  // three chain links (TX.all-free: beside the path's own links).
   const Track& t = *findTrackPtr(*store.current(), keys);
   REQUIRE(t.devices.size() == 5);
   CHECK(t.devices[1]->id == g);
   CHECK(isGroupDevice(*t.devices[1]));
-  CHECK(!t.devices[1]->free);
+  CHECK(playback_fixture::onPath(*store.current(), g));
   CHECK(t.devices[2]->id == util);
-  CHECK(t.devices[2]->free);
+  CHECK(!playback_fixture::onPath(*store.current(), util));
   CHECK(t.devices[2]->group == g);
   CHECK(t.devices[3]->group == g);
   CHECK(t.devices[4]->id == eq);
   CHECK(!t.devices[4]->group.valid());
-  const WireList& w = wiresOf(*store.current());
+  const WireList w = alongSeries(*store.current(), g);
   REQUIRE(w.size() == 3);
   CHECK((w[0].from == g && w[0].port == kGroupInPort && w[0].to == util && w[0].param == "x"));
   CHECK((w[1].from == util && w[1].port == "out" && w[1].to == sat && w[1].param == "x"));
@@ -244,12 +266,11 @@ TEST_CASE("groups: the user's example — basic synth → phase accumulator → 
   b.commands.push_back(SetDeviceParam{pa1, "freq", 110.0});
   b.commands.push_back(SetDeviceParam{pa2, "freq", 3.0});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   (void)roundTrip(store, {pa1, wt, pa2}, "PA → WT → PA after Basic Synth");
   // Basic synth → group: the chain is two devices.
   const Track& t = *findTrackPtr(*store.current(), keys);
-  size_t series = 0;
-  for (const DevicePtr& d : t.devices) series += d->free ? 0 : 1;
-  CHECK(series == 2);
+  CHECK(mainPath(*store.current(), t).blocks.size() == 2);
 }
 
 TEST_CASE("groups: a free modulator moves in, a modulator outside keeps modulating a member across the boundary") {
@@ -263,11 +284,10 @@ TEST_CASE("groups: a free modulator moves in, a modulator outside keeps modulati
   b.commands.push_back(AddDevice{keys, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(AddDevice{keys, makeDevice(lfoIn, "lfo_device", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(AddDevice{keys, makeDevice(lfoOut, "lfo_device", DeviceKind::AudioEffect), kAppend});
-  b.commands.push_back(SetDeviceFree{lfoIn, true});
-  b.commands.push_back(SetDeviceFree{lfoOut, true});
   b.commands.push_back(SetDeviceParam{lfoIn, "rate", 7.0});
   b.commands.push_back(SetDeviceParam{lfoOut, "rate", 3.0});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store, {lfoIn, lfoOut});  // TX.all-free: the chain as cables
   auto w1 = ops::connectWire(*store.current(), ids, lfoIn, "lfo", sat, "drive");
   REQUIRE_MESSAGE(w1.ok(), (w1.ok() ? std::string() : w1.error().message));
   REQUIRE(store.dispatch(w1->command).ok());
@@ -292,6 +312,7 @@ TEST_CASE("groups: editing inside — In also into a parallel device, a member's
   b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(SetDeviceParam{sat, "drive", 18.0});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   auto e = group(store, {sat});
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
@@ -299,9 +320,7 @@ TEST_CASE("groups: editing inside — In also into a parallel device, a member's
   const golden::Channels one = render(*store.current(), 12000);
   // A Utility added free into the group, fed from In and summed into Out: a parallel path.
   Batch add{"util", {}};
-  auto u = std::make_shared<Device>(*makeDevice(util, "utility", DeviceKind::AudioEffect));
-  u->free = true;
-  add.commands.push_back(AddDevice{keys, u, kAppend});
+  add.commands.push_back(AddDevice{keys, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});  // unwired
   add.commands.push_back(SetDeviceGroup{util, g});
   REQUIRE(store.dispatch(add).ok());
   for (auto [from, port, to, param] : {std::tuple{g, std::string(kGroupInPort), util, std::string("x")},
@@ -315,7 +334,7 @@ TEST_CASE("groups: editing inside — In also into a parallel device, a member's
   CHECK(maxDiff(one, two) > 1e-3);  // the dry path joined the saturated one
   CHECK(maxDiff(two, render(*store.current(), 12000, compile::jitUnitBackend())) == 0.0);
   // Not one series any more: ungroup says why.
-  auto un = ops::ungroupInCircuit(store.current(), library(), g);
+  auto un = ops::ungroupInCircuit(store.current(), store.ids(), library(), g);
   REQUIRE_FALSE(un.ok());
   MESSAGE(un.error().message);
   // Deleting the group deletes its members and their wires (one step).
@@ -324,7 +343,7 @@ TEST_CASE("groups: editing inside — In also into a parallel device, a member's
   REQUIRE(store.dispatch(del->command).ok());
   CHECK(findDevice(*store.current(), sat).track == nullptr);
   CHECK(findDevice(*store.current(), util).track == nullptr);
-  CHECK(wiresOf(*store.current()).empty());
+  for (const Wire& x : wiresOf(*store.current())) CHECK((x.from != g && x.to != g && x.from != sat && x.to != sat && x.from != util && x.to != util));
 }
 
 TEST_CASE("groups: refusals say why") {
@@ -344,6 +363,7 @@ TEST_CASE("groups: refusals say why") {
   b.commands.push_back(AddDevice{lead, metaDevice(pa, "phase_acc", DeviceKind::Instrument), kAppend});
   b.commands.push_back(AddDevice{lead, metaDevice(wt, "wavetable", DeviceKind::AudioEffect), kAppend});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   auto refused = [&](std::vector<DeviceId> sel, const char* what) {
     auto e = group(store, sel);
     CHECK_FALSE(e.ok());
@@ -359,7 +379,7 @@ TEST_CASE("groups: refusals say why") {
   REQUIRE(store.dispatch(e->command).ok());
   refused({e->devices.front()}, "a group into a group");
   refused({c}, "already a member");
-  CHECK_FALSE(store.dispatch(SetDeviceFree{c, false}).ok());  // a member is free
+  CHECK_FALSE(playback_fixture::onPath(*store.current(), c));  // a member is never on the main path
 }
 
 TEST_CASE("groups: the file reader refuses a broken group; duplicating a group copies its contents and wires") {
@@ -372,6 +392,7 @@ TEST_CASE("groups: the file reader refuses a broken group; duplicating a group c
   b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(AddDevice{keys, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   auto e = group(store, {sat, util});
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
@@ -388,7 +409,12 @@ TEST_CASE("groups: the file reader refuses a broken group; duplicating a group c
   MESSAGE(r.error().message);
   CHECK(r.error().message.find("group") != std::string::npos);
   // Duplicate: a second group with copies of both members and the three series wires, sounding like two in series.
-  const size_t wires = wiresOf(*store.current()).size();
+  auto chainLinks = [&] {
+    size_t n = 0;
+    for (const Wire& x : wiresOf(*store.current())) n += x.chain ? 1 : 0;
+    return n;
+  };
+  const size_t wires = chainLinks();
   auto d = ops::duplicateDevices(*store.current(), ids, std::vector<DeviceId>{g});
   REQUIRE(d.ok());
   REQUIRE(store.dispatch(d->command).ok());
@@ -400,7 +426,8 @@ TEST_CASE("groups: the file reader refuses a broken group; duplicating a group c
   }
   CHECK(groups == 2);
   CHECK(members == 4);
-  CHECK(wiresOf(*store.current()).size() == 2 * wires);
+  CHECK(chainLinks() == 2 * wires);
+  CHECK(mainPath(*store.current(), t).blocks.size() == 3);  // the synth, the group, its copy after it
   for (const WireState& s : wireStates(*store.current(), library())) CHECK(s.status == WireStatus::Lowered);
   CHECK(peakOf(render(*store.current(), 6000)) > 0.01f);
 }
@@ -428,6 +455,7 @@ Lead leadTrack(DocumentStore& store, std::initializer_list<std::string_view> typ
     first = false;
   }
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   return l;
 }
 
@@ -458,11 +486,11 @@ TEST_CASE("groups-fix1: the user's patch — Phase accumulator → Wavetable →
   REQUIRE(isGroupDevice(*t.devices.front()));
   CHECK(t.devices.front()->id == g);
   for (size_t i = 1; i < t.devices.size(); ++i) {
-    CHECK(t.devices[i]->free);
+    CHECK(!playback_fixture::onPath(grouped, t.devices[i]->id));
     CHECK(t.devices[i]->group == g);
   }
   // The In terminal carries the notes: its link into the Phase accumulator's frequency.
-  const WireList& w = wiresOf(grouped);
+  const WireList w = alongSeries(grouped, g);
   REQUIRE(w.size() == 4);
   CHECK((w[0].from == g && w[0].port == kGroupInPort && w[0].to == pa && w[0].param == "hz" && w[0].chain));
   CHECK((w[3].from == env && w[3].to == g && w[3].param == kGroupOutPort && w[3].chain));
@@ -520,11 +548,18 @@ TEST_CASE("groups-fix1: any stretch of a voice run groups — the head, the midd
     DocumentStore store;
     const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
     const DeviceId sat = store.ids().device(), util = store.ids().device();
+    {  // TX.all-free: spliced in at the path's end
+      auto e = ops::pasteDevices(*store.current(), store.ids(), l.track,
+                                 std::vector<DevicePtr>{makeDevice(sat, "saturator", DeviceKind::AudioEffect),
+                                                        makeDevice(util, "utility", DeviceKind::AudioEffect)});
+      REQUIRE(e.ok());
+      REQUIRE(store.dispatch(e->command).ok());
+    }
+    const DeviceId satC = findTrackPtr(*store.current(), l.track)->devices[3]->id;
+    const DeviceId utilC = findTrackPtr(*store.current(), l.track)->devices[4]->id;
     Batch b{"fx", {}};
-    b.commands.push_back(AddDevice{l.track, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
-    b.commands.push_back(AddDevice{l.track, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
-    b.commands.push_back(SetDeviceParam{sat, "drive", 12.0});
-    b.commands.push_back(SetDeviceParam{util, "width", 2.0});
+    b.commands.push_back(SetDeviceParam{satC, "drive", 12.0});
+    b.commands.push_back(SetDeviceParam{utilC, "width", 2.0});
     b.commands.push_back(SetDeviceParam{l.devs[2], "release", 0.05});
     REQUIRE(store.dispatch(b).ok());
     (void)roundTrip(store, {l.devs[0], l.devs[1], l.devs[2]}, "[PA → WT → Envelope] → Saturator → Utility", 48000);
@@ -535,7 +570,11 @@ TEST_CASE("groups-fix1: a series the voices reach is grouped only as a stretch o
   DocumentStore store;
   const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
   const DeviceId sat = store.ids().device();
-  REQUIRE(store.dispatch(AddDevice{l.track, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend}).ok());
+  {  // TX.all-free: after the Envelope on the path (spliced in at the end)
+    auto e = ops::pasteDevices(*store.current(), store.ids(), l.track, std::vector<DevicePtr>{makeDevice(sat, "saturator", DeviceKind::AudioEffect)});
+    REQUIRE(e.ok());
+    REQUIRE(store.dispatch(e->command).ok());
+  }
   auto refused = [&](DocumentStore& s, std::vector<DeviceId> sel, const char* what) {
     auto e = ops::groupInCircuit(s.current(), s.ids(), library(), sel);
     CHECK_FALSE(e.ok());
@@ -555,6 +594,7 @@ TEST_CASE("groups-fix1: a series the voices reach is grouped only as a stretch o
   b.commands.push_back(AddTrack{playback_fixture::track(fx, TrackKind::Midi, "Fx"), {}, kAppend});
   b.commands.push_back(AddDevice{fx, makeDevice(u, "utility", DeviceKind::AudioEffect), kAppend});
   REQUIRE(s2.dispatch(b).ok());
+  playback_fixture::wireSeries(s2);  // TX.all-free: the chain as cables
   refused(s2, {u}, "a stock effect at the note source");
 }
 
@@ -574,12 +614,13 @@ TEST_CASE("groups-fix1: switched-off devices inside a series pass their signal o
     b.commands.push_back(SetDeviceParam{u2, "balance", -0.4});
     b.commands.push_back(SetDeviceActive{sat, false});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
     const DeviceId g = roundTrip(store, {u1, sat, u2}, "Utility → Saturator (off) → Utility");
     // Switched on inside the group, then ungrouped: the same sound as the series with it on.
     REQUIRE(store.dispatch(SetDeviceActive{sat, true}).ok());
     const golden::Channels on = render(*store.current(), 24000);
     CHECK(maxDiff(on, render(*store.current(), 24000, compile::jitUnitBackend())) == 0.0);
-    auto un = ops::ungroupInCircuit(store.current(), library(), g);
+    auto un = ops::ungroupInCircuit(store.current(), store.ids(), library(), g);
     REQUIRE_MESSAGE(un.ok(), (un.ok() ? std::string() : un.error().message));
     REQUIRE(store.dispatch(un->command).ok());
     CHECK(maxDiff(on, render(*store.current(), 24000)) == 0.0);
@@ -604,6 +645,7 @@ TEST_CASE("groups-fix1: switched-off devices inside a series pass their signal o
     b.commands.push_back(SetDeviceParam{u1, "width", 2.5});
     b.commands.push_back(SetDeviceActive{sat, false});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
     (void)roundTrip(store, {u1, sat}, "Utility → Saturator (off)");
   }
 }
@@ -622,6 +664,7 @@ TEST_CASE("groups-fix1: an unplugged device inside a series — the signal so fa
   b.commands.push_back(SetDeviceParam{pa2, "freq", 220.0});
   b.commands.push_back(SetDeviceChainInput{pa2, std::string(kChainUnplugged)});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   (void)roundTrip(store, {pa1, pa2, wt}, "synth → PA → PA (unplugged) → WT");
   REQUIRE(store.undo());  // the series again
   // Two unplugged devices in a row: the first's output goes nowhere and it takes nothing — refused, with the reason.
@@ -651,12 +694,12 @@ TEST_CASE("groups-fix1: a feedback loop through the grouped series keeps its 1-s
     b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
     b.commands.push_back(SetDeviceParam{sat, "drive", 9.0});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
     auto w = ops::connectWire(*store.current(), ids, sat, "out", util, "gain");
     REQUIRE_MESSAGE(w.ok(), (w.ok() ? std::string() : w.error().message));
     REQUIRE(store.dispatch(w->command).ok());
-    const std::vector<WireState> s = wireStates(*store.current(), library());
-    REQUIRE(s.size() == 1);
-    REQUIRE(s.front().status == WireStatus::Delayed);  // the loop's delay: on the feedback wire
+    for (const WireState& s : wireStates(*store.current(), library()))  // the loop's delay: on the feedback wire
+      CHECK(s.status == (s.id == w->wires.front() ? WireStatus::Delayed : WireStatus::Lowered));
     (void)roundTrip(store, {util, sat}, "Utility → Saturator with Saturator → Utility.gain");
   }
   SUBCASE("meta, at the note source: the Envelope's output back into the accumulator's phase modulation") {
@@ -666,15 +709,14 @@ TEST_CASE("groups-fix1: a feedback loop through the grouped series keeps its 1-s
     auto w = ops::connectWire(*store.current(), store.ids(), l.devs[2], "out", l.devs[0], "pm");
     REQUIRE_MESSAGE(w.ok(), (w.ok() ? std::string() : w.error().message));
     REQUIRE(store.dispatch(w->command).ok());
-    const std::vector<WireState> s = wireStates(*store.current(), library());
-    REQUIRE(s.size() == 1);
-    REQUIRE(s.front().status == WireStatus::Delayed);
+    for (const WireState& s : wireStates(*store.current(), library()))
+      CHECK(s.status == (s.id == w->wires.front() ? WireStatus::Delayed : WireStatus::Lowered));
     (void)roundTrip(store, {l.devs[0], l.devs[1], l.devs[2]}, "PA → WT → Envelope with Envelope → PA.pm", 48000);
   }
 }
 
-TEST_CASE("groups-fix1: ungrouping keeps a free device between the series devices where it was; a rewired series is "
-          "refused") {
+TEST_CASE("groups-fix1: ungrouping keeps a device off the path between the series devices where it was; a rewired series "
+          "is refused") {
   DocumentStore store;
   IdSource& ids = store.ids();
   const TrackId keys = ids.track();
@@ -684,9 +726,9 @@ TEST_CASE("groups-fix1: ungrouping keeps a free device between the series device
   b.commands.push_back(AddDevice{keys, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(AddDevice{keys, makeDevice(lfo, "lfo_device", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
-  b.commands.push_back(SetDeviceFree{lfo, true});
   b.commands.push_back(SetDeviceParam{sat, "drive", 12.0});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store, {lfo});  // TX.all-free: the LFO off the path
   const DeviceId g = roundTrip(store, {util, sat}, "Utility → (a free LFO between them in the list) → Saturator");
   // A chain link deleted and drawn again as a plain wire: the series is no longer Ctrl+G's — Ungroup says why.
   const WireList w = wiresOf(*store.current());
@@ -696,7 +738,7 @@ TEST_CASE("groups-fix1: ungrouping keeps a free device between the series device
   auto again = ops::connectWire(*store.current(), ids, util, link->port, sat, link->param);
   REQUIRE(again.ok());
   REQUIRE(store.dispatch(again->command).ok());
-  auto un = ops::ungroupInCircuit(store.current(), library(), g);
+  auto un = ops::ungroupInCircuit(store.current(), store.ids(), library(), g);
   CHECK_FALSE(un.ok());
   if (!un.ok()) MESSAGE(un.error().message);
 }
@@ -713,28 +755,28 @@ TEST_CASE("groups-fix1: a schema-14 group (its series as plain wires) loads, pla
   b.commands.push_back(SetDeviceParam{util, "width", 2.0});
   b.commands.push_back(SetDeviceParam{sat, "drive", 12.0});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   const golden::Channels series = render(*store.current(), 12000);
   auto e = group(store, {util, sat});
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
   auto text = serializeProject(*store.current(), store.view());
   REQUIRE(text.ok());
-  // As TX.groups wrote it: schema 14, no chain links.
+  // As TX.groups wrote it (schema 14), migrated: no chain links (TX.all-free: the migration wires the group onto the path,
+  // its members off it — what this text is once its chain links are plain wires).
   std::string old = *text;
-  old.replace(old.find("\"schemaVersion\": 16"), 19, "\"schemaVersion\": 14");
   for (size_t at; (at = old.find(", \"chain\": true")) != std::string::npos;) old.erase(at, 15);
-  REQUIRE(old.find("chain") == std::string::npos);
+  REQUIRE(old.find("\"chain\"") == std::string::npos);
   auto r = parseProject(old);
   REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
-  CHECK(r->fileSchemaVersion == 14);
   for (const Wire& w : wiresOf(*r->project)) CHECK_FALSE(w.chain);
   const Snapshot legacy = r->project;
   CHECK(maxDiff(series, render(*legacy, 12000)) == 0.0);
-  auto u = ops::ungroupInCircuit(legacy, library(), e->devices.front());
+  auto u = ops::ungroupInCircuit(legacy, store.ids(), library(), e->devices.front());
   REQUIRE_MESSAGE(u.ok(), (u.ok() ? std::string() : u.error().message));
   ChangeSet cs;
   auto after = apply(legacy, u->command, cs);
   REQUIRE(after.ok());
-  CHECK(wiresOf(**after).empty());
+  for (const Wire& x : wiresOf(**after)) CHECK(x.mainLink());  // only the path's links: source → synth → U → S → mixer
   CHECK(maxDiff(series, render(**after, 12000)) == 0.0);
 }

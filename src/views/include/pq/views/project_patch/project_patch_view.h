@@ -456,14 +456,18 @@ public:
   // `track`'s output into `target`: a group or the master (its output), a return (its send to 0 dB).
   bool routeTo(doc::TrackId track, doc::TrackId target);
   bool sendOn(doc::TrackId track, doc::TrackId ret);
+  // TX.all-free: a cable with these ends (doc::ops::connect; doc::canonicalWire writes two main ports as kMainPort): a
+  // device's port or a track's source → a device's param / input or a track's mixer.
+  bool connectEnds(doc::Wire ends);
+  // A device into `track`'s main path at slot `index` (doc::ops::addDevice; kOffPath: unwired).
   bool addDevice(doc::TrackId track, const std::string& patch, uint32_t index = doc::kAppend);
-  // TX.patching: a device added to `track` out of its series (free: placed under the chain, it plays only through
-  // wires; one undo step), and taking devices out of the series or putting them back (doc::ops::setDevicesFree).
+  // TX.all-free: a block added to `track` unwired (placed under its path; it plays once a cable reaches it).
   bool addFreeDevice(doc::TrackId track, const std::string& patch);
-  bool setDevicesFree(std::span<const doc::DeviceId> devices, bool free);
-  // A free device back into its track's series at list position `index` (one undo step).
-  bool putIntoChain(doc::DeviceId device, uint32_t index);
+  // TX.all-free: the blocks off their main paths (doc::ops::takeOffPath).
+  bool takeOffPath(std::span<const doc::DeviceId> devices);
   bool moveDevice(doc::DeviceId device, doc::TrackId toTrack, uint32_t index);
+  // TX.all-free: a block dropped on another band: to that track, off its path, placed at world point `at`.
+  bool moveToTrack(doc::DeviceId device, doc::TrackId toTrack, graph::Point2 at);
   bool toggleDevicesActive(std::span<const doc::DeviceId> devices);
   // The canvas selection: devices removed, modulation wires removed, sends to −∞, routes to Sends Only; one step.
   bool deleteSelection();

@@ -13,6 +13,7 @@
 
 #include "../common/drag.h"
 #include "../common/panel_template.h"
+#include "pq/document/main_path.h"
 #include "pq/document/edit_ops.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
@@ -63,6 +64,7 @@ struct DeviceChainView::Impl {
   std::vector<std::unique_ptr<ui::Widget>> retiredFrames;
   std::vector<doc::DevicePtr> shown;                  // what each top-level frame shows (pointer-equal while unchanged)
   doc::Snapshot shownFrom;                            // keeps `shown` alive
+  doc::MainPath mainPath;                             // TX.all-free: the shown track's main path (of `shownFrom`)
   std::map<uint32_t, device_chain::FrameBase*> all;   // T4.8: every frame shown (rack contents too), by device id
   // Reordering by dragging a title bar (T4.8: into and out of rack chains too).
   drag::Tracker drag;
@@ -220,9 +222,12 @@ std::unique_ptr<FrameBase> makeRackFrame(DeviceChainView::Impl& impl, ViewContex
 // patch view); groupPatchView: that view, or null for another frame.
 std::unique_ptr<FrameBase> makeGroupFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d);
 project_patch::ProjectPatchView* groupPatchView(FrameBase& f);
-// TX.groups: the devices the Device view shows for a list: every device but a group's members (the group shows them).
-// TX.free-rack: and no free device (the free-device rack shows them; a member is always free).
+// The devices the Device view shows for a rack chain: all of them, in order.
 std::vector<doc::DevicePtr> shownDevices(const std::vector<doc::DevicePtr>& list);
+// TX.all-free (SPEC §15 2026-11-03 "everything is free"): the blocks the Device view lists for a track — its MAIN PATH,
+// in signal order (doc::mainPath; a group's members are never on it: its panel shows them). Blocks off the path are in
+// the free rack.
+std::vector<doc::DevicePtr> pathDevices(const doc::Project& p, const doc::Track& t, const doc::MainPath& path);
 // Devices of a rack's chain are framed like the track's: by makeFrame.
 // T4.8: the map-mode overlay (rack_frame.cpp): over the chain while a rack's Map is on.
 std::unique_ptr<ui::Widget> makeMapOverlay(DeviceChainView::Impl& impl);

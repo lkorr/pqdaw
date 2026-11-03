@@ -402,9 +402,10 @@ struct Mixer {
 
 // ---- Devices (T4.1, SPEC §7.3, §8; QUESTIONS Q129) ----------------------------------------------------------
 
-// What a device is, fixed when it is created from the catalog (devices.h), so the document can enforce the chain
-// rule without the device library: a MIDI track holds at most one instrument, at index 0, then audio effects; groups,
-// returns and the master hold audio effects only.
+// What a device is, fixed when it is created from the catalog (devices.h). TX.all-free: a track's devices are blocks
+// wired by cables (Track::devices); an instrument takes the notes through its main input, so instruments go on MIDI
+// tracks only. A rack chain keeps its list rule (an Instrument Rack chain may start with one instrument, then audio
+// effects; an Audio Effect Rack's chains hold audio effects only).
 enum class DeviceKind : uint8_t { Instrument, AudioEffect };
 
 // A value the user set on a device: a param (runtime, in the param's normalised unit: Hz, seconds, linear gain for a
@@ -457,9 +458,10 @@ struct ParamCurve {
 //   data           meta::DataValue (null: none): never part of the expansion; an edit is the MetaData change class
 // A nested call without an entry plays the type's default state. Editing the state of a module inside a STOCK device
 // does not fork the device (only its patch text does).
-// TMM.10-fix1: a chain meta device's KIND says where it sits, not what it is: Instrument exactly when it is the first
-// device of a list where instruments go (its chain input takes the note source), else AudioEffect. Every command that
-// changes a list keeps this (normaliseMetaKinds), and loading a file normalises it; what the device plays follows
+// TMM.10-fix1: a chain meta device's KIND says where it sits in a RACK CHAIN, not what it is: Instrument exactly when it
+// is the first device of an Instrument Rack chain (its chain input takes the note source), else AudioEffect; every
+// command that changes a rack chain keeps this (normaliseMetaKinds). TX.all-free: in a track's own blocks the kind of a
+// meta device means nothing (what reaches its main input decides: the cables); what the device plays always follows
 // from the signal reaching it (pq/document/meta.h chainStages), never from the kind.
 inline constexpr std::string_view kMetaDevicePrefix = "meta:";
 struct MetaInstance {
@@ -488,8 +490,8 @@ struct UserPatch {
 using UserPatchPtr = std::shared_ptr<const UserPatch>;
 struct Rack;
 
-// One device instance in a track's chain: a call of `patch` (a patch of the device library) with the values the user
-// set. Ports are the patch's signature and are not stored; params / settings not listed play the patch's defaults.
+// One device instance (TX.all-free: a block of a track's circuit, or a device of a rack chain): a call of `patch` (a
+// patch of the device library) with the values the user set. Ports are the patch's signature and are not stored; params / settings not listed play the patch's defaults.
 // T4.8: a RACK is a Device with `rack` set (patch kAudioEffectRack / kInstrumentRack, kind AudioEffect / Instrument): it
 // holds parallel chains of devices instead of calling a library patch; its params are its macros and its chain
 // selector ("macro1" … "macro16", "select"), stored in `params` like any device's.
@@ -511,19 +513,12 @@ struct Device {
   // Device but never the map (nor the data in it).
   MetaMapPtr meta;
   // TMM.10-fix1 ("a chain is wires", pq/document/meta.h chainStages): a chain meta device's choice of the input its
-  // chain feeds — "" the type's own (meta::Type::chainInput), "-" none (unplugged: the module runs once, freely), else
-  // an input of its type by name. Other devices: always "".
+  // MAIN INPUT is (what a cable into its main port, or a rack chain, feeds) — "" the type's own (meta::Type::chainInput),
+  // "-" none (unplugged: the module runs once, freely), else an input of its type by name. Other devices: always "".
   std::string chainInput;
-  // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): placed in its track's circuit OUTSIDE the series.
-  // No chain signal reaches it and its output does not go on to the next device (the chain passes it by as if it were
-  // not in the list): it plays only through wires (into its inputs and params, out of its outputs), and costs nothing
-  // while nothing reads it. Its place in the list is only where the Device view shows it. Only in a track's own list
-  // (not in a rack chain); never a rack or a stock instrument (meta devices are fine: they take no chain signal).
-  // Structural (SetDeviceFree).
-  bool free = false;
   // TX.groups (SPEC §15 2026-11-01 "resize, groups, and the free-device rack"; "Groups" below): the group this device
-  // belongs to (a group device of the same track's own list), or invalid. A member is always free (a group has no chain
-  // order inside): it plays through wires only, exactly as a free device does; membership changes no sound (Meta:
+  // belongs to (a group device of the same track's own blocks), or invalid. A member is never on its track's main path
+  // (main_path.h: a group has no order inside): it plays through its cables only; membership changes no sound (Meta:
   // SetDeviceGroup), it says where the circuit draws the device (inside its group's capsule) and that the Device view
   // shows only the group.
   DeviceId group;
@@ -548,18 +543,18 @@ std::string_view metaDeviceType(const Device& d) noexcept;
 bool normaliseMetaKinds(std::vector<DevicePtr>& list, bool instrumentsGo, std::vector<DeviceId>* changed = nullptr);
 
 // ---- Groups (TX.groups; SPEC §15 2026-11-01 "resize, groups, and the free-device rack"; QUESTIONS Q?-TX.groups-a) ----
-// A GROUP is a capsule of free devices in a track's circuit (the first nested layer: a track's own list, never inside a
-// rack or a device's circuit) that is one audio-effect device of the chain: "basic synth → group" instead of "basic
-// synth → phase accumulator → wavetable → phase accumulator". It is built only from what the circuit already has — no
-// second mechanism:
-//   the group     a Device whose patch is kGroupDevice (kind AudioEffect, no params, no settings, no rack), in its
-//                 track's series at its place (or itself free). It plays the fixed patch groupPatchText(): its chain
-//                 input `x` and main output `y` are its place in the chain, and its two TERMINALS are ports of the same
-//                 device: the In terminal is its output kGroupInPort (= x: what reaches the group), the Out terminal its
-//                 input kGroupOutPort (y = the sum of the wires into it). Nothing else: zero cost of its own.
-//   the members   the devices whose Device::group names it, in the same list; each is free (no chain order inside:
-//                 everything is placed freely) and plays exactly as a free device: through wires only. Their positions
-//                 are the circuit's view state (ViewState::patchNudges by device id), as every free device's.
+// A GROUP is a capsule of blocks in a track's circuit (the first nested layer: a track's own blocks, never inside a
+// rack or a device's circuit) that is one audio-effect block: "basic synth → group" instead of "basic synth → phase
+// accumulator → wavetable → phase accumulator". It is built only from what the circuit already has — no second
+// mechanism:
+//   the group     a Device whose patch is kGroupDevice (kind AudioEffect, no params, no settings, no rack), a block like
+//                 any (on its track's main path or off it). It plays the fixed patch groupPatchText(): its main input `x`
+//                 and main output `y` are where its cables meet it, and its two TERMINALS are ports of the same device:
+//                 the In terminal is its output kGroupInPort (= x: what reaches the group), the Out terminal its input
+//                 kGroupOutPort (y = the sum of the wires into it). Nothing else: zero cost of its own.
+//   the members   the devices whose Device::group names it, in the same track; never on the main path (no order
+//                 inside: everything is placed freely): they play through their cables only. Their positions are the
+//                 circuit's view state (ViewState::patchNudges by device id), as every block's.
 //   the wires     ordinary Project::wires: In → a member's input is a wire from (group, kGroupInPort); a member's
 //                 output → Out a wire into (group, kGroupOutPort); between members, and across the capsule's boundary
 //                 (an LFO outside into a knob inside, a member's output into another track), wires work unchanged
@@ -568,11 +563,11 @@ bool normaliseMetaKinds(std::vector<DevicePtr>& list, bool instrumentsGo, std::v
 // so it sounds the same). Polyphony follows the wires, as for every free device. No nesting (a group is never a member;
 // Q?-TX.groups-a): the model would allow it, the views draw one level.
 // TX.groups-fix1 (SPEC §15 2026-11-01 "notes are a signal"; QUESTIONS Q?-TX.groups-fix1-a): the In terminal carries
-// WHATEVER reaches the group's place in the series (meta.h chainStages): audio, a per-voice signal (the group continues
-// the voices: they pass In and Out per voice, and the run goes on after it), or at a MIDI track's note source the notes
-// (the group is the track's instrument: In gives each input it reaches the note's signal of that input's meaning — a
-// frequency the note's Hz, a phase the note's phase, as a chain input at the note source reads it — and the voices end
-// as a meta voice run's do, by what reaches Out). The series' wires Ctrl+G makes are chain links (Wire::chain).
+// WHATEVER reaches the group's place on the main path (meta.h chainStages): audio, a per-voice signal (the group
+// continues the voices: they pass In and Out per voice, and the run goes on after it), or at a MIDI track's note source
+// the notes (the group is the track's instrument: In gives each input it reaches the note's signal of that input's
+// meaning — a frequency the note's Hz, a phase the note's phase, as a main input at the note source reads it — and the
+// voices end as a meta voice run's do, by what reaches Out). The inner wires Ctrl+G makes are chain links (Wire::chain).
 inline constexpr std::string_view kGroupDevice = "Group";
 inline constexpr std::string_view kGroupInPort = "input";    // the In terminal: an output of the group device
 inline constexpr std::string_view kGroupOutPort = "output";  // the Out terminal: an input of the group device
@@ -666,7 +661,7 @@ struct MacroVariation {
 };
 
 struct Rack {
-  std::vector<ChainPtr> chains;
+  std::vector<ChainPtr> chains;  // (a rack chain is a LIST: its devices run in order, TX.all-free leaves racks as they are)
   std::vector<MacroMapping> mappings;                 // sorted by id
   std::array<std::string, kMacroCount> macroNames{};  // "" = "Macro <k>" (Meta)
   uint8_t visibleMacros = 8;                          // 1 … 16 knobs shown (Meta)
@@ -743,33 +738,56 @@ DevicePtr makeGroup(DeviceId id);              // TX.groups: an empty group devi
 //            the param's normalised unit (Hz, seconds, a dB param's linear gain, the VCA's multiplier), clamped as Add.
 //            Old projects keep their sound; never offered for new wires. No amount.
 // TX.groups-fix1: a wire may be a CHAIN LINK (`chain`): a link of a series that Ctrl+G turned into wires (In → first,
-// device → next, last → Out). The lowering plans chain links before every other wire, as it plans a chain's own links
-// (lower.h "Modulation wires"): a feedback loop through a grouped series keeps its automatic 1-sample delay on the wire
-// that had it; into one input, chain links are summed first (as the chain's signal is), then the other wires in id
+// device → next, last → Out). The lowering plans chain links before every other wire, as it plans the main path's own
+// links (lower.h "Modulation wires"): a feedback loop through a grouped series keeps its automatic 1-sample delay on the
+// wire that had it; into one input, chain links are summed first (as the path's signal is), then the other wires in id
 // order. Ctrl+Shift+G removes exactly the chain links of its group. Nothing else differs (the views draw them as any
 // wire; a wire the user draws is never one).
+//
+// TX.all-free (SPEC §15 2026-11-03 "everything is free; the chain is just cables"; main_path.h): EVERY connection of a
+// track's circuit is a wire, the series included. Two more ends:
+//   MAIN PORTS   `port` kMainPort ("") is its device's MAIN OUTPUT (its first `out`; a rack's output) and `param`
+//                kMainPort its target's MAIN INPUT (a stock effect's first audio `in`, a meta module's chain input
+//                Device::chainInput, a group's `x`, a rack's input; an instrument's main input is its notes). A wire
+//                between two main ports is what the series was: a link of the main path when it lies on it.
+//   SOURCE       `noteSource` + `port` kMainPort: the track's own signal — a MIDI track's notes, an audio track's clips,
+//                a group's or the master's summed input, a return's sends (any track kind; the note outputs "hz", "gate",
+//                "velocity" only on a MIDI track).
+//   MIXER        `mixer` valid (`to` invalid, `param` kMainPort): the track's mixer input (its volume, pan, sends,
+//                routing). Only from a device of that track or its own source.
+// The audio path is the wiring; the lowering compiles it (lower.h "The main path"); a track with no path to its mixer is
+// silent.
+inline constexpr std::string_view kMainPort = "";
 enum class WireReducer : uint8_t { Sum, Last, Highest, Lowest, Loudest };
 enum class WireLaw : uint8_t { Add, Travel, Units };
 inline constexpr double kDefaultWireAmount = 0.5;  // a Travel wire's default depth (ops::connectTravelWire)
 
 struct Wire {
   WireId id;
-  DeviceId from;      // the source device (invalid for a note-source wire)
-  std::string port;   // its output: an `out` or an export (a note-source wire: its note output)
-  DeviceId to;        // the target device (may be `from` itself)
-  std::string param;  // its param, or (TX.patching) one of its inputs
+  DeviceId from;      // the source device (invalid for a source wire)
+  std::string port;   // its output: an `out` or an export (a source wire: its note output), kMainPort: its main output
+  DeviceId to;        // the target device (may be `from` itself; invalid into a mixer)
+  std::string param;  // its param, or (TX.patching) one of its inputs; kMainPort: its main input (and into a mixer)
   // Travel: [−1, 1], knob travel per unit of source. Add: always 1 (an added wire has no depth; a VCA scales it).
   double amount = 1.0;
   WireReducer reducer = WireReducer::Sum;
-  TrackId noteSource;  // TMM.10-fix2: valid: the source is this (MIDI) track's note source
+  // TMM.10-fix2: valid: the source is this track's source (TX.all-free: a MIDI track's note source, or with port
+  // kMainPort any track's own signal; see above).
+  TrackId noteSource;
   WireLaw law = WireLaw::Add;  // TX.patching
   bool chain = false;          // TX.groups-fix1: a chain link of a grouped series (planned first; see above)
+  TrackId mixer;               // TX.all-free: valid: the target is this track's mixer input (see above)
   bool travels() const noexcept { return law == WireLaw::Travel; }
   bool adds() const noexcept { return law != WireLaw::Travel; }  // Add or Units: no amount
   bool fromNoteSource() const noexcept { return noteSource.valid(); }
+  bool toMixer() const noexcept { return mixer.valid(); }
+  // TX.all-free: a wire between two main ports (a device's or the source's main output, a device's main input or the
+  // mixer): a link of the main path when it lies on it (main_path.h).
+  bool mainLink() const noexcept { return port.empty() && param.empty(); }
   // Whether two wires join the same two ports (a second such wire is refused).
   bool sameEnds(const Wire& o) const noexcept {
-    return from == o.from && noteSource == o.noteSource && port == o.port && to == o.to && param == o.param;
+    return from == o.from && noteSource == o.noteSource && port == o.port && to == o.to && param == o.param &&
+           mixer == o.mixer;
   }
   friend bool operator==(const Wire&, const Wire&) = default;
 };
@@ -806,14 +824,17 @@ struct Track {
   std::vector<TrackPtr> children;  // Group only
   std::vector<ClipSlot> clips;     // Midi (note clips) and Audio (audio clips) only, sorted by (start, id)
   std::vector<LanePtr> lanes;      // automation lanes shown under this track
-  std::vector<DevicePtr> devices;  // T4.1: the device chain, signal left → right (MIDI: instrument first)
+  // T4.1; TX.all-free: the track's blocks (devices, meta modules, groups and their members, racks). A SET: the signal
+  // path is the wires (model.h "Modulation wires", main_path.h), never this order; the order only says where a block
+  // nobody has placed is drawn and which block a tie goes to. Rack chains (inside racks) keep their list order.
+  std::vector<DevicePtr> devices;
   // Index of the device in `devices`, or −1.
   int32_t deviceIndex(DeviceId device) const noexcept;
 };
 bool operator==(const Track& a, const Track& b) noexcept;
 
-// A track with an empty device chain (a MIDI track plays nothing until it has an instrument: ops::createTrack adds
-// the default instrument; builders add makeDefaultInstrument(ids.device()) themselves).
+// A track with no blocks and no wires (it plays nothing: ops::createTrack wires its source to its mixer, a MIDI track
+// through the default instrument; builders wire their tracks with ops::wireSeries).
 Track makeTrack(TrackId id, TrackKind kind, std::string name);
 
 // ---- Timeline (SPEC §9.2) --------------------------------------------------------------------------------------
@@ -861,8 +882,10 @@ bool operator==(const Project& a, const Project& b) noexcept;
 
 using Snapshot = std::shared_ptr<const Project>;
 
-// 120 BPM, 4/4, one main tuning "12-EDO", a master track, no other tracks. Ids are drawn from `ids`.
-Snapshot makeDefaultProject(IdSource& ids);
+// 120 BPM, 4/4, one main tuning "12-EDO", a master track wired from its input to its mixer (TX.all-free; `wireMaster`
+// false: unwired, for builders that reproduce an older file's ids and wire every track at the end with
+// ops::wireSeries, as the schema 16 → 17 migration does), no other tracks. Ids are drawn from `ids`.
+Snapshot makeDefaultProject(IdSource& ids, bool wireMaster = true);
 
 // Largest raw id used by any entity (for IdSource::reserveThrough after loading). Visits every note.
 uint32_t maxEntityId(const Project& p);

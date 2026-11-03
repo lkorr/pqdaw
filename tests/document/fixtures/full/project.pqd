@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 16,
+  "schemaVersion": 17,
   "timeline": {
     "tempo": [
       {"tick": 0, "bpm": 120.0, "curve": "linear"},
@@ -667,6 +667,20 @@
     ],
     "devices": []
   },
+  "wires": [
+    {"id": 369, "notes": 4, "port": "", "to": 365, "param": ""},
+    {"id": 370, "from": 365, "port": "", "mixer": 4, "param": ""},
+    {"id": 371, "notes": 5, "port": "", "mixer": 5, "param": ""},
+    {"id": 372, "notes": 6, "port": "", "to": 366, "param": ""},
+    {"id": 373, "from": 366, "port": "", "mixer": 6, "param": ""},
+    {"id": 374, "notes": 328, "port": "", "mixer": 328, "param": ""},
+    {"id": 375, "notes": 329, "port": "", "to": 367, "param": ""},
+    {"id": 376, "from": 367, "port": "", "mixer": 329, "param": ""},
+    {"id": 377, "notes": 7, "port": "", "to": 368, "param": ""},
+    {"id": 378, "from": 368, "port": "", "mixer": 7, "param": ""},
+    {"id": 379, "notes": 3, "port": "", "mixer": 3, "param": ""},
+    {"id": 380, "notes": 2, "port": "", "mixer": 2, "param": ""}
+  ],
   "view": {
     "tracks": [
       {"id": 2, "folded": true, "height": 33},

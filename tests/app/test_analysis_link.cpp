@@ -77,6 +77,7 @@ struct Keys {
     for (int32_t d : {0, 4, 7, 11}) notes.push_back(playback_fixture::note(ids, 0, 64 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "chord")});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     eq = edit(ops::addDevice(*store.current(), store.ids(), track, "eq_eight", DeviceKind::AudioEffect)).devices.at(0);
     // A +6 dB bell at 1 kHz (Q 2), −4 dB at 250 Hz: a curve to measure.
     edit(ops::setDeviceParam(*store.current(), eq, "freq4", 1000.0));

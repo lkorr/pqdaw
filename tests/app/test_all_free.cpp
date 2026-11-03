@@ -7,6 +7,10 @@
 // and the same IR (so every state survives the migration). tests/app/fixtures/all_free/* are schema-16 projects saved
 // before TX.all-free that cover what the older fixtures do not: free devices and their wires, a switched-off free
 // device passing through, a meta voice run, a group with chain links, racks, sends and returns, group tracks.
+// app/fixtures/all_free/v16_document_audio is tests/document/fixtures/audio as schema 16 wrote it (that writer golden is
+// schema 17 now); v16_views_arrangement / _automation / _mixer likewise tests/views/fixtures/* (rebuilt by their scene
+// builders, which make schema-17 projects now). A fixture first written by schema 17 gets its row from this test run with PQ_ALLFREE_NEW_ROW=1 (marked
+// "written by schema 17" in renders.txt): it has no "before".
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -181,6 +185,12 @@ void checkPart(size_t part) {
       continue;
     }
     const auto it = refs.find(rel);
+    if (it == refs.end() && std::getenv("PQ_ALLFREE_NEW_ROW") != nullptr) {  // a fixture written after TX.all-free
+      std::ostringstream row;  // (doctest's MESSAGE takes no stream manipulators)
+      row << rel << ' ' << std::hex << r.interp << ' ' << r.jit << std::dec << ' ' << r.peak << ' ' << r.patches;
+      MESSAGE("new row: " << row.str());
+      continue;
+    }
     REQUIRE_MESSAGE(it != refs.end(), rel << ": no reference (PQ_UPDATE_GOLDENS=1 on the code before TX.all-free)");
     CHECK_MESSAGE(r.interp == it->second.interp, rel << ": interpreted render changed (peak " << r.peak << ", was "
                                                      << it->second.peak << ")");

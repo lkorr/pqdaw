@@ -14,6 +14,7 @@
 #include <random>
 
 #include "doc_fixture.h"
+#include "pq/document/edit_ops.h"
 
 namespace doctest_fixture {
 
@@ -148,6 +149,12 @@ struct RichProject : Fixture {
     });
     const pq::Status si = store.dispatch(inst);
     REQUIRE_MESSAGE(si.ok(), (si.ok() ? std::string() : si.error().message));
+    // TX.all-free: every track wired in series (source → its devices → its mixer), ids after everything else, in track
+    // order: exactly what the schema 16 -> 17 migration gives the older fixtures.
+    auto wired = ops::wireSeries(*store.current(), ids);
+    REQUIRE_MESSAGE(wired.ok(), (wired.ok() ? std::string() : wired.error().message));
+    const pq::Status sw = store.dispatch(wired->command);
+    REQUIRE_MESSAGE(sw.ok(), (sw.ok() ? std::string() : sw.error().message));
     // View state (not undoable, saved with the project).
     store.view().tracks[drums] = TrackView{true, 0};
     store.view().tracks[lead] = TrackView{false, 120};

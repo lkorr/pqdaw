@@ -88,8 +88,16 @@ inline TrackPtr makeTrackPtr(TrackId id, TrackKind kind, std::string name) {
   return std::make_shared<const Track>(makeTrack(id, kind, std::move(name)));
 }
 
+// TX.all-free: a new project whose master is not wired (makeDefaultProject's `wireMaster` false), so the fixtures keep
+// the ids every older schema's file has; a fixture that plays wires its tracks with ops::wireSeries (RichProject does,
+// last, as the schema 16 -> 17 migration does).
+inline Snapshot unwiredDefaultProject() {
+  IdSource ids;
+  return makeDefaultProject(ids, false);
+}
+
 struct Fixture {
-  DocumentStore store;
+  DocumentStore store{unwiredDefaultProject()};
   TrackId master, reverb, lead, drums, kick, bass;
   ClipId clipA, clipB, clipK;
   TuningId t12, t31, tMos, tScale;

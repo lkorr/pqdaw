@@ -1086,12 +1086,29 @@ bool ProjectPatchView::dispatch(const doc::Command& c, const char* what) {
   return ctx.doc() != before;
 }
 
+bool ProjectPatchView::connectEnds(doc::Wire ends) {
+  // TX.all-free: a cable between two main ports is written with kMainPort ends (a link of the main path when it lies
+  // on it: doc::canonicalWire).
+  const doc::Wire w = doc::canonicalWire(*ctx_.doc(), std::move(ends), ctx_.deviceLibrary());
+  return apply(doc::ops::connect(*ctx_.doc(), ctx_.store().ids(), w), "Wire");
+}
+
 bool ProjectPatchView::connect(doc::DeviceId from, const std::string& port, doc::DeviceId to, const std::string& param) {
-  return apply(doc::ops::connectWire(*ctx_.doc(), ctx_.store().ids(), from, port, to, param), "Wire");
+  doc::Wire w;
+  w.from = from;
+  w.port = port;
+  w.to = to;
+  w.param = param;
+  return connectEnds(std::move(w));
 }
 
 bool ProjectPatchView::connectNotes(doc::TrackId track, const std::string& port, doc::DeviceId to, const std::string& param) {
-  return apply(doc::ops::connectNoteWire(*ctx_.doc(), ctx_.store().ids(), track, port, to, param), "Wire");
+  doc::Wire w;
+  w.noteSource = track;
+  w.port = port;
+  w.to = to;
+  w.param = param;
+  return connectEnds(std::move(w));
 }
 
 bool ProjectPatchView::sendOn(doc::TrackId track, doc::TrackId ret) {
@@ -1132,53 +1149,19 @@ bool ProjectPatchView::addDevice(doc::TrackId track, const std::string& patch, u
 }
 
 bool ProjectPatchView::addFreeDevice(doc::TrackId track, const std::string& patch) {
+  // TX.all-free: a block placed unwired (doc::ops::kOffPath): it plays once a cable reaches it.
   const doc::Project& p = *ctx_.doc();
-  doc::ops::EditResult add = doc::ops::Edit{};
-  if (patch.starts_with(doc::kMetaDevicePrefix)) {
-    add = doc::ops::addMetaDevice(p, ctx_.store().ids(), track, patch.substr(doc::kMetaDevicePrefix.size()));
-  } else {
-    const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-    const doc::DeviceInfo* info = lib != nullptr ? lib->catalog().find(patch) : nullptr;
-    if (info != nullptr && info->kind == doc::DeviceKind::Instrument) {
-      ctx_.setStatus("Add Free Device: an instrument goes first in the chain (a meta module can be free)");
-      return false;
-    }
-    add = doc::ops::addDevice(p, ctx_.store().ids(), track, patch, doc::DeviceKind::AudioEffect);
-  }
-  if (!add || add->empty() || add->devices.empty()) return apply(add, "Add Free Device");
-  // The add and the take-out as one step: applied in turn on a scratch snapshot, dispatched as one Batch.
-  doc::ChangeSet cs;
-  auto mid = doc::apply(ctx_.doc(), add->command, cs);
-  if (!mid) {
-    ctx_.setStatus("Add Free Device: " + mid.error().message);
-    return false;
-  }
-  const doc::DeviceId one[1] = {add->devices.back()};
-  doc::ops::EditResult out = doc::ops::setDevicesFree(**mid, one, true);
-  if (!out) return apply(out, "Add Free Device");
-  return dispatch(doc::Batch{"Add Free Device", {add->command, out->command}}, "Add Free Device");
+  if (patch.starts_with(doc::kMetaDevicePrefix))
+    return apply(doc::ops::addMetaDevice(p, ctx_.store().ids(), track, patch.substr(doc::kMetaDevicePrefix.size()), doc::ops::kOffPath),
+                 "Add Device");
+  const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
+  const doc::DeviceInfo* info = lib != nullptr ? lib->catalog().find(patch) : nullptr;
+  const doc::DeviceKind kind = info != nullptr ? info->kind : doc::DeviceKind::AudioEffect;
+  return apply(doc::ops::addDevice(p, ctx_.store().ids(), track, patch, kind, doc::ops::kOffPath), "Add Device");
 }
 
-bool ProjectPatchView::setDevicesFree(std::span<const doc::DeviceId> devices, bool free) {
-  return apply(doc::ops::setDevicesFree(*ctx_.doc(), devices, free), free ? "Take Out of Chain" : "Put Into Chain");
-}
-
-bool ProjectPatchView::putIntoChain(doc::DeviceId device, uint32_t index) {
-  const doc::Track* t = doc::findDevice(*ctx_.doc(), device).track;
-  if (t == nullptr) return false;
-  const doc::DeviceId one[1] = {device};
-  doc::ops::EditResult back = doc::ops::setDevicesFree(*ctx_.doc(), one, false);
-  if (!back || back->empty()) return apply(back, "Put Into Chain");
-  doc::ChangeSet cs;
-  auto mid = doc::apply(ctx_.doc(), back->command, cs);
-  if (!mid) {
-    ctx_.setStatus("Put Into Chain: " + mid.error().message);
-    return false;
-  }
-  doc::ops::EditResult move = doc::ops::moveDevice(**mid, device, t->id, index);
-  if (!move) return apply(move, "Put Into Chain");
-  if (move->empty()) return dispatch(back->command, "Put Into Chain");
-  return dispatch(doc::Batch{"Put Into Chain", {back->command, move->command}}, "Put Into Chain");
+bool ProjectPatchView::takeOffPath(std::span<const doc::DeviceId> devices) {
+  return apply(doc::ops::takeOffPath(*ctx_.doc(), ctx_.store().ids(), ctx_.deviceLibrary(), devices), "Take Off Path");
 }
 
 // ---- TX.free-rack ---------------------------------------------------------------------------------------------------
@@ -1253,7 +1236,7 @@ std::vector<ui::MenuItem> ProjectPatchView::addFreeDeviceItems(doc::TrackId trac
   std::vector<ui::MenuItem> addFree;
   if (const doc::DeviceLibrary* lib = ctx_.deviceLibrary())
     for (const doc::DeviceInfo& d : lib->catalog().devices()) {
-      if (d.kind == doc::DeviceKind::Instrument) continue;  // a stock instrument stays first in its chain
+      if (d.kind == doc::DeviceKind::Instrument) continue;  // a stock instrument plays where the notes reach it (the path)
       const std::string patch = d.patch;
       addFree.push_back(ui::MenuItem::item(d.name, [pick, patch] { pick(patch); }));
     }
@@ -1348,6 +1331,27 @@ bool ProjectPatchView::moveDevice(doc::DeviceId device, doc::TrackId toTrack, ui
   return apply(doc::ops::moveDevice(*ctx_.doc(), device, toTrack, index), "Move Device");
 }
 
+bool ProjectPatchView::moveToTrack(doc::DeviceId device, doc::TrackId toTrack, graph::Point2 at) {
+  // TX.all-free: a block dropped on another band moves to that track off its path (its old path joined where it was),
+  // where it was dropped.
+  const doc::Project& p = *ctx_.doc();
+  const doc::DeviceLoc l = doc::findDevice(p, device);
+  if (l.device == nullptr || l.chain != nullptr || l.track->id == toTrack) return false;
+  doc::ops::EditResult off = doc::ops::takeOffPath(p, ctx_.store().ids(), ctx_.deviceLibrary(), std::span<const doc::DeviceId>(&device, 1));
+  if (!off) return apply(off, "Move Device");
+  doc::ChangeSet cs;
+  auto mid = doc::apply(ctx_.doc(), off->command, cs);
+  if (!mid) {
+    ctx_.setStatus("Move Device: " + mid.error().message);
+    return false;
+  }
+  doc::ops::EditResult move = doc::ops::moveDevice(**mid, device, toTrack, doc::kAppend);
+  if (!move) return apply(move, "Move Device");
+  if (!dispatch(doc::Batch{"Move Device", {off->command, move->command}}, "Move Device")) return false;
+  placeAt(device, at);
+  return true;
+}
+
 bool ProjectPatchView::toggleDevicesActive(std::span<const doc::DeviceId> devices) {
   return apply(doc::ops::toggleDevicesActive(*ctx_.doc(), devices), "Device Activator");
 }
@@ -1438,7 +1442,7 @@ bool ProjectPatchView::groupDevices(std::span<const doc::DeviceId> devices) {
 bool ProjectPatchView::ungroup(doc::DeviceId group) {
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
   if (lib == nullptr) return false;
-  doc::ops::EditResult e = doc::ops::ungroupInCircuit(ctx_.doc(), *lib, group);
+  doc::ops::EditResult e = doc::ops::ungroupInCircuit(ctx_.doc(), ctx_.store().ids(), *lib, group);
   if (!e) {
     ctx_.setStatus(e.error().message);
     return false;
@@ -1481,10 +1485,8 @@ bool ProjectPatchView::setDeviceGroup(doc::DeviceId device, doc::DeviceId group)
   const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), device);
   if (l.device == nullptr) return false;
   if (l.device->group == group) return false;
-  doc::Batch b{group.valid() ? "Into Group" : "Out of Group", {}};
-  if (group.valid() && !l.device->free) b.commands.push_back(doc::SetDeviceFree{device, true});
-  b.commands.push_back(doc::SetDeviceGroup{device, group});
-  return dispatch(b, b.label.c_str());
+  return apply(doc::ops::setDeviceGroup(*ctx_.doc(), ctx_.store().ids(), ctx_.deviceLibrary(), device, group),
+               group.valid() ? "Into Group" : "Out of Group");
 }
 
 void ProjectPatchView::setGroupOpen(doc::DeviceId group, bool open) {
@@ -1682,14 +1684,14 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
       const doc::DeviceId one[1] = {d};
       (void)toggleDevicesActive(one);
     }, "0"));
-    // TX.patching: out of the series (it keeps its wires and plays only through them) or back into it.
-    const bool free = n.free;
-    ui::MenuItem series = ui::MenuItem::item(free ? "Put Into Chain" : "Take Out of Chain", [this, d, free] {
-      const doc::DeviceId one[1] = {d};
-      (void)setDevicesFree(one, !free);
-    });
-    series.enabled = free || (!n.rack && !(n.instrument && !n.meta));
-    items.push_back(std::move(series));
+    // TX.all-free: off the main path (its neighbours joined; it keeps its other cables), and dissolve (it goes, the path
+    // stays connected).
+    if (!n.offPath)
+      items.push_back(ui::MenuItem::item("Take Off Path", [this, d] {
+        const doc::DeviceId one[1] = {d};
+        (void)takeOffPath(one);
+      }));
+    items.push_back(ui::MenuItem::item("Dissolve", [this, d] { (void)dissolve(d); }, "Ctrl+Delete"));
     ui::MenuItem open = ui::MenuItem::item(deviceExpanded(d) ? "Close Atoms" : "Open to Atoms", [this, d] { setDeviceExpanded(d, !deviceExpanded(d)); });
     open.enabled = !n.missing;
     items.push_back(std::move(open));

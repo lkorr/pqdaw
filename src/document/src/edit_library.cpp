@@ -19,16 +19,17 @@ EditResult replaceDevice(const Project& p, IdSource& ids, DeviceId device, const
   DevicePtr fresh = cloneDevice(with, ids);
   auto top = std::make_shared<Device>(*fresh);
   top->id = device;
-  top->free = loc.device->free && !top->rack;  // TX.patching: a free device stays out of the series
+  top->group = top->rack ? DeviceId{} : loc.device->group;  // TX.groups: a member stays in its group
   Edit e = makeEdit("Hot-Swap Preset");
   e.devices.push_back(device);
   Batch& b = batchOf(e);
   b.commands.push_back(RemoveDevice{device});
   b.commands.push_back(AddDevice{loc.track->id, std::move(top), loc.index, loc.chain ? loc.chain->id : ChainId{}});
-  // Wires into a param the new device still has, and every wire out of it (its exports), come back with their ids.
+  // Wires into a param the new device still has, and every wire out of it (its exports), come back with their ids;
+  // TX.all-free: so do the wires into its main input (its place on the path stays).
   for (const Wire& w : wiresOf(p)) {
     if (w.from != device && w.to != device) continue;
-    if (w.to == device && !keepsParam(w.param)) continue;
+    if (w.to == device && !w.param.empty() && !keepsParam(w.param)) continue;
     // A wire between the replaced device and something inside it (a rack's own inner devices) is gone with them.
     if (w.from != device && !w.fromNoteSource() && !findDevice(p, w.from).track) continue;  // TMM.10-fix2: notes stay
     if (w.from != device && deviceContains(*loc.device, w.from)) continue;

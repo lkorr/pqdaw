@@ -17,6 +17,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/library_files.h"
 #include "pq/document/lower.h"
+#include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
@@ -112,77 +113,79 @@ std::string calleeOf(const LoweredProject& lp, TrackId t, DeviceId d) {
 
 namespace {
 
-// The stages of a track's own chain (doc::chainStages from the note source on a MIDI track).
-std::vector<ChainStage> stagesOf(const Track& t) { return chainStages(t.devices, t.kind == TrackKind::Midi); }
-ChainSignal inOf(const Track& t, DeviceId d) {
-  for (const ChainStage& s : stagesOf(t))
+// The stages of a track's blocks along its main path (doc::trackStages, from the note source on a MIDI track).
+std::vector<ChainStage> stagesOf(const Project& p, const Track& t) { return trackStages(p, t); }
+ChainSignal inOf(const Project& p, const Track& t, DeviceId d) {
+  for (const ChainStage& s : stagesOf(p, t))
     if (s.device->id == d) return s.in;
   FAIL("no stage");
   return ChainSignal::None;
 }
+// TX.all-free: the track's main path as a list (what chainSignalAt reads).
+std::vector<DevicePtr> pathList(const Project& p, const Track& t) {
+  const MainPath path = mainPath(p, t);
+  std::vector<DevicePtr> l = flowOrder(t, path);
+  l.resize(path.blocks.size());
+  return l;
+}
 
 }  // namespace
 
-TEST_CASE("meta devices: what reaches each chain input decides its form — kinds are positions (TMM.10-fix1)") {
+TEST_CASE("meta devices: what reaches each main input along the path decides its form (TMM.10-fix1; TX.all-free)") {
   MetaChain c;
-  CHECK(c.dev(c.acc).kind == DeviceKind::Instrument);  // first: the note source reaches it
-  CHECK(c.dev(c.wt).kind == DeviceKind::AudioEffect);
-  CHECK(inOf(c.tr(), c.acc) == ChainSignal::Notes);
-  CHECK(inOf(c.tr(), c.wt) == ChainSignal::Voices);    // the Phase accumulator's per-voice phase
-  CHECK(inOf(c.tr(), c.filter) == ChainSignal::Voices);  // a stock effect: summed at its (global) input
-  CHECK(stagesOf(c.tr()).back().out == ChainSignal::Audio);
-  CHECK(chainSignalAt(c.tr().devices, true, 2) == ChainSignal::Voices);
-  CHECK(chainSignalAt(c.tr().devices, true, 3) == ChainSignal::Audio);
-  // Any type, any slot: the kind is only the position.
+  CHECK(inOf(c.doc(), c.tr(), c.acc) == ChainSignal::Notes);  // first on the path: the note source reaches it
+  CHECK(inOf(c.doc(), c.tr(), c.wt) == ChainSignal::Voices);    // the Phase accumulator's per-voice phase
+  CHECK(inOf(c.doc(), c.tr(), c.filter) == ChainSignal::Voices);  // a stock effect: summed at its (global) input
+  CHECK(stagesOf(c.doc(), c.tr()).back().out == ChainSignal::Audio);
+  CHECK(chainSignalAt(pathList(c.doc(), c.tr()), true, 2) == ChainSignal::Voices);
+  CHECK(chainSignalAt(pathList(c.doc(), c.tr()), true, 3) == ChainSignal::Audio);
+  // TX.all-free: on a track a meta block's kind means nothing (its cables decide): an audio effect, any slot.
   CHECK(*ops::metaDeviceKindAt(c.doc(), meta::wavetableType(), c.track, 2) == DeviceKind::AudioEffect);
-  CHECK(*ops::metaDeviceKindAt(c.doc(), meta::envelopeType(), c.track, kAppend) == DeviceKind::AudioEffect);
-  CHECK(*ops::metaDeviceKindAt(c.doc(), meta::envelopeType(), c.track, 0) == DeviceKind::Instrument);
-  // A second Phase accumulator after the first: its chain input (frequency) takes the first one's voice signal.
+  CHECK(*ops::metaDeviceKindAt(c.doc(), meta::envelopeType(), c.track, 0) == DeviceKind::AudioEffect);
+  // A second Phase accumulator after the first: its main input (frequency) takes the first one's voice signal.
   const DeviceId acc2 = c.edit(ops::addMetaDevice(c.doc(), c.store.ids(), c.track, "phase_acc", 1)).devices.at(0);
-  CHECK(c.dev(acc2).kind == DeviceKind::AudioEffect);
-  CHECK(inOf(c.tr(), acc2) == ChainSignal::Voices);
+  CHECK(inOf(c.doc(), c.tr(), acc2) == ChainSignal::Voices);
   // An inactive device is skipped: the next one takes what it would have.
   c.edit(ops::setDevicesActive(c.doc(), std::vector<DeviceId>{c.acc}, false));
-  CHECK(inOf(c.tr(), acc2) == ChainSignal::Notes);
+  CHECK(inOf(c.doc(), c.tr(), acc2) == ChainSignal::Notes);
   c.edit(ops::setDevicesActive(c.doc(), std::vector<DeviceId>{c.acc}, true));
-  // A meta device inserted first takes the note source; the one that was first becomes an audio effect (no
-  // replacing), and back when it is removed.
+  // A meta device spliced in first takes the note source; the one that was first then receives its voices (no
+  // replacing), and the notes again when it is dissolved.
   const DeviceId env = c.edit(ops::addMetaDevice(c.doc(), c.store.ids(), c.track, "envelope", 0)).devices.at(0);
-  CHECK(c.tr().devices.at(0)->id == env);
-  CHECK(c.dev(env).kind == DeviceKind::Instrument);
-  CHECK(c.dev(c.acc).kind == DeviceKind::AudioEffect);
-  CHECK(inOf(c.tr(), c.acc) == ChainSignal::Voices);
-  c.edit(ops::deleteDevices(c.doc(), std::vector<DeviceId>{env}));
-  CHECK(c.dev(c.acc).kind == DeviceKind::Instrument);
-  // A stock instrument added to the track goes first; the meta device follows it (its voices are summed at the
-  // instrument's output: the meta device receives audio).
+  CHECK(mainPath(c.doc(), c.tr()).blocks.at(0)->id == env);
+  CHECK(inOf(c.doc(), c.tr(), env) == ChainSignal::Notes);
+  CHECK(inOf(c.doc(), c.tr(), c.acc) == ChainSignal::Voices);
+  c.edit(ops::dissolveDevices(c.doc(), c.store.ids(), &library(), std::vector<DeviceId>{env}));
+  CHECK(inOf(c.doc(), c.tr(), c.acc) == ChainSignal::Notes);
+  // A stock instrument added to the track goes first (it takes the notes); the meta device follows it (its voices are
+  // summed at the instrument's output: the meta device receives audio).
   const DeviceId synth = c.edit(ops::addDevice(c.doc(), c.store.ids(), c.track, "BasicSynth", DeviceKind::Instrument)).devices.at(0);
-  CHECK(c.tr().devices.at(0)->id == synth);
-  CHECK(c.dev(c.acc).kind == DeviceKind::AudioEffect);
-  CHECK(inOf(c.tr(), c.acc) == ChainSignal::Audio);
+  CHECK(mainPath(c.doc(), c.tr()).blocks.at(0)->id == synth);
+  CHECK(inOf(c.doc(), c.tr(), c.acc) == ChainSignal::Audio);
   // …and a meta device asked for slot 0 takes the note source there: the stock instrument (which could not follow it:
-  // it takes no chain signal) is replaced.
-  CHECK(*ops::metaDeviceKindAt(c.doc(), meta::phaseAccType(), c.track, 0) == DeviceKind::Instrument);
+  // it takes no main-input signal but the notes) is replaced.
   {
     const ops::Edit add = *ops::addMetaDevice(c.doc(), c.store.ids(), c.track, "envelope", 0);
     const Batch& b = std::get<Batch>(add.command.v);
-    REQUIRE(b.commands.size() == 2);
-    CHECK(std::get<RemoveDevice>(b.commands[0].v).device == synth);
+    bool removesSynth = false;
+    for (const Command& x : b.commands)
+      if (const RemoveDevice* r = std::get_if<RemoveDevice>(&x.v)) removesSynth = removesSynth || r->device == synth;
+    CHECK(removesSynth);
   }
-  // Moving the meta device to the front of a list re-kinds both.
-  c.edit(ops::deleteDevices(c.doc(), std::vector<DeviceId>{synth}));
-  c.edit(ops::moveDevice(c.doc(), c.wt, c.track, 0));
-  CHECK(c.dev(c.wt).kind == DeviceKind::Instrument);
-  CHECK(c.dev(c.acc).kind == DeviceKind::AudioEffect);
+  // Moving the Wavetable to the head of the path (the Device view's reorder): it takes the notes now.
+  c.edit(ops::dissolveDevices(c.doc(), c.store.ids(), &library(), std::vector<DeviceId>{synth}));
+  c.edit(ops::moveOnPath(c.doc(), c.store.ids(), &library(), c.wt, c.track, 0));
+  CHECK(mainPath(c.doc(), c.tr()).blocks.at(0)->id == c.wt);
+  CHECK(inOf(c.doc(), c.tr(), c.wt) == ChainSignal::Notes);
+  CHECK(inOf(c.doc(), c.tr(), c.acc) == ChainSignal::Voices);
   // An audio track: everything receives audio.
   const TrackId audio = c.edit(ops::createTrack(c.doc(), c.store.ids(), TrackKind::Audio)).tracks.at(0);
   const DeviceId fm = c.edit(ops::addMetaDevice(c.doc(), c.store.ids(), audio, "phase_acc")).devices.at(0);
-  CHECK(c.dev(fm).kind == DeviceKind::AudioEffect);
-  CHECK(inOf(*findTrackPtr(c.doc(), audio), fm) == ChainSignal::Audio);
+  CHECK(inOf(c.doc(), *findTrackPtr(c.doc(), audio), fm) == ChainSignal::Audio);
   // Unplugged: nothing reaches it, it runs once.
   c.edit(ops::setDeviceChainInput(c.doc(), fm, std::string(kChainUnplugged)));
-  CHECK(inOf(*findTrackPtr(c.doc(), audio), fm) == ChainSignal::None);
-  CHECK(chainForm(stagesOf(*findTrackPtr(c.doc(), audio)).back()) == meta::Form::ChainAudio);
+  CHECK(inOf(c.doc(), *findTrackPtr(c.doc(), audio), fm) == ChainSignal::None);
+  CHECK(chainForm(stagesOf(c.doc(), *findTrackPtr(c.doc(), audio)).back()) == meta::Form::ChainAudio);
   CHECK_FALSE(ops::setDeviceChainInput(c.doc(), fm, "nope").ok());
   CHECK_FALSE(ops::setDeviceChainInput(c.doc(), c.filter, "-").ok());  // only chain meta devices
   // Plugging into the type's own input stores "" (the default).
@@ -247,13 +250,13 @@ TEST_CASE("meta devices: a Wavetable moved out of its run becomes a chain audio 
   MetaChain c;
   // After the Auto Filter: no run. TMM.8: the Wavetable has an effect form (the chain's audio is its x: in Phase mode
   // the signal is read as a phase; Shape mode shapes it), so it plays as an effect instead of being bypassed.
-  c.edit(ops::moveDevice(c.doc(), c.wt, c.track, 2));
-  CHECK(inOf(c.tr(), c.wt) == ChainSignal::Audio);  // the filter's audio reaches it (TMM.10-fix1: chainStages)
+  c.edit(ops::moveOnPath(c.doc(), c.store.ids(), &library(), c.wt, c.track, 3));  // TX.all-free: after the filter
+  CHECK(inOf(c.doc(), c.tr(), c.wt) == ChainSignal::Audio);  // the filter's audio reaches it (TMM.10-fix1: chainStages)
   Result<LoweredProject> lp = lowerIt(c.doc());
   REQUIRE(lp.ok());
   CHECK(lp->deviceErrors.empty());
   CHECK(trackPatch(*lp, c.track).findByName("d" + std::to_string(c.wt.value)).has_value());
-  c.edit(ops::moveDevice(c.doc(), c.wt, c.track, 1));
+  c.edit(ops::moveOnPath(c.doc(), c.store.ids(), &library(), c.wt, c.track, 1));
   Result<LoweredProject> back = lowerIt(c.doc());
   REQUIRE(back.ok());
   CHECK(back->deviceErrors.empty());
@@ -490,9 +493,13 @@ TEST_CASE("meta devices (fix1): a schema-10 file keeps its meaning (migration 10
   REQUIRE(text.ok());
   nlohmann::json j = nlohmann::json::parse(*text);
   j["schemaVersion"] = 10;
+  j.erase("wires");  // TX.all-free: a schema-10 file has no main links (the 16 -> 17 step wires its chains)
   for (nlohmann::json& t : j["tracks"]) {
     nlohmann::json& devs = t["devices"];
     if (devs.size() == 2 && devs[0]["patch"] == "BasicSynth") devs.erase(devs.begin());  // track A's instrument
+    // Schema 10's kinds were positions: a meta device first in a MIDI track's list (B's accumulator, C's Wavetable)
+    // was an instrument (TX.all-free writes a track's meta blocks as audio effects).
+    else if (!devs.empty() && devs[0]["patch"].get<std::string>().starts_with("meta:")) devs[0]["kind"] = "instrument";
   }
   const Result<LoadedProject> old = parseProject(j.dump(2));
   REQUIRE_MESSAGE(old.ok(), (old.ok() ? std::string() : old.error().message));

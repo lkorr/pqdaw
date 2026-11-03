@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
@@ -78,9 +79,10 @@ struct Ui {
   }
   const doc::Track& track() const { return *doc::findTrackPtr(*ctx.doc(), keys); }
   const doc::Rack& rackOf(doc::DeviceId id) const { return *doc::findDevice(*ctx.doc(), id).device->rack; }
+  // TX.all-free: the track's main path (what the Device view lists), in signal order.
   std::vector<doc::DeviceId> chain() const {
     std::vector<doc::DeviceId> v;
-    for (const doc::DevicePtr& dev : track().devices) v.push_back(dev->id);
+    for (const doc::Device* dev : doc::mainPath(*ctx.doc(), track()).blocks) v.push_back(dev->id);
     return v;
   }
   size_t history() const { return ctx.store().history().cursor(); }
@@ -205,7 +207,7 @@ TEST_CASE("device keys: Shift+Left / Right extend the selection along one list; 
   CHECK(u.ctx.status().find("Ctrl+G") != std::string::npos);
 }
 
-TEST_CASE("device keys: Ctrl+Left / Right move the selected device one step (one undo step); the instrument stays first") {
+TEST_CASE("device keys: Ctrl+Left / Right move the selected device one step along the path (one undo step each)") {
   Ui u;
   const size_t h0 = u.history();
   u.d.click(u.title(u.rack));
@@ -213,17 +215,18 @@ TEST_CASE("device keys: Ctrl+Left / Right move the selected device one step (one
   CHECK(u.history() == h0 + 1);
   CHECK(u.chain() == Ids{u.inst, u.rack, u.util});
   CHECK(u.selection() == Ids{u.rack});  // it stays selected
-  u.d.press("Ctrl+Left");                // not before the instrument
-  CHECK(u.history() == h0 + 1);
-  CHECK(u.ctx.status().find("instrument") != std::string::npos);
-  u.d.press("Ctrl+Right");
+  // TX.all-free: the path has no order rule — it passes the instrument too (the cables are rewired).
+  u.d.press("Ctrl+Left");
   CHECK(u.history() == h0 + 2);
+  CHECK(u.chain() == Ids{u.rack, u.inst, u.util});
+  u.d.press("Ctrl+Left");  // the head: nothing
+  CHECK(u.history() == h0 + 2);
+  u.d.press("Ctrl+Right");
+  u.d.press("Ctrl+Right");
+  CHECK(u.history() == h0 + 4);
   CHECK(u.chain() == Ids{u.inst, u.util, u.rack});
   u.d.press("Ctrl+Right");  // the end: nothing
-  CHECK(u.history() == h0 + 2);
-  u.view().select(Ids{u.inst});  // the instrument does not move either
-  u.d.press("Ctrl+Right");
-  CHECK(u.history() == h0 + 2);
+  CHECK(u.history() == h0 + 4);
   // Inside a rack chain: along that chain.
   const doc::ChainId c1 = u.rackOf(u.rack).chains[0]->id;
   const doc::DeviceId eq = u.run(doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), {}, "eq_eight", doc::DeviceKind::AudioEffect,
@@ -238,7 +241,7 @@ TEST_CASE("device keys: Ctrl+Left / Right move the selected device one step (one
   u.view().select(Ids{u.util, u.rack});
   u.d.press("Ctrl+Left");
   CHECK(u.history() == h1 + 1);
-  for (int k = 0; k < 4; ++k) REQUIRE(u.ctx.undo());  // the move in the chain, the add, the two key moves
+  for (int k = 0; k < 6; ++k) REQUIRE(u.ctx.undo());  // the move in the chain, the add, the four key moves
   CHECK(u.chain() == Ids{u.inst, u.util, u.rack});
 }
 

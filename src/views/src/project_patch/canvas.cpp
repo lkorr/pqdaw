@@ -31,23 +31,26 @@ float pinY(const Node& n, size_t i) noexcept { return pinOffset(n, i); }
 bool isNoteSource(const ProjectPatch& pp, const Node& n) noexcept {
   return n.kind == NodeKind::Source && n.band < pp.bands.size() && pp.bands[n.band].kind == doc::TrackKind::Midi;
 }
+// TX.all-free: a band's source (a lane window, a Σ): its output 0 is the track's own signal (its notes, its clips, its
+// sum), a wire's kMainPort source.
+bool isTrackSource(const Node& n) noexcept { return n.kind == NodeKind::Source || n.kind == NodeKind::Sum; }
 // Whether a press on output pin `pin` starts a wire: a device's (TX.patching: any output, its main one too), a mixer's
-// (route, sends), a note source's.
+// (route, sends), a track's source (TX.all-free: its own signal; a MIDI track's note outputs).
 bool wireSource(const ProjectPatch& pp, const Node& n) noexcept {
-  return n.kind == NodeKind::Device || n.kind == NodeKind::Mixer || isNoteSource(pp, n) ||
+  (void)pp;
+  return n.kind == NodeKind::Device || n.kind == NodeKind::Mixer || isTrackSource(n) ||
          (n.kind == NodeKind::Terminal && !n.outputs.empty());  // TX.groups: a group's In terminal
 }
-// TX.groups: a node a wire may end on (a device, or a group's Out terminal).
-bool wireEnd(const Node& n) noexcept { return n.kind == NodeKind::Device || (n.kind == NodeKind::Terminal && !n.inputs.empty()); }
+// TX.groups: a node a wire may end on (a device, or a group's Out terminal; TX.all-free: a track's mixer).
+bool wireEnd(const Node& n) noexcept {
+  return n.kind == NodeKind::Device || n.kind == NodeKind::Mixer || (n.kind == NodeKind::Terminal && !n.inputs.empty());
+}
 
-// TX.patching: the port of device node `n`'s input pin `i` a wire dropped on it targets, or null: an instrument's
-// `notes` (the chain's note wire) and a rack's own input (its chain's) are not wire targets.
+// TX.patching: the port of node `n`'s input pin `i` a wire dropped on it targets, or null. TX.all-free: an instrument's
+// `notes` and a rack's own input are their main inputs (kMainPort: the main path's notes / audio).
 const Port* wireTarget(const Node& n, uint32_t i) noexcept {
   if (!wireEnd(n) || i >= n.inputs.size()) return nullptr;
-  const Port& q = n.inputs[i];
-  if (q.name == "notes") return nullptr;
-  if (n.rack && !q.param) return nullptr;
-  return &q;
+  return &n.inputs[i];
 }
 
 bool inside(const Rect& r, Vec2 p) noexcept { return p.x >= r.x0 && p.x < r.x1 && p.y >= r.y0 && p.y < r.y1; }
@@ -584,19 +587,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
     const Rect r = deviceRect(n.x, n.y, n.w, n.h);
     const float dx = last_.x - press_.x, dy = last_.y - press_.y;
     dl.addRectStroke(snapRect({r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy}), th.circuit.selected, std::max(1.0f, std::round(us)));
-    const uint32_t b = view_.freeRack() ? kNone : bandAt(last_);  // TX.free-rack: blocks move freely (no chain slot)
-    if (b != kNone) {
-      const Band& band = pp.bands[b];
-      const graph::Point2 w = toWorld(last_);
-      float x = band.x0 + 8.0f;
-      for (const uint32_t d : band.devices) {
-        if (d == dragNode_) continue;
-        const Node& dn = pp.nodes[d];
-        if (dn.x + dn.w * 0.5f < w.x) x = dn.x + dn.w + metrics::kNodeGap * 0.5f;
-      }
-      const Rect m = deviceRect(x - 1.0f, band.y + 4.0f, 2.0f, band.h - 8.0f);
-      dl.addRectFilled(snapRect(m), th.circuit.selected);
-    }
+    // TX.all-free: a block moves where it is dropped (no slot: its cables are its place in the signal path).
   }
   if (drag_ == Drag::Resize) {  // TX.resize: the block's outline and its scale at its bottom-right corner
     const uint32_t rn = pp.nodeOf(resizeDevice_);
@@ -1111,17 +1102,26 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
   if (!from_.valid() || from_.node >= pp.nodes.size()) return nullptr;
   const Node& a = pp.nodes[from_.node];
   // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): any output of a device (its main output too) or a
-  // note output goes onto any parameter or input of any device; TMM.10-fix2: `notes` is the chain's own note wire.
-  if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isNoteSource(pp, a)) {
-    if (a.kind == NodeKind::Source && from_.port == 0)
-      return "Wire: drag a note output (Hz, gate, velocity: the pins under the notes) onto a parameter or an input";
+  // note output goes onto any parameter or input of any device. TX.all-free: a track's own signal (its source's main
+  // output) and any main output onto a main input or the track's mixer: the cables the main path is made of.
+  if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)) {
     const uint32_t to = nodeAt(pos);
     if (to == kNone) return nullptr;  // empty canvas: the drop does nothing
-    if (!wireEnd(pp.nodes[to])) return "Wire: drop it on a device's parameter or input (or a group's Out)";
-    const PinHit t = pinAt(pos);
-    if (t.valid() && t.input && t.node == to && wireTarget(pp.nodes[to], t.port) == nullptr)
-      return pp.nodes[to].rack ? "Wire: a rack's input is its chain's; drop it on a parameter or a device inside the rack"
-                               : "Wire: the notes input is the chain's own note wire; drop it on a parameter or an input";
+    const Node& t = pp.nodes[to];
+    if (!wireEnd(t)) return "Wire: drop it on a device's parameter or input (or a group's Out, a track's mixer)";
+    if (t.kind == NodeKind::Mixer && t.band != a.band)
+      return "Wire: a mixer takes its own track's signals (route a track to a group or the master from its mixer)";
+    const PinHit h = pinAt(pos);
+    const bool onPin = h.valid() && h.input && h.node == to && h.port < t.inputs.size();
+    const bool notes = isTrackSource(a) && isNoteSource(pp, a);  // a MIDI track's note source
+    if (notes && t.kind == NodeKind::Mixer && from_.port != 0)
+      return "Wire: a mixer takes audio (a block's output); a note output goes onto a parameter";
+    // The notes (output 0) onto a pin that is not a main input, or onto a block's body (it would mean its param menu).
+    if (notes && from_.port == 0 && t.kind != NodeKind::Mixer && (onPin ? t.inputs[h.port].param : !onPin))
+      return "Wire: the notes go into a main input (an instrument's notes, a meta module's input); a parameter takes a note output (Hz, gate, velocity)";
+    // An instrument's notes take only its own track's notes (the head of the path): no audio, no other output.
+    if (onPin && t.inputs[h.port].name == "notes" && !(isTrackSource(a) && from_.port == 0 && a.band == t.band))
+      return "Wire: an instrument's notes input takes its own track's notes (from the track's source)";
     return nullptr;
   }
   if (a.kind != NodeKind::Mixer) return nullptr;
@@ -1210,13 +1210,14 @@ void ProjectCanvas::finishWire(Vec2 pos) {
   const Band& fromBand = pp.bands[a.band];
   // TX.node-menu: an output's cable released on empty space: the node menu (nodes with an input first); the node arrives
   // wired from that output.
-  if ((a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isNoteSource(pp, a)) && nodeAt(pos) == kNone && !pinAt(pos).valid() &&
+  if ((a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)) && nodeAt(pos) == kNone && !pinAt(pos).valid() &&
       rect().contains(pos)) {
     ProjectPatchView::SpawnLink link;
     link.kind = ProjectPatchView::SpawnLink::Kind::FromOutput;
     link.port = a.outputs[from_.port].name;
-    if (a.kind == NodeKind::Source) {
+    if (isTrackSource(a)) {
       link.notes = fromBand.track;
+      if (from_.port == 0) link.port.clear();  // TX.all-free: the track's own signal (kMainPort)
     } else {
       link.device = a.device;
       if (const size_t at = link.port.rfind('@'); at != std::string::npos && (a.rack || a.group)) {
@@ -1230,19 +1231,39 @@ void ProjectCanvas::finishWire(Vec2 pos) {
   // Any output of a device or (TMM.10-fix2) a note output: onto an input pin (an audio input, a wired input, a param a
   // wire drives), that port; TX.patching: onto a face's control, that param; onto a device anywhere else, a menu of its
   // params and inputs.
-  if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isNoteSource(pp, a)) {
-    const std::string port = a.outputs[from_.port].name;
+  if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)) {
+    // TX.all-free: a track source's output 0 is its own signal (kMainPort); its others a MIDI track's note outputs.
+    const std::string port = isTrackSource(a) && from_.port == 0 ? std::string() : a.outputs[from_.port].name;
     const bool device = a.kind == NodeKind::Device || a.kind == NodeKind::Terminal;  // TX.groups: In is the group's port
     const doc::DeviceId from = device ? a.device : doc::DeviceId{};
     const doc::TrackId notes = device ? doc::TrackId{} : fromBand.track;
     auto wire = [&](doc::DeviceId to, const std::string& param) {
       (void)(notes.valid() ? v.connectNotes(notes, port, to, param) : v.connect(from, port, to, param));
     };
+    // TX.all-free: onto the band's mixer: into its input (the track's signal at the end of its path).
+    if (const uint32_t to = nodeAt(pos); to != kNone && pp.nodes[to].kind == NodeKind::Mixer) {
+      doc::Wire w;
+      w.from = from;
+      w.noteSource = notes;
+      w.port = port;
+      w.mixer = pp.bands[pp.nodes[to].band].track;
+      (void)v.connectEnds(std::move(w));
+      return;
+    }
     const PinHit target = pinAt(pos);
     if (target.valid() && target.input && wireEnd(pp.nodes[target.node])) {
       const Node& t = pp.nodes[target.node];
       if (const Port* q = wireTarget(t, target.port)) {
         std::string param = q->name;
+        // TX.all-free: an instrument's `notes` takes only its own track's source (the notes: a main link, the head of
+        // the path); a rack's input only a main output (a main link). Any other output there is refused, as before.
+        const bool notesIn = param == "notes";
+        const bool mainOnly = notesIn || (t.rack && !q->param);
+        const bool fromSource = isTrackSource(a) && from_.port == 0 && a.band == t.band;
+        const bool fromMain = fromSource || (!notesIn && a.kind == NodeKind::Device &&
+                                             a.outputs[from_.port].name == v.mainPorts(a.device).out);
+        if (mainOnly && !fromMain) return;
+        if (mainOnly) param.clear();
         doc::DeviceId to = t.device;
         if (const size_t at = param.rfind('@'); t.rack && at != std::string::npos) {  // T4.8: a device inside the rack
           to = doc::DeviceId{static_cast<uint32_t>(std::stoul(param.substr(at + 1)))};
@@ -1319,22 +1340,16 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
   const Band& band = pp.bands[b];
   const Node& moved = pp.nodes[dragNode_];
   const graph::Point2 w = toWorld(pos);
-  uint32_t index = 0;
-  for (const uint32_t d : band.devices) {
-    if (d == dragNode_) continue;
-    const Node& dn = pp.nodes[d];
-    if (dn.x + dn.w * 0.5f < w.x) ++index;
-  }
-  if (pp.scoped && moved.group) return;  // TX.groups: a group panel holds the group itself still (move it in its chain)
+  if (pp.scoped && moved.group) return;  // TX.groups: a group panel holds the group itself still
   const doc::Track* now = doc::findDevice(*v.context().doc(), moved.device).track;
+  const graph::Point2 start = toWorld(press_);
   // TX.groups: inside a capsule a block moves freely (a nudge); dragged out of it, it leaves the group; a block dropped
-  // into another opened capsule of its band joins that group (from the series: it leaves the series).
+  // into another opened capsule of its band joins that group (from the main path: it leaves the path, joined there).
   {
     auto insideNode = [&](const Node& c) { return w.x >= c.x && w.x <= c.x + c.w && w.y >= c.y && w.y <= c.y + c.h; };
     uint32_t into = kNone;
     for (uint32_t i = 0; i < pp.nodes.size(); ++i)
       if (i != dragNode_ && pp.nodes[i].group && pp.nodes[i].groupOpen && pp.nodes[i].band == b && insideNode(pp.nodes[i])) into = i;
-    const graph::Point2 start = toWorld(press_);
     if (moved.capsule != kNone) {
       if (into == moved.capsule) v.nudge(moved.device.value, w.x - start.x, w.y - start.y);
       else if (now != nullptr && now->id == band.track) (void)v.setDeviceGroup(moved.device, into != kNone ? pp.nodes[into].device : doc::DeviceId{});
@@ -1345,33 +1360,14 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
       return;
     }
   }
-  // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): in its own band, a block of the series dropped
-  // below the chain's row leaves the series (free: it goes to the band's free row and keeps its wires); a free block
-  // moves where it is dropped (a nudge), or back into the series when dropped on the chain's row.
+  // TX.all-free (SPEC §15 2026-11-03 "everything is free"): in its own band a block moves where it is dropped (a nudge;
+  // its cables are its place in the signal path, nothing is locked into a row); onto another band it moves to that
+  // track, off its path there (its old path joined where it was), where it was dropped.
   if (now != nullptr && now->id == band.track) {
-    float chainBottom = band.y + metrics::kTitle + metrics::kPinTop;
-    for (const uint32_t n : {band.source, band.mixer})
-      if (n != kNone) chainBottom = std::max(chainBottom, pp.nodes[n].y + pp.nodes[n].h);
-    for (const uint32_t d : band.devices)
-      if (!pp.nodes[d].free) chainBottom = std::max(chainBottom, pp.nodes[d].y + pp.nodes[d].h);
-    const doc::DeviceId one[1] = {moved.device};
-    if (moved.free && w.y > chainBottom) {
-      const graph::Point2 start = toWorld(press_);
-      v.nudge(moved.device.value, w.x - start.x, w.y - start.y);
-      return;
-    }
-    if (moved.free) {
-      (void)v.putIntoChain(moved.device, index);
-      return;
-    }
-    if (w.y > chainBottom + metrics::kFreeRowGap * 0.5f) {
-      (void)v.setDevicesFree(one, true);
-      return;
-    }
-    const int32_t at = now->deviceIndex(moved.device);
-    if (at >= 0 && static_cast<uint32_t>(at) == index) return;  // dropped where it was
+    v.nudge(moved.device.value, w.x - start.x, w.y - start.y);
+    return;
   }
-  (void)v.moveDevice(moved.device, band.track, index);
+  (void)v.moveToTrack(moved.device, band.track, w);
 }
 
 // TX.lane-edit: a press in a window body goes to the arrangement's automation and editor (lane_edit.cpp: the surface
@@ -1671,7 +1667,7 @@ void ProjectCanvas::rememberSource() {
   if (!from_.valid() || from_.node >= pp.nodes.size()) return;
   const Node& n = pp.nodes[from_.node];
   if (from_.port < n.outputs.size()) fromPort_ = n.outputs[from_.port].name;
-  if (n.kind == NodeKind::Source) fromNotes_ = pp.bands[n.band].track;
+  if (isTrackSource(n)) fromNotes_ = pp.bands[n.band].track;
   else fromDevice_ = n.device;
 }
 

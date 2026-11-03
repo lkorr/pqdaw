@@ -1,4 +1,4 @@
-patch Midi3 {
+patch Midi4 {
   param volume = 0 [-70..6]
   param pan = 0 [-1..1]
   param gate = 1 [0..1]
@@ -7,16 +7,16 @@ patch Midi3 {
   out done : bool voice mono
   out out : real audio global stereo
 
-  d5 = meta_phase_acc__d5__36c865d0742f6e2d()
-  d6 = meta_wavetable__d6__3e40a23d87984209(d5)
+  d8 = meta_phase_acc__d8__cbd39f62550e2899()
+  d12 = meta_wavetable__d12__19cdfde4800b4d21(d8)
   _n2 = voice.gate
   _n8 = 0
   _n10 = 1
   _n11 = _n2 ? _n10 : max(z1(_n11) - 200 / sr, _n8)
-  _n13 = voice_sum(d6 * _n11)
+  _n13 = voice_sum(d12 * _n11)
   _n18 = (_n13, _n13)
-  d7 = auto_filter(_n18)
-  _n25 = signal_tap(_n18[_n8], _n18[_n10], d7[_n8], d7[_n10], 29)
+  d15 = auto_filter(_n18)
+  _n25 = signal_tap(_n18[_n8], _n18[_n10], d15[_n8], d15[_n10], 61)
   _n28 = 0.002
   _n32 = volume <= -70 ? _n8 : db_to_gain(volume)
   _n35 = (pan + _n10) * 0.7853981633974483
@@ -27,14 +27,14 @@ patch Midi3 {
   _n47 = _n32 * (_n44 ? gate : _n8)
   _n53 = _n32 * _n46
   done = !_n2 && _n11 <= _n8
-  out = gain(d7, (_n38 * _n47, _n39 * _n47), _n28)
+  out = gain(d15, (_n38 * _n47, _n39 * _n47), _n28)
 
-  export post = gain(d7, (_n38 * _n53, _n39 * _n53), _n28)
-  export pre = gain(d7, (_n38 * _n46, _n39 * _n46), _n28)
+  export post = gain(d15, (_n38 * _n53, _n39 * _n53), _n28)
+  export pre = gain(d15, (_n38 * _n46, _n39 * _n46), _n28)
 
 }
 
-patch meta_wavetable__d6__3e40a23d87984209 {
+patch meta_wavetable__d12__19cdfde4800b4d21 {
   param phase = 0 [0..1] @label("Phase") @wrap
   param position = 0 [0..1] @label("Position")
   param fold = 0 [0..1] @label("Fold")
@@ -43,6 +43,6 @@ patch meta_wavetable__d6__3e40a23d87984209 {
   in x : audio voice
   out out : audio voice mono
 
-  out = wavetable_pos(frac(x + phase), clip(position + -0, 0, 1), 25)
+  out = wavetable_pos(frac(x + phase), clip(position + -0, 0, 1), 49)
 
 }

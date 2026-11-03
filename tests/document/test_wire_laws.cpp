@@ -1,7 +1,7 @@
 // TX.patching (SPEC §15 2026-11-01 "a wire adds its value in the target param's own units", "free patching in the
 // circuit"): the document side — wire laws (Add for new wires, Travel only from migration), schema 13 and its
 // 12 → 13 migration (an old project lowers to exactly the same graph), wires from any output into params and inputs,
-// free devices (SetDeviceFree, the file, the rules, chainStages).
+// TX.all-free: blocks off the main path (takeOffPath, the file, trackStages).
 #include <doctest/doctest.h>
 
 #include <nlohmann/json.hpp>
@@ -13,6 +13,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
+#include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
@@ -151,6 +152,7 @@ TEST_CASE("wire laws: schema 13 writes the law, 12 -> 13 makes every wire Travel
   // The same project as schema 12 wrote it: no "law" (every wire was the knob-travel law), version 12.
   nlohmann::json j = nlohmann::json::parse(*text);
   for (nlohmann::json& w : j["wires"]) {
+    if (w.value("port", std::string("?")).empty() && w.value("param", std::string("?")).empty()) continue;  // a main link
     REQUIRE(w.contains("law"));
     w.erase("law");
   }
@@ -159,7 +161,8 @@ TEST_CASE("wire laws: schema 13 writes the law, 12 -> 13 makes every wire Travel
   REQUIRE_MESSAGE(old.ok(), (old.ok() ? std::string() : old.error().message));
   CHECK(old->fileSchemaVersion == 12);
   CHECK(*old->project == d.doc());
-  for (const Wire& w : wiresOf(*old->project)) CHECK(w.law == WireLaw::Travel);
+  for (const Wire& w : wiresOf(*old->project))
+    if (!w.mainLink()) CHECK(w.law == WireLaw::Travel);  // (TX.all-free: the main links of this relabelled text add)
   // The lowered graph of the migrated file is the one the Travel law built before TX.patching (the same IR, so the
   // same audio: tests/app/test_wires.cpp renders that law bit for bit like a hand-built graph).
   const LoweredProject a = lowerDoc(d.doc()), b = lowerDoc(*old->project);
@@ -189,55 +192,47 @@ TEST_CASE("wire laws: schema 13 writes the law, 12 -> 13 makes every wire Travel
   CHECK_FALSE(parseProject(k.dump(2)).ok());
 }
 
-TEST_CASE("free devices: out of the series, one undo step, in the file, the rules") {
+TEST_CASE("TX.all-free: blocks off the main path — taken off it in one undo step, out of the flow, called, in the file") {
   Doc d;
   const DeviceId sat = d.add("saturator");
   const DeviceId devs[] = {d.lfo, sat};
-  auto e = ops::setDevicesFree(d.doc(), devs, true);
+  auto e = ops::takeOffPath(d.doc(), d.store.ids(), nullptr, devs);
   REQUIRE(e.ok());
   const size_t steps = d.store.history().entries().size();
   REQUIRE(d.store.dispatch(e->command).ok());
   CHECK(d.store.history().entries().size() == steps + 1);
-  CHECK(findDevice(d.doc(), d.lfo).device->free);
-  CHECK(findDevice(d.doc(), sat).device->free);
-  CHECK_FALSE(findDevice(d.doc(), d.eq).device->free);
-  // chainStages lists them but leaves them out of the flow: the EQ after the free LFO receives the instrument's audio.
-  const std::vector<ChainStage> st = chainStages(findTrackPtr(d.doc(), d.keys)->devices, true);
+  const Track& t = *findTrackPtr(d.doc(), d.keys);
+  const MainPath path = mainPath(d.doc(), t);
+  CHECK_FALSE(path.contains(d.lfo));
+  CHECK_FALSE(path.contains(sat));
+  REQUIRE(path.blocks.size() == 2);  // the synth → the EQ (the path closed up where they were)
+  CHECK(path.blocks[1]->id == d.eq);
+  CHECK(path.complete);
+  // trackStages lists them but leaves them out of the flow: the EQ receives the instrument's audio.
+  const std::vector<ChainStage> st = trackStages(d.doc(), t);
   REQUIRE(st.size() == 4);
-  CHECK(st[1].free);
-  CHECK(st[1].in == ChainSignal::None);
-  CHECK(st[2].in == ChainSignal::Audio);
-  // The lowering calls them but chains only the others (the EQ's input is the instrument's voices summed).
+  CHECK(st[1].device->id == d.eq);
+  CHECK(st[1].in == ChainSignal::Audio);
+  CHECK(st[2].offPath);
+  CHECK(st[2].in == ChainSignal::None);
+  // The lowering calls them (the views draw them) but they are not on the path.
   const LoweredProject l = lowerDoc(d.doc());
   const pq::graph::Patch& tp = *l.graph.tracks.at(0).patch;
   CHECK(tp.findByName("d" + std::to_string(d.lfo.value)).has_value());
   CHECK(tp.findByName("d" + std::to_string(sat.value)).has_value());
   CHECK(l.missingDevices.empty());
-  // The file keeps it; an old file has none.
+  // The file keeps the wiring (there is no "free" flag any more); undo puts them back on the path.
   Result<std::string> text = serializeProject(d.doc());
   REQUIRE(text.ok());
-  CHECK(text->find("\"free\": true") != std::string::npos);
+  CHECK(text->find("\"free\"") == std::string::npos);
   Result<LoadedProject> back = parseProject(*text);
   REQUIRE(back.ok());
   CHECK(*back->project == d.doc());
-  // Undo puts them back.
   REQUIRE(d.store.undo());
-  CHECK_FALSE(findDevice(d.doc(), d.lfo).device->free);
-  // Refused: a stock instrument, a rack, a device in a rack chain.
-  const DeviceId inst[] = {d.inst};
-  CHECK_FALSE(ops::setDevicesFree(d.doc(), inst, true).ok());
-  CHECK_FALSE(d.store.dispatch(SetDeviceFree{d.inst, true}).ok());
-  auto g = ops::groupDevices(d.doc(), d.store.ids(), std::vector<DeviceId>{d.eq});
-  REQUIRE(g.ok());
-  REQUIRE(d.store.dispatch(g->command).ok());
-  const DeviceId rack = g->devices.at(0);
-  const DeviceId r1[] = {rack}, inner[] = {d.eq};
-  CHECK_FALSE(ops::setDevicesFree(d.doc(), r1, true).ok());
-  CHECK_FALSE(ops::setDevicesFree(d.doc(), inner, true).ok());
-  CHECK_FALSE(d.store.dispatch(SetDeviceFree{d.eq, true}).ok());
+  CHECK(mainPath(d.doc(), *findTrackPtr(d.doc(), d.keys)).contains(d.lfo));
 }
 
-TEST_CASE("free devices: a free meta device is never where instruments go; the next one in the series is") {
+TEST_CASE("TX.all-free: a meta device taken off the path no longer takes the notes; the next one on the path does") {
   DocumentStore store;
   auto t = ops::createTrack(*store.current(), store.ids(), TrackKind::Midi, {}, "Keys");
   REQUIRE(t.ok());
@@ -250,15 +245,15 @@ TEST_CASE("free devices: a free meta device is never where instruments go; the n
   REQUIRE(b.ok());
   REQUIRE(store.dispatch(b->command).ok());
   const DeviceId pa = a->devices.at(0), wt = b->devices.at(0);
-  CHECK(findDevice(*store.current(), pa).device->kind == DeviceKind::Instrument);
-  REQUIRE(store.dispatch(SetDeviceFree{pa, true}).ok());
-  CHECK(findDevice(*store.current(), pa).device->kind == DeviceKind::AudioEffect);
-  CHECK(findDevice(*store.current(), wt).device->kind == DeviceKind::Instrument);  // now first in the series
-  const std::vector<ChainStage> st = chainStages(findTrackPtr(*store.current(), keys)->devices, true);
+  CHECK(trackStages(*store.current(), *findTrackPtr(*store.current(), keys)).at(0).in == ChainSignal::Notes);
+  auto off = ops::takeOffPath(*store.current(), store.ids(), nullptr, std::vector<DeviceId>{pa});
+  REQUIRE(off.ok());
+  REQUIRE(store.dispatch(off->command).ok());
+  const std::vector<ChainStage> st = trackStages(*store.current(), *findTrackPtr(*store.current(), keys));
   REQUIRE(st.size() == 2);
-  CHECK(st[0].free);
-  CHECK(st[1].in == ChainSignal::Notes);  // the Wavetable takes the note source
-  REQUIRE(store.dispatch(SetDeviceFree{pa, false}).ok());
-  CHECK(findDevice(*store.current(), pa).device->kind == DeviceKind::Instrument);
-  CHECK(findDevice(*store.current(), wt).device->kind == DeviceKind::AudioEffect);
+  CHECK(st[0].device->id == wt);
+  CHECK(st[0].in == ChainSignal::Notes);  // the Wavetable takes the note source
+  CHECK(st[1].offPath);
+  REQUIRE(store.undo());
+  CHECK(trackStages(*store.current(), *findTrackPtr(*store.current(), keys)).at(0).device->id == pa);
 }

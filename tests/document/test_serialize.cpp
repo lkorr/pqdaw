@@ -309,7 +309,8 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                              builtinMigrations()[3], builtinMigrations()[4], builtinMigrations()[5],
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
                              builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11],
-                             builtinMigrations()[12], builtinMigrations()[13], builtinMigrations()[14]};
+                             builtinMigrations()[12], builtinMigrations()[13], builtinMigrations()[14],
+                             builtinMigrations()[15]};
   const std::string old = schema0Text();
   SUBCASE("an old file is migrated, then decoded") {
     Result<LoadedProject> r = parseProject(old, LoadOptions{table, "old.pqd"});
@@ -336,14 +337,14 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
   SUBCASE("a newer file is refused") {
     std::string newer = readFile(fixturePath("minimal/project.pqd"));
-    const size_t at = newer.find("\"schemaVersion\": 16");
+    const size_t at = newer.find("\"schemaVersion\": 17");
     REQUIRE(at != std::string::npos);
-    newer.replace(at, 19, "\"schemaVersion\": 17");
+    newer.replace(at, 19, "\"schemaVersion\": 18");
     Result<LoadedProject> r = parseProject(newer);
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().code == pq::ErrorCode::Unsupported);
     CHECK(r.error().message ==
-          "$.schemaVersion: the project was saved by a newer pqdaw (schema 17; this build reads up to 16)");
+          "$.schemaVersion: the project was saved by a newer pqdaw (schema 18; this build reads up to 17)");
   }
   SUBCASE("a migration's output is validated like any file") {
     const Migration broken[] = {{0, [](nlohmann::json& d) -> pq::Status {
@@ -356,7 +357,8 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                                 builtinMigrations()[3], builtinMigrations()[4], builtinMigrations()[5],
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
                              builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11],
-                             builtinMigrations()[12], builtinMigrations()[13], builtinMigrations()[14]};
+                             builtinMigrations()[12], builtinMigrations()[13], builtinMigrations()[14],
+                             builtinMigrations()[15]};
     Result<LoadedProject> r = parseProject(old, LoadOptions{broken, {}});
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.rfind("$.timeline.tempo: ", 0) == 0);
@@ -442,11 +444,17 @@ StrippedDevices stripAllDevices(nlohmann::json& doc) {
   for (const char* list : {"tracks", "returns"})
     for (nlohmann::json& t : doc[list]) stripDevices(t, s);
   stripDevices(doc["master"], s);
+  // TX.all-free: the 16 -> 17 step's main links (every track's source → its chain → its mixer) go too.
+  if (auto w = doc.find("wires"); w != doc.end()) {
+    bool links = true;
+    for (const nlohmann::json& x : *w) links = links && x.value("port", std::string("?")).empty() && x.value("param", std::string("?")).empty();
+    if (links) doc.erase(w);
+  }
   return s;
 }
 
 TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as the current schema") {
-  static_assert(kSchemaVersion == 16);
+  static_assert(kSchemaVersion == 17);
   const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
   REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
 
@@ -455,7 +463,7 @@ TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick 
   CHECK(r->fileSchemaVersion == 1);
   Result<std::string> again = serializeProject(*r->project, r->view);
   REQUIRE(again.ok());
-  CHECK(again->rfind("{\n  \"schemaVersion\": 16,", 0) == 0);
+  CHECK(again->rfind("{\n  \"schemaVersion\": 17,", 0) == 0);
 
   nlohmann::json resaved = nlohmann::json::parse(*again);
   const StrippedDevices sd = stripAllDevices(resaved);  // 2 -> 3: checked on its own below
@@ -521,7 +529,7 @@ TEST_CASE("serialize: a schema-3 project loads unchanged into schema 4 (no wires
   CHECK(r->fileSchemaVersion == 3);
   RichProject f;
   CHECK(*r->project == f.doc());
-  CHECK(wiresOf(*r->project).empty());
+  for (const Wire& w : wiresOf(*r->project)) CHECK(w.mainLink());  // TX.all-free: only the 16 -> 17 step's main links
   Result<std::string> again = serializeProject(*r->project, r->view);
   REQUIRE(again.ok());
   CHECK(*again == readFile(fixturePath("full/project.pqd")));
@@ -546,10 +554,13 @@ TEST_CASE("serialize: modulation wires round-trip and are validated") {
   REQUIRE(f.store.dispatch(b).ok());
   const LoadedProject back = roundTrip(f.doc(), f.store.view());
   CHECK(*back.project == f.doc());
-  REQUIRE(wiresOf(*back.project).size() == 3);
-  CHECK(wiresOf(*back.project)[0] == a);
-  CHECK(wiresOf(*back.project)[1] == c);
-  CHECK(std::signbit(wiresOf(*back.project)[2].amount));
+  WireList drawn;  // TX.all-free: the wires beside the main paths' links
+  for (const Wire& x : wiresOf(*back.project))
+    if (!x.mainLink()) drawn.push_back(x);
+  REQUIRE(drawn.size() == 3);
+  CHECK(drawn[0] == a);
+  CHECK(drawn[1] == c);
+  CHECK(std::signbit(drawn[2].amount));
   Result<std::string> text = serializeProject(f.doc(), f.store.view());
   REQUIRE(text.ok());
   CHECK(text->find("\"reducer\": \"loudest\"") != std::string::npos);
@@ -592,7 +603,7 @@ TEST_CASE("serialize: wires from a note source (schema 12) round-trip and are va
     Result<std::string> text = serializeProject(f.doc(), f.store.view());
     REQUIRE(text.ok());
     std::string old = *text;
-    old.replace(old.find("\"schemaVersion\": 16"), 19, "\"schemaVersion\": 11");
+    old.replace(old.find("\"schemaVersion\": 17"), 19, "\"schemaVersion\": 11");
     Result<LoadedProject> r = parseProject(old);
     REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
     CHECK(r->fileSchemaVersion == 11);
@@ -631,7 +642,8 @@ TEST_CASE("serialize: wires from a note source (schema 12) round-trip and are va
   CHECK_FALSE(nb->from.valid());
   Result<std::string> text = serializeProject(f.doc(), f.store.view());
   REQUIRE(text.ok());
-  const std::string notes = "\"notes\": " + std::to_string(midi.value);
+  // (TX.all-free: the note output's wire, not the track's main link from its source.)
+  const std::string notes = "\"notes\": " + std::to_string(midi.value) + ", \"port\": \"hz\"";
   CHECK(text->find(notes) != std::string::npos);
   auto broken = [&](const std::string& from, const std::string& to) {
     std::string t = *text;
@@ -640,10 +652,10 @@ TEST_CASE("serialize: wires from a note source (schema 12) round-trip and are va
     t.replace(at, from.size(), to);
     return parseProject(t);
   };
-  CHECK_FALSE(broken(notes, "\"notes\": " + std::to_string(other.value)).ok());  // not a MIDI track
-  CHECK_FALSE(broken(notes, "\"notes\": 999999").ok());                           // no such track
+  CHECK_FALSE(broken(notes, "\"notes\": " + std::to_string(other.value) + ", \"port\": \"hz\"").ok());  // not a MIDI track
+  CHECK_FALSE(broken(notes, "\"notes\": 999999, \"port\": \"hz\"").ok());                           // no such track
   CHECK_FALSE(broken(notes, notes + ", \"from\": " + std::to_string(devs[0].value)).ok());  // both kinds of source
-  CHECK_FALSE(broken(notes + ", \"port\": \"hz\"", notes + ", \"port\": \"pitch\"").ok());  // no such note output
+  CHECK_FALSE(broken(notes, "\"notes\": " + std::to_string(midi.value) + ", \"port\": \"pitch\"").ok());  // no such note output
   // Removing the track removes the wires from its note source in the same command (one undo step).
   REQUIRE(f.store.dispatch(RemoveTrack{midi}).ok());
   CHECK(findWire(f.doc(), n.id) == nullptr);
@@ -756,9 +768,7 @@ TEST_CASE("serialize: device chains round-trip; the reader checks the chain rule
     if (r.error().message.find(message) == std::string::npos) MESSAGE(r.error().message);
   };
   const std::string idA = std::to_string(inst.id.value), idB = std::to_string(fx.id.value);
-  fails("[{\"id\": " + idB + ", \"patch\": \"utility\", \"kind\": \"audioEffect\"}, {\"id\": " + idA +
-            ", \"patch\": \"BasicSynth\", \"kind\": \"instrument\"}]",
-        "the instrument must be the first device of a MIDI track");
+  // (TX.all-free: a track's blocks have no order rule — the cables are the signal path; test_devices.cpp checks it.)
   fails("[{\"id\": " + idA + ", \"patch\": \"\", \"kind\": \"instrument\"}]", "must not be empty");
   fails("[{\"id\": " + idA + ", \"patch\": \"x\", \"kind\": \"midiEffect\"}]", "device kind must be");
   fails("[{\"id\": " + idA + ", \"patch\": \"x\", \"kind\": \"instrument\", \"params\": {\"a b\": 1}}]",

@@ -376,7 +376,7 @@ TEST_CASE("cables: a block pushed apart by a spawn glides, its cables swing; the
   // The free block (the VCA, wired both ways) and its cables.
   uint32_t vca = kNone;
   for (uint32_t i = 0; i < u.pp().nodes.size(); ++i)
-    if (u.pp().nodes[i].kind == NodeKind::Device && u.pp().nodes[i].free) vca = i;
+    if (u.pp().nodes[i].kind == NodeKind::Device && u.pp().nodes[i].offPath) vca = i;
   REQUIRE(vca != kNone);
   const doc::DeviceId vcaId = u.pp().nodes[vca].device;
   const graph::Point2 on{u.pp().nodes[vca].x + u.pp().nodes[vca].w * 0.5f, u.pp().nodes[vca].y + u.pp().nodes[vca].h * 0.5f};

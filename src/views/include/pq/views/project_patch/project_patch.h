@@ -17,8 +17,10 @@
 //              (the same x whatever the group depth), so the windows read as a narrow arrangement. Group, return, master:
 //              a summing node (Σ) whose one input is every Audio wire routed into the track (several wires into one
 //              port sum, graph::ProjectWire).
-//   device     one block per device of the chain (the call `d<id>` of the track patch, NodeId nodeIdFor(Device, id, 0));
-//              deactivated or missing devices stay in place, dim and bypassed (the chain wire passes under them).
+//   device     one block per device of the track (the call `d<id>` of the track patch, NodeId nodeIdFor(Device, id, 0));
+//              deactivated or missing devices stay in place, dim and bypassed. TX.all-free: every block is free; until
+//              placed (a nudge), the blocks of the main path sit on the band's spine in signal order and the others on a
+//              row under it.
 //              Pins: its audio in / out, its exports (the jacks), and the params a modulation wire drives (TX.mod-all:
 //              on a face or panel block a wired param whose control is visible has no pin: its wire ends on the control,
 //              Port::anchored).
@@ -26,10 +28,10 @@
 //              `in`, outputs `out` (the routing) and one send pin per lowered send (to a return).
 //   output     the master's "Out" terminal after its mixer.
 //   group      a container around its band and its members' bands; its own chain starts right of its members' mixers.
-// Edges: notes (source → instrument), chain (left → right through the lowered devices into the mixer), route (a
-// track's `out` → the summing input of its group or the master: graph wire out → in), send (a mixer's send pin → a
-// return's summing input: graph wire post / pre → s<id>; a send at −∞ is in the graph too and drawn dim), modulation
-// (a device export or a note output → a device param: T4.7's wires; across tracks also a graph wire m<id> → m<id>).
+// Edges: TX.all-free — every document wire is one edge (notes, chain, modulation: EdgeKind), the main path's links
+// included; route (a track's `out` → the summing input of its group or the master: graph wire out → in), send (a
+// mixer's send pin → a return's summing input: graph wire post / pre → s<id>; a send at −∞ is in the graph too and drawn
+// dim); across tracks a wire is also a graph wire m<id> → m<id>.
 //
 // Layout (world units = logical px at zoom 1, multiples of 4): bands stacked in lane order, a group's members indented
 // under it; signal left → right; a group's own chain starts right of its members' mixers; returns start right of every
@@ -95,9 +97,11 @@ struct Node {
   bool edited = false;         // Device: a user device (its own patch text, T4.4-fix1); the title says "(edited)"
   bool instrument = false;     // Device: an instrument
   bool expanded = false;       // Device: drawn opened to its atoms (LayoutOptions::expanded)
-  // TX.patching: a free device (doc::Device::free: out of the series): no chain wire reaches or leaves it; placed after
-  // the band's chain until a nudge moves it.
-  bool free = false;
+  // TX.all-free: off its track's main path (doc::mainPath): placed on the row under the path until a nudge moves it, and
+  // listed in the Device view's free rack.
+  bool offPath = false;
+  // TX.all-free: the input a wire into its main port (doc::kMainPort) ends on (−1: none, an unplugged meta module).
+  int32_t mainIn = 0;
   // TMM.4: a chain meta device ("meta:<type>") whose type has a face: drawn as its face (the block's size), unless
   // opened to its atoms; `meta` is set for every chain meta device (its atoms are generated: opened, read-only).
   const meta::Type* face = nullptr;
@@ -140,6 +144,10 @@ struct Node {
   int32_t output(std::string_view name) const noexcept;
 };
 
+// TX.all-free: every edge between blocks is a document wire (Edge::wire): Notes — from a MIDI track's notes into a
+// block's main input; Chain — an audio path inside a band (main port to main port, from the track's own signal, into
+// its mixer: the main path's links among them); Modulation — any other wire. (Chain without a wire: the master's mixer
+// into Out.)
 enum class EdgeKind : uint8_t { Notes, Chain, Route, Send, Modulation };
 // TX.cables (SPEC §15 2026-11-02 "cables and the node menu"): every connection between blocks — notes, chain, modulation
 // and free wires, a group's terminals — is a hanging cable straight from its source port to its target port (a param
@@ -183,7 +191,7 @@ struct Band {
   uint32_t graphTrack = kNone;  // index into the LoweredProject's graph.tracks (kNone: not lowered)
   graph::TrackRole role = graph::TrackRole::Audio;
   uint32_t source = kNone, mixer = kNone, output = kNone;  // node indices
-  std::vector<uint32_t> devices;                           // node indices, chain order
+  std::vector<uint32_t> devices;                           // node indices (its blocks, list order)
   float y = 0, h = 0;          // world: the band's strip
   float x0 = 0, x1 = 0;        // world: its strip from the indent to the end of its chain
   // Groups: the container around the group's band and its members' bands.
@@ -259,8 +267,9 @@ struct LayoutOptions {
   std::span<const doc::DeviceId> closedGroups;
   // TX.groups: only this group (opened) and its contents (ProjectPatch::scoped; the Device view's group panel).
   doc::DeviceId scope;
-  // TX.free-rack: only this track's free devices — free blocks that are not group members (a free group with its
-  // contents), and the wires among them (ProjectPatch::scoped; the Device view's free-device rack). Ignored with `scope`.
+  // TX.free-rack: only this track's blocks off its main path (TX.all-free) that are not group members (a group off the
+  // path with its contents), and the wires among them (ProjectPatch::scoped; the Device view's free rack). Ignored with
+  // `scope`.
   doc::TrackId freeTrack;
 };
 

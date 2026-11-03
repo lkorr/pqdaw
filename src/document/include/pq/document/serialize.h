@@ -81,7 +81,12 @@ namespace pq::doc {
 // 15 = chain links (TX.groups-fix1, model.h "Modulation wires"): a wire may carry "chain": true (a link of a grouped
 // series: planned and summed before the other wires, as a chain's own link). Migration 14 → 15 changes nothing (a
 // schema-14 group's series wires stay plain wires and lower as they did).
-inline constexpr int32_t kSchemaVersion = 16;
+// 16 = knob curves (TX.knob-curves: a device's "curves"; schema-15 wires get "law": "units").
+// 17 = everything is free (TX.all-free, main_path.h): a wire may carry "mixer": <track id> (a track's mixer input)
+// instead of "to", "port" / "param" "" are main ports, and "notes" with "port" "" is any track's own signal; devices no
+// longer carry "free". Migration 16 → 17 turns each track's chain into main links (source → … → mixer) at new ids, so
+// the project sounds exactly as it did.
+inline constexpr int32_t kSchemaVersion = 17;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader

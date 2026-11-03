@@ -4,11 +4,13 @@
 #include "pq/views/project_patch/project_patch.h"
 
 #include <algorithm>
+#include <optional>
 #include <cmath>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 
+#include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
@@ -87,8 +89,11 @@ struct Builder {
   std::unordered_map<uint32_t, uint32_t> modGraphWire;  // doc wire id → graph wire index (cross-track)
   std::unordered_map<uint32_t, const doc::Track*> trackById;
   std::unordered_map<const graph::Patch*, std::unordered_set<std::string_view>> paramsOf;
-  // TMM.10-fix1: the band's chain stages (doc::chainStages): which chain meta device the note source reaches.
+  // TMM.10-fix1: the band's stages (doc::trackStages): which meta device the note source reaches.
   std::vector<doc::ChainStage> bandStages;
+  // TX.all-free: each track's main path (doc::mainPath), by track id.
+  std::unordered_map<uint32_t, doc::MainPath> paths;
+  std::optional<doc::MainLinks> mainLinks;  // made once per build (one pass over the wires)
   // TX.groups: each opened group's contents, placed relative to its capsule's top-left (layout() adds the capsule's
   // place, then the nudges).
   struct Capsule {
@@ -119,6 +124,7 @@ struct Builder {
     for (const doc::WireState& s : low.wires) wireStatus[s.id.value] = s.status;
     for (const doc::Wire& w : doc::wiresOf(p)) {
       if (statusOf(w.id) == doc::WireStatus::Invalid) continue;
+      if (w.toMixer() || w.param.empty()) continue;  // TX.all-free: a main input (kMainPort) or a mixer: no param pin
       auto& v = modulatedParams[w.to.value];
       if (std::find(v.begin(), v.end(), w.param) == v.end()) v.push_back(w.param);
     }
@@ -282,8 +288,8 @@ struct Builder {
       if (params != nullptr && sp.name.size() > 4 && sp.name.ends_with("_add") &&
           params->count(std::string_view(sp.name).substr(0, sp.name.size() - 4)) != 0)
         continue;
-      // TX.patching: a free device's audio input carries no chain signal: named like its other inputs.
-      n.inputs.push_back({sp.name, firstAudio && !d.free ? std::string() : sp.name});
+      // The main input: no label (TX.all-free: every block's, on the path or off it).
+      n.inputs.push_back({sp.name, firstAudio ? std::string() : sp.name});
       firstAudio = false;
     }
     if (sig.inputs.empty() && !n.instrument) n.inputs.push_back({"in", ""});
@@ -293,7 +299,12 @@ struct Builder {
         const doc::DeviceParamInfo* pi = info ? info->param(prm) : nullptr;
         n.inputs.push_back({prm, pi && !pi->label.empty() ? pi->label : prm, true});
       }
-    n.free = d.free;  // TX.patching
+    // TX.all-free: where a wire into its main port ends — a meta module's chain input (Device::chainInput), else the first.
+    if (doc::isMetaDevice(d) && !n.instrument)
+      if (const meta::Type* t = meta::findType(doc::metaDeviceType(d))) {
+        const int32_t ci = doc::metaChainInput(d, *t);
+        n.mainIn = ci < 0 ? -1 : n.input(t->inputs[static_cast<size_t>(ci)].name);
+      }
     bool firstOut = true;
     for (const graph::SubcircuitPort& sp : sig.outputs) {
       n.outputs.push_back({sp.name, firstOut ? std::string() : sp.name});
@@ -356,7 +367,6 @@ struct Builder {
     c.band = band;
     c.device = g.id;
     c.active = g.active;
-    c.free = g.free;
     c.group = true;
     c.groupOpen = !closedGroup(g.id);
     c.title = g.name.empty() ? std::string("Group") : g.name;
@@ -556,7 +566,12 @@ struct Builder {
       s.h = m::kSumH;
       out.bands[bi].source = addNode(std::move(s));
     }
-    bandStages = doc::chainStages(t.devices, t.kind == doc::TrackKind::Midi);
+    if (!mainLinks) mainLinks.emplace(p);
+    const doc::MainPath& path = paths.emplace(t.id.value, doc::mainPath(t, *mainLinks)).first->second;
+    // (Only a meta block reads its stage: a track without one skips the walk.)
+    bandStages.clear();
+    if (std::any_of(t.devices.begin(), t.devices.end(), [](const doc::DevicePtr& d) { return doc::isMetaDevice(*d); }))
+      bandStages = doc::trackStages(p, t, path);
     for (const doc::DevicePtr& d : t.devices) {
       // TX.groups: a member is drawn inside its group's capsule (or, closed, is part of its block).
       if (d->group.valid() && t.deviceIndex(d->group) >= 0) continue;
@@ -567,6 +582,7 @@ struct Builder {
       const uint32_t n = addNode(scaled(d->rack ? rackNode(bi, *d, tp) : deviceNode(bi, *d, tp)));
       out.bands[bi].devices.push_back(n);
     }
+    for (const uint32_t n : out.bands[bi].devices) out.nodes[n].offPath = !path.contains(out.nodes[n].device);  // TX.all-free
     out.bands[bi].mixer = addNode(mixerNode(bi, t, lowered));
     if (t.kind == doc::TrackKind::Master) {
       Node o;
@@ -597,44 +613,9 @@ struct Builder {
     out.edges.push_back(std::move(proto));
   }
 
-  int32_t audioIn(const Node& n) const noexcept {
-    if (n.kind == NodeKind::Device) {
-      if (n.instrument) return -1;
-      return n.inputs.empty() ? -1 : 0;
-    }
-    return n.input("in");
-  }
-
-  void chainEdges(uint32_t bi) {
+  // TX.all-free: the master's mixer into Out (the only edge that is no document wire).
+  void outputEdge(uint32_t bi) {
     const Band& b = out.bands[bi];
-    if (b.graphTrack == kNone) return;
-    std::vector<uint32_t> chain;
-    if (b.kind == doc::TrackKind::Midi) {
-      // The first lowered device takes the notes when it is the instrument (TMM.10-fix1: a chain meta device whose
-      // chain input the note source reaches, after an inactive first device too).
-      uint32_t inst = kNone;
-      for (const uint32_t d : b.devices)
-        if (out.nodes[d].lowered) {
-          inst = d;
-          break;
-        }
-      if (inst != kNone && out.nodes[inst].instrument && out.nodes[inst].lowered && b.role == graph::TrackRole::Instrument) {
-        Edge e;
-        e.voice = true;
-        addEdge(EdgeKind::Notes, b.source, 0, inst, 0, e);
-        chain.push_back(inst);
-      }
-    } else {
-      chain.push_back(b.source);
-    }
-    for (const uint32_t d : b.devices)  // TX.patching: free devices are not in the chain
-      if (out.nodes[d].lowered && !out.nodes[d].instrument && !out.nodes[d].free) chain.push_back(d);
-    chain.push_back(b.mixer);
-    for (size_t i = 0; i + 1 < chain.size(); ++i) {
-      Edge e;
-      e.voice = false;
-      addEdge(EdgeKind::Chain, chain[i], 0, chain[i + 1], audioIn(out.nodes[chain[i + 1]]), e);
-    }
     if (b.output != kNone) addEdge(EdgeKind::Chain, b.mixer, 0, b.output, 0);
   }
 
@@ -667,57 +648,110 @@ struct Builder {
                 out.nodes[to.source].input("in"), e);
       }
     }
+    // TX.all-free: every document wire is a cable (the main path's links included): from a device's port (kMainPort: its
+    // main output), a track's source (kMainPort: its own signal — notes, clips, its sum —, else a note output) into a
+    // device's param or input (kMainPort: its main input) or a track's mixer.
+    // The node of each device (ProjectPatch::nodeOf's answer, once: every wire looks up both its ends).
+    std::unordered_map<uint32_t, uint32_t> nodeOfDevice;
+    for (uint32_t i = 0; i < out.nodes.size(); ++i)
+      if (out.nodes[i].kind == NodeKind::Device) nodeOfDevice.try_emplace(out.nodes[i].device.value, i);
+    for (uint32_t i = 0; i < out.nodes.size(); ++i)
+      for (const doc::DeviceId d : out.nodes[i].inner) nodeOfDevice.try_emplace(d.value, i);
+    auto nodeOf = [&](doc::DeviceId d) {
+      const auto it = nodeOfDevice.find(d.value);
+      return it == nodeOfDevice.end() ? kNone : it->second;
+    };
+    std::unordered_map<uint32_t, uint32_t> bandOfTrack;
+    for (uint32_t i = 0; i < out.bands.size(); ++i) bandOfTrack.try_emplace(out.bands[i].track.value, i);
+    auto bandOf = [&](doc::TrackId t) {
+      const auto it = bandOfTrack.find(t.value);
+      return it == bandOfTrack.end() ? kNone : it->second;
+    };
     for (const doc::Wire& w : doc::wiresOf(p)) {
       const doc::WireStatus st = statusOf(w.id);
       if (st == doc::WireStatus::Invalid) continue;
-      // TMM.10-fix2: a wire from a track's note source starts at its band's lane window, at that note output.
       uint32_t a = kNone;
+      int32_t fromPort = -1;
+      bool fromMidi = false;
       if (w.fromNoteSource()) {
-        const uint32_t sb = out.bandOf(w.noteSource);
-        if (sb != kNone && out.bands[sb].kind == doc::TrackKind::Midi) a = out.bands[sb].source;
+        const uint32_t sb = bandOf(w.noteSource);
+        if (sb != kNone && out.bands[sb].source != kNone) {
+          a = out.bands[sb].source;
+          fromMidi = out.bands[sb].kind == doc::TrackKind::Midi;
+          fromPort = w.port.empty() ? 0 : out.nodes[a].output(w.port);
+        }
       } else {
-        a = out.nodeOf(w.from);
+        a = nodeOf(w.from);
         // TX.groups: the In terminal of an opened group.
         if (a != kNone && out.nodes[a].group && out.nodes[a].device == w.from && w.port == doc::kGroupInPort && out.nodes[a].groupOpen)
           a = out.nodes[a].groupIn;
+        if (a != kNone) fromPort = w.port.empty() && out.nodes[a].device == w.from ? 0 : out.nodes[a].output(portKey(out.nodes[a], w.from, w.port));
       }
-      uint32_t b = out.nodeOf(w.to);
-      if (b != kNone && out.nodes[b].group && out.nodes[b].device == w.to && w.param == doc::kGroupOutPort && out.nodes[b].groupOpen)
-        b = out.nodes[b].groupOut;  // TX.groups: the Out terminal
+      uint32_t b = kNone;
+      int32_t toPort = -1;
+      if (w.toMixer()) {
+        const uint32_t tb = bandOf(w.mixer);
+        if (tb != kNone && out.bands[tb].mixer != kNone) {
+          b = out.bands[tb].mixer;
+          toPort = 0;
+        }
+      } else {
+        b = nodeOf(w.to);
+        if (b != kNone && out.nodes[b].group && out.nodes[b].device == w.to && w.param == doc::kGroupOutPort && out.nodes[b].groupOpen)
+          b = out.nodes[b].groupOut;  // TX.groups: the Out terminal
+        if (b != kNone)
+          toPort = w.param.empty() && out.nodes[b].device == w.to ? out.nodes[b].mainIn
+                                                                  : out.nodes[b].input(portKey(out.nodes[b], w.to, w.param));
+      }
       if (a == kNone || b == kNone) continue;
       if (a == b && out.nodes[a].group) continue;  // TX.groups: inside a closed group (its miniature draws it)
       Edge e;
       e.wire = w.id;
       e.status = st;
       e.delayed = st == doc::WireStatus::Delayed;
-      e.voice = w.fromNoteSource() || out.nodes[a].instrument;
+      e.voice = (w.fromNoteSource() && fromMidi) || out.nodes[a].instrument;
       if (const auto it = modGraphWire.find(w.id.value); it != modGraphWire.end()) e.graphWire = it->second;
-      const int32_t fromPort = w.fromNoteSource() ? out.nodes[a].output(w.port) : out.nodes[a].output(portKey(out.nodes[a], w.from, w.port));
-      const int32_t toPort = out.nodes[b].input(portKey(out.nodes[b], w.to, w.param));
-      e.input = toPort >= 0 && !out.nodes[b].inputs[static_cast<size_t>(toPort)].param;
-      addEdge(EdgeKind::Modulation, a, fromPort, b, toPort, e);
+      e.input = toPort >= 0 && (out.nodes[b].kind != NodeKind::Device || !out.nodes[b].inputs[static_cast<size_t>(toPort)].param);
+      // Its kind (how it is drawn): notes into a main input, an audio path inside the band, or modulation.
+      const bool sameBand = out.nodes[a].band == out.nodes[b].band;
+      const bool mainFrom = w.port.empty(), mainTo = w.param.empty();
+      EdgeKind k = EdgeKind::Modulation;
+      if (w.fromNoteSource() && fromMidi && mainFrom && mainTo) k = EdgeKind::Notes;
+      else if (sameBand && e.graphWire == kNone && ((mainFrom && mainTo) || w.toMixer() || (w.fromNoteSource() && mainFrom))) k = EdgeKind::Chain;
+      addEdge(k, a, fromPort, b, toPort, e);
     }
   }
 
   // ---- layout ---------------------------------------------------------------------------------------------------
 
+  // TX.all-free: the blocks a band places on its spine — its main path's, in signal order (blocks nobody placed sit
+  // where the series was; a nudge puts a block anywhere).
+  std::vector<uint32_t> spineBlocks(const Band& b) const {
+    std::vector<uint32_t> order;
+    const auto it = paths.find(b.track.value);
+    if (it == paths.end()) return order;
+    for (const doc::Device* d : it->second.blocks)
+      for (const uint32_t n : b.devices)
+        if (out.nodes[n].device == d->id) order.push_back(n);
+    return order;
+  }
+
   float placeChain(uint32_t bi, float x) {
     Band& b = out.bands[bi];
     std::vector<uint32_t> order;
     order.push_back(b.source);
-    for (const uint32_t d : b.devices)
-      if (!out.nodes[d].free) order.push_back(d);
+    for (const uint32_t d : spineBlocks(b)) order.push_back(d);
     order.push_back(b.mixer);
     if (b.output != kNone) order.push_back(b.output);
     for (const uint32_t n : order) {
       out.nodes[n].x = x;
       x += out.nodes[n].w + m::kNodeGap;
     }
-    // TX.patching: free devices (out of the series) on a row of their own under the chain, from its first device's
-    // place, in list order (layout(): y; a nudge moves them anywhere).
+    // The blocks off the main path on a row of their own under it, from its first block's place, in list order
+    // (layout(): y; a nudge moves them anywhere).
     float fx = out.nodes[b.source].x + out.nodes[b.source].w + m::kNodeGap;
     for (const uint32_t d : b.devices)
-      if (out.nodes[d].free) {
+      if (out.nodes[d].offPath) {
         out.nodes[d].x = fx;
         fx += out.nodes[d].w + m::kNodeGap;
       }
@@ -778,7 +812,7 @@ struct Builder {
       b.y = y;
       float pinTop = m::kPinTop;
       for (const uint32_t d : b.devices)
-        if (!out.nodes[d].free) pinTop = std::max(pinTop, spineOf(out.nodes[d]));
+        if (!out.nodes[d].offPath) pinTop = std::max(pinTop, spineOf(out.nodes[d]));
       const float spine = y + m::kTitle + pinTop;
       float bottom = y + m::kTitle + m::kSumH;
       auto place = [&](uint32_t n) {
@@ -788,13 +822,13 @@ struct Builder {
       };
       place(b.source);
       for (const uint32_t d : b.devices)
-        if (!out.nodes[d].free) place(d);
+        if (!out.nodes[d].offPath) place(d);
       place(b.mixer);
       if (b.output != kNone) place(b.output);
-      // TX.patching: the free devices' row under the chain (the band grows to hold it).
+      // TX.all-free: the row of the blocks off the main path, under it (the band grows to hold it).
       const float row = roundUp4(bottom + m::kFreeRowGap);
       for (const uint32_t d : b.devices)
-        if (out.nodes[d].free) {
+        if (out.nodes[d].offPath) {
           out.nodes[d].y = row;
           bottom = std::max(bottom, row + out.nodes[d].h);
         }
@@ -1004,7 +1038,7 @@ struct Builder {
     for (const doc::TrackPtr& t : p.tracks) buildBand(*t, 0, -1, true);
     for (const doc::TrackPtr& r : p.returns) buildBand(*r, 0, -1, true);
     if (p.master) buildBand(*p.master, 0, -1, true);
-    for (uint32_t i = 0; i < out.bands.size(); ++i) chainEdges(i);
+    for (uint32_t i = 0; i < out.bands.size(); ++i) outputEdge(i);
     graphEdges();
     layout();
     route();
@@ -1025,7 +1059,7 @@ struct Builder {
     std::vector<uint32_t> order;
     for (uint32_t i = 0; i < out.nodes.size(); ++i) {
       const Node& n = out.nodes[i];
-      if (n.band != b || n.kind != NodeKind::Device || !n.free || n.capsule != kNone) continue;
+      if (n.band != b || n.kind != NodeKind::Device || !n.offPath || n.capsule != kNone) continue;
       order.push_back(i);
       if (n.group && n.groupOpen) {
         if (n.groupIn != kNone) order.push_back(n.groupIn);

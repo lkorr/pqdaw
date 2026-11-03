@@ -56,15 +56,6 @@ private:
   doc::IdSource& ids_;
 };
 
-// The main ports of `d` as the library describes the patch it plays (racks: none of their own; the chain is theirs).
-circuit::MainPorts mainPortsOf(const doc::DeviceLibrary* lib, const doc::Device& d) {
-  if (lib == nullptr || d.isRack()) return {};
-  std::shared_ptr<const doc::ResolvedDevice> hold;
-  const graph::Patch* p = lib->patchOf(d, hold);
-  if (p == nullptr) return {};
-  return circuit::mainPortsOf(graph::subcircuitSignature(*p), p, d.kind == doc::DeviceKind::Instrument);
-}
-
 // The edit that adds `c`'s device to `track` at list position `index`. `plain`: no default preset (Z's VCA is exactly
 // the type's default: ×1). Its Edit::devices holds the new device first.
 doc::ops::EditResult addChoice(ViewContext& ctx, const doc::Project& p, doc::IdSource& ids, const ProjectPatchView::NodeChoice& c,
@@ -143,10 +134,17 @@ bool choiceIsInstrument(ViewContext& ctx, const ProjectPatchView::NodeChoice& c)
   return false;
 }
 
-// Wires `from`.`port` (or note source `notes`'s output `port`) → `to`.`param` in the composition.
-bool wire(Composer& k, doc::DeviceId from, doc::TrackId notes, const std::string& port, doc::DeviceId to, const std::string& param) {
-  if (notes.valid()) return k.add(doc::ops::connectNoteWire(k.doc(), k.ids(), notes, port, to, param));
-  return k.add(doc::ops::connectWire(k.doc(), k.ids(), from, port, to, param));
+// Wires `from`.`port` (or track `notes`'s source: kMainPort its own signal, else a note output) → `to`.`param` in the
+// composition; TX.all-free: two main ports by name are written as kMainPort (doc::canonicalWire).
+bool wire(Composer& k, const doc::DeviceLibrary* lib, doc::DeviceId from, doc::TrackId notes, const std::string& port,
+          doc::DeviceId to, const std::string& param) {
+  doc::Wire w;
+  w.from = notes.valid() ? doc::DeviceId{} : from;
+  w.noteSource = notes;
+  w.port = port;
+  w.to = to;
+  w.param = param;
+  return k.add(doc::ops::connect(k.doc(), k.ids(), doc::canonicalWire(k.doc(), std::move(w), lib)));
 }
 
 }  // namespace
@@ -162,7 +160,7 @@ ProjectPatchView::NodeChoice ProjectPatchView::specChoice(std::string spec) {
 
 circuit::MainPorts ProjectPatchView::mainPorts(doc::DeviceId device) const {
   const doc::Device* d = doc::findDevice(*ctx_.doc(), device).device;
-  return d != nullptr ? mainPortsOf(ctx_.deviceLibrary(), *d) : circuit::MainPorts{};
+  return d != nullptr ? doc::mainPortsOf(*d, ctx_.deviceLibrary()) : circuit::MainPorts{};
 }
 
 bool ProjectPatchView::dispatchSteps(const char* label, std::vector<doc::Command> steps) {
@@ -209,26 +207,15 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
     for (const Node& n : patch_.nodes)
       if (n.group && n.groupOpen && (band == kNone || n.band == band) && at.x >= n.x && at.x <= n.x + n.w && at.y >= n.y && at.y <= n.y + n.h)
         group = n.device;
-  const bool instrument = choiceIsInstrument(ctx_, c);
-  const bool rack = c.item == circuit::NodeItem::Rack;
-  // A stock instrument or a rack cannot be free: it goes into the chain (an instrument first; a rack where the point
-  // is along the chain).
-  uint32_t index = doc::kAppend;
-  if (rack && !instrument && band != kNone) {
-    index = 0;
-    const doc::Track* t = doc::findTrackPtr(p, track);
-    for (const uint32_t d : patch_.bands[band].devices) {
-      const Node& n = patch_.nodes[d];
-      if (n.free || n.capsule != kNone || t == nullptr) continue;
-      if (n.x + n.w * 0.5f < at.x) index = static_cast<uint32_t>(std::max(0, t->deviceIndex(n.device)) + 1);
-    }
-  }
-  if ((instrument || rack) && (freeRack_ || group.valid())) {
-    ctx_.setStatus("Add: " + c.name + " goes into a chain, not into a free rack or a group");
+  // TX.all-free (SPEC §15 2026-11-03 "everything is free"): every node spawns as a free block at the pointer, unwired
+  // (doc::ops::kOffPath) but for the cable it was dropped from; into the capsule under it, in a group panel into the
+  // group. (A stock instrument plays once the notes reach it: a cable from the track's notes into its main input.)
+  if (choiceIsInstrument(ctx_, c) && group.valid()) {
+    ctx_.setStatus("Add: " + c.name + " takes the notes: place it on the band, not inside a group");
     return {};
   }
   Composer k(start, ctx_.store().ids());
-  doc::ops::EditResult add = addChoice(ctx_, p, k.ids(), c, track, index, false);
+  doc::ops::EditResult add = addChoice(ctx_, p, k.ids(), c, track, doc::ops::kOffPath, false);
   if (!add || add->devices.empty()) {
     ctx_.setStatus("Add " + c.name + ": " + (add ? std::string("nothing was added") : add.error().message));
     return {};
@@ -239,29 +226,24 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
     return {};
   }
   const doc::Device* made = doc::findDevice(k.doc(), id).device;
-  const bool free = made != nullptr && made->kind != doc::DeviceKind::Instrument && !made->isRack();
-  if (free) {
-    const doc::DeviceId one[1] = {id};
-    if (!k.add(doc::ops::setDevicesFree(k.doc(), one, true))) {
-      ctx_.setStatus("Add " + c.name + ": " + k.why);
-      return {};
-    }
-    if (group.valid() && !k.add(doc::SetDeviceGroup{id, group})) {
-      ctx_.setStatus("Add " + c.name + ": " + k.why);
-      return {};
-    }
+  if (made != nullptr && group.valid() && !made->isRack() && !k.add(doc::SetDeviceGroup{id, group})) {
+    ctx_.setStatus("Add " + c.name + ": " + k.why);
+    return {};
   }
-  // Wired from the cable it was dropped from: into its main input, or its main output into the param.
+  // Wired from the cable it was dropped from: into its main input, or its main output into the param (TX.all-free: by
+  // kMainPort, so a cable from a main output joins the paths the way it was drawn).
   std::string note, inAt, outAt;
+  const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
   if (link.kind != SpawnLink::Kind::None && made != nullptr) {
-    const circuit::MainPorts mp = mainPortsOf(ctx_.deviceLibrary(), *doc::findDevice(k.doc(), id).device);
+    const circuit::MainPorts mp = doc::mainPortsOf(*doc::findDevice(k.doc(), id).device, lib);
+    const bool takesNotes = made->kind == doc::DeviceKind::Instrument && !doc::isMetaDevice(*made);
     if (link.kind == SpawnLink::Kind::FromOutput) {
-      if (mp.in.empty()) note = c.name + " has no input: placed unwired";
-      else if (!wire(k, link.device, link.notes, link.port, id, mp.in)) note = "Wire: " + k.why;
-      else inAt = mp.in;
+      if (mp.in.empty() && !takesNotes && !made->isRack()) note = c.name + " has no input: placed unwired";
+      else if (!wire(k, lib, link.device, link.notes, link.port, id, std::string(doc::kMainPort))) note = "Wire: " + k.why;
+      else inAt = mp.in.empty() ? std::string("notes") : mp.in;
     } else {
       if (mp.out.empty()) note = c.name + " has no output: placed unwired";
-      else if (!wire(k, id, {}, mp.out, link.device, link.port)) note = "Wire: " + k.why;
+      else if (!wire(k, lib, id, {}, std::string(doc::kMainPort), link.device, link.port)) note = "Wire: " + k.why;
       else outAt = mp.out;
     }
   }
@@ -273,10 +255,8 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
     ctx_.library().setPresetName(id, stem);
   }
   if (!note.empty()) ctx_.setStatus(note);
-  if (free) {
-    placeAt(id, at, inAt, outAt);
-    startPush(id);
-  }
+  placeAt(id, at, inAt, outAt);
+  startPush(id);
   return id;
 }
 
@@ -323,14 +303,14 @@ void ProjectPatchView::startPush(doc::DeviceId placed) {
     return b;
   };
   push_.bodies.push_back(body(p, true));
-  // What it may meet: the blocks of its band at its level (inside the same capsule, or outside any): free blocks move,
-  // chain blocks, the source, the mixer and capsules stand.
+  // What it may meet: the blocks of its band at its level (inside the same capsule, or outside any): blocks move (TX.all-
+  // free: every block is free), the source, the mixer, capsules and opened blocks stand.
   for (uint32_t i = 0; i < patch_.nodes.size(); ++i) {
     if (i == pn) continue;
     const Node& n = patch_.nodes[i];
     if (n.band != p.band || n.capsule != p.capsule) continue;
     if (n.kind == NodeKind::Terminal || (n.group && n.groupOpen && i == p.capsule)) continue;
-    const bool movable = n.kind == NodeKind::Device && n.free && !(n.group && n.groupOpen) && !n.expanded;
+    const bool movable = n.kind == NodeKind::Device && !(n.group && n.groupOpen) && !n.expanded;
     push_.bodies.push_back(body(n, movable));
   }
   // Nothing in the way: no push.
@@ -442,21 +422,6 @@ void ProjectPatchView::finishPushNow() {
 
 // ---- inserting on a cable ------------------------------------------------------------------------------------------
 
-namespace {
-// Where in its track's list a chain cable's insert goes: before the block it enters, else after the block it leaves.
-uint32_t chainIndexOf(const ProjectPatch& pp, const doc::Project& p, const Edge& e) {
-  const Node& a = pp.nodes[e.from];
-  const Node& b = pp.nodes[e.to];
-  const doc::Track* t = a.band < pp.bands.size() ? doc::findTrackPtr(p, pp.bands[a.band].track) : nullptr;
-  if (t == nullptr) return doc::kAppend;
-  if (b.kind == NodeKind::Device)
-    if (const int32_t i = t->deviceIndex(b.device); i >= 0) return static_cast<uint32_t>(i);
-  if (a.kind == NodeKind::Device)
-    if (const int32_t i = t->deviceIndex(a.device); i >= 0) return static_cast<uint32_t>(i) + 1;
-  return doc::kAppend;
-}
-}  // namespace
-
 bool ProjectPatchView::insertOnEdge(uint32_t edge, const NodeChoice& c) { return insertImpl(edge, c, false); }
 
 bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca) {
@@ -467,88 +432,92 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca) 
   const doc::Project& p = *start;
   const std::string& name = c.name;
   const std::string label = "Insert " + name;
-  Composer k(start, ctx_.store().ids());
-  doc::DeviceId id;
   graph::Point2 mid{0.0f, 0.0f};
   if (!e.points.empty()) {
     const graph::Point2& a = e.points.front();
     const graph::Point2& b = e.points.back();
     mid = {(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f};
   }
-  switch (e.kind) {
-    case EdgeKind::Notes:
-      ctx_.setStatus("Insert: the note wire is the chain's own (insert after the instrument)");
+  // TX.all-free: every cable between blocks is a document wire (the main path's links too); routes and sends are buses.
+  const doc::Wire* w = e.wire.valid() ? doc::findWire(p, e.wire) : nullptr;
+  if (w == nullptr || e.kind == EdgeKind::Route || e.kind == EdgeKind::Send) {
+    ctx_.setStatus("Insert: a route or a send is a bus into a mix (insert on a cable between blocks)");
+    return false;
+  }
+  const doc::Wire old = *w;
+  if (choiceIsInstrument(ctx_, c) && !(old.fromNoteSource() && old.port.empty())) {
+    ctx_.setStatus(label + ": an instrument takes the notes (insert it on the cable from the track's notes)");
+    return false;
+  }
+  // The block's track and group: the wire's target's (into a mixer: that track; into a group's Out: that group).
+  doc::TrackId track;
+  doc::DeviceId group;
+  if (old.toMixer()) {
+    track = old.mixer;
+  } else {
+    const doc::DeviceLoc target = doc::findDevice(p, old.to);
+    if (target.track == nullptr || target.chain != nullptr) {
+      ctx_.setStatus(label + ": the wire's target is inside a rack (insert in the rack's chain)");
       return false;
-    case EdgeKind::Route:
-    case EdgeKind::Send:
-      ctx_.setStatus("Insert: a route or a send is a bus into a mix (insert on a chain or a wire)");
+    }
+    track = target.track->id;
+    group = target.device->group;
+    if (target.device->patch == doc::kGroupDevice && old.param == doc::kGroupOutPort) group = old.to;
+  }
+  Composer k(start, ctx_.store().ids());
+  doc::ops::EditResult add = addChoice(ctx_, p, k.ids(), c, track, doc::ops::kOffPath, vca);
+  if (!add || add->devices.empty()) {
+    ctx_.setStatus(label + ": " + (add ? std::string("nothing was added") : add.error().message));
+    return false;
+  }
+  const doc::DeviceId id = add->devices.front();
+  if (!k.add(add)) {
+    ctx_.setStatus(label + ": " + k.why);
+    return false;
+  }
+  if (group.valid() && !k.add(doc::SetDeviceGroup{id, group})) {
+    ctx_.setStatus(label + ": " + k.why);
+    return false;
+  }
+  // The cable becomes its source → the block's main input, the block's main output → its target (a link of the main
+  // path stays a path: the block is on it). A block without an input or an output connects only what it has.
+  const doc::Device* made = doc::findDevice(k.doc(), id).device;
+  const circuit::MainPorts mp = doc::mainPortsOf(*made, ctx_.deviceLibrary());
+  const bool hasIn = !mp.in.empty() || made->kind == doc::DeviceKind::Instrument || made->isRack();
+  const bool hasOut = !mp.out.empty();
+  if (hasIn && hasOut) {
+    if (!k.add(doc::ops::spliceIntoWire(k.doc(), k.ids(), ctx_.deviceLibrary(), id, old.id))) {
+      ctx_.setStatus(label + ": " + k.why);
       return false;
-    case EdgeKind::Chain: {
-      if (choiceIsInstrument(ctx_, c)) {
-        ctx_.setStatus("Insert: an instrument goes first in its chain");
-        return false;
-      }
-      const doc::TrackId track = patch_.bands[patch_.nodes[e.from].band].track;
-      doc::ops::EditResult add = addChoice(ctx_, p, k.ids(), c, track, chainIndexOf(patch_, p, e), vca);
-      if (!add || add->devices.empty()) {
-        ctx_.setStatus(label + ": " + (add ? std::string("nothing was added") : add.error().message));
-        return false;
-      }
-      id = add->devices.front();
-      if (!k.add(add)) {
+    }
+  } else {
+    const doc::WireId gone[1] = {old.id};
+    if (!k.add(doc::ops::deleteWires(k.doc(), gone))) {
+      ctx_.setStatus(label + ": " + k.why);
+      return false;
+    }
+    if (hasIn && !wire(k, ctx_.deviceLibrary(), old.from, old.noteSource, old.port, id, std::string(doc::kMainPort))) {
+      ctx_.setStatus(label + ": " + k.why);
+      return false;
+    }
+    if (hasOut) {
+      doc::Wire nw;
+      nw.from = id;
+      nw.to = old.to;
+      nw.mixer = old.mixer;
+      nw.param = old.param;
+      nw.reducer = old.reducer;
+      if (!k.add(doc::ops::connect(k.doc(), k.ids(), nw))) {
         ctx_.setStatus(label + ": " + k.why);
         return false;
       }
-      if (!dispatchSteps(label.c_str(), std::move(k.steps))) return false;
-      return true;
-    }
-    case EdgeKind::Modulation: {
-      const doc::Wire* w = doc::findWire(p, e.wire);
-      if (w == nullptr) return false;
-      const doc::Wire old = *w;
-      const doc::DeviceLoc target = doc::findDevice(p, old.to);
-      if (target.track == nullptr || target.chain != nullptr) {
-        ctx_.setStatus(label + ": the wire's target is inside a rack (insert in the rack's chain)");
-        return false;
-      }
-      if (choiceIsInstrument(ctx_, c) || c.item == circuit::NodeItem::Rack) {
-        ctx_.setStatus(label + ": an instrument or a rack goes into a chain, not onto a wire");
-        return false;
-      }
-      // Into the target's group when it is inside one (or is the group's Out).
-      doc::DeviceId group = target.device->group;
-      if (target.device->patch == doc::kGroupDevice && old.param == doc::kGroupOutPort) group = old.to;
-      const doc::WireId gone[1] = {old.id};
-      if (!k.add(doc::ops::deleteWires(k.doc(), gone))) break;
-      doc::ops::EditResult add = addChoice(ctx_, k.doc(), k.ids(), c, target.track->id, doc::kAppend, vca);
-      if (!add || add->devices.empty()) {
-        ctx_.setStatus(label + ": " + (add ? std::string("nothing was added") : add.error().message));
-        return false;
-      }
-      id = add->devices.front();
-      if (!k.add(add)) break;
-      const doc::DeviceId one[1] = {id};
-      if (!k.add(doc::ops::setDevicesFree(k.doc(), one, true))) break;
-      if (group.valid() && !k.add(doc::SetDeviceGroup{id, group})) break;
-      const circuit::MainPorts mp = mainPortsOf(ctx_.deviceLibrary(), *doc::findDevice(k.doc(), id).device);
-      if (!mp.in.empty() && !wire(k, old.from, old.noteSource, old.port, id, mp.in)) break;
-      if (!mp.out.empty()) {
-        if (!wire(k, id, {}, mp.out, old.to, old.param)) break;
-        if (old.reducer != doc::WireReducer::Sum) {
-          const doc::Wire& nw = doc::wiresOf(k.doc()).back();
-          if (!k.add(doc::ops::setWireReducer(k.doc(), nw.id, old.reducer))) break;
-        }
-      }
-      if (!dispatchSteps(label.c_str(), std::move(k.steps))) return false;
-      if (mp.in.empty() || mp.out.empty())
-        ctx_.setStatus(name + (mp.in.empty() ? " has no input: only its output is wired" : " has no output: only its input is wired"));
-      placeAt(id, mid);
-      startPush(id);
-      return true;
     }
   }
-  ctx_.setStatus(label + ": " + k.why);
-  return false;
+  if (!dispatchSteps(label.c_str(), std::move(k.steps))) return false;
+  if (!hasIn || !hasOut) ctx_.setStatus(name + (!hasIn ? " has no input: only its output is wired" : " has no output: only its input is wired"));
+  placeAt(id, mid);
+  startPush(id);
+  return true;
 }
 
 bool ProjectPatchView::insertVca(uint32_t edge) {
@@ -565,13 +534,13 @@ bool ProjectPatchView::spliceIntoEdge(doc::DeviceId device, uint32_t edge) {
   sync();
   if (edge >= patch_.edges.size()) return false;
   const Edge e = patch_.edges[edge];
-  const doc::Snapshot start = ctx_.doc();
-  const doc::Project& p = *start;
+  const doc::Project& p = *ctx_.doc();
   const doc::DeviceLoc loc = doc::findDevice(p, device);
   if (loc.device == nullptr) return false;
   const std::string name = deviceDisplayName(ctx_, *loc.device);
-  const circuit::MainPorts mp = mainPortsOf(ctx_.deviceLibrary(), *loc.device);
-  if (mp.in.empty() || mp.out.empty()) {
+  const circuit::MainPorts mp = doc::mainPortsOf(*loc.device, ctx_.deviceLibrary());
+  const bool takesNotes = loc.device->kind == doc::DeviceKind::Instrument;
+  if ((mp.in.empty() && !takesNotes && !loc.device->isRack()) || mp.out.empty()) {
     ctx_.setStatus("Splice: " + name + " needs an input and an output");
     return false;
   }
@@ -580,102 +549,21 @@ bool ProjectPatchView::spliceIntoEdge(doc::DeviceId device, uint32_t edge) {
     ctx_.setStatus("Splice: that cable is the block's own");
     return false;
   }
-  Composer k(start, ctx_.store().ids());
-  const doc::DeviceId one[1] = {device};
-  switch (e.kind) {
-    case EdgeKind::Chain: {
-      const doc::TrackId track = patch_.bands[patch_.nodes[e.from].band].track;
-      if (loc.device->kind == doc::DeviceKind::Instrument) {
-        ctx_.setStatus("Splice: an instrument goes first in its chain");
-        return false;
-      }
-      if (loc.device->group.valid() && !k.add(doc::SetDeviceGroup{device, {}})) break;
-      if (loc.device->free && !k.add(doc::ops::setDevicesFree(k.doc(), one, false))) break;
-      uint32_t index = chainIndexOf(patch_, k.doc(), e);
-      // Moving within its own list: the index after its removal.
-      if (const doc::Track* t = doc::findTrackPtr(k.doc(), track); t != nullptr && loc.track != nullptr && loc.track->id == track)
-        if (const int32_t at = t->deviceIndex(device); at >= 0 && index != doc::kAppend && static_cast<uint32_t>(at) < index) --index;
-      if (!k.add(doc::ops::moveDevice(k.doc(), device, track, index))) break;
-      return dispatchSteps("Splice", std::move(k.steps));
-    }
-    case EdgeKind::Modulation: {
-      const doc::Wire* w = doc::findWire(p, e.wire);
-      if (w == nullptr) return false;
-      const doc::Wire old = *w;
-      if (old.from == device || old.to == device) {
-        ctx_.setStatus("Splice: that cable is the block's own");
-        return false;
-      }
-      const doc::WireId gone[1] = {old.id};
-      if (!k.add(doc::ops::deleteWires(k.doc(), gone))) break;
-      if (!loc.device->free && !k.add(doc::ops::setDevicesFree(k.doc(), one, true))) break;
-      if (!wire(k, old.from, old.noteSource, old.port, device, mp.in)) break;
-      if (!wire(k, device, {}, mp.out, old.to, old.param)) break;
-      return dispatchSteps("Splice", std::move(k.steps));
-    }
-    default:
-      ctx_.setStatus("Splice: notes, routes and sends are not cut (splice into a chain or a wire)");
-      return false;
+  if (!e.wire.valid() || e.kind == EdgeKind::Route || e.kind == EdgeKind::Send) {
+    ctx_.setStatus("Splice: routes and sends are buses (splice into a cable between blocks)");
+    return false;
   }
-  ctx_.setStatus("Splice: " + k.why);
-  return false;
+  return apply(doc::ops::spliceIntoWire(p, ctx_.store().ids(), ctx_.deviceLibrary(), device, e.wire), "Splice");
 }
 
 bool ProjectPatchView::dissolve(doc::DeviceId device) {
-  const doc::Snapshot start = ctx_.doc();
-  const doc::Project& p = *start;
+  const doc::Project& p = *ctx_.doc();
   const doc::DeviceLoc loc = doc::findDevice(p, device);
   if (loc.device == nullptr || loc.track == nullptr) return false;
-  const std::string name = deviceDisplayName(ctx_, *loc.device);
-  const circuit::MainPorts mp = mainPortsOf(ctx_.deviceLibrary(), *loc.device);
-  if (mp.in.empty() || mp.out.empty()) {
-    ctx_.setStatus("Dissolve: " + name + " needs an input and an output (Delete removes it)");
-    return false;
-  }
-  struct Source {
-    doc::DeviceId from;
-    doc::TrackId notes;
-    std::string port;
-  };
-  struct Target {
-    doc::DeviceId to;
-    std::string param;
-    doc::WireReducer reducer;
-  };
-  std::vector<Source> sources;
-  std::vector<Target> targets;
-  for (const doc::Wire& w : doc::wiresOf(p)) {
-    if (w.to == device && w.param == mp.in && w.from != device) sources.push_back({w.from, w.noteSource, w.port});
-    if (w.from == device && !w.fromNoteSource() && w.port == mp.out && w.to != device) targets.push_back({w.to, w.param, w.reducer});
-  }
-  // A device of the series: what fed it is the device before it in the chain (its main output); the chain itself
-  // closes up when it goes.
-  if (!loc.device->free && loc.chain == nullptr && !targets.empty()) {
-    const std::vector<doc::DevicePtr>& list = loc.track->devices;
-    for (uint32_t i = loc.index; i-- > 0;) {
-      const doc::Device& prev = *list[i];
-      if (prev.free || !prev.active) continue;
-      const circuit::MainPorts pm = mainPortsOf(ctx_.deviceLibrary(), prev);
-      if (!pm.out.empty()) sources.push_back({prev.id, {}, pm.out});
-      break;
-    }
-  }
-  Composer k(start, ctx_.store().ids());
-  const doc::DeviceId one[1] = {device};
-  if (!k.add(doc::ops::deleteDevices(k.doc(), one))) {
-    ctx_.setStatus("Dissolve: " + k.why);
-    return false;
-  }
-  for (const Source& s : sources)
-    for (const Target& t : targets) {
-      if (!wire(k, s.from, s.notes, s.port, t.to, t.param)) {
-        ctx_.setStatus("Dissolve: " + k.why);
-        return false;
-      }
-      if (t.reducer != doc::WireReducer::Sum)
-        if (!k.add(doc::ops::setWireReducer(k.doc(), doc::wiresOf(k.doc()).back().id, t.reducer))) return false;
-    }
-  return dispatchSteps("Dissolve", std::move(k.steps));
+  // TX.all-free: doc::ops::dissolveDevices — it goes, what fed its main input is wired to what its main output fed (the
+  // main path through it stays connected). One undo step.
+  return apply(doc::ops::dissolveDevices(p, ctx_.store().ids(), ctx_.deviceLibrary(), std::span<const doc::DeviceId>(&device, 1)),
+               "Dissolve");
 }
 
 // ---- the menus -------------------------------------------------------------------------------------------------------
@@ -715,8 +603,8 @@ circuit::NodeMenu* ProjectPatchView::openSpawnMenu(Vec2 at, const SpawnLink& lin
 circuit::NodeMenu* ProjectPatchView::openInsertMenu(uint32_t edge, Vec2 at) {
   if (edge >= patch_.edges.size()) return nullptr;
   const Edge e = patch_.edges[edge];
-  if (e.kind == EdgeKind::Notes || e.kind == EdgeKind::Route || e.kind == EdgeKind::Send) {
-    ctx_.setStatus("Insert: notes, routes and sends are not cut (Tab over a chain cable or a wire)");
+  if (!e.wire.valid() || e.kind == EdgeKind::Route || e.kind == EdgeKind::Send) {
+    ctx_.setStatus("Insert: routes and sends are buses (Tab over a cable between blocks)");
     return nullptr;
   }
   // The cable by what it joins (indices change with every rebuild while the menu is open).

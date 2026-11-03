@@ -438,7 +438,13 @@ TEST_CASE("user devices: a wire into a param an edit removed is Invalid (kept, n
   REQUIRE(w.ok());
   REQUIRE(t.store.dispatch(w->command).ok());
   const WireId wire = w->wires.at(0);
-  auto states = wireStates(*t.store.current(), *lib);
+  auto statesOf = [&] {  // TX.all-free: the drawn wire's state (beside the main paths' links)
+    std::vector<WireState> v;
+    for (const WireState& s : wireStates(*t.store.current(), *lib))
+      if (s.id == wire) v.push_back(s);
+    return v;
+  };
+  auto states = statesOf();
   REQUIRE(states.size() == 1);
   CHECK(states[0].status == WireStatus::Lowered);
   // The edit renames `drive`: the wire stays in the document but is not lowered.
@@ -452,12 +458,12 @@ TEST_CASE("user devices: a wire into a param an edit removed is Invalid (kept, n
   CHECK(r->info.param("drive") == nullptr);
   CHECK(r->info.param("drv") != nullptr);
   REQUIRE(findWire(*t.store.current(), wire) != nullptr);
-  states = wireStates(*t.store.current(), *lib);
+  states = statesOf();
   REQUIRE(states.size() == 1);
   CHECK(states[0].status == WireStatus::Invalid);
   // Undo: the param is back and the wire plays again.
   REQUIRE(t.store.undo());
-  states = wireStates(*t.store.current(), *lib);
+  states = statesOf();
   CHECK(states[0].status == WireStatus::Lowered);
 }
 

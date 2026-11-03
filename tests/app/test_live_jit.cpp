@@ -125,7 +125,9 @@ TEST_CASE("T1b.5: live playback (NullDevice) starts interpreted and swaps every 
   // A structural edit meanwhile (a new track: a topology change compiling 3 units, interpreted, audible at once): the
   // JIT wants are renewed for the new schedules; the in-flight one may come back stale.
   REQUIRE(fj.store.dispatch(AddTrack{playback_fixture::track(fj.store.ids().track(), TrackKind::Midi, "New", fj.store.ids().device()), {}, kAppend}).ok());
+  playback_fixture::wireSeries(fj.store);  // TX.all-free: wired in series
   REQUIRE(fi.store.dispatch(AddTrack{playback_fixture::track(fi.store.ids().track(), TrackKind::Midi, "New", fi.store.ids().device()), {}, kAppend}).ok());
+  playback_fixture::wireSeries(fi.store);  // TX.all-free: wired in series
   lj->flush();
   li->flush();
   pj.run(94);
@@ -213,6 +215,7 @@ TEST_CASE("lowering: a new return leaves every track patch as it was; NodeIds co
   auto a = lower(*f.snap(), lo);
   REQUIRE(a.ok());
   REQUIRE(f.store.dispatch(AddTrack{playback_fixture::track(f.store.ids().track(), TrackKind::Return, "Verb"), {}, kAppend}).ok());
+  playback_fixture::wireSeries(f.store);  // TX.all-free: wired in series
   auto b = lower(*f.snap(), lo, &a.value());
   REQUIRE(b.ok());
   auto patchOf = [&](const LoweredProject& lp, TrackId id) -> const graph::Patch& {
@@ -428,6 +431,7 @@ TEST_CASE("M3: a polyphony change (a topology rebuild) keeps the JIT image playi
     for (int32_t k = 0; k < 4; ++k) chord.push_back(playback_fixture::note(ids, 0, 16 * pq::kPpq, 3 * k));
     b.commands.push_back(AddClip{op, playback_fixture::clip(ids, 0, 16 * pq::kPpq, chord, "chord")});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   LinkConfig c;
   c.compileThread = false;  // topologies are published on this thread (flush), between blocks

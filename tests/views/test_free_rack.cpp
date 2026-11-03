@@ -15,7 +15,9 @@
 #include <string>
 #include <vector>
 
+#include "all_free_helpers.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
 #include "pq/ui/test_driver.h"
@@ -91,7 +93,7 @@ struct Ui {
   }
   size_t history() const { return ctx.store().history().cursor(); }
   const doc::Track& lead() const { return *doc::findTrackPtr(*ctx.doc(), ids.lead); }
-  bool isFree(doc::DeviceId id) const { return doc::findDevice(*ctx.doc(), id).device->free; }
+  bool isFree(doc::DeviceId id) const { return all_free::offPath(*ctx.doc(), id); }  // TX.all-free: off the main path
   // A block of the rack: the middle of its top strip (a panel's title bar: the block's, not a control's).
   Vec2 rackBlockTop(doc::DeviceId id) const {
     const ProjectPatch& pp = rack().patch();
@@ -153,7 +155,7 @@ TEST_CASE("free rack: free devices are not frames of the chain; the rack holds e
   std::vector<doc::DeviceId> inRack;
   for (const Node& n : pp.nodes) {
     CHECK(n.kind == NodeKind::Device);
-    CHECK(n.free);
+    CHECK(n.offPath);
     inRack.push_back(n.device);
   }
   std::vector<doc::DeviceId> want = u.ids.lfos;
@@ -169,7 +171,7 @@ TEST_CASE("free rack: free devices are not frames of the chain; the rack holds e
   std::vector<doc::DeviceId> row;
   const uint32_t b = main->patch().bandOf(u.ids.lead);
   for (const Node& n : main->patch().nodes)
-    if (n.band == b && n.kind == NodeKind::Device && n.free && n.capsule == kNone) row.push_back(n.device);
+    if (n.band == b && n.kind == NodeKind::Device && n.offPath && n.capsule == kNone) row.push_back(n.device);
   std::sort(row.begin(), row.end());
   CHECK(row == want);
   main->setShown(false, false);
@@ -265,7 +267,10 @@ TEST_CASE("free rack: a chain device dragged onto the rack leaves the chain; a r
   u.d.step();
   CHECK(u.history() == h1 + 1);
   CHECK_FALSE(u.isFree(lfo));
-  CHECK(u.lead().deviceIndex(lfo) == u.lead().deviceIndex(u.ids.util) - 1);
+  {  // TX.all-free: spliced into the main path right before the Utility
+    const doc::MainPath path = doc::mainPath(*u.ctx.doc(), u.lead());
+    CHECK(path.indexOf(lfo) == path.indexOf(u.ids.util) - 1);
+  }
   CHECK(u.chain().frameOf(lfo) != nullptr);
   CHECK(u.rack().patch().nodeOf(lfo) == kNone);
   REQUIRE(u.ctx.undo());

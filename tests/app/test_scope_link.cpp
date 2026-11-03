@@ -79,6 +79,7 @@ struct ScopeProject {
     for (const int32_t d : degrees) notes.push_back(playback_fixture::note(ids, 0, 64 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "chord")});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     if (!instrument) {
       // No instrument: a meta voice run Phase accumulator → Wavetable plays the notes.
       edit(ops::addMetaDevice(*store.current(), store.ids(), track, "phase_acc", 0));
@@ -204,6 +205,7 @@ TEST_CASE("scope link: the engine block with an Oscilloscope unwatched / watched
     Batch b{"silent", {}};
     b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "Keys", store.ids().device()), {}, kAppend});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     auto eq = ops::addDevice(*store.current(), store.ids(), t, "eq_eight", DeviceKind::AudioEffect);
     REQUIRE(eq.ok());
     REQUIRE(store.dispatch(eq->command).ok());

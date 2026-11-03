@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "pq/document/main_path.h"
 #include "pq/document/commands.h"
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
@@ -72,6 +73,12 @@ struct Racks {
 };
 
 pq::Status dispatch(DocumentStore& s, Command c) { return s.dispatch(std::move(c)); }
+// TX.all-free: the tracks built from raw commands wired in series (source → their devices → their mixers).
+void wireAll(DocumentStore& s) {
+  auto e = ops::wireSeries(*s.current(), s.ids());
+  REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+  if (!e->empty()) REQUIRE(s.dispatch(e->command).ok());
+}
 
 }  // namespace
 
@@ -91,7 +98,7 @@ TEST_CASE("racks: the rules — chain kinds, nesting, mappings inside their rack
   SUBCASE("an Instrument Rack goes where instruments go, its chains start with one") {
     CHECK_FALSE(dispatch(r.store, AddDevice{r.ret, makeRack(ids.device(), DeviceKind::Instrument), 0}).ok());
     const DeviceId ir = r.edit(ops::addDevice(r.doc(), ids, r.midi, std::string(kInstrumentRack), DeviceKind::Instrument)).devices[0];
-    CHECK(r.track(r.midi).devices.front()->id == ir);  // it replaced the instrument
+    CHECK(mainPath(r.doc(), r.track(r.midi)).blocks.front()->id == ir);  // it replaced the instrument (TX.all-free: on the path)
     const ChainId ic = ids.chain();
     REQUIRE(dispatch(r.store, AddChain{ir, makeChain(ic, "Keys")}).ok());
     const DeviceId syn = r.add({}, "BasicSynth", DeviceKind::Instrument, ic);
@@ -571,6 +578,7 @@ TEST_CASE("racks: 20,000 nested racks load, save, round-trip, lower and edit wit
     b.commands.push_back(AddTrack{std::make_shared<const Track>(std::move(t)), {}, kAppend});
     b.commands.push_back(AddTrack{std::make_shared<const Track>(std::move(t2)), {}, kAppend});
     REQUIRE(dispatch(store, b).ok());
+    wireAll(store);
   }
   // Save, load, compare (deep equality is iterative too), save again: the same text.
   const Result<std::string> text = serializeProject(*store.current());
@@ -644,6 +652,7 @@ TEST_CASE("racks: 20,000 nested racks load, save, round-trip, lower and edit wit
     Track tr = makeTrack(t, TrackKind::Midi, "Map");
     tr.devices = {makeDefaultInstrument(i2.device()), inner};
     REQUIRE(dispatch(s2, AddTrack{std::make_shared<const Track>(std::move(tr)), {}, kAppend}).ok());
+    wireAll(s2);
     Result<LoweredProject> lp = lower(*s2.current(), o);
     REQUIRE_MESSAGE(lp.ok(), (lp.ok() ? std::string() : lp.error().message));
     const auto params = std::count_if(lp->params.begin(), lp->params.end(), [](const LoweredParam& p) { return p.key.ends_with(":macro1"); });
@@ -666,7 +675,7 @@ TEST_CASE("racks: Ungroup (T4.17) — a one-chain rack becomes its devices in pl
   r.edit(ops::setDeviceParam(r.doc(), sat, "drive", 0.7));
   const Snapshot before = r.store.current();
 
-  const ops::Edit e = r.edit(ops::ungroupDevices(r.doc(), rack));
+  const ops::Edit e = r.edit(ops::ungroupDevices(r.doc(), r.store.ids(), rack));
   CHECK(e.devices == std::vector<DeviceId>{sat, util});  // the selection after the edit
   {
     const Track& t = r.track(r.midi);
@@ -688,7 +697,7 @@ TEST_CASE("racks: Ungroup (T4.17) — a one-chain rack becomes its devices in pl
   SUBCASE("nested: the devices go into the outer rack's chain; the outer rack's mappings onto them survive") {
     const DeviceId outer = r.edit(ops::groupDevices(r.doc(), ids, std::vector<DeviceId>{rack})).devices.at(0);
     r.edit(ops::mapMacro(r.doc(), ids, outer, 3, sat, "drive"));
-    r.edit(ops::ungroupDevices(r.doc(), rack));
+    r.edit(ops::ungroupDevices(r.doc(), r.store.ids(), rack));
     const Chain& oc = *r.rack(outer).chains.at(0);
     REQUIRE(oc.devices.size() == 2);
     CHECK(oc.devices[0]->id == sat);
@@ -699,18 +708,18 @@ TEST_CASE("racks: Ungroup (T4.17) — a one-chain rack becomes its devices in pl
   SUBCASE("an Instrument Rack gives the track its instrument back") {
     const DeviceId ir = r.edit(ops::groupDevices(r.doc(), ids, std::vector<DeviceId>{r.inst})).devices.at(0);
     CHECK(r.track(r.midi).devices[0]->id == ir);
-    r.edit(ops::ungroupDevices(r.doc(), ir));
+    r.edit(ops::ungroupDevices(r.doc(), r.store.ids(), ir));
     CHECK(r.track(r.midi).devices[0]->id == r.inst);
     CHECK(r.track(r.midi).devices[0]->kind == DeviceKind::Instrument);
   }
   SUBCASE("several chains: refused; no chain: the rack is removed") {
     r.edit(ops::addChain(r.doc(), ids, rack));
-    const Result<ops::Edit> refused = ops::ungroupDevices(r.doc(), rack);
+    const Result<ops::Edit> refused = ops::ungroupDevices(r.doc(), r.store.ids(), rack);
     REQUIRE_FALSE(refused.ok());
     CHECK(refused.error().code == pq::ErrorCode::InvalidArgument);
-    CHECK_FALSE(ops::ungroupDevices(r.doc(), sat).ok());  // not a rack
+    CHECK_FALSE(ops::ungroupDevices(r.doc(), r.store.ids(), sat).ok());  // not a rack
     const DeviceId empty = r.add(r.midi, std::string(kAudioEffectRack).c_str());
-    r.edit(ops::ungroupDevices(r.doc(), empty));
+    r.edit(ops::ungroupDevices(r.doc(), r.store.ids(), empty));
     CHECK_FALSE(findDevice(r.doc(), empty).device);
   }
 }

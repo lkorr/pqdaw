@@ -142,9 +142,6 @@ public:
   // Circuit View), else folds the panel as the triangle does.
   void setEdited(bool e);
   bool edited() const noexcept { return edited_; }
-  // TX.patching: a free device (out of its track's series: it plays only through wires): "◌ free" after the title.
-  void setFree(bool f);
-  bool free() const noexcept { return free_; }
   std::function<void()> onTitleDoubleClick;
   // T5.11: the title bar's preset slot shows `name` ("Default" when empty); with onPresetClick set, a click on it runs
   // it (the Device view: the browser hot-swaps this device's presets).
@@ -193,7 +190,6 @@ private:
   bool active_ = true;
   bool folded_ = false;
   bool edited_ = false;
-  bool free_ = false;  // TX.patching
   bool foldable_ = true;  // TX.panel-faces
   std::string presetName_;
   ui::Widget* title_ = nullptr;

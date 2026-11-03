@@ -14,6 +14,7 @@
 
 #include "../engine/tuning_signal_ref.h"
 #include "../golden/golden_audio.h"
+#include "playback_fixture.h"
 #include "pq/app/project_link.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
@@ -192,6 +193,7 @@ TEST_CASE("mode transfer (M7): a live generator edit across 720 cents carries th
   c.notes = NoteSeq::fromNotes(std::move(notes)).value();
   b.commands.push_back(AddClip{tr, std::make_shared<const NoteClip>(std::move(c))});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
 
   auto live = makeLink(store.current());
   [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& e) { live->onDocumentChange(e); });
@@ -337,6 +339,7 @@ struct HeldChord {
     c.notes = NoteSeq::fromNotes(std::move(notes)).value();
     b.commands.push_back(AddClip{track, std::make_shared<const NoteClip>(std::move(c))});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
 };
 
@@ -457,6 +460,7 @@ TuningId addOneTuning(DocumentStore& store, const TuningDef& def) {
   c.notes = NoteSeq::fromNotes(std::move(notes)).value();
   b.commands.push_back(AddClip{tr, std::make_shared<const NoteClip>(std::move(c))});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   return t;
 }
 
@@ -571,6 +575,7 @@ TEST_CASE("tuning tables (M8): every slot in use leaves further tunings static, 
     b.commands.push_back(SetTrackTuning{tr, TuningAssignment::mainTuning(t)});
   }
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   LinkConfig c;
   c.compileThread = false;
   c.sleepAfterMs = 0.0f;

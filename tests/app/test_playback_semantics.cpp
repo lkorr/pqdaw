@@ -108,6 +108,7 @@ struct Proj {
   Snapshot done() {
     const Status st = store.dispatch(batch);
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     batch.commands.clear();
     return store.current();
   }

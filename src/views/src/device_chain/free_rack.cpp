@@ -127,7 +127,8 @@ uint32_t FreeRackPanel::freeCount() const {
   const doc::Track* t = track_.valid() ? doc::findTrackPtr(*ctx_.doc(), track_) : nullptr;
   if (t == nullptr) return 0;
   uint32_t n = 0;
-  for (const doc::DevicePtr& d : t->devices) n += d->free && !d->group.valid() ? 1u : 0u;
+  const doc::MainPath path = doc::mainPath(*ctx_.doc(), *t);  // TX.all-free: the blocks off the main path
+  for (const doc::DevicePtr& d : t->devices) n += !path.contains(d->id) && !d->group.valid() ? 1u : 0u;
   return n;
 }
 

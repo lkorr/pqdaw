@@ -1634,8 +1634,13 @@ std::vector<DeviceId> deviceIdsIn(const Device& d) {
   return out;
 }
 
-// TMM.10-fix1: a list whose first device takes the note source (normaliseMetaKinds).
-bool instrumentsGo(ListKind k) noexcept { return k == ListKind::MidiTrack || k == ListKind::InstrumentRackChain; }
+// TMM.10-fix1: a rack chain's meta devices take the kind their position says (normaliseMetaKinds: an Instrument Rack's
+// chain starts at the note source). TX.all-free: a track's blocks have no position (the kind of a meta block means
+// nothing there: its cables decide), so they are left as they are.
+void normaliseKinds(std::vector<DevicePtr>& list, ListKind k, std::vector<DeviceId>* changed = nullptr) {
+  if (k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain)
+    normaliseMetaKinds(list, k == ListKind::InstrumentRackChain, changed);
+}
 
 // T4.8: the list a device goes into: a track's own chain, or a rack chain.
 struct ListAt {
@@ -1707,7 +1712,7 @@ Res apply_(const Snapshot& s, const AddDevice& c, ChangeSet& cs) {
   const size_t index = std::min<size_t>(c.index, chain.size());
   chain.insert(chain.begin() + static_cast<std::ptrdiff_t>(index), c.device);
   std::vector<DeviceId> rekinded;
-  normaliseMetaKinds(chain, instrumentsGo(at->kind), &rekinded);  // TMM.10-fix1
+  normaliseKinds(chain, at->kind, &rekinded);  // TMM.10-fix1
   PQ_DOC_TRY(checkList(at->kind, chain));
   Res r = editTrack(s, at->path, cs, kChangeStructural, [&](Track& t) {
     *listIn(t, *at) = std::move(chain);
@@ -1737,7 +1742,7 @@ Res apply_(const Snapshot& s, const RemoveDevice& c, ChangeSet& cs) {
     (void)takeFromTree(t.devices, c.device);
     for (const DeviceId m : members) (void)takeFromTree(t.devices, m);
     if (std::vector<DevicePtr>* l = listIn(t, *from))  // TMM.10-fix1: the next device may now take the note source
-      normaliseMetaKinds(*l, instrumentsGo(from->kind), &rekinded);
+      normaliseKinds(*l, from->kind, &rekinded);
     pruneMappings(t.devices, pruned);  // outer racks' mappings onto what was removed
     return ok();
   });
@@ -1771,7 +1776,7 @@ Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
     if (at == src.index) return s;  // where it is
     chain.insert(chain.begin() + static_cast<std::ptrdiff_t>(at), dev);
     std::vector<DeviceId> rekinded;
-    normaliseMetaKinds(chain, instrumentsGo(to->kind), &rekinded);  // TMM.10-fix1
+    normaliseKinds(chain, to->kind, &rekinded);  // TMM.10-fix1
     PQ_DOC_TRY(checkList(to->kind, chain));
     Res r = editTrack(s, to->path, cs, kChangeStructural, [&](Track& t) {
       *listIn(t, *to) = std::move(chain);
@@ -1790,7 +1795,7 @@ Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
     std::vector<DevicePtr> dst = *to->list;
     dst.insert(dst.begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(c.index, dst.size())), dev);
     dst.insert(dst.end(), members.begin(), members.end());
-    normaliseMetaKinds(dst, instrumentsGo(to->kind));
+    normaliseKinds(dst, to->kind);
     PQ_DOC_TRY(checkList(to->kind, dst));
   }
   Result<ListAt> fromList = locateList(*s, from->track->id, src.chain != nullptr ? src.chain->id : ChainId{});
@@ -1810,9 +1815,9 @@ Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
   dst->insert(dst->end(), members.begin(), members.end());
   for (const DevicePtr& m : members) cs.devices.push_back(m->id);
   std::vector<DeviceId> rekinded;  // TMM.10-fix1: both lists' meta devices take the kind their position says
-  normaliseMetaKinds(*dst, instrumentsGo(to->kind), &rekinded);
+  normaliseKinds(*dst, to->kind, &rekinded);
   if (std::vector<DevicePtr>* left = listIn(mutableTrack(*np, from->path), *fromList))
-    normaliseMetaKinds(*left, instrumentsGo(fromList->kind), &rekinded);
+    normaliseKinds(*left, fromList->kind, &rekinded);
   pruneMappings(mutableTrack(*np, from->path).devices, pruned);  // mappings of the racks it left
   cs.mark(kChangeStructural);
   cs.tracks.push_back(from->track->id);
@@ -2162,33 +2167,6 @@ Res apply_(const Snapshot& s, const SetParamCurve& c, ChangeSet& cs) {  // TX.kn
   });
 }
 
-Res apply_(const Snapshot& s, const SetDeviceFree& c, ChangeSet& cs) {  // TX.patching
-  const DeviceLoc loc = findDevice(*s, c.device);
-  if (!loc.track) return notFound("device not found");
-  if (loc.device->free == c.free) return s;
-  if (loc.chain != nullptr) return invalid("a free device sits in a track's circuit, not in a rack chain");
-  Result<ListAt> at = locateList(*s, loc.track->id, ChainId{});
-  if (!at) return std::move(at).error();
-  std::vector<DevicePtr> list = *at->list;
-  for (DevicePtr& d : list)
-    if (d->id == c.device) {
-      auto x = std::make_shared<Device>(*d);
-      x->free = c.free;
-      if (c.free && isMetaDevice(*x)) x->kind = DeviceKind::AudioEffect;  // out of the series: not where instruments go
-      d = std::move(x);
-    }
-  std::vector<DeviceId> rekinded;
-  normaliseMetaKinds(list, instrumentsGo(at->kind), &rekinded);  // the series' first device may change
-  PQ_DOC_TRY(checkList(at->kind, list));
-  Res r = editTrack(s, at->path, cs, kChangeStructural, [&](Track& t) {
-    t.devices = std::move(list);
-    return ok();
-  });
-  if (r) cs.devices.push_back(c.device);
-  if (r) cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
-  return r;
-}
-
 Res apply_(const Snapshot& s, const SetDeviceGroup& c, ChangeSet& cs) {  // TX.groups
   const DeviceLoc loc = findDevice(*s, c.device);
   if (!loc.track) return notFound("device not found");
@@ -2215,12 +2193,13 @@ Res apply_(const Snapshot& s, const SetDeviceGroup& c, ChangeSet& cs) {  // TX.g
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------
 
 // np's wire list without the wires touching a device of `gone` (sorted); their ids into cs. No-op without such wires.
-// TMM.10-fix2: and the wires from the note source of a track of `goneTracks` (sorted).
+// TMM.10-fix2: and the wires from the note source of a track of `goneTracks` (sorted); TX.all-free: and into its mixer.
 void dropWiresOf(Project& np, const std::vector<DeviceId>& gone, ChangeSet& cs, const std::vector<TrackId>& goneTracks) {
   if (!np.wires || (gone.empty() && goneTracks.empty())) return;
   auto touches = [&](const Wire& w) {
     return std::binary_search(gone.begin(), gone.end(), w.from) || std::binary_search(gone.begin(), gone.end(), w.to) ||
-           (w.fromNoteSource() && std::binary_search(goneTracks.begin(), goneTracks.end(), w.noteSource));
+           (w.fromNoteSource() && std::binary_search(goneTracks.begin(), goneTracks.end(), w.noteSource)) ||
+           (w.toMixer() && std::binary_search(goneTracks.begin(), goneTracks.end(), w.mixer));  // TX.all-free
   };
   if (std::none_of(np.wires->begin(), np.wires->end(), touches)) return;
   WireList keep;
@@ -2241,17 +2220,26 @@ Res withWires(const Snapshot& s, WireList list, ChangeSet& cs, ChangeFlag flag, 
 
 Res apply_(const Snapshot& s, const AddWire& c, ChangeSet& cs) {
   PQ_DOC_TRY(checkWire(c.wire));
-  if (c.wire.fromNoteSource()) {  // TMM.10-fix2: a MIDI track's note source
-    const Track* t = findTrackPtr(*s, c.wire.noteSource);
-    if (t == nullptr) return notFound("wire source track not found");
-    if (t->kind != TrackKind::Midi) return invalid("only a MIDI track has a note source");
-  } else if (!findDevice(*s, c.wire.from).track) {
-    return notFound("wire source device not found");
+  const Track* sourceTrack = nullptr;
+  if (c.wire.fromNoteSource()) {  // TMM.10-fix2: a MIDI track's note source; TX.all-free: any track's own signal
+    sourceTrack = findTrackPtr(*s, c.wire.noteSource);
+    if (sourceTrack == nullptr) return notFound("wire source track not found");
+    if (!c.wire.port.empty() && sourceTrack->kind != TrackKind::Midi) return invalid("only a MIDI track has a note source");
+  } else {
+    sourceTrack = findDevice(*s, c.wire.from).track;
+    if (sourceTrack == nullptr) return notFound("wire source device not found");
   }
-  const DeviceLoc to = findDevice(*s, c.wire.to);
-  if (!to.track) return notFound("wire target device not found");
-  if (!c.wire.param.empty())  // TMM.5: a baked meta param is not a modulation target
-    if (std::string why = metaParamBakedOnly(*to.device, c.wire.param); !why.empty()) return invalid(why);
+  if (c.wire.toMixer()) {  // TX.all-free: a track's mixer input, from its own blocks or its own source
+    const Track* t = findTrackPtr(*s, c.wire.mixer);
+    if (t == nullptr) return notFound("wire target track not found");
+    if (sourceTrack != t || (!c.wire.fromNoteSource() && findDevice(*s, c.wire.from).chain != nullptr))
+      return invalid("a track's mixer takes wires from its own blocks and its own source only");
+  } else {
+    const DeviceLoc to = findDevice(*s, c.wire.to);
+    if (!to.track) return notFound("wire target device not found");
+    if (!c.wire.param.empty())  // TMM.5: a baked meta param is not a modulation target
+      if (std::string why = metaParamBakedOnly(*to.device, c.wire.param); !why.empty()) return invalid(why);
+  }
   if (std::string why = chainLinkProblem(*s, c.wire); !why.empty()) return invalid(why);  // TMM.13-fix1 L7
   const WireList& cur = wiresOf(*s);
   for (const Wire& w : cur) {
@@ -2489,7 +2477,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
-    "Edit Device Patch", "Rename Device", "Chain Input", "Free Device", "Device Group", "Knob Curve",
+    "Edit Device Patch", "Rename Device", "Chain Input", "Device Group", "Knob Curve",
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer",
     "Add Chain", "Delete Chain", "Move Chain", "Rename Chain", "Chain Mixer", "Activate Chain", "Solo Chain", "Chain Zone",
     "Map Macro", "Unmap Macro", "Edit Macro Mapping", "Rack Options",

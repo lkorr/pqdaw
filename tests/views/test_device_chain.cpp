@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
@@ -76,9 +77,10 @@ struct Ui {
     return *v;
   }
   const doc::Track& track(doc::TrackId id) const { return *doc::findTrackPtr(*ctx.doc(), id); }
+  // TX.all-free: the track's main path (what the Device view lists), in signal order.
   std::vector<std::string> chain(doc::TrackId id) const {
     std::vector<std::string> v;
-    for (const doc::DevicePtr& dev : track(id).devices) v.push_back(dev->patch + (dev->active ? "" : "(off)"));
+    for (const doc::Device* dev : doc::mainPath(*ctx.doc(), track(id)).blocks) v.push_back(dev->patch + (dev->active ? "" : "(off)"));
     return v;
   }
   size_t history() const { return ctx.store().history().cursor(); }
@@ -150,9 +152,17 @@ TEST_CASE("device view: add, reorder, remove, deactivate, copy / paste and dupli
   u.d.drag({static_cast<float>(fs.x + fs.w / 2), static_cast<float>(fs.y + 18)}, {static_cast<float>(fu.x + 10), static_cast<float>(fu.y + 18)}, 8);
   CHECK(u.history() == h0 + 3);
   CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth", "saturator", "utility"});
-  // An effect never moves before the instrument: dragged to the far left it lands after it.
+  // TX.all-free: the path has no order rule — dragged to the far left, the Utility goes before the instrument (one
+  // step; undone here).
   const IRect fu2 = u.frame(util), fi = u.frame(u.track(u.keys).devices[0]->id);
   u.d.drag({static_cast<float>(fu2.x + fu2.w / 2), static_cast<float>(fu2.y + 18)}, {static_cast<float>(fi.x + 2), static_cast<float>(fi.y + 18)}, 8);
+  CHECK(u.history() == h0 + 4);
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"utility", "BasicSynth", "saturator"});
+  REQUIRE(u.ctx.undo());
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth", "saturator", "utility"});
+  // Onto the Saturator's left half: between the instrument and the Saturator.
+  const IRect fu4 = u.frame(util), fs4 = u.frame(sat);
+  u.d.drag({static_cast<float>(fu4.x + fu4.w / 2), static_cast<float>(fu4.y + 18)}, {static_cast<float>(fs4.x + 10), static_cast<float>(fs4.y + 18)}, 8);
   CHECK(u.history() == h0 + 4);
   CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth", "utility", "saturator"});
 

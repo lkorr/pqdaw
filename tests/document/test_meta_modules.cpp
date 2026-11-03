@@ -158,7 +158,7 @@ TEST_CASE("meta modules: save -> load is deep-equal with nested and chain-level 
                           std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray(cycle)}}))));
   Result<std::string> text = serializeProject(s.doc(), s.store.view());
   REQUIRE(text.ok());
-  CHECK(text->rfind("{\n  \"schemaVersion\": 16,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": 17,", 0) == 0);
   CHECK(text->find("\"patch\": \"meta:phase_acc\"") != std::string::npos);
   CHECK(text->find("\"$f32\"") != std::string::npos);
   Result<LoadedProject> back = parseProject(*text);
@@ -224,10 +224,11 @@ TEST_CASE("meta modules: the reader is strict, with JSON paths") {
       std::string t = good;
       const size_t dev = t.find("\"meta:phase_acc\"");
       REQUIRE(dev != std::string::npos);
-      if (asEffect) {
-        const size_t kind = t.find("\"instrument\"", dev);
-        REQUIRE(kind != std::string::npos);
-        t.replace(kind, 12, "\"audioEffect\"");
+      if (asEffect) {  // the other kind than the one it has (TX.all-free: a track's meta block is an audio effect)
+        const size_t inst = t.find("\"instrument\"", dev), fx = t.find("\"audioEffect\"", dev);
+        REQUIRE((inst != std::string::npos || fx != std::string::npos));
+        if (inst != std::string::npos && (fx == std::string::npos || inst < fx)) t.replace(inst, 12, "\"audioEffect\"");
+        else t.replace(fx, 13, "\"instrument\"");
       }
       if (!chainInput.empty()) t.insert(dev + 16, ", \"chainInput\": \"" + chainInput + "\"");
       return parseProject(t);

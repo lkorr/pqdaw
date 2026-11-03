@@ -355,7 +355,20 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //           signal plus the wires).
 // Audio rate end to end: a wire's signal reaches the pin as it is (the compiler raises the param's path to audio rate
 // where the source is; an unwired param stays a param-rate runtime param, its memoised path unchanged).
-// FREE devices (model.h Device::free): called in their track patch after the series (TrackDevs::free), never chained:
+// THE MAIN PATH (TX.all-free; SPEC §15 2026-11-03 "everything is free; the chain is just cables"; main_path.h): a
+// track's blocks are a set and its series is ordinary cables. The lowering follows the main links from the source
+// (doc::mainPath) and compiles the blocks on that path exactly as the chain was compiled (the same IR, the same NodeIds:
+// a schema-16 project migrates to the same patch, tests/app/test_all_free.cpp); the path's links are consumed by that
+// (they are not lowered as wires: their state is Lowered while the path runs, Inactive past a break). Every other wire
+// is lowered as a wire (its "" main ports resolved to the block's main output / input, model.h kMainPort), and every
+// block off the path as below. The MIXER takes the path's end when the path reaches it (else nothing: a broken path is
+// silent past the break, its mixer input a constant 0) plus Σ the other wires into it (Wire::mixer; its own track's
+// blocks only, a wire into another track's mixer is Invalid; one into it that would close a delay-free cycle gets the
+// 1-sample delay; a per-voice source goes through the wire's reducer). A wire from a track's SOURCE with port "" is that
+// track's own signal (an audio track's clips, a group's / return's summed input; a MIDI track's notes reach a block only
+// along its path: such a wire into a block off it is Inactive).
+// FREE devices (blocks off the main path; before TX.all-free model.h Device::free): called in their track patch after
+// the series (TrackDevs::offPath), never chained:
 // a stock device's first audio `in` reads −0 until a wire reaches it; a meta device plays its Nested form (every input
 // an `in` with its default, outputs of any poly) in the track's voice context when the track plays voices, so the
 // compiler runs it per voice exactly when a per-voice signal reaches it or its output feeds voice processing (pq/graph/

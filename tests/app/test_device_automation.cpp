@@ -77,6 +77,7 @@ struct Song {
     std::vector<Note> notes{playback_fixture::note(ids, 0, bars * kBar, 0)};
     b.commands.push_back(AddClip{t, playback_fixture::clip(ids, 0, bars * kBar, notes, "held")});
     must(b);
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   void must(Command c) {
     const Status st = store.dispatch(std::move(c));

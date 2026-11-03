@@ -4,7 +4,9 @@
 #include <optional>
 
 #include "edit_common.h"
+#include "edit_paths.h"
 #include "pq/document/devices.h"
+#include "pq/document/main_path.h"
 #include "pq/document/lower.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
@@ -131,31 +133,6 @@ meta::Reads noteReads(const Device& d, std::string_view param) {
   return i < 0 ? meta::Reads::Signal : t->inputs[static_cast<size_t>(i)].reads;
 }
 
-// Where the series goes back when group `g` (at index `gi` of `list`) is ungrouped: nothing moves when the series
-// devices already sit where the group's place in the series is (every series device of the list before the group comes
-// before them, every one after it after them: what Ctrl+G leaves, free devices between them included); else they are
-// moved to the group's place, in order.
-void moveSeriesBack(Batch& b, const std::vector<DevicePtr>& list, size_t gi, DeviceId g,
-                    std::span<const Device* const> series, std::span<const Device* const> members) {
-  if (series.empty()) return;
-  auto indexOf = [&](const Device* d) {
-    for (size_t i = 0; i < list.size(); ++i)
-      if (list[i].get() == d) return i;
-    return list.size();
-  };
-  const size_t first = indexOf(series.front()), last = indexOf(series.back());
-  bool inPlace = true;
-  for (size_t i = 0; i < list.size() && inPlace; ++i) {
-    const Device& d = *list[i];
-    if (d.free || d.id == g || std::find(members.begin(), members.end(), &d) != members.end()) continue;
-    if (i < gi && i > first) inPlace = false;
-    if (i > gi && i < last) inPlace = false;
-  }
-  if (inPlace) return;
-  for (size_t k = 0; k < series.size(); ++k)
-    b.commands.push_back(MoveDevice{series[k]->id, TrackId{}, static_cast<uint32_t>(gi + k)});
-}
-
 }  // namespace
 
 EditResult groupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLibrary& lib, std::span<const DeviceId> devices) {
@@ -180,31 +157,24 @@ EditResult groupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLibra
   }
   const std::vector<DevicePtr>& list = track->devices;
   const bool midi = track->kind == TrackKind::Midi;
-  // The selected series devices in list order (S) and the selected free ones (F).
+  // TX.all-free: the selected blocks on the main path in signal order (S: a stretch of it) and the others (F).
+  const MainPath path = mainPath(p, *track);
   std::vector<const Device*> series, freeOnes;
-  std::vector<size_t> seriesAt;  // their indices among the track's series devices
+  std::vector<size_t> seriesAt;  // their places on the path
   size_t firstIndex = list.size();
-  {
-    size_t si = 0;
-    for (size_t i = 0; i < list.size(); ++i) {
-      const Device* d = list[i].get();
-      const bool sel = std::find(picked.begin(), picked.end(), d) != picked.end();
-      if (sel) firstIndex = std::min(firstIndex, i);
-      if (!d->free) {
-        if (sel) {
-          series.push_back(d);
-          seriesAt.push_back(si);
-        }
-        ++si;
-      } else if (sel) {
-        freeOnes.push_back(d);
-      }
+  for (size_t i = 0; i < list.size(); ++i)
+    if (std::find(picked.begin(), picked.end(), list[i].get()) != picked.end()) firstIndex = std::min(firstIndex, i);
+  for (size_t i = 0; i < path.blocks.size(); ++i)
+    if (std::find(picked.begin(), picked.end(), path.blocks[i]) != picked.end()) {
+      series.push_back(path.blocks[i]);
+      seriesAt.push_back(i);
     }
-  }
+  for (const Device* d : picked)
+    if (!path.contains(d->id)) freeOnes.push_back(d);
   for (size_t k = 1; k < seriesAt.size(); ++k)
     if (seriesAt[k] != seriesAt[k - 1] + 1)
-      return invalid("Group: the chain devices must be next to each other (a group takes their place in the chain)");
-  // Where the group goes: the first series device's place (or, a free group, the first selected device's).
+      return invalid("Group: the devices on the path must be next to each other (a group takes their place on it)");
+  // The group's place in the list (only where an unplaced block is drawn): the first selected block's.
   size_t groupIndex = firstIndex;
   if (!series.empty())
     for (size_t i = 0; i < list.size(); ++i)
@@ -213,11 +183,13 @@ EditResult groupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLibra
   // voices: the group continues them (lower.h "Groups"), so the series must be exactly a stretch of the voice run —
   // meta modules that each continue the voices; the run's sum (before a stock device, at an unplugged device) cannot
   // be inside a group.
+  std::vector<DevicePtr> pathList = flowOrder(*track, path);
+  pathList.resize(path.blocks.size());
   const ChainSignal reaching =
-      series.empty() ? ChainSignal::Audio : chainSignalAt(list, midi, static_cast<uint32_t>(groupIndex));
+      series.empty() ? ChainSignal::Audio : chainSignalAt(pathList, midi, static_cast<uint32_t>(seriesAt.front()));
   const bool voiced = reaching == ChainSignal::Notes || reaching == ChainSignal::Voices;
   if (voiced) {
-    const std::vector<ChainStage> stages = chainStages(list, midi);
+    const std::vector<ChainStage> stages = chainStages(pathList, midi);
     auto stageOf = [&](const Device* d) -> const ChainStage* {
       for (const ChainStage& s : stages)
         if (s.device == d) return &s;
@@ -256,21 +228,47 @@ EditResult groupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLibra
   }
   Edit e = makeEdit("Group");
   Batch& b = batchOf(e);
-  {
-    auto g = std::make_shared<Device>(*makeGroup(gid));
-    g->free = series.empty();  // only free devices: the group is free too (it has no place in the chain)
-    b.commands.push_back(AddDevice{track->id, std::move(g), static_cast<uint32_t>(groupIndex)});
+  // TX.all-free: the group takes the series' place on the main path. Its links P0 … Pn (P0 into the first, Pn out of
+  // the last; none past the end of a broken path) go; the group's own come in with P0's and Pn's ids, and each chain
+  // link between two series devices takes the id of the path link it stands for — so ungrouping (which gives every id
+  // back) restores the very document.
+  std::vector<const Wire*> pathLinks;  // P0 … Pn
+  if (!series.empty())
+    for (size_t k = 0; k <= series.size(); ++k)
+      if (seriesAt.front() + k < path.links.size()) pathLinks.push_back(findWire(p, path.links[seriesAt.front() + k]));
+  b.commands.push_back(AddDevice{track->id, makeGroup(gid), static_cast<uint32_t>(groupIndex)});
+  for (const Wire* w : pathLinks) b.commands.push_back(RemoveWire{w->id});
+  if (!pathLinks.empty()) {
+    Wire in = mainLink(ids, endFrom(*pathLinks.front()), End{gid, {}});
+    in.id = pathLinks.front()->id;
+    b.commands.push_back(AddWire{in});
+    if (pathLinks.size() == series.size() + 1) {
+      Wire out = mainLink(ids, End{gid, {}}, endTo(*pathLinks.back()));
+      out.id = pathLinks.back()->id;
+      b.commands.push_back(AddWire{out});
+    }
   }
-  for (const Device* d : series) b.commands.push_back(SetDeviceFree{d->id, true});
   for (const Device* d : picked) b.commands.push_back(SetDeviceGroup{d->id, gid});
-  // The series as chain links (Wire::chain): planned and summed before every other wire, as the chain's links are.
+  // A path link P_k between two series devices with no chain link standing for it (the next device is unplugged: the
+  // signal so far ends there) gives its id to the group's In / Out links instead, in that order (ungroupInCircuit
+  // takes them back the same way).
+  std::vector<WireId> spare;
+  for (size_t k = 1; k < series.size() && k < pathLinks.size(); ++k)
+    if (std::none_of(links.begin(), links.end(), [&](const Link& l) { return l.from == series[k - 1]->id && l.to == series[k]->id; }))
+      spare.push_back(pathLinks[k]->id);
+  size_t nextSpare = 0;
+  // The series as chain links (Wire::chain): planned and summed before every other wire, as the path's links are.
   std::vector<WireId> inactiveIn;  // In links at the note source into an input that reads no note signal
   for (const Link& l : links) {
     for (const Wire& x : wiresOf(p))
       if (l.same(x))
         return invalid("Group: a wire already joins those ports beside the chain (it would play once instead of twice); "
                        "delete it first");
-    const Wire w = chainWire(ids, l);
+    Wire w = chainWire(ids, l);
+    // A link between two series devices s_k → s_k+1 stands for the path link P_k.
+    for (size_t k = 1; k < series.size() && k < pathLinks.size(); ++k)
+      if (l.from == series[k - 1]->id && l.to == series[k]->id) w.id = pathLinks[k]->id;
+    if ((l.from == gid || l.to == gid) && nextSpare < spare.size()) w.id = spare[nextSpare++];
     if (reaching == ChainSignal::Notes && l.from == gid) {
       const DeviceLoc t = findDevice(p, l.to);
       const meta::Reads r = t.device != nullptr ? noteReads(*t.device, l.param) : meta::Reads::Signal;
@@ -378,7 +376,7 @@ Result<std::pair<std::vector<const Device*>, std::vector<const Wire*>>> readSeri
 
 }  // namespace
 
-EditResult ungroupInCircuit(const Snapshot& snap, const DeviceLibrary& lib, DeviceId group) {
+EditResult ungroupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLibrary& lib, DeviceId group) {
   const Project& p = *snap;
   const DeviceLoc l = findDevice(p, group);
   if (!l.track) return notFound("Ungroup: group not found");
@@ -393,22 +391,27 @@ EditResult ungroupInCircuit(const Snapshot& snap, const DeviceLibrary& lib, Devi
   for (const Wire& w : wires) {
     if (w.to == group && w.param == kGroupOutPort) intoOut.push_back(&w);
     if (w.from == group && w.port == kGroupInPort && !w.fromNoteSource()) fromIn.push_back(&w);
-    if (w.to == group && w.param != kGroupOutPort)
+    // (TX.all-free: the group's own main links — its place on the path — go back to the series below.)
+    if (w.to == group && w.param != kGroupOutPort && !w.mainLink())
       return invalid("Ungroup: a wire reaches the group's own input; delete it first (after ungrouping there is no group)");
-    if (w.from == group && w.port != kGroupInPort && !w.fromNoteSource())
+    if (w.from == group && w.port != kGroupInPort && !w.fromNoteSource() && !w.mainLink())
       return invalid("Ungroup: a wire leaves the group's own output; delete it first (after ungrouping there is no group)");
     // TX.groups-fix1: the group's chain links (Ctrl+G's series).
     if (w.chain && !w.fromNoteSource() && (w.from == group || w.to == group || isMember(w.from) || isMember(w.to)))
       links.push_back(&w);
   }
-  if (l.device->free && (!intoOut.empty() || !fromIn.empty()))
-    return invalid("Ungroup: this group is free (not in the chain): delete its In / Out wires first");
+  // TX.all-free: a group off the main path has no series to give back.
+  const MainPath path = mainPath(p, track);
+  const int32_t gi = path.indexOf(group);
+  const bool onPath = gi >= 0;
+  if (!onPath && (!intoOut.empty() || !fromIn.empty()))
+    return invalid("Ungroup: this group is off the main path: delete its In / Out wires first");
   std::vector<const Device*> series;
   std::vector<const Wire*> spine;
-  if (!l.device->free && !links.empty()) {
+  if (onPath && !links.empty()) {
     // TX.groups-fix1: the series is the members its chain links touch, in list order (Ctrl+G keeps every device at its
     // place in the list); those links must be exactly the ones that series makes (seriesLinks), and In / Out must have
-    // no other wires (after ungrouping, the chain feeds only the first device and only the last one's output goes on).
+    // no other wires (after ungrouping, the path feeds only the first device and only the last one's output goes on).
     for (const Device* m : members)
       if (std::any_of(links.begin(), links.end(), [&](const Wire* w) { return w->from == m->id || w->to == m->id; }))
         series.push_back(m);
@@ -419,15 +422,15 @@ EditResult ungroupInCircuit(const Snapshot& snap, const DeviceLibrary& lib, Devi
       same = same && std::count_if(links.begin(), links.end(), [&](const Wire* w) { return k.same(*w); }) == 1;
     if (!same)
       return invalid("Ungroup: the group's series was rewired (its chain links no longer run In → … → Out through its "
-                     "devices in their order); a chain is one series: restore it or delete the group");
+                     "devices in their order); a series is one path: restore it or delete the group");
     for (const Wire* w : fromIn)
       if (!w->chain)
-        return invalid("Ungroup: In also feeds another input; in the chain only the first device hears the signal: "
+        return invalid("Ungroup: In also feeds another input; on the path only the first device hears the signal: "
                        "delete that wire first");
     for (const Wire* w : intoOut)
-      if (!w->chain) return invalid("Ungroup: several wires reach Out; a chain is one series: keep one");
+      if (!w->chain) return invalid("Ungroup: several wires reach Out; a path is one series: keep one");
     spine = links;
-  } else if (!l.device->free) {
+  } else if (onPath) {
     auto back = readSeriesBack(p, lib, group, members, intoOut, fromIn);
     if (!back) return std::move(back).error();
     series = std::move(back->first);
@@ -437,13 +440,39 @@ EditResult ungroupInCircuit(const Snapshot& snap, const DeviceLibrary& lib, Devi
   Batch& b = batchOf(e);
   for (const Wire* w : spine) b.commands.push_back(RemoveWire{w->id});
   for (const Device* m : members) b.commands.push_back(SetDeviceGroup{m->id, DeviceId{}});
-  b.commands.push_back(RemoveDevice{group});
-  for (const Device* d : series) b.commands.push_back(SetDeviceFree{d->id, false});
-  // The series at the group's place, in its order (nothing moves when it is there already).
-  size_t at = 0;
-  for (size_t i = 0; i < track.devices.size(); ++i)
-    if (track.devices[i]->id == group) at = i;
-  moveSeriesBack(b, track.devices, at, group, series, members);
+  b.commands.push_back(RemoveDevice{group});  // (its own path links go with it)
+  // TX.all-free: the series back on the path at the group's place, its links with the ids the group kept (groupInCircuit:
+  // the link in and out of the group, the chain links between two series devices).
+  if (onPath) {
+    const Wire* in = findWire(p, path.links[static_cast<size_t>(gi)]);
+    const Wire* out = static_cast<size_t>(gi) + 1 < path.links.size() ? findWire(p, path.links[static_cast<size_t>(gi) + 1]) : nullptr;
+    End at = endFrom(*in);
+    // A pair with no chain link between them takes the ids of the In / Out links, in that order (groupInCircuit).
+    std::vector<WireId> spare;
+    for (const Wire* s : spine)
+      if (!s->fromNoteSource() && s->from == group) spare.push_back(s->id);
+    for (const Wire* s : spine)
+      if (s->to == group) spare.push_back(s->id);
+    size_t nextSpare = 0;
+    WireId id = in->id;
+    for (size_t k = 0; k < series.size(); ++k) {
+      Wire w = mainLink(ids, at, End{series[k]->id, {}});
+      if (id.valid()) w.id = id;
+      b.commands.push_back(AddWire{w});
+      at = End{series[k]->id, {}};
+      id = {};
+      if (k + 1 < series.size()) {
+        for (const Wire* s : spine)
+          if (!s->fromNoteSource() && s->from == series[k]->id && s->to == series[k + 1]->id) id = s->id;
+        if (!id.valid() && nextSpare < spare.size()) id = spare[nextSpare++];
+      }
+    }
+    if (out != nullptr) {
+      Wire w = mainLink(ids, at, endTo(*out));
+      w.id = out->id;
+      b.commands.push_back(AddWire{w});
+    }
+  }
   for (const Device* m : members) e.devices.push_back(m->id);
   e.tracks.push_back(track.id);
   return e;

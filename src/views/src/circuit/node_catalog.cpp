@@ -595,34 +595,4 @@ Result<SpecDevice> specDevice(std::string_view spec) {
   return out;
 }
 
-MainPorts mainPortsOf(const graph::SubcircuitRef& sig, const graph::Patch* callee, bool instrument) {
-  MainPorts m;
-  if (!sig.outputs.empty()) m.out = sig.outputs.front().name;
-  if (instrument) return m;
-  for (const graph::SubcircuitPort& sp : sig.inputs) {
-    if (sp.type.rate == graph::Rate::Const) continue;
-    if (callee != nullptr) {
-      const std::optional<graph::NodeIndex> n = callee->findByName(sp.name);
-      if (!n || callee->node(*n).kind != graph::NodeKind::Input) continue;  // a param
-      if (sp.name.size() > 4 && sp.name.ends_with("_add"))  // a param's added wires (TX.patching), not a signal input
-        if (const auto q = callee->findByName(std::string_view(sp.name).substr(0, sp.name.size() - 4));
-            q && callee->node(*q).kind == graph::NodeKind::Param)
-          continue;
-      if (callee->outputType(*n, 0).rate == graph::Rate::Const) continue;
-      bool drives = false;
-      for (const graph::Wire& w : callee->wires())
-        if (w.from.node == *n) {
-          drives = true;
-          break;
-        }
-      if (!drives) continue;  // an input wired to nothing carries nothing into the node
-    } else if (sp.optional) {
-      continue;
-    }
-    m.in = sp.name;
-    break;
-  }
-  return m;
-}
-
 }  // namespace pq::views::circuit

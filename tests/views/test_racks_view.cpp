@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "pq/document/lower.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/gpu.h"
@@ -185,7 +186,12 @@ TEST_CASE("rack view: dragging devices into a chain row, onto the empty chain li
   u.d.drag(u.title(u.util), {static_cast<float>(rf.x + 3), static_cast<float>(rf.y + 40)}, 10);
   CHECK(u.history() == h0 + 3);
   REQUIRE(u.track().devices.size() == 3);
-  CHECK(u.track().devices[1]->id == u.util);
+  {  // TX.all-free: spliced into the main path, right before the rack
+    const doc::MainPath path = doc::mainPath(*u.ctx.doc(), u.track());
+    REQUIRE(path.blocks.size() == 3);
+    CHECK(path.blocks[1]->id == u.util);
+    CHECK(path.blocks[2]->id == u.rack);
+  }
   for (int k = 0; k < 3; ++k) REQUIRE(u.ctx.undo());
   CHECK(u.track().devices[1]->id == u.util);  // the start: [instrument, utility, rack]
   CHECK(u.rackOf(u.rack).chains.size() == 1);

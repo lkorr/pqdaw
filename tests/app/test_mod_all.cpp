@@ -76,10 +76,11 @@ struct Song {
     must(e->command);
     return e->devices.at(0);
   }
-  DeviceId freeMeta(std::string_view type) {
-    const DeviceId d = meta(type);
-    edit(ops::setDevicesFree(doc(), std::vector<DeviceId>{d}, true));
-    return d;
+  DeviceId freeMeta(std::string_view type) {  // TX.all-free: a block placed off the main path (unwired)
+    auto e = ops::addMetaDevice(doc(), store.ids(), track, type, ops::kOffPath);
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    must(e->command);
+    return e->devices.at(0);
   }
   void wire(DeviceId from, const std::string& port, DeviceId to, const std::string& param) {
     edit(ops::connectWire(doc(), store.ids(), from, port, to, param));

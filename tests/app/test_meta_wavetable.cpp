@@ -602,6 +602,7 @@ struct AliasRig {
     std::vector<Note> notes{playback_fixture::note(ids, 0, 256 * kTicksPerWhole, 0)};
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 256 * kTicksPerWhole, notes, "held")});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     link = makeLink(store.current(), sr);
     std::string text = link->devices().stockText("BasicSynth");
     auto swap = [&](const std::string& from, const std::string& to) {

@@ -173,7 +173,7 @@ TEST_CASE("device automation: lanes follow their device — move, group, ungroup
     for (const LaneId id : {freq, amount, gain, vol, macro}) CHECK(f.where(id).first == f.b);
     f.edit(ops::moveDevice(f.doc(), rack, f.a, kAppend));
     // Ungroup: the devices' lanes stay; the rack's own (macro, chain volume) go with the rack.
-    f.edit(ops::ungroupDevices(f.doc(), rack));
+    f.edit(ops::ungroupDevices(f.doc(), f.store.ids(), rack));
     for (const LaneId id : {freq, amount, gain}) CHECK(f.where(id).first == f.a);
     CHECK_FALSE(f.where(vol).second);
     CHECK_FALSE(f.where(macro).second);
@@ -239,7 +239,7 @@ TEST_CASE("device automation: the project file keeps device, macro, chain and wi
   f.lane(f.a, ParamRef::chain(chain, kChainPan), "", -1.0f, 1.0f);
   Result<std::string> text = serializeProject(f.doc());
   REQUIRE(text.ok());
-  CHECK(text->rfind("{\n  \"schemaVersion\": 16,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": 17,", 0) == 0);
   CHECK(text->find("\"kind\": \"deviceParam\", \"owner\": " + std::to_string(f.filter.value) + ", \"name\": \"freq\"") !=
         std::string::npos);
   CHECK(text->find("\"kind\": \"chainMixer\", \"owner\": " + std::to_string(chain.value) + ", \"name\": \"pan\"") !=

@@ -168,14 +168,24 @@ const DeviceLibrary& library() {
 }
 
 // A chain meta device of `type` (its default state), optionally free (out of the series) or unplugged.
+// TX.all-free: the devices made `free` (placed off the main path): wired() leaves them out of the series.
+std::vector<DeviceId> gOffPath;
+
 DevicePtr metaDevice(DeviceId id, std::string_view type, DeviceKind kind, bool free = false, std::string chainInput = {}) {
   const meta::Type* t = meta::findType(type);
   REQUIRE(t != nullptr);
   auto d = std::make_shared<Device>(*makeDevice(id, std::string(kMetaDevicePrefix) + std::string(type), kind));
   d->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(*t)}});
-  d->free = free;
+  if (free) gOffPath.push_back(id);
   d->chainInput = std::move(chainInput);
   return d;
+}
+
+// TX.all-free: every track built from raw commands wired in series (the devices made free left off the path).
+void wired(DocumentStore& s, std::vector<DeviceId> offPath = {}) {
+  offPath.insert(offPath.end(), gOffPath.begin(), gOffPath.end());
+  gOffPath.clear();
+  playback_fixture::wireSeries(s, offPath);
 }
 
 // The lowered project of `store` (one MIDI event slot) and its param links.
@@ -183,6 +193,7 @@ struct Lowered {
   LoweredProject low;
   std::vector<engine::ProjectParamLink> links;
   std::vector<float> values;
+  std::vector<WireState> cables;  // TX.all-free: the states of the wires that are not main links (the ones a test draws)
 };
 Lowered lowerIt(const DocumentStore& store) {
   LowerOptions lo;
@@ -191,7 +202,9 @@ Lowered lowerIt(const DocumentStore& store) {
   lo.slotOf = [](TrackId) { return 0u; };
   auto low = lower(*store.current(), lo);
   REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
-  Lowered out{std::move(*low), {}, {}};
+  Lowered out{std::move(*low), {}, {}, {}};
+  for (const WireState& st : out.low.wires)
+    if (const Wire* w = findWire(*store.current(), st.id); w != nullptr && !w->mainLink()) out.cables.push_back(st);
   for (const LoweredParam& p : out.low.params) {
     out.links.push_back({p.track, p.name, static_cast<uint32_t>(out.values.size())});
     out.values.push_back(p.value);
@@ -293,16 +306,17 @@ TEST_CASE("patching: the note source's Hz into a filter cutoff adds exactly its 
   b.commands.push_back(SetDeviceParam{eq, "freq1", 300.0});
   if (!units) b.commands.push_back(SetParamCurve{eq, "freq1", KnobCurve::Linear});
   REQUIRE(store.dispatch(b).ok());
+  wired(store);  // TX.all-free: the chain as cables
   auto e = ops::connectNoteWire(*store.current(), ids, keys, "hz", eq, "freq1");
   REQUIRE(e.ok());
   if (units) asUnits(e);
   REQUIRE(store.dispatch(e->command).ok());
-  const Wire& w = wiresOf(*store.current()).front();
+  const Wire& w = *findWire(*store.current(), e->wires.front());  // (TX.all-free: beside the main links)
   CHECK(w.law == (units ? WireLaw::Units : WireLaw::Add));
   CHECK(w.amount == 1.0);
   const Lowered low = lowerIt(store);
-  REQUIRE(low.low.wires.size() == 1);
-  CHECK(low.low.wires[0].status == WireStatus::Lowered);
+  REQUIRE(low.cables.size() == 1);
+  CHECK(low.cables[0].status == WireStatus::Lowered);
   REQUIRE(low.low.taps.size() == 1);
   CHECK(low.low.taps[0].units);
   // No amount param for an added wire.
@@ -336,6 +350,7 @@ TEST_CASE("patching: a free Phase accumulator into another's phase is per-voice 
     b.commands.push_back(AddDevice{keys, metaDevice(pa1, "phase_acc", DeviceKind::AudioEffect, true), kAppend});
     b.commands.push_back(SetDeviceParam{pa1, "freq", 100.0});
     REQUIRE(s->dispatch(b).ok());
+  wired(*s);  // TX.all-free: the chain as cables
     auto e = ops::connectWire(*s->current(), ids, pa1, "out", pa2, intoPm ? "pm" : "phase");
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
     REQUIRE(s->dispatch(e->command).ok());
@@ -343,8 +358,8 @@ TEST_CASE("patching: a free Phase accumulator into another's phase is per-voice 
   };
   auto [store, keys, pa1, pa2] = build(false);
   const Lowered low = lowerIt(*store);
-  REQUIRE(low.low.wires.size() == 1);
-  CHECK(low.low.wires[0].status == WireStatus::Lowered);
+  REQUIRE(low.cables.size() == 1);
+  CHECK(low.cables[0].status == WireStatus::Lowered);
   CHECK(low.low.missingDevices.empty());
   // The hand-written patch: the two calls, PA1 into PA2's phase, and the voice run's 5 ms release (lower.h).
   const std::string text =
@@ -363,8 +378,8 @@ TEST_CASE("patching: a free Phase accumulator into another's phase is per-voice 
   // The same wire into the `pm` input (added to the phase inside the module): the same samples.
   auto [store2, keys2, pa1b, pa2b] = build(true);
   const Lowered low2 = lowerIt(*store2);
-  REQUIRE(low2.low.wires.size() == 1);
-  CHECK(low2.low.wires[0].status == WireStatus::Lowered);
+  REQUIRE(low2.cables.size() == 1);
+  CHECK(low2.cables[0].status == WireStatus::Lowered);
   const golden::Channels viaPm = renderGraph(low2.low.graph, low2.links, low2.values, 24000);
   CHECK(maxDiff(viaPhase, viaPm) == 0.0);
   // TX.smooth: the audio-rate wire gets no param ramp (only the knobs do): the same ramps either way.
@@ -386,12 +401,13 @@ TEST_CASE("patching: an instrument's output into a later device's audio input su
   b.commands.push_back(AddDevice{keys, makeDevice(u2, "utility", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(SetDeviceParam{u1, "width", 0.0});  // the chain's signal through u1 in mono …
   REQUIRE(store.dispatch(b).ok());
+  wired(store);  // TX.all-free: the chain as cables
   auto e = ops::connectWire(*store.current(), ids, inst, "out", u2, "x");  // … plus the instrument directly into u2
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
   const Lowered low = lowerIt(store);
-  REQUIRE(low.low.wires.size() == 1);
-  CHECK(low.low.wires[0].status == WireStatus::Lowered);
+  REQUIRE(low.cables.size() == 1);
+  CHECK(low.cables[0].status == WireStatus::Lowered);
   CHECK(low.low.taps.empty());  // an input has no knob: no tap
   const std::string text = "patch T {\n  param w1 = 0 [0..4]\n  out out : audio global stereo\n  out done : bool voice mono\n"
                            "  s = BasicSynth()\n  x = voice_sum(s.out)\n  a = utility(pack(x, x), width: w1)\n"
@@ -418,17 +434,14 @@ TEST_CASE("patching: a free LFO's export wired into a param; a free device costs
   b.commands.push_back(SetDeviceParam{eq, "freq1", 400.0});
   b.commands.push_back(SetDeviceParam{lfo, "rate", 3.0});
   REQUIRE(store.dispatch(b).ok());
-  const DeviceId free[] = {lfo, idle};
-  auto f = ops::setDevicesFree(*store.current(), free, true);
-  REQUIRE(f.ok());
-  REQUIRE(store.dispatch(f->command).ok());
-  CHECK(findDevice(*store.current(), lfo).device->free);
+  wired(store, {lfo, idle});  // TX.all-free: the chain as cables, the LFO and the idle Saturator off the path
+  CHECK(!playback_fixture::onPath(*store.current(), lfo));
   auto e = ops::connectWire(*store.current(), ids, lfo, "lfo", eq, "freq1");
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
   const Lowered low = lowerIt(store);
-  REQUIRE(low.low.wires.size() == 1);
-  CHECK(low.low.wires[0].status == WireStatus::Lowered);
+  REQUIRE(low.cables.size() == 1);
+  CHECK(low.cables[0].status == WireStatus::Lowered);
   // Both free devices are calls of the track patch (the views draw them), out of the chain: the chain is the
   // instrument → EQ → mixer; the unread saturator is dropped by the compiler.
   const graph::Patch& tp = *low.low.graph.tracks[0].patch;
@@ -462,12 +475,13 @@ TEST_CASE("patching: a wire from a later device's output into an earlier one's i
   b.commands.push_back(AddDevice{keys, makeDevice(u2, "utility", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(SetDeviceParam{u2, "gain", std::pow(10.0, -6.0 / 20.0)});  // −6 dB: the loop decays
   REQUIRE(store.dispatch(b).ok());
+  wired(store);  // TX.all-free: the chain as cables
   auto e = ops::connectWire(*store.current(), ids, u2, "out", u1, "x");
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
   const Lowered low = lowerIt(store);
-  REQUIRE(low.low.wires.size() == 1);
-  CHECK(low.low.wires[0].status == WireStatus::Delayed);
+  REQUIRE(low.cables.size() == 1);
+  CHECK(low.cables[0].status == WireStatus::Delayed);
   const float g = static_cast<float>(std::pow(10.0, -6.0 / 20.0));
   const std::string text = "patch T {\n  param g2 = " + num(g) + "\n  out out : audio global stereo\n"
                            "  out done : bool voice mono\n  s = BasicSynth()\n  x = voice_sum(s.out)\n"
@@ -495,6 +509,7 @@ TEST_CASE("patching: a feedback wire through the voices' sum is refused, naming 
   b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(AddDevice{keys, metaDevice(pa2, "phase_acc", DeviceKind::AudioEffect, true), kAppend});
   REQUIRE(store.dispatch(b).ok());
+  wired(store);  // TX.all-free: the chain as cables
   const Lowered plain = lowerIt(store);
   const golden::Channels before = renderGraph(plain.low.graph, plain.links, plain.values, 12000);
   CHECK(peakOf(before) > 0.01f);
@@ -570,6 +585,7 @@ TEST_CASE("patching: a Units wire into a VCA's value adds to the multiplier (val
     }
     b.commands.push_back(SetDeviceParam{pa, "freq", 55.0});
     REQUIRE(store.dispatch(b).ok());
+  wired(store);  // TX.all-free: the chain as cables
     if (which == 0) {
       auto e = ops::connectWire(*store.current(), ids, pa, "out", vca, "value");
       asUnits(e);
@@ -680,6 +696,7 @@ TEST_CASE("patching (TMM.18): a negative frequency reflects — into the Phase a
     b.commands.push_back(SetDeviceParam{vca, "max", v < 0 ? v - 60.0 : v - 140.0});
     if (into == kFreqLinear) b.commands.push_back(SetParamCurve{pa, "freq", KnobCurve::Linear});
     REQUIRE(store.dispatch(b).ok());
+  wired(store);  // TX.all-free: the chain as cables
     auto e = ops::connectWire(*store.current(), ids, vca, "out", pa, intoFreq ? "freq" : "hz");
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
     REQUIRE(store.dispatch(e->command).ok());
@@ -744,6 +761,7 @@ Lowered constantInto(const char* target, const char* param, double knob, std::op
     b.commands.push_back(SetDeviceParam{vca, "max", *value - 100.0});
   }
   REQUIRE(store.dispatch(b).ok());
+  wired(store);  // TX.all-free: the chain as cables
   if (value) {
     auto e = ops::connectWire(*store.current(), ids, vca, "out", dev, param);
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
@@ -843,6 +861,7 @@ TEST_CASE("knob curves: the Phase accumulator's frequency bar — exp0 by defaul
       b.commands.push_back(SetDeviceParam{vca, "max", wire->second - 100.0});
     }
     REQUIRE(store.dispatch(b).ok());
+  wired(store);  // TX.all-free: the chain as cables
     if (wire) {
       auto e = ops::connectWire(*store.current(), ids, vca, "out", acc, wire->first);
       REQUIRE(e.ok());
@@ -878,6 +897,7 @@ TEST_CASE("knob curves: an Add wire into the VCA's value — its Log curve in tr
     b.commands.push_back(AddDevice{t, metaDevice(pa, "phase_acc", DeviceKind::AudioEffect, true), kAppend});
     b.commands.push_back(SetDeviceParam{pa, "freq", 55.0});
     REQUIRE(store.dispatch(b).ok());
+  wired(store);  // TX.all-free: the chain as cables
     auto e = ops::connectWire(*store.current(), ids, pa, "out", vca, "value");
     REQUIRE(e.ok());
     REQUIRE(store.dispatch(e->command).ok());

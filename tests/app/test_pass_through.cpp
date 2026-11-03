@@ -125,13 +125,21 @@ double rms(const golden::Channels& a, size_t from, size_t to) {
   return n == 0 ? 0.0 : std::sqrt(s / static_cast<double>(n));
 }
 
+// TX.all-free: the devices made `free` (placed off the main path); wired() leaves them out of the series.
+std::vector<DeviceId> gOffPath;
+
 DevicePtr metaDevice(DeviceId id, std::string_view type, DeviceKind kind, bool free = false) {
   const meta::Type* t = meta::findType(type);
   REQUIRE(t != nullptr);
   auto d = std::make_shared<Device>(*makeDevice(id, std::string(kMetaDevicePrefix) + std::string(type), kind));
   d->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(*t)}});
-  d->free = free;
+  if (free) gOffPath.push_back(id);
   return d;
+}
+
+void wired(DocumentStore& s) {
+  playback_fixture::wireSeries(s, gOffPath);
+  gOffPath.clear();
 }
 
 void wire(DocumentStore& s, DeviceId from, std::string port, DeviceId to, std::string param) {
@@ -180,6 +188,7 @@ Bug bugPatch(DocumentStore& store, const char* analyser, bool stock = false) {
   b.commands.push_back(SetDeviceParam{g.env, "attack", 0.03081697977654113});
   b.commands.push_back(SetDeviceParam{g.vca, "value", 0.3});
   REQUIRE(store.dispatch(b).ok());
+  wired(store);  // TX.all-free: wired in series
   wire(store, g.env, "out", g.vca, "in");
   wire(store, g.vca, "out", g.pa, "freq");
   return g;
@@ -220,6 +229,11 @@ TEST_CASE("scope-sound: two analysers in a row, and an analyser between the run'
     const Bug g = bugPatch(with, "spectrum");
     const DeviceId more = with.ids().device();
     REQUIRE(with.dispatch(AddDevice{g.track, metaDevice(more, "oscilloscope", DeviceKind::AudioEffect), kAppend}).ok());
+    {  // TX.all-free: onto the path's end
+      auto e = ops::insertOnPath(*with.current(), with.ids(), more, kAppend);
+      REQUIRE(e.ok());
+      REQUIRE(with.dispatch(e->command).ok());
+    }
     same(*none.current(), *with.current(), "… → Envelope → Spectrum → Oscilloscope");
   }
   {
@@ -227,6 +241,11 @@ TEST_CASE("scope-sound: two analysers in a row, and an analyser between the run'
     const Bug g = bugPatch(with, nullptr);
     const DeviceId mid = with.ids().device();
     REQUIRE(with.dispatch(AddDevice{g.track, metaDevice(mid, "spectrogram", DeviceKind::AudioEffect), 1}).ok());
+    {  // TX.all-free: onto the path after the Phase accumulator
+      auto e = ops::insertOnPath(*with.current(), with.ids(), mid, 1);
+      REQUIRE(e.ok());
+      REQUIRE(with.dispatch(e->command).ok());
+    }
     same(*none.current(), *with.current(), "PA → Spectrogram → WT → Envelope");
   }
 }
@@ -277,7 +296,7 @@ TEST_CASE("scope-sound: a free analyser fed by the Envelope, and one inside the 
       DocumentStore with;
       const Bug g = bugPatch(with, nullptr);
       const DeviceId f = with.ids().device();
-      REQUIRE(with.dispatch(AddDevice{g.track, metaDevice(f, a, DeviceKind::AudioEffect, /*free=*/true), kAppend}).ok());
+      REQUIRE(with.dispatch(AddDevice{g.track, metaDevice(f, a, DeviceKind::AudioEffect), kAppend}).ok());  // unwired
       wire(with, g.env, "out", f, "in");
       same(*none.current(), *with.current(), std::string("free ") + a + " reading Envelope.out");
     }
@@ -286,7 +305,7 @@ TEST_CASE("scope-sound: a free analyser fed by the Envelope, and one inside the 
       DocumentStore with;
       const Bug g = bugPatch(with, nullptr);
       const DeviceId f = with.ids().device();
-      REQUIRE(with.dispatch(AddDevice{g.track, metaDevice(f, a, DeviceKind::AudioEffect, /*free=*/true), kAppend}).ok());
+      REQUIRE(with.dispatch(AddDevice{g.track, metaDevice(f, a, DeviceKind::AudioEffect), kAppend}).ok());  // unwired
       Batch drop{"unwire", {}};
       for (const Wire& w : wiresOf(*with.current()))
         if (w.from == g.env && w.to == g.vca) drop.commands.push_back(RemoveWire{w.id});

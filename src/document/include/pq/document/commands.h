@@ -152,17 +152,20 @@ struct SetTuningDef { TuningId tuning; TuningDef def; };
 struct SetTuningParam { TuningId tuning; ParamKind param = ParamKind::TuningReference; double value = 0.0; };
 
 // ---- Devices (T4.1; QUESTIONS Q129) -----------------------------------------------------------------------
-// The chain rule: a MIDI track holds at most one instrument, at index 0, then audio effects; groups, returns and the
-// master hold audio effects only. Device ids are project-wide unique (pre-allocated from the IdSource).
-// Structural. Inserts `device` into `track`'s chain at `index` (kAppend: at the end). T4.8: with `chain` valid, into that
-// rack chain instead (`track` is then ignored); a rack device brings its chains, mappings and inner devices (all ids
-// new).
+// TX.all-free: a track's devices are BLOCKS (a set: Track::devices) wired by cables; these commands add, remove and move
+// blocks and never wire anything (ops::insertOnPath / ops::dissolveDevices rewire the main path; main_path.h).
+// Instruments go on MIDI tracks only. A rack chain is a list with its rule: an Instrument Rack's chain may start with
+// one instrument, then audio effects; an Audio Effect Rack's chains hold audio effects only. Device ids are project-wide
+// unique (pre-allocated from the IdSource).
+// Structural. Adds `device` to `track`'s blocks at list position `index` (kAppend: at the end; the position only orders
+// the set: model.h Track::devices). T4.8: with `chain` valid, into that rack chain at `index` instead (`track` is then
+// ignored); a rack device brings its chains, mappings and inner devices (all ids new).
 struct AddDevice { TrackId track; DevicePtr device; uint32_t index = kAppend; ChainId chain; };
 // Structural. Removes a device (its values and its wires go with it; undo restores them). T4.8: a rack goes with
 // everything inside it (their wires too); mappings of outer racks onto the removed devices go with them.
 struct RemoveDevice { DeviceId device; };
-// Structural. Moves a device to `toTrack` (invalid: its own track) at `index` (in the destination chain after removal;
-// kAppend: the end). Within one track only that track's unit recompiles (every device keeps its state: its NodeId is
+// Structural. Moves a device to `toTrack` (invalid: its own track) at `index` (in the destination list after removal;
+// kAppend: the end; its wires stay: they name the device). Within one track only that track's unit recompiles (every device keeps its state: its NodeId is
 // its id); between tracks both do, and the device starts fresh there (state lives per track). T4.8: with `toChain`
 // valid, into that rack chain (`toTrack` ignored; a rack cannot go into itself); mappings of racks the device leaves
 // are removed with it (a macro maps only devices inside its rack).
@@ -182,13 +185,9 @@ struct RenameDevice { DeviceId device; std::string name; };
 // TMM.10-fix1: Structural. A chain meta device's chain input (Device::chainInput: "" the type's own, "-" unplugged, or
 // an input of its type by name): which input the previous stage's signal (or the note source) is wired into.
 struct SetDeviceChainInput { DeviceId device; std::string input; };
-// TX.patching: Structural. Takes a device of a track's own list out of the series (free: it plays only through wires)
-// or puts it back where it is in the list (model.h Device::free). Not in a rack chain; never a rack or a stock
-// instrument; a meta device's kind follows (a free one is never where instruments go).
-struct SetDeviceFree { DeviceId device; bool free = true; };
-// TX.groups: Meta (membership changes no sound: a member is a free device either way; model.h "Groups"). Puts a free
-// device of a track's own list into group `group` (a group device of the same list), or takes it out (invalid). A group
-// is never a member (no nesting).
+// TX.groups: Meta (membership changes no sound: a member plays through its cables either way; model.h "Groups"). Puts a
+// block of a track into group `group` (a group device of the same track), or takes it out (invalid); a member is never
+// on the main path (main_path.h). A group is never a member (no nesting).
 struct SetDeviceGroup { DeviceId device; DeviceId group; };
 // TX.knob-curves: Structural (the Add wire law follows the curve: lower.h "Modulation wires"). A knob's curve
 // (model.h KnobCurve; Default removes the entry). The value stays (it is stored in units): the knob re-maps. The param is
@@ -196,7 +195,8 @@ struct SetDeviceGroup { DeviceId device; DeviceId group; };
 struct SetParamCurve { DeviceId device; std::string param; KnobCurve curve = KnobCurve::Default; };
 
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------
-// Structural. Adds `wire` (its id pre-allocated). Both devices must exist; a Travel wire's amount must be in [−1, 1], an
+// Structural. Adds `wire` (its id pre-allocated). Both ends must exist (TX.all-free: a track's source with kMainPort on
+// any track; a mixer only from that track's own blocks or source); a Travel wire's amount must be in [−1, 1], an
 // Add wire's is 1 (TX.patching); a wire with the same source (device, output) and target (device, param or input) as an
 // existing one is rejected. The ports are not
 // checked against the device patches (the document is library-free): a wire naming a port the patch does not have is
@@ -289,7 +289,7 @@ using CommandVariant = std::variant<
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch, RenameDevice,
-    SetDeviceChainInput, SetDeviceFree, SetDeviceGroup, SetParamCurve, AddWire, RemoveWire, SetWireAmount, SetWireReducer,
+    SetDeviceChainInput, SetDeviceGroup, SetParamCurve, AddWire, RemoveWire, SetWireAmount, SetWireReducer,
     AddChain, RemoveChain, MoveChain, RenameChain, SetChainMixer, SetChainActive, SetChainSolo, SetChainZone,
     AddMacroMapping, RemoveMacroMapping, SetMacroMapping, SetRackOptions,
     AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,

@@ -58,6 +58,7 @@ struct AudioSong {
     IdSource& ids = store.ids();
     echo = ids.track();
     REQUIRE(store.dispatch(AddTrack{playback_fixture::track(echo, TrackKind::Return, "Echo"), {}, kAppend}).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     auto t = ops::createTrack(*store.current(), ids, TrackKind::Audio, {}, "Loop");
     REQUIRE(t.ok());
     REQUIRE(store.dispatch(t->command).ok());

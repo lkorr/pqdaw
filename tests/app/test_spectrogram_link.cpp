@@ -74,6 +74,7 @@ struct GramProject {
     for (const int32_t d : degrees) notes.push_back(playback_fixture::note(ids, 0, 64 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "chord")});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     if (withGram) {
       auto e = ops::addMetaDevice(*store.current(), store.ids(), track, "spectrogram");
       REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));

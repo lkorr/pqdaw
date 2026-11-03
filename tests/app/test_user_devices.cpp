@@ -88,6 +88,7 @@ struct TwoKeys {
       batch.commands.push_back(AddClip{t, playback_fixture::clip(ids, 0, 32 * kPpq, notes, "chord")});
     }
     REQUIRE(store.dispatch(batch).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
 };
 
@@ -359,17 +360,17 @@ TEST_CASE("user devices: a wire into a param an edit removed is reported and lef
   REQUIRE(k.store.dispatch(ops::connectTravelWire(*k.store.current(), k.store.ids(), lfo, "lfo", sat, "drive")->command).ok());
   link->flush();
   CHECK(link->stats().invalidWires == 0);
-  REQUIRE(link->wireStates().size() == 1);
-  CHECK(link->wireStates()[0].status == WireStatus::Lowered);
+  REQUIRE(playback_fixture::drawn(link->wireStates(), *k.store.current()).size() == 1);
+  CHECK(playback_fixture::drawn(link->wireStates(), *k.store.current())[0].status == WireStatus::Lowered);
   const std::string noDrive = renamedDrive(link->devices().stockText("saturator"));
   REQUIRE(k.store.dispatch(ops::editDevicePatch(*k.store.current(), sat, noDrive)->command).ok());
   link->flush();
   CHECK(link->lastError().empty());
   CHECK(link->stats().invalidWires == 1);
-  CHECK(link->wireStates()[0].status == WireStatus::Invalid);
-  CHECK(wiresOf(*k.store.current()).size() == 1);  // kept in the document
+  CHECK(playback_fixture::drawn(link->wireStates(), *k.store.current())[0].status == WireStatus::Invalid);
+  CHECK(playback_fixture::drawnWires(*k.store.current()).size() == 1);  // kept in the document
   REQUIRE(k.store.undo());
   link->flush();
   CHECK(link->stats().invalidWires == 0);
-  CHECK(link->wireStates()[0].status == WireStatus::Lowered);
+  CHECK(playback_fixture::drawn(link->wireStates(), *k.store.current())[0].status == WireStatus::Lowered);
 }

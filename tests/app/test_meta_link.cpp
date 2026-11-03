@@ -93,6 +93,7 @@ struct Keys {
     for (int32_t d : {0, 4, 7}) notes.push_back(playback_fixture::note(ids, 0, 64 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "chord")});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   void edit(Result<ops::Edit> e) {
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
@@ -436,6 +437,7 @@ TEST_CASE("meta link: Phase accumulator -> Wavetable -> Auto Filter plays an 8-v
     }
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 16 * kPpq, notes, "chord")});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   auto edit = [&](Result<ops::Edit> e) {
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));

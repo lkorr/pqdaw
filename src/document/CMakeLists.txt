@@ -25,10 +25,12 @@ pq_add_module(pq_doc
     src/edit_devices.cpp
     src/edit_racks.cpp
     src/edit_groups.cpp
+    src/edit_paths.cpp
     src/edit_library.cpp
     src/edit_meta.cpp
     src/devices.cpp
     src/meta.cpp
+    src/main_path.cpp
     src/audibility.cpp
     src/lower.cpp
     src/pitch_resolve.cpp

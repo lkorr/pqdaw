@@ -3,6 +3,8 @@
 #include <cmath>
 
 #include "edit_common.h"
+#include "edit_paths.h"
+#include "pq/document/main_path.h"
 
 namespace pq::doc::ops {
 
@@ -61,6 +63,25 @@ EditResult groupDevices(const Project& p, IdSource& ids, std::span<const DeviceI
   std::sort(picked.begin(), picked.end());
   std::vector<DevicePtr> inner;
   for (const uint32_t i : picked) inner.push_back(list[i]);
+  // TX.all-free: on a track the rack takes a stretch of its main path (its links in and out keep their ids); the devices
+  // run in the rack's chain in path order.
+  const MainPath path = first.chain == nullptr ? mainPath(p, *first.track) : MainPath{};
+  std::vector<WireId> pathLinks;  // P0 (into the first) … Pn (out of the last; none past a broken path's end)
+  if (first.chain == nullptr) {
+    std::vector<std::pair<int32_t, DevicePtr>> at;
+    for (const DevicePtr& d : inner) {
+      const int32_t i = path.indexOf(d->id);
+      if (i < 0) return invalid("a rack's chain is a series: group devices on the track's main path (the list)");
+      at.emplace_back(i, d);
+    }
+    std::sort(at.begin(), at.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+    for (size_t k = 1; k < at.size(); ++k)
+      if (at[k].first != at[k - 1].first + 1) return invalid("the devices must be next to each other on the main path");
+    inner.clear();
+    for (const auto& [i, d] : at) inner.push_back(d);
+    for (size_t k = 0; k <= inner.size(); ++k)
+      if (static_cast<size_t>(at.front().first) + k < path.links.size()) pathLinks.push_back(path.links[at.front().first + k]);
+  }
   const bool instrument = inner.front()->kind == DeviceKind::Instrument;
   Edit e = makeEdit("Group Devices");
   Batch& b = batchOf(e);
@@ -74,11 +95,23 @@ EditResult groupDevices(const Project& p, IdSource& ids, std::span<const DeviceI
   std::sort(gone.begin(), gone.end());
   DevicePtr rack = makeRack(ids.device(), instrument ? DeviceKind::Instrument : DeviceKind::AudioEffect,
                             {makeChain(ids.chain(), "Chain 1", inner)});
-  e.devices.push_back(rack->id);
+  const DeviceId rid = rack->id;
+  e.devices.push_back(rid);
   b.commands.push_back(AddDevice{first.track->id, rack, picked.front(), first.chain ? first.chain->id : ChainId{}});
   auto in = [&](DeviceId id) { return std::binary_search(gone.begin(), gone.end(), id); };
+  auto isPathLink = [&](WireId w) { return std::find(pathLinks.begin(), pathLinks.end(), w) != pathLinks.end(); };
   for (const Wire& w : wiresOf(p))
-    if (in(w.from) || in(w.to)) b.commands.push_back(AddWire{w});
+    if ((in(w.from) || in(w.to)) && !isPathLink(w.id)) b.commands.push_back(AddWire{w});
+  if (!pathLinks.empty()) {  // the rack where they were on the path
+    Wire into = mainLink(ids, endFrom(*findWire(p, pathLinks.front())), End{rid, {}});
+    into.id = pathLinks.front();
+    b.commands.push_back(AddWire{into});
+    if (pathLinks.size() == inner.size() + 1) {
+      Wire out = mainLink(ids, End{rid, {}}, endTo(*findWire(p, pathLinks.back())));
+      out.id = pathLinks.back();
+      b.commands.push_back(AddWire{out});
+    }
+  }
   forEachDevice(p, [&](const Device& d, const Track&) {
     if (!d.rack || in(d.id)) return;
     for (const MacroMapping& m : d.rack->mappings)
@@ -87,7 +120,7 @@ EditResult groupDevices(const Project& p, IdSource& ids, std::span<const DeviceI
   return e;
 }
 
-EditResult ungroupDevices(const Project& p, DeviceId rack) {
+EditResult ungroupDevices(const Project& p, IdSource& ids, DeviceId rack) {
   Result<const Device*> rr = rackOf(p, rack);
   if (!rr) return std::move(rr).error();
   const Rack& r = *(*rr)->rack;
@@ -110,6 +143,29 @@ EditResult ungroupDevices(const Project& p, DeviceId rack) {
   auto in = [&](DeviceId id) { return std::binary_search(gone.begin(), gone.end(), id); };
   for (const Wire& w : wiresOf(p))
     if ((in(w.from) || in(w.to)) && w.from != rack && w.to != rack) b.commands.push_back(AddWire{w});
+  // TX.all-free: on a track's main path the chain's devices take the rack's place, in their order (the links in and
+  // out keep their ids; an empty rack passed its input: its neighbours are joined).
+  if (loc.chain == nullptr) {
+    const MainPath path = mainPath(p, *loc.track);
+    if (const int32_t gi = path.indexOf(rack); gi >= 0) {
+      const Wire* lin = findWire(p, path.links[static_cast<size_t>(gi)]);
+      const Wire* lout = static_cast<size_t>(gi) + 1 < path.links.size() ? findWire(p, path.links[static_cast<size_t>(gi) + 1]) : nullptr;
+      End at = endFrom(*lin);
+      WireId id = lin->id;
+      for (const DevicePtr& d : inner) {
+        Wire w = mainLink(ids, at, End{d->id, {}});
+        if (id.valid()) w.id = id;
+        b.commands.push_back(AddWire{w});
+        at = End{d->id, {}};
+        id = {};
+      }
+      if (lout != nullptr) {
+        Wire w = mainLink(ids, at, endTo(*lout));
+        w.id = inner.empty() ? lin->id : lout->id;
+        b.commands.push_back(AddWire{w});
+      }
+    }
+  }
   forEachDevice(p, [&](const Device& d, const Track&) {
     if (!d.rack || d.id == rack || in(d.id)) return;
     for (const MacroMapping& m : d.rack->mappings)
@@ -151,8 +207,28 @@ EditResult moveDeviceToNewChain(const Project& p, IdSource& ids, DeviceId device
   const ChainId chain = ids.chain();
   Edit e = makeEdit("Move Device");
   e.devices.push_back(device);
-  batchOf(e).commands.push_back(AddChain{rack, makeChain(chain, freshChainName(*(*r)->rack))});
-  batchOf(e).commands.push_back(MoveDevice{device, {}, kAppend, chain});
+  Steps k(p);
+  // TX.all-free: a block of a track's main path leaves it (its neighbours joined) for the rack's chain.
+  if (d.chain == nullptr && mainPath(p, *d.track).contains(device)) PQ_DOC_TRY(detach(k, ids, nullptr, device));
+  PQ_DOC_TRY(k.add(AddChain{rack, makeChain(chain, freshChainName(*(*r)->rack))}));
+  PQ_DOC_TRY(k.add(MoveDevice{device, {}, kAppend, chain}));
+  batchOf(e).commands = std::move(k.commands);
+  return e;
+}
+
+EditResult moveIntoChain(const Project& p, IdSource& ids, DeviceId device, uint32_t index, ChainId toChain) {
+  const DeviceLoc d = findDevice(p, device);
+  if (!d.device) return notFound("device not found");
+  if (d.chain != nullptr || !mainPath(p, *d.track).contains(device)) return moveDevice(p, device, {}, index, toChain);
+  const ChainLoc c = findChain(p, toChain);
+  if (!c.chain) return notFound("chain not found");
+  if (deviceContains(*d.device, c.rack->id)) return invalid("a rack cannot go into itself");
+  Edit e = makeEdit("Move Device");
+  e.devices.push_back(device);
+  Steps k(p);
+  PQ_DOC_TRY(detach(k, ids, nullptr, device));
+  PQ_DOC_TRY(k.add(MoveDevice{device, {}, index, toChain}));
+  batchOf(e).commands = std::move(k.commands);
   return e;
 }
 

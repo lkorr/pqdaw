@@ -99,6 +99,7 @@ struct Keys {
     for (int32_t d : {0, 4, 7}) notes.push_back(playback_fixture::note(ids, 0, 16 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 16 * kPpq, notes, "chord")});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   ops::Edit edit(Result<ops::Edit> e) {
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
@@ -177,7 +178,7 @@ TEST_CASE("device chains: add / reorder / remove / deactivate are one undo step 
   const DeviceId sat = structuralEdit(ops::addDevice(*k.store.current(), k.store.ids(), k.track, "saturator", DeviceKind::AudioEffect), "add saturator").devices.at(0);
   const std::set<uint64_t> keysBefore = stateKeys(program, keysUnit);
   REQUIRE(keysBefore.size() > 3);
-  structuralEdit(ops::moveDevice(*k.store.current(), sat, {}, 1), "reorder");
+  structuralEdit(ops::moveOnPath(*k.store.current(), k.store.ids(), nullptr, sat, k.track, 1), "reorder");  // TX.all-free: rewired
   // A reorder keeps every device's state: the unit's state keys are exactly the same.
   CHECK(stateKeys(program, keysUnit) == keysBefore);
   // A param is a param write: no compile at all.
@@ -223,6 +224,7 @@ TEST_CASE("device chains: an instrument's voices setting is its track's polyphon
     b.commands.push_back(AddClip{op, playback_fixture::clip(ids, 0, 8 * kPpq, chords, "chords")});
     b.commands.push_back(AddClip{keys, playback_fixture::clip(ids, 0, 16 * kPpq, held, "held")});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   auto link = makeLink(store.current(), false);
   [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
@@ -329,6 +331,7 @@ TEST_CASE("device chains: a lowered chain renders like the hand-built ProjectGra
   b.commands.push_back(SetDeviceParam{sat, "drive", 2.0});
   b.commands.push_back(SetDeviceSetting{sat, "type", 6.0});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   LowerOptions lo;
   lo.library = &(*lib)->library();
   lo.slotOf = [](TrackId) { return 0u; };
@@ -428,6 +431,7 @@ TEST_CASE("device chains: a project with more than 16,384 params plays every sto
       b.commands.push_back(AddClip{id, playback_fixture::clip(ids, 0, 16 * kPpq, {playback_fixture::note(ids, 0, 16 * kPpq, k % 12)}, "n")});
     }
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   auto link = makeLink(store.current(), false);
   CHECK(link->stats().paramSlots > 16384);

@@ -17,8 +17,10 @@
 #include <string>
 #include <vector>
 
+#include "all_free_helpers.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/graph/atoms.h"
 #include "pq/meta/registry.h"
@@ -78,9 +80,7 @@ struct Ui {
     synth = doc::findTrackPtr(*st.current(), keys)->devices.at(0)->id;
     util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices.at(0);
     sat = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "saturator", doc::DeviceKind::AudioEffect)).devices.at(0);
-    lfo = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "lfo_device", doc::DeviceKind::AudioEffect)).devices.at(0);
-    const doc::DeviceId one[1] = {lfo};
-    run(doc::ops::setDevicesFree(*st.current(), one, true));
+    lfo = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "lfo_device", doc::DeviceKind::AudioEffect, doc::ops::kOffPath)).devices.at(0);
     lfoWire = run(doc::ops::connectWire(*st.current(), st.ids(), lfo, "lfo", util, "gain")).wires.at(0);
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
@@ -204,10 +204,21 @@ struct Ui {
     view().sync();
   }
   std::vector<doc::Wire> wires() const { return doc::wiresOf(*ctx.doc()); }
+  // TX.all-free: a wire names a main port "" (doc::kMainPort); compared by the port it stands for.
   bool wired(doc::DeviceId from, std::string_view out, doc::DeviceId to, std::string_view param) const {
-    for (const doc::Wire& w : wires())
-      if (w.from == from && w.port == out && w.to == to && w.param == param) return true;
+    for (const doc::Wire& w : wires()) {
+      if (w.from != from || w.to != to) continue;
+      const std::string outName = w.port.empty() ? std::string(view().mainPorts(from).out) : w.port;
+      const std::string into = w.param.empty() ? std::string(view().mainPorts(to).in) : w.param;
+      if (outName == out && into == param) return true;
+    }
     return false;
+  }
+  // The track's main path (TX.all-free: what the chain was), in signal order.
+  std::vector<doc::DeviceId> path(doc::TrackId t) const {
+    std::vector<doc::DeviceId> v;
+    for (const doc::Device* x : doc::mainPath(*ctx.doc(), track(t)).blocks) v.push_back(x->id);
+    return v;
   }
   doc::DeviceId newest() const {
     doc::DeviceId best;
@@ -407,7 +418,7 @@ TEST_CASE("node menu: Tab opens it at the pointer, typing goes in, keys move and
   const doc::DeviceId made = u.newest();
   REQUIRE(u.device(made) != nullptr);
   CHECK(u.device(made)->patch == "saturator");
-  CHECK(u.device(made)->free);
+  CHECK(all_free::offPath(*u.ctx.doc(), made));
   const Node& n = u.pp().nodes[u.node(made)];
   CHECK(std::abs(n.x + n.w * 0.5f - at.x) <= 2.0f);
   CHECK(std::abs(n.y + n.h * 0.5f - at.y) <= 2.0f);
@@ -697,7 +708,7 @@ TEST_CASE("node menu: every gesture through real dispatch, animated, poisoned fr
     frame();
     std::vector<doc::DeviceId> sel;  // the series after the instrument (the Utility, Z's VCA, the Saturator)
     for (const doc::DevicePtr& dv : u.track(u.keys).devices)
-      if (!dv->free && dv->id != u.synth && sel.size() < 3) sel.push_back(dv->id);
+      if (!all_free::offPath(*u.ctx.doc(), dv->id) && dv->id != u.synth && sel.size() < 3) sel.push_back(dv->id);
     REQUIRE_MESSAGE(u.view().groupDevices(sel), u.ctx.status());
     settle();
     h = u.history();
@@ -989,7 +1000,7 @@ TEST_CASE("node menu: open animation then idle; spawn mark; the insert cable sho
   CHECK(r.bottom() <= 420);
   u.d.press("Escape");
 }
-TEST_CASE("node menu: a typed spec places that one node (`0.5`, `* 2`); an instrument goes into the chain") {
+TEST_CASE("node menu: a typed spec places that one node (`0.5`, `* 2`); an instrument is a block like any (TX.all-free)") {
   Ui u;
   const graph::Point2 at = u.emptyWorld();
   const size_t h0 = u.history();
@@ -1005,19 +1016,23 @@ TEST_CASE("node menu: a typed spec places that one node (`0.5`, `* 2`); an instr
   const doc::DeviceId mul = u.newest();
   REQUIRE(u.device(mul) != nullptr);
   CHECK(u.device(mul)->edited());
-  CHECK(u.device(mul)->free);
+  CHECK(all_free::offPath(*u.ctx.doc(), mul));
   CHECK(u.device(mul)->name == "* 2");
   const MainPorts mp = u.view().mainPorts(mul);
   CHECK_FALSE(mp.in.empty());
   CHECK_FALSE(mp.out.empty());
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
-  // A stock instrument: the chain's first device (it replaces the instrument, as in Live), one step.
+  // A stock instrument: TX.all-free — a block like any other, placed where the menu opened, off the path until cabled
+  // (the path keeps its instrument). One step.
   u.d.move(u.dev(at));
   REQUIRE(u.d.press("Tab") == KeyResult::Widget);
   u.pick("operator", "Operator");
   CHECK(u.history() == h0 + 2);
-  CHECK(u.track(u.keys).devices.front()->patch == "operator");
-  CHECK_FALSE(u.track(u.keys).devices.front()->free);
+  const doc::DeviceId op = u.newest();
+  REQUIRE(u.device(op) != nullptr);
+  CHECK(u.device(op)->patch == "operator");
+  CHECK(all_free::offPath(*u.ctx.doc(), op));
+  CHECK(u.path(u.keys).front() == u.synth);
   REQUIRE(u.ctx.undo());
   REQUIRE(u.ctx.undo());
   CHECK(u.history() == h0);
@@ -1044,7 +1059,7 @@ TEST_CASE("node menu: a cable from an output dropped on empty space spawns a nod
   const doc::DeviceId vca = u.newest();
   REQUIRE(u.device(vca) != nullptr);
   CHECK(u.device(vca)->patch == "meta:vca");
-  CHECK(u.device(vca)->free);
+  CHECK(all_free::offPath(*u.ctx.doc(), vca));
   const MainPorts mp = u.view().mainPorts(vca);
   REQUIRE_FALSE(mp.in.empty());
   CHECK(u.wired(u.sat, "out", vca, mp.in));
@@ -1099,13 +1114,13 @@ TEST_CASE("node menu: Z over a chain cable inserts a VCA at 1 in the chain; over
   u.d.keyUp('z');
   u.view().sync();
   CHECK(u.history() == h0 + 1);
-  const auto& list = u.track(u.keys).devices;
-  REQUIRE(list.size() == 5);
-  CHECK(list[1]->id == u.util);
-  CHECK(list[2]->patch == "meta:vca");
-  CHECK_FALSE(list[2]->free);
-  CHECK(list[2]->params.empty());  // the type's default: value 0.7 (x1)
-  CHECK(list[3]->id == u.sat);
+  const std::vector<doc::DeviceId> list = u.path(u.keys);  // TX.all-free: spliced into the main path
+  REQUIRE(list.size() == 4);
+  CHECK(list[1] == u.util);
+  REQUIRE(u.device(list[2]) != nullptr);
+  CHECK(u.device(list[2])->patch == "meta:vca");
+  CHECK(u.device(list[2])->params.empty());  // the type's default: value 0.7 (x1)
+  CHECK(list[3] == u.sat);
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
   // The LFO's wire into the Utility's gain: LFO → VCA → gain, the VCA free.
   u.d.move(u.onCable(u.wireEdge(u.lfoWire)));
@@ -1115,7 +1130,7 @@ TEST_CASE("node menu: Z over a chain cable inserts a VCA at 1 in the chain; over
   CHECK(u.history() == h0 + 2);
   const doc::DeviceId vca = u.newest();
   REQUIRE(u.device(vca) != nullptr);
-  CHECK(u.device(vca)->free);
+  CHECK(all_free::offPath(*u.ctx.doc(), vca));
   CHECK(doc::findWire(*u.ctx.doc(), u.lfoWire) == nullptr);
   const MainPorts mp = u.view().mainPorts(vca);
   CHECK(u.wired(u.lfo, "lfo", vca, mp.in));
@@ -1130,7 +1145,7 @@ TEST_CASE("node menu: Z over a chain cable inserts a VCA at 1 in the chain; over
   CHECK(u.ctx.doc() == start);
 }
 
-TEST_CASE("node menu: Tab over a cable inserts the chosen node — in and out, output only; notes are not cut") {
+TEST_CASE("node menu: Tab over a cable inserts the chosen node — in and out, output only; the note cable is a path link (TX.all-free)") {
   Ui u;
   const size_t h0 = u.history();
   // In and out: a Saturator into the LFO's wire.
@@ -1167,15 +1182,19 @@ TEST_CASE("node menu: Tab over a cable inserts the chosen node — in and out, o
   for (const doc::Wire& w : u.wires()) CHECK_FALSE((w.from == s2 && w.to == u.util));
   for (const doc::Wire& w : u.wires()) CHECK_FALSE(w.to == half);  // nothing into it
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
-  // The note wire (notes → the instrument) is the chain's own: refused, nothing changes.
+  // TX.all-free: the note cable (the source → the instrument) is a link of the main path like any: a VCA goes in at
+  // the head of the path (what the notes reach first), one step.
   uint32_t notes = kNone;
   for (uint32_t i = 0; i < u.pp().edges.size(); ++i)
     if (u.pp().edges[i].kind == EdgeKind::Notes && u.pp().nodes[u.pp().edges[i].to].device == u.synth) notes = i;
   REQUIRE(notes != kNone);
-  CHECK(u.view().openInsertMenu(notes, u.dev(u.emptyWorld())) == nullptr);
-  CHECK_FALSE(u.view().insertVca(notes));
-  CHECK(u.history() == h0 + 2);
-  for (int i = 0; i < 2; ++i) REQUIRE(u.ctx.undo());
+  CHECK(u.view().insertVca(notes));
+  u.view().sync();
+  CHECK(u.history() == h0 + 3);
+  REQUIRE(u.device(u.path(u.keys).front()) != nullptr);
+  CHECK(u.device(u.path(u.keys).front())->patch == "meta:vca");
+  CHECK(u.path(u.keys).at(1) == u.synth);
+  for (int i = 0; i < 3; ++i) REQUIRE(u.ctx.undo());
   CHECK(u.history() == h0);
 }
 

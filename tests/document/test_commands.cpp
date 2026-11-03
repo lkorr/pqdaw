@@ -805,13 +805,6 @@ std::vector<Case> cases() {
                  CHECK(cs.devices == std::vector<DeviceId>{mt.dev});
                  CHECK(findDevice(f.doc(), mt.dev).device->chainInput == "-");
                }});
-  c.push_back({"SetDeviceFree (TX.patching: out of the series)", [withChain](Fixture& f) -> Command {
-                 withChain(f);
-                 return SetDeviceFree{chain.fx, true};
-               }, S, [](Fixture& f, const ChangeSet& cs) {
-                 CHECK(std::find(cs.devices.begin(), cs.devices.end(), chain.fx) != cs.devices.end());
-                 CHECK(findDevice(f.doc(), chain.fx).device->free);
-               }});
   c.push_back({"SetParamCurve (TX.knob-curves: a knob's curve; Structural: the wire law follows it)", [withChain](Fixture& f) -> Command {
                  withChain(f);
                  return SetParamCurve{chain.fx, "gain", KnobCurve::Exponential};
@@ -820,11 +813,10 @@ std::vector<Case> cases() {
                  CHECK(findDevice(f.doc(), chain.fx).device->curve("gain") == KnobCurve::Exponential);
                }});
   static DeviceId groupId;
-  c.push_back({"SetDeviceGroup (TX.groups: a free device into a group; Meta: no sound changes)", [withChain](Fixture& f) -> Command {
+  c.push_back({"SetDeviceGroup (TX.groups: a block into a group; Meta: no sound changes)", [withChain](Fixture& f) -> Command {
                  withChain(f);
                  groupId = f.store.ids().device();
-                 REQUIRE(f.store.dispatch(Batch{"group", {AddDevice{f.lead, makeGroup(groupId), kAppend},
-                                                          SetDeviceFree{chain.fx, true}}}).ok());
+                 REQUIRE(f.store.dispatch(Batch{"group", {AddDevice{f.lead, makeGroup(groupId), kAppend}}}).ok());
                  return SetDeviceGroup{chain.fx, groupId};
                }, M, [](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.devices == std::vector<DeviceId>{chain.fx});

@@ -123,7 +123,6 @@ std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
   devices::DevicePanel& p = face->panel();
   tp->panel = &p;
   p.setActive(d.active);
-  p.setFree(d.free);
   p.setTitle(panelTitle(d, p));
   p.setPresetName(ctx_.library().presetName(d.id));
   panelSynced_[d.id.value] = loc.list()[loc.index];
@@ -199,7 +198,6 @@ void ProjectPatchView::syncPanels() {
     devices::DevicePanel& p = face.panel();
     p.setTitle(panelTitle(d, p));
     p.setActive(d.active);
-    p.setFree(d.free);
     p.setPresetName(ctx_.library().presetName(d.id));
     for (const devices::ParamInfo& pi : p.signature().params) {
       p.setParamCurve(pi.name, d.curve(pi.name));  // TX.knob-curves

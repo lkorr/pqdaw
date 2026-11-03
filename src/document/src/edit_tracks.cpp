@@ -4,6 +4,7 @@
 #include <string>
 
 #include "edit_common.h"
+#include "edit_paths.h"
 
 namespace pq::doc::ops {
 
@@ -89,14 +90,23 @@ EditResult createTrack(const Project& p, IdSource& ids, TrackKind kind, TrackId 
   if (name.empty()) name = defaultName(p, kind);
   Track t = makeTrack(ids.track(), kind, std::move(name));
   t.colour = colour;
-  // T4.1: a new MIDI track starts with the default instrument (until the M5 browser offers others).
+  // T4.1: a new MIDI track starts with the default instrument (until the M5 browser offers others). TX.all-free: wired
+  // in series (its source → the instrument → its mixer; any other track: its source → its mixer).
   if (kind == TrackKind::Midi) t.devices.push_back(makeDefaultInstrument(ids.device()));
+  const TrackId tid = t.id;
+  const DeviceId inst = t.devices.empty() ? DeviceId{} : t.devices.front()->id;
   Edit e = makeEdit(kind == TrackKind::Return  ? "Insert Return Track"
                     : kind == TrackKind::Group ? "Insert Group Track"
                     : kind == TrackKind::Audio ? "Insert Audio Track"
                                                : "Insert MIDI Track");
   e.tracks.push_back(t.id);
   batchOf(e).commands.push_back(AddTrack{std::make_shared<const Track>(std::move(t)), parent, index});
+  if (inst.valid()) {
+    batchOf(e).commands.push_back(AddWire{mainLink(ids, End{{}, tid}, End{inst, {}})});
+    batchOf(e).commands.push_back(AddWire{mainLink(ids, End{inst, {}}, End{{}, tid})});
+  } else {
+    batchOf(e).commands.push_back(AddWire{mainLink(ids, End{{}, tid}, End{{}, tid})});
+  }
   return e;
 }
 
@@ -180,6 +190,7 @@ EditResult groupTracks(const Project& p, IdSource& ids, std::span<const TrackId>
   Edit e = makeEdit("Group Tracks");
   e.tracks.push_back(gid);
   batchOf(e).commands.push_back(std::move(g));
+  batchOf(e).commands.push_back(AddWire{mainLink(ids, End{{}, gid}, End{{}, gid})});  // TX.all-free: its sum → its mixer
   return e;
 }
 

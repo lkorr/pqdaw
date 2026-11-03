@@ -1,17 +1,21 @@
 #pragma once
 
-// The Device view (T4.1, SPEC §9; QUESTIONS Q129): the detail view's Device tab shows the selected track's device
-// chain left → right — one T4.6 device panel per device (pq/views/devices/device_panel.h: Live-style frame, its panel
-// description or the generated generic one) — and an add slot at the end. Every edit is a document command
-// (pq/document/edit_ops.h), one undo step each:
+// The Device view (T4.1, SPEC §9; QUESTIONS Q129): the detail view's Device tab shows the selected track's MAIN PATH
+// (TX.all-free, pq/document/main_path.h: the blocks the main cables lead through from the source to the mixer, in
+// signal order) left → right — one T4.6 device panel per device (pq/views/devices/device_panel.h: Live-style frame, its
+// panel description or the generated generic one) — and an add slot at the end. Every edit is a document command
+// (pq/document/edit_ops.h), one undo step each; the list's gestures rewire the path (ops::insertOnPath / moveOnPath /
+// dissolveDevices: the path stays connected):
 //   add            the + slot or a right-click: a menu of the device catalog (instruments, audio effects; until M5's
-//                  browser). An instrument replaces the track's instrument (Live).
-//   reorder        drag a device's title bar left / right (a marker shows where it lands); within the chain only
-//   remove         Delete (device.delete) or the context menu
+//                  browser), spliced into the path at that place. An instrument replaces the track's instrument (Live).
+//   reorder        drag a device's title bar left / right (a marker shows where it lands): dissolved at its old place,
+//                  spliced in at the new one (no order rule on the path; a rack's chain keeps its instrument first)
+//   remove         Delete (device.delete) or the context menu: dissolved (its neighbours joined)
 //   deactivate     the panel's activator, `0` (device.toggleActive) or the context menu
 //   copy / paste   Ctrl+C / Ctrl+X / Ctrl+V / Ctrl+D (device.copy, .cut, .paste, .duplicate; an in-process clipboard)
-//   free devices   (TX.free-rack) in the free-device rack over the chain, not in the chain: drag a title bar onto the
-//                  rack to take a device out of the chain, a block of the rack onto the chain to put it in
+//   off the path   (TX.free-rack, TX.all-free) the blocks off the main path are in the free-device rack over the list:
+//                  drag a title bar onto the rack to take a block off the path, a block of the rack onto the list to
+//                  splice it in
 //
 // Each panel's DeviceTarget is the document's device instance: a param gesture (drag, type-in, reset) is one store
 // gesture = one undo step of Param changes (the playback link writes params; no compile); a structural const is a
@@ -195,7 +199,9 @@ public:
   std::function<void(float logicalPx)> onRackHeight;
   // Adds a free device of `patch` to the shown track (opens the rack; one undo step).
   bool addFreeDevice(const std::string& patch);
-  bool takeIntoRack(doc::DeviceId device);  // a chain device out of the chain (one undo step)
+  // TX.all-free: the main-path slot right after the last selected device of the list, else `otherwise`.
+  uint32_t slotAfterSelection(uint32_t otherwise) const;
+  bool takeIntoRack(doc::DeviceId device);  // TX.all-free: a listed device off the main path (one undo step)
   // A free device into the chain before the frame at `slot` (frames.size(): at the end; one undo step).
   bool putIntoChainAt(doc::DeviceId device, uint32_t slot);
   // The slot of the chain a device dropped at device point `pos` lands in (nullopt: not over the chain).

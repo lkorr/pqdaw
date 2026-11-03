@@ -4,8 +4,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <unordered_set>
 
 #include "../common/paint.h"
+#include "pq/document/main_path.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/lines.h"
 #include "pq/ui/overlay.h"
@@ -410,6 +412,7 @@ struct CableLayer::Impl {
   std::vector<Badge*> badges;                // one per drawn wire with a badge
   std::vector<doc::WireState> states;        // doc::wireStates of `statesFrom`
   doc::Snapshot statesFrom;
+  const doc::DeviceLibrary* statesLib = nullptr;  // the library they were planned with
   ui::IRect dragBounds{};                    // what the dragged cable and the target outlines painted
   uint32_t lastHoverRow = 0xFFFFFFFFu;
   // The tree and the slots the layer reads, not the Shell: a screenshot or a test may destroy the Shell object before
@@ -479,8 +482,9 @@ doc::WireId CableLayer::badgeAt(ui::Vec2 pos) const noexcept {
 
 void CableLayer::rebuildStatus() {
   const doc::Snapshot s = ctx_.doc();
-  if (s == impl_->statesFrom) return;
+  if (s == impl_->statesFrom && impl_->statesLib == ctx_.deviceLibrary()) return;
   impl_->statesFrom = s;
+  impl_->statesLib = ctx_.deviceLibrary();
   impl_->states = ctx_.deviceLibrary() != nullptr ? doc::wireStates(*s, *ctx_.deviceLibrary())
                                                   : std::vector<doc::WireState>{};
 }
@@ -511,7 +515,10 @@ bool CableLayer::refresh() {
     cables_.clear();
     return true;
   }
-  if (ctx_.doc() != impl_->statesFrom && ctx_.deviceLibrary() != nullptr) rebuildStatus();
+  // The wire states change only with the structure (onStore rebuilds them then); a param edit keeps them — no wire
+  // planning of the whole project per knob step (TX.all-free: a project has a main link per block).
+  if ((impl_->statesFrom == nullptr || impl_->statesLib != ctx_.deviceLibrary()) && ctx_.deviceLibrary() != nullptr)
+    rebuildStatus();
   const doc::Project& p = *ctx_.doc();
   DeviceChainView* chain = impl_->chain();
   ArrangementView* arr = impl_->arrangement();
@@ -573,9 +580,24 @@ bool CableLayer::refresh() {
       place(c, kLinkBadge);
       next.push_back(std::move(c));
     }
+  // TX.all-free: the shown track's main path is drawn above (chainLinks): its links are not drawn again.
+  const doc::Track* shownTrack = shown.valid() ? doc::findTrackPtr(p, shown) : nullptr;
+  const doc::MainPath path = shownTrack != nullptr ? doc::mainPath(p, *shownTrack) : doc::MainPath{};
+  // The shown track's blocks: a main link touching none of them (nor its source or mixer) is never drawn here, and is
+  // skipped before any lookup (a project has one per block).
+  std::unordered_set<uint32_t> shownBlocks;
+  if (shownTrack != nullptr)
+    for (const doc::DevicePtr& d : shownTrack->devices) shownBlocks.insert(d->id.value);
   for (const doc::Wire& w : doc::wiresOf(p)) {
+    if (path.isLink(w.id)) continue;
+    if (w.mainLink() && !(w.fromNoteSource() ? w.noteSource == shown : shownBlocks.count(w.from.value) != 0) &&
+        !(w.toMixer() ? w.mixer == shown : shownBlocks.count(w.to.value) != 0))
+      continue;
     const doc::DeviceLoc from = w.fromNoteSource() ? doc::DeviceLoc{} : doc::findDevice(p, w.from), to = doc::findDevice(p, w.to);
-    if ((!w.fromNoteSource() && from.device == nullptr) || to.device == nullptr) continue;
+    if ((!w.fromNoteSource() && from.device == nullptr) || to.device == nullptr) continue;  // (into a mixer: the circuit's)
+    // TX.all-free: a main port by name (kMainPort: its first output, its main input).
+    const std::string port = w.port.empty() && from.device != nullptr ? doc::mainPortsOf(*from.device, ctx_.deviceLibrary()).out : w.port;
+    const std::string param = w.param.empty() ? doc::mainPortsOf(*to.device, ctx_.deviceLibrary()).in : w.param;
     // TX.groups: a wire inside a group (between its members and terminals) is drawn by the group's panel.
     if (from.device != nullptr) {
       const doc::DeviceId ga = doc::isGroupDevice(*from.device) ? from.device->id : from.device->group;
@@ -592,10 +614,10 @@ bool CableLayer::refresh() {
       if (w.fromNoteSource()) {  // TMM.10-fix2: the shown track's note source is the chain's left end
         if (w.noteSource == shown) ea = chain->notesEnd();
       } else {
-        ea = chain->sourceEnd(w.from, w.port);
+        ea = chain->sourceEnd(w.from, port);
       }
-      eb = chain->targetEnd(w.to, w.param);
-      c.input = chain->isInput(w.to, w.param);
+      eb = chain->targetEnd(w.to, param);
+      c.input = chain->isInput(w.to, param);
     }
     if (!ea && !eb) continue;  // neither end in the shown chain: not drawn (the project patch view shows every wire, T4.13)
     std::optional<ui::Vec2> a = ea ? std::optional<ui::Vec2>(ea->at) : trackAnchor(w.fromNoteSource() ? w.noteSource : from.track->id);
@@ -608,7 +630,7 @@ bool CableLayer::refresh() {
     c.da = ea ? static_cast<uint8_t>(ea->dir) : 0;
     c.db = eb ? static_cast<uint8_t>(eb->dir) : 0;
     c.status = statusOf(w.id);
-    c.rate = from.device != nullptr ? exportRate(*from.device, ctx_.deviceLibrary(), w.port) : 2;
+    c.rate = from.device != nullptr ? exportRate(*from.device, ctx_.deviceLibrary(), port) : 2;
     if (c.input && c.rate == 0) c.rate = 1;  // TX.free-rack: into an input it is a signal path (heard as audio)
     c.role = w.fromNoteSource() ? 2 : (c.input ? 1 : 0);  // M10: notes amber, a signal path blue, modulation mint
     place(c, kBadge);

@@ -2,7 +2,7 @@
 
 // T3.17: the playback fixture project, built through document commands (and committed as
 // tests/app/fixtures/playback/project.pqd, regenerated with PQ_UPDATE_GOLDENS=1; T4.1: the committed file is still
-// schema 2 — the migration to device chains must give exactly this project):
+// schema 2 — the migrations to device chains and (TX.all-free) to cables must give exactly this project):
 //   tunings  12-EDO (default), 31-EDO, 5L2s (MOS, generator 705 c)
 //   Lead     MIDI in 31-EDO: degrees 0, 10, 18, 31 (one equave) as quarter notes, then a 2-note dyad;
 //            send to Echo at −6 dB (post-fader)
@@ -14,12 +14,18 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <initializer_list>
 #include <memory>
 #include <string>
+#include <span>
 #include <vector>
 
 #include "pq/core/time.h"
 #include "pq/document/commands.h"
+#include "pq/document/edit_ops.h"
+#include "pq/document/lower.h"
+#include "pq/document/main_path.h"
 #include "pq/document/store.h"
 
 namespace playback_fixture {
@@ -49,8 +55,75 @@ inline ClipPtr clip(IdSource& ids, pq::Ticks start, pq::Ticks length, std::vecto
   return std::make_shared<const NoteClip>(std::move(c));
 }
 
+// TX.all-free: wires every track of the store's project that has no main link in series — its source → its devices in
+// list order → its mixer (doc::ops::wireSeries, what the schema 16 → 17 migration does). Builders that add tracks and
+// devices with raw commands call it once they are built.
+// `offPath`: devices left out of the series (blocks placed unwired: what a "free" device was before TX.all-free).
+inline void wireSeries(DocumentStore& s, const std::vector<DeviceId>& offPath = {}) {
+  if (offPath.empty()) {
+    auto e = ops::wireSeries(*s.current(), s.ids());
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    if (e->empty()) return;
+    const pq::Status st = s.dispatch(e->command);
+    REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+    return;
+  }
+  Batch b{"Wire in Series", {}};
+  const Project& p = *s.current();
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    for (const Wire& w : wiresOf(p))
+      if ((w.fromNoteSource() && w.noteSource == t.id && w.port.empty()) || (w.toMixer() && w.mixer == t.id)) return;
+    Wire at;
+    at.noteSource = t.id;
+    for (const DevicePtr& d : t.devices) {
+      if (d->group.valid() || std::find(offPath.begin(), offPath.end(), d->id) != offPath.end()) continue;
+      Wire w = at;
+      w.id = s.ids().wire();
+      w.to = d->id;
+      b.commands.push_back(AddWire{w});
+      at = Wire{};
+      at.from = d->id;
+    }
+    Wire w = at;
+    w.id = s.ids().wire();
+    w.mixer = t.id;
+    b.commands.push_back(AddWire{w});
+  });
+  if (b.commands.empty()) return;
+  const pq::Status st = s.dispatch(b);
+  REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+}
+
+// TX.all-free: of `states` (a lowering's, in id order), the wires that are not main links (the ones a test draws: the
+// main paths' links are the series), and the project's such wires.
+inline std::vector<WireState> drawn(std::span<const WireState> states, const Project& p) {
+  std::vector<WireState> out;
+  for (const WireState& s : states)
+    if (const Wire* w = findWire(p, s.id); w != nullptr && !w->mainLink()) out.push_back(s);
+  return out;
+}
+inline WireList drawnWires(const Project& p) {
+  WireList out;
+  for (const Wire& w : wiresOf(p))
+    if (!w.mainLink()) out.push_back(w);
+  return out;
+}
+
+// TX.all-free: whether `device` is on its track's main path (what "in the chain" was).
+inline bool onPath(const Project& p, DeviceId device) {
+  const DeviceLoc l = findDevice(p, device);
+  return l.track != nullptr && l.chain == nullptr && mainPath(p, *l.track).contains(device);
+}
+
+// TX.all-free: a new project whose master is not wired yet (makeDefaultProject's `wireMaster` false): a builder that
+// reproduces an older file's ids wires every track at the end with wireSeries, in the migration's order.
+inline Snapshot unwiredDefaultProject() {
+  IdSource ids;
+  return makeDefaultProject(ids, false);
+}
+
 // T4.1: a MIDI track plays only with an instrument in its chain; a valid `instrument` id gives it the default one
-// (BasicSynth, as ops::createTrack does).
+// (BasicSynth, as ops::createTrack does; TX.all-free: wired by wireSeries).
 inline TrackPtr track(TrackId id, TrackKind kind, std::string name, DeviceId instrument = {}) {
   Track t = makeTrack(id, kind, std::move(name));
   if (instrument.valid()) t.devices.push_back(makeDefaultInstrument(instrument));
@@ -58,7 +131,7 @@ inline TrackPtr track(TrackId id, TrackKind kind, std::string name, DeviceId ins
 }
 
 struct Fixture {
-  DocumentStore store;
+  DocumentStore store{unwiredDefaultProject()};  // TX.all-free: the committed file's ids (its links come last)
   TrackId master, echo, lead, grp, mos, muted;
   TuningId t31, tMos;
   ClipId leadClip, mosClip, mutedClip;
@@ -131,6 +204,7 @@ struct Fixture {
 
     const pq::Status st = store.dispatch(b);
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+    wireSeries(store);  // TX.all-free: every track's chain as cables, as the migration gives the committed file
   }
   const Snapshot& snap() const { return store.current(); }
 };

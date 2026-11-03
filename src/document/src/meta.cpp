@@ -164,7 +164,7 @@ int32_t metaChainInput(const Device& d, const meta::Type& t) {
   return t.inputIndex(d.chainInput);
 }
 
-std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool notes, bool voices) {
+std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool notes, bool voices, const MainPath* path) {
   std::vector<ChainStage> out;
   out.reserve(list.size());
   ChainSignal s = notes ? ChainSignal::Notes : ChainSignal::Audio;
@@ -174,8 +174,8 @@ std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool not
     ChainStage st;
     st.device = &d;
     const meta::Type* t = isMetaDevice(d) ? meta::findType(metaDeviceType(d)) : nullptr;
-    if (d.free) {  // TX.patching: out of the series: nothing reaches it, the flow passes it by (s unchanged)
-      st.free = true;
+    if (path != nullptr && !path->contains(d.id)) {  // TX.all-free: off the main path: nothing reaches it from the flow
+      st.offPath = true;
       st.in = ChainSignal::None;
       st.out = ChainSignal::Audio;
       out.push_back(st);
@@ -202,6 +202,12 @@ std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool not
   return out;
 }
 
+std::vector<ChainStage> trackStages(const Project& p, const Track& t) { return trackStages(p, t, mainPath(p, t)); }
+
+std::vector<ChainStage> trackStages(const Project&, const Track& t, const MainPath& path) {
+  return chainStages(flowOrder(t, path), t.kind == TrackKind::Midi, true, &path);
+}
+
 meta::Form chainForm(const ChainStage& s) {
   if (s.device == nullptr || !isMetaDevice(*s.device)) return meta::Form::Nested;
   switch (s.in) {
@@ -217,8 +223,7 @@ ChainSignal chainSignalAt(const std::vector<DevicePtr>& list, bool notes, uint32
   const size_t at = std::min<size_t>(index, list.size());
   const std::vector<DevicePtr> before(list.begin(), list.begin() + static_cast<std::ptrdiff_t>(at));
   ChainSignal s = notes ? ChainSignal::Notes : ChainSignal::Audio;
-  for (const ChainStage& st : chainStages(before, notes))
-    if (!st.free) s = st.out;  // TX.patching: a free device is not in the flow
+  for (const ChainStage& st : chainStages(before, notes)) s = st.out;
   return s;
 }
 

@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "all_free_helpers.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
 #include "pq/ui/controls.h"
@@ -134,7 +135,7 @@ TEST_CASE("wiring: a drag from a jack onto a knob is one undo step and draws a c
   const Vec2 from = u.jack(u.lfoB), to = u.knob(u.util, "width");
   u.d.drag(from, to, 10);
   CHECK(u.history() == h0 + 1);
-  const doc::WireList& wires = doc::wiresOf(*u.ctx.doc());
+  const doc::WireList wires = all_free::drawnWires(*u.ctx.doc());
   REQUIRE(wires.size() == 1);
   CHECK(wires[0].from == u.lfoB);
   CHECK(wires[0].port == "lfo");
@@ -163,7 +164,7 @@ TEST_CASE("wiring: a drag from a jack onto a knob is one undo step and draws a c
   u.d.up(to);
   CHECK(u.history() == h0 + 1);
   REQUIRE(u.ctx.undo());
-  CHECK(doc::wiresOf(*u.ctx.doc()).empty());
+  CHECK(all_free::drawnWires(*u.ctx.doc()).empty());
 }
 
 TEST_CASE("wiring: a cable to another track: hovering its row shows its chain, the drop wires across tracks") {
@@ -188,7 +189,7 @@ TEST_CASE("wiring: a cable to another track: hovering its row shows its chain, t
   u.d.move(to);
   u.d.up(to);
   CHECK(u.history() == h0 + 1);
-  const doc::WireList& wires = doc::wiresOf(*u.ctx.doc());
+  const doc::WireList wires = all_free::drawnWires(*u.ctx.doc());
   REQUIRE(wires.size() == 1);
   CHECK(wires[0].from == u.lfoB);
   CHECK(wires[0].to == u.lfoA);
@@ -208,7 +209,7 @@ TEST_CASE("wiring: cables follow scrolling in the same frame and damage only the
   REQUIRE(u.ctx.store().dispatch(doc::ops::connectTravelWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoA, "lfo", u.inst, "bright")->command).ok());
   u.d.step();
   u.d.step();
-  const doc::WireId local = doc::wiresOf(*u.ctx.doc())[0].id;
+  const doc::WireId local = all_free::drawnWires(*u.ctx.doc())[0].id;
   // Scroll the chain sideways (two wide devices more: the chain is wider than the view).
   for (const char* dev : {"eq_eight", "saturator"})
     REQUIRE(u.ctx.store().dispatch(doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, dev,
@@ -255,7 +256,7 @@ TEST_CASE("wiring: the badge sets the amount (one undo step, Param only), Delete
   REQUIRE(u.ctx.store().dispatch(doc::ops::connectTravelWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoB, "lfo", u.util, "width")->command).ok());
   REQUIRE(u.ctx.store().dispatch(doc::ops::connectTravelWire(*u.ctx.doc(), u.ctx.store().ids(), u.lfoB, "lfo", u.lfoB, "rate", 0.2)->command).ok());
   u.d.step();
-  const doc::WireId w = doc::wiresOf(*u.ctx.doc())[0].id, loop = doc::wiresOf(*u.ctx.doc())[1].id;
+  const doc::WireId w = all_free::drawnWires(*u.ctx.doc())[0].id, loop = all_free::drawnWires(*u.ctx.doc())[1].id;
   REQUIRE(u.cable(w) != nullptr);
   REQUIRE(u.cable(loop) != nullptr);
   CHECK(u.cable(w)->status == doc::WireStatus::Lowered);
@@ -394,8 +395,8 @@ TEST_CASE("wiring cursors (T4.16c): jacks Crosshair; a dragged cable Crosshair o
   u.d.move(to);
   CHECK(u.d.tree().cursor() == Cursor::Crosshair);
   u.d.up(to);
-  REQUIRE(doc::wiresOf(*u.ctx.doc()).size() == 1);  // the drop wired it, as the cursor said
-  const doc::WireId w = doc::wiresOf(*u.ctx.doc())[0].id;
+  REQUIRE(all_free::drawnWires(*u.ctx.doc()).size() == 1);  // the drop wired it, as the cursor said
+  const doc::WireId w = all_free::drawnWires(*u.ctx.doc())[0].id;
   u.d.step();
   // The badge: hovering it lights its cable (only that cable repaints). TX.patching: the wire this drop made adds in
   // the knob's units and has no amount to drag (a Pointer, not ResizeNS; a migrated Travel wire's badge still drags).

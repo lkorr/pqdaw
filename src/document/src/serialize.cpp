@@ -576,8 +576,13 @@ private:
       }
       w_.key("port");
       w_.string(PathSeg(&el, "port"), wr.port);
-      w_.key("to");
-      w_.integer(wr.to.value);
+      if (wr.toMixer()) {  // TX.all-free (schema 17): into a track's mixer ("param" is "")
+        w_.key("mixer");
+        w_.integer(wr.mixer.value);
+      } else {
+        w_.key("to");
+        w_.integer(wr.to.value);
+      }
       w_.key("param");
       w_.string(PathSeg(&el, "param"), wr.param);
       if (wr.travels()) {  // TX.patching (schema 13): only the legacy law has a depth, and says so
@@ -750,10 +755,6 @@ private:
     if (!d.active) {
       w_.key("active");
       w_.boolean(false);
-    }
-    if (d.free) {  // TX.patching (schema 13): out of the series
-      w_.key("free");
-      w_.boolean(true);
     }
     if (d.group.valid()) {  // TX.groups (schema 14): a member of the group device with this id
       w_.key("group");
@@ -1973,7 +1974,7 @@ private:
   // so racks nest as deep as memory allows. Each level's own members are read by deviceKey / rackKey / chainKey.
   static constexpr std::string_view kDeviceKeys[] = {"id",       "patch",  "kind", "active", "params",
                                                      "settings", "source", "crlf", "rack", "name", "meta",
-                                                     "chainInput", "free", "group", "curves"};
+                                                     "chainInput", "group", "curves"};
   static constexpr std::string_view kRackKeys[] = {"chains",     "mappings",         "macroNames", "visibleMacros",
                                                    "variations", "randomizeExclude", "keyUnit",    "voiceChains",
                                                    "showChains", "showMacros"};
@@ -2154,9 +2155,9 @@ private:
         d.chainInput = str(f);
         if (d.chainInput.empty()) r_.failValue(f, "must not be empty (omit it for the type's own chain input)");
         break;
-      case 12: d.free = r_.readBool(f); break;  // TX.patching (schema 13)
-      case 13: d.group = DeviceId{ref(f)}; break;  // TX.groups (schema 14); checkList: a group of the same list
-      case 14: d.curves = paramCurves(f); break;  // TX.knob-curves (schema 16)
+      // (TX.patching's "free", schema 13 … 16, is gone: TX.all-free's migration 16 → 17 wires the chain instead.)
+      case 12: d.group = DeviceId{ref(f)}; break;  // TX.groups (schema 14); checkList: a group of the same list
+      case 13: d.curves = paramCurves(f); break;  // TX.knob-curves (schema 16)
     }
   }
 
@@ -2464,8 +2465,9 @@ private:
       // TX.patching (schema 13): "law": "travel" (with its "amount") for a wire migrated from schema ≤ 12; none: the wire
       // adds in its target's units and has no amount.
       // TX.groups-fix1 (schema 15): "chain": true for a grouped series' chain link.
-      static constexpr std::string_view K[] = {"id",     "from",  "port",  "to",  "param",
-                                               "amount", "reducer", "notes", "law", "chain"};
+      // TX.all-free (schema 17): "mixer" (a track's mixer input) instead of "to"; "port" / "param" "" are main ports.
+      static constexpr std::string_view K[] = {"id",     "from",    "port",  "to",  "param",
+                                               "amount", "reducer", "notes", "law", "chain", "mixer"};
       Wire w;
       Members m(r_, el, K);
       for (int k; (k = m.next()) >= 0;) {
@@ -2481,10 +2483,13 @@ private:
           case 7: w.noteSource = TrackId{ref(f)}; break;
           case 8: w.law = static_cast<WireLaw>(name(f, kWireLawNames, "wire law")); break;
           case 9: w.chain = r_.readBool(f); break;
+          case 10: w.mixer = TrackId{ref(f)}; break;
         }
       }
       if (m.has(1) && m.has(7)) json::fail(el, "a wire has either \"from\" (a device) or \"notes\" (a note source)");
-      m.require({0, 2, 3, 4});
+      if (m.has(3) && m.has(10)) json::fail(el, "a wire has either \"to\" (a device) or \"mixer\" (a track's mixer)");
+      m.require({0, 2, 4});
+      if (!m.has(10)) m.require({3});
       if (w.travels()) m.require({5});
       else if (m.has(5)) json::fail(el, "a wire that adds in its target's units has no \"amount\"");
       if (!m.has(7)) m.require({1});
@@ -2999,11 +3004,17 @@ private:
       if (wl[i].fromNoteSource()) {  // TMM.10-fix2
         const Track* t = findTrackPtr(p, wl[i].noteSource);
         if (t == nullptr) json::fail(PathSeg(&el, "notes"), "no track with this id");
-        if (t->kind != TrackKind::Midi) json::fail(PathSeg(&el, "notes"), "only a MIDI track has a note source");
+        // TX.all-free: port "" is any track's own signal; the note outputs are a MIDI track's.
+        if (!wl[i].port.empty() && t->kind != TrackKind::Midi)
+          json::fail(PathSeg(&el, "notes"), "only a MIDI track has a note source");
       } else if (!findDevice(p, wl[i].from).track) {
         json::fail(PathSeg(&el, "from"), "no device with this id");
       }
-      if (!findDevice(p, wl[i].to).track) json::fail(PathSeg(&el, "to"), "no device with this id");
+      if (wl[i].toMixer()) {  // TX.all-free
+        if (findTrackPtr(p, wl[i].mixer) == nullptr) json::fail(PathSeg(&el, "mixer"), "no track with this id");
+      } else if (!findDevice(p, wl[i].to).track) {
+        json::fail(PathSeg(&el, "to"), "no device with this id");
+      }
       if (std::string e = detail::chainLinkProblem(p, wl[i]); !e.empty()) json::fail(PathSeg(&el, "chain"), e);  // L7
       for (size_t j = 0; j < i; ++j)
         if (wl[j].sameEnds(wl[i]))
@@ -3577,11 +3588,21 @@ Status migrateAddNoteWires(nlohmann::json& doc) {
 // law (Q135), so each gets "law": "travel" and keeps its "amount" — an old project sounds exactly as it did. Devices may
 // carry "free" (out of the series; none in schema 12). Self-contained (renumber, do not merge, if another schema step
 // lands first).
+// (TX.all-free: a main-port wire — "mixer", or "port" / "param" "" — exists only from schema 17 on; one in a relabelled
+// file is left as it is.)
+bool mainPortWire(const nlohmann::json& w) {
+  const auto empty = [&](const char* k) {
+    const auto it = w.find(k);
+    return it != w.end() && it->is_string() && it->get<std::string>().empty();
+  };
+  return w.contains("mixer") || empty("port") || empty("param");
+}
+
 Status migrateWireLaws(nlohmann::json& doc) {
   if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
   if (auto it = doc.find("wires"); it != doc.end() && it->is_array())
     for (nlohmann::json& w : *it)
-      if (w.is_object()) w["law"] = "travel";
+      if (w.is_object() && !mainPortWire(w)) w["law"] = "travel";
   return Ok{};
 }
 
@@ -3612,12 +3633,116 @@ Status migrateUnitsWires(nlohmann::json& doc) {
   if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
   if (auto it = doc.find("wires"); it != doc.end() && it->is_array())
     for (nlohmann::json& w : *it) {
-      if (!w.is_object() || w.contains("law")) continue;
+      if (!w.is_object() || w.contains("law") || mainPortWire(w)) continue;
       if (auto c = w.find("chain"); c != w.end() && c->is_boolean() && c->get<bool>()) continue;
       w["law"] = "units";
     }
   return Ok{};
 }
+
+// 16 → 17 (TX.all-free, SPEC §15 2026-11-03 "everything is free; the chain is just cables"; main_path.h): a track's
+// devices are blocks and its series is wires. Each track's chain — its own devices without "free", in list order — becomes
+// main links: the track's source → the first ("notes": <track>, "port": ""), each → the next, the last → the track's
+// mixer ("mixer": <track>; an empty chain: the source straight into the mixer), "port" / "param" "" (the main ports).
+// "free" goes (a free device is simply off the path; group members were free). Rack chains stay lists. The lowering
+// compiles the path as the chain was compiled (the same IR: every project renders bit for bit as before,
+// tests/app/test_all_free.cpp). New wire ids continue above the largest "id" in the file, in track order (tracks
+// depth-first, returns, master), appended to "wires" (sorted by id). Self-contained (renumber, do not merge, if another
+// schema step lands first).
+class ChainWirer {
+public:
+  Status run(nlohmann::json& doc) {
+    if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+    maxId(doc);
+    // A track that has a main link already (a file relabelled by hand: schema 16 had none) keeps its wiring.
+    if (auto w = doc.find("wires"); w != doc.end() && w->is_array())
+      for (const nlohmann::json& x : *w) {
+        if (!x.is_object()) continue;
+        const auto port = x.find("port");
+        if (const auto n = x.find("notes"); n != x.end() && port != x.end() && port->is_string() && port->get<std::string>().empty())
+          wired_.push_back(*n);
+        if (const auto m = x.find("mixer"); m != x.end()) wired_.push_back(*m);
+      }
+    for (const char* list : {"tracks", "returns"})
+      if (auto it = doc.find(list); it != doc.end() && it->is_array())
+        for (nlohmann::json& t : *it) track(t);
+    if (auto it = doc.find("master"); it != doc.end()) track(*it);
+    if (next_ > 0xFFFFFFFEull) return Error{ErrorCode::InvalidArgument, "no id left for the chain's wires", {}};
+    stripFree(doc);  // any device left (a rack chain's, a library file's: presets, user devices)
+    if (!links_.empty()) {
+      nlohmann::json& wires = doc["wires"];
+      if (!wires.is_array()) wires = nlohmann::json::array();
+      for (nlohmann::json& l : links_) wires.push_back(std::move(l));
+    }
+    return Ok{};
+  }
+
+private:
+  void maxId(const nlohmann::json& node) {
+    if (node.is_object()) {
+      for (auto it = node.begin(); it != node.end(); ++it) {
+        if (it.key() == "id" && it->is_number_unsigned()) {
+          next_ = std::max<uint64_t>(next_, it->get<uint64_t>() + 1);
+        } else if (it.key() == "id" && it->is_number_integer()) {
+          const int64_t v = it->get<int64_t>();
+          if (v >= 0) next_ = std::max<uint64_t>(next_, static_cast<uint64_t>(v) + 1);
+        }
+        maxId(*it);
+      }
+    } else if (node.is_array()) {
+      for (const nlohmann::json& e : node) maxId(e);
+    }
+  }
+  static void stripFree(nlohmann::json& node) {
+    if (node.is_object()) {
+      if (node.contains("patch")) node.erase("free");
+      for (auto it = node.begin(); it != node.end(); ++it) stripFree(*it);
+    } else if (node.is_array()) {
+      for (nlohmann::json& e : node) stripFree(e);
+    }
+  }
+  void link(const nlohmann::json& from, bool source, const nlohmann::json& to, bool mixer) {
+    nlohmann::json w = nlohmann::json::object();
+    w["id"] = next_++;
+    w[source ? "notes" : "from"] = from;
+    w["port"] = "";
+    w[mixer ? "mixer" : "to"] = to;
+    w["param"] = "";
+    links_.push_back(std::move(w));
+  }
+  void track(nlohmann::json& t) {
+    if (!t.is_object()) return;
+    const auto id = t.find("id");
+    if (id != t.end() && id->is_number_integer() && std::find(wired_.begin(), wired_.end(), *id) == wired_.end()) {
+      std::vector<nlohmann::json> chain;
+      if (auto d = t.find("devices"); d != t.end() && d->is_array())
+        for (nlohmann::json& dev : *d) {
+          if (!dev.is_object()) continue;
+          bool isFree = false;
+          if (auto f = dev.find("free"); f != dev.end()) {
+            isFree = f->is_boolean() && f->get<bool>();
+            dev.erase(f);
+          }
+          if (!isFree)
+            if (auto di = dev.find("id"); di != dev.end()) chain.push_back(*di);
+        }
+      if (chain.empty()) {
+        link(*id, true, *id, true);
+      } else {
+        link(*id, true, chain.front(), false);
+        for (size_t i = 0; i + 1 < chain.size(); ++i) link(chain[i], false, chain[i + 1], false);
+        link(chain.back(), false, *id, true);
+      }
+    }
+    if (auto c = t.find("children"); c != t.end() && c->is_array())
+      for (nlohmann::json& child : *c) track(child);
+  }
+  uint64_t next_ = 1;
+  std::vector<nlohmann::json> links_;
+  std::vector<nlohmann::json> wired_;  // ids of tracks with a main link already
+};
+
+Status migrateChainToCables(nlohmann::json& doc) { return ChainWirer().run(doc); }
 
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
@@ -3635,6 +3760,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {13, migrateAddGroups},
     {14, migrateAddChainLinks},
     {15, migrateUnitsWires},
+    {16, migrateChainToCables},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

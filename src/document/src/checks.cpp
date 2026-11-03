@@ -311,7 +311,7 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
     work.pop_back();
     const ListKind k = w.kind;
     const std::vector<DevicePtr>& list = *w.list;
-    size_t series = 0;  // TX.patching: devices of the series before this one (free devices are not in it)
+    size_t series = 0;  // a rack chain's devices before this one (TX.all-free: a track's blocks have no order)
     for (size_t i = 0; i < list.size(); ++i) {
       const Status st = [&]() -> Status {
         const DevicePtr& d = list[i];
@@ -320,21 +320,12 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
         if (d->patch.empty()) return invalid("device has no patch");
         for (size_t j = 0; j < i; ++j)
           if (list[j]->id == d->id) return invalid("device id twice in a chain");
-        if (d->free) {  // TX.patching (model.h Device::free)
-          if (k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain)
-            return invalid("a free device sits in a track's circuit, not in a rack chain");
-          if (d->rack) return invalid("a rack cannot be free (it is a chain of its own)");
-          if (d->kind == DeviceKind::Instrument && !isMetaDevice(*d)) return invalid("a stock instrument cannot be free");
-          if (d->kind == DeviceKind::Instrument) return invalid("a free meta device is not where instruments go");
-        }
         if (d->kind == DeviceKind::Instrument) {
-          if (k == ListKind::OtherTrack) return invalid("instruments go on MIDI tracks");
+          if (k == ListKind::OtherTrack) return invalid("instruments go on MIDI tracks (the notes are their main input)");
           if (k == ListKind::AudioRackChain) return invalid("an Audio Effect Rack's chains hold audio effects only");
-          if (series != 0)
-            return invalid(k == ListKind::MidiTrack ? "the instrument must be the first device of a MIDI track"
-                                                    : "the instrument must be the first device of its chain");
+          if (k == ListKind::InstrumentRackChain && series != 0) return invalid("the instrument must be the first device of its chain");
         }
-        if (!d->free) ++series;
+        ++series;
         const bool rackChain = k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain;
         if (isGroupDevice(*d)) {  // TX.groups (model.h "Groups")
           if (rackChain) return invalid("a group sits in a track's circuit, not in a rack chain");
@@ -345,7 +336,6 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
         }
         if (d->group.valid()) {
           if (rackChain) return invalid("a group member sits in a track's circuit, not in a rack chain");
-          if (!d->free) return invalid("a group member is free (a group has no chain order)");
           const auto g = std::find_if(list.begin(), list.end(), [&](const DevicePtr& x) { return x && x->id == d->group; });
           if (g == list.end()) return invalid("a group member's group is not in its track");
           if (!isGroupDevice(**g)) return invalid("a group member's group is not a group");
@@ -496,15 +486,23 @@ Status checkRackOwn(const Device& d) {
 
 Status checkWire(const Wire& w) {
   if (!w.id.valid()) return invalid("wire has no id");
-  if (!w.to.valid()) return invalid("wire end has no device");
   if (w.fromNoteSource()) {  // TMM.10-fix2: a track's note source (no device), one of its note outputs
     if (w.from.valid()) return invalid("a wire from a note source has no source device");
-    if (findNoteOutput(w.port) == nullptr) return invalid("the note source has no output '" + w.port + "'");
+    // TX.all-free: kMainPort is the track's own signal (any track kind; main_path.h).
+    if (!w.port.empty() && findNoteOutput(w.port) == nullptr) return invalid("the note source has no output '" + w.port + "'");
   } else if (!w.from.valid()) {
     return invalid("wire end has no device");
   }
-  PQ_DOC_TRY(checkDeviceValue(w.port, std::nullopt));
-  PQ_DOC_TRY(checkDeviceValue(w.param, std::nullopt));
+  if (w.toMixer()) {  // TX.all-free: into a track's mixer input (model.h "Modulation wires")
+    if (w.to.valid()) return invalid("a wire into a mixer has no target device");
+    if (!w.param.empty()) return invalid("a wire into a mixer enters its one input (no param)");
+    if (w.travels()) return invalid("a wire into a mixer adds (no travel law)");
+  } else if (!w.to.valid()) {
+    return invalid("wire end has no device");
+  }
+  if (!w.port.empty()) PQ_DOC_TRY(checkDeviceValue(w.port, std::nullopt));  // TX.all-free: "" = the main port
+  if (!w.param.empty()) PQ_DOC_TRY(checkDeviceValue(w.param, std::nullopt));
+  if ((w.port.empty() || w.param.empty()) && w.travels()) return invalid("a wire on a main port adds (no travel law)");
   if (static_cast<uint8_t>(w.law) > static_cast<uint8_t>(WireLaw::Units)) return invalid("unknown wire law");
   if (w.travels()) {
     if (!finiteIn(w.amount, -1.0, 1.0)) return invalid("wire amount must be in [-1, 1]");
@@ -517,7 +515,7 @@ Status checkWire(const Wire& w) {
 
 std::string chainLinkProblem(const Project& p, const Wire& w) {
   if (!w.chain) return {};
-  if (w.fromNoteSource()) return "a chain link starts at a device (a grouped series' link)";
+  if (w.fromNoteSource() || w.toMixer()) return "a chain link joins devices (a grouped series' link)";
   const DeviceLoc a = findDevice(p, w.from), b = findDevice(p, w.to);
   if (a.device == nullptr || b.device == nullptr) return {};  // (a missing end is refused on its own)
   if (a.track != b.track) return "a chain link joins devices of one track (a grouped series)";
@@ -528,10 +526,6 @@ std::string chainLinkProblem(const Project& p, const Wire& w) {
   const bool fromIn = isGroupDevice(*a.device), toOut = isGroupDevice(*b.device);
   if (fromIn && w.port != kGroupInPort) return "a chain link leaves a group by its In terminal";
   if (toOut && w.param != kGroupOutPort) return "a chain link enters a group by its Out terminal";
-  if (fromIn || toOut) {
-    const Device* group = fromIn ? a.device : b.device;
-    if (group->free) return "a free group has no chain links (it is not in the series: wire its terminals as any wire)";
-  }
   return {};
 }
 

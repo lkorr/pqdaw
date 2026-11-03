@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "pq/core/result.h"
+#include "pq/document/main_path.h"
 #include "pq/graph/patch.h"
 
 namespace pq::doc {
@@ -142,12 +143,9 @@ struct SpecDevice {
 };
 Result<SpecDevice> specDevice(std::string_view spec);
 
-// The main ports of a device patch (graph signature `sig` of the patch a device plays, `params` its param names):
-// main input = its first input that is not a setting (const), not a param (nor a param's `_add`) and, in `callee` when
-// given, drives something; main output = its first output. "" = none.
-struct MainPorts {
-  std::string in, out;
-};
-MainPorts mainPortsOf(const graph::SubcircuitRef& sig, const graph::Patch* callee, bool instrument);
+// The main ports of a device patch: one rule, the document's (TX.all-free: pq/document/main_path.h, which the main path,
+// the lowering's names and the edit builders read too).
+using doc::MainPorts;
+using doc::mainPortsOf;
 
 }  // namespace pq::views::circuit

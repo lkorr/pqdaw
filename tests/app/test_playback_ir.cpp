@@ -80,6 +80,7 @@ struct Chord {
     for (int32_t d : {0, 4, 7}) notes.push_back(playback_fixture::note(ids, 0, 16 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 16 * kPpq, notes, "chord")});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
 };
 
@@ -113,6 +114,7 @@ TEST_CASE("adding a return while a chord is held compiles only the return and th
     if (program.layout().units[u].voices) keysSwapsBefore = program.unitStats(u).swaps;
   const app::LinkStats s0 = la->stats();
   REQUIRE(a.store.dispatch(AddTrack{playback_fixture::track(a.store.ids().track(), TrackKind::Return, "Verb"), {}, kAppend}).ok());
+  playback_fixture::wireSeries(a.store);  // TX.all-free: wired in series
   la->flush();
   CHECK(la->stats().compiles == s0.compiles + 1);
   CHECK(la->stats().unitCompiles == s0.unitCompiles + 2);  // Verb and the master; Keys and Echo run on untouched

@@ -181,7 +181,7 @@ int32_t crossingDegree() {
 }
 
 struct GlideFixture {
-  DocumentStore store;
+  DocumentStore store{playback_fixture::unwiredDefaultProject()};  // TX.all-free: the committed file's ids
   TrackId master, glide;
   TuningId t;
   ClipId clipId;
@@ -213,6 +213,7 @@ struct GlideFixture {
     b.commands.push_back(AddDevice{glide, makeDefaultInstrument(ids.device()), 0});
     const Status st = store.dispatch(b);
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   const Snapshot& snap() const { return store.current(); }
 };
@@ -545,6 +546,7 @@ struct OperatorTrack {
     b.commands.push_back(AddDevice{track, makeDevice(op, "operator", DeviceKind::Instrument), 0});
     const Status st = store.dispatch(b);
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
 };
 

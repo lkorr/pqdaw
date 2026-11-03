@@ -1,4 +1,4 @@
-patch Midi3 {
+patch Midi4 {
   param volume = 0 [-70..6]
   param pan = 0 [-1..1]
   param gate = 1 [0..1]
@@ -7,8 +7,8 @@ patch Midi3 {
   out done : bool voice mono
   out out : real audio global stereo
 
-  d4 = BasicSynth__u4_0db0c13ccdfb86ab__m4_11209678932d5b9c()
-  _n1 = voice_sum(d4)
+  d5 = BasicSynth__u5_0db0c13ccdfb86ab__m5_cf61ace271698ecd()
+  _n1 = voice_sum(d5)
   _n5 = 0
   _n7 = 0.002
   _n11 = volume <= -70 ? _n5 : db_to_gain(volume)
@@ -19,7 +19,7 @@ patch Midi3 {
   _n25 = _n23 ? sendGate : _n5
   _n26 = _n11 * (_n23 ? gate : _n5)
   _n32 = _n11 * _n25
-  done = d4.done
+  done = d5.done
   out = gain(_n1, (_n17 * _n26, _n18 * _n26), _n7)
 
   export post = gain(_n1, (_n17 * _n32, _n18 * _n32), _n7)
@@ -27,7 +27,7 @@ patch Midi3 {
 
 }
 
-patch BasicSynth__u4_0db0c13ccdfb86ab__m4_11209678932d5b9c {
+patch BasicSynth__u5_0db0c13ccdfb86ab__m5_cf61ace271698ecd {
   param attack = 5ms [0.5ms..5s]
   param decay = 400ms [1ms..10s]
   param sustain = 0.5 [0..1]
@@ -43,7 +43,7 @@ patch BasicSynth__u4_0db0c13ccdfb86ab__m4_11209678932d5b9c {
   time = attacking ? attack : gate ? decay : release
   coef = 1 - exp(-5 / max(time * sr, 1))
   env = z1(env + (target - env) * coef)
-  acc1 = meta_phase_acc__d4_acc1_3740f1cedba25005(voice.hz)
+  acc1 = meta_phase_acc__d5_acc1_3740f1cedba25005(voice.hz)
   osc = sine(acc1) * (1 - bright * 0.4) + sine(frac(acc1 * 2)) * (bright * 0.3) + sine(frac(acc1 * 3)) * (bright * 0.1)
   vel = 0.25 + 0.75 * voice.velocity
   out = osc * env * vel * level
@@ -51,7 +51,7 @@ patch BasicSynth__u4_0db0c13ccdfb86ab__m4_11209678932d5b9c {
 
 }
 
-patch meta_phase_acc__d4_acc1_3740f1cedba25005 {
+patch meta_phase_acc__d5_acc1_3740f1cedba25005 {
   param freq = 0Hz [0Hz..20000Hz] @label("Frequency") @signed @curve(exp0, 14)
   param phase = 0 [0..1] @label("Phase") @wrap
   param amp = 1 [0..4] @label("Amplitude")

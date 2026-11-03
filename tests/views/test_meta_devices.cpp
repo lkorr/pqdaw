@@ -289,7 +289,7 @@ TEST_CASE("meta devices (views): the device menu's Meta Modules — the kind fol
   CHECK(t.devices[1]->patch == "meta:wavetable");
   CHECK(t.devices[1]->kind == doc::DeviceKind::AudioEffect);
   {  // TMM.10-fix1: the Phase accumulator's voice signal reaches both Wavetables (doc::chainStages)
-    const std::vector<doc::ChainStage> st = doc::chainStages(t.devices, true);
+    const std::vector<doc::ChainStage> st = doc::trackStages(*u.ctx.doc(), t);
     REQUIRE(st.size() >= 3);
     CHECK(st[1].in == doc::ChainSignal::Voices);
     CHECK(st[2].in == doc::ChainSignal::Voices);
@@ -307,6 +307,16 @@ TEST_CASE("meta devices (views): the device menu's Meta Modules — the kind fol
   CHECK(std::find(types.begin(), types.end(), &meta::phaseAccType()) != types.end());
 }
 
+namespace {
+// What reaches block `d`'s main input along track `t`'s main path (meta.h trackStages).
+template <class U>
+doc::ChainSignal stageIn(const U& u, doc::TrackId t, doc::DeviceId d) {
+  for (const doc::ChainStage& st : doc::trackStages(*u.ctx.doc(), *doc::findTrackPtr(*u.ctx.doc(), t)))
+    if (st.device->id == d) return st.in;
+  return doc::ChainSignal::None;
+}
+}  // namespace
+
 TEST_CASE("meta devices (views): a preset loads with its slot's kind (state kept); hot-swap keeps the wires") {
   Ui u;
   // A preset of the Lead's Wavetable (an audio-effect kind: it continues the voices).
@@ -316,11 +326,12 @@ TEST_CASE("meta devices (views): a preset loads with its slot's kind (state kept
   const std::string dir = pq::views::test::tempDir("tmm10_presets");
   const std::string path = dir + "/Lead Table.pqpreset";
   std::ofstream(std::filesystem::path(dir) / "Lead Table.pqpreset", std::ios::binary) << *text;
-  // Loaded first on Meta Bass: it becomes the instrument there, with the same state.
+  // Loaded first on Meta Bass: it becomes the instrument there (TX.all-free: first on the path, the notes reach it — a
+  // block's kind means nothing on a track), with the same state.
   auto id = loadDeviceItem(u.ctx, path, DeviceSlot{u.ids.bass, 0, {}});
   REQUIRE_MESSAGE(id.ok(), (id.ok() ? "" : id.error().message));
   const doc::Device& loaded = u.dev(*id);
-  CHECK(loaded.kind == doc::DeviceKind::Instrument);
+  CHECK(stageIn(u, u.ids.bass, *id) == doc::ChainSignal::Notes);
   CHECK(loaded.params == src.params);
   REQUIRE(loaded.meta);
   CHECK(*loaded.meta == *src.meta);
@@ -337,7 +348,7 @@ TEST_CASE("meta devices (views): a preset loads with its slot's kind (state kept
   REQUIRE(hotSwapDevice(u.ctx, u.ids.acc, catalogItemPath("meta:phase_acc")).ok());
   const doc::Device& swapped = u.dev(u.ids.acc);
   CHECK(swapped.patch == "meta:phase_acc");
-  CHECK(swapped.kind == doc::DeviceKind::Instrument);
+  CHECK(stageIn(u, u.ids.lead, u.ids.acc) == doc::ChainSignal::Notes);  // still where the notes arrive
   bool kept = false;
   for (const doc::Wire& x : doc::wiresOf(*u.ctx.doc())) kept = kept || (x.to == u.ids.acc && x.param == "freq");
   CHECK(kept);

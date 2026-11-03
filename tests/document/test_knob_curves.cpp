@@ -244,6 +244,7 @@ TEST_CASE("knob curves: 15 -> 16 keeps TX.patching's added wires as Units (same 
   CHECK(old->fileSchemaVersion == 15);
   int units = 0, links = 0;
   for (const Wire& w : wiresOf(*old->project)) {
+    if (w.mainLink()) continue;  // TX.all-free: the main path's links (this text is schema 17 relabelled 15)
     if (w.chain) {
       CHECK(w.law == WireLaw::Add);
       ++links;
@@ -267,8 +268,7 @@ TEST_CASE("knob curves: 15 -> 16 keeps TX.patching's added wires as Units (same 
   Doc a, b;
   const DeviceId ua = a.add("utility"), ub = b.add("utility");
   a.run(ops::connectWire(a.doc(), a.store.ids(), a.lfo, "lfo", ua, "balance"));
-  b.run(ops::connectWire(b.doc(), b.store.ids(), b.lfo, "lfo", ub, "balance"));
-  Wire w = wiresOf(b.doc()).front();
+  Wire w = *findWire(b.doc(), b.run(ops::connectWire(b.doc(), b.store.ids(), b.lfo, "lfo", ub, "balance")));
   REQUIRE(b.store.dispatch(RemoveWire{w.id}).ok());
   w.law = WireLaw::Units;
   REQUIRE(b.store.dispatch(AddWire{w}).ok());
@@ -278,8 +278,7 @@ TEST_CASE("knob curves: 15 -> 16 keeps TX.patching's added wires as Units (same 
   // Into a curved one they differ (the Units wire keeps TX.patching's Hz law, the Add wire adds in travel).
   Doc c, e;
   c.run(ops::connectWire(c.doc(), c.store.ids(), c.lfo, "lfo", c.eq, "freq1"));
-  e.run(ops::connectWire(e.doc(), e.store.ids(), e.lfo, "lfo", e.eq, "freq1"));
-  Wire x = wiresOf(e.doc()).front();
+  Wire x = *findWire(e.doc(), e.run(ops::connectWire(e.doc(), e.store.ids(), e.lfo, "lfo", e.eq, "freq1")));
   REQUIRE(e.store.dispatch(RemoveWire{x.id}).ok());
   x.law = WireLaw::Units;
   REQUIRE(e.store.dispatch(AddWire{x}).ok());
@@ -291,8 +290,7 @@ TEST_CASE("knob curves: 15 -> 16 keeps TX.patching's added wires as Units (same 
 }
 
 // TMM.13-fix1 L7: group invariants the reader and the store did not enforce (the review's fuzz cases 328, 357, 366,
-// 385, 442 – 444): knob curves on a group, chain links between devices of no one group or across tracks, and a free
-// group with In / Out chain links (it sounded different from the series it stood for).
+// 385, 442 – 444): knob curves on a group, chain links between devices of no one group or across tracks.
 TEST_CASE("groups: a group has no knob curves; chain links join one in-series group's terminals and members") {
   Doc d;
   const DeviceId util = d.add("utility");
@@ -331,15 +329,7 @@ TEST_CASE("groups: a group has no knob curves; chain links join one in-series gr
     MESSAGE(r.error().message);
     CHECK(r.error().message.find(".chain") != std::string::npos);
   }
-  {  // the group made free while its In / Out keep their chain links
-    nlohmann::json k = j;
-    for (nlohmann::json& x : k["tracks"][0]["devices"])
-      if (x["id"] == group.value) x["free"] = true;
-    const Result<LoadedProject> r = parseProject(k.dump(2));
-    REQUIRE_FALSE(r.ok());
-    MESSAGE(r.error().message);
-    CHECK(r.error().message.find("free group") != std::string::npos);
-  }
+  // (TX.all-free: there is no "free" flag any more — a group off the main path simply hears nothing at its In.)
   {  // knob curves on the group
     nlohmann::json k = j;
     for (nlohmann::json& x : k["tracks"][0]["devices"])

@@ -4,6 +4,8 @@
 #include <unordered_map>
 
 #include "edit_common.h"
+#include "edit_paths.h"
+#include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
 
@@ -70,6 +72,26 @@ bool metaReplacesInstrument(const ListView& l, uint32_t at) {
   const std::vector<DevicePtr>& d = *l.devices;
   return at == 0 && l.instrumentAllowed && !d.empty() && d.front()->kind == DeviceKind::Instrument &&
          !isMetaDevice(*d.front());
+}
+
+// TX.all-free: a new block `dev` (already added to `track`) onto its main path at `slot`. `notes`: a stock instrument
+// (it takes the notes: slot 0). A stock instrument or Instrument Rack heading the path is replaced by an instrument, or
+// by a meta module landing at slot 0 (it takes the notes: TMM.10-fix1's rule); an effect at slot 0 goes after it.
+Status placeOnPath(Steps& k, IdSource& ids, TrackId track, DeviceId dev, bool notes, bool meta, uint32_t slot) {
+  const Track* t = findTrackPtr(k.doc(), track);
+  if (t == nullptr) return notFound("track not found");
+  const MainPath path = mainPath(k.doc(), *t);
+  const Device* head = path.blocks.empty() ? nullptr : path.blocks.front();
+  const bool stockHead = head != nullptr && head->kind == DeviceKind::Instrument && !isMetaDevice(*head);
+  if (notes) slot = 0;
+  if (stockHead && slot == 0 && (notes || meta) && t->kind == TrackKind::Midi) {
+    const DeviceId gone = head->id;
+    PQ_DOC_TRY(detach(k, ids, nullptr, gone));
+    PQ_DOC_TRY(k.add(RemoveDevice{gone}));
+  } else if (stockHead && slot == 0) {
+    slot = 1;
+  }
+  return splice(k, ids, track, dev, slot);
 }
 
 }  // namespace
@@ -147,16 +169,29 @@ EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string
   Result<ListView> l = listOf(p, track, chain);
   if (!l) return std::move(l).error();
   if (patch.empty()) return invalid("no device patch");
-  Result<Slot> slot = slotFor(*l, kind, index);
-  if (!slot) return std::move(slot).error();
-  Edit e = makeEdit(patch == kAudioEffectRack || patch == kInstrumentRack ? "Add Rack" : "Add Device");
-  if (slot->replacesInstrument) batchOf(e).commands.push_back(RemoveDevice{l->devices->front()->id});
   const bool rack = patch == kAudioEffectRack || patch == kInstrumentRack;
   if (rack && (patch == kInstrumentRack) != (kind == DeviceKind::Instrument)) return invalid("rack kind mismatch");
+  Edit e = makeEdit(rack ? "Add Rack" : "Add Device");
+  if (chain.valid()) {  // a rack chain: a list (its rule)
+    Result<Slot> slot = slotFor(*l, kind, index);
+    if (!slot) return std::move(slot).error();
+    if (slot->replacesInstrument) batchOf(e).commands.push_back(RemoveDevice{l->devices->front()->id});
+    DevicePtr d = rack ? makeRack(ids.device(), kind) : makeDevice(ids.device(), std::move(patch), kind);
+    e.devices.push_back(d->id);
+    e.tracks.push_back(l->track);
+    batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), slot->index, chain});
+    return e;
+  }
+  // TX.all-free: a track's block, spliced into its main path at slot `index` (kOffPath: unwired).
+  if (kind == DeviceKind::Instrument && !l->instrumentAllowed) return invalid("instruments go on MIDI tracks");
   DevicePtr d = rack ? makeRack(ids.device(), kind) : makeDevice(ids.device(), std::move(patch), kind);
-  e.devices.push_back(d->id);
+  const DeviceId id = d->id;
+  e.devices.push_back(id);
   e.tracks.push_back(l->track);
-  batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), slot->index, chain});
+  Steps k(p);
+  PQ_DOC_TRY(k.add(AddDevice{l->track, std::move(d), kAppend}));
+  if (index != kOffPath) PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, kind == DeviceKind::Instrument, false, index));
+  batchOf(e).commands = std::move(k.commands);
   return e;
 }
 
@@ -164,9 +199,11 @@ EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string
 Result<DeviceKind> metaDeviceKindAt(const Project& p, const meta::Type& t, TrackId track, uint32_t index, ChainId chain) {
   Result<ListView> l = listOf(p, track, chain);
   if (!l) return std::move(l).error();
-  // TMM.10-fix1: any type goes anywhere; its kind is its position (model.h "Meta modules"): the instrument when it lands
-  // first where instruments go (it takes the note source), else an audio effect. Nothing is replaced.
+  // TMM.10-fix1: any type goes anywhere; in a rack chain its kind is its position (model.h "Meta modules"): the
+  // instrument when it lands first in an Instrument Rack's chain, else an audio effect. TX.all-free: on a track the
+  // kind means nothing (its cables decide): an audio effect.
   (void)t;
+  if (!chain.valid()) return DeviceKind::AudioEffect;
   return metaSlotAt(*l, index) == 0 && l->instrumentAllowed ? DeviceKind::Instrument : DeviceKind::AudioEffect;
 }
 
@@ -176,22 +213,38 @@ EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::st
   if (t == nullptr) return invalid("unknown meta module type '" + std::string(type) + "'");
   Result<ListView> l = listOf(p, track, chain);
   if (!l) return std::move(l).error();
-  // TMM.10-fix1: inserted where asked, with the kind its position says (metaSlotAt): first, it takes the note source
-  // (a stock instrument there is replaced: it takes no chain signal; a meta device there becomes an audio effect).
-  const uint32_t at = metaSlotAt(*l, index);
-  const DeviceKind kind = at == 0 && l->instrumentAllowed ? DeviceKind::Instrument : DeviceKind::AudioEffect;
   Edit e = makeEdit("Add Device");
-  if (metaReplacesInstrument(*l, at)) batchOf(e).commands.push_back(RemoveDevice{l->devices->front()->id});
+  // What reaches its main input there (a rack chain: its list; a track: its main path's blocks up to the slot).
+  std::vector<DevicePtr> before = *l->devices;
+  uint32_t at = metaSlotAt(*l, index);
+  if (!chain.valid()) {
+    const Track* tr = findTrackPtr(p, l->track);
+    const MainPath path = mainPath(p, *tr);
+    before = flowOrder(*tr, path);
+    before.resize(path.blocks.size());
+    at = index == kOffPath ? 0 : std::min<uint32_t>(index, static_cast<uint32_t>(path.blocks.size()));
+  }
+  const DeviceKind kind = chain.valid() && at == 0 && l->instrumentAllowed ? DeviceKind::Instrument : DeviceKind::AudioEffect;
   auto d = std::make_shared<Device>(*makeDevice(ids.device(), std::string(kMetaDevicePrefix) + std::string(t->id), kind));
   d->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(*t)}});
   // TMM.8 (docs/plans/MM.md): a Wavetable that receives audio starts in Shape mode (a waveshaper); one that receives the
-  // note's phase or a voice signal (after a Phase accumulator: TMM.10) reads it as a phase in Phase mode.
-  if (chainSignalAt(*l->devices, l->instrumentAllowed, at) == ChainSignal::Audio && t->id == "wavetable" &&
+  // note's phase or a voice signal (after a Phase accumulator: TMM.10) reads it as a phase in Phase mode. (Off the path:
+  // as at its start.)
+  if (chainSignalAt(before, l->instrumentAllowed, at) == ChainSignal::Audio && t->id == "wavetable" &&
       t->settingIndex("mode") >= 0)
     d->settings.push_back(DeviceValue{"mode", 1.0});
-  e.devices.push_back(d->id);
+  const DeviceId id = d->id;
+  e.devices.push_back(id);
   e.tracks.push_back(l->track);
-  batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), at, chain});
+  if (chain.valid()) {
+    if (metaReplacesInstrument(*l, at)) batchOf(e).commands.push_back(RemoveDevice{l->devices->front()->id});
+    batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), at, chain});
+    return e;
+  }
+  Steps k(p);
+  PQ_DOC_TRY(k.add(AddDevice{l->track, std::move(d), kAppend}));
+  if (index != kOffPath) PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, false, true, index));
+  batchOf(e).commands = std::move(k.commands);
   return e;
 }
 
@@ -309,39 +362,65 @@ EditResult pasteDevices(const Project& p, IdSource& ids, TrackId track, std::spa
   Edit e = makeEdit(devices.size() == 1 ? "Paste Device" : "Paste Devices");
   e.tracks.push_back(l->track);
   const std::vector<DevicePtr>& list = *l->devices;
-  const bool hasInstrument = !list.empty() && list.front()->kind == DeviceKind::Instrument;
-  uint32_t at = std::min<uint32_t>(index, static_cast<uint32_t>(list.size()));
-  if (hasInstrument && at == 0) at = 1;
   bool instrumentPasted = false;
   std::vector<Command> after;  // TX.groups: a pasted group's members and wires, after the devices
+  if (chain.valid()) {  // a rack chain: a list
+    const bool hasInstrument = !list.empty() && list.front()->kind == DeviceKind::Instrument;
+    uint32_t at = std::min<uint32_t>(index, static_cast<uint32_t>(list.size()));
+    if (hasInstrument && at == 0) at = 1;
+    for (const DevicePtr& src : devices) {
+      if (!src) continue;
+      DevicePtr d = copyForPaste(p, ids, *src, l->track, chain, e, after);
+      e.devices.push_back(d->id);
+      if (d->kind == DeviceKind::Instrument) {
+        if (!l->instrumentAllowed) return invalid("an Audio Effect Rack's chains hold audio effects only");
+        if (instrumentPasted) return invalid("a chain holds one instrument");
+        instrumentPasted = true;
+        if (hasInstrument) batchOf(e).commands.push_back(RemoveDevice{list.front()->id});
+        batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), 0, chain});
+        if (!hasInstrument) ++at;  // the effects pasted so far moved one place right
+        continue;
+      }
+      batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), at++, chain});
+    }
+    for (Command& c : after) batchOf(e).commands.push_back(std::move(c));
+    return e;
+  }
+  // TX.all-free: a track's blocks, spliced into its main path from slot `index` on, in order (kOffPath: unwired).
+  Steps k(p);
+  uint32_t slot = index;
   for (const DevicePtr& src : devices) {
     if (!src) continue;
     DevicePtr d = copyForPaste(p, ids, *src, l->track, chain, e, after);
-    e.devices.push_back(d->id);
-    if (d->kind == DeviceKind::Instrument) {
-      if (!l->instrumentAllowed) return invalid(chain.valid() ? "an Audio Effect Rack's chains hold audio effects only"
-                                                              : "instruments go on MIDI tracks");
-      if (instrumentPasted) return invalid("a track holds one instrument");
-      instrumentPasted = true;
-      if (hasInstrument) batchOf(e).commands.push_back(RemoveDevice{list.front()->id});
-      batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), 0, chain});
-      if (!hasInstrument) ++at;  // the effects pasted so far moved one place right
-      continue;
-    }
-    batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), at++, chain});
+    const DeviceId id = d->id;
+    const bool notes = d->kind == DeviceKind::Instrument && !isMetaDevice(*d);
+    const bool meta = isMetaDevice(*d);
+    e.devices.push_back(id);
+    if (d->kind == DeviceKind::Instrument && !l->instrumentAllowed) return invalid("instruments go on MIDI tracks");
+    if (notes && instrumentPasted) return invalid("one instrument takes a track's notes (paste the others one by one)");
+    instrumentPasted = instrumentPasted || notes;
+    PQ_DOC_TRY(k.add(AddDevice{l->track, std::move(d), kAppend}));
+    if (index == kOffPath) continue;
+    PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, notes, meta, slot));
+    // The next one goes after it.
+    const MainPath path = mainPath(k.doc(), *findTrackPtr(k.doc(), l->track));
+    if (const int32_t i = path.indexOf(id); i >= 0) slot = static_cast<uint32_t>(i) + 1;
   }
-  for (Command& c : after) batchOf(e).commands.push_back(std::move(c));
+  for (Command& c : after) PQ_DOC_TRY(k.add(c));
+  batchOf(e).commands = std::move(k.commands);
   return e;
 }
 
 EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const DeviceId> devices) {
   Edit e = makeEdit(devices.size() == 1 ? "Duplicate Device" : "Duplicate Devices");
-  // Per list, in its order: the copies go right after the last selected device of that list.
+  // Per list, in its order: the copies go right after the last selected device of that list (TX.all-free: on a track,
+  // right after the last selected block on its main path; blocks off the path are copied off it).
   struct Pick {
     const std::vector<DevicePtr>* list;
     TrackId track;
     ChainId chain;
-    uint32_t index;
+    uint32_t index;  // in the list (a track: its place on the main path, kOffPath off it)
+    const Device* device;
   };
   std::vector<Pick> picks;
   for (const DeviceId id : devices) {
@@ -349,28 +428,56 @@ EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const Dev
     if (!d.track) return notFound("device not found");
     if (d.device->kind == DeviceKind::Instrument) continue;  // one instrument per list
     const std::vector<DevicePtr>* list = &d.list();
-    if (std::none_of(picks.begin(), picks.end(), [&](const Pick& k) { return k.list == list && k.index == d.index; }))
-      picks.push_back(Pick{list, d.track->id, d.chain ? d.chain->id : ChainId{}, d.index});
+    uint32_t index = d.index;
+    if (d.chain == nullptr) {
+      const int32_t i = mainPath(p, *d.track).indexOf(id);
+      index = i >= 0 ? static_cast<uint32_t>(i) : kOffPath;
+    }
+    if (std::none_of(picks.begin(), picks.end(), [&](const Pick& k) { return k.device == d.device; }))
+      picks.push_back(Pick{list, d.track->id, d.chain ? d.chain->id : ChainId{}, index, d.device});
   }
   std::stable_sort(picks.begin(), picks.end(), [](const Pick& a, const Pick& b) {
     if (a.track != b.track) return a.track < b.track;
     return a.list != b.list ? std::less<>()(a.list, b.list) : a.index < b.index;
   });
+  Steps k(p);
   for (size_t i = 0; i < picks.size();) {
     size_t j = i;
     while (j < picks.size() && picks[j].list == picks[i].list) ++j;
-    uint32_t at = picks[j - 1].index + 1;
     std::vector<Command> after;  // TX.groups: a duplicated group's members and wires
-    for (size_t k = i; k < j; ++k) {
-      DevicePtr d = copyForPaste(p, ids, *(*picks[k].list)[picks[k].index], picks[i].track, picks[i].chain, e, after);
-      e.devices.push_back(d->id);
-      batchOf(e).commands.push_back(AddDevice{picks[i].track, std::move(d), at++, picks[i].chain});
+    if (picks[i].chain.valid()) {
+      uint32_t at = picks[j - 1].index + 1;
+      for (size_t q = i; q < j; ++q) {
+        DevicePtr d = copyForPaste(p, ids, *picks[q].device, picks[i].track, picks[i].chain, e, after);
+        e.devices.push_back(d->id);
+        PQ_DOC_TRY(k.add(AddDevice{picks[i].track, std::move(d), at++, picks[i].chain}));
+      }
+    } else {
+      // The path's copies after the last selected block on it, in path order; the others off the path.
+      uint32_t last = 0;
+      bool any = false;
+      for (size_t q = i; q < j; ++q)
+        if (picks[q].index != kOffPath) {
+          last = std::max(last, picks[q].index);
+          any = true;
+        }
+      uint32_t slot = last + 1;
+      for (size_t q = i; q < j; ++q) {
+        DevicePtr d = copyForPaste(p, ids, *picks[q].device, picks[i].track, {}, e, after);
+        const DeviceId id = d->id;
+        e.devices.push_back(id);
+        PQ_DOC_TRY(k.add(AddDevice{picks[i].track, std::move(d), kAppend}));
+        if (!any || picks[q].index == kOffPath) continue;
+        PQ_DOC_TRY(splice(k, ids, picks[i].track, id, slot++));
+      }
     }
-    for (Command& c : after) batchOf(e).commands.push_back(std::move(c));
+    for (Command& c : after) PQ_DOC_TRY(k.add(c));
     i = j;
   }
+  batchOf(e).commands = std::move(k.commands);
   return e;
 }
+
 EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, std::optional<double> value) {
   if (!findDevice(p, device).track) return notFound("device not found");
   PQ_DOC_TRY(checkDeviceValue(param, value));
@@ -445,25 +552,6 @@ EditResult setDeviceChainInput(const Project& p, DeviceId device, std::string in
   return e;
 }
 
-EditResult setDevicesFree(const Project& p, std::span<const DeviceId> devices, bool free) {  // TX.patching
-  Edit e = makeEdit(free ? "Take Out of Chain" : "Put Into Chain");
-  for (const DeviceId id : devices) {
-    const DeviceLoc l = findDevice(p, id);
-    if (!l.track) return notFound("device not found");
-    if (l.device->free == free) continue;
-    if (free) {
-      if (l.chain != nullptr) return invalid("a device in a rack chain stays in its chain");
-      if (l.device->rack) return invalid("a rack cannot be taken out of its chain");
-      if (l.device->kind == DeviceKind::Instrument && !isMetaDevice(*l.device))
-        return invalid("a stock instrument cannot be taken out of its chain");
-    }
-    e.devices.push_back(id);
-    if (std::find(e.tracks.begin(), e.tracks.end(), l.track->id) == e.tracks.end()) e.tracks.push_back(l.track->id);
-    batchOf(e).commands.push_back(SetDeviceFree{id, free});
-  }
-  return e;
-}
-
 EditResult setParamCurve(const Project& p, DeviceId device, std::string param, KnobCurve curve) {  // TX.knob-curves
   const DeviceLoc l = findDevice(p, device);
   if (!l.track) return notFound("device not found");
@@ -482,7 +570,11 @@ namespace {
 // The "Add Wire" edit of `w` (its ends and law set; the source checked by the caller): a fresh id; a Travel wire's
 // amount clamped.
 EditResult addWire(const Project& p, IdSource& ids, Wire w, double amount) {
-  if (!findDevice(p, w.to).track) return notFound("wire target device not found");
+  if (w.toMixer()) {  // TX.all-free: a track's mixer input
+    if (findTrackPtr(p, w.mixer) == nullptr) return notFound("wire target track not found");
+  } else if (!findDevice(p, w.to).track) {
+    return notFound("wire target device not found");
+  }
   for (const Wire& x : wiresOf(p))
     if (x.sameEnds(w)) return invalid("these two ports are already wired");
   w.id = ids.wire();
@@ -510,7 +602,7 @@ EditResult noteWire(const Project& p, IdSource& ids, TrackId track, std::string 
                     WireLaw law, double amount) {
   const Track* t = findTrackPtr(p, track);
   if (t == nullptr) return notFound("wire source track not found");
-  if (t->kind != TrackKind::Midi) return invalid("only a MIDI track has a note source");
+  if (t->kind != TrackKind::Midi && !port.empty()) return invalid("only a MIDI track has a note source");
   Wire w;
   w.noteSource = track;
   w.port = std::move(port);
@@ -527,6 +619,19 @@ EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::stri
 
 EditResult connectNoteWire(const Project& p, IdSource& ids, TrackId track, std::string port, DeviceId to, std::string param) {
   return noteWire(p, ids, track, std::move(port), to, std::move(param), WireLaw::Add, 1.0);
+}
+
+EditResult connect(const Project& p, IdSource& ids, Wire ends) {  // TX.all-free
+  if (ends.fromNoteSource()) {
+    const Track* t = findTrackPtr(p, ends.noteSource);
+    if (t == nullptr) return notFound("wire source track not found");
+    if (t->kind != TrackKind::Midi && !ends.port.empty()) return invalid("only a MIDI track has a note source");
+  } else if (!findDevice(p, ends.from).track) {
+    return notFound("wire source device not found");
+  }
+  ends.law = WireLaw::Add;
+  ends.chain = false;
+  return addWire(p, ids, std::move(ends), 1.0);
 }
 
 EditResult connectTravelWire(const Project& p, IdSource& ids, DeviceId from, std::string port, DeviceId to,

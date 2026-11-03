@@ -12,6 +12,7 @@
 
 #include "pq/document/commands.h"
 #include "pq/document/devices.h"
+#include "pq/document/main_path.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
 #include "pq/document/store.h"
@@ -50,10 +51,16 @@ struct Chains {
     inst = track(midi).devices.at(0)->id;
   }
   const Track& track(TrackId id) const { return *findTrackPtr(*store.current(), id); }
+  // TX.all-free: the track's main path (what the Device view lists), in signal order.
   std::vector<std::string> chain(TrackId id) const {
     std::vector<std::string> v;
-    for (const DevicePtr& d : track(id).devices) v.push_back(d->patch + (d->active ? "" : "(off)"));
+    for (const Device* d : mainPath(*store.current(), track(id)).blocks) v.push_back(d->patch + (d->active ? "" : "(off)"));
     return v;
+  }
+  DevicePtr onPath(TrackId id, size_t i) const {
+    for (const DevicePtr& d : track(id).devices)
+      if (d.get() == mainPath(*store.current(), track(id)).blocks.at(i)) return d;
+    return nullptr;
   }
   // Dispatches a builder's edit: exactly one history entry (or none for an empty batch).
   ops::Edit edit(Result<ops::Edit> e) {
@@ -83,7 +90,7 @@ TEST_CASE("devices: commands keep the chain rule and classify their changes") {
   const Snapshot s0 = c.store.current();
   IdSource& ids = c.store.ids();
   auto apply1 = [&](const Snapshot& s, Command cmd, ChangeSet& cs) { return apply(s, cmd, cs); };
-  SUBCASE("AddDevice: structural; instruments only first on MIDI tracks") {
+  SUBCASE("AddDevice: structural; instruments only on MIDI tracks (TX.all-free: a set of blocks, no position rule)") {
     ChangeSet cs;
     const DevicePtr fx = makeDevice(ids.device(), "utility", DeviceKind::AudioEffect);
     auto r = apply1(s0, AddDevice{c.midi, fx, kAppend}, cs);
@@ -92,9 +99,11 @@ TEST_CASE("devices: commands keep the chain rule and classify their changes") {
     CHECK(cs.tracks == std::vector<TrackId>{c.midi});
     CHECK(cs.devices == std::vector<DeviceId>{fx->id});
     ChangeSet e1, e2, e3, e4;
-    CHECK_FALSE(apply1(s0, AddDevice{c.midi, makeDevice(ids.device(), "utility", DeviceKind::AudioEffect), 0}, e1).ok());
+    // TX.all-free: a list position means nothing on a track (its cables are the signal path): an effect at 0 and a
+    // second instrument are blocks like any (the path decides what takes the notes).
+    CHECK(apply1(s0, AddDevice{c.midi, makeDevice(ids.device(), "utility", DeviceKind::AudioEffect), 0}, e1).ok());
     CHECK_FALSE(apply1(s0, AddDevice{c.group, makeDefaultInstrument(ids.device()), 0}, e2).ok());
-    CHECK_FALSE(apply1(s0, AddDevice{c.midi, makeDefaultInstrument(ids.device()), kAppend}, e3).ok());
+    CHECK(apply1(s0, AddDevice{c.midi, makeDefaultInstrument(ids.device()), kAppend}, e3).ok());
     CHECK_FALSE(apply1(s0, AddDevice{c.ret, nullptr, 0}, e4).ok());  // no device
     ChangeSet e5;
     CHECK_FALSE(apply1(*r, AddDevice{c.ret, fx, 0}, e5).ok());  // the id is in use
@@ -142,7 +151,7 @@ TEST_CASE("devices: commands keep the chain rule and classify their changes") {
     CHECK(cs3.structural());
     CHECK_FALSE(findDevice(**off, c.inst).device->active);
   }
-  SUBCASE("MoveDevice: within a track and across tracks; the chain rule holds") {
+  SUBCASE("MoveDevice: within a track and across tracks (TX.all-free: the list order of the blocks; instruments only on MIDI tracks)") {
     Batch b{"fx", {}};
     const DevicePtr a = makeDevice(ids.device(), "utility", DeviceKind::AudioEffect);
     const DevicePtr s = makeDevice(ids.device(), "saturator", DeviceKind::AudioEffect);
@@ -159,7 +168,7 @@ TEST_CASE("devices: commands keep the chain rule and classify their changes") {
     CHECK(t.devices[2]->id == a->id);
     CHECK((t.devices[1] == s));  // moved, not copied: pointer-equal
     ChangeSet bad;
-    CHECK_FALSE(apply1(*m, MoveDevice{s->id, {}, 0}, bad).ok());  // before the instrument
+    CHECK(apply1(*m, MoveDevice{s->id, {}, 0}, bad).ok());  // TX.all-free: before the instrument in the list: allowed
     CHECK_FALSE(apply1(*m, MoveDevice{c.inst, c.group, 0}, bad).ok());  // an instrument onto a group
     ChangeSet across;
     auto x = apply1(*m, MoveDevice{a->id, c.ret, 0}, across);
@@ -180,19 +189,19 @@ TEST_CASE("devices: commands keep the chain rule and classify their changes") {
 TEST_CASE("devices: add, reorder, remove, deactivate, copy / paste, duplicate are one undo step each") {
   Chains c;
   const Project* p = c.store.current().get();
-  // Add (the device menu): effects append after the instrument.
+  // Add (the device menu): effects append after the instrument (TX.all-free: spliced into the main path).
   const DeviceId utility = c.edit(ops::addDevice(*c.store.current(), c.store.ids(), c.midi, "utility", DeviceKind::AudioEffect)).devices.at(0);
   const DeviceId sat = c.edit(ops::addDevice(*c.store.current(), c.store.ids(), c.midi, "saturator", DeviceKind::AudioEffect, 1)).devices.at(0);
   CHECK(c.chain(c.midi) == std::vector<std::string>{"BasicSynth", "saturator", "utility"});
   // An instrument replaces the track's instrument (Live).
   const DeviceId synth2 = c.edit(ops::addDevice(*c.store.current(), c.store.ids(), c.midi, "BasicSynth", DeviceKind::Instrument)).devices.at(0);
-  CHECK(c.track(c.midi).devices[0]->id == synth2);
+  CHECK(c.onPath(c.midi, 0)->id == synth2);
   CHECK(c.chain(c.midi).size() == 3);
   CHECK_FALSE(ops::addDevice(*c.store.current(), c.store.ids(), c.group, "BasicSynth", DeviceKind::Instrument).ok());
-  // Reorder.
-  c.edit(ops::moveDevice(*c.store.current(), utility, {}, 1));
+  // Reorder (TX.all-free: rewired along the main path).
+  c.edit(ops::moveOnPath(*c.store.current(), c.store.ids(), &library(), utility, c.midi, 1));
   CHECK(c.chain(c.midi) == std::vector<std::string>{"BasicSynth", "utility", "saturator"});
-  const auto noop = ops::moveDevice(*c.store.current(), utility, {}, 1);
+  const auto noop = ops::moveOnPath(*c.store.current(), c.store.ids(), &library(), utility, c.midi, 1);
   REQUIRE(noop.ok());
   CHECK(noop->empty());
   // Deactivate (toggle), param, setting.
@@ -201,7 +210,7 @@ TEST_CASE("devices: add, reorder, remove, deactivate, copy / paste, duplicate ar
   c.edit(ops::setDeviceParam(*c.store.current(), sat, "drive", 2.0));
   c.edit(ops::setDeviceSetting(*c.store.current(), sat, "type", 6.0));
   // Copy / paste onto the group (fresh ids, the same values), then duplicate there.
-  std::vector<DevicePtr> clip{c.track(c.midi).devices[2]};
+  std::vector<DevicePtr> clip{c.onPath(c.midi, 2)};
   REQUIRE(clip[0]->id == sat);
   const ops::Edit pasted = c.edit(ops::pasteDevices(*c.store.current(), c.store.ids(), c.group, clip));
   REQUIRE(pasted.devices.size() == 1);
@@ -214,7 +223,7 @@ TEST_CASE("devices: add, reorder, remove, deactivate, copy / paste, duplicate ar
   c.edit(ops::duplicateDevices(*c.store.current(), c.store.ids(), pasted.devices));
   CHECK(c.chain(c.group) == std::vector<std::string>{"saturator(off)", "saturator(off)"});
   // Pasting an instrument onto a group is refused; onto a MIDI track it replaces the instrument.
-  std::vector<DevicePtr> instClip{c.track(c.midi).devices[0]};
+  std::vector<DevicePtr> instClip{c.onPath(c.midi, 0)};
   CHECK_FALSE(ops::pasteDevices(*c.store.current(), c.store.ids(), c.group, instClip).ok());
   // Remove.
   c.edit(ops::deleteDevices(*c.store.current(), std::vector<DeviceId>{utility, sat}));
@@ -385,8 +394,8 @@ TEST_CASE("devices: lowering a chain — stable NodeIds, params as runtime param
   auto again = lower(*c.store.current(), lo, &lp);
   REQUIRE(again.ok());
   for (size_t i = 0; i < lp.patches.size(); ++i) CHECK((again->patches[i] == lp.patches[i]));
-  // Reorder: only that track's patch changes, and every device keeps its NodeId (its state).
-  c.edit(ops::moveDevice(*c.store.current(), sat, {}, 1));
+  // Reorder (TX.all-free: along the main path): only that track's patch changes, and every device keeps its NodeId.
+  c.edit(ops::moveOnPath(*c.store.current(), c.store.ids(), &library(), sat, c.midi, 1));
   auto moved = lower(*c.store.current(), lo, &*again);
   REQUIRE(moved.ok());
   for (size_t i = 0; i < lp.patches.size(); ++i) CHECK((moved->patches[i] == again->patches[i]) == (i != ti));

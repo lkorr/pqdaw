@@ -252,9 +252,7 @@ std::vector<const Device*> groupMembers(const std::vector<DevicePtr>& list, Devi
 
 bool normaliseMetaKinds(std::vector<DevicePtr>& list, bool instrumentsGo, std::vector<DeviceId>* changed) {
   bool any = false;
-  // TX.patching: a free device is not in the series; the first device of the series is the first one not free.
-  size_t first = 0;
-  while (first < list.size() && list[first] && list[first]->free) ++first;
+  const size_t first = 0;  // (a rack chain: TX.all-free leaves a track's blocks' kinds alone)
   for (size_t i = 0; i < list.size(); ++i) {
     if (!list[i] || !isMetaDevice(*list[i])) continue;
     const DeviceKind want = i == first && instrumentsGo ? DeviceKind::Instrument : DeviceKind::AudioEffect;
@@ -348,7 +346,6 @@ bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
          a.settings == b.settings && deepEq(a.source, b.source) && (a.rack == nullptr) == (b.rack == nullptr) && a.name == b.name &&
          deepEq(a.meta, b.meta) &&  // TMM.3 (an empty map is always null: the commands keep it so)
          a.chainInput == b.chainInput &&  // TMM.10-fix1
-         a.free == b.free &&              // TX.patching
          a.group == b.group &&            // TX.groups
          a.curves == b.curves;            // TX.knob-curves
 }
@@ -657,7 +654,7 @@ const Track* laneHome(const Project& p, const ParamRef& r) noexcept {
   }
 }
 
-Snapshot makeDefaultProject(IdSource& ids) {
+Snapshot makeDefaultProject(IdSource& ids, bool wireMaster) {
   auto p = std::make_shared<Project>();
   p->timeline = std::make_shared<const Timeline>();
   TuningSlot slot;
@@ -667,6 +664,13 @@ Snapshot makeDefaultProject(IdSource& ids) {
   p->tunings = std::make_shared<const TuningList>(TuningList{std::make_shared<const TuningSlot>(std::move(slot))});
   p->locators = std::make_shared<const LocatorList>();
   p->master = std::make_shared<const Track>(makeTrack(ids.track(), TrackKind::Master, "Master"));
+  // TX.all-free: the master's input → its mixer (its main path; main_path.h).
+  if (!wireMaster) return p;
+  Wire w;
+  w.id = ids.wire();
+  w.noteSource = p->master->id;
+  w.mixer = p->master->id;
+  p->wires = std::make_shared<const WireList>(WireList{std::move(w)});
   return p;
 }
 

@@ -119,7 +119,6 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_patching.cpp  # TX.patching: wires add in units, any output into any param / input at audio rate, free devices
     app/test_groups.cpp  # TX.groups: Ctrl+G / Ctrl+Shift+G round trips (series = group bit for bit, interpreter == JIT, same document)
     app/test_all_free.cpp  # TX.all-free: every fixture project renders as before the chain became cables (diff 0, JIT, IR)
-    app/gen_all_free_fixtures.cpp
     app/test_pass_through.cpp  # TX.scope-sound: an analyser (any pass-through) never changes the sound: chain, group, free
     app/test_mod_all.cpp  # TX.mod-all: a wire into any param makes it live at audio rate (repro, the sweep over every device)
     app/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit: one unit compile, state kept; save/load; wires)
@@ -186,6 +185,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_node_menu.cpp  # TX.node-menu: catalog, search, the menu, spawn / insert / Z / splice / dissolve / Ctrl-release / push-apart, golden, perf
     views/test_cables.cpp  # TX.cables: hanging cables (rest shape, rope sim, drag swing, hit tests on the curve, glow, goldens)
     views/test_free_rack.cpp  # TX.free-rack: the Device view's free-device rack (gestures, prefs), the signal-path cables, goldens, perf
+    views/test_all_free_views.cpp  # TX.all-free: the Device view lists the main path; its gestures rewire; the patch view places anywhere
     views/test_chain_circuit.cpp  # T5.x-circuit-chain: a track's chain as one circuit (boxes, wires, racks, view, band), goldens
     views/test_racks_view.cpp  # T4.8: racks in the Device view (chains, drops, map mode, macro / mixer / zone drags), goldens
     views/test_circuit_legibility.cpp  # T4.15: node tooltips, inactive branches, recognised constants, goldens
@@ -417,6 +417,7 @@ pq_add_test(pq_tests_document
     document/test_meta_devices.cpp  # TMM.10: meta devices in chains (voice runs, kinds, copy / presets keep state)
     document/test_analysis_taps.cpp  # TX.spectrum: the lowering's analysis taps (EQ Eight, Auto Filter, Spectrum)
     document/test_wire_laws.cpp  # TX.patching: wire laws, schema 13 + migration, any output / input, free devices
+    document/test_main_path.cpp  # TX.all-free: the main path, its rewiring builders, the 16 -> 17 migration, the lowering of the wiring
     document/test_knob_curves.cpp  # TX.knob-curves: knob curves, the wire laws they decide, schema 16 + migration
   DEPS pq_doc)
 

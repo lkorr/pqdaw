@@ -37,8 +37,9 @@ struct Runner {
     auto e = run(doc::ops::createTrack(*store.current(), store.ids(), kind, after, name, doc::Colour{colour}));
     return e && !e->tracks.empty() ? e->tracks[0] : doc::TrackId{};
   }
-  doc::DeviceId device(doc::TrackId t, const char* patch, doc::DeviceKind kind) {
-    auto e = run(doc::ops::addDevice(*store.current(), store.ids(), t, patch, kind));
+  // `index`: a main-path slot (doc::ops::kOffPath: a block placed unwired).
+  doc::DeviceId device(doc::TrackId t, const char* patch, doc::DeviceKind kind, uint32_t index = doc::kAppend) {
+    auto e = run(doc::ops::addDevice(*store.current(), store.ids(), t, patch, kind, index));
     return e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
   }
   void clip(doc::TrackId t, Ticks start, Ticks end, const char* name, std::vector<int> degrees) {
@@ -495,10 +496,8 @@ Status buildGroupProject(doc::DocumentStore& store, GroupProjectIds* ids) {
   (void)r.run(doc::ops::setMetaData(*store.current(), wt, "", "wavetable", demoWavetableData()));
   (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "position", 0.35));
   (void)r.run(doc::ops::setMetaParam(*store.current(), pa2, "", "phase_acc", "freq", 3.0));
-  const doc::DeviceId lfo = r.device(keys, "lfo_device", K::AudioEffect);
+  const doc::DeviceId lfo = r.device(keys, "lfo_device", K::AudioEffect, doc::ops::kOffPath);
   if (lfo.valid()) {
-    const doc::DeviceId one[1] = {lfo};
-    (void)r.run(doc::ops::setDevicesFree(*store.current(), one, true));
     (void)r.run(doc::ops::setDeviceParam(*store.current(), lfo, "rate", 0.5));
     (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", wt, "position"));
   }
@@ -531,27 +530,23 @@ Status buildFreeRackProject(doc::DocumentStore& store, uint32_t lfos, FreeRackId
                                                              {0, "dryWet"}, {2, "balance"}, {1, "drive"}, {0, "output"}};
   const doc::DeviceId chain[3] = {out.sat, out.filter, out.util};
   for (uint32_t i = 0; i < lfos; ++i) {
-    const doc::DeviceId lfo = r.device(out.lead, "lfo_device", K::AudioEffect);
+    const doc::DeviceId lfo = r.device(out.lead, "lfo_device", K::AudioEffect, doc::ops::kOffPath);
     if (!lfo.valid()) {
       if (r.status) return Error{ErrorCode::Unknown, "free rack project: LFO", {}};
       return r.status;
     }
-    const doc::DeviceId one[1] = {lfo};
-    (void)r.run(doc::ops::setDevicesFree(*store.current(), one, true));
     (void)r.run(doc::ops::setDeviceParam(*store.current(), lfo, "rate", 0.25 * static_cast<double>(i + 1)));
     const auto& t = kTargets[i % std::size(kTargets)];
     (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", chain[t.first], t.second));
     out.lfos.push_back(lfo);
   }
   {
-    auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), out.lead, "phase_acc"));
+    auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), out.lead, "phase_acc", doc::ops::kOffPath));
     out.acc = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
     if (!out.acc.valid()) {
       if (r.status) return Error{ErrorCode::Unknown, "free rack project: Phase accumulator", {}};
       return r.status;
     }
-    const doc::DeviceId one[1] = {out.acc};
-    (void)r.run(doc::ops::setDevicesFree(*store.current(), one, true));
     (void)r.run(doc::ops::setMetaParam(*store.current(), out.acc, "", "phase_acc", "freq", 55.0));
     (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.acc, "out", out.filter, "sc"));
     if (!out.lfos.empty()) (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.lfos.front(), "lfo", out.acc, "freq"));

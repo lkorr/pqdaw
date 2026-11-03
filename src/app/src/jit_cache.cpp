@@ -18,6 +18,7 @@
 
 #include "pq/app/project_link.h"
 #include "pq/compile/compile.h"
+#include "pq/document/edit_ops.h"
 #include "pq/document/commands.h"
 #include "pq/document/devices.h"
 #include "pq/document/model.h"
@@ -107,6 +108,12 @@ Result<std::vector<Snapshot>> stockProjects() {
       auto next = apply(s, Command{b}, changes);
       if (!next) return next.error();
       s = std::move(next.value());
+      // TX.all-free: each track wired in series (source → its devices → its mixer), as ops::createTrack wires it.
+      auto wired = ops::wireSeries(*s, ids);
+      if (!wired) return wired.error();
+      auto after = apply(s, wired->command, changes);
+      if (!after) return after.error();
+      s = std::move(after.value());
     }
     out.push_back(std::move(s));
   }

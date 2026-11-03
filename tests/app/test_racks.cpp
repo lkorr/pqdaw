@@ -235,6 +235,7 @@ TEST_CASE("racks: an Instrument Rack and an Audio Effect Rack render exactly lik
   b.commands.push_back(SetDeviceParam{r2, "macro1", 30.0});
   b.commands.push_back(SetDeviceParam{r2, "macro2", 60.0});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   const Lowered low = lowerIt(*store.current(), **lib);
   constexpr uint32_t kFrames = 48000;
   const golden::Channels lowered = renderGraph(low.lp.graph, low.links, low.values, kFrames, kNotes);
@@ -376,6 +377,7 @@ TEST_CASE("racks: key zones split notes between chains; a note in a fade plays a
       b.commands.push_back(AddDevice{t, makeDefaultInstrument(ids.device()), 0});
     }
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     const Lowered l = lowerIt(*store.current(), **lib);
     return renderGraph(l.lp.graph, l.links, l.values, 24000, kNotes);
   };
@@ -411,6 +413,7 @@ TEST_CASE("racks: key zones split notes between chains; a note in a fade plays a
     Batch b{"t", {}};
     b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T", ids.device()), {}, kAppend});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     const Lowered l = lowerIt(*store.current(), **lib);
     return renderGraph(l.lp.graph, l.links, l.values, 24000, std::move(notes));
   };
@@ -442,6 +445,7 @@ TEST_CASE("racks: a macro driving 8 targets is one param write and no compile") 
     for (const char* p : {"gain", "width", "balance", "ms"})
       b.commands.push_back(AddMacroMapping{rack, MacroMapping{ids.mapping(), 0, d, p, 0.1 * (i % 4), 0.9, 0.25 * (i++ % 3)}});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   REQUIRE(findDevice(*store.current(), rack).device->rack->mappings.size() == 8);
   auto link = makeLink(store.current());
   [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
@@ -492,6 +496,7 @@ TEST_CASE("racks: chain-select crossfades are click-free (a sweep, a jump, a cha
   std::vector<Note> notes{playback_fixture::note(ids, 0, 16 * kPpq, 0)};
   b.commands.push_back(AddClip{t, playback_fixture::clip(ids, 0, 16 * kPpq, notes, "held")});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   auto link = makeLink(store.current());
   [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   Driver d{*link};
@@ -560,6 +565,7 @@ TEST_CASE("racks: a key zone edit while a note sounds is click-free (T4.17: zone
   std::vector<Note> notes{playback_fixture::note(ids, 0, 16 * kPpq, 0)};
   b.commands.push_back(AddClip{t, playback_fixture::clip(ids, 0, 16 * kPpq, notes, "held")});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   auto link = makeLink(store.current());
   [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   Driver d{*link};
@@ -638,6 +644,7 @@ TEST_CASE("racks: Degree key zones read each note's degree in its own tuning (a 
   b.commands.push_back(AddClip{t, clipAt(kBar, 8, true)});
   b.commands.push_back(AddClip{t, clipAt(2 * kBar, 3, true)});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   auto link = makeLink(store.current());
   Driver d{*link};
   link->play(0);
@@ -692,6 +699,7 @@ TEST_CASE("racks: nested racks, per-voice chains and degree zones render the sam
   b.commands.push_back(SetDeviceParam{outer, "macro1", 90.0});
   b.commands.push_back(SetDeviceParam{outer, "macro2", 70.0});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   const Lowered low = lowerIt(*store.current(), **lib);
   CHECK(low.lp.missingDevices.empty());
   const std::vector<engine::TimedNote> notes = {
@@ -740,6 +748,7 @@ TEST_CASE("racks: a muted chain is not in the program; the selector gates a chai
     }
     if (mute) b.commands.push_back(SetChainActive{c2, false});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     const Lowered l = lowerIt(*store.current(), **lib);
     nodes = l.lp.patches[0]->patch.nodeCount();  // the group (first in track order)
     const golden::Channels out = renderGraph(l.lp.graph, l.links, l.values, 48000, {{0, 48000, 220.0f, 0.8f, 0.5f}}, {}, &asleep);
@@ -785,6 +794,7 @@ TEST_CASE("racks: a project with racks nested 20,000 deep opens and plays like t
     b.commands.push_back(AddTrack{std::make_shared<const Track>(std::move(tr)), {}, kAppend});
     b.commands.push_back(AddClip{t, playback_fixture::clip(ids, 0, 16 * kPpq, {playback_fixture::note(ids, 0, 16 * kPpq, 0)}, "n")});
     REQUIRE(store->dispatch(b).ok());
+    playback_fixture::wireSeries(*store);  // TX.all-free: wired in series
     return store;
   };
   auto flat = project(false, 0, 0), deep = project(true, kInstrumentDepth, kEffectDepth);

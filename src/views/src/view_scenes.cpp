@@ -42,6 +42,7 @@
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/tunings/tunings_panel.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "shell/shell_widgets.h"
 
 namespace pq::views {
@@ -1755,7 +1756,7 @@ Status setupProjectCableDrag(Shell& shell) {
   const project_patch::ProjectPatch& pp = v->patch();
   uint32_t src = project_patch::kNone;
   for (uint32_t i = 0; i < pp.nodes.size(); ++i)
-    if (pp.nodes[i].kind == project_patch::NodeKind::Device && pp.nodes[i].free && pp.nodes[i].title == "Utility" && !pp.nodes[i].outputs.empty()) src = i;
+    if (pp.nodes[i].kind == project_patch::NodeKind::Device && pp.nodes[i].offPath && pp.nodes[i].title == "Utility" && !pp.nodes[i].outputs.empty()) src = i;
   if (src == project_patch::kNone) return Error{ErrorCode::NotFound, "project-cable-drag: no free Utility", {}};
   const project_patch::Node& sn = pp.nodes[src];
   const ui::Vec2 from = c.toDevice({sn.x + sn.w, sn.y + project_patch::pinOffset(sn, 0)});
@@ -1998,6 +1999,25 @@ Status setupDeviceFreeRack(Shell& shell, bool open) {
   if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
   v->setFreeRackOpen(open);
   shell.tree().layoutNow();
+  shell.tree().layoutNow();
+  if (CableLayer* l = findCableLayer(shell)) (void)l->refresh();
+  return Ok{};
+}
+
+// TX.all-free: the free-rack project with its Lead track's main path broken — the cable into its last block (the
+// Utility) deleted. The Device view lists what is still on the path (to the break: nothing reaches the mixer); the
+// Utility, off the path now, is in the free rack.
+Status setupDevicePathBroken(Shell& shell) {
+  if (Status s = setupDeviceFreeRack(shell, true); !s) return s;
+  ViewContext& ctx = shell.context();
+  const doc::TrackId lead = ctx.selectedTrack();
+  const doc::Track* t = doc::findTrackPtr(*ctx.doc(), lead);
+  if (t == nullptr) return Error{ErrorCode::NotFound, "device-path-broken: no Lead track", {}};
+  const doc::MainPath path = doc::mainPath(*ctx.doc(), *t);
+  if (!path.complete || path.links.size() < 3) return Error{ErrorCode::NotFound, "device-path-broken: no path to break", {}};
+  auto e = doc::ops::deleteWires(*ctx.doc(), std::vector<doc::WireId>{path.links[path.links.size() - 2]});
+  if (!e) return std::move(e).error();
+  if (Status s = ctx.store().dispatch(e->command); !s) return s;
   shell.tree().layoutNow();
   if (CableLayer* l = findCableLayer(shell)) (void)l->refresh();
   return Ok{};
@@ -2780,6 +2800,7 @@ constexpr SceneEntry kScenes[] = {
     {"device-group-panel", 1600, 900, setupDeviceGroupPanel},          // TX.groups
     {"device-free-rack", 1600, 900, [](Shell& s) { return setupDeviceFreeRack(s, true); }},              // TX.free-rack
     {"device-free-rack-collapsed", 1600, 900, [](Shell& s) { return setupDeviceFreeRack(s, false); }},   // TX.free-rack
+    {"device-path-broken", 1600, 900, setupDevicePathBroken},  // TX.all-free
     {"device-meta-envelope", 1280, 800, setupDeviceMetaEnvelope},      // TMM.11
     {"project-meta-envelope", 1280, 800, setupProjectMetaEnvelope},    // TMM.11
     {"device-meta-vca", 1280, 800, setupDeviceMetaVca},                // TMM.14

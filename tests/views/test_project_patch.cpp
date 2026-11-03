@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "all_free_helpers.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/document/serialize.h"
@@ -684,32 +685,35 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     DeviceChainView* chain = findDeviceChain(*u.shell);
     REQUIRE(chain != nullptr);
     CHECK(chain->frameOf(util) != nullptr);
-    // Move: drag the Utility block left of the EQ Eight (TX.panel-faces: by its panel's title bar; the band framed
-    // again, the new panel widened it past the window).
+    // Move within the band: drag the Utility block left of the EQ Eight (TX.panel-faces: by its panel's title bar; the
+    // band framed again, the new panel widened it past the window). TX.all-free: a block is placed anywhere — the move
+    // is view state (a nudge), the cables keep the path as it was.
     u.zoomTo("Pad");
+    const std::vector<const doc::Device*> before = doc::mainPath(*u.ctx.doc(), u.track("Pad")).blocks;
     const Node& eqn = u.pp().nodes[u.deviceNode(eq)];
     u.d.drag(u.grip(u.deviceNode(util)), u.dev(eqn.x + 4.0f, eqn.y + eqn.h * 0.5f), 8);
-    CHECK(u.history() == h0 + 2);
-    REQUIRE(u.track("Pad").devices.size() == 3);
-    CHECK(u.track("Pad").devices[1]->id == util);
-    // Move to another band: onto Keys.
+    CHECK(u.history() == h0 + 1);
+    CHECK(doc::mainPath(*u.ctx.doc(), u.track("Pad")).blocks == before);
+    CHECK(u.ctx.store().view().patchNudges.count(util.value) == 1);
+    // Move to another band: onto Keys (one step: it leaves the Pad's path, joining its neighbours).
     u.view().fitAll(false);
     u.d.tree().layoutNow();
     const uint32_t kb = u.pp().bandOf(keys);
     const Node& kmix = u.pp().nodes[u.pp().bands[kb].mixer];
     u.d.drag(u.grip(u.deviceNode(util)), u.dev(kmix.x - 8.0f, kmix.y + 12.0f), 8);
-    CHECK(u.history() == h0 + 3);
+    CHECK(u.history() == h0 + 2);
     CHECK(doc::findDevice(*u.ctx.doc(), util).track->id == keys);
+    CHECK(doc::mainPath(*u.ctx.doc(), u.track("Pad")).complete);
     // 0 deactivates the selected block, Delete removes it.
     u.d.click(u.grip(u.deviceNode(util)));
     REQUIRE(u.view().selectedDevices() == std::vector<doc::DeviceId>{util});
     CHECK(u.d.press("0") != KeyResult::Unhandled);
-    CHECK(u.history() == h0 + 4);
+    CHECK(u.history() == h0 + 3);
     CHECK_FALSE(doc::findDevice(*u.ctx.doc(), util).device->active);
     CHECK(u.d.press("Delete") != KeyResult::Unhandled);
-    CHECK(u.history() == h0 + 5);
+    CHECK(u.history() == h0 + 4);
     CHECK(doc::findDevice(*u.ctx.doc(), util).device == nullptr);
-    for (int k = 0; k < 5; ++k) REQUIRE(u.ctx.undo());
+    for (int k = 0; k < 4; ++k) REQUIRE(u.ctx.undo());
     CHECK(u.ctx.doc() == start);
   }
   SUBCASE("mixer: mute and solo clicks, a volume drag — one step each; a value drag only repaints") {
@@ -762,7 +766,9 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     u.d.tree().setFocus(&u.view().canvas());
     CHECK(u.d.press("Delete") != KeyResult::Unhandled);
     CHECK(u.history() == h0 + 1);  // both in one step
-    CHECK(doc::wiresOf(*u.ctx.doc()).size() == 1);
+    size_t drawn = 0;  // TX.all-free: beside the main paths' links
+    for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc())) drawn += w.mainLink() ? 0 : 1;
+    CHECK(drawn == 1);
     REQUIRE(u.ctx.undo());
     CHECK(u.ctx.doc() == start);
   }
@@ -1010,7 +1016,9 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
   m->choose(0);
   u.d.step();
   CHECK(u.history() == h0 + 1);
-  REQUIRE(doc::wiresOf(*u.ctx.doc()).size() == 3);  // the sketch's two LFO wires and this one
+  size_t drawnWires = 0;  // TX.all-free: beside the main paths' links
+  for (const doc::Wire& x : doc::wiresOf(*u.ctx.doc())) drawnWires += x.mainLink() ? 0 : 1;
+  REQUIRE(drawnWires == 3);  // the sketch's two LFO wires and this one
   const doc::Wire w = doc::wiresOf(*u.ctx.doc()).back();
   CHECK(w.noteSource == keys);
   CHECK(w.port == "velocity");
@@ -1136,13 +1144,13 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
   CHECK(u.history() == h0 + 1);
   REQUIRE(u.track("Keys").devices.size() == 3);
   const doc::DeviceId pa = u.track("Keys").devices.back()->id;
-  CHECK(u.track("Keys").devices.back()->free);
+  CHECK(all_free::offPath(*u.ctx.doc(), u.track("Keys").devices.back()->id));
   CHECK(u.track("Keys").devices.at(0)->id == inst);  // the instrument still first: nothing replaced
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
   u.zoomTo("Keys");
   const Node& pn = u.pp().nodes[u.deviceNode(pa)];
   const Node& un = u.pp().nodes[u.deviceNode(util)];
-  CHECK(pn.free);
+  CHECK(pn.offPath);
   CHECK(pn.y >= un.y + un.h);  // its row is under the chain's
   for (const Edge& e : u.pp().edges) CHECK_FALSE((e.kind == EdgeKind::Chain && (e.from == u.deviceNode(pa) || e.to == u.deviceNode(pa))));
   // The accumulator's output dropped on the Utility: its menu offers its inputs too; its audio input wires it there.
@@ -1153,9 +1161,10 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
   CHECK(u.history() == h0 + 2);
   const doc::Wire w1 = doc::wiresOf(*u.ctx.doc()).back();
   CHECK(w1.from == pa);
-  CHECK(w1.port == "out");
+  CHECK(w1.port.empty());  // TX.all-free: "out" is the accumulator's main output, "x" the Utility's main input (kMainPort)
   CHECK(w1.to == util);
-  CHECK(w1.param == "x");
+  CHECK(w1.param.empty());
+  CHECK(all_free::offPath(*u.ctx.doc(), pa));  // a main link into the path from off it: a sum into that input
   CHECK(w1.law == doc::WireLaw::Add);
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
   // The instrument's main output onto the accumulator face's frequency control: that param, no menu.
@@ -1173,7 +1182,7 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
     CHECK(u.history() == h0 + 3);
     const doc::Wire w2 = doc::wiresOf(*u.ctx.doc()).back();
     CHECK(w2.from == inst);
-    CHECK(w2.port == "out");
+    CHECK(w2.port.empty());  // the instrument's main output
     CHECK(w2.to == pa);
     CHECK(w2.param == "freq");
   }
@@ -1188,16 +1197,23 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
     u.d.up(notes);
     CHECK(u.history() == h0 + 3);
   }
-  // The Utility dragged down out of the series: free, one step; its wires stay.
+  // The Utility dragged down out of its place: TX.all-free — placed there, nothing rewired (a nudge, no step); its
+  // block menu's Take Off Path takes it off (one step; the instrument joined to the mixer), its other wires stay.
   {
     const Node& n = u.pp().nodes[u.deviceNode(util)];
     const Vec2 from = u.centre(u.deviceNode(util));
     const Vec2 below = u.dev(n.x + 0.5f * n.w, n.y + n.h + 3.0f * metrics::kFreeRowGap);
     u.d.drag(from, below, 8);
     u.d.step();
+    CHECK(u.history() == h0 + 3);
+    CHECK_FALSE(all_free::offPath(*u.ctx.doc(), util));
+    REQUIRE(u.view().takeOffPath(std::vector<doc::DeviceId>{util}));
+    u.d.step();
     CHECK(u.history() == h0 + 4);
-    CHECK(doc::findDevice(*u.ctx.doc(), util).device->free);
-    CHECK(doc::wiresOf(*u.ctx.doc()).size() == 2);
+    CHECK(all_free::offPath(*u.ctx.doc(), util));
+    size_t drawn = 0;
+    for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc())) drawn += w.from == pa || w.to == pa ? 1 : 0;
+    CHECK(drawn == 2);
     CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
   }
   for (int i = 0; i < 4; ++i) REQUIRE(u.ctx.undo());
@@ -1950,10 +1966,7 @@ WarpSetup warpSetup(Ui& u) {
   };
   s.pa = add("phase_acc", 0);
   s.wt = add("wavetable", doc::kAppend);
-  s.mod = add("phase_acc", doc::kAppend);
-  auto f = doc::ops::setDevicesFree(*st.current(), std::vector<doc::DeviceId>{s.mod}, true);
-  REQUIRE(f.ok());
-  REQUIRE(st.dispatch(f->command).ok());
+  s.mod = add("phase_acc", doc::ops::kOffPath);  // TX.all-free: a block off the path
   auto w = doc::ops::connectWire(*st.current(), st.ids(), s.mod, "out", s.wt, "warp");
   REQUIRE(w.ok());
   REQUIRE(st.dispatch(w->command).ok());

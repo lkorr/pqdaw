@@ -122,6 +122,7 @@ struct ThreeTracks {
     for (int k = 0; k < 16; ++k) notes.push_back(playback_fixture::note(ids, 4 * k * kPpq, 7 * kPpq / 2, 0));
     b.commands.push_back(AddClip{t3, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "notes")});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
 };
 
@@ -152,8 +153,8 @@ TEST_CASE("wires: an LFO on track 1 wired into a filter cutoff on track 3 is aud
   CHECK(link->lastError().empty());
   CHECK(link->stats().compiles == s0.compiles + 1);
   CHECK(link->stats().compileErrors == s0.compileErrors);
-  REQUIRE(link->wireStates().size() == 1);
-  CHECK(link->wireStates()[0].status == WireStatus::Lowered);
+  REQUIRE(playback_fixture::drawn(link->wireStates(), *f.store.current()).size() == 1);
+  CHECK(playback_fixture::drawn(link->wireStates(), *f.store.current())[0].status == WireStatus::Lowered);
   runTo(3.6);
   const double swept = spreadOver(2.6, 3.6);  // the second note (from 2 s), modulated
   MESSAGE("10 ms RMS spread over 1 s: unwired " << flat << " dB, wired " << swept << " dB");
@@ -172,7 +173,7 @@ TEST_CASE("wires: an LFO on track 1 wired into a filter cutoff on track 3 is aud
   // The amount is a param: a write, no compile.
   {
     const app::LinkStats s1 = link->stats();
-    const WireId w = wiresOf(*f.store.current()).at(0).id;
+    const WireId w = playback_fixture::drawnWires(*f.store.current()).at(0).id;
     REQUIRE(f.store.dispatch(ops::setWireAmount(*f.store.current(), w, 0.0)->command).ok());
     link->flush();
     CHECK(link->stats().compiles == s1.compiles);
@@ -185,8 +186,8 @@ TEST_CASE("wires: an LFO on track 1 wired into a filter cutoff on track 3 is aud
   REQUIRE(f.store.undo());
   REQUIRE(f.store.undo());
   link->flush();
-  CHECK(wiresOf(*f.store.current()).empty());
-  CHECK(link->wireStates().empty());
+  CHECK(playback_fixture::drawnWires(*f.store.current()).empty());
+  CHECK(playback_fixture::drawn(link->wireStates(), *f.store.current()).empty());
 }
 
 namespace {
@@ -295,12 +296,13 @@ TEST_CASE("wires: a lowered project with wires renders exactly like the hand-bui
   b.commands.push_back(AddWire{Wire{w2, lfoB, "lfo", eq, "gain2", -0.3, WireReducer::Sum, {}, WireLaw::Travel}});
   b.commands.push_back(AddWire{Wire{w3, lfoB, "lfo", inst, "bright", 0.25, WireReducer::Sum, {}, WireLaw::Travel}});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   LowerOptions lo;
   lo.library = &(*lib)->library();
   lo.slotOf = [](TrackId) { return 0u; };
   auto low = lower(*store.current(), lo);
   REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
-  REQUIRE(low->wires.size() == 3);
+  REQUIRE(playback_fixture::drawn(low->wires, *store.current()).size() == 3);
   for (const WireState& s : low->wires) CHECK(s.status == WireStatus::Lowered);  // LFO2 after the EQ: no loop
   CHECK(low->taps.size() == 3);
   std::vector<engine::ProjectParamLink> links;
@@ -437,7 +439,8 @@ TEST_CASE("wires: a wire that closes a delay-free loop gets a 1-sample delay; an
   b.commands.push_back(AddWire{Wire{wFeed, sat, "wet", glfo, "depth", 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
   b.commands.push_back(AddWire{Wire{wGroup, glfo, "lfo", sat, "drive", 0.3, WireReducer::Sum, {}, WireLaw::Travel}});
   REQUIRE(store.dispatch(b).ok());
-  const std::vector<WireState> st = wireStates(*store.current(), (*lib)->library());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
+  const std::vector<WireState> st = playback_fixture::drawn(wireStates(*store.current(), (*lib)->library()), *store.current());
   REQUIRE(st.size() == 5);
   CHECK(st[0] == WireState{wLoop, WireStatus::Delayed});
   CHECK(st[1] == WireState{wSelf, WireStatus::Delayed});
@@ -457,13 +460,13 @@ TEST_CASE("wires: a wire that closes a delay-free loop gets a 1-sample delay; an
   REQUIRE(store.dispatch(Batch{"cross", {AddWire{Wire{wa, lfo, "lfo", inst2, "bright", 0.2, WireReducer::Sum, {}, WireLaw::Travel}},
                                          AddWire{Wire{wb, lfo2, "lfo", inst, "bright", 0.2, WireReducer::Sum, {}, WireLaw::Travel}}}})
               .ok());
-  const std::vector<WireState> st2 = wireStates(*store.current(), (*lib)->library());
+  const std::vector<WireState> st2 = playback_fixture::drawn(wireStates(*store.current(), (*lib)->library()), *store.current());
   REQUIRE(st2.size() == 7);
   CHECK(st2[5] == WireState{wa, WireStatus::Lowered});
   CHECK(st2[6] == WireState{wb, WireStatus::Refused, WireRefusal::TwoInstruments});
   // Deactivating a device leaves its wires out (inactive), and the project still compiles.
   REQUIRE(store.dispatch(SetDeviceActive{sat, false}).ok());
-  const std::vector<WireState> st3 = wireStates(*store.current(), (*lib)->library());
+  const std::vector<WireState> st3 = playback_fixture::drawn(wireStates(*store.current(), (*lib)->library()), *store.current());
   CHECK(st3[0].status == WireStatus::Inactive);
   CHECK(st3[4].status == WireStatus::Inactive);
   auto link2 = makeLink(store.current());
@@ -501,19 +504,20 @@ patch Probe {
     b.commands.push_back(AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
     b.commands.push_back(AddWire{Wire{ids.wire(), inst, "vel", util, "balance", 0.8, reducer, {}, WireLaw::Travel}});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     LowerOptions lo;
     lo.library = &plib;
     lo.slotOf = [](TrackId) { return 0u; };
     auto low = lower(*store.current(), lo);
     REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
-    REQUIRE(low->wires.size() == 1);
-    CHECK(low->wires[0].status == WireStatus::Lowered);
+    REQUIRE(playback_fixture::drawn(low->wires, *store.current()).size() == 1);
+    CHECK(playback_fixture::drawn(low->wires, *store.current())[0].status == WireStatus::Lowered);
     const graph::Patch& tp = low->patches[0]->patch;
     const std::string_view want = reducer == WireReducer::Last ? "voice_last" : "voice_sum";
     *reducerFound = false;
     for (graph::NodeIndex n = 0; n < tp.nodeCount(); ++n)
       if (tp.node(n).kind == graph::NodeKind::Atom && graph::atomSignature(tp.node(n).atom).name == want &&
-          tp.node(n).id.value == nodeIdFor(NodeRole::Wire, wiresOf(*store.current())[0].id.value, 4))
+          tp.node(n).id.value == nodeIdFor(NodeRole::Wire, playback_fixture::drawnWires(*store.current())[0].id.value, 4))
         *reducerFound = true;
     std::vector<engine::ProjectParamLink> links;
     std::vector<float> values;
@@ -548,9 +552,9 @@ TEST_CASE("wires: deleting a device deletes its wires, in one undo step") {
   REQUIRE(store.dispatch(e->command).ok());
   CHECK_FALSE(ops::connectTravelWire(*store.current(), ids, lfo, "lfo", util, "balance").ok());  // already wired
   REQUIRE(store.dispatch(ops::deleteDevices(*store.current(), std::vector<DeviceId>{lfo})->command).ok());
-  CHECK(wiresOf(*store.current()).empty());
+  CHECK(playback_fixture::drawnWires(*store.current()).empty());
   REQUIRE(store.undo());
-  CHECK(wiresOf(*store.current()).size() == 1);  // one undo step restores the device and its wire
+  CHECK(playback_fixture::drawnWires(*store.current()).size() == 1);  // one undo step restores the device and its wire
 }
 
 // T1.x-silence: a modulation source on another track keeps the target's unit running (and its ring moving) while it is
@@ -569,10 +573,11 @@ TEST_CASE("wires: a cross-track modulation keeps the target unit awake while it 
   b.commands.push_back(AddClip{a, playback_fixture::clip(ids, 0, 16 * kPpq, {playback_fixture::note(ids, 4 * kPpq, kPpq, 0)}, "n")});
   b.commands.push_back(AddWire{Wire{ids.wire(), utilA, "mid", utilB, "width", 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
   REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   auto link = makeLink(store.current());
   REQUIRE(link->lastError().empty());
-  REQUIRE(link->wireStates().size() == 1);
-  CHECK(link->wireStates()[0].status == WireStatus::Lowered);
+  REQUIRE(playback_fixture::drawn(link->wireStates(), *store.current()).size() == 1);
+  CHECK(playback_fixture::drawn(link->wireStates(), *store.current())[0].status == WireStatus::Lowered);
   Driver d{*link};
   engine::ProjectProgram& program = *link->engine().program();
   REQUIRE(program.numUnits() >= 3);
@@ -614,6 +619,7 @@ TEST_CASE("wires (TMM.10-fix2): the note source's outputs wired per voice and th
     b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T", inst), {}, kAppend});
     b.commands.push_back(AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
     REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     if (velocityWire) {
       auto e = ops::connectTravelNoteWire(*store.current(), ids, t, "velocity", inst, "bright", 0.6);
       REQUIRE(e.ok());

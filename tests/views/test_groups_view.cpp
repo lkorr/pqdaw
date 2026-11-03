@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "all_free_helpers.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/gpu.h"
@@ -201,7 +202,7 @@ TEST_CASE("groups view: wiring inside a capsule and across it, a block dragged o
     u.d.step();
     CHECK(u.history() == h0 + 3);
     CHECK_FALSE(u.groupOf(u.ids.pa2).valid());
-    CHECK(doc::findDevice(*u.ctx.doc(), u.ids.pa2).device->free);
+    CHECK(all_free::offPath(*u.ctx.doc(), u.ids.pa2));
     CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
   }
   // Closed: one block with a miniature; its members' wires end on it; opened again.
