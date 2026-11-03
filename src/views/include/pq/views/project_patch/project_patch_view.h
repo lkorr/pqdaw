@@ -494,8 +494,9 @@ public:
   circuit::NodeMenu* openInsertMenu(uint32_t edge, ui::Vec2 at);
   // The main input / output of a device as it is now ("" = none), from its patch's signature (catalog facts).
   circuit::MainPorts mainPorts(doc::DeviceId device) const;
-  // Push-apart (after a spawn): a short simulation of the blocks it moves (nudges, view state), one re-layout per frame
-  // while it runs; it stops when they are apart and at rest (no frames after). Off (tests, scenes): it settles at once.
+  // Push-apart (after a spawn): the blocks in the way are separated (solved at once: free blocks share the move, standing
+  // ones — chain blocks, sources, mixers, capsules — do not move) and each glides there as a critically damped spring
+  // (≈ 0.3 s; nudges, view state), one re-layout per frame while it runs; then no frames. Off (tests, scenes): at once.
   bool pushing() const noexcept { return !push_.bodies.empty(); }
   void setPushAnimated(bool on) noexcept { pushAnimated_ = on; }
   static constexpr float kPushGap = 12.0f;  // world units between blocks pushed apart
@@ -737,6 +738,7 @@ private:
       doc::DeviceId device;
       float x = 0, y = 0, w = 0, h = 0;  // world rect when the push began (before the offset)
       float dx = 0, dy = 0, vx = 0, vy = 0;
+      float tx = 0, ty = 0;              // the offset it ends at (solved when the push begins)
       float minY = 0;                    // its band's title bottom: never pushed above it
       bool movable = true;
       doc::PatchNudge base;              // its nudge when the push began

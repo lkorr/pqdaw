@@ -333,6 +333,43 @@ void ProjectPatchView::startPush(doc::DeviceId placed) {
     push_.bodies.clear();
     return;
   }
+  // Where they end: overlapping pairs (closer than kPushGap) are separated along their axis of least overlap — split
+  // between two free blocks, all of it on the free one against a standing block — until none overlaps (the band's
+  // title strip is a wall: a pair it blocks vertically separates sideways).
+  for (int iter = 0; iter < 256; ++iter) {
+    bool overlap = false;
+    for (size_t i = 0; i < push_.bodies.size(); ++i)
+      for (size_t j = i + 1; j < push_.bodies.size(); ++j) {
+        Push::Body& u = push_.bodies[i];
+        Push::Body& v = push_.bodies[j];
+        if (!u.movable && !v.movable) continue;
+        const float ux = u.x + u.tx, uy = u.y + u.ty, vx = v.x + v.tx, vy = v.y + v.ty;
+        const float ox = std::min(ux + u.w + kPushGap - vx, vx + v.w + kPushGap - ux);
+        const float oy = std::min(uy + u.h + kPushGap - vy, vy + v.h + kPushGap - uy);
+        if (ox <= 0.0f || oy <= 0.0f) continue;
+        overlap = true;
+        const float su = u.movable && v.movable ? 0.5f : (u.movable ? 1.0f : 0.0f), sv = u.movable && v.movable ? 0.5f : (v.movable ? 1.0f : 0.0f);
+        const bool uFirst = (ux + u.w * 0.5f) <= (vx + v.w * 0.5f);  // u left of v (sideways) …
+        const bool uAbove = (uy + u.h * 0.5f) <= (vy + v.h * 0.5f);  // … u above v (vertically)
+        bool vertical = oy < ox;
+        if (vertical) {  // the wall: the one going up must stay below the title strip
+          Push::Body& up = uAbove ? u : v;
+          const float upShare = uAbove ? su : sv;
+          if (up.movable && up.y + up.ty - (oy + 0.5f) * upShare < up.minY) vertical = false;
+        }
+        if (vertical) {
+          const float d = oy + 0.5f;
+          u.ty += (uAbove ? -d : d) * su;
+          v.ty += (uAbove ? d : -d) * sv;
+        } else {
+          const float d = ox + 0.5f;
+          u.tx += (uFirst ? -d : d) * su;
+          v.tx += (uFirst ? d : -d) * sv;
+        }
+      }
+    if (!overlap) break;
+  }
+  for (Push::Body& b : push_.bodies) b.ty = std::max(b.ty, b.minY - b.y);
   if (!pushAnimated_ || !shown()) {
     finishPushNow();
     return;
@@ -341,56 +378,29 @@ void ProjectPatchView::startPush(doc::DeviceId placed) {
 }
 
 bool ProjectPatchView::stepPush(double seconds) {
-  // Each overlapping pair (closer than kPushGap) is pushed apart along the axis of least overlap by a spring force
-  // (equal and opposite; a standing block takes none); velocities are damped. Fixed sub-steps: the same result at any
-  // frame rate. Settled: no pair closer than the gap and every block slower than 4 units / s.
+  // Each moving block approaches its solved place (startPush) as a critically damped spring (no overshoot, ≈ 0.3 s):
+  // a'' = ω²·(target − x) − 2ω·x'. Fixed sub-steps: the same path at any frame rate. Settled: within half a unit and
+  // slower than 4 units / s (then exactly at the target).
   constexpr double kStep = 1.0 / 240.0;
-  constexpr float kSpring = 900.0f, kDamping = 16.0f, kMaxSpeed = 4000.0f;
+  constexpr float kOmega = 24.0f;
   const int steps = std::clamp(static_cast<int>(std::ceil(seconds / kStep)), 1, 240);
   const float dt = static_cast<float>(kStep);
-  const float damp = std::exp(-kDamping * dt);
-  bool overlap = false;
-  for (int s = 0; s < steps; ++s) {
-    overlap = false;
-    std::vector<std::pair<float, float>> acc(push_.bodies.size(), {0.0f, 0.0f});
-    for (size_t i = 0; i < push_.bodies.size(); ++i)
-      for (size_t j = i + 1; j < push_.bodies.size(); ++j) {
-        const Push::Body& a = push_.bodies[i];
-        const Push::Body& b = push_.bodies[j];
-        if (!a.movable && !b.movable) continue;
-        const float ax = a.x + a.dx, ay = a.y + a.dy, bx = b.x + b.dx, by = b.y + b.dy;
-        const float ox = std::min(ax + a.w + kPushGap - bx, bx + b.w + kPushGap - ax);
-        const float oy = std::min(ay + a.h + kPushGap - by, by + b.h + kPushGap - ay);
-        if (ox <= 0.0f || oy <= 0.0f) continue;
-        overlap = true;
-        float fx = 0.0f, fy = 0.0f;
-        if (ox <= oy) {
-          const float dir = (ax + a.w * 0.5f) <= (bx + b.w * 0.5f) ? -1.0f : 1.0f;  // a's push direction
-          fx = dir * kSpring * ox;
-        } else {
-          const float dir = (ay + a.h * 0.5f) <= (by + b.h * 0.5f) ? -1.0f : 1.0f;
-          fy = dir * kSpring * oy;
-        }
-        const float share = a.movable && b.movable ? 0.5f : 1.0f;
-        if (a.movable) acc[i].first += fx * share, acc[i].second += fy * share;
-        if (b.movable) acc[j].first -= fx * share, acc[j].second -= fy * share;
-      }
-    for (size_t i = 0; i < push_.bodies.size(); ++i) {
-      Push::Body& b = push_.bodies[i];
-      if (!b.movable) continue;
-      b.vx = std::clamp((b.vx + acc[i].first * dt) * damp, -kMaxSpeed, kMaxSpeed);
-      b.vy = std::clamp((b.vy + acc[i].second * dt) * damp, -kMaxSpeed, kMaxSpeed);
+  bool moving = false;
+  for (Push::Body& b : push_.bodies) {
+    if (!b.movable) continue;
+    for (int s = 0; s < steps; ++s) {
+      b.vx += (kOmega * kOmega * (b.tx - b.dx) - 2.0f * kOmega * b.vx) * dt;
+      b.vy += (kOmega * kOmega * (b.ty - b.dy) - 2.0f * kOmega * b.vy) * dt;
       b.dx += b.vx * dt;
       b.dy += b.vy * dt;
-      if (b.y + b.dy < b.minY) {  // the band's title strip is a wall
-        b.dy = b.minY - b.y;
-        b.vy = std::max(0.0f, b.vy);
-      }
+    }
+    if (std::fabs(b.tx - b.dx) < 0.5f && std::fabs(b.ty - b.dy) < 0.5f && std::fabs(b.vx) < 4.0f && std::fabs(b.vy) < 4.0f) {
+      b.dx = b.tx, b.dy = b.ty, b.vx = b.vy = 0.0f;
+    } else {
+      moving = true;
     }
   }
-  float speed = 0.0f;
-  for (const Push::Body& b : push_.bodies) speed = std::max(speed, std::max(std::fabs(b.vx), std::fabs(b.vy)));
-  return overlap || speed > 4.0f;
+  return moving;
 }
 
 void ProjectPatchView::applyPush() {
@@ -414,8 +424,7 @@ void ProjectPatchView::applyPush() {
 }
 
 void ProjectPatchView::finishPushNow() {
-  for (int i = 0; i < 2000 && stepPush(1.0 / 60.0); ++i) {
-  }
+  for (Push::Body& b : push_.bodies) b.dx = b.tx, b.dy = b.ty;
   applyPush();
   push_.bodies.clear();
 }

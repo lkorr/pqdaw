@@ -850,7 +850,7 @@ TEST_CASE("node menu: opening it with the full catalog is fast (within a 60 Hz f
     u.d.press("Escape");
     u.d.step();
   }
-  MESSAGE("node menu open + first frame, worst of 19: " << worst << " ms");
+  MESSAGE("node menu open + layout + step (the painted frame: pq_bench_project_patch), worst of 19: " << worst << " ms");
 #if PQ_OPTIMIZED
   CHECK(worst <= 16.0);
 #endif
