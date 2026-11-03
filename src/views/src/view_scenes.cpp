@@ -1741,6 +1741,57 @@ Status setupProjectNodeMenu(Shell& shell) {
   return Ok{};
 }
 
+// TX.node-menu-fix1: a new connection being drawn out in the project patch view (the TX.patching scene): a press on the
+// free Utility's output and a drag onto an input pin of another block — the real cable (tube, plugs, the source's
+// colour) from the port to the pin it snapped to, highlighted (its halo, a ring on the pin). Cables at rest (no motion:
+// deterministic).
+Status setupProjectCableDrag(Shell& shell) {
+  if (Status s = setupProjectPatchFree(shell); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-cable-drag: the view is not installed", {}};
+  project_patch::ProjectCanvas& c = v->canvas();
+  c.setCablesAnimated(false);
+  shell.tree().layoutNow();
+  const project_patch::ProjectPatch& pp = v->patch();
+  uint32_t src = project_patch::kNone;
+  for (uint32_t i = 0; i < pp.nodes.size(); ++i)
+    if (pp.nodes[i].kind == project_patch::NodeKind::Device && pp.nodes[i].free && pp.nodes[i].title == "Utility" && !pp.nodes[i].outputs.empty()) src = i;
+  if (src == project_patch::kNone) return Error{ErrorCode::NotFound, "project-cable-drag: no free Utility", {}};
+  const project_patch::Node& sn = pp.nodes[src];
+  const ui::Vec2 from = c.toDevice({sn.x + sn.w, sn.y + project_patch::pinOffset(sn, 0)});
+  auto send = [&](ui::PointerType t, ui::Vec2 p) {
+    ui::PointerEvent e;
+    e.type = t;
+    e.button = ui::PointerButton::Left;
+    e.pos = p;
+    shell.tree().dispatchPointer(e);
+  };
+  // The target: the first visible input pin of another block that a release would connect (tried along the drag).
+  std::vector<ui::Vec2> pins;
+  const ui::IRect cr = c.rect();
+  for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
+    const project_patch::Node& n = pp.nodes[i];
+    if (i == src || n.kind != project_patch::NodeKind::Device) continue;
+    for (size_t k = 0; k < n.inputs.size(); ++k) {
+      const ui::Vec2 p = c.toDevice(project_patch::inputEntry(n, k));
+      if (!n.inputs[k].anchored && cr.contains(p) && std::hypot(p.x - from.x, p.y - from.y) >= 120.0f) pins.push_back(p);
+    }
+  }
+  send(ui::PointerType::Move, from);
+  send(ui::PointerType::Down, from);
+  if (!c.looseCable())
+    return Error{ErrorCode::Unknown, "project-cable-drag: no cable on the pointer (drag " + std::to_string(static_cast<int>(c.drag())) + ")", {}};
+  bool snapped = false;
+  for (const ui::Vec2 to : pins) {
+    for (int k = 1; k <= 6; ++k)
+      send(ui::PointerType::Move, {from.x + (to.x - from.x) * static_cast<float>(k) / 6.0f, from.y + (to.y - from.y) * static_cast<float>(k) / 6.0f});
+    if ((snapped = c.looseCableSnapped())) break;
+  }
+  if (!snapped) return Error{ErrorCode::Unknown, "project-cable-drag: no input the cable snaps to", {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TX.panel-faces (bug report 2026-11-01_12-15-15: "the utility in the circuit should just look like the utility ui in
 // the device list below"): closed stock devices drawn as their Device-view panels in the project patch view — "Keys"
 // plays the default synth (its generic panel) into an Auto Filter (frequency 600 Hz, resonance 0.4) and a Utility
@@ -2722,6 +2773,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-notes", 1280, 800, setupProjectPatchNotes},        // TMM.10-fix2
     {"project-patch-free", 1280, 800, setupProjectPatchFree},          // TX.patching
     {"project-node-menu", 1280, 800, setupProjectNodeMenu},          // TX.node-menu
+    {"project-cable-drag", 1280, 800, setupProjectCableDrag},        // TX.node-menu-fix1
     {"project-patch-panels", 1600, 900, setupProjectPatchPanels},      // TX.panel-faces
     {"project-patch-resize", 1600, 900, setupProjectPatchResize},      // TX.resize
     {"project-patch-group", 1600, 900, setupProjectPatchGroup},        // TX.groups

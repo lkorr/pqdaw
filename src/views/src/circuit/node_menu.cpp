@@ -351,11 +351,10 @@ float NodeMenu::openProgress() const noexcept {
 }
 
 void NodeMenu::paint(ui::PaintContext& ctx) {
-  const ui::Theme* th = ctx.res.theme;
-  if (th == nullptr) return;
   // The open animation: faded in and grown from 96 % about the corner at the pointer, eased out.
   const float t = openProgress();
   if (t < 1.0f && openAt_ == -1.0) requestFrame();  // first paint: start the clock (onFrame)
+  if (ctx.res.theme == nullptr) return;
   const uint32_t first = ctx.dl.vtxCurrentIdx();
   paintMenu(ctx);
   if (t < 1.0f) {

@@ -917,6 +917,78 @@ TEST_CASE("node menu: a new connection is the real cable on the pointer — snap
   u.d.advance(1.0);
   CHECK(u.d.framesDrawn() == f);  // idle again: no frames
 }
+
+// TX.node-menu-fix1: the menu opens with a short fade (frames for kOpenSeconds, then none while it is idle), beside the
+// pointer with the spawn point marked (gone when it closes); Tab over a cable shows that cable selected while the menu
+// is open (the selection comes back on Esc); a node spawned from a dropped cable meets it with its input pin; the menu
+// fits a small window.
+TEST_CASE("node menu: open animation then idle; spawn mark; the insert cable shown; a dropped cable meets the input; fits") {
+  Ui u;
+  const graph::Point2 at = u.emptyWorld();
+  u.d.move(u.dev(at));
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  NodeMenu* m = u.menu();
+  REQUIRE(m != nullptr);
+  CHECK(m->openProgress() < 1.0f);
+  REQUIRE(u.view().spawnMark().has_value());
+  CHECK(std::abs(u.view().spawnMark()->x - at.x) <= 0.5f);
+  const uint64_t f0 = u.d.framesDrawn();
+  u.d.advance(0.25);
+  CHECK(m->openProgress() == 1.0f);
+  CHECK(u.d.framesDrawn() > f0 + 2);  // it animated
+  const uint64_t f1 = u.d.framesDrawn();
+  u.d.advance(0.5);
+  CHECK(u.d.framesDrawn() == f1);  // then idle: no frames
+  u.d.press("Escape");
+  u.d.step();
+  CHECK(u.menu() == nullptr);
+  CHECK_FALSE(u.view().spawnMark().has_value());
+  CHECK(u.d.tree().focus() == &u.view().canvas());
+  // Tab over the LFO's wire: that cable selected while the menu is open; Esc gives the selection back.
+  {
+    const uint32_t sn = u.view().scene().sceneNode[u.node(u.sat)];
+    const uint32_t one[1] = {sn};
+    u.view().canvas().select(one, {});
+    const uint32_t edge = u.wireEdge(u.lfoWire);
+    u.d.move(u.onCable(edge));
+    REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+    REQUIRE(u.menu() != nullptr);
+    REQUIRE(u.view().canvas().selection().wires.size() == 1);
+    CHECK(u.view().scene().modelEdge[u.view().canvas().selection().wires[0]] == edge);
+    CHECK(u.view().canvas().selection().nodes.empty());
+    u.d.press("Escape");
+    CHECK(u.view().canvas().selection().nodes.size() == 1);
+    CHECK(u.view().canvas().selection().wires.empty());
+  }
+  // A cable from the Saturator's output dropped on empty space: the Utility it spawns has its input pin there.
+  {
+    const graph::Point2 drop{at.x + 40.0f, at.y + 24.0f};
+    u.d.drag(u.outPin(u.sat, "out"), u.dev(drop), 6);
+    REQUIRE(u.menu() != nullptr);
+    u.pick("utility", "Utility");
+    const doc::DeviceId made = u.newest();
+    const Node& n = u.pp().nodes[u.node(made)];
+    const int32_t k = n.input(u.view().mainPorts(made).in);
+    REQUIRE(k >= 0);
+    const graph::Point2 pin = inputEntry(n, static_cast<size_t>(k));
+    CHECK(std::abs(pin.x - drop.x) <= 1.0f);
+    CHECK(std::abs(pin.y - drop.y) <= 1.0f);
+  }
+  // A small window: the menu fits inside it.
+  u.d.resize(640, 420);
+  u.d.tree().layoutNow();
+  u.d.move({300.0f, 200.0f});
+  u.d.tree().setFocus(&u.view().canvas());
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  REQUIRE(u.menu() != nullptr);
+  u.d.tree().layoutNow();
+  const ui::IRect r = u.menu()->rect();
+  CHECK(r.x >= 0);
+  CHECK(r.y >= 0);
+  CHECK(r.right() <= 640);
+  CHECK(r.bottom() <= 420);
+  u.d.press("Escape");
+}
 TEST_CASE("node menu: a typed spec places that one node (`0.5`, `* 2`); an instrument goes into the chain") {
   Ui u;
   const graph::Point2 at = u.emptyWorld();
@@ -1362,6 +1434,23 @@ TEST_CASE("node menu: opening it with the full catalog is fast (within a 60 Hz f
 
 TEST_CASE("render: project-node-menu matches the golden image") {
   const char* name = "project-node-menu";
+  uint32_t w = 0, h = 0;
+  viewSceneDefaultSize(name, w, h);
+  GpuOptions o;
+  o.validation = true;
+  auto img = renderViewScene(name, {}, w, h, {}, o, &library());
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+  const std::string path = std::string(PQ_TEST_DATA_DIR) + "/views/golden/" + name + ".png";
+  auto ref = readPng(path);
+  if (!ref) (void)writePng(std::string(name) + ".actual.png", *img);
+  REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
+  ImageDiff d;
+  CHECK(pq::ui::test::matchesGolden(name, *img, *ref, true, &d));
+  MESSAGE(std::string(name) << ": " << pq::ui::test::describe(d));
+}
+
+TEST_CASE("render: project-cable-drag matches the golden image") {
+  const char* name = "project-cable-drag";
   uint32_t w = 0, h = 0;
   viewSceneDefaultSize(name, w, h);
   GpuOptions o;
