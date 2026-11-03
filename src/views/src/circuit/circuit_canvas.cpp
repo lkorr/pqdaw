@@ -8,7 +8,6 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
-#include <numbers>
 #include <optional>
 #include <unordered_map>
 
@@ -1711,11 +1710,13 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
       const float g = cables[d.cable].glow * d.alpha;
       if (g <= 0.0f) continue;
       cfade.resize(d.count);
+      // A pulse per period: a smooth bump a quarter period wide (no trig per vertex).
+      const float inv = 1.0f / period;
       for (uint32_t k = 0; k < d.count; ++k) {
-        const float x = (carc[d.first + k] - phase) / period;
-        const float c = 0.5f + 0.5f * std::cos(2.0f * std::numbers::pi_v<float> * (x - std::floor(x) - 0.5f));
-        const float c2 = c * c, c4 = c2 * c2;
-        cfade[k] = g * (0.18f + 0.82f * c4 * c2);
+        const float x = (carc[d.first + k] - phase) * inv;
+        const float u = x - std::floor(x) - 0.5f;
+        const float b = std::max(0.0f, 1.0f - 16.0f * u * u);
+        cfade[k] = g * (0.18f + 0.82f * b * b);
       }
       const Rgba core = ui::lerp(d.col, ui::rgba(255, 255, 255), 0.45f);
       const float o[3] = {0.7f * hw, 0.0f, -0.7f * hw};
