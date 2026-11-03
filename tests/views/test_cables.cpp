@@ -361,6 +361,63 @@ TEST_CASE("cables: a block drag swings its cables; the canvas stops requesting f
   CHECK(std::isinf(u.d.tree().nextWakeTime()));
 }
 
+// TX.node-menu's push-apart glides blocks (a re-layout per frame): the cables of a gliding block swing with it, then all
+// of it settles and the canvas goes idle.
+TEST_CASE("cables: a block pushed apart by a spawn glides, its cables swing; then idle") {
+  Ui u(fixture());
+  doc::TrackId midi;
+  doc::forEachTrack(*u.ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (!midi.valid() && t.kind == doc::TrackKind::Midi) midi = t.id;
+  });
+  REQUIRE(midi.valid());
+  u.view().focusBand(midi, false);
+  u.d.advance(0.5);
+  REQUIRE(u.canvas().lod() != circuit::CircuitCanvas::Lod::Far);
+  // The free block (the VCA, wired both ways) and its cables.
+  uint32_t vca = kNone;
+  for (uint32_t i = 0; i < u.pp().nodes.size(); ++i)
+    if (u.pp().nodes[i].kind == NodeKind::Device && u.pp().nodes[i].free) vca = i;
+  REQUIRE(vca != kNone);
+  const doc::DeviceId vcaId = u.pp().nodes[vca].device;
+  const graph::Point2 on{u.pp().nodes[vca].x + u.pp().nodes[vca].w * 0.5f, u.pp().nodes[vca].y + u.pp().nodes[vca].h * 0.5f};
+  const float x0 = u.pp().nodes[vca].x, y0 = u.pp().nodes[vca].y;
+  u.view().setPushAnimated(true);
+  const doc::DeviceId spawned = u.view().spawnNode(ProjectPatchView::specChoice("tanh"), on);
+  REQUIRE(spawned.valid());
+  REQUIRE(u.view().pushing());
+  bool swung = false;
+  for (int i = 0; i < 30 && !swung; ++i) {
+    u.d.advance(1.0 / 144.0);
+    swung = u.canvas().cablesMoving();
+  }
+  CHECK(swung);
+  const double took = u.settle(5.0);
+  CHECK(took <= 2.5);
+  CHECK_FALSE(u.view().pushing());
+  CHECK_FALSE(u.canvas().cablesMoving());
+  const uint32_t moved = u.pp().nodeOf(vcaId);
+  REQUIRE(moved != kNone);
+  CHECK((u.pp().nodes[moved].x != x0 || u.pp().nodes[moved].y != y0));
+  // Its cables hang from its pins where it is now, at rest.
+  const circuit::CircuitScene& sc = u.scene();
+  const uint32_t sn = u.view().scene().sceneNode[moved];
+  uint32_t mine = 0;
+  for (uint32_t w = 0; w < sc.wires.size(); ++w) {
+    if (!sc.wires[w].cable) continue;
+    const bool from = sc.pins[sc.wires[w].fromPin].node == sn, to = sc.pins[sc.wires[w].toPin].node == sn;
+    if (!from && !to) continue;
+    ++mine;
+    const std::span<const Point2> rope = u.canvas().cablePoints(w);
+    const Point2 end = from ? rope.front() : rope.back();
+    const Point2 pin = from ? sc.points[sc.wires[w].firstPoint] : sc.points[sc.wires[w].firstPoint + sc.wires[w].pointCount - 1];
+    CHECK(dist(end, pin) < 0.01f);
+  }
+  CHECK(mine >= 2);
+  const uint64_t f0 = u.d.framesDrawn();
+  u.d.advance(1.0);
+  CHECK(u.d.framesDrawn() == f0);
+}
+
 TEST_CASE("cables: hit tests follow the hanging curve (within 4 px), not the chord; over a face's control only the plug") {
   Ui u;
   // A cable whose lowest point hangs in the open (no block under it), the longest such: zoomed 1:1 onto that point.
