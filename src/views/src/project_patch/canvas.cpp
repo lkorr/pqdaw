@@ -1875,7 +1875,12 @@ ui::InfoText ProjectCanvas::info() const {
             "make room. S + double-click (or Reset Size in its menu) gives it its own size. Esc cancels the drag."};
   if (ui::InfoText t; faceInfo(t)) return t;  // TMM.4
   const ProjectPatchView::Readout& ro = view_.readout();
-  if (ro.edge != kNone) return {ro.title, ro.value};
+  if (ro.edge != kNone) {
+    // TX.node-menu-fix1: what the keys do on this cable (the hover halo shows which one).
+    if (!cuttableEdge(ro.edge)) return {ro.title, ro.value};
+    infoTitle_ = ro.value + "  ·  Z inserts a VCA at x1, Tab inserts a node, a block Shift-dragged onto it is spliced in.";
+    return {ro.title, infoTitle_};
+  }
   // TMM.10-fix2: a MIDI track's lane window is its note source (its Hz piano roll), not a subcircuit.
   if (const circuit::CanvasHit& h = hovered(); (h.kind == circuit::CanvasHit::Kind::Node || h.kind == circuit::CanvasHit::Kind::Pin) && scene()) {
     const circuit::CircuitScene& sc = *scene();
