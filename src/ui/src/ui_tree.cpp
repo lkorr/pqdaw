@@ -517,6 +517,11 @@ Cursor UiTree::cursor() const {
 bool UiTree::bubblePointer(Widget* from, const PointerEvent& e) {
   for (Widget* w = from; w; w = w->parent_) {
     if (!w->enabled() || !w->onPointer(e)) continue;
+    // TX.node-menu-fix1: a widget may leave the tree inside its own handler (a popup closing on the press that chose:
+    // OverlayLayer::close retires it until the next frame). It is never captured then: the capture would outlive it,
+    // and the next cursor query or pointer event would call through a destroyed widget. Widgets removed during
+    // dispatch must stay alive until it returns (retire them, as the overlay does), so w itself is still readable here.
+    if (w->tree_ != this) return true;
     if (e.type == PointerType::Down && !captured_) {
       captured_ = w;
       w->set(Widget::kCaptured, true);

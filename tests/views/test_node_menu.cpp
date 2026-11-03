@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "pq/core/alloc_trap.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/graph/atoms.h"
@@ -411,6 +412,81 @@ TEST_CASE("node menu: Tab opens it at the pointer, typing goes in, keys move and
   CHECK(recentNodes().front() == "device:saturator");
   REQUIRE(u.ctx.undo());
   CHECK(u.ctx.doc() == start);
+}
+
+// TX.node-menu-fix1 (the user's crash, dump pqdaw.exe.15024 at 65b90690): a CLICK on a row places the node and closes
+// the menu inside its own onPointer(Down); the tree then captured the press for the menu — a widget already removed
+// from the tree (in the overlay's graveyard). The next frame destroyed it and the app's cursor query
+// (UiTree::cursor → captured_->cursorAt) called through a freed vtable. Freed memory is poisoned here, and every step
+// is followed by the app's own sequence (update, then cursor()), through real event dispatch.
+TEST_CASE("node menu: a click on a row places the node — the closed menu is never captured (poisoned frees)") {
+  Ui u;
+  const graph::Point2 at = u.emptyWorld();
+  auto frame = [&] {
+    u.d.step();
+    (void)u.d.tree().cursor();  // the app's loop: ui->update(now), then applyCursor(ui->cursor())
+  };
+  auto clickRow = [&](std::string_view query, std::string_view name) {
+    NodeMenu* m = u.menu();
+    REQUIRE(m != nullptr);
+    u.d.type(query);
+    frame();
+    int32_t row = -1;
+    for (int32_t i = 0; i < static_cast<int32_t>(m->rows().size()); ++i) {
+      const NodeMenu::Row& r = m->rows()[static_cast<size_t>(i)];
+      if (r.kind == NodeMenu::Row::Kind::Entry && m->catalog().entries[r.entry].name == name) {
+        row = i;
+        break;
+      }
+    }
+    REQUIRE(row >= 0);
+    const ui::IRect rr = m->rowRect(row);
+    REQUIRE_FALSE(rr.empty());
+    const Vec2 p{static_cast<float>(rr.x + rr.w / 2), static_cast<float>(rr.y + rr.h / 2)};
+    u.d.move(p);
+    frame();
+    const size_t h0 = u.history();
+    {
+      alloc_trap::PoisonFrees poison;
+      u.d.down(p);
+      CHECK(u.d.tree().captured() != static_cast<Widget*>(m));
+      frame();  // the graveyard empties: the menu is freed (poisoned)
+      frame();
+      u.d.move({p.x + 3.0f, p.y + 2.0f});
+      frame();
+      u.d.up({p.x + 3.0f, p.y + 2.0f});
+      frame();
+      u.d.advance(0.5);  // push-apart / cable frames
+      (void)u.d.tree().cursor();
+    }
+    u.view().sync();
+    CHECK(u.history() == h0 + 1);
+    CHECK(u.menu() == nullptr);
+    CHECK(u.d.tree().focus() == &u.view().canvas());  // the keys go back to the canvas
+  };
+  // Tab on empty canvas, a click on "Saturator".
+  u.d.move(u.dev(at));
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  frame();
+  clickRow("saturator", "Saturator");
+  // Animated push-apart: Tab over the block just placed, a click (the spawn pushes it; frames run while it glides).
+  u.view().setPushAnimated(true);
+  u.view().canvas().setCablesAnimated(true);
+  u.d.move(u.centre(u.newest()));
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  frame();
+  clickRow("vca", "VCA");
+  // Tab over a cable (insert), a click.
+  u.d.move(u.onCable(u.wireEdge(u.lfoWire)));
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  frame();
+  clickRow("saturator", "Saturator");
+  // A cable dropped on empty space, a click.
+  u.d.drag(u.outPin(u.sat, "out"), u.dev({at.x + 40.0f, at.y + 170.0f}), 6);  // below the blocks placed above
+  frame();
+  REQUIRE(u.menu() != nullptr);
+  clickRow("utility", "Utility");
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
 }
 
 TEST_CASE("node menu: a typed spec places that one node (`0.5`, `* 2`); an instrument goes into the chain") {

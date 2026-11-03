@@ -1218,3 +1218,54 @@ TEST_CASE("context menu: from a hosted tree, placed where the host shows the poi
   CHECK(m->rect().y == 52);
   inner.tree().setHost(nullptr);
 }
+
+// TX.node-menu-fix1 (the user's crash in the node menu): a popup that closes itself on the press that chooses (a click
+// on a row) leaves the tree inside its own onPointer(Down). The tree must not capture it: the overlay frees it at the
+// next frame, and a capture outliving it made the next cursor query call through a freed vtable. Freed memory is
+// poisoned while the press, the frames and the release run (the app's loop: update, then cursor()).
+TEST_CASE("overlay: a popup closed by its own press is not captured; frames, the cursor and the release are safe") {
+  struct ClosesOnPress : Widget {
+    int presses = 0;
+    bool onPointer(const PointerEvent& e) override {
+      if (e.type != PointerType::Down) return true;
+      ++presses;
+      if (OverlayLayer* l = OverlayLayer::of(*this)) l->close(*this);
+      return true;  // consumed: the press is this popup's
+    }
+  };
+  Fixture f;
+  Button& behind = f.add<Button>(120, 30, "behind", "Behind");
+  auto popup = std::make_unique<ClosesOnPress>();
+  popup->setSize(Length::fixed(100), Length::fixed(60));
+  OverlayOptions o;
+  o.anchor = {40, 40, 0, 0};
+  o.placement = Placement::AtPoint;
+  int closed = 0;
+  o.onClosed = [&] { ++closed; };
+  auto& p = static_cast<ClosesOnPress&>(f.overlay->open(std::move(popup), std::move(o)));
+  f.d.tree().layoutNow();
+  const Vec2 at = centre(p.rect());
+  f.d.move(at);
+  {
+    pq::alloc_trap::PoisonFrees poison;
+    f.d.down(at);
+    CHECK(p.presses == 1);  // (p is alive until the next frame: the overlay's graveyard)
+    CHECK(closed == 1);
+    CHECK(f.d.tree().captured() == nullptr);
+    for (int i = 0; i < 3; ++i) {
+      f.d.step();
+      (void)f.d.tree().cursor();
+    }
+    f.d.move({at.x + 4.0f, at.y});
+    (void)f.d.tree().cursor();
+    f.d.up({at.x + 4.0f, at.y});
+    f.d.step();
+    (void)f.d.tree().cursor();
+  }
+  CHECK(f.overlay->openCount() == 0);
+  // The tree works on: a click on the button behind.
+  int clicks = 0;
+  behind.onClick = [&] { ++clicks; };
+  f.d.click(centre(behind.rect()));
+  CHECK(clicks == 1);
+}
