@@ -2154,7 +2154,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **Rebuild during a gesture** (an undo while dragging): the gesture goes on if what it holds still exists (found again by identity), else it ends without an edit.
 - Status: open (provisional choices above).
 
-## Q?-TX.all-free-a · 2026-11-03 · TX.all-free · Everything is free: what the main path is, and what is not (yet) lowered
+## Q208 · 2026-11-03 · TX.all-free · Everything is free: what the main path is, and what is not (yet) lowered
 - **Which cables are the series** (the decision says "the series is ordinary cables (source → … → mixer)"): a wire between two MAIN ports (`kMainPort` "" at both ends: a block's main output → a block's main input, the track's source, the mixer). Cables drawn between main ports by name are written as "" (`doc::canonicalWire`), so a hand-drawn cable joins the path. Alternative: any wire into a main input; rejected: a modulation of an input would then reorder the Device view.
 - **Branches**: where a block's main output has several main links, the path follows the OLDEST one that reaches the mixer, else the oldest (stable while editing; ids are creation order). A merge (two main links into one block) is a path through the first; the other is an ordinary sum into that input. Alternative: the newest (follows the last gesture), or the longest; both make the list jump when an unrelated cable is drawn.
 - **A broken path** (nothing on it reaches the mixer): the Device view lists what is still on it (from the source to the break), the mixer hears only the other wires into it (silence when none). Nothing is silently re-wired.
