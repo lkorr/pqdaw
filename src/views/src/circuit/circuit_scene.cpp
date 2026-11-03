@@ -237,7 +237,8 @@ void indexScene(CircuitScene& sc, const float* include, uint32_t junctionNetsFro
   {
     std::vector<std::vector<uint32_t>> netSegs(nets);
     for (uint32_t s = 0; s < sc.segments.size(); ++s)
-      if (const uint32_t n = sc.wires[sc.segments[s].wire].net; n >= junctionNetsFrom) netSegs[n].push_back(s);
+      if (const SceneWire& w = sc.wires[sc.segments[s].wire]; w.net >= junctionNetsFrom && !w.cable)  // TX.cables: no dots
+        netSegs[w.net].push_back(s);
     std::vector<Point2> cand;
     for (const auto& segs : netSegs) {
       if (segs.size() < 3) continue;

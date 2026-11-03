@@ -10,6 +10,10 @@
 //     layout + scene, cold and from cached device scenes; full paints and pan frames fitted (far) and at zoom 1 (near))
 //   - TMM.4: the project plus 32 Phase accumulator faces at 2x: pan frames with faces vs plain blocks (far, near); 16
 //     faces x 8 animated voices (animation frames, a full paint); idle after the voices stop
+//   - TX.cables (`pq_bench_project_patch cables`, also at the end of a full run): 200 hanging cables between 40 blocks
+//     in view at zoom 1 (2560x1440): the simulation alone (200 awake ropes, a 60 Hz frame's steps), a settled full paint,
+//     frames while all 200 swing (a drag offset each frame: sim + damage + paint), frames while all 200 glow (poll +
+//     paint), and idle after they settle (frames and timers: none)
 // Acceptance (T4.13): zoomed-out full-project paint < 2 ms; the morph at 144 Hz with 64 tracks (a frame < 6.9 ms).
 // Run from the ship build (bench target only); results → bench/RESULTS.md.
 
@@ -36,7 +40,9 @@
 #include "pq/ui/tile_atlas.h"
 #include "pq/ui/widget.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/circuit/cables.h"
 #include "pq/views/circuit/chain_circuit.h"
+#include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -209,6 +215,213 @@ int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle, bool wavetable)
   return idle ? 0 : 1;
 }
 
+
+// ---- TX.cables ---------------------------------------------------------------------------------------------------
+// 200 cables between 40 plain blocks (8 × 5 over 2400 × 1300 world units), every cable in view at zoom 1, UI scale 1,
+// 2560x1440: what the UI thread pays per frame for the rope simulation and the tubes (shadow, tube, plugs; glow and
+// flow when lit). The scene is built by hand (the canvas's own path: SceneWire::cable, rest shapes, indexScene).
+int cablesBench(double nsPerCycle) {
+  auto sc = std::make_shared<circuit::CircuitScene>();
+  constexpr uint32_t kCols = 8, kRows = 5, kCables = 200;
+  for (uint32_t r = 0; r < kRows; ++r)
+    for (uint32_t c = 0; c < kCols; ++c) {
+      circuit::SymbolSpec spec;
+      spec.symbol = circuit::Symbol::Box;
+      spec.w = 120.0f;
+      spec.h = 80.0f;
+      spec.bodyKey = 77;
+      for (int k = 0; k < 5; ++k) {
+        circuit::PinSpec ps;
+        ps.y = 12.0f + 14.0f * static_cast<float>(k);
+        spec.inputs.push_back(ps);
+        spec.outputs.push_back(ps);
+      }
+      circuit::SceneNode n;
+      n.x = 60.0f + 300.0f * static_cast<float>(c);
+      n.y = 60.0f + 260.0f * static_cast<float>(r);
+      n.w = spec.w;
+      n.h = spec.h;
+      n.spec = static_cast<uint32_t>(sc->specs.size());
+      n.node = static_cast<graph::NodeIndex>(sc->nodes.size());
+      n.firstPin = static_cast<uint32_t>(sc->pins.size());
+      for (int side = 0; side < 2; ++side)
+        for (int k = 0; k < 5; ++k) {
+          circuit::ScenePin pin;
+          pin.input = side == 0;
+          pin.x = side == 0 ? n.x : n.x + n.w;
+          pin.y = n.y + spec.inputs[static_cast<size_t>(k)].y;
+          pin.node = n.node;
+          pin.port = static_cast<uint16_t>(k);
+          pin.connected = true;
+          sc->pins.push_back(pin);
+        }
+      n.pinCount = 10;
+      sc->specs.push_back(spec);
+      sc->nodes.push_back(n);
+    }
+  uint32_t seed = 12345;
+  auto rnd = [&](uint32_t m) {
+    seed = seed * 1664525u + 1013904223u;
+    return (seed >> 8) % m;
+  };
+  std::vector<graph::Point2> rest;
+  for (uint32_t i = 0; i < kCables; ++i) {
+    const uint32_t a = rnd(kCols * kRows);
+    uint32_t b = rnd(kCols * kRows);
+    if (b == a) b = (b + 1) % (kCols * kRows);
+    const circuit::SceneNode& na = sc->nodes[a];
+    const circuit::SceneNode& nb = sc->nodes[b];
+    const uint32_t fromPin = na.firstPin + 5 + rnd(5), toPin = nb.firstPin + rnd(5);
+    const graph::Point2 p0{sc->pins[fromPin].x, sc->pins[fromPin].y}, p1{sc->pins[toPin].x, sc->pins[toPin].y};
+    const uint32_t n = circuit::cablePointCount(std::hypot(p1.x - p0.x, p1.y - p0.y));
+    rest.resize(n);
+    circuit::cableRest(p0, p1, n, rest.data());
+    circuit::SceneWire sw;
+    sw.firstPoint = static_cast<uint32_t>(sc->points.size());
+    sw.pointCount = n;
+    sw.style.rate = circuit::WireRate::Audio;
+    sw.style.modulation = i % 3 == 1;
+    sw.style.notes = i % 7 == 3;
+    sw.net = i;
+    sw.wire = i;
+    sw.fromPin = fromPin;
+    sw.toPin = toPin;
+    sw.cable = true;
+    sw.cableKey = i + 1;
+    sw.x0 = sw.x1 = p0.x, sw.y0 = sw.y1 = p0.y;
+    for (const graph::Point2& q : rest) {
+      sw.x0 = std::min(sw.x0, q.x), sw.x1 = std::max(sw.x1, q.x);
+      sw.y0 = std::min(sw.y0, q.y), sw.y1 = std::max(sw.y1, q.y);
+    }
+    for (uint32_t k = 0; k + 1 < n; ++k) sc->segments.push_back({i, sw.firstPoint + k});
+    sc->points.insert(sc->points.end(), rest.begin(), rest.end());
+    sc->wires.push_back(sw);
+  }
+  circuit::indexScene(*sc);
+  std::printf("cables: %u cables, %zu points, %zu nodes\n", kCables, sc->points.size(), sc->nodes.size());
+
+  // The simulation alone: 200 awake ropes (every end moved), the steps of a 60 Hz frame (2 × 1/120 s).
+  {
+    circuit::CableSim sim;
+    std::vector<circuit::CableSim::Spec> specs;
+    for (const circuit::SceneWire& sw : sc->wires)
+      specs.push_back({sw.cableKey, sc->points[sw.firstPoint], sc->points[sw.firstPoint + sw.pointCount - 1]});
+    sim.sync(specs);
+    std::vector<double> t;
+    for (int round = 0; round < 60; ++round) {
+      const float d = round % 2 ? -30.0f : 30.0f;
+      for (uint32_t i = 0; i < sim.size(); ++i) sim.setEnds(i, {sim.endA(i).x + d, sim.endA(i).y}, sim.endB(i));
+      for (int f = 0; f < 4; ++f) {
+        const uint64_t c0 = threadCycles();
+        (void)sim.advance(1.0 / 60.0);
+        t.push_back(static_cast<double>(threadCycles() - c0) * nsPerCycle);
+      }
+    }
+    std::printf("cables.sim: %u awake after the rounds\n", sim.awakeCount());
+    pq::bench::reportStats("cables.sim step (200 awake ropes, one 60 Hz frame: 2 steps of 1/120 s)", pq::bench::summarize(t), "ns CPU/frame");
+  }
+
+  // The canvas in a tree (CPU paint).
+  auto tex = createSceneText(std::make_shared<Atlas>(), UiScale(1.0f));
+  if (!tex) return 1;
+  auto tiles = std::make_shared<TileAtlas>();
+  PaintResources res = paintResources(*tex);
+  res.tiles = tiles.get();
+  std::vector<uint8_t> staging;
+  auto stageTiles = [&] {
+    const auto b = tiles->uploadBytes();
+    if (staging.size() < b.size()) staging.resize(b.size());
+    if (!b.empty()) std::memcpy(staging.data(), b.data(), b.size());
+    tiles->clearUploads();
+    tiles->beginFrame();
+  };
+  const uint32_t w = 2560, h = 1440;
+  UiTree tree;
+  tree.setViewport(w, h, UiScale(1.0f));
+  tree.setResources(&res);
+  circuit::CircuitCanvas& c = tree.emplaceRoot<circuit::CircuitCanvas>("cables");
+  bool live = false;
+  c.cableSignalLive = [&] { return live; };
+  c.cableLevels = [&](std::span<const uint32_t>, std::span<float> levels) {
+    for (float& l : levels) l = live ? 0.8f : 0.0f;
+  };
+  tree.layoutNow();
+  c.setScene(sc, false);
+  c.setView({0.0, 0.0, 1.0});
+  DrawList dl;
+  double now = 1.0;
+  uint64_t frames = 0;
+  auto frame = [&] {
+    now += 1.0 / 144.0;
+    tree.update(now);
+    tex->text->beginFrame();
+    dl.reset(w, h);
+    if (tree.needsPaint()) {
+      tree.paint(dl, res, now);
+      ++frames;
+    }
+    stageTiles();
+  };
+  auto timed = [&](auto&& input) {
+    const uint64_t c0 = threadCycles();
+    input();
+    frame();
+    return static_cast<double>(threadCycles() - c0) * nsPerCycle;
+  };
+  auto settle = [&] {
+    for (int i = 0; i < 4000 && (tree.needsFrame() || tree.nextWakeTime() <= now + 1.0); ++i) {
+      now = std::max(now, std::min(tree.nextWakeTime(), now + 1.0)) - 1.0 / 144.0;
+      frame();
+    }
+  };
+  auto fullPaint = [&] {
+    tex->text->beginFrame();
+    dl.reset(w, h);
+    tree.paint(dl, res, now);
+    stageTiles();
+  };
+  settle();
+  fullPaint();
+  std::printf("cables: zoom %.2f, %u cables painted, %u vertices, %zu indices\n", c.view().zoom, c.stats().cablesPainted,
+              static_cast<unsigned>(dl.vertices().size()), dl.indices().size());
+  pq::bench::reportStats("cables.paint full, 200 cables at rest (zoom 1, 2560x1440)", pq::bench::measure(fullPaint, 1), "ns/frame");
+  // All 200 swing: every block dragged along a small loop, a step per frame (each frame: the ends move, the ropes step,
+  // their old and new rects are damaged and repainted).
+  std::vector<uint32_t> all;
+  for (uint32_t v = 0; v < sc->nodes.size(); ++v) all.push_back(v);
+  std::vector<double> swing;
+  for (int i = 0; i < 120; ++i) {
+    const float t = static_cast<float>(i) / 120.0f;
+    swing.push_back(timed([&] { c.setCableDrag(all, {40.0f * std::sin(6.2831853f * 2.0f * t), 25.0f * std::cos(6.2831853f * 3.0f * t)}); }));
+  }
+  std::printf("cables: moving %d during the drag frames, %u cables painted per frame\n", c.cablesMoving() ? 1 : 0, c.stats().cablesPainted);
+  pq::bench::reportStats("cables.swing frame (200 cables awake: drag + sim + damage + paint) 2560x1440", pq::bench::summarize(swing), "ns CPU/frame");
+  c.clearCableDrag();
+  const double t0 = now;
+  while (c.cablesMoving() && now - t0 < 10.0) frame();
+  std::printf("cables: every cable asleep %.2f s after the drag ended (frames stop then)\n", now - t0);
+  settle();
+  // All 200 glow (the sources live): the 30 Hz poll + the repaint of the lit cables.
+  live = true;
+  c.wakeCables();
+  std::vector<double> glow;
+  for (int i = 0; i < 120; ++i) {
+    const double next = now + 1.0 / 30.0;
+    glow.push_back(timed([&] { now = next - 1.0 / 144.0; }));
+  }
+  std::printf("cables: %u glowing in the last paint\n", c.stats().cablesGlowing);
+  pq::bench::reportStats("cables.glow frame (200 cables lit: poll + flow repaint, 30 Hz) 2560x1440", pq::bench::summarize(glow), "ns CPU/frame");
+  live = false;
+  settle();
+  // Idle: no frames, no timers.
+  const uint64_t f0 = frames;
+  for (int i = 0; i < 288; ++i) frame();
+  const bool idle = frames == f0 && !tree.needsFrame() && std::isinf(tree.nextWakeTime());
+  std::printf("cables idle: %s (%llu frames in 2 s, glow polling %d, moving %d)\n", idle ? "yes" : "NO",
+              static_cast<unsigned long long>(frames - f0), c.cableGlowPolling() ? 1 : 0, c.cablesMoving() ? 1 : 0);
+  return idle ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -219,6 +432,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   // TMM.13-fix2: `pq_bench_project_patch faces` runs only the TMM.4 / TMM.7 face rows (H5's A/B while iterating).
+  if (argc > 1 && std::string_view(argv[1]) == "cables") return cablesBench(nsPerCycle);  // TX.cables
   if (argc > 1 && std::string_view(argv[1]) == "faces") {
     const int a = facesBench(**lib, nsPerCycle, false);
     const int b = facesBench(**lib, nsPerCycle, true);
@@ -586,5 +800,6 @@ int main(int argc, char** argv) {
   }
   const int a = facesBench(**lib, nsPerCycle, false);  // TMM.4
   const int b = facesBench(**lib, nsPerCycle, true);   // TMM.7
-  return a | b;
+  const int c = cablesBench(nsPerCycle);                // TX.cables
+  return a | b | c;
 }

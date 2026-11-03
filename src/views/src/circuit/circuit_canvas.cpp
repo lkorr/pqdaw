@@ -8,6 +8,8 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <numbers>
+#include <optional>
 #include <unordered_map>
 
 #include "../common/drag.h"
@@ -19,6 +21,7 @@
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
 #include "pq/ui/tile_atlas.h"
+#include "pq/views/circuit/cables.h"
 
 namespace pq::views::circuit {
 
@@ -113,8 +116,14 @@ struct CircuitCanvas::Impl final : FaceHost {
                      float wy1, float thin, Rgba wireCol, Rgba nodeCol) {
     collectVisible(wx0, wy0, wx1, wy1);
     const CircuitScene& s = *scene;
+    uint32_t lastCable = UINT32_MAX;
     for (const uint32_t sg : visSegs) {
       const SceneSegment& seg = s.segments[sg];
+      if (s.wires[seg.wire].cable) {  // TX.cables: its rest shape, thin and antialiased (once per cable)
+        if (seg.wire != lastCable) farCable(dlW, seg.wire, ox, oy, sc, thin, wireCol);
+        lastCable = seg.wire;
+        continue;
+      }
       const Point2 a = s.points[seg.point], b = s.points[seg.point + 1];
       // Sub-pixel jogs disappear under their neighbours' 1-px lines at this zoom: skip them.
       if (std::max(std::fabs(b.x - a.x), std::fabs(b.y - a.y)) * sc < 0.75f) continue;
@@ -135,10 +144,27 @@ struct CircuitCanvas::Impl final : FaceHost {
     }
   }
 
+  // TX.cables: a cable's rest shape at the far level, world → device = o + w·s (a thin antialiased curve).
+  void farCable(ui::DrawList& dl, uint32_t w, double ox, double oy, float sc, float thin, Rgba col) {
+    const SceneWire& sw = scene->wires[w];
+    farPts.clear();
+    for (uint32_t i = 0; i < sw.pointCount; ++i) {
+      const Point2 q = scene->points[sw.firstPoint + i];
+      farPts.push_back({static_cast<float>(ox + q.x * sc), static_cast<float>(oy + q.y * sc)});
+    }
+    ui::smoothPolyline(dl, farPts, col, std::max(0.35f, thin - 0.6f));
+    ++stats.segmentsPainted;
+  }
+  std::vector<Vec2> farPts;
+
   // A wire drawn over the Far picture (selection, hover).
   void farWire(ui::DrawList& dl, uint32_t w, double ox, double oy, float sc, float thin, Rgba col) {
     if (!scene || w >= scene->wires.size()) return;
     const SceneWire& sw = scene->wires[w];
+    if (sw.cable) {
+      farCable(dl, w, ox, oy, sc, thin + 0.5f, col);
+      return;
+    }
     for (uint32_t i = 0; i + 1 < sw.pointCount; ++i) {
       const Point2 a = scene->points[sw.firstPoint + i], b = scene->points[sw.firstPoint + i + 1];
       const float ax = static_cast<float>(ox + a.x * sc), ay = static_cast<float>(oy + a.y * sc);
@@ -681,6 +707,314 @@ struct CircuitCanvas::Impl final : FaceHost {
     if (i >= 0 && static_cast<size_t>(i) < faces.size()) faces[static_cast<size_t>(i)].face->focusLost();
   }
 
+  // ---- TX.cables: hanging cables ----
+  struct CableRef {
+    uint32_t wire = 0;
+    uint32_t fromNode = UINT32_MAX, toNode = UINT32_MAX;  // the scene nodes of its ends (drag offsets, faces)
+    Point2 restA, restB;  // the scene's ends (a control's centre at build time for a cable onto a control)
+    float glow = 0.0f;    // 0 … 1, smoothed
+  };
+  std::vector<CableRef> cables;  // sim index = cables index
+  std::vector<int32_t> cableOf;  // per scene wire: its cable (−1: none)
+  CableSim sim;
+  double simLast = -1.0;              // the frame time of the last advance (−1: none since it woke)
+  std::vector<uint32_t> dragNodes;    // sorted: setCableDrag's nodes
+  Point2 dragOffset{0.0f, 0.0f};
+  uint32_t glowTimer = 0;
+  bool glowWasLive = false;           // the last poll saw the sources live (one more poll after they stop)
+  std::vector<uint32_t> glowWires;    // poll scratch
+  std::vector<float> glowLevels;
+  std::vector<uint32_t> movedScratch;
+  // Hit-test grid over the cables' current bounds (rebuilt when the sim moved).
+  static constexpr float kCableCell = 128.0f;
+  mutable uint64_t cgVersion = ~0ull;
+  mutable const CircuitScene* cgScene = nullptr;
+  mutable float cgX0 = 0.0f, cgY0 = 0.0f;
+  mutable uint32_t cgCols = 0, cgRows = 0;
+  mutable std::vector<uint32_t> cgBegin, cgItems;
+  // Paint scratch: the visible cables' device polylines (one flat buffer).
+  struct CableDraw {
+    uint32_t cable = 0, first = 0, count = 0;
+    Rgba col = 0;
+    float alpha = 1.0f;
+    float flip = 1.0f;  // the normals' sign: the highlight on the cable's upper side
+    bool poly = false, sel = false, hov = false;
+  };
+  std::vector<CableDraw> cdraw;
+  std::vector<Vec2> cpts, cnrm;
+  std::vector<float> carc, cfade;
+
+  bool cableNodeDragged(uint32_t node) const noexcept {
+    return node != UINT32_MAX && std::binary_search(dragNodes.begin(), dragNodes.end(), node);
+  }
+
+  // Where cable c's ends are now: the scene's, a control's live anchor (its rim, toward the cable's source), the drag.
+  void cableEnds(const CableRef& c, Point2& a, Point2& b) const {
+    a = c.restA;
+    b = c.restB;
+    const SceneWire& sw = scene->wires[c.wire];
+    if (sw.control != UINT32_MAX && c.toNode != UINT32_MAX && faced(c.toNode)) {
+      const Hosted& h = faces[static_cast<size_t>(faceOf[c.toNode])];
+      if (const std::optional<ControlAnchor> an = h.face->controlAnchor(scene->strings[sw.control])) {
+        const SceneNode& n = scene->nodes[c.toNode];
+        const Point2 centre{n.x + an->at.x * h.scale, n.y + an->at.y * h.scale};
+        const float dx = a.x - centre.x, dy = a.y - centre.y, len = std::sqrt(dx * dx + dy * dy);
+        const float r = an->radius * h.scale;
+        b = len > r + 1e-3f ? Point2{centre.x + dx / len * r, centre.y + dy / len * r} : centre;
+      }
+    }
+    if (!dragNodes.empty()) {
+      if (cableNodeDragged(c.fromNode)) a = {a.x + dragOffset.x, a.y + dragOffset.y};
+      if (cableNodeDragged(c.toNode)) b = {b.x + dragOffset.x, b.y + dragOffset.y};
+    }
+  }
+
+  // The scene's cables into the sim (kept connections keep their motion and swing to new ends).
+  void syncCables() {
+    std::vector<std::pair<uint64_t, float>> glowOf;  // the glow carries over by connection
+    for (uint32_t i = 0; i < cables.size() && i < sim.size(); ++i)
+      if (cables[i].glow > 0.0f) glowOf.emplace_back(simKeys.size() > i ? simKeys[i] : 0, cables[i].glow);
+    cables.clear();
+    simKeys.clear();
+    cableOf.assign(scene ? scene->wires.size() : 0, -1);
+    std::vector<CableSim::Spec> specs;
+    for (uint32_t w = 0; scene && w < scene->wires.size(); ++w) {
+      const SceneWire& sw = scene->wires[w];
+      if (!sw.cable || sw.hidden || sw.pointCount < 2) continue;
+      CableRef c;
+      c.wire = w;
+      c.restA = scene->points[sw.firstPoint];
+      c.restB = scene->points[sw.firstPoint + sw.pointCount - 1];
+      if (sw.fromPin < scene->pins.size()) c.fromNode = scene->pins[sw.fromPin].node;
+      if (sw.toPin < scene->pins.size()) c.toNode = scene->pins[sw.toPin].node;
+      CableSim::Spec sp;
+      sp.key = sw.cableKey != 0 ? sw.cableKey : (0xC0FFEEull << 32 | w);
+      for (const auto& [k, g] : glowOf)
+        if (k == sp.key) c.glow = g;
+      cableOf[w] = static_cast<int32_t>(cables.size());
+      cableEnds(c, sp.a, sp.b);
+      specs.push_back(sp);
+      simKeys.push_back(sp.key);
+      cables.push_back(c);
+    }
+    sim.sync(specs);
+    cgVersion = ~0ull;
+    cableMoved();
+  }
+  std::vector<uint64_t> simKeys;  // per cable: its key
+
+  // Ends may have moved (the sim woke): run frames (far: settled at once).
+  void cableMoved() {
+    if (!sim.awake()) return;
+    if (lod() == Lod::Far) {
+      sim.settle();
+      return;
+    }
+    self.requestFrame();
+  }
+
+  // Tube width in device px at the current zoom.
+  float cableWidth() const noexcept { return std::clamp(6.0f * s(), 1.5f * uiScale(), 16.0f * uiScale()); }
+
+  // A cable's damage rect for world box b (device px), padded by its shadow, plugs and glow.
+  void damageCableBox(const CableSim::Box& b) {
+    ui::UiTree* tr = self.tree();
+    if (tr == nullptr) return;
+    const float pad = 4.5f * cableWidth() + 6.0f;
+    const ui::IRect cr = self.rect();
+    const ui::Rect d{std::max(devX(b.x0) - pad, static_cast<float>(cr.x)), std::max(devY(b.y0) - pad, static_cast<float>(cr.y)),
+                     std::min(devX(b.x1) + pad, static_cast<float>(cr.right())), std::min(devY(b.y1) + pad, static_cast<float>(cr.bottom()))};
+    if (d.x1 > d.x0 && d.y1 > d.y0) tr->damage().add(d);
+  }
+  void damageCable(uint32_t i) {
+    const CableSim::Box &a = sim.previousBounds(i), &b = sim.bounds(i);
+    damageCableBox({std::min(a.x0, b.x0), std::min(a.y0, b.y0), std::max(a.x1, b.x1), std::max(a.y1, b.y1)});
+  }
+
+  // Moves the ends of the cables whose ends changed (a drag offset, an anchor); damages and wakes them. `animate`
+  // false: onto their new rest shapes at once.
+  void refreshCableEnds(bool animate) {
+    bool any = false;
+    for (uint32_t i = 0; i < cables.size(); ++i) {
+      Point2 a, b;
+      cableEnds(cables[i], a, b);
+      if (std::max({std::fabs(a.x - sim.endA(i).x), std::fabs(a.y - sim.endA(i).y), std::fabs(b.x - sim.endB(i).x),
+                    std::fabs(b.y - sim.endB(i).y)}) < 1e-3f)
+        continue;
+      sim.setEnds(i, a, b, animate);
+      damageCable(i);
+      any = true;
+    }
+    if (any) {
+      cgVersion = ~0ull;
+      cableMoved();
+    }
+  }
+
+  // Advances the motion to frame time `now` (onFrame); damages what moved.
+  void stepCables(double now) {
+    if (!sim.awake()) {
+      simLast = -1.0;
+      return;
+    }
+    if (lod() == Lod::Far) {  // far: no motion (the chunks show the rest shapes)
+      for (uint32_t i = 0; i < cables.size(); ++i)
+        if (sim.awake(i)) damageCable(i);
+      sim.settle();
+      simLast = -1.0;
+      return;
+    }
+    const double dt = simLast < 0.0 ? kCableStep : now - simLast;
+    simLast = now;
+    movedScratch.clear();
+    for (uint32_t i = 0; i < cables.size(); ++i)
+      if (sim.awake(i)) movedScratch.push_back(i);
+    if (sim.advance(dt))
+      for (const uint32_t i : movedScratch) damageCable(i);
+    if (sim.awake()) self.requestFrame();
+    else simLast = -1.0;
+  }
+
+  // ---- glow ----
+  bool shownInTree() const noexcept {
+    for (const ui::Widget* w = &self; w != nullptr; w = w->parent())
+      if (!w->visible()) return false;
+    return self.tree() != nullptr && !self.rect().empty();
+  }
+  // ≤ 30 Hz while the sources are live (and once after): the visible cables' levels, smoothed; glowing cables repaint
+  // (their light flows), silent ones do not; nothing visible to light: no poll.
+  void pollCables() {
+    ++stats.cableGlowPolls;
+    const bool live = self.cableSignalLive ? self.cableSignalLive() : false;
+    const bool visible = shownInTree() && lod() != Lod::Far && scene != nullptr;
+    glowWires.clear();
+    if (visible && self.cableLevels) {
+      const ui::IRect r = self.rect();
+      const Point2 w0 = self.toWorld({static_cast<float>(r.x), static_cast<float>(r.y)});
+      const Point2 w1 = self.toWorld({static_cast<float>(r.right()), static_cast<float>(r.bottom())});
+      const float pad = 8.0f / std::max(s(), 1e-3f);
+      for (uint32_t i = 0; i < cables.size(); ++i) {
+        const CableSim::Box& b = sim.bounds(i);
+        if (b.x1 >= w0.x - pad && b.x0 <= w1.x + pad && b.y1 >= w0.y - pad && b.y0 <= w1.y + pad) glowWires.push_back(cables[i].wire);
+      }
+    }
+    glowLevels.assign(glowWires.size(), 0.0f);
+    if (!glowWires.empty() && (live || glowWasLive)) self.cableLevels(glowWires, glowLevels);
+    bool glowing = false;
+    size_t k = 0;
+    for (uint32_t i = 0; i < cables.size(); ++i) {
+      CableRef& c = cables[i];
+      float target = 0.0f;
+      if (k < glowWires.size() && glowWires[k] == c.wire) target = std::clamp(glowLevels[k++], 0.0f, 1.0f);
+      const float before = c.glow;
+      c.glow = target >= c.glow ? target : c.glow * 0.78f;  // fast attack, ≈ 130 ms release
+      if (c.glow < 0.01f) c.glow = 0.0f;
+      if (c.glow > 0.0f || before > 0.0f) damageCable(i);
+      glowing = glowing || c.glow > 0.0f;
+    }
+    const bool again = visible && (live || glowing);
+    glowWasLive = live;
+    if (again && glowTimer == 0) glowTimer = self.requestTimer(kCableGlowSeconds);
+  }
+
+  // ---- hit testing ----
+  void buildCableGrid() const {
+    if (cgVersion == sim.version() && cgScene == scene.get()) return;
+    cgVersion = sim.version();
+    cgScene = scene.get();
+    cgBegin.clear();
+    cgItems.clear();
+    cgCols = cgRows = 0;
+    if (cables.empty()) return;
+    CableSim::Box all = sim.bounds(0);
+    for (uint32_t i = 1; i < cables.size(); ++i) {
+      const CableSim::Box& b = sim.bounds(i);
+      all.x0 = std::min(all.x0, b.x0), all.y0 = std::min(all.y0, b.y0), all.x1 = std::max(all.x1, b.x1), all.y1 = std::max(all.y1, b.y1);
+    }
+    cgX0 = all.x0 - 16.0f;
+    cgY0 = all.y0 - 16.0f;
+    cgCols = std::max<uint32_t>(1, static_cast<uint32_t>(std::ceil((all.x1 + 16.0f - cgX0) / kCableCell)));
+    cgRows = std::max<uint32_t>(1, static_cast<uint32_t>(std::ceil((all.y1 + 16.0f - cgY0) / kCableCell)));
+    const uint32_t cells = cgCols * cgRows;
+    cgBegin.assign(cells + 1, 0);
+    auto range = [&](const CableSim::Box& b, uint32_t& c0, uint32_t& r0, uint32_t& c1, uint32_t& r1) {
+      auto cl = [](float v, uint32_t n) { return static_cast<uint32_t>(std::clamp(v, 0.0f, static_cast<float>(n - 1))); };
+      c0 = cl((b.x0 - 8.0f - cgX0) / kCableCell, cgCols), c1 = cl((b.x1 + 8.0f - cgX0) / kCableCell, cgCols);
+      r0 = cl((b.y0 - 8.0f - cgY0) / kCableCell, cgRows), r1 = cl((b.y1 + 8.0f - cgY0) / kCableCell, cgRows);
+    };
+    for (int pass = 0; pass < 2; ++pass) {
+      std::vector<uint32_t> cursor;
+      if (pass == 1) {
+        for (uint32_t c = 0; c < cells; ++c) cgBegin[c + 1] += cgBegin[c];
+        cgItems.resize(cgBegin[cells]);
+        cursor.assign(cgBegin.begin(), cgBegin.end() - 1);
+      }
+      for (uint32_t i = 0; i < cables.size(); ++i) {
+        uint32_t c0, r0, c1, r1;
+        range(sim.bounds(i), c0, r0, c1, r1);
+        for (uint32_t r = r0; r <= r1; ++r)
+          for (uint32_t c = c0; c <= c1; ++c) {
+            const uint32_t cell = r * cgCols + c;
+            if (pass == 0) ++cgBegin[cell + 1];
+            else cgItems[cursor[cell]++] = i;
+          }
+      }
+    }
+  }
+
+  // The cable nearest world point w within `reach` (world units, < 8) of its rope — or, endsOnly, of one of its ends —
+  // as its scene wire; UINT32_MAX: none. `dist` receives the distance.
+  uint32_t cableAt(Point2 w, float reach, bool endsOnly, float& dist) const {
+    dist = reach;
+    buildCableGrid();
+    if (cgCols == 0) return UINT32_MAX;
+    const auto cx = static_cast<int64_t>(std::floor((w.x - cgX0) / kCableCell));
+    const auto cy = static_cast<int64_t>(std::floor((w.y - cgY0) / kCableCell));
+    if (cx < 0 || cy < 0 || cx >= static_cast<int64_t>(cgCols) || cy >= static_cast<int64_t>(cgRows)) return UINT32_MAX;
+    const uint32_t cell = static_cast<uint32_t>(cy) * cgCols + static_cast<uint32_t>(cx);
+    uint32_t best = UINT32_MAX;
+    for (uint32_t k = cgBegin[cell]; k < cgBegin[cell + 1]; ++k) {
+      const uint32_t i = cgItems[k];
+      const CableSim::Box& b = sim.bounds(i);
+      if (w.x < b.x0 - reach || w.x > b.x1 + reach || w.y < b.y0 - reach || w.y > b.y1 + reach) continue;
+      const std::span<const Point2> p = sim.points(i);
+      if (endsOnly) {
+        for (const Point2 e : {p.front(), p.back()}) {
+          const float d = std::hypot(w.x - e.x, w.y - e.y);
+          if (d <= dist) dist = d, best = cables[i].wire;
+        }
+        continue;
+      }
+      for (size_t j = 0; j + 1 < p.size(); ++j) {
+        const float ex = p[j + 1].x - p[j].x, ey = p[j + 1].y - p[j].y;
+        const float len2 = ex * ex + ey * ey;
+        const float t = len2 > 0.0f ? std::clamp(((w.x - p[j].x) * ex + (w.y - p[j].y) * ey) / len2, 0.0f, 1.0f) : 0.0f;
+        const float d = std::hypot(w.x - (p[j].x + ex * t), w.y - (p[j].y + ey * t));
+        if (d <= dist) dist = d, best = cables[i].wire;
+      }
+    }
+    return best;
+  }
+
+  // Whether device point d is on a face's control (a press there goes to it; cables there yield but for their ends).
+  bool onFaceControl(Vec2 d) const {
+    const int32_t i = faceUnder(d);
+    if (i < 0) return false;
+    const Hosted& h = faces[static_cast<size_t>(i)];
+    return h.face->hitTest(localOf(h, self.toWorld(d)), s() * h.scale) >= 0;
+  }
+  // The hit radii (world units): the rope (4 px, or the tube's half width and a pixel), a plug.
+  float cableReach() const noexcept { return std::max(4.0f * uiScale(), 0.5f * cableWidth() + uiScale()) / s(); }
+  float plugReach() const noexcept { return std::max(6.0f * uiScale(), 1.3f * cableWidth()) / s(); }
+  // A cable's end (its plug) under device point d: the scene wire, UINT32_MAX: none.
+  uint32_t cableEndAt(Vec2 d) const {
+    if (cables.empty() || lod() == Lod::Far || !self.rect().contains(d)) return UINT32_MAX;
+    float dist = 0.0f;
+    return cableAt(self.toWorld(d), plugReach(), true, dist);
+  }
+
+  void paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w1);
+
   explicit Impl(CircuitCanvas& c) : self(c) {}
 
   float uiScale() const noexcept { return self.tree() ? self.tree()->scale() : 1.0f; }
@@ -890,6 +1224,7 @@ void CircuitCanvas::setScene(std::shared_ptr<const CircuitScene> scene, bool fit
   impl_->wireLit.clear();
   impl_->resetSelectionFlags();
   impl_->buildFaces();  // TMM.4
+  impl_->syncCables();  // TX.cables: after the faces (a cable onto a control ends on its live anchor)
   if (impl_->rescaled) impl_->zoomed();  // TX.resize: a rescaled face settles like a zoom (its tiles, a panel's layout)
   if (fit) {
     impl_->fitReadable = true;
@@ -1036,6 +1371,14 @@ CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
       }
     }
   if (best.kind != CanvasHit::Kind::None) return best;
+  // TX.cables: drawn over the blocks, so before them: the simulated rope within 4 px (or the tube's half width); over a
+  // face's control only a cable's plug (a press there goes to the control).
+  if (!m.cables.empty()) {
+    const bool control = m.onFaceControl(d);
+    float dist = 0.0f;
+    if (const uint32_t cw = m.cableAt(w, control ? m.plugReach() : m.cableReach(), control, dist); cw != UINT32_MAX)
+      return {CanvasHit::Kind::Wire, cw};
+  }
   sc.grid.cellRange(w.x, w.y, w.x, w.y, c0, r0, c1, r1);
   const uint32_t cell = r0 * sc.grid.cols + c0;
   for (uint32_t k = sc.grid.nodeBegin[cell + 1]; k-- > sc.grid.nodeBegin[cell];) {
@@ -1050,6 +1393,7 @@ CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
       const uint32_t cl = r * sc.grid.cols + c;
       for (uint32_t k = sc.grid.segBegin[cl]; k < sc.grid.segBegin[cl + 1]; ++k) {
         const SceneSegment& sg = sc.segments[sc.grid.segItems[k]];
+        if (sc.wires[sg.wire].cable) continue;  // TX.cables: hit above, by the rope as it hangs now
         const Point2 a = sc.points[sg.point], b = sc.points[sg.point + 1];
         const float dx = std::max({std::min(a.x, b.x) - w.x, 0.0f, w.x - std::max(a.x, b.x)});
         const float dy = std::max({std::min(a.y, b.y) - w.y, 0.0f, w.y - std::max(a.y, b.y)});
@@ -1113,6 +1457,275 @@ void offsetPolyline(const std::vector<Vec2>& in, float d, std::vector<Vec2>& out
 
 }  // namespace
 
+// ---- TX.cables: drawing ---------------------------------------------------------------------------------------------
+
+namespace {
+
+// A strip along a device polyline: lane k at offset off[k] (device px, along each point's normal, then moved by
+// `shift`) in colour col[k], each point's alpha scaled by fade[i] when given. Shared vertices: (lanes − 1) quads per
+// segment, one draw command with the canvas's other geometry.
+void ribbon(ui::DrawList& dl, const Vec2* p, const Vec2* nrm, uint32_t n, const float* off, const Rgba* col, uint32_t lanes,
+            const float* fade = nullptr, Vec2 shift = {0.0f, 0.0f}) {
+  if (n < 2 || lanes < 2) return;
+  const ui::DrawList::PrimSpan sp = dl.primReserveSpan((n - 1) * (lanes - 1) * 6, n * lanes);
+  const Vec2 uv = dl.whiteUv();
+  ui::Vertex* v = sp.v;
+  for (uint32_t i = 0; i < n; ++i) {
+    const float bx = p[i].x + shift.x, by = p[i].y + shift.y;
+    for (uint32_t k = 0; k < lanes; ++k, ++v) {
+      v->pos = {bx + nrm[i].x * off[k], by + nrm[i].y * off[k]};
+      v->uv = uv;
+      v->col = fade != nullptr ? ui::smoothAlphaMul(col[k], fade[i]) : col[k];
+    }
+  }
+  uint32_t* ix = sp.i;
+  for (uint32_t i = 0; i + 1 < n; ++i)
+    for (uint32_t k = 0; k + 1 < lanes; ++k) {
+      const uint32_t a = sp.base + i * lanes + k, b = a + 1, c = a + lanes, d = c + 1;
+      ix[0] = a, ix[1] = b, ix[2] = d, ix[3] = a, ix[4] = d, ix[5] = c;
+      ix += 6;
+    }
+}
+
+// The tube's cross-section (7 lanes, from its upper edge down): a feathered dark rim, a specular highlight above the
+// middle, the body, a darker lower side, the feathered lower rim. Lit from above, as the shadow falls below.
+constexpr uint32_t kTubeLanes = 7;
+void tubeProfile(Rgba col, float hw, float feather, float alpha, float* off, Rgba* cols) {
+  const Rgba rim = ui::scaleRgb(col, 0.5f), low = ui::scaleRgb(col, 0.34f);
+  const Rgba hi = ui::lerp(col, ui::rgba(255, 255, 255), 0.62f), light = ui::lerp(col, ui::rgba(255, 255, 255), 0.2f);
+  const float o[kTubeLanes] = {hw + feather, hw, 0.6f * hw, 0.3f * hw, -0.3f * hw, -hw, -hw - feather};
+  const Rgba c[kTubeLanes] = {ui::withAlpha(rim, 0), rim, hi, light, col, low, ui::withAlpha(low, 0)};
+  for (uint32_t k = 0; k < kTubeLanes; ++k) {
+    off[k] = o[k];
+    cols[k] = ui::mulAlpha(c[k], alpha);
+  }
+}
+
+// A plug on a cable's end: a socket ring at the port and a sleeve with a coloured collar along the cable (device px; `dir`
+// from the port into the cable, unit).
+// `k` (≤ 1) shortens the plug on a short cable, so its rope still shows between the two.
+void cablePlug(ui::DrawList& dl, Vec2 at, Vec2 dir, float w, Rgba col, float alpha, float k) {
+  if (w < 3.0f) {
+    dl.addCircleFilled(at, 0.8f * w, ui::mulAlpha(ui::scaleRgb(col, 0.7f), alpha));
+    return;
+  }
+  Vec2 nrm{dir.y, -dir.x};
+  if (nrm.y > 0.0f || (nrm.y == 0.0f && nrm.x < 0.0f)) nrm = {-nrm.x, -nrm.y};  // the upper side lit
+  const Rgba metal = ui::rgba(22, 24, 28), ring = ui::rgba(150, 156, 168, 210);
+  dl.addCircleFilled(at, 0.92f * w, ui::mulAlpha(metal, alpha));
+  dl.addCircleStroke(at, 0.92f * w, ui::mulAlpha(ring, alpha), std::max(1.0f, 0.16f * w));
+  const Vec2 nn[2] = {nrm, nrm};
+  float off[kTubeLanes];
+  Rgba cols[kTubeLanes];
+  const float fe = std::min(1.0f, 0.25f * w);
+  const float l1 = 1.95f * w * k, l2 = 2.4f * w * k;
+  const Vec2 sleeve[2] = {{at.x + dir.x * 0.1f * w, at.y + dir.y * 0.1f * w}, {at.x + dir.x * l1, at.y + dir.y * l1}};
+  tubeProfile(ui::lerp(ui::rgba(58, 62, 70), col, 0.22f), 0.72f * w, fe, alpha, off, cols);
+  ribbon(dl, sleeve, nn, 2, off, cols, kTubeLanes);
+  const Vec2 collar[2] = {sleeve[1], {at.x + dir.x * l2, at.y + dir.y * l2}};
+  tubeProfile(col, 0.6f * w, fe, alpha, off, cols);
+  ribbon(dl, collar, nn, 2, off, cols, kTubeLanes);
+}
+
+// The direction from a polyline's first point into it, about `reach` px along (unit; +x when degenerate).
+Vec2 endDirection(const Vec2* p, uint32_t n, float reach) {
+  for (uint32_t k = 1; k < n; ++k) {
+    const float dx = p[k].x - p[0].x, dy = p[k].y - p[0].y, d = std::sqrt(dx * dx + dy * dy);
+    if (d >= reach || k + 1 == n) return d > 1e-4f ? Vec2{dx / d, dy / d} : Vec2{1.0f, 0.0f};
+  }
+  return {1.0f, 0.0f};
+}
+
+}  // namespace
+
+void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w1) {
+  Stats& st = stats;
+  if (cables.empty() || lod() == Lod::Far) return;
+  const ui::Theme& th = *ctx.res.theme;
+  const auto& C = th.circuit;
+  const CircuitScene& sc = *scene;
+  ui::DrawList& dl = ctx.dl;
+  const float us = ctx.scale.factor;
+  const float w = cableWidth(), hw = 0.5f * w;
+  const float feather = std::min(1.0f, 0.35f * hw);
+  // A control's anchor moves with its face (a slider's handle, a panel laid out again after a zoom): the cable's end
+  // follows it at once, onto its rest shape (a layout is no push: nothing swings). Its damage reaches the next frame
+  // (this one is clipped to its own).
+  bool anchorsMoved = false;
+  for (uint32_t i = 0; i < cables.size(); ++i) {
+    const CableRef& c = cables[i];
+    if (sc.wires[c.wire].control == UINT32_MAX) continue;
+    Point2 a, b;
+    cableEnds(c, a, b);
+    if (std::max({std::fabs(a.x - sim.endA(i).x), std::fabs(a.y - sim.endA(i).y), std::fabs(b.x - sim.endB(i).x),
+                  std::fabs(b.y - sim.endB(i).y)}) < 1e-3f)
+      continue;
+    sim.setEnds(i, a, b, false);
+    damageCable(i);
+    anchorsMoved = true;
+  }
+  if (anchorsMoved) {
+    cgVersion = ~0ull;
+    self.requestFrame();
+  }
+  // Cables over the face whose control the pointer is on fade (the control reads; a press there goes to it).
+  bool fadeOn = false;
+  ui::Rect fade{};
+  if (faceHover >= 0 && static_cast<size_t>(faceHover) < faces.size() && faces[static_cast<size_t>(faceHover)].face->hoveredPart() >= 0) {
+    const SceneNode& n = sc.nodes[faces[static_cast<size_t>(faceHover)].node];
+    fade = {n.x, n.y, n.x + n.w, n.y + n.h};
+    fadeOn = true;
+  }
+  const float pad = (4.5f * w + 6.0f) / s();
+  cdraw.clear();
+  cpts.clear();
+  carc.clear();
+  Vec2 dev[kCableMaxPoints];
+  for (uint32_t i = 0; i < cables.size(); ++i) {
+    const CableSim::Box& bx = sim.bounds(i);
+    if (bx.x1 < w0.x - pad || bx.x0 > w1.x + pad || bx.y1 < w0.y - pad || bx.y0 > w1.y + pad) continue;
+    const CableRef& c = cables[i];
+    const SceneWire& sw = sc.wires[c.wire];
+    const std::span<const Point2> P = sim.points(i);
+    const uint32_t n = static_cast<uint32_t>(P.size());
+    for (uint32_t k = 0; k < n; ++k) dev[k] = {devX(P[k].x), devY(P[k].y)};
+    CableDraw d;
+    d.cable = i;
+    d.first = static_cast<uint32_t>(cpts.size());
+    // Catmull-Rom through the rope's points, ≈ 12 px chords (≤ 3 per segment; the rope bends gently): smooth at every
+    // zoom, few vertices.
+    for (uint32_t k = 0; k + 1 < n; ++k) {
+      const Vec2 p0 = dev[k > 0 ? k - 1 : 0], p1 = dev[k], p2 = dev[k + 1], p3 = dev[k + 2 < n ? k + 2 : n - 1];
+      const float len = std::hypot(p2.x - p1.x, p2.y - p1.y);
+      const uint32_t steps = std::clamp(static_cast<uint32_t>(std::ceil(len / 12.0f)), 1u, 3u);
+      for (uint32_t t = 0; t < steps; ++t) cpts.push_back(ui::catmullRom(p0, p1, p2, p3, static_cast<float>(t) / static_cast<float>(steps)));
+    }
+    cpts.push_back(dev[n - 1]);
+    d.count = static_cast<uint32_t>(cpts.size()) - d.first;
+    const WireStyle& ws = sw.style;
+    d.sel = c.wire < wireSel.size() && wireSel[c.wire] != 0;
+    d.hov = hover.kind == CanvasHit::Kind::Wire && hover.index == c.wire;
+    if (ws.boolean) d.col = c.wire < wireLit.size() && wireLit[c.wire] ? C.wireBoolLit : C.wireBool;
+    else if (ws.rate == WireRate::Const) d.col = C.wireConst;
+    else if (ws.notes) d.col = C.wireNotes;
+    else if (ws.modulation) d.col = C.wireMod;
+    else d.col = ws.rate == WireRate::Param ? C.wireParam : C.wireAudio;
+    d.poly = ws.poly;
+    d.alpha = sw.inactive && !d.sel && !d.hov ? kInactiveAlpha : 1.0f;
+    if (fadeOn && bx.x1 >= fade.x0 && bx.x0 <= fade.x1 && bx.y1 >= fade.y0 && bx.y0 <= fade.y1)
+      for (const Point2 q : P)
+        if (q.x >= fade.x0 && q.x <= fade.x1 && q.y >= fade.y0 && q.y <= fade.y1) {
+          d.alpha *= kCableFade;
+          break;
+        }
+    d.flip = P.back().x < P.front().x ? -1.0f : 1.0f;
+    cdraw.push_back(d);
+  }
+  if (cdraw.empty()) return;
+  // Normals (the highlight on each cable's upper side) and arc lengths (the flow of light).
+  cnrm.resize(cpts.size());
+  carc.resize(cpts.size());
+  for (const CableDraw& d : cdraw) {
+    const Vec2* p = cpts.data() + d.first;
+    float arc = 0.0f;
+    for (uint32_t k = 0; k < d.count; ++k) {
+      const Vec2 a = p[k > 0 ? k - 1 : 0], b = p[k + 1 < d.count ? k + 1 : d.count - 1];
+      const float tx = b.x - a.x, ty = b.y - a.y, l = std::sqrt(tx * tx + ty * ty);
+      cnrm[d.first + k] = l > 1e-6f ? Vec2{ty / l * d.flip, -tx / l * d.flip} : Vec2{0.0f, -1.0f};
+      if (k > 0) arc += std::hypot(p[k].x - p[k - 1].x, p[k].y - p[k - 1].y);
+      carc[d.first + k] = arc;
+    }
+  }
+  const bool far = w < 3.0f;  // thin (mid zoom): no shadow, no glow layers beyond the core
+  float off[kTubeLanes];
+  Rgba cols[kTubeLanes];
+  // 1. Soft drop shadows on what the cables cross, below and right of them.
+  if (!far) {
+    const Vec2 shift{0.25f * w, 0.7f * w + us};
+    for (const CableDraw& d : cdraw) {
+      const Rgba sh = ui::rgba(0, 0, 0, static_cast<uint32_t>(std::lround(100.0f * d.alpha)));
+      const float o[3] = {1.7f * hw + us, 0.0f, -1.7f * hw - us};
+      const Rgba c3[3] = {ui::withAlpha(sh, 0), sh, ui::withAlpha(sh, 0)};
+      ribbon(dl, cpts.data() + d.first, cnrm.data() + d.first, d.count, o, c3, 3, nullptr, shift);
+    }
+  }
+  // 2. The glow around lit cables (additive light, under the tubes so they stay solid).
+  const double now = self.tree() != nullptr ? self.tree()->now() : 0.0;
+  bool anyGlow = false;
+  for (const CableDraw& d : cdraw) anyGlow = anyGlow || cables[d.cable].glow > 0.0f;
+  if (anyGlow) {
+    dl.setBlend(ui::BlendMode::Additive);
+    for (const CableDraw& d : cdraw) {
+      const float g = cables[d.cable].glow * d.alpha;
+      if (g <= 0.0f) continue;
+      const float o[5] = {4.5f * hw + 2.0f * us, 1.6f * hw, 0.0f, -1.6f * hw, -4.5f * hw - 2.0f * us};
+      const Rgba c5[5] = {ui::withAlpha(d.col, 0), ui::setAlpha(d.col, 0.3f * g), ui::setAlpha(d.col, 0.65f * g),
+                          ui::setAlpha(d.col, 0.3f * g), ui::withAlpha(d.col, 0)};
+      ribbon(dl, cpts.data() + d.first, cnrm.data() + d.first, d.count, o, c5, 5);
+      ++st.cablesGlowing;
+    }
+    dl.setBlend(ui::BlendMode::Alpha);
+  }
+  // 3. The tubes (selected and hovered ones last, with a halo), their twin core when per voice, the plugs.
+  for (int emph = 0; emph < 2; ++emph)
+    for (const CableDraw& d : cdraw) {
+      if ((d.sel || d.hov) != (emph == 1)) continue;
+      const Vec2* p = cpts.data() + d.first;
+      const Vec2* nr = cnrm.data() + d.first;
+      if (d.sel || d.hov) {
+        const Rgba h = d.sel ? ui::withAlpha(C.selected, 230) : ui::withAlpha(C.hover, 190);
+        const float o[4] = {hw + 2.6f * us, hw + 1.2f * us, -hw - 1.2f * us, -hw - 2.6f * us};
+        const Rgba c4[4] = {ui::withAlpha(h, 0), h, h, ui::withAlpha(h, 0)};
+        ribbon(dl, p, nr, d.count, o, c4, 4);
+      }
+      tubeProfile(d.col, hw, feather, d.alpha, off, cols);
+      ribbon(dl, p, nr, d.count, off, cols, kTubeLanes);
+      if (d.poly && !far) {  // per voice: a twin-lead (a dark groove along the middle)
+        const Rgba gr = ui::mulAlpha(ui::scaleRgb(d.col, 0.3f), d.alpha);
+        const float o[3] = {0.3f * hw, 0.0f, -0.3f * hw};
+        const Rgba c3[3] = {ui::withAlpha(gr, 0), gr, ui::withAlpha(gr, 0)};
+        ribbon(dl, p, nr, d.count, o, c3, 3);
+      }
+      const float chord = std::hypot(p[d.count - 1].x - p[0].x, p[d.count - 1].y - p[0].y);
+      const float plugK = std::clamp(chord / (7.0f * w), 0.3f, 1.0f);
+      const float reach = 2.4f * w * plugK;
+      cablePlug(dl, p[0], endDirection(p, d.count, reach), w, d.col, d.alpha, plugK);
+      Vec2 back{-1.0f, 0.0f};
+      // The far end's direction about one plug length in (the rope's last points, walked back).
+      for (uint32_t k = d.count - 1; k-- > 0;) {
+        const float dx = p[k].x - p[d.count - 1].x, dy = p[k].y - p[d.count - 1].y, dd = std::sqrt(dx * dx + dy * dy);
+        if (dd >= reach || k == 0) {
+          if (dd > 1e-4f) back = {dx / dd, dy / dd};
+          break;
+        }
+      }
+      cablePlug(dl, p[d.count - 1], back, w, d.col, d.alpha, plugK);
+      ++st.cablesPainted;
+    }
+  // 4. Light flowing along lit cables from source to target (additive, inside the tube).
+  if (anyGlow && !far) {
+    dl.setBlend(ui::BlendMode::Additive);
+    const float period = std::max(48.0f * us, 16.0f * w), speed = 110.0f * us;
+    const float phase = static_cast<float>(std::fmod(now * static_cast<double>(speed), static_cast<double>(period)));
+    for (const CableDraw& d : cdraw) {
+      const float g = cables[d.cable].glow * d.alpha;
+      if (g <= 0.0f) continue;
+      cfade.resize(d.count);
+      for (uint32_t k = 0; k < d.count; ++k) {
+        const float x = (carc[d.first + k] - phase) / period;
+        const float c = 0.5f + 0.5f * std::cos(2.0f * std::numbers::pi_v<float> * (x - std::floor(x) - 0.5f));
+        const float c2 = c * c, c4 = c2 * c2;
+        cfade[k] = g * (0.18f + 0.82f * c4 * c2);
+      }
+      const Rgba core = ui::lerp(d.col, ui::rgba(255, 255, 255), 0.45f);
+      const float o[3] = {0.7f * hw, 0.0f, -0.7f * hw};
+      const Rgba c3[3] = {ui::withAlpha(core, 0), core, ui::withAlpha(core, 0)};
+      ribbon(dl, cpts.data() + d.first, cnrm.data() + d.first, d.count, o, c3, 3, cfade.data());
+    }
+    dl.setBlend(ui::BlendMode::Alpha);
+  }
+}
+
 void CircuitCanvas::paint(ui::PaintContext& ctx) {
   Impl& m = *impl_;
   m.retired.clear();  // TMM.7: faces a rebuild replaced (no handler of theirs runs during a paint)
@@ -1132,6 +1745,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
   st.chunksFromTiles = st.chunksStretched = st.chunksDirect = 0;
   st.facesPainted = st.faceLayersFromTiles = st.faceLayersStretched = st.faceLayersDirect = st.facePrimitives = 0;
   st.panelsPainted = 0;
+  st.cablesPainted = st.cablesGlowing = 0;
   if (!m.scene) {
     dl.popClip();
     return;
@@ -1236,6 +1850,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       if (w == last) continue;
       last = w;
       const SceneWire& sw = sc.wires[w];
+      if (sw.cable) continue;  // TX.cables: drawn over the blocks (paintCables)
       const WireStyle& ws = sw.style;
       const float t = (!ws.boolean && ws.rate == WireRate::Audio) ? thick : thin;
       const Rgba col = wireColour(w);
@@ -1405,7 +2020,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     for (const uint32_t w : m.controlWires) {
       if (w >= sc.wires.size()) continue;
       const SceneWire& sw = sc.wires[w];
-      if (sw.control == UINT32_MAX || sw.hidden || sw.pointCount < 2 || sw.toPin >= sc.pins.size()) continue;
+      if (sw.control == UINT32_MAX || sw.cable || sw.hidden || sw.pointCount < 2 || sw.toPin >= sc.pins.size()) continue;
       const uint32_t v = sc.pins[sw.toPin].node;
       if (!m.faced(v)) continue;
       const SceneNode& n = sc.nodes[v];
@@ -1538,6 +2153,9 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     }
   }
 
+  // ---- TX.cables: over everything of the scene (near / mid; far: in the chunks) ----
+  m.paintCables(ctx, w0, w1);
+
   // ---- rubber band ----
   if (m.mode == Impl::DragMode::Band && m.tracker.moved) {
     const ui::IRect band = drag::rubberBand(m.tracker.press, m.tracker.last);
@@ -1552,8 +2170,9 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
   }
 }
 
-void CircuitCanvas::onFrame(double /*now*/) {
+void CircuitCanvas::onFrame(double now) {
   Impl& m = *impl_;
+  m.stepCables(now);  // TX.cables: the swing (frames only while a cable is awake)
   if (m.pumpWanted) m.pumpFaces();  // TX.panel-faces: a face's own work (a panel's widgets)
   if (m.scene && !m.zooming && m.prepareFaces()) markDirty();  // TX.panel-faces: a panel laid out at the settled zoom
   if (!m.scene || m.zooming || !m.tilesWanted || !tree() || !tree()->resources() || !tree()->resources()->tiles) return;
@@ -1570,6 +2189,11 @@ void CircuitCanvas::onTimer(uint32_t id) {
   if (id == m.faceTimer && id != 0) {  // TMM.4: the faces' <= 60 Hz poll
     m.faceTimer = 0;
     m.pollFaces();
+    return;
+  }
+  if (id == m.glowTimer && id != 0) {  // TX.cables: the glow's ≤ 30 Hz poll
+    m.glowTimer = 0;
+    m.pollCables();
     return;
   }
   if (id == m.pumpTimer && id != 0) {  // TX.panel-faces: a face's own timer is due
@@ -1875,6 +2499,70 @@ void CircuitCanvas::setFacesShown(bool on) {
 bool CircuitCanvas::facesShown() const noexcept { return impl_->facesShown; }
 bool CircuitCanvas::faceDragging() const noexcept { return impl_->faceCapture >= 0; }
 
+// ---- TX.cables -------------------------------------------------------------------------------------------------------
+
+void CircuitCanvas::setCablesAnimated(bool on) {
+  Impl& m = *impl_;
+  if (m.sim.animated() == on) return;
+  const bool wasAwake = m.sim.awake();
+  m.sim.setAnimated(on);
+  if (wasAwake) markDirty();
+}
+bool CircuitCanvas::cablesAnimated() const noexcept { return impl_->sim.animated(); }
+bool CircuitCanvas::cablesMoving() const noexcept { return impl_->sim.awake(); }
+
+std::span<const graph::Point2> CircuitCanvas::cablePoints(uint32_t wire) const noexcept {
+  const Impl& m = *impl_;
+  if (wire >= m.cableOf.size() || m.cableOf[wire] < 0) return {};
+  return m.sim.points(static_cast<uint32_t>(m.cableOf[wire]));
+}
+
+graph::Point2 CircuitCanvas::cableMidpoint(uint32_t wire) const noexcept {
+  const std::span<const graph::Point2> p = cablePoints(wire);
+  if (p.empty()) return {};
+  // The point halfway along the rope.
+  float total = 0.0f;
+  for (size_t i = 0; i + 1 < p.size(); ++i) total += std::hypot(p[i + 1].x - p[i].x, p[i + 1].y - p[i].y);
+  float rest = 0.5f * total;
+  for (size_t i = 0; i + 1 < p.size(); ++i) {
+    const float l = std::hypot(p[i + 1].x - p[i].x, p[i + 1].y - p[i].y);
+    if (l >= rest && l > 0.0f) return {p[i].x + (p[i + 1].x - p[i].x) * rest / l, p[i].y + (p[i + 1].y - p[i].y) * rest / l};
+    rest -= l;
+  }
+  return p.back();
+}
+
+void CircuitCanvas::setCableDrag(std::span<const uint32_t> nodes, graph::Point2 offset) {
+  Impl& m = *impl_;
+  std::vector<uint32_t> sorted(nodes.begin(), nodes.end());
+  std::sort(sorted.begin(), sorted.end());
+  if (sorted == m.dragNodes && offset == m.dragOffset) return;
+  m.dragNodes = std::move(sorted);
+  m.dragOffset = offset;
+  m.refreshCableEnds(true);
+}
+
+void CircuitCanvas::clearCableDrag() {
+  Impl& m = *impl_;
+  if (m.dragNodes.empty()) return;
+  m.dragNodes.clear();
+  m.dragOffset = {0.0f, 0.0f};
+  m.refreshCableEnds(true);
+}
+
+void CircuitCanvas::wakeCables() {
+  Impl& m = *impl_;
+  if (m.glowTimer != 0 || m.cables.empty() || !cableLevels) return;  // polling already, or nothing to light
+  m.pollCables();
+}
+
+float CircuitCanvas::cableGlow(uint32_t wire) const noexcept {
+  const Impl& m = *impl_;
+  if (wire >= m.cableOf.size() || m.cableOf[wire] < 0) return 0.0f;
+  return m.cables[static_cast<size_t>(m.cableOf[wire])].glow;
+}
+bool CircuitCanvas::cableGlowPolling() const noexcept { return impl_->glowTimer != 0; }
+
 bool CircuitCanvas::facePointer(const ui::PointerEvent& e) {
   Impl& m = *impl_;
   if (!m.facesShown || m.faces.empty() || !m.scene) return false;
@@ -1888,7 +2576,8 @@ bool CircuitCanvas::facePointer(const ui::PointerEvent& e) {
       bool taken = false;
       Face* fp0 = nullptr;
       if ((e.button == ui::PointerButton::Left || e.button == ui::PointerButton::Right) && !(e.mods & ui::mod::kAlt)) {
-        if (const int32_t i = m.faceUnder(e.pos); i >= 0) {
+        // TX.cables: a press on a cable's plug is the cable's, not the control's under it.
+        if (const int32_t i = m.faceUnder(e.pos); i >= 0 && m.cableEndAt(e.pos) == UINT32_MAX) {
           Face& f = *m.faces[static_cast<size_t>(i)].face;
           const FacePointer fp = m.pointerOf(i, e, K::Down);
           if (before >= 0 && before != i) m.blurFace(before);

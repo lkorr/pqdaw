@@ -36,9 +36,9 @@
 //   edits      (each one undo step, shown at once in the arrangement, mixer and Device view: one document)
 //                wire        drag a device's export pin (right side) onto a device → its params (a menu), or onto a
 //                            param pin or a face's / panel's control: T4.7's modulation wire (ops::connectWire).
-//                            TX.mod-all: a wire into a face's or panel's param ends on its control (no pin): its
-//                            route reaches the block's edge nearest the control and the canvas draws on to the knob
-//                            or handle (project_patch.h Port::anchored, Face::controlAnchor)
+//                            TX.mod-all: a wire into a face's or panel's param ends on its control (no pin); TX.cables:
+//                            as a cable hanging straight onto the knob or handle where it is now (project_patch.h
+//                            Port::anchored, Face::controlAnchor)
 //                re-route    drag a mixer's `out` pin onto a group's or the master's Σ (SetTrackOutput), onto a return's
 //                            Σ (its send to 0 dB); drag a send pin onto its return's Σ (send to 0 dB)
 //                devices     right-click a band → Add Device ▸ (the device menu), Delete removes the selected blocks,
@@ -73,6 +73,11 @@
 //                Ctrl-release   a cable released with Ctrl held connects and keeps a new cable from the same source on the
 //                               pointer (no button held): each click wires one more target (Ctrl+click keeps going, a plain
 //                               click ends, Esc drops it).
+//   cables     (TX.cables) every connection between blocks (notes, chain, modulation and free wires, a group's terminals)
+//              is a hanging cable from port to port drawn over the blocks — a glossy tube with a shadow and plugs, coloured
+//              by its signal — simulated: it sways when a block moves (a drag's preview carries it) and settles; it glows
+//              with its signal while the transport plays (a param's modulation sweep, an audio / note path's track
+//              level), with light flowing along it. Routes, sends and a mixer's output stay orthogonal traces.
 //   resize     (TX.resize) hold S over a device block (a meta face, a panel, a plain block; not an opened one): the
 //              cursor shows ⤡ and a drag scales the block uniformly, its top-left kept, its bottom-right corner
 //              following the pointer (0.5× … 3×, a detent at 1×; Shift: steps of 25 %); a face or panel and everything
@@ -233,6 +238,7 @@ private:
   ui::Cursor pressCursor(ui::Vec2 pos) const;  // T4.16c: the cursor for what a left press at `pos` would start
   void finishWire(ui::Vec2 pos);
   void finishDeviceMove(ui::Vec2 pos);
+  void dragCables();  // TX.cables: the dragged block's (band's) cables follow the drag preview
 
   ProjectPatchView& view_;
   Drag drag_ = Drag::None;
@@ -556,6 +562,10 @@ public:
   // TMM.5: a reader may have become live (the host saw new voice records: a note while nothing animated). The view
   // also wakes its faces while the transport plays (each playhead refresh, when no face timer runs).
   void wakeFaces();
+  // TX.cables: what the canvas's cables glow with — per scene wire 0 … 1 (a wire into a param: its modulation sweep; an
+  // audio or note path: its track's peak level), and whether a source may be live (the meters, the modulation taps).
+  void cableLevels(std::span<const uint32_t> wires, std::span<float> levels);
+  bool cableSignalLive() const;
 
   // ---- TX.panel-faces: closed stock devices drawn as their Device-view panels ----------------------------------
   // On (default): a closed stock device (not edited, not a rack, not a chain meta device, not missing) is drawn as the

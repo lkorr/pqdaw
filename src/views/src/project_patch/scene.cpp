@@ -5,6 +5,7 @@
 #include <cmath>
 #include <unordered_map>
 
+#include "pq/views/circuit/cables.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
@@ -111,6 +112,39 @@ void zRoute(std::vector<Point2>& pts, Point2 a, Point2 b) {
     pts.push_back({mx, b.y});
   }
   pts.push_back(b);
+}
+
+// TX.cables: what a model node is across rebuilds (its kind and its device or track), for a cable's identity.
+uint64_t nodeIdentity(const ProjectPatch& pp, uint32_t i) noexcept {
+  const Node& n = pp.nodes[i];
+  const uint64_t track = n.band < pp.bands.size() ? pp.bands[n.band].track.value : 0;
+  switch (n.kind) {
+    case NodeKind::Device: return (1ull << 60) | n.device.value;
+    case NodeKind::Terminal: return (2ull << 60) | (static_cast<uint64_t>(n.device.value) << 1) | (n.inputs.empty() ? 0u : 1u);
+    case NodeKind::Source: return (3ull << 60) | track;
+    case NodeKind::Sum: return (4ull << 60) | track;
+    case NodeKind::Mixer: return (5ull << 60) | track;
+    case NodeKind::Output: return (6ull << 60) | track;
+  }
+  return 0;
+}
+
+uint64_t mix64(uint64_t h, uint64_t v) noexcept {
+  h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+  h ^= h >> 31;
+  h *= 0xBF58476D1CE4E5B9ull;
+  return h ^ (h >> 29);
+}
+
+// A connection's identity: its ends (node and port name) and kind.
+uint64_t cableKeyOf(const ProjectPatch& pp, const Edge& e) noexcept {
+  const std::hash<std::string> hs;
+  uint64_t h = static_cast<uint64_t>(e.kind) + 1;
+  h = mix64(h, nodeIdentity(pp, e.from));
+  h = mix64(h, e.fromPort < pp.nodes[e.from].outputs.size() ? hs(pp.nodes[e.from].outputs[e.fromPort].name) : e.fromPort);
+  h = mix64(h, nodeIdentity(pp, e.to));
+  h = mix64(h, e.toPort < pp.nodes[e.to].inputs.size() ? hs(pp.nodes[e.to].inputs[e.toPort].name) : e.toPort);
+  return h;
 }
 
 }  // namespace
@@ -273,14 +307,26 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     sc.wires.push_back(sw);
     out.modelEdge.push_back(modelEdge);
   };
+  std::vector<Point2> cablePts;
   for (uint32_t k = 0; k < pp.edges.size(); ++k) {
     const Edge& e = pp.edges[k];
     if (e.points.size() < 2) continue;
     WireStyle style = styleOf(e);
     // TMM.13-fix2 (M10): a note output's wire (Hz, gate, velocity into a param or an input) is a note wire.
     if (e.kind == EdgeKind::Modulation && pp.nodes[e.from].kind == NodeKind::Source) style.notes = true;
-    addWire(e.points, style, netOf(e.net), k);
+    const bool cable = e.cable;
+    if (cable) {  // TX.cables: its rest shape between its two ends (the canvas animates it from there)
+      const Point2 a = e.points.front(), b = e.points.back();
+      const uint32_t n = circuit::cablePointCount(std::hypot(b.x - a.x, b.y - a.y));
+      cablePts.resize(n);
+      circuit::cableRest(a, b, n, cablePts.data());
+      addWire(cablePts, style, netOf(e.net), k);
+    } else {
+      addWire(e.points, style, netOf(e.net), k);
+    }
     SceneWire& sw = sc.wires.back();
+    sw.cable = cable;
+    if (cable) sw.cableKey = cableKeyOf(pp, e);
     const uint32_t a = out.sceneNode[e.from], b = out.sceneNode[e.to];
     sw.fromPin = a != kNone ? sc.nodes[a].firstPin + static_cast<uint32_t>(pp.nodes[e.from].inputs.size()) + e.fromPort : 0;
     sw.toPin = b != kNone ? sc.nodes[b].firstPin + e.toPort : 0;

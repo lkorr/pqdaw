@@ -35,6 +35,16 @@
 // panel_face.h) — any views::Face; a face with its own clock wakes the canvas (FaceHost::faceNeedsUpdate, Face::nextWake)
 // and is laid out again once a zoom settles (Face::prepare).
 //
+// Hanging cables (TX.cables, SceneWire::cable; pq/views/circuit/cables.h): a cable wire is drawn over the blocks (after
+// the faces and labels) as a glossy tube — width by zoom, a cylindrical shade across it, a specular highlight, a soft
+// drop shadow, a plug at each end, coloured by its signal kind — following its simulated rope (CableSim: the scene's
+// rest shape until something moves; a block moved, a drag offset or a control's anchor moving makes it swing and
+// settle). Frames run only while a cable is awake; idle = none. A cable over a face whose control the pointer is on is
+// drawn at kCableFade, and a press there goes to the control unless it is on a cable's end (its plug). Far: the rest
+// shapes in the cached chunks, thin and in one colour, no motion, no glow. Glow: the host's cableLevels (0 … 1 per cable)
+// polled at ≤ kCableGlowSeconds⁻¹ only while cableSignalLive() (and once after) and only for visible cables; a glowing
+// cable is lit around (additive) with light flowing along it from source to target. Silent: no polls, no repaints.
+//
 // UI thread only.
 
 #include <cstdint>
@@ -168,12 +178,37 @@ public:
   bool facesShown() const noexcept;
   static constexpr double kFaceFrameSeconds = 1.0 / 60.0;
 
+  // ---- TX.cables ----
+  static constexpr double kCableGlowSeconds = 1.0 / 30.0;
+  static constexpr float kCableFade = 0.3f;
+  // Off (tests, goldens): cables jump to their rest shapes at once; on (default): they swing and settle.
+  void setCablesAnimated(bool on);
+  bool cablesAnimated() const noexcept;
+  bool cablesMoving() const noexcept;  // a cable swings (the canvas runs frames until it settles)
+  // The cable of scene wire `wire` as it hangs now (world units, source → target; empty: not a cable), its middle.
+  std::span<const graph::Point2> cablePoints(uint32_t wire) const noexcept;
+  graph::Point2 cableMidpoint(uint32_t wire) const noexcept;
+  // Blocks being dragged while the scene still has them where they were (a host's drag preview): the cables of scene
+  // nodes `nodes` follow `offset` (world units) and swing. Clear it with the scene that places them (or on cancel).
+  void setCableDrag(std::span<const uint32_t> nodes, graph::Point2 offset);
+  void clearCableDrag();
+  // The glow: the host fills `levels` (0 = silent … 1) for the listed scene wires from its live sources; whether any
+  // may be non-zero now (the transport plays, a source is active). wakeCables(): a source may have become live — poll
+  // now, and keep polling while it is live and once after.
+  std::function<void(std::span<const uint32_t> wires, std::span<float> levels)> cableLevels;
+  std::function<bool()> cableSignalLive;
+  void wakeCables();
+  float cableGlow(uint32_t wire) const noexcept;
+  bool cableGlowPolling() const noexcept;  // the ≤ 30 Hz glow timer is armed
+
   struct Stats {
     uint32_t nodesPainted = 0, nodesFromTiles = 0, nodesStretched = 0, nodesDirect = 0;
     // TMM.4: faces painted, their static layers from tiles / stretched / drawn directly, face primitives emitted.
     uint32_t facesPainted = 0, faceLayersFromTiles = 0, faceLayersStretched = 0, faceLayersDirect = 0, facePrimitives = 0;
     uint32_t panelsPainted = 0;  // TX.panel-faces: device panels painted (not counted in facesPainted)
     uint32_t wiresPainted = 0, segmentsPainted = 0, junctionsPainted = 0, labelsPainted = 0;
+    uint32_t cablesPainted = 0, cablesGlowing = 0;  // TX.cables (near / mid)
+    uint64_t cableGlowPolls = 0;
     // Far level: chunks drawn from their tiles, from the previous zoom level's tiles (stretched), or directly.
     uint32_t chunksFromTiles = 0, chunksStretched = 0, chunksDirect = 0;
     uint64_t tilesBuilt = 0, tileFailures = 0, paints = 0;

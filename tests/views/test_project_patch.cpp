@@ -79,6 +79,8 @@ bool orthogonal(const std::vector<graph::Point2>& pts) {
     if (pts[i].x != pts[i + 1].x && pts[i].y != pts[i + 1].y) return false;
   return pts.size() >= 2;
 }
+// TX.cables: a bus (route / send) is an orthogonal trace; every other edge is a cable: its two ends (it hangs between).
+bool routedAsDrawn(const Edge& e) { return e.cable ? e.points.size() == 2 : orthogonal(e.points); }
 
 // The shell over the sketch project (or a given builder), the patch view shown without the morph.
 struct Ui {
@@ -241,7 +243,7 @@ TEST_CASE("project patch: the sketch project's view is its lowered ProjectGraph,
     sends += e.kind == EdgeKind::Send;
     silent += e.kind == EdgeKind::Send && e.silent;
     mods += e.kind == EdgeKind::Modulation;
-    CHECK(orthogonal(e.points));
+    CHECK(routedAsDrawn(e));
   }
   size_t graphRoutes = 0, graphSends = 0, graphMods = 0;
   for (const graph::ProjectWire& w : low.graph.wires) {
@@ -496,7 +498,7 @@ TEST_CASE("project patch: the layout mirrors the arrangement (lane order, groups
   CHECK(retStart > mainEnd);  // the returns' Σs right of every main track (their sends arrive by buses)
   REQUIRE(pp.master != kNone);
   CHECK(pp.nodes[pp.bands[pp.master].source].x > retEnd);  // the master on the right
-  for (const Edge& e : pp.edges) CHECK(orthogonal(e.points));
+  for (const Edge& e : pp.edges) CHECK(routedAsDrawn(e));
 }
 
 TEST_CASE("project patch: nudges are view state — not undoable, saved with the project, applied to the layout") {
@@ -1026,7 +1028,7 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
   CHECK(u.pp().nodes[e.to].inputs[e.toPort].param);
   CHECK(e.voice);
   CHECK(e.status == doc::WireStatus::Lowered);
-  CHECK(orthogonal(e.points));
+  CHECK(routedAsDrawn(e));
   u.view().updateReadout(edge);
   CHECK(u.view().readout().title.find("Keys notes: velocity") != std::string::npos);
   // TX.knob-curves: an added wire says what it adds in (knob travel, the knob's units, dB: the target knob's curve).
@@ -1102,7 +1104,7 @@ TEST_CASE("project patch (TMM.10-fix2): note-source wires on the band and across
     if (e.kind != EdgeKind::Modulation || pp.nodes[e.from].kind != NodeKind::Source) continue;
     ++fromWindows;
     CHECK(e.voice);
-    CHECK(orthogonal(e.points));
+    CHECK(routedAsDrawn(e));
     across += e.graphWire != kNone ? 1u : 0u;
   }
   CHECK(fromWindows == 3);
@@ -2008,21 +2010,23 @@ TEST_CASE("project patch (TX.mod-all): a wire into the Wavetable's warp ends on 
   const circuit::CircuitScene& sc = *v.scene().scene;
   CHECK_FALSE(sc.pins[sc.nodes[sn].firstPin + static_cast<uint32_t>(k)].visible);
   CHECK(n.h == doctest::Approx(std::ceil(faceSize(*n.face).y / 4.0f) * 4.0f));
-  // The scene wire: ends on the block's bottom edge under the knob, names the param.
+  // The scene wire: a cable (TX.cables) hanging onto the knob's centre as laid out, naming the param; the canvas draws it
+  // to the knob's rim where the face puts the knob now.
   const uint32_t w = sceneWireOf(v, s.wire);
   REQUIRE(w != kNone);
   const circuit::SceneWire& sw = sc.wires[w];
   REQUIRE(sw.control != UINT32_MAX);
+  CHECK(sw.cable);
   CHECK(sc.strings[sw.control] == "warp");
   const graph::Point2 end = sc.points[sw.firstPoint + sw.pointCount - 1];
-  // TMM.13-fix2 (MM review H6): beside the knob, down its clear column (its rim + 3 units left of its centre), not through it.
-  CHECK(end.x == doctest::Approx(n.x + std::max(2.0f, knob->at.x - (std::max(knob->clear, knob->radius) + 3.0f))));
-  CHECK(end.y == doctest::Approx(n.y + n.h));
-  CHECK(orthogonal(std::vector<graph::Point2>(sc.points.begin() + sw.firstPoint, sc.points.begin() + sw.firstPoint + sw.pointCount)));
-  // Hover: the wire's part outside the face (the middle of its next-to-last segment) is the wire.
-  REQUIRE(sw.pointCount >= 3);
-  const graph::Point2 a = sc.points[sw.firstPoint + sw.pointCount - 3], b = sc.points[sw.firstPoint + sw.pointCount - 2];
-  const Vec2 mid = u.dev((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+  CHECK(end.x == doctest::Approx(n.x + knob->at.x));
+  CHECK(end.y == doctest::Approx(n.y + knob->at.y));
+  const std::span<const graph::Point2> rope = v.canvas().cablePoints(w);
+  REQUIRE(rope.size() >= 2);
+  CHECK(std::hypot(rope.back().x - end.x, rope.back().y - end.y) == doctest::Approx(knob->radius).epsilon(0.02));
+  // Hover: the cable halfway along (off the face) is the wire.
+  const graph::Point2 half = v.canvas().cableMidpoint(w);
+  const Vec2 mid = u.dev(half.x, half.y);
   u.d.move(mid);
   CHECK(v.canvas().hovered().kind == circuit::CanvasHit::Kind::Wire);
   CHECK(v.canvas().hovered().index == w);
@@ -2290,7 +2294,7 @@ TEST_CASE("project patch (TX.resize): S + drag scales a block uniformly — clam
     CHECK(u.pp().bands[n.band].h > bandH0);
     CHECK(v.scene().scene->nodes[v.scene().sceneNode[u.deviceNode(wt)]].scale == doctest::Approx(1.5f));
     CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
-    for (const Edge& e : u.pp().edges) CHECK(orthogonal(e.points));
+    for (const Edge& e : u.pp().edges) CHECK(routedAsDrawn(e));
   }
   // Clamped: far out 3×, far in 0.5×.
   sDrag(u, wt, 4000.0f, 4000.0f);
@@ -2476,10 +2480,10 @@ TEST_CASE("project patch (TX.resize): a scaled face and panel — crisp, interac
     const uint32_t w = sceneWireOf(v, r.filterWire);
     REQUIRE(w != kNone);
     const circuit::CircuitScene& sc = *v.scene().scene;
+    // TX.cables: the cable hangs onto the knob (the scene's end: its centre as laid out, at the scale).
     const graph::Point2 end = sc.points[sc.wires[w].firstPoint + sc.wires[w].pointCount - 1];
-    const graph::Point2 entry = inputEntry(n, static_cast<size_t>(k));
-    CHECK(end.x == doctest::Approx(entry.x));
-    CHECK(end.y == doctest::Approx(entry.y));
+    CHECK(end.x == doctest::Approx(n.x + p.ax));
+    CHECK(end.y == doctest::Approx(n.y + p.ay));
     // The knob under the pointer turns (one undo step): hit-testing follows the scale.
     const size_t h0 = u.history();
     const double f0 = paramOf(u, r.filter, "freq");

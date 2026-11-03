@@ -74,9 +74,9 @@ struct Port {
   // TX.mod-all (the user: "the cables actually touch on / go directly to the location of the knob or slider they are
   // modulating itself instead of added made up input ports"): a param of a face or panel block whose control is
   // visible has NO pin: its wires end on the control. (ax, ay) is the control's centre (node-local world units) when the
-  // layout was made (LayoutOptions::controlAnchor); the wire's route reaches the block's edge nearest to it
-  // (inputEntry), and the canvas draws the rest over the face to wherever the control is when it paints (Face::
-  // controlAnchor). Such ports take no pin row.
+  // layout was made (LayoutOptions::controlAnchor); TX.cables: its cable hangs onto it, and the canvas moves the end to
+  // wherever the control is when it paints (Face::controlAnchor). Its invisible scene pin sits at inputEntry (the
+  // block's edge nearest the control). Such ports take no pin row.
   bool anchored = false;
   float ax = 0, ay = 0;
   // TMM.13-fix2 (MM review H6): how far left of ax a top / bottom entry runs down (the control's clear column: beside
@@ -141,6 +141,13 @@ struct Node {
 };
 
 enum class EdgeKind : uint8_t { Notes, Chain, Route, Send, Modulation };
+// TX.cables (SPEC §15 2026-11-02 "cables and the node menu"): every connection between blocks — notes, chain, modulation
+// and free wires, a group's terminals — is a hanging cable straight from its source port to its target port (a param
+// whose control shows: onto the control); the bus structure stays orthogonal traces: route / send into a Σ and a
+// mixer's output (the master's mixer into Out).
+inline bool isCable(EdgeKind k, NodeKind from) noexcept {
+  return k != EdgeKind::Route && k != EdgeKind::Send && from != NodeKind::Mixer;
+}
 
 struct Edge {
   EdgeKind kind = EdgeKind::Chain;
@@ -156,7 +163,10 @@ struct Edge {
   // TX.groups: a Modulation edge into an INPUT (not a param: an audio input, a group's Out): a signal path, drawn solid
   // like the chain (a grouped series reads as the audio it is).
   bool input = false;
-  std::vector<graph::Point2> points;    // route: from pin … to pin (orthogonal)
+  bool cable = false;  // TX.cables: isCable (a hanging cable between its two points), else an orthogonal trace
+  // A trace (route / send): from pin … to pin (orthogonal). TX.cables: a cable has its two ends — the source pin and the
+  // target pin, or an anchored param's control centre (n.x + ax, n.y + ay) — and hangs between them (cables.h).
+  std::vector<graph::Point2> points;
   uint32_t net = 0;                     // wires into one summing input share a net (junction dots on the bus)
 };
 

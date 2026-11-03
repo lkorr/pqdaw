@@ -512,10 +512,18 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
   }
   {
     // z⁻¹ on wires with an automatic 1-sample delay (SPEC §15 2026-10-24).
+    // TX.cables: on a cable, halfway along it as it hangs now (it rides the swing).
     if (text)
-      for (const Edge& e : pp.edges) {
+      for (uint32_t k = 0; k < pp.edges.size(); ++k) {
+        const Edge& e = pp.edges[k];
         if (!e.delayed || e.points.size() < 2) continue;
-        const graph::Point2 a = e.points[e.points.size() / 2 - (e.points.size() % 2 == 0 ? 1 : 0)];
+        graph::Point2 a = e.points[e.points.size() / 2 - (e.points.size() % 2 == 0 ? 1 : 0)];
+        if (e.cable)
+          for (uint32_t w = 0; w < ps.modelEdge.size(); ++w)
+            if (ps.modelEdge[w] == k) {
+              a = cableMidpoint(w);
+              break;
+            }
         const Vec2 c = toDevice(a);
         const ui::IRect box{static_cast<int32_t>(c.x) - static_cast<int32_t>(14.0f * us), static_cast<int32_t>(c.y) - static_cast<int32_t>(7.0f * us),
                             static_cast<int32_t>(28.0f * us), static_cast<int32_t>(14.0f * us)};
@@ -935,9 +943,13 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
               leaveOutside(e.pos);
             }
           }
+          dragCables();  // TX.cables: its cables follow the dragged outline
           markDirty();
           break;
-        case Drag::Nudge: markDirty(); break;
+        case Drag::Nudge:
+          dragCables();
+          markDirty();
+          break;
         case Drag::Resize: {
           // The bottom-right corner follows the pointer along the block's diagonal (its top-left stays): the press-time
           // size, so the re-laid-out block under the pointer does not feed back into the drag.
@@ -996,6 +1008,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       drag_ = Drag::None;
       if (d == Drag::None) return CircuitCanvas::onPointer(e);
       last_ = e.pos;
+      clearCableDrag();  // TX.cables: the scene the drop builds places the blocks (their cables swing on from there)
       switch (d) {
         case Drag::Wire: {
           // TX.node-menu: released with Ctrl held, a made connection keeps a new cable from the same source on the pointer.
@@ -1470,7 +1483,24 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
   return CircuitCanvas::onKey(e);
 }
 
+// TX.cables: the dragged block (an opened capsule: its contents; a band's title: the band's blocks) carries its cables'
+// ends with the preview outline.
+void ProjectCanvas::dragCables() {
+  const ProjectPatch& pp = view_.patch();
+  const ProjectScene& ps = view_.scene();
+  std::vector<uint32_t> nodes;
+  for (uint32_t v = 0; v < ps.modelNode.size(); ++v) {
+    const uint32_t m = ps.modelNode[v];
+    if (m >= pp.nodes.size()) continue;
+    const Node& n = pp.nodes[m];
+    if (dragNode_ != kNone ? (m == dragNode_ || n.capsule == dragNode_) : (dragBand_ != kNone && n.band == dragBand_)) nodes.push_back(v);
+  }
+  const float s = std::max(deviceScale(), 1e-6f);
+  setCableDrag(nodes, {(last_.x - press_.x) / s, (last_.y - press_.y) / s});
+}
+
 void ProjectCanvas::onCaptureLost() {
+  clearCableDrag();  // TX.cables
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   if (sticky_) return;  // TX.node-menu: a held cable has no capture (no button is down)
   if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.endValueGesture();
@@ -1483,6 +1513,7 @@ void ProjectCanvas::onCaptureLost() {
 }
 
 void ProjectCanvas::onInteractionCancelled() {
+  clearCableDrag();  // TX.cables: the cables swing back with the outline
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   sticky_ = false;
   if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.cancelValueGesture();

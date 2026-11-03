@@ -2289,6 +2289,64 @@ Status setupDeviceMetaScope(Shell& shell) {
   return Ok{};
 }
 
+// ---- TX.cables ---------------------------------------------------------------------------------------------------
+
+// The user's meta patch (bug 2026-11-02_18-21-54, --project tests/views/fixtures/meta-cables): Notes → Phase accumulator →
+// Wavetable → Envelope → Oscilloscope → Mixer, and a free VCA (Envelope.out → VCA.in, VCA.out → the accumulator's
+// frequency) — every connection a hanging cable at its rest shape. `zoom` > 0: that zoom on the band (0: the band
+// framed); `glow`: the track playing (a fixed meter level) and the VCA sweeping the frequency (fixed sweeps), live.
+Status setupProjectCablesAt(Shell& shell, double zoom, bool glow) {
+  ViewContext& ctx = shell.context();
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-cables: the view is not installed", {}};
+  const doc::Track* track = nullptr;
+  doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (track == nullptr && t.kind == doc::TrackKind::Midi) track = &t;
+  });
+  if (track == nullptr) return Error{ErrorCode::NotFound, "project-cables: no MIDI track (needs the meta-cables fixture)", {}};
+  const doc::TrackId id = track->id;
+  if (glow) {
+    static FixedMeterSource meters;
+    static FixedModulationSource sweeps;
+    meters = FixedMeterSource{};
+    sweeps = FixedModulationSource();
+    ui::MeterLevels l;
+    l.rmsDb[0] = l.rmsDb[1] = -14.0f;
+    l.peakDb[0] = -6.0f;
+    l.peakDb[1] = -7.5f;
+    meters.set(id, l);
+    meters.setLive(true);
+    for (const doc::Wire& w : doc::wiresOf(*ctx.doc())) sweeps.set(w.to, w.param, ModSweep{true, 0.35f, 0.2f});
+    sweeps.setLive(true);
+    v->setMeterSource(&meters);
+    ctx.setModulationSource(&sweeps);
+  }
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(id, false);
+  shell.tree().layoutNow();
+  if (zoom > 0.0) {
+    const project_patch::ProjectPatch& pp = v->patch();
+    const uint32_t b = pp.bandOf(id);
+    if (b == project_patch::kNone) return Error{ErrorCode::NotFound, "project-cables: no band", {}};
+    const ui::IRect r = v->canvas().rect();
+    const float us = shell.tree().scale();
+    circuit::CircuitCanvas::View view;
+    view.zoom = zoom;
+    view.x = 0.5 * (pp.bands[b].x0 + pp.bands[b].x1) - 0.5 * r.w / (zoom * us);
+    view.y = pp.bands[b].y + 0.5 * pp.bands[b].h - 0.5 * r.h / (zoom * us);
+    v->canvas().setView(view);
+    shell.tree().layoutNow();
+  }
+  if (glow) v->canvas().wakeCables();
+  return Ok{};
+}
+Status setupProjectCables(Shell& shell) { return setupProjectCablesAt(shell, 0.0, false); }
+Status setupProjectCablesFar(Shell& shell) { return setupProjectCablesAt(shell, 0.2, false); }
+Status setupProjectCablesGlow(Shell& shell) { return setupProjectCablesAt(shell, 0.0, true); }
+
 // The same project in the project patch view: the band of "Scopes", its three faces as blocks.
 Status setupProjectMetaScope(Shell& shell) {
   ViewContext& ctx = shell.context();
@@ -2677,6 +2735,9 @@ constexpr SceneEntry kScenes[] = {
     {"project-meta-spectrum", 1280, 800, setupProjectMetaSpectrum},    // TX.spectrum
     {"device-meta-scope", 1280, 800, setupDeviceMetaScope},            // TX.scope
     {"project-meta-scope", 1280, 800, setupProjectMetaScope},          // TX.scope
+    {"project-cables", 1600, 900, setupProjectCables},                 // TX.cables: --project tests/views/fixtures/meta-cables
+    {"project-cables-far", 1600, 900, setupProjectCablesFar},          // TX.cables: the same --project, zoom 0.2
+    {"project-cables-glow", 1600, 900, setupProjectCablesGlow},        // TX.cables: the same --project, playing
     {"device-meta-spectrogram", 1280, 800, setupDeviceMetaSpectrogram},    // TX.spectrogram
     {"project-meta-spectrogram", 1280, 800, setupProjectMetaSpectrogram},  // TX.spectrogram
     {"meta-operator-device", 1760, 900, setupDeviceMetaOperator},      // TMM.12 (wider: the whole panel)

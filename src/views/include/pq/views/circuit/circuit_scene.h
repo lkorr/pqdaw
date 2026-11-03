@@ -85,6 +85,13 @@ struct SceneWire {
   // project patch view's modulation wires; UINT32_MAX: none). Its points end on the node's edge; the canvas draws the
   // rest over the face, from there to wherever the face's Face::controlAnchor puts the control when it paints.
   uint32_t control = UINT32_MAX;
+  // TX.cables: a hanging cable (the project patch view's connections between blocks), not an orthogonal trace: its
+  // points are its rest shape from the source pin to the target (circuit/cables.h cableRest; the segments and the grid
+  // hold that curve, the far level draws it), and the canvas draws and hit-tests the simulated rope (CircuitCanvas).
+  // `cableKey` names the connection across rebuilds of the scene (a kept cable keeps its motion). A cable with
+  // `control` ends on that control (its last point is the control's centre when the scene was built).
+  bool cable = false;
+  uint64_t cableKey = 0;
 };
 
 // Text drawn at a world position: centred in [x0, x1] at y (the cap-centre line) when it fits, else hidden.

@@ -3,6 +3,7 @@ set(PQ_VIEWS_CIRCUIT_SOURCES
   src/circuit/symbols.cpp
   src/circuit/circuit_scene.cpp
   src/circuit/circuit_canvas.cpp
+  src/circuit/cables.cpp  # TX.cables: hanging cables (rest shape, rope simulation)
   src/circuit/circuit_viewer.cpp
   src/circuit/symbol_sheet.cpp
   src/circuit/patch_editor.cpp

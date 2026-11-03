@@ -59,6 +59,9 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
   setLayout(ui::LayoutKind::Custom);
   setClipChildren(true);
   canvas_ = &add<ProjectCanvas>(*this);
+  // TX.cables: the cables glow with their signal (polled by the canvas only while a source is live).
+  canvas_->cableLevels = [this](std::span<const uint32_t> wires, std::span<float> levels) { cableLevels(wires, levels); };
+  canvas_->cableSignalLive = [this] { return cableSignalLive(); };
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent& e) { onDocument(e); });
   viewSub_ = ctx_.observe([this](uint32_t bits) {
     if (bits & view_change::kTransport) refreshTransport();
@@ -991,6 +994,7 @@ void ProjectPatchView::refreshTransport() {
   }
   if (on && ph.playing) {
     wakeFaces();  // TMM.5: voices start with the transport (cheap while a face timer already runs: nothing)
+    canvas_->wakeCables();  // TX.cables: the glow polls while the sources are live (nothing while it already does)
     if (!playhead_ || *playhead_ != ph.tick) {
       if (playhead_) damageLaneColumn(*playhead_);
       playhead_ = ph.tick;
@@ -1278,6 +1282,60 @@ void ProjectPatchView::rebindFaces() { canvas_->rebindFaces(); }
 
 void ProjectPatchView::wakeFaces() {
   if (shown() && !canvas_->animatingFaces()) canvas_->wakeFaces();
+  if (shown()) canvas_->wakeCables();  // TX.cables: a source may have become live
+}
+
+// ---- TX.cables: the glow ------------------------------------------------------------------------------------------
+
+bool ProjectPatchView::cableSignalLive() const {
+  const ModulationSource* mod = ctx_.modulationSource();
+  return (meters_ != nullptr && meters_->live()) || (mod != nullptr && mod->modulationLive());
+}
+
+// A cable's level: a wire into a param, how far its modulation swept the param since the last poll; an audio or note
+// path (chain, notes, a wire into an input, a group's terminals), its track's peak level (−48 dB … 0 dB → 0 … 1). One
+// meter read and one modulation read per poll.
+void ProjectPatchView::cableLevels(std::span<const uint32_t> wires, std::span<float> levels) {
+  std::vector<doc::TrackId> tracks;
+  std::vector<ModTarget> targets;
+  std::vector<int32_t> slot(wires.size(), -1);  // ≥ 0: track index; ≤ −2: −2 − target index
+  const doc::Project* p = ctx_.doc().get();
+  ModulationSource* mod = ctx_.modulationSource();
+  for (size_t i = 0; i < wires.size(); ++i) {
+    const uint32_t w = wires[i];
+    if (w >= scene_.modelEdge.size() || scene_.modelEdge[w] >= patch_.edges.size()) continue;
+    const Edge& e = patch_.edges[scene_.modelEdge[w]];
+    if (e.kind == EdgeKind::Modulation && mod != nullptr && p != nullptr && e.toPort < patch_.nodes[e.to].inputs.size() &&
+        patch_.nodes[e.to].inputs[e.toPort].param) {
+      if (const doc::Wire* dw = doc::findWire(*p, e.wire)) {
+        slot[i] = -2 - static_cast<int32_t>(targets.size());
+        targets.push_back({dw->to, dw->param});
+        continue;
+      }
+    }
+    if (meters_ == nullptr || e.from >= patch_.nodes.size() || patch_.nodes[e.from].band >= patch_.bands.size()) continue;
+    const doc::TrackId t = patch_.bands[patch_.nodes[e.from].band].track;
+    const auto it = std::find(tracks.begin(), tracks.end(), t);
+    slot[i] = static_cast<int32_t>(it - tracks.begin());
+    if (it == tracks.end()) tracks.push_back(t);
+  }
+  std::vector<ui::MeterLevels> meters(tracks.size());
+  if (!tracks.empty()) meters_->read(tracks, meters);
+  std::vector<ModSweep> sweeps(targets.size());
+  if (!targets.empty()) mod->readModulation(targets, sweeps);
+  for (size_t i = 0; i < wires.size(); ++i) {
+    float level = 0.0f;
+    if (slot[i] >= 0) {
+      const ui::MeterLevels& m = meters[static_cast<size_t>(slot[i])];
+      const float peak = std::max(m.peakDb[0], m.channels > 1 ? m.peakDb[1] : -200.0f);
+      level = std::clamp((peak + 48.0f) / 48.0f, 0.0f, 1.0f);
+    } else if (slot[i] <= -2) {
+      const ModSweep& sw = sweeps[static_cast<size_t>(-2 - slot[i])];
+      const float swept = std::max(sw.up, sw.down);
+      level = sw.known && swept > 1e-4f ? std::clamp(0.35f + swept, 0.0f, 1.0f) : 0.0f;
+    }
+    levels[i] = level;
+  }
 }
 
 bool ProjectPatchView::editDeviceCircuit(doc::DeviceId device) {

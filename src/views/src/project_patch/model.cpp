@@ -960,16 +960,6 @@ struct Builder {
       }
       busX[b.source] = x;
     }
-    // TX.mod-all: the bottom of each band's chain row (a wire entering a block from below runs under the whole row, not
-    // under the shorter blocks only).
-    std::vector<float> rowBottom(out.bands.size(), 0.0f);
-    for (uint32_t i = 0; i < out.bands.size(); ++i) {
-      const Band& b = out.bands[i];
-      for (const uint32_t n : {b.source, b.mixer, b.output})
-        if (n != kNone) rowBottom[i] = std::max(rowBottom[i], out.nodes[n].y + out.nodes[n].h);
-      for (const uint32_t d : b.devices)
-        if (!out.nodes[d].free) rowBottom[i] = std::max(rowBottom[i], out.nodes[d].y + out.nodes[d].h);
-    }
     uint32_t serial = 0;
     for (size_t k = 0; k < out.edges.size(); ++k) {
       Edge& e = out.edges[k];
@@ -979,82 +969,31 @@ struct Builder {
       std::vector<graph::Point2>& pts = e.points;
       pts.clear();
       pts.push_back(s);
+      // TX.cables: a connection between blocks hangs straight from port to port (an anchored param's: onto its
+      // control); the scene gives it its rest shape and the canvas its motion.
+      e.cable = isCable(e.kind, a.kind);
+      if (e.cable) {
+        const Port* tp = e.toPort < b.inputs.size() ? &b.inputs[e.toPort] : nullptr;
+        pts.push_back(tp != nullptr && tp->anchored ? graph::Point2{b.x + tp->ax, b.y + tp->ay} : t);
+        e.net = 1u << 30 | static_cast<uint32_t>(k);
+        continue;
+      }
+      // A bus (route / send) into a summing input: every wire into one input shares its vertical channel.
       // TMM.13-fix2 (MM review M10): parallel runs 6 apart (3 channels in a 20-unit title strip), never closer.
       const uint32_t off = (serial++ % 3) * 6;
-      switch (e.kind) {
-        case EdgeKind::Notes:
-        case EdgeKind::Chain:
-          if (s.y != t.y && t.x > s.x) {
-            const float mx = std::round((s.x + t.x) * 0.5f);
-            pts.push_back({mx, s.y});
-            pts.push_back({mx, t.y});
-          } else if (t.x <= s.x) {  // a nudged block left of its source: around, below the band
-            const Band& band = out.bands[a.band];
-            const float gy = band.y + band.h - 4.0f;
-            pts.push_back({s.x + 12.0f, s.y});
-            pts.push_back({s.x + 12.0f, gy});
-            pts.push_back({t.x - 12.0f, gy});
-            pts.push_back({t.x - 12.0f, t.y});
-          }
-          e.net = 1u << 30 | static_cast<uint32_t>(k);
-          break;
-        case EdgeKind::Route:
-        case EdgeKind::Send: {
-          const float bx = busX.count(e.to) ? busX[e.to] : t.x - 16.0f;
-          if (bx > s.x + 4.0f) {
-            pts.push_back({bx, s.y});
-            pts.push_back({bx, t.y});
-          } else {  // the bus is left of the source (a return routed into a group): out right, over the band, back
-            const Band& tb = out.bands[b.band];
-            const float gy = tb.y - m::kBandGap * 0.5f;
-            pts.push_back({s.x + 12.0f + static_cast<float>(off), s.y});
-            pts.push_back({s.x + 12.0f + static_cast<float>(off), gy});
-            pts.push_back({bx, gy});
-            pts.push_back({bx, t.y});
-          }
-          e.net = e.to;  // one net per summing input: the bus shows junctions where its feeds join
-          break;
-        }
-        case EdgeKind::Modulation: {
-          const Band& tb = out.bands[b.band];
-          const float o = static_cast<float>(off);
-          // TX.groups: inside an opened group the gutter is the capsule's title strip (and under its contents).
-          const Node* cap = b.capsule != kNone ? &out.nodes[b.capsule] : nullptr;
-          const float gutterTop = cap != nullptr ? cap->y : tb.y;
-          // T5.x-one-circuit: between opened devices (their atoms fill their frames) the wire takes the gutter above them,
-          // the band's title strip, as the Track-level view routed its modulation.
-          // TMM.10-fix2: a note output's wire always takes the title strip (straight across it would run under the
-          // instrument's face), turning up in the gap beside the chain's note wire.
-          const bool fromNotes = a.kind == NodeKind::Source;
-          // TX.mod-all: into a control's anchor through the block's top or bottom edge: along the gutter above the
-          // target's band row (its title strip) or below it (under the chain row; a free block: under itself), then
-          // straight down / up onto the control's column (the canvas draws on over the face).
-          const Port* tp = e.toPort < b.inputs.size() ? &b.inputs[e.toPort] : nullptr;
-          const EntrySide side = tp != nullptr && tp->anchored ? entrySide(b, *tp) : EntrySide::Left;
-          if (side != EntrySide::Left) {
-            // TMM.13-fix2: a capsule member's gutter is inside the capsule's pad (it ran on the capsule's outline).
-            const float below = b.free || b.capsule != kNone ? b.y + b.h : std::max(b.y + b.h, rowBottom[b.band]);
-            const float gy = side == EntrySide::Top ? gutterTop + 4.0f + o : below + 3.0f + std::min(o, 6.0f);
-            const float ux = s.x + (fromNotes ? 22.0f : 10.0f) + o;
-            pts.push_back({ux, s.y});
-            pts.push_back({ux, gy});
-            pts.push_back({t.x, gy});  // t: inputEntry, the clear column beside the control (H6)
-          } else if (a.band == b.band && t.x > s.x + 24.0f && !a.expanded && !b.expanded && !fromNotes) {
-            const float mx = std::round((s.x + t.x) * 0.5f) + o;
-            pts.push_back({mx, s.y});
-            pts.push_back({mx, t.y});
-          } else {
-            const float gy = gutterTop + 4.0f + o;  // the target band's title strip (above its nodes); a capsule's
-            const float ux = s.x + (fromNotes ? 22.0f : 10.0f) + o;
-            pts.push_back({ux, s.y});
-            pts.push_back({ux, gy});
-            pts.push_back({t.x - 10.0f - o, gy});
-            pts.push_back({t.x - 10.0f - o, t.y});
-          }
-          e.net = 1u << 30 | static_cast<uint32_t>(k);
-          break;
-        }
+      const float bx = busX.count(e.to) ? busX[e.to] : t.x - 16.0f;
+      if (bx > s.x + 4.0f) {
+        pts.push_back({bx, s.y});
+        pts.push_back({bx, t.y});
+      } else {  // the bus is left of the source (a return routed into a group): out right, over the band, back
+        const Band& tb = out.bands[b.band];
+        const float gy = tb.y - m::kBandGap * 0.5f;
+        pts.push_back({s.x + 12.0f + static_cast<float>(off), s.y});
+        pts.push_back({s.x + 12.0f + static_cast<float>(off), gy});
+        pts.push_back({bx, gy});
+        pts.push_back({bx, t.y});
       }
+      e.net = e.to;  // one net per summing input: the bus shows junctions where its feeds join
       pts.push_back(t);
       simplify(pts);
     }
