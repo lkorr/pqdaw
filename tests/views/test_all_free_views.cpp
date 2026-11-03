@@ -17,6 +17,7 @@
 #include "pq/document/main_path.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
+#include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/fake_transport.h"
@@ -419,6 +420,84 @@ TEST_CASE("all-free (project patch): cables drawn between main ports and onto th
   u.d.tree().layoutNow();
   u.d.step();
   CHECK_FALSE(u.pp().nodes[u.node(u2)].offPath);
+}
+
+TEST_CASE("all-free (project patch): a cable from a block on the path onto its mixer is a branch the mixer sums") {
+  PatchUi u;
+  const size_t h0 = u.history();
+  // The Utility (on the path: synth → Utility → Saturator → mixer) dragged from its output onto the band's mixer.
+  u.d.drag(u.outPin(u.util, "out"), u.mixer(), 8);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  doc::WireId branch;
+  for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc()))
+    if (w.from == u.util && w.toMixer() && w.mixer == u.keys) branch = w.id;
+  REQUIRE(branch.valid());
+  CHECK(doc::findWire(*u.ctx.doc(), branch)->mainLink());
+  // The path keeps its oldest link that reaches the mixer (through the Saturator); the new cable is summed beside it.
+  CHECK(u.onPath() == Ids{u.synth, u.util, u.sat});
+  CHECK(doc::mainPath(*u.ctx.doc(), u.track()).complete);
+  CHECK_FALSE(doc::mainPath(*u.ctx.doc(), u.track()).isLink(branch));
+  u.view().sync();
+  REQUIRE(u.view().lowered() != nullptr);
+  bool lowered = false;
+  for (const doc::WireState& st : u.view().lowered()->wires) lowered = lowered || (st.id == branch && st.status == doc::WireStatus::Lowered);
+  CHECK(lowered);
+  REQUIRE(u.ctx.undo());
+  CHECK(doc::findWire(*u.ctx.doc(), branch) == nullptr);
+}
+
+namespace {
+ui::Menu* blockMenu(PatchUi& u, doc::DeviceId d) {
+  u.d.tree().layoutNow();
+  u.d.step();
+  u.d.click(u.top(d), mod::kNone, PointerButton::Right);
+  for (size_t i = u.shell->overlay().childCount(); i-- > 0;)
+    if (auto* m = dynamic_cast<ui::Menu*>(&u.shell->overlay().child(i))) return m;
+  return nullptr;
+}
+bool choose(PatchUi& u, ui::Menu& m, std::string_view label) {
+  for (int32_t i = 0; i < static_cast<int32_t>(m.items().size()); ++i)
+    if (m.items()[static_cast<size_t>(i)].label == label) {
+      m.choose(i);
+      u.d.step();
+      return true;
+    }
+  return false;
+}
+}  // namespace
+
+TEST_CASE("all-free (project patch): the block menu's Take Off Path and Dissolve — one step each, the path joined") {
+  PatchUi u;
+  const size_t h0 = u.history();
+  // Take Off Path on the Utility: it stays (with the LFO's wire into its gain), the synth joins the Saturator.
+  ui::Menu* m = blockMenu(u, u.util);
+  REQUIRE(m != nullptr);
+  REQUIRE(choose(u, *m, "Take Off Path"));
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.onPath() == Ids{u.synth, u.sat});
+  CHECK(doc::mainPath(*u.ctx.doc(), u.track()).complete);
+  CHECK(all_free::offPath(*u.ctx.doc(), u.util));
+  CHECK(doc::findWire(*u.ctx.doc(), u.lfoWire) != nullptr);
+  // An off-path block's menu has no Take Off Path.
+  m = blockMenu(u, u.util);
+  REQUIRE(m != nullptr);
+  bool offered = false;
+  for (const ui::MenuItem& it : m->items()) offered = offered || it.label == "Take Off Path";
+  CHECK_FALSE(offered);
+  u.d.press("Escape");
+  REQUIRE(u.ctx.undo());
+  CHECK(u.onPath() == Ids{u.synth, u.util, u.sat});
+  // Dissolve on the Saturator: it goes, the Utility runs into the mixer.
+  m = blockMenu(u, u.sat);
+  REQUIRE(m != nullptr);
+  REQUIRE(choose(u, *m, "Dissolve"));
+  CHECK(u.history() == h0 + 1);
+  CHECK(doc::findDevice(*u.ctx.doc(), u.sat).device == nullptr);
+  CHECK(u.onPath() == Ids{u.synth, u.util});
+  CHECK(doc::mainPath(*u.ctx.doc(), u.track()).complete);
+  REQUIRE(u.ctx.undo());
+  CHECK(u.onPath() == Ids{u.synth, u.util, u.sat});
 }
 
 // Golden device-path-broken (view_scenes.cpp): the free-rack project with the cable into Lead's last block deleted — the

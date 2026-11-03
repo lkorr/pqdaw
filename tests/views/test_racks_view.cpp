@@ -501,6 +501,11 @@ TEST_CASE("racks view: a rack nest 20,000 deep shows its first levels and stays 
     }
     std::reverse(racks.begin(), racks.end());
     REQUIRE(st.dispatch(doc::AddDevice{u.keys, inner, doc::kAppend}).ok());
+    // TX.all-free: a raw AddDevice only adds the block to the track; the Device view lists the main path, so the nest
+    // is spliced onto it at the end (as the device menu's add does).
+    auto on = doc::ops::insertOnPath(*st.current(), st.ids(), inner->id, doc::kAppend);
+    REQUIRE_MESSAGE(on.ok(), (on.ok() ? "" : on.error().message));
+    REQUIRE(st.dispatch(on->command).ok());
   }
   u.d.tree().layoutNow();
   u.d.advance(0.1);  // a few frames drawn

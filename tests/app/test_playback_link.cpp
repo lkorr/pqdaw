@@ -242,6 +242,10 @@ TEST_CASE("meters: a latched clip lamp does not keep the meter poll alive (M4 re
   // The Lead track through a Utility at +35 dB: its peaks pass 0 dBFS.
   const DeviceId util = f.store.ids().device();
   REQUIRE(f.store.dispatch(AddDevice{f.lead, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend}).ok());
+  // TX.all-free: a raw AddDevice adds an unconnected block; spliced onto the Lead's path so the track hears it.
+  auto on = ops::insertOnPath(*f.store.current(), f.store.ids(), util, kAppend);
+  REQUIRE(on.ok());
+  REQUIRE(f.store.dispatch(on->command).ok());
   REQUIRE(f.store.dispatch(SetDeviceParam{util, "gain", 35.0}).ok());
   auto link = makeLink(f.snap(), 250.0f);
   Driver d{*link};
