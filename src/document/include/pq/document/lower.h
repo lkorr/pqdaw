@@ -102,6 +102,15 @@
 // instrument's voices are summed at its output, so a meta device after one receives audio (the pre-fix1 behaviour;
 // QUESTIONS Q?-TMM.10-fix1-a item 2). Inside a rack chain only the first stage takes the note source; the later ones
 // receive audio (item 5). Every type plays everywhere (no device errors for a type "in the wrong place").
+// TX.scope-sound (QUESTIONS Q?-TX.scope-sound-a): the run's "last stage" here is the last one that is not a
+// PASS-THROUGH — a device whose first `out` is one of its inputs with nothing in between (its callee: an Input node
+// driving the Output; the analysers Oscilloscope / Spectrum / Spectrogram, a switched-off free device's pass__ patch,
+// any patch `out = in`). The lowering walks back from the run's last stage over pass-throughs — along the chain, along
+// the one wire (local, not delayed) into the input a free one passes, through a group's Out and In — to the device
+// whose output the run's signal is; its type decides the voice end and its callee the width. So an analyser anywhere
+// in a run, a group or free placement changes nothing of the sound (tests/app/test_pass_through.cpp: diff 0,
+// interpreter and JIT, a chord with its releases). When the walk reaches the note source or anything else (several
+// wires, a delayed one, another output), the last stage's own rule holds (5 ms).
 //
 // ---- Signal flow --------------------------------------------------------------------------------------------------
 //   MIDI track    its instrument (the first device, normally BasicSynth, the M3 default instrument,

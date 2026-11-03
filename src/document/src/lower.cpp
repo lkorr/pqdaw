@@ -6,6 +6,7 @@
 #include <bit>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <map>
 #include <optional>
@@ -2056,6 +2057,27 @@ uint16_t outWidth(const graph::Patch& callee) noexcept {
   return graph::kWidthInfer;
 }
 
+// TX.scope-sound: the ordinal (among the callee's `in`s) of the input whose port drives the callee's first `out` with
+// nothing in between — the callee passes that input through unchanged (the analysers: Oscilloscope, Spectrum,
+// Spectrogram; a switched-off device's pass__ patch; any patch `out = in`) — or kNone.
+uint32_t passThroughInput(const graph::Patch& callee) noexcept {
+  NodeIndex out = graph::kNone;
+  for (NodeIndex v = 0; v < callee.nodeCount() && out == graph::kNone; ++v)
+    if (callee.node(v).kind == graph::NodeKind::Output) out = v;
+  if (out == graph::kNone) return graph::kNone;
+  NodeIndex src = graph::kNone;
+  for (const graph::Wire& w : callee.wires())
+    if (w.to.node == out && w.to.port == 0) {
+      if (src != graph::kNone) return graph::kNone;
+      src = w.from.node;
+    }
+  if (src == graph::kNone || callee.node(src).kind != graph::NodeKind::Input) return graph::kNone;
+  uint32_t ordinal = 0;
+  for (NodeIndex v = 0; v < src; ++v)
+    if (callee.node(v).kind == graph::NodeKind::Input) ++ordinal;
+  return ordinal;
+}
+
 // An Instrument Rack (lower.h "Racks"): per chain, its instrument's voices × its key and velocity zones' gains (× the
 // outer rack's, nested) → summed over the voices (a per-voice chain: after its effects) → its effects → the chain mixer
 // (× the select zone) → summed. `outer`: the per-voice gain of an enclosing rack's zones (kPending: none). M4 review
@@ -2682,24 +2704,75 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
         // TMM.11: a run ending in a type that decides its voices' end (the Envelope: a VCA on the run's signal) ends
         // them by its `done`; no declick ramp (its release is the voice's end). TMM.10-fix1: also when that stage is
         // the run's only one (an Envelope at the note source); a stage of any other type ends at note-off + 5 ms.
-        const uint32_t lastDev = devs.top[firstEffect - 1];
-        NodeIndex lastCall = firstEffect > 1 ? b.calls[lastDev] : syn;
-        const Device* lastDevice = devs[lastDev].device;
-        if (isGroupDevice(*lastDevice)) {
-          // TX.groups-fix1: the one lowered wire into the group's Out from a device of this track (not delayed): its
-          // source is the run's last stage (its width, its voice end; its call is made with the free devices below).
-          uint32_t src = graph::kNone, count = 0;
-          for (const LWire& w : wp.wires)
-            if (w.toNode == index && w.toDev == lastDev && w.input && w.wire->param == kGroupOutPort) {
-              ++count;
-              if (w.fromNode == index && w.notes == nullptr && !w.delayed) src = w.fromDev;
+        // TX.groups-fix1: a run ending in a group ends as the device whose output alone reaches its Out (the one
+        // lowered wire into Out from a device of this track, not delayed: its width, its voice end; its call is made
+        // with the free devices below). TX.scope-sound: the run's sound is looked for THROUGH pass-throughs (a device
+        // whose first `out` is one of its inputs unchanged: passThroughInput — the analysers, a switched-off device):
+        // the walk goes from the last stage back over them (along the chain, or along the one wire into the input
+        // they pass, a group's In back to what reaches the group) to the device whose output the run's signal is, so
+        // an analyser anywhere in the run changes neither its voices' end nor its width.
+        const Device* lastDevice = nullptr;
+        NodeIndex lastCall = graph::kNone;
+        {
+          // The one lowered wire into an input of `dev` that `match` picks, from a device of this track, not delayed.
+          auto feeder = [&](uint32_t dev, auto match) -> const LWire* {
+            const LWire* one = nullptr;
+            uint32_t count = 0;
+            for (const LWire& w : wp.wires)
+              if (w.toNode == index && w.toDev == dev && w.input && match(w)) {
+                ++count;
+                one = &w;
+              }
+            if (count != 1 || one->fromNode != index || one->notes != nullptr || one->delayed) return nullptr;
+            return one;
+          };
+          auto stageOf = [&](uint32_t dev) -> size_t {
+            for (size_t s = 0; s < firstEffect; ++s)
+              if (devs.top[s] == dev) return s;
+            return SIZE_MAX;
+          };
+          size_t stage = firstEffect - 1;  // `cur`'s place in the run (SIZE_MAX: a free device, fed by wires)
+          uint32_t cur = devs.top[stage], end = graph::kNone;
+          for (size_t guard = 0; guard <= 2 * devs.size() + 2; ++guard) {
+            const LDev& d = devs[cur];
+            if (d.rack >= 0) break;
+            const LWire* in = nullptr;  // what feeds the input `cur` passes on (null with `chain`: the previous stage)
+            bool chain = false;
+            if (isGroupDevice(*d.device)) {
+              in = feeder(cur, [](const LWire& w) { return w.wire->param == kGroupOutPort; });
+            } else if (const uint32_t p = passThroughInput(*d.callee); p == graph::kNone) {
+              end = cur;  // the device the run's signal comes from
+              break;
+            } else if (stage != SIZE_MAX) {
+              chain = p == 0;  // a stage's chain input is its call's first `in` (Form::ChainVoice / ChainNotes)
+              if (!chain) break;
+            } else {
+              in = feeder(cur, [&](const LWire& w) { return w.toPin == p; });
             }
-          if (count != 1) src = graph::kNone;
-          lastDevice = nullptr;
-          if (src != graph::kNone && devs[src].rack < 0 && !devs[src].bypass) {
-            last = devs[src].callee;
-            lastDevice = devs[src].device;
-            groupEnd = src;
+            if (!chain && in == nullptr) break;
+            if (!chain && isGroupDevice(*devs[in->fromDev].device) && in->wire->port == kGroupInPort) {
+              // A group's In: what reaches the group (as a stage of the run: the previous stage).
+              cur = in->fromDev;
+              stage = stageOf(cur);
+              if (stage == SIZE_MAX) break;
+              chain = true;
+            }
+            if (chain) {
+              if (stage == 0) break;  // the note source: nothing of the run's own ends its voices
+              cur = devs.top[--stage];
+              continue;
+            }
+            if (in->fromPort != 0) break;  // another output of its source (not its sound)
+            cur = in->fromDev;
+            stage = stageOf(cur);
+          }
+          if (end != graph::kNone) {
+            last = devs[end].callee;
+            lastDevice = devs[end].device;
+            if (stageOf(end) == SIZE_MAX)
+              groupEnd = end;  // a free device (a group's member): its `done` is wired once its call exists, below
+            else
+              lastCall = b.calls[end];
           }
         }
         const meta::Type* lastType =

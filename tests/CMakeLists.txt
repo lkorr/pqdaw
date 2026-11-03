@@ -118,6 +118,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_wires.cpp  # T4.7: modulation wires (audible LFO wire, hand-built graph diff 0, interpreter == JIT, loops, taps)
     app/test_patching.cpp  # TX.patching: wires add in units, any output into any param / input at audio rate, free devices
     app/test_groups.cpp  # TX.groups: Ctrl+G / Ctrl+Shift+G round trips (series = group bit for bit, interpreter == JIT, same document)
+    app/test_pass_through.cpp  # TX.scope-sound: an analyser (any pass-through) never changes the sound: chain, group, free
     app/test_mod_all.cpp  # TX.mod-all: a wire into any param makes it live at audio rate (repro, the sweep over every device)
     app/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit: one unit compile, state kept; save/load; wires)
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
