@@ -1234,9 +1234,12 @@ ProjectPatchView::WireTarget ProjectPatchView::wireTargetAt(Vec2 pos) const {
 std::vector<ui::MenuItem> ProjectPatchView::addFreeDeviceItems(doc::TrackId track, std::function<void(const std::string&)> pick) {
   if (!pick) pick = [this, track](const std::string& patch) { (void)addFreeDevice(track, patch); };
   std::vector<ui::MenuItem> addFree;
+  const doc::Track* host = doc::findTrackPtr(*ctx_.doc(), track);
+  const bool midi = host != nullptr && host->kind == doc::TrackKind::Midi;
   if (const doc::DeviceLibrary* lib = ctx_.deviceLibrary())
     for (const doc::DeviceInfo& d : lib->catalog().devices()) {
-      if (d.kind == doc::DeviceKind::Instrument) continue;  // a stock instrument plays where the notes reach it (the path)
+      // TX.all-free-fix1: a stock instrument is a block too (it plays the notes a cable gives it): on MIDI tracks.
+      if (d.kind == doc::DeviceKind::Instrument && !midi) continue;
       const std::string patch = d.patch;
       addFree.push_back(ui::MenuItem::item(d.name, [pick, patch] { pick(patch); }));
     }

@@ -280,7 +280,7 @@ TEST_CASE("main path: the 16 -> 17 migration wires every chain in series, strips
 }
 
 TEST_CASE("main path: the lowering — a broken path is silent, the mixer sums the wires into it, a track's own signal "
-          "feeds a block off the path, notes reach only along the path") {
+          "feeds a block off the path, notes cabled into a block off it play it, a mixer takes other tracks' blocks") {
   Doc d;
   const DeviceId u = d.add("utility");
   const LoweredProject full = lowered(d.doc());
@@ -313,19 +313,22 @@ TEST_CASE("main path: the lowering — a broken path is silent, the mixer sums t
   const LoweredProject gl = lowered(d.doc());
   for (const WireState& s : gl.wires)
     if (s.id == sw || s.id == bw) CHECK(s.status == WireStatus::Lowered);
-  // A MIDI track's notes into a block off its path: inactive (the notes reach a block only along the path).
+  // A MIDI track's notes into a block off its path (TX.all-free-fix1; before it, Inactive: the notes reached a block only
+  // along the path): lowered — the Phase accumulator's frequency reads the note's Hz.
   const DeviceId pa = d.edit(ops::addMetaDevice(d.doc(), d.store.ids(), d.keys, "phase_acc", ops::kOffPath)).devices.at(0);
   Wire notes;
   notes.noteSource = d.keys;
   notes.to = pa;
   const WireId nw = d.wire(notes);
   for (const WireState& s : lowered(d.doc()).wires)
-    if (s.id == nw) CHECK(s.status == WireStatus::Inactive);
-  // A mixer takes only its own track's signals.
+    if (s.id == nw) CHECK(s.status == WireStatus::Lowered);
+  // TX.all-free-fix1: a mixer takes another track's block too (a send-like route; before fix1 it was refused).
   Wire cross = intoMixer(u, g);
   auto crossEdit = ops::connect(d.doc(), d.store.ids(), cross);
   const bool made = crossEdit.ok() && d.store.dispatch(crossEdit->command).ok();
-  CHECK_FALSE(made);
+  CHECK(made);
+  for (const WireState& s : lowered(d.doc()).wires)
+    if (s.id == crossEdit->wires.at(0)) CHECK(s.status == WireStatus::Lowered);
 }
 
 TEST_CASE("main path: a block moved into a rack chain leaves the path joined; moveDevice alone moves only the lists") {

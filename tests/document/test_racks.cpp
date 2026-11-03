@@ -91,8 +91,10 @@ TEST_CASE("racks: the rules — chain kinds, nesting, mappings inside their rack
   CHECK(r.rack(aer).chains.empty());
   const ChainId c1 = ids.chain();
   REQUIRE(dispatch(r.store, AddChain{aer, makeChain(c1, "A")}).ok());
-  SUBCASE("an Audio Effect Rack's chains hold no instrument") {
-    CHECK_FALSE(dispatch(r.store, AddDevice{{}, makeDefaultInstrument(ids.device()), 0, c1}).ok());
+  SUBCASE("an Audio Effect Rack's chains: the builder adds no instrument (the document holds one: it plays nothing)") {
+    // TX.all-free-fix1: a rack chain is a series like a path — an instrument anywhere in it plays where the notes reach it
+    // (here: never, an Audio Effect Rack has none), so the document no longer refuses one; the add builder still does.
+    CHECK(dispatch(r.store, AddDevice{{}, makeDefaultInstrument(ids.device()), 0, c1}).ok());
     CHECK_FALSE(ops::addDevice(r.doc(), ids, {}, "BasicSynth", DeviceKind::Instrument, kAppend, c1).ok());
   }
   SUBCASE("an Instrument Rack goes where instruments go, its chains start with one") {
@@ -105,8 +107,11 @@ TEST_CASE("racks: the rules — chain kinds, nesting, mappings inside their rack
     const DeviceId sat = r.add({}, "saturator", DeviceKind::AudioEffect, ic);
     CHECK(findDevice(r.doc(), syn).index == 0);
     CHECK(findDevice(r.doc(), sat).index == 1);
-    // A second instrument in that chain replaces the first (the builder), a raw command after effects is refused.
-    CHECK_FALSE(dispatch(r.store, AddDevice{{}, makeDefaultInstrument(ids.device()), kAppend, ic}).ok());
+    // A second instrument in that chain replaces the first (the builder); TX.all-free-fix1: a raw command may put one
+    // after the effects (it plays nothing there: no notes reach it), so the document holds it.
+    const DeviceId late = ids.device();
+    CHECK(dispatch(r.store, AddDevice{{}, makeDefaultInstrument(late), kAppend, ic}).ok());
+    REQUIRE(dispatch(r.store, RemoveDevice{late}).ok());
     const DeviceId syn2 = r.add({}, "BasicSynth", DeviceKind::Instrument, ic);
     CHECK_FALSE(findDevice(r.doc(), syn).device);
     CHECK(findDevice(r.doc(), syn2).index == 0);

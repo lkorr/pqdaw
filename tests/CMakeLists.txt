@@ -120,6 +120,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_groups.cpp  # TX.groups: Ctrl+G / Ctrl+Shift+G round trips (series = group bit for bit, interpreter == JIT, same document)
     app/test_all_free.cpp  # TX.all-free: every fixture project renders as before the chain became cables (diff 0, JIT, IR)
     app/test_pass_through.cpp  # TX.scope-sound: an analyser (any pass-through) never changes the sound: chain, group, free
+    app/test_free_instruments.cpp  # TX.all-free-fix1: instruments / racks anywhere play by their cables; cross-track mixer cables
     app/test_mod_all.cpp  # TX.mod-all: a wire into any param makes it live at audio rate (repro, the sweep over every device)
     app/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit: one unit compile, state kept; save/load; wires)
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)

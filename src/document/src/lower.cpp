@@ -91,6 +91,15 @@ struct Cables {
   std::unordered_map<uint32_t, Flow> flows;  // by track id
   std::unordered_set<uint32_t> offPath;      // top-level blocks off their track's main path (device ids)
   std::vector<std::pair<WireId, TrackId>> links;  // every main-path link and its track (id order)
+  // TX.all-free-fix1: the NOTES CABLES that are not links of a main path — a wire from a MIDI track's source (port "")
+  // into a top-level block of the same track — by target device: the inputs they enter, named ("" an instrument's notes,
+  // an Instrument Rack's). Empty for most projects.
+  std::unordered_map<uint32_t, std::vector<std::string>> notesTo;
+  // Whether a notes cable enters `d`'s notes input (a stock instrument's or an Instrument Rack's main input).
+  bool fedNotes(DeviceId d) const noexcept {
+    const auto it = notesTo.find(d.value);
+    return it != notesTo.end() && std::find(it->second.begin(), it->second.end(), std::string()) != it->second.end();
+  }
   const Flow* flowOf(const Track& t) const noexcept {
     const auto it = flows.find(t.id.value);
     return it != flows.end() ? &it->second : nullptr;
@@ -153,6 +162,10 @@ std::shared_ptr<const Cables> cablesOf(const Project& p, const graph::PatchLibra
     Wire x = w;
     if (x.port.empty() && !x.fromNoteSource()) x.port = portsOf(x.from).out;
     if (x.param.empty() && !x.toMixer()) x.param = portsOf(x.to).in;
+    if (x.fromNoteSource() && w.port.empty() && !x.toMixer())  // TX.all-free-fix1: a notes cable (same MIDI track only)
+      if (const DeviceLoc l = findDevice(p, x.to); l.track != nullptr && l.chain == nullptr && l.track->id == x.noteSource &&
+                                                   l.track->kind == TrackKind::Midi)
+        c->notesTo[x.to.value].push_back(x.param);
     rest.push_back(std::move(x));
   }
   c->q.wires = rest.empty() ? nullptr : std::make_shared<const WireList>(std::move(rest));
@@ -163,6 +176,13 @@ struct Callees {
   const graph::PatchLibrary* lib = nullptr;  // the library, or the combined one (LoweredProject::userLibrary)
   std::shared_ptr<const Cables> cables;      // TX.all-free: the main paths (never null once made)
   bool isOffPath(const Device& d) const noexcept { return cables != nullptr && cables->offPath.count(d.id.value) != 0; }
+  // TX.all-free-fix1: a notes cable enters `d`'s notes input (it plays them wherever it is).
+  bool fedNotes(const Device& d) const noexcept { return cables != nullptr && cables->fedNotes(d.id); }
+  // TX.all-free-fix1: the MIDI tracks a notes cable (not their path's first link) makes play voices — one into a stock
+  // instrument or Instrument Rack that plays, or into an input of a meta module off the path —, and those meta modules
+  // (they run in the track's voice context: makeCallees, lowerTree).
+  std::unordered_set<uint32_t> voicedTracks;
+  std::unordered_set<uint32_t> notesMeta;
   std::unordered_map<uint32_t, const graph::Patch*> userRoot;  // device id → its own root (null: nothing plays)
   // TMM.3: the nested meta-module calls of each device that has any (their params are runtime params of the track).
   std::unordered_map<uint32_t, std::shared_ptr<const std::vector<MetaSite>>> metaSites;
@@ -435,6 +455,9 @@ private:
   std::vector<std::pair<uint32_t, std::string>> mapped_;
 };
 
+bool calleeIsInstrument(const graph::Patch& p) noexcept;  // (below)
+bool rackPlaysNotes(const Device& rack, const Callees* lib);  // TX.all-free-fix1 (below)
+
 // TX.all-free: `p` is the project as lowered (Cables::q), `cables` its main paths.
 UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, const graph::PatchLibrary* base,
                         const DeviceLibrary* devices, bool combined, const MetaSlotOf* metaSlotOf = nullptr) {
@@ -479,6 +502,40 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
     staged = true;
     u.callees.metaStage = metaStages(p, *u.callees.cables);
   }
+  // TX.all-free-fix1: the tracks a notes cable makes play voices, and the meta modules off the path such a cable reaches
+  // (Callees::voicedTracks): a stock instrument or an Instrument Rack whose notes input a cable feeds and that plays, a
+  // meta module off the path a notes cable enters at one of its inputs (it runs in the voice context, the input reading
+  // the note's signal of its meaning: planWires).
+  if (!u.callees.cables->notesTo.empty()) {
+    if (!staged) {  // (an Instrument Rack's chain may start with a meta module: its stage decides whether it plays)
+      staged = true;
+      u.callees.metaStage = metaStages(p, *u.callees.cables);
+    }
+    forEachTrack(p, [&](const Track& t, const Track*) {
+      if (t.kind != TrackKind::Midi) return;
+      for (const DevicePtr& d : t.devices) {
+        const auto it = u.callees.cables->notesTo.find(d->id.value);
+        if (it == u.callees.cables->notesTo.end() || !d->active || isGroupDevice(*d)) continue;
+        if (isMetaDevice(*d)) {
+          const meta::Type* type = meta::findType(metaDeviceType(*d));
+          if (type == nullptr || !u.callees.isOffPath(*d)) continue;
+          if (std::any_of(it->second.begin(), it->second.end(), [&](const std::string& in) { return type->inputIndex(in) >= 0; })) {
+            u.callees.notesMeta.insert(d->id.value);
+            u.callees.voicedTracks.insert(t.id.value);
+          }
+          continue;
+        }
+        if (d->kind != DeviceKind::Instrument || !u.callees.fedNotes(*d)) continue;
+        bool plays = false;
+        if (d->rack) {
+          plays = rackPlaysNotes(*d, &u.callees);
+        } else if (const graph::Patch* callee = u.callees.find(*d)) {
+          plays = calleeIsInstrument(*callee);
+        }
+        if (plays) u.callees.voicedTracks.insert(t.id.value);
+      }
+    });
+  }
   forEachDevice(p, [&](const Device& d, const Track& t) {
     if (d.rack) return;
     if (isMetaDevice(d)) {
@@ -510,6 +567,8 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
             voiced = staged1 ? xs != nullptr && xs->in == ChainSignal::Notes : x->kind == DeviceKind::Instrument;
             break;
           }
+        // TX.all-free-fix1: or when a notes cable makes the track play voices.
+        if (!voiced && u.callees.isOffPath(d) && t.kind == TrackKind::Midi) voiced = u.callees.voicedTracks.count(t.id.value) != 0;
         if (voiced) u.callees.freeVoiced.insert(d.id.value);
         u.callees.userRoot[d.id.value] = ex.chainDevice(d, t, st, voiced);
         return;
@@ -648,7 +707,8 @@ Plan plan(const Project& p, const TableOf* tableOf, const Callees* lib) {
         n.track = t.get();
         n.kind = t->kind == TrackKind::Midi ? Kind::Midi : t->kind == TrackKind::Audio ? Kind::Audio : Kind::Group;
         n.parent = parent;
-        if (n.kind == Kind::Midi && tableOf != nullptr && *tableOf && here.depth > path.depth && lowersInstrument(*t, lib))
+        if (n.kind == Kind::Midi && tableOf != nullptr && *tableOf && here.depth > path.depth &&
+            (lowersInstrument(*t, lib) || (lib != nullptr && lib->voicedTracks.count(t->id.value) != 0)))  // fix1
           for (const TuningId id : trackTuningSignals(p, here)) {
             const TuningSlot* slot = findTuning(p, id);
             n.tunings.push_back(TuningNode{id, &slot->def, (*tableOf)(id, slot->def)});
@@ -1055,7 +1115,14 @@ struct LDev {
   // TX.groups-fix1: a switched-off free device passing its chain input to its main output (callee: its pass__ patch).
   bool bypass = false;
   bool offPath = false;  // TX.all-free: a block off its track's main path (called after the path, played by its wires)
+  // TX.all-free-fix1: a top-level stock instrument or Instrument Rack that plays notes (a notes cable or the path's notes
+  // reach it): one of the track's voice consumers (its `done` joins the track's).
+  bool plays = false;
+  bool top = false;  // TX.all-free-fix1: a block of the track itself (not inside a rack)
 };
+// TX.all-free-fix1: in a series (TrackDevs::top, LChain::devs) a stock instrument no notes reach: it is not called and
+// what follows it in the series hears silence (its output). Never an index into TrackDevs::devs.
+constexpr uint32_t kSilent = 0xFFFFFFF0u;
 struct LChain {
   const Chain* chain = nullptr;
   std::vector<uint32_t> devs;  // indices into TrackDevs::devs
@@ -1074,16 +1141,22 @@ struct TrackDevs {
   std::vector<LDev> devs;
   std::vector<uint32_t> top;  // the track's main path (TX.all-free: its blocks in signal order, the series the chain was)
   std::vector<uint32_t> offPath;  // TX.all-free: its blocks off the main path (called, played by their wires), list order
+  std::vector<uint32_t> offPathRacks;  // TX.all-free-fix1: its racks off the main path (lowerList → lowerTree: offPath)
+  bool headVoices = false;  // TX.all-free-fix1: the path's first block takes the notes (an instrument, a meta voice run)
+  // TX.all-free-fix1: a voice consumer other than the path's first block (another stock instrument or Instrument Rack
+  // that plays): the track's `done` is then the AND of every consumer's.
+  bool extra = false;
   bool complete = true;  // TX.all-free: the main path reaches the mixer (else the mixer hears only the wires into it)
   struct PendingFree {
     const Device* device = nullptr;
     const graph::Patch* callee = nullptr;
     bool bypass = false;  // TX.groups-fix1: switched off, passing its chain input on
+    bool plays = false;   // TX.all-free-fix1: a stock instrument a notes cable feeds
   };
   std::vector<PendingFree> pendingFree;  // lowerList → lowerTree
   std::vector<LRack> racks;
   std::vector<LMapping> mappings;
-  bool voices = false;  // the track's chain starts with a lowered instrument (a device, or a rack that plays)
+  bool voices = false;  // the track plays voices (TX.all-free-fix1: any of its voice consumers plays)
 
   size_t size() const noexcept { return devs.size(); }
   bool empty() const noexcept { return devs.empty(); }
@@ -1153,6 +1226,15 @@ bool lowersInstrument(const Track& t, const Callees* lib) noexcept {
   return listLowersInstrument(f != nullptr ? f->list : t.devices, lib);
 }
 
+// TX.all-free-fix1: whether an Instrument Rack plays (a chain that plays lowers an instrument first).
+bool rackPlaysNotes(const Device& rack, const Callees* lib) {
+  if (!rack.rack || rack.kind != DeviceKind::Instrument) return false;
+  const bool solo = soloIn(*rack.rack);
+  for (const ChainPtr& c : rack.rack->chains)
+    if (chainPlays(*c, solo) && listLowersInstrument(c->devices, lib)) return true;
+  return false;
+}
+
 // Whether each Instrument Rack inside `list` plays (has a playing chain whose first active device lowers as an
 // instrument), children before parents (reverse pre-order), so every answer reads its inner racks' answers.
 std::unordered_map<const Device*, bool> instrumentRacksPlay(const std::vector<DevicePtr>& list, const Callees* lib) {
@@ -1177,8 +1259,12 @@ std::unordered_map<const Device*, bool> instrumentRacksPlay(const std::vector<De
 // bypassed because their patch is not in the library or not of their kind. M4 review M9: iterative (a stack of the open
 // lists and racks; a deque keeps each open chain's index list in place while its devices are lowered), in the same
 // order as the recursive version (the same indices).
+// TX.all-free-fix1: `trackList`: `list` is a track's blocks (its main path, then the blocks off it); else a rack chain's
+// (or a lone rack's). A stock instrument or Instrument Rack plays where notes reach it — first in a list that starts at
+// the notes (no lowered device before it), or (a track's block) fed by a notes cable — and is otherwise not called (in a
+// series: kSilent, the series goes on from silence); it is never missing for its place.
 void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumentAllowed, const Callees* lib,
-               std::vector<DeviceId>* missing, std::vector<uint32_t>& out) {
+               std::vector<DeviceId>* missing, std::vector<uint32_t>& out, bool trackList = false) {
   const std::unordered_map<const Device*, bool> plays = instrumentRacksPlay(list, lib);
   struct Open {
     const std::vector<DevicePtr>* list = nullptr;  // a device list (null: a rack, lowering its chains)
@@ -1193,6 +1279,8 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
     LChain chain;                    // the chain being lowered (`list` of the frame above fills chain.devs)
     uint32_t from = 0;
     bool open = false;
+    bool track = false;              // list: a track's own blocks; rack: a block of the track
+    bool offPath = false;            // rack: off the main path (TX.all-free-fix1)
   };
   std::deque<Open> stack;
   {
@@ -1200,6 +1288,7 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
     o.list = &list;
     o.instrumentAllowed = instrumentAllowed;
     o.out = &out;
+    o.track = trackList;
   }
   while (!stack.empty()) {
     Open& f = stack.back();
@@ -1209,7 +1298,8 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
         continue;
       }
       const DevicePtr& d = (*f.list)[f.next++];
-      const bool off = lib != nullptr && lib->isOffPath(*d);  // TX.all-free: off the main path (a track's blocks only)
+      // TX.all-free: off the main path (a track's blocks only)
+      const bool off = f.track && lib != nullptr && lib->isOffPath(*d);
       if (!d->active) {
         // TX.groups-fix1: a switched-off free device whose output a wire reads passes its chain input there.
         if (off)
@@ -1217,34 +1307,62 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
             td.pendingFree.push_back({d.get(), it->second, true});
         continue;
       }
+      const bool staged = isMetaDevice(*d) || isGroupDevice(*d);
+      // TX.all-free-fix1: a stock instrument or Instrument Rack (its main input is notes): it plays where notes reach it.
+      const bool takesNotes = !staged && d->kind == DeviceKind::Instrument;
+      const bool notesHere = f.instrumentAllowed && f.out->empty();  // the list's notes reach it along the list
+      const bool fed = takesNotes && (off ? lib->fedNotes(*d) : notesHere || (f.track && lib != nullptr && lib->fedNotes(*d)));
+      auto openRack = [&](bool instrument, std::vector<uint32_t>* into) {
+        Open& r = stack.emplace_back();  // `f` stays valid (deque)
+        r.rack = d.get();
+        r.out = into;
+        r.solo = soloIn(*d->rack);
+        r.idx = static_cast<uint32_t>(td.devs.size());
+        r.ri = static_cast<int32_t>(td.racks.size());
+        r.track = f.track;
+        r.offPath = off;
+        LDev ld{d.get(), nullptr, r.ri, false};
+        ld.offPath = off;
+        ld.top = f.track;
+        ld.plays = instrument && f.track;
+        td.devs.push_back(ld);
+        td.racks.emplace_back();
+        r.lr.passThrough = !instrument && d->rack->chains.empty();
+      };
       if (off) {  // TX.patching / TX.all-free: off the main path (a track's blocks only); called, never chained
+        if (takesNotes && !fed) continue;  // TX.all-free-fix1: no notes reach it: it plays nothing (not missing)
+        if (d->rack) {  // TX.all-free-fix1: a rack off the path plays by its wires (an Instrument Rack: its notes cable)
+          if (takesNotes && !plays.at(d.get())) continue;
+          // An Audio Effect Rack plays only while a wire reads it (nothing else would: as a free device nothing reads).
+          if (!takesNotes && std::none_of(wiresOf(lib->cables->q).begin(), wiresOf(lib->cables->q).end(),
+                                          [&](const Wire& w) { return !w.fromNoteSource() && w.from == d->id; }))
+            continue;
+          openRack(takesNotes, &td.offPathRacks);
+          continue;
+        }
         const graph::Patch* callee = lib != nullptr ? lib->find(*d) : nullptr;
-        if (callee == nullptr || (!isMetaDevice(*d) && calleeIsInstrument(*callee)) || d->rack) {
+        if (callee == nullptr || (!isMetaDevice(*d) && calleeIsInstrument(*callee) != takesNotes)) {
           if (missing != nullptr) missing->push_back(d->id);
           continue;
         }
-        td.pendingFree.push_back({d.get(), callee, false});  // lowerTree adds it once it knows whether the track plays voices
+        // lowerTree adds it once it knows whether the track plays voices
+        td.pendingFree.push_back({d.get(), callee, false, takesNotes});
         continue;
       }
       // TMM.10-fix1: a chain meta device is its list's instrument exactly when it takes the note source (its stage),
       // whatever its kind; TX.groups-fix1: a group too (a group at a MIDI track's note source is its instrument).
-      const bool staged = isMetaDevice(*d) || isGroupDevice(*d);
-      const bool instrument = staged ? lib != nullptr && lib->readsNotes(*d) : d->kind == DeviceKind::Instrument;
-      if (instrument && (!f.instrumentAllowed || !f.out->empty())) {
+      const bool instrument = staged ? lib != nullptr && lib->readsNotes(*d) : takesNotes;
+      if (staged && instrument && !notesHere) {
         if (missing != nullptr) missing->push_back(d->id);
+        continue;
+      }
+      if (takesNotes && !fed) {  // TX.all-free-fix1: no notes reach it here: silence from it on (not missing)
+        f.out->push_back(kSilent);
         continue;
       }
       if (d->rack) {
         if (instrument && !plays.at(d.get())) continue;  // nothing plays: left out
-        Open& r = stack.emplace_back();  // `f` stays valid (deque)
-        r.rack = d.get();
-        r.out = f.out;
-        r.solo = soloIn(*d->rack);
-        r.idx = static_cast<uint32_t>(td.devs.size());
-        r.ri = static_cast<int32_t>(td.racks.size());
-        td.devs.push_back(LDev{d.get(), nullptr, r.ri, false});
-        td.racks.emplace_back();
-        r.lr.passThrough = !instrument && d->rack->chains.empty();
+        openRack(instrument, f.out);
         continue;
       }
       const graph::Patch* callee = lib != nullptr ? lib->find(*d) : nullptr;
@@ -1255,7 +1373,10 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
         continue;
       }
       f.out->push_back(static_cast<uint32_t>(td.devs.size()));
-      td.devs.push_back(LDev{d.get(), callee, -1, instrument});
+      LDev ld{d.get(), callee, -1, instrument};
+      ld.top = f.track;
+      ld.plays = takesNotes && f.track;
+      td.devs.push_back(ld);
       continue;
     }
     const Rack& r = *f.rack->rack;
@@ -1309,19 +1430,35 @@ TrackDevs lowerTree(const Node& n, const Callees* lib, std::vector<DeviceId>* mi
   // IR), then the blocks off it (free). A path that does not reach the mixer leaves the mixer only its wires.
   const Flow* flow = lib != nullptr && lib->cables != nullptr ? lib->cables->flowOf(*n.track) : nullptr;
   if (flow != nullptr) td.complete = flow->path.complete;
-  lowerList(td, flow != nullptr ? flow->list : n.track->devices, n.kind == Kind::Midi, lib, missing, td.top);
-  // The track plays voices when its first lowered device is its instrument (lowerList: a stock instrument, an Instrument
-  // Rack that plays, or — TMM.10-fix1 — a chain meta device whose chain input takes the note source).
-  if (n.kind == Kind::Midi && !td.top.empty()) {
+  lowerList(td, flow != nullptr ? flow->list : n.track->devices, n.kind == Kind::Midi, lib, missing, td.top, true);
+  // The path's head plays voices when its first lowered device is its instrument (lowerList: a stock instrument, an
+  // Instrument Rack that plays, or — TMM.10-fix1 — a chain meta device whose chain input takes the note source).
+  if (n.kind == Kind::Midi && !td.top.empty() && td.top.front() != kSilent) {
     const LDev& f = td.devs[td.top.front()];
-    td.voices = f.rack >= 0 ? f.device->kind == DeviceKind::Instrument : f.voice;
+    td.headVoices = f.rack >= 0 ? f.device->kind == DeviceKind::Instrument : f.voice;
+  }
+  // TX.all-free-fix1: the other voice consumers — a stock instrument or Instrument Rack a notes cable feeds, on the path
+  // after its head or off it — and the meta modules off the path a notes cable reaches: the track plays voices when any
+  // of them does.
+  if (n.kind == Kind::Midi) {
+    for (size_t i = td.headVoices ? 1 : 0; i < td.top.size(); ++i)
+      if (td.top[i] != kSilent && td.devs[td.top[i]].plays) td.extra = true;
+    for (const uint32_t k : td.offPathRacks)
+      if (td.devs[k].plays) td.extra = true;
+    bool notesMeta = false;
+    for (const TrackDevs::PendingFree& pf : td.pendingFree) {
+      td.extra = td.extra || pf.plays;
+      notesMeta = notesMeta || (lib != nullptr && lib->notesMeta.count(pf.device->id.value) != 0);
+    }
+    td.voices = td.headVoices || td.extra || notesMeta;
   }
   // TMM.10 / TMM.10-fix1: the chain meta devices after a meta device at the note source that a per-voice signal
   // reaches stay per voice (their stage's input is Voices: chainStages), up to the first stage that sums.
   // TX.groups-fix1: a group is a stage of the run like a meta device (its terminals carry the voices).
   auto runStage = [](const Device& d) { return isMetaDevice(d) || isGroupDevice(d); };
-  if (td.voices && td.devs[td.top.front()].rack < 0 && runStage(*td.devs[td.top.front()].device) && lib != nullptr) {
+  if (td.headVoices && td.devs[td.top.front()].rack < 0 && runStage(*td.devs[td.top.front()].device) && lib != nullptr) {
     for (size_t i = 1; i < td.top.size(); ++i) {
+      if (td.top[i] == kSilent) break;
       LDev& d = td.devs[td.top[i]];
       const ChainStage* s = d.rack < 0 && runStage(*d.device) ? lib->stageOf(*d.device) : nullptr;
       if (s == nullptr || s->in != ChainSignal::Voices) break;
@@ -1339,12 +1476,16 @@ TrackDevs lowerTree(const Node& n, const Callees* lib, std::vector<DeviceId>* mi
       continue;
     }
     td.offPath.push_back(static_cast<uint32_t>(td.devs.size()));
-    LDev ld{pf.device, pf.callee, -1, voiced};
+    LDev ld{pf.device, pf.callee, -1, voiced || pf.plays};
     ld.bypass = pf.bypass;
     ld.offPath = true;
+    ld.plays = pf.plays;  // TX.all-free-fix1: a stock instrument a notes cable feeds (a voice device)
+    ld.top = true;
     td.devs.push_back(ld);
   }
   td.pendingFree.clear();
+  // TX.all-free-fix1: the racks off the path (lowered in lowerList: their chains' devices follow each), after the others.
+  td.offPath.insert(td.offPath.end(), td.offPathRacks.begin(), td.offPathRacks.end());
   return td;
 }
 
@@ -1517,6 +1658,7 @@ struct LWire {
   // mixer input (toDev / toPin unused; `input` is set: the mixer reads the path's end plus these wires).
   bool fromTrack = false;
   bool toMixer = false;
+  bool phase = false;  // TX.all-free-fix1: a notes cable into a phase input: the note's phase (phasor of its Hz)
 };
 
 struct WirePlan {
@@ -1573,7 +1715,8 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
   for (uint32_t n = 0; n < nodes; ++n)
     for (uint32_t k = 0; k < devs[n].size(); ++k)
       if (const LDev& d = devs[n][k]; d.voice || d.offPath)
-        std::fill_n(voicePoint.begin() + devBase[n][k], insOf(n, k) + outsOf(n, k), static_cast<uint8_t>(d.offPath ? 2 : 1));
+        std::fill_n(voicePoint.begin() + devBase[n][k], insOf(n, k) + outsOf(n, k),
+                    static_cast<uint8_t>(d.offPath && !(d.plays && d.rack < 0) ? 2 : 1));  // fix1: an instrument: voices
   for (uint32_t n = 0; n < nodes; ++n) {
     const TrackDevs& td = devs[n];
     for (uint32_t k = 0; k < td.size(); ++k) {  // inside each device
@@ -1618,6 +1761,10 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
             continue;
           }
           const uint32_t k = f.list[f.next++];
+          if (k == kSilent) {  // TX.all-free-fix1: an instrument no notes reach: nothing goes on
+            f.x = graph::kNone;
+            continue;
+          }
           const LDev& d = td[k];
           if (d.rack >= 0) {
             const LRack& r = td.racks[static_cast<size_t>(d.rack)];
@@ -1660,6 +1807,8 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     const bool ownSource = pl.nodes[n].kind == Kind::Midi || pl.nodes[n].kind == Kind::Audio;
     const uint32_t x = flow(std::span<const uint32_t>(td.top), ownSource ? graph::kNone : nodeBase[n]);
     if (x != graph::kNone && td.complete) adj[x].push_back(nodeBase[n] + 1);  // TX.all-free: a broken path: not
+    for (const uint32_t k : td.offPath)  // TX.all-free-fix1: a rack off the path: its chains (its input → … → its output)
+      if (td[k].rack >= 0) (void)flow(std::span<const uint32_t>(&k, 1), graph::kNone);
     if (pl.dest[n] != graph::kNone) adj[nodeBase[n] + 1].push_back(nodeBase[pl.dest[n]]);
   }
   for (const SendLink& l : pl.sends)
@@ -1717,13 +1866,53 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       const auto a = nodeOfTrack.find(w.noteSource.value);
       const uint32_t target = w.toMixer() ? (nodeOfTrack.count(w.mixer.value) ? nodeOfTrack.at(w.mixer.value) : graph::kNone)
                                           : (b != where.end() ? b->second.first : graph::kNone);
-      if (a == nodeOfTrack.end() || target != a->second || pl.nodes[a->second].kind == Kind::Midi) {
+      // TX.all-free-fix1: another track's mixer takes a track's own signal too (a send-like route; not its notes).
+      const bool otherMixer = w.toMixer() && a != nodeOfTrack.end() && target != graph::kNone && target != a->second;
+      if (a == nodeOfTrack.end() || (target != a->second && !otherMixer)) {
         inactive();
         continue;
       }
-      lw.fromTrack = true;
-      lw.fromNode = a->second;
-      lw.fromDev = graph::kNone;
+      if (pl.nodes[a->second].kind == Kind::Midi) {
+        // TX.all-free-fix1: a NOTES CABLE (not the path's first link) into a block of its own track. Into a stock
+        // instrument's or an Instrument Rack's notes input it makes it play (lowerList; nothing to wire); into an input of
+        // a meta module the input reads the note's signal of its meaning (meta::Reads, as a chain input at the note source
+        // reads it): a frequency the note's Hz, a phase its phase (phasor of the Hz), and a gate or a signal input its own
+        // default (the voice's gate, or the default: in the voice context the module runs in); anything else: nothing.
+        if (w.toMixer() || b == where.end()) {
+          inactive();
+          continue;
+        }
+        const LDev& dd = devs[b->second.first][b->second.second];
+        if (!dd.top) {
+          inactive();
+          continue;
+        }
+        if (!isMetaDevice(*dd.device) && !isGroupDevice(*dd.device) && dd.device->kind == DeviceKind::Instrument) {
+          if (w.param.empty()) wp.states.push_back(st);  // it plays them (Lowered)
+          else inactive();
+          continue;
+        }
+        const meta::Type* type = dd.rack < 0 && !dd.bypass && isMetaDevice(*dd.device) ? meta::findType(metaDeviceType(*dd.device)) : nullptr;
+        const int32_t in = type != nullptr ? type->inputIndex(w.param) : -1;
+        if (in < 0 || !devs[a->second].voices) {
+          inactive();
+          continue;
+        }
+        const meta::Reads reads = type->inputs[static_cast<size_t>(in)].reads;
+        if (reads != meta::Reads::Frequency && reads != meta::Reads::Phase) {
+          if (dd.voice) wp.states.push_back(st);  // the input's own default is the note's (Lowered; nothing to wire)
+          else inactive();
+          continue;
+        }
+        lw.fromNode = a->second;
+        lw.fromDev = graph::kNone;
+        lw.notes = findNoteOutput("hz");
+        lw.phase = reads == meta::Reads::Phase;
+      } else {
+        lw.fromTrack = true;
+        lw.fromNode = a->second;
+        lw.fromDev = graph::kNone;
+      }
     } else if (w.fromNoteSource()) {
       // TMM.10-fix2: the source is a MIDI track's note source: it plays only while the track has voices (its chain
       // starts with a lowered instrument: voice terminals exist only in a voice context).
@@ -1752,9 +1941,8 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
         inactive();
         continue;
       }
-      if (lw.fromNode != t->second || lw.notes != nullptr) {
-        st.status = lw.notes != nullptr ? WireStatus::Inactive : WireStatus::Invalid;
-        wp.states.push_back(st);
+      if (lw.notes != nullptr) {
+        inactive();
         continue;
       }
       lw.toNode = t->second;
@@ -1763,7 +1951,7 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       uint32_t sourcePort = 0;
       if (!lw.fromTrack) {
         const LDev& sd = devs[lw.fromNode][lw.fromDev];
-        sourcePort = sd.rack < 0 ? signalOutput(*sd.callee, w.port) : graph::kNone;
+        sourcePort = sd.rack < 0 ? signalOutput(*sd.callee, w.port) : w.port == "out" ? 0u : graph::kNone;  // fix1: a rack's out
         if (sourcePort != graph::kNone && sd.bypass && sourcePort != 0) sourcePort = graph::kNone;
       }
       if (sourcePort == graph::kNone) {
@@ -1775,6 +1963,23 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       lw.reduce = !lw.fromTrack && devs[lw.fromNode][lw.fromDev].voice;
       const uint32_t from = lw.fromTrack ? nodeBase[lw.fromNode] : devOut(lw.fromNode, lw.fromDev, lw.fromPort);
       const uint32_t to = nodeBase[lw.toNode] + 1;
+      if (lw.fromNode != lw.toNode) {
+        // TX.all-free-fix1: into ANOTHER track's mixer, a send-like route (its source's every channel, voices summed by
+        // the wire's reducer, across as `export m<wire>` → `in m<wire>`, an audio wire between the tracks). Refused only
+        // when it closes a cycle between tracks (WireRefusal::Cycle: the target's output reaches the source's track).
+        reach(tadj, lw.toNode, fwd);
+        if (fwd[lw.fromNode]) {
+          st.status = WireStatus::Refused;
+          st.reason = WireRefusal::Cycle;
+          wp.states.push_back(st);
+          continue;
+        }
+        tadj[lw.fromNode].push_back(lw.toNode);
+        adj[from].push_back(to);
+        wp.states.push_back(st);
+        wp.wires.push_back(lw);
+        continue;
+      }
       reach(adj, to, seen);
       lw.delayed = seen[from] != 0;
       if (lw.delayed) {
@@ -1804,11 +2009,18 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       if (lw.notes != nullptr) sourcePort = 0;  // an unknown note output: Invalid
     } else if (const LDev& sd = devs[lw.fromNode][lw.fromDev]; sd.rack < 0) {
       sourcePort = signalOutput(*sd.callee, w.port);
+    } else if (w.port == "out") {
+      sourcePort = 0;  // TX.all-free-fix1: a rack's output (its main output)
     }
     uint32_t pin = graph::kNone, point = graph::kNone;
     if (dd.rack >= 0) {
       pin = rackParamIndex(w.param);
-      if (pin != graph::kNone) point = rackParamPoint(dd, pin);
+      if (pin != graph::kNone) {
+        point = rackParamPoint(dd, pin);
+      } else if (w.param == "in" && dd.device->kind != DeviceKind::Instrument) {  // TX.all-free-fix1: an Audio Effect
+        pin = point = 0;                                                         // Rack's input (its main input)
+        lw.input = true;
+      }
     } else if (const uint32_t units = !addsAfterLaw(w, *dd.device) ? graph::kNone : signalInput(*dd.callee, w.param + "_add");
                units != graph::kNone && realParamPin(*dd.callee, w.param)) {
       // TX.patching: a param whose patch adds its wires after its own law (an input `<param>_add`: the VCA's value,
@@ -1825,7 +2037,8 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     }
     // A migrated Travel wire keeps T4.7's ends (an export into a param): an old project lowers exactly as it did.
     if (w.travels() && sourcePort != graph::kNone &&
-        (lw.input || (lw.notes == nullptr && sourcePort < outputCount(*devs[lw.fromNode][lw.fromDev].callee))))
+        (lw.input || (lw.notes == nullptr && (devs[lw.fromNode][lw.fromDev].rack >= 0 ||
+                                              sourcePort < outputCount(*devs[lw.fromNode][lw.fromDev].callee)))))
       sourcePort = graph::kNone;
     // TX.groups-fix1: a switched-off free device passing its chain input on (LDev::bypass) has only those two ports; a
     // wire to or from any other of its ports waits until it plays again.
@@ -2018,7 +2231,41 @@ struct Build {
   PortRef time() { return ir.konst(static_cast<double>(o.smoothingMs) * 1e-3, kCTime); }
   const Track* track = nullptr;  // T4.18: the track whose patch this is (its lanes decide chain mixers); null: none
   std::vector<LoweredProject::MetaResource>* resources = nullptr;  // TX.spectrum: the analysis taps' slots
+  // TX.all-free-fix1: per lowered device, a rack's output (what wires from it read) and the pin wires into an Audio
+  // Effect Rack's input are summed into (kPending: none); the racks a wire enters at their input.
+  std::vector<PortRef> rackOut, rackIn;
+  std::vector<uint8_t> rackInWired;
+  // TX.all-free-fix1: with several voice consumers (TrackDevs::extra) the track's `done` is the AND of theirs, made at
+  // the end (each `done` and the device it ends); `allDone` false: one has none (the engine's own end).
+  bool multi = false;
+  std::vector<std::pair<PortRef, uint32_t>> dones;
+  bool allDone = true;
 };
+
+constexpr graph::PortType kVoiceDone = graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1);
+// TX.all-free-fix1: a voice consumer's `done` (kPending: it has none): the track's own output when it is the only one,
+// else one term of the AND made at the end (finishDones).
+void voiceDone(Build& b, PortRef done, uint32_t device) {
+  if (!b.multi) {
+    if (done.node != graph::kNone) b.ir.output("done", kVoiceDone, done, kDone);
+    return;
+  }
+  if (done.node == graph::kNone) b.allDone = false;
+  else b.dones.emplace_back(done, device);
+}
+// Device node slots of a stock instrument that is not the path's head (NodeRole::Device, k 6 / 7: free slots).
+enum DevK : uint32_t { kDVoiceSum = 6, kDDone = 7 };
+void finishDones(Build& b) {
+  if (!b.multi || !b.allDone || b.dones.empty()) return;
+  PortRef d = b.dones.front().first;
+  for (size_t i = 1; i < b.dones.size(); ++i)
+    d = b.ir.atom("and", {d, b.dones[i].first}, nodeIdFor(NodeRole::Device, b.dones[i].second, kDDone));
+  b.ir.output("done", kVoiceDone, d, kDone);
+}
+// A lowered device's output `port` (a rack: its output).
+PortRef outOf(const Build& b, uint32_t k, uint16_t port) {
+  return b.td[k].rack >= 0 ? b.rackOut[k] : PortRef{b.calls[k], port};
+}
 
 std::string chainParamName(ChainId c, std::string_view what) { return "c" + std::to_string(c.value) + "_" + std::string(what); }
 
@@ -2136,6 +2383,23 @@ PortRef effectCall(Build& b, uint32_t k, PortRef x, uint16_t& width) {
   return x;
 }
 
+struct Voices;
+Voices instrumentRack(Build& b, uint32_t k0, PortRef outer0);
+uint16_t outWidth(const graph::Patch& callee) noexcept;
+
+// TX.all-free-fix1: a stock instrument that is not the path's head, playing the notes a cable gives it: its call, its
+// voices summed (its `done` one of the track's terms). What reached it in a series is dropped: it has no audio input.
+PortRef playInstrument(Build& b, uint32_t k, uint16_t& width) {
+  const LDev& d = b.td[k];
+  const NodeIndex c = callDevice(b.ir, d);
+  b.calls[k] = c;
+  const auto done = b.ir.patch().findOutput(c, "done");
+  voiceDone(b, done ? PortRef{c, static_cast<uint16_t>(*done)} : kPending, d.device->id.value);
+  width = outWidth(*d.callee) == graph::kWidthStereo ? graph::kWidthStereo : graph::kWidthMono;
+  return b.ir.atom("voice_sum", {PortRef{c, 0}}, nodeIdFor(NodeRole::Device, d.device->id.value, kDVoiceSum));
+}
+PortRef playInstrumentRack(Build& b, uint32_t k, uint16_t& width);  // (after instrumentRack)
+
 // The devices of a list from `first` on, wired left → right after `x` (declared width `width`): audio effects (calls)
 // and Audio Effect Racks (lower.h "Racks": the rack's input → each chain (through its select zone's gain) → the chain
 // mixer → summed; no chain at all: the input passes; every chain muted: silence). M4 review M9: iterative (a stack of
@@ -2164,16 +2428,37 @@ PortRef chainOf(Build& b, std::span<const uint32_t> list, size_t first, PortRef 
         continue;
       }
       const uint32_t k = f.list[f.next++];
-      const LDev& d = b.td[k];
-      if (d.rack < 0) {
-        f.x = effectCall(b, k, f.x, f.width);
+      if (k == kSilent) {  // TX.all-free-fix1: an instrument no notes reach: silence from here on
+        f.x = b.c0();
+        f.width = graph::kWidthMono;
         continue;
       }
+      const LDev& d = b.td[k];
+      if (d.rack < 0) {
+        // TX.all-free-fix1: a stock instrument a notes cable feeds, after the path's head: its voices, summed.
+        if (d.plays) f.x = playInstrument(b, k, f.width);
+        else f.x = effectCall(b, k, f.x, f.width);
+        continue;
+      }
+      if (d.plays) {  // TX.all-free-fix1: an Instrument Rack a notes cable feeds, after the path's head
+        f.x = playInstrumentRack(b, k, f.width);
+        continue;
+      }
+      // TX.all-free-fix1: wires into an Audio Effect Rack's input add to what reaches it (lowerSites sums them at this pin).
+      if (k < b.rackInWired.size() && b.rackInWired[k]) {
+        if (b.freeZero.node == graph::kNone) b.freeZero = b.ir.konst(-0.0, kCFreeZero);
+        f.x = b.ir.atom("add", {f.x.node == graph::kNone ? b.freeZero : f.x, b.freeZero}, nodeIdFor(NodeRole::Device, d.device->id.value, 0));
+        b.rackIn[k] = PortRef{f.x.node, 0};
+      }
       const LRack& r = b.td.racks[static_cast<size_t>(d.rack)];
-      if (r.passThrough) continue;
+      if (r.passThrough) {
+        if (k < b.rackOut.size()) b.rackOut[k] = f.x;
+        continue;
+      }
       if (r.chains.empty()) {
         f.width = graph::kWidthMono;
         f.x = b.c0();
+        if (k < b.rackOut.size()) b.rackOut[k] = f.x;
         continue;
       }
       Open o;
@@ -2206,6 +2491,7 @@ PortRef chainOf(Build& b, std::span<const uint32_t> list, size_t first, PortRef 
       continue;
     }
     const PortRef acc = f.acc;
+    if (k < b.rackOut.size()) b.rackOut[k] = acc;  // TX.all-free-fix1: what wires from the rack read
     stack.pop_back();
     stack.back().x = acc;  // the list holding the rack goes on from the sum, stereo
     stack.back().width = graph::kWidthStereo;
@@ -2357,6 +2643,14 @@ Voices instrumentRack(Build& b, uint32_t k0, PortRef outer0) {
   return ret;
 }
 
+PortRef playInstrumentRack(Build& b, uint32_t k, uint16_t& width) {
+  const Voices v = instrumentRack(b, k, kPending);
+  voiceDone(b, v.done, b.td[k].device->id.value);
+  width = v.width;
+  if (k < b.rackOut.size()) b.rackOut[k] = v.x;
+  return v.x;
+}
+
 // ---- Modulation wires and macro mappings in a track patch (T4.7, T4.8; lower.h "Modulation wires", "Racks") ---------
 
 // NodeRole::Wire slots: a wire's own nodes, then (from kWTarget) the nodes of the param it modulates.
@@ -2365,6 +2659,7 @@ enum WireK : uint32_t {
   kWNote, kWNoteReal,  // TMM.10-fix2: a note source's voice terminal, its bool → real
   kWMidL, kWMidR, kWMidAdd, kWMid,  // TX.groups: a wide signal into a meta module's input: its mid
   kWOwn14,  // TX.knob-curves: an Add wire's own free slots (kWAmount, kWTerm, this) hold its site's @signed / dB nodes
+  kWNotePhase,  // TX.all-free-fix1: a notes cable into a phase input: phasor of the note's Hz
   kWTarget = 16,
 };
 enum TargetK : uint32_t {
@@ -2429,8 +2724,11 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       if (w.notes->port == "hz" && b.tunedHz.node != graph::kNone) s = b.tunedHz;
       else s = ir.atom(w.notes->atom, {}, wid(w, kWNote));
       if (w.notes->boolean) s = ir.atom("gate_to_real", {s}, wid(w, kWNoteReal));
+      if (w.phase) s = ir.atom("phasor", {s}, wid(w, kWNotePhase));  // TX.all-free-fix1: the note's phase
+    } else if (w.toMixer) {
+      s = outOf(b, w.fromDev, w.fromPort);  // TX.all-free-fix1: into another track's mixer: every channel
     } else if (w.input && w.fromNode == w.toNode) {
-      s = PortRef{b.calls[w.fromDev], w.fromPort};  // TX.patching: into an input on its own track, every channel
+      s = outOf(b, w.fromDev, w.fromPort);  // TX.patching: into an input on its own track, every channel
       // TX.groups: a meta module's outputs are mono, so a signal of more channels (or of a width only inference knows:
       // a group's In terminal) reaches its input as the mid (l + r) / 2 — the chain's rule (effectCall). On a mono
       // signal the mid is the signal itself, bit for bit (x + x is exact, × 0.5 too).
@@ -2442,7 +2740,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
         s = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
       }
     } else {
-      s = ir.atom("channel", {PortRef{b.calls[w.fromDev], w.fromPort}, b.c0()}, wid(w, kWChannel));
+      s = ir.atom("channel", {outOf(b, w.fromDev, w.fromPort), b.c0()}, wid(w, kWChannel));
     }
     if (w.reduce) s = ir.atom(reducerAtom(w.wire->reducer), {s}, wid(w, kWReduce));
     return s;
@@ -2469,7 +2767,9 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       const std::pair<uint32_t, uint16_t> key{f.toDev, f.toPin};
       if (std::find(done.begin(), done.end(), key) != done.end()) continue;
       done.push_back(key);
-      const PortRef pin{b.calls[f.toDev], f.toPin};
+      // (TX.all-free-fix1: an Audio Effect Rack's input: the pin its lowering made, rackIn)
+      const PortRef pin = td[f.toDev].rack >= 0 ? b.rackIn[f.toDev] : PortRef{b.calls[f.toDev], f.toPin};
+      if (pin.node == graph::kNone) continue;
       graph::Patch& p = ir.patch();
       PortRef sum = kPending;
       for (graph::WireIndex x = 0; x < p.wireCount(); ++x)
@@ -2787,7 +3087,7 @@ bool declaresParam(const TrackDevs& td, uint32_t dev, std::string_view name, con
   const uint32_t pi = rackParamIndex(name);
   if (td.rackParamConsumed(dev, pi)) return true;
   for (const LWire& w : wp.wires)
-    if (w.toNode == node && w.toDev == dev && w.toPin == pi) return true;
+    if (w.toNode == node && w.toDev == dev && w.toPin == pi && !w.input) return true;
   return false;
 }
 
@@ -2800,30 +3100,23 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
   Build b{ir, o, devs, std::vector<NodeIndex>(devs.size(), graph::kNone), {}};
   b.track = n.track;  // T4.18
   b.resources = resources;  // TX.spectrum
+  b.rackOut.assign(devs.size(), kPending);  // TX.all-free-fix1
+  b.rackIn.assign(devs.size(), kPending);
+  b.rackInWired.assign(devs.size(), 0);
+  for (const LWire& w : wp.wires)
+    if (w.toNode == index && w.input && !w.toMixer && devs[w.toDev].rack >= 0) b.rackInWired[w.toDev] = 1;
+  b.multi = devs.extra;
   PortRef x;
-  const bool instrument = n.kind == Kind::Midi && devs.voices;
-  voices = instrument;
+  // The path's head takes the notes (TX.all-free-fix1: the track may play voices without it: TrackDevs::extra).
+  const bool instrument = n.kind == Kind::Midi && devs.headVoices;
+  voices = n.kind == Kind::Midi && devs.voices;
   // T4.12-fix1: the instrument's `voices` setting; T4.8: an Instrument Rack's largest (its chains share the voices).
   polyphony = 0;
-  if (instrument)
+  if (voices)
     for (uint32_t k = 0; k < devs.size(); ++k)
       if (devs[k].rack < 0 && devs[k].device->kind == DeviceKind::Instrument) polyphony = std::max(polyphony, devicePolyphony(devs[k]));
-  size_t firstEffect = 0;
-  uint32_t groupEnd = graph::kNone;  // TX.groups-fix1: the member whose `done` ends a voice run ending in a group
-  uint16_t width = graph::kWidthStereo;
-  if (n.kind == Kind::Audio) {
-    // T5.3: the clip player of slot `clipSlot` (stereo; the player duplicates a mono source), then the chain. Without a
-    // slot nothing plays (its effects still run).
-    if (clipSlot != graph::kNone) {
-      x = ir.atom("clipPlayer", {ir.konst(static_cast<double>(clipSlot), kClipSlot)}, kClipPlayer);
-    } else {
-      x = ir.konst(0.0, kC0);
-      width = graph::kWidthMono;
-    }
-  } else if (n.kind == Kind::Midi && !instrument) {
-    x = ir.konst(0.0, kC0);  // no instrument: nothing plays (its effects still run)
-    width = graph::kWidthMono;
-  } else if (n.kind == Kind::Midi) {
+  // The tuning nodes (when the track follows tunings): before every voice consumer.
+  auto tuningNodes = [&] {
     if (!n.tunings.empty()) {
       // The tuning nodes (T2.6-fix1; one per tuning signal, chained, each taking the voices that select it: T2.6-fix3):
       // param defaults are fixed (the values arrive as params), so the IR only depends on the tunings' kinds, ids
@@ -2857,14 +3150,33 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
       ir.atom("tune_voices", {hz, cents}, kTuneVoices);
       b.tunedHz = hz;  // TMM.10-fix2: what a note source's "hz" output reads (the root's own voice.hz is the engine's)
     }
+  };
+  size_t firstEffect = 0;
+  uint32_t groupEnd = graph::kNone;  // TX.groups-fix1: the member whose `done` ends a voice run ending in a group
+  uint16_t width = graph::kWidthStereo;
+  if (n.kind == Kind::Audio) {
+    // T5.3: the clip player of slot `clipSlot` (stereo; the player duplicates a mono source), then the chain. Without a
+    // slot nothing plays (its effects still run).
+    if (clipSlot != graph::kNone) {
+      x = ir.atom("clipPlayer", {ir.konst(static_cast<double>(clipSlot), kClipSlot)}, kClipPlayer);
+    } else {
+      x = ir.konst(0.0, kC0);
+      width = graph::kWidthMono;
+    }
+  } else if (n.kind == Kind::Midi && !instrument) {
+    if (voices) tuningNodes();  // TX.all-free-fix1: voices from consumers off the head
+    x = ir.konst(0.0, kC0);  // no instrument: nothing plays (its effects still run)
+    width = graph::kWidthMono;
+  } else if (n.kind == Kind::Midi) {
+    tuningNodes();
     const uint32_t first = devs.top.front();
     if (devs[first].rack >= 0) {
       // T4.8: an Instrument Rack: its chains' voices, summed per chain.
       const Voices v = instrumentRack(b, first, kPending);
       x = v.x;
       width = v.width;
-      if (v.done.node != graph::kNone)
-        ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1), v.done, kDone);
+      b.rackOut[first] = v.x;  // TX.all-free-fix1: what wires from it read
+      voiceDone(b, v.done, devs[first].device->id.value);
     } else {
       // The instrument (T4.1: the chain's first device; its first `out` is the voice signal, `done` ends voices).
       const NodeIndex syn = callDevice(ir, devs[first]);
@@ -2976,8 +3288,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
         if (own) {
           x = ir.atom("voice_sum", {v}, kVoiceSum);
           if (groupEnd == graph::kNone)  // (a group's last stage: once its call exists, below)
-            ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
-                      PortRef{lastCall, static_cast<uint16_t>(*own)}, kDone);
+            voiceDone(b, PortRef{lastCall, static_cast<uint16_t>(*own)}, devs[first].device->id.value);
         } else {
           const PortRef gate = ir.atom("voice.gate", {}, kRelGate);
           const PortRef step = ir.atom("div", {ir.konst(1.0 / kMetaReleaseSeconds, kRelRate), ir.atom("sr", {}, kRelSr)},
@@ -2989,14 +3300,13 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
           x = ir.atom("voice_sum", {ir.atom("mul", {v, env}, kRelMul)}, kVoiceSum);
           const PortRef done = ir.atom("and", {ir.atom("not", {gate}, kRelNot), ir.atom("le", {env, ir.konst(0.0, kC0)}, kRelLe)},
                                        kRelDone);
-          ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1), done, kDone);
+          voiceDone(b, done, devs[first].device->id.value);
         }
         width = outWidth(*last) == graph::kWidthStereo ? graph::kWidthStereo : graph::kWidthMono;
       } else {
         x = ir.atom("voice_sum", {PortRef{syn, 0}}, kVoiceSum);
-        if (const auto done = ir.patch().findOutput(syn, "done"))
-          ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
-                    PortRef{syn, static_cast<uint16_t>(*done)}, kDone);
+        const auto done = ir.patch().findOutput(syn, "done");
+        voiceDone(b, done ? PortRef{syn, static_cast<uint16_t>(*done)} : kPending, devs[first].device->id.value);
         width = graph::kWidthMono;
         if (outWidth(*devs[first].callee) == graph::kWidthStereo) width = graph::kWidthStereo;
       }
@@ -3029,8 +3339,26 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
   // non-const `in`) reading zero until a wire reaches it, the other inputs their defaults; their outputs feed only
   // wires (unread, the compiler drops them).
   for (const uint32_t k : devs.offPath) {
+    if (devs[k].rack >= 0) {  // TX.all-free-fix1: a rack off the path
+      uint16_t w = graph::kWidthStereo;
+      if (devs[k].plays) {  // an Instrument Rack a notes cable feeds: its voices, summed, read by wires
+        (void)playInstrumentRack(b, k, w);
+      } else {  // an Audio Effect Rack: its input the wires into it (zero until one does), its output read by wires
+        if (b.freeZero.node == graph::kNone) b.freeZero = ir.konst(-0.0, kCFreeZero);
+        b.rackInWired[k] = 1;  // (chainOf makes the pin: add(−0, −0) until wires replace its first term)
+        w = graph::kWidthMono;
+        const PortRef y = audioRack(b, k, b.freeZero, w);
+        if (b.rackOut[k].node == graph::kNone) b.rackOut[k] = y;
+      }
+      continue;
+    }
     const NodeIndex c = callDevice(ir, devs[k]);
     b.calls[k] = c;
+    if (devs[k].plays) {  // TX.all-free-fix1: a stock instrument a notes cable feeds (its outputs per voice, read by wires)
+      const auto done = ir.patch().findOutput(c, "done");
+      voiceDone(b, done ? PortRef{c, static_cast<uint16_t>(*done)} : kPending, devs[k].device->id.value);
+      continue;
+    }
     // (A free meta device plays its Nested form: every input has its default already.)
     const bool own = isMetaDevice(*devs[k].device) && !devs[k].bypass;
     if (const uint32_t in = own ? graph::kNone : audioInIndex(*devs[k].callee); in != graph::kNone) {
@@ -3041,8 +3369,8 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
   // TX.groups-fix1: a voice run ending in a group whose Out a voice-ending member feeds ends by that member's `done`.
   if (groupEnd != graph::kNone)
     if (const auto d = ir.patch().findOutput(b.calls[groupEnd], "done"))
-      ir.output("done", graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1),
-                PortRef{b.calls[groupEnd], static_cast<uint16_t>(*d)}, kDone);
+      voiceDone(b, PortRef{b.calls[groupEnd], static_cast<uint16_t>(*d)}, devs[groupEnd].device->id.value);
+  finishDones(b);  // TX.all-free-fix1: several voice consumers: the AND of their ends
   // TX.all-free (lower.h "The main path"): the mixer hears the main path's end when the path reaches it, plus every other
   // wire into it (in id order: a block's output with all its channels, a voice signal through the wire's reducer, the
   // track's own signal; through a z1 when it closes a loop). Nothing: silence.
@@ -3051,9 +3379,15 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     for (const LWire& w : wp.wires) {
       if (w.toNode != index || !w.toMixer) continue;
       auto wid = [&](uint32_t k) { return nodeIdFor(NodeRole::Wire, w.wire->id.value, k); };
-      PortRef src = w.fromTrack ? b.sourceX : PortRef{b.calls[w.fromDev], w.fromPort};
-      if (src.node == graph::kNone) continue;
-      if (w.reduce) src = ir.atom(reducerAtom(w.wire->reducer), {src}, wid(kWReduce));
+      PortRef src;
+      if (w.fromNode != index) {  // TX.all-free-fix1: from another track (a send-like route): every channel, summed voices
+        constexpr graph::PortType kRoute = graph::portType(graph::Kind::Infer, graph::Rate::Audio, graph::Poly::Global, graph::kWidthInfer);
+        src = ir.input("m" + std::to_string(w.wire->id.value), b.c0(), wid(kWIn), kRoute);
+      } else {
+        src = w.fromTrack ? b.sourceX : outOf(b, w.fromDev, w.fromPort);
+        if (src.node == graph::kNone) continue;
+        if (w.reduce) src = ir.atom(reducerAtom(w.wire->reducer), {src}, wid(kWReduce));
+      }
       if (w.delayed) src = ir.atom("z1", {src}, wid(kWDelay));
       y = y.node == graph::kNone ? src : ir.atom("add", {y, src}, wid(kWSum));
     }
@@ -3562,7 +3896,8 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
   for (const LWire& w : wp.wires)
     if (w.fromNode != w.toNode) {
       const std::string m = "m" + std::to_string(w.wire->id.value);
-      out.graph.wires.push_back({{w.fromNode, m}, {w.toNode, m}, W::Modulation});
+      // (TX.all-free-fix1: a cable into another track's mixer is an audio route, as a send is)
+      out.graph.wires.push_back({{w.fromNode, m}, {w.toNode, m}, w.toMixer ? W::Audio : W::Modulation});
     }
   for (const ModulationTap& t : out.taps) out.graph.taps.push_back({t.track, t.port});
   out.graph.output = {pl.master, "out"};

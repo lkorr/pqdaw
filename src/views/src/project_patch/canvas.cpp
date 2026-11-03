@@ -1109,11 +1109,12 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
     if (to == kNone) return nullptr;  // empty canvas: the drop does nothing
     const Node& t = pp.nodes[to];
     if (!wireEnd(t)) return "Wire: drop it on a device's parameter or input (or a group's Out, a track's mixer)";
-    if (t.kind == NodeKind::Mixer && t.band != a.band)
-      return "Wire: a mixer takes its own track's signals (route a track to a group or the master from its mixer)";
     const PinHit h = pinAt(pos);
     const bool onPin = h.valid() && h.input && h.node == to && h.port < t.inputs.size();
     const bool notes = isTrackSource(a) && isNoteSource(pp, a);  // a MIDI track's note source
+    // TX.all-free-fix1: another track's mixer takes a block's output or a track's own audio (a send-like route).
+    if (notes && t.kind == NodeKind::Mixer && t.band != a.band)
+      return "Wire: a track's notes go into its own blocks; another track's mixer takes audio";
     if (notes && t.kind == NodeKind::Mixer && from_.port != 0)
       return "Wire: a mixer takes audio (a block's output); a note output goes onto a parameter";
     // The notes (output 0) onto a pin that is not a main input, or onto a block's body (it would mean its param menu).

@@ -517,3 +517,125 @@ TEST_CASE("render: device-path-broken matches the golden image") {
   CHECK(pq::ui::test::matchesGolden("device-path-broken", *img, *ref, true, &d));
   MESSAGE("device-path-broken: " << pq::ui::test::describe(d));
 }
+
+// ---- TX.all-free-fix1: stock instruments and racks are ordinary blocks (QUESTIONS Q208) -------------------------------
+// Through real event dispatch in the project patch view: the track's notes dragged onto an off-path instrument's notes
+// input and its output onto the mixer make it play (lowered: a call of it in the track's patch, nothing missing, both
+// cables Lowered); a block's output dragged onto ANOTHER track's mixer is a send-like route (one undo step, lowered).
+namespace {
+Vec2 sourceOut(const PatchUi& u, size_t port) {
+  const Node& n = u.pp().nodes[u.pp().bands[u.pp().bandOf(u.keys)].source];
+  return u.dev({n.x + n.w, n.y + pinOffset(n, port)});
+}
+const doc::WireState* loweredState(PatchUi& u, doc::WireId w) {
+  u.view().sync();
+  REQUIRE(u.view().lowered() != nullptr);
+  for (const doc::WireState& st : u.view().lowered()->wires)
+    if (st.id == w) return &st;
+  return nullptr;
+}
+bool callsDevice(PatchUi& u, doc::DeviceId d) {
+  u.view().sync();
+  const doc::LoweredProject* low = u.view().lowered();
+  REQUIRE(low != nullptr);
+  const std::string name = "d" + std::to_string(d.value);
+  for (const auto& p : low->patches)
+    for (graph::NodeIndex n = 0; n < p->patch.nodeCount(); ++n)
+      if (p->patch.nodeName(n) == name) return true;
+  return false;
+}
+}  // namespace
+
+TEST_CASE("all-free-fix1 (project patch): notes dragged onto an off-path instrument and its output onto the mixer play it") {
+  PatchUi u;
+  const doc::DeviceId synth2 = [&] {
+    auto e = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "BasicSynth", doc::DeviceKind::Instrument,
+                                 doc::ops::kOffPath);
+    REQUIRE(e.ok());
+    REQUIRE(u.ctx.store().dispatch(e->command).ok());
+    return e->devices.at(0);
+  }();
+  u.d.tree().layoutNow();
+  u.d.step();
+  CHECK(all_free::offPath(*u.ctx.doc(), synth2));
+  CHECK_FALSE(callsDevice(u, synth2));  // nothing feeds it notes: it plays nothing (and is not missing)
+  {
+    u.view().sync();
+    const auto& missing = u.view().lowered()->missingDevices;
+    CHECK(std::find(missing.begin(), missing.end(), synth2) == missing.end());
+  }
+  const size_t h0 = u.history();
+  // The band's notes (the source's output 0) onto the new synth's notes input.
+  u.d.drag(sourceOut(u, 0), u.inPin(synth2, "notes"), 8);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  doc::WireId notes;
+  for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc()))
+    if (w.fromNoteSource() && w.noteSource == u.keys && w.port.empty() && w.to == synth2) notes = w.id;
+  REQUIRE(notes.valid());
+  CHECK(all_free::offPath(*u.ctx.doc(), synth2));  // a branch from the source: the path keeps its own first link
+  // Its output onto the band's mixer.
+  u.d.tree().layoutNow();
+  u.d.step();
+  u.d.drag(u.outPin(synth2, "out"), u.mixer(), 8);
+  u.d.step();
+  CHECK(u.history() == h0 + 2);
+  doc::WireId out;
+  for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc()))
+    if (w.from == synth2 && w.toMixer() && w.mixer == u.keys) out = w.id;
+  REQUIRE(out.valid());
+  const doc::WireState* ns = loweredState(u, notes);
+  REQUIRE(ns != nullptr);
+  CHECK(ns->status == doc::WireStatus::Lowered);
+  const doc::WireState* os = loweredState(u, out);
+  REQUIRE(os != nullptr);
+  CHECK(os->status == doc::WireStatus::Lowered);
+  CHECK(callsDevice(u, synth2));
+  CHECK(u.view().lowered()->missingDevices.empty());
+  // One undo step each: back to the unconnected synth.
+  REQUIRE(u.ctx.undo());
+  REQUIRE(u.ctx.undo());
+  CHECK_FALSE(callsDevice(u, synth2));
+}
+
+TEST_CASE("all-free-fix1 (project patch): a block's output dragged onto another track's mixer is a send-like route") {
+  PatchUi u;
+  const doc::TrackId other = [&] {
+    auto e = doc::ops::createTrack(*u.ctx.doc(), u.ctx.store().ids(), doc::TrackKind::Audio, u.keys, "Bus");
+    REQUIRE(e.ok());
+    REQUIRE(u.ctx.store().dispatch(e->command).ok());
+    return e->tracks.at(0);
+  }();
+  u.d.tree().layoutNow();
+  u.d.step();
+  {  // both bands on screen
+    const Band& a = u.pp().bands[u.pp().bandOf(u.keys)];
+    const Band& b = u.pp().bands[u.pp().bandOf(other)];
+    const IRect r = u.view().canvas().rect();
+    const float x0 = std::min(a.x0, b.x0) - 40.0f, x1 = std::max(a.x1, b.x1) + 420.0f;
+    const float y0 = std::min(a.y, b.y) - 40.0f, y1 = std::max(a.y + a.h, b.y + b.h) + 40.0f;
+    circuit::CircuitCanvas::View v;
+    v.zoom = std::min({1.0, static_cast<double>(r.w) / static_cast<double>(x1 - x0), static_cast<double>(r.h) / static_cast<double>(y1 - y0)});
+    v.x = x0;
+    v.y = y0;
+    u.view().canvas().setView(v);
+    u.d.tree().layoutNow();
+    u.d.step();
+  }
+  const Node& m = u.pp().nodes[u.pp().bands[u.pp().bandOf(other)].mixer];
+  const Vec2 otherMixer = u.dev({m.x + m.w * 0.5f, m.y + m.h * 0.5f});
+  const size_t h0 = u.history();
+  u.d.drag(u.outPin(u.sat, "out"), otherMixer, 8);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  doc::WireId route;
+  for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc()))
+    if (w.from == u.sat && w.toMixer() && w.mixer == other) route = w.id;
+  REQUIRE(route.valid());
+  CHECK(doc::mainPath(*u.ctx.doc(), u.track()).complete);  // Keys' own path is untouched
+  const doc::WireState* st = loweredState(u, route);
+  REQUIRE(st != nullptr);
+  CHECK(st->status == doc::WireStatus::Lowered);
+  REQUIRE(u.ctx.undo());
+  CHECK(doc::findWire(*u.ctx.doc(), route) == nullptr);
+}

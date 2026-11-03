@@ -1182,7 +1182,10 @@ void ProjectLink::reportWires(const doc::Project& p) {
                       "the port comes back; Delete removes the wire)");
       break;
     default:
-      if (first->reason == doc::WireRefusal::VoiceLoop)  // TMM.13-fix1 H3
+      if (first->reason == doc::WireRefusal::Cycle)  // TX.all-free-fix1
+        ctx_->setStatus("The wire " + what + " is not played: that mixer's track feeds the wire's own track (a cycle "
+                        "between tracks)");
+      else if (first->reason == doc::WireRefusal::VoiceLoop)  // TMM.13-fix1 H3
         ctx_->setStatus("The wire " + what + " is not played: it would close a feedback loop through the voices' sum "
                         "(per-voice signals and the track's summed signal cannot feed each other back per sample); the "
                         "rest of the track plays");

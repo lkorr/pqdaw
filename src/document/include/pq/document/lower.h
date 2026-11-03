@@ -363,10 +363,31 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // is lowered as a wire (its "" main ports resolved to the block's main output / input, model.h kMainPort), and every
 // block off the path as below. The MIXER takes the path's end when the path reaches it (else nothing: a broken path is
 // silent past the break, its mixer input a constant 0) plus Σ the other wires into it (Wire::mixer; its own track's
-// blocks only, a wire into another track's mixer is Invalid; one into it that would close a delay-free cycle gets the
+// blocks; TX.all-free-fix1: another track's too, below; one into it that would close a delay-free cycle gets the
 // 1-sample delay; a per-voice source goes through the wire's reducer). A wire from a track's SOURCE with port "" is that
-// track's own signal (an audio track's clips, a group's / return's summed input; a MIDI track's notes reach a block only
-// along its path: such a wire into a block off it is Inactive).
+// track's own signal (an audio track's clips, a group's / return's summed input; a MIDI track's notes: a notes cable,
+// below).
+// TX.all-free-fix1 (QUESTIONS Q208, Q?-TX.all-free-fix1-a): STOCK INSTRUMENTS AND RACKS ARE ORDINARY BLOCKS. A stock
+// instrument (or an Instrument Rack) is a block whose main input is notes: it plays the notes that reach it by a cable —
+// the path's first link on a MIDI track (it heads the path: lowered exactly as before), or a NOTES CABLE (a wire from its
+// own MIDI track's source, port "", into its main input; Cables::notesTo) wherever it is: after the head on the path (its
+// voices summed, voice_sum NodeId nodeIdFor(Device, id, 6); what reached it in the series is dropped — it has no audio
+// input), or off the path (called after the path, per voice; wires from it reduce as from any voice device). One no notes
+// reach is not called and is not missing; in a series (the path, a rack chain) what follows it hears silence (kSilent).
+// Several such voice consumers share the track's voices; its `done` is then the AND of theirs (nodeIdFor(Device, id, 7);
+// none when one has none: the engine's own end), its polyphony the largest `voices` setting. A notes cable into an input
+// of a meta module off the path runs it in the track's voice context: a Frequency input reads the note's Hz (the tuned
+// pitch, as a note source's "hz" wire), a Phase input its phase (phasor of it, NodeRole::Wire slot 15), a Gate or Signal
+// input its own default (the voice's gate, or the default: as a chain input at the note source); it holds no voice
+// (no `done`). Into anything else (a stock effect, a param) a notes cable is Inactive. RACKS off the path play by their
+// wires: an Instrument Rack by its notes cable, an Audio Effect Rack while a wire reads its output (`out`); a wire into an
+// Audio Effect Rack's input (`in`, on the path too) adds to what reaches it (an `add` with −0 at nodeIdFor(Device, rack,
+// 0), whose first term the wires replace). Inside a rack each chain is a series with the same rule: an instrument plays
+// first in an Instrument Rack's chain (the notes), else nothing (the document no longer refuses one elsewhere in a chain).
+// A cable into ANOTHER TRACK'S MIXER (from a block or a track's own signal) is a send-like route: its every channel (voices
+// summed by its reducer) leaves as `export m<wire>`, arrives as `in m<wire>` (width inferred) and is summed into that
+// mixer; graph::WireKind::Audio between the tracks. It is Refused (WireRefusal::Cycle) when it closes a cycle between
+// tracks (the target's output reaches the source's track through routing, sends or other cross-track wires).
 // FREE devices (blocks off the main path; before TX.all-free model.h Device::free): called in their track patch after
 // the series (TrackDevs::offPath), never chained:
 // a stock device's first audio `in` reads −0 until a wire reaches it; a meta device plays its Nested form (every input
@@ -409,7 +430,9 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // (tests/app/test_groups.cpp, "groups-fix1"). A hand-built group there follows the same rules whatever is inside it (a
 // stock device inside sums what reaches it, as everywhere; ops::groupInCircuit only groups stretches of the run).
 enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused };
-enum class WireRefusal : uint8_t { None, TwoInstruments, VoiceLoop };  // why a Refused wire is (see above)
+// TX.all-free-fix1: Cycle — a cable into another track's mixer whose target's output reaches the source's track (a
+// cycle between tracks; lower.h "The main path").
+enum class WireRefusal : uint8_t { None, TwoInstruments, VoiceLoop, Cycle };  // why a Refused wire is (see above)
 struct WireState {
   WireId id;
   WireStatus status = WireStatus::Lowered;

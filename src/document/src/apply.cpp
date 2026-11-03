@@ -2229,11 +2229,14 @@ Res apply_(const Snapshot& s, const AddWire& c, ChangeSet& cs) {
     sourceTrack = findDevice(*s, c.wire.from).track;
     if (sourceTrack == nullptr) return notFound("wire source device not found");
   }
-  if (c.wire.toMixer()) {  // TX.all-free: a track's mixer input, from its own blocks or its own source
+  if (c.wire.toMixer()) {  // TX.all-free: a track's mixer input, from blocks and track sources
     const Track* t = findTrackPtr(*s, c.wire.mixer);
     if (t == nullptr) return notFound("wire target track not found");
-    if (sourceTrack != t || (!c.wire.fromNoteSource() && findDevice(*s, c.wire.from).chain != nullptr))
-      return invalid("a track's mixer takes wires from its own blocks and its own source only");
+    // TX.all-free-fix1: another track's blocks or source too (a send-like route; the lowering refuses a cycle).
+    if (!c.wire.fromNoteSource() && findDevice(*s, c.wire.from).chain != nullptr)
+      return invalid("a track's mixer takes wires from tracks' blocks and sources (not from inside a rack)");
+    if (c.wire.fromNoteSource() && sourceTrack != t && sourceTrack->kind == TrackKind::Midi)
+      return invalid("a track's notes go into its own blocks (a mixer takes audio)");
   } else {
     const DeviceLoc to = findDevice(*s, c.wire.to);
     if (!to.track) return notFound("wire target device not found");

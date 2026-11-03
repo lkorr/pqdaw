@@ -311,7 +311,6 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
     work.pop_back();
     const ListKind k = w.kind;
     const std::vector<DevicePtr>& list = *w.list;
-    size_t series = 0;  // a rack chain's devices before this one (TX.all-free: a track's blocks have no order)
     for (size_t i = 0; i < list.size(); ++i) {
       const Status st = [&]() -> Status {
         const DevicePtr& d = list[i];
@@ -320,12 +319,11 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
         if (d->patch.empty()) return invalid("device has no patch");
         for (size_t j = 0; j < i; ++j)
           if (list[j]->id == d->id) return invalid("device id twice in a chain");
-        if (d->kind == DeviceKind::Instrument) {
-          if (k == ListKind::OtherTrack) return invalid("instruments go on MIDI tracks (the notes are their main input)");
-          if (k == ListKind::AudioRackChain) return invalid("an Audio Effect Rack's chains hold audio effects only");
-          if (k == ListKind::InstrumentRackChain && series != 0) return invalid("the instrument must be the first device of its chain");
-        }
-        ++series;
+        // TX.all-free-fix1: a rack chain is a series like a track's path — an instrument anywhere in it plays where the
+        // notes reach it (first in an Instrument Rack's chain), else nothing (lower.h "The main path"): no order rule.
+        // The notes exist only on MIDI tracks.
+        if (d->kind == DeviceKind::Instrument && k == ListKind::OtherTrack)
+          return invalid("instruments go on MIDI tracks (the notes are their main input)");
         const bool rackChain = k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain;
         if (isGroupDevice(*d)) {  // TX.groups (model.h "Groups")
           if (rackChain) return invalid("a group sits in a track's circuit, not in a rack chain");
