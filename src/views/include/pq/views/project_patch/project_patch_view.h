@@ -220,6 +220,9 @@ public:
   bool stickyWire() const noexcept { return sticky_; }
   // The model edge of the cable under a device point (the canvas's wire hit test: TX.cables' curves), kNone: none.
   uint32_t edgeAt(ui::Vec2 device) const;
+  // TX.node-menu-fix1: a node can go into model edge `edge` (Z, Tab, a splice): a chain cable or a wire (not notes,
+  // routes or sends: a bus, or the chain's own note wire).
+  bool cuttableEdge(uint32_t edge) const noexcept;
   // The model edge a Shift-drag would splice into now (kNone: none).
   uint32_t spliceEdge() const noexcept { return spliceEdge_; }
 
@@ -280,6 +283,24 @@ private:
   Selection spliceKeep_;                 // the selection before the Shift-drag (the hovered cable is shown selected)
   void rememberSource();                 // fromDevice_ / fromPort_ / fromNotes_ from from_
   bool resolveSource();                  // from_ from them (false: the source is gone)
+  // TX.node-menu-fix1: a document change rebuilds the model while a gesture holds model indices (a block or a band
+  // being dragged, a cable's source, the cable a splice would cut). The view calls beforeRebuild() with the old model
+  // and afterRebuild() with the new one: the indices are found again by identity (kind, device, track); a gesture whose
+  // block, band or source went away ends (no stale index is ever read).
+  struct NodeKey {
+    NodeKind kind = NodeKind::Device;
+    doc::DeviceId device;
+    doc::TrackId track;
+    bool valid = false;
+  };
+  NodeKey keyOf(uint32_t node) const noexcept;
+  uint32_t findKey(const NodeKey& k) const noexcept;
+  void beforeRebuild();
+  void afterRebuild();
+  NodeKey keepNode_, keepFrom_;
+  doc::TrackId keepBand_;
+  std::string keepFromPort_;
+  bool keepFromInput_ = false;
 };
 
 class ProjectPatchView : public ui::Widget {

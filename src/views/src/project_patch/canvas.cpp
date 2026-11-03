@@ -1440,7 +1440,10 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
   if (drag_ == Drag::None && mods == ui::mod::kNone && (e.key == ui::key::kTab || e.key == 'z')) {
     Vec2 at = pointer_;
     if (!rect().contains(at)) at = {static_cast<float>(rect().x + rect().w / 2), static_cast<float>(rect().y + rect().h / 2)};
-    const uint32_t edge = edgeAt(at);
+    uint32_t edge = edgeAt(at);
+    // TX.node-menu-fix1: over a cable nothing can be inserted into (notes, routes, sends), Tab adds a node as on empty
+    // canvas (it did nothing but a status line).
+    if (e.key == ui::key::kTab && edge != kNone && !cuttableEdge(edge)) edge = kNone;
     if (e.key == 'z') {
       if (edge == kNone) return CircuitCanvas::onKey(e);
       (void)view_.insertVca(edge);
@@ -1545,6 +1548,90 @@ uint32_t ProjectCanvas::edgeAt(Vec2 device) const {
   const ProjectScene& ps = view_.scene();
   if (h.kind != circuit::CanvasHit::Kind::Wire || h.index >= ps.modelEdge.size()) return kNone;
   return ps.modelEdge[h.index];
+}
+
+ProjectCanvas::NodeKey ProjectCanvas::keyOf(uint32_t node) const noexcept {
+  const ProjectPatch& pp = view_.patch();
+  if (node >= pp.nodes.size()) return {};
+  const Node& n = pp.nodes[node];
+  return {n.kind, n.device, n.band < pp.bands.size() ? pp.bands[n.band].track : doc::TrackId{}, true};
+}
+
+uint32_t ProjectCanvas::findKey(const NodeKey& k) const noexcept {
+  if (!k.valid) return kNone;
+  const ProjectPatch& pp = view_.patch();
+  for (uint32_t i = 0; i < pp.nodes.size(); ++i) {  // rare (a rebuild during a gesture): a linear search
+    const Node& n = pp.nodes[i];
+    if (n.kind == k.kind && n.device == k.device && n.band < pp.bands.size() && pp.bands[n.band].track == k.track) return i;
+  }
+  return kNone;
+}
+
+void ProjectCanvas::beforeRebuild() {
+  const ProjectPatch& pp = view_.patch();
+  keepNode_ = keyOf(dragNode_);
+  keepBand_ = dragBand_ < pp.bands.size() ? pp.bands[dragBand_].track : doc::TrackId{};
+  keepFrom_ = from_.valid() ? keyOf(from_.node) : NodeKey{};
+  keepFromPort_.clear();
+  keepFromInput_ = from_.input;
+  if (keepFrom_.valid && from_.node < pp.nodes.size()) {
+    const Node& n = pp.nodes[from_.node];
+    const std::vector<Port>& ports = from_.input ? n.inputs : n.outputs;
+    if (from_.port < ports.size()) keepFromPort_ = ports[from_.port].name;
+  }
+}
+
+void ProjectCanvas::afterRebuild() {
+  const ProjectPatch& pp = view_.patch();
+  bool lost = false;
+  if (keepNode_.valid) {
+    dragNode_ = findKey(keepNode_);
+    lost = lost || dragNode_ == kNone;
+  } else {
+    dragNode_ = kNone;
+  }
+  if (keepBand_.valid()) {
+    dragBand_ = pp.bandOf(keepBand_);
+    lost = lost || dragBand_ == kNone;
+  } else {
+    dragBand_ = kNone;
+  }
+  if (keepFrom_.valid) {
+    from_ = {};
+    if (const uint32_t n = findKey(keepFrom_); n != kNone) {
+      const int32_t k = keepFromInput_ ? pp.nodes[n].input(keepFromPort_) : pp.nodes[n].output(keepFromPort_);
+      if (k >= 0) from_ = {n, static_cast<uint32_t>(k), keepFromInput_};
+    }
+    lost = lost || (!from_.valid() && (drag_ == Drag::Wire || sticky_));
+  }
+  // A splice's cable: found again on the next move (edge indices are the model's).
+  if (drag_ == Drag::Splice || drag_ == Drag::MaybeSplice) {
+    spliceEdge_ = kNone;
+    spliceKeep_ = selection();
+  }
+  keepNode_ = keepFrom_ = {};
+  keepBand_ = {};
+  const bool indexed = drag_ == Drag::Wire || drag_ == Drag::MaybeMoveDevice || drag_ == Drag::MoveDevice || drag_ == Drag::Nudge ||
+                       drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send || drag_ == Drag::MaybeSplice ||
+                       drag_ == Drag::Splice;
+  if (lost && (indexed || sticky_)) {
+    // What the gesture held went away (an undo, another edit): it ends here, without an edit (its release does nothing).
+    if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.cancelValueGesture();
+    clearCableDrag();
+    drag_ = Drag::None;
+    sticky_ = false;
+    dragNode_ = dragBand_ = kNone;
+    from_ = {};
+    spliceEdge_ = kNone;
+    markDirty();
+  }
+}
+
+bool ProjectCanvas::cuttableEdge(uint32_t edge) const noexcept {
+  const ProjectPatch& pp = view_.patch();
+  if (edge >= pp.edges.size()) return false;
+  const EdgeKind k = pp.edges[edge].kind;
+  return k == EdgeKind::Chain || k == EdgeKind::Modulation;
 }
 
 void ProjectCanvas::rememberSource() {

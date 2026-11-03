@@ -549,6 +549,7 @@ void ProjectPatchView::rebuild() {
         const Edge& e = patch_.edges[scene_.modelEdge[w]];
         if (e.kind == EdgeKind::Modulation) selWires.push_back(e.wire);
       }
+  canvas_->beforeRebuild();  // TX.node-menu-fix1: a gesture's model indices, by identity
   patch_ = buildProjectPatch(*snap, *lowered_, devlib != nullptr ? &devlib->catalog() : nullptr, opt);
   tracksOf_ = nullptr;  // bandTrack's table follows the new bands
   scene_ = buildProjectScene(patch_, inner);
@@ -569,6 +570,7 @@ void ProjectPatchView::rebuild() {
       if (e.kind == EdgeKind::Modulation && std::find(selWires.begin(), selWires.end(), e.wire) != selWires.end()) wires.push_back(w);
     }
   if (!nodes.empty() || !wires.empty()) canvas_->select(nodes, wires);
+  canvas_->afterRebuild();
   readout_ = {};
   if (showCosts_) {
     costs_.clear();

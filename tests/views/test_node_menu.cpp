@@ -489,6 +489,313 @@ TEST_CASE("node menu: a click on a row places the node — the closed menu is ne
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
 }
 
+// TX.node-menu-fix1: every gesture of the node menu and the cables through real event dispatch (pointer and key events
+// into the tree, as the window delivers them), animations on (push-apart glides, swinging cables), freed memory
+// poisoned throughout, and the app's frame sequence (update, then the cursor query) after every event: Enter and a click
+// in the menu, Z, Tab on a cable, Shift-splice, dissolve, Ctrl-release, W backwards cable → menu, a cable dropped →
+// menu → Esc, while playing, at the far zoom, into an opened group.
+TEST_CASE("node menu: every gesture through real dispatch, animated, poisoned frees — no stale widget, index or node") {
+  Ui u;
+  u.view().setPushAnimated(true);
+  u.view().canvas().setCablesAnimated(true);
+  alloc_trap::PoisonFrees poison;
+  auto frame = [&] {
+    u.d.step();
+    (void)u.d.tree().cursor();
+  };
+  auto settle = [&] {
+    for (int i = 0; i < 90; ++i) frame();
+    u.view().sync();
+  };
+  const graph::Point2 at = u.emptyWorld();
+  size_t h = u.history();
+  // Tab + Enter on empty canvas.
+  u.d.move(u.dev(at));
+  frame();
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  frame();
+  u.d.type("tanh");
+  frame();
+  REQUIRE(u.d.keyDown(key::kReturn) == KeyResult::Widget);
+  frame();
+  u.d.keyUp(key::kReturn);
+  frame();
+  CHECK(u.menu() == nullptr);
+  CHECK(u.d.tree().focus() == &u.view().canvas());
+  settle();
+  CHECK(u.history() == ++h);
+  // Tab again right over that block (push-apart while the next events arrive).
+  u.d.move(u.centre(u.newest()));
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  u.d.type("abs");
+  frame();
+  REQUIRE(u.d.press("Return") == KeyResult::Widget);
+  for (int i = 0; i < 4; ++i) {
+    u.d.move({u.dev(at).x + static_cast<float>(i) * 7.0f, u.dev(at).y});
+    frame();
+  }
+  settle();
+  CHECK(u.history() == ++h);
+  // Z over the chain cable Utility → Saturator.
+  u.d.move(u.onCable(u.chainEdge(u.util, u.sat)));
+  frame();
+  u.d.keyDown('z');
+  frame();
+  u.d.keyUp('z');
+  frame();
+  settle();
+  CHECK(u.history() == ++h);
+  // Tab on the LFO's wire, Enter.
+  u.d.move(u.onCable(u.wireEdge(u.lfoWire)));
+  frame();
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  u.d.type("saturator");
+  frame();
+  REQUIRE(u.d.press("Return") == KeyResult::Widget);
+  frame();
+  settle();
+  CHECK(u.history() == ++h);
+  const doc::DeviceId inserted = u.newest();
+  // Dissolve it (Ctrl+Delete), a frame between press and release.
+  {
+    const uint32_t sn = u.view().scene().sceneNode[u.node(inserted)];
+    const uint32_t one[1] = {sn};
+    u.view().canvas().select(one, {});
+    u.d.tree().setFocus(&u.view().canvas());
+    REQUIRE(u.d.keyDown(key::kDelete, mod::kCtrl) == KeyResult::Widget);
+    frame();
+    u.d.keyUp(key::kDelete, mod::kCtrl);
+    frame();
+    settle();
+  }
+  CHECK(u.history() == ++h);
+  CHECK(u.device(inserted) == nullptr);
+  // Shift-splice a free block into the LFO's wire, frames during the drag.
+  REQUIRE(u.view().addFreeDevice(u.keys, "saturator"));
+  settle();
+  h = u.history();
+  {
+    const doc::DeviceId s2 = u.newest();
+    doc::WireId lw;
+    for (const doc::Wire& w : u.wires())
+      if (w.from == u.lfo && w.port == "lfo") lw = w.id;
+    REQUIRE(lw.valid());
+    const Vec2 on = u.onCable(u.wireEdge(lw));
+    const Vec2 from = u.centre(s2);
+    u.d.down(from, PointerButton::Left, mod::kShift);
+    frame();
+    for (int k = 1; k <= 6; ++k) {
+      u.d.move({from.x + (on.x - from.x) * static_cast<float>(k) / 6.0f, from.y + (on.y - from.y) * static_cast<float>(k) / 6.0f}, mod::kShift);
+      frame();
+    }
+    u.d.up(on, PointerButton::Left, mod::kShift);
+    frame();
+    settle();
+    CHECK(u.history() == ++h);
+  }
+  // Ctrl-release: the LFO's jack onto the Saturator's input with Ctrl held; frames while the cable is held; a click
+  // on the Utility's input; then another Ctrl-release and Esc.
+  {
+    const Vec2 jack = u.outPin(u.lfo, "lfo");
+    const Vec2 satIn = u.inPin(u.sat, "x");
+    u.d.down(jack);
+    frame();
+    u.d.move({(jack.x + satIn.x) * 0.5f, (jack.y + satIn.y) * 0.5f});
+    frame();
+    u.d.move(satIn, mod::kCtrl);
+    frame();
+    u.d.up(satIn, PointerButton::Left, mod::kCtrl);
+    frame();
+    settle();
+    CHECK(u.history() == ++h);
+    CHECK(u.view().canvas().stickyWire());
+    const Vec2 utilIn = u.inPin(u.util, "x");
+    u.d.move(utilIn);
+    frame();
+    u.d.down(utilIn, PointerButton::Left, mod::kCtrl);
+    frame();
+    u.d.up(utilIn, PointerButton::Left, mod::kCtrl);
+    frame();
+    settle();
+    CHECK(u.history() == ++h);
+    CHECK(u.view().canvas().stickyWire());
+    u.d.press("Escape");
+    frame();
+    CHECK_FALSE(u.view().canvas().stickyWire());
+  }
+  // W + drag out of the Utility's gain onto empty space: the menu (sources first); Enter places one wired.
+  {
+    const graph::Point2 below{at.x + 60.0f, at.y + 190.0f};
+    u.d.keyDown('w');
+    const Vec2 g = u.inPin(u.util, "gain");
+    u.d.down(g);
+    frame();
+    for (int k = 1; k <= 5; ++k) {
+      const Vec2 b = u.dev(below);
+      u.d.move({g.x + (b.x - g.x) * static_cast<float>(k) / 5.0f, g.y + (b.y - g.y) * static_cast<float>(k) / 5.0f});
+      frame();
+    }
+    u.d.up(u.dev(below));
+    u.d.keyUp('w');
+    frame();
+    REQUIRE(u.menu() != nullptr);
+    u.d.type("lfo");
+    frame();
+    REQUIRE(u.d.press("Return") == KeyResult::Widget);
+    frame();
+    settle();
+    CHECK(u.history() == ++h);
+  }
+  // A cable dropped on empty space: the menu; Esc closes it, the canvas has the keys again, nothing changed.
+  {
+    u.d.drag(u.outPin(u.sat, "out"), u.dev({at.x + 260.0f, at.y + 40.0f}), 6);
+    frame();
+    REQUIRE(u.menu() != nullptr);
+    u.d.press("Escape");
+    frame();
+    CHECK(u.menu() == nullptr);
+    CHECK(u.d.tree().focus() == &u.view().canvas());
+    CHECK(u.history() == h);
+  }
+  // While playing: Tab + Enter, cables glowing.
+  u.port.play(0);
+  u.view().canvas().wakeCables();
+  u.d.move(u.dev({at.x + 40.0f, at.y - 10.0f}));
+  frame();
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  REQUIRE_MESSAGE(u.menu() != nullptr, u.ctx.status());
+  u.d.type("vca");
+  frame();
+  REQUIRE_MESSAGE(u.menu() != nullptr, u.ctx.status());
+  CHECK(u.d.tree().focus() == u.menu());
+  REQUIRE(u.d.press("Return") == KeyResult::Widget);
+  settle();
+  CHECK(u.history() == ++h);
+  u.port.stop();
+  // Far zoom: Tab + Enter.
+  {
+    CircuitCanvas::View v = u.view().canvas().view();
+    v.zoom = 0.12;
+    u.view().canvas().setView(v);
+    frame();
+    const ui::IRect r = u.view().canvas().rect();
+    u.d.move({static_cast<float>(r.x + r.w - 60), static_cast<float>(r.y + r.h - 60)});
+    frame();
+    REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+    u.d.type("tanh");
+    frame();
+    REQUIRE(u.d.press("Return") == KeyResult::Widget);
+    settle();
+    CHECK(u.history() == ++h);
+  }
+  // Into an opened group: the series after the instrument grouped, its capsule open; Tab inside it + Enter.
+  {
+    u.view().focusBand(u.keys, false);
+    frame();
+    std::vector<doc::DeviceId> sel;  // the series after the instrument (the Utility, Z's VCA, the Saturator)
+    for (const doc::DevicePtr& dv : u.track(u.keys).devices)
+      if (!dv->free && dv->id != u.synth && sel.size() < 3) sel.push_back(dv->id);
+    REQUIRE_MESSAGE(u.view().groupDevices(sel), u.ctx.status());
+    settle();
+    h = u.history();
+    uint32_t cap = kNone;
+    for (uint32_t i = 0; i < u.pp().nodes.size(); ++i)
+      if (u.pp().nodes[i].group) cap = i;
+    REQUIRE(cap != kNone);
+    u.view().setGroupOpen(u.pp().nodes[cap].device, true);
+    settle();
+    for (uint32_t i = 0; i < u.pp().nodes.size(); ++i)
+      if (u.pp().nodes[i].group) cap = i;
+    const Node& c = u.pp().nodes[cap];
+    u.d.move(u.dev({c.x + c.w - 20.0f, c.y + c.h - 14.0f}));
+    frame();
+    REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+    u.d.type("tanh");
+    frame();
+    REQUIRE(u.d.press("Return") == KeyResult::Widget);
+    settle();
+    CHECK(u.history() == ++h);
+  }
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+}
+
+// TX.node-menu-fix1: a document change during a gesture (an undo while a block or a cable from it is dragged) rebuilds
+// the model under the gesture's indices. They are found again by identity; a gesture whose block went away ends without
+// an edit, and nothing reads a stale index (poisoned frees, app frame sequence).
+TEST_CASE("project patch: an undo during a block drag or a cable drag ends the gesture — no stale index") {
+  Ui u;
+  u.view().canvas().setCablesAnimated(true);
+  alloc_trap::PoisonFrees poison;
+  auto frame = [&] {
+    u.d.step();
+    (void)u.d.tree().cursor();
+  };
+  const graph::Point2 at = u.emptyWorld();
+  for (int pass = 0; pass < 2; ++pass) {
+    u.d.move(u.dev(at));
+    REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+    u.d.type("saturator");
+    REQUIRE(u.d.press("Return") == KeyResult::Widget);
+    frame();
+    u.view().sync();
+    const size_t h0 = u.history();
+    const doc::DeviceId made = u.newest();
+    REQUIRE(u.device(made) != nullptr);
+    // pass 0: the block itself; pass 1: a cable out of its output.
+    const Vec2 from = pass == 0 ? u.centre(made) : u.outPin(made, "out");
+    const Vec2 to = u.inPin(u.util, "gain");
+    u.d.down(from);
+    frame();
+    for (int k = 1; k <= 3; ++k) {
+      u.d.move({from.x + (to.x - from.x) * static_cast<float>(k) / 6.0f, from.y + (to.y - from.y) * static_cast<float>(k) / 6.0f});
+      frame();
+    }
+    CHECK(u.view().canvas().drag() == (pass == 0 ? ProjectCanvas::Drag::MoveDevice : ProjectCanvas::Drag::Wire));
+    REQUIRE(u.ctx.undo());  // the block goes (the spawn undone) while it is dragged
+    frame();
+    CHECK(u.view().canvas().drag() == ProjectCanvas::Drag::None);
+    for (int k = 4; k <= 6; ++k) {
+      u.d.move({from.x + (to.x - from.x) * static_cast<float>(k) / 6.0f, from.y + (to.y - from.y) * static_cast<float>(k) / 6.0f});
+      frame();
+    }
+    u.d.up(to);
+    frame();
+    u.d.advance(0.5);
+    CHECK(u.history() == h0 - 1);  // nothing made by the release
+    CHECK(u.device(made) == nullptr);
+    CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  }
+  // A block dragged while ANOTHER block goes: the drag goes on with the block found again.
+  {
+    u.d.move(u.dev(at));
+    REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+    u.d.type("tanh");
+    REQUIRE(u.d.press("Return") == KeyResult::Widget);
+    frame();
+    u.view().sync();
+    const doc::DeviceId other = u.newest();
+    const Vec2 from = u.centre(u.lfo);
+    u.d.down(from);
+    for (int k = 1; k <= 3; ++k) {
+      u.d.move({from.x + 10.0f * static_cast<float>(k), from.y + 4.0f * static_cast<float>(k)});
+      frame();
+    }
+    const doc::DeviceId gone[1] = {other};
+    auto e = doc::ops::deleteDevices(*u.ctx.doc(), gone);
+    REQUIRE(e.ok());
+    REQUIRE(u.ctx.store().dispatch(e->command).ok());
+    frame();
+    CHECK(u.view().canvas().drag() == ProjectCanvas::Drag::MoveDevice);
+    u.d.move({from.x + 50.0f, from.y + 20.0f});
+    frame();
+    u.d.up({from.x + 50.0f, from.y + 20.0f});
+    frame();
+    u.view().sync();
+    const Node& n = u.pp().nodes[u.node(u.lfo)];
+    const Vec2 c = u.dev({n.x + n.w * 0.5f, n.y + n.h * 0.5f});
+    CHECK(std::abs(c.x - (from.x + 50.0f)) <= 2.0f);  // it moved where it was dropped
+  }
+}
 TEST_CASE("node menu: a typed spec places that one node (`0.5`, `* 2`); an instrument goes into the chain") {
   Ui u;
   const graph::Point2 at = u.emptyWorld();
