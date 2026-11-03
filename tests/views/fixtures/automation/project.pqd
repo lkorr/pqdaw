@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 16,
+  "schemaVersion": 17,
   "timeline": {
     "tempo": [
       {"tick": 0, "bpm": 120.0, "curve": "step"}
@@ -23,7 +23,7 @@
       }
     },
     {
-      "id": 3,
+      "id": 4,
       "name": "5L 2s",
       "colour": "#E0A63A",
       "def": {
@@ -42,7 +42,7 @@
   ],
   "tracks": [
     {
-      "id": 4,
+      "id": 5,
       "kind": "midi",
       "name": "Drums",
       "colour": "#EF7B7B",
@@ -51,24 +51,24 @@
       "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
       "lanes": [
         {
-          "id": 90,
-          "param": {"kind": "trackVolume", "owner": 4},
+          "id": 103,
+          "param": {"kind": "trackVolume", "owner": 5},
           "points": [
-            {"id": 91, "tick": 0, "value": 0.0, "curve": 0.0},
-            {"id": 92, "tick": 1774080, "value": -12.0, "curve": 0.6},
-            {"id": 93, "tick": 3548160, "value": -3.0, "curve": -0.5},
-            {"id": 94, "tick": 5322240, "value": -3.0, "curve": 0.0},
-            {"id": 95, "tick": 5322240, "value": -20.0, "curve": 0.8},
-            {"id": 96, "tick": 7096320, "value": -6.0, "curve": 0.0}
+            {"id": 104, "tick": 0, "value": 0.0, "curve": 0.0},
+            {"id": 105, "tick": 1774080, "value": -12.0, "curve": 0.6},
+            {"id": 106, "tick": 3548160, "value": -3.0, "curve": -0.5},
+            {"id": 107, "tick": 5322240, "value": -3.0, "curve": 0.0},
+            {"id": 108, "tick": 5322240, "value": -20.0, "curve": 0.8},
+            {"id": 109, "tick": 7096320, "value": -6.0, "curve": 0.0}
           ]
         }
       ],
       "devices": [
-        {"id": 5, "patch": "BasicSynth", "kind": "instrument"}
+        {"id": 6, "patch": "BasicSynth", "kind": "instrument"}
       ],
       "clips": [
         {
-          "id": 16,
+          "id": 29,
           "name": "Beat",
           "colour": "#EF7B7B",
           "start": 0,
@@ -79,20 +79,20 @@
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 17, "start": 0, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-            {"id": 18, "start": 110880, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 19, "start": 221760, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-            {"id": 20, "start": 332640, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 21, "start": 443520, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-            {"id": 22, "start": 554400, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 23, "start": 665280, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-            {"id": 24, "start": 776160, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0}
+            {"id": 30, "start": 0, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 31, "start": 110880, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 32, "start": 221760, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 33, "start": 332640, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 34, "start": 443520, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 35, "start": 554400, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 36, "start": 665280, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 37, "start": 776160, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0}
           ]
         }
       ]
     },
     {
-      "id": 6,
+      "id": 9,
       "kind": "midi",
       "name": "Bass",
       "colour": "#E68632",
@@ -101,27 +101,27 @@
       "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
       "lanes": [
         {
-          "id": 97,
-          "param": {"kind": "trackPan", "owner": 6},
+          "id": 110,
+          "param": {"kind": "trackPan", "owner": 9},
           "points": [
-            {"id": 98, "tick": 0, "value": -0.8, "curve": 0.0},
-            {"id": 99, "tick": 887040, "value": 0.8, "curve": 0.0},
-            {"id": 100, "tick": 1774080, "value": -0.8, "curve": 0.0},
-            {"id": 101, "tick": 2661120, "value": 0.8, "curve": 0.0},
-            {"id": 102, "tick": 3548160, "value": -0.8, "curve": 0.0},
-            {"id": 103, "tick": 4435200, "value": 0.8, "curve": 0.0},
-            {"id": 104, "tick": 5322240, "value": -0.8, "curve": 0.0},
-            {"id": 105, "tick": 6209280, "value": 0.8, "curve": 0.0},
-            {"id": 106, "tick": 7096320, "value": -0.8, "curve": 0.0}
+            {"id": 111, "tick": 0, "value": -0.8, "curve": 0.0},
+            {"id": 112, "tick": 887040, "value": 0.8, "curve": 0.0},
+            {"id": 113, "tick": 1774080, "value": -0.8, "curve": 0.0},
+            {"id": 114, "tick": 2661120, "value": 0.8, "curve": 0.0},
+            {"id": 115, "tick": 3548160, "value": -0.8, "curve": 0.0},
+            {"id": 116, "tick": 4435200, "value": 0.8, "curve": 0.0},
+            {"id": 117, "tick": 5322240, "value": -0.8, "curve": 0.0},
+            {"id": 118, "tick": 6209280, "value": 0.8, "curve": 0.0},
+            {"id": 119, "tick": 7096320, "value": -0.8, "curve": 0.0}
           ]
         }
       ],
       "devices": [
-        {"id": 7, "patch": "BasicSynth", "kind": "instrument"}
+        {"id": 10, "patch": "BasicSynth", "kind": "instrument"}
       ],
       "clips": [
         {
-          "id": 25,
+          "id": 38,
           "name": "Bass",
           "colour": "#E68632",
           "start": 0,
@@ -132,20 +132,20 @@
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 26, "start": 0, "length": 110880, "pitch": {"degree": 0, "equave": -1}, "velocity": 100.0},
-            {"id": 27, "start": 110880, "length": 110880, "pitch": {"degree": 5, "equave": -1}, "velocity": 100.0},
-            {"id": 28, "start": 221760, "length": 110880, "pitch": {"degree": 1, "equave": -1}, "velocity": 100.0},
-            {"id": 29, "start": 332640, "length": 110880, "pitch": {"degree": 6, "equave": -1}, "velocity": 100.0},
-            {"id": 30, "start": 443520, "length": 110880, "pitch": {"degree": 2, "equave": -1}, "velocity": 100.0},
-            {"id": 31, "start": 554400, "length": 110880, "pitch": {"degree": 7, "equave": -1}, "velocity": 100.0},
-            {"id": 32, "start": 665280, "length": 110880, "pitch": {"degree": 3, "equave": -1}, "velocity": 100.0},
-            {"id": 33, "start": 776160, "length": 110880, "pitch": {"degree": 8, "equave": -1}, "velocity": 100.0}
+            {"id": 39, "start": 0, "length": 110880, "pitch": {"degree": 0, "equave": -1}, "velocity": 100.0},
+            {"id": 40, "start": 110880, "length": 110880, "pitch": {"degree": 5, "equave": -1}, "velocity": 100.0},
+            {"id": 41, "start": 221760, "length": 110880, "pitch": {"degree": 1, "equave": -1}, "velocity": 100.0},
+            {"id": 42, "start": 332640, "length": 110880, "pitch": {"degree": 6, "equave": -1}, "velocity": 100.0},
+            {"id": 43, "start": 443520, "length": 110880, "pitch": {"degree": 2, "equave": -1}, "velocity": 100.0},
+            {"id": 44, "start": 554400, "length": 110880, "pitch": {"degree": 7, "equave": -1}, "velocity": 100.0},
+            {"id": 45, "start": 665280, "length": 110880, "pitch": {"degree": 3, "equave": -1}, "velocity": 100.0},
+            {"id": 46, "start": 776160, "length": 110880, "pitch": {"degree": 8, "equave": -1}, "velocity": 100.0}
           ]
         }
       ]
     },
     {
-      "id": 14,
+      "id": 25,
       "kind": "group",
       "name": "Keys",
       "colour": "#8499F0",
@@ -154,101 +154,75 @@
       "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
       "lanes": [
         {
-          "id": 107,
-          "param": {"kind": "trackPan", "owner": 14},
+          "id": 120,
+          "param": {"kind": "trackPan", "owner": 25},
           "points": [
-            {"id": 108, "tick": 887040, "value": 0.0, "curve": 0.0},
-            {"id": 109, "tick": 1053360, "value": 0.22961007, "curve": 0.0},
-            {"id": 110, "tick": 1219680, "value": 0.42426407, "curve": 0.0},
-            {"id": 111, "tick": 1386000, "value": 0.5543277, "curve": 0.0},
-            {"id": 112, "tick": 1552320, "value": 0.6, "curve": 0.0},
-            {"id": 113, "tick": 1718640, "value": 0.5543277, "curve": 0.0},
-            {"id": 114, "tick": 1884960, "value": 0.42426407, "curve": 0.0},
-            {"id": 115, "tick": 2051280, "value": 0.22961007, "curve": 0.0},
-            {"id": 116, "tick": 2217600, "value": 7.347881e-17, "curve": 0.0},
-            {"id": 117, "tick": 2383920, "value": -0.22961007, "curve": 0.0},
-            {"id": 118, "tick": 2550240, "value": -0.42426407, "curve": 0.0},
-            {"id": 119, "tick": 2716560, "value": -0.5543277, "curve": 0.0},
-            {"id": 120, "tick": 2882880, "value": -0.6, "curve": 0.0},
-            {"id": 121, "tick": 3049200, "value": -0.5543277, "curve": 0.0},
-            {"id": 122, "tick": 3215520, "value": -0.42426407, "curve": 0.0},
-            {"id": 123, "tick": 3381840, "value": -0.22961007, "curve": 0.0},
-            {"id": 124, "tick": 3548160, "value": 0.0, "curve": 0.0},
-            {"id": 125, "tick": 3714480, "value": 0.22961007, "curve": 0.0},
-            {"id": 126, "tick": 3880800, "value": 0.42426407, "curve": 0.0},
-            {"id": 127, "tick": 4047120, "value": 0.5543277, "curve": 0.0},
-            {"id": 128, "tick": 4213440, "value": 0.6, "curve": 0.0},
-            {"id": 129, "tick": 4379760, "value": 0.5543277, "curve": 0.0},
-            {"id": 130, "tick": 4546080, "value": 0.42426407, "curve": 0.0},
-            {"id": 131, "tick": 4712400, "value": 0.22961007, "curve": 0.0},
-            {"id": 132, "tick": 4878720, "value": 7.347881e-17, "curve": 0.0},
-            {"id": 133, "tick": 5045040, "value": -0.22961007, "curve": 0.0},
-            {"id": 134, "tick": 5211360, "value": -0.42426407, "curve": 0.0},
-            {"id": 135, "tick": 5377680, "value": -0.5543277, "curve": 0.0},
-            {"id": 136, "tick": 5544000, "value": -0.6, "curve": 0.0},
-            {"id": 137, "tick": 5710320, "value": -0.5543277, "curve": 0.0},
-            {"id": 138, "tick": 5876640, "value": -0.42426407, "curve": 0.0},
-            {"id": 139, "tick": 6042960, "value": -0.22961007, "curve": 0.0},
-            {"id": 140, "tick": 6209280, "value": 0.0, "curve": 0.0}
+            {"id": 121, "tick": 887040, "value": 0.0, "curve": 0.0},
+            {"id": 122, "tick": 1053360, "value": 0.22961007, "curve": 0.0},
+            {"id": 123, "tick": 1219680, "value": 0.42426407, "curve": 0.0},
+            {"id": 124, "tick": 1386000, "value": 0.5543277, "curve": 0.0},
+            {"id": 125, "tick": 1552320, "value": 0.6, "curve": 0.0},
+            {"id": 126, "tick": 1718640, "value": 0.5543277, "curve": 0.0},
+            {"id": 127, "tick": 1884960, "value": 0.42426407, "curve": 0.0},
+            {"id": 128, "tick": 2051280, "value": 0.22961007, "curve": 0.0},
+            {"id": 129, "tick": 2217600, "value": 7.347881e-17, "curve": 0.0},
+            {"id": 130, "tick": 2383920, "value": -0.22961007, "curve": 0.0},
+            {"id": 131, "tick": 2550240, "value": -0.42426407, "curve": 0.0},
+            {"id": 132, "tick": 2716560, "value": -0.5543277, "curve": 0.0},
+            {"id": 133, "tick": 2882880, "value": -0.6, "curve": 0.0},
+            {"id": 134, "tick": 3049200, "value": -0.5543277, "curve": 0.0},
+            {"id": 135, "tick": 3215520, "value": -0.42426407, "curve": 0.0},
+            {"id": 136, "tick": 3381840, "value": -0.22961007, "curve": 0.0},
+            {"id": 137, "tick": 3548160, "value": 0.0, "curve": 0.0},
+            {"id": 138, "tick": 3714480, "value": 0.22961007, "curve": 0.0},
+            {"id": 139, "tick": 3880800, "value": 0.42426407, "curve": 0.0},
+            {"id": 140, "tick": 4047120, "value": 0.5543277, "curve": 0.0},
+            {"id": 141, "tick": 4213440, "value": 0.6, "curve": 0.0},
+            {"id": 142, "tick": 4379760, "value": 0.5543277, "curve": 0.0},
+            {"id": 143, "tick": 4546080, "value": 0.42426407, "curve": 0.0},
+            {"id": 144, "tick": 4712400, "value": 0.22961007, "curve": 0.0},
+            {"id": 145, "tick": 4878720, "value": 7.347881e-17, "curve": 0.0},
+            {"id": 146, "tick": 5045040, "value": -0.22961007, "curve": 0.0},
+            {"id": 147, "tick": 5211360, "value": -0.42426407, "curve": 0.0},
+            {"id": 148, "tick": 5377680, "value": -0.5543277, "curve": 0.0},
+            {"id": 149, "tick": 5544000, "value": -0.6, "curve": 0.0},
+            {"id": 150, "tick": 5710320, "value": -0.5543277, "curve": 0.0},
+            {"id": 151, "tick": 5876640, "value": -0.42426407, "curve": 0.0},
+            {"id": 152, "tick": 6042960, "value": -0.22961007, "curve": 0.0},
+            {"id": 153, "tick": 6209280, "value": 0.0, "curve": 0.0}
           ]
         }
       ],
       "devices": [],
       "children": [
         {
-          "id": 8,
+          "id": 13,
           "kind": "midi",
           "name": "Piano",
           "colour": "#46A5E8",
           "active": true,
-          "tuning": {"main": 3},
+          "tuning": {"main": 4},
           "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
           "lanes": [
             {
-              "id": 141,
-              "param": {"kind": "mosGenerator", "owner": 3},
+              "id": 154,
+              "param": {"kind": "mosGenerator", "owner": 4},
               "points": [
-                {"id": 142, "tick": 0, "value": 696.0, "curve": 0.0},
-                {"id": 143, "tick": 3548160, "value": 705.0, "curve": 0.4},
-                {"id": 144, "tick": 7096320, "value": 690.0, "curve": 0.0}
+                {"id": 155, "tick": 0, "value": 696.0, "curve": 0.0},
+                {"id": 156, "tick": 3548160, "value": 705.0, "curve": 0.4},
+                {"id": 157, "tick": 7096320, "value": 690.0, "curve": 0.0}
               ]
             }
           ],
           "devices": [
-            {"id": 9, "patch": "BasicSynth", "kind": "instrument"}
+            {"id": 14, "patch": "BasicSynth", "kind": "instrument"}
           ],
           "clips": [
-            {
-              "id": 34,
-              "name": "Chords",
-              "colour": "#46A5E8",
-              "start": 0,
-              "length": 3548160,
-              "contentStart": 0,
-              "loop": {"enabled": false, "start": 0, "end": 3548160},
-              "signature": {"numerator": 4, "denominator": 4},
-              "tuning": "inherit",
-              "active": true,
-              "notes": [
-                {"id": 35, "start": 0, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 36, "start": 0, "length": 776160, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-                {"id": 37, "start": 0, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 38, "start": 887040, "length": 776160, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
-                {"id": 39, "start": 887040, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
-                {"id": 40, "start": 887040, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
-                {"id": 41, "start": 1774080, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 42, "start": 1774080, "length": 776160, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-                {"id": 43, "start": 1774080, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 44, "start": 2661120, "length": 776160, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
-                {"id": 45, "start": 2661120, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
-                {"id": 46, "start": 2661120, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0}
-              ]
-            },
             {
               "id": 47,
               "name": "Chords",
               "colour": "#46A5E8",
-              "start": 3548160,
+              "start": 0,
               "length": 3548160,
               "contentStart": 0,
               "loop": {"enabled": false, "start": 0, "end": 3548160},
@@ -269,11 +243,37 @@
                 {"id": 58, "start": 2661120, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
                 {"id": 59, "start": 2661120, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0}
               ]
+            },
+            {
+              "id": 60,
+              "name": "Chords",
+              "colour": "#46A5E8",
+              "start": 3548160,
+              "length": 3548160,
+              "contentStart": 0,
+              "loop": {"enabled": false, "start": 0, "end": 3548160},
+              "signature": {"numerator": 4, "denominator": 4},
+              "tuning": "inherit",
+              "active": true,
+              "notes": [
+                {"id": 61, "start": 0, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 62, "start": 0, "length": 776160, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+                {"id": 63, "start": 0, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 64, "start": 887040, "length": 776160, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+                {"id": 65, "start": 887040, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 66, "start": 887040, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 67, "start": 1774080, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 68, "start": 1774080, "length": 776160, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+                {"id": 69, "start": 1774080, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 70, "start": 2661120, "length": 776160, "pitch": {"degree": 3, "equave": 0}, "velocity": 100.0},
+                {"id": 71, "start": 2661120, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 72, "start": 2661120, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0}
+              ]
             }
           ]
         },
         {
-          "id": 10,
+          "id": 17,
           "kind": "midi",
           "name": "Pad",
           "colour": "#BB86F0",
@@ -282,11 +282,11 @@
           "mixer": {"volumeDb": -4.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
           "lanes": [],
           "devices": [
-            {"id": 11, "patch": "BasicSynth", "kind": "instrument"}
+            {"id": 18, "patch": "BasicSynth", "kind": "instrument"}
           ],
           "clips": [
             {
-              "id": 60,
+              "id": 73,
               "name": "Pad",
               "colour": "#BB86F0",
               "start": 0,
@@ -297,9 +297,9 @@
               "tuning": "inherit",
               "active": true,
               "notes": [
-                {"id": 61, "start": 0, "length": 1774080, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 62, "start": 0, "length": 1774080, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 63, "start": 0, "length": 1774080, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0}
+                {"id": 74, "start": 0, "length": 1774080, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 75, "start": 0, "length": 1774080, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 76, "start": 0, "length": 1774080, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0}
               ]
             }
           ]
@@ -307,91 +307,65 @@
       ]
     },
     {
-      "id": 12,
+      "id": 21,
       "kind": "midi",
       "name": "Lead",
       "colour": "#16B293",
       "active": true,
       "tuning": "inherit",
-      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 15, "levelDb": -12.0, "preFader": false}], "output": "default"},
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 27, "levelDb": -12.0, "preFader": false}], "output": "default"},
       "lanes": [
         {
-          "id": 145,
-          "param": {"kind": "trackVolume", "owner": 12},
+          "id": 158,
+          "param": {"kind": "trackVolume", "owner": 21},
           "points": [
-            {"id": 146, "tick": 1774080, "value": -30.0, "curve": -0.7},
-            {"id": 147, "tick": 3548160, "value": 0.0, "curve": 0.0},
-            {"id": 148, "tick": 6209280, "value": -2.0, "curve": 0.5},
-            {"id": 149, "tick": 7096320, "value": -18.0, "curve": 0.0}
+            {"id": 159, "tick": 1774080, "value": -30.0, "curve": -0.7},
+            {"id": 160, "tick": 3548160, "value": 0.0, "curve": 0.0},
+            {"id": 161, "tick": 6209280, "value": -2.0, "curve": 0.5},
+            {"id": 162, "tick": 7096320, "value": -18.0, "curve": 0.0}
           ]
         },
         {
-          "id": 150,
-          "param": {"kind": "trackSend", "owner": 12, "target": 15},
+          "id": 163,
+          "param": {"kind": "trackSend", "owner": 21, "target": 27},
           "points": [
-            {"id": 151, "tick": 1774080, "value": -40.0, "curve": 0.0},
-            {"id": 152, "tick": 4435200, "value": -6.0, "curve": 0.0},
-            {"id": 153, "tick": 7096320, "value": -24.0, "curve": 0.0}
+            {"id": 164, "tick": 1774080, "value": -40.0, "curve": 0.0},
+            {"id": 165, "tick": 4435200, "value": -6.0, "curve": 0.0},
+            {"id": 166, "tick": 7096320, "value": -24.0, "curve": 0.0}
           ]
         },
         {
-          "id": 154,
-          "param": {"kind": "trackMute", "owner": 12},
+          "id": 167,
+          "param": {"kind": "trackMute", "owner": 21},
           "points": [
-            {"id": 155, "tick": 3548160, "value": 1.0, "curve": 0.0},
-            {"id": 156, "tick": 3991680, "value": 1.0, "curve": 0.0},
-            {"id": 157, "tick": 3991680, "value": 0.0, "curve": 0.0},
-            {"id": 158, "tick": 4435200, "value": 0.0, "curve": 0.0},
-            {"id": 159, "tick": 4435200, "value": 1.0, "curve": 0.0},
-            {"id": 160, "tick": 4878720, "value": 1.0, "curve": 0.0},
-            {"id": 161, "tick": 4878720, "value": 0.0, "curve": 0.0},
-            {"id": 162, "tick": 5322240, "value": 0.0, "curve": 0.0},
-            {"id": 163, "tick": 5322240, "value": 1.0, "curve": 0.0},
-            {"id": 164, "tick": 5765760, "value": 1.0, "curve": 0.0},
-            {"id": 165, "tick": 5765760, "value": 0.0, "curve": 0.0},
-            {"id": 166, "tick": 6209280, "value": 0.0, "curve": 0.0},
-            {"id": 167, "tick": 6209280, "value": 1.0, "curve": 0.0},
-            {"id": 168, "tick": 6652800, "value": 1.0, "curve": 0.0},
-            {"id": 169, "tick": 6652800, "value": 0.0, "curve": 0.0},
-            {"id": 170, "tick": 7096320, "value": 0.0, "curve": 0.0}
+            {"id": 168, "tick": 3548160, "value": 1.0, "curve": 0.0},
+            {"id": 169, "tick": 3991680, "value": 1.0, "curve": 0.0},
+            {"id": 170, "tick": 3991680, "value": 0.0, "curve": 0.0},
+            {"id": 171, "tick": 4435200, "value": 0.0, "curve": 0.0},
+            {"id": 172, "tick": 4435200, "value": 1.0, "curve": 0.0},
+            {"id": 173, "tick": 4878720, "value": 1.0, "curve": 0.0},
+            {"id": 174, "tick": 4878720, "value": 0.0, "curve": 0.0},
+            {"id": 175, "tick": 5322240, "value": 0.0, "curve": 0.0},
+            {"id": 176, "tick": 5322240, "value": 1.0, "curve": 0.0},
+            {"id": 177, "tick": 5765760, "value": 1.0, "curve": 0.0},
+            {"id": 178, "tick": 5765760, "value": 0.0, "curve": 0.0},
+            {"id": 179, "tick": 6209280, "value": 0.0, "curve": 0.0},
+            {"id": 180, "tick": 6209280, "value": 1.0, "curve": 0.0},
+            {"id": 181, "tick": 6652800, "value": 1.0, "curve": 0.0},
+            {"id": 182, "tick": 6652800, "value": 0.0, "curve": 0.0},
+            {"id": 183, "tick": 7096320, "value": 0.0, "curve": 0.0}
           ]
         }
       ],
       "devices": [
-        {"id": 13, "patch": "BasicSynth", "kind": "instrument"}
+        {"id": 22, "patch": "BasicSynth", "kind": "instrument"}
       ],
       "clips": [
-        {
-          "id": 64,
-          "name": "Hook",
-          "colour": "#16B293",
-          "start": 1774080,
-          "length": 2661120,
-          "contentStart": 0,
-          "loop": {"enabled": false, "start": 0, "end": 2661120},
-          "signature": {"numerator": 4, "denominator": 4},
-          "tuning": "inherit",
-          "active": true,
-          "notes": [
-            {"id": 65, "start": 0, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 66, "start": 221760, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 67, "start": 443520, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 68, "start": 665280, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
-            {"id": 69, "start": 887040, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 70, "start": 1108800, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 71, "start": 1330560, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 72, "start": 1552320, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
-            {"id": 73, "start": 1774080, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 74, "start": 1995840, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 75, "start": 2217600, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 76, "start": 2439360, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
-          ]
-        },
         {
           "id": 77,
           "name": "Hook",
           "colour": "#16B293",
-          "start": 4435200,
+          "start": 1774080,
           "length": 2661120,
           "contentStart": 0,
           "loop": {"enabled": false, "start": 0, "end": 2661120},
@@ -412,13 +386,39 @@
             {"id": 88, "start": 2217600, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
             {"id": 89, "start": 2439360, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
           ]
+        },
+        {
+          "id": 90,
+          "name": "Hook",
+          "colour": "#16B293",
+          "start": 4435200,
+          "length": 2661120,
+          "contentStart": 0,
+          "loop": {"enabled": false, "start": 0, "end": 2661120},
+          "signature": {"numerator": 4, "denominator": 4},
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {"id": 91, "start": 0, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 92, "start": 221760, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 93, "start": 443520, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 94, "start": 665280, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 95, "start": 887040, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 96, "start": 1108800, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 97, "start": 1330560, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 98, "start": 1552320, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 99, "start": 1774080, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 100, "start": 1995840, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 101, "start": 2217600, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 102, "start": 2439360, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
+          ]
         }
       ]
     }
   ],
   "returns": [
     {
-      "id": 15,
+      "id": 27,
       "kind": "return",
       "name": "A Reverb",
       "colour": "#92A7FF",
@@ -440,10 +440,25 @@
     "lanes": [],
     "devices": []
   },
+  "wires": [
+    {"id": 3, "notes": 2, "port": "", "mixer": 2, "param": ""},
+    {"id": 7, "notes": 5, "port": "", "to": 6, "param": ""},
+    {"id": 8, "from": 6, "port": "", "mixer": 5, "param": ""},
+    {"id": 11, "notes": 9, "port": "", "to": 10, "param": ""},
+    {"id": 12, "from": 10, "port": "", "mixer": 9, "param": ""},
+    {"id": 15, "notes": 13, "port": "", "to": 14, "param": ""},
+    {"id": 16, "from": 14, "port": "", "mixer": 13, "param": ""},
+    {"id": 19, "notes": 17, "port": "", "to": 18, "param": ""},
+    {"id": 20, "from": 18, "port": "", "mixer": 17, "param": ""},
+    {"id": 23, "notes": 21, "port": "", "to": 22, "param": ""},
+    {"id": 24, "from": 22, "port": "", "mixer": 21, "param": ""},
+    {"id": 26, "notes": 25, "port": "", "mixer": 25, "param": ""},
+    {"id": 28, "notes": 27, "port": "", "mixer": 27, "param": ""}
+  ],
   "view": {
     "tracks": [
-      {"id": 4, "folded": false, "height": 56},
-      {"id": 12, "folded": false, "height": 56}
+      {"id": 5, "folded": false, "height": 56},
+      {"id": 21, "folded": false, "height": 56}
     ],
     "lanes": []
   }
