@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 16,
+  "timeline": {
+    "tempo": [
+      {"tick": 0, "bpm": 120.0, "curve": "step"}
+    ],
+    "signatures": [
+      {"bar": 0, "numerator": 4, "denominator": 4}
+    ]
+  },
+  "loop": {"start": 0, "end": 3548160, "enabled": false},
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "12-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 12,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 3,
+      "kind": "midi",
+      "name": "Keys",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 18, "levelDb": -6.0, "preFader": false}], "output": "default"},
+      "lanes": [],
+      "devices": [
+        {"id": 4, "patch": "BasicSynth", "kind": "instrument"},
+        {"id": 5, "patch": "saturator", "kind": "audioEffect"},
+        {"id": 6, "patch": "utility", "kind": "audioEffect", "active": false},
+        {"id": 7, "patch": "eq_eight", "kind": "audioEffect"}
+      ],
+      "clips": [
+        {
+          "id": 17,
+          "name": "notes",
+          "colour": "#808080",
+          "start": 0,
+          "length": 1774080,
+          "contentStart": 0,
+          "loop": {"enabled": false, "start": 0, "end": 887040},
+          "signature": {"numerator": 4, "denominator": 4},
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {"id": 8, "start": 0, "length": 110880, "pitch": {"degree": 0, "equave": 0}, "velocity": 70.0},
+            {"id": 16, "start": 0, "length": 665280, "pitch": {"degree": 0, "equave": 0}, "velocity": 90.0},
+            {"id": 9, "start": 110880, "length": 110880, "pitch": {"degree": 4, "equave": 0}, "velocity": 77.0},
+            {"id": 10, "start": 221760, "length": 110880, "pitch": {"degree": 7, "equave": 0}, "velocity": 84.0},
+            {"id": 11, "start": 332640, "length": 110880, "pitch": {"degree": 0, "equave": 1}, "velocity": 91.0},
+            {"id": 12, "start": 443520, "length": 110880, "pitch": {"degree": 7, "equave": 0}, "velocity": 98.0},
+            {"id": 13, "start": 554400, "length": 110880, "pitch": {"degree": 4, "equave": 0}, "velocity": 70.0},
+            {"id": 14, "start": 665280, "length": 110880, "pitch": {"degree": 2, "equave": 0}, "velocity": 77.0},
+            {"id": 15, "start": 776160, "length": 110880, "pitch": {"degree": 0, "equave": 0}, "velocity": 84.0}
+          ]
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "kind": "group",
+      "name": "Bus",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [],
+      "devices": [
+        {"id": 30, "patch": "utility", "kind": "audioEffect"}
+      ],
+      "children": [
+        {
+          "id": 20,
+          "kind": "midi",
+          "name": "Bass",
+          "colour": "#808080",
+          "active": true,
+          "tuning": "inherit",
+          "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+          "lanes": [],
+          "devices": [
+            {"id": 21, "patch": "BasicSynth", "kind": "instrument"},
+            {"id": 22, "patch": "auto_filter", "kind": "audioEffect"}
+          ],
+          "clips": [
+            {
+              "id": 28,
+              "name": "notes",
+              "colour": "#808080",
+              "start": 0,
+              "length": 1774080,
+              "contentStart": 0,
+              "loop": {"enabled": false, "start": 0, "end": 887040},
+              "signature": {"numerator": 4, "denominator": 4},
+              "tuning": "inherit",
+              "active": true,
+              "notes": [
+                {"id": 23, "start": 0, "length": 221760, "pitch": {"degree": 0, "equave": 0}, "velocity": 70.0},
+                {"id": 27, "start": 0, "length": 665280, "pitch": {"degree": 0, "equave": 0}, "velocity": 90.0},
+                {"id": 24, "start": 221760, "length": 221760, "pitch": {"degree": 0, "equave": 0}, "velocity": 77.0},
+                {"id": 25, "start": 443520, "length": 221760, "pitch": {"degree": 5, "equave": 0}, "velocity": 84.0},
+                {"id": 26, "start": 665280, "length": 221760, "pitch": {"degree": 7, "equave": 0}, "velocity": 91.0}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "returns": [
+    {
+      "id": 18,
+      "kind": "return",
+      "name": "Verb",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [],
+      "devices": [
+        {"id": 19, "patch": "saturator", "kind": "audioEffect"}
+      ]
+    }
+  ],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+    "lanes": [],
+    "devices": [
+      {"id": 31, "patch": "utility", "kind": "audioEffect"}
+    ]
+  },
+  "view": {
+    "tracks": [],
+    "lanes": []
+  }
+}
