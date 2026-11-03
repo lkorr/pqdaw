@@ -3190,7 +3190,8 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
         // (lower.h "Groups").
         PortRef v{syn, 0};
         const graph::Patch* last = devs[first].callee;
-        for (; firstEffect < devs.top.size() && devs[devs.top[firstEffect]].metaVoice; ++firstEffect) {
+        for (; firstEffect < devs.top.size() && devs.top[firstEffect] != kSilent && devs[devs.top[firstEffect]].metaVoice;
+             ++firstEffect) {
           const uint32_t k = devs.top[firstEffect];
           const NodeIndex c = callDevice(ir, devs[k]);
           b.calls[k] = c;

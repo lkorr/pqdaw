@@ -326,6 +326,19 @@ TEST_CASE("free instruments: an effect before the instrument feeds its audio inp
   const double d = maxDiff(with, alone(false, "the synth alone"));
   MESSAGE("effect before the instrument (notes cabled) vs the synth alone: max |diff| = " << d);
   CHECK(d <= 1e-6);
+  // A meta module before it (a VCA at the note source: a voice run of its own, the synth after it fed its audio): the
+  // same — silent, then with the notes cabled the synth exactly (the voices end when both are done: the synth last).
+  DocumentStore m;
+  const TrackId mt = midiTrack(m);
+  const DeviceId msynth = headOf(m, mt);
+  const DeviceId vca = metaOffPath(m, mt, "vca");
+  run(m, ops::insertOnPath(*m.current(), m.ids(), vca, 0));
+  REQUIRE(mainPath(*m.current(), *findTrackPtr(*m.current(), mt)).blocks.at(1)->id == msynth);
+  CHECK(peak(played(*m.current(), "VCA → BasicSynth")) == 0.0f);
+  cable(m, notesInto(mt, msynth));
+  const double dm = maxDiff(played(*m.current(), "VCA → BasicSynth, notes cabled to the synth"), alone(false, "the synth alone"));
+  MESSAGE("a meta module before the instrument (notes cabled) vs the synth alone: max |diff| = " << dm);
+  CHECK(dm <= 1e-6);
 }
 
 TEST_CASE("free instruments: notes cabled into a meta module off the path play it as the run at the note source") {
