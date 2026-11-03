@@ -796,6 +796,124 @@ TEST_CASE("project patch: an undo during a block drag or a cable drag ends the g
     CHECK(std::abs(c.x - (from.x + 50.0f)) <= 2.0f);  // it moved where it was dropped
   }
 }
+
+// TX.node-menu-fix1: a new connection is drawn as the real cable (the canvas's loose cable): out of the port, trailing
+// the pointer and swinging, snapped (highlighted) onto the port or control a release connects; released, the new cable
+// keeps its motion (it is awake, not popped to its rest shape) and frames stop after; dropped on empty space it hangs
+// to the node menu until the spawned node's cable takes it over; Esc / a cancel removes it; W and Ctrl-release too.
+TEST_CASE("node menu: a new connection is the real cable on the pointer — snaps, trails, keeps its motion when dropped") {
+  Ui u;
+  CircuitCanvas& cv = u.view().canvas();
+  cv.setCablesAnimated(true);
+  u.view().setPushAnimated(true);
+  auto frames = [&](int n) {
+    for (int i = 0; i < n; ++i) u.d.step();
+  };
+  const Vec2 jack = u.outPin(u.lfo, "lfo");
+  const Vec2 satIn = u.inPin(u.sat, "x");
+  // Out of the LFO's jack: a cable from the port, its free end at the pointer.
+  u.d.down(jack);
+  CHECK(cv.looseCable());
+  const Vec2 mid{(jack.x + satIn.x) * 0.5f, (jack.y + satIn.y) * 0.5f + 60.0f};
+  for (int k = 1; k <= 8; ++k) {
+    u.d.move({jack.x + (mid.x - jack.x) * static_cast<float>(k) / 8.0f, jack.y + (mid.y - jack.y) * static_cast<float>(k) / 8.0f});
+    u.d.step();
+  }
+  {
+    const auto p = cv.looseCablePoints();
+    REQUIRE(p.size() >= 2);
+    const graph::Point2 port = p.front(), end = p.back();
+    const Node& ln = u.pp().nodes[u.node(u.lfo)];
+    CHECK(std::abs(port.x - (ln.x + ln.w)) <= 0.01f);
+    CHECK(std::abs(u.dev(end).x - mid.x) <= 1.0f);
+    CHECK(std::abs(u.dev(end).y - mid.y) <= 1.0f);
+    CHECK(cv.looseCableMoving());  // it swings after the pointer
+    CHECK_FALSE(cv.looseCableSnapped());
+    CHECK(u.view().canvas().drag() == ProjectCanvas::Drag::Wire);
+  }
+  // Over the Saturator's input: snapped, its end on that pin.
+  u.d.move(satIn);
+  u.d.step();
+  CHECK(cv.looseCableSnapped());
+  {
+    const Node& sn = u.pp().nodes[u.node(u.sat)];
+    const graph::Point2 pin = inputEntry(sn, static_cast<size_t>(sn.input("x")));
+    const graph::Point2 end = cv.looseCablePoints().back();
+    CHECK(std::abs(end.x - pin.x) <= 0.01f);
+    CHECK(std::abs(end.y - pin.y) <= 0.01f);
+  }
+  // Released: connected; the new cable has the loose one's motion (awake now, not on its rest shape).
+  const size_t h0 = u.history();
+  u.d.up(satIn);
+  CHECK(u.history() == h0 + 1);
+  CHECK_FALSE(cv.looseCable());
+  CHECK(cv.cablesMoving());
+  // … and frames stop within 2 s.
+  frames(1);
+  u.d.advance(2.0);
+  CHECK_FALSE(cv.cablesMoving());
+  const uint64_t idle = u.d.framesDrawn();
+  u.d.advance(1.0);
+  CHECK(u.d.framesDrawn() == idle);
+  // Esc during a drag: the cable goes, nothing is made.
+  u.d.down(jack);
+  u.d.move({jack.x + 40.0f, jack.y + 30.0f});
+  CHECK(cv.looseCable());
+  u.d.press("Escape");
+  CHECK_FALSE(cv.looseCable());
+  u.d.up({jack.x + 40.0f, jack.y + 30.0f});
+  CHECK(u.history() == h0 + 1);
+  // Dropped on empty space: it hangs to the menu (asleep: no frames while the menu is idle), the spawned node's cable
+  // takes it over.
+  const Vec2 empty = u.dev({u.emptyWorld().x + 40.0f, u.emptyWorld().y + 150.0f});
+  u.d.drag(u.outPin(u.sat, "out"), empty, 6);
+  REQUIRE(u.menu() != nullptr);
+  CHECK(cv.looseCable());
+  u.d.advance(2.0);
+  const uint64_t menuIdle = u.d.framesDrawn();
+  u.d.advance(0.5);
+  CHECK(u.d.framesDrawn() == menuIdle);
+  CHECK(cv.looseCable());
+  u.d.type("utility");
+  REQUIRE(u.d.press("Return") == KeyResult::Widget);
+  CHECK(u.history() == h0 + 2);
+  CHECK(cv.cablesMoving());  // the spawned node's cable swings on from the loose one
+  u.d.step();
+  CHECK_FALSE(cv.looseCable());
+  // W + drag out of the Utility's gain: a cable out of the param, snapped onto a block's main output.
+  u.d.advance(2.0);
+  u.d.keyDown('w');
+  u.d.down(u.inPin(u.util, "gain"));
+  CHECK(cv.looseCable());
+  u.d.move(u.centre(u.synth));
+  u.d.step();
+  CHECK(cv.looseCableSnapped());
+  u.d.up(u.centre(u.synth));
+  u.d.keyUp('w');
+  CHECK(u.history() == h0 + 3);
+  CHECK_FALSE(cv.looseCable());
+  CHECK(cv.cablesMoving());
+  // Ctrl-release: the made connection's cable takes the motion, a new loose cable stays on the pointer; Esc drops it.
+  u.d.advance(2.0);
+  u.d.down(jack);
+  u.d.move({jack.x + 20.0f, jack.y + 40.0f});
+  u.d.move(u.inPin(u.util, "x"), mod::kCtrl);
+  u.d.up(u.inPin(u.util, "x"), PointerButton::Left, mod::kCtrl);
+  CHECK(u.history() == h0 + 4);
+  CHECK(u.view().canvas().stickyWire());
+  CHECK(cv.looseCable());
+  CHECK(cv.cablesMoving());
+  u.d.move({jack.x + 60.0f, jack.y + 80.0f});
+  u.d.step();
+  CHECK(cv.looseCable());
+  u.d.press("Escape");
+  CHECK_FALSE(cv.looseCable());
+  CHECK_FALSE(u.view().canvas().stickyWire());
+  u.d.advance(2.5);
+  const uint64_t f = u.d.framesDrawn();
+  u.d.advance(1.0);
+  CHECK(u.d.framesDrawn() == f);  // idle again: no frames
+}
 TEST_CASE("node menu: a typed spec places that one node (`0.5`, `* 2`); an instrument goes into the chain") {
   Ui u;
   const graph::Point2 at = u.emptyWorld();

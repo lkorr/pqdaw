@@ -281,6 +281,12 @@ private:
   ui::Vec2 backStart_{0, 0};
   uint32_t spliceEdge_ = kNone;          // Splice: the cable under the dragged block
   Selection spliceKeep_;                 // the selection before the Shift-drag (the hovered cable is shown selected)
+  // TX.node-menu-fix1: the cable on the pointer (a Wire drag from an output, a held cable, a backwards cable) is a
+  // real cable (CircuitCanvas::setLooseCable) from its port to the pointer, snapped onto the port or control a release
+  // would connect (its end there, highlighted). Called on the press and every move.
+  void updateLoose(ui::Vec2 pos);
+  graph::Point2 backWorld_{0, 0};        // BackWire: where the cable starts (the param's pin, or its control's rim)
+  bool menuFromDrop_ = false;            // the last release opened the node menu (the loose cable hangs until it closes)
   void rememberSource();                 // fromDevice_ / fromPort_ / fromNotes_ from from_
   bool resolveSource();                  // from_ from them (false: the source is gone)
   // TX.node-menu-fix1: a document change rebuilds the model while a gesture holds model indices (a block or a band

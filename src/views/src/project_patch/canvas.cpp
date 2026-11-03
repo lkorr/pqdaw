@@ -552,29 +552,25 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
     }
   }
 
-  // Gestures.
-  if (drag_ == Drag::Wire && from_.valid()) {
-    const Node& n = pp.nodes[from_.node];
-    const Vec2 a = toDevice({from_.input ? n.x : n.x + n.w, n.y + pinY(n, from_.port)});
-    const float t = std::max(1.0f, std::round(2.0f * us));
-    const float mx = std::round((a.x + last_.x) * 0.5f);
-    dl.addHLine(std::min(a.x, mx), std::max(a.x, mx), std::round(a.y), th.circuit.selected, t);
-    dl.addVLine(mx, std::min(a.y, last_.y), std::max(a.y, last_.y), th.circuit.selected, t);
-    dl.addHLine(std::min(mx, last_.x), std::max(mx, last_.x), std::round(last_.y), th.circuit.selected, t);
-    const uint32_t target = nodeAt(last_);
-    if (target != kNone && target != from_.node) {
-      const Node& tn = pp.nodes[target];
-      dl.addRectStroke(snapRect(deviceRect(tn.x, tn.y, tn.w, tn.h)), th.circuit.selected, std::max(1.0f, std::round(2.0f * us)));
+  // Gestures. TX.node-menu-fix1: a new connection is drawn as the real cable (the canvas's loose cable, over the
+  // blocks); here only what it would connect to: a soft ring on the port or control it snapped to, or the block whose
+  // params a drop on its body would offer.
+  if ((drag_ == Drag::Wire && from_.valid()) || drag_ == Drag::BackWire) {
+    const std::span<const graph::Point2> lp = looseCablePoints();
+    const float cw = std::clamp(6.0f * s, 1.5f * us, 16.0f * us);
+    if (looseCableSnapped() && !lp.empty()) {
+      const Vec2 c = toDevice(lp.back());
+      const ui::Rgba ring = th.circuit.selected;
+      dl.addCircleFilled(c, 1.9f * cw + 3.0f * us, ui::mulAlpha(ring, 0.16f));
+      dl.addCircleStroke(c, 1.9f * cw + 3.0f * us, ui::mulAlpha(ring, 0.85f), std::max(1.0f, std::round(1.5f * us)));
+    } else if (drag_ == Drag::Wire && wireRefusal(last_) == nullptr) {
+      const uint32_t target = nodeAt(last_);
+      if (target != kNone && target != from_.node && pp.nodes[target].kind == NodeKind::Device) {
+        const Node& tn = pp.nodes[target];
+        dl.addRoundedRectStroke(deviceRect(tn.x - 2.0f, tn.y - 2.0f, tn.w + 4.0f, tn.h + 4.0f), 4.0f * us, ui::mulAlpha(th.circuit.selected, 0.7f),
+                                std::max(1.0f, std::round(1.5f * us)));
+      }
     }
-  }
-  // TX.node-menu: a backwards cable from its param to the pointer; a Shift-dragged block's outline.
-  if (drag_ == Drag::BackWire) {
-    const float t = std::max(1.0f, std::round(2.0f * us));
-    const Vec2 a = backStart_;
-    const float mx = std::round((a.x + last_.x) * 0.5f);
-    dl.addHLine(std::min(a.x, mx), std::max(a.x, mx), std::round(a.y), th.circuit.selected, t);
-    dl.addVLine(mx, std::min(a.y, last_.y), std::max(a.y, last_.y), th.circuit.selected, t);
-    dl.addHLine(std::min(mx, last_.x), std::max(mx, last_.x), std::round(last_.y), th.circuit.selected, t);
   }
   if (drag_ == Drag::Splice && dragNode_ != kNone && dragNode_ < pp.nodes.size()) {
     const Node& n = pp.nodes[dragNode_];
@@ -689,16 +685,20 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       sticky_ = false;
       drag_ = Drag::None;
       from_ = {};
+      clearLooseCable();
       markDirty();
       return true;
     }
     swallowUp_ = true;
     const bool keep = (e.mods & ui::mod::kCtrl) != 0;
     const doc::Snapshot before = v.context().doc();
+    menuFromDrop_ = false;
     finishWire(e.pos);
     sticky_ = keep && v.context().doc() != before && resolveSource();
     drag_ = sticky_ ? Drag::Wire : Drag::None;
-    if (!sticky_) from_ = {};
+    if (!menuFromDrop_) dropLooseCable();
+    if (sticky_) updateLoose(e.pos);
+    else from_ = {};
     markDirty();
     return true;
   }
@@ -864,6 +864,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           drag_ = Drag::Wire;
           from_ = pin;
           wireCursor_ = ui::Cursor::Crosshair;
+          updateLoose(e.pos);  // TX.node-menu-fix1: the real cable comes out of the port
           markDirty();
           return true;
         }
@@ -926,11 +927,13 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
             }
             drag_ = Drag::None;
             from_ = {};
+            clearLooseCable();  // the host's cable layer draws it from here
             markDirty();
             v.onWireOutside(from, port, e.pos);
             return true;
           }
           wireCursor_ = wireRefusal(e.pos) != nullptr ? ui::Cursor::NotAllowed : ui::Cursor::Crosshair;
+          updateLoose(e.pos);
           markDirty();
           break;
         case Drag::MoveDevice:
@@ -990,7 +993,10 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           }
           break;
         }
-        case Drag::BackWire: markDirty(); break;  // TX.node-menu
+        case Drag::BackWire:  // TX.node-menu
+          updateLoose(e.pos);
+          markDirty();
+          break;
         case Drag::MaybeSplice:
           if (std::max(std::fabs(e.pos.x - press_.x), std::fabs(e.pos.y - press_.y)) >= drag::kClickSlop * us) {
             drag_ = Drag::Splice;
@@ -1014,17 +1020,25 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           // TX.node-menu: released with Ctrl held, a made connection keeps a new cable from the same source on the pointer.
           rememberSource();
           const doc::Snapshot before = v.context().doc();
-          finishWire(e.pos);
+          menuFromDrop_ = false;
+          finishWire(e.pos);  // a made connection's new cable takes the loose cable's motion over (no pop)
           if ((e.mods & ui::mod::kCtrl) && v.context().doc() != before && resolveSource()) {
             sticky_ = true;
             drag_ = Drag::Wire;
             last_ = e.pos;
+            dropLooseCable();
+            updateLoose(e.pos);  // a new cable from the same port on the pointer
             markDirty();
             return true;
           }
+          if (!menuFromDrop_) dropLooseCable();  // (the node menu's: it hangs there until the menu closes)
           break;
         }
-        case Drag::BackWire: finishBackWire(e.pos); break;
+        case Drag::BackWire:
+          menuFromDrop_ = false;
+          finishBackWire(e.pos);
+          if (!menuFromDrop_) dropLooseCable();
+          break;
         case Drag::MaybeSplice:
           if (dragNode_ < v.scene().sceneNode.size() && v.scene().sceneNode[dragNode_] != kNone) {  // a Shift+click: add it
             const uint32_t one[1] = {v.scene().sceneNode[dragNode_]};
@@ -1199,7 +1213,7 @@ void ProjectCanvas::finishWire(Vec2 pos) {
         link.port.resize(at);
       }
     }
-    (void)v.openSpawnMenu(pos, link);
+    menuFromDrop_ = v.openSpawnMenu(pos, link) != nullptr;
     return;
   }
   // Any output of a device or (TMM.10-fix2) a note output: onto an input pin (an audio input, a wired input, a param a
@@ -1434,6 +1448,7 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
     sticky_ = false;
     drag_ = Drag::None;
     from_ = {};
+    clearLooseCable();
     markDirty();
     return true;
   }
@@ -1506,6 +1521,7 @@ void ProjectCanvas::onCaptureLost() {
   clearCableDrag();  // TX.cables
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   if (sticky_) return;  // TX.node-menu: a held cable has no capture (no button is down)
+  if (drag_ == Drag::Wire || drag_ == Drag::BackWire) clearLooseCable();  // TX.node-menu-fix1
   if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.endValueGesture();
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit (as the arrangement's lanes: no partial edit)
   leaveOutside(last_);  // TX.free-rack
@@ -1517,6 +1533,7 @@ void ProjectCanvas::onCaptureLost() {
 
 void ProjectCanvas::onInteractionCancelled() {
   clearCableDrag();  // TX.cables: the cables swing back with the outline
+  if (drag_ == Drag::Wire || drag_ == Drag::BackWire || sticky_) clearLooseCable();  // TX.node-menu-fix1
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   sticky_ = false;
   if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.cancelValueGesture();
@@ -1618,6 +1635,7 @@ void ProjectCanvas::afterRebuild() {
     // What the gesture held went away (an undo, another edit): it ends here, without an edit (its release does nothing).
     if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.cancelValueGesture();
     clearCableDrag();
+    if (drag_ == Drag::Wire || drag_ == Drag::BackWire || sticky_) clearLooseCable();
     drag_ = Drag::None;
     sticky_ = false;
     dragNode_ = dragBand_ = kNone;
@@ -1677,7 +1695,8 @@ bool ProjectCanvas::pressBackWire(const ui::PointerEvent& e) {
         backDevice_ = doc::DeviceId{static_cast<uint32_t>(std::stoul(backParam_.substr(at + 1)))};
         backParam_.resize(at);
       }
-      backStart_ = toDevice({t.x, t.y + pinY(t, pin.port)});
+      backWorld_ = inputEntry(t, pin.port);
+      backStart_ = toDevice(backWorld_);
     }
   }
   if (!backDevice_.valid())
@@ -1687,14 +1706,70 @@ bool ProjectCanvas::pressBackWire(const ui::PointerEvent& e) {
         backDevice_ = pp.nodes[mn].device;
         backParam_ = fh.param;
         backStart_ = e.pos;
+        backWorld_ = faceControlPoint(fh.node, fh.param, toWorld(e.pos)).value_or(toWorld(e.pos));
       }
     }
   if (!backDevice_.valid()) return false;
   if (tree()) tree()->setFocus(this);
   drag_ = Drag::BackWire;
   press_ = last_ = e.pos;
+  updateLoose(e.pos);  // TX.node-menu-fix1: the real cable comes out of the param
   markDirty();
   return true;
+}
+
+void ProjectCanvas::updateLoose(Vec2 pos) {
+  const ProjectPatch& pp = view_.patch();
+  graph::Point2 port{}, to = toWorld(pos);
+  circuit::WireStyle style;
+  bool snapped = false;
+  if (drag_ == Drag::Wire && from_.valid() && from_.node < pp.nodes.size() && !from_.input) {
+    const Node& n = pp.nodes[from_.node];
+    port = {n.x + n.w, n.y + pinY(n, from_.port)};  // where its cable will start (the model's outPin)
+    style.notes = isNoteSource(pp, n);
+    if (wireRefusal(pos) == nullptr && (n.kind == NodeKind::Device || n.kind == NodeKind::Terminal || style.notes)) {
+      // Snapped onto what a release here connects: an input pin (that port), a face's / panel's control (its param).
+      const PinHit t = pinAt(pos);
+      if (t.valid() && t.input && t.node < pp.nodes.size() && t.node != from_.node && wireEnd(pp.nodes[t.node])) {
+        if (const Port* q = wireTarget(pp.nodes[t.node], t.port)) {
+          to = inputEntry(pp.nodes[t.node], t.port);
+          style.modulation = q->param;
+          snapped = true;
+        }
+      }
+      if (!snapped)
+        if (const FaceParamHit fh = faceParamAt(pos); !fh.param.empty() && fh.node < view_.scene().modelNode.size() &&
+                                                      view_.scene().modelNode[fh.node] != from_.node)
+          if (const std::optional<graph::Point2> c = faceControlPoint(fh.node, fh.param, port)) {
+            to = *c;
+            style.modulation = true;
+            snapped = true;
+          }
+    }
+  } else if (drag_ == Drag::BackWire && backDevice_.valid()) {
+    port = backWorld_;
+    style.modulation = true;
+    // Snapped onto the output a release here would drive the param from: an output pin, or a block's main output.
+    if (const PinHit pin = pinAt(pos); pin.valid() && !pin.input && pin.node < pp.nodes.size()) {
+      const Node& n = pp.nodes[pin.node];
+      if ((n.kind == NodeKind::Device || n.kind == NodeKind::Terminal || isNoteSource(pp, n)) && n.device != backDevice_ &&
+          !(isNoteSource(pp, n) && pin.port == 0)) {
+        to = {n.x + n.w, n.y + pinY(n, pin.port)};
+        style.notes = isNoteSource(pp, n);
+        snapped = true;
+      }
+    } else if (const uint32_t b = nodeAt(pos); b != kNone && pp.nodes[b].kind == NodeKind::Device && pp.nodes[b].device != backDevice_) {
+      const Node& n = pp.nodes[b];
+      const circuit::MainPorts mp = view_.mainPorts(n.device);
+      if (const int32_t k = mp.out.empty() ? -1 : n.output(mp.out); k >= 0) {
+        to = {n.x + n.w, n.y + pinY(n, static_cast<size_t>(k))};
+        snapped = true;
+      }
+    }
+  } else {
+    return;
+  }
+  setLooseCable(port, to, style, snapped);
 }
 
 void ProjectCanvas::finishBackWire(Vec2 pos) {
@@ -1740,7 +1815,7 @@ void ProjectCanvas::finishBackWire(Vec2 pos) {
   link.kind = ProjectPatchView::SpawnLink::Kind::IntoParam;
   link.device = backDevice_;
   link.port = backParam_;
-  (void)v.openSpawnMenu(pos, link);
+  menuFromDrop_ = v.openSpawnMenu(pos, link) != nullptr;
 }
 
 void ProjectCanvas::updateSplice(Vec2 pos) {

@@ -271,7 +271,7 @@ void CableSim::setEnds(uint32_t i, Point2 a, Point2 b, bool animate) {
   const float inv = 1.0f / static_cast<float>(c.n - 1);
   for (uint32_t k = 0; k < c.n; ++k) {
     const float t = static_cast<float>(k) * inv;
-    const float mx = kCableCarry * (dax + (dbx - dax) * t), my = kCableCarry * (day + (dby - day) * t);
+    const float mx = carry_ * (dax + (dbx - dax) * t), my = carry_ * (day + (dby - day) * t);
     P[k].x += mx, P[k].y += my;
     Q[k].x += mx, Q[k].y += my;
   }
@@ -282,6 +282,43 @@ void CableSim::setEnds(uint32_t i, Point2 a, Point2 b, bool animate) {
   c.calm = 0;
   c.awakeSteps = 0;
   updateBox(c);
+}
+
+void CableSim::adopt(uint32_t i, const CableSim& from, uint32_t j, bool reversed) {
+  if (!animated_ || i >= cables_.size() || j >= from.cables_.size()) return;
+  Cable& c = cables_[i];
+  const Cable& o = from.cables_[j];
+  if (o.n < 2 || c.n < 2) return;
+  c.prevBox = c.box;
+  const Point2* P0 = from.pos_.data() + o.first;
+  const Point2* Q0 = from.prev_.data() + o.first;
+  Point2* P = pos_.data() + c.first;
+  Point2* Q = prev_.data() + c.first;
+  // Resampled by index fraction (both ropes are at about equal arc length).
+  for (uint32_t k = 0; k < c.n; ++k) {
+    float u = static_cast<float>(k) * static_cast<float>(o.n - 1) / static_cast<float>(c.n - 1);
+    if (reversed) u = static_cast<float>(o.n - 1) - u;
+    const uint32_t m = std::min(static_cast<uint32_t>(u), o.n - 2);
+    const float f = u - static_cast<float>(m);
+    P[k] = {P0[m].x + (P0[m + 1].x - P0[m].x) * f, P0[m].y + (P0[m + 1].y - P0[m].y) * f};
+    Q[k] = {Q0[m].x + (Q0[m + 1].x - Q0[m].x) * f, Q0[m].y + (Q0[m + 1].y - Q0[m].y) * f};
+  }
+  // Onto this cable's ends: each point moved by its share of the two ends' offsets (the motion itself is kept).
+  const float dax = c.a.x - P[0].x, day = c.a.y - P[0].y, dbx = c.b.x - P[c.n - 1].x, dby = c.b.y - P[c.n - 1].y;
+  const float inv = 1.0f / static_cast<float>(c.n - 1);
+  for (uint32_t k = 0; k < c.n; ++k) {
+    const float t = static_cast<float>(k) * inv;
+    const float mx = dax + (dbx - dax) * t, my = day + (dby - day) * t;
+    P[k].x += mx, P[k].y += my;
+    Q[k].x += mx, Q[k].y += my;
+  }
+  P[0] = Q[0] = c.a;
+  P[c.n - 1] = Q[c.n - 1] = c.b;
+  if (!c.awake) ++awakeCount_;
+  c.awake = true;
+  c.calm = c.awakeSteps = 0;
+  updateBox(c);
+  ++version_;
 }
 
 void CableSim::setAnimated(bool on) {

@@ -50,8 +50,10 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "pq/graph/patch.h"
@@ -192,6 +194,20 @@ public:
   // nodes `nodes` follow `offset` (world units) and swing. Clear it with the scene that places them (or on cancel).
   void setCableDrag(std::span<const uint32_t> nodes, graph::Point2 offset);
   void clearCableDrag();
+  // TX.node-menu-fix1: the LOOSE cable — a new connection being drawn out (a drag from an output, a backwards cable,
+  // a cable kept on the pointer after a Ctrl-release): a real cable from world point `from` (its port) to `to` (the
+  // pointer, or the port / control it snaps to), drawn as every cable (tube, plugs, `style`'s colour) over the blocks
+  // and simulated: it trails behind the pointer (kLooseCableCarry) and swings. `snapped`: over a valid target (drawn
+  // with the selection halo). Call it on every move; frames run only while it moves. dropLooseCable(): released — the
+  // new scene's cable from the same port whose other end is nearest its free end takes its motion over (no pop to the
+  // rest shape); if none does, it goes at the next frame. clearLooseCable(): gone at once (a cancelled drag).
+  void setLooseCable(graph::Point2 from, graph::Point2 to, const WireStyle& style, bool snapped);
+  void dropLooseCable();
+  void clearLooseCable();
+  bool looseCable() const noexcept;
+  bool looseCableSnapped() const noexcept;
+  bool looseCableMoving() const noexcept;
+  std::span<const graph::Point2> looseCablePoints() const noexcept;
   // The glow: the host fills `levels` (0 = silent … 1) for the listed scene wires from its live sources; whether any
   // may be non-zero now (the transport plays, a source is active). wakeCables(): a source may have become live — poll
   // now, and keep polling while it is live and once after.
@@ -247,6 +263,9 @@ protected:
     std::string param;
   };
   FaceParamHit faceParamAt(ui::Vec2 pos) const;
+  // TX.node-menu-fix1: where a cable onto param `param` of the face on scene node `node` ends now (world units: the
+  // control's rim toward `toward`, as a cable's end onto it); nullopt: no such control shown.
+  std::optional<graph::Point2> faceControlPoint(uint32_t node, std::string_view param, graph::Point2 toward) const;
   bool faceDragging() const noexcept;
   // Drawn over the scene, inside the canvas (editing previews, probes).
   virtual void paintOverlay(ui::PaintContext& /*ctx*/) {}

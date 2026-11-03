@@ -685,6 +685,11 @@ circuit::NodeMenu* ProjectPatchView::openSpawnMenu(Vec2 at, const SpawnLink& lin
   o.onSpec = [this, alive, world, link](const std::string& s) {
     if (!alive.expired()) (void)spawnNode(specChoice(s), world, link);
   };
+  // TX.node-menu-fix1: a cable dropped here hangs from its port to the menu until it closes; the spawned node's cable
+  // then takes its motion over (the drop runs before the pick, the cable goes at the next frame).
+  o.onClosed = [this, alive] {
+    if (!alive.expired()) canvas_->dropLooseCable();
+  };
   return circuit::openNodeMenu(*canvas_, at, std::move(o));
 }
 

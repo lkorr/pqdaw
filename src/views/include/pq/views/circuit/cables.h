@@ -43,6 +43,7 @@ inline constexpr uint32_t kCableMaxStepsPerAdvance = 4;  // a late frame slows t
 inline constexpr float kCableGravity = 1800.0f;      // world units / s² (the swing's restoring force: ω² = g / sag)
 inline constexpr float kCableDamping = 0.96f;        // velocity kept per step
 inline constexpr float kCableCarry = 0.85f;          // how much of an end's move the rope takes at once
+inline constexpr float kLooseCableCarry = 0.45f;     // … for a cable being drawn out on the pointer (it trails)
 inline constexpr float kCableSleepSpeed = 0.02f;     // world units per step
 inline constexpr float kCableSleepOffset = 0.5f;     // world units from the rest shape (the snap is invisible)
 inline constexpr uint32_t kCableCalmSteps = 10;
@@ -75,6 +76,14 @@ public:
   void setEnds(uint32_t i, graph::Point2 a, graph::Point2 b, bool animate = true);
   graph::Point2 endA(uint32_t i) const noexcept { return cables_[i].a; }
   graph::Point2 endB(uint32_t i) const noexcept { return cables_[i].b; }
+
+  // TX.node-menu-fix1: how much of an end's move the rope takes at once (default kCableCarry). The cable being drawn
+  // out on the pointer takes less (kLooseCableCarry): it trails behind the pointer and swings after it.
+  void setCarry(float carry) noexcept { carry_ = carry; }
+  // TX.node-menu-fix1: cable i takes over the motion of cable j of `from` (a cable being drawn out that has just been
+  // dropped and became this connection: no pop to the rest shape). Its points and velocities resampled to cable i's
+  // count (`reversed`: from's end b is this cable's end a), carried onto its ends, awake. No-op when not animated.
+  void adopt(uint32_t i, const CableSim& from, uint32_t j, bool reversed);
 
   // Off (tests, goldens): every cable on its rest shape, asleep, and every later move lands there at once.
   void setAnimated(bool on);
@@ -122,6 +131,7 @@ private:
   std::vector<Cable> cables_;
   std::vector<graph::Point2> pos_, prev_, rest_;  // pools: cable i's points at [first, first + n)
   double pending_ = 0.0;
+  float carry_ = kCableCarry;
   uint32_t awakeCount_ = 0;
   uint64_t version_ = 0, steps_ = 0;
   bool animated_ = true;

@@ -737,6 +737,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     Rgba col = 0;
     float alpha = 1.0f;
     float flip = 1.0f;  // the normals' sign: the highlight on the cable's upper side
+    float glow = 0.0f;  // 0 … 1 (the loose cable: none)
     bool poly = false, sel = false, hov = false;
   };
   std::vector<CableDraw> cdraw;
@@ -770,6 +771,7 @@ struct CircuitCanvas::Impl final : FaceHost {
 
   // The scene's cables into the sim (kept connections keep their motion and swing to new ends).
   void syncCables() {
+    const std::vector<uint64_t> oldKeys = looseOn ? simKeys : std::vector<uint64_t>{};  // TX.node-menu-fix1
     std::vector<std::pair<uint64_t, float>> glowOf;  // the glow carries over by connection
     for (uint32_t i = 0; i < cables.size() && i < sim.size(); ++i)
       if (cables[i].glow > 0.0f) glowOf.emplace_back(simKeys.size() > i ? simKeys[i] : 0, cables[i].glow);
@@ -798,9 +800,77 @@ struct CircuitCanvas::Impl final : FaceHost {
     }
     sim.sync(specs);
     cgVersion = ~0ull;
+    if (looseOn) adoptLoose(oldKeys);
     cableMoved();
   }
   std::vector<uint64_t> simKeys;  // per cable: its key
+
+  // ---- TX.node-menu-fix1: the loose cable (a new connection being drawn out) ----
+  CableSim loose;                 // one cable (key 1) while looseOn
+  bool looseOn = false, looseDropped = false, looseSnap = false;
+  WireStyle looseStyle{};
+  double looseLast = -1.0;        // the frame time of its last advance
+  void damageLoose() {
+    if (!looseOn || loose.size() == 0) return;
+    const CableSim::Box &a = loose.previousBounds(0), &b = loose.bounds(0);
+    const float extra = 2.0f / std::max(s(), 1e-3f);  // the snap halo
+    damageCableBox({std::min(a.x0, b.x0) - extra, std::min(a.y0, b.y0) - extra, std::max(a.x1, b.x1) + extra, std::max(a.y1, b.y1) + extra});
+  }
+  void clearLoose() {
+    if (!looseOn) return;
+    damageLoose();
+    looseOn = looseDropped = looseSnap = false;
+    loose.sync({});
+    looseLast = -1.0;
+  }
+  // A new scene: its NEW cable whose one end is where the loose cable is plugged in (its port) and whose other end is
+  // nearest the loose cable's free end takes the loose cable's motion (the dropped cable keeps swinging, no pop), and
+  // the loose cable goes. Within kLooseAdoptReach world units of the free end (a spawned node's input is about a
+  // block's width from where the cable was dropped); none: it stays (on the pointer, or dropped: it goes next frame).
+  static constexpr float kLooseAdoptReach = 160.0f, kLoosePortReach = 24.0f;
+  void adoptLoose(std::span<const uint64_t> oldKeys) {
+    if (!looseOn || loose.size() == 0 || cables.empty()) return;
+    std::vector<uint64_t> sortedOld(oldKeys.begin(), oldKeys.end());
+    std::sort(sortedOld.begin(), sortedOld.end());
+    const Point2 port = loose.endA(0), free = loose.endB(0);
+    uint32_t best = UINT32_MAX;
+    bool bestRev = false;
+    float bestD = kLooseAdoptReach + kLoosePortReach;
+    for (uint32_t i = 0; i < cables.size(); ++i) {
+      if (std::binary_search(sortedOld.begin(), sortedOld.end(), simKeys[i])) continue;  // not new
+      const Point2 a = sim.endA(i), b = sim.endB(i);
+      for (int rev = 0; rev < 2; ++rev) {
+        const Point2 at = rev ? b : a, other = rev ? a : b;
+        // From the loose cable's port (a control's rim moves with the cable's direction: a little reach).
+        const float pd = std::hypot(at.x - port.x, at.y - port.y);
+        if (pd > kLoosePortReach) continue;
+        const float d = pd + std::hypot(other.x - free.x, other.y - free.y);
+        if (d < bestD) best = i, bestRev = rev != 0, bestD = d;
+      }
+    }
+    if (best == UINT32_MAX) return;
+    sim.adopt(best, loose, 0, bestRev);
+    damageCable(best);
+    clearLoose();
+    cgVersion = ~0ull;
+  }
+  // Advances the loose cable (onFrame); a dropped one that nothing adopted goes.
+  void stepLoose(double now) {
+    if (!looseOn) return;
+    if (looseDropped) {
+      clearLoose();
+      return;
+    }
+    if (!loose.awake()) {
+      looseLast = -1.0;
+      return;
+    }
+    const double dt = looseLast < 0.0 ? kCableStep : now - looseLast;
+    looseLast = now;
+    if (loose.advance(dt)) damageLoose();
+    if (loose.awake()) self.requestFrame();
+    else looseLast = -1.0;
+  }
 
   // Ends may have moved (the sim woke): run frames (far: settled at once).
   void cableMoved() {
@@ -1539,7 +1609,9 @@ Vec2 endDirection(const Vec2* p, uint32_t n, float reach) {
 
 void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w1) {
   Stats& st = stats;
-  if (cables.empty() || lod() == Lod::Far) return;
+  // Far: the cables are in the cached chunks; only the loose cable (TX.node-menu-fix1) is drawn here.
+  const bool farLod = lod() == Lod::Far;
+  if ((cables.empty() || farLod) && !looseOn) return;
   const ui::Theme& th = *ctx.res.theme;
   const auto& C = th.circuit;
   const CircuitScene& sc = *scene;
@@ -1551,7 +1623,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
   // follows it at once, onto its rest shape (a layout is no push: nothing swings). Its damage reaches the next frame
   // (this one is clipped to its own).
   bool anchorsMoved = false;
-  for (uint32_t i = 0; i < cables.size(); ++i) {
+  for (uint32_t i = 0; !farLod && i < cables.size(); ++i) {
     const CableRef& c = cables[i];
     if (sc.wires[c.wire].control == UINT32_MAX) continue;
     Point2 a, b;
@@ -1580,19 +1652,11 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
   cpts.clear();
   carc.clear();
   Vec2 dev[kCableMaxPoints];
-  for (uint32_t i = 0; i < cables.size(); ++i) {
-    const CableSim::Box& bx = sim.bounds(i);
-    if (bx.x1 < w0.x - pad || bx.x0 > w1.x + pad || bx.y1 < w0.y - pad || bx.y0 > w1.y + pad) continue;
-    const CableRef& c = cables[i];
-    const SceneWire& sw = sc.wires[c.wire];
-    const std::span<const Point2> P = sim.points(i);
+  // A rope's device polyline: Catmull-Rom through its points, ≈ 12 px chords (≤ 3 per segment; the rope bends gently):
+  // smooth at every zoom, few vertices.
+  auto spline = [&](std::span<const Point2> P) {
     const uint32_t n = static_cast<uint32_t>(P.size());
     for (uint32_t k = 0; k < n; ++k) dev[k] = {devX(P[k].x), devY(P[k].y)};
-    CableDraw d;
-    d.cable = i;
-    d.first = static_cast<uint32_t>(cpts.size());
-    // Catmull-Rom through the rope's points, ≈ 12 px chords (≤ 3 per segment; the rope bends gently): smooth at every
-    // zoom, few vertices.
     for (uint32_t k = 0; k + 1 < n; ++k) {
       const Vec2 p0 = dev[k > 0 ? k - 1 : 0], p1 = dev[k], p2 = dev[k + 1], p3 = dev[k + 2 < n ? k + 2 : n - 1];
       const float len = std::hypot(p2.x - p1.x, p2.y - p1.y);
@@ -1600,15 +1664,30 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
       for (uint32_t t = 0; t < steps; ++t) cpts.push_back(ui::catmullRom(p0, p1, p2, p3, static_cast<float>(t) / static_cast<float>(steps)));
     }
     cpts.push_back(dev[n - 1]);
+  };
+  auto colourOf = [&](const WireStyle& ws, bool lit) {
+    if (ws.boolean) return lit ? C.wireBoolLit : C.wireBool;
+    if (ws.rate == WireRate::Const) return C.wireConst;
+    if (ws.notes) return C.wireNotes;
+    if (ws.modulation) return C.wireMod;
+    return ws.rate == WireRate::Param ? C.wireParam : C.wireAudio;
+  };
+  for (uint32_t i = 0; !farLod && i < cables.size(); ++i) {
+    const CableSim::Box& bx = sim.bounds(i);
+    if (bx.x1 < w0.x - pad || bx.x0 > w1.x + pad || bx.y1 < w0.y - pad || bx.y0 > w1.y + pad) continue;
+    const CableRef& c = cables[i];
+    const SceneWire& sw = sc.wires[c.wire];
+    const std::span<const Point2> P = sim.points(i);
+    CableDraw d;
+    d.cable = i;
+    d.first = static_cast<uint32_t>(cpts.size());
+    spline(P);
     d.count = static_cast<uint32_t>(cpts.size()) - d.first;
     const WireStyle& ws = sw.style;
     d.sel = c.wire < wireSel.size() && wireSel[c.wire] != 0;
     d.hov = hover.kind == CanvasHit::Kind::Wire && hover.index == c.wire;
-    if (ws.boolean) d.col = c.wire < wireLit.size() && wireLit[c.wire] ? C.wireBoolLit : C.wireBool;
-    else if (ws.rate == WireRate::Const) d.col = C.wireConst;
-    else if (ws.notes) d.col = C.wireNotes;
-    else if (ws.modulation) d.col = C.wireMod;
-    else d.col = ws.rate == WireRate::Param ? C.wireParam : C.wireAudio;
+    d.col = colourOf(ws, c.wire < wireLit.size() && wireLit[c.wire]);
+    d.glow = c.glow;
     d.poly = ws.poly;
     d.alpha = sw.inactive && !d.sel && !d.hov ? kInactiveAlpha : 1.0f;
     if (fadeOn && bx.x1 >= fade.x0 && bx.x0 <= fade.x1 && bx.y1 >= fade.y0 && bx.y0 <= fade.y1)
@@ -1617,6 +1696,20 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
           d.alpha *= kCableFade;
           break;
         }
+    d.flip = P.back().x < P.front().x ? -1.0f : 1.0f;
+    cdraw.push_back(d);
+  }
+  // TX.node-menu-fix1: the cable being drawn out, last (over the others), highlighted when it snaps to a target.
+  if (looseOn && loose.size() > 0) {
+    const std::span<const Point2> P = loose.points(0);
+    CableDraw d;
+    d.cable = UINT32_MAX;
+    d.first = static_cast<uint32_t>(cpts.size());
+    spline(P);
+    d.count = static_cast<uint32_t>(cpts.size()) - d.first;
+    d.col = colourOf(looseStyle, false);
+    d.poly = looseStyle.poly;
+    d.sel = looseSnap;
     d.flip = P.back().x < P.front().x ? -1.0f : 1.0f;
     cdraw.push_back(d);
   }
@@ -1651,11 +1744,11 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
   // 2. The glow around lit cables (additive light, under the tubes so they stay solid).
   const double now = self.tree() != nullptr ? self.tree()->now() : 0.0;
   bool anyGlow = false;
-  for (const CableDraw& d : cdraw) anyGlow = anyGlow || cables[d.cable].glow > 0.0f;
+  for (const CableDraw& d : cdraw) anyGlow = anyGlow || d.glow > 0.0f;
   if (anyGlow) {
     dl.setBlend(ui::BlendMode::Additive);
     for (const CableDraw& d : cdraw) {
-      const float g = cables[d.cable].glow * d.alpha;
+      const float g = d.glow * d.alpha;
       if (g <= 0.0f) continue;
       const float o[5] = {4.5f * hw + 2.0f * us, 1.6f * hw, 0.0f, -1.6f * hw, -4.5f * hw - 2.0f * us};
       const Rgba c5[5] = {ui::withAlpha(d.col, 0), ui::setAlpha(d.col, 0.3f * g), ui::setAlpha(d.col, 0.65f * g),
@@ -1668,7 +1761,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
   // 3. The tubes (selected and hovered ones last, with a halo), their twin core when per voice, the plugs.
   for (int emph = 0; emph < 2; ++emph)
     for (const CableDraw& d : cdraw) {
-      if ((d.sel || d.hov) != (emph == 1)) continue;
+      if ((d.sel || d.hov || d.cable == UINT32_MAX) != (emph == 1)) continue;  // the loose cable on top
       const Vec2* p = cpts.data() + d.first;
       const Vec2* nr = cnrm.data() + d.first;
       if (d.sel || d.hov) {
@@ -1699,7 +1792,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
         }
       }
       cablePlug(dl, p[d.count - 1], back, w, d.col, d.alpha, plugK);
-      ++st.cablesPainted;
+      if (d.cable != UINT32_MAX) ++st.cablesPainted;
     }
   // 4. Light flowing along lit cables from source to target (additive, inside the tube).
   if (anyGlow && !far) {
@@ -1707,7 +1800,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
     const float period = std::max(48.0f * us, 16.0f * w), speed = 110.0f * us;
     const float phase = static_cast<float>(std::fmod(now * static_cast<double>(speed), static_cast<double>(period)));
     for (const CableDraw& d : cdraw) {
-      const float g = cables[d.cable].glow * d.alpha;
+      const float g = d.glow * d.alpha;
       if (g <= 0.0f) continue;
       cfade.resize(d.count);
       // A pulse per period: a smooth bump a quarter period wide (no trig per vertex).
@@ -2174,6 +2267,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
 void CircuitCanvas::onFrame(double now) {
   Impl& m = *impl_;
   m.stepCables(now);  // TX.cables: the swing (frames only while a cable is awake)
+  m.stepLoose(now);   // TX.node-menu-fix1: the cable being drawn out
   if (m.pumpWanted) m.pumpFaces();  // TX.panel-faces: a face's own work (a panel's widgets)
   if (m.scene && !m.zooming && m.prepareFaces()) markDirty();  // TX.panel-faces: a panel laid out at the settled zoom
   if (!m.scene || m.zooming || !m.tilesWanted || !tree() || !tree()->resources() || !tree()->resources()->tiles) return;
@@ -2531,6 +2625,57 @@ graph::Point2 CircuitCanvas::cableMidpoint(uint32_t wire) const noexcept {
     rest -= l;
   }
   return p.back();
+}
+
+void CircuitCanvas::setLooseCable(graph::Point2 from, graph::Point2 to, const WireStyle& style, bool snapped) {
+  Impl& m = *impl_;
+  if (!m.looseOn || m.looseDropped) {
+    if (m.looseOn) m.clearLoose();
+    m.loose.setCarry(kLooseCableCarry);
+    m.loose.setAnimated(m.sim.animated());
+    const CableSim::Spec sp{1, from, from};  // it comes out of the port
+    m.loose.sync({&sp, 1});
+    m.looseOn = true;
+  }
+  if (m.looseSnap != snapped || !(m.looseStyle == style)) markDirty();
+  m.looseSnap = snapped;
+  m.looseStyle = style;
+  m.loose.setEnds(0, from, to, true);
+  m.damageLoose();
+  if (m.loose.awake()) {
+    if (m.looseLast < 0.0 && tree() != nullptr) m.looseLast = tree()->now();
+    requestFrame();
+  }
+}
+
+void CircuitCanvas::dropLooseCable() {
+  Impl& m = *impl_;
+  if (!m.looseOn) return;
+  m.looseDropped = true;
+  m.looseSnap = false;
+  requestFrame();  // it goes at the next frame unless a new cable took its motion over first
+}
+
+void CircuitCanvas::clearLooseCable() { impl_->clearLoose(); }
+bool CircuitCanvas::looseCable() const noexcept { return impl_->looseOn; }
+bool CircuitCanvas::looseCableSnapped() const noexcept { return impl_->looseOn && impl_->looseSnap; }
+bool CircuitCanvas::looseCableMoving() const noexcept { return impl_->looseOn && impl_->loose.awake(); }
+std::span<const graph::Point2> CircuitCanvas::looseCablePoints() const noexcept {
+  const Impl& m = *impl_;
+  return m.looseOn && m.loose.size() > 0 ? m.loose.points(0) : std::span<const graph::Point2>{};
+}
+
+std::optional<graph::Point2> CircuitCanvas::faceControlPoint(uint32_t node, std::string_view param, graph::Point2 toward) const {
+  const Impl& m = *impl_;
+  if (!m.scene || node >= m.scene->nodes.size() || !m.faced(node)) return std::nullopt;
+  const auto& h = m.faces[static_cast<size_t>(m.faceOf[node])];
+  const std::optional<ControlAnchor> an = h.face->controlAnchor(param);
+  if (!an) return std::nullopt;
+  const SceneNode& n = m.scene->nodes[node];
+  const Point2 centre{n.x + an->at.x * h.scale, n.y + an->at.y * h.scale};
+  const float dx = toward.x - centre.x, dy = toward.y - centre.y, len = std::sqrt(dx * dx + dy * dy);
+  const float r = an->radius * h.scale;
+  return len > r + 1e-3f ? Point2{centre.x + dx / len * r, centre.y + dy / len * r} : centre;
 }
 
 void CircuitCanvas::setCableDrag(std::span<const uint32_t> nodes, graph::Point2 offset) {
