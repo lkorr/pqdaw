@@ -629,6 +629,17 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
     dl.addRectStroke(snapRect({r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy}), th.circuit.hover, std::max(1.0f, std::round(us)));
   }
 
+  // TX.node-menu-fix1: while the node menu is open, where its choice goes: a small ring and dot in the accent.
+  if (const std::optional<graph::Point2>& mk = view_.spawnMark()) {
+    const Vec2 c = toDevice(*mk);
+    const ui::Rgba a = th.face.signal;
+    dl.setBlend(ui::BlendMode::Additive);
+    dl.addBlob(c, 16.0f * us, ui::setAlpha(th.face.glow, 0.45f));
+    dl.setBlend(ui::BlendMode::Alpha);
+    dl.addCircleStroke(c, 7.0f * us, a, std::max(1.0f, 1.5f * us));
+    dl.addCircleFilled(c, 2.0f * us, a);
+  }
+
   // The hovered wire's readout, at the pointer.
   const ProjectPatchView::Readout& ro = view_.readout();
   if (ro.edge != kNone && drag_ == Drag::None && ctx.res.uiFonts != nullptr && ctx.res.text != nullptr) {

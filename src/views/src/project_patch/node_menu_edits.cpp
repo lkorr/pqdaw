@@ -252,15 +252,17 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
     }
   }
   // Wired from the cable it was dropped from: into its main input, or its main output into the param.
-  std::string note;
+  std::string note, inAt, outAt;
   if (link.kind != SpawnLink::Kind::None && made != nullptr) {
     const circuit::MainPorts mp = mainPortsOf(ctx_.deviceLibrary(), *doc::findDevice(k.doc(), id).device);
     if (link.kind == SpawnLink::Kind::FromOutput) {
       if (mp.in.empty()) note = c.name + " has no input: placed unwired";
       else if (!wire(k, link.device, link.notes, link.port, id, mp.in)) note = "Wire: " + k.why;
+      else inAt = mp.in;
     } else {
       if (mp.out.empty()) note = c.name + " has no output: placed unwired";
       else if (!wire(k, id, {}, mp.out, link.device, link.port)) note = "Wire: " + k.why;
+      else outAt = mp.out;
     }
   }
   const std::string label = "Add " + c.name;
@@ -272,18 +274,27 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
   }
   if (!note.empty()) ctx_.setStatus(note);
   if (free) {
-    placeAt(id, at);
+    placeAt(id, at, inAt, outAt);
     startPush(id);
   }
   return id;
 }
 
-void ProjectPatchView::placeAt(doc::DeviceId device, graph::Point2 at) {
+void ProjectPatchView::placeAt(doc::DeviceId device, graph::Point2 at, std::string_view inPort, std::string_view outPort) {
   sync();
   const uint32_t n = patch_.nodeOf(device);
   if (n == kNone) return;
   const Node& nd = patch_.nodes[n];
   float dx = at.x - (nd.x + nd.w * 0.5f), dy = at.y - (nd.y + nd.h * 0.5f);
+  // TX.node-menu-fix1: a node spawned from a dropped cable meets it where it was dropped — its input pin there (a cable
+  // from an output), or its output pin (a backwards cable into a param); an anchored input (a face's control) or an
+  // unknown port: its centre.
+  if (const int32_t k = inPort.empty() ? -1 : nd.input(inPort); k >= 0 && !nd.inputs[static_cast<size_t>(k)].anchored) {
+    const graph::Point2 pin = inputEntry(nd, static_cast<size_t>(k));
+    dx = at.x - pin.x, dy = at.y - pin.y;
+  } else if (const int32_t o = outPort.empty() ? -1 : nd.output(outPort); o >= 0) {
+    dx = at.x - (nd.x + nd.w), dy = at.y - (nd.y + pinOffset(nd, static_cast<size_t>(o)));
+  }
   // Never above its band's title strip (the band grows down and right to hold it, never up).
   if (nd.band < patch_.bands.size()) {
     const float top = patch_.bands[nd.band].y + metrics::kTitle;
@@ -688,9 +699,17 @@ circuit::NodeMenu* ProjectPatchView::openSpawnMenu(Vec2 at, const SpawnLink& lin
   // TX.node-menu-fix1: a cable dropped here hangs from its port to the menu until it closes; the spawned node's cable
   // then takes its motion over (the drop runs before the pick, the cable goes at the next frame).
   o.onClosed = [this, alive] {
-    if (!alive.expired()) canvas_->dropLooseCable();
+    if (alive.expired()) return;
+    canvas_->dropLooseCable();
+    spawnMark_.reset();
+    canvas_->markDirty();
   };
-  return circuit::openNodeMenu(*canvas_, at, std::move(o));
+  circuit::NodeMenu* m = circuit::openNodeMenu(*canvas_, at, std::move(o));
+  if (m != nullptr) {
+    spawnMark_ = world;
+    canvas_->markDirty();
+  }
+  return m;
 }
 
 circuit::NodeMenu* ProjectPatchView::openInsertMenu(uint32_t edge, Vec2 at) {
@@ -729,6 +748,29 @@ circuit::NodeMenu* ProjectPatchView::openInsertMenu(uint32_t edge, Vec2 at) {
   o.catalog = circuit::nodeCatalog(circuit::NodeCatalog::Scope::Project, ctx_);
   o.filter = circuit::NodeFilter::WithBoth;
   o.title = "Insert";
+  // TX.node-menu-fix1: the cable it goes into is shown selected while the menu is open (the selection comes back when
+  // it closes, before a choice rebuilds the scene); the point on it marked.
+  const circuit::CircuitCanvas::Selection keep = canvas_->selection();
+  for (uint32_t w = 0; w < scene_.modelEdge.size(); ++w)
+    if (scene_.modelEdge[w] == edge) {
+      const uint32_t one[1] = {w};
+      canvas_->select({}, one);
+      break;
+    }
+  o.onClosed = [this, alive, keep] {
+    if (alive.expired()) return;
+    spawnMark_.reset();
+    const uint32_t nn = canvas_->scene() ? static_cast<uint32_t>(canvas_->scene()->nodes.size()) : 0u;
+    const uint32_t nw = canvas_->scene() ? static_cast<uint32_t>(canvas_->scene()->wires.size()) : 0u;
+    std::vector<uint32_t> nodes, wires;
+    for (const uint32_t n : keep.nodes)
+      if (n < nn) nodes.push_back(n);
+    for (const uint32_t w : keep.wires)
+      if (w < nw) wires.push_back(w);
+    canvas_->select(nodes, wires);
+    canvas_->markDirty();
+  };
+  spawnMark_ = canvas_->toWorld(at);
   o.onPick = [this, alive, resolve](const circuit::NodeEntry& en) {
     if (alive.expired()) return;
     if (const uint32_t i = resolve(); i != kNone) (void)insertOnEdge(i, choiceOf(en));
@@ -737,7 +779,13 @@ circuit::NodeMenu* ProjectPatchView::openInsertMenu(uint32_t edge, Vec2 at) {
     if (alive.expired()) return;
     if (const uint32_t i = resolve(); i != kNone) (void)insertOnEdge(i, specChoice(s));
   };
-  return circuit::openNodeMenu(*canvas_, at, std::move(o));
+  circuit::NodeMenu* m = circuit::openNodeMenu(*canvas_, at, std::move(o));
+  if (m == nullptr) {  // no overlay: nothing to show it in
+    spawnMark_.reset();
+    canvas_->select(keep.nodes, keep.wires);
+  }
+  canvas_->markDirty();
+  return m;
 }
 
 }  // namespace pq::views::project_patch

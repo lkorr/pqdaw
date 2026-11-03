@@ -524,6 +524,8 @@ public:
   bool dissolve(doc::DeviceId device);
   // The menus: spawn at device point `at` (wired by `link`; its filter from the link), or insert on `edge`.
   circuit::NodeMenu* openSpawnMenu(ui::Vec2 at, const SpawnLink& link = {});
+  // TX.node-menu-fix1: while a node menu is open, where its choice goes (world units; drawn as a marker), else nullopt.
+  const std::optional<graph::Point2>& spawnMark() const noexcept { return spawnMark_; }
   circuit::NodeMenu* openInsertMenu(uint32_t edge, ui::Vec2 at);
   // The main input / output of a device as it is now ("" = none), from its patch's signature (catalog facts).
   circuit::MainPorts mainPorts(doc::DeviceId device) const;
@@ -786,11 +788,14 @@ private:
   } push_;
   bool pushAnimated_ = true;
   std::shared_ptr<int> alive_ = std::make_shared<int>(0);  // the node menu's callbacks check it (the view may go first)
+  std::optional<graph::Point2> spawnMark_;  // TX.node-menu-fix1
   void startPush(doc::DeviceId placed);
   bool stepPush(double seconds);  // false: settled
   void applyPush();
   void finishPushNow();
-  void placeAt(doc::DeviceId device, graph::Point2 at);
+  // Moves a free block to world point `at`: its centre there, or (TX.node-menu-fix1) with `inPort` its input pin there
+  // (a cable dropped from an output: the cable reaches the block where it was dropped), with `outPort` its output pin.
+  void placeAt(doc::DeviceId device, graph::Point2 at, std::string_view inPort = {}, std::string_view outPort = {});
   bool dispatchSteps(const char* label, std::vector<doc::Command> steps);
   bool insertImpl(uint32_t edge, const NodeChoice& c, bool plain);  // plain: Z's VCA (no default preset)
 

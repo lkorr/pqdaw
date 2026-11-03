@@ -71,10 +71,17 @@ public:
   ui::IRect rowRect(int32_t row) const noexcept;
   ui::IRect previewRect() const noexcept;
 
-  static constexpr float kWidth = 720.0f, kHeight = 440.0f;  // logical px
+  static constexpr float kWidth = 740.0f, kHeight = 452.0f;  // logical px (at most the window less a margin)
+  // TX.node-menu-fix1: it opens with a fade and a slight growth from the pointer's corner over kOpenSeconds (frames
+  // only then). finishOpening(): shown at once (scenes, goldens).
+  static constexpr double kOpenSeconds = 0.12;
+  static constexpr float kPointerGap = 12.0f;  // logical px between the pointer and the menu's corner
+  void finishOpening() noexcept;
+  float openProgress() const noexcept;  // 0 … 1
 
   ui::ISize contentExtent(ui::ISize viewport) const override;
   void paint(ui::PaintContext& ctx) override;
+  void onFrame(double now) override;
   bool onPointer(const ui::PointerEvent& e) override;
   bool onKey(const ui::KeyEvent& e) override;
   bool onText(const ui::TextEvent& e) override;
@@ -93,6 +100,7 @@ private:
   int32_t step(int32_t from, int32_t dir) const noexcept;
   int32_t rowAt(ui::Vec2 p) const noexcept;
   void close();
+  void paintMenu(ui::PaintContext& ctx);
   void paintPreview(ui::PaintContext& ctx, const ui::IRect& r);
 
   NodeMenuOptions opt_;
@@ -103,10 +111,12 @@ private:
   int32_t scroll_ = 0;  // device px
   bool specValid_ = false;
   bool closing_ = false;
+  double openAt_ = -1.0;  // the open animation's start (−1: not yet, −2: done)
 };
 
-// Opens the menu with its top-left at device point `at` of `from`'s tree (moved to stay inside the window) in its
-// overlay layer, focused. Null when there is no overlay layer.
+// Opens the menu in `from`'s tree's overlay layer, focused: its top-left kPointerGap right of and below device point
+// `at` (its top-right left of it when there is no room on the right; always inside the window). Null when there is no
+// overlay layer.
 NodeMenu* openNodeMenu(ui::Widget& from, ui::Vec2 at, NodeMenuOptions options);
 
 }  // namespace pq::views::circuit

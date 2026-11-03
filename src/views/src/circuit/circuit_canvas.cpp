@@ -771,7 +771,6 @@ struct CircuitCanvas::Impl final : FaceHost {
 
   // The scene's cables into the sim (kept connections keep their motion and swing to new ends).
   void syncCables() {
-    const std::vector<uint64_t> oldKeys = looseOn ? simKeys : std::vector<uint64_t>{};  // TX.node-menu-fix1
     std::vector<std::pair<uint64_t, float>> glowOf;  // the glow carries over by connection
     for (uint32_t i = 0; i < cables.size() && i < sim.size(); ++i)
       if (cables[i].glow > 0.0f) glowOf.emplace_back(simKeys.size() > i ? simKeys[i] : 0, cables[i].glow);
@@ -800,7 +799,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     }
     sim.sync(specs);
     cgVersion = ~0ull;
-    if (looseOn) adoptLoose(oldKeys);
+    if (looseOn) adoptLoose();
     cableMoved();
   }
   std::vector<uint64_t> simKeys;  // per cable: its key
@@ -810,6 +809,7 @@ struct CircuitCanvas::Impl final : FaceHost {
   bool looseOn = false, looseDropped = false, looseSnap = false;
   WireStyle looseStyle{};
   double looseLast = -1.0;        // the frame time of its last advance
+  std::vector<uint64_t> looseBase;  // sorted: the cables there were when it came out of its port (not "new")
   void damageLoose() {
     if (!looseOn || loose.size() == 0) return;
     const CableSim::Box &a = loose.previousBounds(0), &b = loose.bounds(0);
@@ -823,15 +823,15 @@ struct CircuitCanvas::Impl final : FaceHost {
     loose.sync({});
     looseLast = -1.0;
   }
-  // A new scene: its NEW cable whose one end is where the loose cable is plugged in (its port) and whose other end is
+  // A new scene: a NEW cable (none of looseBase: a spawn's cable may first appear where its block was laid out, and
+  // reach the drop point with the next scene, which places the block there) whose one end is where the loose cable is plugged in (its port) and whose other end is
   // nearest the loose cable's free end takes the loose cable's motion (the dropped cable keeps swinging, no pop), and
   // the loose cable goes. Within kLooseAdoptReach world units of the free end (a spawned node's input is about a
   // block's width from where the cable was dropped); none: it stays (on the pointer, or dropped: it goes next frame).
   static constexpr float kLooseAdoptReach = 160.0f, kLoosePortReach = 24.0f;
-  void adoptLoose(std::span<const uint64_t> oldKeys) {
+  void adoptLoose() {
     if (!looseOn || loose.size() == 0 || cables.empty()) return;
-    std::vector<uint64_t> sortedOld(oldKeys.begin(), oldKeys.end());
-    std::sort(sortedOld.begin(), sortedOld.end());
+    const std::vector<uint64_t>& sortedOld = looseBase;
     const Point2 port = loose.endA(0), free = loose.endB(0);
     uint32_t best = UINT32_MAX;
     bool bestRev = false;
@@ -2636,6 +2636,8 @@ void CircuitCanvas::setLooseCable(graph::Point2 from, graph::Point2 to, const Wi
     const CableSim::Spec sp{1, from, from};  // it comes out of the port
     m.loose.sync({&sp, 1});
     m.looseOn = true;
+    m.looseBase = m.simKeys;
+    std::sort(m.looseBase.begin(), m.looseBase.end());
   }
   if (m.looseSnap != snapped || !(m.looseStyle == style)) markDirty();
   m.looseSnap = snapped;

@@ -363,9 +363,12 @@ TEST_CASE("node menu: Tab opens it at the pointer, typing goes in, keys move and
   REQUIRE(m != nullptr);
   CHECK(u.d.tree().focus() == m);
   const ui::IRect r = m->rect();
-  // Its top-left at the pointer, or (no room on the right) its top-right: the overlay keeps it inside the window.
-  const bool atPointer = std::abs(static_cast<float>(r.x) - u.dev(at).x) <= 1.0f || std::abs(static_cast<float>(r.right()) - u.dev(at).x) <= 1.0f;
+  // Its top-left just right of and below the pointer, or (no room on the right) its top-right just left of it
+  // (TX.node-menu-fix1: kPointerGap, so the point where the node goes stays in sight): inside the window.
+  const float g = NodeMenu::kPointerGap;
+  const bool atPointer = std::abs(static_cast<float>(r.x) - (u.dev(at).x + g)) <= 1.0f || std::abs(static_cast<float>(r.right()) - (u.dev(at).x - g)) <= 1.0f;
   CHECK_MESSAGE(atPointer, "menu " << r.x << "," << r.y << " " << r.w << "x" << r.h << " pointer " << u.dev(at).x << "," << u.dev(at).y);
+  CHECK((std::abs(static_cast<float>(r.y) - (u.dev(at).y + g)) <= 1.0f || r.bottom() == 900));
   CHECK(r.right() <= 1600);
   // Typing goes straight in (no click on the field).
   u.d.type("utl");

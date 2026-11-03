@@ -24,21 +24,23 @@ NodeMenu::NodeMenu(NodeMenuOptions options) : ui::Control("node-menu"), opt_(std
   refresh();
 }
 
-ui::ISize NodeMenu::contentExtent(ui::ISize) const {
+ui::ISize NodeMenu::contentExtent(ui::ISize viewport) const {
+  // TX.node-menu-fix1: never larger than the window (less a margin); the preview pane gives way first.
   const ui::UiScale s = tree() ? tree()->uiScale() : ui::UiScale{};
-  return {s.px(kWidth), s.px(kHeight)};
+  const int32_t margin = 2 * s.px(12);
+  return {std::min(s.px(kWidth), std::max(s.px(440), viewport.w - margin)), std::min(s.px(kHeight), std::max(s.px(300), viewport.h - margin))};
 }
 
 NodeMenu::Metrics NodeMenu::metrics() const noexcept {
   const ui::UiScale s = tree() ? tree()->uiScale() : ui::UiScale{};
   Metrics m;
   m.pad = s.px(8);
-  m.header = s.px(36);
-  m.tabsW = s.px(124);
-  m.tabH = s.px(26);
-  m.rowH = s.px(22);
-  m.headH = s.px(22);
-  m.listW = s.px(272);
+  m.header = s.px(46);
+  m.tabsW = s.px(150);
+  m.tabH = s.px(28);
+  m.rowH = s.px(24);
+  m.headH = s.px(26);
+  m.listW = s.px(262);
   return m;
 }
 
@@ -332,77 +334,203 @@ std::string joinPorts(const std::vector<std::string>& ports) {
 
 }  // namespace
 
+void NodeMenu::onFrame(double now) {
+  // TX.node-menu-fix1: the open animation (kOpenSeconds), then no frames.
+  if (openAt_ < 0.0) openAt_ = now;
+  markDirty();
+  if (now - openAt_ < kOpenSeconds) requestFrame();
+  else openAt_ = -2.0;  // done
+}
+
+void NodeMenu::finishOpening() noexcept { openAt_ = -2.0; }
+
+float NodeMenu::openProgress() const noexcept {
+  if (openAt_ <= -2.0) return 1.0f;
+  if (openAt_ < 0.0 || tree() == nullptr) return 0.0f;
+  return static_cast<float>(std::clamp((tree()->now() - openAt_) / kOpenSeconds, 0.0, 1.0));
+}
+
 void NodeMenu::paint(ui::PaintContext& ctx) {
   const ui::Theme* th = ctx.res.theme;
-  const ui::ThemeFonts* f = ctx.res.uiFonts;
   if (th == nullptr) return;
+  // The open animation: faded in and grown from 96 % about the corner at the pointer, eased out.
+  const float t = openProgress();
+  if (t < 1.0f && openAt_ == -1.0) requestFrame();  // first paint: start the clock (onFrame)
+  const uint32_t first = ctx.dl.vtxCurrentIdx();
+  paintMenu(ctx);
+  if (t < 1.0f) {
+    const float e = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+    const IRect r = rect();
+    ctx.dl.fadeSince(first, e, {static_cast<float>(r.x), static_cast<float>(r.y)}, 0.96f + 0.04f * e);
+  }
+}
+
+namespace {
+
+// A line glyph per tab / category, about `sz` device px across, centred at c (the face's line language: round, thin).
+void glyph(ui::DrawList& dl, NodeTab t, Vec2 c, float sz, Rgba col, float lw) {
+  const float h = 0.5f * sz;
+  switch (t) {
+    case NodeTab::All:
+      for (int k = 0; k < 4; ++k)
+        dl.addCircleFilled({c.x + ((k & 1) ? 0.42f : -0.42f) * h, c.y + ((k & 2) ? 0.42f : -0.42f) * h}, 0.2f * h, col);
+      break;
+    case NodeTab::Atoms:
+      dl.addCircleStroke(c, 0.82f * h, col, lw);
+      dl.addCircleFilled(c, 0.28f * h, col);
+      break;
+    case NodeTab::MetaModules:  // the phase accumulator's dial: an arc, a hub, a hand
+      dl.addArcStroke(c, 0.82f * h, 2.4f, 2.4f + 4.6f, col, lw, ui::LineCap::Round);
+      dl.addCircleFilled(c, 0.24f * h, col);
+      segment(dl, c, {c.x + 0.62f * h, c.y - 0.5f * h}, col, lw);
+      break;
+    case NodeTab::Instruments:  // three keys
+      for (int k = -1; k <= 1; ++k) {
+        const float x = c.x + static_cast<float>(k) * 0.62f * h;
+        dl.addRoundedRectFilled({x - 0.2f * h, c.y - 0.85f * h, x + 0.2f * h, c.y + 0.85f * h}, 0.15f * h, col);
+      }
+      break;
+    case NodeTab::AudioEffects: {  // a sine
+      Vec2 prev{c.x - h, c.y};
+      for (int k = 1; k <= 8; ++k) {
+        const float u = static_cast<float>(k) / 8.0f;
+        const Vec2 q{c.x - h + 2.0f * h * u, c.y - 0.7f * h * std::sin(u * 6.2831853f)};
+        segment(dl, prev, q, col, lw);
+        prev = q;
+      }
+      break;
+    }
+    case NodeTab::MidiEffects:  // a DIN socket
+      dl.addCircleStroke(c, 0.82f * h, col, lw);
+      for (int k = 0; k < 5; ++k) {
+        const float a = 3.14159265f * (1.0f + 0.25f * static_cast<float>(k));
+        dl.addCircleFilled({c.x + 0.45f * h * std::cos(a), c.y + 0.45f * h * std::sin(a) + 0.1f * h}, 0.13f * h, col);
+      }
+      break;
+    case NodeTab::Visualisers: {  // a spectrum
+      const float hs[4] = {0.5f, 1.0f, 0.75f, 0.35f};
+      for (int k = 0; k < 4; ++k) {
+        const float x = c.x - 0.78f * h + static_cast<float>(k) * 0.52f * h;
+        dl.addRoundedRectFilled({x - 0.15f * h, c.y + 0.85f * h - 1.7f * h * hs[k], x + 0.15f * h, c.y + 0.85f * h}, 0.1f * h, col);
+      }
+      break;
+    }
+    case NodeTab::UserLibrary: {  // a bookmark
+      const Vec2 p[5] = {{c.x - 0.55f * h, c.y - 0.85f * h}, {c.x + 0.55f * h, c.y - 0.85f * h}, {c.x + 0.55f * h, c.y + 0.85f * h},
+                         {c.x, c.y + 0.4f * h}, {c.x - 0.55f * h, c.y + 0.85f * h}};
+      for (int k = 0; k < 5; ++k) segment(dl, p[k], p[(k + 1) % 5], col, lw);
+      break;
+    }
+    case NodeTab::Recent:  // a clock
+      dl.addCircleStroke(c, 0.82f * h, col, lw);
+      segment(dl, c, {c.x, c.y - 0.5f * h}, col, lw);
+      segment(dl, c, {c.x + 0.38f * h, c.y + 0.12f * h}, col, lw);
+      break;
+    case NodeTab::Count: break;
+  }
+}
+
+// A jack as the cables' plugs sit in it: a dark socket, a metal ring, the cable's colour at its core (device px).
+void jack(ui::DrawList& dl, Vec2 c, float r, Rgba col) {
+  dl.addCircleFilled(c, r, ui::rgba(22, 24, 28));
+  dl.addCircleStroke(c, r, ui::rgba(150, 156, 168, 210), std::max(1.0f, 0.22f * r));
+  dl.addCircleFilled(c, 0.45f * r, col);
+}
+
+// A soft light behind something (additive blobs): the face's glow.
+void softGlow(ui::DrawList& dl, Vec2 c, float r, Rgba col) {
+  dl.setBlend(ui::BlendMode::Additive);
+  dl.addBlob(c, r, col);
+  dl.setBlend(ui::BlendMode::Alpha);
+}
+
+}  // namespace
+
+void NodeMenu::paintMenu(ui::PaintContext& ctx) {
+  const ui::Theme* th = ctx.res.theme;
+  const ui::ThemeFonts* f = ctx.res.uiFonts;
+  const auto& F = th->face;
   const IRect r = rect();
   const Metrics m = metrics();
-  const float rad = ctx.scale.exact(th->radius.menu);
-  // Shadow and frame (the overlay's popup look).
+  const float us = ctx.scale.factor;
+  const float rad = ctx.scale.exact(10.0f);
+  const float hair = std::max(1.0f, std::round(us));
+  const ui::Rect rr0 = r.toRect();
+  // Shadow, a faint halo in the face's glow, the near-black body, a hairline.
   {
-    const float d = ctx.scale.exact(3.0f);
-    ctx.dl.addRoundedRectFilled({static_cast<float>(r.x) - 2.0f, static_cast<float>(r.y) + d - 1.0f, static_cast<float>(r.right()) + 2.0f,
-                                 static_cast<float>(r.bottom()) + d + 2.0f},
-                                rad + 2.0f, ui::mulAlpha(th->menu.shadow, 0.5f));
-    ctx.dl.addRoundedRectFilled({static_cast<float>(r.x), static_cast<float>(r.y) + d, static_cast<float>(r.right()), static_cast<float>(r.bottom()) + d},
-                                rad, th->menu.shadow);
+    const float d = ctx.scale.exact(8.0f);
+    ctx.dl.addRoundedRectFilled({rr0.x0 - d, rr0.y0 - d * 0.25f, rr0.x1 + d, rr0.y1 + d * 1.5f}, rad + d, ui::rgba(0, 0, 0, 40));
+    ctx.dl.addRoundedRectFilled({rr0.x0 - d * 0.5f, rr0.y0, rr0.x1 + d * 0.5f, rr0.y1 + d}, rad + d * 0.5f, ui::rgba(0, 0, 0, 70));
+    for (int k = 3; k >= 1; --k) {
+      const float g = ctx.scale.exact(1.5f * static_cast<float>(k));
+      ctx.dl.addRoundedRectFilled({rr0.x0 - g, rr0.y0 - g, rr0.x1 + g, rr0.y1 + g}, rad + g, ui::setAlpha(F.glow, 0.035f * static_cast<float>(4 - k)));
+    }
   }
-  paint::box(ctx.dl, r, rad, th->surface.panel, th->menu.border);
-  // The tab column and the preview pane a step darker than the list.
-  const IRect tabs{r.x + 1, r.y + m.header, m.tabsW - 1, r.h - m.header - 1};
-  ctx.dl.addRectFilled(tabs.toRect(), th->surface.sunken);
+  ctx.dl.addRoundedRectGradientV(rr0, rad, ui::lerp(F.body, F.hub, 0.35f), F.body);
+  ctx.dl.addRoundedRectStroke(rr0, rad, ui::mulAlpha(F.frame, 0.75f), hair);
+  // The header's hairline and the rail's: the face's track colour (quiet).
+  const float hy = static_cast<float>(r.y + m.header);
+  ctx.dl.addHLine(rr0.x0 + rad, rr0.x1 - rad, hy, F.track, hair);
+  ctx.dl.addVLine(static_cast<float>(r.x + m.tabsW), hy + static_cast<float>(m.pad), rr0.y1 - static_cast<float>(m.pad), F.track, hair);
   const IRect pv = previewRect();
-  ctx.dl.addRectFilled(pv.toRect(), th->surface.background);
-  ctx.dl.addHLine(static_cast<float>(r.x + 1), static_cast<float>(r.right() - 1), static_cast<float>(r.y + m.header), th->menu.separator);
-  ctx.dl.addVLine(static_cast<float>(r.x + m.tabsW), static_cast<float>(r.y + m.header), static_cast<float>(r.bottom() - 1), th->menu.separator);
-  ctx.dl.addVLine(static_cast<float>(pv.x - 1), static_cast<float>(r.y + m.header), static_cast<float>(r.bottom() - 1), th->menu.separator);
+  ctx.dl.addVLine(static_cast<float>(pv.x - 1), hy + static_cast<float>(m.pad), rr0.y1 - static_cast<float>(m.pad), F.track, hair);
   if (f == nullptr || ctx.res.text == nullptr) return;
   ui::TextSystem& ts = *ctx.res.text;
 
-  // Search box: a field well across the top, the title left of it.
+  // Header: the title (small caps, quiet) over the rail; the search borderless, a thin underline lit under the text.
   {
-    const std::string title = opt_.title.empty() ? std::string("Add node") : opt_.title;
-    const int32_t tw = ts.measure(f->bodyStrong, title) + 2 * m.pad;
-    const IRect titleBox{r.x + m.pad / 2, r.y + m.pad / 2, std::min(tw, m.tabsW), m.header - m.pad};
-    paint::text(ctx, f->bodyStrong, titleBox, title, th->text.secondary, ui::TextAlign::Left, m.pad / 2, 0);
-    const IRect field{r.x + std::max(tw, m.tabsW), r.y + m.pad / 2, r.right() - m.pad - (r.x + std::max(tw, m.tabsW)), m.header - m.pad};
-    paint::box(ctx.dl, field, ctx.scale.exact(th->radius.control), th->field.fill, th->field.borderFocus);
-    const int32_t padx = ctx.scale.px(8);
-    // A magnifier: a ring and a handle.
-    const float cx = static_cast<float>(field.x + padx) + ctx.scale.exact(5.0f), cy = static_cast<float>(field.y + field.h / 2) - ctx.scale.exact(1.0f);
-    ctx.dl.addCircleStroke({cx, cy}, ctx.scale.exact(4.0f), th->text.secondary, ctx.scale.exact(1.3f));
-    segment(ctx.dl, {cx + ctx.scale.exact(3.0f), cy + ctx.scale.exact(3.0f)}, {cx + ctx.scale.exact(6.5f), cy + ctx.scale.exact(6.5f)},
-            th->text.secondary, ctx.scale.exact(1.5f));
-    const int32_t tx = field.x + padx + ctx.scale.px(16);
-    const IRect textBox{tx, field.y, field.right() - padx - tx, field.h};
-    if (buf_.text().empty()) {
-      paint::text(ctx, f->body, textBox, "Search, or type a node: tanh, 0.5, 440Hz, * 2, param cutoff = 1kHz", th->text.disabled,
+    std::string title = opt_.title.empty() ? std::string("Add node") : opt_.title;
+    for (char& ch : title) ch = static_cast<char>(ch >= 'a' && ch <= 'z' ? ch - 32 : ch);
+    paint::text(ctx, f->small, IRect{r.x, r.y, m.tabsW, m.header}, title, F.ink, ui::TextAlign::Left, m.pad + ctx.scale.px(8), m.pad / 2);
+    const int32_t fx = r.x + m.tabsW + m.pad + ctx.scale.px(6);
+    const IRect field{fx, r.y + ctx.scale.px(6), r.right() - m.pad - ctx.scale.px(6) - fx, m.header - ctx.scale.px(12)};
+    // The magnifier in the accent.
+    const float cx = static_cast<float>(field.x) + ctx.scale.exact(6.0f), cy = static_cast<float>(field.y + field.h / 2) - ctx.scale.exact(1.0f);
+    ctx.dl.addCircleStroke({cx, cy}, ctx.scale.exact(4.5f), F.signal, ctx.scale.exact(1.4f));
+    segment(ctx.dl, {cx + ctx.scale.exact(3.3f), cy + ctx.scale.exact(3.3f)}, {cx + ctx.scale.exact(7.0f), cy + ctx.scale.exact(7.0f)}, F.signal,
+            ctx.scale.exact(1.6f));
+    const int32_t tx = field.x + ctx.scale.px(20);
+    const IRect textBox{tx, field.y, field.right() - tx, field.h};
+    if (buf_.text().empty())
+      paint::text(ctx, f->body, textBox, "Search, or type a node: tanh, 0.5, 440Hz, * 2, param cutoff = 1kHz", ui::mulAlpha(F.ink, 0.8f),
                   ui::TextAlign::Left);
-    }
     const ui::TextRun run = ts.shape(f->body, buf_.text());
     const int32_t base = paint::capCentredBaseline(field.y, field.h, ts.metrics(f->body).pixelSize);
-    const float y0 = static_cast<float>(field.y + ctx.scale.px(5)), y1 = static_cast<float>(field.bottom() - ctx.scale.px(5));
+    const float y0 = static_cast<float>(field.y + ctx.scale.px(6)), y1 = static_cast<float>(field.bottom() - ctx.scale.px(6));
     if (buf_.hasSelection()) {
       const float a = static_cast<float>(tx + run.caretX(buf_.selBegin())), b = static_cast<float>(tx + run.caretX(buf_.selEnd()));
-      ctx.dl.addRectFilled({a, y0, b, y1}, th->text.selection);
+      ctx.dl.addRectFilled({a, y0, b, y1}, ui::setAlpha(F.glow, 0.35f));
     }
     ui::TextSystem::drawRunClipped(ctx.dl, run, {static_cast<float>(tx), static_cast<float>(base)}, th->text.primary, paint::textClip(ctx, textBox));
     const float x = static_cast<float>(tx + run.caretX(buf_.caret()));
-    ctx.dl.addRectFilled({x, y0, x + std::max(1.0f, std::round(ctx.scale.exact(1.0f))), y1}, th->text.caret);
+    ctx.dl.addRectFilled({x, y0, x + std::max(1.0f, std::round(us)), y1}, F.signal);
+    // The underline: a hairline across, lit (and glowing) under what is typed.
+    const float uy = static_cast<float>(field.bottom()) - hair;
+    ctx.dl.addHLine(static_cast<float>(field.x), static_cast<float>(field.right()), uy, ui::mulAlpha(F.frame, 0.6f), hair);
+    const float lit = std::max(ctx.scale.exact(24.0f), static_cast<float>(tx - field.x + run.advance) + ctx.scale.exact(6.0f));
+    ctx.dl.addHLine(static_cast<float>(field.x), static_cast<float>(field.x) + lit, uy, F.signal, hair);
+    ctx.dl.addRectFilled({static_cast<float>(field.x), uy - ctx.scale.exact(3.0f), static_cast<float>(field.x) + lit, uy},
+                         ui::setAlpha(F.glow, 0.08f));
   }
 
-  // Tabs.
-  for (uint8_t t = 0; t < static_cast<uint8_t>(NodeTab::Count); ++t) {
-    const NodeTab nt = static_cast<NodeTab>(t);
+  // The rail: a glyph and a name per tab; the current one lit (a bar, a soft glow, the accent).
+  const float glyphSz = ctx.scale.exact(12.0f), lw = std::max(1.0f, ctx.scale.exact(1.3f));
+  for (uint8_t k = 0; k < static_cast<uint8_t>(NodeTab::Count); ++k) {
+    const NodeTab nt = static_cast<NodeTab>(k);
     const IRect tr = tabRect(nt);
     const bool on = nt == tab_;
+    const IRect inner{tr.x + ctx.scale.px(6), tr.y + ctx.scale.px(2), tr.w - ctx.scale.px(12), tr.h - ctx.scale.px(4)};
     if (on) {
-      ctx.dl.addRectFilled(IRect{tr.x, tr.y + 1, tr.w, tr.h - 2}.toRect(), th->surface.raised);
-      ctx.dl.addRectFilled(IRect{tr.x, tr.y + 3, ctx.scale.px(3), tr.h - 6}.toRect(), th->accent.primary);
+      ctx.dl.addRoundedRectFilled(inner.toRect(), ctx.scale.exact(6.0f), ui::setAlpha(F.glow, 0.12f));
+      ctx.dl.addRoundedRectFilled({static_cast<float>(inner.x), static_cast<float>(inner.y) + ctx.scale.exact(5.0f),
+                                   static_cast<float>(inner.x) + ctx.scale.exact(2.0f), static_cast<float>(inner.bottom()) - ctx.scale.exact(5.0f)},
+                                  ctx.scale.exact(1.0f), F.signal);
     }
-    paint::text(ctx, on ? f->bodyStrong : f->body, tr, tabName(nt), on ? th->text.primary : th->text.secondary, ui::TextAlign::Left, m.pad + ctx.scale.px(4),
-                m.pad / 2);
+    const Vec2 gc{static_cast<float>(inner.x) + ctx.scale.exact(15.0f), static_cast<float>(inner.y + inner.h / 2)};
+    if (on) softGlow(ctx.dl, gc, ctx.scale.exact(14.0f), ui::setAlpha(F.glow, 0.35f));
+    glyph(ctx.dl, nt, gc, glyphSz, on ? F.signal : F.ink, lw);
+    paint::text(ctx, f->body, inner, tabName(nt), on ? th->text.primary : ui::lerp(F.ink, th->text.secondary, 0.5f), ui::TextAlign::Left,
+                ctx.scale.px(28), ctx.scale.px(4));
   }
 
   // The list.
@@ -417,60 +545,71 @@ void NodeMenu::paint(ui::PaintContext& ctx) {
     if (row.kind == Row::Kind::Header) {
       std::string head(categoryName(row.category));
       for (char& ch : head) ch = static_cast<char>(ch >= 'a' && ch <= 'z' ? ch - 32 : ch);
-      if (!row.compatible) head += "  (NOT CONNECTABLE)";
-      paint::text(ctx, f->small, IRect{rr.x, rr.y + ctx.scale.px(4), rr.w, rr.h - ctx.scale.px(4)}, head, th->text.disabled, ui::TextAlign::Left,
-                  m.pad + ctx.scale.px(2), m.pad);
+      if (!row.compatible) head += "  \xC2\xB7  NOT CONNECTABLE";
+      const Vec2 gc{static_cast<float>(rr.x + m.pad) + ctx.scale.exact(8.0f), static_cast<float>(rr.y + rr.h / 2) + ctx.scale.exact(2.0f)};
+      glyph(ctx.dl, tabOf(row.category), gc, ctx.scale.exact(9.0f), ui::mulAlpha(F.ink, 0.85f), std::max(1.0f, ctx.scale.exact(1.1f)));
+      paint::text(ctx, f->small, IRect{rr.x, rr.y + ctx.scale.px(4), rr.w, rr.h - ctx.scale.px(4)}, head, F.ink, ui::TextAlign::Left,
+                  m.pad + ctx.scale.px(18), m.pad);
       continue;
     }
     const bool hi = i == hi_;
-    if (hi) ctx.dl.addRoundedRectFilled(IRect{rr.x + ctx.scale.px(4), rr.y, rr.w - ctx.scale.px(8), rr.h}.toRect(), ctx.scale.exact(3.0f), th->selection.fill);
-    const Rgba ink = hi ? th->selection.text : row.compatible ? th->text.primary : th->text.disabled;
+    const IRect cell{rr.x + ctx.scale.px(6), rr.y + ctx.scale.px(1), rr.w - ctx.scale.px(14), rr.h - ctx.scale.px(2)};
+    if (hi) {
+      ctx.dl.addRoundedRectFilled(cell.toRect(), ctx.scale.exact(6.0f), ui::setAlpha(F.glow, 0.16f));
+      ctx.dl.addRoundedRectStroke(cell.toRect(), ctx.scale.exact(6.0f), ui::setAlpha(F.signal, 0.28f), hair);
+      const float bx = static_cast<float>(cell.x) + ctx.scale.exact(1.0f);
+      softGlow(ctx.dl, {bx, static_cast<float>(cell.y + cell.h / 2)}, ctx.scale.exact(12.0f), ui::setAlpha(F.glow, 0.45f));
+      ctx.dl.addRoundedRectFilled({bx, static_cast<float>(cell.y) + ctx.scale.exact(5.0f), bx + ctx.scale.exact(2.0f),
+                                   static_cast<float>(cell.bottom()) - ctx.scale.exact(5.0f)},
+                                  ctx.scale.exact(1.0f), F.signal);
+    }
+    const Rgba ink = hi ? ui::lerp(th->text.primary, F.signal, 0.25f) : row.compatible ? th->text.primary : th->text.disabled;
     if (row.kind == Row::Kind::Spec) {
-      paint::text(ctx, f->body, rr, "Place  " + buf_.text(), ink, ui::TextAlign::Left, m.pad + ctx.scale.px(6), m.pad);
-      paint::text(ctx, f->small, rr, "typed", hi ? th->selection.text : th->text.secondary, ui::TextAlign::Right, m.pad, m.pad + ctx.scale.px(4));
+      paint::text(ctx, f->body, rr, "Place  " + buf_.text(), ink, ui::TextAlign::Left, m.pad + ctx.scale.px(10), m.pad);
+      paint::text(ctx, f->small, rr, "TYPED", hi ? F.signal : F.ink, ui::TextAlign::Right, m.pad, m.pad + ctx.scale.px(10));
       continue;
     }
     const NodeEntry& e = c.entries[row.entry];
-    const int32_t drawn = paint::text(ctx, f->body, rr, e.name, ink, ui::TextAlign::Left, m.pad + ctx.scale.px(6), m.pad + ctx.scale.px(44));
-    (void)drawn;
-    // The ports at a glance: "in → out" dots on the right (filled: has it).
+    (void)paint::text(ctx, f->body, rr, e.name, ink, ui::TextAlign::Left, m.pad + ctx.scale.px(10), m.pad + ctx.scale.px(48));
+    // The ports at a glance: in → out, jacks where it has them.
     const float y = static_cast<float>(rr.y) + static_cast<float>(rr.h) * 0.5f;
-    const float xr = static_cast<float>(rr.right() - m.pad - ctx.scale.px(6));
-    const float dot = ctx.scale.exact(3.0f);
-    const Rgba port = hi ? th->selection.text : th->circuit.wireAudio;
+    const float xr = static_cast<float>(rr.right() - m.pad - ctx.scale.px(12));
+    const float dot = ctx.scale.exact(2.6f);
+    const Rgba port = hi ? F.signal : row.compatible ? ui::mulAlpha(F.ink, 0.9f) : ui::mulAlpha(F.ink, 0.45f);
     auto pin = [&](float x, bool has) {
       if (has) ctx.dl.addCircleFilled({x, y}, dot, port);
-      else ctx.dl.addCircleStroke({x, y}, dot, ui::mulAlpha(port, 0.45f), ctx.scale.exact(1.0f));
+      else ctx.dl.addCircleStroke({x, y}, dot, ui::mulAlpha(port, 0.5f), ctx.scale.exact(1.0f));
     };
     pin(xr - ctx.scale.exact(18.0f), e.hasIn);
-    segment(ctx.dl, {xr - ctx.scale.exact(13.0f), y}, {xr - ctx.scale.exact(5.0f), y}, ui::mulAlpha(port, 0.6f), ctx.scale.exact(1.0f));
+    segment(ctx.dl, {xr - ctx.scale.exact(13.5f), y}, {xr - ctx.scale.exact(4.5f), y}, ui::mulAlpha(port, 0.6f), ctx.scale.exact(1.0f));
     pin(xr, e.hasOut);
   }
   if (rows_.empty())
     paint::text(ctx, f->body, IRect{l.x, l.y + m.pad, l.w, m.rowH},
-                tab_ == NodeTab::MidiEffects ? "No MIDI effects yet" : tab_ == NodeTab::Recent ? "Nothing placed yet" : "No match",
-                th->text.disabled, ui::TextAlign::Left, m.pad + ctx.scale.px(6), m.pad);
+                tab_ == NodeTab::MidiEffects ? "No MIDI effects yet" : tab_ == NodeTab::Recent ? "Nothing placed yet" : "No match", F.ink,
+                ui::TextAlign::Left, m.pad + ctx.scale.px(10), m.pad);
   ctx.dl.popClip();
-  // A scroll thumb when the list is longer than its pane.
+  // A thin scroll thumb when the list is longer than its pane.
   if (const int32_t ch = contentHeight(); ch > l.h && l.h > 0) {
     const float t0 = static_cast<float>(scroll_) / static_cast<float>(ch), t1 = static_cast<float>(scroll_ + l.h) / static_cast<float>(ch);
-    const float x = static_cast<float>(l.right()) - ctx.scale.exact(5.0f);
-    ctx.dl.addRoundedRectFilled({x, static_cast<float>(l.y) + t0 * static_cast<float>(l.h) + 2.0f, x + ctx.scale.exact(3.0f),
+    const float x = static_cast<float>(l.right()) - ctx.scale.exact(4.0f);
+    ctx.dl.addRoundedRectFilled({x, static_cast<float>(l.y) + t0 * static_cast<float>(l.h) + 2.0f, x + ctx.scale.exact(2.0f),
                                  static_cast<float>(l.y) + t1 * static_cast<float>(l.h) - 2.0f},
-                                ctx.scale.exact(1.5f), th->scrollbar.thumb);
+                                ctx.scale.exact(1.0f), ui::mulAlpha(F.frame, 0.9f));
   }
   paintPreview(ctx, pv);
 }
 
 void NodeMenu::paintPreview(ui::PaintContext& ctx, const IRect& pv) {
   const ui::Theme& th = *ctx.res.theme;
+  const auto& F = th.face;
   const ui::ThemeFonts& f = *ctx.res.uiFonts;
   ui::TextSystem& ts = *ctx.res.text;
-  const int32_t pad = ctx.scale.px(14);
+  const int32_t pad = ctx.scale.px(16);
   const IRect in{pv.x + pad, pv.y + pad, std::max(0, pv.w - 2 * pad), std::max(0, pv.h - 2 * pad)};
   ctx.dl.pushClip(pv.toRect());
   int32_t y = in.y;
-  const int32_t line = ctx.scale.px(18);
+  const int32_t line = ctx.scale.px(17);
   if (hi_ >= 0 && rows_[static_cast<size_t>(hi_)].kind == Row::Kind::Spec) {
     paint::text(ctx, f.title, IRect{in.x, y, in.w, ctx.scale.px(22)}, buf_.text(), th.text.primary, ui::TextAlign::Left);
     y += ctx.scale.px(30);
@@ -489,59 +628,87 @@ void NodeMenu::paintPreview(ui::PaintContext& ctx, const IRect& pv) {
     ctx.dl.popClip();
     return;
   }
-  // Name.
+  // Name, then the kind chip (an outlined pill in the category's tint, its glyph) and "N params, M in".
   paint::text(ctx, f.title, IRect{in.x, y, in.w, ctx.scale.px(22)}, e->name, th.text.primary, ui::TextAlign::Left);
   y += ctx.scale.px(28);
-  // Kind chip, then "N params, M in".
   {
-    const int32_t cw = ts.measure(f.small, e->chip) + ctx.scale.px(12);
-    const IRect chip{in.x, y, cw, ctx.scale.px(18)};
     const Rgba tint = e->category == NodeCategory::Atoms         ? th.circuit.wireAudio
-                      : e->category == NodeCategory::MetaModules ? th.face.signal
+                      : e->category == NodeCategory::MetaModules ? F.signal
                       : e->category == NodeCategory::Visualisers ? th.circuit.wireMod
                       : e->category == NodeCategory::Instruments ? th.circuit.wireNotes
-                                                                 : th.accent.primary;
-    paint::box(ctx.dl, chip, ctx.scale.exact(9.0f), ui::mulAlpha(tint, 0.22f), ui::mulAlpha(tint, 0.8f));
-    paint::text(ctx, f.small, chip, e->chip, tint, ui::TextAlign::Center);
-    const std::string counts = std::to_string(e->params.size()) + (e->params.size() == 1 ? " param, " : " params, ") +
-                               std::to_string(e->inputs.size()) + " in";
-    paint::text(ctx, f.small, IRect{chip.right() + ctx.scale.px(10), y, in.right() - chip.right() - ctx.scale.px(10), chip.h}, counts,
-                th.text.secondary, ui::TextAlign::Left);
+                                                                 : F.value;
+    const int32_t cw = ts.measure(f.small, e->chip) + ctx.scale.px(30);
+    const IRect chip{in.x, y, cw, ctx.scale.px(18)};
+    ctx.dl.addRoundedRectFilled(chip.toRect(), ctx.scale.exact(9.0f), ui::mulAlpha(tint, 0.12f));
+    ctx.dl.addRoundedRectStroke(chip.toRect(), ctx.scale.exact(9.0f), ui::mulAlpha(tint, 0.7f), std::max(1.0f, std::round(ctx.scale.factor)));
+    glyph(ctx.dl, tabOf(e->category), {static_cast<float>(chip.x) + ctx.scale.exact(11.0f), static_cast<float>(chip.y + chip.h / 2)},
+          ctx.scale.exact(9.0f), tint, std::max(1.0f, ctx.scale.exact(1.1f)));
+    paint::text(ctx, f.small, chip, e->chip, tint, ui::TextAlign::Left, ctx.scale.px(20), ctx.scale.px(6));
+    const std::string counts = std::to_string(e->params.size()) + (e->params.size() == 1 ? " param  \xC2\xB7  " : " params  \xC2\xB7  ") +
+                               std::to_string(e->inputs.size()) + " in  \xC2\xB7  " + std::to_string(e->outputs.size()) + " out";
+    paint::text(ctx, f.small, IRect{chip.right() + ctx.scale.px(10), y, in.right() - chip.right() - ctx.scale.px(10), chip.h}, counts, F.ink,
+                ui::TextAlign::Left);
     y += chip.h + ctx.scale.px(12);
   }
   // Description.
   for (const std::string& ln : wrap(ts, f.body, e->description, in.w)) {
     if (y + line > in.bottom()) break;
-    paint::text(ctx, f.body, IRect{in.x, y, in.w, line}, ln, th.text.primary, ui::TextAlign::Left);
+    paint::text(ctx, f.body, IRect{in.x, y, in.w, line}, ln, th.text.secondary, ui::TextAlign::Left);
     y += line;
   }
-  y += ctx.scale.px(10);
-  // Ports.
-  auto label = [&](std::string_view s) {
-    paint::text(ctx, f.small, IRect{in.x, y, in.w, ctx.scale.px(16)}, s, th.text.disabled, ui::TextAlign::Left);
-    y += ctx.scale.px(18);
-  };
-  label("PORTS");
+  y += ctx.scale.px(12);
+  // The ports as a mini block: its inputs' jacks on the left, its outputs' on the right, each with a short cable in its
+  // signal's colour (as the cables plug into the blocks), the names inside.
   {
-    const std::string ins = "in   " + joinPorts(e->inputs), outs = "out  " + joinPorts(e->outputs);
-    paint::text(ctx, f.small, IRect{in.x, y, in.w, ctx.scale.px(16)}, ins, th.text.secondary, ui::TextAlign::Left);
-    y += ctx.scale.px(16);
-    paint::text(ctx, f.small, IRect{in.x, y, in.w, ctx.scale.px(16)}, outs, th.text.secondary, ui::TextAlign::Left);
-    y += ctx.scale.px(24);
+    const size_t rowsN = std::max<size_t>(1, std::max(e->inputs.size(), e->outputs.size()));
+    const int32_t pitch = ctx.scale.px(16);
+    const int32_t bw = std::min(in.w - ctx.scale.px(60), ctx.scale.px(220));
+    const int32_t bh = static_cast<int32_t>(rowsN) * pitch + ctx.scale.px(12);
+    if (y + bh <= in.bottom() && bw > ctx.scale.px(80)) {
+      const IRect blk{in.x + (in.w - bw) / 2, y, bw, bh};
+      ctx.dl.addRoundedRectFilled(blk.toRect(), ctx.scale.exact(6.0f), F.hub);
+      ctx.dl.addRoundedRectStroke(blk.toRect(), ctx.scale.exact(6.0f), ui::mulAlpha(F.frame, 0.8f), std::max(1.0f, std::round(ctx.scale.factor)));
+      const float jr = ctx.scale.exact(4.0f), stub = ctx.scale.exact(22.0f), cwid = ctx.scale.exact(3.0f);
+      auto colourOf = [&](const std::string& name, bool main) {
+        if (name == "notes") return th.circuit.wireNotes;
+        return main ? th.circuit.wireAudio : th.circuit.wireMod;
+      };
+      auto side = [&](const std::vector<std::string>& ports, bool left) {
+        for (size_t k = 0; k < ports.size(); ++k) {
+          const float py = static_cast<float>(blk.y + ctx.scale.px(6) + static_cast<int32_t>(k) * pitch + pitch / 2);
+          const float px = left ? static_cast<float>(blk.x) : static_cast<float>(blk.right());
+          const Rgba col = colourOf(ports[k], k == 0);
+          const float sx = left ? px - stub : px + stub;
+          // The cable: a short tube (a darker rim, the colour, a highlight) fading out away from the jack.
+          ctx.dl.addRectFilledMultiColor({std::min(px, sx), py - cwid * 0.5f, std::max(px, sx), py + cwid * 0.5f},
+                                         left ? ui::withAlpha(col, 0) : col, left ? col : ui::withAlpha(col, 0),
+                                         left ? col : ui::withAlpha(col, 0), left ? ui::withAlpha(col, 0) : col);
+          jack(ctx.dl, {px, py}, jr, col);
+          const IRect lab{left ? blk.x + ctx.scale.px(10) : blk.x + blk.w / 2, static_cast<int32_t>(py) - pitch / 2, blk.w / 2 - ctx.scale.px(12), pitch};
+          paint::text(ctx, f.small, lab, ports[k], th.text.secondary, left ? ui::TextAlign::Left : ui::TextAlign::Right);
+        }
+      };
+      side(e->inputs, true);
+      side(e->outputs, false);
+      if (e->inputs.empty() && e->outputs.empty())
+        paint::text(ctx, f.small, blk, "no signal ports", F.ink, ui::TextAlign::Center);
+      y += bh + ctx.scale.px(16);
+    }
   }
   if (!e->params.empty() && y + ctx.scale.px(18) < in.bottom()) {
-    label("PARAMETERS");
-    const int32_t colW = (in.w - ctx.scale.px(12)) / 2;
+    paint::text(ctx, f.small, IRect{in.x, y, in.w, ctx.scale.px(16)}, "PARAMETERS", F.ink, ui::TextAlign::Left);
+    y += ctx.scale.px(20);
+    const int32_t colW = (in.w - ctx.scale.px(16)) / 2;
     const int32_t rowH = ctx.scale.px(17);
     const size_t half = (e->params.size() + 1) / 2;
     for (size_t k = 0; k < e->params.size(); ++k) {
       const int32_t col = k < half ? 0 : 1;
       const int32_t ry = y + static_cast<int32_t>(col == 0 ? k : k - half) * rowH;
       if (ry + rowH > in.bottom()) continue;
-      const IRect cell{in.x + col * (colW + ctx.scale.px(12)), ry, colW, rowH};
+      const IRect cell{in.x + col * (colW + ctx.scale.px(16)), ry, colW, rowH};
       const int32_t vw = std::min(colW / 2, ts.measure(f.numeric, e->params[k].value) + ctx.scale.px(2));
       paint::text(ctx, f.small, cell, e->params[k].name, th.text.secondary, ui::TextAlign::Left, 0, vw + ctx.scale.px(6));
-      paint::text(ctx, f.numeric, cell, e->params[k].value, th.text.primary, ui::TextAlign::Right);
+      paint::text(ctx, f.numeric, cell, e->params[k].value, F.value, ui::TextAlign::Right);
     }
   }
   ctx.dl.popClip();
@@ -552,8 +719,11 @@ NodeMenu* openNodeMenu(ui::Widget& from, Vec2 at, NodeMenuOptions options) {
   if (layer == nullptr || !options.catalog) return nullptr;
   auto onClosed = std::move(options.onClosed);
   ui::OverlayOptions o;
-  o.anchor = ui::OverlayLayer::anchorRect(from, {static_cast<int32_t>(std::lround(at.x)), static_cast<int32_t>(std::lround(at.y)), 0, 0});
-  o.placement = ui::Placement::AtPoint;
+  // TX.node-menu-fix1: just right of and below the pointer (left of it when there is no room on the right), so the
+  // point where the node will be placed (marked by the opener) and a cable dropped there stay in sight.
+  const int32_t g = from.tree() != nullptr ? from.tree()->uiScale().px(NodeMenu::kPointerGap) : static_cast<int32_t>(NodeMenu::kPointerGap);
+  o.anchor = ui::OverlayLayer::anchorRect(from, {static_cast<int32_t>(std::lround(at.x)) - g, static_cast<int32_t>(std::lround(at.y)) + g, 2 * g, 0});
+  o.placement = ui::Placement::Right;
   o.takeFocus = true;
   o.onClosed = std::move(onClosed);
   auto menu = std::make_unique<NodeMenu>(std::move(options));

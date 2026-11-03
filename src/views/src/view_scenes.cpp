@@ -1736,6 +1736,7 @@ Status setupProjectNodeMenu(Shell& shell) {
   circuit::NodeMenu* m = v->openSpawnMenu({static_cast<float>(r.x) + static_cast<float>(r.w) * 0.22f, static_cast<float>(r.y) + static_cast<float>(r.h) * 0.18f});
   if (m == nullptr) return Error{ErrorCode::NotFound, "project-node-menu: no overlay layer", {}};
   m->setQuery("filter");
+  m->finishOpening();  // TX.node-menu-fix1: shown as it is after its open animation
   shell.tree().layoutNow();
   return Ok{};
 }

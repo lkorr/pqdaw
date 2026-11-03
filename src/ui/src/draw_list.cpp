@@ -259,6 +259,15 @@ void DrawList::addQuad(Vec2 p0, Vec2 p2, Vec2 uv0, Vec2 uv2, Rgba c0, Rgba c1, R
   s.i[5] = b + 3;
 }
 
+void DrawList::fadeSince(uint32_t first, float alpha, Vec2 origin, float scale) noexcept {
+  const uint32_t end = vtxCurrentIdx();
+  if (first >= end || (alpha >= 1.0f && scale == 1.0f)) return;
+  for (Vertex* v = vtx_.data() + first; v != vtx_.data() + end; ++v) {
+    if (alpha < 1.0f) v->col = mulAlpha(v->col, alpha);
+    v->pos = {origin.x + (v->pos.x - origin.x) * scale, origin.y + (v->pos.y - origin.y) * scale};
+  }
+}
+
 void DrawList::addRectFilled(const Rect& r, Rgba col) {
   if (r.x1 <= r.x0 || r.y1 <= r.y0) return;
   addQuad({r.x0, r.y0}, {r.x1, r.y1}, atlas_.white, atlas_.white, col, col, col, col);

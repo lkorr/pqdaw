@@ -237,6 +237,12 @@ public:
   // scale 1 and a whole-pixel offset the pixels are the same as painting it here directly. `src` must not be this list.
   void appendTransformed(const DrawList& src, Vec2 offset, float scale);
 
+  // TX.node-menu-fix1: every vertex written since vertex `first` (vtxCurrentIdx() before them): its alpha times
+  // `alpha` (0 … 1) and its position scaled by `scale` about `origin` — a group of primitives faded and grown together
+  // (a popup's open animation). Clip rects are not scaled, and overlaps inside the group fade each (not as one
+  // layer): meant for a brief transition.
+  void fadeSince(uint32_t first, float alpha, Vec2 origin = {0.0f, 0.0f}, float scale = 1.0f) noexcept;
+
   // Segments per quarter circle used for a corner of the given radius (max chord error ≈ 0.2 px).
   static uint32_t cornerSegments(float radius) noexcept;
   // Points around a full circle of the given radius (4 · cornerSegments).
