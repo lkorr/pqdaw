@@ -271,6 +271,26 @@ TEST_CASE("user devices: resolution carries NodeIds, renames apart, keeps the la
   for (pq::graph::NodeIndex v = 0; v < p2.nodeCount(); ++v) CHECK(p2.node(v).id == ids->patches[0].node(v).id);
 }
 
+TEST_CASE("user devices (TX.node-menu): a device that names no stock patch resolves from its text alone") {
+  auto lib = freshLibrary();
+  Device d;
+  d.id = DeviceId{41};
+  d.patch = "Tanh";  // no stock device of that name: the node menu's free device of one atom
+  d.source = std::make_shared<const UserPatch>(UserPatch{"patch Tanh {\n  in x : audio\n  out y : audio\n  y = tanh(x)\n}\n", nullptr});
+  auto r = lib->resolve(d);
+  REQUIRE((r != nullptr));
+  CHECK(r->error.empty());
+  REQUIRE((r->graph != nullptr));
+  CHECK(r->graph->root.rfind("Tanh__u41_", 0) == 0);
+  CHECK(r->info.kind == DeviceKind::AudioEffect);
+  CHECK(r->info.name == "Tanh");
+  // A text without the named patch is an error.
+  Device bad = d;
+  bad.id = DeviceId{42};
+  bad.patch = "Other";
+  CHECK_FALSE(lib->resolve(bad)->error.empty());
+}
+
 TEST_CASE("user devices: lowering plays the device's own patch; only its track changes") {
   auto lib = freshLibrary();
   Two t;
