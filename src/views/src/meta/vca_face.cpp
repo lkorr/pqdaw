@@ -56,16 +56,18 @@ constexpr float deg(float d) noexcept { return d * kPi / 180.0f; }
 constexpr float kW = 120.0f, kH = 120.0f;
 constexpr Vec2 kO{60.0f, 60.0f};                   // the body's centre
 constexpr float kBodyR = 58.0f;
-constexpr Vec2 kC{60.0f, 63.0f};                   // the knob's centre
-constexpr float kRingR = 29.0f, kRingW = 3.5f;     // the travel track
-constexpr float kDialR = 25.5f;                    // the dial
-constexpr float kWedgeR = 23.0f;                   // the pie wedge
-constexpr float kHubR = 4.0f;
+constexpr Vec2 kC{60.0f, 61.0f};                   // the knob's centre
+// The knob is most of the circle (the user 2026-11-03: "knob should be the vast majority of the circular space"): the
+// track's outer edge with its end ticks reaches ≈ 0.9 of the body's radius.
+constexpr float kRingR = 46.5f, kRingW = 4.5f;     // the travel track
+constexpr float kDialR = 41.5f;                    // the dial
+constexpr float kWedgeR = 38.5f;                   // the pie wedge
+constexpr float kHubR = 5.0f;
 constexpr float kA0 = 120.0f, kSweep = 300.0f;     // degrees: p = 0 at 7 o'clock, clockwise to 5 o'clock
-constexpr float kReadoutY = 20.0f, kReadoutPx = 10.5f;
-constexpr Rect kReadout{34.0f, 12.0f, 86.0f, 28.0f};
-constexpr Vec2 kChev{60.0f, 100.0f};               // the chevron's centre (in the track's gap at 6 o'clock)
-constexpr Rect kChevRect{49.0f, 93.0f, 71.0f, 109.0f};
+constexpr float kReadoutY = 37.0f, kReadoutPx = 10.5f;  // inside the dial, above the hub, on a dark pill
+constexpr Rect kReadout{37.0f, 29.5f, 83.0f, 44.5f};
+constexpr Vec2 kChev{60.0f, 106.0f};               // the chevron's centre (in the track's gap at 6 o'clock)
+constexpr Rect kChevRect{50.0f, 100.0f, 70.0f, 112.0f};
 // The floating panel: kPopH tall from its top (under the face, or over it), its rows from there.
 constexpr float kPopH = 80.0f, kPopGap = 6.0f, kPopOverTop = 38.0f;
 constexpr float kRangeDy = 17.0f, kRangePx = 8.0f;
@@ -211,7 +213,6 @@ public:
     p.arc(kC, kRingR, angleOf(0.0), angleOf(1.0), kRingW + 1.5f, hovered_ == kKnob || drag_ == kKnob ? th.face.hover : 0,
           ui::LineCap::Round);
     const bool readoutHot = hovered_ == kValueText || edit_ == kValueText;
-    p.roundedRect(kReadout, 3.0f, edit_ == kValueText ? th.face.track : (readoutHot ? th.face.hover : 0));
 
     // ---- the knob ----
     // The fine zone (Log): a brighter band of the track, a tick at each end (the only ticks besides the end stops).
@@ -237,7 +238,9 @@ public:
     p.disc(kC, kHubR, th.face.hub);
     p.ring(kC, kHubR - 0.5f, 1.0f, ui::mulAlpha(th.face.handle, 0.8f));
 
-    // ---- the readout (at the top) ----
+    // ---- the readout (at the top, inside the dial: a dark pill over the wedge and the pointer) ----
+    p.roundedRect(kReadout, 4.0f, ui::mulAlpha(th.face.body, 0.82f));
+    p.roundedRect(kReadout, 4.0f, edit_ == kValueText ? th.face.track : (readoutHot ? th.face.hover : 0));
     p.text({kC.x, kReadoutY}, edit_ == kValueText ? editShown() : formatValue(value_), kReadoutPx,
            edit_ == kValueText ? th.face.handle : accent);
 
@@ -342,8 +345,8 @@ public:
     if (l.x < 0.0f || l.y < 0.0f || l.x > kW || l.y > kH) return kNone;
     const float dx = l.x - kC.x, dy = l.y - kC.y;
     if (inside(kChevRect, l, std::min(slack, 2.0f))) return kChevron;
+    if (inside(kReadout, l, std::min(slack, 2.0f))) return kValueText;  // inside the dial: before the knob
     if (std::sqrt(dx * dx + dy * dy) <= kRingR + kRingW + 2.0f + slack * 0.5f) return kKnob;
-    if (inside(kReadout, l, std::min(slack, 2.0f))) return kValueText;
     return kFrame;
   }
 

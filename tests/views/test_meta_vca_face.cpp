@@ -218,16 +218,16 @@ uint32_t rigW(double zoom) { return static_cast<uint32_t>(std::max(96.0, std::ce
 uint32_t rigH(double zoom) { return static_cast<uint32_t>(std::max(96.0, std::ceil(120.0 * zoom + 48.0))); }
 
 // The face's geometry (vca_face.cpp's layout), for gestures. TX.orbit-ports: a circle (120 x 120) — the readout at the
-// top, the knob, the chevron under it; the range, the curve box and the presets in the floating panel the chevron opens
-// under the face (its top at 126).
-constexpr float kCx = 60.0f, kCy = 63.0f;
-constexpr float kReadoutY = 20.0f, kChevX = 60.0f, kChevY = 100.0f;
+// top (inside the dial since TX.vca-knob: the knob fills most of the circle), the knob, the chevron under it; the range,
+// the curve box and the presets in the floating panel the chevron opens under the face (its top at 126).
+constexpr float kCx = 60.0f, kCy = 61.0f;
+constexpr float kReadoutY = 37.0f, kChevX = 60.0f, kChevY = 106.0f;
 constexpr float kPopTop = 126.0f;
 constexpr float kMinX = 24.0f, kMaxX = 96.0f, kRangeY = kPopTop + 17.0f;
 constexpr float kBoxX = 60.0f, kBoxY = kPopTop + 43.0f;
 float chipX(int i) { return 15.0f + 24.0f * static_cast<float>(i) + 9.0f; }
 constexpr float kChipY = kPopTop + 68.0f;
-constexpr float kKnobExtent = 58.0f;  // 2 × the track's radius: a drag's travel per px
+constexpr float kKnobExtent = 93.0f;  // 2 × the track's radius: a drag's travel per px
 
 }  // namespace
 
