@@ -519,7 +519,12 @@ std::vector<Dut> duts() {
                  return v;
                },
                metaParams("vca"),
-               {Config{"Log curve", {}, {}}, Config{"Bend curve", {{"curve", static_cast<double>(meta::VcaCurve::Bend)}}, {}}}});
+               // TX.vca-knob: a marker moves the curve only between its neighbours, so the knob sits in each pair's
+               // segments once (−100 … −10, −1 … +1 near 0, +10 … +100 on the default range).
+               {Config{"Log curve", {}, {}}, Config{"Bend curve", {{"curve", static_cast<double>(meta::VcaCurve::Bend)}}, {}},
+                Config{"Log curve, knob between -100 and -10", {}, {{"value", 0.19}}},
+                Config{"Log curve, knob near 0", {}, {{"value", 0.53}}},  // (at 0 the VCA is silent)
+                Config{"Log curve, knob between +10 and +100", {}, {{"value", 0.81}}}}});
   return d;
 }
 
