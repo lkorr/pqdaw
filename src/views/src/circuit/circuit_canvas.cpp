@@ -459,7 +459,8 @@ struct CircuitCanvas::Impl final : FaceHost {
         j.at = {(pin.x - n.x) / h.scale, (pin.y - n.y) / h.scale};
         j.input = pin.input;
         j.connected = pin.connected;
-        j.visible = pin.visible;
+        j.visible = pin.visible && !pin.orbit;  // TX.orbit-ports: the canvas draws an orbiting port (off the face)
+
         if (pin.label != UINT32_MAX) j.name = scene->strings[pin.label];
         h.jacks.push_back(j);
       }
@@ -490,9 +491,10 @@ struct CircuitCanvas::Impl final : FaceHost {
     }
   }
 
-  // The face whose block is under a device point (-1: none).
+  // The face whose block is under a device point (-1: none). TX.orbit-ports: a face's floating panel first (over all).
   int32_t faceUnder(Vec2 d) const noexcept {
     if (!facesShown || !scene || !self.rect().contains(d)) return -1;
+    if (const int32_t p = popupUnder(d); p >= 0) return p;
     const Point2 w = self.toWorld(d);
     // TX.block-drag: a lifted face is where it is drawn (over the others: first).
     for (int lift = 1; lift >= 0; --lift) {
@@ -720,7 +722,11 @@ struct CircuitCanvas::Impl final : FaceHost {
   }
   // The key focus leaves face `i` (a press elsewhere, a new scene without it).
   void blurFace(int32_t i) {
-    if (i >= 0 && static_cast<size_t>(i) < faces.size()) faces[static_cast<size_t>(i)].face->focusLost();
+    if (i < 0 || static_cast<size_t>(i) >= faces.size()) return;
+    Face& f = *faces[static_cast<size_t>(i)].face;
+    const bool popup = f.popupRect().has_value();
+    f.focusLost();
+    if (popup && !f.popupRect()) self.markDirty();  // TX.orbit-ports: its floating panel closed (a press elsewhere)
   }
 
   // ---- TX.cables: hanging cables ----
@@ -827,6 +833,10 @@ struct CircuitCanvas::Impl final : FaceHost {
     a = c.restA;
     b = c.restB;
     const SceneWire& sw = scene->wires[c.wire];
+    // TX.orbit-ports: an end on an orbiting port is where the port is now (its slide, its block's drag offset).
+    const int32_t oa = orbitAt(sw.fromPin), ob = orbitAt(sw.toPin);
+    if (oa >= 0) a = orbitPos(orbits[static_cast<size_t>(oa)], true);
+    if (ob >= 0) b = orbitPos(orbits[static_cast<size_t>(ob)], true);
     if (sw.control != UINT32_MAX && c.toNode != UINT32_MAX && faced(c.toNode)) {
       const Hosted& h = faces[static_cast<size_t>(faceOf[c.toNode])];
       if (const std::optional<ControlAnchor> an = h.face->controlAnchor(scene->strings[sw.control])) {
@@ -838,10 +848,252 @@ struct CircuitCanvas::Impl final : FaceHost {
       }
     }
     if (!dragNodes.empty()) {
-      if (cableNodeDragged(c.fromNode)) a = {a.x + dragOffset.x, a.y + dragOffset.y};
-      if (cableNodeDragged(c.toNode)) b = {b.x + dragOffset.x, b.y + dragOffset.y};
+      if (oa < 0 && cableNodeDragged(c.fromNode)) a = {a.x + dragOffset.x, a.y + dragOffset.y};
+      if (ob < 0 && cableNodeDragged(c.toNode)) b = {b.x + dragOffset.x, b.y + dragOffset.y};
     }
   }
+
+  // ---- TX.orbit-ports: orbiting main ports (pq/views/circuit/orbit.h) ----
+  // Every scene pin with ScenePin::orbit: its angle now (`cur`, drawn and plugged there) eases toward `target` (the
+  // scene's settled angle, or the live solve while blocks are lifted). Only the ports whose cable ends moved are solved
+  // again; frames run only while a port slides.
+  struct OrbitRef {
+    uint32_t pin = 0, node = 0;
+    float cur = 0.0f, target = 0.0f;
+    bool pinned = false;
+    bool held = false;      // the host holds it at `heldAngle` (a port dragged along the edge: setPortAngle)
+    float heldAngle = 0.0f;
+    uint32_t firstEnd = 0, endCount = 0;  // into orbitEnds: the cables (cables[] index) that end on it
+  };
+  std::vector<OrbitRef> orbits;
+  std::vector<int32_t> orbitOf;      // per scene pin: index into orbits, or -1
+  std::vector<uint32_t> orbitEnds;   // per orbit, its cables
+  std::vector<uint32_t> orbitLive;   // TX.block-drag: the nodes whose ports a lift moves (solved per move), sorted
+  std::vector<Point2> orbitScratch, orbitFixed;
+  std::vector<std::pair<uint64_t, float>> orbitWas;  // syncOrbits scratch
+  double orbitLast = -1.0;
+  bool orbitAnimated = true;         // follows setCablesAnimated (tests / goldens: at once)
+  uint64_t orbitSolves = 0;
+  std::shared_ptr<const CircuitScene> scene0;  // the scene the orbits were built for (their keys across a new one)
+
+  int32_t orbitAt(uint32_t pin) const noexcept { return pin < orbitOf.size() ? orbitOf[pin] : -1; }
+  // Where orbit o is drawn now (shifted: by its block's lift offset).
+  Point2 orbitPos(const OrbitRef& o, bool shifted) const noexcept {
+    const SceneNode& n = scene->nodes[o.node];
+    const Point2 sh = shifted ? shiftOf(o.node) : Point2{0.0f, 0.0f};
+    return orbitPoint(n.outline.shifted(sh.x, sh.y), o.cur, nodeScale(o.node));
+  }
+  // A scene pin where it is now (an orbiting one: on its outline; unshifted).
+  Point2 pinXY(uint32_t p) const noexcept {
+    const int32_t o = orbitAt(p);
+    if (o >= 0) return orbitPos(orbits[static_cast<size_t>(o)], false);
+    return {scene->pins[p].x, scene->pins[p].y};
+  }
+  bool orbitsMoving() const noexcept {
+    for (const OrbitRef& o : orbits)
+      if (o.cur != o.target) return true;
+    return false;
+  }
+
+  // The scene's orbiting pins (a kept port, by its key, slides on from where it was drawn). Before syncCables.
+  void syncOrbits() {
+    orbitWas.clear();
+    for (const OrbitRef& o : orbits)
+      if (scene0 && o.pin < scene0->pins.size()) orbitWas.emplace_back(scene0->pins[o.pin].orbitKey, o.cur);
+    std::sort(orbitWas.begin(), orbitWas.end());
+    orbits.clear();
+    orbitEnds.clear();
+    orbitLive.clear();
+    orbitOf.assign(scene ? scene->pins.size() : 0, -1);
+    for (uint32_t p = 0; scene && p < scene->pins.size(); ++p) {
+      const ScenePin& pin = scene->pins[p];
+      if (!pin.orbit || pin.node >= scene->nodes.size() || !scene->nodes[pin.node].outline.valid() || scene->nodes[pin.node].hidden) continue;
+      OrbitRef o;
+      o.pin = p;
+      o.node = pin.node;
+      o.pinned = pin.pinned;
+      o.target = o.cur = pin.angle;
+      if (orbitAnimated && pin.orbitKey != 0) {
+        const auto it = std::lower_bound(orbitWas.begin(), orbitWas.end(), pin.orbitKey,
+                                         [](const std::pair<uint64_t, float>& a, uint64_t k) { return a.first < k; });
+        if (it != orbitWas.end() && it->first == pin.orbitKey) o.cur = it->second;
+      }
+      orbitOf[p] = static_cast<int32_t>(orbits.size());
+      orbits.push_back(o);
+    }
+    scene0 = scene;
+    orbitLast = -1.0;
+  }
+  // After syncCables: each orbit's cables.
+  void linkOrbits() {
+    orbitEnds.clear();
+    for (OrbitRef& o : orbits) o.firstEnd = o.endCount = 0;
+    for (uint32_t i = 0; i < cables.size(); ++i) {
+      const SceneWire& sw = scene->wires[cables[i].wire];
+      for (const uint32_t p : {sw.fromPin, sw.toPin})
+        if (const int32_t o = orbitAt(p); o >= 0) ++orbits[static_cast<size_t>(o)].firstEnd;  // (a count first)
+    }
+    uint32_t at = 0;
+    for (OrbitRef& o : orbits) {
+      const uint32_t n = o.firstEnd;
+      o.firstEnd = at;
+      at += n;
+    }
+    orbitEnds.assign(at, 0);
+    for (uint32_t i = 0; i < cables.size(); ++i) {
+      const SceneWire& sw = scene->wires[cables[i].wire];
+      for (const uint32_t p : {sw.fromPin, sw.toPin})
+        if (const int32_t o = orbitAt(p); o >= 0) {
+          OrbitRef& r = orbits[static_cast<size_t>(o)];
+          orbitEnds[r.firstEnd + r.endCount++] = i;
+        }
+    }
+    if (orbitsMoving()) self.requestFrame();
+  }
+  // Solves node v's orbiting ports again (the layout's rule, where the blocks are drawn now: lifted ones at their
+  // offset): their targets. Returns whether one changed.
+  bool solveNode(uint32_t v) {
+    const SceneNode& n = scene->nodes[v];
+    int32_t idx[2] = {-1, -1};  // input, output
+    for (uint32_t k = 0; k < n.pinCount; ++k)
+      if (const int32_t o = orbitAt(n.firstPin + k); o >= 0) idx[scene->pins[n.firstPin + k].input ? 0 : 1] = o;
+    if (idx[0] < 0 && idx[1] < 0) return false;
+    ++orbitSolves;
+    const Point2 sh = shiftOf(v);
+    const Outline ol = n.outline.shifted(sh.x, sh.y);
+    orbitScratch.clear();
+    orbitFixed.clear();
+    size_t split[3] = {0, 0, 0};
+    for (int k = 0; k < 2; ++k) {
+      if (idx[k] >= 0) {
+        const OrbitRef& o = orbits[static_cast<size_t>(idx[k])];
+        for (uint32_t e = 0; e < o.endCount; ++e) {
+          const CableRef& c = cables[orbitEnds[o.firstEnd + e]];
+          const SceneWire& sw = scene->wires[c.wire];
+          const bool fromHere = sw.fromPin == o.pin;
+          const uint32_t other = fromHere ? sw.toPin : sw.fromPin;
+          const uint32_t on = fromHere ? c.toNode : c.fromNode;
+          const Point2 s2 = shiftOf(on);
+          Point2 t = fromHere ? c.restB : c.restA;
+          // The other end orbits too: toward its block's centre (as the layout does: no iteration between them).
+          if (orbitAt(other) >= 0 && on < scene->nodes.size()) t = scene->nodes[on].outline.centre();
+          orbitScratch.push_back({t.x + s2.x, t.y + s2.y});
+        }
+      }
+      split[k + 1] = orbitScratch.size();
+    }
+    for (uint32_t k = 0; k < n.pinCount; ++k) {
+      const ScenePin& pin = scene->pins[n.firstPin + k];
+      if (pin.orbit || !pin.visible) continue;
+      orbitFixed.push_back({pin.x + sh.x, pin.y + sh.y});
+    }
+    const std::span<const Point2> targets[2] = {std::span<const Point2>(orbitScratch.data() + split[0], split[1] - split[0]),
+                                                std::span<const Point2>(orbitScratch.data() + split[1], split[2] - split[1])};
+    bool on[2] = {false, false}, pinned[2] = {false, false};
+    float angles[2] = {0.0f, 0.0f};
+    for (int k = 0; k < 2; ++k) {
+      on[k] = idx[k] >= 0;
+      if (!on[k]) continue;
+      const OrbitRef& o = orbits[static_cast<size_t>(idx[k])];
+      pinned[k] = o.pinned || o.held;
+      angles[k] = o.held ? o.heldAngle : scene->pins[o.pin].angle;
+    }
+    solveOrbits(ol, nodeScale(v), on, pinned, targets, orbitFixed, angles);
+    bool changed = false;
+    for (int k = 0; k < 2; ++k) {
+      if (!on[k]) continue;
+      OrbitRef& o = orbits[static_cast<size_t>(idx[k])];
+      if (o.target == angles[k]) continue;
+      o.target = angles[k];
+      changed = true;
+    }
+    return changed;
+  }
+  // The nodes a lift moves the ports of: the lifted blocks' and those with a cable to one (orbitLive).
+  void buildOrbitLive() {
+    orbitLive.clear();
+    if (orbits.empty() || dragNodes.empty()) return;
+    for (const OrbitRef& o : orbits) {
+      bool touched = lifted(o.node);
+      for (uint32_t e = 0; !touched && e < o.endCount; ++e) {
+        const CableRef& c = cables[orbitEnds[o.firstEnd + e]];
+        touched = lifted(c.fromNode) || lifted(c.toNode);
+      }
+      if (touched) orbitLive.push_back(o.node);
+    }
+    std::sort(orbitLive.begin(), orbitLive.end());
+    orbitLive.erase(std::unique(orbitLive.begin(), orbitLive.end()), orbitLive.end());
+  }
+  // The ports of `nodes` toward their (new) targets: animated (frames run), or at once (orbitAnimated off). The caller
+  // refreshes the cables' ends.
+  void retarget(std::span<const uint32_t> nodes) {
+    bool any = false;
+    for (const uint32_t v : nodes) any = solveNode(v) || any;
+    if (!any) return;
+    if (orbitAnimated) {
+      self.requestFrame();
+      return;
+    }
+    for (OrbitRef& o : orbits)
+      if (o.cur != o.target) {
+        damagePort(o);
+        o.cur = o.target;
+        damagePort(o);
+      }
+  }
+  // Damages a port's drawn rect (with its glow) where it is now.
+  void damagePort(const OrbitRef& o) {
+    ui::UiTree* tr = self.tree();
+    if (tr == nullptr || !scene) return;
+    const Point2 p = orbitPos(o, true);
+    const float r = (kOrbitPortR * 2.4f) * nodeScale(o.node) * s() + 3.0f * uiScale();
+    const ui::IRect cr = self.rect();
+    const ui::Rect d{std::max(devX(p.x) - r, static_cast<float>(cr.x)), std::max(devY(p.y) - r, static_cast<float>(cr.y)),
+                     std::min(devX(p.x) + r, static_cast<float>(cr.right())), std::min(devY(p.y) + r, static_cast<float>(cr.bottom()))};
+    if (d.x1 > d.x0 && d.y1 > d.y0) tr->damage().add(d);
+  }
+  // Advances the slides to frame time `now` (onFrame): the ports that moved, their cables' ends (they swing).
+  void stepOrbits(double now) {
+    if (!orbitsMoving()) {
+      orbitLast = -1.0;
+      return;
+    }
+    const double dt = orbitLast < 0.0 ? 1.0 / 60.0 : std::clamp(now - orbitLast, 0.0, 0.1);
+    orbitLast = now;
+    const float k = static_cast<float>(1.0 - std::exp(-dt / kOrbitEaseSeconds));
+    for (OrbitRef& o : orbits) {
+      if (o.cur == o.target) continue;
+      damagePort(o);
+      const float d = angleDelta(o.cur, o.target);
+      o.cur = std::fabs(d) <= kOrbitSnap || lod() == Lod::Far ? o.target : wrapAngle(o.cur + d * k);
+      if (std::fabs(angleDelta(o.cur, o.target)) <= kOrbitSnap) o.cur = o.target;
+      damagePort(o);
+    }
+    refreshOrbitCables();
+    if (orbitsMoving()) self.requestFrame();
+    else orbitLast = -1.0;
+  }
+  // The cables on orbiting ports to their ports' places now (a cable whose ends did not move is skipped).
+  void refreshOrbitCables() {
+    bool moved = false;
+    for (const OrbitRef& o : orbits)
+      for (uint32_t e = 0; e < o.endCount; ++e) {
+        const uint32_t i = orbitEnds[o.firstEnd + e];
+        Point2 a, b;
+        cableEnds(cables[i], a, b);
+        if (std::max({std::fabs(a.x - sim.endA(i).x), std::fabs(a.y - sim.endA(i).y), std::fabs(b.x - sim.endB(i).x),
+                      std::fabs(b.y - sim.endB(i).y)}) < 1e-3f)
+          continue;
+        sim.setEnds(i, a, b, sim.animated());
+        damageCable(i);
+        moved = true;
+      }
+    if (moved) {
+      cgVersion = ~0ull;
+      cableMoved();
+    }
+  }
+
 
   // The scene's cables into the sim (kept connections keep their motion and swing to new ends).
   void syncCables() {
@@ -1158,6 +1410,23 @@ struct CircuitCanvas::Impl final : FaceHost {
 
   // `which`: −1 every cable, 0 those not touching a lifted block, 1 those that do (and the loose cable).
   void paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w1, int8_t which = -1);
+  // TX.orbit-ports: the orbiting ports of the pass's nodes (showNode) — an input a hollow ring, an output a filled disc
+  // with a bright core and a soft glow, the same size (the block's scale), in their cables' colour.
+  void paintPorts(ui::PaintContext& ctx, Point2 w0, Point2 w1);
+  // TX.orbit-ports: the faces' floating panels (Face::popupRect), last.
+  void paintPopups(ui::PaintContext& ctx);
+  // The face whose floating panel is under device point d (-1: none).
+  int32_t popupUnder(Vec2 d) const noexcept {
+    if (!facesShown || !scene || !self.rect().contains(d)) return -1;
+    const Point2 w = self.toWorld(d);
+    for (size_t i = faces.size(); i-- > 0;) {
+      const std::optional<ui::Rect> r = faces[i].face->popupRect();
+      if (!r || scene->nodes[faces[i].node].hidden) continue;
+      const ui::Vec2 l = localOf(faces[i], w);
+      if (l.x >= r->x0 && l.x <= r->x1 && l.y >= r->y0 && l.y <= r->y1) return static_cast<int32_t>(i);
+    }
+    return -1;
+  }
   // TX.block-drag: a node's scale for the cables' plugs on it (1: none).
   float nodeScale(uint32_t v) const noexcept {
     return scene && v < scene->nodes.size() && scene->nodes[v].scale > 0.0f ? scene->nodes[v].scale : 1.0f;
@@ -1373,7 +1642,9 @@ void CircuitCanvas::setScene(std::shared_ptr<const CircuitScene> scene, bool fit
   impl_->wireLit.clear();
   impl_->resetSelectionFlags();
   impl_->buildFaces();  // TMM.4
+  impl_->syncOrbits();  // TX.orbit-ports: before the cables (their ends on orbiting ports)
   impl_->syncCables();  // TX.cables: after the faces (a cable onto a control ends on its live anchor)
+  impl_->linkOrbits();
   if (impl_->rescaled) impl_->zoomed();  // TX.resize: a rescaled face settles like a zoom (its tiles, a panel's layout)
   if (fit) {
     impl_->fitReadable = true;
@@ -1512,7 +1783,8 @@ CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
       for (uint32_t p = 0; p < n.pinCount; ++p) {
         const ScenePin& pin = sc.pins[n.firstPin + p];
         if (!pin.visible) continue;
-        const float dd = std::max(std::fabs(pin.x - l.x), std::fabs(pin.y - l.y));
+        const Point2 at = m.pinXY(n.firstPin + p);  // TX.orbit-ports: an orbiting port where it is now
+        const float dd = std::max(std::fabs(at.x - l.x), std::fabs(at.y - l.y));
         if (dd <= bestPin) {
           bestPin = dd;
           best = {CanvasHit::Kind::Pin, n.firstPin + p};
@@ -1520,6 +1792,12 @@ CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
       }
     }
     if (best.kind != CanvasHit::Kind::None) return best;
+  }
+  // TX.orbit-ports: an orbiting port sits outside its block (up to a port's width at the block's largest scale): the
+  // nodes of the cells that far around.
+  if (!m.orbits.empty()) {
+    const float reach = pinR + 2.0f * (kOrbitPortR + kOrbitGap) * 3.0f;
+    sc.grid.cellRange(w.x - reach, w.y - reach, w.x + reach, w.y + reach, c0, r0, c1, r1);
   }
   for (uint32_t r = r0; r <= r1; ++r)
     for (uint32_t c = c0; c <= c1; ++c) {
@@ -1530,7 +1808,8 @@ CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
         for (uint32_t p = 0; p < n.pinCount; ++p) {
           const ScenePin& pin = sc.pins[n.firstPin + p];
           if (!pin.visible) continue;
-          const float dd = std::max(std::fabs(pin.x - w.x), std::fabs(pin.y - w.y));
+          const Point2 at = m.pinXY(n.firstPin + p);  // TX.orbit-ports
+          const float dd = std::max(std::fabs(at.x - w.x), std::fabs(at.y - w.y));
           if (dd <= bestPin) {
             bestPin = dd;
             best = {CanvasHit::Kind::Pin, n.firstPin + p};
@@ -1954,6 +2233,84 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
   }
 }
 
+namespace {
+Rgba cableColour(const ui::Theme& th, const WireStyle& ws) noexcept {
+  const auto& C = th.circuit;
+  if (ws.boolean) return C.wireBool;
+  if (ws.rate == WireRate::Const) return C.wireConst;
+  if (ws.notes) return C.wireNotes;
+  if (ws.modulation) return C.wireMod;
+  return ws.rate == WireRate::Param ? C.wireParam : C.wireAudio;
+}
+}  // namespace
+
+void CircuitCanvas::Impl::paintPorts(ui::PaintContext& ctx, Point2 w0, Point2 w1) {
+  if (orbits.empty() || !scene) return;
+  const ui::Theme& th = *ctx.res.theme;
+  ui::DrawList& dl = ctx.dl;
+  const float us = ctx.scale.factor;
+  const CircuitScene& sc = *scene;
+  const float pad = 3.0f * (kOrbitPortR + kOrbitGap) * 3.0f;
+  struct PortDraw {
+    Vec2 at;
+    float r;
+    Rgba col;
+    bool input, hot, connected;
+  };
+  thread_local std::vector<PortDraw> draws;
+  draws.clear();
+  for (const OrbitRef& o : orbits) {
+    if (!showNode(o.node) || sc.nodes[o.node].hidden) continue;
+    const Point2 p = orbitPos(o, true);
+    if (p.x < w0.x - pad || p.x > w1.x + pad || p.y < w0.y - pad || p.y > w1.y + pad) continue;
+    const float r = kOrbitPortR * nodeScale(o.node) * s();
+    if (r < 0.9f) continue;  // smaller than a pixel: the block's outline says it
+    PortDraw d;
+    d.at = {devX(p.x), devY(p.y)};
+    d.r = r;
+    d.input = sc.pins[o.pin].input;
+    d.connected = o.endCount > 0;
+    d.col = d.connected ? cableColour(th, sc.wires[cables[orbitEnds[o.firstEnd]].wire].style) : th.face.jackRing;
+    d.hot = hover.kind == CanvasHit::Kind::Pin && hover.index == o.pin;
+    draws.push_back(d);
+  }
+  if (draws.empty()) return;
+  // The outputs' soft glow (additive light around the disc).
+  dl.setBlend(ui::BlendMode::Additive);
+  for (const PortDraw& d : draws)
+    if (!d.input) dl.addBlob(d.at, 2.6f * d.r + 2.0f * us, ui::setAlpha(d.col, d.connected ? 0.42f : 0.22f));
+  dl.setBlend(ui::BlendMode::Alpha);
+  for (const PortDraw& d : draws) {
+    const float t = std::max(1.0f, 0.34f * d.r);
+    if (d.hot) dl.addCircleStroke(d.at, d.r + t + 1.5f * us, th.circuit.hover, std::max(1.0f, std::round(1.5f * us)));
+    if (d.input) {  // a hollow ring (a dark rim keeps it legible over a cable or a face)
+      dl.addCircleStroke(d.at, d.r - 0.5f * t, ui::withAlpha(th.circuit.background, 200), t + 2.0f);
+      dl.addCircleStroke(d.at, d.r - 0.5f * t, d.connected ? d.col : ui::mulAlpha(d.col, 0.85f), t);
+    } else {  // a filled disc with a bright core
+      dl.addCircleFilled(d.at, d.r + 1.0f, ui::withAlpha(th.circuit.background, 200));
+      dl.addCircleFilled(d.at, d.r, d.connected ? d.col : ui::mulAlpha(d.col, 0.85f));
+      dl.addCircleFilled(d.at, 0.45f * d.r, ui::lerp(d.col, ui::rgba(255, 255, 255), 0.75f));
+    }
+  }
+}
+
+void CircuitCanvas::Impl::paintPopups(ui::PaintContext& ctx) {
+  if (!facesShown || faces.empty() || !scene) return;
+  for (Hosted& h : faces) {
+    if (!h.face->popupRect() || scene->nodes[h.node].hidden) continue;
+    const SceneNode& n = scene->nodes[h.node];
+    const Point2 sh = shiftOf(h.node);
+    FaceEnv env;
+    env.theme = ctx.res.theme;
+    env.uiScale = ctx.scale.factor;
+    env.selected = h.node < nodeSel.size() && nodeSel[h.node] != 0;
+    env.jacks = h.jacks;
+    ui::FacePainter p(ctx.dl, {{std::round(devX(n.x + sh.x)), std::round(devY(n.y + sh.y))}, s() * h.scale});
+    p.setText(ctx.res.text);
+    h.face->paintPopup(p, env);
+  }
+}
+
 void CircuitCanvas::paint(ui::PaintContext& ctx) {
   Impl& m = *impl_;
   m.retired.clear();  // TMM.7: faces a rebuild replaced (no handler of theirs runs during a paint)
@@ -2205,7 +2562,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     // T4.16c: the hovered pin (a press there starts a wire in the editor) is ringed in the hover colour.
     if (m.hover.kind == CanvasHit::Kind::Pin && m.hover.index < sc.pins.size()) {
       const ScenePin& pin = sc.pins[m.hover.index];
-      if (pin.visible && m.showNode(pin.node)) {
+      if (pin.visible && !pin.orbit && m.showNode(pin.node)) {  // TX.orbit-ports: a port shows its own hover (paintPorts)
         const float rr = std::max(3.0f, std::round(3.0f * us));
         dl.addCircleStroke({m.devX(pin.x), m.devY(pin.y)}, rr, C.hover, std::max(1.0f, std::round(1.5f * us)));
       }
@@ -2430,6 +2787,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
   layers(vis0, vis1);
   // ---- TX.cables: over everything of the scene (near / mid; far: in the chunks) ----
   m.paintCables(ctx, vis0, vis1, lifting ? 0 : -1);
+  m.paintPorts(ctx, vis0, vis1);  // TX.orbit-ports: over the cables' plugs
   paintNodeOverlay(ctx);
 
   // ---- TX.block-drag: the lifted pass ----
@@ -2467,6 +2825,8 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     paintNodeOverlay(ctx);
     shift(false);
     m.paintCables(ctx, vis0, vis1, 1);  // their cables over everything (they plug into the lifted blocks)
+    m.paintPass = 1;
+    m.paintPorts(ctx, vis0, vis1);  // TX.orbit-ports: the lifted blocks' ports (at their offset)
     for (const uint32_t v : m.visNodes) baseVis.push_back(v);  // what onFrame builds tiles for: both passes' nodes
     m.visNodes = baseVis;
     m.paintPass = -1;
@@ -2479,6 +2839,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     dl.addRectStroke(band.toRect(), C.rubberBandEdge, 1.0f);
   }
   paintOverlay(ctx);
+  m.paintPopups(ctx);  // TX.orbit-ports: faces' floating panels over everything
   dl.popClip();
   if (missing && !m.zooming) {
     if (atlas) m.tilesWanted = true;
@@ -2488,6 +2849,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
 
 void CircuitCanvas::onFrame(double now) {
   Impl& m = *impl_;
+  m.stepOrbits(now);  // TX.orbit-ports: the ports' slides (frames only while one slides); before the cables' step
   m.stepCables(now);  // TX.cables: the swing (frames only while a cable is awake)
   m.stepLoose(now);   // TX.node-menu-fix1: the cable being drawn out
   if (m.pumpWanted) m.pumpFaces();  // TX.panel-faces: a face's own work (a panel's widgets)
@@ -2825,9 +3187,60 @@ void CircuitCanvas::setCablesAnimated(bool on) {
   if (m.sim.animated() == on) return;
   const bool wasAwake = m.sim.awake();
   m.sim.setAnimated(on);
+  m.orbitAnimated = on;  // TX.orbit-ports: the ports' slides too
+  if (!on && m.orbitsMoving()) {
+    for (Impl::OrbitRef& o : m.orbits) o.cur = o.target;
+    m.refreshOrbitCables();
+    markDirty();
+  }
   if (wasAwake) markDirty();
 }
 bool CircuitCanvas::cablesAnimated() const noexcept { return impl_->sim.animated(); }
+
+graph::Point2 CircuitCanvas::pinPoint(uint32_t pin) const noexcept {
+  const Impl& m = *impl_;
+  if (!m.scene || pin >= m.scene->pins.size()) return {};
+  return m.pinXY(pin);
+}
+bool CircuitCanvas::pinOrbits(uint32_t pin) const noexcept { return impl_->orbitAt(pin) >= 0; }
+float CircuitCanvas::portAngle(uint32_t pin) const noexcept {
+  const int32_t o = impl_->orbitAt(pin);
+  return o >= 0 ? impl_->orbits[static_cast<size_t>(o)].cur : 0.0f;
+}
+float CircuitCanvas::portTarget(uint32_t pin) const noexcept {
+  const int32_t o = impl_->orbitAt(pin);
+  return o >= 0 ? impl_->orbits[static_cast<size_t>(o)].target : 0.0f;
+}
+bool CircuitCanvas::portsMoving() const noexcept { return impl_->orbitsMoving(); }
+uint64_t CircuitCanvas::portSolves() const noexcept { return impl_->orbitSolves; }
+
+void CircuitCanvas::setPortAngle(uint32_t pin, float angle) {
+  Impl& m = *impl_;
+  const int32_t oi = m.orbitAt(pin);
+  if (oi < 0) return;
+  Impl::OrbitRef& o = m.orbits[static_cast<size_t>(oi)];
+  o.held = true;
+  o.heldAngle = wrapAngle(angle);
+  const uint32_t one[1] = {o.node};
+  m.retarget(one);
+  m.damagePort(o);
+  o.cur = o.target;  // the held port is where the pointer puts it (the other one slides out of its way)
+  m.damagePort(o);
+  m.refreshOrbitCables();
+  markDirty();
+}
+
+void CircuitCanvas::releasePort(uint32_t pin) {
+  Impl& m = *impl_;
+  const int32_t oi = m.orbitAt(pin);
+  if (oi < 0 || !m.orbits[static_cast<size_t>(oi)].held) return;
+  m.orbits[static_cast<size_t>(oi)].held = false;
+  const uint32_t one[1] = {m.orbits[static_cast<size_t>(oi)].node};
+  m.retarget(one);
+  m.refreshOrbitCables();
+  markDirty();
+}
+
 bool CircuitCanvas::cablesMoving() const noexcept { return impl_->sim.awake(); }
 
 std::span<const graph::Point2> CircuitCanvas::cablePoints(uint32_t wire) const noexcept {
@@ -2917,9 +3330,12 @@ void CircuitCanvas::setNodeDrag(std::span<const uint32_t> nodes, graph::Point2 o
     m.dragNodes.erase(std::unique(m.dragNodes.begin(), m.dragNodes.end()), m.dragNodes.end());
     std::erase_if(m.dragNodes, [&](uint32_t v) { return v >= m.scene->nodes.size(); });
     m.buildLift();
+    m.buildOrbitLive();  // TX.orbit-ports
   }
   m.dragOffset = offset;
   if (m.dragNodes.empty()) m.clearLift();
+  // TX.orbit-ports: the ports on the moved blocks and on their cables' other ends turn toward where those are now.
+  m.retarget(m.orbitLive);
   m.refreshCableEnds(true);
   markDirty();
 }
@@ -2928,6 +3344,11 @@ void CircuitCanvas::clearNodeDrag() {
   Impl& m = *impl_;
   if (m.dragNodes.empty()) return;
   m.clearLift();
+  // TX.orbit-ports: back to where the scene settles them.
+  thread_local std::vector<uint32_t> live;
+  live.swap(m.orbitLive);
+  m.orbitLive.clear();
+  m.retarget(live);
   m.refreshCableEnds(true);
   markDirty();
 }
@@ -2964,7 +3385,8 @@ bool CircuitCanvas::facePointer(const ui::PointerEvent& e) {
       Face* fp0 = nullptr;
       if ((e.button == ui::PointerButton::Left || e.button == ui::PointerButton::Right) && !(e.mods & ui::mod::kAlt)) {
         // TX.cables: a press on a cable's plug is the cable's, not the control's under it.
-        if (const int32_t i = m.faceUnder(e.pos); i >= 0 && m.cableEndAt(e.pos) == UINT32_MAX) {
+        // TX.orbit-ports: a floating panel is over the cables too.
+        if (const int32_t i = m.faceUnder(e.pos); i >= 0 && (m.popupUnder(e.pos) >= 0 || m.cableEndAt(e.pos) == UINT32_MAX)) {
           Face& f = *m.faces[static_cast<size_t>(i)].face;
           const FacePointer fp = m.pointerOf(i, e, K::Down);
           if (before >= 0 && before != i) m.blurFace(before);

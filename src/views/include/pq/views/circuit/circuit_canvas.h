@@ -231,6 +231,26 @@ public:
   float cableGlow(uint32_t wire) const noexcept;
   bool cableGlowPolling() const noexcept;  // the ≤ 30 Hz glow timer is armed
 
+  // ---- TX.orbit-ports (pq/views/circuit/orbit.h) ----
+  // A scene pin with ScenePin::orbit is drawn on its node's outline (SceneNode::outline) where it is NOW: the scene's
+  // settled angle, or — while blocks are lifted (setNodeDrag) — the same rule solved live for the ports on the lifted
+  // blocks and on their cables' other ends (no other port is solved), the slide eased over kOrbitEaseSeconds (frames
+  // only while one slides; at once with setCablesAnimated(false)). Its cables plug in there and it is hit there. Drawn
+  // over the cables: an input as a hollow ring, an output as a filled disc with a bright core and a soft glow (its
+  // cables' colour; idle: the jack colour), the block's scale; the face does not draw it (FaceJack::visible false).
+  graph::Point2 pinPoint(uint32_t pin) const noexcept;  // where scene pin `pin` is drawn now (unshifted by a lift)
+  bool pinOrbits(uint32_t pin) const noexcept;
+  float portAngle(uint32_t pin) const noexcept;   // its angle now (radians, y down)
+  float portTarget(uint32_t pin) const noexcept;  // the angle it slides toward
+  bool portsMoving() const noexcept;
+  uint64_t portSolves() const noexcept;           // ports' solves so far (benchmarks: only moved ends are solved)
+  // The host holds an orbiting port at `angle` (a port dragged along its block's edge, before the host pins it): it is
+  // drawn and plugged there at once, and the block's other port gives way (the spacing rule). releasePort: the scene's
+  // rule again (a cancelled drag; a new scene drops the hold too).
+  void setPortAngle(uint32_t pin, float angle);
+  void releasePort(uint32_t pin);
+
+
   struct Stats {
     uint32_t nodesPainted = 0, nodesFromTiles = 0, nodesStretched = 0, nodesDirect = 0;
     // TMM.4: faces painted, their static layers from tiles / stretched / drawn directly, face primitives emitted.

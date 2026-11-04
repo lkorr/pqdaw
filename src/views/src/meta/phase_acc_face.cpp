@@ -190,6 +190,7 @@ public:
   // TMM.13-fix2: the binding name in the empty top-left corner (the circle starts 16 units down), not 30 above the body.
   Vec2 captionAt() const noexcept override { return {4.0f, 6.0f}; }
   bool ownsPlate() const noexcept override { return false; }  // a circle: the Device view's panel adds the plate
+  FaceShape shape() const noexcept override { return {true, kC, kBodyR}; }  // TX.orbit-ports: the ports go round the circle
 
   uint32_t staticLayerCount() const noexcept override { return 3; }
   // TX.knob-curves: the ticks layer follows a switched knob curve (0: the type's shared tile).

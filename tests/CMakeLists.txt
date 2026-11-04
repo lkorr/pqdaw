@@ -186,6 +186,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_groups_view.cpp  # TX.groups: Ctrl+G / Ctrl+Shift+G in the circuit, capsules, the Device view group panel, goldens
     views/test_node_menu.cpp  # TX.node-menu: catalog, search, the menu, spawn / insert / Z / splice / dissolve / Ctrl-release / push-apart, golden, perf
     views/test_cables.cpp  # TX.cables: hanging cables (rest shape, rope sim, drag swing, hit tests on the curve, glow, goldens)
+    views/test_orbit_ports.cpp  # TX.orbit-ports: orbiting main ports, the round VCA's floating panel, Delete on a hovered cable
     views/test_free_rack.cpp  # TX.free-rack: the Device view's free-device rack (gestures, prefs), the signal-path cables, goldens, perf
     views/test_all_free_views.cpp  # TX.all-free: the Device view lists the main path; its gestures rewire; the patch view places anywhere
     views/test_chain_circuit.cpp  # T5.x-circuit-chain: a track's chain as one circuit (boxes, wires, racks, view, band), goldens

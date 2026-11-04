@@ -113,7 +113,9 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
   const float floorReach = 2.0f * (tree() ? tree()->scale() : 1.0f) / std::max(s, 1e-6f);
   for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
     const Node& n = pp.nodes[i];
-    if (w.x < n.x - reach || w.x > n.x + n.w + reach || w.y < n.y - reach || w.y > n.y + n.h + reach) continue;
+    // TX.orbit-ports: an orbiting port sits outside the block (a port's width at its scale).
+    const float out = n.orbitIn.on || n.orbitOut.on ? 2.0f * (circuit::kOrbitPortR + circuit::kOrbitGap) * n.scale : 0.0f;
+    if (w.x < n.x - reach - out || w.x > n.x + n.w + reach + out || w.y < n.y - reach - out || w.y > n.y + n.h + reach + out) continue;
     // TX.block-drag: a small block's pins reach a part of its size (its middle stays its body: it can be grabbed).
     const float nodeReach = n.kind == NodeKind::Device ? std::min(reach, std::max(floorReach, kSmallPinReach * std::min(n.w, n.h))) : reach;
     for (int side = 0; side < 2; ++side) {
@@ -121,7 +123,22 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
       const float px = side == 0 ? n.x : n.x + n.w;
       for (size_t k = 0; k < ports.size(); ++k) {
         if (side == 0 && ports[k].anchored) continue;  // TX.mod-all: no pin (its wire ends on the face's control)
-        const float dd = std::max(std::fabs(w.x - px), std::fabs(w.y - (n.y + pinY(n, k))));
+        float dd = std::max(std::fabs(w.x - px), std::fabs(w.y - (n.y + pinY(n, k))));
+        // TX.orbit-ports: where the port is drawn now — its disc, and a few px around it outside the block (inside the
+        // block's outline a press is the block's unless it is on the disc: far out a port is a dot on the block's edge).
+        if (portOrbits(n, k, side == 0)) {
+          const graph::Point2 at = portWorld(i, static_cast<uint32_t>(k), side == 0);
+          dd = std::max(std::fabs(w.x - at.x), std::fabs(w.y - at.y));
+          const float us = tree() ? tree()->scale() : 1.0f;
+          const float disc = circuit::kOrbitPortR * n.scale + 1.0f / std::max(s, 1e-6f);
+          const float around = (std::max(circuit::kOrbitPortR * n.scale * s, 2.0f * us) + 3.0f * us) / std::max(s, 1e-6f);
+          const float portReach = circuit::outlineDistance(n.outline, w) > 0.0f ? std::max(disc, around) : disc;
+          if (dd <= std::min(nodeReach, portReach) && dd <= bestD) {
+            bestD = dd;
+            best = {i, static_cast<uint32_t>(k), side == 0};
+          }
+          continue;
+        }
         if (dd <= bestD && dd <= nodeReach) {
           bestD = dd;
           best = {i, static_cast<uint32_t>(k), side == 0};
@@ -179,6 +196,36 @@ ProjectCanvas::MixerAreas ProjectCanvas::mixerAreas(uint32_t node) const {
     a.volume = r(10.0f, 36.0f, n.w - 10.0f - right, 7.0f);
   }
   return a;
+}
+
+uint32_t ProjectCanvas::scenePin(uint32_t node, uint32_t port, bool input) const noexcept {
+  const ProjectPatch& pp = view_.patch();
+  const ProjectScene& ps = view_.scene();
+  if (node >= pp.nodes.size() || node >= ps.sceneNode.size() || ps.sceneNode[node] == kNone || !scene()) return kNone;
+  const circuit::SceneNode& sn = scene()->nodes[ps.sceneNode[node]];
+  const uint32_t k = input ? port : static_cast<uint32_t>(pp.nodes[node].inputs.size()) + port;
+  return k < sn.pinCount ? sn.firstPin + k : kNone;
+}
+
+graph::Point2 ProjectCanvas::portWorld(uint32_t node, uint32_t port, bool input) const noexcept {
+  const ProjectPatch& pp = view_.patch();
+  if (node >= pp.nodes.size()) return {};
+  const Node& n = pp.nodes[node];
+  if (portOrbits(n, port, input))
+    if (const uint32_t p = scenePin(node, port, input); p != kNone && pinOrbits(p)) return pinPoint(p);
+  return input ? inPortPoint(n, port) : outPortPoint(n, port);
+}
+
+// TX.orbit-ports: a Port drag's step: the held port at the pointer's direction from its block's centre.
+bool ProjectCanvas::portSlide(Vec2 pos) {
+  const ProjectPatch& pp = view_.patch();
+  if (portPin_ == kNone || !port_.valid() || port_.node >= pp.nodes.size()) return false;
+  const graph::Point2 c = pp.nodes[port_.node].outline.centre(), w = toWorld(pos);
+  if (std::hypot(w.x - c.x, w.y - c.y) < 1e-3f) return false;
+  portAngle_ = circuit::wrapAngle(std::atan2(w.y - c.y, w.x - c.x));
+  portMoved_ = true;
+  setPortAngle(portPin_, portAngle_);
+  return true;
 }
 
 // ---- painting -------------------------------------------------------------------------------------------------------
@@ -785,6 +832,12 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         }
       }
       v.selectGroup({});
+      // TX.orbit-ports: a double-click on a pinned main port returns it to following its cables.
+      if (e.clickCount >= 2)
+        if (const PinHit pin = pinAt(e.pos); pin.valid() && portOrbits(pp.nodes[pin.node], pin.port, pin.input)) {
+          if (pp.nodes[pin.node].kind == NodeKind::Device) (void)v.unpinPort(pp.nodes[pin.node].device, pin.input);
+          return true;
+        }
       if (e.clickCount >= 2) {
         // T5.x-one-circuit: a clip in a lane window opens its editor (the piano roll, an audio clip's Clip View).
         if (const doc::ClipRef ref = v.laneClipAt(e.pos); ref.clip.valid()) {
@@ -871,6 +924,23 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
             return true;
           }
       }
+      // TX.orbit-ports: an orbiting main port — a drag along the block's edge slides it there (pinned on release; an
+      // output's drag away from the block draws a cable as before).
+      portMaybe_ = portMoved_ = portWire_ = false;
+      if (const PinHit pin = pinAt(e.pos); pin.valid() && portOrbits(pp.nodes[pin.node], pin.port, pin.input)) {
+        port_ = pin;
+        portPin_ = scenePin(pin.node, pin.port, pin.input);
+        if (portPin_ != kNone && pinOrbits(portPin_)) {
+          portAngle_ = portAngle(portPin_);
+          if (pin.input) {
+            drag_ = Drag::Port;
+            return true;
+          }
+          portMaybe_ = true;  // and on into the output's cable below
+        } else {
+          portPin_ = kNone;
+        }
+      }
       // An output pin: a new wire (a device's export or a note output → a param; a mixer's out / send → a Σ).
       if (const PinHit pin = pinAt(e.pos); pin.valid() && !pin.input) {
         const Node& n = pp.nodes[pin.node];
@@ -880,6 +950,11 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           wireCursor_ = ui::Cursor::Crosshair;
           updateLoose(e.pos);  // TX.node-menu-fix1: the real cable comes out of the port
           markDirty();
+          return true;
+        }
+        if (portMaybe_) {  // an output that draws no cable (none can start there): it only slides
+          portMaybe_ = false;
+          drag_ = Drag::Port;
           return true;
         }
       }
@@ -931,7 +1006,40 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         return CircuitCanvas::onPointer(e);
       }
       last_ = e.pos;
+      // TX.orbit-ports: a drag out of an output port that moves along the block's edge (more than away from it) slides
+      // the port instead of drawing a cable.
+      if (drag_ == Drag::Wire && portMaybe_ && port_.node < pp.nodes.size()) {
+        const Node& pn = pp.nodes[port_.node];
+        const float off = (circuit::kOrbitPortR + circuit::kOrbitGap) * pn.scale;
+        const float d = circuit::outlineDistance(pn.outline, toWorld(e.pos)) - off;
+        if (std::fabs(d) * deviceScale() > kPortBandPx * us) {
+          portMaybe_ = false;  // off the port's orbit: the cable it draws
+        } else if (std::hypot(e.pos.x - press_.x, e.pos.y - press_.y) >= kPortSlidePx * us) {
+          portMaybe_ = false;  // along the edge: the port slides
+          portWire_ = true;    // (pulled away from the edge again, it is the cable after all)
+          clearLooseCable();
+          from_ = {};
+          drag_ = Drag::Port;
+        }
+      }
+      // A slide that began as an output's cable and is pulled well away from the edge: the cable after all (the port
+      // goes back to following its cables).
+      if (drag_ == Drag::Port && portWire_ && port_.node < pp.nodes.size()) {
+        const Node& pn = pp.nodes[port_.node];
+        const float off = (circuit::kOrbitPortR + circuit::kOrbitGap) * pn.scale;
+        if (std::fabs(circuit::outlineDistance(pn.outline, toWorld(e.pos)) - off) * deviceScale() > kPortLeavePx * us) {
+          if (portPin_ != kNone) releasePort(portPin_);
+          portWire_ = portMoved_ = false;
+          from_ = port_;
+          drag_ = Drag::Wire;
+          wireCursor_ = ui::Cursor::Crosshair;
+        }
+      }
       switch (drag_) {
+        case Drag::Port:  // TX.orbit-ports
+          if (portMoved_ || std::max(std::fabs(e.pos.x - press_.x), std::fabs(e.pos.y - press_.y)) >= drag::kClickSlop * us)
+            (void)portSlide(e.pos);
+          break;
         case Drag::Wire:
           // TX.free-rack: a wire from a block of the rack leaves the canvas: the host (the Device view's cable layer)
           // takes the drag over, onto the chain's knobs and inputs.
@@ -1037,7 +1145,19 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       drag_ = Drag::None;
       if (d == Drag::None) return CircuitCanvas::onPointer(e);
       last_ = e.pos;
+      portMaybe_ = false;
+      portWire_ = false;
       switch (d) {
+        case Drag::Port: {  // TX.orbit-ports: pinned where it was let go (a click: nothing)
+          const uint32_t pinIdx = portPin_;
+          const PinHit pt = port_;
+          portPin_ = kNone;
+          if (pinIdx != kNone) releasePort(pinIdx);
+          if (portMoved_ && pt.valid() && pt.node < pp.nodes.size() && pp.nodes[pt.node].kind == NodeKind::Device)
+            (void)v.pinPort(pp.nodes[pt.node].device, pt.input, portAngle_);
+          portMoved_ = false;
+          break;
+        }
         case Drag::Wire: {
           // TX.node-menu: released with Ctrl held, a made connection keeps a new cable from the same source on the pointer.
           rememberSource();
@@ -1108,6 +1228,9 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         case Drag::Lane:
         case Drag::None: break;
       }
+      // TX.orbit-ports: the base canvas's press state ends too (a click's Down went to it to select: until its Up it
+      // took the pointer's moves as a click's, and the hover — what Delete over a cable reads — stood still).
+      (void)CircuitCanvas::onPointer(e);
       endLift();  // TX.block-drag: the drop's scene placed the blocks (or they are back where they were)
       dragNode_ = dragBand_ = kNone;
       from_ = {};
@@ -1131,11 +1254,12 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
   // note output goes onto any parameter or input of any device. TX.all-free: a track's own signal (its source's main
   // output) and any main output onto a main input or the track's mixer: the cables the main path is made of.
   if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)) {
-    const uint32_t to = nodeAt(pos);
+    // TX.orbit-ports: an input pin's block (an orbiting port sits outside it), else the block under the pointer.
+    const PinHit h = pinAt(pos);
+    const uint32_t to = h.valid() && h.input ? h.node : nodeAt(pos);
     if (to == kNone) return nullptr;  // empty canvas: the drop does nothing
     const Node& t = pp.nodes[to];
     if (!wireEnd(t)) return "Wire: drop it on a device's parameter or input (or a group's Out, a track's mixer)";
-    const PinHit h = pinAt(pos);
     const bool onPin = h.valid() && h.input && h.node == to && h.port < t.inputs.size();
     const bool notes = isTrackSource(a) && isNoteSource(pp, a);  // a MIDI track's note source
     // TX.all-free-fix1: another track's mixer takes a block's output or a track's own audio (a send-like route).
@@ -1198,6 +1322,7 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
     case Drag::BackWire: return ui::Cursor::Crosshair;  // TX.node-menu
     case Drag::MaybeSplice:
     case Drag::Splice: return ui::Cursor::Move;
+    case Drag::Port: return ui::Cursor::Move;  // TX.orbit-ports
     case Drag::None: break;
   }
   if (laneHover_ && !panning() && scene()) return laneCursor_;  // TX.lane-edit: over a window body (Alt: copy / curve)
@@ -1219,6 +1344,8 @@ ui::Cursor ProjectCanvas::pressCursor(Vec2 pos) const {
       if (tr != nullptr && inside(r, pos)) return ui::Cursor::ResizeEW;
   }
   if (const PinHit pin = pinAt(pos); pin.valid() && !pin.input && wireSource(pp, pp.nodes[pin.node])) return ui::Cursor::Crosshair;
+  // TX.orbit-ports: an orbiting input port slides along its block's edge.
+  if (const PinHit pin = pinAt(pos); pin.valid() && pin.input && portOrbits(pp.nodes[pin.node], pin.port, true)) return ui::Cursor::Move;
   if (node == kNone) {
     if (const uint32_t b = bandAt(pos); b != kNone && toWorld(pos).y <= pp.bands[b].y + metrics::kTitle) return ui::Cursor::Move;
     return ui::Cursor::Arrow;
@@ -1543,8 +1670,14 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
   // they did something, so the Device view around it still gets Delete, Ctrl+G and Ctrl+Shift+G. The main view keeps
   // them (a Delete there must never fall through to the arrangement's selection behind it).
   const bool swallow = !view_.embedded();
+  // TX.orbit-ports (SPEC §15 2026-11-03): Delete with the pointer on a cable deletes that cable, selected or not (the
+  // hover wins over the selection).
+  if (mods == ui::mod::kNone && drag_ == Drag::None && (e.key == ui::key::kDelete || e.key == ui::key::kBackspace) &&
+      hovered().kind == circuit::CanvasHit::Kind::Wire && rect().contains(pointer_))
+    if (const uint32_t edge = edgeAt(pointer_); edge != kNone && view_.deleteCable(edge)) return true;
   if (mods == ui::mod::kNone && (e.key == ui::key::kDelete || e.key == ui::key::kBackspace))
     return view_.deleteSelection() || swallow;
+
   // TX.groups: Ctrl+G groups the selection, Ctrl+Shift+G ungroups (before the keymap: the Device view's Ctrl+G makes a
   // rack there).
   if (e.key == 'g' && mods == ui::mod::kCtrl) return view_.groupSelection() || swallow;
@@ -1633,6 +1766,9 @@ void ProjectCanvas::endLift() {
 
 void ProjectCanvas::onCaptureLost() {
   endLift();  // TX.block-drag: back in place
+  if (drag_ == Drag::Port && portPin_ != kNone) releasePort(portPin_);  // TX.orbit-ports: unpinned, as it was
+  portPin_ = kNone;
+  portMaybe_ = portMoved_ = portWire_ = false;
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   if (sticky_) return;  // TX.node-menu: a held cable has no capture (no button is down)
   if (drag_ == Drag::Wire || drag_ == Drag::BackWire) clearLooseCable();  // TX.node-menu-fix1
@@ -1647,6 +1783,9 @@ void ProjectCanvas::onCaptureLost() {
 
 void ProjectCanvas::onInteractionCancelled() {
   endLift();  // TX.block-drag: the blocks back in place, their cables swing back
+  if (drag_ == Drag::Port && portPin_ != kNone) releasePort(portPin_);  // TX.orbit-ports: Esc: where it was
+  portPin_ = kNone;
+  portMaybe_ = portMoved_ = portWire_ = false;
   if (drag_ == Drag::Wire || drag_ == Drag::BackWire || sticky_) clearLooseCable();  // TX.node-menu-fix1
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   sticky_ = false;
@@ -1700,6 +1839,13 @@ uint32_t ProjectCanvas::findKey(const NodeKey& k) const noexcept {
 
 void ProjectCanvas::beforeRebuild() {
   const ProjectPatch& pp = view_.patch();
+  // TX.orbit-ports: a port's slide holds scene indices; a rebuild under it ends it (the new scene drops the hold).
+  if (drag_ == Drag::Port) {
+    drag_ = Drag::None;
+    portPin_ = kNone;
+    portMoved_ = false;
+  }
+  portMaybe_ = portWire_ = false;
   keepNode_ = keyOf(dragNode_);
   keepBand_ = dragBand_ < pp.bands.size() ? pp.bands[dragBand_].track : doc::TrackId{};
   keepFrom_ = from_.valid() ? keyOf(from_.node) : NodeKey{};
@@ -1815,7 +1961,7 @@ bool ProjectCanvas::pressBackWire(const ui::PointerEvent& e) {
         backDevice_ = doc::DeviceId{static_cast<uint32_t>(std::stoul(backParam_.substr(at + 1)))};
         backParam_.resize(at);
       }
-      backWorld_ = inputEntry(t, pin.port);
+      backWorld_ = portWorld(pin.node, pin.port, true);  // TX.orbit-ports: an orbiting port where it is
       backStart_ = toDevice(backWorld_);
     }
   }
@@ -1845,14 +1991,14 @@ void ProjectCanvas::updateLoose(Vec2 pos) {
   bool snapped = false;
   if (drag_ == Drag::Wire && from_.valid() && from_.node < pp.nodes.size() && !from_.input) {
     const Node& n = pp.nodes[from_.node];
-    port = {n.x + n.w, n.y + pinY(n, from_.port)};  // where its cable will start (the model's outPin)
+    port = portWorld(from_.node, from_.port, false);  // where its cable will start (TX.orbit-ports: an orbiting port now)
     style.notes = isNoteSource(pp, n);
     if (wireRefusal(pos) == nullptr && (n.kind == NodeKind::Device || n.kind == NodeKind::Terminal || style.notes)) {
       // Snapped onto what a release here connects: an input pin (that port), a face's / panel's control (its param).
       const PinHit t = pinAt(pos);
       if (t.valid() && t.input && t.node < pp.nodes.size() && t.node != from_.node && wireEnd(pp.nodes[t.node])) {
         if (const Port* q = wireTarget(pp.nodes[t.node], t.port)) {
-          to = inputEntry(pp.nodes[t.node], t.port);
+          to = portWorld(t.node, t.port, true);
           style.modulation = q->param;
           snapped = true;
         }
@@ -1874,7 +2020,7 @@ void ProjectCanvas::updateLoose(Vec2 pos) {
       const Node& n = pp.nodes[pin.node];
       if ((n.kind == NodeKind::Device || n.kind == NodeKind::Terminal || isNoteSource(pp, n)) && n.device != backDevice_ &&
           !(isNoteSource(pp, n) && pin.port == 0)) {
-        to = {n.x + n.w, n.y + pinY(n, pin.port)};
+        to = portWorld(pin.node, pin.port, false);
         style.notes = isNoteSource(pp, n);
         snapped = true;
       }
@@ -1882,7 +2028,7 @@ void ProjectCanvas::updateLoose(Vec2 pos) {
       const Node& n = pp.nodes[b];
       const circuit::MainPorts mp = view_.mainPorts(n.device);
       if (const int32_t k = mp.out.empty() ? -1 : n.output(mp.out); k >= 0) {
-        to = {n.x + n.w, n.y + pinY(n, static_cast<size_t>(k))};
+        to = portWorld(b, static_cast<uint32_t>(k), false);
         snapped = true;
       }
     }

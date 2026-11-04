@@ -205,6 +205,14 @@ struct ControlAnchor {
 // info text, wire drops onto a control (paramAt) and the face's own clock (update / nextWake).
 class Face;
 
+// TX.orbit-ports (pq/views/circuit/orbit.h): a face's outline as it draws it, face-local units — a circle (`round`:
+// centre, radius) or its whole rect with corners of `radius`. The host's orbiting main ports sit just outside it.
+struct FaceShape {
+  bool round = false;
+  ui::Vec2 centre{0.0f, 0.0f};
+  float radius = 10.0f;
+};
+
 // TX.panel-faces: what a face with its own clock or popups needs from its host (the canvas).
 class FaceHost {
 public:
@@ -238,6 +246,8 @@ public:
   // TMM.13-fix2 (MM review "UI and aesthetic" 8): whether the face draws its own body plate over its whole rect. A
   // Device-view panel draws one behind a face that does not (the Phase accumulator's circle), as the others have.
   virtual bool ownsPlate() const noexcept { return true; }
+  // TX.orbit-ports: the outline the host's orbiting ports go round (default: the rect, corners of 10).
+  virtual FaceShape shape() const noexcept { return {}; }
   // Where input i of n sits on the left edge / output j of n on the right edge (face-local y), when the host lays
   // its pins out by the face (a nested call's symbol). Default: 24 + 16·i.
   virtual float inputY(size_t i, size_t n) const noexcept;
@@ -263,6 +273,16 @@ public:
   // TMM.13-fix2 (MM review L23): how far in from its edge a socket's centre sits (face units; 5 by default, a short lead
   // in); a face whose plot reaches its edges (the analysers) puts its sockets on the edge itself (0), not on the plot.
   virtual float jackInset() const noexcept { return 5.0f; }
+  // TX.orbit-ports: a FLOATING PANEL the face has open (the VCA's range and curve): its face-local rect, which may reach
+  // outside worldSize (nullopt: none open). The host draws it over everything (after the cables, the lanes, the lifted
+  // pass: paintPopup), hit-tests it as part of the face (hitTest / onPointer get its points in face-local units), and
+  // repaints when it opens or closes; nothing in the layout moves. It follows the face (its zoom, scale and drag). A
+  // face closes it itself (its own control, Esc while it holds the keys, focusLost: a press anywhere else).
+  virtual std::optional<ui::Rect> popupRect() const noexcept { return std::nullopt; }
+  virtual void paintPopup(ui::FacePainter& /*p*/, const FaceEnv& /*env*/) {}
+  // The host has no room around the face (a Device-view panel clips to its body): the floating panel opens over the
+  // face itself, inside worldSize.
+  virtual void setPopupOverFace(bool /*on*/) {}
   // The face-local rects that change while voices sound (the host damages only these, ≤ 60 Hz).
   virtual void liveRects(std::vector<ui::Rect>& out) const = 0;
   // Whether the live layer moves now (a voice sounds): the host keeps its ≤ 60 Hz repaint going.
@@ -386,6 +406,8 @@ bool hasFace(const meta::Type& t) noexcept;
 ui::Vec2 faceSize(const meta::Type& t) noexcept;
 // TMM.13-fix2: captionAt of the type's face ({2, −6} without one), without making one each time.
 ui::Vec2 faceCaptionAt(const meta::Type& t) noexcept;
+// TX.orbit-ports: shape() of the type's face (the default without one), without making one each time.
+FaceShape faceShape(const meta::Type& t) noexcept;
 // Registers a face factory for a type id (built-in faces register themselves; tests may add one).
 using FaceFactory = std::unique_ptr<MetaFace> (*)(const meta::Type& t);
 bool registerFace(std::string_view typeId, FaceFactory factory);

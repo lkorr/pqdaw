@@ -211,7 +211,8 @@ public:
 
   // Lane (TX.lane-edit): a press in a lane window's body went to the arrangement's editor / automation, whose drag runs.
   // TX.node-menu: BackWire (a backwards cable out of a param), MaybeSplice / Splice (a Shift-drag of a block).
-  enum class Drag : uint8_t { None, Wire, MaybeMoveDevice, MoveDevice, Nudge, Volume, Pan, Send, Resize, Lane, BackWire, MaybeSplice, Splice };
+  // TX.orbit-ports: Port (an orbiting main port dragged along its block's edge: pinned there on release).
+  enum class Drag : uint8_t { None, Wire, MaybeMoveDevice, MoveDevice, Nudge, Volume, Pan, Send, Resize, Lane, BackWire, MaybeSplice, Splice, Port };
   Drag drag() const noexcept { return drag_; }
   // TX.lane-edit: the last press was in a lane window (the arrangement's edit chords act there: laneKey).
   bool laneFocused() const noexcept { return laneFocus_; }
@@ -224,6 +225,15 @@ public:
   // backwards cable out of that param.
   static constexpr ui::Key kBackWireKey = 'w';
   bool backWireHeld() const noexcept;
+  // TX.orbit-ports: the scene pin of model node `node`'s port (kNone: not in the scene), and where the port is drawn
+  // now (an orbiting one: CircuitCanvas::pinPoint; else the model's pin).
+  uint32_t scenePin(uint32_t node, uint32_t port, bool input) const noexcept;
+  graph::Point2 portWorld(uint32_t node, uint32_t port, bool input) const noexcept;
+  // A press-and-drag on an output port that moves along the block's edge — staying within kPortBandPx of the port's
+  // orbit while it travels kPortSlidePx — slides the port; one that leaves the band first draws a cable as before. An
+  // input port always slides.
+  // A slide that began so and is pulled kPortLeavePx away from the edge becomes that cable after all.
+  static constexpr float kPortBandPx = 8.0f, kPortSlidePx = 20.0f, kPortLeavePx = 28.0f;
   // TX.node-menu: a cable is held on the pointer after a Ctrl-release (no button held; a click wires the next target).
   bool stickyWire() const noexcept { return sticky_; }
   // The model edge of the cable under a device point (the canvas's wire hit test: TX.cables' curves), kNone: none.
@@ -332,7 +342,15 @@ private:
   uint32_t findKey(const NodeKey& k) const noexcept;
   void beforeRebuild();
   void afterRebuild();
+  // TX.orbit-ports: the port being slid along its block's edge (Drag::Port; or a Wire drag from an output port that may
+  // still become one: portMaybe_), its scene pin, the angle it is held at.
+  PinHit port_{};
+  uint32_t portPin_ = kNone;
+  bool portMaybe_ = false, portMoved_ = false, portWire_ = false;
+  float portAngle_ = 0.0f;
+  bool portSlide(ui::Vec2 pos);  // the slide's step (true: it moved the port)
   NodeKey keepNode_, keepFrom_;
+
   doc::TrackId keepBand_;
   std::string keepFromPort_;
   bool keepFromInput_ = false;
@@ -524,6 +542,15 @@ public:
   // unchanged. 1 = its own size.
   float blockScale(doc::DeviceId device) const noexcept;
   bool setBlockScale(doc::DeviceId device, float scale);
+  // TX.orbit-ports (SPEC §15 2026-11-03): a block's main input / output pinned on its outline at `angle` (radians,
+  // quantised to what a file keeps: doc::patchPinQuantise), or back to following its cables (unpinPort). View state like
+  // a nudge (doc::PatchNudge's pins: saved, not undoable); re-lays out. false: unchanged.
+  bool pinPort(doc::DeviceId device, bool input, float angle);
+  bool unpinPort(doc::DeviceId device, bool input);
+  bool portPinned(doc::DeviceId device, bool input) const noexcept;
+  // TX.orbit-ports: Delete with the pointer on a cable deletes that cable (its document wire; one undo step). false: the
+  // edge is no cable with a wire.
+  bool deleteCable(uint32_t edge);
   // doc::kMinPatchScale … kMaxPatchScale; `snap`: to kBlockScaleStep (Shift while dragging); else whole percent, with a
   // detent at 1 (within kBlockScaleDetent).
   static float clampBlockScale(float scale, bool snap) noexcept;

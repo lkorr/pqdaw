@@ -1262,6 +1262,15 @@ private:
           w_.key("scale");
           w_.number(at, n.scale);
         }
+        // TX.orbit-ports: a pinned main port's angle on the block's outline, in whole hundredths of a degree.
+        if (n.inPinned) {
+          w_.key("pinIn");
+          w_.number(at, patchPinDegrees(n.inAngle));
+        }
+        if (n.outPinned) {
+          w_.key("pinOut");
+          w_.number(at, patchPinDegrees(n.outAngle));
+        }
         w_.endObject();
       }
       w_.endArray();
@@ -3181,7 +3190,7 @@ private:
         r_.beginArray(list);
         for (size_t i = 0; r_.nextElement(list); ++i) {
           const PathSeg el(&list, i);
-          static constexpr std::string_view N[] = {"id", "dx", "dy", "scale"};
+          static constexpr std::string_view N[] = {"id", "dx", "dy", "scale", "pinIn", "pinOut"};
           RawNudge e{0, {}, r_.pos()};
           Members em(r_, el, N);
           for (int q; (q = em.next()) >= 0;) {
@@ -3193,6 +3202,12 @@ private:
               e.nudge.scale = r_.readFloat(f);
               if (!(e.nudge.scale >= kMinPatchScale && e.nudge.scale <= kMaxPatchScale))
                 r_.failValue(f, "a block's scale must be within 0.05 … 3");
+            }
+            if (q == 4 || q == 5) {  // TX.orbit-ports (optional): degrees
+              const float d = r_.readFloat(f);
+              if (!(d >= -360.0f && d <= 360.0f)) r_.failValue(f, "a pinned port's angle must be within -360 … 360 degrees");
+              (q == 4 ? e.nudge.inPinned : e.nudge.outPinned) = true;
+              (q == 4 ? e.nudge.inAngle : e.nudge.outAngle) = patchPinRadians(d);
             }
           }
           em.require({0, 1, 2});

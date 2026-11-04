@@ -162,7 +162,7 @@ struct VcaRig {
     v.zoom = zoom;
     const double lw = canvas->rect().w / static_cast<double>(scale), lh = canvas->rect().h / static_cast<double>(scale);
     v.x = n.x + 60.0 - lw / zoom * 0.5;
-    v.y = n.y + 90.0 - lh / zoom * 0.5;
+    v.y = n.y + 60.0 - lh / zoom * 0.5;  // TX.orbit-ports: the round face is 120 x 120
     canvas->setView(v);
   }
   void settle() {
@@ -215,21 +215,27 @@ std::string zoomName(double z) {
 }
 
 uint32_t rigW(double zoom) { return static_cast<uint32_t>(std::max(96.0, std::ceil(120.0 * zoom + 48.0))); }
-uint32_t rigH(double zoom) { return static_cast<uint32_t>(std::max(96.0, std::ceil(180.0 * zoom + 48.0))); }
+uint32_t rigH(double zoom) { return static_cast<uint32_t>(std::max(96.0, std::ceil(120.0 * zoom + 48.0))); }
 
-// The face's geometry (vca_face.cpp's layout), for gestures.
-constexpr float kCx = 60.0f, kCy = 58.0f;
-constexpr float kMinX = 24.0f, kMaxX = 96.0f, kRangeY = 117.0f, kReadoutY = 103.0f;
-constexpr float kBoxX = 60.0f, kBoxY = 143.0f;
+// The face's geometry (vca_face.cpp's layout), for gestures. TX.orbit-ports: a circle (120 x 120) — the readout at the
+// top, the knob, the chevron under it; the range, the curve box and the presets in the floating panel the chevron opens
+// under the face (its top at 126).
+constexpr float kCx = 60.0f, kCy = 63.0f;
+constexpr float kReadoutY = 20.0f, kChevX = 60.0f, kChevY = 100.0f;
+constexpr float kPopTop = 126.0f;
+constexpr float kMinX = 24.0f, kMaxX = 96.0f, kRangeY = kPopTop + 17.0f;
+constexpr float kBoxX = 60.0f, kBoxY = kPopTop + 43.0f;
 float chipX(int i) { return 15.0f + 24.0f * static_cast<float>(i) + 9.0f; }
-constexpr float kChipY = 168.0f;
+constexpr float kChipY = kPopTop + 68.0f;
+constexpr float kKnobExtent = 58.0f;  // 2 × the track's radius: a drag's travel per px
 
 }  // namespace
 
-TEST_CASE("vca face: registered; a nested call's symbol is its face, sized 120 x 180") {
+TEST_CASE("vca face: registered; a nested call's symbol is its face, sized 120 x 120, round") {
   REQUIRE(hasFace(vcaType()));
   CHECK(faceSize(vcaType()).x == 120.0f);
-  CHECK(faceSize(vcaType()).y == 180.0f);
+  CHECK(faceSize(vcaType()).y == 120.0f);
+  CHECK(faceShape(vcaType()).round);  // TX.orbit-ports: the ports go round its circle
   TestDriver d(600, 400);
   auto& canvas = d.setRoot<circuit::CircuitCanvas>("circuit");
   canvas.setScene(vcaScene(), false);
@@ -248,7 +254,7 @@ TEST_CASE("vca face: golden at zoom 0.1 / 0.5 / 1 / 2, 1x and 2x, four voices at
       const std::string name = "meta-vca-z" + zoomName(zoom) + "-" + zoomName(scale) + "x";
       CAPTURE(name);
       CHECK(rig.canvas->stats().facesPainted == 1u);
-      CHECK(rig.canvas->stats().faceLayersFromTiles == 4u);
+      CHECK(rig.canvas->stats().faceLayersFromTiles == 3u);
       checkImage(name, rig.draw(rig.res));
     }
 }
@@ -274,9 +280,9 @@ TEST_CASE("vca face: the same primitives at every zoom; tiles equal direct drawi
       r.centre(zoom);
       r.settle();
       const Image tiled = r.draw(r.res);
-      CHECK(r.canvas->stats().faceLayersFromTiles == 4u);
+      CHECK(r.canvas->stats().faceLayersFromTiles == 3u);
       const Image direct = r.draw(r.resNoTiles);
-      CHECK(r.canvas->stats().faceLayersDirect == 4u);
+      CHECK(r.canvas->stats().faceLayersDirect == 3u);
       const std::string name = "meta-vca-tiles-z" + zoomName(zoom) + "-" + zoomName(scale) + "x";
       CAPTURE(name);
       CHECK(pq::ui::test::matchesGolden(name, tiled, direct));
@@ -330,7 +336,7 @@ struct VcaUi {
     circuit::CircuitCanvas::View v;
     v.zoom = zoom;
     v.x = n.x + 60.0 - c.rect().w / (zoom * us) * 0.5;
-    v.y = n.y + 90.0 - c.rect().h / (zoom * us) * 0.5;
+    v.y = n.y + 90.0 - c.rect().h / (zoom * us) * 0.5;  // the face and its open panel
     c.setView(v);
     for (int i = 0; i < 4; ++i) d.step();
   }
@@ -340,6 +346,18 @@ struct VcaUi {
   }
   void type(const std::string& s) {
     for (const char c : s) (void)d.keyDown(static_cast<Key>(c));
+  }
+  // TX.orbit-ports: the chevron opens the floating panel (the range, the curve box, the presets); no edit, no rebuild.
+  MetaFace& face() const {
+    MetaFace* f = view().canvas().faceOn(view().scene().sceneNode[view().patch().nodeOf(ids.vca)]);
+    REQUIRE(f != nullptr);
+    return *f;
+  }
+  void openPanel() {
+    const size_t h0 = history();
+    if (!face().popupRect()) d.click(at(kChevX, kChevY));
+    REQUIRE(face().popupRect().has_value());
+    CHECK(history() == h0);
   }
 };
 
@@ -384,14 +402,15 @@ TEST_CASE("vca face: knob, min, max and curve drags at zoom 0.1 and 1.5 — one 
     Vec2 a = u.at(kCx, kCy + 12.0f);
     u.d.drag(a, {a.x, a.y - 30.0f}, 6);
     CHECK(u.history() == h0 + 1);
-    CHECK(u.value(meta::kVcaValue) == doctest::Approx(p0 + 30.0 / span(66.0f)).epsilon(1e-4));
+    CHECK(u.value(meta::kVcaValue) == doctest::Approx(p0 + 30.0 / span(kKnobExtent)).epsilon(1e-4));
     // Shift: a tenth.
     h0 = u.history();
     const double p1 = u.value(meta::kVcaValue);
     u.d.drag(a, {a.x, a.y + 20.0f}, 6, mod::kShift);
     CHECK(u.history() == h0 + 1);
-    CHECK(u.value(meta::kVcaValue) == doctest::Approx(p1 - 2.0 / span(66.0f)).epsilon(1e-4));
-    // Max: down 40 px along the default scale, rounded to 3 significant digits.
+    CHECK(u.value(meta::kVcaValue) == doctest::Approx(p1 - 2.0 / span(kKnobExtent)).epsilon(1e-4));
+    // Max: down 40 px along the default scale, rounded to 3 significant digits (in the floating panel).
+    u.openPanel();
     h0 = u.history();
     a = u.at(kMaxX, kRangeY);
     u.d.drag(a, {a.x, a.y + 40.0f}, 6);
@@ -430,6 +449,7 @@ TEST_CASE("vca face: knob, min, max and curve drags at zoom 0.1 and 1.5 — one 
 TEST_CASE("vca face: presets switch the curve in one undo step; the Bend curve's drag bends it") {
   VcaUi u;
   u.frame(1.5);
+  u.openPanel();
   CHECK(u.curve() == 0.0);
   // Exponential: the curve becomes Bend (a setting: its unit recompiles) and bend 0.6, one step.
   size_t h0 = u.history();
@@ -459,6 +479,7 @@ TEST_CASE("vca face: presets switch the curve in one undo step; the Bend curve's
 TEST_CASE("vca face: double-click a range end or the readout and type; Enter commits, Esc cancels, empty restores") {
   VcaUi u;
   u.frame(1.5);
+  u.openPanel();
   // Max: "150" → 150, one step.
   size_t h0 = u.history();
   u.d.doubleClick(u.at(kMaxX, kRangeY));
@@ -520,6 +541,10 @@ TEST_CASE("vca face: the info view names the hovered control; cursors follow it"
   u.d.move(u.at(kCx, kCy + 12.0f));
   CHECK(std::string(c.info().title) == "Value");
   CHECK(c.cursorAt(u.at(kCx, kCy + 12.0f)) == Cursor::ResizeNS);
+  u.d.move(u.at(kChevX, kChevY));
+  CHECK(std::string(c.info().title) == "Range and Curve");
+  CHECK(c.cursorAt(u.at(kChevX, kChevY)) == Cursor::Pointer);
+  u.openPanel();
   u.d.move(u.at(kMinX, kRangeY));
   CHECK(std::string(c.info().title) == "Min");
   u.d.move(u.at(kMaxX, kRangeY));

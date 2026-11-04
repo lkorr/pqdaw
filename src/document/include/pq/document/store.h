@@ -11,6 +11,7 @@
 // Not thread-safe: UI thread only. The engine sees the document only through the plain-data images T3.16/T3.17
 // build from snapshots.
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -45,13 +46,33 @@ struct LaneView {
 // own size. Bands keep 1. Saved as the entry's optional "scale" (written only when not 1); like the nudge, not undoable.
 inline constexpr float kMinPatchScale = 0.05f;  // TX.block-drag (from 0.5)
 inline constexpr float kMaxPatchScale = 3.0f;
+// TX.orbit-ports (SPEC §15 2026-11-03 "orbiting ports, a round VCA, Delete on a cable"): a device block's main input /
+// output PINNED on its outline at an angle (radians in [0, 2π), atan2 with y down: 0 = right, π/2 = down), the user's
+// drag of the port along the block's edge; unpinned ports follow their cables. Saved as the entry's optional "pinIn" /
+// "pinOut" (degrees); view state like the nudge (not undoable).
 struct PatchNudge {
   float dx = 0.0f;
   float dy = 0.0f;
   float scale = 1.0f;
-  bool empty() const noexcept { return dx == 0.0f && dy == 0.0f && scale == 1.0f; }
+  bool inPinned = false, outPinned = false;
+  float inAngle = 0.0f, outAngle = 0.0f;
+  bool empty() const noexcept { return dx == 0.0f && dy == 0.0f && scale == 1.0f && !inPinned && !outPinned; }
   friend bool operator==(const PatchNudge&, const PatchNudge&) noexcept = default;
 };
+// TX.orbit-ports: a pinned angle as saved (degrees in [0, 360), whole hundredths) and back; quantised angles survive a
+// save and load exactly (the view pins quantised angles).
+inline float patchPinDegrees(float radians) noexcept {
+  constexpr float kDeg = 180.0f / 3.14159265358979f;
+  float d = std::round(radians * kDeg * 100.0f) / 100.0f;
+  d = std::fmod(d, 360.0f);
+  return d < 0.0f ? d + 360.0f : d;
+}
+inline float patchPinRadians(float degrees) noexcept {
+  float d = std::fmod(degrees, 360.0f);
+  if (d < 0.0f) d += 360.0f;
+  return d * (3.14159265358979f / 180.0f);
+}
+inline float patchPinQuantise(float radians) noexcept { return patchPinRadians(patchPinDegrees(radians)); }
 struct ViewState {
   std::unordered_map<TrackId, TrackView> tracks;
   std::unordered_map<LaneId, LaneView> lanes;

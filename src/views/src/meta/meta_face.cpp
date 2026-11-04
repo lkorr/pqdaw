@@ -32,6 +32,7 @@ struct Registry {
   // worldSize per type id, filled on first ask (a face's size never changes).
   std::vector<std::pair<std::string, ui::Vec2>> sizes;
   std::vector<std::pair<std::string, ui::Vec2>> captions;  // TMM.13-fix2: captionAt per type id
+  std::vector<std::pair<std::string, FaceShape>> shapes;   // TX.orbit-ports: shape() per type id
 };
 
 Registry& registry() {
@@ -250,6 +251,20 @@ ui::Vec2 faceCaptionAt(const meta::Type& t) noexcept {
   const ui::Vec2 c = f ? f->captionAt() : ui::Vec2{2.0f, -6.0f};
   std::lock_guard<std::mutex> lock(r.m);
   r.captions.emplace_back(std::string(t.id), c);
+  return c;
+}
+
+FaceShape faceShape(const meta::Type& t) noexcept {
+  Registry& r = registry();
+  {
+    std::lock_guard<std::mutex> lock(r.m);
+    for (const auto& [name, c] : r.shapes)
+      if (name == t.id) return c;
+  }
+  const std::unique_ptr<MetaFace> f = makeFace(t);
+  const FaceShape c = f ? f->shape() : FaceShape{};
+  std::lock_guard<std::mutex> lock(r.m);
+  r.shapes.emplace_back(std::string(t.id), c);
   return c;
 }
 

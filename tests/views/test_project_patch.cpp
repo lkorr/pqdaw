@@ -142,7 +142,8 @@ struct Ui {
     const Node& n = pp().nodes[node];
     const int32_t k = n.output(name);
     REQUIRE(k >= 0);
-    return dev(n.x + n.w, n.y + pinY(n, static_cast<size_t>(k)));
+    (void)n;  // TX.orbit-ports: where the port is drawn (an orbiting main port sits on the block's outline)
+    return view().canvas().toDevice(view().canvas().portWorld(node, static_cast<uint32_t>(k), false));
   }
   Vec2 sumOf(std::string_view track) const {
     const uint32_t b = pp().bandOf(named(*ctx.doc(), track)->id);
@@ -1190,7 +1191,8 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
   {
     const Node& in = u.pp().nodes[u.deviceNode(inst)];
     REQUIRE(in.input("notes") == 0);
-    const Vec2 notes = u.dev(in.x, in.y + pinY(in, 0));
+    (void)in;  // TX.orbit-ports: its main input (notes) orbits: where it is drawn
+    const Vec2 notes = u.view().canvas().toDevice(u.view().canvas().portWorld(u.deviceNode(inst), 0, true));
     u.d.down(u.outPin(u.deviceNode(util), "out"));
     u.d.move(notes);
     CHECK(u.d.tree().cursor() == Cursor::NotAllowed);
@@ -2299,8 +2301,14 @@ TEST_CASE("project patch (TX.resize): S + drag scales a block uniformly — clam
     for (const Edge& e : u.pp().edges)
       if (e.kind == EdgeKind::Chain && (e.to == u.deviceNode(wt) || e.from == u.deviceNode(wt))) {
         ++chains;
-        CHECK(e.points.front().y == doctest::Approx(e.points.back().y));
-        CHECK(e.points.back().y == doctest::Approx(n.y + pinOffset(n, 0)));
+        // TX.orbit-ports: its chain cables end on its orbiting main ports, just outside its outline at its scale.
+        const bool into = e.to == u.deviceNode(wt);
+        const graph::Point2 p = into ? e.points.back() : e.points.front();
+        const Node::Orbit& o = into ? n.orbitIn : n.orbitOut;
+        REQUIRE(o.on);
+        CHECK(p.x == doctest::Approx(o.at.x));
+        CHECK(p.y == doctest::Approx(o.at.y));
+        CHECK(circuit::outlineDistance(n.outline, p) == doctest::Approx((circuit::kOrbitPortR + circuit::kOrbitGap) * 1.5f).epsilon(0.01));
       }
     CHECK(chains == 2);
     // Room made: the filter after it moved right by the growth, the band grew; the scene node draws the face at 1.5.
@@ -2657,10 +2665,20 @@ TEST_CASE("project patch (TX.block-drag): a dragged block is drawn at the pointe
     CHECK(u.pp().nodes[mn].x == n0.x);
     CHECK(v.stats().rebuilds == rebuilds0);
     CHECK(v.stats().relayouts == relayouts0);
-    // Its cables end on its ports where it is drawn now (the other ends stay).
+    // Its cables end on its ports where it is drawn now (the other ends stay). TX.orbit-ports: an orbiting port's end
+    // is on the port where it turned to (at the drag's offset); a control's moves with the block.
     for (size_t i = 0; i < mine.size(); ++i) {
       const auto [w, last] = mine[i];
       const graph::Point2 e = last ? cv.cablePoints(w).back() : cv.cablePoints(w).front();
+      const circuit::SceneWire& swr = cv.scene()->wires[w];
+      const uint32_t pin = last ? swr.toPin : swr.fromPin;
+      if (cv.pinOrbits(pin)) {
+        const graph::Point2 pp = cv.pinPoint(pin);
+        CHECK(e.x == doctest::Approx(pp.x + cv.nodeDragOffset().x).epsilon(0.005));
+        CHECK(e.y == doctest::Approx(pp.y + cv.nodeDragOffset().y).epsilon(0.005));
+        CHECK(circuit::outlineDistance(cv.scene()->nodes[sn].outline, pp) == doctest::Approx(circuit::kOrbitPortR + circuit::kOrbitGap).epsilon(0.01));
+        continue;
+      }
       CHECK(e.x == doctest::Approx(ends0[i].x + dlt.x / s).epsilon(0.005));
       CHECK(e.y == doctest::Approx(ends0[i].y + dlt.y / s).epsilon(0.005));
     }

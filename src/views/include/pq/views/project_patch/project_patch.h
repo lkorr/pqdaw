@@ -60,6 +60,7 @@
 #include "pq/graph/patch.h"
 #include "pq/graph/project.h"
 #include "pq/meta/type.h"
+#include "pq/views/circuit/orbit.h"
 
 namespace pq::views::project_patch {
 
@@ -140,6 +141,18 @@ struct Node {
   };
   std::vector<MiniBox> mini;
   std::vector<graph::Point2> miniWires;  // pairs of points (unit square): a straight line per wire
+  // TX.orbit-ports (pq/views/circuit/orbit.h): a closed device block's main input (inputs[mainIn]) and main output
+  // (outputs[0]) orbit its outline (circle for a round face, the rounded rect of its face / panel / body otherwise): `at`
+  // is the settled port (the angle that makes its cables shortest, or the pinned one: doc::PatchNudge's pins), where
+  // its cables start. Off for every other node and port (their pins keep their places).
+  struct Orbit {
+    bool on = false;
+    bool pinned = false;
+    float angle = 0.0f;
+    graph::Point2 at{0.0f, 0.0f};
+  };
+  Orbit orbitIn, orbitOut;
+  circuit::Outline outline;  // world units (valid while a port orbits)
   int32_t input(std::string_view name) const noexcept;   // −1: none
   int32_t output(std::string_view name) const noexcept;
 };
@@ -325,6 +338,20 @@ inline graph::Point2 inputEntry(const Node& n, size_t i) noexcept {
     }
   }
   return {n.x, n.y + pinOffset(n, i)};
+}
+
+// TX.orbit-ports: where output `i` / input `i` of `n` meets its wires — an orbiting main port's settled place (Node::
+// Orbit), else its pin on the right edge / inputEntry.
+inline graph::Point2 outPortPoint(const Node& n, size_t i) noexcept {
+  if (i == 0 && n.orbitOut.on) return n.orbitOut.at;
+  return {n.x + n.w, n.y + pinOffset(n, i)};
+}
+inline graph::Point2 inPortPoint(const Node& n, size_t i) noexcept {
+  if (n.orbitIn.on && n.mainIn >= 0 && i == static_cast<size_t>(n.mainIn)) return n.orbitIn.at;
+  return inputEntry(n, i);
+}
+inline bool portOrbits(const Node& n, size_t i, bool input) noexcept {
+  return input ? n.orbitIn.on && n.mainIn >= 0 && i == static_cast<size_t>(n.mainIn) : n.orbitOut.on && i == 0;
 }
 
 // The project patch of `project` as lowered into `lowered` (doc::lower with the same project; its library for device

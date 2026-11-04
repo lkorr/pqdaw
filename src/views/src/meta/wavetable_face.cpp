@@ -284,6 +284,7 @@ public:
   }
 
   Vec2 worldSize() const noexcept override { return {kW, kH}; }
+  FaceShape shape() const noexcept override { return {false, {}, kRadius}; }  // TX.orbit-ports
 
   // Inputs on the left edge: x by the mode switch (the sketch), pos beside the display; a wired param's pin by its
   // control (phase by the phase slider, position level with the display, the knobs' by the knob row).

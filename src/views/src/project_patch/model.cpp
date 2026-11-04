@@ -14,6 +14,7 @@
 #include "pq/document/meta.h"
 #include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
+#include "pq/views/devices/panel_face.h"
 #include "pq/views/meta/meta_face.h"
 
 namespace pq::views::project_patch {
@@ -961,8 +962,102 @@ struct Builder {
 
   // ---- routes ---------------------------------------------------------------------------------------------------
 
-  graph::Point2 outPin(const Node& n, uint32_t i) const { return {n.x + n.w, n.y + pinY(n, i)}; }
-  graph::Point2 inPin(const Node& n, uint32_t i) const { return inputEntry(n, i); }
+  graph::Point2 outPin(const Node& n, uint32_t i) const { return outPortPoint(n, i); }  // TX.orbit-ports
+  graph::Point2 inPin(const Node& n, uint32_t i) const { return inPortPoint(n, i); }
+
+  // ---- TX.orbit-ports: orbiting main ports (pq/views/circuit/orbit.h) ----------------------------------------------
+
+  // A closed device block's outline: its face's shape (circle or rounded rect, at its scale), a panel's rect, or the
+  // plain block's body (inside its 8-unit pin margins).
+  std::vector<std::pair<const meta::Type*, FaceShape>> shapes;  // faceShape per type (a registry lookup each, else)
+  circuit::Outline outlineOf(const Node& n) {
+    circuit::Outline o;
+    const float k = n.scale;
+    if (n.face != nullptr) {
+      FaceShape fs;
+      bool known = false;
+      for (const auto& [t, sh] : shapes)
+        if (t == n.face) fs = sh, known = true;
+      if (!known) shapes.emplace_back(n.face, fs = faceShape(*n.face));
+      if (fs.round) {
+        o.round = true;
+        o.cx = n.x + fs.centre.x * k, o.cy = n.y + fs.centre.y * k, o.r = fs.radius * k;
+        return o;
+      }
+      const ui::Vec2 sz = faceSize(*n.face);
+      o.x0 = n.x, o.y0 = n.y, o.x1 = n.x + sz.x * k, o.y1 = n.y + sz.y * k, o.corner = fs.radius * k;
+      return o;
+    }
+    if (n.panel) {
+      o.x0 = n.x, o.y0 = n.y, o.x1 = n.x + n.w, o.y1 = n.y + n.h, o.corner = devices::PanelFace::kPanelCorner * k;
+      return o;
+    }
+    const float in = std::min(8.0f, n.w * 0.25f);
+    o.x0 = n.x + in, o.y0 = n.y, o.x1 = n.x + n.w - in, o.y1 = n.y + n.h, o.corner = 2.0f;
+    return o;
+  }
+
+  // Which ports orbit, and the pinned ones (view state); then each port's angle toward its cables' other ends (an end
+  // that orbits too: its block's centre; an anchored control: its centre; any other pin: the pin), with the spacing rule.
+  void orbit() {
+    std::vector<uint32_t> blocks;
+    for (uint32_t i = 0; i < out.nodes.size(); ++i) {
+      Node& n = out.nodes[i];
+      if (n.kind != NodeKind::Device || n.expanded || (n.group && n.groupOpen)) continue;
+      n.outline = outlineOf(n);
+      if (!n.outline.valid()) continue;
+      n.orbitIn.on = n.mainIn >= 0 && static_cast<size_t>(n.mainIn) < n.inputs.size() && !n.inputs[static_cast<size_t>(n.mainIn)].anchored;
+      n.orbitOut.on = !n.outputs.empty();
+      if (opt.nudges != nullptr)
+        if (const auto it = opt.nudges->find(n.device.value); it != opt.nudges->end()) {
+          n.orbitIn.pinned = it->second.inPinned;
+          n.orbitIn.angle = it->second.inAngle;
+          n.orbitOut.pinned = it->second.outPinned;
+          n.orbitOut.angle = it->second.outAngle;
+        }
+      if (n.orbitIn.on || n.orbitOut.on) blocks.push_back(i);
+    }
+    if (blocks.empty()) return;
+    auto anchorOf = [&](uint32_t idx, uint32_t port, bool input) -> graph::Point2 {
+      const Node& m = out.nodes[idx];
+      if (portOrbits(m, port, input)) return m.outline.centre();
+      if (input && port < m.inputs.size() && m.inputs[port].anchored) return {m.x + m.inputs[port].ax, m.y + m.inputs[port].ay};
+      return input ? inputEntry(m, port) : graph::Point2{m.x + m.w, m.y + pinY(m, port)};
+    };
+    // (port key = node · 2 + 0 input / 1 output, the other end), sorted by key.
+    std::vector<std::pair<uint32_t, graph::Point2>> ends;
+    for (const Edge& e : out.edges) {
+      if (!isCable(e.kind, out.nodes[e.from].kind)) continue;
+      if (portOrbits(out.nodes[e.from], e.fromPort, false)) ends.emplace_back(e.from * 2 + 1, anchorOf(e.to, e.toPort, true));
+      if (portOrbits(out.nodes[e.to], e.toPort, true)) ends.emplace_back(e.to * 2, anchorOf(e.from, e.fromPort, false));
+    }
+    std::stable_sort(ends.begin(), ends.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::vector<graph::Point2> pts(ends.size());
+    for (size_t k = 0; k < ends.size(); ++k) pts[k] = ends[k].second;
+    std::vector<graph::Point2> fixed;
+    for (const uint32_t i : blocks) {
+      Node& n = out.nodes[i];
+      std::span<const graph::Point2> targets[2];
+      for (uint32_t k = 0; k < 2; ++k) {
+        const uint32_t key = i * 2 + k;
+        const auto lo = std::lower_bound(ends.begin(), ends.end(), key, [](const auto& a, uint32_t v) { return a.first < v; });
+        const auto hi = std::upper_bound(lo, ends.end(), key, [](uint32_t v, const auto& a) { return v < a.first; });
+        targets[k] = std::span<const graph::Point2>(pts.data() + (lo - ends.begin()), static_cast<size_t>(hi - lo));
+      }
+      fixed.clear();
+      for (size_t k = 0; k < n.inputs.size(); ++k)
+        if (!portOrbits(n, k, true) && !n.inputs[k].anchored) fixed.push_back(inputEntry(n, k));
+      for (size_t k = 1; k < n.outputs.size(); ++k) fixed.push_back({n.x + n.w, n.y + pinY(n, k)});
+      const bool on[2] = {n.orbitIn.on, n.orbitOut.on};
+      const bool pinned[2] = {n.orbitIn.pinned, n.orbitOut.pinned};
+      float angles[2] = {n.orbitIn.angle, n.orbitOut.angle};
+      circuit::solveOrbits(n.outline, n.scale, on, pinned, targets, fixed, angles);
+      n.orbitIn.angle = angles[0];
+      n.orbitOut.angle = angles[1];
+      if (n.orbitIn.on) n.orbitIn.at = circuit::orbitPoint(n.outline, angles[0], n.scale);
+      if (n.orbitOut.on) n.orbitOut.at = circuit::orbitPoint(n.outline, angles[1], n.scale);
+    }
+  }
 
   static void simplify(std::vector<graph::Point2>& pts) {
     std::vector<graph::Point2> s;
@@ -1041,6 +1136,7 @@ struct Builder {
     for (uint32_t i = 0; i < out.bands.size(); ++i) outputEdge(i);
     graphEdges();
     layout();
+    orbit();  // TX.orbit-ports: the main ports' places (the routes start there)
     route();
     if (opt.scope.valid()) prune();
     else if (opt.freeTrack.valid()) pruneFree();

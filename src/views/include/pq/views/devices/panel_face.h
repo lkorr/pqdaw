@@ -68,6 +68,9 @@ public:
 
   // ---- Face ----
   ui::Vec2 worldSize() const noexcept override { return size_; }
+  // TX.orbit-ports: a panel is a plain rect (its frame's corners: kPanelCorner).
+  static constexpr float kPanelCorner = 2.0f;
+  FaceShape shape() const noexcept override { return {false, {}, kPanelCorner}; }
   // Far out (below kMinScale) the panel is drawn from kLayers coverage tiles at the canvas's scale (the host's static
   // layers: one quad each per frame): the recording's triangles split by colour — panel fills, dark fields, light ink
   // (text as bars, lines), accents (value arcs, curves, lit buttons) — each drawn in its class's mean colour; keyed by

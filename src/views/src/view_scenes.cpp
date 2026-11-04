@@ -1759,7 +1759,8 @@ Status setupProjectCableDrag(Shell& shell) {
     if (pp.nodes[i].kind == project_patch::NodeKind::Device && pp.nodes[i].offPath && pp.nodes[i].title == "Utility" && !pp.nodes[i].outputs.empty()) src = i;
   if (src == project_patch::kNone) return Error{ErrorCode::NotFound, "project-cable-drag: no free Utility", {}};
   const project_patch::Node& sn = pp.nodes[src];
-  const ui::Vec2 from = c.toDevice({sn.x + sn.w, sn.y + project_patch::pinOffset(sn, 0)});
+  (void)sn;
+  const ui::Vec2 from = c.toDevice(c.portWorld(src, 0, false));  // TX.orbit-ports: where its output port is drawn
   auto send = [&](ui::PointerType t, ui::Vec2 p) {
     ui::PointerEvent e;
     e.type = t;
@@ -1774,7 +1775,7 @@ Status setupProjectCableDrag(Shell& shell) {
     const project_patch::Node& n = pp.nodes[i];
     if (i == src || n.kind != project_patch::NodeKind::Device) continue;
     for (size_t k = 0; k < n.inputs.size(); ++k) {
-      const ui::Vec2 p = c.toDevice(project_patch::inputEntry(n, k));
+      const ui::Vec2 p = c.toDevice(c.portWorld(i, static_cast<uint32_t>(k), true));
       if (!n.inputs[k].anchored && cr.contains(p) && std::hypot(p.x - from.x, p.y - from.y) >= 120.0f) pins.push_back(p);
     }
   }
@@ -2460,6 +2461,51 @@ Status setupProjectCablesAt(Shell& shell, double zoom, bool glow) {
   return Ok{};
 }
 Status setupProjectCables(Shell& shell) { return setupProjectCablesAt(shell, 0.0, false); }
+
+// TX.orbit-ports (SPEC §15 2026-11-03 "orbiting ports, a round VCA, Delete on a cable"): the same patch closer, framed on
+// the round VCA and its neighbours — every block's main input (a hollow ring) and output (a disc with a bright core and a
+// glow) on its outline toward its cables; `panel`: the VCA's floating panel opened by a click on its chevron (through
+// the canvas's dispatch: the range, the curve box, the presets under the face, over the canvas).
+Status setupProjectOrbitPorts(Shell& shell, bool panel) {
+  if (Status s = setupProjectCablesAt(shell, 0.0, false); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  project_patch::ProjectCanvas& c = v->canvas();
+  c.setCablesAnimated(false);
+  const project_patch::ProjectPatch& pp = v->patch();
+  uint32_t vca = project_patch::kNone;
+  for (uint32_t i = 0; i < pp.nodes.size(); ++i)
+    if (pp.nodes[i].face != nullptr && pp.nodes[i].face->id == "vca") vca = i;
+  if (vca == project_patch::kNone) return Error{ErrorCode::NotFound, "project-orbit-ports: no VCA (needs the meta-cables fixture)", {}};
+  const project_patch::Node& n = pp.nodes[vca];
+  const ui::IRect r = c.rect();
+  const float us = shell.tree().scale();
+  circuit::CircuitCanvas::View view;
+  view.zoom = panel ? 2.0 : 1.25;
+  view.x = n.x + 0.5 * n.w - 0.5 * r.w / (view.zoom * us);
+  view.y = n.y + (panel ? 100.0 : 0.5 * n.h) - 0.5 * r.h / (view.zoom * us);
+  c.setView(view);
+  shell.tree().layoutNow();
+  if (panel) {
+    const ui::Vec2 chev = c.toDevice({n.x + 60.0f * n.scale, n.y + 100.0f * n.scale});
+    for (const ui::PointerType t : {ui::PointerType::Move, ui::PointerType::Down, ui::PointerType::Up}) {
+      ui::PointerEvent e;
+      e.type = t;
+      e.button = ui::PointerButton::Left;
+      e.pos = chev;
+      shell.tree().dispatchPointer(e);
+    }
+    const uint32_t sn = v->scene().sceneNode[vca];
+    const MetaFace* f = sn == project_patch::kNone ? nullptr : c.faceOn(sn);
+    if (f == nullptr || !f->popupRect()) return Error{ErrorCode::Unknown, "project-vca-panel: the chevron did not open the panel", {}};
+    // The pointer away from the face (no hover over the panel).
+    ui::PointerEvent e;
+    e.type = ui::PointerType::Move;
+    e.pos = {static_cast<float>(r.x + 4), static_cast<float>(r.y + 4)};
+    shell.tree().dispatchPointer(e);
+  }
+  shell.tree().layoutNow();
+  return Ok{};
+}
 Status setupProjectCablesFar(Shell& shell) { return setupProjectCablesAt(shell, 0.2, false); }
 Status setupProjectCablesGlow(Shell& shell) { return setupProjectCablesAt(shell, 0.0, true); }
 
@@ -2857,6 +2903,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-cables", 1600, 900, setupProjectCables},                 // TX.cables: --project tests/views/fixtures/meta-cables
     {"project-cables-far", 1600, 900, setupProjectCablesFar},          // TX.cables: the same --project, zoom 0.2
     {"project-cables-glow", 1600, 900, setupProjectCablesGlow},        // TX.cables: the same --project, playing
+    {"project-orbit-ports", 1600, 900, [](Shell& s) { return setupProjectOrbitPorts(s, false); }},  // TX.orbit-ports: the same --project
+    {"project-vca-panel", 1600, 900, [](Shell& s) { return setupProjectOrbitPorts(s, true); }},     // TX.orbit-ports: the same --project
     {"device-meta-spectrogram", 1280, 800, setupDeviceMetaSpectrogram},    // TX.spectrogram
     {"project-meta-spectrogram", 1280, 800, setupProjectMetaSpectrogram},  // TX.spectrogram
     {"meta-operator-device", 1760, 900, setupDeviceMetaOperator},      // TMM.12 (wider: the whole panel)

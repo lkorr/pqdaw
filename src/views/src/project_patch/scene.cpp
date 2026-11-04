@@ -204,10 +204,22 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
           pin.stub = 0.0f;
           pin.visible = false;
         }
+        // TX.orbit-ports: a main port on the block's outline, where the layout settled it (the canvas moves it live).
+        if (portOrbits(n, k, side == 0)) {
+          const Node::Orbit& o = side == 0 ? n.orbitIn : n.orbitOut;
+          pin.x = o.at.x;
+          pin.y = o.at.y;
+          pin.stub = 0.0f;
+          pin.orbit = true;
+          pin.pinned = o.pinned;
+          pin.angle = o.angle;
+          pin.orbitKey = mix64(nodeIdentity(pp, i), side == 0 ? 0x1Bu : 0x2Bu);
+        }
         sc.pins.push_back(pin);
       }
     }
     sn.pinCount = static_cast<uint32_t>(sc.pins.size()) - sn.firstPin;
+    if (n.orbitIn.on || n.orbitOut.on) sn.outline = n.outline;  // TX.orbit-ports
     sc.nodes.push_back(sn);
     if (n.face != nullptr) sc.faces.push_back({v, n.face, std::string(), n.device.value});  // TMM.4: the device itself
     // TX.panel-faces: a stock device's panel (the view's panelMaker makes it; path: its patch, so a rebuild keeps it).

@@ -75,14 +75,9 @@ struct Ui {
     REQUIRE(n != kNone);
     return n;
   }
-  Vec2 outPin(uint32_t n, size_t k = 0) const {
-    const Node& x = pp().nodes[n];
-    return dev(x.x + x.w, x.y + pinOffset(x, k));
-  }
-  Vec2 inPin(uint32_t n, size_t k = 0) const {
-    const Node& x = pp().nodes[n];
-    return dev(x.x, x.y + pinOffset(x, k));
-  }
+  // TX.orbit-ports: where the port is drawn (an orbiting main port sits on the block's outline).
+  Vec2 outPin(uint32_t n, size_t k = 0) const { return view().canvas().toDevice(view().canvas().portWorld(n, static_cast<uint32_t>(k), false)); }
+  Vec2 inPin(uint32_t n, size_t k = 0) const { return view().canvas().toDevice(view().canvas().portWorld(n, static_cast<uint32_t>(k), true)); }
   void selectBlocks(std::initializer_list<doc::DeviceId> ds) {
     std::vector<uint32_t> sn;
     for (const doc::DeviceId d0 : ds) sn.push_back(view().scene().sceneNode[node(d0)]);

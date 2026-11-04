@@ -16,7 +16,9 @@
 //   - TX.cables (`pq_bench_project_patch cables`, also at the end of a full run): 200 hanging cables between 40 blocks
 //     in view at zoom 1 (2560x1440): the simulation alone (200 awake ropes, a 60 Hz frame's steps), a settled full paint,
 //     frames while all 200 swing (a drag offset each frame: sim + damage + paint), frames while all 200 glow (poll +
-//     paint), and idle after they settle (frames and timers: none)
+//     paint), and idle after they settle (frames and timers: none); TX.orbit-ports: the same cables with orbiting main
+//     ports — one block dragged (its ports and its cables' other ends solved per move) and every block dragged
+
 // Acceptance (T4.13): zoomed-out full-project paint < 2 ms; the morph at 144 Hz with 64 tracks (a frame < 6.9 ms).
 // Run from the ship build (bench target only); results → bench/RESULTS.md.
 
@@ -404,6 +406,52 @@ int cablesBench(double nsPerCycle) {
   while (c.cablesMoving() && now - t0 < 10.0) frame();
   std::printf("cables: every cable asleep %.2f s after the drag ended (frames stop then)\n", now - t0);
   settle();
+  // TX.orbit-ports: the same 200 cables with every block's first input and first output ORBITING its outline (about
+  // 80 cables end on an orbiting port): one block dragged (its ports and its cables' other ends solved each move, the
+  // slides eased, the ropes swing), and every block dragged (every port solved) — against cables.swing above.
+  {
+    auto so = std::make_shared<circuit::CircuitScene>(*sc);
+    for (uint32_t v = 0; v < so->nodes.size(); ++v) {
+      circuit::SceneNode& n = so->nodes[v];
+      n.outline.x0 = n.x + 8.0f, n.outline.y0 = n.y, n.outline.x1 = n.x + n.w - 8.0f, n.outline.y1 = n.y + n.h, n.outline.corner = 2.0f;
+      for (const uint32_t k : {0u, 5u}) {
+        circuit::ScenePin& pin = so->pins[n.firstPin + k];
+        pin.orbit = true;
+        pin.angle = k == 0 ? circuit::kOrbitDefaultIn : circuit::kOrbitDefaultOut;
+        pin.orbitKey = (static_cast<uint64_t>(v) << 1 | (k == 0 ? 0u : 1u)) + 1;
+        const graph::Point2 at = circuit::orbitPoint(n.outline, pin.angle, 1.0f);
+        pin.x = at.x, pin.y = at.y;
+      }
+    }
+    c.setScene(so, false);
+    settle();
+    const uint32_t one[1] = {static_cast<uint32_t>(so->nodes.size() / 2)};
+    std::vector<double> drag1, dragAll;
+    uint64_t s0 = c.portSolves();
+    for (int i = 0; i < 120; ++i) {
+      const float t = static_cast<float>(i) / 120.0f;
+      drag1.push_back(timed([&] { c.setNodeDrag(one, {220.0f * std::sin(6.2831853f * t), 140.0f * std::cos(6.2831853f * t)}); }));
+    }
+    const double solves1 = static_cast<double>(c.portSolves() - s0) / 120.0;
+    c.clearNodeDrag();
+    settle();
+    s0 = c.portSolves();
+    for (int i = 0; i < 120; ++i) {
+      const float t = static_cast<float>(i) / 120.0f;
+      dragAll.push_back(timed([&] { c.setNodeDrag(all, {40.0f * std::sin(6.2831853f * 2.0f * t), 25.0f * std::cos(6.2831853f * 3.0f * t)}); }));
+    }
+    const double solvesAll = static_cast<double>(c.portSolves() - s0) / 120.0;
+    std::printf("orbit: %.1f block solves per move (one block lifted), %.1f (all %zu lifted)\n", solves1, solvesAll, so->nodes.size());
+    pq::bench::reportStats("orbit.drag frame (one block lifted: its orbiting ports + its cables' other ends solved, slides, sim, paint) 200 cables 2560x1440",
+                           pq::bench::summarize(drag1), "ns CPU/frame");
+    pq::bench::reportStats("orbit.swing frame (all 40 blocks lifted: every port solved, slides, sim, paint) 200 cables 2560x1440",
+                           pq::bench::summarize(dragAll), "ns CPU/frame");
+    c.clearNodeDrag();
+    const double t1 = now;
+    while ((c.cablesMoving() || c.portsMoving()) && now - t1 < 10.0) frame();
+    std::printf("orbit: every port and cable at rest %.2f s after the drag ended\n", now - t1);
+    settle();
+  }
   // All 200 glow (the sources live): the 30 Hz poll + the repaint of the lit cables.
   live = true;
   c.wakeCables();
@@ -669,6 +717,7 @@ int main(int argc, char** argv) {
     };
     std::vector<double> move, drop;
     uint32_t lifted = 0;
+    const uint64_t solves0 = view->canvas().portSolves();  // TX.orbit-ports: the blocks whose ports a move solves
     const doc::DeviceId dragged = pp.nodes[node].device;
     for (int round = 0; round < 4; ++round) {
       const Node& n = view->patch().nodes[view->patch().nodeOf(dragged)];
@@ -686,8 +735,10 @@ int main(int argc, char** argv) {
       drop.push_back(timed([&] { pointer(PointerType::Up, end); }));
       settle();
     }
-    std::printf("block drag (%s, %s): the block lifted in %u of %zu move frames\n", level == 0 ? "one band" : "whole project", lod, lifted,
-                move.size());
+    std::printf("block drag (%s, %s): the block lifted in %u of %zu move frames; %.1f orbiting-port solves per move\n",
+                level == 0 ? "one band" : "whole project", lod, lifted, move.size(),
+                static_cast<double>(view->canvas().portSolves() - solves0) / static_cast<double>(std::max<size_t>(1, move.size())));
+
     std::snprintf(name, sizeof name, "block_drag.move frame (a %s at the pointer + its cables; %s, %s) 64 tracks %ux%u",
                   level == 0 ? "panel" : "plain block", level == 0 ? "one band" : "whole project", lod, w, h);
     pq::bench::reportStats(name, pq::bench::summarize(move), "ns CPU/frame");

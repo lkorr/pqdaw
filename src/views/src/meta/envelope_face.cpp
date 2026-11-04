@@ -74,6 +74,7 @@ public:
   explicit EnvelopeFace(const meta::Type& t) : MetaFace(t) {}
 
   Vec2 worldSize() const noexcept override { return {kW, kH}; }
+  FaceShape shape() const noexcept override { return {false, {}, kRadius}; }  // TX.orbit-ports
 
   // Inputs on the left edge: `in` level with the output (the signal passes straight through), the gate at the top, a
   // wired param's pin down the edge in the params' order.

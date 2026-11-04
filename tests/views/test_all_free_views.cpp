@@ -342,13 +342,15 @@ struct PatchUi : Doc {
     const Node& n = pp().nodes[node(id)];
     const int32_t k = n.output(name);
     REQUIRE(k >= 0);
-    return dev({n.x + n.w, n.y + pinOffset(n, static_cast<size_t>(k))});
+    // TX.orbit-ports: where the port is drawn (an orbiting main port sits on the block's outline).
+    return dev(view().canvas().portWorld(node(id), static_cast<uint32_t>(k), false));
   }
   Vec2 inPin(doc::DeviceId id, std::string_view name) const {
     const Node& n = pp().nodes[node(id)];
     const int32_t k = n.input(name);
     REQUIRE(k >= 0);
-    return dev(inputEntry(n, static_cast<size_t>(k)));
+    // TX.orbit-ports: where the port is drawn (an orbiting main port sits on the block's outline).
+    return dev(view().canvas().portWorld(node(id), static_cast<uint32_t>(k), true));
   }
   Vec2 mixer() const {
     const Node& n = pp().nodes[pp().bands[pp().bandOf(keys)].mixer];

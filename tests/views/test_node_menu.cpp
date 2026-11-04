@@ -132,13 +132,15 @@ struct Ui {
     const Node& n = pp().nodes[node(id)];
     const int32_t k = n.output(name);
     REQUIRE(k >= 0);
-    return dev({n.x + n.w, n.y + pinOffset(n, static_cast<size_t>(k))});
+    // TX.orbit-ports: where the port is drawn (an orbiting main port sits on the block's outline).
+    return dev(view().canvas().portWorld(node(id), static_cast<uint32_t>(k), false));
   }
   Vec2 inPin(doc::DeviceId id, std::string_view name) const {
     const Node& n = pp().nodes[node(id)];
     const int32_t k = n.input(name);
     REQUIRE(k >= 0);
-    return dev(inputEntry(n, static_cast<size_t>(k)));
+    // TX.orbit-ports: where the port is drawn (an orbiting main port sits on the block's outline).
+    return dev(view().canvas().portWorld(node(id), static_cast<uint32_t>(k), true));
   }
   // Empty canvas right of the Keys band, level with its spine (world, device).
   graph::Point2 emptyWorld() const {
@@ -860,7 +862,8 @@ TEST_CASE("node menu: a new connection is the real cable on the pointer — snap
   CHECK(cv.looseCableSnapped());
   {
     const Node& sn = u.pp().nodes[u.node(u.sat)];
-    const graph::Point2 pin = inputEntry(sn, static_cast<size_t>(sn.input("x")));
+    // TX.orbit-ports: on the port where it is drawn (the Saturator's main input orbits its panel).
+    const graph::Point2 pin = u.view().canvas().portWorld(u.node(u.sat), static_cast<uint32_t>(sn.input("x")), true);
     const graph::Point2 end = cv.looseCablePoints().back();
     CHECK(std::abs(end.x - pin.x) <= 0.01f);
     CHECK(std::abs(end.y - pin.y) <= 0.01f);
@@ -990,7 +993,7 @@ TEST_CASE("node menu: open animation then idle; spawn mark; the insert cable sho
     const Node& n = u.pp().nodes[u.node(made)];
     const int32_t k = n.input(u.view().mainPorts(made).in);
     REQUIRE(k >= 0);
-    const graph::Point2 pin = inputEntry(n, static_cast<size_t>(k));
+    const graph::Point2 pin = inPortPoint(n, static_cast<size_t>(k));  // TX.orbit-ports: its orbiting input, settled
     CHECK(std::abs(pin.x - drop.x) <= 1.0f);
     CHECK(std::abs(pin.y - drop.y) <= 1.0f);
   }

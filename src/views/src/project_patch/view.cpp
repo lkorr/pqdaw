@@ -1208,7 +1208,7 @@ std::optional<Vec2> ProjectPatchView::outputPoint(doc::DeviceId device, std::str
   if (k < 0) k = nd.output(std::string(port) + "@" + std::to_string(device.value));  // a closed group's member
   if (k < 0) k = 0;
   if (nd.outputs.empty()) return std::nullopt;
-  return clampedPoint(canvas_->toDevice({nd.x + nd.w, nd.y + pinOffset(nd, static_cast<size_t>(k))}), canvas_->rect(), docked);
+  return clampedPoint(canvas_->toDevice(canvas_->portWorld(n, static_cast<uint32_t>(k), false)), canvas_->rect(), docked);
 }
 
 std::optional<Vec2> ProjectPatchView::inputPoint(doc::DeviceId device, std::string_view port, bool* docked) const {
@@ -1219,7 +1219,7 @@ std::optional<Vec2> ProjectPatchView::inputPoint(doc::DeviceId device, std::stri
   int32_t k = nd.input(port);
   if (k < 0) k = nd.input(std::string(port) + "@" + std::to_string(device.value));
   graph::Point2 w{nd.x, nd.y + pinOffset(nd, 0)};
-  if (k >= 0) w = inputEntry(nd, static_cast<size_t>(k));
+  if (k >= 0) w = canvas_->portWorld(n, static_cast<uint32_t>(k), true);  // TX.orbit-ports: an orbiting port where it is
   return clampedPoint(canvas_->toDevice(w), canvas_->rect(), docked);
 }
 
@@ -1663,6 +1663,49 @@ bool ProjectPatchView::setBlockScale(doc::DeviceId device, float scale) {
   if (std::find(resized_.begin(), resized_.end(), device.value) == resized_.end()) resized_.push_back(device.value);
   relayout();  // model + scene again (the lowering kept: view state is not the document)
   return true;
+}
+
+// ---- TX.orbit-ports ---------------------------------------------------------------------------------------------------
+
+bool ProjectPatchView::portPinned(doc::DeviceId device, bool input) const noexcept {
+  const auto& nudges = ctx_.store().view().patchNudges;
+  const auto it = nudges.find(device.value);
+  return it != nudges.end() && (input ? it->second.inPinned : it->second.outPinned);
+}
+
+bool ProjectPatchView::pinPort(doc::DeviceId device, bool input, float angle) {
+  if (!device.valid() || !std::isfinite(angle)) return false;
+  const float a = doc::patchPinQuantise(angle);
+  auto& nudges = ctx_.store().view().patchNudges;
+  doc::PatchNudge& n = nudges[device.value];
+  bool& pinned = input ? n.inPinned : n.outPinned;
+  float& at = input ? n.inAngle : n.outAngle;
+  if (pinned && at == a) return false;
+  pinned = true;
+  at = a;
+  ctx_.viewStateChanged();
+  relayout();  // model + scene again (the lowering kept: view state is not the document)
+  return true;
+}
+
+bool ProjectPatchView::unpinPort(doc::DeviceId device, bool input) {
+  auto& nudges = ctx_.store().view().patchNudges;
+  const auto it = nudges.find(device.value);
+  if (it == nudges.end() || !(input ? it->second.inPinned : it->second.outPinned)) return false;
+  (input ? it->second.inPinned : it->second.outPinned) = false;
+  (input ? it->second.inAngle : it->second.outAngle) = 0.0f;
+  if (it->second.empty()) nudges.erase(it);
+  ctx_.viewStateChanged();
+  relayout();
+  return true;
+}
+
+bool ProjectPatchView::deleteCable(uint32_t edge) {
+  if (edge >= patch_.edges.size()) return false;
+  const Edge& e = patch_.edges[edge];
+  if (!e.cable || !e.wire.valid() || doc::findWire(*ctx_.doc(), e.wire) == nullptr) return false;
+  const doc::WireId one[1] = {e.wire};
+  return apply(doc::ops::deleteWires(*ctx_.doc(), one), "Delete Cable");
 }
 
 // ---- menus ----------------------------------------------------------------------------------------------------------

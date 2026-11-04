@@ -43,6 +43,7 @@ public:
     if (type_ == nullptr) return;
     face_ = makeFace(*type_);
     if (!face_) return;
+    face_->setPopupOverFace(true);  // TX.orbit-ports: a panel clips to its body: a face's floating panel opens over it
     std::unique_ptr<MetaTarget> target = t != nullptr ? t->metaTarget(desc.meta, *type_) : nullptr;
     if (!target) target = std::make_unique<DefaultTarget>(*type_);
     face_->bind(std::move(target), t != nullptr ? t->metaVoices(desc.meta) : nullptr);
@@ -140,6 +141,7 @@ public:
     p.setImages(ctx.res.images);  // TX.spectrogram: a face with its own texture
     face_->paintJacks(p, env);
     face_->paintLive(p, env);
+    face_->paintPopup(p, env);  // TX.orbit-ports: its floating panel (over the face here), when open
     if (missing) {
       tilesWanted_ = true;
       requestFrame();
@@ -194,7 +196,13 @@ public:
         // Left presses, and right presses a face uses (harmonic bars); anything else goes to the device frame.
         if (e.button != ui::PointerButton::Left && e.button != ui::PointerButton::Right) return false;
         const FacePointer fp = pointerOf(e, K::Down);
-        if (face_->hitTest(fp.local, fp.pxPerUnit) < 0) return false;
+        if (face_->hitTest(fp.local, fp.pxPerUnit) < 0) {
+          if (face_->popupRect()) {  // TX.orbit-ports: a press elsewhere closes the floating panel
+            face_->focusLost();
+            markDirty();
+          }
+          return false;
+        }
         if (!face_->onPointer(fp)) return false;
         if (tree()) tree()->setFocus(this);
         markDirty();
@@ -224,6 +232,13 @@ public:
         return true;
       }
       default: return false;
+    }
+  }
+
+  void onFocusChanged(bool focused) override {
+    if (!focused && face_ && face_->popupRect()) {  // TX.orbit-ports: the key focus went elsewhere: the panel closes
+      face_->focusLost();
+      markDirty();
     }
   }
 

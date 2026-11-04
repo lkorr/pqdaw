@@ -269,17 +269,33 @@ void ProjectPatchView::placeAt(doc::DeviceId device, graph::Point2 at, std::stri
   // from an output), or its output pin (a backwards cable into a param); an anchored input (a face's control) or an
   // unknown port: its centre.
   if (const int32_t k = inPort.empty() ? -1 : nd.input(inPort); k >= 0 && !nd.inputs[static_cast<size_t>(k)].anchored) {
-    const graph::Point2 pin = inputEntry(nd, static_cast<size_t>(k));
+    const graph::Point2 pin = inPortPoint(nd, static_cast<size_t>(k));  // TX.orbit-ports: where its port settled
     dx = at.x - pin.x, dy = at.y - pin.y;
   } else if (const int32_t o = outPort.empty() ? -1 : nd.output(outPort); o >= 0) {
-    dx = at.x - (nd.x + nd.w), dy = at.y - (nd.y + pinOffset(nd, static_cast<size_t>(o)));
+    const graph::Point2 pin = outPortPoint(nd, static_cast<size_t>(o));
+    dx = at.x - pin.x, dy = at.y - pin.y;
   }
   // Never above its band's title strip (the band grows down and right to hold it, never up).
   if (nd.band < patch_.bands.size()) {
     const float top = patch_.bands[nd.band].y + metrics::kTitle;
     if (nd.y + dy < top) dy = top - nd.y;
   }
+  const bool orbiting = nd.orbitIn.on || nd.orbitOut.on;
   nudge(device.value, dx, dy);
+  // TX.orbit-ports: an orbiting port turns toward its cable where the block now is: a step or two more puts it on the
+  // drop point (the turn shrinks with each step; whole units, as nudges are).
+  for (int step = 0; orbiting && step < 3; ++step) {
+    const uint32_t m = patch_.nodeOf(device);
+    if (m == kNone) return;
+    const Node& b = patch_.nodes[m];
+    graph::Point2 pin;
+    if (const int32_t k = inPort.empty() ? -1 : b.input(inPort); k >= 0 && !b.inputs[static_cast<size_t>(k)].anchored) pin = inPortPoint(b, static_cast<size_t>(k));
+    else if (const int32_t o = outPort.empty() ? -1 : b.output(outPort); o >= 0) pin = outPortPoint(b, static_cast<size_t>(o));
+    else return;
+    const float rx = at.x - pin.x, ry = at.y - pin.y;
+    if (std::fabs(rx) < 0.75f && std::fabs(ry) < 0.75f) return;
+    nudge(device.value, rx, ry);
+  }
 }
 
 // ---- push-apart (TX.block-drag: blocks never overlap) -----------------------------------------------------------------

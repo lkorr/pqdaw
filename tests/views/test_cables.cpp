@@ -338,8 +338,17 @@ TEST_CASE("cables: a block drag swings its cables; the canvas stops requesting f
   const Point2 moved = fromDragged ? during.front() : during.back();
   const Point2 fixed = fromDragged ? during.back() : during.front();
   const Point2 movedRef = fromDragged ? end0 : last0, fixedRef = fromDragged ? last0 : end0;
-  CHECK(moved.y - movedRef.y == doctest::Approx(dy / s).epsilon(0.02));
-  CHECK(dist(fixed, fixedRef) < 0.01f);
+  // TX.orbit-ports: each end is on its port where that is drawn now — the dragged block's at the drag offset (it went
+  // down with the block), the other one's turned toward it along its own outline.
+  const uint32_t movedPin = fromDragged ? sc.wires[mine[0]].fromPin : sc.wires[mine[0]].toPin;
+  const uint32_t fixedPin = fromDragged ? sc.wires[mine[0]].toPin : sc.wires[mine[0]].fromPin;
+  const Point2 off = u.canvas().nodeDragOffset();
+  const Point2 mp = u.canvas().pinPoint(movedPin), fp = u.canvas().pinPoint(fixedPin);
+  CHECK(off.y == doctest::Approx(dy / s).epsilon(0.02));
+  CHECK(dist(moved, {mp.x + off.x, mp.y + off.y}) < 0.01f);
+  CHECK(dist(fixed, fp) < 0.01f);
+  CHECK(moved.y - movedRef.y > 0.5f * dy / s);
+  (void)fixedRef;
   const uint64_t framesBefore = u.d.framesDrawn();
   u.d.advance(0.1);
   CHECK(u.d.framesDrawn() > framesBefore);  // animating

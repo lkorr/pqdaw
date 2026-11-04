@@ -33,6 +33,7 @@
 #include "pq/graph/layout.h"
 #include "pq/graph/patch.h"
 #include "pq/graph/structure.h"
+#include "pq/views/circuit/orbit.h"
 #include "pq/views/circuit/symbols.h"
 
 namespace pq::views::circuit {
@@ -57,6 +58,14 @@ struct ScenePin {
   bool visible = true;
   bool connected = false;
   uint32_t label = UINT32_MAX;  // into CircuitScene::strings (labelled symbols), or none
+  // TX.orbit-ports (pq/views/circuit/orbit.h): a block's main input / output ORBITS its node's outline (SceneNode::
+  // outline): (x, y) is where it settles (at `angle`, as the layout solved it; the cables' rest shapes start there), and
+  // the canvas moves it along the outline live (a drag) and animates the slide. `pinned`: the user placed it (the angle
+  // is kept). `orbitKey` names the port across rebuilds of the scene (its slide continues from where it was drawn).
+  bool orbit = false;
+  bool pinned = false;
+  float angle = 0.0f;
+  uint64_t orbitKey = 0;
 };
 
 struct SceneNode {
@@ -70,6 +79,9 @@ struct SceneNode {
   // scaled one; a face or panel on it is drawn, hit-tested and laid out at scale × the canvas's px per world unit, in
   // face-local units of its own size (local = (world − x, y) / scale). 1 everywhere else.
   float scale = 1.0f;
+  // TX.orbit-ports: the block's outline (world units: a circle for a round face, a rounded rect otherwise), which its
+  // orbiting pins (ScenePin::orbit) sit just outside of. Unset (invalid) for nodes without orbiting pins.
+  Outline outline;
 };
 
 struct SceneWire {
