@@ -255,8 +255,7 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
     ctx_.library().setPresetName(id, stem);
   }
   if (!note.empty()) ctx_.setStatus(note);
-  placeAt(id, at, inAt, outAt);
-  startPush(id);
+  placeAt(id, at, inAt, outAt);  // TX.block-drag: the nudge's re-layout settles any overlap (the new block gives way most)
   return id;
 }
 
@@ -283,89 +282,181 @@ void ProjectPatchView::placeAt(doc::DeviceId device, graph::Point2 at, std::stri
   nudge(device.value, dx, dy);
 }
 
-// ---- push-apart ------------------------------------------------------------------------------------------------------
+// ---- push-apart (TX.block-drag: blocks never overlap) -----------------------------------------------------------------
 
-void ProjectPatchView::startPush(doc::DeviceId placed) {
-  push_ = {};
-  sync();
-  const uint32_t pn = patch_.nodeOf(placed);
-  if (pn == kNone) return;
-  const Node& p = patch_.nodes[pn];
-  const float minY = p.band < patch_.bands.size() ? patch_.bands[p.band].y + metrics::kTitle : -1e9f;
-  auto& nudges = ctx_.store().view().patchNudges;
-  auto body = [&](const Node& n, bool movable) {
-    Push::Body b;
-    b.device = n.device;
-    b.x = n.x, b.y = n.y, b.w = n.w, b.h = n.h;
-    b.minY = minY;
-    b.movable = movable;
-    if (const auto it = nudges.find(n.device.value); it != nudges.end()) b.base = it->second;
-    return b;
-  };
-  push_.bodies.push_back(body(p, true));
-  // What it may meet: the blocks of its band at its level (inside the same capsule, or outside any): blocks move (TX.all-
-  // free: every block is free), the source, the mixer, capsules and opened blocks stand.
+namespace {
+bool closer(const float* a, const float* b, float gap) noexcept {  // rects {x, y, w, h} nearer than `gap` (0: overlapping)
+  return a[0] < b[0] + b[2] + gap && b[0] < a[0] + a[2] + gap && a[1] < b[1] + b[3] + gap && b[1] < a[1] + a[3] + gap;
+}
+}  // namespace
+
+bool ProjectPatchView::blockGestureRunning() const noexcept {
+  const ProjectCanvas::Drag d = canvas_->drag();
+  return d == ProjectCanvas::Drag::MoveDevice || d == ProjectCanvas::Drag::Nudge || d == ProjectCanvas::Drag::Splice ||
+         d == ProjectCanvas::Drag::Resize;
+}
+
+// Every level's bodies: a band's blocks outside capsules (its source, mixer and Out standing, its title strip a wall)
+// and each opened capsule's members (its terminals standing). With `onlyOverlapping`, only the levels where two bodies
+// (one of them movable) are closer than kPushDetect, or a movable one is above its wall.
+void ProjectPatchView::collectBodies(std::vector<Push::Body>& out, bool onlyOverlapping) const {
+  out.clear();
+  const auto& nudges = ctx_.store().view().patchNudges;
+  auto listed = [](const std::vector<uint32_t>& v, uint32_t id) { return std::find(v.begin(), v.end(), id) != v.end(); };
   for (uint32_t i = 0; i < patch_.nodes.size(); ++i) {
-    if (i == pn) continue;
     const Node& n = patch_.nodes[i];
-    if (n.band != p.band || n.capsule != p.capsule) continue;
-    if (n.kind == NodeKind::Terminal || (n.group && n.groupOpen && i == p.capsule)) continue;
-    const bool movable = n.kind == NodeKind::Device && !(n.group && n.groupOpen) && !n.expanded;
-    push_.bodies.push_back(body(n, movable));
+    if (n.band >= patch_.bands.size()) continue;
+    const bool device = n.kind == NodeKind::Device;
+    const bool standing = n.kind == NodeKind::Source || n.kind == NodeKind::Sum || n.kind == NodeKind::Mixer ||
+                          n.kind == NodeKind::Output || n.kind == NodeKind::Terminal;
+    if (!device && !standing) continue;
+    if (n.w <= 0.0f || n.h <= 0.0f) continue;
+    Push::Body b;
+    b.device = device ? n.device : doc::DeviceId{};
+    b.x = n.x, b.y = n.y, b.w = n.w, b.h = n.h;
+    b.level = n.band * 65536u + (n.capsule == kNone ? 65535u : std::min<uint32_t>(n.capsule, 65534u));
+    // The band's title strip is a wall (a group's panel and the free rack have none: their band is only the room
+    // around their blocks).
+    b.minY = n.capsule == kNone && !patch_.scoped ? patch_.bands[n.band].y + metrics::kTitle : -1e9f;
+    b.movable = device;
+    if (device) {
+      b.mass = std::max(1.0f, n.w * n.h);
+      if (listed(moved_, n.device.value)) b.mass *= 0.25f;   // the one just placed gives way most
+      if (listed(resized_, n.device.value)) b.mass *= 4.0f;  // a resized one holds its place (its neighbours make room)
+      if (const auto it = nudges.find(n.device.value); it != nudges.end()) b.base = it->second;
+    } else {
+      b.mass = 0.0f;
+    }
+    out.push_back(b);
   }
-  // Nothing in the way: no push.
-  bool any = false;
-  const Push::Body& a = push_.bodies.front();
-  for (size_t j = 1; j < push_.bodies.size() && !any; ++j) {
-    const Push::Body& b = push_.bodies[j];
-    any = a.x < b.x + b.w + kPushGap && b.x < a.x + a.w + kPushGap && a.y < b.y + b.h + kPushGap && b.y < a.y + a.h + kPushGap;
+  std::stable_sort(out.begin(), out.end(),
+                   [](const Push::Body& a, const Push::Body& b) { return a.level != b.level ? a.level < b.level : a.x < b.x; });
+  if (!onlyOverlapping) return;
+  // Per level (sorted by x): a sweep finds the pairs nearer than kPushDetect.
+  std::vector<Push::Body> keep;
+  for (size_t l0 = 0; l0 < out.size();) {
+    size_t l1 = l0;
+    while (l1 < out.size() && out[l1].level == out[l0].level) ++l1;
+    bool hit = false;
+    for (size_t i = l0; i < l1 && !hit; ++i) {
+      const Push::Body& a = out[i];
+      if (a.movable && a.y < a.minY - 0.5f) hit = true;
+      const float ra[4] = {a.x, a.y, a.w, a.h};
+      for (size_t j = i + 1; j < l1 && !hit && out[j].x < a.x + a.w + kPushDetect; ++j) {
+        const Push::Body& b = out[j];
+        if (!a.movable && !b.movable) continue;
+        const float rb[4] = {b.x, b.y, b.w, b.h};
+        hit = closer(ra, rb, kPushDetect);
+      }
+    }
+    if (hit) keep.insert(keep.end(), out.begin() + static_cast<std::ptrdiff_t>(l0), out.begin() + static_cast<std::ptrdiff_t>(l1));
+    l0 = l1;
   }
-  if (!any) {
-    push_.bodies.clear();
-    return;
-  }
-  // Where they end: overlapping pairs (closer than kPushGap) are separated along their axis of least overlap — split
-  // between two free blocks, all of it on the free one against a standing block — until none overlaps (the band's
-  // title strip is a wall: a pair it blocks vertically separates sideways).
+  out.swap(keep);
+}
+
+std::vector<std::pair<doc::DeviceId, doc::DeviceId>> ProjectPatchView::overlappingBlocks() const {
+  std::vector<std::pair<doc::DeviceId, doc::DeviceId>> pairs;
+  std::vector<Push::Body> all;
+  collectBodies(all, false);
+  for (size_t i = 0; i < all.size(); ++i)
+    for (size_t j = i + 1; j < all.size() && all[j].level == all[i].level; ++j) {
+      const Push::Body &a = all[i], &b = all[j];
+      if (!a.movable && !b.movable) continue;
+      const float ra[4] = {a.x, a.y, a.w, a.h}, rb[4] = {b.x, b.y, b.w, b.h};
+      if (closer(ra, rb, kPushDetect)) pairs.emplace_back(a.device, b.device);
+    }
+  return pairs;
+}
+
+bool ProjectPatchView::settleOverlaps() {
+  if (pushing() || blockGestureRunning()) return false;
+  sync();
+  if (pushing()) return true;  // the sync's re-layout found one
+  const bool pushed = startPush();
+  moved_.clear();
+  resized_.clear();
+  return pushed;
+}
+
+void ProjectPatchView::landPush() {
+  for (uint32_t i = 0; pushing() && i <= kPushCascade; ++i) finishPushNow();
+}
+
+bool ProjectPatchView::startPush() {
+  std::vector<Push::Body> bs;
+  collectBodies(bs, true);
+  if (bs.empty()) return false;
+  // Where they end: overlapping pairs (closer than kPushGap) are separated along their axis of least overlap - shared by
+  // mass between two blocks, all of it on the block against a standing body - until none overlaps (the band's title
+  // strip is a wall: a pair it blocks vertically separates sideways). Each pass walks each level's pairs.
+  for (Push::Body& b : bs) b.ty = b.movable ? std::max(0.0f, b.minY - b.y) : 0.0f;
   for (int iter = 0; iter < 256; ++iter) {
     bool overlap = false;
-    for (size_t i = 0; i < push_.bodies.size(); ++i)
-      for (size_t j = i + 1; j < push_.bodies.size(); ++j) {
-        Push::Body& u = push_.bodies[i];
-        Push::Body& v = push_.bodies[j];
+    for (size_t i = 0; i < bs.size(); ++i)
+      for (size_t j = i + 1; j < bs.size() && bs[j].level == bs[i].level; ++j) {
+        Push::Body& u = bs[i];
+        Push::Body& v = bs[j];
         if (!u.movable && !v.movable) continue;
         const float ux = u.x + u.tx, uy = u.y + u.ty, vx = v.x + v.tx, vy = v.y + v.ty;
         const float ox = std::min(ux + u.w + kPushGap - vx, vx + v.w + kPushGap - ux);
         const float oy = std::min(uy + u.h + kPushGap - vy, vy + v.h + kPushGap - uy);
         if (ox <= 0.0f || oy <= 0.0f) continue;
         overlap = true;
-        const float su = u.movable && v.movable ? 0.5f : (u.movable ? 1.0f : 0.0f), sv = u.movable && v.movable ? 0.5f : (v.movable ? 1.0f : 0.0f);
-        const bool uFirst = (ux + u.w * 0.5f) <= (vx + v.w * 0.5f);  // u left of v (sideways) …
-        const bool uAbove = (uy + u.h * 0.5f) <= (vy + v.h * 0.5f);  // … u above v (vertically)
-        bool vertical = oy < ox;
-        if (vertical) {  // the wall: the one going up must stay below the title strip
-          Push::Body& up = uAbove ? u : v;
-          const float upShare = uAbove ? su : sv;
-          if (up.movable && up.y + up.ty - (oy + 0.5f) * upShare < up.minY) vertical = false;
-        }
-        if (vertical) {
-          const float d = oy + 0.5f;
-          u.ty += (uAbove ? -d : d) * su;
-          v.ty += (uAbove ? d : -d) * sv;
+        float su = 0.0f, sv = 0.0f;  // each one's share of the separation
+        if (u.movable && v.movable) {
+          su = v.mass / (u.mass + v.mass);
+          sv = 1.0f - su;
         } else {
-          const float d = ox + 0.5f;
-          u.tx += (uFirst ? -d : d) * su;
-          v.tx += (uFirst ? d : -d) * sv;
+          su = u.movable ? 1.0f : 0.0f;
+          sv = v.movable ? 1.0f : 0.0f;
         }
+        const bool uFirst = (ux + u.w * 0.5f) <= (vx + v.w * 0.5f);  // u left of v (sideways) ...
+        const bool uAbove = (uy + u.h * 0.5f) <= (vy + v.h * 0.5f);  // ... u above v (vertically)
+        Push::Body& up = uAbove ? u : v;
+        Push::Body& low = uAbove ? v : u;
+        float upShare = uAbove ? su : sv, lowShare = uAbove ? sv : su;
+        if (iter >= 64) {
+          // Not settled sideways (blocks squeezed between standing ones): from here every overlap is resolved downwards
+          // (bands grow down: always room there), which ends.
+          if (low.movable) low.ty += oy + 0.5f;
+          else up.ty += (low.y + low.ty + low.h + kPushGap) - (up.y + up.ty) + 0.5f;
+        } else {
+          bool vertical = oy < ox;
+          if (vertical && up.movable && upShare > 0.0f && up.y + up.ty - (oy + 0.5f) * upShare < up.minY) {
+            // The wall (the band's title strip) stops the upper one: the lower one takes it all, else sideways.
+            if (low.movable) upShare = 0.0f, lowShare = 1.0f;
+            else vertical = false;
+          }
+          if (vertical) {
+            const float d = oy + 0.5f;
+            up.ty -= d * upShare;
+            low.ty += d * lowShare;
+          } else {
+            const float d = ox + 0.5f;
+            u.tx += (uFirst ? -d : d) * su;
+            v.tx += (uFirst ? d : -d) * sv;
+          }
+        }
+        if (u.movable) u.ty = std::max(u.ty, u.minY - u.y);
+        if (v.movable) v.ty = std::max(v.ty, v.minY - v.y);
       }
     if (!overlap) break;
   }
-  for (Push::Body& b : push_.bodies) b.ty = std::max(b.ty, b.minY - b.y);
+  // Only the blocks that move glide (the standing bodies and the blocks left where they are drop out).
+  std::erase_if(bs, [](const Push::Body& b) { return !b.movable || (std::fabs(b.tx) < 0.5f && std::fabs(b.ty) < 0.5f); });
+  if (bs.empty()) return false;
+  push_.bodies = std::move(bs);
+  push_.last = -1.0;
+  push_.frames = 0;
+  ++push_.count;
+  push_.user = !moved_.empty() || !resized_.empty();
   if (!pushAnimated_ || !shown()) {
     finishPushNow();
-    return;
+    return true;
   }
   requestFrame();
+  return true;
 }
 
 bool ProjectPatchView::stepPush(double seconds) {
@@ -410,14 +501,22 @@ void ProjectPatchView::applyPush() {
     else nudges[b.device.value] = n;
   }
   if (!changed) return;
-  ctx_.viewStateChanged();
+  if (push_.user) ctx_.viewStateChanged();
+  settleHeld_ = true;
   relayout();
+  settleHeld_ = false;
 }
 
 void ProjectPatchView::finishPushNow() {
   for (Push::Body& b : push_.bodies) b.dx = b.tx, b.dy = b.ty;
   applyPush();
   push_.bodies.clear();
+  // A capsule or band the push grew may meet others now: the next round (bounded; only on a model laid out again — a
+  // hidden view re-lays out when it is shown, and its rebuild checks then).
+  if (!stale_ && cascade_ < kPushCascade) {
+    ++cascade_;
+    (void)startPush();
+  }
 }
 
 // ---- inserting on a cable ------------------------------------------------------------------------------------------
@@ -516,7 +615,6 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca) 
   if (!dispatchSteps(label.c_str(), std::move(k.steps))) return false;
   if (!hasIn || !hasOut) ctx_.setStatus(name + (!hasIn ? " has no input: only its output is wired" : " has no output: only its input is wired"));
   placeAt(id, mid);
-  startPush(id);
   return true;
 }
 

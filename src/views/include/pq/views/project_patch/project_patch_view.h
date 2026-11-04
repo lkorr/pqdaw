@@ -75,18 +75,26 @@
 //                               click ends, Esc drops it).
 //   cables     (TX.cables) every connection between blocks (notes, chain, modulation and free wires, a group's terminals)
 //              is a hanging cable from port to port drawn over the blocks — a glossy tube with a shadow and plugs, coloured
-//              by its signal — simulated: it sways when a block moves (a drag's preview carries it) and settles; it glows
+//              by its signal — simulated: it sways when a block moves (a dragged block carries it) and settles; it glows
 //              with its signal while the transport plays (a param's modulation sweep, an audio / note path's track
 //              level), with light flowing along it. Routes, sends and a mixer's output stay orthogonal traces.
 //   resize     (TX.resize) hold S over a device block (a meta face, a panel, a plain block; not an opened one): the
 //              cursor shows ⤡ and a drag scales the block uniformly, its top-left kept, its bottom-right corner
-//              following the pointer (0.5× … 3×, a detent at 1×; Shift: steps of 25 %); a face or panel and everything
+//              following the pointer (0.05× … 3×, a detent at 1×; Shift: steps of 25 %); a face or panel and everything
 //              on it (controls, text, sockets, the cable ends on its knobs) in proportion, interactive and laid out at
 //              that size (a plain block: its box and pin rows; its labels keep the UI font, as at any zoom). Neighbours make
 //              room (the layout re-runs per change: blocks after it move right, the band's spine moves down to its
 //              main pin, the band grows). Esc cancels the drag. S + double-click or the block menu's Reset Size: its own
 //              size. View state like a nudge (saved, not undoable). S does nothing else in this view; while a text
 //              field (a face's or panel's type-in) has the focus, S types.
+//   drag       (TX.block-drag, the user 2026-11-03) a block dragged (a selection of blocks with it when it is selected; an
+//              opened capsule with its contents; a band by its title) is the block itself at the pointer every frame —
+//              its panel / face, its cables plugged into its real ports, drawn over the rest (CircuitCanvas::setNodeDrag;
+//              no re-layout while it moves); the drop is the edit (a nudge, one re-layout; onto another band: one undo
+//              step). Blocks never overlap: after any move, drop, spawn, resize or layout change, overlapping blocks
+//              push each other apart (the one just dropped gives way most) and glide until each has its space with a
+//              small gap; bands and capsules grow to hold them; then no frames (see "Push-apart" below). A block shrunk
+//              below CircuitCanvas::kFaceMiniatureScale is a miniature (no controls: a press grabs it).
 //   groups     (TX.groups; doc model.h "Groups") select devices (or meta modules, free devices) of one band and press
 //              Ctrl+G: they become a group — one capsule in the chain where they were, its contents placed freely inside
 //              between its In and Out terminals, the series kept as wires (so it sounds the same); Ctrl+Shift+G (or the
@@ -225,9 +233,20 @@ public:
   bool cuttableEdge(uint32_t edge) const noexcept;
   // The model edge a Shift-drag would splice into now (kNone: none).
   uint32_t spliceEdge() const noexcept { return spliceEdge_; }
+  // TX.block-drag: a dragged block (a selection of blocks, an opened capsule with its contents, a band by its title) is
+  // drawn live where the pointer has it (CircuitCanvas::setNodeDrag), its cables on its ports; the model nodes lifted now
+  // (empty / false: no block drag), and the blocks a drag moves (the pressed one, or the selection it belongs to).
+  bool lifted(uint32_t modelNode) const noexcept { return modelNode < liftModel_.size() && liftModel_[modelNode] != 0; }
+  bool bandLifted(uint32_t band) const noexcept { return liftBuilt_ && dragBand_ != kNone && band == dragBand_; }
+  const std::vector<doc::DeviceId>& dragDevices() const noexcept { return dragDevices_; }
+  // TX.block-drag: below this many device px across, a block is hit as if it were this size (a tiny block can be grabbed)
+  // and its pins reach no further than kSmallPinReach of its size (its body is not all pins).
+  static constexpr float kMinHitPx = 8.0f;
+  static constexpr float kSmallPinReach = 0.3f;
 
 protected:
   void paintUnderlay(ui::PaintContext& ctx) override;
+  void paintNodeOverlay(ui::PaintContext& ctx) override;
   void paintOverlay(ui::PaintContext& ctx) override;
 
 private:
@@ -241,7 +260,17 @@ private:
   ui::Cursor pressCursor(ui::Vec2 pos) const;  // T4.16c: the cursor for what a left press at `pos` would start
   void finishWire(ui::Vec2 pos);
   void finishDeviceMove(ui::Vec2 pos);
-  void dragCables();  // TX.cables: the dragged block's (band's) cables follow the drag preview
+  // TX.block-drag: the dragged blocks drawn at the pointer (the lift set built on the first move and after a rebuild);
+  // endLift: the drag is over (the drop's scene places them, or they are back in place).
+  void liftDrag();
+  void buildLift();
+  void endLift();
+  void pickDragDevices(uint32_t pressed);  // the pressed block, or the selection it is in
+  std::vector<doc::DeviceId> dragDevices_;
+  std::vector<uint8_t> liftModel_;
+  std::vector<uint32_t> liftScene_;
+  bool liftBuilt_ = false;
+  bool liftDragging() const noexcept { return drag_ == Drag::MoveDevice || drag_ == Drag::Nudge || drag_ == Drag::Splice; }
 
   ProjectPatchView& view_;
   Drag drag_ = Drag::None;
@@ -468,6 +497,9 @@ public:
   bool moveDevice(doc::DeviceId device, doc::TrackId toTrack, uint32_t index);
   // TX.all-free: a block dropped on another band: to that track, off its path, placed at world point `at`.
   bool moveToTrack(doc::DeviceId device, doc::TrackId toTrack, graph::Point2 at);
+  // TX.block-drag: a selection of blocks dropped on another band: all to that track (one undo step), each centred at
+  // its `at`.
+  bool moveToTrack(std::span<const doc::DeviceId> devices, doc::TrackId toTrack, std::span<const graph::Point2> at);
   bool toggleDevicesActive(std::span<const doc::DeviceId> devices);
   // The canvas selection: devices removed, modulation wires removed, sends to −∞, routes to Sends Only; one step.
   bool deleteSelection();
@@ -481,7 +513,9 @@ public:
   void endValueGesture();
   void cancelValueGesture();
   // Nudges (view state; saved, not undoable): world units added to a band (track id) or a block (device id).
+  // TX.block-drag: several at once (one re-layout); moved blocks are the lighter ones when they push others apart.
   void nudge(uint32_t entity, float dx, float dy);
+  void nudge(std::span<const uint32_t> entities, float dx, float dy);
   // Reset Layout: every nudge's position (TX.resize: blocks keep their sizes).
   void resetLayout();
   // TX.resize (SPEC §15 2026-11-01 "resize, groups, and the free-device rack"): a device block's uniform scale — its face,
@@ -533,13 +567,30 @@ public:
   circuit::NodeMenu* openInsertMenu(uint32_t edge, ui::Vec2 at);
   // The main input / output of a device as it is now ("" = none), from its patch's signature (catalog facts).
   circuit::MainPorts mainPorts(doc::DeviceId device) const;
-  // Push-apart (after a spawn): the blocks in the way are separated (solved at once: free blocks share the move, standing
-  // ones — chain blocks, sources, mixers, capsules — do not move) and each glides there as a critically damped spring
-  // (≈ 0.3 s; nudges, view state), one re-layout per frame while it runs; then no frames. Off (tests, scenes): at once.
+  // Push-apart — TX.block-drag: BLOCKS NEVER OVERLAP, one rule for every block. After every re-layout (a move, a drop, a
+  // spawn, a resize, a nudge, a layout change: each rebuild of the model; not while a block is being dragged or resized,
+  // whose release settles), blocks of one level (a band's blocks outside capsules; an opened capsule's members) that
+  // overlap (closer than kPushDetect: 0, their rects share area; touching is not overlapping) are separated to kPushGap (solved at once along each pair's axis of least overlap, shared by mass:
+  // a block's area, a just-moved / spawned block a quarter of it so it gives way most, a just-resized one four times;
+  // the band's source, mixer, Out and a capsule's terminals stand, its title strip is a wall) and each glides there as a
+  // critically damped spring (≈ 0.3 s; nudges, view state), one re-layout per frame while it runs. A capsule or band
+  // that grows into others is settled by the next round (at most kPushCascade rounds after one change). Then no frames.
+  // A push no gesture caused (a project opened with overlapping blocks) moves them without marking the project changed.
+  // Off (tests, scenes): at once. Every device block moves, including chain blocks, opened capsules and opened devices
+  // (TX.all-free: every block is free; Q205's "only free blocks" is gone).
   bool pushing() const noexcept { return !push_.bodies.empty(); }
   void setPushAnimated(bool on) noexcept { pushAnimated_ = on; }
-  static constexpr float kPushGap = 12.0f;  // world units between blocks pushed apart
+  static constexpr float kPushGap = 12.0f;     // world units between blocks pushed apart
+  static constexpr float kPushDetect = 0.0f;   // closer than this is an overlap (well under the gap: no re-push)
+  static constexpr uint32_t kPushCascade = 4;
   uint64_t pushFrames() const noexcept { return push_.frames; }
+  uint64_t pushes() const noexcept { return push_.count; }  // pushes started (tests)
+  // The rule's check now (a gesture that deferred it ends: an S-resize's release); true: a push started.
+  bool settleOverlaps();
+  // A push still gliding lands at once (a block drag starts: it moves the blocks from where they end).
+  void landPush();
+  // The blocks closer than kPushDetect at one level now (world units; tests): pairs of device ids.
+  std::vector<std::pair<doc::DeviceId, doc::DeviceId>> overlappingBlocks() const;
 
   // ---- TX.groups (doc::ops::groupInCircuit / ungroupInCircuit; one undo step each; false + the reason in the status
   // line when refused) -----------------------------------------------------------------------------------------------
@@ -783,17 +834,29 @@ private:
       float dx = 0, dy = 0, vx = 0, vy = 0;
       float tx = 0, ty = 0;              // the offset it ends at (solved when the push begins)
       float minY = 0;                    // its band's title bottom: never pushed above it
+      float mass = 1.0f;                 // TX.block-drag: its share of a separation (0: it stands)
+      uint32_t level = 0;                // TX.block-drag: bodies meet only within one level (a band's, a capsule's)
       bool movable = true;
       doc::PatchNudge base;              // its nudge when the push began
     };
     std::vector<Body> bodies;
     double last = -1.0;  // frame time of the last step
     uint64_t frames = 0;
+    uint64_t count = 0;
+    bool user = false;  // a gesture's (a drop, a spawn, a resize): the project is changed (view state)
   } push_;
   bool pushAnimated_ = true;
+  // TX.block-drag: blocks just moved (a drop, a spawn, a nudge) and resized (by device id), what the next check weighs;
+  // the rounds of pushes since the last user change (kPushCascade).
+  std::vector<uint32_t> moved_, resized_;
+  uint32_t cascade_ = 0;
+  bool settleHeld_ = false;  // no check in this re-layout (a push's own; several blocks placed one by one)
+  // The bodies of every level of the model, by level (TX.block-drag); with `onlyOverlapping` the levels that overlap.
+  void collectBodies(std::vector<Push::Body>& out, bool onlyOverlapping) const;
+  bool blockGestureRunning() const noexcept;
   std::shared_ptr<int> alive_ = std::make_shared<int>(0);  // the node menu's callbacks check it (the view may go first)
   std::optional<graph::Point2> spawnMark_;  // TX.node-menu-fix1
-  void startPush(doc::DeviceId placed);
+  bool startPush();  // the rule's check and solve (true: a push started)
   bool stepPush(double seconds);  // false: settled
   void applyPush();
   void finishPushNow();

@@ -1936,6 +1936,50 @@ Status setupProjectPatchResize(Shell& shell) {
   return Ok{};
 }
 
+// TX.block-drag (the user 2026-11-03): the project-patch-resize scene with Meta Bass's Phase accumulator shrunk to 0.05×
+// (a miniature, its cables' plugs as small) and the Lead's Auto Filter panel being dragged (pressed on its title bar
+// and moved through the window, still held): the panel itself is drawn at the pointer over the Wavetable it passes, its
+// cables plugged into its ports there. Cables at rest (deterministic).
+Status setupProjectBlockDrag(Shell& shell) {
+  if (Status s = setupProjectPatchResize(shell); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-block-drag: the view is not installed", {}};
+  ViewContext& ctx = shell.context();
+  const doc::Track* lead = nullptr;
+  const doc::Track* bass = nullptr;
+  doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Meta Lead") lead = &t;
+    if (t.name == "Meta Bass") bass = &t;
+  });
+  if (lead == nullptr || bass == nullptr || lead->devices.size() < 3 || bass->devices.empty())
+    return Error{ErrorCode::NotFound, "project-block-drag: no Meta Lead / Meta Bass chains", {}};
+  const doc::DeviceId filter = lead->devices[2]->id;
+  (void)v->setBlockScale(bass->devices[0]->id, doc::kMinPatchScale);
+  project_patch::ProjectCanvas& c = v->canvas();
+  c.setCablesAnimated(false);
+  shell.tree().layoutNow();
+  const project_patch::ProjectPatch& pp = v->patch();
+  const uint32_t n = pp.nodeOf(filter);
+  if (n == project_patch::kNone) return Error{ErrorCode::NotFound, "project-block-drag: no Auto Filter block", {}};
+  const ui::Vec2 grip = c.toDevice({pp.nodes[n].x + pp.nodes[n].w * 0.5f, pp.nodes[n].y + 6.0f});
+  auto send = [&](ui::PointerType t, ui::Vec2 at) {
+    ui::PointerEvent e;
+    e.type = t;
+    if (t != ui::PointerType::Move) e.button = ui::PointerButton::Left;
+    e.clickCount = 1;
+    e.pos = at;
+    shell.tree().dispatchPointer(e);
+  };
+  send(ui::PointerType::Move, grip);
+  send(ui::PointerType::Down, grip);
+  for (int k = 1; k <= 8; ++k)
+    send(ui::PointerType::Move, {grip.x - 520.0f * static_cast<float>(k) / 8.0f, grip.y + 150.0f * static_cast<float>(k) / 8.0f});
+  if (c.drag() != project_patch::ProjectCanvas::Drag::MoveDevice || c.draggedNodes().empty())
+    return Error{ErrorCode::Unknown, "project-block-drag: the block is not being dragged", {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TX.groups (SPEC §15 2026-11-01 "resize, groups, and the free-device rack"): project_patch::buildGroupProject with Keys'
 // Phase accumulator → Wavetable → Phase accumulator grouped by Ctrl+G's edit (basic synth → group: the capsule opened,
 // its In → … → Out wires, the free LFO outside it still wired onto the Wavetable's position across the boundary) and
@@ -2796,6 +2840,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-cable-drag", 1280, 800, setupProjectCableDrag},        // TX.node-menu-fix1
     {"project-patch-panels", 1600, 900, setupProjectPatchPanels},      // TX.panel-faces
     {"project-patch-resize", 1600, 900, setupProjectPatchResize},      // TX.resize
+    {"project-block-drag", 1600, 900, setupProjectBlockDrag},          // TX.block-drag
     {"project-patch-group", 1600, 900, setupProjectPatchGroup},        // TX.groups
     {"device-group-panel", 1600, 900, setupDeviceGroupPanel},          // TX.groups
     {"device-free-rack", 1600, 900, [](Shell& s) { return setupDeviceFreeRack(s, true); }},              // TX.free-rack

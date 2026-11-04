@@ -3192,7 +3192,7 @@ private:
             if (q == 3) {  // TX.resize (optional)
               e.nudge.scale = r_.readFloat(f);
               if (!(e.nudge.scale >= kMinPatchScale && e.nudge.scale <= kMaxPatchScale))
-                r_.failValue(f, "a block's scale must be within 0.5 … 3");
+                r_.failValue(f, "a block's scale must be within 0.05 … 3");
             }
           }
           em.require({0, 1, 2});

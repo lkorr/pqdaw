@@ -340,8 +340,15 @@ void ProjectPatchView::onFrame(double now) {
     const bool moving = stepPush(dt);
     applyPush();
     ++push_.frames;
-    if (moving && push_.frames < 240) requestFrame();
-    else push_.bodies.clear();
+    if (moving && push_.frames < 240) {
+      requestFrame();
+    } else {
+      push_.bodies.clear();
+      if (cascade_ < kPushCascade) {  // TX.block-drag: what the push grew into, next
+        ++cascade_;
+        (void)startPush();
+      }
+    }
   }
   if (morph_.active) {
     if (morph_.start < 0.0) morph_.start = now - static_cast<double>(morph_.resumeFrom) * kMorphSeconds;
@@ -578,6 +585,17 @@ void ProjectPatchView::rebuild() {
   }
   ++stats_.rebuilds;
   stats_.lastRebuildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  // TX.block-drag: blocks never overlap — every re-layout settles (not inside a push's own re-layout, nor while a block
+  // is dragged or resized: their release does). Last: a push's immediate re-layout may rebuild again from here.
+  if (!settleHeld_ && !pushing() && !blockGestureRunning()) {
+    if (!moved_.empty() || !resized_.empty()) cascade_ = 0;
+    if (cascade_ < kPushCascade) {
+      ++cascade_;
+      if (!startPush()) cascade_ = 0;  // nothing overlaps: the next change starts afresh
+    }
+    moved_.clear();
+    resized_.clear();
+  }
 }
 
 void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
@@ -1355,6 +1373,50 @@ bool ProjectPatchView::moveToTrack(doc::DeviceId device, doc::TrackId toTrack, g
   return true;
 }
 
+bool ProjectPatchView::moveToTrack(std::span<const doc::DeviceId> devices, doc::TrackId toTrack, std::span<const graph::Point2> at) {
+  if (devices.size() == 1 && at.size() == 1) return moveToTrack(devices.front(), toTrack, at.front());
+  // TX.block-drag: a selection dropped on another band — those of other tracks off their paths, then each to the track
+  // (each step applied to the scratch snapshot the next one reads); one Batch, one undo step.
+  std::vector<doc::DeviceId> moving;
+  for (const doc::DeviceId d : devices) {
+    const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), d);
+    if (l.device != nullptr && l.chain == nullptr && l.track->id != toTrack) moving.push_back(d);
+  }
+  if (moving.empty()) return false;
+  std::vector<doc::Command> steps;
+  doc::Snapshot snap = ctx_.doc();
+  doc::ops::EditResult off = doc::ops::takeOffPath(*snap, ctx_.store().ids(), ctx_.deviceLibrary(), moving);
+  if (!off) return apply(off, "Move Devices");
+  doc::ChangeSet cs;
+  if (!off->empty()) {
+    auto mid = doc::apply(snap, off->command, cs);
+    if (!mid) {
+      ctx_.setStatus("Move Devices: " + mid.error().message);
+      return false;
+    }
+    snap = *mid;
+    steps.push_back(off->command);
+  }
+  for (const doc::DeviceId d : moving) {
+    doc::ops::EditResult move = doc::ops::moveDevice(*snap, d, toTrack, doc::kAppend);
+    if (!move) return apply(move, "Move Devices");
+    auto next = doc::apply(snap, move->command, cs);
+    if (!next) {
+      ctx_.setStatus("Move Devices: " + next.error().message);
+      return false;
+    }
+    snap = *next;
+    steps.push_back(move->command);
+  }
+  if (!dispatch(doc::Batch{"Move Devices", std::move(steps)}, "Move Devices")) return false;
+  settleHeld_ = true;  // all placed, then the overlap rule once
+  for (size_t i = 0; i < devices.size() && i < at.size(); ++i)
+    if (std::find(moving.begin(), moving.end(), devices[i]) != moving.end()) placeAt(devices[i], at[i]);
+  settleHeld_ = false;
+  (void)settleOverlaps();
+  return true;
+}
+
 bool ProjectPatchView::toggleDevicesActive(std::span<const doc::DeviceId> devices) {
   return apply(doc::ops::toggleDevicesActive(*ctx_.doc(), devices), "Device Activator");
 }
@@ -1544,12 +1606,17 @@ void ProjectPatchView::cancelValueGesture() {
   (void)ctx_.store().cancelGesture();
 }
 
-void ProjectPatchView::nudge(uint32_t entity, float dx, float dy) {
-  if (dx == 0.0f && dy == 0.0f) return;
-  doc::PatchNudge& n = ctx_.store().view().patchNudges[entity];
-  n.dx = std::round(n.dx + dx);
-  n.dy = std::round(n.dy + dy);
-  if (n.empty()) ctx_.store().view().patchNudges.erase(entity);  // TX.resize: a scaled block keeps its entry
+void ProjectPatchView::nudge(uint32_t entity, float dx, float dy) { nudge(std::span<const uint32_t>(&entity, 1), dx, dy); }
+
+void ProjectPatchView::nudge(std::span<const uint32_t> entities, float dx, float dy) {
+  if ((dx == 0.0f && dy == 0.0f) || entities.empty()) return;
+  for (const uint32_t entity : entities) {
+    doc::PatchNudge& n = ctx_.store().view().patchNudges[entity];
+    n.dx = std::round(n.dx + dx);
+    n.dy = std::round(n.dy + dy);
+    if (n.empty()) ctx_.store().view().patchNudges.erase(entity);  // TX.resize: a scaled block keeps its entry
+    moved_.push_back(entity);  // TX.block-drag: it gives way most if it now overlaps a block
+  }
   ctx_.viewStateChanged();
   stale_ = true;
   sync();
@@ -1593,6 +1660,7 @@ bool ProjectPatchView::setBlockScale(doc::DeviceId device, float scale) {
   if (n.empty()) nudges.erase(device.value);
   ctx_.viewStateChanged();
   ++stats_.rescales;
+  if (std::find(resized_.begin(), resized_.end(), device.value) == resized_.end()) resized_.push_back(device.value);
   relayout();  // model + scene again (the lowering kept: view state is not the document)
   return true;
 }

@@ -43,7 +43,7 @@ struct LaneView {
 // TX.resize (SPEC §15 2026-11-01 "resize, groups, and the free-device rack"): a device block's uniform scale (its face,
 // panel or plain block and everything on it in proportion; S-drag in the view), kMinPatchScale … kMaxPatchScale, 1 = its
 // own size. Bands keep 1. Saved as the entry's optional "scale" (written only when not 1); like the nudge, not undoable.
-inline constexpr float kMinPatchScale = 0.5f;
+inline constexpr float kMinPatchScale = 0.05f;  // TX.block-drag (from 0.5)
 inline constexpr float kMaxPatchScale = 3.0f;
 struct PatchNudge {
   float dx = 0.0f;

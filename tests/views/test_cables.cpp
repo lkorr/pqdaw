@@ -474,7 +474,7 @@ TEST_CASE("cables: hit tests follow the hanging curve (within 4 px), not the cho
   const circuit::CircuitScene& sc = u.scene();
   const uint32_t src = sc.pins[sc.wires[w].fromPin].node;
   const uint32_t nodes[1] = {src};
-  u.canvas().setCableDrag(nodes, {0.0f, -60.0f});
+  u.canvas().setNodeDrag(nodes, {0.0f, -60.0f});
   for (int i = 0; i < 20; ++i) u.d.advance(1.0 / 144.0);
   const std::span<const Point2> now = u.canvas().cablePoints(w);
   size_t low2 = 0;
@@ -482,7 +482,7 @@ TEST_CASE("cables: hit tests follow the hanging curve (within 4 px), not the cho
     if (now[i].y > now[low2].y) low2 = i;
   const Vec2 p2 = u.dev(now[low2 > 0 && low2 + 1 < now.size() ? low2 : now.size() / 2]);
   if (u.canvas().rect().contains(p2)) CHECK(u.canvas().hitTest(p2).index == w);
-  u.canvas().clearCableDrag();
+  u.canvas().clearNodeDrag();
   u.settle();
   // Over a face's control a cable yields to the control (a press there turns it) but for its plug.
   Ui m(fixture());
@@ -631,9 +631,9 @@ TEST_CASE("cables: far out they are the rest shapes in the chunks: no motion, no
   const circuit::CircuitScene& sc = u.scene();
   const uint32_t src = sc.pins[sc.wires[w].fromPin].node;
   const uint32_t nodes[1] = {src};
-  u.canvas().setCableDrag(nodes, {40.0f, 40.0f});
+  u.canvas().setNodeDrag(nodes, {40.0f, 40.0f});
   CHECK_FALSE(u.canvas().cablesMoving());  // landed at once
-  u.canvas().clearCableDrag();
+  u.canvas().clearNodeDrag();
   CHECK_FALSE(u.canvas().cablesMoving());
   CHECK(u.canvas().stats().cablesPainted == 0);
   u.d.advance(0.5);

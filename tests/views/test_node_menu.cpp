@@ -495,8 +495,17 @@ TEST_CASE("node menu: a click on a row places the node — the closed menu is ne
   REQUIRE(u.d.press("Tab") == KeyResult::Widget);
   frame();
   clickRow("saturator", "Saturator");
-  // A cable dropped on empty space, a click.
-  u.d.drag(u.outPin(u.sat, "out"), u.dev({at.x + 40.0f, at.y + 170.0f}), 6);  // below the blocks placed above
+  // A cable dropped on empty space, a click. TX.block-drag: the spot is found (the blocks placed above were pushed apart
+  // where the overlap rule put them; below them, or right of them, is empty).
+  Vec2 empty{-1.0f, -1.0f};
+  for (int k = 0; k < 24 && empty.x < 0.0f; ++k) {
+    const Vec2 c = u.dev({at.x + 40.0f + 160.0f * static_cast<float>(k % 3), at.y + 170.0f + 60.0f * static_cast<float>(k / 3)});
+    if (u.view().canvas().rect().contains(c) && u.view().canvas().nodeAt(c) == kNone && !u.view().canvas().pinAt(c).valid() &&
+        u.view().canvas().edgeAt(c) == kNone)
+      empty = c;
+  }
+  REQUIRE(empty.x >= 0.0f);
+  u.d.drag(u.outPin(u.sat, "out"), empty, 6);
   frame();
   REQUIRE(u.menu() != nullptr);
   clickRow("utility", "Utility");

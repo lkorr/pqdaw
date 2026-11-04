@@ -1933,6 +1933,9 @@ TEST_CASE("render: project-patch-panels matches the golden image") { golden("pro
 // TX.resize: a Wavetable face at 1.5×, an Auto Filter panel at 1.25×, a Wavetable at 0.6× below; note-velocity cables
 // onto the scaled Wavetable's position and the scaled filter's frequency.
 TEST_CASE("render: project-patch-resize matches the golden image") { golden("project-patch-resize"); }
+// TX.block-drag: the Auto Filter panel held mid-drag over the Wavetable (drawn at the pointer, its cables on its ports),
+// Meta Bass's Phase accumulator at 0.05x (a miniature, tiny plugs).
+TEST_CASE("render: project-block-drag matches the golden image") { golden("project-block-drag"); }
 
 // ---- TX.mod-all: a modulation wire ends on the control it modulates ------------------------------------------------
 
@@ -2569,4 +2572,340 @@ TEST_CASE("project patch (TX.resize): 64 tracks — an S-drag step (re-layout + 
                                            << lay[lay.size() / 2] << " ms (" << v.stats().rescales << " rescales, "
                                            << v.canvas().panelCount() << " panels)");
   CHECK(ms[ms.size() / 2] < 1000.0 / 120.0);
+}
+
+// ---- TX.block-drag: live block drag, blocks never overlap, tiny resize -------------------------------------------------
+
+namespace {
+
+// The cables of scene node `sn` and which end is on it (true: the cable's last point).
+std::vector<std::pair<uint32_t, bool>> cablesAt(const ProjectPatchView& v, uint32_t sn) {
+  std::vector<std::pair<uint32_t, bool>> out;
+  const circuit::CircuitScene& sc = *v.scene().scene;
+  for (uint32_t w = 0; w < sc.wires.size(); ++w) {
+    if (!sc.wires[w].cable) continue;
+    if (sc.pins[sc.wires[w].fromPin].node == sn) out.emplace_back(w, false);
+    else if (sc.pins[sc.wires[w].toPin].node == sn) out.emplace_back(w, true);
+  }
+  return out;
+}
+
+// The largest channel difference between the r-px square around (ax, ay) of `a` and around (bx, by) of `b`, the best
+// over ±1 px of b (pixel snapping).
+uint32_t patchDiff(const Image& a, int ax, int ay, const Image& b, int bx, int by, int r) {
+  uint32_t best = 255;
+  for (int oy = -1; oy <= 1; ++oy)
+    for (int ox = -1; ox <= 1; ++ox) {
+      uint32_t worst = 0;
+      for (int y = -r; y <= r; ++y)
+        for (int x = -r; x <= r; ++x) {
+          const uint8_t* p = a.pixel(static_cast<uint32_t>(ax + x), static_cast<uint32_t>(ay + y));
+          const uint8_t* q = b.pixel(static_cast<uint32_t>(bx + ox + x), static_cast<uint32_t>(by + oy + y));
+          for (int c = 0; c < 3; ++c) worst = std::max<uint32_t>(worst, static_cast<uint32_t>(std::abs(p[c] - q[c])));
+        }
+      best = std::min(best, worst);
+    }
+  return best;
+}
+
+bool apart(const Node& a, const Node& b, float gap) {
+  return a.x + a.w + gap <= b.x || b.x + b.w + gap <= a.x || a.y + a.h + gap <= b.y || b.y + b.h + gap <= a.y;
+}
+
+}  // namespace
+
+// The user (2026-11-03): "clickdragging a module around right now makes an outline move around with the cables attached
+// to the outline rather than the module itself". Through the window: the panel itself is drawn at the pointer every frame
+// (its pixels move with it), hit there, its cables plugged into its real ports there; nothing is re-laid out while it
+// moves; the drop is the move (a nudge), then idle. Esc puts it back.
+TEST_CASE("project patch (TX.block-drag): a dragged block is drawn at the pointer each frame, its cables on its ports") {
+  Ui u;
+  REQUIRE(u.d.enableGpu().ok());
+  const ResizeSetup r = resizeSetup(u);
+  u.show();
+  u.zoomTo("Lead WT");
+  u.d.advance(0.5);
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& cv = v.canvas();
+  v.canvas().setCablesAnimated(false);  // ends land at once: exact positions to compare
+  const uint32_t mn = u.deviceNode(r.filter);
+  const Node n0 = u.pp().nodes[mn];
+  REQUIRE(n0.panel);
+  const uint32_t sn = v.scene().sceneNode[mn];
+  const auto mine = cablesAt(v, sn);
+  REQUIRE(mine.size() >= 2);  // the Wavetable's into its input, the modulator's onto its frequency knob
+  std::vector<graph::Point2> ends0;
+  for (const auto& [w, last] : mine) ends0.push_back(last ? cv.cablePoints(w).back() : cv.cablePoints(w).front());
+  const Vec2 grip = u.grip(mn);
+  auto before = u.d.render();
+  REQUIRE(before.ok());
+  const uint64_t rebuilds0 = v.stats().rebuilds, relayouts0 = v.stats().relayouts;
+  const float s = cv.deviceScale();
+  u.d.move(grip);
+  u.d.down(grip);
+  const Vec2 steps[3] = {{30.0f, 20.0f}, {90.0f, 60.0f}, {150.0f, 110.0f}};
+  for (const Vec2 dlt : steps) {
+    const Vec2 at{grip.x + dlt.x, grip.y + dlt.y};
+    u.d.move(at);
+    u.d.step();
+    CHECK(cv.drag() == ProjectCanvas::Drag::MoveDevice);
+    // Lifted: its scene node drawn at the drag's offset; the model and scene are as they were (no re-layout).
+    const std::span<const uint32_t> lifted = cv.draggedNodes();
+    CHECK(std::find(lifted.begin(), lifted.end(), sn) != lifted.end());
+    CHECK(cv.nodeDragOffset().x == doctest::Approx(dlt.x / s).epsilon(0.01));
+    CHECK(cv.nodeDragOffset().y == doctest::Approx(dlt.y / s).epsilon(0.01));
+    CHECK(u.pp().nodes[mn].x == n0.x);
+    CHECK(v.stats().rebuilds == rebuilds0);
+    CHECK(v.stats().relayouts == relayouts0);
+    // Its cables end on its ports where it is drawn now (the other ends stay).
+    for (size_t i = 0; i < mine.size(); ++i) {
+      const auto [w, last] = mine[i];
+      const graph::Point2 e = last ? cv.cablePoints(w).back() : cv.cablePoints(w).front();
+      CHECK(e.x == doctest::Approx(ends0[i].x + dlt.x / s).epsilon(0.005));
+      CHECK(e.y == doctest::Approx(ends0[i].y + dlt.y / s).epsilon(0.005));
+    }
+    // Hit where it is drawn, not where it was.
+    const circuit::CanvasHit there = cv.hitTest({grip.x + dlt.x, grip.y + dlt.y + 20.0f});
+    CHECK(there.kind == circuit::CanvasHit::Kind::Node);
+    CHECK(there.index == sn);
+    const Vec2 left = u.dev(n0.x + 6.0f, n0.y + n0.h * 0.5f);  // inside where it was, left of where it is now
+    const circuit::CanvasHit old = cv.hitTest(left);
+    CHECK_FALSE((old.kind == circuit::CanvasHit::Kind::Node && old.index == sn));
+    CHECK(cv.stats().panelsPainted >= 1);
+  }
+  // Its pixels moved with it: its title bar now where the pointer has it (and no longer where it was).
+  auto during = u.d.render();
+  REQUIRE(during.ok());
+  const Vec2 last = steps[2];
+  const int gx = static_cast<int>(u.dev(n0.x + 40.0f, n0.y).x), gy = static_cast<int>(grip.y);  // its title bar's left part
+  CHECK(patchDiff(*before, gx, gy, *during, gx + static_cast<int>(last.x), gy + static_cast<int>(last.y), 3) <= 24);
+  CHECK(patchDiff(*before, gx, gy, *during, gx, gy, 3) > 24);
+  // Esc: back where it was, nothing changed.
+  const size_t h0 = u.history();
+  u.d.keyDown(key::kEscape);
+  u.d.keyUp(key::kEscape);
+  CHECK(cv.draggedNodes().empty());
+  u.d.up({grip.x + last.x, grip.y + last.y});
+  CHECK(u.pp().nodes[u.deviceNode(r.filter)].x == n0.x);
+  CHECK(u.history() == h0);
+  // Again, released: the block is where it was dropped (view state: no undo step), its cables at rest on its ports.
+  u.d.drag(grip, {grip.x + 40.0f, grip.y + 160.0f}, 6);
+  u.d.advance(2.0);
+  const Node& n1 = u.pp().nodes[u.deviceNode(r.filter)];
+  CHECK(cv.draggedNodes().empty());
+  CHECK(v.overlappingBlocks().empty());
+  CHECK(n1.y > n0.y + 60.0f / s);
+  CHECK(u.history() == h0);
+  const uint64_t f0 = u.d.framesDrawn();
+  u.d.advance(1.0);
+  CHECK(u.d.framesDrawn() == f0);  // idle: no frames
+}
+
+// "if i drop a module on top of another module it's supposed to have physics and repel from the other module": dropped
+// on the Wavetable, the modulator and the Wavetable push each other apart (the dropped one gives way most) until they
+// are a gap apart, gliding a few frames; then no frames. A selection drags together; a band drags by its title.
+TEST_CASE("project patch (TX.block-drag): a block dropped on another repels it — no overlap, a gap, settled; selections and bands drag live") {
+  Ui u;
+  const ResizeSetup r = resizeSetup(u);
+  u.show();
+  u.zoomTo("Lead WT");
+  u.d.advance(0.5);
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& cv = v.canvas();
+  CHECK(v.overlappingBlocks().empty());
+  const uint32_t modN = u.deviceNode(r.w.mod), wtN = u.deviceNode(r.w.wt);
+  const Node wt0 = u.pp().nodes[wtN];
+  // Grab the modulator by its middle and drop its middle on the Wavetable's.
+  const Vec2 from = u.centre(modN), to = u.centre(wtN);
+  u.d.drag(from, to, 8);
+  // At the drop they overlap; the push starts and glides.
+  const Node dropped = u.pp().nodes[u.deviceNode(r.w.mod)];
+  CHECK_FALSE(apart(dropped, u.pp().nodes[u.deviceNode(r.w.wt)], 0.0f));
+  CHECK(v.pushing());
+  const uint64_t pushes = v.pushes();
+  u.d.advance(2.0);
+  CHECK_FALSE(v.pushing());
+  CHECK(v.pushFrames() > 2);
+  CHECK(v.pushFrames() < 240);
+  const Node& mod1 = u.pp().nodes[u.deviceNode(r.w.mod)];
+  const Node& wt1 = u.pp().nodes[u.deviceNode(r.w.wt)];
+  CHECK(apart(mod1, wt1, ProjectPatchView::kPushGap - 1.0f));
+  CHECK(v.overlappingBlocks().empty());
+  // Both moved; the dropped (lighter) one more.
+  const float dm = std::hypot(mod1.x - dropped.x, mod1.y - dropped.y), dw = std::hypot(wt1.x - wt0.x, wt1.y - wt0.y);
+  CHECK(dm > dw);
+  CHECK(dw > 0.5f);
+  CHECK(v.pushes() >= pushes);
+  // Settled: no frames.
+  const uint64_t f0 = u.d.framesDrawn();
+  u.d.advance(1.0);
+  CHECK(u.d.framesDrawn() == f0);
+
+  // A selection of blocks drags together (both lifted while it moves) and lands by the same delta.
+  const uint32_t paN = u.deviceNode(r.w.pa), fN = u.deviceNode(r.filter);
+  u.d.click(u.grip(paN));
+  u.d.click(u.grip(fN), mod::kShift);
+  REQUIRE(v.selectedDevices().size() == 2);
+  const Node pa0 = u.pp().nodes[paN], f0n = u.pp().nodes[fN];
+  const Vec2 g = u.grip(paN);
+  u.d.move(g);
+  u.d.down(g);
+  u.d.move({g.x + 10.0f, g.y + 10.0f});
+  u.d.move({g.x + 30.0f, g.y + 24.0f});
+  u.d.step();
+  const ProjectScene& ps = v.scene();
+  const std::span<const uint32_t> lifted = cv.draggedNodes();
+  CHECK(std::find(lifted.begin(), lifted.end(), ps.sceneNode[paN]) != lifted.end());
+  CHECK(std::find(lifted.begin(), lifted.end(), ps.sceneNode[fN]) != lifted.end());
+  CHECK(v.canvas().dragDevices().size() == 2);
+  u.d.up({g.x + 30.0f, g.y + 24.0f});
+  const float s = cv.deviceScale();
+  const Node& pa1 = u.pp().nodes[u.deviceNode(r.w.pa)];
+  const Node& f1 = u.pp().nodes[u.deviceNode(r.filter)];
+  CHECK(pa1.x - pa0.x == doctest::Approx(30.0f / s).epsilon(0.05));
+  CHECK(f1.x - f0n.x == doctest::Approx(30.0f / s).epsilon(0.05));
+  CHECK(pa1.y - pa0.y == doctest::Approx(f1.y - f0n.y).epsilon(0.05));
+  u.d.advance(2.0);
+  CHECK(v.overlappingBlocks().empty());
+
+  // A band by its title strip: every node of the band is lifted (its window, its blocks, its mixer).
+  const uint32_t b = u.pp().bandOf(r.w.track);
+  const Band& band = u.pp().bands[b];
+  const Vec2 title = u.dev(band.x0 + 120.0f, band.y + metrics::kTitle * 0.5f);
+  u.d.move(title);
+  u.d.down(title);
+  u.d.move({title.x + 4.0f, title.y + 30.0f});
+  u.d.step();
+  CHECK(cv.drag() == ProjectCanvas::Drag::Nudge);
+  const std::span<const uint32_t> lb = cv.draggedNodes();
+  CHECK(std::find(lb.begin(), lb.end(), v.scene().sceneNode[band.source]) != lb.end());
+  CHECK(std::find(lb.begin(), lb.end(), v.scene().sceneNode[band.mixer]) != lb.end());
+  CHECK(cv.bandLifted(b));
+  u.d.keyDown(key::kEscape);
+  u.d.keyUp(key::kEscape);
+  u.d.up({title.x + 4.0f, title.y + 30.0f});
+  CHECK(cv.draggedNodes().empty());
+}
+
+// "the shrinking feature should also be able to make modules way way way way way smaller": S-drag down to 0.05× (a face
+// and a panel); still drawn (a miniature far below legibility), hit at a minimum size, its body grabbable (its pins do
+// not take all of it), resized back up from there. Overlaps a resize makes are pushed apart on release (the resized
+// block holds its place).
+TEST_CASE("project patch (TX.block-drag): S-resize to 0.05x — drawn, grabbable, resizable back; overlaps after a resize resolved") {
+  Ui u;
+  REQUIRE(u.d.enableGpu().ok());
+  const ResizeSetup r = resizeSetup(u);
+  u.show();
+  u.zoomTo("Lead WT");
+  u.d.advance(0.5);
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& cv = v.canvas();
+  for (const doc::DeviceId dev : {r.w.wt, r.filter}) {
+    const Node n0 = u.pp().nodes[u.deviceNode(dev)];
+    sDrag(u, dev, -4000.0f, -4000.0f);
+    CHECK(v.blockScale(dev) == doctest::Approx(doc::kMinPatchScale));
+    CHECK(doc::kMinPatchScale == doctest::Approx(0.05f));
+    u.d.advance(0.5);
+    const uint32_t mn = u.deviceNode(dev);
+    const Node& n = u.pp().nodes[mn];
+    CHECK(n.w == doctest::Approx(n0.w * 0.05f).epsilon(0.02));
+    CHECK(n.h == doctest::Approx(n0.h * 0.05f).epsilon(0.02));
+    // Drawn (the face / the panel at its tiny scale), no frames once settled.
+    cv.markDirty();
+    u.d.step();
+    CHECK(cv.stats().facesPainted + cv.stats().panelsPainted >= 1);
+    auto img = u.d.render();
+    REQUIRE(img.ok());
+    // Hit at a minimum size; its middle is the block (not a pin).
+    const Vec2 c = u.centre(mn);
+    CHECK(cv.nodeAt(c) == mn);
+    CHECK(cv.nodeAt({c.x + ProjectCanvas::kMinHitPx * 0.4f, c.y}) == mn);
+    CHECK_FALSE(cv.pinAt(c).valid());
+    CHECK(cv.resizableAt(c) == mn);
+    // Grabbed and moved by its middle (live: lifted).
+    u.d.move(c);
+    u.d.down(c);
+    u.d.move({c.x + 20.0f, c.y + 6.0f});
+    u.d.move({c.x + 40.0f, c.y + 12.0f});
+    CHECK(cv.drag() == ProjectCanvas::Drag::MoveDevice);
+    CHECK_FALSE(cv.draggedNodes().empty());
+    u.d.up({c.x + 40.0f, c.y + 12.0f});
+    u.d.advance(1.0);
+    CHECK(cv.draggedNodes().empty());
+    // And back up to its own size from there (the detent at 1×).
+    sDrag(u, dev, 4000.0f, 4000.0f);
+    CHECK(v.blockScale(dev) == doctest::Approx(doc::kMaxPatchScale));
+    REQUIRE(v.setBlockScale(dev, 1.0f));
+    u.d.advance(1.0);
+  }
+  CHECK(v.overlappingBlocks().empty());
+  // Overlaps after a resize: the modulator placed just under the first Phase accumulator; that block grown into it.
+  const uint32_t paN = u.deviceNode(r.w.pa);
+  {
+    const Node& pa = u.pp().nodes[paN];
+    const Node& mod = u.pp().nodes[u.deviceNode(r.w.mod)];
+    v.nudge(r.w.mod.value, pa.x - mod.x, pa.y + pa.h + 8.0f - mod.y);
+  }
+  u.d.advance(1.0);
+  CHECK(v.overlappingBlocks().empty());
+  const Node pa0 = u.pp().nodes[u.deviceNode(r.w.pa)];
+  const float z = cv.deviceScale();
+  sDrag(u, r.w.pa, pa0.w * z * 0.6f, pa0.h * z * 0.6f);
+  CHECK(v.blockScale(r.w.pa) > 1.4f);
+  const Node paR = u.pp().nodes[u.deviceNode(r.w.pa)];  // where the resize left it (the layout made room), overlapping
+  CHECK(v.pushing());
+  u.d.advance(2.0);
+  CHECK_FALSE(v.pushing());
+  CHECK(v.overlappingBlocks().empty());
+  const Node& pa1 = u.pp().nodes[u.deviceNode(r.w.pa)];
+  const Node& mod1 = u.pp().nodes[u.deviceNode(r.w.mod)];
+  CHECK(apart(pa1, mod1, ProjectPatchView::kPushGap - 1.0f));
+  CHECK(std::hypot(pa1.x - paR.x, pa1.y - paR.y) < 8.0f);  // the resized block (heavier) held its place, the other gave way
+  const uint64_t f0 = u.d.framesDrawn();
+  u.d.advance(1.0);
+  CHECK(u.d.framesDrawn() == f0);
+}
+
+// Far out (the cached chunks): a block (a miniature: no controls, so any press grabs it) dragged through the window is
+// drawn over the cached picture at the pointer, the chunks it was in drawn directly without it; the drop moves it; idle.
+TEST_CASE("project patch (TX.block-drag): far out — the dragged block over the cached chunks, the chunks under it drawn without it") {
+  Ui u;
+  REQUIRE(u.d.enableGpu().ok());
+  const ResizeSetup r = resizeSetup(u);
+  u.show();
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& cv = v.canvas();
+  REQUIRE(v.setBlockScale(r.filter, 0.2f));
+  const Node& n = u.pp().nodes[u.deviceNode(r.filter)];
+  const float us = u.d.tree().scale();
+  circuit::CircuitCanvas::View vw;
+  vw.zoom = 0.12;
+  vw.x = n.x + n.w * 0.5f - static_cast<double>(cv.rect().w) * 0.5 / (vw.zoom * us);
+  vw.y = n.y + n.h * 0.5f - static_cast<double>(cv.rect().h) * 0.5 / (vw.zoom * us);
+  cv.setView(vw);
+  u.d.advance(1.0);  // the chunks built
+  REQUIRE(cv.lod() == circuit::CircuitCanvas::Lod::Far);
+  cv.markDirty();
+  u.d.step();
+  CHECK(cv.stats().chunksDirect == 0);
+  const Node n0 = u.pp().nodes[u.deviceNode(r.filter)];
+  const Vec2 c = u.centre(u.deviceNode(r.filter));
+  u.d.move(c);
+  u.d.down(c);
+  u.d.move({c.x + 10.0f, c.y + 6.0f});
+  u.d.move({c.x + 40.0f, c.y + 30.0f});
+  u.d.step();
+  CHECK(cv.drag() == ProjectCanvas::Drag::MoveDevice);
+  CHECK_FALSE(cv.draggedNodes().empty());
+  CHECK(cv.stats().chunksDirect > 0);  // where it (and its cables) were: drawn without it
+  CHECK(cv.hitTest({c.x + 40.0f, c.y + 30.0f}).kind != circuit::CanvasHit::Kind::None);
+  u.d.up({c.x + 40.0f, c.y + 30.0f});
+  CHECK(cv.draggedNodes().empty());
+  const Node& n1 = u.pp().nodes[u.deviceNode(r.filter)];
+  CHECK(n1.x - n0.x == doctest::Approx(40.0f / cv.deviceScale()).epsilon(0.1));
+  u.d.advance(2.0);
+  CHECK(v.overlappingBlocks().empty());
+  const uint64_t f0 = u.d.framesDrawn();
+  u.d.advance(1.0);
+  CHECK(u.d.framesDrawn() == f0);
 }

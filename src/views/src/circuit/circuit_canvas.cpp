@@ -118,6 +118,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     uint32_t lastCable = UINT32_MAX;
     for (const uint32_t sg : visSegs) {
       const SceneSegment& seg = s.segments[sg];
+      if (!showWire(seg.wire)) continue;  // TX.block-drag: a lifted block's wires are drawn with it
       if (s.wires[seg.wire].cable) {  // TX.cables: its rest shape, thin and antialiased (once per cable)
         if (seg.wire != lastCable) farCable(dlW, seg.wire, ox, oy, sc, thin, wireCol);
         lastCable = seg.wire;
@@ -133,7 +134,7 @@ struct CircuitCanvas::Impl final : FaceHost {
       ++stats.segmentsPainted;
     }
     for (const uint32_t v : visNodes) {
-      if (faced(v)) continue;  // TMM.4: faces are drawn over the chunks at every level
+      if (faced(v) || !showNode(v)) continue;  // TMM.4: faces are drawn over the chunks at every level
       const SceneNode& n = s.nodes[v];
       const ui::Rect rr{static_cast<float>(std::round(ox + n.x * sc)), static_cast<float>(std::round(oy + n.y * sc)),
                         static_cast<float>(std::round(ox + (n.x + n.w) * sc)), static_cast<float>(std::round(oy + (n.y + n.h) * sc))};
@@ -209,7 +210,11 @@ struct CircuitCanvas::Impl final : FaceHost {
     for (int32_t j = farJ0; j <= farJ1; ++j)
       for (int32_t i = farI0; i <= farI1; ++i) {
         const float x = static_cast<float>(ox + i * C), y = static_cast<float>(oy + j * C);
-        if (atlas) {
+        // TX.block-drag: a chunk the lifted blocks or their wires were in is drawn directly without them while they are
+        // lifted (its tile keeps them: it is right again once the drag ends without a new scene).
+        const bool liftedHere = paintPass == 0 && liftTouches(static_cast<float>((x - ox) / sc), static_cast<float>((y - oy) / sc),
+                                                         static_cast<float>((x + C - ox) / sc), static_cast<float>((y + C - oy) / sc));
+        if (atlas && !liftedHere) {
           auto it = chunks.find({key, i, j});
           if (it != chunks.end() && chunkReady(*atlas, it->second)) {
             chunkQuads(dl, *atlas, it->second, x, y, 1.0f);
@@ -489,9 +494,17 @@ struct CircuitCanvas::Impl final : FaceHost {
   int32_t faceUnder(Vec2 d) const noexcept {
     if (!facesShown || !scene || !self.rect().contains(d)) return -1;
     const Point2 w = self.toWorld(d);
-    for (size_t i = faces.size(); i-- > 0;) {
-      const SceneNode& n = scene->nodes[faces[i].node];
-      if (!n.hidden && w.x >= n.x && w.x <= n.x + n.w && w.y >= n.y && w.y <= n.y + n.h) return static_cast<int32_t>(i);
+    // TX.block-drag: a lifted face is where it is drawn (over the others: first).
+    for (int lift = 1; lift >= 0; --lift) {
+      if (lift == 1 && dragNodes.empty()) continue;
+      for (size_t i = faces.size(); i-- > 0;) {
+        if (lifted(faces[i].node) != (lift == 1)) continue;
+        if (faces[i].scale < kFaceMiniatureScale) continue;  // TX.block-drag: a miniature has no controls (it is the block)
+        const SceneNode& n = scene->nodes[faces[i].node];
+        const Point2 o = shiftOf(faces[i].node);
+        const float x = w.x - o.x, y = w.y - o.y;
+        if (!n.hidden && x >= n.x && x <= n.x + n.w && y >= n.y && y <= n.y + n.h) return static_cast<int32_t>(i);
+      }
     }
     return -1;
   }
@@ -515,11 +528,13 @@ struct CircuitCanvas::Impl final : FaceHost {
   // TX.resize: a world point in face `h`'s own units (its node may be scaled).
   ui::Vec2 localOf(const Hosted& h, Point2 w) const noexcept {
     const SceneNode& n = scene->nodes[h.node];
-    return {(w.x - n.x) / h.scale, (w.y - n.y) / h.scale};
+    const Point2 o = shiftOf(h.node);  // TX.block-drag
+    return {(w.x - o.x - n.x) / h.scale, (w.y - o.y - n.y) / h.scale};
   }
 
   bool faceVisible(const Hosted& h) const noexcept {
-    const SceneNode& n = scene->nodes[h.node];
+    SceneNode n = scene->nodes[h.node];
+    n.x += shiftOf(h.node).x, n.y += shiftOf(h.node).y;  // TX.block-drag
     const ui::IRect r = self.rect();
     return !n.hidden && devX(n.x + n.w) >= static_cast<float>(r.x) && devX(n.x) <= static_cast<float>(r.right()) &&
            devY(n.y + n.h) >= static_cast<float>(r.y) && devY(n.y) <= static_cast<float>(r.bottom());
@@ -535,7 +550,8 @@ struct CircuitCanvas::Impl final : FaceHost {
       VoiceTapReader* rd = h.face->voices();
       if (rd == nullptr || !faceVisible(h)) continue;
       if (h.face->pollVoices() && tr != nullptr) {
-        const SceneNode& n = scene->nodes[h.node];
+        SceneNode n = scene->nodes[h.node];
+        n.x += shiftOf(h.node).x, n.y += shiftOf(h.node).y;  // TX.block-drag
         faceRects.clear();
         h.face->liveRects(faceRects);
         const float k = h.scale;
@@ -559,7 +575,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     bool wantTimer = false;
     for (Hosted& h : faces) {
       const SceneNode& n = scene->nodes[h.node];
-      if (n.hidden) continue;
+      if (n.hidden || !showNode(h.node)) continue;  // TX.block-drag: a lifted face in the lifted pass
       const float sc = s() * h.scale;  // TX.resize: a scaled node's face at its own px per unit
       const float x0 = devX(n.x), y0 = devY(n.y), x1 = devX(n.x + n.w), y1 = devY(n.y + n.h);
       if (x1 < static_cast<float>(clip.x) - 2.0f || x0 > static_cast<float>(clip.right()) + 2.0f ||
@@ -657,7 +673,8 @@ struct CircuitCanvas::Impl final : FaceHost {
   void damageFace(const Hosted& h) {
     ui::UiTree* tr = self.tree();
     if (tr == nullptr || !scene) return;
-    const SceneNode& n = scene->nodes[h.node];
+    SceneNode n = scene->nodes[h.node];
+    n.x += shiftOf(h.node).x, n.y += shiftOf(h.node).y;  // TX.block-drag
     const ui::IRect cr = self.rect();
     const ui::Rect d{std::max(devX(n.x) - 4.0f, static_cast<float>(cr.x)), std::max(devY(n.y) - 4.0f, static_cast<float>(cr.y)),
                      std::min(devX(n.x + n.w) + 4.0f, static_cast<float>(cr.right())),
@@ -717,8 +734,66 @@ struct CircuitCanvas::Impl final : FaceHost {
   std::vector<int32_t> cableOf;  // per scene wire: its cable (−1: none)
   CableSim sim;
   double simLast = -1.0;              // the frame time of the last advance (−1: none since it woke)
-  std::vector<uint32_t> dragNodes;    // sorted: setCableDrag's nodes
+  // TX.block-drag: blocks lifted by a host's drag (setNodeDrag) — drawn, hit and plugged at their place + dragOffset,
+  // over the rest of the scene, while the scene still has them where they were.
+  std::vector<uint32_t> dragNodes;    // sorted: setNodeDrag's nodes
   Point2 dragOffset{0.0f, 0.0f};
+  std::vector<uint8_t> liftNode;      // per scene node: 1 = lifted (empty: nothing is)
+  std::vector<uint8_t> liftWire;      // per scene wire: 0, 1 = one end on a lifted node, 2 = both ends
+  std::vector<uint32_t> liftSegs;     // the segments of the (non-cable) wires with both ends lifted
+  std::vector<uint32_t> liftHalf;     // the non-cable wires with one end lifted (drawn as a Z between their ends)
+  std::vector<ui::Rect> liftArea;     // world rects the lifted parts cover in the scene (far chunks there: drawn directly)
+  // The paint pass: −1 everything (nothing lifted), 0 the scene without the lifted parts, 1 the lifted parts only.
+  int8_t paintPass = -1;
+  bool lifted(uint32_t v) const noexcept { return v < liftNode.size() && liftNode[v] != 0; }
+  bool showNode(uint32_t v) const noexcept { return paintPass < 0 || lifted(v) == (paintPass == 1); }
+  bool showWire(uint32_t w) const noexcept {
+    if (paintPass < 0 || liftWire.empty()) return paintPass <= 0;
+    return paintPass == 0 ? liftWire[w] == 0 : liftWire[w] == 2;
+  }
+  Point2 shiftOf(uint32_t v) const noexcept { return lifted(v) ? dragOffset : Point2{0.0f, 0.0f}; }
+  void clearLift() {
+    dragNodes.clear();
+    dragOffset = {0.0f, 0.0f};
+    liftNode.clear();
+    liftWire.clear();
+    liftSegs.clear();
+    liftHalf.clear();
+    liftArea.clear();
+  }
+  // The masks and areas for dragNodes (a new set; the offset alone changes nothing here).
+  void buildLift() {
+    liftNode.assign(scene ? scene->nodes.size() : 0, 0);
+    liftWire.assign(scene ? scene->wires.size() : 0, 0);
+    liftSegs.clear();
+    liftHalf.clear();
+    liftArea.clear();
+    if (!scene) return;
+    const CircuitScene& sc = *scene;
+    for (const uint32_t v : dragNodes)
+      if (v < liftNode.size()) {
+        liftNode[v] = 1;
+        const SceneNode& n = sc.nodes[v];
+        liftArea.push_back({n.x - 16.0f, n.y - 16.0f, n.x + n.w + 16.0f, n.y + n.h + 16.0f});
+      }
+    for (uint32_t w = 0; w < sc.wires.size(); ++w) {
+      const SceneWire& sw = sc.wires[w];
+      const uint32_t a = sw.fromPin < sc.pins.size() ? sc.pins[sw.fromPin].node : UINT32_MAX;
+      const uint32_t b = sw.toPin < sc.pins.size() ? sc.pins[sw.toPin].node : UINT32_MAX;
+      const uint8_t k = static_cast<uint8_t>((lifted(a) ? 1 : 0) + (lifted(b) ? 1 : 0));
+      liftWire[w] = k;
+      if (k == 0 || sw.hidden) continue;
+      liftArea.push_back({sw.x0 - 8.0f, sw.y0 - 8.0f, sw.x1 + 8.0f, sw.y1 + 8.0f});
+      if (!sw.cable && k == 1 && sw.pointCount >= 2) liftHalf.push_back(w);
+    }
+    for (uint32_t i = 0; i < sc.segments.size(); ++i)
+      if (liftWire[sc.segments[i].wire] == 2 && !sc.wires[sc.segments[i].wire].cable) liftSegs.push_back(i);
+  }
+  bool liftTouches(float x0, float y0, float x1, float y1) const noexcept {
+    for (const ui::Rect& r : liftArea)
+      if (r.x0 <= x1 && r.x1 >= x0 && r.y0 <= y1 && r.y1 >= y0) return true;
+    return false;
+  }
   uint32_t glowTimer = 0;
   bool glowWasLive = false;           // the last poll saw the sources live (one more poll after they stop)
   std::vector<uint32_t> glowWires;    // poll scratch
@@ -734,6 +809,7 @@ struct CircuitCanvas::Impl final : FaceHost {
   // Paint scratch: the visible cables' device polylines (one flat buffer).
   struct CableDraw {
     uint32_t cable = 0, first = 0, count = 0;
+    float w = 0.0f, plugA = 0.0f, plugB = 0.0f;  // TX.block-drag: tube and plug widths (device px) by its ends' scales
     Rgba col = 0;
     float alpha = 1.0f;
     float flip = 1.0f;  // the normals' sign: the highlight on the cable's upper side
@@ -744,9 +820,7 @@ struct CircuitCanvas::Impl final : FaceHost {
   std::vector<Vec2> cpts, cnrm;
   std::vector<float> carc, cfade;
 
-  bool cableNodeDragged(uint32_t node) const noexcept {
-    return node != UINT32_MAX && std::binary_search(dragNodes.begin(), dragNodes.end(), node);
-  }
+  bool cableNodeDragged(uint32_t node) const noexcept { return lifted(node); }
 
   // Where cable c's ends are now: the scene's, a control's live anchor (its rim, toward the cable's source), the drag.
   void cableEnds(const CableRef& c, Point2& a, Point2& b) const {
@@ -1068,7 +1142,7 @@ struct CircuitCanvas::Impl final : FaceHost {
   // Whether device point d is on a face's control (a press there goes to it; cables there yield but for their ends).
   bool onFaceControl(Vec2 d) const {
     const int32_t i = faceUnder(d);
-    if (i < 0) return false;
+    if (i < 0 || lifted(faces[static_cast<size_t>(i)].node)) return false;  // TX.block-drag: a lifted face is being moved
     const Hosted& h = faces[static_cast<size_t>(i)];
     return h.face->hitTest(localOf(h, self.toWorld(d)), s() * h.scale) >= 0;
   }
@@ -1082,7 +1156,12 @@ struct CircuitCanvas::Impl final : FaceHost {
     return cableAt(self.toWorld(d), plugReach(), true, dist);
   }
 
-  void paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w1);
+  // `which`: −1 every cable, 0 those not touching a lifted block, 1 those that do (and the loose cable).
+  void paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w1, int8_t which = -1);
+  // TX.block-drag: a node's scale for the cables' plugs on it (1: none).
+  float nodeScale(uint32_t v) const noexcept {
+    return scene && v < scene->nodes.size() && scene->nodes[v].scale > 0.0f ? scene->nodes[v].scale : 1.0f;
+  }
 
   explicit Impl(CircuitCanvas& c) : self(c) {}
 
@@ -1285,6 +1364,7 @@ CircuitCanvas::~CircuitCanvas() = default;
 
 void CircuitCanvas::setScene(std::shared_ptr<const CircuitScene> scene, bool fit, bool keepTiles) {
   impl_->scene = std::move(scene);
+  impl_->clearLift();  // TX.block-drag: the lifted nodes were the old scene's (the host lifts them again in the new one)
   impl_->selection = {};
   impl_->hover = {};
   if (!keepTiles) impl_->tiles.clear();
@@ -1423,10 +1503,29 @@ CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
   sc.grid.cellRange(w.x - pinR, w.y - pinR, w.x + pinR, w.y + pinR, c0, r0, c1, r1);
   CanvasHit best;
   float bestPin = pinR;
+  // TX.block-drag: lifted blocks first (drawn over the rest), where they are drawn: the point moved back by their offset.
+  if (!m.dragNodes.empty()) {
+    const Point2 l{w.x - m.dragOffset.x, w.y - m.dragOffset.y};
+    for (const uint32_t v : m.dragNodes) {
+      const SceneNode& n = sc.nodes[v];
+      if (n.hidden) continue;
+      for (uint32_t p = 0; p < n.pinCount; ++p) {
+        const ScenePin& pin = sc.pins[n.firstPin + p];
+        if (!pin.visible) continue;
+        const float dd = std::max(std::fabs(pin.x - l.x), std::fabs(pin.y - l.y));
+        if (dd <= bestPin) {
+          bestPin = dd;
+          best = {CanvasHit::Kind::Pin, n.firstPin + p};
+        }
+      }
+    }
+    if (best.kind != CanvasHit::Kind::None) return best;
+  }
   for (uint32_t r = r0; r <= r1; ++r)
     for (uint32_t c = c0; c <= c1; ++c) {
       const uint32_t cell = r * sc.grid.cols + c;
       for (uint32_t k = sc.grid.nodeBegin[cell]; k < sc.grid.nodeBegin[cell + 1]; ++k) {
+        if (m.lifted(sc.grid.nodeItems[k])) continue;
         const SceneNode& n = sc.nodes[sc.grid.nodeItems[k]];
         for (uint32_t p = 0; p < n.pinCount; ++p) {
           const ScenePin& pin = sc.pins[n.firstPin + p];
@@ -1448,10 +1547,17 @@ CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
     if (const uint32_t cw = m.cableAt(w, control ? m.plugReach() : m.cableReach(), control, dist); cw != UINT32_MAX)
       return {CanvasHit::Kind::Wire, cw};
   }
+  // TX.block-drag: then the lifted blocks' bodies (a cable under one still hits: a splice finds the cable it is over).
+  for (size_t i = m.dragNodes.size(); i-- > 0;) {
+    const SceneNode& n = sc.nodes[m.dragNodes[i]];
+    const float lx = w.x - m.dragOffset.x, ly = w.y - m.dragOffset.y;
+    if (!n.hidden && lx >= n.x && lx <= n.x + n.w && ly >= n.y && ly <= n.y + n.h) return {CanvasHit::Kind::Node, m.dragNodes[i]};
+  }
   sc.grid.cellRange(w.x, w.y, w.x, w.y, c0, r0, c1, r1);
   const uint32_t cell = r0 * sc.grid.cols + c0;
   for (uint32_t k = sc.grid.nodeBegin[cell + 1]; k-- > sc.grid.nodeBegin[cell];) {
     const uint32_t i = sc.grid.nodeItems[k];
+    if (m.lifted(i)) continue;
     const SceneNode& n = sc.nodes[i];
     if (w.x >= n.x && w.x <= n.x + n.w && w.y >= n.y && w.y <= n.y + n.h) return {CanvasHit::Kind::Node, i};
   }
@@ -1463,6 +1569,7 @@ CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
       for (uint32_t k = sc.grid.segBegin[cl]; k < sc.grid.segBegin[cl + 1]; ++k) {
         const SceneSegment& sg = sc.segments[sc.grid.segItems[k]];
         if (sc.wires[sg.wire].cable) continue;  // TX.cables: hit above, by the rope as it hangs now
+        if (!m.liftWire.empty() && m.liftWire[sg.wire] != 0) continue;  // TX.block-drag: re-routed by the drop
         const Point2 a = sc.points[sg.point], b = sc.points[sg.point + 1];
         const float dx = std::max({std::min(a.x, b.x) - w.x, 0.0f, w.x - std::max(a.x, b.x)});
         const float dy = std::max({std::min(a.y, b.y) - w.y, 0.0f, w.y - std::max(a.y, b.y)});
@@ -1607,23 +1714,35 @@ Vec2 endDirection(const Vec2* p, uint32_t n, float reach) {
 
 }  // namespace
 
-void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w1) {
+void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w1, int8_t which) {
   Stats& st = stats;
-  // Far: the cables are in the cached chunks; only the loose cable (TX.node-menu-fix1) is drawn here.
+  // Far: the cables are in the cached chunks; only the loose cable (TX.node-menu-fix1) is drawn here (TX.block-drag: and
+  // the lifted blocks' cables, thin, as they hang now).
   const bool farLod = lod() == Lod::Far;
-  if ((cables.empty() || farLod) && !looseOn) return;
+  const bool withLoose = looseOn && which != 0;
+  auto picked = [&](const CableRef& c) {
+    return which < 0 || liftWire.empty() ? which <= 0 : (liftWire[c.wire] != 0) == (which == 1);
+  };
+  if (farLod && which == 1 && !cables.empty()) {
+    for (uint32_t i = 0; i < cables.size(); ++i) {
+      if (!picked(cables[i])) continue;
+      farPts.clear();
+      for (const Point2 q : sim.points(i)) farPts.push_back({devX(q.x), devY(q.y)});
+      ui::smoothPolyline(ctx.dl, farPts, farWireCol, std::max(0.35f, farThin - 0.6f));
+    }
+  }
+  if ((cables.empty() || farLod) && !withLoose) return;
   const ui::Theme& th = *ctx.res.theme;
   const auto& C = th.circuit;
   const CircuitScene& sc = *scene;
   ui::DrawList& dl = ctx.dl;
   const float us = ctx.scale.factor;
-  const float w = cableWidth(), hw = 0.5f * w;
-  const float feather = std::min(1.0f, 0.35f * hw);
+  const float w = cableWidth();
   // A control's anchor moves with its face (a slider's handle, a panel laid out again after a zoom): the cable's end
   // follows it at once, onto its rest shape (a layout is no push: nothing swings). Its damage reaches the next frame
   // (this one is clipped to its own).
   bool anchorsMoved = false;
-  for (uint32_t i = 0; !farLod && i < cables.size(); ++i) {
+  for (uint32_t i = 0; !farLod && which != 1 && i < cables.size(); ++i) {
     const CableRef& c = cables[i];
     if (sc.wires[c.wire].control == UINT32_MAX) continue;
     Point2 a, b;
@@ -1672,10 +1791,15 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
     if (ws.modulation) return C.wireMod;
     return ws.rate == WireRate::Param ? C.wireParam : C.wireAudio;
   };
+  // TX.block-drag: the tube by the smaller of its ends' scales (≤ 1), each plug by its own block's (a tiny block's
+  // plugs are tiny, a large one's up to twice the zoom's).
+  auto tubeOf = [&](float k) { return std::max(std::min(1.0f, us), w * std::clamp(k, 0.1f, 1.0f)); };
+  auto plugOf = [&](float k) { return std::max(std::min(1.0f, us), w * std::clamp(k, 0.1f, 2.0f)); };
   for (uint32_t i = 0; !farLod && i < cables.size(); ++i) {
     const CableSim::Box& bx = sim.bounds(i);
     if (bx.x1 < w0.x - pad || bx.x0 > w1.x + pad || bx.y1 < w0.y - pad || bx.y0 > w1.y + pad) continue;
     const CableRef& c = cables[i];
+    if (!picked(c)) continue;
     const SceneWire& sw = sc.wires[c.wire];
     const std::span<const Point2> P = sim.points(i);
     CableDraw d;
@@ -1697,10 +1821,14 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
           break;
         }
     d.flip = P.back().x < P.front().x ? -1.0f : 1.0f;
+    const float ka = nodeScale(c.fromNode), kb = nodeScale(c.toNode);
+    d.w = tubeOf(std::min(ka, kb));
+    d.plugA = plugOf(ka);
+    d.plugB = plugOf(kb);
     cdraw.push_back(d);
   }
   // TX.node-menu-fix1: the cable being drawn out, last (over the others), highlighted when it snaps to a target.
-  if (looseOn && loose.size() > 0) {
+  if (withLoose && loose.size() > 0) {
     const std::span<const Point2> P = loose.points(0);
     CableDraw d;
     d.cable = UINT32_MAX;
@@ -1711,6 +1839,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
     d.poly = looseStyle.poly;
     d.sel = looseSnap;
     d.flip = P.back().x < P.front().x ? -1.0f : 1.0f;
+    d.w = d.plugA = d.plugB = w;
     cdraw.push_back(d);
   }
   if (cdraw.empty()) return;
@@ -1733,8 +1862,10 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
   Rgba cols[kTubeLanes];
   // 1. Soft drop shadows on what the cables cross, below and right of them.
   if (!far) {
-    const Vec2 shift{0.25f * w, 0.7f * w + us};
     for (const CableDraw& d : cdraw) {
+      if (d.w < 3.0f) continue;
+      const float hw = 0.5f * d.w;
+      const Vec2 shift{0.25f * d.w, 0.7f * d.w + us};
       const Rgba sh = ui::rgba(0, 0, 0, static_cast<uint32_t>(std::lround(100.0f * d.alpha)));
       const float o[3] = {1.7f * hw + us, 0.0f, -1.7f * hw - us};
       const Rgba c3[3] = {ui::withAlpha(sh, 0), sh, ui::withAlpha(sh, 0)};
@@ -1750,6 +1881,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
     for (const CableDraw& d : cdraw) {
       const float g = d.glow * d.alpha;
       if (g <= 0.0f) continue;
+      const float hw = 0.5f * d.w;
       const float o[5] = {4.5f * hw + 2.0f * us, 1.6f * hw, 0.0f, -1.6f * hw, -4.5f * hw - 2.0f * us};
       const Rgba c5[5] = {ui::withAlpha(d.col, 0), ui::setAlpha(d.col, 0.3f * g), ui::setAlpha(d.col, 0.65f * g),
                           ui::setAlpha(d.col, 0.3f * g), ui::withAlpha(d.col, 0)};
@@ -1764,6 +1896,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
       if ((d.sel || d.hov || d.cable == UINT32_MAX) != (emph == 1)) continue;  // the loose cable on top
       const Vec2* p = cpts.data() + d.first;
       const Vec2* nr = cnrm.data() + d.first;
+      const float hw = 0.5f * d.w, feather = std::min(1.0f, 0.35f * hw);
       if (d.sel || d.hov) {
         const Rgba h = d.sel ? ui::withAlpha(C.selected, 230) : ui::withAlpha(C.hover, 190);
         const float o[4] = {hw + 2.6f * us, hw + 1.2f * us, -hw - 1.2f * us, -hw - 2.6f * us};
@@ -1772,26 +1905,26 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
       }
       tubeProfile(d.col, hw, feather, d.alpha, off, cols);
       ribbon(dl, p, nr, d.count, off, cols, kTubeLanes);
-      if (d.poly && !far) {  // per voice: a twin-lead (a dark groove along the middle)
+      if (d.poly && d.w >= 3.0f) {  // per voice: a twin-lead (a dark groove along the middle)
         const Rgba gr = ui::mulAlpha(ui::scaleRgb(d.col, 0.3f), d.alpha);
         const float o[3] = {0.3f * hw, 0.0f, -0.3f * hw};
         const Rgba c3[3] = {ui::withAlpha(gr, 0), gr, ui::withAlpha(gr, 0)};
         ribbon(dl, p, nr, d.count, o, c3, 3);
       }
       const float chord = std::hypot(p[d.count - 1].x - p[0].x, p[d.count - 1].y - p[0].y);
-      const float plugK = std::clamp(chord / (7.0f * w), 0.3f, 1.0f);
-      const float reach = 2.4f * w * plugK;
-      cablePlug(dl, p[0], endDirection(p, d.count, reach), w, d.col, d.alpha, plugK);
+      const float plugK = std::clamp(chord / (3.5f * (d.plugA + d.plugB)), 0.3f, 1.0f);
+      const float reach = 2.4f * d.plugA * plugK, reachB = 2.4f * d.plugB * plugK;
+      cablePlug(dl, p[0], endDirection(p, d.count, reach), d.plugA, d.col, d.alpha, plugK);
       Vec2 back{-1.0f, 0.0f};
       // The far end's direction about one plug length in (the rope's last points, walked back).
       for (uint32_t k = d.count - 1; k-- > 0;) {
         const float dx = p[k].x - p[d.count - 1].x, dy = p[k].y - p[d.count - 1].y, dd = std::sqrt(dx * dx + dy * dy);
-        if (dd >= reach || k == 0) {
+        if (dd >= reachB || k == 0) {
           if (dd > 1e-4f) back = {dx / dd, dy / dd};
           break;
         }
       }
-      cablePlug(dl, p[d.count - 1], back, w, d.col, d.alpha, plugK);
+      cablePlug(dl, p[d.count - 1], back, d.plugB, d.col, d.alpha, plugK);
       if (d.cable != UINT32_MAX) ++st.cablesPainted;
     }
   // 4. Light flowing along lit cables from source to target (additive, inside the tube).
@@ -1812,6 +1945,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
         cfade[k] = g * (0.18f + 0.82f * b * b);
       }
       const Rgba core = ui::lerp(d.col, ui::rgba(255, 255, 255), 0.45f);
+      const float hw = 0.5f * d.w;
       const float o[3] = {0.7f * hw, 0.0f, -0.7f * hw};
       const Rgba c3[3] = {ui::withAlpha(core, 0), core, ui::withAlpha(core, 0)};
       ribbon(dl, cpts.data() + d.first, cnrm.data() + d.first, d.count, o, c3, 3, cfade.data());
@@ -1864,22 +1998,26 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     }
   }
 
+  // TX.block-drag: blocks being dragged are painted in a second pass over the rest (the lifted pass: the view shifted by
+  // their offset), with their cables last; the first pass leaves them out.
+  const bool lifting = !m.dragNodes.empty();
+  m.paintPass = lifting ? 0 : -1;
   paintUnderlay(ctx);
 
   // Visible world rect (+ the margin of captions and AA).
-  const Point2 w0 = toWorld({static_cast<float>(clip.x), static_cast<float>(clip.y)});
-  const Point2 w1 = toWorld({static_cast<float>(clip.right()), static_cast<float>(clip.bottom())});
+  const Point2 vis0 = toWorld({static_cast<float>(clip.x), static_cast<float>(clip.y)});
+  const Point2 vis1 = toWorld({static_cast<float>(clip.right()), static_cast<float>(clip.bottom())});
 
   // TMM.6: oversample regions under everything else: one opaque wash (mixed from the background and the signal colour,
   // so overlapping pieces read as one shape) behind exactly the region's members and their wires, and "×n" in the
   // title band above its first member, at every zoom where it fits.
   const Rgba wash = ui::lerp(C.background, C.wireAudio, 0.16f);
   for (const SceneRegion& rg : sc.regions) {
-    if (rg.x1 < w0.x || rg.x0 > w1.x || rg.y1 < w0.y || rg.y0 > w1.y) continue;
+    if (rg.x1 < vis0.x || rg.x0 > vis1.x || rg.y1 < vis0.y || rg.y0 > vis1.y) continue;
     const float radius = std::max(1.0f, std::round(5.0f * s));
     for (uint32_t k = rg.firstRect; k < rg.firstRect + rg.rectCount; ++k) {
       const SceneRect& q = sc.regionRects[k];
-      if (q.x1 < w0.x || q.x0 > w1.x || q.y1 < w0.y || q.y0 > w1.y) continue;
+      if (q.x1 < vis0.x || q.x0 > vis1.x || q.y1 < vis0.y || q.y0 > vis1.y) continue;
       const ui::Rect rr{std::round(m.devX(q.x0)), std::round(m.devY(q.y0)), std::round(m.devX(q.x1)), std::round(m.devY(q.y1))};
       if (rr.x1 - rr.x0 >= 1.0f && rr.y1 - rr.y0 >= 1.0f) dl.addRoundedRectFilled(rr, radius, wash);
     }
@@ -1907,9 +2045,6 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
   const float pad = 4.0f / s + 2.0f;
   ui::TileAtlas* atlas = ctx.res.tiles;
   bool missing = false;
-  if (lod != Lod::Far) m.collectVisible(w0.x - pad, w0.y - pad, w1.x + pad, w1.y + pad);
-
-  // ---- wires ----
   const float thin = std::max(1.0f, std::round(us));
   const float thick = std::max(2.0f, std::round(2.0f * us));
   auto baseWireColour = [&](uint32_t w) {
@@ -1934,8 +2069,52 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     const bool emphasised = m.wireSel[w] || (m.hover.kind == CanvasHit::Kind::Wire && m.hover.index == w);
     return sc.wires[w].inactive && !emphasised ? ui::mulAlpha(c, kInactiveAlpha) : c;
   };
+  auto strokeOf = [&](uint32_t v) {
+    if (m.nodeSel[v]) return C.selected;
+    if (m.hover.kind == CanvasHit::Kind::Node && m.hover.index == v) return C.hover;
+    return sc.nodes[v].inactive ? ui::mulAlpha(C.symbolStroke, kInactiveAlpha) : C.symbolStroke;
+  };
+  auto dimIf = [&](uint32_t v, Rgba c) { return sc.nodes[v].inactive ? ui::mulAlpha(c, kInactiveAlpha) : c; };
+
+  // One pass's nodes and wires (TX.block-drag: m.paintPass picks what it shows; w0 … w1 its visible world rect).
+  auto layers = [&](Point2 w0, Point2 w1) {
+  if (lod != Lod::Far) {
+    if (m.paintPass == 1) {  // the lifted blocks and the wires between them
+      m.visNodes.clear();
+      for (const uint32_t v : m.dragNodes) {
+        const SceneNode& n = sc.nodes[v];
+        if (!n.hidden && n.x <= w1.x + pad && n.x + n.w >= w0.x - pad && n.y - 12.0f <= w1.y + pad && n.y + n.h >= w0.y - pad) m.visNodes.push_back(v);
+      }
+      m.visSegs = m.liftSegs;
+    } else {
+      m.collectVisible(w0.x - pad, w0.y - pad, w1.x + pad, w1.y + pad);
+      if (m.paintPass == 0) {
+        std::erase_if(m.visNodes, [&](uint32_t v) { return m.lifted(v); });
+        std::erase_if(m.visSegs, [&](uint32_t g) { return !m.showWire(sc.segments[g].wire); });
+      }
+    }
+  }
+  // ---- wires ----
   if (lod == Lod::Far) {
-    missing = m.paintFar(dl, *theme, clip, atlas, thin);
+    if (m.paintPass == 1) {  // the lifted blocks' outlines and their wires over the cached picture
+      const double ox = std::round(r.x - m.view.x * s), oy = std::round(r.y - m.view.y * s);
+      for (const uint32_t g : m.liftSegs) {
+        const Point2 a = sc.points[sc.segments[g].point], b = sc.points[sc.segments[g].point + 1];
+        const float ax = static_cast<float>(ox + a.x * s), ay = static_cast<float>(oy + a.y * s);
+        const float bx = static_cast<float>(ox + b.x * s), by = static_cast<float>(oy + b.y * s);
+        if (a.y == b.y) dl.addHLine(std::min(ax, bx) - thin * 0.5f, std::max(ax, bx) + thin * 0.5f, ay, m.farWireCol, thin);
+        else dl.addVLine(ax, std::min(ay, by) - thin * 0.5f, std::max(ay, by) + thin * 0.5f, m.farWireCol, thin);
+      }
+      for (const uint32_t v : m.dragNodes) {
+        const SceneNode& n = sc.nodes[v];
+        if (m.faced(v) || n.hidden) continue;
+        const ui::Rect rr{static_cast<float>(std::round(ox + n.x * s)), static_cast<float>(std::round(oy + n.y * s)),
+                          static_cast<float>(std::round(ox + (n.x + n.w) * s)), static_cast<float>(std::round(oy + (n.y + n.h) * s))};
+        if (rr.x1 > rr.x0 && rr.y1 > rr.y0) dl.addRectStroke(rr, m.farNodeCol, 1.0f);
+      }
+    } else {
+      missing = m.paintFar(dl, *theme, clip, atlas, thin);
+    }
   } else {
     // Whole wires (dashes and double lines follow the polyline), each once: the wires of the visible segments.
     uint32_t last = UINT32_MAX;
@@ -1980,6 +2159,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       const Point2 j = sc.junctions[i];
       if (j.x < w0.x - pad || j.x > w1.x + pad || j.y < w0.y - pad || j.y > w1.y + pad) continue;
       const uint32_t w = sc.junctionWire[i];
+      if (!m.showWire(w)) continue;  // TX.block-drag
       const WireStyle& ws = sc.wires[w].style;
       const float t = ws.poly ? thin : ((!ws.boolean && ws.rate == WireRate::Audio) ? thick : thin);
       dl.addCircleFilled({snapCentre(m.devX(j.x), t), snapCentre(m.devY(j.y), t)}, ws.poly ? dotR + thin : dotR, wireColour(w));
@@ -1988,12 +2168,6 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
   }
 
   // ---- nodes ----
-  auto strokeOf = [&](uint32_t v) {
-    if (m.nodeSel[v]) return C.selected;
-    if (m.hover.kind == CanvasHit::Kind::Node && m.hover.index == v) return C.hover;
-    return sc.nodes[v].inactive ? ui::mulAlpha(C.symbolStroke, kInactiveAlpha) : C.symbolStroke;
-  };
-  auto dimIf = [&](uint32_t v, Rgba c) { return sc.nodes[v].inactive ? ui::mulAlpha(c, kInactiveAlpha) : c; };
   if (lod == Lod::Far) {
     // The selection and the hovered node over the cached picture (the chunks hold the unselected look).
     const double ox = std::round(r.x - m.view.x * s), oy = std::round(r.y - m.view.y * s);
@@ -2005,10 +2179,13 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       if (rr.x1 > rr.x0 && rr.y1 > rr.y0) dl.addRectStroke(rr, col, 1.0f);
     };
     for (const uint32_t v : m.selection.nodes)
-      if (v < sc.nodes.size() && !sc.nodes[v].hidden) outline(v, C.selected);
-    if (m.hover.kind == CanvasHit::Kind::Node) outline(m.hover.index, C.hover);
-    for (const uint32_t w : m.selection.wires) m.farWire(dl, w, ox, oy, s, thin, C.selected);
-    if (m.hover.kind == CanvasHit::Kind::Wire) m.farWire(dl, m.hover.index, ox, oy, s, thin, C.hover);
+      if (v < sc.nodes.size() && !sc.nodes[v].hidden && m.showNode(v)) outline(v, C.selected);
+    if (m.hover.kind == CanvasHit::Kind::Node && m.showNode(m.hover.index)) outline(m.hover.index, C.hover);
+    for (const uint32_t w : m.selection.wires)
+      if (w < sc.wires.size() && m.showWire(w) && !(m.paintPass == 1 && sc.wires[w].cable)) m.farWire(dl, w, ox, oy, s, thin, C.selected);
+    if (m.hover.kind == CanvasHit::Kind::Wire && m.hover.index < sc.wires.size() && m.showWire(m.hover.index) &&
+        !(m.paintPass == 1 && sc.wires[m.hover.index].cable))
+      m.farWire(dl, m.hover.index, ox, oy, s, thin, C.hover);
   } else {
     const float stubT = std::max(1.0f, std::round(strokeWidth(s)));
     // Pin stubs (crisp, snapped like the wires); T5.x-circuit-chain: only from Near when the view asks.
@@ -2028,7 +2205,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     // T4.16c: the hovered pin (a press there starts a wire in the editor) is ringed in the hover colour.
     if (m.hover.kind == CanvasHit::Kind::Pin && m.hover.index < sc.pins.size()) {
       const ScenePin& pin = sc.pins[m.hover.index];
-      if (pin.visible) {
+      if (pin.visible && m.showNode(pin.node)) {
         const float rr = std::max(3.0f, std::round(3.0f * us));
         dl.addCircleStroke({m.devX(pin.x), m.devY(pin.y)}, rr, C.hover, std::max(1.0f, std::round(1.5f * us)));
       }
@@ -2114,7 +2291,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     for (const uint32_t w : m.controlWires) {
       if (w >= sc.wires.size()) continue;
       const SceneWire& sw = sc.wires[w];
-      if (sw.control == UINT32_MAX || sw.cable || sw.hidden || sw.pointCount < 2 || sw.toPin >= sc.pins.size()) continue;
+      if (sw.control == UINT32_MAX || sw.cable || sw.hidden || sw.pointCount < 2 || sw.toPin >= sc.pins.size() || !m.showWire(w)) continue;
       const uint32_t v = sc.pins[sw.toPin].node;
       if (!m.faced(v)) continue;
       const SceneNode& n = sc.nodes[v];
@@ -2174,6 +2351,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     const bool pins = m.view.zoom >= kPinLabelZoom;
     for (const SceneLabel& lb : sc.labels) {
       if (lb.role == SceneLabel::Role::Pin && !pins) continue;
+      if (lb.node != UINT32_MAX ? !m.showNode(lb.node) : m.paintPass == 1) continue;  // TX.block-drag
       if (lb.node != UINT32_MAX && lb.role != SceneLabel::Role::Caption && m.faced(lb.node)) continue;  // TMM.4: label-free
       if (lb.node != UINT32_MAX && lb.node < m.nodeStamp.size()) {
         const SceneNode& n = sc.nodes[lb.node];
@@ -2222,7 +2400,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     const float pillPad = std::round(ctx.scale.exact(3.0f)), lh = std::round(ctx.scale.exact(13.0f));
     std::vector<ui::Rect> placed;
     for (const SceneLabel& lb : sc.labels) {
-      if (lb.role != SceneLabel::Role::Title || lb.node >= sc.nodes.size()) continue;
+      if (lb.role != SceneLabel::Role::Title || lb.node >= sc.nodes.size() || !m.showNode(lb.node)) continue;
       const SceneNode& n = sc.nodes[lb.node];
       const Symbol sym = sc.specs[n.spec].symbol;
       if (sym != Symbol::Input && sym != Symbol::Param && sym != Symbol::Source && sym != Symbol::Output && sym != Symbol::Export)
@@ -2247,8 +2425,52 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     }
   }
 
+  };  // layers
+
+  layers(vis0, vis1);
   // ---- TX.cables: over everything of the scene (near / mid; far: in the chunks) ----
-  m.paintCables(ctx, w0, w1);
+  m.paintCables(ctx, vis0, vis1, lifting ? 0 : -1);
+  paintNodeOverlay(ctx);
+
+  // ---- TX.block-drag: the lifted pass ----
+  if (lifting) {
+    thread_local std::vector<uint32_t> baseVis;
+    baseVis = m.visNodes;
+    m.paintPass = 1;
+    const View unshifted = m.view;
+    auto shift = [&](bool on) {
+      m.view = unshifted;
+      if (on) m.view.x -= static_cast<double>(m.dragOffset.x), m.view.y -= static_cast<double>(m.dragOffset.y);
+    };
+    shift(true);
+    paintUnderlay(ctx);
+    shift(false);
+    // The traces with one end on a lifted block: a Z from end to end (their route is laid out again by the drop).
+    for (const uint32_t w : m.liftHalf) {
+      const SceneWire& sw = sc.wires[w];
+      Point2 a = sc.points[sw.firstPoint], b = sc.points[sw.firstPoint + sw.pointCount - 1];
+      const Point2 oa = m.shiftOf(sc.pins[sw.fromPin].node), ob = m.shiftOf(sc.pins[sw.toPin].node);
+      a = {a.x + oa.x, a.y + oa.y};
+      b = {b.x + ob.x, b.y + ob.y};
+      const WireStyle& ws = sw.style;
+      const float t = lod == Lod::Far || ws.boolean || ws.rate != WireRate::Audio ? thin : thick;
+      const Rgba col = lod == Lod::Far ? m.farWireCol : wireColour(w);
+      const Vec2 da{snapCentre(m.devX(a.x), t), snapCentre(m.devY(a.y), t)}, db{snapCentre(m.devX(b.x), t), snapCentre(m.devY(b.y), t)};
+      const float mx = snapCentre((da.x + db.x) * 0.5f, t);
+      crispSegment(dl, da, {mx, da.y}, col, t);
+      crispSegment(dl, {mx, da.y}, {mx, db.y}, col, t);
+      crispSegment(dl, {mx, db.y}, db, col, t);
+    }
+    shift(true);
+    layers(toWorld({static_cast<float>(clip.x), static_cast<float>(clip.y)}),
+           toWorld({static_cast<float>(clip.right()), static_cast<float>(clip.bottom())}));
+    paintNodeOverlay(ctx);
+    shift(false);
+    m.paintCables(ctx, vis0, vis1, 1);  // their cables over everything (they plug into the lifted blocks)
+    for (const uint32_t v : m.visNodes) baseVis.push_back(v);  // what onFrame builds tiles for: both passes' nodes
+    m.visNodes = baseVis;
+    m.paintPass = -1;
+  }
 
   // ---- rubber band ----
   if (m.mode == Impl::DragMode::Band && m.tracker.moved) {
@@ -2479,6 +2701,7 @@ bool CircuitCanvas::onKey(const ui::KeyEvent& e) {
 
 void CircuitCanvas::onCaptureLost() {
   Impl& m = *impl_;
+  clearNodeDrag();  // TX.block-drag
   if (m.faceCapture >= 0 && static_cast<size_t>(m.faceCapture) < m.faces.size()) {  // TMM.4: the drag is undone
     m.faces[static_cast<size_t>(m.faceCapture)].face->cancelDrag();
     m.faceCapture = -1;
@@ -2491,6 +2714,7 @@ void CircuitCanvas::onCaptureLost() {
 
 void CircuitCanvas::onInteractionCancelled() {
   Impl& m = *impl_;
+  clearNodeDrag();  // TX.block-drag: a host's drag cancelled: the lifted nodes back in place
   if (m.faceCapture >= 0 && static_cast<size_t>(m.faceCapture) < m.faces.size()) {  // TMM.4
     m.faces[static_cast<size_t>(m.faceCapture)].face->cancelDrag();
     m.faceCapture = -1;
@@ -2680,23 +2904,38 @@ std::optional<graph::Point2> CircuitCanvas::faceControlPoint(uint32_t node, std:
   return len > r + 1e-3f ? Point2{centre.x + dx / len * r, centre.y + dy / len * r} : centre;
 }
 
-void CircuitCanvas::setCableDrag(std::span<const uint32_t> nodes, graph::Point2 offset) {
+void CircuitCanvas::setNodeDrag(std::span<const uint32_t> nodes, graph::Point2 offset) {
   Impl& m = *impl_;
-  std::vector<uint32_t> sorted(nodes.begin(), nodes.end());
-  std::sort(sorted.begin(), sorted.end());
-  if (sorted == m.dragNodes && offset == m.dragOffset) return;
-  m.dragNodes = std::move(sorted);
+  if (!m.scene) return;
+  // The same set (each move of a drag): only the offset — no allocation, no scan.
+  const bool same = nodes.size() == m.dragNodes.size() && std::is_sorted(nodes.begin(), nodes.end()) &&
+                    std::equal(nodes.begin(), nodes.end(), m.dragNodes.begin());
+  if (same && offset == m.dragOffset) return;
+  if (!same) {
+    m.dragNodes.assign(nodes.begin(), nodes.end());
+    std::sort(m.dragNodes.begin(), m.dragNodes.end());
+    m.dragNodes.erase(std::unique(m.dragNodes.begin(), m.dragNodes.end()), m.dragNodes.end());
+    std::erase_if(m.dragNodes, [&](uint32_t v) { return v >= m.scene->nodes.size(); });
+    m.buildLift();
+  }
   m.dragOffset = offset;
+  if (m.dragNodes.empty()) m.clearLift();
   m.refreshCableEnds(true);
+  markDirty();
 }
 
-void CircuitCanvas::clearCableDrag() {
+void CircuitCanvas::clearNodeDrag() {
   Impl& m = *impl_;
   if (m.dragNodes.empty()) return;
-  m.dragNodes.clear();
-  m.dragOffset = {0.0f, 0.0f};
+  m.clearLift();
   m.refreshCableEnds(true);
+  markDirty();
 }
+
+std::span<const uint32_t> CircuitCanvas::draggedNodes() const noexcept { return impl_->dragNodes; }
+graph::Point2 CircuitCanvas::nodeDragOffset() const noexcept { return impl_->dragOffset; }
+bool CircuitCanvas::nodeLifted(uint32_t node) const noexcept { return impl_->lifted(node); }
+bool CircuitCanvas::lifting() const noexcept { return impl_->paintPass == 1; }
 
 void CircuitCanvas::wakeCables() {
   Impl& m = *impl_;

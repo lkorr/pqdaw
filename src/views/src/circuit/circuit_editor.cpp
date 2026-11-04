@@ -233,7 +233,13 @@ bool EditCanvas::onPointer(const ui::PointerEvent& e) {
         if (drag_ == Drag::MaybeMove &&
             std::max(std::fabs(e.pos.x - press_.x), std::fabs(e.pos.y - press_.y)) >= 3.0f * us)
           drag_ = Drag::Move;
-        if (drag_ == Drag::Move) markDirty();
+        if (drag_ == Drag::Move) {
+          // TX.block-drag: the selected nodes themselves move with the pointer (on the 4-unit grid the drop snaps to),
+          // their wires with them; the edit is made on release.
+          const float s = deviceScale();
+          setNodeDrag(selection().nodes, {std::round((last_.x - press_.x) / s / 4.0f) * 4.0f, std::round((last_.y - press_.y) / s / 4.0f) * 4.0f});
+          markDirty();
+        }
         return true;
       }
       return CircuitCanvas::onPointer(e);
@@ -259,6 +265,7 @@ bool EditCanvas::onPointer(const ui::PointerEvent& e) {
         (void)CircuitCanvas::onPointer(e);
         markDirty();
         if ((dx != 0.0f || dy != 0.0f) && onMove) onMove(selection().nodes, dx, dy);
+        clearNodeDrag();  // the edit's scene has them there (a refused move: back in place)
         return true;
       }
       if (drag_ == Drag::MaybeMove) {
@@ -286,6 +293,7 @@ ui::Cursor EditCanvas::cursorAt(ui::Vec2 pos) const {
 }
 
 void EditCanvas::onCaptureLost() {
+  clearNodeDrag();  // TX.block-drag
   if (drag_ != Drag::None) markDirty();
   drag_ = Drag::None;
   CircuitCanvas::onCaptureLost();
@@ -296,16 +304,7 @@ void EditCanvas::paintOverlay(ui::PaintContext& ctx) {
   if (!th || !scene()) return;
   const CircuitScene& sc = *scene();
   const ui::IRect r = rect();
-  const float s = deviceScale();
   const float t = std::max(1.0f, std::round(ctx.scale.exact(1.5f)));
-  if (drag_ == Drag::Move) {
-    const float dx = std::round((last_.x - press_.x) / s / 4.0f) * 4.0f, dy = std::round((last_.y - press_.y) / s / 4.0f) * 4.0f;
-    for (const uint32_t v : selection().nodes) {
-      const SceneNode& n = sc.nodes[v];
-      const ui::Vec2 a = toDevice({n.x + dx, n.y + dy}), b = toDevice({n.x + n.w + dx, n.y + n.h + dy});
-      ctx.dl.addRectStroke({std::round(a.x), std::round(a.y), std::round(b.x), std::round(b.y)}, th->circuit.selected, t);
-    }
-  }
   if (drag_ == Drag::Wire && fromPin_ < sc.pins.size()) {
     const ScenePin& from = sc.pins[fromPin_];
     const ui::Vec2 a = toDevice({from.x, from.y});

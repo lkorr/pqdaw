@@ -149,7 +149,18 @@ TEST_CASE("circuit editor: drag a node to move it (layout only), Delete removes 
   const graph::NodeIndex t = r.atom("tanh");
   const float x0 = r.patch().layout(t).x;
   const Vec2 c = r.centre(t);
-  r.d.drag(c, {c.x + 40 * r.canvas().deviceScale(), c.y}, 6);
+  // TX.block-drag: while it moves the node itself is drawn at the pointer (lifted), the patch unchanged until the drop.
+  r.d.move(c);
+  r.d.down(c);
+  r.d.move({c.x + 20 * r.canvas().deviceScale(), c.y});
+  r.d.move({c.x + 40 * r.canvas().deviceScale(), c.y});
+  r.d.step();
+  REQUIRE(r.canvas().draggedNodes().size() == 1);
+  CHECK(r.canvas().nodeDragOffset().x == doctest::Approx(40.0f));
+  CHECK(r.patch().layout(r.atom("tanh")).x == doctest::Approx(x0));
+  CHECK(r.canvas().hitTest({c.x + 40 * r.canvas().deviceScale(), c.y}).kind == circuit::CanvasHit::Kind::Node);
+  r.d.up({c.x + 40 * r.canvas().deviceScale(), c.y});
+  CHECK(r.canvas().draggedNodes().empty());
   CHECK(r.patch().layout(r.atom("tanh")).x == doctest::Approx(x0 + 40));
   CHECK(r.editor->document().text().find("layout {") != std::string::npos);
   CHECK(r.editor->document().text().find("y = tanh(x * amount)") != std::string::npos);

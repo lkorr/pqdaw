@@ -179,6 +179,10 @@ public:
   void setFacesShown(bool on);
   bool facesShown() const noexcept;
   static constexpr double kFaceFrameSeconds = 1.0 / 60.0;
+  // TX.block-drag: a face on a node scaled below this (SceneNode::scale: a block shrunk to a miniature) is drawn but has
+  // no controls — presses, hover and wire drops there are the block's (select, move, open), so a tiny block can be
+  // grabbed. Zoom never changes it (a face far out keeps its controls, as before).
+  static constexpr float kFaceMiniatureScale = 0.25f;
 
   // ---- TX.cables ----
   static constexpr double kCableGlowSeconds = 1.0 / 30.0;
@@ -190,10 +194,20 @@ public:
   // The cable of scene wire `wire` as it hangs now (world units, source → target; empty: not a cable), its middle.
   std::span<const graph::Point2> cablePoints(uint32_t wire) const noexcept;
   graph::Point2 cableMidpoint(uint32_t wire) const noexcept;
-  // Blocks being dragged while the scene still has them where they were (a host's drag preview): the cables of scene
-  // nodes `nodes` follow `offset` (world units) and swing. Clear it with the scene that places them (or on cancel).
-  void setCableDrag(std::span<const uint32_t> nodes, graph::Point2 offset);
-  void clearCableDrag();
+  // TX.block-drag: blocks being dragged while the scene still has them where they were. Scene nodes `nodes` (sorted) are
+  // LIFTED: drawn `offset` (world units) from their place in a second pass over everything else (their bodies, faces,
+  // panels, labels, the wires between them, the host's under- and overlay parts of them: paintUnderlay /
+  // paintNodeOverlay with lifting() true), hit-tested there, and their cables plugged into their ports there (they
+  // swing). A trace with one end lifted is drawn as a Z between its ends; far out the chunks under them are drawn
+  // directly without them. Per move of a drag only the offset changes (no allocation). A new scene drops the lift (the
+  // host lifts the new scene's nodes again if the drag goes on); clearNodeDrag: back in place (a cancelled drag).
+  void setNodeDrag(std::span<const uint32_t> nodes, graph::Point2 offset);
+  void clearNodeDrag();
+  std::span<const uint32_t> draggedNodes() const noexcept;
+  graph::Point2 nodeDragOffset() const noexcept;
+  bool nodeLifted(uint32_t node) const noexcept;
+  // The lifted pass is being painted (paintUnderlay / paintNodeOverlay and what they call draw only the lifted parts).
+  bool lifting() const noexcept;
   // TX.node-menu-fix1: the LOOSE cable — a new connection being drawn out (a drag from an output, a backwards cable,
   // a cable kept on the pointer after a Ctrl-release): a real cable from world point `from` (its port) to `to` (the
   // pointer, or the port / control it snaps to), drawn as every cable (tube, plugs, `style`'s colour) over the blocks
@@ -267,8 +281,12 @@ protected:
   // control's rim toward `toward`, as a cable's end onto it); nullopt: no such control shown.
   std::optional<graph::Point2> faceControlPoint(uint32_t node, std::string_view param, graph::Point2 toward) const;
   bool faceDragging() const noexcept;
-  // Drawn over the scene, inside the canvas (editing previews, probes).
+  // Drawn over the scene, inside the canvas (editing previews, probes): last, once.
   virtual void paintOverlay(ui::PaintContext& /*ctx*/) {}
+  // TX.block-drag: what the host draws over its nodes (after the scene's cables): once per pass — lifting() false for
+  // the scene (leave lifted nodes' parts out: nodeLifted), true for the lifted nodes only (the view is shifted by their
+  // offset then, so toDevice places them where they are drawn).
+  virtual void paintNodeOverlay(ui::PaintContext& /*ctx*/) {}
   // T4.13: drawn under the scene (after the background, before wires and symbols; at every level of detail, so not
   // cached in the Far chunks): the project patch view's bands and group containers.
   virtual void paintUnderlay(ui::PaintContext& /*ctx*/) {}

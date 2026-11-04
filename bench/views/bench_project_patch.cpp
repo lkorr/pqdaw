@@ -10,6 +10,9 @@
 //     layout + scene, cold and from cached device scenes; full paints and pan frames fitted (far) and at zoom 1 (near))
 //   - TMM.4: the project plus 32 Phase accumulator faces at 2x: pan frames with faces vs plain blocks (far, near); 16
 //     faces x 8 animated voices (animation frames, a full paint); idle after the voices stop
+//   - TX.block-drag: a block dragged live by real pointer events (the block drawn at the pointer each frame, its cables
+//     on its ports): one band framed (near: a panel with its cables) and the whole project (far), each move a frame;
+//     the drop (nudge + re-layout + the push-apart's check)
 //   - TX.cables (`pq_bench_project_patch cables`, also at the end of a full run): 200 hanging cables between 40 blocks
 //     in view at zoom 1 (2560x1440): the simulation alone (200 awake ropes, a 60 Hz frame's steps), a settled full paint,
 //     frames while all 200 swing (a drag offset each frame: sim + damage + paint), frames while all 200 glow (poll +
@@ -392,11 +395,11 @@ int cablesBench(double nsPerCycle) {
   std::vector<double> swing;
   for (int i = 0; i < 120; ++i) {
     const float t = static_cast<float>(i) / 120.0f;
-    swing.push_back(timed([&] { c.setCableDrag(all, {40.0f * std::sin(6.2831853f * 2.0f * t), 25.0f * std::cos(6.2831853f * 3.0f * t)}); }));
+    swing.push_back(timed([&] { c.setNodeDrag(all, {40.0f * std::sin(6.2831853f * 2.0f * t), 25.0f * std::cos(6.2831853f * 3.0f * t)}); }));
   }
   std::printf("cables: moving %d during the drag frames, %u cables painted per frame\n", c.cablesMoving() ? 1 : 0, c.stats().cablesPainted);
   pq::bench::reportStats("cables.swing frame (200 cables awake: drag + sim + damage + paint) 2560x1440", pq::bench::summarize(swing), "ns CPU/frame");
-  c.clearCableDrag();
+  c.clearNodeDrag();
   const double t0 = now;
   while (c.cablesMoving() && now - t0 < 10.0) frame();
   std::printf("cables: every cable asleep %.2f s after the drag ended (frames stop then)\n", now - t0);
@@ -640,6 +643,59 @@ int main(int argc, char** argv) {
     std::printf("push-apart: %llu frames over 5 spawns (each a re-layout)\n", static_cast<unsigned long long>(frames));
     pq::bench::reportStats("node_menu.push-apart frame (step + re-layout + paint) 64 tracks 2560x1440", pq::bench::summarize(push), "ns CPU/frame");
   }
+  // TX.block-drag: a device block dragged by pointer events through the tree (press, moves, release), every move a frame:
+  // the block (a panel) drawn at the pointer with its cables on its ports, nothing re-laid out until the drop.
+  for (int level = 0; level < 2; ++level) {
+    const doc::TrackId t = snap->tracks[0]->children.at(3)->id;
+    // Far out the blocks are plain (a panel's controls would take a press there: TMM.4 keeps them interactive).
+    view->setPanelsShown(level == 0);
+    if (level == 0) view->focusBand(t, false);
+    else view->fitAll(false);
+    settle();
+    const ProjectPatch& pp = view->patch();
+    uint32_t node = kNone;
+    for (const uint32_t d : pp.bands[pp.bandOf(t)].devices)
+      if (node == kNone && pp.nodes[d].kind == NodeKind::Device) node = d;
+    if (node == kNone) return 1;
+    const circuit::CircuitCanvas& c = view->canvas();
+    const char* lod = c.lod() == circuit::CircuitCanvas::Lod::Far ? "far" : (c.lod() == circuit::CircuitCanvas::Lod::Mid ? "mid" : "near");
+    auto pointer = [&](PointerType type, Vec2 at) {
+      PointerEvent e;
+      e.type = type;
+      e.pos = at;
+      if (type != PointerType::Move) e.button = PointerButton::Left;
+      e.clickCount = 1;
+      (void)tree.dispatchPointer(e);
+    };
+    std::vector<double> move, drop;
+    uint32_t lifted = 0;
+    const doc::DeviceId dragged = pp.nodes[node].device;
+    for (int round = 0; round < 4; ++round) {
+      const Node& n = view->patch().nodes[view->patch().nodeOf(dragged)];
+      const Vec2 grip = view->canvas().toDevice({n.x + n.w * 0.5f, level == 0 ? n.y + 6.0f : n.y + n.h * 0.5f});  // a panel's title bar
+      pointer(PointerType::Move, grip);
+      pointer(PointerType::Down, grip);
+      frame();
+      for (int i = 1; i <= 60; ++i) {
+        const float k = static_cast<float>(i) / 60.0f;
+        const Vec2 at{grip.x + 160.0f * std::sin(3.1415927f * k), grip.y + (round % 2 == 0 ? 90.0f : -90.0f) * k};
+        move.push_back(timed([&] { pointer(PointerType::Move, at); }));
+        lifted += view->canvas().draggedNodes().empty() ? 0u : 1u;
+      }
+      const Vec2 end{grip.x, grip.y + (round % 2 == 0 ? 90.0f : -90.0f)};
+      drop.push_back(timed([&] { pointer(PointerType::Up, end); }));
+      settle();
+    }
+    std::printf("block drag (%s, %s): the block lifted in %u of %zu move frames\n", level == 0 ? "one band" : "whole project", lod, lifted,
+                move.size());
+    std::snprintf(name, sizeof name, "block_drag.move frame (a %s at the pointer + its cables; %s, %s) 64 tracks %ux%u",
+                  level == 0 ? "panel" : "plain block", level == 0 ? "one band" : "whole project", lod, w, h);
+    pq::bench::reportStats(name, pq::bench::summarize(move), "ns CPU/frame");
+    std::snprintf(name, sizeof name, "block_drag.drop frame (nudge + re-layout + overlap check; %s, %s) 64 tracks %ux%u",
+                  level == 0 ? "one band" : "whole project", lod, w, h);
+    pq::bench::reportStats(name, pq::bench::summarize(drop), "ns CPU/frame");
+  }
+  view->setPanelsShown(true);
   // The morph: back to the arrangement and in again, every frame timed at 144 Hz.
   view->setShown(false, false);
   settle();

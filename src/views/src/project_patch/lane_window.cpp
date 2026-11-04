@@ -169,12 +169,14 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
   const float px = fonts ? static_cast<float>(ctx.res.text->metrics(font).pixelSize) : 11.0f;
   const bool header = fonts && canvas.lod() == circuit::CircuitCanvas::Lod::Near;
   const Rgba gridBar = ui::mulAlpha(th.arrangement.gridLine, 1.0f), gridBeat = ui::mulAlpha(th.arrangement.gridLine, 0.45f);
-  if (model != nullptr) model->overlay.reset(dl.targetWidth(), dl.targetHeight());  // audio fades / handles of this paint
+  // TX.block-drag: a band dragged by its title has its window drawn with it (the canvas's lifted pass), not here.
+  const bool liftPass = canvas.lifting();
+  if (model != nullptr && !liftPass) model->overlay.reset(dl.targetWidth(), dl.targetHeight());  // audio fades / handles of this paint
   bool anyWindow = false;
 
   for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
     const Band& band = pp.bands[bi];
-    if (!hasLaneWindow(band) || band.source == kNone) continue;
+    if (!hasLaneWindow(band) || band.source == kNone || canvas.lifted(band.source) != liftPass) continue;
     const Node& n = pp.nodes[band.source];
     const Rect nr = canvas.deviceRect(n.x, n.y, n.w, n.h);
     if (!overlaps(nr, clip)) continue;
@@ -329,7 +331,7 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
 
   // TX.lane-edit: in automation mode the chosen parameter's envelope over each window's clips (the arrangement's bands,
   // on this surface), and its name in the window's title row.
-  if (surf != nullptr && arr->automation().mode()) {
+  if (surf != nullptr && arr->automation().mode() && !liftPass) {
     arr->automation().paintSurface(ctx, *surf, clip);
     if (header)
       for (int32_t r = 0; r < static_cast<int32_t>(surf->rows().size()); ++r) {
@@ -352,7 +354,7 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
   if (const std::optional<Ticks>& ph = view.lanePlayhead(); ph && *ph >= start && *ph < end)
     for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
       const Band& band = pp.bands[bi];
-      if (!hasLaneWindow(band) || band.source == kNone || view.bandTrack(bi) == nullptr) continue;
+      if (!hasLaneWindow(band) || band.source == kNone || view.bandTrack(bi) == nullptr || canvas.lifted(band.source) != liftPass) continue;
       const Node& n = pp.nodes[band.source];
       if (!overlaps(canvas.deviceRect(n.x, n.y, n.w, n.h), clip)) continue;
       const Rect body = laneBodyDevice(canvas, n);

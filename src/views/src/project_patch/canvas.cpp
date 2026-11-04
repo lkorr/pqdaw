@@ -110,16 +110,19 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
   const float reach = 8.0f * (tree() ? tree()->scale() : 1.0f) / std::max(s, 1e-6f);
   PinHit best;
   float bestD = reach;
+  const float floorReach = 2.0f * (tree() ? tree()->scale() : 1.0f) / std::max(s, 1e-6f);
   for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
     const Node& n = pp.nodes[i];
     if (w.x < n.x - reach || w.x > n.x + n.w + reach || w.y < n.y - reach || w.y > n.y + n.h + reach) continue;
+    // TX.block-drag: a small block's pins reach a part of its size (its middle stays its body: it can be grabbed).
+    const float nodeReach = n.kind == NodeKind::Device ? std::min(reach, std::max(floorReach, kSmallPinReach * std::min(n.w, n.h))) : reach;
     for (int side = 0; side < 2; ++side) {
       const auto& ports = side == 0 ? n.inputs : n.outputs;
       const float px = side == 0 ? n.x : n.x + n.w;
       for (size_t k = 0; k < ports.size(); ++k) {
         if (side == 0 && ports[k].anchored) continue;  // TX.mod-all: no pin (its wire ends on the face's control)
         const float dd = std::max(std::fabs(w.x - px), std::fabs(w.y - (n.y + pinY(n, k))));
-        if (dd <= bestD) {
+        if (dd <= bestD && dd <= nodeReach) {
           bestD = dd;
           best = {i, static_cast<uint32_t>(k), side == 0};
         }
@@ -132,9 +135,16 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
 uint32_t ProjectCanvas::nodeAt(Vec2 d) const {
   const ProjectPatch& pp = view_.patch();
   const graph::Point2 w = toWorld(d);
+  // TX.block-drag: a device block smaller than kMinHitPx across is hit as if it were that size (centred on it).
+  const float minW = kMinHitPx * (tree() ? tree()->scale() : 1.0f) / std::max(deviceScale(), 1e-6f);
   for (uint32_t i = static_cast<uint32_t>(pp.nodes.size()); i-- > 0;) {
     const Node& n = pp.nodes[i];
-    if (w.x >= n.x && w.x <= n.x + n.w && w.y >= n.y && w.y <= n.y + n.h) return i;
+    float x0 = n.x, x1 = n.x + n.w, y0 = n.y, y1 = n.y + n.h;
+    if (n.kind == NodeKind::Device) {
+      if (n.w < minW) x0 = n.x + (n.w - minW) * 0.5f, x1 = x0 + minW;
+      if (n.h < minW) y0 = n.y + (n.h - minW) * 0.5f, y1 = y0 + minW;
+    }
+    if (w.x >= x0 && w.x <= x1 && w.y >= y0 && w.y <= y1) return i;
   }
   return kNone;
 }
@@ -183,8 +193,10 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   const float bar = std::max(2.0f, std::round(3.0f * us));
   // Group containers first (outer before inner), then the band strips. TX.groups: a scoped canvas (a group's panel)
   // has no bands to draw.
+  // TX.block-drag: the lifted pass draws only the parts of what is dragged (a band by its title, opened frames, capsules).
+  const bool liftPass = lifting();
   for (const Band& b : pp.bands) {
-    if (pp.scoped) break;
+    if (pp.scoped || liftPass) break;
     if (b.kind != doc::TrackKind::Group) continue;
     const Rect r = snapRect(deviceRect(b.cx0, b.cy0, b.cx1 - b.cx0, b.cy1 - b.cy0));
     if (!overlaps(r, clip)) continue;
@@ -195,6 +207,7 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   const bool names = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr;
   for (const Band& b : pp.bands) {
     if (pp.scoped) break;
+    if (bandLifted(static_cast<uint32_t>(&b - pp.bands.data())) != liftPass) continue;
     const Rect r = snapRect(deviceRect(b.x0, b.y, b.x1 - b.x0, b.h));
     if (!overlaps(r, clip)) continue;
     const Rgba col = ui::hex(b.colour);
@@ -225,6 +238,7 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   // Expanded devices: the frame their atoms are drawn in.
   for (const Node& n : pp.nodes) {
     if (n.kind != NodeKind::Device || !n.expanded) continue;
+    if (lifted(static_cast<uint32_t>(&n - pp.nodes.data())) != liftPass) continue;
     if (n.band < pp.bands.size() && view_.scene().sceneNode.size() > 0) {
       const uint32_t mi = static_cast<uint32_t>(&n - pp.nodes.data());
       if (view_.scene().sceneNode[mi] != kNone) continue;  // not opened (no inner scene)
@@ -271,6 +285,7 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   // TX.groups: opened groups' capsules (a rounded frame with its title strip; its contents are scene nodes over it).
   for (const Node& n : pp.nodes) {
     if (!n.group || !n.groupOpen) continue;
+    if (lifted(static_cast<uint32_t>(&n - pp.nodes.data())) != liftPass) continue;
     const Rect r = snapRect(deviceRect(n.x, n.y, n.w, n.h));
     if (!overlaps(r, clip)) continue;
     const Rgba accent = th.circuit.wireAudio;
@@ -306,6 +321,8 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
 static void paintFocus(ui::PaintContext& ctx, const ProjectCanvas& c, const ProjectPatchView& v) {
   LaneRect r;
   if (!v.focusedDevice().valid() || !v.deviceWorldRect(v.focusedDevice(), r)) return;
+  const uint32_t fn = v.patch().nodeOf(v.focusedDevice());
+  if ((fn != kNone && c.lifted(fn)) != c.lifting()) return;  // TX.block-drag: with its block
   const float us = ctx.scale.factor;
   const float t = std::max(2.0f, std::round(2.0f * us));
   const Rect d = snapRect(c.deviceRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0));
@@ -313,7 +330,8 @@ static void paintFocus(ui::PaintContext& ctx, const ProjectCanvas& c, const Proj
   ctx.dl.addRectStroke({d.x0 - t, d.y0 - t, d.x1 + t, d.y1 + t}, ctx.res.theme->circuit.selected, t);
 }
 
-void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
+// TX.block-drag: what is drawn over the blocks, once per pass of the canvas (lifting(): only the dragged blocks' parts).
+void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
   const ui::Theme& th = *ctx.res.theme;
   const ProjectPatch& pp = view_.patch();
   const ProjectScene& ps = view_.scene();
@@ -322,9 +340,11 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
   const float s = deviceScale();
   const float us = ctx.scale.factor;
   const Lod level = lod();
+  const bool liftPass = lifting();
+  auto mine = [&](const Node& n) { return lifted(static_cast<uint32_t>(&n - pp.nodes.data())) == liftPass; };
   // TX.groups: a closed group's miniature of its contents (its boxes and wires in the block's body, under the title).
   for (const Node& n : pp.nodes) {
-    if (!n.group || n.groupOpen || n.mini.empty()) continue;
+    if (!n.group || n.groupOpen || n.mini.empty() || !mine(n)) continue;
     const Rect r = deviceRect(n.x + 8.0f, n.y + 20.0f, n.w - 16.0f, n.h - 26.0f);
     if (!overlaps(r, clip) || r.x1 - r.x0 < 12.0f || r.y1 - r.y0 < 8.0f) continue;
     // The miniature keeps its aspect, centred in the body.
@@ -370,11 +390,11 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
   const bool text = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr && level == Lod::Near;
   // T5.x-circuit-chain: opened racks' deactivated chains and devices veiled.
   for (const Node& n : pp.nodes)
-    if (n.rack && n.expanded)
+    if (n.rack && n.expanded && mine(n))
       if (const circuit::ChainCircuit* cc = view_.rackCircuit(n.device))
         circuit::paintChainVeils(ctx, *this, *cc, n.x + metrics::kExpandedPad - cc->scene->x0, n.y + 16.0f + metrics::kExpandedPad - cc->scene->y0);
   // The opened band's name over its opened devices when its strip is too thin to show it under them (zoomed out).
-  if (const Rect pb = openedBandPill(*this, view_, ctx); pb.x1 > pb.x0 && overlaps(pb, clip)) {
+  if (const Rect pb = openedBandPill(*this, view_, ctx); !liftPass && pb.x1 > pb.x0 && overlaps(pb, clip)) {
     const Band& b = pp.bands[pp.bandOf(view_.openedBand())];
     const ui::FontId font = ctx.res.uiFonts->small;
     const auto px = static_cast<float>(ctx.res.text->metrics(font).pixelSize);
@@ -393,6 +413,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
     for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
       const Node& n = pp.nodes[i];
       if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;  // expanded: its atoms are drawn
+      if (!mine(n)) continue;
       const Rect nr = deviceRect(n.x, n.y, n.w, n.h);
       if (!overlaps(nr, clip)) continue;
       const Band& band = pp.bands[n.band];
@@ -467,6 +488,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       // lane windows' "Notes" sat on "Keys", "Pad", "Mod"): it moves into its block's top, or is left out.
       for (const Band& b : pp.bands) {
         if (pp.scoped) break;
+        if (bandLifted(static_cast<uint32_t>(&b - pp.bands.data())) != liftPass) continue;
         const Rect br = snapRect(deviceRect(b.x0, b.y, b.x1 - b.x0, b.h));
         if (!overlaps(br, clip) || br.y1 - br.y0 < px + 2.0f) continue;
         const float bar = std::max(2.0f, std::round(3.0f * us));
@@ -486,6 +508,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
         const Node& n = pp.nodes[i];
         if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;  // opened: its frame has the title
+        if (!mine(n)) continue;
         if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal) continue;  // the symbol says it
         if (n.face != nullptr || n.panel) continue;  // TMM.4: a face is label-free; TX.panel-faces: a panel has its title
         const Rect nr = deviceRect(n.x, n.y, n.w, n.h);
@@ -516,7 +539,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
   {
     // z⁻¹ on wires with an automatic 1-sample delay (SPEC §15 2026-10-24).
     // TX.cables: on a cable, halfway along it as it hangs now (it rides the swing).
-    if (text)
+    if (text && !liftPass)
       for (uint32_t k = 0; k < pp.edges.size(); ++k) {
         const Edge& e = pp.edges[k];
         if (!e.delayed || e.points.size() < 2) continue;
@@ -543,7 +566,7 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
     const int32_t lh = static_cast<int32_t>(std::round(14.0f * us)), pad = static_cast<int32_t>(std::round(4.0f * us));
     for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
       const float ns = view_.deviceCost(i);
-      if (ns < 0.0f || pp.nodes[i].kind != NodeKind::Device) continue;
+      if (ns < 0.0f || pp.nodes[i].kind != NodeKind::Device || !mine(pp.nodes[i])) continue;
       const Node& n = pp.nodes[i];
       const Vec2 tr = toDevice({n.x + n.w, n.y});
       const std::string label = circuit::formatCostNs(static_cast<double>(ns));
@@ -554,7 +577,14 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       paint::text(ctx, font, box, label, th.circuit.cost, ui::TextAlign::Center);
     }
   }
+}
 
+void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
+  const ui::Theme& th = *ctx.res.theme;
+  const ProjectPatch& pp = view_.patch();
+  ui::DrawList& dl = ctx.dl;
+  const float s = deviceScale();
+  const float us = ctx.scale.factor;
   // Gestures. TX.node-menu-fix1: a new connection is drawn as the real cable (the canvas's loose cable, over the
   // blocks); here only what it would connect to: a soft ring on the port or control it snapped to, or the block whose
   // params a drop on its body would offer.
@@ -582,13 +612,6 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
     dl.addRectStroke(snapRect({r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy}), spliceEdge_ != kNone ? th.circuit.selected : th.circuit.hover,
                      std::max(1.0f, std::round((spliceEdge_ != kNone ? 2.0f : 1.0f) * us)));
   }
-  if (drag_ == Drag::MoveDevice && dragNode_ != kNone) {
-    const Node& n = pp.nodes[dragNode_];
-    const Rect r = deviceRect(n.x, n.y, n.w, n.h);
-    const float dx = last_.x - press_.x, dy = last_.y - press_.y;
-    dl.addRectStroke(snapRect({r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy}), th.circuit.selected, std::max(1.0f, std::round(us)));
-    // TX.all-free: a block moves where it is dropped (no slot: its cables are its place in the signal path).
-  }
   if (drag_ == Drag::Resize) {  // TX.resize: the block's outline and its scale at its bottom-right corner
     const uint32_t rn = pp.nodeOf(resizeDevice_);
     if (rn != kNone) {
@@ -606,18 +629,6 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
         paint::text(ctx, font, {box.x + pad, box.y, tw, lh}, buf, th.circuit.probeText, ui::TextAlign::Left);
       }
     }
-  }
-  if (drag_ == Drag::Nudge) {
-    const float dx = last_.x - press_.x, dy = last_.y - press_.y;
-    Rect r{};
-    if (dragNode_ != kNone) {
-      const Node& n = pp.nodes[dragNode_];
-      r = deviceRect(n.x, n.y, n.w, n.h);
-    } else if (dragBand_ != kNone) {
-      const Band& b = pp.bands[dragBand_];
-      r = deviceRect(b.x0, b.y, b.x1 - b.x0, b.h);
-    }
-    dl.addRectStroke(snapRect({r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy}), th.circuit.hover, std::max(1.0f, std::round(us)));
   }
 
   // TX.node-menu-fix1: while the node menu is open, where its choice goes: a small ring and dot in the accent.
@@ -769,6 +780,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           drag_ = (e.mods & ui::mod::kCtrl) ? Drag::Nudge : Drag::MaybeMoveDevice;
           dragNode_ = node;
           dragBand_ = kNone;
+          dragDevices_.assign(1, g);  // TX.block-drag: the capsule, its contents with it
           return true;
         }
       }
@@ -879,6 +891,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
             drag_ = Drag::Nudge;
             dragBand_ = b;
             dragNode_ = kNone;
+            dragDevices_.clear();  // TX.block-drag: the band's nodes are lifted (buildLift)
             return true;
           }
         }
@@ -888,6 +901,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           drag_ = Drag::Nudge;
           dragNode_ = node;
           dragBand_ = kNone;
+          pickDragDevices(node);  // TX.block-drag: a selected block brings the selection
           return true;
         }
         if ((e.mods & ui::mod::kShift) == 0) {
@@ -895,6 +909,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           if (sn == kNone || !nodeSelected(sn)) (void)CircuitCanvas::onPointer(e);  // select it
           drag_ = Drag::MaybeMoveDevice;
           dragNode_ = node;
+          pickDragDevices(node);  // TX.block-drag: the selection it is in moves with it
           return true;
         }
         // TX.node-menu: Shift + drag splices the block into the cable it is released over; a Shift+click adds it to the
@@ -902,6 +917,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         if (!(pp.nodes[node].group && pp.nodes[node].groupOpen)) {
           drag_ = Drag::MaybeSplice;
           dragNode_ = node;
+          dragDevices_.assign(1, pp.nodes[node].device);  // TX.block-drag: the block alone, drawn live
           spliceKeep_ = selection();
           spliceEdge_ = kNone;
           return true;
@@ -948,12 +964,11 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
               leaveOutside(e.pos);
             }
           }
-          dragCables();  // TX.cables: its cables follow the dragged outline
-          markDirty();
+          liftDrag();  // TX.block-drag: the block itself at the pointer, its cables on its ports
           break;
         case Drag::Nudge:
-          dragCables();
-          markDirty();
+          if (!liftBuilt_) v.landPush();  // TX.block-drag: a push still gliding lands first
+          liftDrag();
           break;
         case Drag::Resize: {
           // The bottom-right corner follows the pointer along the block's diagonal (its top-left stays): the press-time
@@ -968,8 +983,9 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         }
         case Drag::MaybeMoveDevice:
           if (std::max(std::fabs(e.pos.x - press_.x), std::fabs(e.pos.y - press_.y)) >= drag::kClickSlop * us) {
+            v.landPush();  // TX.block-drag: a push still gliding lands first (the drag moves blocks where they are)
             drag_ = Drag::MoveDevice;
-            markDirty();
+            liftDrag();
           }
           break;
         case Drag::Volume:
@@ -1001,11 +1017,16 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           break;
         case Drag::MaybeSplice:
           if (std::max(std::fabs(e.pos.x - press_.x), std::fabs(e.pos.y - press_.y)) >= drag::kClickSlop * us) {
+            v.landPush();
             drag_ = Drag::Splice;
+            liftDrag();
             updateSplice(e.pos);
           }
           break;
-        case Drag::Splice: updateSplice(e.pos); break;
+        case Drag::Splice:
+          liftDrag();
+          updateSplice(e.pos);
+          break;
         case Drag::Lane:
         case Drag::None: break;
       }
@@ -1016,7 +1037,6 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       drag_ = Drag::None;
       if (d == Drag::None) return CircuitCanvas::onPointer(e);
       last_ = e.pos;
-      clearCableDrag();  // TX.cables: the scene the drop builds places the blocks (their cables swing on from there)
       switch (d) {
         case Drag::Wire: {
           // TX.node-menu: released with Ctrl held, a made connection keeps a new cable from the same source on the pointer.
@@ -1062,9 +1082,14 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           const float s = deviceScale();
           const float dx = (e.pos.x - press_.x) / s, dy = (e.pos.y - press_.y) / s;
           const bool moved = std::max(std::fabs(e.pos.x - press_.x), std::fabs(e.pos.y - press_.y)) >= drag::kClickSlop * us;
-          if (moved && dragNode_ != kNone) v.nudge(pp.nodes[dragNode_].device.value, dx, dy);
-          else if (moved && dragBand_ != kNone) v.nudge(pp.bands[dragBand_].track.value, dx, dy);
-          else if (dragNode_ != kNone) {  // Ctrl+click: toggle the block's selection
+          if (moved && dragNode_ != kNone) {
+            std::vector<uint32_t> ids;  // TX.block-drag: the selection it brought
+            for (const doc::DeviceId dd : dragDevices_) ids.push_back(dd.value);
+            if (ids.empty()) ids.push_back(pp.nodes[dragNode_].device.value);
+            v.nudge(ids, dx, dy);
+          } else if (moved && dragBand_ != kNone) {
+            v.nudge(pp.bands[dragBand_].track.value, dx, dy);
+          } else if (dragNode_ != kNone) {  // Ctrl+click: toggle the block's selection
             const uint32_t sn = dragNode_ < v.scene().sceneNode.size() ? v.scene().sceneNode[dragNode_] : kNone;
             if (sn != kNone) {
               Selection s2 = selection();
@@ -1079,10 +1104,11 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         case Drag::Volume:
         case Drag::Pan:
         case Drag::Send: v.endValueGesture(); break;
-        case Drag::Resize: break;  // applied while dragging (view state: no gesture to commit)
+        case Drag::Resize: (void)v.settleOverlaps(); break;  // applied while dragging; TX.block-drag: then the rule
         case Drag::Lane:
         case Drag::None: break;
       }
+      endLift();  // TX.block-drag: the drop's scene placed the blocks (or they are back where they were)
       dragNode_ = dragBand_ = kNone;
       from_ = {};
       hoverCursor_ = pressCursor(e.pos);
@@ -1310,6 +1336,33 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
   ProjectPatchView& v = view_;
   const ProjectPatch& pp = v.patch();
   if (dragNode_ == kNone) return;
+  // TX.block-drag: a selection of blocks moves together — by the drag in its own band(s) (the free rack: inside it), or
+  // all to the band it is dropped on (one undo step), each where it was dropped.
+  if (dragDevices_.size() > 1) {
+    const graph::Point2 w = toWorld(pos), start = toWorld(press_);
+    const float dx = w.x - start.x, dy = w.y - start.y;
+    std::vector<uint32_t> ids;
+    for (const doc::DeviceId d : dragDevices_) ids.push_back(d.value);
+    if (v.freeRack()) {
+      if (rect().contains(pos)) v.nudge(ids, dx, dy);
+      leaveOutside(pos);
+      return;
+    }
+    const uint32_t b = bandAt(pos);
+    if (b == kNone) return;
+    const doc::Track* now = doc::findDevice(*v.context().doc(), pp.nodes[dragNode_].device).track;
+    if (now != nullptr && now->id == pp.bands[b].track) {
+      v.nudge(ids, dx, dy);
+      return;
+    }
+    std::vector<graph::Point2> at;
+    for (const doc::DeviceId d : dragDevices_) {
+      const uint32_t n = pp.nodeOf(d);
+      at.push_back(n == kNone ? w : graph::Point2{pp.nodes[n].x + pp.nodes[n].w * 0.5f + dx, pp.nodes[n].y + pp.nodes[n].h * 0.5f + dy});
+    }
+    (void)v.moveToTrack(dragDevices_, pp.bands[b].track, at);
+    return;
+  }
   // TX.free-rack: released outside the rack: the host's (into the chain); inside, the block moves where it is dropped
   // (or joins the opened capsule it is dropped into, or leaves its own).
   if (v.freeRack()) {
@@ -1511,24 +1564,75 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
   return CircuitCanvas::onKey(e);
 }
 
-// TX.cables: the dragged block (an opened capsule: its contents; a band's title: the band's blocks) carries its cables'
-// ends with the preview outline.
-void ProjectCanvas::dragCables() {
+// TX.block-drag: the blocks a press drags — the pressed one, or, when it is selected, every selected block (a member of an
+// opened capsule whose capsule is selected too moves with the capsule, not twice).
+void ProjectCanvas::pickDragDevices(uint32_t pressed) {
+  dragDevices_.clear();
   const ProjectPatch& pp = view_.patch();
   const ProjectScene& ps = view_.scene();
-  std::vector<uint32_t> nodes;
-  for (uint32_t v = 0; v < ps.modelNode.size(); ++v) {
-    const uint32_t m = ps.modelNode[v];
-    if (m >= pp.nodes.size()) continue;
-    const Node& n = pp.nodes[m];
-    if (dragNode_ != kNone ? (m == dragNode_ || n.capsule == dragNode_) : (dragBand_ != kNone && n.band == dragBand_)) nodes.push_back(v);
+  if (pressed >= pp.nodes.size() || pp.nodes[pressed].kind != NodeKind::Device) return;
+  const doc::DeviceId d = pp.nodes[pressed].device;
+  dragDevices_.push_back(d);
+  const uint32_t sn = pressed < ps.sceneNode.size() ? ps.sceneNode[pressed] : kNone;
+  if (sn == kNone || !nodeSelected(sn)) return;
+  std::vector<doc::DeviceId> sel = view_.selectedDevices();
+  auto inSel = [&](uint32_t node) {
+    return node < pp.nodes.size() && std::find(sel.begin(), sel.end(), pp.nodes[node].device) != sel.end();
+  };
+  for (const doc::DeviceId o : sel) {
+    if (o == d) continue;
+    const uint32_t n = pp.nodeOf(o);
+    if (n == kNone) continue;
+    bool inside = false;  // in a selected capsule (or one of its own capsules)
+    for (uint32_t c = pp.nodes[n].capsule, guard = 0; c != kNone && c < pp.nodes.size() && guard < 16; c = pp.nodes[c].capsule, ++guard)
+      inside = inside || inSel(c);
+    if (!inside) dragDevices_.push_back(o);
   }
+}
+
+void ProjectCanvas::buildLift() {
+  const ProjectPatch& pp = view_.patch();
+  const ProjectScene& ps = view_.scene();
+  liftModel_.assign(pp.nodes.size(), 0);
+  if (dragNode_ == kNone && dragBand_ != kNone) {  // a band by its title: all of its nodes
+    for (uint32_t i = 0; i < pp.nodes.size(); ++i)
+      if (pp.nodes[i].band == dragBand_) liftModel_[i] = 1;
+  } else {
+    for (const doc::DeviceId d : dragDevices_)
+      if (const uint32_t n = pp.nodeOf(d); n != kNone) liftModel_[n] = 1;
+    if (dragDevices_.empty() && dragNode_ < pp.nodes.size()) liftModel_[dragNode_] = 1;
+  }
+  // An opened capsule's contents (its terminals, its members, their own capsules') with it.
+  for (bool grew = true; grew;) {
+    grew = false;
+    for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
+      const uint32_t c = pp.nodes[i].capsule;
+      if (liftModel_[i] == 0 && c < pp.nodes.size() && liftModel_[c] != 0) liftModel_[i] = 1, grew = true;
+    }
+  }
+  liftScene_.clear();
+  for (uint32_t v = 0; v < ps.modelNode.size(); ++v)
+    if (ps.modelNode[v] < liftModel_.size() && liftModel_[ps.modelNode[v]] != 0) liftScene_.push_back(v);
+  liftBuilt_ = true;
+}
+
+void ProjectCanvas::liftDrag() {
+  if (!liftBuilt_) buildLift();
   const float s = std::max(deviceScale(), 1e-6f);
-  setCableDrag(nodes, {(last_.x - press_.x) / s, (last_.y - press_.y) / s});
+  setNodeDrag(liftScene_, {(last_.x - press_.x) / s, (last_.y - press_.y) / s});
+  markDirty();
+}
+
+void ProjectCanvas::endLift() {
+  liftBuilt_ = false;
+  liftModel_.clear();
+  liftScene_.clear();
+  dragDevices_.clear();
+  clearNodeDrag();
 }
 
 void ProjectCanvas::onCaptureLost() {
-  clearCableDrag();  // TX.cables
+  endLift();  // TX.block-drag: back in place
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   if (sticky_) return;  // TX.node-menu: a held cable has no capture (no button is down)
   if (drag_ == Drag::Wire || drag_ == Drag::BackWire) clearLooseCable();  // TX.node-menu-fix1
@@ -1542,7 +1646,7 @@ void ProjectCanvas::onCaptureLost() {
 }
 
 void ProjectCanvas::onInteractionCancelled() {
-  clearCableDrag();  // TX.cables: the cables swing back with the outline
+  endLift();  // TX.block-drag: the blocks back in place, their cables swing back
   if (drag_ == Drag::Wire || drag_ == Drag::BackWire || sticky_) clearLooseCable();  // TX.node-menu-fix1
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   sticky_ = false;
@@ -1644,7 +1748,7 @@ void ProjectCanvas::afterRebuild() {
   if (lost && (indexed || sticky_)) {
     // What the gesture held went away (an undo, another edit): it ends here, without an edit (its release does nothing).
     if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.cancelValueGesture();
-    clearCableDrag();
+    endLift();
     if (drag_ == Drag::Wire || drag_ == Drag::BackWire || sticky_) clearLooseCable();
     drag_ = Drag::None;
     sticky_ = false;
@@ -1652,7 +1756,13 @@ void ProjectCanvas::afterRebuild() {
     from_ = {};
     spliceEdge_ = kNone;
     markDirty();
+    return;
   }
+  // TX.block-drag: the new scene dropped the lift (its nodes are new): lifted again for a drag that goes on.
+  liftBuilt_ = false;
+  liftModel_.clear();
+  liftScene_.clear();
+  if (liftDragging()) liftDrag();
 }
 
 bool ProjectCanvas::cuttableEdge(uint32_t edge) const noexcept {
@@ -1870,7 +1980,7 @@ void ProjectCanvas::endSplice(bool apply, Vec2 pos) {
 ui::InfoText ProjectCanvas::info() const {
   if (drag_ == Drag::Resize || (drag_ == Drag::None && resizeHeld() && resizableAt(pointer_) != kNone))  // TX.resize
     return {"Resize block",
-            "S-drag scales the block (0.5x to 3x; Shift: steps of 25 %); everything on it in proportion, the blocks after it "
+            "S-drag scales the block (0.05x to 3x; Shift: steps of 25 %); everything on it in proportion, the blocks after it "
             "make room. S + double-click (or Reset Size in its menu) gives it its own size. Esc cancels the drag."};
   if (ui::InfoText t; faceInfo(t)) return t;  // TMM.4
   const ProjectPatchView::Readout& ro = view_.readout();
