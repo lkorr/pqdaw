@@ -226,7 +226,7 @@ constexpr float kReadoutY = 37.0f, kChevX = 60.0f, kChevY = 85.0f;  // the chevr
 constexpr float kPopTop = 126.0f;
 constexpr float kMinX = 24.0f, kMaxX = 96.0f, kRangeY = kPopTop + 17.0f;
 constexpr float kBoxX = 60.0f, kBoxY = kPopTop + 43.0f;
-float chipX(int i) { return 15.0f + 24.0f * static_cast<float>(i) + 9.0f; }
+float chipX(int i) { return 7.0f + 18.0f * static_cast<float>(i) + 8.0f; }  // TX.vca-knob2: six chips
 constexpr float kChipY = kPopTop + 68.0f;
 constexpr float kKnobExtent = 93.0f;  // 2 × the track's radius: a drag's travel per px
 
@@ -452,29 +452,87 @@ TEST_CASE("vca face: presets switch the curve in one undo step; the Bend curve's
   u.frame(1.5);
   u.openPanel();
   CHECK(u.curve() == 0.0);
-  // Exponential: the curve becomes Bend (a setting: its unit recompiles) and bend 0.6, one step.
+  // Fader: the curve becomes Bend (a setting: its unit recompiles), 0 … 1, bend 0.5, one step.
   size_t h0 = u.history();
-  u.d.click(u.at(chipX(2), kChipY));
+  u.d.click(u.at(chipX(4), kChipY));
   CHECK(u.history() == h0 + 1);
   CHECK(u.curve() == 1.0);
-  CHECK(u.value(meta::kVcaBend) == doctest::Approx(0.6));
+  CHECK(u.value(meta::kVcaBend) == doctest::Approx(0.5));
   // Up 20 px in the box: toward logarithmic (bend down).
   h0 = u.history();
   const double us = u.d.tree().scale();
   const Vec2 a = u.at(kBoxX, kBoxY);
   u.d.drag(a, {a.x, a.y - 20.0f}, 6);
   CHECK(u.history() == h0 + 1);
-  CHECK(u.value(meta::kVcaBend) == doctest::Approx(0.6 - 2.0 * 20.0 / std::max(60.0 * 1.5 * us, 150.0 * us)).epsilon(1e-4));
-  // Linear: bend 0, still Bend; bipolar log: back to Log.
-  u.d.click(u.at(chipX(0), kChipY));
+  CHECK(u.value(meta::kVcaBend) == doctest::Approx(0.5 - 2.0 * 20.0 / std::max(60.0 * 1.5 * us, 150.0 * us)).epsilon(1e-4));
+  // 0 -> 1: bend 0, still Bend; Default: back to Log.
+  u.d.click(u.at(chipX(1), kChipY));
   CHECK(u.value(meta::kVcaBend) == doctest::Approx(0.0));
   CHECK(u.curve() == 1.0);
   h0 = u.history();
-  u.d.click(u.at(chipX(1), kChipY));
+  u.d.click(u.at(chipX(0), kChipY));
   CHECK(u.history() == h0 + 1);
   CHECK(u.curve() == 0.0);
   REQUIRE(u.ctx.undo());
   CHECK(u.curve() == 1.0);
+}
+
+// TX.vca-knob2: the six presets — each sets the curve, the range, its shape and the markers in one undo step (the
+// values each one names), lights while the state matches it, and draws its own curve.
+TEST_CASE("vca face (TX.vca-knob2): each preset's values in one undo step; the current one lit; tooltips") {
+  VcaUi u;
+  u.frame(1.5);
+  u.openPanel();
+  project_patch::ProjectCanvas& c = u.view().canvas();
+  struct Want {
+    const char* title;
+    double curve, min, max, zone, bend;
+  };
+  const Want want[] = {{"Preset: Default", 0.0, -20000.0, 20000.0, 0.4, -9.0},
+                       {"Preset: 0 -> 1", 1.0, 0.0, 1.0, -9.0, 0.0},
+                       {"Preset: -1 -> +1", 1.0, -1.0, 1.0, -9.0, 0.0},
+                       {"Preset: x0 ... x2", 1.0, 0.0, 2.0, -9.0, 0.0},
+                       {"Preset: Fader", 1.0, 0.0, 1.0, -9.0, 0.5},
+                       {"Preset: 20 Hz -> 20 kHz", 0.0, 20.0, 20000.0, 0.4, -9.0}};
+  // A moved marker and zone first: a Log preset puts them back.
+  u.d.drag(u.at(kBoxX - 20.0f, kPopTop + 33.0f), u.at(kBoxX - 20.0f, kPopTop + 13.0f), 6);
+  REQUIRE(u.value(meta::kVcaZone) != doctest::Approx(0.4));
+  for (int round = 0; round < 2; ++round)
+    for (int i = 5; i >= 0; --i) {  // from the last: each click changes something
+      CAPTURE(i);
+      const Want& w = want[i];
+      u.d.move(u.at(chipX(i), kChipY));
+      CHECK(std::string(c.info().title) == w.title);
+      CHECK(c.cursorAt(u.at(chipX(i), kChipY)) == Cursor::Pointer);
+      const size_t h0 = u.history();
+      u.d.click(u.at(chipX(i), kChipY));
+      CHECK(u.history() == h0 + 1);
+      CHECK(u.curve() == w.curve);
+      CHECK(u.value(meta::kVcaMin) == w.min);
+      CHECK(u.value(meta::kVcaMax) == w.max);
+      if (w.zone >= 0.0) CHECK(u.value(meta::kVcaZone) == doctest::Approx(w.zone));
+      if (w.bend > -2.0) CHECK(u.value(meta::kVcaBend) == doctest::Approx(w.bend));
+      for (uint32_t m = 0; m < meta::kVcaMarks; ++m) CHECK(u.value(meta::kVcaMark0 + m) == 0.0);
+      // The law each one names.
+      std::vector<double> v(meta::kVcaParams);
+      for (size_t k = 0; k < v.size(); ++k) v[k] = u.value(k);
+      const meta::VcaLaw l = meta::vcaLaw(v, u.curve());
+      CHECK(meta::vcaValue(l, 0.0) == doctest::Approx(w.min));
+      CHECK(meta::vcaValue(l, 1.0) == doctest::Approx(w.max));
+      if (i == 2) CHECK(meta::vcaValue(l, 0.5) == doctest::Approx(0.0).scale(1.0));  // -1 -> +1: 0 at 12 o'clock
+      if (i == 3) CHECK(meta::vcaValue(l, 0.5) == doctest::Approx(1.0));             // x0 ... x2: unity at 12 o'clock
+      if (i == 5) CHECK(meta::vcaValue(l, 0.1) == doctest::Approx(20.0 * std::pow(1000.0, 0.1)));  // equal ratios per travel
+      // Undo takes the whole preset back; redo it.
+      REQUIRE(u.ctx.undo());
+      CHECK(u.history() == h0);
+      REQUIRE(u.ctx.redo());
+    }
+  // A click on the preset the state matches (the lit one) writes nothing.
+  const size_t h1 = u.history();
+  u.d.click(u.at(chipX(5), kChipY));
+  CHECK(u.history() == h1 + 1);  // Default was current: 20 Hz -> 20 kHz is a change
+  u.d.click(u.at(chipX(5), kChipY));
+  CHECK(u.history() == h1 + 1);  // the current one again: nothing to change, no step
 }
 
 TEST_CASE("vca face: double-click a range end or the readout and type; Enter commits, Esc cancels, empty restores") {
@@ -553,7 +611,7 @@ TEST_CASE("vca face: the info view names the hovered control; cursors follow it"
   u.d.move(u.at(kBoxX, kBoxY));
   CHECK(std::string(c.info().title) == "Curve: bipolar log");
   u.d.move(u.at(chipX(2), kChipY));
-  CHECK(std::string(c.info().title) == "Preset: Exponential");
+  CHECK(std::string(c.info().title) == "Preset: -1 -> +1");
   CHECK(c.cursorAt(u.at(chipX(2), kChipY)) == Cursor::Pointer);
 }
 
@@ -574,25 +632,27 @@ Vec2 trackLocal(double p, float r = kTickR) {
   const double a = (90.0 + 360.0 * p) * std::numbers::pi / 180.0;
   return {kCx + r * static_cast<float>(std::cos(a)), kCy + r * static_cast<float>(std::sin(a))};
 }
-// A marker's corner point in the open panel's curve box (the signed-log display scale of vca_face.cpp).
+// A marker's corner point in the open panel's curve box (TX.vca-knob2: the symmetric-log display scale of vca_face.cpp,
+// linear inside ±1, a step per decade beyond).
+double symLog(double a) { return a <= 1.0 ? a / std::numbers::ln10 : (1.0 + std::log(a)) / std::numbers::ln10; }
 Vec2 cornerLocal(const meta::VcaLaw& l, double p, double v) {
-  const double m = std::max({std::abs(l.lo), std::abs(l.hi), 1.0}), sc = std::log10(1.0 + m);
-  auto shown = [&](double x) { return (x < 0.0 ? -1.0 : 1.0) * std::log10(1.0 + std::abs(x)) / sc; };
+  const double m = std::max({std::abs(l.lo), std::abs(l.hi), 1.0}), sc = symLog(m);
+  auto shown = [&](double x) { return (x < 0.0 ? -1.0 : 1.0) * symLog(std::abs(x)) / sc; };
   const double t = (shown(v) - shown(l.lo)) / (shown(l.hi) - shown(l.lo));
   const float y1 = kPopTop + 58.0f;
   return {kBoxL + static_cast<float>(p) * kBoxW, y1 - 3.0f - static_cast<float>(t) * (30.0f - 6.0f)};
 }
 // A drag round the track from knob position p0 to p1 (the pointer follows the circle), one press.
-void arcDrag(VcaUi& u, double p0, double p1, int steps = 10) {
+void arcDrag(VcaUi& u, double p0, double p1, int steps = 10, Mods m = mod::kNone) {
   const Vec2 a = u.at(trackLocal(p0).x, trackLocal(p0).y);
-  u.d.move(a);
-  u.d.down(a);
+  u.d.move(a, m);
+  u.d.down(a, PointerButton::Left, m);
   for (int k = 1; k <= steps; ++k) {
     const Vec2 q = trackLocal(p0 + (p1 - p0) * k / steps);
-    u.d.move(u.at(q.x, q.y));
+    u.d.move(u.at(q.x, q.y), m);
   }
   const Vec2 e = trackLocal(p1);
-  u.d.up(u.at(e.x, e.y));
+  u.d.up(u.at(e.x, e.y), PointerButton::Left, m);
 }
 double offsetOf(const VcaUi& u, uint32_t i) { return u.value(meta::kVcaMark0 + i); }
 
@@ -639,7 +699,7 @@ TEST_CASE("vca face (TX.vca-knob): a full 360° travel — 6 o'clock at both end
   }
 }
 
-TEST_CASE("vca face (TX.vca-knob): each marker dragged alone round the track — one undo step, the others stay") {
+TEST_CASE("vca face (TX.vca-knob): each marker Ctrl+dragged alone round the track — one undo step, the others stay") {
   VcaUi u;
   u.frame(1.5);
   const meta::VcaLaw l0 = lawOf(u);
@@ -650,7 +710,7 @@ TEST_CASE("vca face (TX.vca-knob): each marker dragged alone round the track —
     // Toward the fine zone's middle by a little (within the neighbours).
     const double to = from + (meta::kVcaMarkValue[i] > 0 ? -0.02 : 0.02);
     const size_t h0 = u.history();
-    arcDrag(u, from, to);
+    arcDrag(u, from, to, 10, mod::kCtrl);
     CHECK(u.history() == h0 + 1);
     CHECK(offsetOf(u, i) == doctest::Approx(to - l0.marks[i].base).epsilon(1e-3).scale(1.0));
     const meta::VcaLaw l = lawOf(u);
@@ -664,21 +724,23 @@ TEST_CASE("vca face (TX.vca-knob): each marker dragged alone round the track —
   }
   CHECK(u.view().stats().rebuilds == rebuilds);  // param writes: nothing re-lowers
   // Past its neighbour: +1 dragged to beyond +10 stops a gap short of it (the drag clamps, +10 does not move).
-  arcDrag(u, l0.marks[3].at, 0.95, 16);
+  arcDrag(u, l0.marks[3].at, 0.95, 16, mod::kCtrl);
   meta::VcaLaw l = lawOf(u);
   CHECK(l.marks[3].at == doctest::Approx(l0.marks[4].at - meta::kVcaMarkGap).epsilon(1e-9));
   CHECK(l.marks[4].at == l0.marks[4].at);
   // An asymmetric fine zone: -1 alone toward 9 o'clock; +1 stays where the last drag left it.
   const double plus = l.marks[3].at;
-  arcDrag(u, l.marks[2].at, 0.26);
+  arcDrag(u, l.marks[2].at, 0.26, 10, mod::kCtrl);
   l = lawOf(u);
   CHECK(l.marks[2].at == doctest::Approx(0.26).epsilon(1e-3));
   CHECK(l.marks[3].at == plus);
   CHECK(meta::vcaValue(l, 0.5 * (l.marks[2].at + l.marks[3].at)) == doctest::Approx(0.0).scale(1.0).epsilon(1e-9));
-  // Double-click a marker: its default (one step); undo takes it back.
+  // Ctrl+double-click a marker, Enter on an empty entry: its default alone (one step); undo takes it back.
   const size_t h0 = u.history();
   const Vec2 t = trackLocal(l.marks[3].at);
-  u.d.doubleClick(u.at(t.x, t.y));
+  u.d.doubleClick(u.at(t.x, t.y), mod::kCtrl);
+  CHECK(u.history() == h0);  // a type-in opens; nothing yet
+  (void)u.d.keyDown(key::kReturn);
   CHECK(u.history() == h0 + 1);
   CHECK(offsetOf(u, 3) == 0.0);
   CHECK(offsetOf(u, 2) != 0.0);
@@ -686,7 +748,7 @@ TEST_CASE("vca face (TX.vca-knob): each marker dragged alone round the track —
   CHECK(offsetOf(u, 3) != 0.0);
 }
 
-TEST_CASE("vca face (TX.vca-knob): the curve box's corner points drag each marker alone; the box drag stays symmetric") {
+TEST_CASE("vca face (TX.vca-knob): the curve box's corner points Ctrl+drag each marker alone; the box drag stays symmetric") {
   VcaUi u;
   u.frame(1.5);
   u.openPanel();
@@ -699,7 +761,7 @@ TEST_CASE("vca face (TX.vca-knob): the curve box's corner points drag each marke
   CHECK(c.cursorAt(u.at(c0.x, c0.y)) == Cursor::ResizeEW);
   size_t h0 = u.history();
   const float dx = 0.05f * kBoxW;
-  u.d.drag(u.at(c0.x, c0.y), u.at(c0.x - dx, c0.y + 7.0f), 6);  // the height does not matter
+  u.d.drag(u.at(c0.x, c0.y), u.at(c0.x - dx, c0.y + 7.0f), 6, mod::kCtrl);  // the height does not matter
   CHECK(u.history() == h0 + 1);
   meta::VcaLaw l = lawOf(u);
   CHECK(l.marks[2].at == doctest::Approx(l0.marks[2].at - 0.05).epsilon(1e-3));
@@ -708,7 +770,7 @@ TEST_CASE("vca face (TX.vca-knob): the curve box's corner points drag each marke
   const Vec2 c4 = cornerLocal(l, l.marks[4].at, 10.0);
   u.d.move(u.at(c4.x, c4.y));
   CHECK(std::string(c.info().title) == "Marker +10");
-  u.d.drag(u.at(c4.x, c4.y), u.at(c4.x + 0.03f * kBoxW, c4.y), 6);
+  u.d.drag(u.at(c4.x, c4.y), u.at(c4.x + 0.03f * kBoxW, c4.y), 6, mod::kCtrl);
   l = lawOf(u);
   CHECK(l.marks[4].at == doctest::Approx(l0.marks[4].at + 0.03).epsilon(1e-3));
   CHECK(u.history() == h0 + 2);
@@ -757,6 +819,173 @@ TEST_CASE("vca face (TX.vca-knob): a marker outside min … max is hidden — no
   const Vec2 t1 = trackLocal(l.marks[1].at);
   u.d.move(u.at(t1.x, t1.y));
   CHECK(std::string(c.info().title) == "Marker -10");
+}
+
+// ---- TX.vca-knob2: paired markers, typed places, the display scale ------------------------------------------------
+
+TEST_CASE("vca face (TX.vca-knob2): a plain drag moves the marker's pair mirrored — on the track and in the box; clamps hold for both") {
+  VcaUi u;
+  u.frame(1.5);
+  project_patch::ProjectCanvas& c = u.view().canvas();
+  const meta::VcaLaw l0 = lawOf(u);
+  const uint64_t rebuilds = u.view().stats().rebuilds;
+  // Each pair from each side: +k out by 0.02 of the travel moves -k out by the same (one undo step); the others stay.
+  for (uint32_t i = 0; i < meta::kVcaMarks; ++i) {
+    CAPTURE(i);
+    const uint32_t j = meta::vcaMarkPartner(i);
+    REQUIRE(j < meta::kVcaMarks);
+    const double dir = meta::kVcaMarkValue[i] > 0 ? -0.02 : 0.02;  // inward, within the neighbours
+    const size_t h0 = u.history();
+    arcDrag(u, l0.marks[i].at, l0.marks[i].at + dir);
+    CHECK(u.history() == h0 + 1);
+    const meta::VcaLaw l = lawOf(u);
+    CHECK(l.marks[i].at == doctest::Approx(l0.marks[i].at + dir).epsilon(1e-3));
+    CHECK(offsetOf(u, j) == -offsetOf(u, i));  // mirrored: the same travel the other way
+    CHECK(l.marks[j].at - l0.marks[j].at == doctest::Approx(-(l.marks[i].at - l0.marks[i].at)).epsilon(1e-12));
+    for (uint32_t k = 0; k < meta::kVcaMarks; ++k)
+      if (k != i && k != j) CHECK(offsetOf(u, k) == 0.0);
+    CHECK(meta::vcaValue(l, l.marks[j].at) == doctest::Approx(meta::kVcaMarkValue[j]).epsilon(1e-9));
+    REQUIRE(u.ctx.undo());
+    CHECK(offsetOf(u, i) == 0.0);
+    CHECK(offsetOf(u, j) == 0.0);
+  }
+  CHECK(u.view().stats().rebuilds == rebuilds);
+  // An asymmetric fine zone (+1 alone) stays asymmetric: a plain drag of -1 moves +1 by the mirrored travel.
+  arcDrag(u, l0.marks[3].at, l0.marks[3].at - 0.05, 10, mod::kCtrl);
+  const double asym = offsetOf(u, 3);
+  REQUIRE(asym == doctest::Approx(-0.05).epsilon(1e-3));
+  meta::VcaLaw l = lawOf(u);
+  arcDrag(u, l.marks[2].at, l.marks[2].at - 0.03);
+  CHECK(offsetOf(u, 2) == doctest::Approx(-0.03).epsilon(1e-3));
+  CHECK(offsetOf(u, 3) - asym == doctest::Approx(-offsetOf(u, 2)).epsilon(1e-12));
+  REQUIRE(u.ctx.undo());
+  REQUIRE(u.ctx.undo());
+  // The clamps hold for both: +1 dragged in toward 12 o'clock stops where the pair meets (a gap apart), together.
+  arcDrag(u, l0.marks[3].at, 0.4, 16);
+  l = lawOf(u);
+  CHECK(l.marks[3].at - l.marks[2].at == doctest::Approx(meta::kVcaMarkGap).epsilon(1e-6));
+  CHECK(offsetOf(u, 2) == -offsetOf(u, 3));
+  REQUIRE(u.ctx.undo());
+  // +10 dragged out past +100: it stops a gap short of +100, and -10 stops with it (mirrored), -100 unmoved.
+  arcDrag(u, l0.marks[4].at, 0.98, 16);
+  l = lawOf(u);
+  CHECK(l.marks[4].at == doctest::Approx(l0.marks[5].at - meta::kVcaMarkGap).epsilon(1e-6));
+  CHECK(offsetOf(u, 1) == -offsetOf(u, 4));
+  CHECK(offsetOf(u, 5) == 0.0);
+  CHECK(offsetOf(u, 0) == 0.0);
+  REQUIRE(u.ctx.undo());
+  // In the box: the -10 corner dragged left moves +10 right by the same travel.
+  u.openPanel();
+  const Vec2 c1 = cornerLocal(l0, l0.marks[1].at, -10.0);
+  u.d.move(u.at(c1.x, c1.y));
+  CHECK(std::string(c.info().title) == "Marker -10");
+  CHECK(std::string(c.info().body).find("with +10") != std::string::npos);
+  const size_t h0 = u.history();
+  u.d.drag(u.at(c1.x, c1.y), u.at(c1.x - 0.02f * kBoxW, c1.y), 6);
+  CHECK(u.history() == h0 + 1);
+  CHECK(offsetOf(u, 1) == doctest::Approx(-0.02).epsilon(1e-3));
+  CHECK(offsetOf(u, 4) == -offsetOf(u, 1));
+  // A marker whose pair is hidden moves alone (min 0: no negative markers).
+  REQUIRE(u.ctx.undo());
+  u.d.doubleClick(u.at(kMinX, kRangeY));
+  u.type("0");
+  (void)u.d.keyDown(key::kReturn);
+  l = lawOf(u);
+  REQUIRE(!l.marks[1].shown);
+  REQUIRE(l.marks[4].shown);
+  (void)u.d.keyDown(key::kEscape);
+  arcDrag(u, l.marks[4].at, l.marks[4].at - 0.02);
+  CHECK(offsetOf(u, 4) == doctest::Approx(-0.02).epsilon(1e-3));
+  CHECK(offsetOf(u, 1) == 0.0);
+}
+
+TEST_CASE("vca face (TX.vca-knob2): double-click a marker to type its place (% of the knob) — paired, Ctrl alone, empty = default, Esc") {
+  VcaUi u;
+  u.frame(1.5);
+  const meta::VcaLaw l0 = lawOf(u);
+  // +10 (on the track) at 80 %: -10 mirrored, one step.
+  Vec2 t = trackLocal(l0.marks[4].at);
+  size_t h0 = u.history();
+  u.d.doubleClick(u.at(t.x, t.y));
+  u.type("80");
+  CHECK(u.history() == h0);  // nothing until Enter
+  (void)u.d.keyDown(key::kReturn);
+  CHECK(u.history() == h0 + 1);
+  meta::VcaLaw l = lawOf(u);
+  CHECK(l.marks[4].at == doctest::Approx(0.80).epsilon(1e-9));
+  CHECK(offsetOf(u, 1) == -offsetOf(u, 4));
+  CHECK(meta::vcaValue(l, 0.80) == doctest::Approx(10.0).epsilon(1e-9));
+  // Ctrl+double-click -10 and type 20%: -10 alone.
+  t = trackLocal(l.marks[1].at);
+  const double plus10 = offsetOf(u, 4);
+  u.d.doubleClick(u.at(t.x, t.y), mod::kCtrl);
+  u.type("20%");
+  (void)u.d.keyDown(key::kReturn);
+  l = lawOf(u);
+  CHECK(l.marks[1].at == doctest::Approx(0.20).epsilon(1e-9));
+  CHECK(offsetOf(u, 4) == plus10);
+  // Esc cancels.
+  h0 = u.history();
+  t = trackLocal(l.marks[4].at);
+  u.d.doubleClick(u.at(t.x, t.y));
+  u.type("90");
+  (void)u.d.keyDown(key::kEscape);
+  CHECK(u.history() == h0);
+  CHECK(offsetOf(u, 4) == plus10);
+  // A place past a neighbour: the pair moves together until one of them is a gap from its neighbour (+10 at 99 %:
+  // -10 meets -100 first; the asymmetry of the pair is kept).
+  const meta::VcaLaw before = lawOf(u);
+  u.d.doubleClick(u.at(t.x, t.y));
+  u.type("99");
+  (void)u.d.keyDown(key::kReturn);
+  l = lawOf(u);
+  CHECK(l.marks[1].at == doctest::Approx(l.marks[0].at + meta::kVcaMarkGap).epsilon(1e-6));
+  CHECK(l.marks[4].at - before.marks[4].at == doctest::Approx(before.marks[1].at - l.marks[1].at).epsilon(1e-9));
+  CHECK(l.marks[4].at < l.marks[5].at - meta::kVcaMarkGap);
+  // In the box (the panel open): the +1 corner, an empty entry: the pair's default places, one step.
+  REQUIRE(u.ctx.undo());
+  arcDrag(u, l0.marks[3].at, l0.marks[3].at - 0.04);  // move the ±1 pair (the panel stays open: the track is the face's)
+  u.openPanel();
+  l = lawOf(u);
+  REQUIRE(offsetOf(u, 3) != 0.0);
+  const Vec2 c3 = cornerLocal(l, l.marks[3].at, 1.0);
+  h0 = u.history();
+  u.d.doubleClick(u.at(c3.x, c3.y));
+  (void)u.d.keyDown(key::kReturn);
+  CHECK(u.history() == h0 + 1);
+  CHECK(offsetOf(u, 3) == 0.0);
+  CHECK(offsetOf(u, 2) == 0.0);
+  CHECK(offsetOf(u, 4) == plus10);  // the others untouched
+  // Not a number: a notice, nothing written ('k' and '-' are not accepted in a place).
+  h0 = u.history();
+  u.d.doubleClick(u.at(c3.x, c3.y));
+  u.type(".");
+  (void)u.d.keyDown(key::kReturn);
+  CHECK(u.history() == h0);
+}
+
+TEST_CASE("vca face (TX.vca-knob2): the curve box's scale is a display change only — the law plays bit for bit as before") {
+  // The law's values at fixed knob positions (the default state and a moved state), pinned from the law as TX.vca-knob
+  // left it (TX.vca-knob2 changes no line of vcaLaw / vcaValue / the expansion: these must never move).
+  const meta::VcaLaw d = meta::vcaLaw(meta::VcaCurve::Log, -20000.0, 20000.0, 0.4, 0.0);
+  const std::array<double, meta::kVcaMarks> off = {0.01, -0.02, 0.03, -0.01, 0.02, -0.03};
+  const meta::VcaLaw m = meta::vcaLaw(meta::VcaCurve::Log, -150.0, 2500.0, 0.55, 0.0, off);
+  struct Pin {
+    double p, dv, mv;
+  };
+  const Pin pins[] = {
+      {0.05, -3833.3732421056907, -26.950831262457633},
+      {0.25, -3.810502042682069, -0.82619273903858725},
+      {0.5, 0.0, 0.15419941782415814},
+      {0.71, 1.1110392389233588, 0.97772882958886331},
+      {0.8, 24.35261693294462, 4.4432226735926132},
+      {0.97, 7424.4983335083862, 1271.0011303225554},
+  };
+  for (const Pin& q : pins) {
+    CAPTURE(q.p);
+    CHECK(meta::vcaValue(d, q.p) == q.dv);
+    CHECK(meta::vcaValue(m, q.p) == q.mv);
+  }
 }
 
 TEST_CASE("render: device-meta-vca matches the golden image") { checkScene("device-meta-vca"); }

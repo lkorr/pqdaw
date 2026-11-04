@@ -412,6 +412,79 @@ double vcaMarkOffset(const VcaLaw& l, uint32_t i, double p, double current) noex
   return std::clamp(at - l.marks[i].base, -1.0, 1.0);
 }
 
+uint32_t vcaMarkPartner(uint32_t i) noexcept {
+  if (i >= kVcaMarks) return kVcaMarks;
+  for (uint32_t j = 0; j < kVcaMarks; ++j)
+    if (j != i && kVcaMarkValue[j] == -kVcaMarkValue[i]) return j;
+  return kVcaMarks;
+}
+
+std::array<double, kVcaMarks> vcaMoveMark(std::span<const double> params, double curveSetting, uint32_t i, double p,
+                                          bool paired) noexcept {
+  auto at = [&](size_t k) { return k < params.size() ? params[k] : kParams[k].def; };
+  std::array<double, kVcaMarks> off{};
+  for (uint32_t k = 0; k < kVcaMarks; ++k) off[k] = std::clamp(finiteOr(at(kVcaMark0 + k), 0.0), -1.0, 1.0);
+  const VcaCurve curve = std::lround(curveSetting) == 1 ? VcaCurve::Bend : VcaCurve::Log;
+  const VcaLaw l0 = vcaLaw(curve, at(kVcaMin), at(kVcaMax), at(kVcaZone), at(kVcaBend), off);
+  if (i >= kVcaMarks || !l0.marks[i].shown) return off;
+  p = std::clamp(finiteOr(p, l0.marks[i].at), 0.0, 1.0);
+  const uint32_t j = vcaMarkPartner(i);
+  // The pair moves together only from an ordered state (every shown marker where its offset puts it).
+  auto clean = [&](const std::array<double, kVcaMarks>& o) {
+    const VcaLaw l = vcaLaw(curve, at(kVcaMin), at(kVcaMax), at(kVcaZone), at(kVcaBend), o);
+    for (uint32_t k = 0; k < kVcaMarks; ++k)
+      if (l.marks[k].shown && l.marks[k].at != l.marks[k].base + o[k]) return false;
+    return true;
+  };
+  if (!paired || j >= kVcaMarks || !l0.marks[j].shown || !clean(off)) {
+    off[i] = vcaMarkOffset(l0, i, p, off[i]);
+    return off;
+  }
+  // The gap the drag keeps (vcaMarkOffset's): at least kVcaMarkGap from a neighbour or an end, the law's own order too.
+  auto moved = [&](double d) {
+    std::array<double, kVcaMarks> o = off;
+    o[i] = off[i] + d;
+    o[j] = off[j] - d;
+    return o;
+  };
+  auto ok = [&](double d) {
+    if (d == 0.0) return true;
+    const std::array<double, kVcaMarks> o = moved(d);
+    if (std::abs(o[i]) > 1.0 || std::abs(o[j]) > 1.0 || !clean(o)) return false;
+    const VcaLaw l = vcaLaw(curve, at(kVcaMin), at(kVcaMax), at(kVcaZone), at(kVcaBend), o);
+    for (const uint32_t m : {i, j}) {
+      double prev = 0.0, prev0 = 0.0, next = 1.0, next0 = 1.0;
+      for (uint32_t q = m; q-- > 0;)
+        if (l.marks[q].shown) {
+          prev = l.marks[q].at;
+          prev0 = l0.marks[q].at;
+          break;
+        }
+      for (uint32_t q = m + 1; q < kVcaMarks; ++q)
+        if (l.marks[q].shown) {
+          next = l.marks[q].at;
+          next0 = l0.marks[q].at;
+          break;
+        }
+      // The gap from each neighbour (or end), or what the start already had where that was less.
+      if (l.marks[m].at - prev < std::min(kVcaMarkGap, l0.marks[m].at - prev0) - 1e-12) return false;
+      if (next - l.marks[m].at < std::min(kVcaMarkGap, next0 - l0.marks[m].at) - 1e-12) return false;
+    }
+    return true;
+  };
+  const double want = p - l0.marks[i].at;
+  double d = want;
+  if (!ok(want)) {
+    double lo = 0.0, hi = 1.0;  // the share of `want` that fits (the feasible moves are an interval around 0)
+    for (int it = 0; it < 48; ++it) {
+      const double m = 0.5 * (lo + hi);
+      (ok(want * m) ? lo : hi) = m;
+    }
+    d = want * lo;
+  }
+  return moved(d);
+}
+
 double vcaValue(const VcaLaw& l, double p) noexcept {
   p = vcaWarp(l, p);
   if (l.curve == VcaCurve::Bend) {

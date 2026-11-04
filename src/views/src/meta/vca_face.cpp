@@ -13,9 +13,13 @@
 //              each where it plays; the ±1 pair longer and brighter, the fine zone between them a brighter band of the
 //              track; a marker outside min … max is not drawn). Drag up / down (Shift: fine); double-click: ×1 (the
 //              position of value 1, or the nearest end).
-//   markers    a tick dragged ALONG THE TRACK moves that marker alone (it follows the pointer round the circle,
-//              clamped a gap short of its neighbours; one undo step); the curve box's corner points are the same
-//              markers, dragged left / right. Double-click a marker: its default (offset 0).
+//   markers    a tick dragged ALONG THE TRACK moves that marker (it follows the pointer round the circle, clamped a gap
+//              short of its neighbours; one undo step); the curve box's corner points are the same markers, dragged
+//              left / right. TX.vca-knob2: PAIRED — a plain drag moves the marker of the opposite value with it, mirrored
+//              (+10 out by some travel: −10 out by the same; meta::vcaMoveMark), Ctrl+drag moves it alone. Double-click
+//              a marker to TYPE its place in % of the knob's travel (Ctrl+double-click: that marker alone; Enter
+//              commits, Esc cancels, an empty entry restores the default place); shown on the readout, or in the
+//              curve box while the panel is open.
 //   chevron    inside the dial under the hub (mirroring the readout above it; the track has no gap now): opens the
 //              FLOATING PANEL (Face::popupRect) — the min / max range and
 //              the curve box, as the face's lower half was — under the face over the canvas (nothing moves; it follows
@@ -24,13 +28,17 @@
 //   panel      min — max: the range's ends, joined by a line (the sketch's "−20 —— 20"). Drag up / down (on the
 //              default bipolar-log scale, rounded to 3 significant digits); double-click to type (Enter commits, Esc
 //              cancels, an empty entry restores the default). min ≤ max is kept.
-//              curve box: the value against the knob position (the Log curve on a signed-log scale, the Bend curve
+//              curve box: the value against the knob position (the Log curve on a symmetric-log scale — linear inside
+//              ±1, one equal step per decade beyond (TX.vca-knob2: ±1, ±10, ±100 evenly spaced) — the Bend curve
 //              linear), the knob's position on it (a dotted drop and a dot), each voice's dot. Drag up / down to shape
 //              it: the Log curve's fine zone (up: wider: the ±1 markers move apart symmetrically and the others with
 //              the outers, each keeping its offset), the Bend curve's bend (up: bulges up, logarithmic). The markers'
 //              corner points on the curve (dots, the ±1 pair larger) drag on their own. Double-click the box: the
 //              shape's default (the zone, every marker at offset 0).
-//              presets: four chips under the box: linear, bipolar log, exponential, logarithmic (one undo step each).
+//              presets (TX.vca-knob2): six chips under the box, each a glyph of its own curve (value against the knob,
+//              linear; a faint zero line, a dot at ×1) with a tooltip: Default (bipolar log ±20k), 0 → 1, −1 → +1,
+//              ×0 … ×2, Fader (0 … 1 on an audio taper), 20 Hz → 20 kHz (octaves). Each sets the range, the curve and
+//              the markers in one undo step; the one the state matches is lit.
 //
 // The signal's ports are the host's (orbiting the circle: pq/views/circuit/orbit.h); the face draws no jacks or leads for
 // them. Voices: the knob position each voice plays (the tap: automation, modulation wires and macros move the knob) is a
@@ -87,10 +95,10 @@ constexpr float kMarkHit = 3.5f;  // world units along the track / around a corn
 constexpr float kPopH = 80.0f, kPopGap = 6.0f, kPopOverTop = 38.0f;
 constexpr float kRangeDy = 17.0f, kRangePx = 8.0f;
 constexpr float kBoxDy0 = 28.0f, kBoxDy1 = 58.0f, kBoxPad = 3.0f;
-constexpr float kChipDy0 = 63.0f, kChipDy1 = 73.0f, kChipW = 18.0f, kChipX0 = 15.0f, kChipStep = 24.0f;
+constexpr float kChipDy0 = 63.0f, kChipDy1 = 73.0f, kChipW = 16.0f, kChipX0 = 7.0f, kChipStep = 18.0f;
 constexpr int kCurveN = 64;   // points of the drawn curve (the same at every zoom)
 constexpr int kWedgeN = 16;   // points per third of the wedge
-constexpr int kGlyphN = 9;    // points per preset glyph
+constexpr int kGlyphN = 17;   // points per preset glyph
 
 // ---- parts ----
 enum Part : int32_t {
@@ -100,16 +108,17 @@ enum Part : int32_t {
   kMaxText = 3,
   kCurveBox = 4,
   kPreset0 = 5,
-  kPresets = 4,
-  kChevron = 9,  // the face's chevron and the panel's caret: open / close
-  kPanel = 10,   // the panel's background (a press there keeps it open)
-  kTick0 = 11,   // TX.vca-knob: marker i's tick on the track (kTick0 + i)
+  kPresets = 6,
+  kChevron = kPreset0 + kPresets,  // the face's chevron and the panel's caret: open / close
+  kPanel = kChevron + 1,           // the panel's background (a press there keeps it open)
+  kTick0 = kPanel + 1,             // TX.vca-knob: marker i's tick on the track (kTick0 + i)
   kCorner0 = kTick0 + static_cast<int32_t>(meta::kVcaMarks)  // … and its corner point in the curve box
 };
 constexpr bool isTick(int32_t part) noexcept { return part >= kTick0 && part < kTick0 + static_cast<int32_t>(meta::kVcaMarks); }
 constexpr bool isCorner(int32_t part) noexcept {
   return part >= kCorner0 && part < kCorner0 + static_cast<int32_t>(meta::kVcaMarks);
 }
+constexpr bool isMark(int32_t part) noexcept { return isTick(part) || isCorner(part); }
 constexpr uint32_t markOf(int32_t part) noexcept { return static_cast<uint32_t>(isTick(part) ? part - kTick0 : part - kCorner0); }
 // The ±1 pair (the fine zone's ends) is drawn stronger than the outer markers.
 bool unitMark(uint32_t i) noexcept { return std::abs(meta::kVcaMarkValue[i]) == meta::kVcaFine; }
@@ -120,16 +129,40 @@ std::string markName(uint32_t i) {
   return buf;
 }
 
-// The four presets.
+// TX.vca-knob2: the presets (the user: "we at least need one of them to scale 0→1, one of them −1 to +1, one of them to
+// be default"). Each sets the curve, the range, its shape and the markers (at their places) in one undo step.
 struct Preset {
+  const char* name;  // the info view's title (ASCII)
+  const char* body;  // the tooltip
   meta::VcaCurve curve;
-  double shape;  // zone (Log) or bend (Bend)
-  const char* name;
+  double min, max;
+  double shape;      // zone (Log) or bend (Bend)
 };
-constexpr Preset kPresetList[kPresets] = {{meta::VcaCurve::Bend, 0.0, "Linear"},
-                                          {meta::VcaCurve::Log, 0.4, "Bipolar log"},
-                                          {meta::VcaCurve::Bend, 0.6, "Exponential"},
-                                          {meta::VcaCurve::Bend, -0.6, "Logarithmic"}};
+constexpr Preset kPresetList[kPresets] = {
+    {"Default", "Bipolar log, -20k ... +20k: -1 ... +1 fine around 12 o'clock, logarithmic to the ends.",
+     meta::VcaCurve::Log, -meta::kVcaRange, meta::kVcaRange, 0.4},
+    {"0 -> 1", "Unipolar linear, 0 ... 1: a level or a gain (0 at the start, 1 at the end).", meta::VcaCurve::Bend, 0.0, 1.0,
+     0.0},
+    {"-1 -> +1", "Bipolar linear, -1 ... +1: an attenuverter (0 at 12 o'clock, inverted to the left).",
+     meta::VcaCurve::Bend, -1.0, 1.0, 0.0},
+    {"x0 ... x2", "Linear gain, 0 ... 2: unity (x1) at 12 o'clock, up to +6 dB.", meta::VcaCurve::Bend, 0.0, 2.0, 0.0},
+    {"Fader", "0 ... 1 on an audio taper (exponential: fine near silence; -18.5 dB at 12 o'clock).", meta::VcaCurve::Bend,
+     0.0, 1.0, 0.5},
+    {"20 Hz -> 20 kHz", "A frequency, 20 Hz ... 20 kHz on an octave curve: equal ratios per turn, about an octave per tenth of the knob.",
+     meta::VcaCurve::Log, 20.0, 20000.0, 0.4}};
+meta::VcaLaw presetLaw(const Preset& pr) {
+  return meta::vcaLaw(pr.curve, pr.min, pr.max, pr.curve == meta::VcaCurve::Log ? pr.shape : 0.4,
+                      pr.curve == meta::VcaCurve::Bend ? pr.shape : 0.0);
+}
+// The curve box's value scale for the Log curve (TX.vca-knob2: "a bit more logarithmic"): linear inside ±1, one step
+// per decade beyond (C1 at ±1), so ±1, ±10, ±100 sit at equal steps.
+double symLog(double a) noexcept { return a <= 1.0 ? a / std::numbers::ln10 : (1.0 + std::log(a)) / std::numbers::ln10; }
+// A marker's place as typed and shown: % of the knob's travel.
+std::string formatPlace(double p) {
+  char buf[32];
+  std::snprintf(buf, sizeof buf, "%.1f", 100.0 * p);
+  return buf;
+}
 
 float angleOf(double p) noexcept { return deg(kA0 + kSweep * static_cast<float>(std::clamp(p, 0.0, 1.0))); }
 Vec2 polar(float r, float a) noexcept { return {kC.x + r * std::cos(a), kC.y + r * std::sin(a)}; }
@@ -271,10 +304,12 @@ public:
     p.ring(kC, kHubR - 0.5f, 1.0f, ui::mulAlpha(th.face.handle, 0.8f));
 
     // ---- the readout (at the top, inside the dial: a dark pill over the wedge and the pointer) ----
+    // TX.vca-knob2: a marker's place being typed shows here while the panel is closed ("±10: 82.5|", % of the knob).
+    const bool markTyping = isMark(edit_) && !open_, typing = edit_ == kValueText || markTyping;
     p.roundedRect(kReadout, 4.0f, ui::mulAlpha(th.face.body, 0.82f));
-    p.roundedRect(kReadout, 4.0f, edit_ == kValueText ? th.face.track : (readoutHot ? th.face.hover : 0));
-    p.text({kC.x, kReadoutY}, edit_ == kValueText ? editShown() : formatValue(value_), kReadoutPx,
-           edit_ == kValueText ? th.face.handle : accent);
+    p.roundedRect(kReadout, 4.0f, typing ? th.face.track : (readoutHot ? th.face.hover : 0));
+    p.text({kC.x, kReadoutY}, edit_ == kValueText ? editShown() : markTyping ? markEditShown() : formatValue(value_),
+           markTyping ? 7.5f : kReadoutPx, typing ? th.face.handle : accent);
 
     // ---- the chevron: down while the panel is closed, up while it is open ----
     const bool chevHot = hovered_ == kChevron;
@@ -357,13 +392,24 @@ public:
       p.ring(c, hot ? 2.6f : (unit ? 1.9f : 1.4f), hot ? 1.2f : 0.9f,
              !m.shown ? 0 : hot ? th.face.value : ui::mulAlpha(th.face.handle, unit ? 0.9f : 0.6f));
     }
-    // ---- presets ----
+    // TX.vca-knob2: a marker's place being typed, over the box's top while the panel is open.
+    if (isMark(edit_)) {
+      const Rect er{32.0f, bx.y0 + 1.5f, 88.0f, bx.y0 + 10.5f};
+      p.roundedRect(er, 3.0f, th.face.track);
+      p.text(centreOf(er), markEditShown(), 7.0f, th.face.handle);
+    }
+    // ---- presets: each chip its curve (value against the knob, linear), a faint zero line, a dot at x1 ----
     for (int i = 0; i < kPresets; ++i) {
       const Rect r = chipRect(i);
+      const auto k = static_cast<size_t>(i);
       const bool on = presetActive(i), hot = hovered_ == kPreset0 + i;
+      const Rgba ink = on ? th.face.value : ui::mulAlpha(th.face.handle, hot ? 0.95f : 0.6f);
       p.roundedRect(r, 3.0f, ui::mulAlpha(th.face.track, 0.5f));
       p.roundedRect(r, 3.0f, on ? ui::mulAlpha(th.face.value, 0.3f) : (hot ? th.face.hover : 0));
-      p.polyline(glyph_[static_cast<size_t>(i)], 1.0f, on ? th.face.value : ui::mulAlpha(th.face.handle, hot ? 0.95f : 0.6f));
+      const float gz = glyphZero_[k];
+      p.line({r.x0 + 2.0f, gz}, {r.x1 - 2.0f, gz}, 0.5f, gz > 0.0f ? ui::mulAlpha(th.face.handle, 0.35f) : 0);
+      p.polyline(glyph_[k], 1.0f, ink);
+      p.disc(glyphUnit_[k], 1.1f, glyphUnit_[k].x > 0.0f ? ink : 0);
     }
     paintVoices(p, th, true);
   }
@@ -482,7 +528,9 @@ public:
       if (!editText_.empty()) editText_.pop_back();
       return true;
     }
-    if (editText_.size() < 12 && ((k >= '0' && k <= '9') || k == '.' || k == 'k' || k == 'K' || (k == '-' && editText_.empty()))) {
+    const bool mark = isMark(edit_);  // a marker's place: digits, '.', a trailing %
+    if (editText_.size() < 12 && ((k >= '0' && k <= '9') || k == '.' || (!mark && (k == 'k' || k == 'K')) ||
+                                  (!mark && k == '-' && editText_.empty()) || (mark && k == '%' && !editText_.empty()))) {
       editText_ += static_cast<char>(k == 'K' ? 'k' : k);
       return true;
     }
@@ -492,9 +540,9 @@ public:
   ui::Cursor cursor(int32_t part) const noexcept override {
     if ((part >= kPreset0 && part < kPreset0 + kPresets) || part == kChevron) return ui::Cursor::Pointer;
     if (part == kPanel) return ui::Cursor::Arrow;
+    if (part == edit_ && part >= 0 && !isMark(part)) return ui::Cursor::Text;
     if (isTick(part)) return ui::Cursor::Move;       // round the track
     if (isCorner(part)) return ui::Cursor::ResizeEW;  // along the box
-    if (part == edit_ && part >= 0) return ui::Cursor::Text;
     return part >= 0 ? ui::Cursor::ResizeNS : ui::Cursor::Inherit;
   }
 
@@ -506,7 +554,7 @@ public:
 
   void describe(int32_t part, std::string& title, std::string& body) const override {
     refresh();
-    char buf[240];
+    char buf[400];
     switch (part) {
       case kKnob:
         title = "Value";
@@ -538,7 +586,7 @@ public:
         if (law_.curve == meta::VcaCurve::Log) {
           title = "Curve: bipolar log";
           std::snprintf(buf, sizeof buf, "-1 ... 1 spans %.0f %% of the knob, logarithmic beyond. Drag up / down to widen or "
-                                         "narrow it, a marker's dot to move it alone; double-click resets.",
+                                         "narrow it, a marker's dot to move it (with its pair; Ctrl: alone); double-click resets.",
                         100.0 * (fineSpan().second - fineSpan().first));
         } else {
           title = "Curve: bend";
@@ -547,20 +595,23 @@ public:
         }
         break;
       default:
-        if (isTick(part) || isCorner(part)) {
+        if (isMark(part)) {
           const uint32_t i = markOf(part);
+          const uint32_t j = meta::vcaMarkPartner(i);
+          const bool pair = j < meta::kVcaMarks && law_.marks[j].shown;
           title = "Marker " + markName(i);
-          std::snprintf(buf, sizeof buf, "Value %s at knob %.3f (default %.3f). Drag %s to move it alone; double-click: its "
-                                         "default.", markName(i).c_str(), law_.marks[i].at, law_.marks[i].base,
-                        isTick(part) ? "along the track" : "left / right");
+          const std::string how = pair ? " to move it with " + markName(j) + ", mirrored (Ctrl: alone)" : " to move it";
+          std::snprintf(buf, sizeof buf,
+                        "Value %s at %s %% of the knob (default %s %%). Drag %s%s; double-click to type its place in %% "
+                        "(empty: default)%s.",
+                        markName(i).c_str(), formatPlace(law_.marks[i].at).c_str(), formatPlace(law_.marks[i].base).c_str(),
+                        isTick(part) ? "along the track" : "left / right", how.c_str(), pair ? " (Ctrl: alone)" : "");
           break;
         }
         if (part >= kPreset0 && part < kPreset0 + kPresets) {
-          title = std::string("Preset: ") + kPresetList[part - kPreset0].name;
-          std::snprintf(buf, sizeof buf, "Click to shape the knob's curve %s.",
-                        part == kPreset0 ? "as a straight line" : part == kPreset0 + 1 ? "fine around 0, logarithmic to the ends"
-                                                                  : part == kPreset0 + 2 ? "exponentially (fine at the low end)"
-                                                                                         : "logarithmically (fine at the high end)");
+          const Preset& pr = kPresetList[part - kPreset0];
+          title = std::string("Preset: ") + pr.name;
+          std::snprintf(buf, sizeof buf, "%s Click: the range, the curve and the markers in one step.", pr.body);
           break;
         }
         MetaFace::describe(part, title, body);
@@ -598,9 +649,9 @@ private:
     law_ = meta::vcaLaw(std::span<const double>(s.data(), meta::kVcaParams), s[meta::kVcaParams]);
     pos_ = std::clamp(s[meta::kVcaValue], 0.0, 1.0);
     value_ = meta::vcaValue(law_, pos_);
-    // The display scale: signed log for the Log curve (its shape: fine middle, log ends), linear for Bend.
+    // The display scale: symmetric log for the Log curve (linear inside ±1, a step per decade beyond), linear for Bend.
     const double m = std::max({std::abs(law_.lo), std::abs(law_.hi), 1.0});
-    logScale_ = std::log10(1.0 + m);
+    logScale_ = symLog(m);
     yLo_ = shown(law_.lo);
     yHi_ = shown(law_.hi);
     curve_.clear();
@@ -609,7 +660,7 @@ private:
   }
   double shown(double v) const {
     if (law_.curve == meta::VcaCurve::Bend) return v;
-    return (v < 0.0 ? -1.0 : 1.0) * std::log10(1.0 + std::abs(v)) / logScale_;
+    return (v < 0.0 ? -1.0 : 1.0) * symLog(std::abs(v)) / logScale_;
   }
   // The value's height in the box, 0 (bottom) … 1 (top).
   double curveY(double v) const {
@@ -643,7 +694,33 @@ private:
   }
   bool markHot(uint32_t i) const noexcept {
     for (const int32_t part : {kTick0 + static_cast<int32_t>(i), kCorner0 + static_cast<int32_t>(i)})
-      if (hovered_ == part || drag_ == part) return true;
+      if (hovered_ == part || drag_ == part || edit_ == part) return true;
+    // TX.vca-knob2: the partner of a marker dragged or typed as a pair.
+    for (const int32_t part : {drag_, edit_})
+      if (isMark(part) && dragPair_ && meta::vcaMarkPartner(markOf(part)) == i) return true;
+    return false;
+  }
+  std::string markEditShown() const {
+    const uint32_t i = markOf(edit_);
+    std::string name = markName(i);
+    if (dragPair_ && meta::vcaMarkPartner(i) < meta::kVcaMarks && law_.marks[meta::vcaMarkPartner(i)].shown)
+      name = "\xC2\xB1" + name.substr(1);  // ±10: the pair
+    return minusSign(name) + ": " + editShown();
+  }
+  // The state as a VcaParam-ordered array (meta::vcaMoveMark's input).
+  std::array<double, meta::kVcaParams> stateNow() const {
+    std::array<double, meta::kVcaParams> a{};
+    for (size_t i = 0; i < meta::kVcaParams; ++i) a[i] = param(i);
+    return a;
+  }
+  // Writes the markers' offsets that differ from the state (inside a begun gesture).
+  void writeMarks(const std::array<double, meta::kVcaMarks>& offs) {
+    for (uint32_t k = 0; k < meta::kVcaMarks; ++k)
+      if (offs[k] != param(meta::kVcaMark0 + k)) target().set(meta::kVcaMark0 + k, offs[k]);
+  }
+  bool marksDiffer(const std::array<double, meta::kVcaMarks>& offs) const {
+    for (uint32_t k = 0; k < meta::kVcaMarks; ++k)
+      if (offs[k] != param(meta::kVcaMark0 + k)) return true;
     return false;
   }
   bool marksAtDefault() const {
@@ -663,27 +740,32 @@ private:
 
   void buildGlyphs() const {
     for (int i = 0; i < kPresets; ++i) {
-      const meta::VcaLaw l = kPresetList[i].curve == meta::VcaCurve::Log
-                                 ? meta::vcaLaw(meta::VcaCurve::Log, -meta::kVcaRange, meta::kVcaRange, 0.4, 0.0)
-                                 : meta::vcaLaw(meta::VcaCurve::Bend, 0.0, 1.0, 0.4, kPresetList[i].shape);
-      const double m = std::log10(1.0 + meta::kVcaRange);
+      const Preset& pr = kPresetList[i];
+      const meta::VcaLaw l = presetLaw(pr);
       const Rect r = chipRect(i);
-      auto& g = glyph_[static_cast<size_t>(i)];
+      const auto k = static_cast<size_t>(i);
+      const float x0 = r.x0 + 2.5f, w = kChipW - 5.0f, y0 = r.y1 - 2.0f, h = kChipDy1 - kChipDy0 - 4.0f;
+      auto y = [&](double v) { return y0 - static_cast<float>((v - l.lo) / std::max(l.hi - l.lo, 1e-30)) * h; };
+      auto& g = glyph_[k];
       g.clear();
-      for (int k = 0; k < kGlyphN; ++k) {
-        const double t = static_cast<double>(k) / (kGlyphN - 1);
-        const double v = meta::vcaValue(l, t);
-        const double y = l.curve == meta::VcaCurve::Log ? 0.5 + 0.5 * (v < 0 ? -1.0 : 1.0) * std::log10(1.0 + std::abs(v)) / m : v;
-        g.push_back({r.x0 + 3.5f + static_cast<float>(t) * (kChipW - 7.0f), r.y1 - 2.0f - static_cast<float>(y) * (kChipDy1 - kChipDy0 - 4.0f)});
+      for (int q = 0; q < kGlyphN; ++q) {
+        const double t = static_cast<double>(q) / (kGlyphN - 1);
+        g.push_back({x0 + static_cast<float>(t) * w, y(meta::vcaValue(l, t))});
       }
+      glyphZero_[k] = l.lo < 0.0 && l.hi > 0.0 ? y(0.0) : -1.0f;
+      glyphUnit_[k] = l.lo < 1.0 && l.hi > 1.0 ? Vec2{x0 + static_cast<float>(meta::vcaPosition(l, 1.0)) * w, y(1.0)}
+                                               : Vec2{-1.0f, -1.0f};
     }
   }
 
+  // The state matches preset i: its curve, range and shape, every marker at its place (Log).
   bool presetActive(int i) const {
     const Preset& pr = kPresetList[i];
     if (law_.curve != pr.curve) return false;
+    auto same = [](double a, double b) { return std::abs(a - b) <= 1e-6 * std::max(1.0, std::abs(b)); };
+    if (!same(param(meta::kVcaMin), pr.min) || !same(param(meta::kVcaMax), pr.max)) return false;
     const double v = param(pr.curve == meta::VcaCurve::Log ? meta::kVcaZone : meta::kVcaBend);
-    return std::abs(v - pr.shape) < 1e-3 && (pr.curve != meta::VcaCurve::Log || marksAtDefault());
+    return same(v, pr.shape) && (pr.curve != meta::VcaCurve::Log || marksAtDefault());
   }
 
   Rect textRect(int32_t part) const noexcept { return part == kMinText ? minRect() : part == kMaxText ? maxRect() : kReadout; }
@@ -759,6 +841,12 @@ private:
         editText_.clear();
         return true;
       }
+      if (isMark(part)) {  // TX.vca-knob2: type its place (% of the knob); Ctrl: this marker alone, else with its pair
+        edit_ = part;
+        dragPair_ = (e.mods & ui::mod::kCtrl) == 0;
+        editText_.clear();
+        return true;
+      }
       if (part == kKnob) {  // ×1 (or the end nearest it)
         tg.begin("Value x1");
         tg.set(meta::kVcaValue, meta::vcaPosition(law_, std::clamp(1.0, law_.lo, law_.hi)));
@@ -771,10 +859,6 @@ private:
         if (isLog)  // TX.vca-knob: the markers too (each where the curve puts its value)
           for (uint32_t i = 0; i < meta::kVcaMarks; ++i)
             if (param(meta::kVcaMark0 + i) != 0.0) tg.set(meta::kVcaMark0 + i, 0.0);
-        tg.end();
-      } else if (isTick(part) || isCorner(part)) {  // TX.vca-knob: the marker's default
-        tg.begin("Reset Marker");
-        tg.set(meta::kVcaMark0 + markOf(part), 0.0);
         tg.end();
       }
       return true;
@@ -794,8 +878,10 @@ private:
         break;
       }
       default:
-        if (isTick(part) || isCorner(part)) {  // TX.vca-knob: the marker, from where it is
+        if (isMark(part)) {  // TX.vca-knob: the marker, from where it is; TX.vca-knob2: with its pair unless Ctrl
           dragT_ = law_.marks[markOf(part)].at;
+          dragPair_ = (e.mods & ui::mod::kCtrl) == 0;
+          dragState_ = stateNow();
           break;
         }
         drag_ = kNone;  // the readout: a double-click types; a drag does nothing
@@ -805,7 +891,7 @@ private:
   }
 
   void move(const FacePointer& e) {
-    if (isTick(drag_) || isCorner(drag_)) {  // TX.vca-knob: one marker follows the pointer (round the track / along the box)
+    if (isMark(drag_)) {  // the marker follows the pointer (round the track / along the box), its pair mirrored
       last_ = e.device;
       MetaTarget& tg = target();
       if (!tg.editable()) return;
@@ -813,14 +899,14 @@ private:
       const uint32_t i = markOf(drag_);
       const double p = isTick(drag_) ? trackP(e.local, dragT_) : boxP(e.local.x);
       dragT_ = std::clamp(p, 0.0, 1.0);
-      const size_t pi = meta::kVcaMark0 + i;
-      const double off = meta::vcaMarkOffset(law_, i, dragT_, param(pi));
+      // From the drag's start state: the pair's travel is limited as a whole, never accumulated.
+      const std::array<double, meta::kVcaMarks> offs = meta::vcaMoveMark(dragState_, curveSetting(), i, dragT_, dragPair_);
       if (!begun_) {
-        if (off == param(pi)) return;  // nothing moved yet
-        tg.begin("Move Marker");
+        if (!marksDiffer(offs)) return;  // nothing moved yet
+        tg.begin(dragPair_ ? "Move Markers" : "Move Marker");
         begun_ = true;
       }
-      tg.set(pi, off);
+      writeMarks(offs);
       return;
     }
     const float dy = -(e.device.y - last_.y);
@@ -851,15 +937,18 @@ private:
     }
   }
 
+  // TX.vca-knob2: the curve, the range, its shape and the markers (at their places), one undo step.
   void applyPreset(int i) {
     const Preset& pr = kPresetList[i];
     MetaTarget& tg = target();
     tg.begin("Curve Preset");
     if (law_.curve != pr.curve) tg.setSetting(meta::kVcaCurveSetting, static_cast<double>(pr.curve));
-    tg.set(pr.curve == meta::VcaCurve::Log ? meta::kVcaZone : meta::kVcaBend, pr.shape);
-    if (pr.curve == meta::VcaCurve::Log)  // the bipolar log preset: its markers where the curve puts them
-      for (uint32_t m = 0; m < meta::kVcaMarks; ++m)
-        if (param(meta::kVcaMark0 + m) != 0.0) tg.set(meta::kVcaMark0 + m, 0.0);
+    if (param(meta::kVcaMin) != pr.min) tg.set(meta::kVcaMin, pr.min);
+    if (param(meta::kVcaMax) != pr.max) tg.set(meta::kVcaMax, pr.max);
+    const size_t shape = pr.curve == meta::VcaCurve::Log ? meta::kVcaZone : meta::kVcaBend;
+    if (param(shape) != pr.shape) tg.set(shape, pr.shape);
+    for (uint32_t m = 0; m < meta::kVcaMarks; ++m)
+      if (param(meta::kVcaMark0 + m) != 0.0) tg.set(meta::kVcaMark0 + m, 0.0);
     tg.end();
   }
 
@@ -868,6 +957,10 @@ private:
     edit_ = kNone;
     MetaTarget& tg = target();
     if (part < 0 || !tg.editable()) return;
+    if (isMark(part)) {
+      commitMark(markOf(part));
+      return;
+    }
     const size_t pi = part == kValueText ? meta::kVcaValue : part == kMinText ? meta::kVcaMin : meta::kVcaMax;
     if (editText_.empty()) {
       if (part != kValueText) tg.reset(pi);
@@ -886,8 +979,36 @@ private:
     tg.end();
   }
 
+  // TX.vca-knob2: a marker's typed place (% of the knob's travel), with its pair unless Ctrl; empty: the default place.
+  void commitMark(uint32_t i) {
+    MetaTarget& tg = target();
+    refresh();
+    std::array<double, meta::kVcaMarks> offs{};
+    for (uint32_t k = 0; k < meta::kVcaMarks; ++k) offs[k] = param(meta::kVcaMark0 + k);
+    if (editText_.empty()) {
+      offs[i] = 0.0;
+      const uint32_t j = meta::vcaMarkPartner(i);
+      if (dragPair_ && j < meta::kVcaMarks && law_.marks[j].shown) offs[j] = 0.0;
+    } else {
+      std::string t = editText_;
+      if (t.back() == '%') t.pop_back();
+      const std::optional<double> typed = parseTyped(t);
+      if (!typed) {
+        tg.notice("Not a number: " + editText_);
+        return;
+      }
+      offs = meta::vcaMoveMark(stateNow(), curveSetting(), i, std::clamp(*typed / 100.0, 0.0, 1.0), dragPair_);
+    }
+    if (!marksDiffer(offs)) return;
+    tg.begin(editText_.empty() ? "Reset Marker" : "Type Marker");
+    writeMarks(offs);
+    tg.end();
+  }
+
   int32_t drag_ = kNone;
   bool begun_ = false;
+  bool dragPair_ = true;  // TX.vca-knob2: the marker drag / type-in moves its pair too (no Ctrl)
+  std::array<double, meta::kVcaParams> dragState_{};  // the state at the marker drag's start
   Vec2 last_{0.0f, 0.0f};
   double dragT_ = 0.0;
   int32_t edit_ = kNone;   // the field being typed into
@@ -902,6 +1023,8 @@ private:
   mutable double logScale_ = 1.0, yLo_ = 0.0, yHi_ = 1.0;
   mutable std::vector<Vec2> curve_;
   mutable std::array<std::vector<Vec2>, kPresets> glyph_;
+  mutable std::array<float, kPresets> glyphZero_{};  // the zero line's y in each chip (< 0: none)
+  mutable std::array<Vec2, kPresets> glyphUnit_{};   // the ×1 dot in each chip (x < 0: none)
 };
 
 }  // namespace

@@ -129,5 +129,15 @@ double vcaWarp(const VcaLaw& law, double p) noexcept;         // the markers' wa
 // TX.vca-knob: the offset that puts shown marker i at knob position p, clamped between its shown neighbours (or the
 // ends) with kVcaMarkGap; a hidden marker keeps its offset.
 double vcaMarkOffset(const VcaLaw& law, uint32_t i, double p, double currentOffset) noexcept;
+// TX.vca-knob2: the marker of −value (the PAIR of marker i: ±1, ±10, ±100), or kVcaMarks if there is none.
+uint32_t vcaMarkPartner(uint32_t i) noexcept;
+// TX.vca-knob2: the markers' offsets after shown marker i is moved toward knob position p, from the state `params`
+// (VcaParam order; a drag's start). Alone: vcaMarkOffset. PAIRED (the face's plain drag and typed place): its partner,
+// when shown, moves by the mirrored travel (i by +d, the partner by −d: both outward or both inward, so a symmetric pair
+// stays symmetric and an asymmetric one keeps its asymmetry), d limited so that neither reaches within the gap of a
+// neighbour or an end (the pair stops together; nothing is pushed). A state that already breaks the order (a range
+// change under fixed offsets): i alone.
+std::array<double, kVcaMarks> vcaMoveMark(std::span<const double> params, double curveSetting, uint32_t i, double p,
+                                          bool paired) noexcept;
 
 }  // namespace pq::meta
