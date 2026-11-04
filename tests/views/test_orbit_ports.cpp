@@ -114,9 +114,11 @@ struct Ui {
     return d.now() - t0;
   }
   // The VCA's frame (not a control): left of its knob, inside its circle.
+  // A press on the VCA's frame (its rim, outside the knob: TX.vca-knob's knob fills the circle to r ≈ 53 of 58, so the
+  // old grip at (12, 63) is on the knob now), at 9 o'clock where no marker's tick is.
   Vec2 vcaGrip() const {
     const Node& n = node(faceNode("vca"));
-    return dev({n.x + 12.0f * n.scale, n.y + 63.0f * n.scale});
+    return dev({n.x + 4.0f * n.scale, n.y + 61.0f * n.scale});
   }
   // A point of the canvas over nothing (no block, cable, lane window): a press there is the canvas's.
   Vec2 emptyPoint() const {
@@ -463,7 +465,7 @@ TEST_CASE("orbit ports: the VCA's floating panel opens, edits and closes through
     u.d.step();
     // The chevron opens it (no edit, no rebuild); the panel is under the face, over the canvas.
     CHECK_FALSE(u.vcaFace().popupRect().has_value());
-    u.d.click(at(60.0f, 100.0f));
+    u.d.click(at(60.0f, 85.0f));
     REQUIRE(u.vcaFace().popupRect().has_value());
     CHECK(u.vcaFace().popupRect()->y0 >= 120.0f);
     CHECK(u.history() == h0);
@@ -475,17 +477,17 @@ TEST_CASE("orbit ports: the VCA's floating panel opens, edits and closes through
     // Esc closes it; the chevron opens it again and closes it; a click on empty canvas closes it.
     (void)u.d.keyDown(key::kEscape);
     CHECK_FALSE(u.vcaFace().popupRect().has_value());
-    u.d.click(at(60.0f, 100.0f));
+    u.d.click(at(60.0f, 85.0f));
     REQUIRE(u.vcaFace().popupRect().has_value());
-    u.d.click(at(60.0f, 100.0f));
+    u.d.click(at(60.0f, 85.0f));
     CHECK_FALSE(u.vcaFace().popupRect().has_value());
-    u.d.click(at(60.0f, 100.0f));
+    u.d.click(at(60.0f, 85.0f));
     REQUIRE(u.vcaFace().popupRect().has_value());
     u.d.click(u.emptyPoint());
     CHECK_FALSE(u.vcaFace().popupRect().has_value());
   }
   // An edit in the panel: one undo step (a drag on max, a preset click); the panel stays open over a press inside it.
-  u.d.click(at(60.0f, 100.0f));
+  u.d.click(at(60.0f, 85.0f));
   REQUIRE(u.vcaFace().popupRect().has_value());
   const doc::DeviceId id = u.device("vca");
   auto value = [&](size_t p) { return doc::metaParamValue(*doc::findDevice(*u.ctx.doc(), id).device, "", meta::vcaType(), p); };
@@ -586,3 +588,5 @@ void golden(const char* name) {
 TEST_CASE("render: project-orbit-ports matches the golden image") { golden("project-orbit-ports"); }
 // … and the VCA's floating panel open under it (the range, the curve box, the presets).
 TEST_CASE("render: project-vca-panel matches the golden image") { golden("project-vca-panel"); }
+// TX.vca-knob: … with +1 and −10 moved off their defaults (an asymmetric fine zone: the ticks, the box's corner points).
+TEST_CASE("render: project-vca-markers matches the golden image") { golden("project-vca-markers"); }

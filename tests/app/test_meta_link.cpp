@@ -26,6 +26,7 @@
 #include "pq/meta/vca.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
+#include "pq/document/serialize.h"
 #include "pq/engine/project_program.h"
 #include "pq/tuning/edo.h"
 #include "pq/app/face_voices.h"
@@ -629,6 +630,71 @@ TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 20 ms (no click;
   CHECK(link->stats().compiles == s0.compiles);
   CHECK(link->stats().unitCompiles == s0.unitCompiles);
   CHECK(link->stats().paramWrites >= s0.paramWrites + 3);
+}
+
+// TX.vca-knob: a project saved before the markers existed (no mk_* params: what vca version 1 wrote) reads them as 0
+// and plays what it played (no migration: the markers' default is the old law, bit for bit); a marker drag is a param
+// write that moves the value the knob plays, through the warp, without a compile.
+TEST_CASE("meta link (TX.vca-knob): an older VCA state keeps its sound; a marker write compiles nothing and warps the knob") {
+  Keys k;
+  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "vca", 0));
+  const DeviceId vca = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
+  k.edit(ops::setDeviceChainInput(*k.store.current(), vca, std::string(kChainUnplugged)));
+  k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", "min", -5000.0));
+  k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", "zone", 0.55));
+  const meta::VcaLaw old = meta::vcaLaw(meta::VcaCurve::Log, -5000.0, meta::kVcaRange, 0.55, 0.0);
+  k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", "value", meta::vcaPosition(old, 1.0)));
+  // Saved and loaded: no marker in the file, all 0 when read, the same project.
+  auto text = serializeProject(*k.store.current(), k.store.view());
+  REQUIRE(text.ok());
+  CHECK(text->find("\"mk_") == std::string::npos);
+  CHECK(text->find("\"zone\"") != std::string::npos);
+  auto back = parseProject(*text);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+  CHECK(*back->project == *k.store.current());
+  const Device* dv = findDevice(*back->project, vca).device;
+  REQUIRE(dv != nullptr);
+  for (uint32_t i = 0; i < meta::kVcaMarks; ++i) CHECK(metaParamValue(*dv, "", meta::vcaType(), meta::kVcaMark0 + i) == 0.0);
+  CHECK_FALSE(old.warped);
+  auto link = makeLink(back->project);
+  [[maybe_unused]] const ListenerId sub = k.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  CHECK(link->lastError().empty());
+  Driver d{*link};
+  link->play(0);
+  d.run(20);
+  const float g = d.out.back();  // the knob at value 1: the mixer's gain
+  CHECK(g > 0.6f);
+  CHECK(g < 0.8f);
+  const app::LinkStats s0 = link->stats();
+  auto settle = [&](const char* param, double v) {
+    k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", param, v));
+    link->flush();
+    d.run(18);  // past the 20 ms glide
+    return d.out.back() / g;
+  };
+  // The old law at a knob position just under +1 (in the fine zone), played as it was.
+  const double want = meta::vcaValue(old, 0.74);
+  CHECK(settle("value", 0.74) == doctest::Approx(want).epsilon(1e-4));
+  // +1 moved right by 0.05 (one marker alone): the fine zone is wider, the knob at 0.74 plays less (the warped law).
+  std::array<double, meta::kVcaMarks> off{};
+  off[3] = 0.05;
+  const meta::VcaLaw moved = meta::vcaLaw(meta::VcaCurve::Log, -5000.0, meta::kVcaRange, 0.55, 0.0, off);
+  const double want2 = meta::vcaValue(moved, 0.74);
+  CHECK(want2 < want - 0.1);
+  CHECK(settle("mk_p1", 0.05) == doctest::Approx(want2).epsilon(1e-4));
+  // -100 moved (shown: -5000 < -100): the knob at 0.74 is not in a segment next to it: unchanged.
+  off[0] = 0.02;
+  CHECK(settle("mk_n100", 0.02) == doctest::Approx(want2).epsilon(1e-4));
+  // A marker outside the range (min -50 hides -100): no effect.
+  k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", "min", -50.0));
+  const meta::VcaLaw narrow = meta::vcaLaw(meta::VcaCurve::Log, -50.0, meta::kVcaRange, 0.55, 0.0, off);
+  std::array<double, meta::kVcaMarks> noN100 = off;
+  noN100[0] = 0.0;
+  const double want3 = meta::vcaValue(narrow, 0.1);
+  CHECK(want3 == meta::vcaValue(meta::vcaLaw(meta::VcaCurve::Log, -50.0, meta::kVcaRange, 0.55, 0.0, noN100), 0.1));
+  CHECK(settle("value", 0.1) == doctest::Approx(want3).epsilon(1e-4));
+  CHECK(link->stats().compiles == s0.compiles);
+  CHECK(link->stats().unitCompiles == s0.unitCompiles);
 }
 
 // ---- TMM.17 ---------------------------------------------------------------------------------------------------------

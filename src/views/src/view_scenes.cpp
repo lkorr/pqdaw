@@ -17,6 +17,7 @@
 #include "pq/ui/scene_textures.h"
 #include "pq/media/probe.h"
 #include "pq/meta/envelope.h"
+#include "pq/meta/vca.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/browser/browser_panel.h"
 #include "pq/views/browser/demo_index.h"
@@ -2465,8 +2466,9 @@ Status setupProjectCables(Shell& shell) { return setupProjectCablesAt(shell, 0.0
 // TX.orbit-ports (SPEC §15 2026-11-03 "orbiting ports, a round VCA, Delete on a cable"): the same patch closer, framed on
 // the round VCA and its neighbours — every block's main input (a hollow ring) and output (a disc with a bright core and a
 // glow) on its outline toward its cables; `panel`: the VCA's floating panel opened by a click on its chevron (through
-// the canvas's dispatch: the range, the curve box, the presets under the face, over the canvas).
-Status setupProjectOrbitPorts(Shell& shell, bool panel) {
+// the canvas's dispatch: the range, the curve box, the presets under the face, over the canvas). TX.vca-knob: `markers`
+// moves +1 and −10 off their defaults first (an asymmetric fine zone; the ticks and the box's corner points).
+Status setupProjectOrbitPorts(Shell& shell, bool panel, bool markers = false) {
   if (Status s = setupProjectCablesAt(shell, 0.0, false); !s) return s;
   project_patch::ProjectPatchView* v = findProjectPatch(shell);
   project_patch::ProjectCanvas& c = v->canvas();
@@ -2486,7 +2488,7 @@ Status setupProjectOrbitPorts(Shell& shell, bool panel) {
   c.setView(view);
   shell.tree().layoutNow();
   if (panel) {
-    const ui::Vec2 chev = c.toDevice({n.x + 60.0f * n.scale, n.y + 100.0f * n.scale});
+    const ui::Vec2 chev = c.toDevice({n.x + 60.0f * n.scale, n.y + 85.0f * n.scale});  // the chevron, inside the dial (TX.vca-knob)
     for (const ui::PointerType t : {ui::PointerType::Move, ui::PointerType::Down, ui::PointerType::Up}) {
       ui::PointerEvent e;
       e.type = t;
@@ -2495,8 +2497,16 @@ Status setupProjectOrbitPorts(Shell& shell, bool panel) {
       shell.tree().dispatchPointer(e);
     }
     const uint32_t sn = v->scene().sceneNode[vca];
-    const MetaFace* f = sn == project_patch::kNone ? nullptr : c.faceOn(sn);
+    MetaFace* f = sn == project_patch::kNone ? nullptr : c.faceOn(sn);
     if (f == nullptr || !f->popupRect()) return Error{ErrorCode::Unknown, "project-vca-panel: the chevron did not open the panel", {}};
+    if (markers) {
+      MetaTarget& t = f->target();
+      t.begin("Move Markers");
+      t.set(meta::kVcaMark0 + 3, 0.06);   // +1 later: a wider positive half of the fine zone
+      t.set(meta::kVcaMark0 + 1, -0.04);  // −10 earlier
+      t.end();
+      shell.tree().layoutNow();
+    }
     // The pointer away from the face (no hover over the panel).
     ui::PointerEvent e;
     e.type = ui::PointerType::Move;
@@ -2904,7 +2914,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-cables-far", 1600, 900, setupProjectCablesFar},          // TX.cables: the same --project, zoom 0.2
     {"project-cables-glow", 1600, 900, setupProjectCablesGlow},        // TX.cables: the same --project, playing
     {"project-orbit-ports", 1600, 900, [](Shell& s) { return setupProjectOrbitPorts(s, false); }},  // TX.orbit-ports: the same --project
-    {"project-vca-panel", 1600, 900, [](Shell& s) { return setupProjectOrbitPorts(s, true); }},     // TX.orbit-ports: the same --project
+    {"project-vca-panel", 1600, 900, [](Shell& s) { return setupProjectOrbitPorts(s, true); }},
+    {"project-vca-markers", 1600, 900, [](Shell& s) { return setupProjectOrbitPorts(s, true, true); }},  // TX.vca-knob     // TX.orbit-ports: the same --project
     {"device-meta-spectrogram", 1280, 800, setupDeviceMetaSpectrogram},    // TX.spectrogram
     {"project-meta-spectrogram", 1280, 800, setupProjectMetaSpectrogram},  // TX.spectrogram
     {"meta-operator-device", 1760, 900, setupDeviceMetaOperator},      // TMM.12 (wider: the whole panel)

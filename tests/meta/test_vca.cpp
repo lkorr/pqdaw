@@ -153,15 +153,33 @@ TEST_CASE("vca: every state's curve is continuous and monotonic, ends at min and
                                                {5, 5, 0.4, 0},           {300, -300, 0.4, 0},    {-20000, 20000, 0.05, 0}};
   for (int i = 0; i < 200; ++i) states.push_back({range(rng), range(rng), zone(rng), bend(rng)});
   for (int i = 0; i < 100; ++i) states.push_back({range(rng) * 1e-3, range(rng), zone(rng), bend(rng)});
-  for (const auto& s : states)
+  // TX.vca-knob: every state also with random marker offsets (any order: the law keeps them ordered).
+  std::uniform_real_distribution<double> offset(-0.3, 0.3);
+  std::vector<std::array<double, kVcaMarks>> offs(states.size());
+  for (auto& o : offs)
+    for (double& x : o) x = offset(rng);
+  for (size_t si = 0; si < states.size(); ++si)
+    for (const bool moved : {false, true})
     for (const VcaCurve curve : {VcaCurve::Log, VcaCurve::Bend}) {
+      const auto& s = states[si];
+      CAPTURE(moved);
       CAPTURE(s[0]);
       CAPTURE(s[1]);
       CAPTURE(s[2]);
       CAPTURE(s[3]);
       CAPTURE(static_cast<int>(curve));
-      const VcaLaw l = vcaLaw(curve, s[0], s[1], s[2], s[3]);
+      const VcaLaw l = moved ? vcaLaw(curve, s[0], s[1], s[2], s[3], offs[si]) : vcaLaw(curve, s[0], s[1], s[2], s[3]);
       const double lo = s[0], hi = std::max(s[0], s[1]);
+      // Shown markers: in order with at least the gap (or their bases' own distance), each at its value exactly.
+      double prevAt = 0.0, prevBase = 0.0;
+      for (const VcaLaw::Mark& m : l.marks) {
+        if (!m.shown) continue;
+        CHECK(m.at >= prevAt + std::min(kVcaMarkGap, m.base - prevBase) - 1e-12);
+        CHECK(m.at < 1.0);
+        CHECK(vcaValue(l, m.at) == doctest::Approx(m.value).epsilon(1e-9));
+        prevAt = m.at;
+        prevBase = m.base;
+      }
       CHECK(vcaValue(l, 0.0) == doctest::Approx(lo).epsilon(1e-9).scale(1.0));
       CHECK(vcaValue(l, 1.0) == doctest::Approx(hi).epsilon(1e-9).scale(1.0));
       bool monotonic = true;
@@ -226,9 +244,117 @@ TEST_CASE("vca: custom ranges — one-sided log, the fine zone inside the range,
   CHECK(vcaValue(ex, 0.5) + vcaValue(lg, 0.5) == doctest::Approx(1.0));  // mirror images
 }
 
+TEST_CASE("vca: the markers (TX.vca-knob) — defaults are the old law exactly, each marker moves alone, ordering, hidden") {
+  // No offsets: the base law, bit for bit (an older state has no marker params: they read 0, its sound is unchanged).
+  const std::array<double, kVcaMarks> zero{};
+  for (const auto& r : {std::array<double, 3>{-20000, 20000, 0.4}, {-50, 20000, 0.7}, {0, 20000, 0.4}, {-3, 1.5, 0.9},
+                        {20, 20000, 0.4}, {-20000, 20000, 0.05}}) {
+    CAPTURE(r[0]);
+    CAPTURE(r[1]);
+    const VcaLaw a = vcaLaw(VcaCurve::Log, r[0], r[1], r[2], 0.0), b = vcaLaw(VcaCurve::Log, r[0], r[1], r[2], 0.0, zero);
+    CHECK_FALSE(a.warped);
+    for (int i = 0; i <= 1000; ++i) {
+      CHECK(vcaWarp(a, i / 1000.0) == i / 1000.0);
+      CHECK(vcaValue(a, i / 1000.0) == vcaValue(b, i / 1000.0));
+    }
+    // The shown markers sit where the curve reaches their values (the Newton inverse to double precision).
+    for (const VcaLaw::Mark& m : a.marks) {
+      CHECK(m.shown == (r[0] < m.value && m.value < r[1]));
+      if (!m.shown) continue;
+      CHECK(m.at == m.base);
+      CHECK(vcaValue(a, m.base) == doctest::Approx(m.value).epsilon(1e-12));
+      CHECK(vcaPosition(a, m.value) == doctest::Approx(m.base).epsilon(1e-12));
+    }
+  }
+  // The default law's markers: -1 / +1 at 0.3 / 0.7, -10 / +10 and -100 / +100 mirrored around 12 o'clock.
+  const VcaLaw d = vcaLaw(VcaCurve::Log, -kVcaRange, kVcaRange, 0.4, 0.0);
+  CHECK(d.marks[2].base == doctest::Approx(0.3));
+  CHECK(d.marks[3].base == doctest::Approx(0.7));
+  CHECK(d.marks[4].base == doctest::Approx(1.0 - d.marks[1].base).epsilon(1e-12));
+  CHECK(d.marks[5].base == doctest::Approx(1.0 - d.marks[0].base).epsilon(1e-12));
+  CHECK(d.marks[4].base > 0.77);
+  CHECK(d.marks[5].base < 0.86);
+  // Each marker moved alone: it lands where it was put with its value exactly; every other marker stays; outside the
+  // two segments next to it nothing changes.
+  for (uint32_t i = 0; i < kVcaMarks; ++i)
+    for (const double off : {-0.03, 0.02}) {
+      CAPTURE(i);
+      CAPTURE(off);
+      std::array<double, kVcaMarks> o{};
+      o[i] = off;
+      const VcaLaw m = vcaLaw(VcaCurve::Log, -kVcaRange, kVcaRange, 0.4, 0.0, o);
+      CHECK(m.warped);
+      CHECK(m.marks[i].at == doctest::Approx(d.marks[i].base + off).epsilon(1e-12));
+      CHECK(vcaValue(m, m.marks[i].at) == doctest::Approx(kVcaMarkValue[i]).epsilon(1e-9));
+      for (uint32_t j = 0; j < kVcaMarks; ++j) {
+        if (j == i) continue;
+        CHECK(m.marks[j].at == d.marks[j].at);
+        CHECK(vcaValue(m, m.marks[j].at) == doctest::Approx(kVcaMarkValue[j]).epsilon(1e-9));
+      }
+      const double a0 = i == 0 ? 0.0 : d.marks[i - 1].at, a1 = i + 1 == kVcaMarks ? 1.0 : d.marks[i + 1].at;
+      for (int k = 0; k <= 200; ++k) {
+        const double p = k / 200.0;
+        if (p > a0 && p < a1) continue;
+        CHECK(vcaValue(m, p) == doctest::Approx(vcaValue(d, p)).epsilon(1e-9).scale(1.0));
+      }
+    }
+  // +1 moved right by 0.1: the fine zone runs 0.3 ... 0.8, linear (0 at 0.55); +1 ... +10 is squeezed.
+  std::array<double, kVcaMarks> o{};
+  o[3] = 0.1;
+  const VcaLaw a = vcaLaw(VcaCurve::Log, -kVcaRange, kVcaRange, 0.4, 0.0, o);
+  CHECK(vcaValue(a, 0.55) == doctest::Approx(0.0).scale(1.0).epsilon(1e-12));
+  CHECK(vcaValue(a, 0.675) == doctest::Approx(0.5).epsilon(1e-12));
+  CHECK(vcaValue(a, 0.8) == doctest::Approx(1.0).epsilon(1e-12));
+  CHECK(vcaValue(a, 0.3) == doctest::Approx(-1.0).epsilon(1e-12));
+  // Ordering, for any state (the face's drag never writes one out of order: it clamps, below): the markers stay a gap
+  // apart and from the ends; an offset past a neighbour pushes that neighbour up (a lower marker wins).
+  o = {};
+  o[3] = 0.5;  // +1 past +10 (at about 0.776) and +100
+  const VcaLaw c = vcaLaw(VcaCurve::Log, -kVcaRange, kVcaRange, 0.4, 0.0, o);
+  CHECK(c.marks[3].at == doctest::Approx(1.0 - 3.0 * kVcaMarkGap).epsilon(1e-12));
+  CHECK(c.marks[4].at == doctest::Approx(1.0 - 2.0 * kVcaMarkGap).epsilon(1e-12));
+  CHECK(c.marks[5].at == doctest::Approx(1.0 - kVcaMarkGap).epsilon(1e-12));
+  for (const VcaLaw::Mark& m : c.marks) CHECK(vcaValue(c, m.at) == doctest::Approx(m.value).epsilon(1e-9));
+  o = {};
+  o[5] = 0.9;  // +100 to the end
+  const VcaLaw e = vcaLaw(VcaCurve::Log, -kVcaRange, kVcaRange, 0.4, 0.0, o);
+  CHECK(e.marks[5].at == doctest::Approx(1.0 - kVcaMarkGap).epsilon(1e-12));
+  o = {};
+  o[0] = -0.9;
+  const VcaLaw f = vcaLaw(VcaCurve::Log, -kVcaRange, kVcaRange, 0.4, 0.0, o);
+  CHECK(f.marks[0].at == doctest::Approx(kVcaMarkGap).epsilon(1e-12));
+  // The offset a drag writes (vcaMarkOffset): clamped between the shown neighbours, the other markers unmoved.
+  CHECK(vcaMarkOffset(d, 3, 0.9, 0.0) == doctest::Approx(d.marks[4].at - kVcaMarkGap - d.marks[3].base).epsilon(1e-12));
+  CHECK(vcaMarkOffset(d, 3, 0.4, 0.0) == doctest::Approx(0.4 - d.marks[3].base).epsilon(1e-12));
+  CHECK(vcaMarkOffset(d, 2, 0.75, 0.0) == doctest::Approx(d.marks[3].at - kVcaMarkGap - d.marks[2].base).epsilon(1e-12));
+  CHECK(vcaMarkOffset(d, 0, -1.0, 0.0) == doctest::Approx(kVcaMarkGap - d.marks[0].base).epsilon(1e-12));
+  // Hidden markers (their values outside (min, max)) have no effect: -50 ... 20000 hides -100.
+  o = {};
+  o[0] = 0.2;
+  const VcaLaw h = vcaLaw(VcaCurve::Log, -50.0, 20000.0, 0.4, 0.0, o), h0 = vcaLaw(VcaCurve::Log, -50.0, 20000.0, 0.4, 0.0);
+  CHECK_FALSE(h.marks[0].shown);
+  CHECK(h.marks[1].shown);
+  CHECK_FALSE(h.warped);
+  for (int k = 0; k <= 100; ++k) CHECK(vcaValue(h, k / 100.0) == vcaValue(h0, k / 100.0));
+  CHECK(vcaMarkOffset(h, 0, 0.5, 0.2) == 0.2);  // a hidden marker keeps its offset
+  // 0 ... 20000: the negative markers are hidden, -1 too (min 0 > -1).
+  const VcaLaw half = vcaLaw(VcaCurve::Log, 0.0, 20000.0, 0.4, 0.0);
+  CHECK_FALSE(half.marks[2].shown);
+  CHECK(half.marks[3].shown);
+  // The Bend curve has no markers.
+  for (const VcaLaw::Mark& m : vcaLaw(VcaCurve::Bend, -kVcaRange, kVcaRange, 0.4, 0.0, o).marks) CHECK_FALSE(m.shown);
+  // The zone (the box drag) places every marker's base: wider, +1 moves out and the outer's markers with it (the outer's
+  // share of the travel shrinks from 0.3 to 0.2; +10 keeps about its share of it).
+  const VcaLaw wide = vcaLaw(VcaCurve::Log, -kVcaRange, kVcaRange, 0.6, 0.0);
+  CHECK(wide.marks[3].base == doctest::Approx(0.8));
+  CHECK(wide.marks[4].base > d.marks[4].base);
+  CHECK((1.0 - wide.marks[4].base) / (1.0 - d.marks[4].base) == doctest::Approx(0.2 / 0.3).epsilon(0.1));
+}
+
 TEST_CASE("vca: the DSP computes the law (both curves, many states); interpreter == JIT bit for bit") {
   struct S {
     float pos, min, max, zone, bend;
+    std::array<float, kVcaMarks> mk{};  // TX.vca-knob: marker offsets
   };
   const S states[] = {{0.7f, -20000, 20000, 0.4f, 0},   {0.5f, -20000, 20000, 0.4f, 0},  {0.0f, -20000, 20000, 0.4f, 0},
                       {1.0f, -20000, 20000, 0.4f, 0},   {0.93f, -20000, 20000, 0.4f, 0}, {0.12f, -20000, 20000, 0.4f, 0},
@@ -236,7 +362,13 @@ TEST_CASE("vca: the DSP computes the law (both curves, many states); interpreter
                       {0.15f, 0, 20000, 0.4f, 0},       {0.75f, -0.5f, 0.8f, 0.4f, 0},  {0.85f, -2, 2, 0.4f, 0},
                       {0.95f, -20000, 20000, 0.8f, 0},  {0.5f, 300, -300, 0.4f, 0},     {0.33f, -1, 20000, 0.05f, 0},
                       {0.5f, -2, 6, 0.4f, 0.6f},        {0.5f, -2, 6, 0.4f, -0.6f},     {0.8f, 0, 20000, 0.4f, 1.0f},
-                      {0.25f, -2, 6, 0.4f, 0.0f},       {0.25f, -2, 6, 0.4f, 0.0005f}};
+                      {0.25f, -2, 6, 0.4f, 0.0f},       {0.25f, -2, 6, 0.4f, 0.0005f},
+                      // TX.vca-knob: markers moved (each alone, several, crossing their neighbours, hidden ones)
+                      {0.5f, -20000, 20000, 0.4f, 0, {0, 0, 0, 0.1f, 0, 0}},     {0.75f, -20000, 20000, 0.4f, 0, {0, 0, 0, 0.1f, 0, 0}},
+                      {0.2f, -20000, 20000, 0.4f, 0, {0, 0, -0.15f, 0, 0, 0}},   {0.82f, -20000, 20000, 0.4f, 0, {0, 0, 0, 0, 0.05f, 0}},
+                      {0.95f, -20000, 20000, 0.4f, 0, {0, 0, 0, 0, 0, -0.1f}},   {0.05f, -20000, 20000, 0.4f, 0, {0.1f, -0.1f, 0, 0, 0, 0}},
+                      {0.6f, -20000, 20000, 0.4f, 0, {0, 0, 0, 0.5f, -0.5f, 0}}, {0.3f, -50, 20000, 0.4f, 0, {0.5f, 0.05f, 0, 0, 0, 0}},
+                      {0.4f, 0, 20000, 0.4f, 0, {0, 0, 0, 0.1f, 0.1f, 0.1f}},    {0.6f, -3, 1.5f, 0.9f, 0, {0, 0.3f, -0.2f, 0.1f, 0, 0}}};
   for (const VcaCurve curve : {VcaCurve::Log, VcaCurve::Bend}) {
     const fs::path f = curveFile(curve == VcaCurve::Log ? "log.pqp" : "bend.pqp", curve);
     for (const S& s : states) {
@@ -246,12 +378,15 @@ TEST_CASE("vca: the DSP computes the law (both curves, many states); interpreter
       CAPTURE(s.max);
       CAPTURE(s.bend);
       const std::vector<std::pair<std::string, float>> params = {
-          {"v__value", s.pos}, {"v__min", s.min}, {"v__max", s.max}, {"v__zone", s.zone}, {"v__bend", s.bend}};
+          {"v__value", s.pos},     {"v__min", s.min},       {"v__max", s.max},      {"v__zone", s.zone},
+          {"v__bend", s.bend},     {"v__mk_n100", s.mk[0]}, {"v__mk_n10", s.mk[1]}, {"v__mk_n1", s.mk[2]},
+          {"v__mk_p1", s.mk[3]},   {"v__mk_p10", s.mk[4]},  {"v__mk_p100", s.mk[5]}};
       const std::vector<float> yi = render(f, 0.01, params, pqc::Backend::Interpreter, "Main");
       const std::vector<float> yj = render(f, 0.01, params, pqc::Backend::Jit, "Main");
       REQUIRE(yi.size() == yj.size());
       CHECK(std::memcmp(yi.data(), yj.data(), yi.size() * sizeof(float)) == 0);
-      const double want = vcaValue(vcaLaw(curve, s.min, s.max, s.zone, s.bend), s.pos);
+      const std::array<double, kVcaMarks> off = {s.mk[0], s.mk[1], s.mk[2], s.mk[3], s.mk[4], s.mk[5]};
+      const double want = vcaValue(vcaLaw(curve, s.min, s.max, s.zone, s.bend, off), s.pos);
       // start: 1 — the first sample is already the value; it stays there.
       CHECK(std::abs(yi.front() - want) <= 1e-6 + 2e-5 * std::abs(want));  // float32 arithmetic
       CHECK(yi.back() == yi.front());

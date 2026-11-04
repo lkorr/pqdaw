@@ -4,12 +4,20 @@
 //
 //   readout    the value (3 significant digits, k for thousands) at the top, where the sketch's ✕ was. Double-click to
 //              type one.
-//   knob       a circular dial on a 300° track (7 o'clock … 5 o'clock). A pie wedge in the accent fills from the
-//              value's zero (or the range's end nearest it) to the pointer, like Pomegranate's; the track carries the
-//              same span. Minimal ticks: the end stops and, on the Log curve, the FINE ZONE's ends (|value| ≤ 1, a
-//              brighter band of the track, 10 → 2 o'clock by default). Drag up / down (Shift: fine); double-click: ×1
-//              (the position of value 1, or the nearest end).
-//   chevron    under the knob, in the track's gap: opens the FLOATING PANEL (Face::popupRect) — the min / max range and
+//   knob       a circular dial filling most of the circle (TX.vca-knob: the track's outer edge ≈ 0.85 of the body's
+//              radius, its ticks to 0.9) on a full 360° track: min at 6 o'clock, clockwise all the way round to max at 6
+//              o'clock from the other side (value 0 at 12 o'clock on the default bipolar range); a drag clamps at the
+//              ends, it never wraps across 6 o'clock. A pie wedge in the accent fills from the value's zero (or the
+//              range's end nearest it) to the pointer, like Pomegranate's; the track carries the same span. Ticks: the
+//              end stop at 6 o'clock and, on the Log curve, the MARKERS (pq/meta/vca.h: −100, −10, −1, +1, +10, +100,
+//              each where it plays; the ±1 pair longer and brighter, the fine zone between them a brighter band of the
+//              track; a marker outside min … max is not drawn). Drag up / down (Shift: fine); double-click: ×1 (the
+//              position of value 1, or the nearest end).
+//   markers    a tick dragged ALONG THE TRACK moves that marker alone (it follows the pointer round the circle,
+//              clamped a gap short of its neighbours; one undo step); the curve box's corner points are the same
+//              markers, dragged left / right. Double-click a marker: its default (offset 0).
+//   chevron    inside the dial under the hub (mirroring the readout above it; the track has no gap now): opens the
+//              FLOATING PANEL (Face::popupRect) — the min / max range and
 //              the curve box, as the face's lower half was — under the face over the canvas (nothing moves; it follows
 //              the face at any zoom). The chevron, the panel's own caret, Esc or a press anywhere else closes it. A host
 //              without room around the face (a Device-view panel) opens it over the face (setPopupOverFace).
@@ -18,8 +26,10 @@
 //              cancels, an empty entry restores the default). min ≤ max is kept.
 //              curve box: the value against the knob position (the Log curve on a signed-log scale, the Bend curve
 //              linear), the knob's position on it (a dotted drop and a dot), each voice's dot. Drag up / down to shape
-//              it: the Log curve's fine zone (up: wider), the Bend curve's bend (up: bulges up, logarithmic).
-//              Double-click: the shape's default.
+//              it: the Log curve's fine zone (up: wider: the ±1 markers move apart symmetrically and the others with
+//              the outers, each keeping its offset), the Bend curve's bend (up: bulges up, logarithmic). The markers'
+//              corner points on the curve (dots, the ±1 pair larger) drag on their own. Double-click the box: the
+//              shape's default (the zone, every marker at offset 0).
 //              presets: four chips under the box: linear, bipolar log, exponential, logarithmic (one undo step each).
 //
 // The signal's ports are the host's (orbiting the circle: pq/views/circuit/orbit.h); the face draws no jacks or leads for
@@ -35,6 +45,7 @@
 #include <cstdlib>
 #include <numbers>
 #include <optional>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -63,18 +74,22 @@ constexpr float kRingR = 46.5f, kRingW = 4.5f;     // the travel track
 constexpr float kDialR = 41.5f;                    // the dial
 constexpr float kWedgeR = 38.5f;                   // the pie wedge
 constexpr float kHubR = 5.0f;
-constexpr float kA0 = 120.0f, kSweep = 300.0f;     // degrees: p = 0 at 7 o'clock, clockwise to 5 o'clock
+constexpr float kA0 = 90.0f, kSweep = 360.0f;      // degrees: p = 0 at 6 o'clock, clockwise all the way round
 constexpr float kReadoutY = 37.0f, kReadoutPx = 10.5f;  // inside the dial, above the hub, on a dark pill
 constexpr Rect kReadout{37.0f, 29.5f, 83.0f, 44.5f};
-constexpr Vec2 kChev{60.0f, 106.0f};               // the chevron's centre (in the track's gap at 6 o'clock)
-constexpr Rect kChevRect{50.0f, 100.0f, 70.0f, 112.0f};
+constexpr Vec2 kChev{60.0f, 85.0f};                // the chevron's centre: inside the dial below the hub
+constexpr Rect kChevRect{50.0f, 78.5f, 70.0f, 91.5f};  // (the readout's mirror image about the knob's centre)
+// The markers' ticks, outside the track: from its outer edge out (±1 longer); a press in that band near one grabs it.
+constexpr float kTickR0 = kRingR + kRingW * 0.5f + 1.0f, kTickLong = 4.5f, kTickShort = 2.6f;
+constexpr float kTickHitR0 = kRingR + kRingW * 0.5f + 0.25f, kTickHitR1 = kTickR0 + kTickLong + 2.0f;
+constexpr float kMarkHit = 3.5f;  // world units along the track / around a corner point
 // The floating panel: kPopH tall from its top (under the face, or over it), its rows from there.
 constexpr float kPopH = 80.0f, kPopGap = 6.0f, kPopOverTop = 38.0f;
 constexpr float kRangeDy = 17.0f, kRangePx = 8.0f;
 constexpr float kBoxDy0 = 28.0f, kBoxDy1 = 58.0f, kBoxPad = 3.0f;
 constexpr float kChipDy0 = 63.0f, kChipDy1 = 73.0f, kChipW = 18.0f, kChipX0 = 15.0f, kChipStep = 24.0f;
 constexpr int kCurveN = 64;   // points of the drawn curve (the same at every zoom)
-constexpr int kWedgeN = 24;   // points per half wedge
+constexpr int kWedgeN = 16;   // points per third of the wedge
 constexpr int kGlyphN = 9;    // points per preset glyph
 
 // ---- parts ----
@@ -87,8 +102,23 @@ enum Part : int32_t {
   kPreset0 = 5,
   kPresets = 4,
   kChevron = 9,  // the face's chevron and the panel's caret: open / close
-  kPanel = 10    // the panel's background (a press there keeps it open)
+  kPanel = 10,   // the panel's background (a press there keeps it open)
+  kTick0 = 11,   // TX.vca-knob: marker i's tick on the track (kTick0 + i)
+  kCorner0 = kTick0 + static_cast<int32_t>(meta::kVcaMarks)  // … and its corner point in the curve box
 };
+constexpr bool isTick(int32_t part) noexcept { return part >= kTick0 && part < kTick0 + static_cast<int32_t>(meta::kVcaMarks); }
+constexpr bool isCorner(int32_t part) noexcept {
+  return part >= kCorner0 && part < kCorner0 + static_cast<int32_t>(meta::kVcaMarks);
+}
+constexpr uint32_t markOf(int32_t part) noexcept { return static_cast<uint32_t>(isTick(part) ? part - kTick0 : part - kCorner0); }
+// The ±1 pair (the fine zone's ends) is drawn stronger than the outer markers.
+bool unitMark(uint32_t i) noexcept { return std::abs(meta::kVcaMarkValue[i]) == meta::kVcaFine; }
+// "+10", "-100" (ASCII: the info view's titles).
+std::string markName(uint32_t i) {
+  char buf[16];
+  std::snprintf(buf, sizeof buf, "%+g", meta::kVcaMarkValue[i]);
+  return buf;
+}
 
 // The four presets.
 struct Preset {
@@ -193,15 +223,14 @@ public:
       return;
     }
     if (layer == 1) {
-      p.arc(kC, kRingR, angleOf(0.0), angleOf(1.0), kRingW, w, ui::LineCap::Round);
+      p.ring(kC, kRingR, kRingW, w);  // TX.vca-knob: the whole circle
       p.disc(kC, kDialR, ui::mulAlpha(w, 0.45f));
       return;
     }
     p.ring(kO, kBodyR - 0.75f, 1.25f, w);
-    for (const double e : {0.0, 1.0}) {
-      const float a = angleOf(e);
-      p.line(polar(kRingR - kRingW * 0.5f - 1.0f, a), polar(kRingR + kRingW * 0.5f + 2.5f, a), 1.0f, ui::mulAlpha(w, 0.7f));
-    }
+    // The end stop at 6 o'clock, where min and max meet.
+    const float a = angleOf(0.0);
+    p.line(polar(kRingR - kRingW * 0.5f - 1.0f, a), polar(kRingR + kRingW * 0.5f + 2.5f, a), 1.2f, ui::mulAlpha(w, 0.8f));
   }
 
   void paintLive(ui::FacePainter& p, const FaceEnv& env) override {
@@ -210,20 +239,23 @@ public:
     const bool valueDriven = driven(env, "value");
     const Rgba accent = valueDriven ? th.face.valueDriven : th.face.value;
     // Hover: the hovered control lights.
-    p.arc(kC, kRingR, angleOf(0.0), angleOf(1.0), kRingW + 1.5f, hovered_ == kKnob || drag_ == kKnob ? th.face.hover : 0,
-          ui::LineCap::Round);
+    p.ring(kC, kRingR, kRingW + 1.5f, hovered_ == kKnob || drag_ == kKnob ? th.face.hover : 0);
     const bool readoutHot = hovered_ == kValueText || edit_ == kValueText;
 
     // ---- the knob ----
-    // The fine zone (Log): a brighter band of the track, a tick at each end (the only ticks besides the end stops).
-    const bool log = law_.curve == meta::VcaCurve::Log;
-    const bool fine = log && law_.pP > law_.pN + 1e-6;
-    p.arc(kC, kRingR, angleOf(law_.pN), angleOf(law_.pP), kRingW, fine ? ui::mulAlpha(th.face.handle, 0.22f) : 0);
-    for (const double e : {law_.pN, law_.pP}) {
-      const float a = angleOf(e);
-      const bool show = fine && e > 1e-4 && e < 1.0 - 1e-4;
-      p.line(polar(kRingR + kRingW * 0.5f + 1.0f, a), polar(kRingR + kRingW * 0.5f + 4.0f, a), 1.1f,
-             show ? ui::mulAlpha(th.face.handle, 0.8f) : 0);
+    // The fine zone (Log): a brighter band of the track between the ±1 markers; a tick per shown marker (the ±1 pair
+    // longer and brighter; the hovered or dragged one lit, with a dot at its end).
+    const auto [f0, f1] = fineSpan();
+    const bool fine = law_.curve == meta::VcaCurve::Log && f1 > f0 + 1e-6;
+    p.arc(kC, kRingR, angleOf(f0), angleOf(f1), kRingW, fine ? ui::mulAlpha(th.face.handle, 0.22f) : 0);
+    for (uint32_t i = 0; i < meta::kVcaMarks; ++i) {
+      const meta::VcaLaw::Mark& m = law_.marks[i];
+      const float a = angleOf(m.at);
+      const bool unit = unitMark(i), hot = markHot(i);
+      const float len = unit ? kTickLong : kTickShort;
+      const Rgba col = !m.shown ? 0 : hot ? th.face.value : ui::mulAlpha(th.face.handle, unit ? 0.85f : 0.5f);
+      p.line(polar(kTickR0, a), polar(kTickR0 + len, a), hot ? 1.6f : (unit ? 1.2f : 0.9f), col);
+      p.disc(polar(kTickR0 + len + 0.9f, a), 1.3f, m.shown && hot ? th.face.value : 0);
     }
     // The value's span on the track and the pie wedge, from the anchor (value 0, or the end nearest it) to the pointer.
     const double anchor = law_.lo >= 0.0 ? 0.0 : (law_.hi <= 0.0 ? 1.0 : meta::vcaPosition(law_, 0.0));
@@ -246,6 +278,7 @@ public:
 
     // ---- the chevron: down while the panel is closed, up while it is open ----
     const bool chevHot = hovered_ == kChevron;
+    p.roundedRect(kChevRect, 4.0f, ui::mulAlpha(th.face.body, 0.82f));  // a dark pill over the wedge, as the readout's
     p.roundedRect(kChevRect, 4.0f, chevHot ? th.face.hover : 0);
     const float cy = open_ ? -1.5f : 1.5f;  // closed: a "v" (it opens below); open: a "^"
     const Vec2 chev[3] = {{kChev.x - 4.5f, kChev.y - cy}, {kChev.x, kChev.y + cy}, {kChev.x + 4.5f, kChev.y - cy}};
@@ -304,9 +337,10 @@ public:
     const Vec2 zl[2] = {{bx.x0 + 2.0f, zy}, {bx.x1 - 2.0f, zy}};
     p.dashed(zl, 0.6f, 1.5f, 2.0f, zeroIn ? ui::mulAlpha(th.face.handle, 0.3f) : 0);
     // The fine zone's share of the travel (Log): a faint band behind the curve (what the box's drag widens).
-    const bool fine = law_.curve == meta::VcaCurve::Log && law_.pP > law_.pN + 1e-6;
-    p.roundedRect({boxPoint(law_.pN).x, bx.y0 + 2.0f, std::max(boxPoint(law_.pP).x, boxPoint(law_.pN).x + 0.5f), bx.y1 - 2.0f},
-                  1.5f, fine ? ui::mulAlpha(th.face.handle, 0.07f) : 0);
+    const auto [f0, f1] = fineSpan();
+    const bool fine = law_.curve == meta::VcaCurve::Log && f1 > f0 + 1e-6;
+    p.roundedRect({boxX(f0), bx.y0 + 2.0f, std::max(boxX(f1), boxX(f0) + 0.5f), bx.y1 - 2.0f}, 1.5f,
+                  fine ? ui::mulAlpha(th.face.handle, 0.07f) : 0);
     const float base = zeroIn ? zy : bx.y1 - kBoxPad;
     p.fillUnder(curve_, base, ui::mulAlpha(accent, 0.26f), ui::mulAlpha(accent, 0.04f));
     p.polyline(curve_, hovered_ == kCurveBox || drag_ == kCurveBox ? 1.9f : 1.4f, accent);
@@ -314,6 +348,15 @@ public:
     const Vec2 drop[2] = {{at.x, bx.y0 + 2.0f}, {at.x, bx.y1 - 2.0f}};
     p.dashed(drop, 0.7f, 1.2f, 1.8f, ui::mulAlpha(th.face.handle, 0.45f));
     p.disc(at, 2.2f, hand);
+    // The markers' corner points (TX.vca-knob): each draggable left / right on its own.
+    for (uint32_t i = 0; i < meta::kVcaMarks; ++i) {
+      const meta::VcaLaw::Mark& m = law_.marks[i];
+      const Vec2 c = boxPoint(m.at);
+      const bool unit = unitMark(i), hot = markHot(i);
+      p.disc(c, hot ? 2.6f : (unit ? 1.9f : 1.4f), m.shown ? th.face.body : 0);
+      p.ring(c, hot ? 2.6f : (unit ? 1.9f : 1.4f), hot ? 1.2f : 0.9f,
+             !m.shown ? 0 : hot ? th.face.value : ui::mulAlpha(th.face.handle, unit ? 0.9f : 0.6f));
+    }
     // ---- presets ----
     for (int i = 0; i < kPresets; ++i) {
       const Rect r = chipRect(i);
@@ -331,12 +374,26 @@ public:
   }
 
   int32_t hitTest(Vec2 l, float pxPerUnit) const noexcept override {
+    refresh();  // the markers' places
     // Grown at small zooms so a few device px always hit a control.
     const float slack = std::max(0.0f, 5.0f / std::max(pxPerUnit, 1e-6f) - 2.0f);
     if (const std::optional<Rect> pr = popupRect(); pr && inside(*pr, l)) {
       if (inside(caretRect(), l, std::min(slack, 2.0f))) return kChevron;
       for (int i = 0; i < kPresets; ++i)
         if (inside(chipRect(i), l, std::min(slack, 2.5f))) return kPreset0 + i;
+      // TX.vca-knob: a marker's corner point, before the box (the nearest one in reach).
+      int32_t best = kNone;
+      float bestD = kMarkHit + std::min(slack, 2.0f);
+      for (uint32_t i = 0; i < meta::kVcaMarks; ++i) {
+        if (!law_.marks[i].shown) continue;
+        const Vec2 c = boxPoint(law_.marks[i].at);
+        const float d = std::hypot(l.x - c.x, l.y - c.y);
+        if (d <= bestD) {
+          bestD = d;
+          best = kCorner0 + static_cast<int32_t>(i);
+        }
+      }
+      if (best >= 0) return best;
       if (inside(box(), l, std::min(slack, 2.0f))) return kCurveBox;
       if (inside(minRect(), l, std::min(slack, 2.0f))) return kMinText;
       if (inside(maxRect(), l, std::min(slack, 2.0f))) return kMaxText;
@@ -346,7 +403,24 @@ public:
     const float dx = l.x - kC.x, dy = l.y - kC.y;
     if (inside(kChevRect, l, std::min(slack, 2.0f))) return kChevron;
     if (inside(kReadout, l, std::min(slack, 2.0f))) return kValueText;  // inside the dial: before the knob
-    if (std::sqrt(dx * dx + dy * dy) <= kRingR + kRingW + 2.0f + slack * 0.5f) return kKnob;
+    const float r = std::sqrt(dx * dx + dy * dy);
+    // TX.vca-knob: a marker's tick (the band just outside the track), before the knob: the nearest along the track.
+    if (r >= kTickHitR0 && r <= kTickHitR1 + slack * 0.5f) {
+      int32_t best = kNone;
+      float bestD = kMarkHit + slack * 0.5f;
+      const float a = std::atan2(dy, dx);
+      for (uint32_t i = 0; i < meta::kVcaMarks; ++i) {
+        if (!law_.marks[i].shown) continue;
+        const float da = std::remainder(a - angleOf(law_.marks[i].at), 2.0f * kPi);
+        const float d = std::abs(da) * r;
+        if (d <= bestD) {
+          bestD = d;
+          best = kTick0 + static_cast<int32_t>(i);
+        }
+      }
+      if (best >= 0) return best;
+    }
+    if (r <= kRingR + kRingW + 2.0f + slack * 0.5f) return kKnob;
     return kFrame;
   }
 
@@ -418,6 +492,8 @@ public:
   ui::Cursor cursor(int32_t part) const noexcept override {
     if ((part >= kPreset0 && part < kPreset0 + kPresets) || part == kChevron) return ui::Cursor::Pointer;
     if (part == kPanel) return ui::Cursor::Arrow;
+    if (isTick(part)) return ui::Cursor::Move;       // round the track
+    if (isCorner(part)) return ui::Cursor::ResizeEW;  // along the box
     if (part == edit_ && part >= 0) return ui::Cursor::Text;
     return part >= 0 ? ui::Cursor::ResizeNS : ui::Cursor::Inherit;
   }
@@ -462,7 +538,8 @@ public:
         if (law_.curve == meta::VcaCurve::Log) {
           title = "Curve: bipolar log";
           std::snprintf(buf, sizeof buf, "-1 ... 1 spans %.0f %% of the knob, logarithmic beyond. Drag up / down to widen or "
-                                         "narrow it; double-click resets.", 100.0 * (law_.pP - law_.pN));
+                                         "narrow it, a marker's dot to move it alone; double-click resets.",
+                        100.0 * (fineSpan().second - fineSpan().first));
         } else {
           title = "Curve: bend";
           std::snprintf(buf, sizeof buf, "Bend %+.2f (0: linear; up: logarithmic, down: exponential). Drag up / down; "
@@ -470,6 +547,14 @@ public:
         }
         break;
       default:
+        if (isTick(part) || isCorner(part)) {
+          const uint32_t i = markOf(part);
+          title = "Marker " + markName(i);
+          std::snprintf(buf, sizeof buf, "Value %s at knob %.3f (default %.3f). Drag %s to move it alone; double-click: its "
+                                         "default.", markName(i).c_str(), law_.marks[i].at, law_.marks[i].base,
+                        isTick(part) ? "along the track" : "left / right");
+          break;
+        }
         if (part >= kPreset0 && part < kPreset0 + kPresets) {
           title = std::string("Preset: ") + kPresetList[part - kPreset0].name;
           std::snprintf(buf, sizeof buf, "Click to shape the knob's curve %s.",
@@ -535,10 +620,45 @@ private:
     const Rect b = box();
     return b.y1 - kBoxPad - static_cast<float>(t) * (b.y1 - b.y0 - 2.0f * kBoxPad);
   }
-  Vec2 boxPoint(double p) const {
+  float boxX(double p) const {
     const Rect b = box();
-    const float x = b.x0 + kBoxPad + static_cast<float>(p) * (b.x1 - b.x0 - 2.0f * kBoxPad);
-    return {x, boxY(curveY(meta::vcaValue(law_, p)))};
+    return b.x0 + kBoxPad + static_cast<float>(p) * (b.x1 - b.x0 - 2.0f * kBoxPad);
+  }
+  double boxP(float x) const {
+    const Rect b = box();
+    return (x - b.x0 - kBoxPad) / std::max(b.x1 - b.x0 - 2.0f * kBoxPad, 1e-3f);
+  }
+  Vec2 boxPoint(double p) const { return {boxX(p), boxY(curveY(meta::vcaValue(law_, p)))}; }
+
+  // TX.vca-knob: the fine zone's travel, between the ±1 markers where they are (an end of the travel where one is not
+  // shown: the base law's pN / pP are 0 or 1 then, which the warp keeps).
+  std::pair<double, double> fineSpan() const {
+    double a = law_.pN, b = law_.pP;
+    for (const meta::VcaLaw::Mark& m : law_.marks) {
+      if (!m.shown) continue;
+      if (m.value == -meta::kVcaFine) a = m.at;
+      if (m.value == meta::kVcaFine) b = m.at;
+    }
+    return {a, b};
+  }
+  bool markHot(uint32_t i) const noexcept {
+    for (const int32_t part : {kTick0 + static_cast<int32_t>(i), kCorner0 + static_cast<int32_t>(i)})
+      if (hovered_ == part || drag_ == part) return true;
+    return false;
+  }
+  bool marksAtDefault() const {
+    for (uint32_t i = 0; i < meta::kVcaMarks; ++i)
+      if (param(meta::kVcaMark0 + i) != 0.0) return false;
+    return true;
+  }
+  // The knob position under the pointer on the track (0 at 6 o'clock, clockwise), unwrapped to the nearest of `near`.
+  static double trackP(Vec2 l, double near) {
+    const double a = std::atan2(static_cast<double>(l.y - kC.y), static_cast<double>(l.x - kC.x));
+    double p = (a - static_cast<double>(deg(kA0))) / (2.0 * std::numbers::pi);
+    p -= std::floor(p);
+    if (p - near > 0.5) p -= 1.0;
+    if (near - p > 0.5) p += 1.0;
+    return p;
   }
 
   void buildGlyphs() const {
@@ -563,21 +683,22 @@ private:
     const Preset& pr = kPresetList[i];
     if (law_.curve != pr.curve) return false;
     const double v = param(pr.curve == meta::VcaCurve::Log ? meta::kVcaZone : meta::kVcaBend);
-    return std::abs(v - pr.shape) < 1e-3;
+    return std::abs(v - pr.shape) < 1e-3 && (pr.curve != meta::VcaCurve::Log || marksAtDefault());
   }
 
   Rect textRect(int32_t part) const noexcept { return part == kMinText ? minRect() : part == kMaxText ? maxRect() : kReadout; }
   std::string editShown() const { return editText_ + "|"; }
 
-  // The pie wedge from angle a0 to a1 (radians, either order): two convex halves (each ≤ 150°), so a sweep of up to
-  // 300° stays convex per piece; the same primitive count for every span.
+  // The pie wedge from angle a0 to a1 (radians, either order): three convex pieces (each ≤ 120°), so a sweep of up to
+  // 360° stays convex per piece; the same primitive count for every span.
   void wedge(ui::FacePainter& p, float a0, float a1, Rgba col) const {
-    const float lo = std::min(a0, a1), hi = std::max(a0, a1), mid = 0.5f * (lo + hi);
+    const float lo = std::min(a0, a1), hi = std::max(a0, a1), step = (hi - lo) / 3.0f;
     const bool empty = hi - lo < 1e-4f;
-    for (int h = 0; h < 2; ++h) {
+    for (int h = 0; h < 3; ++h) {
       std::array<Vec2, kWedgeN + 2> pts{};
       pts[0] = kC;
-      const float s = h == 0 ? lo : std::max(lo, mid - 0.02f), e = h == 0 ? mid : hi;  // the halves overlap a hair
+      // The pieces overlap a hair (no seam between them).
+      const float s = std::max(lo, lo + step * static_cast<float>(h) - 0.02f), e = lo + step * static_cast<float>(h + 1);
       for (int k = 0; k <= kWedgeN; ++k) pts[static_cast<size_t>(k) + 1] = polar(kWedgeR, s + (e - s) * static_cast<float>(k) / kWedgeN);
       p.convex(pts, empty ? 0 : col);
     }
@@ -643,9 +764,17 @@ private:
         tg.set(meta::kVcaValue, meta::vcaPosition(law_, std::clamp(1.0, law_.lo, law_.hi)));
         tg.end();
       } else if (part == kCurveBox) {
-        const size_t pi = law_.curve == meta::VcaCurve::Log ? meta::kVcaZone : meta::kVcaBend;
+        const bool isLog = law_.curve == meta::VcaCurve::Log;
+        const size_t pi = isLog ? meta::kVcaZone : meta::kVcaBend;
         tg.begin("Reset Curve");
         tg.set(pi, type().params[pi].def);
+        if (isLog)  // TX.vca-knob: the markers too (each where the curve puts its value)
+          for (uint32_t i = 0; i < meta::kVcaMarks; ++i)
+            if (param(meta::kVcaMark0 + i) != 0.0) tg.set(meta::kVcaMark0 + i, 0.0);
+        tg.end();
+      } else if (isTick(part) || isCorner(part)) {  // TX.vca-knob: the marker's default
+        tg.begin("Reset Marker");
+        tg.set(meta::kVcaMark0 + markOf(part), 0.0);
         tg.end();
       }
       return true;
@@ -664,12 +793,36 @@ private:
         dragT_ = isLog ? t : 1.0 - t;  // Bend: up is toward −1 (the curve bulges up)
         break;
       }
-      default: drag_ = kNone; break;  // the readout: a double-click types; a drag does nothing
+      default:
+        if (isTick(part) || isCorner(part)) {  // TX.vca-knob: the marker, from where it is
+          dragT_ = law_.marks[markOf(part)].at;
+          break;
+        }
+        drag_ = kNone;  // the readout: a double-click types; a drag does nothing
+        break;
     }
     return true;
   }
 
   void move(const FacePointer& e) {
+    if (isTick(drag_) || isCorner(drag_)) {  // TX.vca-knob: one marker follows the pointer (round the track / along the box)
+      last_ = e.device;
+      MetaTarget& tg = target();
+      if (!tg.editable()) return;
+      refresh();
+      const uint32_t i = markOf(drag_);
+      const double p = isTick(drag_) ? trackP(e.local, dragT_) : boxP(e.local.x);
+      dragT_ = std::clamp(p, 0.0, 1.0);
+      const size_t pi = meta::kVcaMark0 + i;
+      const double off = meta::vcaMarkOffset(law_, i, dragT_, param(pi));
+      if (!begun_) {
+        if (off == param(pi)) return;  // nothing moved yet
+        tg.begin("Move Marker");
+        begun_ = true;
+      }
+      tg.set(pi, off);
+      return;
+    }
     const float dy = -(e.device.y - last_.y);
     last_ = e.device;
     MetaTarget& tg = target();
@@ -704,6 +857,9 @@ private:
     tg.begin("Curve Preset");
     if (law_.curve != pr.curve) tg.setSetting(meta::kVcaCurveSetting, static_cast<double>(pr.curve));
     tg.set(pr.curve == meta::VcaCurve::Log ? meta::kVcaZone : meta::kVcaBend, pr.shape);
+    if (pr.curve == meta::VcaCurve::Log)  // the bipolar log preset: its markers where the curve puts them
+      for (uint32_t m = 0; m < meta::kVcaMarks; ++m)
+        if (param(meta::kVcaMark0 + m) != 0.0) tg.set(meta::kVcaMark0 + m, 0.0);
     tg.end();
   }
 

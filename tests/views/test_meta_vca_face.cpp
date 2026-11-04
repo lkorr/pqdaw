@@ -11,6 +11,7 @@
 #include <cmath>
 #include <filesystem>
 #include <memory>
+#include <numbers>
 #include <string>
 #include <vector>
 
@@ -221,7 +222,7 @@ uint32_t rigH(double zoom) { return static_cast<uint32_t>(std::max(96.0, std::ce
 // top (inside the dial since TX.vca-knob: the knob fills most of the circle), the knob, the chevron under it; the range,
 // the curve box and the presets in the floating panel the chevron opens under the face (its top at 126).
 constexpr float kCx = 60.0f, kCy = 61.0f;
-constexpr float kReadoutY = 37.0f, kChevX = 60.0f, kChevY = 106.0f;
+constexpr float kReadoutY = 37.0f, kChevX = 60.0f, kChevY = 85.0f;  // the chevron inside the dial (TX.vca-knob)
 constexpr float kPopTop = 126.0f;
 constexpr float kMinX = 24.0f, kMaxX = 96.0f, kRangeY = kPopTop + 17.0f;
 constexpr float kBoxX = 60.0f, kBoxY = kPopTop + 43.0f;
@@ -554,6 +555,208 @@ TEST_CASE("vca face: the info view names the hovered control; cursors follow it"
   u.d.move(u.at(chipX(2), kChipY));
   CHECK(std::string(c.info().title) == "Preset: Exponential");
   CHECK(c.cursorAt(u.at(chipX(2), kChipY)) == Cursor::Pointer);
+}
+
+// ---- TX.vca-knob: 360° travel, the markers dragged alone (on the track and in the box), through dispatch ---------------
+
+namespace {
+
+constexpr float kTickR = 46.5f + 2.25f + 1.0f + 2.0f;  // a point on a marker's tick (vca_face.cpp: outside the track)
+constexpr float kBoxL = 14.0f + 3.0f, kBoxW = 92.0f - 6.0f;  // the curve box's inner x span (its padding 3)
+
+// The project VCA's law, from its state in the document.
+meta::VcaLaw lawOf(const VcaUi& u) {
+  std::vector<double> v(meta::kVcaParams);
+  for (size_t i = 0; i < v.size(); ++i) v[i] = u.value(i);
+  return meta::vcaLaw(v, u.curve());
+}
+Vec2 trackLocal(double p, float r = kTickR) {
+  const double a = (90.0 + 360.0 * p) * std::numbers::pi / 180.0;
+  return {kCx + r * static_cast<float>(std::cos(a)), kCy + r * static_cast<float>(std::sin(a))};
+}
+// A marker's corner point in the open panel's curve box (the signed-log display scale of vca_face.cpp).
+Vec2 cornerLocal(const meta::VcaLaw& l, double p, double v) {
+  const double m = std::max({std::abs(l.lo), std::abs(l.hi), 1.0}), sc = std::log10(1.0 + m);
+  auto shown = [&](double x) { return (x < 0.0 ? -1.0 : 1.0) * std::log10(1.0 + std::abs(x)) / sc; };
+  const double t = (shown(v) - shown(l.lo)) / (shown(l.hi) - shown(l.lo));
+  const float y1 = kPopTop + 58.0f;
+  return {kBoxL + static_cast<float>(p) * kBoxW, y1 - 3.0f - static_cast<float>(t) * (30.0f - 6.0f)};
+}
+// A drag round the track from knob position p0 to p1 (the pointer follows the circle), one press.
+void arcDrag(VcaUi& u, double p0, double p1, int steps = 10) {
+  const Vec2 a = u.at(trackLocal(p0).x, trackLocal(p0).y);
+  u.d.move(a);
+  u.d.down(a);
+  for (int k = 1; k <= steps; ++k) {
+    const Vec2 q = trackLocal(p0 + (p1 - p0) * k / steps);
+    u.d.move(u.at(q.x, q.y));
+  }
+  const Vec2 e = trackLocal(p1);
+  u.d.up(u.at(e.x, e.y));
+}
+double offsetOf(const VcaUi& u, uint32_t i) { return u.value(meta::kVcaMark0 + i); }
+
+}  // namespace
+
+TEST_CASE("vca face (TX.vca-knob): a full 360° travel — 6 o'clock at both ends, 12 o'clock at 0; a drag clamps, never wraps") {
+  for (const double zoom : {0.5, 1.5}) {
+    CAPTURE(zoom);
+    VcaUi u;
+    u.frame(zoom);
+    project_patch::ProjectCanvas& c = u.view().canvas();
+    const meta::VcaLaw l = lawOf(u);
+    // The markers' ticks where 360° puts them: +1 (0.7) a little above 3 o'clock, -1 (0.3) above 9 o'clock; +10, +100
+    // further round toward 6 o'clock.
+    for (uint32_t i = 0; i < meta::kVcaMarks; ++i) {
+      CAPTURE(i);
+      REQUIRE(l.marks[i].shown);
+      const Vec2 t = trackLocal(l.marks[i].at);
+      u.d.move(u.at(t.x, t.y));
+      CHECK(std::string(c.info().title) == "Marker " + std::string(meta::kVcaMarkValue[i] > 0 ? "+" : "-") +
+                                                std::to_string(static_cast<int>(std::abs(meta::kVcaMarkValue[i]))));
+      CHECK(c.cursorAt(u.at(t.x, t.y)) == Cursor::Move);
+    }
+    CHECK(trackLocal(0.5).y < kCy - 40.0f);  // value 0 (p 0.5) at 12 o'clock
+    CHECK(meta::vcaValue(l, 0.5) == doctest::Approx(0.0).scale(1.0));
+    // Drag up far past the end: the knob stops at p = 1 (max, 6 o'clock); on up, it does not wrap round to min.
+    size_t h0 = u.history();
+    const Vec2 a = u.at(kCx, kCy + 12.0f);
+    u.d.down(a);
+    for (int k = 1; k <= 30; ++k) u.d.move({a.x, a.y - 60.0f * k});
+    CHECK(u.value(meta::kVcaValue) == 1.0);
+    CHECK(meta::vcaValue(l, u.value(meta::kVcaValue)) == doctest::Approx(20000.0));
+    // Back down a little: it moves off the end at once (the overshoot was not accumulated).
+    u.d.move({a.x, a.y - 60.0f * 30 + 20.0f});
+    const double us = u.d.tree().scale(), span = std::max(kKnobExtent * zoom * us, 150.0 * us);
+    CHECK(u.value(meta::kVcaValue) == doctest::Approx(1.0 - 20.0 / span).epsilon(1e-4));
+    u.d.up({a.x, a.y - 60.0f * 30 + 20.0f});
+    CHECK(u.history() == h0 + 1);
+    // Down far past the other end: p = 0 (min, 6 o'clock from the other side).
+    u.d.drag(a, {a.x, a.y + 4000.0f}, 30);
+    CHECK(u.value(meta::kVcaValue) == 0.0);
+    CHECK(meta::vcaValue(l, 0.0) == doctest::Approx(-20000.0));
+    CHECK(u.history() == h0 + 2);
+  }
+}
+
+TEST_CASE("vca face (TX.vca-knob): each marker dragged alone round the track — one undo step, the others stay") {
+  VcaUi u;
+  u.frame(1.5);
+  const meta::VcaLaw l0 = lawOf(u);
+  const uint64_t rebuilds = u.view().stats().rebuilds;
+  for (uint32_t i = 0; i < meta::kVcaMarks; ++i) {
+    CAPTURE(i);
+    const double from = l0.marks[i].at;
+    // Toward the fine zone's middle by a little (within the neighbours).
+    const double to = from + (meta::kVcaMarkValue[i] > 0 ? -0.02 : 0.02);
+    const size_t h0 = u.history();
+    arcDrag(u, from, to);
+    CHECK(u.history() == h0 + 1);
+    CHECK(offsetOf(u, i) == doctest::Approx(to - l0.marks[i].base).epsilon(1e-3).scale(1.0));
+    const meta::VcaLaw l = lawOf(u);
+    CHECK(l.marks[i].at == doctest::Approx(to).epsilon(1e-3));
+    CHECK(meta::vcaValue(l, l.marks[i].at) == doctest::Approx(meta::kVcaMarkValue[i]).epsilon(1e-9));
+    for (uint32_t j = 0; j < meta::kVcaMarks; ++j)
+      if (j != i) CHECK(l.marks[j].at == l0.marks[j].at);
+    // Undo: back where it was; redo for the next one is not needed (each starts from the default).
+    REQUIRE(u.ctx.undo());
+    CHECK(offsetOf(u, i) == 0.0);
+  }
+  CHECK(u.view().stats().rebuilds == rebuilds);  // param writes: nothing re-lowers
+  // Past its neighbour: +1 dragged to beyond +10 stops a gap short of it (the drag clamps, +10 does not move).
+  arcDrag(u, l0.marks[3].at, 0.95, 16);
+  meta::VcaLaw l = lawOf(u);
+  CHECK(l.marks[3].at == doctest::Approx(l0.marks[4].at - meta::kVcaMarkGap).epsilon(1e-9));
+  CHECK(l.marks[4].at == l0.marks[4].at);
+  // An asymmetric fine zone: -1 alone toward 9 o'clock; +1 stays where the last drag left it.
+  const double plus = l.marks[3].at;
+  arcDrag(u, l.marks[2].at, 0.26);
+  l = lawOf(u);
+  CHECK(l.marks[2].at == doctest::Approx(0.26).epsilon(1e-3));
+  CHECK(l.marks[3].at == plus);
+  CHECK(meta::vcaValue(l, 0.5 * (l.marks[2].at + l.marks[3].at)) == doctest::Approx(0.0).scale(1.0).epsilon(1e-9));
+  // Double-click a marker: its default (one step); undo takes it back.
+  const size_t h0 = u.history();
+  const Vec2 t = trackLocal(l.marks[3].at);
+  u.d.doubleClick(u.at(t.x, t.y));
+  CHECK(u.history() == h0 + 1);
+  CHECK(offsetOf(u, 3) == 0.0);
+  CHECK(offsetOf(u, 2) != 0.0);
+  REQUIRE(u.ctx.undo());
+  CHECK(offsetOf(u, 3) != 0.0);
+}
+
+TEST_CASE("vca face (TX.vca-knob): the curve box's corner points drag each marker alone; the box drag stays symmetric") {
+  VcaUi u;
+  u.frame(1.5);
+  u.openPanel();
+  project_patch::ProjectCanvas& c = u.view().canvas();
+  const meta::VcaLaw l0 = lawOf(u);
+  // The -1 corner, left by 0.05 of the travel: one step, only -1 moves.
+  const Vec2 c0 = cornerLocal(l0, l0.marks[2].at, -1.0);
+  u.d.move(u.at(c0.x, c0.y));
+  CHECK(std::string(c.info().title) == "Marker -1");
+  CHECK(c.cursorAt(u.at(c0.x, c0.y)) == Cursor::ResizeEW);
+  size_t h0 = u.history();
+  const float dx = 0.05f * kBoxW;
+  u.d.drag(u.at(c0.x, c0.y), u.at(c0.x - dx, c0.y + 7.0f), 6);  // the height does not matter
+  CHECK(u.history() == h0 + 1);
+  meta::VcaLaw l = lawOf(u);
+  CHECK(l.marks[2].at == doctest::Approx(l0.marks[2].at - 0.05).epsilon(1e-3));
+  for (const uint32_t j : {0u, 1u, 3u, 4u, 5u}) CHECK(l.marks[j].at == l0.marks[j].at);
+  // The +10 corner, right by 0.03.
+  const Vec2 c4 = cornerLocal(l, l.marks[4].at, 10.0);
+  u.d.move(u.at(c4.x, c4.y));
+  CHECK(std::string(c.info().title) == "Marker +10");
+  u.d.drag(u.at(c4.x, c4.y), u.at(c4.x + 0.03f * kBoxW, c4.y), 6);
+  l = lawOf(u);
+  CHECK(l.marks[4].at == doctest::Approx(l0.marks[4].at + 0.03).epsilon(1e-3));
+  CHECK(u.history() == h0 + 2);
+  // The box body (away from the corners): the zone, symmetric — both ±1 bases move apart by the same travel, every
+  // marker keeps its offset.
+  const std::vector<double> offs = {offsetOf(u, 0), offsetOf(u, 1), offsetOf(u, 2), offsetOf(u, 3), offsetOf(u, 4), offsetOf(u, 5)};
+  const Vec2 a = u.at(kBoxX - 20.0f, kPopTop + 33.0f);
+  u.d.move(a);
+  CHECK(std::string(c.info().title) == "Curve: bipolar log");
+  u.d.drag(a, {a.x, a.y - 30.0f}, 6);
+  CHECK(u.history() == h0 + 3);
+  const meta::VcaLaw w = lawOf(u);
+  CHECK(u.value(meta::kVcaZone) > 0.4);
+  for (uint32_t i = 0; i < meta::kVcaMarks; ++i) CHECK(offsetOf(u, i) == offs[i]);
+  CHECK(w.marks[2].base + w.marks[3].base == doctest::Approx(1.0));
+  CHECK(l.marks[3].base - w.marks[3].base == doctest::Approx(w.marks[2].base - l.marks[2].base));
+  CHECK(w.marks[3].base > l.marks[3].base);
+  // Double-click the box: the zone and every marker back to their defaults (one step).
+  u.d.doubleClick(a);
+  CHECK(u.history() == h0 + 4);
+  CHECK(u.value(meta::kVcaZone) == doctest::Approx(0.4));
+  for (uint32_t i = 0; i < meta::kVcaMarks; ++i) CHECK(offsetOf(u, i) == 0.0);
+  REQUIRE(u.ctx.undo());
+  CHECK(offsetOf(u, 2) != 0.0);
+}
+
+TEST_CASE("vca face (TX.vca-knob): a marker outside min … max is hidden — not drawn, not hit, no effect") {
+  VcaUi u;
+  u.frame(1.5);
+  project_patch::ProjectCanvas& c = u.view().canvas();
+  const meta::VcaLaw l0 = lawOf(u);
+  u.openPanel();
+  // min -50: -100 is outside the range.
+  u.d.doubleClick(u.at(kMinX, kRangeY));
+  u.type("-50");
+  (void)u.d.keyDown(key::kReturn);
+  REQUIRE(u.value(meta::kVcaMin) == doctest::Approx(-50.0));
+  (void)u.d.keyDown(key::kEscape);  // close the panel
+  const meta::VcaLaw l = lawOf(u);
+  CHECK_FALSE(l.marks[0].shown);
+  CHECK(l.marks[1].shown);
+  // Where -100's tick was (p ≈ l0's) the band is only the knob's now; -10's tick still answers.
+  const Vec2 t0 = trackLocal(l0.marks[0].at);
+  u.d.move(u.at(t0.x, t0.y));
+  CHECK(std::string(c.info().title).find("Marker -100") == std::string::npos);
+  const Vec2 t1 = trackLocal(l.marks[1].at);
+  u.d.move(u.at(t1.x, t1.y));
+  CHECK(std::string(c.info().title) == "Marker -10");
 }
 
 TEST_CASE("render: device-meta-vca matches the golden image") { checkScene("device-meta-vca"); }
