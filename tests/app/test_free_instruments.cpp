@@ -4,8 +4,8 @@
 // its track's source), wherever it is; a block before it on the path feeds its audio input — it has none, so nothing; an
 // instrument nothing feeds notes to plays nothing (and is not "missing"). Several instruments on one track each play
 // (the voices end when every one is done). A notes cable into a meta module off the path gives the input the note's
-// signal of its meaning. A cable into another track's mixer is a send-like route (refused only when it closes a cycle
-// between tracks). Racks are blocks too: off the path an Instrument Rack plays the notes cabled into it, an Audio Effect
+// signal of its meaning. A cable into another track's mixer is a send-like route (TX.cross-track: one closing a cycle
+// between tracks is delayed by a sample, as every loop). Racks are blocks too: off the path an Instrument Rack plays the notes cabled into it, an Audio Effect
 // Rack takes what is wired into its input; inside a rack each chain is a series with the same rule.
 //
 // Each case renders a three-note chord through the lowered project (interpreter, under the allocation trap) and through
@@ -385,7 +385,7 @@ TEST_CASE("free instruments: notes cabled into a meta module off the path play i
   CHECK(d2 <= 1e-4);
 }
 
-TEST_CASE("free instruments: a cable into another track's mixer is a send-like route; one closing a cycle is refused") {
+TEST_CASE("free instruments: a cable into another track's mixer is a send-like route; one closing a cycle is a loop") {
   DocumentStore s;
   const TrackId a = midiTrack(s);
   // B: a MIDI track without blocks (source → mixer): its mixer the same law as A's.
@@ -400,16 +400,19 @@ TEST_CASE("free instruments: a cable into another track's mixer is a send-like r
   CHECK(rms(one, 0, kFirstOff) > 1e-3);
   CHECK(d == 0.0);
   // A group around A with a Utility on its path; the Utility's output into A's mixer: A → the group → the Utility → A's
-  // mixer is a cycle between tracks: refused, and the rest plays as before.
+  // mixer is a cycle between tracks. TX.cross-track (SPEC §15 2026-11-03 "tracks are not walls"): no longer refused —
+  // it is lowered with the z⁻¹ on the cable and runs per sample (tests/app/test_cross_track.cpp checks such loops
+  // against hand-written per-sample references); here: it plays (the loop is heard) and decays (loop gain ≈ 0.707).
   DocumentStore g;
   const TrackId ga = midiTrack(g);
   const TrackId grp = run(g, ops::groupTracks(*g.current(), g.ids(), std::vector<TrackId>{ga})).tracks.at(0);
   const DeviceId util = run(g, ops::addDevice(*g.current(), g.ids(), grp, "utility", DeviceKind::AudioEffect)).devices.at(0);
   const golden::Channels before = played(*g.current(), "a track in a group with a Utility");
   const WireId loop = cable(g, intoMixer(util, ga));
-  CHECK(stateOf(*g.current(), loop) == WireStatus::Refused);
-  const golden::Channels after = played(*g.current(), "… and a cable from the group's Utility into the track's mixer (refused)");
-  CHECK(maxDiff(before, after) == 0.0);
+  CHECK(stateOf(*g.current(), loop) == WireStatus::Delayed);
+  const golden::Channels after = played(*g.current(), "… and a cable from the group's Utility into the track's mixer (a loop)");
+  CHECK(maxDiff(before, after) > 1e-3);
+  CHECK(peak(after) < peak(before) / (1.0f - 0.7072f));
 }
 
 TEST_CASE("free instruments: an Instrument Rack off the path plays the notes cabled into it; an Audio Effect Rack takes its wires") {

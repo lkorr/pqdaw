@@ -639,3 +639,108 @@ TEST_CASE("all-free-fix1 (project patch): a block's output dragged onto another 
   REQUIRE(u.ctx.undo());
   CHECK(doc::findWire(*u.ctx.doc(), route) == nullptr);
 }
+
+// ---- TX.cross-track: tracks are not walls (SPEC §15 2026-11-03) ----------------------------------------------------
+// Through real event dispatch in the project patch view: a cable that closes a loop between tracks is made and lowered
+// with its z⁻¹ (Delayed: the cable carries the badge), and a track's notes dragged onto another track's synth play it
+// (its instance in the source's patch).
+namespace {
+// Fits the bands of `tracks` (and Keys) on screen.
+void showBands(PatchUi& u, std::initializer_list<doc::TrackId> tracks) {
+  u.d.tree().layoutNow();
+  u.d.step();
+  float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
+  auto add = [&](doc::TrackId t) {
+    const Band& b = u.pp().bands[u.pp().bandOf(t)];
+    x0 = std::min(x0, b.x0 - 40.0f);
+    x1 = std::max(x1, b.x1 + 420.0f);
+    y0 = std::min(y0, b.y - 40.0f);
+    y1 = std::max(y1, b.y + b.h + 40.0f);
+  };
+  add(u.keys);
+  for (const doc::TrackId t : tracks) add(t);
+  const IRect r = u.view().canvas().rect();
+  circuit::CircuitCanvas::View v;
+  v.zoom = std::min({1.0, static_cast<double>(r.w) / static_cast<double>(x1 - x0), static_cast<double>(r.h) / static_cast<double>(y1 - y0)});
+  v.x = x0;
+  v.y = y0;
+  u.view().canvas().setView(v);
+  u.d.tree().layoutNow();
+  u.d.step();
+}
+bool trackCalls(PatchUi& u, doc::TrackId host, doc::DeviceId d) {
+  u.view().sync();
+  const doc::LoweredProject* low = u.view().lowered();
+  REQUIRE(low != nullptr);
+  const std::string name = "d" + std::to_string(d.value);
+  for (size_t j = 0; j < low->trackIds.size(); ++j) {
+    if (low->trackIds[j] != host) continue;
+    for (graph::NodeIndex n = 0; n < low->patches[j]->patch.nodeCount(); ++n)
+      if (low->patches[j]->patch.nodeName(n) == name) return true;
+  }
+  return false;
+}
+}  // namespace
+
+TEST_CASE("cross-track (project patch): a cable that closes a loop between tracks is lowered with its z⁻¹ badge") {
+  PatchUi u;
+  // Keys in a group whose path holds a Utility: the Utility's output dragged onto Keys' mixer closes Keys → group →
+  // Utility → Keys' mixer.
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
+    REQUIRE(u.ctx.store().dispatch(e->command).ok());
+    return *e;
+  };
+  const doc::TrackId group = run(doc::ops::groupTracks(*u.ctx.doc(), u.ctx.store().ids(), std::vector<doc::TrackId>{u.keys})).tracks.at(0);
+  const doc::DeviceId gu = run(doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), group, "utility", doc::DeviceKind::AudioEffect)).devices.at(0);
+  showBands(u, {group});
+  const size_t h0 = u.history();
+  u.d.drag(u.outPin(gu, "out"), u.mixer(), 8);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  doc::WireId loop;
+  for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc()))
+    if (w.from == gu && w.toMixer() && w.mixer == u.keys) loop = w.id;
+  REQUIRE(loop.valid());
+  const doc::WireState* st = loweredState(u, loop);
+  REQUIRE(st != nullptr);
+  CHECK(st->status == doc::WireStatus::Delayed);  // lowered (not refused), its z⁻¹ on it
+  // The cable carries the badge: the view's edge for the wire is drawn with its delay.
+  u.d.tree().layoutNow();
+  u.d.step();
+  bool badge = false;
+  for (const Edge& e : u.pp().edges)
+    if (e.wire == loop) badge = e.delayed && e.points.size() >= 2;
+  CHECK(badge);
+  REQUIRE(u.ctx.undo());
+  CHECK(doc::findWire(*u.ctx.doc(), loop) == nullptr);
+}
+
+TEST_CASE("cross-track (project patch): a track's notes dragged onto another track's synth play it with its voices") {
+  PatchUi u;
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
+    REQUIRE(u.ctx.store().dispatch(e->command).ok());
+    return *e;
+  };
+  const doc::TrackId other = run(doc::ops::createTrack(*u.ctx.doc(), u.ctx.store().ids(), doc::TrackKind::Midi, u.keys, "Other")).tracks.at(0);
+  const doc::DeviceId synth = doc::mainPath(*u.ctx.doc(), *doc::findTrackPtr(*u.ctx.doc(), other)).blocks.at(0)->id;
+  showBands(u, {other});
+  CHECK_FALSE(trackCalls(u, u.keys, synth));
+  const size_t h0 = u.history();
+  u.d.drag(sourceOut(u, 0), u.inPin(synth, "notes"), 8);  // Keys' notes onto Other's synth
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  doc::WireId notes;
+  for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc()))
+    if (w.fromNoteSource() && w.noteSource == u.keys && w.port.empty() && w.to == synth) notes = w.id;
+  REQUIRE(notes.valid());
+  const doc::WireState* st = loweredState(u, notes);
+  REQUIRE(st != nullptr);
+  CHECK(st->status == doc::WireStatus::Lowered);
+  CHECK(trackCalls(u, u.keys, synth));   // an instance of it in Keys' voice context
+  CHECK(trackCalls(u, other, synth));    // and its own (Other's notes) where it is
+  CHECK(u.view().lowered()->missingDevices.empty());
+  REQUIRE(u.ctx.undo());
+  CHECK_FALSE(trackCalls(u, u.keys, synth));
+}

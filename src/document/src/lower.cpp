@@ -95,6 +95,14 @@ struct Cables {
   // into a top-level block of the same track — by target device: the inputs they enter, named ("" an instrument's notes,
   // an Instrument Rack's). Empty for most projects.
   std::unordered_map<uint32_t, std::vector<std::string>> notesTo;
+  // TX.cross-track (SPEC §15 2026-11-03 "tracks are not walls"; lower.h "Cross-track notes cables"): the notes cables
+  // from a MIDI track's source (port "") into a top-level block of ANOTHER track, by target device, in wire id order.
+  struct CrossNotes {
+    TrackId source;
+    WireId wire;
+    std::string input;  // the input it enters, named ("" an instrument's notes, an Instrument Rack's)
+  };
+  std::unordered_map<uint32_t, std::vector<CrossNotes>> crossNotes;
   // Whether a notes cable enters `d`'s notes input (a stock instrument's or an Instrument Rack's main input).
   bool fedNotes(DeviceId d) const noexcept {
     const auto it = notesTo.find(d.value);
@@ -163,9 +171,13 @@ std::shared_ptr<const Cables> cablesOf(const Project& p, const graph::PatchLibra
     if (x.port.empty() && !x.fromNoteSource()) x.port = portsOf(x.from).out;
     if (x.param.empty() && !x.toMixer()) x.param = portsOf(x.to).in;
     if (x.fromNoteSource() && w.port.empty() && !x.toMixer())  // TX.all-free-fix1: a notes cable (same MIDI track only)
-      if (const DeviceLoc l = findDevice(p, x.to); l.track != nullptr && l.chain == nullptr && l.track->id == x.noteSource &&
-                                                   l.track->kind == TrackKind::Midi)
-        c->notesTo[x.to.value].push_back(x.param);
+      if (const DeviceLoc l = findDevice(p, x.to); l.track != nullptr && l.chain == nullptr) {
+        if (l.track->id == x.noteSource && l.track->kind == TrackKind::Midi) {
+          c->notesTo[x.to.value].push_back(x.param);
+        } else if (const Track* src = findTrackPtr(p, x.noteSource); src != nullptr && src->kind == TrackKind::Midi) {
+          c->crossNotes[x.to.value].push_back(Cables::CrossNotes{x.noteSource, x.id, x.param});  // TX.cross-track
+        }
+      }
     rest.push_back(std::move(x));
   }
   c->q.wires = rest.empty() ? nullptr : std::make_shared<const WireList>(std::move(rest));
@@ -183,6 +195,24 @@ struct Callees {
   // (they run in the track's voice context: makeCallees, lowerTree).
   std::unordered_set<uint32_t> voicedTracks;
   std::unordered_set<uint32_t> notesMeta;
+  // TX.cross-track (lower.h "Cross-track notes cables"): a block another MIDI track's notes cable feeds plays an
+  // instance in that track's voice context (its GUEST, lowered in the source's patch); its home instance plays only the
+  // notes of its own track that reach it (else it is a PHANTOM: not called, its outputs the guests' alone).
+  struct Guest {
+    DevicePtr device;
+    TrackId home;                     // the device's own track
+    TrackId source;                   // the MIDI track whose voices play it (whose patch holds it)
+    WireId entity;                    // its first notes cable from that source: the NodeId entity of its nodes
+    std::vector<std::string> inputs;  // the inputs the source's notes cables enter ("" the notes input)
+    bool meta = false;                // a meta module (else a stock instrument or an Instrument Rack)
+  };
+  std::vector<Guest> guests;                                       // in device, then source order
+  std::unordered_map<uint32_t, std::vector<uint32_t>> guestsOf;    // device id → its guests (indices)
+  std::unordered_map<uint32_t, std::vector<uint32_t>> guestsIn;    // source track id → the guests it holds
+  const std::vector<uint32_t>* guestsOfDevice(DeviceId d) const noexcept {
+    const auto it = guestsOf.find(d.value);
+    return it != guestsOf.end() ? &it->second : nullptr;
+  }
   std::unordered_map<uint32_t, const graph::Patch*> userRoot;  // device id → its own root (null: nothing plays)
   // TMM.3: the nested meta-module calls of each device that has any (their params are runtime params of the track).
   std::unordered_map<uint32_t, std::shared_ptr<const std::vector<MetaSite>>> metaSites;
@@ -536,6 +566,55 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
       }
     });
   }
+  // TX.cross-track: the guests (lower.h "Cross-track notes cables"): a notes cable from another MIDI track's source into
+  // a stock instrument's or an Instrument Rack's notes input (one that plays), or into an input of a meta module off its
+  // own track's path, plays the block in the source's voice context. One guest per (block, source).
+  if (!u.callees.cables->crossNotes.empty()) {
+    if (!staged) {
+      staged = true;
+      u.callees.metaStage = metaStages(p, *u.callees.cables);
+    }
+    forEachTrack(p, [&](const Track& t, const Track*) {
+      for (const DevicePtr& d : t.devices) {
+        const auto it = u.callees.cables->crossNotes.find(d->id.value);
+        if (it == u.callees.cables->crossNotes.end() || !d->active || isGroupDevice(*d)) continue;
+        const bool meta = isMetaDevice(*d);
+        const meta::Type* type = meta ? meta::findType(metaDeviceType(*d)) : nullptr;
+        if (meta) {
+          if (type == nullptr || !u.callees.isOffPath(*d)) continue;  // (a meta module on a path takes its path's signal)
+        } else {
+          if (d->kind != DeviceKind::Instrument) continue;  // a stock effect reads nothing of the notes
+          bool plays = false;
+          if (d->rack) plays = rackPlaysNotes(*d, &u.callees);
+          else if (const graph::Patch* callee = u.callees.find(*d)) plays = calleeIsInstrument(*callee);
+          if (!plays) continue;
+        }
+        for (const Cables::CrossNotes& c : it->second) {
+          if (meta ? type->inputIndex(c.input) < 0 : !c.input.empty()) continue;  // a param, or not the notes input
+          std::vector<uint32_t>& mine = u.callees.guestsOf[d->id.value];
+          uint32_t g = graph::kNone;
+          for (const uint32_t x : mine)
+            if (u.callees.guests[x].source == c.source) g = x;
+          if (g == graph::kNone) {
+            g = static_cast<uint32_t>(u.callees.guests.size());
+            Callees::Guest gu;
+            gu.device = d;
+            gu.home = t.id;
+            gu.source = c.source;
+            gu.entity = c.wire;  // (crossNotes is in wire id order: the lowest)
+            gu.meta = meta;
+            u.callees.guests.push_back(std::move(gu));
+            mine.push_back(g);
+            u.callees.guestsIn[c.source.value].push_back(g);
+            u.callees.voicedTracks.insert(c.source.value);  // the source plays voices (tuning nodes, its role)
+          }
+          u.callees.guests[g].inputs.push_back(c.input);
+        }
+        if (const auto e = u.callees.guestsOf.find(d->id.value); e != u.callees.guestsOf.end() && e->second.empty())
+          u.callees.guestsOf.erase(e);
+      }
+    });
+  }
   forEachDevice(p, [&](const Device& d, const Track& t) {
     if (d.rack) return;
     if (isMetaDevice(d)) {
@@ -569,6 +648,9 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
           }
         // TX.all-free-fix1: or when a notes cable makes the track play voices.
         if (!voiced && u.callees.isOffPath(d) && t.kind == TrackKind::Midi) voiced = u.callees.voicedTracks.count(t.id.value) != 0;
+        // TX.cross-track: a meta module another track's notes play runs in voice contexts only (its guests', and its
+        // home's when its own track's notes reach it too).
+        if (!voiced && u.callees.guestsOfDevice(d.id) != nullptr) voiced = true;
         if (voiced) u.callees.freeVoiced.insert(d.id.value);
         u.callees.userRoot[d.id.value] = ex.chainDevice(d, t, st, voiced);
         return;
@@ -1119,6 +1201,14 @@ struct LDev {
   // reach it): one of the track's voice consumers (its `done` joins the track's).
   bool plays = false;
   bool top = false;  // TX.all-free-fix1: a block of the track itself (not inside a rack)
+  // TX.cross-track (lower.h "Cross-track notes cables"): a GUEST — another track's block played in this track's voice
+  // context (Callees::guests[guest]; `home`: the plan node of its own track) — or a PHANTOM: a block of this track
+  // whose own instance does not play (only guests do): not called, its outputs the guests' (imported). A block with
+  // guests (phantom or not) has `guest` its first guest's index, `home` kNone.
+  bool phantom = false;
+  bool isGuest = false;
+  uint32_t guest = graph::kNone;
+  uint32_t home = graph::kNone;
 };
 // TX.all-free-fix1: in a series (TrackDevs::top, LChain::devs) a stock instrument no notes reach: it is not called and
 // what follows it in the series hears silence (its output). Never an index into TrackDevs::devs.
@@ -1152,11 +1242,13 @@ struct TrackDevs {
     const graph::Patch* callee = nullptr;
     bool bypass = false;  // TX.groups-fix1: switched off, passing its chain input on
     bool plays = false;   // TX.all-free-fix1: a stock instrument a notes cable feeds
+    bool phantom = false; // TX.cross-track: its own instance does not play; its guests do (a rack: callee null)
   };
   std::vector<PendingFree> pendingFree;  // lowerList → lowerTree
   std::vector<LRack> racks;
   std::vector<LMapping> mappings;
   bool voices = false;  // the track plays voices (TX.all-free-fix1: any of its voice consumers plays)
+  bool ownVoices = false;  // TX.cross-track: … without the guests it holds (a refused guest plays nothing)
 
   size_t size() const noexcept { return devs.size(); }
   bool empty() const noexcept { return devs.empty(); }
@@ -1263,8 +1355,9 @@ std::unordered_map<const Device*, bool> instrumentRacksPlay(const std::vector<De
 // (or a lone rack's). A stock instrument or Instrument Rack plays where notes reach it — first in a list that starts at
 // the notes (no lowered device before it), or (a track's block) fed by a notes cable — and is otherwise not called (in a
 // series: kSilent, the series goes on from silence); it is never missing for its place.
+// TX.cross-track: `guestList`: `list` holds one Instrument Rack lowered as a guest (off the path, fed by the source).
 void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumentAllowed, const Callees* lib,
-               std::vector<DeviceId>* missing, std::vector<uint32_t>& out, bool trackList = false) {
+               std::vector<DeviceId>* missing, std::vector<uint32_t>& out, bool trackList = false, bool guestList = false) {
   const std::unordered_map<const Device*, bool> plays = instrumentRacksPlay(list, lib);
   struct Open {
     const std::vector<DevicePtr>* list = nullptr;  // a device list (null: a rack, lowering its chains)
@@ -1299,7 +1392,8 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
       }
       const DevicePtr& d = (*f.list)[f.next++];
       // TX.all-free: off the main path (a track's blocks only)
-      const bool off = f.track && lib != nullptr && lib->isOffPath(*d);
+      const bool guestTop = guestList && f.track;  // TX.cross-track: the guest rack itself (not its chains' devices)
+      const bool off = guestTop || (f.track && lib != nullptr && lib->isOffPath(*d));
       if (!d->active) {
         // TX.groups-fix1: a switched-off free device whose output a wire reads passes its chain input there.
         if (off)
@@ -1311,7 +1405,9 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
       // TX.all-free-fix1: a stock instrument or Instrument Rack (its main input is notes): it plays where notes reach it.
       const bool takesNotes = !staged && d->kind == DeviceKind::Instrument;
       const bool notesHere = f.instrumentAllowed && f.out->empty();  // the list's notes reach it along the list
-      const bool fed = takesNotes && (off ? lib->fedNotes(*d) : notesHere || (f.track && lib != nullptr && lib->fedNotes(*d)));
+      const bool fed = takesNotes && (guestTop || (off ? lib->fedNotes(*d) : notesHere || (f.track && lib != nullptr && lib->fedNotes(*d))));
+      // TX.cross-track: a block another track's notes play (its guests) is a phantom here when its own notes do not reach it.
+      const bool guested = f.track && !guestList && lib != nullptr && lib->guestsOfDevice(d->id) != nullptr;
       auto openRack = [&](bool instrument, std::vector<uint32_t>* into) {
         Open& r = stack.emplace_back();  // `f` stays valid (deque)
         r.rack = d.get();
@@ -1330,6 +1426,10 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
         r.lr.passThrough = !instrument && d->rack->chains.empty();
       };
       if (off) {  // TX.patching / TX.all-free: off the main path (a track's blocks only); called, never chained
+        if (takesNotes && !fed && guested && (d->rack || lib->find(*d) != nullptr)) {  // TX.cross-track: its guests play it
+          td.pendingFree.push_back({d.get(), d->rack ? nullptr : lib->find(*d), false, false, true});
+          continue;
+        }
         if (takesNotes && !fed) continue;  // TX.all-free-fix1: no notes reach it: it plays nothing (not missing)
         if (d->rack) {  // TX.all-free-fix1: a rack off the path plays by its wires (an Instrument Rack: its notes cable)
           if (takesNotes && !plays.at(d.get())) continue;
@@ -1345,8 +1445,10 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
           if (missing != nullptr) missing->push_back(d->id);
           continue;
         }
-        // lowerTree adds it once it knows whether the track plays voices
-        td.pendingFree.push_back({d.get(), callee, false, takesNotes});
+        // lowerTree adds it once it knows whether the track plays voices. TX.cross-track: a meta module another track's
+        // notes play, its own track's notes not, is a phantom here.
+        const bool phantom = guested && isMetaDevice(*d) && lib->notesMeta.count(d->id.value) == 0;
+        td.pendingFree.push_back({d.get(), callee, false, takesNotes && !phantom, phantom});
         continue;
       }
       // TMM.10-fix1: a chain meta device is its list's instrument exactly when it takes the note source (its stage),
@@ -1354,6 +1456,20 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
       const bool instrument = staged ? lib != nullptr && lib->readsNotes(*d) : takesNotes;
       if (staged && instrument && !notesHere) {
         if (missing != nullptr) missing->push_back(d->id);
+        continue;
+      }
+      if (takesNotes && !fed && guested && (d->rack || lib->find(*d) != nullptr)) {  // TX.cross-track: a phantom in the
+                                                                                     // series: what follows hears its guests
+        f.out->push_back(static_cast<uint32_t>(td.devs.size()));
+        LDev ld{d.get(), d->rack ? nullptr : lib->find(*d), -1, false};
+        if (d->rack) {
+          ld.rack = static_cast<int32_t>(td.racks.size());
+          td.racks.emplace_back();  // no chains: it plays nothing of its own
+        }
+        ld.top = true;
+        ld.phantom = true;
+        ld.guest = lib->guestsOfDevice(d->id)->front();
+        td.devs.push_back(ld);
         continue;
       }
       if (takesNotes && !fed) {  // TX.all-free-fix1: no notes reach it here: silence from it on (not missing)
@@ -1424,7 +1540,7 @@ void lowerList(TrackDevs& td, const std::vector<DevicePtr>& list, bool instrumen
   }
 }
 
-TrackDevs lowerTree(const Node& n, const Callees* lib, std::vector<DeviceId>* missing) {
+TrackDevs lowerTree(const Plan& pl, const Node& n, const Callees* lib, std::vector<DeviceId>* missing) {
   TrackDevs td;
   // TX.all-free: the track's blocks in flow order: its main path in signal order (lowered as the chain was: the same
   // IR), then the blocks off it (free). A path that does not reach the mixer leaves the mixer only its wires.
@@ -1435,7 +1551,7 @@ TrackDevs lowerTree(const Node& n, const Callees* lib, std::vector<DeviceId>* mi
   // Instrument Rack that plays, or — TMM.10-fix1 — a chain meta device whose chain input takes the note source).
   if (n.kind == Kind::Midi && !td.top.empty() && td.top.front() != kSilent) {
     const LDev& f = td.devs[td.top.front()];
-    td.headVoices = f.rack >= 0 ? f.device->kind == DeviceKind::Instrument : f.voice;
+    td.headVoices = !f.phantom && (f.rack >= 0 ? f.device->kind == DeviceKind::Instrument : f.voice);
   }
   // TX.all-free-fix1: the other voice consumers — a stock instrument or Instrument Rack a notes cable feeds, on the path
   // after its head or off it — and the meta modules off the path a notes cable reaches: the track plays voices when any
@@ -1450,7 +1566,17 @@ TrackDevs lowerTree(const Node& n, const Callees* lib, std::vector<DeviceId>* mi
       td.extra = td.extra || pf.plays;
       notesMeta = notesMeta || (lib != nullptr && lib->notesMeta.count(pf.device->id.value) != 0);
     }
-    td.voices = td.headVoices || td.extra || notesMeta;
+    td.ownVoices = td.headVoices || td.extra || notesMeta;
+    // TX.cross-track: the guests it holds (other tracks' blocks its notes play) are voice consumers of its own.
+    bool guests = false;
+    if (lib != nullptr)
+      if (const auto it = lib->guestsIn.find(n.track->id.value); it != lib->guestsIn.end())
+        for (const uint32_t g : it->second)
+          if (pl.indexOf.count(lib->guests[g].home.value) != 0) {
+            guests = true;
+            td.extra = td.extra || !lib->guests[g].meta;
+          }
+    td.voices = td.headVoices || td.extra || notesMeta || guests;
   }
   // TMM.10 / TMM.10-fix1: the chain meta devices after a meta device at the note source that a per-voice signal
   // reaches stay per voice (their stage's input is Voices: chainStages), up to the first stage that sums.
@@ -1469,6 +1595,17 @@ TrackDevs lowerTree(const Node& n, const Callees* lib, std::vector<DeviceId>* mi
   // context (Callees::freeVoiced) is a voice device there (wires into it stay per voice: the compiler decides what runs
   // per voice); on a track that turned out to play no voices (its instrument is missing) it cannot play: bypassed.
   for (const TrackDevs::PendingFree& pf : td.pendingFree) {
+    if (pf.phantom) {  // TX.cross-track: not called; its guests play it (a rack: no chains of its own)
+      td.offPath.push_back(static_cast<uint32_t>(td.devs.size()));
+      LDev ld{pf.device, pf.callee, -1, false};
+      if (pf.device->rack) {
+        ld.rack = static_cast<int32_t>(td.racks.size());
+        td.racks.emplace_back();
+      }
+      ld.offPath = ld.top = ld.phantom = true;
+      td.devs.push_back(ld);
+      continue;
+    }
     // TX.groups-fix1: a pass-through runs in the track's voice context when there is one (what reaches it decides).
     const bool voiced = pf.bypass ? td.voices : lib != nullptr && lib->freeVoiced.count(pf.device->id.value) != 0;
     if (voiced && !td.voices) {
@@ -1484,15 +1621,52 @@ TrackDevs lowerTree(const Node& n, const Callees* lib, std::vector<DeviceId>* mi
     td.devs.push_back(ld);
   }
   td.pendingFree.clear();
+  // TX.cross-track: the guests this track's notes play (other tracks' blocks), called after its own blocks, off its
+  // path, in its voice context: a stock instrument or a meta module as a free block, an Instrument Rack lowered as
+  // one off the path (its chains' devices follow it).
+  if (lib != nullptr && n.kind == Kind::Midi)
+    if (const auto it = lib->guestsIn.find(n.track->id.value); it != lib->guestsIn.end())
+      for (const uint32_t g : it->second) {
+        const Callees::Guest& gu = lib->guests[g];
+        const auto home = pl.indexOf.find(gu.home.value);
+        if (home == pl.indexOf.end()) continue;  // its track does not play
+        if (gu.device->rack) {
+          const size_t before = td.offPathRacks.size(), firstDev = td.devs.size();
+          const std::vector<DevicePtr> one{gu.device};
+          std::vector<uint32_t> unused;
+          lowerList(td, one, false, lib, nullptr, unused, true, true);
+          if (td.offPathRacks.size() == before) continue;
+          for (size_t i = firstDev; i < td.devs.size(); ++i) {  // the rack and its chains' devices (the copies)
+            td.devs[i].isGuest = true;
+            td.devs[i].guest = g;
+            td.devs[i].home = home->second;
+          }
+          continue;
+        }
+        const graph::Patch* callee = lib->find(*gu.device);
+        if (callee == nullptr || (!gu.meta && !calleeIsInstrument(*callee))) continue;  // (missing: its home says so)
+        td.offPath.push_back(static_cast<uint32_t>(td.devs.size()));
+        LDev ld{gu.device.get(), callee, -1, true};
+        ld.offPath = ld.top = ld.isGuest = true;
+        ld.plays = !gu.meta;
+        ld.guest = g;
+        ld.home = home->second;
+        td.devs.push_back(ld);
+      }
   // TX.all-free-fix1: the racks off the path (lowered in lowerList: their chains' devices follow each), after the others.
   td.offPath.insert(td.offPath.end(), td.offPathRacks.begin(), td.offPathRacks.end());
+  // TX.cross-track: a block of this track another track's notes play knows its first guest (phantom or not).
+  if (lib != nullptr && !lib->guestsOf.empty())
+    for (LDev& d : td.devs)
+      if (d.top && !d.isGuest)
+        if (const std::vector<uint32_t>* gs = lib->guestsOfDevice(d.device->id)) d.guest = gs->front();
   return td;
 }
 
 // The lowered devices of every plan node (`missing`: as lowerList).
 std::vector<TrackDevs> allDevices(const Plan& pl, const Callees* lib, std::vector<DeviceId>* missing) {
   std::vector<TrackDevs> out(pl.nodes.size());
-  for (size_t i = 0; i < pl.nodes.size(); ++i) out[i] = lowerTree(pl.nodes[i], lib, missing);
+  for (size_t i = 0; i < pl.nodes.size(); ++i) out[i] = lowerTree(pl, pl.nodes[i], lib, missing);
   return out;
 }
 
@@ -1664,7 +1838,43 @@ struct LWire {
 struct WirePlan {
   std::vector<LWire> wires;       // lowered, in id order
   std::vector<WireState> states;  // every wire of the project, in id order
+  // TX.cross-track (lower.h "Cross-track notes cables"): per Callees::guests index, where its guest is lowered (host
+  // plan node and device index; host kNone: not lowered), where its block's home instance is, whether it is refused
+  // (its host and home would close a track cycle through two instrument tracks), and which outputs its home reads
+  // (bit o: output o, o < kGuestPorts).
+  struct GuestPlan {
+    uint32_t host = graph::kNone, dev = graph::kNone;
+    uint32_t homeNode = graph::kNone, homeDev = graph::kNone;
+    bool refused = false;
+    uint32_t ports = 0;
+  };
+  std::vector<GuestPlan> guests;
+  // The pins of a block with guests that its home's wires drive (sorted, at most kGuestPins; not a rack's): their values
+  // go to its guests (`gp<device>_<pin>`). By device id.
+  std::unordered_map<uint32_t, std::vector<uint16_t>> fwdPins;
+  const GuestPlan* guestPlan(uint32_t g) const noexcept { return g < guests.size() ? &guests[g] : nullptr; }
+  // The index of `pin` among the forwarded pins of device `d` (kNone: not forwarded).
+  uint32_t forwarded(DeviceId d, uint32_t pin) const noexcept {
+    const auto it = fwdPins.find(d.value);
+    if (it == fwdPins.end()) return graph::kNone;
+    for (size_t j = 0; j < it->second.size(); ++j)
+      if (it->second[j] == pin) return static_cast<uint32_t>(j);
+    return graph::kNone;
+  }
 };
+// TX.cross-track: a guest's outputs its home reads (outputs 0 … 7) and the pins forwarded to it (at most 8).
+constexpr uint32_t kGuestPorts = 8, kGuestPins = 8;
+// NodeRole::Wire slots of a guest's entity (its first notes cable, Callees::Guest::entity; the cable itself is lowered
+// only in the host, in its own slots 0 … 15). In the HOME patch: the import of guest output o (kGImport + o), the sum of
+// the guests' imports (kGChain + o, at the second guest on), a forwarded pin's export (kGPin + j), the home's own voices
+// summed for its wires (kGVoiceSum + o), the path's sum with the imports (kGPath + o), the wires' (kGWire + o). In the
+// HOST patch: the guest's voices summed (kGHostSum + o), their export (kGExport + o), a forwarded pin's import (kGPinIn + j).
+enum GuestK : uint32_t {
+  kGImport = 0, kGChain = 8, kGPin = 16, kGVoiceSum = 24, kGPath = 32, kGWire = 40,
+  kGHostSum = 16, kGExport = 24, kGPinIn = 32,
+};
+std::string guestPortName(WireId entity, uint32_t o) { return "g" + std::to_string(entity.value) + "_" + std::to_string(o); }
+std::string guestPinName(DeviceId d, uint32_t pin) { return "gp" + std::to_string(d.value) + "_" + std::to_string(pin); }
 
 // T4.8: a rack's signal points: its audio input (an Audio Effect Rack), its params (kRackParams), its output.
 uint32_t rackInputs(const LDev& d) noexcept { return (d.device->kind == DeviceKind::Instrument ? 0u : 1u) + kRackParams; }
@@ -1674,15 +1884,18 @@ uint32_t rackParamPoint(const LDev& d, uint32_t param) noexcept {
 
 // Decides how every wire is lowered (lower.h, "Modulation wires"): which are left out, which close a delay-free cycle
 // (delayed) and which a cycle through two instruments (refused).
-WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs>& devs, PortDeps& deps) {
+WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs>& devs, PortDeps& deps,
+                   const Callees* lib) {
   WirePlan wp;
   const WireList& wires = wiresOf(p);
   if (wires.empty()) return wp;
+  if (lib != nullptr) wp.guests.resize(lib->guests.size());
   const auto nodes = static_cast<uint32_t>(pl.nodes.size());
-  // Where each lowered device is.
+  // Where each lowered device is (TX.cross-track: its home instance; a guest stands behind it, below).
   std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> where;
   for (uint32_t n = 0; n < nodes; ++n)
-    for (uint32_t k = 0; k < devs[n].size(); ++k) where[devs[n][k].device->id.value] = {n, k};
+    for (uint32_t k = 0; k < devs[n].size(); ++k)
+      if (!devs[n][k].isGuest) where[devs[n][k].device->id.value] = {n, k};
   auto isInstrumentNode = [&](uint32_t n) { return pl.nodes[n].kind == Kind::Midi && devs[n].voices; };
   // Signal points: per node its input and output, per device its signature inputs then outputs (a rack: its audio
   // input and params, then its output).
@@ -1714,7 +1927,7 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
   std::vector<uint8_t> voicePoint(points, 0);
   for (uint32_t n = 0; n < nodes; ++n)
     for (uint32_t k = 0; k < devs[n].size(); ++k)
-      if (const LDev& d = devs[n][k]; d.voice || d.offPath)
+      if (const LDev& d = devs[n][k]; (d.voice || d.offPath) && !d.phantom)  // (TX.cross-track: a phantom is global)
         std::fill_n(voicePoint.begin() + devBase[n][k], insOf(n, k) + outsOf(n, k),
                     static_cast<uint8_t>(d.offPath && !(d.plays && d.rack < 0) ? 2 : 1));  // fix1: an instrument: voices
   for (uint32_t n = 0; n < nodes; ++n) {
@@ -1819,6 +2032,7 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
   for (uint32_t n = 0; n < nodes; ++n)
     if (pl.dest[n] != graph::kNone) tadj[n].push_back(pl.dest[n]);
   for (const SendLink& l : pl.sends) tadj[l.from].push_back(l.to);
+  // (the guests: below, once `reach` exists)
   std::vector<uint8_t> seen;
   std::vector<uint32_t> stack;
   auto reach = [&](const std::vector<std::vector<uint32_t>>& g, uint32_t from, std::vector<uint8_t>& mark) {
@@ -1840,6 +2054,89 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
   for (uint32_t n = 0; n < nodes; ++n)
     if (pl.nodes[n].track != nullptr) nodeOfTrack.emplace(pl.nodes[n].track->id.value, n);
   std::vector<uint8_t> fwd, back;
+  // Whether a wire from plan node `from` to plan node `to` would close a track cycle through two instrument tracks (the
+  // partition could not run it: one voice table per unit, Q84).
+  auto twoInstruments = [&](uint32_t from, uint32_t to) {
+    reach(tadj, to, fwd);
+    if (!fwd[from]) return false;  // no track cycle forms
+    std::vector<std::vector<uint32_t>> rev(nodes);
+    for (uint32_t v = 0; v < nodes; ++v)
+      for (uint32_t x : tadj[v]) rev[x].push_back(v);
+    reach(rev, from, back);
+    uint32_t instruments = 0;
+    for (uint32_t v = 0; v < nodes; ++v)
+      if ((fwd[v] && back[v]) || v == from || v == to) instruments += isInstrumentNode(v) ? 1u : 0u;
+    return instruments > 1;
+  };
+  // TMM.13-fix1 H3: whether the delay-free loop a wire from signal point `from` to `to` closes (`seen`: what `to`
+  // reaches) passes both per-voice and global points — a voice reducer inside the loop (voice_sum: the voices summed into
+  // the track's signal, or a wire's reducer). Its z1 would need every voice group and the global part to alternate per
+  // sample, which the scheduler cannot run yet (schedule.h step 3; TX.voice-loop): the wire is refused instead (not
+  // lowered; the status line and the views name it), and the rest plays. E.g. a later effect's output back into a meta
+  // voice run's Phase accumulator `hz` (QUESTIONS Q?-TMM.13-fix1-a: why not per voice).
+  auto voiceLoop = [&](uint32_t from, uint32_t to) {
+    bool voice = false, global = false;
+    auto mark = [&](uint32_t v) {
+      voice = voice || voicePoint[v] == 1;
+      global = global || voicePoint[v] == 0;
+    };
+    mark(to);
+    mark(from);
+    if (!(voice && global)) {  // the points on the loop: reached from `to`, reaching `from`
+      std::vector<std::vector<uint32_t>> rev(points);
+      for (uint32_t v = 0; v < points; ++v)
+        for (uint32_t x : adj[v]) rev[x].push_back(v);
+      reach(rev, from, back);
+      for (uint32_t v = 0; v < points && !(voice && global); ++v)
+        if (seen[v] && back[v]) mark(v);
+    }
+    return voice && global;
+  };
+  // TX.cross-track (lower.h "Cross-track notes cables"): each guest stands behind its block's home instance — its
+  // outputs reach the home's (whose readers read every instance), the home's inputs reach its inputs (the wires into
+  // the block drive every instance) — and its host and home tracks are joined both ways (the guests' outputs go home,
+  // the home's wires into the block go to the guests). A guest whose host and home would then close a track cycle
+  // through two instrument tracks is refused (one voice table per unit): its notes cable is Refused (TwoInstruments).
+  for (uint32_t n = 0; n < nodes && lib != nullptr; ++n)
+    for (uint32_t k = 0; k < devs[n].size(); ++k) {
+      const LDev& d = devs[n][k];
+      if (!d.isGuest || !d.top || d.guest == graph::kNone || d.guest >= wp.guests.size()) continue;
+      WirePlan::GuestPlan& gp = wp.guests[d.guest];
+      const auto h = where.find(d.device->id.value);
+      if (h == where.end()) continue;  // (its home is not lowered: nothing reads it)
+      gp.host = n;
+      gp.dev = k;
+      gp.homeNode = h->second.first;
+      gp.homeDev = h->second.second;
+    }
+  for (uint32_t g = 0; g < wp.guests.size(); ++g) {
+    WirePlan::GuestPlan& gp = wp.guests[g];
+    if (gp.host == graph::kNone) continue;
+    const DeviceId block = lib->guests[g].device->id;
+    const bool driven = std::any_of(wires.begin(), wires.end(), [&](const Wire& w) {
+      return !w.toMixer() && w.to == block && !(w.fromNoteSource() && w.port.empty());
+    });
+    tadj[gp.host].push_back(gp.homeNode);
+    if (driven) tadj[gp.homeNode].push_back(gp.host);
+    if (twoInstruments(gp.host, gp.homeNode)) {
+      tadj[gp.host].pop_back();
+      if (driven) tadj[gp.homeNode].pop_back();
+      gp.refused = true;
+      continue;
+    }
+    for (uint32_t o = 0; o < outsOf(gp.host, gp.dev) && o < outsOf(gp.homeNode, gp.homeDev); ++o)
+      adj[devOut(gp.host, gp.dev, o)].push_back(devOut(gp.homeNode, gp.homeDev, o));
+    for (uint32_t i = 0; i < insOf(gp.host, gp.dev) && i < insOf(gp.homeNode, gp.homeDev); ++i)
+      adj[devIn(gp.homeNode, gp.homeDev, i)].push_back(devIn(gp.host, gp.dev, i));
+  }
+  // The guest of block `to` that track node `source` plays (kNone: none lowered).
+  auto guestFor = [&](DeviceId to, uint32_t source) -> uint32_t {
+    if (lib == nullptr) return graph::kNone;
+    if (const std::vector<uint32_t>* gs = lib->guestsOfDevice(to))
+      for (const uint32_t g : *gs)
+        if (wp.guests[g].host == source) return g;
+    return graph::kNone;
+  };
   // TX.groups-fix1: chain links (Wire::chain: a grouped series' links) are planned before every other wire, as a chain's
   // own links are (they are in `adj` already): a loop through a grouped series keeps its delay on the wire that had it.
   // The result is in id order again (below).
@@ -1854,6 +2151,9 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     const Wire& w = *wp0;
     WireState st{w.id, WireStatus::Lowered};
     const auto b = w.toMixer() ? where.end() : where.find(w.to.value);
+    // The target block's instance (TX.cross-track: a notes cable from another track plays its guest there).
+    std::pair<uint32_t, uint32_t> tgt{graph::kNone, graph::kNone};
+    if (b != where.end()) tgt = b->second;
     LWire lw;
     lw.wire = &w;
     auto inactive = [&] {
@@ -1868,7 +2168,21 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
                                           : (b != where.end() ? b->second.first : graph::kNone);
       // TX.all-free-fix1: another track's mixer takes a track's own signal too (a send-like route; not its notes).
       const bool otherMixer = w.toMixer() && a != nodeOfTrack.end() && target != graph::kNone && target != a->second;
-      if (a == nodeOfTrack.end() || (target != a->second && !otherMixer)) {
+      // TX.cross-track: a MIDI track's notes into another track's block play its guest in the source's voice context.
+      bool guest = false;
+      if (a != nodeOfTrack.end() && !w.toMixer() && target != graph::kNone && target != a->second &&
+          pl.nodes[a->second].kind == Kind::Midi)
+        if (const uint32_t g = guestFor(w.to, a->second); g != graph::kNone) {
+          if (wp.guests[g].refused) {
+            st.status = WireStatus::Refused;
+            st.reason = WireRefusal::TwoInstruments;
+            wp.states.push_back(st);
+            continue;
+          }
+          tgt = {wp.guests[g].host, wp.guests[g].dev};
+          guest = true;
+        }
+      if (a == nodeOfTrack.end() || (target != a->second && !otherMixer && !guest)) {
         inactive();
         continue;
       }
@@ -1878,12 +2192,12 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
         // a meta module the input reads the note's signal of its meaning (meta::Reads, as a chain input at the note source
         // reads it): a frequency the note's Hz, a phase its phase (phasor of the Hz), and a gate or a signal input its own
         // default (the voice's gate, or the default: in the voice context the module runs in); anything else: nothing.
-        if (w.toMixer() || b == where.end()) {
+        if (w.toMixer() || tgt.first == graph::kNone) {
           inactive();
           continue;
         }
-        const LDev& dd = devs[b->second.first][b->second.second];
-        if (!dd.top) {
+        const LDev& dd = devs[tgt.first][tgt.second];
+        if (!dd.top || dd.phantom) {
           inactive();
           continue;
         }
@@ -1965,25 +2279,22 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       const uint32_t to = nodeBase[lw.toNode] + 1;
       if (lw.fromNode != lw.toNode) {
         // TX.all-free-fix1: into ANOTHER track's mixer, a send-like route (its source's every channel, voices summed by
-        // the wire's reducer, across as `export m<wire>` → `in m<wire>`, an audio wire between the tracks). Refused only
-        // when it closes a cycle between tracks (WireRefusal::Cycle: the target's output reaches the source's track).
-        reach(tadj, lw.toNode, fwd);
-        if (fwd[lw.fromNode]) {
+        // the wire's reducer, across as `export m<wire>` → `in m<wire>`, an audio wire between the tracks).
+        // TX.cross-track (SPEC §15 2026-11-03 "tracks are not walls"): one that closes a cycle between tracks is
+        // planned like every other cross-track wire — refused only through two instrument tracks (one voice table
+        // per unit), delayed (z⁻¹) when the loop it closes is delay-free, refused through the voices (VoiceLoop).
+        if (twoInstruments(lw.fromNode, lw.toNode)) {
           st.status = WireStatus::Refused;
-          st.reason = WireRefusal::Cycle;
+          st.reason = WireRefusal::TwoInstruments;
           wp.states.push_back(st);
           continue;
         }
         tadj[lw.fromNode].push_back(lw.toNode);
-        adj[from].push_back(to);
-        wp.states.push_back(st);
-        wp.wires.push_back(lw);
-        continue;
       }
       reach(adj, to, seen);
       lw.delayed = seen[from] != 0;
       if (lw.delayed) {
-        if (voicePoint[from] == 1) {  // a voice signal into a loop through the mixer: the scheduler could not run it
+        if (voiceLoop(from, to)) {  // a loop through the voices' sum: the scheduler could not run it (TX.voice-loop)
           st.status = WireStatus::Refused;
           st.reason = WireRefusal::VoiceLoop;
           wp.states.push_back(st);
@@ -1997,8 +2308,14 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       wp.wires.push_back(lw);
       continue;
     }
-    std::tie(lw.toNode, lw.toDev) = b->second;
+    std::tie(lw.toNode, lw.toDev) = tgt;
     const LDev& dd = devs[lw.toNode][lw.toDev];
+    // TX.cross-track: a phantom Instrument Rack has no pins of its own (wires into a rack reach its home's instance only).
+    if (dd.phantom && dd.rack >= 0) {
+      st.status = WireStatus::Inactive;
+      wp.states.push_back(st);
+      continue;
+    }
     // The source: an output of its callee (TX.patching: an `out` as well as an export; its signature index: outs first;
     // a rack has none; a bool output is not a signal) or a note output; the target: a real param (a rack: a macro or
     // its selector) or (TX.patching) a non-const real input of the callee.
@@ -2080,21 +2397,11 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     const bool voiceSource = lw.notes != nullptr || (!lw.fromTrack && devs[lw.fromNode][lw.fromDev].voice);
     lw.reduce = voiceSource && !(lw.toNode == lw.fromNode && dd.voice);
     if (lw.fromNode != lw.toNode) {
-      reach(tadj, lw.toNode, fwd);
-      if (fwd[lw.fromNode]) {  // a track cycle forms: count its instruments
-        std::vector<std::vector<uint32_t>> rev(nodes);
-        for (uint32_t v = 0; v < nodes; ++v)
-          for (uint32_t x : tadj[v]) rev[x].push_back(v);
-        reach(rev, lw.fromNode, back);
-        uint32_t instruments = 0;
-        for (uint32_t v = 0; v < nodes; ++v)
-          if ((fwd[v] && back[v]) || v == lw.fromNode || v == lw.toNode) instruments += isInstrumentNode(v) ? 1u : 0u;
-        if (instruments > 1) {
-          st.status = WireStatus::Refused;
-          st.reason = WireRefusal::TwoInstruments;
-          wp.states.push_back(st);
-          continue;
-        }
+      if (twoInstruments(lw.fromNode, lw.toNode)) {  // a track cycle through two instrument tracks
+        st.status = WireStatus::Refused;
+        st.reason = WireRefusal::TwoInstruments;
+        wp.states.push_back(st);
+        continue;
       }
       tadj[lw.fromNode].push_back(lw.toNode);
     }
@@ -2110,28 +2417,7 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     reach(adj, to, seen);
     lw.delayed = seen[from] != 0;
     if (lw.delayed) {
-      // TMM.13-fix1 H3: a loop through both per-voice and global points passes a voice reducer (voice_sum: the voices
-      // summed into the track's signal, or a wire's reducer). Its z1 would need every voice group and the global part
-      // to alternate per sample, which the scheduler cannot run (schedule.h step 3): the whole unit would be refused
-      // and the track fall silent. So the wire is refused instead (not lowered; the status line and the views name
-      // it), and the rest of the track plays. E.g. a later effect's output back into a meta voice run's Phase
-      // accumulator `hz` (QUESTIONS Q?-TMM.13-fix1-a: why not per voice).
-      bool voice = false, global = false;
-      auto mark = [&](uint32_t v) {
-        voice = voice || voicePoint[v] == 1;
-        global = global || voicePoint[v] == 0;
-      };
-      mark(to);
-      mark(from);
-      if (!(voice && global)) {  // the points on the loop: reached from `to`, reaching `from`
-        std::vector<std::vector<uint32_t>> rev(points);
-        for (uint32_t v = 0; v < points; ++v)
-          for (uint32_t x : adj[v]) rev[x].push_back(v);
-        reach(rev, from, back);
-        for (uint32_t v = 0; v < points && !(voice && global); ++v)
-          if (seen[v] && back[v]) mark(v);
-      }
-      if (voice && global) {
+      if (voiceLoop(from, to)) {  // TMM.13-fix1 H3: through the voices' sum (TX.voice-loop runs it per sample)
         st.status = WireStatus::Refused;
         st.reason = WireRefusal::VoiceLoop;
         wp.states.push_back(st);
@@ -2143,6 +2429,40 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     }
     wp.states.push_back(st);
     wp.wires.push_back(lw);
+  }
+  // TX.cross-track: what each guest's home reads of its block (the outputs its wires and its series take: the guests'
+  // are added there), and which of the block's pins the home's wires drive (their values go to the guests; not the
+  // pins the home's own notes reach, nor a rack's).
+  if (lib != nullptr && !lib->guests.empty()) {
+    auto guestsAt = [&](uint32_t n, uint32_t k) -> const std::vector<uint32_t>* {
+      const LDev& d = devs[n][k];
+      return d.isGuest || d.guest == graph::kNone ? nullptr : lib->guestsOfDevice(d.device->id);
+    };
+    auto read = [&](uint32_t n, uint32_t k, uint32_t o) {
+      if (o >= kGuestPorts) return;
+      if (const std::vector<uint32_t>* gs = guestsAt(n, k))
+        for (const uint32_t g : *gs) wp.guests[g].ports |= 1u << o;
+    };
+    for (const LWire& w : wp.wires)
+      if (!w.fromTrack && w.notes == nullptr) read(w.fromNode, w.fromDev, w.fromPort);
+    for (uint32_t n = 0; n < nodes; ++n)
+      for (const uint32_t k : devs[n].top)
+        if (k != kSilent) read(n, k, 0);
+    std::unordered_map<uint32_t, std::vector<uint16_t>> notesAt;  // device id → pins its home's notes reach
+    for (const LWire& w : wp.wires) {
+      if (w.toMixer || guestsAt(w.toNode, w.toDev) == nullptr || devs[w.toNode][w.toDev].rack >= 0) continue;
+      const uint32_t id = devs[w.toNode][w.toDev].device->id.value;
+      (w.notes != nullptr ? notesAt[id] : wp.fwdPins[id]).push_back(w.toPin);
+    }
+    for (auto it = wp.fwdPins.begin(); it != wp.fwdPins.end();) {
+      std::vector<uint16_t>& v = it->second;
+      std::sort(v.begin(), v.end());
+      v.erase(std::unique(v.begin(), v.end()), v.end());
+      if (const auto n = notesAt.find(it->first); n != notesAt.end())
+        std::erase_if(v, [&](uint16_t pin) { return std::find(n->second.begin(), n->second.end(), pin) != n->second.end(); });
+      if (v.size() > kGuestPins) v.resize(kGuestPins);
+      it = v.empty() ? wp.fwdPins.erase(it) : std::next(it);
+    }
   }
   if (anyChain) {  // back to id order (lower.h: sums into one input follow it, after the chain links)
     std::stable_sort(wp.states.begin(), wp.states.end(), [](const WireState& a, const WireState& b) { return a.id < b.id; });
@@ -2240,6 +2560,12 @@ struct Build {
   bool multi = false;
   std::vector<std::pair<PortRef, uint32_t>> dones;
   bool allDone = true;
+  // TX.cross-track (lower.h "Cross-track notes cables"): the guests (Callees::guests) and how they were planned; per
+  // (device, output) of a block with guests the sum of their imports, the home's own voices summed for its wires, and
+  // that plus the imports.
+  const Callees* lib = nullptr;
+  const WirePlan* wp = nullptr;
+  std::map<std::pair<uint32_t, uint16_t>, PortRef> guestIn, guestVoices, guestWire;
 };
 
 constexpr graph::PortType kVoiceDone = graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1);
@@ -2262,9 +2588,76 @@ void finishDones(Build& b) {
     d = b.ir.atom("and", {d, b.dones[i].first}, nodeIdFor(NodeRole::Device, b.dones[i].second, kDDone));
   b.ir.output("done", kVoiceDone, d, kDone);
 }
-// A lowered device's output `port` (a rack: its output).
-PortRef outOf(const Build& b, uint32_t k, uint16_t port) {
-  return b.td[k].rack >= 0 ? b.rackOut[k] : PortRef{b.calls[k], port};
+// TX.cross-track: the guests of lowered device `k` that play (lowered, not refused) and whose home reads output `o`.
+template <class F>
+void forPlayingGuests(const Build& b, uint32_t k, uint16_t o, F&& f) {
+  const LDev& d = b.td[k];
+  if (d.isGuest || d.guest == graph::kNone || b.lib == nullptr || b.wp == nullptr || o >= kGuestPorts) return;
+  if (const std::vector<uint32_t>* gs = b.lib->guestsOfDevice(d.device->id))
+    for (const uint32_t g : *gs)
+      if (const WirePlan::GuestPlan* gp = b.wp->guestPlan(g); gp != nullptr && gp->host != graph::kNone && !gp->refused &&
+                                                             (gp->ports >> o & 1u) != 0)
+        f(g, b.lib->guests[g].entity);
+}
+// TX.cross-track: the sum of the guests' output `o` of block `k` as they arrive here (`in g<entity>_<o>`, global, any
+// width), or kPending without guests.
+PortRef guestImports(Build& b, uint32_t k, uint16_t o) {
+  const auto key = std::make_pair(k, o);
+  if (const auto it = b.guestIn.find(key); it != b.guestIn.end()) return it->second;
+  constexpr graph::PortType kRoute = graph::portType(graph::Kind::Infer, graph::Rate::Audio, graph::Poly::Global, graph::kWidthInfer);
+  PortRef sum = kPending;
+  forPlayingGuests(b, k, o, [&](uint32_t, WireId e) {
+    const PortRef in = b.ir.input(guestPortName(e, o), b.c0(), nodeIdFor(NodeRole::Wire, e.value, kGImport + o), kRoute);
+    sum = sum.node == graph::kNone ? in : b.ir.atom("add", {sum, in}, nodeIdFor(NodeRole::Wire, e.value, kGChain + o));
+  });
+  b.guestIn.emplace(key, sum);
+  return sum;
+}
+// The first guest's entity of block `k` (whose home slots name the home's guest nodes).
+WireId firstGuestEntity(const Build& b, uint32_t k) { return b.lib->guests[b.td[k].guest].entity; }
+// TX.cross-track: what the series reads after block `k` whose own voices summed are `x`: x plus its guests' output 0.
+PortRef withGuests(Build& b, uint32_t k, PortRef x) {
+  const PortRef in = guestImports(b, k, 0);
+  if (in.node == graph::kNone) return x;
+  return b.ir.atom("add", {x, in}, nodeIdFor(NodeRole::Wire, firstGuestEntity(b, k).value, kGPath));
+}
+// A lowered device's output `port` (a rack: its output). TX.cross-track: a phantom's is its guests' (silence without
+// any); a rack with guests adds theirs to its own.
+PortRef outOf(Build& b, uint32_t k, uint16_t port) {
+  const LDev& d = b.td[k];
+  if (d.phantom) {
+    const PortRef in = guestImports(b, k, port);
+    return in.node != graph::kNone ? in : b.c0();
+  }
+  if (d.rack >= 0) {
+    if (d.guest == graph::kNone || d.isGuest || b.rackOut[k].node == graph::kNone) return b.rackOut[k];
+    const auto key = std::make_pair(k, port);
+    if (const auto it = b.guestWire.find(key); it != b.guestWire.end()) return it->second;
+    const PortRef in = guestImports(b, k, port);
+    const PortRef y = in.node == graph::kNone
+                          ? b.rackOut[k]
+                          : b.ir.atom("add", {b.rackOut[k], in}, nodeIdFor(NodeRole::Wire, firstGuestEntity(b, k).value, kGWire + port));
+    b.guestWire.emplace(key, y);
+    return y;
+  }
+  return PortRef{b.calls[k], port};
+}
+// TX.cross-track: a wire's source summed over the voices when it is (the Sum reducer) from a block with guests that
+// plays its own voices: those voices summed once for every such wire, plus the guests'. kPending otherwise (the wire
+// reduces as before; another reducer reads its home's voices only).
+PortRef guestReduced(Build& b, const LWire& w) {
+  if (!w.reduce || w.fromTrack || w.notes != nullptr || w.wire->reducer != WireReducer::Sum) return kPending;
+  const LDev& d = b.td[w.fromDev];
+  if (d.guest == graph::kNone || d.isGuest || d.phantom || d.rack >= 0) return kPending;
+  const auto key = std::make_pair(w.fromDev, w.fromPort);
+  if (const auto it = b.guestWire.find(key); it != b.guestWire.end()) return it->second;
+  const PortRef in = guestImports(b, w.fromDev, w.fromPort);
+  if (in.node == graph::kNone) return kPending;
+  const uint32_t e = firstGuestEntity(b, w.fromDev).value;
+  const PortRef v = b.ir.atom("voice_sum", {PortRef{b.calls[w.fromDev], w.fromPort}}, nodeIdFor(NodeRole::Wire, e, kGVoiceSum + w.fromPort));
+  const PortRef y = b.ir.atom("add", {v, in}, nodeIdFor(NodeRole::Wire, e, kGWire + w.fromPort));
+  b.guestWire.emplace(key, y);
+  return y;
 }
 
 std::string chainParamName(ChainId c, std::string_view what) { return "c" + std::to_string(c.value) + "_" + std::string(what); }
@@ -2434,14 +2827,22 @@ PortRef chainOf(Build& b, std::span<const uint32_t> list, size_t first, PortRef 
         continue;
       }
       const LDev& d = b.td[k];
+      if (d.phantom) {  // TX.cross-track: a block only other tracks' notes play: its guests' output from here on
+        f.x = outOf(b, k, 0);
+        f.width = d.rack >= 0 || (d.callee != nullptr && outWidth(*d.callee) == graph::kWidthStereo) ? graph::kWidthStereo
+                                                                                                    : graph::kWidthMono;
+        if (d.rack >= 0) b.rackOut[k] = f.x;
+        continue;
+      }
       if (d.rack < 0) {
         // TX.all-free-fix1: a stock instrument a notes cable feeds, after the path's head: its voices, summed.
-        if (d.plays) f.x = playInstrument(b, k, f.width);
+        // TX.cross-track: plus its guests' (other tracks' notes playing it).
+        if (d.plays) f.x = withGuests(b, k, playInstrument(b, k, f.width));
         else f.x = effectCall(b, k, f.x, f.width);
         continue;
       }
       if (d.plays) {  // TX.all-free-fix1: an Instrument Rack a notes cable feeds, after the path's head
-        f.x = playInstrumentRack(b, k, f.width);
+        f.x = withGuests(b, k, playInstrumentRack(b, k, f.width));
         continue;
       }
       // TX.all-free-fix1: wires into an Audio Effect Rack's input add to what reaches it (lowerSites sums them at this pin).
@@ -2698,6 +3099,7 @@ struct Site {
   const LMapping* mapping = nullptr;    // the macro driving it
   bool resolved = false;
   PortRef value = kPending;
+  uint32_t pin = graph::kNone;          // TX.cross-track: a device param's pin (its value may go to the guests)
 };
 
 // The wires of plan node `node` (its outgoing cross-track wires: root exports m<wire>), then every param the patch
@@ -2711,6 +3113,9 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
   // "hz" the tuned pitch, a bool as 0 / 1), reduced over the voices when it leaves them.
   auto source = [&](const LWire& w) {
     PortRef s;
+    // TX.cross-track: from a block with guests, summed over the voices: its own and its guests' (guestReduced).
+    const PortRef summed = guestReduced(b, w);
+    auto from = [&] { return summed.node != graph::kNone ? summed : outOf(b, w.fromDev, w.fromPort); };
     if (w.fromTrack) {  // TX.all-free: the track's own signal (every channel into an input, else its first)
       s = w.input ? b.sourceX : ir.atom("channel", {b.sourceX, b.c0()}, wid(w, kWChannel));
       // Into a meta module's input: its mid, as from any wide source (below); a track's silent source (a return no send
@@ -2726,9 +3131,9 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       if (w.notes->boolean) s = ir.atom("gate_to_real", {s}, wid(w, kWNoteReal));
       if (w.phase) s = ir.atom("phasor", {s}, wid(w, kWNotePhase));  // TX.all-free-fix1: the note's phase
     } else if (w.toMixer) {
-      s = outOf(b, w.fromDev, w.fromPort);  // TX.all-free-fix1: into another track's mixer: every channel
+      s = from();  // TX.all-free-fix1: into another track's mixer: every channel
     } else if (w.input && w.fromNode == w.toNode) {
-      s = outOf(b, w.fromDev, w.fromPort);  // TX.patching: into an input on its own track, every channel
+      s = from();  // TX.patching: into an input on its own track, every channel
       // TX.groups: a meta module's outputs are mono, so a signal of more channels (or of a width only inference knows:
       // a group's In terminal) reaches its input as the mid (l + r) / 2 — the chain's rule (effectCall). On a mono
       // signal the mid is the signal itself, bit for bit (x + x is exact, × 0.5 too).
@@ -2740,13 +3145,22 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
         s = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
       }
     } else {
-      s = ir.atom("channel", {outOf(b, w.fromDev, w.fromPort), b.c0()}, wid(w, kWChannel));
+      s = ir.atom("channel", {from(), b.c0()}, wid(w, kWChannel));
     }
-    if (w.reduce) s = ir.atom(reducerAtom(w.wire->reducer), {s}, wid(w, kWReduce));
+    if (w.reduce && summed.node == graph::kNone) s = ir.atom(reducerAtom(w.wire->reducer), {s}, wid(w, kWReduce));
     return s;
   };
   for (const LWire& w : wp.wires)
     if (w.fromNode == node && w.toNode != node) ir.exportPort("m" + std::to_string(w.wire->id.value), source(w), wid(w, kWExport));
+  // TX.cross-track: a pin of a block with guests that this home's wires drive sends its value to the guests (one export
+  // per pin, `gp<device>_<pin>`, named by its first guest's entity).
+  auto forwardPin = [&](uint32_t dev, uint32_t pin, PortRef value) {
+    const LDev& d = td[dev];
+    if (d.isGuest || d.guest == graph::kNone || value.node == graph::kNone) return;
+    const uint32_t j = wp.forwarded(d.device->id, pin);
+    if (j == graph::kNone) return;
+    ir.exportPort(guestPinName(d.device->id, pin), value, nodeIdFor(NodeRole::Wire, firstGuestEntity(b, dev).value, kGPin + j));
+  };
   // A wire's signal where its target is (this patch): built here, or arriving across tracks; through a z1 when it
   // closes a delay-free loop.
   auto arriving = [&](const LWire& w) {
@@ -2769,10 +3183,11 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       done.push_back(key);
       // (TX.all-free-fix1: an Audio Effect Rack's input: the pin its lowering made, rackIn)
       const PortRef pin = td[f.toDev].rack >= 0 ? b.rackIn[f.toDev] : PortRef{b.calls[f.toDev], f.toPin};
-      if (pin.node == graph::kNone) continue;
+      // TX.cross-track: a phantom has no call (its guests take the pin's value: forwardPin)
+      if (pin.node == graph::kNone && !td[f.toDev].phantom) continue;
       graph::Patch& p = ir.patch();
       PortRef sum = kPending;
-      for (graph::WireIndex x = 0; x < p.wireCount(); ++x)
+      for (graph::WireIndex x = 0; x < p.wireCount() && pin.node != graph::kNone; ++x)
         if (p.wire(x).to == pin) {
           const PortRef from = p.wire(x).from;
           p.disconnect(x);
@@ -2791,7 +3206,8 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
           sum = sum.node == graph::kNone ? src : ir.atom("add", {sum, src}, wid(w, first ? kWTerm : kWSum));
           first = false;
         }
-      p.connect(sum, pin);
+      if (pin.node != graph::kNone) p.connect(sum, pin);
+      forwardPin(f.toDev, f.toPin, sum);
     }
   }
   // The sites: the modulated params first, in the order of their first wire (T4.7), then mapped params and rack params.
@@ -2809,7 +3225,8 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     } else {
       const ParamPin pp = *realParamPin(*d.callee, name);
       s.decl = &d.callee->paramDecl(pp.node);
-      s.pins.push_back(PortRef{b.calls[dev], pp.pin});
+      if (b.calls[dev] != graph::kNone) s.pins.push_back(PortRef{b.calls[dev], pp.pin});  // (TX.cross-track: a phantom: none)
+      s.pin = pp.pin;
     }
     s.mapping = td.mappingOf(dev, name);
     sites.push_back(std::move(s));
@@ -3075,6 +3492,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
   for (size_t i = 0; i < sites.size(); ++i) {
     const PortRef v = valueOf(i);
     for (const PortRef& pin : sites[i].pins) ir.patch().connect(v, pin);
+    if (sites[i].pin != graph::kNone) forwardPin(sites[i].dev, sites[i].pin, v);  // TX.cross-track
   }
 }
 
@@ -3083,6 +3501,20 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
 // not mapped. The same rule as lowerSites, so addParams links exactly the params the patch has.
 bool declaresParam(const TrackDevs& td, uint32_t dev, std::string_view name, const WirePlan& wp, uint32_t node) {
   if (td.mappingOf(dev, name) != nullptr) return false;
+  const LDev& d = td[dev];
+  // TX.cross-track: a phantom is not called: only a modulated param's knob is in the patch (its site makes it); a
+  // guest's forwarded pins are its home's values, not params of its own.
+  if (d.isGuest && d.guest != graph::kNone)  // a refused guest is not called
+    if (const WirePlan::GuestPlan* gp = wp.guestPlan(d.guest); gp == nullptr || gp->refused || gp->host != node) return false;
+  if (d.phantom || (d.isGuest && d.top && d.guest != graph::kNone && d.rack < 0)) {
+    if (d.rack >= 0) return false;
+    const std::optional<ParamPin> pp = realParamPin(*d.callee, name);
+    if (!pp) return !d.phantom;
+    if (!d.phantom) return wp.forwarded(d.device->id, pp->pin) == graph::kNone;
+    for (const LWire& w : wp.wires)
+      if (w.toNode == node && w.toDev == dev && !w.input && !w.toMixer && w.toPin == pp->pin) return true;
+    return false;
+  }
   if (td[dev].rack < 0) return true;
   const uint32_t pi = rackParamIndex(name);
   if (td.rackParamConsumed(dev, pi)) return true;
@@ -3094,10 +3526,12 @@ bool declaresParam(const TrackDevs& td, uint32_t dev, std::string_view name, con
 Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptions& o, const TrackDevs& devs,
                                 const WirePlan& wp, bool& voices, uint32_t& polyphony, uint32_t track,
                                 std::vector<ModulationTap>* taps, uint32_t clipSlot,
-                                std::vector<LoweredProject::MetaResource>* resources) {
+                                std::vector<LoweredProject::MetaResource>* resources, const Callees* lib) {
   const Node& n = pl.nodes[index];
   Ir ir(patchName(n));
   Build b{ir, o, devs, std::vector<NodeIndex>(devs.size(), graph::kNone), {}};
+  b.lib = lib;  // TX.cross-track
+  b.wp = &wp;
   b.track = n.track;  // T4.18
   b.resources = resources;  // TX.spectrum
   b.rackOut.assign(devs.size(), kPending);  // TX.all-free-fix1
@@ -3110,6 +3544,11 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
   // The path's head takes the notes (TX.all-free-fix1: the track may play voices without it: TrackDevs::extra).
   const bool instrument = n.kind == Kind::Midi && devs.headVoices;
   voices = n.kind == Kind::Midi && devs.voices;
+  // TX.cross-track: voices only for the guests it holds play only while one of them is not refused.
+  if (voices && !devs.ownVoices) {
+    voices = false;
+    for (const WirePlan::GuestPlan& gp : wp.guests) voices = voices || (gp.host == index && !gp.refused);
+  }
   // T4.12-fix1: the instrument's `voices` setting; T4.8: an Instrument Rack's largest (its chains share the voices).
   polyphony = 0;
   if (voices)
@@ -3173,7 +3612,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     if (devs[first].rack >= 0) {
       // T4.8: an Instrument Rack: its chains' voices, summed per chain.
       const Voices v = instrumentRack(b, first, kPending);
-      x = v.x;
+      x = withGuests(b, first, v.x);  // TX.cross-track: + its guests'
       width = v.width;
       b.rackOut[first] = v.x;  // TX.all-free-fix1: what wires from it read
       voiceDone(b, v.done, devs[first].device->id.value);
@@ -3305,7 +3744,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
         }
         width = outWidth(*last) == graph::kWidthStereo ? graph::kWidthStereo : graph::kWidthMono;
       } else {
-        x = ir.atom("voice_sum", {PortRef{syn, 0}}, kVoiceSum);
+        x = withGuests(b, first, ir.atom("voice_sum", {PortRef{syn, 0}}, kVoiceSum));  // TX.cross-track: + its guests'
         const auto done = ir.patch().findOutput(syn, "done");
         voiceDone(b, done ? PortRef{syn, static_cast<uint16_t>(*done)} : kPending, devs[first].device->id.value);
         width = graph::kWidthMono;
@@ -3340,6 +3779,10 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
   // non-const `in`) reading zero until a wire reaches it, the other inputs their defaults; their outputs feed only
   // wires (unread, the compiler drops them).
   for (const uint32_t k : devs.offPath) {
+    if (devs[k].phantom) continue;  // TX.cross-track: not called (its outputs are its guests', outOf)
+    if (devs[k].isGuest && devs[k].guest != graph::kNone)
+      if (const WirePlan::GuestPlan* gp = wp.guestPlan(devs[k].guest); gp == nullptr || gp->refused || gp->host != index)
+        continue;  // TX.cross-track: a refused guest plays nothing
     if (devs[k].rack >= 0) {  // TX.all-free-fix1: a rack off the path
       uint16_t w = graph::kWidthStereo;
       if (devs[k].plays) {  // an Instrument Rack a notes cable feeds: its voices, summed, read by wires
@@ -3355,6 +3798,18 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     }
     const NodeIndex c = callDevice(ir, devs[k]);
     b.calls[k] = c;
+    if (devs[k].isGuest && devs[k].guest != graph::kNone) {
+      // TX.cross-track: the pins its home's wires drive take their values from there (`in gp<device>_<pin>`), before
+      // this track's own wires into it (the notes cable into a meta module's input) add to them.
+      constexpr graph::PortType kAnyGlobal = graph::portType(graph::Kind::Real, graph::Rate::Infer, graph::Poly::Global, graph::kWidthMono);
+      if (const auto it = wp.fwdPins.find(devs[k].device->id.value); it != wp.fwdPins.end()) {
+        const uint32_t e = b.lib->guests[devs[k].guest].entity.value;
+        for (size_t j = 0; j < it->second.size(); ++j)
+          ir.patch().connect(ir.input(guestPinName(devs[k].device->id, it->second[j]), b.c0(),
+                                      nodeIdFor(NodeRole::Wire, e, kGPinIn + static_cast<uint32_t>(j)), kAnyGlobal),
+                             PortRef{c, it->second[j]});
+      }
+    }
     if (devs[k].plays) {  // TX.all-free-fix1: a stock instrument a notes cable feeds (its outputs per voice, read by wires)
       const auto done = ir.patch().findOutput(c, "done");
       voiceDone(b, done ? PortRef{c, static_cast<uint16_t>(*done)} : kPending, devs[k].device->id.value);
@@ -3365,6 +3820,30 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     if (const uint32_t in = own ? graph::kNone : audioInIndex(*devs[k].callee); in != graph::kNone) {
       if (b.freeZero.node == graph::kNone) b.freeZero = ir.konst(-0.0, kCFreeZero);
       ir.patch().connect(b.freeZero, PortRef{c, static_cast<uint16_t>(in)});
+    }
+  }
+  // TX.cross-track: a block with guests takes every output its home reads from them (lower(): one wire per output),
+  // whether or not a reader here asked for it (a reader through another reducer reads only its home's voices).
+  if (lib != nullptr && !lib->guests.empty())
+    for (uint32_t k = 0; k < devs.size(); ++k)
+      if (devs[k].guest != graph::kNone && !devs[k].isGuest)
+        for (uint16_t q = 0; q < kGuestPorts; ++q) (void)guestImports(b, k, q);
+  // TX.cross-track: the guests this track plays send home what their homes read (each output summed over the voices).
+  for (const uint32_t k : devs.offPath) {
+    const LDev& d = devs[k];
+    if (!d.isGuest || d.guest == graph::kNone) continue;
+    const WirePlan::GuestPlan* gp = wp.guestPlan(d.guest);
+    if (gp == nullptr || gp->refused || gp->host != index) continue;
+    const uint32_t e = b.lib->guests[d.guest].entity.value;
+    for (uint32_t q = 0; q < kGuestPorts; ++q) {
+      if ((gp->ports >> q & 1u) == 0) continue;
+      PortRef y = kPending;
+      if (d.rack >= 0) {
+        if (q == 0) y = b.rackOut[k];  // (an Instrument Rack's output: its voices summed already)
+      } else if (b.calls[k] != graph::kNone) {
+        y = ir.atom("voice_sum", {PortRef{b.calls[k], static_cast<uint16_t>(q)}}, nodeIdFor(NodeRole::Wire, e, kGHostSum + q));
+      }
+      if (y.node != graph::kNone) ir.exportPort(guestPortName(b.lib->guests[d.guest].entity, q), y, nodeIdFor(NodeRole::Wire, e, kGExport + q));
     }
   }
   // TX.groups-fix1: a voice run ending in a group whose Out a voice-ending member feeds ends by that member's `done`.
@@ -3385,9 +3864,10 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
         constexpr graph::PortType kRoute = graph::portType(graph::Kind::Infer, graph::Rate::Audio, graph::Poly::Global, graph::kWidthInfer);
         src = ir.input("m" + std::to_string(w.wire->id.value), b.c0(), wid(kWIn), kRoute);
       } else {
-        src = w.fromTrack ? b.sourceX : outOf(b, w.fromDev, w.fromPort);
+        const PortRef summed = guestReduced(b, w);  // TX.cross-track: its own voices and its guests', summed
+        src = w.fromTrack ? b.sourceX : summed.node != graph::kNone ? summed : outOf(b, w.fromDev, w.fromPort);
         if (src.node == graph::kNone) continue;
-        if (w.reduce) src = ir.atom(reducerAtom(w.wire->reducer), {src}, wid(kWReduce));
+        if (w.reduce && summed.node == graph::kNone) src = ir.atom(reducerAtom(w.wire->reducer), {src}, wid(kWReduce));
       }
       if (w.delayed) src = ir.atom("z1", {src}, wid(kWDelay));
       y = y.node == graph::kNone ? src : ir.atom("add", {y, src}, wid(kWSum));
@@ -3489,6 +3969,9 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
     for (uint32_t k = 0; k < td.size(); ++k) {
       const LDev& d = td[k];
       const std::string dev = std::to_string(d.device->id.value);
+      if (d.isGuest && d.guest != graph::kNone)  // TX.cross-track: a refused guest (and its rack's chains) is not called
+        if (const WirePlan::GuestPlan* gp = wp.guestPlan(d.guest); gp == nullptr || gp->refused || gp->host != index)
+          continue;
       if (d.rack >= 0) {
         for (uint32_t i = 0; i < kRackParams; ++i) {
           const std::string name = rackParamName(i);
@@ -3513,7 +3996,7 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
       }
       // TMM.3: the params of its nested meta modules (unwired at their call: runtime params of the track patch).
       // (TX.groups-fix1: a switched-off device's pass-through has none.)
-      if (const auto it = lib->metaSites.find(d.device->id.value); !d.bypass && it != lib->metaSites.end())
+      if (const auto it = lib->metaSites.find(d.device->id.value); !d.bypass && !d.phantom && it != lib->metaSites.end())
         for (const MetaSite& s : *it->second)
           for (size_t i = 0; i < s.type->params.size(); ++i) {
             if (s.wired[i]) continue;
@@ -3843,7 +4326,7 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
   out.metaResources = std::move(uc.metaResources);
   const std::vector<TrackDevs> devs = allDevices(pl, lib, &out.missingDevices);
   PortDeps deps(lib->lib);
-  const WirePlan wp = planWires(q, pl, devs, deps);  // T4.7
+  const WirePlan wp = planWires(q, pl, devs, deps, lib);  // T4.7
   out.wires = withLinks(wp.states, *cables, pl);
   std::unordered_map<uint32_t, std::shared_ptr<const LoweredPatch>> prev;  // track id → its previous patch
   if (previous != nullptr)
@@ -3855,7 +4338,7 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     // T5.3: an audio track's clip slot (the engine's audio sequence it plays; LowerOptions::clipSlotOf).
     const uint32_t clipSlot = n.kind == Kind::Audio && o.clipSlotOf ? o.clipSlotOf(n.track->id) : graph::kNone;
     if (n.kind == Kind::Audio && clipSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
-    auto built = buildPatch(pl, i, o, devs[i], wp, voices, polyphony, i, &out.taps, clipSlot, &out.metaResources);
+    auto built = buildPatch(pl, i, o, devs[i], wp, voices, polyphony, i, &out.taps, clipSlot, &out.metaResources, lib);
     if (!built.ok()) return built.error();
     std::shared_ptr<const LoweredPatch> lp;
     const uint64_t hash = patchHash(built.value());
@@ -3900,6 +4383,22 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
       // (TX.all-free-fix1: a cable into another track's mixer is an audio route, as a send is)
       out.graph.wires.push_back({{w.fromNode, m}, {w.toNode, m}, w.toMixer ? W::Audio : W::Modulation});
     }
+  // TX.cross-track (lower.h "Cross-track notes cables"): each guest's outputs its home reads (an audio route, like a
+  // send), and the values of its block's pins the home's wires drive (modulation, from the home to every guest).
+  for (uint32_t g = 0; g < wp.guests.size(); ++g) {
+    const WirePlan::GuestPlan& gp = wp.guests[g];
+    if (gp.host == graph::kNone || gp.refused) continue;
+    for (uint32_t gport = 0; gport < kGuestPorts; ++gport)
+      if ((gp.ports >> gport & 1u) != 0) {
+        const std::string port = guestPortName(lib->guests[g].entity, gport);
+        out.graph.wires.push_back({{gp.host, port}, {gp.homeNode, port}, W::Audio});
+      }
+    if (const auto it = wp.fwdPins.find(lib->guests[g].device->id.value); it != wp.fwdPins.end())
+      for (const uint16_t pin : it->second) {
+        const std::string port = guestPinName(lib->guests[g].device->id, pin);
+        out.graph.wires.push_back({{gp.homeNode, port}, {gp.host, port}, W::Modulation});
+      }
+  }
   for (const ModulationTap& t : out.taps) out.graph.taps.push_back({t.track, t.port});
   out.graph.output = {pl.master, "out"};
   return out;
@@ -3916,7 +4415,7 @@ std::vector<LoweredParam> paramsWith(const Project& p, bool tuningNodes, const C
   WirePlan wp;
   if (lib != nullptr && !wiresOf(p).empty()) {
     PortDeps deps(lib->lib);
-    wp = planWires(p, pl, devs, deps);
+    wp = planWires(p, pl, devs, deps, lib);
   }
   std::vector<LoweredParam> out;
   for (uint32_t i = 0; i < pl.nodes.size(); ++i) addParams(pl, i, aud, out, lib, wp, devs[i]);
@@ -3928,7 +4427,7 @@ std::vector<WireState> wireStatesWith(const Cables& c, const Callees& lib) {
   std::vector<WireState> states;
   if (!wiresOf(c.q).empty()) {
     PortDeps deps(lib.lib);
-    states = planWires(c.q, pl, allDevices(pl, &lib, nullptr), deps).states;
+    states = planWires(c.q, pl, allDevices(pl, &lib, nullptr), deps, &lib).states;
   }
   return withLinks(std::move(states), c, pl);
 }

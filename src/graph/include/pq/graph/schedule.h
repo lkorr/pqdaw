@@ -27,7 +27,11 @@
 //    earliest stage of its poly after everything it reads. A voice reducer (voice_sum …) runs inside the voice stage
 //    of its input, accumulating over the groups, and its global result is available from the next stage on. A
 //    global audio-rate value read by voice ops is broadcast once per block into an 8-lane buffer at the end of the
-//    preceding global stage. A feedback loop may not cross the voice/global boundary (error).
+//    preceding global stage. A feedback loop may not cross the voice/global boundary (error). (TX.cross-track: a loop
+//    between tracks is an ordinary global loop here — the partition merged its tracks into one unit, so its SCC is one
+//    per-sample Loop region of one global stage. TX.voice-loop will lift this error by fusing an SCC that spans voice
+//    and global stages into one per-sample region that runs each active voice group's part, the reduction and the
+//    global part per sample; the lowering refuses such wires until then: doc::WireRefusal::VoiceLoop.)
 // 4. Regions inside a stage, in this order:
 //      Control  — every param/const-rate op of the stage, once per block (frames = 1, lanes = 8: inputs and outputs
 //                 are 8-float patterns, kernel.h), then

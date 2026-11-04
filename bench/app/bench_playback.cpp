@@ -267,6 +267,71 @@ struct DeviceAutoRig {
   }
 };
 
+// TX.cross-track: T MIDI tracks, each BasicSynth (one held note) in a group of its own; `closed`: a cable from each
+// group's own signal into its track's mixer closes a loop between the two tracks (its z⁻¹ on the cable): the loop's
+// stages (the track's mixer sum and gains, the group's input) run per sample, everything else block-wise.
+struct LoopRig {
+  DocumentStore store;
+  std::unique_ptr<app::ProjectLink> link;
+  std::vector<float> l = std::vector<float>(kBlock), r = std::vector<float>(kBlock);
+  int64_t time = 0;
+  LoopRig(uint32_t tracks, bool closed, bool jit) {
+    IdSource& ids = store.ids();
+    auto run = [&](const ops::EditResult& e) {
+      if (!e.ok() || !store.dispatch(e->command).ok()) std::exit(5);
+      return *e;
+    };
+    for (uint32_t t = 0; t < tracks; ++t) {
+      const TrackId id = run(ops::createTrack(*store.current(), ids, TrackKind::Midi)).tracks.at(0);
+      NoteClip c;
+      c.id = ids.clip();
+      c.start = 0;
+      c.length = 1000 * kPpq;
+      Note n;
+      n.id = ids.note();
+      n.start = 0;
+      n.length = 1000 * kPpq;
+      n.pitch = tuning::PitchId::fromDegree(static_cast<int32_t>(t % 12), 0);
+      n.velocity = 90.0f;
+      c.notes = NoteSeq::fromNotes({n}).value();
+      if (!store.dispatch(AddClip{id, std::make_shared<const NoteClip>(std::move(c))}).ok()) std::exit(6);
+      const TrackId g = run(ops::groupTracks(*store.current(), ids, std::vector<TrackId>{id})).tracks.at(0);
+      if (closed) {
+        Wire w;
+        w.noteSource = g;
+        w.mixer = id;
+        (void)run(ops::connect(*store.current(), ids, std::move(w)));
+      }
+    }
+    app::LinkConfig c;
+    c.compileThread = false;
+    c.sleepAfterMs = 0.0f;
+    c.jit = jit;
+    auto made = app::ProjectLink::create(c, store.current());
+    if (!made.ok()) {
+      std::fprintf(stderr, "%s\n", made.error().message.c_str());
+      std::exit(3);
+    }
+    link = std::move(made.value());
+    link->play(0);
+    if (jit) {
+      for (int i = 0; i < 200000; ++i) {
+        const app::JitStats js = link->jitStats();
+        if (js.published + js.errors + js.stale >= js.wanted && js.refined + js.refineStale + js.refineErrors >= js.firstImages)
+          break;
+        block();
+      }
+      link->collect();
+    }
+    for (int i = 0; i < 400; ++i) block();
+  }
+  void block() {
+    float* ch[2] = {l.data(), r.data()};
+    link->engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, time});
+    time += kBlock;
+  }
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -314,5 +379,15 @@ int main(int argc, char** argv) {
       std::printf("  %s: %.2f %% of a core (median)\n", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
     });
   }
+  // TX.cross-track: 16 tracks in groups, each loop closed (per sample) or open (the same project without the cables).
+  for (const bool jit : {false, true})
+    for (const bool closed : {false, true}) {
+      const std::string name = std::string("cross-track loop/16 ") + (closed ? "closed" : "open") + (jit ? " jit" : " interp");
+      runner.add(name, [jit, closed, name](bench::Context& c) {
+        LoopRig rig(16, closed, jit);
+        const bench::Stats s = c.measure([&] { rig.block(); }, 1, "ns/block");
+        std::printf("  %s: %.2f %% of a core (median)\n", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
+      });
+    }
   return runner.main(argc, argv);
 }

@@ -292,7 +292,9 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //   Invalid   the port or param is not one of the patch's (an edited patch lost it), or the param is a bool.
 //   Refused   left out, and the status line and the views say why (WireState::reason):
 //             TwoInstruments: across tracks, it would close a cycle through two instrument tracks, which the engine
-//             cannot run (one voice table per image, QUESTIONS Q84).
+//             cannot run (one voice table per image, QUESTIONS Q84). TX.cross-track: also a notes cable whose guest
+//             would (see "Cross-track notes cables"). Every other loop between tracks is lowered (Delayed when it
+//             is delay-free): see "Loops between tracks".
 //             VoiceLoop (TMM.13-fix1 H3): it would close a loop through per-voice and global signals (a voice
 //             reducer inside the loop, e.g. a later effect's output back into a meta voice run's Phase accumulator
 //             `hz`), whose 1-sample delay needs the voices and the global part to alternate per sample: the
@@ -386,8 +388,38 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // first in an Instrument Rack's chain (the notes), else nothing (the document no longer refuses one elsewhere in a chain).
 // A cable into ANOTHER TRACK'S MIXER (from a block or a track's own signal) is a send-like route: its every channel (voices
 // summed by its reducer) leaves as `export m<wire>`, arrives as `in m<wire>` (width inferred) and is summed into that
-// mixer; graph::WireKind::Audio between the tracks. It is Refused (WireRefusal::Cycle) when it closes a cycle between
-// tracks (the target's output reaches the source's track through routing, sends or other cross-track wires).
+// mixer; graph::WireKind::Audio between the tracks. TX.cross-track (SPEC §15 2026-11-03 "tracks are not walls"): one that
+// closes a cycle between tracks (the target's output reaches the source's track through routing, sends or other
+// cross-track wires) is planned like every wire: Delayed (its z⁻¹, per sample) when the loop is delay-free, Refused only
+// through two instrument tracks (TwoInstruments) or through the voices (VoiceLoop). See "Loops between tracks" below.
+// LOOPS BETWEEN TRACKS (TX.cross-track; SPEC §15 2026-11-03 "tracks are not walls"): the project is one circuit. A wire
+// that closes a delay-free loop through other tracks — a cable into another track's mixer, a modulation or input wire,
+// a send (Plan's sends: a looping send has its z1, never a block delay) — gets the circuit editor's rule: the wire that
+// closes it (taken in id order; sends before wires) has the one-sample z1, deterministic, and the loop runs PER SAMPLE:
+// the partition merges the loop's tracks into one unit (graph/project.h: cycles between units merge) and the scheduler
+// runs the loop's strongly connected part as one per-sample Loop region (graph/schedule.h step 4); the rest of every
+// track keeps block processing, and a project without such loops lowers exactly as before. Refused only where the
+// engine cannot run it yet: through two instrument tracks (TwoInstruments: one voice table per unit, Q84; QUESTIONS
+// Q?-TX.cross-track-a) or through the voices' sum (VoiceLoop: TX.voice-loop).
+// CROSS-TRACK NOTES CABLES (TX.cross-track; Callees::Guest, WirePlan::GuestPlan): a notes cable (port "") from a MIDI
+// track A's source into a block X of another track B plays X with A's VOICES — a voice context per source, not per
+// track. X is a stock instrument or an Instrument Rack that plays (into its notes input), or a meta module off B's path
+// (into an input of its: Frequency the note's Hz, Phase its phase, Gate / Signal its own default, as a notes cable on
+// its own track); anything else (a stock effect, a param, a meta module on B's path) is Inactive. X then has a GUEST:
+// an instance lowered in A's patch (a block off A's path, a voice consumer of A: A's polyphony, its `done` one of A's
+// terms), one guest per (block, source). Its HOME instance in B plays only the notes of B that reach it (B's path head,
+// a notes cable of B's own); without them it is a PHANTOM: not called. What X outputs, as B reads it, is every
+// instance's: the guests' outputs summed over their voices cross as `export g<e>_<o>` (A) → `in g<e>_<o>` (B) (e = the
+// guest's first notes cable, the NodeRole::Wire entity of every guest node; graph::WireKind::Audio) and are added where
+// B sums X's voices — after its voice_sum on B's path, into a wire with the Sum reducer, everywhere for a phantom (a
+// wire with another reducer reads only the home's voices). The pins of X that B's wires drive (its params' and inputs'
+// values, the home's site math) are sent to every guest (`export gp<X>_<pin>` → `in gp<X>_<pin>`, Modulation; at most
+// 8 pins, not an Instrument Rack's): a guest reads B's modulation as a global signal (B's per-voice values are not in
+// A's voice context). A guest whose host and home would close a track cycle through two instrument tracks (A's voices
+// reach B, B's wires reach A, both play voices) is refused: its notes cable is Refused (TwoInstruments), the rest plays.
+// Limits (QUESTIONS Q?-TX.cross-track-a): blocks wired from X on B are not guests themselves (a meta voice run spread over
+// B's blocks hears A's voices summed after X); an Instrument Rack's guest takes no forwarded pins; a guest rack's chain
+// mixer automation lanes are its home's (the guest plays the static chain gains).
 // FREE devices (blocks off the main path; before TX.all-free model.h Device::free): called in their track patch after
 // the series (TrackDevs::offPath), never chained:
 // a stock device's first audio `in` reads −0 until a wire reaches it; a meta device plays its Nested form (every input
@@ -430,9 +462,9 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // (tests/app/test_groups.cpp, "groups-fix1"). A hand-built group there follows the same rules whatever is inside it (a
 // stock device inside sums what reaches it, as everywhere; ops::groupInCircuit only groups stretches of the run).
 enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused };
-// TX.all-free-fix1: Cycle — a cable into another track's mixer whose target's output reaches the source's track (a
-// cycle between tracks; lower.h "The main path").
-enum class WireRefusal : uint8_t { None, TwoInstruments, VoiceLoop, Cycle };  // why a Refused wire is (see above)
+// (TX.all-free-fix1's Cycle — a cable into another track's mixer closing a cycle between tracks — is gone: TX.cross-track
+// lowers that loop with its z⁻¹.)
+enum class WireRefusal : uint8_t { None, TwoInstruments, VoiceLoop };  // why a Refused wire is (see above)
 struct WireState {
   WireId id;
   WireStatus status = WireStatus::Lowered;

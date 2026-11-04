@@ -1114,15 +1114,16 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
     const bool notes = isTrackSource(a) && isNoteSource(pp, a);  // a MIDI track's note source
     // TX.all-free-fix1: another track's mixer takes a block's output or a track's own audio (a send-like route).
     if (notes && t.kind == NodeKind::Mixer && t.band != a.band)
-      return "Wire: a track's notes go into its own blocks; another track's mixer takes audio";
+      return "Wire: a track's notes go into blocks (an instrument's notes, a meta module's input); another track's mixer takes audio";
     if (notes && t.kind == NodeKind::Mixer && from_.port != 0)
       return "Wire: a mixer takes audio (a block's output); a note output goes onto a parameter";
     // The notes (output 0) onto a pin that is not a main input, or onto a block's body (it would mean its param menu).
     if (notes && from_.port == 0 && t.kind != NodeKind::Mixer && (onPin ? t.inputs[h.port].param : !onPin))
       return "Wire: the notes go into a main input (an instrument's notes, a meta module's input); a parameter takes a note output (Hz, gate, velocity)";
-    // An instrument's notes take only its own track's notes (the head of the path): no audio, no other output.
-    if (onPin && t.inputs[h.port].name == "notes" && !(isTrackSource(a) && from_.port == 0 && a.band == t.band))
-      return "Wire: an instrument's notes input takes its own track's notes (from the track's source)";
+    // An instrument's notes input takes notes: a MIDI track's source (output 0) — TX.cross-track (SPEC §15 2026-11-03
+    // "tracks are not walls"): any track's, which then plays it with its voices — no audio, no other output.
+    if (onPin && t.inputs[h.port].name == "notes" && !(notes && from_.port == 0))
+      return "Wire: an instrument's notes input takes a MIDI track's notes (from a track's source)";
     return nullptr;
   }
   if (a.kind != NodeKind::Mixer) return nullptr;
@@ -1256,11 +1257,12 @@ void ProjectCanvas::finishWire(Vec2 pos) {
       const Node& t = pp.nodes[target.node];
       if (const Port* q = wireTarget(t, target.port)) {
         std::string param = q->name;
-        // TX.all-free: an instrument's `notes` takes only its own track's source (the notes: a main link, the head of
-        // the path); a rack's input only a main output (a main link). Any other output there is refused, as before.
+        // TX.all-free: an instrument's `notes` takes a track's source (the notes: TX.cross-track — any MIDI track's, which
+        // then plays it with its voices; its own track's is a main link, the head of the path); a rack's input only a
+        // main output (a main link). Any other output there is refused, as before.
         const bool notesIn = param == "notes";
         const bool mainOnly = notesIn || (t.rack && !q->param);
-        const bool fromSource = isTrackSource(a) && from_.port == 0 && a.band == t.band;
+        const bool fromSource = isTrackSource(a) && from_.port == 0 && (a.band == t.band || (notesIn && isNoteSource(pp, a)));
         const bool fromMain = fromSource || (!notesIn && a.kind == NodeKind::Device &&
                                              a.outputs[from_.port].name == v.mainPorts(a.device).out);
         if (mainOnly && !fromMain) return;

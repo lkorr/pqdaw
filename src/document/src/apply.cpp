@@ -2236,7 +2236,7 @@ Res apply_(const Snapshot& s, const AddWire& c, ChangeSet& cs) {
     if (!c.wire.fromNoteSource() && findDevice(*s, c.wire.from).chain != nullptr)
       return invalid("a track's mixer takes wires from tracks' blocks and sources (not from inside a rack)");
     if (c.wire.fromNoteSource() && sourceTrack != t && sourceTrack->kind == TrackKind::Midi)
-      return invalid("a track's notes go into its own blocks (a mixer takes audio)");
+      return invalid("a track's notes go into blocks, of any track (a mixer takes audio)");
   } else {
     const DeviceLoc to = findDevice(*s, c.wire.to);
     if (!to.track) return notFound("wire target device not found");
