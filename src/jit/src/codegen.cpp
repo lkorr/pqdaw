@@ -366,6 +366,24 @@ private:
     // cascade pipelines across frames: per frame the cost tends to the longest recursion, not the sum.
     memo_.assign(s_.regions.size(), 0);
     for (uint32_t r = 0; r < s_.regions.size(); ++r) memo_[r] = memoizable(s_.regions[r]) ? 1 : 0;
+    // TX.vca-knob2 (graph::Schedule::memoMask): a memo region whose ops read different params runs, in a block whose
+    // params changed, only the runs of ops (consecutive, one mask) that read a changed one. Each run is its own group:
+    // a value it hands to another run is stored (the scheduler gave it a buffer of its own).
+    masked_.assign(s_.regions.size(), 0);
+    for (uint32_t r = 0; r < s_.regions.size(); ++r) {
+      const g::Region& reg = s_.regions[r];
+      if (!memo_[r] || s_.memoMask.size() != n || reg.numOps < 2) continue;
+      bool mixed = false;
+      for (uint32_t i = reg.firstOp + 1; i < reg.firstOp + reg.numOps && !mixed; ++i)
+        mixed = s_.memoMask[i] != s_.memoMask[reg.firstOp];
+      if (!mixed) continue;
+      masked_[r] = 1;
+      int32_t run = -1;
+      for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) {
+        if (i == reg.firstOp || s_.memoMask[i] != s_.memoMask[i - 1]) run = next++;
+        if (grp_[i] >= 0) grp_[i] = run;
+      }
+    }
     chainEnd_.assign(s_.regions.size(), -1);
     chainCost_.assign(s_.stages.size(), 0);
     for (uint32_t sk = 0; sk < s_.stages.size(); ++sk) {
@@ -1834,9 +1852,38 @@ private:
     llvm::BasicBlock* done = llvm::BasicBlock::Create(C_, "memo_after", F_);
     B_.CreateCondBr(B_.CreateICmpEQ(flag, c32(0)), run, done);
     B_.SetInsertPoint(run);
-    emitRegion(r);
+    if (masked_[r]) emitMaskedRegion(r);
+    else emitRegion(r);
     B_.CreateBr(done);
     B_.SetInsertPoint(done);
+  }
+
+  // TX.vca-knob2: a memo region in runs of one param mask (graph::Schedule::memoMask), each behind a test of the
+  // block's changed-param mask (HostLayout::memoOff + 2, a u64: JitImage::process from ImageHost::paramsChangedMask;
+  // all bits in the first block). A run of constants only (mask 0) runs in the first block. The values a run hands on
+  // are in memory (store elimination: each run is a group), so each run starts with an empty value map.
+  void emitMaskedRegion(uint32_t r) {
+    const g::Region& reg = s_.regions[r];
+    llvm::Type* i64 = llvm::Type::getInt64Ty(C_);
+    Value* changed = B_.CreateAlignedLoad(i64, B_.CreateConstInBoundsGEP1_64(f32_, buf_, L_.memoOff + 2), llvm::Align(8));
+    const uint32_t end = reg.firstOp + reg.numOps;
+    for (uint32_t i = reg.firstOp; i < end;) {
+      const uint64_t m = s_.memoMask[i];
+      uint32_t j = i + 1;
+      while (j < end && s_.memoMask[j] == m) ++j;
+      Value* cond = m != 0 ? B_.CreateICmpNE(B_.CreateAnd(changed, llvm::ConstantInt::get(i64, m)), llvm::ConstantInt::get(i64, 0))
+                           : B_.CreateICmpEQ(changed, llvm::ConstantInt::get(i64, ~uint64_t{0}));
+      llvm::BasicBlock* body = llvm::BasicBlock::Create(C_, "memo_part", F_);
+      llvm::BasicBlock* after = llvm::BasicBlock::Create(C_, "memo_part_after", F_);
+      B_.CreateCondBr(cond, body, after);
+      B_.SetInsertPoint(body);
+      Map map;
+      const Frame fr{c64(0), 8u, &map, false};
+      for (uint32_t k = i; k < j; ++k) emitFrameOp(k, fr);
+      B_.CreateBr(after);
+      B_.SetInsertPoint(after);
+      i = j;
+    }
   }
 
   // A global Control region whose results stay valid while the params do (the interpreter's RegionRun::memo rule,
@@ -2438,6 +2485,7 @@ private:
   std::vector<int32_t> chainEnd_;  // per region: the last region of the chain it starts, or −1
   std::vector<uint32_t> chainCost_;  // per stage: the cost of its largest chain (T4.12: pair functions)
   std::vector<uint8_t> memo_;        // per region: a memo Control region (Q126)
+  std::vector<uint8_t> masked_;      // per region: a memo region run in param-mask runs (TX.vca-knob2)
   // current function
   bool rampMode_ = false;          // TX.smooth: emitting a unit's copy for a block in which one of its ramps moves
   bool steady_ = false;            // TX.smooth: emitting a stage's code for a block in which every ramp rests

@@ -67,9 +67,11 @@
 // in travel through the curve (Type::unitsLaw), as Q183 first had it. No param of the VCA takes a knob curve
 // (ParamSpec::noKnobCurve): its curve box is its curve.
 //
-// COST: settled, one multiply per sample (the gain atom); the curve is param-rate arithmetic (once per block: the
-// markers' base positions add ≈ 20 exps and 200 ops per block, ≈ 2 ops per sample at 128) unless `value` is modulated
-// at audio rate, then per sample: Log ≈ 22 ops + one exp + the warp's segment choice (≈ 20 ops), Bend ≈ 8 ops + one exp. Multiplying by
+// COST: settled, one multiply per sample (the gain atom); the curve is param-rate arithmetic in the stage's memo
+// Control region: it runs only in a block whose params changed, and then only the ops that read a changed param
+// (TX.vca-knob2, graph::Schedule::memoMask): the markers' placement (≈ 20 exps and 400 ops) when the range, the zone or a
+// marker changes, the knob's ≈ 30 ops when `value` moves at param rate (automation, a macro, a drag). Unless `value` is
+// modulated at audio rate, then per sample: Log ≈ 22 ops + one exp + the warp's segment choice (≈ 20 ops), Bend ≈ 8 ops + one exp. Multiplying by
 // an audio-rate value is ring modulation: its sidebands (in ± value frequencies) can fold above Nyquist; it is not
 // oversampled (QUESTIONS Q?-TMM.14-a).
 

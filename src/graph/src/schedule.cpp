@@ -83,6 +83,7 @@ struct Val {
   uint32_t buffer = kNone;
   NodeIndex node = kNone; // the node whose op defines it (for dumps)
   bool ramp = false;      // TX.smooth-fix1: a param_ramp's output (its buffers come after every other value's)
+  bool own = false;       // TX.vca-knob2: a memo candidate's value read across a mask boundary: a buffer of its own
 };
 
 // A kernel input of an op: which registry input of the node feeds kernel input k.
@@ -2035,6 +2036,69 @@ private:
   }
 
   // ---- buffers ------------------------------------------------------------------------------------------------
+  // TX.vca-knob2 (schedule.h "5. Buffers", Schedule::memoMask): the memo candidates' op masks, and the values read
+  // across a mask boundary (by an op of another mask, outside the region, as an output or a probe), which get buffers
+  // of their own (`own`, live to the end). Values read only by ops of their own mask share buffers as before: those
+  // ops run or are skipped together.
+  void memoMasks(uint32_t kForever) {
+    Schedule& s = S();
+    const auto numOps = static_cast<uint32_t>(s.ops.size());
+    s.memoMask.clear();
+    std::vector<uint32_t> regionOfOp(numOps, kNone);
+    bool any = false;
+    for (uint32_t r = 0; r < s.regions.size(); ++r) {
+      const Region& reg = s.regions[r];
+      if (reg.kind != RegionKind::Control || reg.poly != Poly::Global || reg.numSolves != 0 || reg.numOps < 2) continue;
+      bool ok = true;
+      for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps && ok; ++i) {
+        const Op& op = s.ops[i];
+        ok = op.kind == OpKind::Kernel && op.state == kNone && op.resource == kNone;
+        for (const Operand& o : s.inputs(op)) {
+          if (!ok) break;
+          if (o.kind == Operand::Kind::Param || o.kind == Operand::Kind::Const) continue;
+          ok = o.kind == Operand::Kind::Buffer && vals_[o.index].def >= reg.firstOp && vals_[o.index].def < i;
+        }
+        for (const Operand& o : s.outputsOf(op)) ok = ok && o.kind == Operand::Kind::Buffer;
+      }
+      if (!ok) continue;
+      any = true;
+      for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) regionOfOp[i] = r;
+    }
+    if (!any) return;
+    s.memoMask.assign(numOps, 0);
+    std::vector<uint64_t> valMask(vals_.size(), 0);
+    for (uint32_t i = 0; i < numOps; ++i) {
+      if (regionOfOp[i] == kNone) continue;
+      const Op& op = s.ops[i];
+      uint64_t m = 0;
+      for (const Operand& o : s.inputs(op)) {
+        if (o.kind == Operand::Kind::Param) m |= uint64_t{1} << (o.index & 63u);
+        else if (o.kind == Operand::Kind::Buffer) m |= valMask[o.index];
+      }
+      s.memoMask[i] = m;
+      for (const Operand& o : s.outputsOf(op)) valMask[o.index] = m;
+    }
+    auto inCandidate = [&](uint32_t val) {
+      const uint32_t d = vals_[val].def;
+      return d < numOps && regionOfOp[d] != kNone;
+    };
+    auto own = [&](uint32_t val) {
+      vals_[val].own = true;
+      vals_[val].live = kForever;
+    };
+    for (const Use& u : uses_) {
+      if (!inCandidate(u.val)) continue;
+      const uint32_t r = regionOfOp[vals_[u.val].def];
+      if (u.region != r || u.after || u.pos >= numOps || s.memoMask[u.pos] != valMask[u.val]) own(u.val);
+    }
+    for (const OutputRef& o : s.outputs)
+      if (o.value.kind == Operand::Kind::Buffer && inCandidate(o.value.index)) own(o.value.index);
+    for (const ProbeRef& p : s.probes)
+      if (p.value.kind == Operand::Kind::Buffer && inCandidate(p.value.index)) own(p.value.index);
+    for (const Ramp& rp : s.ramps)
+      if (rp.source.kind == Operand::Kind::Buffer && inCandidate(rp.source.index)) own(rp.source.index);
+  }
+
   void allocateBuffers() {
     Schedule& s = S();
     const auto numOps = static_cast<uint32_t>(s.ops.size());
@@ -2103,6 +2167,7 @@ private:
         v.live = kForever;
       }
     }
+    memoMasks(kForever);
     // Linear scan over op positions 0 … numOps (values may be defined at numOps: an empty solve body at the end).
     // A value whose live end is 2·p or 2·p + 1 dies at p: its buffer is free for values defined at p + 1 and later.
     const auto numVals = static_cast<uint32_t>(vals_.size());
@@ -2155,7 +2220,7 @@ private:
         if (op.kind == OpKind::Kernel && op.numOut > 0 && dsp::kernelInfo(op.kernel).inPlaceOk) {
           const Operand out0 = s.operands[op.firstOperand + op.numIn];
           if (opt_.shareBuffers && out0.kind == Operand::Kind::Buffer && !vals_[out0.index].perGroup &&
-              vals_[out0.index].buffer == kNone) {
+              !vals_[out0.index].own && vals_[out0.index].buffer == kNone) {
             Val& o = vals_[out0.index];
             for (uint32_t j = 0; j < op.numIn; ++j) {
               const Operand in = s.operands[op.firstOperand + j];
@@ -2176,7 +2241,7 @@ private:
       for (uint32_t k = defBegin[p]; k < defBegin[p + 1]; ++k) {
         Val& v = vals_[byDef[k]];
         if (v.buffer != kNone || v.ramp != rampPass) continue;
-        if (v.perGroup) {
+        if (v.perGroup || v.own) {
           v.buffer = fresh(v);
           continue;
         }
@@ -2191,7 +2256,7 @@ private:
       for (uint32_t k = lastBegin[p]; k < lastBegin[p + 1]; ++k) {
         const uint32_t vi = byLast[k];
         Val& v = vals_[vi];
-        if (v.perGroup || handed[vi] || v.buffer == kNone || v.ramp != rampPass) continue;
+        if (v.perGroup || v.own || handed[vi] || v.buffer == kNone || v.ramp != rampPass) continue;
         freeList[cls(v)].push_back(v.buffer);
       }
     }

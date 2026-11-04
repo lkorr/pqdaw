@@ -13,6 +13,7 @@
 #include <random>
 #include <sstream>
 
+#include "pq/compile/compile.h"
 #include "pq/engine/offline_render.h"
 #include "pq/graph/parse.h"
 #include "pq/graph/patch_file.h"
@@ -66,6 +67,67 @@ fs::path curveFile(const std::string& name, VcaCurve curve, const std::string& i
 }
 
 double slopeAt(const VcaLaw& l, double p, double h) { return (vcaValue(l, p + h) - vcaValue(l, p - h)) / (2.0 * h); }
+
+// TX.vca-knob2: a VCA file's `Main` rendered through renderOffline with its params written per block (automation): the
+// knob every block (`value`), and, with `all`, the range, the zone and a marker every few blocks.
+struct Automation {
+  std::vector<float> base;
+  int32_t value = -1, min = -1, zone = -1, mark = -1;
+  bool all = true;
+};
+void automate(void* user, int64_t t, uint32_t, engine::TransportSnapshot&, std::span<float> params) noexcept {
+  const Automation& a = *static_cast<const Automation*>(user);
+  for (size_t i = 0; i < params.size() && i < a.base.size(); ++i) params[i] = a.base[i];
+  const int64_t blk = t / 64;
+  params[static_cast<size_t>(a.value)] = 0.5f + 0.45f * std::sin(0.05f * static_cast<float>(blk));
+  if (!a.all) return;
+  if ((blk / 7) % 2 != 0) params[static_cast<size_t>(a.min)] = -50.0f;
+  if ((blk / 11) % 2 != 0) params[static_cast<size_t>(a.zone)] = 0.6f;
+  if ((blk / 5) % 3 == 1) params[static_cast<size_t>(a.mark)] = 0.04f;
+}
+std::vector<float> renderAutomated(const fs::path& file, compile::Backend backend, double seconds, bool all,
+                                   double* wall = nullptr) {
+  auto src = compile::SourceFile::load(file);
+  REQUIRE(src.ok());
+  auto k = (*src)->findPatch("Main");
+  REQUIRE(k.ok());
+  auto c = compile::compilePatch(**src, *k);
+  REQUIRE_MESSAGE(c.ok(), (c.ok() ? std::string() : c.error().message));
+  compile::ImageOptions io;
+  io.maxBlockFrames = 64;
+  auto img = compile::buildImage(c->schedule, backend, io);
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? std::string() : img.error().message));
+  Automation a;
+  a.all = all;
+  const graph::Patch& sp = c->scheduled().patch;
+  for (size_t i = 0; i < c->schedule.params.size(); ++i) {
+    const graph::ParamSlot& p = c->schedule.params[i];
+    a.base.push_back(p.defaultValue);
+    const std::string n(sp.nodeName(p.node));
+    auto is = [&](const char* suffix) { return n.size() >= std::strlen(suffix) && n.ends_with(suffix); };
+    if (is("__value")) a.value = static_cast<int32_t>(i);
+    if (is("__min")) a.min = static_cast<int32_t>(i);
+    if (is("__zone")) a.zone = static_cast<int32_t>(i);
+    if (is("__mk_p10")) a.mark = static_cast<int32_t>(i);
+  }
+  REQUIRE(a.value >= 0);
+  REQUIRE(a.min >= 0);
+  REQUIRE(a.zone >= 0);
+  REQUIRE(a.mark >= 0);
+  engine::RenderRequest rq;
+  rq.image = img->get();
+  rq.frames = static_cast<uint64_t>(seconds * 48000.0);
+  rq.blockFrames = 64;
+  rq.params = a.base;
+  rq.hook.fn = &automate;
+  rq.hook.user = &a;
+  engine::BufferSink sink;
+  auto st = engine::renderOffline(rq, sink);
+  REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+  if (wall != nullptr) *wall = st->wallSeconds;
+  REQUIRE(sink.channels.size() == 1);
+  return sink.channels[0];
+}
 
 }  // namespace
 
@@ -395,6 +457,22 @@ TEST_CASE("vca: the DSP computes the law (both curves, many states); interpreter
   }
 }
 
+// TX.vca-knob2: the markers' placement (the Newton steps, the ordering, the warp's segments) is param-rate work that the
+// JIT runs only in a block in which the range, the zone or a marker changed (graph::Schedule::memoMask): with the knob
+// automated every block and the range, zone and a marker changing every few blocks, the JIT plays the interpreter's
+// samples bit for bit.
+TEST_CASE("vca: automation every block (knob) and every few blocks (range, zone, marker): interpreter == JIT bit for bit") {
+  const fs::path f = curveFile("auto.pqp", VcaCurve::Log, "noise()");
+  const std::vector<float> yi = renderAutomated(f, compile::Backend::Interpreter, 0.25, true);
+  const std::vector<float> yj = renderAutomated(f, compile::Backend::Jit, 0.25, true);
+  REQUIRE(yi.size() == yj.size());
+  CHECK(std::memcmp(yi.data(), yj.data(), yi.size() * sizeof(float)) == 0);
+  float peak = 0.0f;
+  for (const float x : yi) peak = std::max(peak, std::abs(x));
+  CHECK(peak > 1.0f);  // the knob sweeps into the log part
+  fs::remove(f);
+}
+
 TEST_CASE("vca: a value modulated at audio rate is mapped per sample (no smoothing); in multiplies") {
   // The knob position swept by a 50 Hz triangle through the whole travel: each sample is the law at its position.
   const fs::path f = curveFile("sweep.pqp", VcaCurve::Log, "0.5, value: abs(frac(phasor(50Hz)) * 2 - 1)");
@@ -440,8 +518,18 @@ TEST_CASE("vca: cost — static value vs in · g by hand vs a value modulated at
     return t * 1e9 / (60.0 * 48000.0);
   };
   const double v = best(vca), h = best(hand), s = best(src), m = best(mod);
+  // TX.vca-knob2: the knob automated every block (a param write per block: the per-position part of the curve runs, the
+  // markers' placement does not).
+  const fs::path autoFile = curveFile("costa.pqp", VcaCurve::Log, "noise()");
+  double a = 1e30;
+  for (int i = 0; i < 3; ++i) {
+    double wall = 0.0;
+    (void)renderAutomated(autoFile, compile::Backend::Jit, 20.0, false, &wall);
+    a = std::min(a, wall * 1e9 / (20.0 * 48000.0));
+  }
+  fs::remove(autoFile);
   MESSAGE("ns/sample: meta_vca static " << v << ", noise * g by hand " << h << ", noise alone " << s
-                                        << ", value modulated at audio rate " << m);
+                                        << ", value modulated at audio rate " << m << ", knob automated per block " << a);
   CHECK(v > 0.0);
   for (const fs::path& f : {vca, hand, src, mod}) fs::remove(f);
 }

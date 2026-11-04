@@ -286,6 +286,11 @@ namespace pq::graph {
 // T5.x-perf-audio: the host's param pass itself is skipped when the caller vouches the params are the previous
 // block's (ProcessContext::paramsUnchanged: ProjectProgram, no project param written since the packet's params were
 // refreshed, the idle-unit generation) and that block changed none (ImageHost::begin; paramsChanged() stays false).
+// TX.vca-knob2: ProgramHost (offline renders, previews) vouches too, from a compare with the packet's previous block.
+// In a block whose params changed, a memo region whose ops read different params runs only the runs of ops whose param
+// mask (graph::Schedule::memoMask: bit p mod 64 per param p the op depends on through the region) meets the changed
+// params (ImageHost::paramsChangedMask, HostLayout::memoOff + 2); the scheduler gives every value read across a mask
+// boundary a buffer of its own. A VCA's knob automated every block no longer re-places its markers.
 namespace pq::jit {
   class Compiler {                                 // one per process; owns LLJIT; images may outlive it
   public:

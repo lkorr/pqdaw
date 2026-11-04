@@ -41,7 +41,11 @@
 //   constants into buffers nothing else writes (the interpreter's memo rule) is behind one branch on a flag word
 //   (HostLayout::memoOff) that JitImage::process sets when the block's params equal the previous block's
 //   (ImageHost::paramsChanged): a settled
-//   mixer's dB / pan math (exact transcendentals: SVML calls) then costs nothing, as in the interpreter.
+//   mixer's dB / pan math (exact transcendentals: SVML calls) then costs nothing, as in the interpreter. TX.vca-knob2:
+//   in a block whose params changed, a memo region whose ops read different params (graph::Schedule::memoMask) runs
+//   only its runs of ops (consecutive, one param mask) that read a changed param, each behind a test of the changed-
+//   param mask (HostLayout::memoOff + 2, from ImageHost::paramsChangedMask): a VCA's knob automated every block no
+//   longer re-places its markers.
 //   Control regions and per-sample Loop regions ("per frame"):
 //     - every op is generated inline for one frame (scalar for 1-lane ops, <8 x float> for 8-lane and Control
 //       ops), including the simple stateful atoms (z1 and its split read/write, rise/fall/change, sr/d/t

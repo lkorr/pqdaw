@@ -57,7 +57,11 @@
 //    export at the end of its stage (per group), a reducer accumulator over its whole stage, and a value read inside
 //    a loop (Loop region, solve body, or the per-group loop of a voice stage) but defined before it, which lives to
 //    after the loop's last op (the next iteration reads it again). A voice value read in a later voice stage gets a
-//    per-group buffer (Buffer::perGroup). tests/graph/sched_replay.h replays a schedule to prove no buffer is
+//    per-group buffer (Buffer::perGroup). TX.vca-knob2: in a MEMO CANDIDATE (a global Control region without solves
+//    whose ops are stateless kernels without resources reading params, constants and the region's own values) each op
+//    has a param mask (Schedule::memoMask); a value read by an op with another mask, outside the region, or as an
+//    output / probe gets a buffer of its own for the whole program (never shared, never written in place), so a backend
+//    may skip the ops whose params did not change and still read every value it keeps. tests/graph/sched_replay.h replays a schedule to prove no buffer is
 //    overwritten while live.
 // 6. State layout (StateLayout): one entry per (state key, channel) of every stateful kernel node (and per
 //    unknown without an initial guess: its previous solution). Keys are TypedPatch::stateKey (call-path hashes, stable
@@ -428,6 +432,11 @@ struct Schedule {
   std::vector<RampStage> rampStages;
   std::vector<uint32_t> rampParams;
   std::vector<uint32_t> rampExternals;
+  // TX.vca-knob2 (see "5. Buffers"): per op (empty when no region is a memo candidate), for the ops of memo candidates,
+  // the params the op depends on through the region (bit p mod 64 for param p; 0: constants only); 0 elsewhere. A
+  // backend may run such an op only in a block in which a param of its mask changed (and in the first block): every
+  // value read across a mask boundary has a buffer of its own.
+  std::vector<uint64_t> memoMask;
 
   std::span<const Operand> inputs(const Op& op) const noexcept { return {operands.data() + op.firstOperand, op.numIn}; }
   std::span<const Operand> outputsOf(const Op& op) const noexcept {

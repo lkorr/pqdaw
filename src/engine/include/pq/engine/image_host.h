@@ -254,6 +254,9 @@ public:
   // T1b.x-perf (Q126): some param differs (bitwise, after clamping) from the previous block's, or this is the first
   // block (after begin(); what the JIT's memo regions test).
   bool paramsChanged() const noexcept { return paramsChanged_; }
+  // TX.vca-knob2 (graph::Schedule::memoMask): bit p mod 64 set for each param p that changed this block; all bits in
+  // the first block; 0 while paramsChanged() is false.
+  uint64_t paramsChangedMask() const noexcept { return paramsChangedMask_; }
   // Voice groups of this block's voice table that the image has records for (after begin()).
   uint32_t groups() const noexcept { return groups_; }
   float* extPtr(uint32_t ext, uint32_t group) const noexcept {  // RT-safe
@@ -439,6 +442,7 @@ private:
   std::vector<uint8_t> paramChanged_;      // per param: changed this block (all of them in the first block)
   bool firstBlock_ = true;
   bool paramsChanged_ = true;
+  uint64_t paramsChangedMask_ = ~uint64_t{0};
   bool dormantCapable_ = false;
   std::vector<const float*> globalRampRem_;  // TX.smooth: lane 0's frames left of each global param ramp
   // TX.smooth-fix1: param ramps, per stage (decideRamps): has ramps, ramp mode this block, frames of ramp mode left,

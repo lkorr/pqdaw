@@ -1484,11 +1484,13 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
   // T5.x-perf-audio: the caller vouches that the params are the previous block's, and that block changed none of them
   // (paramChanged_ is all 0 already): nothing to read, clamp or splat.
   if (ctx.paramsUnchanged && !firstBlock_ && !paramsChanged_) {
+    paramsChangedMask_ = 0;
     resolveExternals(ctx, frames);
     if (anyRamps_) decideRamps();
     return true;
   }
   bool anyChanged = firstBlock_;
+  uint64_t changedMask = firstBlock_ ? ~uint64_t{0} : 0;
   for (uint32_t i = 0; i < params_.size(); ++i) {
     const ParamRun& p = params_[i];
     float v = ctx.params != nullptr && i < ctx.numParams ? ctx.params[i] : p.def;
@@ -1502,9 +1504,11 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
     const uint32_t bits = std::bit_cast<uint32_t>(v);
     paramChanged_[i] = firstBlock_ || bits != paramBits_[i] ? 1 : 0;
     anyChanged = anyChanged || bits != paramBits_[i];
+    changedMask |= bits != paramBits_[i] ? uint64_t{1} << (i & 63u) : 0;
     paramBits_[i] = bits;
   }
   paramsChanged_ = anyChanged;
+  paramsChangedMask_ = changedMask;
   resolveExternals(ctx, frames);
   if (anyRamps_) decideRamps();
   return true;

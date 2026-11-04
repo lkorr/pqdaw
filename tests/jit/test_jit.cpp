@@ -709,6 +709,70 @@ TEST_CASE("jit: memoised param math is recomputed exactly when a param changes, 
   }
 }
 
+// TX.vca-knob2 (graph::Schedule::memoMask): a memo region whose ops read different params runs, in a block whose params
+// changed, only the runs of ops that read a changed param; the values it keeps across the runs have buffers of their
+// own. One param at a time, several, none, NaN, no param block and the first block: bit-identical to the interpreter.
+TEST_CASE("jit: a memo region recomputes only the param-mask runs of the changed params, bit-identical to the interpreter") {
+  const Compiled c = compileText(R"(patch Masks {
+  in x : audio
+  param a = 0.5 [-2..2]
+  param b = 1 [0..4]
+  param k = 0.25 [-1..1]
+  out y : audio
+  out z : audio
+  u = exp(a) * 0.5
+  v = log(b + 2) + u
+  w = sin(k * 3) * v + a
+  q = max(u - b, k)
+  y = x * w
+  z = x * (q + v * 0.125)
+})");
+  REQUIRE(c.sched.memoMask.size() == c.sched.ops.size());
+  std::vector<uint64_t> masks;
+  for (const Region& r : c.sched.regions)
+    if (r.kind == RegionKind::Control)
+      for (uint32_t i = r.firstOp; i < r.firstOp + r.numOps; ++i)
+        if (std::find(masks.begin(), masks.end(), c.sched.memoMask[i]) == masks.end()) masks.push_back(c.sched.memoMask[i]);
+  CHECK(masks.size() >= 4u);  // {a}, {b}, {k}, {a, b}, {a, b, k}, …
+  auto jitImg = compileJit(c.sched);
+  REQUIRE(jitImg.ok());
+  eng::InterpretOptions io;
+  auto interpImg = eng::buildInterpreted(c.sched, io);
+  REQUIRE(interpImg.ok());
+  std::vector<float> x(32);
+  for (size_t i = 0; i < x.size(); ++i) x[i] = std::cos(0.21f * static_cast<float>(i));
+  const float* ins[1] = {x.data()};
+  struct Step {
+    float a, b, k;
+    bool block;
+  };
+  const Step steps[] = {{0.1f, 1.5f, 0.3f, true},  {0.1f, 1.5f, 0.3f, true},  {0.7f, 1.5f, 0.3f, true},
+                        {0.7f, 1.5f, 0.3f, true},  {0.7f, 3.0f, 0.3f, true},  {0.7f, 3.0f, -0.6f, true},
+                        {0.7f, 3.0f, -0.6f, true}, {-1.0f, 0.2f, -0.6f, true}, {-1.0f, 0.2f, 0.9f, true},
+                        {NAN, 0.2f, 0.9f, true},   {NAN, 0.2f, 0.9f, true},   {0, 0, 0, false},
+                        {1.2f, 0.2f, 0.9f, true},  {1.2f, 2.2f, 0.4f, true},  {1.2f, 2.2f, 0.4f, true}};
+  for (size_t s = 0; s < std::size(steps); ++s) {
+    CAPTURE(s);
+    std::vector<float> yj(32), zj(32), yi(32), zi(32);
+    float* oj[2] = {yj.data(), zj.data()};
+    float* oi[2] = {yi.data(), zi.data()};
+    const float params[3] = {steps[s].a, steps[s].b, steps[s].k};
+    eng::ProcessContext ctx;
+    ctx.frames = 32;
+    ctx.in = ins;
+    ctx.numIn = 1;
+    ctx.numOut = 2;
+    ctx.params = steps[s].block ? params : nullptr;
+    ctx.numParams = steps[s].block ? 3u : 0u;
+    ctx.out = oj;
+    CHECK(pq::alloc_trap::countRtViolations([&] { (*jitImg)->process(ctx); }) == 0);
+    ctx.out = oi;
+    (*interpImg)->process(ctx);
+    CHECK(std::memcmp(yj.data(), yi.data(), sizeof(float) * 32) == 0);
+    CHECK(std::memcmp(zj.data(), zi.data(), sizeof(float) * 32) == 0);
+  }
+}
+
 TEST_CASE("jit: a block above maxBlockFrames is rejected with silent outputs; frames = 0 does nothing") {
   const Compiled c = compileText("patch P { out y : audio\n y = sine(phasor(440Hz)) }");
   jit::CompileOptions o;

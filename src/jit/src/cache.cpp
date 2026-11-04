@@ -138,7 +138,7 @@ static_assert(sizeof(g::StateTag) == 8, "graph::StateTag changed: update codegen
 static_assert(sizeof(dsp::StateInit) == 32, "dsp::StateInit changed: update codegenDigest");
 static_assert(sizeof(g::StateEntry) == 72, "graph::StateEntry changed: update codegenDigest");
 static_assert(sizeof(g::StateLayout) == 48, "graph::StateLayout changed: update codegenDigest");
-static_assert(sizeof(g::Schedule) == 552 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
+static_assert(sizeof(g::Schedule) == 576 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
 static_assert(sizeof(g::Ramp) == 24, "graph::Ramp changed: update codegenDigest");
 static_assert(sizeof(g::ProbeRef) == 28, "graph::ProbeRef changed: update codegenDigest");
 static_assert(sizeof(g::SleepPlan) == 152, "graph::SleepPlan changed: update codegenDigest");
@@ -251,6 +251,9 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
   // TX.smooth-fix1: which stages have ramps and whether they check some (codegen emits their ramp modes, checks).
   h.put(s.rampStages.size());
   for (const g::RampStage& x : s.rampStages) h.put(x.ramps), h.put(x.checked);
+  // TX.vca-knob2: the memo regions' param-mask runs.
+  h.put(s.memoMask.size());
+  for (const uint64_t m : s.memoMask) h.put(m);
   h.put(L.sideSlotGlobal), h.put(L.sideSlotVoice), h.put(L.sideVoiceStride);
   h.put(L.sleepOff);
   h.put(L.meterOff), h.put(L.meterFlagOff);  // T4.5

@@ -21,6 +21,8 @@ struct ProgramHost::Packet {
   SwapMode mode = SwapMode::Auto;
   uint32_t fadeFrames = 1;
   std::vector<float> params;                          // the param block, indexed by io().params
+  std::vector<float> prevParams;                      // its previous block's values (ProcessContext::paramsUnchanged)
+  bool ran = false;                                   // the image has run a block
   std::vector<std::pair<uint32_t, uint32_t>> paramMap;  // (new slot, previous packet's slot) with equal keys
   AlignedBuffer<float> scratch;                       // one maxBlock buffer per global out/export slot
   std::vector<float*> slotPtrs;
@@ -78,6 +80,7 @@ Result<PublishInfo> ProgramHost::publish(std::unique_ptr<ProgramImage> image, co
 
   // Params: defaults, then the previous image's values for the same keys (copied at the swap).
   for (const graph::ParamSlot& ps : io.params) p->params.push_back(ps.defaultValue);
+  p->prevParams.assign(p->params.size(), 0.0f);
   PublishInfo info;
   info.sequence = p->seq;
   if (last_ != nullptr) {
@@ -241,6 +244,12 @@ void ProgramHost::prepareContext(ProcessContext& ctx, Packet& p, const float* co
   ctx.numOut = static_cast<uint32_t>(p.slotPtrs.size());
   ctx.params = p.params.data();
   ctx.numParams = static_cast<uint32_t>(p.params.size());
+  // TX.vca-knob2: as ProjectProgram does, the image is told when its params are bit for bit its previous block's (it
+  // then skips its param pass: one compare here instead of a clamp and a splat per param).
+  const size_t bytes = p.params.size() * sizeof(float);
+  ctx.paramsUnchanged = p.ran && (bytes == 0 || std::memcmp(p.params.data(), p.prevParams.data(), bytes) == 0);
+  if (!ctx.paramsUnchanged && bytes != 0) std::memcpy(p.prevParams.data(), p.params.data(), bytes);
+  p.ran = true;
 }
 
 void ProgramHost::process(const AudioBlock& block) noexcept {  // RT-safe

@@ -26,6 +26,8 @@ void JitImage::process(e::ProcessContext& ctx) noexcept {  // RT-safe
   // The memo regions' flag (Q126): this block's (clamped) params bit for bit the previous block's, as the host's
   // param pass found (no second pass over the params).
   *reinterpret_cast<uint32_t*>(buf + layout_.memoOff) = host_.paramsChanged() ? 0u : 1u;
+  // TX.vca-knob2: which params changed (graph::Schedule::memoMask): a memo region runs only its ops that read them.
+  *reinterpret_cast<uint64_t*>(buf + layout_.memoOff + 2) = host_.paramsChangedMask();
   const float* aux = host_.aux();
   std::byte* gstate = host_.globalState();
   std::byte* vstate = host_.voiceState(0);
@@ -118,7 +120,7 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
   for (const g::Op& op : s.ops)
     if (op.numIn > kStackCallOperands || op.numOut > kStackCallOperands) wide = std::max<uint32_t>(wide, op.numIn + op.numOut);
   const uint32_t callFloats = roundUp(wide * 2, kFloatAlign);  // 8-byte pointers
-  const uint32_t memoFloats = kFloatAlign;                      // the memo flag word (Q126), on its own line
+  const uint32_t memoFloats = kFloatAlign;  // the memo flag word (Q126), the pairs' bail word, the changed-param mask (u64)
   // Pairs (T1b.2): voice stages without sends, when there are at least two groups to pair; the second group's copy
   // of each of such a stage's own voice values (sized as the host sizes buffers: image_host.cpp layoutMemory).
   std::vector<uint8_t> pairable(s.stages.size(), 0);
