@@ -161,6 +161,7 @@ Result<Compiled> compilePatch(const SourceFile& src, size_t index, const Compile
   graph::ScheduleOptions so;
   so.sampleRate = options.sampleRate;
   so.visualMode = options.visualMode;
+  so.uniformBranches = options.uniformBranches;
   so.source = source;
   graph::ScheduleResult sr = graph::scheduleDetailed(c.optimised, so);
   if (!sr.ok()) {

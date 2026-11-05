@@ -338,6 +338,7 @@ pq_add_test(pq_tests_jit PERF SHARDS 4 SLOW_SHARDS 8
     jit/test_jit_frame_table.cpp  # TMM.2: wavetable_pos / voice_tap on both backends (swaps, taps, hot swap, reference)
     jit/test_jit_wave_live.cpp  # TMM.8: wavetable_live / wavetable_shape in oversample regions on both backends
     jit/test_param_ramps.cpp  # TX.smooth: param ramps, interpreter == JIT under param motion, the ramp's shape
+    jit/test_uniform_branch.cpp  # TX.uniform-branch: selects of block-uniform conditions, both backends, with and without
   DEPS pq_jit pq_compile)
 
 # T1b.3: the stock subcircuits of stdlib/ (filters, envelopes, LFO, followers) against their hand-written C++

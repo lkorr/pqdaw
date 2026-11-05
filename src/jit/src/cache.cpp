@@ -138,7 +138,8 @@ static_assert(sizeof(g::StateTag) == 8, "graph::StateTag changed: update codegen
 static_assert(sizeof(dsp::StateInit) == 32, "dsp::StateInit changed: update codegenDigest");
 static_assert(sizeof(g::StateEntry) == 72, "graph::StateEntry changed: update codegenDigest");
 static_assert(sizeof(g::StateLayout) == 48, "graph::StateLayout changed: update codegenDigest");
-static_assert(sizeof(g::Schedule) == 576 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
+static_assert(sizeof(g::Schedule) == 624 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
+static_assert(sizeof(g::Branch) == 12, "graph::Branch changed: update codegenDigest");  // TX.uniform-branch
 static_assert(sizeof(g::Ramp) == 24, "graph::Ramp changed: update codegenDigest");
 static_assert(sizeof(g::ProbeRef) == 28, "graph::ProbeRef changed: update codegenDigest");
 static_assert(sizeof(g::SleepPlan) == 152, "graph::SleepPlan changed: update codegenDigest");
@@ -254,6 +255,10 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
   // TX.vca-knob2: the memo regions' param-mask runs.
   h.put(s.memoMask.size());
   for (const uint64_t m : s.memoMask) h.put(m);
+  // TX.uniform-branch: the branches and guards (codegen branches around the guarded ops).
+  h.put(s.branches.size());
+  for (const g::Branch& x : s.branches) h.put(x.op), h.put(x.region), h.put(x.parent);
+  h.putU32s(s.guardOf);
   h.put(L.sideSlotGlobal), h.put(L.sideSlotVoice), h.put(L.sideVoiceStride);
   h.put(L.sleepOff);
   h.put(L.meterOff), h.put(L.meterFlagOff);  // T4.5

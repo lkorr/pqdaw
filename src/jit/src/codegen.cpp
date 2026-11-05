@@ -64,6 +64,10 @@ constexpr uint32_t kMaxPairChainCostWithRamps = 256;
 // frame at a time (scalar) instead of 8 frames per vector, which is free while they fill the recursions' idle issue
 // slots and a loss once they outweigh them (measured: bench_devices, Saturator / EQ Eight).
 constexpr uint32_t kMaxGlobalChainBlockCost = 96;
+// TX.uniform-branch: a branch (graph::Schedule::branches) is taken in a Block region when the ops one of its sides
+// guards cost at least this (opCost units): below it, the stores and loads where the guarded ops leave the fused run
+// cost about what skipping them saves.
+constexpr uint32_t kMinBranchCost = 8;
 // ... and a global chain holds at most this many loop-invariant operands (params, constants, patterns: loaded once
 // before the loop) plus state words (carried from frame to frame). Past the register file they spill, and a spilled
 // state puts a store→load round trip on its recursion (measured: EQ Eight's 14 sections in one chain ran 2.3× slower
@@ -285,6 +289,38 @@ private:
     return r.kind == g::RegionKind::Control || (r.kind == g::RegionKind::Loop && (r.subBlock <= 1 || r.numSolves > 0));
   }
 
+  // TX.uniform-branch (graph::Schedule::branches): which branches the slices take (taken_), and per op the guard it runs
+  // under among those (guardEff_: its nearest taken guard, kNone: unconditional). A branch is taken when its select is
+  // in a Block region (Loop regions hold none) and one of its sides guards at least kMinBranchCost; chained regions
+  // (emitChain) run every op, as without branches.
+  void analyseBranches() {
+    const auto n = static_cast<uint32_t>(s_.ops.size());
+    guardEff_.assign(n, g::kNone);
+    branchOf_.assign(n, g::kNone);
+    taken_.assign(s_.branches.size(), 0);
+    if (s_.branches.empty() || s_.guardOf.size() != n) return;
+    std::vector<uint32_t> cost(2 * s_.branches.size(), 0);
+    for (uint32_t i = 0; i < n; ++i)
+      for (uint32_t gd = s_.guardOf[i]; gd != g::kNone && (gd >> 1) < s_.branches.size(); gd = s_.branches[gd >> 1].parent)
+        cost[gd] += opCost(i);
+    for (uint32_t b = 0; b < s_.branches.size(); ++b) {
+      const g::Branch& br = s_.branches[b];
+      if (br.op >= n || br.region >= s_.regions.size() || s_.regions[br.region].kind != g::RegionKind::Block) continue;
+      const g::Op& op = s_.ops[br.op];
+      if (op.kind != g::OpKind::Kernel || op.kernel != Atom::Select || op.numIn != 3 || (op.splMask & 1u) == 0) continue;
+      if (br.parent != g::kNone && (br.parent >> 1) >= b) continue;  // malformed: parents come first
+      taken_[b] = std::max(cost[2 * b], cost[2 * b + 1]) >= kMinBranchCost ? 1 : 0;
+      if (taken_[b]) branchOf_[br.op] = b;
+    }
+    for (uint32_t i = 0; i < n; ++i)
+      guardEff_[i] = takenGuard(branchOf_[i] != g::kNone ? s_.branches[branchOf_[i]].parent : s_.guardOf[i]);
+  }
+  uint32_t takenGuard(uint32_t gd) const {
+    while (gd != g::kNone && (gd >> 1) < taken_.size() && !taken_[gd >> 1]) gd = s_.branches[gd >> 1].parent;
+    return gd != g::kNone && (gd >> 1) < taken_.size() ? gd : g::kNone;
+  }
+  bool branchSelect(uint32_t i) const noexcept { return i < branchOf_.size() && branchOf_[i] != g::kNone; }
+
   void analyse() {
     const auto n = static_cast<uint32_t>(s_.ops.size());
     inline_.assign(n, false);
@@ -295,12 +331,14 @@ private:
       for (uint32_t i = s_.regions[r].firstOp; i < s_.regions[r].firstOp + s_.regions[r].numOps && i < n; ++i) opRegion_[i] = r;
     for (const g::SolveBlock& sb : s_.solves)
       for (uint32_t i = sb.firstOp; i < sb.firstOp + sb.numOps && i < n; ++i) body_[i] = true;
+    analyseBranches();
     int32_t next = 0;
     for (const g::Region& r : s_.regions) {
       const bool pf = perFrame(r);
       const int32_t regionGroup = next++;
       int32_t run = -1;
       uint32_t runLanes = 0, runSize = 0;
+      uint32_t runGuard = g::kNone;  // TX.uniform-branch: a run holds ops of one guard; a branch's select is alone
       std::set<std::pair<int, uint32_t>> runInv;  // the run's distinct pattern operands (hoisted loads)
       for (uint32_t i = r.firstOp; i < r.firstOp + r.numOps; ++i) {
         const g::Op& op = s_.ops[i];
@@ -339,12 +377,15 @@ private:
               !runInv.count({static_cast<int>(o.kind), o.index}))
             ++newInv;
         }
+        const bool sel = branchSelect(i);
         if (run < 0 || runLanes != op.lanes || (runSize > 0 && runSize + c > kMaxRunCost) ||
-            (runSize > 0 && runInv.size() + newInv > kMaxRunInvariants)) {
+            (runSize > 0 && runInv.size() + newInv > kMaxRunInvariants) || guardEff_[i] != runGuard || sel ||
+            (i > r.firstOp && branchSelect(i - 1))) {
           run = next++;
           runLanes = op.lanes;
           runSize = 0;
           runInv.clear();
+          runGuard = guardEff_[i];
         }
         runSize += c;
         for (uint32_t k = 0; k < opIns.size(); ++k)
@@ -1390,6 +1431,10 @@ private:
   void emitInline(uint32_t i, const Frame& fr, std::vector<Value*>* argsOut = nullptr) {
     const g::Op& op = s_.ops[i];
     const auto ins = s_.inputs(op);
+    if (i == pickOp_ && pick_ > 0 && !argsOut) {  // TX.uniform-branch: a branch's select, one side chosen
+      write(i, 0, read(ins[static_cast<uint32_t>(pick_)], fr), fr);
+      return;
+    }
     Vx v(B_, fr.w);
     IrScope scope(v);
     std::vector<Value*> a;
@@ -1791,7 +1836,11 @@ private:
     B_.SetInsertPoint(body);
     const unsigned lanes = voice_ ? vw_ : 1u;
     if (reg.kind == g::RegionKind::Block) {
+      emitBranchStates(ri);
       emitSlice(reg.firstOp, reg.firstOp + reg.numOps, c64(0), regionFrames(ri));
+      guardOn_.clear();
+      branchAll_.clear();
+      branchNone_.clear();
     } else if (perFrame(reg)) {
       emitGainBranch(voice_ ? nullptr : emitRegionGainPrologues(ri, ri), [&] {
         forLoop(c64(0), regionFrames(ri), 1, [&](Value* t) {
@@ -1954,8 +2003,105 @@ private:
     inv_.clear();
   }
 
-  // Ops [a, b) of a Block region or sub-block on frames [t0, t0 + n): fused runs and calls.
+  // TX.uniform-branch: at a Block region's start, per taken branch of it (outer first): whether its condition is true
+  // in ALL lanes of the pattern its select reads (8; a pair's 16; the scalar baseline's one) or in NONE (the sign bits,
+  // as the select reads them), and so whether each of its guards runs this block (guardOn_; under its parent's).
+  void emitBranchStates(uint32_t ri) {
+    guardOn_.clear();
+    branchAll_.clear();
+    branchNone_.clear();
+    for (uint32_t b = 0; b < s_.branches.size(); ++b) {
+      if (!taken_[b] || s_.branches[b].region != ri) continue;
+      const g::Op& op = s_.ops[s_.branches[b].op];
+      const unsigned w = voice_ ? vw_ : 8u;
+      Value* c = read(s_.inputs(op)[0], Frame{c64(0), w, nullptr, true});
+      llvm::Type* ity = c->getType()->isVectorTy()
+                            ? static_cast<llvm::Type*>(llvm::FixedVectorType::get(
+                                  i32_, llvm::cast<llvm::FixedVectorType>(c->getType())->getNumElements()))
+                            : i32_;
+      Value* neg = B_.CreateICmpSLT(B_.CreateBitCast(c, ity), llvm::Constant::getNullValue(ity));
+      Value* all = ity->isVectorTy() ? B_.CreateAndReduce(neg) : neg;
+      Value* any = ity->isVectorTy() ? B_.CreateOrReduce(neg) : neg;
+      Value* on = nullptr;
+      const uint32_t parent = takenGuard(s_.branches[b].parent);
+      if (parent != g::kNone) {
+        auto it = guardOn_.find(parent);
+        on = it != guardOn_.end() ? it->second : nullptr;
+      }
+      Value* t = any;
+      Value* f = B_.CreateNot(all);
+      if (on) t = B_.CreateAnd(on, t), f = B_.CreateAnd(on, f);
+      guardOn_[2 * b] = t;
+      guardOn_[2 * b + 1] = f;
+      branchAll_[b] = all;
+      branchNone_[b] = B_.CreateNot(any);
+    }
+  }
+
+  // Ops [a, b) of a Block region or sub-block on frames [t0, t0 + n): fused runs and calls. TX.uniform-branch: ops of a
+  // taken guard behind one branch on it (guardOn_), a taken branch's select as the side its condition chose.
   void emitSlice(uint32_t a, uint32_t b, Value* t0, Value* n) {
+    if (guardOn_.empty()) {
+      emitSliceOps(a, b, t0, n);
+      return;
+    }
+    uint32_t i = a;
+    while (i < b) {
+      const uint32_t gd = guardEff_[i];
+      uint32_t j = i + 1;
+      if (!branchSelect(i))
+        while (j < b && guardEff_[j] == gd && !branchSelect(j)) ++j;
+      llvm::BasicBlock* after = nullptr;
+      if (gd != g::kNone) {
+        auto it = guardOn_.find(gd);
+        if (it != guardOn_.end()) {
+          llvm::BasicBlock* run = llvm::BasicBlock::Create(C_, "guarded", F_);
+          after = llvm::BasicBlock::Create(C_, "guarded_after", F_);
+          B_.CreateCondBr(it->second, run, after);
+          B_.SetInsertPoint(run);
+        }
+      }
+      if (branchSelect(i)) emitBranchSelect(i, t0, n);
+      else emitSliceOps(i, j, t0, n);
+      if (after) {
+        B_.CreateBr(after);
+        B_.SetInsertPoint(after);
+      }
+      i = j;
+    }
+  }
+
+  // A taken branch's select (alone in its run): cond ? a : b while the condition is mixed, else its output is the
+  // chosen input (pick_: what the select gives when every lane chose it; the other input is not read).
+  void emitBranchSelect(uint32_t i, Value* t0, Value* n) {
+    const uint32_t b = branchOf_[i];
+    auto it = branchAll_.find(b);
+    if (it == branchAll_.end()) {
+      emitSliceOps(i, i + 1, t0, n);
+      return;
+    }
+    llvm::BasicBlock* pickA = llvm::BasicBlock::Create(C_, "branch_true", F_);
+    llvm::BasicBlock* notA = llvm::BasicBlock::Create(C_, "branch_not_true", F_);
+    llvm::BasicBlock* pickB = llvm::BasicBlock::Create(C_, "branch_false", F_);
+    llvm::BasicBlock* mixed = llvm::BasicBlock::Create(C_, "branch_mixed", F_);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(C_, "branch_after", F_);
+    B_.CreateCondBr(it->second, pickA, notA);
+    B_.SetInsertPoint(notA);
+    B_.CreateCondBr(branchNone_[b], pickB, mixed);
+    const std::pair<llvm::BasicBlock*, int> cases[] = {{pickA, 1}, {pickB, 2}, {mixed, -1}};
+    for (const auto& [bb, pick] : cases) {
+      B_.SetInsertPoint(bb);
+      pickOp_ = i;
+      pick_ = pick;
+      emitSliceOps(i, i + 1, t0, n);
+      pickOp_ = g::kNone;
+      pick_ = -1;
+      B_.CreateBr(done);
+    }
+    B_.SetInsertPoint(done);
+  }
+
+  void emitSliceOps(uint32_t a, uint32_t b, Value* t0, Value* n) {
     uint32_t i = a;
     while (i < b) {
       if (!inline_[i]) {
@@ -2486,6 +2632,13 @@ private:
   std::vector<uint32_t> chainCost_;  // per stage: the cost of its largest chain (T4.12: pair functions)
   std::vector<uint8_t> memo_;        // per region: a memo Control region (Q126)
   std::vector<uint8_t> masked_;      // per region: a memo region run in param-mask runs (TX.vca-knob2)
+  // TX.uniform-branch (analyseBranches): per branch whether the slices take it, per op its taken guard and (for a taken
+  // branch's select) its branch; while emitting a Block region, its guards' and branches' i1 flags.
+  std::vector<uint8_t> taken_;
+  std::vector<uint32_t> guardEff_, branchOf_;
+  std::unordered_map<uint32_t, Value*> guardOn_, branchAll_, branchNone_;
+  uint32_t pickOp_ = g::kNone;
+  int pick_ = -1;
   // current function
   bool rampMode_ = false;          // TX.smooth: emitting a unit's copy for a block in which one of its ramps moves
   bool steady_ = false;            // TX.smooth: emitting a stage's code for a block in which every ramp rests

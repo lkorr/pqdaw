@@ -46,6 +46,10 @@
 //   only its runs of ops (consecutive, one param mask) that read a changed param, each behind a test of the changed-
 //   param mask (HostLayout::memoOff + 2, from ImageHost::paramsChangedMask): a VCA's knob automated every block no
 //   longer re-places its markers.
+//   Uniform branches (TX.uniform-branch, graph::Schedule::branches): in a Block region that is not chained, a branch
+//   whose guarded side costs at least kMinBranchCost is taken: at the region's start one test per branch of its
+//   condition's lanes (all / none true), the ops of each taken guard behind one branch (they are runs of their own),
+//   the select as the chosen input or, when mixed, as itself. Every other op as before.
 //   Control regions and per-sample Loop regions ("per frame"):
 //     - every op is generated inline for one frame (scalar for 1-lane ops, <8 x float> for 8-lane and Control
 //       ops), including the simple stateful atoms (z1 and its split read/write, rise/fall/change, sr/d/t

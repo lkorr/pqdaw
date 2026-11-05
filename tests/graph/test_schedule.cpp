@@ -11,6 +11,7 @@
 #include "doctest_string_view.h"
 
 #include <algorithm>
+#include <bit>
 #include <random>
 #include <set>
 #include <string>
@@ -1894,4 +1895,328 @@ TEST_CASE("schedule: param ramps: one param_ramp per (stage, factor, source) rig
     CHECK(shared.schedule.ramps.size() >= 2);
     CHECK(sched_replay::Replay(shared.schedule, unique.schedule, {}).run().empty());
   }
+}
+
+// ---- TX.uniform-branch (schedule.h "Uniform branches") ------------------------------------------------------------
+namespace {
+
+// The ops guarded by `guard` (2·b + side), as "kernel" names in op order.
+std::vector<std::string> guardedBy(const Schedule& s, uint32_t guard) {
+  std::vector<std::string> out;
+  for (uint32_t i = 0; i < s.guardOf.size(); ++i)
+    if (s.guardOf[i] == guard) out.push_back(dsp::kernelInfo(s.ops[i].kernel).name);
+  return out;
+}
+uint32_t guardedCount(const Schedule& s) {
+  uint32_t n = 0;
+  for (uint32_t g : s.guardOf) n += g != kNone;
+  return n;
+}
+// The branch whose select computes the node named `name` (kNone if none).
+uint32_t branchNamed(const Compiled& c, const std::string& name) {
+  const Schedule& s = c.sched.schedule;
+  for (uint32_t b = 0; b < s.branches.size(); ++b) {
+    const NodeIndex n = s.ops[s.branches[b].op].node;
+    if (n != kNone && c.typed.patch.nodeName(n) == name) return b;
+  }
+  return kNone;
+}
+
+// Global mono patches for the executor: param conditions (and a Control value of params), shared, nested and stateful
+// sides. Param p and q flip between blocks in branchedRuns().
+constexpr const char* kBranchPatches[] = {
+    // one select of a param condition: each side only its own
+    R"(patch One {
+  in x : audio
+  param p = 0.7 [0..1]
+  out y : audio
+  y = select(p > 0.5, tanh(x * 3) * 0.5, x * x - 0.25)
+}
+)",
+    // a value both sides read, and one an output reads too, run unconditionally
+    R"(patch Shared {
+  in x : audio
+  param p = 0.7 [0..1]
+  out y : audio
+  out z : audio
+  s = x * 0.7 + 0.1
+  a = tanh(s * 2)
+  y = select(p > 0.5, a * 0.5, s * s)
+  z = a
+}
+)",
+    // nested: the inner select only on the outer's true side; t shared by the inner's sides
+    R"(patch Nested {
+  in x : audio
+  param p = 0.7 [0..1]
+  param q = 0.2 [0..1]
+  out y : audio
+  t = x * 2 - 0.3
+  inner = select(q > 0.5, tanh(t) * 0.25, t * t)
+  y = select(p > 0.5, inner + 0.5, sin(x * 3) * 0.3)
+}
+)",
+    // stateful ops on a side: a one-pole (z1 feedback), a delay, a phasor: they and what they read always run
+    R"(patch Stateful {
+  in x : audio
+  param p = 0.7 [0..1]
+  out y : audio
+  lp = z1(lp + (x * 2 - lp) * 0.1)
+  e = delay(x * 0.5, 7smp, 16smp)
+  osc = sine(phasor(x * 100 + 300))
+  y = select(p > 0.5, tanh(lp * 3) * 0.5 + e, osc * 0.2 - 0.1)
+}
+)",
+    // a condition computed from params in the Control region (the VCA's `warped`)
+    R"(patch Control {
+  in x : audio
+  param p = 0.7 [0..1]
+  param q = 0.2 [0..1]
+  out y : audio
+  w = abs(p - 0.5) + q > 0.7
+  y = select(w, clip(x * 4 - 1, -1, 1) * 0.5, x)
+}
+)",
+};
+
+// Runs patch `src` block-wise with and without branches, flipping p (and q) between blocks; returns the largest bit
+// difference count (0: identical) and the executor's counts.
+struct BranchRun {
+  uint64_t diffs = 0, skipped = 0, chosen = 0;
+  uint32_t branches = 0;
+};
+BranchRun branchedRuns(std::string_view src, uint32_t frames, uint32_t blocks) {
+  Compiled c;
+  compile(c, src);
+  const Schedule& s = ok(c);
+  REQUIRE(sched_exec::supported(c.typed));
+  BranchRun r;
+  r.branches = static_cast<uint32_t>(s.branches.size());
+  sched_exec::Executor on(s, frames, true), off(s, frames, false);
+  for (uint32_t b = 0; b < blocks; ++b) {
+    // p: true, true, false, true, false, false, … ; q the other way round, at another rate
+    const float p = ((b * 7 + 3) % 5) < 3 ? 0.9f : 0.1f, q = ((b * 3 + 1) % 4) < 2 ? 0.1f : 0.8f;
+    for (uint32_t k = 0; k < s.params.size(); ++k) {
+      const float v = c.typed.patch.nodeName(s.params[k].node) == "q" ? q : p;
+      on.setParam(k, v);
+      off.setParam(k, v);
+    }
+    const auto a = on.block(static_cast<uint64_t>(b) * frames), z = off.block(static_cast<uint64_t>(b) * frames);
+    REQUIRE(a.size() == z.size());
+    for (size_t o = 0; o < a.size(); ++o)
+      for (uint32_t f = 0; f < frames; ++f) r.diffs += std::bit_cast<uint32_t>(a[o][f]) != std::bit_cast<uint32_t>(z[o][f]);
+  }
+  r.skipped = on.skippedOps();
+  r.chosen = on.chosenSides();
+  return r;
+}
+
+}  // namespace
+
+TEST_CASE("schedule: uniform branches: a select of a param condition guards what only one side needs") {
+  Compiled c;
+  compile(c, kBranchPatches[0]);
+  const Schedule& s = ok(c);
+  REQUIRE(s.branches.size() == 1);
+  const Branch& b = s.branches[0];
+  CHECK(s.ops[b.op].kernel == dsp::Atom::Select);
+  CHECK(s.regions[b.region].kind == RegionKind::Block);
+  CHECK(b.parent == kNone);
+  CHECK(s.guardOf.size() == s.ops.size());
+  CHECK(s.guardOf[b.op] == kNone);  // the select itself runs
+  CHECK(guardedBy(s, 0) == std::vector<std::string>{"mul", "tanh", "mul"});
+  CHECK(guardedBy(s, 1) == std::vector<std::string>{"mul", "sub"});
+  const std::string d = dump(s, c.typed);
+  CHECK(d.find("branch 0") != std::string::npos);
+  CHECK(d.find("if b0.true") != std::string::npos);
+  CHECK(d.find("if b0.false") != std::string::npos);
+}
+
+TEST_CASE("schedule: uniform branches: shared values and values read elsewhere stay unconditional") {
+  Compiled c;
+  compile(c, kBranchPatches[1]);
+  const Schedule& s = ok(c);
+  REQUIRE(s.branches.size() == 1);
+  // s (read by both sides) and a (read by the output z too) run every block; a · 0.5 and s · s are guarded.
+  CHECK(guardedBy(s, 0) == std::vector<std::string>{"mul"});
+  CHECK(guardedBy(s, 1) == std::vector<std::string>{"mul"});
+  for (uint32_t i = 0; i < s.ops.size(); ++i)
+    if (s.ops[i].kernel == dsp::Atom::Tanh || s.ops[i].kernel == dsp::Atom::MulAdd) CHECK(s.guardOf[i] == kNone);
+}
+
+TEST_CASE("schedule: uniform branches: nested selects nest their guards (a value shared by the inner sides is under the outer)") {
+  Compiled c;
+  compile(c, kBranchPatches[2]);
+  const Schedule& s = ok(c);
+  REQUIRE(s.branches.size() == 2);
+  const uint32_t inner = branchNamed(c, "inner"), outer = 1 - inner;
+  REQUIRE(inner != kNone);
+  CHECK(outer < inner);  // outer first
+  CHECK(s.branches[outer].parent == kNone);
+  CHECK(s.branches[inner].parent == 2 * outer);  // the inner select runs only on the outer's true side
+  CHECK(s.guardOf[s.branches[inner].op] == 2 * outer);
+  // t = x · 2 − 0.3 (both inner sides read it) and inner + 0.5: on the outer's true side; tanh(t) · 0.25 and t · t
+  // on the inner's sides; sin(x · 3) · 0.3 on the outer's false side.
+  CHECK(guardedBy(s, 2 * outer) == std::vector<std::string>{"mul", "sub", "select", "add"});
+  CHECK(guardedBy(s, 2 * inner) == std::vector<std::string>{"tanh", "mul"});
+  CHECK(guardedBy(s, 2 * inner + 1) == std::vector<std::string>{"mul"});
+  CHECK(guardedBy(s, 2 * outer + 1) == std::vector<std::string>{"mul", "sin", "mul"});
+}
+
+TEST_CASE("schedule: uniform branches: ops with state and what they read are never guarded") {
+  Compiled c;
+  compile(c, kBranchPatches[3]);
+  const Schedule& s = ok(c);
+  REQUIRE(s.branches.size() == 1);
+  for (uint32_t i = 0; i < s.ops.size(); ++i) {
+    INFO("op #" << i << " " << dsp::kernelInfo(s.ops[i].kernel).name);
+    if (s.ops[i].state != kNone) CHECK(s.guardOf[i] == kNone);
+    // whatever a stateful op reads (directly) is unconditional too
+    if (s.guardOf[i] == kNone) continue;
+    for (const Operand& o : s.outputsOf(s.ops[i]))
+      for (uint32_t k = 0; k < s.ops.size(); ++k)
+        if (s.ops[k].state != kNone)
+          for (const Operand& in : s.inputs(s.ops[k])) CHECK_FALSE((in.kind == Operand::Kind::Buffer && in == o && k > i));
+  }
+  // tanh(lp · 3) · 0.5 + e on the true side, osc · 0.2 − 0.1 on the false side; the one-pole, delay, phasor and sine
+  // and the ops feeding them run every block.
+  CHECK(guardedBy(s, 0) == std::vector<std::string>{"mul", "tanh", "muladd"});
+  CHECK(guardedBy(s, 1) == std::vector<std::string>{"sine", "mul", "sub"});
+}
+
+TEST_CASE("schedule: uniform branches: audio-rate conditions, unrequested or empty branches are none") {
+  {
+    Compiled c;
+    compile(c, R"(patch A {
+  in x : audio
+  out y : audio
+  y = select(x > 0, tanh(x * 3), x * x)
+}
+)");
+    CHECK(ok(c).branches.empty());
+    CHECK(ok(c).guardOf.empty());
+  }
+  {  // both sides params: nothing in the Block region to skip
+    Compiled c;
+    compile(c, R"(patch B {
+  in x : audio
+  param p = 0.7 [0..1]
+  param a = 0.2 [0..1]
+  out y : audio
+  y = x * select(p > 0.5, a, a * 2)
+}
+)");
+    CHECK(ok(c).branches.empty());
+  }
+  {
+    ScheduleOptions so;
+    so.uniformBranches = false;
+    Compiled c;
+    compile(c, kBranchPatches[0], so);
+    CHECK(ok(c).branches.empty());
+    CHECK(ok(c).guardOf.empty());
+  }
+}
+
+TEST_CASE("schedule: uniform branches change nothing else: the corpus schedules op for op and buffer for buffer as without") {
+  uint32_t checked = 0, withBranches = 0, guarded = 0;
+  for (const CorpusPatch& cp : corpus(48000.0)) {
+    ScheduleOptions so;
+    so.sampleRate = 48000.0;
+    const ScheduleResult a = scheduleDetailed(cp.typed, so);
+    so.uniformBranches = false;
+    const ScheduleResult b = scheduleDetailed(cp.typed, so);
+    if (!a.ok()) continue;
+    REQUIRE(b.ok());
+    INFO(cp.where);
+    const Schedule &x = a.schedule, &y = b.schedule;
+    CHECK(y.branches.empty());
+    REQUIRE(x.ops.size() == y.ops.size());
+    for (size_t i = 0; i < x.ops.size(); ++i) {
+      CHECK(x.ops[i].kernel == y.ops[i].kernel);
+      CHECK(x.ops[i].firstOperand == y.ops[i].firstOperand);
+      CHECK(x.ops[i].splMask == y.ops[i].splMask);
+      CHECK(x.ops[i].state == y.ops[i].state);
+    }
+    CHECK(x.operands == y.operands);
+    REQUIRE(x.buffers.size() == y.buffers.size());
+    for (size_t i = 0; i < x.buffers.size(); ++i)
+      CHECK((x.buffers[i].cls == y.buffers[i].cls && x.buffers[i].lanes == y.buffers[i].lanes &&
+             x.buffers[i].perGroup == y.buffers[i].perGroup));
+    CHECK(x.state.globalBytes == y.state.globalBytes);
+    CHECK(x.state.voiceBytes == y.state.voiceBytes);
+    CHECK(x.memoMask == y.memoMask);
+    ++checked;
+    withBranches += !x.branches.empty();
+    guarded += guardedCount(x);
+  }
+  MESSAGE("uniform branches: " << checked << " corpus patches, " << withBranches << " with branches, " << guarded
+                               << " guarded ops");
+  CHECK(checked >= 40);
+  CHECK(withBranches >= 1);
+}
+
+TEST_CASE("schedule: uniform branches, executed: skipped ops (poisoned) are never read; bit-identical to both sides computed while p, q flip between blocks") {
+  uint64_t skipped = 0, chosen = 0;
+  for (const char* src : kBranchPatches) {
+    INFO(src);
+    const BranchRun r = branchedRuns(src, 16, 40);
+    CHECK(r.branches >= 1);
+    CHECK(r.diffs == 0);
+    CHECK(r.skipped > 0);
+    CHECK(r.chosen > 0);
+    skipped += r.skipped;
+    chosen += r.chosen;
+    // and the schedule still computes the patch (the naive oracle at the default params)
+    Compiled c;
+    compile(c, src);
+    CHECK(sched_exec::compare(c.typed, ok(c), 16, 4, 48000.0) < 1e-5);
+  }
+  MESSAGE("uniform branches: " << skipped << " ops skipped, " << chosen << " selects of a chosen side");
+}
+
+TEST_CASE("schedule: uniform branches, replayed over random patches: guards and chosen sides never read a skipped value") {
+  std::mt19937 rng(0xB4A9u);
+  sched_replay::Coverage cov;
+  uint32_t checked = 0, withBranches = 0, nested = 0;
+  for (uint32_t attempt = 0; attempt < 600 && checked < 300; ++attempt) {
+    // randomPatch() plus selects of param-rate conditions over its values (some nested, some sharing values)
+    std::string src = randomPatch(rng);
+    src.erase(src.rfind('}'));
+    const char* conds[] = {"p > 0.5", "c0 < 0.4", "abs(p - 0.3) > 0.1", "voice.velocity > 0.5", "p > 0.2"};
+    std::string extra = "  out b1 : audio\n  out b2 : audio voice\n";
+    extra += "  k0 = x * 0.25 + 0.1\n  k1 = tanh(k0 * 3)\n  k2 = k0 * k0\n";
+    extra += "  k3 = select(" + std::string(conds[rng() % 3]) + ", k1 * 0.5 + k2, k2 * 2 - 1)\n";
+    extra += "  k4 = select(" + std::string(conds[rng() % 3]) + ", select(" + conds[rng() % 3] + ", k3 * 3, tanh(k0)), z1(k3) * 0.5)\n";
+    extra += "  b1 = k4 + k1 * " + std::to_string(rng() % 2) + "\n";
+    extra += "  v1 = sine(phasor(voice.hz)) * 0.5\n  v2 = select(" + std::string(conds[3 + rng() % 2]) +
+             ", tanh(v1 * 2), v1 * v1)\n  b2 = v2\n}\n";
+    src += extra;
+    const ParseResult parsed = parseDetailed(src, "r.pqp");
+    REQUIRE_MESSAGE(parsed.ok(), src);
+    InferResult inf = inferDetailed(parsed.file.patches[0]);
+    if (!inf.ok()) continue;
+    OptimiseOptions oo;
+    oo.sampleRate = 48000.0;
+    auto opt = optimise(std::move(inf.typed), oo);
+    REQUIRE(opt.ok());
+    ScheduleOptions so;
+    so.sampleRate = 48000.0;
+    const ScheduleResult r = scheduleDetailed(opt.value(), so);
+    if (!r.ok()) continue;
+    INFO(src);
+    sched_replay::Options ro;
+    ro.blocks = 4;  // every state of every branch at least once
+    CHECK(sched_replay::check(opt.value(), so, ro, &cov) == "");
+    ++checked;
+    withBranches += !r.schedule.branches.empty();
+    for (const Branch& b : r.schedule.branches) nested += b.parent != kNone;
+  }
+  MESSAGE("uniform branches: replayed " << checked << " random patches, " << withBranches << " with branches ("
+                                        << nested << " nested), " << cov.skippedOps << " ops skipped, "
+                                        << cov.chosenSides << " selects of a chosen side");
+  CHECK(checked >= 250);
+  CHECK(withBranches >= 200);
+  CHECK(nested >= 100);
+  CHECK(cov.skippedOps > 1000);
 }

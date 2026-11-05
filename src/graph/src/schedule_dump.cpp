@@ -8,6 +8,8 @@
 //       #4 z1:read/8 () -> b3 [s0]  'lp'
 //       #5 add/8 (b1, ~p0) -> b4  'y'          (~ marks a Spl input: an 8-float pattern)
 //       solve #0 (8 iterations): ops #6..#7; unknowns v=b5 (init b2); equations b6 == b7
+//       #8 select/1 (~b2, b5, b4) -> b5  'q' branch 0       (TX.uniform-branch: a select of a uniform condition)
+//       #6 mul/1 (b1, ~p0) -> b5  'w' if b0.true           (guarded: runs only while branch 0 may take its true side)
 //   outputs:   out 'y' ch0 <- b4 (global)
 //   state global (64 B): s0 @0 +32 z1/8 'lp' ch0
 
@@ -177,6 +179,10 @@ private:
     if (o.resource != kNone) t += " res " + std::to_string(o.resource);
     t += "  " + label(o.node);
     if (o.channel) t += " ch" + std::to_string(o.channel);
+    for (uint32_t b = 0; b < s_.branches.size(); ++b)
+      if (s_.branches[b].op == i) t += " branch " + std::to_string(b);
+    if (i < s_.guardOf.size() && s_.guardOf[i] != kNone)
+      t += " if b" + std::to_string(s_.guardOf[i] >> 1) + ((s_.guardOf[i] & 1u) ? ".false" : ".true");
     line(t);
   }
 

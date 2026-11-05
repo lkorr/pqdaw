@@ -123,6 +123,30 @@
 //   - The ramp: linear over kParamRampSeconds (20 ms) from where it is to the new value, restarted from where it is
 //     by a later change. Its state is global or per voice group like any state (hot swap by key).
 // ScheduleOptions::paramRamps = false schedules no ramps (references, A/B measurements).
+//
+// ---- Uniform branches (TX.uniform-branch: a select whose condition cannot change within a block) ----------------
+// A select (Kernel op `select`, cond ? a : b) in a Block region whose condition is a pattern (a param, a constant, a
+// param-rate engine source or a value of an earlier Control region; not read through a ramp) has the same condition
+// for every frame of the block. Its sides need not both be computed: such a select is a BRANCH (Schedule::branches),
+// and every op that only it needs, through one of its value inputs, is GUARDED by that side (Schedule::guardOf):
+//   - guard 2·b + 0 is branch b's TRUE side (input 1, a), 2·b + 1 its FALSE side (input 2, b);
+//   - an op is guarded only when it is a stateless kernel without a resource in the select's region, and every value
+//     it writes is read only by ops of that region whose guard lies inside that side (or by the select through that
+//     input); a value read by anything else (another region, an output, a probe, a ramp, a solve) keeps it
+//     unconditional. So ops with state (delays, filters, phasors, smoothed gains) and everything they read always run:
+//     their state advances exactly as before. Shared ops (read through both sides, or also elsewhere) run under the
+//     innermost guard that covers every reader: unconditionally at the top level.
+//   - nesting: a branch's select may itself be guarded (Branch::parent); its guards then lie inside that one. Outer
+//     branches come first (parent guard < 2·b).
+// How a backend runs it (optional: computing every op, as without branches, is exactly the same output): at the start
+// of the region (per block, per voice group) each branch's state from its condition's lanes (the sign bits, as the
+// select reads them; 8 lanes, 16 for a pair of groups, one for a scalar lane): ALL true, NONE true, or MIXED. Side 0
+// runs unless NONE, side 1 unless ALL, and only where its parent guard runs. The branch's select (when it runs) is
+// cond ? a : b when MIXED, else its output is the chosen input (computed as select(cond, a, a) / select(cond, b, b):
+// bit for bit what the select gives, without reading the side that was skipped). A skipped op writes nothing; no
+// value it would have written is read in that block (only skipped ops and the select's other input read them), so no
+// stale value of an earlier block can leak, whichever side the next block takes. Buffers are allocated as without
+// branches (identical schedules with ScheduleOptions::uniformBranches = false, except for these two tables).
 
 #include <cstdint>
 #include <memory>
@@ -401,6 +425,13 @@ struct RampStage {
   uint32_t frames = 0;     // a ramp's length in frames of the block (at the base rate)
 };
 
+// TX.uniform-branch (see "Uniform branches" above): one select whose condition is uniform over the block.
+struct Branch {
+  uint32_t op = kNone;      // the select (Schedule::ops): input 0 the condition (a pattern), 1 the true side, 2 the false
+  uint32_t region = kNone;  // its region (a Block region; its guarded ops are all in it)
+  uint32_t parent = kNone;  // the guard the select itself runs under (2·branch + side, a lower branch), or kNone
+};
+
 struct Schedule {
   std::vector<Stage> stages;
   std::vector<Region> regions;
@@ -437,6 +468,10 @@ struct Schedule {
   // backend may run such an op only in a block in which a param of its mask changed (and in the first block): every
   // value read across a mask boundary has a buffer of its own.
   std::vector<uint64_t> memoMask;
+  // TX.uniform-branch (see "Uniform branches" above): the branches (outer first) and, per op (empty when there are
+  // none), its guard: kNone (unconditional) or 2·b + side of branch b.
+  std::vector<Branch> branches;
+  std::vector<uint32_t> guardOf;
 
   std::span<const Operand> inputs(const Op& op) const noexcept { return {operands.data() + op.firstOperand, op.numIn}; }
   std::span<const Operand> outputsOf(const Op& op) const noexcept {
@@ -466,6 +501,9 @@ struct ScheduleOptions {
   std::span<const ProbePoint> probes;
   // TX.smooth: smooth param-rate values at audio-rate inputs (Schedule::ramps). false: none (the T1.5 schedule).
   bool paramRamps = true;
+  // TX.uniform-branch: find selects of block-uniform conditions and guard what only one side needs
+  // (Schedule::branches). false: none (the schedule before TX.uniform-branch, op for op and buffer for buffer).
+  bool uniformBranches = true;
 };
 
 struct ScheduleResult {

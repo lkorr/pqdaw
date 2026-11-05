@@ -129,6 +129,55 @@ std::vector<float> renderAutomated(const fs::path& file, compile::Backend backen
   return sink.channels[0];
 }
 
+// TX.uniform-branch: a VCA file's `Main` with a marker moved every few blocks (the `warped` select's condition flips
+// between blocks: the marker search runs only while a marker is off its default), with or without the schedule's
+// uniform branches. *branches: how many the schedule has.
+struct MarkMotion {
+  std::vector<float> base;
+  int32_t mark = -1;
+};
+void moveMark(void* user, int64_t t, uint32_t, engine::TransportSnapshot&, std::span<float> params) noexcept {
+  const MarkMotion& m = *static_cast<const MarkMotion*>(user);
+  for (size_t i = 0; i < params.size() && i < m.base.size(); ++i) params[i] = m.base[i];
+  const int64_t blk = t / 64;
+  if ((blk / 3) % 2 != 0) params[static_cast<size_t>(m.mark)] = 0.04f + 0.01f * static_cast<float>(blk % 5);
+}
+std::vector<float> renderMarks(const fs::path& file, compile::Backend backend, double seconds, bool branches,
+                               size_t* numBranches = nullptr) {
+  auto src = compile::SourceFile::load(file);
+  REQUIRE(src.ok());
+  auto k = (*src)->findPatch("Main");
+  REQUIRE(k.ok());
+  compile::CompileOptions co;
+  co.uniformBranches = branches;
+  auto c = compile::compilePatch(**src, *k, co);
+  REQUIRE_MESSAGE(c.ok(), (c.ok() ? std::string() : c.error().message));
+  if (numBranches != nullptr) *numBranches = c->schedule.branches.size();
+  compile::ImageOptions io;
+  io.maxBlockFrames = 64;
+  auto img = compile::buildImage(c->schedule, backend, io);
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? std::string() : img.error().message));
+  MarkMotion m;
+  const graph::Patch& sp = c->scheduled().patch;
+  for (size_t i = 0; i < c->schedule.params.size(); ++i) {
+    m.base.push_back(c->schedule.params[i].defaultValue);
+    if (std::string(sp.nodeName(c->schedule.params[i].node)).ends_with("__mk_p1")) m.mark = static_cast<int32_t>(i);
+  }
+  REQUIRE(m.mark >= 0);
+  engine::RenderRequest rq;
+  rq.image = img->get();
+  rq.frames = static_cast<uint64_t>(seconds * 48000.0);
+  rq.blockFrames = 64;
+  rq.params = m.base;
+  rq.hook.fn = &moveMark;
+  rq.hook.user = &m;
+  engine::BufferSink sink;
+  auto st = engine::renderOffline(rq, sink);
+  REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+  REQUIRE(sink.channels.size() == 1);
+  return sink.channels[0];
+}
+
 }  // namespace
 
 TEST_CASE("vca: expansion — every form, fixed ids, the text form parses back (both curves), the tap") {
@@ -461,6 +510,24 @@ TEST_CASE("vca: the DSP computes the law (both curves, many states); interpreter
 // JIT runs only in a block in which the range, the zone or a marker changed (graph::Schedule::memoMask): with the knob
 // automated every block and the range, zone and a marker changing every few blocks, the JIT plays the interpreter's
 // samples bit for bit.
+TEST_CASE("vca: the audio-rate knob's marker search branches once per block (TX.uniform-branch): with == without, both backends, markers moving") {
+  const fs::path f = curveFile("branch.pqp", VcaCurve::Log, "noise(), value: 0.5 + 0.45 * sine(phasor(40Hz))");
+  size_t branches = 0, none = 1;
+  const std::vector<float> ib = renderMarks(f, compile::Backend::Interpreter, 0.25, true, &branches);
+  const std::vector<float> in = renderMarks(f, compile::Backend::Interpreter, 0.25, false, &none);
+  const std::vector<float> jb = renderMarks(f, compile::Backend::Jit, 0.25, true);
+  const std::vector<float> jn = renderMarks(f, compile::Backend::Jit, 0.25, false);
+  CHECK(branches >= 1);  // `warped`: the marker search (segment choice) only while a marker is moved
+  CHECK(none == 0);
+  REQUIRE(ib.size() == in.size());
+  REQUIRE(jb.size() == in.size());
+  REQUIRE(jn.size() == in.size());
+  CHECK(std::memcmp(ib.data(), in.data(), in.size() * sizeof(float)) == 0);
+  CHECK(std::memcmp(jb.data(), in.data(), in.size() * sizeof(float)) == 0);
+  CHECK(std::memcmp(jn.data(), in.data(), in.size() * sizeof(float)) == 0);
+  fs::remove(f);
+}
+
 TEST_CASE("vca: automation every block (knob) and every few blocks (range, zone, marker): interpreter == JIT bit for bit") {
   const fs::path f = curveFile("auto.pqp", VcaCurve::Log, "noise()");
   const std::vector<float> yi = renderAutomated(f, compile::Backend::Interpreter, 0.25, true);

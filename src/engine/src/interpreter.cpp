@@ -15,6 +15,9 @@
 //   regions_  per (stage, group) region: the record range (and, with solve blocks, an item list)
 //   swaps_    TX.smooth: per record with ramped inputs (pq/graph/schedule.h "Param ramps"), the pool cells that read
 //             the ramp's buffer instead of the param-rate pattern in a block where one of the record's ramps moves
+//   branches_ TX.uniform-branch: per (region, group) branch of the schedule (pq/graph/schedule.h "Uniform branches"),
+//             its select record and the select kernels for every Spl mask; records carry their guard (an index into
+//             guardOn_, 2 per branch), evaluated once per block at the region's start
 
 #include "pq/engine/interpreter.h"
 
@@ -51,6 +54,17 @@ struct Rec {
   dsp::KernelFn fnBase = nullptr, fnRamp = nullptr;
   uint32_t maskBase = 0, maskRamp = 0;
   bool rampMode = false;                 // this block reads the ramp buffers
+  // TX.uniform-branch: the guard this record runs under (guardOn_ index) and, for a branch's select, its branch.
+  uint32_t guard = g::kNone;
+  uint32_t branch = g::kNone;
+};
+
+// TX.uniform-branch: one branch of one region (and voice group).
+struct BranchRun {
+  uint32_t rec = 0;                      // its select record
+  uint32_t parent = g::kNone;            // the guardOn_ index its select runs under
+  uint8_t state = 0;                     // this block: 0 mixed (select), 1 all true (input 1), 2 none true (input 2)
+  dsp::KernelFn select[8] = {};          // the select kernel per Spl mask (its lanes)
 };
 
 // TX.smooth: one ramped input of a record (the param_ramp state says whether it moves this block).
@@ -81,6 +95,7 @@ struct RegionRun {
   uint32_t firstRec = 0, numRec = 0;
   uint32_t firstItem = 0, numItems = 0;  // with solve blocks: rec index, or kSolveItem | solve index
   uint32_t firstRampRec = 0, numRampRec = 0;  // TX.smooth: its records with ramped inputs (into rampRecs_)
+  uint32_t firstBranch = 0, numBranches = 0;  // TX.uniform-branch: its branches (into branches_; Block regions)
   // TX.smooth-fix1: a region of param_ramp ops (its records whose ramp is not static: rampChecked_ [firstChecked,
   // + numChecked)), whether some ramped input of the region is not static, and whether some record of it read its
   // ramps in the last block it ran (ramp-free blocks then put the patterns back once).
@@ -160,6 +175,8 @@ public:
   std::vector<Swap> swaps_;          // TX.smooth
   std::vector<uint32_t> rampRecs_;   // TX.smooth: record indices, per region
   std::vector<uint32_t> rampChecked_;  // TX.smooth-fix1: the param_ramp records of non-static ramps, per region
+  std::vector<BranchRun> branches_;  // TX.uniform-branch
+  std::vector<uint8_t> guardOn_;     // TX.uniform-branch: per guard (2 per branch), whether it runs this block
   bool rampMode_ = false;          // TX.smooth-fix1: the stage being run is in its ramp mode (ImageHost::run)
   std::vector<uint32_t> items_;
   std::vector<RegionRun> regions_;
@@ -187,6 +204,8 @@ private:
       pool_[swaps_[k].cell] = swaps_[k].ramp + static_cast<size_t>(t) * swaps_[k].stride;
   }
   void runMetered(ProcessContext& ctx) noexcept;
+  void runBranched(const RegionRun& r, uint32_t frames) noexcept;
+  void runBranchSelect(Rec& rec, const BranchRun& b) noexcept;
   void relocate(const Rec& rec, uint32_t t) noexcept {  // RT-safe
     for (uint32_t k = rec.firstReloc; k < rec.firstReloc + rec.numReloc; ++k) {
       const Reloc& rl = relocs_[k];
@@ -272,6 +291,10 @@ void InterpretedImage::runRegion(const RegionRun& r, uint32_t frames) noexcept {
       }
       return;
     case g::RegionKind::Block:
+      if (r.numBranches != 0) {
+        runBranched(r, frames);
+        return;
+      }
       for (uint32_t i = r.firstRec; i < r.firstRec + r.numRec; ++i) {
         Rec& rec = recs_[i];
         rec.args.frames = frames;
@@ -310,6 +333,42 @@ void InterpretedImage::runRegion(const RegionRun& r, uint32_t frames) noexcept {
       return;
     }
   }
+}
+
+// TX.uniform-branch (pq/graph/schedule.h "Uniform branches"): a Block region with branches. Each branch's state from
+// the sign bits of its condition's 8 lanes (as the select kernel reads them), outer branches first; then every record
+// whose guard runs, a branch's select as the side it chose.
+void InterpretedImage::runBranched(const RegionRun& r, uint32_t frames) noexcept {  // RT-safe
+  for (uint32_t k = r.firstBranch; k < r.firstBranch + r.numBranches; ++k) {
+    BranchRun& b = branches_[k];
+    const int mask = _mm256_movemask_ps(_mm256_loadu_ps(pool_[recs_[b.rec].inBase]));
+    const bool on = b.parent == g::kNone || guardOn_[b.parent] != 0;
+    b.state = mask == 0xFF ? uint8_t{1} : mask == 0 ? uint8_t{2} : uint8_t{0};
+    guardOn_[2 * k] = on && mask != 0 ? 1 : 0;
+    guardOn_[2 * k + 1] = on && mask != 0xFF ? 1 : 0;
+  }
+  for (uint32_t i = r.firstRec; i < r.firstRec + r.numRec; ++i) {
+    Rec& rec = recs_[i];
+    if (rec.guard != g::kNone && guardOn_[rec.guard] == 0) continue;
+    rec.args.frames = frames;
+    if (rec.branch != g::kNone && branches_[rec.branch].state != 0) runBranchSelect(rec, branches_[rec.branch]);
+    else rec.fn(rec.args);
+  }
+}
+
+// The select of a branch that took one side: select(cond, x, x) with x the chosen input (bit for bit its value; the
+// other input, not computed this block, is not read). The other input's cell and the Spl mask are restored after.
+void InterpretedImage::runBranchSelect(Rec& rec, const BranchRun& b) noexcept {  // RT-safe
+  const uint32_t keep = b.state == 1 ? 1u : 2u, drop = 3u - keep;
+  float*& cell = pool_[rec.inBase + drop];
+  float* const saved = cell;
+  const uint32_t mask = rec.args.splMask;
+  const uint32_t m = (mask & ~(1u << drop)) | (((mask >> keep) & 1u) << drop);
+  cell = pool_[rec.inBase + keep];
+  rec.args.splMask = m;
+  b.select[m & 7u](rec.args);
+  rec.args.splMask = mask;
+  cell = saved;
 }
 
 // Newton per lane (pq/engine/newton.h has the scheme; the JIT generates the same arithmetic). Scratch: solveMem_
@@ -775,6 +834,7 @@ private:
           for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
             if (!makeRec(i, gi, loop, control)) return false;
           rr.numRec = static_cast<uint32_t>(im.recs_.size()) - rr.firstRec;
+          if (!branches(ri, rr)) return false;
           rr.firstRampRec = static_cast<uint32_t>(im.rampRecs_.size());
           for (uint32_t q = rr.firstRec; q < rr.firstRec + rr.numRec; ++q)
             if (im.recs_[q].numSwaps != 0) im.rampRecs_.push_back(q);
@@ -820,6 +880,47 @@ private:
       }
       im.stages_.push_back(sr);
     }
+    return true;
+  }
+
+  // TX.uniform-branch: the branches of schedule region ri (one group's records rr) and the guards of its records.
+  bool branches(uint32_t ri, RegionRun& rr) {
+    InterpretedImage& im = *img_;
+    rr.firstBranch = static_cast<uint32_t>(im.branches_.size());
+    if (s_.branches.empty()) return true;
+    if (s_.guardOf.size() != s_.ops.size()) return fail("the branch guards do not match the ops");
+    const g::Region& reg = s_.regions[ri];
+    std::vector<uint32_t> local(s_.branches.size(), g::kNone);  // schedule branch -> image branch (this region, group)
+    for (uint32_t b = 0; b < s_.branches.size(); ++b) {
+      const g::Branch& sb = s_.branches[b];
+      if (sb.region != ri) continue;
+      if (sb.op < reg.firstOp || sb.op >= reg.firstOp + reg.numOps || reg.kind != g::RegionKind::Block)
+        return fail("a branch outside its Block region");
+      const g::Op& op = s_.ops[sb.op];
+      if (op.kind != g::OpKind::Kernel || op.kernel != dsp::Atom::Select || op.numIn != 3 || op.numOut != 1 ||
+          (op.splMask & 1u) == 0)
+        return fail("a branch whose op is not a select of a pattern condition");
+      if (sb.parent != g::kNone && ((sb.parent >> 1) >= b || local[sb.parent >> 1] == g::kNone))
+        return fail("a branch whose parent is not an earlier branch of its region");
+      BranchRun br;
+      br.rec = rr.firstRec + (sb.op - reg.firstOp);
+      br.parent = sb.parent == g::kNone ? g::kNone : 2 * local[sb.parent >> 1] + (sb.parent & 1u);
+      for (uint32_t m = 0; m < 8; ++m) {
+        br.select[m] = dsp::findKernel(dsp::Atom::Select, op.lanes, m);
+        if (!br.select[m]) return fail("no select kernel for a branch");
+      }
+      local[b] = static_cast<uint32_t>(im.branches_.size());
+      im.recs_[br.rec].branch = local[b];
+      im.branches_.push_back(br);
+    }
+    rr.numBranches = static_cast<uint32_t>(im.branches_.size()) - rr.firstBranch;
+    for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) {
+      const uint32_t gd = s_.guardOf[i];
+      if (gd == g::kNone) continue;
+      if ((gd >> 1) >= local.size() || local[gd >> 1] == g::kNone) return fail("an op guarded by a branch of another region");
+      im.recs_[rr.firstRec + (i - reg.firstOp)].guard = 2 * local[gd >> 1] + (gd & 1u);
+    }
+    im.guardOn_.assign(2 * im.branches_.size(), 0);
     return true;
   }
 

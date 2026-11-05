@@ -242,6 +242,26 @@ namespace pq::graph {
   // automation, a released knob or a held note costs nothing. Only ramps of other sources (a stateful Control op, a
   // per-voice signal that moves) keep a per-block check after the Control region (`checked`; the stock Operator has
   // none). SleepStats::rampRuns counts ramp-mode stage runs.
+  // TX.uniform-branch (schedule.h "Uniform branches"; Q?-TX.uniform-branch-a): a select in a Block region whose
+  // condition is a pattern defined before the region (param, constant, param-rate external, a Control value; never a
+  // ramped input) has one condition for the whole block. uniformBranches() (after insertRamps, values still virtual)
+  // walks the ops backwards and gives each op the innermost guard that covers all its readers (a branch select read
+  // through input 1 / 2 counts as that side): Schedule::branches (Branch {op, region, parent guard}, outer first) and
+  // Schedule::guardOf (per op: kNone or 2·b + side). Only stateless kernels without a resource in the select's region
+  // are guarded, and only when every reader is in that region; outputs, probes, ramp sources, solves and reducers pin a
+  // value, so stateful ops (delays, filters, phasors, smoothed gains) and what they read always run. Nothing else of
+  // the schedule changes (ScheduleOptions::uniformBranches = false: the same ops, operands and buffers, no tables;
+  // CompileOptions::uniformBranches, `pqc --no-branches` for A/B). Run time (both optional: computing everything is the
+  // same output): per Block region, per block and voice group, each branch's state from the sign bits of its
+  // condition's lanes (8; a JIT pair's 16; the scalar baseline's one) — ALL, NONE or MIXED; side 0 runs unless NONE,
+  // side 1 unless ALL, inside the parent guard; the select runs as select(c, x, x) of the chosen side (bit for bit
+  // its value, the skipped side never read) or as itself when MIXED. Interpreter: InterpretedImage::runBranched (a
+  // guard byte per record, the select's other input cell swapped for the call). JIT: analyseBranches takes a branch
+  // when one of its sides guards ≥ kMinBranchCost (opCost units); runs split at guard changes and around a taken
+  // select (values crossing are stored, as between runs); emitBranchStates at the region's start, each guarded part
+  // behind one branch, the select in a three-way branch (emitBranchSelect); chained regions (emitChain) ignore guards.
+  // tests/graph sched_replay.h replays every branch state (a skipped value read would fail "before anything wrote it in
+  // this block"); sched_exec.h's executor poisons skipped buffers with NaN.
   ScheduleResult scheduleDetailed(const TypedPatch&, const ScheduleOptions& = {});  // + warnings in the Schedule
   Result<Schedule> schedule(const TypedPatch&, const ScheduleOptions& = {});
 }

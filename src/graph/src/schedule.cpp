@@ -191,6 +191,7 @@ public:
     outputs();
     insertRamps();
     if (!res_.ok()) return std::move(res_);
+    uniformBranches();
     allocateBuffers();
     layoutState();
     if (work_) S().rewritten = work_;
@@ -2033,6 +2034,137 @@ private:
     sg.firstOp = static_cast<uint32_t>(s.ops.size());
     s.stages.push_back(sg);
     return sg.index;
+  }
+
+  // ---- uniform branches (TX.uniform-branch; schedule.h "Uniform branches") ---------------------------------------
+  // One pass over the ops in reverse order (every reader of a value comes after its writer): an op's guard is the
+  // innermost guard that covers all its readers (a branch's select reading it through input 1 / 2 counts as that
+  // side), kNone when one of them is outside its region, not an op (outputs, probes, ramps, solves) or when the op
+  // itself must run (state, a resource, no outputs, not in a Block region). Selects of uniform conditions become
+  // branches as they are met, so an outer branch (later in op order) gets the lower index. Branches that guard
+  // nothing are dropped. Values are still virtual here (vals_ indices); nothing else of the schedule changes.
+  void uniformBranches() {
+    Schedule& s = S();
+    s.branches.clear();
+    s.guardOf.clear();
+    if (!opt_.uniformBranches) return;
+    const auto numOps = static_cast<uint32_t>(s.ops.size());
+    std::vector<uint32_t> regionOfOp(numOps, kNone);
+    for (uint32_t r = 0; r < s.regions.size(); ++r)
+      for (uint32_t i = s.regions[r].firstOp; i < s.regions[r].firstOp + s.regions[r].numOps && i < numOps; ++i)
+        regionOfOp[i] = r;
+    auto inBlock = [&](uint32_t i) {
+      const uint32_t r = regionOfOp[i];
+      return r != kNone && s.regions[r].kind == RegionKind::Block && s.regions[r].numSolves == 0;
+    };
+    // A select of a block-uniform condition: a pattern defined before its region, not ramped.
+    auto uniformSelect = [&](uint32_t i) {
+      const Op& op = s.ops[i];
+      if (op.kind != OpKind::Kernel || op.kernel != dsp::Atom::Select || op.numIn != 3 || op.numOut != 1) return false;
+      if (!inBlock(i) || (op.splMask & 1u) == 0) return false;
+      if (!s.rampOf.empty() && s.rampOf[op.firstOperand] != kNone) return false;
+      const Operand& c = s.operands[op.firstOperand];
+      if (!isPatternLike(c)) return false;
+      if (c.kind == Operand::Kind::Buffer &&
+          (vals_[c.index].def == kNone || vals_[c.index].def >= s.regions[regionOfOp[i]].firstOp))
+        return false;
+      // Both sides patterns: nothing of this region to skip.
+      return (op.splMask & 6u) != 6u;
+    };
+    // Readers of each value (op, input) and the values something other than an op reads.
+    std::vector<uint32_t> firstReader(vals_.size() + 1, 0);
+    for (uint32_t i = 0; i < numOps; ++i)
+      for (const Operand& o : s.inputs(s.ops[i]))
+        if (o.kind == Operand::Kind::Buffer) ++firstReader[o.index + 1];
+    for (size_t v = 0; v < vals_.size(); ++v) firstReader[v + 1] += firstReader[v];
+    std::vector<std::pair<uint32_t, uint32_t>> readers(firstReader.back());
+    {
+      std::vector<uint32_t> fill(firstReader.begin(), firstReader.end() - 1);
+      for (uint32_t i = 0; i < numOps; ++i) {
+        const Op& op = s.ops[i];
+        for (uint32_t j = 0; j < op.numIn; ++j) {
+          const Operand& o = s.operands[op.firstOperand + j];
+          if (o.kind == Operand::Kind::Buffer) readers[fill[o.index]++] = {i, j};
+        }
+      }
+    }
+    std::vector<uint8_t> pinned(vals_.size(), 0);
+    auto pin = [&](const Operand& o) {
+      if (o.kind == Operand::Kind::Buffer && o.index < pinned.size()) pinned[o.index] = 1;
+    };
+    for (const OutputRef& o : s.outputs) pin(o.value);
+    for (const ProbeRef& p : s.probes) pin(p.value);
+    for (const Ramp& r : s.ramps) pin(r.source);
+    for (const SolveUnknown& u : s.unknowns) pin(u.value), pin(u.init);
+    for (const SolveEquation& e : s.equations) pin(e.lhs), pin(e.rhs);
+    for (const Use& u : uses_)
+      if (u.after || u.solve != kNone) pinned[u.val] = 1;
+    for (uint32_t v : reduceVals_) pinned[v] = 1;
+    // Guards: 2·b + side; parent and depth per branch.
+    std::vector<uint32_t> guard(numOps, kNone), branchOfOp(numOps, kNone), depth;  // depth per branch (of its sides)
+    std::vector<Branch> br;
+    auto parentOf = [&](uint32_t g) { return br[g >> 1].parent; };
+    auto depthOf = [&](uint32_t g) { return g == kNone ? 0u : depth[g >> 1]; };
+    auto lca = [&](uint32_t a, uint32_t b) {
+      uint32_t da = depthOf(a), db = depthOf(b);
+      while (da > db) a = parentOf(a), --da;
+      while (db > da) b = parentOf(b), --db;
+      while (a != b) a = parentOf(a), b = parentOf(b);
+      return a;
+    };
+    for (uint32_t i = numOps; i-- > 0;) {
+      const Op& op = s.ops[i];
+      const bool eligible = op.kind == OpKind::Kernel && op.state == kNone && op.resource == kNone && op.numOut > 0 &&
+                            inBlock(i);
+      if (eligible) {
+        uint32_t g = kNone;
+        bool any = false, root = false;
+        for (const Operand& o : s.outputsOf(op)) {
+          if (o.kind != Operand::Kind::Buffer || pinned[o.index]) {
+            root = true;
+            break;
+          }
+          for (uint32_t k = firstReader[o.index]; k < firstReader[o.index + 1] && !root; ++k) {
+            const auto [r, j] = readers[k];
+            if (r <= i || regionOfOp[r] != regionOfOp[i]) {
+              root = true;
+              break;
+            }
+            const uint32_t eff = branchOfOp[r] != kNone && j != 0 ? 2 * branchOfOp[r] + (j == 1 ? 0u : 1u) : guard[r];
+            if (eff == kNone) {
+              root = true;
+              break;
+            }
+            g = any ? lca(g, eff) : eff;
+            any = true;
+            if (g == kNone) root = true;
+          }
+          if (root) break;
+        }
+        guard[i] = root || !any ? kNone : g;
+      }
+      if (uniformSelect(i)) {
+        branchOfOp[i] = static_cast<uint32_t>(br.size());
+        br.push_back(Branch{i, regionOfOp[i], guard[i]});
+        depth.push_back(depthOf(guard[i]) + 1);
+      }
+    }
+    // Keep the branches that guard something; renumber (order kept: parents stay before their children).
+    std::vector<uint8_t> used(br.size(), 0);
+    for (uint32_t i = 0; i < numOps; ++i)
+      if (guard[i] != kNone) used[guard[i] >> 1] = 1;
+    std::vector<uint32_t> newIndex(br.size(), kNone);
+    for (uint32_t b = 0; b < br.size(); ++b) {
+      if (!used[b]) continue;
+      newIndex[b] = static_cast<uint32_t>(s.branches.size());
+      Branch x = br[b];
+      if (x.parent != kNone) x.parent = 2 * newIndex[x.parent >> 1] + (x.parent & 1u);  // a parent guards its child
+      s.branches.push_back(x);
+    }
+    if (s.branches.empty()) return;
+    s.guardOf.assign(numOps, kNone);
+    for (uint32_t i = 0; i < numOps; ++i)
+      if (guard[i] != kNone) s.guardOf[i] = 2 * newIndex[guard[i] >> 1] + (guard[i] & 1u);
   }
 
   // ---- buffers ------------------------------------------------------------------------------------------------

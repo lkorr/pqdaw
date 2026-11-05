@@ -19,6 +19,7 @@ struct Args {
   double rate = 48000.0, seconds = 2.0, gainDb = 0.0;
   uint32_t block = 64, voices = 16;
   bool visual = false, keys = false;
+  bool noBranches = false;  // TX.uniform-branch: --no-branches (A/B)
   std::vector<std::pair<std::string, float>> params;
 };
 
@@ -83,6 +84,7 @@ int cmdCheck(const Args& a, std::ostream& out, std::ostream& err) {
   CompileOptions co;
   co.sampleRate = a.rate;
   co.visualMode = a.visual;
+  co.uniformBranches = !a.noBranches;
   int failed = 0;
   for (size_t k : which) {
     auto c = compilePatch(**src, k, co);
@@ -126,6 +128,7 @@ int cmdDumpSchedule(const Args& a, std::ostream& out, std::ostream& err) {
   CompileOptions co;
   co.sampleRate = a.rate;
   co.visualMode = a.visual;
+  co.uniformBranches = !a.noBranches;
   auto c = compilePatch(**src, *k, co);
   if (!c) return fail(err, c.error());
   for (const std::string& w : c->warnings) err << w << '\n';
@@ -151,6 +154,7 @@ int cmdRender(const Args& a, std::ostream& out, std::ostream& err) {
   ro.patch = a.patch;
   ro.compile.sampleRate = a.rate;
   ro.compile.visualMode = a.visual;
+  ro.compile.uniformBranches = !a.noBranches;
   ro.backend = a.backend == "jit" ? Backend::Jit : Backend::Interpreter;
   ro.seconds = a.seconds;
   ro.blockFrames = a.block;
@@ -197,6 +201,7 @@ std::string usage() {
          "  --patch NAME          patch of the file (default: the first)\n"
          "  --rate HZ             sample rate the program is specialised for (default 48000)\n"
          "  --visual              a delay-free cycle gets a z1 and a warning instead of an error\n"
+         "  --no-branches         compute both sides of every select (no uniform branches; A/B references)\n"
          "  -o FILE               output file (render: required; dumps: default stdout)\n"
          "render:\n"
          "  --seconds S           length (default 2)\n"
@@ -240,6 +245,8 @@ int run(std::span<const std::string> args, std::ostream& out, std::ostream& err)
         return usageError(err, "--rate needs a sample rate in 1000..768000");
     } else if (f == "--visual") {
       a.visual = true;
+    } else if (f == "--no-branches") {
+      a.noBranches = true;
     } else if (f == "--keys" && a.command == "dump-schedule") {
       a.keys = true;
     } else if (f == "--stage" && a.command == "dump-ir") {

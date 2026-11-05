@@ -61,6 +61,7 @@ private:
 struct CompileOptions {
   double sampleRate = 48000.0;
   bool visualMode = false;  // a delay-free cycle gets a z1 and a warning instead of an error
+  bool uniformBranches = true;  // TX.uniform-branch: graph::ScheduleOptions::uniformBranches (false: A/B references)
 };
 
 // One patch through the whole graph pipeline.

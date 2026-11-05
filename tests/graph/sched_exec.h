@@ -7,7 +7,11 @@
 //               No buffer reuse, no regions, no sub-blocks.
 //   Executor  — runs a Schedule the way schedule.h says a backend must: Control regions once per block on 8-float
 //               patterns, Block regions block-wise, Loop regions in sub-blocks, physical buffers shared as the
-//               scheduler assigned them, the state arena laid out by StateLayout.
+//               scheduler assigned them, the state arena laid out by StateLayout. TX.uniform-branch: with
+//               `branches`, it runs a Block region's branches as schedule.h "Uniform branches" says (each branch's state
+//               from its condition's 8 lanes, guarded ops skipped, a select that chose a side computed as
+//               select(c, x, x)), and fills every output buffer of an op it skips with NaN (where the op would run): a skipped value that
+//               anything read would show in the outputs.
 // Both are deliberately simple (not RT code). Unsupported: voices, solve blocks, multichannel, resources, noise.
 
 #include <algorithm>
@@ -245,7 +249,7 @@ private:
 // ---- the schedule runner ------------------------------------------------------------------------------------
 class Executor {
 public:
-  Executor(const Schedule& s, uint32_t frames) : s_(s), frames_(frames) {
+  Executor(const Schedule& s, uint32_t frames, bool branches = false) : s_(s), frames_(frames), branches_(branches) {
     for (const Buffer& b : s.buffers)
       bufs_.push_back(std::vector<float>(b.cls == Buffer::Class::Pattern ? 8 : static_cast<size_t>(frames) * b.lanes));
     for (const ParamSlot& p : s.params)
@@ -260,6 +264,11 @@ public:
         dsp::initState(static_cast<dsp::Atom>(e.tag.kernel), statePtr(e), e.init);
   }
 
+  // Sets param slot `slot` (its 8-float pattern) for the following blocks (bools: pass a mask).
+  void setParam(uint32_t slot, float v) { std::fill(params_[slot].begin(), params_[slot].end(), v); }
+  uint64_t skippedOps() const { return skipped_; }
+  uint64_t chosenSides() const { return chosen_; }
+
   // One block starting at sample t0; returns per output the block of values.
   std::vector<std::vector<float>> block(uint64_t t0) {
     for (size_t i = 0; i < s_.externals.size(); ++i)
@@ -268,6 +277,10 @@ public:
       if (r.kind == RegionKind::Control) {
         for (uint32_t i = r.firstOp; i < r.firstOp + r.numOps; ++i) runOp(s_.ops[i], 0, 1);
       } else if (r.kind == RegionKind::Block) {
+        if (branches_ && !s_.branches.empty()) {
+          runBranched(r);
+          continue;
+        }
         for (uint32_t i = r.firstOp; i < r.firstOp + r.numOps; ++i) runOp(s_.ops[i], 0, frames_);
       } else {
         for (uint32_t t = 0; t < frames_; t += r.subBlock) {
@@ -306,12 +319,14 @@ private:
     }
     return isPattern(o) ? base : base + static_cast<size_t>(t) * lanes;
   }
-  void runOp(const Op& op, uint32_t t, uint32_t frames) {
+  // `pick` (TX.uniform-branch, a select that chose a side): the input that replaces the other side (1 or 2).
+  void runOp(const Op& op, uint32_t t, uint32_t frames, uint32_t pick = 0) {
     if (op.kind != OpKind::Kernel) std::abort();
     std::vector<const float*> ip;
     std::vector<float*> outp;
     const auto ins = s_.inputs(op);
     for (const Operand& o : ins) ip.push_back(ptr(o, t, op.lanes));
+    if (pick != 0) ip[3 - pick] = ip[pick];
     for (const Operand& o : s_.outputsOf(op)) outp.push_back(ptr(o, t, op.lanes));
     dsp::KernelArgs a;
     a.in = ip.data();
@@ -326,8 +341,47 @@ private:
     fn(a);
   }
 
+  // TX.uniform-branch: a Block region with its branches taken (see the header).
+  void runBranched(const Region& r) {
+    std::vector<uint8_t> on(2 * s_.branches.size(), 0), state(s_.branches.size(), 0);
+    for (uint32_t b = 0; b < s_.branches.size(); ++b) {
+      const Branch& x = s_.branches[b];
+      if (x.region >= s_.regions.size() || s_.regions[x.region].firstOp != r.firstOp) continue;
+      const float* c = ptr(s_.inputs(s_.ops[x.op])[0], 0, 1);
+      uint32_t mask = 0;
+      for (uint32_t l = 0; l < 8; ++l) mask |= (std::signbit(c[l]) ? 1u : 0u) << l;
+      const bool parentOn = x.parent == kNone || on[x.parent] != 0;
+      state[b] = mask == 0xFF ? 1 : mask == 0 ? 2 : 0;
+      on[2 * b] = parentOn && mask != 0;
+      on[2 * b + 1] = parentOn && mask != 0xFF;
+    }
+    for (uint32_t i = r.firstOp; i < r.firstOp + r.numOps; ++i) {
+      const uint32_t g = s_.guardOf.empty() ? kNone : s_.guardOf[i];
+      if (g != kNone && !on[g]) {  // poisoned where it would have been written (its buffer may hold an older value)
+        ++skipped_;
+        for (const Operand& o : s_.outputsOf(s_.ops[i]))
+          if (o.kind == Operand::Kind::Buffer) std::fill(bufs_[o.index].begin(), bufs_[o.index].end(), NAN);
+        continue;
+      }
+      uint32_t chosen = 0;
+      for (uint32_t b = 0; b < s_.branches.size(); ++b)
+        if (s_.branches[b].op == i) chosen = state[b];
+      if (chosen == 0) {
+        runOp(s_.ops[i], 0, frames_);
+        continue;
+      }
+      ++chosen_;
+      Op op = s_.ops[i];
+      const uint32_t drop = 3 - chosen;
+      op.splMask = (op.splMask & ~(1u << drop)) | (((op.splMask >> chosen) & 1u) << drop);
+      runOp(op, 0, frames_, chosen);
+    }
+  }
+
   const Schedule& s_;
   uint32_t frames_;
+  bool branches_ = false;
+  uint64_t skipped_ = 0, chosen_ = 0;
   std::vector<std::vector<float>> bufs_, params_, consts_, ext_;
   std::unique_ptr<AlignedBlock> arena_, side_;
   char* statePtr(const StateEntry& e) const { return (e.side ? side_ : arena_)->p + e.offset; }

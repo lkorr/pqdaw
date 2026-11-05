@@ -14,11 +14,11 @@
 `main`, so `tests/tools/test_pqc.cpp` runs exactly what the executable runs.
 
 ```
-pqc check         <file.pqp> [--patch NAME] [--rate HZ] [--visual]
+pqc check         <file.pqp> [--patch NAME] [--rate HZ] [--visual] [--no-branches]
 pqc dump-ir       <file.pqp> [--patch NAME] [--rate HZ] [--stage parsed|inferred|optimised] [-o out.txt]
-pqc dump-schedule <file.pqp> [--patch NAME] [--rate HZ] [--visual] [--keys] [-o out.txt]
+pqc dump-schedule <file.pqp> [--patch NAME] [--rate HZ] [--visual] [--no-branches] [--keys] [-o out.txt]
 pqc render        <file.pqp> [--patch NAME] [--notes "…"] [--seconds S] [--rate HZ] [--block N]
-                  [--backend interp|jit] [--voices N] [--param NAME=VALUE]… [--gain DB] -o out.wav
+                  [--backend interp|jit] [--voices N] [--param NAME=VALUE]… [--gain DB] [--no-branches] -o out.wav
 pqc help
 ```
 
@@ -30,6 +30,8 @@ interpreter or the LLVM JIT, and rendered offline.
   patch (nodes before/after optimisation, ops, stages, block buffers, params, state bytes) on stdout; every
   diagnostic of the failing phase on stderr as `file:line:col: error: …` with the source line and a caret.
   `--visual`: a delay-free cycle gets a z1 and a `warning:` instead of an error (the visual editor's mode).
+  `--no-branches` (any command that schedules): no uniform branches (TX.uniform-branch; pq/graph/schedule.h): both
+  sides of every select are computed, as before; the same output, for A/B measurements.
 - **dump-ir**: the patch IR as patch-language text (`graph::print`). `--stage parsed` is the patch as written;
   `inferred` the flattened patch (subcircuits instantiated, reducers inserted); `optimised` (default) after constant
   folding, CSE, DCE, duration lowering and muladd fusion. The output always parses.

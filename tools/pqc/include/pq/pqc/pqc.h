@@ -1,11 +1,11 @@
 #pragma once
 
 // pqc (T1.10): the patch compiler CLI as a library, so tests drive exactly what the executable runs.
-//   pqc check         <file.pqp> [--patch NAME] [--rate HZ] [--visual]
+//   pqc check         <file.pqp> [--patch NAME] [--rate HZ] [--visual] [--no-branches]
 //   pqc dump-ir       <file.pqp> [--patch NAME] [--rate HZ] [--stage parsed|inferred|optimised] [-o out.txt]
-//   pqc dump-schedule <file.pqp> [--patch NAME] [--rate HZ] [--visual] [--keys] [-o out.txt]
+//   pqc dump-schedule <file.pqp> [--patch NAME] [--rate HZ] [--visual] [--no-branches] [--keys] [-o out.txt]
 //   pqc render        <file.pqp> [--patch NAME] [--notes "…"] [--seconds S] [--rate HZ] [--block N]
-//                     [--backend interp|jit] [--voices N] [--param NAME=VALUE]… [--gain DB] -o out.wav
+//                     [--backend interp|jit] [--voices N] [--param NAME=VALUE]… [--gain DB] [--no-branches] -o out.wav
 // Usage and exit codes: tools/README.md (and usage()).
 //
 // Pipeline (SPEC §7.4): pq_compile (pq/compile/compile.h: read the file with its imports → parse → infer → optimise

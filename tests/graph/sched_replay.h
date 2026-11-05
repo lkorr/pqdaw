@@ -22,7 +22,12 @@
 //     iteration (at most `newton`) a body evaluation, residual reads (lhs, rhs) and unknown reads, and for each
 //     unknown a perturbed write + body + reads twice (central differences) and a restore; then the update write
 //     and, at the end, one more body evaluation (whose values later ops read);
-//   - the engine's reads: voice outputs at the end of their stage per group, global outputs after the last stage.
+//   - the engine's reads: voice outputs at the end of their stage per group, global outputs after the last stage;
+//   - TX.uniform-branch (Options::branches): in each Block region with branches, every branch takes a state per block
+//     and voice group (cycling through MIXED, ALL true, NONE true: blocks 0, 1, 2 …, offset by the branch index and
+//     the group), its guarded ops run only where schedule.h "Uniform branches" says, and a select that chose a side
+//     reads only its condition and that side. A skipped op writes nothing, so any read of a value it would have
+//     written (this block) fails as "before anything wrote it in this block": no stale value of an earlier block.
 // Op-level checks: an output may share a physical buffer with an input only as output 0 of an in-place-capable
 // (dsp::KernelInfo::inPlaceOk) kernel; outputs of one op are distinct; a kernel op has the kernel's input and output
 // counts; a value always maps to the same physical buffer, of the same class, lanes and perGroup flag.
@@ -46,10 +51,12 @@ struct Options {
   uint32_t frames = 2;   // abstract frames per block (= iterations of every Loop region)
   uint32_t blocks = 2;
   uint32_t newton = 2;   // Newton iterations replayed per solve (capped by the block's own count)
+  bool branches = true;  // TX.uniform-branch: replay the branches' states (else every op runs)
 };
 
 struct Coverage {
   uint64_t reads = 0, writes = 0, bodyEvaluations = 0, outputReads = 0, solveReads = 0;
+  uint64_t skippedOps = 0, chosenSides = 0;  // TX.uniform-branch
 };
 
 class Replay {
@@ -129,6 +136,18 @@ private:
         s_.equations.size() != u_.equations.size() || s_.outputs.size() != u_.outputs.size() ||
         s_.regions.size() != u_.regions.size() || s_.stages.size() != u_.stages.size())
       return fail("the shared and unshared schedules differ in structure");
+    if (s_.guardOf != u_.guardOf || s_.branches.size() != u_.branches.size())
+      return fail("the shared and unshared schedules differ in their branches");
+    for (size_t b = 0; b < s_.branches.size(); ++b) {
+      const Branch& x = s_.branches[b];
+      if (x.op != u_.branches[b].op || x.region != u_.branches[b].region || x.parent != u_.branches[b].parent)
+        return fail("the shared and unshared schedules differ in branch " + std::to_string(b));
+      if (x.op >= s_.ops.size() || x.region >= s_.regions.size() || s_.regions[x.region].kind != RegionKind::Block ||
+          x.op < s_.regions[x.region].firstOp || x.op >= s_.regions[x.region].firstOp + s_.regions[x.region].numOps)
+        return fail("branch " + std::to_string(b) + " is not a select of its Block region");
+      if (x.parent != kNone && (x.parent >> 1) >= b) return fail("branch " + std::to_string(b) + " comes before its parent");
+    }
+    if (!s_.guardOf.empty() && s_.guardOf.size() != s_.ops.size()) return fail("guardOf does not match the ops");
     phys_.assign(u_.buffers.size(), UINT32_MAX);
     for (size_t i = 0; i < s_.ops.size(); ++i) {
       const Op& a = s_.ops[i];
@@ -266,7 +285,34 @@ private:
       }
     }
   }
+  // TX.uniform-branch: the branches' states for this region, block and group (0 mixed, 1 all true, 2 none true) and
+  // whether each guard runs.
+  void branchStates(const Region& rg, int ctx) {
+    on_.assign(2 * s_.branches.size(), 0);
+    state_.assign(s_.branches.size(), 0);
+    if (!o_.branches) return;
+    for (uint32_t b = 0; b < s_.branches.size(); ++b) {
+      const Branch& x = s_.branches[b];
+      if (s_.regions[x.region].firstOp != rg.firstOp) continue;
+      const uint8_t st = static_cast<uint8_t>((block_ + b + static_cast<uint32_t>(ctx + 1)) % 3);
+      const bool parentOn = x.parent == kNone || on_[x.parent] != 0;
+      state_[b] = st;
+      on_[2 * b] = parentOn && st != 2;
+      on_[2 * b + 1] = parentOn && st != 1;
+    }
+  }
+  bool runs(uint32_t i) const {
+    if (!o_.branches || s_.guardOf.empty() || s_.guardOf[i] == kNone) return true;
+    return on_[s_.guardOf[i]] != 0;
+  }
+  uint32_t branchOfOp(uint32_t i) const {
+    for (uint32_t b = 0; b < s_.branches.size(); ++b)
+      if (s_.branches[b].op == i) return b;
+    return kNone;
+  }
+
   void runItems(const Region& rg, int ctx, uint32_t f0, uint32_t f1) {
+    if (rg.kind == RegionKind::Block) branchStates(rg, ctx);
     const uint32_t end = rg.firstOp + rg.numOps;
     uint32_t k = rg.firstSolve;
     const uint32_t kEnd = rg.firstSolve + rg.numSolves;
@@ -289,9 +335,18 @@ private:
     const std::string where = "op #" + std::to_string(i);
     const uint32_t ins = op.firstOperand, outs = op.firstOperand + op.numIn;
     const int wctx = op.kind == OpKind::Reduce ? -1 : ctx;  // the accumulator is global
+    if (!runs(i)) {
+      ++cov_.skippedOps;
+      return;
+    }
+    const uint32_t b = o_.branches && s_.regions.size() && !s_.branches.empty() ? branchOfOp(i) : kNone;
+    const uint8_t chosen = b != kNone && b < state_.size() ? state_[b] : uint8_t{0};
+    if (chosen != 0) ++cov_.chosenSides;
     for (uint32_t f = f0; f < f1; ++f)
-      for (uint32_t j = 0; j < op.numIn; ++j)
+      for (uint32_t j = 0; j < op.numIn; ++j) {
+        if (chosen != 0 && j != 0 && j != chosen) continue;  // the side not taken is not read
         read(s_.operands[ins + j], u_.operands[ins + j], ctx, f, where + " input " + std::to_string(j));
+      }
     if (op.kind == OpKind::Reduce)
       for (uint32_t f = f0; f < f1; ++f)
         for (uint32_t j = 0; j < op.numOut; ++j)
@@ -364,6 +419,7 @@ private:
   uint32_t block_ = 0;
   std::vector<std::unique_ptr<std::string>> notes_;
   Coverage cov_;
+  std::vector<uint8_t> on_, state_;  // TX.uniform-branch: per guard / per branch, this region's
 };
 
 // Schedules `tp` with and without buffer sharing (else identical options) and replays. "" = no aliasing.
@@ -381,6 +437,8 @@ inline std::string check(const TypedPatch& tp, ScheduleOptions so, Options o = {
     cov->bodyEvaluations += r.coverage().bodyEvaluations;
     cov->outputReads += r.coverage().outputReads;
     cov->solveReads += r.coverage().solveReads;
+    cov->skippedOps += r.coverage().skippedOps;
+    cov->chosenSides += r.coverage().chosenSides;
   }
   return e;
 }
