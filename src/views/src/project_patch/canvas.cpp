@@ -53,8 +53,6 @@ const Port* wireTarget(const Node& n, uint32_t i) noexcept {
   return &n.inputs[i];
 }
 
-bool inside(const Rect& r, Vec2 p) noexcept { return p.x >= r.x0 && p.x < r.x1 && p.y >= r.y0 && p.y < r.y1; }
-
 // T5.x-circuit-chain: the opened band's name pill (device px; empty when none is drawn: no opened band, or its title
 // strip is tall enough to hold the name). Drawn over its opened devices; their frames' title pills start right of it.
 Rect openedBandPill(const ProjectCanvas& c, const ProjectPatchView& v, const ui::PaintContext& ctx) {
@@ -174,28 +172,6 @@ uint32_t ProjectCanvas::bandAt(Vec2 d) const {
     if (w.y >= b.y && w.y <= b.y + b.h && w.x >= b.x0 - 8.0f) return i;
   }
   return kNone;
-}
-
-// Mixer strip parts (world offsets from the node's top-left; see the file comment of project_patch_view.h).
-ProjectCanvas::MixerAreas ProjectCanvas::mixerAreas(uint32_t node) const {
-  MixerAreas a;
-  const ProjectPatch& pp = view_.patch();
-  if (node >= pp.nodes.size()) return a;
-  const Node& n = pp.nodes[node];
-  auto r = [&](float x, float y, float w, float h) { return deviceRect(n.x + x, n.y + y, w, h); };
-  a.mute = r(10.0f, 20.0f, 12.0f, 11.0f);
-  a.solo = r(24.0f, 20.0f, 12.0f, 11.0f);
-  if (n.expanded) {
-    a.pan = r(40.0f, 22.0f, 24.0f, 7.0f);
-    a.volume = r(10.0f, 36.0f, 54.0f, 7.0f);
-    for (size_t k = 1; k < n.outputs.size(); ++k)
-      a.sends.push_back(r(72.0f, pinY(n, k) - 3.0f, n.w - 72.0f - 22.0f, 6.0f));
-  } else {
-    const float right = n.outputs.size() > 1 ? 22.0f : 10.0f;
-    a.pan = r(40.0f, 22.0f, n.w - 40.0f - right, 7.0f);
-    a.volume = r(10.0f, 36.0f, n.w - 10.0f - right, 7.0f);
-  }
-  return a;
 }
 
 uint32_t ProjectCanvas::scenePin(uint32_t node, uint32_t port, bool input) const noexcept {
@@ -466,47 +442,6 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
       const Band& band = pp.bands[n.band];
       if (n.kind == NodeKind::Source) {
         continue;  // a lane window (above) or a Σ (the symbol)
-      } else if (n.kind == NodeKind::Mixer) {
-        const doc::Track* t = view_.bandTrack(n.band);
-        if (t == nullptr) continue;
-        const MixerAreas a = mixerAreas(i);
-        const bool master = t->kind == doc::TrackKind::Master;
-        if (!master) {
-          paint::box(dl, toIRect(snapRect(a.mute)), 0.0f, t->mixer.mute ? th.mixer.buttonOff : th.mixer.activatorOn, th.mixer.boxBorder);
-          paint::box(dl, toIRect(snapRect(a.solo)), 0.0f, t->mixer.solo ? th.mixer.soloOn : th.mixer.buttonOff, th.mixer.boxBorder);
-        }
-        // Pan: a centre tick and the position.
-        const Rect pr = snapRect(a.pan);
-        dl.addRectFilled(pr, th.mixer.field);
-        const float cx = std::round((pr.x0 + pr.x1) * 0.5f);
-        const float px = std::round(cx + (pr.x1 - pr.x0) * 0.5f * std::clamp(t->mixer.pan, -1.0f, 1.0f));
-        dl.addRectFilled({std::min(cx, px), pr.y0, std::max(cx, px) + 1.0f, pr.y1}, th.mixer.panFill);
-        // Volume: a horizontal fader (Live's fader law).
-        const Rect vr = snapRect(a.volume);
-        dl.addRectFilled(vr, th.mixer.field);
-        const float pos = static_cast<float>(volumeToFader(t->mixer.volumeDb));
-        dl.addRectFilled({vr.x0, vr.y0, std::round(vr.x0 + (vr.x1 - vr.x0) * pos), vr.y1}, th.mixer.volumeFill);
-        // Sends (expanded strips): one bar per send pin.
-        for (size_t k = 0; k < a.sends.size() && k + 1 < n.outputs.size(); ++k) {
-          const Rect sr = snapRect(a.sends[k]);
-          dl.addRectFilled(sr, th.mixer.field);
-          float db = doc::kMinVolumeDb;
-          const std::string& port = n.outputs[k + 1].name;
-          for (const doc::Send& sd : t->mixer.sends)
-            if ("s" + std::to_string(sd.target.value) == port) db = sd.levelDb;
-          const float sp = static_cast<float>(volumeToFader(db));
-          dl.addRectFilled({sr.x0, sr.y0, std::round(sr.x0 + (sr.x1 - sr.x0) * sp), sr.y1}, th.mixer.sendFill);
-        }
-        if (text) {
-          const Rect vb0 = deviceRect(n.x + 10.0f, n.y + 45.0f, (n.expanded ? 64.0f : n.w - 10.0f) - 10.0f, 12.0f);
-          const ui::IRect vb = toIRect(vb0);
-          paint::text(ctx, ctx.res.uiFonts->small, vb, formatVolume(t->mixer.volumeDb) + " dB  " + formatPan(t->mixer.pan),
-                      th.circuit.pinText, ui::TextAlign::Left);
-        }
-        if (text && !master) {
-          paint::text(ctx, ctx.res.uiFonts->small, toIRect(a.mute), "M", th.mixer.activatorText, ui::TextAlign::Center);
-          paint::text(ctx, ctx.res.uiFonts->small, toIRect(a.solo), "S", th.mixer.buttonText, ui::TextAlign::Center);
-        }
       } else if (n.kind == NodeKind::Device && (!n.lowered || !n.active || !band.active) && !(n.panel && band.active)) {
         // (TX.panel-faces: a panel shows its own switched-off look, as in the Device view.)
         // Bypassed (deactivated, missing, on a deactivated track): veiled; the chain wire passes under it.
@@ -557,7 +492,8 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
         if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;  // opened: its frame has the title
         if (!mine(n)) continue;
         if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal) continue;  // the symbol says it
-        if (n.face != nullptr || n.panel) continue;  // TMM.4: a face is label-free; TX.panel-faces: a panel has its title
+        // TMM.4: a face is label-free; TX.panel-faces: a panel has its title; TX.mixer-look: so has a mixer's face.
+        if (n.face != nullptr || n.panel || n.kind == NodeKind::Mixer) continue;
         const Rect nr = deviceRect(n.x, n.y, n.w, n.h);
         if (nr.x1 - nr.x0 < 24.0f * us || !overlaps(nr, clip)) continue;
         const ui::TextRun run = ts.shape(font, n.title);
@@ -887,43 +823,6 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         return true;
       }
       press_ = last_ = e.pos;
-      // Mixer strip controls.
-      if (node != kNone && pp.nodes[node].kind == NodeKind::Mixer) {
-        const MixerAreas a = mixerAreas(node);
-        const doc::TrackId t = pp.bands[pp.nodes[node].band].track;
-        const doc::Track* tr = v.bandTrack(pp.nodes[node].band);
-        if (tr != nullptr && tr->kind != doc::TrackKind::Master && inside(a.mute, e.pos)) {
-          (void)v.toggleMute(t);
-          return true;
-        }
-        if (tr != nullptr && tr->kind != doc::TrackKind::Master && inside(a.solo, e.pos)) {
-          (void)v.solo(t, (e.mods & ui::mod::kCtrl) != 0);
-          return true;
-        }
-        if (tr != nullptr && inside(a.volume, e.pos)) {
-          drag_ = Drag::Volume;
-          dragNode_ = node;
-          dragStart_ = volumeToFader(tr->mixer.volumeDb);
-          return true;
-        }
-        if (tr != nullptr && inside(a.pan, e.pos)) {
-          drag_ = Drag::Pan;
-          dragNode_ = node;
-          dragStart_ = tr->mixer.pan;
-          return true;
-        }
-        for (size_t k = 0; tr != nullptr && k < a.sends.size(); ++k)
-          if (inside(a.sends[k], e.pos)) {
-            drag_ = Drag::Send;
-            dragNode_ = node;
-            dragSend_ = static_cast<uint32_t>(k + 1);
-            float db = doc::kMinVolumeDb;
-            for (const doc::Send& sd : tr->mixer.sends)
-              if ("s" + std::to_string(sd.target.value) == pp.nodes[node].outputs[k + 1].name) db = sd.levelDb;
-            dragStart_ = volumeToFader(db);
-            return true;
-          }
-      }
       // TX.orbit-ports: an orbiting main port — a drag along the block's edge slides it there (pinned on release; an
       // output's drag away from the block draws a cable as before).
       portMaybe_ = portMoved_ = portWire_ = false;
@@ -970,6 +869,15 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
             return true;
           }
         }
+      }
+      // TX.mixer-look: a mixer pressed outside its controls (its face took those): dragged, it is placed where it is
+      // dropped (drawn at the pointer meanwhile, like a block).
+      if (node != kNone && pp.nodes[node].kind == NodeKind::Mixer && !v.freeRack()) {
+        drag_ = Drag::MaybeMoveMixer;
+        dragNode_ = node;
+        dragBand_ = kNone;
+        dragDevices_.clear();  // the mixer alone is lifted (buildLift: dragNode_)
+        return true;
       }
       if (node != kNone && pp.nodes[node].kind == NodeKind::Device) {
         if (e.mods & ui::mod::kCtrl) {  // Ctrl+drag nudges the block; a Ctrl+click toggles its selection (on Up)
@@ -1096,29 +1004,14 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
             liftDrag();
           }
           break;
-        case Drag::Volume:
-        case Drag::Pan:
-        case Drag::Send: {
-          const MixerAreas a = mixerAreas(dragNode_);
-          const Rect& r = drag_ == Drag::Volume ? a.volume : (drag_ == Drag::Pan ? a.pan : a.sends[dragSend_ - 1]);
-          const double width = std::max(4.0f, r.x1 - r.x0);
-          const Band& band = pp.bands[pp.nodes[dragNode_].band];
-          const double fine = (e.mods & ui::mod::kShift) ? 0.1 : 1.0;
-          const double dx = (e.pos.x - press_.x) * fine;
-          if (drag_ == Drag::Volume) {
-            v.beginValueGesture("Set Volume");
-            v.setVolume(band.track, static_cast<float>(faderToVolume(std::clamp(dragStart_ + dx / width, 0.0, 1.0))));
-          } else if (drag_ == Drag::Pan) {
-            v.beginValueGesture("Set Pan");
-            v.setPan(band.track, static_cast<float>(std::clamp(dragStart_ + 2.0 * dx / width, -1.0, 1.0)));
-          } else {
-            const std::string& port = pp.nodes[dragNode_].outputs[dragSend_].name;
-            const doc::TrackId ret{static_cast<uint32_t>(std::stoul(port.substr(1)))};
-            v.beginValueGesture("Set Send Level");
-            v.setSend(band.track, ret, static_cast<float>(faderToVolume(std::clamp(dragStart_ + dx / width, 0.0, 1.0))));
+        case Drag::MaybeMoveMixer:  // TX.mixer-look
+          if (std::max(std::fabs(e.pos.x - press_.x), std::fabs(e.pos.y - press_.y)) >= drag::kClickSlop * us) {
+            v.landPush();
+            drag_ = Drag::MoveMixer;
+            liftDrag();
           }
           break;
-        }
+        case Drag::MoveMixer: liftDrag(); break;
         case Drag::BackWire:  // TX.node-menu
           updateLoose(e.pos);
           markDirty();
@@ -1221,9 +1114,8 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           }
           break;
         }
-        case Drag::Volume:
-        case Drag::Pan:
-        case Drag::Send: v.endValueGesture(); break;
+        case Drag::MoveMixer: finishMixerMove(e.pos); break;  // TX.mixer-look
+        case Drag::MaybeMoveMixer: break;                      // a click on the mixer's frame: nothing
         case Drag::Resize: (void)v.settleOverlaps(); break;  // applied while dragging; TX.block-drag: then the rule
         case Drag::Lane:
         case Drag::None: break;
@@ -1314,9 +1206,10 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
     case Drag::MoveDevice: return bandAt(pos) == kNone && !view_.freeRack() ? ui::Cursor::NotAllowed : ui::Cursor::Move;
     case Drag::MaybeMoveDevice:
     case Drag::Nudge: return ui::Cursor::Move;
-    case Drag::Volume:
-    case Drag::Pan:
-    case Drag::Send: return ui::Cursor::ResizeEW;
+    case Drag::MaybeMoveMixer: return ui::Cursor::Move;  // TX.mixer-look
+    case Drag::MoveMixer: return bandAt(pos) == (dragNode_ < view_.patch().nodes.size() ? view_.patch().nodes[dragNode_].band : kNone)
+                                     ? ui::Cursor::Move
+                                     : ui::Cursor::NotAllowed;
     case Drag::Resize: return ui::Cursor::ResizeNWSE;
     case Drag::Lane: return laneCursor_;  // TX.lane-edit: the arrangement's gesture cursor
     case Drag::BackWire: return ui::Cursor::Crosshair;  // TX.node-menu
@@ -1335,14 +1228,6 @@ ui::Cursor ProjectCanvas::pressCursor(Vec2 pos) const {
   if (const ui::Cursor c = faceCursor(pos); c != ui::Cursor::Inherit) return c;  // TMM.4: a face's control
   const ProjectPatch& pp = view_.patch();
   const uint32_t node = nodeAt(pos);
-  if (node != kNone && pp.nodes[node].kind == NodeKind::Mixer) {
-    const MixerAreas a = mixerAreas(node);
-    const doc::Track* tr = view_.bandTrack(pp.nodes[node].band);
-    if (tr != nullptr && tr->kind != doc::TrackKind::Master && (inside(a.mute, pos) || inside(a.solo, pos))) return ui::Cursor::Pointer;
-    if (tr != nullptr && (inside(a.volume, pos) || inside(a.pan, pos))) return ui::Cursor::ResizeEW;
-    for (const Rect& r : a.sends)
-      if (tr != nullptr && inside(r, pos)) return ui::Cursor::ResizeEW;
-  }
   if (const PinHit pin = pinAt(pos); pin.valid() && !pin.input && wireSource(pp, pp.nodes[pin.node])) return ui::Cursor::Crosshair;
   // TX.orbit-ports: an orbiting input port slides along its block's edge.
   if (const PinHit pin = pinAt(pos); pin.valid() && pin.input && portOrbits(pp.nodes[pin.node], pin.port, true)) return ui::Cursor::Move;
@@ -1350,7 +1235,7 @@ ui::Cursor ProjectCanvas::pressCursor(Vec2 pos) const {
     if (const uint32_t b = bandAt(pos); b != kNone && toWorld(pos).y <= pp.bands[b].y + metrics::kTitle) return ui::Cursor::Move;
     return ui::Cursor::Arrow;
   }
-  return pp.nodes[node].kind == NodeKind::Device ? ui::Cursor::Move : ui::Cursor::Arrow;
+  return pp.nodes[node].kind == NodeKind::Device || pp.nodes[node].kind == NodeKind::Mixer ? ui::Cursor::Move : ui::Cursor::Arrow;
 }
 
 void ProjectCanvas::finishWire(Vec2 pos) {
@@ -1457,6 +1342,22 @@ void ProjectCanvas::leaveOutside(Vec2 pos) {
   if (!outside_) return;
   outside_ = false;
   if (view_.onBlockOutside) (void)view_.onBlockOutside({}, pos, false);
+}
+
+// TX.mixer-look: a mixer dropped in its own band is placed there (its top-left moved by the drag; kept by every
+// re-layout until Reset Layout or its menu's Mixer to Top Right); dropped elsewhere it goes back (a mixer is its
+// track's: it does not move to another band).
+void ProjectCanvas::finishMixerMove(Vec2 pos) {
+  ProjectPatchView& v = view_;
+  const ProjectPatch& pp = v.patch();
+  if (dragNode_ >= pp.nodes.size() || pp.nodes[dragNode_].kind != NodeKind::Mixer) return;
+  const Node& mx = pp.nodes[dragNode_];
+  if (bandAt(pos) != mx.band) {
+    v.context().setStatus("A mixer stays in its track's band: drop it there");
+    return;
+  }
+  const graph::Point2 w = toWorld(pos), start = toWorld(press_);
+  (void)v.placeMixer(pp.bands[mx.band].track, {mx.x + w.x - start.x, mx.y + w.y - start.y});
 }
 
 void ProjectCanvas::finishDeviceMove(Vec2 pos) {
@@ -1772,7 +1673,6 @@ void ProjectCanvas::onCaptureLost() {
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   if (sticky_) return;  // TX.node-menu: a held cable has no capture (no button is down)
   if (drag_ == Drag::Wire || drag_ == Drag::BackWire) clearLooseCable();  // TX.node-menu-fix1
-  if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.endValueGesture();
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit (as the arrangement's lanes: no partial edit)
   leaveOutside(last_);  // TX.free-rack
   if (drag_ != Drag::None) markDirty();
@@ -1789,7 +1689,6 @@ void ProjectCanvas::onInteractionCancelled() {
   if (drag_ == Drag::Wire || drag_ == Drag::BackWire || sticky_) clearLooseCable();  // TX.node-menu-fix1
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   sticky_ = false;
-  if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.cancelValueGesture();
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit
   leaveOutside(last_);  // TX.free-rack
   if (drag_ == Drag::Resize) {  // TX.resize: Esc / focus lost: back to the size at the press
@@ -1889,11 +1788,10 @@ void ProjectCanvas::afterRebuild() {
   keepNode_ = keepFrom_ = {};
   keepBand_ = {};
   const bool indexed = drag_ == Drag::Wire || drag_ == Drag::MaybeMoveDevice || drag_ == Drag::MoveDevice || drag_ == Drag::Nudge ||
-                       drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send || drag_ == Drag::MaybeSplice ||
+                       drag_ == Drag::MaybeMoveMixer || drag_ == Drag::MoveMixer || drag_ == Drag::MaybeSplice ||
                        drag_ == Drag::Splice;
   if (lost && (indexed || sticky_)) {
     // What the gesture held went away (an undo, another edit): it ends here, without an edit (its release does nothing).
-    if (drag_ == Drag::Volume || drag_ == Drag::Pan || drag_ == Drag::Send) view_.cancelValueGesture();
     endLift();
     if (drag_ == Drag::Wire || drag_ == Drag::BackWire || sticky_) clearLooseCable();
     drag_ = Drag::None;

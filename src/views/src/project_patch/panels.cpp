@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "../common/panel_template.h"
+#include "internal.h"
 #include "pq/core/automation_curve.h"
 #include "pq/document/edit_ops.h"
 #include "pq/views/browser/library.h"
@@ -106,6 +107,11 @@ graph::Point2 ProjectPatchView::panelSize(const doc::Device& d) {
 }
 
 std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
+  // TX.mixer-look: a track's mixer is drawn as its face.
+  if (std::string_view(f.path).starts_with(kMixerFacePrefix)) {
+    const uint32_t mn = f.node < scene_.modelNode.size() ? scene_.modelNode[f.node] : kNone;
+    return mn < patch_.nodes.size() ? makeMixerFace(*this, patch_, patch_.nodes[mn]) : nullptr;
+  }
   const doc::DeviceLoc loc = doc::findDevice(*ctx_.doc(), doc::DeviceId{f.owner});
   if (loc.device == nullptr) return nullptr;
   const doc::Device& d = *loc.device;
@@ -182,10 +188,10 @@ void ProjectPatchView::syncPanels() {
     for (const doc::DevicePtr& d : t.devices) devices.emplace(d->id.value, &d);
   });
   for (size_t i = 0; i < canvas_->panelCount(); ++i) {
-    auto& face = static_cast<devices::PanelFace&>(canvas_->panelAt(i));
     const uint32_t sn = canvas_->panelNode(i);
     const uint32_t mn = sn < scene_.modelNode.size() ? scene_.modelNode[sn] : kNone;
-    if (mn >= patch_.nodes.size()) continue;
+    if (mn >= patch_.nodes.size() || patch_.nodes[mn].kind != NodeKind::Device) continue;  // TX.mixer-look: a mixer's face
+    auto& face = static_cast<devices::PanelFace&>(canvas_->panelAt(i));
     const Node& n = patch_.nodes[mn];
     face.setWorldSize({n.w / n.scale, n.h / n.scale});  // TX.resize: its own units
     const auto found = devices.find(n.device.value);

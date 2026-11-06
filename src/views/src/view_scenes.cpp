@@ -1196,6 +1196,48 @@ Status setupProjectPatch(Shell& shell, bool band) {
 }
 Status setupProjectPatchOverview(Shell& shell) { return setupProjectPatch(shell, false); }
 Status setupProjectPatchBand(Shell& shell) { return setupProjectPatch(shell, true); }
+// TX.mixer-look (bug report 2026-11-03): a mixer as its face, close up — the sketch project's Keys mixer at the top right
+// of its band, expanded (its send's level), panned 25L at −4.5 dB, its send to Space at −12 dB, soloed.
+Status setupProjectMixer(Shell& shell) {
+  if (Status s = setupProjectPatch(shell, true); !s) return s;
+  ViewContext& ctx = shell.context();
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
+  const doc::Track* space = namedTrack(*ctx.doc(), "Space");
+  if (keys == nullptr || space == nullptr) return Error{ErrorCode::NotFound, "project-mixer: no Keys / Space", {}};
+  const doc::TrackId k = keys->id, sp = space->id;
+  doc::DocumentStore& st = ctx.store();
+  if (!st.dispatch(doc::SetTrackPan{k, -0.5f}).ok() || !st.dispatch(doc::SetTrackVolume{k, -4.5f}).ok() ||
+      !st.dispatch(doc::SetSendLevel{k, sp, -12.0f}).ok() || !st.dispatch(doc::SetTrackSolo{k, true}).ok())
+    return Error{ErrorCode::Unknown, "project-mixer: the mixer edits failed", {}};
+  // Playing: a fixed level on its meter (RMS −14 / −16 dB, peaks −5 / +1.5 dB: the right channel over 0 dB).
+  static FixedMeterSource meters;
+  meters = FixedMeterSource{};
+  ui::MeterLevels l;
+  l.rmsDb[0] = -14.0f;
+  l.rmsDb[1] = -16.0f;
+  l.peakDb[0] = -5.0f;
+  l.peakDb[1] = 1.5f;
+  meters.set(k, l);
+  meters.setLive(true);
+  v->setMeterSource(&meters);
+  shell.tree().layoutNow();
+  const project_patch::ProjectPatch& pp = v->patch();
+  const uint32_t b = pp.bandOf(k);
+  if (b == project_patch::kNone || pp.bands[b].mixer == project_patch::kNone) return Error{ErrorCode::NotFound, "project-mixer: no Keys mixer", {}};
+  const project_patch::Node& m = pp.nodes[pp.bands[b].mixer];
+  const ui::IRect r = v->canvas().rect();
+  const float us = shell.tree().scale();
+  circuit::CircuitCanvas::View view;
+  view.zoom = 3.0;
+  view.x = m.x + 0.5 * m.w - 0.5 * r.w / (view.zoom * us);
+  view.y = m.y + 0.5 * m.h - 0.5 * r.h / (view.zoom * us);
+  v->canvas().setView(view);
+  shell.tree().layoutNow();
+  v->wakeFaces();  // the meter read (the hosts poll visible faces)
+  shell.tree().layoutNow();
+  return Ok{};
+}
 // T5.x-circuit-chain: zooming into a band of the project patch view (a double-click on it): the sketch project's Keys
 // band opened — Operator → Saturator, each opened to its atoms in its labelled frame, wired through to the mixer.
 Status setupProjectPatchZoom(Shell& shell) {
@@ -2882,6 +2924,7 @@ constexpr SceneEntry kScenes[] = {
     {"circuit-editor-device", 1280, 800, setupCircuitEditorDevice},  // T4.4-fix1
     {"project-patch-overview", 1280, 800, setupProjectPatchOverview},  // T4.13
     {"project-patch-band", 1280, 800, setupProjectPatchBand},
+    {"project-mixer", 1280, 800, setupProjectMixer},  // TX.mixer-look
     {"project-patch-zoom", 1280, 800, setupProjectPatchZoom},     // T5.x-circuit-chain
     {"project-circuit-device", 1280, 800, setupProjectCircuitDevice},  // T5.x-one-circuit
     {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio

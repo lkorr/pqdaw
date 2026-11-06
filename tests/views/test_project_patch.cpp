@@ -196,6 +196,32 @@ struct Ui {
     view().focusBand(named(*ctx.doc(), track)->id, false);
     d.tree().layoutNow();
   }
+  // A point of band `b` over nothing (no block, cable, trace or lane window; below its title strip), on the canvas.
+  Vec2 emptyIn(uint32_t b) const {
+    const ProjectCanvas& c = view().canvas();
+    const Band& band = pp().bands[b];
+    const IRect r = c.rect();
+    for (float y = band.y + metrics::kTitle + 4.0f; y < band.y + band.h - 2.0f; y += 5.0f)
+      for (float x = band.x0 + 4.0f; x < band.x1; x += 7.0f) {
+        const Vec2 p = dev(x, y);
+        if (p.x < r.x + 4 || p.y < r.y + 4 || p.x > r.right() - 4 || p.y > r.bottom() - 4) continue;
+        if (c.nodeAt(p) == kNone && c.bandAt(p) == b && c.hitTest(p).kind == circuit::CanvasHit::Kind::None && view().laneAt(p) == kNone)
+          return p;
+      }
+    FAIL("no empty point in the band");
+    return {};
+  }
+  // TX.mixer-look: a point of a mixer's face (MixerFace's layout, face-local world units from its top-left).
+  Vec2 onMixer(uint32_t node, float x, float y) const {
+    const Node& n = pp().nodes[node];
+    return dev(n.x + x, n.y + y);
+  }
+  Vec2 mixerMute(uint32_t node) const { return onMixer(node, pp().nodes[node].w - 39.5f, 9.5f); }
+  Vec2 mixerSolo(uint32_t node) const { return onMixer(node, pp().nodes[node].w - 19.5f, 9.5f); }
+  Vec2 mixerPan(uint32_t node) const { return onMixer(node, 27.0f, 45.0f); }
+  // On the volume fader's groove, `u` of the way along it (0 … 1).
+  Vec2 mixerFader(uint32_t node, float u) const { return onMixer(node, 52.0f + (pp().nodes[node].w - 66.0f) * u, 41.0f); }
+  Vec2 mixerFrame(uint32_t node) const { return onMixer(node, 40.0f, 64.0f); }  // between the readouts: the block's
 };
 
 }  // namespace
@@ -517,7 +543,14 @@ TEST_CASE("project patch: nudges are view state — not undoable, saved with the
   CHECK(u.ctx.dirty());      // but saved
   CHECK(u.pp().bands[u.pp().bandOf(keys.id)].y == doctest::Approx(by + 20.0f));
   CHECK(u.pp().nodes[u.pp().nodeOf(keys.devices[1]->id)].x == doctest::Approx(sx + 48.0f));
-  CHECK(u.pp().nodes[u.pp().bands[u.pp().bandOf(keys.id)].mixer].x == doctest::Approx(mx));
+  // TX.mixer-look: the (unplaced) mixer stays the band's top-right block: the Saturator nudged into its column pushes it
+  // right, a gap past the Saturator (it was a gap past it before, so by the same 48).
+  {
+    const Node& sn = u.pp().nodes[u.pp().nodeOf(keys.devices[1]->id)];
+    const float mx1 = u.pp().nodes[u.pp().bands[u.pp().bandOf(keys.id)].mixer].x;
+    CHECK(mx1 == doctest::Approx(std::max(mx, sn.x + sn.w + metrics::kNodeGap)));
+    CHECK(mx1 > mx);
+  }
   // Saved and loaded with the project.
   const std::string dir = pq::views::test::tempDir("project_patch_nudges");
   REQUIRE(u.ctx.saveProjectAs(dir).ok());
@@ -542,6 +575,209 @@ TEST_CASE("project patch: nudges are view state — not undoable, saved with the
   u.view().resetLayout();
   CHECK(u.ctx.store().view().patchNudges.empty());
   CHECK(u.pp().bands[u.pp().bandOf(keys.id)].y == doctest::Approx(by));
+}
+
+// ---- TX.mixer-look (bug report 2026-11-03: "positioned always at the top right … though you should be able to move
+// it"): the mixer's default place, its drag (real dispatch), view state that survives re-layout, save / load and
+// opening the band ----------------------------------------------------------------------------------------------------
+
+namespace {
+// Every band's mixer at its top (under the title strip), right of every other block of the band (its main path, the
+// row under it, wherever their nudges put them): the band's top-right block.
+void checkMixersTopRight(const ProjectPatch& pp) {
+  for (const Band& b : pp.bands) {
+    if (b.mixer == kNone) continue;
+    CAPTURE(b.name);
+    const Node& m = pp.nodes[b.mixer];
+    CHECK(m.y == doctest::Approx(b.y + metrics::kTitle));
+    CHECK(m.x + m.w <= b.x1);
+    auto leftOf = [&](uint32_t n) {
+      if (n != kNone && pp.nodes[n].capsule == kNone) CHECK(pp.nodes[n].x + pp.nodes[n].w + metrics::kNodeGap <= m.x + 0.01f);
+    };
+    leftOf(b.source);
+    for (const uint32_t d : b.devices) leftOf(d);
+    if (b.output == kNone) CHECK(m.x + m.w + 12.0f == doctest::Approx(b.x1));  // nothing right of it (the master: Out)
+  }
+}
+}  // namespace
+
+TEST_CASE("project patch (TX.mixer-look): the mixer is its band's top-right block; dragged, it stays where it is put") {
+  Ui u;
+  u.show();
+  ProjectPatchView& v = u.view();
+  const doc::TrackId keys = u.track("Keys").id, pad = u.track("Pad").id;
+  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
+  auto mixerOf = [&](doc::TrackId t) { return u.pp().bands[u.pp().bandOf(t)].mixer; };
+  auto bandOf = [&](doc::TrackId t) -> const Band& { return u.pp().bands[u.pp().bandOf(t)]; };
+  // Default: the top right of every band; drawn as its face (hosted like a panel).
+  checkMixersTopRight(u.pp());
+  for (const Band& b : u.pp().bands)
+    if (b.mixer != kNone) CHECK(v.canvas().panelOn(v.scene().sceneNode[b.mixer]) != nullptr);
+  // A block placed past it pushes it right (it stays the top-right block).
+  v.nudge(sat.value, 400.0f, 0.0f);
+  checkMixersTopRight(u.pp());
+  v.resetLayout();
+  // Opened (the band's devices to their atoms), still its top right.
+  v.openBand(keys, false);
+  u.d.tree().layoutNow();
+  checkMixersTopRight(u.pp());
+  v.closeBand();
+  u.d.tree().layoutNow();
+  REQUIRE_FALSE(v.openedBand().valid());
+
+  // The drag (window → canvas): a press on the face's frame (not a control), moved, released in its band.
+  u.zoomTo("Keys");
+  const Node m0 = u.pp().nodes[mixerOf(keys)];
+  const float bx0 = bandOf(keys).x0, by0 = bandOf(keys).y;
+  const size_t h0 = u.history();
+  const Vec2 grip = u.mixerFrame(mixerOf(keys));
+  const Vec2 to = u.dev(m0.x + 40.0f - 160.0f, m0.y + 64.0f + 24.0f);  // 160 left, 24 down (world units)
+  u.d.move(grip);
+  CHECK(u.d.tree().cursor() == Cursor::Move);
+  u.d.down(grip);
+  CHECK(v.canvas().drag() == ProjectCanvas::Drag::MaybeMoveMixer);
+  for (int k = 1; k <= 8; ++k) u.d.move({grip.x + (to.x - grip.x) * static_cast<float>(k) / 8.0f, grip.y + (to.y - grip.y) * static_cast<float>(k) / 8.0f});
+  CHECK(v.canvas().drag() == ProjectCanvas::Drag::MoveMixer);
+  CHECK(v.canvas().lifted(mixerOf(keys)));  // drawn at the pointer meanwhile, like a block
+  CHECK(u.pp().nodes[mixerOf(keys)].x == doctest::Approx(m0.x));  // no re-layout while it moves
+  u.d.up(to);
+  CHECK(u.history() == h0);  // view state, not an undo step
+  CHECK(u.ctx.dirty());      // but saved
+  REQUIRE(v.mixerPlaced(keys));
+  const Node& m1 = u.pp().nodes[mixerOf(keys)];
+  CHECK(std::fabs(m1.x - (m0.x - 160.0f)) <= 1.0f);
+  CHECK(std::fabs(m1.y - (m0.y + 24.0f)) <= 1.0f);
+  const doc::PatchNudge& e = u.ctx.store().view().patchNudges.at(keys.value);
+  CHECK(e.mixerPlaced);
+  CHECK(e.mixerX == doctest::Approx(m1.x - bx0));
+  CHECK(e.mixerY == doctest::Approx(m1.y - by0));
+  const float rx = m1.x - bx0, ry = m1.y - by0;
+  auto placedStill = [&] {
+    const Band& b = bandOf(keys);
+    const Node& m = u.pp().nodes[b.mixer];
+    CHECK(m.x - b.x0 == doctest::Approx(rx));
+    CHECK(m.y - b.y == doctest::Approx(ry));
+  };
+  // No re-layout moves it: a block nudged past where it was, a device added to the band, the band nudged (it travels
+  // with the band), the view hidden and shown again, the band opened.
+  v.nudge(sat.value, 400.0f, 0.0f);
+  placedStill();
+  REQUIRE(v.addDevice(keys, "utility"));
+  placedStill();
+  v.nudge(keys.value, 30.0f, 12.0f);
+  placedStill();
+  v.setShown(false, false);
+  u.d.tree().layoutNow();
+  v.setShown(true, false);
+  u.d.tree().layoutNow();
+  placedStill();
+  v.openBand(keys, false);
+  u.d.tree().layoutNow();
+  placedStill();
+  v.closeBand();
+  u.d.tree().layoutNow();
+  // Saved and loaded with the project ("mixerX" / "mixerY" on the track's entry), laid out where it was put.
+  auto text = doc::serializeProject(*u.ctx.doc(), u.ctx.store().view());
+  REQUIRE(text.ok());
+  CHECK(text->find("\"mixerX\"") != std::string::npos);
+  const std::string dir = pq::views::test::tempDir("project_patch_mixer");
+  REQUIRE(u.ctx.saveProjectAs(dir).ok());
+  {
+    FakeTransport t2;
+    ViewContext other(t2);
+    REQUIRE(other.openProject(dir).ok());
+    const auto& n = other.store().view().patchNudges;
+    REQUIRE(n.count(keys.value) == 1);
+    CHECK(n.at(keys.value) == u.ctx.store().view().patchNudges.at(keys.value));
+    LayoutOptions o;
+    o.nudges = &n;
+    const doc::LoweredProject low = lowerOf(*other.doc());
+    const ProjectPatch pp = buildProjectPatch(*other.doc(), low, &library().catalog(), o);
+    const Band& b = pp.bands[pp.bandOf(keys)];
+    CHECK(pp.nodes[b.mixer].x - b.x0 == doctest::Approx(rx));
+    CHECK(pp.nodes[b.mixer].y - b.y == doctest::Approx(ry));
+    CHECK(checkAgainstGraph(pp, *other.doc(), low) == "");
+  }
+  // The same view reopening the saved project: the mixer where it was put.
+  REQUIRE(u.ctx.openProject(dir).ok());
+  u.d.tree().layoutNow();
+  u.show();
+  REQUIRE(v.mixerPlaced(keys));
+  placedStill();
+  // Strict reader: mixerX without mixerY is a load error.
+  {
+    std::string bad = *text;
+    const size_t at = bad.find("\"mixerY\"");
+    REQUIRE(at != std::string::npos);
+    bad.replace(at, 8, "\"mixerZ\"");
+    CHECK_FALSE(doc::parseProject(bad).ok());
+  }
+  // Dropped on another band: it stays (a mixer is its track's), nothing changes.
+  u.view().fitAll(false);
+  u.d.tree().layoutNow();
+  {
+    const auto before = u.ctx.store().view().patchNudges.at(keys.value);
+    const Vec2 g = u.mixerFrame(mixerOf(keys));
+    u.d.drag(g, u.emptyIn(u.pp().bandOf(pad)), 8);
+    CHECK(u.ctx.store().view().patchNudges.at(keys.value) == before);
+    placedStill();
+  }
+  // Its menu (a right click on the face): Mixer to Top Right puts it back where the layout puts it.
+  u.zoomTo("Keys");
+  const size_t hm = u.history();
+  u.d.click(u.mixerFrame(mixerOf(keys)), mod::kNone, PointerButton::Right);
+  Menu* menu = u.openMenu();
+  REQUIRE(menu != nullptr);
+  u.choose(*menu, "Mixer to Top Right");
+  CHECK_FALSE(v.mixerPlaced(keys));
+  checkMixersTopRight(u.pp());
+  CHECK(u.history() == hm);  // view state
+}
+
+TEST_CASE("project patch (TX.mixer-look): the mixer's face — pan, double-click resets, an expanded strip's send — through dispatch") {
+  Ui u;
+  u.show();
+  ProjectPatchView& v = u.view();
+  const doc::TrackId keys = u.track("Keys").id, space = u.track("Space").id;
+  u.zoomTo("Keys");
+  auto mixer = [&] { return u.pp().bands[u.pp().bandOf(keys)].mixer; };
+  const size_t h0 = u.history();
+  // Pan: up turns it right (one undo step), Shift is finer; a double-click centres it.
+  const Vec2 pan = u.mixerPan(mixer());
+  u.d.drag(pan, {pan.x, pan.y - 30.0f}, 6);
+  CHECK(u.history() == h0 + 1);
+  const float p1 = u.track("Keys").mixer.pan;
+  CHECK(p1 > 0.0f);
+  u.d.drag(pan, {pan.x, pan.y - 30.0f}, 6, mod::kShift);
+  CHECK(u.history() == h0 + 2);
+  CHECK(u.track("Keys").mixer.pan - p1 == doctest::Approx(0.1f * p1).epsilon(0.05));
+  u.d.doubleClick(u.mixerPan(mixer()));
+  CHECK(u.track("Keys").mixer.pan == 0.0f);
+  // The fader: a double-click is 0 dB.
+  REQUIRE(u.ctx.store().dispatch(doc::SetTrackVolume{keys, -20.0f}).ok());
+  u.d.doubleClick(u.mixerFader(mixer(), static_cast<float>(volumeToFader(-20.0))));
+  CHECK(u.track("Keys").mixer.volumeDb == 0.0f);
+  // Expanded (a double-click on its frame): wider, the send's fader on its row (level with its pin), dragged sideways.
+  const float w0 = u.pp().nodes[mixer()].w;
+  u.d.doubleClick(u.mixerFrame(mixer()));
+  REQUIRE(v.mixerExpanded(keys));
+  const Node& mx = u.pp().nodes[mixer()];
+  CHECK(mx.w > w0);
+  const int32_t s = mx.output("s" + std::to_string(space.value));
+  REQUIRE(s >= 1);
+  CHECK(pinOffset(mx, static_cast<size_t>(s)) == metrics::kMixerSendTop + metrics::kPinPitch * static_cast<float>(s - 1));
+  CHECK(mx.h >= pinOffset(mx, static_cast<size_t>(s)) + 6.0f);
+  float before = doc::kMinVolumeDb;
+  for (const doc::Send& sd : u.track("Keys").mixer.sends)
+    if (sd.target == space) before = sd.levelDb;
+  const size_t h1 = u.history();
+  const Vec2 a = u.onMixer(mixer(), 24.0f + (mx.w - 50.0f - 24.0f) * static_cast<float>(volumeToFader(before)), pinOffset(mx, static_cast<size_t>(s)));
+  u.d.drag(a, {a.x + 40.0f, a.y}, 6);
+  CHECK(u.history() == h1 + 1);
+  float after = doc::kMinVolumeDb;
+  for (const doc::Send& sd : u.track("Keys").mixer.sends)
+    if (sd.target == space) after = sd.levelDb;
+  CHECK(after > before);
 }
 
 TEST_CASE("project patch: Ctrl+Alt+P morphs from the arrangement (lanes keep their place) and back") {
@@ -668,8 +904,8 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
   SUBCASE("devices: add from the band menu, delete with Delete, move by dragging, deactivate with 0") {
     u.zoomTo("Pad");
     const uint32_t pb = u.pp().bandOf(pad);
-    const Node& padMixer = u.pp().nodes[u.pp().bands[pb].mixer];
-    const Vec2 empty = u.dev(padMixer.x + padMixer.w + 20.0f, u.pp().bands[pb].y + u.pp().bands[pb].h * 0.5f);
+    // TX.mixer-look: the band's empty space (no block, cable or trace: the mixer's buses leave its top right).
+    const Vec2 empty = u.emptyIn(pb);
     u.d.click(empty, mod::kNone, PointerButton::Right);
     Menu* m = u.openMenu();
     REQUIRE(m != nullptr);
@@ -706,6 +942,9 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     CHECK(doc::findDevice(*u.ctx.doc(), util).track->id == keys);
     CHECK(doc::mainPath(*u.ctx.doc(), u.track("Pad")).complete);
     // 0 deactivates the selected block, Delete removes it.
+    // (Framed on Keys first: zoomed out to the whole project, once TX.mixer-look's bigger mixer pushed the dropped block
+    // elsewhere, the click on its title bar opened a menu instead — at that zoom a pin's reach covers the grip.)
+    u.zoomTo("Keys");
     u.d.click(u.grip(u.deviceNode(util)));
     REQUIRE(u.view().selectedDevices() == std::vector<doc::DeviceId>{util});
     CHECK(u.d.press("0") != KeyResult::Unhandled);
@@ -721,16 +960,16 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     u.zoomTo("Keys");
     const uint32_t kb = u.pp().bandOf(keys);
     const uint32_t mixer = u.pp().bands[kb].mixer;
-    const Node& mn = u.pp().nodes[mixer];
-    u.d.click(u.dev(mn.x + 16.0f, mn.y + 25.0f));  // M
+    u.d.click(u.mixerMute(mixer));  // M (TX.mixer-look: on the face's header)
     CHECK(u.history() == h0 + 1);
     CHECK(u.track("Keys").mixer.mute);
-    u.d.click(u.dev(mn.x + 30.0f, mn.y + 25.0f));  // S
+    u.d.click(u.mixerSolo(u.pp().bands[u.pp().bandOf(keys)].mixer));  // S
     CHECK(u.history() == h0 + 2);
     CHECK(u.track("Keys").mixer.solo);
+    const uint32_t mixer2 = u.pp().bands[u.pp().bandOf(keys)].mixer;
     const uint64_t rebuilds = u.view().stats().rebuilds;
     const float vol = u.track("Keys").mixer.volumeDb;
-    const Vec2 a = u.dev(mn.x + 30.0f, mn.y + 39.0f), b = u.dev(mn.x + 10.0f, mn.y + 39.0f);
+    const Vec2 a = u.mixerFader(mixer2, static_cast<float>(volumeToFader(vol))), b = {a.x - 40.0f, a.y};  // the cap, left
     u.d.drag(a, b, 6);
     CHECK(u.history() == h0 + 3);
     CHECK(u.track("Keys").mixer.volumeDb < vol);
@@ -784,12 +1023,15 @@ TEST_CASE("project patch cursors (T4.16c): blocks Move, out pins Crosshair, M / 
     u.d.move(p);
     return u.d.tree().cursor();
   };
-  // A mixer strip: M and S are buttons, the volume bar a sideways drag (also while it runs).
+  // A mixer strip: M and S are buttons, the volume fader a sideways drag (also while it runs); TX.mixer-look: the pan
+  // knob an up / down drag, the face's frame moves the mixer.
   u.zoomTo("Keys");
-  const Node& mn = u.pp().nodes[u.pp().bands[u.pp().bandOf(keys)].mixer];
-  CHECK(at(u.dev(mn.x + 16.0f, mn.y + 25.0f)) == Cursor::Pointer);
-  CHECK(at(u.dev(mn.x + 30.0f, mn.y + 25.0f)) == Cursor::Pointer);
-  const Vec2 vol = u.dev(mn.x + 30.0f, mn.y + 39.0f);
+  const uint32_t mn = u.pp().bands[u.pp().bandOf(keys)].mixer;
+  CHECK(at(u.mixerMute(mn)) == Cursor::Pointer);
+  CHECK(at(u.mixerSolo(mn)) == Cursor::Pointer);
+  CHECK(at(u.mixerPan(mn)) == Cursor::ResizeNS);
+  CHECK(at(u.mixerFrame(mn)) == Cursor::Move);
+  const Vec2 vol = u.mixerFader(mn, 0.5f);
   CHECK(at(vol) == Cursor::ResizeEW);
   const size_t h0 = u.history();
   u.d.down(vol);
@@ -1689,8 +1931,9 @@ TEST_CASE("project patch (TX.panel-faces): every closed stock device is drawn as
   u.d.advance(0.5);
   ProjectPatchView& v = u.view();
   CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");  // the same graph, drawn bigger
-  size_t panels = 0;
+  size_t panels = 0, mixers = 0;  // TX.mixer-look: the canvas hosts the mixers' faces as panels too
   for (const Node& n : v.patch().nodes) {
+    mixers += n.kind == NodeKind::Mixer ? 1u : 0u;
     if (n.kind != NodeKind::Device) continue;
     CAPTURE(n.title);
     const bool stock = !n.rack && !n.meta && !n.edited && !n.missing && !n.expanded;
@@ -1713,7 +1956,7 @@ TEST_CASE("project patch (TX.panel-faces): every closed stock device is drawn as
     CHECK(f->panel().signature().exports.empty());
     CHECK_FALSE(f->panel().foldable());
   }
-  CHECK(panels == v.canvas().panelCount());
+  CHECK(panels + mixers == v.canvas().panelCount());
   for (const auto& [id, name] : added) {
     CAPTURE(name);
     CHECK(v.panelOf(id) != nullptr);
@@ -1746,7 +1989,7 @@ TEST_CASE("project patch (TX.panel-faces): every closed stock device is drawn as
   // Panels off (the A/B): plain blocks again, the same graph.
   v.setPanelsShown(false);
   u.d.advance(0.5);
-  CHECK(v.canvas().panelCount() == 0);
+  CHECK(v.canvas().panelCount() == mixers);  // the mixers keep their faces (they are no device panels)
   CHECK(v.panelOf(sat) == nullptr);
   CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
 }
@@ -1920,6 +2163,8 @@ void golden(const char* name, const std::string& project = {}) {
 
 TEST_CASE("render: project-patch-overview matches the golden image") { golden("project-patch-overview"); }
 TEST_CASE("render: project-patch-band matches the golden image") { golden("project-patch-band"); }
+// TX.mixer-look: the mixers' faces close up (Keys expanded, panned, its send set; Pad soloed under it).
+TEST_CASE("render: project-mixer matches the golden image") { golden("project-mixer"); }
 // T5.x-one-circuit: Open in Circuit View on a device, zoomed out around it (the opened band in context); the lane
 // windows (MIDI notes, audio waveforms) over the audio fixture.
 TEST_CASE("render: project-circuit-device matches the golden image") { golden("project-circuit-device"); }

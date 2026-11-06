@@ -50,13 +50,22 @@ inline constexpr float kMaxPatchScale = 3.0f;
 // output PINNED on its outline at an angle (radians in [0, 2π), atan2 with y down: 0 = right, π/2 = down), the user's
 // drag of the port along the block's edge; unpinned ports follow their cables. Saved as the entry's optional "pinIn" /
 // "pinOut" (degrees); view state like the nudge (not undoable).
+// TX.mixer-look (bug report 2026-11-03: the mixer "positioned always at the top right … though you should be able to
+// move it"): a track's entry also keeps where the user PLACED its mixer (`mixerPlaced`; mixerX / mixerY: the mixer's
+// top-left from its band's top-left, world units, so it travels with its band and no re-layout of the band's other
+// blocks moves it). Unplaced, the layout puts the mixer at the band's top right. Saved as the entry's optional "mixerX" /
+// "mixerY"; view state like the nudge (not undoable; Reset Layout clears it).
 struct PatchNudge {
   float dx = 0.0f;
   float dy = 0.0f;
   float scale = 1.0f;
   bool inPinned = false, outPinned = false;
   float inAngle = 0.0f, outAngle = 0.0f;
-  bool empty() const noexcept { return dx == 0.0f && dy == 0.0f && scale == 1.0f && !inPinned && !outPinned; }
+  bool mixerPlaced = false;
+  float mixerX = 0.0f, mixerY = 0.0f;
+  bool empty() const noexcept {
+    return dx == 0.0f && dy == 0.0f && scale == 1.0f && !inPinned && !outPinned && !mixerPlaced;
+  }
   friend bool operator==(const PatchNudge&, const PatchNudge&) noexcept = default;
 };
 // TX.orbit-ports: a pinned angle as saved (degrees in [0, 360), whole hundredths) and back; quantised angles survive a

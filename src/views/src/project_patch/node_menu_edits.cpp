@@ -308,7 +308,7 @@ bool closer(const float* a, const float* b, float gap) noexcept {  // rects {x, 
 
 bool ProjectPatchView::blockGestureRunning() const noexcept {
   const ProjectCanvas::Drag d = canvas_->drag();
-  return d == ProjectCanvas::Drag::MoveDevice || d == ProjectCanvas::Drag::Nudge || d == ProjectCanvas::Drag::Splice ||
+  return d == ProjectCanvas::Drag::MoveDevice || d == ProjectCanvas::Drag::Nudge || d == ProjectCanvas::Drag::Splice || d == ProjectCanvas::Drag::MoveMixer ||
          d == ProjectCanvas::Drag::Resize;
 }
 

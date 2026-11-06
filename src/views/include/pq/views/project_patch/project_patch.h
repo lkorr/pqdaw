@@ -24,8 +24,12 @@
 //              Pins: its audio in / out, its exports (the jacks), and the params a modulation wire drives (TX.mod-all:
 //              on a face or panel block a wired param whose control is visible has no pin: its wire ends on the control,
 //              Port::anchored).
-//   mixer      the compact mixer strip at the end of each chain (volume, pan, mute / solo drawn by the view): input
-//              `in`, outputs `out` (the routing) and one send pin per lowered send (to a return).
+//   mixer      the track's mixer (drawn by the view as its face: header with M / S, pan knob, volume fader with the
+//              level meter, one row per send): input `in`, outputs `out` (the routing) and one send pin per lowered
+//              send (to a return), each level with its row (pinOffset). TX.mixer-look: the track's output, so the
+//              band's TOP-RIGHT block — right of every other block of the band (its path, the row under it, wherever
+//              their nudges put them), at the band's top — unless the user placed it (doc::PatchNudge::mixerPlaced:
+//              from the band's top-left corner, so it travels with the band and no other block's move shifts it).
 //   output     the master's "Out" terminal after its mixer.
 //   group      a container around its band and its members' bands; its own chain starts right of its members' mixers.
 // Edges: TX.all-free — every document wire is one edge (notes, chain, modulation: EdgeKind), the main path's links
@@ -36,7 +40,8 @@
 // Layout (world units = logical px at zoom 1, multiples of 4): bands stacked in lane order, a group's members indented
 // under it; signal left → right; a group's own chain starts right of its members' mixers; returns start right of every
 // main track (their sends arrive by buses), the master right of everything. Then the stored nudges (doc::ViewState::
-// patchNudges: by track id for a band, by device id for a block) and the wires' orthogonal routes (buses into each
+// patchNudges: by track id for a band, by device id for a block), the mixers (TX.mixer-look: placed, or pushed right of
+// any block nudged past them) and the wires' orthogonal routes (buses into each
 // summing input: every wire into one input shares its vertical channel, as a summing bus).
 // TX.resize: a scaled block (the nudge's scale) takes its scaled size in the layout — the blocks after it move right,
 // its band's spine moves down to its main pin and the band grows to hold it, the routes reach its scaled pins and
@@ -246,7 +251,11 @@ inline constexpr float kLaneInset = 11.0f, kLaneTop = 18.0f, kLaneBottom = 3.0f;
 inline constexpr float kLaneTitleW = 48.0f;  // the window's title ("Notes", "Audio") before the bar numbers
 inline constexpr float kNoteNamesW = 36.0f;  // TMM.10-fix2: a MIDI window's right column (its note outputs' names)
 inline constexpr float kSumW = 40.0f, kSumH = 32.0f;
-inline constexpr float kMixerW = 88.0f, kMixerH = 60.0f;     // compact (M / S, pan, volume, values); expanded: wider
+// TX.mixer-look: the mixer's face (MixerFace, src/project_patch/mixer_face.cpp): its main section (header with M / S,
+// the pan knob, the volume fader and readouts) kMixerH tall, then one row per send from kMixerSendTop (each send's pin
+// on the right edge level with its row); expanded (a double-click), wider: longer send faders and their levels.
+inline constexpr float kMixerW = 120.0f, kMixerWideW = 168.0f, kMixerH = 72.0f;
+inline constexpr float kMixerSendTop = 82.0f;  // the first send row's centre (and its pin)
 inline constexpr float kExpandedPad = 16.0f;                // around an expanded device's atoms
 inline constexpr float kCapsuleTitle = 20.0f;               // TX.groups: an opened group's title strip
 inline constexpr float kCapsulePad = 12.0f;                 // around its contents
@@ -322,6 +331,8 @@ inline float pinOffset(const Node& n, size_t i) noexcept {
     case NodeKind::Device:  // TX.resize; TX.groups: an opened group's chain pins at its inner spine
       return ((n.pinTop > 0.0f ? n.pinTop : metrics::kPinTop) + metrics::kPinPitch * static_cast<float>(i)) * n.scale;
     case NodeKind::Terminal: return metrics::kTerminalH * 0.5f;
+    case NodeKind::Mixer:  // TX.mixer-look: in / out under the header; a send's pin level with its row
+      return i == 0 ? metrics::kPinTop : metrics::kMixerSendTop + metrics::kPinPitch * static_cast<float>(i - 1);
     default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
   }
 }

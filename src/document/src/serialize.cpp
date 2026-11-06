@@ -1271,6 +1271,12 @@ private:
           w_.key("pinOut");
           w_.number(at, patchPinDegrees(n.outAngle));
         }
+        if (n.mixerPlaced) {  // TX.mixer-look: a track's mixer where the user placed it (from its band's corner)
+          w_.key("mixerX");
+          w_.number(at, n.mixerX);
+          w_.key("mixerY");
+          w_.number(at, n.mixerY);
+        }
         w_.endObject();
       }
       w_.endArray();
@@ -3190,8 +3196,9 @@ private:
         r_.beginArray(list);
         for (size_t i = 0; r_.nextElement(list); ++i) {
           const PathSeg el(&list, i);
-          static constexpr std::string_view N[] = {"id", "dx", "dy", "scale", "pinIn", "pinOut"};
+          static constexpr std::string_view N[] = {"id", "dx", "dy", "scale", "pinIn", "pinOut", "mixerX", "mixerY"};
           RawNudge e{0, {}, r_.pos()};
+          bool mixerSeen[2] = {false, false};
           Members em(r_, el, N);
           for (int q; (q = em.next()) >= 0;) {
             const PathSeg f(&el, N[static_cast<size_t>(q)]);
@@ -3209,8 +3216,16 @@ private:
               (q == 4 ? e.nudge.inPinned : e.nudge.outPinned) = true;
               (q == 4 ? e.nudge.inAngle : e.nudge.outAngle) = patchPinRadians(d);
             }
+            if (q == 6 || q == 7) {  // TX.mixer-look (optional, both or neither): a placed mixer, from its band's corner
+              const float d = r_.readFloat(f);
+              if (!(std::fabs(d) <= 1.0e6f)) r_.failValue(f, "a placed mixer's offset must be finite (within ±1e6)");
+              (q == 6 ? e.nudge.mixerX : e.nudge.mixerY) = d;
+              mixerSeen[q - 6] = true;
+            }
           }
           em.require({0, 1, 2});
+          if (mixerSeen[0] != mixerSeen[1]) r_.failValue(el, "a placed mixer needs both mixerX and mixerY");
+          e.nudge.mixerPlaced = mixerSeen[0];
           v.nudges.push_back(e);
         }
         continue;

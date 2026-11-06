@@ -1627,14 +1627,55 @@ void ProjectPatchView::resetLayout() {
   auto& nudges = ctx_.store().view().patchNudges;
   bool changed = false;
   for (auto it = nudges.begin(); it != nudges.end();) {
-    if (it->second.dx != 0.0f || it->second.dy != 0.0f) changed = true;
+    if (it->second.dx != 0.0f || it->second.dy != 0.0f || it->second.mixerPlaced) changed = true;
     it->second.dx = it->second.dy = 0.0f;
+    it->second.mixerPlaced = false;  // TX.mixer-look: back to the band's top right
+    it->second.mixerX = it->second.mixerY = 0.0f;
     it = it->second.empty() ? nudges.erase(it) : std::next(it);
   }
   if (!changed) return;
   ctx_.viewStateChanged();
   stale_ = true;
   sync();
+}
+
+// ---- TX.mixer-look: a placed mixer ----------------------------------------------------------------------------------
+
+bool ProjectPatchView::placeMixer(doc::TrackId track, graph::Point2 at) {
+  const uint32_t b = patch_.bandOf(track);
+  if (b == kNone || patch_.bands[b].mixer == kNone || !std::isfinite(at.x) || !std::isfinite(at.y)) return false;
+  const Band& band = patch_.bands[b];
+  // From the band's top-left (whole units), never left of it nor over its title strip (the layout keeps that too).
+  const float rx = std::max(0.0f, std::round(at.x - band.x0)), ry = std::max(metrics::kTitle, std::round(at.y - band.y));
+  auto& nudges = ctx_.store().view().patchNudges;
+  doc::PatchNudge& n = nudges[track.value];
+  if (n.mixerPlaced && n.mixerX == rx && n.mixerY == ry) return false;
+  n.mixerPlaced = true;
+  n.mixerX = rx;
+  n.mixerY = ry;
+  ctx_.viewStateChanged();
+  stale_ = true;
+  sync();
+  return true;
+}
+
+bool ProjectPatchView::unplaceMixer(doc::TrackId track) {
+  auto& nudges = ctx_.store().view().patchNudges;
+  const auto it = nudges.find(track.value);
+  if (it == nudges.end() || !it->second.mixerPlaced) return false;
+  it->second.mixerPlaced = false;
+  it->second.mixerX = it->second.mixerY = 0.0f;
+  if (it->second.empty()) nudges.erase(it);
+  ctx_.viewStateChanged();
+  stale_ = true;
+  sync();
+  return true;
+}
+
+bool ProjectPatchView::mixerPlaced(doc::TrackId track) const noexcept {
+  const auto& nudges = ctx_.store().view().patchNudges;
+  const auto it = nudges.find(track.value);
+  return it != nudges.end() && it->second.mixerPlaced;
 }
 
 float ProjectPatchView::blockScale(doc::DeviceId device) const noexcept {
@@ -1845,6 +1886,10 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
   } else if (n.kind == NodeKind::Mixer) {
     const doc::TrackId t = patch_.bands[n.band].track;
     items.push_back(ui::MenuItem::item(mixerExpanded(t) ? "Collapse Mixer" : "Expand Mixer", [this, t] { setMixerExpanded(t, !mixerExpanded(t)); }));
+    // TX.mixer-look: a placed mixer back where the layout puts it (the band's top right).
+    ui::MenuItem home = ui::MenuItem::item("Mixer to Top Right", [this, t] { (void)unplaceMixer(t); });
+    home.enabled = mixerPlaced(t);
+    items.push_back(std::move(home));
     // Output ▸: the master, the groups (not the track itself or its members), Sends Only.
     std::vector<ui::MenuItem> outs;
     outs.push_back(ui::MenuItem::item("Master", [this, t] {

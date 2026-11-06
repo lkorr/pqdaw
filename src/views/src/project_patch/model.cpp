@@ -509,8 +509,8 @@ struct Builder {
     }
     const bool expanded = std::find(opt.expandedMixers.begin(), opt.expandedMixers.end(), t.id) != opt.expandedMixers.end();
     const size_t sends = n.outputs.size() - 1;
-    n.w = expanded ? 144.0f : m::kMixerW;  // expanded: each send's name and level beside its pin
-    n.h = roundUp4(std::max(m::kMixerH, m::kPinTop + m::kPinPitch * static_cast<float>(sends) + 16.0f));  // ≥ 60: the values row
+    n.w = expanded ? m::kMixerWideW : m::kMixerW;  // TX.mixer-look: expanded, longer send faders and their levels
+    n.h = sends == 0 ? m::kMixerH : roundUp4(m::kMixerSendTop + m::kPinPitch * static_cast<float>(sends - 1) + 9.0f);
     n.expanded = expanded;
     return n;
   }
@@ -742,8 +742,6 @@ struct Builder {
     std::vector<uint32_t> order;
     order.push_back(b.source);
     for (const uint32_t d : spineBlocks(b)) order.push_back(d);
-    order.push_back(b.mixer);
-    if (b.output != kNone) order.push_back(b.output);
     for (const uint32_t n : order) {
       out.nodes[n].x = x;
       x += out.nodes[n].w + m::kNodeGap;
@@ -756,7 +754,45 @@ struct Builder {
         out.nodes[d].x = fx;
         fx += out.nodes[d].w + m::kNodeGap;
       }
-    return std::max(x, fx) - m::kNodeGap;
+    // TX.mixer-look: the mixer is the track's output — right of everything else the band holds (its main path and the
+    // row under it), at the top (layout(): y); the master's Out after it.
+    x = std::max(x, fx);
+    out.nodes[b.mixer].x = x;
+    x += out.nodes[b.mixer].w + m::kNodeGap;
+    if (b.output != kNone) {
+      out.nodes[b.output].x = x;
+      x += out.nodes[b.output].w + m::kNodeGap;
+    }
+    return x - m::kNodeGap;
+  }
+
+  // TX.mixer-look: after the nudges, a band's mixer stays its top-right block — where the user placed it (PatchNudge::
+  // mixerPlaced: from the band's top-left corner, so it travels with the band and nothing else moves it), else pushed
+  // right of any block placed past it. The master's Out follows its mixer (level with the mixer's output).
+  void placeMixer(Band& b) {
+    if (b.mixer == kNone) return;
+    Node& mx = out.nodes[b.mixer];
+    const float x0 = mx.x, y0 = mx.y;
+    const doc::PatchNudge* placed = nullptr;
+    if (opt.nudges != nullptr)
+      if (const auto it = opt.nudges->find(b.track.value); it != opt.nudges->end() && it->second.mixerPlaced) placed = &it->second;
+    if (placed != nullptr) {
+      mx.x = b.x0 + placed->mixerX;
+      mx.y = b.y + std::max(m::kTitle, placed->mixerY);  // never over the band's title strip (a wall, as for blocks)
+    } else {
+      float right = -1e30f;
+      auto reach = [&](uint32_t n) {
+        if (n != kNone && out.nodes[n].capsule == kNone) right = std::max(right, out.nodes[n].x + out.nodes[n].w);
+      };
+      reach(b.source);
+      for (const uint32_t d : b.devices) reach(d);
+      mx.x = std::max(mx.x, right + m::kNodeGap);
+    }
+    if (b.output != kNone) {
+      Node& o = out.nodes[b.output];
+      o.x += mx.x - x0;
+      o.y += mx.y - y0;
+    }
   }
 
   // Places a main-tree track (and its members) from the left; returns the right end of its chain.
@@ -824,8 +860,17 @@ struct Builder {
       place(b.source);
       for (const uint32_t d : b.devices)
         if (!out.nodes[d].offPath) place(d);
-      place(b.mixer);
-      if (b.output != kNone) place(b.output);
+      // TX.mixer-look: the mixer at the band's top (under its title strip), the master's Out level with its output.
+      if (b.mixer != kNone) {
+        Node& mx = out.nodes[b.mixer];
+        mx.y = y + m::kTitle;
+        bottom = std::max(bottom, mx.y + mx.h);
+        if (b.output != kNone) {
+          Node& o = out.nodes[b.output];
+          o.y = mx.y + spineOf(mx) - spineOf(o);
+          bottom = std::max(bottom, o.y + o.h);
+        }
+      }
       // TX.all-free: the row of the blocks off the main path, under it (the band grows to hold it).
       const float row = roundUp4(bottom + m::kFreeRowGap);
       for (const uint32_t d : b.devices)
@@ -900,11 +945,14 @@ struct Builder {
     // TX.node-menu (SPEC §15 2026-11-02: "the band grows to fit blocks placed at its edge"): a band grows down to hold
     // its blocks wherever their nudges put them (a block placed at or past its bottom edge, an opened capsule grown by
     // its members); the bands below it move down by as much, with their blocks.
+    for (Band& b : out.bands) placeMixer(b);  // TX.mixer-look
     for (uint32_t i = 0; i < out.bands.size(); ++i) {
       Band& b = out.bands[i];
       const float oldBottom = b.y + b.h;
       float bottom = oldBottom - m::kBandPad;
       for (const uint32_t d : b.devices) bottom = std::max(bottom, out.nodes[d].y + out.nodes[d].h);
+      for (const uint32_t n : {b.mixer, b.output})  // TX.mixer-look: a mixer placed low grows its band too
+        if (n != kNone) bottom = std::max(bottom, out.nodes[n].y + out.nodes[n].h);
       const float grow = roundUp4(bottom + m::kBandPad - oldBottom);
       if (grow <= 0.0f) continue;
       b.h += grow;

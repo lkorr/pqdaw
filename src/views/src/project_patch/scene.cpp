@@ -5,6 +5,7 @@
 #include <cmath>
 #include <unordered_map>
 
+#include "internal.h"
 #include "pq/views/circuit/cables.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -61,7 +62,8 @@ SymbolSpec specOf(const Node& n) {
     s.face = n.face;
     inStub = outStub = 0.0f;
   }
-  if (n.panel) inStub = outStub = 0.0f;  // TX.panel-faces: the panel face draws its sockets on the edges
+  // TX.panel-faces: the panel face draws its sockets on the edges; TX.mixer-look: so does the mixer's face.
+  if (n.panel || n.kind == NodeKind::Mixer) inStub = outStub = 0.0f;
   for (size_t i = 0; i < n.inputs.size(); ++i) {
     PinSpec p;
     p.y = pinYOf(n, i);
@@ -228,6 +230,16 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
       f.node = v;
       f.owner = n.device.value;
       f.path = n.title;
+      f.panel = true;
+      sc.faces.push_back(std::move(f));
+    }
+    // TX.mixer-look: a track's mixer is drawn as its face (MixerFace: the view's panelMaker makes it); a new size (sends,
+    // expanded) is a new face.
+    if (n.kind == NodeKind::Mixer && n.band < pp.bands.size()) {
+      circuit::SceneFace f;
+      f.node = v;
+      f.owner = pp.bands[n.band].track.value;
+      f.path = mixerFacePath(n);
       f.panel = true;
       sc.faces.push_back(std::move(f));
     }

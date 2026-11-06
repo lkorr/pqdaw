@@ -5,7 +5,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "../arrangement/edit_surface.h"
@@ -45,6 +48,17 @@ inline float lanePlayheadX(const ui::Rect& body, Ticks t, Ticks start, Ticks spa
 // outline, hover, audio handles, drag previews of a gesture in a window), with the arrangement's time selection over the
 // selected tracks' windows and, in automation mode, their chosen envelopes.
 void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatchView& view);
+
+// TX.mixer-look: a track's mixer drawn as a face (mixer_face.cpp). A mixer node's SceneFace has the track as its owner
+// and mixerFacePath as its path (the prefix, its size and its send pins: a new layout of the strip is a new face); the
+// view's panelMaker makes the face for it.
+inline constexpr std::string_view kMixerFacePrefix = "\x01mixer:";
+struct MixerSend {
+  doc::TrackId target;  // the return
+  std::string letter;   // its letter (the pin's label)
+};
+std::string mixerFacePath(const Node& n);
+std::unique_ptr<Face> makeMixerFace(ProjectPatchView& view, const ProjectPatch& pp, const Node& n);
 
 // TX.lane-edit: the title strip of the clips in a window body `bodyH` device px high (0: the body is too low for one).
 inline float laneClipTitleH(float bodyH, float uiScale) noexcept {

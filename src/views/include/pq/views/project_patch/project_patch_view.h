@@ -6,8 +6,11 @@
 // detail, symbol tiles, the cached far-level chunks), edited through the same document commands as the Ableton view.
 //
 //   bands      one per track in lane order, tinted in the track colour, its name in the title strip; a group is a
-//              container around its members; a mixer strip node ends every chain (volume bar, pan, mute and solo
-//              buttons; double-click opens it to show each send's level beside its pin).
+//              container around its members; every band's output is its MIXER (TX.mixer-look: a face in the meta
+//              faces' family — header with the track colour and M / S, pan knob, volume fader on Live's law with the
+//              level meter over it, a row per send; double-click its frame for longer send faders with their levels) at
+//              the band's top right; drag its frame to put it anywhere in its band (view state; its menu's Mixer to
+//              Top Right, or Reset Layout, puts it back).
 //   lanes      (T5.x-one-circuit) a MIDI or audio track's source node is a LANE WINDOW: the lane itself — its clips
 //              (colours, names, MIDI notes, audio waveforms from the overview cache), bar and beat lines, the playhead —
 //              over one time window all windows share (4 bars by default; see laneStart). Wheel over a window scrolls
@@ -44,8 +47,9 @@
 //                devices     right-click a band → Add Device ▸ (the device menu), Delete removes the selected blocks,
 //                            dragging a block along its band or onto another band moves it (ops::moveDevice; the chain
 //                            rule holds), `0` toggles their activators
-//                mixer       click M / S on a mixer strip (mute = the activator, solo exclusive, Ctrl additive); drag its
-//                            volume bar sideways, its pan dot; an expanded strip's send bars likewise (store gestures)
+//                mixer       click M / S on a mixer (mute = the activator, solo exclusive, Ctrl additive); drag its
+//                            volume fader and send faders sideways, its pan knob up / down (Shift: fine; double-click:
+//                            0 dB / centre) (store gestures; TX.mixer-look: the face's controls)
 //                delete      Delete on a selected wire: a modulation wire is removed, a send goes to −∞, a route becomes
 //                            Sends Only
 //              Ctrl+drag a block or a band's title nudges it (view state, saved with the project, not undoable; the
@@ -212,7 +216,11 @@ public:
   // Lane (TX.lane-edit): a press in a lane window's body went to the arrangement's editor / automation, whose drag runs.
   // TX.node-menu: BackWire (a backwards cable out of a param), MaybeSplice / Splice (a Shift-drag of a block).
   // TX.orbit-ports: Port (an orbiting main port dragged along its block's edge: pinned there on release).
-  enum class Drag : uint8_t { None, Wire, MaybeMoveDevice, MoveDevice, Nudge, Volume, Pan, Send, Resize, Lane, BackWire, MaybeSplice, Splice, Port };
+  // TX.mixer-look: MaybeMoveMixer / MoveMixer (a mixer pressed outside its controls, then dragged: placed where it is
+  // dropped, ProjectPatchView::placeMixer); its controls are its face's (MixerFace: the canvas's face routing).
+  enum class Drag : uint8_t {
+    None, Wire, MaybeMoveDevice, MoveDevice, Nudge, MaybeMoveMixer, MoveMixer, Resize, Lane, BackWire, MaybeSplice, Splice, Port
+  };
   Drag drag() const noexcept { return drag_; }
   // TX.lane-edit: the last press was in a lane window (the arrangement's edit chords act there: laneKey).
   bool laneFocused() const noexcept { return laneFocus_; }
@@ -261,12 +269,6 @@ protected:
 
 private:
   friend class ProjectPatchView;
-  // Mixer strip hit areas (device px) of model node n.
-  struct MixerAreas {
-    ui::Rect volume, pan, mute, solo;
-    std::vector<ui::Rect> sends;  // expanded strips: one bar per send pin
-  };
-  MixerAreas mixerAreas(uint32_t node) const;
   ui::Cursor pressCursor(ui::Vec2 pos) const;  // T4.16c: the cursor for what a left press at `pos` would start
   void finishWire(ui::Vec2 pos);
   void finishDeviceMove(ui::Vec2 pos);
@@ -280,7 +282,10 @@ private:
   std::vector<uint8_t> liftModel_;
   std::vector<uint32_t> liftScene_;
   bool liftBuilt_ = false;
-  bool liftDragging() const noexcept { return drag_ == Drag::MoveDevice || drag_ == Drag::Nudge || drag_ == Drag::Splice; }
+  bool liftDragging() const noexcept {
+    return drag_ == Drag::MoveDevice || drag_ == Drag::Nudge || drag_ == Drag::Splice || drag_ == Drag::MoveMixer;
+  }
+  void finishMixerMove(ui::Vec2 pos);  // TX.mixer-look: a mixer dropped (placed there)
 
   ProjectPatchView& view_;
   Drag drag_ = Drag::None;
@@ -288,11 +293,9 @@ private:
   PinHit from_{};
   uint32_t dragNode_ = kNone;      // the device / mixer being dragged
   uint32_t dragBand_ = kNone;      // a band's title being nudged
-  uint32_t dragSend_ = 0;          // the send row of a Send drag
   // TX.resize: the block being resized (by device: the model is rebuilt per step), its scale and size at the press.
   doc::DeviceId resizeDevice_;
   float resizeK0_ = 1.0f, resizeW0_ = 0.0f, resizeH0_ = 0.0f;
-  double dragStart_ = 0.0;         // the value at the press (volume fader position, pan, send position)
   ui::Vec2 pointer_{0, 0};         // the last pointer position (the readout is drawn there)
   bool gesture_ = false;
   bool outside_ = false;           // TX.free-rack: a block drag is out of the canvas (the host shows where it lands)
@@ -534,8 +537,14 @@ public:
   // TX.block-drag: several at once (one re-layout); moved blocks are the lighter ones when they push others apart.
   void nudge(uint32_t entity, float dx, float dy);
   void nudge(std::span<const uint32_t> entities, float dx, float dy);
-  // Reset Layout: every nudge's position (TX.resize: blocks keep their sizes).
+  // Reset Layout: every nudge's position (TX.resize: blocks keep their sizes; TX.mixer-look: placed mixers go back).
   void resetLayout();
+  // TX.mixer-look: `track`'s mixer placed with its top-left at world point `at` (stored from its band's top-left corner,
+  // doc::PatchNudge::mixerPlaced: view state, saved, not undoable; never above the band's title strip); unplaceMixer:
+  // back to the band's top right (the layout's). False when nothing changed.
+  bool placeMixer(doc::TrackId track, graph::Point2 at);
+  bool unplaceMixer(doc::TrackId track);
+  bool mixerPlaced(doc::TrackId track) const noexcept;
   // TX.resize (SPEC §15 2026-11-01 "resize, groups, and the free-device rack"): a device block's uniform scale — its face,
   // panel or plain block and everything on it in proportion (doc::PatchNudge::scale: view state like a nudge, saved with
   // the project, not undoable). setBlockScale clamps (clampBlockScale) and re-lays out (neighbours make room); false:
