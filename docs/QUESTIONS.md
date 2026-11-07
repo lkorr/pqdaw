@@ -2378,7 +2378,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **Spawning**: in a project the node menu, the browser and Add Free Device list the modules (Wavetable, Envelope under Meta Modules; Oscilloscope, Spectrum, Spectrogram under Visualisers) instead of the bare engines; rack chains' Add Device still lists the engines (a chain holds devices, not groups). Existing projects with free `meta:wavetable` / `meta:envelope` / analyser devices load and play unchanged (no conversion: the engines are the same types).
 - **Engine faces draw their static layers directly** (no tiles: they depend on the engine's data) once per section shown; a Wavetable panel paints the face 4 times per frame while voices animate. UI thread only; idle costs nothing. If that shows up in frame time, give the section element tiles keyed by the face's static keys.
 - Status: open (provisional choices above).
-## Q?-GU.9b-a · 2026-11-07 · GU.9 v2 · Racks as parallel groups: the choices made where the plan left room
+## Q228 · 2026-11-07 · GU.9 v2 · Racks as parallel groups: the choices made where the plan left room
 - **What makes a set a rack:** sibling groups with exactly one main-input wire and one main-output wire (into a main input,
   a group's Out terminal or a mixer), sharing both ends; 2+ of them, or 1 that holds a chain mixer group (what Add Rack and
   Ctrl+G make: Live's one-chain rack). A plain group is never a rack. Alternative: any group with macros wired in is a rack
