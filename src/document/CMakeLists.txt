@@ -27,6 +27,8 @@ pq_add_module(pq_doc
     src/edit_racks.cpp
     src/edit_groups.cpp
     src/edit_blocks.cpp
+    src/edit_panels.cpp
+    src/panel.cpp
     src/edit_paths.cpp
     src/edit_library.cpp
     src/edit_meta.cpp

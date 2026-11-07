@@ -160,7 +160,7 @@ TEST_CASE("meta modules: save -> load is deep-equal with nested and chain-level 
                           std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray(cycle)}}))));
   Result<std::string> text = serializeProject(s.doc(), s.store.view());
   REQUIRE(text.ok());
-  CHECK(text->rfind("{\n  \"schemaVersion\": 20,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": 21,", 0) == 0);
   CHECK(text->find("\"patch\": \"meta:phase_acc\"") != std::string::npos);
   CHECK(text->find("\"$f32\"") != std::string::npos);
   Result<LoadedProject> back = parseProject(*text);

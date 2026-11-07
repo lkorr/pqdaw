@@ -363,6 +363,11 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
         PQ_DOC_TRY(checkValues(d->params, "params"));
         PQ_DOC_TRY(checkValues(d->settings, "settings"));
         PQ_DOC_TRY(checkParamCurves(*d));  // TX.knob-curves
+        if (d->panel) {  // GU.3 (pq/document/panel.h); its bindings: SetGroupPanel, the reader, apply's final pass
+          if (!isGroupDevice(*d)) return invalid("only a group has a panel");
+          if (d->panel->empty()) return invalid("an empty panel is no panel");
+          PQ_DOC_TRY(checkPanel(*d->panel));
+        }
         PQ_DOC_TRY(checkDeviceMeta(*d));  // TMM.3
         if (d->rack) {
           PQ_DOC_TRY(checkRackOwn(*d));

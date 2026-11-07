@@ -198,6 +198,10 @@ struct SetDeviceGroup { DeviceId device; DeviceId group; };
 // of a driven one: no compile). The param is not checked against the patch (ops::setParamCurve checks it). Never on a
 // rack or a group.
 struct SetParamCurve { DeviceId device; std::string param; std::optional<dsp::Curve> curve; bool structural = true; };
+// GU.3 (pq/document/panel.h): group `group`'s panel, replaced whole (null or empty: none — the group is drawn as its
+// mini circuit). Meta: a panel is never lowered. Refused on a block that is not a group, for a panel that fails
+// checkPanel, or one binding anything outside the group (bindingsProblem). An equal panel is a no-op.
+struct SetGroupPanel { DeviceId group; PanelPtr panel; };
 
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------
 // Structural. Adds `wire` (its id pre-allocated). Both ends must exist (TX.all-free: a track's source with kMainPort on
@@ -297,7 +301,7 @@ using CommandVariant = std::variant<
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch, RenameDevice,
-    SetDeviceChainInput, SetDeviceGroup, SetParamCurve, AddWire, RemoveWire, SetWireAmount, SetWireReducer, SetWireSignal,
+    SetDeviceChainInput, SetDeviceGroup, SetParamCurve, SetGroupPanel, AddWire, RemoveWire, SetWireAmount, SetWireReducer, SetWireSignal,
     AddChain, RemoveChain, MoveChain, RenameChain, SetChainMixer, SetChainActive, SetChainSolo, SetChainZone,
     AddMacroMapping, RemoveMacroMapping, SetMacroMapping, SetRackOptions,
     AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,

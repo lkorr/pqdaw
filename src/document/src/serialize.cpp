@@ -759,7 +759,7 @@ private:
   }
 
   void deviceHead(const PathSeg& at, const Device& d) {
-    w_.beginObject(d.source != nullptr || d.rack != nullptr || d.meta != nullptr);
+    w_.beginObject(d.source != nullptr || d.rack != nullptr || d.meta != nullptr || d.panel != nullptr);
     w_.key("id");
     w_.integer(d.id.value);
     w_.key("patch");
@@ -805,6 +805,7 @@ private:
       }
       w_.endObject();
     }
+    if (d.panel) panelObject(PathSeg(&at, "panel"), *d.panel);  // GU.3 (schema 21)
     if (d.meta) {  // TMM.3 (schema 10): one line per instance, by path
       const PathSeg mat(&at, "meta");
       w_.key("meta");
@@ -843,6 +844,85 @@ private:
 
   // GU.1 (schema 20): {"min", "max", "unit"?, "digits"?, "step"?, "mode"?, "output"?, "preset", "presetArg"?,
   // "points": [[t, y], …], "shapes": [[shape, bend], …]} (one line).
+  // GU.3 (schema 21, pq/document/panel.h): "panel": {"size": [w, h], "elements": [one element per line]}; an element
+  // {"id", "kind", "rect": [x, y, w, h], "bind": [{"kind", "device", "name", "meta"}], "style": {name: number | text},
+  // "when": {"element", "values"}} — "bind", "style" and "when" only when set, a binding's "meta" only when not "".
+  void panelObject(const PathSeg& at, const Panel& p) {
+    w_.key("panel");
+    w_.beginObject(true);
+    w_.key("size");
+    w_.beginArray(false);
+    w_.number(at, p.width);
+    w_.number(at, p.height);
+    w_.endArray();
+    const PathSeg eat(&at, "elements");
+    w_.key("elements");
+    w_.beginArray(true);
+    for (size_t i = 0; i < p.elements.size(); ++i) {
+      const PanelElement& e = p.elements[i];
+      const PathSeg el(&eat, i);
+      w_.beginObject(false);
+      w_.key("id");
+      w_.integer(e.id);
+      w_.key("kind");
+      w_.string(PathSeg(&el, "kind"), e.kind);
+      w_.key("rect");
+      w_.beginArray(false);
+      for (const float v : {e.x, e.y, e.w, e.h}) w_.number(el, v);
+      w_.endArray();
+      if (!e.bindings.empty()) {
+        const PathSeg bat(&el, "bind");
+        w_.key("bind");
+        w_.beginArray(false);
+        for (const Binding& b : e.bindings) {
+          w_.beginObject(false);
+          w_.key("kind");
+          w_.string(bat, bindingKindName(b.kind));
+          if (b.device.valid()) {
+            w_.key("device");
+            w_.integer(b.device.value);
+          }
+          if (!b.name.empty()) {
+            w_.key("name");
+            w_.string(bat, b.name);
+          }
+          if (!b.meta.empty()) {
+            w_.key("meta");
+            w_.string(bat, b.meta);
+          }
+          w_.endObject();
+        }
+        w_.endArray();
+      }
+      if (!e.style.empty()) {
+        const PathSeg sat(&el, "style");
+        w_.key("style");
+        w_.beginObject(false);
+        for (const StyleField& f : e.style) {
+          w_.key(f.name);
+          if (f.isText) w_.string(PathSeg(&sat, f.name), f.text);
+          else w_.number(PathSeg(&sat, f.name), f.number);
+        }
+        w_.endObject();
+      }
+      if (e.when) {
+        const PathSeg wat(&el, "when");
+        w_.key("when");
+        w_.beginObject(false);
+        w_.key("element");
+        w_.integer(e.when->element);
+        w_.key("values");
+        w_.beginArray(false);
+        for (const double v : e.when->values) w_.number(wat, v);
+        w_.endArray();
+        w_.endObject();
+      }
+      w_.endObject();
+    }
+    w_.endArray();
+    w_.endObject();
+  }
+
   void curveObject(const PathSeg& at, const dsp::Curve& c) {
     w_.beginObject(false);
     w_.key("min");
@@ -1538,6 +1618,9 @@ public:
                    devicesPos);
       if (group) {
         check(devs, detail::checkList(detail::ListKind::MidiTrack, list));
+        for (const DevicePtr& d : list)  // GU.3: a panel binds what is inside its group
+          if (d->panel)
+            if (std::string why = bindingsProblem(list, d->id, *d->panel); !why.empty()) json::fail(devs, why);
         std::unordered_set<uint32_t> inside;
         for (const DevicePtr& d : list) forEachDeviceIn(*d, [&](const Device& x) { inside.insert(x.id.value); });
         for (const Wire& w : out.blocks.wires)
@@ -2103,6 +2186,12 @@ private:
       }
       json::fail(*cur, s.error().message, ErrorCode::InvalidArgument, pos[static_cast<size_t>(kDevices)]);
     }
+    for (size_t i = 0; i < t->devices.size(); ++i)  // GU.3: a panel binds what is inside its group
+      if (const DevicePtr& d = t->devices[i]; d->panel)
+        if (std::string why = bindingsProblem(t->devices, d->id, *d->panel); !why.empty()) {
+          const PathSeg listAt(&at, K[static_cast<size_t>(kDevices)]);
+          json::fail(PathSeg(&listAt, i), why, ErrorCode::InvalidArgument, pos[static_cast<size_t>(kDevices)]);
+        }
     if (t->tuning.mode != TuningMode::Inherit && kind != TrackKind::Midi && kind != TrackKind::Group &&
         kind != TrackKind::Audio)
       failKey(kTuning, "only MIDI, audio and group tracks have a tuning");
@@ -2123,7 +2212,7 @@ private:
   // so racks nest as deep as memory allows. Each level's own members are read by deviceKey / rackKey / chainKey.
   static constexpr std::string_view kDeviceKeys[] = {"id",       "patch",  "kind", "active", "params",
                                                      "settings", "source", "crlf", "rack", "name", "meta",
-                                                     "chainInput", "group", "curves"};
+                                                     "chainInput", "group", "curves", "panel"};
   static constexpr std::string_view kRackKeys[] = {"chains",     "mappings",         "macroNames", "visibleMacros",
                                                    "variations", "randomizeExclude", "keyUnit",    "voiceChains",
                                                    "showChains", "showMacros"};
@@ -2307,6 +2396,7 @@ private:
       // (TX.patching's "free", schema 13 … 16, is gone: TX.all-free's migration 16 → 17 wires the chain instead.)
       case 12: d.group = DeviceId{ref(f)}; break;  // TX.groups (schema 14); checkList: a group of the same list
       case 13: d.curves = paramCurves(f); break;  // GU.1 (schema 20; TX.knob-curves' names: schema 16 … 19)
+      case 14: d.panel = panelObject(f); break;  // GU.3 (schema 21)
     }
   }
 
@@ -2667,6 +2757,121 @@ private:
     for (size_t i = 1; i < v.size(); ++i)
       if (v[i - 1].param == v[i].param) r_.failHere(PathSeg(&at, v[i].param), "duplicate key");
     return v;
+  }
+
+  // GU.3: the encoder's panelObject. The panel's own rules are checkList's (checkPanel); its bindings are checked
+  // against the group's track once the track is read.
+  PanelPtr panelObject(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"size", "elements"};
+    Panel p;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) {
+        float v[2] = {};
+        size_t n = 0;
+        r_.beginArray(f);
+        for (size_t j = 0; r_.nextElement(f); ++j) {
+          if (n == 2) r_.failHere(PathSeg(&f, j), "a size is [w, h]", ErrorCode::InvalidArgument);
+          v[n++] = r_.readFloat(PathSeg(&f, j));
+        }
+        if (n != 2) r_.failHere(f, "a size is [w, h]", ErrorCode::InvalidArgument);
+        p.width = v[0];
+        p.height = v[1];
+      } else {
+        r_.beginArray(f);
+        for (size_t i = 0; r_.nextElement(f); ++i) p.elements.push_back(panelElement(PathSeg(&f, i)));
+      }
+    }
+    m.require({0, 1});
+    if (p.elements.empty()) r_.failValue(at, "a panel has elements (omit it for none)");
+    return std::make_shared<const Panel>(std::move(p));
+  }
+
+  PanelElement panelElement(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"id", "kind", "rect", "bind", "style", "when"};
+    PanelElement e;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0: e.id = u32(f); break;
+        case 1: e.kind = str(f); break;
+        case 2: {
+          float v[4] = {};
+          size_t n = 0;
+          r_.beginArray(f);
+          for (size_t j = 0; r_.nextElement(f); ++j) {
+            if (n == 4) r_.failHere(PathSeg(&f, j), "a rect is [x, y, w, h]", ErrorCode::InvalidArgument);
+            v[n++] = r_.readFloat(PathSeg(&f, j));
+          }
+          if (n != 4) r_.failHere(f, "a rect is [x, y, w, h]", ErrorCode::InvalidArgument);
+          e.x = v[0], e.y = v[1], e.w = v[2], e.h = v[3];
+          break;
+        }
+        case 3:
+          r_.beginArray(f);
+          for (size_t j = 0; r_.nextElement(f); ++j) e.bindings.push_back(panelBinding(PathSeg(&f, j)));
+          break;
+        case 4: {
+          r_.beginObject(f);
+          std::string_view key;
+          while (r_.nextKey(f, key)) {
+            StyleField sf;
+            sf.name = std::string(key);
+            const PathSeg sat(&f, sf.name);
+            if (r_.peek() == json::Reader::Kind::String) {
+              sf.isText = true;
+              r_.readString(sat, sf.text);
+            } else {
+              sf.number = r_.readDouble(sat);
+            }
+            e.style.push_back(std::move(sf));
+          }
+          std::sort(e.style.begin(), e.style.end(), [](const StyleField& a, const StyleField& b) { return a.name < b.name; });
+          for (size_t i = 1; i < e.style.size(); ++i)
+            if (e.style[i - 1].name == e.style[i].name) r_.failHere(PathSeg(&f, e.style[i].name), "duplicate key");
+          break;
+        }
+        case 5: {
+          static constexpr std::string_view W[] = {"element", "values"};
+          Visibility v;
+          Members wm(r_, f, W);
+          for (int j; (j = wm.next()) >= 0;) {
+            const PathSeg g(&f, W[static_cast<size_t>(j)]);
+            if (j == 0) {
+              v.element = u32(g);
+            } else {
+              r_.beginArray(g);
+              for (size_t q = 0; r_.nextElement(g); ++q) v.values.push_back(r_.readDouble(PathSeg(&g, q)));
+            }
+          }
+          wm.require({0, 1});
+          e.when = std::move(v);
+          break;
+        }
+      }
+    }
+    m.require({0, 1, 2});
+    return e;
+  }
+
+  Binding panelBinding(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"kind", "device", "name", "meta"};
+    static constexpr std::array<std::string_view, 6> kKinds = {"none", "control", "setting", "data", "signal", "panel"};
+    Binding b;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0: b.kind = static_cast<BindingKind>(name(f, kKinds, "a binding's kind")); break;
+        case 1: b.device = DeviceId{ref(f)}; break;
+        case 2: b.name = str(f); break;
+        case 3: b.meta = str(f); break;
+      }
+    }
+    m.require({0});
+    return b;
   }
 
   double pairElement(const PathSeg& el, size_t& n, double (&v)[2]) {
@@ -4061,6 +4266,12 @@ Status migrateKnobPositions(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 20 → 21 (GU.3, pq/document/panel.h): a group device may carry "panel"; nothing to convert.
+Status migrateAddPanels(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -4081,6 +4292,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {17, migratePanLaws},
     {18, migrateAddInstrumentGroups},
     {19, migrateKnobPositions},
+    {20, migrateAddPanels},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

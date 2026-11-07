@@ -26,6 +26,7 @@
 #include "pq/document/ids.h"
 #include "pq/dsp/curve.h"
 #include "pq/document/note_seq.h"
+#include "pq/document/panel.h"
 #include "pq/meta/data.h"
 #include "pq/tuning/edo.h"
 #include "pq/tuning/mos.h"
@@ -552,6 +553,11 @@ struct Device {
   // GU.1: the params whose curve is not their declared one (ControlCurve above), sorted by param, unique. Racks and
   // groups have none.
   std::vector<ControlCurve> curves;
+  // GU.3 (pq/document/panel.h): a group's panel — its face built from elements bound to what is inside it; null (or
+  // empty): the group is drawn as its mini circuit. Groups only. Shared, so a param edit copies the Device, never the
+  // panel; SetGroupPanel replaces it whole (Meta: a panel is never lowered).
+  PanelPtr panel;
+  bool hasPanel() const noexcept { return panel != nullptr && !panel->empty(); }
   const dsp::Curve* curve(std::string_view param) const noexcept;  // null: the declared curve
   bool edited() const noexcept { return source != nullptr; }
   const MetaInstance* metaAt(std::string_view path) const noexcept;  // nullptr: no entry

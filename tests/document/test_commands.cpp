@@ -846,6 +846,28 @@ std::vector<Case> cases() {
                  CHECK(cs.devices == std::vector<DeviceId>{chain.fx});
                  CHECK(findDevice(f.doc(), chain.fx).device->group == groupId);
                }});
+  // GU.3 (pq/document/panel.h): a group's panel, Meta (never lowered); its bindings inside the group.
+  static DeviceId panelGroup;
+  c.push_back({"SetGroupPanel (GU.3: a group's panel; Meta, a panel is never lowered)", [withChain](Fixture& f) -> Command {
+                 withChain(f);
+                 panelGroup = f.store.ids().device();
+                 REQUIRE(f.store.dispatch(Batch{"group", {AddDevice{f.lead, makeGroup(panelGroup), kAppend}}}).ok());
+                 REQUIRE(f.store.dispatch(SetDeviceGroup{chain.fx, panelGroup}).ok());
+                 auto p = std::make_shared<Panel>();
+                 p->width = 100.0f, p->height = 60.0f;
+                 PanelElement e;
+                 e.id = 1;
+                 e.kind = "knob";
+                 e.x = 4.0f, e.y = 4.0f, e.w = 40.0f, e.h = 50.0f;
+                 e.bindings.push_back(controlBinding(chain.fx, "gain"));
+                 p->elements.push_back(std::move(e));
+                 return SetGroupPanel{panelGroup, std::move(p)};
+               }, M, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.devices == std::vector<DeviceId>{panelGroup});
+                 const Device* g = findDevice(f.doc(), panelGroup).device;
+                 REQUIRE(g->panel != nullptr);
+                 CHECK(g->panel->elements.size() == 1);
+               }});
   // ---- compound
   c.push_back({"Batch (param + sequence)", [](Fixture& f) -> Command {
                  return Batch{"Mixed", {SetTrackVolume{f.lead, -1.0f},

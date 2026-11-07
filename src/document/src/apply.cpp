@@ -2185,6 +2185,22 @@ Res apply_(const Snapshot& s, const SetParamCurve& c, ChangeSet& cs) {  // GU.1
   });
 }
 
+Res apply_(const Snapshot& s, const SetGroupPanel& c, ChangeSet& cs) {  // GU.3 (pq/document/panel.h)
+  const DeviceLoc loc = findDevice(*s, c.group);
+  if (!loc.track) return notFound("device not found");
+  if (!isGroupDevice(*loc.device) || loc.chain != nullptr) return invalid("only a group has a panel");
+  PanelPtr panel = c.panel && !c.panel->empty() ? c.panel : nullptr;  // an empty panel is none
+  if (panel) {
+    PQ_DOC_TRY(checkPanel(*panel));
+    if (std::string why = bindingsProblem(loc.track->devices, c.group, *panel); !why.empty()) return invalid(why);
+  }
+  if (panel == loc.device->panel || (panel && loc.device->panel && *panel == *loc.device->panel)) return s;
+  return editDeviceAt(s, c.group, cs, kChangeMeta, [&](Device& d) {
+    d.panel = std::move(panel);
+    return ok();
+  });
+}
+
 Res apply_(const Snapshot& s, const SetDeviceGroup& c, ChangeSet& cs) {  // TX.groups
   const DeviceLoc loc = findDevice(*s, c.device);
   if (!loc.track) return notFound("device not found");
@@ -2510,7 +2526,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
-    "Edit Device Patch", "Rename Device", "Chain Input", "Device Group", "Knob Curve",
+    "Edit Device Patch", "Rename Device", "Chain Input", "Device Group", "Knob Curve", "Edit Panel",
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer", "Cable Signal",
     "Add Chain", "Delete Chain", "Move Chain", "Rename Chain", "Chain Mixer", "Activate Chain", "Solo Chain", "Chain Zone",
     "Map Macro", "Unmap Macro", "Edit Macro Mapping", "Rack Options",
@@ -2601,6 +2617,38 @@ Snapshot finishDeviceLanes(const Snapshot& s, ChangeSet& cs) {
   return Snapshot(std::move(np));
 }
 
+// GU.3 (pq/document/panel.h "Rules"): after a structural command, a group panel's elements whose bindings no longer
+// hold (their block deleted, moved to another track, taken out of the group) leave the panel in the same command, so
+// one undo step brings both back. Only the tracks the command touched are looked at; a track without panels costs one
+// pass over its blocks.
+Snapshot finishPanels(const Snapshot& s, ChangeSet& cs) {
+  std::shared_ptr<Project> np;
+  for (const TrackId id : cs.tracks) {
+    const auto path = findTrack(np ? *np : *s, id);
+    if (!path) continue;
+    const Track& t = trackAt(np ? *np : *s, *path);
+    std::vector<std::pair<DeviceId, PanelPtr>> pruned;
+    for (const DevicePtr& d : t.devices)
+      if (d->panel) {
+        PanelPtr p = prunePanel(d->panel, t.devices, d->id);
+        if (p != d->panel) pruned.emplace_back(d->id, std::move(p));
+      }
+    if (pruned.empty()) continue;
+    if (!np) np = copyOf(s);
+    Track& mt = mutableTrack(*np, *path);
+    for (auto& [dev, panel] : pruned) {
+      for (DevicePtr& d : mt.devices)
+        if (d->id == dev) {
+          auto x = std::make_shared<Device>(*d);
+          x->panel = std::move(panel);
+          d = std::move(x);
+        }
+      cs.devices.push_back(dev);
+    }
+  }
+  return np ? Snapshot(std::move(np)) : s;
+}
+
 // T5.3: after the whole command (a Batch's steps may separate two clips and join them again), the crossfades whose
 // clips are no longer adjacent are dropped, on the audio tracks the command touched.
 Snapshot finishCrossfades(const Snapshot& s, ChangeSet& cs) {
@@ -2627,6 +2675,7 @@ Result<Snapshot> apply(const Snapshot& s, const Command& c, ChangeSet& changes) 
   Snapshot cur = std::move(r).value();
   if (cur != s && changes.structural()) {  // T4.18: device lanes follow their devices (after the whole command)
     cur = finishDeviceLanes(cur, changes);
+    cur = finishPanels(cur, changes);  // GU.3
     changes.normalize();
   }
   if (cur != s && changes.has(kChangeSequence)) {

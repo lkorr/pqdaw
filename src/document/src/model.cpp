@@ -488,7 +488,8 @@ bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
          deepEq(a.meta, b.meta) &&  // TMM.3 (an empty map is always null: the commands keep it so)
          a.chainInput == b.chainInput &&  // TMM.10-fix1
          a.group == b.group &&            // TX.groups
-         a.curves == b.curves;            // GU.1
+         a.curves == b.curves &&          // GU.1
+         deepEq(a.panel, b.panel);        // GU.3
 }
 
 bool shallowChainEq(const Chain& a, const Chain& b) noexcept {

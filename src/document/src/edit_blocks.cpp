@@ -88,9 +88,12 @@ BlockSet remapBlocks(const BlockSet& set, IdSource& ids, std::vector<std::pair<D
     return it != to.end() ? it->second : DeviceId{};
   };
   for (DevicePtr& d : out.devices)
-    if (d->group.valid()) {
+    if (d->group.valid() || d->panel) {
       auto c = std::make_shared<Device>(*d);
-      c->group = mapped(d->group);  // (a group outside the set: none — copyBlocks never leaves one)
+      if (d->group.valid()) c->group = mapped(d->group);  // (a group outside the set: none — copyBlocks never leaves one)
+      // GU.3: the panel's bindings follow the copies (a binding to a block outside the set keeps its id: apply's final
+      // pass takes it off the pasted panel, which binds only what is inside its group).
+      if (d->panel) c->panel = std::make_shared<const Panel>(remapPanel(*d->panel, remap));
       d = std::move(c);
     }
   for (const Wire& w : set.wires) {

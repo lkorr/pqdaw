@@ -1,0 +1,151 @@
+#pragma once
+
+// GU.3 (SPEC §15 2026-11-06 "built GUIs"; docs/plans/GU.md "Concepts", "Panels and the panel window"): a GROUP'S PANEL —
+// its face, built from ELEMENTS. Stored on the group's Device (Device::panel; null or empty: the group is drawn as its
+// mini circuit), so a project, the clipboard (doc::BlockSet) and a group preset carry it with the device.
+//
+//   Panel     its size (world units: logical px at zoom 1) and its elements in paint order (later ones on top).
+//   Element   one thing on the panel: a KIND (the views' element registry key: "knob", "slider", "number", "toggle",
+//             "button", "menu", "xy", "label", "shape", "tabs", "curve", "modsource"; GU.7 adds rich kinds — the document
+//             never interprets it), a RECT in the panel, STYLE fields (named values the kind reads: a knob's "pointer"
+//             arc / pie / dot / line, "track" width, "colour" a theme token, "readout" below / above / inside / none,
+//             "label"; unknown names are kept: a later kind or GU.8's style schemas may use them), BINDINGS (slot 0 the
+//             main one; an XY pad's slot 1 its y) and an optional VISIBILITY CONDITION: shown only while another element
+//             of the same panel (a tabs / menu / toggle) has one of the given values (GU.8's tabs).
+//   Binding   what an element shows and edits, naming the block by DeviceId (never by name: ids survive renames and are
+//             remapped on paste, ops::remapBlocks), plus `meta` — the name path of a native engine's inner instance
+//             ("" = the block itself; pq/document/model.h "Meta modules") — and `name`:
+//               Control  a param (a knob position; its curve gives the value: model.h ControlCurve)
+//               Setting  a structural value (a `real const` input, an instrument group's polyphony: groupSettings())
+//               Data     a block's data (a meta instance's DataValue: harmonic tables, envelope breakpoints; GU.7)
+//               Signal   an output port (displays, mod-source handles): `name` the port
+//               Panel    a whole child panel (`device` a group inside: embedded, GU.6)
+//
+// Rules (docs/plans/GU.md "Decided"):
+//   - A panel binds only what is inside its group (any depth) or the group itself (its own settings): SetGroupPanel and
+//     the file reader refuse anything else.
+//   - After every structural command (apply's final pass: a block deleted, moved to another track, taken out of the
+//     group), the elements whose bindings no longer hold are taken off the panel in the same command — one undo step
+//     brings both back. A condition naming a removed element is dropped (the element then always shows).
+//   - The panel is never lowered: a panel edit is Meta (no compile). What its elements edit is classified as always (a
+//     control: Param; a setting: Structural, one recompile; a curve: SetParamCurve's classes).
+//
+// Element ids are the panel's own (1 … , unique in the panel; ops allocate them), so a pasted panel keeps them.
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "pq/core/result.h"
+#include "pq/document/ids.h"
+
+namespace pq::doc {
+
+struct Device;
+using DevicePtr = std::shared_ptr<const Device>;
+
+enum class BindingKind : uint8_t { None, Control, Setting, Data, Signal, Panel };
+inline constexpr uint32_t kBindingKindCount = 6;
+std::string_view bindingKindName(BindingKind k) noexcept;  // "none", "control", "setting", "data", "signal", "panel"
+
+struct Binding {
+  BindingKind kind = BindingKind::None;
+  DeviceId device;
+  std::string meta;  // a native engine's inner instance ("" = the block itself)
+  std::string name;  // Control: the param; Setting: the setting; Signal: the output; Data / Panel: ""
+  bool bound() const noexcept { return kind != BindingKind::None; }
+  friend bool operator==(const Binding&, const Binding&) = default;
+};
+Binding controlBinding(DeviceId device, std::string param, std::string meta = {});
+Binding settingBinding(DeviceId device, std::string setting, std::string meta = {});
+Binding signalBinding(DeviceId device, std::string output);
+
+// A style field: a number or a text (a theme token, an enum's name, a label).
+struct StyleField {
+  std::string name;
+  std::string text;     // when isText
+  double number = 0.0;  // else
+  bool isText = false;
+  friend bool operator==(const StyleField&, const StyleField&) = default;
+};
+StyleField styleNumber(std::string name, double v);
+StyleField styleText(std::string name, std::string v);
+
+// Shown only while element `element`'s value is one of `values` (a tabs / menu element: the index; a toggle: 0 / 1).
+struct Visibility {
+  uint32_t element = 0;
+  std::vector<double> values;
+  friend bool operator==(const Visibility&, const Visibility&) = default;
+};
+
+struct PanelElement {
+  uint32_t id = 0;  // ≥ 1, unique in its panel
+  std::string kind;
+  float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+  std::vector<Binding> bindings;    // slot 0: the main one (may be empty: an unbound label, shape, tabs)
+  std::vector<StyleField> style;    // sorted by name, unique
+  std::optional<Visibility> when;   // none: always shown
+  const Binding* binding(size_t slot = 0) const noexcept {
+    return slot < bindings.size() && bindings[slot].bound() ? &bindings[slot] : nullptr;
+  }
+  const StyleField* field(std::string_view name) const noexcept;
+  double number(std::string_view name, double def) const noexcept;  // a number field, else `def`
+  std::string_view text(std::string_view name, std::string_view def) const noexcept;  // a text field, else `def`
+  // Sets (or replaces) a field, keeping them sorted.
+  void setField(StyleField f);
+  friend bool operator==(const PanelElement&, const PanelElement&) = default;
+};
+
+inline constexpr uint32_t kMaxPanelElements = 4096;
+inline constexpr float kMaxPanelSize = 8192.0f;
+
+struct Panel {
+  float width = 0.0f, height = 0.0f;
+  std::vector<PanelElement> elements;  // paint order
+  bool empty() const noexcept { return elements.empty(); }
+  const PanelElement* find(uint32_t id) const noexcept;
+  int32_t indexOf(uint32_t id) const noexcept;  // −1: none
+  uint32_t nextId() const noexcept;             // 1 + the largest id
+  friend bool operator==(const Panel&, const Panel&) = default;
+};
+using PanelPtr = std::shared_ptr<const Panel>;
+
+// The panel's own rules: size in (0, kMaxPanelSize] when it has elements, at most kMaxPanelElements, ids ≥ 1 and unique,
+// a kind for each, finite rects with w, h > 0, style fields sorted / unique / named / finite, bindings well formed (a
+// kind's fields: Control / Setting / Signal a device and a name, Data / Panel a device), a condition naming another
+// element of the panel. Bindings' devices are not looked up (bindingsProblem does that).
+Status checkPanel(const Panel& p);
+// Whether `b` may be on group `group`'s panel in `list` (its track's own blocks): its device is the group itself (its
+// settings; a Panel binding never) or a device inside it at any depth (a Panel binding: a group inside it).
+bool bindingAllowed(const std::vector<DevicePtr>& list, DeviceId group, const Binding& b) noexcept;
+// "" when every binding of `panel` is allowed on group `group` of `list`, else what is wrong (element and binding).
+std::string bindingsProblem(const std::vector<DevicePtr>& list, DeviceId group, const Panel& panel);
+// `panel` without the elements whose bindings fail `keep` (conditions naming a removed element dropped); the same
+// pointer when nothing goes, null when nothing is left.
+PanelPtr prunePanel(const PanelPtr& panel, const std::vector<DevicePtr>& list, DeviceId group);
+// A copy with every binding's device mapped through `map` (old → new; an id not in it is kept as it is).
+Panel remapPanel(const Panel& p, std::span<const std::pair<DeviceId, DeviceId>> map);
+// Whether any element of `p` binds device `d`.
+bool panelBinds(const Panel& p, DeviceId d) noexcept;
+
+// ---- Settings that are not a patch's `real const` inputs (GU.3: an instrument group's polyphony) ------------------
+// What a panel element (and the group's inspector) needs to show and edit one: its range, step, default, and for a
+// choice its labels (index = value). The views resolve a Setting binding on a group through these; on any other block
+// through the patch's `real const` inputs.
+struct SettingSpec {
+  std::string_view name, label;
+  double min = 0.0, max = 1.0, step = 0.0, def = 0.0;
+  std::span<const std::string_view> choices;  // a choice (value = index); empty: a number (or a switch: 0 … 1, step 1)
+  std::string_view unit;                       // "s", "" …
+  bool isSwitch() const noexcept { return choices.empty() && min == 0.0 && max == 1.0 && step == 1.0; }
+};
+// The polyphony settings of an instrument group (model.h "Instrument groups"), in inspector order: voices, mono, legato,
+// glide, steal.
+std::span<const SettingSpec> groupSettings() noexcept;
+const SettingSpec* groupSetting(std::string_view name) noexcept;
+
+}  // namespace pq::doc

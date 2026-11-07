@@ -99,7 +99,7 @@ namespace pq::doc {
 // ("valuesInUnits", "legacyCurves": never written) and parseProject converts the decoded model with
 // LoadOptions::devices (knob_positions.h: the nearest-position rule through each param's curve); without the library a
 // file with values to convert is refused (Unsupported). Presets older than 20 holding params are refused (no library).
-inline constexpr int32_t kSchemaVersion = 20;
+inline constexpr int32_t kSchemaVersion = 21;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader

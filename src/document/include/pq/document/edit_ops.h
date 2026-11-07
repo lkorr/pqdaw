@@ -411,6 +411,24 @@ BlockSet remapBlocks(const BlockSet& set, IdSource& ids, std::vector<std::pair<D
 // MIDI tracks. Edit::devices: the new top-level blocks first (set order), then everything inside them; Edit::wires: the
 // new wires. One step; undo removes it all.
 EditResult pasteBlocks(const Project& p, IdSource& ids, TrackId track, const BlockSet& set, DeviceId intoGroup = {});
+
+// ---- GU.3: group panels (pq/document/panel.h) -----------------------------------------------------------------------
+// Each one Meta step ("Edit Panel"; a panel is never lowered). Refused: `group` not a group, a panel failing
+// checkPanel, a binding outside the group. An unchanged panel is an empty edit.
+// The whole panel (null / empty: none).
+EditResult setGroupPanel(const Project& p, DeviceId group, PanelPtr panel);
+// `elements` appended (on top): an element with id 0 gets a fresh one (Panel::nextId onwards; `added`, optional, gets
+// the ids in order), a non-zero id must be free. The panel grows to hold them (its size becomes at least each
+// element's right / bottom edge + kPanelMargin); an empty panel starts at that size.
+inline constexpr float kPanelMargin = 8.0f;
+EditResult addPanelElements(const Project& p, DeviceId group, std::vector<PanelElement> elements,
+                            std::vector<uint32_t>* added = nullptr);
+// Element `element.id` replaced (its rect, style, bindings, condition).
+EditResult setPanelElement(const Project& p, DeviceId group, PanelElement element);
+// The elements removed (unknown ids ignored); conditions naming them dropped. The last one gone: no panel.
+EditResult removePanelElements(const Project& p, DeviceId group, std::span<const uint32_t> elements);
+// The panel's size (w, h > 0).
+EditResult setPanelSize(const Project& p, DeviceId group, float width, float height);
 // One param's knob position in [0, 1] (GU.1: what a param stores; a rack's macro or selector: its value 0 … 127;
 // nullopt: back to the patch's default). A drag is several of these inside one store gesture.
 EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, std::optional<double> position);
