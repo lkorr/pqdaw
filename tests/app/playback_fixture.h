@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "../support/knob_positions.h"
+#include "../support/stand_in_synth.h"
 #include "pq/app/project_link.h"
 #include "pq/core/time.h"
 #include "pq/document/commands.h"
@@ -86,6 +87,7 @@ inline void asInstrumentGroups(DocumentStore& s) {
 // IG.1-2: a new MIDI track's Basic Synth out of its instrument group, alone on the path (a lone instrument: the same
 // sound), so a meta module added at slot 0 replaces it as these cases were written.
 inline void ungroupHead(DocumentStore& s, const DeviceLibrary& lib, TrackId t) {
+  (void)stand_in::useBasicSynth(s, t);  // (GU.10: the IG.1-2 layout first: Basic Synth in the group)
   for (const DevicePtr& d : findTrackPtr(*s.current(), t)->devices)
     if (isGroupDevice(*d)) {
       auto e = ops::ungroupInCircuit(s.current(), s.ids(), lib, d->id);

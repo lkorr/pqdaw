@@ -3,8 +3,9 @@
 // The device library and catalog (T4.1; QUESTIONS Q129, item 11).
 //
 // A device is an instance of a patch (SPEC §7.3: devices are subcircuits). The DEVICE LIBRARY is the set of patches
-// devices may call: the stock devices of stdlib/ (BasicSynth, Operator, Utility, Saturator, EQ Eight) with everything they
-// import, parsed once into one graph::PatchLibrary that the lowering (lower.h) calls into. The CATALOG describes each
+// devices may call: the stock devices with everything they import, parsed once into one graph::PatchLibrary that the
+// lowering (lower.h) calls into. GU.10: no stock device ships (the stock devices are group presets, pq/document/
+// modules.h; Auto Filter and EQ Eight are in retired/); the list holds only the tests' STAND-IN devices (stockDevices()). The CATALOG describes each
 // device patch for the views and the edit builders: its kind (instrument / audio effect), its params (range, unit,
 // label, curve, steps: the patch's `param` declarations and attributes) and its settings (`real const` inputs:
 // structural constants, Q121). Until the M5 browser this list is fixed (stockDevices()); user and project patches
@@ -143,7 +144,12 @@ struct StockDevice {
   // lowering gives it an analysis tap (lower.h "Analysis taps").
   bool analysed = false;
 };
-// The stock devices in menu order (instruments first).
+// The stock devices in menu order (instruments first). GU.10: empty in the app. A test process sets the environment
+// variable kStandInDevicesEnv to a directory holding `devices.txt` (lines `file|patch|name|instrument or effect`, files
+// relative to it; read once per process): the tests' copies of the retired stock patches (tests/stand_in_devices),
+// ordinary devices the chain / wire / group tests are written with. loadDeviceLibrary takes a stand-in's file from the
+// stdlib directory when it has one at that relative path (a test's probe instrument), else from the stand-in directory.
+inline constexpr std::string_view kStandInDevicesEnv = "PQ_STAND_IN_DEVICES";
 std::span<const StockDevice> stockDevices() noexcept;
 // TX.spectrum: whether a device playing `patch` (Device::patch: a stock name, also for an edited fork) is analysed.
 bool analysedDevice(std::string_view patch) noexcept;
@@ -250,8 +256,8 @@ private:
 };
 
 // Parses every stock device (stockDevices()) under `stdlibDirUtf8` with its imports. A stock file that does not exist
-// is left out (DeviceLibrary::missing(): a reduced stdlib, e.g. a test's probe instrument). Errors: NotFound (no stock
-// device at all, or a file without its patch), Io (an unreadable file or import), Parse (diagnostics formatted with
+// is left out (DeviceLibrary::missing()); none at all is fine (GU.10: the app has none). Errors: NotFound (a file
+// without its patch), Io (an unreadable file or import), Parse (diagnostics formatted with
 // file:line:col), InvalidArgument (a patch that is not a device).
 Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlibDirUtf8);
 

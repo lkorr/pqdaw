@@ -56,7 +56,10 @@
 
 namespace pq::doc {
 
-enum class ModuleKind : uint8_t { PhaseAccumulator, Vca, Wavetable, Envelope, Oscilloscope, Spectrum, Spectrogram, WavetableSynth };
+enum class ModuleKind : uint8_t {
+  PhaseAccumulator, Vca, Wavetable, Envelope, Oscilloscope, Spectrum, Spectrogram, WavetableSynth,
+  Utility, Saturator, Lfo, Operator  // GU.10: the stock devices
+};
 struct ModuleInfo {
   ModuleKind kind;
   std::string_view key;   // "phase_acc", "vca" (a menu / browser item: kModuleItemPrefix + key)
@@ -162,6 +165,40 @@ struct WavetableSynthRoles {
 };
 inline constexpr const char* kSynthTabs = "Osc|Env|LFO 1|LFO 2";
 BlockSet wavetableSynthBlocks(IdSource& ids, DeviceId inGroup = {}, WavetableSynthRoles* roles = nullptr);
+
+// ---- GU.10: the stock devices as group presets (docs/plans/GU.md "One hierarchy") ----
+// Utility, Saturator, the LFO and Operator are groups of atom blocks, value blocks and modules, each with a panel laid
+// out like its old face (retired/stdlib/devices/<name>.panel.json); the default instrument of a new MIDI track too.
+// What each keeps of the old patch (QUESTIONS Q?-GU.10-a lists what it leaves out):
+//   Utility      the old patch's param-rate matrix term for term (channel mode, phase L / R, width, Mid/Side mode and
+//                balance, mono, balance, gain with −70 dB = silence, mute) and its per-sample smoothed gains (gain /
+//                gain_add, 2 ms, from their first value): the same arithmetic as the old device without bass mono and
+//                the DC filter (both need a filter: no Filter module yet).
+//   Saturator    drive (a smoothed gain) → seven of the old nine curves (each a nested group of the old sat_shape's
+//                atoms) chosen by Type (a menu: a chain of muxes) → output (a smoothed gain) → soft clip → dry/wet (a
+//                smoothed gain_add). No Waveshaper, Shaper (a drawn table), colour EQ (a filter) or HQ oversampling.
+//   LFO          stdlib/control/lfo.pqp's atoms (free phasor or song-synced phase, + phase, the five waves chosen by
+//                Shape), then offset + depth · wave on the group's Out (a modulation source: no audio passes through);
+//                its panel has the jack (a modsource element).
+//   Operator     an instrument group of four operator rows A … D: In (the note's Hz) → × Coarse → Phase Accumulator
+//                (Pitch = fine tune) → Wavetable (a sine) → Envelope (Amount = level); FM by wires, D → C → B → A, each
+//                Envelope into the next row's Phase Accumulator `+ pm` (algorithm 1), only A's to Out; B … D at level 0.
+//                Its panel: Coarse / Fine / Level per row and the four Envelope panels embedded under A … D tabs.
+//   default      an instrument group "Basic Synth": In → Phase Accumulator → Wavetable → Envelope (Amount 0.25) → Out.
+// Every one is built here (the node menu, the browser and the Create menu paste moduleBlocks; createTrack the default).
+struct StockModuleOptions {
+  DeviceId id;       // the group's (invalid: a fresh one)
+  DeviceId inGroup;  // the group it sits in, or none
+  std::string name;  // "" = the module's name
+  bool active = true;
+};
+inline constexpr std::string_view kDefaultInstrumentName = "Basic Synth";
+BlockSet utilityBlocks(IdSource& ids, const StockModuleOptions& o = {});
+BlockSet saturatorBlocks(IdSource& ids, const StockModuleOptions& o = {});
+BlockSet lfoBlocks(IdSource& ids, const StockModuleOptions& o = {});
+BlockSet operatorBlocks(IdSource& ids, const StockModuleOptions& o = {});
+// The default instrument (an instrument group, its polyphony written out, and its blocks; the group first).
+BlockSet defaultInstrumentBlocks(IdSource& ids, const StockModuleOptions& o = {});
 
 // A module's default group preset with ids from 1 (the group first): what spawning it pastes (ops::pasteBlocks gives
 // fresh ids).

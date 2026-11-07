@@ -25,6 +25,7 @@
 #include "pq/graph/parse.h"
 #include "pq/meta/envelope.h"
 #include "pq/meta/registry.h"
+#include "../support/stand_in_synth.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -87,7 +88,9 @@ struct Song {
   Song() {
     meta::testing::registerTestType();
     synthTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
+    REQUIRE(stand_in::useBasicSynth(store, synthTrack).valid());  // (GU.10: the IG.1-2 layout)
     accTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
+    REQUIRE(stand_in::useBasicSynth(store, accTrack).valid());  // (GU.10: the IG.1-2 layout)
     synth = findTrackPtr(doc(), synthTrack)->devices.at(0)->id;
     // (IG.1-2: Acc's default instrument out of its instrument group first, alone on the path.)
     edit(ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(doc(), accTrack)->devices.at(1)->id));

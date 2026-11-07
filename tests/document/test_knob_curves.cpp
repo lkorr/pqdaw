@@ -18,6 +18,7 @@
 #include "pq/document/lower.h"
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
+#include "../support/stand_in_synth.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -54,6 +55,7 @@ struct Doc {
     REQUIRE(t.ok());
     REQUIRE(store.dispatch(t->command).ok());
     keys = t->tracks.at(0);
+    REQUIRE(stand_in::useBasicSynth(store, keys).valid());  // (GU.10: the IG.1-2 layout)
     // IG.1-2: the instrument out of its instrument group, alone on the path (a lone instrument: the same sound).
     auto ug = ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(*store.current(), keys)->devices.at(1)->id);
     REQUIRE_MESSAGE(ug.ok(), (ug.ok() ? std::string() : ug.error().message));

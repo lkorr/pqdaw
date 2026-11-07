@@ -24,6 +24,7 @@
 #include "pq/meta/wavetable.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/meta/data.h"
+#include "../support/stand_in_synth.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -56,7 +57,9 @@ struct Song {
   DeviceId wt, synth;
   Song() {
     wtTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
+    REQUIRE(stand_in::useBasicSynth(store, wtTrack).valid());  // (GU.10: the IG.1-2 layout)
     synthTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
+    REQUIRE(stand_in::useBasicSynth(store, synthTrack).valid());  // (GU.10: the IG.1-2 layout)
     synth = findTrackPtr(doc(), synthTrack)->devices.at(0)->id;
     // (IG.1-2: the instrument alone on the path first, so the Wavetable replaces it there — a rack can take it)
     edit(ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(doc(), wtTrack)->devices.at(1)->id));

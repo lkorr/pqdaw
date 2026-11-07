@@ -130,6 +130,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_module_presets.cpp  # GU.4: the Phase Accumulator / VCA presets render as the meta modules they replace; load conversion
     app/test_wavetable_synth.cpp  # GU.8: the Wavetable Synth spawned at the notes; a chord plays, interpreter == JIT
     app/test_engine_modules.cpp  # GU.7: the Wavetable / Envelope modules render as their engines; the orbit's lowering tap
+    app/test_stock_presets.cpp  # GU.10: the stock devices and the default instrument as group presets (renders vs the retired patches, interp == JIT)
     app/test_curve_renders.cpp  # GU.1: driven / automated / mapped / undriven controls render as before the curves (references)
     app/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit: one unit compile, state kept; save/load; wires)
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
@@ -141,7 +142,6 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_clip_export.cpp  # T5.12: clips rendered for drag-out (== the solo render, WAV files; 60-s clip in perf)
     app/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes reach the DSP, click-free, idle when stopped
     app/test_meta_link.cpp  # TMM.3: meta modules through the link (a nested freq drag compiles nothing; chain instrument)
-    app/test_analysis_link.cpp  # TX.spectrum: analysis taps through the link (watched / unwatched, pass-through, EQ measured vs exact)
     app/test_scope_link.cpp  # TX.scope: the Oscilloscope through the link (its tap: beat, note, signal; pass-through)
     app/test_spectrogram_link.cpp  # TX.spectrogram: the Spectrogram through the link (its tap, RtScope, a feed's columns, pass-through)
     app/test_meta_wavetable.cpp  # TMM.5: the Wavetable through the link (off-thread tables, click-free, alias suite, golden; taps → face dots)
@@ -182,7 +182,6 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_look.cpp
     views/test_tunings_ui.cpp
     views/test_circuit.cpp
-    views/test_device_panels.cpp
     views/test_patch_editor.cpp
     views/test_circuit_editor.cpp
     views/test_circuit_probes.cpp  # T4.5: probes and cost meters in the circuit editor
@@ -194,6 +193,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_nested_groups_view.cpp  # GU.2: capsules in capsules, the instrument group's look, nest / unnest, copy / paste, group presets from the node menu (real dispatch), golden
     views/test_group_panels.cpp  # GU.3: element goldens, a group drawn as its panel (circuit, Device view + inspector), every element edit through real dispatch
     views/test_module_faces.cpp  # GU.5b: the modules' old faces from rich elements (dial markers as curve points), an opened group as a circuit, goldens
+    views/test_stock_panels.cpp  # GU.10: the stock presets closed as their panels (goldens)
     views/test_engine_elements.cpp  # GU.7: the engines' faces as rich elements, the modules' panels, harmonic / envelope drags
     views/test_panel_window.cpp  # GU.5: the panel window (open / move / resize / minimise), send to panel (button, P, drag), the editor and inspector, mod-source cables, link lines, goldens
     views/test_panel_embed.cpp  # GU.6: a child group embedded on its parent's panel (send, play, rename, move out), break apart, any depth, golden
@@ -359,10 +359,7 @@ pq_add_test(pq_tests_jit PERF SHARDS 4 SLOW_SHARDS 8
 pq_add_test(pq_tests_stdlib SHARDS 4 SLOW_SHARDS 4
   SOURCES
     stdlib/test_stdlib.cpp
-    stdlib/test_devices.cpp  # T4.9 / T4.10: Utility, Saturator, EQ Eight vs device_reference.h
-    stdlib/test_operator.cpp  # T4.12: Operator + msenv vs operator_reference.h, tuned playback
-    stdlib/test_auto_filter.cpp  # T4.11: Auto Filter vs device_reference.h, analytic responses, modulation
-    stdlib/test_smooth.cpp  # TX.smooth: every continuous param of every stock device and meta module jumps click-free
+    stdlib/test_smooth.cpp  # TX.smooth: every continuous param of every meta module jumps click-free (GU.10: the stock devices retired)
   DEPS pq_jit pq_pqc pq_tuning)
 
 pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias proof and slow-modulation cases (≈ 20 – 30 s each)
@@ -429,7 +426,6 @@ pq_add_test(pq_tests_document
     document/test_meta_modules.cpp  # TMM.3: meta-module state (file, builders, lowering goldens, renames)
     document/test_meta_wavetable.cpp  # TMM.5: the Wavetable's data in the file, its baked-only controls
     document/test_meta_devices.cpp  # TMM.10: meta devices in chains (voice runs, kinds, copy / presets keep state)
-    document/test_analysis_taps.cpp  # TX.spectrum: the lowering's analysis taps (EQ Eight, Auto Filter, Spectrum)
     document/test_wire_laws.cpp  # TX.patching: wire laws, schema 13 + migration, any output / input, free devices
     document/test_main_path.cpp  # TX.all-free: the main path, its rewiring builders, the 16 -> 17 migration, the lowering of the wiring
     document/test_knob_curves.cpp  # TX.knob-curves: knob curves, the wire laws they decide, schema 16 + migration

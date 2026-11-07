@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "../golden/golden_audio.h"
+#include "../support/stand_in_synth.h"
 #include "playback_fixture.h"
 #include "pq/app/project_link.h"
 #include "pq/compile/compile.h"
@@ -189,6 +190,7 @@ void apply(DocumentStore& s, Command c) {
 // TX.pan-laws: a MIDI track pans with constant power here (centrePan's 0.707: the loops' references decay with it).
 TrackId track(DocumentStore& s, TrackKind kind) {
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), kind)).tracks.at(0);
+  if (kind == TrackKind::Midi) REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout)
   if (kind == TrackKind::Midi) REQUIRE(s.dispatch(SetTrackPanMode{t, PanMode::ConstantPower}).ok());
   return t;
 }

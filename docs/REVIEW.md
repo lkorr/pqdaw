@@ -889,3 +889,23 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - Try it: `pqdaw`; new MIDI track, delete its instrument, browser → Instruments → Wavetable Synth; play a chord; click the tabs; on LFO 2 raise Depth. Open its panel window (header button), Edit, click the Pitch knob → Schema → Minimal.
 - To judge (Q?-GU.8-a): the panel layout (embedded module panels scaled down on the LFO tabs); LFO rates / depths; LFOs restart per note (they run inside the voice); spawning at the notes only when the path is empty.
 - Known gaps: the tab is not saved (an unbound tabs element is view state); schemas do not follow a User Library moved in Preferences until restart; no schema delete / rename UI.
+
+
+## 👁 GU.10 Stock devices as group presets; Auto Filter and EQ Eight retired · 2026-11-07
+- **What changed:** Utility, Saturator, the LFO and Operator are group presets (Tab / browser / Create: "Utility" …),
+  spawned closed as panels laid out like their old faces; double-click opens the circuit of atom and value blocks (and
+  PA / Wavetable / Envelope modules). A new MIDI track's instrument is the group "Basic Synth": Phase Accumulator →
+  Wavetable → Envelope. Auto Filter and EQ Eight are gone from the app (kept in `retired/` until a Filter module exists).
+- **Old face vs new panel** (side by side, 2x): `docs/reviews/GU10/utility-old-vs-new.png`, `saturator-old-vs-new.png`,
+  `operator-old-vs-new.png`, `lfo-old-vs-new.png` (the LFO had no golden; its old layout is
+  `retired/stdlib/devices/lfo_device.panel.json`). Goldens: `stock-utility-panel`, `stock-saturator-panel`,
+  `stock-lfo-panel`, `stock-operator-panel`.
+- **Differences:** Utility — no Bass Mono / Freq / Audition, no DC (no filter yet); no title strip or Default chip (a
+  closed group's panel has none). Saturator — only the left half: no transfer display, no Oversampling menu, no Color, no
+  Waveshaper knobs; Type lists seven curves. LFO — no audio passes through; a jack (`out`) on the right to drag cables
+  from. Operator — rows of Coarse / Fine / Level number boxes (Coarse shows 1.00), the A … D tabs over each operator's
+  Envelope panel; no Osc / LFO / Filter / Pitch / Global tabs, no algorithm picker, no waveform menus, no partials.
+- **Try it:** `pqdaw`, a new MIDI track plays the new Basic Synth; Tab → "Operator" places it closed; wire it (notes in,
+  out to the mixer), raise B's Level and Coarse: FM. Tab → "LFO", drag from its jack onto a knob.
+- **To judge** (QUESTIONS Q?-GU.10-a): the Operator rebuild's scope; the Saturator computing every curve (a switch block
+  would make it structural); the tests' stand-in devices.

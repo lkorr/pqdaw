@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -20,7 +21,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 8> kModules = {{
+constexpr std::array<ModuleInfo, 12> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -44,6 +45,19 @@ constexpr std::array<ModuleInfo, 8> kModules = {{
      "An instrument built from the modules: Phase Accumulator → Wavetable → Envelope per note, with two LFOs (each a "
      "Phase Accumulator into a Wavetable) on the wavetable position and the pitch. Tabs for the oscillator, the "
      "envelope and each LFO; open it to see and rewire the circuit.",
+     true},
+    // GU.10: the stock devices, rebuilt as group presets.
+    {ModuleKind::Utility, "utility", "Utility",
+     "Channel mode, phase invert, width or mid/side balance, mono, balance, gain and mute: one 2 x 2 matrix computed at "
+     "param rate, applied through smoothed gains."},
+    {ModuleKind::Saturator, "saturator", "Saturator",
+     "Drive into one of seven curves (Analog Clip, Soft Sine, Bass Shaper, Medium, Hard, Sinoid Fold, Digital Clip), "
+     "output gain, soft clip and dry/wet."},
+    {ModuleKind::Lfo, "lfo", "LFO",
+     "A low-frequency oscillator (sine, triangle, saws, square), free-running or synced to the song; wire its output (or "
+     "drag from its jack) onto any control."},
+    {ModuleKind::Operator, "operator", "Operator",
+     "Four FM operators (Phase Accumulator, Wavetable, Envelope each), D into C into B into A: an instrument group.",
      true},
 }};
 
@@ -273,7 +287,11 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::Spectrogram: return "spectrogram";
     case ModuleKind::PhaseAccumulator:
     case ModuleKind::Vca:
-    case ModuleKind::WavetableSynth: break;
+    case ModuleKind::WavetableSynth:
+    case ModuleKind::Utility:
+    case ModuleKind::Saturator:
+    case ModuleKind::Lfo:
+    case ModuleKind::Operator: break;
   }
   return {};
 }
@@ -354,7 +372,11 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
     }
     case ModuleKind::PhaseAccumulator:
     case ModuleKind::Vca:
-    case ModuleKind::WavetableSynth: break;
+    case ModuleKind::WavetableSynth:
+    case ModuleKind::Utility:
+    case ModuleKind::Saturator:
+    case ModuleKind::Lfo:
+    case ModuleKind::Operator: break;
   }
   return p;
 }
@@ -507,7 +529,492 @@ BlockSet moduleBlocks(ModuleKind k) {
   if (k == ModuleKind::PhaseAccumulator) return phaseAccumulatorBlocks(ids);
   if (k == ModuleKind::Vca) return vcaBlocks(ids);
   if (k == ModuleKind::WavetableSynth) return wavetableSynthBlocks(ids);
+  if (k == ModuleKind::Utility) return utilityBlocks(ids);
+  if (k == ModuleKind::Saturator) return saturatorBlocks(ids);
+  if (k == ModuleKind::Lfo) return lfoBlocks(ids);
+  if (k == ModuleKind::Operator) return operatorBlocks(ids);
   return engineModuleBlocks(ids, k);
+}
+
+// ---- GU.10: the stock devices as group presets --------------------------------------------------------------------
+
+namespace {
+
+// A signal: a block's output port.
+struct Sig {
+  DeviceId dev;
+  std::string port;
+};
+
+// Builds a circuit of atom and value blocks inside one group (Builder above) from expressions: op("mul", {{"a", x},
+// {"b", y}}) is one atom block with its inputs wired; k(0.5) a constant (a value block with a flat curve, made once per
+// value); val(…) a control.
+struct Kit {
+  Builder b;
+  std::vector<std::pair<double, Sig>> constants;
+  Kit(IdSource& ids, DeviceId group) : b{ids, {}, group} {}
+  Sig in() const { return {b.group, std::string(kGroupInPort)}; }
+  void out(const Sig& s) { b.wire(s.dev, s.port, b.group, kGroupOutPort); }
+  // `value` in the curve's units (dB for a gain).
+  Sig val(std::string name, const dsp::Curve& c, double value) {
+    return {b.value(std::move(name), c, dsp::curvePosition(c, dsp::curveOutput(c, value), 0.0)), std::string(kValueOutput)};
+  }
+  Sig k(double v) {
+    for (const auto& [c, s] : constants)
+      if (c == v && groupOf(s.dev) == b.group) return s;
+    char label[32];
+    std::snprintf(label, sizeof label, "%g", v);
+    const Sig s{b.value(label, dsp::curvePreset(dsp::CurvePreset::Linear, v, v), 1.0), std::string(kValueOutput)};
+    constants.emplace_back(v, s);
+    return s;
+  }
+  DeviceId groupOf(DeviceId d) const {
+    for (const DevicePtr& x : b.set.devices)
+      if (x->id == d) return x->group;
+    return {};
+  }
+  DeviceId block(std::string_view atom, std::string name, std::initializer_list<std::pair<const char*, Sig>> ins) {
+    const DeviceId id = b.atom(atom, std::move(name));
+    for (const auto& [port, s] : ins) b.wire(s.dev, s.port, id, port);
+    return id;
+  }
+  Sig op(std::string_view atom, std::string name, std::initializer_list<std::pair<const char*, Sig>> ins,
+         const char* outPort = "out") {
+    return {block(atom, std::move(name), ins), outPort};
+  }
+  // A const input of an atom block (a setting).
+  void setting(DeviceId id, std::string name, double v) {
+    for (DevicePtr& d : b.set.devices)
+      if (d->id == id) {
+        auto c = std::make_shared<Device>(*d);
+        c->settings.push_back(DeviceValue{std::move(name), v});
+        std::sort(c->settings.begin(), c->settings.end(), [](const DeviceValue& x, const DeviceValue& y) { return x.name < y.name; });
+        d = std::move(c);
+      }
+  }
+  // One of `choices` by the stepped index `index` (0 … n − 1): a chain of two-input muxes (in[clamp(floor(i))]).
+  Sig choose(const Sig& index, std::span<const Sig> choices, const std::string& name) {
+    Sig r = choices.back();
+    for (size_t i = choices.size() - 1; i-- > 0;) {
+      const Sig at = i == 0 ? index : op("sub", name + " - " + std::to_string(i), {{"a", index}, {"b", k(static_cast<double>(i))}});
+      r = op("mux", name + (i == 0 ? std::string() : " " + std::to_string(i)), {{"index", at}, {"in0", choices[i]}, {"in1", r}});
+    }
+    return r;
+  }
+  BlockSet finish(DevicePtr group) {
+    BlockSet out;
+    out.devices.push_back(std::move(group));
+    for (DevicePtr& d : b.set.devices) out.devices.push_back(std::move(d));
+    out.wires = std::move(b.set.wires);
+    std::sort(out.wires.begin(), out.wires.end(), [](const Wire& x, const Wire& y) { return x.id < y.id; });
+    return out;
+  }
+};
+
+dsp::Curve linear(double min, double max, dsp::CurveUnit unit = dsp::CurveUnit::None) {
+  return withUnit(dsp::curvePreset(dsp::CurvePreset::Linear, min, max), unit);
+}
+dsp::Curve stepped(double count) {  // 0 … count − 1, whole numbers (a menu, a switch)
+  dsp::Curve c = dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, count - 1.0);
+  c.step = 1.0;
+  return c;
+}
+dsp::Curve octave(double min, double max, dsp::CurveUnit unit = dsp::CurveUnit::None) {
+  return withUnit(dsp::curvePreset(dsp::CurvePreset::Octave, min, max), unit);
+}
+// A gain in dB (the knob's units), the block giving the linear gain.
+dsp::Curve gainDb(double min, double max) {
+  dsp::Curve c = linear(min, max, dsp::CurveUnit::Db);
+  c.output = dsp::CurveOutput::DbToGain;
+  return c;
+}
+
+// Elements: a control bound to a value block (labelled by the block's name unless a style field says otherwise).
+PanelElement control(uint32_t id, const char* kind, float x, float y, float w, float h, const Sig& v) {
+  return element(id, kind, x, y, w, h, controlBinding(v.dev, std::string(kValueParam)));
+}
+PanelElement caption(uint32_t id, float x, float y, float w, float h, const char* s) {
+  PanelElement e = element(id, "label", x, y, w, h, {});
+  e.bindings.clear();
+  e.setField(styleText("text", s));
+  e.setField(styleText("align", "left"));
+  return e;
+}
+PanelElement menu(PanelElement e, const char* items) {
+  e.setField(styleText("items", items));
+  e.setField(styleText("label", "-"));
+  return e;
+}
+PanelElement shownWhen(PanelElement e, uint32_t element, std::vector<double> values) {
+  e.when = Visibility{element, std::move(values)};
+  return e;
+}
+PanelElement button(PanelElement e, const char* t) {
+  e.setField(styleText("look", "button"));
+  e.setField(styleText("text", t));
+  return e;
+}
+
+}  // namespace
+
+BlockSet utilityBlocks(IdSource& ids, const StockModuleOptions& o) {
+  const DeviceId group = o.id.valid() ? o.id : ids.device();
+  Kit k(ids, group);
+  // The controls (the old device's params; the panel's labels are the blocks' names).
+  const Sig chan = k.val("Channel Mode", stepped(4), 0.0);
+  const Sig invL = k.val("Phase L", stepped(2), 0.0), invR = k.val("Phase R", stepped(2), 0.0);
+  const Sig width = k.val("Width", linear(0.0, 4.0, dsp::CurveUnit::Percent), 1.0);
+  const Sig msMode = k.val("Mid/Side Mode", stepped(2), 0.0);
+  const Sig ms = k.val("Mid/Side", linear(-1.0, 1.0), 0.0);
+  const Sig mono = k.val("Mono", stepped(2), 0.0);
+  const Sig balance = k.val("Balance", linear(-1.0, 1.0), 0.0);
+  const Sig gain = k.val("Gain", linear(-70.0, 35.0, dsp::CurveUnit::Db), 0.0);
+  const Sig mute = k.val("Mute", stepped(2), 0.0);
+  // The matrix, at param rate (the old patch's Control region, term for term): channel mode, phase, mid / side
+  // (width, the Mid/Side balance, mono), balance, gain and mute.
+  const Sig one = k.k(1.0), zero = k.k(0.0), half = k.k(0.5);
+  // (Switches are reals 0 / 1 and choices go through muxes: in[floor(index)]. An atom block's bool input sums its wires
+  // as reals, so the comparisons and selects of the old patch are written as muxes of real indices here.)
+  auto mux = [&](const Sig& index, const Sig& in0, const Sig& in1, std::string n) {
+    return k.op("mux", std::move(n), {{"index", index}, {"in0", in0}, {"in1", in1}});
+  };
+  auto mul = [&](const Sig& a, const Sig& b, std::string n) { return k.op("mul", std::move(n), {{"a", a}, {"b", b}}); };
+  auto add = [&](const Sig& a, const Sig& b, std::string n) { return k.op("add", std::move(n), {{"a", a}, {"b", b}}); };
+  auto sub = [&](const Sig& a, const Sig& b, std::string n) { return k.op("sub", std::move(n), {{"a", a}, {"b", b}}); };
+  // cLL = mux(chan, 1, 1, 0, 0), cLR = 1 − cLL, cRL = mux(chan, 0, 1, 0, 1) = chan mod 2, cRR = 1 − cRL
+  const Sig cLL = mux(mul(chan, half, "chan / 2"), one, zero, "cLL"), cLR = sub(one, cLL, "cLR");
+  const Sig cRL = k.op("mod", "cRL = chan mod 2", {{"a", chan}, {"b", k.k(2.0)}});
+  const Sig cRR = sub(one, cRL, "cRR");
+  const Sig pL = mux(invL, one, k.k(-1.0), "pL"), pR = mux(invR, one, k.k(-1.0), "pR");
+  const Sig m = mux(mono, mux(msMode, one, k.op("min", "min(1, 1 - ms)", {{"a", one}, {"b", sub(one, ms, "1 - ms")}}), "m (M/S)"), one, "m");
+  const Sig s = mux(mono, mux(msMode, width, k.op("min", "min(1, 1 + ms)", {{"a", one}, {"b", add(one, ms, "1 + ms")}}), "s (M/S)"), zero, "s");
+  const Sig hm = mul(half, m, "0.5 m"), hs = mul(half, s, "0.5 s");
+  const Sig aL = mul(pL, cLL, "pL cLL"), bL = mul(pR, cRL, "pR cRL"), aR = mul(pL, cLR, "pL cLR"), bR = mul(pR, cRR, "pR cRR");
+  const Sig mL = mul(hm, add(aL, bL, "pL cLL + pR cRL"), "mL"), mR = mul(hm, add(aR, bR, "pL cLR + pR cRR"), "mR");
+  const Sig sL = mul(hs, sub(aL, bL, "pL cLL - pR cRL"), "sL"), sR = mul(hs, sub(aR, bR, "pL cLR - pR cRR"), "sR");
+  // −70 dB and below is silence: floor(clip(−69 − gain, 0, 1)) is 1 exactly at the range's −70 dB.
+  const Sig floorDb = k.op("clip", "at -70 dB", {{"x", sub(k.k(-69.0), gain, "-69 - gain")}, {"lo", zero}, {"hi", one}});
+  const Sig muted = k.op("max", "mute or -70 dB", {{"a", mute}, {"b", floorDb}});
+  const Sig g = mux(muted, k.op("db_to_gain", "dB to gain", {{"db", gain}}), zero, "g");
+  const Sig oL = mul(g, k.op("min", "min(1, 1 - balance)", {{"a", one}, {"b", sub(one, balance, "1 - balance")}}), "oL");
+  const Sig oR = mul(g, k.op("min", "min(1, 1 + balance)", {{"a", one}, {"b", add(one, balance, "1 + balance")}}), "oR");
+  // Per sample: out L = aLL·L + aLR·R, out R = aRL·L + aRR·R through smoothed gains (2 ms, from their first value).
+  const DeviceId chL = k.block("channel", "L", {{"x", k.in()}}), chR = k.block("channel", "R", {{"x", k.in()}});
+  k.setting(chL, "index", 0.0);
+  k.setting(chR, "index", 1.0);
+  const Sig L{chL, "out"}, R{chR, "out"};
+  auto smoothed = [&](const Sig& gx, const Sig& gy, const char* n) {
+    const DeviceId a = k.block("gain", std::string(n) + " L", {{"x", L}, {"g", gx}});
+    k.setting(a, "start", 1.0);
+    const DeviceId b = k.block("gain_add", std::string(n) + " + R", {{"acc", Sig{a, "out"}}, {"x", R}, {"g", gy}});
+    k.setting(b, "start", 1.0);
+    return Sig{b, "out"};
+  };
+  const Sig outL = smoothed(mul(oL, add(mL, sL, "mL + sL"), "aLL"), mul(oL, add(mR, sR, "mR + sR"), "aLR"), "out L =");
+  const Sig outR = smoothed(mul(oR, sub(mL, sL, "mL - sL"), "aRL"), mul(oR, sub(mR, sR, "mR - sR"), "aRR"), "out R =");
+  k.out(k.op("pack", "(L, R)", {{"in0", outL}, {"in1", outR}}));
+  // The panel: the old face (retired/stdlib/devices/utility.panel.json) at its places, 8 px in from the plate.
+  Panel p;
+  p.width = 196.0f;
+  p.height = 158.0f;
+  p.elements.push_back(plate(p.width, p.height, 6.0));
+  p.elements.push_back(caption(2, 8, 8, 60, 14, "Channel"));
+  p.elements.push_back(menu(control(3, "menu", 8, 22, 60, 18, chan), "Stereo|Left|Right|Swap"));
+  p.elements.push_back(button(control(4, "toggle", 8, 48, 28, 18, invL), "\xC3\x98 L"));
+  p.elements.push_back(button(control(5, "toggle", 40, 48, 28, 18, invR), "\xC3\x98 R"));
+  p.elements.push_back(button(control(6, "toggle", 8, 74, 60, 18, mono), "Mono"));
+  p.elements.push_back(button(control(7, "toggle", 8, 96, 60, 18, msMode), "Mid/Side"));
+  p.elements.push_back(shownWhen(control(8, "knob", 72, 8, 56, 58, width), 7, {0.0}));
+  p.elements.push_back(shownWhen(control(9, "knob", 72, 8, 56, 58, ms), 7, {1.0}));
+  p.elements.push_back(control(10, "knob", 72, 92, 56, 58, balance));
+  p.elements.push_back(control(11, "knob", 132, 8, 56, 58, gain));
+  p.elements.push_back(button(control(12, "toggle", 132, 92, 56, 18, mute), "Mute"));
+  return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("Utility") : o.name, o.active, std::move(p)));
+}
+
+BlockSet saturatorBlocks(IdSource& ids, const StockModuleOptions& o) {
+  const DeviceId group = o.id.valid() ? o.id : ids.device();
+  Kit k(ids, group);
+  const Sig drive = k.val("Drive", gainDb(-36.0, 36.0), 0.0);
+  const Sig type = k.val("Type", stepped(7), 0.0);
+  const Sig output = k.val("Output", gainDb(-36.0, 36.0), 0.0);
+  const Sig softClip = k.val("Soft Clip", stepped(2), 0.0);
+  const Sig dryWet = k.val("Dry/Wet", linear(0.0, 1.0, dsp::CurveUnit::Percent), 1.0);
+  // u = drive · x (smoothed, from its first value)
+  const DeviceId driven = k.block("gain", "x drive", {{"x", k.in()}, {"g", drive}});
+  k.setting(driven, "start", 1.0);
+  const Sig u{driven, "out"};
+  // The curves (the old sat_shape, atom for atom; Waveshaper and Shaper not rebuilt), one nested group each: its In is
+  // u, its Out the curve.
+  std::vector<Sig> curves;
+  auto curve = [&](const char* name, auto&& body) {
+    const DeviceId sub = ids.device();
+    auto g = std::make_shared<Device>(*makeGroup(sub));
+    g->name = name;
+    g->group = group;
+    k.b.set.devices.push_back(std::move(g));
+    k.b.wire(u.dev, u.port, sub, kMainPort);  // (its main input)
+    const DeviceId outer = k.b.group;
+    k.b.group = sub;
+    const Sig y = body(Sig{sub, std::string(kGroupInPort)});
+    k.b.wire(y.dev, y.port, sub, kGroupOutPort);
+    k.b.group = outer;
+    curves.push_back(Sig{sub, std::string(kMainPort)});
+  };
+  curve("Analog Clip", [&](const Sig& v) {
+    const Sig c = k.op("clip", "clip 1.5", {{"x", v}, {"lo", k.k(-1.5)}, {"hi", k.k(1.5)}});
+    const Sig c3 = k.op("mul", "c^3", {{"a", k.op("mul", "c^2", {{"a", c}, {"b", c}})}, {"b", c}});
+    return k.op("sub", "c - 4/27 c^3", {{"a", c}, {"b", k.op("mul", "4/27 c^3", {{"a", k.k(0.14814814814814814)}, {"b", c3}})}});
+  });
+  curve("Soft Sine", [&](const Sig& v) {
+    const Sig t = k.op("mul", "/ 2pi", {{"a", v}, {"b", k.k(0.15915494309189535)}});
+    return k.op("sine", "sine", {{"phase", k.op("clip", "clip 1/4", {{"x", t}, {"lo", k.k(-0.25)}, {"hi", k.k(0.25)}})}});
+  });
+  curve("Bass Shaper", [&](const Sig& v) {
+    const Sig av = k.op("abs", "|v|", {{"x", v}});
+    const Sig num = k.op("mul", "v (|v| + 2)", {{"a", v}, {"b", k.op("add", "|v| + 2", {{"a", av}, {"b", k.k(2.0)}})}});
+    const Sig den = k.op("add", "v^2 + |v| + 1", {{"a", k.op("add", "v^2 + |v|", {{"a", k.op("mul", "v^2", {{"a", v}, {"b", v}})}, {"b", av}})}, {"b", k.k(1.0)}});
+    return k.op("div", "/", {{"a", num}, {"b", den}});
+  });
+  curve("Medium Curve", [&](const Sig& v) { return k.op("fast_tanh", "tanh", {{"x", v}}); });
+  curve("Hard Curve", [&](const Sig& v) {
+    const Sig v2 = k.op("mul", "v^2", {{"a", v}, {"b", v}});
+    const Sig v4 = k.op("mul", "v^4", {{"a", v2}, {"b", v2}});
+    const Sig r = k.op("sqrt", "4th root", {{"x", k.op("sqrt", "sqrt", {{"x", k.op("add", "1 + v^4", {{"a", k.k(1.0)}, {"b", v4}})}})}});
+    return k.op("div", "v /", {{"a", v}, {"b", r}});
+  });
+  curve("Sinoid Fold", [&](const Sig& v) { return k.op("sine", "sine", {{"phase", k.op("mul", "/ 2pi", {{"a", v}, {"b", k.k(0.15915494309189535)}})}}); });
+  curve("Digital Clip", [&](const Sig& v) { return k.op("clip", "clip 1", {{"x", v}, {"lo", k.k(-1.0)}, {"hi", k.k(1.0)}}); });
+  const Sig c = k.choose(type, curves, "type");
+  const DeviceId outGain = k.block("gain", "x output", {{"x", c}, {"g", output}});
+  k.setting(outGain, "start", 1.0);
+  const Sig gOut{outGain, "out"};
+  const Sig wet = k.op("mux", "soft clip?", {{"index", softClip}, {"in0", gOut}, {"in1", k.op("fast_tanh", "tanh", {{"x", gOut}})}});
+  // out = x + dryWet·(wet − x), the dry / wet a smoothed gain_add
+  const DeviceId mix = k.block("gain_add", "dry/wet", {{"acc", k.in()}, {"x", k.op("sub", "wet - x", {{"a", wet}, {"b", k.in()}})}, {"g", dryWet}});
+  k.setting(mix, "start", 1.0);
+  k.out(Sig{mix, "out"});
+  // The panel: the old face's left half (Drive, Type, Soft Clip, Output, Dry/Wet), 8 px in from the plate.
+  Panel p;
+  p.width = 172.0f;
+  p.height = 144.0f;
+  p.elements.push_back(plate(p.width, p.height, 6.0));
+  p.elements.push_back(control(2, "knob", 8, 20, 60, 100, drive));
+  p.elements.push_back(caption(3, 76, 8, 88, 14, "Type"));
+  p.elements.push_back(menu(control(4, "menu", 76, 22, 88, 18, type),
+                            "Analog Clip|Soft Sine|Bass Shaper|Medium Curve|Hard Curve|Sinoid Fold|Digital Clip"));
+  p.elements.push_back(button(control(5, "toggle", 76, 48, 88, 18, softClip), "Soft Clip"));
+  p.elements.push_back(control(6, "knob", 76, 76, 42, 60, output));
+  p.elements.push_back(control(7, "knob", 122, 76, 42, 60, dryWet));
+  return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("Saturator") : o.name, o.active, std::move(p)));
+}
+
+BlockSet lfoBlocks(IdSource& ids, const StockModuleOptions& o) {
+  const DeviceId group = o.id.valid() ? o.id : ids.device();
+  Kit k(ids, group);
+  const Sig shape = k.val("Shape", stepped(5), 0.0);
+  const Sig sync = k.val("Sync", stepped(2), 0.0);
+  const Sig rate = k.val("Rate", octave(0.01, 40.0, dsp::CurveUnit::Hz), 1.0);
+  const Sig beats = k.val("Beats", octave(1.0 / 16.0, 64.0), 1.0);
+  const Sig phase = k.val("Phase", linear(0.0, 1.0), 0.0);
+  const Sig depth = k.val("Depth", linear(0.0, 1.0, dsp::CurveUnit::Percent), 1.0);
+  const Sig offset = k.val("Offset", linear(-1.0, 1.0), 0.0);
+  // stdlib/control/lfo.pqp, atom for atom: free = phasor(rate); song = frac(beat / beats); ph = frac((sync ? song :
+  // free) + phase); the waves; then offset + depth · wave.
+  const Sig free = k.op("phasor", "phasor", {{"hz", rate}});
+  const Sig beat = k.op("transport.beat", "beat", {});
+  const Sig song = k.op("frac", "song frac", {{"x", k.op("div", "beat / beats", {{"a", beat}, {"b", beats}})}});
+  const Sig synced = k.op("mux", "sync?", {{"index", sync}, {"in0", free}, {"in1", song}});
+  const Sig ph = k.op("frac", "phase", {{"x", k.op("add", "+ phase", {{"a", synced}, {"b", phase}})}});
+  const Sig sine = k.op("sine", "Sine", {{"phase", ph}});
+  const Sig q = k.op("frac", "frac", {{"x", k.op("add", "+ 0.75", {{"a", ph}, {"b", k.k(0.75)}})}});
+  const Sig tri4 = k.op("mul", "4 |.|", {{"a", k.k(4.0)}, {"b", k.op("abs", "|.|", {{"x", k.op("sub", "- 0.5", {{"a", q}, {"b", k.k(0.5)}})}})}});
+  const Sig tri = k.op("sub", "Triangle", {{"a", tri4}, {"b", k.k(1.0)}});
+  const Sig h = k.op("frac", "frac", {{"x", k.op("add", "+ 0.5", {{"a", ph}, {"b", k.k(0.5)}})}});
+  const Sig saw = k.op("sub", "Saw Up", {{"a", k.op("mul", "2 .", {{"a", k.k(2.0)}, {"b", h}})}, {"b", k.k(1.0)}});
+  const Sig down = k.op("neg", "Saw Down", {{"x", saw}});
+  const Sig square = k.op("mux", "Square", {{"index", k.op("mul", "2 ph", {{"a", ph}, {"b", k.k(2.0)}})}, {"in0", k.k(1.0)}, {"in1", k.k(-1.0)}});
+  const std::array<Sig, 5> waves = {sine, tri, saw, down, square};
+  const Sig w = k.choose(shape, waves, "shape");
+  const Sig lfo = k.op("add", "offset +", {{"a", offset}, {"b", k.op("mul", "depth x", {{"a", depth}, {"b", w}})}});
+  k.out(lfo);
+  // The panel: the old face (retired/stdlib/devices/lfo_device.panel.json) at its places, 8 px in, and its jack (a mod
+  // source: drag a cable from it onto any control).
+  Panel p;
+  p.width = 236.0f;
+  p.height = 140.0f;
+  p.elements.push_back(plate(p.width, p.height, 6.0));
+  p.elements.push_back(caption(2, 8, 8, 72, 14, "Shape"));
+  p.elements.push_back(menu(control(3, "menu", 8, 22, 72, 18, shape), "Sine|Triangle|Saw Up|Saw Down|Square"));
+  p.elements.push_back(button(control(4, "toggle", 8, 48, 72, 18, sync), "Sync"));
+  p.elements.push_back(shownWhen(control(5, "knob", 84, 8, 56, 58, rate), 4, {0.0}));
+  p.elements.push_back(shownWhen(control(6, "knob", 84, 8, 56, 58, beats), 4, {1.0}));
+  p.elements.push_back(control(7, "knob", 84, 74, 56, 58, phase));
+  p.elements.push_back(control(8, "knob", 144, 8, 56, 58, depth));
+  p.elements.push_back(control(9, "knob", 144, 74, 56, 58, offset));
+  p.elements.push_back(element(10, "modsource", 206, 54, 24, 32, signalBinding(lfo.dev, lfo.port)));
+  return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("LFO") : o.name, o.active, std::move(p)));
+}
+
+namespace {
+
+// A meta engine's param position for `value` (its declared curve).
+double enginePosition(std::string_view type, std::string_view param, double value) {
+  const meta::Type* t = meta::findType(type);
+  const int32_t i = t != nullptr ? t->paramIndex(param) : -1;
+  if (i < 0) return 0.0;
+  return dsp::curvePosition(meta::paramCurve(t->params[static_cast<size_t>(i)]), value, 0.0);
+}
+void setParam(BlockSet& set, DeviceId id, std::string name, double position) {
+  for (DevicePtr& d : set.devices)
+    if (d->id == id) {
+      auto c = std::make_shared<Device>(*d);
+      std::erase_if(c->params, [&](const DeviceValue& v) { return v.name == name; });
+      c->params.push_back(DeviceValue{std::move(name), position});
+      std::sort(c->params.begin(), c->params.end(), [](const DeviceValue& x, const DeviceValue& y) { return x.name < y.name; });
+      d = std::move(c);
+    }
+}
+void append(BlockSet& to, BlockSet&& from) {
+  for (DevicePtr& d : from.devices) to.devices.push_back(std::move(d));
+  for (Wire& w : from.wires) to.wires.push_back(std::move(w));
+}
+void sortWires(BlockSet& s) {
+  std::sort(s.wires.begin(), s.wires.end(), [](const Wire& x, const Wire& y) { return x.id < y.id; });
+}
+
+// One voice: In → [× Coarse] → Phase Accumulator → Wavetable (its default table, a sine) → Envelope (Amount = `level`)
+// → Out, inside group `group` (an operator of Operator, or the default instrument).
+struct VoiceRoles {
+  DeviceId coarse, pa, pitch, phase, pm, wavetable, wavetableGroup, envelope, envelopeGroup;
+};
+BlockSet voiceChain(IdSource& ids, DeviceId group, bool coarse, double level, VoiceRoles& r, std::string_view suffix = {},
+                    bool toOut = true, bool pm = false) {
+  Kit k(ids, group);
+  const std::string sfx = suffix.empty() ? std::string() : " " + std::string(suffix);
+  Sig feed = k.in();
+  if (coarse) {
+    dsp::Curve cv = dsp::curvePreset(dsp::CurvePreset::Linear, 1.0, 16.0);
+    cv.step = 1.0;
+    cv.digits = 0;
+    const Sig c = k.val("Coarse" + sfx, cv, 1.0);
+    r.coarse = c.dev;
+    feed = k.op("mul", "x coarse" + sfx, {{"a", feed}, {"b", c}});
+  }
+  PhaseAccumulatorRoles pr;
+  PhaseAccumulatorOptions po;
+  po.inGroup = group;
+  po.pm = pm;  // (the Phase Accumulator's phase-modulation add: its `b` takes the modulator)
+  if (!sfx.empty()) po.name = "Phase Accumulator" + sfx;
+  BlockSet pa = phaseAccumulatorBlocks(ids, po, &pr);
+  r.pa = pr.group;
+  r.pitch = pr.pitch;
+  r.phase = pr.phase;
+  r.pm = pr.pm;
+  EngineRoles wr, er;
+  EngineModuleOptions eo;
+  eo.inGroup = group;
+  if (!sfx.empty()) eo.name = "Wavetable" + sfx;
+  BlockSet wt = engineModuleBlocks(ids, ModuleKind::Wavetable, eo, &wr);
+  if (!sfx.empty()) eo.name = "Envelope" + sfx;
+  BlockSet env = engineModuleBlocks(ids, ModuleKind::Envelope, eo, &er);
+  r.wavetable = wr.engine;
+  r.wavetableGroup = wr.group;
+  r.envelope = er.engine;
+  r.envelopeGroup = er.group;
+  setParam(env, er.engine, "amount", enginePosition("envelope", "amount", level));
+  k.b.wire(feed.dev, feed.port, pr.group, kMainPort);  // (groups: their main input and output)
+  k.b.wire(pr.group, kMainPort, wr.group, kMainPort);
+  k.b.wire(wr.group, kMainPort, er.group, kMainPort);
+  if (toOut) k.b.wire(er.group, kMainPort, group, kGroupOutPort);
+  BlockSet out;
+  for (DevicePtr& d : k.b.set.devices) out.devices.push_back(std::move(d));
+  for (Wire& w : k.b.set.wires) out.wires.push_back(std::move(w));
+  append(out, std::move(pa));
+  append(out, std::move(wt));
+  append(out, std::move(env));
+  return out;
+}
+
+DevicePtr instrumentGroup(DeviceId id, const StockModuleOptions& o, std::string_view name) {
+  auto g = std::make_shared<Device>(*makeInstrumentGroup(id));
+  g->name = o.name.empty() ? std::string(name) : o.name;
+  g->group = o.inGroup;
+  g->active = o.active;
+  return g;
+}
+
+}  // namespace
+
+BlockSet operatorBlocks(IdSource& ids, const StockModuleOptions& o) {
+  const DeviceId group = o.id.valid() ? o.id : ids.device();
+  BlockSet out;
+  out.devices.push_back(instrumentGroup(group, o, "Operator"));
+  // Four operators A … D, each a row of blocks in the group: In (the note's Hz) → × Coarse → Phase Accumulator (its Pitch
+  // = the old Fine) → Wavetable (its default table: a sine) → Envelope (its Amount = the operator's level). The FM matrix
+  // is wires: the old device's algorithm 1, D → C → B → A, each modulator's Envelope into the next one's Phase
+  // Accumulator Phase (phase modulation in cycles: the Phase control wraps); only A's Envelope reaches Out (and ends the
+  // voices). B, C and D start at level 0 (the old default: A alone). (Operators as nested groups would read better, but
+  // a cable into a nested group on the path to Out keeps the lowering from finding the Envelope that ends the voices:
+  // QUESTIONS Q?-GU.10-a.)
+  constexpr std::array<const char*, 4> kOps = {"A", "B", "C", "D"};
+  std::array<VoiceRoles, 4> roles{};
+  for (size_t i = 0; i < 4; ++i) append(out, voiceChain(ids, group, true, i == 0 ? 1.0 : 0.0, roles[i], kOps[i], i == 0, i < 3));
+  Builder b{ids, {}, group};
+  for (size_t i = 3; i > 0; --i) b.wire(roles[i].envelopeGroup, kMainPort, roles[i - 1].pm, "b");
+  for (Wire& w : b.set.wires) out.wires.push_back(std::move(w));
+  sortWires(out);
+  // The panel: the old face's oscillator rows (A … D: Coarse, Fine, Level) and its envelope display under the A … D
+  // tabs (each operator's Envelope panel embedded, shown under its tab).
+  Panel p;
+  p.width = 470.0f;
+  p.height = 172.0f;
+  p.elements.push_back(plate(p.width, p.height, 6.0));
+  uint32_t id = 2;
+  constexpr std::array<std::pair<const char*, float>, 3> kHeads = {{{"Coarse", 34.0f}, {"Fine", 88.0f}, {"Level", 142.0f}}};
+  for (const auto& [h, x] : kHeads) {
+    PanelElement e = caption(id++, x, 8, 50, 12, h);
+    e.setField(styleText("align", "centre"));
+    p.elements.push_back(std::move(e));
+  }
+  for (size_t i = 0; i < 4; ++i) {
+    const float y = 26.0f + 36.0f * static_cast<float>(i);
+    PanelElement name = caption(id++, 10, y + 4, 18, 16, kOps[i]);
+    name.setField(styleNumber("size", 11.0));
+    p.elements.push_back(std::move(name));
+    const std::array<Binding, 3> bound = {controlBinding(roles[i].coarse, std::string(kValueParam)),
+                                          controlBinding(roles[i].pitch, std::string(kValueParam)),
+                                          controlBinding(roles[i].envelope, "amount")};
+    for (size_t c = 0; c < 3; ++c) {
+      PanelElement e = element(id++, "number", kHeads[c].second, y + 2, 50, 20, bound[c]);
+      e.setField(styleText("label", "-"));
+      p.elements.push_back(std::move(e));
+    }
+  }
+  const uint32_t tabs = id++;
+  PanelElement t = element(tabs, "tabs", 204, 8, 258, 16, {});
+  t.bindings.clear();
+  t.setField(styleText("items", "A|B|C|D"));
+  p.elements.push_back(std::move(t));
+  for (size_t i = 0; i < 4; ++i)
+    p.elements.push_back(shownWhen(element(id++, "panel", 204, 30, 258, 136, panelBinding(roles[i].envelopeGroup)), tabs,
+                                   {static_cast<double>(i)}));
+  auto g = std::make_shared<Device>(*out.devices.front());
+  g->panel = std::make_shared<const Panel>(std::move(p));
+  out.devices.front() = std::move(g);
+  return out;
+}
+
+BlockSet defaultInstrumentBlocks(IdSource& ids, const StockModuleOptions& o) {
+  const DeviceId group = o.id.valid() ? o.id : ids.device();
+  BlockSet out;
+  out.devices.push_back(instrumentGroup(group, o, kDefaultInstrumentName));
+  // In (the note's Hz) → Phase Accumulator → Wavetable (a sine) → Envelope (level 0.25: a few voices on a few tracks
+  // stay below 0 dBFS, as Basic Synth's 0.2 did) → Out. The Envelope ends the voices.
+  VoiceRoles r;
+  append(out, voiceChain(ids, group, false, 0.25, r));
+  sortWires(out);
+  return out;
 }
 
 // ==== Load conversion =================================================================================================

@@ -90,15 +90,43 @@ fs::path utf8Path(std::string_view utf8) {
   return fs::path(std::u8string(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size()));
 }
 
-constexpr StockDevice kStock[] = {
-    {"instruments/basic_synth.pqp", "BasicSynth", "Basic Synth", DeviceKind::Instrument},
-    {"devices/operator.pqp", "operator", "Operator", DeviceKind::Instrument},  // T4.12
-    {"devices/utility.pqp", "utility", "Utility"},
-    {"devices/saturator.pqp", "saturator", "Saturator"},
-    {"devices/eq_eight.pqp", "eq_eight", "EQ Eight", DeviceKind::AudioEffect, true},
-    {"devices/auto_filter.pqp", "auto_filter", "Auto Filter", DeviceKind::AudioEffect, true},  // T4.11 (M4 review H5); its `sc` input is the sidechain
-    {"devices/lfo_device.pqp", "lfo_device", "LFO"},  // T4.7: a modulation source (its `lfo` jack)
+// GU.10 (docs/plans/GU.md "One hierarchy"): no stock device ships any more — Utility, Saturator, the LFO and Operator
+// are group presets (modules.h), the default instrument one too; Auto Filter and EQ Eight are retired (retired/). The
+// list is the STAND-IN devices a test process names in the environment variable kStandInDevicesEnv: a directory with a
+// `devices.txt` (one `file|patch|name|instrument or effect` per line, files relative to it) — the tests' copies of the
+// retired stock patches, which the device-chain, wire and group tests use as ordinary effects and instruments
+// (tests/stand_in_devices). A stdlib directory with a file at the same relative path overrides one (a test's probe
+// instrument). The app never sets it: its list is empty.
+struct StandIns {
+  std::deque<std::string> text;  // the strings the views point into
+  std::vector<StockDevice> list;
+  fs::path dir;
 };
+const StandIns& standIns() {
+  static const StandIns s = [] {
+    StandIns x;
+    const char* dir = std::getenv(std::string(kStandInDevicesEnv).c_str());
+    if (dir == nullptr || *dir == 0) return x;
+    x.dir = fs::path(dir);
+    std::ifstream in(x.dir / "devices.txt");
+    std::string line;
+    while (std::getline(in, line)) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line.empty() || line[0] == '#') continue;
+      std::vector<std::string> f;
+      size_t at = 0;
+      for (size_t bar; (bar = line.find('|', at)) != std::string::npos; at = bar + 1) f.push_back(line.substr(at, bar - at));
+      f.push_back(line.substr(at));
+      if (f.size() != 4) continue;
+      const std::string& file = x.text.emplace_back(f[0]);
+      const std::string& patch = x.text.emplace_back(f[1]);
+      const std::string& name = x.text.emplace_back(f[2]);
+      x.list.push_back(StockDevice{file, patch, name, f[3] == "instrument" ? DeviceKind::Instrument : DeviceKind::AudioEffect});
+    }
+    return x;
+  }();
+  return s;
+}
 
 }  // namespace
 
@@ -282,10 +310,10 @@ std::string deviceParamNameOf(const Project& p, const DeviceLibrary* lib, const 
   return {};
 }
 
-std::span<const StockDevice> stockDevices() noexcept { return kStock; }
+std::span<const StockDevice> stockDevices() noexcept { return standIns().list; }
 
 bool analysedDevice(std::string_view patch) noexcept {
-  for (const StockDevice& s : kStock)
+  for (const StockDevice& s : stockDevices())
     if (s.patch == patch) return s.analysed;
   return false;
 }
@@ -358,9 +386,10 @@ Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlib
   lib->files_->externals = lib->prelude_->signatures;  // TMM.3: stock files may call meta modules
   const fs::path root = utf8Path(stdlibDirUtf8);
   std::vector<std::pair<const graph::Patch*, const StockDevice*>> found;
-  for (const StockDevice& sd : kStock) {
-    const fs::path path = root / utf8Path(sd.file);
+  for (const StockDevice& sd : stockDevices()) {
+    fs::path path = root / utf8Path(sd.file);
     std::error_code ec;
+    if (!fs::exists(path, ec)) path = standIns().dir / utf8Path(sd.file);  // GU.10: the stand-in's own copy
     if (!fs::exists(path, ec)) {  // a reduced stdlib (a test's probe instrument): that device is not available
       lib->missing_.push_back(std::string(sd.patch));
       continue;
@@ -402,7 +431,6 @@ Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlib
       std::optional<DeviceInfo> info = metaDeviceInfo(*e.type, k);
       lib->metaInfos_.push_back(info ? std::move(*info) : DeviceInfo{});
     }
-  if (found.empty()) return Error{ErrorCode::NotFound, "no stock device under " + root.string(), {}};
   for (const auto& [patch, sd] : found) {
     auto info = describeDevice(*patch, std::string(sd->name));
     if (!info) return std::move(info).error();
@@ -624,10 +652,11 @@ bool atomBlockAllowed(const graph::AtomSignature& s) noexcept {
   if (s.has(kInternal) || s.has(kSideEffect)) return false;
   // GU.9: the voice terminals (voice.noteHz, voice.velocity …) are blocks: inside an instrument group they read the
   // note of the voice they run for; anywhere else they give 0 (voicelessAtomPatch). `pack` joins channels (a chain
-  // mixer's stereo gain).
+  // mixer's stereo gain), `channel` picks one (GU.10).
   if (s.category == graph::AtomCategory::Voice) return s.inputs.empty() && s.fixedOutputs() == 1;
   if (s.has(kNeedsVoice)) return false;
   if (s.name == "pack") return true;
+  if (s.name == "channel") return true;  // GU.10: one channel of a wide signal (Utility's L and R; its index a setting)
   switch (s.category) {
     case graph::AtomCategory::Io:
     case graph::AtomCategory::Sample:

@@ -2345,16 +2345,14 @@ Status adoptSpectrumFeeds(ViewContext& ctx, const project_patch::MetaSpectrumIds
     double f, db, q;
   };
   static constexpr Bell kBells[] = {{250.0, -4.0, 1.2}, {1000.0, 6.0, 2.0}, {6000.0, -5.0, 0.7071}};
+  // GU.10: EQ Eight's display math is retired; the bells are the analog prototypes the old exact curve sampled
+  // (H(s) = (s² + s·A/q + 1) / (s² + s/(A·q) + 1), s = j·f/f0, A = 10^(dB/40)).
   auto eqMag = [](double hz) {
     std::complex<double> h = 1.0;
     for (const Bell& b : kBells) {
-      devices::math::EqBand band;
-      band.on = true;
-      band.type = devices::math::kBell;
-      band.freq = b.f;
-      band.gain = std::pow(10.0, b.db / 20.0);
-      band.q = b.q;
-      h *= devices::math::eqBandResponse(band, devices::math::eqCoef(band, false, 1.0, 48000.0, 1.0), hz, 48000.0, 1.0);
+      const std::complex<double> s(0.0, hz / b.f);
+      const double A = std::pow(10.0, b.db / 40.0);
+      h *= (s * s + s * (A / b.q) + 1.0) / (s * s + s / (A * b.q) + 1.0);
     }
     return std::abs(h);
   };
@@ -2884,12 +2882,6 @@ constexpr SceneEntry kScenes[] = {
     {"circuit", 1280, 800, nullptr, setupCircuit},
     {"circuit-svf", 1280, 800, nullptr, setupCircuitSvf},
     {"circuit-svf-core", 1280, 800, nullptr, setupCircuitSvfCore},
-    {"device-utility", 1280, 800, nullptr, devices::setupDeviceScene},       // T4.6: --project stdlib/devices/utility.pqp
-    {"device-saturator", 1280, 800, nullptr, devices::setupDeviceScene},
-    {"device-eq-eight", 1280, 800, nullptr, devices::setupDeviceScene},
-    {"device-operator", 1280, 800, nullptr, devices::setupDeviceScene},      // T4.12: --project stdlib/devices/operator.pqp
-    {"device-operator-filter", 1280, 800, nullptr, devices::setupOperatorFilterScene},  // T4.12-fix1: the same --project
-    {"device-auto-filter", 1280, 800, nullptr, devices::setupDeviceScene},  // T4.11
     {"circuit-editor", 1280, 800, nullptr, setupCircuitEditor},
     {"circuit-editor-error", 1280, 800, nullptr, setupCircuitEditorError},
     {"circuit-editor-probe", 1280, 800, nullptr, setupCircuitEditorProbe},  // T4.5: --project stdlib/envelopes/adsr.pqp

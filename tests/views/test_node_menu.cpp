@@ -194,13 +194,16 @@ struct Ui {
     NodeMenu* m = menu();
     REQUIRE(m != nullptr);
     m->setQuery(std::string(query));
+    // GU.10: the tests' stand-in patches share their names with the stock presets (modules): the patch is preferred.
     int32_t row = -1;
-    for (int32_t i = 0; i < static_cast<int32_t>(m->rows().size()); ++i) {
-      const NodeMenu::Row& r = m->rows()[static_cast<size_t>(i)];
-      if (r.kind == NodeMenu::Row::Kind::Entry && m->catalog().entries[r.entry].name == name) {
-        row = i;
-        break;
+    for (const bool device : {true, false}) {
+      for (int32_t i = 0; row < 0 && i < static_cast<int32_t>(m->rows().size()); ++i) {
+        const NodeMenu::Row& r = m->rows()[static_cast<size_t>(i)];
+        if (r.kind == NodeMenu::Row::Kind::Entry && m->catalog().entries[r.entry].name == name &&
+            (!device || m->catalog().entries[r.entry].key.starts_with("device:")))
+          row = i;
       }
+      if (row >= 0) break;
     }
     REQUIRE_MESSAGE(row >= 0, "no entry " << std::string(name));
     m->setHighlighted(row);
@@ -438,13 +441,16 @@ TEST_CASE("node menu: Tab opens it at the pointer, typing goes in, keys move and
   CHECK(u.history() == h0 + 1);
   const doc::DeviceId made = u.newest();
   REQUIRE(u.device(made) != nullptr);
-  CHECK(u.device(made)->patch == "saturator");
+  // GU.10: "Saturator" is the stock preset (a module: its group) — the tests' stand-in patch of that name comes after it.
+  CHECK(doc::isGroupDevice(*u.device(made)));
+  CHECK(u.device(made)->name == "Saturator");
   CHECK(all_free::offPath(*u.ctx.doc(), made));
   const Node& n = u.pp().nodes[u.node(made)];
   CHECK(std::abs(n.x + n.w * 0.5f - at.x) <= 2.0f);
-  CHECK(std::abs(n.y + n.h * 0.5f - at.y) <= 2.0f);
+  CHECK(n.y <= at.y);  // (a module closes to its panel once placed: centred across, its panel hangs from the spot)
+  CHECK(at.y <= n.y + n.h);
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
-  CHECK(recentNodes().front() == "device:saturator");
+  CHECK(recentNodes().front() == "module:saturator");
   REQUIRE(u.ctx.undo());
   CHECK(u.ctx.doc() == start);
 }
@@ -466,13 +472,16 @@ TEST_CASE("node menu: a click on a row places the node — the closed menu is ne
     REQUIRE(m != nullptr);
     u.d.type(query);
     frame();
+    // GU.10: the tests' stand-in patches share their names with the stock presets (modules): the patch is preferred.
     int32_t row = -1;
-    for (int32_t i = 0; i < static_cast<int32_t>(m->rows().size()); ++i) {
-      const NodeMenu::Row& r = m->rows()[static_cast<size_t>(i)];
-      if (r.kind == NodeMenu::Row::Kind::Entry && m->catalog().entries[r.entry].name == name) {
-        row = i;
-        break;
+    for (const bool device : {true, false}) {
+      for (int32_t i = 0; row < 0 && i < static_cast<int32_t>(m->rows().size()); ++i) {
+        const NodeMenu::Row& r = m->rows()[static_cast<size_t>(i)];
+        if (r.kind == NodeMenu::Row::Kind::Entry && m->catalog().entries[r.entry].name == name &&
+            (!device || m->catalog().entries[r.entry].key.starts_with("device:")))
+          row = i;
       }
+      if (row >= 0) break;
     }
     REQUIRE(row >= 0);
     const ui::IRect rr = m->rowRect(row);
@@ -778,7 +787,7 @@ TEST_CASE("project patch: an undo during a block drag or a cable drag ends the g
   for (int pass = 0; pass < 2; ++pass) {
     u.d.move(u.dev(at));
     REQUIRE(u.d.press("Tab") == KeyResult::Widget);
-    u.d.type("saturator");
+    u.d.type("tanh");  // (GU.10: an atom block — its output is `out`; "saturator" is a module now)
     REQUIRE(u.d.press("Return") == KeyResult::Widget);
     frame();
     u.view().sync();
@@ -1513,4 +1522,39 @@ TEST_CASE("render: project-cable-drag matches the golden image") {
   ImageDiff d;
   CHECK(pq::ui::test::matchesGolden(name, *img, *ref, true, &d));
   MESSAGE(std::string(name) << ": " << pq::ui::test::describe(d));
+}
+
+TEST_CASE("node menu (GU.10): the stock presets spawn as their group presets — Utility closed as its panel, one undo step "
+          "— real dispatch") {
+  Ui u;
+  const graph::Point2 at = u.emptyWorld();
+  const size_t h0 = u.history();
+  u.d.move(u.dev(at));
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  u.d.type("utility");
+  REQUIRE(u.menu() != nullptr);
+  // (The tests' stand-in Utility patch is listed too: walk down to the module.)
+  for (int k = 0; k < 8 && (u.menu()->highlightedEntry() == nullptr || u.menu()->highlightedEntry()->key != "module:utility"); ++k)
+    u.d.press("Down");
+  REQUIRE(u.menu()->highlightedEntry() != nullptr);
+  REQUIRE(u.menu()->highlightedEntry()->key == "module:utility");
+  u.d.press("Return");
+  u.d.step();
+  u.view().sync();
+  CHECK(u.menu() == nullptr);
+  CHECK(u.history() == h0 + 1);
+  const doc::DeviceId made = u.newest();
+  const doc::Device* g = u.device(made);
+  REQUIRE(g != nullptr);
+  CHECK(doc::isGroupDevice(*g));
+  CHECK(g->name == "Utility");
+  REQUIRE(g->panel != nullptr);
+  CHECK(g->panel->elements.size() == 12);
+  CHECK(doc::groupMembersDeep(u.track(u.keys).devices, made).size() > 40);  // its atom and value blocks
+  const Node& n = u.pp().nodes[u.node(made)];
+  CHECK(n.group);
+  CHECK_FALSE(n.groupOpen);  // a panelled group spawns closed: its panel
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  REQUIRE(u.ctx.undo());
+  CHECK(u.device(made) == nullptr);
 }

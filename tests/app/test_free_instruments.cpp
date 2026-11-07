@@ -34,6 +34,7 @@
 #include "pq/engine/project_compile.h"
 #include "pq/engine/project_program.h"
 #include "pq/meta/registry.h"
+#include "../support/stand_in_synth.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -177,6 +178,7 @@ void apply(DocumentStore& s, Command c) {
 // instrument: its own voice context, the same sound) — these cases are about instruments as free blocks.
 TrackId midiTrack(DocumentStore& s) {
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
+  REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout)
   REQUIRE(s.dispatch(SetTrackPanMode{t, PanMode::ConstantPower}).ok());
   for (const DevicePtr& d : findTrackPtr(*s.current(), t)->devices)
     if (isGroupDevice(*d)) {

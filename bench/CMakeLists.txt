@@ -74,10 +74,7 @@ pq_add_bench(pq_bench_jit SOURCES jit/bench_jit.cpp DEPS pq_jit)
 pq_add_bench(pq_bench_stdlib SOURCES jit/bench_stdlib.cpp DEPS pq_jit)
 pq_use_build_paths(pq_bench_stdlib)
 target_compile_definitions(pq_bench_stdlib PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
-# T4.9 / T4.10: the stock devices (Utility, Saturator, EQ Eight) vs their hand-written C++ references.
-pq_add_bench(pq_bench_devices SOURCES jit/bench_devices.cpp DEPS pq_jit)
-pq_use_build_paths(pq_bench_devices)
-target_compile_definitions(pq_bench_devices PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
+# (GU.10: pq_bench_devices, the stock devices vs their C++ references, is retired: retired/bench/jit.)
 # T4.5: what probes and cost meters cost on the stock devices, and the meter against a benchmark of the same image.
 pq_add_bench(pq_bench_inspect SOURCES jit/bench_inspect.cpp DEPS pq_jit)
 pq_use_build_paths(pq_bench_inspect)

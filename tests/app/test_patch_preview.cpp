@@ -32,6 +32,8 @@ constexpr double kRate = 48000.0;
 constexpr uint32_t kBlock = 256;
 
 std::string stdlibPath(const char* rel) { return (fs::path(PQ_TEST_DATA_DIR) / ".." / "stdlib" / rel).string(); }
+// GU.10: the retired stock devices' stand-in copies (tests/stand_in_devices).
+std::string standInPath(const char* rel) { return (fs::path(PQ_TEST_DATA_DIR) / "stand_in_devices" / rel).string(); }
 
 // Renders `blocks` device blocks of the preview (stereo, zeroed first) and appends channel 0.
 void render(PatchPreview& p, uint32_t blocks, std::vector<float>& out, int64_t& t) {
@@ -198,7 +200,7 @@ TEST_CASE("patch preview: an instrument's voices keep sounding through an edit")
   PreviewConfig pc;
   pc.sampleRate = kRate;
   PatchPreview preview(pc);
-  auto made = PatchEditor::open(stdlibPath("instruments/basic_synth.pqp"));
+  auto made = PatchEditor::open(standInPath("instruments/basic_synth.pqp"));
   REQUIRE(made.ok());
   PatchEditor& ed = **made;
   ed.setPlayer(&preview);
@@ -267,7 +269,7 @@ TEST_CASE("patch preview: a device panel's preview plays the Saturator; a curve 
   pc.sampleRate = kRate;
   pc.gainDb = 0.0f;
   PatchPreview preview(pc);
-  auto pv = views::devices::DevicePreview::open(stdlibPath("devices/saturator.pqp"), &preview);
+  auto pv = views::devices::DevicePreview::open(standInPath("devices/saturator.pqp"), &preview);
   REQUIRE_MESSAGE(pv.ok(), (pv.ok() ? std::string() : pv.error().message));
   views::devices::DevicePreview& dev = **pv;
   REQUIRE(dev.play().ok());

@@ -244,7 +244,15 @@ EditResult deleteDevices(const Project& p, std::span<const DeviceId> devices) {
     if (!findDevice(p, id).track) return notFound("device not found");
     seen.push_back(id);
   }
-  for (const DeviceId id : seen) batchOf(e).commands.push_back(RemoveDevice{id});
+  // GU.10: a block inside another listed group goes with that group (RemoveDevice of a group removes what is inside it),
+  // so listing a whole track's blocks — a group preset's group and its members — deletes each once.
+  for (const DeviceId id : seen) {
+    const DeviceLoc d = findDevice(p, id);
+    const bool inside = std::any_of(seen.begin(), seen.end(), [&](DeviceId g) {
+      return g != id && groupContains(d.track->devices, g, id);
+    });
+    if (!inside) batchOf(e).commands.push_back(RemoveDevice{id});
+  }
   return e;
 }
 

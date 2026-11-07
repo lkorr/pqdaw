@@ -106,11 +106,12 @@ float peak(const std::vector<float>& v) {
 
 // The user's first steps in a new project: a MIDI track with the default instrument, a clip, play.
 void addStockTrack(DocumentStore& store) {
+  // GU.10: as the UI makes it (ops::createTrack: the default instrument's group preset), as the seed does.
+  auto e = ops::createTrack(*store.current(), store.ids(), TrackKind::Midi);
+  REQUIRE(e.ok());
+  REQUIRE(store.dispatch(e->command).ok());
+  const TrackId t = e->tracks.at(0);
   IdSource& ids = store.ids();
-  const TrackId t = ids.track();
-  REQUIRE(store.dispatch(AddTrack{playback_fixture::track(t, TrackKind::Midi, "MIDI", store.ids().device()), {}, kAppend}).ok());
-  REQUIRE(store.dispatch(SetTrackPanMode{t, PanMode::Balance}).ok());  // TX.pan-laws: a new track's law (the seed's)
-  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   std::vector<Note> notes;
   for (int i = 0; i < 4; ++i) notes.push_back(playback_fixture::note(ids, i * kPpq, kPpq / 2, 4 * i, 0, 100.0f));
   REQUIRE(store.dispatch(AddClip{t, playback_fixture::clip(ids, 0, kTicksPerWhole, notes, "clip")}).ok());
@@ -214,50 +215,5 @@ TEST_CASE("T1b.4: pqdaw's cache configuration: the user directory (PQ_JIT_CACHE_
   if (std::getenv("PQ_JIT_CACHE_DIR") == nullptr) CHECK(c.dir == jit::defaultCacheDir());
 }
 
-TEST_CASE("T4.12 / H5: a new Operator track, and Auto Filter added from the device menu, run no JIT compile: the AOT seed has them") {
-  TempDir aot("seed-op"), user("user-op");
-  app::AotSeedOptions so;
-  so.sampleRates = {48000.0};
-  auto seeded = app::seedJitAot(aot.path, so);
-  REQUIRE_MESSAGE(seeded.ok(), (seeded.ok() ? std::string() : seeded.error().message));
-  // 0: a MIDI track with Operator as its instrument; 1: the default instrument and Auto Filter at its defaults after
-  // it (M4 review H5: what the device menu's AddDevice makes). Each in a new project.
-  for (int which = 0; which < 2; ++which) {
-    CAPTURE(which);
-    jit::CacheConfig cc;
-    cc.dir = user.path;
-    cc.readOnly = {aot.path};
-    auto host = compilerWith(cc);
-    DocumentStore s;
-    auto l = link(s.current(), host.get());
-    [[maybe_unused]] const ListenerId sub = s.subscribe([&](const StoreEvent& e) { l->onDocumentChange(e); });
-    Player p(*l);
-    p.run(20);
-    IdSource& ids = s.ids();
-    const TrackId t = ids.track();
-    if (which == 0) {
-      REQUIRE(s.dispatch(AddTrack{playback_fixture::track(t, TrackKind::Midi, "MIDI"), {}, kAppend}).ok());
-      REQUIRE(s.dispatch(AddDevice{t, makeDevice(ids.device(), "operator", DeviceKind::Instrument), 0}).ok());
-      playback_fixture::wireSeries(s);  // TX.all-free: wired in series
-    } else {
-      REQUIRE(s.dispatch(AddTrack{playback_fixture::track(t, TrackKind::Midi, "MIDI", ids.device()), {}, kAppend}).ok());
-      REQUIRE(s.dispatch(AddDevice{t, makeDevice(ids.device(), "auto_filter", DeviceKind::AudioEffect), 1}).ok());
-      playback_fixture::wireSeries(s);  // TX.all-free: wired in series
-    }
-    REQUIRE(s.dispatch(SetTrackPanMode{t, PanMode::Balance}).ok());  // TX.pan-laws: a new track's law (the seed's)
-    std::vector<Note> notes;
-    for (int i = 0; i < 4; ++i) notes.push_back(playback_fixture::note(ids, i * kPpq, kPpq / 2, 4 * i, 0, 100.0f));
-    REQUIRE(s.dispatch(AddClip{t, playback_fixture::clip(ids, 0, kTicksPerWhole, notes, "clip")}).ok());
-    l->flush();
-    l->play(0);
-    p.run(40);
-    REQUIRE(l->waitForJit(60.0));
-    p.run(400);
-    const uint32_t units = l->engine().program()->numUnits();
-    CHECK(unitsOn(*l, engine::ImageBackend::Jit) == units);
-    const jit::CacheCounters c = host->counters();
-    CHECK(c.compiles == 0);
-    CHECK(c.aotHits >= units);
-    CHECK(peak(p.out) > 0.01f);
-  }
-}
+// (GU.10: "T4.12 / H5: a new Operator track, and Auto Filter added from the device menu, run no JIT compile" — the stock
+// devices are retired, the seed has none.)

@@ -26,6 +26,7 @@
 #include "pq/graph/parse.h"
 #include "pq/meta/envelope.h"
 #include "pq/meta/wavetable.h"
+#include "../support/stand_in_synth.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -65,6 +66,7 @@ DeviceLibrary& library() {
 // IG.1-2: a new MIDI track's default instrument out of its instrument group, alone on the path (so a meta module added
 // at slot 0 replaces it, as these cases were written).
 void ungroupHead(DocumentStore& s, TrackId t) {
+  (void)stand_in::useBasicSynth(s, t);  // (GU.10: the IG.1-2 layout first: Basic Synth in the group)
   const Track& tr = *findTrackPtr(*s.current(), t);
   DeviceId g;
   for (const DevicePtr& d : tr.devices)

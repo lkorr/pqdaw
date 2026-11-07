@@ -35,6 +35,8 @@ namespace fs = std::filesystem;
 namespace {
 
 std::string stdlibPath(const char* rel) { return (fs::path(PQ_TEST_DATA_DIR) / ".." / "stdlib" / rel).string(); }
+// GU.10: the retired stock devices' stand-in copies (tests/stand_in_devices).
+std::string standInPath(const char* rel) { return (fs::path(PQ_TEST_DATA_DIR) / "stand_in_devices" / rel).string(); }
 
 const char* kPatch =
     "// A drive stage with a mode switch. The second sentence is not shown.\n"
@@ -310,7 +312,7 @@ TEST_CASE("legibility: a circuit edit while hidden stores the layout that is sho
 }
 
 TEST_CASE("legibility: Saturator at its defaults shows only its active path; Inactive shows every curve") {
-  Rig r(0, stdlibPath("devices/saturator.pqp"));
+  Rig r(0, standInPath("devices/saturator.pqp"));
   REQUIRE(r.editor->shownPatch() == "saturator");
   const CircuitScene& top = r.scene();
   const uint32_t total = static_cast<uint32_t>(top.nodes.size());
@@ -346,7 +348,7 @@ TEST_CASE("legibility: Saturator at its defaults shows only its active path; Ina
 }
 
 TEST_CASE("legibility: Operator at its defaults: the unused operators, waveforms and algorithm arms are hidden") {
-  Rig r(0, stdlibPath("devices/operator.pqp"));
+  Rig r(0, standInPath("devices/operator.pqp"));
   REQUIRE(r.editor->shownPatch() == "operator");
   const uint32_t total = static_cast<uint32_t>(r.scene().nodes.size());
   MESSAGE("operator: " << total << " nodes, " << r.scene().hiddenNodes << " hidden");
@@ -385,7 +387,7 @@ TEST_CASE("legibility: Operator at its defaults: the unused operators, waveforms
 }
 
 TEST_CASE("legibility: a device's settings decide what is hidden; the view prefs remember the toggle") {
-  Rig r(0, stdlibPath("devices/saturator.pqp"));
+  Rig r(0, standInPath("devices/saturator.pqp"));
   const uint32_t at1 = r.scene().hiddenNodes;
   r.editor->setInstance("saturator", {{"hq", 4.0}, {"type", 0.0}}, {{"drive", 2.0}});
   CHECK_FALSE(r.scene().nodes[r.named("y4")].hidden);
@@ -427,6 +429,6 @@ TEST_CASE("legibility: a device's settings decide what is hidden; the view prefs
   CHECK(ctx.viewPrefs().circuitShowInactive);
 }
 
-TEST_CASE("render: circuit-inactive-hidden matches the golden image") { checkGolden("circuit-inactive-hidden", stdlibPath("devices/saturator.pqp")); }
-TEST_CASE("render: circuit-inactive-shown matches the golden image") { checkGolden("circuit-inactive-shown", stdlibPath("devices/saturator.pqp")); }
-TEST_CASE("render: circuit-tooltip matches the golden image") { checkGolden("circuit-tooltip", stdlibPath("devices/saturator.pqp")); }
+TEST_CASE("render: circuit-inactive-hidden matches the golden image") { checkGolden("circuit-inactive-hidden", standInPath("devices/saturator.pqp")); }
+TEST_CASE("render: circuit-inactive-shown matches the golden image") { checkGolden("circuit-inactive-shown", standInPath("devices/saturator.pqp")); }
+TEST_CASE("render: circuit-tooltip matches the golden image") { checkGolden("circuit-tooltip", standInPath("devices/saturator.pqp")); }

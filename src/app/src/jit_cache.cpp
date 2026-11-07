@@ -52,69 +52,37 @@ namespace {
 
 using namespace pq::doc;
 
-// As ops::createTrack makes them: a MIDI track starts with the default instrument (T4.1).
-doc::TrackPtr newTrack(IdSource& ids, TrackKind kind, const char* name) {
-  Track t = makeTrack(ids.track(), kind, name);
-  if (kind == TrackKind::Midi) t.devices.push_back(makeDefaultInstrument(ids.device()));
-  return std::make_shared<const Track>(std::move(t));
-}
-
-// The stock projects: a new project (master only) and new projects with default-instrument MIDI tracks, a group and a
-// return — what the first minutes in a new project compile to. Every track is created as the UI creates it.
+// The stock projects: a new project (master only) and new projects with default-instrument MIDI tracks, a group track
+// and a return — what the first minutes in a new project compile to. Every track is created as the UI creates it
+// (ops::createTrack: GU.10, a MIDI track's default instrument is a group preset). (The T4.1 / T4.12 shapes with a stock
+// effect or instrument are gone with the stock devices: GU.10.)
 Result<std::vector<Snapshot>> stockProjects() {
   struct Shape {
     uint32_t midi = 0, returns = 0;
-    bool group = false;          // one more MIDI track inside a group
-    std::string_view effect;     // T4.1 (Q116): the MIDI tracks' chain is the default instrument + this stock effect
-    std::string_view instrument; // T4.12: the MIDI tracks' instrument instead of the default one (e.g. Operator)
+    bool group = false;  // a group track and one more MIDI track
   };
-  std::vector<Shape> shapes = {{0, 0, false, {}}, {1, 0, false, {}}, {2, 0, false, {}}, {4, 0, false, {}},
-                               {8, 0, false, {}}, {1, 1, false, {}}, {2, 1, false, {}}, {1, 0, true, {}}};
-  // Each stock audio effect as it is first added from the device menu: at its defaults after the default instrument.
-  // Each other stock instrument (T4.12: Operator) as the first device of a new MIDI track, at its defaults.
-  for (const StockDevice& d : stockDevices()) {
-    if (d.patch == kDefaultInstrument) continue;
-    if (d.kind == DeviceKind::Instrument) shapes.push_back({1, 0, false, {}, d.patch});
-    else shapes.push_back({1, 0, false, d.patch, {}});
-  }
+  const std::vector<Shape> shapes = {{0, 0, false}, {1, 0, false}, {2, 0, false}, {4, 0, false},
+                                     {8, 0, false}, {1, 1, false}, {2, 1, false}, {1, 0, true}};
   std::vector<Snapshot> out;
   for (const Shape& sh : shapes) {
     IdSource ids;
     Snapshot s = makeDefaultProject(ids);
-    Batch b{"stock project", {}};
-    for (uint32_t r = 0; r < sh.returns; ++r) b.commands.push_back(AddTrack{newTrack(ids, TrackKind::Return, "Return"), {}, kAppend});
-    for (uint32_t k = 0; k < sh.midi; ++k) {
-      TrackPtr t = newTrack(ids, TrackKind::Midi, "MIDI");
-      if (!sh.instrument.empty()) {
-        Track withInstrument = *t;
-        withInstrument.devices.front() = makeDevice(ids.device(), std::string(sh.instrument), DeviceKind::Instrument);
-        t = std::make_shared<const Track>(std::move(withInstrument));
-      }
-      if (!sh.effect.empty()) {
-        Track withEffect = *t;
-        withEffect.devices.push_back(makeDevice(ids.device(), std::string(sh.effect), DeviceKind::AudioEffect));
-        t = std::make_shared<const Track>(std::move(withEffect));
-      }
-      b.commands.push_back(AddTrack{std::move(t), {}, kAppend});
-    }
-    if (sh.group) {
-      TrackPtr g = newTrack(ids, TrackKind::Group, "Group");
-      const TrackId gid = g->id;
-      b.commands.push_back(AddTrack{g, {}, kAppend});
-      b.commands.push_back(AddTrack{newTrack(ids, TrackKind::Midi, "MIDI"), gid, kAppend});
-    }
-    if (!b.commands.empty()) {
+    auto create = [&](TrackKind kind) -> Status {
+      auto e = ops::createTrack(*s, ids, kind);
+      if (!e) return e.error();
       ChangeSet changes;
-      auto next = apply(s, Command{b}, changes);
+      auto next = apply(s, e->command, changes);
       if (!next) return next.error();
       s = std::move(next.value());
-      // TX.all-free: each track wired in series (source → its devices → its mixer), as ops::createTrack wires it.
-      auto wired = ops::wireSeries(*s, ids);
-      if (!wired) return wired.error();
-      auto after = apply(s, wired->command, changes);
-      if (!after) return after.error();
-      s = std::move(after.value());
-    }
+      return Ok{};
+    };
+    for (uint32_t r = 0; r < sh.returns; ++r)
+      if (Status st = create(TrackKind::Return); !st.ok()) return st.error();
+    for (uint32_t k = 0; k < sh.midi; ++k)
+      if (Status st = create(TrackKind::Midi); !st.ok()) return st.error();
+    if (sh.group)
+      for (const TrackKind kind : {TrackKind::Group, TrackKind::Midi})
+        if (Status st = create(kind); !st.ok()) return st.error();
     out.push_back(std::move(s));
   }
   return out;

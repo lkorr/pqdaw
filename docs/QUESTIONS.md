@@ -2417,4 +2417,57 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **The tabs are unbound** (the panel's own view state, not saved, no undo step). Alternative: bind them to a setting of the group so the tab is saved with the project.
 - **Style schemas live outside the document** (views, `pq/views/panel/style_schemas.h`): a user-level library (`<User Library>\Styles\schemas.json`), not per project; applying one writes plain style fields, so a panel does not depend on the schema it came from. A schema carries the kind's Number / Choice / Token fields only: Text fields (labels, tabs items, button texts) are content and are never saved or overwritten. Built-ins (knob Classic / Minimal / Pie, slider Classic / Minimal) cannot be overwritten (a save under their name becomes "<name> 2"). No delete / rename UI yet.
 - **Step 0 (earlier phases' playback failures)**: the PA load conversion now keeps an old Phase Accumulator's pitch in cents through the module's GU.5b Pitch curve (it copied the knob position, which means another pitch on that curve): pa_voice / pa_free and every `gu1_curves` case are back to their references (PA diff 0; `gu1_curves` −137 … −400 dBFS, `switched` −109.5 dBFS at its +13 dBFS peak = −123 relative, within the test's bound), so test_curve_renders needed no bound change. The converted unwired VCA's value block (20 … 20000) now has 2 segments (split at its +100 marker by GU.5b); the test checks the split point is 100 and the law monotonic.
+
+## Q?-GU.10-a · 2026-11-07 · GU.10 · The stock devices as group presets; Auto Filter and EQ Eight retired: the choices made where the plan left room
+- **What each rebuild leaves out** (no stubs: each is simply not there; record for the rewrite from modules):
+  - *Utility*: bass mono (+ its frequency and Audition) and the DC filter — both need a filter. Everything else is the old
+    param-rate matrix term for term with the same smoothed `gain` / `gain_add` per sample (renders equal the retired
+    patch within float rounding: tests/app/test_stock_presets.cpp).
+  - *Saturator*: Waveshaper (its six knobs), Shaper (a drawn table: the `shaper` atom takes a table resource, not a block),
+    colour EQ (a filter), HQ oversampling (the oversample atoms are compiler-internal, not blocks); the transfer-curve
+    display. Kept: drive, seven curves, output, soft clip, dry/wet (equal to the retired patch at those settings).
+  - *LFO*: the audio pass-through and the `lfo` export are gone: the preset is a modulation SOURCE (its Out is the LFO,
+    its panel has a jack: a `modsource` element). Rate, Sync, Beats, Phase, Depth, Offset and the five shapes as before.
+  - *Operator*: a smaller honest rebuild — four rows (A … D) of × Coarse → Phase Accumulator (Pitch = Fine) → Wavetable
+    (its default table, a sine) → Envelope (Amount = Level), FM by wires D → C → B → A (algorithm 1) into each Phase
+    Accumulator's `+ pm` add; only A reaches Out. Missing: the other ten algorithms (rewire by hand), denominators /
+    fixed frequency / ratio display, waveforms other than the Wavetable's tables (draw them there), feedback, the filter,
+    LFO, pitch envelope, loop / beat envelope modes, velocity / key scaling, spread, transpose, glide, the algorithm
+    picker and partial editor; levels are 0 … 1, not dB. The panel: Coarse / Fine / Level per row and the four Envelope
+    panels embedded under A … D tabs.
+  - *Basic Synth*: the default is the plan's "small PA → Wavetable → Envelope group" (Envelope amount 0.25), not the old
+    additive patch rebuilt (its one-pole ADSR has no module; the Envelope's curves differ).
+- **Choices are muxes of real indices.** An atom block's bool input sums its wires as reals (the lowering's Add law), so
+  `select` / comparisons cannot be wired: switches are value blocks 0 / 1 and every choice a `mux` (in[floor(index)]),
+  a menu's Type / Shape a chain of two-input muxes (the block's variadic input is at its minimum). **CPU**: the old
+  devices compiled only the chosen curve / shape (a structural constant); the presets compute every curve (Saturator:
+  seven per sample, ≈ 30 ops more) and every LFO shape, and choose per sample. Utility's matrix is param-rate as before.
+  Proposal: a "switch" block whose index is a SETTING (structural), so only the chosen branch is compiled — or the
+  lowering folding a mux whose index is an undriven value block. Not done here.
+- **`channel` is an atom block now** (its index a setting): Utility needs L and R apart. `pack` already was one.
+- **A driven control's modulation tap ends voices early.** A per-voice cable into a value block (or a meta param) makes
+  the lowering export the modulation-display tap per voice; the voice engine monitors every voice output for silence after
+  note-off, so a silent modulator (level 0) ended Operator's voices 20 ms after note-off, cutting the release. Operator
+  therefore feeds its FM into the PA's `+ pm` atom (no tap). The engine / lowering issue itself is open (taps should not
+  be monitored, or should not be voice outs).
+- **Nested operator groups** were tried (A … D each a group): with a cable into a group on the path to Out the voice end
+  was not found either (the same tap issue); the rows are flat in Operator's group, named "Coarse A", "Phase Accumulator
+  A", "Envelope A" ….
+- **The stand-in devices.** The app ships no stock patch, but ~60 test files build chains, wires, groups, racks and
+  lowerings out of Utility, Saturator, EQ Eight, Auto Filter, the LFO, Operator and Basic Synth. Rather than rewrite them,
+  the shared test main points `PQ_STAND_IN_DEVICES` at `tests/stand_in_devices` (copies of the retired patches and panel
+  descriptions; EQ Eight's and Auto Filter's displays fall back to a plain spectrum, no analysis tap), and
+  `stand_in::useBasicSynth` / `makeLoneInstrument` give those tests the IG.1-2 layout. The retired devices' OWN tests,
+  displays and goldens are in `retired/`. Debt: GU.11 should port these tests to blocks and delete the stand-ins.
+- **Node menu / browser**: in tests the stand-in patches and the presets share names ("Saturator"); the presets come
+  first. In the app only the presets exist.
+- **Still in src with no user**: the lowering's analysis tap for analysed stock devices (`analysedDevice`: false for
+  every device), the panel-description displays' "eq" / "filter" / "lfo" visuals (removed from `makeDisplay`: such a
+  description now shows a plain spectrum), Operator's displays in `operator_displays.cpp` (used by the Operator
+  stand-in's panel in tests). GU.11 retires the panel-description system with them.
+- **Benches**: `pq_bench_devices` is retired; `bench/patches/operator_calibration.pqp` imports the stand-in Operator;
+  `pq_bench_inspect`, `bench_playback`, `bench_silence`, `bench_device_panels`, `bench_project_patch` name stock devices
+  at run time and need `PQ_STAND_IN_DEVICES` set (not run here). bench/RESULTS.md keeps its historical rows.
+- **AOT seed**: its stock projects are new tracks made by `ops::createTrack` (the default preset); the stock-effect and
+  Operator shapes are gone with the stock devices (and their test case).
 - Status: open (provisional choices above).

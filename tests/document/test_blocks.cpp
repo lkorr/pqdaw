@@ -18,6 +18,7 @@
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
 #include "pq/graph/patch.h"
+#include "../support/stand_in_synth.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -38,7 +39,10 @@ const DeviceLibrary& library() {
 struct Doc {
   DocumentStore store;
   TrackId keys;
-  Doc() { keys = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi, {}, "Keys")).tracks.at(0); }
+  Doc() {
+    keys = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi, {}, "Keys")).tracks.at(0);
+    REQUIRE(stand_in::useBasicSynth(store, keys).valid());  // (GU.10: the IG.1-2 layout)
+  }
   const Project& doc() const { return *store.current(); }
   const Track& track() const { return *findTrackPtr(doc(), keys); }
   ops::Edit edit(const Result<ops::Edit>& e) {
@@ -100,6 +104,7 @@ TEST_CASE("blocks: groups nest — at any depth, never inside themselves, at mos
   }
   // Moving the outer group to another track takes everything inside with it; removing it removes it all (one step).
   const TrackId other = d.edit(ops::createTrack(d.doc(), d.store.ids(), TrackKind::Midi, {}, "Other")).tracks.at(0);
+  REQUIRE(stand_in::useBasicSynth(d.store, other).valid());  // (GU.10: the IG.1-2 layout)
   d.edit(ops::moveDevice(d.doc(), g, other, kAppend));
   const Track& o = *findTrackPtr(d.doc(), other);
   CHECK(o.deviceIndex(g) >= 0);
@@ -258,6 +263,7 @@ TEST_CASE("blocks: copy takes a group with everything inside and the wires among
   CHECK(d.store.current().get() == before.get());
   // Ctrl+V into a group of another track: refused (a group of this track only).
   const TrackId other = d.edit(ops::createTrack(d.doc(), d.store.ids(), TrackKind::Midi, {}, "Other")).tracks.at(0);
+  REQUIRE(stand_in::useBasicSynth(d.store, other).valid());  // (GU.10: the IG.1-2 layout)
   CHECK_FALSE(ops::pasteBlocks(d.doc(), d.store.ids(), other, *set, g).ok());
   // A group preset: the set (its group first) written and read back equal.
   auto text = serializeGroupPreset(*set, "Nested");

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "../golden/golden_audio.h"
+#include "../support/stand_in_synth.h"
 #include "playback_fixture.h"
 #include "pq/app/project_link.h"
 #include "pq/compile/compile.h"
@@ -180,7 +181,11 @@ void apply(DocumentStore& s, Command c) {
 }
 const Track& trackOf(DocumentStore& s, TrackId t) { return *findTrackPtr(*s.current(), t); }
 // A new MIDI track (IG.1-2: an instrument group holding Basic Synth heads its path).
-TrackId midi(DocumentStore& s) { return run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0); }
+TrackId midi(DocumentStore& s) {
+  const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
+  REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout these cases were written for)
+  return t;
+}
 DeviceId groupOf(DocumentStore& s, TrackId t) { return mainPath(*s.current(), trackOf(s, t)).blocks.at(0)->id; }
 DeviceId synthOf(DocumentStore& s, TrackId t) {
   for (const DevicePtr& d : trackOf(s, t).devices)

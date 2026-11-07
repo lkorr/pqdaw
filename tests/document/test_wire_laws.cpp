@@ -19,6 +19,7 @@
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
 #include "pq/meta/type.h"
+#include "../support/stand_in_synth.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -45,6 +46,7 @@ struct Doc {
     REQUIRE(t.ok());
     REQUIRE(store.dispatch(t->command).ok());
     keys = t->tracks.at(0);
+    REQUIRE(stand_in::useBasicSynth(store, keys).valid());  // (GU.10: the IG.1-2 layout)
     inst = findTrackPtr(*store.current(), keys)->devices.at(0)->id;
     // IG.1-2: the instrument out of its instrument group, alone on the path (a lone instrument: the same sound), as the
     // wire-law cases were written (their old files have no instrument groups).
@@ -253,6 +255,7 @@ TEST_CASE("TX.all-free: a meta device taken off the path no longer takes the not
   REQUIRE(t.ok());
   REQUIRE(store.dispatch(t->command).ok());
   const TrackId keys = t->tracks.at(0);
+  REQUIRE(stand_in::useBasicSynth(store, keys).valid());  // (GU.10: the IG.1-2 layout)
   {  // IG.1-2: the instrument alone on the path first (out of its instrument group)
     auto ug = ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(*store.current(), keys)->devices.at(1)->id);
     REQUIRE(ug.ok());

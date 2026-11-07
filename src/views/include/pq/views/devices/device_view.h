@@ -115,13 +115,7 @@ DevicePanel* openDevice(Shell& shell, const std::string& devicePath, std::string
 DevicePreview* openPreview(Shell& shell) noexcept;
 DevicePanel* openPanel(Shell& shell) noexcept;
 
-// The device scenes (view_scenes.cpp: device-utility, device-saturator, device-eq-eight, device-operator; `file` = the
-// device's .pqp):
-// the device opened with a few non-default settings; EQ Eight with a spectrum of a fixed test signal.
-Status setupDeviceScene(Shell& shell, std::string_view file);
-// T4.12-fix1 `device-operator-filter` (`file` = operator.pqp): Operator as in device-operator, its Filter section shown
-// with the MS2 circuit model, drive and the filter envelope.
-Status setupOperatorFilterScene(Shell& shell, std::string_view file);
+// (GU.10: the stock device scenes device-utility … device-auto-filter are retired with the stock devices.)
 
 // TX.spectrum (scenes, tests): a device's analysis as a project device's tap carries it (input L/R, output L/R) — a
 // fixed music-like test signal in, the same through a linear filter of magnitude `mag` (Hz → |H|) out, 2 s — analysed

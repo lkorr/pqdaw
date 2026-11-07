@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "all_free_helpers.h"
+#include "../support/stand_in_synth.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
@@ -92,7 +93,10 @@ struct Ui {
 
   explicit Ui(bool sketch = true) {
     ctx.setDeviceLibrary(&library());
-    if (sketch) REQUIRE(buildSketchProject(ctx.store()).ok());
+    if (sketch) {
+      const pq::Status built = buildSketchProject(ctx.store());
+      REQUIRE_MESSAGE(built.ok(), (built.ok() ? std::string() : built.error().message));
+    }
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
@@ -370,6 +374,7 @@ TEST_CASE("project patch: the note wire goes to the meta device the note source 
     return *e;
   };
   const doc::TrackId t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi)).tracks.at(0);
+  REQUIRE(stand_in::useBasicSynth(store, t).valid());  // (GU.10: the IG.1-2 layout: a meta module at slot 0 replaces Basic Synth)
   const doc::DeviceId acc = run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, "envelope", 0)).devices.at(0);  // (GU.4: was a Phase accumulator)
   const doc::DeviceId wt = run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, "wavetable")).devices.at(0);
   auto notesTo = [&](const ProjectPatch& pp, doc::DeviceId d) {
@@ -1836,6 +1841,7 @@ TEST_CASE("project patch (TX.panel-faces): every closed stock device is drawn as
     auto t = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "All " + info.name);
     REQUIRE(t.ok());
     REQUIRE(st.dispatch(t->command).ok());
+    REQUIRE(stand_in::useBasicSynth(st, t->tracks.at(0)).valid());  // (GU.10: the IG.1-2 layout)
     auto e = doc::ops::addDevice(*st.current(), st.ids(), t->tracks.at(0), info.patch, info.kind);
     REQUIRE_MESSAGE(e.ok(), info.patch);
     REQUIRE(st.dispatch(e->command).ok());
@@ -3109,19 +3115,21 @@ TEST_CASE("project patch (TX.block-drag): far out — the dragged block over the
 // capsule holding In → Basic Synth → Out on the band's path, the notes into the capsule, In → the synth a note wire and
 // the synth → Out a chain inside it; the view is the lowered graph (the synth's call in the track patch).
 TEST_CASE("project patch (IG.1-2): a new MIDI track shows its instrument group — In → Basic Synth → Out in a capsule") {
+  // GU.10: Basic Synth is the default instrument's group preset: In → Phase Accumulator → Wavetable → Envelope → Out,
+  // each a module (a capsule of its own).
   doc::DocumentStore store;
   auto e = doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys");
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
   const doc::Project& p = *store.current();
   const doc::Track& t = *doc::findTrackPtr(p, e->tracks.at(0));
-  doc::DeviceId group, synth;
-  for (const doc::DevicePtr& d : t.devices) {
-    if (doc::isGroupDevice(*d)) group = d->id;
-    else synth = d->id;
-  }
+  doc::DeviceId group;
+  for (const doc::DevicePtr& d : t.devices)
+    if (doc::isGroupDevice(*d) && !d->group.valid()) group = d->id;
   REQUIRE(group.valid());
-  REQUIRE(synth.valid());
+  std::vector<doc::DeviceId> modules;
+  for (const doc::Device* d : doc::groupMembers(t.devices, group)) modules.push_back(d->id);
+  REQUIRE(modules.size() == 3);
   const doc::LoweredProject low = lowerOf(p);
   const ProjectPatch pp = buildProjectPatch(p, low, &library().catalog());
   CHECK(checkAgainstGraph(pp, p, low) == "");
@@ -3129,21 +3137,26 @@ TEST_CASE("project patch (IG.1-2): a new MIDI track shows its instrument group �
   REQUIRE(cap != kNone);
   const Node& c = pp.nodes[cap];
   CHECK(c.group);
-  CHECK(c.groupOpen);
   CHECK(c.instrument);  // the notes reach its In
-  REQUIRE(c.members.size() == 1);
-  const uint32_t sn = c.members[0];
-  CHECK(pp.nodes[sn].device == synth);
-  CHECK(pp.nodes[sn].capsule == cap);
-  CHECK(pp.nodes[sn].lowered);
-  auto edge = [&](uint32_t a, uint32_t b, EdgeKind k) {
+  REQUIRE(c.members.size() == 3);
+  std::vector<uint32_t> nodes;
+  for (const doc::DeviceId m : modules) {
+    const uint32_t n = pp.nodeOf(m);
+    REQUIRE(n != kNone);
+    CHECK(pp.nodes[n].group);
+    CHECK(pp.nodes[n].capsule == cap);
+    nodes.push_back(n);
+  }
+  auto edge = [&](uint32_t a, uint32_t b) {
     for (const Edge& x : pp.edges)
-      if (x.from == a && x.to == b && x.kind == k) return true;
+      if (x.from == a && x.to == b) return true;
     return false;
   };
   const Band& band = pp.bands[c.band];
-  CHECK(edge(band.source, cap, EdgeKind::Notes));      // the track's notes into the capsule
-  CHECK(edge(c.groupIn, sn, EdgeKind::Notes));         // In → Basic Synth: the notes, per note
-  CHECK(edge(sn, c.groupOut, EdgeKind::Chain));        // Basic Synth → Out
-  CHECK(edge(cap, band.mixer, EdgeKind::Chain));       // the group's sum into the mixer
+  CHECK(edge(band.source, cap));     // the track's notes into the capsule
+  CHECK(edge(c.groupIn, nodes[0]));  // In → Phase Accumulator
+  CHECK(edge(nodes[0], nodes[1]));   // → Wavetable
+  CHECK(edge(nodes[1], nodes[2]));   // → Envelope
+  CHECK(edge(nodes[2], c.groupOut)); // → Out
+  CHECK(edge(cap, band.mixer));      // the group's sum into the mixer
 }

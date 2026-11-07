@@ -993,10 +993,11 @@ private:
 // project's tracks are new tracks (each with its instrument group); the sketch's instruments are lone
 // (makeLoneInstrument).
 Status buildSketchProject(doc::DocumentStore& store);
-// IG.1-2: a new MIDI track holds an instrument group (In → Basic Synth → Out). The scenes and projects made for a meta
-// module's face, a Device-view panel or chain, or Ctrl+G take its instrument out of it first: a LONE instrument heading
-// the path (the notes → Basic Synth → the mixer), as they were made before instrument groups (a meta module added at
-// slot 0 then replaces it on the path). One undo step; a track without a group: unchanged.
+// IG.1-2: a new MIDI track holds an instrument group (GU.10: the default instrument's group preset). The scenes and
+// projects made for a meta module's face, a Device-view panel or chain, or Ctrl+G replace it first by a LONE instrument
+// heading the path (the notes → Basic Synth → the mixer; GU.10: Basic Synth is a stand-in device the tests load,
+// tests/stand_in_devices), as they were made before instrument groups (a meta module added at slot 0 then replaces it on
+// the path). One undo step; a track without a group: unchanged.
 Status makeLoneInstrument(doc::DocumentStore& store, doc::TrackId track);
 Status buildWideProject(doc::DocumentStore& store, uint32_t tracks);
 // TMM.4: Phase accumulator faces in chains — "Lead" (a face → Saturator), "Bell" (220 Hz, phase 0.25, amp 2 → Auto

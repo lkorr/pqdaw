@@ -61,6 +61,13 @@ std::filesystem::path isolateTempDir() {
   return dir;
 }
 
+// GU.10 (pq/document/devices.h stockDevices): the stand-in devices every test may use (tests/stand_in_devices).
+void standInDevices() {
+  const std::filesystem::path dir = (std::filesystem::path(PQ_TEST_DATA_DIR) / "stand_in_devices").lexically_normal();
+  SetEnvironmentVariableW(L"PQ_STAND_IN_DEVICES", dir.c_str());
+  _wputenv_s(L"PQ_STAND_IN_DEVICES", dir.c_str());
+}
+
 }  // namespace
 
 TEST_CASE("alloc trap is linked into this test executable") {
@@ -70,6 +77,7 @@ TEST_CASE("alloc trap is linked into this test executable") {
 int main(int argc, char** argv) {
   pq::alloc_trap::setHandler(&failRunningTest);
   const std::filesystem::path tempDir = isolateTempDir();
+  standInDevices();
   keepShard(argc, argv);
   doctest::Context context;
   // File names without directories in reports: with the shared compiler cache (cmake/PqCompilerCache.cmake)

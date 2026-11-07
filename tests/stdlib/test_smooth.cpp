@@ -1,4 +1,4 @@
-// TX.smooth: every continuous param of every stock device and meta module is click-free when it jumps (pq/graph/
+// TX.smooth: every continuous param of a user patch and the meta modules is click-free when it jumps (pq/graph/
 // schedule.h "Param ramps"). Per param: the device plays (an effect: a 110 Hz sine; an instrument: a held note), and
 // mid-note the param jumps from its default by 35 % of its range at one block boundary (what a knob drag, an automation
 // step or a macro delivers). Its high-frequency energy (4th-order Butterworth high-pass at 12 kHz, above what the test signals and a fast glide contain: a click is broadband) over 10 ms before to
@@ -6,6 +6,7 @@
 // reference): the jump may add at most kMaxExcessDb. The same jump scheduled without param ramps (the T1.5 schedule,
 // as before TX.smooth) is measured too, to show the metric sees the clicks the ramps remove. JIT, block 64, 48 kHz;
 // every block inside an RtScope (the param_ramp path allocates nothing).
+// GU.10: the stock devices it covered are retired (retired/).
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -36,10 +37,6 @@ constexpr uint64_t kJump = 375 * kBlock;      // 0.5 s, a block boundary
 constexpr uint64_t kSweep = 150 * kBlock;     // the reference's 200 ms
 constexpr double kMaxExcessDb = 6.0;
 
-std::string stdlibPath(const char* rel) {
-  return (fs::path(PQ_TEST_DATA_DIR) / ".." / "stdlib" / rel).lexically_normal().generic_string();
-}
-
 struct Device {
   const char* name;
   std::string text;  // the wrapper patch
@@ -49,9 +46,6 @@ struct Device {
 std::vector<Device> devices() {
   // At the jump (0.5 s) the sine is at its peak, so a gain step there is a step of the output (the worst case).
   const std::string sine = "  s = sine(phasor(110Hz) + 0.25) * 0.5\n";
-  auto effect = [&](const char* name, const char* file, const std::string& call) {
-    return Device{name, "import \"" + stdlibPath(file) + "\"\npatch T {\n  out y : audio stereo\n" + sine + "  d = " + call + "\n  y = d\n}\n", false};
-  };
   std::vector<Device> d;
   // A user patch that multiplies by its params directly (no smoothed gain): what any new device written that way gets.
   d.push_back(Device{"user patch (x * level + offset, a crossfade)",
@@ -59,19 +53,7 @@ std::vector<Device> devices() {
                      "  param mix = 0.2 [0..1]\n" + sine + "  t = sine(phasor(330Hz)) * 0.5\n"
                      "  y = (s * level + offset) * (1 - mix) + t * mix\n}\n",
                      false});
-  d.push_back(effect("utility", "devices/utility.pqp", "utility((s, s))"));
-  d.push_back(effect("saturator", "devices/saturator.pqp", "saturator((s, s))"));
-  d.push_back(effect("eq_eight", "devices/eq_eight.pqp", "eq_eight((s, s))"));
-  d.push_back(effect("auto_filter", "devices/auto_filter.pqp", "auto_filter((s, s))"));
-  d.push_back(Device{"lfo_device (its export)",
-                     "import \"" + stdlibPath("devices/lfo_device.pqp") + "\"\npatch T {\n  out y : audio\n" + sine +
-                         "  d = lfo_device((s, s))\n  y = s * (1 + 0.5 * d.lfo)\n}\n",
-                     false});
-  d.push_back(Device{"operator (additive, filter on)",
-                     "import \"" + stdlibPath("devices/operator.pqp") + "\"\npatch T {\n  out y : audio voice stereo\n"
-                     "  out done : bool voice\n  o = operator(algorithm: 11, onB: 1, onC: 1, onD: 1, filterOn: 1)\n"
-                     "  y = o\n  done = o.done\n}\n",
-                     true});
+  // GU.10: the stock devices (Utility, Saturator, EQ Eight, Auto Filter, the LFO, Operator) are retired (retired/).
   // GU.4: the Phase accumulator and the VCA are group presets (their params value blocks: a phasor's frequency, a
   // multiplier, as here); the Meta Operator is deleted.
   d.push_back(Device{"meta modules (phasor → wavetable → envelope → × level)",
@@ -190,7 +172,7 @@ double transientDb(const Rendered& r) {
 
 }  // namespace
 
-TEST_CASE("smooth params: every continuous param of every stock device and meta module jumps without a click" *
+TEST_CASE("smooth params: every continuous param of a user patch and the meta modules jumps without a click" *
           doctest::test_suite("slow")) {
   uint32_t tested = 0, clickedBefore = 0;
   double worst = -1e9;
@@ -211,8 +193,7 @@ TEST_CASE("smooth params: every continuous param of every stock device and meta 
     REQUIRE(plainR.ok());
     const g::Schedule& plain = plainR.value();
     const g::Patch& scheduled = compiled->scheduled().patch;
-    // Utility's params all reach smoothed gains' targets (gain / gain_add smooth `g` themselves): no ramps there.
-    if (std::string(dev.name) != "utility") CHECK(!ramped.ramps.empty());
+    CHECK(!ramped.ramps.empty());
     std::vector<float> base;
     for (const g::ParamSlot& p : ramped.params) base.push_back(p.defaultValue);
     uint32_t devTested = 0;

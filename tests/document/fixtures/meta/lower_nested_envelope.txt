@@ -8,9 +8,9 @@ patch Midi4 {
   out out : real audio global stereo
 
   _n0 = 0
-  d6 = GroupNotes(d5)
-  _n2 = voice_sum(d6)
-  d5 = BasicSynth__u5_3634bbab60311431__m5_a7215b7b26aa888d()
+  d5 = GroupNotes(d46)
+  _n2 = voice_sum(d5)
+  d46 = BasicSynth__u46_3634bbab60311431__m46_c12235cb3cc46be2()
   _n7 = 1
   _n8 = 0.002
   _n12 = volume <= -70 ? _n0 : db_to_gain(volume)
@@ -20,7 +20,7 @@ patch Midi4 {
   _n23 = _n21 ? sendGate : _n0
   _n24 = _n12 * (_n21 ? gate : _n0)
   _n30 = _n12 * _n23
-  done = d5.done
+  done = d46.done
   out = gain(_n2, (_n14 * _n24, _n16 * _n24), _n8)
 
   export post = gain(_n2, (_n14 * _n30, _n16 * _n30), _n8)
@@ -28,7 +28,7 @@ patch Midi4 {
 
 }
 
-patch BasicSynth__u5_3634bbab60311431__m5_a7215b7b26aa888d {
+patch BasicSynth__u46_3634bbab60311431__m46_c12235cb3cc46be2 {
   param attack = 5ms [0.5ms..5s]
   param decay = 400ms [1ms..10s]
   param sustain = 0.5 [0..1]
@@ -44,7 +44,7 @@ patch BasicSynth__u5_3634bbab60311431__m5_a7215b7b26aa888d {
   time = attacking ? attack : gate ? decay : release
   coef = 1 - exp(-5 / max(time * sr, 1))
   env = z1(env + (target - env) * coef)
-  acc1 = meta_envelope__d5_acc1_b65a354574a9f9f6(phasor(voice.hz))
+  acc1 = meta_envelope__d46_acc1_b65a354574a9f9f6(phasor(voice.hz))
   osc = sine(acc1) * (1 - bright * 0.4) + sine(frac(acc1 * 2)) * (bright * 0.3) + sine(frac(acc1 * 3)) * (bright * 0.1)
   vel = 0.25 + 0.75 * voice.velocity
   out = osc * env * vel * level
@@ -52,7 +52,7 @@ patch BasicSynth__u5_3634bbab60311431__m5_a7215b7b26aa888d {
 
 }
 
-patch meta_envelope__d5_acc1_b65a354574a9f9f6 {
+patch meta_envelope__d46_acc1_b65a354574a9f9f6 {
   param attack = 0.005s [0s..60s] @label("Attack") @curve(exp0, 15.872698924987581)
   param decay = 0.4s [0.001s..60s] @label("Decay") @curve(exp0, 15.872698924987581)
   param sustain = 0.6 [0..1] @label("Sustain")

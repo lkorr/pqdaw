@@ -9,7 +9,7 @@
 //   OpSpreadMs2  OpMs2 with spread (two filters per voice: the most expensive filter configuration)
 //   OpFour     TMM.12: four sine operators (algorithm 1, ratios 1 / 2 / 3:2 / 7:4), feedback, envelopes; nothing else
 //              (the work of TMM.12's Meta Operator, deleted in GU.4)
-import "../../stdlib/devices/operator.pqp"
+import "../../tests/stand_in_devices/operator.pqp"  // GU.10: the retired stock Operator (the tests' stand-in copy)
 
 patch OpDefault {
   out out  : audio voice stereo

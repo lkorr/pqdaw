@@ -74,8 +74,6 @@ std::string_view deviceDescription(std::string_view patch) noexcept {
   if (patch == "operator") return "Four-operator FM synthesis with exact frequency ratios (Live's Operator).";
   if (patch == "utility") return "Gain, width, mid/side, balance, mono and bass mono, phase and channel tools.";
   if (patch == "saturator") return "A waveshaping distortion with drive, curve shapes and a dry/wet mix.";
-  if (patch == "eq_eight") return "An eight-band parametric equaliser with a live spectrum and its measured response.";
-  if (patch == "auto_filter") return "A resonant filter with an envelope follower, an LFO and a sidechain input.";
   if (patch == "lfo_device") return "A low-frequency oscillator whose `lfo` jack modulates any parameter; the audio passes through.";
   if (patch == doc::kAudioEffectRack) return "A group of parallel chains (child groups) of audio effects, summed, with macros on its panel.";
   if (patch == doc::kInstrumentRack) return "An instrument group of parallel chains (child groups) of instruments and effects, with macros on its panel.";

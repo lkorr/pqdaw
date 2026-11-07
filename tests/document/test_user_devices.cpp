@@ -21,6 +21,7 @@
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
 #include "pq/graph/parse.h"
+#include "../support/stand_in_synth.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -63,7 +64,9 @@ struct Two {
       return *e;
     };
     a = run(ops::createTrack(*store.current(), store.ids(), TrackKind::Midi)).tracks.at(0);
+    REQUIRE(stand_in::useBasicSynth(store, a).valid());  // (GU.10: the IG.1-2 layout)
     b = run(ops::createTrack(*store.current(), store.ids(), TrackKind::Midi)).tracks.at(0);
+    REQUIRE(stand_in::useBasicSynth(store, b).valid());  // (GU.10: the IG.1-2 layout)
     synA = findTrackPtr(*store.current(), a)->devices.at(0)->id;
     synB = findTrackPtr(*store.current(), b)->devices.at(0)->id;
     // IG.1-2: each instrument out of its instrument group, alone on its path (a lone instrument: the same sound).

@@ -88,14 +88,25 @@ struct Runner {
 Status makeLoneInstrument(doc::DocumentStore& store, doc::TrackId track) {
   const doc::Track* tr = doc::findTrackPtr(*store.current(), track);
   if (tr == nullptr) return Error{ErrorCode::NotFound, "makeLoneInstrument: no such track", {}};
-  doc::DeviceId g, inst;
+  doc::DeviceId g;
   for (const doc::DevicePtr& d : tr->devices)
-    if (doc::isGroupDevice(*d)) g = d->id;
-  for (const doc::DevicePtr& d : tr->devices)
-    if (g.valid() && d->group == g) inst = d->id;
-  if (!g.valid() || !inst.valid()) return Ok{};
+    if (doc::isGroupDevice(*d) && !d->group.valid()) g = d->id;
+  if (!g.valid()) return Ok{};
   doc::Batch b{"Lone Instrument", {}};
-  b.commands.push_back(doc::SetDeviceGroup{inst, {}});
+  doc::DeviceId inst;
+  if (doc::findDevice(*store.current(), g).device->name == doc::kDefaultInstrumentName) {
+    // GU.10: the default instrument's group preset; the lone instrument is the Basic Synth patch (a stand-in device the
+    // tests load: tests/stand_in_devices) in its place.
+    const std::vector<const doc::Device*> inside = doc::groupMembersDeep(tr->devices, g);
+    for (auto it = inside.rbegin(); it != inside.rend(); ++it) b.commands.push_back(doc::RemoveDevice{(*it)->id});
+    inst = store.ids().device();
+    b.commands.push_back(doc::AddDevice{track, doc::makeDefaultInstrument(inst), 0});
+  } else {  // a group holding one instrument (IG.1-2): the instrument out of it
+    for (const doc::DevicePtr& d : tr->devices)
+      if (d->group == g) inst = d->id;
+    if (!inst.valid()) return Ok{};
+    b.commands.push_back(doc::SetDeviceGroup{inst, {}});
+  }
   b.commands.push_back(doc::RemoveDevice{g});  // (its wires with it)
   doc::Wire in;
   in.id = store.ids().wire();

@@ -19,6 +19,7 @@
 #include "pq/document/serialize.h"
 #include "pq/document/modules.h"
 #include "pq/document/store.h"
+#include "../support/stand_in_synth.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -42,6 +43,7 @@ struct Doc {
   DeviceId inst;
   Doc() {
     keys = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi, {}, "Keys")).tracks.at(0);
+    REQUIRE(stand_in::useBasicSynth(store, keys).valid());  // (GU.10: the IG.1-2 layout)
     inst = findTrackPtr(doc(), keys)->devices.at(0)->id;
   }
   const Project& doc() const { return *store.current(); }

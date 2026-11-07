@@ -28,6 +28,7 @@
 #include "pq/engine/project_compile.h"
 #include "pq/engine/project_program.h"
 #include "pq/media/wav_file.h"
+#include "../support/stand_in_synth.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -152,6 +153,7 @@ TEST_CASE("racks are parallel groups: an Audio Effect Rack (two chains, a macro 
           "the T4.8 rack did") {
   DocumentStore s;
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
+  REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout)
   const DeviceId a = run(s, ops::addRack(*s.current(), s.ids(), t, false)).devices.at(0);
   const DeviceId b = run(s, ops::addChain(*s.current(), s.ids(), a)).devices.at(0);
   {  // two sibling groups fed from the instrument, summed into the mixer: one rack, derived from the wiring
@@ -194,6 +196,7 @@ TEST_CASE("racks are parallel groups: an Instrument Rack's chains are instrument
           "engine: voicing does not double) and render as the T4.8 rack did, a velocity zone too") {
   DocumentStore s;
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
+  REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout)
   std::vector<DeviceId> all;
   for (const DevicePtr& d : trackOf(s, t).devices) all.push_back(d->id);
   run(s, ops::deleteDevices(*s.current(), all));
@@ -232,6 +235,7 @@ TEST_CASE("racks are parallel groups: wiring two groups in parallel by hand make
           "selector are blocks") {
   DocumentStore s;
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
+  REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout)
   const DeviceId a = run(s, ops::addRack(*s.current(), s.ids(), t, false)).devices.at(0);
   const DeviceId b = run(s, ops::addChain(*s.current(), s.ids(), a)).devices.at(0);
   const golden::Channels two = render(*s.current(), t);
@@ -254,6 +258,7 @@ TEST_CASE("racks are parallel groups: wiring two groups in parallel by hand make
   // Two groups wired by hand in parallel (fed from the same block, summed into the mixer): a rack.
   DocumentStore h;
   const TrackId t2 = run(h, ops::createTrack(*h.current(), h.ids(), TrackKind::Midi)).tracks.at(0);
+  REQUIRE(stand_in::useBasicSynth(h, t2).valid());  // (GU.10: the IG.1-2 layout)
   const MainPath path = mainPath(*h.current(), trackOf(h, t2));
   REQUIRE(!path.blocks.empty());
   const DeviceId g1 = h.ids().device(), g2 = h.ids().device();

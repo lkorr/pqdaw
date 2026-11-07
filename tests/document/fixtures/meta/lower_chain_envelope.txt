@@ -1,4 +1,4 @@
-patch Midi11 {
+patch Midi49 {
   param volume = 0 [-70..6]
   param pan = 0 [-1..1]
   param gate = 1 [0..1]
@@ -7,7 +7,7 @@ patch Midi11 {
   out out : real audio global stereo
 
   _n0 = 0
-  d20 = meta_envelope__d20__bff0a4420ef73aa5()
+  d96 = meta_envelope__d96__bff0a4420ef73aa5()
   _n4 = 1
   _n5 = 0.002
   _n9 = volume <= -70 ? _n0 : db_to_gain(volume)
@@ -17,14 +17,14 @@ patch Midi11 {
   _n20 = _n18 ? sendGate : _n0
   _n21 = _n9 * (_n18 ? gate : _n0)
   _n27 = _n9 * _n20
-  out = gain(d20, (_n11 * _n21, _n13 * _n21), _n5)
+  out = gain(d96, (_n11 * _n21, _n13 * _n21), _n5)
 
-  export post = gain(d20, (_n11 * _n27, _n13 * _n27), _n5)
-  export pre = gain(d20, (_n11 * _n20, _n13 * _n20), _n5)
+  export post = gain(d96, (_n11 * _n27, _n13 * _n27), _n5)
+  export pre = gain(d96, (_n11 * _n20, _n13 * _n20), _n5)
 
 }
 
-patch meta_envelope__d20__bff0a4420ef73aa5 {
+patch meta_envelope__d96__bff0a4420ef73aa5 {
   param attack = 0.005s [0s..60s] @label("Attack") @curve(exp0, 15.872698924987581)
   param decay = 0.4s [0.001s..60s] @label("Decay") @curve(exp0, 15.872698924987581)
   param sustain = 0.6 [0..1] @label("Sustain")

@@ -6,6 +6,7 @@
 
 #include "edit_common.h"
 #include "edit_paths.h"
+#include "pq/document/modules.h"
 
 namespace pq::doc::ops {
 
@@ -91,21 +92,22 @@ EditResult createTrack(const Project& p, IdSource& ids, TrackKind kind, TrackId 
   if (name.empty()) name = defaultName(p, kind);
   Track t = makeTrack(ids.track(), kind, std::move(name));
   t.colour = colour;
-  // T4.1: a new MIDI track starts with the default instrument (until the M5 browser offers others). TX.all-free: wired
-  // in series (its source → the instrument → its mixer; any other track: its source → its mixer).
-  // IG.1-2 (model.h "Instrument groups"): the default instrument sits in an INSTRUMENT GROUP (its polyphony written
-  // out: 16 voices, steal oldest, no glide), the group on the path: source → group → mixer, inside In → instrument →
-  // Out (chain links). The instrument is listed first (the block a tie goes to), the group after it. No Envelope: Basic
-  // Synth has its own amp envelope (it ends its own voices; SPEC §15 2026-11-04, QUESTIONS Q?-IG.1-2-a).
-  DeviceId groupId, synthId;
+  // T4.1: a new MIDI track starts with the default instrument. TX.all-free: wired in series (its source → the
+  // instrument → its mixer; any other track: its source → its mixer).
+  // GU.10 (docs/plans/GU.md "One hierarchy"): the default instrument is a group preset (modules.h
+  // defaultInstrumentBlocks): an INSTRUMENT GROUP (its polyphony written out: 16 voices, steal oldest, no glide) holding
+  // In → Phase Accumulator → Wavetable → Envelope → Out, the group on the path: source → group → mixer. Its blocks are
+  // listed first, the group after them.
+  DeviceId groupId;
+  WireList inner;
   if (kind == TrackKind::Midi) {
-    synthId = ids.device();
-    t.devices.push_back(makeDefaultInstrument(synthId));
     groupId = ids.device();
-    auto member = std::make_shared<Device>(*t.devices.front());
-    member->group = groupId;
-    t.devices.front() = std::move(member);
-    t.devices.push_back(makeInstrumentGroup(groupId));
+    StockModuleOptions o;
+    o.id = groupId;
+    BlockSet set = defaultInstrumentBlocks(ids, o);
+    for (size_t i = 1; i < set.devices.size(); ++i) t.devices.push_back(std::move(set.devices[i]));
+    t.devices.push_back(std::move(set.devices.front()));
+    inner = std::move(set.wires);
   }
   const TrackId tid = t.id;
   const DeviceId inst = groupId;
@@ -118,17 +120,7 @@ EditResult createTrack(const Project& p, IdSource& ids, TrackKind kind, TrackId 
   if (inst.valid()) {
     batchOf(e).commands.push_back(AddWire{mainLink(ids, End{{}, tid}, End{inst, {}})});
     batchOf(e).commands.push_back(AddWire{mainLink(ids, End{inst, {}}, End{{}, tid})});
-    for (const auto& [from, port, to, param] :
-         {std::tuple{groupId, kGroupInPort, synthId, kMainPort}, std::tuple{synthId, kMainPort, groupId, kGroupOutPort}}) {
-      Wire w;
-      w.id = ids.wire();
-      w.from = from;
-      w.port = std::string(port);
-      w.to = to;
-      w.param = std::string(param);
-      w.chain = true;  // the group's series (TX.groups-fix1: planned first, as a chain's own link)
-      batchOf(e).commands.push_back(AddWire{w});
-    }
+    for (Wire& w : inner) batchOf(e).commands.push_back(AddWire{std::move(w)});
   } else {
     batchOf(e).commands.push_back(AddWire{mainLink(ids, End{{}, tid}, End{{}, tid})});
   }
