@@ -191,10 +191,13 @@ struct SetDeviceChainInput { DeviceId device; std::string input; };
 // block of a track into group `group` (a group device of the same track), or takes it out (invalid); a member is never
 // on the main path (main_path.h). A group is never a member (no nesting).
 struct SetDeviceGroup { DeviceId device; DeviceId group; };
-// TX.knob-curves: Structural (the Add wire law follows the curve: lower.h "Modulation wires"). A knob's curve
-// (model.h KnobCurve; Default removes the entry). The value stays (it is stored in units): the knob re-maps. The param is
-// not checked against the patch (the document is library-free; ops::setParamCurve checks it). Never on a rack.
-struct SetParamCurve { DeviceId device; std::string param; KnobCurve curve = KnobCurve::Default; };
+// GU.1: a control's curve (model.h ControlCurve; nullopt: the declared one, the entry removed). The knob position stays:
+// the sound follows the curve. Structural when `structural` (the curve's class changed — segment count, shapes, flags —
+// which the specialised `curve` atom and the Add wire law follow; ops::setParamCurve decides it against the declared
+// curve, which the library-free document does not know), else Param (the value of an undriven control, the slot data
+// of a driven one: no compile). The param is not checked against the patch (ops::setParamCurve checks it). Never on a
+// rack or a group.
+struct SetParamCurve { DeviceId device; std::string param; std::optional<dsp::Curve> curve; bool structural = true; };
 
 // ---- Modulation wires (T4.7; model.h "Modulation wires") ------------------------------------------------------
 // Structural. Adds `wire` (its id pre-allocated). Both ends must exist (TX.all-free: a track's source with kMainPort on

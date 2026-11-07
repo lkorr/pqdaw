@@ -615,10 +615,10 @@ TEST_CASE("racks: 20,000 nested racks load, save, round-trip, lower and edit wit
   // Edits at the bottom: a param (path copy down 20,000 levels), then the Utility moved out to the track (taken from
   // the tree, mappings pruned on the way up), then undone; a duplicate of the whole nest (a deep clone).
   {
-    auto e = ops::setDeviceParam(*store.current(), bottomUtil, "gain", -6.0);
+    auto e = ops::setDeviceParam(*store.current(), bottomUtil, "gain", 0.25);  // GU.1: a knob position
     REQUIRE(e.ok());
     REQUIRE(dispatch(store, e->command).ok());
-    CHECK(findDevice(*store.current(), bottomUtil).device->param("gain")->value == -6.0);
+    CHECK(findDevice(*store.current(), bottomUtil).device->param("gain")->value == 0.25);
   }
   {
     auto e = ops::moveDevice(*store.current(), bottomUtil, fx, kAppend);

@@ -17,18 +17,18 @@ constexpr std::array<ParamSpec, kVcaParams> kParams = {{
     // TX.patching: a position whose value (the multiplier) the body computes: added wires add to the multiplier.
     // TX.knob-curves: none has a knob curve (the knob travels along the curve box; the range ends and the box are typed /
     // dragged values of that curve).
-    {"value", "Value", kVcaDefaultPos, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, true, false, true},
-    {"min", "Min", -kVcaRange, -kVcaRange, kVcaRange, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
-    {"max", "Max", kVcaRange, -kVcaRange, kVcaRange, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
-    {"zone", "Fine zone", 0.4, kVcaZoneMin, kVcaZoneMax, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
-    {"bend", "Bend", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
+    {"value", "Value", kVcaDefaultPos, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false, true, false, true},
+    {"min", "Min", -kVcaRange, -kVcaRange, kVcaRange, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false, false, false, true},
+    {"max", "Max", kVcaRange, -kVcaRange, kVcaRange, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false, false, false, true},
+    {"zone", "Fine zone", 0.4, kVcaZoneMin, kVcaZoneMax, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false, false, false, true},
+    {"bend", "Bend", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false, false, false, true},
     // TX.vca-knob: the markers' offsets (kVcaMarkValue order), 0: where the curve puts their values.
-    {"mk_n100", "Marker -100", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
-    {"mk_n10", "Marker -10", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
-    {"mk_n1", "Marker -1", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
-    {"mk_p1", "Marker +1", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
-    {"mk_p10", "Marker +10", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
-    {"mk_p100", "Marker +100", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false, false, false, true},
+    {"mk_n100", "Marker -100", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false, false, false, true},
+    {"mk_n10", "Marker -10", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false, false, false, true},
+    {"mk_n1", "Marker -1", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false, false, false, true},
+    {"mk_p1", "Marker +1", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false, false, false, true},
+    {"mk_p10", "Marker +10", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false, false, false, true},
+    {"mk_p100", "Marker +100", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false, false, false, true},
 }};
 static_assert(kVcaMarks == 6, "one param per marker value (kParams)");
 constexpr std::array<SettingSpec, 1> kSettings = {{{"curve", "Curve", 0.0, 0.0, 1.0, 2}}};

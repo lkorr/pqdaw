@@ -61,6 +61,10 @@
 #include "pq/graph/infer.h"
 #include "pq/graph/patch.h"
 
+namespace pq::dsp {
+class CurveSlot;
+}
+
 namespace pq::graph {
 
 enum class TrackRole : uint8_t { Instrument, Audio, Group, Return, Master };
@@ -98,6 +102,11 @@ struct ProjectGraph {
   // range, read by the views as a metered bus). Their buses come after the output's, so adding a tap never renumbers
   // another bus. wholeProject() ignores them.
   std::vector<ProjectPort> taps;
+  // GU.1: the CurveSlots its `curve` atoms read when the compile is given no Resources::curves — a lowering made without
+  // the playback link (doc::lower without LowerOptions::curveSlotOf numbers its driven controls' slots and owns them
+  // here): by slot id (0: none). `curveOwner` keeps them alive; every image built over them holds it.
+  std::vector<const dsp::CurveSlot*> curveSlots;
+  std::shared_ptr<const void> curveOwner;
 };
 
 struct ProjectUnit {

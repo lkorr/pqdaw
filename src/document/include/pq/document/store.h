@@ -29,6 +29,8 @@
 
 namespace pq::doc {
 
+class DeviceLibrary;
+
 // View state that is saved with the project but is not part of undo (Q15: fold, heights, like Ableton; selection,
 // zoom and scroll stay in the views). Keyed by id, so it survives undo/redo of the entities it describes.
 struct TrackView {
@@ -119,6 +121,10 @@ public:
 
   const Snapshot& current() const noexcept { return current_; }
   IdSource& ids() noexcept { return ids_; }
+  // GU.1: the device library edits made in units resolve their params' curves with (ops::setDeviceParamValue: project
+  // builders, scripts; the views set it: ViewContext::setDeviceLibrary). Null: none (the store never reads it itself).
+  void setDeviceLibrary(const DeviceLibrary* lib) noexcept { devices_ = lib; }
+  const DeviceLibrary* deviceLibrary() const noexcept { return devices_; }
   ViewState& view() noexcept { return view_; }
   const ViewState& view() const noexcept { return view_; }
   const History& history() const noexcept { return history_; }
@@ -167,6 +173,7 @@ private:
   void notify(StoreEventKind kind, const Snapshot& before, const Snapshot& after, const ChangeSet& changes);
 
   IdSource ids_;  // before current_: the default constructor draws the default project's ids from it
+  const DeviceLibrary* devices_ = nullptr;  // GU.1
   Snapshot current_;
   ViewState view_;
   History history_;

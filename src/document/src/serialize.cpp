@@ -24,6 +24,7 @@
 #include "pq/document/instrument_groups.h"
 #include "pq/document/library_files.h"
 #include "pq/document/meta.h"
+#include "knob_positions.h"
 #include "json_io.h"
 #include "pq/meta/registry.h"
 
@@ -46,7 +47,13 @@ constexpr std::array<std::string_view, 13> kParamKindNames = {
 constexpr std::array<std::string_view, 2> kChainLaneNames = {"volume", "pan"};
 constexpr std::array<std::string_view, 5> kWireReducerNames = {"sum", "last", "highest", "lowest", "loudest"};
 constexpr std::array<std::string_view, 3> kWireLawNames = {"add", "travel", "units"};  // TX.patching (13), TX.knob-curves (16)
-// TX.knob-curves (schema 16): a device's "curves" {param: name} (model.h KnobCurve; Default is never written).
+// GU.1 (schema 20): a device's "curves" {param: {curve}} (model.h ControlCurve, pq/dsp/curve.h).
+constexpr std::array<std::string_view, 5> kCurveShapeNames = {"linear", "exp", "log", "power", "scurve"};
+constexpr std::array<std::string_view, 6> kCurveUnitNames = {"none", "hz", "db", "percent", "seconds", "cents"};
+constexpr std::array<std::string_view, 3> kCurveModeNames = {"clip", "wrap", "signed"};
+constexpr std::array<std::string_view, 2> kCurveOutputNames = {"none", "dbToGain"};
+constexpr std::array<std::string_view, 6> kCurvePresetNames = {"custom", "linear", "octave", "exponential", "logarithmic", "exp0"};
+// Schema 16 … 19's knob curve names (TX.knob-curves; migration 19 → 20 resolves them against the library).
 constexpr std::array<std::string_view, 5> kKnobCurveNames = {"default", "linear", "octave", "exponential", "logarithmic"};
 constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "audioEffect"};
 constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
@@ -782,13 +789,13 @@ private:
     };
     values("params", d.params);
     values("settings", d.settings);
-    if (!d.curves.empty()) {  // TX.knob-curves (schema 16): the knobs off their declared curve
+    if (!d.curves.empty()) {  // GU.1 (schema 20): the params off their declared curve
       const PathSeg cat(&at, "curves");
       w_.key("curves");
-      w_.beginObject(false);
-      for (const ParamCurve& c : d.curves) {
+      w_.beginObject(true);
+      for (const ControlCurve& c : d.curves) {
         w_.key(c.param);
-        w_.string(PathSeg(&cat, c.param), kKnobCurveNames[static_cast<size_t>(c.curve)]);
+        curveObject(PathSeg(&cat, c.param), c.curve);
       }
       w_.endObject();
     }
@@ -826,6 +833,63 @@ private:
       }
       w_.endArray();
     }
+  }
+
+  // GU.1 (schema 20): {"min", "max", "unit"?, "digits"?, "step"?, "mode"?, "output"?, "preset", "presetArg"?,
+  // "points": [[t, y], …], "shapes": [[shape, bend], …]} (one line).
+  void curveObject(const PathSeg& at, const dsp::Curve& c) {
+    w_.beginObject(false);
+    w_.key("min");
+    w_.number(PathSeg(&at, "min"), c.min);
+    w_.key("max");
+    w_.number(PathSeg(&at, "max"), c.max);
+    if (c.unit != dsp::CurveUnit::None) {
+      w_.key("unit");
+      w_.string(PathSeg(&at, "unit"), kCurveUnitNames[static_cast<size_t>(c.unit)]);
+    }
+    if (c.digits >= 0) {
+      w_.key("digits");
+      w_.integer(c.digits);
+    }
+    if (c.step > 0.0) {
+      w_.key("step");
+      w_.number(PathSeg(&at, "step"), c.step);
+    }
+    if (c.mode != dsp::CurveMode::Clip) {
+      w_.key("mode");
+      w_.string(PathSeg(&at, "mode"), kCurveModeNames[static_cast<size_t>(c.mode)]);
+    }
+    if (c.output != dsp::CurveOutput::None) {
+      w_.key("output");
+      w_.string(PathSeg(&at, "output"), kCurveOutputNames[static_cast<size_t>(c.output)]);
+    }
+    w_.key("preset");
+    w_.string(PathSeg(&at, "preset"), kCurvePresetNames[static_cast<size_t>(c.preset)]);
+    if (c.presetArg != 0.0) {
+      w_.key("presetArg");
+      w_.number(PathSeg(&at, "presetArg"), c.presetArg);
+    }
+    const PathSeg pat(&at, "points");
+    w_.key("points");
+    w_.beginArray(false);
+    for (uint32_t i = 0; i <= c.segments; ++i) {
+      w_.beginArray(false);
+      w_.number(pat, c.points[i].t);
+      w_.number(pat, c.points[i].y);
+      w_.endArray();
+    }
+    w_.endArray();
+    const PathSeg sat(&at, "shapes");
+    w_.key("shapes");
+    w_.beginArray(false);
+    for (uint32_t i = 0; i < c.segments; ++i) {
+      w_.beginArray(false);
+      w_.string(sat, kCurveShapeNames[static_cast<size_t>(c.shapes[i].shape)]);
+      w_.number(sat, c.shapes[i].bend);
+      w_.endArray();
+    }
+    w_.endArray();
+    w_.endObject();
   }
 
   // T4.8.
@@ -1347,12 +1411,18 @@ constexpr uint32_t kMaxId = 0xFFFFFFFEu;  // so IdSource::reserveThrough(maxEnti
 class Decoder {
 public:
   explicit Decoder(std::string_view text) : r_(text) {}
+  // GU.1: what migration 19 → 20 left for the library pass (parseProject: migrateToKnobPositions).
+  bool valuesInUnits() const noexcept { return valuesInUnits_; }
+  const std::vector<LegacyCurve>& legacyCurves() const noexcept { return legacy_; }
+  int64_t libraryVersion() const noexcept { return libVersion_; }
 
   LoadedProject project() {
     const PathSeg root;
+    // GU.1: "valuesInUnits" and "legacyCurves" exist only in what migration 19 → 20 hands the decoder (never written).
     static constexpr std::string_view K[] = {"schemaVersion", "timeline", "loop",    "locators", "tunings",
-                                             "tracks",        "returns",  "master",  "view",     "wires", "samples"};
-    enum { kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster, kView, kWires, kSamples };
+                                             "tracks",        "returns",  "master",  "view",     "wires", "samples",
+                                             "valuesInUnits", "legacyCurves"};
+    enum { kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster, kView, kWires, kSamples, kUnits, kLegacy };
     auto np = std::make_shared<Project>();
     LoadedProject out;
     Members m(r_, root, K);
@@ -1375,6 +1445,25 @@ public:
         case kView: rawView = view(at); break;
         case kWires: np->wires = wireList(at); break;
         case kSamples: np->samples = sampleList(at); break;
+        case kUnits: valuesInUnits_ = r_.readBool(at); break;
+        case kLegacy: {
+          r_.beginArray(at);
+          for (size_t i = 0; r_.nextElement(at); ++i) {
+            const PathSeg el(&at, i);
+            static constexpr std::string_view LK[] = {"device", "param", "curve"};
+            LegacyCurve lc;
+            Members lm(r_, el, LK);
+            for (int lk; (lk = lm.next()) >= 0;) {
+              const PathSeg lf(&el, LK[static_cast<size_t>(lk)]);
+              if (lk == 0) lc.device = DeviceId{static_cast<uint32_t>(r_.readInt(lf))};
+              else if (lk == 1) lc.param = str(lf);
+              else lc.curve = static_cast<uint8_t>(name(lf, kKnobCurveNames, "a knob curve"));
+            }
+            lm.require({0, 1, 2});
+            legacy_.push_back(std::move(lc));
+          }
+          break;
+        }
       }
     }
     m.require({kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster});
@@ -1395,6 +1484,7 @@ public:
       if (str(f) != format) r_.failValue(f, "format must be \"" + std::string(format) + "\"");
     } else if (k == 1) {
       const int64_t v = r_.readInt(f);
+      libVersion_ = v;
       if (v > kSchemaVersion)
         r_.failValue(f, "the file was saved by a newer pqdaw (schema " + std::to_string(v) + "; this build reads up to " +
                             std::to_string(kSchemaVersion) + ")", ErrorCode::Unsupported);
@@ -1427,6 +1517,12 @@ public:
     }
     m.require({0, 1, 2, 3});
     finishLibrary(root);
+    // GU.1: a preset saved before schema 20 stores values, not knob positions (and no library converts it here).
+    if (libVersion_ < 20 && out.device && !knobPositionsToConvert(*out.device).empty())
+      json::fail(PathSeg(&root, "schemaVersion"),
+                 "the preset was saved before knob positions (schema " + std::to_string(libVersion_) +
+                     "); this version cannot convert it without the device library: make it again",
+                 ErrorCode::Unsupported);
     // A rack's mappings target devices inside it.
     forEachDeviceIn(*out.device, [&](const Device& d) {
       if (!d.rack) return;
@@ -2181,7 +2277,7 @@ private:
         break;
       // (TX.patching's "free", schema 13 … 16, is gone: TX.all-free's migration 16 → 17 wires the chain instead.)
       case 12: d.group = DeviceId{ref(f)}; break;  // TX.groups (schema 14); checkList: a group of the same list
-      case 13: d.curves = paramCurves(f); break;  // TX.knob-curves (schema 16)
+      case 13: d.curves = paramCurves(f); break;  // GU.1 (schema 20; TX.knob-curves' names: schema 16 … 19)
     }
   }
 
@@ -2525,24 +2621,96 @@ private:
     return v.empty() ? nullptr : std::make_shared<const WireList>(std::move(v));
   }
 
-  // {name: number, …}: any key order in the file; sorted in the model.
-  std::vector<ParamCurve> paramCurves(const PathSeg& at) {  // TX.knob-curves (schema 16)
-    std::vector<ParamCurve> v;
+  // {param: {curve}, …} (GU.1, schema 20): any key order in the file; sorted in the model.
+  std::vector<ControlCurve> paramCurves(const PathSeg& at) {
+    std::vector<ControlCurve> v;
     r_.beginObject(at);
     std::string_view key;
     while (r_.nextKey(at, key)) {
-      ParamCurve c;
+      ControlCurve c;
       c.param = std::string(key);
       const PathSeg f(&at, c.param);
-      c.curve = static_cast<KnobCurve>(name(f, kKnobCurveNames, "knob curve"));
-      if (c.curve == KnobCurve::Default) r_.failValue(f, "omit a knob on its declared curve");
       check(f, detail::checkDeviceValue(c.param, std::nullopt));
+      c.curve = curveObject(f);
       v.push_back(std::move(c));
     }
-    std::sort(v.begin(), v.end(), [](const ParamCurve& a, const ParamCurve& b) { return a.param < b.param; });
+    std::sort(v.begin(), v.end(), [](const ControlCurve& a, const ControlCurve& b) { return a.param < b.param; });
     for (size_t i = 1; i < v.size(); ++i)
       if (v[i - 1].param == v[i].param) r_.failHere(PathSeg(&at, v[i].param), "duplicate key");
     return v;
+  }
+
+  double pairElement(const PathSeg& el, size_t& n, double (&v)[2]) {
+    if (n == 2) r_.failHere(el, "a pair has two numbers", ErrorCode::InvalidArgument);
+    return v[n++] = r_.readDouble(el);
+  }
+
+  dsp::Curve curveObject(const PathSeg& at) {  // GU.1: the encoder's curveObject
+    static constexpr std::string_view K[] = {"min",    "max",    "unit",   "digits",    "step",   "mode",
+                                             "output", "preset", "presetArg", "points", "shapes"};
+    dsp::Curve c;
+    std::vector<dsp::CurvePoint> pts;
+    std::vector<dsp::CurveSegment> segs;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0: c.min = r_.readDouble(f); break;
+        case 1: c.max = r_.readDouble(f); break;
+        case 2: c.unit = static_cast<dsp::CurveUnit>(name(f, kCurveUnitNames, "a curve's unit")); break;
+        case 3: {
+          const int64_t d = r_.readInt(f);
+          if (d < 0 || d > 9) r_.failValue(f, "digits are 0 … 9");
+          c.digits = static_cast<int8_t>(d);
+          break;
+        }
+        case 4: c.step = r_.readDouble(f); break;
+        case 5: c.mode = static_cast<dsp::CurveMode>(name(f, kCurveModeNames, "a curve's mode")); break;
+        case 6: c.output = static_cast<dsp::CurveOutput>(name(f, kCurveOutputNames, "a curve's output")); break;
+        case 7: c.preset = static_cast<dsp::CurvePreset>(name(f, kCurvePresetNames, "a curve's preset")); break;
+        case 8: c.presetArg = r_.readDouble(f); break;
+        case 9:
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) {
+            const PathSeg el(&f, i);
+            double v[2] = {};
+            size_t n = 0;
+            r_.beginArray(el);
+            for (size_t j = 0; r_.nextElement(el); ++j) pairElement(PathSeg(&el, j), n, v);
+            if (n != 2) r_.failHere(el, "a point is [t, y]", ErrorCode::InvalidArgument);
+            pts.push_back({v[0], v[1]});
+          }
+          break;
+        case 10:
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) {
+            const PathSeg el(&f, i);
+            dsp::CurveSegment seg;
+            size_t n = 0;
+            r_.beginArray(el);
+            for (size_t j = 0; r_.nextElement(el); ++j) {
+              const PathSeg e2(&el, j);
+              if (n == 0) seg.shape = static_cast<dsp::CurveShape>(name(e2, kCurveShapeNames, "a segment's shape"));
+              else if (n == 1) seg.bend = r_.readDouble(e2);
+              else r_.failHere(e2, "a shape is [shape, bend]", ErrorCode::InvalidArgument);
+              ++n;
+            }
+            if (n != 2) r_.failHere(el, "a shape is [shape, bend]", ErrorCode::InvalidArgument);
+            segs.push_back(seg);
+          }
+          break;
+      }
+    }
+    m.require({0, 1, 7, 9, 10});
+    if (segs.empty() || segs.size() > dsp::kMaxCurveSegments || pts.size() != segs.size() + 1)
+      r_.failHere(at, "a curve has 1 … 16 shapes and one point more", ErrorCode::InvalidArgument);
+    c.segments = static_cast<uint8_t>(segs.size());
+    for (size_t i = 0; i < pts.size(); ++i) c.points[i] = pts[i];
+    for (size_t i = 0; i < segs.size(); ++i) c.shapes[i] = segs[i];
+    for (size_t i = pts.size(); i < c.points.size(); ++i) c.points[i] = {};
+    for (size_t i = segs.size(); i < c.shapes.size(); ++i) c.shapes[i] = {};
+    if (!dsp::validCurve(c)) r_.failHere(at, "not a valid curve (points from t = 0 to 1, increasing; y in [0, 1])", ErrorCode::InvalidArgument);
+    return c;
   }
 
   std::vector<DeviceValue> deviceValues(const PathSeg& at) {
@@ -3320,6 +3488,9 @@ private:
     return v;
   }
 
+  bool valuesInUnits_ = false;  // GU.1
+  std::vector<LegacyCurve> legacy_;
+  int64_t libVersion_ = kSchemaVersion;
   Reader r_;
   std::vector<uint32_t> ids_;
 };
@@ -3819,6 +3990,48 @@ Status migrateAddInstrumentGroups(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 19 → 20 (GU.1, docs/plans/GU.md "Curves"): params store KNOB POSITIONS (0 … 1) instead of values, and a device's
+// "curves" are curve objects instead of TX.knob-curves' names. The positions need each param's curve, which only the
+// device library knows, so the JSON step only marks the file — "valuesInUnits": true at the top, every device's
+// "curves" moved to a top-level "legacyCurves": [{"device", "param", "curve": name}] — and parseProject converts the
+// decoded model with LoadOptions::devices (migrateToKnobPositions: positions through the nearest-position rule, the
+// named curves as curve objects, device automation lanes' points too); without the library such a file is refused
+// unless it holds nothing to convert. Self-contained (renumber, do not merge, if another schema step lands first).
+void moveLegacyCurves(nlohmann::json& devices, nlohmann::json& out) {
+  if (!devices.is_array()) return;
+  for (nlohmann::json& d : devices) {
+    if (!d.is_object()) continue;
+    if (auto c = d.find("curves"); c != d.end()) {
+      if (c->is_object() && d.contains("id"))
+        for (auto it = c->begin(); it != c->end(); ++it)
+          out.push_back(nlohmann::json{{"device", d["id"]}, {"param", it.key()}, {"curve", it.value()}});
+      d.erase(c);
+    }
+    if (auto r = d.find("rack"); r != d.end() && r->is_object())
+      if (auto ch = r->find("chains"); ch != r->end() && ch->is_array())
+        for (nlohmann::json& chain : *ch)
+          if (chain.is_object())
+            if (auto ds = chain.find("devices"); ds != chain.end()) moveLegacyCurves(*ds, out);
+  }
+}
+void moveTrackCurves(nlohmann::json& t, nlohmann::json& out) {
+  if (!t.is_object()) return;
+  if (auto d = t.find("devices"); d != t.end()) moveLegacyCurves(*d, out);
+  if (auto c = t.find("children"); c != t.end() && c->is_array())
+    for (nlohmann::json& child : *c) moveTrackCurves(child, out);
+}
+Status migrateKnobPositions(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  nlohmann::json legacy = nlohmann::json::array();
+  for (const char* list : {"tracks", "returns"})
+    if (auto it = doc.find(list); it != doc.end() && it->is_array())
+      for (nlohmann::json& t : *it) moveTrackCurves(t, legacy);
+  if (auto m = doc.find("master"); m != doc.end()) moveTrackCurves(*m, legacy);
+  doc["valuesInUnits"] = true;
+  if (!legacy.empty()) doc["legacyCurves"] = std::move(legacy);
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3838,6 +4051,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {16, migrateChainToCables},
     {17, migratePanLaws},
     {18, migrateAddInstrumentGroups},
+    {19, migrateKnobPositions},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");
@@ -3917,6 +4131,13 @@ Result<LoadedProject> parseProject(std::string_view text, const LoadOptions& opt
     if (version < 19 && out.project) {  // IG.1-2: the model part of 18 → 19 (instrument_groups.h)
       Project p = *out.project;
       if (migrateToInstrumentGroups(p)) out.project = std::make_shared<const Project>(std::move(p));
+    }
+    if (d.valuesInUnits() && out.project) {  // GU.1: the model part of 19 → 20
+      Project p = *out.project;
+      if (Status st = migrateToKnobPositions(p, options.devices, d.legacyCurves()); !st)
+        return Error{st.error().code, "$: migrating schema 19 to 20 failed: " + st.error().message,
+                     {std::string(options.fileName), 0, 0}};
+      out.project = std::make_shared<const Project>(std::move(p));
     }
     return out;
   } catch (const json::JsonFail& f) {

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "../golden/golden_audio.h"
+#include "../support/knob_positions.h"
 #include "playback_fixture.h"
 #include "pq/app/project_link.h"
 #include "pq/compile/compile.h"
@@ -256,14 +257,20 @@ std::string midiStages(const std::string& x) {
 }
 
 // The modulation math of lower.h for a Log param (lo, hi) driven by `s` into `value`, with its tap (locals pk<t>, p<t>).
-std::string logModulation(const std::string& t, const std::string& knob, double lo, double hi, const std::string& s,
-                          const std::string& value, const std::string& tap) {
-  const double L = std::log(hi / lo);
-  const std::string pk = "pk" + t, p = "p" + t;
-  return "  " + pk + " = log(" + knob + " * " + num(1.0 / lo) + ") * " + num(1.0 / L) + "\n"
-         "  " + p + " = clip(" + pk + " + " + s + ", 0, 1)\n"
-         "  " + value + " = exp(" + p + " * " + num(L) + " + " + num(std::log(lo)) + ")\n"
-         "  export " + tap + " = pack(max(" + p + " - " + pk + ", 0), max(" + pk + " - " + p + ", 0))\n";
+// GU.1 (lower.h "Modulation wires"): a driven control by hand — its knob position `knob` + the wires' sum `s`, the
+// `curve` atom on the slot the lowering gave it (the hand graph reads the lowering's own curve slots), and the tap.
+std::string curveModulation(const std::string& t, const std::string& knob, const std::string& s, const std::string& value,
+                            const std::string& tap, uint32_t slot) {
+  const std::string p = "p" + t;
+  return "  " + p + " = " + knob + " + " + s + "\n"
+         "  " + value + " = curve(" + p + ", 1, " + std::to_string(slot) + ")\n"
+         "  export " + tap + " = pack(max(" + p + " - " + knob + ", 0), max(" + knob + " - " + p + ", 0))\n";
+}
+uint32_t slotOf(const LoweredProject& low, DeviceId d, std::string_view param) {
+  for (const CurveSite& c : low.curves)
+    if (c.device == d && c.param == param) return c.slot;
+  FAIL("no curve site for the param");
+  return 0;
 }
 
 }  // namespace
@@ -295,7 +302,7 @@ TEST_CASE("wires: a lowered project with wires renders exactly like the hand-bui
   b.commands.push_back(AddWire{Wire{w1, lfoA, "lfo", eq, "freq1", 0.4, WireReducer::Sum, {}, WireLaw::Travel}});
   b.commands.push_back(AddWire{Wire{w2, lfoB, "lfo", eq, "gain2", -0.3, WireReducer::Sum, {}, WireLaw::Travel}});
   b.commands.push_back(AddWire{Wire{w3, lfoB, "lfo", inst, "bright", 0.25, WireReducer::Sum, {}, WireLaw::Travel}});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(knob_positions::knobPositions(*store.current(), b, **lib)).ok());  // GU.1: values → positions
   playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   LowerOptions lo;
   lo.library = &(*lib)->library();
@@ -318,25 +325,16 @@ TEST_CASE("wires: a lowered project with wires renders exactly like the hand-bui
 
   // The same written by hand (lower.h: the chains, the mixer stages, the modulation math).
   const auto i = [](auto id) { return std::to_string(id.value); };
-  // The ends of the travels exactly as the device declares them (freq1: 10 Hz … 22 kHz, @curve(exp); gain2: ±15 dB,
-  // a dB gain: Log too).
-  auto travel = [&](const char* name) {
-    const graph::Patch* eqp = (*lib)->library().find("eq_eight");
-    REQUIRE(eqp != nullptr);
-    const auto n = eqp->findByName(name);
-    REQUIRE(n.has_value());
-    return paramTravel(eqp->paramDecl(*n));
-  };
-  const ParamTravel tf = travel("freq1"), tg = travel("gain2");
-  CHECK(tf.log);
-  CHECK(tg.log);
-  const double fLo = tf.lo, fHi = tf.hi, gLo = tg.lo, gHi = tg.hi;
+  // GU.1: the knobs are positions (each driven one's value is its `curve` atom on the lowering's slot).
+  const Device& eqd = *findDevice(*store.current(), eq).device;
+  const Device& instd = *findDevice(*store.current(), inst).device;
+  const double f1 = eqd.param("freq1")->value, g2 = eqd.param("gain2")->value;
+  const double bright = instd.param("bright") != nullptr ? instd.param("bright")->value : 0.35;
   std::string text = "patch A {\n  param rate = 5\n  out out : audio global stereo\n"
                      "  l = lfo_device(pack(0, 0), rate: rate)\n"
                      "  export m" + i(w1) + " = channel(l.lfo, 0)\n" + midiStages("l.out") + "}\n";
-  text += "patch Keys {\n  param bright = 0.35 [0..1]\n  param f1 = 900 [" + num(fLo) + ".." + num(fHi) +
-          "]\n  param g2 = 2 [" + num(gLo) + ".." +
-          num(gHi) + "]\n  param brate = 0.7\n  param w" + i(w1) + " = 0.4 [-1..1]\n  param w" + i(w2) +
+  text += "patch Keys {\n  param bright = " + num(bright) + " [0..1]\n  param f1 = " + num(f1) + " [0..1]\n  param g2 = " +
+          num(g2) + " [0..1]\n  param brate = 0.7\n  param w" + i(w1) + " = 0.4 [-1..1]\n  param w" + i(w2) +
           " = -0.3 [-1..1]\n  param w" + i(w3) + " = 0.25 [-1..1]\n  in m" + i(w1) + " : real global mono = 0\n"
           "  out out : audio global stereo\n  out done : bool voice mono\n"
           "  s = BasicSynth(bright: bv)\n  x = voice_sum(s.out)\n"
@@ -345,10 +343,9 @@ TEST_CASE("wires: a lowered project with wires renders exactly like the hand-bui
           "  b = lfo_device(e.out, shape: 1, rate: brate)\n  src = shared(channel(b.lfo, 0))\n"
           "  done = s.done\n";
   // freq1 ← m (wire 1); gain2 ← src (wire 2); bright ← src (wire 3; Linear 0..1)
-  text += logModulation("a", "f1", fLo, fHi, "w" + i(w1) + " * m" + i(w1), "fv", "tap_d" + i(eq) + "_freq1");
-  text += logModulation("b", "g2", gLo, gHi, "w" + i(w2) + " * src", "gv", "tap_d" + i(eq) + "_gain2");
-  text += "  pkc = (bright - 0.0) * 1.0\n  pc = clip(pkc + w" + i(w3) + " * src, 0, 1)\n  bv = pc * 1.0 + 0.0\n"
-          "  export tap_d" + i(inst) + "_bright = pack(max(pc - pkc, 0), max(pkc - pc, 0))\n";
+  text += curveModulation("a", "f1", "w" + i(w1) + " * m" + i(w1), "fv", "tap_d" + i(eq) + "_freq1", slotOf(*low, eq, "freq1"));
+  text += curveModulation("b", "g2", "w" + i(w2) + " * src", "gv", "tap_d" + i(eq) + "_gain2", slotOf(*low, eq, "gain2"));
+  text += curveModulation("c", "bright", "w" + i(w3) + " * src", "bv", "tap_d" + i(inst) + "_bright", slotOf(*low, inst, "bright"));
   text += midiStages("b.out") + "}\n";
   text += "patch Main {\n  param volume = 0 [-70..6]\n  param pan = 0 [-1..1]\n  in in : audio global stereo\n"
           "  out out : audio global stereo\n  vg = volume <= -70 ? 0 : db_to_gain(volume)\n"
@@ -362,6 +359,8 @@ TEST_CASE("wires: a lowered project with wires renders exactly like the hand-bui
   handLib.addAll((*lib)->library());
   graph::ProjectGraph hand;
   hand.library = &handLib;
+  hand.curveSlots = low->graph.curveSlots;  // GU.1: the lowering's own curve slots
+  hand.curveOwner = low->graph.curveOwner;
   hand.tracks.push_back({ta.value, "A", file->find("A"), graph::TrackRole::Audio, graph::kNone});
   hand.tracks.push_back({keys.value, "Keys", file->find("Keys"), graph::TrackRole::Instrument, 0});
   hand.tracks.push_back({store.current()->master->id.value, "Main", file->find("Main"), graph::TrackRole::Master, graph::kNone});
@@ -377,9 +376,9 @@ TEST_CASE("wires: a lowered project with wires renders exactly like the hand-bui
     handValues.push_back(v);
   };
   link(0, "rate", 5.0f);
-  link(1, "bright", 0.35f);
-  link(1, "f1", 900.0f);
-  link(1, "g2", 2.0f);
+  link(1, "bright", static_cast<float>(bright));
+  link(1, "f1", static_cast<float>(f1));
+  link(1, "g2", static_cast<float>(g2));
   link(1, "brate", 0.7f);
   link(1, "w" + i(w1), 0.4f);
   link(1, "w" + i(w2), -0.3f);

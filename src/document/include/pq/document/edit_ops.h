@@ -395,8 +395,14 @@ EditResult pasteDevices(const Project& p, IdSource& ids, TrackId track, std::spa
 EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const DeviceId> devices);
 // A copy of `d` with fresh ids (a rack: its chains, mappings and inner devices too; mapping targets follow the copies).
 DevicePtr cloneDevice(const Device& d, IdSource& ids);
-// One param value (nullopt: back to the patch's default). A drag is several of these inside one store gesture.
-EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, std::optional<double> value);
+// One param's knob position in [0, 1] (GU.1: what a param stores; a rack's macro or selector: its value 0 … 127;
+// nullopt: back to the patch's default). A drag is several of these inside one store gesture.
+EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, std::optional<double> position);
+// GU.1: a param set by a value in its units (a typed value, a preset's, a script's): the knob position that gives it
+// through the param's curve (the device's own, else the declared one: dsp::curvePosition — on a curve that goes up and
+// back down the one nearest the knob's current position; a value the curve never reaches snaps to the nearest it
+// does). A rack's params take the value itself. NotFound: no such device or param.
+EditResult setDeviceParamValue(const Project& p, const DeviceLibrary& lib, DeviceId device, std::string param, double value);
 // One structural setting (nullopt: the default).
 EditResult setDeviceSetting(const Project& p, DeviceId device, std::string setting, std::optional<double> value);
 // T4.4-fix1 (SPEC §15 2026-10-26): the device's patch text after an edit in the circuit editor; `ids` is the editor's
@@ -426,17 +432,29 @@ Result<DeviceKind> metaDeviceKindAt(const Project& p, const meta::Type& type, Tr
 // TMM.10-fix1: which input of chain meta device `device` its chain feeds ("" the type's own, "-" unplugged, or an
 // input name; SetDeviceChainInput). One Structural step; an unchanged value is an empty edit.
 EditResult setDeviceChainInput(const Project& p, DeviceId device, std::string input);
-// TX.knob-curves: knob `param` of `device` on curve `curve` (model.h KnobCurve; the declared one is stored as Default:
-// pass doc::declaredCurve's answer or Default to go back). One Structural step; an unchanged curve is an empty edit.
-// Refused for a rack (its macros are linear 0 … 127). The views offer it for continuous params only (curveAvailable).
-EditResult setParamCurve(const Project& p, DeviceId device, std::string param, KnobCurve curve);
+// GU.1 (model.h ControlCurve): the curve of `device`'s param `param` (nullopt, or a curve equal to the declared one:
+// the declared curve, the entry removed). The knob position stays (the sound follows). One step: Structural when the
+// curve's class changes against the curve it replaces (dsp::curveClass: a driven control's `curve` atom and the wire
+// law follow it), else Param (no compile). Refused for a rack (its macros are 0 … 127), a group, an invalid curve or a
+// param the device's patch does not have. "Knob Curve".
+EditResult setParamCurve(const Project& p, const DeviceLibrary& lib, DeviceId device, std::string param,
+                         std::optional<dsp::Curve> curve);
+// The knob curve menus: `preset` over the param's declared range (doc::curveWithPreset; the declared preset: back to
+// the declared curve).
+EditResult setParamCurvePreset(const Project& p, const DeviceLibrary& lib, DeviceId device, std::string param,
+                               dsp::CurvePreset preset);
 EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::string_view type, uint32_t index = kAppend,
                          ChainId chain = {});
 // A param / setting / data of the instance (device, path; "" = the chain device itself). A nested call without state
 // gets its default state in the same step (AddMetaInstance: no compile), so a drag on a fresh call is a param write;
 // `type` is the call's type (used only then).
+// GU.1: setMetaParam takes a knob position in [0, 1] (what a param stores), setMetaParamValue a value in the param's
+// units (the position that gives it through its curve, nearest the current one: the type's declared curve, a chain
+// device's own for path "").
 EditResult setMetaParam(const Project& p, DeviceId device, std::string path, std::string_view type, std::string param,
-                        std::optional<double> value);
+                        std::optional<double> position);
+EditResult setMetaParamValue(const Project& p, DeviceId device, std::string path, std::string_view type, std::string param,
+                             double value);
 EditResult setMetaSetting(const Project& p, DeviceId device, std::string path, std::string_view type, std::string setting,
                           std::optional<double> value);
 EditResult setMetaData(const Project& p, DeviceId device, std::string path, std::string_view type, meta::DataPtr data);

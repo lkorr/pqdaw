@@ -473,6 +473,7 @@ Status ProjectLink::makeEngine() {
   resources_.frameTables = frameTableViews_;  // TMM.2: likewise (meta-module slots)
   resources_.voiceTaps = voiceTapViews_;
   resources_.signalTaps = signalTapViews_;  // TX.spectrum
+  resources_.curves = curveViews_;          // GU.1: the control curves' slots
   co.resources = &resources_;
   // T2.6-fix4: every image holds the tuning tables it reads (the ones its compile named: compileHeld_). TMM.2: and the
   // meta-module slots it reads.
@@ -484,6 +485,10 @@ Status ProjectLink::makeEngine() {
       if (kind == dsp::Resource::FrameTable) return m.table;
       if (kind == dsp::Resource::SignalTap) return m.ring;
       return m.tap;
+    }
+    if (kind == dsp::Resource::Curve) {  // GU.1
+      std::lock_guard lock(mutex_);
+      return index < kCurveSlots ? curveSlots_[index].slot : nullptr;
     }
     if (kind != dsp::Resource::Tuning) return nullptr;
     std::lock_guard lock(mutex_);
@@ -747,6 +752,9 @@ void ProjectLink::applyParams(const doc::Project& p, bool forceAll) {
     ctx_->setStatus(lastError());
   }
   const std::vector<doc::LoweredParam> params = doc::lowerParams(p, true, *devices_);
+  drivenKeys_.clear();  // GU.1: the controls whose knob position the patches read (applyDeviceParams)
+  for (const doc::LoweredParam& lp : params)
+    if (lp.position) drivenKeys_.insert(lp.key.substr(0, lp.key.size() - doc::kPositionKeySuffix.size()));
   // M4: a burst of every value (a Reset, a new engine) must fit the ring before the audio thread drains it (at init it
   // does not run at all), duplicate keys included: room for this whole pass and some.
   if (forceAll && engine_->paramRingCapacity() < params.size() + 1024)
@@ -813,10 +821,18 @@ void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::
       if (callee->node(v).kind != graph::NodeKind::Param) continue;
       const std::string& name = callee->nodeName(v);
       if (doc::deviceParamHash(name) != ref.target) continue;
-      const doc::DeviceValue* set = d.device->param(name);
-      const auto value = static_cast<float>(set != nullptr ? set->value : callee->paramDecl(v).defaultValue.value());
-      const uint32_t s = slotForParam("dev" + std::to_string(ref.owner) + ":" + name);
-      if (s != kNone) (void)writeParam(s, value);
+      // GU.1: a driven control's knob position (its curve atom maps it; a curve edit of the same class publishes the
+      // new curve into its slot: no compile), else its value — the curve at the position, evaluated here.
+      const graph::ParamDecl& decl = callee->paramDecl(v);
+      const std::string key = "dev" + std::to_string(ref.owner) + ":" + name;
+      if (drivenKeys_.count(key) != 0) {
+        const uint32_t s = slotForParam(key + std::string(doc::kPositionKeySuffix));
+        if (s != kNone) (void)writeParam(s, static_cast<float>(doc::paramPosition(*d.device, name, decl)));
+        publishCurve(d.device->id, name, doc::controlCurve(*d.device, name, decl));
+      } else {
+        const uint32_t s = slotForParam(key);
+        if (s != kNone) (void)writeParam(s, static_cast<float>(doc::paramValue(*d.device, name, decl)));
+      }
       break;
     }
   }
@@ -888,6 +904,7 @@ doc::ParamRange ProjectLink::laneRange(const doc::Project& p, const doc::Automat
   const doc::Device* d = doc::findDevice(p, doc::DeviceId{lane.param.owner}).device;
   if (d == nullptr) return doc::paramRange(lane.param);
   if (d->rack) return {0.0, doc::kMacroMax};
+  return {0.0, 1.0};  // GU.1: a device param's lane holds knob positions
   std::shared_ptr<const doc::ResolvedDevice> hold;
   if (const doc::DeviceInfo* info = devices_->infoOf(*d, hold))
     if (const doc::DeviceParamInfo* pi = info->param(lane.paramName); pi != nullptr && pi->hasRange)
@@ -903,7 +920,7 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
     for (const doc::LanePtr& lane : t.lanes) {
       if (lane->points.empty()) continue;
-      const std::string key = doc::paramKey(*lane);  // T4.18: a device param's key carries its name
+      const std::string key = doc::paramKey(p, *lane);  // T4.18: a device param's key carries its name (GU.1: "@pos")
       if (key.empty()) continue;  // not lowered (solo is derived into the gates)
       // Overridden by hand (T3.15's "Re-enable Automation"): the document value plays until re-enabled (M4).
       if (ctx_ != nullptr && ctx_->automationOverridden(lane->param)) continue;
@@ -1431,6 +1448,11 @@ std::shared_ptr<const dsp::FrameTable> ProjectLink::metaDefaultTable() {  // mut
 }
 
 void ProjectLink::resetMetaSlotsLocked() {
+  for (const auto& [key, id] : curveIds_) {  // GU.1: the curve slots too (device ids restart per project)
+    curveSlots_[id].live = false;
+    curveFree_.push_back(id);
+  }
+  curveIds_.clear();
   for (const auto& [key, id] : metaIds_) {
     metaSlots_[id].live = false;  // the next syncMetaSlots makes a new object for the id (images hold the old one)
     metaFree_.push_back(id);
@@ -1513,6 +1535,72 @@ uint32_t ProjectLink::metaIdLocked(doc::DeviceId device, std::string_view path, 
         metaSlots_[id].live)
       return id;
   return 0;
+}
+
+uint32_t ProjectLink::curveSlotFor(doc::DeviceId device, std::string_view param) {  // GU.1
+  std::lock_guard lock(mutex_);
+  auto key = std::pair<uint32_t, std::string>{device.value, std::string(param)};
+  auto it = curveIds_.find(key);
+  if (it == curveIds_.end()) {
+    uint32_t id = 0;
+    if (!curveFree_.empty()) {
+      id = curveFree_.front();
+      curveFree_.pop_front();
+    } else if (curveNext_ < kCurveSlots) {
+      id = curveNext_++;
+    }
+    if (id == 0) return 0;  // every slot in use: the atom is the identity on the position (and the status says so)
+    it = curveIds_.emplace(std::move(key), id).first;
+  }
+  curveTouched_.push_back(it->second);
+  return it->second;
+}
+
+void ProjectLink::syncCurveSlots(const std::vector<doc::CurveSite>& sites) {  // GU.1
+  std::lock_guard lock(mutex_);
+  for (const doc::CurveSite& c : sites) {
+    if (c.slot == 0 || c.slot >= kCurveSlots) {
+      if (c.slot == 0) setError("Playback: more driven controls than curve slots (" + std::to_string(kCurveSlots) + ")");
+      continue;
+    }
+    CurveEntry& e = curveSlots_[c.slot];
+    const dsp::CurveData data = dsp::compileCurve(c.curve);
+    if (!e.live) {  // a new id, or a reused one: a new object (the old one lives on in the images that hold it)
+      e.slot = std::make_shared<dsp::CurveSlot>(data);
+      e.live = true;
+    } else {
+      e.slot->publish(data, sampleReclaimer_);
+    }
+    curveViews_[c.slot] = e.slot.get();
+  }
+  std::sort(curveTouched_.begin(), curveTouched_.end());
+  for (auto it = curveIds_.begin(); it != curveIds_.end();) {
+    if (std::binary_search(curveTouched_.begin(), curveTouched_.end(), it->second)) {
+      ++it;
+      continue;
+    }
+    curveSlots_[it->second].live = false;
+    curveFree_.push_back(it->second);
+    it = curveIds_.erase(it);
+  }
+}
+
+void ProjectLink::publishCurve(doc::DeviceId device, std::string_view param, const dsp::Curve& curve) {  // GU.1
+  std::lock_guard lock(mutex_);
+  const auto it = curveIds_.find(std::pair<uint32_t, std::string>{device.value, std::string(param)});
+  if (it == curveIds_.end() || !curveSlots_[it->second].live) return;
+  if (curveSlots_[it->second].slot->publish(dsp::compileCurve(curve), sampleReclaimer_)) sampleReclaimer_.collect();
+}
+
+uint32_t ProjectLink::curveSlot(doc::DeviceId device, std::string_view param) const {
+  std::lock_guard lock(mutex_);
+  const auto it = curveIds_.find(std::pair<uint32_t, std::string>{device.value, std::string(param)});
+  return it != curveIds_.end() && curveSlots_[it->second].live ? it->second : 0;
+}
+
+std::shared_ptr<const dsp::CurveSlot> ProjectLink::curveSlotObject(uint32_t id) const {
+  std::lock_guard lock(mutex_);
+  return id < kCurveSlots ? curveSlots_[id].slot : nullptr;
 }
 
 uint32_t ProjectLink::metaSlot(doc::DeviceId device, std::string_view path, uint32_t index) const {
@@ -1703,6 +1791,8 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   }
   metaTouched_.clear();
   lo.metaSlotOf = [this](doc::DeviceId d, std::string_view path, uint32_t index) { return metaSlotFor(d, path, index); };
+  curveTouched_.clear();  // GU.1: the control curves' slots (syncCurveSlots below)
+  lo.curveSlotOf = [this](doc::DeviceId d, std::string_view param) { return curveSlotFor(d, param); };
   auto lowered = doc::lower(*s, lo, lowered_ ? &*lowered_ : nullptr);
   auto fail = [&](const Error& e) {
     ++stats_.compileErrors;
@@ -1714,6 +1804,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   doc::LoweredProject& lp = lowered.value();
   metaFresh_.clear();
   syncMetaSlots(lp.metaResources);  // before any image is built: resourceFor reads the slots by id
+  syncCurveSlots(lp.curves);         // GU.1: likewise
   if (std::exchange(tapsFresh_, false) && onAnalysisTaps) {  // TX.spectrum: displays waiting for a tap look again
     std::function<void(std::function<void()>)> post;
     {

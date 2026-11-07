@@ -172,10 +172,10 @@ const DeviceValue* findValue(const std::vector<DeviceValue>& v, std::string_view
 
 const DeviceValue* Device::param(std::string_view key) const noexcept { return findValue(params, key); }
 const DeviceValue* Device::setting(std::string_view key) const noexcept { return findValue(settings, key); }
-KnobCurve Device::curve(std::string_view param) const noexcept {  // TX.knob-curves
+const dsp::Curve* Device::curve(std::string_view param) const noexcept {  // GU.1
   const auto it = std::lower_bound(curves.begin(), curves.end(), param,
-                                   [](const ParamCurve& a, std::string_view n) { return a.param < n; });
-  return it != curves.end() && it->param == param ? it->curve : KnobCurve::Default;
+                                   [](const ControlCurve& a, std::string_view n) { return a.param < n; });
+  return it != curves.end() && it->param == param ? &it->curve : nullptr;
 }
 
 // ---- Meta modules (TMM.3) --------------------------------------------------------------------------------------------
@@ -435,7 +435,7 @@ bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
          deepEq(a.meta, b.meta) &&  // TMM.3 (an empty map is always null: the commands keep it so)
          a.chainInput == b.chainInput &&  // TMM.10-fix1
          a.group == b.group &&            // TX.groups
-         a.curves == b.curves;            // TX.knob-curves
+         a.curves == b.curves;            // GU.1
 }
 
 bool shallowChainEq(const Chain& a, const Chain& b) noexcept {

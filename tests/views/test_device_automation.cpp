@@ -418,14 +418,17 @@ TEST_CASE("knob curves (views): a knob's Knob Curve submenu switches its curve, 
   chooseLinear();
   u.d.step();
   CHECK(u.history() == h0 + 1);
-  CHECK(doc::findDevice(*u.ctx.doc(), u.filter).device->curve("freq") == doc::KnobCurve::Linear);
-  CHECK(panel->paramValue("freq") == value);  // the value stays
-  CHECK(knob->value() == doctest::Approx((value - 20.0) / (20000.0 - 20.0)));  // the knob re-mapped onto the line
-  CHECK(knob->value() != doctest::Approx(octavePos));
+  REQUIRE(doc::findDevice(*u.ctx.doc(), u.filter).device->curve("freq") != nullptr);
+  CHECK(doc::findDevice(*u.ctx.doc(), u.filter).device->curve("freq")->preset == dsp::CurvePreset::Linear);
+  // GU.1: the knob stays where it is; the value follows the new curve.
+  CHECK(knob->value() == doctest::Approx(octavePos));
+  CHECK(panel->paramValue("freq") == doctest::Approx(20.0 + octavePos * (20000.0 - 20.0)));
+  CHECK(panel->paramValue("freq") != doctest::Approx(value));
   REQUIRE(u.ctx.undo());
   u.d.step();
-  CHECK(doc::findDevice(*u.ctx.doc(), u.filter).device->curve("freq") == doc::KnobCurve::Default);
+  CHECK(doc::findDevice(*u.ctx.doc(), u.filter).device->curve("freq") == nullptr);
   CHECK(knob->value() == doctest::Approx(octavePos));
+  CHECK(panel->paramValue("freq") == doctest::Approx(value));
   // A bool control has no curve; a rack's macro neither.
   CHECK_FALSE(knobCurveMenu(u.ctx, u.filter, "lfoSync").has_value());
   CHECK_FALSE(knobCurveMenu(u.ctx, u.rack, "macro0").has_value());

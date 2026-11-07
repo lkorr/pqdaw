@@ -86,7 +86,7 @@ bool sameUpToIds(const Device& a, const Device& b) {
 TEST_CASE("library files: a device preset round-trips exactly; its kind is in the first bytes") {
   Lib l;
   const DeviceId sat = l.add(l.midi, "saturator");
-  l.edit(ops::setDeviceParam(l.doc(), sat, "drive", 7.5));
+  l.edit(ops::setDeviceParam(l.doc(), sat, "drive", 0.75));  // GU.1: a knob position
   l.edit(ops::setDevicesActive(l.doc(), std::span<const DeviceId>(&sat, 1), false));
   const std::string text = must(serializePreset(l.device(sat), "Warm"));
   CHECK(text.find("\"pqpreset\"") < 64);

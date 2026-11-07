@@ -156,7 +156,7 @@ TEST_CASE("meta link: a nested Phase accumulator's freq drag compiles nothing an
   s0 = link->stats();
   REQUIRE(k.store.beginGesture().ok());
   for (int i = 1; i <= 16; ++i) {
-    k.edit(ops::setMetaParam(*k.store.current(), k.inst, "acc1", "phase_acc", "freq", 250.0 * i));
+    k.edit(ops::setMetaParamValue(*k.store.current(), k.inst, "acc1", "phase_acc", "freq", 250.0 * i));
     link->flush();
   }
   REQUIRE(k.store.commitGesture().ok());
@@ -208,7 +208,7 @@ TEST_CASE("meta link: a chain meta:phase_acc instrument plays its voices; MetaDa
   CHECK(rms(d.out, mark, d.out.size()) > 1e-3);  // three ramps (DC and all) through the mixer
   // Its own param is a device param: a write, no compile.
   app::LinkStats s0 = link->stats();
-  k.edit(ops::setMetaParam(*k.store.current(), acc, "", "phase_acc", "amp", 0.5));
+  k.edit(ops::setMetaParamValue(*k.store.current(), acc, "", "phase_acc", "amp", 0.5));
   link->flush();
   CHECK(link->stats().compiles == s0.compiles);
   CHECK(link->stats().paramWrites == s0.paramWrites + 1);
@@ -235,7 +235,7 @@ TEST_CASE("meta link (TMM.10-fix1): an unplugged Phase accumulator plays its bar
   Keys k;  // a held three-note chord
   k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
   const DeviceId acc = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
-  k.edit(ops::setMetaParam(*k.store.current(), acc, "", "phase_acc", "freq", 100.0));
+  k.edit(ops::setMetaParamValue(*k.store.current(), acc, "", "phase_acc", "freq", 100.0));
   k.edit(ops::setDeviceChainInput(*k.store.current(), acc, std::string(kChainUnplugged)));
   auto link = makeLink(k.store.current());
   CHECK(link->lastError().empty());
@@ -522,7 +522,7 @@ TEST_CASE("meta link: Phase accumulator -> Wavetable -> Envelope — the envelop
   // A slow attack (100 ms), sustain 0.5, a 200 ms release (−80 dB at 200 ms).
   for (auto [name, v] : {std::pair{"attack", 0.1}, std::pair{"decay", 0.05}, std::pair{"sustain", 0.5},
                          std::pair{"release", 0.2}})
-    k.edit(ops::setMetaParam(*k.store.current(), env, "", "envelope", name, v));
+    k.edit(ops::setMetaParamValue(*k.store.current(), env, "", "envelope", name, v));
   auto link = makeLink(k.store.current());
   CHECK(link->lastError().empty());
   const auto tap = link->metaVoiceTap(env, "", 0);
@@ -580,7 +580,7 @@ TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 20 ms (no click;
   // Unplugged: `in` reads 1, so the track plays the value itself (a DC through the mixer's constant gain).
   k.edit(ops::setDeviceChainInput(*k.store.current(), vca, std::string(kChainUnplugged)));
   const meta::VcaLaw law = meta::vcaLaw(meta::VcaCurve::Log, -meta::kVcaRange, meta::kVcaRange, 0.4, 0.0);
-  k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", "value", meta::vcaPosition(law, 0.5)));
+  k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", "value", meta::vcaPosition(law, 0.5)));
   auto link = makeLink(k.store.current());
   [[maybe_unused]] const ListenerId sub = k.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   CHECK(link->lastError().empty());
@@ -608,7 +608,7 @@ TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 20 ms (no click;
   float from = 0.5f;
   for (const Step& s : steps) {
     CAPTURE(s.param);
-    k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", s.param, s.value));
+    k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", s.param, s.value));
     link->flush();
     const size_t mark = d.out.size();
     d.run(16);  // TX.smooth: every param glides over 20 ms (960 frames: 15 blocks), then one more block at rest
@@ -648,10 +648,10 @@ TEST_CASE("meta link (TX.vca-knob): an older VCA state keeps its sound; a marker
   k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "vca", 0));
   const DeviceId vca = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
   k.edit(ops::setDeviceChainInput(*k.store.current(), vca, std::string(kChainUnplugged)));
-  k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", "min", -5000.0));
-  k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", "zone", 0.55));
+  k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", "min", -5000.0));
+  k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", "zone", 0.55));
   const meta::VcaLaw old = meta::vcaLaw(meta::VcaCurve::Log, -5000.0, meta::kVcaRange, 0.55, 0.0);
-  k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", "value", meta::vcaPosition(old, 1.0)));
+  k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", "value", meta::vcaPosition(old, 1.0)));
   // Saved and loaded: no marker in the file, all 0 when read, the same project.
   auto text = serializeProject(*k.store.current(), k.store.view());
   REQUIRE(text.ok());
@@ -675,7 +675,7 @@ TEST_CASE("meta link (TX.vca-knob): an older VCA state keeps its sound; a marker
   CHECK(g < 0.8f);
   const app::LinkStats s0 = link->stats();
   auto settle = [&](const char* param, double v) {
-    k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", param, v));
+    k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", param, v));
     link->flush();
     d.run(18);  // past the 20 ms glide
     return d.out.back() / g;
@@ -694,7 +694,7 @@ TEST_CASE("meta link (TX.vca-knob): an older VCA state keeps its sound; a marker
   off[0] = 0.02;
   CHECK(settle("mk_n100", 0.02) == doctest::Approx(want2).epsilon(1e-4));
   // A marker outside the range (min -50 hides -100): no effect.
-  k.edit(ops::setMetaParam(*k.store.current(), vca, "", "vca", "min", -50.0));
+  k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", "min", -50.0));
   const meta::VcaLaw narrow = meta::vcaLaw(meta::VcaCurve::Log, -50.0, meta::kVcaRange, 0.55, 0.0, off);
   std::array<double, meta::kVcaMarks> noN100 = off;
   noN100[0] = 0.0;
@@ -828,8 +828,8 @@ TEST_CASE("meta link (TMM.17): the face's voices carry the frequencies they play
   CHECK(hz[1] == doctest::Approx(c4 * std::exp2(4.0 / 12.0)).epsilon(1e-3));
   CHECK(hz[2] == doctest::Approx(c4 * 4.0 * std::exp2(7.0 / 12.0)).epsilon(1e-3));
   // Unplugged at 100 Hz, an octave up by its pitch: one voice at 200 Hz.
-  k.edit(ops::setMetaParam(*k.store.current(), acc, "", "phase_acc", "freq", 100.0));
-  k.edit(ops::setMetaParam(*k.store.current(), acc, "", "phase_acc", "pitch", 1200.0));
+  k.edit(ops::setMetaParamValue(*k.store.current(), acc, "", "phase_acc", "freq", 100.0));
+  k.edit(ops::setMetaParamValue(*k.store.current(), acc, "", "phase_acc", "pitch", 1200.0));
   k.edit(ops::setDeviceChainInput(*k.store.current(), acc, std::string(kChainUnplugged)));
   auto link2 = makeLink(k.store.current());
   app::FaceVoiceHub hub2(*link2);

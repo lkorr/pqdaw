@@ -10,7 +10,7 @@ patch Midi4 {
   _n0 = 0
   d6 = GroupNotes(d5)
   _n2 = voice_sum(d6)
-  d5 = BasicSynth__u5_0db0c13ccdfb86ab__m5_cf61ace271698ecd()
+  d5 = BasicSynth__u5_72c1014c5c1d315e__m5_cf61ace271698ecd()
   _n7 = 1
   _n8 = 0.002
   _n12 = volume <= -70 ? _n0 : db_to_gain(volume)
@@ -28,7 +28,7 @@ patch Midi4 {
 
 }
 
-patch BasicSynth__u5_0db0c13ccdfb86ab__m5_cf61ace271698ecd {
+patch BasicSynth__u5_72c1014c5c1d315e__m5_cf61ace271698ecd {
   param attack = 5ms [0.5ms..5s]
   param decay = 400ms [1ms..10s]
   param sustain = 0.5 [0..1]

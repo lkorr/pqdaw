@@ -46,7 +46,11 @@ double defaultRenderSeconds(const doc::Project& p) {
 }  // namespace
 
 int runRender(const CliOptions& o) {
-  auto loaded = doc::loadProject(o.project);
+  // GU.1: an older project's values become knob positions through the device library's curves.
+  auto lib = loadDeviceLibrary();
+  doc::LoadOptions lo;
+  if (lib.ok()) lo.devices = lib->get();
+  auto loaded = doc::loadProject(o.project, lo);
   if (!loaded) {
     std::fprintf(stderr, "pqdaw: %s\n", loaded.error().message.c_str());
     return 1;

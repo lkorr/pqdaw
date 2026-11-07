@@ -162,7 +162,7 @@ struct WtSong {
     return wid;
   }
   void data(DeviceId d, const meta::DataPtr& v) { edit(ops::setMetaData(doc(), d, "", "wavetable", v)); }
-  void param(DeviceId d, const char* name, double v) { edit(ops::setMetaParam(doc(), d, "", "wavetable", name, v)); }
+  void param(DeviceId d, const char* name, double v) { edit(ops::setMetaParamValue(doc(), d, "", "wavetable", name, v)); }
   void setting(DeviceId d, const char* name, double v) { edit(ops::setMetaSetting(doc(), d, "", "wavetable", name, v)); }
   void lane(size_t track, DeviceId d, const char* name, std::vector<Breakpoint> points) {
     auto l = std::make_shared<AutomationLane>();
@@ -637,7 +637,7 @@ struct AliasRig {
     sub = store.subscribe([this](const StoreEvent& e) { link->onDocumentChange(e); });
     edit(ops::addMetaCall(*store.current(), inst, text, "wt1", "wavetable"));
     edit(ops::setMetaData(*store.current(), inst, "wt1", "wavetable", sawToSquare()));
-    edit(ops::setMetaParam(*store.current(), inst, "wt1", "wavetable", "position", 0.5));
+    edit(ops::setMetaParamValue(*store.current(), inst, "wt1", "wavetable", "position", 0.5));
     link->flush();
     REQUIRE(link->lastError().empty());
     REQUIRE(link->waitForMetaTables());
@@ -649,7 +649,7 @@ struct AliasRig {
     REQUIRE(store.dispatch(e->command).ok());
   }
   void bake(const char* param, double v) {
-    edit(ops::setMetaParam(*store.current(), inst, "wt1", "wavetable", param, v));
+    edit(ops::setMetaParamValue(*store.current(), inst, "wt1", "wavetable", param, v));
     REQUIRE(link->waitForMetaTables());
   }
   void warpMode(int m) {

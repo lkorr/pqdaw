@@ -98,6 +98,7 @@
 #include <string>
 #include <thread>
 #include <map>
+#include <set>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -111,6 +112,7 @@
 #include "pq/document/store.h"
 #include "pq/core/tap_ring.h"
 #include "pq/core/voice_tap.h"
+#include "pq/dsp/curve.h"
 #include "pq/dsp/frame_table_slot.h"
 #include "pq/dsp/tuning_table.h"
 #include "pq/engine/background_compile.h"
@@ -340,6 +342,15 @@ public:
   // track's polyphony, a record per engine block. Any thread (mutex_).
   static constexpr uint32_t kMetaSlots = 4096;
   uint32_t metaSlot(doc::DeviceId device, std::string_view path, uint32_t index) const;  // 0: none
+  // ---- Control curves (GU.1; pq/document/lower.h "Modulation wires") ----
+  // A DRIVEN control's `curve` atom reads a dsp::CurveSlot the link owns: LowerOptions::curveSlotOf gives each (device,
+  // param) a stable id (from 1; Resources::curves) while the lowering lists it in LoweredProject::curves; every compile
+  // publishes the listed curves into them, and a param change of a driven control (ChangeSet Param: SetParamCurve of the
+  // same class) publishes its new curve — no compile. The slot objects are kept alive by the images that read them
+  // (keepAlive). An undriven control has none: its value is written as its param (the curve evaluated here).
+  static constexpr uint32_t kCurveSlots = 4096;
+  uint32_t curveSlot(doc::DeviceId device, std::string_view param) const;  // 0: none (tests)
+  std::shared_ptr<const dsp::CurveSlot> curveSlotObject(uint32_t id) const;  // null: none (tests)
   // TMM.13-fix1 M12: bumps whenever the meta slots change (a compile's syncMetaSlots, a Reset): what metaSlot /
   // metaVoiceTap / metaFrameTable return can only differ after it moved. Any thread.
   uint64_t metaGeneration() const noexcept { return metaGen_.load(std::memory_order_acquire); }
@@ -696,6 +707,22 @@ private:
   std::array<const dsp::FrameTableSlot*, kMetaSlots> frameTableViews_{};
   std::array<VoiceTap*, kMetaSlots> voiceTapViews_{};
   std::array<TapRing*, kMetaSlots> signalTapViews_{};  // TX.spectrum
+  // GU.1: the control curves' slots (mutex_; see "Control curves").
+  struct CurveEntry {
+    std::shared_ptr<dsp::CurveSlot> slot;
+    bool live = false;
+  };
+  std::map<std::pair<uint32_t, std::string>, uint32_t, std::less<>> curveIds_;
+  std::vector<CurveEntry> curveSlots_ = std::vector<CurveEntry>(kCurveSlots);
+  std::vector<uint32_t> curveTouched_;  // ids this lowering named (compile path)
+  std::deque<uint32_t> curveFree_;
+  uint32_t curveNext_ = 1;
+  std::array<const dsp::CurveSlot*, kCurveSlots> curveViews_{};
+  uint32_t curveSlotFor(doc::DeviceId device, std::string_view param);           // compile path (allocates)
+  void syncCurveSlots(const std::vector<doc::CurveSite>& sites);                 // compile path, after lower
+  void publishCurve(doc::DeviceId device, std::string_view param, const dsp::Curve& curve);  // UI thread
+  // GU.1: the device params the last lowering drives ("dev<id>:<name>": their knob position goes to the "@pos" key).
+  std::set<std::string, std::less<>> drivenKeys_;
   engine::Resources resources_;
   // TMM.5: the frame-table builder (its worker publishes into metaSlots_; stopped first in the destructor).
   std::unique_ptr<meta::TableBuilder> tables_;

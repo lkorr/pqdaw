@@ -469,7 +469,7 @@ std::vector<Case> cases() {
                }, S, [](Fixture& f, const ChangeSet&) { CHECK_FALSE(f.track(f.lead).devices.at(1)->active); }});
   c.push_back({"SetDeviceParam", [withChain](Fixture& f) -> Command {
                  withChain(f);
-                 return SetDeviceParam{chain.fx, "width", 1.5};
+                 return SetDeviceParam{chain.fx, "width", 0.375};  // GU.1: a knob position
                }, P, [](Fixture&, const ChangeSet& cs) {
                  CHECK(cs.params == std::vector<ParamRef>{ParamRef::device(chain.fx, "width")});
                  CHECK(cs.devices == std::vector<DeviceId>{chain.fx});
@@ -783,17 +783,17 @@ std::vector<Case> cases() {
                }});
   c.push_back({"SetMetaParam (nested)", [withMeta](Fixture& f) -> Command {
                  withMeta(f);
-                 return SetMetaParam{chain.fx, "acc1", "freq", 200.0};
+                 return SetMetaParam{chain.fx, "acc1", "freq", 0.6};  // GU.1: a knob position
                }, P, [metaAt](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.params == std::vector<ParamRef>{ParamRef::metaParam(chain.fx, "acc1", "freq")});
-                 CHECK(metaAt(f, chain.fx, "acc1")->param("freq")->value == 200.0);
+                 CHECK(metaAt(f, chain.fx, "acc1")->param("freq")->value == 0.6);
                }});
   c.push_back({"SetMetaParam (a chain meta device's own)", [withMeta](Fixture& f) -> Command {
                  withMeta(f);
-                 return SetMetaParam{mt.dev, "", "gain", 1.5};
+                 return SetMetaParam{mt.dev, "", "gain", 0.75};  // GU.1: a knob position
                }, P, [](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.params == std::vector<ParamRef>{ParamRef::device(mt.dev, "gain")});
-                 CHECK(findDevice(f.doc(), mt.dev).device->param("gain")->value == 1.5);
+                 CHECK(findDevice(f.doc(), mt.dev).device->param("gain")->value == 0.75);
                }});
   c.push_back({"SetMetaSetting (nested)", [withMeta](Fixture& f) -> Command {
                  withMeta(f);
@@ -818,12 +818,21 @@ std::vector<Case> cases() {
                  CHECK(cs.devices == std::vector<DeviceId>{mt.dev});
                  CHECK(findDevice(f.doc(), mt.dev).device->chainInput == "-");
                }});
-  c.push_back({"SetParamCurve (TX.knob-curves: a knob's curve; Structural: the wire law follows it)", [withChain](Fixture& f) -> Command {
+  c.push_back({"SetParamCurve (GU.1: a control's curve; Structural when its class changes)", [withChain](Fixture& f) -> Command {
                  withChain(f);
-                 return SetParamCurve{chain.fx, "gain", KnobCurve::Exponential};
+                 return SetParamCurve{chain.fx, "gain", pq::dsp::curvePreset(pq::dsp::CurvePreset::Exponential, -70.0, 35.0), true};
                }, S, [](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.devices == std::vector<DeviceId>{chain.fx});
-                 CHECK(findDevice(f.doc(), chain.fx).device->curve("gain") == KnobCurve::Exponential);
+                 REQUIRE(findDevice(f.doc(), chain.fx).device->curve("gain") != nullptr);
+                 CHECK(findDevice(f.doc(), chain.fx).device->curve("gain")->preset == pq::dsp::CurvePreset::Exponential);
+               }});
+  c.push_back({"SetParamCurve (GU.1: the same class: a Param change, no compile)", [withChain](Fixture& f) -> Command {
+                 withChain(f);
+                 return SetParamCurve{chain.fx, "gain", pq::dsp::curvePreset(pq::dsp::CurvePreset::Linear, -60.0, 30.0), false};
+               }, P, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::device(chain.fx, "gain")});
+                 REQUIRE(findDevice(f.doc(), chain.fx).device->curve("gain") != nullptr);
+                 CHECK(findDevice(f.doc(), chain.fx).device->curve("gain")->min == -60.0);
                }});
   static DeviceId groupId;
   c.push_back({"SetDeviceGroup (TX.groups: a block into a group; Meta: no sound changes)", [withChain](Fixture& f) -> Command {

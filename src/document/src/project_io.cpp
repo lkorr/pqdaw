@@ -142,7 +142,9 @@ Status saveProject(std::string_view dirUtf8, const DocumentStore& store, const S
 }
 
 Status openProject(std::string_view dirUtf8, DocumentStore& store, const LoadOptions& options) {
-  Result<LoadedProject> r = loadProject(dirUtf8, options);
+  LoadOptions o = options;
+  if (o.devices == nullptr) o.devices = store.deviceLibrary();  // GU.1: the store's library converts an older file
+  Result<LoadedProject> r = loadProject(dirUtf8, o);
   if (!r) return std::move(r).error();
   store.reset(r->project);
   store.view() = std::move(r->view);

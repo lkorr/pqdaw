@@ -1068,7 +1068,7 @@ Status setupDeviceChain(Shell& shell) {
   if (!sat || !util) return Error{ErrorCode::Unknown, "device-chain: addDevice failed", {}};
   const doc::DeviceId satId = sat->devices[0], utilId = util->devices[0];
   if (!run(doc::ops::setDeviceSetting(*store.current(), satId, "type", 6.0)) ||
-      !run(doc::ops::setDeviceParam(*store.current(), satId, "drive", 1.9952623149688795)) ||  // +6 dB
+      !run(doc::ops::setDeviceParamValue(*store.current(), *ctx.deviceLibrary(), satId, "drive", 1.9952623149688795)) ||  // +6 dB
       !run(doc::ops::setDevicesActive(*store.current(), std::vector<doc::DeviceId>{utilId}, false)))
     return Error{ErrorCode::Unknown, "device-chain: device edits failed", {}};
   ctx.setSelectedTrack(track);
@@ -1529,17 +1529,19 @@ Status setupDeviceKnobCurves(Shell& shell) {
   const auto ut = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
   if (!pa || !af || !ut) return Error{ErrorCode::Unknown, "device-knob-curves: addDevice failed", {}};
   const doc::DeviceId acc = pa->devices[0], filter = af->devices[0], util = ut->devices[0];
-  doc::Batch b{"scene", {}};
-  b.commands.push_back(doc::SetDeviceParam{acc, "freq", 220.0});
-  b.commands.push_back(doc::SetDeviceParam{acc, "amp", 1.5});
-  b.commands.push_back(doc::SetParamCurve{acc, "freq", doc::KnobCurve::Linear});
-  b.commands.push_back(doc::SetParamCurve{acc, "amp", doc::KnobCurve::Exponential});
-  b.commands.push_back(doc::SetDeviceParam{filter, "freq", 1000.0});
-  b.commands.push_back(doc::SetParamCurve{filter, "freq", doc::KnobCurve::Linear});
-  b.commands.push_back(doc::SetParamCurve{filter, "res", doc::KnobCurve::Exponential});
-  b.commands.push_back(doc::SetDeviceParam{util, "gain", std::pow(10.0, -6.0 / 20.0)});
-  b.commands.push_back(doc::SetParamCurve{util, "gain", doc::KnobCurve::Logarithmic});
-  if (!store.dispatch(b).ok()) return Error{ErrorCode::Unknown, "device-knob-curves: curves failed", {}};
+  // GU.1: the curves first (a curve edit keeps the knob position), then the values typed in units on them.
+  const doc::DeviceLibrary& lib = *ctx.deviceLibrary();
+  using P = dsp::CurvePreset;
+  const bool ok = run(doc::ops::setParamCurvePreset(*store.current(), lib, acc, "freq", P::Linear)) &&
+                  run(doc::ops::setParamCurvePreset(*store.current(), lib, acc, "amp", P::Exponential)) &&
+                  run(doc::ops::setParamCurvePreset(*store.current(), lib, filter, "freq", P::Linear)) &&
+                  run(doc::ops::setParamCurvePreset(*store.current(), lib, filter, "res", P::Exponential)) &&
+                  run(doc::ops::setParamCurvePreset(*store.current(), lib, util, "gain", P::Logarithmic)) &&
+                  run(doc::ops::setDeviceParamValue(*store.current(), lib, acc, "freq", 220.0)) &&
+                  run(doc::ops::setDeviceParamValue(*store.current(), lib, acc, "amp", 1.5)) &&
+                  run(doc::ops::setDeviceParamValue(*store.current(), lib, filter, "freq", 1000.0)) &&
+                  run(doc::ops::setDeviceParamValue(*store.current(), lib, util, "gain", std::pow(10.0, -6.0 / 20.0)));
+  if (!ok) return Error{ErrorCode::Unknown, "device-knob-curves: curves failed", {}};
   ctx.setSelectedTrack(track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
@@ -1764,7 +1766,7 @@ Status setupProjectPatchFree(Shell& shell) {
     if (!e) return e.error();
     return ctx.store().dispatch(e->command);
   };
-  if (Status s = run(doc::ops::setDeviceParam(*ctx.doc(), lfo, "freq", 2.0)); !s) return s;
+  if (Status s = run(doc::ops::setDeviceParamValue(*ctx.doc(), *ctx.deviceLibrary(), lfo, "freq", 2.0)); !s) return s;
   if (Status s = run(doc::ops::connectWire(*ctx.doc(), ctx.store().ids(), lfo, "out", ids.wt, "position")); !s) return s;
   if (Status s = run(doc::ops::connectWire(*ctx.doc(), ctx.store().ids(), ids.acc, "out", util, "x")); !s) return s;
   shell.tree().layoutNow();
@@ -1879,9 +1881,9 @@ Status setupProjectPatchPanels(Shell& shell) {
   }
   const doc::DeviceId lfo = add(mod, "lfo_device");
   if (!filter.valid() || !util.valid() || !lfo.valid()) return Error{ErrorCode::Unknown, "project-patch-panels: adding the devices failed", {}};
-  if (Status s = run(doc::ops::setDeviceParam(*st.current(), filter, "freq", 600.0)); !s) return s;
-  if (Status s = run(doc::ops::setDeviceParam(*st.current(), filter, "res", 0.4)); !s) return s;
-  if (Status s = run(doc::ops::setDeviceParam(*st.current(), util, "width", 1.4)); !s) return s;
+  if (Status s = run(doc::ops::setDeviceParamValue(*st.current(), *ctx.deviceLibrary(), filter, "freq", 600.0)); !s) return s;
+  if (Status s = run(doc::ops::setDeviceParamValue(*st.current(), *ctx.deviceLibrary(), filter, "res", 0.4)); !s) return s;
+  if (Status s = run(doc::ops::setDeviceParamValue(*st.current(), *ctx.deviceLibrary(), util, "width", 1.4)); !s) return s;
   if (Status s = run(doc::ops::setDeviceSetting(*st.current(), util, "bassMono", 1.0)); !s) return s;
   if (Status s = run(doc::ops::connectWire(*st.current(), st.ids(), lfo, "lfo", util, "gain")); !s) return s;
   project_patch::ProjectPatchView* v = findProjectPatch(shell);

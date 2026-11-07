@@ -48,6 +48,14 @@ public:
       live(doc::ops::setMacroValue(*ctx_.doc(), m.rack->id, mm.macro, std::clamp(x, 0.0, 1.0) * doc::kMacroMax));
       return;
     }
+    // GU.1: the document stores the knob position that gives the value (nearest the knob's current one).
+    const doc::Device* d = doc::findDevice(*ctx_.doc(), id_).device;
+    const devices::ParamInfo* info = panel != nullptr ? panel->signature().findParam(param) : nullptr;
+    if (d != nullptr && !d->rack && info != nullptr) {
+      live(doc::ops::setDeviceParam(*ctx_.doc(), id_, std::string(param),
+                                    devices::toPosition(*info, value, devices::storedPosition(*info, *d))));
+      return;
+    }
     live(doc::ops::setDeviceParam(*ctx_.doc(), id_, std::string(param), value));
   }
   void paramGestureEnd(std::string_view) override {
@@ -206,9 +214,8 @@ void ProjectPatchView::syncPanels() {
     p.setActive(d.active);
     p.setPresetName(ctx_.library().presetName(d.id));
     for (const devices::ParamInfo& pi : p.signature().params) {
-      p.setParamCurve(pi.name, d.curve(pi.name));  // TX.knob-curves
-      const doc::DeviceValue* v = d.param(pi.name);
-      p.setParamValue(pi.name, v != nullptr ? v->value : pi.def);
+      p.setParamCurve(pi.name, d.curve(pi.name));  // GU.1
+      p.setParamValue(pi.name, devices::storedValue(pi, d));
     }
     for (const devices::ConstInfo& c : p.signature().consts) {
       const doc::DeviceValue* v = d.setting(c.name);

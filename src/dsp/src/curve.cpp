@@ -335,6 +335,19 @@ CurveData compileCurve(const Curve& c) noexcept {
 
 bool sameData(const CurveData& a, const CurveData& b) noexcept { return std::memcmp(&a, &b, sizeof(CurveData)) == 0; }
 
+uint64_t curveHash(const Curve& c) noexcept {
+  const CurveData d = compileCurve(c);
+  uint64_t h = 1469598103934665603ull;
+  auto mix = [&](const void* p, size_t n) {
+    const auto* b = static_cast<const unsigned char*>(p);
+    for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 1099511628211ull;
+  };
+  mix(&d, sizeof d);
+  mix(&c.min, sizeof c.min);
+  mix(&c.max, sizeof c.max);
+  return h | 1u;
+}
+
 CurveSlot::CurveSlot(const CurveData& initial) { data_.store(new CurveData(initial), std::memory_order_release); }
 
 CurveSlot::~CurveSlot() { delete data_.load(std::memory_order_acquire); }

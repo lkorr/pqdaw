@@ -215,8 +215,10 @@
 #include <vector>
 
 #include "pq/core/result.h"
+#include "pq/dsp/curve.h"
 #include "pq/document/model.h"
 #include "pq/graph/infer.h"
+#include "pq/graph/param_curve.h"
 #include "pq/graph/parse.h"
 #include "pq/graph/project.h"
 #include "pq/meta/registry.h"
@@ -259,6 +261,11 @@ struct LowerOptions {
   // TMM.3: the slot id of resource `index` (meta::ResourceRequest::index) of the meta instance (device, path) — stable
   // while the instance exists (the link owns the slots, TMM.2 / TMM.5). Unset: 0.
   std::function<uint32_t(DeviceId, std::string_view path, uint32_t index)> metaSlotOf;
+  // GU.1: the CurveSlot (engine Resources::curves index) of driven control (device, param): stable while the control is
+  // driven (the link owns the slots and publishes LoweredProject::curves into them); 0: none (the `curve` atom is then
+  // the identity on the position). Unset: the lowering numbers its driven controls 1, 2, … in LoweredProject::curves
+  // order and owns their slots (graph.curveSlots: a compile given no Resources::curves reads them; tests, tools).
+  std::function<uint32_t(DeviceId, std::string_view param)> curveSlotOf;
 };
 
 // One track's patch (immutable once made; shared between lowerings while its IR is equal, so the link sees which
@@ -356,23 +363,25 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //           the wires alone (an unpatched input's default is what it reads only while no wire reaches it). On the
 //           source's own track the source keeps every channel (a stereo output into a stereo input); across tracks
 //           its first channel (export m<wire> / in m<wire>, as for params). No tap.
-//   TX.knob-curves (SPEC §15 2026-11-01 "answers to Q186" + clarification; model.h KnobCurve, WireLaw): the Add law
-//           above is now the UNITS law (WireLaw::Units: every TX.patching wire of a schema-13 … 15 file migrates to
-//           it, so an old project lowers to the same graph). An Add wire adds BEFORE the knob's curve
-//           (paramTravel(decl, Device::curve)): on a CURVED knob (Octave / Exponential / Logarithmic, travelsInUnits
-//           false: a cutoff, the Phase accumulator's frequency bar, an envelope time) it joins the Travel wires' sum
-//           without an amount — p = clip(pk + Σ amount·travel_src + Σ add_src, 0, 1), value = the curve at p (+1 =
-//           the whole range; an @wrap param wraps p with frac, an @signed one reaches −1 … 1 with the curve mirrored:
-//           value = sign(p)·curve(|p|)); on a LINEAR knob it adds in its units as above, and on a dB gain in dB:
-//           value = e^(clip(ln centre + Σ src · ln 10 / 20, ln lo, ln hi)) (its tap in nepers: ModulationTap::db).
-//           The stages: travel (Travel + curved Add), then linear Add, then Units, each centred on the one before;
-//           the tap is the last stage's. Travel wires and macro mappings move along the knob's curve too (the
-//           declared one unless switched: unchanged for every old project).
+//   GU.1 (docs/plans/GU.md "Curves"; model.h ControlCurve, WireLaw): a DRIVEN control — a param with a lowered wire,
+//           an automation lane (even an empty one: a lane is structural) or a macro mapping — is lowered as its knob
+//           POSITION (the root param d<id>__<name>, now in [0, 1] — the mapped position for a mapped param), then
+//           stage 1 in position: + Σ amount·src of the Travel wires + Σ src of the Add wires when the control's curve
+//           is not linear (dsp::curveIsLinear); then ONE native `curve` atom (pq/dsp/atoms.h; its CurveSlot from
+//           LowerOptions::curveSlotOf, listed in LoweredProject::curves) maps the position through the control's
+//           curve (clamp / wrap / mirror for a signed curve, the segments, the step, the output conversion); stage
+//           2, on a linear curve: + Σ src of the Add wires in the curve's units, clamped to the curve's range (not
+//           for wrap; ±max(|min|, |max|) for signed), stepped, then the output conversion (`curve` with convert 0,
+//           then db_to_gain: a dB gain adds in dB); stage 3: the migrated Units wires in the DSP units after it all,
+//           clamped to the declared range. The tap is the last stage's (ModulationTap: position, curve units or DSP
+//           units). An UNDRIVEN control has no op at all: its value is the curve at its position, evaluated on the UI
+//           thread (lowerParams: dsp::evalCurve) and written as the runtime param, as before GU.1 (inside instrument
+//           groups too). A rack's params (macros, the selector) are not curves: values 0 … 127, lowered as before.
 //   units   a param whose patch adds its wires after its own law — an `in <param>_add` beside it (the VCA's `value`,
 //           meta::ParamSpec::unitsInBody: the knob is a position, the wire adds to the multiplier) — takes them there:
-//           the param stays the knob (param rate). TX.knob-curves: a Units wire always; an Add wire only when the
-//           knob is linear in that law (meta::Type::unitsLaw: the VCA on its Bend curve), else it adds to the knob
-//           position (the VCA on its Log curve: in travel, through the curve).
+//           the param stays the knob (param rate). A Units wire always; an Add wire only when the knob is linear in
+//           that law (meta::Type::unitsLaw: the VCA on its Bend curve), else it adds to the knob position (the VCA on
+//           its Log curve, through the curve). (GU.4 replaces the VCA's own law with a curve.)
 //   meta    a chain meta device's inputs that Add wires reach become `in`s of its expansion (meta::ExpandContext::
 //           wired: an unwired chain keeps its expansion and key; under ChainNotes the chain input reads the note's
 //           signal plus the wires).
@@ -483,11 +492,11 @@ struct ModulationTap {
   std::string param;
   uint32_t track = 0;  // index into graph.tracks
   std::string port;    // "tap_d<id>_<param>"
-  // TX.patching: the tap is in the param's own units (a site with an added wire: how far the value moved), not in knob
-  // travel (a site with migrated Travel wires only).
-  bool units = false;
-  // TX.knob-curves: units in NEPERS (ln gain: dB × ln 10 / 20) — an Add wire into a dB gain on its linear (dB) curve.
-  bool db = false;
+  // GU.1: what the tap measures — how far the wires moved the control up and down — in knob POSITION (stage 1: Add
+  // wires on a curved control, Travel wires; not clamped), in the curve's UNITS (stage 2: Add wires on a linear curve;
+  // dB for a dB gain), or in the DSP units after the whole curve (stage 3: migrated Units wires).
+  enum class Domain : uint8_t { Position, Curve, Dsp };
+  Domain domain = Domain::Position;
 };
 
 struct LoweredParam {
@@ -496,6 +505,20 @@ struct LoweredParam {
   std::string name;     // the param's name in the track patch
   float value = 0.0f;   // current value in the param's unit
   std::optional<ParamRef> ref;
+  // GU.1: a driven control's knob (lower.h "Modulation wires"): `value` is its knob POSITION, the `curve` atom maps it
+  // (an undriven device param's value is the curve at its position, in the param's units). Automation writes positions
+  // into exactly these.
+  bool position = false;
+};
+
+// GU.1: a driven control's curve (lower.h "Modulation wires"): the CurveSlot its `curve` atom reads (LowerOptions::
+// curveSlotOf; 0: none, the atom is then the identity) and the curve to publish into it.
+struct CurveSite {
+  TrackId track;
+  DeviceId device;
+  std::string param;
+  uint32_t slot = 0;
+  dsp::Curve curve;
 };
 
 // A send lowered with an automatic 1-sample delay because it closes a delay-free loop (see the file comment).
@@ -514,6 +537,7 @@ struct LoweredProject {
   std::vector<DeviceId> missingDevices;                       // bypassed: patch not in the library (or not its kind)
   std::vector<WireState> wires;                               // T4.7: every wire of the project, in id order
   std::vector<ModulationTap> taps;                            // T4.7: one per modulated param (also graph.taps)
+  std::vector<CurveSite> curves;                              // GU.1: one per driven control (its `curve` atom's slot)
   // T4.4-fix1: user devices. With any, graph.library is `userLibrary` (their renamed patches, then the library's and
   // the files their texts import), and the resolutions stay alive with the lowering (the compiled units' instances
   // point into them).
@@ -551,38 +575,35 @@ struct LoweredProject {
 std::vector<WireState> wireStates(const Project& project, const graph::PatchLibrary& library);
 std::vector<WireState> wireStates(const Project& project, const DeviceLibrary& devices);
 
-// T4.7: the knob travel of a device param — what its panel knob shows (pq/views/devices/device_model.h toPosition /
-// fromPosition follow the same rule) and what modulation adds to: Log for @curve(exp) with positive ends and for dB
-// gains with a positive floor (linear in dB), else Linear; @steps (and integer ranges with them) round the value.
-// TMM.3: `@curve(exp0, k)` (the Phase accumulator's frequency) is exponential from exactly lo: value =
-// lo + (hi − lo)·(2^(k·p) − 1)/(2^k − 1) (exp0 = k; 0 for the other laws).
-// TX.knob-curves (model.h KnobCurve): the travel of a knob on curve `curve` — Default the declared law above; Linear:
-// linear in the units (a dB gain: Log, linear in dB); Octave: Log (lo > 0), a declared exp0 law kept; Exponential /
-// Logarithmic: exp0 = ±kKnobBendK / ln 2 — with `log` (a dB gain) the bend is in dB: value = lo·(hi/lo)^g(p), g the
-// bend. A curve the param cannot take (curveAvailable false) resolves to the declared law.
-struct ParamTravel {
-  bool log = false;
-  double lo = 0.0, hi = 1.0;
-  bool round = false;
-  double exp0 = 0.0;  // ≠ 0: value = lo + (hi − lo)·g(p) (log: lo·(hi/lo)^g(p)), g = (2^(exp0·p) − 1)/(2^exp0 − 1)
-  bool db = false;    // TX.knob-curves: a dB gain with a positive floor (log is its declared law: linear in dB)
-};
-ParamTravel paramTravel(const graph::ParamDecl& decl, KnobCurve curve = KnobCurve::Default) noexcept;
-// TX.knob-curves: `declared` (paramTravel(decl)) on curve `curve` (paramTravel(decl, curve) is this).
-ParamTravel withCurve(const ParamTravel& declared, KnobCurve curve) noexcept;
-// TX.knob-curves: whether the param can take the curve (a continuous range: not @steps, hi > lo; Octave needs lo > 0
-// or a declared exp0 law, and is not offered for a dB gain). Default always.
-bool curveAvailable(const ParamTravel& declared, KnobCurve curve) noexcept;
-// TX.knob-curves: the curve Default means for this param (Octave for @curve(exp) / exp0, else Linear: a dB gain's
-// declared law is linear in dB).
-KnobCurve declaredCurve(const ParamTravel& declared) noexcept;
-// TX.knob-curves: whether a knob on travel `t` is LINEAR in its units (an Add wire adds in units: dB for a dB gain);
-// false: curved (an Add wire adds in travel).
-bool travelsInUnits(const ParamTravel& t) noexcept;
-// TX.knob-curves: the declaration of real param `param` of `patch` (null: none, or a bool).
+// ---- Control curves (GU.1; docs/plans/GU.md "Curves"; model.h ControlCurve; pq/dsp/curve.h) ------------------------
+// The curve a param's declaration gives: its range ([lo..hi]; none: [min(0, default), max(1, default)]), its @curve
+// preset (`linear`; `octave` — or its old name `exp` — with lo > 0; `exponential` / `logarithmic` [, k]; `exp0`, k:
+// exponential from exactly lo, the Phase accumulator's frequency), its unit (@unit or the literals': a dB gain with a
+// positive floor is a curve in dB with the DbToGain output; Hz, s, %, cents the readout), @steps (step 1), a bool (0 …
+// 1, step 1), @wrap (CurveMode::Wrap), @signed (CurveMode::Signed). What every param of the patch language plays unless
+// its device stores another (Device::curves).
+using graph::declaredCurve;  // dsp::Curve declaredCurve(const graph::ParamDecl&): pq/graph/param_curve.h
+// The curve `device` plays for its param `param` declared by `decl`: its own (Device::curves), else the declared one.
+dsp::Curve controlCurve(const Device& device, std::string_view param, const graph::ParamDecl& decl) noexcept;
+// The knob position of `device`'s param: the stored one, else the declared default's through the DECLARED curve
+// (dsp::curvePosition; a curve edit keeps the knob where it is).
+double paramPosition(const Device& device, std::string_view param, const graph::ParamDecl& decl) noexcept;
+// The param's value in its units: controlCurve at paramPosition (an undriven control's runtime value).
+double paramValue(const Device& device, std::string_view param, const graph::ParamDecl& decl) noexcept;
+// The knob curve menus' presets (the "Knob Curve" submenus; the patch language's names): the curves `declared` can
+// switch to, in menu order — Octave (min > 0 and not a dB gain, or a declared exp0 curve, which it keeps), Exponential,
+// Logarithmic, Linear; none for a stepped or empty range. curveWithPreset builds one over the declared range, unit,
+// step, mode and output (a dB gain stays in dB); the declared preset gives the declared curve itself.
+std::vector<dsp::CurvePreset> curvePresets(const dsp::Curve& declared);
+dsp::Curve curveWithPreset(const dsp::Curve& declared, dsp::CurvePreset preset) noexcept;
+// The preset a curve shows in those menus (its own; Custom for a drawn one).
+inline dsp::CurvePreset curvePresetOf(const dsp::Curve& c) noexcept { return c.preset; }
+// Whether an Add wire into a control on `curve` adds in its units (a linear curve) rather than in position.
+inline bool addsInUnits(const dsp::Curve& curve) noexcept { return dsp::curveIsLinear(curve); }
+// The declaration of real param `param` of `patch` (null: none, or a bool).
 const graph::ParamDecl* findParamDecl(const graph::Patch& patch, std::string_view param) noexcept;
-double travelPosition(const ParamTravel& t, double value) noexcept;  // [0, 1]
-double travelValue(const ParamTravel& t, double position) noexcept;  // position clamped to [0, 1]
+// The declaration of any param `param` of `patch` (bools too; null: none).
+const graph::ParamDecl* findAnyParamDecl(const graph::Patch& patch, std::string_view param) noexcept;
 
 // Errors: no master, no library, an entity id too large for nodeIdFor, more setting constants in one track than the
 // pool holds. `previous` (optional): patches with equal IR are shared from it.
@@ -629,6 +650,11 @@ std::string paramKey(const ParamRef& ref);
 // lowered patch declares only while the param is a runtime param of its own: not macro-mapped, a rack param only while
 // the rack reads it).
 std::string paramKey(const AutomationLane& lane);
+// GU.1: the key a DRIVEN control's knob position has ("dev<id>:<name>@pos": LoweredParam::position), apart from the
+// undriven value's, so an image built before a control became driven (or after it stopped) never reads the other
+// meaning; an automation lane on a device param (not a rack's) drives that key (paramKey(project, lane)).
+inline constexpr std::string_view kPositionKeySuffix = "@pos";
+std::string paramKey(const Project& project, const AutomationLane& lane);
 // T4.18: the lowest id of the automation lanes of chain `chain`'s volume / pan on `t` (the rack's track), or invalid:
 // with one, the chain lowers its volume and pan as params of their own (see "Racks" above), the law's nodes keyed by
 // that lane id (nodeIdFor(NodeRole::Chain, lane id, k): a lane id is no other entity's id, like a chain's).

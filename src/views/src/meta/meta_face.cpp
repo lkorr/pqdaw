@@ -122,49 +122,39 @@ void Face::paintJacks(ui::FacePainter& p, const FaceEnv& env) const {
   }
 }
 
-// ---- TX.knob-curves ----
+// ---- TX.knob-curves / GU.1 ----
 namespace {
-doc::ParamTravel specTravel(const meta::ParamSpec& s) noexcept {  // the declared law, as doc::paramTravel reads the expansion's
-  doc::ParamTravel t;
-  t.lo = std::min(s.min, s.max);
-  t.hi = std::max(s.min, s.max);
-  t.log = s.curve == meta::Curve::Exp && t.lo > 0.0;
-  t.exp0 = s.curve == meta::Curve::Exp0 && s.curveK > 0.0 && t.hi > t.lo ? s.curveK : 0.0;
-  return t;
-}
-// The switched travel of param i (false: the declared law, meta::travelToValue's).
-bool switchedTravel(const MetaTarget& target, const meta::Type& type, size_t i, doc::ParamTravel& out) noexcept {
+// The switched curve of param i (false: the declared one, meta::travelToValue's).
+bool switchedCurve(const MetaTarget& target, const meta::Type& type, size_t i, dsp::Curve& out) noexcept {
   if (i >= type.params.size() || type.params[i].unitsInBody || type.params[i].noKnobCurve) return false;
-  const doc::KnobCurve c = target.curve(i);
-  if (c == doc::KnobCurve::Default) return false;
-  const doc::ParamTravel d = specTravel(type.params[i]);
-  if (!doc::curveAvailable(d, c) || c == doc::declaredCurve(d)) return false;
-  out = doc::withCurve(d, c);
+  const dsp::Curve* c = target.curve(i);
+  if (c == nullptr || *c == meta::paramCurve(type.params[i])) return false;
+  out = *c;
   return true;
 }
 }  // namespace
 
 double faceTravelToValue(const MetaTarget& target, const meta::Type& type, size_t param, double t) noexcept {
-  if (doc::ParamTravel tr; switchedTravel(target, type, param, tr)) return doc::travelValue(tr, t);
+  if (dsp::Curve c; switchedCurve(target, type, param, c)) return dsp::evalCurve(c, std::clamp(t, 0.0, 1.0));
   return meta::travelToValue(type.params[param], t);
 }
 
 double faceValueToTravel(const MetaTarget& target, const meta::Type& type, size_t param, double v) noexcept {
-  if (doc::ParamTravel tr; switchedTravel(target, type, param, tr)) return doc::travelPosition(tr, v);
+  if (dsp::Curve c; switchedCurve(target, type, param, c)) return dsp::curvePosition(c, v, 0.0);
   return meta::valueToTravel(type.params[param], v);
 }
 
 bool faceCurveSwitched(const MetaTarget& target, const meta::Type& type, size_t param) noexcept {
-  doc::ParamTravel tr;
-  return switchedTravel(target, type, param, tr);
+  dsp::Curve c;
+  return switchedCurve(target, type, param, c);
 }
 
 void MetaFace::paintJacks(ui::FacePainter& p, const FaceEnv& env) const {
   Face::paintJacks(p, env);
   if (target_ == nullptr || env.theme == nullptr) return;
   for (size_t k = 0; k < type_->params.size(); ++k) {
-    doc::ParamTravel tr;
-    if (!switchedTravel(*target_, *type_, k, tr)) continue;
+    dsp::Curve tr;
+    if (!switchedCurve(*target_, *type_, k, tr)) continue;
     const std::optional<ui::Rect> r = paramRect(k);
     if (!r) continue;
     // A 6 × 4 unit glyph of the curve inside the control's top-right corner, in the face's tick colour.

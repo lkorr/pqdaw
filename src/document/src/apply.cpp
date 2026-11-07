@@ -1873,6 +1873,8 @@ Res apply_(const Snapshot& s, const SetDeviceParam& c, ChangeSet& cs) {
   if (loc.device->rack) {  // T4.8: a macro or the chain selector
     if (!isRackParam(c.param)) return invalid("'" + c.param + "' is not a rack param (macro1 … macro16, select)");
     if (c.value && !finiteIn(*c.value, 0.0, kMacroMax)) return invalid("rack params are in [0, 127]");
+  } else if (c.value && !finiteIn(*c.value, 0.0, 1.0)) {  // GU.1: a knob position
+    return invalid("'" + c.param + "': a param stores its knob position, in [0, 1]");
   }
   std::vector<DeviceValue> params = loc.device->params;
   if (!setValue(params, c.param, c.value)) return s;
@@ -2159,19 +2161,21 @@ Res apply_(const Snapshot& s, const SetDeviceChainInput& c, ChangeSet& cs) {  //
   });
 }
 
-Res apply_(const Snapshot& s, const SetParamCurve& c, ChangeSet& cs) {  // TX.knob-curves
+Res apply_(const Snapshot& s, const SetParamCurve& c, ChangeSet& cs) {  // GU.1
   const DeviceLoc loc = findDevice(*s, c.device);
   if (!loc.track) return notFound("device not found");
-  if (loc.device->curve(c.param) == c.curve) return s;
-  return editDeviceAt(s, c.device, cs, kChangeStructural, [&](Device& d) {
+  const dsp::Curve* now = loc.device->curve(c.param);
+  if (now == nullptr ? !c.curve : (c.curve && *now == *c.curve)) return s;
+  if (!c.structural) cs.params.push_back(ParamRef::device(c.device, c.param));
+  return editDeviceAt(s, c.device, cs, c.structural ? kChangeStructural : kChangeParam, [&](Device& d) {
     auto it = std::lower_bound(d.curves.begin(), d.curves.end(), c.param,
-                               [](const ParamCurve& a, const std::string& n) { return a.param < n; });
-    if (c.curve == KnobCurve::Default) {
+                               [](const ControlCurve& a, const std::string& n) { return a.param < n; });
+    if (!c.curve) {
       if (it != d.curves.end() && it->param == c.param) d.curves.erase(it);
     } else if (it != d.curves.end() && it->param == c.param) {
-      it->curve = c.curve;
+      it->curve = *c.curve;
     } else {
-      d.curves.insert(it, ParamCurve{c.param, c.curve});
+      d.curves.insert(it, ControlCurve{c.param, *c.curve});
     }
     return checkParamCurves(d);
   });
@@ -2415,6 +2419,8 @@ Res apply_(const Snapshot& s, const SetMetaParam& c, ChangeSet& cs) {
   if (!found) return std::move(found).error();
   if (found->second->paramIndex(c.param) < 0)
     return invalid("'" + c.param + "' is not a param of " + std::string(found->second->id));
+  if (c.value && !finiteIn(*c.value, 0.0, 1.0))  // GU.1: a knob position
+    return invalid("'" + c.param + "': a param stores its knob position, in [0, 1]");
   MetaInstance inst = *found->first;
   if (!setValue(inst.params, c.param, c.value)) return s;
   cs.params.push_back(ParamRef::metaParam(c.device, c.path, c.param));

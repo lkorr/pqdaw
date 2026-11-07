@@ -65,6 +65,16 @@ struct Plan {
   std::vector<uint32_t> dest;                      // per node: the node its output feeds, or graph::kNone
   std::vector<SendLink> sends;
   uint32_t master = graph::kNone;
+  // GU.1: the device params an automation lane drives (lower.h "Modulation wires": a lane makes its control driven),
+  // by device id: (param, the lowest lane id on it — its site's nodes are keyed by it when no wire reaches it).
+  std::unordered_map<uint32_t, std::vector<std::pair<std::string, uint32_t>>> laned;
+  uint32_t laneOf(DeviceId d, std::string_view param) const noexcept {  // 0: none
+    const auto it = laned.find(d.value);
+    if (it == laned.end()) return 0;
+    for (const auto& [name, lane] : it->second)
+      if (name == param) return lane;
+    return 0;
+  }
 };
 
 using TableOf = std::function<uint32_t(TuningId, const TuningDef&)>;
@@ -767,6 +777,16 @@ Plan plan(const Project& p, const TableOf* tableOf, const Callees* lib) {
     }
   } walk{p, pl.nodes, tableOf, lib};
   walk(p.tracks, nullptr, TrackPath{});
+  // GU.1: every device param with an automation lane (any track: a lane lives on the track holding its device).
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    for (const LanePtr& l : t.lanes) {
+      if (l->param.kind != ParamKind::DeviceParam || l->paramName.empty()) continue;
+      auto& list = pl.laned[l->param.owner];
+      auto it = std::find_if(list.begin(), list.end(), [&](const auto& e) { return e.first == l->paramName; });
+      if (it == list.end()) list.emplace_back(l->paramName, l->id.value);
+      else it->second = std::min(it->second, l->id.value);
+    }
+  });
   const auto mainCount = static_cast<uint32_t>(pl.nodes.size());
   for (const TrackPtr& r : p.returns)
     if (r->active) pl.nodes.push_back(Node{r.get(), Kind::Return, nullptr, {}});
@@ -2411,8 +2431,7 @@ enum ChainLawK : uint32_t { kLVolLe, kLVolDb, kLVolGain, kLPanA, kLPanB, kLPanL,
 enum MapK : uint32_t {
   kMX, kMInv127, kMKx, kMK, kMExp, kMOne, kMSub, kMInvE, kMShape, kMRange, kMScaled, kMMin, kMPos,
   kML, kMMulL, kMLo, kMAddLo, kMExpV, kMRoundAdd, kMFloor,
-  kMExp0C, kMExp0Mul,  // TMM.3: the exp0 law
-  kMDbExp,             // TX.knob-curves: a dB gain bent in dB
+  kMCurve,  // GU.1: the mapped control's curve atom (a site no wire reaches)
 };
 
 // What building one track patch keeps.
@@ -2454,6 +2473,7 @@ struct Build {
   bool allDone = true;
   const Callees* lib = nullptr;
   const WirePlan* wp = nullptr;
+  const Plan* pl = nullptr;  // GU.1: its automated params (Plan::laned); null: none (a rack on its own)
   uint32_t node = 0;  // this patch's plan node
   // IG.1-2 (lower.h "Voice contexts"): per lowered device, a voice context's output (an instrument group's voices
   // summed, a lone instrument's), what its `y` / main output gives everything outside; and the pending input the
@@ -3065,15 +3085,19 @@ enum WireK : uint32_t {
   kWNotePhase,  // TX.all-free-fix1: a notes cable into a phase input: phasor of the note's Hz
   kWTarget = 16,
 };
+// A driven param's nodes (keyed by its first wire: kWTarget + k; GU.1: a site no wire reaches by its mapping (MapK
+// kMCurve) or its lowest automation lane (an entity id like a wire's: NodeRole::Wire, kWTarget + k)). A rack param's
+// travel law keeps T4.7's nodes (kTPosA, kTPosB, kTMapA, kTMapB, kTClip); a control's (GU.1) the knob, the sum, the
+// curve atom and the stages after it.
 enum TargetK : uint32_t {
-  kTKnob, kTPosA, kTPosB, kTPosC, kTAdd, kTClip, kTMapA, kTMapB, kTMapC, kTRoundAdd, kTFloor,
+  kTKnob, kTPosA, kTPosB, kTCurve, kTAdd, kTClip, kTMapA, kTMapB, kTConv, kTRoundAdd, kTFloor,
   kTUpSub, kTUpMax, kTDownSub, kTDownMax, kTPack, kTExport,
-  kTPosD, kTPosE, kTMapD,  // TMM.3: the exp0 law's extra nodes
-  // TX.patching: the Add law's nodes (keyed by the site's first added wire)
+  kTRoundMul, kTRoundStep, kTSpare19,
+  // the added stage's nodes (keyed by the stage's first wire): TX.patching's units law, GU.1's add-in-units stage
   kTUAdd, kTUClip, kTURoundAdd, kTUFloor, kTUUpSub, kTUUpMax, kTUDownSub, kTUDownMax, kTUPack, kTUExport,
-  kTMapE,  // TX.knob-curves: a dB gain bent in dB (its last exp)
+  kTUConv,  // GU.1: the output conversion after an add-in-units stage (db_to_gain)
 };
-static_assert(static_cast<uint32_t>(kWTarget) + static_cast<uint32_t>(kTMapE) < kWireNodeSlots, "a wire's nodes fit its NodeRole::Wire slots");
+static_assert(static_cast<uint32_t>(kWTarget) + static_cast<uint32_t>(kTUConv) < kWireNodeSlots, "a wire's nodes fit its NodeRole::Wire slots");
 
 std::string_view reducerAtom(WireReducer r) noexcept {
   switch (r) {
@@ -3099,15 +3123,16 @@ struct Site {
   std::vector<PortRef> pins;            // the inputs it feeds
   std::vector<const LWire*> wires;      // modulation into it, in id order
   const LMapping* mapping = nullptr;    // the macro driving it
+  uint32_t lane = 0;                    // GU.1: the lowest automation lane on it (0: none)
   bool resolved = false;
   PortRef value = kPending;
-
 };
 
 // The wires of plan node `node` (its outgoing cross-track wires: root exports m<wire>), then every param the patch
 // builds (modulated, mapped, read by a rack), each connected to its pins. Each modulated param's tap goes to `taps`
 // (graph track `track`).
-void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std::vector<ModulationTap>* taps) {
+void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std::vector<ModulationTap>* taps,
+                std::vector<CurveSite>* curves) {
   Ir& ir = b.ir;
   const TrackDevs& td = b.td;
   auto wid = [](const LWire& w, uint32_t k) { return nodeIdFor(NodeRole::Wire, w.wire->id.value, k); };
@@ -3237,6 +3262,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       if (b.calls[dev] != graph::kNone) s.pins.push_back(PortRef{b.calls[dev], pp.pin});
     }
     s.mapping = td.mappingOf(dev, name);
+    if (d.rack < 0 && b.pl != nullptr) s.lane = b.pl->laneOf(d.device->id, name);
     sites.push_back(std::move(s));
     return sites.back();
   };
@@ -3251,6 +3277,16 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     (void)siteOf(m.target, m.m->param);
   }
   for (const auto& [key, pins] : b.rackPins) (void)siteOf(key.first, rackParamName(key.second));
+  // GU.1: every real param of a lowered device that an automation lane drives (its curve atom after the knob).
+  if (b.pl != nullptr && !b.pl->laned.empty())
+    for (uint32_t k = 0; k < td.size(); ++k) {
+      const LDev& d = td[k];
+      if (d.rack >= 0 || d.callee == nullptr || d.remote || d.bypass || b.calls[k] == graph::kNone) continue;
+      const auto it = b.pl->laned.find(d.device->id.value);
+      if (it == b.pl->laned.end()) continue;
+      for (const auto& [name, lane] : it->second)
+        if (realParamPin(*d.callee, name)) (void)siteOf(k, name);
+    }
   // The site of the macro a site's mapping reads (sites.size(): none).
   auto macroSite = [&](size_t si) {
     const LMapping* mapping = sites[si].mapping;
@@ -3268,20 +3304,8 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     const std::string name = sites[si].name;
     const graph::ParamDecl& decl = *sites[si].decl;
     const LMapping* mapping = sites[si].mapping;
-    // TX.knob-curves (lower.h "Modulation wires"): the knob's travel is its curve (Device::curves; the declared law when
-    // none). Stage 1, in knob travel: the migrated Travel wires (amount · source) and, on a CURVED knob, the Add wires
-    // (+1 = the whole travel). Stage 2, on a LINEAR knob: the Add wires in its units (a dB gain: in dB). Stage 3: the
-    // Units wires (TX.patching's law, migrated from schema 13 … 15) in the param's normalised unit, after the curve.
-    std::vector<const LWire*> wires, added, units;
     const LDev& d = td[dev];
-    const ParamTravel tr = d.rack >= 0 ? ParamTravel{false, 0.0, kMacroMax, false} : paramTravel(decl, d.device->curve(name));
-    const bool curved = !travelsInUnits(tr);
-    for (const LWire* w : sites[si].wires)
-      (w->wire->travels() ? wires : w->wire->law == WireLaw::Units ? units : curved ? wires : added).push_back(w);
-    const LWire* curvedAdd = nullptr;  // the first Add wire of stage 1 (its own free slots hold @signed / @wrap's nodes)
-    for (const LWire* w : wires)
-      if (curvedAdd == nullptr && !w->wire->travels()) curvedAdd = w;
-    const bool travels = tr.hi > tr.lo && (!tr.log || tr.lo > 0.0);
+    const std::string devId = std::to_string(d.device->id.value);
     // The mapped position: min + (max − min) · shape(macro / 127, curve) (the automation curve law).
     PortRef pos = kPending;
     if (mapping != nullptr) {
@@ -3300,184 +3324,155 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       pos = ir.atom("add", {ir.atom("mul", {s, ir.konst(m.max - m.min, mid(kMRange))}, mid(kMScaled)), ir.konst(m.min, mid(kMMin))},
                     mid(kMPos));
     }
+    // Stages 2 and 3: value = clamp(centre + Σ signals, lo, hi), rounded to `step` (step 1: floor(x + 0.5), T4.7's
+    // rounding); the tap is how far up / down the wires moved it (zero exactly when they do not move it).
     PortRef v;
-    if (!wires.empty()) {
-      // T4.7: the knob (or the mapped position) is the centre; Σ amount · source in knob travel; clip; the travel map.
-      const LWire& f = *wires.front();
-      auto tid = [&](uint32_t k) { return wid(f, kWTarget + k); };
-      const std::string devId = std::to_string(d.device->id.value);
-      PortRef knob = kPending, pk = pos;
-      if (mapping == nullptr) knob = ir.paramDecl("d" + devId + "__" + name, decl, tid(kTKnob));
-      if (!travels) {  // no travel to move along: the knob (or the mapping's low end) as before
-        v = mapping == nullptr ? knob : ir.konst(tr.lo, tid(kTMapA));
-      } else {
-        const double L = tr.log ? std::log(tr.hi / tr.lo) : tr.hi - tr.lo;
-        // TMM.3: the exp0 law (paramTravel): K = k·ln 2, value = lo + c·(e^(K·p) − 1), c = (hi − lo)/(e^K − 1).
-        // TX.knob-curves: k < 0 too (Logarithmic); with `log` (a dB gain bent in dB) value = lo·(hi/lo)^g(p),
-        // g = (e^(K·p) − 1)/(e^K − 1): value = e^((ln lo − L·cg) + L·cg·e^(K·p)), cg = 1/(e^K − 1).
-        const double K = tr.exp0 * std::numbers::ln2;
-        const double c = tr.exp0 != 0.0 ? (tr.hi - tr.lo) / std::expm1(K) : 0.0;
-        const bool dbBend = tr.exp0 != 0.0 && tr.log;
-        if (mapping == nullptr && dbBend) {  // p = ln(1 + (ln knob − ln lo)·(e^K − 1)/L) / K
-          const double bb = std::expm1(K) / L, aa = 1.0 - std::log(tr.lo) * bb;
-          pk = ir.atom("mul",
-                       {ir.atom("log",
-                                {ir.atom("add", {ir.atom("mul", {ir.atom("log", {knob}, tid(kTPosA)), ir.literal(bb)}, tid(kTPosB)),
-                                                 ir.literal(aa)},
-                                         tid(kTPosD))},
-                                tid(kTPosE)),
-                        ir.literal(1.0 / K)},
-                       tid(kTPosC));
-        } else if (mapping == nullptr && tr.exp0 != 0.0)  // p = ln(1 + (knob − lo)/c) / K
-          pk = ir.atom("mul",
-                       {ir.atom("log",
-                                {ir.atom("add", {ir.atom("mul", {ir.atom("sub", {knob, ir.literal(tr.lo)}, tid(kTPosA)),
-                                                                 ir.literal(1.0 / c)},
-                                                         tid(kTPosB)),
-                                                 ir.literal(1.0)},
-                                         tid(kTPosD))},
-                                tid(kTPosE)),
-                        ir.literal(1.0 / K)},
-                       tid(kTPosC));
-        else if (mapping == nullptr)  // the knob's position (param rate: the compiler hoists it to once per block)
-          pk = tr.log ? ir.atom("mul", {ir.atom("log", {ir.atom("mul", {knob, ir.literal(1.0 / tr.lo)}, tid(kTPosA))}, tid(kTPosB)),
-                                        ir.literal(1.0 / L)},
-                                tid(kTPosC))
-                      : ir.atom("mul", {ir.atom("sub", {knob, ir.literal(tr.lo)}, tid(kTPosA)), ir.literal(1.0 / L)}, tid(kTPosB));
-        PortRef sum;
-        for (size_t i = 0; i < wires.size(); ++i) {
-          const LWire& w = *wires[i];
-          PortRef term;
-          if (w.wire->travels()) {
-            const std::string id = std::to_string(w.wire->id.value);
-            constexpr graph::PortType kAnyGlobal = graph::portType(graph::Kind::Real, graph::Rate::Infer, graph::Poly::Global, graph::kWidthMono);
-            PortRef src = w.fromNode == node ? source(w) : ir.input("m" + id, b.c0(), wid(w, kWIn), kAnyGlobal);
-            if (w.delayed) src = ir.atom("z1", {src}, wid(w, kWDelay));  // closes a loop: 1 sample (SPEC §15 2026-10-24)
-            const PortRef amt = ir.param("w" + id, w.wire->amount, -1.0, 1.0, wid(w, kWAmount));
-            term = ir.atom("mul", {amt, src}, wid(w, kWTerm));
-          } else {
-            term = arriving(w);  // TX.knob-curves: an Add wire into a curved knob: its signal is the travel it adds
-          }
-          sum = i == 0 ? term : ir.atom("add", {sum, term}, wid(w, kWSum));
-        }
-        // TX.knob-curves: with Add wires, @wrap wraps the travel (frac: past the end comes back round) and @signed
-        // reaches −1 … 1, the curve mirrored (value = sign(p)·curve(|p|)); a Travel-only site clips as T4.7 did.
-        const bool wrapTravel = curvedAdd != nullptr && d.rack < 0 && paramWraps(decl);
-        const bool signedTravel = curvedAdd != nullptr && d.rack < 0 && !wrapTravel && paramSigned(decl);
-        const PortRef moved = ir.atom("add", {pk, sum}, tid(kTAdd));
-        const PortRef p = wrapTravel     ? ir.atom("frac", {moved}, wid(*curvedAdd, kWAmount))
-                          : signedTravel ? ir.atom("clip", {moved, ir.literal(-1.0), b.c1()}, tid(kTClip))
-                                         : ir.atom("clip", {moved, b.c0(), b.c1()}, tid(kTClip));
-        const PortRef pm = signedTravel ? ir.atom("abs", {p}, wid(*curvedAdd, kWAmount)) : p;
-        if (dbBend)
-          v = ir.atom("exp",
-                      {ir.atom("add",
-                               {ir.atom("mul", {ir.atom("exp", {ir.atom("mul", {pm, ir.literal(K)}, tid(kTMapA))}, tid(kTMapC)),
-                                                ir.literal(L / std::expm1(K))},
-                                        tid(kTMapD)),
-                                ir.literal(std::log(tr.lo) - L / std::expm1(K))},
-                               tid(kTMapB))},
-                      tid(kTMapE));
-        else if (tr.exp0 != 0.0)
-          v = ir.atom("add",
-                      {ir.atom("mul", {ir.atom("exp", {ir.atom("mul", {pm, ir.literal(K)}, tid(kTMapA))}, tid(kTMapC)), ir.literal(c)},
-                               tid(kTMapD)),
-                       ir.literal(tr.lo - c)},
-                      tid(kTMapB));
-        else
-          v = tr.log ? ir.atom("exp", {ir.atom("add", {ir.atom("mul", {pm, ir.literal(L)}, tid(kTMapA)), ir.literal(std::log(tr.lo))},
-                                               tid(kTMapB))},
-                               tid(kTMapC))
-                     : ir.atom("add", {ir.atom("mul", {pm, ir.literal(L)}, tid(kTMapA)), ir.literal(tr.lo)}, tid(kTMapB));
-        if (signedTravel) v = ir.atom("mul", {v, ir.atom("sign", {p}, wid(*curvedAdd, kWTerm))}, wid(*curvedAdd, kWOwn14));
-        if (tr.round) v = ir.atom("floor", {ir.atom("add", {v, ir.konst(0.5, kCHalf)}, tid(kTRoundAdd))}, tid(kTFloor));
-        // The tap: how far up and down the modulation moved the param (zero exactly when it does not move it). With
-        // added wires too, the tap is theirs (in units, below).
-        if (added.empty() && units.empty()) {
-          const PortRef up = ir.atom("max", {ir.atom("sub", {p, pk}, tid(kTUpSub)), b.c0()}, tid(kTUpMax));
-          const PortRef down = ir.atom("max", {ir.atom("sub", {pk, p}, tid(kTDownSub)), b.c0()}, tid(kTDownMax));
-          const std::string port = tapPort(d.device->id, name);
-          ir.exportPort(port, ir.atom("pack", {up, down}, tid(kTPack), 2), tid(kTExport));
-          if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port});
-        }
-      }
-    } else if ((!added.empty() || !units.empty()) && mapping == nullptr) {
-      // TX.patching: the knob is the centre the added wires add to (a runtime param, as an unmodulated param's).
-      const LWire& kf = units.empty() ? *added.front() : *units.front();
-      v = ir.paramDecl("d" + std::to_string(d.device->id.value) + "__" + name, decl, wid(kf, kWTarget + static_cast<uint32_t>(kTKnob)));
-    } else if (mapping != nullptr) {
-      // The mapped value: the travel map of the position.
-      const MacroMapping& m = *mapping->m;
-      auto mid = [&](uint32_t s) { return nodeIdFor(NodeRole::Mapping, m.id.value, s); };
-      if (!travels) {
-        v = ir.konst(tr.lo, mid(kMLo));
-      } else {
-        const double L = tr.log ? std::log(tr.hi / tr.lo) : tr.hi - tr.lo;
-        if (tr.exp0 != 0.0 && tr.log) {  // TX.knob-curves: a dB gain bent in dB (see above)
-          const double K = tr.exp0 * std::numbers::ln2;
-          const PortRef e = ir.atom("exp", {ir.atom("mul", {pos, ir.konst(K, mid(kML))}, mid(kMMulL))}, mid(kMExpV));
-          v = ir.atom("exp", {ir.atom("add", {ir.atom("mul", {e, ir.konst(L / std::expm1(K), mid(kMExp0C))}, mid(kMExp0Mul)),
-                                              ir.konst(std::log(tr.lo) - L / std::expm1(K), mid(kMLo))},
-                                      mid(kMAddLo))},
-                      mid(kMDbExp));
-        } else if (tr.exp0 != 0.0) {  // TMM.3: lo + c·(e^(K·pos) − 1)
-          const double K = tr.exp0 * std::numbers::ln2, c = (tr.hi - tr.lo) / std::expm1(K);
-          const PortRef e = ir.atom("exp", {ir.atom("mul", {pos, ir.konst(K, mid(kML))}, mid(kMMulL))}, mid(kMExpV));
-          v = ir.atom("add", {ir.atom("mul", {e, ir.konst(c, mid(kMExp0C))}, mid(kMExp0Mul)), ir.konst(tr.lo - c, mid(kMLo))},
-                      mid(kMAddLo));
-        } else {
-          const PortRef scaled = ir.atom("mul", {pos, ir.konst(L, mid(kML))}, mid(kMMulL));
-          v = ir.atom("add", {scaled, ir.konst(tr.log ? std::log(tr.lo) : tr.lo, mid(kMLo))}, mid(kMAddLo));
-          if (tr.log) v = ir.atom("exp", {v}, mid(kMExpV));
-        }
-        if (tr.round) v = ir.atom("floor", {ir.atom("add", {v, ir.konst(0.5, kCHalf)}, mid(kMRoundAdd))}, mid(kMFloor));
-      }
-    } else {
-      // A rack param its rack reads: the knob, a runtime param of the track patch (dev<rack>:<name>).
-      const uint32_t pi = rackParamIndex(name);
-      v = ir.paramDecl("d" + std::to_string(d.device->id.value) + "__" + name, decl,
-                       nodeIdFor(NodeRole::Rack, d.device->id.value, pi));
-    }
-    // Stages 2 and 3 (TX.patching's math): value = clamp(centre + Σ signals, lo, hi), no clamp for an @wrap param (its
-    // patch wraps it), ±max(|lo|, |hi|) for an @signed one, rounded for @steps; the tap is how far up / down the wires
-    // moved it, in units (zero exactly when they do not move it). Stage 2 on a dB gain works in nepers (ln gain): the
-    // signals are dB (× ln 10 / 20), the tap is in nepers (the views convert it).
-    auto addStage = [&](const std::vector<const LWire*>& list, bool inDb, bool tapIt) {
+    auto addStage = [&](const std::vector<const LWire*>& list, double lo, double hi, bool clamp, double step,
+                        bool tapIt, ModulationTap::Domain domain) {
       auto tid = [&](uint32_t k) { return wid(*list.front(), kWTarget + k); };
-      const LWire& af = *list.front();
-      const PortRef centre = inDb ? ir.atom("log", {v}, wid(af, kWAmount)) : v;
+      const PortRef centre = v;
       PortRef sum = kPending;
       for (size_t i = 0; i < list.size(); ++i) {
         const PortRef src = arriving(*list[i]);
         sum = i == 0 ? src : ir.atom("add", {sum, src}, wid(*list[i], kWSum));
       }
-      if (inDb) sum = ir.atom("mul", {sum, ir.literal(std::numbers::ln10 / 20.0)}, wid(af, kWTerm));
       PortRef x = ir.atom("add", {centre, sum}, tid(kTUAdd));
-      double lo = 0.0, hi = kMacroMax;
-      const bool ranged = d.rack >= 0 || paramRangeOf(decl, lo, hi);
-      if (ranged && d.rack < 0 && !inDb && paramSigned(decl)) {
+      if (clamp) x = ir.atom("clip", {x, ir.literal(lo), ir.literal(hi)}, tid(kTUClip));
+      if (step == 1.0) {
+        x = ir.atom("floor", {ir.atom("add", {x, ir.konst(0.5, kCHalf)}, tid(kTURoundAdd))}, tid(kTUFloor));
+      } else if (step > 0.0) {
+        const PortRef q = ir.atom("floor", {ir.atom("add", {ir.atom("mul", {x, ir.literal(1.0 / step)}, tid(kTRoundStep)),
+                                                            ir.konst(0.5, kCHalf)},
+                                                   tid(kTURoundAdd))},
+                                  tid(kTUFloor));
+        x = ir.atom("mul", {q, ir.literal(step)}, tid(kTRoundMul));
+      }
+      if (tapIt) {
+        const PortRef up = ir.atom("max", {ir.atom("sub", {x, centre}, tid(kTUUpSub)), b.c0()}, tid(kTUUpMax));
+        const PortRef down = ir.atom("max", {ir.atom("sub", {centre, x}, tid(kTUDownSub)), b.c0()}, tid(kTUDownMax));
+        const std::string port = tapPort(d.device->id, name);
+        ir.exportPort(port, ir.atom("pack", {up, down}, tid(kTUPack), 2), tid(kTUExport));
+        if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port, domain});
+      }
+      v = x;
+    };
+    if (d.rack >= 0) {
+      // A rack's macro or selector (T4.8): its values 0 … 127 are its own (no curve). Travel wires move it along
+      // the straight 0 … 127 (T4.7's law, the same nodes), added wires in its units.
+      std::vector<const LWire*> wires, added;
+      for (const LWire* w : sites[si].wires) (w->wire->travels() ? wires : added).push_back(w);
+      if (!wires.empty()) {
+        const LWire& f = *wires.front();
+        auto tid = [&](uint32_t k) { return wid(f, kWTarget + k); };
+        PortRef knob = kPending, pk = pos;
+        if (mapping == nullptr) {
+          knob = ir.paramDecl("d" + devId + "__" + name, decl, tid(kTKnob));
+          pk = ir.atom("mul", {ir.atom("sub", {knob, ir.literal(0.0)}, tid(kTPosA)), ir.literal(1.0 / kMacroMax)}, tid(kTPosB));
+        }
+        PortRef sum;
+        for (size_t i = 0; i < wires.size(); ++i) {
+          const LWire& w = *wires[i];
+          const std::string id = std::to_string(w.wire->id.value);
+          constexpr graph::PortType kAnyGlobal = graph::portType(graph::Kind::Real, graph::Rate::Infer, graph::Poly::Global, graph::kWidthMono);
+          PortRef src = w.fromNode == node ? source(w) : ir.input("m" + id, b.c0(), wid(w, kWIn), kAnyGlobal);
+          if (w.delayed) src = ir.atom("z1", {src}, wid(w, kWDelay));  // closes a loop: 1 sample (SPEC §15 2026-10-24)
+          const PortRef amt = ir.param("w" + id, w.wire->amount, -1.0, 1.0, wid(w, kWAmount));
+          const PortRef term = ir.atom("mul", {amt, src}, wid(w, kWTerm));
+          sum = i == 0 ? term : ir.atom("add", {sum, term}, wid(w, kWSum));
+        }
+        const PortRef p = ir.atom("clip", {ir.atom("add", {pk, sum}, tid(kTAdd)), b.c0(), b.c1()}, tid(kTClip));
+        v = ir.atom("add", {ir.atom("mul", {p, ir.literal(kMacroMax)}, tid(kTMapA)), ir.literal(0.0)}, tid(kTMapB));
+        if (added.empty()) {
+          const PortRef up = ir.atom("max", {ir.atom("sub", {p, pk}, tid(kTUpSub)), b.c0()}, tid(kTUpMax));
+          const PortRef down = ir.atom("max", {ir.atom("sub", {pk, p}, tid(kTDownSub)), b.c0()}, tid(kTDownMax));
+          const std::string port = tapPort(d.device->id, name);
+          ir.exportPort(port, ir.atom("pack", {up, down}, tid(kTPack), 2), tid(kTExport));
+          if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port, ModulationTap::Domain::Position});
+        }
+      } else if (!added.empty() && mapping == nullptr) {
+        v = ir.paramDecl("d" + devId + "__" + name, decl, wid(*added.front(), kWTarget + static_cast<uint32_t>(kTKnob)));
+      } else if (mapping != nullptr) {
+        const MacroMapping& m = *mapping->m;
+        auto mid = [&](uint32_t s) { return nodeIdFor(NodeRole::Mapping, m.id.value, s); };
+        v = ir.atom("add", {ir.atom("mul", {pos, ir.konst(kMacroMax, mid(kML))}, mid(kMMulL)), ir.konst(0.0, mid(kMLo))},
+                    mid(kMAddLo));
+      } else {
+        // A rack param its rack reads: the knob, a runtime param of the track patch (dev<rack>:<name>).
+        v = ir.paramDecl("d" + devId + "__" + name, decl, nodeIdFor(NodeRole::Rack, d.device->id.value, rackParamIndex(name)));
+      }
+      if (!added.empty()) addStage(added, 0.0, kMacroMax, true, 0.0, true, ModulationTap::Domain::Dsp);
+      sites[si].resolved = true;
+      sites[si].value = v;
+      return v;
+    }
+    // GU.1 (lower.h "Modulation wires"): a control. Stage 1 in knob position: the Travel wires (amount · source) and,
+    // on a curve that is not linear, the Add wires (+1 = the whole travel); the `curve` atom; stage 2 on a linear
+    // curve: the Add wires in the curve's units, then its output conversion; stage 3: the migrated Units wires.
+    const dsp::Curve curve = controlCurve(*d.device, name, decl);
+    const bool inUnits = addsInUnits(curve);
+    std::vector<const LWire*> wires, added, units;
+    for (const LWire* w : sites[si].wires)
+      (w->wire->travels() ? wires : w->wire->law == WireLaw::Units ? units : inUnits ? added : wires).push_back(w);
+    // The site's own nodes: keyed by its first wire, else its mapping, else its automation lane.
+    const LWire* first = !sites[si].wires.empty() ? sites[si].wires.front() : nullptr;
+    auto sid = [&](uint32_t k) {
+      if (first != nullptr) return wid(*first, kWTarget + k);
+      if (mapping != nullptr) return nodeIdFor(NodeRole::Mapping, mapping->m->id.value, kMCurve);
+      return nodeIdFor(NodeRole::Wire, sites[si].lane, kWTarget + k);
+    };
+    PortRef pk = pos;
+    if (mapping == nullptr)  // the knob position (param rate); its default the declared default's position
+      pk = ir.param("d" + devId + "__" + name, dsp::curvePosition(declaredCurve(decl), decl.defaultValue.value(), 0.0), 0.0,
+                    1.0, sid(kTKnob));
+    PortRef p = pk;
+    if (!wires.empty()) {
+      PortRef sum;
+      for (size_t i = 0; i < wires.size(); ++i) {
+        const LWire& w = *wires[i];
+        PortRef term;
+        if (w.wire->travels()) {
+          const std::string id = std::to_string(w.wire->id.value);
+          const PortRef amt = ir.param("w" + id, w.wire->amount, -1.0, 1.0, wid(w, kWAmount));
+          term = ir.atom("mul", {amt, arriving(w)}, wid(w, kWTerm));
+        } else {
+          term = arriving(w);  // an Add wire into a curved control: its signal is the position it adds
+        }
+        sum = i == 0 ? term : ir.atom("add", {sum, term}, wid(w, kWSum));
+      }
+      p = ir.atom("add", {pk, sum}, sid(kTAdd));
+    }
+    // (Without LowerOptions::curveSlotOf the lowering numbers its driven controls 1, 2, … itself: graph.curveSlots.)
+    const uint32_t slot = b.o.curveSlotOf  ? b.o.curveSlotOf(d.device->id, name)
+                          : curves != nullptr ? static_cast<uint32_t>(curves->size() + 1)
+                                              : 0u;
+    if (curves != nullptr) curves->push_back(CurveSite{b.track != nullptr ? b.track->id : TrackId{}, d.device->id, name, slot, curve});
+    const bool convertLater = !added.empty() && curve.output != dsp::CurveOutput::None;
+    v = ir.atom("curve", {p, ir.literal(convertLater ? 0.0 : 1.0), ir.literal(static_cast<double>(slot))}, sid(kTCurve));
+    if (!wires.empty() && added.empty() && units.empty()) {  // the tap in position (the views clamp the ring)
+      const PortRef up = ir.atom("max", {ir.atom("sub", {p, pk}, sid(kTUpSub)), b.c0()}, sid(kTUpMax));
+      const PortRef down = ir.atom("max", {ir.atom("sub", {pk, p}, sid(kTDownSub)), b.c0()}, sid(kTDownMax));
+      const std::string port = tapPort(d.device->id, name);
+      ir.exportPort(port, ir.atom("pack", {up, down}, sid(kTPack), 2), sid(kTExport));
+      if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port, ModulationTap::Domain::Position});
+    }
+    if (!added.empty()) {
+      double lo = std::min(curve.min, curve.max), hi = std::max(curve.min, curve.max);
+      if (curve.mode == dsp::CurveMode::Signed) {
         hi = std::max(std::fabs(lo), std::fabs(hi));
         lo = -hi;
       }
-      if (inDb) {
-        lo = std::log(lo);
-        hi = std::log(hi);
+      addStage(added, lo, hi, curve.mode != dsp::CurveMode::Wrap, curve.step, units.empty(), ModulationTap::Domain::Curve);
+      if (convertLater) v = ir.atom("db_to_gain", {v}, wid(*added.front(), kWTarget + static_cast<uint32_t>(kTUConv)));
+    }
+    if (!units.empty()) {
+      double lo = 0.0, hi = 1.0;
+      const bool ranged = paramRangeOf(decl, lo, hi);
+      if (ranged && paramSigned(decl)) {
+        hi = std::max(std::fabs(lo), std::fabs(hi));
+        lo = -hi;
       }
-      if (ranged && (inDb || !paramWraps(decl))) x = ir.atom("clip", {x, ir.literal(lo), ir.literal(hi)}, tid(kTUClip));
-      PortRef out = inDb ? ir.atom("exp", {x}, wid(af, kWOwn14)) : x;
-      if (tr.round) out = ir.atom("floor", {ir.atom("add", {out, ir.konst(0.5, kCHalf)}, tid(kTURoundAdd))}, tid(kTUFloor));
-      if (tapIt) {
-        const PortRef moved = inDb ? x : out;
-        const PortRef up = ir.atom("max", {ir.atom("sub", {moved, centre}, tid(kTUUpSub)), b.c0()}, tid(kTUUpMax));
-        const PortRef down = ir.atom("max", {ir.atom("sub", {centre, moved}, tid(kTUDownSub)), b.c0()}, tid(kTUDownMax));
-        const std::string port = tapPort(d.device->id, name);
-        ir.exportPort(port, ir.atom("pack", {up, down}, tid(kTUPack), 2), tid(kTUExport));
-        if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port, true, inDb});
-      }
-      v = out;
-    };
-    if (!added.empty()) addStage(added, d.rack < 0 && tr.db && tr.log && tr.exp0 == 0.0, units.empty());
-    if (!units.empty()) addStage(units, false, true);
+      addStage(units, lo, hi, ranged && !paramWraps(decl), curve.step, true, ModulationTap::Domain::Dsp);
+    }
     sites[si].resolved = true;
     sites[si].value = v;
     return v;
@@ -3545,12 +3540,14 @@ void contextPolyphony(const TrackDevs& devs, const Callees* lib, uint32_t& polyp
 Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptions& o, const TrackDevs& devs,
                                 const WirePlan& wp, bool& voices, uint32_t& polyphony, int32_t& steal, uint32_t track,
                                 std::vector<ModulationTap>* taps, uint32_t clipSlot,
-                                std::vector<LoweredProject::MetaResource>* resources, const Callees* lib) {
+                                std::vector<LoweredProject::MetaResource>* resources, const Callees* lib,
+                                std::vector<CurveSite>* curves) {
   const Node& n = pl.nodes[index];
   Ir ir(patchName(n));
   Build b{ir, o, devs, std::vector<NodeIndex>(devs.size(), graph::kNone), {}};
   b.lib = lib;
   b.wp = &wp;
+  b.pl = &pl;  // GU.1
   b.node = index;
   b.track = n.track;  // T4.18
   b.resources = resources;  // TX.spectrum
@@ -3723,7 +3720,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     x = y;
   }
   gainStages(ir, n.kind, n.track->mixer.panMode, x, o.smoothingMs);
-  lowerSites(b, index, track, wp, taps);  // T4.7, T4.8
+  lowerSites(b, index, track, wp, taps, curves);  // T4.7, T4.8; GU.1
   if (ir.literalOverflow())
     return Error{ErrorCode::Overflow, "lower: track " + std::to_string(n.track->id.value) + ": more than " +
                                           std::to_string(kEntityNodeBase - kLiteralPool) + " device settings", {}};
@@ -3796,6 +3793,18 @@ void chainParams(const Rack& rack, const Chain& c, bool instrumentRack, uint32_t
   zone(ZoneKind::Select, 's');
 }
 
+// GU.1: whether `dev`.`name` (a real param of a lowered leaf device, not mapped) is DRIVEN — a lowered wire into the
+// param itself or an automation lane on it — so that its patch has its `curve` atom and its runtime param is the knob
+// position (lowerSites' rule; lower.h "Modulation wires").
+bool paramDriven(const Plan& pl, const TrackDevs& td, uint32_t dev, std::string_view name, const WirePlan& wp, uint32_t node) {
+  const LDev& d = td[dev];
+  if (d.rack >= 0 || d.callee == nullptr) return false;
+  if (pl.laneOf(d.device->id, name) != 0) return true;
+  for (const LWire& w : wp.wires)
+    if (w.toNode == node && w.toDev == dev && !w.input && d.callee->nodeName(w.paramNode) == name) return true;
+  return false;
+}
+
 void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::vector<LoweredParam>& out,
                const Callees* lib, const WirePlan& wp, const TrackDevs& td) {
   const Node& n = pl.nodes[index];
@@ -3833,10 +3842,14 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
         if (d.callee->node(v).kind != graph::NodeKind::Param) continue;
         const std::string& name = d.callee->nodeName(v);
         if (!declaresParam(td, k, name, wp, index)) continue;
-        const DeviceValue* set = d.device->param(name);
-        const double value = set != nullptr ? set->value : d.callee->paramDecl(v).defaultValue.value();
-        out.push_back(LoweredParam{"dev" + dev + ":" + name, index, "d" + dev + "__" + name, static_cast<float>(value),
-                                   ParamRef::device(d.device->id, name)});
+        // GU.1: a driven control's knob position (its curve atom maps it), else its value: the curve at the position,
+        // evaluated here (lower.h "Modulation wires": an undriven control has no op).
+        const graph::ParamDecl& decl = d.callee->paramDecl(v);
+        const bool driven = !d.bypass && paramDriven(pl, td, k, name, wp, index);
+        const double value = driven ? paramPosition(*d.device, name, decl) : paramValue(*d.device, name, decl);
+        out.push_back(LoweredParam{"dev" + dev + ":" + name + (driven ? std::string(kPositionKeySuffix) : std::string()), index,
+                                   "d" + dev + "__" + name, static_cast<float>(value), ParamRef::device(d.device->id, name),
+                                   driven});
       }
       // TMM.3: the params of its nested meta modules (unwired at their call: runtime params of the track patch).
       // (TX.groups-fix1: a switched-off device's pass-through has none.)
@@ -3942,96 +3955,53 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept {
   return id <= 0xFFFFFFFFull && k < kEntityNodeSlots ? static_cast<uint32_t>(id) : 0u;
 }
 
-ParamTravel paramTravel(const graph::ParamDecl& d, KnobCurve curve) noexcept {
-  ParamTravel t;
-  graph::Unit unit = d.defaultValue.unit;
-  bool exp = false;
-  for (const graph::Attr& a : d.attrs) {
-    if (a.args.empty()) continue;
-    if (a.name == "unit") {
-      graph::Unit u = graph::Unit::None;
-      if (graph::unitFromSuffix(a.args[0].value.text, u)) unit = u;
-    } else if (a.name == "curve") {
-      exp = a.args[0].value.text == "exp";
-      if (a.args[0].value.text == "exp0")  // TMM.3: `@curve(exp0, k)` (k default 14)
-        t.exp0 = a.args.size() > 1 && a.args[1].value.type == graph::AttrValue::Type::Number
-                     ? std::clamp(a.args[1].value.number.value(), 1e-3, 64.0)
-                     : 14.0;
-    } else if (a.name == "steps" && a.args[0].value.type == graph::AttrValue::Type::Number) {
-      t.round = std::lround(a.args[0].value.number.value()) > 1;
-    }
-  }
-  const double def = d.defaultValue.value();
-  if (d.hasRange) {
-    t.lo = d.rangeMin.value();
-    t.hi = d.rangeMax.value();
-    if (unit == graph::Unit::None && d.defaultValue.unit == graph::Unit::None) unit = d.rangeMax.unit;
-  } else {
-    t.lo = std::min(0.0, def);
-    t.hi = std::max(1.0, def);
-  }
-  if (t.lo > t.hi) std::swap(t.lo, t.hi);
-  t.log = t.lo > 0.0 && (exp || unit == graph::Unit::dB);
-  t.db = t.lo > 0.0 && unit == graph::Unit::dB && !exp;
-  if (t.log || !(t.hi > t.lo)) t.exp0 = 0.0;
-  return withCurve(t, curve);
+dsp::Curve controlCurve(const Device& device, std::string_view param, const graph::ParamDecl& decl) noexcept {
+  if (const dsp::Curve* c = device.curve(param)) return *c;
+  return declaredCurve(decl);
 }
 
-bool curveAvailable(const ParamTravel& d, KnobCurve c) noexcept {  // TX.knob-curves
-  if (c == KnobCurve::Default) return true;
-  if (!(d.hi > d.lo) || d.round || static_cast<uint8_t>(c) > static_cast<uint8_t>(KnobCurve::Logarithmic)) return false;
-  if (c == KnobCurve::Octave) return !d.db && (d.lo > 0.0 || (d.exp0 > 0.0 && !d.log));
-  return true;
+double paramPosition(const Device& device, std::string_view param, const graph::ParamDecl& decl) noexcept {
+  if (const DeviceValue* v = device.param(param)) return v->value;
+  return dsp::curvePosition(declaredCurve(decl), decl.defaultValue.value(), 0.0);
 }
 
-KnobCurve declaredCurve(const ParamTravel& d) noexcept {
-  return d.db ? KnobCurve::Linear : (d.log || d.exp0 > 0.0) ? KnobCurve::Octave : KnobCurve::Linear;
+double paramValue(const Device& device, std::string_view param, const graph::ParamDecl& decl) noexcept {
+  return dsp::evalCurve(controlCurve(device, param, decl), paramPosition(device, param, decl));
 }
 
-ParamTravel withCurve(const ParamTravel& d, KnobCurve c) noexcept {
-  if (c == KnobCurve::Default || !curveAvailable(d, c) || c == declaredCurve(d)) return d;
-  ParamTravel t = d;
-  switch (c) {
-    case KnobCurve::Linear: t.log = d.db; t.exp0 = 0.0; break;
-    case KnobCurve::Octave: t.log = true; t.exp0 = 0.0; break;
-    case KnobCurve::Exponential: t.log = d.db; t.exp0 = kKnobBendK / std::numbers::ln2; break;
-    case KnobCurve::Logarithmic: t.log = d.db; t.exp0 = -kKnobBendK / std::numbers::ln2; break;
-    case KnobCurve::Default: break;
-  }
-  return t;
+std::vector<dsp::CurvePreset> curvePresets(const dsp::Curve& d) {
+  std::vector<dsp::CurvePreset> out;
+  if (!(d.max > d.min) || d.step > 0.0) return out;
+  if ((d.output == dsp::CurveOutput::None && d.min > 0.0) || d.preset == dsp::CurvePreset::Exp0)
+    out.push_back(dsp::CurvePreset::Octave);
+  out.push_back(dsp::CurvePreset::Exponential);
+  out.push_back(dsp::CurvePreset::Logarithmic);
+  out.push_back(dsp::CurvePreset::Linear);
+  return out;
 }
 
-bool travelsInUnits(const ParamTravel& t) noexcept { return t.exp0 == 0.0 && (!t.log || t.db); }
+dsp::Curve curveWithPreset(const dsp::Curve& d, dsp::CurvePreset p) noexcept {
+  if (p == d.preset) return d;
+  if (p == dsp::CurvePreset::Octave && d.preset == dsp::CurvePreset::Exp0) return d;  // the declared exp0 law is its octave
+  if (p == dsp::CurvePreset::Octave && !(d.output == dsp::CurveOutput::None && d.min > 0.0)) return d;
+  dsp::Curve c = dsp::curvePreset(p, d.min, d.max);
+  c.unit = d.unit;
+  c.digits = d.digits;
+  c.step = d.step;
+  c.mode = d.mode;
+  c.output = d.output;
+  return c;
+}
 
 const graph::ParamDecl* findParamDecl(const graph::Patch& patch, std::string_view param) noexcept {
+  const graph::ParamDecl* d = findAnyParamDecl(patch, param);
+  return d != nullptr && d->kind == graph::Kind::Real ? d : nullptr;
+}
+
+const graph::ParamDecl* findAnyParamDecl(const graph::Patch& patch, std::string_view param) noexcept {
   for (NodeIndex n = 0; n < patch.nodeCount(); ++n)
-    if (patch.node(n).kind == graph::NodeKind::Param && patch.nodeName(n) == param) {
-      const graph::ParamDecl& d = patch.paramDecl(n);
-      return d.kind == graph::Kind::Real ? &d : nullptr;
-    }
+    if (patch.node(n).kind == graph::NodeKind::Param && patch.nodeName(n) == param) return &patch.paramDecl(n);
   return nullptr;
-}
-
-double travelPosition(const ParamTravel& t, double v) noexcept {
-  if (!(t.hi > t.lo)) return 0.0;
-  v = std::clamp(v, t.lo, t.hi);
-  if (t.exp0 != 0.0) {
-    const double K = t.exp0 * std::numbers::ln2;
-    const double u = t.log ? std::log(v / t.lo) / std::log(t.hi / t.lo) : (v - t.lo) / (t.hi - t.lo);  // TX.knob-curves: in dB
-    return std::clamp(std::log1p(u * std::expm1(K)) / K, 0.0, 1.0);
-  }
-  return t.log ? std::log(v / t.lo) / std::log(t.hi / t.lo) : (v - t.lo) / (t.hi - t.lo);
-}
-
-double travelValue(const ParamTravel& t, double p) noexcept {
-  p = std::clamp(p, 0.0, 1.0);
-  const double g = t.exp0 != 0.0 ? std::expm1(p * t.exp0 * std::numbers::ln2) / std::expm1(t.exp0 * std::numbers::ln2) : p;
-  double v = t.exp0 != 0.0 && t.log ? t.lo * std::exp(g * std::log(t.hi / t.lo))  // TX.knob-curves: a bend in dB
-             : t.exp0 != 0.0        ? t.lo + (t.hi - t.lo) * std::expm1(p * t.exp0 * std::numbers::ln2) / std::expm1(t.exp0 * std::numbers::ln2)
-             : t.log                ? t.lo * std::exp(p * std::log(t.hi / t.lo))
-                                    : t.lo + p * (t.hi - t.lo);
-  if (t.round) v = std::floor(v + 0.5);
-  return std::clamp(v, t.lo, t.hi);
 }
 
 uint64_t patchHash(const graph::Patch& p) noexcept {
@@ -4103,6 +4073,13 @@ std::string paramKey(const AutomationLane& lane) {
   if (lane.param.kind == ParamKind::DeviceParam)
     return lane.paramName.empty() ? std::string() : "dev" + std::to_string(lane.param.owner) + ":" + lane.paramName;
   return paramKey(lane.param);
+}
+
+std::string paramKey(const Project& p, const AutomationLane& lane) {  // GU.1
+  std::string k = paramKey(lane);
+  if (lane.param.kind == ParamKind::DeviceParam && !k.empty())
+    if (const Device* d = findDevice(p, DeviceId{lane.param.owner}).device; d != nullptr && !d->rack) k += kPositionKeySuffix;
+  return k;
 }
 
 LaneId chainMixerLane(const Track& t, ChainId chain) noexcept {
@@ -4183,7 +4160,8 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     // T5.3: an audio track's clip slot (the engine's audio sequence it plays; LowerOptions::clipSlotOf).
     const uint32_t clipSlot = n.kind == Kind::Audio && o.clipSlotOf ? o.clipSlotOf(n.track->id) : graph::kNone;
     if (n.kind == Kind::Audio && clipSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
-    auto built = buildPatch(pl, i, o, devs[i], wp, voices, polyphony, steal, i, &out.taps, clipSlot, &out.metaResources, lib);
+    auto built = buildPatch(pl, i, o, devs[i], wp, voices, polyphony, steal, i, &out.taps, clipSlot, &out.metaResources, lib,
+                            &out.curves);
     if (!built.ok()) return built.error();
     std::shared_ptr<const LoweredPatch> lp;
     const uint64_t hash = patchHash(built.value());
@@ -4238,6 +4216,18 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     }
   for (const ModulationTap& t : out.taps) out.graph.taps.push_back({t.track, t.port});
   out.graph.output = {pl.master, "out"};
+  // GU.1: without the link's slots the lowering numbered its driven controls' slots itself: it owns them (the graph
+  // carries them to whoever compiles it).
+  if (!o.curveSlotOf && !out.curves.empty()) {
+    auto owned = std::make_shared<std::vector<std::unique_ptr<dsp::CurveSlot>>>();
+    out.graph.curveSlots.assign(out.curves.size() + 1, nullptr);
+    for (const CurveSite& c : out.curves) {
+      if (c.slot == 0 || c.slot >= out.graph.curveSlots.size()) continue;
+      owned->push_back(std::make_unique<dsp::CurveSlot>(dsp::compileCurve(c.curve)));
+      out.graph.curveSlots[c.slot] = owned->back().get();
+    }
+    out.graph.curveOwner = std::move(owned);
+  }
   return out;
 }
 
@@ -4321,7 +4311,7 @@ Result<graph::Patch> rackSubcircuit(const Project& p, DeviceId rackId, const gra
     const PortRef x = audioRack(b, td.top.front(), ir.input("in", ir.konst(0.0, kC0), kIn), width);
     ir.output("out", kStereo, x, kOut);
   }
-  lowerSites(b, 0, 0, WirePlan{}, nullptr);
+  lowerSites(b, 0, 0, WirePlan{}, nullptr, nullptr);
   if (!ir.finish()) return Error{ErrorCode::Overflow, "rackSubcircuit: a document id too large for a stable node id", {}};
   return std::move(ir.patch());
 }

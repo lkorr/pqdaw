@@ -77,7 +77,7 @@ public:
   void setParamValue(std::string_view param, double value);
   // TX.knob-curves: the knob curve of `param` (doc::Device::curves; Default: the declared one): its controls re-map
   // (the value stays) and a knob off its declared curve shows a small glyph of its curve.
-  void setParamCurve(std::string_view param, doc::KnobCurve curve);
+  void setParamCurve(std::string_view param, const dsp::Curve* curve);  // GU.1: null: the declared curve
   void setConstValue(std::string_view name, double value);
   double paramValue(std::string_view param) const;
   double constValue(std::string_view name) const;

@@ -55,6 +55,20 @@ EditResult setMetaParam(const Project& p, DeviceId device, std::string path, std
   return e;
 }
 
+EditResult setMetaParamValue(const Project& p, DeviceId device, std::string path, std::string_view type, std::string param,
+                             double value) {  // GU.1
+  const DeviceLoc l = findDevice(p, device);
+  if (!l.track) return notFound("device not found");
+  const meta::Type* t = meta::findType(path.empty() ? metaDeviceType(*l.device) : type);
+  if (t == nullptr) return notFound("unknown meta module type");
+  const int32_t i = t->paramIndex(param);
+  if (i < 0) return invalid("'" + param + "' is not a param of " + std::string(t->id));
+  const auto k = static_cast<size_t>(i);
+  const double now = metaParamPosition(*l.device, path, *t, k);
+  const double pos = dsp::curvePosition(metaParamCurve(*l.device, path, *t, k), value, now);
+  return setMetaParam(p, device, std::move(path), type, std::move(param), pos);
+}
+
 EditResult setMetaSetting(const Project& p, DeviceId device, std::string path, std::string_view type, std::string setting,
                           std::optional<double> value) {
   Edit e = makeEdit("Meta Module Setting");

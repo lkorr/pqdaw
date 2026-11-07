@@ -151,8 +151,8 @@ std::vector<LoweredProject::MetaResource> resourcesOf(const LoweredProject& lp, 
 TEST_CASE("meta modules: save -> load is deep-equal with nested and chain-level instances (schema 10)") {
   Song s;
   s.addAccCall("acc1");
-  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "freq", 123.5));
-  s.edit(ops::setMetaParam(s.doc(), s.acc, "", "phase_acc", "amp", 2.0));
+  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "phase_acc", "freq", 123.5));
+  s.edit(ops::setMetaParamValue(s.doc(), s.acc, "", "phase_acc", "amp", 2.0));
   // A test module with settings and data, nested in the synth (its call need not exist: the document is library-free).
   s.edit(ops::setMetaSetting(s.doc(), s.synth, "opA.ts", "test_shape", "stages", 3.0));
   const std::vector<float> cycle = {0.0f, 0.5f, -0.25f, 1e-30f, -3.5f, 1.0f / 3.0f, 7.0f};
@@ -160,7 +160,7 @@ TEST_CASE("meta modules: save -> load is deep-equal with nested and chain-level 
                           std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray(cycle)}}))));
   Result<std::string> text = serializeProject(s.doc(), s.store.view());
   REQUIRE(text.ok());
-  CHECK(text->rfind("{\n  \"schemaVersion\": 19,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": 20,", 0) == 0);
   CHECK(text->find("\"patch\": \"meta:phase_acc\"") != std::string::npos);
   CHECK(text->find("\"$f32\"") != std::string::npos);
   Result<LoadedProject> back = parseProject(*text);
@@ -191,7 +191,7 @@ TEST_CASE("meta modules: a schema-9 file loads unchanged") {
 TEST_CASE("meta modules: the reader is strict, with JSON paths") {
   Song s;
   s.addAccCall("acc1");
-  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "freq", 10.0));
+  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "freq", 0.25));  // GU.1: a knob position
   const std::string good = *serializeProject(s.doc(), s.store.view());
   auto broken = [&](const std::string& from, const std::string& to) {
     std::string t = good;
@@ -217,7 +217,7 @@ TEST_CASE("meta modules: the reader is strict, with JSON paths") {
   fails("\"params\": {\"freq\"", "\"params\": {\"frq\"", "'frq' is not a param of phase_acc");
   fails("\"acc1\": {", "\"a..b\": {", "not a meta module path");
   fails("\"acc1\": {", "\"\": {", "only a 'meta:phase_acc' device");
-  fails("\"params\": {\"freq\": 10.0}", "\"params\": {\"freq\": 10.0}, \"data\": 1.0", "keeps no data");
+  fails("\"params\": {\"freq\": 0.25}", "\"params\": {\"freq\": 0.25}, \"data\": 1.0", "keeps no data");
   // TMM.10-fix1 (SPEC §15 2026-11-01 "no instrument special cases"): a chain meta device's kind is never refused for
   // its type (it is its position; what it plays follows from its chain input's signal); its chain input must be the
   // type's, "-" or one of its inputs.
@@ -273,8 +273,8 @@ TEST_CASE("meta modules: every edit is one undo step; a drag gesture is one; und
   const size_t freshCursor = s.store.history().cursor();
   s.addAccCall("acc1");                                                  // fork + default state: one step
   REQUIRE(s.dev(s.synth).metaAt("acc1") != nullptr);
-  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "phase", 0.25));
-  s.edit(ops::setMetaParam(s.doc(), s.acc, "", "phase_acc", "freq", 30.0));
+  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "phase_acc", "phase", 0.25));
+  s.edit(ops::setMetaParamValue(s.doc(), s.acc, "", "phase_acc", "freq", 30.0));
   s.edit(ops::setMetaSetting(s.doc(), s.synth, "x.ts", "test_shape", "stages", 4.0));  // creates "x.ts" too
   s.edit(ops::setMetaData(s.doc(), s.synth, "x.ts", "test_shape",
                           std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray({1.0f})}}))));
@@ -288,24 +288,24 @@ TEST_CASE("meta modules: every edit is one undo step; a drag gesture is one; und
   const size_t before = s.store.history().cursor();
   REQUIRE(s.store.beginGesture().ok());
   for (int i = 1; i <= 20; ++i) {
-    auto e = ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "freq", 10.0 * i);
+    auto e = ops::setMetaParamValue(s.doc(), s.synth, "acc1", "phase_acc", "freq", 10.0 * i);
     REQUIRE(e.ok());
     REQUIRE(s.store.dispatch(e->command).ok());
     CHECK(s.store.lastChanges().paramOnly());
   }
   REQUIRE(s.store.commitGesture().ok());
   CHECK(s.store.history().cursor() == before + 1);
-  CHECK(s.dev(s.synth).metaAt("acc1")->param("freq")->value == 200.0);
+  CHECK(metaParamValue(s.dev(s.synth), "acc1", pq::meta::phaseAccType(), 0) == doctest::Approx(200.0).epsilon(1e-12));  // GU.1
   REQUIRE(s.store.undo());
   CHECK(s.dev(s.synth).metaAt("acc1")->param("freq") == nullptr);
   // A fresh call (no state yet): its first drag adds the default state in the same step, still only a param write.
   s.edit(ops::removeMetaCall(s.doc(), s.synth, synthWithAcc("acc9"), "acc1"));
   REQUIRE(s.dev(s.synth).metaAt("acc9") == nullptr);
-  auto first = ops::setMetaParam(s.doc(), s.synth, "acc9", "phase_acc", "freq", 5.0);
+  auto first = ops::setMetaParamValue(s.doc(), s.synth, "acc9", "phase_acc", "freq", 5.0);
   REQUIRE(first.ok());
   REQUIRE(s.store.dispatch(first->command).ok());
   CHECK(s.store.lastChanges().paramOnly());
-  CHECK(s.dev(s.synth).metaAt("acc9")->param("freq")->value == 5.0);
+  CHECK(metaParamValue(s.dev(s.synth), "acc9", pq::meta::phaseAccType(), 0) == doctest::Approx(5.0).epsilon(1e-12));
   // Undo every step: the stock synth again (the same snapshot).
   while (s.store.history().cursor() > freshCursor) REQUIRE(s.store.undo());
   CHECK(s.store.current() == fresh);
@@ -314,7 +314,7 @@ TEST_CASE("meta modules: every edit is one undo step; a drag gesture is one; und
 TEST_CASE("meta modules: golden lowering texts (a chain meta:phase_acc; a nested meta_phase_acc in a user device)") {
   Song s;
   s.addAccCall("acc1");
-  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "freq", 100.0));
+  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "phase_acc", "freq", 100.0));
   const LoweredProject lp = lowered(s.doc());
   auto textOf = [&](TrackId t, DeviceId d) {
     std::string out = patchText(*lp.patches[trackIndex(lp, t)]);
@@ -364,7 +364,7 @@ TEST_CASE("meta modules: a freq drag lowers to the same IR (shared patch, same h
   Song s;
   s.addAccCall("acc1");
   const LoweredProject a = lowered(s.doc());
-  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "freq", 440.0));
+  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "phase_acc", "freq", 440.0));
   CHECK(s.store.lastChanges().paramOnly());
   const LoweredProject b = lowered(s.doc(), nullptr, &a);
   const size_t ia = trackIndex(a, s.synthTrack), ib = trackIndex(b, s.synthTrack);
@@ -373,7 +373,7 @@ TEST_CASE("meta modules: a freq drag lowers to the same IR (shared patch, same h
   CHECK(calleeOf(a, s.synthTrack, s.synth) == calleeOf(b, s.synthTrack, s.synth));
   CHECK(paramOf(b, metaParamKey(s.synth, "acc1", "freq"))->value == 440.0f);
   // A chain device's param: the same.
-  s.edit(ops::setMetaParam(s.doc(), s.acc, "", "phase_acc", "freq", 7.0));
+  s.edit(ops::setMetaParamValue(s.doc(), s.acc, "", "phase_acc", "freq", 7.0));
   const LoweredProject c = lowered(s.doc(), nullptr, &b);
   CHECK(c.patches[trackIndex(c, s.accTrack)] == b.patches[trackIndex(b, s.accTrack)]);
   CHECK(paramOf(c, "dev" + std::to_string(s.acc.value) + ":freq")->value == 7.0f);
@@ -382,8 +382,8 @@ TEST_CASE("meta modules: a freq drag lowers to the same IR (shared patch, same h
 TEST_CASE("meta modules: TMM.15's pitch — a file without it reads 0; a pitch edit is a param write (same IR)") {
   Song s;
   s.addAccCall("acc1");
-  s.edit(ops::setMetaParam(s.doc(), s.acc, "", "phase_acc", "amp", 2.0));
-  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "freq", 3.0));
+  s.edit(ops::setMetaParamValue(s.doc(), s.acc, "", "phase_acc", "amp", 2.0));
+  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "phase_acc", "freq", 3.0));
   // Instances store only the values that were set: a file from before the pitch param looks exactly like this one.
   const Result<std::string> text = serializeProject(s.doc(), s.store.view());
   REQUIRE(text.ok());
@@ -401,9 +401,9 @@ TEST_CASE("meta modules: TMM.15's pitch — a file without it reads 0; a pitch e
   CHECK(paramOf(a, metaParamKey(s.synth, "acc1", "pitch"))->value == 0.0f);
   // Transposing is a param write: the units keep their IR (no recompile), the value reaches the runtime param.
   const LoweredProject before = lowered(s.doc());
-  s.edit(ops::setMetaParam(s.doc(), s.acc, "", "phase_acc", "pitch", -1200.0));
+  s.edit(ops::setMetaParamValue(s.doc(), s.acc, "", "phase_acc", "pitch", -1200.0));
   CHECK(s.store.lastChanges().paramOnly());
-  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "pitch", 702.0));
+  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "phase_acc", "pitch", 702.0));
   CHECK(s.store.lastChanges().paramOnly());
   const LoweredProject after = lowered(s.doc(), nullptr, &before);
   CHECK(after.patches[trackIndex(after, s.accTrack)] == before.patches[trackIndex(before, s.accTrack)]);
@@ -496,7 +496,7 @@ TEST_CASE("meta modules: a chain device's static-ness follows its automation lan
 TEST_CASE("meta modules: renaming a nested instance keeps its state (the patch editor's rename and a hand edit)") {
   Song s;
   s.addAccCall("acc1");
-  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "phase_acc", "freq", 55.0));
+  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "phase_acc", "freq", 55.0));
   // A hand edit of the text pane: the binding renamed; the new parse carries the NodeIds of the previous one.
   pq::graph::ParseOptions po;
   po.externals = library().signatures();
@@ -515,16 +515,17 @@ TEST_CASE("meta modules: renaming a nested instance keeps its state (the patch e
   s.edit(ops::editDevicePatchKeepingMeta(s.doc(), s.synth, t2, ids, p1.file));
   CHECK(s.dev(s.synth).metaAt("acc1") == nullptr);
   REQUIRE(s.dev(s.synth).metaAt("lfo") != nullptr);
-  CHECK(s.dev(s.synth).metaAt("lfo")->param("freq")->value == 55.0);
+  CHECK(metaParamValue(s.dev(s.synth), "lfo", pq::meta::phaseAccType(), 0) == doctest::Approx(55.0).epsilon(1e-12));
   const LoweredProject lp = lowered(s.doc());
   REQUIRE(paramOf(lp, metaParamKey(s.synth, "lfo", "freq")) != nullptr);
   CHECK(paramOf(lp, metaParamKey(s.synth, "lfo", "freq"))->value == 55.0f);
   // Nested renames: an outer call renamed moves everything below it.
   Song n;
-  n.edit(ops::setMetaParam(n.doc(), n.synth, "opA.acc", "phase_acc", "amp", 3.0));
-  n.edit(ops::setMetaParam(n.doc(), n.synth, "opA.ts", "test_shape", "gain", 1.0));
+  n.edit(ops::setMetaParamValue(n.doc(), n.synth, "opA.acc", "phase_acc", "amp", 3.0));
+  n.edit(ops::setMetaParamValue(n.doc(), n.synth, "opA.ts", "test_shape", "gain", 1.0));
   REQUIRE(n.store.dispatch(RenameMetaInstance{n.synth, "opA", "opB"}).ok());
-  CHECK(n.dev(n.synth).metaAt("opB.acc")->param("amp")->value == 3.0);
+  CHECK(metaParamValue(n.dev(n.synth), "opB.acc", pq::meta::phaseAccType(),
+                       static_cast<size_t>(pq::meta::phaseAccType().paramIndex("amp"))) == doctest::Approx(3.0).epsilon(1e-12));
   CHECK(n.dev(n.synth).metaAt("opB.ts") != nullptr);
   CHECK(n.dev(n.synth).metaAt("opA.acc") == nullptr);
   CHECK_FALSE(n.store.dispatch(RenameMetaInstance{n.synth, "opB", "opB.x"}).ok());  // into itself

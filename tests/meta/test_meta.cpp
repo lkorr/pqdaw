@@ -264,7 +264,7 @@ TEST_CASE("meta laws: the Phase accumulator's frequency travel") {
   const ParamSpec lin{"g", "", 0.0, -1.0, 3.0};
   CHECK(travelToValue(lin, 0.5) == 1.0);
   CHECK(valueToTravel(lin, 1.0) == 0.5);
-  const ParamSpec ex{"c", "", 100.0, 10.0, 1000.0, graph::Unit::Hz, Curve::Exp};
+  const ParamSpec ex{"c", "", 100.0, 10.0, 1000.0, graph::Unit::Hz, dsp::CurvePreset::Octave};
   CHECK(travelToValue(ex, 0.5) == doctest::Approx(100.0));
   CHECK(valueToTravel(ex, 100.0) == doctest::Approx(0.5));
 }

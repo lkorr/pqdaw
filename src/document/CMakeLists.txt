@@ -2,6 +2,7 @@ pq_add_module(pq_doc
   SOURCES
     src/note_seq.cpp
     src/model.cpp
+    src/knob_positions.cpp
     src/audio_clip.cpp
     src/audio_sequence.cpp
     src/change_set.cpp

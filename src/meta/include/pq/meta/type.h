@@ -31,27 +31,23 @@
 #include <vector>
 
 #include "pq/core/result.h"
+#include "pq/dsp/curve.h"
 #include "pq/graph/patch.h"
 #include "pq/graph/types.h"
 #include "pq/meta/data.h"
 
 namespace pq::meta {
 
-// How a face's control travel t ∈ [0, 1] maps to the value (and the param's `@curve` attribute in the expansion).
-enum class Curve : uint8_t {
-  Linear,  // min + t·(max − min)
-  Exp,     // min·(max / min)^t (min > 0): `@curve(exp)`
-  Exp0,    // min + (max − min)·(2^(k·t) − 1)/(2^k − 1), k = curveK: exponential from exactly min (the Phase
-           // accumulator's frequency: 0 Hz at t = 0); `@curve(exp0, k)`
-};
 
 struct ParamSpec {
   std::string_view name;
   std::string_view label;
   double def = 0.0, min = 0.0, max = 1.0;
   graph::Unit unit = graph::Unit::None;  // the literals' unit in the expansion (Hz: values are Hz)
-  Curve curve = Curve::Linear;
-  double curveK = 0.0;                   // Exp0's k
+  // GU.1: the control's declared curve (pq/dsp/curve.h), as the expansion's `@curve(<preset>[, curveK])` (Octave is
+  // written `exp`, its old name; Exp0: exponential from exactly min, the Phase accumulator's frequency: 0 Hz at 0).
+  dsp::CurvePreset curve = dsp::CurvePreset::Linear;
+  double curveK = 0.0;                   // Exp0's k (Exponential / Logarithmic: the bend, 0: the default)
   bool wraps = false;                    // the face drags it around its range (a phase)
   bool bakeable = false;                 // static, it may be baked into table data (TMM.5); else always runtime
   // TX.patching: the param stores a knob POSITION and the body computes its value (the VCA's `value`: position →
@@ -64,12 +60,15 @@ struct ParamSpec {
   // then clamps to ±max(|min|, |max|) instead of [min, max]). The Phase accumulator's frequency: a negative frequency
   // runs the phase backwards (the same pitch, the ramp reversed), so a VCA multiplying the frequency by −1 reflects.
   bool signedValue = false;
-  // TX.knob-curves: the face's control has a law of its own, so no knob curve is offered (doc::KnobCurve; the VCA's
-  // knob travels along its curve box, its range ends and box are values of that curve).
+  // TX.knob-curves: the face's control has a law of its own, so no knob curve is offered (the VCA's knob travels
+  // along its curve box, its range ends and box are values of that curve; GU.4 replaces it with a curve).
   bool noKnobCurve = false;
 };
+// GU.1: the param's declared curve — graph::declaredCurve of the expansion's declaration of it (the same curve the
+// document lowering reads), and the value at a knob position / the position of a value through it.
+dsp::Curve paramCurve(const ParamSpec& p) noexcept;
 double travelToValue(const ParamSpec& p, double t) noexcept;  // t clamped to [0, 1]
-double valueToTravel(const ParamSpec& p, double v) noexcept;  // v clamped to [min, max]
+double valueToTravel(const ParamSpec& p, double v) noexcept;  // the nearest position (dsp::curvePosition)
 
 struct SettingSpec {
   std::string_view name;

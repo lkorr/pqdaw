@@ -199,7 +199,7 @@ public:
     uint64_t key = 0;
     for (int32_t part = 0; part < kParts; ++part)
       if (param_[part] >= 0 && faceCurveSwitched(target(), type(), static_cast<size_t>(param_[part])))
-        key = key * 31 + 1 + static_cast<uint64_t>(part) * 8 + static_cast<uint64_t>(target().curve(static_cast<size_t>(param_[part])));
+        key = key * 31 + 1 + static_cast<uint64_t>(part) * 8 + dsp::curveHash(*target().curve(static_cast<size_t>(param_[part])));
     return key == 0 ? 0 : key | 1u;
   }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {

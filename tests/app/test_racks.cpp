@@ -240,17 +240,14 @@ TEST_CASE("racks: an Instrument Rack and an Audio Effect Rack render exactly lik
   constexpr uint32_t kFrames = 48000;
   const golden::Channels lowered = renderGraph(low.lp.graph, low.links, low.values, kFrames, kNotes);
 
-  // The same by hand (lower.h "Racks").
-  auto travel = [&](const char* patch, const char* name) {
-    const graph::Patch* p = (*lib)->library().find(patch);
-    REQUIRE(p != nullptr);
-    const auto n = p->findByName(name);
-    REQUIRE(n.has_value());
-    return paramTravel(p->paramDecl(*n));
+  // The same by hand (lower.h "Racks"). GU.1: a mapped control's value is its `curve` atom on the mapped position (on
+  // the slot the lowering gave it: the hand graph reads the lowering's own curve slots).
+  auto slotOf = [&](DeviceId d, const char* param) {
+    for (const CurveSite& c : low.lp.curves)
+      if (c.device == d && c.param == param) return std::to_string(c.slot);
+    FAIL("no curve site");
+    return std::string();
   };
-  const ParamTravel td = travel("saturator", "drive");
-  REQUIRE(td.log);
-  const double ln = std::log(td.hi / td.lo);
   const Coef kA = coef(std::log(1.0), std::log(1.0), std::log(250.0), std::log(300.0), true, false, 1e-4);
   Coef vB = coef(0.0, 0.0, 90.0, 110.0, true, false, 1e-3);
   vB.a2 *= 127.0;  // the graph reads voice.velocity in 0 … 1
@@ -278,7 +275,7 @@ TEST_CASE("racks: an Instrument Rack and an Audio Effect Rack render exactly lik
       "  bx = m1a * " + num(1.0 / 127.0) + "\n"
       "  bs = (exp(bx * " + num(k) + ") - 1.0) * " + num(1.0 / std::expm1(k)) + "\n"
       "  bp = bs * " + num(0.9 - 0.2) + " + 0.2\n"
-      "  bv = bp * 1.0 + 0.0\n"
+      "  bv = curve(bp, 1, " + slotOf(sB, "bright") + ")\n"
       "  sb = BasicSynth(bright: bv)\n"
       "  ob = gain(voice_sum(gain(sb.out, gb, 0.002, 1)), pack(glb, grb), 0.002)\n"
       "  r1 = oa + ob\n"
@@ -289,7 +286,7 @@ TEST_CASE("racks: an Instrument Rack and an Audio Effect Rack render exactly lik
       "  sel = sp * 127.0 + 0.0\n"
       "  dx = m1b * " + num(1.0 / 127.0) + "\n"
       "  dp = dx * " + num(0.8 - 0.3) + " + 0.3\n"
-      "  dv = exp(dp * " + num(ln) + " + " + num(std::log(td.lo)) + ")\n"
+      "  dv = curve(dp, 1, " + slotOf(sat, "drive") + ")\n"
       "  z1 = clip(min(sel * s10 + s11, sel * s12 + s13), 0, 1)\n"
       "  st = saturator(gain(r1, z1, 0.002), drive: dv)\n"
       "  o1 = gain(st.out, pack(gl1, gr1), 0.002)\n"
@@ -307,6 +304,8 @@ TEST_CASE("racks: an Instrument Rack and an Audio Effect Rack render exactly lik
   handLib.addAll((*lib)->library());
   graph::ProjectGraph hand;
   hand.library = &handLib;
+  hand.curveSlots = low.lp.graph.curveSlots;  // GU.1
+  hand.curveOwner = low.lp.graph.curveOwner;
   hand.tracks.push_back({keys.value, "Keys", file->find("Keys"), graph::TrackRole::Instrument, 0});
   hand.tracks.push_back({store.current()->master->id.value, "Main", file->find("Main"), graph::TrackRole::Master, graph::kNone});
   hand.wires.push_back({{0, "out"}, {1, "in"}, graph::WireKind::Audio});

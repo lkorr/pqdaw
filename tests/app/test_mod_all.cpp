@@ -105,12 +105,12 @@ struct Song {
   // (Bend, min = max).
   DeviceId modulator(double m, double phase = 0.0) {
     const DeviceId pa = freeMeta("phase_acc");
-    edit(ops::setMetaParam(doc(), pa, "", "phase_acc", "freq", kModHz));
-    if (phase != 0.0) edit(ops::setMetaParam(doc(), pa, "", "phase_acc", "phase", phase));
+    edit(ops::setMetaParamValue(doc(), pa, "", "phase_acc", "freq", kModHz));
+    if (phase != 0.0) edit(ops::setMetaParamValue(doc(), pa, "", "phase_acc", "phase", phase));
     const DeviceId vca = freeMeta("vca");
     edit(ops::setMetaSetting(doc(), vca, "", "vca", "curve", static_cast<double>(meta::VcaCurve::Bend)));
-    edit(ops::setMetaParam(doc(), vca, "", "vca", "max", m));
-    edit(ops::setMetaParam(doc(), vca, "", "vca", "min", m));
+    edit(ops::setMetaParamValue(doc(), vca, "", "vca", "max", m));
+    edit(ops::setMetaParamValue(doc(), vca, "", "vca", "min", m));
     wire(pa, "out", vca, "in");
     return vca;
   }
@@ -196,7 +196,7 @@ TEST_CASE("mod-all repro: audio into a chain Wavetable's warp changes the sound,
         const DeviceId wt = s->meta("wavetable");
         s->edit(ops::setMetaSetting(s->doc(), wt, "", "wavetable", "mode", mode));
         const DeviceId src = s->freeMeta("phase_acc");
-        s->edit(ops::setMetaParam(s->doc(), src, "", "phase_acc", "freq", 750.0));
+        s->edit(ops::setMetaParamValue(s->doc(), src, "", "phase_acc", "freq", 750.0));
         s->notes(2 * kPpq);
         if (wired) s->wire(src, "out", wt, "warp");
         return s;
@@ -216,7 +216,7 @@ TEST_CASE("mod-all repro: the warp wire added while playing takes effect (Shape 
     const DeviceId wt = s.meta("wavetable");  // after BasicSynth: an effect in Shape mode
     CHECK(metaSettings(*findDevice(s.doc(), wt).device, "", meta::wavetableType())[meta::kWtMode] == 1.0);
     const DeviceId src = s.freeMeta("phase_acc");
-    s.edit(ops::setMetaParam(s.doc(), src, "", "phase_acc", "freq", 750.0));
+    s.edit(ops::setMetaParamValue(s.doc(), src, "", "phase_acc", "freq", 750.0));
     s.notes(8 * kPpq);
     app::LinkConfig c;
     c.compileThread = false;
@@ -265,8 +265,8 @@ TEST_CASE("mod-all: Shape mode's live path at static values matches its baked cu
     s->meta("wavetable");  // the sine
     const DeviceId shaper = s->meta("wavetable");
     s->edit(ops::setMetaSetting(s->doc(), shaper, "", "wavetable", "mode", 1.0));
-    s->edit(ops::setMetaParam(s->doc(), shaper, "", "wavetable", "warp", 0.5));
-    s->edit(ops::setMetaParam(s->doc(), shaper, "", "wavetable", "fold", 0.3));
+    s->edit(ops::setMetaParamValue(s->doc(), shaper, "", "wavetable", "warp", 0.5));
+    s->edit(ops::setMetaParamValue(s->doc(), shaper, "", "wavetable", "fold", 0.3));
     s->notes(2 * kPpq);
     if (live) {
       const DeviceId zero = s->modulator(0.0);
@@ -330,7 +330,7 @@ struct Config {
 struct Param {
   std::string name;
   double def = 0.0, min = 0.0, max = 1.0;
-  ParamTravel travel;  // TX.knob-curves: its declared knob curve (an Add wire adds in its input domain)
+  dsp::Curve curve;  // GU.1: its declared curve (an Add wire adds in its input domain: position, or units if linear)
 };
 // A device under test: how its song is built (returns the device), its params, its configurations.
 struct Dut {
@@ -353,7 +353,7 @@ std::vector<Param> stockParams(const std::string& patch) {
   for (const DeviceParamInfo& p : info->params)
     if (p.kind == graph::Kind::Real && p.hasRange && p.steps == 0 && p.max > p.min)
       out.push_back({p.name, p.defaultValue, p.min, p.max,
-                     paramTravel(*findParamDecl(*library().library().find(info->patch.empty() ? patch : info->patch), p.name))});
+                     declaredCurve(*findParamDecl(*library().library().find(info->patch.empty() ? patch : info->patch), p.name))});
   return out;
 }
 
@@ -362,12 +362,7 @@ std::vector<Param> metaParams(std::string_view type) {
   REQUIRE(t != nullptr);
   std::vector<Param> out;
   for (const meta::ParamSpec& p : t->params) {
-    ParamTravel tr;  // the expansion's declaration (pq/meta/type.h Curve → @curve)
-    tr.lo = p.min;
-    tr.hi = p.max;
-    tr.log = p.curve == meta::Curve::Exp && p.min > 0.0;
-    tr.exp0 = p.curve == meta::Curve::Exp0 ? p.curveK : 0.0;
-    out.push_back({std::string(p.name), p.def, p.min, p.max, tr});
+    out.push_back({std::string(p.name), p.def, p.min, p.max, meta::paramCurve(p)});  // the expansion's declaration
   }
   return out;
 }
@@ -378,8 +373,8 @@ void configure(Song& s, DeviceId d, const Config& c, std::string_view metaType) 
     else s.edit(ops::setMetaSetting(s.doc(), d, "", metaType, k, v));
   }
   for (const auto& [k, v] : c.params) {
-    if (metaType.empty()) s.must(SetDeviceParam{d, k, v});
-    else s.edit(ops::setMetaParam(s.doc(), d, "", metaType, k, v));
+    if (metaType.empty()) s.edit(ops::setDeviceParamValue(s.doc(), library(), d, k, v));  // GU.1: values in units
+    else s.edit(ops::setMetaParamValue(s.doc(), d, "", metaType, k, v));
   }
 }
 
@@ -450,7 +445,7 @@ std::vector<Dut> duts() {
   // Utility: after another Utility that makes the signal stereo (its balance), so width and mid/side have a side.
   d.push_back({"Utility", [](Song& s, const Config& c) {
                  const DeviceId pre = s.stock("utility", DeviceKind::AudioEffect);
-                 s.must(SetDeviceParam{pre, "balance", -0.6});
+                 s.edit(ops::setDeviceParamValue(s.doc(), library(), pre, "balance", -0.6));
                  return stockEffect(s, "utility", c);
                },
                stockParams("utility"),
@@ -482,7 +477,7 @@ std::vector<Dut> duts() {
                  if (std::find_if(c.settings.begin(), c.settings.end(), [](const auto& kv) { return kv.first == "scOn"; }) !=
                      c.settings.end()) {
                    const DeviceId sc = s.freeMeta("phase_acc");
-                   s.edit(ops::setMetaParam(s.doc(), sc, "", "phase_acc", "freq", 110.0));
+                   s.edit(ops::setMetaParamValue(s.doc(), sc, "", "phase_acc", "freq", 110.0));
                    s.wire(sc, "out", af, "sc");
                  }
                  return af;
@@ -570,12 +565,11 @@ void sweep(const Dut& dut, uint32_t& tested, std::vector<std::string>& silent) {
       for (const Param& p : dut.params) {
         Answer& a = best[p.name];
         if (phase != 0.0 && a.perSample > kMinResponse) continue;  // answered per sample already
-        // TX.knob-curves: 35 % of the knob's input domain towards its interior — travel on a curved knob, dB on a dB
-        // gain, else the units (an Add wire adds before the curve).
-        const bool curved = !travelsInUnits(p.travel);
-        const double span = curved ? 1.0 : p.travel.db ? 20.0 * std::log10(p.max / p.min) : p.max - p.min;
-        const double frac = curved ? travelPosition(p.travel, p.def) : p.travel.db ? std::log10(p.def / p.min) * 20.0 / span
-                                                                                  : (p.def - p.min) / span;
+        // GU.1: 35 % of the knob's input domain towards its interior — position on a curved control, the curve's units
+        // on a linear one (dB on a dB gain: an Add wire adds there).
+        const bool curved = !addsInUnits(p.curve);
+        const double span = curved ? 1.0 : p.curve.max - p.curve.min;
+        const double frac = curved ? dsp::curvePosition(p.curve, p.def, 0.0) : (dsp::curveInput(p.curve, p.def) - p.curve.min) / span;
         const double m = std::clamp((frac < 0.5 ? 0.35 : -0.35) * span, -meta::kVcaRange, meta::kVcaRange);
         Song s;
         const DeviceId d = dut.build(s, c);

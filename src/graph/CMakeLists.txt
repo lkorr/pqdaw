@@ -23,5 +23,6 @@ pq_add_module(pq_graph
     src/sleep_plan.cpp
     src/inspect.cpp
     src/project.cpp
+    src/param_curve.cpp
   DEPS pq_core pq_dsp
 )

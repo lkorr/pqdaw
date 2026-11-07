@@ -6,6 +6,7 @@
 
 #include "pq/graph/atoms.h"
 #include "pq/meta/type.h"
+#include "pq/graph/param_curve.h"
 
 namespace pq::meta {
 
@@ -32,52 +33,31 @@ graph::ParamDecl paramDecl(const ParamSpec& s) {
   if (s.wraps) d.attrs.push_back(graph::Attr{"wrap", {}});
   // TMM.18: a signed value — wires may take it below the knob range, to −max(|min|, |max|) (doc lowering, the Add law).
   if (s.signedValue) d.attrs.push_back(graph::Attr{"signed", {}});
-  if (s.curve == Curve::Exp) {
-    d.attrs.push_back(graph::Attr{"curve", {graph::AttrArg{{}, graph::AttrValue::ident("exp")}}});
-  } else if (s.curve == Curve::Exp0) {
-    d.attrs.push_back(graph::Attr{"curve", {graph::AttrArg{{}, graph::AttrValue::ident("exp0")},
-                                            graph::AttrArg{{}, graph::AttrValue::num(s.curveK)}}});
+  switch (s.curve) {  // GU.1: the declared curve's preset (graph::declaredCurve reads it back)
+    case dsp::CurvePreset::Octave:
+      d.attrs.push_back(graph::Attr{"curve", {graph::AttrArg{{}, graph::AttrValue::ident("exp")}}});
+      break;
+    case dsp::CurvePreset::Exp0:
+    case dsp::CurvePreset::Exponential:
+    case dsp::CurvePreset::Logarithmic: {
+      std::vector<graph::AttrArg> args{graph::AttrArg{{}, graph::AttrValue::ident(std::string(dsp::curvePresetName(s.curve)))}};
+      if (s.curveK != 0.0) args.push_back(graph::AttrArg{{}, graph::AttrValue::num(s.curveK)});
+      d.attrs.push_back(graph::Attr{"curve", std::move(args)});
+      break;
+    }
+    case dsp::CurvePreset::Linear:
+    case dsp::CurvePreset::Custom: break;
   }
   return d;
 }
 
 }  // namespace
 
-double travelToValue(const ParamSpec& p, double t) noexcept {
-  t = std::clamp(t, 0.0, 1.0);
-  switch (p.curve) {
-    case Curve::Exp:
-      if (p.min > 0.0 && p.max > p.min) return std::clamp(p.min * std::pow(p.max / p.min, t), p.min, p.max);
-      break;
-    case Curve::Exp0:
-      if (p.curveK > 0.0)
-        return std::clamp(p.min + (p.max - p.min) * std::expm1(t * p.curveK * std::numbers::ln2) /
-                                      std::expm1(p.curveK * std::numbers::ln2),
-                          p.min, p.max);
-      break;
-    case Curve::Linear: break;
-  }
-  return p.min + t * (p.max - p.min);
-}
+dsp::Curve paramCurve(const ParamSpec& p) noexcept { return graph::declaredCurve(paramDecl(p)); }
 
-double valueToTravel(const ParamSpec& p, double v) noexcept {
-  if (!(p.max > p.min)) return 0.0;
-  v = std::clamp(v, p.min, p.max);
-  switch (p.curve) {
-    case Curve::Exp:
-      if (p.min > 0.0) return std::clamp(std::log(v / p.min) / std::log(p.max / p.min), 0.0, 1.0);
-      break;
-    case Curve::Exp0:
-      if (p.curveK > 0.0) {
-        const double u = (v - p.min) / (p.max - p.min);  // [0, 1]
-        return std::clamp(std::log1p(u * std::expm1(p.curveK * std::numbers::ln2)) / (p.curveK * std::numbers::ln2), 0.0,
-                          1.0);
-      }
-      break;
-    case Curve::Linear: break;
-  }
-  return (v - p.min) / (p.max - p.min);
-}
+double travelToValue(const ParamSpec& p, double t) noexcept { return dsp::evalCurve(paramCurve(p), std::clamp(t, 0.0, 1.0)); }
+
+double valueToTravel(const ParamSpec& p, double v) noexcept { return dsp::curvePosition(paramCurve(p), v, 0.0); }
 
 int32_t Type::paramIndex(std::string_view n) const noexcept {
   for (size_t i = 0; i < params.size(); ++i)

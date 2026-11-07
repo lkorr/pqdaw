@@ -46,17 +46,15 @@ public:
       return toPosition(info_, *v);
     };
     setSpec(s);
-    // TX.knob-curves: the curve it is on, and where to switch it.
+    // TX.knob-curves / GU.1: the curve it is on, and where to switch it.
     std::string body = "Drag up or down to change the value (Shift: fine). Delete returns it to its default.";
-    if (const std::vector<doc::KnobCurve> cs = knobCurves(p); !cs.empty()) {
-      const doc::KnobCurve declared = doc::declaredCurve(declaredTravel(p));
-      const doc::KnobCurve on = p.curve == doc::KnobCurve::Default ? declared : p.curve;
-      body += std::string(" Curve: ") + knobCurveLabel(on) + (on == declared ? " (its default)" : "") +
+    if (const std::vector<dsp::CurvePreset> cs = knobCurves(p); !cs.empty()) {
+      const bool own = curveSwitched(p);
+      body += std::string(" Curve: ") + knobCurveLabel(p.curve.preset) + (own ? "" : " (its default)") +
               " (right-click: Knob Curve).";
     }
     setInfo(label_, body);
-    switched_ = p.curve != doc::KnobCurve::Default && !knobCurves(p).empty() &&
-                p.curve != doc::declaredCurve(declaredTravel(p));
+    switched_ = curveSwitched(p);
     markDirty();
   }
   const ParamInfo& param() const noexcept { return info_; }
@@ -165,7 +163,7 @@ public:
         ctx.dl.addRoundedRectStroke(box, ctx.scale.exact(1.5f), ui::withAlpha(th->device.label, 140), 1.0f);
         const float in = ctx.scale.exact(2.0f);
         std::array<ui::Vec2, kCurveGlyphPoints> pts;
-        curveGlyphPoints(travelOn(info_, info_.curve), {box.x0 + in, box.y0 + in, box.x1 - in, box.y1 - in}, pts);
+        curveGlyphPoints(info_.curve, {box.x0 + in, box.y0 + in, box.x1 - in, box.y1 - in}, pts);
         ui::smoothPolyline(ctx.dl, pts, ui::withAlpha(th->device.label, 230), ctx.scale.exact(1.0f));
       }
     }
@@ -690,7 +688,15 @@ void DevicePanel::Impl::bindOne(Bound& b) {
       auto& pb = static_cast<PanelBox&>(*b.widget);
       ui::DragBox& box = pb.box();
       // TX.knob-curves: the box re-specs when its param's curve changes too.
-      const std::string key = p ? p->name + "" + std::to_string(static_cast<int>(p->curve)) : std::string();
+      std::string key;
+      if (p) {  // GU.1: the curve's every number (a point drag changes the key too)
+        key = p->name;
+        for (const double x : {p->curve.min, p->curve.max, p->curve.step, static_cast<double>(p->curve.segments)}) key += ";" + std::to_string(x);
+        for (uint32_t i = 0; i <= p->curve.segments && i <= dsp::kMaxCurveSegments; ++i)
+          key += ";" + std::to_string(p->curve.points[i].t) + "," + std::to_string(p->curve.points[i].y);
+        for (uint32_t i = 0; i < p->curve.segments && i < dsp::kMaxCurveSegments; ++i)
+          key += ";" + std::to_string(static_cast<int>(p->curve.shapes[i].shape)) + "," + std::to_string(p->curve.shapes[i].bend);
+      }
       if (p && pb.boundTo == key) {
         box.setValue(toPosition(*p, v));
       } else if (p) {
@@ -945,12 +951,14 @@ void DevicePanel::setParamValue(std::string_view param, double value) {
   impl_->changed(param, false, nullptr);
 }
 
-void DevicePanel::setParamCurve(std::string_view param, doc::KnobCurve curve) {  // TX.knob-curves
+void DevicePanel::setParamCurve(std::string_view param, const dsp::Curve* curve) {  // GU.1
   ParamInfo* info = nullptr;
   for (ParamInfo& p : sig_.params)
     if (p.name == param) info = &p;
-  if (info == nullptr || info->curve == curve) return;
-  info->curve = curve;
+  if (info == nullptr) return;
+  const dsp::Curve& c = curve != nullptr ? *curve : info->declared;
+  if (info->curve == c) return;
+  info->curve = c;
   for (Impl::Bound& b : impl_->bound)
     if (b.param == param) impl_->bindOne(b);
   impl_->changed(param, false, nullptr);  // displays that draw the param re-read it

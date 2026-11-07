@@ -1,5 +1,6 @@
 // The device library and catalog (T4.1): pq/document/devices.h.
 #include "pq/document/devices.h"
+#include "pq/graph/param_curve.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -63,6 +64,7 @@ DeviceParamInfo paramInfo(const graph::Patch& p, graph::NodeIndex n) {
     const double v = a->args[0].value.number.value();
     if (v >= 2.0 && v <= 4096.0) info.steps = static_cast<uint32_t>(v);
   }
+  info.curve = graph::declaredCurve(d);  // GU.1
   return info;
 }
 
@@ -246,9 +248,18 @@ const DeviceInfo* DeviceCatalog::find(std::string_view patch) const noexcept {
   return nullptr;
 }
 
-double deviceParamValue(const Device& d, const DeviceParamInfo& p) noexcept {
+double deviceParamPosition(const Device& d, const DeviceParamInfo& p) noexcept {  // GU.1
   const DeviceValue* v = d.param(p.name);
-  return v != nullptr ? v->value : p.defaultValue;
+  return v != nullptr ? v->value : dsp::curvePosition(p.curve, p.defaultValue, 0.0);
+}
+
+const dsp::Curve& deviceParamCurve(const Device& d, const DeviceParamInfo& p) noexcept {
+  const dsp::Curve* c = d.curve(p.name);
+  return c != nullptr ? *c : p.curve;
+}
+
+double deviceParamValue(const Device& d, const DeviceParamInfo& p) noexcept {
+  return dsp::evalCurve(deviceParamCurve(d, p), deviceParamPosition(d, p));
 }
 
 double deviceSettingValue(const Device& d, const DeviceSettingInfo& s) noexcept {
@@ -321,7 +332,8 @@ std::optional<DeviceInfo> metaDeviceInfo(const meta::Type& t, DeviceKind kind) {
     p.min = s.min;
     p.max = s.max;
     p.unit = s.unit;
-    p.exponential = s.curve == meta::Curve::Exp;
+    p.exponential = s.curve == dsp::CurvePreset::Octave;
+    p.curve = meta::paramCurve(s);  // GU.1
     info.params.push_back(std::move(p));
   }
   for (const meta::SettingSpec& s : t.settings) info.settings.push_back(DeviceSettingInfo{std::string(s.name), s.def, true});

@@ -209,7 +209,7 @@ TEST_CASE("devices: add, reorder, remove, deactivate, copy / paste, duplicate ar
   // Deactivate (toggle), param, setting.
   c.edit(ops::toggleDevicesActive(*c.store.current(), std::vector<DeviceId>{sat}));
   CHECK(c.chain(c.midi) == std::vector<std::string>{"Group", "utility", "saturator(off)"});
-  c.edit(ops::setDeviceParam(*c.store.current(), sat, "drive", 2.0));
+  c.edit(ops::setDeviceParamValue(*c.store.current(), library(), sat, "drive", 2.0));
   c.edit(ops::setDeviceSetting(*c.store.current(), sat, "type", 6.0));
   // Copy / paste onto the group (fresh ids, the same values), then duplicate there.
   std::vector<DevicePtr> clip{c.onPath(c.midi, 2)};
@@ -220,7 +220,7 @@ TEST_CASE("devices: add, reorder, remove, deactivate, copy / paste, duplicate ar
   CHECK(copy.id != sat);
   CHECK(copy.patch == "saturator");
   CHECK_FALSE(copy.active);
-  CHECK(copy.param("drive")->value == 2.0);
+  CHECK(copy.param("drive")->value == findDevice(*c.store.current(), sat).device->param("drive")->value);  // GU.1: its position
   CHECK(copy.setting("type")->value == 6.0);
   c.edit(ops::duplicateDevices(*c.store.current(), c.store.ids(), pasted.devices));
   CHECK(c.chain(c.group) == std::vector<std::string>{"saturator(off)", "saturator(off)"});
@@ -293,8 +293,9 @@ TEST_CASE("devices: the stock device library and catalog") {
   // The value a device plays: set, else the default.
   Device d = *makeDevice(DeviceId{5}, "utility", DeviceKind::AudioEffect);
   CHECK(deviceParamValue(d, *util->param("width")) == doctest::Approx(1.0));
-  d.params = {{"width", 2.0}};
+  d.params = {{"width", 0.5}};  // GU.1: a knob position (0 … 400 %, linear: 200 %)
   CHECK(deviceParamValue(d, *util->param("width")) == 2.0);
+  CHECK(deviceParamPosition(d, *util->param("width")) == 0.5);
   // A patch that is not a device is refused.
   auto notDevice = pq::graph::parse("patch p {\n  in a : real const = 1\n}\n", "p.pqp");
   REQUIRE(notDevice.ok());
@@ -339,7 +340,7 @@ TEST_CASE("devices: lowering a chain — stable NodeIds, params as runtime param
   const ops::Edit u = c.edit(ops::addDevice(*c.store.current(), c.store.ids(), c.midi, "utility", DeviceKind::AudioEffect));
   const ops::Edit s = c.edit(ops::addDevice(*c.store.current(), c.store.ids(), c.midi, "saturator", DeviceKind::AudioEffect));
   const DeviceId util = u.devices[0], sat = s.devices[0];
-  c.edit(ops::setDeviceParam(*c.store.current(), sat, "drive", 2.0));
+  c.edit(ops::setDeviceParamValue(*c.store.current(), library(), sat, "drive", 2.0));
   c.edit(ops::setDeviceSetting(*c.store.current(), sat, "type", 6.0));
   LowerOptions lo;
   lo.library = &library().library();
@@ -392,7 +393,7 @@ TEST_CASE("devices: lowering a chain — stable NodeIds, params as runtime param
   CHECK(wired);
 
   // A param change is not a graph change: the patch is shared with the previous lowering.
-  c.edit(ops::setDeviceParam(*c.store.current(), util, "width", 0.5));
+  c.edit(ops::setDeviceParamValue(*c.store.current(), library(), util, "width", 0.5));
   auto again = lower(*c.store.current(), lo, &lp);
   REQUIRE(again.ok());
   for (size_t i = 0; i < lp.patches.size(); ++i) CHECK((again->patches[i] == lp.patches[i]));

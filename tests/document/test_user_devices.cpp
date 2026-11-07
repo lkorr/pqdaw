@@ -489,7 +489,7 @@ TEST_CASE("store: a coalescing dispatch joins its run's history entry") {
   // Another key, or any other dispatch, starts a new step.
   REQUIRE(t.store.dispatchCoalescing(ops::editDevicePatch(*t.store.current(), t.synA, "//x\n" + text)->command, 43).ok());
   CHECK(t.store.history().cursor() == steps + 2);
-  REQUIRE(t.store.dispatch(ops::setDeviceParam(*t.store.current(), t.sat, "drive", 3.0)->command).ok());
+  REQUIRE(t.store.dispatch(ops::setDeviceParam(*t.store.current(), t.sat, "drive", 0.3)->command).ok());
   REQUIRE(t.store.dispatchCoalescing(ops::editDevicePatch(*t.store.current(), t.synA, "//y\n" + text)->command, 43).ok());
   CHECK(t.store.history().cursor() == steps + 4);
   // Undo takes each step back; the first one restores the stock device.

@@ -2,6 +2,8 @@
 
 #include "pq/views/devices/device_model.h"
 
+#include "pq/graph/param_curve.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -98,6 +100,8 @@ DeviceSignature signatureOf(const graph::Patch& patch) {
           p.steps = static_cast<int32_t>(std::lround(a->args[0].value.number.value()));
         p.hidden = findAttr(d, "hidden") != nullptr;
         if (p.exp && (p.min <= 0.0 || p.max <= 0.0)) p.exp = false;  // a log scale needs positive ends
+        p.declared = graph::declaredCurve(d);  // GU.1
+        p.curve = p.declared;
         sig.params.push_back(std::move(p));
         break;
       }
@@ -143,99 +147,72 @@ double fromDisplay(const ParamInfo& p, double d) noexcept {
   }
 }
 
-doc::ParamTravel declaredTravel(const ParamInfo& p) noexcept {  // TX.knob-curves
-  doc::ParamTravel t;
-  t.lo = std::min(p.min, p.max);
-  t.hi = std::max(p.min, p.max);
-  t.round = p.steps > 1;
-  t.log = p.exp || (p.unit == DisplayUnit::Db && t.lo > 0.0);
-  t.db = !p.exp && p.unit == DisplayUnit::Db && t.lo > 0.0;
-  t.exp0 = !t.log && t.hi > t.lo ? p.exp0 : 0.0;
-  return t;
-}
-
-std::vector<doc::KnobCurve> knobCurves(const ParamInfo& p) {
-  std::vector<doc::KnobCurve> out;
-  if (p.isBool) return out;
-  const doc::ParamTravel d = declaredTravel(p);
-  for (const doc::KnobCurve c : {doc::KnobCurve::Octave, doc::KnobCurve::Exponential, doc::KnobCurve::Logarithmic, doc::KnobCurve::Linear})
-    if (doc::curveAvailable(d, c)) out.push_back(c);
+std::vector<dsp::CurvePreset> knobCurves(const ParamInfo& p) {  // GU.1
+  if (p.isBool) return {};
+  std::vector<dsp::CurvePreset> out = doc::curvePresets(p.declared);
   if (out.size() < 2) out.clear();  // nothing to choose
   return out;
 }
 
-const char* knobCurveLabel(doc::KnobCurve c) noexcept {
+const char* knobCurveLabel(dsp::CurvePreset c) noexcept {
   switch (c) {
-    case doc::KnobCurve::Linear: return "Linear";
-    case doc::KnobCurve::Octave: return "Octave";
-    case doc::KnobCurve::Exponential: return "Exponential";
-    case doc::KnobCurve::Logarithmic: return "Logarithmic";
-    case doc::KnobCurve::Default: break;
+    case dsp::CurvePreset::Linear: return "Linear";
+    case dsp::CurvePreset::Octave:
+    case dsp::CurvePreset::Exp0: return "Octave";
+    case dsp::CurvePreset::Exponential: return "Exponential";
+    case dsp::CurvePreset::Logarithmic: return "Logarithmic";
+    case dsp::CurvePreset::Custom: break;
   }
-  return "Default";
+  return "Custom";
 }
 
-namespace {
-// The instance curve's travel when it is not the declared law (null: the declared law: the code below).
-bool switchedTravel(const ParamInfo& p, doc::ParamTravel& t) noexcept {
-  if (p.curve == doc::KnobCurve::Default || p.isBool) return false;
-  const doc::ParamTravel d = declaredTravel(p);
-  if (!doc::curveAvailable(d, p.curve) || p.curve == doc::declaredCurve(d)) return false;
-  t = doc::withCurve(d, p.curve);
-  return true;
-}
-}  // namespace
-
-double sweptPosition(const ParamInfo& p, double value, double delta, bool legacyUnits, bool nepers) noexcept {
-  const doc::ParamTravel t = travelOn(p, p.curve);
-  if (legacyUnits) return toPosition(p, value + delta);
-  if (!doc::travelsInUnits(t)) return toPosition(p, value) + delta;  // a curved knob: the sweep is in travel
-  if (nepers && value > 0.0) return toPosition(p, value * std::exp(delta));
-  return toPosition(p, value + delta);
+double sweptPosition(const ParamInfo& p, double position, double delta, doc::ModulationTap::Domain domain) noexcept {
+  switch (domain) {
+    case doc::ModulationTap::Domain::Position: return position + delta;
+    case doc::ModulationTap::Domain::Curve: {
+      const double units = dsp::evalCurveUnits(p.curve, position) + delta;
+      return toPosition(p, dsp::curveOutput(p.curve, units), position);
+    }
+    case doc::ModulationTap::Domain::Dsp: return toPosition(p, fromPosition(p, position) + delta, position);
+  }
+  return position;
 }
 
-void curveGlyphPoints(const doc::ParamTravel& t, ui::Rect box, std::array<ui::Vec2, kCurveGlyphPoints>& out) noexcept {
-  const bool ln = t.db;  // the units' domain: ln of a gain (dB), else the value
-  auto dom = [&](double v) { return ln ? std::log(std::max(v, 1e-300)) : v; };
-  const double a = dom(t.lo), b = dom(t.hi);
+void curveGlyphPoints(const dsp::Curve& c, ui::Rect box, std::array<ui::Vec2, kCurveGlyphPoints>& out) noexcept {
+  dsp::Curve u = c;
+  u.step = 0.0;
+  const double a = std::min(c.min, c.max), b = std::max(c.min, c.max);
   for (size_t i = 0; i < kCurveGlyphPoints; ++i) {
     const double x = static_cast<double>(i) / static_cast<double>(kCurveGlyphPoints - 1);
-    doc::ParamTravel u = t;
-    u.round = false;
-    const double y = b > a ? std::clamp((dom(doc::travelValue(u, x)) - a) / (b - a), 0.0, 1.0) : x;
+    const double y = b > a ? std::clamp((dsp::evalCurveUnits(u, x) - a) / (b - a), 0.0, 1.0) : x;
     out[i] = {box.x0 + static_cast<float>(x) * (box.x1 - box.x0), box.y1 - static_cast<float>(y) * (box.y1 - box.y0)};
   }
 }
 
-double toPosition(const ParamInfo& p, double v) noexcept {
-  v = clampV(p, v);
+double storedPosition(const ParamInfo& p, const doc::Device& d) noexcept {  // GU.1
+  if (const doc::DeviceValue* v = d.param(p.name)) return v->value;
+  return p.isBool ? (p.def >= 0.5 ? 1.0 : 0.0) : dsp::curvePosition(p.declared, p.def, 0.0);
+}
+
+const dsp::Curve& storedCurve(const ParamInfo& p, const doc::Device& d) noexcept {
+  const dsp::Curve* c = d.curve(p.name);
+  return c != nullptr ? *c : p.declared;
+}
+
+double storedValue(const ParamInfo& p, const doc::Device& d) noexcept {
+  const double t = storedPosition(p, d);
+  if (p.isBool) return t >= 0.5 ? 1.0 : 0.0;
+  return dsp::evalCurve(storedCurve(p, d), t);
+}
+
+double toPosition(const ParamInfo& p, double v, double hint) noexcept {
   if (p.isBool) return v >= 0.5 ? 1.0 : 0.0;
-  if (doc::ParamTravel t; switchedTravel(p, t)) return doc::travelPosition(t, v);  // TX.knob-curves
-  if (p.exp) return std::log(v / p.min) / std::log(p.max / p.min);
-  if (p.exp0 > 0.0 && p.max > p.min) {
-    const double k = p.exp0 * std::numbers::ln2;
-    return std::clamp(std::log1p((v - p.min) / (p.max - p.min) * std::expm1(k)) / k, 0.0, 1.0);
-  }
-  if (p.unit == DisplayUnit::Db && p.min > 0.0) {
-    const double a = toDisplay(p, p.min), b = toDisplay(p, p.max);
-    return b > a ? (toDisplay(p, v) - a) / (b - a) : 0.0;
-  }
-  return p.max > p.min ? (v - p.min) / (p.max - p.min) : 0.0;
+  return dsp::curvePosition(p.curve, v, hint);
 }
 
 double fromPosition(const ParamInfo& p, double t) noexcept {
-  t = std::clamp(t, 0.0, 1.0);
-  double v;
   if (p.isBool) return t >= 0.5 ? 1.0 : 0.0;
-  if (doc::ParamTravel tr; switchedTravel(p, tr)) return clampV(p, doc::travelValue(tr, t));  // TX.knob-curves
-  if (p.exp) v = p.min * std::pow(p.max / p.min, t);
-  else if (p.exp0 > 0.0) v = p.min + (p.max - p.min) * std::expm1(t * p.exp0 * std::numbers::ln2) / std::expm1(p.exp0 * std::numbers::ln2);
-  else if (p.unit == DisplayUnit::Db && p.min > 0.0) {
-    const double a = toDisplay(p, p.min), b = toDisplay(p, p.max);
-    v = fromDisplay(p, a + t * (b - a));
-  } else v = p.min + t * (p.max - p.min);
-  if (p.steps > 1) v = std::round(v);
-  return clampV(p, v);
+  return dsp::evalCurve(p.curve, std::clamp(t, 0.0, 1.0));
 }
 
 std::string formatValue(const ParamInfo& p, double v) {

@@ -92,7 +92,14 @@ namespace pq::doc {
 // cable); a group's polyphony is its settings ("voices", "mono", "legato", "glide", "steal"). Migration 18 → 19 is a
 // no-op on the JSON; after the decode every file older than 19 has its MIDI tracks' instruments wrapped into instrument
 // groups (migrateToInstrumentGroups: sound-identical).
-inline constexpr int32_t kSchemaVersion = 19;
+// 20 = knob positions (GU.1, docs/plans/GU.md "Curves"): a device's (and a nested meta module's) "params" are knob
+// positions 0 … 1 (a rack's macros and selector keep 0 … 127); a device-param lane's points are positions; a device's
+// "curves" are curve objects {param: {"min", "max", "unit"?, "digits"?, "step"?, "mode"?, "output"?, "preset",
+// "presetArg"?, "points": [[t, y], …], "shapes": [[shape, bend], …]}} (pq/dsp/curve.h). Migration 19 → 20 marks the file
+// ("valuesInUnits", "legacyCurves": never written) and parseProject converts the decoded model with
+// LoadOptions::devices (knob_positions.h: the nearest-position rule through each param's curve); without the library a
+// file with values to convert is refused (Unsupported). Presets older than 20 holding params are refused (no library).
+inline constexpr int32_t kSchemaVersion = 20;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader
@@ -108,10 +115,14 @@ struct Migration {
 // new; 9 → 10: none, meta modules are new).
 std::span<const Migration> builtinMigrations() noexcept;
 
+class DeviceLibrary;
 struct LoadOptions {
   // Steps applied to files older than kSchemaVersion, in order from the file's version (tests inject their own).
   std::span<const Migration> migrations = builtinMigrations();
   std::string_view fileName;  // labels errors (Error::location.file)
+  // GU.1: the device library a file older than schema 20 needs (its values become knob positions through each param's
+  // curve). Null: such a file loads only when it holds nothing to convert.
+  const DeviceLibrary* devices = nullptr;
 };
 
 struct LoadedProject {

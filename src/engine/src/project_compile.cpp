@@ -366,6 +366,7 @@ Result<UnitImage> ProjectCompiler::bind(uint32_t u, std::unique_ptr<ProgramImage
       if (std::shared_ptr<const void> owner = opt_.keepAlive(kind, op.resource)) ui.keepAlive.push_back(std::move(owner));
     }
   }
+  if (graphCurveOwner_) ui.keepAlive.push_back(graphCurveOwner_);  // GU.1: the graph's own curve slots
   if (opt_.onBind)  // T4.4-fix1: probe taps / cost meter; their owner lives as long as the image (M4 review H2, L4)
     if (std::shared_ptr<const void> owner = opt_.onBind(u, cu, *image)) ui.keepAlive.push_back(std::move(owner));
   ui.image = std::move(image);
@@ -377,11 +378,12 @@ Result<UnitImage> ProjectCompiler::makeImage(uint32_t u, const UnitBackend& back
   const auto t0 = std::chrono::steady_clock::now();
   const uint32_t groups = voiceGroupsOf(cu);
   Result<std::unique_ptr<ProgramImage>> img = [&]() -> Result<std::unique_ptr<ProgramImage>> {
-    if (backend.fn != nullptr) return backend.fn(backend.user, *cu.schedule, opt_.maxBlockFrames, groups, opt_.resources);
+    const Resources* res = res_ != nullptr ? res_ : opt_.resources;  // GU.1: the graph's curve slots when given none
+    if (backend.fn != nullptr) return backend.fn(backend.user, *cu.schedule, opt_.maxBlockFrames, groups, res);
     InterpretOptions io;
     io.maxBlockFrames = opt_.maxBlockFrames;
     io.maxVoiceGroups = groups;
-    io.resources = opt_.resources;
+    io.resources = res;
     return buildInterpreted(*cu.schedule, io);
   }();
   if (!img.ok()) return compileError(img.error().code, "unit '" + partition_.units[u].name + "': " + img.error().message);
@@ -568,7 +570,19 @@ Result<TopologyBuild> ProjectCompiler::rebuild(const graph::ProjectGraph& g, std
   return out;
 }
 
+void ProjectCompiler::adoptGraphCurves(const graph::ProjectGraph& g) {  // GU.1
+  res_ = nullptr;
+  graphCurveOwner_.reset();
+  if (g.curveSlots.empty() || (opt_.resources != nullptr && !opt_.resources->curves.empty())) return;
+  graphRes_ = opt_.resources != nullptr ? *opt_.resources : Resources{};
+  graphCurves_ = g.curveSlots;
+  graphRes_.curves = graphCurves_;
+  graphCurveOwner_ = g.curveOwner;
+  res_ = &graphRes_;
+}
+
 Result<ProjectBuild> ProjectCompiler::build(const graph::ProjectGraph& g) {
+  adoptGraphCurves(g);
   auto part = graph::partitionProject(g);
   if (!part.ok()) return part.error();
   whole_ = false;
@@ -576,6 +590,7 @@ Result<ProjectBuild> ProjectCompiler::build(const graph::ProjectGraph& g) {
 }
 
 Result<ProjectBuild> ProjectCompiler::buildWhole(const graph::ProjectGraph& g) {
+  adoptGraphCurves(g);
   auto part = graph::wholeProject(g);
   if (!part.ok()) return part.error();
   whole_ = true;
@@ -584,6 +599,7 @@ Result<ProjectBuild> ProjectCompiler::buildWhole(const graph::ProjectGraph& g) {
 
 Result<std::vector<UnitUpdate>> ProjectCompiler::update(const graph::ProjectGraph& g, std::span<const uint32_t> tracks,
                                                         const UnitBackend* backend) {
+  adoptGraphCurves(g);  // GU.1
   if (units_.empty()) return compileError(ErrorCode::InvalidArgument, "update before build");
   // The partition only depends on tracks, wires and roles: O(tracks + wires).
   auto part = whole_ ? graph::wholeProject(g) : graph::partitionProject(g);

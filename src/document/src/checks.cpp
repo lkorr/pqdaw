@@ -272,12 +272,11 @@ Status checkValues(const std::vector<DeviceValue>& v, const char* what) {
 }
 }  // namespace
 
-Status checkParamCurves(const Device& d) {  // TX.knob-curves (model.h KnobCurve)
+Status checkParamCurves(const Device& d) {  // GU.1 (model.h ControlCurve)
   for (size_t i = 0; i < d.curves.size(); ++i) {
-    const ParamCurve& c = d.curves[i];
+    const ControlCurve& c = d.curves[i];
     PQ_DOC_TRY(checkDeviceValue(c.param, std::nullopt));
-    if (c.curve == KnobCurve::Default || static_cast<uint8_t>(c.curve) > static_cast<uint8_t>(KnobCurve::Logarithmic))
-      return invalid("a knob curve must be Linear, Octave, Exponential or Logarithmic (Default is no entry)");
+    if (!dsp::validCurve(c.curve)) return invalid("'" + c.param + "': not a valid curve (pq/dsp/curve.h validCurve)");
     if (i > 0 && !(d.curves[i - 1].param < c.param)) return invalid("device knob curves must be sorted by param, one per param");
   }
   if (d.rack && !d.curves.empty()) return invalid("a rack's macros have no knob curves");

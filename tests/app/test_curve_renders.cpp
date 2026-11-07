@@ -1,11 +1,21 @@
-// GU.1 reference recorder (runs on the code BEFORE GU.1's document change, with PQ_GU1_RECORD=1): builds the five
-// curve-render projects with the pre-GU.1 API, saves each (schema 19) under tests/app/fixtures/gu1_curves/<case>/ and
-// records its interpreter render as reference.wav (32-bit float). The GU.1 test that replaces this file loads those
-// projects (the schema 19 → 20 migration turns their values into knob positions) and renders them against the
-// references.
+// GU.1 (docs/plans/GU.md "Curves", Phases 1): controls own curves and store knob positions — renders against the
+// lowering before GU.1. tests/app/fixtures/gu1_curves/<case>/ holds a schema-19 project (values in units) and its
+// interpreter render recorded on the pre-GU.1 code (commit bdef3da9, the recorder this file replaced): the five cases
+// — undriven values off their defaults (a Phase accumulator, an Envelope inside the instrument group, Auto Filter,
+// Utility), wires (an LFO through a VCA into an envelope time and a cutoff: curved, added in position; into a dB gain
+// and a sustain: linear, added in units), automation lanes (a cutoff and a gain), a macro mapping (Auto Filter's cutoff
+// in an Audio Effect Rack) and switched curves (Exponential cutoff, Logarithmic dB gain, both wired).
+//   references  each project loads through migration 19 → 20 (its values become knob positions through the library's
+//               curves) and renders on the interpreter and the JIT: the two bit for bit, and within −120 dBFS of the
+//               reference (the curve atom's float arithmetic replaces the old per-curve atom chains: plan tolerance)
+//   no op       an undriven control has no `curve` op in its unit's schedule (its value is the curve evaluated when it
+//               changes, written as its param), inside the instrument group too; each driven control has one
+//   live edits  under RtScope: a knob drag on an undriven control (one param write), a curve edit of the same class on
+//               a driven one (a curve-slot publication, no compile) and on an undriven one (one write) all reach the
+//               audio; a class change compiles
 #include <doctest/doctest.h>
 
-#include <cstdlib>
+#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -18,10 +28,11 @@
 #include "pq/core/rt_scope.h"
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
-#include "pq/document/instrument_groups.h"
+#include "pq/document/lower.h"
+#include "pq/document/meta.h"
 #include "pq/document/serialize.h"
+#include "pq/engine/project_compile.h"
 #include "pq/engine/wav_file.h"
-#include "pq/meta/vca.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -32,6 +43,7 @@ namespace {
 constexpr uint32_t kBlock = 64;
 constexpr double kRate = 48000.0;
 constexpr uint32_t kBlocks = 600;  // 0.8 s
+const char* const kCases[] = {"undriven", "wires", "automation", "macro", "switched"};
 
 fs::path caseDir(const std::string& name) { return fs::path(PQ_TEST_DATA_DIR) / "app" / "fixtures" / "gu1_curves" / name; }
 
@@ -41,85 +53,16 @@ const DeviceLibrary& library() {
   return **lib;
 }
 
-struct Song {
-  DocumentStore store;
-  TrackId track;
-  DeviceId acc, env, filter, util, lfo, vca;
-  Song() {
-    must(SetTempoMap{{{0, 120.0, TempoCurve::Step}}});
-    auto t = ops::createTrack(doc(), store.ids(), TrackKind::Midi);
-    REQUIRE(t.ok());
-    must(t->command);
-    track = t->tracks.at(0);
-    playback_fixture::ungroupHead(store, library(), track);
-    acc = meta("phase_acc", 0);
-    env = meta("envelope");
-    filter = stock("auto_filter");
-    util = stock("utility");
-    // Undriven values off their defaults (units).
-    edit(ops::setMetaParam(doc(), acc, "", "phase_acc", "pitch", -300.0));
-    edit(ops::setMetaParam(doc(), acc, "", "phase_acc", "amp", 0.6));
-    edit(ops::setMetaParam(doc(), env, "", "envelope", "attack", 0.02));
-    edit(ops::setMetaParam(doc(), env, "", "envelope", "decay", 0.15));
-    edit(ops::setMetaParam(doc(), env, "", "envelope", "sustain", 0.5));
-    edit(ops::setMetaParam(doc(), env, "", "envelope", "release", 0.2));
-    edit(ops::setDeviceParam(doc(), filter, "freq", 1800.0));
-    edit(ops::setDeviceParam(doc(), filter, "res", 0.4));
-    edit(ops::setDeviceParam(doc(), util, "gain", 0.5));
-    edit(ops::setDeviceParam(doc(), util, "width", 0.8));
-    std::vector<Note> v{playback_fixture::note(store.ids(), 0, kPpq, 0)};  // a quarter note (0.5 s)
-    must(AddClip{track, playback_fixture::clip(store.ids(), 0, kPpq, std::move(v), "n")});
-  }
-  void must(Command c) {
-    const Status st = store.dispatch(std::move(c));
-    REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
-  }
-  void edit(Result<ops::Edit> e) {
-    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
-    must(e->command);
-  }
-  const Project& doc() const { return *store.current(); }
-  DeviceId meta(std::string_view type, uint32_t index = kAppend) {
-    auto e = ops::addMetaDevice(doc(), store.ids(), track, type, index);
-    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
-    must(e->command);
-    return e->devices.at(0);
-  }
-  DeviceId freeMeta(std::string_view type) {
-    auto e = ops::addMetaDevice(doc(), store.ids(), track, type, ops::kOffPath);
-    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
-    must(e->command);
-    return e->devices.at(0);
-  }
-  DeviceId stock(const std::string& patch) {
-    auto e = ops::addDevice(doc(), store.ids(), track, patch, DeviceKind::AudioEffect);
-    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
-    must(e->command);
-    return e->devices.at(0);
-  }
-  // A 3 Hz ramp × 0.35 (a free Phase accumulator through a free VCA on its Bend curve, min = max = 0.35).
-  void modulator() {
-    lfo = freeMeta("phase_acc");
-    edit(ops::setMetaParam(doc(), lfo, "", "phase_acc", "freq", 3.0));
-    vca = freeMeta("vca");
-    edit(ops::setMetaSetting(doc(), vca, "", "vca", "curve", static_cast<double>(meta::VcaCurve::Bend)));
-    edit(ops::setMetaParam(doc(), vca, "", "vca", "max", 0.35));
-    edit(ops::setMetaParam(doc(), vca, "", "vca", "min", 0.35));
-    edit(ops::connectWire(doc(), store.ids(), lfo, "out", vca, "in"));
-  }
-  void wire(DeviceId to, const std::string& param) { edit(ops::connectWire(doc(), store.ids(), vca, "out", to, param)); }
-  void lane(DeviceId d, const std::string& param, std::vector<Breakpoint> points) {
-    auto l = std::make_shared<AutomationLane>();
-    l->id = store.ids().lane();
-    l->param = ParamRef::device(d, param);
-    l->paramName = param;
-    for (Breakpoint& p : points) p.id = store.ids().breakpoint();
-    l->points = std::move(points);
-    must(AddAutomationLane{track, l});
-  }
-};
+Snapshot loadCase(const std::string& name) {
+  LoadOptions lo;
+  lo.devices = &library();
+  auto r = loadProject(caseDir(name).string(), lo);
+  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
+  CHECK(r->fileSchemaVersion == 19);
+  return r->project;
+}
 
-golden::Channels render(const Snapshot& s, bool jit) {
+std::unique_ptr<app::ProjectLink> makeLink(const Snapshot& s, bool jit) {
   app::LinkConfig c;
   c.compileThread = false;
   c.sleepAfterMs = 0.0f;
@@ -127,74 +70,209 @@ golden::Channels render(const Snapshot& s, bool jit) {
   c.sampleRate = kRate;
   auto l = app::ProjectLink::create(c, s);
   REQUIRE_MESSAGE(l.ok(), (l.ok() ? std::string() : l.error().message));
-  app::ProjectLink& link = **l;
-  REQUIRE(link.waitForMetaTables());
-  if (jit) REQUIRE(link.waitForJit(180.0));
-  link.play(0);
-  golden::Channels out(2);
-  std::vector<float> L(kBlock), R(kBlock);
-  int64_t t = 0;
-  for (uint32_t b = 0; b < kBlocks; ++b) {
-    float* ch[2] = {L.data(), R.data()};
-    {
-      RtScope rt;
-      DenormalGuard dg;
-      link.engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, t});
-    }
-    t += kBlock;
-    out[0].insert(out[0].end(), L.begin(), L.end());
-    out[1].insert(out[1].end(), R.begin(), R.end());
-  }
-  CHECK(link.lastError().empty());
-  return out;
+  REQUIRE((*l)->waitForMetaTables());
+  if (jit) REQUIRE((*l)->waitForJit(180.0));
+  return std::move(l.value());
 }
 
-std::unique_ptr<Song> build(const std::string& name) {
-  auto s = std::make_unique<Song>();
-  if (name == "wires" || name == "switched") s->modulator();
-  if (name == "wires") {
-    s->wire(s->env, "decay");     // exp0 (curved): adds in travel
-    s->wire(s->filter, "freq");   // octave (curved): adds in travel
-    s->wire(s->util, "gain");     // a dB gain (linear in dB): adds in dB
-    s->wire(s->env, "sustain");   // linear: adds in units
-  } else if (name == "automation") {
-    s->lane(s->filter, "freq", {{0, 400.0f, 0.3f, {}}, {kPpq, 6000.0f, 0.0f, {}}});
-    s->lane(s->util, "gain", {{0, 0.2f, 0.0f, {}}, {kPpq, 1.0f, 0.0f, {}}});
-  } else if (name == "macro") {
-    auto g = ops::groupDevices(s->doc(), s->store.ids(), std::vector{s->filter});
-    s->edit(std::move(g));
-    const DeviceId rack = findDevice(s->doc(), s->filter).rack->id;
-    s->edit(ops::mapMacro(s->doc(), s->store.ids(), rack, 0, s->filter, "freq"));
-    const MacroMapping& m = findDevice(s->doc(), rack).device->rack->mappings.at(0);
-    s->edit(ops::setMacroMapping(s->doc(), m.id, 0.2, 0.9, 0.3));
-    s->edit(ops::setMacroValue(s->doc(), rack, 0, 80.0));
-  } else if (name == "switched") {
-    s->edit(ops::setParamCurve(s->doc(), s->filter, "freq", KnobCurve::Exponential));
-    s->edit(ops::setParamCurve(s->doc(), s->util, "gain", KnobCurve::Logarithmic));
-    s->wire(s->filter, "freq");  // curved: adds in travel
-    s->wire(s->util, "gain");    // a dB gain bent in dB (curved): adds in travel
+struct Driver {
+  app::ProjectLink& link;
+  int64_t t = 0;
+  uint64_t violations = 0;
+  golden::Channels out = golden::Channels(2);
+  void run(uint32_t blocks) {
+    std::vector<float> L(kBlock), R(kBlock);
+    for (uint32_t b = 0; b < blocks; ++b) {
+      float* ch[2] = {L.data(), R.data()};
+      violations += alloc_trap::countRtViolations([&] {
+        DenormalGuard dg;
+        link.engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, t});
+      });
+      t += kBlock;
+      out[0].insert(out[0].end(), L.begin(), L.end());
+      out[1].insert(out[1].end(), R.begin(), R.end());
+    }
   }
-  return s;
+};
+
+golden::Channels render(const Snapshot& s, bool jit) {
+  auto link = makeLink(s, jit);
+  link->play(0);
+  Driver d{*link};
+  d.run(kBlocks);
+  CHECK(d.violations == 0);
+  CHECK(link->lastError().empty());
+  return d.out;
+}
+
+double maxDiff(const golden::Channels& a, const golden::Channels& b) {
+  REQUIRE(a.size() == b.size());
+  double m = 0.0;
+  for (size_t c = 0; c < a.size(); ++c) {
+    REQUIRE(a[c].size() == b[c].size());
+    for (size_t i = 0; i < a[c].size(); ++i) m = std::max(m, std::fabs(static_cast<double>(a[c][i]) - b[c][i]));
+  }
+  return m;
+}
+
+double dbfs(double x) { return x > 0.0 ? 20.0 * std::log10(x) : -400.0; }
+
+// The `curve` kernel ops in the schedules of `p` lowered with the library (no link: slot 0, the IR is what matters).
+uint32_t curveOps(const Project& p) {
+  LowerOptions o;
+  o.library = &library().library();
+  o.devices = &library();
+  o.slotOf = [](TrackId) { return 0u; };
+  auto low = lower(p, o);
+  REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
+  engine::ProjectCompileOptions co;
+  co.sampleRate = kRate;
+  co.maxBlockFrames = kBlock;
+  co.voice.maxVoices = 8;
+  engine::ProjectCompiler compiler(co);
+  auto build = compiler.build(low->graph);
+  REQUIRE_MESSAGE(build.ok(), (build.ok() ? std::string() : build.error().message));
+  uint32_t n = 0;
+  for (uint32_t u = 0; u < compiler.numUnits(); ++u)
+    for (const graph::Op& op : compiler.unit(u).schedule->ops)
+      if (op.kind == graph::OpKind::Kernel && op.kernel == dsp::Atom::Curve) ++n;
+  return n;
+}
+
+const Device* deviceOf(const Project& p, std::string_view patch) {
+  const Device* out = nullptr;
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    for (const DevicePtr& d : t.devices) {
+      if (d->patch == patch && out == nullptr) out = d.get();
+      if (d->rack)
+        for (const ChainPtr& c : d->rack->chains)
+          for (const DevicePtr& x : c->devices)
+            if (x->patch == patch && out == nullptr) out = x.get();
+    }
+  });
+  return out;
 }
 
 }  // namespace
 
-TEST_CASE("GU.1 references: record the pre-GU.1 renders (PQ_GU1_RECORD=1)") {
-  if (std::getenv("PQ_GU1_RECORD") == nullptr) return;
-  for (const std::string name : {"undriven", "wires", "automation", "macro", "switched"}) {
+TEST_CASE("GU.1 curve renders: every case loads (19 → 20), interpreter == JIT, within −120 dBFS of the pre-GU.1 render") {
+  for (const std::string name : kCases) {
     CAPTURE(name);
-    auto s = build(name);
-    Project p = *s->store.current();
-    (void)migrateToInstrumentGroups(p);  // as a schema-19 file plays
-    const Snapshot snap = std::make_shared<const Project>(std::move(p));
-    fs::create_directories(caseDir(name));
-    REQUIRE(saveProject(caseDir(name).string(), *snap).ok());
-    const golden::Channels ref = render(snap, false);
-    REQUIRE(engine::writeWav(caseDir(name) / "reference.wav", ref, static_cast<uint32_t>(kRate)).ok());
-    const golden::Channels jit = render(snap, true);
-    double d = 0.0;
-    for (size_t c = 0; c < 2; ++c)
-      for (size_t i = 0; i < ref[c].size(); ++i) d = std::max(d, std::fabs(double(ref[c][i]) - jit[c][i]));
-    MESSAGE(name << ": interpreter vs JIT max diff " << d);
+    const Snapshot s = loadCase(name);
+    auto ref = engine::readWav(caseDir(name) / "reference.wav");
+    REQUIRE(ref.ok());
+    const golden::Channels a = render(s, false), b = render(s, true);
+    CHECK(maxDiff(a, b) == 0.0);
+    const double d = maxDiff(ref->channels, a);
+    MESSAGE(name << ": peak error vs the pre-GU.1 render " << d << " (" << dbfs(d) << " dBFS)");
+    CHECK(dbfs(d) <= -120.0);
   }
+}
+
+TEST_CASE("GU.1 curve renders: the migration stores knob positions; the values they give are the old ones") {
+  const Snapshot s = loadCase("undriven");
+  const Device* filter = deviceOf(*s, "auto_filter");
+  const Device* env = deviceOf(*s, "meta:envelope");
+  REQUIRE(filter != nullptr);
+  REQUIRE(env != nullptr);
+  // Auto Filter's cutoff (20 Hz … 20 kHz, octave): 1800 Hz is the position log(90) / log(1000).
+  REQUIRE(filter->param("freq") != nullptr);
+  CHECK(filter->param("freq")->value == doctest::Approx(std::log(1800.0 / 20.0) / std::log(1000.0)).epsilon(1e-12));
+  std::shared_ptr<const ResolvedDevice> hold;
+  const graph::Patch* fp = library().patchOf(*filter, hold);
+  REQUIRE(fp != nullptr);
+  CHECK(paramValue(*filter, "freq", *findParamDecl(*fp, "freq")) == doctest::Approx(1800.0).epsilon(1e-12));
+  CHECK(paramValue(*filter, "res", *findParamDecl(*fp, "res")) == doctest::Approx(0.4).epsilon(1e-12));
+  // The Envelope's attack (exp0, k = 15.87) inside the instrument group: 20 ms.
+  const meta::Type* et = meta::findType("envelope");
+  REQUIRE(et != nullptr);
+  const size_t ai = static_cast<size_t>(et->paramIndex("attack"));
+  CHECK(metaParamValue(*env, "", *et, ai) == doctest::Approx(0.02).epsilon(1e-12));
+  CHECK(metaParamPosition(*env, "", *et, ai) > 0.0);
+  CHECK(metaParamPosition(*env, "", *et, ai) < 1.0);
+  // The switched case: the TX.knob-curves names became curve objects (Exponential cutoff, Logarithmic dB gain).
+  const Snapshot sw = loadCase("switched");
+  const Device* sf = deviceOf(*sw, "auto_filter");
+  const Device* su = deviceOf(*sw, "utility");
+  REQUIRE(sf != nullptr);
+  REQUIRE(su != nullptr);
+  REQUIRE(sf->curve("freq") != nullptr);
+  CHECK(sf->curve("freq")->preset == dsp::CurvePreset::Exponential);
+  REQUIRE(su->curve("gain") != nullptr);
+  CHECK(su->curve("gain")->preset == dsp::CurvePreset::Logarithmic);
+  CHECK(su->curve("gain")->output == dsp::CurveOutput::DbToGain);
+  // Saved again it is a schema-20 file that loads to the same project, without the library.
+  auto text = serializeProject(*sw);
+  REQUIRE(text.ok());
+  auto back = parseProject(*text);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+  CHECK(*back->project == *sw);
+  // The schema-19 file without the library: refused (it holds values to convert), saying why.
+  auto raw = loadProject(caseDir("undriven").string());
+  REQUIRE_FALSE(raw.ok());
+  CHECK(raw.error().message.find("device library") != std::string::npos);
+}
+
+TEST_CASE("GU.1 curve renders: an undriven control has no op (inside the instrument group too); a driven one has one") {
+  const Snapshot undriven = loadCase("undriven");
+  CHECK(curveOps(*undriven) == 0);
+  // wires: four driven controls (the envelope's decay and sustain inside the instrument group, the cutoff, the gain);
+  // automation: two; the macro: one; switched: two.
+  const Snapshot wires = loadCase("wires");
+  const uint32_t w = curveOps(*wires);
+  MESSAGE("curve ops: wires " << w);
+  CHECK(w >= 4);
+  CHECK(curveOps(*loadCase("automation")) >= 2);
+  CHECK(curveOps(*loadCase("macro")) >= 1);
+  CHECK(curveOps(*loadCase("switched")) >= 2);
+  // The undriven project's runtime params are values in units (no "@pos" key); the wired one's driven knobs positions.
+  for (const LoweredParam& p : lowerParams(*undriven, true, library())) CHECK_FALSE(p.position);
+  uint32_t positions = 0;
+  for (const LoweredParam& p : lowerParams(*wires, true, library())) positions += p.position ? 1u : 0u;
+  CHECK(positions == 4);
+}
+
+TEST_CASE("GU.1 curve renders: live edits reach the audio without a compile where the class stays (RtScope)") {
+  DocumentStore store(loadCase("wires"));
+  store.setDeviceLibrary(&library());
+  app::LinkConfig c;
+  c.compileThread = false;
+  c.sleepAfterMs = 0.0f;
+  c.sampleRate = kRate;
+  auto l = app::ProjectLink::create(c, store.current());
+  REQUIRE(l.ok());
+  app::ProjectLink& link = **l;
+  [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& e) { link.onDocumentChange(e); });
+  REQUIRE(link.waitForMetaTables());
+  link.play(0);
+  Driver d{link};
+  d.run(40);
+  const Device* filter = deviceOf(*store.current(), "auto_filter");  // driven (a wire)
+  const Device* util = deviceOf(*store.current(), "utility");       // gain driven, width undriven
+  REQUIRE(filter != nullptr);
+  REQUIRE(util != nullptr);
+  const DeviceId fid = filter->id, uid = util->id;
+  const uint64_t compiles0 = link.stats().compiles;
+  auto edit = [&](const ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+    link.flush();
+  };
+  // A knob drag on an undriven control: one param write, the value its curve gives.
+  edit(ops::setDeviceParamValue(*store.current(), library(), uid, "width", 1.5));
+  d.run(20);
+  // A curve edit of the same class on the driven cutoff (Octave → Exponential: one Exp segment either way): its slot.
+  const uint32_t slot = link.curveSlot(fid, "freq");
+  REQUIRE(slot != 0);
+  const dsp::CurveData before = link.curveSlotObject(slot)->data();
+  edit(ops::setParamCurvePreset(*store.current(), library(), fid, "freq", dsp::CurvePreset::Exponential));
+  CHECK_FALSE(dsp::sameData(before, link.curveSlotObject(slot)->data()));
+  d.run(20);
+  CHECK(link.stats().compiles == compiles0);  // neither edit compiled
+  // A class change (to Linear: the wire law follows it) compiles once.
+  edit(ops::setParamCurvePreset(*store.current(), library(), fid, "freq", dsp::CurvePreset::Linear));
+  d.run(20);
+  CHECK(link.stats().compiles > compiles0);
+  CHECK(d.violations == 0);
+  CHECK(link.lastError().empty());
 }

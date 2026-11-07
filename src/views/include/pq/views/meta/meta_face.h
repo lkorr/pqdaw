@@ -87,12 +87,12 @@ public:
   // no track known, the default); guidesKey() changes whenever they may have (the face asks again).
   virtual void pitchGuides(float /*loHz*/, float /*hiHz*/, std::vector<PitchGuide>& out) const { out.clear(); }
   virtual uint64_t guidesKey() const { return 0; }
-  // TX.knob-curves: param i's knob curve (doc::Device::curves of a chain meta device; Default: the declared one). The
-  // face's controls travel along it (faceTravelToValue / faceValueToTravel).
-  virtual doc::KnobCurve curve(size_t /*param*/) const { return doc::KnobCurve::Default; }
+  // GU.1: param i's own curve (doc::Device::curves of a chain meta device; null: the declared one, meta::paramCurve).
+  // The face's controls travel along it (faceTravelToValue / faceValueToTravel).
+  virtual const dsp::Curve* curve(size_t /*param*/) const { return nullptr; }
 };
 
-// TX.knob-curves: a face control's travel t in [0, 1] ↔ param i's value on the target's knob curve (the declared one:
+// GU.1: a face control's position t in [0, 1] ↔ param i's value on the target's curve (the declared one:
 // meta::travelToValue / valueToTravel exactly), and whether the curve is switched off the declared one.
 double faceTravelToValue(const MetaTarget& target, const meta::Type& type, size_t param, double t) noexcept;
 double faceValueToTravel(const MetaTarget& target, const meta::Type& type, size_t param, double v) noexcept;

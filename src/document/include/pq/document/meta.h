@@ -44,9 +44,12 @@ bool callsMeta(const graph::Patch& p, const PatchLookup& lookup);
 
 std::string metaParamKey(DeviceId device, std::string_view path, std::string_view param);       // "dev<id>:<path>.<name>"
 std::string metaParamFlatName(DeviceId device, std::string_view path, std::string_view param);  // "d<id>__<p>__<name>"
-// The value param `i` of type `t` plays at `path` of `d`: the instance's (a chain device's own param for path ""), else
-// the type's default.
+// The value param `i` of type `t` plays at `path` of `d`: GU.1 — its curve (a chain device's own for path "", else the
+// type's: meta::paramCurve) at its knob position (metaParamPosition: the instance's, a chain device's own param for
+// path "", else the type's default through its declared curve), in the param's units.
 double metaParamValue(const Device& d, std::string_view path, const meta::Type& t, size_t i);
+double metaParamPosition(const Device& d, std::string_view path, const meta::Type& t, size_t i);
+dsp::Curve metaParamCurve(const Device& d, std::string_view path, const meta::Type& t, size_t i);
 // The resolved settings of the instance at `path` (spec order; path "": the device's own settings), defaults filled in.
 std::vector<double> metaSettings(const Device& d, std::string_view path, const meta::Type& t);
 // TMM.5: why chain meta device `d`'s param `param` cannot be modulated (an automation lane, a modulation wire, a macro

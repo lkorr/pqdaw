@@ -64,7 +64,7 @@ void DocTarget::begin(const char* label) {
 
 void DocTarget::set(size_t param, double value) {
   if (param >= type_.params.size()) return;
-  auto e = doc::ops::setMetaParam(*ctx_.doc(), device_, path_, type_.id, std::string(type_.params[param].name), value);
+  auto e = doc::ops::setMetaParamValue(*ctx_.doc(), device_, path_, type_.id, std::string(type_.params[param].name), value);
   if (!e) {
     ctx_.setStatus(e.error().message);
     return;
@@ -157,10 +157,10 @@ void DocTarget::pitchGuides(float loHz, float hiHz, std::vector<PitchGuide>& out
   std::sort(out.begin(), out.end(), [](const PitchGuide& a, const PitchGuide& b) { return a.hz < b.hz; });
 }
 
-doc::KnobCurve DocTarget::curve(size_t param) const {  // TX.knob-curves
-  if (!path_.empty() || param >= type_.params.size()) return doc::KnobCurve::Default;
+const dsp::Curve* DocTarget::curve(size_t param) const {  // GU.1
+  if (!path_.empty() || param >= type_.params.size()) return nullptr;
   const doc::Device* d = dev();
-  return d != nullptr ? d->curve(type_.params[param].name) : doc::KnobCurve::Default;
+  return d != nullptr ? d->curve(type_.params[param].name) : nullptr;
 }
 
 uint64_t DocTarget::guidesKey() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ctx_.doc().get())); }

@@ -119,8 +119,8 @@ TEST_CASE("wire laws: a new wire adds in units and has no amount; a Travel wire 
   CHECK_FALSE(addAmount);
   CHECK(travelAmount);
   REQUIRE(l.taps.size() == 2);
-  // TX.knob-curves: freq1 is on its declared octave curve, so the added wire adds in knob travel (its tap too).
-  for (const ModulationTap& tap : l.taps) CHECK_FALSE(tap.units);
+  // freq1 is on its declared octave curve, so the added wire adds in knob position (GU.1; its tap too).
+  for (const ModulationTap& tap : l.taps) CHECK(tap.domain == ModulationTap::Domain::Position);
 }
 
 TEST_CASE("wire laws: any output into any param or input; a migrated Travel wire keeps T4.7's ends") {

@@ -19,7 +19,7 @@ namespace pq::meta::testing {
 
 inline constexpr std::array<InputSpec, 1> kTestInputs = {{{"x", "In", InputDefault::Zero}}};
 inline constexpr std::array<ParamSpec, 1> kTestParams = {
-    {{"gain", "Gain", 0.5, 0.0, 2.0, graph::Unit::None, Curve::Linear, 0.0, false, true}}};
+    {{"gain", "Gain", 0.5, 0.0, 2.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, true}}};
 inline constexpr std::array<SettingSpec, 1> kTestSettings = {{{"stages", "Stages", 1.0, 1.0, 4.0, 4}}};
 inline constexpr std::array<OutputSpec, 1> kTestOutputs = {{{"out", graph::kWidthMono}}};
 

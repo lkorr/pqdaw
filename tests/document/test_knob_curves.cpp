@@ -1,8 +1,9 @@
-// TX.knob-curves (SPEC §15 2026-11-01 "answers to Q186" + clarification): the document side — a knob's curve per
-// device instance (model.h KnobCurve: SetParamCurve, undo, the file, the checks), the curves' laws (doc::paramTravel
-// on a curve: positions and values round-trip, what each param can take), the wire laws they decide (an Add wire into
-// a curved knob adds in travel, into a linear one in units, into a dB gain in dB) and the 15 → 16 migration (TX.patching's
-// added wires keep their law as Units, so an old project lowers to the same graph).
+// GU.1 (docs/plans/GU.md "Curves"; SPEC §15 2026-11-06 "built GUIs"): the document side of control curves — the curve a
+// declaration gives (graph::declaredCurve; the knob curve menus' presets over it), a device's own curves (model.h
+// ControlCurve: SetParamCurve keeps the knob position — the sound follows —, one undo step, Structural only when the
+// class changes, the file, the checks), the wire laws a curve decides (an Add wire adds in position on a curved control,
+// in units on a linear one: dB on a dB gain), the 15 → 16 migration (TX.patching's added wires keep their law as Units)
+// and 19 → 20 (values and TX.knob-curves' named curves become knob positions and curve objects, with the library).
 #include <doctest/doctest.h>
 
 #include <nlohmann/json.hpp>
@@ -20,6 +21,7 @@
 
 using namespace pq::doc;
 using pq::Result;
+namespace dsp = pq::dsp;
 
 namespace {
 
@@ -47,6 +49,7 @@ struct Doc {
   TrackId keys;
   DeviceId lfo, eq;
   Doc() {
+    store.setDeviceLibrary(&library());
     auto t = ops::createTrack(*store.current(), store.ids(), TrackKind::Midi, {}, "Keys");
     REQUIRE(t.ok());
     REQUIRE(store.dispatch(t->command).ok());
@@ -88,90 +91,118 @@ const ModulationTap* tapOf(const LoweredProject& l, std::string_view param) {
   return nullptr;
 }
 
+using Domain = ModulationTap::Domain;
+
 }  // namespace
 
-TEST_CASE("knob curves: the laws — what each param can take, positions and values round-trip, Default is the declaration") {
-  const ParamTravel cutoff = paramTravel(declOf("eq_eight", "freq1"));  // 10 Hz … 22 kHz @curve(exp)
-  const ParamTravel gain = paramTravel(declOf("eq_eight", "gain1"));    // −15 … +15 dB (gains)
-  CHECK(declaredCurve(cutoff) == KnobCurve::Octave);
-  CHECK(declaredCurve(gain) == KnobCurve::Linear);
-  CHECK(gain.db);
-  CHECK_FALSE(travelsInUnits(cutoff));  // curved: an Add wire adds in travel
-  CHECK(travelsInUnits(gain));          // linear in dB: an Add wire adds dB
-  for (const KnobCurve c : {KnobCurve::Linear, KnobCurve::Octave, KnobCurve::Exponential, KnobCurve::Logarithmic})
-    CHECK(curveAvailable(cutoff, c));
-  CHECK_FALSE(curveAvailable(gain, KnobCurve::Octave));  // equal ratios of a dB value mean nothing
-  CHECK(curveAvailable(gain, KnobCurve::Exponential));
-  // Default and the declared curve are the declaration itself.
-  for (const KnobCurve c : {KnobCurve::Default, KnobCurve::Octave}) {
-    const ParamTravel t = paramTravel(declOf("eq_eight", "freq1"), c);
-    CHECK(t.log == cutoff.log);
-    CHECK(t.exp0 == cutoff.exp0);
-  }
-  CHECK(travelsInUnits(withCurve(cutoff, KnobCurve::Linear)));
-  CHECK_FALSE(travelsInUnits(withCurve(gain, KnobCurve::Logarithmic)));
-  // Every curve maps [0, 1] onto the whole range monotonically, and back.
-  for (const ParamTravel& d : {cutoff, gain})
-    for (const KnobCurve c : {KnobCurve::Linear, KnobCurve::Octave, KnobCurve::Exponential, KnobCurve::Logarithmic}) {
-      if (!curveAvailable(d, c)) continue;
-      const ParamTravel t = withCurve(d, c);
-      CHECK(travelValue(t, 0.0) == doctest::Approx(d.lo));
-      CHECK(travelValue(t, 1.0) == doctest::Approx(d.hi));
+TEST_CASE("control curves: the declared curves, the presets each can take, every preset round-trips") {
+  const dsp::Curve cutoff = declaredCurve(declOf("eq_eight", "freq1"));  // 10 Hz … 22 kHz @curve(exp)
+  const dsp::Curve gain = declaredCurve(declOf("eq_eight", "gain1"));    // −15 … +15 dB (gains)
+  CHECK(cutoff.preset == dsp::CurvePreset::Octave);
+  CHECK(cutoff.unit == dsp::CurveUnit::Hz);
+  CHECK(gain.preset == dsp::CurvePreset::Linear);
+  CHECK(gain.output == dsp::CurveOutput::DbToGain);
+  CHECK(gain.min == doctest::Approx(-15.0).epsilon(1e-12));
+  CHECK_FALSE(addsInUnits(cutoff));  // curved: an Add wire adds in position
+  CHECK(addsInUnits(gain));          // linear in dB: an Add wire adds dB
+  const std::vector<dsp::CurvePreset> cp = curvePresets(cutoff), gp = curvePresets(gain);
+  CHECK(cp.size() == 4);
+  CHECK(std::find(gp.begin(), gp.end(), dsp::CurvePreset::Octave) == gp.end());  // equal ratios of dB mean nothing
+  CHECK(std::find(gp.begin(), gp.end(), dsp::CurvePreset::Exponential) != gp.end());
+  CHECK(curveWithPreset(cutoff, dsp::CurvePreset::Octave) == cutoff);  // the declared preset is the declared curve
+  CHECK(addsInUnits(curveWithPreset(cutoff, dsp::CurvePreset::Linear)));
+  CHECK_FALSE(addsInUnits(curveWithPreset(gain, dsp::CurvePreset::Logarithmic)));
+  // Every preset maps [0, 1] onto the whole range monotonically, and back (gains in their DSP units).
+  for (const dsp::Curve& d : {cutoff, gain})
+    for (const dsp::CurvePreset c : curvePresets(d)) {
+      const dsp::Curve t = curveWithPreset(d, c);
+      CHECK(dsp::evalCurveUnits(t, 0.0) == doctest::Approx(d.min));
+      CHECK(dsp::evalCurveUnits(t, 1.0) == doctest::Approx(d.max));
       double prev = -1e300;
       for (int i = 0; i <= 20; ++i) {
-        const double p = i / 20.0, v = travelValue(t, p);
+        const double p = i / 20.0, v = dsp::evalCurve(t, p);
         CHECK(v >= prev);
         prev = v;
-        CHECK(travelPosition(t, v) == doctest::Approx(p).epsilon(1e-9));
+        CHECK(dsp::curvePosition(t, v, 0.5) == doctest::Approx(p).epsilon(1e-9));
       }
     }
   // Exponential is fine at the low end (half the travel reaches less than the middle), Logarithmic at the high end.
-  const ParamTravel lin = withCurve(cutoff, KnobCurve::Linear);
-  const double mid = 0.5 * (cutoff.lo + cutoff.hi);
-  CHECK(travelValue(withCurve(cutoff, KnobCurve::Exponential), 0.5) < mid);
-  CHECK(travelValue(withCurve(cutoff, KnobCurve::Logarithmic), 0.5) > mid);
-  CHECK(travelValue(lin, 0.5) == doctest::Approx(mid));
+  const double mid = 0.5 * (cutoff.min + cutoff.max);
+  CHECK(dsp::evalCurve(curveWithPreset(cutoff, dsp::CurvePreset::Exponential), 0.5) < mid);
+  CHECK(dsp::evalCurve(curveWithPreset(cutoff, dsp::CurvePreset::Logarithmic), 0.5) > mid);
+  CHECK(dsp::evalCurve(curveWithPreset(cutoff, dsp::CurvePreset::Linear), 0.5) == doctest::Approx(mid));
   // A dB gain bent in dB: the middle of the travel is below 0 dB on Exponential.
-  CHECK(travelValue(withCurve(gain, KnobCurve::Exponential), 0.5) < 1.0);
-  // A stepped param has no curve to choose.
-  ParamTravel stepped = lin;
-  stepped.round = true;
-  CHECK_FALSE(curveAvailable(stepped, KnobCurve::Exponential));
+  CHECK(dsp::evalCurve(curveWithPreset(gain, dsp::CurvePreset::Exponential), 0.5) < 1.0);
+  // A stepped param has no curve to choose (and steps by 1).
+  const dsp::Curve chan = declaredCurve(declOf("utility", "chan"));
+  CHECK(chan.step == 1.0);
+  CHECK(curvePresets(chan).empty());
+  // A bool is a stepped 0 … 1.
+  const dsp::Curve mono = declaredCurve(*findAnyParamDecl(*library().library().find("utility"), "mono"));
+  CHECK(dsp::evalCurve(mono, 1.0) == 1.0);
+  CHECK(dsp::evalCurve(mono, 0.0) == 0.0);
 }
 
-TEST_CASE("knob curves: SetParamCurve keeps the value, is one undo step, Default removes the entry, racks refuse") {
+TEST_CASE("control curves: SetParamCurve keeps the knob position (the sound follows), one undo step, racks refuse") {
   Doc d;
-  REQUIRE(d.store.dispatch(SetDeviceParam{d.eq, "freq1", 440.0}).ok());
+  REQUIRE(d.run(ops::setDeviceParamValue(d.doc(), library(), d.eq, "freq1", 440.0)) == WireId{});
+  const double pos = findDevice(d.doc(), d.eq).device->param("freq1")->value;
+  CHECK(paramValue(*findDevice(d.doc(), d.eq).device, "freq1", declOf("eq_eight", "freq1")) == doctest::Approx(440.0).epsilon(1e-12));
   const auto before = d.store.current();
-  auto e = ops::setParamCurve(d.doc(), d.eq, "freq1", KnobCurve::Linear);
+  auto e = ops::setParamCurvePreset(d.doc(), library(), d.eq, "freq1", dsp::CurvePreset::Linear);
   REQUIRE(e.ok());
   REQUIRE(d.store.dispatch(e->command).ok());
   const Device* eq = findDevice(d.doc(), d.eq).device;
   REQUIRE(eq != nullptr);
-  CHECK(eq->curve("freq1") == KnobCurve::Linear);
-  CHECK(eq->curve("freq2") == KnobCurve::Default);
-  CHECK(eq->param("freq1")->value == 440.0);  // the value stays: the knob re-maps
+  REQUIRE(eq->curve("freq1") != nullptr);
+  CHECK(eq->curve("freq1")->preset == dsp::CurvePreset::Linear);
+  CHECK(eq->curve("freq2") == nullptr);
+  CHECK(eq->param("freq1")->value == pos);  // the knob stays …
+  const double now = paramValue(*eq, "freq1", declOf("eq_eight", "freq1"));
+  CHECK(now == doctest::Approx(10.0 + pos * (22000.0 - 10.0)).epsilon(1e-12));  // … and the value follows the curve
   CHECK(d.store.history().undoLabel() == "Knob Curve");
-  // The same curve again is an empty edit; another one replaces it; Default removes it.
-  auto same = ops::setParamCurve(d.doc(), d.eq, "freq1", KnobCurve::Linear);
+  // Octave → Linear changes the class (an Exp segment → a straight one): Structural; Linear → Exponential back to Exp.
+  REQUIRE(std::holds_alternative<Batch>(e->command.v));
+  const Batch& b = std::get<Batch>(e->command.v);
+  REQUIRE(b.commands.size() == 1);
+  CHECK(std::get<SetParamCurve>(b.commands[0].v).structural);
+  auto same = ops::setParamCurvePreset(d.doc(), library(), d.eq, "freq1", dsp::CurvePreset::Linear);
   REQUIRE(same.ok());
   CHECK(same->empty());
-  REQUIRE(d.store.dispatch(SetParamCurve{d.eq, "freq1", KnobCurve::Logarithmic}).ok());
-  REQUIRE(d.store.dispatch(SetParamCurve{d.eq, "gain1", KnobCurve::Exponential}).ok());
+  // Octave → Exponential keeps the class (one Exp segment): a Param change, no compile.
+  Doc d2;
+  auto ex = ops::setParamCurvePreset(d2.doc(), library(), d2.eq, "freq1", dsp::CurvePreset::Exponential);
+  REQUIRE(ex.ok());
+  CHECK_FALSE(std::get<SetParamCurve>(std::get<Batch>(ex->command.v).commands.at(0).v).structural);
+  bool paramOnly = false;
+  const pq::doc::ListenerId sub = d2.store.subscribe([&](const StoreEvent& ev) { paramOnly = ev.changes.paramOnly(); });
+  REQUIRE(d2.store.dispatch(ex->command).ok());
+  d2.store.unsubscribe(sub);
+  CHECK(paramOnly);
+  // Another curve replaces it; the declared one removes the entry (sorted by param).
+  REQUIRE(d.run(ops::setParamCurvePreset(d.doc(), library(), d.eq, "freq1", dsp::CurvePreset::Logarithmic)) == WireId{});
+  REQUIRE(d.run(ops::setParamCurvePreset(d.doc(), library(), d.eq, "gain1", dsp::CurvePreset::Exponential)) == WireId{});
   eq = findDevice(d.doc(), d.eq).device;
   REQUIRE(eq->curves.size() == 2);
-  CHECK(eq->curves[0].param == "freq1");  // sorted by param
-  REQUIRE(d.store.dispatch(SetParamCurve{d.eq, "gain1", KnobCurve::Default}).ok());
+  CHECK(eq->curves[0].param == "freq1");
+  REQUIRE(d.run(ops::setParamCurvePreset(d.doc(), library(), d.eq, "gain1", dsp::CurvePreset::Linear)) == WireId{});
   CHECK(findDevice(d.doc(), d.eq).device->curves.size() == 1);
   REQUIRE(d.store.undo());
   REQUIRE(d.store.undo());
   REQUIRE(d.store.undo());
-  CHECK(findDevice(d.doc(), d.eq).device->curve("freq1") == KnobCurve::Linear);
+  CHECK(findDevice(d.doc(), d.eq).device->curve("freq1")->preset == dsp::CurvePreset::Linear);
   REQUIRE(d.store.undo());
   CHECK(d.store.current() == before);
   REQUIRE(d.store.redo());
-  CHECK(findDevice(d.doc(), d.eq).device->curve("freq1") == KnobCurve::Linear);
-  // A rack's macros are linear 0 … 127: no curve.
+  CHECK(findDevice(d.doc(), d.eq).device->curve("freq1")->preset == dsp::CurvePreset::Linear);
+  // An invalid curve and an unknown param are refused.
+  dsp::Curve bad = curveWithPreset(declaredCurve(declOf("eq_eight", "freq1")), dsp::CurvePreset::Linear);
+  bad.points[1].t = 0.5;
+  CHECK_FALSE(ops::setParamCurve(d.doc(), library(), d.eq, "freq1", bad).ok());
+  CHECK_FALSE(ops::setParamCurve(d.doc(), library(), d.eq, "nope", std::nullopt).ok());
+  // A knob position outside [0, 1] is refused by the store (a value in units: ops::setDeviceParamValue).
+  CHECK_FALSE(d.store.dispatch(SetDeviceParam{d.eq, "freq1", 440.0}).ok());
+  // A rack's macros are 0 … 127: no curve.
   auto rack = ops::groupDevices(d.doc(), d.store.ids(), std::vector<DeviceId>{d.lfo});
   REQUIRE(rack.ok());
   REQUIRE(d.store.dispatch(rack->command).ok());
@@ -180,75 +211,74 @@ TEST_CASE("knob curves: SetParamCurve keeps the value, is one undo step, Default
   for (const DevicePtr& x : t->devices)
     if (x->rack) rackId = x->id;
   REQUIRE(rackId.valid());
-  CHECK_FALSE(ops::setParamCurve(d.doc(), rackId, "macro0", KnobCurve::Exponential).ok());
-  CHECK_FALSE(d.store.dispatch(SetParamCurve{rackId, "macro0", KnobCurve::Exponential}).ok());
+  CHECK_FALSE(ops::setParamCurve(d.doc(), library(), rackId, "macro0", std::nullopt).ok());
+  CHECK_FALSE(d.store.dispatch(SetParamCurve{rackId, "macro0", dsp::curvePreset(dsp::CurvePreset::Linear, 0, 1), true}).ok());
 }
 
-TEST_CASE("knob curves: the file — written as \"curves\", read back equal, bad entries refused") {
+TEST_CASE("control curves: the file — curve objects under \"curves\", read back equal, bad entries refused") {
   Doc d;
-  REQUIRE(d.store.dispatch(SetParamCurve{d.eq, "freq1", KnobCurve::Linear}).ok());
-  REQUIRE(d.store.dispatch(SetParamCurve{d.eq, "gain2", KnobCurve::Logarithmic}).ok());
+  d.run(ops::setParamCurvePreset(d.doc(), library(), d.eq, "freq1", dsp::CurvePreset::Linear));
+  d.run(ops::setParamCurvePreset(d.doc(), library(), d.eq, "gain2", dsp::CurvePreset::Logarithmic));
   Result<std::string> text = serializeProject(d.doc());
   REQUIRE(text.ok());
-  CHECK(text->find("\"curves\": {\"freq1\": \"linear\", \"gain2\": \"logarithmic\"}") != std::string::npos);
+  CHECK(text->find("\"freq1\": {\"min\": 10.0, \"max\": 22000.0, \"unit\": \"hz\", \"preset\": \"linear\"") != std::string::npos);
+  CHECK(text->find("\"output\": \"dbToGain\", \"preset\": \"logarithmic\"") != std::string::npos);
   Result<LoadedProject> back = parseProject(*text);
   REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
   CHECK(*back->project == d.doc());
-  for (const char* bad : {"\"default\"", "\"steep\"", "1"}) {
+  // Broken curves: a point out of order, a shape that is not one, a missing range.
+  for (const auto& [from, to] : std::vector<std::pair<std::string, std::string>>{
+           {"[1.0, 1.0]]", "[0.0, 1.0]]"}, {"[\"linear\", 0.0]", "[\"steep\", 0.0]"}, {"\"min\": 10.0, ", ""}}) {
     std::string t = *text;
-    const size_t at = t.find("\"linear\"");
+    const size_t at = t.find(from);
     REQUIRE(at != std::string::npos);
-    t.replace(at, 8, bad);
+    t.replace(at, from.size(), to);
     CHECK_FALSE(parseProject(t).ok());
   }
 }
 
-TEST_CASE("knob curves: an Add wire adds before the curve — travel on a curved knob, units on a linear one, dB on a gain") {
+TEST_CASE("control curves: an Add wire adds in position on a curved control, in units on a linear one, in dB on a gain") {
   Doc d;
-  const WireId cut = d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "freq1"));
-  const WireId g = d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "gain1"));
-  (void)cut;
-  (void)g;
+  d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "freq1"));
+  d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "gain1"));
   {
     const LoweredProject l = lowerDoc(d.doc());
     REQUIRE(tapOf(l, "freq1") != nullptr);
     REQUIRE(tapOf(l, "gain1") != nullptr);
-    CHECK_FALSE(tapOf(l, "freq1")->units);  // octave: in travel
-    CHECK(tapOf(l, "gain1")->units);        // linear in dB: in nepers
-    CHECK(tapOf(l, "gain1")->db);
+    CHECK(tapOf(l, "freq1")->domain == Domain::Position);  // octave: in position
+    CHECK(tapOf(l, "gain1")->domain == Domain::Curve);     // linear in dB: in dB
+    CHECK(l.curves.size() == 2);                            // one curve atom each
   }
-  REQUIRE(d.store.dispatch(SetParamCurve{d.eq, "freq1", KnobCurve::Linear}).ok());
-  REQUIRE(d.store.dispatch(SetParamCurve{d.eq, "gain1", KnobCurve::Exponential}).ok());
+  d.run(ops::setParamCurvePreset(d.doc(), library(), d.eq, "freq1", dsp::CurvePreset::Linear));
+  d.run(ops::setParamCurvePreset(d.doc(), library(), d.eq, "gain1", dsp::CurvePreset::Exponential));
   {
     const LoweredProject l = lowerDoc(d.doc());
-    CHECK(tapOf(l, "freq1")->units);  // linear: in Hz
-    CHECK_FALSE(tapOf(l, "freq1")->db);
-    CHECK_FALSE(tapOf(l, "gain1")->units);  // a bent gain: in travel
+    CHECK(tapOf(l, "freq1")->domain == Domain::Curve);     // linear: in Hz
+    CHECK(tapOf(l, "gain1")->domain == Domain::Position);  // a bent gain: in position
   }
 }
 
-TEST_CASE("knob curves: 15 -> 16 keeps TX.patching's added wires as Units (same graph), chain links stay added") {
+TEST_CASE("control curves: 15 -> 16 keeps TX.patching's added wires as Units (same graph), chain links stay added") {
   Doc d;
   const DeviceId util = d.add("utility");
   d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "freq1"));  // curved: the laws differ
   d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "gain3"));  // a dB gain: the laws differ
   d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", util, "balance"));  // linear: the same
   d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "gain2", 0.4));
-  // Chain links as TX.groups-fix1 wrote them (schema 15): the utility grouped (In → its input x, its out → Out).
-  // (TMM.13-fix1 L7: this test used to append a hand-made chain link from the LFO into the utility, which belongs to no
-  // group: the reader now refuses such a link, as the review asked, so the links come from a real group.)
   const DeviceId series[1] = {util};
   d.run(ops::groupInCircuit(d.store.current(), d.store.ids(), library(), series));
   Result<std::string> text = serializeProject(d.doc());
   REQUIRE(text.ok());
   nlohmann::json j = nlohmann::json::parse(*text);
   j["schemaVersion"] = 15;
-  Result<LoadedProject> old = parseProject(j.dump(2));
+  LoadOptions lo;
+  lo.devices = &library();
+  Result<LoadedProject> old = parseProject(j.dump(2), lo);
   REQUIRE_MESSAGE(old.ok(), (old.ok() ? std::string() : old.error().message));
   CHECK(old->fileSchemaVersion == 15);
   int units = 0, links = 0;
   for (const Wire& w : wiresOf(*old->project)) {
-    if (w.mainLink()) continue;  // TX.all-free: the main path's links (this text is schema 17 relabelled 15)
+    if (w.mainLink()) continue;  // TX.all-free: the main path's links (this text is schema 20 relabelled 15)
     if (w.chain) {
       CHECK(w.law == WireLaw::Add);
       ++links;
@@ -261,25 +291,14 @@ TEST_CASE("knob curves: 15 -> 16 keeps TX.patching's added wires as Units (same 
   }
   CHECK(units == 3);
   CHECK(links == 4);  // (IG.1-2: and the 18 -> 19 step's two, In → the synth → Out of its instrument group)
-  // Re-saved, a Units wire says so; it reads back the same.
   Result<std::string> again = serializeProject(*old->project);
   REQUIRE(again.ok());
   CHECK(again->find("\"law\": \"units\"") != std::string::npos);
   Result<LoadedProject> back = parseProject(*again);
   REQUIRE(back.ok());
   CHECK(*back->project == *old->project);
-  // Into a linear param a Units wire and an Add wire are the same math: the same graph.
-  Doc a, b;
-  const DeviceId ua = a.add("utility"), ub = b.add("utility");
-  a.run(ops::connectWire(a.doc(), a.store.ids(), a.lfo, "lfo", ua, "balance"));
-  Wire w = *findWire(b.doc(), b.run(ops::connectWire(b.doc(), b.store.ids(), b.lfo, "lfo", ub, "balance")));
-  REQUIRE(b.store.dispatch(RemoveWire{w.id}).ok());
-  w.law = WireLaw::Units;
-  REQUIRE(b.store.dispatch(AddWire{w}).ok());
-  const LoweredProject la = lowerDoc(a.doc()), lb = lowerDoc(b.doc());
-  REQUIRE(la.patches.size() == lb.patches.size());
-  for (size_t i = 0; i < la.patches.size(); ++i) CHECK(la.patches[i]->hash == lb.patches[i]->hash);
-  // Into a curved one they differ (the Units wire keeps TX.patching's Hz law, the Add wire adds in travel).
+  // Into a linear param a Units wire and an Add wire differ only by where the conversion sits (none here): the same IR
+  // apart from the tap's domain.
   Doc c, e;
   c.run(ops::connectWire(c.doc(), c.store.ids(), c.lfo, "lfo", c.eq, "freq1"));
   Wire x = *findWire(e.doc(), e.run(ops::connectWire(e.doc(), e.store.ids(), e.lfo, "lfo", e.eq, "freq1")));
@@ -289,8 +308,61 @@ TEST_CASE("knob curves: 15 -> 16 keeps TX.patching's added wires as Units (same 
   const LoweredProject lc = lowerDoc(c.doc()), le = lowerDoc(e.doc());
   bool differ = false;
   for (size_t i = 0; i < lc.patches.size(); ++i) differ = differ || lc.patches[i]->hash != le.patches[i]->hash;
-  CHECK(differ);
-  CHECK(tapOf(le, "freq1")->units);
+  CHECK(differ);  // into a curved cutoff: in position vs in Hz after the curve
+  CHECK(tapOf(le, "freq1")->domain == Domain::Dsp);
+}
+
+TEST_CASE("control curves: 19 -> 20 turns values and named curves into knob positions and curve objects (library)") {
+  Doc d;
+  d.run(ops::setDeviceParamValue(d.doc(), library(), d.eq, "freq1", 1000.0));
+  d.run(ops::setDeviceParamValue(d.doc(), library(), d.eq, "gain2", std::pow(10.0, 6.0 / 20.0)));
+  Result<std::string> text = serializeProject(d.doc());
+  REQUIRE(text.ok());
+  // The same project as schema 19 wrote it: values in units, a knob on a named curve, a lane in units.
+  nlohmann::json j = nlohmann::json::parse(*text);
+  j["schemaVersion"] = 19;
+  nlohmann::json* eq = nullptr;
+  for (nlohmann::json& x : j["tracks"][0]["devices"])
+    if (x["id"] == d.eq.value) eq = &x;
+  REQUIRE(eq != nullptr);
+  (*eq)["params"]["freq1"] = 1000.0;
+  (*eq)["params"]["gain2"] = std::pow(10.0, 6.0 / 20.0);
+  (*eq)["params"]["freq2"] = 2000.0;
+  (*eq)["curves"] = nlohmann::json::object({{"freq2", "linear"}});
+  j["tracks"][0]["lanes"] = nlohmann::json::array({nlohmann::json{
+      {"id", 9000},
+      {"param", {{"kind", "deviceParam"}, {"owner", d.eq.value}, {"name", "freq1"}}},
+      {"points", nlohmann::json::array({nlohmann::json{{"id", 9001}, {"tick", 0}, {"value", 100.0}, {"curve", 0.0}},
+                                        nlohmann::json{{"id", 9002}, {"tick", 1000}, {"value", 10000.0}, {"curve", 0.0}}})}}});
+  const std::string old = j.dump(2);
+  LoadOptions lo;
+  lo.devices = &library();
+  Result<LoadedProject> r = parseProject(old, lo);
+  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
+  const Device* e = findDevice(*r->project, d.eq).device;
+  REQUIRE(e != nullptr);
+  const dsp::Curve oct = declaredCurve(declOf("eq_eight", "freq1"));
+  CHECK(e->param("freq1")->value == doctest::Approx(dsp::curvePosition(oct, 1000.0, 0.0)).epsilon(1e-12));
+  CHECK(paramValue(*e, "freq1", declOf("eq_eight", "freq1")) == doctest::Approx(1000.0).epsilon(1e-12));
+  CHECK(paramValue(*e, "gain2", declOf("eq_eight", "gain2")) == doctest::Approx(std::pow(10.0, 6.0 / 20.0)).epsilon(1e-12));
+  REQUIRE(e->curve("freq2") != nullptr);  // the named curve became a curve object; its knob kept the value
+  CHECK(e->curve("freq2")->preset == dsp::CurvePreset::Linear);
+  CHECK(paramValue(*e, "freq2", declOf("eq_eight", "freq2")) == doctest::Approx(2000.0).epsilon(1e-12));
+  const Track* t = findTrackPtr(*r->project, d.keys);
+  REQUIRE(t != nullptr);
+  REQUIRE(t->lanes.size() == 1);
+  CHECK(t->lanes[0]->points[0].value == doctest::Approx(static_cast<float>(dsp::curvePosition(oct, 100.0, 0.0))));
+  CHECK(t->lanes[0]->points[1].value == doctest::Approx(static_cast<float>(dsp::curvePosition(oct, 10000.0, 0.0))));
+  // Without the library such a file is refused, saying why; one with nothing to convert loads.
+  Result<LoadedProject> none = parseProject(old);
+  REQUIRE_FALSE(none.ok());
+  CHECK(none.error().message.find("device library") != std::string::npos);
+  Doc fresh;
+  Result<std::string> plain = serializeProject(fresh.doc());
+  REQUIRE(plain.ok());
+  nlohmann::json k = nlohmann::json::parse(*plain);
+  k["schemaVersion"] = 19;
+  CHECK(parseProject(k.dump(2)).ok());
 }
 
 // TMM.13-fix1 L7: group invariants the reader and the store did not enforce (the review's fuzz cases 328, 357, 366,
@@ -307,7 +379,7 @@ TEST_CASE("groups: a group has no knob curves; chain links join one in-series gr
     if (isGroupDevice(*x)) group = x->id;
   REQUIRE(group.valid());
   // Curves: refused by the store (there is no knob) and by the reader.
-  CHECK_FALSE(d.store.dispatch(SetParamCurve{group, "gain", KnobCurve::Linear}).ok());
+  CHECK_FALSE(d.store.dispatch(SetParamCurve{group, "gain", dsp::curvePreset(dsp::CurvePreset::Linear, 0, 1), true}).ok());
   // A chain link the user never draws, between devices of no group: refused.
   Wire stray;
   stray.id = d.store.ids().wire();
@@ -333,11 +405,12 @@ TEST_CASE("groups: a group has no knob curves; chain links join one in-series gr
     MESSAGE(r.error().message);
     CHECK(r.error().message.find(".chain") != std::string::npos);
   }
-  // (TX.all-free: there is no "free" flag any more — a group off the main path simply hears nothing at its In.)
   {  // knob curves on the group
     nlohmann::json k = j;
     for (nlohmann::json& x : k["tracks"][0]["devices"])
-      if (x["id"] == group.value) x["curves"] = nlohmann::json::object({{"gain", "linear"}});
+      if (x["id"] == group.value)
+        x["curves"] = nlohmann::json::parse(
+            R"({"gain": {"min": 0.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}})");
     const Result<LoadedProject> r = parseProject(k.dump(2));
     REQUIRE_FALSE(r.ok());
     MESSAGE(r.error().message);

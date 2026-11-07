@@ -8,6 +8,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
+#include "pq/graph/param_curve.h"
 #include "pq/meta/registry.h"
 #include "pq/views/devices/device_model.h"
 #include "pq/views/view_context.h"
@@ -26,22 +27,26 @@ std::optional<ui::MenuItem> knobCurveMenu(ViewContext& ctx, doc::DeviceId device
   const graph::Patch* patch = lib->patchOf(*loc.device, hold);
   const graph::ParamDecl* decl = patch != nullptr ? doc::findParamDecl(*patch, param) : nullptr;
   if (decl == nullptr) return std::nullopt;
-  const doc::ParamTravel declared = doc::paramTravel(*decl);
-  const doc::KnobCurve def = doc::declaredCurve(declared);
-  const doc::KnobCurve stored = loc.device->curve(param);
-  const doc::KnobCurve on = stored == doc::KnobCurve::Default || !doc::curveAvailable(declared, stored) ? def : stored;
+  // GU.1: the presets over the declared curve (doc::curvePresets); the one on is the stored curve's (else the declared).
+  const dsp::Curve declared = graph::declaredCurve(*decl);
+  const dsp::Curve* stored = loc.device->curve(param);
+  const dsp::Curve& on = stored != nullptr ? *stored : declared;
+  auto sameItem = [](dsp::CurvePreset a, dsp::CurvePreset b) {
+    auto norm = [](dsp::CurvePreset x) { return x == dsp::CurvePreset::Exp0 ? dsp::CurvePreset::Octave : x; };
+    return norm(a) == norm(b);
+  };
   std::vector<ui::MenuItem> items;
-  for (const doc::KnobCurve c : {doc::KnobCurve::Octave, doc::KnobCurve::Exponential, doc::KnobCurve::Logarithmic, doc::KnobCurve::Linear}) {
-    if (!doc::curveAvailable(declared, c)) continue;
+  for (const dsp::CurvePreset c : doc::curvePresets(declared)) {
     std::string label = devices::knobCurveLabel(c);
-    if (c == def) label += " (default)";
-    const doc::KnobCurve store = c == def ? doc::KnobCurve::Default : c;
+    if (sameItem(c, declared.preset)) label += " (default)";
     ViewContext* cx = &ctx;
-    ui::MenuItem it = ui::MenuItem::item(std::move(label), [cx, device, param, store] {
-      if (auto e = doc::ops::setParamCurve(*cx->doc(), device, param, store); !e) cx->setStatus(e.error().message);
+    ui::MenuItem it = ui::MenuItem::item(std::move(label), [cx, device, param, c] {
+      const doc::DeviceLibrary* l = cx->deviceLibrary();
+      if (l == nullptr) return;
+      if (auto e = doc::ops::setParamCurvePreset(*cx->doc(), *l, device, param, c); !e) cx->setStatus(e.error().message);
       else if (!e->empty()) (void)cx->store().dispatch(e->command);
     });
-    it.checked = c == on;
+    it.checked = sameItem(c, on.preset);
     items.push_back(std::move(it));
   }
   if (items.size() < 2) return std::nullopt;

@@ -15,14 +15,14 @@ constexpr std::array<InputSpec, 2> kInputs = {{
     {"gate", "Gate", InputDefault::VoiceGate, graph::Kind::Bool, Reads::Gate},
 }};
 constexpr std::array<ParamSpec, kEnvParams> kParams = {{
-    {"attack", "Attack", 0.005, 0.0, kEnvMaxSeconds, graph::Unit::s, Curve::Exp0, kEnvCurveK, false, false},
-    {"decay", "Decay", 0.4, 0.001, kEnvMaxSeconds, graph::Unit::s, Curve::Exp0, kEnvCurveK, false, false},
-    {"sustain", "Sustain", 0.6, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false},
-    {"release", "Release", 0.25, 0.001, kEnvMaxSeconds, graph::Unit::s, Curve::Exp0, kEnvCurveK, false, false},
-    {"acurve", "Attack curve", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false},
-    {"dcurve", "Decay curve", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false},
-    {"rcurve", "Release curve", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false},
-    {"amount", "Amount", 1.0, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false},
+    {"attack", "Attack", 0.005, 0.0, kEnvMaxSeconds, graph::Unit::s, dsp::CurvePreset::Exp0, kEnvCurveK, false, false},
+    {"decay", "Decay", 0.4, 0.001, kEnvMaxSeconds, graph::Unit::s, dsp::CurvePreset::Exp0, kEnvCurveK, false, false},
+    {"sustain", "Sustain", 0.6, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false},
+    {"release", "Release", 0.25, 0.001, kEnvMaxSeconds, graph::Unit::s, dsp::CurvePreset::Exp0, kEnvCurveK, false, false},
+    {"acurve", "Attack curve", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false},
+    {"dcurve", "Decay curve", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false},
+    {"rcurve", "Release curve", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false},
+    {"amount", "Amount", 1.0, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false},
 }};
 constexpr std::array<OutputSpec, 1> kOutputs = {{{"out", graph::kWidthMono}}};
 

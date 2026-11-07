@@ -1,7 +1,7 @@
 #pragma once
 
 // TX.knob-curves (SPEC §15 2026-11-01 "answers to Q186"): the "Knob Curve" submenu every continuous knob's context menu
-// carries — Device view panels and faces, circuit panels, meta faces' sliders (doc::KnobCurve; doc::ops::setParamCurve).
+// carries — Device view panels and faces, circuit panels, meta faces' sliders (GU.1: curve presets, doc::curvePresets; doc::ops::setParamCurvePreset).
 // UI thread only.
 
 #include <optional>

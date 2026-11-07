@@ -127,6 +127,8 @@ bool deviceParam(const doc::Project& p, const doc::ParamRef& r, const doc::Devic
     pi.unit = unitOf(d.unit);
     pi.exp = d.exponential && pi.min > 0.0 && pi.max > 0.0;
     pi.steps = static_cast<int32_t>(d.steps);
+    pi.declared = d.curve;  // GU.1: the knob's curve (the device's own, else the declared one)
+    pi.curve = devices::storedCurve(pi, *out.device);
     return true;
   }
   return false;
@@ -172,13 +174,13 @@ std::string deviceKindName(const doc::Project& p, const doc::ParamRef& r, const 
 ParamDisplay paramDisplay(const doc::Project& p, const doc::ParamRef& r, const doc::DeviceLibrary* lib) noexcept {
   using S = ParamDisplay::Scale;
   switch (r.kind) {
-    // T4.18: a device param in its knob's scale; a chain's volume as a fader, its pan and a wire's amount +-1.
+    // T4.18: a device param in its knob's scale; a chain's volume as a fader, its pan and a wire's amount +-1. GU.1: a
+    // device param's lane holds knob positions (the lane is the knob's travel; readouts go through its curve).
     case doc::ParamKind::DeviceParam: {
       DevParam d;
       if (!deviceParam(p, r, lib, d)) return {S::Linear, 0.0, 1.0};
-      if (d.info.exp) return {S::Log, d.info.min, d.info.max};
-      if (d.info.unit == devices::DisplayUnit::Db && d.info.min > 0.0) return {S::Db, d.info.min, d.info.max};
-      return {S::Linear, std::min(d.info.min, d.info.max), std::max(d.info.min, d.info.max)};
+      if (d.device->rack) return {S::Linear, std::min(d.info.min, d.info.max), std::max(d.info.min, d.info.max)};
+      return {S::Linear, 0.0, 1.0};
     }
     case doc::ParamKind::ChainMixer:
       if (r.target == doc::kChainVolume) return {S::Fader, doc::kMinVolumeDb, doc::kMaxVolumeDb};
@@ -301,7 +303,8 @@ std::string formatParamValue(const doc::ParamRef& r, double v) {
 }
 
 std::string formatParamValue(const doc::Project& p, const doc::ParamRef& r, double v, const doc::DeviceLibrary* lib) {
-  if (DevParam d; deviceParam(p, r, lib, d)) return devices::formatValue(d.info, v);
+  if (DevParam d; deviceParam(p, r, lib, d))  // GU.1: a knob position, shown as the value its curve gives
+    return devices::formatValue(d.info, d.device->rack ? v : devices::fromPosition(d.info, v));
   return formatParamValue(r, v);
 }
 
@@ -311,8 +314,7 @@ double currentParamValue(const doc::Project& p, const doc::ParamRef& r, const do
       DevParam d;
       if (!deviceParam(p, r, lib, d)) return 0.0;
       if (d.device->rack) return doc::rackParamValue(*d.device, d.info.name);
-      const doc::DeviceValue* v = d.device->param(d.info.name);
-      return v != nullptr ? v->value : d.info.def;
+      return devices::storedPosition(d.info, *d.device);  // GU.1: the lane's domain
     }
     case doc::ParamKind::ChainMixer: {
       const doc::ChainLoc c = doc::findChain(p, doc::ChainId{r.owner});

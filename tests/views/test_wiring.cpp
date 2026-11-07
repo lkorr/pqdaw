@@ -325,7 +325,7 @@ TEST_CASE("wiring: show / fade / hide (hidden: no cables, no work); the rings sh
   CHECK(src.reads() == reads);
 }
 
-TEST_CASE("wiring: the views' knob travel is the lowering's (every stock device param)") {
+TEST_CASE("wiring (GU.1): the views' knob travel is the lowering's curve (every stock device param)") {
   for (const doc::DeviceInfo& di : library().catalog().devices()) {
     const graph::Patch* p = library().library().find(di.patch);
     REQUIRE(p != nullptr);
@@ -334,19 +334,20 @@ TEST_CASE("wiring: the views' knob travel is the lowering's (every stock device 
       if (pi.isBool) continue;
       const auto n = p->findByName(pi.name);
       REQUIRE(n.has_value());
-      const doc::ParamTravel t = doc::paramTravel(p->paramDecl(*n));
+      const dsp::Curve c = doc::declaredCurve(p->paramDecl(*n));
       CAPTURE(di.patch);
       CAPTURE(pi.name);
+      CHECK(pi.declared == c);
       for (double x : {0.0, 0.13, 0.5, 0.77, 1.0}) {
         const double v = devices::fromPosition(pi, x);
-        CHECK(doc::travelPosition(t, v) == doctest::Approx(devices::toPosition(pi, v)).epsilon(1e-9));
-        if (pi.steps <= 1) CHECK(doc::travelValue(t, x) == doctest::Approx(v).epsilon(1e-9));
+        CHECK(v == dsp::evalCurve(c, x));
+        if (pi.steps <= 1) CHECK(devices::toPosition(pi, v) == doctest::Approx(x).epsilon(1e-9));
       }
     }
   }
 }
 
-TEST_CASE("wiring (TX.knob-curves): on every curve a knob's travel is the lowering's; the menu offers the same curves") {
+TEST_CASE("wiring (GU.1): on every preset a knob's travel is the lowering's; the menu offers the document's presets") {
   for (const doc::DeviceInfo& di : library().catalog().devices()) {
     const graph::Patch* p = library().library().find(di.patch);
     REQUIRE(p != nullptr);
@@ -355,24 +356,18 @@ TEST_CASE("wiring (TX.knob-curves): on every curve a knob's travel is the loweri
       if (pi.isBool) continue;
       const auto n = p->findByName(pi.name);
       REQUIRE(n.has_value());
-      const doc::ParamTravel declared = doc::paramTravel(p->paramDecl(*n));
+      const dsp::Curve declared = doc::declaredCurve(p->paramDecl(*n));
       CAPTURE(di.patch);
       CAPTURE(pi.name);
-      // The curves the views offer are the ones the document accepts for this param.
-      const std::vector<doc::KnobCurve> offered = devices::knobCurves(pi);
-      for (const doc::KnobCurve c : {doc::KnobCurve::Linear, doc::KnobCurve::Octave, doc::KnobCurve::Exponential, doc::KnobCurve::Logarithmic}) {
-        const bool listed = std::find(offered.begin(), offered.end(), c) != offered.end();
-        CHECK(listed == (offered.size() >= 2 && doc::curveAvailable(declared, c)));
-      }
-      CHECK(doc::declaredCurve(devices::declaredTravel(pi)) == doc::declaredCurve(declared));
-      for (const doc::KnobCurve c : offered) {
+      const std::vector<dsp::CurvePreset> offered = devices::knobCurves(pi);
+      const std::vector<dsp::CurvePreset> doc = doc::curvePresets(declared);
+      CHECK(offered == (doc.size() >= 2 ? doc : std::vector<dsp::CurvePreset>{}));
+      for (const dsp::CurvePreset c : offered) {
         CAPTURE(static_cast<int>(c));
-        pi.curve = c;
-        const doc::ParamTravel t = doc::paramTravel(p->paramDecl(*n), c);
+        pi.curve = doc::curveWithPreset(declared, c);
         for (double x : {0.0, 0.13, 0.5, 0.77, 1.0}) {
           const double v = devices::fromPosition(pi, x);
-          CHECK(doc::travelPosition(t, v) == doctest::Approx(devices::toPosition(pi, v)).epsilon(1e-9));
-          CHECK(doc::travelValue(t, x) == doctest::Approx(v).epsilon(1e-9));
+          CHECK(v == dsp::evalCurve(pi.curve, x));
           CHECK(devices::toPosition(pi, v) == doctest::Approx(x).epsilon(1e-9));
         }
       }

@@ -6,7 +6,9 @@
 // control shows: knob position (0..1), display text, typed values.
 //
 // Values are always in the patch's internal units (PATCH_LANGUAGE §1: a dB param holds a linear gain, % a fraction,
-// Hz Hz); display units come from @unit(…) or the default's unit suffix.
+// Hz Hz); display units come from @unit(…) or the default's unit suffix. GU.1: the document stores a param's KNOB
+// POSITION; a control's position ↔ value is its curve (ParamInfo::curve: the instance's, else the declared one;
+// pq/dsp/curve.h), what toPosition / fromPosition follow.
 
 #include <array>
 #include <cstdint>
@@ -36,9 +38,9 @@ struct ParamInfo {
   int32_t steps = 0;        // @steps(n): n integer positions (0 = continuous)
   bool isBool = false;
   bool hidden = false;      // @hidden
-  // TX.knob-curves: the instance's knob curve (doc::Device::curves; Default: the declared one). toPosition / fromPosition
-  // follow it (doc::paramTravel(decl, curve) is the same law).
-  doc::KnobCurve curve = doc::KnobCurve::Default;
+  // GU.1: the curve the knob plays (the instance's, doc::Device::curves, else `declared`) and the one its declaration
+  // gives (graph::declaredCurve). toPosition / fromPosition follow `curve`.
+  dsp::Curve curve, declared;
 };
 
 // One structural setting: an `in name : real const = default` input.
@@ -62,26 +64,29 @@ struct DeviceSignature {
 DeviceSignature signatureOf(const graph::Patch& patch);
 
 // ---- value mapping (UI thread, cheap: once per change) ---------------------------------------------------------------
-// Knob / slider position in [0, 1]: linear in the display value (dB for gains), logarithmic for @curve(exp), the
-// exp0 law for @curve(exp0, k) (doc::paramTravel follows the same laws).
-double toPosition(const ParamInfo& p, double value) noexcept;
+// GU.1: knob / slider position in [0, 1] ↔ value through the knob's curve (ParamInfo::curve): fromPosition is
+// dsp::evalCurve, toPosition dsp::curvePosition (the position nearest `hint` that gives the value; one the curve never
+// reaches snaps to the nearest it does).
+double toPosition(const ParamInfo& p, double value, double hint = 0.0) noexcept;
 double fromPosition(const ParamInfo& p, double position) noexcept;
-// TX.knob-curves: the param's declared travel as doc::paramTravel reads it (lo, hi, log, exp0, db, round), and its
-// travel on curve `c` (doc::withCurve). curveAvailable / declaredCurve / travelsInUnits answer on these.
-doc::ParamTravel declaredTravel(const ParamInfo& p) noexcept;
-inline doc::ParamTravel travelOn(const ParamInfo& p, doc::KnobCurve c) noexcept { return doc::withCurve(declaredTravel(p), c); }
-// TX.knob-curves: the curves the knob offers (continuous params: not bool, not @steps), in menu order, and the label of
-// each ("Octave", "Exponential", "Logarithmic", "Linear"); the one Default means is declaredCurve(declaredTravel(p)).
-std::vector<doc::KnobCurve> knobCurves(const ParamInfo& p);
-const char* knobCurveLabel(doc::KnobCurve c) noexcept;
-// TX.knob-curves: the knob's position after an Add wire's sweep `delta` (a tap's up / down) from value `value`: in travel
-// on a curved knob, in units on a linear one (nepers for a dB gain: `nepers`), Units wires (`legacyUnits`) in the param's
-// normalised unit.
-double sweptPosition(const ParamInfo& p, double value, double delta, bool legacyUnits, bool nepers) noexcept;
-// TX.knob-curves: a small drawing of travel `t`'s curve in `box` (left → right = travel 0 → 1, bottom → top = the
-// value in its units: dB for a dB gain), for a knob switched off its declared curve.
+// GU.1: the curve presets the knob's curve menu offers (doc::curvePresets of the declared curve: continuous params only),
+// in menu order, and the label of each ("Octave", "Exponential", "Logarithmic", "Linear").
+std::vector<dsp::CurvePreset> knobCurves(const ParamInfo& p);
+const char* knobCurveLabel(dsp::CurvePreset c) noexcept;
+// GU.1: whether the knob plays a curve other than its declared one (its glyph is drawn).
+inline bool curveSwitched(const ParamInfo& p) noexcept { return !(p.curve == p.declared); }
+// GU.1: the knob's position after a wire's sweep `delta` (a tap's up / down, doc::ModulationTap::Domain) from knob
+// position `position`: in position, in the curve's units (dB for a dB gain), or in the DSP units after the curve.
+double sweptPosition(const ParamInfo& p, double position, double delta, doc::ModulationTap::Domain domain) noexcept;
+// A small drawing of curve `c` in `box` (left → right = position 0 → 1, bottom → top = its value in its units: dB for a
+// dB gain), for a knob switched off its declared curve.
 inline constexpr size_t kCurveGlyphPoints = 9;
-void curveGlyphPoints(const doc::ParamTravel& t, ui::Rect box, std::array<ui::Vec2, kCurveGlyphPoints>& out) noexcept;
+void curveGlyphPoints(const dsp::Curve& c, ui::Rect box, std::array<ui::Vec2, kCurveGlyphPoints>& out) noexcept;
+// GU.1: the knob position device `d` stores for param `p` (its default's position through the declared curve when it
+// stores none), the curve it plays it on (doc::Device::curves, else the declared one) and the value in units.
+double storedPosition(const ParamInfo& p, const doc::Device& d) noexcept;
+const dsp::Curve& storedCurve(const ParamInfo& p, const doc::Device& d) noexcept;
+double storedValue(const ParamInfo& p, const doc::Device& d) noexcept;
 // The value shown (dB for a gain, % for a fraction, Hz).
 double toDisplay(const ParamInfo& p, double value) noexcept;
 double fromDisplay(const ParamInfo& p, double display) noexcept;

@@ -297,7 +297,7 @@ TEST_CASE("meta devices: a Wavetable moved out of its run becomes a chain audio 
 TEST_CASE("meta devices: copy / paste, duplicate and a preset keep the state (params, settings, data)") {
   MetaChain c;
   // Some state: a param, a setting, data (two keyframes).
-  c.edit(ops::setMetaParam(c.doc(), c.wt, "", "wavetable", "position", 0.4));
+  c.edit(ops::setMetaParamValue(c.doc(), c.wt, "", "wavetable", "position", 0.4));
   c.edit(ops::setMetaSetting(c.doc(), c.wt, "", "wavetable", "warpMode", 2.0));
   auto parsed = meta::parseWavetableData(*meta::wavetableDefaultData());
   REQUIRE(parsed.ok());
@@ -346,7 +346,7 @@ TEST_CASE("meta devices: the Meta Operator (TMM.12) lowers each nested instance 
   const DeviceId op = run(ops::addDevice(*store.current(), store.ids(), t, "meta_operator", DeviceKind::Instrument)).devices.at(0);
   REQUIRE(library().catalog().find("meta_operator") != nullptr);
   CHECK(library().catalog().find("meta_operator")->name == "Meta Operator");
-  run(ops::setMetaParam(*store.current(), op, "envB", "envelope", "amount", 0.25));
+  run(ops::setMetaParamValue(*store.current(), op, "envB", "envelope", "amount", 0.25));
   run(ops::setDeviceSetting(*store.current(), op, "algorithm", 5.0));
   run(ops::setDeviceSetting(*store.current(), op, "hq", 2.0));
   run(ops::setDeviceSetting(*store.current(), op, "fbOn", 1.0));

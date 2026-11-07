@@ -19,11 +19,11 @@ constexpr std::array<InputSpec, 2> kInputs = {{
     {"pos", "Position in", InputDefault::Zero},
 }};
 constexpr std::array<ParamSpec, 5> kParams = {{
-    {"phase", "Phase", 0.0, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, true, false},
-    {"position", "Position", 0.0, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, false},
-    {"fold", "Fold", 0.0, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, true},
-    {"warp", "Warp", 0.0, -1.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, true},
-    {"sync", "Sync", 0.0, 0.0, 1.0, graph::Unit::None, Curve::Linear, 0.0, false, true},
+    {"phase", "Phase", 0.0, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, true, false},
+    {"position", "Position", 0.0, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false},
+    {"fold", "Fold", 0.0, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, true},
+    {"warp", "Warp", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, true},
+    {"sync", "Sync", 0.0, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, true},
 }};
 constexpr std::array<SettingSpec, 3> kSettings = {{
     {"mode", "Mode", 0.0, 0.0, 1.0, 2},

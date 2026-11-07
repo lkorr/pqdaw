@@ -149,6 +149,7 @@ bool automated(const doc::Project& p, const doc::ParamRef& r) {
 }  // namespace
 
 void ViewContext::setDeviceLibrary(const doc::DeviceLibrary* lib) {
+  store_.setDeviceLibrary(lib);  // GU.1: edits in units resolve curves with it
   if (devices_ == lib) return;
   devices_ = lib;
   notify(view_change::kDevices);
@@ -253,7 +254,9 @@ void ViewContext::newProject() {
 }
 
 Status ViewContext::openProject(std::string_view dirUtf8) {
-  if (Status s = doc::openProject(dirUtf8, store_); !s) {
+  doc::LoadOptions lo;
+  lo.devices = devices_;  // GU.1: an older file's values become knob positions through the library's curves
+  if (Status s = doc::openProject(dirUtf8, store_, lo); !s) {
     setStatus("Could not open " + std::string(dirUtf8) + ": " + s.error().message);
     return s;
   }

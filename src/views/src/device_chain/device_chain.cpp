@@ -311,6 +311,15 @@ public:
       return;
     }
     // Inside the gesture each change is applied at once (live param writes); outside it is one undo step of its own.
+    // GU.1: the document stores the knob position that gives the value (nearest the knob's current one).
+    const doc::Device* d = doc::findDevice(*ctx_.doc(), id_).device;
+    FrameBase* f = impl_.frameOf(id_);
+    const devices::ParamInfo* info = f != nullptr && f->panel() != nullptr ? f->panel()->signature().findParam(param) : nullptr;
+    if (d != nullptr && !d->rack && info != nullptr) {
+      impl_.live(doc::ops::setDeviceParam(*ctx_.doc(), id_, std::string(param),
+                                          devices::toPosition(*info, value, devices::storedPosition(*info, *d))));
+      return;
+    }
     impl_.live(doc::ops::setDeviceParam(*ctx_.doc(), id_, std::string(param), value));
   }
   void paramGestureEnd(std::string_view) override {
@@ -353,10 +362,11 @@ public:
     setLayout(ui::LayoutKind::Custom);
     if (tpl != nullptr) {
       std::map<std::string, double, std::less<>> values;
-      for (const doc::DeviceValue& v : d.params) values[v.name] = v.value;
+      for (const doc::DeviceValue& v : d.params)  // GU.1: the panel shows values: the curve at the stored position
+        if (const devices::ParamInfo* p = tpl->sig.findParam(v.name)) values[v.name] = devices::storedValue(*p, d);
       for (const doc::DeviceValue& v : d.settings) values[v.name] = v.value;
       panel_ = &add<devices::DevicePanel>("panel", tpl->sig, tpl->desc, &target_, values);
-      for (const doc::ParamCurve& c : d.curves) panel_->setParamCurve(c.param, c.curve);  // TX.knob-curves
+      for (const doc::ControlCurve& c : d.curves) panel_->setParamCurve(c.param, &c.curve);  // GU.1
       panel_->setActive(d.active);
       panel_->onSizeChanged = [this] { impl_.content->invalidateLayout(); };
       // T4.7: a jack press and the drag after it go to the cable layer (installWiring).
@@ -407,9 +417,8 @@ public:
     panel_->setEdited(d.edited());
     panel_->setPresetName(ctx_.library().presetName(d.id));
     for (const devices::ParamInfo& p : panel_->signature().params) {
-      panel_->setParamCurve(p.name, d.curve(p.name));  // TX.knob-curves
-      const doc::DeviceValue* v = d.param(p.name);
-      panel_->setParamValue(p.name, v != nullptr ? v->value : p.def);
+      panel_->setParamCurve(p.name, d.curve(p.name));  // GU.1
+      panel_->setParamValue(p.name, devices::storedValue(p, d));
     }
     for (const devices::ConstInfo& c : panel_->signature().consts) {
       const doc::DeviceValue* v = d.setting(c.name);
@@ -422,8 +431,8 @@ public:
       if (r.kind != doc::ParamKind::DeviceParam || r.owner != d.id.value) continue;
       for (const devices::ParamInfo& p : panel_->signature().params)
         if (doc::deviceParamHash(p.name) == r.target) {
-          const doc::DeviceValue* v = d.param(p.name);
-          panel_->setParamValue(p.name, v != nullptr ? v->value : p.def);
+          panel_->setParamCurve(p.name, d.curve(p.name));  // GU.1: a curve edit is a Param change too
+          panel_->setParamValue(p.name, devices::storedValue(p, d));
         }
     }
   }
@@ -1787,9 +1796,13 @@ std::optional<ui::Vec2> DeviceChainView::paramPoint(doc::DeviceId device, std::s
 bool DeviceChainView::ringsPolling() const noexcept { return impl_->ringTimer != 0; }
 
 namespace {
-// TX.knob-curves: what a site's tap is in (lower.h "Modulation wires": the last stage's): 0 knob travel (Travel wires),
-// 1 an Add wire's (travel on a curved knob, units / nepers on a linear one), 2 the param's normalised unit (Units wires).
+// What a site's tap is in (lower.h "Modulation wires": the last stage's): 0 knob position (Travel wires), 1 an Add wire's
+// (GU.1: position on a curved control, the curve's units on a linear one), 2 the DSP units (migrated Units wires).
 uint8_t ringLaw(const doc::Wire& w) noexcept { return w.travels() ? 0 : w.law == doc::WireLaw::Units ? 2 : 1; }
+doc::ModulationTap::Domain ringDomain(uint8_t law, const devices::ParamInfo& info) noexcept {
+  using D = doc::ModulationTap::Domain;
+  return law == 2 ? D::Dsp : law == 1 && doc::addsInUnits(info.curve) ? D::Curve : D::Position;
+}
 }  // namespace
 
 void DeviceChainView::refreshRings() {
@@ -1854,12 +1867,10 @@ void DeviceChainView::refreshRings() {
         ring.current = -1.0f;
         const ModSweep& s = m.ringSweeps[i];
         if (s.known && (s.up > 0.0f || s.down > 0.0f)) {
-          if (m.ringUnits[i] != 0) {  // TX.patching / TX.knob-curves: an added wire's sweep (sweptPosition)
-            const double v = devices::fromPosition(info, pk);
-            const bool legacy = m.ringUnits[i] == 2;
-            const bool nepers = info.unit == devices::DisplayUnit::Db && doc::travelsInUnits(devices::travelOn(info, info.curve));
-            ring.liveLo = std::clamp(static_cast<float>(devices::sweptPosition(info, v, -s.down, legacy, nepers)), 0.0f, 1.0f);
-            ring.liveHi = std::clamp(static_cast<float>(devices::sweptPosition(info, v, s.up, legacy, nepers)), 0.0f, 1.0f);
+          if (m.ringUnits[i] != 0) {  // TX.patching / GU.1: an added wire's sweep in its tap's domain (sweptPosition)
+            const doc::ModulationTap::Domain dom = ringDomain(m.ringUnits[i], info);
+            ring.liveLo = std::clamp(static_cast<float>(devices::sweptPosition(info, pk, -s.down, dom)), 0.0f, 1.0f);
+            ring.liveHi = std::clamp(static_cast<float>(devices::sweptPosition(info, pk, s.up, dom)), 0.0f, 1.0f);
           } else {
             ring.liveLo = std::clamp(pk - s.down, 0.0f, 1.0f);
             ring.liveHi = std::clamp(pk + s.up, 0.0f, 1.0f);
@@ -1941,14 +1952,16 @@ void DeviceChainView::applyAutomation() {
     if (a.overridden) {  // overridden by hand: the knob shows (and plays) its own value until re-enabled
       const doc::Device* d = doc::findDevice(*ctx_.doc(), a.device).device;
       if (d == nullptr) continue;
-      const double own = d->rack ? doc::rackParamValue(*d, a.param) : d->param(a.param) ? d->param(a.param)->value : info->def;
+      const double own = d->rack ? doc::rackParamValue(*d, a.param) : devices::storedValue(*info, *d);  // GU.1: in units
       if (panel->paramValue(a.param) != own) panel->setParamValue(a.param, own);
       continue;
     }
     live = true;
-    // The envelope at the playhead (Live: an automated knob follows its automation, moving while it plays).
-    const double v = evalAutomation(std::span<const doc::Breakpoint>(a.lane->points), static_cast<double>(ph.tick),
-                                    panel->paramValue(a.param));
+    // The envelope at the playhead (Live: an automated knob follows its automation, moving while it plays). GU.1: a
+    // device param's lane holds knob positions: the knob shows the value its curve gives.
+    const double v = devices::fromPosition(*info, evalAutomation(std::span<const doc::Breakpoint>(a.lane->points),
+                                                                 static_cast<double>(ph.tick),
+                                                                 devices::toPosition(*info, panel->paramValue(a.param))));
     if (panel->paramValue(a.param) != v) panel->setParamValue(a.param, v);  // repaints the bound control only
   }
   if (m.chainAuto || live)  // racks: their chains' volume / pan (refreshAutomation also clears them)

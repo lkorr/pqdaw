@@ -2148,8 +2148,8 @@ void ProjectPatchView::pollReadout() {
       const std::string& toLabel = tn.inputs[e.toPort].label.empty() ? tn.inputs[e.toPort].name : tn.inputs[e.toPort].label;
       readout_.title = source + " \xE2\x86\x92 " + tn.title + "." + toLabel;
       char buf[96];
-      // TX.patching: an added wire has no amount; a migrated one keeps its depth. TX.knob-curves: an Add wire adds
-      // before the knob's curve (travel on a curved knob, units / dB on a linear one); a Units wire after it.
+      // TX.patching: an added wire has no amount; a migrated one keeps its depth. GU.1: an Add wire adds in position
+      // (before a curved control's curve) or in the curve's units (a linear one: dB for a dB gain); a Units wire after it.
       enum class Adds : uint8_t { Travel, KnobTravel, Units, Db, Input, Legacy } adds = Adds::Travel;
       if (w != nullptr && w->law == doc::WireLaw::Units) {
         adds = Adds::Legacy;
@@ -2161,15 +2161,15 @@ void ProjectPatchView::pollReadout() {
         const graph::Patch* callee =
             tl.device != nullptr && devlib != nullptr && !tl.device->rack ? devlib->patchOf(*tl.device, hold) : nullptr;
         if (const graph::ParamDecl* decl = callee != nullptr ? doc::findParamDecl(*callee, w->param) : nullptr) {
-          const doc::ParamTravel tr = doc::paramTravel(*decl, tl.device->curve(w->param));
-          adds = !doc::travelsInUnits(tr) ? Adds::KnobTravel : tr.db ? Adds::Db : Adds::Units;
+          const dsp::Curve c = doc::controlCurve(*tl.device, w->param, *decl);
+          adds = !doc::addsInUnits(c) ? Adds::KnobTravel : c.output == dsp::CurveOutput::DbToGain ? Adds::Db : Adds::Units;
         } else if (tl.device != nullptr && tl.device->rack) {
           adds = Adds::Units;
         }
       }
       switch (adds) {
         case Adds::Travel: std::snprintf(buf, sizeof buf, "amount %+.0f %%", w != nullptr ? w->amount * 100.0 : 0.0); break;
-        case Adds::KnobTravel: std::snprintf(buf, sizeof buf, "adds in knob travel (1 = the whole range, through its curve)"); break;
+        case Adds::KnobTravel: std::snprintf(buf, sizeof buf, "adds in knob position (1 = the whole range, through its curve)"); break;
         case Adds::Units: std::snprintf(buf, sizeof buf, "adds in the knob's units"); break;
         case Adds::Db: std::snprintf(buf, sizeof buf, "adds in dB"); break;
         case Adds::Input: std::snprintf(buf, sizeof buf, "adds to the input"); break;

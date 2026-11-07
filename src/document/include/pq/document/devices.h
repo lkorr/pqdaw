@@ -44,6 +44,7 @@ struct DeviceParamInfo {
   graph::Unit unit = graph::Unit::None;  // display unit: @unit(…), else the default literal's suffix
   bool exponential = false;       // @curve(exp): a knob maps its travel exponentially
   uint32_t steps = 0;             // @steps(n): n discrete values from min to max (0: continuous)
+  dsp::Curve curve;               // GU.1: the declared curve (graph::declaredCurve; a device may store its own)
 };
 
 // One structural setting: a `real const` input of the patch, set by a literal at the call site (Q121).
@@ -80,8 +81,12 @@ private:
   std::vector<DeviceInfo> devices_;
 };
 
-// The value a device plays for a param / setting: the one the user set, else the patch's default.
+// The value a device plays for a param / setting: the one the user set, else the patch's default. GU.1: a param's in
+// its units — its curve (the device's own, else the declared one) at its knob position (deviceParamPosition: the stored
+// one, else the default's through the declared curve); a rack's macro or selector is not a DeviceParamInfo.
 double deviceParamValue(const Device& d, const DeviceParamInfo& p) noexcept;
+double deviceParamPosition(const Device& d, const DeviceParamInfo& p) noexcept;
+const dsp::Curve& deviceParamCurve(const Device& d, const DeviceParamInfo& p) noexcept;
 double deviceSettingValue(const Device& d, const DeviceSettingInfo& s) noexcept;
 
 class DeviceLibrary;

@@ -222,6 +222,13 @@ private:
   Result<UnitImage> makeImage(uint32_t u, const UnitBackend& backend);
 
   ProjectCompileOptions opt_;
+  // GU.1: the Resources images are built with — opt_.resources, or a copy whose curves are the graph's own
+  // (graph::ProjectGraph::curveSlots) when it gives none; graphCurveOwner_ goes into every image's keepAlive.
+  Resources graphRes_;
+  std::vector<const dsp::CurveSlot*> graphCurves_;
+  std::shared_ptr<const void> graphCurveOwner_;
+  const Resources* res_ = nullptr;
+  void adoptGraphCurves(const graph::ProjectGraph& g);
   graph::ProjectPartition partition_;
   std::vector<CompiledUnit> units_;
   std::vector<graph::PortType> busTypes_;

@@ -112,7 +112,7 @@ std::string metaParamFlatName(DeviceId device, std::string_view path, std::strin
   return "d" + std::to_string(device.value) + "__" + flatPath(path) + "__" + std::string(param);
 }
 
-double metaParamValue(const Device& d, std::string_view path, const meta::Type& t, size_t i) {
+double metaParamPosition(const Device& d, std::string_view path, const meta::Type& t, size_t i) {  // GU.1
   const meta::ParamSpec& s = t.params[i];
   const DeviceValue* v = nullptr;
   if (path.empty()) {
@@ -120,7 +120,17 @@ double metaParamValue(const Device& d, std::string_view path, const meta::Type& 
   } else if (const MetaInstance* inst = d.metaAt(path)) {
     v = inst->param(s.name);
   }
-  return v != nullptr ? v->value : s.def;
+  return v != nullptr ? v->value : dsp::curvePosition(meta::paramCurve(s), s.def, 0.0);
+}
+
+dsp::Curve metaParamCurve(const Device& d, std::string_view path, const meta::Type& t, size_t i) {
+  if (path.empty())
+    if (const dsp::Curve* c = d.curve(t.params[i].name)) return *c;
+  return meta::paramCurve(t.params[i]);
+}
+
+double metaParamValue(const Device& d, std::string_view path, const meta::Type& t, size_t i) {
+  return dsp::evalCurve(metaParamCurve(d, path, t, i), metaParamPosition(d, path, t, i));
 }
 
 std::string metaParamBakedOnly(const Device& d, std::string_view param) {

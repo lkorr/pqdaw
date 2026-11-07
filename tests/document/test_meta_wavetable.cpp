@@ -94,7 +94,7 @@ TEST_CASE("wavetable document: keyframe cycles save -> load bit-exact; 64 keyfra
   const meta::DataPtr data = manyKeyframes(64, 5);
   s.edit(ops::setMetaData(s.doc(), s.wt, "", "wavetable", data));
   CHECK(s.store.lastChanges().metaDataOnly());
-  s.edit(ops::setMetaParam(s.doc(), s.wt, "", "wavetable", "fold", 0.25));
+  s.edit(ops::setMetaParamValue(s.doc(), s.wt, "", "wavetable", "fold", 0.25));
   CHECK(s.store.lastChanges().paramOnly());
   s.edit(ops::setMetaSetting(s.doc(), s.wt, "", "wavetable", "warpMode", 2.0));
   const auto t0 = std::chrono::steady_clock::now();

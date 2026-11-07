@@ -7,6 +7,8 @@
 
 #include "edit_common.h"
 #include "edit_paths.h"
+#include "pq/document/devices.h"
+#include "pq/document/lower.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
@@ -665,16 +667,60 @@ EditResult setDeviceChainInput(const Project& p, DeviceId device, std::string in
   return e;
 }
 
-EditResult setParamCurve(const Project& p, DeviceId device, std::string param, KnobCurve curve) {  // TX.knob-curves
+namespace {
+// GU.1: the declaration of `device`'s param `param` in the patch it plays (null: none).
+const graph::ParamDecl* declOf(const DeviceLibrary& lib, const Device& d, std::string_view param,
+                               std::shared_ptr<const ResolvedDevice>& hold) {
+  const graph::Patch* callee = lib.patchOf(d, hold);
+  return callee != nullptr ? findAnyParamDecl(*callee, param) : nullptr;
+}
+}  // namespace
+
+EditResult setParamCurve(const Project& p, const DeviceLibrary& lib, DeviceId device, std::string param,
+                         std::optional<dsp::Curve> curve) {  // GU.1
   const DeviceLoc l = findDevice(p, device);
   if (!l.track) return notFound("device not found");
   if (l.device->rack) return invalid("a rack's macros have no knob curve");
+  if (isGroupDevice(*l.device)) return invalid("a group has no knobs");
   if (param.empty()) return invalid("no param");
+  std::shared_ptr<const ResolvedDevice> hold;
+  const graph::ParamDecl* decl = declOf(lib, *l.device, param, hold);
+  if (decl == nullptr) return notFound("the device has no param '" + param + "'");
+  if (curve && !dsp::validCurve(*curve)) return invalid("not a valid curve");
+  const dsp::Curve declared = declaredCurve(*decl);
+  if (curve && *curve == declared) curve.reset();
+  const dsp::Curve before = controlCurve(*l.device, param, *decl);
+  const dsp::Curve after = curve ? *curve : declared;
   Edit e = makeEdit("Knob Curve");
   e.devices.push_back(device);
   e.tracks.push_back(l.track->id);
-  if (l.device->curve(param) != curve) batchOf(e).commands.push_back(SetParamCurve{device, std::move(param), curve});
+  const dsp::Curve* stored = l.device->curve(param);
+  const bool structural = dsp::curveClass(before) != dsp::curveClass(after);
+  if (stored == nullptr ? curve.has_value() : !(curve && *stored == *curve))
+    batchOf(e).commands.push_back(SetParamCurve{device, std::move(param), std::move(curve), structural});
   return e;
+}
+
+EditResult setParamCurvePreset(const Project& p, const DeviceLibrary& lib, DeviceId device, std::string param,
+                               dsp::CurvePreset preset) {
+  const DeviceLoc l = findDevice(p, device);
+  if (!l.track) return notFound("device not found");
+  std::shared_ptr<const ResolvedDevice> hold;
+  const graph::ParamDecl* decl = l.device->rack ? nullptr : declOf(lib, *l.device, param, hold);
+  if (decl == nullptr) return setParamCurve(p, lib, device, std::move(param), std::nullopt);  // its refusal
+  return setParamCurve(p, lib, device, std::move(param), curveWithPreset(declaredCurve(*decl), preset));
+}
+
+EditResult setDeviceParamValue(const Project& p, const DeviceLibrary& lib, DeviceId device, std::string param, double value) {
+  const DeviceLoc l = findDevice(p, device);
+  if (!l.track) return notFound("device not found");
+  if (l.device->rack) return setDeviceParam(p, device, std::move(param), value);
+  std::shared_ptr<const ResolvedDevice> hold;
+  const graph::ParamDecl* decl = declOf(lib, *l.device, param, hold);
+  if (decl == nullptr) return notFound("the device has no param '" + param + "'");
+  const double now = paramPosition(*l.device, param, *decl);
+  const double pos = dsp::curvePosition(controlCurve(*l.device, param, *decl), value, now);
+  return setDeviceParam(p, device, std::move(param), pos);
 }
 
 // ---- Modulation wires (T4.7) --------------------------------------------------------------------------------------

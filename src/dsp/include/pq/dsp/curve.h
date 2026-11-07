@@ -163,6 +163,8 @@ struct alignas(64) CurveData {
 static_assert(sizeof(CurveData) == 576, "CurveData has no padding bytes");
 CurveData compileCurve(const Curve& c) noexcept;
 bool sameData(const CurveData& a, const CurveData& b) noexcept;  // bitwise
+// A hash of everything a curve maps (its compiled data and its range): cache keys of what draws it. Never 0.
+uint64_t curveHash(const Curve& c) noexcept;
 
 // The resource a `curve` atom reads (Resource::Curve): one atomic pointer to an immutable CurveData. publish() (any
 // non-RT thread, serialised internally) swaps in new data and retires the old to the reclaimer (freed after the audio

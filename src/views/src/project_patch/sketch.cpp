@@ -37,6 +37,16 @@ struct Runner {
     auto e = run(doc::ops::createTrack(*store.current(), store.ids(), kind, after, name, doc::Colour{colour}));
     return e && !e->tracks.empty() ? e->tracks[0] : doc::TrackId{};
   }
+  // GU.1: a device param set by its value in units (the knob position that gives it, through the store's library).
+  void param(doc::DeviceId d, std::string name, double value) {
+    if (!status) return;
+    const doc::DeviceLibrary* lib = store.deviceLibrary();
+    if (lib == nullptr) {
+      status = Error{ErrorCode::InvalidArgument, "project builder: the store has no device library (DocumentStore::setDeviceLibrary)", {}};
+      return;
+    }
+    (void)run(doc::ops::setDeviceParamValue(*store.current(), *lib, d, std::move(name), value));
+  }
   // IG.1-2 (makeLoneInstrument): the track's instrument out of its instrument group.
   void lone(doc::TrackId t) {
     if (status) status = makeLoneInstrument(store, t);
@@ -174,9 +184,9 @@ doc::DeviceId phaseAccOn(Runner& r, doc::TrackId t, double freq, double phase, d
   auto e = r.run(doc::ops::addMetaDevice(*r.store.current(), r.store.ids(), t, "phase_acc", 0));
   if (!e || e->devices.empty()) return {};
   const doc::DeviceId d = e->devices[0];
-  if (freq != 0.0) (void)r.run(doc::ops::setMetaParam(*r.store.current(), d, "", "phase_acc", "freq", freq));
-  if (phase != 0.0) (void)r.run(doc::ops::setMetaParam(*r.store.current(), d, "", "phase_acc", "phase", phase));
-  if (amp != 1.0) (void)r.run(doc::ops::setMetaParam(*r.store.current(), d, "", "phase_acc", "amp", amp));
+  if (freq != 0.0) (void)r.run(doc::ops::setMetaParamValue(*r.store.current(), d, "", "phase_acc", "freq", freq));
+  if (phase != 0.0) (void)r.run(doc::ops::setMetaParamValue(*r.store.current(), d, "", "phase_acc", "phase", phase));
+  if (amp != 1.0) (void)r.run(doc::ops::setMetaParamValue(*r.store.current(), d, "", "phase_acc", "amp", amp));
   return d;
 }
 
@@ -290,15 +300,15 @@ Status buildMetaWavetableProject(doc::DocumentStore& store, doc::DeviceId* pair)
   for (const doc::TrackId t : {wave, two}) r.lone(t);
   if (!r.status) return r.status;
   const doc::DeviceId wt = wavetableOn(r, wave, demoWavetableData());
-  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "warp", 0.3));
-  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "position", 0.35));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), wt, "", "wavetable", "warp", 0.3));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), wt, "", "wavetable", "position", 0.35));
   (void)r.device(wave, "saturator", K::AudioEffect);
   const doc::Track* t = doc::findTrackPtr(*store.current(), two);
   if (t == nullptr || t->devices.empty()) return Error{ErrorCode::NotFound, "wavetable project: Pair has no instrument", {}};
   const doc::DeviceId inst = t->devices[0]->id;
   (void)r.run(doc::ops::editDevicePatch(*store.current(), inst, kWaveSynth));
   (void)r.run(doc::ops::setMetaData(*store.current(), inst, "wt1", "wavetable", demoWavetableData()));
-  (void)r.run(doc::ops::setMetaParam(*store.current(), inst, "wt1", "wavetable", "position", 0.7));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), inst, "wt1", "wavetable", "position", 0.7));
   r.clip(wave, 0, 4 * kTicksPerWhole, "Line", {0, 4, 7, 11});
   r.clip(two, 0, 4 * kTicksPerWhole, "Chord", {0, 3, 7});
   if (pair != nullptr) *pair = inst;
@@ -318,8 +328,8 @@ Status buildMetaChainProject(doc::DocumentStore& store, MetaChainIds* ids) {
   const doc::DeviceId wt = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
   if (!wt.valid()) return Error{ErrorCode::Unknown, "meta chain project: no Wavetable", {}};
   (void)r.run(doc::ops::setMetaData(*store.current(), wt, "", "wavetable", demoWavetableData()));
-  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "position", 0.35));
-  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "warp", 0.3));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), wt, "", "wavetable", "position", 0.35));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), wt, "", "wavetable", "warp", 0.3));
   (void)r.device(lead, "auto_filter", K::AudioEffect);
   // Bass: a detuned Phase accumulator (+1.5 Hz) → a saw Wavetable, nothing after it (the voices sum at the chain end).
   const doc::DeviceId bacc = phaseAccOn(r, bass, 1.5, 0.0, 1.0);
@@ -385,20 +395,20 @@ Status buildMetaEnvelopeProject(doc::DocumentStore& store, MetaEnvelopeIds* ids)
   const doc::DeviceId env = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
   if (!wt.valid() || !env.valid()) return Error{ErrorCode::Unknown, "envelope project: no Wavetable / Envelope", {}};
   (void)r.run(doc::ops::setMetaData(*store.current(), wt, "", "wavetable", demoWavetableData()));
-  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "position", 0.35));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), wt, "", "wavetable", "position", 0.35));
   const std::pair<const char*, double> pluckEnv[] = {{"attack", 0.012}, {"decay", 0.9}, {"sustain", 0.35}, {"release", 1.2},
                                                      {"acurve", 0.45},  {"dcurve", -0.25}, {"rcurve", 0.3}};
-  for (const auto& [name, v] : pluckEnv) (void)r.run(doc::ops::setMetaParam(*store.current(), env, "", "envelope", name, v));
+  for (const auto& [name, v] : pluckEnv) (void)r.run(doc::ops::setMetaParamValue(*store.current(), env, "", "envelope", name, v));
   // Shape: the default synth forked into acc1 → wt1 → env1 (nested faces), a slower envelope.
   const doc::Track* t = doc::findTrackPtr(*store.current(), shape);
   if (t == nullptr || t->devices.empty()) return Error{ErrorCode::NotFound, "envelope project: Shape has no instrument", {}};
   const doc::DeviceId inst = t->devices[0]->id;
   (void)r.run(doc::ops::editDevicePatch(*store.current(), inst, kEnvelopeSynth));
   (void)r.run(doc::ops::setMetaData(*store.current(), inst, "wt1", "wavetable", demoWavetableData()));
-  (void)r.run(doc::ops::setMetaParam(*store.current(), inst, "wt1", "wavetable", "position", 0.7));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), inst, "wt1", "wavetable", "position", 0.7));
   const std::pair<const char*, double> shapeEnv[] = {
       {"attack", 0.4}, {"decay", 2.0}, {"sustain", 0.7}, {"release", 3.0}, {"acurve", -0.4}};
-  for (const auto& [name, v] : shapeEnv) (void)r.run(doc::ops::setMetaParam(*store.current(), inst, "env1", "envelope", name, v));
+  for (const auto& [name, v] : shapeEnv) (void)r.run(doc::ops::setMetaParamValue(*store.current(), inst, "env1", "envelope", name, v));
   r.clip(pluck, 0, 4 * kTicksPerWhole, "Line", {0, 4, 7, 11});
   r.clip(shape, 0, 4 * kTicksPerWhole, "Pad", {0, 3, 7});
   if (ids != nullptr) *ids = MetaEnvelopeIds{pluck, acc, wt, env, shape, inst};
@@ -415,7 +425,7 @@ Status buildMetaOperatorProject(doc::DocumentStore& store, MetaOperatorIds* ids)
   if (!op.valid()) return Error{ErrorCode::NotFound, "meta operator project: no Meta Operator", {}};
   // Exact ratios: A 1, B 2, C 3/2, D 7/4.
   const std::pair<const char*, double> ratios[] = {{"nB", 2}, {"nC", 3}, {"dC", 2}, {"nD", 7}, {"dD", 4}};
-  for (const auto& [name, v] : ratios) (void)r.run(doc::ops::setDeviceParam(*store.current(), op, name, v));
+  for (const auto& [name, v] : ratios) r.param(op, name, v);
   // The modulators: shorter, quieter envelopes (their amount is the depth); B reads the demo table, D a saw.
   struct EnvSet {
     const char* path;
@@ -429,16 +439,16 @@ Status buildMetaOperatorProject(doc::DocumentStore& store, MetaOperatorIds* ids)
   };
   for (const EnvSet& e : envs)
     for (const auto& [name, v] : e.values)
-      (void)r.run(doc::ops::setMetaParam(*store.current(), op, e.path, "envelope", name, v));
+      (void)r.run(doc::ops::setMetaParamValue(*store.current(), op, e.path, "envelope", name, v));
   (void)r.run(doc::ops::setMetaData(*store.current(), op, "wtB", "wavetable", demoWavetableData()));
-  (void)r.run(doc::ops::setMetaParam(*store.current(), op, "wtB", "wavetable", "position", 0.4));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), op, "wtB", "wavetable", "position", 0.4));
   {
     meta::WavetableData d;
     const AlignedBuffer<float> saw = dsp::basicCycle(dsp::BasicCycle::Saw);
     d.keyframes.push_back({0.0f, std::vector<float>(saw.span().begin(), saw.span().end())});
     (void)r.run(doc::ops::setMetaData(*store.current(), op, "wtD", "wavetable", meta::wavetableData(d)));
   }
-  (void)r.run(doc::ops::setMetaParam(*store.current(), op, "accD", "phase_acc", "freq", 1.5));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), op, "accD", "phase_acc", "freq", 1.5));
   r.clip(keys, 0, 4 * kTicksPerWhole, "Chord", {0, 4, 7, 11});
   if (ids != nullptr) *ids = MetaOperatorIds{keys, op};
   return r.status;
@@ -478,7 +488,7 @@ Status buildMetaVcaProject(doc::DocumentStore& store, MetaVcaIds* ids) {
   auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), keys, "vca"));
   const doc::DeviceId vca = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
   if (!vca.valid()) return Error{ErrorCode::Unknown, "vca project: no VCA", {}};
-  (void)r.run(doc::ops::setMetaParam(*store.current(), vca, "", "vca", "value", 0.62));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), vca, "", "vca", "value", 0.62));
   // Trem: the synth forked with vca1 on a Bend curve from 0 to 2 (bent toward exponential), at the three-quarter mark.
   const doc::Track* t = doc::findTrackPtr(*store.current(), trem);
   if (t == nullptr || t->devices.empty()) return Error{ErrorCode::NotFound, "vca project: Trem has no instrument", {}};
@@ -486,7 +496,7 @@ Status buildMetaVcaProject(doc::DocumentStore& store, MetaVcaIds* ids) {
   (void)r.run(doc::ops::editDevicePatch(*store.current(), inst, kVcaSynth));
   (void)r.run(doc::ops::setMetaSetting(*store.current(), inst, "vca1", "vca", "curve", 1.0));
   const std::pair<const char*, double> tremVca[] = {{"min", 0.0}, {"max", 2.0}, {"bend", 0.5}, {"value", 0.75}};
-  for (const auto& [name, v] : tremVca) (void)r.run(doc::ops::setMetaParam(*store.current(), inst, "vca1", "vca", name, v));
+  for (const auto& [name, v] : tremVca) (void)r.run(doc::ops::setMetaParamValue(*store.current(), inst, "vca1", "vca", name, v));
   r.clip(keys, 0, 4 * kTicksPerWhole, "Line", {0, 4, 7, 11});
   r.clip(trem, 0, 4 * kTicksPerWhole, "Pad", {0, 3, 7});
   if (ids != nullptr) *ids = MetaVcaIds{keys, vca, trem, inst};
@@ -504,7 +514,7 @@ Status buildSpectrumProject(doc::DocumentStore& store, MetaSpectrumIds* ids) {
   const std::pair<const char*, double> bands[] = {{"freq3", 250.0},  {"gain3", 0.6309573}, {"q3", 1.2},      // −4 dB
                                                   {"freq4", 1000.0}, {"gain4", 1.9952623}, {"q4", 2.0},      // +6 dB
                                                   {"freq6", 6000.0}, {"gain6", 0.5623413}, {"q6", 0.7071}};  // −5 dB
-  for (const auto& [name, v] : bands) (void)r.run(doc::ops::setDeviceParam(*store.current(), eq, name, v));
+  for (const auto& [name, v] : bands) r.param(eq, name, v);
   auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), keys, "spectrum"));
   const doc::DeviceId spec = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
   if (!spec.valid()) return r.status ? Status{Error{ErrorCode::NotFound, "spectrum project: no Spectrum", {}}} : r.status;
@@ -530,20 +540,20 @@ Status buildGroupProject(doc::DocumentStore& store, GroupProjectIds* ids) {
   const doc::DeviceId pa2 = meta(keys, "phase_acc");
   if (!r.status) return r.status;
   if (!pa1.valid() || !wt.valid() || !pa2.valid()) return Error{ErrorCode::Unknown, "group project: meta devices", {}};
-  (void)r.run(doc::ops::setMetaParam(*store.current(), pa1, "", "phase_acc", "freq", 110.0));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), pa1, "", "phase_acc", "freq", 110.0));
   (void)r.run(doc::ops::setMetaData(*store.current(), wt, "", "wavetable", demoWavetableData()));
-  (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "position", 0.35));
-  (void)r.run(doc::ops::setMetaParam(*store.current(), pa2, "", "phase_acc", "freq", 3.0));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), wt, "", "wavetable", "position", 0.35));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), pa2, "", "phase_acc", "freq", 3.0));
   const doc::DeviceId lfo = r.device(keys, "lfo_device", K::AudioEffect, doc::ops::kOffPath);
   if (lfo.valid()) {
-    (void)r.run(doc::ops::setDeviceParam(*store.current(), lfo, "rate", 0.5));
+    r.param(lfo, "rate", 0.5);
     (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", wt, "position"));
   }
   // Bass: the default synth → Saturator → Utility.
   const doc::DeviceId sat = r.device(bass, "saturator", K::AudioEffect);
   const doc::DeviceId util = r.device(bass, "utility", K::AudioEffect);
-  (void)r.run(doc::ops::setDeviceParam(*store.current(), sat, "drive", 4.0));
-  (void)r.run(doc::ops::setDeviceParam(*store.current(), util, "width", 1.6));
+  r.param(sat, "drive", 4.0);
+  r.param(util, "width", 1.6);
   r.clip(keys, 0, 4 * kTicksPerWhole, "Chord", {0, 4, 7});
   r.clip(bass, 0, 4 * kTicksPerWhole, "Root", {0, 7});
   if (ids != nullptr) *ids = GroupProjectIds{keys, pa1, wt, pa2, lfo, bass, sat, util};
@@ -562,7 +572,7 @@ Status buildFreeRackProject(doc::DocumentStore& store, uint32_t lfos, FreeRackId
   out.filter = r.device(out.lead, "auto_filter", K::AudioEffect);
   out.util = r.device(out.lead, "utility", K::AudioEffect);
   if (!r.status) return r.status;
-  (void)r.run(doc::ops::setDeviceParam(*store.current(), out.sat, "drive", 6.0));
+  r.param(out.sat, "drive", 6.0);
   // The free devices: LFOs, each wired onto a knob of the chain (in turn through these), and a Phase accumulator whose
   // audio feeds the Auto Filter's sidechain input (a wire into an input), its frequency moved by the first LFO.
   static constexpr std::pair<int, const char*> kTargets[] = {{0, "drive"},  {1, "freq"},    {2, "width"},  {1, "res"},
@@ -574,7 +584,7 @@ Status buildFreeRackProject(doc::DocumentStore& store, uint32_t lfos, FreeRackId
       if (r.status) return Error{ErrorCode::Unknown, "free rack project: LFO", {}};
       return r.status;
     }
-    (void)r.run(doc::ops::setDeviceParam(*store.current(), lfo, "rate", 0.25 * static_cast<double>(i + 1)));
+    r.param(lfo, "rate", 0.25 * static_cast<double>(i + 1));
     const auto& t = kTargets[i % std::size(kTargets)];
     (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", chain[t.first], t.second));
     out.lfos.push_back(lfo);
@@ -586,7 +596,7 @@ Status buildFreeRackProject(doc::DocumentStore& store, uint32_t lfos, FreeRackId
       if (r.status) return Error{ErrorCode::Unknown, "free rack project: Phase accumulator", {}};
       return r.status;
     }
-    (void)r.run(doc::ops::setMetaParam(*store.current(), out.acc, "", "phase_acc", "freq", 55.0));
+    (void)r.run(doc::ops::setMetaParamValue(*store.current(), out.acc, "", "phase_acc", "freq", 55.0));
     (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.acc, "out", out.filter, "sc"));
     if (!out.lfos.empty()) (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.lfos.front(), "lfo", out.acc, "freq"));
   }
