@@ -6,8 +6,8 @@
 //           in Phase mode and in Shape mode (Shape mode refused the wire before: its fold / warp / sync were baked),
 //           wired from the start (interpreter and JIT) and added while playing.
 //   sweep   (slow) every continuous param (real, ranged, not @steps) of every stock device and meta module, in the
-//           configurations that switch its section on: a free Phase accumulator at 750 Hz (a ramp 0 … 1 that is
-//           exactly 0 at every 64-frame block start: 48000 / 64 = 750) through a free VCA (Bend curve, min = max = M,
+//           configurations that switch its section on: a free Phase Accumulator at 750 Hz (a ramp 0 … 1 that is
+//           exactly 0 at every 64-frame block start: 48000 / 64 = 750) through a free VCA (its knob a constant M,
 //           M = ±35 % of the param's range towards its interior) wired into the param, vs the same project without the
 //           wire. A param that reached its consumer only at param rate (once per block) would read the ramp's 0 at
 //           every block start and render identically to the unwired project: a difference means the param responds
@@ -20,6 +20,8 @@
 #include <cstdio>
 #include <functional>
 #include <map>
+#include <optional>
+#include <tuple>
 #include <memory>
 #include <string>
 #include <vector>
@@ -34,7 +36,7 @@
 #include "pq/document/lower.h"
 #include "pq/document/meta.h"
 #include "pq/dsp/frame_table_build.h"
-#include "pq/meta/vca.h"
+#include "pq/document/modules.h"
 #include "pq/meta/wavetable.h"
 
 using namespace pq;
@@ -84,6 +86,22 @@ struct Song {
     must(e->command);
     return e->devices.at(0);
   }
+  // GU.4: a built-in module pasted off the main path; `blocks` its pasted ids (local id k + 1 → index k).
+  DeviceId module(const BlockSet& set, std::vector<DeviceId>* blocks = nullptr) {
+    auto e = ops::pasteBlocks(doc(), store.ids(), track, set);
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    must(e->command);
+    if (blocks != nullptr) *blocks = e->devices;
+    return e->devices.at(0);
+  }
+  // GU.4: a free Phase Accumulator module at `hz` (from `phase`); returns its group.
+  DeviceId freePa(double hz, double phase = 0.0) {
+    IdSource local;
+    PhaseAccumulatorOptions o;
+    o.freq = dsp::curvePosition(phaseAccumulatorCurve(kPaFrequency), hz, 0.0);
+    o.phase = phase;
+    return module(phaseAccumulatorBlocks(local, o));
+  }
   DeviceId freeMeta(std::string_view type) {  // TX.all-free: a block placed off the main path (unwired)
     auto e = ops::addMetaDevice(doc(), store.ids(), track, type, ops::kOffPath);
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
@@ -104,17 +122,15 @@ struct Song {
     }
     must(AddClip{track, playback_fixture::clip(store.ids(), 0, end, std::move(v), "n")});
   }
-  // The audio-rate modulator: a free Phase accumulator at kModHz (starting at `phase`) through a free VCA of exactly `m`
-  // (Bend, min = max).
+  // The audio-rate modulator: a free Phase Accumulator at kModHz (starting at `phase`) through a free VCA of exactly `m`
+  // (GU.4: the modules; the VCA's knob a constant curve, min = max = m).
   DeviceId modulator(double m, double phase = 0.0) {
-    const DeviceId pa = freeMeta("phase_acc");
-    edit(ops::setMetaParamValue(doc(), pa, "", "phase_acc", "freq", kModHz));
-    if (phase != 0.0) edit(ops::setMetaParamValue(doc(), pa, "", "phase_acc", "phase", phase));
-    const DeviceId vca = freeMeta("vca");
-    edit(ops::setMetaSetting(doc(), vca, "", "vca", "curve", static_cast<double>(meta::VcaCurve::Bend)));
-    edit(ops::setMetaParamValue(doc(), vca, "", "vca", "max", m));
-    edit(ops::setMetaParamValue(doc(), vca, "", "vca", "min", m));
-    wire(pa, "out", vca, "in");
+    const DeviceId pa = freePa(kModHz, phase);
+    IdSource local;
+    VcaOptions vo;
+    vo.curve = dsp::curvePreset(dsp::CurvePreset::Linear, m, m);
+    const DeviceId vca = module(vcaBlocks(local, vo));
+    wire(pa, "", vca, "");
     return vca;
   }
 };
@@ -191,17 +207,17 @@ meta::DataPtr sawToSquare() {
 TEST_CASE("mod-all repro: audio into a chain Wavetable's warp changes the sound, Phase and Shape mode (interpreter, JIT)") {
   // The user's patch: notes → Phase accumulator → Wavetable, and another Phase accumulator's audio wired into the
   // Wavetable's warp. Before TX.mod-all Phase mode worked and Shape mode refused the wire ("baked into its curve").
+  // (GU.4: the Wavetable first reads the note's phase itself — what the default Phase accumulator gave it —, the other
+  // accumulator is the module.)
   for (const double mode : {0.0, 1.0})
     for (const bool jit : {false, true}) {
       auto build = [&](bool wired) {
         auto s = std::make_unique<Song>();
-        s->meta("phase_acc", 0);
-        const DeviceId wt = s->meta("wavetable");
+        const DeviceId wt = s->meta("wavetable", 0);
         s->edit(ops::setMetaSetting(s->doc(), wt, "", "wavetable", "mode", mode));
-        const DeviceId src = s->freeMeta("phase_acc");
-        s->edit(ops::setMetaParamValue(s->doc(), src, "", "phase_acc", "freq", 750.0));
+        const DeviceId src = s->freePa(750.0);
         s->notes(2 * kPpq);
-        if (wired) s->wire(src, "out", wt, "warp");
+        if (wired) s->wire(src, "", wt, "warp");
         return s;
       };
       auto a = build(false), b = build(true);
@@ -218,8 +234,7 @@ TEST_CASE("mod-all repro: the warp wire added while playing takes effect (Shape 
     Song s;
     const DeviceId wt = s.meta("wavetable");  // after BasicSynth: an effect in Shape mode
     CHECK(metaSettings(*findDevice(s.doc(), wt).device, "", meta::wavetableType())[meta::kWtMode] == 1.0);
-    const DeviceId src = s.freeMeta("phase_acc");
-    s.edit(ops::setMetaParamValue(s.doc(), src, "", "phase_acc", "freq", 750.0));
+    const DeviceId src = s.freePa(750.0);
     s.notes(8 * kPpq);
     app::LinkConfig c;
     c.compileThread = false;
@@ -244,7 +259,7 @@ TEST_CASE("mod-all repro: the warp wire added while playing takes effect (Shape 
       }
     };
     blocks(100);
-    if (wire) s.wire(src, "out", wt, "warp");
+    if (wire) s.wire(src, "", wt, "warp");
     link.flush();
     REQUIRE(link.waitForMetaTables());
     blocks(300);
@@ -264,8 +279,7 @@ TEST_CASE("mod-all repro: the warp wire added while playing takes effect (Shape 
 TEST_CASE("mod-all: Shape mode's live path at static values matches its baked curve") {
   auto build = [&](bool live) {
     auto s = std::make_unique<Song>();
-    s->meta("phase_acc", 0);
-    s->meta("wavetable");  // the sine
+    s->meta("wavetable", 0);  // the sine (reading the note's phase: GU.4, it followed a Phase accumulator)
     const DeviceId shaper = s->meta("wavetable");
     s->edit(ops::setMetaSetting(s->doc(), shaper, "", "wavetable", "mode", 1.0));
     s->edit(ops::setMetaParamValue(s->doc(), shaper, "", "wavetable", "warp", 0.5));
@@ -273,8 +287,8 @@ TEST_CASE("mod-all: Shape mode's live path at static values matches its baked cu
     s->notes(2 * kPpq);
     if (live) {
       const DeviceId zero = s->modulator(0.0);
-      s->wire(zero, "out", shaper, "warp");
-      s->wire(zero, "out", shaper, "fold");
+      s->wire(zero, "", shaper, "warp");
+      s->wire(zero, "", shaper, "fold");
     }
     return s;
   };
@@ -442,9 +456,6 @@ std::vector<Dut> duts() {
                   with(all, "LFO synced", {}, {{"lfoSync", 1}}),
                   with(all, "Morph filter, OSR circuit", {{"filterType", 4}, {"filterCircuit", 1}}), glide}});
   }
-  d.push_back({"Meta Operator", [](Song& s, const Config& c) { return stockInstrument(s, "meta_operator", c); },
-               stockParams("meta_operator"),
-               {Config{"algorithm 1, hq, feedback", {{"algorithm", 1}, {"hq", 1}, {"fbOn", 1}}, {}}}});
   // Utility: after another Utility that makes the signal stereo (its balance), so width and mid/side have a side.
   d.push_back({"Utility", [](Song& s, const Config& c) {
                  const DeviceId pre = s.stock("utility", DeviceKind::AudioEffect);
@@ -474,14 +485,13 @@ std::vector<Dut> duts() {
     d.push_back({"EQ Eight", [](Song& s, const Config& c) { return stockEffect(s, "eq_eight", c); }, stockParams("eq_eight"),
                  {bells, lr}});
   }
-  // Auto Filter: its sections on in turn; the sidechain's follower hears a free Phase accumulator at 110 Hz.
+  // Auto Filter: its sections on in turn; the sidechain's follower hears a free Phase Accumulator at 110 Hz.
   d.push_back({"Auto Filter", [](Song& s, const Config& c) {
                  const DeviceId af = stockEffect(s, "auto_filter", c);
                  if (std::find_if(c.settings.begin(), c.settings.end(), [](const auto& kv) { return kv.first == "scOn"; }) !=
                      c.settings.end()) {
-                   const DeviceId sc = s.freeMeta("phase_acc");
-                   s.edit(ops::setMetaParamValue(s.doc(), sc, "", "phase_acc", "freq", 110.0));
-                   s.wire(sc, "out", af, "sc");
+                   const DeviceId sc = s.freePa(110.0);
+                   s.wire(sc, "", af, "sc");
                  }
                  return af;
                },
@@ -499,39 +509,72 @@ std::vector<Dut> duts() {
                  return lfo;
                },
                stockParams("lfo_device"), {Config{"free", {}, {}}, Config{"synced", {}, {{"sync", 1}}}}});
-  d.push_back({"Phase Accumulator", [](Song& s, const Config&) { return s.meta("phase_acc", 0); }, metaParams("phase_acc"),
-               one("the instrument")});
+  // GU.4: the Phase Accumulator module (an instrument group In → its group → Out, the instrument gone): each of its
+  // value blocks' knobs (one control each: `value`, its curve the module's).
+  for (const std::string_view control : {kPaFrequency, kPaPhase, kPaAmplitude, kPaPitch}) {
+    const std::string name(control);
+    const dsp::Curve curve = phaseAccumulatorCurve(control);
+    const double def = control == kPaAmplitude ? 1.0 : 0.0;
+    d.push_back({"Phase Accumulator " + name, [control](Song& s, const Config&) {
+                   const DeviceLibrary& lib = library();
+                   std::vector<DeviceId> old;
+                   for (const DevicePtr& x : findTrackPtr(s.doc(), s.track)->devices) old.push_back(x->id);
+                   s.edit(ops::dissolveDevices(s.doc(), s.store.ids(), &lib, old));
+                   IdSource local;
+                   PhaseAccumulatorRoles r;
+                   std::vector<DeviceId> ids;
+                   const DeviceId pa = s.module(phaseAccumulatorBlocks(local, {}, &r), &ids);
+                   s.edit(ops::insertOnPath(s.doc(), s.store.ids(), pa, 0));
+                   s.edit(ops::groupInCircuit(s.store.current(), s.store.ids(), lib, std::vector<DeviceId>{pa}));
+                   const DeviceId block = control == kPaFrequency ? r.freq : control == kPaPhase ? r.phase
+                                          : control == kPaAmplitude ? r.amp : r.pitch;
+                   return ids.at(block.value - 1);
+                 },
+                 {Param{std::string(kValueParam), def, curve.min, curve.max, curve}}, one("the instrument")});
+  }
   auto wavetable = [](double mode) {
     return [mode](Song& s, const Config&) {
-      if (mode == 0.0) s.meta("phase_acc", 0);  // the note's phase; else BasicSynth's audio (Shape mode)
-      const DeviceId wt = s.meta("wavetable");
+      // (GU.4: in Phase mode first on the path, reading the note's phase — what a Phase accumulator before it gave.)
+      const DeviceId wt = mode == 0.0 ? s.meta("wavetable", 0) : s.meta("wavetable");
       s.edit(ops::setMetaSetting(s.doc(), wt, "", "wavetable", "mode", mode));
       s.edit(ops::setMetaData(s.doc(), wt, "", "wavetable", sawToSquare()));
       return wt;
     };
   };
-  d.push_back({"Wavetable (Phase mode)", wavetable(0.0), metaParams("wavetable"), one("after a Phase accumulator")});
+  d.push_back({"Wavetable (Phase mode)", wavetable(0.0), metaParams("wavetable"), one("at the notes (their phase)")});
   d.push_back({"Wavetable (Shape mode)", wavetable(1.0), metaParams("wavetable"), one("after Basic Synth")});
   d.push_back({"Envelope", [](Song& s, const Config&) {
-                 s.meta("phase_acc", 0);
-                 s.meta("wavetable");
+                 s.meta("wavetable", 0);
                  return s.meta("envelope");
                },
                metaParams("envelope"), one("after a Wavetable")});
-  d.push_back({"VCA", [](Song& s, const Config& c) {
-                 s.meta("phase_acc", 0);
-                 s.meta("wavetable");
-                 const DeviceId v = s.meta("vca");
-                 configure(s, v, c, "vca");
-                 return v;
-               },
-               metaParams("vca"),
-               // TX.vca-knob: a marker moves the curve only between its neighbours, so the knob sits in each pair's
-               // segments once (−100 … −10, −1 … +1 near 0, +10 … +100 on the default range).
-               {Config{"Log curve", {}, {}}, Config{"Bend curve", {{"curve", static_cast<double>(meta::VcaCurve::Bend)}}, {}},
-                Config{"Log curve, knob between -100 and -10", {}, {{"value", 0.19}}},
-                Config{"Log curve, knob near 0", {}, {{"value", 0.53}}},  // (at 0 the VCA is silent)
-                Config{"Log curve, knob between +10 and +100", {}, {{"value", 0.81}}}}});
+  // GU.4: the VCA module after a Wavetable: its knob (the value block, on the VCA's law, or a line) at the configured
+  // positions.
+  auto vca = [](std::optional<dsp::Curve> curve, double knob) {
+    return [curve, knob](Song& s, const Config&) {
+      s.meta("wavetable", 0);
+      IdSource local;
+      VcaOptions vo;
+      vo.curve = curve;
+      vo.value = knob;
+      VcaRoles r;
+      std::vector<DeviceId> ids;
+      const DeviceId g = s.module(vcaBlocks(local, vo, &r), &ids);
+      s.edit(ops::insertOnPath(s.doc(), s.store.ids(), g, 1));
+      return ids.at(r.value.value - 1);
+    };
+  };
+  const dsp::Curve law = vcaCurve();
+  for (const auto& [label, curve, knob] :
+       {std::tuple{"VCA (its law)", std::optional<dsp::Curve>{}, 0.7},
+        std::tuple{"VCA (a line 0 … 2)", std::optional<dsp::Curve>{dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, 2.0)}, 0.7},
+        std::tuple{"VCA (its law, knob between -100 and -10)", std::optional<dsp::Curve>{}, 0.19},
+        std::tuple{"VCA (its law, knob near 0)", std::optional<dsp::Curve>{}, 0.53},  // (at 0 the VCA is silent)
+        std::tuple{"VCA (its law, knob between +10 and +100)", std::optional<dsp::Curve>{}, 0.81}}) {
+    const dsp::Curve c = curve.value_or(law);
+    d.push_back({label, vca(curve, knob), {Param{std::string(kValueParam), dsp::evalCurve(c, knob), c.min, c.max, c}},
+                 one("after a Wavetable")});
+  }
   return d;
 }
 
@@ -573,12 +616,12 @@ void sweep(const Dut& dut, uint32_t& tested, std::vector<std::string>& silent) {
         const bool curved = !addsInUnits(p.curve);
         const double span = curved ? 1.0 : p.curve.max - p.curve.min;
         const double frac = curved ? dsp::curvePosition(p.curve, p.def, 0.0) : (dsp::curveInput(p.curve, p.def) - p.curve.min) / span;
-        const double m = std::clamp((frac < 0.5 ? 0.35 : -0.35) * span, -meta::kVcaRange, meta::kVcaRange);
+        const double m = std::clamp((frac < 0.5 ? 0.35 : -0.35) * span, -20000.0, 20000.0);
         Song s;
         const DeviceId d = dut.build(s, c);
         s.notes(c.notes);
         const DeviceId mod = s.modulator(m, phase);
-        s.wire(mod, "out", d, p.name);
+        s.wire(mod, "", d, p.name);
         const Rendered r = render(s.store.current(), kBlocks);
         CHECK_MESSAGE(r.error.empty(), dut.label << " / " << c.name << " / " << p.name << ": " << r.error);
         CHECK(r.invalidWires == 0);

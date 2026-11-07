@@ -23,6 +23,7 @@
 #include "pq/document/instrument_groups.h"
 #include "pq/document/lower.h"
 #include "pq/document/main_path.h"
+#include "pq/document/modules.h"
 #include "pq/document/serialize.h"
 #include "pq/engine/note_list.h"
 #include "pq/engine/offline_render.h"
@@ -222,6 +223,25 @@ DeviceId metaBlock(DocumentStore& s, TrackId t, std::string_view type, DeviceId 
   if (g.valid()) apply(s, SetDeviceGroup{d, g});
   return d;
 }
+// GU.4: a module's group preset pasted off the path of `t` (into group `g` when given); `roles` its blocks (local index
+// k + 1 → the pasted id). Returns the module's group.
+std::vector<DeviceId> moduleBlock(DocumentStore& s, TrackId t, const BlockSet& set, DeviceId g = {}) {
+  return run(s, ops::pasteBlocks(*s.current(), s.ids(), t, set, g)).devices;
+}
+DeviceId paBlock(DocumentStore& s, TrackId t, DeviceId g = {}, PhaseAccumulatorRoles* roles = nullptr) {
+  IdSource local;
+  PhaseAccumulatorRoles lr;
+  const std::vector<DeviceId> ids = moduleBlock(s, t, phaseAccumulatorBlocks(local, {}, &lr), g);
+  if (roles != nullptr) {
+    auto at = [&](DeviceId l) { return l.valid() ? ids.at(l.value - 1) : DeviceId{}; };
+    *roles = PhaseAccumulatorRoles{at(lr.group), at(lr.freq), at(lr.phase), at(lr.amp), at(lr.pitch), at(lr.ref),
+                                   at(lr.sum), at(lr.ratio), at(lr.pitched), at(lr.phasor), at(lr.addPhase),
+                                   at(lr.pm), at(lr.frac), at(lr.out)};
+  }
+  return ids.at(0);
+}
+DeviceId vcaBlock(DocumentStore& s, TrackId t, DeviceId g = {}) { return moduleBlock(s, t, moduleBlocks(ModuleKind::Vca), g).at(0); }
+
 // The cable from the synth into its group's Out (what createTrack wires).
 WireId intoOut(DocumentStore& s, DeviceId g) {
   for (const Wire& w : wiresOf(*s.current()))
@@ -359,15 +379,15 @@ TEST_CASE("instrument groups: a Saturator inside runs per note (= each note satu
 
 TEST_CASE("instrument groups: the Envelope last decides each voice's end; without it the voices end 5 ms after "
           "note-off") {
-  // In → Phase accumulator → Wavetable [→ Envelope] → Out, the Basic Synth taken out.
+  // In → Phase Accumulator (GU.4: its module, a nested group) → Wavetable [→ Envelope] → Out, the Basic Synth taken out.
   auto build = [](DocumentStore& s, bool envelope) {
     const TrackId t = midi(s);
     const DeviceId g = groupOf(s, t);
     const DeviceId syn = synthOf(s, t);
     const DeviceId del[1] = {syn};
     run(s, ops::deleteDevices(*s.current(), del));
-    const DeviceId pa = metaBlock(s, t, "phase_acc", g), wt = metaBlock(s, t, "wavetable", g);
-    cable(s, link(g, std::string(kGroupInPort), pa, "hz"));
+    const DeviceId pa = paBlock(s, t, g), wt = metaBlock(s, t, "wavetable", g);
+    cable(s, link(g, std::string(kGroupInPort), pa, ""));
     cable(s, link(pa, "", wt, ""));
     if (envelope) {
       const DeviceId env = metaBlock(s, t, "envelope", g);
@@ -597,19 +617,20 @@ TEST_CASE("instrument groups: a single-signal path back into a per-note block is
   const DeviceId syn = synthOf(s, t);
   const DeviceId del[1] = {syn};
   run(s, ops::deleteDevices(*s.current(), del));
-  const DeviceId pa = metaBlock(s, t, "phase_acc", g), wt = metaBlock(s, t, "wavetable", g);
-  cable(s, link(g, std::string(kGroupInPort), pa, "hz"));
+  PhaseAccumulatorRoles roles;
+  const DeviceId pa = paBlock(s, t, g, &roles), wt = metaBlock(s, t, "wavetable", g);
+  cable(s, link(g, std::string(kGroupInPort), pa, ""));
   cable(s, link(pa, "", wt, ""));
   cable(s, link(wt, "", g, std::string(kGroupOutPort)));
   const Score sc{{{t, chord()}}};
-  // Inside, per note: the Wavetable back into the accumulator's hz (FM feedback per voice): delayed, plays.
-  const WireId inside = cable(s, link(wt, "", pa, "hz"));
+  // Inside, per note: the Wavetable back into the accumulator's frequency input (FM feedback per voice): delayed, plays.
+  const WireId inside = cable(s, link(wt, "", roles.sum, "a"));
   CHECK(stateOf(*s.current(), inside, sc).status == WireStatus::Delayed);
   // Through a single-signal cable (the voices reduced, a Utility once) back into the accumulator: refused.
   const DeviceId u = block(s, t, "utility", g);
   const WireId toU = cable(s, link(wt, "", u, ""));
   run(s, ops::setWireSignal(*s.current(), toU, true, WireReducer::Sum));
-  const WireId back = cable(s, link(u, "", pa, "pm"));
+  const WireId back = cable(s, link(u, "", roles.phase, std::string(kValueParam)));
   const WireState st = stateOf(*s.current(), back, sc);
   CHECK(st.status == WireStatus::Refused);
   CHECK(st.reason == WireRefusal::VoiceLoop);
@@ -628,7 +649,8 @@ TEST_CASE("instrument groups: a single-signal path back into a per-note block is
 TEST_CASE("instrument groups: a monitoring cable from the note source (an Oscilloscope) does not change the sound "
           "(bug 2026-11-03_22-46-24)") {
   // The reported track, rebuilt: PA → WT into the mixer, PA → WT → VCA → back into the first PA's phase, the note
-  // source's Hz into the second PA's freq; no instrument group. Then the user cabled the note source into an
+  // source's Hz into the second PA's freq; no instrument group (GU.4: the Phase Accumulator and VCA modules, their
+  // Phase / Frequency value blocks the targets). Then the user cabled the note source into an
   // Oscilloscope: that made the track "play voices" and gated / changed everything. Under IG nothing here is inside an
   // instrument group: single-signal, the notes read as the newest note — the scope adds a reader, nothing else.
   auto build = [](DocumentStore& s, bool scope) {
@@ -636,15 +658,16 @@ TEST_CASE("instrument groups: a monitoring cable from the note source (an Oscill
     const DeviceId g = groupOf(s, t);
     const DeviceId del[1] = {g};
     run(s, ops::deleteDevices(*s.current(), del));  // (no path: the mixer hears the cables into it)
-    const DeviceId pa1 = metaBlock(s, t, "phase_acc"), wt1 = metaBlock(s, t, "wavetable");
-    const DeviceId pa2 = metaBlock(s, t, "phase_acc"), wt2 = metaBlock(s, t, "wavetable"), vca = metaBlock(s, t, "vca");
-    apply(s, SetDeviceParam{pa1, "freq", 110.0});
+    PhaseAccumulatorRoles r1, r2;
+    const DeviceId pa1 = paBlock(s, t, {}, &r1), wt1 = metaBlock(s, t, "wavetable");
+    const DeviceId pa2 = paBlock(s, t, {}, &r2), wt2 = metaBlock(s, t, "wavetable"), vca = vcaBlock(s, t);
+    apply(s, SetDeviceParam{r1.freq, std::string(kValueParam), dsp::curvePosition(phaseAccumulatorCurve(kPaFrequency), 110.0, 0.0)});
     cable(s, link(pa1, "", wt1, ""));
     cable(s, intoMixer(wt1, t));
     cable(s, link(pa2, "", wt2, ""));
     cable(s, link(wt2, "", vca, ""));
-    cable(s, link(vca, "", pa1, "phase"));
-    cable(s, notesInto(t, pa2, "hz", "freq"));
+    cable(s, link(vca, "", r1.phase, std::string(kValueParam)));
+    cable(s, notesInto(t, r2.freq, "hz", std::string(kValueParam)));
     if (scope) cable(s, notesInto(t, metaBlock(s, t, "oscilloscope")));
     return t;
   };

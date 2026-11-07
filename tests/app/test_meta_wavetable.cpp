@@ -31,7 +31,7 @@
 #include "pq/engine/offline_render.h"
 #include "pq/engine/project_program.h"
 #include "pq/engine/wav_file.h"
-#include "pq/meta/phase_acc.h"
+#include "pq/meta/envelope.h"
 #include "pq/meta/table_builder.h"
 #include "pq/meta/wavetable.h"
 #include "../ui/golden_check.h"
@@ -979,12 +979,12 @@ TEST_CASE("meta wavetable: a baked drag is heard at >= 30 Hz through preview tab
 
 TEST_CASE("meta faces: a played note is a dot — the face reads the engine's voice tap through the app's hub") {
   WtSong s;
-  // A chain Phase accumulator playing a three-note chord, and a chain Wavetable playing one note.
+  // A chain Envelope (GU.4: was a Phase accumulator) playing a three-note chord, and a chain Wavetable playing one note.
   auto t = ops::createTrack(s.doc(), s.store.ids(), TrackKind::Midi);
   REQUIRE(t.ok());
   s.must(t->command);
   const TrackId accTrack = t->tracks.at(0);
-  const DeviceId acc = s.metaFirst(accTrack, "phase_acc");
+  const DeviceId acc = s.metaFirst(accTrack, "envelope");
   std::vector<Note> chord;
   for (int32_t deg : {0, 4, 7}) chord.push_back(playback_fixture::note(s.store.ids(), 0, 64 * kPpq, deg));
   s.must(AddClip{accTrack, playback_fixture::clip(s.store.ids(), 0, 64 * kPpq, chord, "chord")});
@@ -997,7 +997,7 @@ TEST_CASE("meta faces: a played note is a dot — the face reads the engine's vo
   views::VoiceTapReader* wtVoices = hub.voices(wt, "");
   CHECK(hub.voices(acc, "") == accVoices);  // stable
   // A face bound to the reader, as the project patch view binds it.
-  std::unique_ptr<views::MetaFace> face = views::makeFace(meta::phaseAccType());
+  std::unique_ptr<views::MetaFace> face = views::makeFace(meta::envelopeType());
   REQUIRE(face != nullptr);
   face->bind(nullptr, accVoices);
   CHECK_FALSE(accVoices->live());  // silent: the host's timer does not run
@@ -1012,10 +1012,8 @@ TEST_CASE("meta faces: a played note is a dot — the face reads the engine's vo
   REQUIRE(face->sounding().size() == 3);  // three dots
   const auto tap = link->metaVoiceTap(acc, "", 0);
   REQUIRE(tap != nullptr);
-  // The dots are the phases the voices read: each in [0, 1), each voice's samples rising (a ramp, wrapping).
+  // Each dot carries the samples its voice wrote (the Envelope's encoded level and stage).
   for (const views::FaceVoice& v : face->sounding()) {
-    CHECK(v.phase >= 0.0f);
-    CHECK(v.phase < 1.0f);
     CHECK(v.sampleCount > 0);
     CHECK(v.sampleCount <= views::FaceVoice::kMaxSamples);
   }
@@ -1059,7 +1057,7 @@ TEST_CASE("meta faces: a face bound before its instance compiled follows the tap
   auto link = makeLink(s.store.current());
   [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   app::FaceVoiceHub hub(*link);
-  auto a = ops::addMetaDevice(s.doc(), s.store.ids(), track, "phase_acc", 0);
+  auto a = ops::addMetaDevice(s.doc(), s.store.ids(), track, "envelope", 0);
   REQUIRE(a.ok());
   const DeviceId acc = a->devices.at(0);
   views::VoiceTapReader* r = hub.voices(acc, "");  // no such instance yet: no tap
@@ -1135,11 +1133,11 @@ TEST_CASE("meta faces: the hub's reader knows the Wavetable's table — a publis
   CHECK(r->heardTable().table == slot->table());
   CHECK_FALSE(r->fresh());
   CHECK(r->live());            // still within the linger: a full table may follow a preview
-  // A Phase accumulator's reader has no table.
+  // An Envelope's reader has no table (GU.4: was a Phase accumulator's).
   auto t = ops::createTrack(s.doc(), s.store.ids(), TrackKind::Midi);
   REQUIRE(t.ok());
   s.must(t->command);
-  auto a = ops::addMetaDevice(s.doc(), s.store.ids(), t->tracks.at(0), "phase_acc", 0);
+  auto a = ops::addMetaDevice(s.doc(), s.store.ids(), t->tracks.at(0), "envelope", 0);
   REQUIRE(a.ok());
   s.must(a->command);
   link->flush();

@@ -359,47 +359,49 @@ TEST_CASE("free instruments: an effect before the instrument feeds its audio inp
   DocumentStore m;
   const TrackId mt = midiTrack(m);
   const DeviceId msynth = headOf(m, mt);
-  const DeviceId vca = metaOffPath(m, mt, "vca");
+  const DeviceId vca = metaOffPath(m, mt, "envelope");  // (GU.4: was a VCA; any meta module)
   run(m, ops::insertOnPath(*m.current(), m.ids(), vca, 0));
   REQUIRE(mainPath(*m.current(), *findTrackPtr(*m.current(), mt)).blocks.at(1)->id == msynth);
-  CHECK(peak(played(*m.current(), "VCA → BasicSynth")) == 0.0f);
+  CHECK(peak(played(*m.current(), "Envelope → BasicSynth")) == 0.0f);
   cable(m, notesInto(mt, msynth));
-  const double dm = maxDiff(played(*m.current(), "VCA → BasicSynth, notes cabled to the synth"), alone(false, "the synth alone"));
+  const double dm = maxDiff(played(*m.current(), "Envelope → BasicSynth, notes cabled to the synth"), alone(false, "the synth alone"));
   MESSAGE("a meta module before the instrument (notes cabled) vs the synth alone: max |diff| = " << dm);
   CHECK(dm <= 1e-6);
 }
 
 TEST_CASE("free instruments: notes cabled into a meta module off the path play it as the run at the note source") {
-  // The reference: the path source → Phase accumulator → Wavetable → mixer (a meta voice run).
+  // The reference: the path source → Wavetable → Wavetable → mixer (a meta voice run; GU.4: a Wavetable where the Phase
+  // accumulator was, a group preset now).
   DocumentStore ref;
   const TrackId rt = midiTrack(ref);
   run(ref, ops::dissolveDevices(*ref.current(), ref.ids(), &library(), std::vector<DeviceId>{headOf(ref, rt)}));
-  const DeviceId rpa = metaOffPath(ref, rt, "phase_acc");
+  const DeviceId rpa = metaOffPath(ref, rt, "wavetable");
   const DeviceId rwt = metaOffPath(ref, rt, "wavetable");
   run(ref, ops::insertOnPath(*ref.current(), ref.ids(), rpa, 0));
   run(ref, ops::insertOnPath(*ref.current(), ref.ids(), rwt, 1));
-  const golden::Channels a = played(*ref.current(), "PA → WT on the path");
-  // The same two blocks off the path (the path: source → mixer): the notes into the Phase accumulator's main input
-  // (its frequency: the note's Hz), its output into the Wavetable's (a phase), the Wavetable into the mixer.
+  const golden::Channels a = played(*ref.current(), "WT → WT on the path");
+  // The same two blocks off the path (the path: source → mixer): the notes into the first one's main input (a phase), its output
+  // into the Wavetable's, the Wavetable into the mixer.
   DocumentStore s;
   const TrackId t = midiTrack(s);
   run(s, ops::dissolveDevices(*s.current(), s.ids(), &library(), std::vector<DeviceId>{headOf(s, t)}));
-  const DeviceId pa = metaOffPath(s, t, "phase_acc");
+  const DeviceId pa = metaOffPath(s, t, "wavetable");
   const DeviceId wt = metaOffPath(s, t, "wavetable");
   const WireId n = cable(s, notesInto(t, pa));
   cable(s, link(pa, wt));
   cable(s, intoMixer(wt, t));
   REQUIRE(mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.empty());
   CHECK(stateOf(*s.current(), n) == WireStatus::Lowered);
-  const golden::Channels b = played(*s.current(), "PA → WT off the path, notes cabled");
+  const golden::Channels b = played(*s.current(), "WT → WT off the path, notes cabled");
   // While the notes are held both are the same signal (the run's 5 ms release ramp after note-off is the path's own;
   // off the path the voices end as the engine ends voices without a `done`).
   const double d = maxDiff(a, b, kFirstOff);
   MESSAGE("notes into an off-path meta module vs the run at the note source, before the first note-off: max |diff| = " << d);
   CHECK(rms(b, 0, kFirstOff) > 1e-3);
   CHECK(d <= 1e-6);
-  // Into an input of no note meaning (the Wavetable's x reads a phase: the note's phase, phasor(Hz)) — the note's phase
-  // into the Wavetable alone plays the same as the accumulator feeding it.
+  // Into the Wavetable's x (it reads a phase: the note's phase, phasor(Hz)) — the note's phase into the Wavetable alone
+  // plays the note (GU.4: it was compared with the Phase accumulator feeding it; the module's own render equality with
+  // the meta module is tests/app/test_module_presets.cpp's).
   DocumentStore s2;
   const TrackId t2 = midiTrack(s2);
   run(s2, ops::dissolveDevices(*s2.current(), s2.ids(), &library(), std::vector<DeviceId>{headOf(s2, t2)}));
@@ -408,9 +410,7 @@ TEST_CASE("free instruments: notes cabled into a meta module off the path play i
   cable(s2, intoMixer(wt2, t2));
   CHECK(stateOf(*s2.current(), n2) == WireStatus::Lowered);
   const golden::Channels c = played(*s2.current(), "notes (the phase) into an off-path Wavetable");
-  const double d2 = maxDiff(a, c, kFirstOff);
-  MESSAGE("notes into an off-path Wavetable (its phase) vs PA → WT on the path, before the first note-off: max |diff| = " << d2);
-  CHECK(d2 <= 1e-4);
+  CHECK(rms(c, 0, kFirstOff) > 1e-3);
 }
 
 TEST_CASE("free instruments: a cable into another track's mixer is a send-like route; one closing a cycle is a loop") {

@@ -20,6 +20,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/instrument_groups.h"
+#include "pq/document/modules.h"
 #include "pq/document/library_files.h"
 #include "pq/document/lower.h"
 #include "pq/document/main_path.h"
@@ -312,9 +313,9 @@ TEST_CASE("nested groups: an instrument group holding a nested group (wired thro
     const DeviceId g = groupOf(s, t);
     const DeviceId del[1] = {synthOf(s, t)};
     run(s, ops::deleteDevices(*s.current(), del));
-    const DeviceId pa = metaBlock(s, t, "phase_acc", g);
+    const DeviceId pa = run(s, ops::pasteBlocks(*s.current(), s.ids(), t, moduleBlocks(ModuleKind::PhaseAccumulator), g)).devices.at(0);
     const DeviceId env = metaBlock(s, t, "envelope", g);
-    cable(s, g, std::string(kGroupInPort), pa, "hz");
+    cable(s, g, std::string(kGroupInPort), pa, "");  // (GU.4: the Phase Accumulator module, a nested group itself)
     if (nested) {
       const DeviceId n = block(s, t, std::string(kGroupDevice));
       apply(s, SetDeviceGroup{n, g});

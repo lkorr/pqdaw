@@ -47,11 +47,21 @@ struct Converter {
   }
   // The curve `d`'s param plays after the migration (and whether it is its own: stored in Device::curves).
   bool curveOf(const Device& d, std::string_view param, dsp::Curve& out, bool& own) const {
-    std::shared_ptr<const ResolvedDevice> hold;
-    const graph::Patch* callee = lib.patchOf(d, hold);
-    const graph::ParamDecl* decl = callee != nullptr ? findAnyParamDecl(*callee, param) : nullptr;
-    if (decl == nullptr) return false;
-    const dsp::Curve declared = declaredCurve(*decl);
+    dsp::Curve declared;
+    const meta::Type* retired = isMetaDevice(d) && meta::findType(metaDeviceType(d)) == nullptr
+                                    ? meta::findRetiredType(metaDeviceType(d))
+                                    : nullptr;
+    if (retired != nullptr) {  // GU.4: a retired meta module (the library has no patch for it): its old declaration
+      const int32_t i = retired->paramIndex(param);
+      if (i < 0) return false;
+      declared = meta::paramCurve(retired->params[static_cast<size_t>(i)]);
+    } else {
+      std::shared_ptr<const ResolvedDevice> hold;
+      const graph::Patch* callee = lib.patchOf(d, hold);
+      const graph::ParamDecl* decl = callee != nullptr ? findAnyParamDecl(*callee, param) : nullptr;
+      if (decl == nullptr) return false;
+      declared = declaredCurve(*decl);
+    }
     out = declared;
     own = false;
     if (const LegacyCurve* l = legacyOf(d.id, param); l != nullptr && l->curve != 0) {

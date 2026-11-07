@@ -20,6 +20,7 @@
 #include "pq/core/denormal_guard.h"
 #include "pq/document/instrument_groups.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/modules.h"
 #include "pq/document/lower.h"
 #include "pq/document/meta.h"
 #include "pq/engine/note_list.h"
@@ -161,6 +162,8 @@ void groupOf(DocumentStore& s, std::vector<DeviceId> devices) {
 // The reported patch (bug 2026-11-02_18-21-54): a MIDI track PA → Wavetable (fold 0.25) → Envelope (attack 0.03)
 // [→ the analyser], a free VCA (value 0.3: ×−1) with Envelope.out → VCA.in and VCA.out → PA.freq — a loop through the
 // voice run (its 1-sample delay on a wire). `stock`: a Saturator after the Envelope (before the analyser).
+// GU.4: the head a Wavetable at the notes (was the Phase accumulator, a group preset now), the VCA its module (a group:
+// In → mul ← Value at 0.3), the loop closing into the first Wavetable's position input.
 struct Bug {
   TrackId track;
   DeviceId pa, wt, env, vca, sat, analyser;
@@ -175,9 +178,8 @@ Bug bugPatch(DocumentStore& store, const char* analyser, bool stock = false) {
   g.vca = ids.device();
   Batch b{"bug", {}};
   b.commands.push_back(AddTrack{playback_fixture::track(g.track, TrackKind::Midi, "1 MIDI"), {}, kAppend});
-  b.commands.push_back(AddDevice{g.track, metaDevice(g.pa, "phase_acc", DeviceKind::Instrument), kAppend});
+  b.commands.push_back(AddDevice{g.track, metaDevice(g.pa, "wavetable", DeviceKind::Instrument), kAppend});
   b.commands.push_back(AddDevice{g.track, metaDevice(g.wt, "wavetable", DeviceKind::AudioEffect), kAppend});
-  b.commands.push_back(AddDevice{g.track, metaDevice(g.vca, "vca", DeviceKind::AudioEffect, /*free=*/true), kAppend});
   b.commands.push_back(AddDevice{g.track, metaDevice(g.env, "envelope", DeviceKind::AudioEffect), kAppend});
   if (stock) {
     g.sat = ids.device();
@@ -190,11 +192,17 @@ Bug bugPatch(DocumentStore& store, const char* analyser, bool stock = false) {
   }
   b.commands.push_back(SetDeviceParam{g.wt, "fold", 0.2533332407474518});
   b.commands.push_back(SetDeviceParam{g.env, "attack", 0.03081697977654113});
-  b.commands.push_back(SetDeviceParam{g.vca, "value", 0.3});
   REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   wired(store);  // TX.all-free: wired in series
-  wire(store, g.env, "out", g.vca, "in");
-  wire(store, g.vca, "out", g.pa, "freq");
+  VcaOptions vo;
+  vo.value = 0.3;
+  IdSource local;
+  auto paste = ops::pasteBlocks(*store.current(), store.ids(), g.track, vcaBlocks(local, vo));
+  REQUIRE(paste.ok());
+  REQUIRE(store.dispatch(paste->command).ok());
+  g.vca = paste->devices.at(0);
+  wire(store, g.env, "out", g.vca, "");
+  wire(store, g.vca, "", g.pa, "pos");
   return g;
 }
 

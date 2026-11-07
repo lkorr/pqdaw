@@ -72,13 +72,11 @@ std::vector<Device> devices() {
                      "  out done : bool voice\n  o = operator(algorithm: 11, onB: 1, onC: 1, onD: 1, filterOn: 1)\n"
                      "  y = o\n  done = o.done\n}\n",
                      true});
-  d.push_back(Device{"meta_operator",
-                     "import \"" + stdlibPath("devices/meta_operator.pqp") + "\"\npatch T {\n  out y : audio voice mono\n"
-                     "  out done : bool voice mono\n  o = meta_operator(algorithm: 1, hq: 1, fbOn: 1)\n  y = o\n  done = o.done\n}\n",
-                     true});
-  d.push_back(Device{"meta modules (phase_acc → wavetable → envelope → vca)",
-                     "patch T {\n  out y : audio voice mono\n  a = meta_phase_acc(voice.hz)\n  w = meta_wavetable(a)\n"
-                     "  e = meta_envelope(w)\n  y = meta_vca(e, min: 0, max: 1)\n}\n",
+  // GU.4: the Phase accumulator and the VCA are group presets (their params value blocks: a phasor's frequency, a
+  // multiplier, as here); the Meta Operator is deleted.
+  d.push_back(Device{"meta modules (phasor → wavetable → envelope → × level)",
+                     "patch T {\n  param level = 0.7 [0..1]\n  out y : audio voice mono\n  a = phasor(voice.hz)\n"
+                     "  w = meta_wavetable(a)\n  e = meta_envelope(w)\n  y = e * level\n}\n",
                      true});
   return d;
 }

@@ -1,8 +1,9 @@
-// TMM.3: meta modules through the playback link — a nested Phase accumulator's freq drag is param writes only (no
-// compile job, no unit compile, the unit keeps its image: the unit hash is unchanged) and audible; a chain-level
-// `meta:phase_acc` instrument plays its voices; a MetaData edit compiles nothing.
-// TMM.10: Phase accumulator -> Wavetable -> Auto Filter as a chain (a meta voice run) plays exact pitches in 31edo;
-// its voices end with the run's release.
+// TMM.3: meta modules through the playback link. GU.4: the Phase Accumulator and the VCA are modules (group presets,
+// pq/document/modules.h): a Phase Accumulator's Frequency drag is param writes only (no compile job, no unit compile,
+// the unit keeps its image: the unit hash is unchanged) and audible; a Phase Accumulator in an instrument group plays
+// its voices; a MetaData edit compiles nothing.
+// TMM.10: Phase Accumulator -> Wavetable -> Auto Filter (an instrument group: In -> PA -> Wavetable -> Out) plays exact
+// pitches in 31edo; its voices end with the group's release.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -23,7 +24,7 @@
 #include "pq/dsp/frame_table_slot.h"
 #include "pq/meta/envelope.h"
 #include "pq/meta/registry.h"
-#include "pq/meta/vca.h"
+#include "pq/document/modules.h"
 #include "pq/document/instrument_groups.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
@@ -33,7 +34,6 @@
 #include "pq/app/face_voices.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/view_context.h"
-#include "../../src/views/src/meta/faces.h"  // TMM.17: faceVoiceHz (tests)
 
 using namespace pq;
 using namespace pq::doc;
@@ -110,6 +110,48 @@ struct Keys {
   }
 };
 
+// GU.4: track `t`'s path made of `blocks` — "pa" a Phase Accumulator module (its roles in `pa`), else a meta type —
+// in an instrument group (In -> blocks -> Out, the way an older file's meta voice run loads), its instrument gone.
+// Returns the group.
+DeviceId instrumentRun(DocumentStore& s, TrackId t, const std::vector<std::string>& blocks, PhaseAccumulatorRoles* pa = nullptr) {
+  const DeviceLibrary& lib = playback_fixture::unitsLibrary();
+  auto run = [&](Result<ops::Edit> e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(s.dispatch(e->command).ok());
+    return *e;
+  };
+  // The track's instrument grouped (an instrument group at the notes), then taken out of it: the group stays, empty.
+  if (mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.empty())
+    run(ops::addDevice(*s.current(), s.ids(), t, std::string(kDefaultInstrument), DeviceKind::Instrument, 0));
+  const DeviceId inst = mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.at(0)->id;
+  const DeviceId g = run(ops::groupInCircuit(s.current(), s.ids(), lib, std::vector<DeviceId>{inst})).devices.at(0);
+  run(ops::deleteDevices(*s.current(), std::vector<DeviceId>{inst}));
+  DeviceId at = g;
+  std::string port(kGroupInPort);
+  for (const std::string& b : blocks) {
+    DeviceId d;
+    if (b == "pa") {
+      IdSource local;
+      PhaseAccumulatorRoles lr;
+      const ops::Edit e = run(ops::pasteBlocks(*s.current(), s.ids(), t, phaseAccumulatorBlocks(local, {}, &lr), g));
+      auto id = [&](DeviceId l) { return l.valid() ? e.devices.at(l.value - 1) : DeviceId{}; };
+      if (pa != nullptr)
+        *pa = PhaseAccumulatorRoles{id(lr.group), id(lr.freq), id(lr.phase), id(lr.amp), id(lr.pitch), id(lr.ref),
+                                    id(lr.sum), id(lr.ratio), id(lr.pitched), id(lr.phasor), id(lr.addPhase),
+                                    id(lr.pm), id(lr.frac), id(lr.out)};
+      d = e.devices.at(0);
+    } else {
+      d = run(ops::addMetaDevice(*s.current(), s.ids(), t, b, ops::kOffPath)).devices.at(0);
+      REQUIRE(s.dispatch(SetDeviceGroup{d, g}).ok());
+    }
+    run(ops::connectWire(*s.current(), s.ids(), at, port, d, ""));
+    at = d;
+    port.clear();
+  }
+  run(ops::connectWire(*s.current(), s.ids(), at, port, g, std::string(kGroupOutPort)));
+  return g;
+}
+
 uint32_t voiceUnit(engine::ProjectProgram& program) {
   for (uint32_t u = 0; u < program.numUnits(); ++u)
     if (program.layout().units[u].voices) return u;
@@ -125,38 +167,32 @@ double rms(const std::vector<float>& v, size_t from, size_t to) {
 
 }  // namespace
 
-TEST_CASE("meta link: a nested Phase accumulator's freq drag compiles nothing and is audible") {
+TEST_CASE("meta link: a Phase Accumulator's Frequency drag compiles nothing and is audible") {
+  // (GU.4: was a nested meta_phase_acc call's freq; the module's Frequency is a value block's knob, undriven: a param.)
   Keys k;
+  PhaseAccumulatorRoles pa;
+  (void)instrumentRun(k.store, k.track, {"pa"}, &pa);
   auto link = makeLink(k.store.current());
   [[maybe_unused]] const ListenerId sub = k.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   Driver d{*link};
   link->play(0);
-  d.run(50);
-  // Fork the synth with a Phase accumulator as its oscillator phase (one structural compile of its unit).
-  const std::string text = replaced(link->devices().stockText("BasicSynth"), "ph  = phasor(voice.hz)",
-                                    "acc1 = meta_phase_acc(voice.hz)\n  ph  = acc1");  // TMM.10-fix1: the note wired
-  app::LinkStats s0 = link->stats();
-  k.edit(ops::addMetaCall(*k.store.current(), k.inst, text, "acc1", "phase_acc"));
-  link->flush();
-  CHECK(link->stats().compiles == s0.compiles + 1);
-  CHECK(link->stats().compileErrors == s0.compileErrors);
-  CHECK(link->lastError().empty());
   d.run(100);
+  CHECK(link->lastError().empty());
   engine::ProjectProgram& program = *link->engine().program();
   const uint32_t u = voiceUnit(program);
   CHECK(program.voices(u)->liveVoices() == 3);
   const engine::ProgramImage* image = program.current(u);
   REQUIRE(image != nullptr);
-  const std::string key = metaParamKey(k.inst, "acc1", "freq");
+  const std::string key = "dev" + std::to_string(pa.freq.value) + ":value";
   REQUIRE(link->paramSlot(key) != ProjectLink::kNoSlot);
   const size_t mark = d.out.size();
   d.run(100);
   const double before = rms(d.out, mark, d.out.size());
   // A drag: 16 values in one gesture. Param writes only.
-  s0 = link->stats();
+  app::LinkStats s0 = link->stats();
   REQUIRE(k.store.beginGesture().ok());
   for (int i = 1; i <= 16; ++i) {
-    k.edit(ops::setMetaParamValue(*k.store.current(), k.inst, "acc1", "phase_acc", "freq", 250.0 * i));
+    k.edit(ops::setDeviceParamValue(*k.store.current(), link->devices(), pa.freq, std::string(kValueParam), 250.0 * i));
     link->flush();
   }
   REQUIRE(k.store.commitGesture().ok());
@@ -177,15 +213,15 @@ TEST_CASE("meta link: a nested Phase accumulator's freq drag compiles nothing an
   bool differs = false;
   for (size_t i = 0; i < 6400 && !differs; ++i) differs = d.out[mark + i] != d.out[mark2 + i];
   CHECK(differs);
-  // A setting-free nested param back to its default: still a write.
+  // Back to its default: still a write.
   s0 = link->stats();
-  k.edit(ops::setMetaParam(*k.store.current(), k.inst, "acc1", "phase_acc", "freq", std::nullopt));
+  k.edit(ops::setDeviceParam(*k.store.current(), pa.freq, std::string(kValueParam), std::nullopt));
   link->flush();
   CHECK(link->stats().compiles == s0.compiles);
   CHECK(link->stats().paramWrites == s0.paramWrites + 1);
 }
 
-TEST_CASE("meta link: a chain meta:phase_acc instrument plays its voices; MetaData edits compile nothing") {
+TEST_CASE("meta link: a Phase Accumulator in an instrument group plays its voices; MetaData edits compile nothing") {
   meta::testing::registerTestType();
   Keys k;
   auto link = makeLink(k.store.current());
@@ -193,12 +229,15 @@ TEST_CASE("meta link: a chain meta:phase_acc instrument plays its voices; MetaDa
   Driver d{*link};
   link->play(0);
   d.run(20);
-  // The Phase accumulator replaces the instrument (the chain rule: one instrument, first).
-  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
+  // The Phase Accumulator replaces the instrument (In -> its group -> Out of an instrument group).
+  PhaseAccumulatorRoles pa;
+  (void)instrumentRun(k.store, k.track, {"pa"}, &pa);
   link->flush();
   CHECK(link->lastError().empty());
-  const DeviceId acc = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
-  REQUIRE(isMetaDevice(*findDevice(*k.store.current(), acc).device));
+  REQUIRE(isGroupDevice(*findDevice(*k.store.current(), pa.group).device));
+  link->stop();
+  d.run(5);
+  link->play(0);
   d.run(100);
   engine::ProjectProgram& program = *link->engine().program();
   const uint32_t u = voiceUnit(program);
@@ -206,14 +245,14 @@ TEST_CASE("meta link: a chain meta:phase_acc instrument plays its voices; MetaDa
   const size_t mark = d.out.size();
   d.run(50);
   CHECK(rms(d.out, mark, d.out.size()) > 1e-3);  // three ramps (DC and all) through the mixer
-  // Its own param is a device param: a write, no compile.
+  // Its Amplitude is a value block's param: a write, no compile.
   app::LinkStats s0 = link->stats();
-  k.edit(ops::setMetaParamValue(*k.store.current(), acc, "", "phase_acc", "amp", 0.5));
+  k.edit(ops::setDeviceParamValue(*k.store.current(), link->devices(), pa.amp, std::string(kValueParam), 0.5));
   link->flush();
   CHECK(link->stats().compiles == s0.compiles);
   CHECK(link->stats().paramWrites == s0.paramWrites + 1);
   // A data edit (a nested test module's samples) compiles nothing either. (TMM.13-fix1 L6: the state sits on a stock
-  // device of the chain; a chain meta device now holds only its own state, path "", so it can no longer carry it.)
+  // device of the chain.)
   const DeviceId util = [&] {
     auto e = ops::addDevice(*k.store.current(), k.store.ids(), k.track, "utility", DeviceKind::AudioEffect);
     REQUIRE(e.ok());
@@ -231,25 +270,29 @@ TEST_CASE("meta link: a chain meta:phase_acc instrument plays its voices; MetaDa
   CHECK(link->stats().paramWrites == s0.paramWrites);
 }
 
-TEST_CASE("meta link (TMM.10-fix1): an unplugged Phase accumulator plays its bar's phase once, whatever notes play") {
+TEST_CASE("meta link (TMM.10-fix1): a free Phase Accumulator plays its bar's phase once, whatever notes play") {
+  // (GU.4: the module off the path, nothing into its In, its output into the mixer; was an unplugged chain module.)
   Keys k;  // a held three-note chord
-  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
-  const DeviceId acc = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
-  k.edit(ops::setMetaParamValue(*k.store.current(), acc, "", "phase_acc", "freq", 100.0));
-  k.edit(ops::setDeviceChainInput(*k.store.current(), acc, std::string(kChainUnplugged)));
+  const DeviceLibrary& lib = playback_fixture::unitsLibrary();
+  k.edit(ops::deleteDevices(*k.store.current(), std::vector<DeviceId>{k.inst}));
+  IdSource local;
+  PhaseAccumulatorRoles lr;
+  auto e = ops::pasteBlocks(*k.store.current(), k.store.ids(), k.track, phaseAccumulatorBlocks(local, {}, &lr));
+  REQUIRE(e.ok());
+  const DeviceId acc = e->devices.at(0), freq = e->devices.at(lr.freq.value - 1);
+  k.edit(std::move(e));
+  k.edit(ops::setDeviceParamValue(*k.store.current(), lib, freq, std::string(kValueParam), 100.0));
+  Wire m;
+  m.from = acc;
+  m.mixer = k.track;
+  k.edit(ops::connect(*k.store.current(), k.store.ids(), m));
   auto link = makeLink(k.store.current());
   CHECK(link->lastError().empty());
   Driver d{*link};
   link->play(0);
   d.run(10);
-  const auto tap = link->metaVoiceTap(acc, "", 0);
-  REQUIRE(tap != nullptr);
-  VoiceTapReader reader(tap);
   const size_t mark = d.out.size();
-  for (int i = 0; i < 10; ++i) {
-    d.run(75);  // 750 blocks of 64 = 1 s
-    reader.poll(1.0);
-  }
+  d.run(750);  // 1 s
   // No voices anywhere: the notes are not wired into it.
   engine::ProjectProgram& program = *link->engine().program();
   for (uint32_t u = 0; u < program.numUnits(); ++u) CHECK_FALSE(program.layout().units[u].voices);
@@ -264,10 +307,6 @@ TEST_CASE("meta link (TMM.10-fix1): an unplugged Phase accumulator plays its bar
   CHECK(wraps <= 101);
   CHECK(peak > 0.6f);   // a single ramp 0 … 1 at −3 dB (three voices would sum past 1)
   CHECK(peak < 0.75f);
-  // The face shows one dot (a global module taps one voice).
-  uint32_t active = 0;
-  for (uint32_t s = 0; s < reader.voiceSlots(); ++s) active += reader.voice(s).active ? 1u : 0u;
-  CHECK(active == 1);
 }
 
 // ---- TMM.2: the link's meta-module resource slots (frame tables, voice taps) -----------------------------------------
@@ -426,7 +465,7 @@ double measuredHz(const std::vector<float>& x, size_t from, size_t window, size_
 
 }  // namespace
 
-TEST_CASE("meta link: Phase accumulator -> Wavetable -> Auto Filter plays an 8-voice 31edo chord, every pitch exact") {
+TEST_CASE("meta link: Phase Accumulator -> Wavetable -> Auto Filter plays an 8-voice 31edo chord, every pitch exact") {
   DocumentStore store;
   IdSource& ids = store.ids();
   const TrackId track = ids.track();
@@ -453,11 +492,10 @@ TEST_CASE("meta link: Phase accumulator -> Wavetable -> Auto Filter plays an 8-v
     REQUIRE(store.dispatch(e->command).ok());
     return *e;
   };
-  edit(ops::addMetaDevice(*store.current(), ids, track, "phase_acc", 0));
-  const DeviceId wt = edit(ops::addMetaDevice(*store.current(), ids, track, "wavetable")).devices.at(0);
+  // GU.4: In -> Phase Accumulator -> Wavetable -> Out (an instrument group), then the Auto Filter.
+  const DeviceId g = instrumentRun(store, track, {"pa", "wavetable"});
   edit(ops::addDevice(*store.current(), ids, track, "auto_filter", DeviceKind::AudioEffect));
-  CHECK(findDevice(*store.current(), wt).device->kind == DeviceKind::AudioEffect);
-  REQUIRE(chainStages(findTrackPtr(*store.current(), track)->devices, true).at(1).in == ChainSignal::Voices);
+  CHECK(mainPath(*store.current(), *findTrackPtr(*store.current(), track)).blocks.at(0)->id == g);
   auto link = makeLink(store.current());
   CHECK(link->lastError().empty());
   Driver d{*link};
@@ -479,10 +517,9 @@ TEST_CASE("meta link: Phase accumulator -> Wavetable -> Auto Filter plays an 8-v
   CHECK(worst <= 1e-4);
 }
 
-TEST_CASE("meta link: a meta voice run's voices end 5 ms after note-off (no click, no stuck voice)") {
+TEST_CASE("meta link: an instrument group's voices end 5 ms after note-off (no click, no stuck voice)") {
   Keys k;
-  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
-  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "wavetable"));
+  (void)instrumentRun(k.store, k.track, {"pa", "wavetable"});
   auto link = makeLink(k.store.current());
   Driver d{*link};
   link->play(0);
@@ -504,21 +541,14 @@ TEST_CASE("meta link: a meta voice run's voices end 5 ms after note-off (no clic
 
 // ---- TMM.11: the Envelope in a voice run --------------------------------------------------------------------------
 
-TEST_CASE("meta link: Phase accumulator -> Wavetable -> Envelope — the envelope shapes each voice and ends it") {
+TEST_CASE("meta link: Phase Accumulator -> Wavetable -> Envelope — the envelope shapes each voice and ends it") {
   Keys k;
-  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
-  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "wavetable"));
-  auto e = ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "envelope");
-  REQUIRE(e.ok());
-  const DeviceId env = e->devices.at(0);
-  k.edit(std::move(e));
+  const DeviceId g = instrumentRun(k.store, k.track, {"pa", "wavetable", "envelope"});
+  DeviceId env;
+  for (const DevicePtr& d : findTrackPtr(*k.store.current(), k.track)->devices)
+    if (d->group == g && d->patch == "meta:envelope") env = d->id;
+  REQUIRE(env.valid());
   CHECK(findDevice(*k.store.current(), env).device->kind == DeviceKind::AudioEffect);
-  {
-    const std::vector<ChainStage> st = chainStages(findTrackPtr(*k.store.current(), k.track)->devices, true);
-    REQUIRE(st.size() == 3);
-    CHECK(st[1].in == ChainSignal::Voices);
-    CHECK(st[2].in == ChainSignal::Voices);
-  }
   // A slow attack (100 ms), sustain 0.5, a 200 ms release (−80 dB at 200 ms).
   for (auto [name, v] : {std::pair{"attack", 0.1}, std::pair{"decay", 0.05}, std::pair{"sustain", 0.5},
                          std::pair{"release", 0.2}})
@@ -537,8 +567,7 @@ TEST_CASE("meta link: Phase accumulator -> Wavetable -> Envelope — the envelop
   // A VCA on the run's signal: the same run without the Envelope, times the envelope — the linear attack i / 4800, then
   // (the decay settled) the sustain 0.5.
   Keys plainKeys;
-  plainKeys.edit(ops::addMetaDevice(*plainKeys.store.current(), plainKeys.store.ids(), plainKeys.track, "phase_acc", 0));
-  plainKeys.edit(ops::addMetaDevice(*plainKeys.store.current(), plainKeys.store.ids(), plainKeys.track, "wavetable"));
+  (void)instrumentRun(plainKeys.store, plainKeys.track, {"pa", "wavetable"});
   auto plainLink = makeLink(plainKeys.store.current());
   Driver plain{*plainLink};
   plainLink->play(0);
@@ -573,14 +602,26 @@ TEST_CASE("meta link: Phase accumulator -> Wavetable -> Envelope — the envelop
 
 // ---- TMM.14: the VCA through the link ------------------------------------------------------------------------------
 
-TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 20 ms (no click; TX.smooth) and compile nothing; min/max too") {
+TEST_CASE("meta link (TMM.14): a VCA knob's changes glide over 20 ms (no click; TX.smooth) and compile nothing; its curve too") {
+  // GU.4: an unwired VCA (a constant source of its value) is a Value block with the VCA's curve (what such a VCA converts
+  // to); its knob and its curve's range edits are param writes that glide.
   Keys k;
-  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "vca", 0));
-  const DeviceId vca = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
-  // Unplugged: `in` reads 1, so the track plays the value itself (a DC through the mixer's constant gain).
-  k.edit(ops::setDeviceChainInput(*k.store.current(), vca, std::string(kChainUnplugged)));
-  const meta::VcaLaw law = meta::vcaLaw(meta::VcaCurve::Log, -meta::kVcaRange, meta::kVcaRange, 0.4, 0.0);
-  k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", "value", meta::vcaPosition(law, 0.5)));
+  const DeviceLibrary& lib = playback_fixture::unitsLibrary();
+  k.edit(ops::deleteDevices(*k.store.current(), std::vector<DeviceId>{k.inst}));
+  const DeviceId vca = [&] {
+    auto e = ops::addDevice(*k.store.current(), k.store.ids(), k.track, std::string(kValueDevice), DeviceKind::AudioEffect, ops::kOffPath);
+    REQUIRE(e.ok());
+    REQUIRE(k.store.dispatch(e->command).ok());
+    return e->devices.at(0);
+  }();
+  const std::string vp(kValueParam);
+  const dsp::Curve law = vcaCurve();
+  k.edit(ops::setParamCurve(*k.store.current(), lib, vca, vp, law));
+  k.edit(ops::setDeviceParamValue(*k.store.current(), lib, vca, vp, 0.5));
+  Wire m;
+  m.from = vca;
+  m.mixer = k.track;
+  k.edit(ops::connect(*k.store.current(), k.store.ids(), m));
   auto link = makeLink(k.store.current());
   [[maybe_unused]] const ListenerId sub = k.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   CHECK(link->lastError().empty());
@@ -593,30 +634,32 @@ TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 20 ms (no click;
   float spread = 0.0f;  // settled: a DC
   for (size_t i = d.out.size() - 64; i < d.out.size(); ++i) spread = std::max(spread, std::fabs(d.out[i] - d.out.back()));
   CHECK(spread <= 1e-5f);  // (the mixer's own float rounding)
-  // Steps: up to 20 (a knob jump across the fine zone into the log part), down to −3, then min moved under a held knob.
+  // Steps: up to 20 (a knob jump across the fine zone into the log part), down to −3, then min moved under a held knob
+  // (a curve edit: the same knob position plays the new curve's value).
   const app::LinkStats s0 = link->stats();
-  struct Step {
-    const char* param;
-    double value;
-    double want;  // the value the knob then plays
-  };
-  const meta::VcaLaw narrow = meta::vcaLaw(meta::VcaCurve::Log, -100.0, meta::kVcaRange, 0.4, 0.0);
-  const double p3 = meta::vcaPosition(law, -3.0);
-  const Step steps[] = {{"value", meta::vcaPosition(law, 20.0), 20.0},
-                        {"value", p3, -3.0},
-                        {"min", -100.0, meta::vcaValue(narrow, p3)}};
+  const dsp::Curve narrow = vcaCurve(-100.0, 20000.0);
+  const double p3 = dsp::curvePosition(law, -3.0, 0.5);
   float from = 0.5f;
-  for (const Step& s : steps) {
-    CAPTURE(s.param);
-    k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", s.param, s.value));
+  for (int step = 0; step < 3; ++step) {
+    CAPTURE(step);
+    double want = 0.0;
+    if (step == 0) {
+      k.edit(ops::setDeviceParamValue(*k.store.current(), lib, vca, vp, 20.0));
+      want = 20.0;
+    } else if (step == 1) {
+      k.edit(ops::setDeviceParam(*k.store.current(), vca, vp, p3));
+      want = -3.0;
+    } else {
+      k.edit(ops::setParamCurve(*k.store.current(), lib, vca, vp, narrow));
+      want = dsp::evalCurve(narrow, p3);
+    }
     link->flush();
     const size_t mark = d.out.size();
     d.run(16);  // TX.smooth: every param glides over 20 ms (960 frames: 15 blocks), then one more block at rest
-    const float to = static_cast<float>(s.want);
+    const float to = static_cast<float>(want);
     CHECK(d.out.back() / g == doctest::Approx(to).epsilon(1e-3));
-    // TX.smooth (pq/graph/schedule.h "Param ramps"): a linear glide from the old value to the new over 20 ms (it was the
-    // gain's 2 ms one-pole before): monotonic, no sample-to-sample step above the glide's (1/960 of the distance),
-    // never past the target.
+    // TX.smooth (pq/graph/schedule.h "Param ramps"): a linear glide from the old value to the new over 20 ms: monotonic,
+    // no sample-to-sample step above the glide's (1/960 of the distance), never past the target.
     const float dist = std::fabs(to - from) * g, maxStep = dist / 960.0f * 1.02f + 1e-6f;
     float worst = 0.0f;
     bool monotonic = true, beyond = false;
@@ -624,8 +667,6 @@ TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 20 ms (no click;
       const float prev = i == mark ? from * g : d.out[i - 1];
       worst = std::max(worst, std::fabs(d.out[i] - prev));
       monotonic = monotonic && (to > from ? d.out[i] >= prev - 1e-6f : d.out[i] <= prev + 1e-6f);
-      // (TX.smooth: the tolerance on the far side of the target whatever its sign; the glide now arrives exactly, and a
-      // downward move to a positive target sat inside the old `to·g·1.0001` band.)
       const float tol = std::fabs(to * g) * 1e-4f + 1e-6f;
       beyond = beyond || (to > from ? d.out[i] > to * g + tol : d.out[i] < to * g - tol);
     }
@@ -638,71 +679,6 @@ TEST_CASE("meta link (TMM.14): a VCA's value changes glide over 20 ms (no click;
   CHECK(link->stats().compiles == s0.compiles);
   CHECK(link->stats().unitCompiles == s0.unitCompiles);
   CHECK(link->stats().paramWrites >= s0.paramWrites + 3);
-}
-
-// TX.vca-knob: a project saved before the markers existed (no mk_* params: what vca version 1 wrote) reads them as 0
-// and plays what it played (no migration: the markers' default is the old law, bit for bit); a marker drag is a param
-// write that moves the value the knob plays, through the warp, without a compile.
-TEST_CASE("meta link (TX.vca-knob): an older VCA state keeps its sound; a marker write compiles nothing and warps the knob") {
-  Keys k;
-  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "vca", 0));
-  const DeviceId vca = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
-  k.edit(ops::setDeviceChainInput(*k.store.current(), vca, std::string(kChainUnplugged)));
-  k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", "min", -5000.0));
-  k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", "zone", 0.55));
-  const meta::VcaLaw old = meta::vcaLaw(meta::VcaCurve::Log, -5000.0, meta::kVcaRange, 0.55, 0.0);
-  k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", "value", meta::vcaPosition(old, 1.0)));
-  // Saved and loaded: no marker in the file, all 0 when read, the same project.
-  auto text = serializeProject(*k.store.current(), k.store.view());
-  REQUIRE(text.ok());
-  CHECK(text->find("\"mk_") == std::string::npos);
-  CHECK(text->find("\"zone\"") != std::string::npos);
-  auto back = parseProject(*text);
-  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
-  CHECK(*back->project == *k.store.current());
-  const Device* dv = findDevice(*back->project, vca).device;
-  REQUIRE(dv != nullptr);
-  for (uint32_t i = 0; i < meta::kVcaMarks; ++i) CHECK(metaParamValue(*dv, "", meta::vcaType(), meta::kVcaMark0 + i) == 0.0);
-  CHECK_FALSE(old.warped);
-  auto link = makeLink(back->project);
-  [[maybe_unused]] const ListenerId sub = k.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
-  CHECK(link->lastError().empty());
-  Driver d{*link};
-  link->play(0);
-  d.run(20);
-  const float g = d.out.back();  // the knob at value 1: the mixer's gain
-  CHECK(g > 0.6f);
-  CHECK(g < 0.8f);
-  const app::LinkStats s0 = link->stats();
-  auto settle = [&](const char* param, double v) {
-    k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", param, v));
-    link->flush();
-    d.run(18);  // past the 20 ms glide
-    return d.out.back() / g;
-  };
-  // The old law at a knob position just under +1 (in the fine zone), played as it was.
-  const double want = meta::vcaValue(old, 0.74);
-  CHECK(settle("value", 0.74) == doctest::Approx(want).epsilon(1e-4));
-  // +1 moved right by 0.05 (one marker alone): the fine zone is wider, the knob at 0.74 plays less (the warped law).
-  std::array<double, meta::kVcaMarks> off{};
-  off[3] = 0.05;
-  const meta::VcaLaw moved = meta::vcaLaw(meta::VcaCurve::Log, -5000.0, meta::kVcaRange, 0.55, 0.0, off);
-  const double want2 = meta::vcaValue(moved, 0.74);
-  CHECK(want2 < want - 0.1);
-  CHECK(settle("mk_p1", 0.05) == doctest::Approx(want2).epsilon(1e-4));
-  // -100 moved (shown: -5000 < -100): the knob at 0.74 is not in a segment next to it: unchanged.
-  off[0] = 0.02;
-  CHECK(settle("mk_n100", 0.02) == doctest::Approx(want2).epsilon(1e-4));
-  // A marker outside the range (min -50 hides -100): no effect.
-  k.edit(ops::setMetaParamValue(*k.store.current(), vca, "", "vca", "min", -50.0));
-  const meta::VcaLaw narrow = meta::vcaLaw(meta::VcaCurve::Log, -50.0, meta::kVcaRange, 0.55, 0.0, off);
-  std::array<double, meta::kVcaMarks> noN100 = off;
-  noN100[0] = 0.0;
-  const double want3 = meta::vcaValue(narrow, 0.1);
-  CHECK(want3 == meta::vcaValue(meta::vcaLaw(meta::VcaCurve::Log, -50.0, meta::kVcaRange, 0.55, 0.0, noN100), 0.1));
-  CHECK(settle("value", 0.1) == doctest::Approx(want3).epsilon(1e-4));
-  CHECK(link->stats().compiles == s0.compiles);
-  CHECK(link->stats().unitCompiles == s0.unitCompiles);
 }
 
 // ---- TMM.17 ---------------------------------------------------------------------------------------------------------
@@ -743,12 +719,12 @@ TEST_CASE("meta link (TMM.17): a MIDI track's instrument coming and going rebuil
   CHECK(replay() == 0.0);
   engine::ProjectProgram& program = *link->engine().program();
   for (uint32_t u = 0; u < program.numUnits(); ++u) CHECK_FALSE(program.layout().units[u].voices);
-  // A Phase accumulator arrives as the instrument: a voice unit again, playing the chord.
-  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
-  expectClean("phase_acc added");
+  // A Wavetable arrives as the instrument: a voice unit again, playing the chord. (GU.4: was a Phase accumulator.)
+  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "wavetable", 0));
+  expectClean("wavetable added");
   CHECK(replay() > 1e-3);
   CHECK(program.voices(voiceUnit(program))->liveVoices() == 3);
-  // Undo Add Device: an empty track again; Redo: the accumulator plays again.
+  // Undo Add Device: an empty track again; Redo: the Wavetable plays again.
   REQUIRE(k.store.undo());
   expectClean("undo add");
   CHECK(replay() == 0.0);
@@ -762,7 +738,7 @@ TEST_CASE("meta link (TMM.17): a MIDI track's instrument coming and going rebuil
   CHECK(replay() > 1e-3);
 }
 
-// The status line said "Device 'meta:phase_acc' is not available: it is bypassed" for every chain meta device (the same
+// The status line said "Device 'meta:<type>' is not available: it is bypassed" for every chain meta device (the same
 // reports): the check looked the device up in the library by its patch name, which a meta device is not in.
 TEST_CASE("meta link (TMM.17): chain meta devices are not reported as missing; a missing stock device still is") {
   Keys k;
@@ -777,9 +753,9 @@ TEST_CASE("meta link (TMM.17): chain meta devices are not reported as missing; a
     REQUIRE(ctx.store().dispatch(e->command).ok());
     link->flush();
   };
-  edit(ops::addMetaDevice(*ctx.doc(), ctx.store().ids(), k.track, "phase_acc", 0));
+  edit(ops::addMetaDevice(*ctx.doc(), ctx.store().ids(), k.track, "envelope", 0));
   edit(ops::addMetaDevice(*ctx.doc(), ctx.store().ids(), k.track, "wavetable"));
-  edit(ops::addMetaDevice(*ctx.doc(), ctx.store().ids(), k.track, "vca"));
+  edit(ops::addMetaDevice(*ctx.doc(), ctx.store().ids(), k.track, "spectrum"));
   CHECK(ctx.status().find("not available") == std::string::npos);
   edit(ops::addDevice(*ctx.doc(), ctx.store().ids(), k.track, "NoSuchDevice", DeviceKind::AudioEffect));
   CHECK(ctx.status().find("Device 'NoSuchDevice' is not available") != std::string::npos);
@@ -787,56 +763,3 @@ TEST_CASE("meta link (TMM.17): chain meta devices are not reported as missing; a
   link->detach();
 }
 
-// TMM.17: the Phase accumulator face colours and sizes each voice by the frequency it plays: its tap's increment (the
-// phase step of the last sample) times the engine rate, which the hub's reader now reports with each voice.
-TEST_CASE("meta link (TMM.17): the face's voices carry the frequencies they play (a chord across octaves; unplugged)") {
-  Keys k;
-  k.edit(ops::deleteDevices(*k.store.current(), std::vector<DeviceId>{k.inst}));
-  k.edit(ops::addMetaDevice(*k.store.current(), k.store.ids(), k.track, "phase_acc", 0));
-  // The chord spread over five octaves instead: C two octaves down, E, G two octaves up.
-  {
-    const Track& t = *findTrackPtr(*k.store.current(), k.track);
-    REQUIRE(t.clips.size() == 1);
-    Batch b{"spread", {}};
-    b.commands.push_back(RemoveClip{ClipRef{k.track, t.clips.front().id}});
-    std::vector<Note> notes;
-    notes.push_back(playback_fixture::note(k.store.ids(), 0, 64 * kPpq, 0, -2));
-    notes.push_back(playback_fixture::note(k.store.ids(), 0, 64 * kPpq, 4, 0));
-    notes.push_back(playback_fixture::note(k.store.ids(), 0, 64 * kPpq, 7, 2));
-    b.commands.push_back(AddClip{k.track, playback_fixture::clip(k.store.ids(), 0, 64 * kPpq, notes, "spread")});
-    REQUIRE(k.store.dispatch(playback_fixture::inUnits(k.store, b)).ok());
-  }
-  const DeviceId acc = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
-  auto link = makeLink(k.store.current());
-  app::FaceVoiceHub hub(*link);
-  views::VoiceTapReader* voices = hub.voices(acc, "");
-  Driver d{*link};
-  link->play(0);
-  d.run(20);
-  std::array<views::FaceVoice, 16> buf{};
-  const uint32_t n = voices->read(buf);
-  REQUIRE(n == 3);
-  std::vector<double> hz;
-  for (uint32_t i = 0; i < n; ++i) {
-    CHECK(buf[i].rate == 48000.0f);
-    hz.push_back(views::faceVoiceHz(buf[i], -1.0));
-  }
-  std::sort(hz.begin(), hz.end());
-  const double c4 = 261.626;  // the project's 12-EDO reference
-  MESSAGE("voices play " << hz[0] << ", " << hz[1] << ", " << hz[2] << " Hz");
-  CHECK(hz[0] == doctest::Approx(c4 / 4.0).epsilon(1e-3));
-  CHECK(hz[1] == doctest::Approx(c4 * std::exp2(4.0 / 12.0)).epsilon(1e-3));
-  CHECK(hz[2] == doctest::Approx(c4 * 4.0 * std::exp2(7.0 / 12.0)).epsilon(1e-3));
-  // Unplugged at 100 Hz, an octave up by its pitch: one voice at 200 Hz.
-  k.edit(ops::setMetaParamValue(*k.store.current(), acc, "", "phase_acc", "freq", 100.0));
-  k.edit(ops::setMetaParamValue(*k.store.current(), acc, "", "phase_acc", "pitch", 1200.0));
-  k.edit(ops::setDeviceChainInput(*k.store.current(), acc, std::string(kChainUnplugged)));
-  auto link2 = makeLink(k.store.current());
-  app::FaceVoiceHub hub2(*link2);
-  views::VoiceTapReader* unplugged = hub2.voices(acc, "");
-  Driver d2{*link2};
-  link2->play(0);
-  d2.run(20);
-  REQUIRE(unplugged->read(buf) == 1);
-  CHECK(views::faceVoiceHz(buf[0], -1.0) == doctest::Approx(200.0).epsilon(1e-3));
-}

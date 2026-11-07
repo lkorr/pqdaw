@@ -89,8 +89,8 @@ struct ScopeProject {
     REQUIRE(store.dispatch(b).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     if (!instrument) {
-      // No instrument: a meta voice run Phase accumulator → Wavetable plays the notes.
-      edit(ops::addMetaDevice(*store.current(), store.ids(), track, "phase_acc", 0));
+      // No instrument: a meta voice run Envelope → Wavetable plays the notes (GU.4: was a Phase accumulator).
+      edit(ops::addMetaDevice(*store.current(), store.ids(), track, "envelope", 0));
       edit(ops::addMetaDevice(*store.current(), store.ids(), track, "wavetable"));
     }
     if (withScope) scope = edit(ops::addMetaDevice(*store.current(), store.ids(), track, "oscilloscope")).devices.at(0);
