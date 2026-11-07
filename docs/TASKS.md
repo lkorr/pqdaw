@@ -700,7 +700,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [x] **GU.3 Panel model (from PanelDesc), generic elements, collapsed group drawn as its panel** *(merged a0ee84c9; Q221; lighter verification; open: circuit selection doesn't move the Device view to its group; wires into a closed panel's control end at the edge pins)* (plan §Phases 3). 👁
 - [x] **GU.4 Phase Accumulator and VCA as group presets with panels; Meta Operator deleted** *(merged c3ce21b9; Q222; PA renders bit-identical, VCA within −110 dB of peak (law now in double) instead of diff 0; VCA markers dropped; playback slow tier not re-run after the last fix, at the user's request)* (plan §Phases 4). 👁
 - [x] **GU.5 The panel window and send-to-panel** *(merged bef21fcd; Q223; light testing, no bench)* (plan §Phases 5). 👁
-- [ ] **GU.5b Modules look as before (closed = the old face incl. VCA markers, PA phase orbit); an opened group is a circuit diagram** (plan §Phases 5a; user 2026-11-07). 👁
+- [x] **GU.5b Modules look as before *(merged 8c84a209; Q225; PA voice dots wait for GU.7's signal tap; VCA render tolerance after the 7-segment split not re-checked)* (closed = the old face incl. VCA markers, PA phase orbit); an opened group is a circuit diagram** (plan §Phases 5a; user 2026-11-07). 👁
 - [ ] **GU.6 Embed and break apart** (plan §Phases 6).
 - [ ] **GU.7 Rich elements; Wavetable, Envelope and analysers as group presets** (plan §Phases 7).
 - [ ] **GU.8 The example instrument, style schemas, outline of the next ingredients** (plan §Phases 8). 👁
