@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 21,
+  "timeline": {
+    "tempo": [
+      {"tick": 0, "bpm": 120.0, "curve": "step"}
+    ],
+    "signatures": [
+      {"bar": 0, "numerator": 4, "denominator": 4}
+    ]
+  },
+  "loop": {"start": 0, "end": 3548160, "enabled": false},
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "12-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 12,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 4,
+      "kind": "audio",
+      "name": "1 Audio",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [],
+      "devices": [
+        {
+          "id": 6,
+          "patch": "meta:phase_acc",
+          "kind": "audioEffect",
+          "params": {"amp": 0.2, "freq": 0.5774177806454228, "pitch": 0.3697916666666667},
+          "meta": {
+            "": {"type": "phase_acc", "version": 1}
+          }
+        },
+        {
+          "id": 9,
+          "patch": "meta:phase_acc",
+          "kind": "audioEffect",
+          "params": {"freq": 0.16780675000017684},
+          "meta": {
+            "": {"type": "phase_acc", "version": 1}
+          }
+        },
+        {
+          "id": 10,
+          "patch": "meta:vca",
+          "kind": "audioEffect",
+          "params": {"max": 0.5000100000000001, "min": 0.5},
+          "settings": {"curve": 1.0},
+          "meta": {
+            "": {"type": "vca", "version": 1}
+          }
+        },
+        {
+          "id": 13,
+          "patch": "meta:phase_acc",
+          "kind": "audioEffect",
+          "params": {"freq": 0.09997204444089365},
+          "meta": {
+            "": {"type": "phase_acc", "version": 1}
+          }
+        },
+        {
+          "id": 14,
+          "patch": "meta:vca",
+          "kind": "audioEffect",
+          "params": {"max": 0.5000225, "min": 0.500015},
+          "settings": {"curve": 1.0},
+          "meta": {
+            "": {"type": "vca", "version": 1}
+          }
+        }
+      ],
+      "clips": []
+    }
+  ],
+  "returns": [],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+    "lanes": [],
+    "devices": []
+  },
+  "wires": [
+    {"id": 3, "notes": 2, "port": "", "mixer": 2, "param": ""},
+    {"id": 7, "notes": 4, "port": "", "to": 6, "param": ""},
+    {"id": 8, "from": 6, "port": "", "mixer": 4, "param": ""},
+    {"id": 11, "from": 9, "port": "out", "to": 10, "param": "in"},
+    {"id": 12, "from": 10, "port": "out", "to": 6, "param": "pm"},
+    {"id": 15, "from": 13, "port": "out", "to": 14, "param": "in"},
+    {"id": 16, "from": 14, "port": "out", "to": 6, "param": "phase"}
+  ],
+  "view": {
+    "tracks": [],
+    "lanes": []
+  }
+}

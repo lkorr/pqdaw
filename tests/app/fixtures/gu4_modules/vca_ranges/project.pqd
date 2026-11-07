@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 21,
+  "timeline": {
+    "tempo": [
+      {"tick": 0, "bpm": 120.0, "curve": "step"}
+    ],
+    "signatures": [
+      {"bar": 0, "numerator": 4, "denominator": 4}
+    ]
+  },
+  "loop": {"start": 0, "end": 3548160, "enabled": false},
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "12-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 12,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 4,
+      "kind": "audio",
+      "name": "1 Audio",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [],
+      "devices": [
+        {
+          "id": 6,
+          "patch": "meta:phase_acc",
+          "kind": "audioEffect",
+          "params": {"freq": 0.46496300584080763},
+          "meta": {
+            "": {"type": "phase_acc", "version": 1}
+          }
+        },
+        {
+          "id": 9,
+          "patch": "meta:vca",
+          "kind": "audioEffect",
+          "params": {"max": 0.50125, "min": 0.49995, "value": 0.83, "zone": 0.6470588235294117},
+          "meta": {
+            "": {"type": "vca", "version": 1}
+          }
+        },
+        {
+          "id": 12,
+          "patch": "meta:vca",
+          "kind": "audioEffect",
+          "params": {"bend": 0.75, "max": 0.50005, "min": 0.5, "value": 0.4},
+          "settings": {"curve": 1.0},
+          "meta": {
+            "": {"type": "vca", "version": 1}
+          }
+        },
+        {
+          "id": 15,
+          "patch": "meta:vca",
+          "kind": "audioEffect",
+          "params": {"max": 0.50002, "min": 0.50000625, "value": 0.35},
+          "meta": {
+            "": {"type": "vca", "version": 1}
+          }
+        },
+        {
+          "id": 18,
+          "patch": "meta:vca",
+          "kind": "audioEffect",
+          "params": {"max": 1.0, "min": 0.5005, "value": 0.3},
+          "meta": {
+            "": {"type": "vca", "version": 1}
+          }
+        }
+      ],
+      "clips": []
+    }
+  ],
+  "returns": [],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+    "lanes": [],
+    "devices": []
+  },
+  "wires": [
+    {"id": 3, "notes": 2, "port": "", "mixer": 2, "param": ""},
+    {"id": 7, "notes": 4, "port": "", "to": 6, "param": ""},
+    {"id": 10, "from": 6, "port": "", "to": 9, "param": ""},
+    {"id": 13, "from": 9, "port": "", "to": 12, "param": ""},
+    {"id": 16, "from": 12, "port": "", "to": 15, "param": ""},
+    {"id": 17, "from": 15, "port": "", "mixer": 4, "param": ""},
+    {"id": 19, "from": 18, "port": "out", "to": 6, "param": "hz"}
+  ],
+  "view": {
+    "tracks": [],
+    "lanes": []
+  }
+}

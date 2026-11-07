@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 21,
+  "timeline": {
+    "tempo": [
+      {"tick": 0, "bpm": 120.0, "curve": "step"}
+    ],
+    "signatures": [
+      {"bar": 0, "numerator": 4, "denominator": 4}
+    ]
+  },
+  "loop": {"start": 0, "end": 3548160, "enabled": false},
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "12-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 12,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 4,
+      "kind": "audio",
+      "name": "1 Audio",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [
+        {
+          "id": 15,
+          "param": {"kind": "deviceParam", "owner": 9, "name": "value"},
+          "points": [
+            {"id": 16, "tick": 0, "value": 0.5, "curve": 0.0},
+            {"id": 17, "tick": 110880, "value": 0.9, "curve": 0.3},
+            {"id": 18, "tick": 221760, "value": 0.2, "curve": 0.0}
+          ]
+        }
+      ],
+      "devices": [
+        {
+          "id": 6,
+          "patch": "meta:phase_acc",
+          "kind": "audioEffect",
+          "params": {"freq": 0.5358244747183741},
+          "meta": {
+            "": {"type": "phase_acc", "version": 1}
+          }
+        },
+        {
+          "id": 9,
+          "patch": "meta:vca",
+          "kind": "audioEffect",
+          "meta": {
+            "": {"type": "vca", "version": 1}
+          }
+        },
+        {
+          "id": 12,
+          "patch": "meta:vca",
+          "kind": "audioEffect",
+          "params": {"value": 0.62},
+          "meta": {
+            "": {"type": "vca", "version": 1}
+          }
+        },
+        {
+          "id": 19,
+          "patch": "meta:phase_acc",
+          "kind": "audioEffect",
+          "params": {"freq": 0.1278363134254331},
+          "meta": {
+            "": {"type": "phase_acc", "version": 1}
+          }
+        },
+        {
+          "id": 20,
+          "patch": "meta:vca",
+          "kind": "audioEffect",
+          "params": {"max": 0.5000037500000001, "min": 0.5},
+          "settings": {"curve": 1.0},
+          "meta": {
+            "": {"type": "vca", "version": 1}
+          }
+        },
+        {
+          "id": 23,
+          "patch": "meta:vca",
+          "kind": "audioEffect",
+          "params": {"max": 0.500025, "min": 0.5},
+          "settings": {"curve": 1.0},
+          "meta": {
+            "": {"type": "vca", "version": 1}
+          }
+        },
+        {
+          "id": 26,
+          "patch": "meta:phase_acc",
+          "kind": "audioEffect",
+          "params": {"freq": 0.1497474482155736},
+          "meta": {
+            "": {"type": "phase_acc", "version": 1}
+          }
+        },
+        {
+          "id": 27,
+          "patch": "meta:vca",
+          "kind": "audioEffect",
+          "params": {"max": 0.500005, "min": 0.49999499999999997},
+          "settings": {"curve": 1.0},
+          "meta": {
+            "": {"type": "vca", "version": 1}
+          }
+        }
+      ],
+      "clips": []
+    }
+  ],
+  "returns": [],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+    "lanes": [],
+    "devices": []
+  },
+  "wires": [
+    {"id": 3, "notes": 2, "port": "", "mixer": 2, "param": ""},
+    {"id": 7, "notes": 4, "port": "", "to": 6, "param": ""},
+    {"id": 10, "from": 6, "port": "", "to": 9, "param": ""},
+    {"id": 13, "from": 9, "port": "", "to": 12, "param": ""},
+    {"id": 21, "from": 19, "port": "out", "to": 20, "param": "in"},
+    {"id": 22, "from": 20, "port": "out", "to": 12, "param": "value"},
+    {"id": 24, "from": 12, "port": "", "to": 23, "param": ""},
+    {"id": 25, "from": 23, "port": "", "mixer": 4, "param": ""},
+    {"id": 28, "from": 26, "port": "out", "to": 27, "param": "in"},
+    {"id": 29, "from": 27, "port": "out", "to": 23, "param": "value"}
+  ],
+  "view": {
+    "tracks": [],
+    "lanes": []
+  }
+}
