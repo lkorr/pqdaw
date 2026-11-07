@@ -119,7 +119,6 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_wires.cpp  # T4.7: modulation wires (audible LFO wire, hand-built graph diff 0, interpreter == JIT, loops, taps)
     app/test_patching.cpp  # TX.patching: wires add in units, any output into any param / input at audio rate, free devices
     app/test_groups.cpp  # TX.groups: Ctrl+G / Ctrl+Shift+G round trips (series = group bit for bit, interpreter == JIT, same document)
-    app/test_all_free.cpp  # TX.all-free: every fixture project renders as before the chain became cables (diff 0, JIT, IR)
     app/test_pass_through.cpp  # TX.scope-sound: an analyser (any pass-through) never changes the sound: chain, group, free
     app/test_free_instruments.cpp  # TX.all-free-fix1: instruments / racks anywhere play by their cables; cross-track mixer cables
     app/test_panel_link.cpp  # GU.3: a panel's edits through the link (a setting drag compiles once, a control / curve point never, a shape once)
@@ -132,7 +131,6 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_engine_modules.cpp  # GU.7: the Wavetable / Envelope modules render as their engines; the orbit's lowering tap
     app/test_stock_presets.cpp  # GU.10: the stock devices and the default instrument as group presets (renders vs the retired patches, interp == JIT)
     app/test_curve_renders.cpp  # GU.1: driven / automated / mapped / undriven controls render as before the curves (references)
-    app/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit: one unit compile, state kept; save/load; wires)
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
     app/test_inspect_lifetime.cpp  # T4.x-fix-safety: cost meters and probe taps live as long as the images that write them
     app/test_racks.cpp  # GU.9: racks are parallel groups (renders vs the T4.8 racks' references, interpreter == JIT)

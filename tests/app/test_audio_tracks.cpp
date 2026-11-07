@@ -63,7 +63,7 @@ struct AudioSong {
     REQUIRE(t.ok());
     REQUIRE(store.dispatch(t->command).ok());
     audio = t->tracks.at(0);
-    auto d = ops::addDevice(*store.current(), ids, audio, "utility", DeviceKind::AudioEffect);
+    auto d = ops::addDevice(*store.current(), ids, audio, "module:utility", DeviceKind::AudioEffect);
     REQUIRE(d.ok());
     REQUIRE(store.dispatch(d->command).ok());
     REQUIRE(store.dispatch(SetSendLevel{audio, echo, -6.0f}).ok());

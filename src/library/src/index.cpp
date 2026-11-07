@@ -35,9 +35,16 @@ std::string_view firstComponent(std::string_view rel, std::string_view* rest) no
   return rel.substr(0, sep);
 }
 
-// The category of the presets of the module or native engine `nameOrPatch` (a Presets/<name> folder, a Defaults file).
+// The category of the presets of the module or native engine `nameOrPatch` (a Presets/<name> folder, a Defaults file),
+// as the browser lists the modules (GU.11): an instrument module under Instruments, the effects that were stock
+// devices (Utility, Saturator, LFO) under Audio Effects, the other modules and the engines under Meta Modules.
 Category moduleCategory(std::string_view nameOrPatch) noexcept {
-  if (doc::findModule(nameOrPatch) != nullptr) return Category::MetaModules;  // GU.4: a module's presets (by its name)
+  if (const doc::ModuleInfo* m = doc::findModule(nameOrPatch)) {
+    if (m->instrument) return Category::Instruments;
+    if (m->kind == doc::ModuleKind::Utility || m->kind == doc::ModuleKind::Saturator || m->kind == doc::ModuleKind::Lfo)
+      return Category::AudioEffects;
+    return Category::MetaModules;
+  }  // GU.4: a module's presets (by its name)
   for (const meta::Type* t : meta::types())  // TMM.10: a meta module's presets (by its name or "meta:<id>")
     if (equalsFolded(t->name, nameOrPatch) ||
         (nameOrPatch.size() > doc::kMetaDevicePrefix.size() && equalsFolded(doc::kMetaDevicePrefix, nameOrPatch.substr(0, doc::kMetaDevicePrefix.size())) &&

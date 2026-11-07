@@ -59,8 +59,9 @@ TEST_CASE("project patch cost: devices report ns per sample only while metered; 
   doc::forEachTrack(*s, [&](const doc::Track& t, const doc::Track*) {
     for (const doc::DevicePtr& d : t.devices) {
       ids.push_back(d->id);
-      if (t.name == "Keys" && d->patch == "operator") op = d->id;
-      if (t.name == "Keys" && d->patch == "saturator") sat = d->id;
+      // GU.11: the modules' groups (top-level blocks of Keys, by name)
+      if (t.name == "Keys" && !d->group.valid() && d->name == "Operator") op = d->id;
+      if (t.name == "Keys" && !d->group.valid() && d->name == "Saturator") sat = d->id;
     }
   });
   REQUIRE(op.valid());

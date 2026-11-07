@@ -240,13 +240,12 @@ TEST_CASE("meters keep being polled after a stop until they have fallen (L13)" *
 TEST_CASE("meters: a latched clip lamp does not keep the meter poll alive (M4 review M5)" * doctest::test_suite("slow")) {
   playback_fixture::Fixture f;
   // The Lead track through a Utility at +35 dB: its peaks pass 0 dBFS.
-  const DeviceId util = f.store.ids().device();
-  REQUIRE(f.store.dispatch(AddDevice{f.lead, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend}).ok());
-  // TX.all-free: a raw AddDevice adds an unconnected block; spliced onto the Lead's path so the track hears it.
-  auto on = ops::insertOnPath(*f.store.current(), f.store.ids(), util, kAppend);
-  REQUIRE(on.ok());
-  REQUIRE(f.store.dispatch(on->command).ok());
-  REQUIRE(f.store.dispatch(playback_fixture::inUnits(f.store, SetDeviceParam{util, "gain", 35.0})).ok());
+  // GU.11: the Utility module on the Lead's path, its Gain value block at +35 dB.
+  const DeviceId util = test_blocks::addModule(f.store, f.lead, "utility");
+  auto gain = ops::setDeviceParamValue(*f.store.current(), playback_fixture::unitsLibrary(),
+                                       test_blocks::member(*f.store.current(), util, "Gain"), std::string(kValueParam), 35.0);
+  REQUIRE(gain.ok());
+  REQUIRE(f.store.dispatch(gain->command).ok());
   auto link = makeLink(f.snap(), 250.0f);
   Driver d{*link};
   link->play(0);

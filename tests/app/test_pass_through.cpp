@@ -161,7 +161,8 @@ void groupOf(DocumentStore& s, std::vector<DeviceId> devices) {
 
 // The reported patch (bug 2026-11-02_18-21-54): a MIDI track PA → Wavetable (fold 0.25) → Envelope (attack 0.03)
 // [→ the analyser], a free VCA (value 0.3: ×−1) with Envelope.out → VCA.in and VCA.out → PA.freq — a loop through the
-// voice run (its 1-sample delay on a wire). `stock`: a Saturator after the Envelope (before the analyser).
+// voice run (its 1-sample delay on a wire). `stock`: a plain block (GU.11: an atom block, tanh) after the Envelope
+// (before the analyser).
 // GU.4: the head a Wavetable at the notes (was the Phase accumulator, a group preset now), the VCA its module (a group:
 // In → mul ← Value at 0.3), the loop closing into the first Wavetable's position input.
 struct Bug {
@@ -183,8 +184,8 @@ Bug bugPatch(DocumentStore& store, const char* analyser, bool stock = false) {
   b.commands.push_back(AddDevice{g.track, metaDevice(g.env, "envelope", DeviceKind::AudioEffect), kAppend});
   if (stock) {
     g.sat = ids.device();
-    b.commands.push_back(AddDevice{g.track, makeDevice(g.sat, "saturator", DeviceKind::AudioEffect), kAppend});
-    b.commands.push_back(SetDeviceParam{g.sat, "drive", 9.0});
+    // GU.11: a plain (non-meta) block in the chain: an atom block (the stock Saturator was one).
+    b.commands.push_back(AddDevice{g.track, makeDevice(g.sat, "atom:tanh", DeviceKind::AudioEffect), kAppend});
   }
   if (analyser != nullptr) {
     g.analyser = ids.device();

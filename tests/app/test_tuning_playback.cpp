@@ -210,8 +210,8 @@ struct GlideFixture {
     lane.points = {{0, static_cast<float>(kGenFrom), 0.0f, ids.breakpoint()},
                    {kTicksPerWhole, static_cast<float>(kGenTo), 0.0f, ids.breakpoint()}};
     b.commands.push_back(AddAutomationLane{glide, std::make_shared<const AutomationLane>(lane)});
-    // T4.1: the default instrument with the id the schema 2 → 3 migration gives the committed fixture (the next one).
-    b.commands.push_back(AddDevice{glide, makeDefaultInstrument(ids.device()), 0});
+    // T4.1 / GU.11: the default instrument group (the committed fixture is saved by this version).
+    (void)playback_fixture::instrument(b, ids, glide, ids.device());
     const Status st = store.dispatch(b);
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
@@ -547,11 +547,10 @@ struct OperatorTrack {
       notes.push_back(playback_fixture::note(ids, static_cast<pq::Ticks>(i) * pq::kPpq, pq::kPpq * 3 / 4, d - e * perEquave, e));
     }
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 4 * pq::kTicksPerWhole, notes, "Op")});
-    op = ids.device();
-    b.commands.push_back(AddDevice{track, makeDevice(op, "operator", DeviceKind::Instrument), 0});
     const Status st = store.dispatch(b);
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
+    op = test_blocks::addModule(store, track, "operator", 0);  // GU.11: the Operator module (its group) at the notes
   }
 };
 

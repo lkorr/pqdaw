@@ -82,7 +82,8 @@ struct ScopeProject {
     track = ids.track();
     const DeviceId inst = instrument ? ids.device() : DeviceId{};
     Batch b{"scope", {}};
-    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Keys", inst), {}, kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Keys"), {}, kAppend});
+    if (inst.valid()) (void)playback_fixture::instrument(b, ids, track, inst);
     std::vector<Note> notes;
     for (const int32_t d : degrees) notes.push_back(playback_fixture::note(ids, 0, 64 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "chord")});
@@ -205,16 +206,17 @@ TEST_CASE("scope link: the engine block with an Oscilloscope unwatched / watched
   const double watched = timeRun(d, 4000);
   link->deviceAnalysisTap(k.scope)->removeReader();
   MESSAGE("engine block (64 frames), a synth chord + Oscilloscope: unwatched " << idle << " us, watched " << watched << " us");
-  // A silent playing track (no notes) through EQ Eight then an analyser: the transport's beat the Oscilloscope taps
+  // A silent playing track (no notes) through a Saturator then an analyser: the transport's beat the Oscilloscope taps
   // keeps nothing awake (a sink has no live output), so it costs what a Spectrum costs.
   auto silentCost = [&](const char* analyser) {
     DocumentStore store;
     const TrackId t = store.ids().track();
     Batch b{"silent", {}};
-    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "Keys", store.ids().device()), {}, kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "Keys"), {}, kAppend});
+    (void)playback_fixture::instrument(b, store.ids(), t, store.ids().device());
     REQUIRE(store.dispatch(b).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
-    auto eq = ops::addDevice(*store.current(), store.ids(), t, "eq_eight", DeviceKind::AudioEffect);
+    auto eq = ops::addDevice(*store.current(), store.ids(), t, "module:saturator", DeviceKind::AudioEffect);  // (GU.11: was EQ Eight)
     REQUIRE(eq.ok());
     REQUIRE(store.dispatch(eq->command).ok());
     auto an = ops::addMetaDevice(*store.current(), store.ids(), t, analyser);
@@ -227,5 +229,5 @@ TEST_CASE("scope link: the engine block with an Oscilloscope unwatched / watched
     return timeRun(dr, 4000);
   };
   const double spectrum = silentCost("spectrum"), scope = silentCost("oscilloscope");
-  MESSAGE("silent playing track, EQ Eight + Spectrum " << spectrum << " us/block, + Oscilloscope " << scope << " us/block");
+  MESSAGE("silent playing track, Saturator + Spectrum " << spectrum << " us/block, + Oscilloscope " << scope << " us/block");
 }

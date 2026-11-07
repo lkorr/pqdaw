@@ -113,8 +113,10 @@ TEST_CASE("library: kinds, categories, folding") {
         Category::Racks);
   CHECK(categorize(ItemKind::Preset, PlaceKind::UserLibrary, "Presets\\Operator", "a.pqpreset", Category::None) ==
         Category::Instruments);
+  CHECK(categorize(ItemKind::Preset, PlaceKind::UserLibrary, "Presets\\Utility\\Mix", "a.pqpreset",
+                   Category::None) == Category::AudioEffects);  // GU.11: a module's presets, by its name
   CHECK(categorize(ItemKind::Preset, PlaceKind::UserLibrary, "Presets\\EQ Eight\\Mix", "a.pqpreset",
-                   Category::None) == Category::AudioEffects);
+                   Category::None) == Category::None);  // (retired: no such module)
   CHECK(categorize(ItemKind::Preset, PlaceKind::UserLibrary, "Defaults", "Saturator.pqpreset", Category::None) ==
         Category::AudioEffects);
   CHECK(categorize(ItemKind::Preset, PlaceKind::Folder, "Presets\\Operator", "a.pqpreset", Category::None) ==
@@ -135,13 +137,6 @@ TEST_CASE("library: kinds, categories, folding") {
   CHECK(categoryName(Category::MetaModules) == "Meta Modules");
   CHECK(std::size(kCategoryOrder) == static_cast<size_t>(Category::Count) - 1);  // every category once, None aside
 
-  bool sawInstrument = false, sawEffect = false;
-  for (const StockItem& s : stockItems()) {
-    sawInstrument = sawInstrument || s.category == Category::Instruments;
-    sawEffect = sawEffect || s.category == Category::AudioEffects;
-  }
-  CHECK(sawInstrument);
-  CHECK(sawEffect);
 
   CHECK(compareFolded("abc", "ABD") < 0);
   CHECK(compareFolded("ABC", "abc") < 0);  // ties broken by raw bytes ('A' < 'a')

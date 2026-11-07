@@ -1,8 +1,8 @@
 #pragma once
 
 // T3.17: the playback fixture project, built through document commands (and committed as
-// tests/app/fixtures/playback/project.pqd, regenerated with PQ_UPDATE_GOLDENS=1; T4.1: the committed file is still
-// schema 2 — the migrations to device chains and (TX.all-free) to cables must give exactly this project):
+// tests/app/fixtures/playback/project.pqd, regenerated with PQ_UPDATE_GOLDENS=1; GU.11: saved by this version — the
+// MIDI tracks' instruments are the default instrument group, wired in series):
 //   tunings  12-EDO (default), 31-EDO, 5L2s (MOS, generator 705 c)
 //   Lead     MIDI in 31-EDO: degrees 0, 10, 18, 31 (one equave) as quarter notes, then a 2-note dyad;
 //            send to Echo at −6 dB (post-fader)
@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "../support/knob_positions.h"
-#include "../support/stand_in_synth.h"
+#include "../support/blocks.h"
 #include "pq/app/project_link.h"
 #include "pq/core/time.h"
 #include "pq/document/commands.h"
@@ -36,7 +36,7 @@ namespace playback_fixture {
 
 using namespace pq::doc;
 
-// GU.1 (a param stores its knob position): the stock device library, loaded once — what these tests' values in units
+// GU.1 (a param stores its knob position): the block library, loaded once — what these tests' values in units
 // become knob positions with (tests/support/knob_positions.h).
 inline const DeviceLibrary& unitsLibrary() {
   static const auto lib = pq::app::loadDeviceLibrary();
@@ -84,17 +84,20 @@ inline void asInstrumentGroups(DocumentStore& s) {
   REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
 }
 
-// IG.1-2: a new MIDI track's Basic Synth out of its instrument group, alone on the path (a lone instrument: the same
-// sound), so a meta module added at slot 0 replaces it as these cases were written.
-inline void ungroupHead(DocumentStore& s, const DeviceLibrary& lib, TrackId t) {
-  (void)stand_in::useBasicSynth(s, t);  // (GU.10: the IG.1-2 layout first: Basic Synth in the group)
-  for (const DevicePtr& d : findTrackPtr(*s.current(), t)->devices)
-    if (isGroupDevice(*d)) {
-      auto e = ops::ungroupInCircuit(s.current(), s.ids(), lib, d->id);
-      REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
-      REQUIRE(s.dispatch(e->command).ok());
-      return;
-    }
+// GU.11: the default instrument group (its id `id`) of MIDI track `t` as commands of `b` (after the AddTrack: the group,
+// its blocks, the wires among them). Not wired to the track: wireSeries does it.
+inline DeviceId instrument(Batch& b, IdSource& ids, TrackId t, DeviceId id) {
+  return test_blocks::defaultInstrumentCommands(b, ids, t, id);
+}
+
+// GU.11: a new MIDI track's instrument group deleted (with its blocks): the path empty (source → mixer), so a native
+// engine added at slot 0 takes the notes as these cases were written.
+inline void clearHead(DocumentStore& s, TrackId t) {
+  const MainPath path = mainPath(*s.current(), *findTrackPtr(*s.current(), t));
+  if (path.blocks.empty() || !isGroupDevice(*path.blocks.front())) return;
+  auto e = ops::deleteDevices(*s.current(), std::vector<DeviceId>{path.blocks.front()->id});
+  REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+  REQUIRE(s.dispatch(e->command).ok());
 }
 
 inline void wireSeries(DocumentStore& s, const std::vector<DeviceId>& offPath = {}) {
@@ -160,11 +163,10 @@ inline Snapshot unwiredDefaultProject() {
   return makeDefaultProject(ids, false);
 }
 
-// T4.1: a MIDI track plays only with an instrument in its chain; a valid `instrument` id gives it the default one
-// (BasicSynth, as ops::createTrack does; TX.all-free: wired by wireSeries).
-inline TrackPtr track(TrackId id, TrackKind kind, std::string name, DeviceId instrument = {}) {
+// A track with no device; GU.11: a MIDI track's instrument is added after it (instrument(): the default instrument
+// group's blocks and inner wires; TX.all-free: wired into its track by wireSeries).
+inline TrackPtr track(TrackId id, TrackKind kind, std::string name) {
   Track t = makeTrack(id, kind, std::move(name));
-  if (instrument.valid()) t.devices.push_back(makeDefaultInstrument(instrument));
   // TX.pan-laws: a MIDI track of these tests pans with constant power, the law their references (hand-built graphs,
   // the committed fixtures, goldens) were made with before Balance became every track's default.
   if (kind == TrackKind::Midi) t.mixer.panMode = PanMode::ConstantPower;
@@ -239,9 +241,9 @@ struct Fixture {
     vol.points = {{0, -18.0f, 0.4f, ids.breakpoint()}, {2 * kPpq, 0.0f, 0.0f, ids.breakpoint()}};
     b.commands.push_back(AddAutomationLane{grp, std::make_shared<const AutomationLane>(vol)});
 
-    // T4.1: the default instruments, with ids after every other entity and in track order (Lead, Mos inside Grp,
-    // Muted): exactly what the schema 2 → 3 migration gives the committed (schema-2) fixture file.
-    for (const TrackId t : {lead, mos, muted}) b.commands.push_back(AddDevice{t, makeDefaultInstrument(ids.device()), 0});
+    // T4.1 / GU.11: the default instrument groups, with ids after every other entity and in track order (Lead, Mos
+    // inside Grp, Muted).
+    for (const TrackId t : {lead, mos, muted}) (void)instrument(b, ids, t, ids.device());
 
     const pq::Status st = store.dispatch(b);
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));

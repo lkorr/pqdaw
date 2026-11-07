@@ -2,9 +2,10 @@
 // instrument too. Light render checks, each interpreter == JIT:
 //   default    a new MIDI track (createTrack: the "Basic Synth" instrument group, PA → Wavetable → Envelope) plays a
 //              chord: not silent, below 0 dBFS, and the voices end after the release
-//   Utility    after the default instrument, at gain −6 dB, width 50 %, balance 0.3: the same as the retired patch
-//              (its stand-in copy) at the same settings — the preset is the old matrix term for term
-//   Saturator  drive +12 dB, Analog Clip and Medium Curve: the same as the retired patch (colour off, HQ off)
+//   Utility    after the default instrument, at gain −6 dB, width 50 %, balance 0.3: the reference render
+//              tests/golden/audio/gu10_utility.wav (GU.11: recorded from the preset, which GU.10 checked against the
+//              retired patch's stand-in copy within 1e-5 of its peak before the stand-ins were deleted)
+//   Saturator  drive +12 dB, Analog Clip and Medium Curve: gu10_saturator_type0.wav / _type3.wav (the same way)
 //   LFO        its output into an audio track's mixer is the 1 Hz sine it should be
 //   Operator   A alone is the default instrument's chain at level 1 (4 × the default's 0.25); B modulating A changes
 //              the sound and stays finite
@@ -18,6 +19,7 @@
 
 #include "../golden/golden_audio.h"
 #include "playback_fixture.h"
+#include "pq/engine/wav_file.h"
 #include "pq/app/project_link.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
@@ -79,6 +81,24 @@ double peakOf(const golden::Channels& a, size_t from = 0, size_t to = SIZE_MAX) 
   for (const auto& c : a)
     for (size_t i = from; i < std::min(to, c.size()); ++i) p = std::max(p, static_cast<double>(std::fabs(c[i])));
   return p;
+}
+
+bool updateGoldens() {
+  const char* v = std::getenv("PQ_UPDATE_GOLDENS");
+  return v != nullptr && *v != '\0' && *v != '0';
+}
+
+// GU.11: `out` against the reference render `name` (tests/golden/audio/<name>.wav, float): within 1e-5 of its peak.
+// PQ_UPDATE_GOLDENS=1 writes `out` as it.
+void againstReference(const golden::Channels& out, const char* name) {
+  const std::filesystem::path wav = golden::goldenDir() / "audio" / (std::string(name) + ".wav");
+  if (updateGoldens()) REQUIRE(engine::writeWav(wav, out, static_cast<uint32_t>(kRate)).ok());
+  auto gold = engine::readWav(wav);
+  REQUIRE_MESSAGE(gold.ok(), (gold.ok() ? std::string() : gold.error().message + " (PQ_UPDATE_GOLDENS=1)"));
+  const golden::Channels y = gold->channels;
+  const double peak = peakOf(y);
+  CHECK(peak > 0.02);
+  CHECK(maxDiff(out, y) <= 1e-5 * std::max(peak, 1.0));
 }
 
 // Renders `s` with the interpreter and the JIT; they agree (float rounding of the same program).
@@ -144,19 +164,13 @@ TEST_CASE("GU.10 default instrument: a new MIDI track plays its group preset (no
 }
 
 TEST_CASE("GU.10 Utility: the preset is the retired patch's matrix (gain, width, balance), interpreter == JIT") {
-  Song a, b;
+  Song a;
   const DeviceId u = a.insert(utilityBlocks(a.store.ids()));
   a.set(a.named(u, "Gain"), -6.0);
   a.set(a.named(u, "Width"), 0.5);
   a.set(a.named(u, "Balance"), 0.3);
-  const DeviceId old = b.edit(ops::addDevice(*b.store.current(), b.store.ids(), b.keys, "utility", DeviceKind::AudioEffect)).devices.at(0);
-  b.edit(ops::setDeviceParamValue(*b.store.current(), library(), old, "gain", std::pow(10.0, -6.0 / 20.0)));
-  b.edit(ops::setDeviceParamValue(*b.store.current(), library(), old, "width", 0.5));
-  b.edit(ops::setDeviceParamValue(*b.store.current(), library(), old, "balance", 0.3));
-  const golden::Channels x = both(a.store.current()), y = render(b.store.current(), false);
-  const double peak = peakOf(y);
-  CHECK(peak > 0.02);
-  CHECK(maxDiff(x, y) <= 1e-5 * peak);
+  const golden::Channels x = both(a.store.current());
+  againstReference(x, "gu10_utility");
   // Balance 0.3: the left side is quieter than the right.
   CHECK(peakOf(golden::Channels{x[0]}) < peakOf(golden::Channels{x[1]}));
 }
@@ -164,18 +178,14 @@ TEST_CASE("GU.10 Utility: the preset is the retired patch's matrix (gain, width,
 TEST_CASE("GU.10 Saturator: drive into Analog Clip and Medium Curve as the retired patch, interpreter == JIT") {
   for (const double type : {0.0, 3.0}) {
     CAPTURE(type);
-    Song a, b;
+    Song a;
     const DeviceId sat = a.insert(saturatorBlocks(a.store.ids()));
     a.set(a.named(sat, "Drive"), 12.0);
     a.set(a.named(sat, "Type"), type);
-    const DeviceId old = b.edit(ops::addDevice(*b.store.current(), b.store.ids(), b.keys, "saturator", DeviceKind::AudioEffect)).devices.at(0);
-    b.edit(ops::setDeviceParamValue(*b.store.current(), library(), old, "drive", std::pow(10.0, 12.0 / 20.0)));
-    b.edit(ops::setDeviceSetting(*b.store.current(), old, "type", type));
-    const golden::Channels x = both(a.store.current()), y = render(b.store.current(), false);
-    const double peak = peakOf(y);
-    CHECK(peak > 0.1);
-    CHECK(peak <= 1.0 + 1e-6);  // both curves saturate at 1
-    CHECK(maxDiff(x, y) <= 1e-5);
+    const golden::Channels x = both(a.store.current());
+    CHECK(peakOf(x) > 0.1);
+    CHECK(peakOf(x) <= 1.0 + 1e-6);  // both curves saturate at 1
+    againstReference(x, type == 0.0 ? "gu10_saturator_type0" : "gu10_saturator_type3");
   }
 }
 

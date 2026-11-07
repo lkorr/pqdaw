@@ -3300,11 +3300,9 @@ private:
 
 Status migrateTicksPpq27720To221760(nlohmann::json& doc) { return TickScaler().run(doc); }
 
-// Schema 2 → 3 (T4.1, QUESTIONS Q129): device chains. Before, every MIDI track played the default instrument
-// implicitly; now it is the first device of its chain. Every track gets "devices": MIDI tracks
-// [{"id": <new>, "patch": "BasicSynth", "kind": "instrument"}], every other track []. New ids continue above the
-// largest "id" anywhere in the file (one counter for every entity), in track order: tracks depth-first, returns,
-// master. Members of the wrong shape are left for the decoder to report.
+// Schema 2 → 3 (T4.1, QUESTIONS Q129): device chains. Every track gets "devices": [] (GU.11: the stock default
+// instrument this step gave a MIDI track is not a block any more: such a track loads with no instrument). Members of the
+// wrong shape are left for the decoder to report.
 class ChainAdder {
 public:
   Status run(nlohmann::json& doc) {
@@ -3337,13 +3335,8 @@ private:
   void track(nlohmann::json& t) {
     if (!t.is_object() || t.contains("devices")) return;
     nlohmann::json chain = nlohmann::json::array();
-    if (auto k = t.find("kind"); k != t.end() && k->is_string() && k->get<std::string>() == "midi") {
-      nlohmann::json d = nlohmann::json::object();
-      d["id"] = next_++;
-      d["patch"] = "BasicSynth";  // (the M3 default instrument; GU.11: not a block, such a file is refused after migrating)
-      d["kind"] = "instrument";
-      chain.push_back(std::move(d));
-    }
+    // (GU.11: the M3 default instrument it inserted, "BasicSynth", is not a block: a MIDI track of such a file loads
+    // with no instrument — silent — and the id counter is not advanced.)
     if (auto c = t.find("children"); c != t.end() && c->is_array())
       for (nlohmann::json& child : *c) track(child);
     t["devices"] = std::move(chain);

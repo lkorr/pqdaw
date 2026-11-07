@@ -1,6 +1,6 @@
 // T2.6-fix2 / T2.6-fix3 / T2.6-fix4 (M3 review H3, H4, H5, M6–M9): tuning-signal coverage in project playback,
-// rendered through the real ProjectLink with a probe instrument whose output is voice.hz (tests/app/fixtures/
-// probe_stdlib), so the tuning node's pitch can be checked on every sample. The projects under
+// rendered through the real ProjectLink with a probe instrument whose output is voice.hz (GU.11: an instrument group
+// of the atom block voice.hz, tests/support/blocks.h addProbeInstrument), so the tuning node's pitch can be checked on every sample. The projects under
 // tests/app/fixtures/m3_review are the review's probes (docs/reviews/M3/tuning/make_variants.py).
 #include <doctest/doctest.h>
 
@@ -14,6 +14,7 @@
 
 #include "../engine/tuning_signal_ref.h"
 #include "../golden/golden_audio.h"
+#include "../support/blocks.h"
 #include "playback_fixture.h"
 #include "pq/app/project_link.h"
 #include "pq/core/denormal_guard.h"
@@ -40,17 +41,26 @@ constexpr double kRate = 48000.0;
 
 fs::path fixture(const std::string& name) { return fs::path(PQ_TEST_DATA_DIR) / "app" / "fixtures" / name; }
 
-// T4.1: a MIDI track with the default instrument (an empty chain plays nothing).
+// A MIDI track with no instrument: GU.11 — the tests give it the probe instrument once it is wired
+// (test_blocks::addProbeInstruments).
 TrackPtr midiTrack(TrackId id, IdSource& ids, const char* name) {
-  Track t = makeTrack(id, TrackKind::Midi, name);
-  t.devices.push_back(makeDefaultInstrument(ids.device()));
-  return std::make_shared<const Track>(std::move(t));
+  (void)ids;
+  return std::make_shared<const Track>(makeTrack(id, TrackKind::Midi, name));
 }
 
+// A fixture project with the probe instrument heading each MIDI track (GU.11: a schema-2 file's tracks load with no
+// instrument; a newer file's instrument group is replaced).
 Snapshot load(const std::string& name) {
   auto l = loadProject(fixture(name).string());
   REQUIRE_MESSAGE(l.ok(), (l.ok() ? std::string() : l.error().message));
-  return l->project;
+  DocumentStore st(l->project);
+  std::vector<TrackId> midi;
+  forEachTrack(*st.current(), [&](const Track& t, const Track*) {
+    if (t.kind == TrackKind::Midi) midi.push_back(t.id);
+  });
+  for (const TrackId t : midi) playback_fixture::clearHead(st, t);  // (a saved instrument group goes)
+  test_blocks::addProbeInstruments(st);
+  return st.current();
 }
 
 // A link whose instrument plays voice.hz (the probe), or the default instrument.
@@ -58,7 +68,7 @@ std::unique_ptr<ProjectLink> makeLink(const Snapshot& s, bool probe = true) {
   LinkConfig c;
   c.compileThread = false;
   c.sleepAfterMs = 0.0f;
-  if (probe) c.stdlib = fixture("probe_stdlib").string();
+  (void)probe;  // GU.11: the probe is an instrument group of the project (test_blocks::addProbeInstrument)
   auto l = ProjectLink::create(c, s);
   REQUIRE_MESSAGE(l.ok(), (l.ok() ? std::string() : l.error().message));
   return std::move(l.value());
@@ -194,6 +204,7 @@ TEST_CASE("mode transfer (M7): a live generator edit across 720 cents carries th
   b.commands.push_back(AddClip{tr, std::make_shared<const NoteClip>(std::move(c))});
   REQUIRE(store.dispatch(b).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: wired in series
+  test_blocks::addProbeInstruments(store);  // GU.11: the probe instrument
 
   auto live = makeLink(store.current());
   [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& e) { live->onDocumentChange(e); });
@@ -340,6 +351,8 @@ struct HeldChord {
     b.commands.push_back(AddClip{track, std::make_shared<const NoteClip>(std::move(c))});
     REQUIRE(store.dispatch(b).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
+    test_blocks::addProbeInstruments(store);  // GU.11: the probe instrument
+  test_blocks::addProbeInstruments(store);  // GU.11: the probe instrument
   }
 };
 
@@ -461,6 +474,7 @@ TuningId addOneTuning(DocumentStore& store, const TuningDef& def) {
   b.commands.push_back(AddClip{tr, std::make_shared<const NoteClip>(std::move(c))});
   REQUIRE(store.dispatch(b).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: wired in series
+  test_blocks::addProbeInstruments(store);  // GU.11: the probe instrument
   return t;
 }
 
@@ -576,10 +590,10 @@ TEST_CASE("tuning tables (M8): every slot in use leaves further tunings static, 
   }
   REQUIRE(store.dispatch(b).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: wired in series
+  test_blocks::addProbeInstruments(store);  // GU.11: the probe instrument
   LinkConfig c;
   c.compileThread = false;
   c.sleepAfterMs = 0.0f;
-  c.stdlib = fixture("probe_stdlib").string();
   auto made = ProjectLink::create(c, store.current());
   REQUIRE(made.ok());
   ProjectLink& link = *made.value();

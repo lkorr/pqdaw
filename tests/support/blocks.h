@@ -16,9 +16,11 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "pq/document/commands.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "pq/document/model.h"
 #include "pq/document/modules.h"
 #include "pq/document/store.h"
@@ -68,6 +70,42 @@ inline pq::doc::DeviceId addDefaultInstrument(pq::doc::DocumentStore& s, pq::doc
   const pq::doc::DeviceId g = defaultInstrumentCommands(b, s.ids(), track);
   REQUIRE(s.dispatch(b).ok());
   return g;
+}
+
+// GU.11: a PROBE instrument (what the tests' probe stdlib's BasicSynth was): an instrument group whose Out is the atom
+// block voice.hz, so a rendered track is the tuning node's pitch per sample (× the track's constant gains; the voices end
+// by the 5 ms release after note-off). Pasted at MIDI track `track`'s notes (its path must be empty: clear it first);
+// returns the group.
+inline pq::doc::DeviceId addProbeInstrument(pq::doc::DocumentStore& s, pq::doc::TrackId track) {
+  using namespace pq::doc;
+  BlockSet set;
+  auto g = std::make_shared<Device>(*makeInstrumentGroup(DeviceId{1}));
+  g->name = "Probe";
+  set.devices.push_back(g);
+  auto hz = std::make_shared<Device>(*makeDevice(DeviceId{2}, std::string(kAtomDevicePrefix) + "voice.hz", DeviceKind::AudioEffect));
+  hz->group = DeviceId{1};
+  set.devices.push_back(hz);
+  Wire w;
+  w.id = WireId{1};
+  w.from = DeviceId{2};
+  w.port = "out";
+  w.to = DeviceId{1};
+  w.param = std::string(kGroupOutPort);
+  set.wires.push_back(w);
+  auto e = ops::pasteBlocksAtNotes(*s.current(), s.ids(), track, set);
+  REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+  REQUIRE(s.dispatch(e->command).ok());
+  return e->devices.front();
+}
+
+// Every MIDI track of `s` with an empty main path gets a probe instrument (one undo step per track).
+inline void addProbeInstruments(pq::doc::DocumentStore& s) {
+  using namespace pq::doc;
+  std::vector<TrackId> midi;
+  forEachTrack(*s.current(), [&](const Track& t, const Track*) {
+    if (t.kind == TrackKind::Midi && mainPath(*s.current(), t).blocks.empty()) midi.push_back(t.id);
+  });
+  for (const TrackId t : midi) (void)addProbeInstrument(s, t);
 }
 
 }  // namespace test_blocks
