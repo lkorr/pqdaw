@@ -51,6 +51,9 @@ struct BoundInfo {
   std::vector<std::string> choices;  // a choice (value = index); empty: none
   bool isSwitch = false;  // a bool param / a 0 … 1 step-1 setting
   int32_t steps = 0;      // discrete positions (≥ 2), 0: continuous
+  // Changes whenever the target resolved the binding again (its block changed): what an element caches from it (its
+  // label, a readout's text) is keyed on it.
+  uint64_t generation = 0;
 };
 
 // What elements read and edit. A gesture is begin, any number of setPosition / setCurve, then end (one undo step) or
@@ -78,6 +81,8 @@ public:
   // Changes whenever anything a binding resolves to may have (a new document): cached resolutions are redone.
   virtual uint64_t revision() const = 0;
   virtual void notice(std::string_view /*message*/) {}
+  // The elements were rebuilt (their bindings are new objects): what a target caches per binding goes.
+  virtual void bindingsChanged() {}
   // The host widget (menus open from it) — null: no menus (tests without a tree).
   virtual ui::Widget* menuHost() const noexcept { return nullptr; }
 };
@@ -158,12 +163,18 @@ protected:
   ui::Rgba colour(const ui::Theme& th, std::string_view field, std::string_view def, ui::Rgba fallback) const noexcept {
     return themeToken(th, txt(field, def), fallback);
   }
-  // The label shown: the "label" field ("-": none), else the binding's label.
-  std::string labelText(const PanelTarget& t, size_t slot = 0) const;
+  // The label shown: the "label" field ("-": none), else the binding's label (cached by the binding's generation).
+  const std::string& labelText(const PanelTarget& t, size_t slot = 0) const;
+  // The text of the binding's value at `position` (cached by position and generation: a repaint that changes nothing
+  // formats nothing).
+  const std::string& readoutText(const PanelTarget& t, double position, size_t slot = 0) const;
   doc::PanelElement desc_;
 
 private:
   uint64_t staticKey_ = 0;
+  mutable std::string label_, readout_;
+  mutable uint64_t labelGen_ = ~0ull, readoutGen_ = ~0ull;
+  mutable double readoutPos_ = -1.0;
 };
 
 using ElementFactory = std::unique_ptr<Element> (*)(const doc::PanelElement& desc);

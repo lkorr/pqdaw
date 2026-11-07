@@ -54,12 +54,30 @@ Element::Element(doc::PanelElement desc) : desc_(std::move(desc)) {
 
 bool Element::hit(Vec2 l) const noexcept { return l.x >= 0.0f && l.y >= 0.0f && l.x <= desc_.w && l.y <= desc_.h; }
 
-std::string Element::labelText(const PanelTarget& t, size_t slot) const {
+const std::string& Element::labelText(const PanelTarget& t, size_t slot) const {
+  static const std::string kNone;
   const std::string_view f = txt("label", "");
-  if (f == "-") return {};
-  if (!f.empty()) return std::string(f);
+  if (f == "-") return kNone;
   const doc::Binding* b = binding(slot);
-  return b != nullptr ? t.info(*b).label : std::string();
+  const uint64_t gen = b != nullptr ? t.info(*b).generation : 0;
+  if (gen != labelGen_) {
+    labelGen_ = gen;
+    label_ = !f.empty() ? std::string(f) : b != nullptr ? t.info(*b).label : std::string();
+  }
+  return label_;
+}
+
+const std::string& Element::readoutText(const PanelTarget& t, double position, size_t slot) const {
+  static const std::string kNone;
+  const doc::Binding* b = binding(slot);
+  if (b == nullptr) return kNone;
+  const uint64_t gen = t.info(*b).generation;
+  if (gen != readoutGen_ || position != readoutPos_) {
+    readoutGen_ = gen;
+    readoutPos_ = position;
+    readout_ = t.format(*b, position);
+  }
+  return readout_;
 }
 
 void Element::describe(const PanelTarget& t, std::string& title, std::string& body) const {
@@ -249,10 +267,10 @@ public:
       p.disc(g.c, std::max(1.0f, g.r - track() * 0.5f - 1.0f), ui::lerp(th.face.body, th.face.track, 0.45f));
       p.line(g.c, polar(g.c, g.r, a), std::max(1.2f, track() * 0.6f), accent);
     }
-    const std::string label = labelText(t);
+    const std::string& label = labelText(t);
     if (!label.empty()) p.text({desc_.w * 0.5f, g.labelY}, label, kLabelPx, th.face.ink);
-    if (g.readoutY > 0.0f)
-      if (const doc::Binding* b = binding()) p.text({desc_.w * 0.5f, g.readoutY}, t.format(*b, v), g.inside ? kLabelPx : kValuePx, ok ? accent : th.face.ink);
+    if (g.readoutY > 0.0f && binding() != nullptr)
+      p.text({desc_.w * 0.5f, g.readoutY}, readoutText(t, v), g.inside ? kLabelPx : kValuePx, ok ? accent : th.face.ink);
   }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
     using K = FacePointer::Kind;
@@ -360,12 +378,11 @@ public:
       p.roundedRect({h.x - 3.0f, h.y - g.half - 3.0f, h.x + 3.0f, h.y + g.half + 3.0f}, 2.0f, ui::mulAlpha(th.face.body, 0.9f));
       p.roundedRect({h.x - 2.0f, h.y - g.half - 2.0f, h.x + 2.0f, h.y + g.half + 2.0f}, 1.5f, cap);
     }
-    const std::string label = labelText(t);
+    const std::string& label = labelText(t);
     if (!label.empty()) p.textAligned({g.vertical ? desc_.w * 0.5f : 2.0f, 5.0f}, label, kLabelPx, th.face.ink, g.vertical ? 0.5f : 0.0f);
-    if (txt("readout", "below") != "none")
-      if (const doc::Binding* b = binding())
-        p.textAligned({g.vertical ? desc_.w * 0.5f : desc_.w - 2.0f, g.vertical ? desc_.h - 5.0f : 5.0f}, t.format(*b, v), kLabelPx,
-                      ok ? accent : th.face.ink, g.vertical ? 0.5f : 1.0f);
+    if (txt("readout", "below") != "none" && binding() != nullptr)
+      p.textAligned({g.vertical ? desc_.w * 0.5f : desc_.w - 2.0f, g.vertical ? desc_.h - 5.0f : 5.0f}, readoutText(t, v), kLabelPx,
+                    ok ? accent : th.face.ink, g.vertical ? 0.5f : 1.0f);
   }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
     using K = FacePointer::Kind;
@@ -451,8 +468,8 @@ public:
     const float px = static_cast<float>(std::clamp(num("size", 8.5), 4.0, 32.0));
     const Vec2 c{(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f};
     if (typing_) p.text(c, text_ + "|", px, th.face.ink);
-    else if (const doc::Binding* b = binding()) p.text(c, t.format(*b, pos(t)), px, accent);
-    const std::string label = labelText(t);
+    else if (binding() != nullptr) p.text(c, readoutText(t, pos(t)), px, accent);
+    const std::string& label = labelText(t);
     if (!label.empty() && r.y0 > 6.0f) p.textAligned({r.x0, 4.5f}, label, kLabelPx, th.face.ink, 0.0f);
   }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
@@ -664,9 +681,9 @@ public:
     const BoundInfo& i = bound(t);
     const std::vector<std::string> items = choicesOf(*this, i);
     std::string shown;
-    if (const doc::Binding* b = binding()) shown = items.empty() ? t.format(*b, pos(t)) : items[positionIndex(pos(t), items.size())];
+    if (binding() != nullptr) shown = items.empty() ? readoutText(t, pos(t)) : items[positionIndex(pos(t), items.size())];
     p.textAligned({r.x0 + 5.0f, (r.y0 + r.y1) * 0.5f}, shown, kLabelPx, editable(t) ? colour(th, "colour", "value", th.face.value) : th.face.ink, 0.0f);
-    const std::string label = labelText(t);
+    const std::string& label = labelText(t);
     if (!label.empty() && r.y0 > 6.0f) p.textAligned({r.x0, 4.5f}, label, kLabelPx, th.face.ink, 0.0f);
   }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {

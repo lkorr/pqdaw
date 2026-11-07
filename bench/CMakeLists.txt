@@ -143,6 +143,10 @@ pq_add_bench(pq_bench_device_panels SOURCES views/bench_device_panels.cpp DEPS p
 pq_use_build_paths(pq_bench_device_panels)
 target_compile_definitions(pq_bench_device_panels PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)
 # T4.13: the project patch view over 64 tracks (model / scene builds, whole-project and band paints and pans, the morph).
+# GU.3: the frame cost of a 200-element group panel (shared element tiles, direct, a value written).
+pq_add_bench(pq_bench_group_panel SOURCES views/bench_group_panel.cpp DEPS pq_views)
+pq_use_build_paths(pq_bench_group_panel)
+target_compile_definitions(pq_bench_group_panel PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)
 pq_add_bench(pq_bench_project_patch SOURCES views/bench_project_patch.cpp DEPS pq_views)
 pq_use_build_paths(pq_bench_project_patch)
 target_compile_definitions(pq_bench_project_patch PRIVATE PQ_SOURCE_DIR=pq_build_source_dir)

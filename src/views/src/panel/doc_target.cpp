@@ -241,6 +241,7 @@ public:
     }
   }
 
+  void bindingsChanged() override { cache_.clear(); }  // (keyed by the elements' binding addresses)
   uint64_t revision() const override {
     sync();
     return rev_;
@@ -261,6 +262,7 @@ private:
     size_t index = 0;
     double def = 0.0;
     std::string unit;
+    doc::DevicePtr seenDevice, seenGroup;  // what it was resolved from (held: compared by identity)
   };
   struct Pending {
     doc::Binding b;
@@ -277,12 +279,16 @@ private:
     const doc::DeviceLoc l = s ? doc::findDevice(*s, group_) : doc::DeviceLoc{};
     if (l.track != nullptr) {
       list_ = &l.track->devices;  // (the snapshot is held: seen_)
-      for (const doc::DevicePtr& d : l.track->devices) devs_.emplace(d->id.value, d.get());
+      for (const doc::DevicePtr& d : l.track->devices) devs_.emplace(d->id.value, &d);
     }
   }
   const doc::Device* device(doc::DeviceId id) const {
     const auto it = devs_.find(id.value);
-    return it == devs_.end() ? nullptr : it->second;
+    return it == devs_.end() ? nullptr : it->second->get();
+  }
+  doc::DevicePtr devicePtr(doc::DeviceId id) const {
+    const auto it = devs_.find(id.value);
+    return it == devs_.end() ? nullptr : *it->second;
   }
   const devices::DeviceSignature* signature(const doc::Device& d) const {
     const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
@@ -300,13 +306,22 @@ private:
 
   const Resolved& resolved(const doc::Binding& b) const {
     sync();
-    if (cache_.size() > 4096) cache_.clear();
     Resolved& r = cache_[&b];
     if (r.rev == rev_ && r.b == b) return r;
+    // A new snapshot in which neither the bound block nor the group changed (a persistent document: the same objects,
+    // held here, so compared by identity): the resolution holds — a param write elsewhere re-resolves nothing.
+    doc::DevicePtr d = devicePtr(b.device), g = devicePtr(group_);
+    if (r.rev != 0 && r.b == b && r.seenDevice == d && r.seenGroup == g) {
+      r.rev = rev_;
+      return r;
+    }
     r = Resolved{};
     r.b = b;
     r.rev = rev_;
+    r.seenDevice = std::move(d);
+    r.seenGroup = std::move(g);
     resolve(b, r);
+    r.info.generation = ++generation_;
     return r;
   }
 
@@ -418,7 +433,8 @@ private:
   std::function<ui::Widget*()> host_;
   mutable doc::Snapshot seen_;
   mutable uint64_t rev_ = 0;
-  mutable std::unordered_map<uint32_t, const doc::Device*> devs_;
+  mutable std::unordered_map<uint32_t, const doc::DevicePtr*> devs_;  // into the held snapshot's list
+  mutable uint64_t generation_ = 0;
   mutable const std::vector<doc::DevicePtr>* list_ = nullptr;
   mutable std::unordered_map<const graph::Patch*, std::unique_ptr<devices::DeviceSignature>> sigs_;
   mutable std::vector<std::shared_ptr<const doc::ResolvedDevice>> holds_;

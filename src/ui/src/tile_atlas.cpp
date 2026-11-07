@@ -1,6 +1,7 @@
 #include "pq/ui/tile_atlas.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 
 namespace pq::ui {
@@ -8,6 +9,8 @@ namespace pq::ui {
 TileAtlas::TileAtlas(uint32_t maxPages, uint32_t pageSize)
     : maxPages_(std::clamp<uint32_t>(maxPages, 1, kMaxTilePages)), pageSize_(std::max<uint32_t>(pageSize, 16)) {
   pages_.resize(maxPages_);
+  static std::atomic<uint64_t> next{1};
+  serial_ = next.fetch_add(1, std::memory_order_relaxed);
 }
 
 void TileAtlas::clearPage(uint32_t page) {

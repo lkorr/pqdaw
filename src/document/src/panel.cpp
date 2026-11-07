@@ -165,9 +165,20 @@ std::string bindingsProblem(const std::vector<DevicePtr>& list, DeviceId group, 
 
 PanelPtr prunePanel(const PanelPtr& panel, const std::vector<DevicePtr>& list, DeviceId group) {
   if (!panel) return panel;
+  // What is inside the group (one walk of the list), so each binding is a lookup (bindingAllowed's rule).
+  std::unordered_set<uint32_t> inside, groups;
+  for (const Device* d : groupMembersDeep(list, group)) {
+    inside.insert(d->id.value);
+    if (isGroupDevice(*d)) groups.insert(d->id.value);
+  }
+  auto allowed = [&](const Binding& b) {
+    if (!b.bound()) return true;
+    if (b.device == group) return b.kind != BindingKind::Panel;
+    return b.kind == BindingKind::Panel ? groups.count(b.device.value) != 0 : inside.count(b.device.value) != 0;
+  };
   auto keep = [&](const PanelElement& e) {
     for (const Binding& b : e.bindings)
-      if (!bindingAllowed(list, group, b)) return false;
+      if (!allowed(b)) return false;
     return true;
   };
   if (std::all_of(panel->elements.begin(), panel->elements.end(), keep)) return panel;

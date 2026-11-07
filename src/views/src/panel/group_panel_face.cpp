@@ -36,7 +36,7 @@ struct ElementTiles {
     uint64_t h = staticKey * 0x9E3779B97F4A7C15ull;
     h ^= (static_cast<uint64_t>(layer) + 1) * 0xC2B2AE3D27D4EB4Full;
     h ^= static_cast<uint64_t>(std::bit_cast<uint32_t>(scale)) * 0x165667B19E3779F9ull;
-    h ^= static_cast<uint64_t>(reinterpret_cast<uintptr_t>(atlas)) * 0xD6E8FEB86659FD93ull;
+    h ^= atlas->serial() * 0xD6E8FEB86659FD93ull;  // (never the address: a later atlas may reuse it)
     return h;
   }
   void prune() {
@@ -79,6 +79,7 @@ void GroupPanelFace::rebuild(const doc::PanelPtr& p) {
   panel_ = p;
   elements_.clear();
   whenSource_.clear();
+  target_->bindingsChanged();
   if (!p) return;
   elements_.reserve(p->elements.size());
   for (const doc::PanelElement& d : p->elements) {

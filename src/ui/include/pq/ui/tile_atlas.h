@@ -49,6 +49,8 @@ public:
   };
   // Largest content size a tile may have.
   uint32_t maxTileSize() const noexcept { return pageSize_ - 2; }
+  // GU.3: unique per atlas created in the process (a cache outliving one atlas keys its tiles by it, never by address).
+  uint64_t serial() const noexcept { return serial_; }
   // Reserves a w×h tile (+ border). Returns false when it is larger than maxTileSize() or every page is full and was
   // used in the current frame. The tile's page is touched.
   bool allocate(uint32_t w, uint32_t h, Tile& out);
@@ -120,6 +122,7 @@ private:
   std::vector<Upload> uploads_;
   std::vector<uint8_t> bytes_;
   Stats stats_;
+  uint64_t serial_ = 0;
 };
 
 }  // namespace pq::ui
