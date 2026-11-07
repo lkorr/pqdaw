@@ -20,6 +20,11 @@
 //                                   breakpoint every half bar: every lane's value changes every block
 //   device automation/16x4 held     the same four lanes, each constant: rendered, but no param changes
 // (moving − reference) / (16 · N) is the cost of one automated device param per block, devices' reaction included.
+// GU.4: the Phase Accumulator / VCA projects of tests/app/fixtures/gu4_modules (meta modules before GU.4, their group
+// presets after: the load converts them), one MIDI / audio track each:
+//   modules/<case> compile interp   ProjectLink::create (lowering, every unit's interpreter image), ms
+//   modules/<case> compile jit      the same with the JIT, until every unit is on its final image, ms
+//   modules/<case> play jit         one 64-frame block on the JIT images, ns/block
 // Release / ship build. Usage: pq_bench_playback [runner options]
 #include <cmath>
 #include <cstdio>
@@ -29,10 +34,13 @@
 #include <vector>
 
 #include "pq/app/project_link.h"
+#include "pq/compile/compile.h"
+#include "pq/jit/compiler.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/time.h"
 #include "pq/document/commands.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/serialize.h"
 #include "pq/document/store.h"
 #include "pq/engine/wav_file.h"
 #include "pq_bench.h"
@@ -332,6 +340,36 @@ struct LoopRig {
   }
 };
 
+// GU.4: a gu4_modules fixture project (loaded once; the load converts what it must).
+Snapshot moduleProject(const std::string& name) {
+  static const auto lib = app::loadDeviceLibrary();
+  if (!lib.ok()) std::exit(7);
+  LoadOptions lo;
+  lo.devices = lib->get();
+  auto r = loadProject((std::filesystem::path(PQ_TEST_DATA_DIR) / "app" / "fixtures" / "gu4_modules" / name).string(), lo);
+  if (!r.ok()) {
+    std::fprintf(stderr, "%s\n", r.error().message.c_str());
+    std::exit(8);
+  }
+  return r->project;
+}
+// `compiler`: a fresh one per measured compile (no in-memory cache hits), null: the process compiler.
+std::unique_ptr<app::ProjectLink> moduleLink(const Snapshot& s, bool jit, jit::Compiler* compiler = nullptr) {
+  app::LinkConfig c;
+  c.compileThread = false;
+  c.sleepAfterMs = 0.0f;
+  c.jit = jit;
+  if (compiler != nullptr) c.jitBackend = compile::jitUnitBackend(compiler, false);
+  auto made = app::ProjectLink::create(c, s);
+  if (!made.ok()) {
+    std::fprintf(stderr, "%s\n", made.error().message.c_str());
+    std::exit(3);
+  }
+  if (!(*made)->waitForMetaTables()) std::exit(9);
+  if (jit && !(*made)->waitForJit(180.0)) std::exit(10);
+  return std::move(made.value());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -389,5 +427,37 @@ int main(int argc, char** argv) {
         std::printf("  %s: %.2f %% of a core (median)\n", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
       });
     }
+  // GU.4: compile and play the Phase Accumulator / VCA projects.
+  for (const char* m : {"pa_voice", "pa_free", "vca_law", "vca_driven"}) {
+    const std::string mod = m;
+    runner.add("modules/" + mod + " compile interp", [mod](bench::Context& c) {
+      const Snapshot s = moduleProject(mod);
+      c.measure([&] { (void)moduleLink(s, false); }, 1, "ns");
+    });
+    runner.add("modules/" + mod + " compile jit", [mod](bench::Context& c) {
+      const Snapshot s = moduleProject(mod);
+      c.measure([&] {
+        auto compiler = jit::Compiler::create();
+        if (!compiler.ok()) std::exit(11);
+        (void)moduleLink(s, true, compiler->get());
+      }, 1, "ns");
+    });
+    runner.add("modules/" + mod + " play jit", [mod](bench::Context& c) {
+      const Snapshot s = moduleProject(mod);
+      auto link = moduleLink(s, true);
+      link->play(0);
+      std::vector<float> l(kBlock), r(kBlock);
+      int64_t t = 0;
+      c.measure([&] {
+        float* ch[2] = {l.data(), r.data()};
+        link->engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, t});
+        t += kBlock;
+        if (t > static_cast<int64_t>(kRate) * 2) {  // the clip's notes: loop the first 2 s
+          link->play(0);
+          t = 0;
+        }
+      }, 1, "ns/block");
+    });
+  }
   return runner.main(argc, argv);
 }

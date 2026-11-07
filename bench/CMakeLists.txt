@@ -105,6 +105,8 @@ pq_use_build_paths(pq_bench_silence)
 target_compile_definitions(pq_bench_silence PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
 # T3.17-fix2: the lowered mixer through the whole playback path (64 tracks x R returns, silent / notes, interp / JIT).
 pq_add_bench(pq_bench_playback SOURCES app/bench_playback.cpp DEPS pq_app)
+pq_use_build_paths(pq_bench_playback)  # GU.4: the gu4_modules fixture projects
+target_compile_definitions(pq_bench_playback PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
 pq_add_bench(pq_bench_arrangement SOURCES views/bench_arrangement.cpp DEPS pq_views)
 # T5.6: the arrangement over 64 audio tracks × 200 clips (waveform tiles; scroll / zoom / playhead frames, memory, idle).
 pq_add_bench(pq_bench_arrangement_audio SOURCES views/bench_arrangement_audio.cpp DEPS pq_views)
