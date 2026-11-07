@@ -49,7 +49,7 @@ namespace {
 constexpr uint32_t kBlock = 64;
 constexpr double kRate = 48000.0;
 constexpr uint32_t kBlocks = 600;  // 0.8 s
-const char* const kCases[] = {"undriven", "wires", "automation_steps", "macro", "switched"};
+const char* const kCases[] = {"undriven", "wires", "automation_steps", "switched"};  // (GU.9: "macro" went with the racks)
 
 fs::path caseDir(const std::string& name) { return fs::path(PQ_TEST_DATA_DIR) / "app" / "fixtures" / "gu1_curves" / name; }
 
@@ -150,10 +150,6 @@ const Device* deviceOf(const Project& p, std::string_view patch) {
   forEachTrack(p, [&](const Track& t, const Track*) {
     for (const DevicePtr& d : t.devices) {
       if (d->patch == patch && out == nullptr) out = d.get();
-      if (d->rack)
-        for (const ChainPtr& c : d->rack->chains)
-          for (const DevicePtr& x : c->devices)
-            if (x->patch == patch && out == nullptr) out = x.get();
     }
   });
   return out;
@@ -251,14 +247,13 @@ TEST_CASE("GU.1 curve renders: an undriven control has no op (inside the instrum
   const Snapshot undriven = loadCase("undriven");
   CHECK(curveOps(*undriven) == 0);
   // wires: four driven controls (the envelope's decay and sustain inside the instrument group, the cutoff, the gain);
-  // automation: two; the macro: one; switched: two.
+  // automation: two; switched: two.
   const Snapshot wires = loadCase("wires");
   const uint32_t w = curveOps(*wires);
   MESSAGE("curve ops: wires " << w);
   CHECK(w >= 4);
   CHECK(curveOps(*loadCase("automation")) >= 2);
   CHECK(curveOps(*loadCase("automation_steps")) >= 2);
-  CHECK(curveOps(*loadCase("macro")) >= 1);
   CHECK(curveOps(*loadCase("switched")) >= 2);
   // The undriven project's runtime params are values in units (no "@pos" key); the wired one's driven knobs positions.
   for (const LoweredParam& p : lowerParams(*undriven, true, library())) CHECK_FALSE(p.position);

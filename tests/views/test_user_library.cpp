@@ -153,7 +153,7 @@ TEST_CASE("user library: Save Preset writes Presets/<Device>/, the browser renam
   CHECK(f->device->params == l.device(l.sat)->params);
   // Loaded from the browser into the selected track: one undo step, a new device with the same values.
   l.browser().list().renameField()->onCancel();
-  auto id = loadDeviceItem(l.ctx, file, DeviceSlot{l.keys, doc::kAppend, {}});
+  auto id = loadDeviceItem(l.ctx, file, DeviceSlot{l.keys, doc::kAppend});
   REQUIRE(id.ok());
   CHECK(l.history() == h0 + 1);
   CHECK(*id != l.sat);

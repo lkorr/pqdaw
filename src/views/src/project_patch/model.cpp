@@ -150,51 +150,6 @@ struct Builder {
     return node.device == device ? port : port + "@" + std::to_string(device.value);
   }
 
-  // T4.8: a rack as one block (Node::rack).
-  Node rackNode(uint32_t band, const doc::Device& d, const graph::Patch* tp) {
-    Node n;
-    n.kind = NodeKind::Device;
-    n.band = band;
-    n.device = d.id;
-    n.active = d.active;
-    n.instrument = d.kind == doc::DeviceKind::Instrument;
-    n.rack = true;
-    n.title = n.instrument ? "Instrument Rack" : "Audio Effect Rack";
-    bool plays = false;
-    doc::forEachDeviceIn(d, [&](const doc::Device& x) {
-      if (x.id == d.id) return;
-      n.inner.push_back(x.id);
-      if (!x.rack && callOf(tp, x.id) != graph::kNone) plays = true;
-    });
-    // An Audio Effect Rack with no device that plays passes its input (or is silent): it is in the signal path.
-    n.lowered = tp != nullptr && d.active && (plays || !n.instrument);
-    if (n.instrument) n.inputs.push_back({"notes", ""});
-    else n.inputs.push_back({"in", ""});
-    auto mods = [&](doc::DeviceId dev) {
-      const auto it = modulatedParams.find(dev.value);
-      if (it == modulatedParams.end()) return;
-      for (const std::string& prm : it->second) n.inputs.push_back({portKey(n, dev, prm), prm, true});
-    };
-    mods(d.id);  // its macros
-    for (const doc::DeviceId x : n.inner) mods(x);
-    n.outputs.push_back({"out", ""});
-    for (const doc::Wire& w : doc::wiresOf(p)) {  // exports of devices inside it that wires use
-      if (statusOf(w.id) == doc::WireStatus::Invalid) continue;
-      if (std::find(n.inner.begin(), n.inner.end(), w.from) == n.inner.end()) continue;
-      const std::string key = portKey(n, w.from, w.port);
-      if (n.output(key) < 0) n.outputs.push_back({key, w.port});
-    }
-    sizeBlock(n, 120.0f);
-    // T5.x-circuit-chain: opened, a rack's frame holds its circuit (circuit::buildRackCircuit: chains, nested frames).
-    for (const ExpandedSize& e : opt.expanded)
-      if (e.device == d.id) {
-        n.expanded = true;
-        n.w = roundUp4(std::max(n.w, e.w + 2.0f * m::kExpandedPad));
-        n.h = roundUp4(std::max(n.h, e.h + 2.0f * m::kExpandedPad + 16.0f));
-      }
-    return n;
-  }
-
   // ---- nodes ----------------------------------------------------------------------------------------------------
 
   // TX.resize: a closed device block at its stored scale (ViewState::patchNudges' scale): its rect, its pins' rows
@@ -645,7 +600,7 @@ struct Builder {
         out.bands[bi].devices.push_back(groupNode(bi, *d, t, tp));
         continue;
       }
-      const uint32_t n = addNode(scaled(d->rack ? rackNode(bi, *d, tp) : deviceNode(bi, *d, tp)));
+      const uint32_t n = addNode(scaled(deviceNode(bi, *d, tp)));
       out.bands[bi].devices.push_back(n);
     }
     for (const uint32_t n : out.bands[bi].devices) out.nodes[n].offPath = !path.contains(out.nodes[n].device);  // TX.all-free
@@ -1463,7 +1418,7 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
       if (!found) return "device call " + name + " of " + b.name + " has no block";
     }
     uint32_t lowered = 0;
-    for (const uint32_t d : blocks) lowered += pp.nodes[d].lowered && !pp.nodes[d].rack ? 1u : 0u;
+    for (const uint32_t d : blocks) lowered += pp.nodes[d].lowered ? 1u : 0u;
     if (lowered != calls) return "band " + b.name + ": " + std::to_string(lowered) + " lowered blocks, " + std::to_string(calls) + " calls";
   }
   for (const Band& b : pp.bands)

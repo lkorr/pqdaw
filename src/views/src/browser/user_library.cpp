@@ -132,7 +132,7 @@ std::string Library::uniqueFile(std::string_view dir, std::string_view stem, std
 
 Result<std::string> Library::savePreset(const doc::Device& d, std::string_view deviceName, std::string_view name) {
   if (userLibrary_.empty()) return noLibrary();
-  const std::string dir = d.isRack() ? userPath("Racks") : userPath("Presets\\" + safeStem(deviceName));
+  const std::string dir = userPath("Presets\\" + safeStem(deviceName));
   const std::string stem(name.empty() ? deviceName : name);
   const std::string path = uniqueFile(dir, stem, doc::kPresetExtension);
   const std::string shown = utf8Of(pathOf(path).stem());

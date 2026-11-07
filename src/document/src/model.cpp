@@ -139,17 +139,16 @@ bool isTrackParam(ParamKind k) noexcept {
   }
 }
 
-// T4.18: device params, wire amounts and chain volumes / pans are automatable too (lanes on the device's track).
+// T4.18: device params and wire amounts are automatable too (lanes on the device's track).
 bool isAutomatable(ParamKind k) noexcept { return k != ParamKind::TrackSolo && k != ParamKind::MetaParam; }  // TMM.3: not MetaParam (MM)
 
 bool isAutomatable(const ParamRef& r) noexcept {
   if (!isAutomatable(r.kind)) return false;
-  if (r.kind == ParamKind::ChainMixer) return r.target == kChainVolume || r.target == kChainPan;
   return true;
 }
 
 bool isDeviceParamKind(ParamKind k) noexcept {
-  return k == ParamKind::DeviceParam || k == ParamKind::WireAmount || k == ParamKind::ChainMixer;
+  return k == ParamKind::DeviceParam || k == ParamKind::WireAmount;
 }
 
 uint32_t deviceParamHash(std::string_view name) noexcept {
@@ -261,21 +260,21 @@ PanMatrix panMatrix(PanMode m, double p) noexcept {
   return g;
 }
 
-bool isMetaDevice(const Device& d) noexcept { return !d.rack && d.patch.starts_with(kMetaDevicePrefix); }
+bool isMetaDevice(const Device& d) noexcept { return d.patch.starts_with(kMetaDevicePrefix); }
 
 std::string_view metaDeviceType(const Device& d) noexcept {
   return isMetaDevice(d) ? std::string_view(d.patch).substr(kMetaDevicePrefix.size()) : std::string_view();
 }
 
-bool isGroupDevice(const Device& d) noexcept { return !d.rack && d.patch == kGroupDevice; }
+bool isGroupDevice(const Device& d) noexcept { return d.patch == kGroupDevice; }
 
 bool isAtomDevice(const Device& d) noexcept {
-  return !d.rack && !d.source && d.patch.size() > kAtomDevicePrefix.size() && d.patch.starts_with(kAtomDevicePrefix);
+  return !d.source && d.patch.size() > kAtomDevicePrefix.size() && d.patch.starts_with(kAtomDevicePrefix);
 }
 std::string_view atomDeviceName(const Device& d) noexcept {
   return isAtomDevice(d) ? std::string_view(d.patch).substr(kAtomDevicePrefix.size()) : std::string_view();
 }
-bool isValueDevice(const Device& d) noexcept { return !d.rack && !d.source && d.patch == kValueDevice; }
+bool isValueDevice(const Device& d) noexcept { return !d.source && d.patch == kValueDevice; }
 
 std::string_view valuePatchText() noexcept {
   // GU.2: one control as a signal. The range and law are the control's curve (Device::curves; declared: linear 0 … 1).
@@ -431,63 +430,28 @@ DevicePtr makeInstrumentGroup(DeviceId id) {
   return d;
 }
 
-// ---- Racks (T4.8) ----------------------------------------------------------------------------------------------
+// ---- Racks (GU.9) -----------------------------------------------------------------------------------------------
 
-std::string macroParamName(uint32_t index) { return "macro" + std::to_string(index + 1); }
-
-std::optional<uint32_t> macroIndex(std::string_view param) noexcept {
-  if (!param.starts_with("macro") || param.size() < 6 || param.size() > 7) return std::nullopt;
-  uint32_t v = 0;
-  for (const char c : param.substr(5)) {
-    if (c < '0' || c > '9') return std::nullopt;
-    v = v * 10 + static_cast<uint32_t>(c - '0');
-  }
-  if (param[5] == '0' || v < 1 || v > kMacroCount) return std::nullopt;
-  return v - 1;
+std::vector<const Device*> rackChains(const Project& p, const Track& t, DeviceId group) {
+  std::vector<const Device*> out;
+  const WireList& ws = wiresOf(p);
+  auto wired = [&](DeviceId from, std::string_view port, DeviceId to, std::string_view param) {
+    for (const Wire& w : ws)
+      if (w.from == from && w.to == to && w.port == port && w.param == param && !w.fromNoteSource() && !w.toMixer())
+        return true;
+    return false;
+  };
+  for (const DevicePtr& d : t.devices)
+    if (d->group == group && isGroupDevice(*d) && wired(group, kGroupInPort, d->id, kMainPort))
+      out.push_back(d.get());
+  return out;
 }
 
-bool isRackParam(std::string_view param) noexcept { return param == kSelectParam || macroIndex(param).has_value(); }
-
-ZoneRange zoneRange(ZoneKind kind, KeyZoneUnit unit) noexcept {
-  switch (kind) {
-    case ZoneKind::Key: return unit == KeyZoneUnit::Hz ? ZoneRange{1.0, 100000.0} : ZoneRange{-1024.0, 1024.0};
-    case ZoneKind::Velocity: return {0.0, kVelocityMax};
-    case ZoneKind::Select: return {0.0, kSelectMax};
-  }
-  return {};
-}
-
-Zone fullZone(ZoneKind kind, KeyZoneUnit unit) noexcept {
-  const ZoneRange r = zoneRange(kind, unit);
-  return Zone{r.min, r.min, r.max, r.max};
-}
-
-bool zoneOff(const Zone& z, ZoneKind kind, KeyZoneUnit unit) noexcept {
-  const ZoneRange r = zoneRange(kind, unit);
-  return z.lo <= r.min && z.fadeLo <= r.min && z.fadeHi >= r.max && z.hi >= r.max;
-}
-
-bool zoneValid(const Zone& z, ZoneKind kind, KeyZoneUnit unit) noexcept {
-  const ZoneRange r = zoneRange(kind, unit);
-  for (const double v : {z.lo, z.fadeLo, z.fadeHi, z.hi})
-    if (!std::isfinite(v) || v < r.min || v > r.max) return false;
-  return z.lo <= z.fadeLo && z.fadeLo <= z.fadeHi && z.fadeHi <= z.hi;
-}
-
-const Chain* Rack::findChain(ChainId id) const noexcept {
-  for (const ChainPtr& c : chains)
-    if (c->id == id) return c.get();
-  return nullptr;
-}
-
-// M4 review M9: the deep comparisons of devices, chains and racks are iterative (an explicit stack of rack pairs still
-// to compare), so racks nested to any depth compare without deep recursion. Each level compares its own fields
-// ("shallow") and pushes the pairs of nested racks that are not the same object.
 namespace {
 
 bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
   return a.id == b.id && a.patch == b.patch && a.kind == b.kind && a.active == b.active && a.params == b.params &&
-         a.settings == b.settings && deepEq(a.source, b.source) && (a.rack == nullptr) == (b.rack == nullptr) && a.name == b.name &&
+         a.settings == b.settings && deepEq(a.source, b.source) && a.name == b.name &&
          deepEq(a.meta, b.meta) &&  // TMM.3 (an empty map is always null: the commands keep it so)
          a.chainInput == b.chainInput &&  // TMM.10-fix1
          a.group == b.group &&            // TX.groups
@@ -495,128 +459,13 @@ bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
          deepEq(a.panel, b.panel);        // GU.3
 }
 
-bool shallowChainEq(const Chain& a, const Chain& b) noexcept {
-  return a.id == b.id && a.name == b.name && a.volumeDb == b.volumeDb && a.pan == b.pan && a.active == b.active &&
-         a.solo == b.solo && a.key == b.key && a.velocity == b.velocity && a.select == b.select &&
-         a.devices.size() == b.devices.size();
-}
-
-bool shallowRackEq(const Rack& a, const Rack& b) noexcept {
-  return a.chains.size() == b.chains.size() && a.mappings == b.mappings && a.macroNames == b.macroNames &&
-         a.visibleMacros == b.visibleMacros && a.variations == b.variations && a.randomizeExclude == b.randomizeExclude &&
-         a.keyUnit == b.keyUnit && a.voiceChains == b.voiceChains && a.showChains == b.showChains &&
-         a.showMacros == b.showMacros;
-}
-
-using RackPairs = std::vector<std::pair<const Rack*, const Rack*>>;
-
-// Compares two device lists level by level; nested rack pairs go to `pending`.
-bool devicesEq(const std::vector<DevicePtr>& a, const std::vector<DevicePtr>& b, RackPairs& pending) noexcept {
-  if (a.size() != b.size()) return false;
-  for (size_t i = 0; i < a.size(); ++i) {
-    if (a[i] == b[i]) continue;
-    if (!a[i] || !b[i] || !shallowDeviceEq(*a[i], *b[i])) return false;
-    if (a[i]->rack != b[i]->rack) pending.emplace_back(a[i]->rack.get(), b[i]->rack.get());
-  }
-  return true;
-}
-
-bool racksEq(RackPairs& pending) noexcept {
-  while (!pending.empty()) {
-    const auto [x, y] = pending.back();
-    pending.pop_back();
-    if (x == y) continue;
-    if (!shallowRackEq(*x, *y)) return false;
-    for (size_t i = 0; i < x->chains.size(); ++i) {
-      const ChainPtr& cx = x->chains[i];
-      const ChainPtr& cy = y->chains[i];
-      if (cx == cy) continue;
-      if (!cx || !cy || !shallowChainEq(*cx, *cy) || !devicesEq(cx->devices, cy->devices, pending)) return false;
-    }
-  }
-  return true;
-}
-
 }  // namespace
 
-bool operator==(const Chain& a, const Chain& b) noexcept {
-  RackPairs pending;
-  return shallowChainEq(a, b) && devicesEq(a.devices, b.devices, pending) && racksEq(pending);
-}
-
-bool operator==(const Rack& a, const Rack& b) noexcept {
-  RackPairs pending{{&a, &b}};
-  return racksEq(pending);
-}
-
-bool operator==(const Device& a, const Device& b) noexcept {
-  if (!shallowDeviceEq(a, b)) return false;
-  if (a.rack == b.rack) return true;
-  RackPairs pending{{a.rack.get(), b.rack.get()}};
-  return racksEq(pending);
-}
-
-Rack::~Rack() {
-  // Racks destroyed on this thread inside the outermost one hand their chains to it (`pending`) instead of destroying
-  // them in their own destructor: the depth of the destructor calls stays one rack whatever the nesting.
-  thread_local std::vector<ChainPtr>* pending = nullptr;
-  if (pending != nullptr) {
-    for (ChainPtr& c : chains)
-      if (c) pending->push_back(std::move(c));
-    return;
-  }
-  std::vector<ChainPtr> work = std::move(chains);
-  pending = &work;
-  while (!work.empty()) {
-    ChainPtr c = std::move(work.back());
-    work.pop_back();
-    c.reset();  // its devices' racks (if this was the last owner) push their chains onto `work`
-  }
-  pending = nullptr;
-}
-
-DevicePtr makeRack(DeviceId id, DeviceKind kind, std::vector<ChainPtr> chains) {
-  auto d = std::make_shared<Device>();
-  d->id = id;
-  d->patch = std::string(kind == DeviceKind::Instrument ? kInstrumentRack : kAudioEffectRack);
-  d->kind = kind;
-  auto r = std::make_shared<Rack>();
-  r->chains = std::move(chains);
-  d->rack = std::move(r);
-  return d;
-}
-
-ChainPtr makeChain(ChainId id, std::string name, std::vector<DevicePtr> devices) {
-  auto c = std::make_shared<Chain>();
-  c->id = id;
-  c->name = std::move(name);
-  c->devices = std::move(devices);
-  c->key = fullZone(ZoneKind::Key, KeyZoneUnit::Hz);
-  c->velocity = fullZone(ZoneKind::Velocity, KeyZoneUnit::Hz);
-  c->select = fullZone(ZoneKind::Select, KeyZoneUnit::Hz);
-  return c;
-}
-
-std::string macroDisplayName(const Rack& r, uint32_t index) {
-  if (index < kMacroCount && !r.macroNames[index].empty()) return r.macroNames[index];
-  return "Macro " + std::to_string(index + 1);
-}
-
-double rackParamValue(const Device& rack, std::string_view param) noexcept {
-  const DeviceValue* v = rack.param(param);
-  return v != nullptr ? v->value : 0.0;
-}
+bool operator==(const Device& a, const Device& b) noexcept { return shallowDeviceEq(a, b); }
 
 const std::vector<DevicePtr>& DeviceLoc::list() const noexcept {
   static const std::vector<DevicePtr> kNone;
-  if (chain != nullptr) return chain->devices;
   return track != nullptr ? track->devices : kNone;
-}
-
-bool deviceContains(const Device& outer, DeviceId inner) noexcept {
-  bool found = false;
-  forEachDeviceIn(outer, [&](const Device& d) { found = found || d.id == inner; });
-  return found;
 }
 
 int32_t Track::deviceIndex(DeviceId device) const noexcept {
@@ -641,17 +490,12 @@ ParamRange paramRange(ParamKind k) noexcept {
     case ParamKind::MosStretch: return {-1199.0, 1200.0};
     case ParamKind::DeviceParam: return {-1e30, 1e30};  // the device patch's own range applies (DeviceCatalog)
     case ParamKind::WireAmount: return {-1.0, 1.0};
-    case ParamKind::ChainMixer: return {-1e30, 1e30};  // a chain's mixer / zones (each value its own range)
     case ParamKind::MetaParam: return {-1e30, 1e30};  // TMM.3: the meta type's own range applies
   }
   return {};
 }
 
 ParamRange paramRange(const ParamRef& r) noexcept {
-  if (r.kind == ParamKind::ChainMixer) {
-    if (r.target == kChainVolume) return {kMinVolumeDb, kMaxVolumeDb};
-    if (r.target == kChainPan) return {-1.0, 1.0};
-  }
   return paramRange(r.kind);
 }
 
@@ -790,7 +634,6 @@ const Wire* findWire(const Project& p, WireId id) noexcept {
 const Track* laneHome(const Project& p, const ParamRef& r) noexcept {
   switch (r.kind) {
     case ParamKind::DeviceParam: return findDevice(p, DeviceId{r.owner}).track;
-    case ParamKind::ChainMixer: return findChain(p, ChainId{r.owner}).track;
     case ParamKind::WireAmount: {
       const Wire* w = findWire(p, WireId{r.owner});
       return w != nullptr ? findDevice(p, w->to).track : nullptr;
@@ -830,9 +673,6 @@ uint32_t maxEntityId(const Project& p) {
     see(t.id.value);
     forEachDeviceIn(t.devices, [&](const Device& d) {
       see(d.id.value);
-      if (!d.rack) return;  // T4.8: chains and mappings
-      for (const ChainPtr& c : d.rack->chains) see(c->id.value);
-      for (const MacroMapping& m : d.rack->mappings) see(m.id.value);
     });
     for (const LanePtr& l : t.lanes) {
       see(l->id.value);
@@ -891,37 +731,13 @@ int32_t findClipIndex(const Track& t, ClipId id) noexcept {
 }
 
 namespace {
-// Searches `list` (the track's own chain) and the racks in it, depth-first in chain order. Iterative (M4 review M9).
 bool findIn(const std::vector<DevicePtr>& list, DeviceId id, DeviceLoc& out) {
-  struct Frame {
-    const DevicePtr* begin;
-    const DevicePtr* next;
-    const DevicePtr* end;
-    const Chain* chain;   // the chain holding the list (null: the track's)
-    const Device* rack;   // … and its rack
-  };
-  std::vector<Frame> stack{{list.data(), list.data(), list.data() + list.size(), nullptr, nullptr}};
-  while (!stack.empty()) {
-    Frame& f = stack.back();
-    if (f.next == f.end) {
-      stack.pop_back();
-      continue;
-    }
-    const DevicePtr* at = f.next++;
-    const Device& d = **at;
-    if (d.id == id) {
-      out.device = &d;
-      out.index = static_cast<uint32_t>(at - f.begin);
-      out.chain = f.chain;
-      out.rack = f.rack;
+  for (size_t i = 0; i < list.size(); ++i)
+    if (list[i]->id == id) {
+      out.device = list[i].get();
+      out.index = static_cast<uint32_t>(i);
       return true;
     }
-    if (d.rack)
-      for (size_t i = d.rack->chains.size(); i-- > 0;) {
-        const Chain& c = *d.rack->chains[i];
-        stack.push_back({c.devices.data(), c.devices.data(), c.devices.data() + c.devices.size(), &c, &d});
-      }
-  }
   return false;
 }
 }  // namespace
@@ -932,38 +748,6 @@ DeviceLoc findDevice(const Project& p, DeviceId id) noexcept {
   forEachTrack(p, [&](const Track& t, const Track*) {
     if (out.track) return;
     if (findIn(t.devices, id, out)) out.track = &t;
-  });
-  return out;
-}
-
-ChainLoc findChain(const Project& p, ChainId id) noexcept {
-  ChainLoc out;
-  if (!id.valid()) return out;
-  forEachDevice(p, [&](const Device& d, const Track& t) {
-    if (out.chain || !d.rack) return;
-    for (size_t i = 0; i < d.rack->chains.size(); ++i)
-      if (d.rack->chains[i]->id == id) out = ChainLoc{&t, &d, d.rack->chains[i].get(), static_cast<uint32_t>(i)};
-  });
-  return out;
-}
-
-MappingLoc findMapping(const Project& p, MappingId id) noexcept {
-  MappingLoc out;
-  if (!id.valid()) return out;
-  forEachDevice(p, [&](const Device& d, const Track& t) {
-    if (out.mapping || !d.rack) return;
-    for (const MacroMapping& m : d.rack->mappings)
-      if (m.id == id) out = MappingLoc{&t, &d, &m};
-  });
-  return out;
-}
-
-MappingLoc mappingOf(const Project& p, DeviceId device, std::string_view param) noexcept {
-  MappingLoc out;
-  forEachDevice(p, [&](const Device& d, const Track& t) {
-    if (out.mapping || !d.rack) return;
-    for (const MacroMapping& m : d.rack->mappings)
-      if (m.device == device && m.param == param) out = MappingLoc{&t, &d, &m};
   });
   return out;
 }

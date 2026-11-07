@@ -178,20 +178,13 @@ bool trackHasSends(TrackKind k) {
 
 // Whether `host` may carry a lane for `r` (see AddAutomationLane).
 namespace {
-// T4.18: whether device `id` / chain `chain` is in `list`'s tree (racks included).
+// T4.18: whether device `id` is in `list`.
 bool treeHasDevice(const std::vector<DevicePtr>& list, DeviceId id, const Device** out = nullptr) {
   bool found = false;
   forEachDeviceIn(list, [&](const Device& d) {
     if (found || d.id != id) return;
     found = true;
     if (out != nullptr) *out = &d;
-  });
-  return found;
-}
-bool treeHasChain(const std::vector<DevicePtr>& list, ChainId chain) {
-  bool found = false;
-  forEachDeviceIn(list, [&](const Device& d) {
-    if (!found && d.rack) found = d.rack->findChain(chain) != nullptr;
   });
   return found;
 }
@@ -214,14 +207,9 @@ Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r, st
           return invalid("a device parameter can only be automated on the device's own track");
         if (!identifier(name)) return invalid("a device parameter lane needs the parameter's name");
         if (deviceParamHash(name) != r.target) return invalid("the lane's parameter name does not match its target");
-        if (d->rack && !isRackParam(name)) return invalid("a rack's automatable parameters are its macros and selector");
         if (std::string why = metaParamBakedOnly(*d, name); !why.empty()) return invalid(why);  // TMM.5
         return ok();
       }
-      case ParamKind::ChainMixer:
-        if (!treeHasChain(host.devices, ChainId{r.owner}))
-          return invalid("a chain's mixer can only be automated on the rack's own track");
-        return ok();
       default: {  // WireAmount
         if (r.target != 0) return invalid("a wire amount has no target");
         const Wire* w = findWire(p, WireId{r.owner});
@@ -280,7 +268,6 @@ Status checkParamCurves(const Device& d) {  // GU.1 (model.h ControlCurve)
     if (!dsp::validCurve(c.curve)) return invalid("'" + c.param + "': not a valid curve (pq/dsp/curve.h validCurve)");
     if (i > 0 && !(d.curves[i - 1].param < c.param)) return invalid("device knob curves must be sorted by param, one per param");
   }
-  if (d.rack && !d.curves.empty()) return invalid("a rack's macros have no knob curves");
   if (isGroupDevice(d) && !d.curves.empty()) return invalid("a group has no knobs (no knob curves)");  // TMM.13-fix1 L7
   return ok();
 }
@@ -291,26 +278,9 @@ Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices, std::ve
 
 ListKind listKindOf(TrackKind kind) noexcept { return kind == TrackKind::Midi ? ListKind::MidiTrack : ListKind::OtherTrack; }
 
-ListKind chainListKind(const Device& rack) noexcept {
-  return rack.kind == DeviceKind::Instrument ? ListKind::InstrumentRackChain : ListKind::AudioRackChain;
-}
-
-// M4 review M9: iterative (an explicit list of device lists still to check), so racks nest as deep as memory allows. A
-// rack's own fields are checked by checkRackOwn when it is met; its chains' lists are queued.
-// TMM.13-fix1 M8: a refusal says which device (`where`: the indices down to it, checks.h checkChain).
-Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vector<size_t>* where) {
-  struct Work {
-    ListKind kind;
-    const std::vector<DevicePtr>* list;
-    std::vector<size_t> at;  // the list's location (checkChain's `where`)
-  };
-  std::vector<Work> work;
-  work.push_back({kind, &devices, {}});
-  while (!work.empty()) {
-    const Work w = std::move(work.back());
-    work.pop_back();
-    const ListKind k = w.kind;
-    const std::vector<DevicePtr>& list = *w.list;
+// TMM.13-fix1 M8: a refusal says which device (`where`: its index, checks.h checkChain).
+Status checkList(ListKind k, const std::vector<DevicePtr>& list, std::vector<size_t>* where) {
+  {
     for (size_t i = 0; i < list.size(); ++i) {
       const Status st = [&]() -> Status {
         const DevicePtr& d = list[i];
@@ -319,14 +289,10 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
         if (d->patch.empty()) return invalid("device has no patch");
         for (size_t j = 0; j < i; ++j)
           if (list[j]->id == d->id) return invalid("device id twice in a chain");
-        // TX.all-free-fix1: a rack chain is a series like a track's path — an instrument anywhere in it plays where the
-        // notes reach it (first in an Instrument Rack's chain), else nothing (lower.h "The main path"): no order rule.
-        // The notes exist only on MIDI tracks.
+        // The notes exist only on MIDI tracks (an instrument plays where they reach it: lower.h "The main path").
         if (d->kind == DeviceKind::Instrument && k == ListKind::OtherTrack)
           return invalid("instruments go on MIDI tracks (the notes are their main input)");
-        const bool rackChain = k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain;
         if (isGroupDevice(*d)) {  // TX.groups (model.h "Groups")
-          if (rackChain) return invalid("a group sits in a track's circuit, not in a rack chain");
           if (d->kind != DeviceKind::AudioEffect) return invalid("a group is an audio effect");
           if (!d->params.empty() || d->source || d->meta)
             return invalid("a group has no params, text or meta modules of its own");
@@ -347,7 +313,6 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
           }
         }
         if (d->group.valid()) {
-          if (rackChain) return invalid("a group member sits in a track's circuit, not in a rack chain");
           // GU.2: groups nest (model.h "Groups"): the groups a member sits in, outward, end within kMaxGroupDepth and
           // never come back to it.
           const Device* at = d.get();
@@ -370,24 +335,12 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
           PQ_DOC_TRY(checkPanel(*d->panel));
         }
         PQ_DOC_TRY(checkDeviceMeta(*d));  // TMM.3
-        if (d->rack) {
-          PQ_DOC_TRY(checkRackOwn(*d));
-          for (size_t c = d->rack->chains.size(); c-- > 0;) {
-            std::vector<size_t> at = w.at;
-            at.push_back(i);
-            at.push_back(c);
-            work.push_back({chainListKind(*d), &d->rack->chains[c]->devices, std::move(at)});
-          }
-        } else if (d->patch == kAudioEffectRack || d->patch == kInstrumentRack) {
-          return invalid("'" + d->patch + "' is a rack and needs its chains");
-        }
+        if (d->patch == kAudioEffectRack || d->patch == kInstrumentRack)
+          return invalid("'" + d->patch + "' names a rack spawn, not a device patch (a rack is a group: ops::addRack)");
         return ok();
       }();
       if (!st) {
-        if (where != nullptr) {
-          *where = w.at;
-          where->push_back(i);
-        }
+        if (where != nullptr) *where = {i};
         return st;
       }
     }
@@ -401,7 +354,6 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
 Status checkMetaInstance(const Device& d, std::string_view path, const MetaInstance& inst) {
   const std::string at = path.empty() ? std::string("the device's meta module") : "meta module '" + std::string(path) + "'";
   if (!meta::validPath(path)) return invalid("'" + std::string(path) + "' is not a meta module path");
-  if (d.rack) return invalid("a rack holds no meta modules");
   const meta::Type* t = meta::findTypeOrRetired(inst.type);
   if (t == nullptr) return unsupported(at + ": unknown meta module type '" + inst.type + "'");
   if (inst.version != t->version)
@@ -451,64 +403,6 @@ Status checkDeviceMeta(const Device& d) {
   return ok();
 }
 
-Status checkMapping(const MacroMapping& m) {
-  if (!m.id.valid()) return invalid("mapping has no id");
-  if (m.macro >= kMacroCount) return invalid("a rack has 16 macros");
-  if (!m.device.valid()) return invalid("mapping has no target device");
-  PQ_DOC_TRY(checkDeviceValue(m.param, std::nullopt));
-  if (!finiteIn(m.min, 0.0, 1.0) || !finiteIn(m.max, 0.0, 1.0)) return invalid("mapping min / max must be in [0, 1]");
-  if (!finiteIn(m.curve, -1.0, 1.0)) return invalid("mapping curve must be in [-1, 1]");
-  return ok();
-}
-
-Status checkRack(const Device& d) {
-  PQ_DOC_TRY(checkRackOwn(d));
-  for (const ChainPtr& c : d.rack->chains) PQ_DOC_TRY(checkList(chainListKind(d), c->devices));
-  return ok();
-}
-
-Status checkRackOwn(const Device& d) {
-  const Rack& r = *d.rack;
-  const bool instrument = d.kind == DeviceKind::Instrument;
-  if (d.patch != (instrument ? kInstrumentRack : kAudioEffectRack)) return invalid("a rack's patch must name its kind");
-  if (!d.settings.empty()) return invalid("racks have no settings");
-  for (const DeviceValue& v : d.params) {
-    if (!isRackParam(v.name)) return invalid("'" + v.name + "' is not a rack param (macro1 … macro16, select)");
-    if (!finiteIn(v.value, 0.0, kMacroMax)) return invalid("rack param '" + v.name + "' must be in [0, 127]");
-  }
-  if (r.visibleMacros < 1 || r.visibleMacros > kMacroCount) return invalid("a rack shows 1 … 16 macros");
-  if (static_cast<uint8_t>(r.keyUnit) > static_cast<uint8_t>(KeyZoneUnit::Degree)) return invalid("unknown key zone unit");
-  if (r.voiceChains && !instrument) return invalid("only Instrument Rack chains run per voice");
-  for (const MacroVariation& v : r.variations)
-    for (const double x : v.values)
-      if (!finiteIn(x, 0.0, kMacroMax)) return invalid("macro variation values must be in [0, 127]");
-  for (size_t i = 0; i < r.chains.size(); ++i) {
-    const ChainPtr& c = r.chains[i];
-    if (!c) return invalid("null chain");
-    if (!c->id.valid()) return invalid("chain has no id");
-    for (size_t j = 0; j < i; ++j)
-      if (r.chains[j]->id == c->id) return invalid("chain id twice in a rack");
-    if (!finiteIn(c->volumeDb, kMinVolumeDb, kMaxVolumeDb)) return invalid("chain volume out of range");
-    if (!finiteIn(c->pan, -1.0, 1.0)) return invalid("chain pan out of range");
-    for (const ZoneKind k : {ZoneKind::Key, ZoneKind::Velocity, ZoneKind::Select})
-      if (!zoneValid(c->zone(k), k, r.keyUnit)) return invalid("chain zone out of order or out of range");
-    if (!instrument && (!zoneOff(c->key, ZoneKind::Key, r.keyUnit) || !zoneOff(c->velocity, ZoneKind::Velocity, r.keyUnit)))
-      return invalid("key and velocity zones are Instrument Rack zones");
-  }
-  for (size_t i = 0; i < r.mappings.size(); ++i) {
-    const MacroMapping& m = r.mappings[i];
-    PQ_DOC_TRY(checkMapping(m));
-    if (i > 0 && !(r.mappings[i - 1].id < m.id)) return invalid("mappings must be sorted by id, unique");
-    for (size_t j = 0; j < i; ++j)
-      if (r.mappings[j].device == m.device && r.mappings[j].param == m.param) return invalid("a param is mapped twice");
-    if (m.device == d.id) {
-      if (m.param != kSelectParam) return invalid("a rack's macros map its chain selector, not themselves");
-    } else if (!deviceContains(d, m.device)) {
-      return invalid("a macro maps only devices inside its rack");
-    }
-  }
-  return ok();
-}
 
 Status checkWire(const Wire& w) {
   if (!w.id.valid()) return invalid("wire has no id");

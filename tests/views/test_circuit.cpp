@@ -24,7 +24,7 @@
 #include "pq/ui/scene_textures.h"
 #include "pq/ui/test_driver.h"
 #include "pq/ui/tile_atlas.h"
-#include "pq/views/circuit/chain_circuit.h"
+#include "pq/views/circuit/device_scene.h"
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/fake_transport.h"

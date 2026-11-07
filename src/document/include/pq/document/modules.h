@@ -43,6 +43,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "pq/core/result.h"
 #include "pq/document/ids.h"
@@ -101,6 +102,17 @@ struct VcaOptions {
 BlockSet vcaBlocks(IdSource& ids, const VcaOptions& o = {}, VcaRoles* roles = nullptr);
 // The VCA's curve: its law over [min, max] with fine zone `zone` (0: the default 0.4).
 dsp::Curve vcaCurve(double min = -20000.0, double max = 20000.0, double zone = 0.0);
+
+// GU.9 (model.h "Racks"): a rack's blocks — the rack group (an instrument group when `instrument`, named "Instrument
+// Rack" / "Audio Effect Rack"), `chains` empty chain groups ("Chain <k>", In → Out, each fed from the rack's In and
+// summed into its Out) and kDefaultMacros macro value blocks ("Macro <k>", 0 … 1, at 0) shown as knobs on its panel.
+struct RackRoles {
+  DeviceId group;
+  std::vector<DeviceId> chains, macros;
+};
+BlockSet rackBlocks(IdSource& ids, bool instrument, uint32_t chains = 1, RackRoles* roles = nullptr);
+// One empty chain group `id` of rack `rack` and its wires (rack In → chain, chain In → Out, chain → rack Out).
+BlockSet chainBlocks(IdSource& ids, DeviceId rack, std::string name);
 
 // A module's default group preset with ids from 1 (the group first): what spawning it pastes (ops::pasteBlocks gives
 // fresh ids).

@@ -1,8 +1,8 @@
 #pragma once
 
-// Private to the device view (T4.1; racks T4.8): its sizes (logical px), the view's shared state (Impl) and the frames
-// it shows — a device's panel (DeviceFrame, device_chain.cpp) or a rack (RackFrame, rack_frame.cpp: its macro panel, its
-// chain list with the chain mixer and the zone editor, and the frames of the chain it shows, nested to any depth).
+// Private to the device view (T4.1): its sizes (logical px), the view's shared state (Impl) and the frames it shows — a
+// device's panel (DeviceFrame, device_chain.cpp), a group (group_frame.cpp) or a rack (GU.9 rack_view.cpp: a group of
+// parallel chain groups — its chain list, its panel of macros and the chain it shows).
 
 #include <cstdint>
 #include <map>
@@ -39,18 +39,16 @@ inline constexpr float kAddW = 132.0f;     // the add slot at the end of the cha
 class FrameBase;
 class FreeRackPanel;
 
-// Where a dragged device would land (T4.8: a rack's chain list or the chain a rack shows, besides the track's chain).
+// Where a dragged device would land.
 struct DropTarget {
   // TX.free-rack: Free = onto the free-device rack (out of the chain).
-  enum class Kind : uint8_t { None, Track, Chain, NewChain, Free };
+  enum class Kind : uint8_t { None, Track, Free };
   Kind kind = Kind::None;
-  uint32_t index = 0;   // Track / Chain: the position among the list's devices (the dragged one counted, if it is there)
-  doc::ChainId chain;   // Chain
-  doc::DeviceId rack;   // NewChain: the rack that gets a new chain
+  uint32_t index = 0;   // Track: the position among the list's devices (the dragged one counted, if it is there)
   ui::IRect marker;     // device px: what paintOver draws (a line, or a row outline)
-  bool row = false;     // the marker outlines a row (a chain) instead of being an insertion line
-  // T4.16c: the drop would be refused (a rack into itself or a rack inside it, an instrument into an Audio Effect
-  // Rack): no marker, the NotAllowed cursor, nothing happens on release (the status line says why).
+  bool row = false;     // the marker outlines a row instead of being an insertion line
+  // T4.16c: the drop would be refused: no marker, the NotAllowed cursor, nothing happens on release (the status line
+  // says why).
   const char* refused = nullptr;
 };
 
@@ -68,21 +66,13 @@ struct DeviceChainView::Impl {
   std::vector<doc::DevicePtr> shown;                  // what each top-level frame shows (pointer-equal while unchanged)
   doc::Snapshot shownFrom;                            // keeps `shown` alive
   doc::MainPath mainPath;                             // TX.all-free: the shown track's main path (of `shownFrom`)
-  std::map<uint32_t, device_chain::FrameBase*> all;   // T4.8: every frame shown (rack contents too), by device id
-  // Reordering by dragging a title bar (T4.8: into and out of rack chains too).
+  std::map<uint32_t, device_chain::FrameBase*> all;   // every frame shown, by device id
+  // Reordering by dragging a title bar.
   drag::Tracker drag;
   doc::DeviceId dragging;
   device_chain::DropTarget drop;
-  // T4.8: per rack (by device id): the chain its frame shows, its zone editor's tab (kZonesHidden: hidden).
-  static constexpr uint8_t kZonesHidden = 0xFF;
-  std::map<uint32_t, doc::ChainId> shownChain;
-  std::map<uint32_t, uint8_t> zoneTab;
-  // M4 review M9 (DeviceChainView::kMaxNestedRackFrames): the nesting of the rack frame being built (its ctor reads it).
-  uint32_t nestingBuilt = 0;
-  // T4.8: macro map mode — the rack whose Map is on, and the macro picked (−1: none yet).
-  doc::DeviceId mapRack;
-  int32_t mapMacro = -1;
-  ui::Widget* mapOverlay = nullptr;
+  // GU.9: per rack (by device id): the chain group its frame shows (absent: its first chain).
+  std::map<uint32_t, doc::DeviceId> shownChain;
 
   explicit Impl(DeviceChainView& v) : view(v) {}
   ViewContext& ctx() const noexcept { return view.ctx_; }
@@ -111,11 +101,9 @@ struct DeviceChainView::Impl {
   void endDrag(bool commit);
   // T4.8: rebuilds `all` from the frames (after any frame was added or removed).
   void reindex();
-  // T4.8: the device menu for a list: the catalog's instruments (where they go) and audio effects, and the racks; a
-  // pick adds into `track`'s chain (chain invalid) or into `chain` at `index`.
-  std::vector<ui::MenuItem> deviceMenu(doc::TrackId track, doc::ChainId chain, uint32_t index, bool instruments);
-  // T4.8: map mode.
-  void setMapMode(doc::DeviceId rack);  // invalid: off
+  // The device menu: the catalog's instruments (where they go) and audio effects, and the racks; a pick adds into
+  // `track`'s main path at slot `index`.
+  std::vector<ui::MenuItem> deviceMenu(doc::TrackId track, uint32_t index, bool instruments);
   // T4.7: the modulated params of the shown chain, the knob travel their wires sum to, their last sweeps.
   std::vector<ModTarget> ringTargets;
   std::vector<float> ringSpan;
@@ -132,7 +120,6 @@ struct DeviceChainView::Impl {
     bool overridden = false;
   };
   std::vector<AutoTarget> autoTargets;
-  bool chainAuto = false;  // a rack chain's volume / pan lane on the shown track
   uint32_t autoTimer = 0;
   // TX.groups: a group panel's width (logical px) after its right edge was dragged, by group id (this session).
   std::map<uint32_t, float> groupWidths;
@@ -175,27 +162,20 @@ public:
   virtual bool keeps(const doc::Device& /*d*/) const { return true; }
   // Only these params changed (a Param ChangeSet): repaint what shows them.
   virtual void paramsChanged(const doc::Device& d, std::span<const doc::ParamRef> params) = 0;
-  // The panel showing this device's params (a rack: its macro panel), and its binding.
+  // The panel showing this device's params, and its binding.
   virtual devices::DevicePanel* panel() const noexcept { return nullptr; }
   virtual devices::DeviceTarget* target() noexcept { return nullptr; }
-  virtual bool isRack() const noexcept { return false; }
-  // Adds itself (and what it shows inside: a rack's frames) to `all`.
+  // Adds itself to `all`.
   virtual void collect(std::map<uint32_t, FrameBase*>& all) { all[id_.value] = this; }
-  // T4.16c: itself, then (a rack) the frames of the chain it shows, in display order (left → right): the order Left /
-  // Right walk. A folded rack shows none of its devices.
+  // T4.16c: itself in display order (left → right): the order Left / Right walk.
   virtual void appendShown(std::vector<FrameBase*>& out) { out.push_back(this); }
-  // T4.16c: items the right-click menu at `p` adds first (a rack: Rename Macro over a macro knob).
+  // T4.16c: items the right-click menu at `p` adds first.
   virtual void contextItems(ui::Vec2 /*p*/, std::vector<ui::MenuItem>& /*items*/) {}
-  // T4.18: the automation lanes of the shown track or the playhead changed: a rack re-shows its chains' volume / pan
-  // (an automated one: the envelope at the playhead and an LED).
-  virtual void automationChanged() {}
   // T4.18: the param of panel() whose control is under `p` ("" none: no panel, or not over a param's control).
   std::string paramAt(ui::Vec2 p) const;
   // T4.18: the params with an automation lane (second: overridden): their controls get Live's LED (paintOver).
   void setAutomated(std::vector<std::pair<std::string, bool>> params);
   const std::vector<std::pair<std::string, bool>>& automated() const noexcept { return automated_; }
-  // T4.8: a drop for a dragged device at `p` inside this frame (racks: their chain list and shown chain).
-  virtual bool dropAt(ui::Vec2 /*p*/, DropTarget& /*out*/) { return false; }
   // The title-bar band a reorder drag starts from.
   virtual bool inTitle(ui::Vec2 p) const;
   void setSelected(bool s);
@@ -218,8 +198,10 @@ protected:
   std::vector<std::pair<std::string, bool>> automated_;  // T4.18
 };
 
-// A frame for `d` (a rack or a device).
+// A frame for `d` (a rack, a group or a device).
 std::unique_ptr<FrameBase> makeFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d);
+// GU.9 (rack_view.cpp): whether the Device view shows group `d` as a rack (doc::rackChains: it has chains), and its frame.
+bool showsAsRack(ViewContext& ctx, const doc::Device& d);
 std::unique_ptr<FrameBase> makeRackFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d);
 // TX.groups (group_frame.cpp): a group's frame — its panel is the circuit of its contents (an embedded, scoped project
 // patch view); groupPatchView: that view, or null for another frame.
@@ -228,15 +210,10 @@ project_patch::ProjectPatchView* groupPatchView(FrameBase& f);
 // GU.3: a group frame's panel host (its panel with elements; null: it shows its mini circuit) or its inspector (an
 // instrument group's polyphony; null: none).
 panel::PanelHost* groupPanelHost(FrameBase& f, bool inspector);
-// The devices the Device view shows for a rack chain: all of them, in order.
-std::vector<doc::DevicePtr> shownDevices(const std::vector<doc::DevicePtr>& list);
 // TX.all-free (SPEC §15 2026-11-03 "everything is free"): the blocks the Device view lists for a track — its MAIN PATH,
 // in signal order (doc::mainPath; a group's members are never on it: its panel shows them). Blocks off the path are in
 // the free rack.
 std::vector<doc::DevicePtr> pathDevices(const doc::Project& p, const doc::Track& t, const doc::MainPath& path);
-// Devices of a rack's chain are framed like the track's: by makeFrame.
-// T4.8: the map-mode overlay (rack_frame.cpp): over the chain while a rack's Map is on.
-std::unique_ptr<ui::Widget> makeMapOverlay(DeviceChainView::Impl& impl);
 
 // TX.free-rack (free_rack.cpp): the free-device rack over the chain — a tab strip (collapse / expand, the count, Add
 // Free Device) and, expanded, the embedded circuit of the shown track's free devices with a resize handle under it.

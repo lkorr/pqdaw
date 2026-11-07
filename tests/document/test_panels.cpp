@@ -232,7 +232,7 @@ TEST_CASE("panels: deleting a bound block takes its elements off in the same com
     const TrackId other = d.edit(ops::createTrack(d.doc(), d.store.ids(), TrackKind::Midi, {}, "Other")).tracks.at(0);
     // (a member leaves its group first: MoveDevice keeps the tag, and a group tag names a group of the same track)
     const size_t h0 = d.store.history().cursor();
-    d.cmd(Batch{"Move", {SetDeviceGroup{d.v, {}}, MoveDevice{d.v, other, kAppend, {}}}});
+    d.cmd(Batch{"Move", {SetDeviceGroup{d.v, {}}, MoveDevice{d.v, other, kAppend}}});
     CHECK(d.store.history().cursor() == h0 + 1);
     REQUIRE(findDevice(d.doc(), d.v).track->id == other);
     CHECK(d.panel(d.g)->elements.size() == 4);

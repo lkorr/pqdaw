@@ -77,8 +77,8 @@ std::string_view deviceDescription(std::string_view patch) noexcept {
   if (patch == "eq_eight") return "An eight-band parametric equaliser with a live spectrum and its measured response.";
   if (patch == "auto_filter") return "A resonant filter with an envelope follower, an LFO and a sidechain input.";
   if (patch == "lfo_device") return "A low-frequency oscillator whose `lfo` jack modulates any parameter; the audio passes through.";
-  if (patch == doc::kAudioEffectRack) return "Parallel chains of audio effects with macros, chain volumes and zones.";
-  if (patch == doc::kInstrumentRack) return "Parallel chains of instruments and effects with key and velocity zones and macros.";
+  if (patch == doc::kAudioEffectRack) return "A group of parallel chains (child groups) of audio effects, summed, with macros on its panel.";
+  if (patch == doc::kInstrumentRack) return "An instrument group of parallel chains (child groups) of instruments and effects, with macros on its panel.";
   return {};
 }
 

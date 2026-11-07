@@ -43,37 +43,27 @@ bool pointLess(const Breakpoint& a, const Breakpoint& b);  // (tick, id)
 bool tuningParamApplies(const TuningDef& d, ParamKind k);
 bool trackHasSends(TrackKind k);
 // Whether `host` may carry a lane for `r` (see AddAutomationLane). T4.18: a device-kind param (isDeviceParamKind) only
-// on the track holding its device / chain / wire target (looked up in host's own device tree, so a track being inserted
-// with its devices checks against itself); `name` = AutomationLane::paramName (a DeviceParam's: an identifier whose
-// hash is r.target, a rack's macro or selector on a rack; "" for every other kind).
+// on the track holding its device / wire target (looked up in host's own devices, so a track being inserted with its
+// devices checks against itself); `name` = AutomationLane::paramName (a DeviceParam's: an identifier whose hash is
+// r.target; "" for every other kind).
 Status checkLaneParam(const Project& p, const Track& host, const ParamRef& r, std::string_view name);
 // T4.1: a track's device chain: devices present with valid ids, unique in the chain; the chain rule (a MIDI track holds
 // at most one instrument, at index 0, then audio effects; other tracks audio effects only); each device's patch name
 // non-empty and its params / settings sorted by name, unique, named and finite.
-// TMM.13-fix1 M8 (`where`, optional): on a refusal, the location of the device it is about — its index in `devices`,
-// then for a device inside a rack the chain's index and the device's index in that chain, and so on (empty when the
-// list itself is refused).
+// TMM.13-fix1 M8 (`where`, optional): on a refusal, the location of the device it is about — its index in `devices`
+// (empty when the list itself is refused).
 Status checkChain(TrackKind kind, const std::vector<DevicePtr>& devices, std::vector<size_t>* where = nullptr);
-// T4.8: where a device list lives: it decides whether it may start with an instrument.
-enum class ListKind : uint8_t { MidiTrack, OtherTrack, InstrumentRackChain, AudioRackChain };
+// Where a device list lives: it decides whether it may hold an instrument.
+enum class ListKind : uint8_t { MidiTrack, OtherTrack };
 ListKind listKindOf(TrackKind kind) noexcept;
-ListKind chainListKind(const Device& rack) noexcept;  // the kind of the lists inside a rack
-// A device list (any level): checkChain's rules for that kind of list, and every rack in it (recursively): its patch
-// and kind agree, chain ids valid and unique in the rack, chain mixers / zones valid, params only macros and the
-// selector (0 … 127), no settings, mappings sorted by id with valid fields onto devices inside the rack (or its own
-// selector), at most one mapping per target in the rack.
+// A device list: checkChain's rules for that kind of list.
 Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vector<size_t>* where = nullptr);
-// T4.8: one rack (as checkList checks every rack of a list; the chains' lists included).
-Status checkRack(const Device& rack);
-// A rack's own fields (its chains, zones, mappings), not the devices in its chains (checkList queues those: M4 M9).
-Status checkRackOwn(const Device& rack);
 // TMM.13-fix1 L7: a chain link (Wire::chain, a grouped series' link) joins, on one track, a group's In terminal, its
 // members and its Out terminal, of one group that is in the series (not free). "" = fine (or not a chain link).
 std::string chainLinkProblem(const Project& p, const Wire& w);
-Status checkMapping(const MacroMapping& m);  // its own fields
 // A device param / setting name (non-empty) and value (finite, when set).
 Status checkDeviceValue(const std::string& name, const std::optional<double>& value);
-// TX.knob-curves: Device::curves sorted, unique, never Default; none on a rack.
+// TX.knob-curves: Device::curves sorted, unique, never Default.
 Status checkParamCurves(const Device& d);
 // TMM.3 (model.h "Meta modules"): one instance of `d` at `path` — a valid path ("" only on a chain meta device of that
 // type, without params / settings), a registered type at its current version, the type's param / setting names

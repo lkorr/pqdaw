@@ -45,7 +45,6 @@ Result<BlockSet> copyBlocks(const Project& p, std::span<const DeviceId> devices)
   for (const DeviceId id : devices) {
     const DeviceLoc l = findDevice(p, id);
     if (l.device == nullptr) return notFound("Copy: device not found");
-    if (l.chain != nullptr) return invalid("Copy: a device inside a rack is copied with its rack");
     if (track != nullptr && l.track != track) return invalid("Copy: the blocks are on different tracks");
     track = l.track;
     picked.insert(id.value);
@@ -54,7 +53,7 @@ Result<BlockSet> copyBlocks(const Project& p, std::span<const DeviceId> devices)
   }
   // The set's top-level blocks first, then what is inside them, each in list order; a block whose group is not in the
   // set is a top-level block of the set (its tag cleared).
-  std::unordered_set<uint32_t> inside;  // every device id of the set, racks' inner devices included
+  std::unordered_set<uint32_t> inside;  // every device id of the set
   for (const bool top : {true, false})
     for (const DevicePtr& d : track->devices) {
       if (picked.count(d->id.value) == 0) continue;
@@ -67,7 +66,7 @@ Result<BlockSet> copyBlocks(const Project& p, std::span<const DeviceId> devices)
       } else {
         out.devices.push_back(d);
       }
-      forEachDeviceIn(*d, [&](const Device& x) { inside.insert(x.id.value); });
+      inside.insert(d->id.value);
     }
   for (const Wire& w : wiresOf(p)) {
     if (w.fromNoteSource() || w.toMixer()) continue;  // (a track's own ends: not part of a block set)
@@ -136,7 +135,7 @@ EditResult pasteBlocks(const Project& p, IdSource& ids, TrackId track, const Blo
   Batch& b = batchOf(e);
   for (const auto& [depth, i] : order) {
     if (depth == 0) e.devices.push_back(fresh.devices[i]->id);
-    b.commands.push_back(AddDevice{track, fresh.devices[i], kAppend, {}});
+    b.commands.push_back(AddDevice{track, fresh.devices[i], kAppend});
   }
   for (const auto& [depth, i] : order)
     if (depth != 0) e.devices.push_back(fresh.devices[i]->id);

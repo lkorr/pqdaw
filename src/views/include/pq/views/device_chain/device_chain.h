@@ -84,7 +84,7 @@ public:
   bool openInCircuitView(doc::DeviceId device);
   bool editDeviceCircuit(doc::DeviceId device);
   bool revertSelectedToStock();
-  // T4.8: Ctrl+G — the selected devices (of one list) into a new rack (pq/document/edit_ops.h groupDevices).
+  // Ctrl+G — the selected devices into a new group (doc::ops::groupInCircuit, as the circuit's Ctrl+G).
   bool groupSelected();
   // ---- T5.11: the user library (pq/views/browser/library_load.h) ---------------------------------------------------
   // The device's context menu: "Save Preset" (the browser then renames it inline), "Save as Default Preset" (a new
@@ -97,46 +97,33 @@ public:
   bool hotSwap(doc::DeviceId device);
   ui::DropFeedback dragOver(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
   ui::DropEffect drop(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
-  // T4.17: Ctrl+Shift+G: the selected rack (one chain) becomes its devices in place; Ctrl+R: renames the selected device
+  // Ctrl+Shift+G: the selected group becomes its devices in place (ungroupInCircuit); Ctrl+R: renames the selected device
   // in its title bar (Enter: one undo step). False when there is nothing to do (the reason in the status line).
   bool ungroupSelected();
   bool renameSelected();
-  // M4 review UI item 6 (Create menu): an empty Instrument / Audio Effect Rack after the selected device, else at the end.
+  // M4 review UI item 6 (Create menu): a new Instrument / Audio Effect Rack (doc::ops::addRack) after the selected
+  // device, else at the end.
   bool addRack(bool instrument);
   // ---- T4.16c: keyboard (Live's Device view; docs/HOTKEYS.md) -------------------------------------------------------
-  // Left / Right (device.selectPrev / Next): the neighbouring device in display order — a rack, then the devices of the
-  // chain it shows, then what follows the rack — so the arrows walk into and out of rack chains; nothing selected: the
+  // Left / Right (device.selectPrev / Next): the neighbouring device in display order; nothing selected: the
   // first / last. Shift (device.extendPrev / Next): adds the neighbour in the lead device's own list to the selection (or
   // steps back out of it), the devices Ctrl+G groups. Home / End: the first / last device of the selected device's list
   // (else the track's chain). Ctrl+Left / Right (device.moveLeft / Right): moves the one selected device a step along its
-  // list (one undo step; the instrument stays first). Up / Down (device.chainUp / Down): the selected rack, or the rack
-  // around the selected device, shows its previous / next chain. The selection is scrolled into view.
+  // list (one undo step). Up / Down (device.chainUp / Down): the selected rack, or the rack around the selected device,
+  // shows its previous / next chain. The selection is scrolled into view.
   bool selectNeighbour(int32_t dir, bool extend);
   bool selectEnd(bool last);
   bool moveSelected(int32_t dir);
   bool showNeighbourChain(int32_t dir);
   std::vector<doc::DeviceId> shownOrder() const;  // every device shown, in display order
   void revealDevice(doc::DeviceId device);        // scrolls the chain so the device's frame is in view
-  // T4.8: opens a rack's lowered subcircuit in the circuit viewer (read-only; rebuilt while open after a structural
-  // or meta edit of the rack, closed when the rack is removed; rack_frame.cpp, Q?-T4.8-a).
-  bool openRackCircuit(doc::DeviceId rack);
 
-  // ---- T4.8: racks (rack_frame.cpp) --------------------------------------------------------------------------------
-  // The chain a rack's frame shows (invalid: none; its first chain by default) and showing another one.
-  doc::ChainId shownChain(doc::DeviceId rack) const;
-  void showChain(doc::DeviceId rack, doc::ChainId chain);
-  // Macro map mode (Live's Map): on for `rack` (invalid: off). While on, a click on one of the rack's macros picks it;
-  // then a click on a knob of a device inside the rack (or on the rack's chain selector) maps it to that macro (or
-  // unmaps it when it already is), one undo step each.
-  void setMapMode(doc::DeviceId rack);
-  doc::DeviceId mapRack() const noexcept;
-  int32_t mapMacro() const noexcept;
-  void pickMacro(int32_t macro);
-  // Map mode: maps `device`.`param` to the picked macro (as the overlay's click does).
-  bool mapPicked(doc::DeviceId device, std::string_view param);
-  // The zone editor of a rack: shown (with the Key / Velocity / Chain tab) or hidden.
-  void showZones(doc::DeviceId rack, std::optional<doc::ZoneKind> tab);
-  std::optional<doc::ZoneKind> zonesShown(doc::DeviceId rack) const;
+  // ---- GU.9: racks (rack_view.cpp; a rack is a group of parallel chain groups, doc model.h "Racks") ----------------
+  // The chain group a rack's frame shows (its first chain by default; invalid: none) and showing another one.
+  doc::DeviceId shownChain(doc::DeviceId rack) const;
+  void showChain(doc::DeviceId rack, doc::DeviceId chain);
+  // A new empty chain in `rack` (doc::ops::addChain; the frame then shows it). One undo step.
+  bool addChain(doc::DeviceId rack);
   bool onKey(const ui::KeyEvent& e) override;
 
   // The device menu (the + slot, a right-click on empty space): the catalog's instruments and audio effects, TMM.10:
@@ -262,10 +249,6 @@ public:
   bool automationPolling() const noexcept;
   // The LEDs of a device's frame: (param, grey: overridden or macro-mapped); empty: none or no such frame. Tests.
   std::vector<std::pair<std::string, bool>> automationMarks(doc::DeviceId device) const;
-
-  // M4 review M9: rack frames show their chain's devices inline down to this many nested racks; a deeper rack shows its
-  // strip, macros and chain list but not its chain's devices, so the widget tree stays shallow however deep racks nest.
-  static constexpr uint32_t kMaxNestedRackFrames = 24;
 
   struct Impl;
 

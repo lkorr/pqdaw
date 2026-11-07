@@ -66,7 +66,6 @@ struct Ui {
   ArrangementView* arr = nullptr;
   doc::TrackId keys, bass;
   doc::DeviceId inst, lfo, filter, util, rack;
-  doc::ChainId chain;
   doc::WireId wire;
 
   Ui() {
@@ -80,8 +79,6 @@ struct Ui {
     lfo = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "lfo_device", doc::DeviceKind::AudioEffect)).devices[0];
     filter = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "auto_filter", doc::DeviceKind::AudioEffect)).devices[0];
     util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices[0];
-    rack = run(doc::ops::groupDevices(*st.current(), st.ids(), std::vector<doc::DeviceId>{util})).devices[0];
-    chain = doc::findDevice(*ctx.doc(), rack).device->rack->chains.at(0)->id;
     wire = run(doc::ops::connectTravelWire(*st.current(), st.ids(), lfo, "lfo", filter, "freq", 0.3)).wires[0];
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
@@ -146,62 +143,6 @@ struct Ui {
 };
 
 }  // namespace
-
-TEST_CASE("device automation (views): the chooser has a section per device, rack chain and the wires; names and scales") {
-  Ui u;
-  const doc::Project& p = *u.ctx.doc();
-  const std::vector<ParamChoice> choices = paramChoices(p, u.track(u.keys), &library());
-  auto find = [&](const doc::ParamRef& r) -> const ParamChoice* {
-    for (const ParamChoice& c : choices)
-      if (c.param == r) return &c;
-    return nullptr;
-  };
-  const ParamChoice* freq = find(doc::ParamRef::device(u.filter, "freq"));
-  REQUIRE(freq != nullptr);
-  CHECK(freq->group == "Auto Filter");
-  CHECK(freq->label == "Frequency");
-  const ParamChoice* macro = find(doc::ParamRef::device(u.rack, "macro1"));
-  REQUIRE(macro != nullptr);
-  CHECK(macro->group == "Audio Effect Rack");
-  CHECK(find(doc::ParamRef::device(u.rack, "select")) != nullptr);
-  const ParamChoice* vol = find(doc::ParamRef::chain(u.chain, doc::kChainVolume));
-  REQUIRE(vol != nullptr);
-  CHECK(vol->group == "Audio Effect Rack | Chain 1");
-  CHECK(find(doc::ParamRef::chain(u.chain, doc::kChainPan)) != nullptr);
-  CHECK(find(doc::ParamRef::device(u.util, "gain")) != nullptr);  // inside the rack
-  CHECK(find(doc::ParamRef::wireAmount(u.wire)) != nullptr);
-  CHECK(find(doc::ParamRef::device(u.inst, "bright")) != nullptr);
-  // Bass offers none of Keys' devices.
-  for (const ParamChoice& c : paramChoices(p, u.track(u.bass), &library()))
-    if (c.param.kind == doc::ParamKind::DeviceParam) CHECK(c.param.owner != u.filter.value);
-  // Names, the scale (GU.1: a device param's lane holds its knob position, drawn linearly: the knob's own travel), the
-  // knob's text.
-  CHECK(paramName(p, doc::ParamRef::device(u.filter, "freq"), &library()) == "Auto Filter: Frequency");
-  CHECK(paramName(p, doc::ParamRef::device(u.rack, "macro1"), &library()) == "Audio Effect Rack: Macro 1");
-  CHECK(paramName(p, doc::ParamRef::chain(u.chain, doc::kChainPan), &library()) == "Chain 1: Pan");
-  CHECK(paramName(p, doc::ParamRef::wireAmount(u.wire), &library()) == "LFO > Frequency: Amount");
-  CHECK(paramDisplay(p, doc::ParamRef::device(u.filter, "freq"), &library()).scale == ParamDisplay::Scale::Linear);
-  CHECK(paramDisplay(p, doc::ParamRef::device(u.util, "gain"), &library()).scale == ParamDisplay::Scale::Linear);
-  CHECK(paramDisplay(p, doc::ParamRef::device(u.util, "gain"), &library()).hi == 1.0);
-  CHECK(paramDisplay(p, doc::ParamRef::chain(u.chain, doc::kChainVolume), &library()).scale == ParamDisplay::Scale::Fader);
-  CHECK(formatParamValue(p, doc::ParamRef::device(u.filter, "freq"), u.pos(u.filter, "freq", 1500.0), &library()) == "1.50 kHz");
-  const ParamDisplay g = paramDisplay(p, doc::ParamRef::device(u.util, "gain"), &library());
-  CHECK(displayNorm(g, displayValue(g, 0.37)) == doctest::Approx(0.37));
-  CHECK(currentParamValue(p, doc::ParamRef::device(u.filter, "freq"), &library()) == doctest::Approx(u.pos(u.filter, "freq", 1000.0)));
-
-  // A macro-mapped param plays its macro (no runtime param of its own): not offered, unless it already has a lane.
-  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 0, u.util, "gain"));
-  auto offered = [&](const doc::ParamRef& r) {
-    for (const ParamChoice& c : paramChoices(*u.ctx.doc(), u.track(u.keys), &library()))
-      if (c.param == r) return true;
-    return false;
-  };
-  CHECK_FALSE(offered(doc::ParamRef::device(u.util, "gain")));
-  CHECK(offered(doc::ParamRef::device(u.util, "width")));
-  CHECK(offered(doc::ParamRef::device(u.rack, "macro1")));
-  u.addLane(doc::ParamRef::device(u.util, "gain"), "gain", {{0.0, 0.5f}, {1.0, 1.0f}});
-  CHECK(offered(doc::ParamRef::device(u.util, "gain")));
-}
 
 TEST_CASE("device automation (views): the first click on a device param's line makes its lane and a point (one undo step)") {
   Ui u;
@@ -289,71 +230,6 @@ TEST_CASE("device automation (views): a knob's Show Automation opens its lane; a
   u.ctx.reenableAutomation();
   CHECK_FALSE(u.view().automationMarks(u.filter).at(0).second);
   CHECK(panel->paramValue("freq") == doctest::Approx(halfway).epsilon(1e-4));
-}
-
-TEST_CASE("device automation (views): a chain row's Show Volume / Pan Automation; a macro-mapped knob has no lane of its own") {
-  Ui u;
-  u.view().revealDevice(u.rack);
-  u.d.tree().layoutNow();
-  auto* rackFrame = u.view().frameOf(u.rack);
-  REQUIRE(rackFrame != nullptr);
-  Widget* row = rackFrame->find("chains/chain[" + std::to_string(u.chain.value) + "]");
-  REQUIRE(row != nullptr);
-  auto choose = [&](Widget& at, Vec2 pos, const std::string& label) {
-    u.d.click(pos, mod::kNone, PointerButton::Right);
-    Menu* m = u.lastMenu();
-    REQUIRE(m != nullptr);
-    int32_t k = -1;
-    for (size_t i = 0; i < m->items().size(); ++i)
-      if (m->items()[i].label == label) k = static_cast<int32_t>(i);
-    if (k < 0) {
-      u.d.press("Escape");
-      u.d.step();
-      return false;
-    }
-    m->choose(k);
-    u.d.step();
-    (void)at;
-    return true;
-  };
-  // The row's name (left of its solo button): the chain's menu.
-  const Vec2 name{static_cast<float>(row->rect().x + 30), mid(row->rect()).y};
-  REQUIRE(choose(*row, name, "Show Pan Automation"));
-  std::vector<doc::ParamRef> shown = u.au().shownLanes(u.keys);
-  CHECK(std::find(shown.begin(), shown.end(), doc::ParamRef::chain(u.chain, doc::kChainPan)) != shown.end());
-  REQUIRE(choose(*row, name, "Show Volume Automation"));
-  shown = u.au().shownLanes(u.keys);
-  CHECK(std::find(shown.begin(), shown.end(), doc::ParamRef::chain(u.chain, doc::kChainVolume)) != shown.end());
-  // Only a chain lane on the track: the rows still follow it while playing (the timer runs), and stop with it.
-  u.addLane(doc::ParamRef::chain(u.chain, doc::kChainVolume), "", {{0.0, 0.0f}, {2.0, -12.0f}});
-  CHECK_FALSE(u.view().automationPolling());
-  u.ctx.togglePlay();
-  CHECK(u.view().automationPolling());
-  u.ctx.togglePlay();
-  u.view().applyAutomation();  // the timer's next tick
-  CHECK_FALSE(u.view().automationPolling());
-
-  // Utility's gain mapped to macro 1: its knob offers no Show Automation (the macro is what to automate) …
-  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 0, u.util, "gain"));
-  u.d.tree().layoutNow();
-  devices::DevicePanel* panel = u.view().panelOf(u.util);
-  REQUIRE(panel != nullptr);
-  Widget* gain = panel->controlFor("gain");
-  Widget* width = panel->controlFor("width");
-  REQUIRE(gain != nullptr);
-  REQUIRE(width != nullptr);
-  CHECK_FALSE(choose(*gain, mid(gain->rect()), "Show Automation"));
-  CHECK(choose(*width, mid(width->rect()), "Show Automation"));
-  // … and a lane it already had is inert: its LED grey (overridden-like), its knob left to the macro.
-  u.addLane(doc::ParamRef::device(u.util, "gain"), "gain", {{0.0, 0.1f}, {2.0, 0.2f}});
-  const auto marks = u.view().automationMarks(u.util);
-  REQUIRE(marks.size() == 1);
-  CHECK(marks[0].first == "gain");
-  CHECK(marks[0].second);  // grey
-  const double before = panel->paramValue("gain");
-  u.port.setPlayheadTick(kBar);
-  u.view().applyAutomation();
-  CHECK(panel->paramValue("gain") == before);
 }
 
 TEST_CASE("device automation (views): moving the device to another track takes its lane along; deleting it removes the lane") {

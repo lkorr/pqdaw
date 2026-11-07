@@ -9,7 +9,7 @@ namespace all_free {
 
 inline bool offPath(const pq::doc::Project& p, pq::doc::DeviceId d) {
   const pq::doc::DeviceLoc l = pq::doc::findDevice(p, d);
-  return l.track != nullptr && l.chain == nullptr && !pq::doc::mainPath(p, *l.track).contains(d);
+  return l.track != nullptr && !pq::doc::mainPath(p, *l.track).contains(d);
 }
 
 // The project's wires that are not main links (the ones a test draws: the main paths' links are the series).

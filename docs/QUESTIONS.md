@@ -2325,3 +2325,22 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **Selected control**: every left press in the circuit sets it to the control under the pointer (a face / panel control, a param pin, a one-control block like a value block) or clears it; with none, P sends the selected blocks' controls (all params of each).
 - **Link lines** go from the element to the control's place in the circuit (a face's control, a pin, the element of a closed group's panel, else the block's centre); shown for all elements while the window is the last pressed or its group is selected, else for the hovered element only.
 - Status: open (provisional choices above).
+
+## Q?-GU.9-a · 2026-11-07 · GU.9 · Racks are groups: what is in, what is left out, and the choices made
+- **In:** a rack = a group whose member groups are fed from its In (`doc::rackChains`, derived from the wires: no flag);
+  chains sum at Out; Instrument Rack = instrument group of chain groups (only the outermost fed group voices); 8 macros
+  (value blocks 0 … 1, knobs on the rack's panel); mapping = Travel wire (amount max − min, the target knob set to min);
+  the chain selector (value block "Chain Select" 0 … 127 stepped, constants "1" / "0", per chain lo / hi value blocks + sub / min / add / clip
+  / mul atoms — reals only: atom blocks into bool inputs did not lower; a chain added later gets its gate). Device view: chain list (click shows, "+ Chain" adds,
+  Up / Down step), the panel of macros, the shown chain's circuit.
+- **Left out (provisional, most reversible):** key and velocity zones (they need the note's Hz / velocity at note-on per
+  chain: a gate of voice atoms inside the instrument group — doable, but voice atoms are not blocks yet, GU.2), zone fades,
+  the chain mixer (volume / pan: a Utility or VCA in the chain does it), chain solo, macro variations / Rand, Map mode in
+  the Device view (wire the macro in the circuit, or `ops::mapMacro`), the old rack goldens and "Open Lowered Rack
+  Patch". Options for zones later: (a) voice atoms as blocks + a gate per chain like the selector's; (b) a `zone` atom.
+  I'd pick (a).
+- **Mapping law:** a Travel wire (position += amount · macro) instead of a new Wire offset field: min is the control's own
+  knob. Moving that knob by hand moves the mapping's min (Live keeps min fixed). Alternative: an `offset` on Wire.
+- **No compatibility** (user 2026-11-07): projects / presets with old racks do not load; the repo's rack fixtures
+  (`all_free/racks`, `gu1_curves/macro`) and goldens (`audio-rack`, `instrument-rack`) were deleted, the `device-automation`
+  scene lost its rack (re-recorded).

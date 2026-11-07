@@ -202,17 +202,6 @@ TEST_CASE("control curves: SetParamCurve keeps the knob position (the sound foll
   CHECK_FALSE(ops::setParamCurve(d.doc(), library(), d.eq, "nope", std::nullopt).ok());
   // A knob position outside [0, 1] is refused by the store (a value in units: ops::setDeviceParamValue).
   CHECK_FALSE(d.store.dispatch(SetDeviceParam{d.eq, "freq1", 440.0}).ok());
-  // A rack's macros are 0 … 127: no curve.
-  auto rack = ops::groupDevices(d.doc(), d.store.ids(), std::vector<DeviceId>{d.lfo});
-  REQUIRE(rack.ok());
-  REQUIRE(d.store.dispatch(rack->command).ok());
-  const Track* t = findTrackPtr(d.doc(), d.keys);
-  DeviceId rackId;
-  for (const DevicePtr& x : t->devices)
-    if (x->rack) rackId = x->id;
-  REQUIRE(rackId.valid());
-  CHECK_FALSE(ops::setParamCurve(d.doc(), library(), rackId, "macro0", std::nullopt).ok());
-  CHECK_FALSE(d.store.dispatch(SetParamCurve{rackId, "macro0", dsp::curvePreset(dsp::CurvePreset::Linear, 0, 1), true}).ok());
 }
 
 TEST_CASE("control curves: the file — curve objects under \"curves\", read back equal, bad entries refused") {

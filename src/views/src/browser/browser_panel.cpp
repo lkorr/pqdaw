@@ -870,7 +870,7 @@ bool BrowserPanel::loadSelection() {
         ctx_.setStatus("Select a track to load " + name + " into");
         return false;
       }
-      auto d = loadDeviceItem(ctx_, item, DeviceSlot{track, doc::kAppend, {}});
+      auto d = loadDeviceItem(ctx_, item, DeviceSlot{track, doc::kAppend});
       ctx_.setStatus(d ? name + " loaded" : "Could not load " + name + ": " + d.error().message);
       return d.ok();
     }

@@ -270,11 +270,6 @@ std::string deviceParamNameOf(const Project& p, const DeviceLibrary* lib, const 
   if (r.kind != ParamKind::DeviceParam) return {};
   const Device* d = findDevice(p, DeviceId{r.owner}).device;
   if (d == nullptr) return {};
-  if (d->rack) {
-    for (uint32_t i = 0; i < kMacroCount; ++i)
-      if (std::string n = macroParamName(i); deviceParamHash(n) == r.target) return n;
-    return deviceParamHash(kSelectParam) == r.target ? std::string(kSelectParam) : std::string();
-  }
   if (lib != nullptr) {
     std::shared_ptr<const ResolvedDevice> hold;
     if (const DeviceInfo* info = lib->infoOf(*d, hold))
