@@ -135,6 +135,8 @@ struct S8 {
   static F exactExp(F x) noexcept { return _mm256_exp_ps(x); }
   static F exactLog(F x) noexcept { return _mm256_log_ps(x); }
   static F exactPow(F a, F b) noexcept { return _mm256_pow_ps(a, b); }
+  static F exactExpm1(F x) noexcept { return _mm256_expm1_ps(x); }  // GU.1: the curve atom
+  static F exactLog1p(F x) noexcept { return _mm256_log1p_ps(x); }
 
   // Unit conversions in double (correctly rounded to float in practice). f(d) maps __m256d → __m256d.
   template <class Fn>
@@ -267,6 +269,8 @@ struct S1 {
   static F exactExp(F x) noexcept { return lane0(S8::exactExp(wide(x))); }
   static F exactLog(F x) noexcept { return lane0(S8::exactLog(wide(x))); }
   static F exactPow(F a, F b) noexcept { return lane0(S8::exactPow(wide(a), wide(b))); }
+  static F exactExpm1(F x) noexcept { return lane0(S8::exactExpm1(wide(x))); }  // GU.1
+  static F exactLog1p(F x) noexcept { return lane0(S8::exactLog1p(wide(x))); }
   // Each is S8's lambda body on one 4-double half, converted the same way (vcvtpd2ps).
   static F exactCentsToHz(F c, F ref) noexcept {
     return _mm256_cvtpd_ps(_mm256_mul_pd(wideD(ref), _mm256_exp2_pd(_mm256_div_pd(wideD(c), _mm256_set1_pd(1200.0)))));

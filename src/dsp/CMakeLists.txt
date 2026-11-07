@@ -23,6 +23,8 @@ pq_add_module(pq_dsp
     src/kernels_frame_table.cpp
     src/kernels_wave_live.cpp
     src/kernels_signal_tap.cpp
+    src/kernels_curve.cpp
+    src/curve.cpp
     src/fft_mixed.cpp
   DEPS pq_core
 )

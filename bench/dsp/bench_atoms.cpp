@@ -26,6 +26,7 @@ void addResampleBenches(pq::bench::Runner& runner);  // bench_resample.cpp (T5.4
 void addFrameTableBenches(pq::bench::Runner& runner);  // bench_frame_table.cpp (TMM.1)
 void addOversampleBenches(pq::bench::Runner& runner);  // bench_oversample.cpp (TMM.6)
 void addWaveLiveBenches(pq::bench::Runner& runner);    // bench_wave_live.cpp (TMM.8)
+void addCurveBenches(pq::bench::Runner& runner);       // bench_curve.cpp (GU.1)
 void printOversampleTable();
 
 namespace {
@@ -208,8 +209,9 @@ int main(int argc, char** argv) {
     // signal_tap stays: a null tap is its hidden case (a relaxed load). TMM.6: the oversample converters need their
     // factor (bench_oversample.cpp).
     const pq::dsp::Resource res = pq::dsp::kernelInfo(a).resource;
-    const bool noFixture =
-        res == pq::dsp::Resource::Tuning || res == pq::dsp::Resource::FrameTable || res == pq::dsp::Resource::VoiceTap;
+    // GU.1: curve needs its slot's data (bench_curve.cpp: one segment linear / exp, 16 segments).
+    const bool noFixture = res == pq::dsp::Resource::Tuning || res == pq::dsp::Resource::FrameTable ||
+                           res == pq::dsp::Resource::VoiceTap || res == pq::dsp::Resource::Curve;
     const bool converter = ai >= static_cast<uint32_t>(Atom::OversampleUp) && ai <= static_cast<uint32_t>(Atom::OversampleAny);
     if (!noFixture && !converter) add(a, 0, "");
   }
@@ -237,6 +239,7 @@ int main(int argc, char** argv) {
   addFrameTableBenches(runner);
   addOversampleBenches(runner);
   addWaveLiveBenches(runner);
+  addCurveBenches(runner);
   const int code = runner.main(static_cast<int>(args.size()), args.data());
   printOversampleTable();
   if (code != 0 || rows.empty()) return code;

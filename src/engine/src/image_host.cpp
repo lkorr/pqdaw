@@ -273,6 +273,8 @@ const void* resourceFor(const Resources* r, dsp::Resource kind, uint32_t index, 
       return r && index < r->voiceTaps.size() ? r->voiceTaps[index] : nullptr;
     case dsp::Resource::SignalTap:  // TX.spectrum: no default (the kernel writes nothing)
       return r && index < r->signalTaps.size() ? r->signalTaps[index] : nullptr;
+    case dsp::Resource::Curve:  // GU.1: no default (the kernel is then the identity on its position)
+      return r && index < r->curves.size() ? r->curves[index] : nullptr;
     default: return nullptr;
   }
 }

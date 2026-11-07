@@ -24,6 +24,7 @@ constexpr ArgMap kZ1[] = {{U::Input, 0}, {U::InitZ1, 0}};                       
 constexpr ArgMap kDelay[] = {{U::Input, 0}, {U::InputSeconds, 1}, {U::InitMaxDelaySeconds, 0}};  // x, time, max
 constexpr ArgMap kWavetable[] = {{U::Input, 0}, {U::Resource, 0}};                      // phase, table
 constexpr ArgMap kShaper[] = {{U::Input, 0}, {U::Resource, 0}};                         // x, table
+constexpr ArgMap kCurve[] = {{U::Input, 0}, {U::Input, 1}, {U::Resource, 0}};           // x, convert, slot (GU.1)
 constexpr ArgMap kWavetablePos[] = {{U::Input, 0}, {U::Input, 1}, {U::Resource, 0}};    // phase, position, table
 constexpr ArgMap kVoiceTap[] = {{U::Input, 0}, {U::Resource, 0}};                       // x, slot
 constexpr ArgMap kSignalTap[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // inL, inR, outL, outR,
@@ -58,6 +59,7 @@ constexpr Special kSpecial[] = {
     {"delay_allpass", kDelay},
     {"wavetable", kWavetable},
     {"shaper", kShaper},
+    {"curve", kCurve},
     {"wavetable_pos", kWavetablePos},
     {"voice_tap", kVoiceTap},
     {"signal_tap", kSignalTap},

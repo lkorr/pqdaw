@@ -359,7 +359,7 @@ Result<UnitImage> ProjectCompiler::bind(uint32_t u, std::unique_ptr<ProgramImage
       if (op.kind != graph::OpKind::Kernel || op.resource == graph::kNone) continue;
       const dsp::Resource kind = dsp::kernelInfo(op.kernel).resource;
       if (kind != dsp::Resource::Tuning && kind != dsp::Resource::FrameTable && kind != dsp::Resource::VoiceTap &&
-          kind != dsp::Resource::SignalTap)  // TX.spectrum
+          kind != dsp::Resource::SignalTap && kind != dsp::Resource::Curve)  // TX.spectrum; GU.1
         continue;
       if (std::find(seen.begin(), seen.end(), std::pair(kind, op.resource)) != seen.end()) continue;
       seen.emplace_back(kind, op.resource);

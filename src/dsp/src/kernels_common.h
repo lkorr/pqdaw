@@ -127,5 +127,6 @@ KernelFn findFrameTableKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcep
 KernelFn findWaveLiveKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;    // TMM.8 (kernels_wave_live.cpp)
 KernelFn findRampKernel(Atom a, uint32_t lanes) noexcept;  // TX.smooth: param_ramp (kernels_ramp.cpp)
 KernelFn findSignalTapKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // TX.spectrum (kernels_signal_tap.cpp)
+KernelFn findCurveKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // GU.1 (kernels_curve.cpp)
 
 }  // namespace pq::dsp::detail

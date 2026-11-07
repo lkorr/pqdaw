@@ -57,6 +57,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "wavetable_live", "wavetable_shape",
       // TMM.6: the oversample region's rate converters (compiler-inserted: atom_flags::kInternal).
       "oversample_up", "oversample_down", "oversample_phase", "oversample_hold", "oversample_any",
+      // GU.1: a driven control's curve (its CurveSlot's data).
+      "curve",
   };
   for (const char* n : names) {
     CAPTURE(n);

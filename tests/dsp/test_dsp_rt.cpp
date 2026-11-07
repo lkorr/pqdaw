@@ -9,6 +9,7 @@
 #include "pq/core/aligned_buffer.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/dsp/atoms.h"
+#include "pq/dsp/curve.h"
 #include "pq/core/voice_tap.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/dsp/frame_table_slot.h"
@@ -57,6 +58,14 @@ TEST_CASE("rt: every atom kernel and initState are allocation-free") {
   slot.tap()->addReader();
   pq::VoiceTap tap(pq::VoiceTapConfig{});
   tap.addReader();
+  // GU.1: a curve slot holding 16 segments of every shape (the kernel's search, gathers and blends).
+  pq::dsp::Curve curve = pq::dsp::curvePreset(pq::dsp::CurvePreset::Linear, -3.0, 5.0);
+  curve.segments = 16;
+  for (uint32_t i = 0; i <= 16; ++i) curve.points[i] = {static_cast<double>(i) / 16.0, (i % 3) / 2.0};
+  for (uint32_t i = 0; i < 16; ++i) curve.shapes[i] = {static_cast<pq::dsp::CurveShape>(i % 5), 1.5};
+  curve.step = 0.25;
+  REQUIRE(pq::dsp::validCurve(curve));
+  pq::dsp::CurveSlot curveSlot(pq::dsp::compileCurve(curve));
 
   std::vector<pq::AlignedBuffer<float>> in, out;
   for (uint32_t i = 0; i < kMaxIn; ++i) in.emplace_back(static_cast<size_t>(kFrames) * 8);
@@ -84,6 +93,7 @@ TEST_CASE("rt: every atom kernel and initState are allocation-free") {
                            : info.resource == pq::dsp::Resource::Tuning  ? static_cast<const void*>(&tt->view())
                            : info.resource == pq::dsp::Resource::FrameTable ? static_cast<const void*>(&slot)
                            : info.resource == pq::dsp::Resource::VoiceTap   ? static_cast<const void*>(&tap)
+                           : info.resource == pq::dsp::Resource::Curve      ? static_cast<const void*>(&curveSlot)
                                                                             : nullptr;
     const uint32_t specMax = info.variadicIn ? 15u : info.splSpecMask;
     for (uint32_t lanes : {1u, 8u}) {

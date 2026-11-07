@@ -186,6 +186,15 @@
 //                                     L / R) into the SignalTap resource's ring (null: nothing) while a reader is
 //                                     registered (TapRing::wanted: unwatched one relaxed load per call). Every input
 //                                     may be Spl or Blk (a param-rate input is repeated); 8 lanes: the lanes summed.
+// Control curves (GU.1; kernels_curve.cpp; the model, its double evaluator and the coefficient form in pq/dsp/curve.h):
+//   curve (x, convert) → value        a driven control's curve at knob position x (any rate): the slot's CurveData
+//                                     (Resource::Curve, a dsp::CurveSlot: one acquire load per call), clamp / wrap /
+//                                     signed by its mode, the segment found by comparison (several segments: the
+//                                     coefficients gathered per lane), the shape (exact expm1 / log1p / pow), then the
+//                                     step and — when the const `convert` ≠ 0 — the output conversion (dB → gain:
+//                                     exactly db_to_gain's). Element-wise and stateless; equals curve.h evalCurve to
+//                                     float rounding. Without a slot (a lowering without the link's curve slots) it is
+//                                     the identity on x.
 
 #include <cstddef>
 #include <cstdint>
@@ -229,6 +238,8 @@ enum class Atom : uint16_t {
   ParamRamp,
   // TX.spectrum: the analysis-tap sink (see "Analysis taps" above)
   SignalTap,
+  // GU.1: a driven control's curve (see "Control curves" above)
+  Curve,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);
@@ -236,7 +247,8 @@ inline constexpr uint32_t kSignalTapChannels = 4;  // signal_tap's inputs: in L,
 
 // TMM.2: FrameTable = a dsp::FrameTableSlot (frame_table_slot.h), VoiceTap = a pq::VoiceTap (pq/core/voice_tap.h).
 // TX.spectrum: SignalTap = a pq::TapRing of kSignalTapChannels channels (pq/core/tap_ring.h).
-enum class Resource : uint8_t { None, Wavetable, Shaper, Sample, Tuning, FrameTable, VoiceTap, SignalTap };
+// GU.1: Curve = a dsp::CurveSlot (curve.h).
+enum class Resource : uint8_t { None, Wavetable, Shaper, Sample, Tuning, FrameTable, VoiceTap, SignalTap, Curve };
 
 // Static description of an atom kernel (for the T1.1 registry and the interpreter).
 struct KernelInfo {

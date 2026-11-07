@@ -100,6 +100,8 @@ constexpr PortSpec pSampleHold[] = {{"x", kR}, {"trig", kB}};
 constexpr PortSpec pLatch[] = {{"x", kAny}, {"enable", kB}};
 
 constexpr PortSpec pShaper[] = {{"x", kR}, {"table", kRConst, true, 0.0f}};
+// GU.1: a control's curve; `convert` 0 leaves out its output conversion (dB → gain), `slot` its CurveSlot.
+constexpr PortSpec pCurve[] = {{"x", kR}, {"convert", kRConst, true, 1.0f}, {"slot", kRConst, true, 0.0f}};
 constexpr PortSpec pChannel[] = {{"x", kAny}, {"index", kRConst}};
 constexpr PortSpec pChannelOut[] = {{"out", kRMonoOut}};
 constexpr PortSpec pPack[] = {{"in", kAny}};
@@ -232,6 +234,7 @@ const AtomSignature kAtoms[] = {
 
     // Shaping.
     {"shaper", C::Shaping, pShaper, pOutR, 0, kMath, 0, {}, "transfer curve: table read by input value"},
+    {"curve", C::Shaping, pCurve, pOutR, 0, kMath, 0, {}, "a control's curve: knob position → value (its slot's data)"},
 
     // Memory. delay*: time in seconds (the compiler multiplies by sr; the kernels take samples), max (const,
     // seconds) sizes the buffer. The read is clamped to at least 1 (linear), 2 (cubic) or 1.5 (allpass) samples,
