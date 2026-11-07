@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "lone_instrument.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
 #include "pq/ui/controls.h"
@@ -59,6 +60,7 @@ struct Ui {
       return *e;
     };
     keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks[0];
+    view_fixture::loneInstrument(st, library(), keys);  // IG.1-2 (lone_instrument.h)
     grp = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Group, {}, "Bus")).tracks[0];
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));

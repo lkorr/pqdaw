@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 18,
+  "schemaVersion": 19,
   "timeline": {
     "tempo": [
       {"tick": 0, "bpm": 122.0, "curve": "step"}
@@ -42,14 +42,15 @@
       "colour": "#EF7B7B",
       "active": true,
       "tuning": "inherit",
-      "mixer": {"volumeDb": -3.5, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 27, "levelDb": -12.0, "preFader": false}, {"target": 29, "levelDb": -70.0, "preFader": true}], "output": "default"},
+      "mixer": {"volumeDb": -3.5, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 42, "levelDb": -12.0, "preFader": false}, {"target": 44, "levelDb": -70.0, "preFader": true}], "output": "default"},
       "lanes": [],
       "devices": [
-        {"id": 6, "patch": "BasicSynth", "kind": "instrument"}
+        {"id": 6, "patch": "BasicSynth", "kind": "instrument", "group": 7},
+        {"id": 7, "patch": "Group", "kind": "audioEffect", "settings": {"glide": 0.0, "steal": 0.0, "voices": 16.0}}
       ],
       "clips": [
         {
-          "id": 31,
+          "id": 46,
           "name": "Beat",
           "colour": "#EF7B7B",
           "start": 0,
@@ -60,33 +61,34 @@
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 32, "start": 0, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-            {"id": 33, "start": 110880, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 34, "start": 221760, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-            {"id": 35, "start": 332640, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 36, "start": 443520, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-            {"id": 37, "start": 554400, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 38, "start": 665280, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-            {"id": 39, "start": 776160, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0}
+            {"id": 47, "start": 0, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 48, "start": 110880, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 49, "start": 221760, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 50, "start": 332640, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 51, "start": 443520, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 52, "start": 554400, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 53, "start": 665280, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 54, "start": 776160, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0}
           ]
         }
       ]
     },
     {
-      "id": 9,
+      "id": 12,
       "kind": "midi",
       "name": "Bass",
       "colour": "#E68632",
       "active": true,
       "tuning": {"main": 4},
-      "mixer": {"volumeDb": -6.0, "pan": 0.0, "mute": false, "solo": false, "arm": true, "sends": [{"target": 29, "levelDb": -70.0, "preFader": true}], "output": "default"},
+      "mixer": {"volumeDb": -6.0, "pan": 0.0, "mute": false, "solo": false, "arm": true, "sends": [{"target": 44, "levelDb": -70.0, "preFader": true}], "output": "default"},
       "lanes": [],
       "devices": [
-        {"id": 10, "patch": "BasicSynth", "kind": "instrument"}
+        {"id": 13, "patch": "BasicSynth", "kind": "instrument", "group": 14},
+        {"id": 14, "patch": "Group", "kind": "audioEffect", "settings": {"glide": 0.0, "steal": 0.0, "voices": 16.0}}
       ],
       "clips": [
         {
-          "id": 40,
+          "id": 55,
           "name": "Bass",
           "colour": "#E68632",
           "start": 0,
@@ -97,44 +99,45 @@
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 41, "start": 0, "length": 110880, "pitch": {"degree": 0, "equave": -1}, "velocity": 100.0},
-            {"id": 42, "start": 110880, "length": 110880, "pitch": {"degree": 5, "equave": -1}, "velocity": 100.0},
-            {"id": 43, "start": 221760, "length": 110880, "pitch": {"degree": 1, "equave": -1}, "velocity": 100.0},
-            {"id": 44, "start": 332640, "length": 110880, "pitch": {"degree": 6, "equave": -1}, "velocity": 100.0},
-            {"id": 45, "start": 443520, "length": 110880, "pitch": {"degree": 2, "equave": -1}, "velocity": 100.0},
-            {"id": 46, "start": 554400, "length": 110880, "pitch": {"degree": 7, "equave": -1}, "velocity": 100.0},
-            {"id": 47, "start": 665280, "length": 110880, "pitch": {"degree": 3, "equave": -1}, "velocity": 100.0},
-            {"id": 48, "start": 776160, "length": 110880, "pitch": {"degree": 8, "equave": -1}, "velocity": 100.0}
+            {"id": 56, "start": 0, "length": 110880, "pitch": {"degree": 0, "equave": -1}, "velocity": 100.0},
+            {"id": 57, "start": 110880, "length": 110880, "pitch": {"degree": 5, "equave": -1}, "velocity": 100.0},
+            {"id": 58, "start": 221760, "length": 110880, "pitch": {"degree": 1, "equave": -1}, "velocity": 100.0},
+            {"id": 59, "start": 332640, "length": 110880, "pitch": {"degree": 6, "equave": -1}, "velocity": 100.0},
+            {"id": 60, "start": 443520, "length": 110880, "pitch": {"degree": 2, "equave": -1}, "velocity": 100.0},
+            {"id": 61, "start": 554400, "length": 110880, "pitch": {"degree": 7, "equave": -1}, "velocity": 100.0},
+            {"id": 62, "start": 665280, "length": 110880, "pitch": {"degree": 3, "equave": -1}, "velocity": 100.0},
+            {"id": 63, "start": 776160, "length": 110880, "pitch": {"degree": 8, "equave": -1}, "velocity": 100.0}
           ]
         }
       ]
     },
     {
-      "id": 25,
+      "id": 40,
       "kind": "group",
       "name": "Keys",
       "colour": "#8499F0",
       "active": true,
       "tuning": "inherit",
-      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 29, "levelDb": -70.0, "preFader": true}], "output": "default"},
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 44, "levelDb": -70.0, "preFader": true}], "output": "default"},
       "lanes": [],
       "devices": [],
       "children": [
         {
-          "id": 13,
+          "id": 19,
           "kind": "midi",
           "name": "Piano",
           "colour": "#46A5E8",
           "active": true,
           "tuning": "inherit",
-          "mixer": {"volumeDb": 0.0, "pan": -0.4, "mute": false, "solo": false, "arm": false, "sends": [{"target": 27, "levelDb": -6.0, "preFader": false}, {"target": 29, "levelDb": -70.0, "preFader": true}], "output": "default"},
+          "mixer": {"volumeDb": 0.0, "pan": -0.4, "mute": false, "solo": false, "arm": false, "sends": [{"target": 42, "levelDb": -6.0, "preFader": false}, {"target": 44, "levelDb": -70.0, "preFader": true}], "output": "default"},
           "lanes": [],
           "devices": [
-            {"id": 14, "patch": "BasicSynth", "kind": "instrument"}
+            {"id": 20, "patch": "BasicSynth", "kind": "instrument", "group": 21},
+            {"id": 21, "patch": "Group", "kind": "audioEffect", "settings": {"glide": 0.0, "steal": 0.0, "voices": 16.0}}
           ],
           "clips": [
             {
-              "id": 49,
+              "id": 64,
               "name": "Chords",
               "colour": "#46A5E8",
               "start": 0,
@@ -145,24 +148,24 @@
               "tuning": "inherit",
               "active": true,
               "notes": [
-                {"id": 50, "start": 0, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 51, "start": 0, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 52, "start": 0, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
-                {"id": 53, "start": 887040, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
-                {"id": 54, "start": 887040, "length": 776160, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
-                {"id": 55, "start": 887040, "length": 776160, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
-                {"id": 56, "start": 1774080, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 57, "start": 1774080, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 58, "start": 1774080, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
-                {"id": 59, "start": 2661120, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
-                {"id": 60, "start": 2661120, "length": 776160, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
-                {"id": 61, "start": 2661120, "length": 776160, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0}
+                {"id": 65, "start": 0, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 66, "start": 0, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 67, "start": 0, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 68, "start": 887040, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 69, "start": 887040, "length": 776160, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+                {"id": 70, "start": 887040, "length": 776160, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+                {"id": 71, "start": 1774080, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 72, "start": 1774080, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 73, "start": 1774080, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 74, "start": 2661120, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 75, "start": 2661120, "length": 776160, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+                {"id": 76, "start": 2661120, "length": 776160, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0}
               ]
             }
           ]
         },
         {
-          "id": 17,
+          "id": 26,
           "kind": "midi",
           "name": "Pad",
           "colour": "#BB86F0",
@@ -175,14 +178,15 @@
               "referenceHz": 261.626
             }
           },
-          "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": true, "solo": false, "arm": false, "sends": [{"target": 29, "levelDb": -70.0, "preFader": true}], "output": "default"},
+          "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": true, "solo": false, "arm": false, "sends": [{"target": 44, "levelDb": -70.0, "preFader": true}], "output": "default"},
           "lanes": [],
           "devices": [
-            {"id": 18, "patch": "BasicSynth", "kind": "instrument"}
+            {"id": 27, "patch": "BasicSynth", "kind": "instrument", "group": 28},
+            {"id": 28, "patch": "Group", "kind": "audioEffect", "settings": {"glide": 0.0, "steal": 0.0, "voices": 16.0}}
           ],
           "clips": [
             {
-              "id": 62,
+              "id": 77,
               "name": "Pad 22",
               "colour": "#BB86F0",
               "start": 1774080,
@@ -193,9 +197,9 @@
               "tuning": "inherit",
               "active": true,
               "notes": [
-                {"id": 63, "start": 0, "length": 1774080, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 64, "start": 0, "length": 1774080, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
-                {"id": 65, "start": 0, "length": 1774080, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0}
+                {"id": 78, "start": 0, "length": 1774080, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 79, "start": 0, "length": 1774080, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 80, "start": 0, "length": 1774080, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0}
               ]
             }
           ]
@@ -203,20 +207,21 @@
       ]
     },
     {
-      "id": 21,
+      "id": 33,
       "kind": "midi",
       "name": "Lead",
       "colour": "#16B293",
       "active": true,
       "tuning": "inherit",
-      "mixer": {"volumeDb": 2.0, "pan": 0.24, "mute": false, "solo": true, "arm": false, "sends": [{"target": 27, "levelDb": -20.0, "preFader": false}, {"target": 29, "levelDb": -3.0, "preFader": true}], "output": {"track": 25}},
+      "mixer": {"volumeDb": 2.0, "pan": 0.24, "mute": false, "solo": true, "arm": false, "sends": [{"target": 42, "levelDb": -20.0, "preFader": false}, {"target": 44, "levelDb": -3.0, "preFader": true}], "output": {"track": 40}},
       "lanes": [],
       "devices": [
-        {"id": 22, "patch": "BasicSynth", "kind": "instrument"}
+        {"id": 34, "patch": "BasicSynth", "kind": "instrument", "group": 35},
+        {"id": 35, "patch": "Group", "kind": "audioEffect", "settings": {"glide": 0.0, "steal": 0.0, "voices": 16.0}}
       ],
       "clips": [
         {
-          "id": 66,
+          "id": 81,
           "name": "Hook",
           "colour": "#16B293",
           "start": 3548160,
@@ -227,18 +232,18 @@
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 67, "start": 0, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 68, "start": 221760, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 69, "start": 443520, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 70, "start": 665280, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
-            {"id": 71, "start": 887040, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 72, "start": 1108800, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 73, "start": 1330560, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 74, "start": 1552320, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
-            {"id": 75, "start": 1774080, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 76, "start": 1995840, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 77, "start": 2217600, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 78, "start": 2439360, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
+            {"id": 82, "start": 0, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 83, "start": 221760, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 84, "start": 443520, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 85, "start": 665280, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 86, "start": 887040, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 87, "start": 1108800, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 88, "start": 1330560, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 89, "start": 1552320, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 90, "start": 1774080, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 91, "start": 1995840, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 92, "start": 2217600, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 93, "start": 2439360, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
           ]
         }
       ]
@@ -246,18 +251,18 @@
   ],
   "returns": [
     {
-      "id": 27,
+      "id": 42,
       "kind": "return",
       "name": "A Reverb",
       "colour": "#92A7FF",
       "active": true,
       "tuning": "inherit",
-      "mixer": {"volumeDb": -9.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 29, "levelDb": -70.0, "preFader": true}], "output": "default"},
+      "mixer": {"volumeDb": -9.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [{"target": 44, "levelDb": -70.0, "preFader": true}], "output": "default"},
       "lanes": [],
       "devices": []
     },
     {
-      "id": 29,
+      "id": 44,
       "kind": "return",
       "name": "B Delay",
       "colour": "#10A4EE",
@@ -281,28 +286,38 @@
   },
   "wires": [
     {"id": 3, "notes": 2, "port": "", "mixer": 2, "param": ""},
-    {"id": 7, "notes": 5, "port": "", "to": 6, "param": ""},
-    {"id": 8, "from": 6, "port": "", "mixer": 5, "param": ""},
-    {"id": 11, "notes": 9, "port": "", "to": 10, "param": ""},
-    {"id": 12, "from": 10, "port": "", "mixer": 9, "param": ""},
-    {"id": 15, "notes": 13, "port": "", "to": 14, "param": ""},
-    {"id": 16, "from": 14, "port": "", "mixer": 13, "param": ""},
-    {"id": 19, "notes": 17, "port": "", "to": 18, "param": ""},
-    {"id": 20, "from": 18, "port": "", "mixer": 17, "param": ""},
-    {"id": 23, "notes": 21, "port": "", "to": 22, "param": ""},
-    {"id": 24, "from": 22, "port": "", "mixer": 21, "param": ""},
-    {"id": 26, "notes": 25, "port": "", "mixer": 25, "param": ""},
-    {"id": 28, "notes": 27, "port": "", "mixer": 27, "param": ""},
-    {"id": 30, "notes": 29, "port": "", "mixer": 29, "param": ""}
+    {"id": 8, "notes": 5, "port": "", "to": 7, "param": ""},
+    {"id": 9, "from": 7, "port": "", "mixer": 5, "param": ""},
+    {"id": 10, "from": 7, "port": "input", "to": 6, "param": "", "chain": true},
+    {"id": 11, "from": 6, "port": "", "to": 7, "param": "output", "chain": true},
+    {"id": 15, "notes": 12, "port": "", "to": 14, "param": ""},
+    {"id": 16, "from": 14, "port": "", "mixer": 12, "param": ""},
+    {"id": 17, "from": 14, "port": "input", "to": 13, "param": "", "chain": true},
+    {"id": 18, "from": 13, "port": "", "to": 14, "param": "output", "chain": true},
+    {"id": 22, "notes": 19, "port": "", "to": 21, "param": ""},
+    {"id": 23, "from": 21, "port": "", "mixer": 19, "param": ""},
+    {"id": 24, "from": 21, "port": "input", "to": 20, "param": "", "chain": true},
+    {"id": 25, "from": 20, "port": "", "to": 21, "param": "output", "chain": true},
+    {"id": 29, "notes": 26, "port": "", "to": 28, "param": ""},
+    {"id": 30, "from": 28, "port": "", "mixer": 26, "param": ""},
+    {"id": 31, "from": 28, "port": "input", "to": 27, "param": "", "chain": true},
+    {"id": 32, "from": 27, "port": "", "to": 28, "param": "output", "chain": true},
+    {"id": 36, "notes": 33, "port": "", "to": 35, "param": ""},
+    {"id": 37, "from": 35, "port": "", "mixer": 33, "param": ""},
+    {"id": 38, "from": 35, "port": "input", "to": 34, "param": "", "chain": true},
+    {"id": 39, "from": 34, "port": "", "to": 35, "param": "output", "chain": true},
+    {"id": 41, "notes": 40, "port": "", "mixer": 40, "param": ""},
+    {"id": 43, "notes": 42, "port": "", "mixer": 42, "param": ""},
+    {"id": 45, "notes": 44, "port": "", "mixer": 44, "param": ""}
   ],
   "view": {
     "tracks": [
       {"id": 2, "folded": false, "height": 40},
       {"id": 5, "folded": false, "height": 64},
-      {"id": 13, "folded": false, "height": 64},
-      {"id": 21, "folded": false, "height": 64},
-      {"id": 25, "folded": false, "height": 44},
-      {"id": 27, "folded": false, "height": 40}
+      {"id": 19, "folded": false, "height": 64},
+      {"id": 33, "folded": false, "height": 64},
+      {"id": 40, "folded": false, "height": 44},
+      {"id": 42, "folded": false, "height": 40}
     ],
     "lanes": []
   }

@@ -1062,6 +1062,7 @@ Status setupDeviceChain(Shell& shell) {
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
   if (!t) return Error{ErrorCode::Unknown, "device-chain: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
+  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
   const auto sat = run(doc::ops::addDevice(*store.current(), store.ids(), track, "saturator", doc::DeviceKind::AudioEffect));
   const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
   if (!sat || !util) return Error{ErrorCode::Unknown, "device-chain: addDevice failed", {}};
@@ -1099,6 +1100,8 @@ Status setupDeviceWiring(Shell& shell) {
                         : std::nullopt;
   if (!mod || !keys) return Error{ErrorCode::Unknown, "device-wiring: createTrack failed", {}};
   const doc::TrackId modT = mod->tracks[0], keysT = keys->tracks[0];
+  for (const doc::TrackId x : {modT, keysT})  // (IG.1-2: the instruments alone)
+    if (Status st = project_patch::makeLoneInstrument(store, x); !st) return st;
   const auto lfoA = run(doc::ops::addDevice(*store.current(), store.ids(), modT, "lfo_device", doc::DeviceKind::AudioEffect));
   const auto lfoB = run(doc::ops::addDevice(*store.current(), store.ids(), keysT, "lfo_device", doc::DeviceKind::AudioEffect));
   const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), keysT, "utility", doc::DeviceKind::AudioEffect));
@@ -1146,6 +1149,7 @@ Status setupCircuitEditorDevice(Shell& shell) {
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
   if (!t) return Error{ErrorCode::Unknown, "circuit-editor-device: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
+  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
   if (!run(doc::ops::addDevice(*store.current(), store.ids(), track, "saturator", doc::DeviceKind::AudioEffect)))
     return Error{ErrorCode::Unknown, "circuit-editor-device: addDevice failed", {}};
   const doc::DeviceId inst = doc::findTrackPtr(*store.current(), track)->devices.at(0)->id;
@@ -1379,6 +1383,7 @@ Status setupAudioRack(Shell& shell) {
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
   if (!t) return Error{ErrorCode::Unknown, "audio-rack: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
+  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
   const auto dry = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
   const auto sat = run(doc::ops::addDevice(*store.current(), store.ids(), track, "saturator", doc::DeviceKind::AudioEffect));
   const auto wide = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
@@ -1435,6 +1440,7 @@ Status setupDeviceAutomation(Shell& shell) {
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
   if (!t) return Error{ErrorCode::Unknown, "device-automation: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
+  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
   const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
   if (!util) return Error{ErrorCode::Unknown, "device-automation: addDevice failed", {}};
   const auto rack = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{util->devices[0]}));
@@ -1517,6 +1523,7 @@ Status setupDeviceKnobCurves(Shell& shell) {
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
   if (!t) return Error{ErrorCode::Unknown, "device-knob-curves: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
+  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
   const auto pa = run(doc::ops::addMetaDevice(*store.current(), store.ids(), track, "phase_acc", 0));
   const auto af = run(doc::ops::addDevice(*store.current(), store.ids(), track, "auto_filter", doc::DeviceKind::AudioEffect));
   const auto ut = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
@@ -1553,6 +1560,7 @@ Status setupInstrumentRack(Shell& shell) {
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Split"));
   if (!t) return Error{ErrorCode::Unknown, "instrument-rack: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
+  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
   const doc::DeviceId inst = doc::findTrackPtr(*store.current(), track)->devices.at(0)->id;
   const auto rack = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{inst}));
   if (!rack) return Error{ErrorCode::Unknown, "instrument-rack: group failed", {}};
@@ -1865,7 +1873,8 @@ Status setupProjectPatchPanels(Shell& shell) {
   };
   const doc::DeviceId filter = add(keys, "auto_filter"), util = add(keys, "utility");
   if (const doc::Track* m = doc::findTrackPtr(*st.current(), mod); m != nullptr && !m->devices.empty()) {
-    const doc::DeviceId inst[1] = {m->devices[0]->id};
+    std::vector<doc::DeviceId> inst;  // (IG.1-2: its instrument group with it; Keys keeps its group — the new track's look)
+    for (const doc::DevicePtr& d : m->devices) inst.push_back(d->id);
     if (Status s = run(doc::ops::deleteDevices(*st.current(), inst)); !s) return s;
   }
   const doc::DeviceId lfo = add(mod, "lfo_device");

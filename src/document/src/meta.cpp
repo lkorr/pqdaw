@@ -205,8 +205,57 @@ std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool not
 
 std::vector<ChainStage> trackStages(const Project& p, const Track& t) { return trackStages(p, t, mainPath(p, t)); }
 
-std::vector<ChainStage> trackStages(const Project&, const Track& t, const MainPath& path) {
-  return chainStages(flowOrder(t, path), t.kind == TrackKind::Midi, true, &path);
+namespace {
+// IG.1-2: the members of group `g` along its series — from its In terminal through each member's main output into the
+// next member's chain input (a meta module's chain input by name, else kMainPort), as Ctrl+G and new tracks wire them.
+std::vector<DevicePtr> groupSeries(const Project& p, const Track& t, DeviceId g) {
+  std::vector<DevicePtr> members;
+  for (const DevicePtr& d : t.devices)
+    if (d->group == g) members.push_back(d);
+  std::vector<DevicePtr> out;
+  DeviceId cur = g;
+  std::string port(kGroupInPort);
+  for (size_t guard = 0; guard < members.size(); ++guard) {
+    const DevicePtr* next = nullptr;
+    for (const Wire& w : wiresOf(p)) {
+      if (w.fromNoteSource() || w.toMixer() || w.from != cur || w.port != port) continue;
+      for (const DevicePtr& m : members) {
+        if (m->id != w.to || std::find(out.begin(), out.end(), m) != out.end()) continue;
+        const meta::Type* ty = isMetaDevice(*m) ? meta::findType(metaDeviceType(*m)) : nullptr;
+        const int32_t ci = ty != nullptr ? metaChainInput(*m, *ty) : -1;
+        if (w.param == kMainPort || (ci >= 0 && w.param == ty->inputs[static_cast<size_t>(ci)].name)) next = &m;
+      }
+      if (next != nullptr) break;
+    }
+    if (next == nullptr) break;
+    out.push_back(*next);
+    cur = (*next)->id;
+    const meta::Type* ty = isMetaDevice(**next) ? meta::findType(metaDeviceType(**next)) : nullptr;
+    port = ty != nullptr && !ty->outputs.empty() ? std::string(ty->outputs.front().name) : std::string(kMainPort);
+  }
+  return out;
+}
+}  // namespace
+
+std::vector<ChainStage> trackStages(const Project& p, const Track& t, const MainPath& path) {
+  std::vector<ChainStage> out = chainStages(flowOrder(t, path), t.kind == TrackKind::Midi, true, &path);
+  // IG.1-2: a group on the path passes what reaches it to its series (an instrument group: the notes, per note); its
+  // members follow, by its series (the others: off it).
+  for (size_t i = 0, n = out.size(); i < n; ++i) {
+    const ChainStage st = out[i];
+    if (st.offPath || !isGroupDevice(*st.device)) continue;
+    const std::vector<DevicePtr> series = groupSeries(p, t, st.device->id);
+    for (ChainStage m : chainStages(series, st.in == ChainSignal::Notes || st.in == ChainSignal::Voices)) out.push_back(m);
+    for (const DevicePtr& d : t.devices)
+      if (d->group == st.device->id && d->active && std::find(series.begin(), series.end(), d) == series.end()) {
+        ChainStage m;
+        m.device = d.get();
+        m.offPath = true;
+        m.in = ChainSignal::None;
+        out.push_back(m);
+      }
+  }
+  return out;
 }
 
 meta::Form chainForm(const ChainStage& s) {

@@ -85,12 +85,14 @@ struct ChainStage {
 // out (meta::Form::ChainNotes), Voices → Voices (ChainVoice), Audio → Audio (ChainAudio), unplugged → Audio
 // (ChainAudio with nothing in: it runs once, freely). `voices` false (a rack chain, whose devices after its first the
 // lowering keeps global) delivers Audio where Voices would arrive. TX.groups-fix1: a group (model.h "Groups") passes on
-// what reaches it — Notes or Voices in → Voices out (its terminals carry them per voice), Audio → Audio. Any other device
+// what reaches it to its series (IG.1-2: an instrument group sums its voices at Out — Audio out). Any other device
 // gives Audio. TX.all-free: with `path`, the devices of `list` not on it are listed (ChainStage::offPath) but take no
 // part in the flow (a track: pass flowOrder(t, path), the path first).
 std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool notes, bool voices = true,
                                     const MainPath* path = nullptr);
-// TX.all-free: the stages of a track's blocks (its main path's flow, then the blocks off it).
+// TX.all-free: the stages of a track's blocks (its main path's flow, then the blocks off it). IG.1-2: then, for each
+// group on the path, its members along its series (In → member → … → Out, each starting at what reaches the group: an
+// instrument group's first member takes the notes), its other members off it.
 std::vector<ChainStage> trackStages(const Project& p, const Track& t);
 std::vector<ChainStage> trackStages(const Project& p, const Track& t, const MainPath& path);  // its path known
 // The meta form of a stage (Nested for a device that is not a chain meta device or has no known type).

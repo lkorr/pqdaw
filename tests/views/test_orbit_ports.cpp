@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "lone_instrument.h"
 #include "../ui/golden_check.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/serialize.h"
@@ -53,6 +54,15 @@ const doc::DeviceLibrary& library() {
 float dist(Point2 a, Point2 b) { return std::hypot(a.x - b.x, a.y - b.y); }
 std::string fixture() { return views::test::fixtureDir("meta-cables"); }
 
+// IG.1-2: the user's meta patch (schema 16) loads with its meta voice run wrapped in an instrument group, the VCA wired to
+// it with it. These tests are about free blocks on a band: the group is ungrouped again (Ctrl+Shift+G) — the run back on
+// the path, the VCA free.
+void ungroupAll(ViewContext& ctx) {
+  std::vector<doc::TrackId> tracks;
+  doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) { tracks.push_back(t.id); });
+  for (const doc::TrackId t : tracks) view_fixture::loneInstrument(ctx.store(), library(), t);
+}
+
 // The shell over the meta patch, the patch view shown, its band framed.
 struct Ui {
   FakeTransport port;
@@ -63,6 +73,7 @@ struct Ui {
   explicit Ui(bool animated = false) {
     ctx.setDeviceLibrary(&library());
     REQUIRE(ctx.openProject(fixture()).ok());
+    ungroupAll(ctx);
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);

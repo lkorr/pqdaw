@@ -1635,7 +1635,7 @@ std::vector<DeviceChainView::ChainLink> DeviceChainView::chainLinks() const {
   const doc::Device* prev = nullptr;
   bool fromSource = t->kind == doc::TrackKind::Midi || t->kind == doc::TrackKind::Audio;  // the clips reach the first one
   for (const doc::ChainStage& s : stages) {
-    if (s.offPath || s.device == nullptr) continue;
+    if (s.offPath || s.device == nullptr || s.device->group.valid()) continue;  // (IG.1-2: a group's series: its own)
     if (impl_->frameOf(s.device->id) == nullptr) continue;
     if (s.in == doc::ChainSignal::None) {  // unplugged: nothing goes in; the next stage hears it
       prev = s.device;

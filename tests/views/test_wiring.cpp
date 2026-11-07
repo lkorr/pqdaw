@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "lone_instrument.h"
 #include "all_free_helpers.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
@@ -68,7 +69,9 @@ struct Ui {
       return *e;
     };
     mod = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Mod")).tracks[0];
+    view_fixture::loneInstrument(st, library(), mod);  // IG.1-2 (lone_instrument.h)
     keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, mod, "Keys")).tracks[0];
+    view_fixture::loneInstrument(st, library(), keys);  // IG.1-2 (lone_instrument.h)
     lfoA = run(doc::ops::addDevice(*st.current(), st.ids(), mod, "lfo_device", doc::DeviceKind::AudioEffect)).devices[0];
     lfoB = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "lfo_device", doc::DeviceKind::AudioEffect)).devices[0];
     util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices[0];

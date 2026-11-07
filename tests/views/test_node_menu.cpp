@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "lone_instrument.h"
 #include "all_free_helpers.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/document/edit_ops.h"
@@ -76,7 +77,9 @@ struct Ui {
       return *e;
     };
     keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks.at(0);
+    view_fixture::loneInstrument(st, library(), keys);  // IG.1-2 (lone_instrument.h)
     bass = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, keys, "Bass")).tracks.at(0);
+    view_fixture::loneInstrument(st, library(), bass);  // IG.1-2 (lone_instrument.h)
     synth = doc::findTrackPtr(*st.current(), keys)->devices.at(0)->id;
     util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices.at(0);
     sat = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "saturator", doc::DeviceKind::AudioEffect)).devices.at(0);

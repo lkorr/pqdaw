@@ -414,7 +414,7 @@ TEST_CASE("project patch: racks (nested, instrument, wired into and out of) matc
   // Keys: its effects grouped into an Audio Effect Rack; a second chain holding a nested rack with a Utility.
   std::vector<doc::DeviceId> fx;
   for (const doc::DevicePtr& d : named(*store.current(), "Keys")->devices)
-    if (d->kind == doc::DeviceKind::AudioEffect) fx.push_back(d->id);
+    if (d->kind == doc::DeviceKind::AudioEffect && !doc::isGroupDevice(*d)) fx.push_back(d->id);  // (IG.1-2: not its instrument group)
   REQUIRE_FALSE(fx.empty());
   const doc::DeviceId rack = run(doc::ops::groupDevices(*store.current(), store.ids(), fx)).devices.at(0);
   const doc::DeviceId util = run(doc::ops::addDevice(*store.current(), store.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices.at(0);
@@ -1422,6 +1422,7 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
   REQUIRE(t.ok());
   REQUIRE(u.ctx.store().dispatch(t->command).ok());
   const doc::TrackId keys = t->tracks.at(0);
+  REQUIRE(makeLoneInstrument(u.ctx.store(), keys).ok());  // (IG.1-2: the instrument heading the path, as written)
   auto ua = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), keys, "utility", doc::DeviceKind::AudioEffect);
   REQUIRE(ua.ok());
   REQUIRE(u.ctx.store().dispatch(ua->command).ok());
@@ -1984,7 +1985,7 @@ TEST_CASE("project patch (TX.panel-faces): every closed stock device is drawn as
     mixers += n.kind == NodeKind::Mixer ? 1u : 0u;
     if (n.kind != NodeKind::Device) continue;
     CAPTURE(n.title);
-    const bool stock = !n.rack && !n.meta && !n.edited && !n.missing && !n.expanded;
+    const bool stock = !n.rack && !n.group && !n.meta && !n.edited && !n.missing && !n.expanded;  // (IG.1-2: a group: a capsule)
     CHECK(n.panel == stock);
     if (!stock) continue;
     ++panels;
@@ -2256,6 +2257,7 @@ WarpSetup warpSetup(Ui& u) {
   REQUIRE(t.ok());
   REQUIRE(st.dispatch(t->command).ok());
   s.track = t->tracks.at(0);
+  REQUIRE(makeLoneInstrument(st, s.track).ok());  // (IG.1-2: the Phase accumulator heads the path, as written)
   auto add = [&](std::string_view type, uint32_t index) {
     auto e = doc::ops::addMetaDevice(*st.current(), st.ids(), s.track, type, index);
     REQUIRE(e.ok());
@@ -3219,4 +3221,47 @@ TEST_CASE("project patch (TX.block-drag): far out — the dragged block over the
   const uint64_t f0 = u.d.framesDrawn();
   u.d.advance(1.0);
   CHECK(u.d.framesDrawn() == f0);
+}
+
+// IG.1-2 (SPEC §15 2026-11-04 "instrument groups"): a new MIDI track is drawn with its instrument group — an opened
+// capsule holding In → Basic Synth → Out on the band's path, the notes into the capsule, In → the synth a note wire and
+// the synth → Out a chain inside it; the view is the lowered graph (the synth's call in the track patch).
+TEST_CASE("project patch (IG.1-2): a new MIDI track shows its instrument group — In → Basic Synth → Out in a capsule") {
+  doc::DocumentStore store;
+  auto e = doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys");
+  REQUIRE(e.ok());
+  REQUIRE(store.dispatch(e->command).ok());
+  const doc::Project& p = *store.current();
+  const doc::Track& t = *doc::findTrackPtr(p, e->tracks.at(0));
+  doc::DeviceId group, synth;
+  for (const doc::DevicePtr& d : t.devices) {
+    if (doc::isGroupDevice(*d)) group = d->id;
+    else synth = d->id;
+  }
+  REQUIRE(group.valid());
+  REQUIRE(synth.valid());
+  const doc::LoweredProject low = lowerOf(p);
+  const ProjectPatch pp = buildProjectPatch(p, low, &library().catalog());
+  CHECK(checkAgainstGraph(pp, p, low) == "");
+  const uint32_t cap = pp.nodeOf(group);
+  REQUIRE(cap != kNone);
+  const Node& c = pp.nodes[cap];
+  CHECK(c.group);
+  CHECK(c.groupOpen);
+  CHECK(c.instrument);  // the notes reach its In
+  REQUIRE(c.members.size() == 1);
+  const uint32_t sn = c.members[0];
+  CHECK(pp.nodes[sn].device == synth);
+  CHECK(pp.nodes[sn].capsule == cap);
+  CHECK(pp.nodes[sn].lowered);
+  auto edge = [&](uint32_t a, uint32_t b, EdgeKind k) {
+    for (const Edge& x : pp.edges)
+      if (x.from == a && x.to == b && x.kind == k) return true;
+    return false;
+  };
+  const Band& band = pp.bands[c.band];
+  CHECK(edge(band.source, cap, EdgeKind::Notes));      // the track's notes into the capsule
+  CHECK(edge(c.groupIn, sn, EdgeKind::Notes));         // In → Basic Synth: the notes, per note
+  CHECK(edge(sn, c.groupOut, EdgeKind::Chain));        // Basic Synth → Out
+  CHECK(edge(cap, band.mixer, EdgeKind::Chain));       // the group's sum into the mixer
 }

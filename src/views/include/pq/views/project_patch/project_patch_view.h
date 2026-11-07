@@ -919,8 +919,15 @@ private:
 //   processing (EQ Eight, Utility), a "Mod" track whose LFO modulates the group's Utility width and the keys' Saturator
 //   drive, a return "Space" fed by both tracks' sends, a Saturator on the master; clips on Keys and Pad.
 //   a wide project: `tracks` MIDI tracks (an effect or two each, a clip each) in groups of eight, two returns, sends.
-// Both need the stock device library for the lowering to draw the devices (the document does not).
+// Both need the stock device library for the lowering to draw the devices (the document does not). IG.1-2: the wide
+// project's tracks are new tracks (each with its instrument group); the sketch's instruments are lone
+// (makeLoneInstrument).
 Status buildSketchProject(doc::DocumentStore& store);
+// IG.1-2: a new MIDI track holds an instrument group (In → Basic Synth → Out). The scenes and projects made for a meta
+// module's face, a Device-view panel or chain, or Ctrl+G take its instrument out of it first: a LONE instrument heading
+// the path (the notes → Basic Synth → the mixer), as they were made before instrument groups (a meta module added at
+// slot 0 then replaces it on the path). One undo step; a track without a group: unchanged.
+Status makeLoneInstrument(doc::DocumentStore& store, doc::TrackId track);
 Status buildWideProject(doc::DocumentStore& store, uint32_t tracks);
 // TMM.4: Phase accumulator faces in chains — "Lead" (a face → Saturator), "Bell" (220 Hz, phase 0.25, amp 2 → Auto
 // Filter), "Sub" (4.5 Hz, phase 0.5, amp 0.5 → EQ Eight) and "Keys" (Operator → Saturator: plain blocks beside them).

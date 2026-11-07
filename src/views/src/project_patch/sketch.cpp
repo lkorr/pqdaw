@@ -37,6 +37,10 @@ struct Runner {
     auto e = run(doc::ops::createTrack(*store.current(), store.ids(), kind, after, name, doc::Colour{colour}));
     return e && !e->tracks.empty() ? e->tracks[0] : doc::TrackId{};
   }
+  // IG.1-2 (makeLoneInstrument): the track's instrument out of its instrument group.
+  void lone(doc::TrackId t) {
+    if (status) status = makeLoneInstrument(store, t);
+  }
   // `index`: a main-path slot (doc::ops::kOffPath: a block placed unwired).
   doc::DeviceId device(doc::TrackId t, const char* patch, doc::DeviceKind kind, uint32_t index = doc::kAppend) {
     auto e = run(doc::ops::addDevice(*store.current(), store.ids(), t, patch, kind, index));
@@ -61,12 +65,38 @@ struct Runner {
 
 }  // namespace
 
+Status makeLoneInstrument(doc::DocumentStore& store, doc::TrackId track) {
+  const doc::Track* tr = doc::findTrackPtr(*store.current(), track);
+  if (tr == nullptr) return Error{ErrorCode::NotFound, "makeLoneInstrument: no such track", {}};
+  doc::DeviceId g, inst;
+  for (const doc::DevicePtr& d : tr->devices)
+    if (doc::isGroupDevice(*d)) g = d->id;
+  for (const doc::DevicePtr& d : tr->devices)
+    if (g.valid() && d->group == g) inst = d->id;
+  if (!g.valid() || !inst.valid()) return Ok{};
+  doc::Batch b{"Lone Instrument", {}};
+  b.commands.push_back(doc::SetDeviceGroup{inst, {}});
+  b.commands.push_back(doc::RemoveDevice{g});  // (its wires with it)
+  doc::Wire in;
+  in.id = store.ids().wire();
+  in.noteSource = track;
+  in.to = inst;
+  b.commands.push_back(doc::AddWire{in});
+  doc::Wire out;
+  out.id = store.ids().wire();
+  out.from = inst;
+  out.mixer = track;
+  b.commands.push_back(doc::AddWire{out});
+  return store.dispatch(std::move(b));
+}
+
 Status buildSketchProject(doc::DocumentStore& store) {
   Runner r{store};
   using K = doc::DeviceKind;
   const doc::TrackId keys = r.track(doc::TrackKind::Midi, {}, "Keys", 0xF6A23B);
   const doc::TrackId pad = r.track(doc::TrackKind::Midi, keys, "Pad", 0x8ED36C);
   const doc::TrackId mod = r.track(doc::TrackKind::Midi, pad, "Mod", 0xB38BEA);
+  for (const doc::TrackId t : {keys, pad}) r.lone(t);  // (IG.1-2: the sketch's instruments head their tracks)
   if (!r.status) return r.status;
   // The keys play Operator through a Saturator; the pad the default synth through an EQ Eight.
   (void)r.device(keys, "operator", K::Instrument);
@@ -74,7 +104,8 @@ Status buildSketchProject(doc::DocumentStore& store) {
   (void)r.device(pad, "eq_eight", K::AudioEffect);
   // The modulation track holds only an LFO (no instrument: an audio track that makes no sound).
   if (const doc::Track* m = doc::findTrackPtr(*store.current(), mod); m != nullptr && !m->devices.empty()) {
-    const doc::DeviceId inst[1] = {m->devices[0]->id};
+    std::vector<doc::DeviceId> inst;  // (IG.1-2: its instrument group with it)
+    for (const doc::DevicePtr& d : m->devices) inst.push_back(d->id);
     (void)r.run(doc::ops::deleteDevices(*store.current(), inst));
   }
   const doc::DeviceId lfo = r.device(mod, "lfo_device", K::AudioEffect);
@@ -158,6 +189,7 @@ Status buildMetaFacesProject(doc::DocumentStore& store) {
   const doc::TrackId bell = r.track(doc::TrackKind::Midi, lead, "Bell", 0x3FA9F5);
   const doc::TrackId sub = r.track(doc::TrackKind::Midi, bell, "Sub", 0x8ED36C);
   const doc::TrackId keys = r.track(doc::TrackKind::Midi, sub, "Keys", 0xB38BEA);
+  for (const doc::TrackId t : {lead, bell, sub, keys}) r.lone(t);
   if (!r.status) return r.status;
   (void)phaseAccOn(r, lead, 0.0, 0.0, 1.0);
   (void)r.device(lead, "saturator", K::AudioEffect);
@@ -255,6 +287,7 @@ Status buildMetaWavetableProject(doc::DocumentStore& store, doc::DeviceId* pair)
   using K = doc::DeviceKind;
   const doc::TrackId wave = r.track(doc::TrackKind::Midi, {}, "Wave", 0x3FA9F5);
   const doc::TrackId two = r.track(doc::TrackKind::Midi, wave, "Pair", 0xF6A23B);
+  for (const doc::TrackId t : {wave, two}) r.lone(t);
   if (!r.status) return r.status;
   const doc::DeviceId wt = wavetableOn(r, wave, demoWavetableData());
   (void)r.run(doc::ops::setMetaParam(*store.current(), wt, "", "wavetable", "warp", 0.3));
@@ -277,6 +310,7 @@ Status buildMetaChainProject(doc::DocumentStore& store, MetaChainIds* ids) {
   using K = doc::DeviceKind;
   const doc::TrackId lead = r.track(doc::TrackKind::Midi, {}, "Meta Lead", 0x3FA9F5);
   const doc::TrackId bass = r.track(doc::TrackKind::Midi, lead, "Meta Bass", 0x8ED36C);
+  for (const doc::TrackId t : {lead, bass}) r.lone(t);
   if (!r.status) return r.status;
   // Lead: Phase accumulator → Wavetable → Auto Filter (a meta voice run, then the voices summed into the filter).
   const doc::DeviceId acc = phaseAccOn(r, lead, 0.0, 0.0, 1.0);
@@ -341,6 +375,7 @@ Status buildMetaEnvelopeProject(doc::DocumentStore& store, MetaEnvelopeIds* ids)
   Runner r{store};
   const doc::TrackId pluck = r.track(doc::TrackKind::Midi, {}, "Pluck", 0x3FA9F5);
   const doc::TrackId shape = r.track(doc::TrackKind::Midi, pluck, "Shape", 0xF6A23B);
+  for (const doc::TrackId t : {pluck, shape}) r.lone(t);
   if (!r.status) return r.status;
   // Pluck: Phase accumulator → Wavetable → Envelope (a meta voice run whose release is the envelope's).
   const doc::DeviceId acc = phaseAccOn(r, pluck, 0.0, 0.0, 1.0);
@@ -373,6 +408,7 @@ Status buildMetaEnvelopeProject(doc::DocumentStore& store, MetaEnvelopeIds* ids)
 Status buildMetaOperatorProject(doc::DocumentStore& store, MetaOperatorIds* ids) {
   Runner r{store};
   const doc::TrackId keys = r.track(doc::TrackKind::Midi, {}, "FM Keys", 0x3FA9F5);
+  r.lone(keys);
   if (!r.status) return r.status;
   const doc::DeviceId op = r.device(keys, "meta_operator", doc::DeviceKind::Instrument);
   if (!r.status) return r.status;
@@ -436,6 +472,7 @@ Status buildMetaVcaProject(doc::DocumentStore& store, MetaVcaIds* ids) {
   Runner r{store};
   const doc::TrackId keys = r.track(doc::TrackKind::Midi, {}, "Keys", 0x3FA9F5);
   const doc::TrackId trem = r.track(doc::TrackKind::Midi, keys, "Trem", 0xF6A23B);
+  for (const doc::TrackId t : {keys, trem}) r.lone(t);
   if (!r.status) return r.status;
   // Keys: the default synth, then a chain VCA at ×0.60 on the default bipolar-log curve.
   auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), keys, "vca"));
@@ -480,6 +517,7 @@ Status buildGroupProject(doc::DocumentStore& store, GroupProjectIds* ids) {
   using K = doc::DeviceKind;
   const doc::TrackId keys = r.track(doc::TrackKind::Midi, {}, "Keys", 0xF6A23B);
   const doc::TrackId bass = r.track(doc::TrackKind::Midi, keys, "Bass", 0x8ED36C);
+  for (const doc::TrackId t : {keys, bass}) r.lone(t);
   if (!r.status) return r.status;
   // Keys: the default synth → Phase accumulator (110 Hz, FM by the synth) → Wavetable → Phase accumulator (3 Hz), and a
   // free LFO (out of the series) wired onto the Wavetable's position.
@@ -517,6 +555,7 @@ Status buildFreeRackProject(doc::DocumentStore& store, uint32_t lfos, FreeRackId
   using K = doc::DeviceKind;
   FreeRackIds out;
   out.lead = r.track(doc::TrackKind::Midi, {}, "Lead", 0x6CB6F0);
+  r.lone(out.lead);
   if (!r.status) return r.status;
   // The chain: the default synth → Saturator → Auto Filter → Utility.
   out.sat = r.device(out.lead, "saturator", K::AudioEffect);

@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "lone_instrument.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
@@ -52,6 +53,15 @@ float ropeLength(std::span<const Point2> p) {
   return l;
 }
 
+// IG.1-2: the user's meta patch (schema 16) loads with its meta voice run wrapped in an instrument group, the VCA wired to
+// it with it. These tests are about free blocks on a band: the group is ungrouped again (Ctrl+Shift+G) — the run back on
+// the path, the VCA free.
+void ungroupAll(ViewContext& ctx) {
+  std::vector<doc::TrackId> tracks;
+  doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) { tracks.push_back(t.id); });
+  for (const doc::TrackId t : tracks) view_fixture::loneInstrument(ctx.store(), library(), t);
+}
+
 // The shell over a project, the patch view shown without the morph.
 struct Ui {
   FakeTransport port;
@@ -62,7 +72,10 @@ struct Ui {
   explicit Ui(const std::string& projectDir = {}) {
     ctx.setDeviceLibrary(&library());
     if (projectDir.empty()) REQUIRE(buildSketchProject(ctx.store()).ok());
-    else REQUIRE(ctx.openProject(projectDir).ok());
+    else {
+      REQUIRE(ctx.openProject(projectDir).ok());
+      ungroupAll(ctx);
+    }
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);

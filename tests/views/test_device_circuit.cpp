@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "lone_instrument.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/gpu.h"
@@ -67,7 +68,9 @@ struct Ui {
       return *e;
     };
     keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks[0];
+    view_fixture::loneInstrument(st, library(), keys);  // IG.1-2 (lone_instrument.h)
     other = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Other")).tracks[0];
+    view_fixture::loneInstrument(st, library(), other);  // IG.1-2 (lone_instrument.h)
     inst = doc::findTrackPtr(*st.current(), keys)->devices.at(0)->id;
     otherInst = doc::findTrackPtr(*st.current(), other)->devices.at(0)->id;
     auto s = Shell::create(d.tree(), ctx);

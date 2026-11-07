@@ -720,7 +720,10 @@ TEST_CASE("cross-track (project patch): a cable that closes a loop between track
   CHECK(doc::findWire(*u.ctx.doc(), loop) == nullptr);
 }
 
-TEST_CASE("cross-track (project patch): a track's notes dragged onto another track's synth play it with its voices") {
+// IG.1-2 (lower.h "Voice contexts"): Other is a new track — its instrument group (In → Basic Synth → Out). Keys' notes
+// dragged onto the group's input play it with Keys' voices: the group is lowered in Keys' patch. One notes source per
+// voice context: the cable wins over Other's own notes (TX.cross-track's guest — an instance in each — is gone).
+TEST_CASE("cross-track (project patch): a track's notes dragged onto another track's instrument group play it with its voices") {
   PatchUi u;
   auto run = [&](const doc::ops::EditResult& e) {
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
@@ -728,23 +731,31 @@ TEST_CASE("cross-track (project patch): a track's notes dragged onto another tra
     return *e;
   };
   const doc::TrackId other = run(doc::ops::createTrack(*u.ctx.doc(), u.ctx.store().ids(), doc::TrackKind::Midi, u.keys, "Other")).tracks.at(0);
-  const doc::DeviceId synth = doc::mainPath(*u.ctx.doc(), *doc::findTrackPtr(*u.ctx.doc(), other)).blocks.at(0)->id;
+  const doc::Device* head = doc::mainPath(*u.ctx.doc(), *doc::findTrackPtr(*u.ctx.doc(), other)).blocks.at(0);
+  REQUIRE(doc::isGroupDevice(*head));
+  const doc::DeviceId group = head->id;
+  doc::DeviceId synth;
+  for (const doc::DevicePtr& d : doc::findTrackPtr(*u.ctx.doc(), other)->devices)
+    if (d->group == group) synth = d->id;
+  REQUIRE(synth.valid());
   showBands(u, {other});
   CHECK_FALSE(trackCalls(u, u.keys, synth));
+  CHECK(trackCalls(u, other, synth));
   const size_t h0 = u.history();
-  u.d.drag(sourceOut(u, 0), u.inPin(synth, "notes"), 8);  // Keys' notes onto Other's synth
+  u.d.drag(sourceOut(u, 0), u.inPin(group, "x"), 8);  // Keys' notes onto Other's instrument group
   u.d.step();
   CHECK(u.history() == h0 + 1);
   doc::WireId notes;
   for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc()))
-    if (w.fromNoteSource() && w.noteSource == u.keys && w.port.empty() && w.to == synth) notes = w.id;
+    if (w.fromNoteSource() && w.noteSource == u.keys && w.port.empty() && w.to == group) notes = w.id;
   REQUIRE(notes.valid());
   const doc::WireState* st = loweredState(u, notes);
   REQUIRE(st != nullptr);
   CHECK(st->status == doc::WireStatus::Lowered);
-  CHECK(trackCalls(u, u.keys, synth));   // an instance of it in Keys' voice context
-  CHECK(trackCalls(u, other, synth));    // and its own (Other's notes) where it is
+  CHECK(trackCalls(u, u.keys, synth));        // in Keys' patch, with Keys' voices
+  CHECK_FALSE(trackCalls(u, other, synth));   // one notes source: not also with Other's
   CHECK(u.view().lowered()->missingDevices.empty());
   REQUIRE(u.ctx.undo());
   CHECK_FALSE(trackCalls(u, u.keys, synth));
+  CHECK(trackCalls(u, other, synth));
 }

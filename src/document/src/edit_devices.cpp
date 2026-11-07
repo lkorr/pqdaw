@@ -97,9 +97,15 @@ Status placeOnPath(Steps& k, IdSource& ids, TrackId track, DeviceId dev, bool no
     if (!notes && !intoGroup) return splice(k, ids, track, dev, slot == 0 ? 1 : slot);
     if (!notes) {
       const DeviceId g = head->id;
-      const Device* stock = nullptr;
-      for (const DevicePtr& d : t->devices)
-        if (d->group == g && d->kind == DeviceKind::Instrument && !isMetaDevice(*d)) stock = d.get();
+      DeviceId stock;
+      uint32_t index = 0;  // (the stock instrument's place in the device list: the new one takes it)
+      for (uint32_t i = 0; i < t->devices.size(); ++i) {
+        const Device& d = *t->devices[i];
+        if (d.group == g && d.kind == DeviceKind::Instrument && !isMetaDevice(d)) {
+          stock = d.id;
+          index = i;
+        }
+      }
       PQ_DOC_TRY(k.add(SetDeviceGroup{dev, g}));
       // (its ports by name, as Ctrl+G's series names them: ungroup reads the series back)
       std::string chainIn, firstOut;
@@ -108,12 +114,13 @@ Status placeOnPath(Steps& k, IdSource& ids, TrackId track, DeviceId dev, bool no
           if (const int32_t ci = metaChainInput(*dl.device, *ty); ci >= 0) chainIn = std::string(ty->inputs[static_cast<size_t>(ci)].name);
           if (!ty->outputs.empty()) firstOut = std::string(ty->outputs.front().name);
         }
-      if (slot == 0 && stock != nullptr) {
-        const DeviceId gone = stock->id;
+      if (slot == 0 && stock.valid()) {
+        const DeviceId gone = stock;
         std::vector<Wire> moved;
         for (const Wire& w : wiresOf(k.doc()))
           if ((!w.fromNoteSource() && w.from == gone) || (!w.toMixer() && w.to == gone)) moved.push_back(w);
         PQ_DOC_TRY(k.add(RemoveDevice{gone}));
+        PQ_DOC_TRY(k.add(MoveDevice{dev, track, index, {}}));
         for (Wire w : moved) {
           w.id = ids.wire();
           if (!w.fromNoteSource() && w.from == gone) {

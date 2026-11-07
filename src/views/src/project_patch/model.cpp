@@ -370,6 +370,9 @@ struct Builder {
     c.active = g.active;
     c.group = true;
     c.groupOpen = !closedGroup(g.id);
+    // IG.1-2: an instrument group — the notes reach its In (its stage), so In gives its members the notes.
+    for (const doc::ChainStage& s : bandStages)
+      if (s.device == &g) c.instrument = s.in == doc::ChainSignal::Notes;
     c.title = g.name.empty() ? std::string("Group") : g.name;
     const graph::NodeIndex call = callOf(tp, g.id);
     c.lowered = call != graph::kNone;
@@ -569,9 +572,9 @@ struct Builder {
     }
     if (!mainLinks) mainLinks.emplace(p);
     const doc::MainPath& path = paths.emplace(t.id.value, doc::mainPath(t, *mainLinks)).first->second;
-    // (Only a meta block reads its stage: a track without one skips the walk.)
+    // (Only a meta block or a group reads its stage: a track without one skips the walk.)
     bandStages.clear();
-    if (std::any_of(t.devices.begin(), t.devices.end(), [](const doc::DevicePtr& d) { return doc::isMetaDevice(*d); }))
+    if (std::any_of(t.devices.begin(), t.devices.end(), [](const doc::DevicePtr& d) { return doc::isMetaDevice(*d) || doc::isGroupDevice(*d); }))
       bandStages = doc::trackStages(p, t, path);
     for (const doc::DevicePtr& d : t.devices) {
       // TX.groups: a member is drawn inside its group's capsule (or, closed, is part of its block).
@@ -715,9 +718,23 @@ struct Builder {
       e.input = toPort >= 0 && (out.nodes[b].kind != NodeKind::Device || !out.nodes[b].inputs[static_cast<size_t>(toPort)].param);
       // Its kind (how it is drawn): notes into a main input, an audio path inside the band, or modulation.
       const bool sameBand = out.nodes[a].band == out.nodes[b].band;
-      const bool mainFrom = w.port.empty(), mainTo = w.param.empty();
+      // IG.1-2: inside one opened instrument group its series — In, a member's main output (output 0), into a member's
+      // main input or Out — is its path, drawn as a chain; from In (the notes) as a note wire. (Another group's series
+      // keeps TX.groups' drawing.)
+      const uint32_t cap = out.nodes[a].capsule;
+      auto chainInput = [&] {  // into the target meta module's chain input by name (a member taking the notes)
+        const doc::Device* d = doc::findDevice(p, w.to).device;
+        const meta::Type* t = d != nullptr && doc::isMetaDevice(*d) ? meta::findType(doc::metaDeviceType(*d)) : nullptr;
+        const int32_t ci = t != nullptr ? doc::metaChainInput(*d, *t) : -1;
+        return ci >= 0 && w.param == t->inputs[static_cast<size_t>(ci)].name;
+      };
+      const bool series = cap != kNone && cap == out.nodes[b].capsule && out.nodes[cap].instrument && fromPort == 0 &&
+                          (out.nodes[b].kind == NodeKind::Terminal || toPort == out.nodes[b].mainIn || chainInput());
+      const bool mainFrom = w.port.empty() || series;
+      const bool mainTo = w.param.empty() || series;
       EdgeKind k = EdgeKind::Modulation;
       if (w.fromNoteSource() && fromMidi && mainFrom && mainTo) k = EdgeKind::Notes;
+      else if (series && out.nodes[a].kind == NodeKind::Terminal) k = EdgeKind::Notes;
       else if (sameBand && e.graphWire == kNone && ((mainFrom && mainTo) || w.toMixer() || (w.fromNoteSource() && mainFrom))) k = EdgeKind::Chain;
       addEdge(k, a, fromPort, b, toPort, e);
     }
