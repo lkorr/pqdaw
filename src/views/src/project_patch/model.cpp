@@ -499,6 +499,20 @@ struct Builder {
           if (c.output(key) < 0) c.outputs.push_back({key, w.port});
         }
       }
+      // GU.5: drawn as its panel, a wire into a control inside the group that an element shows ends on that element (no
+      // pin: TX.mod-all's anchored port, its key "<name>@<id>" as the panel face answers it). Anchored ports go last, so
+      // the pins' rows stay where they were.
+      if (g.hasPanel() && opt.controlAnchor) {
+        for (Port& q : c.inputs)
+          if (q.param)
+            if (const std::optional<LayoutOptions::Anchor> a = opt.controlAnchor(g, q.name)) {
+              q.anchored = true;
+              q.ax = a->x;
+              q.ay = a->y;
+              q.aclear = a->clear;
+            }
+        std::stable_partition(c.inputs.begin(), c.inputs.end(), [](const Port& q) { return !q.anchored; });
+      }
       c.pinTop = 0.0f;
       sizeBlock(c, m::kClosedGroupW);
       c.h = roundUp4(std::max(c.h, m::kClosedGroupH));

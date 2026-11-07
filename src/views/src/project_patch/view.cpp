@@ -25,6 +25,7 @@
 #include "pq/views/devices/knob_curve_menu.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
+#include "pq/views/panel/panel_window.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 
@@ -334,6 +335,17 @@ void ProjectPatchView::captureArrangement() {
 }
 
 void ProjectPatchView::onFrame(double now) {
+  // GU.5: windows whose group went (hidden at once by syncWindows) are removed here, outside any event of theirs.
+  if (windowsStale_) {
+    windowsStale_ = false;
+    const doc::Snapshot& snap = ctx_.doc();
+    for (size_t i = windows_.size(); i-- > 0;) {
+      panel::PanelWindow* w = windows_[i];
+      if (snap && doc::findDevice(*snap, w->group()).device != nullptr) continue;
+      windows_.erase(windows_.begin() + static_cast<std::ptrdiff_t>(i));
+      (void)removeChild(*w);
+    }
+  }
   // TX.node-menu: the push-apart after a spawn steps with the frame clock until the blocks are apart and at rest.
   if (pushing()) {
     if (push_.last < 0.0) push_.last = now - 1.0 / 60.0;
@@ -385,6 +397,22 @@ void ProjectPatchView::onFrame(double now) {
 
 void ProjectPatchView::arrange(ui::LayoutPass& pass) {
   pass.place(*canvas_, rect());
+  // GU.5: the panel windows over the canvas, where their view state puts them (logical px from the view's top-left),
+  // kept so their title bars stay reachable; none while the view morphs.
+  for (panel::PanelWindow* w : windows_) {
+    if (!w->visible()) continue;
+    const doc::PanelWindowView& st = w->state();
+    if (morph_.active || rect().w <= 0 || rect().h <= 0) {
+      pass.place(*w, {});
+      continue;
+    }
+    const int32_t ww = std::min(rect().w, pass.px(std::max(st.w, panel::PanelWindow::kMinW)));
+    const int32_t hh = st.minimised ? pass.px(panel::PanelWindow::kTitleH) : std::min(rect().h, pass.px(std::max(st.h, panel::PanelWindow::kMinH)));
+    const int32_t keep = pass.px(48.0f);
+    const int32_t x = std::clamp(rect().x + pass.px(st.x), rect().x - ww + keep, rect().right() - keep);
+    const int32_t y = std::clamp(rect().y + pass.px(st.y), rect().y, rect().bottom() - pass.px(panel::PanelWindow::kTitleH));
+    pass.place(*w, {x, y, ww, hh});
+  }
   // TX.groups: an embedded view (a group's panel) builds itself once it has a size (it fits the capsule then).
   if (embedded() && rect().w > 0 && rect().h > 0 && (stale_ || built_ != ctx_.doc())) sync();
   // TX.free-rack: the rack's height was dragged: its contents fit again, unless the user moved the view since.
@@ -585,6 +613,7 @@ void ProjectPatchView::rebuild() {
     costs_.clear();
     if (!costTimer_) pollCosts();
   }
+  syncWindows();  // GU.5: the panel windows of the view state (a group gone: its window goes)
   ++stats_.rebuilds;
   stats_.lastRebuildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   // TX.block-drag: blocks never overlap — every re-layout settles (not inside a push's own re-layout, nor while a block
@@ -640,6 +669,8 @@ void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
     syncPanels();         // TX.panel-faces: a param value shown on a block's panel
     canvas_->markDirty();
   }
+  for (panel::PanelWindow* w : windows_)  // GU.5: the panels follow the document (values, elements)
+    if (w->visible()) w->documentChanged();
 }
 
 const doc::Track* ProjectPatchView::bandTrack(uint32_t b) const noexcept {
@@ -1251,7 +1282,13 @@ ProjectPatchView::WireTarget ProjectPatchView::wireTargetAt(Vec2 pos) const {
   const circuit::CircuitCanvas::FaceParamHit fh = canvas_->faceParamAt(pos);
   if (!fh.param.empty() && fh.node < scene_.modelNode.size()) {
     const uint32_t mn = scene_.modelNode[fh.node];
-    if (mn < patch_.nodes.size() && patch_.nodes[mn].kind == NodeKind::Device) return {patch_.nodes[mn].device, fh.param};
+    if (mn < patch_.nodes.size() && patch_.nodes[mn].kind == NodeKind::Device) {
+      if (patch_.nodes[mn].groupPanel) {  // GU.5: a closed group's panel element: the control inside the group
+        const doc::Binding b = panel::GroupPanelFace::controlOfKey(patch_.nodes[mn].device, fh.param);
+        if (b.bound()) return {b.device, b.name};
+      }
+      return {patch_.nodes[mn].device, fh.param};
+    }
   }
   return {};
 }
@@ -1952,6 +1989,21 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
       items.push_back(ui::MenuItem::item("Copy", [this, sel] { (void)copyBlocks(sel); }, "Ctrl+C"));
       if (n.group)
         items.push_back(ui::MenuItem::item("Save as Group Preset", [this, d] { (void)saveGroupPreset(d); }));
+      // GU.5: the group's panel window; a control of the block (or the block's controls) onto its group's panel.
+      if (n.group && !embedded()) {
+        ui::MenuItem win = ui::MenuItem::item("Panel Window", [this, d] { (void)togglePanelWindow(d); });
+        win.checked = panelWindowOpen(d);
+        items.push_back(std::move(win));
+      }
+      if (!embedded() && n.capsule != kNone) {
+        const doc::Binding c = controlAt(at);
+        std::vector<doc::Binding> bs = c.bound() ? std::vector<doc::Binding>{c} : controlsOf(d);
+        ui::MenuItem send = ui::MenuItem::item(c.bound() ? "Send Control to Panel" : "Send Controls to Panel", [this, bs] {
+          if (!bs.empty()) (void)sendToPanel(panelGroupFor(bs.front().device), bs);
+        }, "P");
+        send.enabled = !bs.empty();
+        items.push_back(std::move(send));
+      }
     }
     items.push_back(ui::MenuItem::item("Delete", [this, d] {
       const doc::DeviceId one[1] = {d};

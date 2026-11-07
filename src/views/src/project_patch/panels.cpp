@@ -124,8 +124,10 @@ std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
   // GU.3: a closed group drawn as its panel, bound to the document (menus open from the canvas).
   if (std::string_view(f.path).starts_with(kGroupPanelFacePrefix)) {
     const doc::DeviceId g{f.owner};
-    return std::make_unique<panel::GroupPanelFace>(panel::docPanelSource(ctx_, g),
-                                                   panel::makeDocPanelTarget(ctx_, g, [c = canvas_]() -> ui::Widget* { return c; }));
+    auto face = std::make_unique<panel::GroupPanelFace>(panel::docPanelSource(ctx_, g),
+                                                        panel::makeDocPanelTarget(ctx_, g, [c = canvas_]() -> ui::Widget* { return c; }));
+    face->setOwner(g);  // GU.5: its elements answer for the controls inside the group ("<name>@<id>": wires end on them)
+    return face;
   }
   const doc::DeviceLoc loc = doc::findDevice(*ctx_.doc(), doc::DeviceId{f.owner});
   if (loc.device == nullptr) return nullptr;
@@ -169,7 +171,14 @@ std::optional<LayoutOptions::Anchor> ProjectPatchView::controlAnchorOf(const doc
       return point(f->controlHome(param));
     }
   }
-  // Not shown yet: a prototype of its kind.
+  // Not shown yet: a prototype of its kind. GU.5: a closed group's panel — the element bound to the control inside it.
+  if (doc::isGroupDevice(d)) {
+    if (!d.hasPanel()) return std::nullopt;
+    const doc::PanelPtr p = d.panel;
+    panel::GroupPanelFace f([p] { return p; }, panel::makeDocPanelTarget(ctx_, d.id, {}));
+    f.setOwner(d.id);
+    return point(f.controlHome(param));
+  }
   if (doc::isMetaDevice(d)) {
     const meta::Type* t = meta::findType(doc::metaDeviceType(d));
     if (t == nullptr || !hasFace(*t)) return std::nullopt;

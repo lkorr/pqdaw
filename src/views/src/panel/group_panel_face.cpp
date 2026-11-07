@@ -4,6 +4,7 @@
 #include "pq/views/panel/group_panel_face.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -75,6 +76,7 @@ void GroupPanelFace::rebuild(const doc::PanelPtr& p) {
       if (const std::optional<double> s = e->selection(*target_)) keep.emplace_back(e->id(), *s);
   if (capture_ >= 0 && static_cast<size_t>(capture_) < elements_.size()) elements_[static_cast<size_t>(capture_)]->cancelDrag(*target_);
   capture_ = focus_ = -1;
+  cable_ = cableTarget_ = -1;
   hovered_ = kNone;
   panel_ = p;
   elements_.clear();
@@ -196,9 +198,86 @@ void GroupPanelFace::paintLive(ui::FacePainter& p, const FaceEnv& env) {
     e.paintLive(q, ee);
     ++stats_.drawn;
   }
+  // GU.5: a mod source's cable on the pointer: a hanging curve from its handle, the control a release wires outlined.
+  if (cable_ >= 0 && static_cast<size_t>(cable_) < elements_.size()) {
+    const Element& src = *elements_[static_cast<size_t>(cable_)];
+    const Vec2 h = src.cableHandle().value_or(Vec2{src.desc().w * 0.5f, src.desc().h * 0.5f});
+    const Vec2 a{src.desc().x + h.x, src.desc().y + h.y}, b = cableTo_;
+    const float sag = std::min(40.0f, 0.2f * std::hypot(b.x - a.x, b.y - a.y));
+    std::array<Vec2, 17> pts;
+    for (size_t k = 0; k < pts.size(); ++k) {
+      const float u = static_cast<float>(k) / static_cast<float>(pts.size() - 1);
+      pts[k] = {a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u + sag * 4.0f * u * (1.0f - u)};
+    }
+    if (cableTarget_ >= 0 && static_cast<size_t>(cableTarget_) < elements_.size()) {
+      const Rect r = elements_[static_cast<size_t>(cableTarget_)]->rect();
+      outlineRect(p, {r.x0 - 2.0f, r.y0 - 2.0f, r.x1 + 2.0f, r.y1 + 2.0f}, 3.0f, 1.5f, th.circuit.selected);
+    }
+    p.polyline(pts, 2.4f, ui::mulAlpha(th.face.signal, 0.95f));
+    p.disc(b, 2.5f, th.face.signal);
+  }
   // The block's selection / hover rim.
   outlineRect(p, {0.6f, 0.6f, ws.x - 0.6f, ws.y - 0.6f}, kCorner - 0.6f, env.selected ? 1.75f : 1.25f,
               env.selected ? th.circuit.selected : (env.hovered && hovered_ == kFrame ? th.circuit.hover : 0u));
+}
+
+int32_t GroupPanelFace::cableTargetAt(Vec2 l) const {
+  const int32_t i = elementAt(l);
+  if (i < 0 || i == cable_) return -1;
+  const doc::Binding* b = elements_[static_cast<size_t>(i)]->binding();
+  return b != nullptr && b->kind == doc::BindingKind::Control ? i : -1;
+}
+
+std::string GroupPanelFace::portKey(doc::DeviceId group, const doc::Binding& b) {
+  if (b.device == group) return b.name;
+  return b.name + "@" + std::to_string(b.device.value);
+}
+
+doc::Binding GroupPanelFace::controlOfKey(doc::DeviceId group, std::string_view key) {
+  const size_t at = key.rfind('@');
+  if (at == std::string_view::npos) return key.empty() ? doc::Binding{} : doc::controlBinding(group, std::string(key));
+  uint32_t id = 0;
+  for (const char c : key.substr(at + 1)) {
+    if (c < '0' || c > '9' || id > 100000000u) return {};
+    id = id * 10u + static_cast<uint32_t>(c - '0');
+  }
+  if (at == 0 || id == 0) return {};
+  return doc::controlBinding(doc::DeviceId{id}, std::string(key.substr(0, at)));
+}
+
+std::string GroupPanelFace::paramAt(Vec2 local) const {
+  const int32_t i = elementAt(local);
+  if (i < 0) return {};
+  const doc::Binding* b = elements_[static_cast<size_t>(i)]->binding();
+  if (b == nullptr || b->kind != doc::BindingKind::Control || !b->meta.empty()) return {};
+  return portKey(owner_, *b);
+}
+
+std::optional<ControlAnchor> GroupPanelFace::elementAnchor(size_t i) const {
+  if (i >= elements_.size()) return std::nullopt;
+  const Element& e = *elements_[i];
+  const Rect r = e.rect();
+  ControlAnchor a = e.anchor().value_or(ControlAnchor{{e.desc().w * 0.5f, e.desc().h * 0.5f}, 0.0f, e.desc().w * 0.5f});
+  a.at = {a.at.x + r.x0, a.at.y + r.y0};
+  return a;
+}
+
+std::optional<ControlAnchor> GroupPanelFace::controlAnchor(std::string_view param) const {
+  const doc::Binding want = controlOfKey(owner_, param);
+  if (!want.bound()) return std::nullopt;
+  std::vector<int8_t>& memo = freshMemo();
+  for (size_t i = 0; i < elements_.size(); ++i)
+    if (const doc::Binding* b = elements_[i]->binding(); b != nullptr && *b == want && shownNow(i, memo)) return elementAnchor(i);
+  return std::nullopt;
+}
+
+std::optional<ControlAnchor> GroupPanelFace::controlHome(std::string_view param) const {
+  if (std::optional<ControlAnchor> now = controlAnchor(param)) return now;
+  const doc::Binding want = controlOfKey(owner_, param);
+  if (!want.bound()) return std::nullopt;
+  for (size_t i = 0; i < elements_.size(); ++i)  // on another tab: where it is placed
+    if (const doc::Binding* b = elements_[i]->binding(); b != nullptr && *b == want) return elementAnchor(i);
+  return std::nullopt;
 }
 
 void GroupPanelFace::liveRects(std::vector<Rect>& out) const {
@@ -254,7 +333,22 @@ bool GroupPanelFace::onPointer(const FacePointer& e) {
     const int32_t c = capture_;
     if (e.kind == K::Up) capture_ = -1;
     if (e.kind == K::Leave) return false;
-    return elements_[static_cast<size_t>(c)]->onPointer(local(c), *target_) || e.kind == K::Up || e.kind == K::Move;
+    const bool used = elements_[static_cast<size_t>(c)]->onPointer(local(c), *target_) || e.kind == K::Up || e.kind == K::Move;
+    // GU.5: a mod source's cable follows the pointer; released on a control, the cable is made (one undo step).
+    if (c == cable_) {
+      cableTo_ = e.local;
+      cableTarget_ = cableTargetAt(e.local);
+      if (e.kind == K::Up) {
+        const int32_t to = cableTarget_;
+        cable_ = cableTarget_ = -1;
+        if (to >= 0) {
+          const doc::Binding from = *elements_[static_cast<size_t>(c)]->binding();
+          const doc::Binding into = *elements_[static_cast<size_t>(to)]->binding();
+          (void)target_->connect(from, into);  // (the host's scene may rebuild; this face stays)
+        }
+      }
+    }
+    return used;
   }
   switch (e.kind) {
     case K::Down: {
@@ -264,7 +358,14 @@ bool GroupPanelFace::onPointer(const FacePointer& e) {
       if (i < 0) return false;
       // (an edit made by the element may rebuild the host's scene; this face and its elements stay)
       const bool used = elements_[static_cast<size_t>(i)]->onPointer(local(i), *target_);
-      if (used && static_cast<size_t>(i) < elements_.size() && elements_[static_cast<size_t>(i)]->dragging()) capture_ = i;
+      if (used && static_cast<size_t>(i) < elements_.size() && elements_[static_cast<size_t>(i)]->dragging()) {
+        capture_ = i;
+        if (elements_[static_cast<size_t>(i)]->cableHandle()) {  // GU.5: a mod source's cable comes out
+          cable_ = i;
+          cableTo_ = e.local;
+          cableTarget_ = -1;
+        }
+      }
       return used;
     }
     case K::Move: {
@@ -285,6 +386,7 @@ bool GroupPanelFace::dragging() const noexcept {
 void GroupPanelFace::cancelDrag() {
   if (capture_ >= 0 && static_cast<size_t>(capture_) < elements_.size()) elements_[static_cast<size_t>(capture_)]->cancelDrag(*target_);
   capture_ = -1;
+  cable_ = cableTarget_ = -1;
 }
 
 bool GroupPanelFace::onKey(const ui::KeyEvent& e) {
@@ -446,13 +548,17 @@ bool PanelHost::onPointer(const ui::PointerEvent& e) {
   if (e.type == ui::PointerType::Move && !captured_) {
     const int32_t part = face_->hitTest(f.local, f.pxPerUnit);
     const bool hov = face_->setHoveredPart(part) || part != hover_;
+    const bool moved = part != hover_;
     hover_ = part;
+    if (moved && onHoverPart) onHoverPart();
     if (face_->onPointer(f) || hov) markDirty();
     return part != Face::kNone;
   }
   if (e.type == ui::PointerType::Leave) {
     if (face_->setHoveredPart(Face::kNone)) markDirty();
+    const bool moved = hover_ != Face::kNone;
     hover_ = Face::kNone;
+    if (moved && onHoverPart) onHoverPart();
     return false;
   }
   if (e.type == ui::PointerType::Down && tree() != nullptr) tree()->setFocus(this);
@@ -489,6 +595,14 @@ void PanelHost::onFocusChanged(bool focused) {
     setAcceptsTextInput(false);
     markDirty();
   }
+}
+
+void PanelHost::onHoverChanged(bool hovered) {
+  if (hovered || hover_ == Face::kNone || captured_) return;
+  (void)face_->setHoveredPart(Face::kNone);  // the pointer went to another widget: nothing of the panel is hovered
+  hover_ = Face::kNone;
+  markDirty();
+  if (onHoverPart) onHoverPart();
 }
 
 ui::Cursor PanelHost::cursorAt(Vec2 pos) const {

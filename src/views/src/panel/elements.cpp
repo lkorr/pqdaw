@@ -253,6 +253,8 @@ public:
     const bool hot = env.hovered || drag_;
     const std::string_view ptr = pointer();
     if (hot) p.ring(g.c, g.r, track() + 2.0f, th.face.hover);
+    // GU.5: a cable drives the control — its modulation ring, just outside the track (and its end ticks).
+    if (binding() != nullptr && t.driven(*binding())) p.ring(g.c, g.r + track() * 0.5f + 5.0f, 1.5f, th.face.valueDriven);
     if (ptr == "pie") {
       // A filled wedge from the start to the value: an arc as thick as the radius (one primitive, no seams).
       if (a > g.a0 + 1e-4f) p.arc(g.c, g.r * 0.5f, g.a0, a, g.r, ui::mulAlpha(accent, 0.9f));
@@ -365,6 +367,9 @@ public:
     if (g.vertical) fill.y0 = h.y;
     else fill.x1 = h.x;
     const float rr = std::min(g.groove.x1 - g.groove.x0, g.groove.y1 - g.groove.y0) * 0.5f;
+    // GU.5: a cable drives the control — its modulation ring: an outline round the groove.
+    if (binding() != nullptr && t.driven(*binding()))
+      outlineRect(p, {g.groove.x0 - 2.5f, g.groove.y0 - 2.5f, g.groove.x1 + 2.5f, g.groove.y1 + 2.5f}, rr + 2.5f, 1.2f, th.face.valueDriven);
     if (fill.x1 - fill.x0 > 0.2f && fill.y1 - fill.y0 > 0.2f) p.roundedRect(fill, rr, accent);
     const bool hot = env.hovered || drag_;
     const Rgba cap = hot ? ui::lerp(th.face.handle, th.face.value, 0.35f) : th.face.handle;
@@ -408,6 +413,10 @@ public:
     return false;
   }
   ui::Cursor cursor() const noexcept override { return geom().vertical ? ui::Cursor::ResizeNS : ui::Cursor::ResizeEW; }
+  std::optional<ControlAnchor> anchor() const override {
+    const G g = geom();
+    return ControlAnchor{{(g.groove.x0 + g.groove.x1) * 0.5f, (g.groove.y0 + g.groove.y1) * 0.5f}, 0.0f, desc_.w * 0.5f};
+  }
 
 private:
   struct G {
@@ -969,11 +978,33 @@ public:
   void describe(const PanelTarget&, std::string& title, std::string& body) const override {
     const doc::Binding* b = binding();
     title = "Modulation source";
-    body = b != nullptr ? "The output '" + b->name + "' of a block in the group. (Dragging it onto a control makes the cable: GU.5.)"
+    body = b != nullptr ? "The output '" + b->name + "' of a block in the group. Drag it onto a control of the panel: the "
+                                                     "cable from this output into that control (one undo step)."
                         : "Not bound to an output.";
   }
+  // GU.5: bound to an output, a drag from the handle onto a control makes the cable (GroupPanelFace).
+  bool interactive() const noexcept override { return signal(); }
+  bool onPointer(const FacePointer& e, PanelTarget&) override {
+    using K = FacePointer::Kind;
+    if (e.kind == K::Down && e.button == ui::PointerButton::Left && signal()) return drag_ = true;
+    if (e.kind == K::Move && drag_) return true;
+    if (e.kind == K::Up && drag_) {
+      drag_ = false;
+      return true;
+    }
+    return false;
+  }
+  bool dragging() const noexcept override { return drag_; }
+  void cancelDrag(PanelTarget&) override { drag_ = false; }
+  ui::Cursor cursor() const noexcept override { return signal() ? ui::Cursor::Crosshair : ui::Cursor::Inherit; }
+  std::optional<Vec2> cableHandle() const override { return signal() ? std::optional<Vec2>(centre()) : std::nullopt; }
 
 private:
+  bool signal() const noexcept {
+    const doc::Binding* b = binding();
+    return b != nullptr && b->kind == doc::BindingKind::Signal;
+  }
+  bool drag_ = false;
   Vec2 centre() const noexcept {
     const bool label = desc_.h >= 2.0f * std::min(desc_.w, desc_.h) * 0.3f + 9.0f;
     return {desc_.w * 0.5f, label ? (desc_.h - 9.0f) * 0.5f : desc_.h * 0.5f};

@@ -4,4 +4,5 @@ set(PQ_VIEWS_PANEL_SOURCES
   src/panel/elements.cpp
   src/panel/curve_element.cpp
   src/panel/group_panel_face.cpp
-  src/panel/doc_target.cpp)
+  src/panel/doc_target.cpp
+  src/panel/panel_window.cpp)  # GU.5: the panel window, its editor and inspector

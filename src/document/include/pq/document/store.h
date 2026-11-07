@@ -84,10 +84,22 @@ inline float patchPinRadians(float degrees) noexcept {
   return d * (3.14159265358979f / 180.0f);
 }
 inline float patchPinQuantise(float radians) noexcept { return patchPinRadians(patchPinDegrees(radians)); }
+// GU.5 (docs/plans/GU.md "Panels and the panel window"): a group's PANEL WINDOW in the project patch view — open or not,
+// minimised (its title bar only), in edit or play mode, and where it floats over the canvas: its top-left from the
+// canvas's top-left and its size, logical px (w, h 0: not placed yet, the view's default). View state like a nudge
+// (saved with the project as the view's optional "panels", not undoable). Key: the group's device id.
+struct PanelWindowView {
+  bool open = false, minimised = false, edit = false;
+  float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+  bool empty() const noexcept { return !open && !minimised && !edit && w == 0.0f && h == 0.0f && x == 0.0f && y == 0.0f; }
+  friend bool operator==(const PanelWindowView&, const PanelWindowView&) noexcept = default;
+};
+inline constexpr float kMaxPanelWindowCoord = 1.0e5f;  // |x|, |y|, w, h (logical px) the reader accepts
 struct ViewState {
   std::unordered_map<TrackId, TrackView> tracks;
   std::unordered_map<LaneId, LaneView> lanes;
   std::unordered_map<uint32_t, PatchNudge> patchNudges;  // T4.13: by raw track or device id (TX.resize: + scale)
+  std::unordered_map<uint32_t, PanelWindowView> panelWindows;  // GU.5: by group (device) id
 };
 
 enum class StoreEventKind : uint8_t {

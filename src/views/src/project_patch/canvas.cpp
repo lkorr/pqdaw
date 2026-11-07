@@ -15,6 +15,8 @@
 #include "pq/views/circuit/probes.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/meta/face_targets.h"
+#include "pq/views/panel/group_panel_face.h"
+#include "pq/views/panel/panel_window.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
 namespace pq::views::project_patch {
@@ -341,6 +343,21 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
                               ui::lerp(th.circuit.background, accent, n.active ? (n.instrument ? 0.26f : 0.18f) : 0.08f));
     const float frame = n.instrument ? 1.5f * sw : sw;
     dl.addRoundedRectStroke(r, rad, sel ? th.circuit.selected : ui::mulAlpha(accent, n.active ? 0.9f : 0.4f), sel ? 2.0f * sw : frame);
+    // GU.5: the panel-window button at the title strip's right end (a small window glyph; lit while its window is open).
+    if (stripH >= 12.0f && !view_.embedded()) {
+      const LaneRect br = ProjectPatchView::panelButtonRect(n);
+      const Rect b = snapRect(deviceRect(br.x0, br.y0, br.x1 - br.x0, br.y1 - br.y0));
+      if (b.x0 > r.x0 + rad) {
+        const bool on = view_.panelWindowOpen(n.device);
+        const float bw = std::max(1.0f, std::round(us));
+        const float inset = std::round((b.y1 - b.y0) * 0.2f);
+        const Rect g{b.x0 + inset, b.y0 + inset, b.x1 - inset, b.y1 - inset};
+        const ui::Rgba ink = on ? th.circuit.selected : ui::mulAlpha(th.circuit.symbolText, 0.85f);
+        if (on) dl.addRoundedRectFilled(b, 3.0f * us, ui::mulAlpha(th.circuit.selected, 0.35f));
+        dl.addRectStroke(g, ink, bw);
+        dl.addRectFilled({g.x0, g.y0, g.x1, g.y0 + std::max(bw, std::round((g.y1 - g.y0) * 0.28f))}, ink);
+      }
+    }
     if (names && stripH >= 8.0f) {
       const ui::FontId font = ctx.res.uiFonts->small;
       const auto px = static_cast<float>(ctx.res.text->metrics(font).pixelSize);
@@ -634,6 +651,9 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
     }
   }
 
+  // GU.5: the link lines from the panel windows' elements to their controls, and the selected control's ring.
+  view_.paintPanelLinks(ctx);
+
   // TX.node-menu-fix1: while the node menu is open, where its choice goes: a small ring and dot in the accent.
   if (const std::optional<graph::Point2>& mk = view_.spawnMark()) {
     const Vec2 c = toDevice(*mk);
@@ -726,6 +746,10 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       backWireHeld() && pressBackWire(e))
     return true;
   if (lanePointer(e)) return true;  // TX.lane-edit: a window body is the arrangement's editing surface
+  // GU.5: a left press selects the control under it (a face's or panel's, a param pin, a value block): what P sends.
+  if (drag_ == Drag::None && e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && !(e.mods & ui::mod::kAlt) &&
+      !v.embedded())
+    v.setSelectedControl(v.controlAt(e.pos));
   if (drag_ == Drag::None && facePointer(e)) return true;  // TMM.4: a face's control (its drag, hover, wheel)
   switch (e.type) {
     case ui::PointerType::Wheel: {
@@ -766,6 +790,16 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       if (e.button != ui::PointerButton::Left || (e.mods & ui::mod::kAlt)) return CircuitCanvas::onPointer(e);
       if (tree()) tree()->setFocus(this);
       const uint32_t node = nodeAt(e.pos);
+      // GU.5: an opened capsule's panel-window button.
+      if (node != kNone && pp.nodes[node].group && pp.nodes[node].groupOpen && !v.embedded() &&
+          deviceScale() * metrics::kCapsuleTitle >= 12.0f) {
+        const LaneRect br = ProjectPatchView::panelButtonRect(pp.nodes[node]);
+        const graph::Point2 w = toWorld(e.pos);
+        if (w.x >= br.x0 && w.x <= br.x1 && w.y >= br.y0 && w.y <= br.y1) {
+          (void)v.togglePanelWindow(pp.nodes[node].device);
+          return true;
+        }
+      }
       // TX.groups: a group's capsule — double-click its title strip to close it, the closed block to open it again; a
       // press on its frame selects the group (an opened capsule is no scene node) and drags or nudges it as a block.
       if (node != kNone && pp.nodes[node].group) {
@@ -963,6 +997,8 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           wireCursor_ = ui::Cursor::Crosshair;
         }
       }
+      // GU.5: a block, an output's cable or a control's (W) over a panel window: the window shows it would take it.
+      v.setPanelDropHover(e.pos, drag_ == Drag::MoveDevice || drag_ == Drag::Wire || drag_ == Drag::BackWire);
       switch (drag_) {
         case Drag::Port:  // TX.orbit-ports
           if (portMoved_ || std::max(std::fabs(e.pos.x - press_.x), std::fabs(e.pos.y - press_.y)) >= drag::kClickSlop * us)
@@ -1056,6 +1092,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
     case ui::PointerType::Up: {
       const Drag d = drag_;
       drag_ = Drag::None;
+      v.setPanelDropHover(e.pos, false);  // GU.5
       if (d == Drag::None) return CircuitCanvas::onPointer(e);
       last_ = e.pos;
       portMaybe_ = false;
@@ -1072,6 +1109,22 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           break;
         }
         case Drag::Wire: {
+          // GU.5: an output's cable released on a panel window: a mod source of that output there.
+          if (panel::PanelWindow* pw = v.panelWindowAt(e.pos);
+              pw != nullptr && from_.valid() && from_.node < pp.nodes.size() && pp.nodes[from_.node].kind == NodeKind::Device &&
+              from_.port < pp.nodes[from_.node].outputs.size()) {
+            const Node& a = pp.nodes[from_.node];
+            doc::DeviceId dev = a.device;
+            std::string port = a.outputs[from_.port].name;
+            if (const size_t at = port.rfind('@'); at != std::string::npos && (a.rack || a.group)) {
+              dev = doc::DeviceId{static_cast<uint32_t>(std::stoul(port.substr(at + 1)))};
+              port.resize(at);
+            }
+            const doc::Binding b = doc::signalBinding(dev, port);
+            (void)v.dropOnPanelWindow(*pw, std::span<const doc::Binding>(&b, 1), e.pos);
+            clearLooseCable();
+            break;
+          }
           // TX.node-menu: released with Ctrl held, a made connection keeps a new cable from the same source on the pointer.
           rememberSource();
           const doc::Snapshot before = v.context().doc();
@@ -1091,6 +1144,12 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         }
         case Drag::BackWire:
           menuFromDrop_ = false;
+          if (panel::PanelWindow* pw = v.panelWindowAt(e.pos)) {  // GU.5: a control dragged onto a panel window
+            const doc::Binding b = doc::controlBinding(backDevice_, backParam_);
+            (void)v.dropOnPanelWindow(*pw, std::span<const doc::Binding>(&b, 1), e.pos);
+            clearLooseCable();
+            break;
+          }
           finishBackWire(e.pos);
           if (!menuFromDrop_) dropLooseCable();
           break;
@@ -1101,7 +1160,17 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           }
           break;
         case Drag::Splice: endSplice(true, e.pos); break;
-        case Drag::MoveDevice: finishDeviceMove(e.pos); break;
+        case Drag::MoveDevice:
+          // GU.5: blocks dropped on a panel window: their controls go onto that panel (the blocks stay where they were).
+          if (panel::PanelWindow* pw = v.panelWindowAt(e.pos)) {
+            std::vector<doc::Binding> bs;
+            for (const doc::DeviceId dd : dragDevices_)
+              for (doc::Binding& b : v.controlsOf(dd)) bs.push_back(std::move(b));
+            (void)v.dropOnPanelWindow(*pw, bs, e.pos);
+            break;
+          }
+          finishDeviceMove(e.pos);
+          break;
         case Drag::MaybeMoveDevice: {
           // A click on a selected block selects only it.
           const uint32_t sn = dragNode_ < v.scene().sceneNode.size() ? v.scene().sceneNode[dragNode_] : kNone;
@@ -1342,6 +1411,14 @@ void ProjectCanvas::finishWire(Vec2 pos) {
           v.scene().sceneNode[mn] == fh.node) {
         wire(pp.nodes[mn].device, fh.param);
         return;
+      }
+      // GU.5: a closed group's panel element: the control inside the group it shows.
+      if (mn < pp.nodes.size() && pp.nodes[mn].groupPanel && v.scene().sceneNode[mn] == fh.node) {
+        const doc::Binding b = panel::GroupPanelFace::controlOfKey(pp.nodes[mn].device, fh.param);
+        if (b.bound()) {
+          wire(b.device, b.name);
+          return;
+        }
       }
     }
     const uint32_t to = nodeAt(pos);
@@ -1617,6 +1694,8 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
     return view_.pasteAt(toWorld(at)) || swallow;
   }
   if (e.key == 'g' && mods == ui::mod::kCtrl) return view_.groupSelection() || swallow;
+  // GU.5: P sends the selected control (or the selected blocks' controls) to its group's panel.
+  if (e.key == 'p' && mods == ui::mod::kNone && !view_.embedded()) return view_.sendSelectionToPanel() || swallow;
   if (e.key == 'g' && mods == (ui::mod::kCtrl | ui::mod::kShift)) return view_.ungroupSelection() || swallow;
   if (mods == ui::mod::kNone && e.key == '0') {
     const std::vector<doc::DeviceId> d = view_.selectedDevices();

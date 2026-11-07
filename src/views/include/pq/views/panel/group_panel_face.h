@@ -70,6 +70,24 @@ public:
   ui::Cursor cursor(int32_t part) const noexcept override;
   void describe(int32_t part, std::string& title, std::string& body) const override;
   bool setHoveredPart(int32_t part) noexcept override;
+  // GU.5: a wire into a control inside the group ends on the element bound to it. `param` is the closed group's port for
+  // that control (project_patch.h: "<name>@<device id>"; a bare name: a param of the group itself, owner()).
+  std::string paramAt(ui::Vec2 local) const override;
+  std::optional<ControlAnchor> controlAnchor(std::string_view param) const override;
+  std::optional<ControlAnchor> controlHome(std::string_view param) const override;
+  // The group whose panel this is (the port keys above name its own params bare); invalid: none known.
+  void setOwner(doc::DeviceId group) noexcept { owner_ = group; }
+  doc::DeviceId owner() const noexcept { return owner_; }
+  // The port key of a Control binding on `group`'s panel ("<name>@<id>", or the name for the group's own) and back
+  // (an unbound binding when `key` is malformed).
+  static std::string portKey(doc::DeviceId group, const doc::Binding& b);
+  static doc::Binding controlOfKey(doc::DeviceId group, std::string_view key);
+  // Where element i's control sits (panel units): its anchor (a knob's centre) or its rect's centre; nullopt: none.
+  std::optional<ControlAnchor> elementAnchor(size_t i) const;
+  // GU.5: a mod source's cable on the pointer (a drag from its handle; the face draws it to the pointer and outlines the
+  // control a release would wire), and that control's element (-1: none under the pointer).
+  bool cableDragging() const noexcept { return cable_ >= 0; }
+  int32_t cableTarget() const noexcept { return cableTarget_; }
 
   // ---- the panel ----
   // Re-reads the source: the elements rebuilt when the panel changed (true). Paint and the events call it.
@@ -103,6 +121,11 @@ private:
   mutable std::vector<int8_t> memo_;
   float tilesWanted_ = 0.0f;  // the scale the last paint missed tiles at (0: none missing)
   Stats stats_;
+  doc::DeviceId owner_;
+  // GU.5: the mod source whose cable is on the pointer (-1: none), the pointer (panel units), the control under it.
+  int32_t cable_ = -1, cableTarget_ = -1;
+  ui::Vec2 cableTo_{0.0f, 0.0f};
+  int32_t cableTargetAt(ui::Vec2 local) const;
 };
 
 // The group's document panel: Device::panel of `group` in the current snapshot (null: none).
@@ -128,6 +151,9 @@ public:
   ui::FaceTransform transform() const noexcept;
   // The document changed: repaint (and re-sync a group panel).
   void notifyChanged();
+  // GU.5: the face part under the pointer changed (a panel window's link line follows the hovered element).
+  std::function<void()> onHoverPart;
+  int32_t hoveredPart() const noexcept { return hover_; }
 
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
@@ -136,6 +162,7 @@ public:
   void onFrame(double now) override;
   void onCaptureLost() override;
   void onFocusChanged(bool focused) override;
+  void onHoverChanged(bool hovered) override;
   ui::Cursor cursorAt(ui::Vec2 p) const override;
   ui::InfoText info() const override;
   // FaceHost

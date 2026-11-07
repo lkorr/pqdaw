@@ -155,6 +155,9 @@ struct PanelTemplate;
 namespace devices {
 class PanelFace;
 }
+namespace panel {
+class PanelWindow;
+}
 namespace arrangement {
 class EditSurface;
 }
@@ -660,6 +663,54 @@ public:
   void selectGroup(doc::DeviceId group);
   doc::DeviceId selectedGroup() const noexcept { return selectedGroup_; }
 
+  // ---- GU.5: panel windows and send-to-panel (docs/plans/GU.md "Panels and the panel window"; pq/views/panel/
+  // panel_window.h). The main view only (an embedded view has none). ------------------------------------------------
+  // A group's panel window: opened by the button in its capsule's title strip (or its block menu's Panel Window),
+  // floating over the canvas; its place, size, mode and minimised are view state (doc::ViewState::panelWindows).
+  bool setPanelWindowOpen(doc::DeviceId group, bool open);
+  bool togglePanelWindow(doc::DeviceId group);
+  bool panelWindowOpen(doc::DeviceId group) const noexcept;
+  panel::PanelWindow* panelWindow(doc::DeviceId group) const noexcept;  // null: not open
+  panel::PanelWindow* panelWindowAt(ui::Vec2 device) const noexcept;    // the topmost open window there
+  // The control selected in the circuit: the last control pressed on a face or panel (a closed group's panel: the
+  // control inside it), else the one control of a block pressed (a value block). Unbound: none.
+  const doc::Binding& selectedControl() const noexcept { return selectedControl_; }
+  void setSelectedControl(doc::Binding b);
+  // The control under device point `pos` (a face's or panel's control, a param pin; a value block's own), unbound: none.
+  doc::Binding controlAt(ui::Vec2 pos) const;
+  // A block's controls (its params) or, `outputs`, its outputs: what a block sent to a panel becomes.
+  std::vector<doc::Binding> controlsOf(doc::DeviceId device) const;
+  // The group a control of `device` is sent to: the innermost group around it whose window is open, else the
+  // outermost group around it (invalid: it is in no group).
+  doc::DeviceId panelGroupFor(doc::DeviceId device) const;
+  // Bindings added to `group`'s panel as elements of their default kinds (panel::defaultElement; the first centred at
+  // `panelAt`, panel units, when given): ONE undo step; the window opens on them (selected). Bindings outside the group
+  // are refused (false + the status line says why).
+  bool sendToPanel(doc::DeviceId group, std::span<const doc::Binding> bindings, std::optional<ui::Vec2> panelAt = {});
+  // P / a window's +: the selected control (else the selected blocks' controls) to `group`'s panel (invalid: the
+  // control's panelGroupFor).
+  bool sendSelectionToPanel(doc::DeviceId group = {});
+  // A drag from the circuit released over a window: blocks (their controls), an output (a mod source), a control
+  // (W-drag out of it) — sent to that window's group at the drop point.
+  bool dropOnPanelWindow(panel::PanelWindow& w, std::span<const doc::Binding> bindings, ui::Vec2 at);
+  // A drag from the circuit is over device point `pos` (a window there is highlighted as the drop target); off: none.
+  void setPanelDropHover(ui::Vec2 pos, bool on);
+  // LINK LINES (in the circuit, under the windows; the panel shows no wires): from a window's element to the control
+  // it is bound to — every element's while its group is selected in the circuit or its window is the active one (the
+  // last press was in it), else only the hovered element's. Device px.
+  struct PanelLink {
+    ui::Vec2 from{0.0f, 0.0f}, to{0.0f, 0.0f};
+    doc::DeviceId group;
+    uint32_t element = 0;  // its id
+  };
+  std::vector<PanelLink> panelLinks() const;
+  // Where a binding's control is drawn in the circuit now (world units; its rim's radius in `radius`): a face's or
+  // panel's control, a pin, a closed group's panel element, else its block's centre. nullopt: not drawn.
+  std::optional<graph::Point2> controlWorld(const doc::Binding& b, float* radius = nullptr) const;
+  // The panel-window button in an opened capsule's title strip (world units).
+  static LaneRect panelButtonRect(const Node& capsule) noexcept;
+  void paintPanelLinks(ui::PaintContext& ctx);  // (the canvas's overlay)
+
   // Menus: the band's (add device, focus, reset layout), a block's (delete, (de)activate, open, expand), a wire's.
   ui::Menu* openBandMenu(uint32_t band, ui::Vec2 at);
   ui::Menu* openNodeMenu(uint32_t node, ui::Vec2 at);
@@ -852,6 +903,14 @@ private:
   // TX.mod-all: prototype faces (by meta type) and panels (by patch) for controlAnchorOf before a block is shown.
   std::unordered_map<const meta::Type*, std::unique_ptr<MetaFace>> anchorFaces_;
   std::map<std::string, std::unique_ptr<Face>, std::less<>> anchorPanels_;
+  // GU.5: the panel windows (children over the canvas, by group), the selected control, windows to remove (their group
+  // went: removed at the next frame, never inside an event of theirs).
+  std::vector<panel::PanelWindow*> windows_;
+  doc::Binding selectedControl_;
+  bool windowsStale_ = false;
+  void syncWindows();
+  panel::PanelWindow& makeWindow(doc::DeviceId group);
+  void windowChanged(panel::PanelWindow& w);
 
   struct Morph {
     bool active = false;

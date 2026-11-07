@@ -1442,6 +1442,41 @@ private:
       }
       w_.endArray();
     }
+    // GU.5: the groups' panel windows, only when there are any (files without them are unchanged).
+    std::vector<std::pair<uint32_t, PanelWindowView>> pw;
+    for (const auto& [id, win] : v.panelWindows)
+      if (live(entityIds, id) && !win.empty()) pw.emplace_back(id, win);
+    std::sort(pw.begin(), pw.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    if (!pw.empty()) {
+      w_.key("panels");
+      w_.beginArray(true);
+      const PathSeg at(nullptr, "panels");
+      for (const auto& [id, win] : pw) {
+        w_.beginObject(false);
+        w_.key("id");
+        w_.integer(id);
+        w_.key("open");
+        w_.boolean(win.open);
+        if (win.minimised) {
+          w_.key("minimised");
+          w_.boolean(true);
+        }
+        if (win.edit) {
+          w_.key("edit");
+          w_.boolean(true);
+        }
+        w_.key("x");
+        w_.number(at, win.x);
+        w_.key("y");
+        w_.number(at, win.y);
+        w_.key("w");
+        w_.number(at, win.w);
+        w_.key("h");
+        w_.number(at, win.h);
+        w_.endObject();
+      }
+      w_.endArray();
+    }
     w_.endObject();
   }
 
@@ -3603,17 +3638,48 @@ private:
     PatchNudge nudge;
     size_t pos;
   };
+  struct RawWindow {
+    uint32_t id;
+    PanelWindowView win;
+    size_t pos;
+  };
   struct RawView {
     std::vector<RawViewEntry> tracks, lanes;
     std::vector<RawNudge> nudges;  // T4.13 (optional "patch")
+    std::vector<RawWindow> windows;  // GU.5 (optional "panels")
   };
 
   RawView view(const PathSeg& at) {
     RawView v;
-    static constexpr std::string_view K[] = {"tracks", "lanes", "patch"};
+    static constexpr std::string_view K[] = {"tracks", "lanes", "patch", "panels"};
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
       const PathSeg list(&at, K[static_cast<size_t>(k)]);
+      if (k == 3) {  // GU.5: a group's panel window
+        r_.beginArray(list);
+        for (size_t i = 0; r_.nextElement(list); ++i) {
+          const PathSeg el(&list, i);
+          static constexpr std::string_view N[] = {"id", "open", "minimised", "edit", "x", "y", "w", "h"};
+          RawWindow e{0, {}, r_.pos()};
+          Members em(r_, el, N);
+          for (int q; (q = em.next()) >= 0;) {
+            const PathSeg f(&el, N[static_cast<size_t>(q)]);
+            if (q == 0) e.id = ref(f);
+            if (q == 1) e.win.open = r_.readBool(f);
+            if (q == 2) e.win.minimised = r_.readBool(f);
+            if (q == 3) e.win.edit = r_.readBool(f);
+            if (q >= 4) {
+              const float d = r_.readFloat(f);
+              if (!(std::fabs(d) <= kMaxPanelWindowCoord) || (q >= 6 && d < 0.0f))
+                r_.failValue(f, "a panel window's place must be finite (within ±1e5; its size ≥ 0)");
+              (q == 4 ? e.win.x : q == 5 ? e.win.y : q == 6 ? e.win.w : e.win.h) = d;
+            }
+          }
+          em.require({0, 1, 4, 5, 6, 7});
+          v.windows.push_back(e);
+        }
+        continue;
+      }
       if (k == 2) {
         r_.beginArray(list);
         for (size_t i = 0; r_.nextElement(list); ++i) {
@@ -3718,6 +3784,23 @@ private:
         if (!std::isfinite(e.nudge.dx) || !std::isfinite(e.nudge.dy))
           json::fail(el, "a nudge must be finite", ErrorCode::InvalidArgument, e.pos);
         if (!v.patchNudges.emplace(e.id, e.nudge).second)
+          json::fail(el, "duplicate view entry for this id", ErrorCode::InvalidArgument, e.pos);
+      }
+    }
+    if (!raw.windows.empty()) {  // GU.5: by group id
+      std::vector<uint32_t> groupIds;
+      forEachTrack(p, [&](const Track& t, const Track*) {
+        for (const DevicePtr& d : t.devices)
+          if (isGroupDevice(*d)) groupIds.push_back(d->id.value);
+      });
+      std::sort(groupIds.begin(), groupIds.end());
+      const PathSeg list(&at, "panels");
+      for (size_t i = 0; i < raw.windows.size(); ++i) {
+        const RawWindow& e = raw.windows[i];
+        const PathSeg el(&list, i);
+        if (!std::binary_search(groupIds.begin(), groupIds.end(), e.id))
+          json::fail(PathSeg(&el, "id"), "no group has this id", ErrorCode::InvalidArgument, e.pos);
+        if (!v.panelWindows.emplace(e.id, e.win).second)
           json::fail(el, "duplicate view entry for this id", ErrorCode::InvalidArgument, e.pos);
       }
     }

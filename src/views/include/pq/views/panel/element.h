@@ -85,6 +85,12 @@ public:
   virtual void bindingsChanged() {}
   // The host widget (menus open from it) — null: no menus (tests without a tree).
   virtual ui::Widget* menuHost() const noexcept { return nullptr; }
+  // GU.5: whether a wire drives the bound control (a modulation cable reaches it): the element shows a MODULATION RING.
+  // Cheap per call (the target indexes the project's wires once per wire list).
+  virtual bool driven(const doc::Binding& /*b*/) const { return false; }
+  // GU.5: a mod source dragged onto a control — the real cable from output `from` (a Signal binding) into control `to`
+  // (a Control binding): one undo step. False (and a notice saying why) when it cannot be made.
+  virtual bool connect(const doc::Binding& /*from*/, const doc::Binding& /*to*/) { return false; }
 };
 
 // What an element paints with.
@@ -155,6 +161,9 @@ public:
   virtual void setLocalSelection(double /*v*/) {}
   // Where a wire into the bound param ends (element-local), nullopt: nowhere particular.
   virtual std::optional<ControlAnchor> anchor() const { return std::nullopt; }
+  // GU.5: a mod source's handle (element-local) while it is bound to an output: a drag from it onto a control of the
+  // panel makes the cable (GroupPanelFace draws the cable on the pointer meanwhile). nullopt: not a cable source.
+  virtual std::optional<ui::Vec2> cableHandle() const { return std::nullopt; }
 
 protected:
   // Style fields with the schema's defaults.

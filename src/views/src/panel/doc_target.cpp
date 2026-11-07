@@ -23,6 +23,7 @@
 
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
 #include "pq/views/devices/device_model.h"
@@ -249,6 +250,50 @@ public:
   void notice(std::string_view message) override { ctx_.setStatus(std::string(message)); }
   ui::Widget* menuHost() const noexcept override { return host_ ? host_() : nullptr; }
 
+  // GU.5: the controls a wire drives, indexed once per wire list (a persistent document: the list is the same object
+  // until a wire changes), so a paint asks a sorted vector.
+  bool driven(const doc::Binding& b) const override {
+    if (b.kind != doc::BindingKind::Control || !b.meta.empty()) return false;
+    const doc::Snapshot& s = ctx_.doc();
+    if (!s) return false;
+    const doc::WireList* wl = &doc::wiresOf(*s);
+    if (wl != drivenOf_ || s != drivenSnap_) {
+      if (wl != drivenOf_) {
+        drivenOf_ = wl;
+        driven_.clear();
+        for (const doc::Wire& w : *wl)
+          if (!w.param.empty()) driven_.emplace_back(w.to.value, w.param);
+        std::sort(driven_.begin(), driven_.end());
+      }
+      drivenSnap_ = s;
+    }
+    return std::binary_search(driven_.begin(), driven_.end(), std::pair<uint32_t, std::string>(b.device.value, b.name));
+  }
+
+  bool connect(const doc::Binding& from, const doc::Binding& to) override {
+    if (from.kind != doc::BindingKind::Signal || to.kind != doc::BindingKind::Control || !from.meta.empty() || !to.meta.empty()) {
+      notice("A mod source makes a cable into a control");
+      return false;
+    }
+    doc::Wire w;
+    w.from = from.device;
+    w.port = from.name;
+    w.to = to.device;
+    w.param = to.name;
+    w = doc::canonicalWire(*ctx_.doc(), std::move(w), ctx_.deviceLibrary());  // (two main ports: a main link)
+    const doc::ops::EditResult e = doc::ops::connect(*ctx_.doc(), ctx_.store().ids(), std::move(w));
+    if (!e) {
+      notice(e.error().message);
+      return false;
+    }
+    if (e->empty()) return false;
+    if (Status st = ctx_.store().dispatch(e->command); !st) {
+      notice(st.error().message);
+      return false;
+    }
+    return true;
+  }
+
 private:
   enum class How : uint8_t { None, Param, MetaParam, GroupSetting, Const, MetaSetting };
   struct Resolved {
@@ -441,6 +486,9 @@ private:
   mutable std::unordered_map<const doc::Binding*, Resolved> cache_;
   std::vector<Pending> pending_;
   bool inGesture_ = false, storeGesture_ = false;
+  mutable const doc::WireList* drivenOf_ = nullptr;
+  mutable doc::Snapshot drivenSnap_;  // (holds the wire list driven_ was built from)
+  mutable std::vector<std::pair<uint32_t, std::string>> driven_;
 };
 
 }  // namespace

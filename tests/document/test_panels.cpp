@@ -360,3 +360,51 @@ TEST_CASE("panels: an instrument group's polyphony is its settings — specs for
   CHECK(groupPolyphony(d.dev(d.g)).voices == 6);
   d.store.unsubscribe(sub);
 }
+
+TEST_CASE("panels (GU.5): a group's panel window is view state — saved as the view's \"panels\" and read back exactly; "
+          "a window of a group that is gone is not written; the reader refuses one naming no group or a place out of "
+          "range") {
+  PanelDoc d;
+  PanelWindowView w;
+  w.open = true;
+  w.edit = true;
+  w.x = 412.0f, w.y = 36.5f, w.w = 520.0f, w.h = 300.0f;
+  ViewState view;
+  view.panelWindows[d.g.value] = w;
+  PanelWindowView m;
+  m.minimised = true;  // closed but placed and minimised: kept
+  m.w = 200.0f, m.h = 120.0f;
+  view.panelWindows[d.n.value] = m;
+  view.panelWindows[999999u] = w;  // no such group: dropped at the write
+  auto text = serializeProject(d.doc(), view);
+  REQUIRE(text.ok());
+  CHECK(text->find("\"panels\"") != std::string::npos);
+  auto back = parseProject(*text);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+  CHECK(back->view.panelWindows.size() == 2);
+  CHECK(back->view.panelWindows.at(d.g.value) == w);
+  CHECK(back->view.panelWindows.at(d.n.value) == m);
+  // Without windows the file has no "panels" key (older files unchanged).
+  auto plain = serializeProject(d.doc(), ViewState{});
+  REQUIRE(plain.ok());
+  CHECK(plain->find("\"panels\"") == std::string::npos);
+  // A window on a block that is no group, and a size out of range: refused.
+  {
+    std::string bad = *text;
+    const std::string key = "\"id\": " + std::to_string(d.g.value) + ", \"open\"";
+    const size_t at = bad.find(key);
+    REQUIRE(at != std::string::npos);
+    bad.replace(at, key.size(), "\"id\": " + std::to_string(d.v.value) + ", \"open\"");
+    auto r = parseProject(bad);
+    REQUIRE_FALSE(r.ok());
+    CHECK(r.error().message.find("no group has this id") != std::string::npos);
+  }
+  {
+    std::string bad = *text;
+    const size_t at = bad.find("\"w\": 520");
+    REQUIRE(at != std::string::npos);
+    bad.replace(at, 8, "\"w\": -5");
+    auto r = parseProject(bad);
+    REQUIRE_FALSE(r.ok());
+  }
+}
