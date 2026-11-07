@@ -704,7 +704,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [ ] **GU.6 Embed and break apart** (plan §Phases 6).
 - [ ] **GU.7 Rich elements; Wavetable, Envelope and analysers as group presets** (plan §Phases 7).
 - [ ] **GU.8 The example instrument, style schemas, outline of the next ingredients** (plan §Phases 8). 👁
-- [ ] **GU.9 Racks are groups (parallel child groups, macros as value blocks + wires; Device view shows them as racks; Rack/Chain removed)** (plan §One hierarchy; user 2026-11-07).
+- [x] **GU.9 Racks are groups *(merged effcd6dc; Q224; zones / chain volume-pan-solo / macro variations left out; engine & library tests not run)* (parallel child groups, macros as value blocks + wires; Device view shows them as racks; Rack/Chain removed)** (plan §One hierarchy; user 2026-11-07).
 - [ ] **GU.10 Stock devices as group presets (Utility, Saturator, LFO, Operator); Auto Filter and EQ Eight retired to `retired/` until a Filter module exists** (plan §One hierarchy). 👁
 - [ ] **GU.11 One view, one panel system (circuit editor / user devices merge into the group view; panel.json system retired; model = blocks, groups, native engines)** (plan §One hierarchy). 👁
 

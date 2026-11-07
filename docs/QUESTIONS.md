@@ -2326,7 +2326,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **Link lines** go from the element to the control's place in the circuit (a face's control, a pin, the element of a closed group's panel, else the block's centre); shown for all elements while the window is the last pressed or its group is selected, else for the hovered element only.
 - Status: open (provisional choices above).
 
-## Q?-GU.9-a · 2026-11-07 · GU.9 · Racks are groups: what is in, what is left out, and the choices made
+## Q224 · 2026-11-07 · GU.9 · Racks are groups: what is in, what is left out, and the choices made
 - **In:** a rack = a group whose member groups are fed from its In (`doc::rackChains`, derived from the wires: no flag);
   chains sum at Out; Instrument Rack = instrument group of chain groups (only the outermost fed group voices); 8 macros
   (value blocks 0 … 1, knobs on the rack's panel); mapping = Travel wire (amount max − min, the target knob set to min);
