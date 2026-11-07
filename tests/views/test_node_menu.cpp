@@ -256,13 +256,20 @@ TEST_CASE("node catalog: every atom, meta module, stock device and rack; project
   for (const meta::Type* t : meta::types())
     if (hasFace(*t)) {
       CHECK(circuitCat->find("meta:" + std::string(t->id)) != nullptr);
-      CHECK(projectCat->find("meta:" + std::string(t->id)) != nullptr);
+      // GU.7: in a project an engine with a module is spawned as it (the group around the engine)
+      if (doc::moduleOfEngine(t->id) != nullptr) {
+        CHECK(projectCat->find("meta:" + std::string(t->id)) == nullptr);
+        CHECK(projectCat->find("module:" + std::string(t->id)) != nullptr);
+      } else {
+        CHECK(projectCat->find("meta:" + std::string(t->id)) != nullptr);
+      }
     }
   for (const doc::DeviceInfo& d : library().catalog().devices()) CHECK(projectCat->find("device:" + d.patch) != nullptr);
   CHECK(projectCat->find("rack:" + std::string(doc::kAudioEffectRack)) != nullptr);
   CHECK(projectCat->find("rack:" + std::string(doc::kInstrumentRack)) != nullptr);
   // The analysers are visualisers; instruments have no main input.
-  CHECK(projectCat->find("meta:spectrum")->category == NodeCategory::Visualisers);
+  CHECK(projectCat->find("module:spectrum")->category == NodeCategory::Visualisers);
+  CHECK(projectCat->find("module:wavetable")->category == NodeCategory::MetaModules);
   CHECK(projectCat->find("device:BasicSynth")->category == NodeCategory::Instruments);
   CHECK_FALSE(projectCat->find("device:BasicSynth")->hasIn);
   CHECK(projectCat->find("device:utility")->hasIn);
