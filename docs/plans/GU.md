@@ -120,6 +120,13 @@ Ordered so nothing is built twice: groups can nest and modules can be groups *be
 is built once, on the group it ends up on; the VCA's law is not touched until the VCA is replaced; each phase owns its
 part of the group drawing.
 
+**Speed and compatibility (user 2026-11-07, overrides the acceptance lists below):** there are no old projects, so
+**no migrations, no load conversions, no compatibility code**: schema bumps without a migration; the repo's own
+fixtures, presets and goldens are regenerated or deleted instead of converted. Testing is **light**: a few focused tests
+per phase on the new behaviour (UI gestures through real dispatch; a render check only where DSP changes), no broad
+sweeps, no slow tier, no playback suites for UI phases, no perf benches unless the phase is about performance. Work
+fast.
+
 **Acceptance conventions for every phase:**
 - *Identical render* means bit-identical (diff 0) where the arithmetic is the same atoms in the same order; where a law
   changes its arithmetic (GU.1's curve vs today's travel code) the phase states its tolerance (default: peak error
