@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "../golden/golden_audio.h"
+#include "playback_fixture.h"
 #include "pq/app/project_link.h"
 #include "pq/compile/compile.h"
 #include "pq/core/alloc_trap.h"
@@ -173,7 +174,7 @@ E run(DocumentStore& s, Result<E> e) {
   return *e;
 }
 void apply(DocumentStore& s, Command c) {
-  const Status st = s.dispatch(std::move(c));
+  const Status st = s.dispatch(playback_fixture::inUnits(s, std::move(c)));
   REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
 }
 const Track& trackOf(DocumentStore& s, TrackId t) { return *findTrackPtr(*s.current(), t); }

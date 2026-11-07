@@ -122,7 +122,7 @@ struct ThreeTracks {
     std::vector<Note> notes;
     for (int k = 0; k < 16; ++k) notes.push_back(playback_fixture::note(ids, 4 * k * kPpq, 7 * kPpq / 2, 0));
     b.commands.push_back(AddClip{t3, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "notes")});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
 };
@@ -438,7 +438,7 @@ TEST_CASE("wires: a wire that closes a delay-free loop gets a 1-sample delay; an
   // the track cycle, so the partition merges Keys and the group into one unit).
   b.commands.push_back(AddWire{Wire{wFeed, sat, "wet", glfo, "depth", 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
   b.commands.push_back(AddWire{Wire{wGroup, glfo, "lfo", sat, "drive", 0.3, WireReducer::Sum, {}, WireLaw::Travel}});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   const std::vector<WireState> st = playback_fixture::drawn(wireStates(*store.current(), (*lib)->library()), *store.current());
   REQUIRE(st.size() == 5);
@@ -503,7 +503,7 @@ patch Probe {
     b.commands.push_back(AddDevice{t, makeDevice(inst, "Probe", DeviceKind::Instrument), 0});
     b.commands.push_back(AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
     b.commands.push_back(AddWire{Wire{ids.wire(), inst, "vel", util, "balance", 0.8, reducer, {}, WireLaw::Travel}});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     LowerOptions lo;
     lo.library = &plib;
@@ -572,7 +572,7 @@ TEST_CASE("wires: a cross-track modulation keeps the target unit awake while it 
   // Src plays a note 2.0–2.5 s; Dst never plays (two instruments: the wire stays a bus between their units, Q84).
   b.commands.push_back(AddClip{a, playback_fixture::clip(ids, 0, 16 * kPpq, {playback_fixture::note(ids, 4 * kPpq, kPpq, 0)}, "n")});
   b.commands.push_back(AddWire{Wire{ids.wire(), utilA, "mid", utilB, "width", 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   auto link = makeLink(store.current());
   REQUIRE(link->lastError().empty());
@@ -618,7 +618,7 @@ TEST_CASE("wires (TMM.10-fix2): the note source's outputs wired per voice and th
     Batch b{"notes", {}};
     b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T", inst), {}, kAppend});
     b.commands.push_back(AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     if (velocityWire) {
       auto e = ops::connectTravelNoteWire(*store.current(), ids, t, "velocity", inst, "bright", 0.6);

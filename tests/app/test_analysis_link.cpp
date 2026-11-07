@@ -76,15 +76,15 @@ struct Keys {
     std::vector<Note> notes;
     for (int32_t d : {0, 4, 7, 11}) notes.push_back(playback_fixture::note(ids, 0, 64 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "chord")});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     eq = edit(ops::addDevice(*store.current(), store.ids(), track, "eq_eight", DeviceKind::AudioEffect)).devices.at(0);
     // A +6 dB bell at 1 kHz (Q 2), −4 dB at 250 Hz: a curve to measure.
-    edit(ops::setDeviceParam(*store.current(), eq, "freq4", 1000.0));
-    edit(ops::setDeviceParam(*store.current(), eq, "gain4", 1.9952623));
-    edit(ops::setDeviceParam(*store.current(), eq, "q4", 2.0));
-    edit(ops::setDeviceParam(*store.current(), eq, "freq3", 250.0));
-    edit(ops::setDeviceParam(*store.current(), eq, "gain3", 0.6309573));
+    edit(ops::setDeviceParamValue(*store.current(), playback_fixture::unitsLibrary(), eq, "freq4", 1000.0));
+    edit(ops::setDeviceParamValue(*store.current(), playback_fixture::unitsLibrary(), eq, "gain4", 1.9952623));
+    edit(ops::setDeviceParamValue(*store.current(), playback_fixture::unitsLibrary(), eq, "q4", 2.0));
+    edit(ops::setDeviceParamValue(*store.current(), playback_fixture::unitsLibrary(), eq, "freq3", 250.0));
+    edit(ops::setDeviceParamValue(*store.current(), playback_fixture::unitsLibrary(), eq, "gain3", 0.6309573));
     if (withSpectrum) spectrum = edit(ops::addMetaDevice(*store.current(), store.ids(), track, "spectrum")).devices.at(0);
   }
   ops::Edit edit(Result<ops::Edit> e) {

@@ -61,7 +61,7 @@ struct Song {
     playback_fixture::ungroupHead(store, **lib, track);
   }
   void must(Command c) {
-    const Status st = store.dispatch(std::move(c));
+    const Status st = store.dispatch(playback_fixture::inUnits(store, std::move(c)));
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
   }
   void edit(Result<ops::Edit> e) {

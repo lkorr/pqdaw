@@ -124,7 +124,7 @@ struct WtSong {
   std::vector<DeviceId> wts;
   WtSong() { must(SetTempoMap{{{0, 120.0, TempoCurve::Step}}}); }
   void must(Command c) {
-    const Status st = store.dispatch(std::move(c));
+    const Status st = store.dispatch(playback_fixture::inUnits(store, std::move(c)));
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
   }
   void edit(Result<ops::Edit> e) {
@@ -543,7 +543,7 @@ TEST_CASE("meta wavetable: tables refresh only for meta devices' knobs; data is 
   [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   REQUIRE(link->waitForMetaTables());
   const ProjectLink::MetaRefreshStats r0 = link->metaRefreshStats();
-  s.edit(ops::setDeviceParam(s.doc(), sat, "drive", 12.0));  // a stock device's knob: no table can change
+  s.edit(ops::setDeviceParamValue(s.doc(), playback_fixture::unitsLibrary(), sat, "drive", 12.0));  // a stock device's knob: no table can change
   CHECK(link->metaRefreshStats().refreshes == r0.refreshes);
   s.param(wt, "position", 0.25);  // a meta device's knob: refreshed
   CHECK(link->metaRefreshStats().refreshes == r0.refreshes + 1);
@@ -623,7 +623,7 @@ struct AliasRig {
     b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "WT", inst), {}, kAppend});
     std::vector<Note> notes{playback_fixture::note(ids, 0, 256 * kTicksPerWhole, 0)};
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 256 * kTicksPerWhole, notes, "held")});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     link = makeLink(store.current(), sr);
     std::string text = link->devices().stockText("BasicSynth");
@@ -659,7 +659,7 @@ struct AliasRig {
   }
   // N frames of the left channel after the phase increment `inc` (cycles per sample) has played `lead` frames.
   std::vector<float> capture(double inc, uint32_t n, uint32_t lead = 4096) {
-    REQUIRE(store.dispatch(SetDeviceParam{inst, "d", inc}).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, SetDeviceParam{inst, "d", inc})).ok());
     std::vector<float> l(kBlock), r(kBlock), out;
     out.reserve(n);
     uint32_t done = 0;

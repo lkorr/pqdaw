@@ -21,6 +21,8 @@
 #include <span>
 #include <vector>
 
+#include "../support/knob_positions.h"
+#include "pq/app/project_link.h"
 #include "pq/core/time.h"
 #include "pq/document/commands.h"
 #include "pq/document/edit_ops.h"
@@ -32,6 +34,17 @@
 namespace playback_fixture {
 
 using namespace pq::doc;
+
+// GU.1 (a param stores its knob position): the stock device library, loaded once — what these tests' values in units
+// become knob positions with (tests/support/knob_positions.h).
+inline const DeviceLibrary& unitsLibrary() {
+  static const auto lib = pq::app::loadDeviceLibrary();
+  REQUIRE_MESSAGE(lib.ok(), (lib.ok() ? std::string() : lib.error().message));
+  return **lib;
+}
+inline Command inUnits(const DocumentStore& s, Command c) {
+  return knob_positions::inUnits(*s.current(), std::move(c), unitsLibrary());
+}
 
 inline Note note(IdSource& ids, pq::Ticks start, pq::Ticks length, int32_t degree, int32_t equave = 0,
                  float velocity = 100.0f) {

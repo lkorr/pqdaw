@@ -234,7 +234,7 @@ TEST_CASE("groups: a series of stock effects grouped sounds the same, ungrouped 
   b.commands.push_back(SetDeviceSetting{eq, "on1", 1.0});
   b.commands.push_back(SetDeviceSetting{eq, "type1", 6.0});
   b.commands.push_back(SetDeviceParam{eq, "freq1", 900.0});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   const DeviceId g = roundTrip(store, {util, sat}, "Utility → Saturator");
   // The grouped document: the group where Utility was (on the main path), both members off it and in it, the series as
@@ -276,7 +276,7 @@ TEST_CASE("groups: the user's example — basic synth → phase accumulator → 
   b.commands.push_back(AddDevice{keys, metaDevice(pa2, "phase_acc", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(SetDeviceParam{pa1, "freq", 110.0});
   b.commands.push_back(SetDeviceParam{pa2, "freq", 3.0});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   (void)roundTrip(store, {pa1, wt, pa2}, "PA → WT → PA after Basic Synth");
   // Basic synth → group: the chain is two devices.
@@ -297,7 +297,7 @@ TEST_CASE("groups: a free modulator moves in, a modulator outside keeps modulati
   b.commands.push_back(AddDevice{keys, makeDevice(lfoOut, "lfo_device", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(SetDeviceParam{lfoIn, "rate", 7.0});
   b.commands.push_back(SetDeviceParam{lfoOut, "rate", 3.0});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store, {lfoIn, lfoOut});  // TX.all-free: the chain as cables
   auto w1 = ops::connectWire(*store.current(), ids, lfoIn, "lfo", sat, "drive");
   REQUIRE_MESSAGE(w1.ok(), (w1.ok() ? std::string() : w1.error().message));
@@ -322,7 +322,7 @@ TEST_CASE("groups: editing inside — In also into a parallel device, a member's
   b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", inst), {}, kAppend});
   b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(SetDeviceParam{sat, "drive", 18.0});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   auto e = group(store, {sat});
   REQUIRE(e.ok());
@@ -373,7 +373,7 @@ TEST_CASE("groups: refusals say why") {
   b.commands.push_back(AddTrack{playback_fixture::track(lead, TrackKind::Midi, "Lead"), {}, kAppend});
   b.commands.push_back(AddDevice{lead, metaDevice(pa, "phase_acc", DeviceKind::Instrument), kAppend});
   b.commands.push_back(AddDevice{lead, metaDevice(wt, "wavetable", DeviceKind::AudioEffect), kAppend});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   auto refused = [&](std::vector<DeviceId> sel, const char* what) {
     auto e = group(store, sel);
@@ -403,7 +403,7 @@ TEST_CASE("groups: the file reader refuses a broken group; duplicating a group c
   b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", inst), {}, kAppend});
   b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(AddDevice{keys, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   auto e = group(store, {sat, util});
   REQUIRE(e.ok());
@@ -466,7 +466,7 @@ Lead leadTrack(DocumentStore& store, std::initializer_list<std::string_view> typ
     b.commands.push_back(AddDevice{l.track, metaDevice(id, t, first ? DeviceKind::Instrument : DeviceKind::AudioEffect), kAppend});
     first = false;
   }
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   return l;
 }
@@ -490,7 +490,7 @@ TEST_CASE("groups-fix1: the user's patch — Phase accumulator → Wavetable →
   b.commands.push_back(SetDeviceParam{wt, "position", 0.3});
   b.commands.push_back(SetDeviceParam{env, "attack", 0.01});
   b.commands.push_back(SetDeviceParam{env, "release", 0.05});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   // 48000 frames: the chord's notes end at 30000 … 39000, their releases (the Envelope's `done`) inside the render.
   const DeviceId g = roundTrip(store, {pa, wt, env}, "PA → WT → Envelope at the note source", 48000);
   const Project& grouped = *store.current();
@@ -524,19 +524,19 @@ TEST_CASE("groups-fix1: any stretch of a voice run groups — the head, the midd
   SUBCASE("the Phase accumulator alone: the run goes on after the group (In = the notes, Out = voices)") {
     DocumentStore store;
     const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
-    REQUIRE(store.dispatch(SetDeviceParam{l.devs[2], "release", 0.05}).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, SetDeviceParam{l.devs[2], "release", 0.05})).ok());
     (void)roundTrip(store, {l.devs[0]}, "[PA] → WT → Envelope", 48000);
   }
   SUBCASE("Wavetable → Envelope: voices reach the group (In = the accumulator's per-voice phase)") {
     DocumentStore store;
     const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
-    REQUIRE(store.dispatch(SetDeviceParam{l.devs[2], "release", 0.05}).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, SetDeviceParam{l.devs[2], "release", 0.05})).ok());
     (void)roundTrip(store, {l.devs[1], l.devs[2]}, "PA → [WT → Envelope]", 48000);
   }
   SUBCASE("the Wavetable alone in the middle of the run") {
     DocumentStore store;
     const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
-    REQUIRE(store.dispatch(SetDeviceParam{l.devs[2], "release", 0.05}).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, SetDeviceParam{l.devs[2], "release", 0.05})).ok());
     (void)roundTrip(store, {l.devs[1]}, "PA → [WT] → Envelope", 48000);
   }
   SUBCASE("Phase accumulator → Wavetable: the voices end 5 ms after note-off, as the run's") {
@@ -547,13 +547,13 @@ TEST_CASE("groups-fix1: any stretch of a voice run groups — the head, the midd
   SUBCASE("a Wavetable first: In gives its phase input the note's phase") {
     DocumentStore store;
     const Lead l = leadTrack(store, {"wavetable", "envelope"});
-    REQUIRE(store.dispatch(SetDeviceParam{l.devs[1], "release", 0.05}).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, SetDeviceParam{l.devs[1], "release", 0.05})).ok());
     (void)roundTrip(store, {l.devs[0], l.devs[1]}, "[WT → Envelope] at the note source", 48000);
   }
   SUBCASE("an Envelope alone: its `in` reads no note signal (the In link carries nothing), its gate the voice's") {
     DocumentStore store;
     const Lead l = leadTrack(store, {"envelope"});
-    REQUIRE(store.dispatch(SetDeviceParam{l.devs[0], "release", 0.05}).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, SetDeviceParam{l.devs[0], "release", 0.05})).ok());
     (void)roundTrip(store, {l.devs[0]}, "[Envelope] at the note source", 48000, /*quietIn=*/true);
   }
   SUBCASE("stock effects after the grouped run hear its sum") {
@@ -573,7 +573,7 @@ TEST_CASE("groups-fix1: any stretch of a voice run groups — the head, the midd
     b.commands.push_back(SetDeviceParam{satC, "drive", 12.0});
     b.commands.push_back(SetDeviceParam{utilC, "width", 2.0});
     b.commands.push_back(SetDeviceParam{l.devs[2], "release", 0.05});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     (void)roundTrip(store, {l.devs[0], l.devs[1], l.devs[2]}, "[PA → WT → Envelope] → Saturator → Utility", 48000);
   }
 }
@@ -605,7 +605,7 @@ TEST_CASE("groups-fix1: a series the voices reach is grouped only as a stretch o
   Batch b{"fx", {}};
   b.commands.push_back(AddTrack{playback_fixture::track(fx, TrackKind::Midi, "Fx"), {}, kAppend});
   b.commands.push_back(AddDevice{fx, makeDevice(u, "utility", DeviceKind::AudioEffect), kAppend});
-  REQUIRE(s2.dispatch(b).ok());
+  REQUIRE(s2.dispatch(playback_fixture::inUnits(s2, b)).ok());
   playback_fixture::wireSeries(s2);  // TX.all-free: the chain as cables
   refused(s2, {u}, "a stock effect at the note source");
 }
@@ -625,7 +625,7 @@ TEST_CASE("groups-fix1: switched-off devices inside a series pass their signal o
     b.commands.push_back(SetDeviceParam{sat, "drive", 18.0});
     b.commands.push_back(SetDeviceParam{u2, "balance", -0.4});
     b.commands.push_back(SetDeviceActive{sat, false});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
     const DeviceId g = roundTrip(store, {u1, sat, u2}, "Utility → Saturator (off) → Utility");
     // Switched on inside the group, then ungrouped: the same sound as the series with it on.
@@ -640,8 +640,8 @@ TEST_CASE("groups-fix1: switched-off devices inside a series pass their signal o
   SUBCASE("meta, at the note source: Phase accumulator → Wavetable (off) → Envelope") {
     DocumentStore store;
     const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
-    REQUIRE(store.dispatch(SetDeviceParam{l.devs[0], "amp", 0.5}).ok());
-    REQUIRE(store.dispatch(SetDeviceParam{l.devs[2], "release", 0.05}).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, SetDeviceParam{l.devs[0], "amp", 0.5})).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, SetDeviceParam{l.devs[2], "release", 0.05})).ok());
     REQUIRE(store.dispatch(SetDeviceActive{l.devs[1], false}).ok());
     (void)roundTrip(store, {l.devs[0], l.devs[1], l.devs[2]}, "PA → WT (off) → Envelope", 48000);
   }
@@ -656,7 +656,7 @@ TEST_CASE("groups-fix1: switched-off devices inside a series pass their signal o
     b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
     b.commands.push_back(SetDeviceParam{u1, "width", 2.5});
     b.commands.push_back(SetDeviceActive{sat, false});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
     (void)roundTrip(store, {u1, sat}, "Utility → Saturator (off)");
   }
@@ -675,7 +675,7 @@ TEST_CASE("groups-fix1: an unplugged device inside a series — the signal so fa
   b.commands.push_back(SetDeviceParam{pa1, "freq", 50.0});
   b.commands.push_back(SetDeviceParam{pa2, "freq", 220.0});
   b.commands.push_back(SetDeviceChainInput{pa2, std::string(kChainUnplugged)});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   (void)roundTrip(store, {pa1, pa2, wt}, "synth → PA → PA (unplugged) → WT");
   REQUIRE(store.undo());  // the series again
@@ -705,7 +705,7 @@ TEST_CASE("groups-fix1: a feedback loop through the grouped series keeps its 1-s
     b.commands.push_back(AddDevice{keys, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
     b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
     b.commands.push_back(SetDeviceParam{sat, "drive", 9.0});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
     auto w = ops::connectWire(*store.current(), ids, sat, "out", util, "gain");
     REQUIRE_MESSAGE(w.ok(), (w.ok() ? std::string() : w.error().message));
@@ -717,7 +717,7 @@ TEST_CASE("groups-fix1: a feedback loop through the grouped series keeps its 1-s
   SUBCASE("meta, at the note source: the Envelope's output back into the accumulator's phase modulation") {
     DocumentStore store;
     const Lead l = leadTrack(store, {"phase_acc", "wavetable", "envelope"});
-    REQUIRE(store.dispatch(SetDeviceParam{l.devs[2], "release", 0.05}).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, SetDeviceParam{l.devs[2], "release", 0.05})).ok());
     auto w = ops::connectWire(*store.current(), store.ids(), l.devs[2], "out", l.devs[0], "pm");
     REQUIRE_MESSAGE(w.ok(), (w.ok() ? std::string() : w.error().message));
     REQUIRE(store.dispatch(w->command).ok());
@@ -739,7 +739,7 @@ TEST_CASE("groups-fix1: ungrouping keeps a device off the path between the serie
   b.commands.push_back(AddDevice{keys, makeDevice(lfo, "lfo_device", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(SetDeviceParam{sat, "drive", 12.0});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store, {lfo});  // TX.all-free: the LFO off the path
   const DeviceId g = roundTrip(store, {util, sat}, "Utility → (a free LFO between them in the list) → Saturator");
   // A chain link deleted and drawn again as a plain wire: the series is no longer Ctrl+G's — Ungroup says why.
@@ -766,7 +766,7 @@ TEST_CASE("groups-fix1: a schema-14 group (its series as plain wires) loads, pla
   b.commands.push_back(AddDevice{keys, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
   b.commands.push_back(SetDeviceParam{util, "width", 2.0});
   b.commands.push_back(SetDeviceParam{sat, "drive", 12.0});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: the chain as cables
   const golden::Channels series = render(*store.current(), 12000);
   auto e = group(store, {util, sat});

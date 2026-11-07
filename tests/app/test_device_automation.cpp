@@ -80,7 +80,7 @@ struct Song {
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   void must(Command c) {
-    const Status st = store.dispatch(std::move(c));
+    const Status st = store.dispatch(playback_fixture::inUnits(store, std::move(c)));
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
   }
   DeviceId add(const char* patch) {
@@ -96,6 +96,7 @@ struct Song {
     l->param = r;
     l->paramName = std::move(name);
     for (Breakpoint& p : points) p.id = store.ids().breakpoint();
+    knob_positions::lanePositions(*store.current(), r, l->paramName, points, playback_fixture::unitsLibrary());  // GU.1
     l->points = std::move(points);
     must(AddAutomationLane{t, l});
     return l->id;
@@ -163,16 +164,17 @@ TEST_CASE("device automation: a filter-cutoff sweep reaches Auto Filter; where t
   const DeviceId afRef = ref.add("auto_filter");
   ref.must(SetDeviceParam{afRef, "res", 0.1});
   ref.must(SetDeviceParam{afRef, "freq", 150.0});
-  // 150 Hz for the first bar, then up to 12 kHz over the second (linear in Hz), then held.
+  // 150 Hz for the first bar, then up to 12 kHz over the second, then held. GU.1: the lane holds knob positions, so the
+  // ramp moves linearly in position — on the octave cutoff, equal ratios per time: 150 · 80^(s) over the bar's share s.
   s.lane(ParamRef::device(af, "freq"), "freq", {{0, 150.0f, 0.0f, {}}, {kBar, 150.0f, 0.0f, {}}, {2 * kBar, 12000.0f, 0.0f, {}}});
   const golden::Channels out = play(s, 6.0);
   const golden::Channels st = play(ref, 6.0);
   const auto at = [](double sec) { return static_cast<size_t>(sec * kRate); };
   // Bar 1 (0–2 s): the lane holds 150 Hz: the static render, sample for sample.
   CHECK(maxDiff(out, st, 0, at(1.9)) <= 1e-6);
-  // The sweep opens the filter: high-frequency energy grows through the start of the second bar (≈ 450 Hz at 2.06 s,
-  // ≈ 1.6 kHz at 2.25 s), and the static filter stays closed.
-  const double hf0 = rmsD1(out, at(1.0), at(1.9)), hfA = rmsD1(out, at(2.04), at(2.08)), hf1 = rmsD1(out, at(2.15), at(2.35));
+  // The sweep opens the filter: high-frequency energy grows through the second bar (≈ 450 Hz at 2.5 s, ≈ 1.6 kHz at
+  // 2.8 s), and the static filter stays closed.
+  const double hf0 = rmsD1(out, at(1.0), at(1.9)), hfA = rmsD1(out, at(2.48), at(2.52)), hf1 = rmsD1(out, at(2.7), at(2.9));
   MESSAGE("HF (first-difference RMS): 150 Hz " << hf0 << ", ~450 Hz " << hfA << ", ~1.6 kHz " << hf1);
   CHECK(hfA > 1.5 * hf0);
   CHECK(hf1 > hfA);

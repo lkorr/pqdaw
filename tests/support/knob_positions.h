@@ -65,4 +65,33 @@ inline pq::doc::Batch knobPositions(const pq::doc::Project& p, pq::doc::Batch b,
   return b;
 }
 
+// A device param's automation lane written in units (GU.1: lanes hold knob positions): its points through the param's
+// curve (the device's own, else the declared one). Other lanes (a rack's macros, mixers, wires) as they are.
+inline void lanePositions(const pq::doc::Project& p, const pq::doc::ParamRef& r, std::string_view param,
+                          std::vector<pq::doc::Breakpoint>& points, const pq::doc::DeviceLibrary& lib) {
+  using namespace pq::doc;
+  if (r.kind != ParamKind::DeviceParam) return;
+  const Device* d = findDevice(p, DeviceId{r.owner}).device;
+  if (d == nullptr || d->rack) return;
+  std::shared_ptr<const ResolvedDevice> hold;
+  const pq::graph::Patch* callee = lib.patchOf(*d, hold);
+  const pq::graph::ParamDecl* decl = callee != nullptr ? findAnyParamDecl(*callee, param) : nullptr;
+  if (decl == nullptr) return;
+  const pq::dsp::Curve curve = controlCurve(*d, param, *decl);
+  for (Breakpoint& b : points) b.value = static_cast<float>(pq::dsp::curvePosition(curve, b.value, 0.0));
+}
+
+// The same for one command: a Batch, or a lone SetDeviceParam; anything else as it is.
+inline pq::doc::Command inUnits(const pq::doc::Project& p, pq::doc::Command c, const pq::doc::DeviceLibrary& lib) {
+  using namespace pq::doc;
+  if (auto* b = std::get_if<Batch>(&c.v)) return Command{knobPositions(p, std::move(*b), lib)};
+  if (std::holds_alternative<SetDeviceParam>(c.v)) {
+    Batch b{"", {}};
+    b.commands.push_back(std::move(c));
+    b = knobPositions(p, std::move(b), lib);
+    return std::move(b.commands.front());
+  }
+  return c;
+}
+
 }  // namespace knob_positions

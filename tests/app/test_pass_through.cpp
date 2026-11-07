@@ -191,7 +191,7 @@ Bug bugPatch(DocumentStore& store, const char* analyser, bool stock = false) {
   b.commands.push_back(SetDeviceParam{g.wt, "fold", 0.2533332407474518});
   b.commands.push_back(SetDeviceParam{g.env, "attack", 0.03081697977654113});
   b.commands.push_back(SetDeviceParam{g.vca, "value", 0.3});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   wired(store);  // TX.all-free: wired in series
   wire(store, g.env, "out", g.vca, "in");
   wire(store, g.vca, "out", g.pa, "freq");

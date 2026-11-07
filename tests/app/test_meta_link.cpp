@@ -101,7 +101,7 @@ struct Keys {
     std::vector<Note> notes;
     for (int32_t d : {0, 4, 7}) notes.push_back(playback_fixture::note(ids, 0, 64 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "chord")});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   void edit(Result<ops::Edit> e) {
@@ -445,7 +445,7 @@ TEST_CASE("meta link: Phase accumulator -> Wavetable -> Auto Filter plays an 8-v
       notes.push_back(playback_fixture::note(ids, 0, 14 * kPpq, deg - e * 31, e, 80.0f));
     }
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 16 * kPpq, notes, "chord")});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   auto edit = [&](Result<ops::Edit> e) {
@@ -804,7 +804,7 @@ TEST_CASE("meta link (TMM.17): the face's voices carry the frequencies they play
     notes.push_back(playback_fixture::note(k.store.ids(), 0, 64 * kPpq, 4, 0));
     notes.push_back(playback_fixture::note(k.store.ids(), 0, 64 * kPpq, 7, 2));
     b.commands.push_back(AddClip{k.track, playback_fixture::clip(k.store.ids(), 0, 64 * kPpq, notes, "spread")});
-    REQUIRE(k.store.dispatch(b).ok());
+    REQUIRE(k.store.dispatch(playback_fixture::inUnits(k.store, b)).ok());
   }
   const DeviceId acc = findTrackPtr(*k.store.current(), k.track)->devices.at(0)->id;
   auto link = makeLink(k.store.current());

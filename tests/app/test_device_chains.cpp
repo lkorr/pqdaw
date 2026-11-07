@@ -98,7 +98,7 @@ struct Keys {
     std::vector<Note> notes;
     for (int32_t d : {0, 4, 7}) notes.push_back(playback_fixture::note(ids, 0, 16 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 16 * kPpq, notes, "chord")});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   ops::Edit edit(Result<ops::Edit> e) {
@@ -185,7 +185,7 @@ TEST_CASE("device chains: add / reorder / remove / deactivate are one undo step 
   // A param is a param write: no compile at all.
   {
     const app::LinkStats s0 = link->stats();
-    k.edit(ops::setDeviceParam(*k.store.current(), util, "width", 0.25));
+    k.edit(ops::setDeviceParamValue(*k.store.current(), playback_fixture::unitsLibrary(), util, "width", 0.25));
     link->flush();
     CHECK(link->stats().compiles == s0.compiles);
     CHECK(link->stats().paramWrites == s0.paramWrites + 1);
@@ -224,7 +224,7 @@ TEST_CASE("device chains: an instrument's voices setting is its track's polyphon
     for (int32_t d : {0, 4, 7}) held.push_back(playback_fixture::note(ids, 0, 16 * kPpq, d));
     b.commands.push_back(AddClip{op, playback_fixture::clip(ids, 0, 8 * kPpq, chords, "chords")});
     b.commands.push_back(AddClip{keys, playback_fixture::clip(ids, 0, 16 * kPpq, held, "held")});
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   auto link = makeLink(store.current(), false);
@@ -331,7 +331,7 @@ TEST_CASE("device chains: a lowered chain renders like the hand-built ProjectGra
   b.commands.push_back(SetDeviceParam{util, "width", 0.5});
   b.commands.push_back(SetDeviceParam{sat, "drive", 2.0});
   b.commands.push_back(SetDeviceSetting{sat, "type", 6.0});
-  REQUIRE(store.dispatch(b).ok());
+  REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   LowerOptions lo;
   lo.library = &(*lib)->library();
@@ -431,7 +431,7 @@ TEST_CASE("device chains: a project with more than 16,384 params plays every sto
       b.commands.push_back(AddTrack{std::make_shared<const Track>(std::move(t)), {}, kAppend});
       b.commands.push_back(AddClip{id, playback_fixture::clip(ids, 0, 16 * kPpq, {playback_fixture::note(ids, 0, 16 * kPpq, k % 12)}, "n")});
     }
-    REQUIRE(store.dispatch(b).ok());
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   }
   auto link = makeLink(store.current(), false);
@@ -454,7 +454,7 @@ TEST_CASE("device chains: a project with more than 16,384 params plays every sto
   CHECK(peak == 0.0f);  // every track muted by its Utility
   // An edit of a param beyond the old limit plays: unmute the last track.
   {
-    auto e = ops::setDeviceParam(*store.current(), utilities.back(), "mute", 0.0);
+    auto e = ops::setDeviceParamValue(*store.current(), playback_fixture::unitsLibrary(), utilities.back(), "mute", 0.0);
     REQUIRE(e.ok());
     [[maybe_unused]] const ListenerId sub = store.subscribe([&](const StoreEvent& ev) { link->onDocumentChange(ev); });
     REQUIRE(store.dispatch(e->command).ok());

@@ -416,8 +416,9 @@ TEST_CASE("patching: a free Phase accumulator into another's phase is per-voice 
   CHECK(low2.cables[0].status == WireStatus::Lowered);
   const golden::Channels viaPm = renderGraph(low2.low.graph, low2.links, low2.values, 24000);
   CHECK(maxDiff(viaPhase, viaPm) == 0.0);
-  // TX.smooth: the audio-rate wire gets no param ramp (only the knobs do): the same ramps either way.
-  CHECK(rampKeys(low.low.graph, low.links) == rampKeys(low2.low.graph, low2.links));
+  // TX.smooth: the audio-rate wire gets no param ramp (only the knobs do): as many ramps either way. (GU.1: into `phase`
+  // the knob is driven, so its ramp is on its curve atom's value — a computed pattern — rather than on the param.)
+  CHECK(rampKeys(low.low.graph, low.links).size() == rampKeys(low2.low.graph, low2.links).size());
   (void)keys2;
   (void)pa1b;
   (void)pa2b;

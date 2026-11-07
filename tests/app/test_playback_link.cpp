@@ -246,7 +246,7 @@ TEST_CASE("meters: a latched clip lamp does not keep the meter poll alive (M4 re
   auto on = ops::insertOnPath(*f.store.current(), f.store.ids(), util, kAppend);
   REQUIRE(on.ok());
   REQUIRE(f.store.dispatch(on->command).ok());
-  REQUIRE(f.store.dispatch(SetDeviceParam{util, "gain", 35.0}).ok());
+  REQUIRE(f.store.dispatch(playback_fixture::inUnits(f.store, SetDeviceParam{util, "gain", 35.0})).ok());
   auto link = makeLink(f.snap(), 250.0f);
   Driver d{*link};
   link->play(0);
