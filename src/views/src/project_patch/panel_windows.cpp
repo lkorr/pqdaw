@@ -171,7 +171,7 @@ doc::Binding ProjectPatchView::controlAt(Vec2 pos) const {
     if (t.kind == NodeKind::Device && pin.port < t.inputs.size() && t.inputs[pin.port].param) {
       std::string param = t.inputs[pin.port].name;
       doc::DeviceId to = t.device;
-      if (const size_t at = param.rfind('@'); at != std::string::npos && t.group) {
+      if (const size_t at = param.rfind('@'); at != std::string::npos && (t.rack || t.group)) {
         to = doc::DeviceId{static_cast<uint32_t>(std::stoul(param.substr(at + 1)))};
         param.resize(at);
       }
@@ -192,7 +192,7 @@ std::vector<doc::Binding> ProjectPatchView::controlsOf(doc::DeviceId device) con
   const doc::Snapshot& snap = ctx_.doc();
   const doc::Device* d = snap ? doc::findDevice(*snap, device).device : nullptr;
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-  if (d == nullptr || lib == nullptr || doc::isGroupDevice(*d)) return out;  // (a group's own panel: GU.6)
+  if (d == nullptr || lib == nullptr || doc::isGroupDevice(*d) || d->rack) return out;  // (a group's own panel: GU.6)
   std::shared_ptr<const doc::ResolvedDevice> hold;
   const graph::Patch* patch = lib->patchOf(*d, hold);
   if (patch == nullptr) return out;

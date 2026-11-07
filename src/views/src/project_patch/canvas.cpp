@@ -1098,7 +1098,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
             const Node& a = pp.nodes[from_.node];
             doc::DeviceId dev = a.device;
             std::string port = a.outputs[from_.port].name;
-            if (const size_t at = port.rfind('@'); at != std::string::npos && a.group) {
+            if (const size_t at = port.rfind('@'); at != std::string::npos && (a.rack || a.group)) {
               dev = doc::DeviceId{static_cast<uint32_t>(std::stoul(port.substr(at + 1)))};
               port.resize(at);
             }
