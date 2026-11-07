@@ -451,6 +451,14 @@ Converted convertPa(const Project& p, const Device& d, IdSource& ids, BlockSet* 
   o.phase = positionOf(d, t, "phase");
   o.amp = positionOf(d, t, "amp");
   o.pitch = positionOf(d, t, "pitch");
+  if (d.curve("pitch") == nullptr) {
+    // The module's Pitch curve is not the retired type's (GU.5b's arc scale): keep the pitch in cents, not the position.
+    const int32_t i = t.paramIndex("pitch");
+    if (i >= 0) {
+      const double cents = dsp::evalCurve(meta::paramCurve(t.params[static_cast<size_t>(i)]), o.pitch);
+      o.pitch = dsp::curvePosition(phaseAccumulatorCurve(kPaPitch), cents, o.pitch);
+    }
+  }
   if (const dsp::Curve* c = d.curve("freq")) o.freqCurve = *c;
   if (const dsp::Curve* c = d.curve("phase")) o.phaseCurve = *c;
   if (const dsp::Curve* c = d.curve("amp")) o.ampCurve = *c;

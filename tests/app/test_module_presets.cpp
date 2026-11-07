@@ -266,7 +266,11 @@ TEST_CASE("GU.4 modules: conversion — wires into pm / phase, a lane on the kno
   REQUIRE(src != nullptr);
   CHECK(isValueDevice(*src));
   REQUIRE(src->curve(kValueParam) != nullptr);
-  CHECK(src->curve(kValueParam)->segments == 1);  // 20 … 20000: one pure exponential
+  // 20 … 20000: the VCA law's positive outer, split at its +100 marker (GU.5b, dsp::splitCurveAt: the same function)
+  const dsp::Curve& law = *src->curve(kValueParam);
+  CHECK(law.segments == 2);
+  CHECK(dsp::evalCurve(law, law.points[1].t) == doctest::Approx(100.0));
+  for (int k = 1; k <= 64; ++k) CHECK(dsp::evalCurve(law, k / 64.0) > dsp::evalCurve(law, (k - 1) / 64.0));
   CHECK(dsp::evalCurve(*src->curve(kValueParam), 0.0) == doctest::Approx(20.0));
   CHECK(dsp::evalCurve(*src->curve(kValueParam), 1.0) == doctest::Approx(20000.0));
 }
