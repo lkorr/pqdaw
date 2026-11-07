@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <memory>
 #include <span>
 #include <string>
@@ -15,6 +16,7 @@
 #include "../common/panel_template.h"
 #include "pq/document/main_path.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/racks.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/devices/device_panel.h"
@@ -77,6 +79,9 @@ struct DeviceChainView::Impl {
   static constexpr uint8_t kZonesHidden = 0xFF;
   std::map<uint32_t, doc::ChainId> shownChain;
   std::map<uint32_t, uint8_t> zoneTab;
+  // GU.9: what a rack's frame shows (view state, by its frame's id: a rack has no options of its own any more).
+  std::map<uint32_t, bool> rackShowChains, rackShowMacros;
+  std::map<uint32_t, uint32_t> rackVisibleMacros;
   // M4 review M9 (DeviceChainView::kMaxNestedRackFrames): the nesting of the rack frame being built (its ctor reads it).
   uint32_t nestingBuilt = 0;
   // T4.8: macro map mode — the rack whose Map is on, and the macro picked (−1: none yet).
@@ -173,6 +178,9 @@ public:
   // Whether update(d) can show `d` (else the frame is rebuilt). T4.4-fix1: a device whose patch text now plays another
   // graph (an edit in the circuit view, Revert to Stock) needs a new panel; a comment or layout edit keeps it.
   virtual bool keeps(const doc::Device& /*d*/) const { return true; }
+  // GU.9: what it shows is derived from more than its device (a rack: its chains, macros, wires): sync updates it on
+  // every edit, not only when its device changed.
+  virtual bool derived() const noexcept { return false; }
   // Only these params changed (a Param ChangeSet): repaint what shows them.
   virtual void paramsChanged(const doc::Device& d, std::span<const doc::ParamRef> params) = 0;
   // The panel showing this device's params (a rack: its macro panel), and its binding.
@@ -235,6 +243,19 @@ std::vector<doc::DevicePtr> shownDevices(const std::vector<doc::DevicePtr>& list
 // the free rack.
 std::vector<doc::DevicePtr> pathDevices(const doc::Project& p, const doc::Track& t, const doc::MainPath& path);
 // Devices of a rack's chain are framed like the track's: by makeFrame.
+// GU.9 (rack_frame.cpp): the rack chain a device sits in directly (its group is a chain of a rack: doc::RackInfo), its
+// index among the chain's devices and those devices (the snapshot's pointers); none: not in a rack chain.
+struct ChainPlace {
+  std::optional<doc::RackInfo> rack;
+  doc::ChainId chain;
+  int32_t index = -1;
+  std::vector<doc::DevicePtr> list;
+  bool inChain() const noexcept { return chain.valid(); }
+};
+ChainPlace chainPlaceOf(const doc::Project& p, doc::DeviceId device);
+// The macro mapping onto device.param (its rack, the mapping); nullopt: none.
+std::optional<std::pair<doc::RackInfo, doc::RackMapping>> macroMappingOf(const doc::Project& p, doc::DeviceId device,
+                                                                         std::string_view param);
 // T4.8: the map-mode overlay (rack_frame.cpp): over the chain while a rack's Map is on.
 std::unique_ptr<ui::Widget> makeMapOverlay(DeviceChainView::Impl& impl);
 

@@ -392,14 +392,6 @@ bool retired(const Device& d) noexcept {
   return isMetaDevice(d) && meta::findType(metaDeviceType(d)) == nullptr && meta::findRetiredType(metaDeviceType(d)) != nullptr;
 }
 
-// Whether a retired device sits inside rack `d` at any depth (forEachDeviceIn: iterative, any nesting depth).
-bool rackHoldsRetired(const Device& d) noexcept {
-  if (!d.isRack()) return false;
-  bool any = false;
-  forEachDeviceIn(d, [&](const Device& x) { any = any || (&x != &d && retired(x)); });
-  return any;
-}
-
 // A retired param's value in units (its stored knob position through its declared curve; absent: its default).
 double unitsOf(const Device& d, const meta::Type& t, std::string_view name) {
   const int32_t i = t.paramIndex(name);
@@ -560,7 +552,7 @@ bool holdsRetiredModules(const Project& p) noexcept {
   bool any = false;
   forEachTrack(p, [&](const Track& t, const Track*) {
     for (const DevicePtr& d : t.devices)
-      if (retired(*d) || rackHoldsRetired(*d)) any = true;
+      if (retired(*d)) any = true;
   });
   return any;
 }
@@ -572,18 +564,10 @@ Status convertRetiredModules(Project& p) {
   std::unordered_map<uint32_t, Converted> made;  // by old device id
   std::unordered_map<uint32_t, std::vector<DevicePtr>> newDevices;
   std::unordered_map<uint32_t, std::vector<LanePtr>> newLanes;
-  Status failed = Ok{};
   forEachTrack(p, [&](const Track& t, const Track*) {
     bool changed = false;
     std::vector<DevicePtr> list;
     for (const DevicePtr& d : t.devices) {
-      if (rackHoldsRetired(*d) && failed) {
-        failed = Error{ErrorCode::Unsupported,
-                       "track '" + t.name + "': a Phase Accumulator or VCA inside a rack chain cannot become its group preset "
-                       "(GU.4: a group lives in a track's circuit, not in a rack chain); take it out of the rack in an "
-                       "older pqdaw first",
-                       {}};
-      }
       if (!retired(*d)) {
         list.push_back(d);
         continue;
@@ -614,7 +598,6 @@ Status convertRetiredModules(Project& p) {
     }
     if (lanesChanged) newLanes[t.id.value] = std::move(lanes);
   });
-  if (!failed) return failed;
   // Wires: ends on the old devices follow their targets; the modules' own wires join.
   WireList wires;
   for (const Wire& w0 : wiresOf(p)) {

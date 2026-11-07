@@ -14,6 +14,7 @@
 
 #include "../common/paint.h"
 #include "internal.h"
+#include "pq/document/racks.h"
 #include "pq/document/instrument_groups.h"
 #include "pq/ui/theme.h"
 #include "pq/views/panel/group_panel_face.h"
@@ -93,9 +94,13 @@ public:
   }
   // GU.3: a panel placed or emptied, or the group becoming or ceasing to be an instrument: a new frame.
   bool keeps(const doc::Device& d) const override {
-    return d.hasPanel() == hasPanel_ && doc::isInstrumentGroup(*ctx_.doc(), d.id) == instrument_;
+    return d.hasPanel() == hasPanel_ && doc::isInstrumentGroup(*ctx_.doc(), d.id) == instrument_ && !rackChain(d);  // GU.9: a group wired in parallel with others is a rack's chain
   }
   void paramsChanged(const doc::Device&, std::span<const doc::ParamRef>) override {}  // the canvas follows the document
+  bool rackChain(const doc::Device& d) const {
+    const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), d.id);
+    return l.track != nullptr && doc::rackOfChain(*ctx_.doc(), *l.track, d.id).has_value();
+  }
 
   project_patch::ProjectPatchView* patchView() const noexcept { return view_; }  // null: the group shows its panel
   panel::PanelHost* panelHost() const noexcept { return panel_; }

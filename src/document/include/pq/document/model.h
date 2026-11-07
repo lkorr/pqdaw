@@ -126,18 +126,11 @@ enum class ParamKind : uint8_t {
   DeviceParam,
   // T4.7: the amount of a modulation wire (owner = wire id), in [−1, 1]; a runtime param. T4.18: automatable.
   WireAmount,
-  // T4.8: a rack chain's runtime values (owner = chain id; target = what: 0 mixer (volume, pan), 1 + ZoneKind a zone).
-  // The lowering derives the chain's param values from them (lower.h "Racks"). T4.18: the chain's volume (target
-  // kChainVolume, dB) and pan (kChainPan) are automatable one by one.
-  ChainMixer,
   // TMM.3: a param of a NESTED meta-module instance (owner = device id, target = deviceParamHash("<path>.<name>"));
   // a runtime param "dev<id>:<path>.<name>". Not automatable or macro-mappable in MM (docs/plans/MM.md). A chain-level
   // meta device's params are its DeviceParams.
   MetaParam,
 };
-// T4.18: the `target` of a chain's volume / pan as an automation lane's ParamRef (ParamRef::chain(c, kChainVolume)).
-inline constexpr uint32_t kChainVolume = 16;
-inline constexpr uint32_t kChainPan = 17;
 
 struct ParamRef {
   ParamKind kind = ParamKind::TrackVolume;
@@ -149,7 +142,6 @@ struct ParamRef {
   static ParamRef tuning(ParamKind k, TuningId t) { return {k, t.value, 0}; }
   static ParamRef device(DeviceId d, std::string_view param);  // {DeviceParam, d, deviceParamHash(param)}
   static ParamRef wireAmount(WireId w) { return {ParamKind::WireAmount, w.value, 0}; }
-  static ParamRef chain(ChainId c, uint32_t what = 0) { return {ParamKind::ChainMixer, c.value, what}; }
   // TMM.3: {MetaParam, d, deviceParamHash(path + "." + param)}.
   static ParamRef metaParam(DeviceId d, std::string_view path, std::string_view param);
 };
@@ -167,7 +159,6 @@ struct ParamRange {
   double max = 1.0;
 };
 ParamRange paramRange(ParamKind k) noexcept;
-// T4.18: as the kind's, but a chain's volume (dB) / pan ([−1, 1]) for ParamRef::chain(c, kChainVolume / kChainPan).
 // A device param's range is its patch's (the document does not know it: any finite value).
 ParamRange paramRange(const ParamRef& r) noexcept;
 
@@ -516,7 +507,6 @@ struct UserPatch {
   friend bool operator==(const UserPatch& a, const UserPatch& b) noexcept { return a.text == b.text; }
 };
 using UserPatchPtr = std::shared_ptr<const UserPatch>;
-struct Rack;
 
 // One device instance (TX.all-free: a block of a track's circuit, or a device of a rack chain): a call of `patch` (a
 // patch of the device library) with the values the user set. Ports are the patch's signature and are not stored; params / settings not listed play the patch's defaults.
@@ -533,7 +523,6 @@ struct Device {
   // T4.4-fix1: the instance's own patch text (a user device), or null (the library's stock patch). Shared, so a param
   // edit copies the Device but never the text. Racks: always null (a rack has no patch text).
   UserPatchPtr source;
-  std::shared_ptr<const Rack> rack;  // T4.8: non-null for a rack
   // T4.17: the instance's own name (Live: Ctrl+R renames a device), shown in its title bar; "" = the patch's default
   // name (the catalog's / the panel description's title). Meta.
   std::string name;
@@ -563,7 +552,6 @@ struct Device {
   const MetaInstance* metaAt(std::string_view path) const noexcept;  // nullptr: no entry
   const DeviceValue* param(std::string_view key) const noexcept;    // nullptr: the patch's default
   const DeviceValue* setting(std::string_view key) const noexcept;  // nullptr: the patch's default
-  bool isRack() const noexcept { return rack != nullptr; }
 };
 bool operator==(const Device& a, const Device& b) noexcept;  // deep (racks by content, user texts by text)
 using DevicePtr = std::shared_ptr<const Device>;
@@ -673,118 +661,11 @@ GroupPolyphony groupPolyphony(const Device& group) noexcept;
 // A new instrument group (kGroupDevice) with the default polyphony written out (16 voices, steal oldest, no glide).
 DevicePtr makeInstrumentGroup(DeviceId id);
 
-// ---- Racks (T4.8, SPEC §8.2; QUESTIONS Q129 item 6, Q?-T4.8-a) -------------------------------------------------------
-// An Audio Effect Rack (kind AudioEffect) or an Instrument Rack (kind Instrument) holds parallel CHAINS, each a device
-// list (the same chain rule as a track: an Instrument Rack's chain may start with one instrument — a device or a nested
-// Instrument Rack —, then audio effects; an Audio Effect Rack's chains hold audio effects only) with its own mixer
-// (volume, pan, activator, solo) and ZONES. Racks nest (a chain may hold racks). Up to 16 MACROS: params of the rack
-// ("macro1" … "macro16", 0 … 127) that drive any number of MAPPINGS (a target param of a device inside the rack, a
-// min / max in the target's knob travel and a curve); the CHAIN SELECTOR is the rack param "select" (0 … 127).
-// Everything continuous is a runtime value (a macro turn is one param write; a chain's volume / pan or a zone drag are
-// param writes too); chains, mappings, mute / solo and a zone switched on or off are structural.
+// ---- Racks (GU.9 v2; pq/document/racks.h) -----------------------------------------------------------------------
+// A rack is not stored: it is a set of PARALLEL GROUPS derived from the wiring (racks.h). These are the spawn ids the
+// menus and the browser offer (ops::addDevice / ops::addRack build the groups).
 inline constexpr std::string_view kAudioEffectRack = "AudioEffectRack";
 inline constexpr std::string_view kInstrumentRack = "InstrumentRack";
-inline constexpr uint32_t kMacroCount = 16;
-inline constexpr double kMacroMax = 127.0;   // a macro's value range is 0 … 127 (Live's macro scale)
-inline constexpr double kSelectMax = 127.0;  // the chain selector's range (and a select zone's)
-inline constexpr double kVelocityMax = 127.0;
-// The rack params: "macro1" … "macro16" (index 0 … 15) and "select".
-std::string macroParamName(uint32_t index);                           // "macro<index + 1>"
-std::optional<uint32_t> macroIndex(std::string_view param) noexcept;  // the inverse; nullopt: not a macro
-inline constexpr std::string_view kSelectParam = "select";
-bool isRackParam(std::string_view param) noexcept;  // a macro or "select"
-
-// A zone: the values where a chain plays. Gain 0 below `lo` and above `hi`, rising linearly from `lo` to `fadeLo`,
-// 1 from `fadeLo` to `fadeHi`, falling linearly to `hi` (lo ≤ fadeLo ≤ fadeHi ≤ hi). A zone covering its whole range
-// is OFF: it costs nothing (no node in the graph).
-enum class ZoneKind : uint8_t { Key, Velocity, Select };
-// Key zones of an Instrument Rack: in Hz (a pitch range; the fades are linear in log frequency) or in degrees of the
-// track's tuning (converted to Hz from the track's current tuning; they follow a tuning param edit).
-enum class KeyZoneUnit : uint8_t { Hz, Degree };
-struct Zone {
-  double lo = 0.0, fadeLo = 0.0, fadeHi = 0.0, hi = 0.0;
-  friend constexpr bool operator==(const Zone&, const Zone&) noexcept = default;
-};
-struct ZoneRange {
-  double min = 0.0, max = 0.0;
-};
-ZoneRange zoneRange(ZoneKind kind, KeyZoneUnit unit) noexcept;  // Key: Hz 1 … 100000, Degree −1024 … 1024; else 0 … 127
-Zone fullZone(ZoneKind kind, KeyZoneUnit unit) noexcept;        // {min, min, max, max}: off
-bool zoneOff(const Zone& z, ZoneKind kind, KeyZoneUnit unit) noexcept;
-bool zoneValid(const Zone& z, ZoneKind kind, KeyZoneUnit unit) noexcept;  // ordered, finite, inside the range
-
-struct Chain {
-  ChainId id;
-  std::string name;
-  std::vector<DevicePtr> devices;  // left → right
-  float volumeDb = 0.0f;           // [kMinVolumeDb, kMaxVolumeDb]; at kMinVolumeDb: −∞
-  float pan = 0.0f;                // [−1, 1], balance
-  bool active = true;              // the chain activator: off = muted, left out of the graph (structural, zero CPU)
-  bool solo = false;               // any soloed chain in a rack: only soloed chains play (structural)
-  Zone key, velocity, select;      // makeChain sets the full (off) zones
-  const Zone& zone(ZoneKind k) const noexcept {
-    return k == ZoneKind::Key ? key : k == ZoneKind::Velocity ? velocity : select;
-  }
-  Zone& zone(ZoneKind k) noexcept { return k == ZoneKind::Key ? key : k == ZoneKind::Velocity ? velocity : select; }
-};
-bool operator==(const Chain& a, const Chain& b) noexcept;
-using ChainPtr = std::shared_ptr<const Chain>;
-
-// A macro mapping: macro `macro` (0 … 15) drives `param` of `device` (a device inside the rack, at any depth; a nested
-// rack's macro or selector too). The target's knob position = min + (max − min) · shape(macro / 127, curve) — GU.1: a
-// knob position like the param's stored value, mapped through the param's curve — with the automation curve law
-// (pq/core/automation_curve.h; curve 0 = straight). min > max inverts. A mapped param
-// plays the macro (its own stored value is kept but unused); wires into it still add (Q135's law, the mapping as the
-// centre). A param has at most one mapping in the project.
-struct MacroMapping {
-  MappingId id;
-  uint8_t macro = 0;
-  DeviceId device;
-  std::string param;
-  double min = 0.0, max = 1.0;  // [0, 1] knob travel
-  double curve = 0.0;           // [−1, 1]
-  friend bool operator==(const MacroMapping&, const MacroMapping&) = default;
-};
-
-// A stored snapshot of all macro values (Live's macro variations).
-struct MacroVariation {
-  std::string name;
-  std::array<double, kMacroCount> values{};
-  friend bool operator==(const MacroVariation&, const MacroVariation&) = default;
-};
-
-struct Rack {
-  std::vector<ChainPtr> chains;  // (a rack chain is a LIST: its devices run in order, TX.all-free leaves racks as they are)
-  std::vector<MacroMapping> mappings;                 // sorted by id
-  std::array<std::string, kMacroCount> macroNames{};  // "" = "Macro <k>" (Meta)
-  uint8_t visibleMacros = 8;                          // 1 … 16 knobs shown (Meta)
-  std::vector<MacroVariation> variations;             // Meta
-  uint16_t randomizeExclude = 0;                      // bit k: Rand leaves macro k alone (Meta)
-  KeyZoneUnit keyUnit = KeyZoneUnit::Hz;              // Instrument Rack (structural)
-  // Instrument Rack: each chain's audio effects run per voice (SPEC §8.2 voicechain: the voices are summed after the
-  // chain instead of after its instrument). Structural.
-  bool voiceChains = false;
-  bool showChains = true;  // the chain list is shown (Meta)
-  bool showMacros = true;  // the macro knobs are shown (Meta)
-  const Chain* findChain(ChainId id) const noexcept;
-
-  Rack() = default;
-  Rack(const Rack&) = default;
-  Rack(Rack&&) noexcept = default;
-  Rack& operator=(const Rack&) = default;
-  Rack& operator=(Rack&&) noexcept = default;
-  // M4 review M9: frees nested racks iteratively (a rack inside one being destroyed hands its chains to the outermost
-  // destructor instead of destroying them itself), so a nest of any depth is freed without deep recursion.
-  ~Rack();
-};
-bool operator==(const Rack& a, const Rack& b) noexcept;
-
-// A new rack device (no chains: an empty rack passes its input through) / a new chain (full zones).
-DevicePtr makeRack(DeviceId id, DeviceKind kind, std::vector<ChainPtr> chains = {});
-ChainPtr makeChain(ChainId id, std::string name, std::vector<DevicePtr> devices = {});
-std::string macroDisplayName(const Rack& r, uint32_t index);  // the name, else "Macro <index + 1>"
-// A rack param's value: the stored one, else 0.
-double rackParamValue(const Device& rack, std::string_view param) noexcept;
 
 // The M3 default instrument (QUESTIONS Q15 A): every MIDI track ops::createTrack makes starts with it.
 inline constexpr std::string_view kDefaultInstrument = "BasicSynth";
@@ -1030,52 +911,27 @@ const Track* parentOf(const Project& p, const TrackPath& path) noexcept;
 const TuningSlot* findTuning(const Project& p, TuningId id) noexcept;
 // Index of the clip in track.clips, or −1.
 int32_t findClipIndex(const Track& t, ClipId id) noexcept;
-// The track holding device `id` (nullptr: none) and the device. T4.8: a device inside a rack is found too (any depth):
-// `chain` is then the chain holding it (index into chain->devices), `rack` that chain's rack device; the track is the one
-// holding the outermost rack.
+// The track holding device `id` (nullptr: none) and the device.
 struct DeviceLoc {
   const Track* track = nullptr;
   const Device* device = nullptr;
-  uint32_t index = 0;            // in the list holding it: track->devices, or chain->devices
-  const Chain* chain = nullptr;  // T4.8: the chain holding it (nullptr: the track's chain)
-  const Device* rack = nullptr;  // T4.8: the rack holding `chain`
+  uint32_t index = 0;  // in track->devices
   // The list holding the device.
   const std::vector<DevicePtr>& list() const noexcept;
 };
 DeviceLoc findDevice(const Project& p, DeviceId id) noexcept;
-// T4.8: a chain of any rack in the project: the chain, its rack and the track holding the rack.
-struct ChainLoc {
-  const Track* track = nullptr;
-  const Device* rack = nullptr;
-  const Chain* chain = nullptr;
-  uint32_t index = 0;  // in rack->rack->chains
-};
-ChainLoc findChain(const Project& p, ChainId id) noexcept;
-// T4.8: the mapping with `id` and its rack (nullptr: none).
-struct MappingLoc {
-  const Track* track = nullptr;
-  const Device* rack = nullptr;
-  const MacroMapping* mapping = nullptr;
-};
-MappingLoc findMapping(const Project& p, MappingId id) noexcept;
-// T4.8: the mapping driving `device`.`param` (nullptr: unmapped) and its rack.
-MappingLoc mappingOf(const Project& p, DeviceId device, std::string_view param) noexcept;
-// T4.8: visits `d` and every device inside it (racks: chains in order, depth-first): f(const Device&). M4 review M9:
-// iterative (an explicit stack on the heap), so racks nest as deep as memory allows.
+// Visits every device of a list: f(const Device&). (GU.9: no device holds others; a group's members are in its list.)
 template <class F>
-void forEachDeviceIn(const Device& d, F&& f);
-// Visits every device of a list (and inside racks), depth-first in chain order (iterative, as above).
-template <class F>
-void forEachDeviceIn(const std::vector<DevicePtr>& list, F&& f);
-// Whether `inner` is `outer` or inside it (a rack).
-bool deviceContains(const Device& outer, DeviceId inner) noexcept;
+void forEachDeviceIn(const std::vector<DevicePtr>& list, F&& f) {
+  for (const DevicePtr& d : list) f(*d);
+}
 // T4.7: the project's wires (an empty list when it has none) and one by id (nullptr: none).
 const WireList& wiresOf(const Project& p) noexcept;
 const Wire* findWire(const Project& p, WireId id) noexcept;
 // T4.18: the track an automation lane of a device-kind param lives on (isDeviceParamKind): the track holding the
-// device (DeviceParam), the chain's rack (ChainMixer) or the wire's target device (WireAmount: its amount is a param of
+// device (DeviceParam) or the wire's target device (WireAmount: its amount is a param of
 // the target's track patch); nullptr when that entity is gone. Lanes follow it: a command that moves or removes a
-// device, chain or wire moves the lanes to the new home track or removes them in the same step (apply.cpp).
+// device or wire moves the lanes to the new home track or removes them in the same step (apply.cpp).
 const Track* laneHome(const Project& p, const ParamRef& r) noexcept;
 // T5.3: the project's sample table (an empty list when it has none) and one entry by id (nullptr: none).
 const SampleList& samplesOf(const Project& p) noexcept;
@@ -1102,52 +958,7 @@ void forEachTrack(const Project& p, F&& f) {
   if (p.master) f(*p.master, static_cast<const Track*>(nullptr));
 }
 
-namespace detail {
-// The device lists still to visit (a range each); a rack's chains are pushed in reverse, so chain 0 comes next.
-struct DeviceRange {
-  const DevicePtr* next;
-  const DevicePtr* end;
-};
-inline void pushChains(std::vector<DeviceRange>& stack, const Device& d) {
-  if (!d.rack) return;
-  const std::vector<ChainPtr>& chains = d.rack->chains;
-  for (size_t i = chains.size(); i-- > 0;) {
-    const std::vector<DevicePtr>& list = chains[i]->devices;
-    if (!list.empty()) stack.push_back({list.data(), list.data() + list.size()});
-  }
-}
-template <class F>
-void walkDevices(std::vector<DeviceRange>& stack, F& f) {
-  while (!stack.empty()) {
-    DeviceRange& top = stack.back();
-    if (top.next == top.end) {
-      stack.pop_back();
-      continue;
-    }
-    const Device& d = **top.next++;  // before a push moves `top`
-    f(d);
-    pushChains(stack, d);
-  }
-}
-}  // namespace detail
-
-template <class F>
-void forEachDeviceIn(const std::vector<DevicePtr>& list, F&& f) {
-  if (list.empty()) return;
-  std::vector<detail::DeviceRange> stack{{list.data(), list.data() + list.size()}};
-  detail::walkDevices(stack, f);
-}
-
-template <class F>
-void forEachDeviceIn(const Device& d, F&& f) {
-  f(d);
-  if (!d.rack) return;
-  std::vector<detail::DeviceRange> stack;
-  detail::pushChains(stack, d);
-  detail::walkDevices(stack, f);
-}
-
-// T4.8: visits every device of the project, nested ones too: f(const Device&, const Track&).
+// Visits every device of the project: f(const Device&, const Track&).
 template <class F>
 void forEachDevice(const Project& p, F&& f) {
   forEachTrack(p, [&](const Track& t, const Track*) {

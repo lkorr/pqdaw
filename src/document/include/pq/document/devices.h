@@ -122,7 +122,10 @@ bool atomBlockAllowed(const graph::AtomSignature& s) noexcept;
 // `out <output>` per output (an output whose name an input has is `<name>_out`). Named "Atom_<name>" ('.' -> '_').
 // The compiler flattens the call: the block costs exactly the atom. Null: no such atom, or not atomBlockAllowed.
 const graph::Patch* atomBlockPatch(std::string_view atomName);
-const DeviceInfo* atomBlockInfo(std::string_view atomName);  // its description (AudioEffect, settings: the const ins)
+const DeviceInfo* atomBlockInfo(std::string_view atomName);
+// GU.9: a voice terminal's block outside a voice context (not per note): the same outputs, each 0. Null: not a voice
+// terminal.
+const graph::Patch* voicelessAtomPatch(std::string_view atomName);  // its description (AudioEffect, settings: the const ins)
 // The patch every value block plays (model.h valuePatchText, parsed once) and its description (one param `value`).
 const graph::Patch& valuePatch();
 const DeviceInfo& valueDeviceInfo();

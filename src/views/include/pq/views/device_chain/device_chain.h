@@ -37,6 +37,7 @@
 
 #include "pq/document/devices.h"
 #include "pq/document/model.h"
+#include "pq/document/racks.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
 #include "pq/views/devices/device_panel.h"
@@ -117,10 +118,6 @@ public:
   bool showNeighbourChain(int32_t dir);
   std::vector<doc::DeviceId> shownOrder() const;  // every device shown, in display order
   void revealDevice(doc::DeviceId device);        // scrolls the chain so the device's frame is in view
-  // T4.8: opens a rack's lowered subcircuit in the circuit viewer (read-only; rebuilt while open after a structural
-  // or meta edit of the rack, closed when the rack is removed; rack_frame.cpp, Q?-T4.8-a).
-  bool openRackCircuit(doc::DeviceId rack);
-
   // ---- T4.8: racks (rack_frame.cpp) --------------------------------------------------------------------------------
   // The chain a rack's frame shows (invalid: none; its first chain by default) and showing another one.
   doc::ChainId shownChain(doc::DeviceId rack) const;

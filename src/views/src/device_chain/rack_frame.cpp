@@ -1,10 +1,12 @@
-// Racks in the Device view (T4.8, SPEC §8.2; Live's rack): pq/views/device_chain/device_chain.h. A rack's frame is, left
-// to right: a strip of buttons (show macros / chains / zones, Map, Rand, variations), the macro panel (a T4.6
-// DevicePanel over the rack's params: up to 16 macros and the chain selector, with the title bar's activator and fold),
-// the chain list (one row per chain: activator, name, solo, volume, pan — the chain mixer), the zone editor (Key /
-// Velocity / Chain zones as bars aligned with the rows), then the frames of the chain it shows (devices and nested
-// racks, framed like the track's) and a slot that adds to that chain. Every edit is a document command (edit_ops.h),
-// one undo step each; drags are store gestures (one step).
+// Racks in the Device view (T4.8, SPEC §8.2; Live's rack): pq/views/device_chain/device_chain.h. GU.9 v2: a rack is a
+// set of PARALLEL GROUPS derived from the wiring (pq/document/racks.h, doc::RackInfo); this frame is its other view —
+// the same objects the circuit draws as group capsules. The frame stands for the rack's chain on the main path (its id;
+// any chain id names the rack to the edit builders). Left to right: a strip of buttons (show macros / chains / zones,
+// Map, Rand, variations), the macro panel (a T4.6 DevicePanel over the macros — value blocks of the rack — and the
+// chain selector), the chain list (one row per chain group: activator, name, solo, volume, pan — its Mixer group's value
+// blocks), the zone editor (its zone groups' value blocks as bars aligned with the rows), then the frames of the chain
+// it shows (the chain group's series, framed like the track's) and a slot that adds to that chain. Every edit is a
+// document command (edit_ops.h, racks.h's builders), one undo step each; drags are store gestures (one step).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -15,6 +17,7 @@
 #include "internal.h"
 #include "pq/core/automation_curve.h"
 #include "pq/document/lower.h"
+#include "pq/document/racks.h"
 #include "pq/graph/parse.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
@@ -49,13 +52,22 @@ std::string fmtPan(double p) {
 }
 
 // The rack's params as a device signature: "macro1" … "macro16" (labels: the macro names) and "select" ("Chain").
-devices::DeviceSignature rackSignature(const doc::Device& d) {
+constexpr std::string_view kSelectParam = "select";  // the panel's chain selector knob
+std::string macroParamName(uint32_t k) { return "macro" + std::to_string(k + 1); }
+std::optional<uint32_t> macroIndex(std::string_view p) {
+  if (p.size() < 6 || p.substr(0, 5) != "macro") return std::nullopt;
+  const int k = std::atoi(std::string(p.substr(5)).c_str());
+  if (k < 1 || k > static_cast<int>(doc::kMacroCount)) return std::nullopt;
+  return static_cast<uint32_t>(k - 1);
+}
+
+devices::DeviceSignature rackSignature(const doc::RackInfo& r) {
   devices::DeviceSignature s;
-  s.patch = d.patch;
+  s.patch = r.instrument ? std::string(doc::kInstrumentRack) : std::string(doc::kAudioEffectRack);
   for (uint32_t k = 0; k < doc::kMacroCount; ++k) {
     devices::ParamInfo p;
-    p.name = doc::macroParamName(k);
-    p.label = doc::macroDisplayName(*d.rack, k);
+    p.name = macroParamName(k);
+    p.label = r.macroName(k);
     p.min = 0.0;
     p.max = doc::kMacroMax;
     p.steps = 128;  // shown and dragged in whole steps 0 … 127 (Live's macros); the param itself is continuous
@@ -63,7 +75,7 @@ devices::DeviceSignature rackSignature(const doc::Device& d) {
     s.params.push_back(std::move(p));
   }
   devices::ParamInfo sel;
-  sel.name = std::string(doc::kSelectParam);
+  sel.name = std::string(kSelectParam);
   sel.label = "Chain";
   sel.min = 0.0;
   sel.max = doc::kSelectMax;
@@ -77,33 +89,32 @@ devices::DeviceSignature rackSignature(const doc::Device& d) {
 // up to one past the highest macro in use (mapped or renamed: never a value, so a macro drag does not rebuild the
 // panel under the pointer), at least one column: a new rack shows four, and there is always a free macro to map next.
 // The chain selector is the zone editor's (its Chain tab's marker).
-uint32_t shownMacros(const doc::Device& d) {
-  const doc::Rack& r = *d.rack;
+uint32_t shownMacros(const doc::RackInfo& r, uint32_t visibleMacros) {
   int32_t used = -1;
-  for (const doc::MacroMapping& m : r.mappings) used = std::max(used, static_cast<int32_t>(m.macro));
+  for (const doc::RackMapping& m : r.mappings) used = std::max(used, static_cast<int32_t>(m.macro));
   for (uint32_t k = 0; k < doc::kMacroCount; ++k)
-    if (!r.macroNames[k].empty()) used = std::max(used, static_cast<int32_t>(k));
+    if (r.macros[k].block.valid()) used = std::max(used, static_cast<int32_t>(k));
   const auto want = static_cast<uint32_t>((used + 2 + 3) / 4 * 4);  // one past the highest used, whole columns
-  return std::clamp<uint32_t>(std::min<uint32_t>(r.visibleMacros, std::max(4u, want)), 1, doc::kMacroCount);
+  return std::clamp<uint32_t>(std::min<uint32_t>(visibleMacros, std::max(4u, want)), 1, doc::kMacroCount);
 }
 
 // The macro panel's layout: the shown macros in columns of four; only the title bar when the macros are hidden.
-devices::PanelDesc rackPanel(const doc::Device& d, const devices::DeviceSignature& sig) {
+devices::PanelDesc rackPanel(const doc::RackInfo& r, const devices::DeviceSignature& sig, bool showMacros,
+                             uint32_t visibleMacros) {
   devices::PanelDesc p;
   p.patch = sig.patch;
-  p.title = d.kind == doc::DeviceKind::Instrument ? "Instrument Rack" : "Audio Effect Rack";
-  const doc::Rack& r = *d.rack;
-  if (!r.showMacros) {
+  p.title = r.instrument ? "Instrument Rack" : "Audio Effect Rack";
+  if (!showMacros) {
     p.width = 112.0f;
     p.height = 0.0f;
     return p;
   }
-  const uint32_t n = shownMacros(d);
+  const uint32_t n = shownMacros(r, visibleMacros);
   const uint32_t rows = std::min<uint32_t>(4, n), cols = (n + 3) / 4;
   for (uint32_t k = 0; k < n; ++k) {
     devices::ControlDesc c;
     c.kind = devices::ControlKind::Knob;
-    c.param = c.id = doc::macroParamName(k);
+    c.param = c.id = macroParamName(k);
     c.x = static_cast<float>(k / 4) * kMacroCell;
     c.y = static_cast<float>(k % 4) * kMacroCell;
     c.w = kMacroCell - 4.0f;
@@ -127,15 +138,24 @@ public:
     }
   }
   void setParam(std::string_view param, double value) override {
-    impl_.live(doc::ops::setDeviceParam(impl_.doc(), id_, std::string(param), std::clamp(value, 0.0, doc::kMacroMax)));
+    // GU.9: a macro is its value block (0 … 1), the selector its own (0 … 127).
+    if (const std::optional<uint32_t> k = macroIndex(param))
+      impl_.live(doc::ops::setMacroValue(impl_.doc(), id_, *k, std::clamp(value, 0.0, doc::kMacroMax)));
+    else if (param == kSelectParam)
+      impl_.live(doc::ops::setSelectorValue(impl_.doc(), id_, std::clamp(value, 0.0, doc::kSelectMax)));
   }
   void paramGestureEnd(std::string_view) override {
     if (own_ && impl_.ctx().store().inGesture()) (void)impl_.ctx().store().commitGesture();
     own_ = false;
   }
   void setConst(std::string_view, double) override {}
-  void setActive(bool on) override {
-    impl_.run(doc::ops::setDevicesActive(impl_.doc(), std::vector<doc::DeviceId>{id_}, on), false);
+  void setActive(bool on) override {  // GU.9: every chain's activator (a rack has no switch of its own)
+    const std::optional<doc::RackInfo> r = doc::rackOf(impl_.doc(), id_);
+    if (!r) return;
+    doc::DocumentStore& st = impl_.ctx().store();
+    const bool own = !st.inGesture() && st.beginGesture(on ? "Activate Rack" : "Deactivate Rack").ok();
+    for (const doc::RackChain& c : r->chains) impl_.live(doc::ops::setChainActive(impl_.doc(), c.id, on));
+    if (own) (void)st.commitGesture();
   }
 
 private:
@@ -149,9 +169,9 @@ class RackFrame;
 // One chain row: activator, name, solo, volume, pan (the chain mixer).
 class ChainRow final : public ui::Widget {
 public:
-  ChainRow(RackFrame& rack, DeviceChainView::Impl& impl, const doc::Chain& c);
+  ChainRow(RackFrame& rack, DeviceChainView::Impl& impl, const doc::RackChain& c);
   doc::ChainId chain() const noexcept { return chain_; }
-  void set(const doc::Chain& c, bool shown);
+  void set(const doc::RackChain& c, bool shown);
   void arrange(ui::LayoutPass& pass) override;
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
@@ -333,6 +353,7 @@ public:
   RackFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d)
       : FrameBase("rack[" + std::to_string(d.id.value) + "]", impl, ctx, d.id), target_(impl, d.id),
         nesting_(impl.nestingBuilt) {
+    track_ = doc::findDevice(impl.doc(), d.id).track != nullptr ? doc::findDevice(impl.doc(), d.id).track->id : doc::TrackId{};
     setLayout(ui::LayoutKind::Custom);
     strip_ = &add<RackStrip>(*this, impl);
     list_ = &add<ChainList>(*this, impl);
@@ -341,10 +362,16 @@ public:
     update(d);
   }
 
-  const doc::Rack& rack() const noexcept { return *rack_; }
-  bool instrument() const noexcept { return kind_ == doc::DeviceKind::Instrument; }
+  const doc::RackInfo& rack() const noexcept { return rack_; }
+  bool instrument() const noexcept { return rack_.instrument; }
   doc::ChainId shownChain() const noexcept { return shown_; }
-  const doc::Chain* shownChainPtr() const noexcept { return shown_.valid() ? rack_->findChain(shown_) : nullptr; }
+  const doc::RackChain* shownChainPtr() const noexcept { return shown_.valid() ? rack_.findChain(shown_) : nullptr; }
+  bool showChains() const { return impl_.rackShowChains.count(id_.value) == 0 || impl_.rackShowChains.at(id_.value); }
+  bool showMacros() const { return impl_.rackShowMacros.count(id_.value) == 0 || impl_.rackShowMacros.at(id_.value); }
+  uint32_t visibleMacros() const {
+    const auto it = impl_.rackVisibleMacros.find(id_.value);
+    return it == impl_.rackVisibleMacros.end() ? doc::kDefaultMacros : it->second;
+  }
   std::optional<doc::ZoneKind> zoneTab() const {
     const auto it = impl_.zoneTab.find(id_.value);
     if (it == impl_.zoneTab.end() || it->second == DeviceChainView::Impl::kZonesHidden) return std::nullopt;
@@ -357,12 +384,12 @@ public:
   }
   // The selector the chains hear: its knob, or where the macro mapped to it puts it.
   double selectorValue() const {
-    for (const doc::MacroMapping& m : rack_->mappings)
-      if (m.device == id_ && m.param == doc::kSelectParam) {
-        const double pos = m.min + (m.max - m.min) * automationShape(paramValue(doc::macroParamName(m.macro)) / doc::kMacroMax, m.curve);
-        return std::clamp(pos, 0.0, 1.0) * doc::kSelectMax;
+    for (const doc::RackMapping& m : rack_.mappings)
+      if (m.device == rack_.selector && rack_.selector.valid()) {
+        const double pos = m.min + (m.max - m.min) * (paramValue(macroParamName(m.macro)) / doc::kMacroMax);
+        return std::round(std::clamp(pos, 0.0, 1.0) * doc::kSelectMax);
       }
-    return paramValue(doc::kSelectParam);
+    return paramValue(kSelectParam);
   }
   ChainList& list() noexcept { return *list_; }
   RackStrip& strip() noexcept { return *strip_; }
@@ -384,7 +411,7 @@ public:
   float logicalWidth() const override {
     if (panel_ != nullptr && panel_->folded()) return panel_->logicalWidth();
     float w = kStripW + (panel_ != nullptr ? panel_->logicalWidth() : 0.0f);
-    if (rack_->showChains) w += kListW + (zoneTab() ? kZoneW : 0.0f);
+    if (showChains()) w += kListW + (zoneTab() ? kZoneW : 0.0f);
     for (const FrameBase* f : inner_) w += kFrameGap + f->logicalWidth();
     return w + kFrameGap + kSlotW + kFrameGap;
   }
@@ -393,16 +420,31 @@ public:
     return available;
   }
 
+  // GU.9: what the frame shows is derived from the document (doc::RackInfo); the device given is its chain on the path.
+  bool keeps(const doc::Device& d) const override {
+    const doc::DeviceLoc l = doc::findDevice(impl_.doc(), d.id);
+    return l.track != nullptr && doc::rackOfChain(impl_.doc(), *l.track, d.id).has_value();
+  }
+  bool derived() const noexcept override { return true; }
   void update(const doc::Device& d) override {
-    const bool first = rack_ == nullptr;
-    const bool optionsChanged = first || d.rack->macroNames != rack_->macroNames ||
-                                d.rack->visibleMacros != rack_->visibleMacros || d.rack->showMacros != rack_->showMacros ||
-                                shownMacros(d) != shownMacros_;
-    shownMacros_ = shownMacros(d);
-    rack_ = d.rack;
-    kind_ = d.kind;
-    active_ = d.active;
-    params_ = d.params;
+    const doc::DeviceLoc loc = doc::findDevice(impl_.doc(), d.id);
+    std::optional<doc::RackInfo> info = loc.track != nullptr ? doc::rackOfChain(impl_.doc(), *loc.track, d.id) : std::nullopt;
+    if (!info) return;  // (sync rebuilds the frame: keeps() is false now)
+    const bool first = !built_;
+    built_ = true;
+    std::array<std::string, doc::kMacroCount> names{};
+    for (uint32_t k = 0; k < doc::kMacroCount; ++k) names[k] = info->macroName(k);
+    const uint32_t shown = shownMacros(*info, visibleMacros());
+    const bool optionsChanged = first || names != macroNames_ || showMacros() != showMacrosBuilt_ || shown != shownMacros_ ||
+                                info->instrument != rack_.instrument;
+    macroNames_ = names;
+    showMacrosBuilt_ = showMacros();
+    shownMacros_ = shown;
+    rack_ = std::move(*info);
+    active_ = std::any_of(rack_.chains.begin(), rack_.chains.end(), [](const doc::RackChain& c) { return c.active; });
+    params_.clear();
+    for (uint32_t k = 0; k < doc::kMacroCount; ++k) params_.push_back(doc::DeviceValue{macroParamName(k), rack_.macros[k].value});
+    params_.push_back(doc::DeviceValue{std::string(kSelectParam), rack_.selectorValue});
     // The macro panel: rebuilt when its layout changed, else its values.
     if (optionsChanged) {
       bool folded = false;
@@ -411,10 +453,10 @@ public:
         (void)removeChild(*panel_);
         panel_ = nullptr;
       }
-      sig_ = rackSignature(d);
-      desc_ = rackPanel(d, sig_);
+      sig_ = rackSignature(rack_);
+      desc_ = rackPanel(rack_, sig_, showMacros(), visibleMacros());
       std::map<std::string, double, std::less<>> values;
-      for (const doc::DeviceValue& v : d.params) values[v.name] = v.value;
+      for (const doc::DeviceValue& v : params_) values[v.name] = v.value;
       panel_ = &add<devices::DevicePanel>("panel", sig_, desc_, &target_, values);
       panel_->setFolded(folded);
       panel_->onSizeChanged = [this] {
@@ -422,25 +464,25 @@ public:
         relayout();
       };
     }
-    panel_->setActive(d.active);
-    panel_->setTitle(d.name.empty() ? desc_.title : d.name);  // T4.17
+    panel_->setActive(active_);
+    panel_->setTitle(desc_.title);
     for (const devices::ParamInfo& p : sig_.params) panel_->setParamValue(p.name, paramValue(p.name));
     // The chain rows.
-    bool sameRows = list_->rows.size() == rack_->chains.size();
-    for (size_t i = 0; sameRows && i < rack_->chains.size(); ++i) sameRows = list_->rows[i]->chain() == rack_->chains[i]->id;
+    bool sameRows = list_->rows.size() == rack_.chains.size();
+    for (size_t i = 0; sameRows && i < rack_.chains.size(); ++i) sameRows = list_->rows[i]->chain() == rack_.chains[i].id;
     if (!sameRows) {
       for (ChainRow* r : list_->rows) (void)list_->removeChild(*r);
       list_->rows.clear();
-      for (const doc::ChainPtr& c : rack_->chains) list_->rows.push_back(&list_->add<ChainRow>(*this, impl_, *c));
+      for (const doc::RackChain& c : rack_.chains) list_->rows.push_back(&list_->add<ChainRow>(*this, impl_, c));
       list_->invalidateLayout();
       list_->markDirty();
     }
     // The chain shown: the one picked (view state), else the first.
     const auto it = impl_.shownChain.find(id_.value);
-    shown_ = it != impl_.shownChain.end() && rack_->findChain(it->second) != nullptr ? it->second
-             : rack_->chains.empty()                                                    ? doc::ChainId{}
-                                                                                         : rack_->chains.front()->id;
-    for (size_t i = 0; i < list_->rows.size(); ++i) list_->rows[i]->set(*rack_->chains[i], rack_->chains[i]->id == shown_);
+    shown_ = it != impl_.shownChain.end() && rack_.findChain(it->second) != nullptr ? it->second
+             : rack_.chains.empty()                                                   ? doc::ChainId{}
+                                                                                       : rack_.chains.front().id;
+    for (size_t i = 0; i < list_->rows.size(); ++i) list_->rows[i]->set(rack_.chains[i], rack_.chains[i].id == shown_);
     const bool rebuilt = syncInner();
     const bool shownBefore = list_->visible(), zonesBefore = zones_->visible();
     applyVisibility();
@@ -451,12 +493,16 @@ public:
       relayout();
   }
   void paramsChanged(const doc::Device& d, std::span<const doc::ParamRef>) override { update(d); }
+  // GU.9: the rack's blocks changed somewhere (any edit of its track): shows them again.
+  void refreshDerived() {
+    if (const doc::Device* d = doc::findDevice(impl_.doc(), id_).device) update(*d);
+  }
 
   // Shows another chain (view state: no document change).
   void showChain(doc::ChainId c) {
     impl_.shownChain[id_.value] = c;
     shown_ = c;
-    for (size_t i = 0; i < list_->rows.size(); ++i) list_->rows[i]->set(*rack_->chains[i], rack_->chains[i]->id == shown_);
+    for (size_t i = 0; i < list_->rows.size(); ++i) list_->rows[i]->set(rack_.chains[i], rack_.chains[i].id == shown_);
     syncInner();
     impl_.reindex();
     impl_.view.refreshRings();  // new panels: their rings and mapped values
@@ -468,8 +514,8 @@ public:
     const bool folded = panel_ != nullptr && panel_->folded();
     for (size_t i = 0; i < childCount(); ++i) child(i).setVisible(!folded || &child(i) == panel_);
     if (folded) return;
-    list_->setVisible(rack_->showChains);
-    zones_->setVisible(rack_->showChains && zoneTab().has_value());
+    list_->setVisible(showChains());
+    zones_->setVisible(showChains() && zoneTab().has_value());
   }
   void relayout() {
     invalidateLayout();
@@ -491,7 +537,7 @@ public:
       pass.place(*panel_, {x, r.y, w, std::min(r.h, pass.px(panel_->logicalHeight()))});
       x += w;
     }
-    if (rack_->showChains) {
+    if (showChains()) {
       pass.place(*list_, {x, r.y, pass.px(kListW), r.h});
       x += pass.px(kListW);
       if (zoneTab()) {
@@ -520,7 +566,7 @@ public:
     // The title band over the chain list and the shown chain (the macro panel draws its own title bar).
     const int32_t tb = ctx.scale.px(kTitleH);
     ctx.dl.addRectFilled(ui::IRect{r.x, r.y, r.w, tb}.toRect(), th->device.titleBar);
-    if (const doc::Chain* c = shownChainPtr(); c != nullptr && ctx.res.uiFonts && !(panel_ != nullptr && panel_->folded())) {
+    if (const doc::RackChain* c = shownChainPtr(); c != nullptr && ctx.res.uiFonts && !(panel_ != nullptr && panel_->folded())) {
       // The chain shown, named above its devices.
       const int32_t x0 = slot_->rect().x - (inner_.empty() ? 0 : (slot_->rect().x - inner_.front()->rect().x));
       const ui::IRect t{x0, r.y, std::max(0, slot_->rect().right() - x0), tb};
@@ -533,8 +579,8 @@ public:
     FrameBase::paintOver(ctx);
   }
   void automationChanged() override {  // T4.18: the chain rows' volume / pan
-    if (rack_ == nullptr || list_ == nullptr || list_->rows.size() != rack_->chains.size()) return;
-    for (size_t i = 0; i < list_->rows.size(); ++i) list_->rows[i]->set(*rack_->chains[i], rack_->chains[i]->id == shown_);
+    if (!built_ || list_ == nullptr || list_->rows.size() != rack_.chains.size()) return;
+    for (size_t i = 0; i < list_->rows.size(); ++i) list_->rows[i]->set(rack_.chains[i], rack_.chains[i].id == shown_);
   }
 
   bool inTitle(ui::Vec2 p) const override {
@@ -550,10 +596,10 @@ public:
   bool dropAt(ui::Vec2 p, DropTarget& out) override {
     if (panel_ != nullptr && panel_->folded()) return false;
     const float s = tree() ? tree()->scale() : 1.0f;
-    if (rack_->showChains && list_->rect().contains(p)) {
+    if (showChains() && list_->rect().contains(p)) {
       for (ChainRow* row : list_->rows)
         if (row->rect().contains(p)) {
-          const doc::Chain* c = rack_->findChain(row->chain());
+          const doc::RackChain* c = rack_.findChain(row->chain());
           out.kind = DropTarget::Kind::Chain;
           out.chain = row->chain();
           out.index = c != nullptr ? static_cast<uint32_t>(c->devices.size()) : doc::kAppend;
@@ -572,7 +618,7 @@ public:
       return false;
     }
     // The chain shown: the gap nearest the pointer.
-    const doc::Chain* c = shownChainPtr();
+    const doc::RackChain* c = shownChainPtr();
     const int32_t from = inner_.empty() ? slot_->rect().x : inner_.front()->rect().x;
     if (c == nullptr || p.x < static_cast<float>(from) - 4.0f * s || p.x > static_cast<float>(slot_->rect().right())) {
       if (c == nullptr && slot_->rect().contains(p)) {  // no chain yet: the slot makes one
@@ -593,7 +639,7 @@ public:
       }
     }
     // An Instrument Rack's chain keeps its instrument first.
-    if (instrument() && !c->devices.empty() && c->devices.front()->kind == doc::DeviceKind::Instrument &&
+    if (instrument() && !c->devices.empty() && (c->devices.front()->kind == doc::DeviceKind::Instrument || doc::isGroupDevice(*c->devices.front())) &&
         c->devices.front()->id != impl_.dragging)
       slot = std::max(slot, 1u);
     out.kind = DropTarget::Kind::Chain;
@@ -609,7 +655,7 @@ public:
 
   // The rack's own macro knobs (map mode picks them).
   ui::Widget* macroKnob(uint32_t k) const {
-    return panel_ != nullptr && !panel_->folded() ? panel_->controlFor(doc::macroParamName(k)) : nullptr;
+    return panel_ != nullptr && !panel_->folded() ? panel_->controlFor(macroParamName(k)) : nullptr;
   }
 
   // T4.16c: a right-click on a macro knob offers Rename Macro: a field over the knob's label, Enter commits (one undo
@@ -631,7 +677,7 @@ public:
     const ui::Widget* knob = macroKnob(k);
     if (knob == nullptr || macroRename_ != nullptr) return;
     renamingMacro_ = k;
-    macroRename_ = &add<ui::TextEdit>("macro-rename", doc::macroDisplayName(*rack_, k));
+    macroRename_ = &add<ui::TextEdit>("macro-rename", rack_.macroName(k));
     macroRenameDone_ = false;
     macroRename_->buffer().selectAll();
     macroRename_->onCommit = [this](const std::string&) { endMacroRename(true); };
@@ -660,24 +706,29 @@ private:
     const std::string text = macroRename_->text();
     requestFrame();  // removed at the next frame: this may run inside the field's own callback
     if (ui::UiTree* t = tree(); t != nullptr && t->focus() == macroRename_) t->setFocus(&impl_.view);
-    if (commit && !text.empty() && text != doc::macroDisplayName(*rack_, renamingMacro_))
-      impl_.run(doc::ops::renameMacro(impl_.doc(), id_, renamingMacro_, text), false);
+    if (commit && !text.empty() && text != rack_.macroName(renamingMacro_)) {
+      const auto r = doc::ops::renameMacro(impl_.doc(), id_, renamingMacro_, text);
+      if (!r) impl_.ctx().setStatus(r.error().message);  // an unmapped macro has no block to name
+      else impl_.run(r, false);
+    }
   }
 
   // The frames of the chain shown: rebuilt when its devices changed, else updated.
   bool syncInner() {
-    const doc::Chain* c = shownChainPtr();
-    static const std::vector<doc::DevicePtr> kNone;
+    const doc::RackChain* c = shownChainPtr();
     // M4 review M9: below kMaxNestedRackFrames nested racks, the chain's devices are not framed.
     const bool deep = nesting_ + 1 >= DeviceChainView::kMaxNestedRackFrames;
-    const std::vector<doc::DevicePtr>& devs = c != nullptr && !deep ? c->devices : kNone;
+    std::vector<doc::DevicePtr> devs;  // GU.9: the chain group's series (its devices, the snapshot's pointers)
+    if (c != nullptr && !deep)
+      if (const doc::Track* t = doc::findTrackPtr(impl_.doc(), track_))
+        for (const doc::Device* x : c->devices)
+          for (const doc::DevicePtr& p : t->devices)
+            if (p.get() == x) devs.push_back(p);
     bool same = devs.size() == innerShown_.size();
-    for (size_t i = 0; same && i < devs.size(); ++i)
-      same = devs[i]->id == innerShown_[i]->id && devs[i]->isRack() == innerShown_[i]->isRack() &&
-             inner_[i]->keeps(*devs[i]);
+    for (size_t i = 0; same && i < devs.size(); ++i) same = devs[i]->id == innerShown_[i]->id && inner_[i]->keeps(*devs[i]);
     if (same) {
       for (size_t i = 0; i < devs.size(); ++i)
-        if (devs[i] != innerShown_[i]) inner_[i]->update(*devs[i]);
+        if (devs[i] != innerShown_[i] || inner_[i]->derived()) inner_[i]->update(*devs[i]);
     } else {
       for (FrameBase* f : inner_) (void)removeChild(*f);
       inner_.clear();
@@ -696,8 +747,11 @@ private:
 
   RackTarget target_;
   uint32_t nesting_ = 0;  // racks around this one in the Device view (0: on the track's chain)
-  std::shared_ptr<const doc::Rack> rack_;
-  doc::DeviceKind kind_ = doc::DeviceKind::AudioEffect;
+  doc::TrackId track_;
+  doc::RackInfo rack_;
+  bool built_ = false;
+  std::array<std::string, doc::kMacroCount> macroNames_{};
+  bool showMacrosBuilt_ = true;
   bool active_ = true;
   std::vector<doc::DeviceValue> params_;
   devices::DeviceSignature sig_;
@@ -718,7 +772,7 @@ private:
 
 // ---- ChainRow ----------------------------------------------------------------------------------------------------
 
-ChainRow::ChainRow(RackFrame& rack, DeviceChainView::Impl& impl, const doc::Chain& c)
+ChainRow::ChainRow(RackFrame& rack, DeviceChainView::Impl& impl, const doc::RackChain& c)
     : Widget("chain[" + std::to_string(c.id.value) + "]"), rack_(rack), impl_(impl), chain_(c.id) {
   setLayout(ui::LayoutKind::Custom);
   on_ = &add<ui::Toggle>("on", "", ui::ToggleStyle::Activator, c.active);
@@ -798,24 +852,33 @@ void ChainRow::onFrame(double) {
   }
 }
 
-void ChainRow::set(const doc::Chain& c, bool shown) {
+void ChainRow::set(const doc::RackChain& c, bool shown) {
   if (name_ != c.name || shown_ != shown) markDirty();
-  name_ = c.name;
+  name_ = c.name.empty() ? std::string("Chain") : c.name;
+  // GU.9: a hand-wired parallel group has no chain mixer: its row shows no volume / pan.
+  vol_->setVisible(c.volumeBlock.valid());
+  pan_->setVisible(c.panBlock.valid());
   shown_ = shown;
   on_->setOn(c.active);
   solo_->setOn(c.solo);
   // T4.18: an automated volume / pan shows its envelope at the playhead (its own value once overridden by hand).
   double vol = c.volumeDb, pan = c.pan;
   uint8_t va = 0, pa = 0;
+  // GU.9: their lanes are the Volume / Pan value blocks' (knob positions, through the blocks' curves).
   if (const doc::Track* t = impl_.track()) {
     const Ticks tick = impl_.ctx().transport().playhead().tick;
     for (const doc::LanePtr& l : t->lanes) {
-      if (l->param.kind != doc::ParamKind::ChainMixer || l->param.owner != c.id.value || l->points.empty()) continue;
+      if (l->param.kind != doc::ParamKind::DeviceParam || l->points.empty()) continue;
+      const bool isVol = c.volumeBlock.valid() && l->param.owner == c.volumeBlock.value;
+      const bool isPan = c.panBlock.valid() && l->param.owner == c.panBlock.value;
+      if (!isVol && !isPan) continue;
       const bool over = impl_.ctx().automationOverridden(l->param);
-      const bool isVol = l->param.target == doc::kChainVolume;
       (isVol ? va : pa) = over ? 2 : 1;
-      if (!over)
-        (isVol ? vol : pan) = evalAutomation(std::span<const doc::Breakpoint>(l->points), static_cast<double>(tick), isVol ? vol : pan);
+      if (!over) {
+        const double pos = evalAutomation(std::span<const doc::Breakpoint>(l->points), static_cast<double>(tick), 0.0);
+        if (isVol) vol = dsp::evalCurveUnits(doc::chainVolumeCurve(), pos);
+        else pan = dsp::evalCurve(doc::chainPanCurve(), pos);
+      }
     }
   }
   if (va != volAuto_ || pa != panAuto_) markDirty();
@@ -872,25 +935,30 @@ void ChainRow::paint(ui::PaintContext& ctx) {
 bool ChainRow::onPointer(const ui::PointerEvent& e) {
   if (e.type != ui::PointerType::Down) return e.type == ui::PointerType::Up;
   if (e.button == ui::PointerButton::Right) {
-    const doc::ChainLoc loc = doc::findChain(impl_.doc(), chain_);
-    if (loc.chain == nullptr) return true;
+    const doc::RackChain* lc = rack_.rack().findChain(chain_);
+    if (lc == nullptr) return true;
     DeviceChainView::Impl* im = &impl_;
     const doc::ChainId c = chain_;
-    const doc::DeviceId rack = loc.rack->id;
+    const doc::DeviceId rack = rack_.id();
+    const int32_t index = rack_.rack().chainIndex(chain_);
+    const size_t count = rack_.rack().chains.size();
     std::vector<ui::MenuItem> items;
-    if (loc.track != nullptr) {  // T4.18: the chain's volume / pan lanes in the arrangement (on the rack's track)
+    if (lc->volumeBlock.valid()) {  // T4.18: the chain's volume / pan lanes (GU.9: its Mixer's value blocks)
       ViewContext* vc = &impl_.ctx();
-      const doc::TrackId t = loc.track->id;
-      items.push_back(ui::MenuItem::item("Show Volume Automation",
-                                         [vc, t, c] { vc->showAutomation(t, doc::ParamRef::chain(c, doc::kChainVolume)); }));
-      items.push_back(ui::MenuItem::item("Show Pan Automation",
-                                         [vc, t, c] { vc->showAutomation(t, doc::ParamRef::chain(c, doc::kChainPan)); }));
+      const doc::TrackId t = rack_.rack().track;
+      const doc::DeviceId vb = lc->volumeBlock, pb = lc->panBlock;
+      items.push_back(ui::MenuItem::item("Show Volume Automation", [vc, t, vb] {
+        vc->showAutomation(t, doc::ParamRef::device(vb, std::string(doc::kValueParam)));
+      }));
+      items.push_back(ui::MenuItem::item("Show Pan Automation", [vc, t, pb] {
+        vc->showAutomation(t, doc::ParamRef::device(pb, std::string(doc::kValueParam)));
+      }));
       items.push_back(ui::MenuItem::sep());
     }
-    items.push_back(ui::MenuItem::item(loc.chain->active ? "Deactivate Chain" : "Activate Chain",
-                                       [im, c, on = loc.chain->active] { im->run(doc::ops::setChainActive(im->doc(), c, !on), false); }));
-    items.push_back(ui::MenuItem::item(loc.chain->solo ? "Unsolo" : "Solo",
-                                       [im, c, s = loc.chain->solo] { im->run(doc::ops::setChainSolo(im->doc(), c, !s), false); }));
+    items.push_back(ui::MenuItem::item(lc->active ? "Deactivate Chain" : "Activate Chain",
+                                       [im, c, on = lc->active] { im->run(doc::ops::setChainActive(im->doc(), c, !on), false); }));
+    items.push_back(ui::MenuItem::item(lc->solo ? "Unsolo" : "Solo",
+                                       [im, c, s = lc->solo] { im->run(doc::ops::setChainSolo(im->doc(), c, !s), false); }));
     items.push_back(ui::MenuItem::item("Rename", [im, rack, c] {  // T4.16c (the row is looked up: it may be rebuilt)
       if (auto* f = dynamic_cast<RackFrame*>(im->frameOf(rack)))
         for (ChainRow* row : f->list().rows)
@@ -899,16 +967,21 @@ bool ChainRow::onPointer(const ui::PointerEvent& e) {
     items.push_back(ui::MenuItem::sep());
     items.push_back(ui::MenuItem::item("Duplicate Chain",
                                        [im, c] { im->run(doc::ops::duplicateChain(im->doc(), im->ctx().store().ids(), c), false); }));
-    items.push_back(ui::MenuItem::item("Delete Chain",
-                                       [im, c] { im->run(doc::ops::deleteChains(im->doc(), std::vector<doc::ChainId>{c}), false); }));
+    items.push_back(ui::MenuItem::item("Delete Chain", [im, c] {
+      im->run(doc::ops::deleteChains(im->doc(), im->ctx().store().ids(), std::vector<doc::ChainId>{c}), false);
+    }));
     items.push_back(ui::MenuItem::item("Add Chain",
                                        [im, rack] { im->run(doc::ops::addChain(im->doc(), im->ctx().store().ids(), rack), false); }));
     items.push_back(ui::MenuItem::sep());
-    const bool first = loc.index == 0, last = loc.index + 1 == loc.rack->rack->chains.size();
-    ui::MenuItem up = ui::MenuItem::item("Move Up", [im, c, i = loc.index] { im->run(doc::ops::moveChain(im->doc(), c, i - 1), false); });
+    const bool first = index == 0, last = static_cast<size_t>(index) + 1 == count;
+    ui::MenuItem up = ui::MenuItem::item("Move Up", [im, c, i = static_cast<uint32_t>(index)] {
+      im->run(doc::ops::moveChain(im->doc(), c, i - 1), false);
+    });
     up.enabled = !first;
     items.push_back(std::move(up));
-    ui::MenuItem down = ui::MenuItem::item("Move Down", [im, c, i = loc.index] { im->run(doc::ops::moveChain(im->doc(), c, i + 1), false); });
+    ui::MenuItem down = ui::MenuItem::item("Move Down", [im, c, i = static_cast<uint32_t>(index)] {
+      im->run(doc::ops::moveChain(im->doc(), c, i + 1), false);
+    });
     down.enabled = !last;
     items.push_back(std::move(down));
     ui::openContextMenu(*this, e.pos, std::move(items));
@@ -1018,7 +1091,7 @@ void ZoneEditor::paint(ui::PaintContext& ctx) {
                   "Selector " + valueText(rack_.selectorValue(), false), th->text.secondary, ui::TextAlign::Right);
   }
   const ui::Rgba zoneFill = ui::withAlpha(th->accent.primary, 110), solidFill = ui::withAlpha(th->accent.primary, 200);
-  const doc::Rack& rack = rack_.rack();
+  const doc::RackInfo& rack = rack_.rack();
   // M4 review M16: an axis along the bottom (ticks and values in the tab's unit) with faint lines up through the rows.
   const int32_t axisH = ctx.scale.px(kAxisH);
   const int32_t axisY = r.bottom() - axisH;
@@ -1047,7 +1120,7 @@ void ZoneEditor::paint(ui::PaintContext& ctx) {
     }
   }
   for (size_t i = 0; i < rack.chains.size(); ++i) {
-    const doc::Chain& c = *rack.chains[i];
+    const doc::RackChain& c = rack.chains[i];
     const int32_t y = r.y + tb + static_cast<int32_t>(i) * ctx.scale.px(kRowH);
     const int32_t h = ctx.scale.px(kRowH);
     if (y + h > axisY) break;
@@ -1101,7 +1174,7 @@ ZoneEditor::Grab ZoneEditor::grabAt(ui::Vec2 p, size_t* rowOut) const {
   const auto row = static_cast<size_t>((p.y - static_cast<float>(r.y + tb)) / static_cast<float>(rh));
   if (row >= rack_.rack().chains.size()) return Grab::None;
   if (rowOut != nullptr) *rowOut = row;
-  const doc::Zone& z = rack_.rack().chains[row]->zone(tab);
+  const doc::Zone& z = rack_.rack().chains[row].zone(tab);
   const float slop = 4.0f * s;
   const float yInRow = p.y - static_cast<float>(r.y + tb) - static_cast<float>(row) * static_cast<float>(rh);
   const bool upper = yInRow < 0.4f * static_cast<float>(rh);
@@ -1137,7 +1210,7 @@ std::string ZoneEditor::valueText(double v, bool hz) {
 }
 
 void ZoneEditor::setHoverRow(int32_t row) {
-  const doc::Rack& rack = rack_.rack();
+  const doc::RackInfo& rack = rack_.rack();
   if (row >= static_cast<int32_t>(rack.chains.size())) row = -1;
   if (row == hoverRow_) return;
   hoverRow_ = row;
@@ -1147,7 +1220,7 @@ void ZoneEditor::setHoverRow(int32_t row) {
     const doc::ZoneKind tab = rack_.zoneTab().value_or(doc::ZoneKind::Select);
     const bool hz = axisOf(tab, rack.keyUnit).log;
     const char* unit = tab == doc::ZoneKind::Key ? (hz ? " Hz" : " degrees") : "";
-    const doc::Chain& c = *rack.chains[static_cast<size_t>(row)];
+    const doc::RackChain& c = rack.chains[static_cast<size_t>(row)];
     const doc::Zone& z = c.zone(tab);
     hoverTitle_ = (c.name.empty() ? std::string("Chain") : c.name) + ": " + valueText(z.lo, hz) + " \xE2\x80\x93 " +
                   valueText(z.hi, hz) + unit;
@@ -1182,7 +1255,7 @@ bool ZoneEditor::onPointer(const ui::PointerEvent& e) {
       return true;
     }
     if (g == Grab::Unit) {
-      impl_.run(doc::ops::setKeyZoneUnit(impl_.doc(), rack_.id(), rack_.rack().keyUnit == doc::KeyZoneUnit::Hz
+      impl_.run(doc::ops::setKeyZoneUnit(impl_.doc(), impl_.ctx().store().ids(), rack_.id(), rack_.rack().keyUnit == doc::KeyZoneUnit::Hz
                                                                         ? doc::KeyZoneUnit::Degree
                                                                         : doc::KeyZoneUnit::Hz),
                 false);
@@ -1191,12 +1264,13 @@ bool ZoneEditor::onPointer(const ui::PointerEvent& e) {
     if (g == Grab::Selector) {
       grab_ = Grab::Selector;
       (void)store.beginGesture("Device Parameter");
-      impl_.live(doc::ops::setDeviceParam(impl_.doc(), rack_.id(), std::string(doc::kSelectParam), std::round(toValue(e.pos.x))));
+      impl_.live(doc::ops::setSelectorValue(impl_.doc(), rack_.id(), std::round(toValue(e.pos.x))));
+      if (!rack_.rack().selector.valid()) impl_.ctx().setStatus("Chain selector: give a chain a chain zone first (drag its bar)");
       return true;
     }
     grab_ = g;
     if (grab_ == Grab::None) return true;
-    const doc::Chain& c = *rack_.rack().chains[row];
+    const doc::RackChain& c = rack_.rack().chains[row];
     const doc::Zone& z = c.zone(tab);
     chain_ = c.id;
     start_ = z;
@@ -1207,7 +1281,7 @@ bool ZoneEditor::onPointer(const ui::PointerEvent& e) {
   if (e.type == ui::PointerType::Move && grab_ != Grab::None) {
     const double v = toValue(e.pos.x);
     if (grab_ == Grab::Selector) {
-      impl_.live(doc::ops::setDeviceParam(impl_.doc(), rack_.id(), std::string(doc::kSelectParam), std::round(v)));
+      impl_.live(doc::ops::setSelectorValue(impl_.doc(), rack_.id(), std::round(v)));
       return true;
     }
     const doc::ZoneRange range = doc::zoneRange(tab, rack_.rack().keyUnit);
@@ -1243,7 +1317,8 @@ bool ZoneEditor::onPointer(const ui::PointerEvent& e) {
       }
       default: break;
     }
-    if (doc::zoneValid(z, tab, rack_.rack().keyUnit)) impl_.live(doc::ops::setChainZone(impl_.doc(), chain_, tab, z));
+    if (doc::zoneValid(z, tab, rack_.rack().keyUnit))
+      impl_.live(doc::ops::setChainZone(impl_.doc(), impl_.ctx().store().ids(), chain_, tab, z));
     return true;
   }
   if (e.type == ui::PointerType::Up && grab_ != Grab::None) {
@@ -1275,8 +1350,8 @@ bool ChainSlot::onPointer(const ui::PointerEvent& e) {
   if (e.type != ui::PointerType::Up || e.button != ui::PointerButton::Left || !rect().contains(e.pos))
     return e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left;
   const ui::Vec2 at{static_cast<float>(rect().x), static_cast<float>(rect().bottom())};
-  if (const doc::Chain* c = rack_.shownChainPtr()) {
-    ui::openContextMenu(*this, at, impl_.deviceMenu({}, c->id, doc::kAppend, rack_.instrument()));
+  if (const doc::RackChain* c = rack_.shownChainPtr()) {
+    ui::openContextMenu(*this, at, impl_.deviceMenu(rack_.rack().track, c->id, doc::kAppend, rack_.instrument()));
     return true;
   }
   // No chain yet: a device picked makes the first chain with it.
@@ -1313,9 +1388,9 @@ void RackStrip::paint(ui::PaintContext& ctx) {
   const ui::IRect r = rect();
   ctx.dl.addRectFilled(r.toRect(), th->device.titleBar);
   if (!ctx.res.uiFonts) return;
-  const doc::Rack& rk = rack_.rack();
-  const bool on[kButtons] = {rk.showMacros, rk.showChains, rack_.zoneTab().has_value(), impl_.mapRack == rack_.id(), false,
-                             !rk.variations.empty()};
+  const doc::RackInfo& rk = rack_.rack();
+  const bool on[kButtons] = {rack_.showMacros(), rack_.showChains(), rack_.zoneTab().has_value(), impl_.mapRack == rack_.id(),
+                             false, rk.variations > 0};
   const char* text[kButtons] = {"M", "C", "Z", "Map", "Rnd", "Var"};
   for (uint32_t b = 0; b < kButtons; ++b) {
     const ui::IRect br = buttonRect(b);
@@ -1326,13 +1401,21 @@ void RackStrip::paint(ui::PaintContext& ctx) {
 
 bool RackStrip::onPointer(const ui::PointerEvent& e) {
   if (e.type != ui::PointerType::Down || e.button != ui::PointerButton::Left) return e.type == ui::PointerType::Up;
-  const doc::Rack& rk = rack_.rack();
+  const doc::RackInfo& rk = rack_.rack();
   const doc::DeviceId id = rack_.id();
   for (uint32_t b = 0; b < kButtons; ++b) {
     if (!buttonRect(b).contains(e.pos)) continue;
-    switch (b) {
-      case kMacros: impl_.run(doc::ops::setRackShow(impl_.doc(), id, rk.showChains, !rk.showMacros), false); break;
-      case kChains: impl_.run(doc::ops::setRackShow(impl_.doc(), id, !rk.showChains, rk.showMacros), false); break;
+    switch (b) {  // GU.9: what the frame shows is view state (a rack has no options of its own)
+      case kMacros:
+        impl_.rackShowMacros[id.value] = !rack_.showMacros();
+        rack_.refreshDerived();
+        rack_.relayout();
+        break;
+      case kChains:
+        impl_.rackShowChains[id.value] = !rack_.showChains();
+        rack_.refreshDerived();
+        rack_.relayout();
+        break;
       case kZones:
         impl_.view.showZones(id, rack_.zoneTab() ? std::nullopt
                                                  : std::optional<doc::ZoneKind>(rack_.instrument() ? doc::ZoneKind::Key
@@ -1344,12 +1427,12 @@ bool RackStrip::onPointer(const ui::PointerEvent& e) {
         DeviceChainView::Impl* im = &impl_;
         std::vector<ui::MenuItem> items;
         items.push_back(ui::MenuItem::item("Store Variation", [im, id] { im->run(doc::ops::storeVariation(im->doc(), id), false); }));
-        if (!rk.variations.empty()) items.push_back(ui::MenuItem::sep());
-        for (uint32_t i = 0; i < rk.variations.size(); ++i) {
-          const std::string& n = rk.variations[i].name;
+        if (rk.variations > 0) items.push_back(ui::MenuItem::sep());
+        for (uint32_t i = 0; i < rk.variations; ++i) {
+          const std::string n = "Variation " + std::to_string(i + 1);
           items.push_back(ui::MenuItem::item("Recall " + n, [im, id, i] { im->run(doc::ops::recallVariation(im->doc(), id, i), false); }));
           items.push_back(ui::MenuItem::sub("   " + n, {ui::MenuItem::item("Overwrite", [im, id, i] {
-                                                          im->run(doc::ops::storeVariation(im->doc(), id, {}, i), false);
+                                                          im->run(doc::ops::storeVariation(im->doc(), id, i), false);
                                                         }),
                                                         ui::MenuItem::item("Delete", [im, id, i] {
                                                           im->run(doc::ops::deleteVariation(im->doc(), id, i), false);
@@ -1357,19 +1440,25 @@ bool RackStrip::onPointer(const ui::PointerEvent& e) {
         }
         items.push_back(ui::MenuItem::sep());
         std::vector<ui::MenuItem> excl;
-        for (uint32_t k = 0; k < rk.visibleMacros; ++k) {
-          const bool x = ((rk.randomizeExclude >> k) & 1u) != 0;
-          ui::MenuItem it = ui::MenuItem::item(doc::macroDisplayName(rk, k), [im, id, k, x] {
+        for (uint32_t k = 0; k < rack_.visibleMacros(); ++k) {
+          const bool x = rk.macros[k].excluded;
+          ui::MenuItem it = ui::MenuItem::item(rk.macroName(k), [im, id, k, x] {
             im->run(doc::ops::setMacroExcluded(im->doc(), id, k, !x), false);
           });
           it.checked = x;
+          it.enabled = rk.macros[k].block.valid();
           excl.push_back(std::move(it));
         }
         items.push_back(ui::MenuItem::sub("Exclude from Rand", std::move(excl)));
         std::vector<ui::MenuItem> count;
         for (uint32_t n : {1u, 2u, 4u, 8u, 12u, 16u}) {
-          ui::MenuItem it = ui::MenuItem::item(std::to_string(n), [im, id, n] { im->run(doc::ops::setVisibleMacros(im->doc(), id, n), false); });
-          it.checked = rk.visibleMacros == n;
+          RackFrame* rf = &rack_;
+          ui::MenuItem it = ui::MenuItem::item(std::to_string(n), [im, id, n, rf] {
+            im->rackVisibleMacros[id.value] = n;
+            rf->refreshDerived();
+            rf->relayout();
+          });
+          it.checked = rack_.visibleMacros() == n;
           count.push_back(std::move(it));
         }
         items.push_back(ui::MenuItem::sub("Macros Shown", std::move(count)));
@@ -1409,12 +1498,12 @@ public:
   template <class F>
   void forEachTarget(F&& f) const {
     if (impl_.frameOf(impl_.mapRack) == nullptr) return;
-    const doc::DeviceLoc rl = doc::findDevice(impl_.doc(), impl_.mapRack);
-    if (rl.device == nullptr || !rl.device->rack) return;
+    const std::optional<doc::RackInfo>& rk = mapInfo();
+    if (!rk) return;
     for (const auto& [id, fr] : impl_.all) {
       const doc::DeviceId dev{id};
       const bool self = dev == impl_.mapRack;
-      if (!self && !doc::deviceContains(*rl.device, dev)) continue;
+      if (!self && !rk->holds(impl_.doc(), dev)) continue;
       const devices::DevicePanel* panel = fr->panel();
       if (panel == nullptr || panel->folded()) continue;
       for (const devices::ParamInfo& p : panel->signature().params) {
@@ -1423,9 +1512,10 @@ public:
         if (!cr || cr->empty()) continue;
         Target t{dev, p.name, *cr, -1};
         if (self) {
-          const std::optional<uint32_t> m = doc::macroIndex(p.name);
+          const std::optional<uint32_t> m = macroIndex(p.name);
           if (m) t.macro = static_cast<int32_t>(*m);
-          else if (p.name != doc::kSelectParam) continue;
+          else if (p.name != kSelectParam || !rk->selector.valid()) continue;
+          else t.device = rk->selector, t.param = doc::kValueParam;  // the selector's knob maps its value block
         }
         if (f(t)) return;
       }
@@ -1461,9 +1551,12 @@ public:
                  picked || t.rect == hover_ ? th.accent.focus : ui::withAlpha(th.circuit.wireBool, 200));
       return;
     }
-    const doc::MappingLoc m = doc::mappingOf(impl_.doc(), t.device, t.param);
-    const bool ours = m.mapping != nullptr && m.rack->id == impl_.mapRack;
-    const bool byPicked = ours && static_cast<int32_t>(m.mapping->macro) == impl_.mapMacro;
+    const doc::RackMapping* m = nullptr;
+    if (const std::optional<doc::RackInfo>& rk = mapInfo())
+      for (const doc::RackMapping& x : rk->mappings)
+        if (x.device == t.device && x.param == t.param) m = &x;
+    const bool ours = m != nullptr;
+    const bool byPicked = ours && static_cast<int32_t>(m->macro) == impl_.mapMacro;
     const bool hot = t.rect == hover_;
     paint::box(ctx.dl, t.rect, 0.0f, ui::withAlpha(th.circuit.wireBool, byPicked ? 140 : ours ? 80 : hot ? 70 : 35),
                hot ? th.accent.focus : ui::withAlpha(th.circuit.wireBool, 200));
@@ -1520,8 +1613,20 @@ public:
   }
 
 private:
+  // The rack in map mode, derived once per document snapshot (a pointer move asks every target).
+  const std::optional<doc::RackInfo>& mapInfo() const {
+    if (infoFrom_ != impl_.ctx().doc() || infoRack_ != impl_.mapRack) {
+      infoFrom_ = impl_.ctx().doc();
+      infoRack_ = impl_.mapRack;
+      info_ = doc::rackOf(impl_.doc(), impl_.mapRack);
+    }
+    return info_;
+  }
   DeviceChainView::Impl& impl_;
   ui::IRect hover_{};  // the target under the pointer (device px)
+  mutable doc::Snapshot infoFrom_;
+  mutable doc::DeviceId infoRack_;
+  mutable std::optional<doc::RackInfo> info_;
 };
 
 }  // namespace
@@ -1532,6 +1637,38 @@ std::unique_ptr<FrameBase> device_chain::makeRackFrame(DeviceChainView::Impl& im
 
 std::unique_ptr<ui::Widget> device_chain::makeMapOverlay(DeviceChainView::Impl& impl) {
   return std::make_unique<MapOverlay>(impl);
+}
+
+device_chain::ChainPlace device_chain::chainPlaceOf(const doc::Project& p, doc::DeviceId device) {
+  ChainPlace out;
+  const doc::DeviceLoc l = doc::findDevice(p, device);
+  if (l.device == nullptr || l.track == nullptr || !l.device->group.valid()) return out;
+  out.rack = doc::rackOfChain(p, *l.track, l.device->group);
+  if (!out.rack) return out;
+  const doc::RackChain* c = out.rack->findChain(l.device->group);
+  out.chain = c->id;
+  for (const doc::Device* x : c->devices)
+    for (const doc::DevicePtr& d : l.track->devices)
+      if (d.get() == x) {
+        if (x->id == device) out.index = static_cast<int32_t>(out.list.size());
+        out.list.push_back(d);
+      }
+  return out;
+}
+
+std::optional<std::pair<doc::RackInfo, doc::RackMapping>> device_chain::macroMappingOf(const doc::Project& p,
+                                                                                         doc::DeviceId device,
+                                                                                         std::string_view param) {
+  for (const doc::Wire& w : doc::wiresOf(p)) {
+    if (w.toMixer() || w.to != device || w.param != param || !w.travels() || w.fromNoteSource()) continue;
+    const doc::Device* m = doc::findDevice(p, w.from).device;
+    if (m == nullptr || !doc::isValueDevice(*m) || m->setting(doc::kMacroSetting) == nullptr) continue;
+    std::optional<doc::RackInfo> r = doc::rackOf(p, w.from);
+    if (!r) continue;
+    for (const doc::RackMapping& x : r->mappings)
+      if (x.wire == w.id) return std::make_pair(std::move(*r), x);
+  }
+  return std::nullopt;
 }
 
 void DeviceChainView::Impl::setMapMode(doc::DeviceId rack) {
@@ -1579,17 +1716,18 @@ bool DeviceChainView::mapPicked(doc::DeviceId device, std::string_view param) {
     return false;
   }
   const doc::Project& p = *ctx_.doc();
-  const doc::MappingLoc cur = doc::mappingOf(p, device, param);
+  const std::optional<doc::RackInfo> rk = doc::rackOf(p, m.mapRack);
+  if (!rk) return false;
+  const doc::RackMapping* cur = nullptr;
+  for (const doc::RackMapping& x : rk->mappings)
+    if (x.device == device && x.param == param) cur = &x;
   bool r = false;
-  if (cur.mapping != nullptr && cur.rack->id == m.mapRack && cur.mapping->macro == m.mapMacro) {
-    r = m.run(doc::ops::unmapParam(p, device, param), false);  // a second click unmaps
+  if (cur != nullptr && static_cast<int32_t>(cur->macro) == m.mapMacro) {
+    r = m.run(doc::ops::unmapMacro(p, cur->wire), false);  // a second click unmaps
   } else {
     // A macro's first mapping takes over the param's position (Live).
     std::optional<double> macroValue;
-    const doc::DeviceLoc rl = doc::findDevice(p, m.mapRack);
-    bool hasMappings = false;
-    if (rl.device != nullptr && rl.device->rack)
-      for (const doc::MacroMapping& mm : rl.device->rack->mappings) hasMappings = hasMappings || mm.macro == m.mapMacro;
+    const bool hasMappings = rk->macros[static_cast<size_t>(m.mapMacro)].block.valid();
     if (!hasMappings)
       if (devices::DevicePanel* panel = panelOf(device))
         if (const devices::ParamInfo* info = panel->signature().findParam(param))
@@ -1617,117 +1755,6 @@ std::optional<doc::ZoneKind> DeviceChainView::zonesShown(doc::DeviceId rack) con
   const auto it = impl_->zoneTab.find(rack.value);
   if (it == impl_->zoneTab.end() || it->second == Impl::kZonesHidden) return std::nullopt;
   return static_cast<doc::ZoneKind>(it->second);
-}
-
-namespace {
-
-// A read-only document of a rack's lowered subcircuit (Q?-T4.8-a): the patch (its text is the printed IR), with the
-// device files it calls as imports so a double-click opens them.
-Result<std::shared_ptr<circuit::PatchDocument>> rackDocument(const doc::Project& project, const doc::DeviceLibrary& lib,
-                                                            doc::DeviceId rack) {
-  Result<graph::Patch> sub = doc::rackSubcircuit(project, rack, lib.library(), &lib);
-  if (!sub) return std::move(sub).error();
-  auto d = std::make_shared<circuit::PatchDocument>();
-  d->path = sub->name() + ".pqp";
-  d->source = graph::print(*sub);
-  std::vector<std::string> files;
-  for (graph::NodeIndex n = 0; n < sub->nodeCount(); ++n) {
-    if (sub->node(n).kind != graph::NodeKind::Subcircuit) continue;
-    const std::string f = lib.pathOf(sub->subcircuit(n).patch);
-    if (!f.empty() && std::find(files.begin(), files.end(), f) == files.end()) files.push_back(f);
-  }
-  d->parsed.file.patches.push_back(std::move(*sub));
-  d->parsed.lowered = true;
-  // T4.4-fix1: a user device inside the rack calls its own renamed patches: they come from its resolution (printed
-  // as the project plays them), with the stock file's imports for what they call.
-  if (const doc::Device* rd = doc::findDevice(project, rack).device) {
-    doc::forEachDeviceIn(*rd, [&](const doc::Device& x) {
-      if (!x.source) return;
-      const auto r = lib.resolve(x);
-      if (!r || !r->graph) return;
-      auto u = std::make_shared<circuit::PatchDocument>();
-      u->path = lib.pathOf(x.patch);
-      for (const graph::Patch& pp : r->graph->file.patches) u->source += graph::print(pp);
-      u->parsed.file = r->graph->file;
-      u->parsed.lowered = true;
-      if (!u->path.empty())
-        if (auto stock = circuit::loadPatchDocument(u->path)) u->imports = (*stock)->imports;
-      d->imports.push_back(std::move(u));
-    });
-  }
-  for (const std::string& f : files)
-    if (auto imp = circuit::loadPatchDocument(f)) d->imports.push_back(std::move(*imp));
-  return d;
-}
-
-// Keeps an open rack viewer in step with the document (a hidden child of the viewer: it lives as long as the viewer).
-// A structural or meta edit that changes the rack's subcircuit rebuilds it (rack -> circuit view in sync); param-only
-// edits (macro turns, mixer and zone drags) change runtime values, not the drawn structure, and cost nothing here.
-// The rack removed: the viewer closes.
-class RackViewerSync final : public ui::Widget {
-public:
-  RackViewerSync(circuit::CircuitViewer& viewer, ViewContext& ctx, doc::DeviceId rack)
-      : Widget("rack-sync"), viewer_(viewer), ctx_(ctx), rack_(rack) {
-    setVisible(false);
-    sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onStore(e); });
-  }
-
-private:
-  void onStore(const doc::StoreEvent& e) {
-    const doc::DeviceLoc now = doc::findDevice(*e.after, rack_);
-    if (now.device == nullptr || !now.device->rack) {
-      // Closed on the next timer tick, not here: the edit may come from an event the viewer is dispatching.
-      if (!closeTimer_) {
-        ctx_.setStatus("The rack was removed: its circuit view closed.");
-        closeTimer_ = requestTimer(0.0);
-      }
-      return;
-    }
-    if (!e.changes.has(doc::kChangeStructural) && !e.changes.has(doc::kChangeMeta)) return;
-    const doc::DeviceLoc was = doc::findDevice(*e.before, rack_);
-    if (was.device == now.device) return;  // the rack and everything in it unchanged
-    const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-    if (lib == nullptr) return;
-    auto d = rackDocument(*e.after, *lib, rack_);
-    if (!d) return;
-    const auto& oldPatches = viewer_.document().parsed.file.patches;
-    if (!oldPatches.empty() && oldPatches.front() == (*d)->parsed.file.patches.front() &&
-        viewer_.document().imports.size() == (*d)->imports.size())
-      return;  // the same subcircuit (an edit that does not change what the rack plays)
-    (void)viewer_.replaceDocument(std::move(*d));
-  }
-
-  void onTimer(uint32_t id) override {
-    if (id != closeTimer_) return;
-    closeTimer_ = 0;
-    if (ui::OverlayLayer* layer = ui::OverlayLayer::of(viewer_)) layer->close(viewer_);  // destroys this
-  }
-
-  circuit::CircuitViewer& viewer_;
-  ViewContext& ctx_;
-  doc::DeviceId rack_;
-  uint32_t closeTimer_ = 0;
-  ViewContext::Subscription sub_;
-};
-
-}  // namespace
-
-bool DeviceChainView::openRackCircuit(doc::DeviceId rack) {
-  const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-  if (lib == nullptr) return false;
-  auto d = rackDocument(*ctx_.doc(), *lib, rack);
-  if (!d) {
-    ctx_.setStatus(d.error().message);
-    return false;
-  }
-  const std::string name = (*d)->parsed.file.patches.front().name();
-  circuit::CircuitViewer* v = circuit::openCircuitViewer(*this, std::move(*d), name);
-  if (v == nullptr) {
-    ctx_.setStatus("The rack cannot be shown");
-    return false;
-  }
-  v->add<RackViewerSync>(*v, ctx_, rack);
-  return true;
 }
 
 }  // namespace pq::views

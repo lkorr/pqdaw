@@ -123,13 +123,13 @@ TEST_CASE("wire laws: a new wire adds in units and has no amount; a Travel wire 
   for (const ModulationTap& tap : l.taps) CHECK(tap.domain == ModulationTap::Domain::Position);
 }
 
-TEST_CASE("wire laws: any output into any param or input; a migrated Travel wire keeps T4.7's ends") {
+TEST_CASE("wire laws: any output into any param or input; a Travel wire goes into params only") {
   Doc d;
   const DeviceId util = d.add("utility");
   // An effect's main output (an `out`, not an export) into a param and into another device's audio input.
   const WireId outToParam = d.run(ops::connectWire(d.doc(), d.store.ids(), d.eq, "out", util, "balance"));
   const WireId outToInput = d.run(ops::connectWire(d.doc(), d.store.ids(), d.inst, "out", util, "x"));
-  // A Travel wire (a migrated one) from an `out`, or into an input, does not play: T4.7 took exports into params only.
+  // A Travel wire into an input does not play; GU.9: from an `out` into a param it does (a rack macro's mapping).
   const WireId oldOut = d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.eq, "out", util, "width", 0.5));
   const WireId oldIn = d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.lfo, "lfo", util, "x", 0.5));
   // A bool output (an instrument's `done`) is not a signal; a const input (a setting) is not a target.
@@ -138,7 +138,7 @@ TEST_CASE("wire laws: any output into any param or input; a migrated Travel wire
   const LoweredProject l = lowerDoc(d.doc());
   CHECK(statusOf(l, outToParam) == WireStatus::Lowered);
   CHECK(statusOf(l, outToInput) == WireStatus::Lowered);
-  CHECK(statusOf(l, oldOut) == WireStatus::Invalid);
+  CHECK(statusOf(l, oldOut) == WireStatus::Lowered);
   CHECK(statusOf(l, oldIn) == WireStatus::Invalid);
   CHECK(statusOf(l, done) == WireStatus::Invalid);
   CHECK(statusOf(l, setting) == WireStatus::Invalid);

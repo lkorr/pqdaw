@@ -171,7 +171,7 @@ doc::Binding ProjectPatchView::controlAt(Vec2 pos) const {
     if (t.kind == NodeKind::Device && pin.port < t.inputs.size() && t.inputs[pin.port].param) {
       std::string param = t.inputs[pin.port].name;
       doc::DeviceId to = t.device;
-      if (const size_t at = param.rfind('@'); at != std::string::npos && (t.rack || t.group)) {
+      if (const size_t at = param.rfind('@'); at != std::string::npos && t.group) {
         to = doc::DeviceId{static_cast<uint32_t>(std::stoul(param.substr(at + 1)))};
         param.resize(at);
       }
@@ -192,7 +192,7 @@ std::vector<doc::Binding> ProjectPatchView::controlsOf(doc::DeviceId device) con
   const doc::Snapshot& snap = ctx_.doc();
   const doc::Device* d = snap ? doc::findDevice(*snap, device).device : nullptr;
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-  if (d == nullptr || lib == nullptr || d->rack) return out;
+  if (d == nullptr || lib == nullptr) return out;
   if (doc::isGroupDevice(*d)) {  // GU.6: a group left whole is its panel (embedded on its parent's); none: nothing
     if (d->hasPanel()) out.push_back(doc::panelBinding(device));
     return out;

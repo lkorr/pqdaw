@@ -269,35 +269,6 @@ TEST_CASE("GU.4 modules: conversion — wires into pm / phase, a lane on the kno
   CHECK(src->curve(kValueParam)->segments == 1);  // 20 … 20000: one pure exponential
   CHECK(dsp::evalCurve(*src->curve(kValueParam), 0.0) == doctest::Approx(20.0));
   CHECK(dsp::evalCurve(*src->curve(kValueParam), 1.0) == doctest::Approx(20000.0));
-  // A macro: a module can only be mapped from inside a rack, and a module (a group) never sits in a rack chain — such
-  // a file is refused, saying why.
-  Project p = *loadCase("vca_law");
-  {
-    IdSource ids;
-    ids.reserveThrough(maxEntityId(p));
-    auto vca = std::make_shared<Device>(*makeDevice(ids.device(), "meta:vca", DeviceKind::AudioEffect));
-    vca->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", MetaInstance{"vca", 1, {}, {}, nullptr}}});
-    auto chain = std::make_shared<Chain>();
-    chain->id = ids.chain();
-    chain->devices = {vca};
-    auto rack = std::make_shared<Rack>();
-    rack->chains = {chain};
-    MacroMapping m;
-    m.id = ids.mapping();
-    m.macro = 0;
-    m.device = vca->id;
-    m.param = "value";
-    rack->mappings = {m};
-    auto r = std::make_shared<Device>(*makeDevice(ids.device(), std::string(kAudioEffectRack), DeviceKind::AudioEffect));
-    r->rack = rack;
-    auto t = std::make_shared<Track>(*p.tracks.front());
-    t->devices.push_back(r);
-    p.tracks.front() = t;
-  }
-  CHECK(holdsRetiredModules(p));
-  const Status st = convertRetiredModules(p);
-  REQUIRE_FALSE(st.ok());
-  CHECK(st.error().message.find("rack chain") != std::string::npos);
 }
 
 TEST_CASE("GU.4 modules: a preset of a retired module loads as its group preset; the built-in presets are valid") {

@@ -33,11 +33,13 @@ std::string_view catalogPatchOf(std::string_view path) noexcept;
 enum class LibraryItem : uint8_t { None, CatalogDevice, Preset, UserDevice, Tuning, Clip };
 LibraryItem libraryItemOf(std::string_view path) noexcept;
 
-// Where a device goes: a track's chain at `index` (doc::kAppend: the end), or a rack chain (`chain` valid).
+// Where a device goes: a track's main path at `index` (doc::kAppend: the end).
 struct DeviceSlot {
   doc::TrackId track;
   uint32_t index = doc::kAppend;
-  doc::ChainId chain;
+  // GU.9: valid: into this rack chain (a chain group) at `index` among its devices (added off the path, then moved in:
+  // one undo step).
+  doc::DeviceId chain;
 };
 
 // The device's display name: the catalog's ("EQ Eight"), a rack's ("Audio Effect Rack"), else its patch.
@@ -64,7 +66,7 @@ Result<doc::BlockSet> libraryBlocksOf(std::string_view path);
 // Hot-swap: the preset (or user device) at `path` replaces `target` in place (doc::ops::replaceDevice; wires and macro
 // mappings onto params the new device still has are kept).
 Status hotSwapDevice(ViewContext& ctx, doc::DeviceId target, std::string_view path);
-// The params a device would have (the catalog's, a user device's resolved patch, a rack's macros and selector).
+// The params a device would have (the catalog's, a user device's resolved patch).
 std::vector<std::string> deviceParamNames(const ViewContext& ctx, const doc::Device& d);
 
 // A tuning file (.pqtuning, or a Scala .scl at `referenceHz`) as a library tuning (name = the file's stem for .scl).

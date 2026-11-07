@@ -138,7 +138,7 @@ std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId
     items.push_back(std::move(head));
     for (const meta::Type* t : metaModuleTypes()) {
       const std::string patch = std::string(doc::kMetaDevicePrefix) + std::string(t->id);
-      auto kind = doc::ops::metaDeviceKindAt(doc(), *t, trackId, index, chain);
+      auto kind = doc::ops::metaDeviceKindAt(doc(), *t, trackId, index);
       ui::MenuItem it = ui::MenuItem::item("   " + std::string(t->name), [add, patch, k = kind ? *kind : doc::DeviceKind::Instrument] {
         add(patch, k);
       });
@@ -198,11 +198,19 @@ void DeviceChainView::Impl::moveDrag(const ui::PointerEvent& e) {
   if (d.kind == DropTarget::Kind::Chain || d.kind == DropTarget::Kind::NewChain) {
     const doc::Project& p = doc();
     const doc::DeviceLoc moving = doc::findDevice(p, dragging);
-    const doc::Device* into = d.kind == DropTarget::Kind::NewChain ? doc::findDevice(p, d.rack).device : doc::findChain(p, d.chain).rack;
-    if (moving.device != nullptr && into != nullptr) {
-      if (into == moving.device || doc::deviceContains(*moving.device, into->id)) d.refused = "A rack cannot go inside itself";
-      else if (moving.device->kind == doc::DeviceKind::Instrument && !doc::isMetaDevice(*moving.device) &&
-               into->kind != doc::DeviceKind::Instrument)
+    // GU.9: the target rack (derived: a set of parallel groups); a rack being dragged is all of its chains.
+    const std::optional<doc::RackInfo> into = doc::rackOf(p, d.kind == DropTarget::Kind::NewChain ? d.rack : d.chain);
+    if (moving.device != nullptr && into) {
+      const std::optional<doc::RackInfo> self = moving.track != nullptr ? doc::rackOfChain(p, *moving.track, dragging) : std::nullopt;
+      bool inside = false;
+      if (self)
+        for (const doc::RackChain& c : self->chains)
+          inside = inside || into->findChain(c.id) != nullptr || into->holds(p, c.id) ||
+                   (moving.track != nullptr && groupContains(moving.track->devices, c.id, into->chains.front().id));
+      else
+        inside = moving.track != nullptr && groupContains(moving.track->devices, dragging, into->chains.front().id);
+      if (inside) d.refused = "A rack cannot go inside itself";
+      else if (moving.device->kind == doc::DeviceKind::Instrument && !doc::isMetaDevice(*moving.device) && !into->instrument)
         d.refused = "An instrument goes into an Instrument Rack, not an Audio Effect Rack";
     }
   }
@@ -270,9 +278,12 @@ void DeviceChainView::Impl::endDrag(bool commit) {
     }
     case DropTarget::Kind::Chain: {
       uint32_t to = d.index;
-      if (loc.chain != nullptr && loc.chain->id == d.chain && d.index > loc.index) --to;
+      const ChainPlace at = chainPlaceOf(doc(), id);
+      if (at.chain == d.chain && at.index >= 0 && d.index > static_cast<uint32_t>(at.index)) --to;
+      const std::optional<doc::RackInfo> rk = doc::rackOf(doc(), d.chain);
       run(doc::ops::moveIntoChain(doc(), view.ctx_.store().ids(), id, to, d.chain));  // TX.all-free: off the path first
-      shownChain[doc::findChain(doc(), d.chain).rack != nullptr ? doc::findChain(doc(), d.chain).rack->id.value : 0] = d.chain;
+      if (rk)  // the rack's frame (its chain on the path) shows the chain it went into
+        for (const doc::RackChain& c : rk->chains) shownChain[c.id.value] = d.chain;
       break;
     }
     case DropTarget::Kind::NewChain:
@@ -298,16 +309,15 @@ public:
   }
   void setParam(std::string_view param, double value) override {
     // T4.8: a knob a macro drives turns its macro (the inverse of the mapping), as Live's mapped controls follow theirs.
-    if (const doc::MappingLoc m = doc::mappingOf(*ctx_.doc(), id_, param); m.mapping != nullptr) {
+    // GU.9: the mapping is a Travel wire from the macro's value block (position = min + (max − min) · macro).
+    if (const auto m = macroMappingOf(*ctx_.doc(), id_, param)) {
       FrameBase* f = impl_.frameOf(id_);
       const devices::ParamInfo* info = f != nullptr && f->panel() != nullptr ? f->panel()->signature().findParam(param) : nullptr;
       if (info == nullptr) return;
-      const doc::MacroMapping& mm = *m.mapping;
+      const doc::RackMapping& mm = m->second;
       const double span = mm.max - mm.min;
-      const double s = std::abs(span) < 1e-9 ? 0.0 : std::clamp((devices::toPosition(*info, value) - mm.min) / span, 0.0, 1.0);
-      const double k = kAutomationCurveK * mm.curve;
-      const double x = std::abs(k) < kAutomationLinearK ? s : std::log1p(s * std::expm1(k)) / k;  // shape⁻¹
-      impl_.live(doc::ops::setMacroValue(*ctx_.doc(), m.rack->id, mm.macro, std::clamp(x, 0.0, 1.0) * doc::kMacroMax));
+      const double x = std::abs(span) < 1e-9 ? 0.0 : std::clamp((devices::toPosition(*info, value) - mm.min) / span, 0.0, 1.0);
+      impl_.live(doc::ops::setMacroValue(*ctx_.doc(), m->first.id, mm.macro, x * doc::kMacroMax));
       return;
     }
     // Inside the gesture each change is applied at once (live param writes); outside it is one undo step of its own.
@@ -315,7 +325,7 @@ public:
     const doc::Device* d = doc::findDevice(*ctx_.doc(), id_).device;
     FrameBase* f = impl_.frameOf(id_);
     const devices::ParamInfo* info = f != nullptr && f->panel() != nullptr ? f->panel()->signature().findParam(param) : nullptr;
-    if (d != nullptr && !d->rack && info != nullptr) {
+    if (d != nullptr && info != nullptr) {
       impl_.live(doc::ops::setDeviceParam(*ctx_.doc(), id_, std::string(param),
                                           devices::toPosition(*info, value, devices::storedPosition(*info, *d))));
       return;
@@ -651,7 +661,7 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       // A macro-mapped param plays its macro: no lane of its own unless it already has one (the arrangement's chooser).
       if (const std::string param = paramAt(e.pos);
           !param.empty() && loc.track != nullptr &&
-          (doc::mappingOf(*ctx_.doc(), id, param).mapping == nullptr ||
+          (!macroMappingOf(*ctx_.doc(), id, param) ||
            findAutomationLane(*ctx_.doc(), doc::ParamRef::device(id, param)).lane != nullptr)) {
         ViewContext* c = &ctx_;
         const doc::TrackId t = loc.track->id;
@@ -669,9 +679,7 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       // T5.x-circuit-chain: Open in Circuit View shows the whole track's chain as one circuit focused on this device
       // (the Track level); Edit Device Circuit goes straight to the device's own editor (the Device level).
       items.push_back(ui::MenuItem::item("Open in Circuit View", [v, id] { v->openInCircuitView(id); }));
-      if (loc.device != nullptr && loc.device->rack) {
-        items.push_back(ui::MenuItem::item("Open Lowered Rack Patch", [v, id] { v->openRackCircuit(id); }));
-      } else {
+      if (!isRack()) {
         ui::MenuItem edit = ui::MenuItem::item("Edit Device Circuit", [v, id] { v->editDeviceCircuit(id); });
         edit.enabled = loc.device != nullptr && !doc::isMetaDevice(*loc.device);  // a meta module's atoms are generated
         items.push_back(std::move(edit));
@@ -700,12 +708,12 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
           items.push_back(ui::MenuItem::sub("Chain Input", std::move(ins)));
         }
       // TX.all-free: off the main path (its neighbours joined; it keeps its other cables: the free rack shows it).
-      if (loc.device != nullptr && loc.chain == nullptr)
+      if (loc.device != nullptr && !isRack() && !chainPlaceOf(*ctx_.doc(), id).inChain())
         items.push_back(ui::MenuItem::item("Take Off Path", [v, id] { (void)v->takeIntoRack(id); }));
       // T5.11: the user library.
       items.push_back(ui::MenuItem::sep());
       items.push_back(ui::MenuItem::item("Save Preset", [v, id] { v->savePreset(id, false); }));
-      if (loc.device != nullptr && !loc.device->rack) {
+      if (loc.device != nullptr && !isRack()) {
         items.push_back(ui::MenuItem::item("Save as Default Preset", [v, id] { v->savePreset(id, true); }));
         ui::MenuItem asNew = ui::MenuItem::item("Save as New Device", [v, id] { v->saveAsNewDevice(id); });
         asNew.enabled = loc.device->edited();
@@ -724,7 +732,7 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       items.push_back(ui::MenuItem::item("Rename", [v] { v->renameSelected(); }, "Ctrl+R"));  // T4.17
       items.push_back(ui::MenuItem::sep());
       items.push_back(ui::MenuItem::item("Group", [v] { v->groupSelected(); }, "Ctrl+G"));  // T4.8
-      if (loc.device != nullptr && loc.device->rack)
+      if (isRack())
         items.push_back(ui::MenuItem::item("Ungroup", [v] { v->ungroupSelected(); }, "Ctrl+Shift+G"));  // T4.17
       items.push_back(ui::MenuItem::sep());
       items.push_back(ui::MenuItem::sub("Add Device", view.deviceMenu()));
@@ -800,7 +808,10 @@ std::vector<doc::DevicePtr> device_chain::pathDevices(const doc::Project& p, con
 }
 
 std::unique_ptr<FrameBase> device_chain::makeFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d) {
-  if (d.rack) return makeRackFrame(impl, ctx, d);
+  // GU.9: a chain of a rack (a set of parallel groups) stands for the rack: its frame.
+  if (doc::isGroupDevice(d))
+    if (const doc::DeviceLoc l = doc::findDevice(impl.doc(), d.id); l.track != nullptr && doc::rackOfChain(impl.doc(), *l.track, d.id))
+      return makeRackFrame(impl, ctx, d);
   if (doc::isGroupDevice(d)) return makeGroupFrame(impl, ctx, d);  // TX.groups
   return std::make_unique<DeviceFrame>(impl, ctx, d, impl.templateFor(d),
                                        DeviceChainView::Impl::templateKey(ctx.deviceLibrary(), d));
@@ -878,10 +889,10 @@ void DeviceChainView::sync(bool force) {
   const std::vector<doc::DevicePtr> chain = t != nullptr ? pathDevices(*ctx_.doc(), *t, path) : std::vector<doc::DevicePtr>{};
   bool sameIds = !force && want == track_ && chain.size() == m.shown.size();
   for (size_t i = 0; sameIds && i < chain.size(); ++i)
-    sameIds = chain[i]->id == m.shown[i]->id && chain[i]->isRack() == m.shown[i]->isRack() && m.frames[i]->keeps(*chain[i]);
+    sameIds = chain[i]->id == m.shown[i]->id && m.frames[i]->keeps(*chain[i]);
   if (sameIds) {
     for (size_t i = 0; i < chain.size(); ++i)
-      if (chain[i] != m.shown[i]) m.frames[i]->update(*chain[i]);
+      if (chain[i] != m.shown[i] || m.frames[i]->derived()) m.frames[i]->update(*chain[i]);
   } else {
     if (m.drag.active) m.endDrag(false);
     for (FrameBase* f : m.frames) m.retiredFrames.push_back(m.content->removeChild(*f));  // H1: not destroyed here
@@ -940,7 +951,7 @@ void DeviceChainView::onStore(const doc::StoreEvent& e) {
     const std::vector<doc::DevicePtr> now = t != nullptr ? pathDevices(*e.after, *t, path) : std::vector<doc::DevicePtr>{};
     if (t == nullptr || now.size() != m.shown.size()) return sync(false);
     for (size_t i = 0; i < now.size(); ++i) {
-      if (now[i] == m.shown[i]) continue;
+      if (now[i] == m.shown[i] && !m.frames[i]->derived()) continue;  // GU.9: a rack's blocks are not its device
       m.frames[i]->paramsChanged(*now[i], c.params);
       m.shown[i] = now[i];
     }
@@ -970,7 +981,7 @@ void DeviceChainView::select(std::span<const doc::DeviceId> devices) {
     bool oneList = first.device != nullptr;
     for (const doc::DeviceId id : selection_) {
       const doc::DeviceLoc l = doc::findDevice(p, id);
-      oneList = oneList && l.device != nullptr && l.track == first.track && l.chain == first.chain;
+      oneList = oneList && l.device != nullptr && l.track == first.track && l.device->group == first.device->group;
     }
     if (oneList)
       ctx_.setStatus(std::to_string(selection_.size()) + " devices selected: Ctrl+G (or right-click > Group) groups them into a rack");
@@ -1043,7 +1054,13 @@ bool DeviceChainView::selectEnd(bool last) {
   if (t == nullptr) return false;
   const std::vector<doc::DevicePtr>* list = &impl_->shown;  // TX.all-free: the main path
   if (!selection_.empty())
-    if (const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), selection_.back()); l.device != nullptr && l.chain != nullptr) list = &l.list();
+    if (const ChainPlace at = chainPlaceOf(*ctx_.doc(), selection_.back()); at.inChain()) {
+      if (at.list.empty()) return false;
+      const doc::DeviceId one[1] = {last ? at.list.back()->id : at.list.front()->id};
+      select(one);
+      revealDevice(one[0]);
+      return true;
+    }
   if (list->empty()) return false;
   const doc::DeviceId one[1] = {last ? list->back()->id : list->front()->id};
   select(one);
@@ -1059,8 +1076,9 @@ bool DeviceChainView::moveSelected(int32_t dir) {
   const doc::DeviceId id = selection_.front();
   const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), id);
   if (l.device == nullptr) return false;
-  // A rack chain is a list; the track's list is its main path (TX.all-free: the move rewires it).
-  const std::vector<doc::DevicePtr>& list = l.chain != nullptr ? l.list() : impl_->shown;
+  // A rack chain is a series; the track's list is its main path (TX.all-free: the move rewires either).
+  const ChainPlace at0 = chainPlaceOf(*ctx_.doc(), id);
+  const std::vector<doc::DevicePtr>& list = at0.inChain() ? at0.list : impl_->shown;
   int64_t at = -1;
   for (size_t i = 0; i < list.size(); ++i)
     if (list[i]->id == id) at = static_cast<int64_t>(i);
@@ -1069,13 +1087,13 @@ bool DeviceChainView::moveSelected(int32_t dir) {
   if (to < 0 || to >= static_cast<int64_t>(list.size())) return false;
   // An Instrument Rack's chain keeps its instrument first: neither it nor an effect passes it (TMM.10-fix1: a chain meta
   // device first is a stage like any other). TX.all-free: the track's main path has no such rule.
-  if (l.chain != nullptr && list.front()->kind == doc::DeviceKind::Instrument && !doc::isMetaDevice(*list.front()) &&
+  if (at0.inChain() && at0.rack->instrument && list.front()->kind == doc::DeviceKind::Instrument && !doc::isMetaDevice(*list.front()) &&
       (at == 0 || to == 0)) {
     ctx_.setStatus("The instrument stays first in the chain");
     return false;
   }
-  const bool r = l.chain != nullptr
-                     ? impl_->run(doc::ops::moveDevice(*ctx_.doc(), id, {}, static_cast<uint32_t>(to), l.chain->id))
+  const bool r = at0.inChain()
+                     ? impl_->run(doc::ops::moveIntoChain(*ctx_.doc(), ctx_.store().ids(), id, static_cast<uint32_t>(to), at0.chain))
                      : impl_->run(doc::ops::moveOnPath(*ctx_.doc(), ctx_.store().ids(), ctx_.deviceLibrary(), id, track_,
                                                        static_cast<uint32_t>(dir > 0 ? to + 1 : to)));
   if (r) revealDevice(id);
@@ -1087,21 +1105,28 @@ bool DeviceChainView::showNeighbourChain(int32_t dir) {
   // chain list); a device inside the old chain hands the selection to the first device of the new one.
   if (selection_.size() != 1) return false;
   const doc::Project& p = *ctx_.doc();
-  const doc::DeviceLoc l = doc::findDevice(p, selection_.front());
-  if (l.device == nullptr) return false;
-  const doc::Device* rack = l.device->rack ? l.device : l.rack;
-  if (rack == nullptr || rack->rack->chains.empty()) return false;
-  const auto& chains = rack->rack->chains;
-  const doc::ChainId cur = shownChain(rack->id);
+  const doc::DeviceId sel = selection_.front();
+  // The rack: the selected rack frame's, else the one whose chain holds the selected device.
+  doc::DeviceId frame;
+  if (FrameBase* f = impl_->frameOf(sel); f != nullptr && f->isRack()) frame = sel;
+  const ChainPlace place = chainPlaceOf(p, sel);
+  std::optional<doc::RackInfo> rk = frame.valid() ? doc::rackOf(p, frame) : place.rack;
+  if (!rk || rk->chains.empty()) return false;
+  if (!frame.valid())
+    for (const doc::RackChain& c : rk->chains)
+      if (impl_->frameOf(c.id) != nullptr && impl_->frameOf(c.id)->isRack()) frame = c.id;
+  if (!frame.valid()) return false;
+  const auto& chains = rk->chains;
+  const doc::ChainId cur = shownChain(frame);
   int64_t at = 0;
   for (size_t i = 0; i < chains.size(); ++i)
-    if (chains[i]->id == cur) at = static_cast<int64_t>(i);
+    if (chains[i].id == cur) at = static_cast<int64_t>(i);
   const int64_t to = std::clamp<int64_t>(at + dir, 0, static_cast<int64_t>(chains.size()) - 1);
   if (to == at) return true;
-  const doc::Chain& next = *chains[static_cast<size_t>(to)];
-  showChain(rack->id, next.id);
-  if (rack != l.device) {
-    const doc::DeviceId one[1] = {next.devices.empty() ? rack->id : next.devices.front()->id};
+  const doc::RackChain& next = chains[static_cast<size_t>(to)];
+  showChain(frame, next.id);
+  if (frame != sel) {
+    const doc::DeviceId one[1] = {next.devices.empty() ? frame : next.devices.front()->id};
     select(one);
   }
   revealDevice(selection_.front());
@@ -1222,9 +1247,9 @@ bool DeviceChainView::deleteSelected() {
   bool seen = false;
   for (const doc::DeviceId id : order) {
     const bool gone = std::find(sel.begin(), sel.end(), id) != sel.end() ||
-                      [&] {  // inside a deleted rack
+                      [&] {  // inside a deleted rack (GU.9: inside one of its chain groups)
                         for (const doc::DeviceId s : sel)
-                          if (const doc::Device* d = doc::findDevice(*ctx_.doc(), s).device; d != nullptr && doc::deviceContains(*d, id)) return true;
+                          if (const std::optional<doc::RackInfo> rk = doc::rackOf(*ctx_.doc(), s); rk && rk->holds(*ctx_.doc(), id)) return true;
                         return false;
                       }();
     if (gone) seen = true;
@@ -1232,7 +1257,21 @@ bool DeviceChainView::deleteSelected() {
     else if (!next.valid()) next = id;
   }
   // TX.all-free: Delete DISSOLVES (the main path through them stays connected; their other cables go with them).
-  if (!impl_->run(doc::ops::dissolveDevices(*ctx_.doc(), ctx_.store().ids(), ctx_.deviceLibrary(), sel))) return false;
+  // GU.9: a rack's frame deletes the rack — every chain group (the last one joins its feed to its sum), its macros.
+  std::vector<doc::DeviceId> plain, chains;
+  for (const doc::DeviceId id : sel) {
+    const FrameBase* f = impl_->frameOf(id);
+    const std::optional<doc::RackInfo> rk = f != nullptr && f->isRack() ? doc::rackOf(*ctx_.doc(), id) : std::nullopt;
+    if (rk)
+      for (const doc::RackChain& c : rk->chains) chains.push_back(c.id);
+    else
+      plain.push_back(id);
+  }
+  if (!chains.empty() && plain.empty()) {
+    if (!impl_->run(doc::ops::deleteChains(*ctx_.doc(), ctx_.store().ids(), chains))) return false;
+  } else if (!impl_->run(doc::ops::dissolveDevices(*ctx_.doc(), ctx_.store().ids(), ctx_.deviceLibrary(), plain))) {
+    return false;
+  }
   selection_.clear();
   if (const doc::DeviceId keep = next.valid() ? next : prev; keep.valid() && impl_->frameOf(keep) != nullptr) {
     const doc::DeviceId one[1] = {keep};
@@ -1244,12 +1283,12 @@ bool DeviceChainView::deleteSelected() {
 bool DeviceChainView::copySelected() {
   if (selection_.empty()) return false;
   clipboard_.clear();
-  // In list order (whatever order they were selected in): the track's chain, then each rack chain depth-first.
-  doc::forEachDeviceIn(impl_->shown, [&](const doc::Device& d) {
-    if (std::find(selection_.begin(), selection_.end(), d.id) == selection_.end()) return;
-    const doc::DeviceLoc loc = doc::findDevice(*ctx_.doc(), d.id);
+  // In display order (whatever order they were selected in).
+  for (const doc::DeviceId id : shownOrder()) {
+    if (std::find(selection_.begin(), selection_.end(), id) == selection_.end()) continue;
+    const doc::DeviceLoc loc = doc::findDevice(*ctx_.doc(), id);
     if (loc.device != nullptr) clipboard_.push_back(loc.list()[loc.index]);
-  });
+  }
   return !clipboard_.empty();
 }
 
@@ -1260,9 +1299,18 @@ bool DeviceChainView::paste() {
   if (t == nullptr || clipboard_.empty()) return false;
   // Into the list of the last selected device (a rack chain or the track's), right after it; else at the track's end.
   if (!selection_.empty()) {
-    const doc::DeviceLoc loc = doc::findDevice(*ctx_.doc(), selection_.back());
-    if (loc.device != nullptr && loc.chain != nullptr)
-      return impl_->run(doc::ops::pasteDevices(*ctx_.doc(), ctx_.store().ids(), track_, clipboard_, loc.index + 1, loc.chain->id));
+    if (const ChainPlace at = chainPlaceOf(*ctx_.doc(), selection_.back()); at.inChain()) {
+      // GU.9: pasted onto the track off the path, then each into the chain after the selection (one step each).
+      bool any = false;
+      uint32_t index = static_cast<uint32_t>(at.index + 1);
+      for (const doc::DevicePtr& d : clipboard_) {
+        const doc::ops::EditResult pasted = doc::ops::pasteDevices(*ctx_.doc(), ctx_.store().ids(), track_,
+                                                                   std::span<const doc::DevicePtr>(&d, 1), doc::ops::kOffPath);
+        if (!pasted || pasted->devices.empty() || !impl_->run(pasted)) continue;
+        any = impl_->run(doc::ops::moveIntoChain(*ctx_.doc(), ctx_.store().ids(), pasted->devices.front(), index++, at.chain)) || any;
+      }
+      return any;
+    }
   }
   uint32_t index = doc::kAppend;
   index = slotAfterSelection(index);  // TX.all-free: on the main path
@@ -1331,18 +1379,18 @@ bool DeviceChainView::ungroupSelected() {
     if (!selection_.empty()) ctx_.setStatus("Ungroup: select one rack");
     return false;
   }
-  const doc::Device* d = doc::findDevice(*ctx_.doc(), selection_.front()).device;
-  if (d == nullptr || !d->rack) {
+  const std::optional<doc::RackInfo> rk = doc::rackOf(*ctx_.doc(), selection_.front());
+  if (!rk) {
     ctx_.setStatus("Ungroup: the selected device is not a rack");
     return false;
   }
-  const doc::DeviceId rack = d->id;
-  // The rack's devices take its place; they become the selection (Live).
-  std::vector<doc::DeviceId> inner;
-  if (d->rack->chains.size() == 1)
-    for (const doc::DevicePtr& x : d->rack->chains.front()->devices) inner.push_back(x->id);
-  if (!impl_->run(doc::ops::ungroupDevices(*ctx_.doc(), ctx_.store().ids(), rack))) return false;
-  select(inner);
+  if (rk->chains.size() != 1) {
+    ctx_.setStatus("Ungroup: a rack with one chain (this one has " + std::to_string(rk->chains.size()) + ")");
+    return false;
+  }
+  const auto r = doc::ops::ungroupDevices(*ctx_.doc(), ctx_.store().ids(), rk->id);
+  if (!r || !impl_->run(r)) return false;
+  select(r->devices);  // the rack's devices take its place; they become the selection (Live)
   return true;
 }
 
@@ -1496,7 +1544,7 @@ void DeviceChainView::Impl::refreshPorts() {
     if (d == nullptr) continue;
     Ports& out = ports[id];
     std::shared_ptr<const doc::ResolvedDevice> hold;
-    const graph::Patch* patch = lib != nullptr && !d->rack ? lib->patchOf(*d, hold) : nullptr;
+    const graph::Patch* patch = lib != nullptr && !f->isRack() ? lib->patchOf(*d, hold) : nullptr;
     if (patch == nullptr) {  // a rack, a missing patch: its chain's ports
       if (d->kind != doc::DeviceKind::Instrument) out.inputs.push_back("in");
       out.outputs.push_back("out");
@@ -1816,6 +1864,11 @@ void DeviceChainView::refreshRings() {
   m.ringUnits.clear();
   for (const doc::Wire& w : doc::wiresOf(p)) {
     if (m.frameOf(w.to) == nullptr) continue;
+    // GU.9: a macro mapping (a Travel wire from a macro's value block) is drawn as the mapping's range, not a ring.
+    if (w.travels() && !w.fromNoteSource())
+      if (const doc::Device* src = doc::findDevice(p, w.from).device;
+          src != nullptr && doc::isValueDevice(*src) && src->setting(doc::kMacroSetting) != nullptr)
+        continue;
     // TX.patching: an added wire has no amount: no static span (its reach is its signal's), only the live sweep.
     const float span = w.travels() ? std::fabs(static_cast<float>(w.amount)) : 0.0f;
     bool found = false;
@@ -1840,21 +1893,13 @@ void DeviceChainView::refreshRings() {
       // T4.8: a macro-mapped param shows the mapping's range and where the macro puts it now (the mapping is the centre
       // the wires add to).
       float pk = static_cast<float>(devices::toPosition(info, panel->paramValue(info.name)));
-      if (const doc::MappingLoc ml = doc::mappingOf(p, f->id(), info.name); ml.mapping != nullptr) {
-        const doc::MacroMapping& mm = *ml.mapping;
-        // M4 review L3: the macro as played: when an outer rack's macro maps this rack's macro (and so on), the value
-        // comes down the chain of mappings from the outermost one (the stored value of a mapped macro does not play).
-        std::vector<const doc::MacroMapping*> outer;
-        const doc::Device* top = ml.rack;
-        for (doc::MappingLoc up = doc::mappingOf(p, top->id, doc::macroParamName(mm.macro)); up.mapping != nullptr && outer.size() < 64;
-             up = doc::mappingOf(p, top->id, doc::macroParamName(up.mapping->macro))) {
-          outer.push_back(up.mapping);
-          top = up.rack;
-        }
-        double macro = doc::rackParamValue(*top, doc::macroParamName(outer.empty() ? mm.macro : outer.back()->macro)) / doc::kMacroMax;
-        for (auto it = outer.rbegin(); it != outer.rend(); ++it)
-          macro = (*it)->min + ((*it)->max - (*it)->min) * automationShape(macro, (*it)->curve);
-        pk = static_cast<float>(mm.min + (mm.max - mm.min) * automationShape(macro, mm.curve));
+      bool mapped = false;
+      if (const auto ml = macroMappingOf(p, f->id(), info.name)) {
+        // GU.9: the macro's value block as it stands (a macro another rack's macro drives plays what its wire adds).
+        const doc::RackMapping& mm = ml->second;
+        const double macro = ml->first.macros[mm.macro].value / doc::kMacroMax;
+        pk = static_cast<float>(std::clamp(mm.min + (mm.max - mm.min) * macro, 0.0, 1.0));
+        mapped = true;
         ring.active = true;
         ring.lo = static_cast<float>(std::min(mm.min, mm.max));
         ring.hi = static_cast<float>(std::max(mm.min, mm.max));
@@ -1864,6 +1909,7 @@ void DeviceChainView::refreshRings() {
       }
       for (size_t i = 0; i < m.ringTargets.size(); ++i) {
         if (m.ringTargets[i].device != f->id() || m.ringTargets[i].param != info.name) continue;
+        if (mapped && m.ringSpan[i] <= 0.0f && m.ringUnits[i] == 0) continue;  // (only its mapping: shown above)
         ring.active = true;
         ring.lo = std::clamp(pk - m.ringSpan[i], 0.0f, 1.0f);
         ring.hi = std::clamp(pk + m.ringSpan[i], 0.0f, 1.0f);
@@ -1923,11 +1969,14 @@ void DeviceChainView::refreshAutomation() {
   std::map<uint32_t, std::vector<std::pair<std::string, bool>>> marks;
   if (const doc::Track* t = m.track())
     for (const doc::LanePtr& l : t->lanes) {  // a device's lanes live on its track (the shown one)
-      m.chainAuto = m.chainAuto || (l->param.kind == doc::ParamKind::ChainMixer && !l->points.empty());
+      // GU.9: a chain's volume / pan lane is its Mixer value block's (no frame of its own: the rack's rows show it).
+      if (l->param.kind == doc::ParamKind::DeviceParam && !l->points.empty() && m.frameOf(doc::DeviceId{l->param.owner}) == nullptr)
+        if (const doc::Device* vb = doc::findDevice(*ctx_.doc(), doc::DeviceId{l->param.owner}).device; vb != nullptr && doc::isValueDevice(*vb))
+          m.chainAuto = true;
       if (l->param.kind != doc::ParamKind::DeviceParam || l->points.empty() || m.frameOf(doc::DeviceId{l->param.owner}) == nullptr)
         continue;
       // A macro-mapped param plays its macro, not its lane (lower.h): its knob is left to the macro, its LED grey.
-      if (doc::mappingOf(*ctx_.doc(), doc::DeviceId{l->param.owner}, l->paramName).mapping != nullptr) {
+      if (macroMappingOf(*ctx_.doc(), doc::DeviceId{l->param.owner}, l->paramName)) {
         marks[l->param.owner].emplace_back(l->paramName, true);
         continue;
       }
@@ -1955,7 +2004,7 @@ void DeviceChainView::applyAutomation() {
     if (a.overridden) {  // overridden by hand: the knob shows (and plays) its own value until re-enabled
       const doc::Device* d = doc::findDevice(*ctx_.doc(), a.device).device;
       if (d == nullptr) continue;
-      const double own = d->rack ? doc::rackParamValue(*d, a.param) : devices::storedValue(*info, *d);  // GU.1: in units
+      const double own = devices::storedValue(*info, *d);  // GU.1: in units
       if (panel->paramValue(a.param) != own) panel->setParamValue(a.param, own);
       continue;
     }

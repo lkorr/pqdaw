@@ -14,7 +14,7 @@ namespace {
 Result<const Device*> findGroup(const Project& p, DeviceId group) {
   const DeviceLoc l = findDevice(p, group);
   if (l.device == nullptr) return notFound("Edit Panel: group not found");
-  if (!isGroupDevice(*l.device) || l.chain != nullptr) return invalid("Edit Panel: only a group has a panel");
+  if (!isGroupDevice(*l.device)) return invalid("Edit Panel: only a group has a panel");
   return l.device;
 }
 

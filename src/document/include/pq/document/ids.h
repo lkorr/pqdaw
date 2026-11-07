@@ -25,8 +25,6 @@ struct TuningTag {};
 struct LocatorTag {};
 struct DeviceTag {};  // T4.1: a device instance in a track's chain
 struct WireTag {};    // T4.7: a cross-device modulation wire
-struct ChainTag {};   // T4.8: a chain of a rack
-struct MappingTag {}; // T4.8: a macro mapping of a rack
 struct SampleTag {};  // T5.3: an entry of the project's sample table
 
 using TrackId = StableId<TrackTag>;
@@ -38,8 +36,6 @@ using TuningId = StableId<TuningTag>;
 using LocatorId = StableId<LocatorTag>;
 using DeviceId = StableId<DeviceTag>;
 using WireId = StableId<WireTag>;
-using ChainId = StableId<ChainTag>;
-using MappingId = StableId<MappingTag>;
 using SampleId = StableId<SampleTag>;
 
 // The project-wide id counter. Not thread-safe (owned by the UI thread's DocumentStore).
@@ -61,8 +57,6 @@ public:
   LocatorId locator() noexcept { return next<LocatorTag>(); }
   DeviceId device() noexcept { return next<DeviceTag>(); }
   WireId wire() noexcept { return next<WireTag>(); }
-  ChainId chain() noexcept { return next<ChainTag>(); }
-  MappingId mapping() noexcept { return next<MappingTag>(); }
   SampleId sample() noexcept { return next<SampleTag>(); }
 
   // The value next() would hand out.

@@ -37,22 +37,10 @@ public:
     }
   }
   void setParam(std::string_view param, double value) override {
-    // T4.8: a knob a macro drives turns its macro (the inverse of the mapping), as in the Device view.
-    if (const doc::MappingLoc m = doc::mappingOf(*ctx_.doc(), id_, param); m.mapping != nullptr) {
-      const devices::ParamInfo* info = panel != nullptr ? panel->signature().findParam(param) : nullptr;
-      if (info == nullptr) return;
-      const doc::MacroMapping& mm = *m.mapping;
-      const double span = mm.max - mm.min;
-      const double s = std::abs(span) < 1e-9 ? 0.0 : std::clamp((devices::toPosition(*info, value) - mm.min) / span, 0.0, 1.0);
-      const double k = kAutomationCurveK * mm.curve;
-      const double x = std::abs(k) < kAutomationLinearK ? s : std::log1p(s * std::expm1(k)) / k;  // shape⁻¹
-      live(doc::ops::setMacroValue(*ctx_.doc(), m.rack->id, mm.macro, std::clamp(x, 0.0, 1.0) * doc::kMacroMax));
-      return;
-    }
     // GU.1: the document stores the knob position that gives the value (nearest the knob's current one).
     const doc::Device* d = doc::findDevice(*ctx_.doc(), id_).device;
     const devices::ParamInfo* info = panel != nullptr ? panel->signature().findParam(param) : nullptr;
-    if (d != nullptr && !d->rack && info != nullptr) {
+    if (d != nullptr && info != nullptr) {
       live(doc::ops::setDeviceParam(*ctx_.doc(), id_, std::string(param),
                                     devices::toPosition(*info, value, devices::storedPosition(*info, *d))));
       return;
@@ -103,7 +91,7 @@ const PanelTemplate* ProjectPatchView::panelTemplate(const doc::Device& d) {
     panelTemplates_.clear();
     panelTemplatesFrom_ = lib;
   }
-  if (lib == nullptr || d.edited() || d.rack || doc::isMetaDevice(d)) return nullptr;
+  if (lib == nullptr || d.edited() || doc::isMetaDevice(d)) return nullptr;
   if (const auto it = panelTemplates_.find(d.patch); it != panelTemplates_.end()) return it->second.get();
   return (panelTemplates_[d.patch] = buildPanelTemplate(lib, d)).get();
 }

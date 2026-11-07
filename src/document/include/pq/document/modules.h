@@ -46,6 +46,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "pq/core/result.h"
 #include "pq/document/ids.h"

@@ -22,6 +22,7 @@
 #include "pq/ui/theme.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/device_circuit.h"
+#include "pq/views/circuit/device_scene.h"
 #include "pq/views/devices/knob_curve_menu.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
@@ -529,21 +530,8 @@ void ProjectPatchView::rebuild() {
   std::erase_if(bandExpanded_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
   if (openBand_.valid() && doc::findTrackPtr(*snap, openBand_) == nullptr) openBand_ = {};
   if (focus_.valid() && doc::findDevice(*snap, focus_).device == nullptr) focus_ = {};
-  rackCircuits_.clear();
   for (const doc::DeviceId d : expanded_) {
     const doc::DeviceLoc loc = doc::findDevice(*snap, d);
-    if (loc.device->rack) {  // T5.x-circuit-chain: a rack opens to its chains (nested frames), its devices to atoms
-      circuit::ChainOptions co;
-      co.devices = devlib;
-      co.cache = &chainCache_;
-      auto cc = std::make_shared<const circuit::ChainCircuit>(circuit::buildRackCircuit(*snap, d, co));
-      if (cc->boxes.empty()) continue;
-      const circuit::CircuitScene& rs = *cc->scene;
-      sizes.push_back({d, rs.x1 - rs.x0, rs.y1 - rs.y0});
-      inner.push_back({d, std::shared_ptr<const circuit::CircuitScene>(cc, cc->scene.get())});
-      rackCircuits_.emplace_back(d, std::move(cc));
-      continue;
-    }
     // What the device plays: the stock patch, or a user device's resolved root (its name carries its graph hash, so
     // an edited text gets its own cache entry).
     std::shared_ptr<const doc::ResolvedDevice> hold;
@@ -644,7 +632,6 @@ void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
     expanded_.clear();
     expandedMixers_.clear();
     innerCache_.clear();
-    chainCache_.clear();
     bandExpanded_.clear();
     openBand_ = {};
     fitted_ = false;
@@ -792,12 +779,6 @@ void ProjectPatchView::closeBand() {
   if (shown()) sync();
 }
 
-const circuit::ChainCircuit* ProjectPatchView::rackCircuit(doc::DeviceId rack) const noexcept {
-  for (const auto& [d, c] : rackCircuits_)
-    if (d == rack) return c.get();
-  return nullptr;
-}
-
 void ProjectPatchView::setDeviceExpanded(doc::DeviceId device, bool on) {
   const auto it = std::find(expanded_.begin(), expanded_.end(), device);
   if (on == (it != expanded_.end())) return;
@@ -841,15 +822,6 @@ bool ProjectPatchView::deviceWorldRect(doc::DeviceId device, LaneRect& out) cons
   if (n == kNone) return false;
   const Node& nd = patch_.nodes[n];
   out = {nd.x, nd.y, nd.x + nd.w, nd.y + nd.h};
-  if (nd.rack && nd.device != device && nd.expanded)  // inside an opened rack: its box in the rack's frame
-    if (const circuit::ChainCircuit* cc = rackCircuit(nd.device)) {
-      const uint32_t b = cc->boxOf(device);
-      if (b != circuit::kNoBox) {
-        const float dx = nd.x + metrics::kExpandedPad - cc->scene->x0, dy = nd.y + 16.0f + metrics::kExpandedPad - cc->scene->y0;
-        const circuit::ChainBox& box = cc->boxes[b];
-        out = {box.x0 + dx, box.y0 + dy, box.x1 + dx, box.y1 + dy};
-      }
-    }
   return true;
 }
 
@@ -1278,10 +1250,10 @@ ProjectPatchView::WireTarget ProjectPatchView::wireTargetAt(Vec2 pos) const {
     const Node& t = patch_.nodes[pin.node];
     if ((t.kind == NodeKind::Device || (t.kind == NodeKind::Terminal && !t.inputs.empty())) && pin.port < t.inputs.size()) {
       const Port& q = t.inputs[pin.port];
-      if (q.name != "notes" && !(t.rack && !q.param)) {
+      if (q.name != "notes") {
         std::string param = q.name;
         doc::DeviceId to = t.device;
-        if (const size_t at = param.rfind('@'); at != std::string::npos && (t.rack || t.group)) {
+        if (const size_t at = param.rfind('@'); at != std::string::npos && t.group) {
           to = doc::DeviceId{static_cast<uint32_t>(std::stoul(param.substr(at + 1)))};
           param.resize(at);
         }
@@ -1415,7 +1387,7 @@ bool ProjectPatchView::moveToTrack(doc::DeviceId device, doc::TrackId toTrack, g
   // where it was dropped.
   const doc::Project& p = *ctx_.doc();
   const doc::DeviceLoc l = doc::findDevice(p, device);
-  if (l.device == nullptr || l.chain != nullptr || l.track->id == toTrack) return false;
+  if (l.device == nullptr || l.track->id == toTrack) return false;
   doc::ops::EditResult off = doc::ops::takeOffPath(p, ctx_.store().ids(), ctx_.deviceLibrary(), std::span<const doc::DeviceId>(&device, 1));
   if (!off) return apply(off, "Move Device");
   doc::ChangeSet cs;
@@ -1438,7 +1410,7 @@ bool ProjectPatchView::moveToTrack(std::span<const doc::DeviceId> devices, doc::
   std::vector<doc::DeviceId> moving;
   for (const doc::DeviceId d : devices) {
     const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), d);
-    if (l.device != nullptr && l.chain == nullptr && l.track->id != toTrack) moving.push_back(d);
+    if (l.device != nullptr && l.track->id != toTrack) moving.push_back(d);
   }
   if (moving.empty()) return false;
   std::vector<doc::Command> steps;
@@ -2039,11 +2011,9 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
     const doc::TrackId bandTrackId = patch_.bands[n.band].track;
     ui::MenuItem circuit = ui::MenuItem::item("Open in Circuit View", [this, d, bandTrackId] { (void)openCircuit(bandTrackId, d); });
     items.push_back(std::move(circuit));
-    if (!n.rack) {
-      ui::MenuItem edit = ui::MenuItem::item("Edit Device Circuit", [this, d] { (void)editDeviceCircuit(d); });
-      edit.enabled = ctx_.deviceLibrary() != nullptr && !n.missing && !n.meta;  // a meta module's atoms are generated
-      items.push_back(std::move(edit));
-    }
+    ui::MenuItem edit = ui::MenuItem::item("Edit Device Circuit", [this, d] { (void)editDeviceCircuit(d); });
+    edit.enabled = ctx_.deviceLibrary() != nullptr && !n.missing && !n.meta;  // a meta module's atoms are generated
+    items.push_back(std::move(edit));
     if (n.edited)
       items.push_back(ui::MenuItem::item("Revert to Stock", [this, d] {
         const doc::DeviceId one[1] = {d};
@@ -2160,7 +2130,7 @@ ui::Menu* ProjectPatchView::openParamMenu(doc::DeviceId from, const std::string&
     if (const meta::Type* t = meta::findType(doc::metaDeviceType(*loc.device)))
       for (const meta::InputSpec& in : t->inputs)
         if (in.kind == graph::Kind::Real) inputs.emplace_back(std::string(in.name), in.label.empty() ? std::string(in.name) : std::string(in.label));
-  } else if (!n.rack) {
+  } else {
     for (const Port& q : n.inputs)
       if (!q.param && q.name != "notes") inputs.emplace_back(q.name, q.label.empty() ? std::string("Audio In") : q.label);
   }
@@ -2322,12 +2292,10 @@ void ProjectPatchView::pollReadout() {
         std::shared_ptr<const doc::ResolvedDevice> hold;
         const doc::DeviceLibrary* devlib = ctx_.deviceLibrary();
         const graph::Patch* callee =
-            tl.device != nullptr && devlib != nullptr && !tl.device->rack ? devlib->patchOf(*tl.device, hold) : nullptr;
+            tl.device != nullptr && devlib != nullptr ? devlib->patchOf(*tl.device, hold) : nullptr;
         if (const graph::ParamDecl* decl = callee != nullptr ? doc::findParamDecl(*callee, w->param) : nullptr) {
           const dsp::Curve c = doc::controlCurve(*tl.device, w->param, *decl);
           adds = !doc::addsInUnits(c) ? Adds::KnobTravel : c.output == dsp::CurveOutput::DbToGain ? Adds::Db : Adds::Units;
-        } else if (tl.device != nullptr && tl.device->rack) {
-          adds = Adds::Units;
         }
       }
       switch (adds) {

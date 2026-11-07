@@ -9,6 +9,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 
@@ -270,11 +271,6 @@ std::string deviceParamNameOf(const Project& p, const DeviceLibrary* lib, const 
   if (r.kind != ParamKind::DeviceParam) return {};
   const Device* d = findDevice(p, DeviceId{r.owner}).device;
   if (d == nullptr) return {};
-  if (d->rack) {
-    for (uint32_t i = 0; i < kMacroCount; ++i)
-      if (std::string n = macroParamName(i); deviceParamHash(n) == r.target) return n;
-    return deviceParamHash(kSelectParam) == r.target ? std::string(kSelectParam) : std::string();
-  }
   if (lib != nullptr) {
     std::shared_ptr<const ResolvedDevice> hold;
     if (const DeviceInfo* info = lib->infoOf(*d, hold))
@@ -397,8 +393,10 @@ Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlib
   // GU.2: the value block and every atom block (built once per process; a lowering then needs no library of its own).
   lib->library_.add(valuePatch());
   for (const graph::AtomSignature& s : graph::AtomRegistry::builtin().all())
-    if (atomBlockAllowed(s))
+    if (atomBlockAllowed(s)) {
       if (const graph::Patch* ap = atomBlockPatch(s.name)) lib->library_.add(*ap);
+      if (const graph::Patch* vp = voicelessAtomPatch(s.name)) lib->library_.add(*vp);
+    }
   for (const meta::Prelude::Entry& e : lib->prelude_->entries)
     for (const DeviceKind k : {DeviceKind::Instrument, DeviceKind::AudioEffect}) {
       std::optional<DeviceInfo> info = metaDeviceInfo(*e.type, k);
@@ -623,9 +621,14 @@ const graph::Patch& groupNotesPatch() {
 
 bool atomBlockAllowed(const graph::AtomSignature& s) noexcept {
   using namespace graph::atom_flags;
-  if (s.has(kInternal) || s.has(kNeedsVoice) || s.has(kSideEffect)) return false;
+  if (s.has(kInternal) || s.has(kSideEffect)) return false;
+  // GU.9: the voice terminals (voice.noteHz, voice.velocity …) are blocks: inside an instrument group they read the
+  // note of the voice they run for; anywhere else they give 0 (voicelessAtomPatch). `pack` joins channels (a chain
+  // mixer's stereo gain).
+  if (s.category == graph::AtomCategory::Voice) return s.inputs.empty() && s.fixedOutputs() == 1;
+  if (s.has(kNeedsVoice)) return false;
+  if (s.name == "pack") return true;
   switch (s.category) {
-    case graph::AtomCategory::Voice:
     case graph::AtomCategory::Io:
     case graph::AtomCategory::Sample:
     case graph::AtomCategory::Structure: return false;
@@ -641,6 +644,7 @@ namespace {
 struct AtomBlock {
   graph::Patch patch{""};
   DeviceInfo info;
+  std::optional<graph::Patch> voiceless;  // GU.9: a voice terminal's stand-in outside a voice (its outputs = 0)
 };
 
 std::unique_ptr<AtomBlock> buildAtomBlock(std::string_view atomName) {
@@ -694,6 +698,17 @@ std::unique_ptr<AtomBlock> buildAtomBlock(std::string_view atomName) {
   std::vector<graph::NodeId> ids;
   for (graph::NodeIndex n = 0; n < p.nodeCount(); ++n) ids.push_back(graph::NodeId{n + 1});
   if (!p.setNodeIds(ids) || !p.validate()) return nullptr;
+  if (s.category == graph::AtomCategory::Voice) {  // GU.9: the same ports, every output 0
+    graph::Patch v(name + "__voiceless");
+    for (graph::NodeIndex n = 0; n < p.nodeCount(); ++n) {
+      if (p.node(n).kind != graph::NodeKind::Output) continue;
+      const graph::NodeIndex out = v.addOutput(std::string(p.nodeName(n)), graph::portType(graph::Kind::Real));
+      v.connect(graph::PortRef{v.addConst(graph::Constant::real(0.0)), 0}, graph::PortRef{out, 0});
+    }
+    std::vector<graph::NodeId> vids;
+    for (graph::NodeIndex n = 0; n < v.nodeCount(); ++n) vids.push_back(graph::NodeId{n + 1});
+    if (v.setNodeIds(vids) && v.validate()) b->voiceless = std::move(v);
+  }
   b->info.patch = std::string(kAtomDevicePrefix) + std::string(s.name);
   b->info.name = std::string(s.name);
   b->info.kind = DeviceKind::AudioEffect;
@@ -744,6 +759,10 @@ const ValueBlock& valueBlock() {
 const graph::Patch* atomBlockPatch(std::string_view atomName) {
   const AtomBlock* b = atomBlock(atomName);
   return b != nullptr ? &b->patch : nullptr;
+}
+const graph::Patch* voicelessAtomPatch(std::string_view atomName) {
+  const AtomBlock* b = atomBlock(atomName);
+  return b != nullptr && b->voiceless ? &*b->voiceless : nullptr;
 }
 const DeviceInfo* atomBlockInfo(std::string_view atomName) {
   const AtomBlock* b = atomBlock(atomName);

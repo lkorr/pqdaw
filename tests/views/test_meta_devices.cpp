@@ -322,7 +322,7 @@ TEST_CASE("meta devices (views): a preset loads with its slot's kind (state kept
   std::ofstream(std::filesystem::path(dir) / "Lead Table.pqpreset", std::ios::binary) << *text;
   // Loaded first on Meta Bass: it becomes the instrument there (TX.all-free: first on the path, the notes reach it — a
   // block's kind means nothing on a track), with the same state.
-  auto id = loadDeviceItem(u.ctx, path, DeviceSlot{u.ids.bass, 0, {}});
+  auto id = loadDeviceItem(u.ctx, path, DeviceSlot{u.ids.bass, 0});
   REQUIRE_MESSAGE(id.ok(), (id.ok() ? "" : id.error().message));
   const doc::Device& loaded = u.dev(*id);
   CHECK(stageIn(u, u.ids.bass, *id) == doc::ChainSignal::Notes);

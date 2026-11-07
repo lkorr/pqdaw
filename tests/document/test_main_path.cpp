@@ -338,22 +338,3 @@ TEST_CASE("main path: the lowering — a broken path is silent, the mixer sums t
   for (const WireState& s : lowered(d.doc()).wires)
     if (s.id == crossEdit->wires.at(0)) CHECK(s.status == WireStatus::Lowered);
 }
-
-TEST_CASE("main path: a block moved into a rack chain leaves the path joined; moveDevice alone moves only the lists") {
-  Doc d;
-  const DeviceId u = d.add("utility");
-  const DeviceId s = d.add("saturator");
-  const DeviceId rack = d.edit(ops::addDevice(d.doc(), d.store.ids(), d.keys, std::string(kAudioEffectRack),
-                                              DeviceKind::AudioEffect)).devices.at(0);
-  d.edit(ops::addChain(d.doc(), d.store.ids(), rack));
-  const ChainId c = findDevice(d.doc(), rack).device->rack->chains.back()->id;
-  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility", "saturator", std::string(kAudioEffectRack)});
-  d.edit(ops::moveIntoChain(d.doc(), d.store.ids(), u, kAppend, c));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "saturator", std::string(kAudioEffectRack)});
-  CHECK(d.complete(d.keys));
-  CHECK(findDevice(d.doc(), u).chain != nullptr);
-  // The plain list move keeps the cables: the Saturator's links stay, so the path breaks where it was.
-  d.edit(ops::moveDevice(d.doc(), s, {}, kAppend, c));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"Group"});
-  CHECK_FALSE(d.complete(d.keys));
-}

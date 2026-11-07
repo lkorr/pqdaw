@@ -90,37 +90,19 @@ void collectIds(const Track& t, ChangeSet& cs) {
   cs.tracks.push_back(t.id);
   for (const ClipSlot& c : t.clips) cs.clips.push_back(c.id);
   for (const LanePtr& l : t.lanes) cs.lanes.push_back(l->id);
-  forEachDeviceIn(t.devices, [&](const Device& d) { cs.devices.push_back(d.id); });  // T4.8: rack contents too
+  forEachDeviceIn(t.devices, [&](const Device& d) { cs.devices.push_back(d.id); });
   for (const TrackPtr& c : t.children) collectIds(*c, cs);
 }
 
-// T4.8: the ids of `list`'s devices (racks: their chains, mappings and inner devices) into `ids`; none may name an
-// entity of its kind that exists in `p`.
+// The ids of `list`'s devices into `ids`; none may name a device that exists in `p`.
 Status checkNewDeviceIds(const Project& p, const std::vector<DevicePtr>& list, std::vector<uint32_t>& ids) {
-  // The project's device, chain and mapping ids once (M4 review M9: a lookup per new id walked the whole project).
-  std::unordered_set<uint32_t> devices, chains, mappings;
-  forEachDevice(p, [&](const Device& d, const Track&) {
-    devices.insert(d.id.value);
-    if (!d.rack) return;
-    for (const ChainPtr& c : d.rack->chains) chains.insert(c->id.value);
-    for (const MacroMapping& m : d.rack->mappings) mappings.insert(m.id.value);
-  });
-  Status st = ok();
-  forEachDeviceIn(list, [&](const Device& d) {
-    if (!st) return;
-    if (devices.count(d.id.value) != 0) st = invalid("device id already in use");
-    ids.push_back(d.id.value);
-    if (!d.rack) return;
-    for (const ChainPtr& c : d.rack->chains) {
-      if (chains.count(c->id.value) != 0) st = invalid("chain id already in use");
-      ids.push_back(c->id.value);
-    }
-    for (const MacroMapping& m : d.rack->mappings) {
-      if (mappings.count(m.id.value) != 0) st = invalid("mapping id already in use");
-      ids.push_back(m.id.value);
-    }
-  });
-  return st;
+  std::unordered_set<uint32_t> devices;
+  forEachDevice(p, [&](const Device& d, const Track&) { devices.insert(d.id.value); });
+  for (const DevicePtr& d : list) {
+    if (devices.count(d->id.value) != 0) return invalid("device id already in use");
+    ids.push_back(d->id.value);
+  }
+  return ok();
 }
 
 // T4.7: drops the wires touching a removed device (defined with the wire commands below).
@@ -1418,273 +1400,48 @@ Res apply_(const Snapshot& s, const SetTuningParam& c, ChangeSet& cs) {
   return Snapshot(withSlot(s, static_cast<size_t>(i), std::move(n)));
 }
 
-// ---- Devices (T4.1; inside racks T4.8) -----------------------------------------------------------------------------
+// ---- Devices (T4.1) -----------------------------------------------------------------------------
 
-// ---- Device trees (T4.8): path-copying edits of a track's device list, racks and chains included ----------------
-// Every helper works on a FRESH copy of a track's top-level list (Track::devices of a mutableTrack): it replaces the
-// racks / chains on the way down by fresh copies and never writes a node reachable from the input snapshot.
+// ---- Device lists: edits of a FRESH copy of a track's list (Track::devices of a mutableTrack) ------------------------
 
-// M4 review M9: every helper here is iterative (explicit stacks / paths on the heap), so racks nest as deep as memory
-// allows; a path-copying edit finds its path first (one walk), then copies the nodes along it (O(depth)).
-
-// Whether rack device `d` holds chain `chain` (at any depth).
-bool holdsChain(const Device& d, ChainId chain) {
-  bool found = false;
-  forEachDeviceIn(d, [&](const Device& x) {
-    if (!found && x.rack)
-      for (const ChainPtr& c : x.rack->chains) found = found || c->id == chain;
-  });
-  return found;
-}
-
-// One step down a device tree: the device at `device` of the current list, then its rack's chain `chain`.
-struct TreeStep {
-  size_t device = 0;
-  size_t chain = 0;
-};
-
-// Finds the device `id` (pre-order, chains in order) or, with `chain` valid, the rack holding chain `chain`: the steps
-// from `list` to the list holding it, and its index there (`chainIndex`: the chain's index in that rack). False: not
-// in `list`.
-bool findInTree(const std::vector<DevicePtr>& list, DeviceId id, ChainId chain, std::vector<TreeStep>& path,
-                size_t& index, size_t& chainIndex) {
-  struct Open {
-    const std::vector<DevicePtr>* list;
-    size_t device = 0;
-    size_t chain = 0;  // the device's next chain to look in
-  };
-  std::vector<Open> stack{{&list}};
-  while (!stack.empty()) {
-    Open& f = stack.back();
-    if (f.device >= f.list->size()) {
-      stack.pop_back();
-      if (!stack.empty()) ++stack.back().chain;
-      continue;
-    }
-    const Device& d = *(*f.list)[f.device];
-    if (f.chain == 0) {  // first visit of this device
-      bool hit = !chain.valid() && d.id == id;
-      if (chain.valid() && d.rack)
-        for (size_t c = 0; c < d.rack->chains.size() && !hit; ++c)
-          if (d.rack->chains[c]->id == chain) {
-            hit = true;
-            chainIndex = c;
-          }
-      if (hit) {
-        path.clear();
-        for (size_t i = 0; i + 1 < stack.size(); ++i) path.push_back({stack[i].device, stack[i].chain});
-        index = f.device;
-        return true;
-      }
-    }
-    if (d.rack && f.chain < d.rack->chains.size()) {
-      const std::vector<DevicePtr>* inner = &d.rack->chains[f.chain]->devices;
-      stack.push_back({inner});  // invalidates f
-      continue;
-    }
-    ++f.device;
-    f.chain = 0;
-  }
-  return false;
-}
-
-// Path-copies `list` along `path` (fresh copies of each device, rack and chain on the way) and returns the fresh list
-// at its end.
-std::vector<DevicePtr>* copyAlong(std::vector<DevicePtr>& list, const std::vector<TreeStep>& path) {
-  std::vector<DevicePtr>* cur = &list;
-  for (const TreeStep& s : path) {
-    DevicePtr& slot = (*cur)[s.device];
-    auto dev = std::make_shared<Device>(*slot);
-    auto rack = std::make_shared<Rack>(*dev->rack);
-    auto chain = std::make_shared<Chain>(*rack->chains[s.chain]);
-    cur = &chain->devices;
-    rack->chains[s.chain] = std::move(chain);
-    dev->rack = std::move(rack);
-    slot = std::move(dev);
-  }
-  return cur;
-}
-
-// Path-copies `list` down to chain `chain` and returns its (fresh, mutable) device list; `kind` gets the list's kind,
-// `rack` the id of the rack holding it. nullptr: not in this list.
-std::vector<DevicePtr>* mutableChainList(std::vector<DevicePtr>& list, ChainId chain, ListKind& kind, DeviceId& rackId) {
-  std::vector<TreeStep> path;
-  size_t index = 0, chainIndex = 0;
-  if (!findInTree(list, {}, chain, path, index, chainIndex)) return nullptr;
-  std::vector<DevicePtr>* holder = copyAlong(list, path);  // the fresh list holding the rack
-  std::vector<DevicePtr>* out = copyAlong(*holder, std::vector<TreeStep>{{index, chainIndex}});
-  const Device& rackDev = *(*holder)[index];
-  kind = chainListKind(rackDev);
-  rackId = rackDev.id;
-  return out;
-}
-
-// Path-copies `list` down to device `id` and returns a fresh mutable copy of it (installed in the tree). nullptr: not in
-// this list.
+// A fresh mutable copy of device `id` installed in `list`. nullptr: not in this list.
 Device* mutableDevice(std::vector<DevicePtr>& list, DeviceId id) {
-  std::vector<TreeStep> path;
-  size_t index = 0, chainIndex = 0;
-  if (!findInTree(list, id, {}, path, index, chainIndex)) return nullptr;
-  std::vector<DevicePtr>* at = copyAlong(list, path);
-  auto copy = std::make_shared<Device>(*(*at)[index]);
-  Device* raw = copy.get();
-  (*at)[index] = std::move(copy);
-  return raw;
-}
-
-// A rack device's rack, made mutable (a fresh copy installed in the device).
-Rack& mutableRack(Device& d) {
-  auto r = std::make_shared<Rack>(*d.rack);
-  Rack& ref = *r;
-  d.rack = std::move(r);
-  return ref;
-}
-
-// A chain of a mutable rack, made mutable.
-Chain* mutableChainOf(Rack& r, ChainId id) {
-  for (ChainPtr& c : r.chains)
-    if (c->id == id) {
-      auto copy = std::make_shared<Chain>(*c);
-      Chain* raw = copy.get();
-      c = std::move(copy);
+  for (DevicePtr& d : list)
+    if (d->id == id) {
+      auto copy = std::make_shared<Device>(*d);
+      Device* raw = copy.get();
+      d = std::move(copy);
       return raw;
     }
   return nullptr;
 }
 
-// Removes device `id` from the tree (path-copying on the way) and returns it (null: not here).
+// Removes device `id` from `list` and returns it (null: not here).
 DevicePtr takeFromTree(std::vector<DevicePtr>& list, DeviceId id) {
-  std::vector<TreeStep> path;
-  size_t index = 0, chainIndex = 0;
-  if (!findInTree(list, id, {}, path, index, chainIndex)) return nullptr;
-  std::vector<DevicePtr>* at = copyAlong(list, path);
-  DevicePtr d = (*at)[index];
-  at->erase(at->begin() + static_cast<std::ptrdiff_t>(index));
-  return d;
+  for (size_t i = 0; i < list.size(); ++i)
+    if (list[i]->id == id) {
+      DevicePtr d = list[i];
+      list.erase(list.begin() + static_cast<std::ptrdiff_t>(i));
+      return d;
+    }
+  return nullptr;
 }
 
-// Drops every mapping whose target is no longer inside its rack (after devices left a rack or were removed); their ids
-// go to `gone`. Path-copies only racks that change. Post-order (inner racks first), iterative: each open level works on
-// a copy of a chain's device list, which replaces the chain's list when something in it changed.
-bool pruneMappings(std::vector<DevicePtr>& top, std::vector<MappingId>& gone) {
-  struct Open {
-    std::vector<DevicePtr>* list = nullptr;  // the list being pruned
-    size_t device = 0;
-    size_t chain = 0;                        // the device's next chain
-    std::shared_ptr<Device> copy;            // the device's fresh copy, once it or something inside it changes
-    Rack* rack = nullptr;                    // copy's fresh rack
-    std::vector<DevicePtr> inner;            // the working copy of chain `chain − 1`'s devices
-    bool changed = false;                    // a device of `list` was replaced
-  };
-  std::deque<Open> stack;
-  stack.emplace_back().list = &top;
-  bool changed = false;
-  while (!stack.empty()) {
-    Open& f = stack.back();
-    if (f.device == f.list->size()) {
-      const bool listChanged = f.changed;
-      stack.pop_back();
-      if (stack.empty()) {
-        changed = listChanged;
-        break;
-      }
-      Open& p = stack.back();
-      if (listChanged) {  // the parent device's chain `chain − 1` takes the pruned list
-        if (!p.copy) {
-          p.copy = std::make_shared<Device>(*(*p.list)[p.device]);
-          p.rack = &mutableRack(*p.copy);
-        }
-        auto c = std::make_shared<Chain>(*p.rack->chains[p.chain - 1]);
-        c->devices = std::move(p.inner);
-        p.rack->chains[p.chain - 1] = std::move(c);
-      }
-      continue;
-    }
-    const DevicePtr& d = (*f.list)[f.device];
-    if (!d->rack) {
-      ++f.device;
-      continue;
-    }
-    const Rack& cur = f.copy ? *f.rack : *d->rack;
-    if (f.chain < cur.chains.size()) {
-      f.inner = cur.chains[f.chain++]->devices;
-      Open& c = stack.emplace_back();  // `f` stays valid (deque), and so does f.inner while the level above runs
-      c.list = &f.inner;
-      continue;
-    }
-    const Device& now = f.copy ? *f.copy : *d;
-    const auto keep = [&](const MacroMapping& m) {
-      return m.device == now.id ? m.param == kSelectParam : deviceContains(now, m.device);
-    };
-    if (!std::all_of(now.rack->mappings.begin(), now.rack->mappings.end(), keep)) {
-      if (!f.copy) {
-        f.copy = std::make_shared<Device>(*d);
-        f.rack = &mutableRack(*f.copy);
-      }
-      for (const MacroMapping& m : f.rack->mappings)
-        if (!keep(m)) gone.push_back(m.id);
-      std::erase_if(f.rack->mappings, [&](const MacroMapping& m) { return !keep(m); });
-    }
-    if (f.copy) {
-      (*f.list)[f.device] = std::move(f.copy);
-      f.rack = nullptr;
-      f.changed = true;
-    }
-    ++f.device;
-    f.chain = 0;
-  }
-  return changed;
-}
-
-// The ids of `d` and of every device inside it.
-std::vector<DeviceId> deviceIdsIn(const Device& d) {
-  std::vector<DeviceId> out;
-  forEachDeviceIn(d, [&](const Device& x) { out.push_back(x.id); });
-  std::sort(out.begin(), out.end());
-  return out;
-}
-
-// TMM.10-fix1: a rack chain's meta devices take the kind their position says (normaliseMetaKinds: an Instrument Rack's
-// chain starts at the note source). TX.all-free: a track's blocks have no position (the kind of a meta block means
-// nothing there: its cables decide), so they are left as they are.
-void normaliseKinds(std::vector<DevicePtr>& list, ListKind k, std::vector<DeviceId>* changed = nullptr) {
-  if (k == ListKind::InstrumentRackChain || k == ListKind::AudioRackChain)
-    normaliseMetaKinds(list, k == ListKind::InstrumentRackChain, changed);
-}
-
-// T4.8: the list a device goes into: a track's own chain, or a rack chain.
+// The list a device goes into: a track's blocks.
 struct ListAt {
   TrackPath path;
   const Track* track = nullptr;
   const std::vector<DevicePtr>* list = nullptr;
   ListKind kind = ListKind::OtherTrack;
-  ChainId chain;  // invalid: the track's own list
 };
-Result<ListAt> locateList(const Project& p, TrackId track, ChainId chain) {
+Result<ListAt> locateList(const Project& p, TrackId track) {
   ListAt out;
-  if (chain.valid()) {
-    const ChainLoc c = findChain(p, chain);
-    if (!c.chain) return notFound("chain not found");
-    out.track = c.track;
-    out.list = &c.chain->devices;
-    out.kind = chainListKind(*c.rack);
-    out.chain = chain;
-  } else {
-    out.track = findTrackPtr(p, track);
-    if (!out.track) return notFound("track not found");
-    out.list = &out.track->devices;
-    out.kind = listKindOf(out.track->kind);
-  }
+  out.track = findTrackPtr(p, track);
+  if (!out.track) return notFound("track not found");
+  out.list = &out.track->devices;
+  out.kind = listKindOf(out.track->kind);
   out.path = *findTrack(p, out.track->id);
   return out;
-}
-
-// The fresh list of `at` inside the fresh track `t`.
-std::vector<DevicePtr>* listIn(Track& t, const ListAt& at) {
-  if (!at.chain.valid()) return &t.devices;
-  ListKind kind{};
-  DeviceId rack;
-  return mutableChainList(t.devices, at.chain, kind, rack);
 }
 
 struct DevLoc {
@@ -1712,53 +1469,39 @@ Res editDeviceAt(const Snapshot& s, DeviceId id, ChangeSet& cs, ChangeFlag flag,
 
 Res apply_(const Snapshot& s, const AddDevice& c, ChangeSet& cs) {
   if (!c.device) return invalid("no device");
-  Result<ListAt> at = locateList(*s, c.track, c.chain);
+  Result<ListAt> at = locateList(*s, c.track);
   if (!at) return std::move(at).error();
   std::vector<uint32_t> ids;
   PQ_DOC_TRY(checkNewDeviceIds(*s, std::vector<DevicePtr>{c.device}, ids));
-  std::sort(ids.begin(), ids.end());
-  if (std::adjacent_find(ids.begin(), ids.end()) != ids.end()) return invalid("an id twice inside the device");
   std::vector<DevicePtr> chain = *at->list;
   const size_t index = std::min<size_t>(c.index, chain.size());
   chain.insert(chain.begin() + static_cast<std::ptrdiff_t>(index), c.device);
-  std::vector<DeviceId> rekinded;
-  normaliseKinds(chain, at->kind, &rekinded);  // TMM.10-fix1
   PQ_DOC_TRY(checkList(at->kind, chain));
   Res r = editTrack(s, at->path, cs, kChangeStructural, [&](Track& t) {
-    *listIn(t, *at) = std::move(chain);
+    t.devices = std::move(chain);
     return ok();
   });
-  if (r) forEachDeviceIn(*c.device, [&](const Device& d) { cs.devices.push_back(d.id); });
-  if (r) cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
+  if (r) cs.devices.push_back(c.device->id);
   return r;
 }
 
 Res apply_(const Snapshot& s, const RemoveDevice& c, ChangeSet& cs) {
   Result<DevLoc> loc = locateDevice(*s, c.device);
   if (!loc) return std::move(loc).error();
-  std::vector<DeviceId> gone = deviceIdsIn(*loc->device);  // T4.8: a rack with everything inside it
-  const DeviceLoc src = findDevice(*s, c.device);
+  std::vector<DeviceId> gone{c.device};
   // TX.groups: a group goes with its members (model.h "Groups"; GU.2: at any depth).
   std::vector<DeviceId> members;
-  if (isGroupDevice(*loc->device) && src.chain == nullptr)
+  if (isGroupDevice(*loc->device))
     for (const Device* m : groupMembersDeep(loc->track->devices, c.device)) members.push_back(m->id);
   gone.insert(gone.end(), members.begin(), members.end());
   std::sort(gone.begin(), gone.end());
-  Result<ListAt> from = locateList(*s, loc->track->id, src.chain != nullptr ? src.chain->id : ChainId{});
-  if (!from) return std::move(from).error();
-  std::vector<MappingId> pruned;
-  std::vector<DeviceId> rekinded;
   Res r = editTrack(s, loc->path, cs, kChangeStructural, [&](Track& t) {
     (void)takeFromTree(t.devices, c.device);
     for (const DeviceId m : members) (void)takeFromTree(t.devices, m);
-    if (std::vector<DevicePtr>* l = listIn(t, *from))  // TMM.10-fix1: the next device may now take the note source
-      normaliseKinds(*l, from->kind, &rekinded);
-    pruneMappings(t.devices, pruned);  // outer racks' mappings onto what was removed
     return ok();
   });
   if (!r) return r;
   cs.devices.insert(cs.devices.end(), gone.begin(), gone.end());
-  cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
   const WireList& wires = wiresOf(**r);
   const auto touches = [&](const Wire& w) {
     return std::binary_search(gone.begin(), gone.end(), w.from) || std::binary_search(gone.begin(), gone.end(), w.to);
@@ -1772,69 +1515,52 @@ Res apply_(const Snapshot& s, const RemoveDevice& c, ChangeSet& cs) {
 Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
   Result<DevLoc> from = locateDevice(*s, c.device);
   if (!from) return std::move(from).error();
-  const DeviceLoc src = findDevice(*s, c.device);
-  const DevicePtr dev = src.list()[src.index];
+  const std::vector<DevicePtr>& srcList = from->track->devices;
+  const DevicePtr dev = srcList[from->index];
   const TrackId toId = c.toTrack.valid() ? c.toTrack : from->track->id;
-  Result<ListAt> to = locateList(*s, toId, c.toChain);
+  Result<ListAt> to = locateList(*s, toId);
   if (!to) return std::move(to).error();
-  if (c.toChain.valid() && holdsChain(*dev, c.toChain)) return invalid("a rack cannot go into one of its own chains");
-  const bool sameList = to->list == &src.list();
-  if (sameList) {
+  if (to->list == &srcList) {
     std::vector<DevicePtr> chain = *to->list;
-    chain.erase(chain.begin() + src.index);
+    chain.erase(chain.begin() + from->index);
     const size_t at = std::min<size_t>(c.index, chain.size());
-    if (at == src.index) return s;  // where it is
+    if (at == from->index) return s;  // where it is
     chain.insert(chain.begin() + static_cast<std::ptrdiff_t>(at), dev);
-    std::vector<DeviceId> rekinded;
-    normaliseKinds(chain, to->kind, &rekinded);  // TMM.10-fix1
     PQ_DOC_TRY(checkList(to->kind, chain));
     Res r = editTrack(s, to->path, cs, kChangeStructural, [&](Track& t) {
-      *listIn(t, *to) = std::move(chain);
+      t.devices = std::move(chain);
       return ok();
     });
     if (r) cs.devices.push_back(c.device);
-    if (r) cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
     return r;
   }
   // TX.groups: a group moves with its members (appended to the destination list in their order; model.h "Groups";
   // GU.2: at any depth).
   std::vector<DevicePtr> members;
-  if (isGroupDevice(*dev) && src.chain == nullptr)
-    for (const DevicePtr& m : src.list())
-      if (m->group.valid() && groupContains(src.list(), dev->id, m->id)) members.push_back(m);
+  if (isGroupDevice(*dev))
+    for (const DevicePtr& m : srcList)
+      if (m->group.valid() && groupContains(srcList, dev->id, m->id)) members.push_back(m);
   {  // the destination list with the device in it must hold
     std::vector<DevicePtr> dst = *to->list;
     dst.insert(dst.begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(c.index, dst.size())), dev);
     dst.insert(dst.end(), members.begin(), members.end());
-    normaliseKinds(dst, to->kind);
     PQ_DOC_TRY(checkList(to->kind, dst));
   }
-  Result<ListAt> fromList = locateList(*s, from->track->id, src.chain != nullptr ? src.chain->id : ChainId{});
-  if (!fromList) return std::move(fromList).error();
   auto np = copyOf(s);
-  std::vector<MappingId> pruned;
   // No Track& is held across a mutableTrack call (M4 review H1): mutableTrack re-copies every ancestor on its path, so
   // when the destination is a child of the source group, a reference to the source taken before the second call points
   // at a copy the new ancestor chain no longer owns (freed). Each step re-resolves its track; the paths stay valid
-  // because only device lists change. The extra Track copies cost a few hundred bytes on the UI thread.
-  // The source first (removing may path-copy the racks on the way to the destination too, when both are in one track).
+  // because only device lists change.
   (void)takeFromTree(mutableTrack(*np, from->path).devices, c.device);
   for (const DevicePtr& m : members) (void)takeFromTree(mutableTrack(*np, from->path).devices, m->id);
-  std::vector<DevicePtr>* dst = listIn(mutableTrack(*np, to->path), *to);
-  if (dst == nullptr) return invalid("the destination chain is inside the moved device");
-  dst->insert(dst->begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(c.index, dst->size())), dev);
-  dst->insert(dst->end(), members.begin(), members.end());
+  std::vector<DevicePtr>& dst = mutableTrack(*np, to->path).devices;
+  dst.insert(dst.begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(c.index, dst.size())), dev);
+  dst.insert(dst.end(), members.begin(), members.end());
   for (const DevicePtr& m : members) cs.devices.push_back(m->id);
-  std::vector<DeviceId> rekinded;  // TMM.10-fix1: both lists' meta devices take the kind their position says
-  normaliseKinds(*dst, to->kind, &rekinded);
-  if (std::vector<DevicePtr>* left = listIn(mutableTrack(*np, from->path), *fromList))
-    normaliseKinds(*left, fromList->kind, &rekinded);
-  pruneMappings(mutableTrack(*np, from->path).devices, pruned);  // mappings of the racks it left
   cs.mark(kChangeStructural);
   cs.tracks.push_back(from->track->id);
   cs.tracks.push_back(to->track->id);
-  forEachDeviceIn(*dev, [&](const Device& d) { cs.devices.push_back(d.id); });
-  cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
+  cs.devices.push_back(dev->id);
   return Snapshot(std::move(np));
 }
 
@@ -1871,10 +1597,7 @@ Res apply_(const Snapshot& s, const SetDeviceParam& c, ChangeSet& cs) {
   const DeviceLoc loc = findDevice(*s, c.device);
   if (!loc.track) return notFound("device not found");
   PQ_DOC_TRY(checkDeviceValue(c.param, c.value));
-  if (loc.device->rack) {  // T4.8: a macro or the chain selector
-    if (!isRackParam(c.param)) return invalid("'" + c.param + "' is not a rack param (macro1 … macro16, select)");
-    if (c.value && !finiteIn(*c.value, 0.0, kMacroMax)) return invalid("rack params are in [0, 127]");
-  } else if (c.value && !finiteIn(*c.value, 0.0, 1.0)) {  // GU.1: a knob position
+  if (c.value && !finiteIn(*c.value, 0.0, 1.0)) {  // GU.1: a knob position
     return invalid("'" + c.param + "': a param stores its knob position, in [0, 1]");
   }
   // GU.2 (model.h "Atom blocks and value blocks"): an atom block has no params, a value block only `value`.
@@ -1893,7 +1616,6 @@ Res apply_(const Snapshot& s, const SetDeviceSetting& c, ChangeSet& cs) {
   const DeviceLoc loc = findDevice(*s, c.device);
   if (!loc.track) return notFound("device not found");
   PQ_DOC_TRY(checkDeviceValue(c.setting, c.value));
-  if (loc.device->rack) return invalid("racks have no settings");
   std::vector<DeviceValue> settings = loc.device->settings;
   if (!setValue(settings, c.setting, c.value)) return s;
   return editDeviceAt(s, c.device, cs, kChangeStructural, [&](Device& d) {
@@ -1902,240 +1624,11 @@ Res apply_(const Snapshot& s, const SetDeviceSetting& c, ChangeSet& cs) {
   });
 }
 
-// ---- Racks (T4.8) -----------------------------------------------------------------------------------------------
-
-struct RackLoc {
-  const Device* rack = nullptr;
-  const Track* track = nullptr;
-};
-Result<RackLoc> locateRack(const Project& p, DeviceId id) {
-  const DeviceLoc d = findDevice(p, id);
-  if (!d.track) return notFound("rack not found");
-  if (!d.device->rack) return invalid("the device is not a rack");
-  return RackLoc{d.device, d.track};
-}
-
-// Edits the chain `id` (fresh copy) of its rack (fresh copy) through f(Rack&, Chain&).
-template <class F>
-Res editChain(const Snapshot& s, ChainId id, ChangeSet& cs, ChangeFlag flag, F&& f) {
-  const ChainLoc c = findChain(*s, id);
-  if (!c.chain) return notFound("chain not found");
-  return editDeviceAt(s, c.rack->id, cs, flag, [&](Device& rack) {
-    Rack& r = mutableRack(rack);
-    return f(r, *mutableChainOf(r, id));
-  });
-}
-
-Res apply_(const Snapshot& s, const AddChain& c, ChangeSet& cs) {
-  if (!c.chain) return invalid("no chain");
-  Result<RackLoc> rl = locateRack(*s, c.rack);
-  if (!rl) return std::move(rl).error();
-  if (!c.chain->id.valid() || findChain(*s, c.chain->id).chain) return invalid("chain id missing or already in use");
-  std::vector<uint32_t> ids{c.chain->id.value};
-  PQ_DOC_TRY(checkNewDeviceIds(*s, c.chain->devices, ids));
-  std::sort(ids.begin(), ids.end());
-  if (std::adjacent_find(ids.begin(), ids.end()) != ids.end()) return invalid("an id twice inside the chain");
-  Res r = editDeviceAt(s, c.rack, cs, kChangeStructural, [&](Device& rack) {
-    Rack& rr = mutableRack(rack);
-    rr.chains.insert(rr.chains.begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(c.index, rr.chains.size())), c.chain);
-    return checkRack(rack);
-  });
-  if (r) forEachDeviceIn(c.chain->devices, [&](const Device& d) { cs.devices.push_back(d.id); });
-  return r;
-}
-
-Res apply_(const Snapshot& s, const RemoveChain& c, ChangeSet& cs) {
-  const ChainLoc loc = findChain(*s, c.chain);
-  if (!loc.chain) return notFound("chain not found");
-  std::vector<DeviceId> gone;
-  forEachDeviceIn(loc.chain->devices, [&](const Device& d) { gone.push_back(d.id); });
-  std::sort(gone.begin(), gone.end());
-  const DeviceId rackId = loc.rack->id;
-  std::vector<MappingId> pruned;
-  Res r = editTrack(s, *findTrack(*s, loc.track->id), cs, kChangeStructural, [&](Track& t) {
-    Rack& rr = mutableRack(*mutableDevice(t.devices, rackId));
-    std::erase_if(rr.chains, [&](const ChainPtr& x) { return x->id == c.chain; });
-    pruneMappings(t.devices, pruned);
-    return ok();
-  });
-  if (!r) return r;
-  cs.devices.push_back(rackId);
-  cs.devices.insert(cs.devices.end(), gone.begin(), gone.end());
-  const WireList& wires = wiresOf(**r);
-  const auto touches = [&](const Wire& w) {
-    return std::binary_search(gone.begin(), gone.end(), w.from) || std::binary_search(gone.begin(), gone.end(), w.to);
-  };
-  if (std::none_of(wires.begin(), wires.end(), touches)) return r;
-  auto np = std::make_shared<Project>(**r);
-  dropWiresOf(*np, gone, cs);
-  return Snapshot(std::move(np));
-}
-
-Res apply_(const Snapshot& s, const MoveChain& c, ChangeSet& cs) {
-  const ChainLoc loc = findChain(*s, c.chain);
-  if (!loc.chain) return notFound("chain not found");
-  const size_t n = loc.rack->rack->chains.size();
-  const size_t at = std::min<size_t>(c.index, n - 1);
-  if (at == loc.index) return s;
-  return editDeviceAt(s, loc.rack->id, cs, kChangeStructural, [&](Device& rack) {
-    Rack& rr = mutableRack(rack);
-    ChainPtr moved = rr.chains[loc.index];
-    rr.chains.erase(rr.chains.begin() + loc.index);
-    rr.chains.insert(rr.chains.begin() + static_cast<std::ptrdiff_t>(at), std::move(moved));
-    return ok();
-  });
-}
-
-Res apply_(const Snapshot& s, const RenameChain& c, ChangeSet& cs) {
-  const ChainLoc loc = findChain(*s, c.chain);
-  if (!loc.chain) return notFound("chain not found");
-  if (loc.chain->name == c.name) return s;
-  return editChain(s, c.chain, cs, kChangeMeta, [&](Rack&, Chain& ch) {
-    ch.name = c.name;
-    return ok();
-  });
-}
-
-Res apply_(const Snapshot& s, const SetChainMixer& c, ChangeSet& cs) {
-  if (!finiteIn(c.volumeDb, kMinVolumeDb, kMaxVolumeDb)) return invalid("chain volume out of range");
-  if (!finiteIn(c.pan, -1.0, 1.0)) return invalid("chain pan out of range");
-  const ChainLoc loc = findChain(*s, c.chain);
-  if (!loc.chain) return notFound("chain not found");
-  if (loc.chain->volumeDb == c.volumeDb && loc.chain->pan == c.pan) return s;
-  // T4.18: the value that changed as its automation ParamRef (a hand edit of an automated chain volume / pan overrides
-  // its lane); the link re-derives the whole chain from either.
-  if (loc.chain->volumeDb != c.volumeDb) cs.params.push_back(ParamRef::chain(c.chain, kChainVolume));
-  if (loc.chain->pan != c.pan) cs.params.push_back(ParamRef::chain(c.chain, kChainPan));
-  return editChain(s, c.chain, cs, kChangeParam, [&](Rack&, Chain& ch) {
-    ch.volumeDb = c.volumeDb;
-    ch.pan = c.pan;
-    return ok();
-  });
-}
-
-Res apply_(const Snapshot& s, const SetChainActive& c, ChangeSet& cs) {
-  const ChainLoc loc = findChain(*s, c.chain);
-  if (!loc.chain) return notFound("chain not found");
-  if (loc.chain->active == c.active) return s;
-  return editChain(s, c.chain, cs, kChangeStructural, [&](Rack&, Chain& ch) {
-    ch.active = c.active;
-    return ok();
-  });
-}
-
-Res apply_(const Snapshot& s, const SetChainSolo& c, ChangeSet& cs) {
-  const ChainLoc loc = findChain(*s, c.chain);
-  if (!loc.chain) return notFound("chain not found");
-  if (loc.chain->solo == c.solo) return s;
-  return editChain(s, c.chain, cs, kChangeStructural, [&](Rack&, Chain& ch) {
-    ch.solo = c.solo;
-    return ok();
-  });
-}
-
-Res apply_(const Snapshot& s, const SetChainZone& c, ChangeSet& cs) {
-  const ChainLoc loc = findChain(*s, c.chain);
-  if (!loc.chain) return notFound("chain not found");
-  if (static_cast<uint8_t>(c.kind) > static_cast<uint8_t>(ZoneKind::Select)) return invalid("unknown zone kind");
-  const KeyZoneUnit unit = loc.rack->rack->keyUnit;
-  if (!zoneValid(c.zone, c.kind, unit)) return invalid("zone out of order or out of range");
-  if (c.kind != ZoneKind::Select && loc.rack->kind != DeviceKind::Instrument && !zoneOff(c.zone, c.kind, unit))
-    return invalid("key and velocity zones are Instrument Rack zones");
-  const Zone& old = loc.chain->zone(c.kind);
-  if (old == c.zone) return s;
-  // A zone that stays on (or off) is a runtime value; switching it on or off adds or removes its nodes.
-  const bool structural = zoneOff(old, c.kind, unit) != zoneOff(c.zone, c.kind, unit);
-  if (!structural) cs.params.push_back(ParamRef::chain(c.chain, 1 + static_cast<uint32_t>(c.kind)));
-  return editChain(s, c.chain, cs, structural ? kChangeStructural : kChangeParam, [&](Rack&, Chain& ch) {
-    ch.zone(c.kind) = c.zone;
-    return ok();
-  });
-}
-
-Res apply_(const Snapshot& s, const AddMacroMapping& c, ChangeSet& cs) {
-  PQ_DOC_TRY(checkMapping(c.mapping));
-  Result<RackLoc> rl = locateRack(*s, c.rack);
-  if (!rl) return std::move(rl).error();
-  if (findMapping(*s, c.mapping.id).mapping) return invalid("mapping id already in use");
-  if (const MappingLoc m = mappingOf(*s, c.mapping.device, c.mapping.param); m.mapping)
-    return invalid("this param is already mapped to a macro");
-  const DeviceLoc target = findDevice(*s, c.mapping.device);
-  if (!target.device) return notFound("mapping target device not found");
-  if (target.device->rack && !isRackParam(c.mapping.param)) return invalid("a rack's params are its macros and selector");
-  if (std::string why = metaParamBakedOnly(*target.device, c.mapping.param); !why.empty()) return invalid(why);  // TMM.5
-  Res r = editDeviceAt(s, c.rack, cs, kChangeStructural, [&](Device& rack) {
-    Rack& rr = mutableRack(rack);
-    rr.mappings.insert(std::upper_bound(rr.mappings.begin(), rr.mappings.end(), c.mapping.id,
-                                        [](MappingId a, const MacroMapping& b) { return a < b.id; }),
-                       c.mapping);
-    return checkRack(rack);
-  });
-  if (r) cs.devices.push_back(c.mapping.device);
-  return r;
-}
-
-Res apply_(const Snapshot& s, const RemoveMacroMapping& c, ChangeSet& cs) {
-  const MappingLoc m = findMapping(*s, c.mapping);
-  if (!m.mapping) return notFound("mapping not found");
-  const DeviceId target = m.mapping->device;
-  Res r = editDeviceAt(s, m.rack->id, cs, kChangeStructural, [&](Device& rack) {
-    std::erase_if(mutableRack(rack).mappings, [&](const MacroMapping& x) { return x.id == c.mapping; });
-    return ok();
-  });
-  if (r) cs.devices.push_back(target);
-  return r;
-}
-
-Res apply_(const Snapshot& s, const SetMacroMapping& c, ChangeSet& cs) {
-  PQ_DOC_TRY(checkMapping(c.mapping));
-  const MappingLoc m = findMapping(*s, c.mapping.id);
-  if (!m.mapping) return notFound("mapping not found");
-  if (m.mapping->device != c.mapping.device || m.mapping->param != c.mapping.param)
-    return invalid("a mapping's target cannot change (remove it and map again)");
-  if (*m.mapping == c.mapping) return s;
-  Res r = editDeviceAt(s, m.rack->id, cs, kChangeStructural, [&](Device& rack) {
-    for (MacroMapping& x : mutableRack(rack).mappings)
-      if (x.id == c.mapping.id) x = c.mapping;
-    return ok();
-  });
-  if (r) cs.devices.push_back(c.mapping.device);
-  return r;
-}
-
-Res apply_(const Snapshot& s, const SetRackOptions& c, ChangeSet& cs) {
-  Result<RackLoc> rl = locateRack(*s, c.rack);
-  if (!rl) return std::move(rl).error();
-  const Rack& old = *rl->rack->rack;
-  const RackOptions& o = c.options;
-  if (rackOptions(old) == o) return s;
-  const bool structural = o.keyUnit != old.keyUnit || o.voiceChains != old.voiceChains;
-  return editDeviceAt(s, c.rack, cs, structural ? kChangeStructural : kChangeMeta, [&](Device& rack) {
-    Rack& r = mutableRack(rack);
-    r.macroNames = o.macroNames;
-    r.visibleMacros = o.visibleMacros;
-    r.variations = o.variations;
-    r.randomizeExclude = o.randomizeExclude;
-    r.showChains = o.showChains;
-    r.showMacros = o.showMacros;
-    r.voiceChains = o.voiceChains;
-    if (o.keyUnit != r.keyUnit) {  // the key zones meant another unit: back to off
-      r.keyUnit = o.keyUnit;
-      for (ChainPtr& ch : r.chains) {
-        auto copy = std::make_shared<Chain>(*ch);
-        copy->key = fullZone(ZoneKind::Key, o.keyUnit);
-        ch = std::move(copy);
-      }
-    }
-    return checkRack(rack);
-  });
-}
-
 // T4.4-fix1: a user device's text (fork / edit) or back to the stock patch (null).
 Res apply_(const Snapshot& s, const SetDevicePatch& c, ChangeSet& cs) {
-  const DeviceLoc loc = findDevice(*s, c.device);  // T4.8: at any depth (a device inside a rack)
+  const DeviceLoc loc = findDevice(*s, c.device);
   if (!loc.track) return notFound("device not found");
   const Device& old = *loc.device;
-  if (old.rack) return invalid("a rack has no patch text");
   if (c.source && c.source->text.empty())
     return Error{ErrorCode::InvalidArgument, "a device patch text must not be empty", {}};
   if (old.source == c.source || (old.source && c.source && *old.source == *c.source)) return s;
@@ -2188,7 +1681,7 @@ Res apply_(const Snapshot& s, const SetParamCurve& c, ChangeSet& cs) {  // GU.1
 Res apply_(const Snapshot& s, const SetGroupPanel& c, ChangeSet& cs) {  // GU.3 (pq/document/panel.h)
   const DeviceLoc loc = findDevice(*s, c.group);
   if (!loc.track) return notFound("device not found");
-  if (!isGroupDevice(*loc.device) || loc.chain != nullptr) return invalid("only a group has a panel");
+  if (!isGroupDevice(*loc.device)) return invalid("only a group has a panel");
   PanelPtr panel = c.panel && !c.panel->empty() ? c.panel : nullptr;  // an empty panel is none
   if (panel) {
     PQ_DOC_TRY(checkPanel(*panel));
@@ -2208,8 +1701,7 @@ Res apply_(const Snapshot& s, const SetDeviceGroup& c, ChangeSet& cs) {  // TX.g
   const DeviceLoc loc = findDevice(*s, c.device);
   if (!loc.track) return notFound("device not found");
   if (loc.device->group == c.group) return s;
-  if (loc.chain != nullptr) return invalid("a group member sits in a track's circuit, not in a rack chain");
-  Result<ListAt> at = locateList(*s, loc.track->id, ChainId{});
+  Result<ListAt> at = locateList(*s, loc.track->id);
   if (!at) return std::move(at).error();
   std::vector<DevicePtr> list = *at->list;
   for (DevicePtr& d : list)
@@ -2272,8 +1764,6 @@ Res apply_(const Snapshot& s, const AddWire& c, ChangeSet& cs) {
     const Track* t = findTrackPtr(*s, c.wire.mixer);
     if (t == nullptr) return notFound("wire target track not found");
     // TX.all-free-fix1: another track's blocks or source too (a send-like route; the lowering refuses a cycle).
-    if (!c.wire.fromNoteSource() && findDevice(*s, c.wire.from).chain != nullptr)
-      return invalid("a track's mixer takes wires from tracks' blocks and sources (not from inside a rack)");
     if (c.wire.fromNoteSource() && sourceTrack != t && sourceTrack->kind == TrackKind::Midi)
       return invalid("a track's notes go into blocks, of any track (a mixer takes audio)");
   } else {
@@ -2531,26 +2021,11 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
     "Edit Device Patch", "Rename Device", "Chain Input", "Device Group", "Knob Curve", "Edit Panel",
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer", "Cable Signal",
-    "Add Chain", "Delete Chain", "Move Chain", "Rename Chain", "Chain Mixer", "Activate Chain", "Solo Chain", "Chain Zone",
-    "Map Macro", "Unmap Macro", "Edit Macro Mapping", "Rack Options",
     "Add Meta Module", "Delete Meta Module", "Rename Meta Module", "Meta Module Parameter", "Meta Module Setting",
     "Edit Meta Module Data",
     "Batch"};
 
 }  // namespace
-
-RackOptions rackOptions(const Rack& r) {
-  RackOptions o;
-  o.macroNames = r.macroNames;
-  o.visibleMacros = r.visibleMacros;
-  o.variations = r.variations;
-  o.randomizeExclude = r.randomizeExclude;
-  o.keyUnit = r.keyUnit;
-  o.voiceChains = r.voiceChains;
-  o.showChains = r.showChains;
-  o.showMacros = r.showMacros;
-  return o;
-}
 
 std::string_view label(const Command& c) noexcept {
   if (const Batch* b = std::get_if<Batch>(&c.v)) return b->label.empty() ? kLabels.back() : std::string_view(b->label);
@@ -2559,8 +2034,7 @@ std::string_view label(const Command& c) noexcept {
 
 namespace {
 // T4.18: after the whole command, every lane of a device-kind param (isDeviceParamKind) lives on its laneHome: a lane
-// whose device, chain or wire is gone is removed, one whose device moved to another track (with its rack, or a wire's
-// target) moves there. After the whole command, so a Batch that takes devices out and puts them back with their ids
+// whose device or wire is gone is removed, one whose device moved to another track (or a wire's target) moves there. After the whole command, so a Batch that takes devices out and puts them back with their ids
 // (Group / Ungroup Devices, Hot-Swap) keeps their lanes where they are. Only lanes of those kinds are looked at; a
 // project without any costs one walk over its tracks' lane lists.
 Snapshot finishDeviceLanes(const Snapshot& s, ChangeSet& cs) {
@@ -2575,19 +2049,13 @@ Snapshot finishDeviceLanes(const Snapshot& s, ChangeSet& cs) {
       if (isDeviceParamKind(l->param.kind)) seen.push_back({t.id, l->id, l->param});
   });
   if (seen.empty()) return s;
-  // Where each device and chain lives now (one walk).
-  std::unordered_map<uint32_t, TrackId> deviceTrack, chainTrack;
-  forEachDevice(*s, [&](const Device& d, const Track& t) {
-    deviceTrack.emplace(d.id.value, t.id);
-    if (d.rack)
-      for (const ChainPtr& c : d.rack->chains) chainTrack.emplace(c->id.value, t.id);
-  });
+  // Where each device lives now (one walk).
+  std::unordered_map<uint32_t, TrackId> deviceTrack;
+  forEachDevice(*s, [&](const Device& d, const Track& t) { deviceTrack.emplace(d.id.value, t.id); });
   auto home = [&](const ParamRef& r) -> TrackId {
     const std::unordered_map<uint32_t, TrackId>* m = &deviceTrack;
     uint32_t key = r.owner;
-    if (r.kind == ParamKind::ChainMixer) {
-      m = &chainTrack;
-    } else if (r.kind == ParamKind::WireAmount) {
+    if (r.kind == ParamKind::WireAmount) {
       const Wire* w = findWire(*s, WireId{r.owner});
       if (w == nullptr) return {};
       key = w->to.value;

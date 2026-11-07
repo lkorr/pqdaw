@@ -11,7 +11,6 @@
 #include "pq/document/edit_ops.h"
 #include "pq/ui/theme.h"
 #include "internal.h"
-#include "pq/views/circuit/chain_paint.h"
 #include "pq/views/circuit/probes.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/meta/face_targets.h"
@@ -279,7 +278,7 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
     const Rect r = snapRect(deviceRect(n.x, n.y, n.w, n.h));
     if (!overlaps(r, clip)) continue;
     // T5.x-circuit-chain: the frame is a labelled boundary with the kind's accent (as in the track circuit view).
-    const Rgba accent = n.rack ? th.accent.solo : n.instrument ? th.accent.primary : th.circuit.wireAudio;
+    const Rgba accent = n.instrument ? th.accent.primary : th.circuit.wireAudio;
     const float stripH = std::round(16.0f * s);
     dl.addRectFilled(r, ui::lerp(th.circuit.background, th.circuit.subcircuitFill, 0.5f));
     dl.addRectFilled({r.x0, r.y0, r.x1, r.y0 + stripH}, ui::lerp(th.circuit.background, accent, 0.22f));
@@ -295,7 +294,7 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
         const int32_t adv = paint::text(ctx, font, box, n.title, th.circuit.symbolText, ui::TextAlign::Left);
         const int32_t gap = static_cast<int32_t>(std::round(10.0f * us));
         if (adv > 0 && adv + gap + 12 < box.w) {
-          const char* kind = n.rack ? (n.instrument ? "Instrument Rack" : "Audio Effect Rack") : (n.instrument ? "Instrument" : "Audio Effect");
+          const char* kind = n.instrument ? "Instrument" : "Audio Effect";
           paint::text(ctx, font, {box.x + adv + gap, box.y, box.w - adv - gap, box.h}, kind, th.circuit.pinText, ui::TextAlign::Left);
         }
       } else if (r.x1 - r.x0 >= 28.0f * us) {  // zoomed out: the name in a pill at the frame's corner
@@ -310,10 +309,6 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
                                 th.circuit.symbolText);
       }
     }
-    // T5.x-circuit-chain: an opened rack's chains and devices as nested frames.
-    if (n.rack)
-      if (const circuit::ChainCircuit* cc = view_.rackCircuit(n.device))
-        circuit::paintChainBoxes(ctx, *this, *cc, n.x + metrics::kExpandedPad - cc->scene->x0, n.y + 16.0f + metrics::kExpandedPad - cc->scene->y0);
   }
   // TX.groups: opened groups' capsules (a rounded frame with its title strip; its contents are scene nodes over it).
   // GU.2: nested capsules come after their parent in the model, so each is drawn over the one it sits in. An instrument
@@ -446,11 +441,6 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
   }
   (void)ps;
   const bool text = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr && level == Lod::Near;
-  // T5.x-circuit-chain: opened racks' deactivated chains and devices veiled.
-  for (const Node& n : pp.nodes)
-    if (n.rack && n.expanded && mine(n))
-      if (const circuit::ChainCircuit* cc = view_.rackCircuit(n.device))
-        circuit::paintChainVeils(ctx, *this, *cc, n.x + metrics::kExpandedPad - cc->scene->x0, n.y + 16.0f + metrics::kExpandedPad - cc->scene->y0);
   // The opened band's name over its opened devices when its strip is too thin to show it under them (zoomed out).
   if (const Rect pb = openedBandPill(*this, view_, ctx); !liftPass && pb.x1 > pb.x0 && overlaps(pb, clip)) {
     const Band& b = pp.bands[pp.bandOf(view_.openedBand())];
@@ -858,15 +848,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
             v.context().setStatus("A meta module's atoms are generated from its face: read-only. Its title strip closes it.");
             return true;
           }
-          doc::DeviceId target = n.rack ? doc::DeviceId{} : n.device;
-          if (n.rack)
-            if (const circuit::ChainCircuit* cc = v.rackCircuit(n.device)) {
-              const float dx = n.x + metrics::kExpandedPad - cc->scene->x0, dy = n.y + 16.0f + metrics::kExpandedPad - cc->scene->y0;
-              const uint32_t b = cc->deviceBoxAt(w.x - dx, w.y - dy);
-              if (b != circuit::kNoBox && cc->boxes[b].kind == circuit::ChainBoxKind::Device && !cc->boxes[b].missing) target = cc->boxes[b].device;
-            }
-          if (target.valid()) (void)v.editDeviceCircuit(target);
-          else v.context().setStatus("A rack has no circuit of its own: double-click a device inside it to edit its circuit");
+          (void)v.editDeviceCircuit(n.device);
           return true;
         }
         if (node != kNone && pp.nodes[node].kind == NodeKind::Mixer) {
@@ -1122,7 +1104,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
             const Node& a = pp.nodes[from_.node];
             doc::DeviceId dev = a.device;
             std::string port = a.outputs[from_.port].name;
-            if (const size_t at = port.rfind('@'); at != std::string::npos && (a.rack || a.group)) {
+            if (const size_t at = port.rfind('@'); at != std::string::npos && a.group) {
               dev = doc::DeviceId{static_cast<uint32_t>(std::stoul(port.substr(at + 1)))};
               port.resize(at);
             }
@@ -1355,7 +1337,7 @@ void ProjectCanvas::finishWire(Vec2 pos) {
       if (from_.port == 0) link.port.clear();  // TX.all-free: the track's own signal (kMainPort)
     } else {
       link.device = a.device;
-      if (const size_t at = link.port.rfind('@'); at != std::string::npos && (a.rack || a.group)) {
+      if (const size_t at = link.port.rfind('@'); at != std::string::npos && a.group) {
         link.device = doc::DeviceId{static_cast<uint32_t>(std::stoul(link.port.substr(at + 1)))};
         link.port.resize(at);
       }
@@ -1394,14 +1376,14 @@ void ProjectCanvas::finishWire(Vec2 pos) {
         // then plays it with its voices; its own track's is a main link, the head of the path); a rack's input only a
         // main output (a main link). Any other output there is refused, as before.
         const bool notesIn = param == "notes";
-        const bool mainOnly = notesIn || (t.rack && !q->param);
+        const bool mainOnly = notesIn;
         const bool fromSource = isTrackSource(a) && from_.port == 0 && (a.band == t.band || (notesIn && isNoteSource(pp, a)));
         const bool fromMain = fromSource || (!notesIn && a.kind == NodeKind::Device &&
                                              a.outputs[from_.port].name == v.mainPorts(a.device).out);
         if (mainOnly && !fromMain) return;
         if (mainOnly) param.clear();
         doc::DeviceId to = t.device;
-        if (const size_t at = param.rfind('@'); t.rack && at != std::string::npos) {  // T4.8: a device inside the rack
+        if (const size_t at = param.rfind('@'); t.group && at != std::string::npos) {  // a device inside the closed group
           to = doc::DeviceId{static_cast<uint32_t>(std::stoul(param.substr(at + 1)))};
           param.resize(at);
         }
@@ -1975,7 +1957,7 @@ bool ProjectCanvas::pressBackWire(const ui::PointerEvent& e) {
     if (const Port* q = wireTarget(t, pin.port)) {
       backParam_ = q->name;
       backDevice_ = t.device;
-      if (const size_t at = backParam_.rfind('@'); at != std::string::npos && (t.rack || t.group)) {
+      if (const size_t at = backParam_.rfind('@'); at != std::string::npos && t.group) {
         backDevice_ = doc::DeviceId{static_cast<uint32_t>(std::stoul(backParam_.substr(at + 1)))};
         backParam_.resize(at);
       }
@@ -2071,7 +2053,7 @@ void ProjectCanvas::finishBackWire(Vec2 pos) {
     }
     if (n.kind == NodeKind::Device || n.kind == NodeKind::Terminal) {
       doc::DeviceId from = n.device;
-      if (const size_t at = port.rfind('@'); at != std::string::npos && (n.rack || n.group)) {
+      if (const size_t at = port.rfind('@'); at != std::string::npos && n.group) {
         from = doc::DeviceId{static_cast<uint32_t>(std::stoul(port.substr(at + 1)))};
         port.resize(at);
       }
