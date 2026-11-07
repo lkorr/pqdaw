@@ -2316,7 +2316,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **Tests deleted or ported**: Meta Operator's tests and fixtures (with it); the PA / VCA faces' tests (`test_meta_vca_face`, `test_vca`, `test_phase_acc`, the face cases of `test_meta_faces`, the VCA marker golden) — their behaviour has no successor until GU.7; every PA / VCA behaviour that still exists was ported to the modules (Frequency drag, signed Frequency (TMM.18), the wrap phase, the VCA's knob glide, curve edits, wires into its knob, In → mul ← Value), and generic meta-module cases moved to the Wavetable / Envelope. `test_project_patch`'s count of params asked for a control dropped from > 300 to 292 (Meta Operator, the PA and the VCA left): its bound is now > 280.
 - Status: open (provisional choices above).
 
-## Q?-GU.5-a · 2026-11-07 · GU.5 · The panel window: the choices made where the plan left room
+## Q223 · 2026-11-07 · GU.5 · The panel window: the choices made where the plan left room
 - **The window is a child of the project patch view, not an overlay popup**: it floats over the canvas only (clipped to it), menus open over it, outside clicks never close it. Its state is view state keyed by group (`ViewState::panelWindows`, the view's optional "panels"; no schema bump, as GU.2 added keys).
 - **Where a sent control goes**: the innermost group around it whose window is open, else its outermost group (the Device view's group). The window's + sends into its own group (refused, with a message, when the control is outside it).
 - **Duplicates are allowed**: sending a control already on the panel adds a second element (two views of one control); undo removes it.
