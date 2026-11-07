@@ -31,6 +31,7 @@ pq_add_module(pq_doc
     src/devices.cpp
     src/meta.cpp
     src/main_path.cpp
+    src/instrument_groups.cpp
     src/audibility.cpp
     src/lower.cpp
     src/pitch_resolve.cpp

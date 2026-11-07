@@ -88,7 +88,11 @@ namespace pq::doc {
 // the project sounds exactly as it did.
 // 18 = pan laws (TX.pan-laws, model.h PanMode): a track's "mixer" may carry "panMode": "constantPower" | "linear" |
 // "stereo" (absent: "balance"). Migration 17 → 18 gives every MIDI track "constantPower" (its law until then).
-inline constexpr int32_t kSchemaVersion = 18;
+// 19 = instrument groups (IG.1-2, pq/document/instrument_groups.h): a wire may carry "single": true (a single-signal
+// cable); a group's polyphony is its settings ("voices", "mono", "legato", "glide", "steal"). Migration 18 → 19 is a
+// no-op on the JSON; after the decode every file older than 19 has its MIDI tracks' instruments wrapped into instrument
+// groups (migrateToInstrumentGroups: sound-identical).
+inline constexpr int32_t kSchemaVersion = 19;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader

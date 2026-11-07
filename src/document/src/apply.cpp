@@ -2297,6 +2297,14 @@ Res apply_(const Snapshot& s, const SetWireReducer& c, ChangeSet& cs) {
   return editWire(s, c.wire, cs, kChangeStructural, [&](Wire& w) { w.reducer = c.reducer; });
 }
 
+Res apply_(const Snapshot& s, const SetWireSignal& c, ChangeSet& cs) {  // IG.1-2
+  if (static_cast<uint8_t>(c.reducer) > static_cast<uint8_t>(WireReducer::Loudest)) return invalid("unknown wire reducer");
+  return editWire(s, c.wire, cs, kChangeStructural, [&](Wire& w) {
+    w.single = c.single;
+    w.reducer = c.reducer;
+  });
+}
+
 // ---- Meta modules (TMM.3) ------------------------------------------------------------------------------------------
 
 // The device's meta map with `f` applied to a copy of it (an empty result is stored as none).

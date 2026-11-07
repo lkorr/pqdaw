@@ -493,6 +493,12 @@ EditResult deleteWires(const Project& p, std::span<const WireId> wires);
 // store gesture (Param: no compile).
 EditResult setWireAmount(const Project& p, WireId wire, double amount);
 EditResult setWireReducer(const Project& p, WireId wire, WireReducer reducer);
+// IG.1-2 (model.h Wire::single): a cable per note or single-signal with `reducer` (sum, max = Highest, newest = Last).
+// One step.
+EditResult setWireSignal(const Project& p, WireId wire, bool single, WireReducer reducer);
+// IG.1-2 (model.h "Instrument groups"): an instrument group's polyphony as settings of the group device (each field
+// written; one step).
+EditResult setGroupPolyphony(const Project& p, DeviceId group, const GroupPolyphony& poly);
 // The wires into `device`.`param` / out of `device`.`port` (any order of the project's list: by id).
 std::vector<WireId> wiresInto(const Project& p, DeviceId device, std::string_view param);
 std::vector<WireId> wiresFrom(const Project& p, DeviceId device, std::string_view port);

@@ -217,3 +217,79 @@ PQ_ALL_FREE_PART(2)
 PQ_ALL_FREE_PART(3)
 PQ_ALL_FREE_PART(4)
 PQ_ALL_FREE_PART(5)
+
+// TEMP IG fixture generator (removed after use)
+#include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
+#include "pq/meta/registry.h"
+namespace {
+template <class E>
+E igRun(DocumentStore& s, Result<E> e) {
+  REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+  REQUIRE(s.dispatch(e->command).ok());
+  return *e;
+}
+DeviceId igMeta(DocumentStore& s, TrackId t, std::string_view type) {
+  const meta::Type* mt = meta::findType(type);
+  REQUIRE(mt != nullptr);
+  const DeviceId id = s.ids().device();
+  auto d = std::make_shared<Device>(*makeDevice(id, std::string(kMetaDevicePrefix) + std::string(type), DeviceKind::AudioEffect));
+  d->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(*mt)}});
+  REQUIRE(s.dispatch(AddDevice{t, std::move(d), kAppend}).ok());
+  return id;
+}
+Wire igW(DeviceId f, std::string port, DeviceId t, std::string param) { Wire w; w.from = f; w.port = port; w.to = t; w.param = param; return w; }
+Wire igN(TrackId src, std::string port, DeviceId t, std::string param) { Wire w; w.noteSource = src; w.port = port; w.to = t; w.param = param; return w; }
+Wire igM(DeviceId f, TrackId m) { Wire w; w.from = f; w.mixer = m; return w; }
+void igSave(DocumentStore& s, const std::string& name) {
+  const fs::path dir = testRoot() / "app" / "fixtures" / "instrument_groups" / name;
+  fs::create_directories(dir);
+  REQUIRE(saveProject(dir.string(), *s.current()).ok());
+}
+}  // namespace
+TEST_CASE("TEMP make IG fixtures") {
+  if (std::getenv("PQ_IG_MAKE_FIXTURES") == nullptr) return;
+  auto base = [&](const char* rel, DocumentStore& s) {
+    auto l = loadProject((testRoot() / rel).string());
+    REQUIRE(l.ok());
+    s.reset(l->project);
+  };
+  const DeviceLibrary& lib = library();
+  {  // a meta run with a per-voice free phase accumulator (note hz) driving the Wavetable's position, a velocity wire
+    DocumentStore s; base("app/fixtures/all_free/meta_run", s);
+    const TrackId t = s.current()->tracks[0]->id;
+    const DeviceId p2 = igMeta(s, t, "phase_acc");
+    igRun(s, ops::connect(*s.current(), s.ids(), igN(t, "hz", p2, "freq")));
+    igRun(s, ops::connect(*s.current(), s.ids(), igW(p2, "out", DeviceId{6}, "x")));
+    igRun(s, ops::connect(*s.current(), s.ids(), igN(t, "velocity", DeviceId{7}, "sustain")));
+    igSave(s, "meta_run_free");
+  }
+  {  // the meta run grouped at the note source (TX.groups-fix1 GroupNotes)
+    DocumentStore s; base("app/fixtures/all_free/meta_run", s);
+    const std::vector<DeviceId> run{DeviceId{5}, DeviceId{6}, DeviceId{7}};
+    igRun(s, ops::groupInCircuit(s.current(), s.ids(), lib, run));
+    igSave(s, "group_notes");
+  }
+  {  // BasicSynth head + an off-path Operator played by a notes cable into the mixer; an off-path Wavetable by notes
+    DocumentStore s; base("app/fixtures/all_free/chains", s);
+    const TrackId t = s.current()->tracks[0]->id;
+    const DeviceId op = igRun(s, ops::addDevice(*s.current(), s.ids(), t, "operator", DeviceKind::Instrument, ops::kOffPath)).devices.at(0);
+    igRun(s, ops::connect(*s.current(), s.ids(), igN(t, "", op, "")));
+    igRun(s, ops::connect(*s.current(), s.ids(), igM(op, t)));
+    const DeviceId wt = igMeta(s, t, "wavetable");
+    igRun(s, ops::connect(*s.current(), s.ids(), igN(t, "", wt, "x")));
+    igRun(s, ops::connect(*s.current(), s.ids(), igM(wt, t)));
+    igSave(s, "notes_cables");
+  }
+  {  // cross-track: track A (meta run) plays an off-path Wavetable on a second MIDI track B (no blocks)
+    DocumentStore s; base("app/fixtures/all_free/meta_run", s);
+    const TrackId a = s.current()->tracks[0]->id;
+    const TrackId b = igRun(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
+    const DeviceId head = mainPath(*s.current(), *findTrackPtr(*s.current(), b)).blocks.at(0)->id;
+    igRun(s, ops::dissolveDevices(*s.current(), s.ids(), &lib, std::vector<DeviceId>{head}));
+    const DeviceId wt = igMeta(s, b, "wavetable");
+    igRun(s, ops::connect(*s.current(), s.ids(), igN(a, "", wt, "x")));
+    igRun(s, ops::connect(*s.current(), s.ids(), igM(wt, b)));
+    igSave(s, "cross_meta");
+  }
+}

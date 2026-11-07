@@ -608,6 +608,34 @@ std::string_view groupNotesPatchText() noexcept;
 // The members of group `group` in `list` (list order).
 std::vector<const Device*> groupMembers(const std::vector<DevicePtr>& list, DeviceId group);
 
+// ---- Instrument groups (IG.1-2; SPEC §15 2026-11-04 "instrument groups", 2026-11-06 "single-signal cables";
+// docs/plans/IG.md; pq/document/instrument_groups.h finds them) ------------------------------------------------------
+// A group whose main input is fed NOTES (it heads a MIDI track's main path, or a notes cable from a MIDI track's source
+// enters its main input) is an INSTRUMENT GROUP: everything inside runs per note (one copy per sounding voice of that
+// source), its Out sums the voices; outside it everything is single-signal. Its POLYPHONY is stored as settings of the
+// group device (Device::settings; SetDeviceSetting, undoable; absent = the default below):
+//   voices   the voice count (1 … kMaxPolyphony); absent: the link's default (a migrated group plays as its track did)
+//   mono     0 / 1: one voice (a new note takes the voice)
+//   legato   0 / 1 (with mono: a note that overlaps the held one does not retrigger) — stored; IG.4 plays it
+//   glide    seconds of portamento (0: none) — stored; IG.4 plays it
+//   steal    0 oldest, 1 quietest, 2 none (drop notes beyond the voice count)
+inline constexpr std::string_view kGroupVoices = "voices";
+inline constexpr std::string_view kGroupMono = "mono";
+inline constexpr std::string_view kGroupLegato = "legato";
+inline constexpr std::string_view kGroupGlide = "glide";
+inline constexpr std::string_view kGroupSteal = "steal";
+inline constexpr uint32_t kDefaultGroupVoices = 16;  // a new instrument group's voice count (docs/plans/IG.md "Open")
+enum class GroupSteal : uint8_t { Oldest = 0, Quietest = 1, None = 2 };
+struct GroupPolyphony {
+  uint32_t voices = 0;  // 0: not set (the link's default)
+  bool mono = false, legato = false;
+  double glide = 0.0;
+  GroupSteal steal = GroupSteal::Oldest;
+};
+GroupPolyphony groupPolyphony(const Device& group) noexcept;
+// A new instrument group (kGroupDevice) with the default polyphony written out (16 voices, steal oldest, no glide).
+DevicePtr makeInstrumentGroup(DeviceId id);
+
 // ---- Racks (T4.8, SPEC §8.2; QUESTIONS Q129 item 6, Q?-T4.8-a) -------------------------------------------------------
 // An Audio Effect Rack (kind AudioEffect) or an Instrument Rack (kind Instrument) holds parallel CHAINS, each a device
 // list (the same chain rule as a track: an Instrument Rack's chain may start with one instrument — a device or a nested
@@ -805,6 +833,12 @@ struct Wire {
   WireLaw law = WireLaw::Add;  // TX.patching
   bool chain = false;          // TX.groups-fix1: a chain link of a grouped series (planned first; see above)
   TrackId mixer;               // TX.all-free: valid: the target is this track's mixer input (see above)
+  // IG.1-2 (SPEC §15 2026-11-06 "single-signal cables"; "Instrument groups" below): a SINGLE-SIGNAL cable — the voices
+  // of a per-note source are reduced at it (by `reducer`: sum, max = Highest, newest = Last), so what it feeds runs once
+  // instead of per note. A cable from inside an instrument group to anything outside it reduces whatever this says (the
+  // group edge is the same rule by default); inside a group a cable is per note unless this is set. Structural
+  // (SetWireSignal).
+  bool single = false;
   bool travels() const noexcept { return law == WireLaw::Travel; }
   bool adds() const noexcept { return law != WireLaw::Travel; }  // Add or Units: no amount
   bool fromNoteSource() const noexcept { return noteSource.valid(); }

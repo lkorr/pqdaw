@@ -44,3 +44,8 @@ views/fixtures/mixer 408cad44ae576b83 408cad44ae576b83 0 5:4878dec89942cc64,9:19
 views/fixtures/arrangement 95ca4a4f286863e3 95ca4a4f286863e3 0.464359 8:27d48e31a641fc72,12:da3f6d3b101ef8e9,30:4049b2c8a15c6e34,16:1266a859de63a11c,28:16008c4fb4dca217,20:b31bd2414ba4ce76,32:ded24d257a418c92,24:b9adb77e66411a6d,2:c6331391df2b0cbd
 views/fixtures/automation 34bee40ca1a3ce94 34bee40ca1a3ce94 0.632569 5:4878dec89942cc64,9:16ce8088307cadf3,25:f1b5e6f041bb30ce,13:78d8af3607f6af76,17:207272fd2d357818,21:7f106bd2b2415d,27:e7a7c3f38222506e,2:c6331391df2b0cbd
 document/fixtures/audio 408cad44ae576b83 408cad44ae576b83 0 4:b9b4b6dfcaab45ba,8:c52fb2d3dc72c749,10:6609cad08b1b60b0,2:c6331391df2b0cbd
+# IG.1-2: schema-17 projects written before instrument groups (references recorded on the code before IG.1-2)
+app/fixtures/instrument_groups/notes_cables 7801cf32bc08a77 7801cf32bc08a77 4.47482 3:fb7fac981db966eb,29:32dd18102c7ae1bf,20:af6a4ffe59fe4c3c,18:4db69d16744b44cb,2:3161ef9c28e1d6b3
+app/fixtures/instrument_groups/cross_meta 4d9ea4b537bdb3df 4d9ea4b537bdb3df 2.82815 3:31caad8437aff642,23:f7260f161c8c815c,2:c6331391df2b0cbd
+app/fixtures/instrument_groups/group_notes 59eb1a55effa5203 59eb1a55effa5203 0.707107 3:1456b70ef61c8a4f,2:c6331391df2b0cbd
+app/fixtures/instrument_groups/meta_run_free b6ba16f4fbba0da3 b6ba16f4fbba0da3 0.707107 3:2b42bc53bd521f5a,2:c6331391df2b0cbd

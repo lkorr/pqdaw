@@ -209,6 +209,9 @@ struct RemoveWire { WireId wire; };                                // Structural
 // amount: refused).
 struct SetWireAmount { WireId wire; double amount = kDefaultWireAmount; };
 struct SetWireReducer { WireId wire; WireReducer reducer = WireReducer::Sum; };  // Structural
+// IG.1-2 (model.h Wire::single): a cable per note (`single` false) or single-signal, reduced by `reducer` — one command,
+// one undo step. Structural.
+struct SetWireSignal { WireId wire; bool single = false; WireReducer reducer = WireReducer::Sum; };
 
 // ---- Racks (T4.8; model.h "Racks") ------------------------------------------------------------------------------
 // Structural. Inserts `chain` (with its devices; ids new) into rack `rack` at `index` (kAppend: the end). The chain
@@ -291,7 +294,7 @@ using CommandVariant = std::variant<
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch, RenameDevice,
-    SetDeviceChainInput, SetDeviceGroup, SetParamCurve, AddWire, RemoveWire, SetWireAmount, SetWireReducer,
+    SetDeviceChainInput, SetDeviceGroup, SetParamCurve, AddWire, RemoveWire, SetWireAmount, SetWireReducer, SetWireSignal,
     AddChain, RemoveChain, MoveChain, RenameChain, SetChainMixer, SetChainActive, SetChainSolo, SetChainZone,
     AddMacroMapping, RemoveMacroMapping, SetMacroMapping, SetRackOptions,
     AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,

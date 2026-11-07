@@ -354,6 +354,27 @@ DevicePtr makeDefaultInstrument(DeviceId id) {
 
 DevicePtr makeGroup(DeviceId id) { return makeDevice(id, std::string(kGroupDevice), DeviceKind::AudioEffect); }
 
+GroupPolyphony groupPolyphony(const Device& g) noexcept {
+  GroupPolyphony p;
+  auto val = [&](std::string_view n) -> const DeviceValue* { return g.setting(n); };
+  if (const DeviceValue* v = val(kGroupVoices); v != nullptr && std::isfinite(v->value))
+    p.voices = static_cast<uint32_t>(std::clamp(std::round(v->value), 1.0, 128.0));
+  if (const DeviceValue* v = val(kGroupMono)) p.mono = v->value >= 0.5;
+  if (const DeviceValue* v = val(kGroupLegato)) p.legato = v->value >= 0.5;
+  if (const DeviceValue* v = val(kGroupGlide); v != nullptr && std::isfinite(v->value)) p.glide = std::max(v->value, 0.0);
+  if (const DeviceValue* v = val(kGroupSteal); v != nullptr && std::isfinite(v->value))
+    p.steal = static_cast<GroupSteal>(std::clamp(static_cast<int>(std::lround(v->value)), 0, 2));
+  return p;
+}
+
+DevicePtr makeInstrumentGroup(DeviceId id) {
+  auto d = std::make_shared<Device>(*makeGroup(id));
+  // (sorted by name: Device::settings)
+  d->settings = {DeviceValue{std::string(kGroupGlide), 0.0}, DeviceValue{std::string(kGroupSteal), 0.0},
+                 DeviceValue{std::string(kGroupVoices), static_cast<double>(kDefaultGroupVoices)}};
+  return d;
+}
+
 // ---- Racks (T4.8) ----------------------------------------------------------------------------------------------
 
 std::string macroParamName(uint32_t index) { return "macro" + std::to_string(index + 1); }

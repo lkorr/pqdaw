@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <string>
+#include <tuple>
 
 #include "edit_common.h"
 #include "edit_paths.h"
@@ -92,9 +93,22 @@ EditResult createTrack(const Project& p, IdSource& ids, TrackKind kind, TrackId 
   t.colour = colour;
   // T4.1: a new MIDI track starts with the default instrument (until the M5 browser offers others). TX.all-free: wired
   // in series (its source → the instrument → its mixer; any other track: its source → its mixer).
-  if (kind == TrackKind::Midi) t.devices.push_back(makeDefaultInstrument(ids.device()));
+  // IG.1-2 (model.h "Instrument groups"): the default instrument sits in an INSTRUMENT GROUP (its polyphony written
+  // out: 16 voices, steal oldest, no glide), the group on the path: source → group → mixer, inside In → instrument →
+  // Out (chain links). The instrument is listed first (the block a tie goes to), the group after it. No Envelope: Basic
+  // Synth has its own amp envelope (it ends its own voices; SPEC §15 2026-11-04, QUESTIONS Q?-IG.1-2-a).
+  DeviceId groupId, synthId;
+  if (kind == TrackKind::Midi) {
+    synthId = ids.device();
+    t.devices.push_back(makeDefaultInstrument(synthId));
+    groupId = ids.device();
+    auto member = std::make_shared<Device>(*t.devices.front());
+    member->group = groupId;
+    t.devices.front() = std::move(member);
+    t.devices.push_back(makeInstrumentGroup(groupId));
+  }
   const TrackId tid = t.id;
-  const DeviceId inst = t.devices.empty() ? DeviceId{} : t.devices.front()->id;
+  const DeviceId inst = groupId;
   Edit e = makeEdit(kind == TrackKind::Return  ? "Insert Return Track"
                     : kind == TrackKind::Group ? "Insert Group Track"
                     : kind == TrackKind::Audio ? "Insert Audio Track"
@@ -104,6 +118,17 @@ EditResult createTrack(const Project& p, IdSource& ids, TrackKind kind, TrackId 
   if (inst.valid()) {
     batchOf(e).commands.push_back(AddWire{mainLink(ids, End{{}, tid}, End{inst, {}})});
     batchOf(e).commands.push_back(AddWire{mainLink(ids, End{inst, {}}, End{{}, tid})});
+    for (const auto& [from, port, to, param] :
+         {std::tuple{groupId, kGroupInPort, synthId, kMainPort}, std::tuple{synthId, kMainPort, groupId, kGroupOutPort}}) {
+      Wire w;
+      w.id = ids.wire();
+      w.from = from;
+      w.port = std::string(port);
+      w.to = to;
+      w.param = std::string(param);
+      w.chain = true;  // the group's series (TX.groups-fix1: planned first, as a chain's own link)
+      batchOf(e).commands.push_back(AddWire{w});
+    }
   } else {
     batchOf(e).commands.push_back(AddWire{mainLink(ids, End{{}, tid}, End{{}, tid})});
   }

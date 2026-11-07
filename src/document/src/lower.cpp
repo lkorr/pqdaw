@@ -95,14 +95,9 @@ struct Cables {
   // into a top-level block of the same track — by target device: the inputs they enter, named ("" an instrument's notes,
   // an Instrument Rack's). Empty for most projects.
   std::unordered_map<uint32_t, std::vector<std::string>> notesTo;
-  // TX.cross-track (SPEC §15 2026-11-03 "tracks are not walls"; lower.h "Cross-track notes cables"): the notes cables
-  // from a MIDI track's source (port "") into a top-level block of ANOTHER track, by target device, in wire id order.
-  struct CrossNotes {
-    TrackId source;
-    WireId wire;
-    std::string input;  // the input it enters, named ("" an instrument's notes, an Instrument Rack's)
-  };
-  std::unordered_map<uint32_t, std::vector<CrossNotes>> crossNotes;
+  // IG.1-2 (pq/document/instrument_groups.h): the voice contexts — instrument groups and lone instruments fed notes —
+  // of the project as lowered (its wires as these Cables hold them: main ports named).
+  VoiceContexts contexts;
   // Whether a notes cable enters `d`'s notes input (a stock instrument's or an Instrument Rack's main input).
   bool fedNotes(DeviceId d) const noexcept {
     const auto it = notesTo.find(d.value);
@@ -172,15 +167,12 @@ std::shared_ptr<const Cables> cablesOf(const Project& p, const graph::PatchLibra
     if (x.param.empty() && !x.toMixer()) x.param = portsOf(x.to).in;
     if (x.fromNoteSource() && w.port.empty() && !x.toMixer())  // TX.all-free-fix1: a notes cable (same MIDI track only)
       if (const DeviceLoc l = findDevice(p, x.to); l.track != nullptr && l.chain == nullptr) {
-        if (l.track->id == x.noteSource && l.track->kind == TrackKind::Midi) {
-          c->notesTo[x.to.value].push_back(x.param);
-        } else if (const Track* src = findTrackPtr(p, x.noteSource); src != nullptr && src->kind == TrackKind::Midi) {
-          c->crossNotes[x.to.value].push_back(Cables::CrossNotes{x.noteSource, x.id, x.param});  // TX.cross-track
-        }
+        if (l.track->id == x.noteSource && l.track->kind == TrackKind::Midi) c->notesTo[x.to.value].push_back(x.param);
       }
     rest.push_back(std::move(x));
   }
   c->q.wires = rest.empty() ? nullptr : std::make_shared<const WireList>(std::move(rest));
+  c->contexts = voiceContexts(p);  // (the original project: its main paths; contexts hold its devices, shared by q)
   return c;
 }
 
@@ -190,35 +182,26 @@ struct Callees {
   bool isOffPath(const Device& d) const noexcept { return cables != nullptr && cables->offPath.count(d.id.value) != 0; }
   // TX.all-free-fix1: a notes cable enters `d`'s notes input (it plays them wherever it is).
   bool fedNotes(const Device& d) const noexcept { return cables != nullptr && cables->fedNotes(d.id); }
-  // TX.all-free-fix1: the MIDI tracks a notes cable (not their path's first link) makes play voices — one into a stock
-  // instrument or Instrument Rack that plays, or into an input of a meta module off the path —, and those meta modules
-  // (they run in the track's voice context: makeCallees, lowerTree).
+  // IG.1-2 (lower.h "Voice contexts"): the MIDI tracks whose notes something plays or reads — a voice context's source,
+  // or a block outside every context that reads the newest note (a notes cable into a meta module's input, a note output
+  // wire, a meta module heading the path) — and so play voices.
   std::unordered_set<uint32_t> voicedTracks;
-  std::unordered_set<uint32_t> notesMeta;
-  // TX.cross-track (lower.h "Cross-track notes cables"): a block another MIDI track's notes cable feeds plays an
-  // instance in that track's voice context (its GUEST, lowered in the source's patch); its home instance plays only the
-  // notes of its own track that reach it (else it is a PHANTOM: not called, its outputs the guests' alone).
-  struct Guest {
-    DevicePtr device;
-    TrackId home;                     // the device's own track
-    TrackId source;                   // the MIDI track whose voices play it (whose patch holds it)
-    WireId entity;                    // its first notes cable from that source: the NodeId entity of its nodes
-    std::vector<std::string> inputs;  // the inputs the source's notes cables enter ("" the notes input)
-    bool meta = false;                // a meta module (else a stock instrument or an Instrument Rack)
-  };
-  std::vector<Guest> guests;                                       // in device, then source order
-  std::unordered_map<uint32_t, std::vector<uint32_t>> guestsOf;    // device id → its guests (indices)
-  std::unordered_map<uint32_t, std::vector<uint32_t>> guestsIn;    // source track id → the guests it holds
-  const std::vector<uint32_t>* guestsOfDevice(DeviceId d) const noexcept {
-    const auto it = guestsOf.find(d.value);
-    return it != guestsOf.end() ? &it->second : nullptr;
-  }
+  // IG.1-2: the voice contexts (Cables::contexts) and, per context, which of its members run per note (the rest run
+  // once: only single-signal cables reach them from inside; SPEC §15 2026-11-06), by device id.
+  const VoiceContexts* contexts = nullptr;
+  std::unordered_set<uint32_t> perNote;
+  const VoiceContext* contextOf(DeviceId d) const noexcept { return contexts != nullptr ? contexts->of(d) : nullptr; }
+  const VoiceContext* blockContext(DeviceId d) const noexcept { return contexts != nullptr ? contexts->blockOf(d) : nullptr; }
+  // A member of an instrument group (inside it: per note or once), not the block itself.
+  const VoiceContext* memberContext(DeviceId d) const noexcept { return contexts != nullptr ? contexts->memberOf(d) : nullptr; }
+  bool runsPerNote(DeviceId d) const noexcept { return perNote.count(d.value) != 0; }
   std::unordered_map<uint32_t, const graph::Patch*> userRoot;  // device id → its own root (null: nothing plays)
   // TMM.3: the nested meta-module calls of each device that has any (their params are runtime params of the track).
   std::unordered_map<uint32_t, std::shared_ptr<const std::vector<MetaSite>>> metaSites;
   // TMM.10-fix1: each active chain meta device's stage (what reaches its chain input: metaStages).
   std::unordered_map<uint32_t, ChainStage> metaStage;
-  // TX.patching: the free meta devices expanded in their track's voice context (MetaExpander::chainDevice).
+  // TX.patching / IG.1-2: the meta devices expanded in a voice context (MetaExpander::chainDevice): an instrument
+  // group's members.
   std::unordered_set<uint32_t> freeVoiced;
   // TX.groups-fix1: the switched-off free devices that pass their chain input to their main output (lower.h "Free
   // devices"): device id → its pass-through patch (in MetaPatches).
@@ -233,11 +216,10 @@ struct Callees {
     const ChainStage* s = stageOf(d);
     return s != nullptr && s->in == ChainSignal::Notes;
   }
-  // TX.groups-fix1: what a group plays — at the note source GroupNotes, where voices reach it GroupVoice, else Group.
+  // TX.groups-fix1 / IG.1-2: what a group plays — an instrument group GroupNotes (its In the notes per voice, its Out
+  // per voice: the context sums it, lower.h "Voice contexts"), any other Group.
   const graph::Patch& groupCallee(const Device& d) const noexcept {
-    const ChainStage* s = stageOf(d);
-    if (s != nullptr && s->in == ChainSignal::Notes) return groupNotesPatch();
-    if (s != nullptr && s->in == ChainSignal::Voices) return groupVoicePatch();
+    if (const VoiceContext* c = blockContext(d.id); c != nullptr && c->group) return groupNotesPatch();
     return groupPatch();
   }
   const graph::Patch* find(const Device& d) const noexcept {
@@ -328,8 +310,12 @@ public:
     std::vector<uint8_t> modulated(type->params.size(), 0);
     for (size_t i = 0; i < type->params.size(); ++i) modulated[i] = modulatedParam(d, t, type->params[i].name) ? 1 : 0;
     meta::ExpandContext c;
-    c.form = chainForm(stage);
-    c.voice = c.form == meta::Form::ChainNotes || c.form == meta::Form::ChainVoice;
+    // IG.1-2: on a main path a meta module is outside every instrument group: single-signal (ChainAudio, global) —
+    // what reaches its chain input is audio, or at a MIDI track's note source the newest note (buildPatch). No voice runs.
+    // (Inside a rack chain the chain's forms stay: an Instrument Rack's chain starts at its notes, per voice.)
+    const bool top = findDevice(p_, d.id).chain == nullptr;
+    c.form = top ? meta::Form::ChainAudio : chainForm(stage);
+    c.voice = !top && (c.form == meta::Form::ChainNotes || c.form == meta::Form::ChainVoice);
     c.chainInput = stage.input;
     if (u_.callees.isOffPath(d)) {  // TX.all-free: off the main path
       c.form = meta::Form::Nested;
@@ -532,89 +518,79 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
     staged = true;
     u.callees.metaStage = metaStages(p, *u.callees.cables);
   }
-  // TX.all-free-fix1: the tracks a notes cable makes play voices, and the meta modules off the path such a cable reaches
-  // (Callees::voicedTracks): a stock instrument or an Instrument Rack whose notes input a cable feeds and that plays, a
-  // meta module off the path a notes cable enters at one of its inputs (it runs in the voice context, the input reading
-  // the note's signal of its meaning: planWires).
-  if (!u.callees.cables->notesTo.empty()) {
-    if (!staged) {  // (an Instrument Rack's chain may start with a meta module: its stage decides whether it plays)
-      staged = true;
-      u.callees.metaStage = metaStages(p, *u.callees.cables);
+  // IG.1-2 (lower.h "Voice contexts"): the voice contexts, which of their members run per note, and the MIDI tracks
+  // whose notes something plays or reads (Callees::voicedTracks).
+  u.callees.contexts = &u.callees.cables->contexts;
+  if (!staged) {  // (a rack chain may start with a meta module, a path with a meta module reading the notes)
+    staged = true;
+    u.callees.metaStage = metaStages(p, *u.callees.cables);
+  }
+  for (const VoiceContext& c : u.callees.contexts->list) {
+    if (!c.block->active) continue;
+    bool plays = c.group;
+    if (!plays) {
+      if (c.block->rack) plays = rackPlaysNotes(*c.block, &u.callees);
+      else if (const graph::Patch* callee = u.callees.find(*c.block)) plays = calleeIsInstrument(*callee);
     }
-    forEachTrack(p, [&](const Track& t, const Track*) {
-      if (t.kind != TrackKind::Midi) return;
-      for (const DevicePtr& d : t.devices) {
-        const auto it = u.callees.cables->notesTo.find(d->id.value);
-        if (it == u.callees.cables->notesTo.end() || !d->active || isGroupDevice(*d)) continue;
-        if (isMetaDevice(*d)) {
-          const meta::Type* type = meta::findType(metaDeviceType(*d));
-          if (type == nullptr || !u.callees.isOffPath(*d)) continue;
-          if (std::any_of(it->second.begin(), it->second.end(), [&](const std::string& in) { return type->inputIndex(in) >= 0; })) {
-            u.callees.notesMeta.insert(d->id.value);
-            u.callees.voicedTracks.insert(t.id.value);
-          }
+    if (!plays) continue;
+    u.callees.voicedTracks.insert(c.source.value);
+    if (!c.group) {
+      u.callees.perNote.insert(c.block->id.value);  // a lone instrument: its own code per voice
+      continue;
+    }
+    // A member runs ONCE when it has an input from inside the group and every such input is single-signal: a cable
+    // marked single, or one from a member that runs once (SPEC §15 2026-11-06). Inputs from outside are broadcast and
+    // decide nothing. Every other member runs per note.
+    std::vector<const Device*> members;
+    for (const DevicePtr& d : c.home->devices)
+      if (d->group == c.block->id) members.push_back(d.get());
+    std::unordered_set<uint32_t> once;
+    auto inside = [&](const Wire& w) {
+      if (w.fromNoteSource()) return w.noteSource == c.source;
+      if (w.from == c.block->id) return w.port == kGroupInPort;
+      return std::any_of(members.begin(), members.end(), [&](const Device* m) { return m->id == w.from; });
+    };
+    for (bool changed = true; changed;) {
+      changed = false;
+      for (const Device* m : members) {
+        if (once.count(m->id.value) != 0) continue;
+        bool any = false, all = true;
+        for (const Wire& w : wiresOf(p)) {
+          if (w.toMixer() || w.to != m->id || !inside(w)) continue;
+          any = true;
+          const bool single = w.single || (!w.fromNoteSource() && once.count(w.from.value) != 0);
+          if (!single) all = false;
+        }
+        if (any && all) {
+          once.insert(m->id.value);
+          changed = true;
+        }
+      }
+    }
+    for (const Device* m : members)
+      if (once.count(m->id.value) == 0) u.callees.perNote.insert(m->id.value);
+  }
+  // Readers of the newest note outside every context: a notes cable into a meta module's input, a note output wire,
+  // a meta module that heads a MIDI track's path and takes the notes.
+  for (const Wire& w : wiresOf(p))
+    if (w.fromNoteSource() && !w.toMixer())
+      if (const Track* src = findTrackPtr(p, w.noteSource); src != nullptr && src->kind == TrackKind::Midi) {
+        if (!w.port.empty()) {
+          u.callees.voicedTracks.insert(src->id.value);
           continue;
         }
-        if (d->kind != DeviceKind::Instrument || !u.callees.fedNotes(*d)) continue;
-        bool plays = false;
-        if (d->rack) {
-          plays = rackPlaysNotes(*d, &u.callees);
-        } else if (const graph::Patch* callee = u.callees.find(*d)) {
-          plays = calleeIsInstrument(*callee);
-        }
-        if (plays) u.callees.voicedTracks.insert(t.id.value);
+        if (const DeviceLoc l = findDevice(p, w.to); l.device != nullptr && isMetaDevice(*l.device))
+          u.callees.voicedTracks.insert(src->id.value);
       }
-    });
-  }
-  // TX.cross-track: the guests (lower.h "Cross-track notes cables"): a notes cable from another MIDI track's source into
-  // a stock instrument's or an Instrument Rack's notes input (one that plays), or into an input of a meta module off its
-  // own track's path, plays the block in the source's voice context. One guest per (block, source).
-  if (!u.callees.cables->crossNotes.empty()) {
-    if (!staged) {
-      staged = true;
-      u.callees.metaStage = metaStages(p, *u.callees.cables);
-    }
-    forEachTrack(p, [&](const Track& t, const Track*) {
-      for (const DevicePtr& d : t.devices) {
-        const auto it = u.callees.cables->crossNotes.find(d->id.value);
-        if (it == u.callees.cables->crossNotes.end() || !d->active || isGroupDevice(*d)) continue;
-        const bool meta = isMetaDevice(*d);
-        const meta::Type* type = meta ? meta::findType(metaDeviceType(*d)) : nullptr;
-        if (meta) {
-          if (type == nullptr || !u.callees.isOffPath(*d)) continue;  // (a meta module on a path takes its path's signal)
-        } else {
-          if (d->kind != DeviceKind::Instrument) continue;  // a stock effect reads nothing of the notes
-          bool plays = false;
-          if (d->rack) plays = rackPlaysNotes(*d, &u.callees);
-          else if (const graph::Patch* callee = u.callees.find(*d)) plays = calleeIsInstrument(*callee);
-          if (!plays) continue;
-        }
-        for (const Cables::CrossNotes& c : it->second) {
-          if (meta ? type->inputIndex(c.input) < 0 : !c.input.empty()) continue;  // a param, or not the notes input
-          std::vector<uint32_t>& mine = u.callees.guestsOf[d->id.value];
-          uint32_t g = graph::kNone;
-          for (const uint32_t x : mine)
-            if (u.callees.guests[x].source == c.source) g = x;
-          if (g == graph::kNone) {
-            g = static_cast<uint32_t>(u.callees.guests.size());
-            Callees::Guest gu;
-            gu.device = d;
-            gu.home = t.id;
-            gu.source = c.source;
-            gu.entity = c.wire;  // (crossNotes is in wire id order: the lowest)
-            gu.meta = meta;
-            u.callees.guests.push_back(std::move(gu));
-            mine.push_back(g);
-            u.callees.guestsIn[c.source.value].push_back(g);
-            u.callees.voicedTracks.insert(c.source.value);  // the source plays voices (tuning nodes, its role)
-          }
-          u.callees.guests[g].inputs.push_back(c.input);
-        }
-        if (const auto e = u.callees.guestsOf.find(d->id.value); e != u.callees.guestsOf.end() && e->second.empty())
-          u.callees.guestsOf.erase(e);
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    if (t.kind != TrackKind::Midi) return;
+    if (const Flow* f = u.callees.cables->flowOf(t))
+      for (const Device* x : f->path.blocks) {
+        if (!x->active) continue;
+        if (isMetaDevice(*x) && u.callees.readsNotes(*x)) u.callees.voicedTracks.insert(t.id.value);
+        break;
       }
-    });
-  }
+  });
   forEachDevice(p, [&](const Device& d, const Track& t) {
     if (d.rack) return;
     if (isMetaDevice(d)) {
@@ -634,23 +610,9 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
         st.in = st.input < 0 ? ChainSignal::None : d.kind == DeviceKind::Instrument ? ChainSignal::Notes : ChainSignal::Audio;
       }
       if (combined) {
-        // TX.patching: a meta device off the main path runs in its track's voice context when the track plays voices
-        // (the first active block of its path takes the notes); lowerTree checks that the track then really does.
-        bool voiced = false;
-        if (u.callees.isOffPath(d) && t.kind == TrackKind::Midi)
-          for (const Device* x : u.callees.cables->flowOf(t)->path.blocks) {
-            if (!x->active) continue;
-            // TX.groups-fix1: a group at the note source takes the notes as a meta device there does.
-            const bool staged1 = isMetaDevice(*x) || isGroupDevice(*x);
-            const ChainStage* xs = staged1 ? u.callees.stageOf(*x) : nullptr;
-            voiced = staged1 ? xs != nullptr && xs->in == ChainSignal::Notes : x->kind == DeviceKind::Instrument;
-            break;
-          }
-        // TX.all-free-fix1: or when a notes cable makes the track play voices.
-        if (!voiced && u.callees.isOffPath(d) && t.kind == TrackKind::Midi) voiced = u.callees.voicedTracks.count(t.id.value) != 0;
-        // TX.cross-track: a meta module another track's notes play runs in voice contexts only (its guests', and its
-        // home's when its own track's notes reach it too).
-        if (!voiced && u.callees.guestsOfDevice(d.id) != nullptr) voiced = true;
+        // IG.1-2: a meta device inside an instrument group that runs per note plays in its source's voice context
+        // (its Nested form: per voice where the voices reach it, pq/graph/infer.h); everywhere else it is single-signal.
+        const bool voiced = u.callees.memberContext(d.id) != nullptr && u.callees.runsPerNote(d.id);
         if (voiced) u.callees.freeVoiced.insert(d.id.value);
         u.callees.userRoot[d.id.value] = ex.chainDevice(d, t, st, voiced);
         return;
@@ -659,8 +621,8 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
       // form of the stage, so the lowering's instrument check agrees).
       if (!prelude) prelude = meta::prelude();
       const meta::Prelude::Entry* e = prelude->find(metaDeviceType(d));
-      const meta::Form f = chainForm(st);
-      const std::optional<graph::Patch>* form = e == nullptr                    ? nullptr
+      const meta::Form f = findDevice(p, d.id).chain == nullptr ? meta::Form::ChainAudio : chainForm(st);  // IG.1-2
+      const std::optional<graph::Patch>* form = e == nullptr                   ? nullptr
                                                 : f == meta::Form::ChainNotes ? &e->notes
                                                 : f == meta::Form::ChainVoice ? &e->voice
                                                                               : &e->audio;
@@ -790,7 +752,7 @@ Plan plan(const Project& p, const TableOf* tableOf, const Callees* lib) {
         n.kind = t->kind == TrackKind::Midi ? Kind::Midi : t->kind == TrackKind::Audio ? Kind::Audio : Kind::Group;
         n.parent = parent;
         if (n.kind == Kind::Midi && tableOf != nullptr && *tableOf && here.depth > path.depth &&
-            (lowersInstrument(*t, lib) || (lib != nullptr && lib->voicedTracks.count(t->id.value) != 0)))  // fix1
+            lib != nullptr && lib->voicedTracks.count(t->id.value) != 0)  // IG.1-2: its notes play somewhere
           for (const TuningId id : trackTuningSignals(p, here)) {
             const TuningSlot* slot = findTuning(p, id);
             n.tunings.push_back(TuningNode{id, &slot->def, (*tableOf)(id, slot->def)});

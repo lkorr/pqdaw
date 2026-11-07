@@ -675,6 +675,30 @@ EditResult setWireReducer(const Project& p, WireId wire, WireReducer reducer) {
   return e;
 }
 
+EditResult setGroupPolyphony(const Project& p, DeviceId group, const GroupPolyphony& poly) {
+  const DeviceLoc l = findDevice(p, group);
+  if (!l.device) return notFound("group not found");
+  if (!isGroupDevice(*l.device)) return invalid("only a group has polyphony settings");
+  Edit e = makeEdit("Polyphony");
+  e.devices.push_back(group);
+  Batch& b = batchOf(e);
+  b.commands.push_back(SetDeviceSetting{group, std::string(kGroupVoices),
+                                        poly.voices == 0 ? std::optional<double>() : std::optional<double>(poly.voices)});
+  b.commands.push_back(SetDeviceSetting{group, std::string(kGroupMono), poly.mono ? 1.0 : 0.0});
+  b.commands.push_back(SetDeviceSetting{group, std::string(kGroupLegato), poly.legato ? 1.0 : 0.0});
+  b.commands.push_back(SetDeviceSetting{group, std::string(kGroupGlide), poly.glide});
+  b.commands.push_back(SetDeviceSetting{group, std::string(kGroupSteal), static_cast<double>(poly.steal)});
+  return e;
+}
+
+EditResult setWireSignal(const Project& p, WireId wire, bool single, WireReducer reducer) {
+  if (!findWire(p, wire)) return notFound("wire not found");
+  Edit e = makeEdit(single ? "Single-Signal Cable" : "Per-Note Cable");
+  e.wires.push_back(wire);
+  batchOf(e).commands.push_back(SetWireSignal{wire, single, reducer});
+  return e;
+}
+
 std::vector<WireId> wiresInto(const Project& p, DeviceId device, std::string_view param) {
   std::vector<WireId> out;
   for (const Wire& w : wiresOf(p))

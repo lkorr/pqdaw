@@ -21,6 +21,7 @@
 
 #include "checks.h"
 #include "pq/document/audio_clip.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/library_files.h"
 #include "pq/document/meta.h"
 #include "json_io.h"
@@ -604,6 +605,10 @@ private:
       }
       if (wr.chain) {  // TX.groups-fix1 (schema 15): a grouped series' chain link
         w_.key("chain");
+        w_.boolean(true);
+      }
+      if (wr.single) {  // IG.1-2 (schema 19): a single-signal cable (the voices reduced at it)
+        w_.key("single");
         w_.boolean(true);
       }
       w_.endObject();
@@ -2486,7 +2491,7 @@ private:
       // TX.groups-fix1 (schema 15): "chain": true for a grouped series' chain link.
       // TX.all-free (schema 17): "mixer" (a track's mixer input) instead of "to"; "port" / "param" "" are main ports.
       static constexpr std::string_view K[] = {"id",     "from",    "port",  "to",  "param",
-                                               "amount", "reducer", "notes", "law", "chain", "mixer"};
+                                               "amount", "reducer", "notes", "law", "chain", "mixer", "single"};
       Wire w;
       Members m(r_, el, K);
       for (int k; (k = m.next()) >= 0;) {
@@ -2503,6 +2508,7 @@ private:
           case 8: w.law = static_cast<WireLaw>(name(f, kWireLawNames, "wire law")); break;
           case 9: w.chain = r_.readBool(f); break;
           case 10: w.mixer = TrackId{ref(f)}; break;
+          case 11: w.single = r_.readBool(f); break;  // IG.1-2 (schema 19)
         }
       }
       if (m.has(1) && m.has(7)) json::fail(el, "a wire has either \"from\" (a device) or \"notes\" (a note source)");
@@ -3805,6 +3811,14 @@ Status migratePanLaws(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 18 → 19 (IG.1-2): nothing in the JSON ("single" wires and group polyphony settings are new). The structural part —
+// each MIDI track's instrument wrapped into an instrument group — runs on the decoded model (parseProject:
+// migrateToInstrumentGroups), where the main paths and the meta types are known.
+Status migrateAddInstrumentGroups(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3823,6 +3837,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {15, migrateUnitsWires},
     {16, migrateChainToCables},
     {17, migratePanLaws},
+    {18, migrateAddInstrumentGroups},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");
@@ -3899,6 +3914,10 @@ Result<LoadedProject> parseProject(std::string_view text, const LoadOptions& opt
     Decoder d(body);
     LoadedProject out = d.project();
     out.fileSchemaVersion = static_cast<int32_t>(version);
+    if (version < 19 && out.project) {  // IG.1-2: the model part of 18 → 19 (instrument_groups.h)
+      Project p = *out.project;
+      if (migrateToInstrumentGroups(p)) out.project = std::make_shared<const Project>(std::move(p));
+    }
     return out;
   } catch (const json::JsonFail& f) {
     return toError(f, body, options.fileName, !wasMigrated);
