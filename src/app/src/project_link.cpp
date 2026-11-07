@@ -801,7 +801,7 @@ void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::
     const doc::DeviceLoc d = doc::findDevice(p, doc::DeviceId{ref.owner});
     if (d.device == nullptr) continue;
     std::shared_ptr<const doc::ResolvedDevice> hold;  // T4.4-fix1: a user device plays its own patch
-    const graph::Patch* callee = devices_->patchOf(*d.device, hold);
+    const graph::Patch* callee = devices_->patchOf(*d.device);
     if (callee == nullptr) continue;  // bypassed (missing): nothing reads it
     for (graph::NodeIndex v = 0; v < callee->nodeCount(); ++v) {
       if (callee->node(v).kind != graph::NodeKind::Param) continue;
@@ -890,8 +890,7 @@ doc::ParamRange ProjectLink::laneRange(const doc::Project& p, const doc::Automat
   const doc::Device* d = doc::findDevice(p, doc::DeviceId{lane.param.owner}).device;
   if (d == nullptr) return doc::paramRange(lane.param);
   return {0.0, 1.0};  // GU.1: a device param's lane holds knob positions
-  std::shared_ptr<const doc::ResolvedDevice> hold;
-  if (const doc::DeviceInfo* info = devices_->infoOf(*d, hold))
+  if (const doc::DeviceInfo* info = devices_->infoOf(*d))
     if (const doc::DeviceParamInfo* pi = info->param(lane.paramName); pi != nullptr && pi->hasRange)
       return {std::min(pi->min, pi->max), std::max(pi->min, pi->max)};
   return doc::paramRange(lane.param);
@@ -1116,7 +1115,7 @@ void ProjectLink::reportMissingDevices(const doc::Project& p) {
                 (r && r->stale ? "): its last good version plays" : "): it is bypassed");
       }
       missing.push_back(d.id);
-    } else if (std::shared_ptr<const doc::ResolvedDevice> hold; devices_->patchOf(d, hold) == nullptr) {
+    } else if (std::shared_ptr<const doc::ResolvedDevice> hold; devices_->patchOf(d) == nullptr) {
       // TMM.17: patchOf, not the library by name: a chain meta device ("meta:<type>") plays its type's expansion, which
       // the library holds under another name (it was reported as missing while it played).
       if (missing.empty()) first = "Device '" + d.patch + "' is not available: it is bypassed";

@@ -26,8 +26,7 @@ struct PanelTemplate {
 // The template of what `d` plays (null: nothing plays — no library, a missing patch, an edited text that does not
 // resolve). Keyed by the caller (DeviceChainView::Impl::templateKey).
 inline std::unique_ptr<PanelTemplate> buildPanelTemplate(const doc::DeviceLibrary* lib, const doc::Device& d) {
-  std::shared_ptr<const doc::ResolvedDevice> hold;
-  const graph::Patch* callee = lib != nullptr ? lib->patchOf(d, hold) : nullptr;
+  const graph::Patch* callee = lib != nullptr ? lib->patchOf(d) : nullptr;
   if (callee == nullptr) return nullptr;
   auto t = std::make_unique<PanelTemplate>();
   t->sig = devices::signatureOf(*callee);

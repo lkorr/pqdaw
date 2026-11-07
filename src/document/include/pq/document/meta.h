@@ -6,8 +6,6 @@
 //   sites      every `name = meta_<type>(…)` call reachable from a device's root patch, by name path
 //   keys       the runtime param of a nested instance: key "dev<id>:<path>.<name>", flattened name in the track patch
 //              "d<id>__<path, '.' → '__'>__<name>" (the call path the compiler flattens), ParamRef::metaParam
-//   renames    which meta-call paths a text edit renamed (NodeIds carried by ParseOptions::previous), so the state key
-//              follows the name
 // Not RT code.
 
 #include <cstdint>
@@ -68,7 +66,7 @@ MetaInstance defaultMetaInstance(const meta::Type& t);
 // per voice; a per-voice signal reaching any other device is summed there (a stock device's audio input is global), and
 // a stock instrument's voices are summed at its output (Live's instrument: QUESTIONS Q?-TMM.10-fix1-a item 2).
 enum class ChainSignal : uint8_t {
-  None,    // nothing: an unplugged chain input (Device::chainInput "-"), a type without one
+  None,    // nothing: a type without a chain input
   Notes,   // the note source (its signal of the input's meaning: meta::Reads)
   Voices,  // a per-voice signal
   Audio,   // global audio
@@ -100,23 +98,11 @@ std::vector<ChainStage> trackStages(const Project& p, const Track& t);
 std::vector<ChainStage> trackStages(const Project& p, const Track& t, const MainPath& path);  // its path known
 // The meta form of a stage (Nested for a device that is not a chain meta device or has no known type).
 meta::Form chainForm(const ChainStage& s);
-// The input `d`'s chain feeds: Device::chainInput ("" the type's meta::Type::chainInput, "-" none, else that input by
-// name); −1: none (or not an input of the type).
+// The input `d`'s chain feeds: its type's meta::Type::chainInput (GU.11: a native engine's main input is always its
+// type's); −1: none.
 int32_t metaChainInput(const Device& d, const meta::Type& t);
 // What would reach the main input of a device inserted at `index` of `list` (kAppend: the end; a rack chain, or a
 // track's main path as its blocks in signal order).
 ChainSignal chainSignalAt(const std::vector<DevicePtr>& list, bool notes, uint32_t index);
-// TMM.10-fix1: Device::chainInput's value for an unplugged chain.
-inline constexpr std::string_view kChainUnplugged = "-";
-
-// The renames between two parses of a device text, `after` parsed with ParseOptions::previous = `before`: every NAMED
-// subcircuit call reachable from patch `root` (through calls into patches of the same file) whose NodeId path is the
-// same in both but whose name path differs, outermost first (a rename of `opA` covers everything below it). The edit
-// builders turn them into RenameMetaInstance commands for the paths that hold state.
-struct MetaRename {
-  std::string from, to;
-  friend bool operator==(const MetaRename&, const MetaRename&) = default;
-};
-std::vector<MetaRename> metaRenames(const graph::PatchFile& before, const graph::PatchFile& after, std::string_view root);
 
 }  // namespace pq::doc

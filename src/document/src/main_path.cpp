@@ -51,8 +51,7 @@ MainPorts mainPortsOf(const Device& d, const DeviceLibrary* lib) {
     return m;
   }
   if (lib == nullptr) return {};
-  std::shared_ptr<const ResolvedDevice> hold;
-  const graph::Patch* p = lib->patchOf(d, hold);
+  const graph::Patch* p = lib->patchOf(d);
   if (p == nullptr) return {};
   return mainPortsOf(graph::subcircuitSignature(*p), p, d.kind == DeviceKind::Instrument);
 }

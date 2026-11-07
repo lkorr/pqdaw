@@ -67,30 +67,6 @@ std::string flatPath(std::string_view path) {
   return s;
 }
 
-// Every named call reachable from `p` within `file`: (NodeId path, name path).
-struct CallPath {
-  std::vector<uint32_t> ids;
-  std::string names;
-};
-void callPaths(const graph::PatchFile& file, const graph::Patch& p, const CallPath& prefix,
-               std::vector<const graph::Patch*>& active, std::vector<CallPath>& out) {
-  if (active.size() >= graph::kMaxSubcircuitDepth || std::find(active.begin(), active.end(), &p) != active.end()) return;
-  active.push_back(&p);
-  for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
-    if (p.node(n).kind != graph::NodeKind::Subcircuit || p.nodeName(n).empty()) continue;
-    CallPath c = prefix;
-    c.ids.push_back(p.node(n).id.value);
-    c.names += (c.names.empty() ? "" : ".") + p.nodeName(n);
-    out.push_back(c);
-    if (const graph::Patch* callee = file.find(p.subcircuit(n).patch)) callPaths(file, *callee, c, active, out);
-  }
-  active.pop_back();
-}
-
-bool under(std::string_view path, std::string_view root) {
-  return path == root || (path.size() > root.size() && path.starts_with(root) && path[root.size()] == '.');
-}
-
 }  // namespace
 
 std::vector<MetaSite> metaSites(const graph::Patch& root, const PatchLookup& lookup) {
@@ -169,10 +145,8 @@ MetaInstance defaultMetaInstance(const meta::Type& t) {
 }
 
 int32_t metaChainInput(const Device& d, const meta::Type& t) {
-  if (d.chainInput.empty())
-    return t.chainInput >= 0 && static_cast<size_t>(t.chainInput) < t.inputs.size() ? t.chainInput : -1;
-  if (d.chainInput == kChainUnplugged) return -1;
-  return t.inputIndex(d.chainInput);
+  (void)d;
+  return t.chainInput >= 0 && static_cast<size_t>(t.chainInput) < t.inputs.size() ? t.chainInput : -1;
 }
 
 std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool notes, bool voices, const MainPath* path) {
@@ -292,28 +266,6 @@ ChainSignal chainSignalAt(const std::vector<DevicePtr>& list, bool notes, uint32
   ChainSignal s = notes ? ChainSignal::Notes : ChainSignal::Audio;
   for (const ChainStage& st : chainStages(before, notes)) s = st.out;
   return s;
-}
-
-std::vector<MetaRename> metaRenames(const graph::PatchFile& before, const graph::PatchFile& after, std::string_view root) {
-  std::vector<MetaRename> out;
-  const graph::Patch* rb = before.find(root);
-  const graph::Patch* ra = after.find(root);
-  if (rb == nullptr || ra == nullptr) return out;
-  std::vector<CallPath> pb, pa;
-  std::vector<const graph::Patch*> active;
-  callPaths(before, *rb, {}, active, pb);
-  callPaths(after, *ra, {}, active, pa);
-  std::stable_sort(pa.begin(), pa.end(), [](const CallPath& a, const CallPath& b) { return a.ids.size() < b.ids.size(); });
-  for (const CallPath& a : pa) {
-    const auto it = std::find_if(pb.begin(), pb.end(), [&](const CallPath& b) { return b.ids == a.ids; });
-    if (it == pb.end() || it->names == a.names) continue;
-    // Where the outer renames accepted so far have moved the old path.
-    std::string from = it->names;
-    for (const MetaRename& r : out)
-      if (under(from, r.from)) from = r.to + from.substr(r.from.size());
-    if (from != a.names) out.push_back(MetaRename{from, a.names});
-  }
-  return out;
 }
 
 }  // namespace pq::doc

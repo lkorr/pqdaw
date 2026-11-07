@@ -1624,20 +1624,6 @@ Res apply_(const Snapshot& s, const SetDeviceSetting& c, ChangeSet& cs) {
   });
 }
 
-// T4.4-fix1: a user device's text (fork / edit) or back to the stock patch (null).
-Res apply_(const Snapshot& s, const SetDevicePatch& c, ChangeSet& cs) {
-  const DeviceLoc loc = findDevice(*s, c.device);
-  if (!loc.track) return notFound("device not found");
-  const Device& old = *loc.device;
-  if (c.source && c.source->text.empty())
-    return Error{ErrorCode::InvalidArgument, "a device patch text must not be empty", {}};
-  if (old.source == c.source || (old.source && c.source && *old.source == *c.source)) return s;
-  return editDeviceAt(s, c.device, cs, kChangeStructural, [&](Device& d) {
-    d.source = c.source;
-    return ok();
-  });
-}
-
 Res apply_(const Snapshot& s, const RenameDevice& c, ChangeSet& cs) {
   const DeviceLoc loc = findDevice(*s, c.device);  // at any depth
   if (!loc.track) return notFound("device not found");
@@ -1645,16 +1631,6 @@ Res apply_(const Snapshot& s, const RenameDevice& c, ChangeSet& cs) {
   return editDeviceAt(s, c.device, cs, kChangeMeta, [&](Device& d) {
     d.name = c.name;
     return ok();
-  });
-}
-
-Res apply_(const Snapshot& s, const SetDeviceChainInput& c, ChangeSet& cs) {  // TMM.10-fix1
-  const DeviceLoc loc = findDevice(*s, c.device);
-  if (!loc.track) return notFound("device not found");
-  if (loc.device->chainInput == c.input) return s;
-  return editDeviceAt(s, c.device, cs, kChangeStructural, [&](Device& d) {
-    d.chainInput = c.input;
-    return checkDeviceMeta(d);
   });
 }
 
@@ -2019,7 +1995,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
-    "Edit Device Patch", "Rename Device", "Chain Input", "Device Group", "Knob Curve", "Edit Panel",
+    "Rename Device", "Device Group", "Knob Curve", "Edit Panel",
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer", "Cable Signal",
     "Add Meta Module", "Delete Meta Module", "Rename Meta Module", "Meta Module Parameter", "Meta Module Setting",
     "Edit Meta Module Data",

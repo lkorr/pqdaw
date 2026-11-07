@@ -47,8 +47,7 @@ inline pq::doc::Batch knobPositions(const pq::doc::Project& p, pq::doc::Batch b,
     if (s == nullptr || !s->value) continue;
     const Device* d = deviceOf(s->device);
     if (d == nullptr) continue;
-    std::shared_ptr<const ResolvedDevice> hold;
-    const pq::graph::Patch* callee = lib.patchOf(*d, hold);
+    const pq::graph::Patch* callee = lib.patchOf(*d);
     const pq::graph::ParamDecl* decl = callee != nullptr ? findAnyParamDecl(*callee, s->param) : nullptr;
     if (decl == nullptr) continue;
     pq::dsp::Curve curve = controlCurve(*d, s->param, *decl);
@@ -67,8 +66,7 @@ inline double positionOf(const pq::doc::Project& p, pq::doc::DeviceId device, st
   using namespace pq::doc;
   const Device* d = findDevice(p, device).device;
   if (d == nullptr) return value;
-  std::shared_ptr<const ResolvedDevice> hold;
-  const pq::graph::Patch* callee = lib.patchOf(*d, hold);
+  const pq::graph::Patch* callee = lib.patchOf(*d);
   const pq::graph::ParamDecl* decl = callee != nullptr ? findAnyParamDecl(*callee, param) : nullptr;
   if (decl == nullptr) return value;
   return pq::dsp::curvePosition(controlCurve(*d, param, *decl), value, paramPosition(*d, param, *decl));

@@ -5,18 +5,12 @@
 // reader, the same schema version), so a preset and a project never disagree about what a device is.
 //
 //   .pqpreset   {"format": "pqpreset", "schemaVersion", "name", "devices": [one device]}: a device preset (its patch,
-//               kind, params and settings), a rack preset (the rack with its nested chains, mappings, macro names,
-//               variations and the texts of the user devices inside it) or a user device's state (its "source").
-//               The device object comes right after the name, so its "kind" (and a rack's "rack" key) sits in the
-//               first bytes of the file, where the browser index sniffs the category (QUESTIONS Q153).
+//               kind, params and settings: a native engine, an atom or value block). The device object comes right
+//               after the name, so its "kind" sits in the first bytes of the file, where the browser index sniffs the
+//               category (QUESTIONS Q153).
 //               GU.2: a GROUP PRESET is the same file with "devices": [the group, everything inside it at any depth]
 //               and "wires": [the wires among them] (a block set, model.h BlockSet; spawning it = pasting it with fresh
 //               ids, ops::pasteBlocks). GU.3 adds the group's panel to its device object (no new key here).
-//   .pqdevice   {"format": "pqdevice", "schemaVersion", "name", "kind", "patch", "origin", "crlf"?, "source": [lines],
-//               "panel"?: [lines]}: a user device ("Save as New Device"): its patch text (the device patch is the patch
-//               of the text named `patch`, the stock device it was forked from), the stdlib file it was forked from
-//               (`origin`, relative to stdlib/, so its imports resolve the same way: DeviceLibrary::resolve) and an
-//               optional panel description (T4.6 panel JSON).
 //   .pqtuning   {"format": "pqtuning", "schemaVersion", "name", "colour", "def": {tuning definition}}: EDO, MOS and
 //               Scala tunings exactly as a project embeds a main tuning.
 //   .pqclip     {"format": "pqclip", "schemaVersion", "name", "clip": {a note or audio clip}, "samples"?: [one]}: a
@@ -38,7 +32,6 @@
 namespace pq::doc {
 
 inline constexpr std::string_view kPresetExtension = ".pqpreset";
-inline constexpr std::string_view kUserDeviceExtension = ".pqdevice";
 inline constexpr std::string_view kTuningExtension = ".pqtuning";
 inline constexpr std::string_view kClipExtension = ".pqclip";
 
@@ -52,21 +45,6 @@ Result<std::string> serializePreset(const Device& device, std::string_view name)
 // GU.2: a GROUP PRESET (a block set whose first device is its one top-level block, a group: ops::copyBlocks of a group).
 Result<std::string> serializeGroupPreset(const BlockSet& blocks, std::string_view name);
 Result<PresetFile> parsePreset(std::string_view text, std::string_view fileName = {});
-
-struct UserDeviceFile {
-  std::string name;                       // what the browser and the device menu show
-  std::string patch;                      // the device patch's name in `text` (the stock device it was forked from)
-  DeviceKind kind = DeviceKind::AudioEffect;
-  std::string origin;                     // the stock file, relative to stdlib/ ("devices/saturator.pqp"); may be ""
-  std::string text;                       // the whole patch text
-  std::string panel;                      // a T4.6 panel description (JSON text) or ""
-  friend bool operator==(const UserDeviceFile&, const UserDeviceFile&) = default;
-};
-Result<std::string> serializeUserDevice(const UserDeviceFile& f);
-Result<UserDeviceFile> parseUserDevice(std::string_view text, std::string_view fileName = {});
-// A new device instance playing a user device: `patch` / `kind` with the text as its own source (model.h UserPatch), so
-// a project using it embeds the text and opens without the library (T4.4-fix1).
-DevicePtr makeUserDevice(DeviceId id, const UserDeviceFile& f);
 
 struct TuningFile {
   std::string name;

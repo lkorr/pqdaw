@@ -403,8 +403,7 @@ private:
   const devices::DeviceSignature* signature(const doc::Device& d) const {
     const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
     if (lib == nullptr) return nullptr;
-    std::shared_ptr<const doc::ResolvedDevice> hold;
-    const graph::Patch* patch = lib->patchOf(d, hold);
+    const graph::Patch* patch = lib->patchOf(d);
     if (patch == nullptr) return nullptr;
     auto it = sigs_.find(patch);
     if (it == sigs_.end()) {

@@ -51,8 +51,7 @@ struct Converter {
       if (i < 0) return false;
       declared = meta::paramCurve(retired->params[static_cast<size_t>(i)]);
     } else {
-      std::shared_ptr<const ResolvedDevice> hold;
-      const graph::Patch* callee = lib.patchOf(d, hold);
+      const graph::Patch* callee = lib.patchOf(d);
       const graph::ParamDecl* decl = callee != nullptr ? findAnyParamDecl(*callee, param) : nullptr;
       if (decl == nullptr) return false;
       declared = declaredCurve(*decl);

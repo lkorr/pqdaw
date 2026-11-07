@@ -122,7 +122,7 @@ bool shownNow(const ui::Widget& w) noexcept {
 uint8_t exportRate(const doc::Device& d, const doc::DeviceLibrary* lib, std::string_view port) {
   if (d.kind == doc::DeviceKind::Instrument) return 2;
   std::shared_ptr<const doc::ResolvedDevice> hold;  // T4.4-fix1: a user device plays its own patch
-  const graph::Patch* p = lib != nullptr ? lib->patchOf(d, hold) : nullptr;
+  const graph::Patch* p = lib != nullptr ? lib->patchOf(d) : nullptr;
   if (p == nullptr) return 1;
   const graph::Adjacency adj = p->adjacency();
   std::vector<uint8_t> seen(p->nodeCount(), 0);
@@ -165,7 +165,7 @@ std::string paramLabel(const ViewContext& ctx, const doc::Project& p, doc::Devic
   const doc::DeviceLoc l = doc::findDevice(p, id);
   std::shared_ptr<const doc::ResolvedDevice> hold;  // T4.4-fix1: an edited device's own labels
   const doc::DeviceInfo* info = l.device != nullptr && ctx.deviceLibrary() != nullptr
-                                    ? ctx.deviceLibrary()->infoOf(*l.device, hold) : nullptr;
+                                    ? ctx.deviceLibrary()->infoOf(*l.device) : nullptr;
   const doc::DeviceParamInfo* pi = info != nullptr ? info->param(param) : nullptr;
   return pi != nullptr ? pi->label : param;
 }

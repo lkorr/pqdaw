@@ -21,8 +21,7 @@ const meta::Type* metaTypeAt(const ViewContext& ctx, doc::DeviceId device, std::
   if (const doc::MetaInstance* inst = d->metaAt(path)) return meta::findType(inst->type);
   const doc::DeviceLibrary* lib = ctx.deviceLibrary();
   if (lib == nullptr) return nullptr;
-  std::shared_ptr<const doc::ResolvedDevice> hold;
-  const graph::Patch* root = lib->patchOf(*d, hold);
+  const graph::Patch* root = lib->patchOf(*d);
   if (root == nullptr) return nullptr;
   const graph::PatchLibrary* l = &lib->library();
   const doc::ResolvedDevice* user = hold.get();

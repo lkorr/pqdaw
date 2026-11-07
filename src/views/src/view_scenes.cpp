@@ -1488,8 +1488,7 @@ Status setupDeviceAutomation(Shell& shell) {
     if (ref.kind != doc::ParamKind::DeviceParam) return v;
     const doc::Device* d = doc::findDevice(*store.current(), doc::DeviceId{ref.owner}).device;
     if (d == nullptr) return v;
-    std::shared_ptr<const doc::ResolvedDevice> hold;
-    const graph::Patch* callee = ctx.deviceLibrary()->patchOf(*d, hold);
+    const graph::Patch* callee = ctx.deviceLibrary()->patchOf(*d);
     const graph::ParamDecl* decl = callee != nullptr ? doc::findAnyParamDecl(*callee, name) : nullptr;
     return decl != nullptr ? dsp::curvePosition(doc::controlCurve(*d, name, *decl), v, 0.0) : v;
   };

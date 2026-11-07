@@ -371,6 +371,9 @@ EditResult setDeviceGroup(const Project& p, IdSource& ids, const DeviceLibrary* 
 // effect at slot 0 goes after a stock instrument heading the path). An instrument takes the notes: slot 0; when the path
 // starts with a stock instrument or Instrument Rack it replaces it (Live). Instruments only go on MIDI tracks.
 // GU.9: `patch` kAudioEffectRack / kInstrumentRack adds a new rack (addRack: a group of parallel chain groups).
+// GU.11: `patch` kModuleItemPrefix + a module's key ("module:utility") pastes that module's group preset (modules.h
+// moduleBlocks, fresh ids) and puts its group on the path at `index` (kOffPath: off it); an instrument module takes
+// the notes (slot 0), replacing the instrument group heading the path. The Edit's first device is the group.
 EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string patch, DeviceKind kind,
                      uint32_t index = kAppend);
 // Removes the devices (any tracks). T4.18: their automation lanes (and those of the wires that go with them) go in the
@@ -447,15 +450,6 @@ EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, 
 EditResult setDeviceParamValue(const Project& p, const DeviceLibrary& lib, DeviceId device, std::string param, double value);
 // One structural setting (nullopt: the default).
 EditResult setDeviceSetting(const Project& p, DeviceId device, std::string setting, std::optional<double> value);
-// T4.4-fix1 (SPEC §15 2026-10-26): the device's patch text after an edit in the circuit editor; `ids` is the editor's
-// parse of it (model.h UserPatch::ids: the project then plays the NodeIds the editor shows). The first edit of a stock
-// device forks it into a user device ("Edit Device Patch"); each edit is one undo step, and undoing the first one
-// restores the stock reference. An unchanged text is an empty edit.
-EditResult editDevicePatch(const Project& p, DeviceId device, std::string text,
-                           std::shared_ptr<const graph::PatchFile> ids = nullptr);
-// "Revert to Stock": the devices' own texts are dropped (the library's patch plays again; id, values and wires stay).
-// Devices that are not edited are skipped (none edited: an empty edit).
-EditResult revertDevicesToStock(const Project& p, std::span<const DeviceId> devices);
 // T4.17 (Live: Ctrl+R): the device's own name (Device::name; "" = the patch's default name). One Meta step; an unchanged
 // name is an empty edit.
 EditResult renameDevice(const Project& p, DeviceId device, std::string name);
@@ -470,9 +464,6 @@ EditResult renameDevice(const Project& p, DeviceId device, std::string name);
 // anywhere else its chain input takes the previous device's signal. A Wavetable that would receive audio starts in
 // Shape mode.
 Result<DeviceKind> metaDeviceKindAt(const Project& p, const meta::Type& type, TrackId track, uint32_t index = kAppend);
-// TMM.10-fix1: which input of chain meta device `device` its chain feeds ("" the type's own, "-" unplugged, or an
-// input name; SetDeviceChainInput). One Structural step; an unchanged value is an empty edit.
-EditResult setDeviceChainInput(const Project& p, DeviceId device, std::string input);
 // GU.1 (model.h ControlCurve): the curve of `device`'s param `param` (nullopt, or a curve equal to the declared one:
 // the declared curve, the entry removed). The knob position stays (the sound follows). One step: Structural when the
 // curve's class changes against the curve it replaces (dsp::curveClass: a driven control's `curve` atom and the wire
@@ -498,21 +489,6 @@ EditResult setMetaParamValue(const Project& p, DeviceId device, std::string path
 EditResult setMetaSetting(const Project& p, DeviceId device, std::string path, std::string_view type, std::string setting,
                           std::optional<double> value);
 EditResult setMetaData(const Project& p, DeviceId device, std::string path, std::string_view type, meta::DataPtr data);
-// The patch editor's meta-call edits, each the device's new `text` (forking a stock device, editDevicePatch) plus the
-// state change: a new call `path = meta_<type>(…)` with its default state; a call renamed `from` → `to` (the state
-// follows the name, everything below it too); a call deleted (its state goes).
-EditResult addMetaCall(const Project& p, DeviceId device, std::string text, std::string path, std::string_view type,
-                       std::shared_ptr<const graph::PatchFile> ids = nullptr);
-EditResult renameMetaCall(const Project& p, DeviceId device, std::string text, std::string from, std::string to,
-                          std::shared_ptr<const graph::PatchFile> ids = nullptr);
-EditResult removeMetaCall(const Project& p, DeviceId device, std::string text, std::string path,
-                          std::shared_ptr<const graph::PatchFile> ids = nullptr);
-// Any text edit of a device (the text pane, a circuit edit): editDevicePatch plus a RenameMetaInstance for every call
-// path that `ids` (the new parse, made with ParseOptions::previous = `previous`) renamed and that holds state
-// (meta.h metaRenames): a hand edit that renames a meta binding keeps its state.
-EditResult editDevicePatchKeepingMeta(const Project& p, DeviceId device, std::string text,
-                                      std::shared_ptr<const graph::PatchFile> ids, const graph::PatchFile& previous);
-
 // ---- User library (T5.11; pq/document/library_files.h) -----------------------------------------------------------
 // Hot-swap: `with` (a preset's device) replaces `device` in place: the same position and id (so wires, mappings and the
 // engine's state key follow it); everything inside `with` (a rack's chains, mappings, inner devices) gets fresh ids.

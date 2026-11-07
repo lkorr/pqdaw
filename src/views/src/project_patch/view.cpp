@@ -534,8 +534,7 @@ void ProjectPatchView::rebuild() {
     const doc::DeviceLoc loc = doc::findDevice(*snap, d);
     // What the device plays: the stock patch, or a user device's resolved root (its name carries its graph hash, so
     // an edited text gets its own cache entry).
-    std::shared_ptr<const doc::ResolvedDevice> hold;
-    const graph::Patch* callee = devlib != nullptr ? devlib->patchOf(*loc.device, hold) : nullptr;
+    const graph::Patch* callee = devlib != nullptr ? devlib->patchOf(*loc.device) : nullptr;
     if (callee == nullptr) continue;
     // T4.15 / TMM.12: as it plays (what its settings switch off hidden), cached per patch and settings.
     const std::string key =
@@ -2111,7 +2110,7 @@ ui::Menu* ProjectPatchView::openParamMenu(doc::DeviceId from, const std::string&
   const doc::Project& p = *ctx_.doc();
   const doc::DeviceLoc loc = doc::findDevice(p, n.device);
   std::shared_ptr<const doc::ResolvedDevice> hold;  // a user device's params are its own text's (T4.4-fix1)
-  const doc::DeviceInfo* info = lib != nullptr && loc.device != nullptr ? lib->infoOf(*loc.device, hold) : nullptr;
+  const doc::DeviceInfo* info = lib != nullptr && loc.device != nullptr ? lib->infoOf(*loc.device) : nullptr;
   if (info == nullptr) {
     ctx_.setStatus("Wire: no parameters known for " + n.title);
     return nullptr;
@@ -2291,10 +2290,9 @@ void ProjectPatchView::pollReadout() {
       } else if (w != nullptr && !w->travels()) {
         adds = Adds::Input;
         const doc::DeviceLoc tl = doc::findDevice(p, w->to);
-        std::shared_ptr<const doc::ResolvedDevice> hold;
         const doc::DeviceLibrary* devlib = ctx_.deviceLibrary();
         const graph::Patch* callee =
-            tl.device != nullptr && devlib != nullptr ? devlib->patchOf(*tl.device, hold) : nullptr;
+            tl.device != nullptr && devlib != nullptr ? devlib->patchOf(*tl.device) : nullptr;
         if (const graph::ParamDecl* decl = callee != nullptr ? doc::findParamDecl(*callee, w->param) : nullptr) {
           const dsp::Curve c = doc::controlCurve(*tl.device, w->param, *decl);
           adds = !doc::addsInUnits(c) ? Adds::KnobTravel : c.output == dsp::CurveOutput::DbToGain ? Adds::Db : Adds::Units;

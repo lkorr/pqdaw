@@ -197,8 +197,7 @@ std::vector<doc::Binding> ProjectPatchView::controlsOf(doc::DeviceId device) con
     if (d->hasPanel()) out.push_back(doc::panelBinding(device));
     return out;
   }
-  std::shared_ptr<const doc::ResolvedDevice> hold;
-  const graph::Patch* patch = lib->patchOf(*d, hold);
+  const graph::Patch* patch = lib->patchOf(*d);
   if (patch == nullptr) return out;
   for (const devices::ParamInfo& pi : devices::signatureOf(*patch).params) out.push_back(doc::controlBinding(device, pi.name));
   return out;

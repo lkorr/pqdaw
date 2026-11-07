@@ -19,8 +19,7 @@ std::optional<ui::MenuItem> knobCurveMenu(ViewContext& ctx, doc::DeviceId device
   const doc::DeviceLoc loc = doc::findDevice(*ctx.doc(), device);
   const doc::DeviceLibrary* lib = ctx.deviceLibrary();
   if (loc.device == nullptr || lib == nullptr || param.empty()) return std::nullopt;
-  std::shared_ptr<const doc::ResolvedDevice> hold;
-  const graph::Patch* patch = lib->patchOf(*loc.device, hold);
+  const graph::Patch* patch = lib->patchOf(*loc.device);
   const graph::ParamDecl* decl = patch != nullptr ? doc::findParamDecl(*patch, param) : nullptr;
   if (decl == nullptr) return std::nullopt;
   // GU.1: the presets over the declared curve (doc::curvePresets); the one on is the stored curve's (else the declared).

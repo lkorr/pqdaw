@@ -454,16 +454,6 @@ struct ControlCurve {
   friend bool operator==(const ControlCurve&, const ControlCurve&) = default;
 };
 
-// T4.4-fix1 (SPEC §15 2026-10-26; QUESTIONS Q138): a USER DEVICE is a stock device edited in the circuit
-// editor. The first edit forks the instance: it gets its own copy of the device's patch file (`text`: the whole .pqp
-// with its imports and helper patches), stored in the project; the stock file and every other instance are unchanged.
-// The device's patch is the patch of `text` named Device::patch (the stock name it was forked from: "Revert to Stock"
-// drops the copy and plays the library's patch again). Imports resolve relative to the stock file's location (the
-// stdlib), so `import "../filters/svf.pqp"` keeps working.
-// `ids` (optional, never saved) is the circuit editor's parse of `text` at the edit: the device library takes its
-// NodeIds from it (ParseOptions::previous), so the project plays the very ids the editor shows (probes, cost) and keeps
-// every state the editor kept. Without it (a loaded project) the library parses `text` with the ids of the device's
-// previous text, else of the stock file (devices.h DeviceLibrary::resolve).
 // ---- Meta modules (TMM.3; docs/plans/MM.md "Architecture"; pq/meta/type.h) -------------------------------------------
 // A meta module's state lives in its device, keyed by its NAME PATH (pq/meta/registry.h validPath): the call binding
 // names from the device's root patch to the instance ("acc1", "opA.acc"; the editor names calls acc1, wt1, …), or ""
@@ -501,18 +491,14 @@ struct MetaEntry {
 using MetaMap = std::vector<MetaEntry>;  // sorted by path, unique
 using MetaMapPtr = std::shared_ptr<const MetaMap>;
 
-struct UserPatch {
-  std::string text;
-  std::shared_ptr<const graph::PatchFile> ids;
-  friend bool operator==(const UserPatch& a, const UserPatch& b) noexcept { return a.text == b.text; }
-};
-using UserPatchPtr = std::shared_ptr<const UserPatch>;
-
-// One device instance (TX.all-free: a block of a track's circuit, or a device of a rack chain): a call of `patch` (a
-// patch of the device library) with the values the user set. Ports are the patch's signature and are not stored; params / settings not listed play the patch's defaults.
-// T4.8: a RACK is a Device with `rack` set (patch kAudioEffectRack / kInstrumentRack, kind AudioEffect / Instrument): it
-// holds parallel chains of devices instead of calling a library patch; its params are its macros and its chain
-// selector ("macro1" … "macro16", "select"), stored in `params` like any device's.
+// One BLOCK of a track's circuit (GU.11, docs/plans/GU.md "One hierarchy"): `patch` says which of exactly four it is —
+//   a GROUP          kGroupDevice: the one container (its members name it in Device::group; "Groups" below)
+//   an ATOM BLOCK    "atom:<name>": one atom of the graph's registry ("Atom blocks and value blocks" below)
+//   a VALUE BLOCK    kValueDevice: one control
+//   a NATIVE ENGINE  "meta:<type>": a meta type whose expansion is real DSP (the wavetable oscillator, the envelope, the
+//                    analysers' taps): a leaf with a face and no inside ("Meta modules" above)
+// Nothing else is a block (checks.cpp refuses any other patch: no stock patch, no patch text of the instance's own).
+// Ports are the block's fixed patch's signature and are not stored; params / settings not listed play the defaults.
 struct Device {
   DeviceId id;
   std::string patch;
@@ -520,19 +506,12 @@ struct Device {
   bool active = true;                // deactivated: left out of the graph (structural, zero CPU)
   std::vector<DeviceValue> params;   // sorted by name, unique
   std::vector<DeviceValue> settings; // sorted by name, unique (racks: none)
-  // T4.4-fix1: the instance's own patch text (a user device), or null (the library's stock patch). Shared, so a param
-  // edit copies the Device but never the text. Racks: always null (a rack has no patch text).
-  UserPatchPtr source;
   // T4.17: the instance's own name (Live: Ctrl+R renames a device), shown in its title bar; "" = the patch's default
   // name (the catalog's / the panel description's title). Meta.
   std::string name;
   // TMM.3: meta-module state by name path (see "Meta modules" above); null: none. Shared, so a param edit copies the
   // Device but never the map (nor the data in it).
   MetaMapPtr meta;
-  // TMM.10-fix1 ("a chain is wires", pq/document/meta.h chainStages): a chain meta device's choice of the input its
-  // MAIN INPUT is (what a cable into its main port, or a rack chain, feeds) — "" the type's own (meta::Type::chainInput),
-  // "-" none (unplugged: the module runs once, freely), else an input of its type by name. Other devices: always "".
-  std::string chainInput;
   // TX.groups (SPEC §15 2026-11-01 "resize, groups, and the free-device rack"; "Groups" below): the group this device
   // belongs to (a group device of the same track's own blocks), or invalid. A member is never on its track's main path
   // (main_path.h: a group has no order inside): it plays through its cables only; membership changes no sound (Meta:
@@ -548,7 +527,6 @@ struct Device {
   PanelPtr panel;
   bool hasPanel() const noexcept { return panel != nullptr && !panel->empty(); }
   const dsp::Curve* curve(std::string_view param) const noexcept;  // null: the declared curve
-  bool edited() const noexcept { return source != nullptr; }
   const MetaInstance* metaAt(std::string_view path) const noexcept;  // nullptr: no entry
   const DeviceValue* param(std::string_view key) const noexcept;    // nullptr: the patch's default
   const DeviceValue* setting(std::string_view key) const noexcept;  // nullptr: the patch's default
@@ -667,10 +645,7 @@ DevicePtr makeInstrumentGroup(DeviceId id);
 inline constexpr std::string_view kAudioEffectRack = "AudioEffectRack";
 inline constexpr std::string_view kInstrumentRack = "InstrumentRack";
 
-// The M3 default instrument (QUESTIONS Q15 A): every MIDI track ops::createTrack makes starts with it.
-inline constexpr std::string_view kDefaultInstrument = "BasicSynth";
 DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind);
-DevicePtr makeDefaultInstrument(DeviceId id);  // makeDevice(id, kDefaultInstrument, Instrument)
 DevicePtr makeGroup(DeviceId id);              // TX.groups: an empty group device (kGroupDevice, AudioEffect)
 
 // ---- Modulation wires (T4.7, SPEC §7.1, §7.4, §9, §15 2026-10-24; QUESTIONS Q129 item 5) -------------------------

@@ -96,8 +96,7 @@ bool deviceParam(const doc::Project& p, const doc::ParamRef& r, const doc::Devic
   if (out.device == nullptr) return false;
   devices::ParamInfo& pi = out.info;
   if (lib == nullptr) return false;
-  std::shared_ptr<const doc::ResolvedDevice> hold;
-  const doc::DeviceInfo* info = lib->infoOf(*out.device, hold);
+  const doc::DeviceInfo* info = lib->infoOf(*out.device);
   if (info == nullptr) return false;
   for (const doc::DeviceParamInfo& d : info->params) {
     if (doc::deviceParamHash(d.name) != r.target) continue;
@@ -386,8 +385,7 @@ std::vector<ParamChoice> paramChoices(const doc::Project& p, const doc::Track& t
     mine.push_back(d.id);
     const std::string title = deviceTitle(d, lib);
     if (lib == nullptr) return;
-    std::shared_ptr<const doc::ResolvedDevice> hold;
-    const graph::Patch* patch = lib->patchOf(d, hold);
+    const graph::Patch* patch = lib->patchOf(d);
     if (patch == nullptr) return;
     for (const devices::ParamInfo& pi : devices::signatureOf(*patch).params)
       if (!pi.hidden) addDevice(d, pi.name, title, pi.label);

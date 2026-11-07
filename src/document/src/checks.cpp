@@ -6,6 +6,7 @@
 #include <cmath>
 #include <string>
 
+#include "pq/document/devices.h"
 #include "pq/document/meta.h"
 #include "pq/document/racks.h"
 #include "pq/meta/registry.h"
@@ -288,6 +289,12 @@ Status checkList(ListKind k, const std::vector<DevicePtr>& list, std::vector<siz
         if (!d) return invalid("null device");
         if (!d->id.valid()) return invalid("device has no id");
         if (d->patch.empty()) return invalid("device has no patch");
+        // GU.11 (model.h Device): a block is a group, an atom block, a value block or a native engine — nothing else.
+        if (d->patch == kAudioEffectRack || d->patch == kInstrumentRack)
+          return invalid("'" + d->patch + "' names a rack spawn, not a device patch (a rack is a group: ops::addRack)");
+        if (!isGroupDevice(*d) && !isValueDevice(*d) && !isMetaDevice(*d) &&
+            !(isAtomDevice(*d) && atomBlockPatch(atomDeviceName(*d)) != nullptr))
+          return invalid("'" + d->patch + "' is not a block (a group, an atom block, a value block or a native engine)");
         for (size_t j = 0; j < i; ++j)
           if (list[j]->id == d->id) return invalid("device id twice in a chain");
         // The notes exist only on MIDI tracks (an instrument plays where they reach it: lower.h "The main path").
@@ -295,8 +302,7 @@ Status checkList(ListKind k, const std::vector<DevicePtr>& list, std::vector<siz
           return invalid("instruments go on MIDI tracks (the notes are their main input)");
         if (isGroupDevice(*d)) {  // TX.groups (model.h "Groups")
           if (d->kind != DeviceKind::AudioEffect) return invalid("a group is an audio effect");
-          if (!d->params.empty() || d->source || d->meta)
-            return invalid("a group has no params, text or meta modules of its own");
+          if (!d->params.empty() || d->meta) return invalid("a group has no params or meta modules of its own");
           // IG.1-2 (model.h "Instrument groups"): its settings are an instrument group's polyphony only.
           for (const DeviceValue& v : d->settings)
             if (v.name != kGroupVoices && v.name != kGroupMono && v.name != kGroupLegato && v.name != kGroupGlide &&
@@ -338,8 +344,6 @@ Status checkList(ListKind k, const std::vector<DevicePtr>& list, std::vector<siz
           PQ_DOC_TRY(checkPanel(*d->panel));
         }
         PQ_DOC_TRY(checkDeviceMeta(*d));  // TMM.3
-        if (d->patch == kAudioEffectRack || d->patch == kInstrumentRack)
-          return invalid("'" + d->patch + "' names a rack spawn, not a device patch (a rack is a group: ops::addRack)");
         return ok();
       }();
       if (!st) {
@@ -384,13 +388,7 @@ Status checkDeviceMeta(const Device& d) {
   if (isMetaDevice(d)) {
     const meta::Type* t = meta::findTypeOrRetired(metaDeviceType(d));
     if (t == nullptr) return unsupported("unknown meta module type '" + std::string(metaDeviceType(d)) + "'");
-    // TMM.10-fix1: any type in either kind (its kind is its position: model.h "Meta modules"); the chain input is
-    // the type's, none, or one of its inputs.
-    if (!d.chainInput.empty() && d.chainInput != kChainUnplugged && t->inputIndex(d.chainInput) < 0)
-      return invalid("a " + std::string(t->name) + " has no input '" + d.chainInput + "' to wire the chain into");
-    if (d.source) return invalid("a meta device has no patch text");
-  } else if (!d.chainInput.empty()) {
-    return invalid("only a chain meta device chooses its chain input");
+    (void)t;  // TMM.10-fix1: any type in either kind (its kind is its position: model.h "Meta modules")
   }
   if (!d.meta) return ok();
   if (d.meta->empty()) return invalid("an empty meta map is stored as none");

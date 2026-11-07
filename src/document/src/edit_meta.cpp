@@ -1,6 +1,4 @@
 // Meta-module edit builders (TMM.3): pq/document/edit_ops.h, "Meta modules".
-#include <algorithm>
-
 #include "edit_common.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
@@ -10,10 +8,6 @@ namespace pq::doc::ops {
 using namespace detail;
 
 namespace {
-
-bool under(std::string_view path, std::string_view root) {
-  return path == root || (path.size() > root.size() && path.starts_with(root) && path[root.size()] == '.');
-}
 
 // The device and, for a nested path without state, the AddMetaInstance of its default state (into `e`).
 Result<const Device*> prepare(const Project& p, Edit& e, DeviceId device, const std::string& path, std::string_view type) {
@@ -27,21 +21,6 @@ Result<const Device*> prepare(const Project& p, Edit& e, DeviceId device, const 
     batchOf(e).commands.push_back(AddMetaInstance{device, path, defaultMetaInstance(*t)});
   }
   return l.device;
-}
-
-// The device text edit (editDevicePatch) as the first commands of `e`.
-Status textEdit(const Project& p, Edit& e, DeviceId device, std::string text, std::shared_ptr<const graph::PatchFile> ids) {
-  EditResult t = editDevicePatch(p, device, std::move(text), std::move(ids));
-  if (!t) return std::move(t).error();
-  for (Command& c : batchOf(*t).commands) batchOf(e).commands.push_back(std::move(c));
-  e.devices = t->devices;
-  e.tracks = t->tracks;
-  return ok();
-}
-
-bool holdsState(const Device& d, std::string_view root) {
-  if (!d.meta) return false;
-  return std::any_of(d.meta->begin(), d.meta->end(), [&](const MetaEntry& m) { return under(m.path, root); });
 }
 
 }  // namespace
@@ -88,62 +67,6 @@ EditResult setMetaData(const Project& p, DeviceId device, std::string path, std:
     batchOf(e).commands.push_back(AddMetaInstance{device, "", defaultMetaInstance(*t)});
   }
   batchOf(e).commands.push_back(SetMetaData{device, std::move(path), std::move(data)});
-  return e;
-}
-
-EditResult addMetaCall(const Project& p, DeviceId device, std::string text, std::string path, std::string_view type,
-                       std::shared_ptr<const graph::PatchFile> ids) {
-  const meta::Type* t = meta::findType(type);
-  if (t == nullptr) return invalid("unknown meta module type '" + std::string(type) + "'");
-  if (path.empty() || !meta::validPath(path)) return invalid("a meta call needs a name");
-  Edit e = makeEdit("Add Meta Module");
-  PQ_DOC_TRY(textEdit(p, e, device, std::move(text), std::move(ids)));
-  const DeviceLoc l = findDevice(p, device);
-  if (holdsState(*l.device, path))  // a stale state under that name (a deleted call's): the new call starts fresh
-    batchOf(e).commands.push_back(RemoveMetaInstance{device, path});
-  batchOf(e).commands.push_back(AddMetaInstance{device, std::move(path), defaultMetaInstance(*t)});
-  return e;
-}
-
-EditResult renameMetaCall(const Project& p, DeviceId device, std::string text, std::string from, std::string to,
-                          std::shared_ptr<const graph::PatchFile> ids) {
-  Edit e = makeEdit("Rename Meta Module");
-  PQ_DOC_TRY(textEdit(p, e, device, std::move(text), std::move(ids)));
-  const DeviceLoc l = findDevice(p, device);
-  if (from != to && holdsState(*l.device, from)) batchOf(e).commands.push_back(RenameMetaInstance{device, from, to});
-  return e;
-}
-
-EditResult removeMetaCall(const Project& p, DeviceId device, std::string text, std::string path,
-                          std::shared_ptr<const graph::PatchFile> ids) {
-  Edit e = makeEdit("Delete Meta Module");
-  PQ_DOC_TRY(textEdit(p, e, device, std::move(text), std::move(ids)));
-  const DeviceLoc l = findDevice(p, device);
-  if (l.device->meta)
-    for (const MetaEntry& m : *l.device->meta)
-      if (under(m.path, path)) batchOf(e).commands.push_back(RemoveMetaInstance{device, m.path});
-  return e;
-}
-
-EditResult editDevicePatchKeepingMeta(const Project& p, DeviceId device, std::string text,
-                                      std::shared_ptr<const graph::PatchFile> ids, const graph::PatchFile& previous) {
-  const DeviceLoc l = findDevice(p, device);
-  if (!l.track) return notFound("device not found");
-  std::vector<MetaRename> renames;
-  if (ids) renames = metaRenames(previous, *ids, l.device->patch);
-  Edit e = makeEdit("Edit Device Patch");
-  PQ_DOC_TRY(textEdit(p, e, device, std::move(text), std::move(ids)));
-  // Applied in order (outer renames first, metaRenames): track where each state is after the earlier ones.
-  std::vector<std::string> paths;
-  if (l.device->meta)
-    for (const MetaEntry& m : *l.device->meta) paths.push_back(m.path);
-  for (const MetaRename& r : renames) {
-    if (!std::any_of(paths.begin(), paths.end(), [&](const std::string& s) { return under(s, r.from); })) continue;
-    if (std::any_of(paths.begin(), paths.end(), [&](const std::string& s) { return under(s, r.to); })) continue;
-    batchOf(e).commands.push_back(RenameMetaInstance{device, r.from, r.to});
-    for (std::string& s : paths)
-      if (under(s, r.from)) s = r.to + s.substr(r.from.size());
-  }
   return e;
 }
 

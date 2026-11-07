@@ -269,12 +269,12 @@ std::string_view metaDeviceType(const Device& d) noexcept {
 bool isGroupDevice(const Device& d) noexcept { return d.patch == kGroupDevice; }
 
 bool isAtomDevice(const Device& d) noexcept {
-  return !d.source && d.patch.size() > kAtomDevicePrefix.size() && d.patch.starts_with(kAtomDevicePrefix);
+  return d.patch.size() > kAtomDevicePrefix.size() && d.patch.starts_with(kAtomDevicePrefix);
 }
 std::string_view atomDeviceName(const Device& d) noexcept {
   return isAtomDevice(d) ? std::string_view(d.patch).substr(kAtomDevicePrefix.size()) : std::string_view();
 }
-bool isValueDevice(const Device& d) noexcept { return !d.source && d.patch == kValueDevice; }
+bool isValueDevice(const Device& d) noexcept { return d.patch == kValueDevice; }
 
 std::string_view valuePatchText() noexcept {
   // GU.2: one control as a signal. The range and law are the control's curve (Device::curves; declared: linear 0 … 1).
@@ -403,9 +403,6 @@ DevicePtr makeDevice(DeviceId id, std::string patch, DeviceKind kind) {
   return d;
 }
 
-DevicePtr makeDefaultInstrument(DeviceId id) {
-  return makeDevice(id, std::string(kDefaultInstrument), DeviceKind::Instrument);
-}
 
 DevicePtr makeGroup(DeviceId id) { return makeDevice(id, std::string(kGroupDevice), DeviceKind::AudioEffect); }
 
@@ -434,9 +431,8 @@ namespace {
 
 bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
   return a.id == b.id && a.patch == b.patch && a.kind == b.kind && a.active == b.active && a.params == b.params &&
-         a.settings == b.settings && deepEq(a.source, b.source) && a.name == b.name &&
+         a.settings == b.settings && a.name == b.name &&
          deepEq(a.meta, b.meta) &&  // TMM.3 (an empty map is always null: the commands keep it so)
-         a.chainInput == b.chainInput &&  // TMM.10-fix1
          a.group == b.group &&            // TX.groups
          a.curves == b.curves &&          // GU.1
          deepEq(a.panel, b.panel);        // GU.3

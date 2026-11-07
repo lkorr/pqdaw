@@ -930,8 +930,7 @@ private:
     const doc::DeviceLibrary* lib = w.ctx_.deviceLibrary();
     for (const doc::Device* d : doc::groupMembersDeep(gl.track->devices, w.group_)) {
       if (doc::isGroupDevice(*d) || lib == nullptr) continue;
-      std::shared_ptr<const doc::ResolvedDevice> hold;
-      const graph::Patch* patch = lib->patchOf(*d, hold);
+      const graph::Patch* patch = lib->patchOf(*d);
       if (patch == nullptr) continue;
       const devices::DeviceSignature sig = devices::signatureOf(*patch);
       std::vector<ui::MenuItem> sub;

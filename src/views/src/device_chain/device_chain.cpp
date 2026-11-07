@@ -1552,8 +1552,7 @@ void DeviceChainView::Impl::refreshPorts() {
     const doc::Device* d = doc::findDevice(p, doc::DeviceId{id}).device;
     if (d == nullptr) continue;
     Ports& out = ports[id];
-    std::shared_ptr<const doc::ResolvedDevice> hold;
-    const graph::Patch* patch = lib != nullptr && !f->isRack() ? lib->patchOf(*d, hold) : nullptr;
+    const graph::Patch* patch = lib != nullptr && !f->isRack() ? lib->patchOf(*d) : nullptr;
     if (patch == nullptr) {  // a rack, a missing patch: its chain's ports
       if (d->kind != doc::DeviceKind::Instrument) out.inputs.push_back("in");
       out.outputs.push_back("out");

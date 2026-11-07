@@ -178,8 +178,7 @@ TEST_CASE("GU.1 curve renders: a ramp's breakpoints convert exactly; between the
   const Snapshot s = loadCase("automation");
   const Device* filter = deviceOf(*s, "auto_filter");
   REQUIRE(filter != nullptr);
-  std::shared_ptr<const ResolvedDevice> hold;
-  const graph::Patch* fp = library().patchOf(*filter, hold);
+  const graph::Patch* fp = library().patchOf(*filter);
   REQUIRE(fp != nullptr);
   const dsp::Curve c = controlCurve(*filter, "freq", *findParamDecl(*fp, "freq"));
   const AutomationLane* lane = nullptr;
@@ -208,8 +207,7 @@ TEST_CASE("GU.1 curve renders: the migration stores knob positions; the values t
   // Auto Filter's cutoff (20 Hz … 20 kHz, octave): 1800 Hz is the position log(90) / log(1000).
   REQUIRE(filter->param("freq") != nullptr);
   CHECK(filter->param("freq")->value == doctest::Approx(std::log(1800.0 / 20.0) / std::log(1000.0)).epsilon(1e-12));
-  std::shared_ptr<const ResolvedDevice> hold;
-  const graph::Patch* fp = library().patchOf(*filter, hold);
+  const graph::Patch* fp = library().patchOf(*filter);
   REQUIRE(fp != nullptr);
   CHECK(paramValue(*filter, "freq", *findParamDecl(*fp, "freq")) == doctest::Approx(1800.0).epsilon(1e-12));
   CHECK(paramValue(*filter, "res", *findParamDecl(*fp, "res")) == doctest::Approx(0.4).epsilon(1e-12));

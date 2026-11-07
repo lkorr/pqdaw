@@ -122,8 +122,7 @@ std::vector<std::string> deviceParamNames(const ViewContext& ctx, const doc::Dev
   std::vector<std::string> out;
   const doc::DeviceLibrary* lib = ctx.deviceLibrary();
   if (lib == nullptr) return out;
-  std::shared_ptr<const doc::ResolvedDevice> hold;
-  if (const doc::DeviceInfo* info = lib->infoOf(d, hold))
+  if (const doc::DeviceInfo* info = lib->infoOf(d))
     for (const doc::DeviceParamInfo& p : info->params) out.push_back(p.name);
   return out;
 }

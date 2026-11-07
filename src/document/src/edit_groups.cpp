@@ -33,8 +33,7 @@ ChainPorts chainPortsOf(const Device& d, const DeviceLibrary& lib) {
     if (!t->outputs.empty()) c.out = std::string(t->outputs.front().name);
     return c;
   }
-  std::shared_ptr<const ResolvedDevice> hold;
-  const graph::Patch* p = lib.patchOf(d, hold);
+  const graph::Patch* p = lib.patchOf(d);
   if (p == nullptr) return c;
   // The lowering's rule (lower.cpp effectCall): the first non-const `in`, the first `out`.
   for (graph::NodeIndex v = 0; v < p->nodeCount(); ++v) {
@@ -49,8 +48,7 @@ ChainPorts chainPortsOf(const Device& d, const DeviceLibrary& lib) {
 
 std::string displayName(const Device& d, const DeviceLibrary& lib) {
   if (!d.name.empty()) return d.name;
-  std::shared_ptr<const ResolvedDevice> hold;
-  if (const DeviceInfo* i = lib.infoOf(d, hold)) return i->name;
+  if (const DeviceInfo* i = lib.infoOf(d)) return i->name;
   return d.patch;
 }
 

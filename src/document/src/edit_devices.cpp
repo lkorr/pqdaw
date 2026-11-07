@@ -11,6 +11,7 @@
 #include "pq/document/lower.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
+#include "pq/document/modules.h"
 #include "pq/meta/registry.h"
 
 namespace pq::doc::ops {
@@ -178,6 +179,35 @@ DevicePtr cloneDevice(const Device& d, IdSource& ids, std::vector<std::pair<Devi
 EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string patch, DeviceKind kind, uint32_t index) {
   if (patch == kAudioEffectRack || patch == kInstrumentRack)  // GU.9: a rack is a group of chain groups
     return addRack(p, ids, track, patch == kInstrumentRack, index);
+  if (patch.starts_with(kModuleItemPrefix)) {  // GU.11: a built-in module (its group preset) onto the path
+    const ModuleInfo* m = findModule(std::string_view(patch).substr(kModuleItemPrefix.size()));
+    if (m == nullptr) return invalid("no module '" + patch + "'");
+    const Track* t = findTrackPtr(p, track);
+    if (t == nullptr) return notFound("track not found");
+    if (m->instrument && t->kind != TrackKind::Midi) return invalid("instruments go on MIDI tracks");
+    EditResult pasted = pasteBlocks(p, ids, track, moduleBlocks(m->kind));
+    if (!pasted || index == kOffPath) return pasted;
+    const DeviceId g = pasted->devices.front();
+    Steps k(p);
+    PQ_DOC_TRY(k.add(pasted));
+    if (m->instrument) {
+      // An instrument takes the notes: it replaces the instrument group heading the path (Live: a new instrument
+      // replaces the old one; its blocks go with it).
+      const MainPath path = mainPath(k.doc(), *findTrackPtr(k.doc(), track));
+      if (!path.blocks.empty() && isGroupDevice(*path.blocks.front()) && path.blocks.front()->id != g) {
+        const DeviceId gone = path.blocks.front()->id;
+        PQ_DOC_TRY(detach(k, ids, nullptr, gone));
+        PQ_DOC_TRY(k.add(RemoveDevice{gone}));
+      }
+      PQ_DOC_TRY(splice(k, ids, track, g, 0));
+    } else {
+      PQ_DOC_TRY(placeOnPath(k, ids, track, g, false, false, index));
+    }
+    Edit e = std::move(*pasted);
+    batchOf(e).label = m->instrument ? "Add Instrument" : "Add Device";
+    batchOf(e).commands = std::move(k.commands);
+    return e;
+  }
   Result<ListView> l = listOf(p, track);
   if (!l) return std::move(l).error();
   if (patch.empty()) return invalid("no device patch");
@@ -446,36 +476,6 @@ EditResult setDeviceSetting(const Project& p, DeviceId device, std::string setti
   return e;
 }
 
-EditResult editDevicePatch(const Project& p, DeviceId device, std::string text, std::shared_ptr<const graph::PatchFile> ids) {
-  const DeviceLoc l = findDevice(p, device);
-  if (!l.track) return notFound("device not found");
-  if (text.empty()) return invalid("a device patch text must not be empty");
-  Edit e = makeEdit("Edit Device Patch");
-  if (l.device->source && l.device->source->text == text) return e;  // unchanged: nothing to undo
-  e.devices.push_back(device);
-  e.tracks.push_back(l.track->id);
-  auto src = std::make_shared<UserPatch>();
-  src->text = std::move(text);
-  src->ids = std::move(ids);
-  batchOf(e).commands.push_back(SetDevicePatch{device, std::move(src)});
-  return e;
-}
-
-EditResult revertDevicesToStock(const Project& p, std::span<const DeviceId> devices) {
-  Edit e = makeEdit("Revert to Stock");
-  std::vector<DeviceId> seen;
-  for (const DeviceId id : devices) {
-    if (std::find(seen.begin(), seen.end(), id) != seen.end()) continue;
-    const DeviceLoc l = findDevice(p, id);
-    if (!l.track) return notFound("device not found");
-    seen.push_back(id);
-    if (!l.device->edited()) continue;
-    e.devices.push_back(id);
-    batchOf(e).commands.push_back(SetDevicePatch{id, nullptr});
-  }
-  return e;
-}
-
 EditResult renameDevice(const Project& p, DeviceId device, std::string name) {
   const DeviceLoc l = findDevice(p, device);
   if (!l.track) return notFound("device not found");
@@ -485,27 +485,10 @@ EditResult renameDevice(const Project& p, DeviceId device, std::string name) {
   return e;
 }
 
-EditResult setDeviceChainInput(const Project& p, DeviceId device, std::string input) {  // TMM.10-fix1
-  const DeviceLoc l = findDevice(p, device);
-  if (!l.track) return notFound("device not found");
-  if (!isMetaDevice(*l.device)) return invalid("only a chain meta device chooses its chain input");
-  const meta::Type* t = meta::findType(metaDeviceType(*l.device));
-  if (t == nullptr) return invalid("unknown meta module type");
-  if (!input.empty() && input != kChainUnplugged && t->inputIndex(input) < 0)
-    return invalid("a " + std::string(t->name) + " has no input '" + input + "'");
-  if (!input.empty() && input != kChainUnplugged && t->inputIndex(input) == t->chainInput) input.clear();  // the default
-  Edit e = makeEdit("Chain Input");
-  e.devices.push_back(device);
-  e.tracks.push_back(l.track->id);
-  if (l.device->chainInput != input) batchOf(e).commands.push_back(SetDeviceChainInput{device, std::move(input)});
-  return e;
-}
-
 namespace {
 // GU.1: the declaration of `device`'s param `param` in the patch it plays (null: none).
-const graph::ParamDecl* declOf(const DeviceLibrary& lib, const Device& d, std::string_view param,
-                               std::shared_ptr<const ResolvedDevice>& hold) {
-  const graph::Patch* callee = lib.patchOf(d, hold);
+const graph::ParamDecl* declOf(const DeviceLibrary& lib, const Device& d, std::string_view param) {
+  const graph::Patch* callee = lib.patchOf(d);
   return callee != nullptr ? findAnyParamDecl(*callee, param) : nullptr;
 }
 }  // namespace
@@ -516,8 +499,7 @@ EditResult setParamCurve(const Project& p, const DeviceLibrary& lib, DeviceId de
   if (!l.track) return notFound("device not found");
   if (isGroupDevice(*l.device)) return invalid("a group has no knobs");
   if (param.empty()) return invalid("no param");
-  std::shared_ptr<const ResolvedDevice> hold;
-  const graph::ParamDecl* decl = declOf(lib, *l.device, param, hold);
+  const graph::ParamDecl* decl = declOf(lib, *l.device, param);
   if (decl == nullptr) return notFound("the device has no param '" + param + "'");
   if (curve && !dsp::validCurve(*curve)) return invalid("not a valid curve");
   const dsp::Curve declared = declaredCurve(*decl);
@@ -538,8 +520,7 @@ EditResult setParamCurvePreset(const Project& p, const DeviceLibrary& lib, Devic
                                dsp::CurvePreset preset) {
   const DeviceLoc l = findDevice(p, device);
   if (!l.track) return notFound("device not found");
-  std::shared_ptr<const ResolvedDevice> hold;
-  const graph::ParamDecl* decl = declOf(lib, *l.device, param, hold);
+  const graph::ParamDecl* decl = declOf(lib, *l.device, param);
   if (decl == nullptr) return setParamCurve(p, lib, device, std::move(param), std::nullopt);  // its refusal
   return setParamCurve(p, lib, device, std::move(param), curveWithPreset(declaredCurve(*decl), preset));
 }
@@ -547,8 +528,7 @@ EditResult setParamCurvePreset(const Project& p, const DeviceLibrary& lib, Devic
 EditResult setDeviceParamValue(const Project& p, const DeviceLibrary& lib, DeviceId device, std::string param, double value) {
   const DeviceLoc l = findDevice(p, device);
   if (!l.track) return notFound("device not found");
-  std::shared_ptr<const ResolvedDevice> hold;
-  const graph::ParamDecl* decl = declOf(lib, *l.device, param, hold);
+  const graph::ParamDecl* decl = declOf(lib, *l.device, param);
   if (decl == nullptr) return notFound("the device has no param '" + param + "'");
   const double now = paramPosition(*l.device, param, *decl);
   const double pos = dsp::curvePosition(controlCurve(*l.device, param, *decl), value, now);

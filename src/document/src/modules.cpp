@@ -1100,9 +1100,8 @@ Converted convertPa(const Project& p, const Device& d, IdSource& ids, BlockSet* 
   if (const dsp::Curve* c = d.curve("phase")) o.phaseCurve = *c;
   if (const dsp::Curve* c = d.curve("amp")) o.ampCurve = *c;
   if (const dsp::Curve* c = d.curve("pitch")) o.pitchCurve = *c;
-  // The chain input (the main input): the type's own (hz), another input by name, or unplugged.
-  const std::string feed = d.chainInput.empty() ? std::string("hz") : d.chainInput;
-  o.feed = feed == "hz" ? PhaseAccumulatorOptions::Feed::Hz : feed == "pm" ? PhaseAccumulatorOptions::Feed::Pm : PhaseAccumulatorOptions::Feed::None;
+  // The chain input (the main input): the type's own (hz). (GU.11: a device's own choice of it is gone.)
+  o.feed = PhaseAccumulatorOptions::Feed::Hz;
   o.pm = wiredInto(p, d.id, "pm");
   PhaseAccumulatorRoles r;
   BlockSet set = phaseAccumulatorBlocks(ids, o, &r);
@@ -1131,7 +1130,7 @@ Converted convertVca(const Project* p, const Device& d, IdSource& ids, BlockSet*
   const double pos = positionOf(d, t, "value");
   // Whether anything fed `in` (its own wire, or the main input while it is the chain input): else the module was a
   // constant source of its value (in read its default 1) — a Value block.
-  const bool plugged = d.chainInput != "-";
+  const bool plugged = true;  // GU.11: the type's own chain input (a device's own choice of it is gone)
   bool fed = presetOut != nullptr;  // a preset: as the module (its wires come with its use)
   if (p != nullptr)
     for (const Wire& w : wiresOf(*p))

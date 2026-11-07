@@ -171,15 +171,8 @@ struct SetDeviceActive { DeviceId device; bool active = true; };   // Structural
 struct SetDeviceParam { DeviceId device; std::string param; std::optional<double> value; };
 // Structural: a `real const` input (a literal at the call site; the unit recompiles). nullopt = the default.
 struct SetDeviceSetting { DeviceId device; std::string setting; std::optional<double> value; };
-// T4.4-fix1: Structural. The device's own patch text (a user device: the circuit editor's edit of it) or null (back to
-// the library's stock patch). The id, values and wires stay: state keys follow the device id, so only that track's
-// unit recompiles and every state the edit kept carries over. An equal text is a no-op.
-struct SetDevicePatch { DeviceId device; UserPatchPtr source; };
 // T4.17: Meta. The device's own name ("" = the patch's default name, Device::name).
 struct RenameDevice { DeviceId device; std::string name; };
-// TMM.10-fix1: Structural. A chain meta device's chain input (Device::chainInput: "" the type's own, "-" unplugged, or
-// an input of its type by name): which input the previous stage's signal (or the note source) is wired into.
-struct SetDeviceChainInput { DeviceId device; std::string input; };
 // TX.groups: puts a block of a track into group `group` (a group device of the same track), or takes it out (invalid); a
 // member is never on the main path (main_path.h). GU.2: Structural (membership decides whether a block runs per note:
 // an instrument group's members at any depth); groups nest (a group may go into another group; no cycles).
@@ -253,8 +246,8 @@ using CommandVariant = std::variant<
     AddAutomationLane, RemoveAutomationLane, AddBreakpoints, RemoveBreakpoints, UpdateBreakpoints,
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
-    AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch, RenameDevice,
-    SetDeviceChainInput, SetDeviceGroup, SetParamCurve, SetGroupPanel, AddWire, RemoveWire, SetWireAmount, SetWireReducer, SetWireSignal,
+    AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, RenameDevice,
+    SetDeviceGroup, SetParamCurve, SetGroupPanel, AddWire, RemoveWire, SetWireAmount, SetWireReducer, SetWireSignal,
     AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,
     Batch>;
 

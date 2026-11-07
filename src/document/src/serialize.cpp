@@ -227,20 +227,6 @@ public:
     w_.endObject();
     out_ += "\n";
   }
-  void userDeviceFile(const UserDeviceFile& f) {
-    const PathSeg root;
-    libraryHead(root, "pqdevice", f.name);
-    w_.key("kind");
-    w_.string(root, kDeviceKindNames[static_cast<size_t>(f.kind)]);
-    w_.key("patch");
-    w_.string(PathSeg(&root, "patch"), f.patch);
-    w_.key("origin");
-    w_.string(PathSeg(&root, "origin"), f.origin);
-    lines(root, "source", f.text, true);
-    if (!f.panel.empty()) lines(root, "panel", f.panel, false);
-    w_.endObject();
-    out_ += "\n";
-  }
   void tuningFile(const TuningFile& f) {
     const PathSeg root;
     libraryHead(root, "pqtuning", f.name);
@@ -264,31 +250,6 @@ public:
   }
 
 private:
-  // A text as one string per line ("crlf": true first when every line ends in "\r\n"; `crlfKey` false: the caller's
-  // text must not use "\r\n" lines then, they are written with their '\r').
-  void lines(const PathSeg& root, const char* key, std::string_view text, bool crlfKey) {
-    bool crlf = crlfKey && text.find('\n') != std::string_view::npos;
-    for (size_t b = text.find('\n'); crlf && b != std::string_view::npos; b = text.find('\n', b + 1))
-      crlf = b > 0 && text[b - 1] == '\r';
-    if (crlf) {
-      w_.key("crlf");
-      w_.boolean(true);
-    }
-    const PathSeg at(&root, key);
-    w_.key(key);
-    w_.beginArray(true);
-    size_t line = 0;
-    for (size_t a = 0;; ++line) {
-      const size_t b = text.find('\n', a);
-      std::string_view l = text.substr(a, b == std::string_view::npos ? std::string_view::npos : b - a);
-      if (crlf && b != std::string_view::npos) l.remove_suffix(1);
-      w_.string(PathSeg(&at, line), l);
-      if (b == std::string_view::npos) break;
-      a = b + 1;
-    }
-    w_.endArray();
-  }
-
   void timeline(const PathSeg& at, const Timeline& t) {
     w_.key("timeline");
     w_.beginObject(true);
@@ -697,7 +658,7 @@ private:
   }
 
   void deviceHead(const PathSeg& at, const Device& d) {
-    w_.beginObject(d.source != nullptr || d.meta != nullptr || d.panel != nullptr);
+    w_.beginObject(d.meta != nullptr || d.panel != nullptr);
     w_.key("id");
     w_.integer(d.id.value);
     w_.key("patch");
@@ -707,10 +668,6 @@ private:
     if (!d.name.empty()) {  // T4.17 (schema 8): the device's own name
       w_.key("name");
       w_.string(PathSeg(&at, "name"), d.name);
-    }
-    if (!d.chainInput.empty()) {  // TMM.10-fix1 (schema 11): a chain meta device's chain input
-      w_.key("chainInput");
-      w_.string(PathSeg(&at, "chainInput"), d.chainInput);
     }
     if (!d.active) {
       w_.key("active");
@@ -753,30 +710,6 @@ private:
         metaInstance(PathSeg(&mat, e.path), e.instance);
       }
       w_.endObject();
-    }
-    if (d.source) {
-      // Lines end in "\r\n" throughout (a Windows checkout of the stdlib): written without the '\r', "crlf": true.
-      const std::string_view text = d.source->text;
-      bool crlf = text.find('\n') != std::string_view::npos;
-      for (size_t b = text.find('\n'); crlf && b != std::string_view::npos; b = text.find('\n', b + 1))
-        crlf = b > 0 && text[b - 1] == '\r';
-      if (crlf) {
-        w_.key("crlf");
-        w_.boolean(true);
-      }
-      const PathSeg sat(&at, "source");
-      w_.key("source");
-      w_.beginArray(true);
-      size_t line = 0;
-      for (size_t a = 0;; ++line) {
-        const size_t b = text.find('\n', a);
-        std::string_view l = text.substr(a, b == std::string_view::npos ? std::string_view::npos : b - a);
-        if (crlf && b != std::string_view::npos) l.remove_suffix(1);
-        w_.string(PathSeg(&sat, line), l);
-        if (b == std::string_view::npos) break;
-        a = b + 1;
-      }
-      w_.endArray();
     }
   }
 
@@ -1492,44 +1425,6 @@ public:
                  ErrorCode::Unsupported);
     return out;
   }
-  UserDeviceFile userDeviceFile() {
-    const PathSeg root;
-    static constexpr std::string_view K[] = {"format", "schemaVersion", "name",   "kind", "patch",
-                                             "origin", "crlf",          "source", "panel"};
-    UserDeviceFile out;
-    bool crlf = false;
-    Members m(r_, root, K);
-    for (int k; (k = m.next()) >= 0;) {
-      const PathSeg f(&root, K[static_cast<size_t>(k)]);
-      switch (k) {
-        case 0:
-        case 1:
-        case 2: libraryKey(k, f, "pqdevice", out.name); break;
-        case 3: out.kind = static_cast<DeviceKind>(name(f, kDeviceKindNames, "device kind")); break;
-        case 4:
-          out.patch = str(f);
-          if (out.patch.empty()) r_.failValue(f, "must not be empty");
-          break;
-        case 5: out.origin = str(f); break;
-        case 6: crlf = r_.readBool(f); break;
-        case 7: out.text = joinedLines(f); break;
-        case 8: out.panel = joinedLines(f); break;
-      }
-    }
-    m.require({0, 1, 2, 3, 4, 5, 7});
-    if (out.text.empty()) json::fail(PathSeg(&root, "source"), "must not be empty");
-    if (crlf) {
-      std::string t;
-      t.reserve(out.text.size() + out.text.size() / 32);
-      for (const char ch : out.text) {
-        if (ch == '\n') t += '\r';
-        t += ch;
-      }
-      out.text = std::move(t);
-    }
-    finishLibrary(root);
-    return out;
-  }
   TuningFile tuningFile() {
     const PathSeg root;
     static constexpr std::string_view K[] = {"format", "schemaVersion", "name", "colour", "def"};
@@ -1574,18 +1469,6 @@ public:
   }
 
 private:
-  std::string joinedLines(const PathSeg& f) {
-    std::string text, line;
-    r_.beginArray(f);
-    for (size_t j = 0; r_.nextElement(f); ++j) {
-      line.clear();
-      r_.readString(PathSeg(&f, j), line);
-      if (j > 0) text += '\n';
-      text += line;
-    }
-    return text;
-  }
-
   // ---- Scalars ----
   uint32_t defineId(const PathSeg& at) {
     const uint32_t id = ref(at);
@@ -2042,7 +1925,8 @@ private:
   }
 
   // T4.1: the device list (checked as a whole by checkList when the track is read). "rack" (index 8) is refused: a rack
-  // is a group of chain groups (GU.9; no conversion of older files).
+  // is a group of chain groups (GU.9; no conversion of older files). GU.11: so are "source" / "crlf" (6, 7: a device's
+  // own patch text) and "chainInput" (11: a native engine's main input is its type's).
   static constexpr std::string_view kDeviceKeys[] = {"id",       "patch",  "kind", "active", "params",
                                                      "settings", "source", "crlf", "rack", "name", "meta",
                                                      "chainInput", "group", "curves", "panel"};
@@ -2053,20 +1937,21 @@ private:
     for (size_t i = 0; r_.nextElement(listAt); ++i) {
       const PathSeg el(&listAt, i);
       auto d = std::make_shared<Device>();
-      bool crlf = false;
       Members m(r_, el, kDeviceKeys);
       for (int k; (k = m.next()) >= 0;) {
         const PathSeg key(&el, kDeviceKeys[static_cast<size_t>(k)]);
         if (k == 8) r_.failValue(key, "racks are groups since GU.9: this file holds an old rack");
-        deviceKey(k, key, *d, crlf);
+        if (k == 6 || k == 7) r_.failValue(key, "a block has no patch text of its own since GU.11: this file holds a user device");
+        if (k == 11) r_.failValue(key, "a native engine's main input is its type's since GU.11");
+        deviceKey(k, key, *d);
       }
-      finishDevice(el, m, *d, crlf);
+      finishDevice(el, m, *d);
       list.push_back(std::move(d));
     }
     return list;
   }
 
-  void deviceKey(int k, const PathSeg& f, Device& d, bool& crlf) {
+  void deviceKey(int k, const PathSeg& f, Device& d) {
     switch (k) {
       case 0: d.id = DeviceId{defineId(f)}; break;
       case 1:
@@ -2077,27 +1962,8 @@ private:
       case 3: d.active = r_.readBool(f); break;
       case 4: d.params = deviceValues(f); break;
       case 5: d.settings = deviceValues(f); break;
-      case 6: {  // T4.4-fix1: a user device's patch text, one string per line
-        auto src = std::make_shared<UserPatch>();
-        r_.beginArray(f);
-        std::string line;
-        for (size_t j = 0; r_.nextElement(f); ++j) {
-          line.clear();
-          r_.readString(PathSeg(&f, j), line);
-          if (j > 0) src->text += '\n';
-          src->text += line;
-        }
-        if (src->text.empty()) r_.failValue(f, "must not be empty");
-        d.source = std::move(src);
-        break;
-      }
-      case 7: crlf = r_.readBool(f); break;
       case 9: d.name = str(f); break;  // T4.17 (schema 8)
       case 10: d.meta = metaMap(f); break;  // TMM.3 (schema 10)
-      case 11:  // TMM.10-fix1 (schema 11)
-        d.chainInput = str(f);
-        if (d.chainInput.empty()) r_.failValue(f, "must not be empty (omit it for the type's own chain input)");
-        break;
       // (TX.patching's "free", schema 13 … 16, is gone: TX.all-free's migration 16 → 17 wires the chain instead.)
       case 12: d.group = DeviceId{ref(f)}; break;  // TX.groups (schema 14); checkList: a group of the same list
       case 13: d.curves = paramCurves(f); break;  // GU.1 (schema 20; TX.knob-curves' names: schema 16 … 19)
@@ -2215,23 +2081,10 @@ private:
     }
   }
 
-  void finishDevice(const PathSeg& el, const Members& m, Device& d, bool crlf) {
+  void finishDevice(const PathSeg& el, const Members& m, Device& d) {
     m.require({0, 1, 2});
-    if (crlf && d.source) {  // the lines were written without their '\r'
-      std::string t;
-      t.reserve(d.source->text.size() + d.source->text.size() / 32);
-      for (const char ch : d.source->text) {
-        if (ch == '\n') t += '\r';
-        t += ch;
-      }
-      auto src = std::make_shared<UserPatch>();
-      src->text = std::move(t);
-      d.source = std::move(src);
-    } else if (crlf) {
-      r_.failValue(el, "\"crlf\" without a \"source\"");
-    }
     // TMM.3: meta state checked as the commands check it (type, version, names, data; a chain meta device's kind).
-    if (d.meta || isMetaDevice(d) || !d.chainInput.empty()) {
+    if (d.meta || isMetaDevice(d)) {
       const PathSeg mat(&el, d.meta ? "meta" : "patch");
       if (d.meta)
         for (const MetaEntry& e : *d.meta) check(PathSeg(&mat, e.path), detail::checkMetaInstance(d, e.path, e.instance));
@@ -3487,7 +3340,7 @@ private:
     if (auto k = t.find("kind"); k != t.end() && k->is_string() && k->get<std::string>() == "midi") {
       nlohmann::json d = nlohmann::json::object();
       d["id"] = next_++;
-      d["patch"] = std::string(kDefaultInstrument);
+      d["patch"] = "BasicSynth";  // (the M3 default instrument; GU.11: not a block, such a file is refused after migrating)
       d["kind"] = "instrument";
       chain.push_back(std::move(d));
     }
@@ -3586,13 +3439,7 @@ private:
   }
   void list(nlohmann::json& l, bool notes) {
     if (!l.is_array()) return;
-    if (notes)
-      for (nlohmann::json& d : l) {
-        if (!d.is_object()) continue;
-        if (const auto a = d.find("active"); a != d.end() && a->is_boolean() && !a->get<bool>()) continue;
-        if (isMeta(d) && !kindIs(d, "instrument")) d["chainInput"] = std::string(kChainUnplugged);
-        break;
-      }
+    // (GU.11: the chain input "-" this step gave a meta device not at the notes is gone with Device::chainInput.)
     for (size_t i = 0; i < l.size(); ++i) {
       nlohmann::json& d = l[i];
       if (isMeta(d)) d["kind"] = i == 0 && notes ? "instrument" : "audioEffect";
@@ -4042,24 +3889,6 @@ Result<PresetFile> parsePreset(std::string_view text, std::string_view fileName)
       f->device = f->blocks.devices.front();
     }
   return f;
-}
-Result<std::string> serializeUserDevice(const UserDeviceFile& f) {
-  if (f.text.empty()) return Error{ErrorCode::InvalidArgument, "$.source: must not be empty", {}};
-  if (f.patch.empty()) return Error{ErrorCode::InvalidArgument, "$.patch: must not be empty", {}};
-  return encodeLibrary([&](Encoder& e) { e.userDeviceFile(f); });
-}
-Result<UserDeviceFile> parseUserDevice(std::string_view text, std::string_view fileName) {
-  return decodeLibrary<UserDeviceFile>(text, fileName, [](Decoder& d) { return d.userDeviceFile(); });
-}
-DevicePtr makeUserDevice(DeviceId id, const UserDeviceFile& f) {
-  auto d = std::make_shared<Device>();
-  d->id = id;
-  d->patch = f.patch;
-  d->kind = f.kind;
-  auto src = std::make_shared<UserPatch>();
-  src->text = f.text;
-  d->source = std::move(src);
-  return d;
 }
 Result<std::string> serializeTuning(const TuningFile& f) {
   return encodeLibrary([&](Encoder& e) { e.tuningFile(f); });

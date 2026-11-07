@@ -26,10 +26,6 @@
 // ProjectTrack::maxVoices = round(voices) clamped to [1, kMaxPolyphony] (the user's value, else the patch's default);
 // an instrument without one gets the link's default (LinkConfig::maxVoices). A change of it is a structural edit of
 // that track whose unit restarts with a VoiceEngine of the new size (engine::ProjectCompiler::update / rebuild).
-// User devices (T4.4-fix1, model.h UserPatch): the call names the device's own root, resolved through
-// LowerOptions::devices (devices.h DeviceLibrary::resolve: renamed `<name>__u<id>_<graph hash>`, the NodeIds the circuit
-// editor shows); the call's NodeId is the same, so a fork, an edit and Revert to Stock keep every state the patch
-// still has. graph.library is then LoweredProject::userLibrary.
 //
 // ---- Racks (GU.9; model.h "Racks") --------------------------------------------------------------------------------
 // A rack is a group of parallel chain groups wired by ordinary wires: it lowers as every group does (no path of its own).
@@ -38,25 +34,13 @@
 // A chain meta device (Device::patch "meta:<type>") calls its own expansion, `meta_<type>__d<id>__<key>`, its form from
 // what reaches its chain input (TMM.10-fix1, pq/document/meta.h chainStages; never from its type or kind: ChainNotes at
 // the note source — the input reads the note's signal of its meaning, per-voice out, done —, ChainVoice after a voiced
-// stage, ChainAudio after audio or unplugged), built from its own settings (Device::settings), its chain input
-// (Device::chainInput) and the static-ness of its params (an automation lane, a modulation wire or a macro
+// stage, ChainAudio after audio or unplugged), built from its own settings (Device::settings), its type's chain input
+// and the static-ness of its params (an automation lane, a modulation wire or a macro
 // mapping on one makes it modulated); its params are the device's own (d<id>__<name>, dev<id>:<name>), so automation,
-// macros and wires work as for any device. A device whose circuit (stock or user text) has NAMED meta calls
-// `name = meta_<type>(…)` calls a specialised copy of its root, `<root>__m<id>_<hash>`, in which every such call (and
-// every named helper call on the way to one, copied and renamed the same way) calls the instance's expansion
-// `meta_<type>__d<id>_<path>_<key>`, built from the instance's settings (MetaInstance; the type's defaults without
-// one), the call's wired param pins (not static) and the voice context (the device is an instrument). The instance's
-// params stay unconnected runtime params, flattened d<id>__<path>__<name> (path dots as "__"), linked as
-// "dev<id>:<path>.<name>" (ParamRef::metaParam): a face drag is one param write and the unit hash does not change.
-// Names carry hashes of everything they depend on, so an unchanged state lowers to the same IR (the track patch is
+// macros and wires work as for any device. Names carry hashes of everything they depend on, so an unchanged state lowers to the same IR (the track patch is
 // shared, its unit not recompiled); data never enters an expansion (MetaData edits never lower). An unnamed meta call
 // plays the prelude's default state (pq/meta/registry.h). Resource slots (frame tables, voice taps) come from
 // LowerOptions::metaSlotOf and are listed with the instance's data in LoweredProject::metaResources.
-// ANALYSIS TAPS (TX.spectrum): an active analysed stock device in a chain (doc::analysedDevice: EQ Eight, Auto Filter;
-// an edited fork too) gets a sink signal_tap(in[0], in[1], out[0], out[1], slot) next to its call (node ids
-// nodeIdFor(Device, id, 8 … 13)), its slot from LowerOptions::metaSlotOf(device, kAnalysisTapPath, 0), listed in
-// LoweredProject::metaResources (type "", kind SignalTap): the panel's spectrum and measured response read it. Without
-// metaSlotOf (tools, tests), or with slot 0, no tap. Unwatched it costs one relaxed load per block (pq/dsp/atoms.h).
 // VOICE CONTEXTS (IG.1-2; SPEC §15 2026-11-04 "instrument groups", 2026-11-06 "single-signal cables"; docs/plans/IG.md;
 // pq/document/instrument_groups.h). What runs per note is decided by structure alone: a block inside an INSTRUMENT
 // GROUP (a group whose main input is fed notes: it heads a MIDI track's path, or a notes cable enters it) runs per note
@@ -197,7 +181,6 @@ namespace pq::doc {
 inline constexpr uint32_t kMaxPolyphony = 128;
 
 class DeviceLibrary;
-struct ResolvedDevice;
 // TMM.3: the meta-module expansions (and specialised device roots) a lowering calls ("Meta modules" below), kept alive
 // with it (LoweredProject::metaPatches).
 struct MetaPatches {
@@ -208,8 +191,7 @@ struct MetaPatches {
 struct LowerOptions {
   // The device library (devices.h: every patch a device may name, and what those import). Required.
   const graph::PatchLibrary* library = nullptr;
-  // T4.4-fix1: resolves user devices (Device::source; devices.h DeviceLibrary::resolve). Null: user devices are
-  // bypassed (listed in missingDevices). The app passes the DeviceLibrary whose library() is `library`.
+  // The block library whose library() is `library` (the native engines' descriptions); may be null.
   const DeviceLibrary* devices = nullptr;
   std::span<const graph::SubcircuitRef> externals; // unused since T3.17-fix2 (the IR calls library patches directly)
   // The note-event slot of a MIDI track (Timeline::eventSource(k)); stable across lowerings (the app keeps the map).
@@ -508,13 +490,10 @@ struct LoweredProject {
   std::vector<WireState> wires;                               // T4.7: every wire of the project, in id order
   std::vector<ModulationTap> taps;                            // T4.7: one per modulated param (also graph.taps)
   std::vector<CurveSite> curves;                              // GU.1: one per driven control (its `curve` atom's slot)
-  // T4.4-fix1: user devices. With any, graph.library is `userLibrary` (their renamed patches, then the library's and
-  // the files their texts import), and the resolutions stay alive with the lowering (the compiled units' instances
-  // point into them).
+  // The combined library graph.library points into when the lowering added patches of its own (the native engines'
+  // expansions, block patches LowerOptions::library lacks); null: graph.library is LowerOptions::library.
   std::shared_ptr<const graph::PatchLibrary> userLibrary;
-  std::vector<std::shared_ptr<const ResolvedDevice>> userDevices;
-  // User devices whose current text does not play (ResolvedDevice::error): stale = their last good text plays, else
-  // they are bypassed (and in missingDevices).
+  // Blocks that do not play (a native engine whose expansion failed): `message` says why (`stale` is always false).
   struct DeviceError {
     DeviceId device;
     std::string message;

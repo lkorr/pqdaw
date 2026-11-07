@@ -86,9 +86,6 @@ const Send* storedSend(const Track& t, TrackId ret) {
   return nullptr;
 }
 
-// The patches devices call (T4.4-fix1): the library's by name; a user device's own root (its resolution, kept alive by
-// the UserCallees that made this). TMM.3: a chain meta device's expansion, and the specialised root of a device whose
-// circuit calls meta modules (lower.h "Meta modules"), in the same map.
 // ---- TX.all-free: the cables (lower.h "The main path"; main_path.h) -------------------------------------------------
 // What the lowering reads of a project's wires before anything else: each track's main path (its blocks in signal
 // order, then the blocks off it), and the project with every wire that is NOT a link of a main path, its main ports
@@ -126,10 +123,8 @@ struct Cables {
 // have no named main input.
 MainPorts lowerPortsOf(const Device& d, const graph::PatchLibrary* lib, const DeviceLibrary* devices) {
   if (isGroupDevice(d) || isMetaDevice(d)) return mainPortsOf(d, devices);
+  (void)lib;
   const graph::Patch* callee = builtinBlockPatch(d);  // GU.2: an atom / value block
-  std::shared_ptr<const ResolvedDevice> hold;
-  if (callee == nullptr && devices != nullptr) callee = devices->patchOf(d, hold);
-  else if (callee == nullptr && lib != nullptr && !d.source) callee = lib->find(d.patch);
   if (callee == nullptr) return {};
   MainPorts m;
   for (NodeIndex v = 0; v < callee->nodeCount(); ++v) {
@@ -240,14 +235,14 @@ struct Callees {
     if (lib == nullptr) return nullptr;
     if (const auto it = userRoot.find(d.id.value); it != userRoot.end()) return it->second;
     if (isGroupDevice(d)) return &groupCallee(d);  // TX.groups (lower.h "Groups"; the graph's library holds it)
-    if (d.source || isMetaDevice(d)) return nullptr;
+    if (isMetaDevice(d)) return nullptr;
     if (isAtomDevice(d)) {  // GU.2 (lower.h "Atom and value blocks")
       // GU.9: a voice terminal outside a voice reads 0 (its stand-in has the same outputs).
       if (const graph::Patch* v = voicelessAtomPatch(atomDeviceName(d)); v != nullptr && !runsPerNote(d.id)) return v;
       return atomBlockPatch(atomDeviceName(d));
     }
     if (isValueDevice(d)) return &valuePatch();
-    return lib->find(d.patch);
+    return nullptr;  // GU.11: not a block
   }
 };
 
@@ -277,14 +272,12 @@ std::unordered_map<uint32_t, ChainStage> metaStages(const Project& p, const Cabl
   return out;
 }
 
-// The callees of `p`'s devices: `base` alone while no device is a user device. With user devices and `combined`
-// (what a graph needs: lower(), the wire planner's walk into callees), a combined library of their renamed patches,
-// the base library and the stdlib files their texts import; without it (the param fast path: only roots are looked
-// at) nothing is built but the per-device lookup (a cache hit per user device).
+// The callees of `p`'s blocks: `base`, plus (with `combined`: what a graph needs — lower(), the wire planner's walk into
+// callees) a combined library holding the native engines' expansions and the block patches `base` lacks; without it
+// (the param fast path: only roots are looked at) nothing is built but the per-device lookup.
 struct UserCallees {
   Callees callees;
   std::shared_ptr<graph::PatchLibrary> combined;
-  std::vector<std::shared_ptr<const ResolvedDevice>> held;
   std::vector<LoweredProject::DeviceError> errors;
   std::shared_ptr<MetaPatches> meta;                       // TMM.3: the expansions (combined only)
   std::vector<LoweredProject::MetaResource> metaResources;  // TMM.3 (combined only)
@@ -292,12 +285,6 @@ struct UserCallees {
 
 using MetaSlotOf = std::function<uint32_t(DeviceId, std::string_view, uint32_t)>;
 
-std::string hex16(uint64_t v) {
-  static constexpr char kDigits[] = "0123456789abcdef";
-  std::string s(16, '0');
-  for (int i = 15; i >= 0; --i, v >>= 4) s[static_cast<size_t>(i)] = kDigits[v & 15];
-  return s;
-}
 
 bool addsAfterLaw(const Wire& w, const Device& d);  // TX.knob-curves (below)
 
@@ -348,16 +335,6 @@ public:
         }
     if (anyWired) c.wired = wired;
     return expandInstance(d, t, "", *type, c, settings, modulated);
-  }
-
-  // `root` with every named meta call below it replaced by its instance's expansion (copies of the patches on the way,
-  // renamed); `root` itself when it calls none.
-  const graph::Patch* specialise(const Device& d, const Track& t, const graph::Patch& root, const PatchLookup& lookup) {
-    device_ = &d;
-    track_ = &t;
-    lookup_ = &lookup;
-    active_.clear();
-    return walk(root, std::string());
   }
 
 private:
@@ -413,93 +390,21 @@ private:
     return &patches().patches.emplace_back(std::move(e->patch));
   }
 
-  const graph::Patch* walk(const graph::Patch& p, const std::string& prefix) {
-    if (active_.size() >= graph::kMaxSubcircuitDepth || std::find(active_.begin(), active_.end(), &p) != active_.end())
-      return &p;
-    active_.push_back(&p);
-    std::optional<graph::Patch> copy;
-    std::optional<graph::Adjacency> adj;
-    uint64_t h = 1469598103934665603ull;
-    auto mix = [&](std::string_view s) {
-      for (const char ch : s) h = (h ^ static_cast<unsigned char>(ch)) * 1099511628211ull;
-      h = (h ^ 0xFFu) * 1099511628211ull;
-    };
-    mix(prefix);
-    for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
-      if (p.node(n).kind != graph::NodeKind::Subcircuit || p.nodeName(n).empty()) continue;
-      const std::string& callee = p.subcircuit(n).patch;
-      const std::string& name = p.nodeName(n);
-      const graph::Patch* to = nullptr;
-      if (const meta::Type* type = meta::typeOfCall(callee)) {
-        if (!adj) adj = p.adjacency();
-        const std::string path = prefix + name;
-        std::vector<uint8_t> wired(type->params.size(), 0);
-        for (size_t i = 0; i < type->params.size(); ++i)
-          if (const auto pin = p.findInput(n, type->params[i].name))
-            wired[i] = adj->driver[p.flatInput(n, *pin)] != graph::kNone ? 1 : 0;
-        meta::ExpandContext c;
-        c.voice = device_->kind == DeviceKind::Instrument;
-        to = expandInstance(*device_, *track_, path, *type, c, metaSettings(*device_, path, *type), wired);
-      } else if (const graph::Patch* inner = (*lookup_)(callee); inner != nullptr && callsMeta(*inner, *lookup_)) {
-        to = walk(*inner, prefix + name + ".");
-        if (to == inner) to = nullptr;
-      }
-      if (to == nullptr) continue;
-      if (!copy) copy = p;
-      copy->setSubcircuitPatch(n, to->name());
-      mix(to->name());
-    }
-    active_.pop_back();
-    if (!copy) return &p;
-    copy->setName(p.name() + "__m" + std::to_string(device_->id.value) + "_" + hex16(h));
-    return &patches().patches.emplace_back(std::move(*copy));
-  }
-
   const Project& p_;
   UserCallees& u_;
   const MetaSlotOf* slotOf_;
-  const Device* device_ = nullptr;
-  const Track* track_ = nullptr;
-  const PatchLookup* lookup_ = nullptr;
-  std::vector<const graph::Patch*> active_;
 };
 
 bool calleeIsInstrument(const graph::Patch& p) noexcept;  // (below)
 
 // TX.all-free: `p` is the project as lowered (Cables::q), `cables` its main paths.
 UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, const graph::PatchLibrary* base,
-                        const DeviceLibrary* devices, bool combined, const MetaSlotOf* metaSlotOf = nullptr) {
+                        bool combined, const MetaSlotOf* metaSlotOf = nullptr) {
   UserCallees u;
   u.callees.lib = base;
   u.callees.cables = std::move(cables);
   if (base == nullptr) return u;
-  std::vector<const graph::PatchFile*> extra;
-  std::unordered_map<uint32_t, const ResolvedDevice*> resolved;  // TMM.3: a user device's graph (its callees' lookup)
-  forEachDevice(p, [&](const Device& d, const Track&) {  // T4.8: inside racks too
-    if (!d.source) return;
-    std::shared_ptr<const ResolvedDevice> r = devices != nullptr ? devices->resolve(d) : nullptr;
-    if (!r) {
-      u.callees.userRoot[d.id.value] = nullptr;
-      u.errors.push_back({d.id, "edited devices need the device library", false});
-      return;
-    }
-    if (!r->error.empty()) u.errors.push_back({d.id, r->error, r->graph != nullptr});
-    u.callees.userRoot[d.id.value] = r->root();
-    resolved[d.id.value] = r.get();
-    if (combined) {
-      if (!u.combined) u.combined = std::make_shared<graph::PatchLibrary>();
-      if (r->graph) u.combined->addAll(r->graph->library);
-      for (const graph::PatchFile* f : r->extraFiles)
-        if (std::find(extra.begin(), extra.end(), f) == extra.end()) extra.push_back(f);
-    }
-    u.held.push_back(std::move(r));
-  });
-  if (u.combined) {
-    u.combined->addAll(*base);
-    for (const graph::PatchFile* f : extra) u.combined->add(*f);  // first under a name wins: the stock set's
-    u.callees.lib = u.combined.get();
-  }
-  // TMM.3: meta modules — chain meta devices and the nested calls of every device's circuit.
+  // TMM.3: meta modules — the native engines.
   MetaExpander ex(p, u, metaSlotOf);
   std::shared_ptr<const meta::Prelude> prelude;
   bool staged = false;  // TMM.10-fix1: every chain meta device's stage, computed at the first one met
@@ -620,25 +525,6 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
       u.callees.userRoot[d.id.value] = form != nullptr && *form ? &**form : nullptr;
       return;
     }
-    const graph::Patch* root = u.callees.find(d);
-    if (root == nullptr) return;
-    const auto rit = resolved.find(d.id.value);
-    const ResolvedDevice* user = rit != resolved.end() ? rit->second : nullptr;
-    const graph::PatchLibrary* lib = u.callees.lib;
-    const PatchLookup lookup = [&, user, lib](std::string_view name) -> const graph::Patch* {
-      if (user != nullptr && user->graph)
-        if (const graph::Patch* x = user->graph->library.find(name)) return x;
-      return lib->find(name);
-    };
-    std::shared_ptr<const std::vector<MetaSite>> sites =
-        devices != nullptr ? devices->metaSitesOf(d, *root, user, lookup)
-                           : [&]() -> std::shared_ptr<const std::vector<MetaSite>> {
-                               std::vector<MetaSite> s = metaSites(*root, lookup);
-                               return s.empty() ? nullptr : std::make_shared<const std::vector<MetaSite>>(std::move(s));
-                             }();
-    if (!sites) return;
-    u.callees.metaSites[d.id.value] = sites;
-    if (combined) u.callees.userRoot[d.id.value] = ex.specialise(d, t, *root, lookup);
   });
   // TX.groups-fix1 (lower.h "Free devices"): a switched-off free device whose main output a wire reads passes what
   // reaches its chain input (the input a chain would feed: a meta module's chain input, else the first non-const `in`)
@@ -2227,22 +2113,6 @@ PortRef effectCall(Build& b, uint32_t k, PortRef x, uint16_t& width) {
   // TMM.10-fix1: a device without an audio `in` (an unplugged chain meta device) takes nothing: the signal so far ends
   // there (its first pin is a param).
   if (haveIn && x.node != graph::kNone) b.ir.patch().connect(x, PortRef{c, static_cast<uint16_t>(inPort)});  // (IG.1-2: kPending: the default)
-  // TX.spectrum (lower.h "Analysis taps"): an analysed stock device's input and output go to its analysis tap.
-  if (haveIn && x.node != graph::kNone && b.resources != nullptr && b.o.metaSlotOf && analysedDevice(d.device->patch))
-    if (const uint32_t slot = b.o.metaSlotOf(d.device->id, kAnalysisTapPath, 0); slot != 0) {
-      auto nid = [&](uint32_t s) { return nodeIdFor(NodeRole::Device, id, s); };
-      const PortRef y{c, 0};
-      const PortRef il = b.ir.atom("channel", {x, b.c0()}, nid(8)), inr = b.ir.atom("channel", {x, b.c1()}, nid(9));
-      const PortRef ol = b.ir.atom("channel", {y, b.c0()}, nid(10)), orr = b.ir.atom("channel", {y, b.c1()}, nid(11));
-      b.ir.atom("signal_tap", {il, inr, ol, orr, b.ir.konst(static_cast<double>(slot), nid(12))}, nid(13));
-      LoweredProject::MetaResource m;
-      m.track = b.track != nullptr ? b.track->id : TrackId{};
-      m.device = d.device->id;
-      m.path = std::string(kAnalysisTapPath);
-      m.request = meta::ResourceRequest{meta::ResourceKind::SignalTap, 0};
-      m.slot = slot;
-      b.resources->push_back(std::move(m));
-    }
   x = PortRef{c, 0};
   if (outW != graph::kWidthInfer) width = outW;
   else if (inWidth == graph::kWidthStereo) width = graph::kWidthStereo;
@@ -3351,14 +3221,13 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
   // TX.all-free: the main paths, and the project as lowered (its other wires by name; lower.h "The main path").
   std::shared_ptr<const Cables> cables = cablesOf(p, o.library, o.devices);
   const Project& q = cables->q;
-  UserCallees uc = makeCallees(q, cables, o.library, o.devices, true, &o.metaSlotOf);  // T4.4-fix1; TMM.3 meta modules
+  UserCallees uc = makeCallees(q, cables, o.library, true, &o.metaSlotOf);  // TMM.3 meta modules
   const Callees* lib = &uc.callees;
   const Plan pl = plan(q, &o.tuningTableOf, lib);
   const AudibilityMap aud = computeAudibility(q, AudibilityOptions{true});
   LoweredProject out;
   out.graph.library = lib->lib;
   out.userLibrary = std::move(uc.combined);
-  out.userDevices = std::move(uc.held);
   out.deviceErrors = std::move(uc.errors);
   out.metaPatches = std::move(uc.meta);
   out.metaResources = std::move(uc.metaResources);
@@ -3481,26 +3350,26 @@ std::vector<WireState> wireStatesWith(const Cables& c, const Callees& lib) {
 std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes, const graph::PatchLibrary* library) {
   std::shared_ptr<const Cables> c = cablesOf(p, library, nullptr);
   if (library == nullptr) return paramsWith(c->q, tuningNodes, nullptr);
-  const UserCallees uc = makeCallees(c->q, c, library, nullptr, !wiresOf(c->q).empty());
+  const UserCallees uc = makeCallees(c->q, c, library, !wiresOf(c->q).empty());
   return paramsWith(c->q, tuningNodes, &uc.callees);
 }
 
 std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes, const DeviceLibrary& devices) {
   std::shared_ptr<const Cables> c = cablesOf(p, &devices.library(), &devices);
-  const UserCallees uc = makeCallees(c->q, c, &devices.library(), &devices, !wiresOf(c->q).empty());
+  const UserCallees uc = makeCallees(c->q, c, &devices.library(), !wiresOf(c->q).empty());
   return paramsWith(c->q, tuningNodes, &uc.callees);
 }
 
 std::vector<WireState> wireStates(const Project& p, const graph::PatchLibrary& library) {
   if (wiresOf(p).empty()) return {};
   std::shared_ptr<const Cables> c = cablesOf(p, &library, nullptr);
-  return wireStatesWith(*c, makeCallees(c->q, c, &library, nullptr, true).callees);
+  return wireStatesWith(*c, makeCallees(c->q, c, &library, true).callees);
 }
 
 std::vector<WireState> wireStates(const Project& p, const DeviceLibrary& devices) {
   if (wiresOf(p).empty()) return {};
   std::shared_ptr<const Cables> c = cablesOf(p, &devices.library(), &devices);
-  return wireStatesWith(*c, makeCallees(c->q, c, &devices.library(), &devices, true).callees);
+  return wireStatesWith(*c, makeCallees(c->q, c, &devices.library(), true).callees);
 }
 
 std::vector<DelayedSend> delayedSends(const Project& p) {
