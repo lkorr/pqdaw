@@ -1386,3 +1386,16 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: ship, one-binary A/B: VCA audio-rate knob JIT 3.87 → 3.36 ns/sample (law −22…−26 %; ≈ −40 % expected: the per-sample exp and outer / fine selects remain), interpreter 7.28 → 5.42; static VCA unchanged; device rows within ±3 %; JIT compile 90 → 100 ms on the VCA. Load 10–17 %.
 - CPU-efficiency check: one reduce per branch per block; skipped ops cost nothing; no branch where the split would cost what it saves; patches without branches unchanged.
 - Notes/blockers: no branching in Loop / Control regions or fused chains; voice groups skip only when all lanes agree.
+
+## 2026-11-05 · TX.mixer-look 👁 · (merged 057e6ac; entry backfilled by the orchestrator 2026-11-06)
+- Did: the mixer drawn as a face at its band's top right, draggable, placed position saved (bug 2026-11-03_22-37-50, moved to fixed). Q216, REVIEW.
+- Verified / Perf / CPU-efficiency check: not recorded at merge (entry missing; backfilled).
+
+## 2026-11-06 · TX.pan-laws 👁 · task/TX.pan-laws (worker; merged by the orchestrator)
+- Did: per-track pan law (doc::PanMode on Mixer: Balance default / ConstantPower / Linear / Stereo; panMatrix reference); SetTrackPanMode (structural); schema 18 + migration 17→18 (MIDI tracks → constantPower); lowering gainStages per law (True Stereo: gain(x,(ll,rr)) + gain_add(swap(x),(rl,lr))); mixer face law tag + menu, Pan Law ▸ in the mixer node menu; tests (law table, lowered-mixer renders mono+stereo at −1/0/1, compile count + undo, serialize round-trip/migration, commands, UI through real dispatch); fixtures/goldens regenerated (23 project-patch images, document/views fixtures, meta lowering texts); tests whose references assume the old MIDI law opt into ConstantPower explicitly.
+- Diagnosis: the user's pan was on a MIDI track (constant power): hard R = R +3.01 dB over centre, total power equal; buses were Balance. No math bug; the law was the wrong default for the user's expectation.
+- Verified: -Affected skipped at the user's request. Ran pq_tests_document (208/208), pq_tests_playback (4/4 shards, default tier), pq_tests_views (654 cases pass after golden update; two wall-clock checks failed once under load, passed on re-run). Other executables linking document were not run: the next -Full on main covers them.
+- Perf: n/a.
+- CPU-efficiency check: law gains are block-rate math folded into the existing per-track smoother (no per-sample cost for Balance / CP / Linear); True Stereo adds one smoothed 2×2 per sample per track; the law is structural, so no per-sample select.
+- Notes/blockers: a law switch while playing is a recompile (a step of up to the law difference off-centre); the mixer view's strips have no selector yet; True Stereo is one knob (no two-knob split). Q217.
+
