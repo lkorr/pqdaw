@@ -55,7 +55,7 @@ VoiceContexts voiceContexts(const Project& p);
 bool isInstrumentGroup(const Project& p, DeviceId d);
 
 
-// ---- Schema 17 → 18 (serialize.h): wrap each MIDI track's instrument into an instrument group ----------------------
+// ---- Schema 18 → 19 (serialize.h): wrap each MIDI track's instrument into an instrument group ----------------------
 // Sound-identical (tests/app/test_instrument_groups.cpp, every fixture: diff 0, interpreter == JIT). Per MIDI track:
 //   * the main path's first active block, when it takes the notes: a stock instrument or an Instrument Rack (alone), or
 //     a meta voice run (a meta module whose chain input takes the notes and the meta modules after it the voices reach;

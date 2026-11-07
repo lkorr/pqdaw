@@ -1183,8 +1183,8 @@ void ProjectLink::reportWires(const doc::Project& p) {
       break;
     default:
       if (first->reason == doc::WireRefusal::VoiceLoop)  // TMM.13-fix1 H3
-        ctx_->setStatus("The wire " + what + " is not played: it would close a feedback loop through the voices' sum "
-                        "(per-voice signals and the track's summed signal cannot feed each other back per sample); the "
+        ctx_->setStatus("The wire " + what + " is not played: it would close a feedback loop across a voice sum (a "
+                        "single-signal path back into per-note blocks, or through two instrument tracks: not run per sample yet); the "
                         "rest of the track plays");
       else
         ctx_->setStatus("The wire " + what + " is not played: it would close a loop through two instrument tracks");

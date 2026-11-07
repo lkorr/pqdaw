@@ -5,6 +5,7 @@
 #include <string>
 #include <unordered_set>
 
+#include "pq/document/commands.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
@@ -391,3 +392,5 @@ bool migrateToInstrumentGroups(Project& p) {
   return true;
 }
 
+
+}  // namespace pq::doc

@@ -138,6 +138,7 @@ struct CompiledUnit {
   uint32_t idleAfterBlocks = 0;   // UnitImage::idleAfterBlocks (idleAfterBlocks())
   bool voices = false;
   uint32_t maxVoices = 0;         // voice units: the polyphony its images and VoiceEngine are built for (0: none)
+  int32_t steal = -1;             // IG.1-2: its voice stealing (ProjectTrack::steal; −1: ProjectCompileOptions::voice's)
   // Identity across topology edits (rebuild).
   std::vector<uint32_t> memberIds;          // the member tracks' ids, ascending
   std::vector<std::string> readKeys, writeKeys;  // bus keys read / written, sorted

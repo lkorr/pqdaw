@@ -71,6 +71,7 @@ struct ProjectTrack {
   const Patch* patch = nullptr;  // must outlive every use of the graph, partition and composed unit
   TrackRole role = TrackRole::Audio;
   uint32_t eventSlot = kNone;    // Instrument: the note-event slot (Timeline::eventSource(k)); kNone: none
+  int32_t steal = -1;            // IG.1-2: Instrument: its voice stealing (0 oldest, 1 quietest, 2 none; -1: the compiler default)
   uint32_t maxVoices = 0;        // Instrument: its polyphony (T4.12-fix1: the instrument device's `voices` setting);
                                  // 0: the compiler's default (engine::ProjectCompileOptions::voice.maxVoices)
 };

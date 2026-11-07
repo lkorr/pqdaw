@@ -470,7 +470,10 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused };
 // (TX.all-free-fix1's Cycle — a cable into another track's mixer closing a cycle between tracks — is gone: TX.cross-track
 // lowers that loop with its z⁻¹.)
-enum class WireRefusal : uint8_t { None, TwoInstruments, VoiceLoop };  // why a Refused wire is (see above)
+// IG.1-2: VoiceLoop is every loop the engine cannot run per sample yet (IG.3): across a voice sum (a single-signal path
+// back into per-note blocks, a cable leaving a group back into it) or through two instrument tracks (one voice table
+// per unit); TX.cross-track's TwoInstruments is folded into it.
+enum class WireRefusal : uint8_t { None, VoiceLoop };  // why a Refused wire is (see above)
 struct WireState {
   WireId id;
   WireStatus status = WireStatus::Lowered;

@@ -627,7 +627,7 @@ TEST_CASE("cross-track notes: refused only where the host and the block's track 
   const WireId n = cable(s, notesInto(a, synth));
   const WireState st = stateOf(*s.current(), n, &sc);
   CHECK(st.status == WireStatus::Refused);
-  CHECK(st.reason == WireRefusal::TwoInstruments);
+  CHECK(st.reason == WireRefusal::VoiceLoop);
   const golden::Channels after = played(*s.current(), "B, with A's refused notes cable", &sc);
   CHECK(maxDiff(before, after) == 0.0);
 }
