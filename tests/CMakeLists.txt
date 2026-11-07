@@ -127,7 +127,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_instrument_groups.cpp  # IG.1-2: per note inside instrument groups (per-voice references), reducers, layering, cross-track, single-signal cables
     app/test_cross_track.cpp  # TX.cross-track: loops between tracks per sample (hand-written references), notes cables across tracks
     app/test_mod_all.cpp  # TX.mod-all: a wire into any param makes it live at audio rate (repro, the sweep over every device)
-    app/test_module_presets.cpp  # GU.4: the Phase Accumulator / VCA presets render as the meta modules they replace (references)
+    app/test_module_presets.cpp  # GU.4: the Phase Accumulator / VCA presets render as the meta modules they replace; load conversion
     app/test_curve_renders.cpp  # GU.1: driven / automated / mapped / undriven controls render as before the curves (references)
     app/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit: one unit compile, state kept; save/load; wires)
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
@@ -212,7 +212,6 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_meta_vca_face.cpp  # TMM.14: the VCA face (goldens with voices, gestures, typing, presets, scenes, paint cost)
     views/test_meta_wavetable_edit.cpp  # TMM.9: its harmonic editor and draw tools (math, gestures, goldens, paint cost)
     views/test_meta_devices.cpp  # TMM.10: chain meta devices in the Device view (face panels, menus, presets, goldens)
-    views/test_meta_operator.cpp  # TMM.12: the Meta Operator (face panel, algorithm, circuit hiding and counts, presets, goldens)
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell
@@ -358,7 +357,6 @@ pq_add_test(pq_tests_stdlib SHARDS 4 SLOW_SHARDS 4
     stdlib/test_devices.cpp  # T4.9 / T4.10: Utility, Saturator, EQ Eight vs device_reference.h
     stdlib/test_operator.cpp  # T4.12: Operator + msenv vs operator_reference.h, tuned playback
     stdlib/test_auto_filter.cpp  # T4.11: Auto Filter vs device_reference.h, analytic responses, modulation
-    stdlib/test_meta_operator.cpp  # TMM.12: the Meta Operator vs meta_operator_reference.h, pitch, hq
     stdlib/test_smooth.cpp  # TX.smooth: every continuous param of every stock device and meta module jumps click-free
   DEPS pq_jit pq_pqc pq_tuning)
 

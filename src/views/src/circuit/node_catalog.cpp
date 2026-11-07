@@ -11,6 +11,7 @@
 
 #include "pq/document/devices.h"
 #include "pq/document/model.h"
+#include "pq/document/modules.h"
 #include "pq/graph/atoms.h"
 #include "pq/graph/edit.h"
 #include "pq/graph/parse.h"
@@ -61,10 +62,8 @@ std::string valueText(double v, graph::Unit unit, bool boolean = false, uint32_t
 // One or two sentences per meta type and stock device (the preview pane). Keyed by id / patch; an unknown one gets
 // a generic line from its ports.
 std::string_view metaDescription(std::string_view id) noexcept {
-  if (id == "phase_acc") return "A phase accumulator: a 0..1 ramp at its frequency (the note's Hz in a chain). Feed it into a Wavetable, or use its phase as a slow modulation source.";
   if (id == "wavetable") return "Reads a table of single-cycle frames by phase: position morphs between keyframes, warp bends the cycle. A band-limited oscillator or, fed audio, a waveshaper.";
   if (id == "envelope") return "An attack / decay / sustain / release envelope per voice with bendable segments; as a VCA on its input it ends the voice when released and quiet.";
-  if (id == "vca") return "One input, one output, one knob: out = in x value. Unwired it is a constant source of its value; at its default the value is 1 (the sound passes unchanged).";
   if (id == "spectrum") return "A spectrum analyser of what passes through it (the signal is unchanged).";
   if (id == "oscilloscope") return "An oscilloscope locked to the pitch of what passes through it (the signal is unchanged).";
   if (id == "spectrogram") return "A scrolling spectrogram of what passes through it (the signal is unchanged).";
@@ -73,7 +72,6 @@ std::string_view metaDescription(std::string_view id) noexcept {
 std::string_view deviceDescription(std::string_view patch) noexcept {
   if (patch == "BasicSynth") return "The default synth: one oscillator per voice through a filter and an amp envelope.";
   if (patch == "operator") return "Four-operator FM synthesis with exact frequency ratios (Live's Operator).";
-  if (patch == "meta_operator") return "Four operators built from meta modules (Phase accumulator, Wavetable, Envelope): FM with editable faces.";
   if (patch == "utility") return "Gain, width, mid/side, balance, mono and bass mono, phase and channel tools.";
   if (patch == "saturator") return "A waveshaping distortion with drive, curve shapes and a dry/wet mix.";
   if (patch == "eq_eight") return "An eight-band parametric equaliser with a live spectrum and its measured response.";
@@ -197,6 +195,34 @@ void addMetas(NodeCatalog& c, std::vector<NodeEntry>& visualisers) {
   }
 }
 
+// GU.4: the built-in modules (group presets of atom and value blocks with a panel: doc::moduleInfos), beside the meta
+// modules (the project only: a module is a group, which lives in a track's circuit).
+void addModules(NodeCatalog& c) {
+  for (const doc::ModuleInfo& m : doc::moduleInfos()) {
+    NodeEntry e;
+    e.item = NodeItem::Module;
+    e.id = std::string(m.key);
+    e.key = std::string(doc::kModuleItemPrefix) + e.id;
+    e.name = std::string(m.name);
+    e.category = NodeCategory::MetaModules;
+    e.chip = "MODULE";
+    e.aliases = e.id + " module group preset meta";
+    e.description = std::string(m.description);
+    e.inputs = {"in"};
+    e.outputs = {"out"};
+    e.hasIn = e.hasOut = true;
+    const doc::BlockSet set = doc::moduleBlocks(m.kind);
+    for (const doc::DevicePtr& d : set.devices)
+      if (doc::isValueDevice(*d) && d->curve(doc::kValueParam) != nullptr && d->name != doc::kPaReference) {
+        const dsp::Curve& cv = *d->curve(doc::kValueParam);
+        const doc::DeviceValue* v = d->param(doc::kValueParam);
+        e.params.push_back({d->name, number(dsp::evalCurve(cv, v != nullptr ? v->value : 0.0))});
+      }
+    finish(e);
+    c.entries.push_back(std::move(e));
+  }
+}
+
 void addDevices(const doc::DeviceLibrary* lib, std::vector<NodeEntry>& instruments, std::vector<NodeEntry>& effects) {
   if (lib == nullptr) return;
   for (const doc::DeviceInfo& d : lib->catalog().devices()) {
@@ -286,6 +312,7 @@ std::shared_ptr<const NodeCatalog> build(NodeCatalog::Scope scope, const doc::De
   std::vector<NodeEntry> visualisers, instruments, effects;
   addAtoms(*c);
   addMetas(*c, visualisers);
+  if (scope == NodeCatalog::Scope::Project) addModules(*c);
   if (scope == NodeCatalog::Scope::Project) {
     addDevices(lib, instruments, effects);
     auto byName = [](const NodeEntry& a, const NodeEntry& b) { return a.foldedName < b.foldedName; };

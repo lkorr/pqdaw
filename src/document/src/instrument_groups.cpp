@@ -9,6 +9,7 @@
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
+#include "pq/meta/retired.h"
 
 namespace pq::doc {
 
@@ -171,7 +172,7 @@ struct TrackPlan {
 };
 
 std::string firstOutput(const Device& d) {
-  const meta::Type* t = isMetaDevice(d) ? meta::findType(metaDeviceType(d)) : nullptr;
+  const meta::Type* t = isMetaDevice(d) ? meta::findTypeOrRetired(metaDeviceType(d)) : nullptr;
   return t != nullptr && !t->outputs.empty() ? std::string(t->outputs.front().name) : std::string();
 }
 
@@ -228,7 +229,7 @@ bool migrateToInstrumentGroups(Project& p, IdSource* given) {
     return nullptr;
   };
   auto isMetaOff = [&](const Device& d, const MainPath& path) {
-    return isMetaDevice(d) && d.active && !d.group.valid() && !path.contains(d.id) && meta::findType(metaDeviceType(d)) != nullptr;
+    return isMetaDevice(d) && d.active && !d.group.valid() && !path.contains(d.id) && meta::findTypeOrRetired(metaDeviceType(d)) != nullptr;
   };
   auto newGroup = [&](TrackPlan& pl, uint32_t index) {
     const DeviceId g = ids.device();
@@ -346,7 +347,7 @@ bool migrateToInstrumentGroups(Project& p, IdSource* given) {
         if (playsNotes(*d)) {
           in = out = std::string(kMainPort);  // an instrument's main input is its notes, its main output its sound
         } else {
-          const meta::Type* ty = meta::findType(metaDeviceType(*d));
+          const meta::Type* ty = meta::findTypeOrRetired(metaDeviceType(*d));
           const int32_t ci = ty != nullptr ? metaChainInput(*d, *ty) : -1;
           plugged = ci >= 0;
           if (plugged) in = std::string(ty->inputs[static_cast<size_t>(ci)].name);
@@ -387,7 +388,7 @@ bool migrateToInstrumentGroups(Project& p, IdSource* given) {
     for (const DevicePtr& dp : t.devices) {
       const Device& d = *dp;
       if (placed.count(d.id.value) != 0 || !isMetaOff(d, path)) continue;
-      const meta::Type* ty = meta::findType(metaDeviceType(d));
+      const meta::Type* ty = meta::findTypeOrRetired(metaDeviceType(d));
       TrackId src;
       for (const Wire& w : wiresOf(p))
         if (w.fromNoteSource() && w.port.empty() && w.to == d.id && w.noteSource != t.id && midiTrack(p, w.noteSource) &&

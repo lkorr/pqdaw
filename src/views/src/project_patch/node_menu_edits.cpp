@@ -12,6 +12,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/library_files.h"
+#include "pq/document/modules.h"
 #include "pq/meta/registry.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/browser/library_load.h"
@@ -56,8 +57,8 @@ private:
   doc::IdSource& ids_;
 };
 
-// The edit that adds `c`'s device to `track` at list position `index`. `plain`: no default preset (Z's VCA is exactly
-// the type's default: ×1). Its Edit::devices holds the new device first.
+// The edit that adds `c`'s device to `track` at list position `index`. `plain`: no default preset. Its Edit::devices
+// holds the new device first (a module: its group).
 doc::ops::EditResult addChoice(ViewContext& ctx, const doc::Project& p, doc::IdSource& ids, const ProjectPatchView::NodeChoice& c,
                                doc::TrackId track, uint32_t index, bool plain) {
   auto paste = [&](doc::DevicePtr d) {
@@ -89,6 +90,11 @@ doc::ops::EditResult addChoice(ViewContext& ctx, const doc::Project& p, doc::IdS
     }
     case circuit::NodeItem::Rack:
       return doc::ops::addDevice(p, ids, track, c.id, c.id == doc::kInstrumentRack ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect, index);
+    case circuit::NodeItem::Module: {  // GU.4: a built-in module: its group preset, pasted (fresh ids, off the path)
+      const doc::ModuleInfo* m = doc::findModule(c.id);
+      if (m == nullptr) return Error{ErrorCode::NotFound, "no module '" + c.id + "'", {}};
+      return doc::ops::pasteBlocks(p, ids, track, doc::moduleBlocks(m->kind));
+    }
     case circuit::NodeItem::LibraryFile: {
       // GU.2: a group preset spawns as a paste of its blocks (fresh ids), off the path (the view places it).
       if (auto blocks = libraryBlocksOf(c.id); blocks && !blocks->empty()) return doc::ops::pasteBlocks(p, ids, track, *blocks);
@@ -651,10 +657,10 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca) 
 
 bool ProjectPatchView::insertVca(uint32_t edge) {
   NodeChoice c;
-  c.item = circuit::NodeItem::Meta;
+  c.item = circuit::NodeItem::Module;  // GU.4: the VCA module (its knob at 0.7: × 1)
   c.id = "vca";
   c.name = "VCA";
-  return insertImpl(edge, c, true);  // plain: no default preset (exactly x1)
+  return insertImpl(edge, c, true);
 }
 
 // ---- splice, dissolve -------------------------------------------------------------------------------------------------

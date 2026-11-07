@@ -23,9 +23,8 @@
 //                          the median ratio (robust against the load other processes put on the machine), four hosts
 //                          of each (placement); ramps A/A: the same method with the ramped schedule on both sides
 //                          (the noise floor)
-//   operator/meta-<config> <backend> xN, operator/stock-four …   TMM.12: the Meta Operator (bench/patches/
-//                          meta_operator_calibration.pqp: sine = algorithm 1 with feedback, hq = the same ×2, add =
-//                          algorithm 11) and the stock Operator doing the same work (four sines, algorithm 1, feedback)
+//   operator/stock-four <backend> xN   the stock Operator with four sines, algorithm 1, feedback (TMM.12's comparison
+//                          with the Meta Operator, deleted in GU.4)
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -198,26 +197,6 @@ const g::Schedule& operatorSchedule() {
 const g::Schedule& stockSchedule(const char* patch) {
   static const std::unique_ptr<pqc::SourceFile> src = [] {
     auto s = pqc::SourceFile::load(std::filesystem::path(PQ_SOURCE_DIR) / "bench" / "patches" / "operator_calibration.pqp");
-    if (!s) die(s.error().message);
-    return std::move(s.value());
-  }();
-  static std::map<std::string, g::Schedule> cache;
-  auto it = cache.find(patch);
-  if (it == cache.end()) {
-    auto idx = src->findPatch(patch);
-    if (!idx) die(idx.error().message);
-    auto compiled = pqc::compilePatch(*src, *idx);
-    if (!compiled) die(compiled.error().message);
-    std::printf("PATCH  %s: %zu ops\n", patch, compiled->schedule.ops.size());
-    it = cache.emplace(patch, std::move(compiled->schedule)).first;
-  }
-  return it->second;
-}
-
-// TMM.12: the Meta Operator's calibration patches (bench/patches/meta_operator_calibration.pqp).
-const g::Schedule& metaSchedule(const char* patch) {
-  static const std::unique_ptr<pqc::SourceFile> src = [] {
-    auto s = pqc::SourceFile::load(std::filesystem::path(PQ_SOURCE_DIR) / "bench" / "patches" / "meta_operator_calibration.pqp");
     if (!s) die(s.error().message);
     return std::move(s.value());
   }();
@@ -544,16 +523,11 @@ int main(int argc, char** argv) {
     r.add(std::string("operator/stock-full ") + (jit ? "jit" : "interp") + " x64 ramps A/A",
           [jit](bench::Context& c) { benchRampsAB(c, stockSchedule("OpFull"), stockSchedule("OpFull"), jit, true); });
   }
-  // TMM.12: the Meta Operator against the stock Operator doing the same work (operator/stock-four).
-  static const Stock meta[] = {{"meta-sine", "MoSine"}, {"meta-hq", "MoHq"}, {"meta-add", "MoAdd"}, {"meta-nofb", "MoNoFb"}};
+  // TMM.12: the stock Operator with four sines (the Meta Operator's comparison; GU.4 deleted the Meta Operator).
   for (bool jit : {false, true})
-    for (uint32_t v : {8u, 64u}) {
+    for (uint32_t v : {8u, 64u})
       r.add(std::string("operator/stock-four ") + (jit ? "jit" : "interp") + " x" + std::to_string(v),
             [jit, v](bench::Context& c) { benchVoicePatch(c, stockSchedule("OpFour"), jit, v, false); });
-      for (const Stock& sc : meta)
-        r.add(std::string("operator/") + sc.name + " " + (jit ? "jit" : "interp") + " x" + std::to_string(v),
-              [&sc, jit, v](bench::Context& c) { benchVoicePatch(c, metaSchedule(sc.patch), jit, v, false); });
-    }
   // T1b.x-perf (Q111 C): the cold JIT compile of each stock configuration (64-voice geometry, no cache: every image
   // is dropped before the next compile, so nothing is shared in memory) with voice groups only (the quick first image)
   // and with the default voice code (the pair functions as well: the final image).

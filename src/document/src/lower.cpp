@@ -348,17 +348,6 @@ public:
           anyWired = true;
         }
     if (anyWired) c.wired = wired;
-    // A param whose units the body computes (meta::ParamSpec::unitsInBody: the VCA's value) takes its added wires
-    // after its law, through the expansion's `<name>_add` input.
-    std::vector<uint8_t> units(type->params.size(), 0);
-    bool anyUnits = false;
-    for (const Wire& w : wiresOf(p_))
-      if (w.to == d.id && addsAfterLaw(w, d))  // TX.knob-curves: the VCA on its Log curve takes Add wires on the knob
-        if (const int32_t i = type->paramIndex(w.param); i >= 0 && type->params[static_cast<size_t>(i)].unitsInBody) {
-          units[static_cast<size_t>(i)] = 1;
-          anyUnits = true;
-        }
-    if (anyUnits) c.unitsWired = units;
     return expandInstance(d, t, "", *type, c, settings, modulated);
   }
 
@@ -1150,20 +1139,10 @@ bool paramWraps(const graph::ParamDecl& d) noexcept {
 bool paramSigned(const graph::ParamDecl& d) noexcept {
   return std::any_of(d.attrs.begin(), d.attrs.end(), [](const graph::Attr& a) { return a.name == "signed"; });
 }
-// TX.knob-curves: whether wire `w` into a param whose patch takes its wires after its own law (an `in <param>_add`: the
-// VCA's value, meta::ParamSpec::unitsInBody) goes there. A Units wire (TX.patching's law) always; an Add wire when the
-// knob is linear in that law's units — a meta type's unitsLaw hook with the device's settings (the VCA: its Bend curve;
-// on its Log curve the wire adds to the knob position, i.e. in travel), any other patch with such an input always —;
-// a Travel wire never.
-bool addsAfterLaw(const Wire& w, const Device& d) {
-  if (w.travels()) return false;
-  if (w.law == WireLaw::Units || !isMetaDevice(d)) return true;
-  const meta::Type* t = meta::findType(metaDeviceType(d));
-  if (t == nullptr) return true;
-  const int32_t i = t->paramIndex(w.param);
-  if (i < 0 || !t->params[static_cast<size_t>(i)].unitsInBody || t->unitsLaw == nullptr) return true;
-  return t->unitsLaw(metaSettings(d, "", *t), static_cast<uint32_t>(i));
-}
+// TX.knob-curves: whether wire `w` into a param whose patch takes its wires after its own law (an `in <param>_add`
+// beside it, user patch text) goes there: an Add or Units wire; a Travel wire never. (GU.4: no meta type has such a
+// param any more: the VCA, whose `value` was one, is a group preset whose knob is a value block's curve.)
+bool addsAfterLaw(const Wire& w, const Device&) { return !w.travels(); }
 
 // TX.patching: the number of `out`s of a callee (its signature's outputs before its exports).
 uint32_t outputCount(const graph::Patch& callee) noexcept {
@@ -2294,8 +2273,8 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       }
     } else if (const uint32_t units = !addsAfterLaw(w, *dd.device) ? graph::kNone : signalInput(*dd.callee, w.param + "_add");
                units != graph::kNone && realParamPin(*dd.callee, w.param)) {
-      // TX.patching: a param whose patch adds its wires after its own law (an input `<param>_add`: the VCA's value,
-      // meta::ParamSpec::unitsInBody): the wire goes there, the param stays the knob (param rate).
+      // TX.patching: a param whose patch adds its wires after its own law (an input `<param>_add` in its text): the
+      // wire goes there, the param stays the knob (param rate).
       pin = point = units;
       lw.input = true;
     } else if (const std::optional<ParamPin> pp = realParamPin(*dd.callee, w.param)) {
@@ -2323,10 +2302,15 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     // that input's meaning (meta::Reads, as a chain input at the note source reads it): a frequency the note's Hz
     // (`input`), a phase its phase (`phase`). An input of no such meaning (a signal, a param, a stock effect's input)
     // gets nothing from the notes: the wire is inactive.
+    // GU.4: a block of the kit — an atom block's input, a nested group's main input — has no meaning of its own: it gets
+    // the In terminal's own signal, the note's frequency (`input` = voice.hz), so a Phase Accumulator preset (In → its
+    // group → hz + freq → phasor) plays the note as the meta module did.
     if (!w.fromNoteSource() && sourcePort != graph::kNone && w.port == kGroupInPort) {
       const LDev& sd = devs[lw.fromNode][lw.fromDev];
       if (sd.rack < 0 && sd.callee == &groupNotesPatch()) {
         meta::Reads reads = meta::Reads::Signal;
+        if (dd.rack < 0 && !dd.bypass && (isAtomDevice(*dd.device) || isGroupDevice(*dd.device)) && lw.paramNode == graph::kNone)
+          reads = meta::Reads::Frequency;
         if (lw.input && dd.rack < 0 && !dd.bypass && isMetaDevice(*dd.device))
           if (const meta::Type* t = meta::findType(metaDeviceType(*dd.device)))
             if (const int32_t i = t->inputIndex(w.param); i >= 0) reads = t->inputs[static_cast<size_t>(i)].reads;

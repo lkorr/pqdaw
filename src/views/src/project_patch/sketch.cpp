@@ -11,6 +11,7 @@
 
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
+#include "pq/document/modules.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/meta/wavetable.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -51,6 +52,14 @@ struct Runner {
   // IG.1-2 (makeLoneInstrument): the track's instrument out of its instrument group.
   void lone(doc::TrackId t) {
     if (status) status = makeLoneInstrument(store, t);
+  }
+  // GU.4: a built-in module's block set (local ids from 1, the group first: doc::modules.h) pasted into `t`, inserted on
+  // its main path at `slot` (kOffPath: placed unwired). Returns the pasted ids, index k for local id k + 1.
+  std::vector<doc::DeviceId> module(doc::TrackId t, const doc::BlockSet& set, uint32_t slot) {
+    auto e = run(doc::ops::pasteBlocks(*store.current(), store.ids(), t, set));
+    if (!e || e->devices.empty()) return {};
+    if (slot != doc::ops::kOffPath) (void)run(doc::ops::insertOnPath(*store.current(), store.ids(), e->devices[0], slot));
+    return e->devices;
   }
   // `index`: a main-path slot (doc::ops::kOffPath: a block placed unwired).
   doc::DeviceId device(doc::TrackId t, const char* patch, doc::DeviceKind kind, uint32_t index = doc::kAppend) {
@@ -180,15 +189,29 @@ Status buildWideProject(doc::DocumentStore& store, uint32_t tracks) {
 
 namespace {
 
-// The instrument of MIDI track `t` replaced by a chain Phase accumulator (TMM.4), with param values.
+// GU.4: a Phase Accumulator module (its group preset) with these values in units, at main-path slot `slot` of `t`
+// (kOffPath: unwired). `roles` (optional) gets its blocks' ids. Returns the group.
+doc::DeviceId phaseAccModule(Runner& r, doc::TrackId t, double freq, double phase, double amp, uint32_t slot,
+                             doc::PhaseAccumulatorRoles* roles = nullptr) {
+  doc::IdSource local;
+  doc::PhaseAccumulatorOptions o;
+  o.freq = dsp::curvePosition(doc::phaseAccumulatorCurve(doc::kPaFrequency), freq, 0.0);
+  o.phase = dsp::curvePosition(doc::phaseAccumulatorCurve(doc::kPaPhase), phase, 0.0);
+  o.amp = dsp::curvePosition(doc::phaseAccumulatorCurve(doc::kPaAmplitude), amp, 0.25);
+  doc::PhaseAccumulatorRoles lr;
+  const std::vector<doc::DeviceId> ids = r.module(t, doc::phaseAccumulatorBlocks(local, o, &lr), slot);
+  if (ids.empty()) return {};
+  if (roles != nullptr) {
+    auto at = [&](doc::DeviceId l) { return l.valid() && l.value - 1 < ids.size() ? ids[l.value - 1] : doc::DeviceId{}; };
+    *roles = doc::PhaseAccumulatorRoles{at(lr.group), at(lr.freq), at(lr.phase), at(lr.amp), at(lr.pitch), at(lr.ref),
+                                        at(lr.sum), at(lr.ratio), at(lr.pitched), at(lr.phasor), at(lr.addPhase),
+                                        at(lr.pm), at(lr.frac), at(lr.out)};
+  }
+  return ids[0];
+}
+// The head of MIDI track `t`'s path: a Phase Accumulator module (TMM.4's chain accumulator, GU.4's preset).
 doc::DeviceId phaseAccOn(Runner& r, doc::TrackId t, double freq, double phase, double amp) {
-  auto e = r.run(doc::ops::addMetaDevice(*r.store.current(), r.store.ids(), t, "phase_acc", 0));
-  if (!e || e->devices.empty()) return {};
-  const doc::DeviceId d = e->devices[0];
-  if (freq != 0.0) (void)r.run(doc::ops::setMetaParamValue(*r.store.current(), d, "", "phase_acc", "freq", freq));
-  if (phase != 0.0) (void)r.run(doc::ops::setMetaParamValue(*r.store.current(), d, "", "phase_acc", "phase", phase));
-  if (amp != 1.0) (void)r.run(doc::ops::setMetaParamValue(*r.store.current(), d, "", "phase_acc", "amp", amp));
-  return d;
+  return phaseAccModule(r, t, freq, phase, amp, 0);
 }
 
 }  // namespace
@@ -253,7 +276,7 @@ constexpr const char* kWaveSynth =
     "  gate = voice.gate\n"
     "  coef = 1 - exp(-5 / max((gate ? attack : release) * sr, 1))\n"
     "  env  = z1(env + ((gate ? 1.0 : 0.0) - env) * coef)\n"
-    "  acc1 = meta_phase_acc(voice.hz)\n"  // TMM.10-fix1: the note plays because its frequency is wired in
+    "  acc1 = phasor(voice.hz)\n"  // GU.4: the phase (the Phase Accumulator is a group preset, not a call)
     "  wt1  = meta_wavetable(acc1)\n"
     "  out  = wt1 * env * (0.25 + 0.75 * voice.velocity) * level\n"
     "  done = !gate && env < 0.00003\n"
@@ -373,7 +396,7 @@ constexpr const char* kEnvelopeSynth =
     "  out   out  : audio voice mono\n"
     "  out   done : bool voice mono\n"
     "\n"
-    "  acc1 = meta_phase_acc(voice.hz)\n"  // TMM.10-fix1: the note wired into its frequency
+    "  acc1 = phasor(voice.hz)\n"  // GU.4: the phase (the Phase Accumulator is a group preset, not a call)
     "  wt1  = meta_wavetable(acc1)\n"
     "  env1 = meta_envelope(wt1)\n"
     "  out  = env1 * (0.25 + 0.75 * voice.velocity) * level\n"
@@ -416,49 +439,10 @@ Status buildMetaEnvelopeProject(doc::DocumentStore& store, MetaEnvelopeIds* ids)
   return r.status;
 }
 
-Status buildMetaOperatorProject(doc::DocumentStore& store, MetaOperatorIds* ids) {
-  Runner r{store};
-  const doc::TrackId keys = r.track(doc::TrackKind::Midi, {}, "FM Keys", 0x3FA9F5);
-  r.lone(keys);
-  if (!r.status) return r.status;
-  const doc::DeviceId op = r.device(keys, "meta_operator", doc::DeviceKind::Instrument);
-  if (!r.status) return r.status;
-  if (!op.valid()) return Error{ErrorCode::NotFound, "meta operator project: no Meta Operator", {}};
-  // Exact ratios: A 1, B 2, C 3/2, D 7/4.
-  const std::pair<const char*, double> ratios[] = {{"nB", 2}, {"nC", 3}, {"dC", 2}, {"nD", 7}, {"dD", 4}};
-  for (const auto& [name, v] : ratios) r.param(op, name, v);
-  // The modulators: shorter, quieter envelopes (their amount is the depth); B reads the demo table, D a saw.
-  struct EnvSet {
-    const char* path;
-    std::vector<std::pair<const char*, double>> values;
-  };
-  const EnvSet envs[] = {
-      {"envA", {{"attack", 0.004}, {"decay", 1.4}, {"sustain", 0.55}, {"release", 0.8}, {"dcurve", -0.2}}},
-      {"envB", {{"attack", 0.002}, {"decay", 0.5}, {"sustain", 0.3}, {"release", 0.4}, {"amount", 0.35}}},
-      {"envC", {{"attack", 0.03}, {"decay", 0.9}, {"sustain", 0.5}, {"release", 0.6}, {"acurve", 0.4}, {"amount", 0.25}}},
-      {"envD", {{"attack", 0.001}, {"decay", 0.25}, {"sustain", 0.0}, {"release", 0.2}, {"dcurve", 0.35}, {"amount", 0.15}}},
-  };
-  for (const EnvSet& e : envs)
-    for (const auto& [name, v] : e.values)
-      (void)r.run(doc::ops::setMetaParamValue(*store.current(), op, e.path, "envelope", name, v));
-  (void)r.run(doc::ops::setMetaData(*store.current(), op, "wtB", "wavetable", demoWavetableData()));
-  (void)r.run(doc::ops::setMetaParamValue(*store.current(), op, "wtB", "wavetable", "position", 0.4));
-  {
-    meta::WavetableData d;
-    const AlignedBuffer<float> saw = dsp::basicCycle(dsp::BasicCycle::Saw);
-    d.keyframes.push_back({0.0f, std::vector<float>(saw.span().begin(), saw.span().end())});
-    (void)r.run(doc::ops::setMetaData(*store.current(), op, "wtD", "wavetable", meta::wavetableData(d)));
-  }
-  (void)r.run(doc::ops::setMetaParamValue(*store.current(), op, "accD", "phase_acc", "freq", 1.5));
-  r.clip(keys, 0, 4 * kTicksPerWhole, "Chord", {0, 4, 7, 11});
-  if (ids != nullptr) *ids = MetaOperatorIds{keys, op};
-  return r.status;
-}
-
 namespace {
 
-// The Trem instrument (TMM.14): an envelope around a Phase accumulator into a Wavetable, through a VCA whose value an
-// LFO-like sine moves (the face shows the knob's dots), at a narrow range.
+// The Trem instrument (TMM.14): an envelope around a phase into a Wavetable, its level `trem` (GU.4: the VCA is a group
+// preset now, not a call: a plain multiply).
 constexpr const char* kVcaSynth =
     "patch BasicSynth {\n"  // a fork keeps its root patch's name
     "  param attack  = 5ms   [0.5ms..5s]\n"
@@ -470,9 +454,10 @@ constexpr const char* kVcaSynth =
     "  gate = voice.gate\n"
     "  coef = 1 - exp(-5 / max((gate ? attack : release) * sr, 1))\n"
     "  env  = z1(env + ((gate ? 1.0 : 0.0) - env) * coef)\n"
-    "  acc1 = meta_phase_acc(voice.hz)\n"
+    "  param trem    = 0.75  [0..2]\n"
+    "  acc1 = phasor(voice.hz)\n"
     "  wt1  = meta_wavetable(acc1)\n"
-    "  vca1 = meta_vca(wt1 * env)\n"
+    "  vca1 = wt1 * env * trem\n"
     "  out  = vca1 * (0.25 + 0.75 * voice.velocity) * level\n"
     "  done = !gate && env < 0.00003\n"
     "}\n";
@@ -485,19 +470,18 @@ Status buildMetaVcaProject(doc::DocumentStore& store, MetaVcaIds* ids) {
   const doc::TrackId trem = r.track(doc::TrackKind::Midi, keys, "Trem", 0xF6A23B);
   for (const doc::TrackId t : {keys, trem}) r.lone(t);
   if (!r.status) return r.status;
-  // Keys: the default synth, then a chain VCA at ×0.60 on the default bipolar-log curve.
-  auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), keys, "vca"));
-  const doc::DeviceId vca = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
-  if (!vca.valid()) return Error{ErrorCode::Unknown, "vca project: no VCA", {}};
-  (void)r.run(doc::ops::setMetaParamValue(*store.current(), vca, "", "vca", "value", 0.62));
-  // Trem: the synth forked with vca1 on a Bend curve from 0 to 2 (bent toward exponential), at the three-quarter mark.
+  // Keys: the default synth, then a VCA module at ×0.60 on its law (the knob at 0.62) on the path.
+  doc::IdSource local;
+  doc::VcaOptions vo;
+  vo.value = 0.62;
+  const std::vector<doc::DeviceId> made = r.module(keys, doc::vcaBlocks(local, vo), doc::kAppend);
+  const doc::DeviceId vca = made.empty() ? doc::DeviceId{} : made[0];
+  if (!vca.valid()) return r.status ? Status(Error{ErrorCode::Unknown, "vca project: no VCA", {}}) : r.status;
+  // Trem: the synth forked (its level a param).
   const doc::Track* t = doc::findTrackPtr(*store.current(), trem);
   if (t == nullptr || t->devices.empty()) return Error{ErrorCode::NotFound, "vca project: Trem has no instrument", {}};
   const doc::DeviceId inst = t->devices[0]->id;
   (void)r.run(doc::ops::editDevicePatch(*store.current(), inst, kVcaSynth));
-  (void)r.run(doc::ops::setMetaSetting(*store.current(), inst, "vca1", "vca", "curve", 1.0));
-  const std::pair<const char*, double> tremVca[] = {{"min", 0.0}, {"max", 2.0}, {"bend", 0.5}, {"value", 0.75}};
-  for (const auto& [name, v] : tremVca) (void)r.run(doc::ops::setMetaParamValue(*store.current(), inst, "vca1", "vca", name, v));
   r.clip(keys, 0, 4 * kTicksPerWhole, "Line", {0, 4, 7, 11});
   r.clip(trem, 0, 4 * kTicksPerWhole, "Pad", {0, 3, 7});
   if (ids != nullptr) *ids = MetaVcaIds{keys, vca, trem, inst};
@@ -536,15 +520,14 @@ Status buildGroupProject(doc::DocumentStore& store, GroupProjectIds* ids) {
     auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, type));
     return e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
   };
-  const doc::DeviceId pa1 = meta(keys, "phase_acc");
+  // (GU.4: the Phase accumulators are modules: their group presets on the path.)
+  const doc::DeviceId pa1 = phaseAccModule(r, keys, 110.0, 0.0, 1.0, doc::kAppend);
   const doc::DeviceId wt = meta(keys, "wavetable");
-  const doc::DeviceId pa2 = meta(keys, "phase_acc");
+  const doc::DeviceId pa2 = phaseAccModule(r, keys, 3.0, 0.0, 1.0, doc::kAppend);
   if (!r.status) return r.status;
   if (!pa1.valid() || !wt.valid() || !pa2.valid()) return Error{ErrorCode::Unknown, "group project: meta devices", {}};
-  (void)r.run(doc::ops::setMetaParamValue(*store.current(), pa1, "", "phase_acc", "freq", 110.0));
   (void)r.run(doc::ops::setMetaData(*store.current(), wt, "", "wavetable", demoWavetableData()));
   (void)r.run(doc::ops::setMetaParamValue(*store.current(), wt, "", "wavetable", "position", 0.35));
-  (void)r.run(doc::ops::setMetaParamValue(*store.current(), pa2, "", "phase_acc", "freq", 3.0));
   const doc::DeviceId lfo = r.device(keys, "lfo_device", K::AudioEffect, doc::ops::kOffPath);
   if (lfo.valid()) {
     r.param(lfo, "rate", 0.5);
@@ -601,7 +584,10 @@ Status buildNestedGroupProject(doc::DocumentStore& store, NestedProjectIds* ids)
     (void)r.run(doc::ops::deleteDevices(*store.current(), del));
   }
   if (!r.status) return r.status;
-  o.pa = meta(o.keys, "phase_acc", o.group);
+  {  // GU.4: the Phase Accumulator module, nested in the instrument group
+    o.pa = phaseAccModule(r, o.keys, 0.0, 0.0, 1.0, doc::ops::kOffPath);
+    if (o.pa.valid()) into(o.pa, o.group);
+  }
   o.osc = group(o.keys, "Osc", o.group);
   o.wt = meta(o.keys, "wavetable", o.osc);
   o.env = meta(o.keys, "envelope", o.group);
@@ -613,7 +599,7 @@ Status buildNestedGroupProject(doc::DocumentStore& store, NestedProjectIds* ids)
   if (!r.status) return r.status;
   (void)r.run(doc::ops::setMetaData(*store.current(), o.wt, "", "wavetable", demoWavetableData()));
   r.param(o.value, "value", 0.8);
-  wire(o.group, "input", o.pa, "hz");
+  wire(o.group, "input", o.pa, "");
   wire(o.pa, "", o.osc, "x");
   wire(o.osc, "input", o.wt, "");
   wire(o.wt, "", o.osc, "output");
@@ -672,9 +658,8 @@ Status buildPanelProject(doc::DocumentStore& store, PanelProjectIds* ids) {
     into(v);
     return v;
   };
-  {
-    auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), o.keys, "phase_acc", doc::ops::kOffPath));
-    o.pa = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+  {  // GU.4: the Phase Accumulator module (a group nested in the instrument group)
+    o.pa = phaseAccModule(r, o.keys, 0.0, 0.0, 1.0, doc::ops::kOffPath);
     into(o.pa);
   }
   o.mul = r.device(o.keys, "atom:mul", K::AudioEffect, doc::ops::kOffPath);
@@ -705,7 +690,7 @@ Status buildPanelProject(doc::DocumentStore& store, PanelProjectIds* ids) {
   auto wire = [&](doc::DeviceId a, const char* port, doc::DeviceId b, const char* param) {
     (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), a, port, b, param));
   };
-  wire(o.group, "input", o.pa, "hz");
+  wire(o.group, "input", o.pa, "");
   wire(o.pa, "", o.mul, "a");
   wire(o.level, "y", o.mul, "b");
   wire(o.mul, "out", o.group, "output");
@@ -854,16 +839,16 @@ Status buildFreeRackProject(doc::DocumentStore& store, uint32_t lfos, FreeRackId
     (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", chain[t.first], t.second));
     out.lfos.push_back(lfo);
   }
-  {
-    auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), out.lead, "phase_acc", doc::ops::kOffPath));
-    out.acc = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+  {  // GU.4: the Phase Accumulator module (free); the LFO into its Frequency value block
+    doc::PhaseAccumulatorRoles roles;
+    out.acc = phaseAccModule(r, out.lead, 55.0, 0.0, 1.0, doc::ops::kOffPath, &roles);
     if (!out.acc.valid()) {
       if (r.status) return Error{ErrorCode::Unknown, "free rack project: Phase accumulator", {}};
       return r.status;
     }
-    (void)r.run(doc::ops::setMetaParamValue(*store.current(), out.acc, "", "phase_acc", "freq", 55.0));
-    (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.acc, "out", out.filter, "sc"));
-    if (!out.lfos.empty()) (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.lfos.front(), "lfo", out.acc, "freq"));
+    (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.acc, "", out.filter, "sc"));
+    if (!out.lfos.empty())
+      (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.lfos.front(), "lfo", roles.freq, std::string(doc::kValueParam)));
   }
   r.clip(out.lead, 0, 4 * kTicksPerWhole, "Riff", {0, 3, 7});
   if (ids != nullptr) *ids = std::move(out);

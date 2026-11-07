@@ -8,6 +8,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
+#include "pq/document/modules.h"
 #include "pq/meta/registry.h"
 #include "pq/library/index.h"
 #include "pq/tuning/scala.h"
@@ -102,6 +103,8 @@ std::vector<const meta::Type*> metaModuleTypes() {
 
 std::string deviceDisplayName(const ViewContext& ctx, std::string_view patch) {
   if (patch == doc::kAudioEffectRack) return "Audio Effect Rack";
+  if (patch.starts_with(doc::kModuleItemPrefix))  // GU.4: a built-in module
+    if (const doc::ModuleInfo* m = doc::findModule(patch.substr(doc::kModuleItemPrefix.size()))) return std::string(m->name);
   if (patch.starts_with(doc::kMetaDevicePrefix))  // TMM.10: a chain meta device: its type's name
     if (const meta::Type* t = meta::findType(patch.substr(doc::kMetaDevicePrefix.size()))) return std::string(t->name);
   if (patch == doc::kInstrumentRack) return "Instrument Rack";
@@ -131,6 +134,12 @@ std::vector<std::string> deviceParamNames(const ViewContext& ctx, const doc::Dev
 
 Result<doc::DeviceId> addCatalogDevice(ViewContext& ctx, std::string_view patch, doc::DeviceKind kind, DeviceSlot at) {
   const doc::Project& p = *ctx.doc();
+  if (patch.starts_with(doc::kModuleItemPrefix)) {  // GU.4: a built-in module: its group preset, pasted (off the path)
+    const doc::ModuleInfo* m = doc::findModule(patch.substr(doc::kModuleItemPrefix.size()));
+    if (m == nullptr) return Error{ErrorCode::NotFound, "unknown module '" + std::string(patch) + "'", {}};
+    if (at.chain.valid()) return Error{ErrorCode::InvalidArgument, "a module goes into a track's circuit, not a rack chain", {}};
+    return firstDevice(ctx, doc::ops::pasteBlocks(p, ctx.store().ids(), at.track, doc::moduleBlocks(m->kind)));
+  }
   if (patch.starts_with(doc::kMetaDevicePrefix)) {  // TMM.10: a chain meta device, its kind from the slot
     const meta::Type* t = meta::findType(patch.substr(doc::kMetaDevicePrefix.size()));
     if (t == nullptr) return Error{ErrorCode::NotFound, "unknown meta module '" + std::string(patch) + "'", {}};
@@ -187,6 +196,8 @@ Result<doc::DeviceId> loadDeviceItem(ViewContext& ctx, std::string_view path, De
 Status hotSwapDevice(ViewContext& ctx, doc::DeviceId target, std::string_view path) {
   doc::DevicePtr with;
   if (const std::string_view patch = catalogPatchOf(path); !patch.empty()) {
+    if (patch.starts_with(doc::kModuleItemPrefix))  // GU.4: a module is a group of blocks, not one device
+      return Error{ErrorCode::InvalidArgument, "a module cannot replace a device (drop it into the track instead)", {}};
     const doc::Device* cur = doc::findDevice(*ctx.doc(), target).device;
     if (cur == nullptr) return Error{ErrorCode::NotFound, "the device is gone", {}};
     with = ctx.library().defaultPreset(deviceDisplayName(ctx, patch), patch);

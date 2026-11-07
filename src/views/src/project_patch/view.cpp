@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include "pq/views/browser/library_load.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/modules.h"
 #include "pq/views/browser/library.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
@@ -1173,6 +1174,11 @@ bool ProjectPatchView::addFreeDevice(doc::TrackId track, const std::string& patc
   if (patch.starts_with(doc::kMetaDevicePrefix))
     return apply(doc::ops::addMetaDevice(p, ctx_.store().ids(), track, patch.substr(doc::kMetaDevicePrefix.size()), doc::ops::kOffPath),
                  "Add Device");
+  if (patch.starts_with(doc::kModuleItemPrefix)) {  // GU.4: a built-in module: its group preset, pasted
+    const doc::ModuleInfo* m = doc::findModule(std::string_view(patch).substr(doc::kModuleItemPrefix.size()));
+    if (m == nullptr) return false;
+    return apply(doc::ops::pasteBlocks(p, ctx_.store().ids(), track, doc::moduleBlocks(m->kind)), "Add Module");
+  }
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
   const doc::DeviceInfo* info = lib != nullptr ? lib->catalog().find(patch) : nullptr;
   const doc::DeviceKind kind = info != nullptr ? info->kind : doc::DeviceKind::AudioEffect;
@@ -1270,6 +1276,10 @@ std::vector<ui::MenuItem> ProjectPatchView::addFreeDeviceItems(doc::TrackId trac
     for (const meta::Type* t : metaModuleTypes()) {
       const std::string patch = std::string(doc::kMetaDevicePrefix) + std::string(t->id);
       addFree.push_back(ui::MenuItem::item("   " + std::string(t->name), [pick, patch] { pick(patch); }));
+    }
+    for (const doc::ModuleInfo& m : doc::moduleInfos()) {  // GU.4: the modules (group presets)
+      const std::string patch = std::string(doc::kModuleItemPrefix) + std::string(m.key);
+      addFree.push_back(ui::MenuItem::item("   " + std::string(m.name), [pick, patch] { pick(patch); }));
     }
   }
   return addFree;

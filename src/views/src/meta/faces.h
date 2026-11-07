@@ -11,10 +11,8 @@
 
 namespace pq::views {
 
-std::unique_ptr<MetaFace> makePhaseAccFace(const meta::Type& t);
 std::unique_ptr<MetaFace> makeWavetableFace(const meta::Type& t);  // TMM.7
 std::unique_ptr<MetaFace> makeEnvelopeFace(const meta::Type& t);   // TMM.11
-std::unique_ptr<MetaFace> makeVcaFace(const meta::Type& t);        // TMM.14
 std::unique_ptr<MetaFace> makeSpectrumFace(const meta::Type& t);   // TX.spectrum
 std::unique_ptr<MetaFace> makeScopeFace(const meta::Type& t);      // TX.scope
 std::unique_ptr<MetaFace> makeSpectrogramFace(const meta::Type& t);  // TX.spectrogram
@@ -73,16 +71,5 @@ struct WavetableShown {
 };
 bool wavetableShown(const MetaFace& f, WavetableShown& out);
 
-// TMM.17: the Phase accumulator face's voices by frequency (Q?-TMM.17-a). The colour: a continuous log-frequency map
-// (red below 100 Hz, purple 100–300 Hz, then blue, cyan, green, yellow from 1 kHz up; 0 Hz and below: red). The orbit
-// radius as a multiple of the face's orbit: kPhaseAccOrbitMax at ≤ kPhaseAccLowHz down to kPhaseAccOrbitMin at
-// ≥ kPhaseAccHighHz, linear in log-frequency.
-inline constexpr double kPhaseAccLowHz = 20.0, kPhaseAccHighHz = 10000.0;
-inline constexpr float kPhaseAccOrbitMax = 1.25f, kPhaseAccOrbitMin = 0.25f;
-ui::Rgba phaseAccVoiceColour(double hz) noexcept;
-float phaseAccOrbitScale(double hz) noexcept;
-// The frequency a phase-reading voice plays: |its increment wrapped to ±0.5 cycles| × its rate (FaceVoice::rate), or
-// fallbackHz when the rate is unknown (0).
-double faceVoiceHz(const FaceVoice& v, double fallbackHz) noexcept;
 
 }  // namespace pq::views

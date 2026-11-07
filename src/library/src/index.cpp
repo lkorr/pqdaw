@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "pq/document/devices.h"
+#include "pq/document/modules.h"
 #include "pq/meta/registry.h"
 
 namespace pq::library {
@@ -38,6 +39,7 @@ Category stockDeviceCategory(std::string_view nameOrPatch) noexcept {
   for (const doc::StockDevice& d : doc::stockDevices())
     if (equalsFolded(d.name, nameOrPatch) || equalsFolded(d.patch, nameOrPatch))
       return d.kind == doc::DeviceKind::Instrument ? Category::Instruments : Category::AudioEffects;
+  if (doc::findModule(nameOrPatch) != nullptr) return Category::MetaModules;  // GU.4: a module's presets (by its name)
   for (const meta::Type* t : meta::types())  // TMM.10: a meta module's presets (by its name or "meta:<id>")
     if (equalsFolded(t->name, nameOrPatch) ||
         (nameOrPatch.size() > doc::kMetaDevicePrefix.size() && equalsFolded(doc::kMetaDevicePrefix, nameOrPatch.substr(0, doc::kMetaDevicePrefix.size())) &&

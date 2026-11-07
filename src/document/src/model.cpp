@@ -279,8 +279,11 @@ bool isValueDevice(const Device& d) noexcept { return !d.rack && !d.source && d.
 
 std::string_view valuePatchText() noexcept {
   // GU.2: one control as a signal. The range and law are the control's curve (Device::curves; declared: linear 0 … 1).
+  // GU.4: the param declares no range (its declared curve is still linear 0 … 1: graph::declaredCurve's rule for an
+  // unranged param), because the engine clamps a runtime param to its declared range: a value block whose curve runs
+  // 0 … 20 kHz (a Phase Accumulator's frequency) or ±20000 (a VCA's) writes values its curve gives, beyond [0, 1].
   return "patch Value {\n"
-         "  param value = 0 [0 .. 1]\n"
+         "  param value = 0\n"
          "  out   y     : real\n"
          "  y = value\n"
          "}\n";

@@ -22,10 +22,9 @@ namespace {
 
 struct Registry {
   std::mutex m;
-  std::vector<std::pair<std::string, FaceFactory>> factories{{"phase_acc", &makePhaseAccFace},
-                                                                     {"wavetable", &makeWavetableFace},
+  // (GU.4: the Phase accumulator's and the VCA's faces are their presets' panels now.)
+  std::vector<std::pair<std::string, FaceFactory>> factories{{"wavetable", &makeWavetableFace},
                                                                      {"envelope", &makeEnvelopeFace},
-                                                                     {"vca", &makeVcaFace},
                                                                      {"spectrum", &makeSpectrumFace},  // TX.spectrum
                                                                      {"oscilloscope", &makeScopeFace},  // TX.scope
                                                                      {"spectrogram", &makeSpectrogramFace}};  // TX.spectrogram
@@ -126,7 +125,7 @@ void Face::paintJacks(ui::FacePainter& p, const FaceEnv& env) const {
 namespace {
 // The switched curve of param i (false: the declared one, meta::travelToValue's).
 bool switchedCurve(const MetaTarget& target, const meta::Type& type, size_t i, dsp::Curve& out) noexcept {
-  if (i >= type.params.size() || type.params[i].unitsInBody || type.params[i].noKnobCurve) return false;
+  if (i >= type.params.size()) return false;
   const dsp::Curve* c = target.curve(i);
   if (c == nullptr || *c == meta::paramCurve(type.params[i])) return false;
   out = *c;

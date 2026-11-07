@@ -9,6 +9,7 @@
 #include "pq/document/lower.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
+#include "pq/meta/retired.h"
 
 namespace pq::doc {
 namespace {
@@ -98,7 +99,7 @@ struct Converter {
       auto m = std::make_shared<MetaMap>(*d.meta);
       for (MetaEntry& e : *m) {
         if (e.path.empty()) continue;
-        const meta::Type* t = meta::findType(e.instance.type);
+        const meta::Type* t = meta::findTypeOrRetired(e.instance.type);
         if (t == nullptr) continue;
         for (DeviceValue& v : e.instance.params)
           if (const int32_t i = t->paramIndex(v.name); i >= 0)

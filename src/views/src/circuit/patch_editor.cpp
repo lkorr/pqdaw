@@ -639,8 +639,7 @@ Result<graph::NodeId> PatchEditor::addNode(size_t patch, std::string_view spec, 
   // TMM.10: a meta module added in the editor is a named instance (its state is keyed by the name path): acc1, wt1, …
   if (p.node(*n).kind == graph::NodeKind::Subcircuit)
     if (const meta::Type* t = meta::typeOfCall(p.subcircuit(*n).patch)) {
-      const std::string stem = t->id == "phase_acc" ? "acc"
-                               : t->id == "wavetable" ? "wt"
+      const std::string stem = t->id == "wavetable" ? "wt"
                                : t->id == "envelope"  ? "env"
                                                       : std::string(t->id);
       for (uint32_t k = 1;; ++k) {

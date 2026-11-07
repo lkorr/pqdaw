@@ -90,16 +90,6 @@ NodeIndex Builder::take(NodeIndex n, uint32_t id) {
 
 bool Builder::modulated(size_t i) const noexcept { return i < ctx_->modulated.size() && ctx_->modulated[i] != 0; }
 
-bool Builder::unitsWired(size_t i) const noexcept { return i < unitsIn_.size() && unitsIn_[i].node != graph::kNone; }
-
-PortRef Builder::units(size_t i, PortRef value) {
-  if (!unitsWired(i) || value.node == graph::kNone) return value;
-  const NodeIndex sum = take(p_.addAtom(graph::atomId("add")), kFixedIdBase + 112 + static_cast<uint32_t>(i));
-  p_.connect(value, PortRef{sum, 0});
-  p_.connect(unitsIn_[i], PortRef{sum, 1});
-  return PortRef{sum, 0};
-}
-
 PortRef Builder::slot(uint32_t index) {
   const uint32_t id = kSlotIdBase + index;
   for (size_t n = 0; n < ids_.size(); ++n)
@@ -255,17 +245,6 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
     p.connect(PortRef{def, 0}, PortRef{n, 0});
     b.inputs_[i] = PortRef{n, 0};
   }
-  // TX.patching: the `<name>_add` inputs of params whose added wires the body adds after its law (after the type's own
-  // inputs; only when the lowering asks — a text call never does, so its signature is unchanged).
-  b.unitsIn_.assign(type.params.size(), PortRef{graph::kNone, 0});
-  for (size_t i = 0; i < type.params.size() && i < ctx.unitsWired.size() && i < 16; ++i) {
-    if (ctx.unitsWired[i] == 0 || !type.params[i].unitsInBody) continue;
-    const NodeIndex z = b.take(p.addConst(graph::Constant::real(-0.0)), kDefaultIdBase + 32 + static_cast<uint32_t>(i));
-    const NodeIndex n = b.take(p.addInput(std::string(type.params[i].name) + "_add", kAudio),
-                               kInputIdBase + 32 + static_cast<uint32_t>(i));
-    p.connect(PortRef{z, 0}, PortRef{n, 0});
-    b.unitsIn_[i] = PortRef{n, 0};
-  }
   b.params_.resize(type.params.size());
   for (size_t i = 0; i < type.params.size(); ++i)
     b.params_[i] = PortRef{b.take(p.addParam(std::string(type.params[i].name), paramDecl(type.params[i])),
@@ -343,11 +322,6 @@ uint64_t expansionKey(const Type& type, const ExpandContext& ctx) noexcept {
   if (ctx.form != Form::Nested && std::any_of(ctx.wired.begin(), ctx.wired.end(), [](uint8_t w) { return w != 0; })) {
     mix(0x200000000ull);
     for (size_t i = 0; i < type.inputs.size(); ++i) mix(i < ctx.wired.size() && ctx.wired[i] != 0 ? 1 : 0);
-  }
-  if (std::any_of(ctx.unitsWired.begin(), ctx.unitsWired.end(), [](uint8_t w) { return w != 0; })) {
-    mix(0x300000000ull);
-    for (size_t i = 0; i < type.params.size(); ++i)
-      mix(i < ctx.unitsWired.size() && ctx.unitsWired[i] != 0 && type.params[i].unitsInBody ? 1 : 0);
   }
   mix(ctx.slots.size());
   for (const uint32_t s : ctx.slots) mix(s);

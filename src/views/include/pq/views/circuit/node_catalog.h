@@ -59,6 +59,7 @@ enum class NodeItem : uint8_t {
   Device,      // id: a stock patch ("utility")
   Rack,        // id: doc::kAudioEffectRack / doc::kInstrumentRack
   LibraryFile, // id: a .pqpreset / .pqdevice path of the User Library
+  Module,      // GU.4, id: a built-in module's key ("vca", doc::moduleInfos): its group preset, pasted (project only)
   Spec,        // id: a typed patch-language node spec (not in the catalog: the menu's typed row)
 };
 

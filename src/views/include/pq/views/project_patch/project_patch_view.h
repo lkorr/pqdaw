@@ -944,7 +944,8 @@ Status buildWideProject(doc::DocumentStore& store, uint32_t tracks);
 // TMM.4: Phase accumulator faces in chains — "Lead" (a face → Saturator), "Bell" (220 Hz, phase 0.25, amp 2 → Auto
 // Filter), "Sub" (4.5 Hz, phase 0.5, amp 0.5 → EQ Eight) and "Keys" (Operator → Saturator: plain blocks beside them).
 Status buildMetaFacesProject(doc::DocumentStore& store);
-// The instrument of the first `count` MIDI tracks replaced by a chain Phase accumulator (benchmarks: a project plus faces).
+// The first `count` MIDI tracks headed by a Phase Accumulator module (GU.4: its group preset with its panel; benchmarks:
+// a project plus panels).
 Status addPhaseAccFaces(doc::DocumentStore& store, uint32_t count);
 // TMM.7: a three-keyframe table for scenes, tests and benchmarks: a saw at 0, a square at 0.5 (spectral morph between
 // them), a bright vocal-like cycle (odd and formant partials) at 1 (crossfade gap), 64 dense frames.
@@ -975,16 +976,8 @@ struct MetaEnvelopeIds {
   doc::DeviceId shapeInst;
 };
 Status buildMetaEnvelopeProject(doc::DocumentStore& store, MetaEnvelopeIds* ids = nullptr);
-// TMM.12: the Meta Operator — "FM Keys" plays it at algorithm 1 (D → C → B → A) with exact ratios A 1, B 2, C 3/2,
-// D 7/4 (+1.5 Hz on D's accumulator), modulator envelopes shorter and quieter (amounts 0.35 / 0.25 / 0.15), B reading
-// demoWavetableData at position 0.4 and D a saw; a four-note chord. The ids.
-struct MetaOperatorIds {
-  doc::TrackId keys;
-  doc::DeviceId op;
-};
-Status buildMetaOperatorProject(doc::DocumentStore& store, MetaOperatorIds* ids = nullptr);
-// TMM.14: the VCA — "Keys" (the default synth, then a chain VCA at ×0.60 on the default bipolar-log curve) and "Trem"
-// (the synth forked: acc1 → wt1 → vca1 = meta_vca(wt1 · env) on a Bend curve 0 … 2, bend 0.5, knob at 0.75). The ids.
+// TMM.14 / GU.4: the VCA — "Keys" (the default synth, then the VCA module on the path, its knob at 0.62: × 0.60) and
+// "Trem" (the synth forked: acc1 = phasor(voice.hz) → wt1 → vca1 = wt1 · env · trem). The ids (`vca`: the module's group).
 struct MetaVcaIds {
   doc::TrackId keys;
   doc::DeviceId vca;

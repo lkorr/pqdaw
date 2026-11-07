@@ -19,10 +19,6 @@ std::optional<ui::MenuItem> knobCurveMenu(ViewContext& ctx, doc::DeviceId device
   const doc::DeviceLoc loc = doc::findDevice(*ctx.doc(), device);
   const doc::DeviceLibrary* lib = ctx.deviceLibrary();
   if (loc.device == nullptr || loc.device->rack || lib == nullptr || param.empty()) return std::nullopt;
-  if (doc::isMetaDevice(*loc.device))  // the VCA's value: its curve is its face's own curve box
-    if (const meta::Type* t = meta::findType(doc::metaDeviceType(*loc.device)))
-      if (const int32_t i = t->paramIndex(param); i >= 0 && (t->params[static_cast<size_t>(i)].unitsInBody || t->params[static_cast<size_t>(i)].noKnobCurve))
-        return std::nullopt;
   std::shared_ptr<const doc::ResolvedDevice> hold;
   const graph::Patch* patch = lib->patchOf(*loc.device, hold);
   const graph::ParamDecl* decl = patch != nullptr ? doc::findParamDecl(*patch, param) : nullptr;

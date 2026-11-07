@@ -50,19 +50,11 @@ struct ParamSpec {
   double curveK = 0.0;                   // Exp0's k (Exponential / Logarithmic: the bend, 0: the default)
   bool wraps = false;                    // the face drags it around its range (a phase)
   bool bakeable = false;                 // static, it may be baked into table data (TMM.5); else always runtime
-  // TX.patching: the param stores a knob POSITION and the body computes its value (the VCA's `value`: position →
-  // multiplier through its curve). A wire adds in the param's own units, i.e. to that value, not to the position: the
-  // expansion then has an input `<name>_add` (ExpandContext::unitsWired) the body adds after its law (Builder::units),
-  // and the document lowering routes added wires there (pq/document/lower.h "Modulation wires").
-  bool unitsInBody = false;
   // TMM.18: the param's value is SIGNED beyond its knob range: the knob covers min … max, but what wires add may take
-  // it down to −max(|min|, |max|) (an `@signed` attribute on the expansion's param; the document lowering's Add law
-  // then clamps to ±max(|min|, |max|) instead of [min, max]). The Phase accumulator's frequency: a negative frequency
-  // runs the phase backwards (the same pitch, the ramp reversed), so a VCA multiplying the frequency by −1 reflects.
+  // it down to −max(|min|, |max|) (an `@signed` attribute on the expansion's param; its curve is mirrored below 0:
+  // dsp::CurveMode::Signed). The retired Phase accumulator's frequency (pq/meta/retired.h); GU.4: its preset's value
+  // block carries the same curve.
   bool signedValue = false;
-  // TX.knob-curves: the face's control has a law of its own, so no knob curve is offered (the VCA's knob travels
-  // along its curve box, its range ends and box are values of that curve; GU.4 replaces it with a curve).
-  bool noKnobCurve = false;
 };
 // GU.1: the param's declared curve — graph::declaredCurve of the expansion's declaration of it (the same curve the
 // document lowering reads), and the value at a knob position / the position of a value through it.
@@ -145,9 +137,6 @@ struct ExpandContext {
   // the expansion whatever the form, which reads its default while the call leaves it unconnected; the chain input
   // under ChainNotes reads the note's signal PLUS that `in` (a wire adds to what the chain gives it). Empty: none.
   std::span<const uint8_t> wired;
-  // TX.patching (any form; the lowering only): per ParamSpec with unitsInBody, 1 = added wires reach it: the expansion has the input
-  // `<name>_add` (−0 unconnected). Empty: none.
-  std::span<const uint8_t> unitsWired;
   std::span<const uint32_t> slots;     // per resource request index; missing: 0
 };
 
@@ -201,11 +190,6 @@ struct Type {
   //   Nested           adds an output `done` (Bool) after the outputs (an instrument circuit wires it to its `done`)
   //   ChainAudio       ignores it
   bool voiceEnd = false;
-  // TX.knob-curves (optional; SPEC §15 2026-11-01 "answers to Q186" + clarification: a wire adds before the knob's
-  // curve): with these (resolved) settings, whether an Add wire into unitsInBody param `param` adds in the param's
-  // units after the body's law (true: through `<name>_add`) or into the knob position, i.e. in travel (false). Null:
-  // true. The VCA: its Bend curve true (the multiplier), its Log curve false (the knob, through the curve).
-  bool (*unitsLaw)(std::span<const double> settings, uint32_t param) = nullptr;
 
   int32_t paramIndex(std::string_view n) const noexcept;    // −1: none
   int32_t settingIndex(std::string_view n) const noexcept;  // −1: none
@@ -221,9 +205,7 @@ inline constexpr uint32_t kParamIdBase = 128;    // param i
 inline constexpr uint32_t kOutputIdBase = 256;   // output i (kOutputIdBase + outputs: `done`)
 inline constexpr uint32_t kFixedIdBase = 384;    // the framework's own nodes (voice.gate, not; a Phase chain input
                                                  // i's voice.hz under ChainNotes: kFixedIdBase + 32 + i; TX.patching:
-                                                 // a wired chain input's −0 / sum + 64 / + 96 + i, a param's added
-                                                 // units + 112 + i; its `<name>_add` input kInputIdBase + 32 + i and
-                                                 // its −0 kDefaultIdBase + 32 + i)
+                                                 // a wired chain input's −0 / sum + 64 / + 96 + i)
 inline constexpr uint32_t kSlotIdBase = 512;     // resource slot constant i
 inline constexpr uint32_t kBodyIdBase = 1024;    // body node k: kBodyIdBase + k
 inline constexpr uint32_t kMaxBodyIds = 1u << 20;
@@ -239,10 +221,6 @@ public:
   PortRef param(size_t i) const noexcept { return params_[i]; }
   double setting(size_t i) const noexcept { return settings_[i]; }      // resolved (default when not given)
   bool modulated(size_t i) const noexcept;                               // ExpandContext::modulated
-  // TX.patching: whether added wires reach param i (ParamSpec::unitsInBody, ExpandContext::unitsWired), and `value` (the
-  // param's value in its units, as the body computed it) plus what they add — `value` itself when none reach it.
-  bool unitsWired(size_t i) const noexcept;
-  PortRef units(size_t i, PortRef value);
   PortRef slot(uint32_t index);                                          // the slot id as a constant
   PortRef atom(std::string_view atomName, std::initializer_list<PortRef> ins, uint32_t k, uint16_t repeat = 0);
   PortRef konst(double v, uint32_t k);
@@ -266,7 +244,6 @@ private:
   const ExpandContext* ctx_;
   graph::Patch p_;
   std::vector<PortRef> inputs_, params_;
-  std::vector<PortRef> unitsIn_;  // TX.patching: per param, its `<name>_add` input (kNone: none)
   std::vector<double> settings_;
   std::vector<graph::NodeIndex> outputs_;
   std::vector<uint16_t> outPorts_;

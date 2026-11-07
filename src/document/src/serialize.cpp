@@ -28,6 +28,8 @@
 #include "knob_positions.h"
 #include "json_io.h"
 #include "pq/meta/registry.h"
+#include "pq/meta/retired.h"
+#include "pq/document/modules.h"
 
 namespace pq::doc {
 
@@ -2438,7 +2440,7 @@ private:
     }
     mm.require({0, 1});
     const PathSeg tat(&at, "type"), vat(&at, "version");
-    const meta::Type* t = meta::findType(inst.type);
+    const meta::Type* t = meta::findTypeOrRetired(inst.type);
     if (t == nullptr) r_.failValue(tat, "unknown meta module type '" + inst.type + "'", ErrorCode::Unsupported);
     if (inst.version == 0) r_.failValue(vat, "must be at least 1");
     if (inst.version > t->version)
@@ -4380,6 +4382,12 @@ Result<LoadedProject> parseProject(std::string_view text, const LoadOptions& opt
                      {std::string(options.fileName), 0, 0}};
       out.project = std::make_shared<const Project>(std::move(p));
     }
+    if (out.project && holdsRetiredModules(*out.project)) {  // GU.4: the retired meta modules become their presets
+      Project p = *out.project;
+      if (Status st = convertRetiredModules(p); !st)
+        return Error{st.error().code, "$: " + st.error().message, {std::string(options.fileName), 0, 0}};
+      out.project = std::make_shared<const Project>(std::move(p));
+    }
     return out;
   } catch (const json::JsonFail& f) {
     return toError(f, body, options.fileName, !wasMigrated);
@@ -4441,7 +4449,14 @@ Result<std::string> serializeGroupPreset(const BlockSet& blocks, std::string_vie
   return encodeLibrary([&](Encoder& e) { e.presetFile(blocks.devices, blocks.wires, name); });
 }
 Result<PresetFile> parsePreset(std::string_view text, std::string_view fileName) {
-  return decodeLibrary<PresetFile>(text, fileName, [](Decoder& d) { return d.presetFile(); });
+  Result<PresetFile> f = decodeLibrary<PresetFile>(text, fileName, [](Decoder& d) { return d.presetFile(); });
+  // GU.4: a preset of a retired meta module (a Phase Accumulator, a VCA) is its module's group preset.
+  if (f && f->device && !f->groupPreset())
+    if (std::optional<BlockSet> set = convertRetiredPreset(*f->device)) {
+      f->blocks = std::move(*set);
+      f->device = f->blocks.devices.front();
+    }
+  return f;
 }
 Result<std::string> serializeUserDevice(const UserDeviceFile& f) {
   if (f.text.empty()) return Error{ErrorCode::InvalidArgument, "$.source: must not be empty", {}};

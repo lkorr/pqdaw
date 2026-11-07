@@ -5,11 +5,9 @@
 
 #include "pq/graph/patch_file.h"
 #include "pq/meta/envelope.h"
-#include "pq/meta/phase_acc.h"
 #include "pq/meta/oscilloscope.h"
 #include "pq/meta/spectrogram.h"
 #include "pq/meta/spectrum.h"
-#include "pq/meta/vca.h"
 #include "pq/meta/wavetable.h"
 
 namespace pq::meta {
@@ -28,10 +26,10 @@ struct Registry {
   std::vector<const Type*> types;
   std::shared_ptr<const Prelude> prelude;  // null: rebuild on next use
   Registry() {
-    types.push_back(&phaseAccType());
+    // (GU.4: the Phase accumulator and the VCA are group presets now: pq/document/modules.h; pq/meta/retired.h keeps
+    // their old state's description for loading older files.)
     types.push_back(&wavetableType());  // TMM.5
     types.push_back(&envelopeType());   // TMM.11
-    types.push_back(&vcaType());        // TMM.14
     types.push_back(&spectrumType());   // TX.spectrum
     types.push_back(&oscilloscopeType());  // TX.scope
     types.push_back(&spectrogramType());   // TX.spectrogram

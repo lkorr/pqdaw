@@ -6,6 +6,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
+#include "pq/meta/retired.h"
 
 namespace pq::doc {
 
@@ -44,7 +45,7 @@ MainPorts mainPortsOf(const Device& d, const DeviceLibrary* lib) {
   if (isGroupDevice(d)) return {"x", "y"};
   if (isMetaDevice(d)) {
     MainPorts m;
-    if (const meta::Type* t = meta::findType(metaDeviceType(d))) {
+    if (const meta::Type* t = meta::findTypeOrRetired(metaDeviceType(d))) {
       if (const int32_t i = metaChainInput(d, *t); i >= 0) m.in = std::string(t->inputs[static_cast<size_t>(i)].name);
       if (!t->outputs.empty()) m.out = std::string(t->outputs.front().name);
     }

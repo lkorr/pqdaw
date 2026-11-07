@@ -377,11 +377,9 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //           units). An UNDRIVEN control has no op at all: its value is the curve at its position, evaluated on the UI
 //           thread (lowerParams: dsp::evalCurve) and written as the runtime param, as before GU.1 (inside instrument
 //           groups too). A rack's params (macros, the selector) are not curves: values 0 … 127, lowered as before.
-//   units   a param whose patch adds its wires after its own law — an `in <param>_add` beside it (the VCA's `value`,
-//           meta::ParamSpec::unitsInBody: the knob is a position, the wire adds to the multiplier) — takes them there:
-//           the param stays the knob (param rate). A Units wire always; an Add wire only when the knob is linear in
-//           that law (meta::Type::unitsLaw: the VCA on its Bend curve), else it adds to the knob position (the VCA on
-//           its Log curve, through the curve). (GU.4 replaces the VCA's own law with a curve.)
+//   units   a param whose patch adds its wires after its own law — an `in <param>_add` beside it in its text — takes
+//           its Add and Units wires there: the param stays the knob (param rate). (GU.4: the VCA, whose `value` was the
+//           one meta param of this kind, is a group preset now: in → mul ← a value block with the VCA's curve.)
 //   meta    a chain meta device's inputs that Add wires reach become `in`s of its expansion (meta::ExpandContext::
 //           wired: an unwired chain keeps its expansion and key; under ChainNotes the chain input reads the note's
 //           signal plus the wires).

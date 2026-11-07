@@ -8,7 +8,7 @@
 //   OpPrd      OpFull with the PRD circuit model (the transistor ladder, 1 iteration) at +12 dB drive
 //   OpSpreadMs2  OpMs2 with spread (two filters per voice: the most expensive filter configuration)
 //   OpFour     TMM.12: four sine operators (algorithm 1, ratios 1 / 2 / 3:2 / 7:4), feedback, envelopes; nothing else
-//              (the Meta Operator's work: meta_operator_calibration.pqp's MoSine)
+//              (the work of TMM.12's Meta Operator, deleted in GU.4)
 import "../../stdlib/devices/operator.pqp"
 
 patch OpDefault {

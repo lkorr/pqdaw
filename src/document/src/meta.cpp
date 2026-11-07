@@ -5,6 +5,7 @@
 
 #include "pq/graph/infer.h"
 #include "pq/meta/registry.h"
+#include "pq/meta/retired.h"
 
 namespace pq::doc {
 
@@ -135,7 +136,7 @@ double metaParamValue(const Device& d, std::string_view path, const meta::Type& 
 
 std::string metaParamBakedOnly(const Device& d, std::string_view param) {
   if (!isMetaDevice(d)) return {};
-  const meta::Type* t = meta::findType(metaDeviceType(d));
+  const meta::Type* t = meta::findTypeOrRetired(metaDeviceType(d));
   if (t == nullptr) return {};
   const int32_t i = t->paramIndex(param);
   if (i < 0 || !t->params[static_cast<size_t>(i)].bakeable) return {};
@@ -183,7 +184,7 @@ std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool not
     if (!d.active) continue;
     ChainStage st;
     st.device = &d;
-    const meta::Type* t = isMetaDevice(d) ? meta::findType(metaDeviceType(d)) : nullptr;
+    const meta::Type* t = isMetaDevice(d) ? meta::findTypeOrRetired(metaDeviceType(d)) : nullptr;
     if (path != nullptr && !path->contains(d.id)) {  // TX.all-free: off the main path: nothing reaches it from the flow
       st.offPath = true;
       st.in = ChainSignal::None;
@@ -231,7 +232,7 @@ std::vector<DevicePtr> groupSeries(const Project& p, const Track& t, DeviceId g)
       if (w.fromNoteSource() || w.toMixer() || w.from != cur || w.port != port) continue;
       for (const DevicePtr& m : members) {
         if (m->id != w.to || std::find(out.begin(), out.end(), m) != out.end()) continue;
-        const meta::Type* ty = isMetaDevice(*m) ? meta::findType(metaDeviceType(*m)) : nullptr;
+        const meta::Type* ty = isMetaDevice(*m) ? meta::findTypeOrRetired(metaDeviceType(*m)) : nullptr;
         const int32_t ci = ty != nullptr ? metaChainInput(*m, *ty) : -1;
         if (w.param == kMainPort || (ci >= 0 && w.param == ty->inputs[static_cast<size_t>(ci)].name)) next = &m;
       }
@@ -240,7 +241,7 @@ std::vector<DevicePtr> groupSeries(const Project& p, const Track& t, DeviceId g)
     if (next == nullptr) break;
     out.push_back(*next);
     cur = (*next)->id;
-    const meta::Type* ty = isMetaDevice(**next) ? meta::findType(metaDeviceType(**next)) : nullptr;
+    const meta::Type* ty = isMetaDevice(**next) ? meta::findTypeOrRetired(metaDeviceType(**next)) : nullptr;
     port = ty != nullptr && !ty->outputs.empty() ? std::string(ty->outputs.front().name) : std::string(kMainPort);
   }
   return out;

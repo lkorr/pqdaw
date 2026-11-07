@@ -17,7 +17,7 @@
 #include "pq/ui/scene_textures.h"
 #include "pq/media/probe.h"
 #include "pq/meta/envelope.h"
-#include "pq/meta/vca.h"
+#include "pq/document/modules.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/browser/browser_panel.h"
 #include "pq/views/browser/demo_index.h"
@@ -1537,21 +1537,17 @@ Status setupDeviceKnobCurves(Shell& shell) {
   if (!t) return Error{ErrorCode::Unknown, "device-knob-curves: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
   if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
-  const auto pa = run(doc::ops::addMetaDevice(*store.current(), store.ids(), track, "phase_acc", 0));
+  // (GU.4: no Phase accumulator here any more: its knobs are a module's value blocks, their curves on its panel.)
   const auto af = run(doc::ops::addDevice(*store.current(), store.ids(), track, "auto_filter", doc::DeviceKind::AudioEffect));
   const auto ut = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
-  if (!pa || !af || !ut) return Error{ErrorCode::Unknown, "device-knob-curves: addDevice failed", {}};
-  const doc::DeviceId acc = pa->devices[0], filter = af->devices[0], util = ut->devices[0];
+  if (!af || !ut) return Error{ErrorCode::Unknown, "device-knob-curves: addDevice failed", {}};
+  const doc::DeviceId filter = af->devices[0], util = ut->devices[0];
   // GU.1: the curves first (a curve edit keeps the knob position), then the values typed in units on them.
   const doc::DeviceLibrary& lib = *ctx.deviceLibrary();
   using P = dsp::CurvePreset;
-  const bool ok = run(doc::ops::setParamCurvePreset(*store.current(), lib, acc, "freq", P::Linear)) &&
-                  run(doc::ops::setParamCurvePreset(*store.current(), lib, acc, "amp", P::Exponential)) &&
-                  run(doc::ops::setParamCurvePreset(*store.current(), lib, filter, "freq", P::Linear)) &&
+  const bool ok = run(doc::ops::setParamCurvePreset(*store.current(), lib, filter, "freq", P::Linear)) &&
                   run(doc::ops::setParamCurvePreset(*store.current(), lib, filter, "res", P::Exponential)) &&
                   run(doc::ops::setParamCurvePreset(*store.current(), lib, util, "gain", P::Logarithmic)) &&
-                  run(doc::ops::setDeviceParamValue(*store.current(), lib, acc, "freq", 220.0)) &&
-                  run(doc::ops::setDeviceParamValue(*store.current(), lib, acc, "amp", 1.5)) &&
                   run(doc::ops::setDeviceParamValue(*store.current(), lib, filter, "freq", 1000.0)) &&
                   run(doc::ops::setDeviceParamValue(*store.current(), lib, util, "gain", std::pow(10.0, -6.0 / 20.0)));
   if (!ok) return Error{ErrorCode::Unknown, "device-knob-curves: curves failed", {}};
@@ -1770,18 +1766,23 @@ Status setupProjectPatchFree(Shell& shell) {
   if (Status s = project_patch::buildMetaChainProject(ctx.store(), &ids); !s) return s;
   project_patch::ProjectPatchView* v = findProjectPatch(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-free: the view is not installed", {}};
-  if (!v->addFreeDevice(ids.lead, "meta:phase_acc") || !v->addFreeDevice(ids.lead, "utility"))
+  const size_t before = doc::findTrackPtr(*ctx.doc(), ids.lead)->devices.size();
+  if (!v->addFreeDevice(ids.lead, std::string(doc::kModuleItemPrefix) + "phase_acc") || !v->addFreeDevice(ids.lead, "utility"))
     return Error{ErrorCode::Unknown, "project-patch-free: adding the free devices failed", {}};
   const doc::Track* lead = doc::findTrackPtr(*ctx.doc(), ids.lead);
-  if (lead == nullptr || lead->devices.size() < 5) return Error{ErrorCode::NotFound, "project-patch-free: no Lead chain", {}};
-  const doc::DeviceId lfo = lead->devices[3]->id, util = lead->devices[4]->id;
+  if (lead == nullptr || lead->devices.size() < before + 2) return Error{ErrorCode::NotFound, "project-patch-free: no Lead chain", {}};
+  // GU.4: the module's group (the first block pasted), its Frequency value block, and the Utility (the last).
+  const doc::DeviceId lfo = lead->devices[before]->id, util = lead->devices.back()->id;
+  doc::DeviceId lfoFreq;
+  for (const doc::DevicePtr& d : lead->devices)
+    if (d->group == lfo && d->name == doc::kPaFrequency) lfoFreq = d->id;
   auto run = [&](const doc::ops::EditResult& e) -> Status {
     if (!e) return e.error();
     return ctx.store().dispatch(e->command);
   };
-  if (Status s = run(doc::ops::setDeviceParamValue(*ctx.doc(), *ctx.deviceLibrary(), lfo, "freq", 2.0)); !s) return s;
-  if (Status s = run(doc::ops::connectWire(*ctx.doc(), ctx.store().ids(), lfo, "out", ids.wt, "position")); !s) return s;
-  if (Status s = run(doc::ops::connectWire(*ctx.doc(), ctx.store().ids(), ids.acc, "out", util, "x")); !s) return s;
+  if (Status s = run(doc::ops::setDeviceParamValue(*ctx.doc(), *ctx.deviceLibrary(), lfoFreq, std::string(doc::kValueParam), 2.0)); !s) return s;
+  if (Status s = run(doc::ops::connectWire(*ctx.doc(), ctx.store().ids(), lfo, "", ids.wt, "position")); !s) return s;
+  if (Status s = run(doc::ops::connectWire(*ctx.doc(), ctx.store().ids(), ids.acc, "", util, "x")); !s) return s;
   shell.tree().layoutNow();
   v->setShown(true, false);
   shell.tree().layoutNow();
@@ -2295,16 +2296,7 @@ Status setupProjectMetaEnvelope(Shell& shell) {
   return Ok{};
 }
 
-// TMM.14: the VCA (project_patch::buildMetaVcaProject). Still voices: each one's knob position (the tap), a little
-// apart as a per-voice modulation would put them, with the positions sampled during the last frame.
-void setVcaVoices(SyntheticVoices& v, std::initializer_list<double> positions) {
-  std::vector<SyntheticVoices::Voice> list;
-  uint32_t slot = 0;
-  for (const double p : positions) list.push_back({slot++, 0.0, p, 0.0});
-  v.setVoices(std::move(list));
-}
-
-// The Device view of "Keys": the default synth, then the VCA's face as its panel.
+// TMM.14 / GU.4: the Device view of "Keys": the default synth, then the VCA module's panel (its group frame).
 Status setupDeviceMetaVca(Shell& shell) {
   ViewContext& ctx = shell.context();
   if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-meta-vca: no device library", {}};
@@ -2312,12 +2304,7 @@ Status setupDeviceMetaVca(Shell& shell) {
   if (Status s = project_patch::buildMetaVcaProject(ctx.store(), &ids); !s) return s;
   DeviceChainView* v = findDeviceChain(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "device-meta-vca: the Device view is not installed", {}};
-  static SyntheticVoices voices;
-  setVcaVoices(voices, {0.62});  // after a stock synth the voices are summed: one global dot at the knob
   const doc::DeviceId vca = ids.vca;
-  v->faceVoices = [vca](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
-    return d == vca && path.empty() ? &voices : nullptr;
-  };
   ctx.setSelectedTrack(ids.keys);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
@@ -2585,19 +2572,21 @@ Status setupProjectCablesAt(Shell& shell, double zoom, bool glow) {
 Status setupProjectCables(Shell& shell) { return setupProjectCablesAt(shell, 0.0, false); }
 
 // TX.orbit-ports (SPEC §15 2026-11-03 "orbiting ports, a round VCA, Delete on a cable"): the same patch closer, framed on
-// the round VCA and its neighbours — every block's main input (a hollow ring) and output (a disc with a bright core and a
-// glow) on its outline toward its cables; `panel`: the VCA's floating panel opened by a click on its chevron (through
-// the canvas's dispatch: the range, the curve box, the presets under the face, over the canvas). TX.vca-knob: `markers`
-// moves +1 and −10 off their defaults first (an asymmetric fine zone; the ticks and the box's corner points).
-Status setupProjectOrbitPorts(Shell& shell, bool panel, bool markers = false) {
+// the VCA and its neighbours — every block's main input (a hollow ring) and output (a disc with a bright core and a
+// glow) toward its cables. GU.4: the VCA is its module (a group drawn as its panel: the round knob, the curve editor);
+// `panel`: framed close on it (zoom 2: the panel's elements).
+Status setupProjectOrbitPorts(Shell& shell, bool panel) {
   if (Status s = setupProjectCablesAt(shell, 0.0, false); !s) return s;
   project_patch::ProjectPatchView* v = findProjectPatch(shell);
   project_patch::ProjectCanvas& c = v->canvas();
   c.setCablesAnimated(false);
   const project_patch::ProjectPatch& pp = v->patch();
+  const doc::Project& doc = *shell.context().doc();
   uint32_t vca = project_patch::kNone;
   for (uint32_t i = 0; i < pp.nodes.size(); ++i)
-    if (pp.nodes[i].face != nullptr && pp.nodes[i].face->id == "vca") vca = i;
+    if (pp.nodes[i].kind == project_patch::NodeKind::Device)
+      if (const doc::Device* d = doc::findDevice(doc, pp.nodes[i].device).device; d != nullptr && doc::isGroupDevice(*d) && d->name == "VCA")
+        vca = i;
   if (vca == project_patch::kNone) return Error{ErrorCode::NotFound, "project-orbit-ports: no VCA (needs the meta-cables fixture)", {}};
   const project_patch::Node& n = pp.nodes[vca];
   const ui::IRect r = c.rect();
@@ -2605,35 +2594,8 @@ Status setupProjectOrbitPorts(Shell& shell, bool panel, bool markers = false) {
   circuit::CircuitCanvas::View view;
   view.zoom = panel ? 2.0 : 1.25;
   view.x = n.x + 0.5 * n.w - 0.5 * r.w / (view.zoom * us);
-  view.y = n.y + (panel ? 100.0 : 0.5 * n.h) - 0.5 * r.h / (view.zoom * us);
+  view.y = n.y + 0.5 * n.h - 0.5 * r.h / (view.zoom * us);
   c.setView(view);
-  shell.tree().layoutNow();
-  if (panel) {
-    const ui::Vec2 chev = c.toDevice({n.x + 60.0f * n.scale, n.y + 85.0f * n.scale});  // the chevron, inside the dial (TX.vca-knob)
-    for (const ui::PointerType t : {ui::PointerType::Move, ui::PointerType::Down, ui::PointerType::Up}) {
-      ui::PointerEvent e;
-      e.type = t;
-      e.button = ui::PointerButton::Left;
-      e.pos = chev;
-      shell.tree().dispatchPointer(e);
-    }
-    const uint32_t sn = v->scene().sceneNode[vca];
-    MetaFace* f = sn == project_patch::kNone ? nullptr : c.faceOn(sn);
-    if (f == nullptr || !f->popupRect()) return Error{ErrorCode::Unknown, "project-vca-panel: the chevron did not open the panel", {}};
-    if (markers) {
-      MetaTarget& t = f->target();
-      t.begin("Move Markers");
-      t.set(meta::kVcaMark0 + 3, 0.06);   // +1 later: a wider positive half of the fine zone
-      t.set(meta::kVcaMark0 + 1, -0.04);  // −10 earlier
-      t.end();
-      shell.tree().layoutNow();
-    }
-    // The pointer away from the face (no hover over the panel).
-    ui::PointerEvent e;
-    e.type = ui::PointerType::Move;
-    e.pos = {static_cast<float>(r.x + 4), static_cast<float>(r.y + 4)};
-    shell.tree().dispatchPointer(e);
-  }
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -2832,23 +2794,13 @@ Status setupProjectMetaVca(Shell& shell) {
   if (Status s = project_patch::buildMetaVcaProject(ctx.store(), &ids); !s) return s;
   project_patch::ProjectPatchView* v = findProjectPatch(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-vca: the view is not installed", {}};
-  static SyntheticVoices accVoices, wtVoices, vcaVoices;
-  accVoices.setVoices({{0, 4.0, 0.08, 0.0, kSceneNoteInc[0]}, {1, 5.0, 0.4, 0.0, kSceneNoteInc[1]}, {2, 6.0, 0.66, 0.0, kSceneNoteInc[2]}, {3, 7.0, 0.9, 0.0, kSceneNoteInc[3]}});
-  accVoices.setRate(kSceneRate);  // TMM.13-fix2: real note frequencies (their colours, not 0 Hz red)
+  static SyntheticVoices wtVoices;
   wtVoices.setVoices({{0, 4.0, 0.08, 0.0}, {1, 5.0, 0.4, 0.0}, {2, 6.0, 0.66, 0.0}, {3, 7.0, 0.9, 0.0}});
-  for (SyntheticVoices* sv : {&accVoices, &wtVoices}) {
-    sv->advance(1.0 / 60.0);
-    sv->freeze();
-  }
-  setVcaVoices(vcaVoices, {0.58, 0.69, 0.75, 0.86});
-  const doc::DeviceId inst = ids.tremInst, vca = ids.vca;
-  v->faceVoices = [inst, vca](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
-    if (d == vca && path.empty()) return nullptr;
-    if (d != inst) return nullptr;
-    if (path == "acc1") return &accVoices;
-    if (path == "wt1") return &wtVoices;
-    if (path == "vca1") return &vcaVoices;
-    return nullptr;
+  wtVoices.advance(1.0 / 60.0);
+  wtVoices.freeze();
+  const doc::DeviceId inst = ids.tremInst;
+  v->faceVoices = [inst](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    return d == inst && path == "wt1" ? &wtVoices : nullptr;
   };
   shell.tree().layoutNow();
   v->setShown(true, false);
@@ -2857,100 +2809,6 @@ Status setupProjectMetaVca(Shell& shell) {
   shell.tree().layoutNow();
   v->rebindFaces();
   v->focusBand(ids.trem, false);
-  shell.tree().layoutNow();
-  return Ok{};
-}
-
-// TMM.12: still voices for the Meta Operator's twelve faces — four voices of a chord, each operator's accumulator and
-// wavetable dots at its own ratio's phases, its envelope in a stage of its own (the modulators decaying faster).
-struct MetaOperatorSceneVoices {
-  SyntheticVoices acc[4], wt[4];
-  std::unique_ptr<EnvelopeSceneVoices> env[4];
-  MetaOperatorSceneVoices() {
-    static constexpr double kRatio[4] = {1.0, 2.0, 1.5, 1.75};
-    static constexpr double kPos[4] = {0.0, 0.4, 0.0, 0.0};
-    for (uint32_t o = 0; o < 4; ++o) {
-      std::vector<SyntheticVoices::Voice> a, w;
-      for (uint32_t v = 0; v < 4; ++v) {
-        const double hz = (3.0 + v) * kRatio[o];
-        const double ph = std::fmod(0.11 + 0.23 * v + 0.37 * o * kRatio[o], 1.0);
-        a.push_back({v, hz, ph, 0.0, kSceneNoteInc[v] * kRatio[o]});  // TMM.13-fix2: the chord at its ratio (real colours)
-        w.push_back({v, hz, ph, kPos[o]});
-      }
-      acc[o].setVoices(a);
-      acc[o].setRate(kSceneRate);
-      wt[o].setVoices(w);
-      for (SyntheticVoices* sv : {&acc[o], &wt[o]}) {
-        sv->advance(1.0 / 60.0);
-        sv->freeze();
-      }
-    }
-    // A, the carrier, sustains; B and C decay toward their sustains; D, the fast one, is nearly done.
-    env[0] = std::make_unique<EnvelopeSceneVoices>(std::vector<EnvelopeSceneVoices::V>{
-        {0, 0.92, 0.88, false}, {1, 0.74, 0.70, false}, {2, 0.56, 0.55, false}, {3, 0.40, 0.33, true}});
-    env[1] = std::make_unique<EnvelopeSceneVoices>(std::vector<EnvelopeSceneVoices::V>{
-        {0, 0.70, 0.62, false}, {1, 0.45, 0.41, false}, {2, 0.30, 0.30, false}, {3, 0.22, 0.12, true}});
-    env[2] = std::make_unique<EnvelopeSceneVoices>(std::vector<EnvelopeSceneVoices::V>{
-        {0, 0.40, 0.62, false}, {1, 0.85, 0.80, false}, {2, 0.55, 0.52, false}, {3, 0.50, 0.50, false}});
-    env[3] = std::make_unique<EnvelopeSceneVoices>(std::vector<EnvelopeSceneVoices::V>{
-        {0, 0.42, 0.30, false}, {1, 0.16, 0.11, false}, {2, 0.05, 0.03, false}, {3, 0.02, 0.01, true}});
-  }
-  VoiceTapReader* of(std::string_view path) {
-    if (path.size() < 2) return nullptr;
-    const char letter = path.back();
-    if (letter < 'A' || letter > 'D') return nullptr;
-    const uint32_t o = static_cast<uint32_t>(letter - 'A');
-    const std::string_view stem = path.substr(0, path.size() - 1);
-    if (stem == "acc") return &acc[o];
-    if (stem == "wt") return &wt[o];
-    if (stem == "env") return env[o].get();
-    return nullptr;
-  }
-};
-
-// TMM.12: the Meta Operator (project_patch::buildMetaOperatorProject) in the Device view: its panel of twelve faces
-// with the algorithm picker, the dots of a four-note chord.
-Status setupDeviceMetaOperator(Shell& shell) {
-  ViewContext& ctx = shell.context();
-  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "meta-operator-device: no device library", {}};
-  project_patch::MetaOperatorIds ids;
-  if (Status s = project_patch::buildMetaOperatorProject(ctx.store(), &ids); !s) return s;
-  DeviceChainView* v = findDeviceChain(shell);
-  if (v == nullptr) return Error{ErrorCode::NotFound, "meta-operator-device: the Device view is not installed", {}};
-  static MetaOperatorSceneVoices voices;
-  const doc::DeviceId op = ids.op;
-  v->faceVoices = [op](doc::DeviceId d, std::string_view path) -> VoiceTapReader* { return d == op ? voices.of(path) : nullptr; };
-  ctx.setSelectedTrack(ids.keys);
-  ctx.setDetailVisible(true);
-  ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(270.0f);
-  shell.tree().layoutNow();
-  v->rebuild();
-  const doc::DeviceId one[1] = {op};
-  v->select(one);
-  shell.tree().layoutNow();
-  return Ok{};
-}
-
-// TMM.12: the same project in the project patch view, the band of "FM Keys" opened: the Meta Operator's circuit at
-// algorithm 1 — twelve faces, the ratios, the algorithm's wires and the output.
-Status setupMetaOperatorCircuit(Shell& shell) {
-  ViewContext& ctx = shell.context();
-  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "meta-operator-circuit: no device library", {}};
-  project_patch::MetaOperatorIds ids;
-  if (Status s = project_patch::buildMetaOperatorProject(ctx.store(), &ids); !s) return s;
-  project_patch::ProjectPatchView* v = findProjectPatch(shell);
-  if (v == nullptr) return Error{ErrorCode::NotFound, "meta-operator-circuit: the view is not installed", {}};
-  static MetaOperatorSceneVoices voices;
-  const doc::DeviceId op = ids.op;
-  v->faceVoices = [op](doc::DeviceId d, std::string_view path) -> VoiceTapReader* { return d == op ? voices.of(path) : nullptr; };
-  shell.tree().layoutNow();
-  v->setShown(true, false);
-  shell.tree().layoutNow();
-  v->setDeviceExpanded(op, true);
-  shell.tree().layoutNow();
-  v->rebindFaces();
-  v->focusBand(ids.keys, false);
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -3039,12 +2897,9 @@ constexpr SceneEntry kScenes[] = {
     {"project-cables-far", 1600, 900, setupProjectCablesFar},          // TX.cables: the same --project, zoom 0.2
     {"project-cables-glow", 1600, 900, setupProjectCablesGlow},        // TX.cables: the same --project, playing
     {"project-orbit-ports", 1600, 900, [](Shell& s) { return setupProjectOrbitPorts(s, false); }},  // TX.orbit-ports: the same --project
-    {"project-vca-panel", 1600, 900, [](Shell& s) { return setupProjectOrbitPorts(s, true); }},
-    {"project-vca-markers", 1600, 900, [](Shell& s) { return setupProjectOrbitPorts(s, true, true); }},  // TX.vca-knob     // TX.orbit-ports: the same --project
+    {"project-vca-panel", 1600, 900, [](Shell& s) { return setupProjectOrbitPorts(s, true); }},  // GU.4: the VCA module's panel, near
     {"device-meta-spectrogram", 1280, 800, setupDeviceMetaSpectrogram},    // TX.spectrogram
     {"project-meta-spectrogram", 1280, 800, setupProjectMetaSpectrogram},  // TX.spectrogram
-    {"meta-operator-device", 1760, 900, setupDeviceMetaOperator},      // TMM.12 (wider: the whole panel)
-    {"meta-operator-circuit", 1600, 900, setupMetaOperatorCircuit},    // TMM.12
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)

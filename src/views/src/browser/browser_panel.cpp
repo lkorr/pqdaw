@@ -15,6 +15,7 @@
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
 #include "pq/document/devices.h"
+#include "pq/document/modules.h"
 #include "pq/document/edit_ops.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/browser/library_load.h"
@@ -513,6 +514,8 @@ void BrowserPanel::buildDeviceTree() {
     for (const meta::Type* t : metaModuleTypes())
       deviceRows_.push_back({std::string(t->name), std::string(doc::kMetaDevicePrefix) + std::string(t->id),
                              doc::DeviceKind::Instrument});
+    for (const doc::ModuleInfo& m : doc::moduleInfos())  // GU.4: the modules (group presets) beside them
+      deviceRows_.push_back({std::string(m.name), std::string(doc::kModuleItemPrefix) + std::string(m.key), doc::DeviceKind::AudioEffect});
   } else if (const doc::DeviceLibrary* dl = ctx_.deviceLibrary()) {
     for (const doc::DeviceInfo& d : dl->catalog().devices())
       if (d.kind == kind) deviceRows_.push_back({d.name, d.patch, d.kind});
