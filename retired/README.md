@@ -36,6 +36,22 @@ a Filter module.
 
 Still live because something else uses them (QUESTIONS Q?-GU.10-a): the stdlib functions the retired devices imported
 (`filters/svf*.pqp`, `filters/circuit.pqp`, `util/oversample.pqp`, `envelopes/msenv.pqp`, `dynamics/envfollow.pqp`,
-`control/*.pqp`), the oversample atoms, `shaper`, the analysis-tap path of the lowering (`analysedDevice`, now true for
-no device) and the panel-description system (`panel_desc.h`; GU.11 retires it). The tests use copies of the retired
-patches as stand-in devices (`tests/stand_in_devices`, not shipped).
+`control/*.pqp`), the oversample atoms, `shaper`.
+
+GU.11 (2026-11-07): one hierarchy — a block is a group, an atom block, a value block or a native engine; no stock patch,
+no patch text of a device's own, one panel system (a group's panel; a leaf's Device-view frame is generated).
+
+| File | What it was | Why it left |
+|---|---|---|
+| `src/views/include/pq/views/devices/panel_desc.h`, `src/views/src/devices/panel_desc.cpp` | T4.6 panel descriptions: the `.panel.json` reader (selectors, conditions, repeats, visuals) and the generated panels | the stock devices' panels left; a leaf's frame is `panel_layout.h` now; GU.11 |
+| `src/views/include/pq/views/devices/panel_face.h`, `src/views/src/devices/panel_face.cpp` | TX.panel-faces: a stock device drawn in the circuit as its Device-view panel | no stock device; a group is drawn as its own panel; GU.11 |
+| `src/views/src/devices/device_displays.cpp`, `device_math.h` | the panel descriptions' displays (Saturator's transfer curve, the spectrum display) and their math | their panels left; GU.11 |
+| `src/views/src/devices/operator_displays.cpp` | the stock Operator's envelope, algorithm picker and partial editor | the stock Operator left (GU.10); GU.11 |
+| `src/views/include/pq/views/devices/device_view.h`, `src/views/src/devices/device_view.cpp` | T4.6 stand-alone device preview (View > Developer > Preview Device File) | it previewed stock device files; GU.11 |
+| `src/views/include/pq/views/circuit/device_circuit.h`, `src/views/src/circuit/device_circuit.cpp` | T4.4-fix1 the circuit editor on a device of the project (fork on edit, Revert to Stock) | a block has no patch text of its own: opening a block with an inside opens its group; GU.11 |
+| `bench/views/bench_device_panels.cpp` | `pq_bench_device_panels`: the stock panels' paints and drags | the stock panels left; GU.11 |
+
+Deleted outright (git history keeps them): the user devices (`Device::source`, `.pqdevice` files, `DeviceLibrary::resolve`),
+`Device::chainInput`, the stock device list and its `PQ_STAND_IN_DEVICES` test hook with `tests/stand_in_devices`, the
+analysis tap of analysed stock devices, the app's `DevicePlayer`, and the tests of those (test_user_devices, the
+schema-migration and all-free fixture renders, the GU.1 curve renders of stock devices).
