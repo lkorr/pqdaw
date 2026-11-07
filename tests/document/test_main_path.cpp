@@ -17,6 +17,7 @@
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/document/serialize.h"
+#include "pq/document/modules.h"
 #include "pq/document/store.h"
 
 using namespace pq::doc;
@@ -206,7 +207,8 @@ TEST_CASE("main path: insert, move, dissolve, take off, splice — each one undo
                          if (w.from == lfo) return w.id;
                        return WireId{};
                      }())->id;
-  const DeviceId vca = d.edit(ops::addMetaDevice(d.doc(), d.store.ids(), d.keys, "vca", ops::kOffPath)).devices.at(0);
+  // (GU.4: the VCA module, a group, by its main ports.)
+  const DeviceId vca = d.edit(ops::pasteBlocks(d.doc(), d.store.ids(), d.keys, moduleBlocks(ModuleKind::Vca))).devices.at(0);
   d.edit(ops::spliceIntoWire(d.doc(), d.store.ids(), &library(), vca, mod));
   CHECK_FALSE(mainPath(d.doc(), d.track(d.keys)).contains(vca));
   bool lfoToVca = false, vcaToEq = false;
@@ -320,8 +322,8 @@ TEST_CASE("main path: the lowering — a broken path is silent, the mixer sums t
   for (const WireState& s : gl.wires)
     if (s.id == sw || s.id == bw) CHECK(s.status == WireStatus::Lowered);
   // A MIDI track's notes into a block off its path (TX.all-free-fix1; before it, Inactive: the notes reached a block only
-  // along the path): lowered — the Phase accumulator's frequency reads the note's Hz.
-  const DeviceId pa = d.edit(ops::addMetaDevice(d.doc(), d.store.ids(), d.keys, "phase_acc", ops::kOffPath)).devices.at(0);
+  // along the path): lowered — the Wavetable's phase reads the note's phase (GU.4: was a Phase accumulator's Hz).
+  const DeviceId pa = d.edit(ops::addMetaDevice(d.doc(), d.store.ids(), d.keys, "wavetable", ops::kOffPath)).devices.at(0);
   Wire notes;
   notes.noteSource = d.keys;
   notes.to = pa;

@@ -209,7 +209,6 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_meta_faces.cpp  # TMM.4: meta-module faces (toolkit, hosting at every zoom, drags, expand, editor, goldens)
     views/test_meta_wavetable_face.cpp  # TMM.7: the Wavetable face (display model, goldens, voices, gestures, paint cost)
     views/test_meta_envelope_face.cpp  # TMM.11: the Envelope face (goldens with voices, gestures, scenes, paint cost)
-    views/test_meta_vca_face.cpp  # TMM.14: the VCA face (goldens with voices, gestures, typing, presets, scenes, paint cost)
     views/test_meta_wavetable_edit.cpp  # TMM.9: its harmonic editor and draw tools (math, gestures, goldens, paint cost)
     views/test_meta_devices.cpp  # TMM.10: chain meta devices in the Device view (face panels, menus, presets, goldens)
   DEPS pq_views nlohmann_json::nlohmann_json)
@@ -393,10 +392,8 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
 pq_add_test(pq_tests_meta PERF  # TMM.13-fix1 M2: the preview rate of a drag (wall-clock)
   SOURCES
     meta/test_meta.cpp
-    meta/test_phase_acc.cpp
     meta/test_wavetable.cpp
     meta/test_envelope.cpp  # TMM.11: the Envelope (expansion, bit-identity with msenv, curves, VCA)
-    meta/test_vca.cpp  # TMM.14: the VCA (expansion, the curve law, DSP == law on both backends, audio-rate value, cost)
     meta/test_spectrum.cpp  # TX.spectrum: the Spectrum module (expansion, the tap, pass-through bit for bit on both backends)
     meta/test_oscilloscope.cpp  # TX.scope: the Oscilloscope module (expansion, the tap, data, pass-through bit for bit on both backends)
     meta/test_spectrogram_module.cpp  # TX.spectrogram: the Spectrogram module (expansion, the tap, data, pass-through bit for bit on both backends)

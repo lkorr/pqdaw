@@ -258,7 +258,7 @@ TEST_CASE("TX.all-free: a meta device taken off the path no longer takes the not
     REQUIRE(ug.ok());
     REQUIRE(store.dispatch(ug->command).ok());
   }
-  auto a = ops::addMetaDevice(*store.current(), store.ids(), keys, "phase_acc", 0);  // replaces the instrument
+  auto a = ops::addMetaDevice(*store.current(), store.ids(), keys, "envelope", 0);  // replaces the instrument (GU.4: was a PA)
   REQUIRE(a.ok());
   REQUIRE(store.dispatch(a->command).ok());
   auto b = ops::addMetaDevice(*store.current(), store.ids(), keys, "wavetable");

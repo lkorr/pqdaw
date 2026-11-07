@@ -1,4 +1,4 @@
-// TMM.10: meta modules as chain devices — voice continuity (a meta voice run: Phase accumulator → Wavetable → Auto
+// TMM.10: meta modules as chain devices — voice continuity (a meta voice run: Envelope → Wavetable → Auto
 // Filter lowers to per-voice calls, a release, then the voice sum; golden text), the kinds addMetaDevice picks, a meta
 // effect outside a run (bypassed with a reason), the param fast path, copy / paste / presets keep the state.
 #include <doctest/doctest.h>
@@ -25,7 +25,6 @@
 #include "pq/graph/infer.h"
 #include "pq/graph/parse.h"
 #include "pq/meta/envelope.h"
-#include "pq/meta/phase_acc.h"
 #include "pq/meta/wavetable.h"
 
 using namespace pq::doc;
@@ -76,8 +75,9 @@ void ungroupHead(DocumentStore& s, TrackId t) {
   REQUIRE(s.dispatch(e->command).ok());
 }
 
-// A MIDI track with Phase accumulator → Wavetable → Auto Filter on its path (outside any instrument group: the run's
-// stages as chainStages reads them; groupRun puts the two meta modules into an instrument group).
+// A MIDI track with Envelope → Wavetable → Auto Filter on its path (outside any instrument group: the run's stages as
+// chainStages reads them; groupRun puts the two meta modules into an instrument group). GU.4: `acc` was a Phase
+// accumulator (a group preset now): the Envelope takes the note source the same way (any meta module first does).
 struct MetaChain {
   DocumentStore store;
   TrackId track;
@@ -85,14 +85,14 @@ struct MetaChain {
   MetaChain() {
     track = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
     ungroupHead(store, track);
-    acc = edit(ops::addMetaDevice(doc(), store.ids(), track, "phase_acc", 0)).devices.at(0);
+    acc = edit(ops::addMetaDevice(doc(), store.ids(), track, "envelope", 0)).devices.at(0);
     wt = edit(ops::addMetaDevice(doc(), store.ids(), track, "wavetable")).devices.at(0);
     filter = edit(ops::addDevice(doc(), store.ids(), track, "auto_filter", DeviceKind::AudioEffect)).devices.at(0);
   }
   const Project& doc() const { return *store.current(); }
   const Device& dev(DeviceId d) const { return *findDevice(doc(), d).device; }
   const Track& tr() const { return *findTrackPtr(doc(), track); }
-  // IG.1-2: Ctrl+G on the run (Phase accumulator → Wavetable): an instrument group at the note source; they run per
+  // IG.1-2: Ctrl+G on the run (Envelope → Wavetable): an instrument group at the note source; they run per
   // note inside it.
   DeviceId groupRun() {
     const DeviceId run[2] = {acc, wt};
@@ -155,7 +155,7 @@ std::vector<DevicePtr> pathList(const Project& p, const Track& t) {
 TEST_CASE("meta devices: what reaches each main input along the path decides its form (TMM.10-fix1; TX.all-free)") {
   MetaChain c;
   CHECK(inOf(c.doc(), c.tr(), c.acc) == ChainSignal::Notes);  // first on the path: the note source reaches it
-  CHECK(inOf(c.doc(), c.tr(), c.wt) == ChainSignal::Voices);    // the Phase accumulator's per-voice phase
+  CHECK(inOf(c.doc(), c.tr(), c.wt) == ChainSignal::Voices);    // the Envelope's per-voice signal
   CHECK(inOf(c.doc(), c.tr(), c.filter) == ChainSignal::Voices);  // a stock effect: summed at its (global) input
   CHECK(stagesOf(c.doc(), c.tr()).back().out == ChainSignal::Audio);
   CHECK(chainSignalAt(pathList(c.doc(), c.tr()), true, 2) == ChainSignal::Voices);
@@ -163,8 +163,8 @@ TEST_CASE("meta devices: what reaches each main input along the path decides its
   // TX.all-free: on a track a meta block's kind means nothing (its cables decide): an audio effect, any slot.
   CHECK(*ops::metaDeviceKindAt(c.doc(), meta::wavetableType(), c.track, 2) == DeviceKind::AudioEffect);
   CHECK(*ops::metaDeviceKindAt(c.doc(), meta::envelopeType(), c.track, 0) == DeviceKind::AudioEffect);
-  // A second Phase accumulator after the first: its main input (frequency) takes the first one's voice signal.
-  const DeviceId acc2 = c.edit(ops::addMetaDevice(c.doc(), c.store.ids(), c.track, "phase_acc", 1)).devices.at(0);
+  // A second Envelope after the first: its main input takes the first one's voice signal.
+  const DeviceId acc2 = c.edit(ops::addMetaDevice(c.doc(), c.store.ids(), c.track, "envelope", 1)).devices.at(0);
   CHECK(inOf(c.doc(), c.tr(), acc2) == ChainSignal::Voices);
   // An inactive device is skipped: the next one takes what it would have.
   c.edit(ops::setDevicesActive(c.doc(), std::vector<DeviceId>{c.acc}, false));
@@ -201,7 +201,7 @@ TEST_CASE("meta devices: what reaches each main input along the path decides its
   CHECK(inOf(c.doc(), c.tr(), c.acc) == ChainSignal::Voices);
   // An audio track: everything receives audio.
   const TrackId audio = c.edit(ops::createTrack(c.doc(), c.store.ids(), TrackKind::Audio)).tracks.at(0);
-  const DeviceId fm = c.edit(ops::addMetaDevice(c.doc(), c.store.ids(), audio, "phase_acc")).devices.at(0);
+  const DeviceId fm = c.edit(ops::addMetaDevice(c.doc(), c.store.ids(), audio, "wavetable")).devices.at(0);
   CHECK(inOf(c.doc(), *findTrackPtr(c.doc(), audio), fm) == ChainSignal::Audio);
   // Unplugged: nothing reaches it, it runs once.
   c.edit(ops::setDeviceChainInput(c.doc(), fm, std::string(kChainUnplugged)));
@@ -210,7 +210,7 @@ TEST_CASE("meta devices: what reaches each main input along the path decides its
   CHECK_FALSE(ops::setDeviceChainInput(c.doc(), fm, "nope").ok());
   CHECK_FALSE(ops::setDeviceChainInput(c.doc(), c.filter, "-").ok());  // only chain meta devices
   // Plugging into the type's own input stores "" (the default).
-  c.edit(ops::setDeviceChainInput(c.doc(), fm, "hz"));
+  c.edit(ops::setDeviceChainInput(c.doc(), fm, "x"));
   CHECK(c.dev(fm).chainInput.empty());
 }
 
@@ -240,7 +240,7 @@ TEST_CASE("meta devices: a voice run lowers per voice — calls in a row, a rele
     CHECK(std::any_of(lp->params.begin(), lp->params.end(), [&](const LoweredParam& p) { return p.key == key; }));
     CHECK(std::any_of(fast.begin(), fast.end(), [&](const LoweredParam& p) { return p.key == key; }));
   }
-  // Both modules' resources are listed (the Wavetable's table, the Phase accumulator's tap).
+  // Both modules' resources are listed (the Wavetable's table, the Envelope's tap).
   size_t tables = 0, taps = 0;
   for (const LoweredProject::MetaResource& r : lp->metaResources) {
     tables += r.device == c.wt && r.request.kind == meta::ResourceKind::FrameTable ? 1 : 0;
@@ -335,40 +335,6 @@ TEST_CASE("meta devices: copy / paste, duplicate and a preset keep the state (pa
   CHECK(*back->device->meta == *src.meta);
 }
 
-TEST_CASE("meta devices: the Meta Operator (TMM.12) lowers each nested instance to its own expansion, with its slots") {
-  DocumentStore store;
-  auto run = [&](Result<ops::Edit> e) {
-    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
-    REQUIRE(store.dispatch(e->command).ok());
-    return *e;
-  };
-  const TrackId t = run(ops::createTrack(*store.current(), store.ids(), TrackKind::Midi)).tracks.at(0);
-  const DeviceId op = run(ops::addDevice(*store.current(), store.ids(), t, "meta_operator", DeviceKind::Instrument)).devices.at(0);
-  REQUIRE(library().catalog().find("meta_operator") != nullptr);
-  CHECK(library().catalog().find("meta_operator")->name == "Meta Operator");
-  run(ops::setMetaParamValue(*store.current(), op, "envB", "envelope", "amount", 0.25));
-  run(ops::setDeviceSetting(*store.current(), op, "algorithm", 5.0));
-  run(ops::setDeviceSetting(*store.current(), op, "hq", 2.0));
-  run(ops::setDeviceSetting(*store.current(), op, "fbOn", 1.0));
-  CHECK_FALSE(findDevice(*store.current(), op).device->edited());  // a nested state edit never forks the stock device
-  Result<LoweredProject> lp = lowerIt(*store.current());
-  REQUIRE_MESSAGE(lp.ok(), (lp.ok() ? std::string() : lp.error().message));
-  for (const LoweredProject::DeviceError& e : lp->deviceErrors) FAIL_CHECK(e.message);
-  // Twelve instances with resources (every one a voice tap; the Wavetables a table too).
-  std::vector<std::string> paths;
-  for (const LoweredProject::MetaResource& r : lp->metaResources)
-    if (r.device == op && std::find(paths.begin(), paths.end(), r.path) == paths.end()) paths.push_back(r.path);
-  CHECK(paths.size() == 12);
-  for (const char* p : {"accA", "wtA", "envA", "accD", "wtD", "envD"})
-    CHECK_MESSAGE(std::find(paths.begin(), paths.end(), std::string(p)) != paths.end(), p);
-  // The device's patch is a specialised copy whose meta calls are the instances' expansions.
-  const pq::graph::Patch* dp = lp->graph.library->find(calleeOf(*lp, t, op));
-  REQUIRE(dp != nullptr);
-  const auto acc = dp->findByName("accA");
-  REQUIRE(acc.has_value());
-  CHECK(dp->subcircuit(*acc).patch.starts_with("meta_phase_acc__d" + std::to_string(op.value) + "_accA_"));
-}
-
 // ---- TMM.10-fix1: notes are a signal; a chain is wires (SPEC §15 2026-11-01) ----------------------------------------
 
 namespace {
@@ -423,10 +389,11 @@ pq::graph::Poly outPoly(const pq::graph::Patch& p) {
 
 }  // namespace
 
-TEST_CASE("meta devices (fix1): an unplugged Phase accumulator first on a MIDI track runs once, freely — no voices") {
+TEST_CASE("meta devices (fix1): an unplugged Wavetable first on a MIDI track runs once, freely — no voices") {
+  // (GU.4: was the Phase accumulator, a group preset now; the same holds for any meta module.)
   Doc d;
   const TrackId t = d.track(TrackKind::Midi);
-  const DeviceId acc = d.meta(t, "phase_acc", 0);  // replaces the default instrument
+  const DeviceId acc = d.meta(t, "wavetable", 0);  // replaces the default instrument
   d.edit(ops::setDeviceChainInput(d.doc(), acc, std::string(kChainUnplugged)));
   Result<LoweredProject> lp = d.lowered();
   const pq::graph::Patch& pa = calleePatch(*lp, t, acc);
@@ -436,25 +403,26 @@ TEST_CASE("meta devices (fix1): an unplugged Phase accumulator first on a MIDI t
   const std::string text = patchText(*lp->patches[trackIndex(*lp, t)]);
   CAPTURE(text);
   CHECK(text.find("voice_sum") == std::string::npos);
-  // Nothing is wired into the call: its pins are its params (freq first), runtime params of the track.
+  // Nothing is wired into the call: its pins are its params (phase first), runtime params of the track.
   const pq::graph::Patch& tp = trackPatch(*lp, t);
   const auto call = tp.findByName("d" + std::to_string(acc.value));
   REQUIRE(call.has_value());
   for (uint32_t i = 0; i < tp.subcircuit(*call).inputs.size(); ++i)
     CHECK(tp.adjacency().driver[tp.flatInput(*call, i)] == pq::graph::kNone);
   CHECK(std::any_of(lp->params.begin(), lp->params.end(),
-                    [&](const LoweredParam& p) { return p.key == "dev" + std::to_string(acc.value) + ":freq"; }));
+                    [&](const LoweredParam& p) { return p.key == "dev" + std::to_string(acc.value) + ":phase"; }));
   CHECK_FALSE(trackPatch(*lp, t).findByName("done").has_value());  // no voices to end
 }
 
-TEST_CASE("meta devices (fix1): a Phase accumulator on an audio track takes the audio on its frequency (FM)") {
+TEST_CASE("meta devices (fix1): a Wavetable on an audio track takes the audio on its phase input (a shaper)") {
+  // (GU.4: was the Phase accumulator's FM; tests/app/test_module_presets.cpp renders its preset on an audio track.)
   Doc d;
   const TrackId t = d.track(TrackKind::Audio);
-  const DeviceId acc = d.meta(t, "phase_acc");
+  const DeviceId acc = d.meta(t, "wavetable");
   CHECK(findDevice(d.doc(), acc).device->kind == DeviceKind::AudioEffect);
   Result<LoweredProject> lp = d.lowered();
   const pq::graph::Patch& pa = calleePatch(*lp, t, acc);
-  const auto hz = pa.findByName("hz");
+  const auto hz = pa.findByName("x");
   REQUIRE(hz.has_value());
   CHECK(pa.node(*hz).kind == pq::graph::NodeKind::Input);
   CHECK(pa.outputType(*hz, 0).poly == pq::graph::Poly::Global);
@@ -481,24 +449,24 @@ TEST_CASE("meta devices (fix1): an Envelope at the note source plays its envelop
 TEST_CASE("meta devices (fix1): after a stock instrument a meta device receives its (summed) audio") {
   Doc d;
   const TrackId t = d.track(TrackKind::Midi);  // BasicSynth first
-  const DeviceId acc = d.meta(t, "phase_acc");
+  const DeviceId acc = d.meta(t, "wavetable");
   CHECK(findDevice(d.doc(), acc).device->kind == DeviceKind::AudioEffect);
   Result<LoweredProject> lp = d.lowered();
   const pq::graph::Patch& pa = calleePatch(*lp, t, acc);
-  REQUIRE(pa.findByName("hz").has_value());
-  CHECK(pa.outputType(*pa.findByName("hz"), 0).poly == pq::graph::Poly::Global);
+  REQUIRE(pa.findByName("x").has_value());
+  CHECK(pa.outputType(*pa.findByName("x"), 0).poly == pq::graph::Poly::Global);
   CHECK(outPoly(pa) == pq::graph::Poly::Global);
 }
 
 TEST_CASE("meta devices (fix1): the note's frequency wired to a filter cutoff in a circuit modulates it per voice") {
   // Inside a circuit the note source is an ordinary signal: voice.hz into any input — here a one-pole's cutoff — per
-  // voice; the Phase accumulator hears the note only because voice.hz is wired into its hz.
+  // voice; a phasor hears the note only because voice.hz is wired into it.
   Doc d;
   const TrackId t = d.track(TrackKind::Midi);
   const DeviceId synth = d.doc().tracks.front()->devices.at(0)->id;
   const std::string text =
       "patch BasicSynth {\n  out out : audio voice mono\n  out done : bool voice mono\n"
-      "  acc1 = meta_phase_acc(voice.hz)\n  x = acc1 - 0.5\n"
+      "  acc1 = phasor(voice.hz)\n  x = acc1 - 0.5\n"
       "  g = tan(3.141592653589793 * clip(voice.hz * 4, 0, 0.49 * sr) / sr)\n  G = g / (1 + g)\n"
       "  v = (x - s) * G\n  low = s + v\n  s = z1(low + v)\n  out = low * 0.2\n  done = !voice.gate\n}\n";
   d.edit(ops::editDevicePatch(d.doc(), synth, text));
@@ -518,12 +486,12 @@ TEST_CASE("meta devices (fix1): the note's frequency wired to a filter cutoff in
 
 TEST_CASE("meta devices (fix1): a schema-10 file keeps its meaning (migration 10 → 11)") {
   // Track A as a schema-10 build could leave it: the instrument deleted, a Wavetable (an audio effect after it) now
-  // first — it heard silence, no voices. Track B: Phase accumulator → Wavetable, a voice run. Track C: a Wavetable
+  // first — it heard silence, no voices. Track B: Envelope → Wavetable, a voice run. Track C: a Wavetable
   // first on its own (an oscillator per note).
   Doc d;
   const TrackId a = d.track(TrackKind::Midi), b = d.track(TrackKind::Midi), c = d.track(TrackKind::Midi);
   const DeviceId wtA = d.meta(a, "wavetable");
-  const DeviceId accB = d.meta(b, "phase_acc", 0), wtB = d.meta(b, "wavetable");
+  const DeviceId accB = d.meta(b, "envelope", 0), wtB = d.meta(b, "wavetable");
   const DeviceId wtC = d.meta(c, "wavetable", 0);
   Result<std::string> text = serializeProject(d.doc(), d.store.view());
   REQUIRE(text.ok());
@@ -606,7 +574,7 @@ WireStatus statusOf(const LoweredProject& lp, WireId w) {
 }  // namespace
 
 TEST_CASE("meta devices (fix2): the note source's Hz wired to a meta param of its voice run modulates it per voice") {
-  MetaChain c;  // Phase accumulator (at the note source) → Wavetable (its voice run) → Auto Filter
+  MetaChain c;  // Envelope (at the note source) → Wavetable (its voice run) → Auto Filter
   c.groupRun();  // IG.1-2: the run in its instrument group
   const WireId w = c.edit(ops::connectTravelNoteWire(c.doc(), c.store.ids(), c.track, "hz", c.wt, "position")).wires.at(0);
   Result<LoweredProject> lp = lowerIt(c.doc());
@@ -692,18 +660,19 @@ TEST_CASE("meta devices (fix2): a note-source wire plays only while its track ha
 // compiler accepts — every track patch infers (no width mismatch inside an expansion), two Wavetables in a row included.
 TEST_CASE("meta devices: meta → meta → stock chains (two Wavetables in a row) lower and infer") {
   const std::vector<std::vector<std::string>> chains = {
-      {"phase_acc", "wavetable", "wavetable", "utility"},      // the report's chain
-      {"phase_acc", "wavetable", "wavetable"},
-      {"phase_acc", "wavetable", "utility"},
-      {"phase_acc", "wavetable", "envelope", "wavetable", "utility"},
+      // (GU.4: the report's Phase accumulator is an Envelope here: a meta module first, its signal into the next.)
+      {"envelope", "wavetable", "wavetable", "utility"},      // the report's chain
+      {"envelope", "wavetable", "wavetable"},
+      {"envelope", "wavetable", "utility"},
+      {"envelope", "wavetable", "envelope", "wavetable", "utility"},
       {"wavetable", "wavetable", "utility"},
-      {"phase_acc", "phase_acc", "wavetable", "auto_filter"},
+      {"envelope", "envelope", "wavetable", "auto_filter"},
       // A meta device after a stereo stock effect (ChainAudio): the stereo signal reaches a module whose outputs are
       // mono — the report's state (a Wavetable after a stock device, deleted before the shot). Lowered as the mid.
-      {"phase_acc", "wavetable", "utility", "wavetable"},
-      {"phase_acc", "wavetable", "auto_filter", "wavetable", "utility"},
-      {"phase_acc", "wavetable", "utility", "phase_acc", "utility"},
-      {"phase_acc", "wavetable", "utility", "envelope"},
+      {"envelope", "wavetable", "utility", "wavetable"},
+      {"envelope", "wavetable", "auto_filter", "wavetable", "utility"},
+      {"envelope", "wavetable", "utility", "envelope", "utility"},
+      {"envelope", "wavetable", "utility", "envelope"},
   };
   for (const std::vector<std::string>& chain : chains) {
     std::string name;

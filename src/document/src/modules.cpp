@@ -224,12 +224,12 @@ bool retired(const Device& d) noexcept {
   return isMetaDevice(d) && meta::findType(metaDeviceType(d)) == nullptr && meta::findRetiredType(metaDeviceType(d)) != nullptr;
 }
 
+// Whether a retired device sits inside rack `d` at any depth (forEachDeviceIn: iterative, any nesting depth).
 bool rackHoldsRetired(const Device& d) noexcept {
   if (!d.isRack()) return false;
-  for (const ChainPtr& c : d.rack->chains)
-    for (const DevicePtr& x : c->devices)
-      if (retired(*x) || rackHoldsRetired(*x)) return true;
-  return false;
+  bool any = false;
+  forEachDeviceIn(d, [&](const Device& x) { any = any || (&x != &d && retired(x)); });
+  return any;
 }
 
 // A retired param's value in units (its stored knob position through its declared curve; absent: its default).

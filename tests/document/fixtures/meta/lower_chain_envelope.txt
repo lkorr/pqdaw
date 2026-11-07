@@ -1,0 +1,83 @@
+patch Midi11 {
+  param volume = 0 [-70..6]
+  param pan = 0 [-1..1]
+  param gate = 1 [0..1]
+  param sendGate = 1 [0..1]
+  param mute = 0 [0..1]
+  out out : real audio global stereo
+
+  _n0 = 0
+  d20 = meta_envelope__d20__bff0a4420ef73aa5()
+  _n4 = 1
+  _n5 = 0.002
+  _n9 = volume <= -70 ? _n0 : db_to_gain(volume)
+  _n11 = min(_n4, _n4 - pan)
+  _n13 = min(_n4, _n4 + pan)
+  _n18 = mute < 0.5
+  _n20 = _n18 ? sendGate : _n0
+  _n21 = _n9 * (_n18 ? gate : _n0)
+  _n27 = _n9 * _n20
+  out = gain(d20, (_n11 * _n21, _n13 * _n21), _n5)
+
+  export post = gain(d20, (_n11 * _n27, _n13 * _n27), _n5)
+  export pre = gain(d20, (_n11 * _n20, _n13 * _n20), _n5)
+
+}
+
+patch meta_envelope__d20__bff0a4420ef73aa5 {
+  param attack = 0.005s [0s..60s] @label("Attack") @curve(exp0, 15.872698924987581)
+  param decay = 0.4s [0.001s..60s] @label("Decay") @curve(exp0, 15.872698924987581)
+  param sustain = 0.6 [0..1] @label("Sustain")
+  param release = 0.25s [0.001s..60s] @label("Release") @curve(exp0, 15.872698924987581)
+  param acurve = 0 [-1..1] @label("Attack curve")
+  param dcurve = 0 [-1..1] @label("Decay curve")
+  param rcurve = 0 [-1..1] @label("Release curve")
+  param amount = 1 [0..1] @label("Amount")
+  in in : audio global
+  out out : audio global mono
+
+  _n1 = false
+  rate = sr
+  a_n = max(attack * rate, 1)
+  a_bend = abs(acurve)
+  a_linear = a_bend < 0.001
+  a_depth = max(a_bend, 0.001) * 9.210340371976184
+  a_q = exp(-a_depth)
+  a_ov = a_q / (1 - a_q)
+  a_x = a_depth / a_n
+  a_xh = a_x * 0.5
+  a_x3 = a_x * 0.3333333333333333
+  a_small = a_x < 0.01
+  a_up = acurve > 0
+  a_m = a_linear ? 1 : a_up ? a_small ? a_x * (1 - a_xh * (1 - a_x3)) : 1 - exp(-a_x) : a_small ? -(a_x * (1 + a_xh * (1 + a_x3))) : 1 - exp(a_x)
+  a_target = a_linear ? 1 : a_up ? 1 + a_ov : -a_ov
+  a_rate = a_linear ? 1 / a_n : 1e+09
+  d_depth = 9.210340371976184 * max(1 - dcurve * (dcurve < 0 ? 2 : 1), 0.01)
+  d_negdepth = -d_depth
+  d_n = max(decay * rate, 1)
+  d_coef = exp(d_negdepth / d_n)
+  d_q = exp(d_negdepth)
+  d_x = d_depth / d_n
+  d_pull = -((dcurve > 0 ? d_q / (1 - d_q) : 0) * (1 - sustain) * (d_x < 0.001 ? d_x * (1 - d_x * 0.5) : 1 - exp(-d_x)))
+  r_depth = 9.210340371976184 * max(1 - rcurve * (rcurve < 0 ? 2 : 1), 0.01)
+  r_negdepth = -r_depth
+  r_n = max(release * rate, 1)
+  r_coef = exp(r_negdepth / r_n)
+  r_q = exp(r_negdepth)
+  r_x = r_depth / r_n
+  r_pull = -((rcurve > 0 ? r_q / (1 - r_q) : 0) * 1 * (r_x < 0.001 ? r_x * (1 - r_x * 0.5) : 1 - exp(-r_x)))
+  start0 = rise(_n1)
+  target = _n1 ? sustain : 0
+  lvl = z1(next)
+  b = max(lvl, start0 ? 0 : -2)
+  inAtt = _n1 && start0 || _n1 && z1(att)
+  step = min((a_target - b) * a_m, a_rate)
+  reach = 1 - b <= step
+  e = b - target
+  next = inAtt ? reach ? 1 : b + step : clip(target + sign(e) * (_n1 ? d_pull : r_pull) + e * (_n1 ? d_coef : r_coef), min(b, target), max(b, target))
+  att = inAtt && !reach
+  _n195 = !_n1 && next < 1e-04
+  tap = voice_tap(next * 0.4 + (_n1 ? 0 : 0.5), 0)
+  out = next * amount * in
+
+}

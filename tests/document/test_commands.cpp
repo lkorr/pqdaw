@@ -11,7 +11,7 @@
 #include "../meta/meta_test_type.h"
 #include "doc_fixture.h"
 #include "pq/document/meta.h"
-#include "pq/meta/phase_acc.h"
+#include "pq/meta/envelope.h"
 
 using namespace pq::doc;
 using doctest_fixture::Fixture;
@@ -728,7 +728,8 @@ std::vector<Case> cases() {
                  CHECK(rackOf(f).keyUnit == KeyZoneUnit::Degree);
                  CHECK(zoneOff(rackOf(f).chains[0]->key, ZoneKind::Key, KeyZoneUnit::Degree));
                }});
-  // ---- meta modules (TMM.3): withMeta adds, on chain.fx (a stock Utility), a nested Phase accumulator "acc1" (freq 50)
+  // ---- meta modules (TMM.3): withMeta adds, on chain.fx (a stock Utility), a nested Envelope "acc1" (sustain 0.5; GU.4:
+  // it was a Phase accumulator, a group preset now)
   // and a nested test module "ts" (with data), and a chain-level test module meta.dev after it.
   constexpr uint8_t D = kChangeMetaData;
   static struct {
@@ -737,8 +738,8 @@ std::vector<Case> cases() {
   auto withMeta = [withChain](Fixture& f) {
     withChain(f);
     const pq::meta::Type& ts = pq::meta::testing::registerTestType();
-    MetaInstance acc = defaultMetaInstance(pq::meta::phaseAccType());
-    acc.params = {DeviceValue{"freq", 50.0}};
+    MetaInstance acc = defaultMetaInstance(pq::meta::envelopeType());
+    acc.params = {DeviceValue{"sustain", 0.5}};
     mt.dev = f.store.ids().device();
     auto dev = std::make_shared<Device>(*makeDevice(mt.dev, "meta:test_shape", DeviceKind::AudioEffect));
     dev->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(ts)}});
@@ -750,11 +751,11 @@ std::vector<Case> cases() {
   auto metaAt = [](Fixture& f, DeviceId d, const char* path) { return findDevice(f.doc(), d).device->metaAt(path); };
   c.push_back({"AddMetaInstance (params: a param write)", [withMeta](Fixture& f) -> Command {
                  withMeta(f);
-                 MetaInstance m = defaultMetaInstance(pq::meta::phaseAccType());
-                 m.params = {DeviceValue{"amp", 2.0}};
+                 MetaInstance m = defaultMetaInstance(pq::meta::envelopeType());
+                 m.params = {DeviceValue{"attack", 0.2}};
                  return AddMetaInstance{chain.fx, "acc2", m};
                }, static_cast<uint8_t>(P | M), [metaAt](Fixture& f, const ChangeSet& cs) {
-                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::metaParam(chain.fx, "acc2", "amp")});
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::metaParam(chain.fx, "acc2", "attack")});
                  CHECK(cs.devices == std::vector<DeviceId>{chain.fx});
                  REQUIRE(metaAt(f, chain.fx, "acc2") != nullptr);
                }});
@@ -770,7 +771,7 @@ std::vector<Case> cases() {
                  withMeta(f);
                  return RemoveMetaInstance{chain.fx, "acc1"};
                }, static_cast<uint8_t>(P | M), [metaAt](Fixture& f, const ChangeSet& cs) {
-                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::metaParam(chain.fx, "acc1", "freq")});
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::metaParam(chain.fx, "acc1", "sustain")});
                  CHECK(metaAt(f, chain.fx, "acc1") == nullptr);
                }});
   c.push_back({"RenameMetaInstance", [withMeta](Fixture& f) -> Command {
@@ -779,14 +780,14 @@ std::vector<Case> cases() {
                }, S, [metaAt](Fixture& f, const ChangeSet&) {
                  CHECK(metaAt(f, chain.fx, "acc1") == nullptr);
                  REQUIRE(metaAt(f, chain.fx, "osc") != nullptr);
-                 CHECK(metaAt(f, chain.fx, "osc")->param("freq")->value == 50.0);
+                 CHECK(metaAt(f, chain.fx, "osc")->param("sustain")->value == 0.5);
                }});
   c.push_back({"SetMetaParam (nested)", [withMeta](Fixture& f) -> Command {
                  withMeta(f);
-                 return SetMetaParam{chain.fx, "acc1", "freq", 0.6};  // GU.1: a knob position
+                 return SetMetaParam{chain.fx, "acc1", "sustain", 0.6};  // GU.1: a knob position
                }, P, [metaAt](Fixture& f, const ChangeSet& cs) {
-                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::metaParam(chain.fx, "acc1", "freq")});
-                 CHECK(metaAt(f, chain.fx, "acc1")->param("freq")->value == 0.6);
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::metaParam(chain.fx, "acc1", "sustain")});
+                 CHECK(metaAt(f, chain.fx, "acc1")->param("sustain")->value == 0.6);
                }});
   c.push_back({"SetMetaParam (a chain meta device's own)", [withMeta](Fixture& f) -> Command {
                  withMeta(f);

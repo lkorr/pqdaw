@@ -8,8 +8,9 @@
 #include "pq/graph/atoms.h"
 #include "pq/graph/parse.h"
 #include "pq/graph/patch_file.h"
-#include "pq/meta/phase_acc.h"
 #include "pq/meta/registry.h"
+#include "pq/meta/retired.h"
+#include "pq/meta/wavetable.h"
 
 using namespace pq;
 using namespace pq::meta;
@@ -31,15 +32,23 @@ std::vector<uint32_t> idsOf(const graph::Patch& p) {
 }  // namespace
 
 TEST_CASE("meta registry: built-in types, call names, instance names, paths") {
-  const Type& acc = phaseAccType();
-  CHECK(findType("phase_acc") == &acc);
-  CHECK(callName(acc) == "meta_phase_acc");
-  CHECK(typeOfCall("meta_phase_acc") == &acc);
-  CHECK(typeOfCall("meta_phase_acc__d5_acc1_0123456789abcdef") == &acc);
+  // (GU.4: the Phase accumulator's and the VCA's types are retired — group presets now —: findType never gives them.)
+  const Type& acc = wavetableType();
+  CHECK(findType("wavetable") == &acc);
+  CHECK(findType("phase_acc") == nullptr);
+  CHECK(findType("vca") == nullptr);
+  CHECK(findRetiredType("phase_acc") != nullptr);
+  CHECK(findRetiredType("phase_acc")->body == nullptr);
+  CHECK(findTypeOrRetired("vca") == findRetiredType("vca"));
+  CHECK(findTypeOrRetired("wavetable") == &acc);
+  CHECK(typeOfCall("meta_phase_acc") == nullptr);
+  CHECK(callName(acc) == "meta_wavetable");
+  CHECK(typeOfCall("meta_wavetable") == &acc);
+  CHECK(typeOfCall("meta_wavetable__d5_wt1_0123456789abcdef") == &acc);
   CHECK(typeOfCall("meta_nothing") == nullptr);
-  CHECK(typeOfCall("phase_acc") == nullptr);
+  CHECK(typeOfCall("wavetable") == nullptr);
   const std::string a = instanceName(acc, 5, "op.acc", 42), b = instanceName(acc, 5, "op_acc", 42);
-  CHECK(a.starts_with("meta_phase_acc__d5_op_acc_"));
+  CHECK(a.starts_with("meta_wavetable__d5_op_acc_"));
   CHECK(a != b);  // the key covers the path
   CHECK(typeOfCall(a) == &acc);
   CHECK(validPath(""));
@@ -59,20 +68,21 @@ TEST_CASE("meta registry: built-in types, call names, instance names, paths") {
 }
 
 TEST_CASE("meta expansion: deterministic, fixed ids, prints and parses back") {
-  const Type& acc = phaseAccType();
+  // (GU.4: on the Wavetable; these were the Phase accumulator's before it became a group preset.)
+  const Type& acc = wavetableType();
   ExpandContext c;
   const Expansion a = mustExpand(acc, c), b = mustExpand(acc, c);
   CHECK(a.patch == b.patch);
   CHECK(idsOf(a.patch) == idsOf(b.patch));
   CHECK(a.key == b.key);
-  // TMM.5: its voice tap (the face's dots).
+  // TMM.5: its frame table.
   REQUIRE(a.resources.size() == 1);
-  CHECK(a.resources[0].kind == ResourceKind::VoiceTap);
+  CHECK(a.resources[0].kind == ResourceKind::FrameTable);
   // Ports at their fixed ids: inputs, params, outputs.
-  CHECK(a.patch.node(*a.patch.findByName("hz")).id.value == kInputIdBase);
-  CHECK(a.patch.node(*a.patch.findByName("pm")).id.value == kInputIdBase + 1);
-  CHECK(a.patch.node(*a.patch.findByName("freq")).id.value == kParamIdBase);
-  CHECK(a.patch.node(*a.patch.findByName("amp")).id.value == kParamIdBase + 2);
+  CHECK(a.patch.node(*a.patch.findByName("x")).id.value == kInputIdBase);
+  CHECK(a.patch.node(*a.patch.findByName("pos")).id.value == kInputIdBase + 1);
+  CHECK(a.patch.node(*a.patch.findByName("phase")).id.value == kParamIdBase);
+  CHECK(a.patch.node(*a.patch.findByName("fold")).id.value == kParamIdBase + 2);
   CHECK(a.patch.node(*a.patch.findByName("out")).id.value == kOutputIdBase);
   // The text form of the expansion (what TMM.4's expanded view shows) parses back to the same graph.
   const std::string text = graph::print(a.patch);
@@ -81,10 +91,9 @@ TEST_CASE("meta expansion: deterministic, fixed ids, prints and parses back") {
   REQUIRE_MESSAGE(parsed.ok(), (parsed.ok() ? std::string() : parsed.error().message));
   REQUIRE(parsed->patches.size() == 1);
   CHECK(parsed->patches[0] == a.patch);
-  CHECK(text.find("@curve(exp0, 14)") != std::string::npos);
-  CHECK(text.find("@signed @curve(exp0, 14)") != std::string::npos);  // TMM.18: freq is signed (wires may take it below 0)
-  // TMM.10-fix1 (SPEC §15 2026-11-01 "notes are a signal"): hz defaults to 0 Hz in a voice context too (no implicit
-  // note: the module plays a note only when one is wired into hz), so the voice context changes nothing but the key.
+  CHECK(text.find("@wrap") != std::string::npos);  // its phase wraps
+  // TMM.10-fix1 (SPEC §15 2026-11-01 "notes are a signal"): x defaults to phase 0 in a voice context too (no implicit
+  // note: the module plays a note only when one is wired in), so the voice context changes nothing but the key.
   ExpandContext g;
   g.voice = false;
   const Expansion global = mustExpand(acc, g);
@@ -151,40 +160,42 @@ TEST_CASE("meta expansion: chain forms are devices") {
   REQUIRE(in);
   CHECK(e.patch.node(*in).kind == graph::NodeKind::Input);
   CHECK(e.patch.outputType(*in, 0).poly == graph::Poly::Global);
-  // TMM.10-fix1: no type is limited to some forms — the Phase accumulator receives audio on its frequency (FM), the
-  // note's frequency at the note source, or nothing when unplugged.
-  const Expansion pa = mustExpand(phaseAccType(), fx);
-  const auto hz = pa.patch.findByName("hz");
+  // TMM.10-fix1: no type is limited to some forms — the Wavetable receives audio on its phase input (a shaper), the
+  // note's phase at the note source, or nothing when unplugged.
+  const Type& wt = wavetableType();
+  const Expansion pa = mustExpand(wt, fx);
+  const auto hz = pa.patch.findByName("x");
   REQUIRE(hz);
   CHECK(pa.patch.node(*hz).kind == graph::NodeKind::Input);
   CHECK(pa.patch.outputType(*hz, 0).poly == graph::Poly::Global);
   ExpandContext ai;
   ai.form = Form::ChainNotes;
-  const Expansion pn = mustExpand(phaseAccType(), ai);
-  CHECK_FALSE(pn.patch.findByName("hz").has_value());  // the chain wire reads the note: voice.hz at its default's id
-  bool readsHz = false;
+  const Expansion pn = mustExpand(wt, ai);
+  CHECK_FALSE(pn.patch.findByName("x").has_value());  // the chain wire reads the note: its phase at the default's id
+  bool readsNote = false;
   for (graph::NodeIndex n = 0; n < pn.patch.nodeCount(); ++n)
-    if (pn.patch.node(n).id.value == kDefaultIdBase) readsHz = pn.patch.node(n).kind == graph::NodeKind::Atom;
-  CHECK(readsHz);
+    if (pn.patch.node(n).kind == graph::NodeKind::Atom && pn.patch.node(n).atom == graph::atomId("voice.hz")) readsNote = true;
+  CHECK(readsNote);
   ExpandContext un = fx;
-  un.chainInput = -1;  // unplugged: no input at all, outputs global
-  const Expansion pu = mustExpand(phaseAccType(), un);
-  for (graph::NodeIndex n = 0; n < pu.patch.nodeCount(); ++n) CHECK(pu.patch.node(n).kind != graph::NodeKind::Input);
-  CHECK(expansionKey(phaseAccType(), un) != expansionKey(phaseAccType(), fx));
+  un.chainInput = -1;  // unplugged: only the other input, outputs global
+  const Expansion pu = mustExpand(wt, un);
+  CHECK_FALSE(pu.patch.findByName("x").has_value());
+  CHECK(expansionKey(wt, un) != expansionKey(wt, fx));
   ExpandContext bad = fx;
   bad.chainInput = 7;
-  CHECK_FALSE(expand(phaseAccType(), bad, "y").ok());
+  CHECK_FALSE(expand(wt, bad, "y").ok());
   ExpandContext noVoice = un;
   noVoice.form = Form::ChainVoice;  // a voice continuation needs a chain input
-  CHECK_FALSE(expand(phaseAccType(), noVoice, "y").ok());
+  CHECK_FALSE(expand(wt, noVoice, "y").ok());
 }
 
 TEST_CASE("meta prelude: one default expansion and signature per type") {
   testing::registerTestType();
   const std::shared_ptr<const Prelude> p = prelude();
-  const Prelude::Entry* acc = p->find("phase_acc");
+  CHECK(p->find("phase_acc") == nullptr);  // GU.4: retired (a group preset)
+  const Prelude::Entry* acc = p->find("wavetable");
   REQUIRE(acc != nullptr);
-  CHECK(acc->nested.name() == "meta_phase_acc");
+  CHECK(acc->nested.name() == "meta_wavetable");
   // TMM.10-fix1: every type has every chain form.
   CHECK(acc->notes.has_value());
   CHECK(acc->audio.has_value());
@@ -207,7 +218,7 @@ TEST_CASE("meta prelude: one default expansion and signature per type") {
   // A call parses against the prelude's signatures.
   graph::ParseOptions po;
   po.externals = p->signatures;
-  auto f = graph::parse("patch P {\n  out out : audio\n  acc1 = meta_phase_acc(freq: 100Hz)\n  out = acc1\n}\n", "p.pqp", po);
+  auto f = graph::parse("patch P {\n  out out : audio\n  wt1 = meta_wavetable(position: 0.5)\n  out = wt1\n}\n", "p.pqp", po);
   REQUIRE_MESSAGE(f.ok(), (f.ok() ? std::string() : f.error().message));
 }
 
@@ -249,18 +260,22 @@ TEST_CASE("meta data: deep equality, hash, base64 floats, problems") {
   CHECK_FALSE(decodeFloats("AACA", out));  // 3 bytes: not a whole float
 }
 
-TEST_CASE("meta laws: the Phase accumulator's frequency travel") {
-  CHECK(phaseAccFreqFromTravel(0.0) == 0.0);
-  CHECK(phaseAccFreqFromTravel(1.0) == doctest::Approx(20000.0).epsilon(1e-12));
-  CHECK(phaseAccFreqFromTravel(-1.0) == 0.0);
+TEST_CASE("meta laws: the (retired) Phase accumulator's frequency travel; a param's declared curve") {
+  // GU.4: the retired type's state description keeps the law its files were saved with (their positions convert
+  // through it), the same curve its preset's Frequency value block carries.
+  const ParamSpec& freq = findRetiredType("phase_acc")->params[0];
+  CHECK(travelToValue(freq, 0.0) == 0.0);
+  CHECK(travelToValue(freq, 1.0) == doctest::Approx(20000.0).epsilon(1e-12));
+  CHECK(travelToValue(freq, -1.0) == 0.0);
+  CHECK(paramCurve(freq).mode == dsp::CurveMode::Signed);
   // f = 20 kHz · (2^(14t) − 1)/(2^14 − 1).
   for (double t : {0.1, 0.25, 0.5, 0.75, 0.9}) {
     const double f = 20000.0 * (std::pow(2.0, 14.0 * t) - 1.0) / (std::pow(2.0, 14.0) - 1.0);
-    CHECK(phaseAccFreqFromTravel(t) == doctest::Approx(f).epsilon(1e-12));
-    CHECK(phaseAccTravelFromFreq(f) == doctest::Approx(t).epsilon(1e-12));
+    CHECK(travelToValue(freq, t) == doctest::Approx(f).epsilon(1e-12));
+    CHECK(valueToTravel(freq, f) == doctest::Approx(t).epsilon(1e-12));
   }
-  CHECK(phaseAccTravelFromFreq(0.0) == 0.0);
-  CHECK(phaseAccTravelFromFreq(1e9) == 1.0);
+  CHECK(valueToTravel(freq, 0.0) == 0.0);
+  CHECK(valueToTravel(freq, 1e9) == 1.0);
   const ParamSpec lin{"g", "", 0.0, -1.0, 3.0};
   CHECK(travelToValue(lin, 0.5) == 1.0);
   CHECK(valueToTravel(lin, 1.0) == 0.5);
