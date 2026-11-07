@@ -52,19 +52,23 @@ Result<BlockSet> copyBlocks(const Project& p, std::span<const DeviceId> devices)
     if (isGroupDevice(*l.device))
       for (const Device* m : groupMembersDeep(track->devices, id)) picked.insert(m->id.value);
   }
-  // In list order; a block whose group is not in the set becomes a top-level block of the set.
+  // The set's top-level blocks first, then what is inside them, each in list order; a block whose group is not in the
+  // set is a top-level block of the set (its tag cleared).
   std::unordered_set<uint32_t> inside;  // every device id of the set, racks' inner devices included
-  for (const DevicePtr& d : track->devices) {
-    if (picked.count(d->id.value) == 0) continue;
-    if (d->group.valid() && picked.count(d->group.value) == 0) {
-      auto c = std::make_shared<Device>(*d);
-      c->group = {};
-      out.devices.push_back(std::move(c));
-    } else {
-      out.devices.push_back(d);
+  for (const bool top : {true, false})
+    for (const DevicePtr& d : track->devices) {
+      if (picked.count(d->id.value) == 0) continue;
+      const bool isTop = !d->group.valid() || picked.count(d->group.value) == 0;
+      if (isTop != top) continue;
+      if (d->group.valid() && isTop) {
+        auto c = std::make_shared<Device>(*d);
+        c->group = {};
+        out.devices.push_back(std::move(c));
+      } else {
+        out.devices.push_back(d);
+      }
+      forEachDeviceIn(*d, [&](const Device& x) { inside.insert(x.id.value); });
     }
-    forEachDeviceIn(*d, [&](const Device& x) { inside.insert(x.id.value); });
-  }
   for (const Wire& w : wiresOf(p)) {
     if (w.fromNoteSource() || w.toMixer()) continue;  // (a track's own ends: not part of a block set)
     if (inside.count(w.from.value) != 0 && inside.count(w.to.value) != 0) out.wires.push_back(w);

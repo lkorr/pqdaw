@@ -893,7 +893,7 @@ using WireList = std::vector<Wire>;  // sorted by id
 // of the set). GU.3: a group's panel lives on its Device (bindings by DeviceId), so a set carries it with no change of
 // its own; ops::remapBlocks is the one place ids are rewritten (panel bindings join it there).
 struct BlockSet {
-  std::vector<DevicePtr> devices;  // their order in the list they came from (a group before its members not required)
+  std::vector<DevicePtr> devices;  // its top-level blocks first, then what is inside them (each in list order)
   WireList wires;                  // by id
   bool empty() const noexcept { return devices.empty(); }
 };
