@@ -1,13 +1,18 @@
 // GU.1 (docs/plans/GU.md "Curves", Phases 1): controls own curves and store knob positions — renders against the
 // lowering before GU.1. tests/app/fixtures/gu1_curves/<case>/ holds a schema-19 project (values in units) and its
-// interpreter render recorded on the pre-GU.1 code (commit bdef3da9, the recorder this file replaced): the five cases
-// — undriven values off their defaults (a Phase accumulator, an Envelope inside the instrument group, Auto Filter,
-// Utility), wires (an LFO through a VCA into an envelope time and a cutoff: curved, added in position; into a dB gain
-// and a sustain: linear, added in units), automation lanes (a cutoff and a gain), a macro mapping (Auto Filter's cutoff
-// in an Audio Effect Rack) and switched curves (Exponential cutoff, Logarithmic dB gain, both wired).
+// interpreter render recorded on the pre-GU.1 code (commit bdef3da9, the recorder this file replaced; automation_steps
+// and switched re-recorded on that code with its recorder extended): the cases — undriven values off their defaults
+// (a Phase accumulator, an Envelope inside the instrument group, Auto Filter, Utility), wires (an LFO through a VCA
+// into an envelope time and a cutoff: curved, added in position; into a dB gain and a sustain: linear, added in
+// units), automation lanes of holds and jumps (a cutoff and a gain), a macro mapping (Auto Filter's cutoff in an Audio
+// Effect Rack) and switched curves (Exponential cutoff, Logarithmic dB gain, both wired).
 //   references  each project loads through migration 19 → 20 (its values become knob positions through the library's
-//               curves) and renders on the interpreter and the JIT: the two bit for bit, and within −120 dBFS of the
-//               reference (the curve atom's float arithmetic replaces the old per-curve atom chains: plan tolerance)
+//               curves) and renders on the interpreter and the JIT: the two bit for bit, and within −120 dB of the
+//               reference — dBFS, or of its peak where it is above full scale (switched: +13 dBFS; float rounding is
+//               relative) — the curve atom's float arithmetic replaces the old per-curve atom chains (plan tolerance)
+//   ramps       automation lanes hold knob POSITIONS now (plan: "automation and macros record knob positions"), so a
+//               ramp between two breakpoints moves linearly in position, not in units: the `automation` case's lanes
+//               (ramps) convert exactly at every breakpoint and play differently between them, by design
 //   no op       an undriven control has no `curve` op in its unit's schedule (its value is the curve evaluated when it
 //               changes, written as its param), inside the instrument group too; each driven control has one
 //   live edits  under RtScope: a knob drag on an undriven control (one param write), a curve edit of the same class on
@@ -24,6 +29,7 @@
 #include "../golden/golden_audio.h"
 #include "playback_fixture.h"
 #include "pq/app/project_link.h"
+#include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
 #include "pq/document/devices.h"
@@ -43,7 +49,7 @@ namespace {
 constexpr uint32_t kBlock = 64;
 constexpr double kRate = 48000.0;
 constexpr uint32_t kBlocks = 600;  // 0.8 s
-const char* const kCases[] = {"undriven", "wires", "automation", "macro", "switched"};
+const char* const kCases[] = {"undriven", "wires", "automation_steps", "macro", "switched"};
 
 fs::path caseDir(const std::string& name) { return fs::path(PQ_TEST_DATA_DIR) / "app" / "fixtures" / "gu1_curves" / name; }
 
@@ -164,9 +170,37 @@ TEST_CASE("GU.1 curve renders: every case loads (19 → 20), interpreter == JIT,
     const golden::Channels a = render(s, false), b = render(s, true);
     CHECK(maxDiff(a, b) == 0.0);
     const double d = maxDiff(ref->channels, a);
-    MESSAGE(name << ": peak error vs the pre-GU.1 render " << d << " (" << dbfs(d) << " dBFS)");
-    CHECK(dbfs(d) <= -120.0);
+    double peak = 0.0;
+    for (const auto& c : ref->channels)
+      for (const float v : c) peak = std::max(peak, static_cast<double>(std::fabs(v)));
+    MESSAGE(name << ": peak error vs the pre-GU.1 render " << d << " (" << dbfs(d) << " dBFS; reference peak " << peak << ")");
+    CHECK(dbfs(d / std::max(1.0, peak)) <= -120.0);
   }
+}
+
+TEST_CASE("GU.1 curve renders: a ramp's breakpoints convert exactly; between them the lane moves in position") {
+  const Snapshot s = loadCase("automation");
+  const Device* filter = deviceOf(*s, "auto_filter");
+  REQUIRE(filter != nullptr);
+  std::shared_ptr<const ResolvedDevice> hold;
+  const graph::Patch* fp = library().patchOf(*filter, hold);
+  REQUIRE(fp != nullptr);
+  const dsp::Curve c = controlCurve(*filter, "freq", *findParamDecl(*fp, "freq"));
+  const AutomationLane* lane = nullptr;
+  forEachTrack(*s, [&](const Track& t, const Track*) {
+    for (const LanePtr& l : t.lanes)
+      if (l->paramName == "freq") lane = l.get();
+  });
+  REQUIRE(lane != nullptr);
+  REQUIRE(lane->points.size() == 2);
+  CHECK(dsp::evalCurve(c, lane->points[0].value) == doctest::Approx(400.0).epsilon(1e-6));   // float breakpoints
+  CHECK(dsp::evalCurve(c, lane->points[1].value) == doctest::Approx(6000.0).epsilon(1e-6));
+  // Halfway along the ramp: the middle of the two positions — the geometric mean on the octave cutoff (√(400 · 6000)),
+  // where the old lane passed the arithmetic one (3200 Hz).
+  const double mid = 0.5 * (lane->points[0].value + lane->points[1].value);
+  CHECK(dsp::evalCurve(c, mid) == doctest::Approx(std::sqrt(400.0 * 6000.0)).epsilon(1e-5));
+  // It renders on both backends bit for bit.
+  CHECK(maxDiff(render(s, false), render(s, true)) == 0.0);
 }
 
 TEST_CASE("GU.1 curve renders: the migration stores knob positions; the values they give are the old ones") {
@@ -223,6 +257,7 @@ TEST_CASE("GU.1 curve renders: an undriven control has no op (inside the instrum
   MESSAGE("curve ops: wires " << w);
   CHECK(w >= 4);
   CHECK(curveOps(*loadCase("automation")) >= 2);
+  CHECK(curveOps(*loadCase("automation_steps")) >= 2);
   CHECK(curveOps(*loadCase("macro")) >= 1);
   CHECK(curveOps(*loadCase("switched")) >= 2);
   // The undriven project's runtime params are values in units (no "@pos" key); the wired one's driven knobs positions.

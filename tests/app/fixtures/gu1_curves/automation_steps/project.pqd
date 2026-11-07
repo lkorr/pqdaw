@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 19,
+  "timeline": {
+    "tempo": [
+      {"tick": 0, "bpm": 120.0, "curve": "step"}
+    ],
+    "signatures": [
+      {"bar": 0, "numerator": 4, "denominator": 4}
+    ]
+  },
+  "loop": {"start": 0, "end": 3548160, "enabled": false},
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "12-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 12,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 4,
+      "kind": "midi",
+      "name": "1 MIDI",
+      "colour": "#808080",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [
+        {
+          "id": 28,
+          "param": {"kind": "deviceParam", "owner": 20, "name": "freq"},
+          "points": [
+            {"id": 29, "tick": 0, "value": 400.0, "curve": 0.0},
+            {"id": 30, "tick": 110880, "value": 400.0, "curve": 0.0},
+            {"id": 31, "tick": 110880, "value": 3000.0, "curve": 0.0},
+            {"id": 32, "tick": 221760, "value": 3000.0, "curve": 0.0}
+          ]
+        },
+        {
+          "id": 33,
+          "param": {"kind": "deviceParam", "owner": 23, "name": "gain"},
+          "points": [
+            {"id": 34, "tick": 0, "value": 0.3, "curve": 0.0},
+            {"id": 35, "tick": 55440, "value": 0.3, "curve": 0.0},
+            {"id": 36, "tick": 55440, "value": 0.8, "curve": 0.0},
+            {"id": 37, "tick": 221760, "value": 0.8, "curve": 0.0}
+          ]
+        }
+      ],
+      "devices": [
+        {
+          "id": 13,
+          "patch": "meta:phase_acc",
+          "kind": "audioEffect",
+          "group": 38,
+          "params": {"amp": 0.6, "pitch": -300.0},
+          "meta": {
+            "": {"type": "phase_acc", "version": 1}
+          }
+        },
+        {"id": 38, "patch": "Group", "kind": "audioEffect"},
+        {
+          "id": 17,
+          "patch": "meta:envelope",
+          "kind": "audioEffect",
+          "group": 38,
+          "params": {"attack": 0.02, "decay": 0.15, "release": 0.2, "sustain": 0.5},
+          "meta": {
+            "": {"type": "envelope", "version": 1}
+          }
+        },
+        {"id": 20, "patch": "auto_filter", "kind": "audioEffect", "params": {"freq": 1800.0, "res": 0.4}},
+        {"id": 23, "patch": "utility", "kind": "audioEffect", "params": {"gain": 0.5, "width": 0.8}}
+      ],
+      "clips": [
+        {
+          "id": 27,
+          "name": "n",
+          "colour": "#808080",
+          "start": 0,
+          "length": 221760,
+          "contentStart": 0,
+          "loop": {"enabled": false, "start": 0, "end": 887040},
+          "signature": {"numerator": 4, "denominator": 4},
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {"id": 26, "start": 0, "length": 221760, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0}
+          ]
+        }
+      ]
+    }
+  ],
+  "returns": [],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+    "lanes": [],
+    "devices": []
+  },
+  "wires": [
+    {"id": 3, "notes": 2, "port": "", "mixer": 2, "param": ""},
+    {"id": 15, "notes": 4, "port": "", "to": 38, "param": ""},
+    {"id": 21, "from": 38, "port": "", "to": 20, "param": ""},
+    {"id": 24, "from": 20, "port": "", "to": 23, "param": ""},
+    {"id": 25, "from": 23, "port": "", "mixer": 4, "param": ""},
+    {"id": 39, "from": 38, "port": "input", "to": 13, "param": "hz", "chain": true},
+    {"id": 40, "from": 13, "port": "out", "to": 17, "param": "in", "chain": true},
+    {"id": 41, "from": 17, "port": "out", "to": 38, "param": "output", "chain": true}
+  ],
+  "view": {
+    "tracks": [],
+    "lanes": []
+  }
+}

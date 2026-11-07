@@ -56,7 +56,7 @@
           }
         },
         {"id": 20, "patch": "auto_filter", "kind": "audioEffect", "params": {"freq": 1800.0, "res": 0.4}, "curves": {"freq": "exponential"}},
-        {"id": 23, "patch": "utility", "kind": "audioEffect", "params": {"gain": 0.5, "width": 0.8}, "curves": {"gain": "logarithmic"}},
+        {"id": 23, "patch": "utility", "kind": "audioEffect", "params": {"gain": 0.03, "width": 0.8}, "curves": {"gain": "logarithmic"}},
         {
           "id": 28,
           "patch": "meta:phase_acc",
