@@ -121,6 +121,18 @@ std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
     const uint32_t mn = f.node < scene_.modelNode.size() ? scene_.modelNode[f.node] : kNone;
     return mn < patch_.nodes.size() ? makeMixerFace(*this, patch_, patch_.nodes[mn]) : nullptr;
   }
+  // GU.5b: a value block drawn as its knob (a one-knob panel bound to its `value`; a wire into it ends on the knob).
+  if (std::string_view(f.path).starts_with(kValueKnobFacePrefix)) {
+    const doc::DeviceId v{f.owner};
+    const uint32_t mn = patch_.nodeOf(v);
+    const ui::Vec2 size = mn != kNone ? ui::Vec2{patch_.nodes[mn].w / patch_.nodes[mn].scale, patch_.nodes[mn].h / patch_.nodes[mn].scale}
+                                      : ui::Vec2{metrics::kValueKnobW, metrics::kValueKnobH};
+    auto p = std::make_shared<const doc::Panel>(panel::valueKnobPanel(v, size.x, size.y));
+    auto face = std::make_unique<panel::GroupPanelFace>([p] { return p; },
+                                                        panel::makeDocPanelTarget(ctx_, v, [c = canvas_]() -> ui::Widget* { return c; }));
+    face->setOwner(v);
+    return face;
+  }
   // GU.3: a closed group drawn as its panel, bound to the document (menus open from the canvas).
   if (std::string_view(f.path).starts_with(kGroupPanelFacePrefix)) {
     const doc::DeviceId g{f.owner};

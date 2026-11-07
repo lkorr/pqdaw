@@ -8,12 +8,15 @@
 //   Phase Accumulator   a group: In → [hz + Frequency] → × 2^(Pitch/1200) (cents_to_hz(Pitch, 1)) → phasor → + Phase
 //                       → frac → × Amplitude → Out. The value blocks carry the old params' curves: Frequency 0 … 20 kHz
 //                       exp0 (k 14), SIGNED (a wire may take it below 0: the phase runs backwards); Phase 0 … 1, WRAP;
-//                       Amplitude 0 … 4; Pitch ±4800 cents; and a constant 1 (the ratio's reference). Its panel: four
-//                       knobs. The meta module's `pm` input is an `add` after the phase, made only when something feeds
-//                       it (a converted module whose pm was wired): an unused phase-modulation input costs no op.
+//                       Amplitude 0 … 4; Pitch ±4800 cents (GU.5b: ±1200 over the middle half of the travel, as the
+//                       old face's arc); and a constant 1 (the ratio's reference). Its panel (GU.5b): the old face — a
+//                       body circle, four `arc` elements round it and the `orbit` in the middle. The meta
+//                       module's `pm` input is an `add` after the phase, made only when something feeds it (a converted
+//                       module whose pm was wired): an unused phase-modulation input costs no op.
 //   VCA                 a group: In → mul ← Value → Out; the value block's curve is the VCA's law (dsp::CurvePreset::Vca,
-//                       ±20000, the fine ±1 zone over 40 % of the travel), its knob at 0.7 (× 1). Its panel: the round
-//                       knob with its readout inside and the curve editor below it.
+//                       ±20000, the fine ±1 zone over 40 % of the travel), its knob at 0.7 (× 1). Its panel (GU.5b): the
+//                       old face, one `dial` (the curve's ±1 / ±10 / ±100 points as its markers, range and curve in its
+//                       popup).
 //
 // Both play exactly the atoms the meta modules' expansions scheduled (the Phase Accumulator bit for bit; the VCA's law
 // is a curve now: the same function, evaluated by dsp::evalCurve / the curve atom instead of its own atom chain, and

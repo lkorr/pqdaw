@@ -13,6 +13,7 @@
 #include "pq/document/instrument_groups.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
+#include "pq/graph/layout.h"
 #include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
 #include "pq/views/devices/panel_face.h"
@@ -103,6 +104,13 @@ struct Builder {
   struct Capsule {
     uint32_t node = kNone;
     std::vector<std::pair<uint32_t, graph::Point2>> rel;
+    // GU.5b: the routes the circuit layout gave the wires among its contents (node, port -> node, port; the corners
+    // relative to the capsule), used while every content still sits where the layout put it.
+    struct Route {
+      uint32_t from = kNone, fromPort = 0, to = kNone, toPort = 0;
+      std::vector<graph::Point2> via;
+    };
+    std::vector<Route> routes;
   };
   std::vector<Capsule> capsules;
   bool closedGroup(doc::DeviceId g) const noexcept {
@@ -237,6 +245,45 @@ struct Builder {
     return *idx;
   }
 
+  // GU.5b: an atom block drawn as the circuit editor's symbol of its atom (circuit::describe on the block's patch): its
+  // size, and each of the block's ports at the pin of the atom port its terminal feeds (or is fed by).
+  void atomSymbol(Node& n, const doc::Device& d) const {
+    const graph::Patch* ap = doc::atomBlockPatch(doc::atomDeviceName(d));
+    if (ap == nullptr) return;
+    graph::NodeIndex atom = graph::kNone;
+    for (graph::NodeIndex k = 0; k < ap->nodeCount(); ++k)
+      if (ap->node(k).kind == graph::NodeKind::Atom) atom = k;
+    if (atom == graph::kNone) return;
+    const std::vector<uint8_t> wired(ap->node(atom).numInputs, 1);
+    const circuit::SymbolSpec sp = circuit::describe(*ap, atom, wired);
+    auto spec = std::make_shared<circuit::SymbolSpec>(sp);
+    spec->inputs.clear();
+    spec->outputs.clear();
+    spec->caption.clear();
+    auto pinOf = [&](std::string_view name, bool input) {
+      circuit::PinSpec pin;
+      pin.y = std::round(sp.h * 0.5f);
+      pin.stub = 4.0f;
+      for (const graph::Wire& w : ap->wires()) {
+        const graph::NodeIndex term = input ? w.from.node : w.to.node;
+        const graph::NodeKind want = input ? graph::NodeKind::Input : graph::NodeKind::Output;
+        if ((input ? w.to.node : w.from.node) != atom || ap->node(term).kind != want || ap->nodeName(term) != name) continue;
+        const std::vector<circuit::PinSpec>& pins = input ? sp.inputs : sp.outputs;
+        const uint16_t port = input ? w.to.port : w.from.port;
+        if (port < pins.size()) pin = pins[port];
+      }
+      pin.visible = true;
+      return pin;
+    };
+    for (const Port& q : n.inputs) spec->inputs.push_back(pinOf(q.name, true));
+    for (const Port& q : n.outputs) spec->outputs.push_back(pinOf(q.name, false));
+    for (Port& q : n.inputs) q.label.clear();  // the symbol's own pin labels (an IC's) say it
+    for (Port& q : n.outputs) q.label.clear();
+    n.w = sp.w;
+    n.h = sp.h;
+    n.symbol = std::move(spec);
+  }
+
   Node deviceNode(uint32_t band, const doc::Device& d, const graph::Patch* tp) {
     Node n;
     n.kind = NodeKind::Device;
@@ -316,6 +363,23 @@ struct Builder {
     }
     if (n.outputs.empty()) n.outputs.push_back({"out", ""});
     sizeBlock(n, 96.0f);
+    // GU.5b: an atom block is its circuit symbol, a value block a small knob (project_patch.h Node::symbol / valueKnob).
+    if (doc::isAtomDevice(d) && !n.expanded) atomSymbol(n, d);
+    if (doc::isValueDevice(d) && !n.expanded) {
+      n.valueKnob = true;
+      n.groupPanel = true;
+      std::erase_if(n.inputs, [](const Port& q) { return !q.param; });  // (the patch has no audio input)
+      n.mainIn = -1;
+      n.w = m::kValueKnobW;
+      n.h = m::kValueKnobH;
+      for (Port& q : n.inputs)
+        if (q.name == doc::kValueParam) {  // a wire into its control ends on the knob (the knob element's centre)
+          q.anchored = true;
+          q.ax = n.w * 0.5f;
+          q.ay = n.h * 0.5f;
+          q.aclear = n.w * 0.5f;
+        }
+    }
     // TMM.4: a chain meta device is drawn as its face (its size; the pins on the face's edges at the band's rows).
     if (std::string_view(d.patch).starts_with(doc::kMetaDevicePrefix)) {
       n.meta = true;
@@ -329,7 +393,7 @@ struct Builder {
     }
     // TX.panel-faces: a closed stock device with a panel is drawn as it (the Device view's panel at the block's size).
     graph::Point2 panelSize{0.0f, 0.0f};
-    if (!n.meta && !n.expanded && !n.edited && !n.missing && opt.panelSize) panelSize = opt.panelSize(d);
+    if (!n.meta && !n.expanded && !n.edited && !n.missing && !n.symbol && !n.valueKnob && opt.panelSize) panelSize = opt.panelSize(d);
     // TX.mod-all: on a face or a panel a wired param whose control is visible takes no pin: its wires end on the control.
     // (Anchored ports are the last inputs, so the pins' rows stay where they were.)
     if ((n.face != nullptr || (panelSize.x > 0.0f && panelSize.y > 0.0f)) && opt.controlAnchor) {
@@ -362,6 +426,98 @@ struct Builder {
           n.h = roundUp4(std::max(n.h, e.h + 2.0f * m::kExpandedPad + 16.0f));
         }
     return n;
+  }
+
+  // GU.5b (docs/plans/GU.md 5a): an opened group's contents laid out as a CIRCUIT by the circuit editor's layouter
+  // (graph::autoLayout: layers by signal flow left to right -- the In terminal first, the Out last --, a crossing-reducing
+  // order, straightened placement, orthogonal routes through the channels), on a proxy patch of its blocks (their sizes
+  // and pin rows) and the wires among them. `rel`: each content's place from the capsule's top-left; `routes` the wires'
+  // corners; the capsule's size and its chain pins' row (the In terminal's) follow. Cost: one small layout per opened
+  // group per rebuild of the model (tens of blocks: microseconds), never per frame.
+  void circuitLayout(const doc::Device& g, const doc::Track& t, const std::vector<uint32_t>& kids, Node& c,
+                     std::vector<graph::Point2>& rel, std::vector<Capsule::Route>& routes) {
+    const size_t n = kids.size();
+    graph::Patch lp;
+    std::vector<graph::NodeIndex> v(n);
+    for (size_t i = 0; i < n; ++i) {
+      const Node& k = out.nodes[kids[i]];
+      if (i == 0) v[i] = lp.addInput("in", graph::PortType{});
+      else if (i + 1 == n) v[i] = lp.addOutput("out", graph::PortType{});
+      else {
+        graph::SubcircuitRef ref;
+        ref.patch = "block";
+        for (const Port& q : k.inputs) ref.inputs.push_back({q.name, graph::PortType{}, true});
+        for (const Port& q : k.outputs) ref.outputs.push_back({q.name, graph::PortType{}, false});
+        v[i] = lp.addSubcircuit(std::move(ref));
+      }
+    }
+    graph::LayoutGeometry geo;
+    geo.shape.resize(lp.nodeCount());
+    geo.inPinY.assign(lp.portCount(), 0.0f);
+    geo.outPinY.assign(lp.portCount(), 0.0f);
+    for (size_t i = 0; i < n; ++i) {
+      const Node& k = out.nodes[kids[i]];
+      geo.shape[v[i]] = {k.w, k.h};
+      for (uint32_t j = 0; j < lp.node(v[i]).numInputs; ++j)
+        geo.inPinY[lp.flatInput(v[i], j)] = j < k.inputs.size() && k.inputs[j].anchored ? k.inputs[j].ay : pinOffset(k, j, true);
+      for (uint32_t j = 0; j < lp.node(v[i]).numOutputs; ++j) geo.outPinY[lp.flatOutput(v[i], j)] = pinOffset(k, j, false);
+    }
+    // The wires among the contents (one into a block inside a nested group counts as into that group).
+    auto kidOf = [&](doc::DeviceId d, std::string_view port, bool source) -> int32_t {
+      if (d == g.id) {
+        if (port != (source ? doc::kGroupInPort : doc::kGroupOutPort)) return -1;
+        return source ? 0 : static_cast<int32_t>(n) - 1;
+      }
+      for (size_t i = 1; i + 1 < n; ++i) {
+        const Node& k = out.nodes[kids[i]];
+        if (k.device == d || (k.group && doc::groupContains(t.devices, k.device, d))) return static_cast<int32_t>(i);
+      }
+      return -1;
+    };
+    struct Link {
+      uint32_t a, ap, b, bp;
+      graph::WireIndex w;
+    };
+    std::vector<Link> links;
+    for (const doc::Wire& w : doc::wiresOf(p)) {
+      if (w.fromNoteSource() || statusOf(w.id) == doc::WireStatus::Invalid) continue;
+      const int32_t a = kidOf(w.from, w.port, true), b = kidOf(w.to, w.param, false);
+      if (a < 0 || b < 0 || a == b) continue;
+      const size_t ua = static_cast<size_t>(a), ub = static_cast<size_t>(b);
+      const Node& ka = out.nodes[kids[ua]];
+      const Node& kb = out.nodes[kids[ub]];
+      // A closed group's block names a port of a block inside it "<port>@<id>" (portKey); an opened one: its chain pin.
+      int32_t ap = ua == 0 ? 0 : ka.output(portKey(ka, w.from, w.port));
+      int32_t bp = ub + 1 == n ? 0 : kb.input(portKey(kb, w.to, w.param));
+      if (w.port.empty() || ap < 0) ap = 0;
+      if (w.param.empty()) bp = kb.mainIn > 0 ? kb.mainIn : 0;
+      if (bp < 0) bp = kb.mainIn > 0 ? kb.mainIn : 0;
+      if (static_cast<uint32_t>(ap) >= lp.node(v[ua]).numOutputs || static_cast<uint32_t>(bp) >= lp.node(v[ub]).numInputs) continue;
+      const graph::WireIndex wi = lp.connect(graph::PortRef{v[ua], static_cast<uint16_t>(ap)}, graph::PortRef{v[ub], static_cast<uint16_t>(bp)});
+      links.push_back({static_cast<uint32_t>(a), static_cast<uint32_t>(ap), static_cast<uint32_t>(b), static_cast<uint32_t>(bp), wi});
+    }
+    graph::AutoLayoutOptions lo;
+    lo.layerGap = 20.0f;
+    lo.nodeGap = 20.0f;
+    (void)graph::autoLayout(lp, geo, lo);
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (size_t i = 0; i < n; ++i) {
+      const graph::NodeLayout& l = lp.layout(v[i]);
+      x0 = std::min(x0, l.x), y0 = std::min(y0, l.y);
+      x1 = std::max(x1, l.x + geo.shape[v[i]].w), y1 = std::max(y1, l.y + geo.shape[v[i]].h);
+    }
+    const float ox = m::kCapsulePad - x0, oy = m::kCapsuleTitle + m::kCapsulePad - y0;
+    rel.clear();
+    for (size_t i = 0; i < n; ++i) rel.push_back({lp.layout(v[i]).x + ox, lp.layout(v[i]).y + oy});
+    c.w = roundUp4(std::max(x1 - x0 + 2.0f * m::kCapsulePad, 96.0f));
+    c.h = roundUp4(std::max(y1 - y0 + m::kCapsuleTitle + 2.0f * m::kCapsulePad, m::kCapsuleTitle + 48.0f));
+    c.pinTop = rel[0].y + pinOffset(out.nodes[kids[0]], 0, false);
+    routes.clear();
+    for (const Link& k : links) {
+      Capsule::Route r{kids[k.a], k.ap, kids[k.b], k.bp, {}};
+      for (const graph::Point2& q : lp.wireVia(k.w)) r.via.push_back({q.x + ox, q.y + oy});
+      routes.push_back(std::move(r));
+    }
   }
 
   // TX.groups: a group device's capsule (project_patch.h Node::group) and, opened, its terminals and members. GU.2: a
@@ -518,6 +674,12 @@ struct Builder {
       c.h = roundUp4(std::max(c.h, m::kClosedGroupH));
       if (g.hasPanel()) {  // GU.3: drawn as its panel (at the panel's size; its pins on the edges)
         c.groupPanel = true;
+        if (const std::optional<FaceShape> ps = panel::panelShape(*g.panel); ps && ps->round) {  // GU.5b: a round panel
+          c.panelRound = true;
+          c.roundX = ps->centre.x;
+          c.roundY = ps->centre.y;
+          c.roundR = ps->radius;
+        }
         c.mini.clear();
         c.miniWires.clear();
         const size_t rows = pinRows(c);
@@ -536,10 +698,8 @@ struct Builder {
     for (const doc::Device* d : members)
       kids.push_back(doc::isGroupDevice(*d) ? groupNode(band, *d, t, tp) : addNode(scaled(deviceNode(band, *d, tp))));
     kids.push_back(addNode(terminal(false)));
-    std::vector<const Node*> kp;
-    for (const uint32_t k : kids) kp.push_back(&out.nodes[k]);
     std::vector<graph::Point2> rel;
-    innerLayout(kp, rel);
+    circuitLayout(g, t, kids, c, rel, capsules[capIndex].routes);  // GU.5b: a circuit, not a row
     out.nodes[ci] = std::move(c);
     Node& cn = out.nodes[ci];
     for (size_t i = 0; i < kids.size(); ++i) {
@@ -1099,6 +1259,38 @@ struct Builder {
 
   // ---- routes ---------------------------------------------------------------------------------------------------
 
+  // GU.5b: the trace of edge e inside an opened group (from s to t; pts holds s).
+  void innerTrace(const Edge& e, graph::Point2 s, graph::Point2 t, std::vector<graph::Point2>& pts) const {
+    const Node& a = out.nodes[e.from];
+    for (const Capsule& c : capsules) {
+      if (c.node != a.capsule) continue;
+      const Node& cn = out.nodes[c.node];
+      bool laid = true;  // every content where the layout put it (relative to the capsule)
+      for (const auto& [k, r] : c.rel) laid = laid && out.nodes[k].x == cn.x + r.x && out.nodes[k].y == cn.y + r.y;
+      if (laid)
+        for (const Capsule::Route& r : c.routes)
+          if (r.from == e.from && r.fromPort == e.fromPort && r.to == e.to && r.toPort == e.toPort) {
+            for (const graph::Point2& q : r.via) pts.push_back({cn.x + q.x, cn.y + q.y});
+            pts.push_back(t);
+            return;
+          }
+      break;
+    }
+    const Node& b = out.nodes[e.to];
+    if (t.x >= s.x + 8.0f) {  // a Z through the middle of the gap
+      const float mx = std::round((s.x + t.x) * 0.5f);
+      pts.push_back({mx, s.y});
+      pts.push_back({mx, t.y});
+    } else {  // back to the left: out, under both blocks, in
+      const float yb = std::max(a.y + a.h, b.y + b.h) + 8.0f;
+      pts.push_back({s.x + 8.0f, s.y});
+      pts.push_back({s.x + 8.0f, yb});
+      pts.push_back({t.x - 8.0f, yb});
+      pts.push_back({t.x - 8.0f, t.y});
+    }
+    pts.push_back(t);
+  }
+
   graph::Point2 outPin(const Node& n, uint32_t i) const { return outPortPoint(n, i); }  // TX.orbit-ports
   graph::Point2 inPin(const Node& n, uint32_t i) const { return inPortPoint(n, i); }
 
@@ -1125,6 +1317,11 @@ struct Builder {
       o.x0 = n.x, o.y0 = n.y, o.x1 = n.x + sz.x * k, o.y1 = n.y + sz.y * k, o.corner = fs.radius * k;
       return o;
     }
+    if (n.groupPanel && n.panelRound) {  // GU.5b: a round panel (the VCA's dial, the Phase Accumulator's body)
+      o.round = true;
+      o.cx = n.x + n.roundX * k, o.cy = n.y + n.roundY * k, o.r = n.roundR * k;
+      return o;
+    }
     if (n.panel || n.groupPanel) {  // GU.3: a group drawn as its panel too
       o.x0 = n.x, o.y0 = n.y, o.x1 = n.x + n.w, o.y1 = n.y + n.h;
       o.corner = (n.panel ? devices::PanelFace::kPanelCorner : panel::GroupPanelFace::kCorner) * k;
@@ -1141,7 +1338,8 @@ struct Builder {
     std::vector<uint32_t> blocks;
     for (uint32_t i = 0; i < out.nodes.size(); ++i) {
       Node& n = out.nodes[i];
-      if (n.kind != NodeKind::Device || n.expanded || (n.group && n.groupOpen)) continue;
+      // GU.5b: a block inside an opened group keeps its pins on its edges (a circuit: its traces leave them straight).
+      if (n.kind != NodeKind::Device || n.expanded || (n.group && n.groupOpen) || n.symbol || n.valueKnob || n.capsule != kNone) continue;
       n.outline = outlineOf(n);
       if (!n.outline.valid()) continue;
       n.orbitIn.on = n.mainIn >= 0 && static_cast<size_t>(n.mainIn) < n.inputs.size() && !n.inputs[static_cast<size_t>(n.mainIn)].anchored;
@@ -1160,7 +1358,7 @@ struct Builder {
       const Node& m = out.nodes[idx];
       if (portOrbits(m, port, input)) return m.outline.centre();
       if (input && port < m.inputs.size() && m.inputs[port].anchored) return {m.x + m.inputs[port].ax, m.y + m.inputs[port].ay};
-      return input ? inputEntry(m, port) : graph::Point2{m.x + m.w, m.y + pinY(m, port)};
+      return input ? inputEntry(m, port) : graph::Point2{m.x + m.w, m.y + pinOffset(m, port, false)};
     };
     // (port key = node · 2 + 0 input / 1 output, the other end), sorted by key.
     std::vector<std::pair<uint32_t, graph::Point2>> ends;
@@ -1185,7 +1383,7 @@ struct Builder {
       fixed.clear();
       for (size_t k = 0; k < n.inputs.size(); ++k)
         if (!portOrbits(n, k, true) && !n.inputs[k].anchored) fixed.push_back(inputEntry(n, k));
-      for (size_t k = 1; k < n.outputs.size(); ++k) fixed.push_back({n.x + n.w, n.y + pinY(n, k)});
+      for (size_t k = 1; k < n.outputs.size(); ++k) fixed.push_back({n.x + n.w, n.y + pinOffset(n, k, false)});
       const bool on[2] = {n.orbitIn.on, n.orbitOut.on};
       const bool pinned[2] = {n.orbitIn.pinned, n.orbitOut.pinned};
       float angles[2] = {n.orbitIn.angle, n.orbitOut.angle};
@@ -1239,6 +1437,20 @@ struct Builder {
       // TX.cables: a connection between blocks hangs straight from port to port (an anchored param's: onto its
       // control); the scene gives it its rest shape and the canvas its motion.
       e.cable = isCable(e.kind, a.kind);
+      // GU.5b: a wire between two blocks of one opened group is a circuit trace: the layout's route while its contents
+      // sit where the layout put them, else an orthogonal Z (a block was moved by hand).
+      if (e.cable && a.capsule != kNone && a.capsule == b.capsule) {
+        e.cable = false;
+        innerTrace(e, s, t, pts);
+        for (size_t q = 1; q < pts.size(); ++q)  // every piece straight (an end that is not where the route assumed it)
+          if (pts[q].x != pts[q - 1].x && pts[q].y != pts[q - 1].y) {
+            const graph::Point2 corner = q + 1 == pts.size() ? graph::Point2{pts[q - 1].x, pts[q].y} : graph::Point2{pts[q].x, pts[q - 1].y};
+            pts.insert(pts.begin() + static_cast<std::ptrdiff_t>(q), corner);
+          }
+        e.net = 0x20000000u | (e.from << 6) | (e.fromPort & 63u);
+        simplify(pts);
+        continue;
+      }
       if (e.cable) {
         const Port* tp = e.toPort < b.inputs.size() ? &b.inputs[e.toPort] : nullptr;
         pts.push_back(tp != nullptr && tp->anchored ? graph::Point2{b.x + tp->ax, b.y + tp->ay} : t);

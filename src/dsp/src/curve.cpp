@@ -214,9 +214,40 @@ Curve curvePreset(CurvePreset p, double min, double max, double arg) noexcept {
       if (arg != 0.0) s = {CurveShape::Exp, arg * std::numbers::ln2};
       else c.preset = CurvePreset::Linear;
       break;
-    case CurvePreset::Vca: vcaPreset(c, arg); break;
+    case CurvePreset::Vca:
+      vcaPreset(c, arg);
+      // GU.5b: the VCA's markers (±10, ±100 where the range reaches past them) are points of the curve: dragging one
+      // edits the curve. Splitting a segment where the curve has that value keeps the function exactly.
+      for (const double v : {-100.0, -10.0, 10.0, 100.0}) (void)splitCurveAt(c, curvePosition(c, v, 0.5));
+      break;
   }
   return c;
+}
+
+bool splitCurveAt(Curve& c, double t) noexcept {
+  if (!(t > 0.0 && t < 1.0) || c.segments >= kMaxCurveSegments) return false;
+  const uint32_t i = segmentOf(c, t);
+  const double t0 = c.points[i].t, t1 = c.points[i + 1].t, w = t1 - t0;
+  constexpr double kGap = 1e-6;  // never a sliver segment
+  if (!(t - t0 > kGap && t1 - t > kGap)) return false;
+  const CurveSegment seg = c.shapes[i];
+  const bool straight = seg.shape == CurveShape::Linear || std::fabs(seg.bend) < kStraight;
+  if (!straight && seg.shape != CurveShape::Exp && seg.shape != CurveShape::Joined) return false;
+  // The value there in the curve's own units, as the share of the range the points hold.
+  const SegmentCoeffs sc = segmentCoeffs(c, i);
+  const double range = c.max - c.min;
+  const double y = range != 0.0 ? std::clamp((segValue(sc, t) - c.min) / range, 0.0, 1.0) : c.points[i].y;
+  for (uint32_t k = c.segments; k > i; --k) c.shapes[k] = c.shapes[k - 1];
+  for (uint32_t k = c.segments + 1u; k > i + 1; --k) c.points[k] = c.points[k - 1];
+  c.points[i + 1] = {t, y};
+  // An exponential restricted to part of its width is the same exponential with its bend in proportion (Exp: the
+  // ratio over the part; Joined: its line and exponential, the neighbour's slope at the join carried by the evaluator).
+  if (!straight) {
+    c.shapes[i].bend = seg.bend * (t - t0) / w;
+    c.shapes[i + 1].bend = seg.bend * (t1 - t) / w;
+  }
+  ++c.segments;
+  return true;
 }
 
 std::string_view curvePresetName(CurvePreset p) noexcept {

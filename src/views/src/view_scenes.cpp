@@ -2622,9 +2622,22 @@ Status setupProjectOrbitPorts(Shell& shell, bool panel) {
   circuit::CircuitCanvas::View view;
   view.zoom = panel ? 2.0 : 1.25;
   view.x = n.x + 0.5 * n.w - 0.5 * r.w / (view.zoom * us);
-  view.y = n.y + 0.5 * n.h - 0.5 * r.h / (view.zoom * us);
+  view.y = n.y + 0.5 * n.h - 0.5 * r.h / (view.zoom * us) + (panel ? 50.0 : 0.0);
   c.setView(view);
   shell.tree().layoutNow();
+  // GU.5b: framed close, the dial's range and curve popup open (a click on its chevron).
+  if (panel && vca < v->scene().sceneNode.size() && v->scene().sceneNode[vca] != project_patch::kNone)
+    if (Face* f = c.panelOn(v->scene().sceneNode[vca])) {
+      FacePointer e;
+      e.kind = FacePointer::Kind::Down;
+      e.local = {60.0f, 85.0f};
+      e.pxPerUnit = static_cast<float>(view.zoom) * us;
+      e.uiScale = us;
+      (void)f->onPointer(e);
+      e.kind = FacePointer::Kind::Up;
+      (void)f->onPointer(e);
+      shell.tree().layoutNow();
+    }
   return Ok{};
 }
 Status setupProjectCablesFar(Shell& shell) { return setupProjectCablesAt(shell, 0.2, false); }

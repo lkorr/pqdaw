@@ -91,6 +91,10 @@ public:
   // GU.5: a mod source dragged onto a control — the real cable from output `from` (a Signal binding) into control `to`
   // (a Control binding): one undo step. False (and a notice saying why) when it cannot be made.
   virtual bool connect(const doc::Binding& /*from*/, const doc::Binding& /*to*/) { return false; }
+  // GU.5b: the voices of a signal (a Signal binding: what each sounding voice's tap read; the phase orbit's dots), null
+  // when nothing taps it (GU.7 makes the lowering tap a placed display's signal; until then only hosts that have a
+  // reader, e.g. tests, show voices).
+  virtual VoiceTapReader* voices(const doc::Binding& /*b*/) { return nullptr; }
 };
 
 // What an element paints with.
@@ -164,6 +168,23 @@ public:
   // GU.5: a mod source's handle (element-local) while it is bound to an output: a drag from it onto a control of the
   // panel makes the cable (GroupPanelFace draws the cable on the pointer meanwhile). nullopt: not a cable source.
   virtual std::optional<ui::Vec2> cableHandle() const { return std::nullopt; }
+  // GU.5b: the element's own outline (element-local) when it can be a panel's plate: the BOTTOM element of a panel
+  // that has one (a circle shape, the dial) makes the panel that shape — no rectangular plate, the block's orbiting
+  // ports go round it (GroupPanelFace::shape). nullopt: none.
+  virtual std::optional<FaceShape> outline() const noexcept { return std::nullopt; }
+  // GU.5b: a FLOATING POPUP the element has open (element-local; it may reach outside the panel: Face::popupRect),
+  // drawn over everything by the host and hit-tested as part of the element (its onPointer gets those points too).
+  // The element closes it itself (its own control, Esc, focusLost).
+  virtual std::optional<ui::Rect> popupRect() const noexcept { return std::nullopt; }
+  virtual void paintPopup(ui::FacePainter& /*p*/, const ElementEnv& /*env*/) {}
+  virtual void setPopupOverFace(bool /*on*/) {}  // the host has no room around the panel (Face::setPopupOverFace)
+  // GU.5b: voices (Face::pollVoices / animating): read the bound signal's reader once per displayed frame (true: what
+  // the element shows changed); whether the element still moves.
+  virtual bool pollVoices(PanelTarget& /*t*/) { return false; }
+  virtual bool animating() const noexcept { return false; }
+  virtual VoiceTapReader* voiceReader(PanelTarget& /*t*/) const { return nullptr; }
+  // GU.5b: the face-local rects (element-local) its live layer changes while voices sound (default: its rect).
+  virtual void liveRects(std::vector<ui::Rect>& out) const { out.push_back({0.0f, 0.0f, desc_.w, desc_.h}); }
 
 protected:
   // Style fields with the schema's defaults.

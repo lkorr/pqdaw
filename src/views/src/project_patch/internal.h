@@ -55,6 +55,8 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
 inline constexpr std::string_view kMixerFacePrefix = "\x01mixer:";
 // GU.3: the SceneFace path of a closed group drawn as its panel ("<prefix><w>x<h>").
 inline constexpr std::string_view kGroupPanelFacePrefix = "\x01group-panel:";
+// GU.5b: the SceneFace path of a value block drawn as its knob ("<prefix><w>x<h>"): a one-knob panel bound to it.
+inline constexpr std::string_view kValueKnobFacePrefix = "\x01value-knob:";
 struct MixerSend {
   doc::TrackId target;  // the return
   std::string letter;   // its letter (the pin's label)

@@ -94,6 +94,8 @@ enum class CurvePreset : uint8_t {
                 // travel when the range reaches past it on both sides; beyond it on each side a Joined segment of bend
                 // ±max(ln(end / 1), 1) (C1 at ±1), the two outers sharing the rest of the travel in proportion to their
                 // log extents; a range wholly beyond ±1 on one side is one pure exponential (Exp, bend ln(max / min)).
+                // GU.5b: the outers are split at ±10 and ±100 where the range reaches past them (splitCurveAt: the
+                // same function), so the old face's markers are points of the curve.
 };
 inline constexpr double kCurveVcaZone = 0.4;
 inline constexpr double kCurveVcaZoneMin = 0.05, kCurveVcaZoneMax = 0.9;
@@ -148,6 +150,10 @@ double curveOutput(const Curve& c, double units) noexcept;
 double curveInput(const Curve& c, double value) noexcept;  // value → the curve's units (a gain → dB; ≤ 0: −∞ → min)
 // The knob position in [0, 1] that gives `value` (after the output conversion; see "The inverse").
 double curvePosition(const Curve& c, double value, double hint = 0.0) noexcept;
+// GU.5b: splits the segment holding position t into two at t, the function unchanged (a straight, Exp or Joined
+// segment: the bends in proportion to the parts' widths); false when t is not strictly inside a segment (by ≥ 1e-6),
+// the curve is full, or the shape cannot be split exactly. The VCA preset's markers are made this way.
+bool splitCurveAt(Curve& c, double t) noexcept;
 
 // ---- The atom's data -------------------------------------------------------------------------------------------------
 // The coefficient form of segment i (double; the atom's data rounds it to float), on x = p − t0: a = Y0 for every

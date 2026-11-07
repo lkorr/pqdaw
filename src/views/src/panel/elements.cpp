@@ -296,6 +296,12 @@ public:
     return false;
   }
   ui::Cursor cursor() const noexcept override { return ui::Cursor::ResizeNS; }
+  // GU.5b: the dial and a little around it (its label and readout are the panel's: a value block's knob is moved by them).
+  bool hit(Vec2 l) const noexcept override {
+    const G g = geom();
+    const float r = g.r + track() * 0.5f + 4.0f;
+    return (l.x - g.c.x) * (l.x - g.c.x) + (l.y - g.c.y) * (l.y - g.c.y) <= r * r;
+  }
   std::optional<ControlAnchor> anchor() const override {
     const G g = geom();
     return ControlAnchor{g.c, g.r + track() * 0.5f, desc_.w * 0.5f};
@@ -868,6 +874,12 @@ public:
   }
   void paintLive(ui::FacePainter&, const ElementEnv&) override {}
   bool hit(Vec2) const noexcept override { return false; }  // a decoration: presses go through it
+  // GU.5b: a circle at the bottom of a panel makes the panel round.
+  std::optional<FaceShape> outline() const noexcept override {
+    if (txt("shape", "round") != "circle") return std::nullopt;
+    const float t = static_cast<float>(std::clamp(num("thickness", 1.0), 0.0, 32.0));
+    return FaceShape{true, {desc_.w * 0.5f, desc_.h * 0.5f}, std::min(desc_.w, desc_.h) * 0.5f - t * 0.5f};
+  }
 };
 
 // ---- tabs ---------------------------------------------------------------------------------------------------------
@@ -1068,6 +1080,7 @@ void registerGeneric() {
     reg("tabs", "Tabs", Tabs::kStyle, kValueSlot, 120, 16, &make<Tabs>);
     reg("curve", "Curve Editor", curveElementStyle(), kValueSlot, 160, 96, &makeCurveElement);
     reg("modsource", "Mod Source", ModSource::kStyle, kSignalSlot, 24, 32, &make<ModSource>);
+    registerRichElements(reg);  // GU.5b
   });
 }
 

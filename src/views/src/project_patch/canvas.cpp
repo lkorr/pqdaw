@@ -27,8 +27,6 @@ using ui::Vec2;
 
 namespace {
 
-float pinY(const Node& n, size_t i) noexcept { return pinOffset(n, i); }
-
 // TMM.10-fix2: a MIDI track's lane window (its note source), whose outputs start wires.
 bool isNoteSource(const ProjectPatch& pp, const Node& n) noexcept {
   return n.kind == NodeKind::Source && n.band < pp.bands.size() && pp.bands[n.band].kind == doc::TrackKind::Midi;
@@ -133,7 +131,7 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
       const float px = side == 0 ? n.x : n.x + n.w;
       for (size_t k = 0; k < ports.size(); ++k) {
         if (side == 0 && ports[k].anchored) continue;  // TX.mod-all: no pin (its wire ends on the face's control)
-        float dd = std::max(std::fabs(w.x - px), std::fabs(w.y - (n.y + pinY(n, k))));
+        float dd = std::max(std::fabs(w.x - px), std::fabs(w.y - (n.y + pinOffset(n, k, side == 0))));
         // TX.orbit-ports: where the port is drawn now — its disc, and a few px around it outside the block (inside the
         // block's outline a press is the block's unless it is on the disc: far out a port is a dot on the block's edge).
         if (portOrbits(n, k, side == 0)) {
@@ -531,6 +529,7 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
         if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal) continue;  // the symbol says it
         // TMM.4: a face is label-free; TX.panel-faces: a panel has its title; TX.mixer-look: so has a mixer's face.
         if (n.face != nullptr || n.panel || n.groupPanel || n.kind == NodeKind::Mixer) continue;  // GU.3: a group's panel
+        if (n.symbol) continue;  // GU.5b: an atom block's symbol says what it is
         const Rect nr = deviceRect(n.x, n.y, n.w, n.h);
         if (nr.x1 - nr.x0 < 24.0f * us || !overlaps(nr, clip)) continue;
         const ui::TextRun run = ts.shape(font, n.title);
@@ -800,6 +799,13 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           return true;
         }
       }
+      // TX.orbit-ports: a double-click on a pinned main port returns it to following its cables (GU.5b: before the
+      // group's block, whose rect holds the ports of its round panel).
+      if (e.clickCount >= 2)
+        if (const PinHit pin = pinAt(e.pos); pin.valid() && portOrbits(pp.nodes[pin.node], pin.port, pin.input)) {
+          if (pp.nodes[pin.node].kind == NodeKind::Device) (void)v.unpinPort(pp.nodes[pin.node].device, pin.input);
+          return true;
+        }
       // TX.groups: a group's capsule — double-click its title strip to close it, the closed block to open it again; a
       // press on its frame selects the group (an opened capsule is no scene node) and drags or nudges it as a block.
       if (node != kNone && pp.nodes[node].group) {

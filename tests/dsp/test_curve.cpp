@@ -216,9 +216,15 @@ TEST_CASE("curve preset vca: the VCA's Log law exactly, C1 at the fine zone, eve
       if (r.hi > r.lo) CHECK(std::fabs(evalCurve(c, curvePosition(c, v, 0.5)) - v) <= 1e-9 * scale);
     }
   }
-  // The default: 0.7 → 1 (the knob's default), 0.3 → −1, 0.5 → 0, the ends ±20000; three segments.
+  // The default: 0.7 → 1 (the knob's default), 0.3 → −1, 0.5 → 0, the ends ±20000; three segments, the outers split
+  // at ±10 and ±100 (GU.5b: the markers are points), seven in all.
   const Curve d = curvePreset(CurvePreset::Vca, -20000.0, 20000.0);
-  CHECK(d.segments == 3);
+  REQUIRE(d.segments == 7);
+  for (const double v : {-100.0, -10.0, -1.0, 1.0, 10.0, 100.0}) {
+    bool found = false;
+    for (uint32_t i = 1; i < d.segments; ++i) found = found || std::fabs(d.min + d.points[i].y * (d.max - d.min) - v) < 1e-9 * 20000.0;
+    CHECK_MESSAGE(found, "marker " << v);
+  }
   CHECK(d.presetArg == 0.0);
   close(evalCurve(d, 0.7), 1.0, 1e-11);  // (points are shares of the range: ≈ 1e-16 of it)
   close(evalCurve(d, 0.3), -1.0, 1e-11);

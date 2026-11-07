@@ -111,7 +111,19 @@ dsp::Curve phaseAccumulatorCurve(std::string_view control) {
     return c;
   }
   if (control == kPaAmplitude) return dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, 4.0);
-  if (control == kPaPitch) return withUnit(dsp::curvePreset(dsp::CurvePreset::Linear, -4800.0, 4800.0), dsp::CurveUnit::Cents);
+  if (control == kPaPitch) {
+    // GU.5b: the old face's pitch arc scale — ±12 semitones over the middle half of the travel, the rest of ±4 octaves
+    // over the outer quarters (straight segments: a wire still adds in cents).
+    dsp::Curve c = withUnit(dsp::curvePreset(dsp::CurvePreset::Linear, -4800.0, 4800.0), dsp::CurveUnit::Cents);
+    c.segments = 3;
+    c.points[0] = {0.0, 0.0};
+    c.points[1] = {0.25, 0.375};
+    c.points[2] = {0.75, 0.625};
+    c.points[3] = {1.0, 1.0};
+    c.shapes[0] = c.shapes[1] = c.shapes[2] = {dsp::CurveShape::Linear, 0.0};
+    c.preset = dsp::CurvePreset::Custom;
+    return c;
+  }
   return dsp::curvePreset(dsp::CurvePreset::Linear, 1.0, 1.0);  // kPaReference: a constant 1
 }
 
@@ -154,21 +166,48 @@ BlockSet phaseAccumulatorBlocks(IdSource& ids, const PhaseAccumulatorOptions& o,
   b.wire(r.amp, y, r.out, "a");
   b.wire(r.frac, "out", r.out, "b");
   b.wire(r.out, "out", r.group, kGroupOutPort);
-  // The panel: the four controls as knobs (the face's arcs: Frequency, Amplitude, Pitch, Phase).
+  // The panel (GU.5b: the old face, element for element): the body circle, the four controls as arcs round it —
+  // Frequency up the left side, Amplitude over the top, Pitch down the right (0 cents at 3 o'clock), Phase along the
+  // bottom — and the phase orbit in the middle (its hub lit by the amplitude; voices on it where the output is tapped).
   Panel panel;
   panel.width = 120.0f;
-  panel.height = 136.0f;
+  panel.height = 120.0f;
   const std::string vp(kValueParam);
-  PanelElement f = element(1, "knob", 6, 4, 52, 64, controlBinding(r.freq, vp));
-  f.setField(styleText("pointer", "pie"));
-  f.setField(styleText("colour", "signal"));
-  PanelElement a = element(2, "knob", 62, 4, 52, 64, controlBinding(r.amp, vp));
-  PanelElement p = element(3, "knob", 6, 68, 52, 64, controlBinding(r.pitch, vp));
-  p.setField(styleText("pointer", "line"));
-  PanelElement ph = element(4, "knob", 62, 68, 52, 64, controlBinding(r.phase, vp));
-  ph.setField(styleText("pointer", "dot"));
-  ph.setField(styleNumber("sweep", 360.0));
-  panel.elements = {std::move(f), std::move(a), std::move(p), std::move(ph)};
+  PanelElement body = element(1, "shape", 12, 16, 96, 96, {});
+  body.bindings.clear();
+  body.setField(styleText("shape", "circle"));
+  body.setField(styleText("fill", "body"));
+  body.setField(styleText("stroke", "frame"));
+  body.setField(styleNumber("thickness", 1.25));
+  auto arc = [&](uint32_t id, DeviceId block, double start, double sweep, double from, double to, const char* drag) {
+    PanelElement e = element(id, "arc", 0, 0, 120, 120, controlBinding(block, vp));
+    e.setField(styleNumber("start", start));
+    e.setField(styleNumber("sweep", sweep));
+    e.setField(styleNumber("hitFrom", from));
+    e.setField(styleNumber("hitTo", to));
+    e.setField(styleText("drag", drag));
+    return e;
+  };
+  PanelElement f = arc(2, r.freq, 150.0, 90.0, 140.0, 246.0, "vertical");
+  f.setField(styleText("ticks", "100|1000|10000"));
+  PanelElement a = arc(3, r.amp, 252.0, 40.0, 246.0, 299.0, "diagonal");
+  a.setField(styleText("ticks", "1|2|3"));
+  PanelElement p = arc(4, r.pitch, 36.0, -72.0, 315.0, 43.0, "vertical");
+  p.setField(styleNumber("origin", 0.5));
+  p.setField(styleText("ticks", "-3600|-2400|-1200|0|1200|2400|3600"));
+  {
+    std::string minor;
+    for (int st = -11; st <= 11; ++st)
+      if (st != 0) minor += (minor.empty() ? "" : "|") + std::to_string(100 * st);
+    p.setField(styleText("minor", minor));
+  }
+  p.setField(styleNumber("dragPx", 300.0));
+  p.setField(styleText("readout", "corner"));
+  PanelElement ph = arc(5, r.phase, 130.0, -80.0, 43.0, 140.0, "horizontal");
+  ph.setField(styleText("ticks", "0.25|0.5|0.75"));
+  PanelElement orbit = element(6, "orbit", 0, 0, 120, 120, signalBinding(r.out, "out"));
+  orbit.bindings.push_back(controlBinding(r.amp, vp));
+  panel.elements = {std::move(body), std::move(f), std::move(a), std::move(p), std::move(ph), std::move(orbit)};
   BlockSet out;
   out.devices.push_back(groupDevice(r.group, o.inGroup, o.name.empty() ? std::string("Phase Accumulator") : o.name, o.active, std::move(panel)));
   for (DevicePtr& d : b.set.devices) out.devices.push_back(std::move(d));
@@ -189,19 +228,12 @@ BlockSet vcaBlocks(IdSource& ids, const VcaOptions& o, VcaRoles* roles) {
   if (o.plugged) b.wire(r.group, kGroupInPort, r.mul, "a");
   b.wire(r.value, kValueOutput, r.mul, "b");
   b.wire(r.mul, "out", r.group, kGroupOutPort);
-  // The panel: the round knob (360°, its readout inside, no label) and the curve editor below it (the law, its range,
-  // the fine zone: the old face's markers and curve box).
+  // The panel (GU.5b: the old face): the dial — a round 360° knob with its value inside, the curve's points as markers
+  // on its track (±1, ±10, ±100: dragging one edits the curve) and its range and curve in a popup under the chevron.
   Panel panel;
   panel.width = 120.0f;
-  panel.height = 172.0f;
-  const std::string vp(kValueParam);
-  PanelElement k = element(1, "knob", 0, 0, 120, 120, controlBinding(r.value, vp));
-  k.setField(styleNumber("sweep", 360.0));
-  k.setField(styleText("readout", "inside"));
-  k.setField(styleText("label", "-"));
-  k.setField(styleNumber("track", 6.0));
-  PanelElement c = element(2, "curve", 6, 124, 108, 44, controlBinding(r.value, vp));
-  panel.elements = {std::move(k), std::move(c)};
+  panel.height = 120.0f;
+  panel.elements = {element(1, "dial", 0, 0, 120, 120, controlBinding(r.value, std::string(kValueParam)))};
   BlockSet out;
   out.devices.push_back(groupDevice(r.group, o.inGroup, o.name.empty() ? std::string("VCA") : o.name, o.active, std::move(panel)));
   for (DevicePtr& d : b.set.devices) out.devices.push_back(std::move(d));

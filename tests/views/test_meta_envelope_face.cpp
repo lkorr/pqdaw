@@ -302,6 +302,9 @@ struct EnvUi {
     shell = std::move(*s);
     d.tree().layoutNow();
     view().setShown(true, false);
+    // GU.5b: a module spawns closed (its panel); the Pluck's envelope sits inside its Phase Accumulator (the instrument
+    // group at the notes): opened, so the envelope is a block of the circuit.
+    for (doc::DeviceId g = dev().group; g.valid(); g = doc::findDevice(*ctx.doc(), g).device->group) view().setGroupOpen(g, true);
     d.tree().layoutNow();
   }
   ~EnvUi() { d.tree().setRoot(std::make_unique<Widget>()); }

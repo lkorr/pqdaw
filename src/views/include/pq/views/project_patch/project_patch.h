@@ -51,6 +51,7 @@
 // (project_patch_view.h).
 
 #include <cstdint>
+#include <memory>
 #include <functional>
 #include <optional>
 #include <span>
@@ -66,6 +67,7 @@
 #include "pq/graph/project.h"
 #include "pq/meta/type.h"
 #include "pq/views/circuit/orbit.h"
+#include "pq/views/circuit/symbols.h"
 
 namespace pq::views::project_patch {
 
@@ -142,6 +144,16 @@ struct Node {
   // pq/views/panel/group_panel_face.h GroupPanelFace), at the panel's size; no miniature (`mini` empty). An empty panel:
   // the miniature as before.
   bool groupPanel = false;
+  // GU.5b: a round panel (its bottom element's outline, panel::panelShape: the VCA's dial, the Phase Accumulator's
+  // body): its centre and radius in the panel's own units (× scale on the block); its ports orbit the circle.
+  bool panelRound = false;
+  float roundX = 0.0f, roundY = 0.0f, roundR = 0.0f;
+  // GU.5b (docs/plans/GU.md 5a, "an opened group is a circuit"): an ATOM BLOCK is drawn as its circuit symbol (the
+  // circuit editor's symbol set: ×, +, a phasor, a box with its name …; `symbol` its spec at the block's size, pins at
+  // its pin offsets, no title pill), a VALUE BLOCK as a small knob (`valueKnob`; with `groupPanel` set its face is a
+  // one-knob panel bound to its `value`, which a wire into it ends on).
+  std::shared_ptr<const circuit::SymbolSpec> symbol;
+  bool valueKnob = false;
   uint32_t voices = 0;
   uint32_t capsule = kNone;
   std::vector<uint32_t> members;
@@ -269,6 +281,7 @@ inline constexpr float kCapsuleTitle = 20.0f;               // TX.groups: an ope
 inline constexpr float kCapsulePad = 12.0f;                 // around its contents
 inline constexpr float kTerminalW = 36.0f, kTerminalH = 32.0f;  // its In / Out terminals
 inline constexpr float kClosedGroupW = 168.0f, kClosedGroupH = 96.0f;  // a closed group's block (its miniature)
+inline constexpr float kValueKnobW = 48.0f, kValueKnobH = 56.0f;      // GU.5b: a value block's knob
 }  // namespace metrics
 
 // An expanded device (opened to its atoms in place): the size of what is drawn inside its frame, from the view.
@@ -330,6 +343,7 @@ inline bool hasLaneWindow(const Band& b) noexcept { return b.kind == doc::TrackK
 // a row below each; a Σ's and Out's at their middle. TMM.10-fix2: a lane window's note outputs (1 …) in its lower
 // right corner, 8 apart (the window keeps its height).
 inline float pinOffset(const Node& n, size_t i) noexcept {
+  if (n.symbol && i < n.symbol->inputs.size()) return n.symbol->inputs[i].y;  // GU.5b (inputs: pinOffset(n, i, false) for outputs)
   switch (n.kind) {
     case NodeKind::Sum: return 16.0f;
     case NodeKind::Output: return 8.0f;
@@ -343,6 +357,16 @@ inline float pinOffset(const Node& n, size_t i) noexcept {
       return i == 0 ? metrics::kPinTop : metrics::kMixerSendTop + metrics::kPinPitch * static_cast<float>(i - 1);
     default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
   }
+}
+
+// GU.5b: input `i` (input) or output `i` of `n`: an atom block's symbol puts its inputs and outputs at their own rows.
+inline float pinOffset(const Node& n, size_t i, bool input) noexcept {
+  if (n.symbol) {
+    const std::vector<circuit::PinSpec>& pins = input ? n.symbol->inputs : n.symbol->outputs;
+    if (i < pins.size()) return pins[i].y;
+  }
+  if (n.symbol && !input) return n.h * 0.5f;
+  return pinOffset(n, i);
 }
 
 // Where input `i`'s wires meet node `n` (world units): its pin on the left edge, or (TX.mod-all) for an anchored param
@@ -363,7 +387,7 @@ inline graph::Point2 inputEntry(const Node& n, size_t i) noexcept {
 // Orbit), else its pin on the right edge / inputEntry.
 inline graph::Point2 outPortPoint(const Node& n, size_t i) noexcept {
   if (i == 0 && n.orbitOut.on) return n.orbitOut.at;
-  return {n.x + n.w, n.y + pinOffset(n, i)};
+  return {n.x + n.w, n.y + pinOffset(n, i, false)};
 }
 inline graph::Point2 inPortPoint(const Node& n, size_t i) noexcept {
   if (n.orbitIn.on && n.mainIn >= 0 && i == static_cast<size_t>(n.mainIn)) return n.orbitIn.at;

@@ -35,6 +35,13 @@ uint64_t bodyKeyOf(const SymbolSpec& s) noexcept {
 float pinYOf(const Node& n, size_t i) noexcept { return pinOffset(n, i); }
 
 SymbolSpec specOf(const Node& n) {
+  if (n.symbol) {  // GU.5b: an atom block is its circuit symbol (pins at the symbol's rows, the symbol's stubs)
+    SymbolSpec s = *n.symbol;
+    s.w = n.w;
+    s.h = n.h;
+    s.bodyKey = bodyKeyOf(s);
+    return s;
+  }
   SymbolSpec s;
   s.w = n.w;
   s.h = n.h;
@@ -73,7 +80,7 @@ SymbolSpec specOf(const Node& n) {
   }
   for (size_t i = 0; i < n.outputs.size(); ++i) {
     PinSpec p;
-    p.y = pinYOf(n, i);
+    p.y = pinOffset(n, i, false);
     p.stub = outStub;
     // TMM.10-fix2: a lane window's note outputs are named too (outside it: the window's body holds the lane).
     p.label = n.kind == NodeKind::Device || n.kind == NodeKind::Mixer || n.kind == NodeKind::Source ? n.outputs[i].label
@@ -239,7 +246,8 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
       circuit::SceneFace f;
       f.node = v;
       f.owner = n.device.value;
-      f.path = std::string(kGroupPanelFacePrefix) + std::to_string(std::lround(n.w)) + "x" + std::to_string(std::lround(n.h));
+      f.path = std::string(n.valueKnob ? kValueKnobFacePrefix : kGroupPanelFacePrefix) + std::to_string(std::lround(n.w)) + "x" +
+               std::to_string(std::lround(n.h));
       f.panel = true;
       sc.faces.push_back(std::move(f));
     }
@@ -270,6 +278,14 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
         title.align = SceneLabel::Align::Left;
         break;
       case NodeKind::Device:
+        title.y = n.y + 8.0f;
+        // GU.5b: an atom block's symbol carries a name only in a box (frac, cents_to_hz …), centred; the rest say it.
+        if (n.symbol) {
+          sc.strings[title.text] = n.symbol->title;
+          title.y = n.y + n.h * 0.5f;
+          if (n.symbol->title.empty() || (n.symbol->symbol != Symbol::Box && n.symbol->symbol != Symbol::Unknown)) title.node = UINT32_MAX;
+        }
+        break;
       case NodeKind::Mixer: title.y = n.y + 8.0f; break;
       case NodeKind::Output:
         title.x0 = n.x + 7.0f;
@@ -471,7 +487,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
       if (t == kNone) continue;
       const circuit::SceneNode& tn = sc.nodes[t];
       pts.clear();
-      zRoute(pts, {tn.x + tn.w, tn.y + tn.h * 0.5f}, {n.x + n.w, n.y + pinYOf(n, k)});
+      zRoute(pts, {tn.x + tn.w, tn.y + tn.h * 0.5f}, {n.x + n.w, n.y + pinOffset(n, k, false)});
       addWire(pts, conn, netOf((1u << 31) | (0x50000000u + nodeBase + static_cast<uint32_t>(k))), kNone);
     }
   }

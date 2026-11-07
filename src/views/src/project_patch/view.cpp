@@ -569,6 +569,16 @@ void ProjectPatchView::rebuild() {
   opt.expandedMixers = expandedMixers_;
   opt.nudges = &ctx_.store().view().patchNudges;
   std::erase_if(closedGroups_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
+  // GU.5b: groups seen for the first time start closed when they have a panel (seenGroups_).
+  doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) {
+    for (const doc::DevicePtr& d : t.devices) {
+      if (!doc::isGroupDevice(*d)) continue;
+      const auto at = std::lower_bound(seenGroups_.begin(), seenGroups_.end(), d->id.value);
+      if (at != seenGroups_.end() && *at == d->id.value) continue;
+      seenGroups_.insert(at, d->id.value);
+      if (d->hasPanel() && groupOpen(d->id)) closedGroups_.push_back(d->id);
+    }
+  });
   opt.closedGroups = closedGroups_;  // TX.groups
   opt.scope = scope_;
   if (freeRack_) opt.freeTrack = rackTrack_.valid() ? rackTrack_ : doc::TrackId{0xFFFFFFFFu};  // TX.free-rack (none: empty)

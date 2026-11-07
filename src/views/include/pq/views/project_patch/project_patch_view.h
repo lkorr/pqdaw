@@ -894,6 +894,10 @@ private:
   circuit::CircuitCanvas::View fitView_{};
   void fitEmbedded();
   std::vector<doc::DeviceId> closedGroups_;
+  // GU.5b: the groups this view has seen. A group seen for the first time with a panel (a module, a pasted group preset,
+  // a loaded project's) starts CLOSED — drawn as its panel —, any other opened; after that only the user opens or closes
+  // it (a panel made later does not close an opened group).
+  std::vector<uint32_t> seenGroups_;
   doc::DeviceId selectedGroup_;
   // TX.panel-faces
   bool panelsShown_ = true;

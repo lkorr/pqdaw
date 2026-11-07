@@ -48,7 +48,10 @@ public:
 
   // ---- geometry ----
   ui::Vec2 worldSize() const noexcept override;  // the panel's size (as of the last sync)
-  FaceShape shape() const noexcept override { return {false, {0.0f, 0.0f}, kCorner}; }
+  // GU.5b: a panel whose bottom element has an outline (Element::outline: a circle shape, the dial) is that shape (no
+  // rectangular plate); any other a rounded rect.
+  FaceShape shape() const noexcept override;
+  bool ownsPlate() const noexcept override { return !round_; }
   static constexpr float kCorner = 8.0f;
 
   // ---- painting ----
@@ -57,6 +60,13 @@ public:
   bool needsPrepare(float pxPerUnit) const noexcept override;
   bool prepare(float pxPerUnit) override;
   void attach(FaceHost* host) override { host_ = host; }
+  // GU.5b: an element's floating popup (the dial's range and curve) and the elements' voices (the phase orbit's dots).
+  std::optional<ui::Rect> popupRect() const noexcept override;
+  void paintPopup(ui::FacePainter& p, const FaceEnv& env) override;
+  void setPopupOverFace(bool on) override;
+  VoiceTapReader* voices() const noexcept override;
+  bool pollVoices() override;
+  bool animating() const noexcept override;
 
   // ---- interaction ----
   int32_t hitTest(ui::Vec2 local, float pxPerUnit) const noexcept override;
@@ -126,7 +136,17 @@ private:
   int32_t cable_ = -1, cableTarget_ = -1;
   ui::Vec2 cableTo_{0.0f, 0.0f};
   int32_t cableTargetAt(ui::Vec2 local) const;
+  int32_t popupAt(ui::Vec2 local) const;  // the element whose open popup holds `local` (−1: none)
+  bool round_ = false;                    // GU.5b: the bottom element's outline is the panel's
+  FaceShape roundShape_;
 };
+
+// GU.5b: the outline a panel takes from its bottom element (Element::outline, in panel units), nullopt: a rounded rect.
+std::optional<FaceShape> panelShape(const doc::Panel& panel);
+
+// GU.5b: the face of a VALUE BLOCK in a circuit (an opened group's): one knob filling w × h, bound to the block's
+// `value` (its name above, its value below).
+doc::Panel valueKnobPanel(doc::DeviceId block, float w, float h);
 
 // The group's document panel: Device::panel of `group` in the current snapshot (null: none).
 GroupPanelFace::Source docPanelSource(ViewContext& ctx, doc::DeviceId group);

@@ -92,6 +92,8 @@ struct WinUi {
     view().setPushAnimated(false);
     view().setShown(true, false);
     d.tree().layoutNow();
+    view().setGroupOpen(ids.group, true);  // GU.5b: a group with a panel starts closed
+    d.tree().layoutNow();
     REQUIRE(view().groupOpen(ids.group));
     const Node& n = node(ids.group);
     circuit::CircuitCanvas::View v;
@@ -379,7 +381,9 @@ TEST_CASE("panel window: send to panel — P on a control selected in the circui
   }
   SUBCASE("a value block dragged onto the window: its control there (at the drop), the block back in place") {
     panel::PanelWindow& w = u.open();
-    const Vec2 from = u.centre(u.ids.mix);
+    // (GU.5b: a value block is drawn as its knob: it is moved by its label strip, above the dial)
+    const float mx0 = u.node(u.ids.mix).x, my0 = u.node(u.ids.mix).y, mw = u.node(u.ids.mix).w;
+    const Vec2 from = u.view().canvas().toDevice({mx0 + mw * 0.5f, my0 + 4.0f});
     const IRect area = w.host().rect();
     const Vec2 drop{static_cast<float>(area.x) + 70.0f, static_cast<float>(area.y) + 50.0f};
     const size_t h0 = u.history();
@@ -396,8 +400,8 @@ TEST_CASE("panel window: send to panel — P on a control selected in the circui
     REQUIRE(w.panelPoint(drop, p));
     CHECK(std::fabs(e->x + e->w * 0.5f - p.x) <= 1.0f);
     CHECK(std::fabs(e->y + e->h * 0.5f - p.y) <= 1.0f);
-    CHECK(u.centre(u.ids.mix).x == doctest::Approx(from.x));  // not moved
-    CHECK(u.centre(u.ids.mix).y == doctest::Approx(from.y));
+    CHECK(u.node(u.ids.mix).x == doctest::Approx(mx0));  // not moved
+    CHECK(u.node(u.ids.mix).y == doctest::Approx(my0));
     CHECK(doc::findDevice(*u.ctx.doc(), u.ids.mix).device->group == u.ids.group);
   }
   SUBCASE("an output's cable dropped on the window: a mod source bound to that output") {

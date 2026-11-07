@@ -59,10 +59,25 @@ std::string fixture() { return views::test::fixtureDir("meta-cables"); }
 // IG.1-2: the user's meta patch (schema 16) loads with its meta voice run wrapped in an instrument group, the VCA wired to
 // it with it. These tests are about free blocks on a band: the group is ungrouped again (Ctrl+Shift+G) — the run back on
 // the path, the VCA free.
+// GU.5b: every group that is not a module is ungrouped (an opened group is a circuit whose blocks keep their pins on
+// their edges; these tests are about free blocks, whose main ports orbit).
 void ungroupAll(ViewContext& ctx) {
   std::vector<doc::TrackId> tracks;
   doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) { tracks.push_back(t.id); });
   for (const doc::TrackId t : tracks) view_fixture::loneInstrument(ctx.store(), library(), t);
+  for (bool again = true; again;) {
+    again = false;
+    doc::DeviceId g;
+    doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+      for (const doc::DevicePtr& dv : t.devices)
+        if (!g.valid() && doc::isGroupDevice(*dv) && doc::findModule(dv->name) == nullptr) g = dv->id;
+    });
+    if (!g.valid()) break;
+    auto e = doc::ops::ungroupInCircuit(ctx.store().current(), ctx.store().ids(), library(), g);
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(ctx.store().dispatch(e->command).ok());
+    again = true;
+  }
 }
 
 // The shell over the meta patch, the patch view shown, its band framed.
@@ -141,10 +156,10 @@ struct Ui {
     while (d.now() - t0 < limit && (canvas().cablesMoving() || canvas().portsMoving() || d.tree().needsFrame())) d.advance(1.0 / 144.0);
     return d.now() - t0;
   }
-  // A press on the VCA's panel where no element is (GU.4: between its knob and its curve editor): the block's.
+  // A press on the VCA's panel where no element is (GU.5b: the dial's rim, outside its markers): the block's.
   Vec2 vcaGrip() const {
     const Node& n = node(faceNode("vca"));
-    return dev({n.x + 60.0f * n.scale, n.y + 122.0f * n.scale});
+    return dev({n.x + 60.0f * n.scale, n.y + 116.0f * n.scale});
   }
   // A point of the canvas over nothing (no block, cable, lane window): a press there is the canvas's.
   Vec2 emptyPoint() const {
@@ -242,7 +257,9 @@ TEST_CASE("orbit ports: every block's main ports orbit its outline toward their 
   uint32_t blocks = 0, single = 0;
   for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
     const Node& n = pp.nodes[i];
-    if (n.kind != NodeKind::Device || n.expanded || (n.group && n.groupOpen) || hiddenInClosed(pp, i)) {
+    // GU.5b: a block inside an opened group (a circuit), an atom block's symbol and a value block's knob keep their pins.
+    if (n.kind != NodeKind::Device || n.expanded || (n.group && n.groupOpen) || hiddenInClosed(pp, i) || n.capsule != kNone ||
+        n.symbol || n.valueKnob) {
       CHECK_FALSE(n.orbitIn.on);
       CHECK_FALSE(n.orbitOut.on);
       continue;
@@ -303,10 +320,9 @@ TEST_CASE("orbit ports: every block's main ports orbit its outline toward their 
   }
   CHECK(blocks >= 5);  // accumulator, wavetable, envelope, oscilloscope, VCA
   CHECK(single >= 3);
-  // The VCA's ports go round its outline (GU.4: its module's panel, a rounded rectangle — the round VCA face is gone; a
-  // round outline's orbit is tested above).
+  // The VCA's ports go round its outline (GU.5b: its module's panel is the round dial again: a round outline).
   const Node& vca = pp.nodes[u.faceNode("vca")];
-  CHECK_FALSE(vca.outline.round);
+  CHECK(vca.outline.round);
   CHECK(dist(vca.orbitIn.at, circuit::orbitPoint(vca.outline, vca.orbitIn.angle, vca.scale)) < 1e-3f);
 }
 
@@ -328,7 +344,7 @@ TEST_CASE("orbit ports: a lifted drag turns the ports toward where the blocks ar
   const uint64_t solves0 = u.canvas().portSolves(), relayouts0 = u.view().stats().relayouts;
   u.d.move(grip);
   u.d.down(grip);
-  const Vec2 to{grip.x + 900.0f, grip.y + 60.0f};
+  const Vec2 to{grip.x + 900.0f, grip.y + 10.0f};  // (GU.5b: the VCA starts under the path now: stay in its band)
   for (int k = 1; k <= 8; ++k) {
     u.d.move({grip.x + (to.x - grip.x) * static_cast<float>(k) / 8.0f, grip.y + (to.y - grip.y) * static_cast<float>(k) / 8.0f});
     u.d.advance(1.0 / 144.0);

@@ -90,6 +90,85 @@ void GroupPanelFace::rebuild(const doc::PanelPtr& p) {
       if (id == d.id) elements_.back()->setLocalSelection(v);
   }
   for (const doc::PanelElement& d : p->elements) whenSource_.push_back(d.when ? indexOf(d.when->element) : -1);
+  round_ = false;
+  if (!elements_.empty())
+    if (const std::optional<FaceShape> o = elements_.front()->outline()) {
+      round_ = true;
+      roundShape_ = *o;
+      const Rect r = elements_.front()->rect();
+      roundShape_.centre = {roundShape_.centre.x + r.x0, roundShape_.centre.y + r.y0};
+    }
+}
+
+FaceShape GroupPanelFace::shape() const noexcept {
+  if (round_) return roundShape_;
+  return {false, {0.0f, 0.0f}, kCorner};
+}
+
+std::optional<FaceShape> panelShape(const doc::Panel& panel) {
+  if (panel.elements.empty()) return std::nullopt;
+  const std::unique_ptr<Element> e = makeElement(panel.elements.front());
+  std::optional<FaceShape> o = e->outline();
+  if (o) o->centre = {o->centre.x + e->desc().x, o->centre.y + e->desc().y};
+  return o;
+}
+
+int32_t GroupPanelFace::popupAt(Vec2 l) const {
+  for (size_t k = elements_.size(); k-- > 0;)
+    if (const std::optional<Rect> pr = elements_[k]->popupRect()) {
+      const Rect r = elements_[k]->rect();
+      if (l.x >= r.x0 + pr->x0 && l.x <= r.x0 + pr->x1 && l.y >= r.y0 + pr->y0 && l.y <= r.y0 + pr->y1) return static_cast<int32_t>(k);
+    }
+  return -1;
+}
+
+std::optional<Rect> GroupPanelFace::popupRect() const noexcept {
+  for (const std::unique_ptr<Element>& e : elements_)
+    if (const std::optional<Rect> pr = e->popupRect()) {
+      const Rect r = e->rect();
+      return Rect{r.x0 + pr->x0, r.y0 + pr->y0, r.x0 + pr->x1, r.y0 + pr->y1};
+    }
+  return std::nullopt;
+}
+
+void GroupPanelFace::paintPopup(ui::FacePainter& p, const FaceEnv& env) {
+  if (env.theme == nullptr) return;
+  ElementEnv ee;
+  ee.theme = env.theme;
+  ee.target = target_.get();
+  const float sc = p.transform().scale;
+  const Vec2 o0 = p.transform().origin;
+  for (size_t i = 0; i < elements_.size(); ++i) {
+    Element& e = *elements_[i];
+    if (!e.popupRect()) continue;
+    const Rect r = e.rect();
+    ui::FacePainter q = p.at({{o0.x + r.x0 * sc, o0.y + r.y0 * sc}, sc});
+    ee.hovered = hovered_ == static_cast<int32_t>(i);
+    ee.focused = focus_ == static_cast<int32_t>(i);
+    e.paintPopup(q, ee);
+  }
+}
+
+void GroupPanelFace::setPopupOverFace(bool on) {
+  for (const std::unique_ptr<Element>& e : elements_) e->setPopupOverFace(on);
+}
+
+VoiceTapReader* GroupPanelFace::voices() const noexcept {
+  for (const std::unique_ptr<Element>& e : elements_)
+    if (VoiceTapReader* r = e->voiceReader(*target_)) return r;
+  return nullptr;
+}
+
+bool GroupPanelFace::pollVoices() {
+  bool changed = false;
+  for (const std::unique_ptr<Element>& e : elements_) changed = e->pollVoices(*target_) || changed;
+  return changed;
+}
+
+bool GroupPanelFace::animating() const noexcept {
+  for (const std::unique_ptr<Element>& e : elements_)
+    if (e->animating()) return true;
+  return false;
 }
 
 Vec2 GroupPanelFace::worldSize() const noexcept {
@@ -132,6 +211,7 @@ bool GroupPanelFace::shown(size_t i) const {
 }
 
 int32_t GroupPanelFace::elementAt(Vec2 l) const {
+  if (const int32_t pop = popupAt(l); pop >= 0) return pop;  // GU.5b: an open popup is on top of everything
   std::vector<int8_t>& memo = freshMemo();
   for (size_t k = elements_.size(); k-- > 0;) {
     const Element& e = *elements_[k];
@@ -153,9 +233,11 @@ void GroupPanelFace::paintLive(ui::FacePainter& p, const FaceEnv& env) {
   const ui::Theme& th = *env.theme;
   const Vec2 ws = worldSize();
   stats_ = {};
-  // The plate: the meta faces' body and frame.
-  p.roundedRect({0.0f, 0.0f, ws.x, ws.y}, kCorner, th.face.body);
-  outlineRect(p, {0.6f, 0.6f, ws.x - 0.6f, ws.y - 0.6f}, kCorner - 0.6f, 1.2f, th.face.frame);
+  // The plate: the meta faces' body and frame (GU.5b: a round panel's bottom element is its plate).
+  if (!round_) {
+    p.roundedRect({0.0f, 0.0f, ws.x, ws.y}, kCorner, th.face.body);
+    outlineRect(p, {0.6f, 0.6f, ws.x - 0.6f, ws.y - 0.6f}, kCorner - 0.6f, 1.2f, th.face.frame);
+  }
   ui::TileAtlas* at = atlas();
   ElementTiles& cache = elementTiles();
   const float sc = p.transform().scale;
@@ -217,8 +299,9 @@ void GroupPanelFace::paintLive(ui::FacePainter& p, const FaceEnv& env) {
     p.disc(b, 2.5f, th.face.signal);
   }
   // The block's selection / hover rim.
-  outlineRect(p, {0.6f, 0.6f, ws.x - 0.6f, ws.y - 0.6f}, kCorner - 0.6f, env.selected ? 1.75f : 1.25f,
-              env.selected ? th.circuit.selected : (env.hovered && hovered_ == kFrame ? th.circuit.hover : 0u));
+  const Rgba rim = env.selected ? th.circuit.selected : (env.hovered && hovered_ == kFrame ? th.circuit.hover : 0u);
+  if (round_) p.ring(roundShape_.centre, roundShape_.radius - 0.75f, env.selected ? 1.75f : 1.25f, rim);
+  else outlineRect(p, {0.6f, 0.6f, ws.x - 0.6f, ws.y - 0.6f}, kCorner - 0.6f, env.selected ? 1.75f : 1.25f, rim);
 }
 
 int32_t GroupPanelFace::cableTargetAt(Vec2 l) const {
@@ -283,6 +366,7 @@ std::optional<ControlAnchor> GroupPanelFace::controlHome(std::string_view param)
 void GroupPanelFace::liveRects(std::vector<Rect>& out) const {
   const Vec2 ws = worldSize();
   out.push_back({0.0f, 0.0f, ws.x, ws.y});
+  if (const std::optional<Rect> pr = popupRect()) out.push_back(*pr);
 }
 
 bool GroupPanelFace::needsPrepare(float pxPerUnit) const noexcept { return tilesWanted_ > 0.0f && tilesWanted_ == pxPerUnit && atlas() != nullptr; }
@@ -314,6 +398,7 @@ bool GroupPanelFace::prepare(float pxPerUnit) {
 }
 
 int32_t GroupPanelFace::hitTest(Vec2 l, float) const noexcept {
+  if (const int32_t pop = popupAt(l); pop >= 0) return pop;  // GU.5b: outside the panel too
   const Vec2 ws = worldSize();
   if (l.x < 0.0f || l.y < 0.0f || l.x > ws.x || l.y > ws.y) return kNone;
   const int32_t i = elementAt(l);
@@ -443,6 +528,19 @@ GroupPanelFace::Source docPanelSource(ViewContext& ctx, doc::DeviceId group) {
     }
     return memo->panel;
   };
+}
+
+doc::Panel valueKnobPanel(doc::DeviceId block, float w, float h) {
+  doc::Panel p;
+  p.width = w;
+  p.height = h;
+  doc::PanelElement k;
+  k.id = 1;
+  k.kind = "knob";
+  k.x = 0.0f, k.y = 0.0f, k.w = w, k.h = h;
+  k.bindings = {doc::controlBinding(block, std::string(doc::kValueParam))};
+  p.elements.push_back(std::move(k));
+  return p;
 }
 
 doc::Panel inspectorPanel(doc::DeviceId group, float width) {

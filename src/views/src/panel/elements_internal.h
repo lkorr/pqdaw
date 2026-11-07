@@ -42,6 +42,10 @@ protected:
   double start_[kSlots] = {0.0, 0.0};
 };
 
+// GU.5b: the rich kinds (rich_elements.cpp: dial, arc, orbit), registered by registerGeneric through `reg`.
+void registerRichElements(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
+                                      std::span<const std::string_view> slots, float w, float h, ElementFactory f));
+
 // The curve editor (curve_element.cpp).
 std::span<const StyleSpec> curveElementStyle() noexcept;
 std::unique_ptr<Element> makeCurveElement(const doc::PanelElement& desc);
