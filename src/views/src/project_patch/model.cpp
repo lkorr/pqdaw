@@ -96,7 +96,7 @@ struct Builder {
   // TX.all-free: each track's main path (doc::mainPath), by track id.
   std::unordered_map<uint32_t, doc::MainPath> paths;
   std::optional<doc::MainLinks> mainLinks;  // made once per build (one pass over the wires)
-  std::optional<doc::VoiceContexts> contexts;  // GU.2: made at the first group (which is an instrument group)
+  std::optional<doc::VoiceContexts> contexts;  // GU.2: made at the first nested group (is it an instrument group?)
   // TX.groups: each opened group's contents, placed relative to its capsule's top-left (layout() adds the capsule's
   // place, then the nudges).
   struct Capsule {
@@ -376,9 +376,17 @@ struct Builder {
     c.active = g.active;
     c.group = true;
     c.groupOpen = !closedGroup(g.id);
-    if (!contexts) contexts.emplace(doc::voiceContexts(p));
-    if (const doc::VoiceContext* vc = contexts->blockOf(g.id); vc != nullptr && vc->group) {
-      c.instrument = true;
+    // A top-level group: its stage says it (the notes reach its In: IG.1-2's rule, no extra pass); a nested one (rare)
+    // asks the voice contexts, made once per build at the first nested group.
+    if (!g.group.valid()) {
+      for (const doc::ChainStage& s : bandStages)
+        if (s.device == &g) c.instrument = s.in == doc::ChainSignal::Notes;
+    } else {
+      if (!contexts) contexts.emplace(doc::voiceContexts(p));
+      const doc::VoiceContext* vc = contexts->blockOf(g.id);
+      c.instrument = vc != nullptr && vc->group;
+    }
+    if (c.instrument) {
       const doc::GroupPolyphony gp = doc::groupPolyphony(g);
       c.voices = gp.mono ? 1u : gp.voices;
     }
@@ -938,6 +946,7 @@ struct Builder {
     // A capsule's contents move with it (a band nudge, the group's own nudge).
     // GU.2: and a nested capsule's contents with it (any depth).
     auto moveKids = [&](uint32_t n, float dx, float dy) {
+      if (n == kNone || !out.nodes[n].group || !out.nodes[n].groupOpen) return;  // (most nodes: no work, no allocation)
       std::vector<uint32_t> todo{n};
       while (!todo.empty()) {
         const uint32_t at = todo.back();

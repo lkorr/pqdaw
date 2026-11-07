@@ -1550,7 +1550,9 @@ bool DeviceChainView::inFreeRack(doc::DeviceId device) const {
   if (i < 0) return false;
   const doc::Device& d = *t->devices[static_cast<size_t>(i)];
   // TX.all-free: off the main path; a member is in the rack with its group when the group is off the path.
-  const doc::DeviceId shownAs = d.group.valid() && t->deviceIndex(d.group) >= 0 ? d.group : d.id;
+  // (GU.2: a member at any depth is shown with its outermost group.)
+  const doc::DeviceId outer = doc::outermostGroup(t->devices, d.id);
+  const doc::DeviceId shownAs = outer.valid() ? outer : d.id;
   return !impl_->mainPath.contains(shownAs);
 }
 
@@ -1750,8 +1752,9 @@ std::vector<DeviceChainView::ParamControl> DeviceChainView::paramControls() cons
 // an output, its right end for a param), not docked.
 std::optional<ui::Vec2> DeviceChainView::groupPoint(doc::DeviceId device, bool output, bool* docked) const {
   const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), device);
-  if (l.device == nullptr || !l.device->group.valid()) return std::nullopt;
-  const device_chain::FrameBase* f = impl_->frameOf(l.device->group);
+  if (l.device == nullptr || !l.device->group.valid() || l.track == nullptr) return std::nullopt;
+  // GU.2: a member at any depth: its outermost group's frame (nested groups have no frame of their own).
+  const device_chain::FrameBase* f = impl_->frameOf(doc::outermostGroup(l.track->devices, device));
   if (f == nullptr) return std::nullopt;
   const ui::IRect r = f->rect();
   const ui::Vec2 p{output ? static_cast<float>(r.x) + 8.0f : static_cast<float>(r.right()) - 6.0f, static_cast<float>(r.y) + 10.0f};
