@@ -687,8 +687,8 @@ Each task's full description and acceptance criteria are in docs/plans/MM.md und
 
 ## IG: Instrument groups (plan: docs/plans/IG.md; user decision 2026-11-04, SPEC §15 "instrument groups"; planned, not started)
 
-- [ ] **IG.1 Model, migration, default instrument group** (plan §Phases 1).
-- [ ] **IG.2 Lowering: the voice context is the instrument group** (plan §Phases 2; replaces voice runs and guest instances; single-signal cables inside the group, user 2026-11-06). In progress together with IG.1 (task/IG.1-2-instrument-groups).
+- [~] **IG.1 Model, migration, default instrument group** *(merged 58ec7c9e with IG.2; partially verified, see PROGRESS 2026-11-06 IG.1-2)* (plan §Phases 1).
+- [~] **IG.2 Lowering: the voice context is the instrument group** *(merged 58ec7c9e; partially verified: no -Affected, goldens unreviewed, perf rows not recorded)* (plan §Phases 2; replaces voice runs and guest instances; single-signal cables inside the group, user 2026-11-06).
 - [ ] **IG.3 Per-sample loops across the group edge** (plan §Phases 3; the former TX.voice-loop).
 - [ ] **IG.4 Views: instrument-group capsule and panel, per-note cable colour, reducers on cables, single-signal cable toggle** (plan §Phases 4). 👁
 
