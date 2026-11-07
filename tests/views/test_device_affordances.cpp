@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "lone_instrument.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
 #include "pq/ui/controls.h"
@@ -52,6 +53,7 @@ struct Ui {
     ctx.setDeviceLibrary(&library());
     doc::DocumentStore& st = ctx.store();
     keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks[0];
+    view_fixture::loneInstrument(st, library(), keys);  // IG.1-2 (lone_instrument.h)
     inst = track().devices.at(0)->id;
     util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices[0];
     sat = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "saturator", doc::DeviceKind::AudioEffect)).devices[0];

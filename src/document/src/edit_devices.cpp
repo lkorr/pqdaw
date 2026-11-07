@@ -1,6 +1,7 @@
 // Device edit builders (T4.1; inside racks T4.8): pq/document/edit_ops.h, "Devices".
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <tuple>
 #include <unordered_map>
 
@@ -89,7 +90,72 @@ Status placeOnPath(Steps& k, IdSource& ids, TrackId track, DeviceId dev, bool no
   // stock instrument there (its cables, In → it → Out, move to the new one), or wired In → it → Out when there is none;
   // anything else at slot 0 goes after the group.
   if (head != nullptr && isGroupDevice(*head) && t->kind == TrackKind::Midi) {
-    if (!notes) return splice(k, ids, track, dev, slot == 0 ? 1 : slot);
+    // A meta module where the instrument is (slot 0), or appended while the group is all the path holds, builds the
+    // instrument: it goes into the group — in place of its stock instrument at slot 0, else at the end of its series
+    // (into what reached Out; it now feeds Out).
+    const bool intoGroup = meta && (slot == 0 || (slot >= path.blocks.size() && path.blocks.size() == 1));
+    if (!notes && !intoGroup) return splice(k, ids, track, dev, slot == 0 ? 1 : slot);
+    if (!notes) {
+      const DeviceId g = head->id;
+      const Device* stock = nullptr;
+      for (const DevicePtr& d : t->devices)
+        if (d->group == g && d->kind == DeviceKind::Instrument && !isMetaDevice(*d)) stock = d.get();
+      PQ_DOC_TRY(k.add(SetDeviceGroup{dev, g}));
+      // (its ports by name, as Ctrl+G's series names them: ungroup reads the series back)
+      std::string chainIn, firstOut;
+      if (const DeviceLoc dl = findDevice(k.doc(), dev); dl.device != nullptr)
+        if (const meta::Type* ty = meta::findType(metaDeviceType(*dl.device))) {
+          if (const int32_t ci = metaChainInput(*dl.device, *ty); ci >= 0) chainIn = std::string(ty->inputs[static_cast<size_t>(ci)].name);
+          if (!ty->outputs.empty()) firstOut = std::string(ty->outputs.front().name);
+        }
+      if (slot == 0 && stock != nullptr) {
+        const DeviceId gone = stock->id;
+        std::vector<Wire> moved;
+        for (const Wire& w : wiresOf(k.doc()))
+          if ((!w.fromNoteSource() && w.from == gone) || (!w.toMixer() && w.to == gone)) moved.push_back(w);
+        PQ_DOC_TRY(k.add(RemoveDevice{gone}));
+        for (Wire w : moved) {
+          w.id = ids.wire();
+          if (!w.fromNoteSource() && w.from == gone) {
+            w.from = dev;
+            w.port = firstOut;
+          }
+          if (!w.toMixer() && w.to == gone) {
+            w.to = dev;
+            w.param = chainIn;  // (the notes from In reach its chain input)
+          }
+          PQ_DOC_TRY(k.add(AddWire{w}));
+        }
+        return ok();
+      }
+      std::optional<Wire> last;
+      for (const Wire& w : wiresOf(k.doc()))
+        if (!w.toMixer() && w.to == g && w.param == kGroupOutPort) last = w;
+      Wire in;
+      in.id = ids.wire();
+      in.chain = true;
+      in.to = dev;
+      in.param = chainIn;
+      if (last) {
+        PQ_DOC_TRY(k.add(RemoveWire{last->id}));
+        in.from = last->from;
+        in.noteSource = last->noteSource;
+        in.port = last->port;
+      } else {
+        in.from = g;
+        in.port = std::string(kGroupInPort);
+      }
+      PQ_DOC_TRY(k.add(AddWire{in}));
+      Wire out;
+      out.id = ids.wire();
+      out.chain = true;
+      out.from = dev;
+      out.port = firstOut;
+      out.to = g;
+      out.param = std::string(kGroupOutPort);
+      PQ_DOC_TRY(k.add(AddWire{out}));
+      return ok();
+    }
     const DeviceId g = head->id;
     const Device* old = nullptr;
     for (const DevicePtr& d : t->devices)

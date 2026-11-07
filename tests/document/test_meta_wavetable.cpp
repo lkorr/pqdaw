@@ -58,6 +58,8 @@ struct Song {
     wtTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
     synthTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
     synth = findTrackPtr(doc(), synthTrack)->devices.at(0)->id;
+    // (IG.1-2: the instrument alone on the path first, so the Wavetable replaces it there — a rack can take it)
+    edit(ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(doc(), wtTrack)->devices.at(1)->id));
     wt = edit(ops::addMetaDevice(doc(), store.ids(), wtTrack, "wavetable", 0)).devices.at(0);
   }
   const Project& doc() const { return *store.current(); }
