@@ -692,6 +692,18 @@ Each task's full description and acceptance criteria are in docs/plans/MM.md und
 - [ ] **IG.3 Per-sample loops across the group edge** (plan §Phases 3; the former TX.voice-loop).
 - [ ] **IG.4 Views: instrument-group capsule and panel, per-note cable colour, reducers on cables, single-signal cable toggle** (plan §Phases 4). 👁
 
+## GU: Built GUIs (plan: docs/plans/GU.md; user decision 2026-11-06, SPEC §15 "built GUIs"; revised after three audits, awaiting user review)
+
+Starts after IG.2 merges; IG.3 not concurrent with GU.1; IG.4 merged before GU.2. Strictly in order (each phase owns its part of the group drawing; every panel is built once, on the group it ends up on).
+- [ ] **GU.1 Curves: segment curves owned by controls, knob position stored, native curve atom** (plan §Phases 1).
+- [ ] **GU.2 Nested groups, atom and value blocks, group presets** (plan §Phases 2).
+- [ ] **GU.3 Panel model (from PanelDesc), generic elements, collapsed group drawn as its panel** (plan §Phases 3). 👁
+- [ ] **GU.4 Phase Accumulator and VCA as group presets with panels; Meta Operator deleted** (plan §Phases 4). 👁
+- [ ] **GU.5 The panel window and send-to-panel** (plan §Phases 5). 👁
+- [ ] **GU.6 Embed and break apart** (plan §Phases 6).
+- [ ] **GU.7 Rich elements; Wavetable, Envelope and analysers as group presets** (plan §Phases 7).
+- [ ] **GU.8 The example instrument, style schemas, outline of the next ingredients** (plan §Phases 8). 👁
+
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
 - **M5** (re-scoped by the user 2026-10-30, SPEC §15): **audio tracks + audio clips** (pulled forward from M6: samples dragged in from the browser or Explorer play on the timeline, without warping beyond Re-Pitch), **browser + user library** (index, search, preview, drag in/out, saving presets / user devices / racks). Plan: docs/plans/M5.md. Simpler and Drum Rack follow (M5b) once sample playback exists. 👁
