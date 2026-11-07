@@ -509,7 +509,8 @@ std::vector<Dut> duts() {
                  return lfo;
                },
                stockParams("lfo_device"), {Config{"free", {}, {}}, Config{"synced", {}, {{"sync", 1}}}}});
-  // GU.4: the Phase Accumulator module (an instrument group In → its group → Out, the instrument gone): each of its
+  // GU.4: the Phase Accumulator module at the notes, the instrument gone (the module itself is then the instrument group:
+  // the outermost group fed notes, its voices ending at its Out): each of its
   // value blocks' knobs (one control each: `value`, its curve the module's).
   for (const std::string_view control : {kPaFrequency, kPaPhase, kPaAmplitude, kPaPitch}) {
     const std::string name(control);
@@ -525,7 +526,6 @@ std::vector<Dut> duts() {
                    std::vector<DeviceId> ids;
                    const DeviceId pa = s.module(phaseAccumulatorBlocks(local, {}, &r), &ids);
                    s.edit(ops::insertOnPath(s.doc(), s.store.ids(), pa, 0));
-                   s.edit(ops::groupInCircuit(s.store.current(), s.store.ids(), lib, std::vector<DeviceId>{pa}));
                    const DeviceId block = control == kPaFrequency ? r.freq : control == kPaPhase ? r.phase
                                           : control == kPaAmplitude ? r.amp : r.pitch;
                    return ids.at(block.value - 1);
