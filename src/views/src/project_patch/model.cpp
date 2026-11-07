@@ -674,7 +674,7 @@ struct Builder {
       c.h = roundUp4(std::max(c.h, m::kClosedGroupH));
       if (g.hasPanel()) {  // GU.3: drawn as its panel (at the panel's size; its pins on the edges)
         c.groupPanel = true;
-        if (const std::optional<FaceShape> ps = panel::panelShape(*g.panel); ps && ps->round) {  // GU.5b: a round panel
+        if (const std::optional<FaceShape> ps = panel::panelShape(*g.panel, &t.devices); ps && ps->round) {  // GU.5b: a round panel
           c.panelRound = true;
           c.roundX = ps->centre.x;
           c.roundY = ps->centre.y;

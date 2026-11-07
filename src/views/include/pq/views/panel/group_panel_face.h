@@ -59,7 +59,7 @@ public:
   void liveRects(std::vector<ui::Rect>& out) const override;
   bool needsPrepare(float pxPerUnit) const noexcept override;
   bool prepare(float pxPerUnit) override;
-  void attach(FaceHost* host) override { host_ = host; }
+  void attach(FaceHost* host) override;
   // GU.5b: an element's floating popup (the dial's range and curve) and the elements' voices (the phase orbit's dots).
   std::optional<ui::Rect> popupRect() const noexcept override;
   void paintPopup(ui::FacePainter& p, const FaceEnv& env) override;
@@ -92,6 +92,9 @@ public:
   // (an unbound binding when `key` is malformed).
   static std::string portKey(doc::DeviceId group, const doc::Binding& b);
   static doc::Binding controlOfKey(doc::DeviceId group, std::string_view key);
+  // GU.6: where Control binding `want` sits (panel units): an element bound to it, or one inside an embedded child
+  // panel; `shownOnly`: only on elements shown now (not on another tab). nullopt: nowhere.
+  std::optional<ControlAnchor> bindingAnchor(const doc::Binding& want, bool shownOnly) const;
   // Where element i's control sits (panel units): its anchor (a knob's centre) or its rect's centre; nullopt: none.
   std::optional<ControlAnchor> elementAnchor(size_t i) const;
   // GU.5: a mod source's cable on the pointer (a drag from its handle; the face draws it to the pointer and outlines the
@@ -142,7 +145,9 @@ private:
 };
 
 // GU.5b: the outline a panel takes from its bottom element (Element::outline, in panel units), nullopt: a rounded rect.
-std::optional<FaceShape> panelShape(const doc::Panel& panel);
+// GU.6: a bottom element embedding a child panel takes the child's outline (looked up in `list`, the group's track's
+// blocks; null: an embed is never round).
+std::optional<FaceShape> panelShape(const doc::Panel& panel, const std::vector<doc::DevicePtr>* list = nullptr);
 
 // GU.5b: the face of a VALUE BLOCK in a circuit (an opened group's): one knob filling w × h, bound to the block's
 // `value` (its name above, its value below).

@@ -52,6 +52,12 @@ Element::Element(doc::PanelElement desc) : desc_(std::move(desc)) {
   staticKey_ = h | 1u;
 }
 
+std::optional<ControlAnchor> Element::anchorFor(const doc::Binding& want, bool /*shownOnly*/) const {
+  const doc::Binding* b = binding();
+  if (b == nullptr || !(*b == want)) return std::nullopt;
+  return anchor().value_or(ControlAnchor{{desc_.w * 0.5f, desc_.h * 0.5f}, 0.0f, desc_.w * 0.5f});
+}
+
 bool Element::hit(Vec2 l) const noexcept { return l.x >= 0.0f && l.y >= 0.0f && l.x <= desc_.w && l.y <= desc_.h; }
 
 const std::string& Element::labelText(const PanelTarget& t, size_t slot) const {
@@ -1081,6 +1087,7 @@ void registerGeneric() {
     reg("curve", "Curve Editor", curveElementStyle(), kValueSlot, 160, 96, &makeCurveElement);
     reg("modsource", "Mod Source", ModSource::kStyle, kSignalSlot, 24, 32, &make<ModSource>);
     registerRichElements(reg);  // GU.5b
+    registerEmbedElement(reg);  // GU.6
   });
 }
 

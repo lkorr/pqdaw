@@ -43,6 +43,7 @@ ElementChoice defaultElement(const doc::Binding& b, const BoundInfo& info) {
     return c;
   };
   if (b.kind == doc::BindingKind::Signal) return sized("modsource");
+  if (b.kind == doc::BindingKind::Panel) return sized(std::string(doc::kEmbedKind));  // GU.6 (sized by its child's panel)
   if (info.isSwitch) return sized("toggle");
   if (!info.choices.empty()) return sized("menu");
   if (info.setting) return sized("number");
@@ -279,6 +280,7 @@ public:
   }
 
   bool onKey(const ui::KeyEvent& e) override {
+    if (!e.down) return false;  // (GU.6: a key's release acted again — every nudge was two)
     const ui::Mods m = e.mods & (ui::mod::kCtrl | ui::mod::kShift | ui::mod::kAlt);
     if (e.key == ui::key::kEscape) {
       if (drag_ != Drag::None) {
@@ -305,6 +307,7 @@ public:
       return true;
     }
     if (e.key == 'd' && m == ui::mod::kCtrl) return win_.duplicateSelected() || true;
+    if (e.key == 'g' && m == (ui::mod::kCtrl | ui::mod::kShift)) return win_.breakApartSelected() || true;  // GU.6
     const float step = (m & ui::mod::kShift) ? 10.0f : 1.0f;
     if ((m & ~ui::mod::kShift) == ui::mod::kNone && !win_.selection_.empty()) {
       if (e.key == ui::key::kLeft) return win_.nudgeSelected(-step, 0.0f) || true;
@@ -510,6 +513,14 @@ private:
       if (!alive.expired()) (void)w->removeSelected();
     }, "Delete");
     dup.enabled = del.enabled = any;
+    ui::MenuItem brk = ui::MenuItem::item("Break Apart", [alive, w] {  // GU.6: an embedded child panel → its elements
+      if (!alive.expired()) (void)w->breakApartSelected();
+    }, "Ctrl+Shift+G");
+    brk.enabled = false;
+    if (const doc::PanelPtr p = win_.docPanel())
+      for (const doc::PanelElement& x : p->elements)
+        if (selected(x.id) && doc::embeddedGroup(x).valid()) brk.enabled = true;
+    items.push_back(std::move(brk));
     items.push_back(std::move(dup));
     items.push_back(std::move(del));
     (void)ui::openContextMenu(*this, at, std::move(items));
@@ -1356,6 +1367,25 @@ bool PanelWindow::duplicateSelected() {
   }
   preview_ = std::make_shared<doc::Panel>(std::move(p));
   if (!commitPreview("Duplicate Panel Elements")) return false;
+  setSelection(std::move(ids));
+  return true;
+}
+
+bool PanelWindow::breakApartSelected() {
+  const doc::Snapshot& s = ctx_.doc();
+  if (!s || selection_.empty()) return false;
+  std::vector<uint32_t> ids;
+  const doc::ops::EditResult e = doc::ops::breakApartPanelElements(*s, group_, selection_, &ids);
+  if (!e) {
+    ctx_.setStatus(e.error().message);
+    return false;
+  }
+  if (e->empty()) return false;
+  if (Status st = ctx_.store().dispatch(e->command); !st) {
+    ctx_.setStatus(st.error().message);
+    return false;
+  }
+  documentChanged();
   setSelection(std::move(ids));
   return true;
 }

@@ -91,6 +91,65 @@ EditResult removePanelElements(const Project& p, DeviceId group, std::span<const
   return panelEdit(p, group, std::move(panel));
 }
 
+EditResult breakApartPanelElements(const Project& p, DeviceId group, std::span<const uint32_t> elements, std::vector<uint32_t>* added) {
+  Result<const Device*> g = findGroup(p, group);
+  if (!g) return std::move(g).error();
+  if (!(*g)->panel) return makeEdit("Edit Panel");
+  const Panel& base = *(*g)->panel;
+  const DeviceLoc gl = findDevice(p, group);
+  const std::unordered_set<uint32_t> want(elements.begin(), elements.end());
+  Panel out;
+  out.width = base.width;
+  out.height = base.height;
+  uint32_t next = base.nextId();
+  bool any = false;
+  for (const PanelElement& e : base.elements) {
+    const DeviceId child = embeddedGroup(e);
+    if (!child.valid() || want.count(e.id) == 0) {
+      out.elements.push_back(e);
+      continue;
+    }
+    any = true;
+    const Device* cd = nullptr;
+    for (const DevicePtr& d : gl.track->devices)
+      if (d->id == child) cd = d.get();
+    if (cd == nullptr || !cd->hasPanel()) continue;
+    const Panel& cp = *cd->panel;
+    const EmbedFit f = embedFit(e.w, e.h, cp.width, cp.height);
+    std::vector<std::pair<uint32_t, uint32_t>> ids;  // child id → new id
+    const size_t first = out.elements.size();
+    for (const PanelElement& c : cp.elements) {
+      PanelElement x = c;
+      x.id = next++;
+      x.x = e.x + f.x + c.x * f.k;
+      x.y = e.y + f.y + c.y * f.k;
+      x.w = c.w * f.k;
+      x.h = c.h * f.k;
+      ids.emplace_back(c.id, x.id);
+      if (added != nullptr) added->push_back(x.id);
+      out.width = std::max(out.width, std::ceil(x.x + x.w));
+      out.height = std::max(out.height, std::ceil(x.y + x.h));
+      out.elements.push_back(std::move(x));
+    }
+    for (size_t i = first; i < out.elements.size(); ++i) {
+      PanelElement& x = out.elements[i];
+      if (!x.when) continue;
+      const auto it = std::find_if(ids.begin(), ids.end(), [&](const auto& m) { return m.first == x.when->element; });
+      if (it == ids.end()) x.when.reset();
+      else x.when->element = it->second;
+    }
+  }
+  if (!any) return makeEdit("Edit Panel");
+  // A condition naming a broken-apart embed is dropped (an embed has no selection: it never held).
+  for (PanelElement& e : out.elements)
+    if (e.when && out.indexOf(e.when->element) < 0) e.when.reset();
+  out.width = std::min(out.width, kMaxPanelSize);
+  out.height = std::min(out.height, kMaxPanelSize);
+  EditResult r = panelEdit(p, group, std::move(out));
+  if (r && !r->empty()) batchOf(*r).label = "Break Apart";
+  return r;
+}
+
 EditResult setPanelSize(const Project& p, DeviceId group, float width, float height) {
   Result<const Device*> g = findGroup(p, group);
   if (!g) return std::move(g).error();

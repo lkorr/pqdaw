@@ -46,6 +46,10 @@ protected:
 void registerRichElements(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
                                       std::span<const std::string_view> slots, float w, float h, ElementFactory f));
 
+// GU.6: the embedded child panel (embed_element.cpp, kind doc::kEmbedKind).
+void registerEmbedElement(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
+                                      std::span<const std::string_view> slots, float w, float h, ElementFactory f));
+
 // The curve editor (curve_element.cpp).
 std::span<const StyleSpec> curveElementStyle() noexcept;
 std::unique_ptr<Element> makeCurveElement(const doc::PanelElement& desc);

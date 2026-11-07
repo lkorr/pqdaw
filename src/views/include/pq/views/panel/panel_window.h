@@ -16,7 +16,8 @@
 //               place for a selection frame; drag a selection to move it, a handle of a single selection to resize it;
 //               moves and resizes snap their edges and centres to the other elements' and the panel's within 4 px at zoom
 //               1 (guides drawn; Alt: no snap); Delete removes, arrows nudge (Shift: 10), Ctrl+D duplicates, Ctrl+A selects
-//               all, the right-click menu aligns / distributes / reorders; the panel's corner handle sizes the panel. Every
+//               all, Ctrl+Shift+G breaks an embedded child panel apart (GU.6), the right-click menu aligns /
+//               distributes / reorders; the panel's corner handle sizes the panel. Every
 //               gesture is ONE undo step (a drag previews in the window and commits one SetGroupPanel at the release).
 //               The INSPECTOR column on the right is generated: the element's kind, its binding (a menu of the group's
 //               controls, settings and outputs), its visibility condition (shown while a tabs / menu / toggle element has a
@@ -123,6 +124,9 @@ public:
   void setSelection(std::vector<uint32_t> ids);
   bool removeSelected();
   bool duplicateSelected();
+  // GU.6: the selected embedded child panels replaced by copies of their elements (ops::breakApartPanelElements; one
+  // undo step), the copies selected. False: no embed selected.
+  bool breakApartSelected();
   enum class AlignTo : uint8_t { Left, Centre, Right, Top, Middle, Bottom, SpaceH, SpaceV, Front, Back };
   bool alignSelected(AlignTo a);
   bool nudgeSelected(float dx, float dy);

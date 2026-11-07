@@ -844,3 +844,13 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - What to look at: goldens `module-vca-panel`, `module-phase-acc-panel` (2x), `project-module-circuits` (both modules opened), `project-patch-nested` (nested groups as circuits), `project-vca-panel`, `project-orbit-ports`, `project-cables*`, `project-patch-group`, `project-meta-*`, `panel-window-*`, `project-patch-free` (free PAs as their old faces).
 - Try it: `pqdaw --project tests/views/fixtures/meta-cables`; Tab → "vca" / "phase acc": they appear closed; drag a VCA marker; open the chevron; double-click a module's rim to see its circuit.
 - To judge (Q?-GU.5b-a): closed-by-default rule; markers as curve points (7-segment default VCA curve); traces instead of cables inside groups and no orbiting ports there; value blocks drawn as knobs everywhere.
+
+## 👁 GU.6 Embed and break apart · 2026-11-07
+- What changed:
+  - **A child group on its parent's panel is part of that GUI.** Click a closed group inside another (on its panel's frame, not a control) and press **P** (or the window's +, or drag it onto the window): its whole panel appears on the parent's panel, embedded and live: its knobs are the child's controls, its popups and round outline come with it. Embeds nest (a child whose panel embeds a grandchild's).
+  - **Break apart** (panel window, edit mode: right-click → Break Apart, or **Ctrl+Shift+G**): the embed becomes copies of its elements at the same places, bound to the same controls, each movable, restylable, removable on its own; one undo step. A nested embed inside comes out as an embed (break it again for the next level).
+  - The embed follows renames; moving the child out of the group takes its embed off (undo brings both back).
+- What to look at: golden `panel-embed` (Tone embedded in Synth's panel window, its plate and two knobs; below it a broken-apart copy: the same knobs, no plate).
+- Try it: `pqdaw`, an instrument group with two value blocks; select them inside the group, Ctrl+G, open the new group's window and send both knobs to it; then click the closed inner group and press P: it lands on the outer group's window. Edit → select it → Ctrl+Shift+G.
+- To judge (Q?-GU.6-a): an embed keeps the child's plate (frame and body), a broken-apart copy does not; a group without a panel cannot be embedded (P says nothing to send); embedded panels scale with the element's rect (aspect kept).
+- Known gaps: a mod-source cable cannot be dragged from an embedded panel to a control of the parent's (only within the same panel); a group without a panel is not embeddable.

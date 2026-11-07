@@ -4,6 +4,7 @@ set(PQ_VIEWS_PANEL_SOURCES
   src/panel/elements.cpp
   src/panel/curve_element.cpp
   src/panel/rich_elements.cpp  # GU.5b: dial, arc, orbit
+  src/panel/embed_element.cpp  # GU.6: an embedded child panel
   src/panel/group_panel_face.cpp
   src/panel/doc_target.cpp
   src/panel/panel_window.cpp)  # GU.5: the panel window, its editor and inspector

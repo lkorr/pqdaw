@@ -427,6 +427,14 @@ EditResult addPanelElements(const Project& p, DeviceId group, std::vector<PanelE
 EditResult setPanelElement(const Project& p, DeviceId group, PanelElement element);
 // The elements removed (unknown ids ignored); conditions naming them dropped. The last one gone: no panel.
 EditResult removePanelElements(const Project& p, DeviceId group, std::span<const uint32_t> elements);
+// GU.6: BREAK APART — each of `elements` that embeds a child group's panel (panel.h kEmbedKind, a Panel binding) is
+// replaced, at its place in the paint order, by copies of the child panel's elements: the same bindings, kinds, styles,
+// rects mapped through the embed's fit (embedFit: nothing moves on screen), fresh ids (`added`, optional, gets them in
+// order), visibility conditions among them renumbered (one naming an element not copied dropped). An embed inside the
+// child stays an embed (one level at a time). Ids that are not embeds are ignored; a child without a panel just
+// leaves. The panel grows to hold the copies. One step.
+EditResult breakApartPanelElements(const Project& p, DeviceId group, std::span<const uint32_t> elements,
+                                   std::vector<uint32_t>* added = nullptr);
 // The panel's size (w, h > 0).
 EditResult setPanelSize(const Project& p, DeviceId group, float width, float height);
 // One param's knob position in [0, 1] (GU.1: what a param stores; a rack's macro or selector: its value 0 … 127;

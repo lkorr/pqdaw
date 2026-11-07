@@ -35,6 +35,21 @@ Binding settingBinding(DeviceId device, std::string setting, std::string meta) {
   return Binding{BindingKind::Setting, device, std::move(meta), std::move(setting)};
 }
 Binding signalBinding(DeviceId device, std::string output) { return Binding{BindingKind::Signal, device, {}, std::move(output)}; }
+Binding panelBinding(DeviceId group) { return Binding{BindingKind::Panel, group, {}, {}}; }
+
+EmbedFit embedFit(float w, float h, float childW, float childH) noexcept {
+  EmbedFit f;
+  if (!(childW > 0.0f) || !(childH > 0.0f) || !(w > 0.0f) || !(h > 0.0f)) return f;
+  f.k = std::min(w / childW, h / childH);
+  f.x = (w - childW * f.k) * 0.5f;
+  f.y = (h - childH * f.k) * 0.5f;
+  return f;
+}
+
+DeviceId embeddedGroup(const PanelElement& e) noexcept {
+  const Binding* b = e.binding();
+  return b != nullptr && b->kind == BindingKind::Panel ? b->device : DeviceId{};
+}
 
 StyleField styleNumber(std::string name, double v) {
   StyleField f;

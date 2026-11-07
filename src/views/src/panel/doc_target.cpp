@@ -248,6 +248,12 @@ public:
     return rev_;
   }
   void notice(std::string_view message) override { ctx_.setStatus(std::string(message)); }
+  // GU.6: a child group's panel (the group's track's list, indexed once per snapshot).
+  doc::PanelPtr childPanel(const doc::Binding& b) const override {
+    sync();
+    const doc::Device* d = device(b.device);
+    return d != nullptr && doc::isGroupDevice(*d) && d->hasPanel() ? d->panel : nullptr;
+  }
   ui::Widget* menuHost() const noexcept override { return host_ ? host_() : nullptr; }
 
   // GU.5: the controls a wire drives, indexed once per wire list (a persistent document: the list is the same object
@@ -441,8 +447,8 @@ private:
       i.valid = true;
       return;
     }
-    // Data / Signal / Panel: shown, not edited by the generic kinds.
-    i.label = b.name;
+    // Data / Signal / Panel: shown, not edited by the generic kinds (a Panel binding: the child group's name).
+    i.label = b.kind == doc::BindingKind::Panel ? d->name : b.name;
     i.editable = false;
     i.valid = true;
   }

@@ -63,6 +63,7 @@ struct Binding {
 Binding controlBinding(DeviceId device, std::string param, std::string meta = {});
 Binding settingBinding(DeviceId device, std::string setting, std::string meta = {});
 Binding signalBinding(DeviceId device, std::string output);
+Binding panelBinding(DeviceId group);  // GU.6: a child group's whole panel (embedded)
 
 // A style field: a number or a text (a theme token, an enum's name, a label).
 struct StyleField {
@@ -129,6 +130,21 @@ std::string bindingsProblem(const std::vector<DevicePtr>& list, DeviceId group, 
 PanelPtr prunePanel(const PanelPtr& panel, const std::vector<DevicePtr>& list, DeviceId group);
 // A copy with every binding's device mapped through `map` (old → new; an id not in it is kept as it is).
 Panel remapPanel(const Panel& p, std::span<const std::pair<DeviceId, DeviceId>> map);
+// ---- GU.6: embedded child panels ---------------------------------------------------------------------------------
+// A child group left whole on its parent's panel is an element of kind kEmbedKind bound (slot 0) to the child by a Panel
+// binding: the child's panel drawn live inside the element's rect (its own elements, the same controls). The child's
+// panel is fitted into the rect with its aspect kept and centred: a child-panel point c is at (x + k·c.x, y + k·c.y)
+// in the element (embedFit). Breaking it apart (ops::breakApartPanelElements) puts copies of the child's elements at
+// those places, so nothing moves on screen.
+inline constexpr std::string_view kEmbedKind = "panel";
+struct EmbedFit {
+  float k = 1.0f, x = 0.0f, y = 0.0f;
+};
+// The fit of a `childW` × `childH` panel into a `w` × `h` element (k = 1 when either size is not positive).
+EmbedFit embedFit(float w, float h, float childW, float childH) noexcept;
+// The group an embed element shows (its Panel binding), invalid: `e` is not one.
+DeviceId embeddedGroup(const PanelElement& e) noexcept;
+
 // Whether any element of `p` binds device `d`.
 bool panelBinds(const Panel& p, DeviceId d) noexcept;
 

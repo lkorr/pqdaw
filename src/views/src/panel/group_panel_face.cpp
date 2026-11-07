@@ -86,6 +86,7 @@ void GroupPanelFace::rebuild(const doc::PanelPtr& p) {
   elements_.reserve(p->elements.size());
   for (const doc::PanelElement& d : p->elements) {
     elements_.push_back(makeElement(d));
+    elements_.back()->bind(*target_, host_);  // GU.6: an embedded panel reads its child through the target
     for (const auto& [id, v] : keep)
       if (id == d.id) elements_.back()->setLocalSelection(v);
   }
@@ -105,8 +106,22 @@ FaceShape GroupPanelFace::shape() const noexcept {
   return {false, {0.0f, 0.0f}, kCorner};
 }
 
-std::optional<FaceShape> panelShape(const doc::Panel& panel) {
+std::optional<FaceShape> panelShape(const doc::Panel& panel, const std::vector<doc::DevicePtr>* list) {
   if (panel.elements.empty()) return std::nullopt;
+  const doc::PanelElement& bottom = panel.elements.front();
+  if (const doc::DeviceId child = doc::embeddedGroup(bottom); child.valid()) {  // GU.6: the embedded child's outline
+    if (list == nullptr) return std::nullopt;
+    for (const doc::DevicePtr& d : *list)
+      if (d->id == child && d->hasPanel()) {
+        std::optional<FaceShape> o = panelShape(*d->panel, list);  // (groups nest as a tree: this ends)
+        if (!o) return o;
+        const doc::EmbedFit f = doc::embedFit(bottom.w, bottom.h, std::max(1.0f, d->panel->width), std::max(1.0f, d->panel->height));
+        o->centre = {bottom.x + f.x + o->centre.x * f.k, bottom.y + f.y + o->centre.y * f.k};
+        o->radius *= f.k;
+        return o;
+      }
+    return std::nullopt;
+  }
   const std::unique_ptr<Element> e = makeElement(panel.elements.front());
   std::optional<FaceShape> o = e->outline();
   if (o) o->centre = {o->centre.x + e->desc().x, o->centre.y + e->desc().y};
@@ -331,7 +346,8 @@ doc::Binding GroupPanelFace::controlOfKey(doc::DeviceId group, std::string_view 
 std::string GroupPanelFace::paramAt(Vec2 local) const {
   const int32_t i = elementAt(local);
   if (i < 0) return {};
-  const doc::Binding* b = elements_[static_cast<size_t>(i)]->binding();
+  const Element& el = *elements_[static_cast<size_t>(i)];
+  const doc::Binding* b = el.controlAt({local.x - el.rect().x0, local.y - el.rect().y0});  // (GU.6: inside an embed)
   if (b == nullptr || b->kind != doc::BindingKind::Control || !b->meta.empty()) return {};
   return portKey(owner_, *b);
 }
@@ -345,22 +361,27 @@ std::optional<ControlAnchor> GroupPanelFace::elementAnchor(size_t i) const {
   return a;
 }
 
-std::optional<ControlAnchor> GroupPanelFace::controlAnchor(std::string_view param) const {
-  const doc::Binding want = controlOfKey(owner_, param);
+std::optional<ControlAnchor> GroupPanelFace::bindingAnchor(const doc::Binding& want, bool shownOnly) const {
   if (!want.bound()) return std::nullopt;
   std::vector<int8_t>& memo = freshMemo();
-  for (size_t i = 0; i < elements_.size(); ++i)
-    if (const doc::Binding* b = elements_[i]->binding(); b != nullptr && *b == want && shownNow(i, memo)) return elementAnchor(i);
+  for (size_t i = 0; i < elements_.size(); ++i) {
+    if (shownOnly && !shownNow(i, memo)) continue;
+    if (std::optional<ControlAnchor> a = elements_[i]->anchorFor(want, shownOnly)) {  // (GU.6: an embed's inner control)
+      const Rect r = elements_[i]->rect();
+      a->at = {a->at.x + r.x0, a->at.y + r.y0};
+      return a;
+    }
+  }
   return std::nullopt;
+}
+
+std::optional<ControlAnchor> GroupPanelFace::controlAnchor(std::string_view param) const {
+  return bindingAnchor(controlOfKey(owner_, param), true);
 }
 
 std::optional<ControlAnchor> GroupPanelFace::controlHome(std::string_view param) const {
   if (std::optional<ControlAnchor> now = controlAnchor(param)) return now;
-  const doc::Binding want = controlOfKey(owner_, param);
-  if (!want.bound()) return std::nullopt;
-  for (size_t i = 0; i < elements_.size(); ++i)  // on another tab: where it is placed
-    if (const doc::Binding* b = elements_[i]->binding(); b != nullptr && *b == want) return elementAnchor(i);
-  return std::nullopt;
+  return bindingAnchor(controlOfKey(owner_, param), false);  // on another tab: where it is placed
 }
 
 void GroupPanelFace::liveRects(std::vector<Rect>& out) const {
@@ -369,7 +390,17 @@ void GroupPanelFace::liveRects(std::vector<Rect>& out) const {
   if (const std::optional<Rect> pr = popupRect()) out.push_back(*pr);
 }
 
-bool GroupPanelFace::needsPrepare(float pxPerUnit) const noexcept { return tilesWanted_ > 0.0f && tilesWanted_ == pxPerUnit && atlas() != nullptr; }
+bool GroupPanelFace::needsPrepare(float pxPerUnit) const noexcept {
+  if (tilesWanted_ > 0.0f && tilesWanted_ == pxPerUnit && atlas() != nullptr) return true;
+  for (const std::unique_ptr<Element>& e : elements_)
+    if (e->needsPrepare(pxPerUnit)) return true;  // GU.6: an embedded panel's own tiles
+  return false;
+}
+
+void GroupPanelFace::attach(FaceHost* host) {
+  host_ = host;
+  for (const std::unique_ptr<Element>& e : elements_) e->bind(*target_, host_);
+}
 
 bool GroupPanelFace::prepare(float pxPerUnit) {
   ui::TileAtlas* at = atlas();
@@ -393,6 +424,8 @@ bool GroupPanelFace::prepare(float pxPerUnit) {
       ++stats_.tilesBuilt;
     }
   }
+  for (size_t i = 0; i < elements_.size(); ++i)
+    if (shownNow(i, memo)) built = elements_[i]->prepare(pxPerUnit) || built;  // GU.6: an embedded panel's
   cache.prune();
   return built;
 }

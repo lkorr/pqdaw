@@ -95,6 +95,8 @@ public:
   // when nothing taps it (GU.7 makes the lowering tap a placed display's signal; until then only hosts that have a
   // reader, e.g. tests, show voices).
   virtual VoiceTapReader* voices(const doc::Binding& /*b*/) { return nullptr; }
+  // GU.6: the panel of the group a Panel binding names (an embedded child panel), null: none (or no document).
+  virtual doc::PanelPtr childPanel(const doc::Binding& /*b*/) const { return nullptr; }
 };
 
 // What an element paints with.
@@ -185,6 +187,17 @@ public:
   virtual VoiceTapReader* voiceReader(PanelTarget& /*t*/) const { return nullptr; }
   // GU.5b: the face-local rects (element-local) its live layer changes while voices sound (default: its rect).
   virtual void liveRects(std::vector<ui::Rect>& out) const { out.push_back({0.0f, 0.0f, desc_.w, desc_.h}); }
+  // GU.6: elements that hold a panel of their own (an embedded child panel, kind doc::kEmbedKind):
+  //   bind          called by the face once the element is made (and when the face gets a host): its target (lives as
+  //                 long as the face) and host (its tree's tile atlas).
+  //   needsPrepare  / prepare: static tiles of what it holds, at the face's scale (the face asks every element).
+  //   controlAt     the Control binding under `local` (default: its own binding): a wire dropped there, P.
+  //   anchorFor     where control `want` sits in it (element-local; default: its own anchor when it is bound to `want`).
+  virtual void bind(PanelTarget& /*t*/, FaceHost* /*host*/) {}
+  virtual bool needsPrepare(float /*pxPerUnit*/) const noexcept { return false; }
+  virtual bool prepare(float /*pxPerUnit*/) { return false; }
+  virtual const doc::Binding* controlAt(ui::Vec2 /*local*/) const { return binding(); }
+  virtual std::optional<ControlAnchor> anchorFor(const doc::Binding& want, bool shownOnly) const;
 
 protected:
   // Style fields with the schema's defaults.

@@ -192,7 +192,11 @@ std::vector<doc::Binding> ProjectPatchView::controlsOf(doc::DeviceId device) con
   const doc::Snapshot& snap = ctx_.doc();
   const doc::Device* d = snap ? doc::findDevice(*snap, device).device : nullptr;
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-  if (d == nullptr || lib == nullptr || doc::isGroupDevice(*d) || d->rack) return out;  // (a group's own panel: GU.6)
+  if (d == nullptr || lib == nullptr || d->rack) return out;
+  if (doc::isGroupDevice(*d)) {  // GU.6: a group left whole is its panel (embedded on its parent's); none: nothing
+    if (d->hasPanel()) out.push_back(doc::panelBinding(device));
+    return out;
+  }
   std::shared_ptr<const doc::ResolvedDevice> hold;
   const graph::Patch* patch = lib->patchOf(*d, hold);
   if (patch == nullptr) return out;
@@ -242,7 +246,9 @@ bool ProjectPatchView::sendToPanel(doc::DeviceId group, std::span<const doc::Bin
     }
     const panel::BoundInfo& info = target->info(b);
     if (!info.valid) continue;
-    const panel::ElementChoice c = panel::defaultElement(b, info);
+    panel::ElementChoice c = panel::defaultElement(b, info);
+    if (b.kind == doc::BindingKind::Panel)  // GU.6: an embedded child panel at its own size
+      if (const doc::PanelPtr cp = target->childPanel(b)) c.w = std::max(1.0f, cp->width), c.h = std::max(1.0f, cp->height);
     doc::PanelElement e;
     e.kind = c.kind;
     e.w = c.w;
