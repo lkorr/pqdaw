@@ -590,6 +590,10 @@ bool CableLayer::refresh() {
     for (const doc::DevicePtr& d : shownTrack->devices) shownBlocks.insert(d->id.value);
   for (const doc::Wire& w : doc::wiresOf(p)) {
     if (path.isLink(w.id)) continue;
+    // GU.9: a rack's own wiring — its chains' feeds and sums, its macros' mappings, its selector — is its frame's (the
+    // rows, the macro panel, Map mode), not a cable.
+    if (chain != nullptr && ((!w.fromNoteSource() && chain->heldByRack(w.from)) || (!w.toMixer() && chain->heldByRack(w.to))))
+      continue;
     if (w.mainLink() && !(w.fromNoteSource() ? w.noteSource == shown : shownBlocks.count(w.from.value) != 0) &&
         !(w.toMixer() ? w.mixer == shown : shownBlocks.count(w.to.value) != 0))
       continue;
@@ -600,8 +604,9 @@ bool CableLayer::refresh() {
     const std::string param = w.param.empty() ? doc::mainPortsOf(*to.device, ctx_.deviceLibrary()).in : w.param;
     // TX.groups: a wire inside a group (between its members and terminals) is drawn by the group's panel.
     if (from.device != nullptr) {
-      const doc::DeviceId ga = doc::isGroupDevice(*from.device) ? from.device->id : from.device->group;
-      const doc::DeviceId gb = doc::isGroupDevice(*to.device) ? to.device->id : to.device->group;
+      // GU.9: a group end is its group by its terminals (In / Out); by its main ports it is a member of its parent.
+      const doc::DeviceId ga = doc::isGroupDevice(*from.device) && w.port == doc::kGroupInPort ? from.device->id : from.device->group;
+      const doc::DeviceId gb = doc::isGroupDevice(*to.device) && w.param == doc::kGroupOutPort ? to.device->id : to.device->group;
       if (ga.valid() && ga == gb) continue;
       // TX.free-rack: between two devices of the free-device rack: drawn by the rack's canvas.
       if (chain != nullptr && chain->inFreeRack(w.from) && chain->inFreeRack(w.to)) continue;

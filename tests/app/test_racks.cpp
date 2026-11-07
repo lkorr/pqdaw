@@ -250,7 +250,7 @@ TEST_CASE("racks are parallel groups: wiring two groups in parallel by hand make
   REQUIRE(rackIn(s, t).selector.valid());
   CHECK(maxDiff(render(*s.current(), t), one) <= 1e-6);
   run(s, ops::setSelectorValue(*s.current(), a, 100.0));
-  CHECK(maxDiff(render(*s.current(), t), two, 960) <= 1e-6);  // (a chain zone's gain fades in over its first 2 ms)
+  CHECK(maxDiff(render(*s.current(), t), two, 4800) <= 1e-6);  // (a chain zone's gain fades in from 0: settled after 0.1 s)
   // Two groups wired by hand in parallel (fed from the same block, summed into the mixer): a rack.
   DocumentStore h;
   const TrackId t2 = run(h, ops::createTrack(*h.current(), h.ids(), TrackKind::Midi)).tracks.at(0);

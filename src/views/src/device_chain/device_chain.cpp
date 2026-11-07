@@ -917,6 +917,15 @@ void DeviceChainView::sync(bool force) {
   m.shown = chain;
   m.shownFrom = ctx_.doc();
   m.mainPath = std::move(path);
+  m.rackHeld.clear();  // GU.9: the track-level racks' blocks (inFreeRack)
+  if (t != nullptr)
+    for (const doc::RackInfo& r : doc::findRacks(*ctx_.doc(), *t)) {
+      if (r.parent.valid()) continue;
+      for (const doc::RackChain& c : r.chains) m.rackHeld.insert(c.id.value);
+      for (const doc::RackMacro& mc : r.macros)
+        if (mc.block.valid()) m.rackHeld.insert(mc.block.value);
+      if (r.selector.valid()) m.rackHeld.insert(r.selector.value);
+    }
   // TX.free-rack: the rack shows the track's free devices (hidden with no track); the frames' ports for the cables.
   if (m.freeRack != nullptr) {
     m.freeRack->setVisible(t != nullptr);
@@ -1591,6 +1600,8 @@ ui::Vec2 socketAt(const ui::IRect& r, bool right, size_t row, float us) {
 }
 }  // namespace
 
+bool DeviceChainView::heldByRack(doc::DeviceId device) const { return impl_->rackHeld.count(device.value) != 0; }
+
 bool DeviceChainView::inFreeRack(doc::DeviceId device) const {
   const doc::Track* t = impl_->track();
   if (t == nullptr || impl_->freeRack == nullptr || !impl_->freeRack->visible()) return false;
@@ -1601,7 +1612,8 @@ bool DeviceChainView::inFreeRack(doc::DeviceId device) const {
   // (GU.2: a member at any depth is shown with its outermost group.)
   const doc::DeviceId outer = doc::outermostGroup(t->devices, d.id);
   const doc::DeviceId shownAs = outer.valid() ? outer : d.id;
-  return !impl_->mainPath.contains(shownAs);
+  // GU.9: a rack's other chains, its macros and its selector are the rack frame's (not the free rack's).
+  return !impl_->mainPath.contains(shownAs) && impl_->rackHeld.count(shownAs.value) == 0;
 }
 
 ui::Vec2 DeviceChainView::tabPoint(doc::DeviceId device) const {
@@ -1897,7 +1909,7 @@ void DeviceChainView::refreshRings() {
       if (const auto ml = macroMappingOf(p, f->id(), info.name)) {
         // GU.9: the macro's value block as it stands (a macro another rack's macro drives plays what its wire adds).
         const doc::RackMapping& mm = ml->second;
-        const double macro = ml->first.macros[mm.macro].value / doc::kMacroMax;
+        const double macro = playedPosition(p, ml->first.macros[mm.macro].block);
         pk = static_cast<float>(std::clamp(mm.min + (mm.max - mm.min) * macro, 0.0, 1.0));
         mapped = true;
         ring.active = true;

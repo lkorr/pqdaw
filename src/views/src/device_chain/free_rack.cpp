@@ -128,7 +128,12 @@ uint32_t FreeRackPanel::freeCount() const {
   if (t == nullptr) return 0;
   uint32_t n = 0;
   const doc::MainPath path = doc::mainPath(*ctx_.doc(), *t);  // TX.all-free: the blocks off the main path
-  for (const doc::DevicePtr& d : t->devices) n += !path.contains(d->id) && !d->group.valid() ? 1u : 0u;
+  const std::vector<doc::RackInfo> racks = doc::findRacks(*ctx_.doc(), *t);  // GU.9: not a rack's (its frame shows them)
+  for (const doc::DevicePtr& d : t->devices)
+    n += !path.contains(d->id) && !d->group.valid() &&
+                 std::none_of(racks.begin(), racks.end(), [&](const doc::RackInfo& r) { return r.holds(*ctx_.doc(), d->id); })
+             ? 1u
+             : 0u;
   return n;
 }
 

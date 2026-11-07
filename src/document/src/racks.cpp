@@ -237,16 +237,22 @@ RackInfo makeInfo(const Project& p, const TrackIndex& ix, const std::vector<cons
       if (d == c->id || groupContains(ix.t.devices, c->id, d)) return true;
     return false;
   };
-  for (const DevicePtr& d : ix.t.devices) {
-    if (!isValueDevice(*d) || d->group != r.parent) continue;
+  for (const DevicePtr& d : ix.t.devices) {  // the selector first (a macro may drive it)
+    if (!isValueDevice(*d) || d->group != r.parent || d->name != kChainSelectName) continue;
     const auto& ws = TrackIndex::of(ix.from, d->id);
-    const bool wired = std::any_of(ws.begin(), ws.end(), [&](const Wire* w) { return !w->toMixer() && inRack(w->to); });
-    if (!wired) continue;
-    if (d->name == kChainSelectName) {
+    if (std::any_of(ws.begin(), ws.end(), [&](const Wire* w) { return !w->toMixer() && inRack(w->to); })) {
       r.selector = d->id;
       r.selectorValue = valueOf(*d);
-      continue;
+      break;
     }
+  }
+  for (const DevicePtr& d : ix.t.devices) {
+    if (!isValueDevice(*d) || d->group != r.parent || d->id == r.selector) continue;
+    const auto& ws = TrackIndex::of(ix.from, d->id);
+    const bool wired = std::any_of(ws.begin(), ws.end(), [&](const Wire* w) {
+      return !w->toMixer() && (inRack(w->to) || (r.selector.valid() && w->to == r.selector));
+    });
+    if (!wired) continue;
     const DeviceValue* slot = d->setting(kMacroSetting);
     if (slot == nullptr) continue;
     const auto k = static_cast<int32_t>(std::lround(slot->value)) - 1;
@@ -263,7 +269,7 @@ RackInfo makeInfo(const Project& p, const TrackIndex& ix, const std::vector<cons
         if (n > 0) r.variations = std::max(r.variations, static_cast<uint32_t>(n));
       }
     for (const Wire* w : ws) {
-      if (w->toMixer() || !w->travels() || !inRack(w->to) && w->to != r.selector) continue;
+      if (w->toMixer() || !w->travels() || (!inRack(w->to) && w->to != r.selector)) continue;
       RackMapping mp;
       mp.wire = w->id;
       mp.macro = static_cast<uint32_t>(k);
@@ -276,7 +282,6 @@ RackInfo makeInfo(const Project& p, const TrackIndex& ix, const std::vector<cons
       r.mappings.push_back(std::move(mp));
     }
   }
-  // Mappings onto the selector (a macro wired into it: found above only when the selector came first).
   std::sort(r.mappings.begin(), r.mappings.end(), [](const RackMapping& a, const RackMapping& b) { return a.wire < b.wire; });
   return r;
 }

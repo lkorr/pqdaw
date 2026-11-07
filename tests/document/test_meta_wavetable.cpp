@@ -224,9 +224,9 @@ TEST_CASE("wavetable document: fold / warp / sync are automated, wired and mappe
   w.to = s.wt;
   w.param = "warp";
   CHECK(s.store.dispatch(AddWire{w}).ok());
-  const DeviceId macro =  // GU.9: a macro is a value block, its mapping a Travel wire
-      s.edit(ops::addDevice(s.doc(), s.store.ids(), s.wtTrack, std::string(kValueDevice), DeviceKind::AudioEffect, ops::kOffPath)).devices.at(0);
-  s.edit(ops::mapMacro(s.doc(), s.store.ids(), macro, s.wt, "sync"));
+  // GU.9: a rack of one chain around it; the macro is a value block, its mapping a Travel wire.
+  const DeviceId rack = s.edit(ops::groupDevices(s.doc(), s.store.ids(), std::vector<DeviceId>{s.wt})).devices.at(0);
+  s.edit(ops::mapMacro(s.doc(), s.store.ids(), rack, 0, s.wt, "sync"));
   Result<LoweredProject> lm = lower(s.doc(), o);
   REQUIRE_MESSAGE(lm.ok(), (lm.ok() ? std::string() : lm.error().message));
   CHECK(lm->deviceErrors.empty());

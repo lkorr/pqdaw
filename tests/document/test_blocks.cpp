@@ -157,7 +157,12 @@ TEST_CASE("blocks: atom blocks are their atom (ports, settings, no params); a va
   CHECK(mi->params.empty());
   CHECK(atomBlockPatch("mul") == mul);  // built once
   CHECK(library().library().find("Atom_mul") == mul);  // the device library holds every atom block
-  CHECK(atomBlockPatch("voice.hz") == nullptr);  // needs a voice context
+  // GU.9 (the user: zones are voice atoms as atom blocks): a voice terminal is a block; outside a voice it plays its
+  // stand-in, every output 0.
+  CHECK(atomBlockPatch("voice.hz") != nullptr);
+  REQUIRE(voicelessAtomPatch("voice.hz") != nullptr);
+  CHECK(voicelessAtomPatch("voice.hz")->name() == "Atom_voice_hz__voiceless");
+  CHECK(voicelessAtomPatch("mul") == nullptr);
   CHECK(atomBlockPatch("no_such_atom") == nullptr);
   CHECK(atomBlockPatch("curve") == nullptr);
   const pq::graph::SubcircuitRef sig = pq::graph::subcircuitSignature(*mul);

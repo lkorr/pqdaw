@@ -1,20 +1,38 @@
-// GU.9 (docs/plans/GU.md "One hierarchy"): a rack (a group of parallel chain groups) in the Device view — its chain list
-// (a click shows a chain, "+ Chain" adds one) and its panel of macros (a knob drag moves the macro's value block in one
-// undo step) — through REAL pointer dispatch (window → frame → its rows / its panel's element).
+// T4.8 racks in the Device view through the real shell — GU.9 v2: the same tests over racks that are sets of parallel
+// groups (pq/document/racks.h; the frame is their Device-view form): a rack's frame (macro panel, chain list with the
+// chain mixer, the zone editor, the frames of the chain it shows), showing another chain, dragging devices into chains
+// (a row, the empty list: a new chain), Ctrl+G, macro map mode (macro, then knob: one undo step; again: unmapped), a
+// macro drag (one step of Param changes on the macro's value block), a chain volume drag (its Mixer's Volume block), a
+// zone drag (a zone group made), the circuit showing the chains as parallel group capsules. Goldens: audio-rack,
+// instrument-rack.
+
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
+#include <vector>
 
-#include "pq/document/devices.h"
+#include "lone_instrument.h"
 #include "pq/document/edit_ops.h"
-#include "pq/ui/test_driver.h"
-#include "pq/views/device_chain/device_chain.h"
-#include "pq/views/fake_transport.h"
-#include "pq/views/panel/element.h"
-#include "pq/views/panel/group_panel_face.h"
+#include "pq/document/main_path.h"
+#include "pq/document/lower.h"
+#include "pq/document/racks.h"
+#include "pq/views/project_patch/project_patch.h"
 #include "pq/views/project_patch/project_patch_view.h"
+#include "pq/ui/controls.h"
+#include "pq/ui/gpu.h"
+#include "pq/ui/image.h"
+#include "pq/ui/overlay.h"
+#include "pq/ui/test_driver.h"
+#include "pq/views/circuit/circuit_viewer.h"
+#include "pq/views/device_chain/device_chain.h"
+#include "pq/views/devices/device_panel.h"
+#include "pq/views/fake_transport.h"
+#include "../../src/views/src/shell/shell_widgets.h"
 #include "pq/views/shell/shell.h"
+#include "pq/views/view_scenes.h"
+#include "../ui/golden_check.h"
 #include "views_test_util.h"
 
 using namespace pq;
@@ -23,7 +41,7 @@ using namespace pq::views;
 
 namespace {
 
-const doc::DeviceLibrary& devLib() {
+const doc::DeviceLibrary& library() {
   static std::unique_ptr<doc::DeviceLibrary> lib = [] {
     auto r = doc::loadDeviceLibrary(std::string(PQ_TEST_DATA_DIR) + "/../stdlib");
     REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
@@ -32,114 +50,476 @@ const doc::DeviceLibrary& devLib() {
   return *lib;
 }
 
+Vec2 mid(const IRect& r) { return {static_cast<float>(r.x) + static_cast<float>(r.w) / 2.0f, static_cast<float>(r.y) + static_cast<float>(r.h) / 2.0f}; }
+
+// The shell over one MIDI track: BasicSynth → Utility → Saturator, the saturator grouped into an Audio Effect Rack (one
+// chain: a chain group with its mixer, spliced where the saturator was), shown in the Device view.
 struct Ui {
   FakeTransport port;
   ViewContext ctx{port};
   TestDriver d{1600, 900};
   std::unique_ptr<Shell> shell;
-  doc::TrackId track;
-  doc::DeviceId rack;
+  doc::TrackId keys;
+  doc::DeviceId inst, sat, util, rack;
 
   Ui() {
-    ctx.setDeviceLibrary(&devLib());
+    ctx.setDeviceLibrary(&library());
     doc::DocumentStore& st = ctx.store();
-    auto run = [&](const doc::ops::EditResult& e) {
-      REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
-      REQUIRE(st.dispatch(e->command).ok());
-      return *e;
-    };
-    track = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks.at(0);
-    rack = run(doc::ops::addRack(*st.current(), st.ids(), track, false)).devices.at(0);
+    keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks[0];
+    view_fixture::loneInstrument(st, library(), keys);  // IG.1-2 (lone_instrument.h)
+    inst = track().devices.at(0)->id;
+    util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices[0];
+    sat = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "saturator", doc::DeviceKind::AudioEffect)).devices[0];
+    rack = run(doc::ops::groupDevices(*st.current(), st.ids(), std::vector<doc::DeviceId>{sat})).devices[0];
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
-    ctx.setSelectedTrack(track);
+    dynamic_cast<Splitter&>(*d.find("main/body")).setPosition(300.0f);
+    ctx.setSelectedTrack(keys);
     ctx.setDetailVisible(true);
     ctx.setDetailMode(DetailMode::Device);
     d.tree().layoutNow();
-    d.step();
   }
   ~Ui() { d.tree().setRoot(std::make_unique<Widget>()); }
+
+  doc::ops::Edit run(const doc::ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(ctx.store().dispatch(e->command).ok());
+    return *e;
+  }
   DeviceChainView& view() const {
     DeviceChainView* v = findDeviceChain(*shell);
     REQUIRE(v != nullptr);
     return *v;
   }
-  Widget& frame() const {
-    Widget* f = view().frameOf(rack);
-    REQUIRE(f != nullptr);
-    return *f;
+  const doc::Track& track() const { return *doc::findTrackPtr(*ctx.doc(), keys); }
+  doc::RackInfo rackOf(doc::DeviceId id) const {
+    std::optional<doc::RackInfo> r = doc::rackOf(*ctx.doc(), id);
+    REQUIRE(r.has_value());
+    return *r;
   }
-  size_t chains() const { return doc::rackChains(*ctx.doc(), *doc::findTrackPtr(*ctx.doc(), track), rack).size(); }
-  // Row `i` of the chain list (20 px title, 20 px rows, 132 px wide at scale 1): its centre.
-  Vec2 row(size_t i) const {
-    const IRect r = frame().rect();
-    return {static_cast<float>(r.x + 40), static_cast<float>(r.y + 20 + static_cast<int32_t>(i) * 20 + 10)};
+  std::vector<doc::DeviceId> path() const {
+    std::vector<doc::DeviceId> out;
+    for (const doc::Device* b : doc::mainPath(*ctx.doc(), track()).blocks) out.push_back(b->id);
+    return out;
   }
   size_t history() const { return ctx.store().history().cursor(); }
+  IRect frame(doc::DeviceId id) {
+    d.tree().layoutNow();
+    Widget* f = view().frameOf(id);
+    REQUIRE(f != nullptr);
+    return f->rect();
+  }
+  Widget* in(doc::DeviceId id, std::string_view path) {
+    d.tree().layoutNow();
+    Widget* f = view().frameOf(id);
+    REQUIRE(f != nullptr);
+    return f->find(path);
+  }
+  // A point in a frame's title bar (below the jack strip of a device with exports).
+  Vec2 title(doc::DeviceId id) {
+    const IRect r = frame(id);
+    devices::DevicePanel* p = view().panelOf(id);
+    const int32_t strip = p != nullptr && !p->signature().exports.empty() ? 10 : 0;
+    return {static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + strip + 10)};
+  }
 };
 
 }  // namespace
 
-TEST_CASE("racks view: a rack (a group with chain groups) is shown as a rack — its chain list adds and shows chains, "
-          "its macro knob drags its value block (real dispatch)") {
+TEST_CASE("rack view: the frame shows macros, chain rows with their mixer, and the shown chain's devices") {
   Ui u;
-  Widget& f = u.frame();
-  CHECK(f.name() == "rack[" + std::to_string(u.rack.value) + "]");
-  REQUIRE(u.chains() == 1);
-  const doc::DeviceId first = u.view().shownChain(u.rack);
-  CHECK(first.valid());
-  // "+ Chain" (the row after the last chain): one undo step, the new chain shown.
+  DeviceChainView& v = u.view();
+  REQUIRE(v.frameOf(u.rack) != nullptr);
+  // The macro panel is the rack's panel. M4 review UI item 2: a rack with no macro in use shows one column of four
+  // (always one free macro past the highest mapped or named one, up to visibleMacros); the chain selector is the zone
+  // editor's (its Chain tab), not a knob.
+  devices::DevicePanel* p = v.panelOf(u.rack);
+  REQUIRE(p != nullptr);
+  CHECK(p->controlFor("macro1") != nullptr);
+  CHECK(p->controlFor("macro4") != nullptr);
+  CHECK(p->controlFor("macro5") == nullptr);
+  CHECK(p->controlFor("select") == nullptr);
+  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 3, u.sat, "drive"));  // macro 4 in use
+  p = v.panelOf(u.rack);
+  REQUIRE(p != nullptr);
+  CHECK(p->controlFor("macro5") != nullptr);  // the next column: a free macro to map next
+  CHECK(p->controlFor("macro8") != nullptr);
+  CHECK(p->controlFor("macro9") == nullptr);  // visibleMacros (8) caps it
+  REQUIRE(u.ctx.undo());
+  p = v.panelOf(u.rack);
+  REQUIRE(p != nullptr);
+  // The chain shown is the first; its device has a frame and a panel nested in the rack's frame.
+  const doc::ChainId c1 = u.rackOf(u.rack).chains[0].id;
+  CHECK(v.shownChain(u.rack) == c1);
+  REQUIRE(v.frameOf(u.sat) != nullptr);
+  CHECK(v.frameOf(u.rack)->rect().contains(mid(u.frame(u.sat))));
+  // A second chain (+ in the chain list header), then a click on its row shows it (view state: no history).
+  Widget* list = u.in(u.rack, "chains");
+  REQUIRE(list != nullptr);
   const size_t h0 = u.history();
-  u.d.click(u.row(1));
-  u.d.step();
-  CHECK(u.chains() == 2);
+  u.d.click({static_cast<float>(list->rect().right() - 8), static_cast<float>(list->rect().y + 10)});
   CHECK(u.history() == h0 + 1);
-  const doc::DeviceId second = u.view().shownChain(u.rack);
-  CHECK(second != first);
-  CHECK(doc::findDevice(*u.ctx.doc(), second).device->name == "Chain 2");
-  // A click on the first row shows chain 1 again (view state: no undo step).
-  u.d.click(u.row(0));
-  u.d.step();
-  CHECK(u.view().shownChain(u.rack) == first);
+  REQUIRE(u.rackOf(u.rack).chains.size() == 2);
+  const doc::ChainId c2 = u.rackOf(u.rack).chains[1].id;
+  CHECK(doc::isGroupDevice(*doc::findDevice(*u.ctx.doc(), c2).device));  // a chain is a group
+  Widget* row2 = u.in(u.rack, "chains/chain[" + std::to_string(c2.value) + "]");
+  REQUIRE(row2 != nullptr);
+  u.d.click({static_cast<float>(row2->rect().x + 60), static_cast<float>(row2->rect().y + row2->rect().h / 2)});
+  CHECK(v.shownChain(u.rack) == c2);
   CHECK(u.history() == h0 + 1);
-  // Up / Down step through the chains.
-  const doc::DeviceId one[1] = {u.rack};
-  u.view().select(one);
-  CHECK(u.view().showNeighbourChain(1));
-  CHECK(u.view().shownChain(u.rack) == second);
-  // The macros: Macro 1's knob on the rack's panel, dragged up: its value block moves, one undo step.
-  auto* host = dynamic_cast<panel::PanelHost*>(u.view().frameOf(u.rack)->find("macros[" + std::to_string(u.rack.value) + "]"));
-  REQUIRE(host != nullptr);
-  auto& face = static_cast<panel::GroupPanelFace&>(host->face());
-  REQUIRE(face.elementCount() == doc::kDefaultMacros);
-  const panel::Element& knob = face.element(0);
-  REQUIRE(knob.binding() != nullptr);
-  const doc::DeviceId macro = knob.binding()->device;
-  CHECK(doc::isValueDevice(*doc::findDevice(*u.ctx.doc(), macro).device));
-  const doc::PanelElement& e = knob.desc();
-  const Vec2 c = host->transform().map({e.x + e.w * 0.5f, e.y + e.h * 0.5f});
-  const size_t h1 = u.history();
-  u.d.drag(c, {c.x, c.y - 60.0f}, 6);
-  u.d.step();
-  const doc::DeviceValue* v = doc::findDevice(*u.ctx.doc(), macro).device->param(doc::kValueParam);
-  REQUIRE(v != nullptr);
-  CHECK(v->value > 0.1);
-  CHECK(u.history() == h1 + 1);
+  CHECK(v.frameOf(u.sat) == nullptr);  // not in the chain shown
+  // The row's mixer: its activator mutes the chain (structural), one undo step.
+  Widget* on = u.in(u.rack, "chains/chain[" + std::to_string(c2.value) + "]/on");
+  REQUIRE(on != nullptr);
+  u.d.click(mid(on->rect()));
+  CHECK(u.history() == h0 + 2);
+  CHECK_FALSE(u.rackOf(u.rack).chains[1].active);
 }
 
-TEST_CASE("racks view: the circuit shows the rack as the group it is (one capsule, its chains capsules inside)") {
+TEST_CASE("rack view: dragging devices into a chain row, onto the empty chain list (a new chain), out to the track") {
   Ui u;
-  project_patch::ProjectPatchView* pv = findProjectPatch(*u.shell);
-  REQUIRE(pv != nullptr);
-  pv->setShown(true, false);
+  const size_t h0 = u.history();
+  Widget* list = u.in(u.rack, "chains");
+  REQUIRE(list != nullptr);
+  // Utility (on the track) onto the empty area below the rows: a new chain holding it, one step.
+  const Vec2 empty{static_cast<float>(list->rect().x + 40), static_cast<float>(list->rect().y + 90)};
+  u.d.drag(u.title(u.util), empty, 10);
+  CHECK(u.history() == h0 + 1);
+  REQUIRE(u.rackOf(u.rack).chains.size() == 2);
+  CHECK(u.rackOf(u.rack).chains[1].devices.at(0)->id == u.util);
+  CHECK(u.path() == std::vector<doc::DeviceId>{u.inst, u.rack});  // instrument, rack
+  // The saturator (in chain 1) onto chain 2's row: moved there, one step.
+  const doc::ChainId c2 = u.rackOf(u.rack).chains[1].id;
+  Widget* row2 = u.in(u.rack, "chains/chain[" + std::to_string(c2.value) + "]");
+  REQUIRE(row2 != nullptr);
+  u.d.drag(u.title(u.sat), mid(row2->rect()), 10);
+  CHECK(u.history() == h0 + 2);
+  CHECK(u.rackOf(u.rack).chains[0].devices.empty());
+  CHECK(u.rackOf(u.rack).chains[1].devices.size() == 2);
+  // Out of the rack again: onto the track's chain, just left of the rack.
+  u.view().showChain(u.rack, c2);
+  const IRect rf = u.frame(u.rack);
+  u.d.drag(u.title(u.util), {static_cast<float>(rf.x + 3), static_cast<float>(rf.y + 40)}, 10);
+  CHECK(u.history() == h0 + 3);
+  // TX.all-free: spliced into the main path, right before the rack
+  CHECK(u.path() == std::vector<doc::DeviceId>{u.inst, u.util, u.rack});
+  for (int k = 0; k < 3; ++k) REQUIRE(u.ctx.undo());
+  CHECK(u.path() == std::vector<doc::DeviceId>{u.inst, u.util, u.rack});  // the start: [instrument, utility, rack]
+  CHECK(u.rackOf(u.rack).chains.size() == 1);
+}
+
+TEST_CASE("rack view: Ctrl+G groups the selection; the circuit shows the rack's chains as parallel group capsules") {
+  Ui u;
+  const size_t h0 = u.history();
+  u.d.click(u.title(u.util));
+  REQUIRE(u.view().selection().size() == 1);
+  CHECK(u.d.press("Ctrl+G") == KeyResult::Action);
+  CHECK(u.history() == h0 + 1);
+  const std::vector<doc::DeviceId> p = u.path();
+  REQUIRE(p.size() == 3);
+  const doc::RackInfo r = u.rackOf(p[1]);
+  CHECK(r.chains.at(0).devices.at(0)->id == u.util);
+  // A second chain in the first rack: the circuit draws both chains as group capsules side by side in the band, fed from
+  // the same block and summed into the same one (the rack is their Device-view form, not a block of its own).
+  u.run(doc::ops::addChain(*u.ctx.doc(), u.ctx.store().ids(), u.rack));
+  const doc::RackInfo two = u.rackOf(u.rack);
+  REQUIRE(two.chains.size() == 2);
+  doc::LowerOptions lo;
+  lo.library = &library().library();
+  lo.devices = &library();
+  const auto low = doc::lower(*u.ctx.doc(), lo);
+  REQUIRE(low.ok());
+  const project_patch::ProjectPatch pm = project_patch::buildProjectPatch(*u.ctx.doc(), *low, &library().catalog());
+  std::vector<const project_patch::Node*> caps;
+  for (const project_patch::Node& n : pm.nodes)
+    if (n.kind == project_patch::NodeKind::Device && (n.device == two.chains[0].id || n.device == two.chains[1].id))
+      caps.push_back(&n);
+  REQUIRE(caps.size() == 2);
+  CHECK(caps[0]->group);
+  CHECK(caps[1]->group);
+  CHECK(!caps[0]->offPath);  // both laid out on the band's path (stacked), neither in the free row
+  CHECK(!caps[1]->offPath);
+  CHECK(std::fabs(caps[0]->x - caps[1]->x) < 1.0f);  // parallel: one above the other
+  CHECK(caps[0]->y != caps[1]->y);
+}
+
+TEST_CASE("rack view: map mode — a macro, then a knob maps it (one step); again unmaps; Esc ends map mode") {
+  Ui u;
+  DeviceChainView& v = u.view();
+  v.setMapMode(u.rack);
+  CHECK(v.mapRack() == u.rack);
   u.d.tree().layoutNow();
-  const project_patch::ProjectPatch& pp = pv->patch();
-  const uint32_t n = pp.nodeOf(u.rack);
-  REQUIRE(n != project_patch::kNone);
-  CHECK(pp.nodes[n].group);
-  const doc::DeviceId chain = u.view().shownChain(u.rack);
-  const uint32_t cn = pp.nodeOf(chain);
-  REQUIRE(cn != project_patch::kNone);
-  CHECK(pp.nodes[cn].group);
+  // Click macro 2, then the saturator's drive knob.
+  devices::DevicePanel* rp = v.panelOf(u.rack);
+  devices::DevicePanel* sp = v.panelOf(u.sat);
+  REQUIRE(rp != nullptr);
+  REQUIRE(sp != nullptr);
+  const size_t h0 = u.history();
+  u.d.click(mid(rp->controlFor("macro2")->rect()));
+  CHECK(v.mapMacro() == 1);
+  CHECK(u.history() == h0);  // picking a macro is view state
+  u.d.click(mid(sp->controlFor("drive")->rect()));
+  CHECK(u.history() == h0 + 1);
+  {
+    const doc::RackInfo r = u.rackOf(u.rack);
+    REQUIRE(r.mappings.size() == 1);
+    CHECK(r.mappings[0].device == u.sat);
+    CHECK(r.mappings[0].param == "drive");
+    CHECK(r.mappings[0].macro == 1);
+    // The macro took over the knob's position (its first mapping: Live): a value block made for it.
+    REQUIRE(r.macros[1].block.valid());
+    CHECK(r.macros[1].value == doctest::Approx(0.5 * doc::kMacroMax).epsilon(0.02));  // drive 0 dB: near mid travel
+  }
+  // The mapped knob shows the mapping's range as a ring.
+  // A second click on it unmaps (one step).
+  u.d.click(mid(sp->controlFor("drive")->rect()));
+  CHECK(u.history() == h0 + 2);
+  CHECK(u.rackOf(u.rack).mappings.empty());
+  // Knobs outside the rack are not targets: a click on the instrument's knob changes nothing.
+  devices::DevicePanel* ip = v.panelOf(u.inst);
+  REQUIRE(ip != nullptr);
+  u.d.click(mid(ip->controlFor("bright")->rect()));
+  CHECK(u.history() == h0 + 2);
+  // Esc ends map mode.
+  u.d.click(mid(v.rect()));
+  u.d.tree().setFocus(&v);
+  u.d.press("Escape");
+  CHECK_FALSE(v.mapRack().valid());
+}
+
+TEST_CASE("rack view: a macro drag is one step of Param changes; a chain volume drag one step; a zone drag one step") {
+  Ui u;
+  DeviceChainView& v = u.view();
+  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 0, u.sat, "drive"));
+  devices::DevicePanel* rp = v.panelOf(u.rack);
+  REQUIRE(rp != nullptr);
+  u.d.tree().layoutNow();
+  const size_t h0 = u.history();
+  const Vec2 c = mid(rp->controlFor("macro1")->rect());
+  u.d.drag(c, {c.x, c.y - 40.0f}, 6);
+  CHECK(u.history() == h0 + 1);
+  const doc::ChangeSet& cs = u.ctx.store().history().entries()[h0].changes;
+  CHECK(cs.paramOnly());
+  REQUIRE(cs.params.size() == 1);
+  CHECK(cs.params[0] == doc::ParamRef::device(u.rackOf(u.rack).macros[0].block, std::string(doc::kValueParam)));
+  CHECK(u.rackOf(u.rack).macros[0].value > 10.0);
+  // The chain row's volume box.
+  const doc::ChainId c1 = u.rackOf(u.rack).chains[0].id;
+  Widget* vol = u.in(u.rack, "chains/chain[" + std::to_string(c1.value) + "]/volume");
+  REQUIRE(vol != nullptr);
+  const Vec2 vc = mid(vol->rect());
+  u.d.drag(vc, {vc.x, vc.y + 30.0f}, 6);
+  CHECK(u.history() == h0 + 2);
+  CHECK(u.ctx.store().history().entries()[h0 + 1].changes.paramOnly());
+  CHECK(u.rackOf(u.rack).chains[0].volumeDb < 0.0f);
+  // The zone editor (Chain tab): drag the zone's right end left — the zone switches on (structural), one step.
+  v.showZones(u.rack, doc::ZoneKind::Select);
+  Widget* zones = u.in(u.rack, "zones");
+  REQUIRE(zones != nullptr);
+  REQUIRE(zones->visible());
+  const IRect zr = zones->rect();
+  const float rowY = static_cast<float>(zr.y + 20 + 15);
+  u.d.drag({static_cast<float>(zr.right() - 6), rowY}, {static_cast<float>(zr.x + zr.w / 2), rowY}, 6);
+  CHECK(u.history() == h0 + 3);
+  const doc::Zone z = u.rackOf(u.rack).chains[0].select;
+  CHECK(u.rackOf(u.rack).chains[0].selectZone.valid());  // the zone is a group in the chain now
+  CHECK(u.rackOf(u.rack).selector.valid());              // and the rack has its selector
+  CHECK(z.hi < 100.0);
+  CHECK(z.hi > 40.0);
+  CHECK_FALSE(doc::zoneOff(z, doc::ZoneKind::Select, doc::KeyZoneUnit::Hz));
+  for (int k = 0; k < 3; ++k) REQUIRE(u.ctx.undo());
+  CHECK(doc::zoneOff(u.rackOf(u.rack).chains[0].select, doc::ZoneKind::Select, doc::KeyZoneUnit::Hz));
+  CHECK_FALSE(u.rackOf(u.rack).chains[0].selectZone.valid());
+}
+
+// M4 review M6 / L2: a zone drag and a device reorder drag cancel on a lost focus (alt-tab) and on Esc: the document is
+// as before, no undo step, and a pointer that comes back with the button down drives nothing.
+TEST_CASE("rack view: zone and reorder drags cancel on focus loss and Esc (M4 review M6, L2)") {
+  Ui u;
+  DeviceChainView& v = u.view();
+  v.showZones(u.rack, doc::ZoneKind::Select);
+  Widget* zones = u.in(u.rack, "zones");
+  REQUIRE(zones != nullptr);
+  const IRect zr = zones->rect();
+  const float rowY = static_cast<float>(zr.y + 20 + 15);
+  const Vec2 end{static_cast<float>(zr.right() - 6), rowY};
+  const doc::Snapshot before = u.ctx.doc();
+  const size_t h0 = u.history();
+  auto zoneDrag = [&] {
+    u.d.move(end);
+    u.d.down(end);
+    u.d.move({end.x - 80.0f, rowY});
+    REQUIRE(u.ctx.store().inGesture());
+    CHECK_FALSE(doc::zoneOff(u.rackOf(u.rack).chains[0].select, doc::ZoneKind::Select, doc::KeyZoneUnit::Hz));
+  };
+  // Focus loss mid-drag.
+  zoneDrag();
+  u.shell->cancelInteraction();
+  CHECK_FALSE(u.ctx.store().inGesture());
+  CHECK(u.d.tree().captured() == nullptr);
+  CHECK(u.ctx.doc() == before);
+  u.d.move({end.x - 160.0f, rowY});  // hover moves after the cancel: nothing follows the pointer
+  u.d.up({end.x - 160.0f, rowY});
+  CHECK(u.ctx.doc() == before);
+  CHECK(u.history() == h0);
+  // Esc mid-drag (the focus elsewhere: Esc goes to the widget holding the pointer).
+  zoneDrag();
+  CHECK(u.d.keyDown(key::kEscape) == KeyResult::Widget);
+  CHECK_FALSE(u.ctx.store().inGesture());
+  u.d.move({end.x - 160.0f, rowY});
+  u.d.up({end.x - 160.0f, rowY});
+  CHECK(u.ctx.doc() == before);
+  CHECK(u.history() == h0);
+  // A device reorder drag (Utility to the end of the chain): focus loss, then Esc; nothing moves, a later click does
+  // not drop it.
+  for (int k = 0; k < 2; ++k) {
+    CAPTURE(k);
+    const Vec2 from = u.title(u.util);
+    const IRect last = u.frame(u.rack);
+    const Vec2 to{static_cast<float>(last.right() + 30), from.y};
+    u.d.move(from);
+    u.d.down(from);
+    u.d.move({from.x + 40.0f, from.y});
+    u.d.move(to);
+    if (k == 0) u.shell->cancelInteraction();
+    else CHECK(u.d.keyDown(key::kEscape) == KeyResult::Widget);
+    u.d.up(to);
+    u.d.click(to);
+    CHECK(u.ctx.doc() == before);
+    CHECK(u.history() == h0);
+  }
+}
+
+// T4.17: Ctrl+R renames the selected device in its title bar (one undo step; the title shows the name); Ctrl+Shift+G
+// ungroups the selected one-chain rack (its devices take its place and become the selection). M4 review M14: with the
+// Device view focused, the Edit menu acts on the devices (no arrangement-only items).
+TEST_CASE("rack view: Ctrl+R renames a device in its title bar; Ctrl+Shift+G ungroups; Edit follows the focus (T4.17, M14)") {
+  Ui u;
+  DeviceChainView& v = u.view();
+  const doc::DeviceId one[1] = {u.rack};
+  v.select(one);
+  u.d.tree().setFocus(&v);
+  // Edit menu: the device actions.
+  auto* bar = dynamic_cast<shell::MenuBar*>(u.d.find("main/menu-bar"));
+  REQUIRE(bar != nullptr);
+  const std::vector<MenuItem> edit = bar->items(1);
+  auto has = [&](std::string_view action) {
+    return std::any_of(edit.begin(), edit.end(), [&](const MenuItem& m) { return m.action == action; });
+  };
+  CHECK(has("device.copy"));
+  CHECK(has("device.delete"));
+  CHECK(has("device.ungroup"));
+  CHECK_FALSE(has("arrangement.copy"));
+  CHECK_FALSE(has("arrangement.split"));
+  CHECK_FALSE(has("arrangement.insertTime"));
+  // Rename (GU.9: a device inside the rack's chain; the rack itself has no name of its own): a field over the title;
+  // typing replaces the selected name; Enter: one step.
+  const size_t h0 = u.history();
+  const doc::DeviceId satOnly[1] = {u.sat};
+  v.select(satOnly);
+  CHECK(u.d.press("Ctrl+R") == KeyResult::Action);
+  devices::DevicePanel* p = v.panelOf(u.sat);
+  REQUIRE(p != nullptr);
+  CHECK(p->renaming());
+  CHECK(u.d.type("Dirt"));
+  u.d.press("Return");
+  u.d.step();
+  CHECK_FALSE(p->renaming());
+  CHECK(u.history() == h0 + 1);
+  CHECK(doc::findDevice(*u.ctx.doc(), u.sat).device->name == "Dirt");
+  CHECK(v.panelOf(u.sat)->title() == "Dirt");
+  // Esc cancels.
+  u.d.tree().setFocus(&v);
+  u.d.press("Ctrl+R");
+  CHECK(u.d.type("Nope"));
+  u.d.press("Escape");
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  CHECK(doc::findDevice(*u.ctx.doc(), u.sat).device->name == "Dirt");
+  // Ungroup: the Saturator back in the track's chain where the rack was, selected; one step.
+  u.d.tree().setFocus(&v);
+  v.select(one);
+  CHECK(u.d.press("Ctrl+Shift+G") == KeyResult::Action);
+  CHECK(u.history() == h0 + 2);
+  CHECK_FALSE(doc::findDevice(*u.ctx.doc(), u.rack).device);
+  CHECK(u.path() == std::vector<doc::DeviceId>{u.inst, u.util, u.sat});
+  REQUIRE(v.selection().size() == 1);
+  CHECK(v.selection()[0] == u.sat);
+  REQUIRE(u.ctx.undo());
+  CHECK(doc::findDevice(*u.ctx.doc(), u.rack).device);
+}
+
+// M4 review L3: a knob mapped to a macro that an outer rack's macro maps shows the value as played (down the chain of
+// mappings from the outer macro), not the inner macro's stored value.
+TEST_CASE("rack view: a knob under nested macro mappings shows the played value (M4 review L3)") {
+  Ui u;
+  DeviceChainView& v = u.view();
+  const doc::DeviceId outer = u.run(doc::ops::groupDevices(*u.ctx.doc(), u.ctx.store().ids(), std::vector<doc::DeviceId>{u.rack})).devices.at(0);
+  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 0, u.sat, "drive", 0.0));  // inner macro 1 -> drive
+  const doc::DeviceId innerMacro = u.rackOf(u.rack).macros[0].block;
+  // outer macro 1 -> inner macro 1 (its value block's knob)
+  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), outer, 0, innerMacro, std::string(doc::kValueParam), 0.0));
+  u.run(doc::ops::setMacroValue(*u.ctx.doc(), outer, 0, doc::kMacroMax));  // the inner macro's stored knob stays 0
+  u.d.tree().layoutNow();
+  v.refreshRings();
+  devices::DevicePanel* sat = v.panelOf(u.sat);
+  REQUIRE(sat != nullptr);
+  const doc::RackInfo inner = u.rackOf(u.rack);
+  REQUIRE(inner.mappings.size() == 1);
+  const doc::RackMapping* mapping = &inner.mappings[0];
+  const devices::ParamInfo* info = nullptr;
+  for (const devices::ParamInfo& pi : sat->signature().params)
+    if (pi.name == "drive") info = &pi;
+  REQUIRE(info != nullptr);
+  CHECK(devices::toPosition(*info, sat->paramValue("drive")) == doctest::Approx(mapping->max).epsilon(1e-6));
+}
+
+// M4 review M16: the zone editor's hovered bar shows its range in the info view; UI item 6: Create > Insert Audio
+// Effect Rack adds an empty rack after the selected device (one undo step).
+TEST_CASE("rack view: a hovered zone shows its range (M16); Create inserts a rack (UI item 6)") {
+  Ui u;
+  DeviceChainView& v = u.view();
+  v.showZones(u.rack, doc::ZoneKind::Select);
+  Widget* zones = u.in(u.rack, "zones");
+  REQUIRE(zones != nullptr);
+  const IRect zr = zones->rect();
+  const Vec2 row0{static_cast<float>(zr.x + zr.w / 2), static_cast<float>(zr.y + 20 + 11)};
+  u.d.move(row0);
+  const InfoText info = zones->info();
+  CHECK(std::string(info.title).find("0 \xE2\x80\x93 127") != std::string::npos);
+  CHECK(std::string(info.body).find("Full level") != std::string::npos);
+  u.d.move({static_cast<float>(zr.x + zr.w / 2), static_cast<float>(zr.bottom() - 3)});  // the axis row: no bar
+  CHECK(std::string(zones->info().title) == "Zones");
+  // Create > Insert Audio Effect Rack: after the selected Utility.
+  const doc::DeviceId one[1] = {u.util};
+  v.select(one);
+  const size_t h0 = u.history();
+  REQUIRE(u.ctx.actions().invoke(u.ctx.actions().find("device.addAudioEffectRack")));
+  CHECK(u.history() == h0 + 1);
+  const std::vector<doc::DeviceId> p = u.path();
+  REQUIRE(p.size() == 4);
+  CHECK(p[1] == u.util);
+  const std::optional<doc::RackInfo> made = doc::rackOf(*u.ctx.doc(), p[2]);
+  REQUIRE(made.has_value());
+  CHECK_FALSE(made->instrument);
+}
+
+TEST_CASE("render: audio-rack and instrument-rack match the golden images") {
+  for (const std::string scene : {"audio-rack", "instrument-rack"}) {
+    CAPTURE(scene);
+    uint32_t w = 0, h = 0;
+    viewSceneDefaultSize(scene, w, h);
+    GpuOptions o;
+    o.validation = true;
+    auto img = renderViewScene(scene, {}, w, h, {}, o, &library());
+    REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+    const std::string path = std::string(PQ_TEST_DATA_DIR) + "/views/golden/" + scene + ".png";
+    auto ref = readPng(path);
+    if (!ref) (void)writePng(std::string(scene) + ".actual.png", *img);
+    REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
+    ImageDiff d;
+    CHECK(pq::ui::test::matchesGolden(scene, *img, *ref, true, &d));
+    MESSAGE(scene << ": " << pq::ui::test::describe(d));
+  }
 }

@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <map>
+#include <unordered_set>
 #include <optional>
 #include <memory>
 #include <span>
@@ -82,6 +83,7 @@ struct DeviceChainView::Impl {
   // GU.9: what a rack's frame shows (view state, by its frame's id: a rack has no options of its own any more).
   std::map<uint32_t, bool> rackShowChains, rackShowMacros;
   std::map<uint32_t, uint32_t> rackVisibleMacros;
+  std::unordered_set<uint32_t> rackHeld;  // the shown track's racks' chains, macros and selectors (sync)
   // M4 review M9 (DeviceChainView::kMaxNestedRackFrames): the nesting of the rack frame being built (its ctor reads it).
   uint32_t nestingBuilt = 0;
   // T4.8: macro map mode — the rack whose Map is on, and the macro picked (−1: none yet).
@@ -253,6 +255,9 @@ struct ChainPlace {
   bool inChain() const noexcept { return chain.valid(); }
 };
 ChainPlace chainPlaceOf(const doc::Project& p, doc::DeviceId device);
+// M4 review L3 / GU.9: a value block's knob position as played — its own plus what Travel wires (an outer rack's macro
+// mapped onto it) add, down the chain of mappings.
+double playedPosition(const doc::Project& p, doc::DeviceId block, uint32_t depth = 0);
 // The macro mapping onto device.param (its rack, the mapping); nullopt: none.
 std::optional<std::pair<doc::RackInfo, doc::RackMapping>> macroMappingOf(const doc::Project& p, doc::DeviceId device,
                                                                          std::string_view param);

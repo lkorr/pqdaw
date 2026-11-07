@@ -1656,6 +1656,18 @@ device_chain::ChainPlace device_chain::chainPlaceOf(const doc::Project& p, doc::
   return out;
 }
 
+double device_chain::playedPosition(const doc::Project& p, doc::DeviceId block, uint32_t depth) {
+  const doc::Device* d = doc::findDevice(p, block).device;
+  if (d == nullptr) return 0.0;
+  const doc::DeviceValue* v = d->param(doc::kValueParam);
+  double pos = v != nullptr ? v->value : 0.0;
+  if (depth < 16)
+    for (const doc::Wire& w : doc::wiresOf(p))
+      if (!w.toMixer() && w.to == block && w.param == doc::kValueParam && w.travels() && !w.fromNoteSource())
+        pos += w.amount * playedPosition(p, w.from, depth + 1);
+  return std::clamp(pos, 0.0, 1.0);
+}
+
 std::optional<std::pair<doc::RackInfo, doc::RackMapping>> device_chain::macroMappingOf(const doc::Project& p,
                                                                                          doc::DeviceId device,
                                                                                          std::string_view param) {

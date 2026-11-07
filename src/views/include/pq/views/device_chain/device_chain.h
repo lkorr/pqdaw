@@ -198,7 +198,9 @@ public:
   bool addFreeDevice(const std::string& patch);
   // TX.all-free: the main-path slot right after the last selected device of the list, else `otherwise`.
   uint32_t slotAfterSelection(uint32_t otherwise) const;
-  bool takeIntoRack(doc::DeviceId device);  // TX.all-free: a listed device off the main path (one undo step)
+  bool takeIntoRack(doc::DeviceId device);
+  // GU.9: one of the shown track's racks' chains, macros or selector (racks.h): their wires are the rack frame's.
+  bool heldByRack(doc::DeviceId device) const;  // TX.all-free: a listed device off the main path (one undo step)
   // A free device into the chain before the frame at `slot` (frames.size(): at the end; one undo step).
   bool putIntoChainAt(doc::DeviceId device, uint32_t slot);
   // The slot of the chain a device dropped at device point `pos` lands in (nullopt: not over the chain).

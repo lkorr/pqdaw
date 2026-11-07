@@ -108,6 +108,8 @@ struct Node {
   // TX.all-free: off its track's main path (doc::mainPath): placed on the row under the path until a nudge moves it, and
   // listed in the Device view's free rack.
   bool offPath = false;
+  // GU.9 (pq/document/racks.h): part of a rack — one of its chains, a macro, its selector (not in the free rack).
+  bool rack = false;
   // TX.all-free: the input a wire into its main port (doc::kMainPort) ends on (−1: none, an unplugged meta module).
   int32_t mainIn = 0;
   // TMM.4: a chain meta device ("meta:<type>") whose type has a face: drawn as its face (the block's size), unless

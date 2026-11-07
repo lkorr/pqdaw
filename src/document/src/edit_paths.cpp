@@ -5,6 +5,7 @@
 
 #include "edit_common.h"
 #include "edit_paths.h"
+#include "pq/document/racks.h"
 #include "pq/document/main_path.h"
 
 namespace pq::doc::ops {
@@ -65,6 +66,29 @@ Status splice(Steps& k, IdSource& ids, TrackId track, DeviceId device, uint32_t 
   if (at < path.links.size()) {  // the link into that slot: link.from → it → link.to
     const Wire* l = findWire(k.doc(), path.links[at]);
     const End a = endFrom(*l), b = endTo(*l);
+    // GU.9 (racks.h): the link is a rack's feed or its sum — every chain's (they stay parallel: one feed, one sum).
+    if (b.device.valid())
+      if (const std::optional<RackInfo> r = rackOfChain(k.doc(), *t, b.device)) {
+        std::vector<WireId> feeds;
+        for (const RackChain& c : r->chains)
+          for (const Wire& w : wiresOf(k.doc()))
+            if (!w.toMixer() && w.to == c.id && w.param == kMainPort) feeds.push_back(w.id);
+        for (const WireId w : feeds) PQ_DOC_TRY(k.add(RemoveWire{w}));
+        PQ_DOC_TRY(k.add(AddWire{mainLink(ids, a, self)}));
+        for (const RackChain& c : r->chains) PQ_DOC_TRY(k.add(AddWire{mainLink(ids, self, End{c.id, {}})}));
+        return ok();
+      }
+    if (a.device.valid())
+      if (const std::optional<RackInfo> r = rackOfChain(k.doc(), *t, a.device)) {
+        std::vector<WireId> sums;
+        for (const RackChain& c : r->chains)
+          for (const Wire& w : wiresOf(k.doc()))
+            if (!w.fromNoteSource() && w.from == c.id && w.port == kMainPort && (w.toMixer() || w.param == kMainPort))
+              sums.push_back(w.id);
+        for (const WireId w : sums) PQ_DOC_TRY(k.add(RemoveWire{w}));
+        for (const RackChain& c : r->chains) PQ_DOC_TRY(k.add(AddWire{mainLink(ids, End{c.id, {}}, self)}));
+        return k.add(AddWire{mainLink(ids, self, b)});
+      }
     PQ_DOC_TRY(k.add(RemoveWire{l->id}));
     PQ_DOC_TRY(k.add(AddWire{mainLink(ids, a, self)}));
     return k.add(AddWire{mainLink(ids, self, b)});
@@ -189,6 +213,11 @@ EditResult moveOnPath(const Project& p, IdSource& ids, const DeviceLibrary* lib,
   }
   Steps k(p);
   if (from >= 0) PQ_DOC_TRY(detach(k, ids, lib, device));
+  // GU.9: a member of a group (a rack's chain) leaves its group's series (joined there) and the group.
+  if (from < 0 && loc.device->group.valid()) {
+    PQ_DOC_TRY(detach(k, ids, lib, device));
+    PQ_DOC_TRY(k.add(SetDeviceGroup{device, {}}));
+  }
   if (to != loc.track->id) PQ_DOC_TRY(k.add(MoveDevice{device, to, kAppend}));
   // The slot counted on the path without it.
   uint32_t s = slot;

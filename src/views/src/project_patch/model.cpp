@@ -13,6 +13,7 @@
 #include "pq/document/instrument_groups.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
+#include "pq/document/racks.h"
 #include "pq/graph/layout.h"
 #include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
@@ -97,6 +98,10 @@ struct Builder {
   std::vector<doc::ChainStage> bandStages;
   // TX.all-free: each track's main path (doc::mainPath), by track id.
   std::unordered_map<uint32_t, doc::MainPath> paths;
+  // GU.9 (racks.h): a rack's chains off the path (node → the path chain it stacks under, in chain order) — drawn as
+  // parallel group capsules under the chain on the path, the shared feed and sum their wires.
+  std::unordered_map<uint32_t, uint32_t> stackUnder;
+  std::vector<uint32_t> stackOrder;  // those nodes, each after the one it stacks under
   std::optional<doc::MainLinks> mainLinks;  // made once per build (one pass over the wires)
   std::optional<doc::VoiceContexts> contexts;  // GU.2: made at the first nested group (is it an instrument group?)
   // TX.groups: each opened group's contents, placed relative to its capsule's top-left (layout() adds the capsule's
@@ -764,6 +769,33 @@ struct Builder {
       out.bands[bi].devices.push_back(n);
     }
     for (const uint32_t n : out.bands[bi].devices) out.nodes[n].offPath = !path.contains(out.nodes[n].device);  // TX.all-free
+    // GU.9: the track-level racks: their chains off the path stack under the one on it; their macros and selector stay
+    // on the free row (blocks wired into the chains) but belong to the rack (the Device view's free rack leaves them out).
+    for (const doc::RackInfo& r : doc::findRacks(p, t)) {
+      if (r.parent.valid()) continue;
+      uint32_t anchor = kNone;
+      std::vector<uint32_t> rest;
+      for (const doc::RackChain& c : r.chains)
+        for (const uint32_t n : out.bands[bi].devices)
+          if (out.nodes[n].device == c.id) {
+            out.nodes[n].rack = true;
+            if (anchor == kNone && path.contains(c.id)) anchor = n;
+            else rest.push_back(n);
+          }
+      for (const uint32_t n : out.bands[bi].devices) {
+        const doc::DeviceId d = out.nodes[n].device;
+        if (d == r.selector || std::any_of(r.macros.begin(), r.macros.end(), [&](const doc::RackMacro& m) { return m.block == d; }))
+          out.nodes[n].rack = true;
+      }
+      if (anchor == kNone) continue;
+      uint32_t under = anchor;
+      for (const uint32_t n : rest) {
+        out.nodes[n].offPath = false;
+        stackUnder[n] = under;
+        stackOrder.push_back(n);
+        under = n;
+      }
+    }
     out.bands[bi].mixer = addNode(mixerNode(bi, t, lowered));
     if (t.kind == doc::TrackKind::Master) {
       Node o;
@@ -940,6 +972,13 @@ struct Builder {
       out.nodes[n].x = x;
       x += out.nodes[n].w + m::kNodeGap;
     }
+    // GU.9: a rack's other chains under its chain on the path, at its x (each under the one before it).
+    for (const uint32_t d : b.devices)
+      if (const auto it = stackUnder.find(d); it != stackUnder.end()) {
+        uint32_t a = it->second;
+        for (uint32_t guard = 0; stackUnder.count(a) != 0 && guard < 4096; ++guard) a = stackUnder.at(a);
+        out.nodes[d].x = out.nodes[a].x;
+      }
     // The blocks off the main path on a row of their own under it, from its first block's place, in list order
     // (layout(): y; a nudge moves them anywhere).
     float fx = out.nodes[b.source].x + out.nodes[b.source].w + m::kNodeGap;
@@ -1053,7 +1092,14 @@ struct Builder {
       };
       place(b.source);
       for (const uint32_t d : b.devices)
-        if (!out.nodes[d].offPath) place(d);
+        if (!out.nodes[d].offPath && stackUnder.count(d) == 0) place(d);
+      // GU.9: a rack's other chains, each under the one before it (the band grows to hold them).
+      for (const uint32_t d : stackOrder) {
+        if (out.nodes[d].band != out.nodes[stackUnder.at(d)].band || &out.bands[out.nodes[d].band] != &b) continue;
+        const Node& above = out.nodes[stackUnder.at(d)];
+        out.nodes[d].y = roundUp4(above.y + above.h + m::kFreeRowGap);
+        bottom = std::max(bottom, out.nodes[d].y + out.nodes[d].h);
+      }
       // TX.mixer-look: the mixer at the band's top (under its title strip), the master's Out level with its output.
       if (b.mixer != kNone) {
         Node& mx = out.nodes[b.mixer];
@@ -1472,7 +1518,7 @@ struct Builder {
     std::vector<uint32_t> order;
     for (uint32_t i = 0; i < out.nodes.size(); ++i) {
       const Node& n = out.nodes[i];
-      if (n.band != b || n.kind != NodeKind::Device || !n.offPath || n.capsule != kNone) continue;
+      if (n.band != b || n.kind != NodeKind::Device || !n.offPath || n.rack || n.capsule != kNone) continue;
       order.push_back(i);
       contentsOf(i, order);
     }
