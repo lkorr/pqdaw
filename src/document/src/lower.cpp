@@ -708,7 +708,10 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
   }
   // TX.groups: the group patch joins the callee library when a group plays (the graph calls it by name); TX.groups-fix1:
   // and each variant a group's stage selects.
-  if (combined && groups) {
+  // (A DeviceLibrary's own library holds them already: devices.cpp.)
+  const bool baseHasGroups = base->find(groupNotesPatch().name()) == &groupNotesPatch() &&
+                             base->find(groupPatch().name()) == &groupPatch();
+  if (combined && groups && (!baseHasGroups || u.combined)) {
     if (!u.combined) {
       u.combined = std::make_shared<graph::PatchLibrary>();
       u.combined->addAll(*base);
@@ -3509,27 +3512,23 @@ bool declaresParam(const TrackDevs& td, uint32_t dev, std::string_view name, con
 // the largest voice count (an instrument group's `voices` setting — 1 when mono —, else the largest `voices` setting of
 // its stock instruments, T4.12-fix1; a lone instrument's own; 0: the link's default) and the first group's stealing.
 void contextPolyphony(const TrackDevs& devs, const Callees* lib, uint32_t& polyphony, int32_t& steal) {
+  (void)lib;
   polyphony = 0;
   steal = -1;
+  // The stock instruments' own `voices` settings (T4.12-fix1; inside racks too: T4.8) …
+  for (uint32_t m = 0; m < devs.size(); ++m) {
+    const LDev& d = devs[m];
+    if (d.rack < 0 && d.callee != nullptr && !isMetaDevice(*d.device) && !isGroupDevice(*d.device) &&
+        d.device->kind == DeviceKind::Instrument)
+      polyphony = std::max(polyphony, devicePolyphony(d));
+  }
+  // … and the instrument groups' voice counts (1 when mono).
   for (const uint32_t k : devs.contexts) {
     const LDev& c = devs[k];
-    if (isContextGroup(c)) {
-      const GroupPolyphony gp = groupPolyphony(*c.device);
-      uint32_t v = gp.mono ? 1u : gp.voices;
-      if (v == 0)
-        for (uint32_t m = 0; m < devs.size(); ++m) {
-          const LDev& d = devs[m];
-          if (d.rack >= 0 || d.callee == nullptr || isMetaDevice(*d.device) || isGroupDevice(*d.device) ||
-              d.device->kind != DeviceKind::Instrument || lib == nullptr)
-            continue;
-          if (const VoiceContext* vc = lib->memberContext(d.device->id); vc != nullptr && vc->block == c.device)
-            v = std::max(v, devicePolyphony(d));
-        }
-      polyphony = std::max(polyphony, v);
-      if (steal < 0 && c.device->setting(kGroupSteal) != nullptr) steal = static_cast<int32_t>(gp.steal);
-    } else if (c.rack < 0) {
-      polyphony = std::max(polyphony, devicePolyphony(c));
-    }
+    if (!isContextGroup(c)) continue;
+    const GroupPolyphony gp = groupPolyphony(*c.device);
+    polyphony = std::max(polyphony, gp.mono ? 1u : gp.voices);
+    if (steal < 0 && c.device->setting(kGroupSteal) != nullptr) steal = static_cast<int32_t>(gp.steal);
   }
 }
 

@@ -328,8 +328,13 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
         if (isGroupDevice(*d)) {  // TX.groups (model.h "Groups")
           if (rackChain) return invalid("a group sits in a track's circuit, not in a rack chain");
           if (d->kind != DeviceKind::AudioEffect) return invalid("a group is an audio effect");
-          if (!d->params.empty() || !d->settings.empty() || d->source || d->meta)
-            return invalid("a group has no params, settings, text or meta modules of its own");
+          if (!d->params.empty() || d->source || d->meta)
+            return invalid("a group has no params, text or meta modules of its own");
+          // IG.1-2 (model.h "Instrument groups"): its settings are an instrument group's polyphony only.
+          for (const DeviceValue& v : d->settings)
+            if (v.name != kGroupVoices && v.name != kGroupMono && v.name != kGroupLegato && v.name != kGroupGlide &&
+                v.name != kGroupSteal)
+              return invalid("a group's settings are its polyphony (voices, mono, legato, glide, steal)");
           if (d->group.valid()) return invalid("groups do not nest (a group cannot be in a group)");
         }
         if (d->group.valid()) {

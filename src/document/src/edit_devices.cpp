@@ -1,6 +1,7 @@
 // Device edit builders (T4.1; inside racks T4.8): pq/document/edit_ops.h, "Devices".
 #include <algorithm>
 #include <cmath>
+#include <tuple>
 #include <unordered_map>
 
 #include "edit_common.h"
@@ -84,6 +85,45 @@ Status placeOnPath(Steps& k, IdSource& ids, TrackId track, DeviceId dev, bool no
   const Device* head = path.blocks.empty() ? nullptr : path.blocks.front();
   const bool stockHead = head != nullptr && head->kind == DeviceKind::Instrument && !isMetaDevice(*head);
   if (notes) slot = 0;
+  // IG.1-2: a MIDI track headed by its instrument group — an instrument goes INTO the group, taking the place of the
+  // stock instrument there (its cables, In → it → Out, move to the new one), or wired In → it → Out when there is none;
+  // anything else at slot 0 goes after the group.
+  if (head != nullptr && isGroupDevice(*head) && t->kind == TrackKind::Midi) {
+    if (!notes) return splice(k, ids, track, dev, slot == 0 ? 1 : slot);
+    const DeviceId g = head->id;
+    const Device* old = nullptr;
+    for (const DevicePtr& d : t->devices)
+      if (d->group == g && d->kind == DeviceKind::Instrument && !isMetaDevice(*d)) {
+        old = d.get();
+        break;
+      }
+    PQ_DOC_TRY(k.add(SetDeviceGroup{dev, g}));
+    if (old != nullptr) {
+      const DeviceId gone = old->id;
+      std::vector<Wire> moved;
+      for (const Wire& w : wiresOf(k.doc()))
+        if ((!w.fromNoteSource() && w.from == gone) || (!w.toMixer() && w.to == gone)) moved.push_back(w);
+      PQ_DOC_TRY(k.add(RemoveDevice{gone}));
+      for (Wire w : moved) {
+        w.id = ids.wire();
+        if (!w.fromNoteSource() && w.from == gone) w.from = dev;
+        if (!w.toMixer() && w.to == gone) w.to = dev;
+        PQ_DOC_TRY(k.add(AddWire{w}));
+      }
+      return ok();
+    }
+    for (const auto& [from, port, to, param] : {std::tuple{g, kGroupInPort, dev, kMainPort}, std::tuple{dev, kMainPort, g, kGroupOutPort}}) {
+      Wire w;
+      w.id = ids.wire();
+      w.from = from;
+      w.port = std::string(port);
+      w.to = to;
+      w.param = std::string(param);
+      w.chain = true;
+      PQ_DOC_TRY(k.add(AddWire{w}));
+    }
+    return ok();
+  }
   if (stockHead && slot == 0 && (notes || meta) && t->kind == TrackKind::Midi) {
     const DeviceId gone = head->id;
     PQ_DOC_TRY(detach(k, ids, nullptr, gone));

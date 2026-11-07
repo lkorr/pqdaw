@@ -310,7 +310,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
                              builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11],
                              builtinMigrations()[12], builtinMigrations()[13], builtinMigrations()[14],
-                             builtinMigrations()[15], builtinMigrations()[16]};
+                             builtinMigrations()[15], builtinMigrations()[16], builtinMigrations()[17]};
   const std::string old = schema0Text();
   SUBCASE("an old file is migrated, then decoded") {
     Result<LoadedProject> r = parseProject(old, LoadOptions{table, "old.pqd"});
@@ -337,14 +337,14 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
   SUBCASE("a newer file is refused") {
     std::string newer = readFile(fixturePath("minimal/project.pqd"));
-    const size_t at = newer.find("\"schemaVersion\": 18");
+    const size_t at = newer.find("\"schemaVersion\": 19");
     REQUIRE(at != std::string::npos);
-    newer.replace(at, 19, "\"schemaVersion\": 19");
+    newer.replace(at, 19, "\"schemaVersion\": 20");
     Result<LoadedProject> r = parseProject(newer);
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().code == pq::ErrorCode::Unsupported);
     CHECK(r.error().message ==
-          "$.schemaVersion: the project was saved by a newer pqdaw (schema 19; this build reads up to 18)");
+          "$.schemaVersion: the project was saved by a newer pqdaw (schema 20; this build reads up to 19)");
   }
   SUBCASE("a migration's output is validated like any file") {
     const Migration broken[] = {{0, [](nlohmann::json& d) -> pq::Status {
@@ -358,7 +358,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
                              builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11],
                              builtinMigrations()[12], builtinMigrations()[13], builtinMigrations()[14],
-                             builtinMigrations()[15], builtinMigrations()[16]};
+                             builtinMigrations()[15], builtinMigrations()[16], builtinMigrations()[17]};
     Result<LoadedProject> r = parseProject(old, LoadOptions{broken, {}});
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.rfind("$.timeline.tempo: ", 0) == 0);
@@ -431,7 +431,11 @@ void stripDevices(nlohmann::json& t, StrippedDevices& s) {
   if (!t.is_object()) return;
   if (auto it = t.find("devices"); it != t.end()) {
     const bool midi = t.value("kind", std::string()) == "midi";
-    if (midi && it->size() == 1 && (*it)[0].value("patch", std::string()) == "BasicSynth") ++s.midi;
+    // IG.1-2: the 18 -> 19 step wraps the instrument into an instrument group (the Basic Synth its member, the group
+    // after it in the list).
+    if (midi && it->size() == 2 && (*it)[0].value("patch", std::string()) == "BasicSynth" && (*it)[0].contains("group") &&
+        (*it)[1].value("patch", std::string()) == "Group")
+      ++s.midi;
     else if (!midi && it->empty()) ++s.other;
     else ++s.unexpected;
     t.erase(it);
@@ -462,14 +466,17 @@ StrippedDevices stripAllDevices(nlohmann::json& doc) {
   // TX.all-free: the 16 -> 17 step's main links (every track's source → its chain → its mixer) go too.
   if (auto w = doc.find("wires"); w != doc.end()) {
     bool links = true;
-    for (const nlohmann::json& x : *w) links = links && x.value("port", std::string("?")).empty() && x.value("param", std::string("?")).empty();
+    // (IG.1-2: and the 18 -> 19 step's chain links inside each instrument group, In → Basic Synth → Out)
+    for (const nlohmann::json& x : *w)
+      links = links && ((x.value("port", std::string("?")).empty() && x.value("param", std::string("?")).empty()) ||
+                        x.value("chain", false));
     if (links) doc.erase(w);
   }
   return s;
 }
 
 TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as the current schema") {
-  static_assert(kSchemaVersion == 18);
+  static_assert(kSchemaVersion == 19);
   const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
   REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
 
@@ -478,7 +485,7 @@ TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick 
   CHECK(r->fileSchemaVersion == 1);
   Result<std::string> again = serializeProject(*r->project, r->view);
   REQUIRE(again.ok());
-  CHECK(again->rfind("{\n  \"schemaVersion\": 18,", 0) == 0);
+  CHECK(again->rfind("{\n  \"schemaVersion\": 19,", 0) == 0);
 
   nlohmann::json resaved = nlohmann::json::parse(*again);
   const StrippedDevices sd = stripAllDevices(resaved);  // 2 -> 3: checked on its own below
@@ -544,7 +551,7 @@ TEST_CASE("serialize: a schema-3 project loads unchanged into schema 4 (no wires
   CHECK(r->fileSchemaVersion == 3);
   RichProject f;
   CHECK(*r->project == f.doc());
-  for (const Wire& w : wiresOf(*r->project)) CHECK(w.mainLink());  // TX.all-free: only the 16 -> 17 step's main links
+  for (const Wire& w : wiresOf(*r->project)) CHECK((w.mainLink() || w.chain));  // TX.all-free: only the 16 -> 17 step's main links
   Result<std::string> again = serializeProject(*r->project, r->view);
   REQUIRE(again.ok());
   CHECK(*again == readFile(fixturePath("full/project.pqd")));
@@ -571,7 +578,7 @@ TEST_CASE("serialize: modulation wires round-trip and are validated") {
   CHECK(*back.project == f.doc());
   WireList drawn;  // TX.all-free: the wires beside the main paths' links
   for (const Wire& x : wiresOf(*back.project))
-    if (!x.mainLink()) drawn.push_back(x);
+    if (!x.mainLink() && !x.chain) drawn.push_back(x);  // (IG.1-2: and the instrument groups' chain links)
   REQUIRE(drawn.size() == 3);
   CHECK(drawn[0] == a);
   CHECK(drawn[1] == c);
@@ -618,7 +625,7 @@ TEST_CASE("serialize: wires from a note source (schema 12) round-trip and are va
     Result<std::string> text = serializeProject(f.doc(), f.store.view());
     REQUIRE(text.ok());
     std::string old = *text;
-    old.replace(old.find("\"schemaVersion\": 18"), 19, "\"schemaVersion\": 11");
+    old.replace(old.find("\"schemaVersion\": 19"), 19, "\"schemaVersion\": 11");
     Result<LoadedProject> r = parseProject(old);
     REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
     CHECK(r->fileSchemaVersion == 11);
@@ -714,7 +721,8 @@ TEST_CASE("serialize: a schema-2 project migrates to device chains (the default 
       return;
     }
     ++midiTracks;
-    REQUIRE(t.devices.size() == 1);
+    REQUIRE(t.devices.size() == 2);  // IG.1-2: the instrument and its instrument group (the 18 -> 19 step)
+    CHECK(isGroupDevice(*t.devices[1]));
     CHECK(t.devices[0]->patch == kDefaultInstrument);
     CHECK(t.devices[0]->id.value > maxJsonId(nlohmann::json::parse(oldText)));
   });

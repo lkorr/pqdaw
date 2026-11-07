@@ -100,7 +100,7 @@ VoiceContexts voiceContexts(const Project& p) {
     // Instrument groups first (their members are not lone instruments).
     std::unordered_set<uint32_t> groups;
     for (const DevicePtr& d : t.devices) {
-      if (!isGroupDevice(*d) || d->group.valid()) continue;
+      if (!isGroupDevice(*d) || d->group.valid() || !d->active) continue;  // (a switched-off group plays nothing)
       VoiceContext c;
       if (!contextFor(t, *d, head, path.contains(d->id), c)) continue;
       const auto i = static_cast<uint32_t>(out.list.size());
@@ -113,7 +113,7 @@ VoiceContexts voiceContexts(const Project& p) {
         out.byMember.emplace(d->id.value, out.byBlock.at(d->group.value));
         continue;
       }
-      if (!playsNotes(*d)) continue;
+      if (!playsNotes(*d) || !d->active) continue;
       VoiceContext c;
       if (!contextFor(t, *d, head, path.contains(d->id), c)) continue;
       out.byBlock.emplace(d->id.value, static_cast<uint32_t>(out.list.size()));
@@ -291,7 +291,7 @@ bool migrateToInstrumentGroups(Project& p) {
     const DeviceId g =
         existing.valid() ? existing
                          : newGroup(plan, series.empty() ? kAppend
-                                                         : static_cast<uint32_t>(std::max<int32_t>(t.deviceIndex(series.front()->id), 0)));
+                                                         : static_cast<uint32_t>(std::max<int32_t>(t.deviceIndex(series.front()->id), 0) + 1));
     for (const Device* d : series) plan.join.emplace_back(d->id, g);
     for (const DeviceId d : join) plan.join.emplace_back(d, g);
     if (!series.empty()) {

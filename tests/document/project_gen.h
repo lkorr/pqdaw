@@ -15,6 +15,7 @@
 
 #include "doc_fixture.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/instrument_groups.h"
 
 namespace doctest_fixture {
 
@@ -163,6 +164,32 @@ struct RichProject : Fixture {
     });
     const pq::Status sl = store.dispatch(laws);
     REQUIRE_MESSAGE(sl.ok(), (sl.ok() ? std::string() : sl.error().message));
+    // IG.1-2: every MIDI track's instrument wrapped into an instrument group, ids after everything else: exactly what
+    // the schema 18 -> 19 step gives the older fixtures, dispatched as one undoable batch (its difference).
+    {
+      const Snapshot before = store.current();
+      Project wrapped = *before;
+      REQUIRE(migrateToInstrumentGroups(wrapped));
+      ids.reserveThrough(maxEntityId(wrapped));
+      Batch ig{"instrument groups", {}};
+      forEachTrack(wrapped, [&](const Track& t, const Track*) {
+        const Track* old = findTrackPtr(*before, t.id);
+        for (uint32_t i = 0; i < t.devices.size(); ++i)
+          if (old->deviceIndex(t.devices[i]->id) < 0) ig.commands.push_back(AddDevice{t.id, t.devices[i], i});
+      });
+      for (const Wire& w : wiresOf(*before))
+        if (const Wire* n = findWire(wrapped, w.id); n == nullptr || !(*n == w)) ig.commands.push_back(RemoveWire{w.id});
+      forEachTrack(wrapped, [&](const Track& t, const Track*) {
+        for (const DevicePtr& d : t.devices)
+          if (const DeviceLoc l = findDevice(*before, d->id); l.device != nullptr && l.device->group != d->group)
+            ig.commands.push_back(SetDeviceGroup{d->id, d->group});
+      });
+      for (const Wire& w : wiresOf(wrapped))
+        if (const Wire* o = findWire(*before, w.id); o == nullptr || !(*o == w)) ig.commands.push_back(AddWire{w});
+      const pq::Status sg = store.dispatch(ig);
+      REQUIRE_MESSAGE(sg.ok(), (sg.ok() ? std::string() : sg.error().message));
+      REQUIRE(*store.current() == wrapped);
+    }
     // View state (not undoable, saved with the project).
     store.view().tracks[drums] = TrackView{true, 0};
     store.view().tracks[lead] = TrackView{false, 120};

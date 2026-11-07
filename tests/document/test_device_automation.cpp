@@ -239,7 +239,7 @@ TEST_CASE("device automation: the project file keeps device, macro, chain and wi
   f.lane(f.a, ParamRef::chain(chain, kChainPan), "", -1.0f, 1.0f);
   Result<std::string> text = serializeProject(f.doc());
   REQUIRE(text.ok());
-  CHECK(text->rfind("{\n  \"schemaVersion\": 18,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": 19,", 0) == 0);
   CHECK(text->find("\"kind\": \"deviceParam\", \"owner\": " + std::to_string(f.filter.value) + ", \"name\": \"freq\"") !=
         std::string::npos);
   CHECK(text->find("\"kind\": \"chainMixer\", \"owner\": " + std::to_string(chain.value) + ", \"name\": \"pan\"") !=

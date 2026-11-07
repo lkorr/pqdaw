@@ -12,6 +12,7 @@
 
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/lower.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
@@ -45,6 +46,11 @@ struct Doc {
     REQUIRE(store.dispatch(t->command).ok());
     keys = t->tracks.at(0);
     inst = findTrackPtr(*store.current(), keys)->devices.at(0)->id;
+    // IG.1-2: the instrument out of its instrument group, alone on the path (a lone instrument: the same sound), as the
+    // wire-law cases were written (their old files have no instrument groups).
+    auto ug = ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(*store.current(), keys)->devices.at(1)->id);
+    REQUIRE_MESSAGE(ug.ok(), (ug.ok() ? std::string() : ug.error().message));
+    REQUIRE(store.dispatch(ug->command).ok());
     lfo = add("lfo_device");
     eq = add("eq_eight");
   }
@@ -166,12 +172,15 @@ TEST_CASE("wire laws: schema 13 writes the law, 12 -> 13 makes every wire Travel
   Result<LoadedProject> old = parseProject(j.dump(2));
   REQUIRE_MESSAGE(old.ok(), (old.ok() ? std::string() : old.error().message));
   CHECK(old->fileSchemaVersion == 12);
-  CHECK(*old->project == d.doc());
+  // (IG.1-2: the 18 -> 19 step wraps the instrument into an instrument group, as for every older file.)
+  Project want = *d.store.current();
+  REQUIRE(migrateToInstrumentGroups(want));
+  CHECK(*old->project == want);
   for (const Wire& w : wiresOf(*old->project))
-    if (!w.mainLink()) CHECK(w.law == WireLaw::Travel);  // (TX.all-free: the main links of this relabelled text add)
+    if (!w.mainLink() && !w.chain) CHECK(w.law == WireLaw::Travel);  // (the main links of this relabelled text add)
   // The lowered graph of the migrated file is the one the Travel law built before TX.patching (the same IR, so the
   // same audio: tests/app/test_wires.cpp renders that law bit for bit like a hand-built graph).
-  const LoweredProject a = lowerDoc(d.doc()), b = lowerDoc(*old->project);
+  const LoweredProject a = lowerDoc(want), b = lowerDoc(*old->project);
   REQUIRE(a.patches.size() == b.patches.size());
   for (size_t i = 0; i < a.patches.size(); ++i) CHECK(a.patches[i]->hash == b.patches[i]->hash);
   // An added wire is written without "law" and "amount"; reading one with an amount is refused, as is a Travel wire
@@ -244,6 +253,11 @@ TEST_CASE("TX.all-free: a meta device taken off the path no longer takes the not
   REQUIRE(t.ok());
   REQUIRE(store.dispatch(t->command).ok());
   const TrackId keys = t->tracks.at(0);
+  {  // IG.1-2: the instrument alone on the path first (out of its instrument group)
+    auto ug = ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(*store.current(), keys)->devices.at(1)->id);
+    REQUIRE(ug.ok());
+    REQUIRE(store.dispatch(ug->command).ok());
+  }
   auto a = ops::addMetaDevice(*store.current(), store.ids(), keys, "phase_acc", 0);  // replaces the instrument
   REQUIRE(a.ok());
   REQUIRE(store.dispatch(a->command).ok());

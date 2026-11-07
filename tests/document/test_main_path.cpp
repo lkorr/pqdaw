@@ -98,14 +98,18 @@ const pq::graph::Patch& patchOf(const LoweredProject& l, TrackId t) {
 
 TEST_CASE("main path: a new track is wired source → instrument → mixer; the default project's master too") {
   Doc d;
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group"});
   CHECK(d.complete(d.keys));
   const MainPath p = mainPath(d.doc(), d.track(d.keys));
   REQUIRE(p.links.size() == 2);
   const Wire* in = findWire(d.doc(), p.links[0]);
   const Wire* out = findWire(d.doc(), p.links[1]);
-  CHECK((in->fromNoteSource() && in->noteSource == d.keys && in->to == d.inst && in->mainLink()));
-  CHECK((out->from == d.inst && out->toMixer() && out->mixer == d.keys && out->mainLink()));
+  // IG.1-2: through the instrument group (In → Basic Synth → Out inside it, chain links).
+  const DeviceId g0 = d.track(d.keys).devices.at(1)->id;
+  CHECK(findDevice(d.doc(), d.inst).device->group == g0);
+  CHECK((in->fromNoteSource() && in->noteSource == d.keys && in->to == g0 && in->mainLink()));
+  CHECK((out->from == g0 && out->toMixer() && out->mixer == d.keys && out->mainLink()));
+  CHECK(std::count_if(wiresOf(d.doc()).begin(), wiresOf(d.doc()).end(), [&](const Wire& w) { return w.chain; }) == 2);
   // Every other kind starts with its source straight into its mixer.
   const TrackId g = d.edit(ops::createTrack(d.doc(), d.store.ids(), TrackKind::Group)).tracks.at(0);
   CHECK(d.path(g).empty());
@@ -114,7 +118,7 @@ TEST_CASE("main path: a new track is wired source → instrument → mixer; the 
   // A list position means nothing: the blocks' order in the track is not the path's.
   const DeviceId u = d.add("utility");
   const DeviceId s = d.add("saturator", 1);  // between the synth and the Utility on the path
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "saturator", "utility"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "saturator", "utility"});
   CHECK(d.track(d.keys).devices.back()->id == s);  // appended to the set
   CHECK(flowOrder(d.track(d.keys), mainPath(d.doc(), d.track(d.keys))).at(1)->id == s);
   (void)u;
@@ -125,25 +129,25 @@ TEST_CASE("main path: branches, merges, a broken path, group members, loops") {
   const DeviceId a = d.add("utility");
   const DeviceId b = d.add("saturator", ops::kOffPath);
   const DeviceId c = d.add("eq_eight", ops::kOffPath);
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "utility"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility"});
   // A branch: the Utility's main output also into the EQ, the EQ into the mixer — the path keeps its oldest link that
   // reaches the mixer (the Utility's own link into the mixer).
   d.wire(link(a, c));
   d.wire(intoMixer(c, d.keys));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "utility"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility"});
   // Its link into the mixer gone: the branch is the path now (it reaches the mixer).
   const MainPath p = mainPath(d.doc(), d.track(d.keys));
   d.edit(ops::deleteWires(d.doc(), std::vector<WireId>{p.links.back()}));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "utility", "eq_eight"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility", "eq_eight"});
   CHECK(d.complete(d.keys));
   // Broken: the EQ's link into the mixer gone — the path is what is still on it, and it does not reach the mixer.
   const MainPath q = mainPath(d.doc(), d.track(d.keys));
   d.edit(ops::deleteWires(d.doc(), std::vector<WireId>{q.links.back()}));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "utility", "eq_eight"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility", "eq_eight"});
   CHECK_FALSE(d.complete(d.keys));
   // A loop back into a block already on the path is not followed.
   d.wire(link(c, d.inst));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "utility", "eq_eight"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility", "eq_eight"});
   // A group's member is never on the path (it is inside its group).
   const DeviceId g = d.edit(ops::addDevice(d.doc(), d.store.ids(), d.keys, std::string(kGroupDevice), DeviceKind::AudioEffect,
                                            ops::kOffPath)).devices.at(0);
@@ -151,7 +155,7 @@ TEST_CASE("main path: branches, merges, a broken path, group members, loops") {
   REQUIRE(d.complete(d.keys));
   d.edit(ops::setDeviceGroup(d.doc(), d.store.ids(), &library(), b, g));
   d.wire(link(c, b));  // a main link from the path into a member: the member stays off the path
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "utility", "eq_eight"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility", "eq_eight"});
 }
 
 TEST_CASE("main path: insert, move, dissolve, take off, splice — each one undo step, the path stays connected") {
@@ -159,14 +163,14 @@ TEST_CASE("main path: insert, move, dissolve, take off, splice — each one undo
   const DeviceId u = d.add("utility");
   const DeviceId s = d.add("saturator");
   const DeviceId e = d.add("eq_eight");
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "utility", "saturator", "eq_eight"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility", "saturator", "eq_eight"});
   // Move (the Device view's reorder): the EQ to slot 1 (counted with it in its old place).
   d.edit(ops::moveOnPath(d.doc(), d.store.ids(), &library(), e, d.keys, 1));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "eq_eight", "utility", "saturator"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "eq_eight", "utility", "saturator"});
   CHECK(d.complete(d.keys));
   // Right by one (slot after its right neighbour).
   d.edit(ops::moveOnPath(d.doc(), d.store.ids(), &library(), e, d.keys, 3));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "utility", "eq_eight", "saturator"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility", "eq_eight", "saturator"});
   // Where it is: no edit.
   CHECK(ops::moveOnPath(d.doc(), d.store.ids(), &library(), e, d.keys, 2)->empty());
   CHECK(ops::moveOnPath(d.doc(), d.store.ids(), &library(), e, d.keys, 3)->empty());
@@ -174,27 +178,27 @@ TEST_CASE("main path: insert, move, dissolve, take off, splice — each one undo
   const DeviceId lfo = d.add("lfo_device", ops::kOffPath);
   d.edit(ops::connectWire(d.doc(), d.store.ids(), lfo, "lfo", e, "freq1"));
   d.edit(ops::dissolveDevices(d.doc(), d.store.ids(), &library(), std::vector<DeviceId>{e}));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "utility", "saturator"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility", "saturator"});
   CHECK(d.complete(d.keys));
   for (const Wire& w : wiresOf(d.doc())) CHECK((w.from != e && w.to != e));
   REQUIRE(d.store.undo());
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "utility", "eq_eight", "saturator"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility", "eq_eight", "saturator"});
   // Take off the path: the block stays (with its other wires), its neighbours are joined.
   d.edit(ops::takeOffPath(d.doc(), d.store.ids(), &library(), std::vector<DeviceId>{u}));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "eq_eight", "saturator"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "eq_eight", "saturator"});
   CHECK(findDevice(d.doc(), u).device != nullptr);
   // Insert it back at the end (the free rack's block dropped onto the list).
   d.edit(ops::insertOnPath(d.doc(), d.store.ids(), u, kAppend));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "eq_eight", "saturator", "utility"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "eq_eight", "saturator", "utility"});
   // Splice a block off the path into a link of it (the circuit's Shift-drag): the link into the Saturator.
   const DeviceId v = d.add("utility", ops::kOffPath);
   const MainPath p = mainPath(d.doc(), d.track(d.keys));
   d.edit(ops::spliceIntoWire(d.doc(), d.store.ids(), &library(), v, p.links[2]));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "eq_eight", "utility", "saturator", "utility"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "eq_eight", "utility", "saturator", "utility"});
   // Splicing a block of the path elsewhere moves it (it leaves its place first).
   const MainPath p2 = mainPath(d.doc(), d.track(d.keys));
   d.edit(ops::spliceIntoWire(d.doc(), d.store.ids(), &library(), s, p2.links[1]));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "saturator", "eq_eight", "utility", "utility"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "saturator", "eq_eight", "utility", "utility"});
   CHECK(d.complete(d.keys));
   // Into a modulation wire: the block goes between its ends (off the path).
   const WireId mod = findWire(d.doc(), [&] {
@@ -261,7 +265,9 @@ TEST_CASE("main path: the 16 -> 17 migration wires every chain in series, strips
   const Track& keys = *findTrackPtr(p, TrackId{3});
   const MainPath path = mainPath(p, keys);
   REQUIRE(path.blocks.size() == 2);  // the synth → the Utility (the LFO was free: off the path)
-  CHECK(path.blocks[0]->id == DeviceId{4});
+  // (IG.1-2: the 18 -> 19 step then wraps the synth into an instrument group, id 14, its chain links 15 and 16.)
+  CHECK(isGroupDevice(*path.blocks[0]));
+  CHECK(findDevice(p, DeviceId{4}).device->group == path.blocks[0]->id);
   CHECK(path.blocks[1]->id == DeviceId{6});
   CHECK(path.complete);
   CHECK(mainPath(p, *findTrackPtr(p, TrackId{7})).complete);  // an empty chain: source → mixer
@@ -269,7 +275,7 @@ TEST_CASE("main path: the 16 -> 17 migration wires every chain in series, strips
   // New ids above the file's largest, in track order (Keys, G, master); the old wire is kept.
   std::vector<uint32_t> ids;
   for (const Wire& w : wiresOf(p)) ids.push_back(w.id.value);
-  CHECK(ids == std::vector<uint32_t>{8, 9, 10, 11, 12, 13});
+  CHECK(ids == std::vector<uint32_t>{8, 9, 10, 11, 12, 13, 15, 16});
   // It re-saves (without "free") and reads back the same.
   Result<std::string> again = serializeProject(p);
   REQUIRE(again.ok());
@@ -339,13 +345,13 @@ TEST_CASE("main path: a block moved into a rack chain leaves the path joined; mo
                                               DeviceKind::AudioEffect)).devices.at(0);
   d.edit(ops::addChain(d.doc(), d.store.ids(), rack));
   const ChainId c = findDevice(d.doc(), rack).device->rack->chains.back()->id;
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "utility", "saturator", std::string(kAudioEffectRack)});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "utility", "saturator", std::string(kAudioEffectRack)});
   d.edit(ops::moveIntoChain(d.doc(), d.store.ids(), u, kAppend, c));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth", "saturator", std::string(kAudioEffectRack)});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group", "saturator", std::string(kAudioEffectRack)});
   CHECK(d.complete(d.keys));
   CHECK(findDevice(d.doc(), u).chain != nullptr);
   // The plain list move keeps the cables: the Saturator's links stay, so the path breaks where it was.
   d.edit(ops::moveDevice(d.doc(), s, {}, kAppend, c));
-  CHECK(d.path(d.keys) == std::vector<std::string>{"BasicSynth"});
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Group"});
   CHECK_FALSE(d.complete(d.keys));
 }

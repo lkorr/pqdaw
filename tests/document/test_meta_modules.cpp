@@ -88,6 +88,8 @@ struct Song {
     synthTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
     accTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
     synth = findTrackPtr(doc(), synthTrack)->devices.at(0)->id;
+    // (IG.1-2: Acc's default instrument out of its instrument group first, alone on the path.)
+    edit(ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(doc(), accTrack)->devices.at(1)->id));
     // At slot 0: it takes the note source, replacing the default instrument (TMM.10-fix1: appended it would follow it).
     acc = edit(ops::addMetaDevice(doc(), store.ids(), accTrack, "phase_acc", 0)).devices.at(0);
   }
@@ -158,7 +160,7 @@ TEST_CASE("meta modules: save -> load is deep-equal with nested and chain-level 
                           std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray(cycle)}}))));
   Result<std::string> text = serializeProject(s.doc(), s.store.view());
   REQUIRE(text.ok());
-  CHECK(text->rfind("{\n  \"schemaVersion\": 18,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": 19,", 0) == 0);
   CHECK(text->find("\"patch\": \"meta:phase_acc\"") != std::string::npos);
   CHECK(text->find("\"$f32\"") != std::string::npos);
   Result<LoadedProject> back = parseProject(*text);

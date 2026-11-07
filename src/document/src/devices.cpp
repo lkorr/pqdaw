@@ -378,6 +378,11 @@ Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlib
   // TMM.3: the meta-module prelude (default expansions `meta_<type>`), callable like any library patch.
   for (const meta::Prelude::Entry& e : lib->prelude_->entries) lib->library_.add(e.nested);
   for (const graph::SubcircuitRef& s : lib->prelude_->signatures) lib->signatures_.push_back(s);
+  // TX.groups / IG.1-2: the fixed group patches (every new MIDI track holds an instrument group), so a lowering needs no
+  // library of its own for them.
+  lib->library_.add(groupPatch());
+  lib->library_.add(groupVoicePatch());
+  lib->library_.add(groupNotesPatch());
   for (const meta::Prelude::Entry& e : lib->prelude_->entries)
     for (const DeviceKind k : {DeviceKind::Instrument, DeviceKind::AudioEffect}) {
       std::optional<DeviceInfo> info = metaDeviceInfo(*e.type, k);

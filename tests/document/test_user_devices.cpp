@@ -66,6 +66,10 @@ struct Two {
     b = run(ops::createTrack(*store.current(), store.ids(), TrackKind::Midi)).tracks.at(0);
     synA = findTrackPtr(*store.current(), a)->devices.at(0)->id;
     synB = findTrackPtr(*store.current(), b)->devices.at(0)->id;
+    // IG.1-2: each instrument out of its instrument group, alone on its path (a lone instrument: the same sound).
+    const auto lib = freshLibrary();
+    for (const TrackId t : {a, b})
+      run(ops::ungroupInCircuit(store.current(), store.ids(), *lib, findTrackPtr(*store.current(), t)->devices.at(1)->id));
     sat = run(ops::addDevice(*store.current(), store.ids(), a, "saturator", DeviceKind::AudioEffect)).devices.at(0);
   }
   const Device& dev(DeviceId d) const { return *findDevice(*store.current(), d).device; }

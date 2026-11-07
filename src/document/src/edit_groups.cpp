@@ -77,6 +77,14 @@ Result<std::vector<Link>> seriesLinks(DeviceId gid, std::span<const Device* cons
   DeviceId at = gid;
   std::string port(kGroupInPort);
   for (const Device* d : series) {
+    // IG.1-2: a stock instrument or Instrument Rack takes the notes at its main input and gives its sound at its main
+    // output (an instrument group's In → it → Out: main ports, as createTrack wires one).
+    if (d->kind == DeviceKind::Instrument && !isMetaDevice(*d)) {
+      links.push_back(Link{at, port, d->id, std::string(kMainPort)});
+      at = d->id;
+      port = std::string(kMainPort);
+      continue;
+    }
     const ChainPorts c = chainPortsOf(*d, lib);
     if (c.out.empty())
       return Error{ErrorCode::InvalidArgument, std::string(verb) + displayName(*d, lib) + " has no output to pass on", {}};
@@ -149,10 +157,8 @@ EditResult groupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLibra
     if (std::find(picked.begin(), picked.end(), l.device) != picked.end()) continue;
     if (isGroupDevice(*l.device)) return invalid("Group: groups do not nest (a group cannot go into a group)");
     if (l.device->group.valid()) return invalid("Group: " + displayName(*l.device, lib) + " is in a group already");
-    if (l.device->rack) return invalid("Group: a rack cannot go into a group (its chains are a series; a group has none)");
-    if (l.device->kind == DeviceKind::Instrument && !isMetaDevice(*l.device))
-      return invalid("Group: a stock instrument stays in the chain (its voices are summed at its output, which no wire "
-                     "inside a group can reproduce); group the devices after it");
+    if (l.device->rack && l.device->kind != DeviceKind::Instrument)
+      return invalid("Group: an Audio Effect Rack cannot go into a group (its chains are a series; a group has none)");
     picked.push_back(l.device);
   }
   const std::vector<DevicePtr>& list = track->devices;
@@ -206,6 +212,11 @@ EditResult groupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLibra
       }
       const ChainStage* s = stageOf(d);
       const ChainSignal want = seenActive ? ChainSignal::Voices : reaching;
+      // IG.1-2: a stock instrument (or Instrument Rack) where the notes arrive: the group becomes its instrument group.
+      if (!seenActive && reaching == ChainSignal::Notes && d->kind == DeviceKind::Instrument && !isMetaDevice(*d)) {
+        seenActive = true;
+        continue;
+      }
       if (!isMetaDevice(*d))
         return invalid("Group: the voices are summed before " + displayName(*d, lib) +
                        (reaching == ChainSignal::Notes && !seenActive ? " (the notes reach it, and it plays none)"
@@ -272,7 +283,9 @@ EditResult groupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLibra
     if (reaching == ChainSignal::Notes && l.from == gid) {
       const DeviceLoc t = findDevice(p, l.to);
       const meta::Reads r = t.device != nullptr ? noteReads(*t.device, l.param) : meta::Reads::Signal;
-      if (r != meta::Reads::Frequency && r != meta::Reads::Phase) inactiveIn.push_back(w.id);
+      // (IG.1-2: a stock instrument there plays the notes: its link plays)
+      if (r != meta::Reads::Frequency && r != meta::Reads::Phase && (t.device == nullptr || isMetaDevice(*t.device)))
+        inactiveIn.push_back(w.id);
     }
     b.commands.push_back(AddWire{w});
     e.wires.push_back(w.id);

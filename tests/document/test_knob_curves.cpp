@@ -51,6 +51,10 @@ struct Doc {
     REQUIRE(t.ok());
     REQUIRE(store.dispatch(t->command).ok());
     keys = t->tracks.at(0);
+    // IG.1-2: the instrument out of its instrument group, alone on the path (a lone instrument: the same sound).
+    auto ug = ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(*store.current(), keys)->devices.at(1)->id);
+    REQUIRE_MESSAGE(ug.ok(), (ug.ok() ? std::string() : ug.error().message));
+    REQUIRE(store.dispatch(ug->command).ok());
     lfo = add("lfo_device");
     eq = add("eq_eight");
   }
@@ -256,7 +260,7 @@ TEST_CASE("knob curves: 15 -> 16 keeps TX.patching's added wires as Units (same 
     }
   }
   CHECK(units == 3);
-  CHECK(links == 2);
+  CHECK(links == 4);  // (IG.1-2: and the 18 -> 19 step's two, In → the synth → Out of its instrument group)
   // Re-saved, a Units wire says so; it reads back the same.
   Result<std::string> again = serializeProject(*old->project);
   REQUIRE(again.ok());

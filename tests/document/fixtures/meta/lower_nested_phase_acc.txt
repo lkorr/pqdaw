@@ -7,23 +7,24 @@ patch Midi4 {
   out done : bool voice mono
   out out : real audio global stereo
 
+  _n0 = 0
+  d6 = GroupNotes(d5)
+  _n2 = voice_sum(d6)
   d5 = BasicSynth__u5_0db0c13ccdfb86ab__m5_cf61ace271698ecd()
-  _n1 = voice_sum(d5)
-  _n5 = 0
-  _n6 = 1
-  _n7 = 0.002
-  _n11 = volume <= -70 ? _n5 : db_to_gain(volume)
-  _n13 = min(_n6, _n6 - pan)
-  _n15 = min(_n6, _n6 + pan)
-  _n20 = mute < 0.5
-  _n22 = _n20 ? sendGate : _n5
-  _n23 = _n11 * (_n20 ? gate : _n5)
-  _n29 = _n11 * _n22
+  _n7 = 1
+  _n8 = 0.002
+  _n12 = volume <= -70 ? _n0 : db_to_gain(volume)
+  _n14 = min(_n7, _n7 - pan)
+  _n16 = min(_n7, _n7 + pan)
+  _n21 = mute < 0.5
+  _n23 = _n21 ? sendGate : _n0
+  _n24 = _n12 * (_n21 ? gate : _n0)
+  _n30 = _n12 * _n23
   done = d5.done
-  out = gain(_n1, (_n13 * _n23, _n15 * _n23), _n7)
+  out = gain(_n2, (_n14 * _n24, _n16 * _n24), _n8)
 
-  export post = gain(_n1, (_n13 * _n29, _n15 * _n29), _n7)
-  export pre = gain(_n1, (_n13 * _n22, _n15 * _n22), _n7)
+  export post = gain(_n2, (_n14 * _n30, _n16 * _n30), _n8)
+  export pre = gain(_n2, (_n14 * _n23, _n16 * _n23), _n8)
 
 }
 

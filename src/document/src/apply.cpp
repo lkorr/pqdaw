@@ -2499,7 +2499,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
     "Edit Device Patch", "Rename Device", "Chain Input", "Device Group", "Knob Curve",
-    "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer",
+    "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer", "Cable Signal",
     "Add Chain", "Delete Chain", "Move Chain", "Rename Chain", "Chain Mixer", "Activate Chain", "Solo Chain", "Chain Zone",
     "Map Macro", "Unmap Macro", "Edit Macro Mapping", "Rack Options",
     "Add Meta Module", "Delete Meta Module", "Rename Meta Module", "Meta Module Parameter", "Meta Module Setting",

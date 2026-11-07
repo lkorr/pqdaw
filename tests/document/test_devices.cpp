@@ -76,7 +76,7 @@ struct Chains {
 
 TEST_CASE("devices: a new MIDI track has the default instrument; other tracks start empty") {
   Chains c;
-  CHECK(c.chain(c.midi) == std::vector<std::string>{"BasicSynth"});
+  CHECK(c.chain(c.midi) == std::vector<std::string>{"Group"});
   CHECK(c.track(c.midi).devices[0]->kind == DeviceKind::Instrument);
   CHECK(c.chain(c.group).empty());
   CHECK(c.chain(c.ret).empty());
@@ -165,7 +165,7 @@ TEST_CASE("devices: commands keep the chain rule and classify their changes") {
     CHECK(cs.tracks == std::vector<TrackId>{c.midi});
     const Track& t = *findTrackPtr(**m, c.midi);
     CHECK(t.devices[1]->id == s->id);
-    CHECK(t.devices[2]->id == a->id);
+    CHECK(t.devices[3]->id == a->id);  // (IG.1-2: [Basic Synth, s, its group, a])
     CHECK((t.devices[1] == s));  // moved, not copied: pointer-equal
     ChangeSet bad;
     CHECK(apply1(*m, MoveDevice{s->id, {}, 0}, bad).ok());  // TX.all-free: before the instrument in the list: allowed
@@ -192,21 +192,23 @@ TEST_CASE("devices: add, reorder, remove, deactivate, copy / paste, duplicate ar
   // Add (the device menu): effects append after the instrument (TX.all-free: spliced into the main path).
   const DeviceId utility = c.edit(ops::addDevice(*c.store.current(), c.store.ids(), c.midi, "utility", DeviceKind::AudioEffect)).devices.at(0);
   const DeviceId sat = c.edit(ops::addDevice(*c.store.current(), c.store.ids(), c.midi, "saturator", DeviceKind::AudioEffect, 1)).devices.at(0);
-  CHECK(c.chain(c.midi) == std::vector<std::string>{"BasicSynth", "saturator", "utility"});
+  CHECK(c.chain(c.midi) == std::vector<std::string>{"Group", "saturator", "utility"});
   // An instrument replaces the track's instrument (Live).
   const DeviceId synth2 = c.edit(ops::addDevice(*c.store.current(), c.store.ids(), c.midi, "BasicSynth", DeviceKind::Instrument)).devices.at(0);
-  CHECK(c.onPath(c.midi, 0)->id == synth2);
+  // IG.1-2: into the instrument group heading the path, in place of its Basic Synth.
+  CHECK(findDevice(*c.store.current(), synth2).device->group == c.onPath(c.midi, 0)->id);
+  CHECK(findDevice(*c.store.current(), c.inst).device == nullptr);
   CHECK(c.chain(c.midi).size() == 3);
   CHECK_FALSE(ops::addDevice(*c.store.current(), c.store.ids(), c.group, "BasicSynth", DeviceKind::Instrument).ok());
   // Reorder (TX.all-free: rewired along the main path).
   c.edit(ops::moveOnPath(*c.store.current(), c.store.ids(), &library(), utility, c.midi, 1));
-  CHECK(c.chain(c.midi) == std::vector<std::string>{"BasicSynth", "utility", "saturator"});
+  CHECK(c.chain(c.midi) == std::vector<std::string>{"Group", "utility", "saturator"});
   const auto noop = ops::moveOnPath(*c.store.current(), c.store.ids(), &library(), utility, c.midi, 1);
   REQUIRE(noop.ok());
   CHECK(noop->empty());
   // Deactivate (toggle), param, setting.
   c.edit(ops::toggleDevicesActive(*c.store.current(), std::vector<DeviceId>{sat}));
-  CHECK(c.chain(c.midi) == std::vector<std::string>{"BasicSynth", "utility", "saturator(off)"});
+  CHECK(c.chain(c.midi) == std::vector<std::string>{"Group", "utility", "saturator(off)"});
   c.edit(ops::setDeviceParam(*c.store.current(), sat, "drive", 2.0));
   c.edit(ops::setDeviceSetting(*c.store.current(), sat, "type", 6.0));
   // Copy / paste onto the group (fresh ids, the same values), then duplicate there.
@@ -227,7 +229,7 @@ TEST_CASE("devices: add, reorder, remove, deactivate, copy / paste, duplicate ar
   CHECK_FALSE(ops::pasteDevices(*c.store.current(), c.store.ids(), c.group, instClip).ok());
   // Remove.
   c.edit(ops::deleteDevices(*c.store.current(), std::vector<DeviceId>{utility, sat}));
-  CHECK(c.chain(c.midi) == std::vector<std::string>{"BasicSynth"});
+  CHECK(c.chain(c.midi) == std::vector<std::string>{"Group"});
   // Undo walks every step back to the start.
   while (c.store.history().cursor() > 3) REQUIRE(c.store.undo());
   CHECK(*c.store.current() == *p);
@@ -409,8 +411,9 @@ TEST_CASE("devices: lowering a chain — stable NodeIds, params as runtime param
   CHECK_FALSE(off->patches[ti]->patch.indexOf(pq::graph::NodeId{nodeIdFor(NodeRole::Device, util.value, 0)}).has_value());
   CHECK(std::none_of(off->params.begin(), off->params.end(),
                      [&](const LoweredParam& p) { return p.key.rfind("dev" + std::to_string(util.value) + ":", 0) == 0; }));
-  // Without its instrument the MIDI track plays nothing: no voices, no event slot.
-  c.edit(ops::setDevicesActive(*c.store.current(), std::vector<DeviceId>{c.inst}, false));
+  // Without its instrument group (IG.1-2: the voice context; its Basic Synth inside) the MIDI track plays nothing: no
+  // voices, no event slot.
+  c.edit(ops::setDevicesActive(*c.store.current(), std::vector<DeviceId>{c.onPath(c.midi, 0)->id}, false));
   auto silent = lower(*c.store.current(), lo, &*off);
   REQUIRE(silent.ok());
   CHECK(silent->graph.tracks[ti].role == pq::graph::TrackRole::Audio);

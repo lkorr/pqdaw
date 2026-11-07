@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 18,
+  "schemaVersion": 19,
   "timeline": {
     "tempo": [
       {"tick": 0, "bpm": 120.0, "curve": "linear"},
@@ -35,12 +35,13 @@
       "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
       "lanes": [],
       "devices": [
-        {"id": 5, "patch": "BasicSynth", "kind": "instrument"}
+        {"id": 5, "patch": "BasicSynth", "kind": "instrument", "group": 6},
+        {"id": 6, "patch": "Group", "kind": "audioEffect", "settings": {"glide": 0.0, "steal": 0.0, "voices": 16.0}}
       ],
       "clips": []
     },
     {
-      "id": 8,
+      "id": 11,
       "kind": "audio",
       "name": "1 Audio",
       "colour": "#808080",
@@ -50,12 +51,12 @@
       "lanes": [],
       "devices": [],
       "clips": [
-        {"kind": "audio", "id": 14, "name": "loop", "colour": "#808080", "start": 31680, "length": 802160, "sample": 12, "warp": "off", "contentStartFrame": 1681.0650514468166, "seconds": 1.9284125860975623, "contentStart": 0, "loop": {"enabled": false, "start": 0, "end": 887040}, "sourceBpm": 120.0, "gainDb": -3.5, "transpose": {"cents": -1250.25}, "detuneCents": 12.5, "reverse": false, "fadeIn": {"length": 73920, "curve": 0.25}, "fadeOut": {"length": 110880, "curve": -0.75}, "crossfadeIn": 0, "tuning": "inherit", "active": true},
-        {"kind": "audio", "id": 15, "name": "Kick \"808\" — ünïcode", "colour": "#808080", "start": 833840, "length": 379424, "sample": 13, "warp": "off", "contentStartFrame": 0.0, "seconds": 1.0, "contentStart": 0, "loop": {"enabled": false, "start": 0, "end": 887040}, "sourceBpm": 120.0, "gainDb": 0.0, "transpose": {"ratio": "5/4"}, "detuneCents": 0.0, "reverse": true, "fadeIn": {"length": 0, "curve": 0.0}, "fadeOut": {"length": 0, "curve": 0.0}, "crossfadeIn": 55440, "tuning": "inherit", "active": true}
+        {"kind": "audio", "id": 17, "name": "loop", "colour": "#808080", "start": 31680, "length": 802160, "sample": 15, "warp": "off", "contentStartFrame": 1681.0650514468166, "seconds": 1.9284125860975623, "contentStart": 0, "loop": {"enabled": false, "start": 0, "end": 887040}, "sourceBpm": 120.0, "gainDb": -3.5, "transpose": {"cents": -1250.25}, "detuneCents": 12.5, "reverse": false, "fadeIn": {"length": 73920, "curve": 0.25}, "fadeOut": {"length": 110880, "curve": -0.75}, "crossfadeIn": 0, "tuning": "inherit", "active": true},
+        {"kind": "audio", "id": 18, "name": "Kick \"808\" — ünïcode", "colour": "#808080", "start": 833840, "length": 379424, "sample": 16, "warp": "off", "contentStartFrame": 0.0, "seconds": 1.0, "contentStart": 0, "loop": {"enabled": false, "start": 0, "end": 887040}, "sourceBpm": 120.0, "gainDb": 0.0, "transpose": {"ratio": "5/4"}, "detuneCents": 0.0, "reverse": true, "fadeIn": {"length": 0, "curve": 0.0}, "fadeOut": {"length": 0, "curve": 0.0}, "crossfadeIn": 55440, "tuning": "inherit", "active": true}
       ]
     },
     {
-      "id": 10,
+      "id": 13,
       "kind": "audio",
       "name": "2 Audio",
       "colour": "#808080",
@@ -65,7 +66,7 @@
       "lanes": [],
       "devices": [],
       "clips": [
-        {"kind": "audio", "id": 16, "name": "re-pitched", "colour": "#808080", "start": 887040, "length": 729610, "sample": 12, "warp": "rePitch", "contentStartFrame": 0.0, "seconds": 2.0, "contentStart": 0, "loop": {"enabled": true, "start": 221760, "end": 665280}, "sourceBpm": 87.5, "gainDb": 0.0, "transpose": {"steps": -5}, "detuneCents": 0.0, "reverse": false, "fadeIn": {"length": 0, "curve": 0.0}, "fadeOut": {"length": 0, "curve": 0.0}, "crossfadeIn": 0, "tuning": {
+        {"kind": "audio", "id": 19, "name": "re-pitched", "colour": "#808080", "start": 887040, "length": 729610, "sample": 15, "warp": "rePitch", "contentStartFrame": 0.0, "seconds": 2.0, "contentStart": 0, "loop": {"enabled": true, "start": 221760, "end": 665280}, "sourceBpm": 87.5, "gainDb": 0.0, "transpose": {"steps": -5}, "detuneCents": 0.0, "reverse": false, "fadeIn": {"length": 0, "curve": 0.0}, "fadeOut": {"length": 0, "curve": 0.0}, "crossfadeIn": 0, "tuning": {
             "private": {
               "kind": "edo",
               "n": 19,
@@ -90,14 +91,16 @@
   },
   "wires": [
     {"id": 3, "notes": 2, "port": "", "mixer": 2, "param": ""},
-    {"id": 6, "notes": 4, "port": "", "to": 5, "param": ""},
-    {"id": 7, "from": 5, "port": "", "mixer": 4, "param": ""},
-    {"id": 9, "notes": 8, "port": "", "mixer": 8, "param": ""},
-    {"id": 11, "notes": 10, "port": "", "mixer": 10, "param": ""}
+    {"id": 7, "notes": 4, "port": "", "to": 6, "param": ""},
+    {"id": 8, "from": 6, "port": "", "mixer": 4, "param": ""},
+    {"id": 9, "from": 6, "port": "input", "to": 5, "param": "", "chain": true},
+    {"id": 10, "from": 5, "port": "", "to": 6, "param": "output", "chain": true},
+    {"id": 12, "notes": 11, "port": "", "mixer": 11, "param": ""},
+    {"id": 14, "notes": 13, "port": "", "mixer": 13, "param": ""}
   ],
   "samples": [
-    {"id": 12, "path": "C:/samples/loop.wav", "name": "loop", "hash": "0123456789abcdef", "size": 384044, "frames": 96000, "rate": 48000.0, "channels": 2},
-    {"id": 13, "path": "samples/imported/Kick (2).flac", "name": "Kick \"808\" — ünïcode", "hash": "fedcba9876543210", "size": 1234567, "frames": 44100, "rate": 44100.0, "channels": 1}
+    {"id": 15, "path": "C:/samples/loop.wav", "name": "loop", "hash": "0123456789abcdef", "size": 384044, "frames": 96000, "rate": 48000.0, "channels": 2},
+    {"id": 16, "path": "samples/imported/Kick (2).flac", "name": "Kick \"808\" — ünïcode", "hash": "fedcba9876543210", "size": 1234567, "frames": 44100, "rate": 44100.0, "channels": 1}
   ],
   "view": {
     "tracks": [],

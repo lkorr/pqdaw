@@ -1,45 +1,39 @@
-patch Midi8 {
+patch Midi11 {
   param volume = 0 [-70..6]
   param pan = 0 [-1..1]
   param gate = 1 [0..1]
   param sendGate = 1 [0..1]
   param mute = 0 [0..1]
-  out done : bool voice mono
   out out : real audio global stereo
 
-  d12 = meta_phase_acc__d12__ca0ff6bcec569ed8()
-  _n1 = voice.gate
-  _n7 = 0
-  _n9 = 1
-  _n10 = _n1 ? _n9 : max(z1(_n10) - 200 / sr, _n7)
-  _n12 = voice_sum(d12 * _n10)
-  _n19 = 0.002
-  _n23 = volume <= -70 ? _n7 : db_to_gain(volume)
-  _n25 = min(_n9, _n9 - pan)
-  _n27 = min(_n9, _n9 + pan)
-  _n32 = mute < 0.5
-  _n34 = _n32 ? sendGate : _n7
-  _n35 = _n23 * (_n32 ? gate : _n7)
-  _n41 = _n23 * _n34
-  done = !_n1 && _n10 <= _n7
-  out = gain(_n12, (_n25 * _n35, _n27 * _n35), _n19)
+  _n0 = 0
+  d20 = meta_phase_acc__d20__e36bceb1183c82ba(voice_last(voice.hz))
+  _n6 = 1
+  _n7 = 0.002
+  _n11 = volume <= -70 ? _n0 : db_to_gain(volume)
+  _n13 = min(_n6, _n6 - pan)
+  _n15 = min(_n6, _n6 + pan)
+  _n20 = mute < 0.5
+  _n22 = _n20 ? sendGate : _n0
+  _n23 = _n11 * (_n20 ? gate : _n0)
+  _n29 = _n11 * _n22
+  out = gain(d20, (_n13 * _n23, _n15 * _n23), _n7)
 
-  export post = gain(_n12, (_n25 * _n41, _n27 * _n41), _n19)
-  export pre = gain(_n12, (_n25 * _n34, _n27 * _n34), _n19)
+  export post = gain(d20, (_n13 * _n29, _n15 * _n29), _n7)
+  export pre = gain(d20, (_n13 * _n22, _n15 * _n22), _n7)
 
 }
 
-patch meta_phase_acc__d12__ca0ff6bcec569ed8 {
+patch meta_phase_acc__d20__e36bceb1183c82ba {
   param freq = 0Hz [0Hz..20000Hz] @label("Frequency") @signed @curve(exp0, 14)
   param phase = 0 [0..1] @label("Phase") @wrap
   param amp = 1 [0..4] @label("Amplitude")
   param pitch = 0c [-4800c..4800c] @label("Pitch")
-  out out : audio voice mono
-  out done : bool voice mono
+  in hz : audio global
+  out out : audio global mono
 
-  ph = frac(phasor((voice.hz + freq) * cents_to_hz(pitch, 1)) + phase + -0)
+  ph = frac(phasor((hz + freq) * cents_to_hz(pitch, 1)) + phase + -0)
   tap = voice_tap(ph, 0)
   out = amp * ph
-  done = !voice.gate
 
 }

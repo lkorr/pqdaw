@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 18,
+  "schemaVersion": 19,
   "timeline": {
     "tempo": [
       {"tick": 0, "bpm": 120.0, "curve": "linear"},
@@ -115,7 +115,8 @@
         }
       ],
       "devices": [
-        {"id": 365, "patch": "BasicSynth", "kind": "instrument"}
+        {"id": 365, "patch": "BasicSynth", "kind": "instrument", "group": 381},
+        {"id": 381, "patch": "Group", "kind": "audioEffect"}
       ],
       "clips": [
         {
@@ -503,7 +504,8 @@
             }
           ],
           "devices": [
-            {"id": 366, "patch": "BasicSynth", "kind": "instrument"}
+            {"id": 366, "patch": "BasicSynth", "kind": "instrument", "group": 384},
+            {"id": 384, "patch": "Group", "kind": "audioEffect"}
           ],
           "clips": [
             {
@@ -574,7 +576,8 @@
                 }
               ],
               "devices": [
-                {"id": 367, "patch": "BasicSynth", "kind": "instrument"}
+                {"id": 367, "patch": "BasicSynth", "kind": "instrument", "group": 387},
+                {"id": 387, "patch": "Group", "kind": "audioEffect"}
               ],
               "clips": [
                 {
@@ -630,7 +633,8 @@
         }
       ],
       "devices": [
-        {"id": 368, "patch": "BasicSynth", "kind": "instrument"}
+        {"id": 368, "patch": "BasicSynth", "kind": "instrument", "group": 390},
+        {"id": 390, "patch": "Group", "kind": "audioEffect"}
       ],
       "clips": []
     }
@@ -668,18 +672,26 @@
     "devices": []
   },
   "wires": [
-    {"id": 369, "notes": 4, "port": "", "to": 365, "param": ""},
-    {"id": 370, "from": 365, "port": "", "mixer": 4, "param": ""},
+    {"id": 369, "notes": 4, "port": "", "to": 381, "param": ""},
+    {"id": 370, "from": 381, "port": "", "mixer": 4, "param": ""},
     {"id": 371, "notes": 5, "port": "", "mixer": 5, "param": ""},
-    {"id": 372, "notes": 6, "port": "", "to": 366, "param": ""},
-    {"id": 373, "from": 366, "port": "", "mixer": 6, "param": ""},
+    {"id": 372, "notes": 6, "port": "", "to": 384, "param": ""},
+    {"id": 373, "from": 384, "port": "", "mixer": 6, "param": ""},
     {"id": 374, "notes": 328, "port": "", "mixer": 328, "param": ""},
-    {"id": 375, "notes": 329, "port": "", "to": 367, "param": ""},
-    {"id": 376, "from": 367, "port": "", "mixer": 329, "param": ""},
-    {"id": 377, "notes": 7, "port": "", "to": 368, "param": ""},
-    {"id": 378, "from": 368, "port": "", "mixer": 7, "param": ""},
+    {"id": 375, "notes": 329, "port": "", "to": 387, "param": ""},
+    {"id": 376, "from": 387, "port": "", "mixer": 329, "param": ""},
+    {"id": 377, "notes": 7, "port": "", "to": 390, "param": ""},
+    {"id": 378, "from": 390, "port": "", "mixer": 7, "param": ""},
     {"id": 379, "notes": 3, "port": "", "mixer": 3, "param": ""},
-    {"id": 380, "notes": 2, "port": "", "mixer": 2, "param": ""}
+    {"id": 380, "notes": 2, "port": "", "mixer": 2, "param": ""},
+    {"id": 382, "from": 381, "port": "input", "to": 365, "param": "", "chain": true},
+    {"id": 383, "from": 365, "port": "", "to": 381, "param": "output", "chain": true},
+    {"id": 385, "from": 384, "port": "input", "to": 366, "param": "", "chain": true},
+    {"id": 386, "from": 366, "port": "", "to": 384, "param": "output", "chain": true},
+    {"id": 388, "from": 387, "port": "input", "to": 367, "param": "", "chain": true},
+    {"id": 389, "from": 367, "port": "", "to": 387, "param": "output", "chain": true},
+    {"id": 391, "from": 390, "port": "input", "to": 368, "param": "", "chain": true},
+    {"id": 392, "from": 368, "port": "", "to": 390, "param": "output", "chain": true}
   ],
   "view": {
     "tracks": [

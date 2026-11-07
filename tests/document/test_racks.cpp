@@ -53,6 +53,9 @@ struct Racks {
     midi = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
     ret = edit(ops::createTrack(doc(), store.ids(), TrackKind::Return)).tracks.at(0);
     inst = track(midi).devices.at(0)->id;
+    // IG.1-2: the default instrument out of its instrument group, alone on the path (a lone stock instrument is a voice
+    // context of its own: the same sound), as these rack tests build on a bare instrument heading the track.
+    edit(ops::ungroupInCircuit(store.current(), store.ids(), library(), track(midi).devices.at(1)->id));
   }
   const Project& doc() const { return *store.current(); }
   const Track& track(TrackId id) const { return *findTrackPtr(doc(), id); }

@@ -531,6 +531,13 @@ std::vector<Case> cases() {
                  withWire(f);
                  return SetWireReducer{wire, WireReducer::Highest};
                }, S, [](Fixture& f, const ChangeSet&) { CHECK(findWire(f.doc(), wire)->reducer == WireReducer::Highest); }});
+  c.push_back({"SetWireSignal", [withWire](Fixture& f) -> Command {  // IG.1-2
+                 withWire(f);
+                 return SetWireSignal{wire, true, WireReducer::Last};
+               }, S, [](Fixture& f, const ChangeSet&) {
+                 CHECK(findWire(f.doc(), wire)->single);
+                 CHECK(findWire(f.doc(), wire)->reducer == WireReducer::Last);
+               }});
   c.push_back({"RemoveDevice (takes its wires)", [withWire](Fixture& f) -> Command {
                  withWire(f);
                  return RemoveDevice{chain.fx};
