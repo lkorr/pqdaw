@@ -5,7 +5,8 @@
 // scalar: S1 and S8 are the same bits per element). One acquire load of the slot per call, then the call's
 // specialisation by the data's class: one segment (no search) or several (a compare per segment boundary, the
 // coefficients gathered per lane), and the shape — Linear without a transcendental, one exact expm1 / log1p / pow
-// otherwise; mixed shapes compute each shape present and blend. The flags are per-call branches outside the
+// otherwise (one exp for a single Exp segment through zero, the Octave preset); mixed shapes compute each shape present
+// and blend. The flags are per-call branches outside the
 // arithmetic (uniform over the call).
 
 #include <algorithm>
@@ -17,6 +18,7 @@ namespace pq::dsp::detail {
 namespace {
 
 constexpr uint32_t kMixed = kCurveShapeCount;
+constexpr uint32_t kPureExp = kCurveShapeCount + 1;  // one Exp segment through zero: a · e^(c·x) (CurveData::pureExp)
 
 template <class S>
 struct Coeffs {
@@ -48,7 +50,9 @@ typename S::F shapeValue(const Coeffs<S>& k, typename S::F x) noexcept {
 template <class S, uint32_t kShape>
 typename S::F segValue(const Coeffs<S>& k, typename S::F p, uint32_t shapes) noexcept {
   using F = typename S::F;
-  if constexpr (kShape != kMixed) {
+  if constexpr (kShape == kPureExp) {
+    return S::mul(k.a, S::exactExp(S::mul(k.c, p)));
+  } else if constexpr (kShape != kMixed) {
     return shapeValue<S, static_cast<CurveShape>(kShape)>(k, p);
   } else {
     F y = S::zero();
@@ -125,6 +129,8 @@ void run(const KernelArgs& a, uint32_t count, const CurveData& D, bool convert) 
 
 template <bool kSpl, bool kMulti>
 void runShape(const KernelArgs& a, uint32_t count, const CurveData& D, bool convert) noexcept {  // RT-safe
+  if constexpr (!kMulti)
+    if (D.pureExp != 0) return run<kSpl, false, kPureExp>(a, count, D, convert);
   switch (D.single) {
     case static_cast<uint32_t>(CurveShape::Linear): return run<kSpl, kMulti, 0>(a, count, D, convert);
     case static_cast<uint32_t>(CurveShape::Exp): return run<kSpl, kMulti, 1>(a, count, D, convert);

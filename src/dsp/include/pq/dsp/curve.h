@@ -153,7 +153,9 @@ struct alignas(64) CurveData {
   uint32_t output = 0;   // CurveOutput
   float step = 0.0f, invStep = 0.0f;
   uint32_t single = 0;   // the shape of every segment when they all share one (else kCurveShapeCount: mixed)
-  uint32_t pad = 0;
+  // 1: one Exp segment through zero (a = b: the Octave preset, Y0 · (Y1/Y0)^p), evaluated as a · e^(c·x) with the plain
+  // exp (≈ 4× cheaper than expm1, and as exact: relative error everywhere). compileCurve sets it.
+  uint32_t pureExp = 0;
   float t[kMaxCurveSegments]{};  // segment starts (t[0] = 0)
   float a[kMaxCurveSegments]{}, b[kMaxCurveSegments]{}, c[kMaxCurveSegments]{};
   float e[kMaxCurveSegments]{}, f[kMaxCurveSegments]{};

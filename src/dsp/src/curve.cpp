@@ -332,6 +332,13 @@ CurveData compileCurve(const Curve& c) noexcept {
     d.shape[i] = static_cast<float>(sh);
   }
   for (uint32_t i = n; i < kMaxCurveSegments; ++i) d.t[i] = 2.0f;  // never reached by a search over p ≤ 1
+  if (n == 1 && d.single == static_cast<uint32_t>(CurveShape::Exp)) {
+    const SegmentCoeffs s = segmentCoeffs(c, 0);
+    if (s.a != 0.0 && std::fabs(s.a - s.b) <= 1e-12 * std::fabs(s.a)) {  // a + a·(e^(cx) − 1) = a·e^(cx)
+      d.pureExp = 1;
+      d.b[0] = d.a[0];
+    }
+  }
   return d;
 }
 
