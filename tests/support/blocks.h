@@ -116,6 +116,7 @@ inline void addProbeInstruments(pq::doc::DocumentStore& s) {
     if (t.kind == TrackKind::Midi && mainPath(*s.current(), t).blocks.empty()) midi.push_back(t.id);
   });
   for (const TrackId t : midi) (void)addProbeInstrument(s, t);
+}
 
 inline void dispatchEdit(pq::doc::DocumentStore& s, const pq::doc::ops::EditResult& e) {
   REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));

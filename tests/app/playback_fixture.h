@@ -173,6 +173,15 @@ inline TrackPtr track(TrackId id, TrackKind kind, std::string name) {
   return std::make_shared<const Track>(std::move(t));
 }
 
+// GU.11: a MIDI track `id` with the default instrument group (unwired: wireSeries), as one batch (AddTrack under
+// `parent`, then the group's commands).
+inline Batch midiWithInstrument(IdSource& ids, TrackId id, std::string name, TrackId parent = {}) {
+  Batch b{"track", {}};
+  b.commands.push_back(AddTrack{track(id, TrackKind::Midi, std::move(name)), parent, kAppend});
+  (void)instrument(b, ids, id, ids.device());
+  return b;
+}
+
 struct Fixture {
   DocumentStore store{unwiredDefaultProject()};  // TX.all-free: the committed file's ids (its links come last)
   TrackId master, echo, lead, grp, mos, muted;

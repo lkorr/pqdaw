@@ -1,11 +1,11 @@
 // TX.mod-all (the user, 2026-11-01: "make sure every knob is able to be audio rate modulated"): a wire into a param
-// makes that param live at audio rate, for every meta module and stock device — one rule (pq/document/lower.h
-// "Modulation wires"; meta::ExpandContext::modulated), no per-type lists.
+// makes that param live at audio rate, for every engine and module (GU.11: a module's controls are value blocks) —
+// one rule (pq/document/lower.h "Modulation wires"; meta::ExpandContext::modulated), no per-type lists.
 //
 //   repro   the user's case: a Phase accumulator's audio wired into a chain Wavetable's warp (the bottom-middle knob),
 //           in Phase mode and in Shape mode (Shape mode refused the wire before: its fold / warp / sync were baked),
 //           wired from the start (interpreter and JIT) and added while playing.
-//   sweep   (slow) every continuous param (real, ranged, not @steps) of every stock device and meta module, in the
+//   sweep   (slow) every continuous param (real, ranged, not @steps) of every module (its value blocks) and engine, in the
 //           configurations that switch its section on: a free Phase Accumulator at 750 Hz (a ramp 0 … 1 that is
 //           exactly 0 at every 64-frame block start: 48000 / 64 = 750) through a free VCA (its knob a constant M,
 //           M = ±35 % of the param's range towards its interior) wired into the param, vs the same project without the
@@ -36,6 +36,7 @@
 #include "pq/document/lower.h"
 #include "pq/document/meta.h"
 #include "pq/dsp/frame_table_build.h"
+#include "pq/document/main_path.h"
 #include "pq/document/modules.h"
 #include "pq/meta/wavetable.h"
 
@@ -53,15 +54,13 @@ struct Song {
   TrackId track;
   Song() {
     must(SetTempoMap{{{0, 120.0, TempoCurve::Step}}});
-    auto t = ops::createTrack(doc(), store.ids(), TrackKind::Midi);  // BasicSynth as its instrument
+    auto t = ops::createTrack(doc(), store.ids(), TrackKind::Midi);  // the default instrument group heads its path
     REQUIRE(t.ok());
     must(t->command);
     track = t->tracks.at(0);
-    // IG.1-2: the Basic Synth out of its instrument group, alone on the path (a meta module at slot 0 replaces it).
-    static const auto lib = app::loadDeviceLibrary();
-    REQUIRE(lib.ok());
-    playback_fixture::ungroupHead(store, **lib, track);
   }
+  // GU.11: the default instrument group deleted: the path empty, so an engine at slot 0 takes the notes.
+  void bare() { playback_fixture::clearHead(store, track); }
   // A command built by hand: its device params in units (GU.1: stored as knob positions, tests/support/knob_positions.h).
   void must(Command c) { raw(playback_fixture::inUnits(store, std::move(c))); }
   void raw(Command c) {
@@ -80,8 +79,12 @@ struct Song {
     must(e->command);
     return e->devices.at(0);
   }
-  DeviceId stock(const std::string& patch, DeviceKind kind) {
-    auto e = ops::addDevice(doc(), store.ids(), track, patch, kind);
+  // GU.11: a native engine / a module ("module:<key>") spliced in at the path's end (after the instrument group, not
+  // into its voice run); a module off the path.
+  DeviceId metaAfter(std::string_view type) { return test_blocks::appendEngineAfter(store, track, type); }
+  DeviceId moduleAfter(std::string_view key) { return test_blocks::appendAfter(store, track, "module:" + std::string(key)); }
+  DeviceId moduleOff(std::string_view key) {
+    auto e = ops::addDevice(doc(), store.ids(), track, "module:" + std::string(key), DeviceKind::AudioEffect, ops::kOffPath);
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
     must(e->command);
     return e->devices.at(0);
@@ -213,6 +216,7 @@ TEST_CASE("mod-all repro: audio into a chain Wavetable's warp changes the sound,
     for (const bool jit : {false, true}) {
       auto build = [&](bool wired) {
         auto s = std::make_unique<Song>();
+        s->bare();
         const DeviceId wt = s->meta("wavetable", 0);
         s->edit(ops::setMetaSetting(s->doc(), wt, "", "wavetable", "mode", mode));
         const DeviceId src = s->freePa(750.0);
@@ -232,7 +236,8 @@ TEST_CASE("mod-all repro: audio into a chain Wavetable's warp changes the sound,
 TEST_CASE("mod-all repro: the warp wire added while playing takes effect (Shape mode: the live path's table)") {
   auto run = [&](bool wire) {
     Song s;
-    const DeviceId wt = s.meta("wavetable");  // after BasicSynth: an effect in Shape mode
+    const DeviceId wt = s.metaAfter("wavetable");  // after the instrument group: an effect (in Shape mode)
+    s.edit(ops::setMetaSetting(s.doc(), wt, "", "wavetable", "mode", 1.0));
     CHECK(metaSettings(*findDevice(s.doc(), wt).device, "", meta::wavetableType())[meta::kWtMode] == 1.0);
     const DeviceId src = s.freePa(750.0);
     s.notes(8 * kPpq);
@@ -279,6 +284,7 @@ TEST_CASE("mod-all repro: the warp wire added while playing takes effect (Shape 
 TEST_CASE("mod-all: Shape mode's live path at static values matches its baked curve") {
   auto build = [&](bool live) {
     auto s = std::make_unique<Song>();
+    s->bare();
     s->meta("wavetable", 0);  // the sine (reading the note's phase: GU.4, it followed a Phase accumulator)
     const DeviceId shaper = s->meta("wavetable");
     s->edit(ops::setMetaSetting(s->doc(), shaper, "", "wavetable", "mode", 1.0));
@@ -348,6 +354,7 @@ struct Param {
   std::string name;
   double def = 0.0, min = 0.0, max = 1.0;
   dsp::Curve curve;  // GU.1: its declared curve (an Add wire adds in its input domain: position, or units if linear)
+  std::string block;  // GU.11: a module's control: its value block's name inside the device (the wire's target)
 };
 // A device under test: how its song is built (returns the device), its params, its configurations.
 struct Dut {
@@ -363,15 +370,24 @@ const DeviceLibrary& library() {
   return **lib;
 }
 
-std::vector<Param> stockParams(const std::string& patch) {
-  const DeviceInfo* info = library().catalog().find(patch);
-  REQUIRE_MESSAGE(info != nullptr, patch);
+// GU.11: a module's controls — its value blocks with a continuous curve (not stepped, a range), the first of each name
+// (Operator's rows repeat them: row A's, the one heard).
+std::vector<Param> moduleParams(const BlockSet& set) {
   std::vector<Param> out;
-  for (const DeviceParamInfo& p : info->params)
-    if (p.kind == graph::Kind::Real && p.hasRange && p.steps == 0 && p.max > p.min)
-      out.push_back({p.name, p.defaultValue, p.min, p.max,
-                     declaredCurve(*findParamDecl(*library().library().find(info->patch.empty() ? patch : info->patch), p.name))});
+  for (const DevicePtr& d : set.devices) {
+    if (d->patch != kValueDevice) continue;
+    const dsp::Curve* c = d->curve(kValueParam);
+    if (c == nullptr || c->step > 0.0 || !(c->max > c->min)) continue;
+    if (std::any_of(out.begin(), out.end(), [&](const Param& p) { return p.block == d->name; })) continue;
+    const DeviceValue* v = d->param(kValueParam);
+    out.push_back({std::string(kValueParam), dsp::evalCurve(*c, v != nullptr ? v->value : 0.0), c->min, c->max, *c, d->name});
+  }
   return out;
+}
+BlockSet moduleSet(std::string_view key) {
+  const ModuleInfo* m = findModule(key);
+  REQUIRE(m != nullptr);
+  return moduleBlocks(m->kind);
 }
 
 std::vector<Param> metaParams(std::string_view type) {
@@ -384,25 +400,18 @@ std::vector<Param> metaParams(std::string_view type) {
   return out;
 }
 
-void configure(Song& s, DeviceId d, const Config& c, std::string_view metaType) {
-  for (const auto& [k, v] : c.settings) {
-    if (metaType.empty()) s.must(SetDeviceSetting{d, k, v});
-    else s.edit(ops::setMetaSetting(s.doc(), d, "", metaType, k, v));
-  }
+// GU.11: a module's configuration: its controls (value blocks by name) set in units.
+void configure(Song& s, DeviceId d, const Config& c) {
   for (const auto& [k, v] : c.params) {
-    if (metaType.empty()) s.edit(ops::setDeviceParamValue(s.doc(), library(), d, k, v));  // GU.1: values in units
-    else s.edit(ops::setMetaParamValue(s.doc(), d, "", metaType, k, v));
+    const DeviceId block = test_blocks::member(s.doc(), d, k);
+    REQUIRE_MESSAGE(block.valid(), k);
+    s.edit(ops::setDeviceParamValue(s.doc(), library(), block, std::string(kValueParam), v));  // GU.1: values in units
   }
 }
 
-DeviceId stockInstrument(Song& s, const std::string& patch, const Config& c) {
-  const DeviceId d = patch == "BasicSynth" ? s.doc().tracks.front()->devices.front()->id : s.stock(patch, DeviceKind::Instrument);
-  configure(s, d, c, "");
-  return d;
-}
-DeviceId stockEffect(Song& s, const std::string& patch, const Config& c) {
-  const DeviceId d = s.stock(patch, DeviceKind::AudioEffect);  // after BasicSynth
-  configure(s, d, c, "");
+DeviceId moduleEffect(Song& s, std::string_view key, const Config& c) {
+  const DeviceId d = s.moduleAfter(key);  // after the default instrument group
+  configure(s, d, c);
   return d;
 }
 
@@ -417,98 +426,39 @@ Config with(Config c, std::string name, std::vector<std::pair<std::string, doubl
 std::vector<Dut> duts() {
   std::vector<Dut> d;
   auto one = [](std::string name) { return std::vector<Config>{Config{std::move(name), {}, {}}}; };
-  d.push_back({"Basic Synth", [](Song& s, const Config& c) { return stockInstrument(s, "BasicSynth", c); },
-               stockParams("BasicSynth"), one("default")});
+  // GU.11: the stock devices are modules (groups): their controls are value blocks (moduleParams). The default
+  // instrument (a new track's group) and Operator (an instrument module: it replaces the group at the notes) as they
+  // come; Utility after another Utility that makes the signal stereo (its Balance), so Width and Mid/Side have a side;
+  // the LFO's output (its Out) wired into a Utility's Gain after it, so its controls reach the sound. (The stock
+  // devices' configurations of sections that the modules do not have went with them: EQ Eight and Auto Filter are
+  // retired.)
   {
-    // Operator: every oscillator on and heard (algorithm 11: all carriers; levels −6 dB), the filter, pitch envelope,
-    // LFO and spread on with their amounts up; an octave above the key-scaling reference. Then: User partials with
-    // looping envelopes, fixed frequencies, the LFO synced, the Morph filter through a driven circuit, and two
-    // overlapping notes (glide).
-    // The envelopes get a 20 ms attack (so Initial is heard) and a sustain 12 dB below the peak (so the decay moves);
-    // looping, their decay settles within 10 ms and they repeat every 50 ms.
-    Config all{"all sections",
-               {{"algorithm", 11}, {"onB", 1}, {"onC", 1}, {"onD", 1}, {"filterOn", 1}, {"pitchEnvOn", 1}, {"lfoOn", 1},
-                {"glideOn", 1}, {"spreadOn", 1}},
-               {{"levelB", 0.5}, {"levelC", 0.5}, {"levelD", 0.5}, {"penvAmount", 1200.0}, {"fenvAmount", 2400.0},
-                {"penvAttack", 0.02}, {"fenvAttack", 0.02}},
-               {{kNoteStart, kPpq, 12}}};
-    std::vector<std::pair<std::string, double>> user, loopParams, fixed;
-    for (const char* o : {"A", "B", "C", "D"}) {
-      all.params.push_back({std::string("attack") + o, 0.02});
-      all.params.push_back({std::string("sustain") + o, 0.25});
-      user.push_back({std::string("wave") + o, 22});
-      user.push_back({std::string("loop") + o, 1});
-      loopParams.push_back({std::string("decay") + o, 0.01});  // settles at the sustain within the note
-      loopParams.push_back({std::string("repeat") + o, 0.05});
-      fixed.push_back({std::string("fixed") + o, 1});
-    }
-    user.push_back({"pitchLoop", 1});
-    user.push_back({"filterLoop", 1});
-    for (const char* e : {"penv", "fenv"}) {
-      loopParams.push_back({std::string(e) + "Repeat", 0.05});
-      loopParams.push_back({std::string(e) + "Decay", 0.01});  // settles within the note, so the loop's wait starts
-    }
-    Config glide = with(all, "two overlapping notes (glide)", {});
-    glide.notes = {{kNoteStart, kPpq, 12}, {kPpq / 2 + kNoteStart, kPpq / 2, 19}};
-    d.push_back({"Operator", [](Song& s, const Config& c) { return stockInstrument(s, "operator", c); },
-                 stockParams("operator"),
-                 {all, with(all, "user partials, looping envelopes", user, loopParams), with(all, "fixed frequencies", {}, fixed),
-                  with(all, "LFO synced", {}, {{"lfoSync", 1}}),
-                  with(all, "Morph filter, OSR circuit", {{"filterType", 4}, {"filterCircuit", 1}}), glide}});
+    IdSource local;
+    d.push_back({"Basic Synth", [](Song& s, const Config&) { return s.doc().tracks.front()->devices.front()->id; },
+                 moduleParams(defaultInstrumentBlocks(local)), one("default")});
   }
-  // Utility: after another Utility that makes the signal stereo (its balance), so width and mid/side have a side.
+  d.push_back({"Operator", [](Song& s, const Config&) {
+                 s.edit(ops::addDevice(s.doc(), s.store.ids(), s.track, "module:operator", DeviceKind::Instrument, 0));
+                 return mainPath(s.doc(), *findTrackPtr(s.doc(), s.track)).blocks.at(0)->id;
+               },
+               moduleParams(moduleSet("operator")), one("default")});
   d.push_back({"Utility", [](Song& s, const Config& c) {
-                 const DeviceId pre = s.stock("utility", DeviceKind::AudioEffect);
-                 s.edit(ops::setDeviceParamValue(s.doc(), library(), pre, "balance", -0.6));
-                 return stockEffect(s, "utility", c);
+                 configure(s, s.moduleAfter("utility"), Config{"pre", {}, {{"Balance", -0.6}}});
+                 return moduleEffect(s, "utility", c);
                },
-               stockParams("utility"),
-               {Config{"default", {}, {}}, Config{"bass mono", {{"bassMono", 1}}, {}}, Config{"mid/side", {}, {{"msMode", 1}}}}});
-  d.push_back({"Saturator", [](Song& s, const Config& c) { return stockEffect(s, "saturator", c); }, stockParams("saturator"),
-               {Config{"default", {}, {}}, Config{"colour (depth +6 dB)", {{"color", 1}}, {{"depth", 2.0}}},
-                Config{"waveshaper", {{"type", 7}}, {{"wsDepth", 0.5}, {"wsDamp", 0.5}}}}});
-  {
-    // EQ Eight: every band on as a bell (Stereo), then L/R so the B bands play on the right channel; gains +4.
-    Config bells{"all bells", {{"on1", 1}, {"on8", 1}}, {}};
-    for (int b = 1; b <= 8; ++b) bells.settings.push_back({"type" + std::to_string(b), 3});
-    Config lr = bells;
-    lr.name = "L/R, all bells";
-    lr.settings.push_back({"mode", 1});
-    lr.settings.push_back({"onB1", 1});
-    lr.settings.push_back({"onB8", 1});
-    for (int b = 1; b <= 8; ++b) lr.settings.push_back({"typeB" + std::to_string(b), 3});
-    for (Config* c : {&bells, &lr})
-      for (int b = 1; b <= 8; ++b) {
-        c->params.push_back({"gain" + std::to_string(b), 1.585});
-        c->params.push_back({"gainB" + std::to_string(b), 1.585});
-      }
-    d.push_back({"EQ Eight", [](Song& s, const Config& c) { return stockEffect(s, "eq_eight", c); }, stockParams("eq_eight"),
-                 {bells, lr}});
-  }
-  // Auto Filter: its sections on in turn; the sidechain's follower hears a free Phase Accumulator at 110 Hz.
-  d.push_back({"Auto Filter", [](Song& s, const Config& c) {
-                 const DeviceId af = stockEffect(s, "auto_filter", c);
-                 if (std::find_if(c.settings.begin(), c.settings.end(), [](const auto& kv) { return kv.first == "scOn"; }) !=
-                     c.settings.end()) {
-                   const DeviceId sc = s.freePa(110.0);
-                   s.wire(sc, "", af, "sc");
-                 }
-                 return af;
-               },
-               stockParams("auto_filter"),
-               {Config{"default", {}, {}}, Config{"OSR circuit", {{"circuit", 1}}, {}},
-                Config{"LFO", {{"lfo", 1}}, {{"lfoAmount", 0.5}}},
-                Config{"LFO synced", {{"lfo", 1}}, {{"lfoAmount", 0.5}, {"lfoSync", 1}}},
-                Config{"envelope", {{"env", 1}}, {{"envAmount", 0.5}}}, Config{"morph", {{"type", 4}}, {}},
-                Config{"DJ", {{"type", 5}}, {}}, Config{"sidechain", {{"env", 1}, {"scOn", 1}}, {{"envAmount", 0.5}}}}});
-  // The LFO's own output is its export: wired into a Utility's gain after it, so its params reach the sound.
+               moduleParams(moduleSet("utility")),
+               {Config{"default", {}, {}}, Config{"mid/side", {}, {{"Mid/Side Mode", 1}}}}});
+  d.push_back({"Saturator", [](Song& s, const Config& c) { return moduleEffect(s, "saturator", c); },
+               moduleParams(moduleSet("saturator")),
+               {Config{"default", {}, {}}, Config{"Medium Curve, soft clip", {}, {{"Type", 3}, {"Soft Clip", 1}}}}});
   d.push_back({"LFO", [](Song& s, const Config& c) {
-                 const DeviceId lfo = stockEffect(s, "lfo_device", c);
-                 const DeviceId util = s.stock("utility", DeviceKind::AudioEffect);
-                 s.wire(lfo, "lfo", util, "gain");
+                 const DeviceId lfo = s.moduleOff("lfo");
+                 configure(s, lfo, c);
+                 const DeviceId util = s.moduleAfter("utility");
+                 s.wire(lfo, "y", test_blocks::member(s.doc(), util, "Gain"), std::string(kValueParam));
                  return lfo;
                },
-               stockParams("lfo_device"), {Config{"free", {}, {}}, Config{"synced", {}, {{"sync", 1}}}}});
+               moduleParams(moduleSet("lfo")), {Config{"free", {}, {}}, Config{"synced", {}, {{"Sync", 1}}}}});
   // GU.4: the Phase Accumulator module at the notes, the instrument gone (the module itself is then the instrument group:
   // the outermost group fed notes, its voices ending at its Out): each of its
   // value blocks' knobs (one control each: `value`, its curve the module's).
@@ -535,7 +485,8 @@ std::vector<Dut> duts() {
   auto wavetable = [](double mode) {
     return [mode](Song& s, const Config&) {
       // (GU.4: in Phase mode first on the path, reading the note's phase — what a Phase accumulator before it gave.)
-      const DeviceId wt = mode == 0.0 ? s.meta("wavetable", 0) : s.meta("wavetable");
+      if (mode == 0.0) s.bare();
+      const DeviceId wt = mode == 0.0 ? s.meta("wavetable", 0) : s.metaAfter("wavetable");
       s.edit(ops::setMetaSetting(s.doc(), wt, "", "wavetable", "mode", mode));
       s.edit(ops::setMetaData(s.doc(), wt, "", "wavetable", sawToSquare()));
       return wt;
@@ -544,6 +495,7 @@ std::vector<Dut> duts() {
   d.push_back({"Wavetable (Phase mode)", wavetable(0.0), metaParams("wavetable"), one("at the notes (their phase)")});
   d.push_back({"Wavetable (Shape mode)", wavetable(1.0), metaParams("wavetable"), one("after Basic Synth")});
   d.push_back({"Envelope", [](Song& s, const Config&) {
+                 s.bare();
                  s.meta("wavetable", 0);
                  return s.meta("envelope");
                },
@@ -552,6 +504,7 @@ std::vector<Dut> duts() {
   // positions.
   auto vca = [](std::optional<dsp::Curve> curve, double knob) {
     return [curve, knob](Song& s, const Config&) {
+      s.bare();
       s.meta("wavetable", 0);
       IdSource local;
       VcaOptions vo;
@@ -621,7 +574,7 @@ void sweep(const Dut& dut, uint32_t& tested, std::vector<std::string>& silent) {
         const DeviceId d = dut.build(s, c);
         s.notes(c.notes);
         const DeviceId mod = s.modulator(m, phase);
-        s.wire(mod, "", d, p.name);
+        s.wire(mod, "", p.block.empty() ? d : test_blocks::member(s.doc(), d, p.block), p.name);
         const Rendered r = render(s.store.current(), kBlocks);
         CHECK_MESSAGE(r.error.empty(), dut.label << " / " << c.name << " / " << p.name << ": " << r.error);
         CHECK(r.invalidWires == 0);
@@ -660,7 +613,7 @@ void sweep(const Dut& dut, uint32_t& tested, std::vector<std::string>& silent) {
 
 }  // namespace
 
-TEST_CASE("mod-all sweep: every continuous param of every stock device and meta module responds to an audio-rate wire" *
+TEST_CASE("mod-all sweep: every continuous control of every module and engine responds to an audio-rate wire" *
           doctest::test_suite("slow")) {
   uint32_t tested = 0;
   std::vector<std::string> silent;
@@ -671,6 +624,6 @@ TEST_CASE("mod-all sweep: every continuous param of every stock device and meta 
   std::string list;
   for (const std::string& s : silent) list += "\n  " + s;
   MESSAGE("mod-all sweep: " << tested << " params; " << silent.size() << " do not respond:" << list);
-  CHECK(tested >= 250);
+  CHECK(tested >= 40);  // (GU.11: the modules' controls; the stock devices' 250-odd params went with them)
 }
 
