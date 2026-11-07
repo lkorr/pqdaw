@@ -865,3 +865,19 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - What to look at: goldens `module-wavetable-panel`, `module-envelope-panel` (2x), `module-scope-panel`, `module-spectrum-panel`, `module-spectrogram-panel`, `panel-rich-elements` (each rich element alone).
 - Try it: `pqdaw`; Tab → "wavetable", "envelope", "oscilloscope": closed modules. Drag the harmonic bars, the envelope breakpoints. PA → Wavetable → Envelope in an instrument group, play: the PA orbit's dots, the Wavetable's and Envelope's dots. Open a panel window and send a scope bound to a block's output (P on the output pin's block, then set the kind / binding in the inspector).
 - To judge (Q?-GU.7-a): sections of the old face classes as rich elements (not rewritten); the position slider kept inside the table display; display state of a signal-bound display not saved; a Wavetable module directly at the notes hears Hz, not phase.
+
+## 👁 GU.9 v2 Racks are parallel groups; the Device view shows them as the rack · 2026-11-07
+- **What:** racks are now sets of parallel groups (derived from their wiring; nothing stored). The Device view's rack is the
+  same as before — the `audio-rack` / `instrument-rack` goldens render within tolerance of the T4.8 images (unchanged) —
+  but every row, knob and zone bar edits blocks: a chain is a group, its volume / pan its Mixer group's value blocks, its
+  zones groups made while on, a macro a value block wired into the mapped knob.
+- **Look at:** the circuit of a track with a rack (Create > Audio Effect Rack, + a chain): the chains are group capsules
+  stacked under the one on the path, fed from the same block and summed into the same one; open a chain to see its Mixer
+  (and a zone group after dragging a zone). Edit a chain's volume in the Device view, then its Volume knob in the circuit:
+  the same value. Map a macro (Map, macro, knob): a value block "Macro k" appears beside the chains with a cable into the
+  knob.
+- **Differences to judge:** a macro that maps nothing has no block (its knob waits for a mapping; renaming it asks to map
+  it first); variations are named "Variation k"; the rack's activator switches every chain; a muted chain still runs (its
+  Gate is 0) instead of being left out; "Open Lowered Rack Patch" is gone (the circuit is the rack); the stacked chains'
+  layout in the circuit is plain (no rack frame drawn around them). QUESTIONS Q?-GU.9b-a.
+

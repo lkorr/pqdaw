@@ -2378,3 +2378,33 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **Spawning**: in a project the node menu, the browser and Add Free Device list the modules (Wavetable, Envelope under Meta Modules; Oscilloscope, Spectrum, Spectrogram under Visualisers) instead of the bare engines; rack chains' Add Device still lists the engines (a chain holds devices, not groups). Existing projects with free `meta:wavetable` / `meta:envelope` / analyser devices load and play unchanged (no conversion: the engines are the same types).
 - **Engine faces draw their static layers directly** (no tiles: they depend on the engine's data) once per section shown; a Wavetable panel paints the face 4 times per frame while voices animate. UI thread only; idle costs nothing. If that shows up in frame time, give the section element tiles keyed by the face's static keys.
 - Status: open (provisional choices above).
+## Q?-GU.9b-a · 2026-11-07 · GU.9 v2 · Racks as parallel groups: the choices made where the plan left room
+- **What makes a set a rack:** sibling groups with exactly one main-input wire and one main-output wire (into a main input,
+  a group's Out terminal or a mixer), sharing both ends; 2+ of them, or 1 that holds a chain mixer group (what Add Rack and
+  Ctrl+G make: Live's one-chain rack). A plain group is never a rack. Alternative: any group with macros wired in is a rack
+  (rejected: the modules would turn into rack frames).
+- **Roles by name:** the Mixer group, its Volume / Pan / Gate value blocks and the zone groups are found by Device::name
+  (as GU.4's modules are). Renaming one in the circuit takes that row's control away (the sound is unchanged).
+  Alternative: a role setting on the blocks.
+- **Mute and solo:** a chain's on / solo are settings of its group; the edits write the Mixer's Gate (0 / 1) from them (and
+  from Volume at -70 dB = -inf). A muted chain still computes (T4.8 left it out: zero CPU). Alternative: a generic "a
+  switched-off group switches off its contents" rule (today a switched-off group bypasses, which would leak the dry signal
+  into the sum).
+- **Macros:** a macro is a block only while it maps something (an unmapped macro has nothing that wires it into the rack);
+  its value and name go with its last mapping. T4.8's mapping curve (-1 ... 1) is not carried (a Travel wire has none).
+  Moving a mapped knob by hand moves the mapping's min (Q224's law). A macro's automation lane is its value block's; the
+  macro knob does not follow the lane while it plays (the mapped knobs do).
+- **Variations:** `var<k>` settings of the macro blocks, unnamed ("Variation k"); store / recall / overwrite / delete and
+  Rand work. Shown macros, the chain list / macro panel toggles and the macro count are view state (not undoable).
+- **Zones:** float atoms (in ln Hz for Hz key zones) instead of T4.8's document-side doubles: the velocity-zone render is
+  within 3e-8 of the reference. A select zone still gates an Audio Effect Rack chain's input; in an Instrument Rack it is a
+  gain stage before the mixer (T4.8 multiplied it into the mixer's gains). The selector exists once a chain zone does.
+- **Instrument Rack:** each chain is its own instrument group of the track's notes (one voice engine, each group per
+  voice); the instrument stage's out wire is single-signal (T4.8's voice sum) unless Per-Voice Chains is on: renders
+  bit-identical to T4.8's. Generic lowering fixes this needed: a value block nothing inside drives runs once, a nested
+  group's Out-terminal wires are not its inputs.
+- **Nested racks:** a chain's series treats a nested rack as one stage; moving a rack's frame into a chain moves all its
+  chains, macros and selector. The Device view's 20,000-deep nest test (built from the stored `makeRack`) is gone.
+- **Gone:** "Open Lowered Rack Patch" (the circuit shows the rack's blocks); the rack's own name; its activator now
+  switches every chain. A library item or module dropped into a chain is added off the path and moved in (one undo step).
+
