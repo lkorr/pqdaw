@@ -39,8 +39,8 @@
 // ---- The inverse ----------------------------------------------------------------------------------------------------
 // curvePosition(curve, value, hint): the knob position that gives `value` (typed values, presets, defaults, migrated
 // files): each segment is inverted analytically; of the positions that reach the value the one nearest `hint` (the
-// knob's current position) is chosen; a value the curve never reaches snaps to the reachable value nearest it (ties:
-// nearest `hint`). The knob's own domain [0, 1] (a signed curve's negative half is the wires', never the knob's).
+// knob's current position) is chosen — the hint itself when it gives exactly `value` (so writing back the value a knob
+// shows never moves it); a value the curve never reaches snaps to the reachable value nearest it (ties: nearest `hint`). The knob's own domain [0, 1] (a signed curve's negative half is the wires', never the knob's).
 //
 // ---- Classes ------------------------------------------------------------------------------------------------------
 // curveClass: the structural part of a curve (segment count, which shapes, the flags, whether it steps): what a change

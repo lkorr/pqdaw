@@ -128,7 +128,8 @@ std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
   if (t == nullptr || mn == kNone || !patch_.nodes[mn].panel) return nullptr;
   const Node& n = patch_.nodes[mn];
   std::map<std::string, double, std::less<>> values;
-  for (const doc::DeviceValue& v : d.params) values[v.name] = v.value;
+  for (const doc::DeviceValue& v : d.params)  // GU.1: the panel shows values: the curve at the stored position
+    if (const devices::ParamInfo* pi = t->sig.findParam(v.name)) values[v.name] = devices::storedValue(*pi, d);
   for (const doc::DeviceValue& v : d.settings) values[v.name] = v.value;
   auto target = std::make_unique<PatchPanelTarget>(*this, d.id);
   PatchPanelTarget* tp = target.get();
@@ -136,6 +137,7 @@ std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
   auto face = std::make_unique<devices::PanelFace>(t->sig, t->desc, std::move(target), values, ui::Vec2{n.w / n.scale, n.h / n.scale});
   devices::DevicePanel& p = face->panel();
   tp->panel = &p;
+  for (const doc::ControlCurve& c : d.curves) p.setParamCurve(c.param, &c.curve);  // GU.1
   p.setActive(d.active);
   p.setTitle(panelTitle(d, p));
   p.setPresetName(ctx_.library().presetName(d.id));

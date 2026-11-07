@@ -65,20 +65,27 @@ inline pq::doc::Batch knobPositions(const pq::doc::Project& p, pq::doc::Batch b,
   return b;
 }
 
+// The knob position of a device param `param` of the device `device` in `p` that gives `value` (in units) through its
+// curve (the device's own, else the declared one). A rack's params and unknown ones: `value` as it is.
+inline double positionOf(const pq::doc::Project& p, pq::doc::DeviceId device, std::string_view param, double value,
+                         const pq::doc::DeviceLibrary& lib) {
+  using namespace pq::doc;
+  const Device* d = findDevice(p, device).device;
+  if (d == nullptr || d->rack) return value;
+  std::shared_ptr<const ResolvedDevice> hold;
+  const pq::graph::Patch* callee = lib.patchOf(*d, hold);
+  const pq::graph::ParamDecl* decl = callee != nullptr ? findAnyParamDecl(*callee, param) : nullptr;
+  if (decl == nullptr) return value;
+  return pq::dsp::curvePosition(controlCurve(*d, param, *decl), value, paramPosition(*d, param, *decl));
+}
+
 // A device param's automation lane written in units (GU.1: lanes hold knob positions): its points through the param's
-// curve (the device's own, else the declared one). Other lanes (a rack's macros, mixers, wires) as they are.
+// curve. Other lanes (a rack's macros, mixers, wires) as they are.
 inline void lanePositions(const pq::doc::Project& p, const pq::doc::ParamRef& r, std::string_view param,
                           std::vector<pq::doc::Breakpoint>& points, const pq::doc::DeviceLibrary& lib) {
   using namespace pq::doc;
   if (r.kind != ParamKind::DeviceParam) return;
-  const Device* d = findDevice(p, DeviceId{r.owner}).device;
-  if (d == nullptr || d->rack) return;
-  std::shared_ptr<const ResolvedDevice> hold;
-  const pq::graph::Patch* callee = lib.patchOf(*d, hold);
-  const pq::graph::ParamDecl* decl = callee != nullptr ? findAnyParamDecl(*callee, param) : nullptr;
-  if (decl == nullptr) return;
-  const pq::dsp::Curve curve = controlCurve(*d, param, *decl);
-  for (Breakpoint& b : points) b.value = static_cast<float>(pq::dsp::curvePosition(curve, b.value, 0.0));
+  for (Breakpoint& b : points) b.value = static_cast<float>(positionOf(p, DeviceId{r.owner}, param, b.value, lib));
 }
 
 // The same for one command: a Batch, or a lone SetDeviceParam; anything else as it is.

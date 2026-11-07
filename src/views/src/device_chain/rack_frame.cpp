@@ -59,6 +59,7 @@ devices::DeviceSignature rackSignature(const doc::Device& d) {
     p.min = 0.0;
     p.max = doc::kMacroMax;
     p.steps = 128;  // shown and dragged in whole steps 0 … 127 (Live's macros); the param itself is continuous
+    p.declared = p.curve = dsp::curvePreset(dsp::CurvePreset::Linear, p.min, p.max);  // GU.1: a rack keeps its 0 … 127
     s.params.push_back(std::move(p));
   }
   devices::ParamInfo sel;
@@ -67,6 +68,7 @@ devices::DeviceSignature rackSignature(const doc::Device& d) {
   sel.min = 0.0;
   sel.max = doc::kSelectMax;
   sel.steps = 128;
+  sel.declared = sel.curve = dsp::curvePreset(dsp::CurvePreset::Linear, sel.min, sel.max);
   s.params.push_back(std::move(sel));
   return s;
 }

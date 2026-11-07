@@ -218,21 +218,24 @@ double fromPosition(const ParamInfo& p, double t) noexcept {
 std::string formatValue(const ParamInfo& p, double v) {
   if (p.isBool) return v >= 0.5 ? "On" : "Off";
   const double d = toDisplay(p, v);
+  // GU.1: a value is its knob position through the curve, so a typed 1000 Hz comes back as 999.9999999… : the
+  // thresholds below take a value within 1e-9 (relative) of one as reaching it.
+  const auto atLeast = [](double x, double t) { return x >= t * (1.0 - 1e-9); };
   switch (p.unit) {
     case DisplayUnit::Hz:
-      if (d >= 10000.0) return fmt("%.1f kHz", d / 1000.0);
-      if (d >= 1000.0) return fmt("%.2f kHz", d / 1000.0);
-      if (d >= 100.0) return fmt("%.0f Hz", d);
+      if (atLeast(d, 10000.0)) return fmt("%.1f kHz", d / 1000.0);
+      if (atLeast(d, 1000.0)) return fmt("%.2f kHz", d / 1000.0);
+      if (atLeast(d, 100.0)) return fmt("%.0f Hz", d);
       return fmt("%.1f Hz", d);
     case DisplayUnit::Db:
       if (gainFloorIsSilence(p) && v <= p.min * 1.0000001) return "-inf dB";
       return fmt(std::fabs(d) < 0.05 ? "0.0 dB" : "%.1f dB", d);
-    case DisplayUnit::Percent: return fmt(std::fabs(d) >= 10.0 ? "%.0f %%" : "%.1f %%", d);
+    case DisplayUnit::Percent: return fmt(atLeast(std::fabs(d), 10.0) ? "%.0f %%" : "%.1f %%", d);
     case DisplayUnit::Seconds:  // Live: "12.0 ms", "450 ms", "1.20 s"
-      return d >= 1000.0 ? fmt("%.2f s", d / 1000.0) : fmt(d >= 100.0 ? "%.0f ms" : "%.1f ms", d);
+      return atLeast(d, 1000.0) ? fmt("%.2f s", d / 1000.0) : fmt(atLeast(d, 100.0) ? "%.0f ms" : "%.1f ms", d);
     default:
       if (p.steps > 1) return fmt("%.0f", v);
-      return fmt(std::fabs(v) >= 10.0 ? "%.1f" : "%.2f", v);
+      return fmt(atLeast(std::fabs(v), 10.0) ? "%.1f" : "%.2f", v);
   }
 }
 

@@ -32,6 +32,7 @@
 #include "pq/views/fake_transport.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
+#include "../support/knob_positions.h"
 #include "../ui/golden_check.h"
 #include "views_test_util.h"
 
@@ -116,7 +117,11 @@ struct Ui {
   ArrangementAutomation& au() const { return arr->automation(); }
   size_t history() const { return ctx.store().history().cursor(); }
   const doc::AutomationLane* lane(const doc::ParamRef& r) const { return findAutomationLane(*ctx.doc(), r).lane; }
-  // A lane on Keys with points ({bars, value}).
+  // GU.1: the knob position of a device param's value in units (lanes and params store positions).
+  double pos(doc::DeviceId dev, std::string_view param, double v) const {
+    return knob_positions::positionOf(*ctx.doc(), dev, param, v, library());
+  }
+  // A lane on Keys with points ({bars, value}); a device param's values in units (stored as knob positions).
   void addLane(doc::ParamRef r, std::string name, std::vector<std::pair<double, float>> pts) {
     auto l = std::make_shared<doc::AutomationLane>();
     l->id = ctx.store().ids().lane();
@@ -124,6 +129,7 @@ struct Ui {
     l->paramName = std::move(name);
     for (const auto& [bars, v] : pts)
       l->points.push_back({static_cast<Ticks>(bars * static_cast<double>(kBar)), v, 0.0f, ctx.store().ids().breakpoint()});
+    knob_positions::lanePositions(*ctx.doc(), r, l->paramName, l->points, library());
     REQUIRE(ctx.store().dispatch(doc::AddAutomationLane{keys, l}).ok());
   }
   AutomationBand band(const doc::ParamRef& r) {
@@ -168,18 +174,20 @@ TEST_CASE("device automation (views): the chooser has a section per device, rack
   // Bass offers none of Keys' devices.
   for (const ParamChoice& c : paramChoices(p, u.track(u.bass), &library()))
     if (c.param.kind == doc::ParamKind::DeviceParam) CHECK(c.param.owner != u.filter.value);
-  // Names, the knob's scale (exponential frequency, dB gain), the knob's text.
+  // Names, the scale (GU.1: a device param's lane holds its knob position, drawn linearly: the knob's own travel), the
+  // knob's text.
   CHECK(paramName(p, doc::ParamRef::device(u.filter, "freq"), &library()) == "Auto Filter: Frequency");
   CHECK(paramName(p, doc::ParamRef::device(u.rack, "macro1"), &library()) == "Audio Effect Rack: Macro 1");
   CHECK(paramName(p, doc::ParamRef::chain(u.chain, doc::kChainPan), &library()) == "Chain 1: Pan");
   CHECK(paramName(p, doc::ParamRef::wireAmount(u.wire), &library()) == "LFO > Frequency: Amount");
-  CHECK(paramDisplay(p, doc::ParamRef::device(u.filter, "freq"), &library()).scale == ParamDisplay::Scale::Log);
-  CHECK(paramDisplay(p, doc::ParamRef::device(u.util, "gain"), &library()).scale == ParamDisplay::Scale::Db);
+  CHECK(paramDisplay(p, doc::ParamRef::device(u.filter, "freq"), &library()).scale == ParamDisplay::Scale::Linear);
+  CHECK(paramDisplay(p, doc::ParamRef::device(u.util, "gain"), &library()).scale == ParamDisplay::Scale::Linear);
+  CHECK(paramDisplay(p, doc::ParamRef::device(u.util, "gain"), &library()).hi == 1.0);
   CHECK(paramDisplay(p, doc::ParamRef::chain(u.chain, doc::kChainVolume), &library()).scale == ParamDisplay::Scale::Fader);
-  CHECK(formatParamValue(p, doc::ParamRef::device(u.filter, "freq"), 1500.0, &library()) == "1.50 kHz");
+  CHECK(formatParamValue(p, doc::ParamRef::device(u.filter, "freq"), u.pos(u.filter, "freq", 1500.0), &library()) == "1.50 kHz");
   const ParamDisplay g = paramDisplay(p, doc::ParamRef::device(u.util, "gain"), &library());
   CHECK(displayNorm(g, displayValue(g, 0.37)) == doctest::Approx(0.37));
-  CHECK(currentParamValue(p, doc::ParamRef::device(u.filter, "freq"), &library()) == doctest::Approx(1000.0));
+  CHECK(currentParamValue(p, doc::ParamRef::device(u.filter, "freq"), &library()) == doctest::Approx(u.pos(u.filter, "freq", 1000.0)));
 
   // A macro-mapped param plays its macro (no runtime param of its own): not offered, unless it already has a lane.
   u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 0, u.util, "gain"));
@@ -202,15 +210,16 @@ TEST_CASE("device automation (views): the first click on a device param's line m
   const AutomationBand b = u.band(freq);
   CHECK(b.lane == nullptr);
   const size_t h0 = u.history();
-  // The dashed line at the knob's value (1 kHz), at bar 2.
-  u.d.click({u.arr->xOfTick(2.0 * kBar), u.au().yOfValue(b, 1000.0)});
+  // The dashed line at the knob's value (1 kHz; GU.1: lanes are positions), at bar 2.
+  const double p1k = u.pos(u.filter, "freq", 1000.0);
+  u.d.click({u.arr->xOfTick(2.0 * kBar), u.au().yOfValue(b, p1k)});
   REQUIRE(u.history() == h0 + 1);
   const doc::AutomationLane* l = u.lane(freq);
   REQUIRE(l != nullptr);
   CHECK(l->paramName == "freq");
   REQUIRE(l->points.size() == 1);
   CHECK(l->points[0].tick == 2 * kBar);
-  CHECK(l->points[0].value == doctest::Approx(1000.0).epsilon(0.02));
+  CHECK(l->points[0].value == doctest::Approx(p1k).epsilon(0.02));
   CHECK(doc::laneHome(*u.ctx.doc(), freq)->id == u.keys);
   // A drag moves it in the knob's (exponential) scale, as one more step; the readout is the knob's text.
   const AutomationBand b2 = u.band(freq);
@@ -222,7 +231,7 @@ TEST_CASE("device automation (views): the first click on a device param's line m
   CHECK(u.au().readout().find("Hz") != std::string::npos);
   u.d.up({at.x, at.y - 10.0f});
   CHECK(u.history() == h0 + 2);
-  CHECK(u.lane(freq)->points[0].value > 1000.0f);
+  CHECK(u.lane(freq)->points[0].value > p1k);
   REQUIRE(u.ctx.undo());
   REQUIRE(u.ctx.undo());
   CHECK(u.lane(freq) == nullptr);
@@ -258,7 +267,9 @@ TEST_CASE("device automation (views): a knob's Show Automation opens its lane; a
   CHECK(panel->paramValue("freq") == doctest::Approx(200.0));
   u.port.setPlayheadTick(kBar);
   u.view().applyAutomation();
-  CHECK(panel->paramValue("freq") == doctest::Approx(2600.0));
+  // GU.1: halfway in knob position — on the octave cutoff, the geometric mean (the lane was linear in Hz: 2600).
+  const double halfway = std::sqrt(200.0 * 5000.0);
+  CHECK(panel->paramValue("freq") == doctest::Approx(halfway).epsilon(1e-4));
   const auto marks = u.view().automationMarks(u.filter);
   REQUIRE(marks.size() == 1);
   CHECK(marks[0].first == "freq");
@@ -271,13 +282,13 @@ TEST_CASE("device automation (views): a knob's Show Automation opens its lane; a
   u.view().applyAutomation();
   CHECK_FALSE(u.view().automationPolling());
   // A hand edit overrides it (Live): the knob keeps its own value; Re-enable brings the envelope back.
-  REQUIRE(u.ctx.store().dispatch(doc::SetDeviceParam{u.filter, "freq", 300.0}).ok());
+  REQUIRE(u.ctx.store().dispatch(doc::SetDeviceParam{u.filter, "freq", u.pos(u.filter, "freq", 300.0)}).ok());
   CHECK(u.ctx.automationOverridden(doc::ParamRef::device(u.filter, "freq")));
   CHECK(panel->paramValue("freq") == doctest::Approx(300.0));
   CHECK(u.view().automationMarks(u.filter).at(0).second);  // its LED grey
   u.ctx.reenableAutomation();
   CHECK_FALSE(u.view().automationMarks(u.filter).at(0).second);
-  CHECK(panel->paramValue("freq") == doctest::Approx(2600.0));
+  CHECK(panel->paramValue("freq") == doctest::Approx(halfway).epsilon(1e-4));
 }
 
 TEST_CASE("device automation (views): a chain row's Show Volume / Pan Automation; a macro-mapped knob has no lane of its own") {

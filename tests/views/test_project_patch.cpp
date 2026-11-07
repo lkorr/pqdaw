@@ -2125,7 +2125,7 @@ TEST_CASE("project patch (TX.panel-faces): a panel's controls edit the document 
     CHECK(v.panelOf(util) == nullptr);
   }
   SUBCASE("a value from elsewhere (the Device view, automation, undo) shows on the panel; a structural setting too") {
-    auto e = doc::ops::setDeviceParam(*u.ctx.doc(), util, "width", 2.0);
+    auto e = doc::ops::setDeviceParamValue(*u.ctx.doc(), *u.ctx.deviceLibrary(), util, "width", 2.0);  // GU.1: in units
     REQUIRE(e.ok());
     REQUIRE(u.ctx.store().dispatch(e->command).ok());
     u.d.step();

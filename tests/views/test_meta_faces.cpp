@@ -639,13 +639,14 @@ TEST_CASE("faces: pitch drags in semitones (Ctrl: cents, Shift: fine), keys step
     CHECK(u.d.keyDown(key::kUp, mod::kShift) == KeyResult::Widget);
     CHECK(u.value("pitch") == 1300.0);
     CHECK(u.d.keyDown(key::kDown, mod::kCtrl) == KeyResult::Widget);
-    CHECK(u.value("pitch") == 1299.0);
+    // GU.1: values are stored as knob positions, so a typed or stepped value reads back within float rounding.
+    CHECK(u.value("pitch") == doctest::Approx(1299.0).epsilon(1e-12));
     CHECK(u.d.keyDown(key::kDown, mod::kShift) == KeyResult::Widget);
     CHECK(u.d.keyDown(key::kDown, mod::kShift) == KeyResult::Widget);
-    CHECK(u.value("pitch") == -1101.0);
+    CHECK(u.value("pitch") == doctest::Approx(-1101.0).epsilon(1e-12));
     CHECK(u.history() == h0 + 5);
     REQUIRE(u.ctx.undo());
-    CHECK(u.value("pitch") == 99.0);
+    CHECK(u.value("pitch") == doctest::Approx(99.0).epsilon(1e-12));
     // Clamped at ±4800 (4 octaves).
     for (int i = 0; i < 6; ++i) (void)u.d.keyDown(key::kUp, mod::kShift);
     CHECK(u.value("pitch") == 4800.0);

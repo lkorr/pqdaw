@@ -257,6 +257,8 @@ double curvePosition(const Curve& c, double value, double hint) noexcept {
   if (std::isnan(u)) return clamp01(hint);
   u = std::clamp(u, -1e300, 1e300);
   hint = clamp01(hint);
+  // The hint itself gives the value (a write of the value the knob shows): it stays — no float drift from re-inverting.
+  if (evalCurve(c, hint) == value) return hint;
   double best = -1.0, bestDist = 0.0;  // the reaching position nearest the hint
   auto offer = [&](double p) {
     const double d = std::fabs(p - hint);

@@ -508,8 +508,9 @@ TEST_CASE("vca face (TX.vca-knob2): each preset's values in one undo step; the c
       u.d.click(u.at(chipX(i), kChipY));
       CHECK(u.history() == h0 + 1);
       CHECK(u.curve() == w.curve);
-      CHECK(u.value(meta::kVcaMin) == w.min);
-      CHECK(u.value(meta::kVcaMax) == w.max);
+      // GU.1: params are stored as knob positions: a value reads back within float rounding (of the range's ends).
+      CHECK(std::fabs(u.value(meta::kVcaMin) - w.min) <= 1e-12 * meta::kVcaRange);
+      CHECK(std::fabs(u.value(meta::kVcaMax) - w.max) <= 1e-12 * meta::kVcaRange);
       if (w.zone >= 0.0) CHECK(u.value(meta::kVcaZone) == doctest::Approx(w.zone));
       if (w.bend > -2.0) CHECK(u.value(meta::kVcaBend) == doctest::Approx(w.bend));
       for (uint32_t m = 0; m < meta::kVcaMarks; ++m) CHECK(u.value(meta::kVcaMark0 + m) == 0.0);
@@ -727,7 +728,7 @@ TEST_CASE("vca face (TX.vca-knob): each marker Ctrl+dragged alone round the trac
   arcDrag(u, l0.marks[3].at, 0.95, 16, mod::kCtrl);
   meta::VcaLaw l = lawOf(u);
   CHECK(l.marks[3].at == doctest::Approx(l0.marks[4].at - meta::kVcaMarkGap).epsilon(1e-9));
-  CHECK(l.marks[4].at == l0.marks[4].at);
+  CHECK(l.marks[4].at == doctest::Approx(l0.marks[4].at).epsilon(1e-12));  // GU.1: positions, float rounding
   // An asymmetric fine zone: -1 alone toward 9 o'clock; +1 stays where the last drag left it.
   const double plus = l.marks[3].at;
   arcDrag(u, l.marks[2].at, 0.26, 10, mod::kCtrl);
@@ -840,7 +841,8 @@ TEST_CASE("vca face (TX.vca-knob2): a plain drag moves the marker's pair mirrore
     CHECK(u.history() == h0 + 1);
     const meta::VcaLaw l = lawOf(u);
     CHECK(l.marks[i].at == doctest::Approx(l0.marks[i].at + dir).epsilon(1e-3));
-    CHECK(offsetOf(u, j) == -offsetOf(u, i));  // mirrored: the same travel the other way
+    // Mirrored: the same travel the other way (GU.1: each stored as its knob position, within float rounding).
+    CHECK(offsetOf(u, j) == doctest::Approx(-offsetOf(u, i)).epsilon(1e-12));
     CHECK(l.marks[j].at - l0.marks[j].at == doctest::Approx(-(l.marks[i].at - l0.marks[i].at)).epsilon(1e-12));
     for (uint32_t k = 0; k < meta::kVcaMarks; ++k)
       if (k != i && k != j) CHECK(offsetOf(u, k) == 0.0);
@@ -913,7 +915,7 @@ TEST_CASE("vca face (TX.vca-knob2): double-click a marker to type its place (% o
   CHECK(u.history() == h0 + 1);
   meta::VcaLaw l = lawOf(u);
   CHECK(l.marks[4].at == doctest::Approx(0.80).epsilon(1e-9));
-  CHECK(offsetOf(u, 1) == -offsetOf(u, 4));
+  CHECK(offsetOf(u, 1) == doctest::Approx(-offsetOf(u, 4)).epsilon(1e-12));  // GU.1: positions, float rounding
   CHECK(meta::vcaValue(l, 0.80) == doctest::Approx(10.0).epsilon(1e-9));
   // Ctrl+double-click -10 and type 20%: -10 alone.
   t = trackLocal(l.marks[1].at);

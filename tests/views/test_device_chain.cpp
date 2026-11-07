@@ -227,7 +227,8 @@ TEST_CASE("device view: a param drag is one undo step of Param changes; a const 
   CHECK(cs.params[0] == doc::ParamRef::device(sat, "drive"));
   const doc::Device& d = *doc::findDevice(*u.ctx.doc(), sat).device;
   REQUIRE(d.param("drive") != nullptr);
-  CHECK(d.param("drive")->value > 1.0);  // up from 0 dB (a linear gain above 1)
+  // Up from 0 dB (a linear gain above 1; GU.1: the param stores the knob position, the value is its curve's).
+  CHECK(devices::storedValue(*panel->signature().findParam("drive"), d) > 1.0);
   // A structural const through the panel's target: one structural step, shown back in the panel.
   devices::DeviceTarget* target = u.view().targetOf(sat);
   REQUIRE(target != nullptr);
@@ -250,8 +251,10 @@ TEST_CASE("device view: a param change from elsewhere repaints only its control"
   REQUIRE(panel != nullptr);
   ui::Widget* width = panel->controlFor("width");
   REQUIRE(width != nullptr);
-  REQUIRE(u.ctx.store().dispatch(doc::SetDeviceParam{util, "width", 2.0}).ok());
-  CHECK(panel->paramValue("width") == 2.0);
+  auto e = doc::ops::setDeviceParamValue(*u.ctx.doc(), library(), util, "width", 2.0);  // GU.1: in units
+  REQUIRE(e.ok());
+  REQUIRE(u.ctx.store().dispatch(e->command).ok());
+  CHECK(panel->paramValue("width") == doctest::Approx(2.0).epsilon(1e-12));
   IRect rects[Damage::kMaxRects];
   int64_t area = 0;
   const uint32_t n = u.d.tree().damageRects(rects, area);

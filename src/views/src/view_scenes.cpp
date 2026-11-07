@@ -42,6 +42,8 @@
 #include "pq/views/prefs/audio_prefs.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/tunings/tunings_panel.h"
+#include "pq/document/devices.h"
+#include "pq/document/lower.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
 #include "shell/shell_widgets.h"
@@ -1475,13 +1477,24 @@ Status setupDeviceAutomation(Shell& shell) {
     c.notes = std::move(seq).value();
     b.commands.push_back(doc::AddClip{track, std::make_shared<const doc::NoteClip>(std::move(c)), nullptr});
   }
+  // GU.1: a device param's lane holds knob positions: its points given in units go through the param's curve.
+  auto position = [&](const doc::ParamRef& ref, const std::string& name, double v) {
+    if (ref.kind != doc::ParamKind::DeviceParam) return v;
+    const doc::Device* d = doc::findDevice(*store.current(), doc::DeviceId{ref.owner}).device;
+    if (d == nullptr || d->rack) return v;
+    std::shared_ptr<const doc::ResolvedDevice> hold;
+    const graph::Patch* callee = ctx.deviceLibrary()->patchOf(*d, hold);
+    const graph::ParamDecl* decl = callee != nullptr ? doc::findAnyParamDecl(*callee, name) : nullptr;
+    return decl != nullptr ? dsp::curvePosition(doc::controlCurve(*d, name, *decl), v, 0.0) : v;
+  };
   auto lane = [&](doc::ParamRef ref, std::string name, std::vector<std::pair<double, float>> pts, float curve) {
     auto l = std::make_shared<doc::AutomationLane>();
     l->id = store.ids().lane();
     l->param = ref;
     l->paramName = std::move(name);
     for (const auto& [bars, v] : pts)
-      l->points.push_back({static_cast<Ticks>(bars * static_cast<double>(bar)), v, curve, store.ids().breakpoint()});
+      l->points.push_back({static_cast<Ticks>(bars * static_cast<double>(bar)), static_cast<float>(position(ref, l->paramName, v)),
+                           curve, store.ids().breakpoint()});
     b.commands.push_back(doc::AddAutomationLane{track, l});
   };
   lane(doc::ParamRef::device(filter, "freq"), "freq", {{0.0, 200.0f}, {1.0, 200.0f}, {3.0, 6000.0f}, {4.0, 800.0f}}, 0.0f);
