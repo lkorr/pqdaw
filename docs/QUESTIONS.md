@@ -2355,7 +2355,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **A knob element is hit on its dial only** (its label and readout are the panel's), so a value block drawn as a knob is moved by its label strip; a panel knob's label no longer starts a drag.
 - Status: open (provisional choices above).
 
-## Q?-GU.6-a · 2026-11-07 · GU.6 · Embed and break apart: the choices made where the plan left room
+## Q226 · 2026-11-07 · GU.6 · Embed and break apart: the choices made where the plan left room
 - **An embed is one element kind, "panel", bound by a Panel binding.** It draws the child's panel live through a nested panel face that uses the parent's target (every binding inside the child is inside the parent, so nothing re-resolves differently); the child's panel is fitted into the element's rect with its aspect kept and centred (`doc::embedFit`), so resizing the element scales it. Alternative: an embed that only reserves space and lets the parent's face draw the child's elements flattened — no element to select / move as one.
 - **Only a group with a panel can be embedded.** `controlsOf(group)` is its Panel binding when it has a non-empty panel, else nothing (P says so). Alternative: embed a panel-less group as its mini circuit or send all its controls — left out (a group without a panel has nothing to show yet).
 - **The embed keeps the child's plate (body + frame); a broken-apart copy does not.** Break apart copies exactly the child's elements (the plate is not an element). Alternative: add a shape element for the plate when breaking apart.

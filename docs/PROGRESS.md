@@ -1455,3 +1455,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: not measured.
 - CPU-efficiency check: layout once per opened group per model rebuild; dial re-derives only on curve hash change; marker drags stay within the curve class (no recompile); the VCA's driven path evaluates 4 more segments.
 - Notes/blockers: PA voice dots need GU.7's lowering tap; no captions / PA leads; pitch continuous; Fader preset approximated; pq_tests_app (VCA render at −110 dB with the 7-segment curve) not run. ~25 goldens re-recorded.
+
+## 2026-11-07 · GU.6 Embed and break apart · task/GU.6-embed (worker; merged by the orchestrator)
+- Did: a child group with a panel sent to its parent's panel (P, +, drop) becomes an embed element (kind "panel", bound by DeviceId) drawing the child's panel live, passing pointer / keys / popups / voices / outline through; any depth; wires into an embedded control end on it. ops::breakApartPanelElements (one undo, "Break Apart"; right-click or Ctrl+Shift+G in edit mode): copies at the same places, same bindings, fresh ids, visibility renumbered, one level at a time. Fixed: the GU.5 panel editor acted on key releases (double nudge / duplicate). ARCHITECTURE, REVIEW 👁, Q226.
+- Verified (light): build.ps1 -Target views, ui, document, pqdaw (check) 0 warnings, 3/3; test_panel_embed 3 cases real dispatch (send, embedded knob edit, rename survival, break apart + undo, move out + undo, depth 2). Golden panel-embed.
+- Perf: not measured.
+- CPU-efficiency check: UI thread only, never lowered; embed rebuilt only when the child's panel pointer changes; artwork from the shared tile cache.
+- Notes/blockers: groups without a panel can't be embedded; break-apart copies lose the child's frame; a mod-source cable from an embed reaches only that child's controls.
