@@ -90,27 +90,45 @@
 // nodeIdFor(Device, id, 8 … 13)), its slot from LowerOptions::metaSlotOf(device, kAnalysisTapPath, 0), listed in
 // LoweredProject::metaResources (type "", kind SignalTap): the panel's spectrum and measured response read it. Without
 // metaSlotOf (tools, tests), or with slot 0, no tap. Unwatched it costs one relaxed load per block (pq/dsp/atoms.h).
-// TMM.10 / TMM.10-fix1 (docs/plans/MM.md "Voice continuity"; SPEC §15 2026-11-01 "notes are a signal"): a MIDI track
-// whose first active device is a chain meta device taking the note source plays a VOICE RUN: it and the active chain
-// meta devices right after it that the per-voice signal reaches (Form::ChainVoice: their chain input is an `in` fed by
-// the previous stage's per-voice output) stay per voice, so "Phase accumulator → Wavetable" is a polyphonic
-// oscillator. At the run's end the voices get a linear release after note-off (kMetaReleaseSeconds, 5 ms: env = gate ?
-// 1 : max(z1(env) − 1/(0.005·sr), 0)), the track's `done` is !gate && env ≤ 0, and they are summed; the devices after
-// the run receive audio (a meta device there: ChainAudio). TMM.11: when the run's last stage is of a type that decides
-// its voices' end (meta::Type::voiceEnd: the Envelope, a VCA on the run's signal; fix1: also as the only stage), its
-// `done` output is the track's `done` and there is no declick ramp (the Envelope's release is the end). A stock
-// instrument's voices are summed at its output, so a meta device after one receives audio (the pre-fix1 behaviour;
-// QUESTIONS Q?-TMM.10-fix1-a item 2). Inside a rack chain only the first stage takes the note source; the later ones
-// receive audio (item 5). Every type plays everywhere (no device errors for a type "in the wrong place").
-// TX.scope-sound (QUESTIONS Q?-TX.scope-sound-a): the run's "last stage" here is the last one that is not a
-// PASS-THROUGH — a device whose first `out` is one of its inputs with nothing in between (its callee: an Input node
-// driving the Output; the analysers Oscilloscope / Spectrum / Spectrogram, a switched-off free device's pass__ patch,
-// any patch `out = in`). The lowering walks back from the run's last stage over pass-throughs — along the chain, along
-// the one wire (local, not delayed) into the input a free one passes, through a group's Out and In — to the device
-// whose output the run's signal is; its type decides the voice end and its callee the width. So an analyser anywhere
-// in a run, a group or free placement changes nothing of the sound (tests/app/test_pass_through.cpp: diff 0,
-// interpreter and JIT, a chord with its releases). When the walk reaches the note source or anything else (several
-// wires, a delayed one, another output), the last stage's own rule holds (5 ms).
+// VOICE CONTEXTS (IG.1-2; SPEC §15 2026-11-04 "instrument groups", 2026-11-06 "single-signal cables"; docs/plans/IG.md;
+// pq/document/instrument_groups.h). What runs per note is decided by structure alone: a block inside an INSTRUMENT
+// GROUP (a group whose main input is fed notes: it heads a MIDI track's path, or a notes cable enters it) runs per note
+// of that group's notes source; a LONE stock instrument or Instrument Rack fed notes is a context of its own (its code is
+// per voice). Everything else is single-signal. (The TMM.10 voice runs — meta modules continuing the notes along a
+// path, the ChainNotes / ChainVoice forms on a track, "a stock device ends the voices" — are gone: a meta module on a
+// path is ChainAudio, global; heading a MIDI track's path it reads the NEWEST note, voice_last of the signal of its chain
+// input's meaning. Rack chains keep their forms.)
+//   lowering  a context is lowered in its SOURCE's track patch (its voices are that source's VoiceEngine's). When that
+//             is another track than its own, its block and members are HOSTED in the source's patch; on its own track a
+//             REMOTE placeholder stands on the path, its output imported (`export v<device>` → `in v<device>`, an Audio
+//             wire); every cable between it and its own track crosses as any cross-track wire (export / in m<wire>).
+//             One notes source per context: a notes cable from another MIDI track (lowest wire id) wins over the
+//             block's own track; any other notes into it are Inactive. (TX.cross-track's guests — g<e>_<o>,
+//             gp<X>_<pin>, phantoms, the 8-pin limit, the TwoInstruments refusal — are gone.)
+//   group     its call is GroupNotes: In gives the note's Hz / phase by the meaning of the input it reaches (a stock
+//             instrument member plays the notes through In or a notes cable of the same source), Out is per voice.
+//             Members run per note unless every input they have from inside the group is SINGLE-SIGNAL — a cable
+//             marked single (Wire::single, reduced by its reducer) or one from a member that runs once — then once
+//             (LDev::voice false, a fixpoint over the cables: Callees::perNote). A per-note member's single-signal
+//             inputs (and every signal from outside) are BROADCAST: the value marked shared, so a free-running source
+//             behind it keeps one instance. A cable from a per-voice source to anything not per note of the same
+//             context (outside, or single-signal) reduces by its reducer (sum, max = voice_highest, newest =
+//             voice_last). The group's `y` (what its main output gives) = voice_sum of Out's per-note terms (× the
+//             release ramp) + Out's single-signal terms added once (LWire::outGlobal).
+//   end       a group's voices end when every ender is done: the device whose output alone reaches Out's per-note
+//             terms (through pass-throughs: TX.scope-sound) when it is a voiceEnd meta type (the Envelope) or a
+//             stock instrument, and every stock instrument / Instrument Rack inside. Without an ender reaching Out the
+//             voices get the 5 ms linear release after note-off (kMetaReleaseSeconds: env = gate ? 1 : max(z1(env) −
+//             1/(0.005·sr), 0), done = !gate && env ≤ 0) and that ends them (with the instruments'). The track's
+//             `done` is the AND of every context lowered in its patch.
+//   voices    a track plays voices when its notes are played or read anywhere (a context's source, a note output wire,
+//             a notes cable into a meta module, a meta module heading its path); a unit whose patch then schedules no
+//             voice stage runs as a plain unit (project_compile). Its polyphony is the largest of its groups' `voices`
+//             settings (mono: 1) and its stock instruments' `voices`; its stealing the first group's `steal` setting
+//             (ProjectTrack::steal; model.h "Instrument groups").
+//   loops     a delay-free loop entirely inside a context (per voice) or entirely outside plays (Delayed, z⁻¹); one
+//             that crosses a voice sum — out of a group (or through a single-signal cable) and back into per-note
+//             blocks — or that would put two instrument tracks into one unit is Refused (VoiceLoop: IG.3).
 //
 // ---- Signal flow --------------------------------------------------------------------------------------------------
 //   MIDI track    its instrument (the first device, normally BasicSynth, the M3 default instrument,
@@ -297,11 +315,8 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //             (see GROUPS below), and a wire on a port of a switched-off free device other than its pass-through's two.
 //   Invalid   the port or param is not one of the patch's (an edited patch lost it), or the param is a bool.
 //   Refused   left out, and the status line and the views say why (WireState::reason):
-//             TwoInstruments: across tracks, it would close a cycle through two instrument tracks, which the engine
-//             cannot run (one voice table per image, QUESTIONS Q84). TX.cross-track: also a notes cable whose guest
-//             would (see "Cross-track notes cables"). Every other loop between tracks is lowered (Delayed when it
-//             is delay-free): see "Loops between tracks".
-//             VoiceLoop (TMM.13-fix1 H3): it would close a loop through per-voice and global signals (a voice
+//             VoiceLoop (TMM.13-fix1 H3; IG.1-2: also a cycle through two instrument tracks, formerly TwoInstruments):
+//             it would close a loop through per-voice and global signals (a voice
 //             reducer inside the loop, e.g. a later effect's output back into a meta voice run's Phase accumulator
 //             `hz`), whose 1-sample delay needs the voices and the global part to alternate per sample: the
 //             scheduler refuses that (schedule.h step 3), which silenced the whole track.
@@ -397,7 +412,7 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // mixer; graph::WireKind::Audio between the tracks. TX.cross-track (SPEC §15 2026-11-03 "tracks are not walls"): one that
 // closes a cycle between tracks (the target's output reaches the source's track through routing, sends or other
 // cross-track wires) is planned like every wire: Delayed (its z⁻¹, per sample) when the loop is delay-free, Refused only
-// through two instrument tracks (TwoInstruments) or through the voices (VoiceLoop). See "Loops between tracks" below.
+// through two instrument tracks or across a voice sum (VoiceLoop). See "Loops between tracks" below.
 // LOOPS BETWEEN TRACKS (TX.cross-track; SPEC §15 2026-11-03 "tracks are not walls"): the project is one circuit. A wire
 // that closes a delay-free loop through other tracks — a cable into another track's mixer, a modulation or input wire,
 // a send (Plan's sends: a looping send has its z1, never a block delay) — gets the circuit editor's rule: the wire that
@@ -405,27 +420,9 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // the partition merges the loop's tracks into one unit (graph/project.h: cycles between units merge) and the scheduler
 // runs the loop's strongly connected part as one per-sample Loop region (graph/schedule.h step 4); the rest of every
 // track keeps block processing, and a project without such loops lowers exactly as before. Refused only where the
-// engine cannot run it yet: through two instrument tracks (TwoInstruments: one voice table per unit, Q84; QUESTIONS
+// engine cannot run it yet: through two instrument tracks (VoiceLoop: one voice table per unit, Q84; QUESTIONS
 // Q?-TX.cross-track-a) or through the voices' sum (VoiceLoop: TX.voice-loop).
-// CROSS-TRACK NOTES CABLES (TX.cross-track; Callees::Guest, WirePlan::GuestPlan): a notes cable (port "") from a MIDI
-// track A's source into a block X of another track B plays X with A's VOICES — a voice context per source, not per
-// track. X is a stock instrument or an Instrument Rack that plays (into its notes input), or a meta module off B's path
-// (into an input of its: Frequency the note's Hz, Phase its phase, Gate / Signal its own default, as a notes cable on
-// its own track); anything else (a stock effect, a param, a meta module on B's path) is Inactive. X then has a GUEST:
-// an instance lowered in A's patch (a block off A's path, a voice consumer of A: A's polyphony, its `done` one of A's
-// terms), one guest per (block, source). Its HOME instance in B plays only the notes of B that reach it (B's path head,
-// a notes cable of B's own); without them it is a PHANTOM: not called. What X outputs, as B reads it, is every
-// instance's: the guests' outputs summed over their voices cross as `export g<e>_<o>` (A) → `in g<e>_<o>` (B) (e = the
-// guest's first notes cable, the NodeRole::Wire entity of every guest node; graph::WireKind::Audio) and are added where
-// B sums X's voices — after its voice_sum on B's path, into a wire with the Sum reducer, everywhere for a phantom (a
-// wire with another reducer reads only the home's voices). The pins of X that B's wires drive (its params' and inputs'
-// values, the home's site math) are sent to every guest (`export gp<X>_<pin>` → `in gp<X>_<pin>`, Modulation; at most
-// 8 pins, not an Instrument Rack's): a guest reads B's modulation as a global signal (B's per-voice values are not in
-// A's voice context). A guest whose host and home would close a track cycle through two instrument tracks (A's voices
-// reach B, B's wires reach A, both play voices) is refused: its notes cable is Refused (TwoInstruments), the rest plays.
-// Limits (QUESTIONS Q?-TX.cross-track-a): blocks wired from X on B are not guests themselves (a meta voice run spread over
-// B's blocks hears A's voices summed after X); an Instrument Rack's guest takes no forwarded pins; a guest rack's chain
-// mixer automation lanes are its home's (the guest plays the static chain gains).
+// CROSS-TRACK NOTES CABLES: see "Voice contexts" above (IG.1-2: a context is lowered in its notes source's patch).
 // FREE devices (blocks off the main path; before TX.all-free model.h Device::free): called in their track patch after
 // the series (TrackDevs::offPath), never chained:
 // a stock device's first audio `in` reads −0 until a wire reaches it; a meta device plays its Nested form (every input

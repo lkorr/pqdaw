@@ -341,7 +341,8 @@ TEST_CASE("wires: a lowered project with wires renders exactly like the hand-bui
           "  out out : audio global stereo\n  out done : bool voice mono\n"
           "  s = BasicSynth(bright: bv)\n  x = voice_sum(s.out)\n"
           "  e = eq_eight(pack(x, x), on1: 1, type1: 6, freq1: fv, gain2: gv)\n"
-          "  b = lfo_device(e.out, shape: 1, rate: brate)\n  src = channel(b.lfo, 0)\n"
+          // IG.1-2: a signal from outside the voice context is broadcast: one LFO for every voice (shared)
+          "  b = lfo_device(e.out, shape: 1, rate: brate)\n  src = shared(channel(b.lfo, 0))\n"
           "  done = s.done\n";
   // freq1 ← m (wire 1); gain2 ← src (wire 2); bright ← src (wire 3; Linear 0..1)
   text += logModulation("a", "f1", fLo, fHi, "w" + i(w1) + " * m" + i(w1), "fv", "tap_d" + i(eq) + "_freq1");

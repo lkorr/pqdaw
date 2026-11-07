@@ -1787,6 +1787,10 @@ struct LWire {
   // IG.1-2: a single-signal term into an instrument group's Out (from a member that runs once, a single-signal cable or
   // from outside): added once after the voices' sum, not per voice.
   bool outGlobal = false;
+  // IG.1-2: a single-signal source (outside every context, or a member that runs once) into a block that runs per note:
+  // broadcast to every voice — its value marked `shared` (Node::shared), so a free-running source behind it keeps one
+  // instance instead of being made per voice (pq/graph/infer.h).
+  bool broadcast = false;
 };
 
 struct WirePlan {
@@ -2313,6 +2317,7 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     const bool keepsVoices = sameContext && (dd.voice || intoOut) && !w.single;
     lw.reduce = voiceSource && !keepsVoices;
     lw.outGlobal = intoOut && !(voiceSource && keepsVoices);
+    lw.broadcast = !voiceSource && dd.voice && !lw.fromTrack;
     if (lw.fromNode != lw.toNode) {
       if (twoInstruments(lw.fromNode, lw.toNode)) {  // a track cycle through two instrument tracks (IG.3)
         refuse(st);
@@ -2938,7 +2943,7 @@ PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
     const LWire* one = nullptr;
     uint32_t count = 0;
     for (const LWire& w : b.wp->wires)
-      if (w.toNode == b.node && w.toDev == dev && w.input && match(w)) {
+      if (w.toNode == b.node && w.toDev == dev && w.input && !w.outGlobal && match(w)) {  // (per-note terms)
         ++count;
         one = &w;
       }
@@ -3142,7 +3147,12 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     } else {
       s = ir.atom("channel", {from(), b.c0()}, wid(w, kWChannel));
     }
-    if (w.reduce) s = ir.atom(reducerAtom(w.reducer), {s}, wid(w, kWReduce));
+    if (w.reduce) {
+      s = ir.atom(reducerAtom(w.reducer), {s}, wid(w, kWReduce));
+    } else if (w.broadcast) {  // IG.1-2: one value for every voice (−0 added: exact)
+      s = ir.atom("add", {s, ir.konst(-0.0, kCFreeZero)}, wid(w, kWReduce));
+      ir.patch().setShared(s.node, true);
+    }
     return s;
   };
   for (const LWire& w : wp.wires)
