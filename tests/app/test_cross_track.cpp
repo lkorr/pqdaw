@@ -22,7 +22,6 @@
 #include <vector>
 
 #include "../golden/golden_audio.h"
-#include "../support/stand_in_synth.h"
 #include "playback_fixture.h"
 #include "pq/app/project_link.h"
 #include "pq/compile/compile.h"
@@ -32,6 +31,7 @@
 #include "pq/document/lower.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
+#include "pq/document/modules.h"
 #include "pq/engine/note_list.h"
 #include "pq/engine/project_compile.h"
 #include "pq/engine/project_program.h"
@@ -190,18 +190,8 @@ void apply(DocumentStore& s, Command c) {
 // TX.pan-laws: a MIDI track pans with constant power here (centrePan's 0.707: the loops' references decay with it).
 TrackId track(DocumentStore& s, TrackKind kind) {
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), kind)).tracks.at(0);
-  if (kind == TrackKind::Midi) REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout)
   if (kind == TrackKind::Midi) REQUIRE(s.dispatch(SetTrackPanMode{t, PanMode::ConstantPower}).ok());
   return t;
-}
-// The instrument heading track `t` (IG.1-2: the stock instrument inside the instrument group heading its path).
-DeviceId headOf(DocumentStore& s, TrackId t) {
-  const Track& tr = *findTrackPtr(*s.current(), t);
-  const Device* h = mainPath(*s.current(), tr).blocks.at(0);
-  if (isGroupDevice(*h))
-    for (const DevicePtr& d : tr.devices)
-      if (d->group == h->id && d->kind == DeviceKind::Instrument) return d->id;
-  return h->id;
 }
 // The block heading track `t`'s path (its instrument group for a new MIDI track).
 DeviceId pathHead(DocumentStore& s, TrackId t) { return mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.at(0)->id; }
@@ -222,6 +212,31 @@ TrackId emptyMidi(DocumentStore& s) {
 }
 DeviceId addOn(DocumentStore& s, TrackId t, std::string patch, DeviceKind kind, uint32_t slot = ops::kOffPath) {
   return run(s, ops::addDevice(*s.current(), s.ids(), t, std::move(patch), kind, slot)).devices.at(0);
+}
+
+// GU.11: a module's control (its value block named `control`) set in units.
+void setControl(DocumentStore& s, DeviceId m, std::string_view control, double value) {
+  const DeviceId v = test_blocks::member(*s.current(), m, control);
+  REQUIRE(v.valid());
+  run(s, ops::setDeviceParamValue(*s.current(), library(), v, std::string(kValueParam), value));
+}
+// GU.11: "a synth" — the default instrument (an instrument group) pasted off the path of `t`.
+DeviceId synthOff(DocumentStore& s, TrackId t) {
+  IdSource local;
+  return run(s, ops::pasteBlocks(*s.current(), s.ids(), t, defaultInstrumentBlocks(local))).devices.at(0);
+}
+// The synth's Pitch (its Phase Accumulator's, cents): a per-voice control (what Basic Synth's brightness was here).
+DeviceId pitchOf(DocumentStore& s, DeviceId synth) {
+  const DeviceId p = test_blocks::member(*s.current(), synth, kPaPitch);
+  REQUIRE(p.valid());
+  return p;
+}
+// An LFO module off the path of `t` at 3 Hz, depth 0.4.
+DeviceId lfoOff(DocumentStore& s, TrackId t) {
+  const DeviceId lfo = run(s, ops::addDevice(*s.current(), s.ids(), t, "module:lfo", DeviceKind::AudioEffect, ops::kOffPath)).devices.at(0);
+  setControl(s, lfo, "Rate", 3.0);
+  setControl(s, lfo, "Depth", 0.4);
+  return lfo;
 }
 
 WireId cable(DocumentStore& s, Wire w) { return run(s, ops::connect(*s.current(), s.ids(), std::move(w))).wires.at(0); }
@@ -303,7 +318,7 @@ void checkLoop(const golden::Channels& got, const golden::Channels& ref, const g
 // ---- (1) loops between tracks --------------------------------------------------------------------------------------
 
 TEST_CASE("cross-track loops: a track's group fed back into the track's mixer runs per sample (z⁻¹ on the cable)") {
-  // A (source → BasicSynth → mixer) in a group G (no blocks). A cable from G's own signal (what reaches G: A's output)
+  // A (source → its instrument group → mixer) in a group G (no blocks). A cable from G's own signal (what reaches G: A's output)
   // into A's mixer closes the loop A's mixer → A's out → G's input → the cable → A's mixer. Its loop gain is A's pan
   // law at the centre (≈ 0.707 < 1): it rings and decays.
   DocumentStore s;
@@ -321,13 +336,13 @@ TEST_CASE("cross-track loops: a track's group fed back into the track's mixer ru
 }
 
 TEST_CASE("cross-track loops: two tracks' blocks wired into each other's mixers through a return run per sample") {
-  // A (source → BasicSynth → mixer) sends to a return R (post fader, 0 dB). R's Utility (on R's path, −6 dB) is cabled
+  // A (source → its instrument group → mixer) sends to a return R (post fader, 0 dB). R's Utility (on R's path, −6 dB) is cabled
   // into A's mixer: A's mixer → A's post → the send → R → Utility → the cable → A's mixer. The cable closes the loop.
   DocumentStore s;
   const TrackId a = track(s, TrackKind::Midi);
   const TrackId r = track(s, TrackKind::Return);
-  const DeviceId u = addOn(s, r, "utility", DeviceKind::AudioEffect, 0);
-  apply(s, SetDeviceParam{u, "gain", std::pow(10.0, -6.0 / 20.0)});
+  const DeviceId u = addOn(s, r, "module:utility", DeviceKind::AudioEffect, 0);
+  setControl(s, u, "Gain", -6.0);
   apply(s, SetSendLevel{a, r, 0.0f});
   const golden::Channels open = played(*s.current(), "A sending to R (no loop)");
   const WireId w = cable(s, intoMixer(u, a));
@@ -387,18 +402,18 @@ TEST_CASE("cross-track loops: a looping send (return → return → return) gets
 }
 
 TEST_CASE("cross-track loops: a loop through modulation (B's block modulating A's) runs per sample") {
-  // A: source → BasicSynth → Utility U → mixer. B (no instrument): a Utility V off its path. U's output → V's input
-  // (across: its first channel), V's output → U's balance (an Add wire: balance = clip(V[n − 1], −1, 1), the wire that
+  // A: source → instrument group → Utility U → mixer. B (no instrument): a Utility V off its path. U's output → V's
+  // input (across: its first channel), V's output → U's Balance (an Add wire: balance = clip(V[n − 1], −1, 1), the wire that
   // closes the loop delayed). U: L·min(1, 1 − balance), R·min(1, 1 + balance); V passes its input (L = R = U's L).
   DocumentStore s;
   const TrackId a = track(s, TrackKind::Midi);
-  const DeviceId u = addOn(s, a, "utility", DeviceKind::AudioEffect, 1);
+  const DeviceId u = addOn(s, a, "module:utility", DeviceKind::AudioEffect, 1);
   const TrackId b = emptyMidi(s);
-  const DeviceId v = addOn(s, b, "utility", DeviceKind::AudioEffect);
-  const WireId first = cable(s, link(u, v, "out", "x"));
+  const DeviceId v = addOn(s, b, "module:utility", DeviceKind::AudioEffect);
+  const WireId first = cable(s, link(u, v, "y", "x"));
   CHECK(stateOf(*s.current(), first).status == WireStatus::Lowered);
   const golden::Channels open = played(*s.current(), "U → V (no loop)");
-  const WireId w = cable(s, link(v, u, "out", "balance"));
+  const WireId w = cable(s, link(v, test_blocks::member(*s.current(), u, "Balance"), "y", std::string(kValueParam)));
   CHECK(stateOf(*s.current(), w).status == WireStatus::Delayed);
   const golden::Channels closed = played(*s.current(), "V's output modulating U's balance");
   const double k = centrePan();
@@ -421,11 +436,8 @@ TEST_CASE("cross-track loops: a loop through modulation (B's block modulating A'
 
 namespace {
 
-// A BasicSynth's sound made different from the default one's (same envelope: the same voice end).
-void voiced(DocumentStore& s, DeviceId synth) {
-  apply(s, SetDeviceParam{synth, "bright", 0.9});
-  apply(s, SetDeviceParam{synth, "level", 0.13});
-}
+// A synth's sound made different from the default one's (same envelope: the same voice end): a fifth up.
+void voiced(DocumentStore& s, DeviceId synth) { setControl(s, synth, kPaPitch, 702.0); }
 
 // Whether the lowered patch of track `host` calls device `d` (a guest is called in its source's patch).
 bool calls(const Project& p, TrackId host, DeviceId d, const Score* score) {
@@ -455,7 +467,8 @@ DeviceId metaOffPath(DocumentStore& s, TrackId t, std::string_view type) {
 }  // namespace
 
 TEST_CASE("cross-track notes: track A's notes cabled to a synth on track B play it with A's voices (= the synth on A)") {
-  // The reference: A plays its own synth (source → BasicSynth → mixer); B (a MIDI track, nothing on it) is silent.
+  // The reference: A plays its own synth (source → its instrument group → mixer); B (a MIDI track, nothing on it) is
+  // silent.
   DocumentStore r;
   const TrackId ra = track(r, TrackKind::Midi);
   const TrackId rb = emptyMidi(r);
@@ -465,7 +478,7 @@ TEST_CASE("cross-track notes: track A's notes cabled to a synth on track B play 
   DocumentStore s;
   const TrackId a = emptyMidi(s);
   const TrackId b = emptyMidi(s);
-  const DeviceId synth = addOn(s, b, "BasicSynth", DeviceKind::Instrument);
+  const DeviceId synth = synthOff(s, b);
   const Score sc{{{a, chord()}, {b, {}}}};
   const WireId n = cable(s, notesInto(a, synth));
   const WireId m = cable(s, intoMixer(synth, b));
@@ -491,12 +504,12 @@ TEST_CASE("cross-track notes: track A's notes cabled to a synth on track B play 
 }
 
 TEST_CASE("cross-track notes: a synth on another track's path, played by A's notes, feeds that path") {
-  // B: a MIDI track whose path is source → BasicSynth → Saturator → mixer, B playing nothing; A's notes cabled into the
+  // B: a MIDI track whose path is source → instrument group → Saturator → mixer, B playing nothing; A's notes cabled into the
   // synth: the path hears A's voices of it (B's own instance plays nothing: no notes). The reference: A's own path
-  // source → BasicSynth → Saturator → mixer.
+  // source → its instrument group → Saturator → mixer.
   auto build = [](DocumentStore& s, TrackId t) {
-    const DeviceId sat = addOn(s, t, "saturator", DeviceKind::AudioEffect, 1);
-    apply(s, SetDeviceParam{sat, "drive", 9.0});
+    const DeviceId sat = addOn(s, t, "module:saturator", DeviceKind::AudioEffect, 1);
+    setControl(s, sat, "Drive", std::pow(10.0, 9.0 / 20.0));
     return sat;
   };
   DocumentStore r;
@@ -525,7 +538,7 @@ TEST_CASE("cross-track notes: two sources into blocks of one track (each its own
   DocumentStore r;
   const TrackId ra = track(r, TrackKind::Midi);
   const TrackId rb = track(r, TrackKind::Midi);
-  voiced(r, headOf(r, rb));
+  voiced(r, pathHead(r, rb));
   const Score rs{{{ra, chord()}, {rb, otherChord()}}};
   const golden::Channels ref = played(*r.current(), "A and B on their own synths", &rs);
   // A and B without blocks; C holds both synths: x played by A's notes, y by B's, each into C's mixer.
@@ -533,8 +546,8 @@ TEST_CASE("cross-track notes: two sources into blocks of one track (each its own
   const TrackId a = emptyMidi(s);
   const TrackId b = emptyMidi(s);
   const TrackId c = emptyMidi(s);
-  const DeviceId x = addOn(s, c, "BasicSynth", DeviceKind::Instrument);
-  const DeviceId y = addOn(s, c, "BasicSynth", DeviceKind::Instrument);
+  const DeviceId x = synthOff(s, c);
+  const DeviceId y = synthOff(s, c);
   voiced(s, y);
   cable(s, notesInto(a, x));
   cable(s, notesInto(b, y));
@@ -559,7 +572,7 @@ TEST_CASE("cross-track notes: two sources into blocks of one track (each its own
   const TrackId oa = emptyMidi(o);
   const TrackId ob = emptyMidi(o);
   const TrackId oc = emptyMidi(o);
-  const DeviceId z = addOn(o, oc, "BasicSynth", DeviceKind::Instrument);
+  const DeviceId z = synthOff(o, oc);
   // IG.1-2: both sources into ONE block: one voice context, one source (the lowest wire id from another track: A's);
   // B's cable is not played. The reference: A alone on the default synth.
   cable(o, notesInto(oa, z));
@@ -609,27 +622,23 @@ TEST_CASE("cross-track notes: into a meta module off another track's path; a mod
   MESSAGE("notes into another track's meta module vs into its own: max |diff| = " << d);
   CHECK(peak(ref) > 1e-2);
   CHECK(d == 0.0);
-  // A modulation of a block by its home track (an LFO on B into the synth's brightness) reaches the instance A's notes
+  // A modulation of a block by its home track (an LFO on B into the synth's Pitch) reaches the instance A's notes
   // play as a global signal (the home's value of the pin, sent to the guest): the same as that LFO on another track
   // modulating the synth on A. (An LFO on A itself would run per voice there: a free-running source that feeds voice
   // processing in its own track's voice context does — pq/graph/infer.h; a home's modulation is not in that context.)
   DocumentStore r2;
   const TrackId r2a = track(r2, TrackKind::Midi);
   const TrackId r2b = emptyMidi(r2);
-  const DeviceId r2lfo = addOn(r2, r2b, "lfo_device", DeviceKind::AudioEffect);
-  apply(r2, SetDeviceParam{r2lfo, "rate", 3.0});
-  apply(r2, SetDeviceParam{r2lfo, "depth", 0.4});
-  cable(r2, link(r2lfo, headOf(r2, r2a), "lfo", "bright"));
+  const DeviceId r2lfo = lfoOff(r2, r2b);
+  cable(r2, link(r2lfo, pitchOf(r2, pathHead(r2, r2a)), "y", std::string(kValueParam)));
   const Score s2{{{r2a, chord()}, {r2b, {}}}};
   const golden::Channels ref2 = played(*r2.current(), "an LFO on B modulating A's synth", &s2);
   DocumentStore m;
   const TrackId ma = emptyMidi(m);
   const TrackId mb = emptyMidi(m);
-  const DeviceId synth = addOn(m, mb, "BasicSynth", DeviceKind::Instrument);
-  const DeviceId lfo = addOn(m, mb, "lfo_device", DeviceKind::AudioEffect);
-  apply(m, SetDeviceParam{lfo, "rate", 3.0});
-  apply(m, SetDeviceParam{lfo, "depth", 0.4});
-  const WireId mod = cable(m, link(lfo, synth, "lfo", "bright"));
+  const DeviceId synth = synthOff(m, mb);
+  const DeviceId lfo = lfoOff(m, mb);
+  const WireId mod = cable(m, link(lfo, pitchOf(m, synth), "y", std::string(kValueParam)));
   cable(m, notesInto(ma, synth));
   cable(m, intoMixer(synth, mb));
   const Score ms{{{ma, chord()}, {mb, {}}}};
@@ -649,9 +658,9 @@ TEST_CASE("cross-track notes: refused only where the host and the block's track 
   DocumentStore s;
   const TrackId a = emptyMidi(s);
   const TrackId b = track(s, TrackKind::Midi);
-  const DeviceId synth = addOn(s, b, "BasicSynth", DeviceKind::Instrument);
-  const DeviceId lfo = addOn(s, b, "lfo_device", DeviceKind::AudioEffect);
-  cable(s, link(lfo, synth, "lfo", "bright"));
+  const DeviceId synth = synthOff(s, b);
+  const DeviceId lfo = lfoOff(s, b);
+  cable(s, link(lfo, pitchOf(s, synth), "y", std::string(kValueParam)));
   const WireId mix = cable(s, intoMixer(synth, b));
   const Score sc{{{a, chord()}, {b, otherChord()}}};
   const golden::Channels before = played(*s.current(), "B alone", &sc);
