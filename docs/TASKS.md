@@ -689,12 +689,12 @@ Each task's full description and acceptance criteria are in docs/plans/MM.md und
 
 - [~] **IG.1 Model, migration, default instrument group** *(merged 58ec7c9e with IG.2; partially verified, see PROGRESS 2026-11-06 IG.1-2)* (plan §Phases 1).
 - [~] **IG.2 Lowering: the voice context is the instrument group** *(merged 58ec7c9e; partially verified: no -Affected, goldens unreviewed, perf rows not recorded)* (plan §Phases 2; replaces voice runs and guest instances; single-signal cables inside the group, user 2026-11-06).
-- [ ] **IG.3 Per-sample loops across the group edge** (plan §Phases 3; the former TX.voice-loop).
-- [ ] **IG.4 Views: instrument-group capsule and panel, per-note cable colour, reducers on cables, single-signal cable toggle** (plan §Phases 4). 👁
+- [ ] **IG.3 Per-sample loops across the group edge** (plan §Phases 3; the former TX.voice-loop). *Deferred until after GU (user 2026-11-06).*
+- [ ] **IG.4 Views: per-note cable colour, reducers on cables, single-signal cable toggle, status lines** (plan §Phases 4). 👁 *Deferred until after GU; the instrument-group capsule moved to GU.2, the polyphony panel to GU.3 (user 2026-11-06).*
 
-## GU: Built GUIs (plan: docs/plans/GU.md; user decision 2026-11-06, SPEC §15 "built GUIs"; revised after three audits, awaiting user review)
+## GU: Built GUIs (plan: docs/plans/GU.md; user decision 2026-11-06, SPEC §15 "built GUIs"; approved by the user 2026-11-06)
 
-Starts after IG.2 merges; IG.3 not concurrent with GU.1; IG.4 merged before GU.2. Strictly in order (each phase owns its part of the group drawing; every panel is built once, on the group it ends up on).
+Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly in order (each phase owns its part of the group drawing; every panel is built once, on the group it ends up on).
 - [ ] **GU.1 Curves: segment curves owned by controls, knob position stored, native curve atom** (plan §Phases 1).
 - [ ] **GU.2 Nested groups, atom and value blocks, group presets** (plan §Phases 2).
 - [ ] **GU.3 Panel model (from PanelDesc), generic elements, collapsed group drawn as its panel** (plan §Phases 3). 👁

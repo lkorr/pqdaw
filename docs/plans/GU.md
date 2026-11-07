@@ -1,8 +1,8 @@
 # GU plan: built GUIs — modules are groups, every block's face is a panel of elements
 
-Status: **draft 2026-11-06, revised after three audits (same day); phases ordered so nothing is built twice.** From
-SPEC §15 2026-11-06 "built GUIs", the code on `main` at bc35d549, docs/plans/MM.md and IG.md. Once approved, the phases
-become `GU.n` in TASKS.md.
+Status: **approved 2026-11-06 (user: "carry out this plan"), revised after three audits; phases ordered so nothing is
+built twice.** From SPEC §15 2026-11-06 "built GUIs", the code on `main` at bc35d549, docs/plans/MM.md and IG.md. The
+phases are `GU.n` in TASKS.md.
 
 ## Goal
 
@@ -109,8 +109,12 @@ Single-signal cables (IG) work unchanged across nested group edges.
 
 ## Phases (one worker each, strictly in order)
 
-**Prerequisites:** IG.2 merged before GU.1; IG.3 not running at the same time as GU.1 (both rewrite the lowering's
-param and wire handling: run one, then the other); IG.4 merged before GU.2 (both restyle the group capsule and header).
+**Prerequisites:** IG.1–2 merged (done, 58ec7c9e). IG.3 and IG.4 are **not** prerequisites (user 2026-11-06: the
+polyphony work is finished as far as GU needs it). What GU needed from IG.4 moves into GU: GU.2 owns the group capsule
+and header drawing, including the instrument-group styling (a capsule fed notes reads as an instrument); GU.3 makes the
+instrument group's polyphony settings (voices, mono, stealing, glide) bindable settings, edited in the group's
+inspector and on panels. IG.3 (per-sample loops across the group edge) and IG.4's remaining items (per-note cable
+colour, reducer menu, single-signal toggle, status lines) stay as follow-ups and do not run during GU.
 
 Ordered so nothing is built twice: groups can nest and modules can be groups *before* any panel is made, so every panel
 is built once, on the group it ends up on; the VCA's law is not touched until the VCA is replaced; each phase owns its
@@ -221,5 +225,5 @@ curves.
 - The Device view shows the panel of the selected block's outermost group; with nothing selected, the track's
   instrument group.
 - IG.4's "group panel" (voice count, mono / legato, glide, stealing) becomes the instrument group's own settings and
-  controls: IG.4 shows them in the group's header / inspector; from GU.3 on they bind to panels like any other.
+  controls: GU.3 shows them in the group's inspector and binds them to panels like any other (IG.4 no longer does).
 - Only the outermost group fed notes is an instrument; nested groups never voice again.
