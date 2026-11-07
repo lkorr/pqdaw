@@ -187,9 +187,9 @@ struct RenameDevice { DeviceId device; std::string name; };
 // TMM.10-fix1: Structural. A chain meta device's chain input (Device::chainInput: "" the type's own, "-" unplugged, or
 // an input of its type by name): which input the previous stage's signal (or the note source) is wired into.
 struct SetDeviceChainInput { DeviceId device; std::string input; };
-// TX.groups: Meta (membership changes no sound: a member plays through its cables either way; model.h "Groups"). Puts a
-// block of a track into group `group` (a group device of the same track), or takes it out (invalid); a member is never
-// on the main path (main_path.h). A group is never a member (no nesting).
+// TX.groups: puts a block of a track into group `group` (a group device of the same track), or takes it out (invalid); a
+// member is never on the main path (main_path.h). GU.2: Structural (membership decides whether a block runs per note:
+// an instrument group's members at any depth); groups nest (a group may go into another group; no cycles).
 struct SetDeviceGroup { DeviceId device; DeviceId group; };
 // GU.1: a control's curve (model.h ControlCurve; nullopt: the declared one, the entry removed). The knob position stays:
 // the sound follows the curve. Structural when `structural` (the curve's class changed — segment count, shapes, flags —

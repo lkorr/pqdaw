@@ -9,6 +9,9 @@
 //               variations and the texts of the user devices inside it) or a user device's state (its "source").
 //               The device object comes right after the name, so its "kind" (and a rack's "rack" key) sits in the
 //               first bytes of the file, where the browser index sniffs the category (QUESTIONS Q153).
+//               GU.2: a GROUP PRESET is the same file with "devices": [the group, everything inside it at any depth]
+//               and "wires": [the wires among them] (a block set, model.h BlockSet; spawning it = pasting it with fresh
+//               ids, ops::pasteBlocks). GU.3 adds the group's panel to its device object (no new key here).
 //   .pqdevice   {"format": "pqdevice", "schemaVersion", "name", "kind", "patch", "origin", "crlf"?, "source": [lines],
 //               "panel"?: [lines]}: a user device ("Save as New Device"): its patch text (the device patch is the patch
 //               of the text named `patch`, the stock device it was forked from), the stdlib file it was forked from
@@ -41,9 +44,13 @@ inline constexpr std::string_view kClipExtension = ".pqclip";
 
 struct PresetFile {
   std::string name;
-  DevicePtr device;
+  DevicePtr device;  // the preset's device (a group preset: its group)
+  BlockSet blocks;   // GU.2: every device of the file (the device first) and the wires among them
+  bool groupPreset() const noexcept { return blocks.devices.size() > 1 || !blocks.wires.empty(); }
 };
 Result<std::string> serializePreset(const Device& device, std::string_view name);
+// GU.2: a GROUP PRESET (a block set whose first device is its one top-level block, a group: ops::copyBlocks of a group).
+Result<std::string> serializeGroupPreset(const BlockSet& blocks, std::string_view name);
 Result<PresetFile> parsePreset(std::string_view text, std::string_view fileName = {});
 
 struct UserDeviceFile {

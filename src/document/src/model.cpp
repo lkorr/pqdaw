@@ -269,6 +269,23 @@ std::string_view metaDeviceType(const Device& d) noexcept {
 
 bool isGroupDevice(const Device& d) noexcept { return !d.rack && d.patch == kGroupDevice; }
 
+bool isAtomDevice(const Device& d) noexcept {
+  return !d.rack && !d.source && d.patch.size() > kAtomDevicePrefix.size() && d.patch.starts_with(kAtomDevicePrefix);
+}
+std::string_view atomDeviceName(const Device& d) noexcept {
+  return isAtomDevice(d) ? std::string_view(d.patch).substr(kAtomDevicePrefix.size()) : std::string_view();
+}
+bool isValueDevice(const Device& d) noexcept { return !d.rack && !d.source && d.patch == kValueDevice; }
+
+std::string_view valuePatchText() noexcept {
+  // GU.2: one control as a signal. The range and law are the control's curve (Device::curves; declared: linear 0 … 1).
+  return "patch Value {\n"
+         "  param value = 0 [0 .. 1]\n"
+         "  out   y     : real\n"
+         "  y = value\n"
+         "}\n";
+}
+
 std::string_view groupPatchText() noexcept {
   // TX.groups: the In terminal is an output (`input` = x), the Out terminal an input (`output` → y). y is declared stereo
   // (an upper bound: a mono sum stays mono), so the chain after a group never packs an already stereo signal.
@@ -314,6 +331,42 @@ std::vector<const Device*> groupMembers(const std::vector<DevicePtr>& list, Devi
   if (!group.valid()) return out;
   for (const DevicePtr& d : list)
     if (d && d->group == group) out.push_back(d.get());
+  return out;
+}
+
+namespace {
+const Device* inList(const std::vector<DevicePtr>& list, DeviceId id) noexcept {
+  for (const DevicePtr& d : list)
+    if (d && d->id == id) return d.get();
+  return nullptr;
+}
+}  // namespace
+
+bool groupContains(const std::vector<DevicePtr>& list, DeviceId group, DeviceId d) noexcept {
+  if (!group.valid()) return false;
+  const Device* at = inList(list, d);
+  for (uint32_t step = 0; at != nullptr && at->group.valid() && step < kMaxGroupDepth; ++step) {
+    if (at->group == group) return true;
+    at = inList(list, at->group);
+  }
+  return false;
+}
+
+std::vector<const Device*> groupMembersDeep(const std::vector<DevicePtr>& list, DeviceId group) {
+  std::vector<const Device*> out;
+  if (!group.valid()) return out;
+  for (const DevicePtr& d : list)
+    if (d && d->group.valid() && groupContains(list, group, d->id)) out.push_back(d.get());
+  return out;
+}
+
+DeviceId outermostGroup(const std::vector<DevicePtr>& list, DeviceId d) noexcept {
+  DeviceId out;
+  const Device* at = inList(list, d);
+  for (uint32_t step = 0; at != nullptr && at->group.valid() && step < kMaxGroupDepth; ++step) {
+    out = at->group;
+    at = inList(list, at->group);
+  }
   return out;
 }
 

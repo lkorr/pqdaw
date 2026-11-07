@@ -111,6 +111,25 @@ const DeviceInfo& groupDeviceInfo();
 const graph::Patch& groupVoicePatch();
 const graph::Patch& groupNotesPatch();
 
+// ---- GU.2: atom blocks and value blocks (model.h "Atom blocks and value blocks") ----------------------------------
+// Which atoms may be a block of their own: not compiler-internal, not a voice source (they need a voice context), no
+// side effect, not an I/O / sample / structure atom, no table resource (the wavetables, shaper, tuning_hz and the GU.1
+// curve atom are the meta modules' and the lowering's own). The node menu offers exactly these (circuit/node_catalog).
+bool atomBlockAllowed(const graph::AtomSignature& s) noexcept;
+// The patch an atom block "atom:<name>" plays, built once per atom from its signature (no text: graph API, cached,
+// thread-safe; lives for the process): `in <input> : <kind>[ const]` per fixed input (the variadic one its minimum
+// count, numbered `<name>0` ...): an optional input defaults to the atom's default, a const one is a setting; the atom;
+// `out <output>` per output (an output whose name an input has is `<name>_out`). Named "Atom_<name>" ('.' -> '_').
+// The compiler flattens the call: the block costs exactly the atom. Null: no such atom, or not atomBlockAllowed.
+const graph::Patch* atomBlockPatch(std::string_view atomName);
+const DeviceInfo* atomBlockInfo(std::string_view atomName);  // its description (AudioEffect, settings: the const ins)
+// The patch every value block plays (model.h valuePatchText, parsed once) and its description (one param `value`).
+const graph::Patch& valuePatch();
+const DeviceInfo& valueDeviceInfo();
+// The fixed patch a built-in block plays (a group: groupPatch(); an atom block; a value block), or null for any other
+// device. The views and the edit builders see these; the lowering picks a group's variant itself (lower.h "Groups").
+const graph::Patch* builtinBlockPatch(const Device& d);
+
 // A stock device: its file (relative to stdlib/), patch and display name.
 struct StockDevice {
   std::string_view file;

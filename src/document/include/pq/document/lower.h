@@ -445,6 +445,17 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // reads that output. Its other ports' wires are Inactive (it plays nothing else), and so is it without a chain input
 // (unplugged) or an output. Before fix1 a switched-off free device was silent: a project with a wire both into its chain
 // input and out of its main output now hears the pass-through (QUESTIONS Q?-TX.groups-fix1-a).
+// NESTED GROUPS (GU.2; docs/plans/GU.md "Nesting and instrument groups"): only the OUTERMOST group fed notes is an
+// instrument group (instrument_groups.h); every device inside it at any depth is its member, a nested group too. A
+// nested group that runs per note (Callees::perNote, the same fixpoint as any member) plays groupVoicePatch() (its
+// terminals per voice), else groupPatch(); it never voices again (no GroupNotes, no voice sum, no end of its own: an
+// Envelope behind a nested group's Out still ends the voices, followed through it as a pass-through). Cables across a
+// nested capsule's edge are ordinary wires (single-signal ones too). A group of blocks is the same graph as the blocks
+// ungrouped: the group's own call is an identity the compiler flattens (tests/app/test_nested_groups.cpp).
+// ATOM AND VALUE BLOCKS (GU.2; model.h "Atom blocks and value blocks"): an atom block calls atomBlockPatch() (devices.h:
+// the atom between its `in`s and `out`s), a value block valuePatch() (`y = value`); both flatten, so a module built of
+// atom blocks schedules exactly its atoms. A value block's `value` is a control like any device param: undriven a
+// runtime param written in units (no op), driven the GU.1 curve atom after the sum of position and wires.
 // GROUPS (TX.groups; model.h "Groups"): nothing of their own. A group device is a call of the fixed patch
 // groupPatch() (devices.h; `in x`, `in output`, `out y = output`, `out input = x`; the callee library holds it while a
 // group plays) at its place in the chain like any audio effect (or free); its members are free devices of the track,

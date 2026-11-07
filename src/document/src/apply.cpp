@@ -1738,10 +1738,10 @@ Res apply_(const Snapshot& s, const RemoveDevice& c, ChangeSet& cs) {
   if (!loc) return std::move(loc).error();
   std::vector<DeviceId> gone = deviceIdsIn(*loc->device);  // T4.8: a rack with everything inside it
   const DeviceLoc src = findDevice(*s, c.device);
-  // TX.groups: a group goes with its members (model.h "Groups").
+  // TX.groups: a group goes with its members (model.h "Groups"; GU.2: at any depth).
   std::vector<DeviceId> members;
   if (isGroupDevice(*loc->device) && src.chain == nullptr)
-    for (const Device* m : groupMembers(loc->track->devices, c.device)) members.push_back(m->id);
+    for (const Device* m : groupMembersDeep(loc->track->devices, c.device)) members.push_back(m->id);
   gone.insert(gone.end(), members.begin(), members.end());
   std::sort(gone.begin(), gone.end());
   Result<ListAt> from = locateList(*s, loc->track->id, src.chain != nullptr ? src.chain->id : ChainId{});
@@ -1796,11 +1796,12 @@ Res apply_(const Snapshot& s, const MoveDevice& c, ChangeSet& cs) {
     if (r) cs.devices.insert(cs.devices.end(), rekinded.begin(), rekinded.end());
     return r;
   }
-  // TX.groups: a group moves with its members (appended to the destination list in their order; model.h "Groups").
+  // TX.groups: a group moves with its members (appended to the destination list in their order; model.h "Groups";
+  // GU.2: at any depth).
   std::vector<DevicePtr> members;
   if (isGroupDevice(*dev) && src.chain == nullptr)
     for (const DevicePtr& m : src.list())
-      if (m->group == dev->id) members.push_back(m);
+      if (m->group.valid() && groupContains(src.list(), dev->id, m->id)) members.push_back(m);
   {  // the destination list with the device in it must hold
     std::vector<DevicePtr> dst = *to->list;
     dst.insert(dst.begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(c.index, dst.size())), dev);
@@ -1876,6 +1877,9 @@ Res apply_(const Snapshot& s, const SetDeviceParam& c, ChangeSet& cs) {
   } else if (c.value && !finiteIn(*c.value, 0.0, 1.0)) {  // GU.1: a knob position
     return invalid("'" + c.param + "': a param stores its knob position, in [0, 1]");
   }
+  // GU.2 (model.h "Atom blocks and value blocks"): an atom block has no params, a value block only `value`.
+  if (c.value && isAtomDevice(*loc.device)) return invalid("an atom block has no params (its inputs are wired)");
+  if (c.value && isValueDevice(*loc.device) && c.param != kValueParam) return invalid("a value block's one control is 'value'");
   std::vector<DeviceValue> params = loc.device->params;
   if (!setValue(params, c.param, c.value)) return s;
   cs.params.push_back(ParamRef::device(c.device, c.param));
@@ -2196,7 +2200,9 @@ Res apply_(const Snapshot& s, const SetDeviceGroup& c, ChangeSet& cs) {  // TX.g
       d = std::move(x);
     }
   PQ_DOC_TRY(checkList(at->kind, list));
-  Res r = editTrack(s, at->path, cs, kChangeMeta, [&](Track& t) {
+  // GU.2: Structural, not Meta — joining or leaving an instrument group (at any depth) decides whether the block runs
+  // per note (instrument_groups.h), and a nested group's variant (lower.h "Groups").
+  Res r = editTrack(s, at->path, cs, kChangeStructural, [&](Track& t) {
     t.devices = std::move(list);
     return ok();
   });

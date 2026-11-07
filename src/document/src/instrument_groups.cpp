@@ -97,10 +97,37 @@ VoiceContexts voiceContexts(const Project& p) {
           head = b;
           break;
         }
-    // Instrument groups first (their members are not lone instruments).
-    std::unordered_set<uint32_t> groups;
+    // Instrument groups first (their members are not lone instruments). GU.2 (docs/plans/GU.md "Nesting and instrument
+    // groups"): only the OUTERMOST group fed notes is an instrument — a group inside one is a plain member that runs
+    // per note because its parent does (it never voices again); a group fed notes inside a plain group is one. Outer
+    // groups first (by depth), so a group's ancestors are decided before it.
+    std::vector<std::pair<uint32_t, const Device*>> byDepth;
     for (const DevicePtr& d : t.devices) {
-      if (!isGroupDevice(*d) || d->group.valid() || !d->active) continue;  // (a switched-off group plays nothing)
+      if (!isGroupDevice(*d) || !d->active) continue;  // (a switched-off group plays nothing)
+      uint32_t depth = 0;
+      for (const Device* at = d.get(); at != nullptr && at->group.valid() && depth < kMaxGroupDepth; ++depth) {
+        const int32_t gi = t.deviceIndex(at->group);
+        at = gi >= 0 ? t.devices[static_cast<size_t>(gi)].get() : nullptr;
+      }
+      byDepth.emplace_back(depth, d.get());
+    }
+    std::stable_sort(byDepth.begin(), byDepth.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    // The instrument group `d` sits in at any depth (its outermost such group), or kNone.
+    auto contextAbove = [&](const Device& d) -> uint32_t {
+      uint32_t found = UINT32_MAX;
+      const Device* at = &d;
+      for (uint32_t step = 0; at->group.valid() && step < kMaxGroupDepth; ++step) {
+        if (const auto it = out.byBlock.find(at->group.value); it != out.byBlock.end() && out.list[it->second].group)
+          found = it->second;
+        const int32_t gi = t.deviceIndex(at->group);
+        if (gi < 0) break;
+        at = t.devices[static_cast<size_t>(gi)].get();
+      }
+      return found;
+    };
+    std::unordered_set<uint32_t> groups;
+    for (const auto& [depth, d] : byDepth) {
+      if (depth > 0 && contextAbove(*d) != UINT32_MAX) continue;  // inside an instrument group: a plain member
       VoiceContext c;
       if (!contextFor(t, *d, head, path.contains(d->id), c)) continue;
       const auto i = static_cast<uint32_t>(out.list.size());
@@ -109,10 +136,11 @@ VoiceContexts voiceContexts(const Project& p) {
       groups.insert(d->id.value);
     }
     for (const DevicePtr& d : t.devices) {
-      if (d->group.valid() && groups.count(d->group.value) != 0) {
-        out.byMember.emplace(d->id.value, out.byBlock.at(d->group.value));
-        continue;
-      }
+      if (d->group.valid() && !groups.empty())
+        if (const uint32_t ctx = contextAbove(*d); ctx != UINT32_MAX) {
+          out.byMember.emplace(d->id.value, ctx);  // GU.2: a member at any depth runs in its outermost instrument group
+          continue;
+        }
       if (!playsNotes(*d) || !d->active) continue;
       VoiceContext c;
       if (!contextFor(t, *d, head, path.contains(d->id), c)) continue;

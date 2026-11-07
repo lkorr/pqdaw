@@ -125,10 +125,10 @@ struct Cables {
 // have no named main input.
 MainPorts lowerPortsOf(const Device& d, const graph::PatchLibrary* lib, const DeviceLibrary* devices) {
   if (d.isRack() || isGroupDevice(d) || isMetaDevice(d)) return mainPortsOf(d, devices);
-  const graph::Patch* callee = nullptr;
+  const graph::Patch* callee = builtinBlockPatch(d);  // GU.2: an atom / value block
   std::shared_ptr<const ResolvedDevice> hold;
-  if (devices != nullptr) callee = devices->patchOf(d, hold);
-  else if (lib != nullptr && !d.source) callee = lib->find(d.patch);
+  if (callee == nullptr && devices != nullptr) callee = devices->patchOf(d, hold);
+  else if (callee == nullptr && lib != nullptr && !d.source) callee = lib->find(d.patch);
   if (callee == nullptr) return {};
   MainPorts m;
   for (NodeIndex v = 0; v < callee->nodeCount(); ++v) {
@@ -229,8 +229,10 @@ struct Callees {
   }
   // TX.groups-fix1 / IG.1-2: what a group plays — an instrument group GroupNotes (its In the notes per voice, its Out
   // per voice: the context sums it, lower.h "Voice contexts"), any other Group.
+  // GU.2: a group nested inside an instrument group that runs per note passes its signals per voice (GroupVoice).
   const graph::Patch& groupCallee(const Device& d) const noexcept {
     if (const VoiceContext* c = blockContext(d.id); c != nullptr && c->group) return groupNotesPatch();
+    if (memberContext(d.id) != nullptr && runsPerNote(d.id)) return groupVoicePatch();
     return groupPatch();
   }
   const graph::Patch* find(const Device& d) const noexcept {
@@ -238,6 +240,8 @@ struct Callees {
     if (const auto it = userRoot.find(d.id.value); it != userRoot.end()) return it->second;
     if (isGroupDevice(d)) return &groupCallee(d);  // TX.groups (lower.h "Groups"; the graph's library holds it)
     if (d.source || isMetaDevice(d)) return nullptr;
+    if (isAtomDevice(d)) return atomBlockPatch(atomDeviceName(d));  // GU.2 (lower.h "Atom and value blocks")
+    if (isValueDevice(d)) return &valuePatch();
     return lib->find(d.patch);
   }
 };
@@ -552,9 +556,8 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
     // A member runs ONCE when it has an input from inside the group and every such input is single-signal: a cable
     // marked single, or one from a member that runs once (SPEC §15 2026-11-06). Inputs from outside are broadcast and
     // decide nothing. Every other member runs per note.
-    std::vector<const Device*> members;
-    for (const DevicePtr& d : c.home->devices)
-      if (d->group == c.block->id) members.push_back(d.get());
+    // GU.2: its members at any depth (a nested group is a member that runs per note because its parent does).
+    const std::vector<const Device*> members = groupMembersDeep(c.home->devices, c.block->id);
     std::unordered_set<uint32_t> once;
     auto inside = [&](const Wire& w) {
       if (w.fromNoteSource()) return w.noteSource == c.source;
@@ -737,6 +740,25 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
     if (voice) u.combined->add(groupVoicePatch());
     if (notes) u.combined->add(groupNotesPatch());
     u.callees.lib = u.combined.get();
+  }
+  // GU.2: atom and value blocks' patches join the callee library when the base lacks them (a DeviceLibrary holds them
+  // all: no copy then).
+  if (combined) {
+    std::vector<const graph::Patch*> blocks;
+    forEachDevice(p, [&](const Device& d, const Track&) {
+      if (!isAtomDevice(d) && !isValueDevice(d)) return;
+      const graph::Patch* bp = builtinBlockPatch(d);
+      if (bp != nullptr && u.callees.lib->find(bp->name()) != bp && std::find(blocks.begin(), blocks.end(), bp) == blocks.end())
+        blocks.push_back(bp);
+    });
+    if (!blocks.empty()) {
+      if (!u.combined) {
+        u.combined = std::make_shared<graph::PatchLibrary>();
+        u.combined->addAll(*base);
+      }
+      for (const graph::Patch* bp : blocks) u.combined->add(*bp);
+      u.callees.lib = u.combined.get();
+    }
   }
   return u;
 }
@@ -1573,8 +1595,7 @@ std::unordered_map<uint32_t, uint32_t> hostedElsewhere(const Plan& pl, const Cal
     if (host == pl.indexOf.end() || home == pl.indexOf.end()) continue;
     out.emplace(c.block->id.value, host->second);
     if (c.group)
-      for (const DevicePtr& d : c.home->devices)
-        if (d->group == c.block->id) out.emplace(d->id.value, host->second);
+      for (const Device* d : groupMembersDeep(c.home->devices, c.block->id)) out.emplace(d->id.value, host->second);
   }
   return out;
 }
@@ -1598,7 +1619,7 @@ TrackDevs lowerTree(const Plan& pl, const Node& n, const Callees* lib, std::vect
       if (it == elsewhere.end() || it->second != self) continue;
       std::vector<DevicePtr> list;
       for (const DevicePtr& d : c.home->devices)
-        if (d.get() == c.block || (c.group && d->group == c.block->id)) list.push_back(d);
+        if (d.get() == c.block || (c.group && groupContains(c.home->devices, c.block->id, d->id))) list.push_back(d);
       std::vector<uint32_t> unused;
       TrackScope hosted;
       hosted.hostedList = true;
@@ -1610,7 +1631,8 @@ TrackDevs lowerTree(const Plan& pl, const Node& n, const Callees* lib, std::vect
     const uint32_t k = static_cast<uint32_t>(td.devs.size());
     td.offPath.push_back(k);
     const bool perNote = lib != nullptr && lib->runsPerNote(pf.device->id);
-    LDev ld{pf.device, pf.callee, -1, perNote && !isGroupDevice(*pf.device)};
+    // (GU.2: a nested group inside an instrument group that runs per note is a voice device too: GroupVoice.)
+    LDev ld{pf.device, pf.callee, -1, perNote};
     ld.bypass = pf.bypass;
     ld.offPath = true;
     ld.hosted = pf.hosted;

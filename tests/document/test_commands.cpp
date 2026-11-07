@@ -835,12 +835,14 @@ std::vector<Case> cases() {
                  CHECK(findDevice(f.doc(), chain.fx).device->curve("gain")->min == -60.0);
                }});
   static DeviceId groupId;
-  c.push_back({"SetDeviceGroup (TX.groups: a block into a group; Meta: no sound changes)", [withChain](Fixture& f) -> Command {
+  // GU.2: Structural (was Meta under TX.groups): since IG.1-2 membership decides whether a block runs per note (an
+  // instrument group's member at any depth), and a nested group's variant.
+  c.push_back({"SetDeviceGroup (TX.groups: a block into a group; GU.2: Structural, membership decides per note)", [withChain](Fixture& f) -> Command {
                  withChain(f);
                  groupId = f.store.ids().device();
                  REQUIRE(f.store.dispatch(Batch{"group", {AddDevice{f.lead, makeGroup(groupId), kAppend}}}).ok());
                  return SetDeviceGroup{chain.fx, groupId};
-               }, M, [](Fixture& f, const ChangeSet& cs) {
+               }, S, [](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.devices == std::vector<DeviceId>{chain.fx});
                  CHECK(findDevice(f.doc(), chain.fx).device->group == groupId);
                }});

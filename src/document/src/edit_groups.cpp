@@ -6,6 +6,7 @@
 #include "edit_common.h"
 #include "edit_paths.h"
 #include "pq/document/devices.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/main_path.h"
 #include "pq/document/lower.h"
 #include "pq/document/meta.h"
@@ -155,13 +156,48 @@ EditResult groupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLibra
     if (track != nullptr && l.track != track) return invalid("Group: the devices are on different tracks (a group is one track's)");
     track = l.track;
     if (std::find(picked.begin(), picked.end(), l.device) != picked.end()) continue;
-    if (isGroupDevice(*l.device)) return invalid("Group: groups do not nest (a group cannot go into a group)");
-    if (l.device->group.valid()) return invalid("Group: " + displayName(*l.device, lib) + " is in a group already");
     if (l.device->rack && l.device->kind != DeviceKind::Instrument)
       return invalid("Group: an Audio Effect Rack cannot go into a group (its chains are a series; a group has none)");
     picked.push_back(l.device);
   }
   const std::vector<DevicePtr>& list = track->devices;
+  // GU.2 (model.h "Groups"): groups nest. The new group goes where the selection is — every selected block must sit
+  // in the same group (or in none): it becomes a member there (`parent`) and the selection its members, wires as they
+  // are (they name devices, not containers: the sound cannot change). A selected group takes its contents with it. An
+  // instrument group is not nested into a new one: its In carries the notes by the meaning of the input it reaches,
+  // which a group around it would not pass on.
+  const DeviceId parent = picked.front()->group;
+  for (const Device* d : picked) {
+    if (d->group != parent)
+      return invalid("Group: the devices are in different groups; select blocks of one capsule (or of none)");
+    if (isGroupDevice(*d) && isInstrumentGroup(p, d->id))
+      return invalid("Group: " + displayName(*d, lib) + " is an instrument group (fed notes); it stays outermost");
+  }
+  if (parent.valid()) {
+    uint32_t depth = 1;
+    for (DeviceId at = parent; at.valid() && depth <= kMaxGroupDepth; ++depth) {
+      const int32_t gi = track->deviceIndex(at);
+      at = gi >= 0 ? track->devices[static_cast<size_t>(gi)]->group : DeviceId{};
+    }
+    if (depth > kMaxGroupDepth) return invalid("Group: groups nest at most " + std::to_string(kMaxGroupDepth) + " deep");
+    const DeviceId gid = ids.device();
+    Edit e = makeEdit("Group");
+    Batch& b = batchOf(e);
+    size_t at = list.size();
+    for (size_t i = 0; i < list.size(); ++i)
+      if (std::find(picked.begin(), picked.end(), list[i].get()) != picked.end()) at = std::min(at, i);
+    DevicePtr g = makeGroup(gid);
+    {
+      auto x = std::make_shared<Device>(*g);
+      x->group = parent;
+      g = std::move(x);
+    }
+    b.commands.push_back(AddDevice{track->id, std::move(g), static_cast<uint32_t>(at)});
+    for (const Device* d : picked) b.commands.push_back(SetDeviceGroup{d->id, gid});
+    e.devices.push_back(gid);
+    e.tracks.push_back(track->id);
+    return e;
+  }
   const bool midi = track->kind == TrackKind::Midi;
   // TX.all-free: the selected blocks on the main path in signal order (S: a stretch of it) and the others (F).
   const MainPath path = mainPath(p, *track);
@@ -452,7 +488,8 @@ EditResult ungroupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLib
   Edit e = makeEdit("Ungroup");
   Batch& b = batchOf(e);
   for (const Wire* w : spine) b.commands.push_back(RemoveWire{w->id});
-  for (const Device* m : members) b.commands.push_back(SetDeviceGroup{m->id, DeviceId{}});
+  // GU.2: its members go back to the group it sits in (or to none).
+  for (const Device* m : members) b.commands.push_back(SetDeviceGroup{m->id, l.device->group});
   b.commands.push_back(RemoveDevice{group});  // (its own path links go with it)
   // TX.all-free: the series back on the path at the group's place, its links with the ids the group kept (groupInCircuit:
   // the link in and out of the group, the chain links between two series devices).

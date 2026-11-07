@@ -13,6 +13,7 @@
 #include <limits>
 #include <set>
 #include <span>
+#include <unordered_set>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -211,14 +212,19 @@ public:
     w_.string(PathSeg(&root, "name"), name);
   }
   void presetFile(const Device& d, std::string_view name) {
+    const std::vector<DevicePtr> one{std::shared_ptr<const Device>(std::shared_ptr<const Device>(), &d)};
+    presetFile(one, {}, name);
+  }
+  // GU.2: a group preset holds the group, everything inside it and the wires among them (a block set).
+  void presetFile(const std::vector<DevicePtr>& devices, const WireList& list, std::string_view name) {
     const PathSeg root;
     libraryHead(root, "pqpreset", name);
-    const std::vector<DevicePtr> one{std::shared_ptr<const Device>(std::shared_ptr<const Device>(), &d)};
     const PathSeg devs(&root, "devices");
     w_.key("devices");
     w_.beginArray(true);
-    deviceList(devs, one);
+    deviceList(devs, devices);
     w_.endArray();
+    wires(PathSeg(&root, "wires"), list);
     w_.endObject();
     out_ += "\n";
   }
@@ -1501,22 +1507,45 @@ public:
   }
   PresetFile presetFile() {
     const PathSeg root;
-    static constexpr std::string_view K[] = {"format", "schemaVersion", "name", "devices"};
+    static constexpr std::string_view K[] = {"format", "schemaVersion", "name", "devices", "wires"};
     PresetFile out;
     Members m(r_, root, K);
+    size_t devicesPos = 0;
     for (int k; (k = m.next()) >= 0;) {
       const PathSeg f(&root, K[static_cast<size_t>(k)]);
       if (k < 3) {
         libraryKey(k, f, "pqpreset", out.name);
         continue;
       }
-      const size_t pos = r_.valueStart();
-      std::vector<DevicePtr> list = devices(f);
-      if (list.size() != 1) json::fail(f, "a preset holds exactly one device", ErrorCode::InvalidArgument, pos);
-      out.device = std::move(list[0]);
+      if (k == 4) {  // GU.2: a group preset's wires
+        if (std::shared_ptr<const WireList> w = wireList(f)) out.blocks.wires = *w;
+        continue;
+      }
+      devicesPos = r_.valueStart();
+      out.blocks.devices = devices(f);
     }
     m.require({0, 1, 2, 3});
     finishLibrary(root);
+    {
+      const PathSeg devs(&root, "devices");
+      std::vector<DevicePtr>& list = out.blocks.devices;
+      // One device, or (GU.2) a GROUP PRESET: one top-level group (first) with everything inside it, and their wires.
+      const bool group = list.size() > 1 || !out.blocks.wires.empty();
+      size_t top = 0;
+      for (const DevicePtr& d : list) top += d->group.valid() ? 0 : 1;
+      if (list.empty() || (group && (top != 1 || !isGroupDevice(*list.front()) || list.front()->group.valid())))
+        json::fail(devs, "a preset holds one device, or a group (first) with what is inside it", ErrorCode::InvalidArgument,
+                   devicesPos);
+      if (group) {
+        check(devs, detail::checkList(detail::ListKind::MidiTrack, list));
+        std::unordered_set<uint32_t> inside;
+        for (const DevicePtr& d : list) forEachDeviceIn(*d, [&](const Device& x) { inside.insert(x.id.value); });
+        for (const Wire& w : out.blocks.wires)
+          if (w.fromNoteSource() || w.toMixer() || inside.count(w.from.value) == 0 || inside.count(w.to.value) == 0)
+            json::fail(PathSeg(&root, "wires"), "wire " + std::to_string(w.id.value) + " leaves the preset's blocks");
+      }
+      out.device = list.front();
+    }
     // GU.1: a preset saved before schema 20 stores values, not knob positions (and no library converts it here).
     if (libVersion_ < 20 && out.device && !knobPositionsToConvert(*out.device).empty())
       json::fail(PathSeg(&root, "schemaVersion"),
@@ -4193,6 +4222,11 @@ TuningAssignment portable(const TuningAssignment& a, const Project* p) {
 
 Result<std::string> serializePreset(const Device& device, std::string_view name) {
   return encodeLibrary([&](Encoder& e) { e.presetFile(device, name); });
+}
+Result<std::string> serializeGroupPreset(const BlockSet& blocks, std::string_view name) {
+  if (blocks.devices.empty() || !isGroupDevice(*blocks.devices.front()) || blocks.devices.front()->group.valid())
+    return Error{ErrorCode::InvalidArgument, "$.devices: a group preset starts with its group", {}};
+  return encodeLibrary([&](Encoder& e) { e.presetFile(blocks.devices, blocks.wires, name); });
 }
 Result<PresetFile> parsePreset(std::string_view text, std::string_view fileName) {
   return decodeLibrary<PresetFile>(text, fileName, [](Decoder& d) { return d.presetFile(); });

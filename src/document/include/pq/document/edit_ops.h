@@ -394,7 +394,23 @@ EditResult pasteDevices(const Project& p, IdSource& ids, TrackId track, std::spa
 // Ctrl+D: copies of the devices right after the last of them in its list (instruments are not duplicated).
 EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const DeviceId> devices);
 // A copy of `d` with fresh ids (a rack: its chains, mappings and inner devices too; mapping targets follow the copies).
-DevicePtr cloneDevice(const Device& d, IdSource& ids);
+// GU.2: `remap` (optional) gets every (old, new) device id of the copy, its rack's inner devices included.
+DevicePtr cloneDevice(const Device& d, IdSource& ids, std::vector<std::pair<DeviceId, DeviceId>>* remap = nullptr);
+
+// ---- GU.2: block sets — copy / paste of a subgraph, group presets (docs/plans/GU.md "Phases" 2) ------------------
+// BlockSet: model.h (a piece of a track's circuit with its wires).
+// The blocks `devices` of ONE track's own list (not inside a rack) with everything inside the groups among them (any
+// depth) and the wires among them; a picked block's group tag is kept only when that group is picked too. Error: a
+// device that is not a track's block, blocks of several tracks.
+Result<BlockSet> copyBlocks(const Project& p, std::span<const DeviceId> devices);
+// `set` with fresh ids from `ids` (devices, racks' inner devices and chains, wires; group tags, wire ends and mapping
+// targets follow the copies). `remap` (optional) gets every (old, new) device id.
+BlockSet remapBlocks(const BlockSet& set, IdSource& ids, std::vector<std::pair<DeviceId, DeviceId>>* remap = nullptr);
+// Ctrl+V / spawning a group preset: a fresh copy of `set` (remapBlocks) into `track`, off its main path (free blocks
+// placed where the view puts them), its top-level blocks into group `intoGroup` (invalid: none). Instruments only on
+// MIDI tracks. Edit::devices: the new top-level blocks first (set order), then everything inside them; Edit::wires: the
+// new wires. One step; undo removes it all.
+EditResult pasteBlocks(const Project& p, IdSource& ids, TrackId track, const BlockSet& set, DeviceId intoGroup = {});
 // One param's knob position in [0, 1] (GU.1: what a param stores; a rack's macro or selector: its value 0 … 127;
 // nullopt: back to the patch's default). A drag is several of these inside one store gesture.
 EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, std::optional<double> position);
@@ -542,6 +558,11 @@ std::vector<WireId> wiresFrom(const Project& p, DeviceId device, std::string_vie
 // a wire already joining two series ports; a wire from a switched-off device's output that would start to play; or a
 // feedback loop whose 1-sample delay would move (checked: every wire lowers as before). `lib` gives the port names
 // (and the wire states). One step; the selection after = the group.
+// GU.2 (model.h "Groups": groups nest): the selection may hold groups (they take their contents with them; not an
+// instrument group, which stays outermost) and may sit inside a capsule — every block in the same group, or in none.
+// Inside a capsule the new group is a member of that capsule's group and the selection its members, every wire as it
+// is (nothing is on a path inside a group: the sound cannot change); ungroupInCircuit gives the members back to the
+// group it sat in. At most kMaxGroupDepth deep.
 EditResult groupInCircuit(const Snapshot& p, IdSource& ids, const DeviceLibrary& lib, std::span<const DeviceId> devices);
 // Ctrl+Shift+G: the exact inverse. TX.groups-fix1: the series is the members the group's chain links touch, in list
 // order, and its links must be exactly the ones that series makes (else refused: it was rewired); a group without chain

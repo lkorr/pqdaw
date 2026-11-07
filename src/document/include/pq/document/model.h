@@ -587,8 +587,11 @@ bool normaliseMetaKinds(std::vector<DevicePtr>& list, bool instrumentsGo, std::v
 //                 (an LFO outside into a knob inside, a member's output into another track), wires work unchanged
 //                 because they name devices, not containers.
 // Audio enters and leaves through the terminals the user wires (ops::groupInCircuit wires a grouped series In → … → Out,
-// so it sounds the same). Polyphony follows the wires, as for every free device. No nesting (a group is never a member;
-// Q?-TX.groups-a): the model would allow it, the views draw one level.
+// so it sounds the same). Polyphony follows the wires, as for every free device.
+// GU.2 (docs/plans/GU.md "Nesting and instrument groups"): GROUPS NEST — a group may be a member of another group of the
+// same list (any depth up to kMaxGroupDepth, no cycles: checkList). A member at any depth plays through its cables as
+// every member does (wires name devices, not containers, so a cable across a nested capsule's edge needs nothing).
+// "Inside g" means at any depth (groupContains / groupMembersDeep); Device::group names the innermost group.
 // TX.groups-fix1 (SPEC §15 2026-11-01 "notes are a signal"; QUESTIONS Q?-TX.groups-fix1-a): the In terminal carries
 // WHATEVER reaches the group's place on the main path (meta.h chainStages): audio, a per-voice signal (the group
 // continues the voices: they pass In and Out per voice, and the run goes on after it), or at a MIDI track's note source
@@ -604,8 +607,37 @@ std::string_view groupPatchText() noexcept;
 // TX.groups-fix1: what a group plays where voices reach it (devices.h groupVoicePatch / groupNotesPatch).
 std::string_view groupVoicePatchText() noexcept;
 std::string_view groupNotesPatchText() noexcept;
-// The members of group `group` in `list` (list order).
+// The members of group `group` in `list` (list order): its own (Device::group == group), not theirs.
 std::vector<const Device*> groupMembers(const std::vector<DevicePtr>& list, DeviceId group);
+// GU.2: nesting. The deepest a group may sit (a member of a group of a group … : depth 1 is a top-level group's member).
+inline constexpr uint32_t kMaxGroupDepth = 16;
+// Every device inside group `group` at any depth (its members, their members …), list order.
+std::vector<const Device*> groupMembersDeep(const std::vector<DevicePtr>& list, DeviceId group);
+// Whether device `d` sits inside group `group` at any depth (false for the group itself, or when `d` is in no group).
+bool groupContains(const std::vector<DevicePtr>& list, DeviceId group, DeviceId d) noexcept;
+// The outermost group `d` sits in (`d` itself is not counted; invalid: `d` is in no group). Follows Device::group up to
+// kMaxGroupDepth steps (a cycle, refused by checkList, stops there).
+DeviceId outermostGroup(const std::vector<DevicePtr>& list, DeviceId d) noexcept;
+
+// ---- Atom blocks and value blocks (GU.2; docs/plans/GU.md "Concepts") ---------------------------------------------
+// The native ingredients a module is built from, as document blocks (free devices of a track, inside groups or not):
+//   an ATOM BLOCK   a Device whose patch is "atom:<name>" (kAtomDevicePrefix + an atom of graph::AtomRegistry that may
+//                   stand alone: devices.h atomBlockAllowed): the atom itself — its inputs are the block's inputs (an
+//                   optional one keeps the atom's default while unwired; a const one is a setting), its outputs the
+//                   block's outputs. It lowers inline (devices.h atomBlockPatch: one call the compiler flattens to the
+//                   atom; no generated text, no user patch). No params of its own (controls are value blocks).
+//   a VALUE BLOCK   a Device whose patch is kValueDevice ("Value"): one control, `value`, whose value (through its
+//                   curve, GU.1: Device::curves owns the range and law) is the block's output `y`. Undriven it costs
+//                   nothing per sample (a runtime param); driven, the curve atom after the sum of its wires.
+// Neither has a rack, a source text or meta modules. Kind AudioEffect.
+inline constexpr std::string_view kAtomDevicePrefix = "atom:";
+inline constexpr std::string_view kValueDevice = "Value";
+inline constexpr std::string_view kValueParam = "value";
+inline constexpr std::string_view kValueOutput = "y";
+bool isAtomDevice(const Device& d) noexcept;
+std::string_view atomDeviceName(const Device& d) noexcept;  // "" when not an atom block
+bool isValueDevice(const Device& d) noexcept;
+std::string_view valuePatchText() noexcept;  // the patch every value block plays (devices.h valuePatch)
 
 // ---- Instrument groups (IG.1-2; SPEC §15 2026-11-04 "instrument groups", 2026-11-06 "single-signal cables";
 // docs/plans/IG.md; pq/document/instrument_groups.h finds them) ------------------------------------------------------
@@ -852,6 +884,21 @@ struct Wire {
   friend bool operator==(const Wire&, const Wire&) = default;
 };
 using WireList = std::vector<Wire>;  // sorted by id
+
+// ---- Block sets (GU.2; pq/document/edit_ops.h "block sets") ------------------------------------------------------
+// A BLOCK SET is a piece of a track's circuit taken out of its project: blocks (a group with its members at any depth,
+// racks with everything inside) and the wires among them (both ends inside the set: a member's cable into a rack's inner
+// device too; never a note source's or a mixer's), with the ids they had. It is what Ctrl+C copies (ops::copyBlocks),
+// Ctrl+V pastes (ops::pasteBlocks) and a group preset file holds (library_files.h). A device's group tag names a group of the set, or none (a top-level block
+// of the set). GU.3: a group's panel lives on its Device (bindings by DeviceId), so a set carries it with no change of
+// its own; ops::remapBlocks is the one place ids are rewritten (panel bindings join it there).
+struct BlockSet {
+  std::vector<DevicePtr> devices;  // their order in the list they came from (a group before its members not required)
+  WireList wires;                  // by id
+  bool empty() const noexcept { return devices.empty(); }
+};
+bool operator==(const BlockSet& a, const BlockSet& b) noexcept;
+
 
 // TMM.10-fix2: the outputs of a track's note source (its Hz piano roll), in the order the views draw them: the
 // voice terminal each reads (pq/graph atoms `voice.*`; "hz" is the tuned pitch, as devices hear it), its label, and

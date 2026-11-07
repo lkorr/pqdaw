@@ -395,6 +395,11 @@ Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlib
   lib->library_.add(groupPatch());
   lib->library_.add(groupVoicePatch());
   lib->library_.add(groupNotesPatch());
+  // GU.2: the value block and every atom block (built once per process; a lowering then needs no library of its own).
+  lib->library_.add(valuePatch());
+  for (const graph::AtomSignature& s : graph::AtomRegistry::builtin().all())
+    if (atomBlockAllowed(s))
+      if (const graph::Patch* ap = atomBlockPatch(s.name)) lib->library_.add(*ap);
   for (const meta::Prelude::Entry& e : lib->prelude_->entries)
     for (const DeviceKind k : {DeviceKind::Instrument, DeviceKind::AudioEffect}) {
       std::optional<DeviceInfo> info = metaDeviceInfo(*e.type, k);
@@ -615,8 +620,156 @@ const graph::Patch& groupNotesPatch() {
   return p;
 }
 
+// ---- GU.2: atom blocks and value blocks -------------------------------------------------------------------------
+
+bool atomBlockAllowed(const graph::AtomSignature& s) noexcept {
+  using namespace graph::atom_flags;
+  if (s.has(kInternal) || s.has(kNeedsVoice) || s.has(kSideEffect)) return false;
+  switch (s.category) {
+    case graph::AtomCategory::Voice:
+    case graph::AtomCategory::Io:
+    case graph::AtomCategory::Sample:
+    case graph::AtomCategory::Structure: return false;
+    default: break;
+  }
+  if (s.fixedOutputs() == 0 && !(s.has(kVariadicOutputs) && s.minRepeat > 0)) return false;  // nothing to give on
+  return s.name.find("wavetable") == std::string_view::npos && s.name != "shaper" && s.name != "tuning_hz" &&
+         s.name != "curve";
+}
+
+namespace {
+
+struct AtomBlock {
+  graph::Patch patch{""};
+  DeviceInfo info;
+};
+
+std::unique_ptr<AtomBlock> buildAtomBlock(std::string_view atomName) {
+  const std::optional<graph::AtomId> id = graph::AtomRegistry::builtin().find(atomName);
+  if (!id) return nullptr;
+  const graph::AtomSignature& s = graph::atomSignature(*id);
+  if (!atomBlockAllowed(s)) return nullptr;
+  std::string name = "Atom_";
+  for (const char ch : s.name) name.push_back(ch == '.' ? '_' : ch);
+  auto b = std::make_unique<AtomBlock>();
+  b->patch = graph::Patch(name);
+  graph::Patch& p = b->patch;
+  const uint32_t fixedIn = s.fixedInputs();
+  const bool variadicIn = s.has(graph::atom_flags::kVariadicInputs) && s.inputs.size() > fixedIn;
+  const uint16_t repeat = variadicIn || s.has(graph::atom_flags::kVariadicOutputs) ? s.minRepeat : 0;
+  const graph::NodeIndex atom = p.addAtom(*id, repeat);
+  std::vector<std::string> inNames;
+  auto addIn = [&](const graph::PortSpec& spec, std::string nm, uint16_t pin) {
+    graph::PortType t;
+    // Real or Bool; an atom of any kind (select, z1, mux …) takes and gives reals as a block (a port of a patch has one
+    // declared kind).
+    t.kind = spec.type.kind == graph::Kind::Bool ? graph::Kind::Bool : graph::Kind::Real;
+    const bool setting = spec.type.rate == graph::Rate::Const;
+    if (setting) t.rate = graph::Rate::Const;
+    const graph::NodeIndex in = p.addInput(nm, t);
+    if (spec.optional || setting) {
+      const graph::NodeIndex c = p.addConst(t.kind == graph::Kind::Bool ? graph::Constant::boolean(spec.defaultValue != 0.0f)
+                                                                       : graph::Constant::real(spec.defaultValue));
+      p.connect(graph::PortRef{c, 0}, graph::PortRef{in, 0});
+      if (setting) b->info.settings.push_back(DeviceSettingInfo{nm, static_cast<double>(spec.defaultValue), true});
+    }
+    p.connect(graph::PortRef{in, 0}, graph::PortRef{atom, pin});
+    inNames.push_back(std::move(nm));
+  };
+  for (uint32_t i = 0; i < fixedIn; ++i) addIn(s.inputs[i], std::string(s.inputs[i].name), static_cast<uint16_t>(i));
+  if (variadicIn)
+    for (uint16_t k = 0; k < s.minRepeat; ++k)
+      addIn(s.inputs[fixedIn], std::string(s.inputs[fixedIn].name) + std::to_string(k), static_cast<uint16_t>(fixedIn + k));
+  const uint32_t outs = p.node(atom).numOutputs;
+  if (outs == 0) return nullptr;
+  for (uint32_t o = 0; o < outs; ++o) {
+    std::string nm = std::string(p.outputName(atom, o));
+    if (nm.empty()) nm = "out";
+    if (o >= s.fixedOutputs()) nm += std::to_string(o - s.fixedOutputs());  // a variadic output: numbered
+    if (std::find(inNames.begin(), inNames.end(), nm) != inNames.end()) nm += "_out";
+    graph::PortType t;
+    t.kind = p.outputType(atom, o).kind == graph::Kind::Bool ? graph::Kind::Bool : graph::Kind::Real;
+    const graph::NodeIndex out = p.addOutput(nm, t);
+    p.connect(graph::PortRef{atom, static_cast<uint16_t>(o)}, graph::PortRef{out, 0});
+  }
+  std::vector<graph::NodeId> ids;
+  for (graph::NodeIndex n = 0; n < p.nodeCount(); ++n) ids.push_back(graph::NodeId{n + 1});
+  if (!p.setNodeIds(ids) || !p.validate()) return nullptr;
+  b->info.patch = std::string(kAtomDevicePrefix) + std::string(s.name);
+  b->info.name = std::string(s.name);
+  b->info.kind = DeviceKind::AudioEffect;
+  return b;
+}
+
+struct AtomBlocks {
+  std::mutex m;
+  std::unordered_map<std::string, std::unique_ptr<AtomBlock>> made;  // by atom name (null: not a block)
+};
+AtomBlocks& atomBlocks() {
+  static AtomBlocks a;
+  return a;
+}
+const AtomBlock* atomBlock(std::string_view atomName) {
+  AtomBlocks& a = atomBlocks();
+  std::lock_guard lock(a.m);
+  auto it = a.made.find(std::string(atomName));
+  if (it == a.made.end()) it = a.made.emplace(std::string(atomName), buildAtomBlock(atomName)).first;
+  return it->second.get();  // (unique_ptr: the address stays put when the map rehashes)
+}
+
+struct ValueBlock {
+  graph::PatchFile file;
+  const graph::Patch* patch = nullptr;
+  DeviceInfo info;
+};
+const ValueBlock& valueBlock() {
+  static const ValueBlock v = [] {
+    ValueBlock x;
+    Result<graph::PatchFile> f = graph::parse(valuePatchText(), "value");
+    if (!f.ok()) return x;
+    x.file = std::move(f.value());
+    x.patch = x.file.find(kValueDevice);
+    if (x.patch == nullptr) return x;
+    x.info.patch = std::string(kValueDevice);
+    x.info.name = "Value";
+    x.info.kind = DeviceKind::AudioEffect;
+    for (graph::NodeIndex n = 0; n < x.patch->nodeCount(); ++n)
+      if (x.patch->node(n).kind == graph::NodeKind::Param) x.info.params.push_back(paramInfo(*x.patch, n));
+    return x;
+  }();
+  return v;
+}
+
+}  // namespace
+
+const graph::Patch* atomBlockPatch(std::string_view atomName) {
+  const AtomBlock* b = atomBlock(atomName);
+  return b != nullptr ? &b->patch : nullptr;
+}
+const DeviceInfo* atomBlockInfo(std::string_view atomName) {
+  const AtomBlock* b = atomBlock(atomName);
+  return b != nullptr ? &b->info : nullptr;
+}
+const graph::Patch& valuePatch() {
+  const ValueBlock& v = valueBlock();
+  if (v.patch == nullptr) std::abort();  // the fixed text always parses (tests/document test_blocks)
+  return *v.patch;
+}
+const DeviceInfo& valueDeviceInfo() {
+  (void)valuePatch();
+  return valueBlock().info;
+}
+const graph::Patch* builtinBlockPatch(const Device& d) {
+  if (isGroupDevice(d)) return &groupPatch();
+  if (isAtomDevice(d)) return atomBlockPatch(atomDeviceName(d));
+  if (isValueDevice(d)) return &valuePatch();
+  return nullptr;
+}
+
 const graph::Patch* DeviceLibrary::patchOf(const Device& d, std::shared_ptr<const ResolvedDevice>& hold) const {
   if (isGroupDevice(d)) return &groupPatch();  // TX.groups
+  if (isAtomDevice(d)) return atomBlockPatch(atomDeviceName(d));  // GU.2
+  if (isValueDevice(d)) return &valuePatch();                     // GU.2
   if (isMetaDevice(d)) {  // TMM.3
     const meta::Prelude::Entry* e = prelude_->find(metaDeviceType(d));
     if (e == nullptr) return nullptr;
@@ -631,6 +784,8 @@ const graph::Patch* DeviceLibrary::patchOf(const Device& d, std::shared_ptr<cons
 
 const DeviceInfo* DeviceLibrary::infoOf(const Device& d, std::shared_ptr<const ResolvedDevice>& hold) const {
   if (isGroupDevice(d)) return &groupDeviceInfo();  // TX.groups
+  if (isAtomDevice(d)) return atomBlockInfo(atomDeviceName(d));  // GU.2
+  if (isValueDevice(d)) return &valueDeviceInfo();               // GU.2
   if (isMetaDevice(d)) {  // TMM.3
     for (size_t i = 0; i < prelude_->entries.size(); ++i)
       if (prelude_->entries[i].type->id == metaDeviceType(d)) {

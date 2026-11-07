@@ -122,6 +122,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_all_free.cpp  # TX.all-free: every fixture project renders as before the chain became cables (diff 0, JIT, IR)
     app/test_pass_through.cpp  # TX.scope-sound: an analyser (any pass-through) never changes the sound: chain, group, free
     app/test_free_instruments.cpp  # TX.all-free-fix1: instruments / racks anywhere play by their cables; cross-track mixer cables
+    app/test_nested_groups.cpp  # GU.2: nested groups / atom + value blocks / pasted block sets render as their references
     app/test_instrument_groups.cpp  # IG.1-2: per note inside instrument groups (per-voice references), reducers, layering, cross-track, single-signal cables
     app/test_cross_track.cpp  # TX.cross-track: loops between tracks per sample (hand-written references), notes cables across tracks
     app/test_mod_all.cpp  # TX.mod-all: a wire into any param makes it live at audio rate (repro, the sweep over every device)
@@ -428,6 +429,7 @@ pq_add_test(pq_tests_document
     document/test_wire_laws.cpp  # TX.patching: wire laws, schema 13 + migration, any output / input, free devices
     document/test_main_path.cpp  # TX.all-free: the main path, its rewiring builders, the 16 -> 17 migration, the lowering of the wiring
     document/test_knob_curves.cpp  # TX.knob-curves: knob curves, the wire laws they decide, schema 16 + migration
+    document/test_blocks.cpp  # GU.2: nested groups (rules, remove / move, nest / unnest), atom + value blocks, block sets, group presets
   DEPS pq_doc)
 
 # library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index

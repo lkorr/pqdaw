@@ -334,13 +334,31 @@ Status checkList(ListKind kind, const std::vector<DevicePtr>& devices, std::vect
             if (v.name != kGroupVoices && v.name != kGroupMono && v.name != kGroupLegato && v.name != kGroupGlide &&
                 v.name != kGroupSteal)
               return invalid("a group's settings are its polyphony (voices, mono, legato, glide, steal)");
-          if (d->group.valid()) return invalid("groups do not nest (a group cannot be in a group)");
+        }
+        if (isAtomDevice(*d) || isValueDevice(*d)) {  // GU.2 (model.h "Atom blocks and value blocks")
+          if (d->kind != DeviceKind::AudioEffect) return invalid("an atom or value block is an audio effect");
+          if (d->meta) return invalid("an atom or value block has no meta modules");
+          if (isAtomDevice(*d) && !d->params.empty()) return invalid("an atom block has no params (its inputs are wired)");
+          if (isValueDevice(*d)) {
+            if (!d->settings.empty()) return invalid("a value block has no settings");
+            for (const DeviceValue& v : d->params)
+              if (v.name != kValueParam) return invalid("a value block's one control is 'value'");
+          }
         }
         if (d->group.valid()) {
           if (rackChain) return invalid("a group member sits in a track's circuit, not in a rack chain");
-          const auto g = std::find_if(list.begin(), list.end(), [&](const DevicePtr& x) { return x && x->id == d->group; });
-          if (g == list.end()) return invalid("a group member's group is not in its track");
-          if (!isGroupDevice(**g)) return invalid("a group member's group is not a group");
+          // GU.2: groups nest (model.h "Groups"): the groups a member sits in, outward, end within kMaxGroupDepth and
+          // never come back to it.
+          const Device* at = d.get();
+          for (uint32_t depth = 0; at->group.valid(); ++depth) {
+            if (at->group == d->id) return invalid("a group cannot be inside itself");
+            if (depth >= kMaxGroupDepth)
+              return invalid("groups nest at most " + std::to_string(kMaxGroupDepth) + " deep");
+            const auto g = std::find_if(list.begin(), list.end(), [&](const DevicePtr& x) { return x && x->id == at->group; });
+            if (g == list.end()) return invalid("a group member's group is not in its track");
+            if (!isGroupDevice(**g)) return invalid("a group member's group is not a group");
+            at = g->get();
+          }
         }
         PQ_DOC_TRY(checkValues(d->params, "params"));
         PQ_DOC_TRY(checkValues(d->settings, "settings"));

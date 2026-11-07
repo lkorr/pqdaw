@@ -11,6 +11,9 @@
 //   a lone instrument     a stock instrument or an Instrument Rack (their own code is per voice) fed the same way while
 //                         it is not a member of an instrument group: it is a context of its own (one block), as if
 //                         grouped alone, so a stock instrument plays its notes wherever it sits.
+// GU.2 (groups nest): only the OUTERMOST group fed notes is an instrument group; every device inside it at any depth
+// is its member (byMember), a nested group included (it runs per note because its parent does and never voices again).
+// A group fed notes inside a plain group is an instrument group of its own.
 // Its NOTES SOURCE: a notes cable from ANOTHER MIDI track (the lowest wire id) wins over the block's own track (its main
 // path's head, a notes cable from its own source) — an explicit cable is the user's choice; any other notes into it are
 // not played (one source per context: to layer, use another group). The context is lowered in its source's track patch

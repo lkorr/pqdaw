@@ -213,7 +213,7 @@ Status placeOnPath(Steps& k, IdSource& ids, TrackId track, DeviceId dev, bool no
 
 // M4 review M9: iterative (explicit stacks), in the recursive version's id order: devices and chains pre-order (a
 // device, then per chain its id and its devices), then the mappings pre-order (a rack's own, then its chains' racks).
-DevicePtr cloneDevice(const Device& d, IdSource& ids) {
+DevicePtr cloneDevice(const Device& d, IdSource& ids, std::vector<std::pair<DeviceId, DeviceId>>* remapOut) {
   std::unordered_map<uint32_t, DeviceId> remap;  // old device id → new (racks: mapping targets follow)
   auto fresh = [&](const Device& src) {
     auto c = std::make_shared<Device>(src);
@@ -276,6 +276,8 @@ DevicePtr cloneDevice(const Device& d, IdSource& ids) {
     dev.rack = std::move(r);
     todo.insert(todo.end(), inner.rbegin(), inner.rend());  // the first inner device next (pre-order)
   }
+  if (remapOut != nullptr)
+    for (const auto& [from, to] : remap) remapOut->emplace_back(DeviceId{from}, to);
   return out;
 }
 
@@ -443,29 +445,33 @@ DevicePtr copyForPaste(const Project& p, IdSource& ids, const Device& src, Track
   if (!isGroupDevice(src) || chain.valid()) return d;
   const DeviceLoc g = findDevice(p, src.id);
   if (g.track == nullptr) return d;  // the group is gone: an empty one
-  std::vector<std::pair<DeviceId, DeviceId>> remap{{src.id, d->id}};
-  for (const Device* m : groupMembers(g.track->devices, src.id)) {
-    auto c = std::make_shared<Device>(*cloneDevice(*m, ids));
-    c->group = d->id;
-    remap.emplace_back(m->id, c->id);
-    e.devices.push_back(c->id);
-    after.push_back(AddDevice{track, std::move(c), kAppend, {}});
+  // GU.2: its contents at any depth and the wires among them (and its terminals) — the group's block set, the copy's
+  // own group `d` standing for the source group.
+  const DeviceId one[1] = {src.id};
+  Result<BlockSet> set = copyBlocks(p, one);
+  if (!set) return d;
+  std::vector<std::pair<DeviceId, DeviceId>> remap;
+  BlockSet fresh = remapBlocks(*set, ids, &remap);
+  // remapBlocks gave the group a copy of its own: `d` (the copy the caller places) stands for it instead.
+  DeviceId tmp;
+  for (const auto& [from, to] : remap)
+    if (from == src.id) tmp = to;
+  std::erase_if(fresh.devices, [&](const DevicePtr& m) { return m->id == tmp; });
+  for (DevicePtr& m : fresh.devices)
+    if (m->group == tmp) {
+      auto c = std::make_shared<Device>(*m);
+      c->group = d->id;
+      m = std::move(c);
+    }
+  for (Wire& w : fresh.wires) {
+    if (!w.fromNoteSource() && w.from == tmp) w.from = d->id;
+    if (!w.toMixer() && w.to == tmp) w.to = d->id;
   }
-  auto mapped = [&](DeviceId id) {
-    for (const auto& [a, b] : remap)
-      if (a == id) return b;
-    return DeviceId{};
-  };
-  for (const Wire& w : wiresOf(p)) {
-    if (w.fromNoteSource()) continue;
-    const DeviceId a = mapped(w.from), b = mapped(w.to);
-    if (!a.valid() || !b.valid()) continue;
-    Wire c = w;
-    c.id = ids.wire();
-    c.from = a;
-    c.to = b;
-    after.push_back(AddWire{c});
+  for (DevicePtr& m : fresh.devices) {
+    e.devices.push_back(m->id);
+    after.push_back(AddDevice{track, std::move(m), kAppend, {}});
   }
+  for (Wire& w : fresh.wires) after.push_back(AddWire{std::move(w)});
   return d;
 }
 }  // namespace
