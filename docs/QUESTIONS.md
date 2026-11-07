@@ -2409,7 +2409,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   switches every chain. A library item or module dropped into a chain is added off the path and moved in (one undo step).
 
 
-## Q?-GU.8-a · 2026-11-07 · GU.8 · The Wavetable Synth and style schemas: the choices made where the plan left room
+## Q229 · 2026-11-07 · GU.8 · The Wavetable Synth and style schemas: the choices made where the plan left room
 - **The synth is a built-in module built in code** (`doc::wavetableSynthBlocks`, ModuleKind::WavetableSynth, `ModuleInfo::instrument`), not a `.pqpreset` file: the other modules are code too, a file would duplicate them and could not follow their changes. A user saving it gets an ordinary group preset. Listed under Instruments (browser) and as an INSTRUMENT in the node menu, not under Meta Modules.
 - **Spawning it takes the notes only on an empty path** (`ops::pasteBlocksAtNotes`): on a MIDI track whose main path has no block it is spliced in at the source (it becomes the instrument group, plays at once); with an instrument already there it lands off the path (cable the notes in, or delete the other). Alternative: replace the track's instrument as `addDevice` does for stock instruments — more destructive for a block set.
 - **The LFOs are PA + Wavetable pairs inside the instrument group**, so they run per voice and restart with each note (key-synced). A free-running global LFO would sit outside the group with a single-signal cable in. Their Wavetables use ×2 oversampling (the `os` setting 1, the least the engine offers) instead of the auto ×8: an LFO has nothing to alias. Cost: two extra wavetable reads (×2) and two PAs per voice.
