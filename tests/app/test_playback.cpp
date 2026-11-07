@@ -15,6 +15,7 @@
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/audibility.h"
 #include "pq/document/lower.h"
 #include "pq/document/serialize.h"
@@ -215,7 +216,11 @@ TEST_CASE("golden: the playback fixture (31-EDO, 5L2s, a group with volume autom
   }
   auto loaded = loadProject(dir.string());
   REQUIRE_MESSAGE(loaded.ok(), (loaded.ok() ? std::string() : loaded.error().message));
-  CHECK(*loaded->project == *f.snap());  // the committed fixture is the project these tests build
+  {  // the committed fixture is the project these tests build (IG.1-2: as it loads, its instruments in instrument groups)
+    Project want = *f.snap();
+    (void)migrateToInstrumentGroups(want);
+    CHECK(*loaded->project == want);
+  }
 
   const golden::Channels out = render(loaded->project, kSeconds);
   REQUIRE(out.size() == 2);

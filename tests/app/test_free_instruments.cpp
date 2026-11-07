@@ -24,6 +24,7 @@
 #include "pq/compile/compile.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
 #include "pq/document/main_path.h"
@@ -58,7 +59,10 @@ Result<LoweredProject> lowered(const Project& p) {
 }
 
 // The lowered project of `p` (one MIDI event slot) rendered for kFrames with a three-note chord.
-golden::Channels render(const Project& p, engine::UnitBackend backend = {}) {
+// IG.1-2: rendered as an older file of the project loads: its meta voice runs in instrument groups (per note), as written.
+golden::Channels render(const Project& p0, engine::UnitBackend backend = {}) {
+  Project p = p0;
+  (void)migrateToInstrumentGroups(p);
   auto low = lowered(p);
   REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
   CHECK(low->missingDevices.empty());
@@ -87,7 +91,10 @@ golden::Channels render(const Project& p, engine::UnitBackend backend = {}) {
   pc.eventSources.push_back(notes.source());
   auto prog = engine::ProjectProgram::create(pc, build->layout);
   REQUIRE_MESSAGE(prog.ok(), (prog.ok() ? std::string() : prog.error().message));
-  for (uint32_t u = 0; u < build->images.size(); ++u) REQUIRE((*prog)->publish(u, std::move(build->images[u])).ok());
+  for (uint32_t u = 0; u < build->images.size(); ++u) {
+    const auto pub = (*prog)->publish(u, std::move(build->images[u]));
+    REQUIRE_MESSAGE(pub.ok(), (pub.ok() ? std::string() : pub.error().message));
+  }
   std::copy(values.begin(), values.end(), (*prog)->projectParams().begin());
   golden::Channels out(2);
   std::vector<float> l(kBlock), r(kBlock);
@@ -165,12 +172,27 @@ void apply(DocumentStore& s, Command c) {
 
 // A MIDI track as ops::createTrack makes it: source → BasicSynth → mixer.
 // TX.pan-laws: constant power (−3 dB at the centre: the loop below decays with gain ≈ 0.707).
+// IG.1-2: its Basic Synth out of the instrument group createTrack puts it in, alone on the path (a lone stock
+// instrument: its own voice context, the same sound) — these cases are about instruments as free blocks.
 TrackId midiTrack(DocumentStore& s) {
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
   REQUIRE(s.dispatch(SetTrackPanMode{t, PanMode::ConstantPower}).ok());
+  for (const DevicePtr& d : findTrackPtr(*s.current(), t)->devices)
+    if (isGroupDevice(*d)) {
+      run(s, ops::ungroupInCircuit(s.current(), s.ids(), library(), d->id));
+      break;
+    }
   return t;
 }
-DeviceId headOf(DocumentStore& s, TrackId t) { return mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.at(0)->id; }
+// The instrument heading track `t` (IG.1-2: the stock instrument inside the instrument group heading its path).
+DeviceId headOf(DocumentStore& s, TrackId t) {
+  const Track& tr = *findTrackPtr(*s.current(), t);
+  const Device* h = mainPath(*s.current(), tr).blocks.at(0);
+  if (isGroupDevice(*h))
+    for (const DevicePtr& d : tr.devices)
+      if (d->group == h->id && d->kind == DeviceKind::Instrument) return d->id;
+  return h->id;
+}
 
 DeviceId offPath(DocumentStore& s, TrackId t, std::string patch, DeviceKind kind) {
   return run(s, ops::addDevice(*s.current(), s.ids(), t, std::move(patch), kind, ops::kOffPath)).devices.at(0);

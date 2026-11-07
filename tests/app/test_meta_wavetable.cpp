@@ -23,6 +23,7 @@
 #include "pq/app/project_link.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/dsp/fft.h"
@@ -55,7 +56,19 @@ namespace {
 
 constexpr uint32_t kBlock = 64;
 
-std::unique_ptr<ProjectLink> makeLink(const Snapshot& s, double rate = 48000.0) {
+// IG.1-2: the project as an older file of it loads — its meta voice runs (and instruments) in instrument groups, so they
+// play per note as these cases were written (pq/document/instrument_groups.h).
+const DeviceLibrary& library() {
+  static auto lib = app::loadDeviceLibrary();
+  REQUIRE_MESSAGE(lib.ok(), (lib.ok() ? std::string() : lib.error().message));
+  return **lib;
+}
+Snapshot grouped(const Snapshot& s) {
+  Project p = *s;
+  return migrateToInstrumentGroups(p) ? std::make_shared<const Project>(std::move(p)) : s;
+}
+std::unique_ptr<ProjectLink> makeLink(const Snapshot& s0, double rate = 48000.0) {
+  const Snapshot s = grouped(s0);
   LinkConfig c;
   c.compileThread = false;
   c.sleepAfterMs = 0.0f;
@@ -119,6 +132,16 @@ struct WtSong {
     must(e->command);
   }
   const Project& doc() const { return *store.current(); }
+  // IG.1-2: a meta module of `type` playing track `t`'s notes per note: the default instrument out of its group, the
+  // module at slot 0 in its place, then (as an older file loads) Ctrl+G'd into an instrument group.
+  DeviceId metaFirst(TrackId t, const char* type) {
+    playback_fixture::ungroupHead(store, library(), t);
+    auto w = ops::addMetaDevice(doc(), store.ids(), t, type, 0);
+    REQUIRE(w.ok());
+    must(w->command);
+    playback_fixture::asInstrumentGroups(store);
+    return w->devices.at(0);
+  }
   // A track with a chain Wavetable and one note per (start, length, degree).
   DeviceId track(std::vector<std::array<Ticks, 3>> notes) {
     auto t = ops::createTrack(doc(), store.ids(), TrackKind::Midi);
@@ -126,9 +149,7 @@ struct WtSong {
     must(t->command);
     const TrackId id = t->tracks.at(0);
     must(SetTrackPanMode{id, PanMode::ConstantPower});  // TX.pan-laws: the law the golden and the −3 dB below assume
-    auto w = ops::addMetaDevice(doc(), store.ids(), id, "wavetable", 0);
-    REQUIRE(w.ok());
-    must(w->command);
+    const DeviceId wid = metaFirst(id, "wavetable");
     std::vector<Note> ns;
     Ticks end = 0;
     for (const auto& n : notes) {
@@ -137,8 +158,8 @@ struct WtSong {
     }
     if (!ns.empty()) must(AddClip{id, playback_fixture::clip(store.ids(), 0, end, ns, "notes")});
     tracks.push_back(id);
-    wts.push_back(w->devices.at(0));
-    return w->devices.at(0);
+    wts.push_back(wid);
+    return wid;
   }
   void data(DeviceId d, const meta::DataPtr& v) { edit(ops::setMetaData(doc(), d, "", "wavetable", v)); }
   void param(DeviceId d, const char* name, double v) { edit(ops::setMetaParam(doc(), d, "", "wavetable", name, v)); }
@@ -960,10 +981,7 @@ TEST_CASE("meta faces: a played note is a dot — the face reads the engine's vo
   REQUIRE(t.ok());
   s.must(t->command);
   const TrackId accTrack = t->tracks.at(0);
-  auto a = ops::addMetaDevice(s.doc(), s.store.ids(), accTrack, "phase_acc", 0);
-  REQUIRE(a.ok());
-  s.must(a->command);
-  const DeviceId acc = a->devices.at(0);
+  const DeviceId acc = s.metaFirst(accTrack, "phase_acc");
   std::vector<Note> chord;
   for (int32_t deg : {0, 4, 7}) chord.push_back(playback_fixture::note(s.store.ids(), 0, 64 * kPpq, deg));
   s.must(AddClip{accTrack, playback_fixture::clip(s.store.ids(), 0, 64 * kPpq, chord, "chord")});
@@ -1032,6 +1050,7 @@ TEST_CASE("meta faces: a face bound before its instance compiled follows the tap
   REQUIRE(t.ok());
   s.must(t->command);
   const TrackId track = t->tracks.at(0);
+  playback_fixture::ungroupHead(s.store, library(), track);  // IG.1-2 (WtSong::metaFirst)
   std::vector<Note> one{playback_fixture::note(s.store.ids(), 0, 64 * kPpq, 0)};
   s.must(AddClip{track, playback_fixture::clip(s.store.ids(), 0, 64 * kPpq, one, "one")});
   auto link = makeLink(s.store.current());
@@ -1043,6 +1062,7 @@ TEST_CASE("meta faces: a face bound before its instance compiled follows the tap
   views::VoiceTapReader* r = hub.voices(acc, "");  // no such instance yet: no tap
   CHECK_FALSE(r->live());
   s.must(a->command);
+  playback_fixture::asInstrumentGroups(s.store);  // IG.1-2: per note in its instrument group
   link->flush();
   (void)r->serial();  // the host's next poll finds the new tap and registers with it
   Driver d{*link};

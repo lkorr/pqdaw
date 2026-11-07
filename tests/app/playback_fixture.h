@@ -24,6 +24,7 @@
 #include "pq/core/time.h"
 #include "pq/document/commands.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/lower.h"
 #include "pq/document/main_path.h"
 #include "pq/document/store.h"
@@ -59,6 +60,28 @@ inline ClipPtr clip(IdSource& ids, pq::Ticks start, pq::Ticks length, std::vecto
 // list order → its mixer (doc::ops::wireSeries, what the schema 16 → 17 migration does). Builders that add tracks and
 // devices with raw commands call it once they are built.
 // `offPath`: devices left out of the series (blocks placed unwired: what a "free" device was before TX.all-free).
+// IG.1-2: every MIDI track's instrument or meta voice run on its path into an instrument group (as an older file loads:
+// pq/document/instrument_groups.h), one undo step. A meta voice run then plays per note again.
+inline void asInstrumentGroups(DocumentStore& s) {
+  auto e = ops::wrapInstrumentGroups(*s.current(), s.ids());
+  REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+  if (e->empty()) return;
+  const pq::Status st = s.dispatch(e->command);
+  REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+}
+
+// IG.1-2: a new MIDI track's Basic Synth out of its instrument group, alone on the path (a lone instrument: the same
+// sound), so a meta module added at slot 0 replaces it as these cases were written.
+inline void ungroupHead(DocumentStore& s, const DeviceLibrary& lib, TrackId t) {
+  for (const DevicePtr& d : findTrackPtr(*s.current(), t)->devices)
+    if (isGroupDevice(*d)) {
+      auto e = ops::ungroupInCircuit(s.current(), s.ids(), lib, d->id);
+      REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+      REQUIRE(s.dispatch(e->command).ok());
+      return;
+    }
+}
+
 inline void wireSeries(DocumentStore& s, const std::vector<DeviceId>& offPath = {}) {
   if (offPath.empty()) {
     auto e = ops::wireSeries(*s.current(), s.ids());

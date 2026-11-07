@@ -18,6 +18,7 @@
 #include "pq/compile/compile.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
 #include "pq/document/meta.h"
@@ -45,7 +46,10 @@ const DeviceLibrary& library() {
 }
 
 // The lowered project of `p` (one MIDI event slot) rendered for `frames` with a three-note chord.
-golden::Channels render(const Project& p, uint32_t frames, engine::UnitBackend backend = {}) {
+// IG.1-2: rendered as an older file of the project loads: its meta voice runs in instrument groups (per note), as written.
+golden::Channels render(const Project& p0, uint32_t frames, engine::UnitBackend backend = {}) {
+  Project p = p0;
+  (void)migrateToInstrumentGroups(p);
   LowerOptions lo;
   lo.library = &library().library();
   lo.devices = &library();
@@ -195,12 +199,16 @@ Bug bugPatch(DocumentStore& store, const char* analyser, bool stock = false) {
 }
 
 // `with` sounds exactly as `without` (interpreter), and `with` through the JIT exactly as through the interpreter.
-void same(const Project& without, const Project& with, const std::string& what) {
+// `sounds` false: the patch is silent by IG.1-2's rule (an Envelope outside every instrument group reads no note's gate)
+// — the analyser must still change nothing.
+void same(const Project& without, const Project& with, const std::string& what, bool sounds = true) {
   const golden::Channels a = render(without, kFrames);
   const golden::Channels b = render(with, kFrames);
   const golden::Channels j = render(with, kFrames, compile::jitUnitBackend());
-  CHECK(rms(a, 0, 30000) > 1e-3);
-  CHECK(tailEnd(a) > 39000);  // the releases are inside the render
+  if (sounds) {
+    CHECK(rms(a, 0, 30000) > 1e-3);
+    CHECK(tailEnd(a) > 39000);  // the releases are inside the render
+  }
   const double d = maxDiff(a, b), dj = maxDiff(b, j);
   MESSAGE(what << ": without vs with, max |diff| = " << d << " (tail end " << tailEnd(a) << " vs " << tailEnd(b)
                << ", release rms " << rms(a, 39000, kFrames) << " vs " << rms(b, 39000, kFrames)
@@ -275,14 +283,17 @@ TEST_CASE("scope-sound: an analyser inside a group changes nothing — alone, af
       groupOf(none, {n.env});
       const Bug g = bugPatch(with, a);
       groupOf(with, {g.env, g.analyser});
-      same(*none.current(), *with.current(), std::string("… → [Envelope] vs … → [Envelope → ") + a + "]");
+      // (IG.1-2: the group holding the run's Envelope is not an instrument group: the Envelope is outside the voices.)
+      same(*none.current(), *with.current(), std::string("… → [Envelope] vs … → [Envelope → ") + a + "]", false);
     }
     SUBCASE("the whole run grouped") {
       DocumentStore none, with;
       const Bug n = bugPatch(none, nullptr);
-      groupOf(none, {n.pa, n.wt, n.env});
+      // (IG.1-2: with the VCA of the run's feedback loop, so the loop stays inside the instrument group — a loop across
+      // its edge is IG.3's per-sample region.)
+      groupOf(none, {n.pa, n.wt, n.env, n.vca});
       const Bug g = bugPatch(with, a);
-      groupOf(with, {g.pa, g.wt, g.env, g.analyser});
+      groupOf(with, {g.pa, g.wt, g.env, g.vca, g.analyser});
       same(*none.current(), *with.current(), std::string("[PA → WT → Envelope] vs [… → ") + a + "]");
     }
   }

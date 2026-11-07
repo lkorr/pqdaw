@@ -18,6 +18,7 @@
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/lower.h"
 #include "pq/document/meta.h"
 #include "pq/document/serialize.h"
@@ -95,7 +96,10 @@ golden::Channels render(const Project& p, uint32_t frames, engine::UnitBackend b
   pc.eventSources.push_back(notes.source());
   auto prog = engine::ProjectProgram::create(pc, build->layout);
   REQUIRE_MESSAGE(prog.ok(), (prog.ok() ? std::string() : prog.error().message));
-  for (uint32_t u = 0; u < build->images.size(); ++u) REQUIRE((*prog)->publish(u, std::move(build->images[u])).ok());
+  for (uint32_t u = 0; u < build->images.size(); ++u) {
+    const auto pub = (*prog)->publish(u, std::move(build->images[u]));
+    REQUIRE_MESSAGE(pub.ok(), (pub.ok() ? std::string() : pub.error().message));
+  }
   std::copy(values.begin(), values.end(), (*prog)->projectParams().begin());
   golden::Channels out(2);
   std::vector<float> l(kBlock), r(kBlock);
@@ -152,7 +156,6 @@ DeviceId roundTrip(DocumentStore& store, std::vector<DeviceId> devices, const st
   const Snapshot before = store.current();
   const std::vector<WireState> statesBefore = wireStates(*before, library());
   const golden::Channels a = render(*before, frames);
-  CHECK(peakOf(a) > 0.01f);
   auto e = group(store, devices);
   REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
   REQUIRE(store.dispatch(e->command).ok());
@@ -183,9 +186,17 @@ DeviceId roundTrip(DocumentStore& store, std::vector<DeviceId> devices, const st
     CHECK(*back->project == grouped);
   }
   const golden::Channels b = render(grouped, frames);
-  const double d = maxDiff(a, b);
-  MESSAGE(what << ": series vs group, max |diff| = " << d);
-  CHECK(d == 0.0);
+  // IG.1-2: a series the notes reach plays the newest note on the path; grouped it is an instrument group and plays
+  // per note — a different patch, not the same sound. Every other group is the series' graph: bit for bit.
+  // (A stretch that leaves the run's Envelope outside the group is silent there: outside every instrument group an
+  // Envelope reads no note's gate.)
+  if (isInstrumentGroup(grouped, g)) {
+    MESSAGE(what << ": an instrument group (per note), peak " << peakOf(b));
+  } else {
+    const double d = maxDiff(a, b);
+    MESSAGE(what << ": series vs group, max |diff| = " << d);
+    CHECK(d == 0.0);
+  }
   const golden::Channels j = render(grouped, frames, compile::jitUnitBackend());
   const double dj = maxDiff(b, j);
   MESSAGE(what << ": group, interpreter vs JIT, max |diff| = " << dj);
@@ -371,7 +382,8 @@ TEST_CASE("groups: refusals say why") {
   };
   refused({a, x}, "two tracks");
   refused({a, d}, "a gap in the series");
-  refused({inst}, "the instrument");
+  // (IG.1-2: the instrument groups — it becomes the track's instrument group: tests/app/test_instrument_groups.cpp)
+  refused({inst, a}, "the instrument and the effect after it (the voices are summed before it)");
   // (TX.groups-fix1: a series the notes or voices reach, and switched-off devices inside a series, group now —
   // tests below; the remaining refusals there have their own case.)
   auto e = group(store, {c});

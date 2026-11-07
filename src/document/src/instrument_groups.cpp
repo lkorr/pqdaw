@@ -185,9 +185,10 @@ void rebuild(std::vector<TrackPtr>& list, const std::unordered_map<uint32_t, Tra
 
 }  // namespace
 
-bool migrateToInstrumentGroups(Project& p) {
-  IdSource ids;
-  ids.reserveThrough(maxEntityId(p));
+bool migrateToInstrumentGroups(Project& p, IdSource* given) {
+  IdSource own;
+  own.reserveThrough(maxEntityId(p));
+  IdSource& ids = given != nullptr ? *given : own;
   WireList wires = wiresOf(p);
   std::vector<WireId> removed;
   std::unordered_map<uint32_t, TrackPlan> plans;  // by track id
@@ -392,5 +393,38 @@ bool migrateToInstrumentGroups(Project& p) {
   return true;
 }
 
-
 }  // namespace pq::doc
+
+namespace pq::doc::ops {
+
+EditResult wrapInstrumentGroups(const Project& before, IdSource& ids) {
+  Project wrapped = before;
+  Edit e;
+  Batch b{"Make Instrument Groups", {}};
+  if (migrateToInstrumentGroups(wrapped, &ids)) {
+    forEachTrack(wrapped, [&](const Track& t, const Track*) {
+      const Track* old = findTrackPtr(before, t.id);
+      for (uint32_t i = 0; i < t.devices.size(); ++i)
+        if (old->deviceIndex(t.devices[i]->id) < 0) {
+          b.commands.push_back(AddDevice{t.id, t.devices[i], i});
+          e.devices.push_back(t.devices[i]->id);
+        }
+    });
+    for (const Wire& w : wiresOf(before))
+      if (const Wire* n = findWire(wrapped, w.id); n == nullptr || !(*n == w)) b.commands.push_back(RemoveWire{w.id});
+    forEachTrack(wrapped, [&](const Track& t, const Track*) {
+      for (const DevicePtr& d : t.devices)
+        if (const DeviceLoc l = findDevice(before, d->id); l.device != nullptr && l.device->group != d->group)
+          b.commands.push_back(SetDeviceGroup{d->id, d->group});
+    });
+    for (const Wire& w : wiresOf(wrapped))
+      if (const Wire* o = findWire(before, w.id); o == nullptr || !(*o == w)) {
+        b.commands.push_back(AddWire{w});
+        e.wires.push_back(w.id);
+      }
+  }
+  e.command = Command{std::move(b)};
+  return e;
+}
+
+}  // namespace pq::doc::ops

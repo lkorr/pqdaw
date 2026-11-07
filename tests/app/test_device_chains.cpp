@@ -139,7 +139,8 @@ TEST_CASE("device chains: the migrated schema-2 playback fixture renders bit-ide
     CHECK(loaded->fileSchemaVersion == 2);
     forEachTrack(*loaded->project, [&](const Track& t, const Track*) {
       if (t.kind == TrackKind::Midi) {
-        REQUIRE(t.devices.size() == 1);
+        REQUIRE(t.devices.size() == 2);  // IG.1-2: the instrument in its instrument group (the 18 -> 19 step)
+        CHECK(isGroupDevice(*t.devices[1]));
         CHECK(t.devices[0]->patch == kDefaultInstrument);
       }
     });

@@ -20,6 +20,7 @@
 #include "pq/app/project_link.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/lower.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/document/serialize.h"
@@ -410,7 +411,11 @@ TEST_CASE("golden: a 5L2s generator automated across a region boundary (the pitc
   }
   auto loaded = loadProject(dir.string());
   REQUIRE_MESSAGE(loaded.ok(), (loaded.ok() ? std::string() : loaded.error().message));
-  CHECK(*loaded->project == *f.snap());  // the committed fixture is the project this test builds
+  {  // the committed fixture is the project this test builds (IG.1-2: as it loads, its instruments in instrument groups)
+    Project want = *f.snap();
+    (void)migrateToInstrumentGroups(want);
+    CHECK(*loaded->project == want);
+  }
 
   auto link = makeLink(loaded->project);
   const app::LinkStats s0 = link->stats();

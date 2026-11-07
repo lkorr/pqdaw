@@ -28,6 +28,7 @@
 #include "pq/app/project_link.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
@@ -54,6 +55,10 @@ struct Song {
     REQUIRE(t.ok());
     must(t->command);
     track = t->tracks.at(0);
+    // IG.1-2: the Basic Synth out of its instrument group, alone on the path (a meta module at slot 0 replaces it).
+    static const auto lib = app::loadDeviceLibrary();
+    REQUIRE(lib.ok());
+    playback_fixture::ungroupHead(store, **lib, track);
   }
   void must(Command c) {
     const Status st = store.dispatch(std::move(c));
@@ -117,7 +122,10 @@ struct Rendered {
   uint32_t invalidWires = 0, refusedWires = 0;
 };
 
-Rendered render(const Snapshot& s, uint32_t blocks, bool jit = false) {
+// IG.1-2: rendered as an older file of the project loads: its meta voice runs in instrument groups (per note), as written.
+Rendered render(const Snapshot& s0, uint32_t blocks, bool jit = false) {
+  Project gp = *s0;
+  const Snapshot s = migrateToInstrumentGroups(gp) ? std::make_shared<const Project>(std::move(gp)) : s0;
   app::LinkConfig c;
   c.compileThread = false;
   c.sleepAfterMs = 0.0f;
@@ -215,7 +223,8 @@ TEST_CASE("mod-all repro: the warp wire added while playing takes effect (Shape 
     c.sleepAfterMs = 0.0f;
     c.jit = false;
     c.sampleRate = kRate;
-    auto l = app::ProjectLink::create(c, s.store.current());
+    Project gp = *s.store.current();
+    auto l = app::ProjectLink::create(c, migrateToInstrumentGroups(gp) ? std::make_shared<const Project>(std::move(gp)) : s.store.current());  // IG.1-2
     REQUIRE(l.ok());
     app::ProjectLink& link = **l;
     [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link.onDocumentChange(e); });

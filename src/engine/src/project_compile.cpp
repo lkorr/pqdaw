@@ -284,7 +284,10 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   for (const Diagnostic& d : sr.schedule.warnings) cu.warnings.push_back(d.message);
   cu.ops = static_cast<uint32_t>(sr.schedule.ops.size());
   cu.inBus = up.value().inBus;
-  cu.voices = up.value().voices;
+  // IG.1-2: a unit whose notes are only read (the newest note, a reduced note output: voice terminals, no per-voice
+  // processing) may schedule no voice stage at all: it then runs as a plain unit (its notes reach it reduced anyway).
+  cu.voices = up.value().voices && std::any_of(sr.schedule.stages.begin(), sr.schedule.stages.end(),
+                                               [](const graph::Stage& st) { return st.poly == graph::Poly::Voice; });
   cu.maxVoices = cu.voices ? polyphonyOf(opt_, g, partition_.units[u]) : 0u;
   cu.steal = cu.voices ? stealOf(g, partition_.units[u]) : -1;
   for (uint32_t t : partition_.units[u].tracks) cu.memberIds.push_back(g.tracks[t].id);

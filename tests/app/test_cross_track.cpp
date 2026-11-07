@@ -191,11 +191,30 @@ TrackId track(DocumentStore& s, TrackKind kind) {
   if (kind == TrackKind::Midi) REQUIRE(s.dispatch(SetTrackPanMode{t, PanMode::ConstantPower}).ok());
   return t;
 }
-DeviceId headOf(DocumentStore& s, TrackId t) { return mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.at(0)->id; }
+// The instrument heading track `t` (IG.1-2: the stock instrument inside the instrument group heading its path).
+DeviceId headOf(DocumentStore& s, TrackId t) {
+  const Track& tr = *findTrackPtr(*s.current(), t);
+  const Device* h = mainPath(*s.current(), tr).blocks.at(0);
+  if (isGroupDevice(*h))
+    for (const DevicePtr& d : tr.devices)
+      if (d->group == h->id && d->kind == DeviceKind::Instrument) return d->id;
+  return h->id;
+}
+// The block heading track `t`'s path (its instrument group for a new MIDI track).
+DeviceId pathHead(DocumentStore& s, TrackId t) { return mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.at(0)->id; }
 // A MIDI track without blocks (source → mixer): its mixer the same law as a MIDI track with a synth.
 TrackId emptyMidi(DocumentStore& s) {
   const TrackId t = track(s, TrackKind::Midi);
-  run(s, ops::dissolveDevices(*s.current(), s.ids(), &library(), std::vector<DeviceId>{headOf(s, t)}));
+  const DeviceId head = pathHead(s, t);
+  std::vector<DeviceId> gone{head};
+  // (the group's members go with it)
+  run(s, ops::deleteDevices(*s.current(), gone));  // IG.1-2: the group and its instrument
+  run(s, ops::connect(*s.current(), s.ids(), [&] {
+    Wire w;
+    w.noteSource = t;
+    w.mixer = t;
+    return w;
+  }()));
   return t;
 }
 DeviceId addOn(DocumentStore& s, TrackId t, std::string patch, DeviceKind kind, uint32_t slot = ops::kOffPath) {
@@ -456,19 +475,16 @@ TEST_CASE("cross-track notes: track A's notes cabled to a synth on track B play 
   MESSAGE("A's notes into B's synth vs the synth on A: max |diff| = " << d);
   CHECK(peak(ref) > 1e-2);
   CHECK(d == 0.0);
-  // B's own notes play their own instance beside it: B playing the other chord adds exactly B playing it alone.
-  DocumentStore r2;
-  const TrackId r2a = emptyMidi(r2);
-  const TrackId r2b = track(r2, TrackKind::Midi);
-  const Score s2{{{r2a, {}}, {r2b, otherChord()}}};
-  const golden::Channels bAlone = played(*r2.current(), "B playing its own synth", &s2);
-  cable(s, notesInto(b, synth));  // B's notes into the same synth too
+  // IG.1-2: one notes source per voice context (no guest instances): B's notes into the same synth are not played —
+  // the cable from another track wins — so A's notes alone still play it.
+  const WireId nb = cable(s, notesInto(b, synth));  // B's notes into the same synth too
   const Score sc2{{{a, chord()}, {b, otherChord()}}};
-  CHECK(calls(*s.current(), b, synth, &sc2));
+  CHECK(stateOf(*s.current(), nb, &sc2).status == WireStatus::Inactive);
+  CHECK_FALSE(calls(*s.current(), b, synth, &sc2));
   const golden::Channels both = played(*s.current(), "A's and B's notes into B's synth", &sc2);
-  const double d2 = maxDiff(both, plus(ref, bAlone));
-  MESSAGE("A's and B's notes into one synth vs each playing it alone: max |diff| = " << d2);
-  CHECK(d2 <= 1e-6);
+  const double d2 = maxDiff(both, ref);
+  MESSAGE("A's and B's notes into one synth (A's play it) vs A alone: max |diff| = " << d2);
+  CHECK(d2 == 0.0);
 }
 
 TEST_CASE("cross-track notes: a synth on another track's path, played by A's notes, feeds that path") {
@@ -490,7 +506,7 @@ TEST_CASE("cross-track notes: a synth on another track's path, played by A's not
   const TrackId a = emptyMidi(s);
   const TrackId b = track(s, TrackKind::Midi);
   (void)build(s, b);
-  const DeviceId synth = headOf(s, b);
+  const DeviceId synth = pathHead(s, b);  // IG.1-2: its instrument group (A's notes into it win over B's path)
   const Score sc{{{a, chord()}, {b, {}}}};
   const WireId n = cable(s, notesInto(a, synth));
   CHECK(stateOf(*s.current(), n, &sc).status == WireStatus::Lowered);
@@ -541,16 +557,25 @@ TEST_CASE("cross-track notes: two sources into blocks of one track (each its own
   const TrackId ob = emptyMidi(o);
   const TrackId oc = emptyMidi(o);
   const DeviceId z = addOn(o, oc, "BasicSynth", DeviceKind::Instrument);
+  // IG.1-2: both sources into ONE block: one voice context, one source (the lowest wire id from another track: A's);
+  // B's cable is not played. The reference: A alone on the default synth.
   cable(o, notesInto(oa, z));
-  cable(o, notesInto(ob, z));
+  const WireId ob2 = cable(o, notesInto(ob, z));
   cable(o, intoMixer(z, oc));
   const Score os{{{oa, chord()}, {ob, otherChord()}, {oc, {}}}};
   CHECK(calls(*o.current(), oa, z, &os));
-  CHECK(calls(*o.current(), ob, z, &os));
-  const golden::Channels got1 = played(*o.current(), "one synth on C played by A and by B", &os);
-  const double d1 = maxDiff(got1, ref1);
-  MESSAGE("two sources into one block vs each on its own track: max |diff| = " << d1);
+  CHECK_FALSE(calls(*o.current(), ob, z, &os));
+  CHECK(stateOf(*o.current(), ob2, &os).status == WireStatus::Inactive);
+  DocumentStore r3;
+  const TrackId r3a = track(r3, TrackKind::Midi);
+  const TrackId r3b = emptyMidi(r3);
+  const Score rs3{{{r3a, chord()}, {r3b, {}}}};
+  const golden::Channels aAlone = played(*r3.current(), "A alone on the default synth", &rs3);
+  const golden::Channels got1 = played(*o.current(), "one synth on C played by A (B's cable not played)", &os);
+  const double d1 = maxDiff(got1, aAlone);
+  MESSAGE("two sources into one block vs A alone: max |diff| = " << d1);
   CHECK(d1 <= 1e-6);
+  (void)ref1;
 }
 
 TEST_CASE("cross-track notes: into a meta module off another track's path; a modulation on its home reaches it") {
@@ -572,8 +597,10 @@ TEST_CASE("cross-track notes: into a meta module off another track's path; a mod
   cable(s, intoMixer(wt, b));
   const Score sc{{{a, chord()}, {b, {}}}};
   CHECK(stateOf(*s.current(), n, &sc).status == WireStatus::Lowered);
-  CHECK(calls(*s.current(), a, wt, &sc));
-  CHECK_FALSE(calls(*s.current(), b, wt, &sc));
+  // IG.1-2: outside every instrument group a meta module reads the newest note (single-signal): it stays on B, A's
+  // newest note crossing to it (the reference reads A's newest note on A the same way).
+  CHECK_FALSE(calls(*s.current(), a, wt, &sc));
+  CHECK(calls(*s.current(), b, wt, &sc));
   const golden::Channels got = played(*s.current(), "A's notes into B's off-path Wavetable", &sc);
   const double d = maxDiff(got, ref);
   MESSAGE("notes into another track's meta module vs into its own: max |diff| = " << d);
@@ -613,19 +640,21 @@ TEST_CASE("cross-track notes: into a meta module off another track's path; a mod
 
 TEST_CASE("cross-track notes: refused only where the host and the block's track would loop through two instruments") {
   // B plays its own synth (an instrument track) and modulates the synth A's notes play on it: A's voices feed B (the
-  // synth's output), B feeds A (the modulation): one unit could not hold both tracks' voices. The notes cable is refused
-  // (TwoInstruments), the rest plays as without it.
+  // synth's output), B feeds A (the modulation): one unit could not hold both tracks' voices (IG.3). IG.1-2: the synth
+  // is a voice context of A (lowered in A's patch), so the cable that closes the loop between the two instrument tracks
+  // — its output into B's mixer — is refused (VoiceLoop); the rest plays as without it.
   DocumentStore s;
   const TrackId a = emptyMidi(s);
   const TrackId b = track(s, TrackKind::Midi);
   const DeviceId synth = addOn(s, b, "BasicSynth", DeviceKind::Instrument);
   const DeviceId lfo = addOn(s, b, "lfo_device", DeviceKind::AudioEffect);
   cable(s, link(lfo, synth, "lfo", "bright"));
-  cable(s, intoMixer(synth, b));
+  const WireId mix = cable(s, intoMixer(synth, b));
   const Score sc{{{a, chord()}, {b, otherChord()}}};
   const golden::Channels before = played(*s.current(), "B alone", &sc);
   const WireId n = cable(s, notesInto(a, synth));
-  const WireState st = stateOf(*s.current(), n, &sc);
+  CHECK(stateOf(*s.current(), n, &sc).status == WireStatus::Lowered);
+  const WireState st = stateOf(*s.current(), mix, &sc);
   CHECK(st.status == WireStatus::Refused);
   CHECK(st.reason == WireRefusal::VoiceLoop);
   const golden::Channels after = played(*s.current(), "B, with A's refused notes cable", &sc);

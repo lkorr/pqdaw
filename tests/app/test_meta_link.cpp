@@ -24,6 +24,7 @@
 #include "pq/meta/envelope.h"
 #include "pq/meta/registry.h"
 #include "pq/meta/vca.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/document/serialize.h"
@@ -43,7 +44,14 @@ namespace {
 
 constexpr uint32_t kBlock = 64;
 
-std::unique_ptr<ProjectLink> makeLink(const Snapshot& s) {
+// IG.1-2: the project as an older file of it loads — its meta voice runs (and instruments) in instrument groups, so they
+// play per note as these cases were written (pq/document/instrument_groups.h).
+Snapshot grouped(const Snapshot& s) {
+  Project p = *s;
+  return migrateToInstrumentGroups(p) ? std::make_shared<const Project>(std::move(p)) : s;
+}
+std::unique_ptr<ProjectLink> makeLink(const Snapshot& s0) {
+  const Snapshot s = grouped(s0);
   LinkConfig c;
   c.compileThread = false;
   c.sleepAfterMs = 0.0f;

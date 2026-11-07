@@ -71,6 +71,20 @@ bool isInstrumentGroup(const Project& p, DeviceId d);
 // No Envelope is added (it would change the sound); no polyphony is written (absent = the link's default, as before).
 // Lone stock instruments fed by notes cables are contexts already and stay as they are. New ids continue above the
 // project's largest. Returns whether anything changed.
-bool migrateToInstrumentGroups(Project& p);
+bool migrateToInstrumentGroups(Project& p, IdSource* ids = nullptr);
+
+}  // namespace pq::doc
+
+#include "pq/document/edit_ops.h"
+
+namespace pq::doc::ops {
+
+// "Make instrument groups": migrateToInstrumentGroups as one undoable edit (new ids from `ids`): every MIDI track's
+// instrument or meta voice run on its path into an instrument group. An empty edit when nothing is to wrap.
+EditResult wrapInstrumentGroups(const Project& p, IdSource& ids);
+
+}  // namespace pq::doc::ops
+
+namespace pq::doc {
 
 }  // namespace pq::doc

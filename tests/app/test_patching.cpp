@@ -29,6 +29,7 @@
 #include "pq/compile/compile.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
 #include "pq/document/meta.h"
@@ -200,11 +201,13 @@ Lowered lowerIt(const DocumentStore& store) {
   lo.library = &library().library();
   lo.devices = &library();
   lo.slotOf = [](TrackId) { return 0u; };
-  auto low = lower(*store.current(), lo);
+  Project gp = *store.current();
+  (void)migrateToInstrumentGroups(gp);  // IG.1-2: as an older file of it loads (its voice run in an instrument group)
+  auto low = lower(gp, lo);
   REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
   Lowered out{std::move(*low), {}, {}, {}};
   for (const WireState& st : out.low.wires)
-    if (const Wire* w = findWire(*store.current(), st.id); w != nullptr && !w->mainLink()) out.cables.push_back(st);
+    if (const Wire* w = findWire(*store.current(), st.id); w != nullptr && !w->mainLink() && !w->chain) out.cables.push_back(st);
   for (const LoweredParam& p : out.low.params) {
     out.links.push_back({p.track, p.name, static_cast<uint32_t>(out.values.size())});
     out.values.push_back(p.value);
@@ -307,6 +310,7 @@ TEST_CASE("patching: the note source's Hz into a filter cutoff adds exactly its 
   if (!units) b.commands.push_back(SetParamCurve{eq, "freq1", KnobCurve::Linear});
   REQUIRE(store.dispatch(b).ok());
   wired(store);  // TX.all-free: the chain as cables
+  playback_fixture::asInstrumentGroups(store);  // IG.1-2: the voice run in its instrument group
   auto e = ops::connectNoteWire(*store.current(), ids, keys, "hz", eq, "freq1");
   REQUIRE(e.ok());
   if (units) asUnits(e);
@@ -402,6 +406,7 @@ TEST_CASE("patching: an instrument's output into a later device's audio input su
   b.commands.push_back(SetDeviceParam{u1, "width", 0.0});  // the chain's signal through u1 in mono …
   REQUIRE(store.dispatch(b).ok());
   wired(store);  // TX.all-free: the chain as cables
+  playback_fixture::asInstrumentGroups(store);  // IG.1-2: the voice run in its instrument group
   auto e = ops::connectWire(*store.current(), ids, inst, "out", u2, "x");  // … plus the instrument directly into u2
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
@@ -476,6 +481,7 @@ TEST_CASE("patching: a wire from a later device's output into an earlier one's i
   b.commands.push_back(SetDeviceParam{u2, "gain", std::pow(10.0, -6.0 / 20.0)});  // −6 dB: the loop decays
   REQUIRE(store.dispatch(b).ok());
   wired(store);  // TX.all-free: the chain as cables
+  playback_fixture::asInstrumentGroups(store);  // IG.1-2: the voice run in its instrument group
   auto e = ops::connectWire(*store.current(), ids, u2, "out", u1, "x");
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
@@ -510,6 +516,7 @@ TEST_CASE("patching: a feedback wire through the voices' sum is refused, naming 
   b.commands.push_back(AddDevice{keys, metaDevice(pa2, "phase_acc", DeviceKind::AudioEffect, true), kAppend});
   REQUIRE(store.dispatch(b).ok());
   wired(store);  // TX.all-free: the chain as cables
+  playback_fixture::asInstrumentGroups(store);  // IG.1-2: the voice run in its instrument group
   const Lowered plain = lowerIt(store);
   const golden::Channels before = renderGraph(plain.low.graph, plain.links, plain.values, 12000);
   CHECK(peakOf(before) > 0.01f);
@@ -534,6 +541,8 @@ TEST_CASE("patching: a feedback wire through the voices' sum is refused, naming 
   REQUIRE(inRun.ok());
   REQUIRE(store.dispatch(inRun->command).ok());
   const WireId runLoop = doc::wiresOf(*store.current()).back().id;
+  // (IG.1-2: the free Phase accumulator inside the run's instrument group, so its loop stays inside: per voice.)
+  REQUIRE(store.dispatch(SetDeviceGroup{pa2, findDevice(*store.current(), pa).device->group}).ok());
   auto toFree = ops::connectWire(*store.current(), ids, wt, "out", pa2, "hz");
   REQUIRE(toFree.ok());
   REQUIRE(store.dispatch(toFree->command).ok());
@@ -586,6 +595,7 @@ TEST_CASE("patching: a Units wire into a VCA's value adds to the multiplier (val
     b.commands.push_back(SetDeviceParam{pa, "freq", 55.0});
     REQUIRE(store.dispatch(b).ok());
   wired(store);  // TX.all-free: the chain as cables
+  playback_fixture::asInstrumentGroups(store);  // IG.1-2: the voice run in its instrument group
     if (which == 0) {
       auto e = ops::connectWire(*store.current(), ids, pa, "out", vca, "value");
       asUnits(e);
@@ -697,6 +707,7 @@ TEST_CASE("patching (TMM.18): a negative frequency reflects — into the Phase a
     if (into == kFreqLinear) b.commands.push_back(SetParamCurve{pa, "freq", KnobCurve::Linear});
     REQUIRE(store.dispatch(b).ok());
   wired(store);  // TX.all-free: the chain as cables
+  playback_fixture::asInstrumentGroups(store);  // IG.1-2: the voice run in its instrument group
     auto e = ops::connectWire(*store.current(), ids, vca, "out", pa, intoFreq ? "freq" : "hz");
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
     REQUIRE(store.dispatch(e->command).ok());
@@ -762,6 +773,7 @@ Lowered constantInto(const char* target, const char* param, double knob, std::op
   }
   REQUIRE(store.dispatch(b).ok());
   wired(store);  // TX.all-free: the chain as cables
+  playback_fixture::asInstrumentGroups(store);  // IG.1-2: the voice run in its instrument group
   if (value) {
     auto e = ops::connectWire(*store.current(), ids, vca, "out", dev, param);
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
@@ -862,6 +874,7 @@ TEST_CASE("knob curves: the Phase accumulator's frequency bar — exp0 by defaul
     }
     REQUIRE(store.dispatch(b).ok());
   wired(store);  // TX.all-free: the chain as cables
+  playback_fixture::asInstrumentGroups(store);  // IG.1-2: the voice run in its instrument group
     if (wire) {
       auto e = ops::connectWire(*store.current(), ids, vca, "out", acc, wire->first);
       REQUIRE(e.ok());
@@ -898,6 +911,7 @@ TEST_CASE("knob curves: an Add wire into the VCA's value — its Log curve in tr
     b.commands.push_back(SetDeviceParam{pa, "freq", 55.0});
     REQUIRE(store.dispatch(b).ok());
   wired(store);  // TX.all-free: the chain as cables
+  playback_fixture::asInstrumentGroups(store);  // IG.1-2: the voice run in its instrument group
     auto e = ops::connectWire(*store.current(), ids, pa, "out", vca, "value");
     REQUIRE(e.ok());
     REQUIRE(store.dispatch(e->command).ok());
