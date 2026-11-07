@@ -179,6 +179,24 @@ part of the group drawing.
    - Header button, floating window, send by button / hotkey / drag, link lines, edit / play, inspector (binding, curve,
      style, visibility), mod-source drags making cables.
    - Accept: every gesture tested through real dispatch, goldens, frame cost with a panel open.
+5a. **GU.5b Modules look as before; an opened group is a circuit.** 👁 *(user 2026-11-07, after seeing GU.4: "while the
+   new modules are groups, they should look exactly the same as before; expanding them open … would show the group
+   view … effectively the circuit diagram intermingled with previous meta modules".)* Runs after GU.5 (it uses GU.5's
+   styling) and before GU.6.
+   - **Closed = the old face.** The Phase Accumulator and VCA modules spawn closed, and their panels reproduce the
+     pre-GU.4 faces (goldens at 04c59ffe: meta-phase-acc, meta-vca, project-vca-markers, project-vca-panel), with
+     the VCA's round 360° knob, readout, ±1 / ±10 / ±100 markers (as curve points of its Joined curve: dragging a
+     marker edits the curve) and floating range / curve panel, and the PA's phase orbit with voice dots (pulled
+     forward from GU.7 as rich elements). Generic elements gain the style fields this needs; nothing per-module in C++
+     beyond registered elements.
+   - **Open = a circuit diagram**, for every group (a general rule, not per module): atom blocks drawn as compact
+     circuit symbols (the circuit editor's symbol set: ×, +, phasor, frac …), value blocks as their knob, nested
+     groups and native engines as their faces / panels, laid out by signal flow (layers left to right, few
+     crossings, the circuit editor's cable routing), the group's In / Out at the edges. Not the device-chain row of
+     boxes with cables crossing the whole capsule.
+   - Accept: closed-panel goldens vs the old faces side by side in REVIEW (near-identical, differences listed);
+     open-group goldens (PA, VCA, a nested group); marker drag through real dispatch (one undo step, no recompile);
+     open / close frame cost no worse.
 6. **GU.6 Embed and break apart.**
    - A child panel as an element; break apart into its elements; any depth.
    - Accept: gesture tests, golden, the bindings survive renames and moves.
