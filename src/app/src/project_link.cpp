@@ -800,7 +800,6 @@ void ProjectLink::applyDeviceParams(const doc::Project& p, std::span<const doc::
     }
     const doc::DeviceLoc d = doc::findDevice(p, doc::DeviceId{ref.owner});
     if (d.device == nullptr) continue;
-    std::shared_ptr<const doc::ResolvedDevice> hold;  // T4.4-fix1: a user device plays its own patch
     const graph::Patch* callee = devices_->patchOf(*d.device);
     if (callee == nullptr) continue;  // bypassed (missing): nothing reads it
     for (graph::NodeIndex v = 0; v < callee->nodeCount(); ++v) {
@@ -1103,19 +1102,9 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
 void ProjectLink::reportMissingDevices(const doc::Project& p) {
   std::vector<doc::DeviceId> missing;
   std::string first;
-  doc::forEachDevice(p, [&](const doc::Device& d, const doc::Track& t) {
+  doc::forEachDevice(p, [&](const doc::Device& d, const doc::Track&) {
     if (!d.active) return;
-    if (d.edited()) {  // T4.4-fix1: a user device whose text does not play
-      const auto r = devices_->resolve(d);
-      if (r && r->error.empty()) return;
-      if (missing.empty()) {
-        const doc::DeviceInfo* info = devices_->catalog().find(d.patch);
-        const std::string why = r ? r->error.substr(0, r->error.find('\n')) : std::string("no device library");
-        first = "The edited " + (info ? info->name : d.patch) + " (" + t.name + ") does not play its text (" + why +
-                (r && r->stale ? "): its last good version plays" : "): it is bypassed");
-      }
-      missing.push_back(d.id);
-    } else if (std::shared_ptr<const doc::ResolvedDevice> hold; devices_->patchOf(d) == nullptr) {
+    if (devices_->patchOf(d) == nullptr) {
       // TMM.17: patchOf, not the library by name: a chain meta device ("meta:<type>") plays its type's expansion, which
       // the library holds under another name (it was reported as missing while it played).
       if (missing.empty()) first = "Device '" + d.patch + "' is not available: it is bypassed";
@@ -1154,8 +1143,9 @@ void ProjectLink::reportWires(const doc::Project& p) {
   const doc::Wire* w = doc::findWire(p, first->id);
   auto name = [&](doc::DeviceId d) {
     const doc::DeviceLoc l = doc::findDevice(p, d);
-    const doc::DeviceInfo* info = l.device != nullptr ? devices_->catalog().find(l.device->patch) : nullptr;
-    return (info != nullptr ? info->name : std::string("device")) + (l.device != nullptr && l.device->edited() ? " (edited)" : "") +
+    const doc::DeviceInfo* info = l.device != nullptr ? devices_->infoOf(*l.device) : nullptr;
+    const std::string own = l.device != nullptr ? l.device->name : std::string();
+    return (!own.empty() ? own : info != nullptr ? info->name : std::string("device")) +
            (l.track != nullptr ? " (" + l.track->name + ")" : "");
   };
   // TMM.10-fix2: a note source is named by its track.
@@ -1613,8 +1603,7 @@ std::shared_ptr<TapRing> ProjectLink::metaSignalTap(doc::DeviceId device, std::s
 }
 
 std::shared_ptr<TapRing> ProjectLink::deviceAnalysisTap(doc::DeviceId device) const {
-  if (std::shared_ptr<TapRing> t = metaSignalTap(device, doc::kAnalysisTapPath, 0)) return t;
-  return metaSignalTap(device, "", 0);  // a chain Spectrum meta device: its own request 0
+  return metaSignalTap(device, "", 0);  // a Spectrum native engine: its own request 0
 }
 
 Status ProjectLink::publishFrameTable(doc::DeviceId device, std::string_view path, uint32_t index,

@@ -8,7 +8,6 @@
 //   T3.18 installPreferences(shell);   → shell.overlay() (the preferences window), the app.preferences action
 //   T3.19 installTuningsPanel(shell);  → ShellSlot::Tunings (View > Tunings), the tuning.newMain action
 //   T4.2  circuit::installCircuitViewer(shell); → shell.overlay() (the circuit viewer), the view.openPatch action
-//   T4.6  devices::installDeviceView(shell);    → ShellSlot::DeviceDetail (device panels), the view.openDevice action
 //   T4.1  installDeviceChain(shell);   → ShellSlot::DeviceDetail (the Device view), the device.* actions
 //   T4.7  installWiring(shell);        → ShellSlot::Cables (the cables over the UI), view.cycleCables, wire.delete
 //   T4.13 installProjectPatch(shell);  → ShellSlot::Patch (the project patch view), view.togglePatch
@@ -19,7 +18,6 @@
 #include "pq/views/audio_clip/audio_clip_view.h"
 #include "pq/views/browser/browser_panel.h"
 #include "pq/views/circuit/circuit_viewer.h"
-#include "pq/views/devices/device_view.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
@@ -43,8 +41,7 @@ void installDefaultContent(Shell& shell) {
   installPreferences(shell);
   installTuningsPanel(shell);
   circuit::installCircuitViewer(shell);
-  installDeviceChain(shell);          // the selected track's chain …
-  devices::installDeviceView(shell);  // … under T4.6's stand-alone preview, which covers it while one is open
+  installDeviceChain(shell);          // the selected track's chain
   installWiring(shell);               // the cables between its jacks and knobs
   installProjectPatch(shell);         // after the mixer: each one's toggle hides the other
   installBrowser(shell);

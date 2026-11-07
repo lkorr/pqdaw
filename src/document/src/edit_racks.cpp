@@ -10,6 +10,7 @@
 #include "edit_paths.h"
 #include "pq/document/instrument_groups.h"
 #include "pq/document/main_path.h"
+#include "pq/document/modules.h"
 #include "pq/document/racks.h"
 #include "pq/dsp/curve.h"
 
@@ -365,10 +366,24 @@ EditResult addToChain(const Project& p, IdSource& ids, DeviceId chain, std::stri
     return invalid("An instrument goes into an Instrument Rack, not an Audio Effect Rack");
   Edit e = makeEdit("Add Device");
   Steps k(p);
-  const DeviceId id = ids.device();
-  auto d = std::make_shared<Device>(*makeDevice(id, std::move(patch), kind));
-  d->group = chain;
-  PQ_DOC_TRY(k.add(AddDevice{c->track->id, std::move(d), kAppend}));
+  DeviceId id;
+  if (patch.starts_with(kModuleItemPrefix)) {  // GU.11: a built-in module: its group preset (fresh ids) in the chain
+    const ModuleInfo* m = findModule(std::string_view(patch).substr(kModuleItemPrefix.size()));
+    if (m == nullptr) return invalid("no module '" + patch + "'");
+    if (m->instrument != (kind == DeviceKind::Instrument))
+      return invalid(m->instrument ? "an instrument module is added as an instrument" : "an effect module is added as an effect");
+    BlockSet set = remapBlocks(moduleBlocks(m->kind), ids);
+    id = set.devices.front()->id;
+    auto g = std::make_shared<Device>(*set.devices.front());
+    g->group = chain;
+    set.devices.front() = std::move(g);
+    PQ_DOC_TRY(addBlocks(k, c->track->id, set));
+  } else {
+    id = ids.device();
+    auto d = std::make_shared<Device>(*makeDevice(id, std::move(patch), kind));
+    d->group = chain;
+    PQ_DOC_TRY(k.add(AddDevice{c->track->id, std::move(d), kAppend}));
+  }
   std::vector<DeviceId> devs = idsOf(c->chain.devices);
   bool instFirst = instrumentFirst(p, c->rack, c->chain);
   if (kind == DeviceKind::Instrument) {  // first, replacing the chain's instrument (Live)

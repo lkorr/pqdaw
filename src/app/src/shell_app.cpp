@@ -13,11 +13,11 @@
 #include <utility>
 
 #include "pq/app/device_player.h"
+#include "pq/views/devices/analysis.h"
 #include "pq/app/startup.h"
 #include "pq/compile/compile.h"
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/device_chain/device_chain.h"
-#include "pq/views/devices/device_view.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/app/audio_manager.h"
@@ -220,7 +220,6 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   app->shell_ = std::move(*shell);
   markStartupPhase("views built");
   // T4.6: View > Open Device… lists the stock devices (the player is attached below once the playback link exists).
-  views::devices::setDeviceLibrary(*app->shell_, stdlibDir() + "/devices", nullptr);
   if (app->link_) {
     const double t1 = msSinceMainEntry();
     // T5.4: a finished sample load republishes the audio sequences on the UI thread.
@@ -239,11 +238,6 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
       // GU.7: a display placed on a panel reads the tap the lowering put on its signal
       app->ctx_->setSignalTapSource([lk](doc::DeviceId d, std::string_view path) { return lk->metaSignalTap(d, path, 0); });
     }
-    // T4.4-fix1: the circuit editor on a project device probes and measures it in the project's own unit.
-    ProjectLink* link = app->link_.get();
-    app->ctx_->setDevicePlayers([link](doc::DeviceId d) -> std::unique_ptr<views::circuit::PatchPlayer> {
-      return std::make_unique<DevicePlayer>(*link, d);
-    });
     if (!o.project.empty()) std::printf("pqdaw: project sequences and params to the engine in %.1f ms (units compile on the worker)\n", msSinceMainEntry() - t1);
     if (views::MixerView* mixer = views::findMixer(*app->shell_)) mixer->setMeterSource(app->link_.get());
     if (auto* patch = views::findProjectPatch(*app->shell_)) {  // T4.13: wire readouts and the CPU cost labels
@@ -285,8 +279,8 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
         app->link_->samplePool(), app->link_->engine().config().sampleRate, &app->audio_->output(),
         [type = app->userEvent_](std::function<void()> fn) { pushUser(type, kRunOnUi, new std::function<void()>(std::move(fn))); });
     app->ctx_->library().setPreview(app->browserPreview_.get());
-    views::devices::setDeviceLibrary(*app->shell_, stdlibDir() + "/devices", app->preview_.get());  // T4.6
     // T5.7: files a drag brings in start loading into the link's pool while they hover.
+    ProjectLink* link = app->link_.get();
     app->ctx_->setSamplePreloader([link](const std::string& path) { link->preloadSample(path); });
     markStartupPhase("link attached, audio device opening in the background");
   }
@@ -386,7 +380,6 @@ ShellApp::~ShellApp() {
   if (ctx_) ctx_->setAudioPrefs(nullptr);
   if (ctx_) ctx_->setDeviceLibrary(nullptr);  // the link owns it
   if (ctx_) ctx_->setModulationSource(nullptr);
-  if (ctx_) ctx_->setDevicePlayers(nullptr);
   if (preview_) preview_->onActiveChanged = nullptr;
   if (ctx_) {  // T5.10: the browser's services go before what they use (the output, the pool, the context)
     ctx_->library().setPreview(nullptr);

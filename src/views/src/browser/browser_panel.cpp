@@ -510,28 +510,28 @@ void BrowserPanel::buildDeviceTree() {
   const bool instruments = source_.index == static_cast<uint32_t>(library::Category::Instruments);
   const doc::DeviceKind kind = instruments ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect;
   const bool metaModules = source_.index == static_cast<uint32_t>(library::Category::MetaModules);
+  // GU.11: every item is a built-in module (a group preset) or a native engine. Instruments: the instrument modules;
+  // Audio Effects: the effect modules that were stock devices (Utility, Saturator, LFO); Meta Modules: the native
+  // engines and the other modules (the Phase Accumulator, the VCA, the engines' groups, the analysers).
+  auto stockEffect = [](const doc::ModuleInfo& m) {
+    return m.kind == doc::ModuleKind::Utility || m.kind == doc::ModuleKind::Saturator || m.kind == doc::ModuleKind::Lfo;
+  };
   if (metaModules) {  // TMM.10: the meta modules (a chain meta device: the kind follows where it lands)
     for (const meta::Type* t : metaModuleTypes(true))
       deviceRows_.push_back({std::string(t->name), std::string(doc::kMetaDevicePrefix) + std::string(t->id),
                              doc::DeviceKind::Instrument});
     for (const doc::ModuleInfo& m : doc::moduleInfos())  // GU.4: the modules (group presets) beside them
-      if (!m.instrument)
+      if (!m.instrument && !stockEffect(m))
         deviceRows_.push_back({std::string(m.name), std::string(doc::kModuleItemPrefix) + std::string(m.key), doc::DeviceKind::AudioEffect});
-  } else if (const doc::DeviceLibrary* dl = ctx_.deviceLibrary()) {
-    for (const doc::DeviceInfo& d : dl->catalog().devices())
-      if (d.kind == kind) deviceRows_.push_back({d.name, d.patch, d.kind});
-    if (instruments)  // GU.8: the instrument modules (the Wavetable Synth) after the stock instruments
-      for (const doc::ModuleInfo& m : doc::moduleInfos())
-        if (m.instrument)
-          deviceRows_.push_back({std::string(m.name), std::string(doc::kModuleItemPrefix) + std::string(m.key), doc::DeviceKind::Instrument});
   } else {
-    for (const doc::StockDevice& d : doc::stockDevices())
-      if (d.kind == kind) deviceRows_.push_back({std::string(d.name), std::string(d.patch), d.kind});
+    for (const doc::ModuleInfo& m : doc::moduleInfos())
+      if (instruments ? m.instrument : (!m.instrument && stockEffect(m)))
+        deviceRows_.push_back({std::string(m.name), std::string(doc::kModuleItemPrefix) + std::string(m.key), kind});
   }
   if (!metaModules)
     deviceRows_.push_back({instruments ? "Instrument Rack" : "Audio Effect Rack",
                            std::string(instruments ? doc::kInstrumentRack : doc::kAudioEffectRack), kind});
-  // Presets by the patch they are for; user devices and presets of unknown devices after the devices.
+  // Presets by the patch they are for; presets of unknown devices after the devices.
   std::vector<std::vector<BrowserRow>> presets(deviceRows_.size());
   std::vector<BrowserRow> rest;
   const auto cat = static_cast<library::Category>(source_.index);
@@ -546,8 +546,6 @@ void BrowserPanel::buildDeviceTree() {
           placed = true;
         }
       if (!placed && ix.category(e) == cat) rest.push_back({e, 0, false, false});
-    } else if (k == library::ItemKind::Device && ix.category(e) == cat) {
-      rest.push_back({e, 0, false, false});
     }
   }
   for (size_t d = 0; d < deviceRows_.size(); ++d) {
@@ -863,13 +861,12 @@ bool BrowserPanel::loadSelection() {
     setHotSwap({});
     return true;
   }
-  // T5.11: devices, presets, user devices, tunings and clips.
+  // T5.11: devices, presets, tunings and clips.
   const std::string item = selectedPath();
   const std::string name = r.device ? deviceRows_[r.id].name : std::string(index_->stem(r.id));
   switch (libraryItemOf(item)) {
     case LibraryItem::CatalogDevice:
-    case LibraryItem::Preset:
-    case LibraryItem::UserDevice: {
+    case LibraryItem::Preset: {
       const doc::TrackId track = ctx_.selectedTrack();
       if (!track.valid()) {
         ctx_.setStatus("Select a track to load " + name + " into");

@@ -16,10 +16,9 @@
 #include "pq/ui/controls.h"
 #include "pq/ui/theme.h"
 #include "pq/views/device_chain/wiring.h"
-#include "pq/views/circuit/device_circuit.h"
 #include "pq/views/devices/analysis.h"
 #include "pq/views/devices/knob_curve_menu.h"
-#include "pq/views/devices/panel_desc.h"
+#include "pq/document/modules.h"
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/shell/shell.h"
 #include "pq/document/meta.h"
@@ -70,14 +69,10 @@ void DeviceChainView::Impl::reindex() {
 }
 
 std::string DeviceChainView::Impl::templateKey(const doc::DeviceLibrary* lib, const doc::Device& d) {
-  // TMM.10: a chain meta device's form follows its position (first: the note source reaches it) and (TMM.10-fix1) the
-  // input its chain feeds (its face's input socket, none when unplugged).
-  if (doc::isMetaDevice(d))
-    return d.patch + (d.kind == doc::DeviceKind::Instrument ? "#instrument" : "#effect") +
-           (d.chainInput.empty() ? std::string() : "#in:" + d.chainInput);
-  if (!d.source) return d.patch;
-  const auto r = lib != nullptr ? lib->resolve(d) : nullptr;
-  return r && r->graph ? r->graph->root : std::string();
+  (void)lib;
+  // TMM.10: a native engine's form follows its position (first: the note source reaches it).
+  if (doc::isMetaDevice(d)) return d.patch + (d.kind == doc::DeviceKind::Instrument ? "#instrument" : "#effect");
+  return d.patch;
 }
 
 const PanelTemplate* DeviceChainView::Impl::templateFor(const doc::Device& d) {
@@ -91,9 +86,9 @@ const PanelTemplate* DeviceChainView::Impl::templateFor(const doc::Device& d) {
 std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId, doc::ChainId chain, uint32_t index,
                                                             bool instruments) {
   std::vector<ui::MenuItem> items;
-  const doc::DeviceCatalog* cat = catalog();
-  if (cat == nullptr || (!trackId.valid() && !chain.valid())) {
-    ui::MenuItem none = ui::MenuItem::item(cat == nullptr ? "No device library" : "No track selected");
+  const doc::DeviceLibrary* lib = view.ctx_.deviceLibrary();
+  if (lib == nullptr || (!trackId.valid() && !chain.valid())) {
+    ui::MenuItem none = ui::MenuItem::item(lib == nullptr ? "No device library" : "No track selected");
     none.enabled = false;
     items.push_back(std::move(none));
     return items;
@@ -113,9 +108,12 @@ std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId
     head.enabled = false;
     if (!items.empty()) items.push_back(ui::MenuItem::sep());
     items.push_back(std::move(head));
-    for (const doc::DeviceInfo& d : cat->devices()) {
-      if (d.kind != kind) continue;
-      ui::MenuItem it = ui::MenuItem::item("   " + d.name, [add, patch = d.patch, kind] { add(patch, kind); });
+    // GU.11: the built-in modules of that kind (group presets: Utility, Saturator, LFO, the instruments).
+    for (const doc::ModuleInfo& m : doc::moduleInfos()) {
+      const bool stockEffect = m.kind == doc::ModuleKind::Utility || m.kind == doc::ModuleKind::Saturator || m.kind == doc::ModuleKind::Lfo;
+      if (kind == doc::DeviceKind::Instrument ? !m.instrument : (m.instrument || !stockEffect)) continue;
+      const std::string patch = std::string(doc::kModuleItemPrefix) + std::string(m.key);
+      ui::MenuItem it = ui::MenuItem::item("   " + std::string(m.name), [add, patch, kind] { add(patch, kind); });
       it.enabled = kind == doc::DeviceKind::AudioEffect || instruments;
       items.push_back(std::move(it));
     }
@@ -143,23 +141,6 @@ std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId
         add(patch, k);
       });
       it.enabled = kind.ok();
-      items.push_back(std::move(it));
-    }
-  }
-  // T5.11: the user devices of the library ("Save as New Device"), for every project.
-  const auto& users = view.ctx_.library().userDevices();
-  if (!users.empty()) {
-    items.push_back(ui::MenuItem::sep());
-    ui::MenuItem head = ui::MenuItem::item("User Devices");
-    head.enabled = false;
-    items.push_back(std::move(head));
-    for (const Library::UserDeviceEntry& u : users) {
-      const std::string path = u.path;
-      ui::MenuItem it = ui::MenuItem::item("   " + u.file.name, [v, path, trackId, chain, index] {
-        auto r = loadDeviceItem(v->ctx_, path, DeviceSlot{trackId, index, chain});
-        if (!r) v->ctx_.setStatus("Add Device: " + r.error().message);
-      });
-      it.enabled = u.file.kind == doc::DeviceKind::AudioEffect || instruments;
       items.push_back(std::move(it));
     }
   }
@@ -350,10 +331,8 @@ public:
   VoiceTapReader* metaVoices(std::string_view path) override {
     return impl_.view.faceVoices ? impl_.view.faceVoices(id_, path) : nullptr;
   }
-  // TX.spectrum: the device's analysis (its panel's spectrum and measured response; a Spectrum meta device's face) and
-  // the engine's rate (EQ Eight's exact curve).
+  // TX.spectrum: the device's analysis (a Spectrum native engine's face).
   devices::SpectrumFeed* outputSpectrum() override { return ctx_.analysisFeed(id_); }
-  double sampleRate() const override { return ctx_.analysisHub() ? ctx_.analysisHub()->sampleRate() : 48000.0; }
 
 private:
   DeviceChainView::Impl& impl_;
@@ -368,7 +347,7 @@ class DeviceFrame final : public FrameBase {
 public:
   DeviceFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d, const PanelTemplate* tpl, std::string key)
       : FrameBase("device[" + std::to_string(d.id.value) + "]", impl, ctx, d.id), target_(impl, ctx, d.id),
-        key_(std::move(key)), source_(d.source) {
+        key_(std::move(key)) {
     setLayout(ui::LayoutKind::Custom);
     if (tpl != nullptr) {
       std::map<std::string, double, std::less<>> values;
@@ -390,29 +369,16 @@ public:
       panel_->onJackDrag = [this](const ui::PointerEvent& e) {
         if (impl_.view.onJack) impl_.view.onJack(id_, {}, e);
       };
-      // T4.4-fix1: a user device's "edited" marker; a double-click on the title opens the device in the circuit view.
-      panel_->setEdited(d.edited());
       if (!d.name.empty()) panel_->setTitle(d.name);  // T4.17
-      panel_->onTitleDoubleClick = [this] { impl_.view.openInCircuitView(id_); };
       // T5.11: the preset slot names the last preset loaded here; a click hot-swaps the device's presets in the browser.
       panel_->setPresetName(ctx.library().presetName(d.id));
       panel_->onPresetClick = [this] { impl_.view.hotSwap(id_); };
     }
-    if (tpl == nullptr && d.edited()) {
-      const doc::DeviceLibrary* lib = ctx.deviceLibrary();
-      const auto r = lib ? lib->resolve(d) : nullptr;
-      missing_ = "'" + d.patch + "' (edited) does not play: " +
-                 (r ? r->error.substr(0, r->error.find('\n')) : std::string("no device library")) +
-                 ". Right-click: Open in Circuit View, Revert to Stock.";
-    } else if (tpl == nullptr) {
-      missing_ = "'" + d.patch + "' is not available: bypassed";
-    }
+    if (tpl == nullptr) missing_ = "'" + d.patch + "' is not available: bypassed";
   }
 
   bool keeps(const doc::Device& d) const override {
-    // The same user text keeps its frame without a resolve; anything else compares its template key (TMM.10-fix1: a
-    // chain meta device's key carries its position and chain input, so its face's socket follows them).
-    if (d.source != nullptr && d.source == source_) return true;
+    // Its template key (TMM.10-fix1: a native engine's key carries its position, so its face's socket follows it).
     return DeviceChainView::Impl::templateKey(ctx_.deviceLibrary(), d) == key_;
   }
 
@@ -420,11 +386,9 @@ public:
   devices::DeviceTarget* target() noexcept override { return &target_; }
   // The device changed in the document (values, settings, activation): the panel repaints what moved.
   void update(const doc::Device& d) override {
-    source_ = d.source;
     if (!panel_) return;
     panel_->setTitle(d.name.empty() ? panel_->desc().title : d.name);  // T4.17
     panel_->setActive(d.active);
-    panel_->setEdited(d.edited());
     panel_->setPresetName(ctx_.library().presetName(d.id));
     for (const devices::ParamInfo& p : panel_->signature().params) {
       panel_->setParamCurve(p.name, d.curve(p.name));  // GU.1
@@ -490,7 +454,6 @@ public:
 private:
   ChainTarget target_;
   std::string key_;           // the template it was built from (Impl::templateKey)
-  doc::UserPatchPtr source_;  // the patch text it shows (T4.4-fix1)
   devices::DevicePanel* panel_ = nullptr;
   std::string missing_;
 };
@@ -676,37 +639,8 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
           items.push_back(ui::MenuItem::sep());
         }
       }
-      // T5.x-circuit-chain: Open in Circuit View shows the whole track's chain as one circuit focused on this device
-      // (the Track level); Edit Device Circuit goes straight to the device's own editor (the Device level).
+      // T5.x-circuit-chain: Open in Circuit View shows the whole track's chain as one circuit focused on this device.
       items.push_back(ui::MenuItem::item("Open in Circuit View", [v, id] { v->openInCircuitView(id); }));
-      if (!isRack()) {
-        ui::MenuItem edit = ui::MenuItem::item("Edit Device Circuit", [v, id] { v->editDeviceCircuit(id); });
-        edit.enabled = loc.device != nullptr && !doc::isMetaDevice(*loc.device);  // a meta module's atoms are generated
-        items.push_back(std::move(edit));
-        ui::MenuItem revert = ui::MenuItem::item("Revert to Stock", [v] { v->revertSelectedToStock(); });
-        revert.enabled = loc.device != nullptr && loc.device->edited();
-        items.push_back(std::move(revert));
-      }
-      // TMM.10-fix1 ("a chain is wires"): which input of a chain meta device the chain (the note source when it is
-      // first on a MIDI track, else the previous device) is wired into; None unplugs it (it runs freely, one voice).
-      if (loc.device != nullptr && doc::isMetaDevice(*loc.device))
-        if (const meta::Type* type = meta::findType(doc::metaDeviceType(*loc.device))) {
-          const int32_t cur = doc::metaChainInput(*loc.device, *type);
-          std::vector<ui::MenuItem> ins;
-          for (size_t i = 0; i < type->inputs.size(); ++i) {
-            const meta::InputSpec& in = type->inputs[i];
-            ui::MenuItem it = ui::MenuItem::item(std::string(in.label.empty() ? in.name : in.label),
-                                                 [v, id, name = std::string(in.name)] { v->setChainInput(id, name); });
-            it.checked = cur == static_cast<int32_t>(i);
-            ins.push_back(std::move(it));
-          }
-          ui::MenuItem none = ui::MenuItem::item("None (runs freely)", [v, id] {
-            v->setChainInput(id, std::string(doc::kChainUnplugged));
-          });
-          none.checked = cur < 0;
-          ins.push_back(std::move(none));
-          items.push_back(ui::MenuItem::sub("Chain Input", std::move(ins)));
-        }
       // TX.all-free: off the main path (its neighbours joined; it keeps its other cables: the free rack shows it).
       if (loc.device != nullptr && !isRack() && !chainPlaceOf(*ctx_.doc(), id).inChain())
         items.push_back(ui::MenuItem::item("Take Off Path", [v, id] { (void)v->takeIntoRack(id); }));
@@ -715,9 +649,6 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       items.push_back(ui::MenuItem::item("Save Preset", [v, id] { v->savePreset(id, false); }));
       if (loc.device != nullptr && !isRack()) {
         items.push_back(ui::MenuItem::item("Save as Default Preset", [v, id] { v->savePreset(id, true); }));
-        ui::MenuItem asNew = ui::MenuItem::item("Save as New Device", [v, id] { v->saveAsNewDevice(id); });
-        asNew.enabled = loc.device->edited();
-        items.push_back(std::move(asNew));
       }
       items.push_back(ui::MenuItem::item("Hot-Swap Presets\xE2\x80\xA6", [v, id] { v->hotSwap(id); }));
       items.push_back(ui::MenuItem::sep());
@@ -1183,16 +1114,6 @@ bool DeviceChainView::savePreset(doc::DeviceId device, bool asDefault) {
   return true;
 }
 
-bool DeviceChainView::saveAsNewDevice(doc::DeviceId device) {
-  auto r = views::saveAsNewDevice(ctx_, device);
-  if (!r) {
-    ctx_.setStatus("Save as New Device: " + r.error().message);
-    return false;
-  }
-  ctx_.setStatus("Saved as a new device: " + *r);
-  return true;
-}
-
 bool DeviceChainView::hotSwap(doc::DeviceId device) {
   const doc::Device* d = doc::findDevice(*ctx_.doc(), device).device;
   if (d == nullptr) return false;
@@ -1213,7 +1134,7 @@ ui::DropFeedback DeviceChainView::dragOver(const ui::DragPayload& p, ui::Vec2, u
     return {};
   for (const std::string& s : p.paths) {
     const LibraryItem k = libraryItemOf(s);
-    if (k != LibraryItem::CatalogDevice && k != LibraryItem::Preset && k != LibraryItem::UserDevice) return {};
+    if (k != LibraryItem::CatalogDevice && k != LibraryItem::Preset) return {};
   }
   return {ui::DropEffect::Copy, ui::Cursor::Arrow};
 }
@@ -1339,13 +1260,6 @@ bool DeviceChainView::toggleSelectedActive() {
   return r;
 }
 
-bool DeviceChainView::setChainInput(doc::DeviceId device, std::string input) {
-  const bool r = impl_->run(doc::ops::setDeviceChainInput(*ctx_.doc(), device, std::move(input)));
-  const doc::DeviceId one[1] = {device};
-  select(one);
-  return r;
-}
-
 bool DeviceChainView::moveDevice(doc::DeviceId device, uint32_t index) {
   // TX.all-free: `index` is the slot on the main path, counted with the device in its old place (the frames' order).
   return impl_->run(doc::ops::moveOnPath(*ctx_.doc(), ctx_.store().ids(), ctx_.deviceLibrary(), device, track_, index));
@@ -1353,18 +1267,6 @@ bool DeviceChainView::moveDevice(doc::DeviceId device, uint32_t index) {
 
 bool DeviceChainView::openInCircuitView(doc::DeviceId device) {
   return ctx_.openProjectCircuit({}, device);  // T5.x-one-circuit: the project patch view, framed on it
-}
-
-bool DeviceChainView::editDeviceCircuit(doc::DeviceId device) {
-  return circuit::openDeviceInCircuitView(*this, ctx_, device) != nullptr;
-}
-
-bool DeviceChainView::revertSelectedToStock() {
-  if (selection_.empty()) return false;
-  const std::vector<doc::DeviceId> keep = selection_;
-  const bool r = impl_->run(doc::ops::revertDevicesToStock(*ctx_.doc(), keep));
-  select(keep);
-  return r;
 }
 
 bool DeviceChainView::groupSelected() {

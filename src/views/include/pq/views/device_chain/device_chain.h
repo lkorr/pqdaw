@@ -72,29 +72,18 @@ public:
   bool paste();  // after the selected device, else at the end
   bool duplicateSelected();
   bool toggleSelectedActive();
-  // TMM.10-fix1: a chain meta device's chain input (the context menu's "Chain Input": an input of its type, or "-" =
-  // none: the module runs freely; ops::setDeviceChainInput). One undo step.
-  bool setChainInput(doc::DeviceId device, std::string input);
   bool moveDevice(doc::DeviceId device, uint32_t index);  // index in the chain after removal
-  // T4.4-fix1 (SPEC §15 2026-10-26): the device's context menu "Open in Circuit View" (also a double-click on its
-  // title: pq/views/circuit/device_circuit.h) and "Revert to Stock" (the selected user devices back to their stock
-  // patch: one undo step). An edited device's title shows an "edited" marker.
-  // T5.x-one-circuit: Open in Circuit View is the project patch view with the device's band opened, framed on the
-  // device (ViewContext::openProjectCircuit); editDeviceCircuit (the menu's Edit Device Circuit) the device's own editor
-  // (the Device level).
+  // T5.x-one-circuit: the device's context menu "Open in Circuit View": the project patch view with the device's band
+  // opened, framed on the device (ViewContext::openProjectCircuit).
   bool openInCircuitView(doc::DeviceId device);
-  bool editDeviceCircuit(doc::DeviceId device);
-  bool revertSelectedToStock();
   // T4.8: Ctrl+G — the selected devices (of one list) into a new rack (pq/document/edit_ops.h groupDevices).
   bool groupSelected();
   // ---- T5.11: the user library (pq/views/browser/library_load.h) ---------------------------------------------------
   // The device's context menu: "Save Preset" (the browser then renames it inline), "Save as Default Preset" (a new
-  // device of its kind starts from it), "Save as New Device" (an edited device joins the device menu and the browser
-  // for every project). "Hot-Swap Presets…" and a click on the title bar's preset slot put the browser in hot-swap mode
-  // for the device. Presets, user devices and catalog devices dragged from the browser (or Explorer) onto the chain load
+  // device of its kind starts from it). "Hot-Swap Presets…" and a click on the title bar's preset slot put the browser in
+  // hot-swap mode for the device. Presets and built-in items dragged from the browser (or Explorer) onto the chain load
   // after the selected device (one undo step each).
   bool savePreset(doc::DeviceId device, bool asDefault);
-  bool saveAsNewDevice(doc::DeviceId device);
   bool hotSwap(doc::DeviceId device);
   ui::DropFeedback dragOver(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
   ui::DropEffect drop(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;

@@ -34,7 +34,7 @@ constexpr double kFaceFrameSeconds = 1.0 / 60.0;
 
 class FaceDisplay final : public PanelDisplay {
 public:
-  FaceDisplay(DevicePanel::Impl& impl, const ControlDesc& desc) : PanelDisplay(desc.id, impl, desc) {
+  FaceDisplay(DevicePanel::Impl& impl, const ControlLayout& desc) : PanelDisplay(desc.id, impl, desc) {
     setFocusable(true);
     DeviceTarget* t = impl.target();
     type_ = t != nullptr ? t->metaType(desc.meta) : nullptr;
@@ -315,7 +315,7 @@ private:
 
 }  // namespace
 
-std::unique_ptr<PanelDisplay> makeFaceDisplay(DevicePanel::Impl& impl, const ControlDesc& desc) {
+std::unique_ptr<PanelDisplay> makeFaceDisplay(DevicePanel::Impl& impl, const ControlLayout& desc) {
   return std::make_unique<FaceDisplay>(impl, desc);
 }
 

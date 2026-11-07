@@ -143,7 +143,6 @@ int facesBench(const doc::DeviceLibrary& lib, double nsPerCycle, bool wavetable)
     stageTiles();
   };
   tree.layoutNow();
-  view->setPanelsShown(false);  // TX.panel-faces: the faces' A/B alone (the panels have their own rows above)
   view->setShown(true, false);
   settle();
   circuit::CircuitCanvas& c = view->canvas();
@@ -510,7 +509,7 @@ int main(int argc, char** argv) {
       const auto t1 = std::chrono::steady_clock::now();
       if (!r) return 1;
       low = std::make_shared<doc::LoweredProject>(std::move(*r));
-      pp = buildProjectPatch(*snap, *low, &(*lib)->catalog());
+      pp = buildProjectPatch(*snap, *low, lib->get());
       const auto t2 = std::chrono::steady_clock::now();
       const ProjectScene sc = buildProjectScene(pp);
       const auto t3 = std::chrono::steady_clock::now();
@@ -594,21 +593,10 @@ int main(int argc, char** argv) {
     tree.paint(dl, res, now);
     stageTiles();
   };
-  // TX.panel-faces: the first show with panels (the panel faces made: every closed stock device's DevicePanel).
-  {
-    view->setPanelsShown(false);
-    settle();
-    const auto t0 = std::chrono::steady_clock::now();
-    view->setPanelsShown(true);
-    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    std::printf("panels: %zu panel faces made in %.2f ms (rebuild %.2f ms of it)\n", view->canvas().panelCount(), ms, view->stats().lastRebuildMs);
-    settle();
-  }
-  // The whole project, fitted (far level), then one band (near level). TX.panel-faces: with the stock devices drawn as
-  // their panels (the default) and as plain blocks (setPanelsShown(false): the A/B of the panels' cost).
+  // The whole project, fitted (far level), then one band (near level). (GU.11: the stock devices' panels and their A/B
+  // are gone: the modules are groups drawn as their own panels.)
   for (int level = 0; level < 2; ++level) {
-    for (int panels = 1; panels >= 0; --panels) {
-      view->setPanelsShown(panels != 0);
+    for (int panels = 1; panels >= 1; --panels) {
       if (level == 0) view->fitAll(false);
       else view->focusBand(snap->tracks[0]->children.at(3)->id, false);
       settle();
@@ -646,7 +634,6 @@ int main(int argc, char** argv) {
       }
     }
   }
-  view->setPanelsShown(true);
   // TX.node-menu: the node menu over one band — opening it with the full catalog (Tab: the catalog shared, the search,
   // the popup laid out and painted with the canvas under it), a keystroke (search again + repaint), and the push-apart
   // after a spawn onto a block (a re-layout per frame until settled; then idle).
@@ -695,7 +682,6 @@ int main(int argc, char** argv) {
   for (int level = 0; level < 2; ++level) {
     const doc::TrackId t = snap->tracks[0]->children.at(3)->id;
     // Far out the blocks are plain (a panel's controls would take a press there: TMM.4 keeps them interactive).
-    view->setPanelsShown(level == 0);
     if (level == 0) view->focusBand(t, false);
     else view->fitAll(false);
     settle();
@@ -745,7 +731,6 @@ int main(int argc, char** argv) {
                   level == 0 ? "one band" : "whole project", lod, w, h);
     pq::bench::reportStats(name, pq::bench::summarize(drop), "ns CPU/frame");
   }
-  view->setPanelsShown(true);
   // The morph: back to the arrangement and in again, every frame timed at 144 Hz.
   view->setShown(false, false);
   settle();
@@ -821,8 +806,8 @@ int main(int argc, char** argv) {
     auto t = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Chain");
     if (!t || !st.dispatch(t->command)) return 1;
     const doc::TrackId track = t->tracks.at(0);
-    const char* fx[] = {"auto_filter", "eq_eight", "saturator"};
-    auto inst = doc::ops::addDevice(*st.current(), st.ids(), track, "operator", doc::DeviceKind::Instrument);
+    const char* fx[] = {"module:saturator", "module:vca", "module:utility"};  // GU.11: modules
+    auto inst = doc::ops::addDevice(*st.current(), st.ids(), track, "module:operator", doc::DeviceKind::Instrument);
     if (!inst || !st.dispatch(inst->command)) return 1;
     for (const char* f : fx) {
       auto e = doc::ops::addDevice(*st.current(), st.ids(), track, f, doc::DeviceKind::AudioEffect);

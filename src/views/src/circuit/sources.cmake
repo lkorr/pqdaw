@@ -10,8 +10,7 @@ set(PQ_VIEWS_CIRCUIT_SOURCES
   src/circuit/patch_editor.cpp
   src/circuit/circuit_editor.cpp
   src/circuit/probes.cpp
-  src/circuit/device_circuit.cpp  # T4.4-fix1: the editor on a device of the project
   src/circuit/node_info.cpp  # T4.15: node tooltips, recognised constant forms
   src/circuit/device_scene.cpp  # T4.15 / TMM.12: a device patch's scene as it plays
-  src/circuit/node_catalog.cpp  # TX.node-menu: the catalog (atoms, meta modules, devices, user library), search, typed specs
+  src/circuit/node_catalog.cpp  # TX.node-menu: the catalog (atoms, meta modules, modules, user library), search, typed specs
   src/circuit/node_menu.cpp)  # TX.node-menu: the node menu widget

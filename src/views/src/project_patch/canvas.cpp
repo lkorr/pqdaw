@@ -833,22 +833,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         if (node != kNone && pp.nodes[node].kind == NodeKind::Source) return true;  // a window's empty lane: nothing
         if (node != kNone && pp.nodes[node].kind == NodeKind::Device && !pp.nodes[node].missing) {
           const Node& n = pp.nodes[node];
-          if (!n.expanded) {
-            v.setDeviceExpanded(n.device, true);  // a closed block opens to its atoms
-            return true;
-          }
-          // Opened (T5.x-one-circuit): its title strip closes it; anywhere else inside edits its circuit (the Device
-          // level: the circuit editor) — in an opened rack, the device whose box is under the pointer.
-          const graph::Point2 w = toWorld(e.pos);
-          if (w.y < n.y + 16.0f) {
-            v.setDeviceExpanded(n.device, false);
-            return true;
-          }
-          if (n.meta) {  // TMM.4: a meta module's atoms are its generated expansion
-            v.context().setStatus("A meta module's atoms are generated from its face: read-only. Its title strip closes it.");
-            return true;
-          }
-          (void)v.editDeviceCircuit(n.device);
+          v.setDeviceExpanded(n.device, true);  // GU.11: a group opens (a leaf has no inside: a status line)
           return true;
         }
         if (node != kNone && pp.nodes[node].kind == NodeKind::Mixer) {

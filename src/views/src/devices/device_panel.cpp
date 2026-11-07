@@ -196,65 +196,6 @@ private:
   ui::DragBox* box_;
 };
 
-// ---- EQ filter-type chooser: the item as a filter-shape glyph (the menu lists the names) ----------------------------------
-class FilterChooser final : public ui::Dropdown {
-public:
-  FilterChooser(std::string name, std::vector<std::string> items) : Dropdown(std::move(name), std::move(items), 0) {}
-  void paint(ui::PaintContext& ctx) override {
-    const ui::Theme* th = ctx.res.theme;
-    if (!th) return;
-    const ui::VisualState v = visualState();
-    const ui::IRect r = rect();
-    const ui::Rgba fill = v.hover || v.pressed || menuOpen() ? th->field.fillHover : th->field.fill;
-    paint::box(ctx.dl, r, 0.0f, fill, v.focus || menuOpen() ? th->field.borderFocus : th->field.border);
-    // The glyph: magnitude (0 = bottom … 1 = top) over x ∈ [0, 1], a log-ish frequency axis.
-    const float gx0 = static_cast<float>(r.x) + ctx.scale.exact(7.0f), gx1 = static_cast<float>(r.right()) - ctx.scale.exact(7.0f);
-    const float gy0 = static_cast<float>(r.y) + ctx.scale.exact(4.0f), gy1 = static_cast<float>(r.bottom()) - ctx.scale.exact(4.0f);
-    constexpr int kN = 24;
-    ui::Vec2 pts[kN];
-    const int type = index();
-    for (int i = 0; i < kN; ++i) {
-      const float u = static_cast<float>(i) / (kN - 1);
-      float m = 0.5f;
-      switch (type) {
-        case 0: m = u < 0.35f ? 0.5f * std::pow(u / 0.35f, 4.0f) : 0.5f; break;                 // low cut 48
-        case 1: m = u < 0.45f ? 0.5f * std::sqrt(u / 0.45f) : 0.5f; break;                      // low cut 12
-        case 2: m = 0.5f + 0.35f / (1.0f + std::exp((u - 0.4f) * 14.0f)); break;               // low shelf
-        case 3: m = 0.5f + 0.4f * std::exp(-(u - 0.5f) * (u - 0.5f) * 40.0f); break;           // bell
-        case 4: m = 0.5f - 0.45f * std::exp(-(u - 0.5f) * (u - 0.5f) * 120.0f); break;         // notch
-        case 5: m = 0.5f + 0.35f / (1.0f + std::exp(-(u - 0.6f) * 14.0f)); break;              // high shelf
-        case 6: m = u > 0.55f ? 0.5f * std::sqrt((1.0f - u) / 0.45f) : 0.5f; break;            // high cut 12
-        default: m = u > 0.65f ? 0.5f * std::pow((1.0f - u) / 0.35f, 4.0f) : 0.5f; break;      // high cut 48
-      }
-      pts[i] = {gx0 + u * (gx1 - gx0), gy1 - m * (gy1 - gy0)};
-    }
-    ui::smoothPolyline(ctx.dl, pts, kN, v.disabled ? th->text.disabled : th->text.primary, ctx.scale.exact(1.25f));
-  }
-};
-
-// ---- tabs: one latching button per selector value ------------------------------------------------------------------------
-class PanelTabs final : public ui::Widget {
-public:
-  PanelTabs(std::string name, DevicePanel::Impl& impl, const SelectorDesc& sel) : Widget(std::move(name)), impl_(impl), sel_(sel) {
-    setLayout(ui::LayoutKind::Row);
-    setGap(2);
-    for (size_t i = 0; i < sel.values.size(); ++i) {
-      auto& t = add<ui::Toggle>("tab" + std::to_string(i), sel.values[i].empty() ? std::string("A") : sel.values[i]);
-      t.setWidth(ui::Length::flex(1.0f));
-      const int32_t idx = static_cast<int32_t>(i);
-      t.onToggle = [this, idx](bool) { impl_.userSelect(sel_.name, idx); };
-    }
-  }
-  void show(int32_t index) {
-    for (size_t i = 0; i < childCount(); ++i) static_cast<ui::Toggle&>(child(i)).setOn(static_cast<int32_t>(i) == index);
-  }
-  const SelectorDesc& selector() const noexcept { return sel_; }
-
-private:
-  DevicePanel::Impl& impl_;
-  const SelectorDesc& sel_;
-};
-
 // ---- the frame's parts ----------------------------------------------------------------------------------------------------
 class JackStrip final : public ui::Widget {
 public:
@@ -389,21 +330,9 @@ public:
     // Preset slot (placeholder until the M5 browser): a sunken field on the right.
     const ui::IRect p = presetRect();
     if (f) {
-      ui::IRect t{fr.right() + ctx.scale.px(4), r.y, std::max(0, (p.w > 0 ? p.x : r.right()) - fr.right() - ctx.scale.px(8)), r.h};
-      // T4.4-fix1: a user device — "● edited" after the title, in the accent colour (room kept for it first).
-      const std::string_view kEdited = "\xE2\x97\x8F edited";
-      int32_t markW = 0;
-      if (panel_.edited() && ctx.res.text) markW = ctx.res.text->measure(f->small, kEdited) + ctx.scale.px(6);
-      if (markW > t.w / 2) markW = 0;  // too narrow (folded): the title alone
-      t.w -= markW;
-      const int32_t adv = rename_ != nullptr ? 0 :  // T4.17: the rename field draws the name
-          paint::text(ctx, f->bodyStrong, t, title_, panel_.active() ? th->device.titleText : th->device.titleTextOff, ui::TextAlign::Left);
-      if (markW > 0 && rename_ == nullptr) {
-        const int32_t x = t.x + adv + ctx.scale.px(6);
-        const int32_t ew = ctx.res.text != nullptr ? ctx.res.text->measure(f->small, kEdited) : 0;
-        paint::text(ctx, f->small, {x, r.y, ew, r.h}, kEdited, !panel_.active() ? th->device.titleTextOff : th->accent.primary,
-                    ui::TextAlign::Left);
-      }
+      const ui::IRect t{fr.right() + ctx.scale.px(4), r.y, std::max(0, (p.w > 0 ? p.x : r.right()) - fr.right() - ctx.scale.px(8)), r.h};
+      if (rename_ == nullptr)  // T4.17: the rename field draws the name
+        paint::text(ctx, f->bodyStrong, t, title_, panel_.active() ? th->device.titleText : th->device.titleTextOff, ui::TextAlign::Left);
       if (p.w > 0) {  // T5.11: the preset name; a click hot-swaps (the host's onPresetClick)
         const bool live = static_cast<bool>(panel_.onPresetClick);
         paint::box(ctx.dl, p, 0.0f, hoverPreset_ && live ? th->surface.raised : th->field.fill, th->device.border);
@@ -437,10 +366,8 @@ public:
       panel_.setFolded(!panel_.folded());
       return true;
     }
-    if (e.clickCount == 2) {  // T4.4-fix1: the host's action (Open in Circuit View), else fold
-      if (panel_.onTitleDoubleClick) panel_.onTitleDoubleClick();
-      else if (panel_.foldable()) panel_.setFolded(!panel_.folded());
-      else return false;
+    if (e.clickCount == 2 && panel_.foldable()) {  // folds, as the triangle does
+      panel_.setFolded(!panel_.folded());
       return true;
     }
     return false;
@@ -463,10 +390,6 @@ public:
   }
   ui::IRect presetSlot() const { return presetRect(); }
   ui::InfoText info() const override {
-    if (panel_.onTitleDoubleClick)
-      return {title_ + (panel_.edited() ? " (edited)" : ""),
-              "Device title bar: the square switches the device on or off; the triangle folds it; a double-click opens "
-              "the device in the Circuit View (editing a stock device makes it this track's own, edited copy)."};
     return {title_, "Device title bar: the square switches the device on or off; the triangle (or a double-click) folds it."};
   }
 
@@ -521,7 +444,7 @@ public:
     setLayout(ui::LayoutKind::Custom);
     setClipChildren(true);
   }
-  void place(ui::Widget& w, const ControlDesc& d) { placed_.push_back({&w, &d}); }
+  void place(ui::Widget& w, const ControlLayout& d) { placed_.push_back({&w, &d}); }
   void arrange(ui::LayoutPass& pass) override {
     const ui::IRect r = rect();
     const int32_t pad = pass.px(kPad);
@@ -548,7 +471,7 @@ public:
 private:
   struct Placed {
     ui::Widget* widget;
-    const ControlDesc* desc;
+    const ControlLayout* desc;
   };
   DevicePanel& panel_;
   std::vector<Placed> placed_;
@@ -565,18 +488,14 @@ bool shownInTree(const ui::Widget& w) noexcept {
 
 // ---- Impl ------------------------------------------------------------------------------------------------------------
 
-std::string DevicePanel::Impl::resolve(std::string_view templ) const { return resolveTemplate(templ, selValues); }
-
 double DevicePanel::Impl::value(std::string_view name) const {
   if (!name.empty() && name[0] == '#') {
-    const std::string n = resolve(name.substr(1));
-    const auto it = consts.find(n);
+    const auto it = consts.find(name.substr(1));
     return it != consts.end() ? it->second : 0.0;
   }
-  const std::string n = resolve(name);
-  const auto it = params.find(n);
+  const auto it = params.find(name);
   if (it != params.end()) return it->second;
-  const auto c = consts.find(n);
+  const auto c = consts.find(name);
   return c != consts.end() ? c->second : 0.0;
 }
 
@@ -609,14 +528,8 @@ void DevicePanel::Impl::userActive(bool on) {
   if (panel.target_) panel.target_->setActive(on);
 }
 
-void DevicePanel::Impl::userSelect(const std::string& selector, int32_t index) {
-  if (suppress) return;
-  panel.select(selector, index);
-}
-
 void DevicePanel::Impl::changed(std::string_view name, bool isConst, ui::Widget* source) {
   suppress = true;
-  bool visibility = false;
   const std::string key = isConst ? "#" + std::string(name) : std::string(name);
   for (Bound& b : bound) {
     if (b.display) {
@@ -624,55 +537,14 @@ void DevicePanel::Impl::changed(std::string_view name, bool isConst, ui::Widget*
     } else if (b.widget != source && ((!isConst && b.param == name) || (isConst && b.constName == name))) {
       bindOne(b);
     }
-    for (const Condition& c : b.desc->when)
-      if (c.source != Condition::Source::Selector && resolve(c.name) == name &&
-          (c.source == Condition::Source::Const) == isConst)
-        visibility = true;
   }
   suppress = false;
-  if (visibility) refreshVisibility();
-}
-
-bool DevicePanel::Impl::conditionsHold(const ControlDesc& d) const {
-  for (const Condition& c : d.when) {
-    if (c.source == Condition::Source::Selector) {
-      const auto it = selValues.find(c.name);
-      const std::string cur = it != selValues.end() ? it->second : std::string();
-      if (std::find(c.keys.begin(), c.keys.end(), cur) == c.keys.end()) return false;
-      continue;
-    }
-    const std::string n = resolve(c.name);
-    double v = 0.0;
-    if (c.source == Condition::Source::Const) {
-      const auto it = consts.find(n);
-      v = it != consts.end() ? it->second : 0.0;
-    } else {
-      const auto it = params.find(n);
-      v = it != params.end() ? it->second : 0.0;
-    }
-    bool any = false;
-    for (double x : c.values) any = any || std::fabs(x - v) < 1e-9 * std::max(1.0, std::fabs(x));
-    if (!any) return false;
-  }
-  return true;
-}
-
-void DevicePanel::Impl::refreshVisibility() {
-  bool any = false;
-  for (Bound& b : bound) {
-    const bool show = conditionsHold(*b.desc);
-    if (b.widget->visible() != show) {
-      b.widget->setVisible(show);
-      any = true;
-    }
-  }
-  if (any) panel.body_->invalidateArrange();
 }
 
 void DevicePanel::Impl::bindOne(Bound& b) {
-  const ControlDesc& d = *b.desc;
-  b.param = d.param.empty() ? std::string() : resolve(d.param);
-  b.constName = d.constName.empty() ? std::string() : resolve(d.constName);
+  const ControlLayout& d = *b.desc;
+  b.param = d.param;
+  b.constName = d.constName;
   const ParamInfo* p = b.param.empty() ? nullptr : paramInfo(b.param);
   const double v = p ? params[b.param] : (!b.constName.empty() ? consts[b.constName] : 0.0);
   switch (d.kind) {
@@ -744,32 +616,12 @@ void DevicePanel::Impl::bindOne(Bound& b) {
       t.setOn(std::fabs(v - d.values[1]) < 1e-9);
       break;
     }
-    case ControlKind::Chooser: {
-      auto& c = static_cast<ui::Dropdown&>(*b.widget);
-      int32_t idx = 0;
-      double best = 1e300;
-      for (size_t i = 0; i < d.values.size(); ++i)
-        if (std::fabs(d.values[i] - v) < best) {
-          best = std::fabs(d.values[i] - v);
-          idx = static_cast<int32_t>(i);
-        }
-      c.setIndex(idx);
-      break;
-    }
-    case ControlKind::Tabs: {
-      auto& t = static_cast<PanelTabs&>(*b.widget);
-      const auto it = selection.find(d.selector);
-      t.show(it != selection.end() ? it->second : 0);
-      break;
-    }
-    case ControlKind::Visual:
     case ControlKind::Face:
       if (b.display) {
         b.display->rebind();
         b.display->valuesChanged();
       }
       break;
-    case ControlKind::Label: break;
   }
 }
 
@@ -777,12 +629,11 @@ void DevicePanel::Impl::bindAll() {
   suppress = true;
   for (Bound& b : bound) bindOne(b);
   suppress = false;
-  refreshVisibility();
 }
 
 // ---- DevicePanel ------------------------------------------------------------------------------------------------------
 
-DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelDesc desc, DeviceTarget* target,
+DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelLayout desc, DeviceTarget* target,
                          const std::map<std::string, double, std::less<>>& values)
     : Widget(std::move(name)), sig_(std::move(sig)), desc_(std::move(desc)), target_(target), impl_(std::make_unique<Impl>(*this)) {
   Impl& im = *impl_;
@@ -794,11 +645,6 @@ DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelDesc desc, 
     const auto it = values.find(c.name);
     im.consts[c.name] = it != values.end() ? it->second : c.def;
   }
-  for (const SelectorDesc& s : desc_.selectors) {
-    im.selection[s.name] = s.def;
-    im.selValues[s.name] = s.values[static_cast<size_t>(s.def)];
-  }
-
   setLayout(ui::LayoutKind::Column);
   setClipChildren(true);
   const float w = desc_.width + 2 * kPad;
@@ -815,7 +661,7 @@ DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelDesc desc, 
   body.setHeight(desc_.fitFace ? ui::Length::flex() : ui::Length::fixed(desc_.height + 2 * kPad));
   body_ = &body;
 
-  for (const ControlDesc& d : desc_.controls) {
+  for (const ControlLayout& d : desc_.controls) {
     Impl::Bound b;
     b.desc = &d;
     switch (d.kind) {
@@ -867,7 +713,7 @@ DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelDesc desc, 
         auto& t = body.add<ui::Toggle>(d.id, d.text.empty() ? (d.label.empty() ? d.param + d.constName : d.label) : d.text);
         Impl* ip = &im;
         ui::Toggle* tp = &t;
-        const ControlDesc* dp = &d;
+        const ControlLayout* dp = &d;
         t.onToggle = [ip, tp, dp](bool on) {
           for (Impl::Bound& x : ip->bound) {
             if (x.widget != tp) continue;
@@ -881,52 +727,9 @@ DevicePanel::DevicePanel(std::string name, DeviceSignature sig, PanelDesc desc, 
             }
           }
         };
-        if (!d.info.empty()) t.setInfo(d.text.empty() ? d.id : d.text, d.info);
-        else if (!d.constName.empty())
+        if (!d.constName.empty())
           t.setInfo(d.text.empty() ? d.constName : d.text, "A structural setting: switching it recompiles the device (crossfaded while it plays).");
         b.widget = &t;
-        break;
-      }
-      case ControlKind::Chooser: {
-        ui::Dropdown& c = d.style == "filter" ? static_cast<ui::Dropdown&>(body.add<FilterChooser>(d.id, d.items))
-                                              : body.add<ui::Dropdown>(d.id, d.items, 0);
-        Impl* ip = &im;
-        ui::Dropdown* cp = &c;
-        const ControlDesc* dp = &d;
-        c.onChange = [ip, cp, dp](int32_t i) {
-          const double v = dp->values[static_cast<size_t>(std::clamp<int32_t>(i, 0, static_cast<int32_t>(dp->values.size()) - 1))];
-          for (Impl::Bound& x : ip->bound) {
-            if (x.widget != cp) continue;
-            if (!x.param.empty()) {
-              ip->userParamBegin(x.param);
-              ip->userParam(x.param, v, cp);
-              ip->userParamEnd(x.param);
-            } else {
-              ip->userConst(x.constName, v, cp);
-            }
-          }
-        };
-        if (!d.info.empty()) c.setInfo(d.label.empty() ? d.id : d.label, d.info);
-        else if (!d.constName.empty())
-          c.setInfo(d.label.empty() ? d.constName : d.label, "A structural setting: changing it recompiles the device (crossfaded while it plays).");
-        b.widget = &c;
-        break;
-      }
-      case ControlKind::Label: {
-        auto& l = body.add<ui::Label>(d.id, d.text, ui::FontRoleId::Small, ui::TextTone::Secondary, ui::TextAlign::Left);
-        b.widget = &l;
-        break;
-      }
-      case ControlKind::Tabs: {
-        const SelectorDesc* s = desc_.findSelector(d.selector);
-        auto& t = body.add<PanelTabs>(d.id, im, *s);
-        b.widget = &t;
-        break;
-      }
-      case ControlKind::Visual: {
-        std::unique_ptr<PanelDisplay> disp = makeDisplay(im, d);
-        b.display = disp.get();
-        b.widget = &body.addChild(std::move(disp));
         break;
       }
       case ControlKind::Face: {  // TMM.10
@@ -981,41 +784,6 @@ double DevicePanel::constValue(std::string_view name) const {
   return it != impl_->consts.end() ? it->second : 0.0;
 }
 
-void DevicePanel::select(std::string_view selector, int32_t index) {
-  const SelectorDesc* s = desc_.findSelector(selector);
-  if (!s) return;
-  index = std::clamp(index, 0, static_cast<int32_t>(s->values.size()) - 1);
-  int32_t& cur = impl_->selection[s->name];
-  if (cur == index) {
-    // Tabs flip on press: show the (unchanged) selection on this selector's tabs again.
-    impl_->suppress = true;
-    for (Impl::Bound& b : impl_->bound)
-      if (b.desc->kind == ControlKind::Tabs && b.desc->selector == s->name) impl_->bindOne(b);
-    impl_->suppress = false;
-    return;
-  }
-  cur = index;
-  impl_->selValues[s->name] = s->values[static_cast<size_t>(index)];
-  // Rebind only what uses this selector (controls whose bindings or conditions name it, tabs, displays).
-  const std::string key = "{" + s->name + "}";
-  impl_->suppress = true;
-  for (Impl::Bound& b : impl_->bound) {
-    const ControlDesc& d = *b.desc;
-    bool uses = d.param.find(key) != std::string::npos || d.constName.find(key) != std::string::npos ||
-                (d.kind == ControlKind::Tabs && d.selector == s->name) || d.kind == ControlKind::Visual ||
-                d.kind == ControlKind::Face;
-    for (const Condition& c : d.when) uses = uses || c.name == s->name || c.name.find(key) != std::string::npos;
-    if (uses) impl_->bindOne(b);
-  }
-  impl_->suppress = false;
-  impl_->refreshVisibility();
-}
-
-int32_t DevicePanel::selected(std::string_view selector) const {
-  const auto it = impl_->selection.find(selector);
-  return it != impl_->selection.end() ? it->second : 0;
-}
-
 void DevicePanel::setActive(bool on) {
   if (active_ == on) return;
   active_ = on;
@@ -1028,12 +796,6 @@ void DevicePanel::beginRename(std::function<void(const std::string&)> commit) {
   static_cast<TitleBar*>(title_)->beginRename(std::move(commit));
 }
 bool DevicePanel::renaming() const noexcept { return static_cast<const TitleBar*>(title_)->renaming(); }
-
-void DevicePanel::setEdited(bool e) {
-  if (edited_ == e) return;
-  edited_ = e;
-  markDirty();
-}
 
 void DevicePanel::setPresetName(std::string name) {
   if (presetName_ == name) return;
@@ -1063,7 +825,7 @@ void DevicePanel::setFoldable(bool f) {
   if (title_) title_->markDirty();
 }
 
-ui::Vec2 DevicePanel::logicalSizeOf(const DeviceSignature& sig, const PanelDesc& desc) noexcept {
+ui::Vec2 DevicePanel::logicalSizeOf(const DeviceSignature& sig, const PanelLayout& desc) noexcept {
   const float w = desc.fitFace ? std::max(kFaceMinWidth, desc.width + 2 * kPad) : desc.width + 2 * kPad;
   return {w, (sig.exports.empty() ? 0.0f : kJackStripH) + kTitleH + desc.height + 2 * kPad};
 }
@@ -1086,7 +848,7 @@ bool DevicePanel::interactiveAt(ui::Vec2 p) const {
   }
   if (folded_ || body_ == nullptr || !body_->visible()) return false;
   for (const Impl::Bound& b : impl_->bound) {
-    if (b.desc->kind == ControlKind::Label || !b.widget->visible() || !b.widget->enabled()) continue;
+    if (!b.widget->visible() || !b.widget->enabled()) continue;
     if (b.widget->rect().contains(p)) return true;
   }
   return false;
@@ -1127,18 +889,13 @@ std::optional<DevicePanel::Anchor> DevicePanel::controlAnchor(std::string_view p
     return Anchor{{static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)},
                   0.5f * static_cast<float>(std::min(r.w, r.h))};
   };
-  // Of several shown controls for it, the one controlHome prefers (bound by name, then without conditions).
   std::optional<Anchor> best, display;
-  int32_t bestScore = -1;
   for (const Impl::Bound& b : impl_->bound) {
     if (!b.widget->visible()) continue;
     if (b.display) {
       if (!display)
         if (auto r = b.display->paramRect(param)) display = centreOf(*r);
-    } else if (b.param == param) {
-      const int32_t score = b.desc != nullptr ? (b.desc->param == param ? 2 : 0) + (b.desc->when.empty() ? 1 : 0) : 0;
-      if (score <= bestScore) continue;
-      bestScore = score;
+    } else if (b.param == param && !best) {
       const ui::IRect r = b.widget->rect();
       if (dynamic_cast<const PanelKnob*>(b.widget) != nullptr) {
         // PanelKnob::paint's arc: between the label and value rows, its outer edge at rad + thick / 2.
@@ -1159,60 +916,15 @@ std::optional<DevicePanel::Anchor> DevicePanel::controlAnchor(std::string_view p
 }
 
 std::optional<DevicePanel::Anchor> DevicePanel::controlHome(std::string_view param) const {
-  // Every assignment of the selectors' values (a few: EQ Eight's band, Operator's oscillator).
-  std::vector<NameMap> assigns(1);
-  for (const SelectorDesc& s : desc_.selectors) {
-    if (s.values.empty() || assigns.size() * s.values.size() > 4096) continue;
-    std::vector<NameMap> next;
-    next.reserve(assigns.size() * s.values.size());
-    for (const NameMap& a : assigns)
-      for (const std::string& v : s.values) {
-        NameMap b = a;
-        b[s.name] = v;
-        next.push_back(std::move(b));
-      }
-    assigns = std::move(next);
-  }
-  auto names = [&](const std::string& templ) {
-    for (const NameMap& a : assigns)
-      if (resolveTemplate(templ, a) == param) return true;
-    return false;
-  };
   const float top = (sig_.exports.empty() ? 0.0f : kJackStripH) + kTitleH + kPad;
-  // Of several controls for it (Operator's LFO amount per oscillator on the oscillator's tab and in the LFO section),
-  // the one shown most often: bound by name rather than through a selector, then without conditions.
-  std::optional<Anchor> best, display;
-  int32_t bestScore = -1;
-  for (const ControlDesc& c : desc_.controls) {
+  for (const ControlLayout& c : desc_.controls) {
+    if (c.param != param) continue;
     const ui::Vec2 centre{kPad + c.x + 0.5f * c.w, top + c.y + 0.5f * c.h};
-    if (!c.param.empty() && c.kind != ControlKind::Label && names(c.param)) {
-      const int32_t score = (c.param == param ? 2 : 0) + (c.when.empty() ? 1 : 0);
-      if (score <= bestScore) continue;
-      bestScore = score;
-      Anchor a{centre, 0.5f * std::min(c.w, c.h), 0.5f * c.w};
-      if (c.kind == ControlKind::Knob) a.radius = std::max(0.0f, 0.5f * std::min(c.w, std::max(0.0f, c.h - 2.0f * kLabelH)) - 2.0f);
-      best = a;
-      continue;
-    }
-    if (!display)
-      for (const auto& [role, templ] : c.bind)
-        if (names(templ)) {
-          display = Anchor{centre, 0.0f};
-          break;
-        }
+    Anchor a{centre, 0.5f * std::min(c.w, c.h), 0.5f * c.w};
+    if (c.kind == ControlKind::Knob) a.radius = std::max(0.0f, 0.5f * std::min(c.w, std::max(0.0f, c.h - 2.0f * kLabelH)) - 2.0f);
+    return a;
   }
-  return best ? best : display;
-}
-
-void DevicePanel::showMeasuredResponse(bool on) {
-  for (Impl::Bound& b : impl_->bound)
-    if (b.display) b.display->setMeasured(on);
-}
-
-bool DevicePanel::measuredResponseShown() const {
-  for (const Impl::Bound& b : impl_->bound)
-    if (b.display && b.display->measured()) return true;
-  return false;
+  return std::nullopt;
 }
 
 void DevicePanel::wakeFaces() {

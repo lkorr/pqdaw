@@ -158,7 +158,7 @@ void probeFile(const std::string& absPath, const PlaceSpec& place, std::string_v
     } else {
       r.flags |= kFlagProbeFailed;
     }
-  } else if ((r.kind == ItemKind::Preset || r.kind == ItemKind::Device) && !(r.flags & kFlagOffline)) {
+  } else if (r.kind == ItemKind::Preset && !(r.flags & kFlagOffline)) {
     HANDLE h = CreateFileW(winPath(absPath).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     if (h != INVALID_HANDLE_VALUE) {

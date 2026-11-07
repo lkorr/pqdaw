@@ -62,13 +62,11 @@ const char* tuningParamLabel(doc::ParamKind k) noexcept {
 
 // ---- T4.18: device params ----
 
-// A device's name as its panel title shows it: its own name, else the rack kind or the catalog's.
+// A device's name as its panel title shows it: its own name, else its block's (the library's description).
 std::string deviceTitle(const doc::Device& d, const doc::DeviceLibrary* lib) {
   if (!d.name.empty()) return d.name;
   if (lib != nullptr)
-    if (const doc::DeviceInfo* i = lib->catalog().find(d.patch)) return i->name;
-  for (const doc::StockDevice& st : doc::stockDevices())
-    if (st.patch == d.patch) return std::string(st.name);
+    if (const doc::DeviceInfo* i = lib->infoOf(d)) return i->name;
   return d.patch;
 }
 

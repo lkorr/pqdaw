@@ -39,8 +39,7 @@ struct PlaceSpec {
 // What a file is (by extension).
 enum class ItemKind : uint8_t {
   Sample,   // audio: .wav .wave .w64 .rf64 .bw64 .aif .aiff .aifc .flac .mp3 .ogg
-  Preset,   // .pqpreset: a device or rack preset (T5.11)
-  Device,   // .pqdevice: a user device (T5.11)
+  Preset,   // .pqpreset: a block or group preset (T5.11, GU.2)
   Tuning,   // .pqtuning, .scl
   Clip,     // .pqclip, .mid, .midi
   Patch,    // .pqp: a patch / subcircuit file
@@ -222,17 +221,9 @@ std::string foldedPathKey(std::string_view path);
 Category categorize(ItemKind kind, PlaceKind place, std::string_view relDir, std::string_view fileName,
                     Category sniffed) noexcept;
 
-// The kind a preset or user device file declares, from its first bytes (`head`, up to 4 KiB): a "rack" key → Racks;
+// The kind a preset file declares, from its first bytes (`head`, up to 4 KiB): a "rack" key → Racks;
 // else (TMM.10) a "patch" value "meta:…" → MetaModules; else the first "kind" value: "instrument" → Instruments,
 // "audioEffect" → AudioEffects; else None. Provisional until T5.11 fixes the preset format (QUESTIONS Q153).
 Category sniffDeviceCategory(std::string_view head) noexcept;
-
-// A stock device as a category item (Instruments / Audio Effects list the stock devices themselves, as in Live).
-struct StockItem {
-  std::string_view name;
-  std::string_view patch;
-  Category category = Category::AudioEffects;
-};
-std::vector<StockItem> stockItems();
 
 }  // namespace pq::library

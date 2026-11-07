@@ -14,7 +14,6 @@
 #include "pq/library/index.h"
 #include "pq/tuning/scala.h"
 #include "pq/views/browser/library.h"
-#include "pq/views/devices/panel_desc.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 
@@ -52,15 +51,10 @@ Result<doc::DeviceId> firstDevice(ViewContext& ctx, const doc::ops::EditResult& 
   return e->devices.front();
 }
 
-// The device a preset or user-device file holds (its own ids: cloned on load).
+// The device a preset file holds (its own ids: cloned on load).
 Result<doc::DevicePtr> deviceOfFile(std::string_view path) {
   auto text = doc::readTextFile(path);
   if (!text) return std::move(text).error();
-  if (libraryItemOf(path) == LibraryItem::UserDevice) {
-    auto f = doc::parseUserDevice(*text, path);
-    if (!f) return std::move(f).error();
-    return doc::makeUserDevice(doc::DeviceId{1}, *f);
-  }
   auto f = doc::parsePreset(*text, path);
   if (!f) return std::move(f).error();
   return std::move(f->device);
@@ -89,7 +83,6 @@ std::string_view catalogPatchOf(std::string_view path) noexcept {
 LibraryItem libraryItemOf(std::string_view path) noexcept {
   if (!catalogPatchOf(path).empty()) return LibraryItem::CatalogDevice;
   if (endsWithFolded(path, doc::kPresetExtension)) return LibraryItem::Preset;
-  if (endsWithFolded(path, doc::kUserDeviceExtension)) return LibraryItem::UserDevice;
   if (endsWithFolded(path, doc::kTuningExtension) || endsWithFolded(path, ".scl")) return LibraryItem::Tuning;
   if (endsWithFolded(path, doc::kClipExtension)) return LibraryItem::Clip;
   return LibraryItem::None;
@@ -109,10 +102,7 @@ std::string deviceDisplayName(const ViewContext& ctx, std::string_view patch) {
   if (patch.starts_with(doc::kMetaDevicePrefix))  // TMM.10: a chain meta device: its type's name
     if (const meta::Type* t = meta::findType(patch.substr(doc::kMetaDevicePrefix.size()))) return std::string(t->name);
   if (patch == doc::kInstrumentRack) return "Instrument Rack";
-  if (const doc::DeviceLibrary* lib = ctx.deviceLibrary())
-    if (const doc::DeviceInfo* i = lib->catalog().find(patch)) return i->name;
-  for (const doc::StockDevice& s : doc::stockDevices())
-    if (s.patch == patch) return std::string(s.name);
+  (void)ctx;
   return std::string(patch);
 }
 
@@ -150,12 +140,13 @@ Result<doc::DeviceId> addCatalogDevice(ViewContext& ctx, std::string_view patch,
   if (at.chain.valid())
     return intoChain(ctx, at, [&](DeviceSlot off) { return addCatalogDevice(ctx, patch, kind, off); });
   const doc::Project& p = *ctx.doc();
-  if (patch.starts_with(doc::kModuleItemPrefix)) {  // GU.4: a built-in module: its group preset, pasted (off the path)
+  if (patch.starts_with(doc::kModuleItemPrefix)) {  // GU.4: a built-in module: its group preset
     const doc::ModuleInfo* m = doc::findModule(patch.substr(doc::kModuleItemPrefix.size()));
     if (m == nullptr) return Error{ErrorCode::NotFound, "unknown module '" + std::string(patch) + "'", {}};
     if (m->instrument)  // GU.8: an instrument module takes the notes of a MIDI track with an empty path
       return firstDevice(ctx, doc::ops::pasteBlocksAtNotes(p, ctx.store().ids(), at.track, doc::moduleBlocks(m->kind)));
-    return firstDevice(ctx, doc::ops::pasteBlocks(p, ctx.store().ids(), at.track, doc::moduleBlocks(m->kind)));
+    // GU.11: an effect module goes onto the path at the slot (its group: one block of the chain).
+    return firstDevice(ctx, doc::ops::addDevice(p, ctx.store().ids(), at.track, std::string(patch), doc::DeviceKind::AudioEffect, at.index));
   }
   if (patch.starts_with(doc::kMetaDevicePrefix)) {  // TMM.10: a chain meta device, its kind from the slot
     const meta::Type* t = meta::findType(patch.substr(doc::kMetaDevicePrefix.size()));
@@ -183,11 +174,6 @@ Result<doc::DeviceId> loadDeviceItem(ViewContext& ctx, std::string_view path, De
   if (const std::string_view patch = catalogPatchOf(path); !patch.empty()) {
     doc::DeviceKind kind = doc::DeviceKind::AudioEffect;
     if (patch == doc::kInstrumentRack) kind = doc::DeviceKind::Instrument;
-    else if (const doc::DeviceLibrary* lib = ctx.deviceLibrary(); lib && lib->catalog().find(patch))
-      kind = lib->catalog().find(patch)->kind;
-    else
-      for (const doc::StockDevice& s : doc::stockDevices())
-        if (s.patch == patch) kind = s.kind;
     return addCatalogDevice(ctx, patch, kind, at);
   }
   // GU.2: a group preset is pasted whole (fresh ids) onto the track, off its path (outside a rack chain only).
@@ -325,27 +311,6 @@ Result<std::string> saveDevicePreset(ViewContext& ctx, doc::DeviceId device, boo
   }
   auto path = lib.savePreset(*d, name);
   if (path) lib.pendingRename = *path;
-  return path;
-}
-
-Result<std::string> saveAsNewDevice(ViewContext& ctx, doc::DeviceId device) {
-  const doc::Device* d = doc::findDevice(*ctx.doc(), device).device;
-  if (d == nullptr) return Error{ErrorCode::NotFound, "the device is gone", {}};
-  if (!d->source) return Error{ErrorCode::InvalidArgument, "only an edited device (its own patch) can be saved as a new device", {}};
-  doc::UserDeviceFile f;
-  f.name = deviceDisplayName(ctx, *d);
-  f.patch = d->patch;
-  f.kind = d->kind;
-  f.text = d->source->text;
-  for (const doc::StockDevice& s : doc::stockDevices())
-    if (s.patch == d->patch) f.origin = std::string(s.file);
-  if (const doc::DeviceLibrary* lib = ctx.deviceLibrary()) {
-    const std::string file = lib->pathOf(d->patch);
-    if (!file.empty())
-      if (auto panel = doc::readTextFile(devices::panelPathFor(file))) f.panel = std::move(*panel);
-  }
-  auto path = ctx.library().saveUserDevice(f);
-  if (path) ctx.library().pendingRename = *path;
   return path;
 }
 

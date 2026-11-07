@@ -35,10 +35,8 @@ std::string_view firstComponent(std::string_view rel, std::string_view* rest) no
   return rel.substr(0, sep);
 }
 
-Category stockDeviceCategory(std::string_view nameOrPatch) noexcept {
-  for (const doc::StockDevice& d : doc::stockDevices())
-    if (equalsFolded(d.name, nameOrPatch) || equalsFolded(d.patch, nameOrPatch))
-      return d.kind == doc::DeviceKind::Instrument ? Category::Instruments : Category::AudioEffects;
+// The category of the presets of the module or native engine `nameOrPatch` (a Presets/<name> folder, a Defaults file).
+Category moduleCategory(std::string_view nameOrPatch) noexcept {
   if (doc::findModule(nameOrPatch) != nullptr) return Category::MetaModules;  // GU.4: a module's presets (by its name)
   for (const meta::Type* t : meta::types())  // TMM.10: a meta module's presets (by its name or "meta:<id>")
     if (equalsFolded(t->name, nameOrPatch) ||
@@ -54,7 +52,6 @@ std::string_view itemKindName(ItemKind k) noexcept {
   switch (k) {
     case ItemKind::Sample: return "sample";
     case ItemKind::Preset: return "preset";
-    case ItemKind::Device: return "device";
     case ItemKind::Tuning: return "tuning";
     case ItemKind::Clip: return "clip";
     case ItemKind::Patch: return "patch";
@@ -76,7 +73,7 @@ std::optional<ItemKind> indexedKind(std::string_view fileName) noexcept {
       {"rf64", ItemKind::Sample},     {"bw64", ItemKind::Sample},    {"aif", ItemKind::Sample},
       {"aiff", ItemKind::Sample},     {"aifc", ItemKind::Sample},    {"flac", ItemKind::Sample},
       {"mp3", ItemKind::Sample},      {"ogg", ItemKind::Sample},     {"pqpreset", ItemKind::Preset},
-      {"pqdevice", ItemKind::Device}, {"pqtuning", ItemKind::Tuning}, {"scl", ItemKind::Tuning},
+      {"pqtuning", ItemKind::Tuning}, {"scl", ItemKind::Tuning},
       {"pqclip", ItemKind::Clip},     {"mid", ItemKind::Clip},       {"midi", ItemKind::Clip},
       {"pqp", ItemKind::Patch},       {"pqd", ItemKind::Project},
   };
@@ -324,8 +321,7 @@ Category categorize(ItemKind kind, PlaceKind place, std::string_view relDir, std
     case ItemKind::Tuning: return Category::Tunings;
     case ItemKind::Patch: return Category::Patches;
     case ItemKind::Project: return Category::None;
-    case ItemKind::Preset:
-    case ItemKind::Device: break;
+    case ItemKind::Preset: break;
     case ItemKind::Count: return Category::None;
   }
   if (sniffed != Category::None) return sniffed;
@@ -333,17 +329,9 @@ Category categorize(ItemKind kind, PlaceKind place, std::string_view relDir, std
   std::string_view rest;
   const std::string_view top = firstComponent(relDir, &rest);
   if (equalsFolded(top, "Racks")) return Category::Racks;
-  if (equalsFolded(top, "Presets") && !rest.empty()) return stockDeviceCategory(firstComponent(rest, nullptr));
-  if (equalsFolded(top, "Defaults")) return stockDeviceCategory(stemOf(fileName));
+  if (equalsFolded(top, "Presets") && !rest.empty()) return moduleCategory(firstComponent(rest, nullptr));
+  if (equalsFolded(top, "Defaults")) return moduleCategory(stemOf(fileName));
   return Category::None;
-}
-
-std::vector<StockItem> stockItems() {
-  std::vector<StockItem> out;
-  for (const doc::StockDevice& d : doc::stockDevices())
-    out.push_back({d.name, d.patch,
-                   d.kind == doc::DeviceKind::Instrument ? Category::Instruments : Category::AudioEffects});
-  return out;
 }
 
 }  // namespace pq::library

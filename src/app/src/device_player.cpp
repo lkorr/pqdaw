@@ -142,45 +142,4 @@ std::shared_ptr<const views::circuit::PlayedProgram> DeviceInspector::played() c
   return played_;
 }
 
-// ---- DevicePlayer ----------------------------------------------------------------------------------------------------
-
-DevicePlayer::DevicePlayer(ProjectLink& link, doc::DeviceId device) : link_(link), device_(device) {}
-
-DevicePlayer::~DevicePlayer() {
-  link_.inspector().setMetering(false);
-  link_.setDeviceInspect(device_, {}, {}, false);
-}
-
-double DevicePlayer::sampleRate() const { return link_.config().sampleRate; }
-
-Status DevicePlayer::play(const graph::Schedule&, const graph::TypedPatch&) { return Ok{}; }  // the project plays it
-
-void DevicePlayer::stop() {
-  link_.inspector().setMetering(false);
-  link_.setDeviceInspect(device_, {}, {}, false);
-}
-
-void DevicePlayer::setProbeSignals(std::span<const uint32_t> ids) { link_.inspector().setSignals(ids); }
-TapRing* DevicePlayer::probeSignal(uint32_t id) noexcept { return link_.inspector().probeSignal(id); }
-const ProbeLevel* DevicePlayer::probeLevel(uint32_t id) const noexcept { return link_.inspector().probeLevel(id); }
-void DevicePlayer::setMetering(bool on) { link_.inspector().setMetering(on); }
-bool DevicePlayer::readCost(CostReading& out) { return link_.inspector().readCost(out); }
-uint64_t DevicePlayer::generation() const noexcept { return link_.inspector().generation(); }
-
-void DevicePlayer::setProbeTargets(std::span<const graph::ProbeTarget> targets, std::span<const uint32_t> ids) {
-  link_.setDeviceInspect(device_, std::vector<graph::ProbeTarget>(targets.begin(), targets.end()),
-                         std::vector<uint32_t>(ids.begin(), ids.end()), true);
-}
-
-const views::circuit::PlayedProgram* DevicePlayer::playedProgram() const {
-  hold_ = link_.inspector().played();
-  return hold_.get();
-}
-
-std::vector<graph::NodeId> DevicePlayer::pathPrefix() const {
-  // The unit's call node of the track (its NodeId is the track id), then the device's call in the track's patch.
-  return {graph::NodeId{link_.inspector().trackId()},
-          graph::NodeId{doc::nodeIdFor(doc::NodeRole::Device, device_.value, 0)}};
-}
-
 }  // namespace pq::app

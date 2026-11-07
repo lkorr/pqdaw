@@ -17,6 +17,7 @@
 #include "internal.h"
 #include "pq/core/automation_curve.h"
 #include "pq/document/lower.h"
+#include "pq/document/modules.h"
 #include "pq/document/racks.h"
 #include "pq/graph/parse.h"
 #include "pq/ui/controls.h"
@@ -99,9 +100,9 @@ uint32_t shownMacros(const doc::RackInfo& r, uint32_t visibleMacros) {
 }
 
 // The macro panel's layout: the shown macros in columns of four; only the title bar when the macros are hidden.
-devices::PanelDesc rackPanel(const doc::RackInfo& r, const devices::DeviceSignature& sig, bool showMacros,
+devices::PanelLayout rackPanel(const doc::RackInfo& r, const devices::DeviceSignature& sig, bool showMacros,
                              uint32_t visibleMacros) {
-  devices::PanelDesc p;
+  devices::PanelLayout p;
   p.patch = sig.patch;
   p.title = r.instrument ? "Instrument Rack" : "Audio Effect Rack";
   if (!showMacros) {
@@ -112,14 +113,13 @@ devices::PanelDesc rackPanel(const doc::RackInfo& r, const devices::DeviceSignat
   const uint32_t n = shownMacros(r, visibleMacros);
   const uint32_t rows = std::min<uint32_t>(4, n), cols = (n + 3) / 4;
   for (uint32_t k = 0; k < n; ++k) {
-    devices::ControlDesc c;
+    devices::ControlLayout c;
     c.kind = devices::ControlKind::Knob;
     c.param = c.id = macroParamName(k);
     c.x = static_cast<float>(k / 4) * kMacroCell;
     c.y = static_cast<float>(k % 4) * kMacroCell;
     c.w = kMacroCell - 4.0f;
     c.h = kMacroCell;
-    c.info = "A macro: drives every param mapped to it (Map, then the macro, then a knob).";
     p.controls.push_back(std::move(c));
   }
   p.width = std::max(144.0f, static_cast<float>(cols) * kMacroCell);  // room for the title
@@ -755,7 +755,7 @@ private:
   bool active_ = true;
   std::vector<doc::DeviceValue> params_;
   devices::DeviceSignature sig_;
-  devices::PanelDesc desc_;
+  devices::PanelLayout desc_;
   devices::DevicePanel* panel_ = nullptr;
   RackStrip* strip_ = nullptr;
   ChainList* list_ = nullptr;
@@ -1356,17 +1356,16 @@ bool ChainSlot::onPointer(const ui::PointerEvent& e) {
   }
   // No chain yet: a device picked makes the first chain with it.
   std::vector<ui::MenuItem> items;
-  const doc::DeviceCatalog* cat = impl_.catalog();
   DeviceChainView::Impl* im = &impl_;
   const doc::DeviceId rack = rack_.id();
-  if (cat != nullptr)
-    for (const doc::DeviceInfo& d : cat->devices()) {
-      ui::MenuItem it = ui::MenuItem::item(d.name, [im, rack, patch = d.patch, kind = d.kind] {
-        im->run(doc::ops::addChainWithDevice(im->doc(), im->ctx().store().ids(), rack, patch, kind));
-      });
-      it.enabled = d.kind == doc::DeviceKind::AudioEffect || rack_.instrument();
-      items.push_back(std::move(it));
-    }
+  for (const doc::ModuleInfo& m : doc::moduleInfos()) {  // GU.11: the built-in modules (group presets)
+    const doc::DeviceKind kind = m.instrument ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect;
+    ui::MenuItem it = ui::MenuItem::item(std::string(m.name), [im, rack, patch = std::string(doc::kModuleItemPrefix) + std::string(m.key), kind] {
+      im->run(doc::ops::addChainWithDevice(im->doc(), im->ctx().store().ids(), rack, patch, kind));
+    });
+    it.enabled = !m.instrument || rack_.instrument();
+    items.push_back(std::move(it));
+  }
   // T4.16c: the racks too (a nested rack), as the other device menus list them.
   if (!items.empty()) items.push_back(ui::MenuItem::sep());
   for (const bool instrumentRack : {true, false}) {

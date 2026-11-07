@@ -23,6 +23,10 @@ namespace pq::views {
 class Shell;
 }
 
+namespace pq::views {
+class ViewContext;
+}
+
 namespace pq::views::circuit {
 
 // A .pqp file read for viewing: its text, its parse (imports resolved relative to it) and the files it imports.
@@ -89,5 +93,9 @@ CircuitViewer* openCircuitViewer(ui::Widget& from, std::shared_ptr<const PatchDo
 
 // The `view.openPatch` action (View > Open Patch in Circuit View…): file dialog → viewer; errors go to the status line.
 void installCircuitViewer(Shell& shell);
+// T4.15: the editor's Inactive toggle starts as ctx's view prefs say and a flip of it is remembered there (ctx must
+// outlive the editor, as the shell's context does).
+class CircuitEditor;
+void followViewPrefs(CircuitEditor& editor, ViewContext& ctx);
 
 }  // namespace pq::views::circuit

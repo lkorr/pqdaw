@@ -4,9 +4,9 @@
 // T5.11), shared by the browser (Enter, double-click, hot-swap), the Device view (its menus, drops on a chain) and the
 // tuning chips. Every load is one undo step.
 //
-// Items are named by path: a library file (.pqpreset, .pqdevice, .pqtuning, .scl, .pqclip) or a catalog device
-// ("pqdaw-device:<patch>", catalogItemPath: the stock devices and racks the browser lists under Instruments / Audio
-// Effects).
+// Items are named by path: a library file (.pqpreset, .pqtuning, .scl, .pqclip) or a built-in item ("pqdaw-device:<id>",
+// catalogItemPath: a module "module:<key>", a native engine "meta:<type>", a rack spawn — what the browser lists under
+// Instruments / Audio Effects / Meta Modules).
 //
 // UI thread only.
 
@@ -30,7 +30,7 @@ std::string catalogItemPath(std::string_view patch);
 std::string_view catalogPatchOf(std::string_view path) noexcept;
 
 // What a library path holds.
-enum class LibraryItem : uint8_t { None, CatalogDevice, Preset, UserDevice, Tuning, Clip };
+enum class LibraryItem : uint8_t { None, CatalogDevice, Preset, Tuning, Clip };
 LibraryItem libraryItemOf(std::string_view path) noexcept;
 
 // Where a device goes: a track's main path at `index` (doc::kAppend: the end).
@@ -42,7 +42,8 @@ struct DeviceSlot {
   doc::DeviceId chain;
 };
 
-// The device's display name: the catalog's ("EQ Eight"), a rack's ("Audio Effect Rack"), else its patch.
+// The device's display name: a module's ("Utility"), a native engine's type's ("Wavetable"), a rack's ("Audio Effect
+// Rack"), else its patch.
 std::string deviceDisplayName(const ViewContext& ctx, const doc::Device& d);
 std::string deviceDisplayName(const ViewContext& ctx, std::string_view patch);
 
@@ -51,22 +52,24 @@ std::string deviceDisplayName(const ViewContext& ctx, std::string_view patch);
 // GU.7: `project` — where modules can be spawned (a track's circuit): without the engines a module is built around.
 std::vector<const meta::Type*> metaModuleTypes(bool project = false);
 
-// A new device of the catalog with its default preset (Library::defaultPreset) when the User Library has one. Returns
-// the new device's id. TMM.10: a "meta:<type>" patch is a chain meta device (doc::ops::addMetaDevice; its kind follows
-// the slot, `kind` is ignored), its default preset applied with that kind.
+// A new built-in item with its default preset (Library::defaultPreset) when the User Library has one. Returns the new
+// device's id. TMM.10: a "meta:<type>" patch is a native engine (doc::ops::addMetaDevice; its kind follows the slot,
+// `kind` is ignored), its default preset applied with that kind. GU.11: a module "module:<key>" is its group preset on
+// the path at the slot (doc::ops::addDevice; an instrument module takes the notes of a MIDI track with an empty path,
+// else lands off it: doc::ops::pasteBlocksAtNotes); the id is its group's.
 Result<doc::DeviceId> addCatalogDevice(ViewContext& ctx, std::string_view patch, doc::DeviceKind kind, DeviceSlot at);
-// Loads a catalog device, a preset or a user device into a chain. Returns the new device's id.
+// Loads a built-in item or a preset into a chain. Returns the new device's id.
 Result<doc::DeviceId> loadDeviceItem(ViewContext& ctx, std::string_view path, DeviceSlot at);
-// TX.node-menu: the device a preset or user-device file holds (its own ids: give it fresh ones, e.g. through
+// TX.node-menu: the device a preset file holds (its own ids: give it fresh ones, e.g. through
 // doc::ops::pasteDevices), for callers that place it themselves.
 Result<doc::DevicePtr> libraryDeviceOf(std::string_view path);
 // GU.2: a group preset's block set (doc::PresetFile::groupPreset: the group, everything inside it, their wires), or an
-// empty set for any other file (a one-device preset, a user device). Errors: unreadable, not a preset that parses.
+// empty set for any other file (a one-device preset). Errors: unreadable, not a preset that parses.
 Result<doc::BlockSet> libraryBlocksOf(std::string_view path);
-// Hot-swap: the preset (or user device) at `path` replaces `target` in place (doc::ops::replaceDevice; wires and macro
+// Hot-swap: the preset at `path` replaces `target` in place (doc::ops::replaceDevice; wires and macro
 // mappings onto params the new device still has are kept).
 Status hotSwapDevice(ViewContext& ctx, doc::DeviceId target, std::string_view path);
-// The params a device would have (the catalog's, a user device's resolved patch).
+// The params a block has (its library description's).
 std::vector<std::string> deviceParamNames(const ViewContext& ctx, const doc::Device& d);
 
 // A tuning file (.pqtuning, or a Scala .scl at `referenceHz`) as a library tuning (name = the file's stem for .scl).
@@ -80,10 +83,8 @@ Result<std::string> loadTuningItem(ViewContext& ctx, std::string_view path, cons
 // resolved file).
 Result<doc::ClipRef> loadClipItem(ViewContext& ctx, std::string_view path, doc::TrackId track, Ticks start);
 
-// Saves (the Device view's menus): the device as a preset / as its device's default preset / (a user device) as a new
-// device of the catalog. Returns the written path.
+// Saves (the Device view's menus): the device as a preset / as its device's default preset. Returns the written path.
 Result<std::string> saveDevicePreset(ViewContext& ctx, doc::DeviceId device, bool asDefault);
-Result<std::string> saveAsNewDevice(ViewContext& ctx, doc::DeviceId device);
 // A tuning ("Save to Library": the tunings panel, a tuning chip).
 Result<std::string> saveTuningToLibrary(ViewContext& ctx, const TuningTarget& target);
 

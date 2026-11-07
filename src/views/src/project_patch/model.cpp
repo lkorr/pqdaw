@@ -17,7 +17,6 @@
 #include "pq/graph/layout.h"
 #include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
-#include "pq/views/devices/panel_face.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/panel/group_panel_face.h"
 
@@ -83,7 +82,7 @@ std::string sendLetter(size_t returnIndex) {
 struct Builder {
   const doc::Project& p;
   const doc::LoweredProject& low;
-  const doc::DeviceCatalog* catalog;
+  const doc::DeviceLibrary* devices;
   const LayoutOptions& opt;
   ProjectPatch out;
 
@@ -128,11 +127,6 @@ struct Builder {
   }
 
   const graph::PatchLibrary* library() const noexcept { return low.graph.library; }
-  const doc::ResolvedDevice* userDevice(doc::DeviceId id) const noexcept {
-    for (const auto& r : low.userDevices)
-      if (r && r->device == id) return r.get();
-    return nullptr;
-  }
 
   void prepare() {
     doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) { trackById.emplace(t.id.value, &t); });
@@ -256,25 +250,17 @@ struct Builder {
     if (doc::isMetaDevice(d))
       for (const doc::ChainStage& s : bandStages)
         if (s.device == &d) n.instrument = s.in == doc::ChainSignal::Notes;
-    // A user device (T4.4-fix1: the instance's own patch text) plays its resolution's renamed root: its callee and its
-    // description come from the resolution the lowering made; a stock device's from the library and the catalog.
-    const doc::ResolvedDevice* user = d.edited() ? userDevice(d.id) : nullptr;
-    const doc::DeviceInfo* info = user != nullptr && user->graph ? &user->info : catalog ? catalog->find(d.patch) : nullptr;
-    n.edited = d.edited();
-    // TX.node-menu: the device's own name when it has one (Ctrl+R; a node-menu device of one atom is named after it);
-    // "(edited)" marks a fork of a stock device only.
+    // The block's description (its name) from the library; its callee from what the graph calls, else the library.
+    const doc::DeviceInfo* info = devices != nullptr ? devices->infoOf(d) : nullptr;
+    // TX.node-menu: the device's own name when it has one (Ctrl+R; a node-menu atom block is named after its atom).
     n.title = !d.name.empty() ? d.name : info ? info->name : d.patch;
-    if (n.edited && d.name.empty() && catalog != nullptr && catalog->find(d.patch) != nullptr) n.title += " (edited)";
     const graph::NodeIndex call = callOf(tp, d.id);
     n.lowered = call != graph::kNone;
     if (n.lowered) n.call = tp->node(call).id;
     const graph::Patch* callee = nullptr;
     if (n.lowered && library() != nullptr) callee = library()->find(tp->subcircuit(call).patch);  // what the graph calls
-    else if (user != nullptr) callee = user->root();
-    else if (!d.edited() && library() != nullptr) callee = library()->find(d.patch);
+    else if (devices != nullptr) callee = devices->patchOf(d);
     n.missing = callee == nullptr;
-    for (const ExpandedSize& e : opt.expanded)
-      if (e.device == d.id && callee != nullptr) n.expanded = true;
     graph::SubcircuitRef sig;
     if (n.lowered) sig = tp->subcircuit(call);
     else if (callee != nullptr) sig = graph::subcircuitSignature(*callee);
@@ -353,7 +339,7 @@ struct Builder {
     }
     // TX.panel-faces: a closed stock device with a panel is drawn as it (the Device view's panel at the block's size).
     graph::Point2 panelSize{0.0f, 0.0f};
-    if (!n.meta && !n.expanded && !n.edited && !n.missing && !n.symbol && !n.valueKnob && opt.panelSize) panelSize = opt.panelSize(d);
+    if (!n.meta && !n.missing && !n.symbol && !n.valueKnob && opt.panelSize) panelSize = opt.panelSize(d);
     // TX.mod-all: on a face or a panel a wired param whose control is visible takes no pin: its wires end on the control.
     // (Anchored ports are the last inputs, so the pins' rows stay where they were.)
     if ((n.face != nullptr || (panelSize.x > 0.0f && panelSize.y > 0.0f)) && opt.controlAnchor) {
@@ -1325,7 +1311,7 @@ struct Builder {
     }
     if (n.panel || n.groupPanel) {  // GU.3: a group drawn as its panel too
       o.x0 = n.x, o.y0 = n.y, o.x1 = n.x + n.w, o.y1 = n.y + n.h;
-      o.corner = (n.panel ? devices::PanelFace::kPanelCorner : panel::GroupPanelFace::kCorner) * k;
+      o.corner = panel::GroupPanelFace::kCorner * k;
       return o;
     }
     const float in = std::min(8.0f, n.w * 0.25f);
@@ -1617,8 +1603,8 @@ struct Builder {
 }  // namespace
 
 ProjectPatch buildProjectPatch(const doc::Project& project, const doc::LoweredProject& lowered,
-                               const doc::DeviceCatalog* catalog, const LayoutOptions& options) {
-  Builder b{project, lowered, catalog, options, {}, {}, {}, {}, {}, {}, {}, {}};
+                               const doc::DeviceLibrary* devices, const LayoutOptions& options) {
+  Builder b{project, lowered, devices, options, {}, {}, {}, {}, {}, {}, {}, {}};
   b.run();
   return std::move(b.out);
 }

@@ -4,12 +4,12 @@
 // as a node, with what the menu shows and what a cable can connect.
 //
 //   atoms         every leaf atom of the patch language (pq/graph/atoms.h; its one-line summary). At the project level
-//                 only those that make a free device on their own (no voice, I/O, sample, structure or internal atoms):
-//                 such an atom becomes a free device of that one atom (specDevice).
+//                 only those that may be a block of their own (doc::atomBlockAllowed): such an atom is an atom block;
+//                 beside them the value block
 //   meta modules  every registered meta-module type with a face (pq/meta/registry.h); the analysers (Spectrum,
 //                 Oscilloscope, Spectrogram) under Visualisers
-//   devices       the stock instruments and audio effects (doc::stockDevices, the catalog), the two racks
-//   user library  the User Library's saved devices, presets and racks (the browser's index: Library::index())
+//   modules       the built-in modules (doc::moduleInfos: group presets), the two racks
+//   user library  the User Library's saved presets and racks (the browser's index: Library::index())
 //
 // Each entry carries the facts the menu needs and nothing it does not: its signal ports (inputs apart from params,
 // outputs), its params with their defaults, whether it has a MAIN input (its first signal input: what a chain or a
@@ -56,9 +56,9 @@ inline NodeTab tabOf(NodeCategory c) noexcept { return static_cast<NodeTab>(stat
 enum class NodeItem : uint8_t {
   Atom,        // id: the atom's name ("tanh"); the circuit editor's spec, a one-atom free device in the project
   Meta,        // id: the type ("vca"): a chain meta device "meta:<id>" / a `meta_<id>` call
-  Device,      // id: a stock patch ("utility")
+  Device,      // id: doc::kValueDevice (the value block)
   Rack,        // id: doc::kAudioEffectRack / doc::kInstrumentRack
-  LibraryFile, // id: a .pqpreset / .pqdevice path of the User Library
+  LibraryFile, // id: a .pqpreset path of the User Library
   Module,      // GU.4, id: a built-in module's key ("vca", doc::moduleInfos): its group preset, pasted (project only)
   Spec,        // id: a typed patch-language node spec (not in the catalog: the menu's typed row)
 };
@@ -133,16 +133,10 @@ struct SpecParts {
 };
 SpecParts splitSpec(std::string_view spec);
 
-// The project level: a free device made of the one node `spec` describes — its patch text (a user device: model.h
-// UserPatch) with one `in` per required input of the node, one `out` per output (a node without a real input gets an
-// audio input that drives nothing, so it is still an audio effect; it has no main input), its patch name and the
-// device's display name. Declarations other than `param` are refused (they are a patch's ports, not nodes).
-struct SpecDevice {
-  std::string patch;  // the patch name in `text`
-  std::string text;
-  std::string name;   // shown on the block
-};
-Result<SpecDevice> specDevice(std::string_view spec);
+// GU.11: the project level places a typed spec only when it is one atom that may be a block (no operand): its atom
+// block's patch "atom:<name>"; else an error saying why (a literal, a param or an operator with an operand has no block
+// of its own: wire a Value block).
+Result<std::string> specBlockPatch(std::string_view spec);
 
 // The main ports of a device patch: one rule, the document's (TX.all-free: pq/document/main_path.h, which the main path,
 // the lowering's names and the edit builders read too).

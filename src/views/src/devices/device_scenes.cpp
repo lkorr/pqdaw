@@ -8,8 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "pq/views/devices/device_view.h"
-#include "pq/views/shell/shell.h"
+#include "pq/views/devices/analysis.h"
 
 namespace pq::views::devices {
 

@@ -25,10 +25,8 @@
 #include "pq/views/circuit/node_menu.h"
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
-#include "pq/views/circuit/device_circuit.h"
-#include "devices/device_math.h"
 #include "pq/views/devices/analysis.h"
-#include "pq/views/devices/device_view.h"
+#include "pq/document/modules.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/fake_transport.h"
@@ -512,6 +510,29 @@ Status setupMenuBar(Shell& shell) {
 namespace {
 
 // Dispatches an edit; nullopt (and nothing changed) on failure.
+// GU.11: the block named `name` inside group `g` (a module's value block: "Drive", "Width" …), or none.
+doc::DeviceId memberNamed(const doc::Project& p, doc::DeviceId g, std::string_view name) {
+  const doc::DeviceLoc l = doc::findDevice(p, g);
+  if (l.track == nullptr) return {};
+  for (const doc::Device* d : doc::groupMembersDeep(l.track->devices, g))
+    if (d->name == name) return d->id;
+  return {};
+}
+// GU.11: the block heading track `t`'s main path (its instrument group on a MIDI track), or none.
+doc::DeviceId pathHead(const doc::Project& p, doc::TrackId t) {
+  const doc::Track* tr = doc::findTrackPtr(p, t);
+  if (tr == nullptr) return {};
+  const doc::MainPath path = doc::mainPath(p, *tr);
+  return path.blocks.empty() ? doc::DeviceId{} : path.blocks.front()->id;
+}
+// GU.11: a top-level block of track `t` named `name` (a module's group), or none.
+doc::DeviceId topNamed(const doc::Project& p, doc::TrackId t, std::string_view name) {
+  if (const doc::Track* tr = doc::findTrackPtr(p, t))
+    for (const doc::DevicePtr& d : tr->devices)
+      if (!d->group.valid() && d->name == name) return d->id;
+  return {};
+}
+
 std::optional<doc::ops::Edit> runEdit(doc::DocumentStore& store, const doc::ops::EditResult& e) {
   if (!e.ok() || !store.dispatch(e->command).ok()) return std::nullopt;
   return *e;
@@ -1063,26 +1084,25 @@ Status setupCircuitEditorCost(Shell& shell, std::string_view file) {
   return Ok{};
 }
 
-// T4.1: the Device view of a MIDI track: Basic Synth → Saturator (Digital Clip, drive +6 dB, selected) → Utility (off),
-// generic panels. Needs the device library (renderViewScene's `devices`; pqdaw --screenshot loads the stock one).
+// T4.1: the Device view of a MIDI track: Basic Synth → Saturator (Digital Clip, drive +6 dB, selected) → Utility (off).
+// GU.11: each a module (its group's panel). Needs the device library (renderViewScene's `devices`).
 Status setupDeviceChain(Shell& shell) {
   ViewContext& ctx = shell.context();
   if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-chain: no device library", {}};
   doc::DocumentStore& store = ctx.store();
-  auto run = [&](const doc::ops::EditResult& e) -> std::optional<doc::ops::Edit> {
-    if (!e.ok() || !store.dispatch(e->command).ok()) return std::nullopt;
-    return *e;
-  };
+  auto run = [&](const doc::ops::EditResult& e) { return runEdit(store, e); };
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
   if (!t) return Error{ErrorCode::Unknown, "device-chain: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
-  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
-  const auto sat = run(doc::ops::addDevice(*store.current(), store.ids(), track, "saturator", doc::DeviceKind::AudioEffect));
-  const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
+  const auto sat = run(doc::ops::addDevice(*store.current(), store.ids(), track, "module:saturator", doc::DeviceKind::AudioEffect));
+  const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), track, "module:utility", doc::DeviceKind::AudioEffect));
   if (!sat || !util) return Error{ErrorCode::Unknown, "device-chain: addDevice failed", {}};
   const doc::DeviceId satId = sat->devices[0], utilId = util->devices[0];
-  if (!run(doc::ops::setDeviceSetting(*store.current(), satId, "type", 6.0)) ||
-      !run(doc::ops::setDeviceParamValue(*store.current(), *ctx.deviceLibrary(), satId, "drive", 1.9952623149688795)) ||  // +6 dB
+  const doc::Project& p = *store.current();
+  const std::string vp(doc::kValueParam);
+  if (!run(doc::ops::setDeviceParamValue(p, *ctx.deviceLibrary(), memberNamed(p, satId, "Type"), vp, 6.0)) ||
+      !run(doc::ops::setDeviceParamValue(*store.current(), *ctx.deviceLibrary(), memberNamed(*store.current(), satId, "Drive"), vp,
+                                         1.9952623149688795)) ||  // +6 dB
       !run(doc::ops::setDevicesActive(*store.current(), std::vector<doc::DeviceId>{utilId}, false)))
     return Error{ErrorCode::Unknown, "device-chain: device edits failed", {}};
   ctx.setSelectedTrack(track);
@@ -1097,41 +1117,39 @@ Status setupDeviceChain(Shell& shell) {
   return Ok{};
 }
 
-// T4.7: cross-device wiring. Track "Mod" holds an LFO; "Keys" holds BasicSynth → LFO → Utility. Wires: Keys' LFO
-// into Utility's width and balance (the cables in the chain), the LFO's export into its own rate (a delay-free loop: its
-// badge shows z⁻¹), and Mod's LFO into BasicSynth's brightness (its cable rises to Mod's row in the arrangement). The
-// rings show fixed sweeps (a FixedModulationSource; the app reads the engine's taps).
+// T4.7: cross-device wiring. Track "Mod" holds an LFO; "Keys" holds Basic Synth → Utility with a free LFO beside them
+// (GU.11: modules: the LFO's Out is its signal). Wires: Keys' LFO into Utility's Width and Balance (cables into the
+// group's value blocks), into its own Rate (a delay-free loop: its badge shows z⁻¹), and Mod's LFO into Utility's Gain
+// across tracks. The rings show fixed sweeps (a FixedModulationSource; the app reads the engine's taps).
 Status setupDeviceWiring(Shell& shell) {
   ViewContext& ctx = shell.context();
   if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-wiring: no device library", {}};
   doc::DocumentStore& store = ctx.store();
-  auto run = [&](const doc::ops::EditResult& e) -> std::optional<doc::ops::Edit> {
-    if (!e.ok() || !store.dispatch(e->command).ok()) return std::nullopt;
-    return *e;
-  };
+  auto run = [&](const doc::ops::EditResult& e) { return runEdit(store, e); };
   const auto mod = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Mod"));
   const auto keys = mod ? run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, mod->tracks[0], "Keys"))
                         : std::nullopt;
   if (!mod || !keys) return Error{ErrorCode::Unknown, "device-wiring: createTrack failed", {}};
   const doc::TrackId modT = mod->tracks[0], keysT = keys->tracks[0];
-  for (const doc::TrackId x : {modT, keysT})  // (IG.1-2: the instruments alone)
-    if (Status st = project_patch::makeLoneInstrument(store, x); !st) return st;
-  const auto lfoA = run(doc::ops::addDevice(*store.current(), store.ids(), modT, "lfo_device", doc::DeviceKind::AudioEffect));
-  const auto lfoB = run(doc::ops::addDevice(*store.current(), store.ids(), keysT, "lfo_device", doc::DeviceKind::AudioEffect));
-  const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), keysT, "utility", doc::DeviceKind::AudioEffect));
+  const auto lfoA = run(doc::ops::addDevice(*store.current(), store.ids(), modT, "module:lfo", doc::DeviceKind::AudioEffect, doc::ops::kOffPath));
+  const auto lfoB = run(doc::ops::addDevice(*store.current(), store.ids(), keysT, "module:lfo", doc::DeviceKind::AudioEffect, doc::ops::kOffPath));
+  const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), keysT, "module:utility", doc::DeviceKind::AudioEffect));
   if (!lfoA || !lfoB || !util) return Error{ErrorCode::Unknown, "device-wiring: addDevice failed", {}};
   const doc::DeviceId a = lfoA->devices[0], b = lfoB->devices[0], u = util->devices[0];
-  const doc::DeviceId inst = doc::findTrackPtr(*store.current(), keysT)->devices.at(0)->id;
-  if (!run(doc::ops::connectWire(*store.current(), store.ids(), b, "lfo", u, "width")) ||
-      !run(doc::ops::connectWire(*store.current(), store.ids(), b, "lfo", u, "balance")) ||
-      !run(doc::ops::connectTravelWire(*store.current(), store.ids(), b, "lfo", b, "rate", 0.2)) ||
-      !run(doc::ops::connectWire(*store.current(), store.ids(), a, "lfo", inst, "bright")))
+  const doc::Project& p = *store.current();
+  const doc::DeviceId width = memberNamed(p, u, "Width"), balance = memberNamed(p, u, "Balance"), gain = memberNamed(p, u, "Gain"),
+                      rate = memberNamed(p, b, "Rate");
+  const std::string vp(doc::kValueParam);
+  if (!run(doc::ops::connectWire(*store.current(), store.ids(), b, "y", width, vp)) ||
+      !run(doc::ops::connectWire(*store.current(), store.ids(), b, "y", balance, vp)) ||
+      !run(doc::ops::connectTravelWire(*store.current(), store.ids(), b, "y", rate, vp, 0.2)) ||
+      !run(doc::ops::connectWire(*store.current(), store.ids(), a, "y", gain, vp)))
     return Error{ErrorCode::Unknown, "device-wiring: connectWire failed", {}};
   static FixedModulationSource sweeps;
   sweeps = FixedModulationSource();
-  sweeps.set(u, "width", ModSweep{true, 0.2f, 0.05f});
-  sweeps.set(u, "balance", ModSweep{true, 0.1f, 0.45f});
-  sweeps.set(inst, "bright", ModSweep{true, 0.3f, 0.3f});
+  sweeps.set(width, vp, ModSweep{true, 0.2f, 0.05f});
+  sweeps.set(balance, vp, ModSweep{true, 0.1f, 0.45f});
+  sweeps.set(gain, vp, ModSweep{true, 0.3f, 0.3f});
   ctx.setModulationSource(&sweeps);
   ctx.setSelectedTrack(keysT);
   ctx.setDetailVisible(true);
@@ -1147,49 +1165,6 @@ Status setupDeviceWiring(Shell& shell) {
   return Ok{};
 }
 
-// T4.4-fix1: the circuit editor opened from a device of the project (SPEC §15 2026-10-26): track "Keys" holds
-// Basic Synth → Saturator; the Basic Synth is opened in the circuit view (as its context menu / a double-click on its
-// title does) and edited once in the text pane (its `level` default 0.2 → 0.3), which forked it into the track's own
-// edited copy — the title bar names the device, its track and "(edited)"; there is no Save and no Play (the project
-// holds and plays it). Needs the device library.
-Status setupCircuitEditorDevice(Shell& shell) {
-  ViewContext& ctx = shell.context();
-  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "circuit-editor-device: no device library", {}};
-  doc::DocumentStore& store = ctx.store();
-  auto run = [&](const doc::ops::EditResult& e) -> std::optional<doc::ops::Edit> {
-    if (!e.ok() || !store.dispatch(e->command).ok()) return std::nullopt;
-    return *e;
-  };
-  const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
-  if (!t) return Error{ErrorCode::Unknown, "circuit-editor-device: createTrack failed", {}};
-  const doc::TrackId track = t->tracks[0];
-  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
-  if (!run(doc::ops::addDevice(*store.current(), store.ids(), track, "saturator", doc::DeviceKind::AudioEffect)))
-    return Error{ErrorCode::Unknown, "circuit-editor-device: addDevice failed", {}};
-  const doc::DeviceId inst = doc::findTrackPtr(*store.current(), track)->devices.at(0)->id;
-  ctx.setSelectedTrack(track);
-  ctx.setDetailVisible(true);
-  ctx.setDetailMode(DetailMode::Device);
-  shell.tree().layoutNow();
-  DeviceChainView* v = findDeviceChain(shell);
-  if (v == nullptr) return Error{ErrorCode::NotFound, "circuit-editor-device: the Device view is not installed", {}};
-  circuit::CircuitEditor* ed = circuit::openDeviceInCircuitView(*v, ctx, inst);
-  if (ed == nullptr) return Error{ErrorCode::Unknown, "circuit-editor-device: the device did not open", {}};
-  const std::string& text = ed->document().text();
-  const size_t at = text.find("param level   = 0.2");
-  if (at == std::string::npos) return Error{ErrorCode::NotFound, "circuit-editor-device: no `level` param", {}};
-  // As typed in the text pane: the pane holds the keystroke, the document gets it (and forks the device).
-  ed->textPane().replace(static_cast<uint32_t>(at + 18), 1, "3", static_cast<uint32_t>(at + 19));
-  ed->document().replaceText(static_cast<uint32_t>(at + 18), 1, "3", true);
-  ed->checkNow();
-  if (!doc::findDevice(*store.current(), inst).device->edited())
-    return Error{ErrorCode::Unknown, "circuit-editor-device: the edit did not fork the device", {}};
-  ed->refreshTitle();
-  shell.tree().layoutNow();
-  ed->canvas().fitToRead();  // M4 review M15: as the editor opens it
-  shell.tree().layoutNow();
-  return Ok{};
-}
 // T4.13: the project patch view over the user's sketch project (project_patch::buildSketchProject): the whole project
 // (overview), and zoomed onto the Keys band with its mixer strip expanded (band).
 Status setupProjectPatch(Shell& shell, bool band) {
@@ -1390,7 +1365,8 @@ Status setupProjectPatchLaneEdit(Shell& shell) {
 // GU.9 v2: racks in the Device view (a rack is a set of parallel groups, pq/document/racks.h). audio-rack (the T4.8
 // scene rebuilt from blocks): Keys = Basic Synth → an Audio Effect Rack [Dry: Utility | Crunch: Saturator (shown) |
 // Wide: Utility] with chain zones (a crossfade over the chain selector), chain mixers, macros Drive / Width / Blend
-// (Blend drives the selector), the zone editor on its Chain tab.
+// (Blend drives the selector), the zone editor on its Chain tab. GU.11: the chains' devices are modules; the macros map
+// their value blocks.
 Status setupAudioRack(Shell& shell) {
   ViewContext& ctx = shell.context();
   if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "audio-rack: no device library", {}};
@@ -1399,16 +1375,18 @@ Status setupAudioRack(Shell& shell) {
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
   if (!t) return Error{ErrorCode::Unknown, "audio-rack: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
-  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
   const auto rack = run(doc::ops::addRack(*store.current(), store.ids(), track, false));
   if (!rack) return Error{ErrorCode::Unknown, "audio-rack: addRack failed", {}};
   const doc::DeviceId c1 = rack->devices[0];
-  const auto dry = run(doc::ops::addToChain(*store.current(), store.ids(), c1, "utility", doc::DeviceKind::AudioEffect));
-  const auto sat = run(doc::ops::addChainWithDevice(*store.current(), store.ids(), c1, "saturator", doc::DeviceKind::AudioEffect));
-  const auto wide = run(doc::ops::addChainWithDevice(*store.current(), store.ids(), c1, "utility", doc::DeviceKind::AudioEffect));
+  const auto dry = run(doc::ops::addToChain(*store.current(), store.ids(), c1, "module:utility", doc::DeviceKind::AudioEffect));
+  const auto sat = run(doc::ops::addChainWithDevice(*store.current(), store.ids(), c1, "module:saturator", doc::DeviceKind::AudioEffect));
+  const auto wide = run(doc::ops::addChainWithDevice(*store.current(), store.ids(), c1, "module:utility", doc::DeviceKind::AudioEffect));
   if (!dry || !sat || !wide) return Error{ErrorCode::Unknown, "audio-rack: chains failed", {}};
   const doc::DeviceId s = sat->devices[0], w = wide->devices[0];
   const doc::DeviceId c2 = doc::findDevice(*store.current(), s).device->group, c3 = doc::findDevice(*store.current(), w).device->group;
+  const doc::DeviceId drive = memberNamed(*store.current(), s, "Drive"), width = memberNamed(*store.current(), w, "Width"),
+                      type = memberNamed(*store.current(), s, "Type");
+  const std::string vp(doc::kValueParam);
   bool ok = run(doc::ops::renameChain(*store.current(), c1, "Dry")) && run(doc::ops::renameChain(*store.current(), c2, "Crunch")) &&
             run(doc::ops::renameChain(*store.current(), c3, "Wide")) &&
             run(doc::ops::setChainZone(*store.current(), store.ids(), c1, doc::ZoneKind::Select, {0, 0, 32, 64})) &&
@@ -1416,13 +1394,13 @@ Status setupAudioRack(Shell& shell) {
             run(doc::ops::setChainZone(*store.current(), store.ids(), c3, doc::ZoneKind::Select, {64, 96, 127, 127})) &&
             run(doc::ops::setChainMixer(*store.current(), c2, -3.0f, 0.0f)) &&
             run(doc::ops::setChainMixer(*store.current(), c3, -6.0f, 0.3f)) &&
-            run(doc::ops::mapMacro(*store.current(), store.ids(), c1, 0, s, "drive", 40.0)) &&
-            run(doc::ops::mapMacro(*store.current(), store.ids(), c1, 1, w, "width", 70.0)) &&
-            run(doc::ops::setDeviceSetting(*store.current(), s, "type", 6.0));
+            run(doc::ops::mapMacro(*store.current(), store.ids(), c1, 0, drive, vp, 40.0)) &&
+            run(doc::ops::mapMacro(*store.current(), store.ids(), c1, 1, width, vp, 70.0)) &&
+            run(doc::ops::setDeviceParamValue(*store.current(), *ctx.deviceLibrary(), type, vp, 6.0));
   if (!ok) return Error{ErrorCode::Unknown, "audio-rack: rack edits failed", {}};
   const std::optional<doc::RackInfo> info = doc::rackOf(*store.current(), c1);
   if (!info || !info->selector.valid()) return Error{ErrorCode::Unknown, "audio-rack: no selector", {}};
-  ok = run(doc::ops::mapMacro(*store.current(), store.ids(), c1, 2, info->selector, std::string(doc::kValueParam), 52.0)) &&
+  ok = run(doc::ops::mapMacro(*store.current(), store.ids(), c1, 2, info->selector, vp, 52.0)) &&
        run(doc::ops::renameMacro(*store.current(), c1, 0, "Drive")) && run(doc::ops::renameMacro(*store.current(), c1, 1, "Width")) &&
        run(doc::ops::renameMacro(*store.current(), c1, 2, "Blend"));
   if (!ok) return Error{ErrorCode::Unknown, "audio-rack: macro edits failed", {}};
@@ -1440,9 +1418,9 @@ Status setupAudioRack(Shell& shell) {
   return Ok{};
 }
 
-// T4.18: device automation. Track "Keys": BasicSynth -> Utility -> Auto Filter, with a held chord. Lanes under Keys: the
-// filter's frequency (a sweep 200 Hz -> 6 kHz over bars 2-4, back to 800 Hz: the knob's exponential scale), the
-// Utility's gain (a ramp; overridden by hand: grey) and its width (curved). The Device view below shows the automated
+// T4.18: device automation. Track "Keys": Basic Synth -> Utility -> Saturator (GU.11: modules; the Saturator where Auto
+// Filter was), with a held chord. Lanes under Keys: the Saturator's drive (a sweep −6 -> +18 dB over bars 2-4, back to
+// 0 dB), the Utility's gain (a ramp; overridden by hand: grey) and its width (curved) — their value blocks' controls. The Device view below shows the automated
 // controls with their LEDs and the envelopes' values at the playhead (bar 3). (GU.9: the rack in it is gone.)
 Status setupDeviceAutomation(Shell& shell) {
   ViewContext& ctx = shell.context();
@@ -1454,12 +1432,14 @@ Status setupDeviceAutomation(Shell& shell) {
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
   if (!t) return Error{ErrorCode::Unknown, "device-automation: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
-  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
-  const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
+  const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), track, "module:utility", doc::DeviceKind::AudioEffect));
   if (!util) return Error{ErrorCode::Unknown, "device-automation: addDevice failed", {}};
-  const auto af = run(doc::ops::addDevice(*store.current(), store.ids(), track, "auto_filter", doc::DeviceKind::AudioEffect));
+  const auto af = run(doc::ops::addDevice(*store.current(), store.ids(), track, "module:saturator", doc::DeviceKind::AudioEffect));
   if (!af) return Error{ErrorCode::Unknown, "device-automation: addDevice failed", {}};
-  const doc::DeviceId filter = af->devices[0];
+  const doc::DeviceId drive = memberNamed(*store.current(), af->devices[0], "Drive");
+  const doc::DeviceId gain = memberNamed(*store.current(), util->devices[0], "Gain");
+  const doc::DeviceId width = memberNamed(*store.current(), util->devices[0], "Width");
+  const std::string vp(doc::kValueParam);
   const Ticks bar = kTicksPerWhole;
   doc::Batch b{"scene", {}};
   {
@@ -1502,11 +1482,11 @@ Status setupDeviceAutomation(Shell& shell) {
                            curve, store.ids().breakpoint()});
     b.commands.push_back(doc::AddAutomationLane{track, l});
   };
-  lane(doc::ParamRef::device(filter, "freq"), "freq", {{0.0, 200.0f}, {1.0, 200.0f}, {3.0, 6000.0f}, {4.0, 800.0f}}, 0.0f);
-  lane(doc::ParamRef::device(util->devices[0], "gain"), "gain", {{0.5, 0.5f}, {3.5, 1.5f}}, 0.0f);
-  lane(doc::ParamRef::device(util->devices[0], "width"), "width", {{0.0, 1.0f}, {3.0, 3.0f}, {4.0, 0.5f}}, -0.4f);
+  lane(doc::ParamRef::device(drive, vp), vp, {{0.0, 0.5f}, {1.0, 0.5f}, {3.0, 7.94f}, {4.0, 1.0f}}, 0.0f);
+  lane(doc::ParamRef::device(gain, vp), vp, {{0.5, -6.0f}, {3.5, 3.5f}}, 0.0f);
+  lane(doc::ParamRef::device(width, vp), vp, {{0.0, 1.0f}, {3.0, 3.0f}, {4.0, 0.5f}}, -0.4f);
   if (!store.dispatch(b).ok()) return Error{ErrorCode::Unknown, "device-automation: lanes failed", {}};
-  ctx.overrideAutomation(doc::ParamRef::device(util->devices[0], "gain"));
+  ctx.overrideAutomation(doc::ParamRef::device(gain, vp));
   ctx.transport().locate(2 * bar);
   ctx.setSelectedTrack(track);
   ctx.setDetailVisible(true);
@@ -1520,18 +1500,14 @@ Status setupDeviceAutomation(Shell& shell) {
   if (v == nullptr) return Error{ErrorCode::NotFound, "device-automation: the Device view is not installed", {}};
   v->refreshAutomation();
   shell.tree().layoutNow();
-  // Basic Synth folded, so the filter's frequency knob and the rack (its Drive macro, its chain's volume) show together.
-  if (devices::DevicePanel* synth = v->panelOf(doc::findTrackPtr(*store.current(), track)->devices.at(0)->id)) synth->setFolded(true);
-  shell.tree().layoutNow();
   v->revealDevice(util->devices[0]);
   shell.tree().layoutNow();
   return Ok{};
 }
 
-// TX.knob-curves: knobs switched off their declared curves. Track "Keys": a Phase accumulator (its frequency bar on
-// Linear, its amplitude on Exponential: the face's glyphs, the bar's ticks re-placed) -> Auto Filter (frequency at 1 kHz
-// on Linear: the knob sits near its start; resonance on Exponential) -> Utility (gain on Logarithmic, in dB); the
-// unswitched knobs beside them show no glyph.
+// TX.knob-curves: knobs switched off their declared curves. Track "Keys": a Saturator (its Drive on Linear: the knob sits
+// near its start; its Dry/Wet on Exponential) -> Utility (its Gain on Logarithmic, in dB); GU.11: the modules' value
+// blocks, their curves on the modules' panels.
 Status setupDeviceKnobCurves(Shell& shell) {
   ViewContext& ctx = shell.context();
   if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-knob-curves: no device library", {}};
@@ -1540,20 +1516,21 @@ Status setupDeviceKnobCurves(Shell& shell) {
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
   if (!t) return Error{ErrorCode::Unknown, "device-knob-curves: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
-  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
-  // (GU.4: no Phase accumulator here any more: its knobs are a module's value blocks, their curves on its panel.)
-  const auto af = run(doc::ops::addDevice(*store.current(), store.ids(), track, "auto_filter", doc::DeviceKind::AudioEffect));
-  const auto ut = run(doc::ops::addDevice(*store.current(), store.ids(), track, "utility", doc::DeviceKind::AudioEffect));
+  const auto af = run(doc::ops::addDevice(*store.current(), store.ids(), track, "module:saturator", doc::DeviceKind::AudioEffect));
+  const auto ut = run(doc::ops::addDevice(*store.current(), store.ids(), track, "module:utility", doc::DeviceKind::AudioEffect));
   if (!af || !ut) return Error{ErrorCode::Unknown, "device-knob-curves: addDevice failed", {}};
-  const doc::DeviceId filter = af->devices[0], util = ut->devices[0];
+  const doc::DeviceId drive = memberNamed(*store.current(), af->devices[0], "Drive"),
+                      mix = memberNamed(*store.current(), af->devices[0], "Dry/Wet"),
+                      gain = memberNamed(*store.current(), ut->devices[0], "Gain");
   // GU.1: the curves first (a curve edit keeps the knob position), then the values typed in units on them.
   const doc::DeviceLibrary& lib = *ctx.deviceLibrary();
+  const std::string vp(doc::kValueParam);
   using P = dsp::CurvePreset;
-  const bool ok = run(doc::ops::setParamCurvePreset(*store.current(), lib, filter, "freq", P::Linear)) &&
-                  run(doc::ops::setParamCurvePreset(*store.current(), lib, filter, "res", P::Exponential)) &&
-                  run(doc::ops::setParamCurvePreset(*store.current(), lib, util, "gain", P::Logarithmic)) &&
-                  run(doc::ops::setDeviceParamValue(*store.current(), lib, filter, "freq", 1000.0)) &&
-                  run(doc::ops::setDeviceParamValue(*store.current(), lib, util, "gain", std::pow(10.0, -6.0 / 20.0)));
+  const bool ok = run(doc::ops::setParamCurvePreset(*store.current(), lib, drive, vp, P::Linear)) &&
+                  run(doc::ops::setParamCurvePreset(*store.current(), lib, mix, vp, P::Exponential)) &&
+                  run(doc::ops::setParamCurvePreset(*store.current(), lib, gain, vp, P::Logarithmic)) &&
+                  run(doc::ops::setDeviceParamValue(*store.current(), lib, drive, vp, 2.0)) &&
+                  run(doc::ops::setDeviceParamValue(*store.current(), lib, gain, vp, -6.0));
   if (!ok) return Error{ErrorCode::Unknown, "device-knob-curves: curves failed", {}};
   ctx.setSelectedTrack(track);
   ctx.setDetailVisible(true);
@@ -1568,9 +1545,10 @@ Status setupDeviceKnobCurves(Shell& shell) {
 }
 
 // GU.9 v2: instrument-rack (the T4.8 scene rebuilt from blocks): Split = an Instrument Rack [Low: Basic Synth (key zone
-// up to 300 Hz, fading out to 400) | High: Operator (from 300 Hz, fading in to 400) | Soft: Basic Synth (velocity up
-// to 48, fading to 64; -4.5 dB, pan -0.4)] -> Saturator, per-voice chains, macros Bright / Freq, two variations; the
-// key zones shown.
+// up to 300 Hz, fading out to 400) | High: Operator (from 300 Hz, fading in to 400) | Soft: the Wavetable Synth
+// (velocity up to 48, fading to 64; -4.5 dB, pan -0.4)] -> Saturator, per-voice chains, macros Bright / Level, two
+// variations; the key zones shown. GU.11: every chain's instrument is a module (its group); Ctrl+G groups the track's
+// instrument group into the first chain.
 Status setupInstrumentRack(Shell& shell) {
   ViewContext& ctx = shell.context();
   if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "instrument-rack: no device library", {}};
@@ -1579,19 +1557,20 @@ Status setupInstrumentRack(Shell& shell) {
   const auto t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Split"));
   if (!t) return Error{ErrorCode::Unknown, "instrument-rack: createTrack failed", {}};
   const doc::TrackId track = t->tracks[0];
-  if (Status st = project_patch::makeLoneInstrument(store, track); !st) return st;  // (IG.1-2: the instrument alone)
-  const doc::DeviceId inst = doc::findTrackPtr(*store.current(), track)->devices.at(0)->id;
+  const doc::DeviceId inst = pathHead(*store.current(), track);
   const auto rack = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{inst}));
   if (!rack) return Error{ErrorCode::Unknown, "instrument-rack: group failed", {}};
   const doc::DeviceId lo = rack->devices[0];
-  const auto opc = run(doc::ops::addChainWithDevice(*store.current(), store.ids(), lo, "operator", doc::DeviceKind::Instrument));
-  const auto soc = run(doc::ops::addChainWithDevice(*store.current(), store.ids(), lo, std::string(doc::kDefaultInstrument),
-                                                    doc::DeviceKind::Instrument));
-  if (!opc || !soc || !run(doc::ops::addDevice(*store.current(), store.ids(), track, "saturator", doc::DeviceKind::AudioEffect)))
+  const auto opc = run(doc::ops::addChainWithDevice(*store.current(), store.ids(), lo, "module:operator", doc::DeviceKind::Instrument));
+  const auto soc = run(doc::ops::addChainWithDevice(*store.current(), store.ids(), lo, "module:wavetable_synth", doc::DeviceKind::Instrument));
+  if (!opc || !soc ||
+      !run(doc::ops::addDevice(*store.current(), store.ids(), track, "module:saturator", doc::DeviceKind::AudioEffect)))
     return Error{ErrorCode::Unknown, "instrument-rack: chains failed", {}};
   const doc::DeviceId op = opc->devices[0];
   const doc::DeviceId hi = doc::findDevice(*store.current(), op).device->group;
   const doc::DeviceId soft = doc::findDevice(*store.current(), soc->devices[0]).device->group;
+  const std::string vp(doc::kValueParam);
+  const doc::DeviceId bright = memberNamed(*store.current(), inst, "Amount"), level = memberNamed(*store.current(), op, "Level A");
   const bool ok =
       run(doc::ops::renameChain(*store.current(), lo, "Low")) && run(doc::ops::renameChain(*store.current(), hi, "High")) &&
       run(doc::ops::renameChain(*store.current(), soft, "Soft")) &&
@@ -1600,8 +1579,8 @@ Status setupInstrumentRack(Shell& shell) {
       run(doc::ops::setChainZone(*store.current(), store.ids(), soft, doc::ZoneKind::Velocity, {0, 0, 48, 64})) &&
       run(doc::ops::setChainMixer(*store.current(), soft, -4.5f, -0.4f)) &&
       run(doc::ops::setVoiceChains(*store.current(), lo, true)) &&
-      run(doc::ops::mapMacro(*store.current(), store.ids(), lo, 0, inst, "bright", 80.0)) &&
-      run(doc::ops::mapMacro(*store.current(), store.ids(), lo, 1, op, "filterFreq", 60.0)) &&
+      (!bright.valid() || run(doc::ops::mapMacro(*store.current(), store.ids(), lo, 0, bright, vp, 80.0))) &&
+      (!level.valid() || run(doc::ops::mapMacro(*store.current(), store.ids(), lo, 1, level, vp, 60.0))) &&
       run(doc::ops::renameMacro(*store.current(), lo, 0, "Bright")) &&
       run(doc::ops::storeVariation(*store.current(), lo)) &&
       run(doc::ops::setMacroValue(*store.current(), lo, 0, 20.0)) &&
@@ -1681,10 +1660,13 @@ Status setupProjectMetaWavetable(Shell& shell) {
     sv->freeze();
   }
   const doc::DeviceId waveDev = wave->devices[0]->id;
-  v->faceVoices = [waveDev, pair](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
-    if (d == waveDev && path.empty()) return &waveVoices;
-    if (d == pair && path == "acc1") return &accVoices;
-    if (d == pair && path == "wt1") return &wtVoices;
+  // GU.11: Pair is the Wavetable Synth: its oscillator Wavetable's engine shows the chord.
+  const doc::DeviceId pairOsc = memberNamed(*ctx.doc(), memberNamed(*ctx.doc(), pair, "Wavetable"), "Wavetable");
+  (void)accVoices;
+  v->faceVoices = [waveDev, pairOsc](doc::DeviceId d, std::string_view path) -> VoiceTapReader* {
+    if (!path.empty()) return nullptr;
+    if (d == waveDev) return &waveVoices;
+    if (d == pairOsc) return &wtVoices;
     return nullptr;
   };
   shell.tree().layoutNow();
@@ -1778,12 +1760,13 @@ Status setupProjectPatchFree(Shell& shell) {
   project_patch::ProjectPatchView* v = findProjectPatch(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-free: the view is not installed", {}};
   const size_t before = doc::findTrackPtr(*ctx.doc(), ids.lead)->devices.size();
-  if (!v->addFreeDevice(ids.lead, std::string(doc::kModuleItemPrefix) + "phase_acc") || !v->addFreeDevice(ids.lead, "utility"))
+  if (!v->addFreeDevice(ids.lead, std::string(doc::kModuleItemPrefix) + "phase_acc") || !v->addFreeDevice(ids.lead, "module:utility"))
     return Error{ErrorCode::Unknown, "project-patch-free: adding the free devices failed", {}};
   const doc::Track* lead = doc::findTrackPtr(*ctx.doc(), ids.lead);
   if (lead == nullptr || lead->devices.size() < before + 2) return Error{ErrorCode::NotFound, "project-patch-free: no Lead chain", {}};
-  // GU.4: the module's group (the first block pasted), its Frequency value block, and the Utility (the last).
-  const doc::DeviceId lfo = lead->devices[before]->id, util = lead->devices.back()->id;
+  // GU.4: the module's group (the first block pasted), its Frequency value block, and the Utility's group (GU.11: a
+  // module too: the group of the last blocks pasted).
+  const doc::DeviceId lfo = lead->devices[before]->id, util = topNamed(*ctx.doc(), ids.lead, "Utility");
   doc::DeviceId lfoFreq;
   for (const doc::DevicePtr& d : lead->devices)
     if (d->group == lfo && d->name == doc::kPaFrequency) lfoFreq = d->id;
@@ -1899,19 +1882,21 @@ Status setupProjectPatchPanels(Shell& shell) {
     if (!e || e->devices.empty() || !st.dispatch(e->command)) return {};
     return e->devices[0];
   };
-  const doc::DeviceId filter = add(keys, "auto_filter"), util = add(keys, "utility");
+  const doc::DeviceId filter = add(keys, "module:saturator"), util = add(keys, "module:utility");
   if (const doc::Track* m = doc::findTrackPtr(*st.current(), mod); m != nullptr && !m->devices.empty()) {
     std::vector<doc::DeviceId> inst;  // (IG.1-2: its instrument group with it; Keys keeps its group — the new track's look)
     for (const doc::DevicePtr& d : m->devices) inst.push_back(d->id);
     if (Status s = run(doc::ops::deleteDevices(*st.current(), inst)); !s) return s;
   }
-  const doc::DeviceId lfo = add(mod, "lfo_device");
+  const doc::DeviceId lfo = add(mod, "module:lfo");
   if (!filter.valid() || !util.valid() || !lfo.valid()) return Error{ErrorCode::Unknown, "project-patch-panels: adding the devices failed", {}};
-  if (Status s = run(doc::ops::setDeviceParamValue(*st.current(), *ctx.deviceLibrary(), filter, "freq", 600.0)); !s) return s;
-  if (Status s = run(doc::ops::setDeviceParamValue(*st.current(), *ctx.deviceLibrary(), filter, "res", 0.4)); !s) return s;
-  if (Status s = run(doc::ops::setDeviceParamValue(*st.current(), *ctx.deviceLibrary(), util, "width", 1.4)); !s) return s;
-  if (Status s = run(doc::ops::setDeviceSetting(*st.current(), util, "bassMono", 1.0)); !s) return s;
-  if (Status s = run(doc::ops::connectWire(*st.current(), st.ids(), lfo, "lfo", util, "gain")); !s) return s;
+  const std::string vp(doc::kValueParam);
+  const doc::DeviceLibrary& lib = *ctx.deviceLibrary();
+  if (Status s = run(doc::ops::setDeviceParamValue(*st.current(), lib, memberNamed(*st.current(), filter, "Drive"), vp, 2.0)); !s) return s;
+  if (Status s = run(doc::ops::setDeviceParamValue(*st.current(), lib, memberNamed(*st.current(), filter, "Dry/Wet"), vp, 0.4)); !s) return s;
+  if (Status s = run(doc::ops::setDeviceParamValue(*st.current(), lib, memberNamed(*st.current(), util, "Width"), vp, 1.4)); !s) return s;
+  if (Status s = run(doc::ops::setDeviceParamValue(*st.current(), lib, memberNamed(*st.current(), util, "Mono"), vp, 1.0)); !s) return s;
+  if (Status s = run(doc::ops::connectWire(*st.current(), st.ids(), lfo, "y", memberNamed(*st.current(), util, "Gain"), vp)); !s) return s;
   project_patch::ProjectPatchView* v = findProjectPatch(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-panels: the view is not installed", {}};
   shell.tree().layoutNow();
@@ -2037,7 +2022,7 @@ Status setupProjectBlockDrag(Shell& shell) {
   });
   if (lead == nullptr || bass == nullptr || lead->devices.size() < 3 || bass->devices.empty())
     return Error{ErrorCode::NotFound, "project-block-drag: no Meta Lead / Meta Bass chains", {}};
-  const doc::DeviceId filter = lead->devices[2]->id;
+  const doc::DeviceId filter = topNamed(*ctx.doc(), lead->id, "Saturator");  // GU.11: where Auto Filter was
   (void)v->setBlockScale(bass->devices[0]->id, doc::kMinPatchScale);
   project_patch::ProjectCanvas& c = v->canvas();
   c.setCablesAnimated(false);
@@ -2386,7 +2371,6 @@ Status setupDeviceMetaSpectrum(Shell& shell) {
   shell.tree().layoutNow();
   v->rebuild();
   shell.tree().layoutNow();
-  if (devices::DevicePanel* eq = v->panelOf(ids.eq)) eq->showMeasuredResponse(true);
   const doc::DeviceId one[1] = {ids.spectrum};
   v->select(one);
   shell.tree().layoutNow();
@@ -2887,7 +2871,6 @@ constexpr SceneEntry kScenes[] = {
     {"circuit-editor-cost", 1280, 800, nullptr, setupCircuitEditorCost},    // T4.5: --project stdlib/filters/svf.pqp
     {"device-chain", 1280, 800, setupDeviceChain},
     {"device-wiring", 1280, 800, setupDeviceWiring},  // T4.7
-    {"circuit-editor-device", 1280, 800, setupCircuitEditorDevice},  // T4.4-fix1
     {"project-patch-overview", 1280, 800, setupProjectPatchOverview},  // T4.13
     {"project-patch-band", 1280, 800, setupProjectPatchBand},
     {"project-mixer", 1280, 800, setupProjectMixer},  // TX.mixer-look

@@ -1,7 +1,8 @@
 #pragma once
 
-// The circuit editor on a device of the project, played by the project (T4.4-fix1; SPEC §15 2026-10-26): T4.5's live
-// probes and cost meters read the device where it plays — inside the unit of its track — not a separate preview.
+// Live probes and cost meters of a device where it plays — inside the unit of its track (T4.4-fix1; SPEC §15
+// 2026-10-26). GU.11: the project-device circuit editor that drove it (DevicePlayer) is retired with the patch texts of a
+// device's own (retired/); the inspector stays as ProjectLink's probe path (ProjectLink::setDeviceInspect).
 //
 //   DeviceInspector   owned by ProjectLink. The inspected track's unit is compiled with the editor's probes (paths from
 //                     the device patch, the device's call node and the track's in front: engine::TrackInspect) and its
@@ -12,10 +13,6 @@
 //                     leases through UnitImage::keepAlive, M4 review L4; the rings grow to 32 while older images hold
 //                     them) and the cost meter (tagged with the schedule's
 //                     generation, so a reading is attributed to the program it measured).
-//   DevicePlayer      implements views::circuit::PatchPlayer as an EXTERNAL player over ProjectLink for one device: the
-//                     editor's probe targets → ProjectLink::setDeviceInspect (a recompile of that unit only; the audio is
-//                     bit-identical with or without probes), its reads → the inspector; stop() / its destruction → no
-//                     inspection (the unit is recompiled without probes, so a closed editor costs nothing).
 // Cost: nothing for units that are not inspected (their images are bound to nothing); the inspected unit pays T4.5's
 // probe copies and, while Cost is on, its region timing.
 // Threads: bind() on the compile path / the JIT worker (under the link's compile mutex), everything else on the UI
@@ -88,35 +85,6 @@ private:
   engine::CostMeter meter_;
   std::atomic<uint64_t> generation_{0};
   std::atomic<uint32_t> trackId_{0};
-};
-
-class DevicePlayer final : public views::circuit::PatchPlayer {
-public:
-  DevicePlayer(ProjectLink& link, doc::DeviceId device);
-  ~DevicePlayer() override;  // inspection off
-  DevicePlayer(const DevicePlayer&) = delete;
-  DevicePlayer& operator=(const DevicePlayer&) = delete;
-
-  double sampleRate() const override;
-  Status play(const graph::Schedule& schedule, const graph::TypedPatch& scheduled) override;
-  void stop() override;
-  bool playing() const override { return true; }  // the project plays it (or would, with the transport running)
-  const graph::StateLayout* stateLayout() const override { return nullptr; }
-  void setProbeSignals(std::span<const uint32_t> ids) override;
-  TapRing* probeSignal(uint32_t id) noexcept override;
-  const ProbeLevel* probeLevel(uint32_t id) const noexcept override;
-  void setMetering(bool on) override;
-  bool readCost(CostReading& out) override;
-  uint64_t generation() const noexcept override;
-  bool external() const override { return true; }
-  void setProbeTargets(std::span<const graph::ProbeTarget> targets, std::span<const uint32_t> ids) override;
-  const views::circuit::PlayedProgram* playedProgram() const override;
-  std::vector<graph::NodeId> pathPrefix() const override;
-
-private:
-  ProjectLink& link_;
-  doc::DeviceId device_;
-  mutable std::shared_ptr<const views::circuit::PlayedProgram> hold_;
 };
 
 }  // namespace pq::app

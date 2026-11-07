@@ -21,7 +21,7 @@
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/devices/device_panel.h"
-#include "pq/views/devices/panel_desc.h"
+#include "pq/views/devices/panel_layout.h"
 
 namespace pq::views {
 
@@ -94,10 +94,6 @@ struct DeviceChainView::Impl {
   explicit Impl(DeviceChainView& v) : view(v) {}
   ViewContext& ctx() const noexcept { return view.ctx_; }
   const doc::Project& doc() const noexcept { return *view.ctx_.doc(); }
-  const doc::DeviceCatalog* catalog() const noexcept {
-    const doc::DeviceLibrary* lib = view.ctx_.deviceLibrary();
-    return lib != nullptr ? &lib->catalog() : nullptr;
-  }
   const doc::Track* track() const noexcept {
     return view.track_.valid() ? doc::findTrackPtr(*view.ctx_.doc(), view.track_) : nullptr;
   }
@@ -177,8 +173,7 @@ public:
   virtual float logicalWidthFor(float /*available*/) const { return logicalWidth(); }
   // The device (or something inside it) changed in the document: show it (values, settings, activation, structure).
   virtual void update(const doc::Device& d) = 0;
-  // Whether update(d) can show `d` (else the frame is rebuilt). T4.4-fix1: a device whose patch text now plays another
-  // graph (an edit in the circuit view, Revert to Stock) needs a new panel; a comment or layout edit keeps it.
+  // Whether update(d) can show `d` (else the frame is rebuilt).
   virtual bool keeps(const doc::Device& /*d*/) const { return true; }
   // GU.9: what it shows is derived from more than its device (a rack: its chains, macros, wires): sync updates it on
   // every edit, not only when its device changed.

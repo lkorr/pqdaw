@@ -22,20 +22,14 @@
 //   one view   (T5.x-one-circuit, SPEC §15 2026-10-31: the whole project is one circuit) every "Open in Circuit View"
 //              comes here (ViewContext::openProjectCircuit: openCircuit): the device's band opened, framed on the
 //              device and focused; zooming out shows the other bands, groups with their chains, returns, the master
-//              chain and Out. Double-click inside an opened device edits its circuit (the Device level: the circuit
-//              editor, whose Track button comes back here); its title strip closes it again.
+//              chain and Out. (GU.11: there is no Device level: a group opens in place, a leaf has no inside.)
 //   zoom       Ctrl+wheel / = / − / F (fit), the wheel pans, middle or Alt drag pans (the canvas's). Semantic zoom:
 //              zoomed out, boxes and the bands' names; in, symbols, then titles and pin labels; double-click a band's
-//              empty space (or its name) to OPEN the band (T5.x-circuit-chain): zoomed onto it with every device of
-//              its chain opened to its atoms in place, each in its labelled frame (racks as nested frames with their
-//              chains stacked: circuit::buildRackCircuit) — project → track → devices → atoms; Esc / F back to the
-//              whole project (the band's devices close again). Double-click a closed device to open it alone; what is
-//              drawn is what plays: a device's patch is edited in the circuit editor (a double-click inside its
-//              opened frame, or "Edit Device Circuit" in its menu).
-//   panels     (TX.panel-faces) a closed stock device is drawn as the panel the Device view shows (the same widgets at
-//              the canvas's zoom: devices::PanelFace), edited in place — a knob drag, a toggle, a chooser, a typed value:
-//              one undo step each; its title bar and body move / select / open the block; a wire dropped on a control
-//              drives that param. Opened, the device shows its atoms. Far out the panels are colour-layer miniatures.
+//              empty space (or its name) to OPEN the band (T5.x-circuit-chain): zoomed onto it with its groups opened
+//              as their capsules; Esc / F back to the whole project (they close again).
+//   panels     (GU.3, GU.11) a closed group is drawn as its panel (pq/views/panel/group_panel_face.h), edited in place;
+//              a native engine as its face, an atom block as its symbol, a value block as a small knob. Only a group
+//              opens (its capsule); a leaf has no inside.
 //   edits      (each one undo step, shown at once in the arrangement, mixer and Device view: one document)
 //                wire        drag a device's export pin (right side) onto a device → its params (a menu), or onto a
 //                            param pin or a face's / panel's control: T4.7's modulation wire (ops::connectWire).
@@ -150,10 +144,6 @@ namespace pq::views {
 class Shell;
 class MeterSource;
 class ArrangementView;
-struct PanelTemplate;
-namespace devices {
-class PanelFace;
-}
 namespace panel {
 class PanelWindow;
 }
@@ -428,12 +418,13 @@ public:
   // ---- semantic zoom ------------------------------------------------------------------------------------------
   void fitAll(bool animate = true);
   void focusBand(doc::TrackId track, bool animate = true);
-  // T5.x-circuit-chain: the band opened (every device of its chain opened to its atoms, then zoomed onto it); a band
-  // opened before closes its devices (those the user did not open one by one). closeBand: they close again.
+  // T5.x-circuit-chain: the band opened (GU.11: every closed group of it opened as its capsule, then zoomed onto it); a
+  // band opened before closes its groups again (those the user did not open one by one). closeBand: they close again.
   void openBand(doc::TrackId track, bool animate = true);
   void closeBand();
   doc::TrackId openedBand() const noexcept { return openBand_; }
-  // A device opened to its atoms in place (read-only), or closed again. View state of this session.
+  // GU.11: a group opened as its capsule, or closed again (setGroupOpen); a leaf has no inside (a status line). View
+  // state of this session.
   void setDeviceExpanded(doc::DeviceId device, bool expanded);
   bool deviceExpanded(doc::DeviceId device) const noexcept;
   void setMixerExpanded(doc::TrackId track, bool expanded);
@@ -730,11 +721,6 @@ public:
   // The label of model node n (its ns per sample, smoothed), or < 0 for none.
   float deviceCost(uint32_t node) const noexcept { return node < costs_.size() ? costs_[node] : -1.0f; }
   void pollCosts();
-  // A device block's "Edit Device Circuit": the project-device circuit editor (T4.4-fix1,
-  // circuit::openDeviceInCircuitView; SPEC §15 2026-10-26): its edits are document commands, editing a stock device
-  // forks it into a user device. False: no device library, or the device is gone.
-  // Edit Device Circuit: the device's own editor (above). T5.x-one-circuit: Open in Circuit View is openCircuit here.
-  bool editDeviceCircuit(doc::DeviceId device);
   // Set by installProjectPatch: hides the other views of the track area (the mixer) when this one is shown.
   std::function<void()> hideOthers;
   // T4.8 hook: racks are devices whose block will open to their chains; until then a rack is a block like any device.
@@ -751,14 +737,6 @@ public:
   void cableLevels(std::span<const uint32_t> wires, std::span<float> levels);
   bool cableSignalLive() const;
 
-  // ---- TX.panel-faces: closed stock devices drawn as their Device-view panels ----------------------------------
-  // On (default): a closed stock device (not edited, not a rack, not a chain meta device, not missing) is drawn as the
-  // panel the Device view shows (devices::PanelFace: the same widgets at the canvas's zoom, interactive in place, one
-  // undo step per gesture); off: plain blocks (benchmarks' A/B). Rebuilds the model.
-  void setPanelsShown(bool on);
-  bool panelsShown() const noexcept { return panelsShown_; }
-  // The panel face of a device's block (null: the device is not drawn as a panel now).
-  devices::PanelFace* panelOf(doc::DeviceId device) const noexcept;
 
   // The hovered wire's readout (what the overlay draws; tests).
   struct Readout {
@@ -825,11 +803,6 @@ private:
   void captureArrangement();
   circuit::CircuitCanvas::View viewForArrangement() const;
   void pollReadout();
-  // TX.panel-faces: what a device's panel is (cached per patch), its size (world units; {0, 0}: none), and the shown
-  // panels brought up to date with the document (values, activation, name; the block's size after a rebuild).
-  const PanelTemplate* panelTemplate(const doc::Device& d);
-  graph::Point2 panelSize(const doc::Device& d);
-  void syncPanels();
   // TX.mod-all: the centre (block-local world units) of the control showing `param` on device `d`'s face or panel
   // (LayoutOptions::controlAnchor): the shown face's (its values, its panel's layout and selection now), else a
   // prototype's of the type / patch (the defaults' layout); nullopt: no visible control.
@@ -848,13 +821,8 @@ private:
   bool stale_ = true;
   bool fitted_ = false;
   Ticks songEnd_ = 0;
-  std::vector<doc::DeviceId> expanded_;
   std::vector<doc::TrackId> expandedMixers_;
-  // Expanded devices' scenes by the patch they play (a user device's resolved root name: one per text); bounded.
-  static constexpr size_t kInnerCacheMax = 32;
-  std::vector<std::pair<std::string, std::shared_ptr<const circuit::CircuitScene>>> innerCache_;
-  // T5.x-circuit-chain: opened racks' circuits (rebuilt with the model), their devices' scenes; the opened band and
-  // the devices it opened.
+  // T5.x-circuit-chain: the opened band and the groups it opened.
   doc::TrackId openBand_;
   std::vector<doc::DeviceId> bandExpanded_;
   doc::DeviceId focus_;           // T5.x-one-circuit: the device "Open in Circuit View" framed
@@ -894,14 +862,8 @@ private:
   // it (a panel made later does not close an opened group).
   std::vector<uint32_t> seenGroups_;
   doc::DeviceId selectedGroup_;
-  // TX.panel-faces
-  bool panelsShown_ = true;
-  std::map<std::string, std::unique_ptr<PanelTemplate>, std::less<>> panelTemplates_;  // by patch
-  const doc::DeviceLibrary* panelTemplatesFrom_ = nullptr;
-  std::unordered_map<uint32_t, doc::DevicePtr> panelSynced_;  // per device: what its panel shows (unchanged: skipped)
-  // TX.mod-all: prototype faces (by meta type) and panels (by patch) for controlAnchorOf before a block is shown.
+  // TX.mod-all: prototype faces (by meta type) for controlAnchorOf before a block is shown.
   std::unordered_map<const meta::Type*, std::unique_ptr<MetaFace>> anchorFaces_;
-  std::map<std::string, std::unique_ptr<Face>, std::less<>> anchorPanels_;
   // GU.5: the panel windows (children over the canvas, by group), the selected control, windows to remove (their group
   // went: removed at the next frame, never inside an event of theirs).
   std::vector<panel::PanelWindow*> windows_;
@@ -985,23 +947,16 @@ private:
 };
 
 // Projects for scenes, tests and benchmarks, built through the edit operations (the store's history grows):
-//   the user's sketch: a group of "Keys" (Operator → Saturator) and "Pad" (the default synth → EQ Eight) with its own
-//   processing (EQ Eight, Utility), a "Mod" track whose LFO modulates the group's Utility width and the keys' Saturator
+//   the user's sketch: a group of "Keys" (Operator → Saturator) and "Pad" (the default synth → VCA) with its own
+//   processing (VCA, Utility), a "Mod" track whose LFO modulates the group's Utility width and the keys' Saturator
 //   drive, a return "Space" fed by both tracks' sends, a Saturator on the master; clips on Keys and Pad.
 //   a wide project: `tracks` MIDI tracks (an effect or two each, a clip each) in groups of eight, two returns, sends.
-// Both need the stock device library for the lowering to draw the devices (the document does not). IG.1-2: the wide
-// project's tracks are new tracks (each with its instrument group); the sketch's instruments are lone
-// (makeLoneInstrument).
+// GU.11: every device is a module (pasted through doc::ops::addDevice "module:<key>"): a group of blocks on the path;
+// a MIDI track's instrument is its instrument group (the default one, or Operator replacing it).
 Status buildSketchProject(doc::DocumentStore& store);
-// IG.1-2: a new MIDI track holds an instrument group (GU.10: the default instrument's group preset). The scenes and
-// projects made for a meta module's face, a Device-view panel or chain, or Ctrl+G replace it first by a LONE instrument
-// heading the path (the notes → Basic Synth → the mixer; GU.10: Basic Synth is a stand-in device the tests load,
-// tests/stand_in_devices), as they were made before instrument groups (a meta module added at slot 0 then replaces it on
-// the path). One undo step; a track without a group: unchanged.
-Status makeLoneInstrument(doc::DocumentStore& store, doc::TrackId track);
 Status buildWideProject(doc::DocumentStore& store, uint32_t tracks);
-// TMM.4: Phase accumulator faces in chains — "Lead" (a face → Saturator), "Bell" (220 Hz, phase 0.25, amp 2 → Auto
-// Filter), "Sub" (4.5 Hz, phase 0.5, amp 0.5 → EQ Eight) and "Keys" (Operator → Saturator: plain blocks beside them).
+// TMM.4: Phase accumulator faces in chains — "Lead" (a face → Saturator), "Bell" (220 Hz, phase 0.25, amp 2 →
+// Saturator), "Sub" (4.5 Hz, phase 0.5, amp 0.5 → VCA) and "Keys" (Operator → Saturator: groups beside them).
 Status buildMetaFacesProject(doc::DocumentStore& store);
 // The first `count` MIDI tracks headed by a Phase Accumulator module (GU.4: its group preset with its panel; benchmarks:
 // a project plus panels).
@@ -1010,11 +965,11 @@ Status addPhaseAccFaces(doc::DocumentStore& store, uint32_t count);
 // them), a bright vocal-like cycle (odd and formant partials) at 1 (crossfade gap), 64 dense frames.
 meta::DataPtr demoWavetableData();
 // TMM.7: Wavetable faces — "Wave" (a chain Wavetable with demoWavetableData, warp 0.3 bend, position 0.35 → Saturator)
-// and "Pair" (the default synth forked: `acc1 = meta_phase_acc(voice.hz)` wired into `wt1 = meta_wavetable(acc1)`
-// under an envelope; wt1 holds demoWavetableData at position 0.7). Returns the Pair instrument in `pair` when given.
+// and "Pair" (GU.11: the Wavetable Synth, its oscillator Wavetable holding demoWavetableData at position 0.7). Returns
+// the Pair instrument group in `pair` when given.
 Status buildMetaWavetableProject(doc::DocumentStore& store, doc::DeviceId* pair = nullptr);
 // TMM.10: meta modules as chain devices — "Meta Lead" (Phase accumulator → Wavetable with demoWavetableData at
-// position 0.35, warp 0.3 → Auto Filter: a meta voice run) and "Meta Bass" (Phase accumulator +1.5 Hz → a saw
+// position 0.35, warp 0.3 → Saturator) and "Meta Bass" (Phase accumulator +1.5 Hz → a saw
 // Wavetable, nothing after it). The ids, when given.
 struct MetaChainIds {
   doc::TrackId lead;
@@ -1027,7 +982,7 @@ Status buildMetaChainProject(doc::DocumentStore& store, MetaChainIds* ids = null
 Status addWavetableFaces(doc::DocumentStore& store, uint32_t count, const meta::DataPtr& data);
 // TMM.11: the Envelope — "Pluck" (Phase accumulator → Wavetable → Envelope: a meta voice run whose voices end by the
 // envelope; attack 12 ms bent up, decay 0.9 s bent down, sustain 0.35, release 1.2 s bent toward a line) and "Shape"
-// (the default synth forked: acc1 → wt1 → env1 = meta_envelope(wt1) as a VCA whose `done` ends the voice). The ids.
+// (GU.11: the Wavetable Synth with a slower Envelope; `shapeInst` its group). The ids.
 struct MetaEnvelopeIds {
   doc::TrackId pluck;
   doc::DeviceId acc, wt, env;
@@ -1036,7 +991,8 @@ struct MetaEnvelopeIds {
 };
 Status buildMetaEnvelopeProject(doc::DocumentStore& store, MetaEnvelopeIds* ids = nullptr);
 // TMM.14 / GU.4: the VCA — "Keys" (the default synth, then the VCA module on the path, its knob at 0.62: × 0.60) and
-// "Trem" (the synth forked: acc1 = phasor(voice.hz) → wt1 → vca1 = wt1 · env · trem). The ids (`vca`: the module's group).
+// "Trem" (GU.11: the default synth, then a VCA at × 0.75; `tremInst` that VCA's group). The ids (`vca`: the module's
+// group).
 struct MetaVcaIds {
   doc::TrackId keys;
   doc::DeviceId vca;
@@ -1044,8 +1000,8 @@ struct MetaVcaIds {
   doc::DeviceId tremInst;
 };
 Status buildMetaVcaProject(doc::DocumentStore& store, MetaVcaIds* ids = nullptr);
-// TX.spectrum: the analysis displays — "Mix" (an audio track: EQ Eight with three bands moved, then a Spectrum meta
-// device). The ids.
+// TX.spectrum: the analysis displays — "Mix" (an audio track: a Saturator at +6 dB drive — GU.11: where EQ Eight was —,
+// then a Spectrum meta device). The ids (`eq`: the Saturator's group).
 struct MetaSpectrumIds {
   doc::TrackId keys;
   doc::DeviceId eq, spectrum;
@@ -1072,10 +1028,10 @@ struct NestedProjectIds {
   doc::DeviceId fx, sat, tone, util;
 };
 Status buildNestedGroupProject(doc::DocumentStore& store, NestedProjectIds* ids = nullptr);
-// TX.free-rack: "Lead" plays the default synth → Saturator → Auto Filter → Utility; `lfos` free LFOs (0.25 Hz apart) are
-// each wired onto a knob of the chain (Saturator drive, Auto Filter frequency, Utility width, Auto Filter resonance,
-// Saturator dry / wet, Utility balance, Auto Filter drive, Saturator output, then again), and a free Phase accumulator
-// (55 Hz) feeds the Auto Filter's sidechain input, its frequency moved by the first LFO. The ids.
+// TX.free-rack: "Lead" plays the default synth → Saturator → a second Saturator (`filter`: GU.11, where Auto Filter
+// was) → Utility; `lfos` free LFO modules (0.25 Hz apart) are each wired onto a knob of the chain (its value blocks:
+// Drive, Output, Width, Dry/Wet, Dry/Wet, Balance, Drive, Output, then again), and a free Wavetable feeds the second
+// Saturator's input, its position moved by the first LFO. The ids.
 struct FreeRackIds {
   doc::TrackId lead;
   doc::DeviceId sat, filter, util;

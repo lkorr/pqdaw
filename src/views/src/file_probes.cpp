@@ -35,8 +35,7 @@ ProbedFile::Kind fileKindByName(std::string_view path) noexcept {
   if (!k) return ProbedFile::Kind::Other;
   switch (*k) {
     case library::ItemKind::Sample: return ProbedFile::Kind::Audio;
-    case library::ItemKind::Preset:
-    case library::ItemKind::Device: return ProbedFile::Kind::Preset;
+    case library::ItemKind::Preset: return ProbedFile::Kind::Preset;
     case library::ItemKind::Tuning: return ProbedFile::Kind::Tuning;
     case library::ItemKind::Project: return ProbedFile::Kind::Project;
     case library::ItemKind::Clip: {

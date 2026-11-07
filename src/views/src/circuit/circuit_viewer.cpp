@@ -11,7 +11,6 @@
 #include "pq/meta/registry.h"
 #include "pq/ui/controls.h"
 #include "pq/views/circuit/circuit_editor.h"
-#include "pq/views/circuit/device_circuit.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
 
@@ -293,6 +292,15 @@ void setPatchPlayer(Shell& shell, PatchPlayer* player) {
   ui::Widget& slot = shell.slot(ShellSlot::ClipDetail);
   for (size_t i = 0; i < slot.childCount(); ++i)
     if (auto* host = dynamic_cast<CircuitViewerHost*>(&slot.child(i))) host->player = player;
+}
+
+void followViewPrefs(CircuitEditor& editor, ViewContext& ctx) {
+  editor.setShowInactive(ctx.viewPrefs().circuitShowInactive);
+  editor.onShowInactiveChanged = [&ctx](bool on) {
+    ViewPrefs p = ctx.viewPrefs();
+    p.circuitShowInactive = on;
+    ctx.setViewPrefs(p);
+  };
 }
 
 }  // namespace pq::views::circuit

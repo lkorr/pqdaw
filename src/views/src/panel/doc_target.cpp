@@ -408,7 +408,6 @@ private:
     auto it = sigs_.find(patch);
     if (it == sigs_.end()) {
       it = sigs_.emplace(patch, std::make_unique<devices::DeviceSignature>(devices::signatureOf(*patch))).first;
-      if (hold) holds_.push_back(std::move(hold));  // the patch stays alive while its signature is cached
     }
     return it->second.get();
   }
@@ -546,7 +545,6 @@ private:
   mutable uint64_t generation_ = 0;
   mutable const std::vector<doc::DevicePtr>* list_ = nullptr;
   mutable std::unordered_map<const graph::Patch*, std::unique_ptr<devices::DeviceSignature>> sigs_;
-  mutable std::vector<std::shared_ptr<const doc::ResolvedDevice>> holds_;
   mutable std::unordered_map<const doc::Binding*, Resolved> cache_;
   std::vector<Pending> pending_;
   bool inGesture_ = false, storeGesture_ = false;

@@ -121,7 +121,6 @@ bool shownNow(const ui::Widget& w) noexcept {
 // subcircuit), param when it is computed from params and constants only.
 uint8_t exportRate(const doc::Device& d, const doc::DeviceLibrary* lib, std::string_view port) {
   if (d.kind == doc::DeviceKind::Instrument) return 2;
-  std::shared_ptr<const doc::ResolvedDevice> hold;  // T4.4-fix1: a user device plays its own patch
   const graph::Patch* p = lib != nullptr ? lib->patchOf(d) : nullptr;
   if (p == nullptr) return 1;
   const graph::Adjacency adj = p->adjacency();
@@ -152,7 +151,8 @@ uint8_t exportRate(const doc::Device& d, const doc::DeviceLibrary* lib, std::str
 std::string deviceName(const ViewContext& ctx, const doc::Project& p, doc::DeviceId id) {
   const doc::DeviceLoc l = doc::findDevice(p, id);
   if (l.device == nullptr) return "?";
-  const doc::DeviceInfo* info = ctx.deviceLibrary() != nullptr ? ctx.deviceLibrary()->catalog().find(l.device->patch) : nullptr;
+  const doc::DeviceInfo* info = ctx.deviceLibrary() != nullptr ? ctx.deviceLibrary()->infoOf(*l.device) : nullptr;
+  if (!l.device->name.empty()) return l.device->name;
   return info != nullptr ? info->name : l.device->patch;
 }
 
@@ -163,7 +163,6 @@ std::string trackName(const doc::Project& p, doc::TrackId id) {
 
 std::string paramLabel(const ViewContext& ctx, const doc::Project& p, doc::DeviceId id, const std::string& param) {
   const doc::DeviceLoc l = doc::findDevice(p, id);
-  std::shared_ptr<const doc::ResolvedDevice> hold;  // T4.4-fix1: an edited device's own labels
   const doc::DeviceInfo* info = l.device != nullptr && ctx.deviceLibrary() != nullptr
                                     ? ctx.deviceLibrary()->infoOf(*l.device) : nullptr;
   const doc::DeviceParamInfo* pi = info != nullptr ? info->param(param) : nullptr;

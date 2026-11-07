@@ -102,7 +102,6 @@ struct Node {
   bool lowered = true;         // Device: its call is in the track patch (active, in the library, of its kind)
   bool active = true;          // Device: its activator
   bool missing = false;        // Device: its patch is not in the library
-  bool edited = false;         // Device: a user device (its own patch text, T4.4-fix1); the title says "(edited)"
   bool instrument = false;     // Device: an instrument
   bool expanded = false;       // Device: drawn opened to its atoms (LayoutOptions::expanded)
   // TX.all-free: off its track's main path (doc::mainPath): placed on the row under the path until a nudge moves it, and
@@ -397,9 +396,9 @@ inline bool portOrbits(const Node& n, size_t i, bool input) noexcept {
 }
 
 // The project patch of `project` as lowered into `lowered` (doc::lower with the same project; its library for device
-// ports), described with `catalog` (display names; may be null). Never fails: what is not lowered is drawn dim.
+// ports), described with `devices` (the blocks' names; may be null). Never fails: what is not lowered is drawn dim.
 ProjectPatch buildProjectPatch(const doc::Project& project, const doc::LoweredProject& lowered,
-                               const doc::DeviceCatalog* catalog, const LayoutOptions& options = {});
+                               const doc::DeviceLibrary* devices, const LayoutOptions& options = {});
 
 // Checks a patch against the graph it was built from (tests, debug builds): every lowered track has exactly one band
 // with its role; every device call `d<id>` of a track patch is a lowered Device node of that band (and every lowered

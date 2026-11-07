@@ -112,8 +112,8 @@ public:
   PreviewPort* preview() const noexcept { return preview_; }
 
   // --- T5.11: the User Library's files (pq/document/library_files.h; layout in docs/plans/M5.md T5.11) ---
-  //   Presets/<Device>/*.pqpreset   device presets          Defaults/<Device>.pqpreset   default presets
-  //   Racks/*.pqpreset              rack presets            Devices/*.pqdevice           user devices
+  //   Presets/<Device>/*.pqpreset   block presets           Defaults/<Device>.pqpreset   default presets
+  //   Racks/*.pqpreset              rack presets            Groups/*.pqpreset            group presets
   //   Tunings/*.pqtuning            tunings                 Clips/*.pqclip (+ Clips/Samples/)   clips
   // <Device> is the device's display name ("EQ Eight"). Every save goes through doc::writeTextFileAtomic; the
   // indexer's watcher puts the file in the browser (≤ 500 ms). Errors: no User Library (tests set one in %TEMP%), I/O.
@@ -132,8 +132,6 @@ public:
   // The default preset of a device (by display name) when it exists and is for `patch`; null otherwise. Cached by the
   // file's write time, so a new device costs one stat when nothing changed.
   doc::DevicePtr defaultPreset(std::string_view deviceName, std::string_view patch);
-  // "Save as New Device": Devices/<name>.pqdevice.
-  Result<std::string> saveUserDevice(const doc::UserDeviceFile& f);
   // "Save to Library" (a tuning): Tunings/<name>.pqtuning.
   Result<std::string> saveTuning(const doc::TuningFile& f);
   // A clip as `dir`/<name>.pqclip; an audio clip's sample is copied into `dir`/Samples/ (unless it already lies below
@@ -144,12 +142,6 @@ public:
                                std::string_view dir = {});
   // A library clip file read back: its clip, with the sample path resolved against the file's folder.
   Result<doc::ClipFile> readClip(std::string_view pathUtf8) const;
-  // The user devices of the index (*.pqdevice in any place), parsed; re-read when the index changes.
-  struct UserDeviceEntry {
-    std::string path;
-    doc::UserDeviceFile file;
-  };
-  const std::vector<UserDeviceEntry>& userDevices();
   // The patch a preset file is for: its device's "patch" in the first 4 KiB ("" unreadable). Cached by path + write time.
   std::string presetPatch(std::string_view pathUtf8);
   // The browser renames this file inline as soon as the index shows it (a preset just saved; the panel clears it).
@@ -179,8 +171,6 @@ private:
     std::string patch;
   };
   std::map<std::string, CachedPreset, std::less<>> presetCache_;  // by folded path
-  std::vector<UserDeviceEntry> userDevices_;
-  std::shared_ptr<const library::Index> userDevicesFor_;
   ClipRenderer clipRenderer_;
   std::function<void(const HotSwapTarget&)> hotSwapHandler_;
   std::map<uint32_t, std::string> presetNames_;

@@ -295,11 +295,10 @@ std::vector<MenuItem> MenuBar::items(int32_t i) const {
       v.push_back(check(act("Fixed Grid", "grid.toggleFixed"), ctx_.grid().mode == GridMode::Fixed));
       v.push_back(MenuItem::sep());
       v.push_back(act("Preferences\xE2\x80\xA6", "app.preferences"));
-      // T4.4-fix1 (SPEC §15 2026-10-26): the circuit editor works on the project's devices (a device's context menu,
-      // or a double-click on its title); loose .pqp files are a developer's tool.
+      // Loose .pqp files (the patch language's own: the stdlib's functions) are a developer's tool (GU.11: a block of the
+      // project has no patch text).
       v.push_back(MenuItem::sep());
-      v.push_back(MenuItem::sub("Developer", {act("Open Patch File in Circuit View\xE2\x80\xA6", "view.openPatch"),  // T4.2
-                                             act("Preview Device File\xE2\x80\xA6", "view.openDevice")}));     // T4.6
+      v.push_back(MenuItem::sub("Developer", {act("Open Patch File in Circuit View\xE2\x80\xA6", "view.openPatch")}));  // T4.2
       break;
     case 5: {  // Help
       ViewContext* c = &ctx_;

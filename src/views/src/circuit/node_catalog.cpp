@@ -226,37 +226,7 @@ void addModules(NodeCatalog& c, std::vector<NodeEntry>& visualisers) {
   }
 }
 
-void addDevices(const doc::DeviceLibrary* lib, std::vector<NodeEntry>& instruments, std::vector<NodeEntry>& effects) {
-  if (lib == nullptr) return;
-  for (const doc::DeviceInfo& d : lib->catalog().devices()) {
-    NodeEntry e;
-    e.item = NodeItem::Device;
-    e.id = d.patch;
-    e.key = "device:" + d.patch;
-    e.name = d.name;
-    e.instrument = d.kind == doc::DeviceKind::Instrument;
-    e.category = e.instrument ? NodeCategory::Instruments : NodeCategory::AudioEffects;
-    e.chip = e.instrument ? "INSTRUMENT" : "AUDIO EFFECT";
-    e.description = std::string(deviceDescription(d.patch));
-    e.aliases = d.patch;
-    const graph::Patch* callee = lib->library().find(d.patch);
-    if (callee != nullptr) {
-      const graph::SubcircuitRef sig = graph::subcircuitSignature(*callee);
-      std::unordered_set<std::string_view> params;
-      for (const doc::DeviceParamInfo& p : d.params) params.insert(p.name);
-      for (const graph::SubcircuitPort& sp : sig.inputs)
-        if (sp.type.rate != graph::Rate::Const && params.count(sp.name) == 0 && !sp.name.ends_with("_add")) e.inputs.push_back(sp.name);
-      for (const graph::SubcircuitPort& sp : sig.outputs) e.outputs.push_back(sp.name);
-      const MainPorts m = mainPortsOf(sig, callee, e.instrument);
-      e.hasIn = !m.in.empty();
-      e.hasOut = !m.out.empty();
-    }
-    for (const doc::DeviceParamInfo& p : d.params)
-      e.params.push_back({p.label.empty() ? p.name : p.label, valueText(p.defaultValue, p.unit, p.kind == graph::Kind::Bool, p.steps)});
-    if (e.description.empty()) e.description = e.instrument ? "An instrument." : "An audio effect.";
-    finish(e);
-    (e.instrument ? instruments : effects).push_back(std::move(e));
-  }
+void addRacks(std::vector<NodeEntry>& instruments, std::vector<NodeEntry>& effects) {
   for (const bool inst : {false, true}) {
     NodeEntry e;
     e.item = NodeItem::Rack;
@@ -282,7 +252,7 @@ void addLibrary(NodeCatalog& c, const library::Index& index) {
   std::vector<NodeEntry> files;
   for (uint32_t i = 0; i < index.entryCount(); ++i) {
     const library::ItemKind k = index.kind(i);
-    if (k != library::ItemKind::Preset && k != library::ItemKind::Device) continue;
+    if (k != library::ItemKind::Preset) continue;
     const uint32_t place = index.placeOf(i);
     if (place >= index.places.size() || index.places[place].kind != library::PlaceKind::UserLibrary) continue;
     const library::Category cat = index.category(i);
@@ -294,9 +264,9 @@ void addLibrary(NodeCatalog& c, const library::Index& index) {
     e.name = std::string(index.stem(i));
     e.instrument = cat == library::Category::Instruments;
     const bool rack = cat == library::Category::Racks;
-    e.chip = k == library::ItemKind::Device ? "USER DEVICE" : rack ? "RACK PRESET" : "PRESET";
+    e.chip = rack ? "RACK PRESET" : "PRESET";
     e.aliases = std::string(library::itemKindName(k)) + (e.instrument ? " instrument" : rack ? " rack" : " effect");
-    e.description = std::string(k == library::ItemKind::Device ? "A device saved to the User Library" : "A preset saved to the User Library") +
+    e.description = std::string("A preset saved to the User Library") +
                     (e.instrument ? " (an instrument)." : cat == library::Category::MetaModules ? " (a meta module)." : ".");
     e.hasIn = !e.instrument;
     e.hasOut = true;
@@ -310,6 +280,7 @@ void addLibrary(NodeCatalog& c, const library::Index& index) {
 }
 
 std::shared_ptr<const NodeCatalog> build(NodeCatalog::Scope scope, const doc::DeviceLibrary* lib, const library::Index* index) {
+  (void)lib;  // GU.11: nothing of the library is listed (the blocks are the atoms, the modules and the engines)
   auto c = std::make_shared<NodeCatalog>();
   c->scope = scope;
   std::vector<NodeEntry> visualisers, instruments, effects;
@@ -317,7 +288,7 @@ std::shared_ptr<const NodeCatalog> build(NodeCatalog::Scope scope, const doc::De
   addMetas(*c, visualisers);
   if (scope == NodeCatalog::Scope::Project) addModules(*c, visualisers);
   if (scope == NodeCatalog::Scope::Project) {
-    addDevices(lib, instruments, effects);
+    addRacks(instruments, effects);
     auto byName = [](const NodeEntry& a, const NodeEntry& b) { return a.foldedName < b.foldedName; };
     std::stable_sort(instruments.begin(), instruments.end(), byName);
     std::stable_sort(effects.begin(), effects.end(), byName);
@@ -557,79 +528,32 @@ bool nodeSpecValid(std::string_view spec, NodeCatalog::Scope scope, std::span<co
   if (!n) return false;
   if (scope == NodeCatalog::Scope::Circuit) return true;
   const graph::NodeKind k = p.node(*n).kind;
-  return k == graph::NodeKind::Atom || k == graph::NodeKind::Const || k == graph::NodeKind::Param ||
-         (k == graph::NodeKind::Subcircuit && meta::typeOfCall(p.subcircuit(*n).patch) != nullptr);
+  if (k == graph::NodeKind::Subcircuit) return meta::typeOfCall(p.subcircuit(*n).patch) != nullptr;
+  return specBlockPatch(spec).ok();  // GU.11: a block of its own
 }
 
-Result<SpecDevice> specDevice(std::string_view spec) {
+Result<std::string> specBlockPatch(std::string_view spec) {
+  const SpecParts parts = splitSpec(spec);
+  if (!parts.operand.empty())
+    return Error{ErrorCode::InvalidArgument, "an operand has no block of its own: place the atom and wire a Value block into it", {}};
   graph::Patch probe("Spec");
-  const std::vector<graph::SubcircuitRef> callees = specCallees({});
-  auto pn = addSpecNode(probe, spec, callees);
+  auto pn = addSpecNode(probe, spec, specCallees({}));
   if (!pn) return std::move(pn).error();
   const graph::Node& pnode = probe.node(*pn);
-  std::string name;
   switch (pnode.kind) {
-    case graph::NodeKind::Atom: name = std::string(graph::atomSignature(pnode.atom).name); break;
-    case graph::NodeKind::Const: name = "Const"; break;
-    case graph::NodeKind::Param: name = probe.nodeName(*pn); break;
+    case graph::NodeKind::Atom: {
+      const std::string_view name = graph::atomSignature(pnode.atom).name;
+      if (doc::atomBlockPatch(name) == nullptr)
+        return Error{ErrorCode::InvalidArgument, "`" + std::string(name) + "` cannot be a block of its own", {}};
+      return std::string(doc::kAtomDevicePrefix) + std::string(name);
+    }
+    case graph::NodeKind::Const:
+    case graph::NodeKind::Param:
+      return Error{ErrorCode::InvalidArgument, "a literal or a param is a Value block (place one from the menu)", {}};
     case graph::NodeKind::Subcircuit:
-      return Error{ErrorCode::InvalidArgument, "a meta module is placed as itself (its face), a patch inside a device", {}};
+      return Error{ErrorCode::InvalidArgument, "a meta module is placed as itself (its face)", {}};
     default: return Error{ErrorCode::InvalidArgument, "a declaration (in, out, export) is a port of a patch, not a node", {}};
   }
-  // The patch's name: the node's, capitalised (atom names are lower case: never an atom's name), letters only.
-  std::string patchName;
-  for (const char ch : name)
-    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_')
-      patchName.push_back(patchName.empty() && ch >= 'a' && ch <= 'z' ? static_cast<char>(ch - 32) : ch);
-    else if (ch == '.')
-      patchName.push_back('_');
-  if (patchName.empty() || (patchName[0] >= '0' && patchName[0] <= '9')) patchName = "Node" + patchName;
-  graph::Patch p(patchName);
-  // Which inputs become the device's: the required ones not wired by the spec (an optional one keeps its default).
-  std::vector<uint32_t> ins;
-  {
-    const graph::Adjacency adj = probe.adjacency();
-    for (uint32_t i = 0; i < pnode.numInputs; ++i)
-      if (!probe.inputOptional(*pn, i) && adj.driver[probe.flatInput(*pn, i)] == graph::kNone) ins.push_back(i);
-  }
-  const bool firstReal = !ins.empty() && probe.inputType(*pn, ins.front()).kind != graph::Kind::Bool;
-  // A node without a real first input still makes an audio effect: an audio input first that drives nothing.
-  if (!firstReal) {
-    if (auto d = graph::edit::addNode(p, "in " + graph::edit::uniqueName(p, "x") + " : audio", {}); !d) return std::move(d).error();
-  }
-  std::vector<graph::NodeIndex> inNodes;
-  for (const uint32_t i : ins) {
-    const std::string nm = graph::edit::uniqueName(p, std::string(probe.inputName(*pn, i)));
-    const bool b = probe.inputType(*pn, i).kind == graph::Kind::Bool;
-    auto d = graph::edit::addNode(p, "in " + nm + " : " + (b ? "bool" : "audio"), {});
-    if (!d) return std::move(d).error();
-    inNodes.push_back(*d);
-  }
-  auto n = addSpecNode(p, spec, callees);
-  if (!n) return std::move(n).error();
-  for (size_t k = 0; k < ins.size(); ++k)
-    if (auto w = graph::edit::connect(p, graph::PortRef{inNodes[k], 0}, graph::PortRef{*n, static_cast<uint16_t>(ins[k])}); !w) return std::move(w).error();
-  const uint32_t outs = p.node(*n).numOutputs;
-  for (uint32_t o = 0; o < outs; ++o) {
-    std::string base = p.node(*n).kind == graph::NodeKind::Atom ? std::string(p.outputName(*n, o)) : std::string("out");
-    if (base.empty()) base = "out";
-    const std::string nm = graph::edit::uniqueName(p, base);
-    const bool b = p.outputType(*n, o).kind == graph::Kind::Bool;
-    auto d = graph::edit::addNode(p, "out " + nm + " : " + (b ? "bool" : "audio"), {});
-    if (!d) return std::move(d).error();
-    if (auto w = graph::edit::connect(p, graph::PortRef{*n, static_cast<uint16_t>(o)}, graph::PortRef{*d, 0}); !w) return std::move(w).error();
-  }
-  if (outs == 0) return Error{ErrorCode::InvalidArgument, "`" + std::string(spec) + "` has no output: it cannot be a device", {}};
-  SpecDevice out;
-  out.patch = patchName;
-  out.text = graph::print(p);
-  {
-    std::string_view t = spec;
-    while (!t.empty() && t.front() == ' ') t.remove_prefix(1);
-    while (!t.empty() && t.back() == ' ') t.remove_suffix(1);
-    out.name = std::string(t);
-  }
-  return out;
 }
 
 }  // namespace pq::views::circuit

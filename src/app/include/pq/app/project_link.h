@@ -365,10 +365,10 @@ public:
   std::shared_ptr<dsp::FrameTableSlot> metaFrameTable(doc::DeviceId device, std::string_view path, uint32_t index) const;
   // The tap of a VoiceTap request, or the tap of a FrameTable request's slot (what its wavetable_pos writes); null.
   std::shared_ptr<VoiceTap> metaVoiceTap(doc::DeviceId device, std::string_view path, uint32_t index) const;
-  // TX.spectrum: the analysis tap of a SignalTap request (a Spectrum meta module's, or an analysed stock device's at
-  // path doc::kAnalysisTapPath): kAnalysisTapChannels × kAnalysisTapFrames, written per engine block; null: none.
+  // TX.spectrum: the analysis tap of a SignalTap request (a Spectrum native engine's): kAnalysisTapChannels ×
+  // kAnalysisTapFrames, written per engine block; null: none.
   std::shared_ptr<TapRing> metaSignalTap(doc::DeviceId device, std::string_view path, uint32_t index) const;
-  // The device's analysis tap: its own (an analysed stock device) or, for a chain Spectrum meta device, its face's.
+  // The device's analysis tap: a Spectrum native engine's (its face's).
   std::shared_ptr<TapRing> deviceAnalysisTap(doc::DeviceId device) const;
   static constexpr uint32_t kAnalysisTapFrames = 16384;
   // Posted to the UI thread (setUiPoster) after a compile that made new analysis taps (the views look again). Set once,

@@ -83,14 +83,6 @@ void ProjectLink::readDeviceCosts(std::span<const doc::DeviceId> devices, std::s
     // TMM.3: the meta-module expansions and specialised device roots, held alive by the lowering.
     if (lowered_->metaPatches)
       for (const graph::Patch& p : lowered_->metaPatches->patches) library.insert(&p);
-    // T4.4-fix1: user devices' patches (and the stdlib files their imports loaded), held alive by the lowering.
-    for (const auto& rd : lowered_->userDevices) {
-      if (!rd || !rd->graph) continue;
-      for (const graph::Patch& p : rd->graph->file.patches) library.insert(&p);
-      for (const graph::PatchFile* f : rd->extraFiles)
-        if (f != nullptr)
-          for (const graph::Patch& p : f->patches) library.insert(&p);
-    }
     auto alive = [&](const graph::Patch* p) { return p != nullptr && (trackOf.count(p) != 0 || library.count(p) != 0); };
     // Device ids by their call's NodeId, per track.
     std::unordered_map<uint64_t, uint32_t> deviceOf;  // (track id << 32 | call NodeId) → device id

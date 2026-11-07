@@ -60,7 +60,7 @@ class SpectrumFeed;
 }  // namespace devices
 }  // namespace pq::views
 namespace pq::views::circuit {
-class PatchPlayer;  // pq/views/circuit/patch_player.h (T4.4-fix1: ViewContext::devicePlayers)
+class PatchPlayer;  // pq/views/circuit/patch_player.h
 }  // namespace pq::views::circuit
 namespace pq::doc {
 class DeviceLibrary;  // pq/document/devices.h
@@ -254,12 +254,6 @@ public:
   VoiceTapReader* faceVoices(doc::DeviceId device, std::string_view path) const { return faceVoices_ ? faceVoices_(device, path) : nullptr; }
   // The app, after a compile made new taps: displays waiting for their device's feed look again (notifies kAnalysis).
   void analysisTapsChanged() { notify(view_change::kAnalysis); }
-  // T4.4-fix1: the circuit editor's player for a device of the project — probes and cost through the project unit
-  // that plays it (the app's ProjectLink: app::DevicePlayer). Unset in tests and scenes without one: the editor then
-  // edits only. A player made here lives as long as the editor that asked for it.
-  using DevicePlayerFactory = std::function<std::unique_ptr<circuit::PatchPlayer>(doc::DeviceId)>;
-  void setDevicePlayers(DevicePlayerFactory f) { devicePlayers_ = std::move(f); }
-  const DevicePlayerFactory& devicePlayers() const noexcept { return devicePlayers_; }
   // T5.x-one-circuit (SPEC §15 2026-10-31: the whole project is one circuit): every "Open in Circuit View" (a device's
   // menu and title double-click, view.trackCircuit, the device editor's Track button) opens the project patch view
   // with `track`'s band opened, framed on `device` when one is given (a device inside a rack: its box in the rack's
@@ -470,8 +464,6 @@ public:
   static constexpr std::string_view kTuningsActions[] = {"tuning.newMain"};
   // T4.2: View > Open Patch in Circuit View… (installCircuitViewer sets the handler: file dialog → circuit viewer).
   static constexpr std::string_view kCircuitActions[] = {"view.openPatch"};
-  // T4.6: View > Open Device… (installDeviceView sets the handler: a menu of the stock devices → the Device tab).
-  static constexpr std::string_view kDeviceActions[] = {"view.openDevice"};
   // T4.1: the Device view's edits (installDeviceChain sets the handlers; scope "devices").
   // T4.8: device.group (Ctrl+G: the selection into a rack). T4.16c: the arrow keys (select / extend / move, chains).
   static constexpr std::string_view kDeviceChainActions[] = {
@@ -526,7 +518,6 @@ private:
   std::unique_ptr<devices::AnalysisHub> analysis_;  // TX.spectrum
   std::function<std::shared_ptr<TapRing>(doc::DeviceId, std::string_view)> signalTapOf_;  // GU.7
   FaceVoices faceVoices_;  // GU.7
-  DevicePlayerFactory devicePlayers_;
   CircuitOpener circuitOpener_;
   ViewPrefs viewPrefs_;
   std::function<void(const ViewPrefs&)> viewPrefsListener_;

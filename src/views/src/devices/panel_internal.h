@@ -1,7 +1,7 @@
 #pragma once
 
-// Device panel internals shared by device_panel.cpp (frame, body, controls, bindings) and device_displays.cpp
-// (transfer curve, EQ display, spectrum). Private to pq_views.
+// Device panel internals shared by device_panel.cpp (frame, body, controls, bindings) and face_display.cpp (a native
+// engine's face in the body). Private to pq_views.
 
 #include <functional>
 #include <map>
@@ -18,8 +18,6 @@
 
 namespace pq::views::devices {
 
-using NameMap = std::map<std::string, std::string, std::less<>>;
-
 class PanelDisplay;
 
 struct DevicePanel::Impl {
@@ -27,22 +25,19 @@ struct DevicePanel::Impl {
 
   DevicePanel& panel;
   std::map<std::string, double, std::less<>> params, consts;
-  std::map<std::string, int32_t, std::less<>> selection;  // selector → index
-  NameMap selValues;                                        // selector → its current value (for templates)
 
-  // A control bound to a param or const (or a display / tabs / label).
+  // A control bound to a param or const (or a face).
   struct Bound {
-    const ControlDesc* desc = nullptr;
+    const ControlLayout* desc = nullptr;
     ui::Widget* widget = nullptr;
     PanelDisplay* display = nullptr;
-    std::string param, constName;  // resolved now
+    std::string param, constName;
   };
   std::vector<Bound> bound;
   bool suppress = false;  // set while the panel updates its own controls (their callbacks must not echo)
 
-  // "name" → a param, "#name" → a const; templates resolved.
+  // "name" → a param, "#name" → a const.
   double value(std::string_view name) const;
-  std::string resolve(std::string_view templ) const;
   const ParamInfo* paramInfo(std::string_view resolved) const { return panel.sig_.findParam(resolved); }
 
   // User edits from a control (source: that control, which shows the value already).
@@ -50,25 +45,18 @@ struct DevicePanel::Impl {
   void userParam(const std::string& name, double v, ui::Widget* source);
   void userParamEnd(const std::string& name);
   void userConst(const std::string& name, double v, ui::Widget* source);
-  void userSelect(const std::string& selector, int32_t index);
   void userActive(bool on);
   // Shows a value change on every control and display that reads `name` (except `source`).
   void changed(std::string_view name, bool isConst, ui::Widget* source);
-  // Rebinds every control after a selector change; re-evaluates visibility.
   void bindAll();
   void bindOne(Bound& b);
-  void refreshVisibility();
-  bool conditionsHold(const ControlDesc& d) const;
-  SpectrumFeed* spectrum() const { return panel.target_ ? panel.target_->outputSpectrum() : nullptr; }
-  double sampleRate() const { return panel.target_ ? panel.target_->sampleRate() : 48000.0; }
   DeviceTarget* target() const noexcept { return panel.target_; }  // TMM.10
 };
 
-// A display in the panel body.
+// A face in the panel body.
 class PanelDisplay : public ui::Widget {
 public:
-  PanelDisplay(std::string name, DevicePanel::Impl& impl, const ControlDesc& desc) : Widget(std::move(name)), impl_(impl), desc_(desc) {}
-  // Selectors changed: re-resolve the bindings.
+  PanelDisplay(std::string name, DevicePanel::Impl& impl, const ControlLayout& desc) : Widget(std::move(name)), impl_(impl), desc_(desc) {}
   virtual void rebind() {}
   // `name` (resolved; consts as "#name") changed.
   virtual bool dependsOn(std::string_view name) const = 0;
@@ -77,21 +65,14 @@ public:
   virtual std::optional<ui::IRect> paramRect(std::string_view /*param*/) const { return std::nullopt; }
   // TMM.10: a face's voices may have become live.
   virtual void wake() {}
-  // TX.spectrum: the measured-response overlay of a display with an exact curve (DevicePanel::showMeasuredResponse).
-  virtual void setMeasured(bool /*on*/) {}
-  virtual bool measured() const noexcept { return false; }
 
 protected:
   DevicePanel::Impl& impl_;
-  const ControlDesc& desc_;
+  const ControlLayout& desc_;
 };
 
-std::unique_ptr<PanelDisplay> makeDisplay(DevicePanel::Impl& impl, const ControlDesc& desc);
-// Operator's displays (T4.12, operator_displays.cpp): "envelope", "algorithm", "partials"; null for another visual.
-std::unique_ptr<PanelDisplay> makeOperatorDisplay(DevicePanel::Impl& impl, const ControlDesc& desc);
-
 // TMM.10 (face_display.cpp): a meta module's face in the panel ("face" controls; a chain meta device's whole body).
-std::unique_ptr<PanelDisplay> makeFaceDisplay(DevicePanel::Impl& impl, const ControlDesc& desc);
+std::unique_ptr<PanelDisplay> makeFaceDisplay(DevicePanel::Impl& impl, const ControlLayout& desc);
 
 // True when `w` and every ancestor are visible and it is in a tree.
 bool shownInTree(const ui::Widget& w) noexcept;

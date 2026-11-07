@@ -183,18 +183,6 @@ doc::DevicePtr Library::defaultPreset(std::string_view deviceName, std::string_v
   return c.device && c.device->patch == patch ? c.device : nullptr;
 }
 
-Result<std::string> Library::saveUserDevice(const doc::UserDeviceFile& f) {
-  if (userLibrary_.empty()) return noLibrary();
-  const std::string path = uniqueFile(userPath("Devices"), f.name, doc::kUserDeviceExtension);
-  doc::UserDeviceFile g = f;
-  g.name = utf8Of(pathOf(path).stem());
-  auto text = doc::serializeUserDevice(g);
-  if (!text) return std::move(text).error();
-  if (Status s = doc::writeTextFileAtomic(path, *text); !s) return std::move(s).error();
-  userDevicesFor_.reset();
-  return path;
-}
-
 Result<std::string> Library::saveTuning(const doc::TuningFile& f) {
   if (userLibrary_.empty()) return noLibrary();
   const std::string path = uniqueFile(userPath("Tunings"), f.name, doc::kTuningExtension);
@@ -264,44 +252,8 @@ Result<doc::ClipFile> Library::readClip(std::string_view path) const {
   return f;
 }
 
-const std::vector<Library::UserDeviceEntry>& Library::userDevices() {
-  const auto idx = index();
-  if (idx == userDevicesFor_ && idx) return userDevices_;
-  userDevicesFor_ = idx;
-  userDevices_.clear();
-  if (!idx) return userDevices_;
-  for (uint32_t e = 0; e < idx->entryCount(); ++e) {
-    if (idx->kind(e) != library::ItemKind::Device) continue;
-    const std::string path = idx->path(e);
-    auto text = doc::readTextFile(path);
-    if (!text) continue;
-    auto f = doc::parseUserDevice(*text, path);
-    if (!f) continue;
-    userDevices_.push_back({path, std::move(*f)});
-  }
-  std::sort(userDevices_.begin(), userDevices_.end(), [](const UserDeviceEntry& a, const UserDeviceEntry& b) {
-    return library::compareFolded(a.file.name, b.file.name) < 0;
-  });
-  return userDevices_;
-}
-
 std::string Library::presetPatch(std::string_view path) {
-  // The User Library's layout first (no I/O): ...\Presets\<Device>\x.pqpreset, ...\Defaults\<Device>.pqpreset.
-  std::string folded;
-  for (const char c : path) folded += c == '/' ? '\\' : library::foldChar(c);
-  auto stock = [](std::string_view name) -> std::string {
-    for (const doc::StockDevice& d : doc::stockDevices())
-      if (library::compareFolded(d.name, name) == 0 || library::compareFolded(d.patch, name) == 0) return std::string(d.patch);
-    return {};
-  };
-  constexpr std::string_view kPresets = "\\presets\\", kDefaults = "\\defaults\\";
-  if (const size_t k = folded.rfind(kPresets); k != std::string::npos) {
-    const size_t a = k + kPresets.size(), b = folded.find('\\', a);
-    if (b != std::string::npos && folded.find('\\', b + 1) == std::string::npos)
-      if (std::string p = stock(path.substr(a, b - a)); !p.empty()) return p;
-  }
-  if (const size_t k = folded.rfind(kDefaults); k != std::string::npos && folded.find('\\', k + kDefaults.size()) == std::string::npos)
-    if (std::string p = stock(library::stemOf(path.substr(k + kDefaults.size()))); !p.empty()) return p;
+  // The file's own "patch" (GU.11: no stock device names a Presets / Defaults folder any more).
   const int64_t t = writeTime(path);
   if (t < 0) return {};
   CachedPreset& c = presetCache_[library::foldedPathKey(path)];

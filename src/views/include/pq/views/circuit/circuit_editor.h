@@ -29,8 +29,9 @@
 // anything. While hidden, a patch with no stored positions for its visible nodes shows them laid out on their own;
 // a circuit edit made then stores that layout (PatchEditor::setLayoutBase) and Tidy re-places only the visible nodes.
 //
-// Options > Developer > Open Patch File in Circuit View… (`view.openPatch`) opens a loose file in it; a device of the
-// project opens through pq/views/circuit/device_circuit.h (T4.4-fix1: a Host, the document as its history). UI thread only.
+// Options > Developer > Open Patch File in Circuit View… (`view.openPatch`) opens a loose file in it (GU.11: the patch
+// language's own files — the stdlib's atoms and functions; a block of the project has no patch text to open). UI thread
+// only.
 
 #include <cstdint>
 #include <functional>
@@ -171,7 +172,8 @@ public:
   const std::vector<graph::ProbeTarget>& probeTargets() const noexcept { return compiledTargets_; }
   const std::vector<uint32_t>& probeIds() const noexcept { return compiledIds_; }
 
-  // ---- T4.4-fix1: an editor over a device of the project (pq/views/circuit/device_circuit.h) ----
+  // ---- T4.4-fix1: an editor with a host (none since GU.11 retired the project-device editor; the hook stays for a ----
+  // ---- host that owns undo and the title) ----
   // The host owns undo / redo (the document's: one history with the Ableton view) and the title; there is no file to
   // save (the project holds the text: Save is hidden, closing never asks) and nothing to start (the project plays the
   // device: Play is hidden; probes and cost follow the player the editor was opened with). It lives as long as the

@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "../common/paint.h"
-#include "../common/panel_template.h"
 #include "internal.h"
 #include <cstdio>
 #include <unordered_map>
@@ -21,7 +20,6 @@
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
 #include "pq/views/arrangement/arrangement.h"
-#include "pq/views/circuit/device_circuit.h"
 #include "pq/views/circuit/device_scene.h"
 #include "pq/views/devices/knob_curve_menu.h"
 #include "pq/views/device_chain/wiring.h"
@@ -507,7 +505,7 @@ void ProjectPatchView::rebuild() {
   const doc::DeviceLibrary* devlib = ctx_.deviceLibrary();
   doc::LowerOptions lo;
   lo.library = devlib != nullptr ? &devlib->library() : &emptyLibrary();
-  lo.devices = devlib;  // user devices (T4.4-fix1) as the link resolves them
+  lo.devices = devlib;
   if (!lowered_ || built_ != snap || loweredWith_ != devlib) {  // a nudge or an opened device: the same graph
     auto low = doc::lower(*snap, lo, lowered_.get());
     if (!low) {
@@ -523,33 +521,12 @@ void ProjectPatchView::rebuild() {
   doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) {
     for (const doc::ClipSlot& c : t.clips) songEnd_ = std::max(songEnd_, c.end());
   });
-  // Expanded devices: their patches' own scenes (cached per patch name).
+  // GU.11: only a group has an inside (it opens as its capsule: closedGroups_); no block expands to a scene of its own.
   std::vector<ExpandedSize> sizes;
   std::vector<InnerScene> inner;
-  std::erase_if(expanded_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
   std::erase_if(bandExpanded_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
   if (openBand_.valid() && doc::findTrackPtr(*snap, openBand_) == nullptr) openBand_ = {};
   if (focus_.valid() && doc::findDevice(*snap, focus_).device == nullptr) focus_ = {};
-  for (const doc::DeviceId d : expanded_) {
-    const doc::DeviceLoc loc = doc::findDevice(*snap, d);
-    // What the device plays: the stock patch, or a user device's resolved root (its name carries its graph hash, so
-    // an edited text gets its own cache entry).
-    const graph::Patch* callee = devlib != nullptr ? devlib->patchOf(*loc.device) : nullptr;
-    if (callee == nullptr) continue;
-    // T4.15 / TMM.12: as it plays (what its settings switch off hidden), cached per patch and settings.
-    const std::string key =
-        circuit::deviceSceneKey(hold && hold->graph ? hold->graph->root : loc.device->patch, loc.device->settings);
-    std::shared_ptr<const circuit::CircuitScene> sc;
-    for (const auto& [name, s] : innerCache_)
-      if (name == key) sc = s;
-    if (!sc) {
-      if (innerCache_.size() >= kInnerCacheMax) innerCache_.erase(innerCache_.begin());  // oldest first
-      sc = circuit::buildDeviceScene(*callee, loc.device->settings);
-      innerCache_.emplace_back(key, sc);
-    }
-    sizes.push_back({d, sc->x1 - sc->x0, sc->y1 - sc->y0});
-    inner.push_back({d, sc});
-  }
   LayoutOptions opt;
   opt.sourceW = laneWidth();
   opt.expanded = sizes;
@@ -570,7 +547,6 @@ void ProjectPatchView::rebuild() {
   opt.scope = scope_;
   if (freeRack_) opt.freeTrack = rackTrack_.valid() ? rackTrack_ : doc::TrackId{0xFFFFFFFFu};  // TX.free-rack (none: empty)
   if (selectedGroup_.valid() && doc::findDevice(*snap, selectedGroup_).device == nullptr) selectedGroup_ = {};
-  if (panelsShown_) opt.panelSize = [this](const doc::Device& d) { return panelSize(d); };  // TX.panel-faces
   // TX.mod-all: wires into a face's or panel's params end on their controls (no made-up pins).
   if (canvas_->facesShown())
     opt.controlAnchor = [this](const doc::Device& d, std::string_view param) { return controlAnchorOf(d, param); };
@@ -584,7 +560,7 @@ void ProjectPatchView::rebuild() {
         if (e.kind == EdgeKind::Modulation) selWires.push_back(e.wire);
       }
   canvas_->beforeRebuild();  // TX.node-menu-fix1: a gesture's model indices, by identity
-  patch_ = buildProjectPatch(*snap, *lowered_, devlib != nullptr ? &devlib->catalog() : nullptr, opt);
+  patch_ = buildProjectPatch(*snap, *lowered_, devlib, opt);
   tracksOf_ = nullptr;  // bandTrack's table follows the new bands
   scene_ = buildProjectScene(patch_, inner);
   const circuit::CircuitCanvas::View keep = canvas_->view();
@@ -592,7 +568,6 @@ void ProjectPatchView::rebuild() {
   if (!fitted_ && embedded()) fitEmbedded();  // TX.groups / TX.free-rack: a panel shows all of its contents
   if (fitted_) canvas_->setView(keep);
   fitted_ = true;
-  syncPanels();  // TX.panel-faces: kept panels show the new document and their blocks' sizes
   std::vector<uint32_t> nodes, wires;
   for (const doc::DeviceId d : selDevices) {
     const uint32_t n = patch_.nodeOf(d);
@@ -628,9 +603,7 @@ void ProjectPatchView::rebuild() {
 
 void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
   if (e.kind == doc::StoreEventKind::Reset) {
-    expanded_.clear();
     expandedMixers_.clear();
-    innerCache_.clear();
     bandExpanded_.clear();
     openBand_ = {};
     fitted_ = false;
@@ -662,7 +635,6 @@ void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
   } else {
     ++stats_.repaints;
     built_ = ctx_.doc();  // same graph; the overlay reads the values
-    syncPanels();         // TX.panel-faces: a param value shown on a block's panel
     canvas_->markDirty();
   }
   for (panel::PanelWindow* w : windows_)  // GU.5: the panels follow the document (values, elements)
@@ -756,10 +728,11 @@ void ProjectPatchView::expandBand(doc::TrackId track) {
   if (t == nullptr) return;
   if (openBand_ != track) closeBand();
   openBand_ = track;
+  // GU.11: the band's closed groups (its modules, its instrument group) open as their capsules.
   bool opened = false;
   for (const doc::DevicePtr& d : t->devices)
-    if (!deviceExpanded(d->id)) {
-      expanded_.push_back(d->id);
+    if (doc::isGroupDevice(*d) && !d->group.valid() && !groupOpen(d->id)) {
+      std::erase(closedGroups_, d->id);
       bandExpanded_.push_back(d->id);
       opened = true;
     }
@@ -772,17 +745,24 @@ void ProjectPatchView::closeBand() {
   if (!openBand_.valid() && bandExpanded_.empty()) return;
   openBand_ = {};
   if (bandExpanded_.empty()) return;
-  std::erase_if(expanded_, [&](doc::DeviceId d) { return std::find(bandExpanded_.begin(), bandExpanded_.end(), d) != bandExpanded_.end(); });
+  for (const doc::DeviceId g : bandExpanded_)
+    if (groupOpen(g)) closedGroups_.push_back(g);
   bandExpanded_.clear();
   stale_ = true;
   if (shown()) sync();
 }
 
 void ProjectPatchView::setDeviceExpanded(doc::DeviceId device, bool on) {
-  const auto it = std::find(expanded_.begin(), expanded_.end(), device);
-  if (on == (it != expanded_.end())) return;
-  if (on) expanded_.push_back(device);
-  else expanded_.erase(it);
+  // GU.11 (docs/plans/GU.md "One hierarchy"): opening a block that has an inside is opening a group; a leaf (a native
+  // engine, an atom or value block) has none.
+  const doc::Device* d = doc::findDevice(*ctx_.doc(), device).device;
+  if (d == nullptr) return;
+  if (!doc::isGroupDevice(*d)) {
+    if (on) ctx_.setStatus("A block of its own: it has no inside (only a group opens).");
+    return;
+  }
+  if (on == groupOpen(device)) return;
+  setGroupOpen(device, on);
   if (!on) std::erase(bandExpanded_, device);
   stale_ = true;
   sync();
@@ -798,7 +778,8 @@ void ProjectPatchView::setDeviceExpanded(doc::DeviceId device, bool on) {
 }
 
 bool ProjectPatchView::deviceExpanded(doc::DeviceId device) const noexcept {
-  return std::find(expanded_.begin(), expanded_.end(), device) != expanded_.end();
+  const doc::Device* d = doc::findDevice(*ctx_.doc(), device).device;
+  return d != nullptr && doc::isGroupDevice(*d) && groupOpen(device);
 }
 
 void ProjectPatchView::setMixerExpanded(doc::TrackId track, bool on) {
@@ -1174,9 +1155,12 @@ bool ProjectPatchView::addDevice(doc::TrackId track, const std::string& patch, u
   if (patch.starts_with(doc::kMetaDevicePrefix))  // TMM.10: a chain meta device (its kind follows the slot)
     return apply(doc::ops::addMetaDevice(*ctx_.doc(), ctx_.store().ids(), track, patch.substr(doc::kMetaDevicePrefix.size()), index),
                  "Add Device");
-  const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-  const doc::DeviceInfo* info = lib != nullptr ? lib->catalog().find(patch) : nullptr;
-  const doc::DeviceKind kind = info != nullptr ? info->kind : doc::DeviceKind::AudioEffect;
+  // GU.11: a module (its group preset on the path; an instrument module takes the notes), a rack, a block.
+  doc::DeviceKind kind = doc::DeviceKind::AudioEffect;
+  if (patch.starts_with(doc::kModuleItemPrefix))
+    if (const doc::ModuleInfo* m = doc::findModule(std::string_view(patch).substr(doc::kModuleItemPrefix.size())); m && m->instrument)
+      kind = doc::DeviceKind::Instrument;
+  if (patch == doc::kInstrumentRack) kind = doc::DeviceKind::Instrument;
   return apply(doc::ops::addDevice(*ctx_.doc(), ctx_.store().ids(), track, patch, kind, index), "Add Device");
 }
 
@@ -1193,9 +1177,7 @@ bool ProjectPatchView::addFreeDevice(doc::TrackId track, const std::string& patc
       return apply(doc::ops::pasteBlocksAtNotes(p, ctx_.store().ids(), track, doc::moduleBlocks(m->kind)), "Add Module");
     return apply(doc::ops::pasteBlocks(p, ctx_.store().ids(), track, doc::moduleBlocks(m->kind)), "Add Module");
   }
-  const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-  const doc::DeviceInfo* info = lib != nullptr ? lib->catalog().find(patch) : nullptr;
-  const doc::DeviceKind kind = info != nullptr ? info->kind : doc::DeviceKind::AudioEffect;
+  const doc::DeviceKind kind = patch == doc::kInstrumentRack ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect;
   return apply(doc::ops::addDevice(p, ctx_.store().ids(), track, patch, kind, doc::ops::kOffPath), "Add Device");
 }
 
@@ -1281,14 +1263,8 @@ std::vector<ui::MenuItem> ProjectPatchView::addFreeDeviceItems(doc::TrackId trac
   std::vector<ui::MenuItem> addFree;
   const doc::Track* host = doc::findTrackPtr(*ctx_.doc(), track);
   const bool midi = host != nullptr && host->kind == doc::TrackKind::Midi;
-  if (const doc::DeviceLibrary* lib = ctx_.deviceLibrary())
-    for (const doc::DeviceInfo& d : lib->catalog().devices()) {
-      // TX.all-free-fix1: a stock instrument is a block too (it plays the notes a cable gives it): on MIDI tracks.
-      if (d.kind == doc::DeviceKind::Instrument && !midi) continue;
-      const std::string patch = d.patch;
-      addFree.push_back(ui::MenuItem::item(d.name, [pick, patch] { pick(patch); }));
-    }
-  if (!addFree.empty()) {
+  if (ctx_.deviceLibrary() != nullptr) {
+    (void)midi;  // GU.11: no stock device: the modules and the native engines (below) are what a track places
     addFree.push_back(ui::MenuItem::sep());
     ui::MenuItem head = ui::MenuItem::item("Meta Modules");
     head.enabled = false;
@@ -1298,6 +1274,7 @@ std::vector<ui::MenuItem> ProjectPatchView::addFreeDeviceItems(doc::TrackId trac
       addFree.push_back(ui::MenuItem::item("   " + std::string(t->name), [pick, patch] { pick(patch); }));
     }
     for (const doc::ModuleInfo& m : doc::moduleInfos()) {  // GU.4: the modules (group presets)
+      if (m.instrument && !midi) continue;
       const std::string patch = std::string(doc::kModuleItemPrefix) + std::string(m.key);
       addFree.push_back(ui::MenuItem::item("   " + std::string(m.name), [pick, patch] { pick(patch); }));
     }
@@ -1373,10 +1350,6 @@ void ProjectPatchView::cableLevels(std::span<const uint32_t> wires, std::span<fl
     }
     levels[i] = level;
   }
-}
-
-bool ProjectPatchView::editDeviceCircuit(doc::DeviceId device) {
-  return circuit::openDeviceInCircuitView(*canvas_, ctx_, device) != nullptr;
 }
 
 bool ProjectPatchView::moveDevice(doc::DeviceId device, doc::TrackId toTrack, uint32_t index) {
@@ -1892,12 +1865,12 @@ ui::Menu* ProjectPatchView::openBandMenu(uint32_t band, Vec2 at) {
   const Band b = patch_.bands[band];
   std::vector<ui::MenuItem> items;
   std::vector<ui::MenuItem> add;
-  if (const doc::DeviceLibrary* lib = ctx_.deviceLibrary())
-    for (const doc::DeviceInfo& d : lib->catalog().devices()) {
-      if (d.kind == doc::DeviceKind::Instrument && b.kind != doc::TrackKind::Midi) continue;
+  if (ctx_.deviceLibrary() != nullptr)
+    for (const doc::ModuleInfo& m : doc::moduleInfos()) {  // GU.11: the modules (group presets) onto the band's path
+      if (m.instrument && b.kind != doc::TrackKind::Midi) continue;
       const doc::TrackId track = b.track;
-      const std::string patch = d.patch;
-      add.push_back(ui::MenuItem::item(d.name, [this, track, patch] { (void)addDevice(track, patch); }));
+      const std::string patch = std::string(doc::kModuleItemPrefix) + std::string(m.key);
+      add.push_back(ui::MenuItem::item(std::string(m.name), [this, track, patch] { (void)addDevice(track, patch); }));
     }
   // TMM.10: the meta modules, as chain devices of the band, at its end (TMM.10-fix1: any type on any band; its chain
   // input takes the last device's signal; it replaces nothing).
@@ -2004,22 +1977,10 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
         (void)takeOffPath(one);
       }));
     items.push_back(ui::MenuItem::item("Dissolve", [this, d] { (void)dissolve(d); }, "Ctrl+Delete"));
-    ui::MenuItem open = ui::MenuItem::item(deviceExpanded(d) ? "Close Atoms" : "Open to Atoms", [this, d] { setDeviceExpanded(d, !deviceExpanded(d)); });
-    open.enabled = !n.missing;
-    items.push_back(std::move(open));
-    // T5.x-one-circuit: its band opened here, framed on this device (racks too); the project-device circuit editor
-    // (T4.4-fix1: edits go into the document; editing a stock device forks it).
+    // T5.x-one-circuit: its band opened here, framed on this device (racks too).
     const doc::TrackId bandTrackId = patch_.bands[n.band].track;
     ui::MenuItem circuit = ui::MenuItem::item("Open in Circuit View", [this, d, bandTrackId] { (void)openCircuit(bandTrackId, d); });
     items.push_back(std::move(circuit));
-    ui::MenuItem edit = ui::MenuItem::item("Edit Device Circuit", [this, d] { (void)editDeviceCircuit(d); });
-    edit.enabled = ctx_.deviceLibrary() != nullptr && !n.missing && !n.meta;  // a meta module's atoms are generated
-    items.push_back(std::move(edit));
-    if (n.edited)
-      items.push_back(ui::MenuItem::item("Revert to Stock", [this, d] {
-        const doc::DeviceId one[1] = {d};
-        (void)apply(doc::ops::revertDevicesToStock(*ctx_.doc(), one), "Revert to Stock");
-      }));
     const auto& nudges0 = ctx_.store().view().patchNudges;
     const auto own = nudges0.find(d.value);
     ui::MenuItem reset = ui::MenuItem::item("Reset Position", [this, d] {
@@ -2109,7 +2070,6 @@ ui::Menu* ProjectPatchView::openParamMenu(doc::DeviceId from, const std::string&
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
   const doc::Project& p = *ctx_.doc();
   const doc::DeviceLoc loc = doc::findDevice(p, n.device);
-  std::shared_ptr<const doc::ResolvedDevice> hold;  // a user device's params are its own text's (T4.4-fix1)
   const doc::DeviceInfo* info = lib != nullptr && loc.device != nullptr ? lib->infoOf(*loc.device) : nullptr;
   if (info == nullptr) {
     ctx_.setStatus("Wire: no parameters known for " + n.title);

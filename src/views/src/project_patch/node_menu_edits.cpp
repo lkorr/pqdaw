@@ -80,13 +80,10 @@ doc::ops::EditResult addChoice(ViewContext& ctx, const doc::Project& p, doc::IdS
   };
   switch (c.item) {
     case circuit::NodeItem::Meta: return meta(c.id);
-    case circuit::NodeItem::Device: {
-      const doc::DeviceLibrary* lib = ctx.deviceLibrary();
-      const doc::DeviceInfo* info = lib != nullptr ? lib->catalog().find(c.id) : nullptr;
-      const doc::DeviceKind kind = info != nullptr ? info->kind : doc::DeviceKind::AudioEffect;
+    case circuit::NodeItem::Device: {  // the value block
       if (!plain)
-        if (doc::DevicePtr def = ctx.library().defaultPreset(deviceDisplayName(ctx, c.id), c.id); def && def->kind == kind) return paste(def);
-      return doc::ops::addDevice(p, ids, track, c.id, kind, index);
+        if (doc::DevicePtr def = ctx.library().defaultPreset(deviceDisplayName(ctx, c.id), c.id); def && def->patch == c.id) return paste(def);
+      return doc::ops::addDevice(p, ids, track, c.id, doc::DeviceKind::AudioEffect, index);
     }
     case circuit::NodeItem::Rack:
       return doc::ops::addDevice(p, ids, track, c.id, c.id == doc::kInstrumentRack ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect, index);
@@ -121,27 +118,17 @@ doc::ops::EditResult addChoice(ViewContext& ctx, const doc::Project& p, doc::IdS
       if (c.item == circuit::NodeItem::Spec && c.id.starts_with(meta::kCallPrefix))
         if (meta::findType(std::string_view(c.id).substr(meta::kCallPrefix.size())) != nullptr)
           return meta(std::string_view(c.id).substr(meta::kCallPrefix.size()));
-      auto sd = circuit::specDevice(c.id);
-      if (!sd) return std::move(sd).error();
-      auto d = std::make_shared<doc::Device>();
-      d->id = doc::DeviceId{1};
-      d->patch = sd->patch;
-      d->kind = doc::DeviceKind::AudioEffect;
-      d->name = sd->name;
-      d->source = std::make_shared<const doc::UserPatch>(doc::UserPatch{sd->text, nullptr});
-      return paste(d);
+      auto block = circuit::specBlockPatch(c.id);  // GU.11: one atom block (no patch text of its own)
+      if (!block) return std::move(block).error();
+      return doc::ops::addDevice(p, ids, track, *block, doc::DeviceKind::AudioEffect, index);
     }
   }
   return Error{ErrorCode::InvalidArgument, "nothing to place", {}};
 }
 
 bool choiceIsInstrument(ViewContext& ctx, const ProjectPatchView::NodeChoice& c) {
+  (void)ctx;
   if (c.item == circuit::NodeItem::Rack) return c.id == doc::kInstrumentRack;
-  if (c.item == circuit::NodeItem::Device) {
-    const doc::DeviceLibrary* lib = ctx.deviceLibrary();
-    const doc::DeviceInfo* info = lib != nullptr ? lib->catalog().find(c.id) : nullptr;
-    return info != nullptr && info->kind == doc::DeviceKind::Instrument;
-  }
   if (c.item == circuit::NodeItem::LibraryFile)
     if (auto d = libraryDeviceOf(c.id); d && !doc::isMetaDevice(**d)) return (*d)->kind == doc::DeviceKind::Instrument;
   return false;

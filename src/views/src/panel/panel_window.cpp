@@ -559,7 +559,7 @@ ui::Widget& row(ui::Widget& parent, std::string name, std::string label) {
 std::string blockName(const ViewContext& ctx, const doc::Device& d) {
   if (!d.name.empty()) return d.name;
   if (const doc::DeviceLibrary* lib = ctx.deviceLibrary())
-    if (const doc::DeviceInfo* i = lib->catalog().find(d.patch)) return i->name;
+    if (const doc::DeviceInfo* i = lib->infoOf(d)) return i->name;
   return d.patch;
 }
 

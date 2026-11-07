@@ -18,20 +18,8 @@ const meta::Type* metaTypeAt(const ViewContext& ctx, doc::DeviceId device, std::
   const doc::Device* d = doc::findDevice(*ctx.doc(), device).device;
   if (d == nullptr) return nullptr;
   if (path.empty()) return meta::findType(doc::metaDeviceType(*d));
+  // GU.11: a native engine is the only meta instance (path ""); a stored nested state names its type.
   if (const doc::MetaInstance* inst = d->metaAt(path)) return meta::findType(inst->type);
-  const doc::DeviceLibrary* lib = ctx.deviceLibrary();
-  if (lib == nullptr) return nullptr;
-  const graph::Patch* root = lib->patchOf(*d);
-  if (root == nullptr) return nullptr;
-  const graph::PatchLibrary* l = &lib->library();
-  const doc::ResolvedDevice* user = hold.get();
-  const doc::PatchLookup lookup = [l, user](std::string_view name) -> const graph::Patch* {
-    if (user != nullptr && user->graph)
-      if (const graph::Patch* x = user->graph->library.find(name)) return x;
-    return l->find(name);
-  };
-  for (const doc::MetaSite& site : doc::metaSites(*root, lookup))
-    if (site.path == path) return site.type;
   return nullptr;
 }
 
