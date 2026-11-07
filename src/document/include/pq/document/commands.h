@@ -120,7 +120,8 @@ struct SetNoteProperty { ClipRef clip; std::vector<NoteKey> notes; NoteProperty 
 // ---- Automation ------------------------------------------------------------------------------------------------
 // Structural (the parameter becomes an audio-rate automation signal, T3.16). At most one lane per ParamRef in the
 // project. Track params may only be automated on their own track; tuning params on any track. T4.18: device params
-// (with AutomationLane::paramName) and wire amounts only on the track holding the device (laneHome). After every command a lane of those
+// (with AutomationLane::paramName), rack macros / selector, chain volume / pan (ParamRef::chain(c, kChainVolume /
+// kChainPan)) and wire amounts only on the track holding the device (laneHome). After every command a lane of those
 // kinds follows its device: removed with it, moved with it to another track (apply's final pass, one undo step).
 struct AddAutomationLane { TrackId track; LanePtr lane; };
 struct RemoveAutomationLane { TrackId track; LaneId lane; };      // Structural
@@ -155,16 +156,22 @@ struct SetTuningParam { TuningId tuning; ParamKind param = ParamKind::TuningRefe
 // ---- Devices (T4.1; QUESTIONS Q129) -----------------------------------------------------------------------
 // TX.all-free: a track's devices are BLOCKS (a set: Track::devices) wired by cables; these commands add, remove and move
 // blocks and never wire anything (ops::insertOnPath / ops::dissolveDevices rewire the main path; main_path.h).
-// Instruments go on MIDI tracks only. Device ids are project-wide unique (pre-allocated from the IdSource).
+// Instruments go on MIDI tracks only. A rack chain is a list with its rule: an Instrument Rack's chain may start with
+// one instrument, then audio effects; an Audio Effect Rack's chains hold audio effects only. Device ids are project-wide
+// unique (pre-allocated from the IdSource).
 // Structural. Adds `device` to `track`'s blocks at list position `index` (kAppend: at the end; the position only orders
-// the set: model.h Track::devices).
-struct AddDevice { TrackId track; DevicePtr device; uint32_t index = kAppend; };
-// Structural. Removes a device (its values and its wires go with it; undo restores them).
+// the set: model.h Track::devices). T4.8: with `chain` valid, into that rack chain at `index` instead (`track` is then
+// ignored); a rack device brings its chains, mappings and inner devices (all ids new).
+struct AddDevice { TrackId track; DevicePtr device; uint32_t index = kAppend; ChainId chain; };
+// Structural. Removes a device (its values and its wires go with it; undo restores them). T4.8: a rack goes with
+// everything inside it (their wires too); mappings of outer racks onto the removed devices go with them.
 struct RemoveDevice { DeviceId device; };
 // Structural. Moves a device to `toTrack` (invalid: its own track) at `index` (in the destination list after removal;
 // kAppend: the end; its wires stay: they name the device). Within one track only that track's unit recompiles (every device keeps its state: its NodeId is
-// its id); between tracks both do, and the device starts fresh there (state lives per track).
-struct MoveDevice { DeviceId device; TrackId toTrack; uint32_t index = kAppend; };
+// its id); between tracks both do, and the device starts fresh there (state lives per track). T4.8: with `toChain`
+// valid, into that rack chain (`toTrack` ignored; a rack cannot go into itself); mappings of racks the device leaves
+// are removed with it (a macro maps only devices inside its rack).
+struct MoveDevice { DeviceId device; TrackId toTrack; uint32_t index = kAppend; ChainId toChain; };
 struct SetDeviceActive { DeviceId device; bool active = true; };   // Structural (left out of the graph when off)
 // Param (ParamRef::device(device, param)): a runtime value, one param write, never a compile. `value` in the
 // param's normalised unit; nullopt = back to the patch's default.
@@ -213,6 +220,46 @@ struct SetWireReducer { WireId wire; WireReducer reducer = WireReducer::Sum; }; 
 // one undo step. Structural.
 struct SetWireSignal { WireId wire; bool single = false; WireReducer reducer = WireReducer::Sum; };
 
+// ---- Racks (T4.8; model.h "Racks") ------------------------------------------------------------------------------
+// Structural. Inserts `chain` (with its devices; ids new) into rack `rack` at `index` (kAppend: the end). The chain
+// rule of the rack's kind applies to its devices.
+struct AddChain { DeviceId rack; ChainPtr chain; uint32_t index = kAppend; };
+// Structural. Removes a chain with its devices (their wires and the mappings onto them go too).
+struct RemoveChain { ChainId chain; };
+// Structural. Moves a chain within its rack (index after removal; kAppend: the end).
+struct MoveChain { ChainId chain; uint32_t index = kAppend; };
+struct RenameChain { ChainId chain; std::string name; };          // Meta
+// Param (ParamRef::chain(chain, 0)): a chain's volume (dB, kMinVolumeDb = −∞) and pan; one param write per value.
+struct SetChainMixer { ChainId chain; float volumeDb = 0.0f; float pan = 0.0f; };
+struct SetChainActive { ChainId chain; bool active = true; };     // Structural (a muted chain is left out)
+struct SetChainSolo { ChainId chain; bool solo = false; };        // Structural
+// Param (ParamRef::chain(chain, 1 + kind)) while the zone stays on (or off); Structural when it switches on or off
+// (an off zone has no node). The zone must be valid for the rack's key unit.
+struct SetChainZone { ChainId chain; ZoneKind kind = ZoneKind::Select; Zone zone; };
+// Structural. Adds a mapping (id pre-allocated) to rack `rack`: its target must be a device inside the rack (or one of
+// the rack's nested racks' params), the param a name (not checked against the patch: the document is library-free; a
+// param the patch lacks is left out by the lowering), not already mapped anywhere; min / max in [0, 1], curve in
+// [−1, 1], macro < 16.
+struct AddMacroMapping { DeviceId rack; MacroMapping mapping; };
+struct RemoveMacroMapping { MappingId mapping; };                  // Structural
+// Structural. Replaces a mapping's macro / min / max / curve (matched by id; the target cannot change).
+struct SetMacroMapping { MacroMapping mapping; };
+// Everything about a rack that is not a chain, a mapping or a param value. Meta, except `keyUnit` / `voiceChains`
+// (Structural; a key unit change resets every chain's key zone to off).
+struct RackOptions {
+  std::array<std::string, kMacroCount> macroNames{};
+  uint8_t visibleMacros = 8;
+  std::vector<MacroVariation> variations;
+  uint16_t randomizeExclude = 0;
+  KeyZoneUnit keyUnit = KeyZoneUnit::Hz;
+  bool voiceChains = false;
+  bool showChains = true;
+  bool showMacros = true;
+  friend bool operator==(const RackOptions&, const RackOptions&) = default;
+};
+RackOptions rackOptions(const Rack& r);
+struct SetRackOptions { DeviceId rack; RackOptions options; };
+
 // ---- Meta modules (TMM.3; model.h "Meta modules") -----------------------------------------------------------------
 // An instance is addressed by (device, path); "" is a chain-level meta device itself (Device::patch "meta:<type>"). The
 // type must be registered (pq/meta/registry.h), the instance at the type's version, names the type's, values finite,
@@ -255,6 +302,8 @@ using CommandVariant = std::variant<
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, SetDevicePatch, RenameDevice,
     SetDeviceChainInput, SetDeviceGroup, SetParamCurve, SetGroupPanel, AddWire, RemoveWire, SetWireAmount, SetWireReducer, SetWireSignal,
+    AddChain, RemoveChain, MoveChain, RenameChain, SetChainMixer, SetChainActive, SetChainSolo, SetChainZone,
+    AddMacroMapping, RemoveMacroMapping, SetMacroMapping, SetRackOptions,
     AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,
     Batch>;
 

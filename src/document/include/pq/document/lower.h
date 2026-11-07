@@ -31,8 +31,41 @@
 // editor shows); the call's NodeId is the same, so a fork, an edit and Revert to Stock keep every state the patch
 // still has. graph.library is then LoweredProject::userLibrary.
 //
-// ---- Racks (GU.9; model.h "Racks") --------------------------------------------------------------------------------
-// A rack is a group of parallel chain groups wired by ordinary wires: it lowers as every group does (no path of its own).
+// ---- Racks (T4.8, SPEC §8.2; model.h "Racks"; QUESTIONS Q?-T4.8-a) ------------------------------------------------
+// A rack lowers INLINE into its track's patch (the compiler flattens subcircuits anyway, so this is the same machine
+// code as a nested call, and every device inside keeps nodeIdFor(Device, its id, 0): its state survives moves between
+// chains, in and out of racks, within the track). rackSubcircuit() builds the same nodes as a patch of their own for the
+// circuit view. Chains that play: active, soloed if any chain of the rack is (muted chains have no node: zero cost);
+// an Instrument Rack's chains with an instrument first. Per chain c (nodes NodeRole::Chain, the chain's id):
+//   Audio Effect Rack   x → [gain(x, zs_c) when its select zone is on] → its devices → gain(·, pack(gl_c, gr_c)) →
+//                       summed over the chains (no chain at all: x passes; every chain muted: silence). The select
+//                       zone gates the chain's INPUT (exact silence after its fade; whether it then sleeps is the
+//                       scheduler's segmenting: not yet, Q?-T4.8-a).
+//   Instrument Rack     gain(its instrument's voices, zk_c (key zone: Hz unit on ln voice.noteHz, Degree unit on
+//                       voice.noteDegree (NaN → 0): the note's pitch / degree in its own tuning, held from the note-on,
+//                       T4.17 + M4 review M7) · zv_c (velocity zone) [· the enclosing rack's per-voice gain, nested],
+//                       start 1) (per voice, block rate: a zone edit while notes sound fades over the smoothing time; a
+//                       note starts at its gain) → voice_sum → its effects (per-voice chains: the
+//                       effects before voice_sum) → gain(·, pack(gl_c · zs_c, gr_c · zs_c)) → summed; `done` = and of
+//                       every chain's `done` (all of them must have one, else none).
+//   gl_c, gr_c          runtime params c<chain>_gl / _gr ("chain<id>:gl"): balance pan · volume, derived by the
+//                       document (a chain mixer drag is two param writes; the `gain` stage smooths it). T4.18: while
+//                       the chain's volume or pan has an automation lane (on the rack's track), the chain lowers
+//                       c<chain>_volume (dB, "chain<id>:volume") and c<chain>_pan ("chain<id>:pan") instead and the
+//                       same law in the graph (−∞ at kMinVolumeDb, db_to_gain, balance min(1, 1 ∓ pan)), at block rate:
+//                       each lane drives one param.
+//   zone gain           clip(min(v·a1 + b1, v·a2 + b2), 0, 1), linear ramps lo → fadeLo and fadeHi → hi with ε-inclusive
+//                       edges; a1 … b2 runtime params c<chain>_s0 … s3 / v0 … / k0 … the document derives from the zone
+//                       (a zone drag is a param write; Degree key zones are in degrees, Hz key zones in ln Hz). A zone
+//                       that is off (its whole range) has no node.
+// Rack params ("macro1" … "macro16", "select"): a root param d<rack>__<name> (key dev<rack>:<name>) when the rack reads it
+// (a mapping of that macro, a select zone) or a wire modulates it; else none. A macro turn is one param write whatever
+// it drives. Mapped params (a MacroMapping onto a device param or a nested rack's param): the macro's value m →
+// pos = min + (max − min)·shape(m / 127, curve) (pq/core/automation_curve.h) → the param's knob travel map → the pin
+// (nodes NodeRole::Mapping, the mapping's id; constants folded at compile time, the math hoisted to block rate while the
+// macro is not audio-rate modulated). A mapped param is no longer a param of its own (no dev<id>:<name>). Wires into a
+// mapped param add to the mapped position (Q135's law with the mapping as the centre); wires into a macro modulate the
+// macro (and so everything it drives).
 //
 // ---- Meta modules (TMM.3; model.h "Meta modules", pq/meta/type.h, pq/document/meta.h) --------------------------------
 // A chain meta device (Device::patch "meta:<type>") calls its own expansion, `meta_<type>__d<id>__<key>`, its form from
@@ -257,6 +290,12 @@ enum class NodeRole : uint8_t {
   // never a tuning, track or device id: a wire's nodes take the k slots of all three role spaces (k / 16 picks it).
   // k 0–15: the wire's own nodes; k 16–47: the nodes of the param it modulates (keyed by its lowest wire id).
   Wire = 3,
+  // T4.8 (racks; lower.h "Racks"): like Wire, a chain id or a mapping id is no other entity's id, so their nodes take
+  // the k slots of all three role spaces (k < 48). A rack is a device whose own Device slots stay unused (it has no
+  // call): its nodes take the TuningNode and SendInput slots of its id (k < 32: k / 16 picks the space).
+  Chain = 4,
+  Mapping = 5,
+  Rack = 6,
 };
 inline constexpr uint32_t kEntityNodeBase = 1024;
 inline constexpr uint32_t kEntityNodeSlots = 16;  // k < 16 per (role, entity)
@@ -589,6 +628,21 @@ std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes =
 // T4.4-fix1: the same with user devices resolved through `devices` (its library()).
 std::vector<LoweredParam> lowerParams(const Project& project, bool tuningNodes, const DeviceLibrary& devices);
 
+// T4.8: a rack's lowered subcircuit on its own — `patch AudioEffectRack<id> { in in; … out out }` (an Instrument Rack:
+// no input, voices inside, `done`) built by the same code that lowers it inside its track (chains, zones, chain mixers,
+// mappings; its macros and selector as params of the patch). The circuit view of a rack (read-only, follows the
+// document while open; Q?-T4.8-a).
+// Wires into the rack are not part of it (they belong to the track patch). With `devices`, user devices inside it
+// (T4.4-fix1) call their own renamed roots as lower() does (else they are left out, as lower() bypasses them without
+// one). Errors: NotFound (no such rack).
+Result<graph::Patch> rackSubcircuit(const Project& project, DeviceId rack, const graph::PatchLibrary& library,
+                                    const DeviceLibrary* devices = nullptr);
+
+// T4.8: the derived params of one rack chain as lower() names them (its mixer gains "chain<id>:gl" / ":gr"; its zones
+// that are on, ":s0" … ":s3", ":v0" …, ":k0" …) with their current values; empty when there is no such chain. The link's
+// fast path for a chain mixer or zone drag (`track` is 0: unknown here).
+std::vector<LoweredParam> chainParamValues(const Project& project, ChainId chain);
+
 // What, besides structural changes, decides the lowered graph: the sends that are lowered only while stored (return
 // → return sends, sends that close a loop) and which of them are delayed. A send level edit that changes this key
 // (a return's send to another return turned up from −∞, or back) needs a compile (the link compares it on every
@@ -598,16 +652,22 @@ std::vector<uint64_t> conditionalSendsKey(const Project& project);
 std::vector<DelayedSend> delayedSends(const Project& project);
 
 // The key of a document param, or "" for params that are not lowered (solo: derived into the gates; a device param,
-// whose key needs its name: the lane form below). T4.18: a wire's "wire<id>:amount".
+// whose key needs its name: the lane form below; a chain's mixer as a whole or a zone, several derived params).
+// T4.18: a chain's volume / pan "chain<id>:volume" / ":pan" (lowered while automated), a wire's "wire<id>:amount".
 std::string paramKey(const ParamRef& ref);
 // T4.18: the key an automation lane drives: paramKey(lane.param), and a device param's "dev<id>:<paramName>" (a key the
-// lowered patch declares while the param is a runtime param of its own).
+// lowered patch declares only while the param is a runtime param of its own: not macro-mapped, a rack param only while
+// the rack reads it).
 std::string paramKey(const AutomationLane& lane);
 // GU.1: the key a DRIVEN control's knob position has ("dev<id>:<name>@pos": LoweredParam::position), apart from the
 // undriven value's, so an image built before a control became driven (or after it stopped) never reads the other
-// meaning; an automation lane on a device param drives that key (paramKey(project, lane)).
+// meaning; an automation lane on a device param (not a rack's) drives that key (paramKey(project, lane)).
 inline constexpr std::string_view kPositionKeySuffix = "@pos";
 std::string paramKey(const Project& project, const AutomationLane& lane);
+// T4.18: the lowest id of the automation lanes of chain `chain`'s volume / pan on `t` (the rack's track), or invalid:
+// with one, the chain lowers its volume and pan as params of their own (see "Racks" above), the law's nodes keyed by
+// that lane id (nodeIdFor(NodeRole::Chain, lane id, k): a lane id is no other entity's id, like a chain's).
+LaneId chainMixerLane(const Track& t, ChainId chain) noexcept;
 
 // The main tuning of a MIDI track's track-level effective tuning (effectiveTuningRef without a clip) when that is a
 // main tuning with a linear form (hasTuningSignal); invalid otherwise.

@@ -402,6 +402,83 @@ TEST_CASE("project patch: the note wire goes to the meta device the note source 
 
 // T4.8: racks are drawn as plain blocks; the devices inside them (racks lower inline) belong to the rack's block, and
 // wires into / out of them end on it.
+TEST_CASE("project patch: racks (nested, instrument, wired into and out of) match the graph as one block each") {
+  doc::DocumentStore store;
+  REQUIRE(buildSketchProject(store).ok());
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+    return *e;
+  };
+  const doc::TrackId keys = named(*store.current(), "Keys")->id, pad = named(*store.current(), "Pad")->id;
+  // Keys: its effects grouped into an Audio Effect Rack; a second chain holding a nested rack with a Utility.
+  std::vector<doc::DeviceId> fx;
+  for (const doc::DevicePtr& d : named(*store.current(), "Keys")->devices)
+    if (d->kind == doc::DeviceKind::AudioEffect && !doc::isGroupDevice(*d)) fx.push_back(d->id);  // (IG.1-2: not its instrument group)
+  REQUIRE_FALSE(fx.empty());
+  const doc::DeviceId rack = run(doc::ops::groupDevices(*store.current(), store.ids(), fx)).devices.at(0);
+  const doc::DeviceId util = run(doc::ops::addDevice(*store.current(), store.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices.at(0);
+  const doc::DeviceId inner = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{util})).devices.at(0);
+  run(doc::ops::moveDeviceToNewChain(*store.current(), store.ids(), inner, rack));
+  // Pad: its instrument in an Instrument Rack.
+  const doc::DeviceId padInst = named(*store.current(), "Pad")->devices.at(0)->id;
+  const doc::DeviceId irack = run(doc::ops::groupDevices(*store.current(), store.ids(), std::vector<doc::DeviceId>{padInst})).devices.at(0);
+  // Wires from the Mod track's LFO into the nested Utility's width and into the outer rack's first macro.
+  const doc::DeviceId lfo = named(*store.current(), "Mod")->devices[0]->id;
+  const doc::WireId toUtil = run(doc::ops::connectTravelWire(*store.current(), store.ids(), lfo, "lfo", util, "width", 0.3)).wires.at(0);
+  const doc::WireId toMacro = run(doc::ops::connectTravelWire(*store.current(), store.ids(), lfo, "lfo", rack, "macro1", 0.2)).wires.at(0);
+
+  const doc::Project& p = *store.current();
+  const doc::LoweredProject low = lowerOf(p);
+  const ProjectPatch pp = buildProjectPatch(p, low, &library().catalog());
+  CHECK(checkAgainstGraph(pp, p, low) == "");
+  const uint32_t rn = pp.nodeOf(rack);
+  REQUIRE(rn != kNone);
+  const Node& r = pp.nodes[rn];
+  CHECK(r.rack);
+  CHECK(r.lowered);
+  CHECK_FALSE(r.missing);
+  CHECK(r.title == "Audio Effect Rack");
+  CHECK(r.band == pp.bandOf(keys));
+  CHECK(std::find(r.inner.begin(), r.inner.end(), util) != r.inner.end());
+  CHECK(std::find(r.inner.begin(), r.inner.end(), inner) != r.inner.end());
+  CHECK(pp.nodeOf(util) == rn);  // a device inside a rack: the rack's block
+  CHECK(pp.nodeOf(inner) == rn);
+  const std::string utilPort = "width@" + std::to_string(util.value);
+  CHECK(r.input(utilPort) >= 0);
+  CHECK(r.input("macro1") >= 0);
+  int wiresIn = 0;
+  for (const Edge& e : pp.edges)
+    if (e.kind == EdgeKind::Modulation && (e.wire == toUtil || e.wire == toMacro)) {
+      CHECK(e.to == rn);
+      ++wiresIn;
+    }
+  CHECK(wiresIn == 2);
+  // The chain runs through the rack's block.
+  bool chained = false;
+  for (const Edge& e : pp.edges) chained = chained || (e.kind == EdgeKind::Chain && e.to == rn);
+  CHECK(chained);
+  const uint32_t ir = pp.nodeOf(irack);
+  REQUIRE(ir != kNone);
+  CHECK(pp.nodes[ir].rack);
+  CHECK(pp.nodes[ir].instrument);
+  CHECK(pp.nodes[ir].lowered);
+  CHECK(pp.nodes[ir].band == pp.bandOf(pad));
+  bool notes = false;
+  for (const Edge& e : pp.edges) notes = notes || (e.kind == EdgeKind::Notes && e.to == ir);
+  CHECK(notes);
+  // A rack with nothing that plays (an Instrument Rack whose chain was muted) is drawn but not lowered.
+  run(doc::ops::setChainActive(*store.current(), doc::findDevice(*store.current(), irack).device->rack->chains.at(0)->id, false));
+  const doc::LoweredProject low2 = lowerOf(*store.current());
+  const ProjectPatch pp2 = buildProjectPatch(*store.current(), low2, &library().catalog());
+  CHECK(checkAgainstGraph(pp2, *store.current(), low2) == "");
+  CHECK_FALSE(pp2.nodes[pp2.nodeOf(irack)].lowered);
+  // A broken model is caught: the rack drawn as not lowered while its devices play.
+  ProjectPatch broken = pp;
+  broken.nodes[rn].lowered = false;
+  CHECK(checkAgainstGraph(broken, p, low) != "");
+}
+
 TEST_CASE("project patch: the layout mirrors the arrangement (lane order, groups as containers, left → right)") {
   doc::DocumentStore store;
   REQUIRE(buildWideProject(store, 20).ok());
@@ -1298,6 +1375,41 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
   CHECK(u.ctx.doc() == start);
 }
 
+TEST_CASE("project patch (TMM.10-fix2): note-source wires on the band and across tracks match the graph; saved and loaded") {
+  doc::DocumentStore store;
+  MetaChainIds ids;
+  REQUIRE(buildMetaChainProject(store, &ids).ok());
+  const doc::DeviceId filter = doc::mainPath(*store.current(), *doc::findTrackPtr(*store.current(), ids.lead)).blocks.at(1)->id;  // (GU.4: the Wavetable heads the path)
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+  };
+  run(doc::ops::connectTravelNoteWire(*store.current(), store.ids(), ids.lead, "velocity", ids.wt, "position"));  // per voice
+  run(doc::ops::connectTravelNoteWire(*store.current(), store.ids(), ids.lead, "hz", filter, "freq"));           // reduced
+  run(doc::ops::connectTravelNoteWire(*store.current(), store.ids(), ids.bass, "gate", filter, "res"));          // across tracks
+  // Saved and loaded: the same project (the wires' note sources included).
+  Result<std::string> text = doc::serializeProject(*store.current(), store.view());
+  REQUIRE(text.ok());
+  Result<doc::LoadedProject> back = doc::parseProject(*text);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+  CHECK(*back->project == *store.current());
+  const doc::Project& p = *back->project;
+  const doc::LoweredProject low = lowerOf(p);
+  for (const doc::WireState& s : low.wires) CHECK(s.status == doc::WireStatus::Lowered);
+  const ProjectPatch pp = buildProjectPatch(p, low, &library().catalog());
+  CHECK(checkAgainstGraph(pp, p, low) == "");
+  size_t fromWindows = 0, across = 0;
+  for (const Edge& e : pp.edges) {
+    if (e.kind != EdgeKind::Modulation || pp.nodes[e.from].kind != NodeKind::Source) continue;
+    ++fromWindows;
+    CHECK(e.voice);
+    CHECK(routedAsDrawn(e));
+    across += e.graphWire != kNone ? 1u : 0u;
+  }
+  CHECK(fromWindows == 3);
+  CHECK(across == 1);  // Bass → Lead: a graph wire m<id> (reduced in Bass's patch)
+}
+
 // A chain meta device has no patch text: "Edit Device Circuit" is not offered (its atoms are generated from its face),
 // and asked directly the status says so — not "'meta:wavetable' is not in the device library" (coordinator report).
 // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): a device added unconnected sits under the chain;
@@ -1399,6 +1511,29 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
   }
   for (int i = 0; i < 4; ++i) REQUIRE(u.ctx.undo());
   CHECK(u.ctx.doc() == start);
+}
+
+TEST_CASE("project patch: a chain meta device's circuit is not edited as a library device") {
+  Ui u(false);
+  MetaChainIds ids;
+  REQUIRE(buildMetaChainProject(u.ctx.store(), &ids).ok());
+  u.show();
+  u.view().fitAll(false);
+  u.d.tree().layoutNow();
+  CHECK_FALSE(u.view().editDeviceCircuit(ids.wt));
+  CHECK(u.ctx.status().find("not in the device library") == std::string::npos);
+  CHECK(u.ctx.status().find("generated") != std::string::npos);
+  CHECK(u.editor() == nullptr);
+  REQUIRE(u.view().openNodeMenu(u.deviceNode(ids.wt), u.centre(u.deviceNode(ids.wt))) != nullptr);
+  Menu* m = u.openMenu();
+  REQUIRE(m != nullptr);
+  bool found = false;
+  for (const MenuItem& it : m->items())
+    if (it.label == "Edit Device Circuit") {
+      found = true;
+      CHECK_FALSE(it.enabled);
+    }
+  CHECK(found);
 }
 
 TEST_CASE("project patch: hovering a wire reads its signal (meters, modulation sweeps)") {
@@ -1850,7 +1985,7 @@ TEST_CASE("project patch (TX.panel-faces): every closed stock device is drawn as
     mixers += n.kind == NodeKind::Mixer ? 1u : 0u;
     if (n.kind != NodeKind::Device) continue;
     CAPTURE(n.title);
-    const bool stock = !n.group && !n.meta && !n.edited && !n.missing && !n.expanded;  // (IG.1-2: a group: a capsule)
+    const bool stock = !n.rack && !n.group && !n.meta && !n.edited && !n.missing && !n.expanded;  // (IG.1-2: a group: a capsule)
     CHECK(n.panel == stock);
     if (!stock) continue;
     ++panels;

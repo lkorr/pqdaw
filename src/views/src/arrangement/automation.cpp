@@ -65,6 +65,8 @@ const char* tuningParamLabel(doc::ParamKind k) noexcept {
 // A device's name as its panel title shows it: its own name, else the rack kind or the catalog's.
 std::string deviceTitle(const doc::Device& d, const doc::DeviceLibrary* lib) {
   if (!d.name.empty()) return d.name;
+  if (d.patch == doc::kAudioEffectRack) return "Audio Effect Rack";
+  if (d.patch == doc::kInstrumentRack) return "Instrument Rack";
   if (lib != nullptr)
     if (const doc::DeviceInfo* i = lib->catalog().find(d.patch)) return i->name;
   for (const doc::StockDevice& st : doc::stockDevices())
@@ -95,6 +97,21 @@ bool deviceParam(const doc::Project& p, const doc::ParamRef& r, const doc::Devic
   out.device = doc::findDevice(p, doc::DeviceId{r.owner}).device;
   if (out.device == nullptr) return false;
   devices::ParamInfo& pi = out.info;
+  if (out.device->rack) {  // a macro or the chain selector: 0 ... 127
+    pi.min = 0.0;
+    pi.max = doc::kMacroMax;
+    for (uint32_t i = 0; i < doc::kMacroCount; ++i)
+      if (doc::deviceParamHash(doc::macroParamName(i)) == r.target) {
+        pi.name = doc::macroParamName(i);
+        pi.label = doc::macroDisplayName(*out.device->rack, i);
+        return true;
+      }
+    if (doc::deviceParamHash(doc::kSelectParam) != r.target) return false;
+    pi.name = std::string(doc::kSelectParam);
+    pi.label = "Chain Selector";
+    pi.steps = 128;
+    return true;
+  }
   if (lib == nullptr) return false;
   std::shared_ptr<const doc::ResolvedDevice> hold;
   const doc::DeviceInfo* info = lib->infoOf(*out.device, hold);
@@ -117,6 +134,7 @@ bool deviceParam(const doc::Project& p, const doc::ParamRef& r, const doc::Devic
   return false;
 }
 
+const char* chainValueLabel(const doc::ParamRef& r) noexcept { return r.target == doc::kChainPan ? "Pan" : "Volume"; }
 
 // "<device>: <param>" / "<param>" for the device kinds (the short form drops the device).
 std::string deviceKindName(const doc::Project& p, const doc::ParamRef& r, const doc::DeviceLibrary* lib, bool full) {
@@ -126,6 +144,11 @@ std::string deviceKindName(const doc::Project& p, const doc::ParamRef& r, const 
       const bool known = deviceParam(p, r, lib, d);
       const std::string label = known ? d.info.label : std::string("Parameter");
       return full && d.device != nullptr ? deviceTitle(*d.device, lib) + ": " + label : label;
+    }
+    case doc::ParamKind::ChainMixer: {
+      const doc::ChainLoc c = doc::findChain(p, doc::ChainId{r.owner});
+      const std::string chain = c.chain != nullptr ? c.chain->name : std::string("Chain");
+      return chain + (full ? ": " : " ") + chainValueLabel(r);
     }
     case doc::ParamKind::WireAmount: {
       const doc::Wire* w = doc::findWire(p, doc::WireId{r.owner});
@@ -156,8 +179,12 @@ ParamDisplay paramDisplay(const doc::Project& p, const doc::ParamRef& r, const d
     case doc::ParamKind::DeviceParam: {
       DevParam d;
       if (!deviceParam(p, r, lib, d)) return {S::Linear, 0.0, 1.0};
+      if (d.device->rack) return {S::Linear, std::min(d.info.min, d.info.max), std::max(d.info.min, d.info.max)};
       return {S::Linear, 0.0, 1.0};
     }
+    case doc::ParamKind::ChainMixer:
+      if (r.target == doc::kChainVolume) return {S::Fader, doc::kMinVolumeDb, doc::kMaxVolumeDb};
+      return {S::Linear, -1.0, 1.0};
     case doc::ParamKind::WireAmount: return {S::Linear, -1.0, 1.0};
     case doc::ParamKind::TrackVolume:
     case doc::ParamKind::TrackSend: return {S::Fader, doc::kMinVolumeDb, doc::kMaxVolumeDb};
@@ -269,6 +296,7 @@ std::string formatParamValue(const doc::ParamRef& r, double v) {
     case doc::ParamKind::TrackSolo: return v >= 0.5 ? "Off" : "On";
     case doc::ParamKind::TuningReference: std::snprintf(buf, sizeof buf, "%.1f Hz", v); return buf;
     case doc::ParamKind::DeviceParam: std::snprintf(buf, sizeof buf, "%.2f", v); return buf;  // T4.18: no library
+    case doc::ParamKind::ChainMixer: return r.target == doc::kChainVolume ? formatVolume(v) + " dB" : formatPan(v);
     case doc::ParamKind::WireAmount: std::snprintf(buf, sizeof buf, "%.0f %%", v * 100.0); return buf;
     default: std::snprintf(buf, sizeof buf, "%.1f \xC2\xA2", v); return buf;  // cents: U+00A2
   }
@@ -276,7 +304,7 @@ std::string formatParamValue(const doc::ParamRef& r, double v) {
 
 std::string formatParamValue(const doc::Project& p, const doc::ParamRef& r, double v, const doc::DeviceLibrary* lib) {
   if (DevParam d; deviceParam(p, r, lib, d))  // GU.1: a knob position, shown as the value its curve gives
-    return devices::formatValue(d.info, devices::fromPosition(d.info, v));
+    return devices::formatValue(d.info, d.device->rack ? v : devices::fromPosition(d.info, v));
   return formatParamValue(r, v);
 }
 
@@ -285,7 +313,13 @@ double currentParamValue(const doc::Project& p, const doc::ParamRef& r, const do
     case doc::ParamKind::DeviceParam: {
       DevParam d;
       if (!deviceParam(p, r, lib, d)) return 0.0;
+      if (d.device->rack) return doc::rackParamValue(*d.device, d.info.name);
       return devices::storedPosition(d.info, *d.device);  // GU.1: the lane's domain
+    }
+    case doc::ParamKind::ChainMixer: {
+      const doc::ChainLoc c = doc::findChain(p, doc::ChainId{r.owner});
+      if (c.chain == nullptr) return 0.0;
+      return r.target == doc::kChainPan ? c.chain->pan : c.chain->volumeDb;
     }
     case doc::ParamKind::WireAmount: {
       const doc::Wire* w = doc::findWire(p, doc::WireId{r.owner});
@@ -377,14 +411,28 @@ std::vector<ParamChoice> paramChoices(const doc::Project& p, const doc::Track& t
                                doc::ParamKind::MosPeriod, doc::ParamKind::MosStretch})
         // T3.17-fix3: only a tuning with a signal (EDO, MOS) has a node a lane can drive (the model refuses others).
         if (doc::hasTuningSignal(s->def) && tuningParamFits(s->def, k)) add(doc::ParamRef::tuning(k, s->id), s->name, tuningParamLabel(k));
-  // T4.18: the track's devices.
+  // T4.18: the track's devices (racks: macros and selector, then their chains, then what is inside), in chain order.
+  // A param an outer rack's macro maps plays the macro (lower.h "Racks"): it is offered only while it already has a
+  // lane (to be seen and deleted); the macro is what to automate.
   auto addDevice = [&](const doc::Device& d, const std::string& name, const std::string& group, std::string label) {
-    add(doc::ParamRef::device(d.id, name), group, std::move(label));
+    const doc::ParamRef r = doc::ParamRef::device(d.id, name);
+    if (doc::mappingOf(p, d.id, name).mapping != nullptr && findAutomationLane(p, r).lane == nullptr) return;
+    add(r, group, std::move(label));
   };
   std::vector<doc::DeviceId> mine;
   doc::forEachDeviceIn(t.devices, [&](const doc::Device& d) {
     mine.push_back(d.id);
     const std::string title = deviceTitle(d, lib);
+    if (d.rack) {
+      for (uint32_t i = 0; i < std::min<uint32_t>(d.rack->visibleMacros, doc::kMacroCount); ++i)
+        addDevice(d, doc::macroParamName(i), title, doc::macroDisplayName(*d.rack, i));
+      addDevice(d, std::string(doc::kSelectParam), title, "Chain Selector");
+      for (const doc::ChainPtr& c : d.rack->chains) {
+        add(doc::ParamRef::chain(c->id, doc::kChainVolume), title + " | " + c->name, "Volume");
+        add(doc::ParamRef::chain(c->id, doc::kChainPan), title + " | " + c->name, "Pan");
+      }
+      return;
+    }
     if (lib == nullptr) return;
     std::shared_ptr<const doc::ResolvedDevice> hold;
     const graph::Patch* patch = lib->patchOf(d, hold);

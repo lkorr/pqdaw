@@ -661,3 +661,35 @@ TEST_CASE("cross-track notes: refused only where the host and the block's track 
   const golden::Channels after = played(*s.current(), "B, with A's refused notes cable", &sc);
   CHECK(maxDiff(before, after) == 0.0);
 }
+
+TEST_CASE("cross-track notes: an Instrument Rack on another track played by A's notes (= the rack on A's path)") {
+  auto rack = [](DocumentStore& s, TrackId t) {
+    const DeviceId r = s.ids().device(), inner = s.ids().device();
+    apply(s, AddDevice{t, makeRack(r, DeviceKind::Instrument, {makeChain(s.ids().chain(), "Chain 1", {makeDefaultInstrument(inner)})}),
+                       kAppend});
+    voiced(s, inner);
+    return r;
+  };
+  // The reference: the rack heading A's path.
+  DocumentStore r;
+  const TrackId ra = emptyMidi(r);
+  const DeviceId rr = rack(r, ra);
+  run(r, ops::insertOnPath(*r.current(), r.ids(), rr, 0));
+  const TrackId rb = emptyMidi(r);
+  const Score rs{{{ra, chord()}, {rb, {}}}};
+  const golden::Channels ref = played(*r.current(), "an Instrument Rack heading A's path", &rs);
+  // The rack off B's path, A's notes cabled into it, its output into B's mixer.
+  DocumentStore s;
+  const TrackId a = emptyMidi(s);
+  const TrackId b = emptyMidi(s);
+  const DeviceId sr = rack(s, b);
+  const WireId n = cable(s, notesInto(a, sr));
+  cable(s, intoMixer(sr, b));
+  const Score sc{{{a, chord()}, {b, {}}}};
+  CHECK(stateOf(*s.current(), n, &sc).status == WireStatus::Lowered);
+  const golden::Channels got = played(*s.current(), "A's notes into an Instrument Rack on B", &sc);
+  const double d = maxDiff(got, ref);
+  MESSAGE("A's notes into B's Instrument Rack vs the rack on A's path: max |diff| = " << d);
+  CHECK(peak(ref) > 1e-2);
+  CHECK(d <= 1e-6);
+}

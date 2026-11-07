@@ -3,6 +3,7 @@ app/fixtures/all_free/chains 24ab151bfe8a6703 24ab151bfe8a6703 0.417127 3:27d472
 app/fixtures/all_free/free_wires c97731c109449403 c97731c109449403 0.693905 3:4892169df248f200,2:6b54d4d0f3fe3038
 app/fixtures/all_free/group d296a96ae63a2a93 d296a96ae63a2a93 0.192349 3:cbfc7fe167fd035,2:6b54d4d0f3fe3038
 app/fixtures/all_free/meta_run 59eb1a55effa5203 59eb1a55effa5203 0.707107 3:53abb48aa9b39c5b,2:6b54d4d0f3fe3038
+app/fixtures/all_free/racks 432e21fa284bef3f 432e21fa284bef3f 0.733758 3:1e5dab55f0c4a7f8,2:6b54d4d0f3fe3038
 app/fixtures/all_free/v16_document_audio 408cad44ae576b83 408cad44ae576b83 0 3:a09dd765716f7933,5:ca4f0ce0da0c7595,6:1121bad6a148efaf,2:6b54d4d0f3fe3038
 app/fixtures/all_free/v16_views_arrangement 95ca4a4f286863e3 95ca4a4f286863e3 0.464359 7:6466d7583c0e77b1,9:a5d68ff56c54122c,18:b61ab144870e0ee8,11:179c5eb3ef3bcda3,17:dee707f95c9049e3,13:f5bcdac52f7cd666,19:f2ff49009e2a2db5,15:4460343447da08b8,2:6b54d4d0f3fe3038
 app/fixtures/all_free/v16_views_automation 34bee40ca1a3ce94 34bee40ca1a3ce94 0.632569 4:d8f2d7672a3d531e,6:603aba187dabcdc5,14:a14c1f7d3ecfc414,8:12975a2ad6fb69a6,10:799bac583fbb8e8d,12:2fcff89c13297048,15:2945d2ecb7c58ecb,2:6b54d4d0f3fe3038

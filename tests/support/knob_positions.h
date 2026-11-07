@@ -19,7 +19,12 @@
 namespace knob_positions {
 
 inline const pq::doc::Device* findIn(const pq::doc::Device& d, pq::doc::DeviceId id) {
-  return d.id == id ? &d : nullptr;
+  if (d.id == id) return &d;
+  if (d.rack)
+    for (const pq::doc::ChainPtr& c : d.rack->chains)
+      for (const pq::doc::DevicePtr& x : c->devices)
+        if (const pq::doc::Device* f = findIn(*x, id)) return f;
+  return nullptr;
 }
 
 inline const pq::doc::Device* findIn(const pq::doc::Track& t, pq::doc::DeviceId id) {
@@ -46,7 +51,7 @@ inline pq::doc::Batch knobPositions(const pq::doc::Project& p, pq::doc::Batch b,
     auto* s = std::get_if<SetDeviceParam>(&b.commands[i].v);
     if (s == nullptr || !s->value) continue;
     const Device* d = deviceOf(s->device);
-    if (d == nullptr) continue;
+    if (d == nullptr || d->rack) continue;
     std::shared_ptr<const ResolvedDevice> hold;
     const pq::graph::Patch* callee = lib.patchOf(*d, hold);
     const pq::graph::ParamDecl* decl = callee != nullptr ? findAnyParamDecl(*callee, s->param) : nullptr;
@@ -66,7 +71,7 @@ inline double positionOf(const pq::doc::Project& p, pq::doc::DeviceId device, st
                          const pq::doc::DeviceLibrary& lib) {
   using namespace pq::doc;
   const Device* d = findDevice(p, device).device;
-  if (d == nullptr) return value;
+  if (d == nullptr || d->rack) return value;
   std::shared_ptr<const ResolvedDevice> hold;
   const pq::graph::Patch* callee = lib.patchOf(*d, hold);
   const pq::graph::ParamDecl* decl = callee != nullptr ? findAnyParamDecl(*callee, param) : nullptr;

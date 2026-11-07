@@ -41,6 +41,7 @@ MainPorts mainPortsOf(const graph::SubcircuitRef& sig, const graph::Patch* calle
 }
 
 MainPorts mainPortsOf(const Device& d, const DeviceLibrary* lib) {
+  if (d.isRack()) return d.kind == DeviceKind::Instrument ? MainPorts{"", "out"} : MainPorts{"in", "out"};
   if (isGroupDevice(d)) return {"x", "y"};
   if (isMetaDevice(d)) {
     MainPorts m;
@@ -215,10 +216,10 @@ std::vector<DevicePtr> flowOrder(const Track& t, const MainPath& path) {
 
 Wire canonicalWire(const Project& p, Wire w, const DeviceLibrary* lib) {
   if (!w.port.empty() && !w.fromNoteSource())
-    if (const Device* d = findDevice(p, w.from).device; d != nullptr)
+    if (const Device* d = findDevice(p, w.from).device; d != nullptr && findDevice(p, w.from).chain == nullptr)
       if (const MainPorts m = mainPortsOf(*d, lib); !m.out.empty() && m.out == w.port) w.port.clear();
   if (!w.param.empty() && !w.toMixer())
-    if (const Device* d = findDevice(p, w.to).device; d != nullptr)
+    if (const Device* d = findDevice(p, w.to).device; d != nullptr && findDevice(p, w.to).chain == nullptr)
       if (const MainPorts m = mainPortsOf(*d, lib); !m.in.empty() && m.in == w.param) w.param.clear();
   return w;
 }

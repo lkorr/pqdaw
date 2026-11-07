@@ -24,6 +24,11 @@ dsp::CurvePreset presetOfLegacy(uint8_t c) noexcept {
 }
 
 void collect(const Device& d, std::vector<std::string>& out) {
+  if (d.rack) {
+    for (const ChainPtr& c : d.rack->chains)
+      for (const DevicePtr& x : c->devices) collect(*x, out);
+    return;
+  }
   for (const DeviceValue& v : d.params) out.push_back(std::to_string(d.id.value) + ":" + v.name);
   if (d.meta)
     for (const MetaEntry& e : *d.meta)
@@ -69,6 +74,16 @@ struct Converter {
   DevicePtr device(const DevicePtr& dp) const {
     const Device& d = *dp;
     auto n = std::make_shared<Device>(d);
+    if (d.rack) {
+      auto r = std::make_shared<Rack>(*d.rack);
+      for (ChainPtr& c : r->chains) {
+        auto ch = std::make_shared<Chain>(*c);
+        for (DevicePtr& x : ch->devices) x = device(x);
+        c = std::move(ch);
+      }
+      n->rack = std::move(r);
+      return n;
+    }
     for (DeviceValue& v : n->params) {
       dsp::Curve c;
       bool own = false;
@@ -112,7 +127,7 @@ struct Converter {
     for (LanePtr& lp : t->lanes) {
       if (lp->param.kind != ParamKind::DeviceParam || lp->paramName.empty()) continue;
       const Device* d = findDevice(before, DeviceId{lp->param.owner}).device;
-      if (d == nullptr) continue;
+      if (d == nullptr || d->rack) continue;
       dsp::Curve c;
       bool own = false;
       if (!curveOf(*d, lp->paramName, c, own)) continue;

@@ -211,57 +211,6 @@ BlockSet vcaBlocks(IdSource& ids, const VcaOptions& o, VcaRoles* roles) {
   return out;
 }
 
-BlockSet chainBlocks(IdSource& ids, DeviceId rack, std::string name) {
-  const DeviceId chain = ids.device();
-  Builder b{ids, {}, rack};
-  auto c = std::make_shared<Device>(*makeGroup(chain));
-  c->name = std::move(name);
-  c->group = rack;
-  b.set.devices.push_back(std::move(c));
-  b.wire(rack, kGroupInPort, chain, kMainPort);
-  b.wire(chain, kGroupInPort, chain, kGroupOutPort);
-  b.wire(chain, kMainPort, rack, kGroupOutPort);
-  return std::move(b.set);
-}
-
-BlockSet rackBlocks(IdSource& ids, bool instrument, uint32_t chains, RackRoles* roles) {
-  RackRoles r;
-  r.group = ids.device();
-  Builder b{ids, {}, r.group};
-  for (uint32_t k = 0; k < chains; ++k) {
-    BlockSet c = chainBlocks(ids, r.group, "Chain " + std::to_string(k + 1));
-    r.chains.push_back(c.devices.front()->id);
-    for (DevicePtr& d : c.devices) b.set.devices.push_back(std::move(d));
-    for (Wire& w : c.wires) b.set.wires.push_back(std::move(w));
-  }
-  // The macros: value blocks 0 … 1 (a mapping's Travel wire scales them), four knobs a row on the panel.
-  Panel panel;
-  constexpr float kKnobW = 52.0f, kKnobH = 64.0f;
-  panel.width = 4 * kKnobW + 16.0f;
-  panel.height = 2 * kKnobH + 8.0f;
-  for (uint32_t k = 0; k < kDefaultMacros; ++k) {
-    const std::string name = "Macro " + std::to_string(k + 1);
-    r.macros.push_back(b.value(name, dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, 1.0), 0.0));
-    PanelElement e = element(k + 1, "knob", 8.0f + static_cast<float>(k % 4) * kKnobW, 4.0f + static_cast<float>(k / 4) * kKnobH,
-                             kKnobW, kKnobH, controlBinding(r.macros.back(), std::string(kValueParam)));
-    e.setField(styleText("label", name));
-    panel.elements.push_back(std::move(e));
-  }
-  DevicePtr g = groupDevice(r.group, {}, instrument ? "Instrument Rack" : "Audio Effect Rack", true, std::move(panel));
-  if (instrument) {
-    auto gi = std::make_shared<Device>(*g);
-    gi->settings = makeInstrumentGroup(r.group)->settings;
-    g = std::move(gi);
-  }
-  BlockSet out;
-  out.devices.push_back(std::move(g));
-  for (DevicePtr& d : b.set.devices) out.devices.push_back(std::move(d));
-  out.wires = std::move(b.set.wires);
-  std::sort(out.wires.begin(), out.wires.end(), [](const Wire& x, const Wire& y) { return x.id < y.id; });
-  if (roles != nullptr) *roles = std::move(r);
-  return out;
-}
-
 BlockSet moduleBlocks(ModuleKind k) {
   IdSource ids;
   return k == ModuleKind::PhaseAccumulator ? phaseAccumulatorBlocks(ids) : vcaBlocks(ids);
@@ -277,6 +226,14 @@ constexpr std::string_view kGroupChainOut = "y";
 
 bool retired(const Device& d) noexcept {
   return isMetaDevice(d) && meta::findType(metaDeviceType(d)) == nullptr && meta::findRetiredType(metaDeviceType(d)) != nullptr;
+}
+
+// Whether a retired device sits inside rack `d` at any depth (forEachDeviceIn: iterative, any nesting depth).
+bool rackHoldsRetired(const Device& d) noexcept {
+  if (!d.isRack()) return false;
+  bool any = false;
+  forEachDeviceIn(d, [&](const Device& x) { any = any || (&x != &d && retired(x)); });
+  return any;
 }
 
 // A retired param's value in units (its stored knob position through its declared curve; absent: its default).
@@ -439,7 +396,7 @@ bool holdsRetiredModules(const Project& p) noexcept {
   bool any = false;
   forEachTrack(p, [&](const Track& t, const Track*) {
     for (const DevicePtr& d : t.devices)
-      if (retired(*d)) any = true;
+      if (retired(*d) || rackHoldsRetired(*d)) any = true;
   });
   return any;
 }
@@ -451,10 +408,18 @@ Status convertRetiredModules(Project& p) {
   std::unordered_map<uint32_t, Converted> made;  // by old device id
   std::unordered_map<uint32_t, std::vector<DevicePtr>> newDevices;
   std::unordered_map<uint32_t, std::vector<LanePtr>> newLanes;
+  Status failed = Ok{};
   forEachTrack(p, [&](const Track& t, const Track*) {
     bool changed = false;
     std::vector<DevicePtr> list;
     for (const DevicePtr& d : t.devices) {
+      if (rackHoldsRetired(*d) && failed) {
+        failed = Error{ErrorCode::Unsupported,
+                       "track '" + t.name + "': a Phase Accumulator or VCA inside a rack chain cannot become its group preset "
+                       "(GU.4: a group lives in a track's circuit, not in a rack chain); take it out of the rack in an "
+                       "older pqdaw first",
+                       {}};
+      }
       if (!retired(*d)) {
         list.push_back(d);
         continue;
@@ -485,6 +450,7 @@ Status convertRetiredModules(Project& p) {
     }
     if (lanesChanged) newLanes[t.id.value] = std::move(lanes);
   });
+  if (!failed) return failed;
   // Wires: ends on the old devices follow their targets; the modules' own wires join.
   WireList wires;
   for (const Wire& w0 : wiresOf(p)) {

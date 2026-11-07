@@ -195,6 +195,49 @@ TEST_CASE("device automation: a filter-cutoff sweep reaches Auto Filter; where t
   CHECK(dj <= 1e-4);
 }
 
+TEST_CASE("device automation: a macro lane drives what the macro maps; a chain volume lane its chain (rack law in the graph)") {
+  Song s(false);
+  const DeviceId u = s.add("utility");
+  auto g = ops::groupDevices(*s.store.current(), s.store.ids(), std::vector{u});
+  REQUIRE(g.ok());
+  s.must(g->command);
+  const DeviceId rack = g->devices.at(0);
+  const ChainId chain = findDevice(*s.store.current(), rack).device->rack->chains.at(0)->id;
+  auto m = ops::mapMacro(*s.store.current(), s.store.ids(), rack, 0, u, "gain");
+  REQUIRE(m.ok());
+  s.must(m->command);
+  // Macro 1 (mapped onto the Utility's gain over its whole −70 … +35 dB travel): 64 for a bar, then 0 (−70 dB:
+  // silence).
+  s.lane(ParamRef::device(rack, "macro1"), "macro1",
+         {{0, 64.0f, 0.0f, {}}, {kBar, 64.0f, 0.0f, {}}, {kBar, 0.0f, 0.0f, {}}});
+  // The chain's volume: 0 dB, then −12 dB from bar 0.5.
+  s.lane(ParamRef::chain(chain, kChainVolume), "", {{0, 0.0f, 0.0f, {}}, {kBar / 2, 0.0f, 0.0f, {}}, {kBar / 2, -12.0f, 0.0f, {}}});
+  const golden::Channels out = play(s, 3.0);
+  const auto at = [](double sec) { return static_cast<size_t>(sec * kRate); };
+  const double a = rms(out, at(0.5), at(0.95)), b = rms(out, at(1.1), at(1.9)), c = rms(out, at(2.2), at(2.9));
+  MESSAGE("RMS: macro 64 at 0 dB " << a << ", macro 64 at -12 dB " << b << ", macro 0 " << c);
+  CHECK(a > 1e-3);
+  CHECK(b / a == doctest::Approx(std::pow(10.0, -12.0 / 20.0)).epsilon(0.02));  // the chain volume lane: −12 dB
+  CHECK(c < 1e-3 * a);                                                          // macro 0: the mapped gain at −70 dB
+  // The JIT images play the same lanes (the chain's volume law and the macro's mapping compiled).
+  const golden::Channels jit = play(s, 3.0, true);
+  const double dj = maxDiff(out, jit, 0, at(3.0));
+  MESSAGE("interpreter vs JIT: max diff " << dj);
+  CHECK(dj <= 1e-5);
+  // Static: the same macro value and chain volume set by hand render the same as the lanes holding them.
+  Song ref(false);
+  const DeviceId u2 = ref.add("utility");
+  auto g2 = ops::groupDevices(*ref.store.current(), ref.store.ids(), std::vector{u2});
+  REQUIRE(g2.ok());
+  ref.must(g2->command);
+  const DeviceId rack2 = g2->devices.at(0);
+  auto m2 = ops::mapMacro(*ref.store.current(), ref.store.ids(), rack2, 0, u2, "gain", 64.0);
+  REQUIRE(m2.ok());
+  ref.must(m2->command);
+  const golden::Channels st = play(ref, 1.0);
+  CHECK(maxDiff(out, st, 0, at(0.95)) <= 1e-6);
+}
+
 TEST_CASE("device automation: an automated gain jump is click-free; the wire amount lane drives its wire") {
   SUBCASE("Utility gain: 0 dB → −12 dB → +6 dB as jumps") {
     Song s(false);

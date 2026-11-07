@@ -93,7 +93,7 @@ public:
   }
   // GU.3: a panel placed or emptied, or the group becoming or ceasing to be an instrument: a new frame.
   bool keeps(const doc::Device& d) const override {
-    return d.hasPanel() == hasPanel_ && doc::isInstrumentGroup(*ctx_.doc(), d.id) == instrument_ && !showsAsRack(ctx_, d);
+    return d.hasPanel() == hasPanel_ && doc::isInstrumentGroup(*ctx_.doc(), d.id) == instrument_;
   }
   void paramsChanged(const doc::Device&, std::span<const doc::ParamRef>) override {}  // the canvas follows the document
 

@@ -15,26 +15,36 @@ EditResult replaceDevice(const Project& p, IdSource& ids, DeviceId device, const
   auto keepsParam = [&](std::string_view name) {
     return std::find(params.begin(), params.end(), name) != params.end();
   };
-  (void)ids;  // (nothing inside a device needs fresh ids)
-  // The new device: the replaced device's id (its state key and wires follow it).
-  auto top = std::make_shared<Device>(with);
+  // The new device: fresh ids inside, the replaced device's id on top (its state key, wires and mappings follow it).
+  DevicePtr fresh = cloneDevice(with, ids);
+  auto top = std::make_shared<Device>(*fresh);
   top->id = device;
-  top->group = loc.device->group;  // TX.groups: a member stays in its group
+  top->group = top->rack ? DeviceId{} : loc.device->group;  // TX.groups: a member stays in its group
   Edit e = makeEdit("Hot-Swap Preset");
   e.devices.push_back(device);
   Batch& b = batchOf(e);
   b.commands.push_back(RemoveDevice{device});
-  b.commands.push_back(AddDevice{loc.track->id, std::move(top), loc.index});
+  b.commands.push_back(AddDevice{loc.track->id, std::move(top), loc.index, loc.chain ? loc.chain->id : ChainId{}});
   // Wires into a param the new device still has, and every wire out of it (its exports), come back with their ids;
   // TX.all-free: so do the wires into its main input (its place on the path stays).
   for (const Wire& w : wiresOf(p)) {
     if (w.from != device && w.to != device) continue;
     if (w.to == device && !w.param.empty() && !keepsParam(w.param)) continue;
+    // A wire between the replaced device and something inside it (a rack's own inner devices) is gone with them.
     if (w.from != device && !w.fromNoteSource() && !findDevice(p, w.from).track) continue;  // TMM.10-fix2: notes stay
+    if (w.from != device && deviceContains(*loc.device, w.from)) continue;
+    if (w.to != device && deviceContains(*loc.device, w.to)) continue;
     b.commands.push_back(AddWire{w});
   }
+  // Mappings of the racks around it onto its params.
+  forEachDeviceIn(loc.track->devices, [&](const Device& r) {
+    if (!r.rack || r.id == device || !deviceContains(r, device)) return;
+    for (const MacroMapping& m : r.rack->mappings)
+      if (m.device == device && keepsParam(m.param)) b.commands.push_back(AddMacroMapping{r.id, m});
+  });
   // T4.18: its automation lanes stay on the params the new device still has (the device keeps its id: apply keeps
-  // those lanes where they are); the lanes of the others go.
+  // those lanes where they are); the lanes of the others go. Lanes inside it (a rack's chains, inner devices: fresh ids)
+  // go with them (apply's lane pass).
   for (const LanePtr& l : loc.track->lanes)
     if (l->param.kind == ParamKind::DeviceParam && l->param.owner == device.value && !keepsParam(l->paramName))
       b.commands.push_back(RemoveAutomationLane{loc.track->id, l->id});

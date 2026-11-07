@@ -138,6 +138,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
+#include "pq/views/circuit/chain_circuit.h"
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/circuit/circuit_scene.h"
 #include "pq/views/circuit/node_menu.h"
@@ -433,6 +434,8 @@ public:
   void openBand(doc::TrackId track, bool animate = true);
   void closeBand();
   doc::TrackId openedBand() const noexcept { return openBand_; }
+  // The circuit drawn inside an opened rack's frame (nested boxes), null when the rack is not opened.
+  const circuit::ChainCircuit* rackCircuit(doc::DeviceId rack) const noexcept;
   // A device opened to its atoms in place (read-only), or closed again. View state of this session.
   void setDeviceExpanded(doc::DeviceId device, bool expanded);
   bool deviceExpanded(doc::DeviceId device) const noexcept;
@@ -855,6 +858,8 @@ private:
   std::vector<std::pair<std::string, std::shared_ptr<const circuit::CircuitScene>>> innerCache_;
   // T5.x-circuit-chain: opened racks' circuits (rebuilt with the model), their devices' scenes; the opened band and
   // the devices it opened.
+  std::vector<std::pair<doc::DeviceId, std::shared_ptr<const circuit::ChainCircuit>>> rackCircuits_;
+  circuit::ChainSceneCache chainCache_;
   doc::TrackId openBand_;
   std::vector<doc::DeviceId> bandExpanded_;
   doc::DeviceId focus_;           // T5.x-one-circuit: the device "Open in Circuit View" framed

@@ -132,7 +132,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit: one unit compile, state kept; save/load; wires)
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
     app/test_inspect_lifetime.cpp  # T4.x-fix-safety: cost meters and probe taps live as long as the images that write them
-    app/test_racks.cpp  # GU.9: racks are groups (parallel chains sum, chain selector, a macro wire, Instrument Rack voices once)
+    app/test_racks.cpp  # T4.8: racks (hand-built graph diff 0, interpreter == JIT, key zones, macro = one write, click-free)
     app/test_audio_tracks.cpp  # T5.3: audio tracks (golden lowering text, clip slot, clip edits compile nothing)
     app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
     app/test_drop_playback.cpp  # T5.7: a dropped file plays at once (the hover preloads it into the pool)
@@ -198,7 +198,8 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_orbit_ports.cpp  # TX.orbit-ports: orbiting main ports, the round VCA's floating panel, Delete on a hovered cable
     views/test_free_rack.cpp  # TX.free-rack: the Device view's free-device rack (gestures, prefs), the signal-path cables, goldens, perf
     views/test_all_free_views.cpp  # TX.all-free: the Device view lists the main path; its gestures rewire; the patch view places anywhere
-    views/test_racks_view.cpp  # GU.9: a rack group in the Device view (chain list, add chain, macro drag), real dispatch
+    views/test_chain_circuit.cpp  # T5.x-circuit-chain: a track's chain as one circuit (boxes, wires, racks, view, band), goldens
+    views/test_racks_view.cpp  # T4.8: racks in the Device view (chains, drops, map mode, macro / mixer / zone drags), goldens
     views/test_circuit_legibility.cpp  # T4.15: node tooltips, inactive branches, recognised constants, goldens
     views/test_device_affordances.cpp  # T4.16c: Device view keys (arrows, Shift, Ctrl, Home / End, chains), cursors, rename
     views/test_affordances.cpp  # T4.16b: cursors, hover highlights and editing keys (arrangement, piano roll, automation)
@@ -416,6 +417,7 @@ pq_add_test(pq_tests_document
     document/test_virtual_fundamental.cpp
     document/test_devices.cpp  # T4.1: device chains (commands, builders, catalog, lowering)
     document/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit, file, resolution, lowering, coalescing)
+    document/test_racks.cpp    # T4.8: racks (rules, builders, file, lowering)
     document/test_audio.cpp    # T5.3: audio tracks + clips (commands, builders, warp laws, file)
     document/test_samples.cpp  # T5.8: project samples (resolve, relink, collect all and save)
     document/test_library_files.cpp  # T5.11: user-library files, hot-swap, library clips

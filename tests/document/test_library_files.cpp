@@ -50,8 +50,8 @@ struct Lib {
     CHECK(store.history().cursor() == before + (e->empty() ? 0u : 1u));
     return *e;
   }
-  DeviceId add(TrackId t, const char* patch, DeviceKind k = DeviceKind::AudioEffect) {
-    return edit(ops::addDevice(doc(), store.ids(), t, patch, k, kAppend)).devices.at(0);
+  DeviceId add(TrackId t, const char* patch, DeviceKind k = DeviceKind::AudioEffect, ChainId chain = {}) {
+    return edit(ops::addDevice(doc(), store.ids(), t, patch, k, kAppend, chain)).devices.at(0);
   }
 };
 
@@ -60,6 +60,24 @@ bool sameUpToIds(const Device& a, const Device& b) {
   if (a.patch != b.patch || a.kind != b.kind || a.active != b.active || a.params != b.params || a.settings != b.settings)
     return false;
   if ((a.source == nullptr) != (b.source == nullptr) || (a.source && a.source->text != b.source->text)) return false;
+  if ((a.rack == nullptr) != (b.rack == nullptr)) return false;
+  if (!a.rack) return true;
+  const Rack &ra = *a.rack, &rb = *b.rack;
+  if (ra.chains.size() != rb.chains.size() || ra.mappings.size() != rb.mappings.size() || ra.macroNames != rb.macroNames ||
+      ra.variations != rb.variations || ra.visibleMacros != rb.visibleMacros || ra.keyUnit != rb.keyUnit)
+    return false;
+  for (size_t i = 0; i < ra.chains.size(); ++i) {
+    const Chain &ca = *ra.chains[i], &cb = *rb.chains[i];
+    if (ca.name != cb.name || ca.volumeDb != cb.volumeDb || ca.pan != cb.pan || ca.devices.size() != cb.devices.size() ||
+        ca.key != cb.key || ca.velocity != cb.velocity || ca.select != cb.select)
+      return false;
+    for (size_t j = 0; j < ca.devices.size(); ++j)
+      if (!sameUpToIds(*ca.devices[j], *cb.devices[j])) return false;
+  }
+  for (size_t i = 0; i < ra.mappings.size(); ++i)
+    if (ra.mappings[i].macro != rb.mappings[i].macro || ra.mappings[i].param != rb.mappings[i].param ||
+        ra.mappings[i].min != rb.mappings[i].min || ra.mappings[i].max != rb.mappings[i].max)
+      return false;
   return true;
 }
 
@@ -90,6 +108,33 @@ TEST_CASE("library files: a device preset round-trips exactly; its kind is in th
   const auto newer = parsePreset(bad);
   REQUIRE_FALSE(newer.ok());
   CHECK(newer.error().message.find("newer") != std::string::npos);
+}
+
+TEST_CASE("library files: a nested rack preset keeps chains, mappings, variations and user-device texts") {
+  Lib l;
+  const DeviceId sat = l.add(l.midi, "saturator");
+  const DeviceId eq = l.add(l.midi, "eq_eight");
+  const DeviceId ids[] = {sat, eq};
+  const DeviceId rack = l.edit(ops::groupDevices(l.doc(), l.store.ids(), ids)).devices.at(0);
+  const DeviceId inner[] = {eq};
+  const DeviceId nested = l.edit(ops::groupDevices(l.doc(), l.store.ids(), inner)).devices.at(0);
+  l.edit(ops::mapMacro(l.doc(), l.store.ids(), rack, 0, sat, "drive"));
+  l.edit(ops::mapMacro(l.doc(), l.store.ids(), nested, 1, eq, "output"));
+  l.edit(ops::renameMacro(l.doc(), rack, 0, "Heat"));
+  l.edit(ops::storeVariation(l.doc(), rack, "A"));
+  l.edit(ops::editDevicePatch(l.doc(), sat, "// forked\n" + std::string("patch saturator {}\n")));
+  const Device& r = l.device(rack);
+  const std::string text = must(serializePreset(r, "Bus"));
+  CHECK(text.find("\"rack\"") < 4096);  // the browser sniffs Racks from the first 4 KiB (Q153)
+  const PresetFile f = must(parsePreset(text));
+  CHECK(*f.device == r);
+  // Loaded into a project: fresh ids, the same content; mappings follow the copies.
+  const DeviceId pasted = l.edit(ops::pasteDevices(l.doc(), l.store.ids(), l.fx, std::span<const DevicePtr>(&f.device, 1))).devices.at(0);
+  CHECK(pasted != rack);
+  CHECK(sameUpToIds(l.device(pasted), r));
+  const Rack& pr = *l.device(pasted).rack;
+  REQUIRE(pr.mappings.size() == 1);
+  CHECK(deviceContains(l.device(pasted), pr.mappings[0].device));
 }
 
 TEST_CASE("library files: user devices, tunings and clips round-trip exactly") {
@@ -200,6 +245,47 @@ TEST_CASE("library files: paths relative to the library file's folder") {
   CHECK(must(readTextFile(p)) == "hello");
   CHECK(readTextFile((dir / "none").generic_string()).error().code == pq::ErrorCode::NotFound);
   fs::remove_all(dir, ec);
+}
+
+TEST_CASE("library: hot-swap keeps the id, the position, wires and mappings onto params that still exist") {
+  Lib l;
+  const DeviceId sat = l.add(l.midi, "saturator");
+  const DeviceId eq = l.add(l.midi, "eq_eight");
+  const DeviceId util = l.add(l.midi, "utility");
+  const DeviceId grouped[] = {sat, eq};
+  const DeviceId rack = l.edit(ops::groupDevices(l.doc(), l.store.ids(), grouped)).devices.at(0);
+  l.edit(ops::mapMacro(l.doc(), l.store.ids(), rack, 0, sat, "drive"));
+  l.edit(ops::mapMacro(l.doc(), l.store.ids(), rack, 1, sat, "output"));
+  const WireId in = l.edit(ops::connectTravelWire(l.doc(), l.store.ids(), util, "out", sat, "drive")).wires.at(0);
+  const WireId gone = l.edit(ops::connectTravelWire(l.doc(), l.store.ids(), util, "out", sat, "output")).wires.at(0);
+  const WireId outw = l.edit(ops::connectTravelWire(l.doc(), l.store.ids(), sat, "env", util, "gain")).wires.at(0);
+  const DeviceLoc before = findDevice(l.doc(), sat);
+  const uint32_t index = before.index;
+
+  // The preset: another Saturator with other values.
+  auto preset = std::make_shared<Device>(*makeDevice(DeviceId{77}, "saturator", DeviceKind::AudioEffect));
+  preset->params = {{"drive", 3.0}};
+  const std::vector<std::string> params = {"drive", "dryWet"};  // "output" is gone in this (pretend) patch
+  const size_t steps = l.store.history().cursor();
+  l.edit(ops::replaceDevice(l.doc(), l.store.ids(), sat, *preset, params));
+  CHECK(l.store.history().cursor() == steps + 1);
+  const DeviceLoc after = findDevice(l.doc(), sat);
+  REQUIRE(after.device);
+  CHECK(after.index == index);
+  CHECK(after.rack == findDevice(l.doc(), rack).device);
+  CHECK(after.device->params == preset->params);
+  CHECK(findWire(l.doc(), in) != nullptr);
+  CHECK(findWire(l.doc(), outw) != nullptr);
+  CHECK(findWire(l.doc(), gone) == nullptr);
+  const Rack& r = *l.device(rack).rack;
+  REQUIRE(r.mappings.size() == 1);
+  CHECK(r.mappings[0].param == "drive");
+  // Undo restores everything.
+  REQUIRE(l.store.undo());
+  CHECK(findWire(l.doc(), gone) != nullptr);
+  CHECK(l.device(rack).rack->mappings.size() == 2);
+  // Another kind is refused.
+  CHECK_FALSE(ops::replaceDevice(l.doc(), l.store.ids(), sat, *makeDevice(DeviceId{78}, "BasicSynth", DeviceKind::Instrument), params).ok());
 }
 
 TEST_CASE("library: a clip placed from the library gets fresh ids and overwrites; an audio clip brings its sample") {

@@ -247,7 +247,7 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
     return {};
   }
   const doc::Device* made = doc::findDevice(k.doc(), id).device;
-  if (made != nullptr && group.valid() && !k.add(doc::SetDeviceGroup{id, group})) {
+  if (made != nullptr && group.valid() && !made->isRack() && !k.add(doc::SetDeviceGroup{id, group})) {
     ctx_.setStatus("Add " + c.name + ": " + k.why);
     return {};
   }
@@ -259,7 +259,7 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
     const circuit::MainPorts mp = doc::mainPortsOf(*doc::findDevice(k.doc(), id).device, lib);
     const bool takesNotes = made->kind == doc::DeviceKind::Instrument && !doc::isMetaDevice(*made);
     if (link.kind == SpawnLink::Kind::FromOutput) {
-      if (mp.in.empty() && !takesNotes) note = c.name + " has no input: placed unwired";
+      if (mp.in.empty() && !takesNotes && !made->isRack()) note = c.name + " has no input: placed unwired";
       else if (!wire(k, lib, link.device, link.notes, link.port, id, std::string(doc::kMainPort))) note = "Wire: " + k.why;
       else inAt = mp.in.empty() ? std::string("notes") : mp.in;
     } else {
@@ -592,8 +592,8 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca) 
     track = old.mixer;
   } else {
     const doc::DeviceLoc target = doc::findDevice(p, old.to);
-    if (target.track == nullptr) {
-      ctx_.setStatus(label + ": the wire's target is gone");
+    if (target.track == nullptr || target.chain != nullptr) {
+      ctx_.setStatus(label + ": the wire's target is inside a rack (insert in the rack's chain)");
       return false;
     }
     track = target.track->id;
@@ -619,7 +619,7 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca) 
   // path stays a path: the block is on it). A block without an input or an output connects only what it has.
   const doc::Device* made = doc::findDevice(k.doc(), id).device;
   const circuit::MainPorts mp = doc::mainPortsOf(*made, ctx_.deviceLibrary());
-  const bool hasIn = !mp.in.empty() || made->kind == doc::DeviceKind::Instrument;
+  const bool hasIn = !mp.in.empty() || made->kind == doc::DeviceKind::Instrument || made->isRack();
   const bool hasOut = !mp.out.empty();
   if (hasIn && hasOut) {
     if (!k.add(doc::ops::spliceIntoWire(k.doc(), k.ids(), ctx_.deviceLibrary(), id, old.id))) {
@@ -675,7 +675,7 @@ bool ProjectPatchView::spliceIntoEdge(doc::DeviceId device, uint32_t edge) {
   const std::string name = deviceDisplayName(ctx_, *loc.device);
   const circuit::MainPorts mp = doc::mainPortsOf(*loc.device, ctx_.deviceLibrary());
   const bool takesNotes = loc.device->kind == doc::DeviceKind::Instrument;
-  if ((mp.in.empty() && !takesNotes) || mp.out.empty()) {
+  if ((mp.in.empty() && !takesNotes && !loc.device->isRack()) || mp.out.empty()) {
     ctx_.setStatus("Splice: " + name + " needs an input and an output");
     return false;
   }

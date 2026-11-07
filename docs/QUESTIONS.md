@@ -2325,7 +2325,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **Selected control**: every left press in the circuit sets it to the control under the pointer (a face / panel control, a param pin, a one-control block like a value block) or clears it; with none, P sends the selected blocks' controls (all params of each).
 - **Link lines** go from the element to the control's place in the circuit (a face's control, a pin, the element of a closed group's panel, else the block's centre); shown for all elements while the window is the last pressed or its group is selected, else for the hovered element only.
 - Status: open (provisional choices above).
-
+ — REVERTED 2026-11-07 (user: racks are parallel groups, not one group; redone as GU.9 v2)
 ## Q224 · 2026-11-07 · GU.9 · Racks are groups: what is in, what is left out, and the choices made
 - **In:** a rack = a group whose member groups are fed from its In (`doc::rackChains`, derived from the wires: no flag);
   chains sum at Out; Instrument Rack = instrument group of chain groups (only the outermost fed group voices); 8 macros

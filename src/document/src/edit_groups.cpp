@@ -152,9 +152,12 @@ EditResult groupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLibra
   for (const DeviceId id : devices) {
     const DeviceLoc l = findDevice(p, id);
     if (!l.track) return notFound("Group: device not found");
+    if (l.chain != nullptr) return invalid("Group: a device inside a rack stays in its rack");
     if (track != nullptr && l.track != track) return invalid("Group: the devices are on different tracks (a group is one track's)");
     track = l.track;
     if (std::find(picked.begin(), picked.end(), l.device) != picked.end()) continue;
+    if (l.device->rack && l.device->kind != DeviceKind::Instrument)
+      return invalid("Group: an Audio Effect Rack cannot go into a group (its chains are a series; a group has none)");
     picked.push_back(l.device);
   }
   const std::vector<DevicePtr>& list = track->devices;

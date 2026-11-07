@@ -18,7 +18,7 @@ namespace pq::views {
 std::optional<ui::MenuItem> knobCurveMenu(ViewContext& ctx, doc::DeviceId device, const std::string& param) {
   const doc::DeviceLoc loc = doc::findDevice(*ctx.doc(), device);
   const doc::DeviceLibrary* lib = ctx.deviceLibrary();
-  if (loc.device == nullptr || lib == nullptr || param.empty()) return std::nullopt;
+  if (loc.device == nullptr || loc.device->rack || lib == nullptr || param.empty()) return std::nullopt;
   std::shared_ptr<const doc::ResolvedDevice> hold;
   const graph::Patch* patch = lib->patchOf(*loc.device, hold);
   const graph::ParamDecl* decl = patch != nullptr ? doc::findParamDecl(*patch, param) : nullptr;

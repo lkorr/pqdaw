@@ -42,9 +42,12 @@ using json::Writer;
 // ---- Names -------------------------------------------------------------------------------------------------------
 
 constexpr std::array<std::string_view, 5> kTrackKindNames = {"midi", "group", "return", "master", "audio"};
-constexpr std::array<std::string_view, 12> kParamKindNames = {
+constexpr std::array<std::string_view, 13> kParamKindNames = {
     "trackVolume", "trackPan", "trackMute", "trackSolo", "trackSend",
-    "tuningReference", "tuningEquave", "mosGenerator", "mosPeriod", "mosStretch", "deviceParam", "wireAmount"};
+    "tuningReference", "tuningEquave", "mosGenerator", "mosPeriod", "mosStretch", "deviceParam", "wireAmount",
+    "chainMixer"};
+// T4.18: a chain lane's "name" (ParamRef::chain(c, kChainVolume / kChainPan)).
+constexpr std::array<std::string_view, 2> kChainLaneNames = {"volume", "pan"};
 constexpr std::array<std::string_view, 5> kWireReducerNames = {"sum", "last", "highest", "lowest", "loudest"};
 constexpr std::array<std::string_view, 3> kWireLawNames = {"add", "travel", "units"};  // TX.patching (13), TX.knob-curves (16)
 // GU.1 (schema 20): a device's "curves" {param: {curve}} (model.h ControlCurve, pq/dsp/curve.h).
@@ -630,13 +633,74 @@ private:
 
   // T4.1: one line per device; params / settings as {name: value} (only those set), `active` only when false.
   // T4.4-fix1 (schema 5): a user device's own patch text as "source": one string per line (diffable; the text is
-  // the lines joined by "\n"), the device then written over several lines. The elements of `list` (the caller writes
-  // the array's brackets).
+  // the lines joined by "\n"), the device then written over several lines. T4.8 (schema 6): a rack spans several lines
+  // too: its "rack" object holds the chains (each with its own "devices"), the mappings and the options that differ
+  // from the defaults.
+  // M4 review M9: a device list with its racks written iteratively (explicit frames; the path segments of the open
+  // levels live in a deque, so their addresses stay put), so racks nest as deep as memory allows. The elements of
+  // `list` (the caller writes the array's brackets).
   void deviceList(const PathSeg& listAt, const std::vector<DevicePtr>& list) {
-    for (size_t i = 0; i < list.size(); ++i) {
-      const PathSeg el(&listAt, i);
-      deviceHead(el, *list[i]);
-      w_.endObject();
+    struct Frame {
+      const std::vector<DevicePtr>* list = nullptr;  // a device list (null: a rack, iterating its chains)
+      const Rack* rack = nullptr;
+      size_t next = 0;
+      const PathSeg* at = nullptr;   // the list's path, or the rack's ("…rack")
+      const PathSeg* aux = nullptr;  // a rack: its "chains" path
+      size_t paths = 0;              // the path segments to drop when the frame ends
+    };
+    std::deque<PathSeg> paths;
+    std::vector<Frame> stack;
+    stack.push_back(Frame{&list, nullptr, 0, &listAt, nullptr, 0});
+    while (!stack.empty()) {
+      Frame& f = stack.back();
+      if (f.list != nullptr) {
+        if (f.next < f.list->size()) {
+          const Device& d = *(*f.list)[f.next];
+          const size_t mark = paths.size();
+          const PathSeg& el = paths.emplace_back(f.at, f.next++);
+          deviceHead(el, d);
+          if (!d.rack) {
+            w_.endObject();
+            paths.resize(mark);
+            continue;
+          }
+          const PathSeg& ra = paths.emplace_back(&el, "rack");
+          const PathSeg& ca = paths.emplace_back(&ra, "chains");
+          w_.key("rack");
+          w_.beginObject(true);
+          w_.key("chains");
+          w_.beginArray(true);
+          stack.push_back(Frame{nullptr, d.rack.get(), 0, &ra, &ca, mark});  // invalidates f
+          continue;
+        }
+        const size_t mark = f.paths;
+        const bool chain = stack.size() > 1;
+        stack.pop_back();
+        if (chain) {  // a chain's devices: close them and the chain
+          w_.endArray();
+          w_.endObject();
+          paths.resize(mark);
+        }
+        continue;
+      }
+      const Rack& r = *f.rack;
+      if (f.next < r.chains.size()) {
+        const size_t mark = paths.size();
+        const PathSeg& el = paths.emplace_back(f.aux, f.next);
+        chainHead(el, *r.chains[f.next], r.keyUnit);
+        const PathSeg& devs = paths.emplace_back(&el, "devices");
+        w_.key("devices");
+        w_.beginArray(true);
+        const std::vector<DevicePtr>* devices = &r.chains[f.next++]->devices;
+        stack.push_back(Frame{devices, nullptr, 0, &devs, nullptr, mark});  // invalidates f
+        continue;
+      }
+      w_.endArray();  // the chains
+      rackTail(*f.at, r);
+      w_.endObject();  // the rack
+      w_.endObject();  // its device
+      paths.resize(f.paths);
+      stack.pop_back();
     }
   }
 
@@ -697,7 +761,7 @@ private:
   }
 
   void deviceHead(const PathSeg& at, const Device& d) {
-    w_.beginObject(d.source != nullptr || d.meta != nullptr || d.panel != nullptr);
+    w_.beginObject(d.source != nullptr || d.rack != nullptr || d.meta != nullptr || d.panel != nullptr);
     w_.key("id");
     w_.integer(d.id.value);
     w_.key("patch");
@@ -916,6 +980,121 @@ private:
     w_.endObject();
   }
 
+  // T4.8.
+  void zone(const PathSeg& at, const char* key, const Zone& z) {
+    w_.key(key);
+    w_.beginArray(false);
+    for (const double v : {z.lo, z.fadeLo, z.fadeHi, z.hi}) w_.number(at, v);
+    w_.endArray();
+  }
+
+  // T4.8: one chain's fields up to its "devices" (the object stays open).
+  void chainHead(const PathSeg& el, const Chain& c, KeyZoneUnit keyUnit) {
+    w_.beginObject(true);
+    w_.key("id");
+    w_.integer(c.id.value);
+    w_.key("name");
+    w_.string(PathSeg(&el, "name"), c.name);
+    if (c.volumeDb != 0.0f) {
+      w_.key("volumeDb");
+      w_.number(PathSeg(&el, "volumeDb"), c.volumeDb);
+    }
+    if (c.pan != 0.0f) {
+      w_.key("pan");
+      w_.number(PathSeg(&el, "pan"), c.pan);
+    }
+    if (!c.active) {
+      w_.key("active");
+      w_.boolean(false);
+    }
+    if (c.solo) {
+      w_.key("solo");
+      w_.boolean(true);
+    }
+    if (!zoneOff(c.key, ZoneKind::Key, keyUnit)) zone(PathSeg(&el, "key"), "key", c.key);
+    if (!zoneOff(c.velocity, ZoneKind::Velocity, keyUnit)) zone(PathSeg(&el, "velocity"), "velocity", c.velocity);
+    if (!zoneOff(c.select, ZoneKind::Select, keyUnit)) zone(PathSeg(&el, "select"), "select", c.select);
+  }
+
+  // T4.8: a rack's members after "chains" (the object stays open).
+  void rackTail(const PathSeg& at, const Rack& r) {
+    if (!r.mappings.empty()) {
+      const PathSeg mapsAt(&at, "mappings");
+      w_.key("mappings");
+      w_.beginArray(true);
+      for (size_t i = 0; i < r.mappings.size(); ++i) {
+        const MacroMapping& m = r.mappings[i];
+        const PathSeg el(&mapsAt, i);
+        w_.beginObject(false);
+        w_.key("id");
+        w_.integer(m.id.value);
+        w_.key("macro");
+        w_.integer(m.macro + 1);
+        w_.key("device");
+        w_.integer(m.device.value);
+        w_.key("param");
+        w_.string(PathSeg(&el, "param"), m.param);
+        w_.key("min");
+        w_.number(PathSeg(&el, "min"), m.min);
+        w_.key("max");
+        w_.number(PathSeg(&el, "max"), m.max);
+        if (m.curve != 0.0) {
+          w_.key("curve");
+          w_.number(PathSeg(&el, "curve"), m.curve);
+        }
+        w_.endObject();
+      }
+      w_.endArray();
+    }
+    if (std::any_of(r.macroNames.begin(), r.macroNames.end(), [](const std::string& s) { return !s.empty(); })) {
+      const PathSeg namesAt(&at, "macroNames");
+      w_.key("macroNames");
+      w_.beginArray(false);
+      for (size_t i = 0; i < kMacroCount; ++i) w_.string(PathSeg(&namesAt, i), r.macroNames[i]);
+      w_.endArray();
+    }
+    if (r.visibleMacros != 8) {
+      w_.key("visibleMacros");
+      w_.integer(r.visibleMacros);
+    }
+    if (!r.variations.empty()) {
+      const PathSeg varsAt(&at, "variations");
+      w_.key("variations");
+      w_.beginArray(true);
+      for (size_t i = 0; i < r.variations.size(); ++i) {
+        const PathSeg el(&varsAt, i);
+        w_.beginObject(false);
+        w_.key("name");
+        w_.string(PathSeg(&el, "name"), r.variations[i].name);
+        w_.key("values");
+        w_.beginArray(false);
+        for (const double v : r.variations[i].values) w_.number(PathSeg(&el, "values"), v);
+        w_.endArray();
+        w_.endObject();
+      }
+      w_.endArray();
+    }
+    if (r.randomizeExclude != 0) {
+      w_.key("randomizeExclude");
+      w_.integer(r.randomizeExclude);
+    }
+    if (r.keyUnit != KeyZoneUnit::Hz) {
+      w_.key("keyUnit");
+      w_.string(at, "degree");
+    }
+    if (r.voiceChains) {
+      w_.key("voiceChains");
+      w_.boolean(true);
+    }
+    if (!r.showChains) {
+      w_.key("showChains");
+      w_.boolean(false);
+    }
+    if (!r.showMacros) {
+      w_.key("showMacros");
+      w_.boolean(false);
+    }
+  }
 
   void lane(const PathSeg& at, const AutomationLane& l) {
     w_.beginObject(true);
@@ -930,6 +1109,9 @@ private:
     if (l.param.kind == ParamKind::DeviceParam) {  // T4.18: the param's name (its hash is the target)
       w_.key("name");
       w_.string(at, l.paramName);
+    } else if (l.param.kind == ParamKind::ChainMixer) {
+      w_.key("name");
+      w_.string(at, kChainLaneNames[l.param.target == kChainPan ? 1 : 0]);
     } else if (l.param.kind == ParamKind::TrackSend || l.param.target != 0) {
       w_.key("target");
       w_.integer(l.param.target);
@@ -1477,7 +1659,7 @@ public:
           if (d->panel)
             if (std::string why = bindingsProblem(list, d->id, *d->panel); !why.empty()) json::fail(devs, why);
         std::unordered_set<uint32_t> inside;
-        for (const DevicePtr& d : list) inside.insert(d->id.value);
+        for (const DevicePtr& d : list) forEachDeviceIn(*d, [&](const Device& x) { inside.insert(x.id.value); });
         for (const Wire& w : out.blocks.wires)
           if (w.fromNoteSource() || w.toMixer() || inside.count(w.from.value) == 0 || inside.count(w.to.value) == 0)
             json::fail(PathSeg(&root, "wires"), "wire " + std::to_string(w.id.value) + " leaves the preset's blocks");
@@ -1490,6 +1672,15 @@ public:
                  "the preset was saved before knob positions (schema " + std::to_string(libVersion_) +
                      "); this version cannot convert it without the device library: make it again",
                  ErrorCode::Unsupported);
+    // A rack's mappings target devices inside it.
+    forEachDeviceIn(*out.device, [&](const Device& d) {
+      if (!d.rack) return;
+      for (const MacroMapping& mp : d.rack->mappings)
+        if (!deviceContains(d, mp.device) || mp.device == d.id)
+          json::fail(PathSeg(&root, "devices"), "a mapping of rack " + std::to_string(d.id.value) +
+                                                      " targets device " + std::to_string(mp.device.value) +
+                                                      ", which is not inside it");
+    });
     return out;
   }
   UserDeviceFile userDeviceFile() {
@@ -2014,12 +2205,23 @@ private:
     for (const ClipSlot& c : t->clips)  // T5.3
       if ((kind == TrackKind::Audio) != c.isAudio())
         failKey(kClips, kind == TrackKind::Audio ? "an audio track holds audio clips only" : "a MIDI track holds note clips only");
-    // TMM.13-fix1 M8: at the device it is about ($.tracks[0].devices[3]).
+    // TMM.13-fix1 M8: at the device it is about ($.tracks[0].devices[3], …[3].rack.chains[1].devices[0]).
     std::vector<size_t> where;
     if (Status s = detail::checkChain(kind, t->devices, &where); !s) {
       const PathSeg listAt(&at, K[static_cast<size_t>(kDevices)]);
-      if (where.empty()) json::fail(listAt, s.error().message, ErrorCode::InvalidArgument, pos[static_cast<size_t>(kDevices)]);
-      json::fail(PathSeg(&listAt, where.front()), s.error().message, ErrorCode::InvalidArgument, pos[static_cast<size_t>(kDevices)]);
+      std::deque<PathSeg> segs;
+      const PathSeg* cur = &listAt;
+      for (size_t i = 0; i < where.size(); ++i) {
+        if (i % 2 == 1) {  // a chain of the rack before it
+          cur = &segs.emplace_back(cur, std::string_view("rack"));
+          cur = &segs.emplace_back(cur, std::string_view("chains"));
+          cur = &segs.emplace_back(cur, where[i]);
+          cur = &segs.emplace_back(cur, std::string_view("devices"));
+        } else {
+          cur = &segs.emplace_back(cur, where[i]);
+        }
+      }
+      json::fail(*cur, s.error().message, ErrorCode::InvalidArgument, pos[static_cast<size_t>(kDevices)]);
     }
     for (size_t i = 0; i < t->devices.size(); ++i)  // GU.3: a panel binds what is inside its group
       if (const DevicePtr& d = t->devices[i]; d->panel)
@@ -2041,29 +2243,159 @@ private:
     return t;
   }
 
-  // T4.1: the device list (checked as a whole by checkList when the track is read). "rack" (index 8) is refused: a rack
-  // is a group of chain groups (GU.9; no conversion of older files).
+  // T4.1: the device chain. T4.8: racks hold chains of devices (checked as a whole by checkList when the track is read).
+  // M4 review M9: read iteratively — an explicit stack of the open levels (a device list, a device, a rack, a chain) on
+  // the heap, their path segments in a deque (stable addresses for the Members readers and the inner levels' paths) —
+  // so racks nest as deep as memory allows. Each level's own members are read by deviceKey / rackKey / chainKey.
   static constexpr std::string_view kDeviceKeys[] = {"id",       "patch",  "kind", "active", "params",
                                                      "settings", "source", "crlf", "rack", "name", "meta",
                                                      "chainInput", "group", "curves", "panel"};
+  static constexpr std::string_view kRackKeys[] = {"chains",     "mappings",         "macroNames", "visibleMacros",
+                                                   "variations", "randomizeExclude", "keyUnit",    "voiceChains",
+                                                   "showChains", "showMacros"};
+  static constexpr std::string_view kChainKeys[] = {"id",  "name",     "volumeDb", "pan",    "active",
+                                                    "solo", "key", "velocity", "select", "devices"};
+  using ChainZones = std::array<std::optional<Zone>, 3>;
 
   std::vector<DevicePtr> devices(const PathSeg& listAt) {
-    std::vector<DevicePtr> list;
+    enum class Kind : uint8_t { List, Device, Rack, Chain };
+    struct Frame {
+      Kind kind = Kind::List;
+      const PathSeg* at = nullptr;     // List: the array's path; Rack: the "rack" member's path
+      PathSeg el;                      // Device / Chain: the element's path
+      PathSeg key;                     // the member being read (a child level's parent path)
+      size_t index = 0;                // List: next element; Rack: next chain
+      std::optional<Members> members;  // Device / Rack / Chain
+      std::vector<DevicePtr> list;     // List
+      std::shared_ptr<Device> device;  // Device
+      bool crlf = false;               // Device
+      std::shared_ptr<Rack> rack;      // Rack
+      bool inChains = false;           // Rack: reading its "chains" array
+      std::vector<std::shared_ptr<Chain>> chains;  // Rack
+      std::vector<ChainZones> zones;               // Rack: per chain ("keyUnit" may come after the chains)
+      std::shared_ptr<Chain> chain;    // Chain
+      ChainZones chainZones;           // Chain
+    };
+    std::deque<Frame> stack;
+    // What the level just closed hands to the one below it.
+    std::vector<DevicePtr> doneList;
+    bool listDone = false;
+    std::shared_ptr<Device> doneDevice;
+    std::shared_ptr<Rack> doneRack;
+    std::shared_ptr<Chain> doneChain;
+    ChainZones doneZones;
+    stack.emplace_back();
+    stack.back().at = &listAt;
     r_.beginArray(listAt);
-    for (size_t i = 0; r_.nextElement(listAt); ++i) {
-      const PathSeg el(&listAt, i);
-      auto d = std::make_shared<Device>();
-      bool crlf = false;
-      Members m(r_, el, kDeviceKeys);
-      for (int k; (k = m.next()) >= 0;) {
-        const PathSeg key(&el, kDeviceKeys[static_cast<size_t>(k)]);
-        if (k == 8) r_.failValue(key, "racks are groups since GU.9: this file holds an old rack");
-        deviceKey(k, key, *d, crlf);
+    while (!stack.empty()) {
+      Frame& f = stack.back();
+      switch (f.kind) {
+        case Kind::List: {
+          if (doneDevice) f.list.push_back(std::move(doneDevice));
+          if (!r_.nextElement(*f.at)) {
+            doneList = std::move(f.list);
+            listDone = true;
+            stack.pop_back();
+            break;
+          }
+          const size_t i = f.index++;
+          Frame& d = stack.emplace_back();  // `f` stays valid: a deque keeps its elements in place
+          d.kind = Kind::Device;
+          d.el = PathSeg(f.at, i);
+          d.device = std::make_shared<Device>();
+          d.members.emplace(r_, d.el, kDeviceKeys);
+          break;
+        }
+        case Kind::Device: {
+          if (doneRack) f.device->rack = std::move(doneRack);
+          bool descended = false;
+          for (int k; !descended && (k = f.members->next()) >= 0;) {
+            f.key = PathSeg(&f.el, kDeviceKeys[static_cast<size_t>(k)]);
+            if (k == 8) {  // "rack": its members level
+              Frame& r = stack.emplace_back();
+              r.kind = Kind::Rack;
+              r.at = &f.key;
+              r.rack = std::make_shared<Rack>();
+              r.members.emplace(r_, f.key, kRackKeys);
+              descended = true;
+            } else {
+              deviceKey(k, f.key, *f.device, f.crlf);
+            }
+          }
+          if (descended) break;
+          finishDevice(f.el, *f.members, *f.device, f.crlf);
+          doneDevice = std::move(f.device);
+          stack.pop_back();
+          break;
+        }
+        case Kind::Rack: {
+          if (doneChain) {
+            f.chains.push_back(std::move(doneChain));
+            f.zones.push_back(doneZones);
+          }
+          if (f.inChains) {
+            if (r_.nextElement(f.key)) {
+              const size_t i = f.index++;
+              Frame& c = stack.emplace_back();
+              c.kind = Kind::Chain;
+              c.el = PathSeg(&f.key, i);
+              c.chain = std::make_shared<Chain>();
+              c.members.emplace(r_, c.el, kChainKeys);
+              break;
+            }
+            f.inChains = false;
+          }
+          bool descended = false;
+          for (int k; !descended && (k = f.members->next()) >= 0;) {
+            f.key = PathSeg(f.at, kRackKeys[static_cast<size_t>(k)]);
+            if (k == 0) {  // "chains": one level per chain
+              r_.beginArray(f.key);
+              f.inChains = true;
+              descended = true;
+            } else {
+              rackKey(k, f.key, *f.rack);
+            }
+          }
+          if (descended) break;
+          f.members->require({0});
+          for (size_t i = 0; i < f.chains.size(); ++i) {  // absent zones are off (in the rack's key unit)
+            const ZoneKind kinds[3] = {ZoneKind::Key, ZoneKind::Velocity, ZoneKind::Select};
+            for (size_t k = 0; k < 3; ++k)
+              f.chains[i]->zone(kinds[k]) = f.zones[i][k].value_or(fullZone(kinds[k], f.rack->keyUnit));
+            f.rack->chains.push_back(std::move(f.chains[i]));
+          }
+          doneRack = std::move(f.rack);
+          stack.pop_back();
+          break;
+        }
+        case Kind::Chain: {
+          if (listDone) {
+            f.chain->devices = std::move(doneList);
+            listDone = false;
+          }
+          bool descended = false;
+          for (int k; !descended && (k = f.members->next()) >= 0;) {
+            f.key = PathSeg(&f.el, kChainKeys[static_cast<size_t>(k)]);
+            if (k == 9) {  // "devices": a list level
+              Frame& l = stack.emplace_back();
+              l.kind = Kind::List;
+              l.at = &f.key;
+              r_.beginArray(f.key);
+              descended = true;
+            } else {
+              chainKey(k, f.key, *f.chain, f.chainZones);
+            }
+          }
+          if (descended) break;
+          f.members->require({0, 1, 9});
+          doneChain = std::move(f.chain);
+          doneZones = f.chainZones;
+          stack.pop_back();
+          break;
+        }
       }
-      finishDevice(el, m, *d, crlf);
-      list.push_back(std::move(d));
     }
-    return list;
+    return doneList;
   }
 
   void deviceKey(int k, const PathSeg& f, Device& d, bool& crlf) {
@@ -2230,6 +2562,7 @@ private:
     } else if (crlf) {
       r_.failValue(el, "\"crlf\" without a \"source\"");
     }
+    if (d.rack && d.source) r_.failValue(el, "a rack has no \"source\"");
     // TMM.3: meta state checked as the commands check it (type, version, names, data; a chain meta device's kind).
     if (d.meta || isMetaDevice(d) || !d.chainInput.empty()) {
       const PathSeg mat(&el, d.meta ? "meta" : "patch");
@@ -2239,6 +2572,124 @@ private:
     }
   }
 
+  void chainKey(int ck, const PathSeg& cf, Chain& c, ChainZones& z) {
+    switch (ck) {
+      case 0: c.id = ChainId{defineId(cf)}; break;
+      case 1: c.name = str(cf); break;
+      case 2: c.volumeDb = static_cast<float>(r_.readDouble(cf)); break;
+      case 3: c.pan = static_cast<float>(r_.readDouble(cf)); break;
+      case 4: c.active = r_.readBool(cf); break;
+      case 5: c.solo = r_.readBool(cf); break;
+      case 6: z[0] = zone(cf); break;
+      case 7: z[1] = zone(cf); break;
+      case 8: z[2] = zone(cf); break;
+    }
+  }
+
+  Zone zone(const PathSeg& at) {
+    double v[4] = {};
+    size_t n = 0;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      if (n == 4) r_.failHere(el, "a zone is [lo, fadeLo, fadeHi, hi]", ErrorCode::InvalidArgument);
+      v[n++] = r_.readDouble(el);
+    }
+    if (n != 4) r_.failHere(at, "a zone is [lo, fadeLo, fadeHi, hi]", ErrorCode::InvalidArgument);
+    return Zone{v[0], v[1], v[2], v[3]};
+  }
+
+  // A rack's members other than "chains".
+  void rackKey(int k, const PathSeg& f, Rack& r) {
+    switch (k) {
+      case 1: {
+        r_.beginArray(f);
+        for (size_t i = 0; r_.nextElement(f); ++i) {
+          const PathSeg el(&f, i);
+          static constexpr std::string_view MK[] = {"id", "macro", "device", "param", "min", "max", "curve"};
+          MacroMapping mp;
+          Members mm(r_, el, MK);
+          for (int mk; (mk = mm.next()) >= 0;) {
+            const PathSeg mf(&el, MK[static_cast<size_t>(mk)]);
+            switch (mk) {
+              case 0: mp.id = MappingId{defineId(mf)}; break;
+              case 1: {
+                const int64_t v = r_.readInt(mf);
+                if (v < 1 || v > static_cast<int64_t>(kMacroCount)) r_.failValue(mf, "macros are 1 … 16");
+                mp.macro = static_cast<uint8_t>(v - 1);
+                break;
+              }
+              case 2: mp.device = DeviceId{ref(mf)}; break;
+              case 3: mp.param = str(mf); break;
+              case 4: mp.min = r_.readDouble(mf); break;
+              case 5: mp.max = r_.readDouble(mf); break;
+              case 6: mp.curve = r_.readDouble(mf); break;
+            }
+          }
+          mm.require({0, 1, 2, 3, 4, 5});
+          check(el, detail::checkMapping(mp));
+          r.mappings.push_back(std::move(mp));
+        }
+        break;
+      }
+      case 2: {
+        size_t n = 0;
+        r_.beginArray(f);
+        for (size_t i = 0; r_.nextElement(f); ++i) {
+          const PathSeg el(&f, i);
+          if (n == kMacroCount) r_.failHere(el, "a rack has 16 macros", ErrorCode::InvalidArgument);
+          r.macroNames[n++] = str(el);
+        }
+        break;
+      }
+      case 3: {
+        const int64_t v = r_.readInt(f);
+        if (v < 1 || v > static_cast<int64_t>(kMacroCount)) r_.failValue(f, "a rack shows 1 … 16 macros");
+        r.visibleMacros = static_cast<uint8_t>(v);
+        break;
+      }
+      case 4: {
+        r_.beginArray(f);
+        for (size_t i = 0; r_.nextElement(f); ++i) {
+          const PathSeg el(&f, i);
+          static constexpr std::string_view VK[] = {"name", "values"};
+          MacroVariation var;
+          Members vm(r_, el, VK);
+          for (int vk; (vk = vm.next()) >= 0;) {
+            const PathSeg vf(&el, VK[static_cast<size_t>(vk)]);
+            if (vk == 0) var.name = str(vf);
+            if (vk == 1) {
+              size_t n = 0;
+              r_.beginArray(vf);
+              for (size_t j = 0; r_.nextElement(vf); ++j) {
+                const PathSeg xe(&vf, j);
+                if (n == kMacroCount) r_.failHere(xe, "a variation holds 16 values", ErrorCode::InvalidArgument);
+                var.values[n++] = r_.readDouble(xe);
+              }
+              if (n != kMacroCount) r_.failHere(vf, "a variation holds 16 values", ErrorCode::InvalidArgument);
+            }
+          }
+          vm.require({0, 1});
+          r.variations.push_back(std::move(var));
+        }
+        break;
+      }
+      case 5: {
+        const int64_t v = r_.readInt(f);
+        if (v < 0 || v > 0xFFFF) r_.failValue(f, "a 16-bit mask");
+        r.randomizeExclude = static_cast<uint16_t>(v);
+        break;
+      }
+      case 6: {
+        static constexpr std::array<std::string_view, 2> kUnits = {"hz", "degree"};
+        r.keyUnit = static_cast<KeyZoneUnit>(name(f, kUnits, "key zone unit"));
+        break;
+      }
+      case 7: r.voiceChains = r_.readBool(f); break;
+      case 8: r.showChains = r_.readBool(f); break;
+      case 9: r.showMacros = r_.readBool(f); break;
+    }
+  }
 
   // T5.3: the sample table, sorted by id in the file.
   std::shared_ptr<const SampleList> sampleList(const PathSeg& at) {
@@ -2677,8 +3128,13 @@ private:
       m.require({3});
       r.target = deviceParamHash(text);
       paramName = std::move(text);
+    } else if (r.kind == ParamKind::ChainMixer) {
+      m.require({3});
+      if (text == kChainLaneNames[0]) r.target = kChainVolume;
+      else if (text == kChainLaneNames[1]) r.target = kChainPan;
+      else json::fail(PathSeg(&at, "name"), "must be \"volume\" or \"pan\"", ErrorCode::InvalidArgument, namePos);
     } else if (m.has(3)) {
-      json::fail(PathSeg(&at, "name"), "only device parameters have a name", ErrorCode::InvalidArgument, namePos);
+      json::fail(PathSeg(&at, "name"), "only device and chain parameters have a name", ErrorCode::InvalidArgument, namePos);
     }
     return r;
   }
@@ -3036,6 +3492,14 @@ private:
         if (wl[j].sameEnds(wl[i]))
           json::fail(el, "these two ports are already wired (wire " + std::to_string(wl[j].id.value) + ")");
     }
+    // T4.8: a param has at most one macro mapping in the project.
+    std::set<std::pair<uint32_t, std::string>> mapped;
+    forEachDevice(p, [&](const Device& d, const Track&) {
+      if (!d.rack) return;
+      for (const MacroMapping& m : d.rack->mappings)
+        if (!mapped.emplace(m.device.value, m.param).second)
+          json::fail(root, "device " + std::to_string(m.device.value) + " param '" + m.param + "' is mapped to two macros");
+    });
 
     std::sort(ids_.begin(), ids_.end());
     const auto dup = std::adjacent_find(ids_.begin(), ids_.end());
@@ -3097,7 +3561,41 @@ private:
     auto walkTrack = [&](auto& self, const PathSeg& at, const Track& t) -> void {
       see(t.id.value, at);
       const PathSeg devs(&at, "devices");
-      for (size_t i = 0; i < t.devices.size(); ++i) see(t.devices[i]->id.value, PathSeg(&devs, i));
+      // T4.8: devices, chains, mappings and inner devices, in file order. M4 review M9: iterative (a stack of open
+      // device lists and racks; the path segments live in a deque, which keeps their addresses).
+      struct Open {
+        const PathSeg* at;                     // the list's path, or the rack's ("…rack")
+        const std::vector<DevicePtr>* list;    // a device list (null: a rack, walking its chains)
+        const Rack* rack;
+        size_t next;
+      };
+      std::deque<PathSeg> paths;
+      std::vector<Open> open{{&devs, &t.devices, nullptr, 0}};
+      while (!open.empty()) {
+        Open& o = open.back();
+        if (o.list != nullptr) {
+          if (o.next == o.list->size()) {
+            open.pop_back();
+            continue;
+          }
+          const Device& d = *(*o.list)[o.next];
+          const PathSeg& da = paths.emplace_back(o.at, o.next++);
+          see(d.id.value, da);
+          if (d.rack) open.push_back({&paths.emplace_back(&da, "rack"), nullptr, d.rack.get(), 0});
+          continue;
+        }
+        const Rack& r = *o.rack;
+        if (o.next < r.chains.size()) {
+          const size_t j = o.next++;
+          const PathSeg& cj = paths.emplace_back(&paths.emplace_back(o.at, "chains"), j);
+          see(r.chains[j]->id.value, cj);
+          open.push_back({&paths.emplace_back(&cj, "devices"), &r.chains[j]->devices, nullptr, 0});
+          continue;
+        }
+        const PathSeg ma(o.at, "mappings");
+        for (size_t j = 0; j < r.mappings.size(); ++j) see(r.mappings[j].id.value, PathSeg(&ma, j));
+        open.pop_back();
+      }
       const PathSeg lanes(&at, "lanes");
       for (size_t i = 0; i < t.lanes.size(); ++i) {
         const PathSeg la(&lanes, i);

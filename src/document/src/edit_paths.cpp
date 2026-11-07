@@ -141,6 +141,7 @@ EditResult wireSeries(const Project& p, IdSource& ids) {
 EditResult insertOnPath(const Project& p, IdSource& ids, DeviceId device, uint32_t slot) {
   const DeviceLoc loc = findDevice(p, device);
   if (loc.device == nullptr) return notFound("device not found");
+  if (loc.chain != nullptr) return invalid("a device in a rack chain is in its chain (not on a track's path)");
   Edit e = makeEdit("Insert on Path");
   Steps k(p);
   PQ_DOC_TRY(splice(k, ids, loc.track->id, device, slot));
@@ -154,6 +155,19 @@ EditResult moveOnPath(const Project& p, IdSource& ids, const DeviceLibrary* lib,
   const DeviceLoc loc = findDevice(p, device);
   if (loc.device == nullptr) return notFound("device not found");
   const TrackId to = track.valid() ? track : loc.track->id;
+  if (loc.chain != nullptr) {  // out of a rack chain onto a track's path
+    const Track* dst = findTrackPtr(p, to);
+    if (dst == nullptr) return notFound("track not found");
+    if (loc.device->kind == DeviceKind::Instrument && dst->kind != TrackKind::Midi)
+      return invalid("instruments go on MIDI tracks (the notes are their main input)");
+    Edit e = makeEdit("Move Device");
+    e.devices.push_back(device);
+    Steps k(p);
+    PQ_DOC_TRY(k.add(MoveDevice{device, to, kAppend}));
+    PQ_DOC_TRY(splice(k, ids, to, device, slot));
+    batchOf(e).commands = std::move(k.commands);
+    return e;
+  }
   const Track* dst = findTrackPtr(p, to);
   if (dst == nullptr) return notFound("track not found");
   if (loc.device->kind == DeviceKind::Instrument && dst->kind != TrackKind::Midi)
@@ -196,7 +210,7 @@ EditResult takeOffPath(const Project& p, IdSource& ids, const DeviceLibrary* lib
   for (const DeviceId id : devices) {
     const DeviceLoc l = findDevice(k.doc(), id);
     if (l.device == nullptr) return notFound("device not found");
-    if (!mainPath(k.doc(), *l.track).contains(id)) continue;
+    if (l.chain != nullptr || !mainPath(k.doc(), *l.track).contains(id)) continue;
     PQ_DOC_TRY(detach(k, ids, lib, id));
     e.devices.push_back(id);
   }
@@ -212,7 +226,7 @@ EditResult setDeviceGroup(const Project& p, IdSource& ids, const DeviceLibrary* 
   if (l.device->group == group) return e;
   Steps k(p);
   // A block of the main path leaves it first (a group has no order inside; its neighbours are joined).
-  if (group.valid() && mainPath(p, *l.track).contains(device)) PQ_DOC_TRY(detach(k, ids, lib, device));
+  if (group.valid() && l.chain == nullptr && mainPath(p, *l.track).contains(device)) PQ_DOC_TRY(detach(k, ids, lib, device));
   PQ_DOC_TRY(k.add(SetDeviceGroup{device, group}));
   batchOf(e).commands = std::move(k.commands);
   return e;
@@ -224,6 +238,7 @@ EditResult spliceIntoWire(const Project& p, IdSource& ids, const DeviceLibrary* 
   const Wire old = *w0;
   const DeviceLoc loc = findDevice(p, device);
   if (loc.device == nullptr) return notFound("device not found");
+  if (loc.chain != nullptr) return invalid("a device in a rack chain stays in its chain");
   if ((!old.fromNoteSource() && old.from == device) || (!old.toMixer() && old.to == device))
     return invalid("that cable is the block's own");
   // The track whose path a link belongs to (a link of another track's path takes the block there).

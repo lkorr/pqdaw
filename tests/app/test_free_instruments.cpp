@@ -256,6 +256,30 @@ golden::Channels alone(bool varied, const std::string& what) {
   return played(*s.current(), what);
 }
 
+// An Instrument Rack of `chains` (each a list of BasicSynths, `varied` the first chain's sound) heading a MIDI track's path
+// alone (its chain mixers smooth from their first value: what a rack sounds like; the reference for racks).
+struct RackOf {
+  std::vector<size_t> chains;  // BasicSynths per chain
+  bool varied = false;
+};
+golden::Channels rackAlone(const RackOf& r, const std::string& what) {
+  DocumentStore s;
+  const TrackId t = midiTrack(s);
+  run(s, ops::dissolveDevices(*s.current(), s.ids(), &library(), std::vector<DeviceId>{headOf(s, t)}));
+  const DeviceId rack = s.ids().device();
+  std::vector<ChainPtr> chains;
+  std::vector<DeviceId> first;
+  for (const size_t n : r.chains) {
+    std::vector<DevicePtr> synths;
+    for (size_t i = 0; i < n; ++i) synths.push_back(makeDefaultInstrument(s.ids().device()));
+    first.push_back(synths.front()->id);
+    chains.push_back(makeChain(s.ids().chain(), "Chain", std::move(synths)));
+  }
+  apply(s, AddDevice{t, makeRack(rack, DeviceKind::Instrument, std::move(chains)), kAppend});
+  if (r.varied) voiced(s, first.front());
+  run(s, ops::insertOnPath(*s.current(), s.ids(), rack, 0));
+  return played(*s.current(), what);
+}
 
 }  // namespace
 
@@ -417,5 +441,69 @@ TEST_CASE("free instruments: a cable into another track's mixer is a send-like r
   const golden::Channels after = played(*g.current(), "… and a cable from the group's Utility into the track's mixer (a loop)");
   CHECK(maxDiff(before, after) > 1e-3);
   CHECK(peak(after) < peak(before) / (1.0f - 0.7072f));
+}
+
+TEST_CASE("free instruments: an Instrument Rack off the path plays the notes cabled into it; an Audio Effect Rack takes its wires") {
+  DocumentStore s;
+  const TrackId t = midiTrack(s);
+  // An Instrument Rack (one chain: a BasicSynth with the varied sound), unconnected: it plays nothing, not missing.
+  const DeviceId rack = s.ids().device(), inner = s.ids().device();
+  const ChainId chain = s.ids().chain();
+  apply(s, AddDevice{t, makeRack(rack, DeviceKind::Instrument, {makeChain(chain, "Chain 1", {makeDefaultInstrument(inner)})}), kAppend});
+  voiced(s, inner);
+  {
+    auto low = lowered(*s.current());
+    REQUIRE(low.ok());
+    CHECK(low->missingDevices.empty());
+  }
+  const WireId n = cable(s, notesInto(t, rack));
+  const WireId m = cable(s, intoMixer(rack, t));
+  CHECK(stateOf(*s.current(), n) == WireStatus::Lowered);
+  CHECK(stateOf(*s.current(), m) == WireStatus::Lowered);
+  const golden::Channels both = played(*s.current(), "path synth + off-path Instrument Rack");
+  const double d = maxDiff(both, plus(alone(false, "a alone"), rackAlone({{1}, true}, "the rack alone on a path")));
+  MESSAGE("path synth + off-path Instrument Rack vs each alone: max |diff| = " << d);
+  CHECK(d <= 1e-6);
+  // An empty Audio Effect Rack off the path (it passes its input) fed by the path's synth, into the mixer: twice it.
+  DocumentStore e;
+  const TrackId et = midiTrack(e);
+  const DeviceId aer = e.ids().device();
+  apply(e, AddDevice{et, makeRack(aer, DeviceKind::AudioEffect), kAppend});
+  const WireId in = cable(e, link(headOf(e, et), aer));
+  const WireId out = cable(e, intoMixer(aer, et));
+  CHECK(stateOf(*e.current(), in) == WireStatus::Lowered);
+  CHECK(stateOf(*e.current(), out) == WireStatus::Lowered);
+  const golden::Channels twice = played(*e.current(), "synth → mixer and → empty Audio Effect Rack → mixer");
+  const golden::Channels one = alone(false, "the synth alone");
+  const double d2 = maxDiff(twice, plus(one, one));
+  MESSAGE("off-path empty Audio Effect Rack (pass) beside the path vs twice the synth: max |diff| = " << d2);
+  CHECK(d2 <= 1e-6);
+}
+
+TEST_CASE("free instruments: inside a rack each chain is a series with the same rule (no instrument is missing)") {
+  // An Audio Effect Rack on the path after the synth, its one chain holding a BasicSynth: the chain feeds the synth's
+  // audio input (none) and no notes reach it: that chain is silent (before fix1 the synth was missing and bypassed).
+  DocumentStore s;
+  const TrackId t = midiTrack(s);
+  const DeviceId rack = s.ids().device(), inner = s.ids().device();
+  apply(s, AddDevice{t, makeRack(rack, DeviceKind::AudioEffect, {makeChain(s.ids().chain(), "Chain 1", {makeDefaultInstrument(inner)})}), kAppend});
+  run(s, ops::insertOnPath(*s.current(), s.ids(), rack, kAppend));
+  CHECK(peak(played(*s.current(), "synth → Audio Effect Rack [BasicSynth]")) == 0.0f);
+  // An Instrument Rack whose chain is [BasicSynth, BasicSynth]: the second is fed the first's audio: it plays nothing,
+  // and the chain's end is it: silent; the chain [BasicSynth] beside it plays.
+  DocumentStore r;
+  const TrackId rt = midiTrack(r);
+  run(r, ops::dissolveDevices(*r.current(), r.ids(), &library(), std::vector<DeviceId>{headOf(r, rt)}));
+  const DeviceId ir = r.ids().device(), s1 = r.ids().device(), s2 = r.ids().device(), s3 = r.ids().device();
+  apply(r, AddDevice{rt,
+                     makeRack(ir, DeviceKind::Instrument,
+                              {makeChain(r.ids().chain(), "Two", {makeDefaultInstrument(s1), makeDefaultInstrument(s2)}),
+                               makeChain(r.ids().chain(), "One", {makeDefaultInstrument(s3)})}),
+                     kAppend});
+  run(r, ops::insertOnPath(*r.current(), r.ids(), ir, 0));
+  const golden::Channels both = played(*r.current(), "Instrument Rack [synth, synth] + [synth]");
+  const double d = maxDiff(both, rackAlone({{1}, false}, "an Instrument Rack [synth]"));
+  MESSAGE("rack chains [synth, synth] + [synth] vs the rack [synth]: max |diff| = " << d);
+  CHECK(d <= 1e-6);
 }
 

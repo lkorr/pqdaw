@@ -148,7 +148,7 @@ inline WireList drawnWires(const Project& p) {
 // TX.all-free: whether `device` is on its track's main path (what "in the chain" was).
 inline bool onPath(const Project& p, DeviceId device) {
   const DeviceLoc l = findDevice(p, device);
-  return l.track != nullptr && mainPath(p, *l.track).contains(device);
+  return l.track != nullptr && l.chain == nullptr && mainPath(p, *l.track).contains(device);
 }
 
 // TX.all-free: a new project whose master is not wired yet (makeDefaultProject's `wireMaster` false): a builder that

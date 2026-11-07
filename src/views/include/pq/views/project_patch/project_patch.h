@@ -115,8 +115,11 @@ struct Node {
   // TX.panel-faces: a closed stock device with a panel (LayoutOptions::panelSize) is drawn as its Device-view panel: the
   // block is the panel's size (taller when its pins need it), its pins on the edges.
   bool panel = false;
-  // A closed group's members (any depth): a wire to / from one of them ends on the group's block at a port named
-  // "<port>@<device id>" (labelled with the port's name).
+  // T4.8: a rack is drawn as one plain block. Its devices (at any depth) have no blocks of their own: `inner` lists
+  // them, their calls are in the track patch (racks lower inline) and a wire to / from one of them ends on the rack's
+  // block at a port named "<port>@<device id>" (labelled with the port's name). `lowered`: some device inside plays
+  // (or an Audio Effect Rack passes its input); `call` stays invalid.
+  bool rack = false;
   std::vector<doc::DeviceId> inner;
   graph::NodeId call;          // Device (lowered): the call node's NodeId in the track patch
   std::vector<Port> inputs, outputs;
@@ -232,7 +235,7 @@ struct ProjectPatch {
   // devices (LayoutOptions::freeTrack: the Device view's free-device rack).
   bool scoped = false;
   uint32_t bandOf(doc::TrackId t) const noexcept;
-  uint32_t nodeOf(doc::DeviceId d) const noexcept;  // a device inside a closed group: the group's block
+  uint32_t nodeOf(doc::DeviceId d) const noexcept;  // T4.8: a device inside a rack: the rack's block
 };
 
 // Layout metrics (world units).

@@ -388,7 +388,7 @@ private:
         i.curve = devices::storedCurve(*pi, *d);
         i.isSwitch = pi->isBool;
         i.steps = pi->isBool ? 2 : pi->steps;
-        i.editable = true;
+        i.editable = !d->rack;
       } else {
         const meta::Type* t = metaTypeAt(ctx_, b.device, b.meta);
         const int32_t k = t != nullptr ? t->paramIndex(b.name) : -1;

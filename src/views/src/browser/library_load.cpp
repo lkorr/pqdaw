@@ -102,7 +102,7 @@ std::vector<const meta::Type*> metaModuleTypes() {
 }
 
 std::string deviceDisplayName(const ViewContext& ctx, std::string_view patch) {
-  if (patch == doc::kAudioEffectRack) return "Audio Effect Rack";  // GU.9: a rack (a group preset made in code)
+  if (patch == doc::kAudioEffectRack) return "Audio Effect Rack";
   if (patch.starts_with(doc::kModuleItemPrefix))  // GU.4: a built-in module
     if (const doc::ModuleInfo* m = doc::findModule(patch.substr(doc::kModuleItemPrefix.size()))) return std::string(m->name);
   if (patch.starts_with(doc::kMetaDevicePrefix))  // TMM.10: a chain meta device: its type's name
@@ -119,6 +119,11 @@ std::string deviceDisplayName(const ViewContext& ctx, const doc::Device& d) { re
 
 std::vector<std::string> deviceParamNames(const ViewContext& ctx, const doc::Device& d) {
   std::vector<std::string> out;
+  if (d.isRack()) {
+    for (uint32_t i = 0; i < doc::kMacroCount; ++i) out.push_back(doc::macroParamName(i));
+    out.emplace_back(doc::kSelectParam);
+    return out;
+  }
   const doc::DeviceLibrary* lib = ctx.deviceLibrary();
   if (lib == nullptr) return out;
   std::shared_ptr<const doc::ResolvedDevice> hold;
@@ -132,27 +137,28 @@ Result<doc::DeviceId> addCatalogDevice(ViewContext& ctx, std::string_view patch,
   if (patch.starts_with(doc::kModuleItemPrefix)) {  // GU.4: a built-in module: its group preset, pasted (off the path)
     const doc::ModuleInfo* m = doc::findModule(patch.substr(doc::kModuleItemPrefix.size()));
     if (m == nullptr) return Error{ErrorCode::NotFound, "unknown module '" + std::string(patch) + "'", {}};
+    if (at.chain.valid()) return Error{ErrorCode::InvalidArgument, "a module goes into a track's circuit, not a rack chain", {}};
     return firstDevice(ctx, doc::ops::pasteBlocks(p, ctx.store().ids(), at.track, doc::moduleBlocks(m->kind)));
   }
   if (patch.starts_with(doc::kMetaDevicePrefix)) {  // TMM.10: a chain meta device, its kind from the slot
     const meta::Type* t = meta::findType(patch.substr(doc::kMetaDevicePrefix.size()));
     if (t == nullptr) return Error{ErrorCode::NotFound, "unknown meta module '" + std::string(patch) + "'", {}};
-    auto k = doc::ops::metaDeviceKindAt(p, *t, at.track, at.index);
+    auto k = doc::ops::metaDeviceKindAt(p, *t, at.track, at.index, at.chain);
     if (!k) return std::move(k).error();
     if (doc::DevicePtr def = ctx.library().defaultPreset(deviceDisplayName(ctx, patch), patch); def && def->patch == patch) {
       auto d = std::make_shared<doc::Device>(*def);
       d->kind = *k;
       const doc::DevicePtr one = d;
       return firstDevice(ctx, doc::ops::pasteDevices(p, ctx.store().ids(), at.track, std::span<const doc::DevicePtr>(&one, 1),
-                                                     at.index));
+                                                     at.index, at.chain));
     }
     return firstDevice(ctx, doc::ops::addMetaDevice(p, ctx.store().ids(), at.track, std::string(patch.substr(doc::kMetaDevicePrefix.size())),
-                                                    at.index));
+                                                    at.index, at.chain));
   }
   if (doc::DevicePtr def = ctx.library().defaultPreset(deviceDisplayName(ctx, patch), patch); def && def->kind == kind)
     return firstDevice(ctx, doc::ops::pasteDevices(p, ctx.store().ids(), at.track, std::span<const doc::DevicePtr>(&def, 1),
-                                                   at.index));
-  return firstDevice(ctx, doc::ops::addDevice(p, ctx.store().ids(), at.track, std::string(patch), kind, at.index));
+                                                   at.index, at.chain));
+  return firstDevice(ctx, doc::ops::addDevice(p, ctx.store().ids(), at.track, std::string(patch), kind, at.index, at.chain));
 }
 
 Result<doc::DeviceId> loadDeviceItem(ViewContext& ctx, std::string_view path, DeviceSlot at) {
@@ -168,20 +174,21 @@ Result<doc::DeviceId> loadDeviceItem(ViewContext& ctx, std::string_view path, De
   }
   // GU.2: a group preset is pasted whole (fresh ids) onto the track, off its path (outside a rack chain only).
   if (auto blocks = libraryBlocksOf(path); blocks && !blocks->empty()) {
+    if (at.chain.valid()) return Error{ErrorCode::InvalidArgument, "a group preset goes into a track's circuit, not a rack chain", {}};
     return firstDevice(ctx, doc::ops::pasteBlocks(*ctx.doc(), ctx.store().ids(), at.track, *blocks));
   }
   auto d = deviceOfFile(path);
   if (!d) return std::move(d).error();
   if (doc::isMetaDevice(**d))  // TMM.10: a meta device's preset takes the kind its slot gives (an instrument, a voice)
     if (const meta::Type* t = meta::findType(doc::metaDeviceType(**d))) {
-      auto k = doc::ops::metaDeviceKindAt(*ctx.doc(), *t, at.track, at.index);
+      auto k = doc::ops::metaDeviceKindAt(*ctx.doc(), *t, at.track, at.index, at.chain);
       if (!k) return std::move(k).error();
       auto c = std::make_shared<doc::Device>(**d);
       c->kind = *k;
       *d = std::move(c);
     }
   auto id = firstDevice(ctx, doc::ops::pasteDevices(*ctx.doc(), ctx.store().ids(), at.track,
-                                                    std::span<const doc::DevicePtr>(&*d, 1), at.index));
+                                                    std::span<const doc::DevicePtr>(&*d, 1), at.index, at.chain));
   if (id && libraryItemOf(path) == LibraryItem::Preset) ctx.library().setPresetName(*id, stemOf(path));
   return id;
 }
@@ -297,6 +304,7 @@ Result<std::string> saveDevicePreset(ViewContext& ctx, doc::DeviceId device, boo
   const std::string name = deviceDisplayName(ctx, *d);
   Library& lib = ctx.library();
   if (asDefault) {
+    if (d->isRack()) return Error{ErrorCode::InvalidArgument, "racks have no default preset", {}};
     return lib.saveDefaultPreset(*d, name);
   }
   auto path = lib.savePreset(*d, name);

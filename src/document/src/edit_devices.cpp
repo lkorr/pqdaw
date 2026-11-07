@@ -1,4 +1,4 @@
-// Device edit builders (T4.1): pq/document/edit_ops.h, "Devices".
+// Device edit builders (T4.1; inside racks T4.8): pq/document/edit_ops.h, "Devices".
 #include <algorithm>
 #include <cmath>
 #include <optional>
@@ -19,20 +19,63 @@ using namespace detail;
 
 namespace {
 
-// A track's device list: its devices and whether it may hold an instrument.
+// A device list (a track's chain or a rack chain): its devices and whether it may hold an instrument first.
 struct ListView {
   const std::vector<DevicePtr>* devices = nullptr;
-  bool instrumentAllowed = false;  // a MIDI track
+  bool instrumentAllowed = false;  // a MIDI track or an Instrument Rack's chain
   TrackId track;
+  ChainId chain;
 };
-Result<ListView> listOf(const Project& p, TrackId track) {
+Result<ListView> listOf(const Project& p, TrackId track, ChainId chain) {
   ListView v;
+  if (chain.valid()) {
+    const ChainLoc c = findChain(p, chain);
+    if (!c.chain) return notFound("chain not found");
+    v.devices = &c.chain->devices;
+    v.instrumentAllowed = c.rack->kind == DeviceKind::Instrument;
+    v.track = c.track->id;
+    v.chain = chain;
+    return v;
+  }
   const Track* t = findTrackPtr(p, track);
   if (!t) return notFound("track not found");
   v.devices = &t->devices;
   v.instrumentAllowed = t->kind == TrackKind::Midi;
   v.track = track;
   return v;
+}
+
+// Where a new device of `kind` goes in a list, and whether it replaces the instrument there.
+struct Slot {
+  uint32_t index = 0;
+  bool replacesInstrument = false;
+};
+Result<Slot> slotFor(const ListView& l, DeviceKind kind, uint32_t index) {
+  const std::vector<DevicePtr>& d = *l.devices;
+  const bool hasInstrument = !d.empty() && d.front()->kind == DeviceKind::Instrument;
+  if (kind == DeviceKind::Instrument) {
+    if (!l.instrumentAllowed)
+      return invalid(l.chain.valid() ? "an Audio Effect Rack's chains hold audio effects only" : "instruments go on MIDI tracks");
+    // TMM.10-fix1: a chain meta device first is not replaced: it follows the instrument (its chain input then takes
+    // the instrument's signal; AddDevice makes it an audio effect).
+    return Slot{0, hasInstrument && !isMetaDevice(*d.front())};
+  }
+  const auto n = static_cast<uint32_t>(d.size());
+  uint32_t at = std::min(index, n);
+  if (hasInstrument && at == 0) at = 1;
+  return Slot{at, false};
+}
+
+// TMM.10-fix1: where a chain meta device lands for `index`: exactly there. First where instruments go it takes the note
+// source; a stock instrument or Instrument Rack there takes no chain signal (it could not follow it), so it is
+// replaced; a chain meta device there moves on (AddDevice re-kinds it).
+uint32_t metaSlotAt(const ListView& l, uint32_t index) {
+  return std::min(index, static_cast<uint32_t>(l.devices->size()));
+}
+bool metaReplacesInstrument(const ListView& l, uint32_t at) {
+  const std::vector<DevicePtr>& d = *l.devices;
+  return at == 0 && l.instrumentAllowed && !d.empty() && d.front()->kind == DeviceKind::Instrument &&
+         !isMetaDevice(*d.front());
 }
 
 // TX.all-free: a new block `dev` (already added to `track`) onto its main path at `slot`. `notes`: a stock instrument
@@ -79,7 +122,7 @@ Status placeOnPath(Steps& k, IdSource& ids, TrackId track, DeviceId dev, bool no
         for (const Wire& w : wiresOf(k.doc()))
           if ((!w.fromNoteSource() && w.from == gone) || (!w.toMixer() && w.to == gone)) moved.push_back(w);
         PQ_DOC_TRY(k.add(RemoveDevice{gone}));
-        PQ_DOC_TRY(k.add(MoveDevice{dev, track, index}));
+        PQ_DOC_TRY(k.add(MoveDevice{dev, track, index, {}}));
         for (Wire w : moved) {
           w.id = ids.wire();
           if (!w.fromNoteSource() && w.from == gone) {
@@ -168,23 +211,97 @@ Status placeOnPath(Steps& k, IdSource& ids, TrackId track, DeviceId dev, bool no
 
 }  // namespace
 
+// M4 review M9: iterative (explicit stacks), in the recursive version's id order: devices and chains pre-order (a
+// device, then per chain its id and its devices), then the mappings pre-order (a rack's own, then its chains' racks).
 DevicePtr cloneDevice(const Device& d, IdSource& ids, std::vector<std::pair<DeviceId, DeviceId>>* remapOut) {
-  auto c = std::make_shared<Device>(d);
-  c->id = ids.device();
-  if (remapOut != nullptr) remapOut->emplace_back(d.id, c->id);
-  return c;
+  std::unordered_map<uint32_t, DeviceId> remap;  // old device id → new (racks: mapping targets follow)
+  auto fresh = [&](const Device& src) {
+    auto c = std::make_shared<Device>(src);
+    c->id = ids.device();
+    remap[src.id.value] = c->id;
+    return c;
+  };
+  // A rack being copied: its fresh rack, its next chain, the chain being filled and its next device.
+  struct Open {
+    std::shared_ptr<Device> device;
+    std::shared_ptr<Rack> rack;
+    size_t chain = 0;
+    std::shared_ptr<Chain> current;
+    size_t next = 0;
+  };
+  std::shared_ptr<Device> out = fresh(d);
+  std::vector<Open> stack;
+  if (out->rack) stack.push_back(Open{out, std::make_shared<Rack>(*out->rack)});
+  while (!stack.empty()) {
+    Open& f = stack.back();
+    if (f.current && f.next < f.current->devices.size()) {
+      DevicePtr& slot = f.current->devices[f.next++];
+      std::shared_ptr<Device> c = fresh(*slot);
+      slot = c;
+      if (c->rack) stack.push_back(Open{c, std::make_shared<Rack>(*c->rack)});  // invalidates f
+      continue;
+    }
+    if (f.current) f.rack->chains[f.chain - 1] = std::move(f.current);
+    if (f.chain < f.rack->chains.size()) {
+      f.current = std::make_shared<Chain>(*f.rack->chains[f.chain++]);
+      f.current->id = ids.chain();
+      f.next = 0;
+      continue;
+    }
+    f.device->rack = std::move(f.rack);
+    stack.pop_back();
+  }
+  // Mappings after every device has its new id (the tree is this function's own: its racks are rewritten in place,
+  // as fresh copies).
+  std::vector<Device*> todo{out.get()};
+  while (!todo.empty()) {
+    Device& dev = *todo.back();
+    todo.pop_back();
+    if (!dev.rack) continue;
+    auto r = std::make_shared<Rack>(*dev.rack);
+    for (MacroMapping& m : r->mappings) {
+      m.id = ids.mapping();
+      if (const auto it = remap.find(m.device.value); it != remap.end()) m.device = it->second;
+    }
+    std::vector<Device*> inner;
+    for (ChainPtr& ch : r->chains) {
+      auto cc = std::make_shared<Chain>(*ch);
+      for (DevicePtr& x : cc->devices) {
+        auto xc = std::make_shared<Device>(*x);
+        inner.push_back(xc.get());
+        x = std::move(xc);
+      }
+      ch = std::move(cc);
+    }
+    dev.rack = std::move(r);
+    todo.insert(todo.end(), inner.rbegin(), inner.rend());  // the first inner device next (pre-order)
+  }
+  if (remapOut != nullptr)
+    for (const auto& [from, to] : remap) remapOut->emplace_back(DeviceId{from}, to);
+  return out;
 }
 
-EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string patch, DeviceKind kind, uint32_t index) {
-  if (patch == kAudioEffectRack || patch == kInstrumentRack)  // GU.9: a rack is a group of chain groups
-    return addRack(p, ids, track, patch == kInstrumentRack, index);
-  Result<ListView> l = listOf(p, track);
+EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string patch, DeviceKind kind, uint32_t index,
+                     ChainId chain) {
+  Result<ListView> l = listOf(p, track, chain);
   if (!l) return std::move(l).error();
   if (patch.empty()) return invalid("no device patch");
-  Edit e = makeEdit("Add Device");
+  const bool rack = patch == kAudioEffectRack || patch == kInstrumentRack;
+  if (rack && (patch == kInstrumentRack) != (kind == DeviceKind::Instrument)) return invalid("rack kind mismatch");
+  Edit e = makeEdit(rack ? "Add Rack" : "Add Device");
+  if (chain.valid()) {  // a rack chain: a list (its rule)
+    Result<Slot> slot = slotFor(*l, kind, index);
+    if (!slot) return std::move(slot).error();
+    if (slot->replacesInstrument) batchOf(e).commands.push_back(RemoveDevice{l->devices->front()->id});
+    DevicePtr d = rack ? makeRack(ids.device(), kind) : makeDevice(ids.device(), std::move(patch), kind);
+    e.devices.push_back(d->id);
+    e.tracks.push_back(l->track);
+    batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), slot->index, chain});
+    return e;
+  }
   // TX.all-free: a track's block, spliced into its main path at slot `index` (kOffPath: unwired).
   if (kind == DeviceKind::Instrument && !l->instrumentAllowed) return invalid("instruments go on MIDI tracks");
-  DevicePtr d = makeDevice(ids.device(), std::move(patch), kind);
+  DevicePtr d = rack ? makeRack(ids.device(), kind) : makeDevice(ids.device(), std::move(patch), kind);
   const DeviceId id = d->id;
   e.devices.push_back(id);
   e.tracks.push_back(l->track);
@@ -196,28 +313,35 @@ EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string
 }
 
 // TMM.3.
-Result<DeviceKind> metaDeviceKindAt(const Project& p, const meta::Type& t, TrackId track, uint32_t index) {
-  Result<ListView> l = listOf(p, track);
+Result<DeviceKind> metaDeviceKindAt(const Project& p, const meta::Type& t, TrackId track, uint32_t index, ChainId chain) {
+  Result<ListView> l = listOf(p, track, chain);
   if (!l) return std::move(l).error();
-  // TX.all-free: on a track the kind of a meta device means nothing (its cables decide): an audio effect.
+  // TMM.10-fix1: any type goes anywhere; in a rack chain its kind is its position (model.h "Meta modules"): the
+  // instrument when it lands first in an Instrument Rack's chain, else an audio effect. TX.all-free: on a track the
+  // kind means nothing (its cables decide): an audio effect.
   (void)t;
-  (void)index;
-  return DeviceKind::AudioEffect;
+  if (!chain.valid()) return DeviceKind::AudioEffect;
+  return metaSlotAt(*l, index) == 0 && l->instrumentAllowed ? DeviceKind::Instrument : DeviceKind::AudioEffect;
 }
 
-EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::string_view type, uint32_t index) {
+EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::string_view type, uint32_t index,
+                         ChainId chain) {
   const meta::Type* t = meta::findType(type);
   if (t == nullptr) return invalid("unknown meta module type '" + std::string(type) + "'");
-  Result<ListView> l = listOf(p, track);
+  Result<ListView> l = listOf(p, track, chain);
   if (!l) return std::move(l).error();
   Edit e = makeEdit("Add Device");
-  // What reaches its main input there: its track's main path's blocks up to the slot.
-  const Track* tr = findTrackPtr(p, l->track);
-  const MainPath path = mainPath(p, *tr);
-  std::vector<DevicePtr> before = flowOrder(*tr, path);
-  before.resize(path.blocks.size());
-  const uint32_t at = index == kOffPath ? 0 : std::min<uint32_t>(index, static_cast<uint32_t>(path.blocks.size()));
-  const DeviceKind kind = DeviceKind::AudioEffect;
+  // What reaches its main input there (a rack chain: its list; a track: its main path's blocks up to the slot).
+  std::vector<DevicePtr> before = *l->devices;
+  uint32_t at = metaSlotAt(*l, index);
+  if (!chain.valid()) {
+    const Track* tr = findTrackPtr(p, l->track);
+    const MainPath path = mainPath(p, *tr);
+    before = flowOrder(*tr, path);
+    before.resize(path.blocks.size());
+    at = index == kOffPath ? 0 : std::min<uint32_t>(index, static_cast<uint32_t>(path.blocks.size()));
+  }
+  const DeviceKind kind = chain.valid() && at == 0 && l->instrumentAllowed ? DeviceKind::Instrument : DeviceKind::AudioEffect;
   auto d = std::make_shared<Device>(*makeDevice(ids.device(), std::string(kMetaDevicePrefix) + std::string(t->id), kind));
   d->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(*t)}});
   // TMM.8 (docs/plans/MM.md): a Wavetable that receives audio starts in Shape mode (a waveshaper); one that receives the
@@ -229,6 +353,11 @@ EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::st
   const DeviceId id = d->id;
   e.devices.push_back(id);
   e.tracks.push_back(l->track);
+  if (chain.valid()) {
+    if (metaReplacesInstrument(*l, at)) batchOf(e).commands.push_back(RemoveDevice{l->devices->front()->id});
+    batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), at, chain});
+    return e;
+  }
   Steps k(p);
   PQ_DOC_TRY(k.add(AddDevice{l->track, std::move(d), kAppend}));
   if (index != kOffPath) PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, false, true, index));
@@ -244,19 +373,35 @@ EditResult deleteDevices(const Project& p, std::span<const DeviceId> devices) {
     if (!findDevice(p, id).track) return notFound("device not found");
     seen.push_back(id);
   }
-  for (const DeviceId id : seen) batchOf(e).commands.push_back(RemoveDevice{id});
+  for (const DeviceId id : seen) {
+    // T4.8: a device inside another selected rack goes with that rack.
+    const bool inner = std::any_of(seen.begin(), seen.end(), [&](DeviceId o) {
+      return o != id && deviceContains(*findDevice(p, o).device, id);
+    });
+    if (!inner) batchOf(e).commands.push_back(RemoveDevice{id});
+  }
   return e;
 }
 
-EditResult moveDevice(const Project& p, DeviceId device, TrackId toTrack, uint32_t index) {
+EditResult moveDevice(const Project& p, DeviceId device, TrackId toTrack, uint32_t index, ChainId toChain) {
   const DeviceLoc d = findDevice(p, device);
   if (!d.track) return notFound("device not found");
   Edit e = makeEdit("Move Device");
   e.devices.push_back(device);
+  if (toChain.valid()) {
+    const ChainLoc c = findChain(p, toChain);
+    if (!c.chain) return notFound("chain not found");
+    if (c.chain == d.chain) {
+      const auto after = std::min<uint32_t>(index, static_cast<uint32_t>(d.list().size() - 1));
+      if (after == d.index) return e;
+    }
+    batchOf(e).commands.push_back(MoveDevice{device, {}, index, toChain});
+    return e;
+  }
   const Track* to = toTrack.valid() ? findTrackPtr(p, toTrack) : d.track;
   if (!to) return notFound("track not found");
   // A no-op move gives an empty batch (no history entry).
-  if (to == d.track) {
+  if (to == d.track && d.chain == nullptr) {
     const auto after = std::min<uint32_t>(index, static_cast<uint32_t>(d.track->devices.size() - 1));
     if (after == d.index) return e;
   }
@@ -289,7 +434,7 @@ namespace {
 // TX.groups (model.h "Groups"): a copy of device `src` for a paste or a duplicate. A copied member is no member (its
 // group is not copied with it): a free device. A copied group brings copies of its members (from `p`, appended to the
 // destination list after it) and of the wires among them and its terminals — the group as it is, one step.
-DevicePtr copyForPaste(const Project& p, IdSource& ids, const Device& src, TrackId track, Edit& e,
+DevicePtr copyForPaste(const Project& p, IdSource& ids, const Device& src, TrackId track, ChainId chain, Edit& e,
                        std::vector<Command>& after) {
   DevicePtr d = cloneDevice(src, ids);
   if (d->group.valid()) {
@@ -297,7 +442,7 @@ DevicePtr copyForPaste(const Project& p, IdSource& ids, const Device& src, Track
     x->group = {};
     d = std::move(x);
   }
-  if (!isGroupDevice(src)) return d;
+  if (!isGroupDevice(src) || chain.valid()) return d;
   const DeviceLoc g = findDevice(p, src.id);
   if (g.track == nullptr) return d;  // the group is gone: an empty one
   // GU.2: its contents at any depth and the wires among them (and its terminals) — the group's block set, the copy's
@@ -324,7 +469,7 @@ DevicePtr copyForPaste(const Project& p, IdSource& ids, const Device& src, Track
   }
   for (DevicePtr& m : fresh.devices) {
     e.devices.push_back(m->id);
-    after.push_back(AddDevice{track, std::move(m), kAppend});
+    after.push_back(AddDevice{track, std::move(m), kAppend, {}});
   }
   for (Wire& w : fresh.wires) after.push_back(AddWire{std::move(w)});
   return d;
@@ -332,19 +477,42 @@ DevicePtr copyForPaste(const Project& p, IdSource& ids, const Device& src, Track
 }  // namespace
 
 EditResult pasteDevices(const Project& p, IdSource& ids, TrackId track, std::span<const DevicePtr> devices,
-                        uint32_t index) {
-  Result<ListView> l = listOf(p, track);
+                        uint32_t index, ChainId chain) {
+  Result<ListView> l = listOf(p, track, chain);
   if (!l) return std::move(l).error();
   Edit e = makeEdit(devices.size() == 1 ? "Paste Device" : "Paste Devices");
   e.tracks.push_back(l->track);
+  const std::vector<DevicePtr>& list = *l->devices;
   bool instrumentPasted = false;
   std::vector<Command> after;  // TX.groups: a pasted group's members and wires, after the devices
+  if (chain.valid()) {  // a rack chain: a list
+    const bool hasInstrument = !list.empty() && list.front()->kind == DeviceKind::Instrument;
+    uint32_t at = std::min<uint32_t>(index, static_cast<uint32_t>(list.size()));
+    if (hasInstrument && at == 0) at = 1;
+    for (const DevicePtr& src : devices) {
+      if (!src) continue;
+      DevicePtr d = copyForPaste(p, ids, *src, l->track, chain, e, after);
+      e.devices.push_back(d->id);
+      if (d->kind == DeviceKind::Instrument) {
+        if (!l->instrumentAllowed) return invalid("an Audio Effect Rack's chains hold audio effects only");
+        if (instrumentPasted) return invalid("a chain holds one instrument");
+        instrumentPasted = true;
+        if (hasInstrument) batchOf(e).commands.push_back(RemoveDevice{list.front()->id});
+        batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), 0, chain});
+        if (!hasInstrument) ++at;  // the effects pasted so far moved one place right
+        continue;
+      }
+      batchOf(e).commands.push_back(AddDevice{l->track, std::move(d), at++, chain});
+    }
+    for (Command& c : after) batchOf(e).commands.push_back(std::move(c));
+    return e;
+  }
   // TX.all-free: a track's blocks, spliced into its main path from slot `index` on, in order (kOffPath: unwired).
   Steps k(p);
   uint32_t slot = index;
   for (const DevicePtr& src : devices) {
     if (!src) continue;
-    DevicePtr d = copyForPaste(p, ids, *src, l->track, e, after);
+    DevicePtr d = copyForPaste(p, ids, *src, l->track, chain, e, after);
     const DeviceId id = d->id;
     const bool notes = d->kind == DeviceKind::Instrument && !isMetaDevice(*d);
     const bool meta = isMetaDevice(*d);
@@ -371,6 +539,7 @@ EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const Dev
   struct Pick {
     const std::vector<DevicePtr>* list;
     TrackId track;
+    ChainId chain;
     uint32_t index;  // in the list (a track: its place on the main path, kOffPath off it)
     const Device* device;
   };
@@ -380,10 +549,13 @@ EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const Dev
     if (!d.track) return notFound("device not found");
     if (d.device->kind == DeviceKind::Instrument) continue;  // one instrument per list
     const std::vector<DevicePtr>* list = &d.list();
-    const int32_t i = mainPath(p, *d.track).indexOf(id);
-    const uint32_t index = i >= 0 ? static_cast<uint32_t>(i) : kOffPath;
+    uint32_t index = d.index;
+    if (d.chain == nullptr) {
+      const int32_t i = mainPath(p, *d.track).indexOf(id);
+      index = i >= 0 ? static_cast<uint32_t>(i) : kOffPath;
+    }
     if (std::none_of(picks.begin(), picks.end(), [&](const Pick& k) { return k.device == d.device; }))
-      picks.push_back(Pick{list, d.track->id, index, d.device});
+      picks.push_back(Pick{list, d.track->id, d.chain ? d.chain->id : ChainId{}, index, d.device});
   }
   std::stable_sort(picks.begin(), picks.end(), [](const Pick& a, const Pick& b) {
     if (a.track != b.track) return a.track < b.track;
@@ -394,7 +566,14 @@ EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const Dev
     size_t j = i;
     while (j < picks.size() && picks[j].list == picks[i].list) ++j;
     std::vector<Command> after;  // TX.groups: a duplicated group's members and wires
-    {
+    if (picks[i].chain.valid()) {
+      uint32_t at = picks[j - 1].index + 1;
+      for (size_t q = i; q < j; ++q) {
+        DevicePtr d = copyForPaste(p, ids, *picks[q].device, picks[i].track, picks[i].chain, e, after);
+        e.devices.push_back(d->id);
+        PQ_DOC_TRY(k.add(AddDevice{picks[i].track, std::move(d), at++, picks[i].chain}));
+      }
+    } else {
       // The path's copies after the last selected block on it, in path order; the others off the path.
       uint32_t last = 0;
       bool any = false;
@@ -405,7 +584,7 @@ EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const Dev
         }
       uint32_t slot = last + 1;
       for (size_t q = i; q < j; ++q) {
-        DevicePtr d = copyForPaste(p, ids, *picks[q].device, picks[i].track, e, after);
+        DevicePtr d = copyForPaste(p, ids, *picks[q].device, picks[i].track, {}, e, after);
         const DeviceId id = d->id;
         e.devices.push_back(id);
         PQ_DOC_TRY(k.add(AddDevice{picks[i].track, std::move(d), kAppend}));
@@ -441,6 +620,7 @@ EditResult setDeviceSetting(const Project& p, DeviceId device, std::string setti
 EditResult editDevicePatch(const Project& p, DeviceId device, std::string text, std::shared_ptr<const graph::PatchFile> ids) {
   const DeviceLoc l = findDevice(p, device);
   if (!l.track) return notFound("device not found");
+  if (l.device->rack) return invalid("a rack has no patch text (its chains are document structure)");  // T4.8
   if (text.empty()) return invalid("a device patch text must not be empty");
   Edit e = makeEdit("Edit Device Patch");
   if (l.device->source && l.device->source->text == text) return e;  // unchanged: nothing to undo
@@ -506,6 +686,7 @@ EditResult setParamCurve(const Project& p, const DeviceLibrary& lib, DeviceId de
                          std::optional<dsp::Curve> curve) {  // GU.1
   const DeviceLoc l = findDevice(p, device);
   if (!l.track) return notFound("device not found");
+  if (l.device->rack) return invalid("a rack's macros have no knob curve");
   if (isGroupDevice(*l.device)) return invalid("a group has no knobs");
   if (param.empty()) return invalid("no param");
   std::shared_ptr<const ResolvedDevice> hold;
@@ -531,7 +712,7 @@ EditResult setParamCurvePreset(const Project& p, const DeviceLibrary& lib, Devic
   const DeviceLoc l = findDevice(p, device);
   if (!l.track) return notFound("device not found");
   std::shared_ptr<const ResolvedDevice> hold;
-  const graph::ParamDecl* decl = declOf(lib, *l.device, param, hold);
+  const graph::ParamDecl* decl = l.device->rack ? nullptr : declOf(lib, *l.device, param, hold);
   if (decl == nullptr) return setParamCurve(p, lib, device, std::move(param), std::nullopt);  // its refusal
   return setParamCurve(p, lib, device, std::move(param), curveWithPreset(declaredCurve(*decl), preset));
 }
@@ -539,6 +720,7 @@ EditResult setParamCurvePreset(const Project& p, const DeviceLibrary& lib, Devic
 EditResult setDeviceParamValue(const Project& p, const DeviceLibrary& lib, DeviceId device, std::string param, double value) {
   const DeviceLoc l = findDevice(p, device);
   if (!l.track) return notFound("device not found");
+  if (l.device->rack) return setDeviceParam(p, device, std::move(param), value);
   std::shared_ptr<const ResolvedDevice> hold;
   const graph::ParamDecl* decl = declOf(lib, *l.device, param, hold);
   if (decl == nullptr) return notFound("the device has no param '" + param + "'");
