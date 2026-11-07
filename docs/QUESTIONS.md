@@ -2401,8 +2401,8 @@ Agents: add questions here instead of guessing on anything important. Use this f
   gain stage before the mixer (T4.8 multiplied it into the mixer's gains). The selector exists once a chain zone does.
 - **Instrument Rack:** each chain is its own instrument group of the track's notes (one voice engine, each group per
   voice); the instrument stage's out wire is single-signal (T4.8's voice sum) unless Per-Voice Chains is on: renders
-  bit-identical to T4.8's. Generic lowering fixes this needed: a value block nothing inside drives runs once, a nested
-  group's Out-terminal wires are not its inputs.
+  bit-identical to T4.8's. Generic lowering fix this needed: a nested group's Out-terminal
+  wires are not its inputs (the per-note fixpoint).
 - **Nested racks:** a chain's series treats a nested rack as one stage; moving a rack's frame into a chain moves all its
   chains, macros and selector. The Device view's 20,000-deep nest test (built from the stored `makeRack`) is gone.
 - **Gone:** "Open Lowered Rack Patch" (the circuit shows the rack's blocks); the rack's own name; its activator now

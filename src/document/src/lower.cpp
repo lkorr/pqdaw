@@ -553,9 +553,7 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
           const bool single = w.single || (!w.fromNoteSource() && once.count(w.from.value) != 0);
           if (!single) all = false;
         }
-        // GU.9: a value block nothing inside drives is a control, the same for every note: it runs once (so what it
-        // alone feeds — a chain mixer's law — runs once too, instead of per note).
-        if ((any && all) || (!any && isValueDevice(*m))) {
+        if (any && all) {
           once.insert(m->id.value);
           changed = true;
         }

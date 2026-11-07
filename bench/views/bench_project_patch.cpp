@@ -46,7 +46,6 @@
 #include "pq/ui/widget.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/cables.h"
-#include "pq/views/circuit/chain_circuit.h"
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/meta/face_targets.h"
@@ -829,40 +828,7 @@ int main(int argc, char** argv) {
       auto e = doc::ops::addDevice(*st.current(), st.ids(), track, f, doc::DeviceKind::AudioEffect);
       if (!e || !st.dispatch(e->command)) return 1;
     }
-    std::vector<double> cold, warm;
-    circuit::ChainSceneCache cache;
-    circuit::ChainOptions co;
-    co.devices = lib->get();
-    size_t nodes = 0;
-    for (int i = 0; i < 10; ++i) {
-      circuit::ChainOptions c0 = co;  // no cache: every device's scene built
-      c0.cache = nullptr;
-      const auto a = std::chrono::steady_clock::now();
-      const circuit::ChainCircuit c = circuit::buildTrackCircuit(*ctx.doc(), track, c0);
-      const auto b = std::chrono::steady_clock::now();
-      co.cache = &cache;
-      const circuit::ChainCircuit d = circuit::buildTrackCircuit(*ctx.doc(), track, co);
-      const auto e = std::chrono::steady_clock::now();
-      nodes = d.scene->nodes.size();
-      cold.push_back(std::chrono::duration<double, std::nano>(b - a).count());
-      if (i > 0) warm.push_back(std::chrono::duration<double, std::nano>(e - b).count());
-    }
-    std::printf("chain: %zu scene nodes\n", nodes);
-    {
-      std::vector<double> ix;
-      const circuit::ChainCircuit d = circuit::buildTrackCircuit(*ctx.doc(), track, co);
-      for (int i = 0; i < 10; ++i) {
-        circuit::CircuitScene copy = *d.scene;
-        const float inc[4] = {d.x0, d.y0, d.x1, d.y1};
-        const auto a = std::chrono::steady_clock::now();
-        circuit::indexScene(copy, inc);
-        ix.push_back(std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - a).count());
-      }
-      pq::bench::reportStats("chain_circuit.indexScene (junctions, bounds, grid) of the composed scene", pq::bench::summarize(ix), "ns/index");
-    }
-    pq::bench::reportStats("chain_circuit.build cold (device scenes + layout + scene) Operator>AutoFilter>EQ8>Saturator", pq::bench::summarize(cold), "ns/build");
-    pq::bench::reportStats("chain_circuit.build from cached device scenes (a structure change) Operator>AutoFilter>EQ8>Saturator",
-                           pq::bench::summarize(warm), "ns/build");
+    // (GU.9: the T5.x chain circuit went with the stored racks; the project patch view below is the circuit now.)
     // The other 64 tracks go (the shell under the full-window view still paints the arrangement: keep it to one lane).
     {
       std::vector<doc::TrackId> others;
