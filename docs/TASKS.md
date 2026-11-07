@@ -705,7 +705,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [x] **GU.7 Rich elements; Wavetable, Envelope and analysers as group presets** *(merged 759ccf7c; Q227; engines kept as leaves with their faces as element sections; 3 older playback failures from GU.5b / GU.1 open, fixed in GU.8)* (plan §Phases 7).
 - [x] **GU.8 The example instrument, style schemas, outline of the next ingredients** *(merged 549f2087; Q229)* (plan §Phases 8). 👁
 - [x] **GU.9 Racks are parallel groups; the rack is the Device view of them** *(v2 merged b71adab3; Q228; muted chains still compute; Open Lowered Rack Patch removed)* (plan §One hierarchy; user 2026-11-07: "racks still exist but only as a visual indicator … in the circuit view racks are PARALLEL GROUPS, not a singular group … 1-1 isomorphic with parallel groups, just another way of viewing"). *First attempt (effcd6dc: one group holding chain groups, rack features stripped) reverted in 7eff8172.*
-- [ ] **GU.10 Stock devices as group presets (Utility, Saturator, LFO, Operator); Auto Filter and EQ Eight retired to `retired/` until a Filter module exists** (plan §One hierarchy). 👁
+- [x] **GU.10 Stock devices as group presets (Utility, Saturator, LFO, Operator); Auto Filter and EQ Eight retired to `retired/` until a Filter module exists** (plan §One hierarchy). 👁 Merged fc964e34; Q230.
 - [ ] **GU.11 One view, one panel system (circuit editor / user devices merge into the group view; panel.json system retired; model = blocks, groups, native engines)** (plan §One hierarchy). 👁
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)

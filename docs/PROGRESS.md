@@ -1483,3 +1483,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: not measured.
 - CPU-efficiency check: only existing atoms / engines; LFO Wavetables at ×2 oversampling; depths one add after the curve; schemas / tabs UI only.
 - Notes/blockers: LFOs run per voice and restart per note; tab not saved; no schema delete / rename UI.
+
+## 2026-11-07 · GU.10 · orchestrator (merge of task/GU.10-stock-presets)
+- Did: fast-forwarded main to fc964e34. Utility, Saturator, LFO and Operator are group presets (`modules.cpp`); the default instrument is a PA → Wavetable → Envelope "Basic Synth" group used by `createTrack`; the seven stock .pqp/panel.json files, the Auto Filter and EQ Eight displays/math, their tests, six device-face goldens and pq_bench_devices moved to `retired/` (README). Tests keep stand-in copies under `tests/stand_in_devices/` via `PQ_STAND_IN_DEVICES` (test debt for GU.11). Q230.
+- Verified (worker, light): check build 0 warnings; document, stdlib, library, app, views, playback default tier 12/12 entries; Utility / Saturator match the retired patches within 1e-5 of peak; interp == JIT.
+- Perf: not measured. Known regression: Saturator computes all seven curves and the LFO all five shapes per sample (no setting-indexed switch block yet; Q230).
+- CPU-efficiency check: see the regression above; Utility unchanged.
+- Notes/blockers: a per-voice cable into a control creates a modulation tap that ends voices once silent (open engine bug, Q230); Operator FM routed through `+ pm` to avoid it.
