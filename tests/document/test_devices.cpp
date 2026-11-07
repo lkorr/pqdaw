@@ -368,13 +368,12 @@ TEST_CASE("devices: lowering a chain — stable NodeIds, params as runtime param
   CHECK_FALSE(c.store.dispatch(AddDevice{c.group, makeDevice(c.store.ids().device(), "no_such_device", DeviceKind::AudioEffect), 0}).ok());
 }
 
-// KNOWN BUG (GU.11, reported to the lead; expected to fail until fixed — then drop the decorator): deactivating a
-// GROUP must leave out everything inside it (model.h Device::active: "left out of the graph"), as deactivating the
+// GU.11: deactivating a GROUP leaves out everything inside it (model.h Device::active: "left out of the graph"), as deactivating the
 // stock devices did. Today the lowering still lowers a switched-off group's blocks (their params are listed), and a
 // switched-off instrument group whose modules are groups still gives the track voices (instrument_groups.cpp only skips
 // the switched-off group itself; the groups inside it are fed notes and become instruments).
 TEST_CASE("devices: a deactivated group leaves out everything inside it; a MIDI track without an active instrument "
-          "group plays nothing" * doctest::should_fail()) {
+          "group plays nothing") {
   Chains c;
   const std::string kv(kValueParam);
   const DeviceId util = test_blocks::addModule(c.store, c.midi, "utility");
@@ -405,10 +404,9 @@ TEST_CASE("devices: a deactivated group leaves out everything inside it; a MIDI 
   CHECK(silent->graph.tracks[ti].eventSlot == pq::graph::kNone);
 }
 
-// KNOWN BUG (GU.11, reported to the lead; expected to fail until fixed — then drop the decorator): a group has no params,
-// no settings but its polyphony and rack-chain ones, and no meta-module state (checks.cpp checkList, which the reader
+// GU.11: a group has no params, no settings but its polyphony and rack-chain ones, and no meta-module state (checks.cpp checkList, which the reader
 // applies), but the store's SetDeviceParam / SetDeviceSetting / AddMetaInstance accept them on a group.
-TEST_CASE("devices: the store refuses params, foreign settings and meta state on a group" * doctest::should_fail()) {
+TEST_CASE("devices: the store refuses params, foreign settings and meta state on a group") {
   Chains c;
   const Snapshot s0 = c.store.current();
   CHECK_FALSE(c.store.dispatch(SetDeviceParam{c.inst, "level", 0.5}).ok());

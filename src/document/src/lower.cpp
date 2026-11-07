@@ -2,6 +2,7 @@
 #include "pq/document/lower.h"
 
 #include <algorithm>
+#include <functional>
 #include <deque>
 #include <bit>
 #include <cassert>
@@ -138,11 +139,52 @@ MainPorts lowerPortsOf(const Device& d, const graph::PatchLibrary* lib, const De
   return m;
 }
 
+// GU.11: `p` with every block inside a switched-off group switched off too (Device::active: "left out of the graph" —
+// a group's contents are the group), sharing every track that has none; `p` itself when no group is off.
+Project withGroupsOff(const Project& p) {
+  bool any = false;
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    for (const DevicePtr& d : t.devices) any = any || (isGroupDevice(*d) && !d->active);
+  });
+  if (!any) return p;
+  Project q = p;
+  auto fix = [](const TrackPtr& tp) -> TrackPtr {
+    const Track& t = *tp;
+    std::vector<DeviceId> off;
+    for (const DevicePtr& d : t.devices)
+      if (isGroupDevice(*d) && !d->active) off.push_back(d->id);
+    if (off.empty()) return tp;
+    auto nt = std::make_shared<Track>(t);
+    for (DevicePtr& d : nt->devices) {
+      if (!d->active || !d->group.valid()) continue;
+      for (const DeviceId g : off)
+        if (groupContains(t.devices, g, d->id)) {
+          auto x = std::make_shared<Device>(*d);
+          x->active = false;
+          d = std::move(x);
+          break;
+        }
+    }
+    return nt;
+  };
+  std::function<TrackPtr(const TrackPtr&)> walk = [&](const TrackPtr& tp) -> TrackPtr {
+    TrackPtr t = fix(tp);
+    if (t->children.empty()) return t;
+    auto nt = std::make_shared<Track>(*t);
+    for (TrackPtr& ch : nt->children) ch = walk(ch);
+    return nt;
+  };
+  for (TrackPtr& t : q.tracks) t = walk(t);
+  for (TrackPtr& t : q.returns) t = walk(t);
+  if (q.master) q.master = walk(q.master);
+  return q;
+}
+
 std::shared_ptr<const Cables> cablesOf(const Project& p, const graph::PatchLibrary* lib, const DeviceLibrary* devices) {
   auto c = std::make_shared<Cables>();
-  c->q = p;
+  c->q = withGroupsOff(p);
   const MainLinks mainLinks(p);  // one pass over the wires for every track's path
-  forEachTrack(p, [&](const Track& t, const Track*) {
+  forEachTrack(c->q, [&](const Track& t, const Track*) {  // (q's tracks: GU.11 a switched-off group's blocks are off)
     Flow f;
     f.path = mainPath(t, mainLinks);
     f.list = flowOrder(t, f.path);

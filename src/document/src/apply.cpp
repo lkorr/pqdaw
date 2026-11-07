@@ -19,6 +19,7 @@
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
 #include "checks.h"
+#include "pq/document/racks.h"
 
 namespace pq::doc {
 
@@ -1602,6 +1603,7 @@ Res apply_(const Snapshot& s, const SetDeviceParam& c, ChangeSet& cs) {
   }
   // GU.2 (model.h "Atom blocks and value blocks"): an atom block has no params, a value block only `value`.
   if (c.value && isAtomDevice(*loc.device)) return invalid("an atom block has no params (its inputs are wired)");
+  if (c.value && isGroupDevice(*loc.device)) return invalid("a group has no params (its controls are its value blocks)");
   if (c.value && isValueDevice(*loc.device) && c.param != kValueParam) return invalid("a value block's one control is 'value'");
   std::vector<DeviceValue> params = loc.device->params;
   if (!setValue(params, c.param, c.value)) return s;
@@ -1616,6 +1618,13 @@ Res apply_(const Snapshot& s, const SetDeviceSetting& c, ChangeSet& cs) {
   const DeviceLoc loc = findDevice(*s, c.device);
   if (!loc.track) return notFound("device not found");
   PQ_DOC_TRY(checkDeviceValue(c.setting, c.value));
+  // GU.11: what checkList allows (model.h "Groups", racks.h): a group's polyphony and rack-chain settings, a value
+  // block's rack-macro ones.
+  if (c.value && isGroupDevice(*loc.device) && c.setting != kGroupVoices && c.setting != kGroupMono &&
+      c.setting != kGroupLegato && c.setting != kGroupGlide && c.setting != kGroupSteal && !rackGroupSetting(c.setting))
+    return invalid("a group's settings are its polyphony and its rack chain's");
+  if (c.value && isValueDevice(*loc.device) && !rackValueSetting(c.setting))
+    return invalid("a value block's settings are its rack macro's");
   std::vector<DeviceValue> settings = loc.device->settings;
   if (!setValue(settings, c.setting, c.value)) return s;
   return editDeviceAt(s, c.device, cs, kChangeStructural, [&](Device& d) {
@@ -1834,6 +1843,7 @@ ChangeFlag classifyInstance(const DeviceId dev, std::string_view path, const Met
 Res apply_(const Snapshot& s, const AddMetaInstance& c, ChangeSet& cs) {
   const DeviceLoc loc = findDevice(*s, c.device);
   if (!loc.track) return notFound("device not found");
+  if (!isMetaDevice(*loc.device)) return invalid("only a native engine holds meta-module state");  // GU.11
   PQ_DOC_TRY(checkMetaInstance(*loc.device, c.path, c.instance));
   if (loc.device->metaAt(c.path) != nullptr) return invalid("meta module '" + c.path + "' already has a state");
   ChangeSet local;

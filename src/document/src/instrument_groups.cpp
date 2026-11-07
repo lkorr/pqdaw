@@ -106,11 +106,13 @@ VoiceContexts voiceContexts(const Project& p) {
     for (const DevicePtr& d : t.devices) {
       if (!isGroupDevice(*d) || !d->active) continue;  // (a switched-off group plays nothing)
       uint32_t depth = 0;
+      bool off = false;  // GU.11: inside a switched-off group: nothing of it plays either
       for (const Device* at = d.get(); at != nullptr && at->group.valid() && depth < kMaxGroupDepth; ++depth) {
         const int32_t gi = t.deviceIndex(at->group);
         at = gi >= 0 ? t.devices[static_cast<size_t>(gi)].get() : nullptr;
+        off = off || (at != nullptr && !at->active);
       }
-      byDepth.emplace_back(depth, d.get());
+      if (!off) byDepth.emplace_back(depth, d.get());
     }
     std::stable_sort(byDepth.begin(), byDepth.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     // The instrument group `d` sits in at any depth (its outermost such group), or kNone.
