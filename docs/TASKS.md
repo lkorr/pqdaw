@@ -686,9 +686,9 @@ Each task's full description and acceptance criteria are in docs/plans/MM.md und
 ## IG: Instrument groups (plan: docs/plans/IG.md; user decision 2026-11-04, SPEC §15 "instrument groups"; planned, not started)
 
 - [ ] **IG.1 Model, migration, default instrument group** (plan §Phases 1).
-- [ ] **IG.2 Lowering: the voice context is the instrument group** (plan §Phases 2; replaces voice runs and guest instances).
+- [ ] **IG.2 Lowering: the voice context is the instrument group** (plan §Phases 2; replaces voice runs and guest instances; single-signal cables inside the group, user 2026-11-06). In progress together with IG.1 (task/IG.1-2-instrument-groups).
 - [ ] **IG.3 Per-sample loops across the group edge** (plan §Phases 3; the former TX.voice-loop).
-- [ ] **IG.4 Views: instrument-group capsule and panel, per-note cable colour, reducers on cables** (plan §Phases 4). 👁
+- [ ] **IG.4 Views: instrument-group capsule and panel, per-note cable colour, reducers on cables, single-signal cable toggle** (plan §Phases 4). 👁
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁

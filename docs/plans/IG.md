@@ -39,6 +39,17 @@ instances) with one visible structural rule: what is per note is what sits insid
   spanning every active voice's part, the voice sum and the outside part; the z⁻¹ goes on the wire that closes it (the
   circuit's rule). This is the former TX.voice-loop; it is part of this plan, not deferred.
 
+## Single-signal cables (user 2026-11-06)
+
+Any cable **inside** an instrument group can be switched from per note to **single signal** (cable menu / click; its own
+colour), with the same reducer as an out-of-group cable (sum default, max, newest). The voices are reduced at that
+cable, so the block it feeds runs once ("a normal filter on a synth"), and so does everything downstream of it that has
+only single-signal inputs. A block with any per-note input runs per note (its single-signal inputs are broadcast to every
+voice, as an outside signal is); Out sums its per-note inputs and adds its single-signal inputs once. This is the one
+rule behind the group edge too: a cable leaving the group is a reducing cable by default. A single-signal path that
+comes back into a per-note block closes a loop across the voice sum: per sample, IG.3 (until then refused with
+VoiceLoop, as an outside loop is). Model + lowering: IG.2 (or IG.1-2); menu, colour, status line: IG.4.
+
 ## Ramifications
 
 - **Migration (sound-identical):** on load, a MIDI track's instrument (or meta voice run: the meta stages after the
