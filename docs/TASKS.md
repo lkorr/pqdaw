@@ -702,7 +702,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [x] **GU.5 The panel window and send-to-panel** *(merged bef21fcd; Q223; light testing, no bench)* (plan §Phases 5). 👁
 - [x] **GU.5b Modules look as before *(merged 8c84a209; Q225; PA voice dots wait for GU.7's signal tap; VCA render tolerance after the 7-segment split not re-checked)* (closed = the old face incl. VCA markers, PA phase orbit); an opened group is a circuit diagram** (plan §Phases 5a; user 2026-11-07). 👁
 - [x] **GU.6 Embed and break apart** *(merged 1ebc21f2; Q226)* (plan §Phases 6).
-- [ ] **GU.7 Rich elements; Wavetable, Envelope and analysers as group presets** (plan §Phases 7).
+- [x] **GU.7 Rich elements; Wavetable, Envelope and analysers as group presets** *(merged 759ccf7c; Q227; engines kept as leaves with their faces as element sections; 3 older playback failures from GU.5b / GU.1 open, fixed in GU.8)* (plan §Phases 7).
 - [ ] **GU.8 The example instrument, style schemas, outline of the next ingredients** (plan §Phases 8). 👁
 - [ ] **GU.9 Racks are parallel groups; the rack is the Device view of them** (plan §One hierarchy; user 2026-11-07: "racks still exist but only as a visual indicator … in the circuit view racks are PARALLEL GROUPS, not a singular group … 1-1 isomorphic with parallel groups, just another way of viewing"). *First attempt (effcd6dc: one group holding chain groups, rack features stripped) reverted in 7eff8172.*
 - [ ] **GU.10 Stock devices as group presets (Utility, Saturator, LFO, Operator); Auto Filter and EQ Eight retired to `retired/` until a Filter module exists** (plan §One hierarchy). 👁
