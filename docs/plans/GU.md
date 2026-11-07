@@ -237,21 +237,22 @@ Retired code: code that cannot be rebuilt yet (no Filter module: Auto Filter, EQ
 stays readable for the rewrite, never rots inside live files, and greps of `src/` stay clean. Git history keeps
 everything as well.
 
-9. **GU.9 Racks are groups.**
-   - A rack is a group whose chains are child groups, each fed by the rack's In and summed into its Out by ordinary
-     wires (a parallel group: no special lowering); an Instrument Rack is an instrument group whose chains are its
-     child groups (only the outermost fed group voices, as already decided). Chain selector / key / velocity zones
-     become a gate per chain driven by atoms and value blocks inside the rack group (not a lowering special case);
-     macros are value blocks on the rack group's panel, and a macro mapping is a wire from the macro's value block to
-     the mapped control (its min / max as the wire's amount / offset in knob position).
-   - The **Device view** shows a group made of parallel chains as today's rack (chain list, macros from its panel);
-     the circuit shows it as a group. Same object, two views.
-   - Delete `Rack` / `Chain` from the model, the rack lowering path, the rack-only commands; load conversion of
-     projects / presets / fixtures with racks (via `convertRetiredModules`' pattern), a test each for chains, zones,
-     macros, Instrument Rack voicing.
-   - Accept: renders of every rack fixture vs today's (diff 0 where arithmetic is unchanged, else the GU tolerance),
-     interpreter == JIT; Device-view rack gestures through real dispatch (add chain, select chain, macro drag, map);
-     goldens + REVIEW 👁.
+9. **GU.9 Racks are parallel groups; the rack is their Device view.** *(user 2026-11-07: "racks still exist but only
+   as a visual indicator … in the circuit view racks are PARALLEL GROUPS, not a singular group … racks were just a way
+   to visualize and interact with the thing in device view, though it's still 1-1 isomorphic with parallel groups".
+   A first attempt that wrapped the chains in one group and dropped rack features was reverted.)*
+   - **Data:** each chain is a group. A rack is **derived from wiring** (user's choice): sibling groups fed from one
+     point and summed into one point are one rack; no flag, no tag, no container. Wiring two groups in parallel by hand
+     makes a rack. Macros are value blocks wired into the rack's chains, shown at the rack's head in the Device view.
+     The `Rack` / `Chain` structs go; everything they held lives in groups, value blocks, atom blocks and wires.
+   - **Feature parity:** the Device view keeps today's rack UI working over those groups: chain list, chain volume /
+     pan / mute / solo, chain selector, key / velocity zones and fades, macros, Map mode, macro variations. Each is
+     made of blocks inside / around the chains (a chain's mixer = value blocks + atoms in its group; zones = voice
+     atoms as blocks), not a lowering special case.
+   - The circuit shows the chains as parallel group capsules with their shared input and sum; the Device view shows
+     the same thing as a rack. Same objects, two views.
+   - Light tests: renders vs today's rack (diff 0 where arithmetic is the same), Device-view gestures via real
+     dispatch, goldens + REVIEW 👁.
 10. **GU.10 Stock devices as group presets; the unbuildable ones retired.**
    - Utility, Saturator, the LFO device and Operator rebuilt as group presets from atom blocks, value blocks and the
      modules (PA, VCA, Wavetable, Envelope), each with a panel from elements (looking like their faces today where
