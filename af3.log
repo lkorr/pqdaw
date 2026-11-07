@@ -1,0 +1,21 @@
+[doctest] doctest version is "2.4.11"
+[doctest] run with "--help" for options
+===============================================================================
+test_all_free.cpp(219):
+TEST SUITE: slow
+TEST CASE:  all-free: every fixture project renders as before (diff 0, interpreter == JIT, the same IR), part 3
+
+test_all_free.cpp(200): ERROR: CHECK( r.patches == it->second.patches ) is NOT correct!
+  values: CHECK( 3:b5769833c5046ba,2:6b54d4d0f3fe3038 == 3:11e7df9d36ad2769,2:c6331391df2b0cbd )
+  logged: rel := app/fixtures/all_free/meta_run
+          app/fixtures/all_free/meta_run: lowered IR changed
+
+test_all_free.cpp(196): FATAL ERROR: REQUIRE( it != refs.end() ) is NOT correct!
+  values: REQUIRE( {?} != {?} )
+  logged: rel := app/fixtures/gu1_curves/automation
+          app/fixtures/gu1_curves/automation: no reference (PQ_UPDATE_GOLDENS=1 on the code before TX.all-free)
+
+===============================================================================
+[doctest] test cases:  1 |  0 passed | 1 failed | 226 skipped
+[doctest] assertions: 26 | 24 passed | 2 failed |
+[doctest] Status: FAILURE!

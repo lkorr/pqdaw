@@ -1,0 +1,36 @@
+[doctest] doctest version is "2.4.11"
+[doctest] run with "--help" for options
+===============================================================================
+test_all_free.cpp(217):
+TEST SUITE: slow
+TEST CASE:  all-free: every fixture project renders as before (diff 0, interpreter == JIT, the same IR), part 1
+
+test_all_free.cpp(198): ERROR: CHECK( r.interp == it->second.interp ) is NOT correct!
+  values: CHECK( 14517126629006021635 == 11209390672930416591 )
+  logged: rel := app/fixtures/all_free/free_wires
+          app/fixtures/all_free/free_wires: interpreted render changed (peak 0.693905, was 0.693905)
+
+test_all_free.cpp(199): ERROR: CHECK( r.jit == it->second.jit ) is NOT correct!
+  values: CHECK( 14517126629006021635 == 11209390672930416591 )
+  logged: rel := app/fixtures/all_free/free_wires
+          app/fixtures/all_free/free_wires: JIT render changed
+
+test_all_free.cpp(200): ERROR: CHECK( r.patches == it->second.patches ) is NOT correct!
+  values: CHECK( 3:4892169df248f200,2:6b54d4d0f3fe3038 == 3:f6e12a21dbc9f3a3,2:c6331391df2b0cbd )
+  logged: rel := app/fixtures/all_free/free_wires
+          app/fixtures/all_free/free_wires: lowered IR changed
+
+test_all_free.cpp(200): ERROR: CHECK( r.patches == it->second.patches ) is NOT correct!
+  values: CHECK( 4:d8f2d7672a3d531e,6:603aba187dabcdc5,14:a14c1f7d3ecfc414,8:12975a2ad6fb69a6,10:799bac583fbb8e8d,12:2fcff89c13297048,15:2945d2ecb7c58ecb,2:6b54d4d0f3fe3038 == 4:7d1ea548633969f8,6:5faf3ddc952e5dff,14:62ef81cd7599aa2a,8:d55e7f3c9be4e1d2,10:c1d67e0124e2e4db,12:b08c3932e5295966,15:d054e2c9a6f1b2a9,2:c6331391df2b0cbd )
+  logged: rel := app/fixtures/all_free/v16_views_automation
+          app/fixtures/all_free/v16_views_automation: lowered IR changed
+
+test_all_free.cpp(196): FATAL ERROR: REQUIRE( it != refs.end() ) is NOT correct!
+  values: REQUIRE( {?} != {?} )
+  logged: rel := app/fixtures/gu1_curves/undriven
+          app/fixtures/gu1_curves/undriven: no reference (PQ_UPDATE_GOLDENS=1 on the code before TX.all-free)
+
+===============================================================================
+[doctest] test cases:  1 |  0 passed | 1 failed | 226 skipped
+[doctest] assertions: 40 | 35 passed | 5 failed |
+[doctest] Status: FAILURE!

@@ -123,13 +123,16 @@ struct WtSong {
   std::vector<TrackId> tracks;
   std::vector<DeviceId> wts;
   WtSong() { must(SetTempoMap{{{0, 120.0, TempoCurve::Step}}}); }
-  void must(Command c) {
-    const Status st = store.dispatch(playback_fixture::inUnits(store, std::move(c)));
+  // A command built by hand: its device params in units (GU.1: stored as knob positions, tests/support/knob_positions.h).
+  void must(Command c) { raw(playback_fixture::inUnits(store, std::move(c))); }
+  void raw(Command c) {
+    const Status st = store.dispatch(std::move(c));
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
   }
+  // An edit op's command as it is (ops::setDeviceParam takes a position, setDeviceParamValue converts itself).
   void edit(Result<ops::Edit> e) {
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
-    must(e->command);
+    raw(e->command);
   }
   const Project& doc() const { return *store.current(); }
   // IG.1-2: a meta module of `type` playing track `t`'s notes per note: the default instrument out of its group, the

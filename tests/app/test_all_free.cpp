@@ -11,6 +11,11 @@
 // schema 17 now); v16_views_arrangement / _automation / _mixer likewise tests/views/fixtures/* (rebuilt by their scene
 // builders, which make schema-17 projects now). A fixture first written by schema 17 gets its row from this test run with PQ_ALLFREE_NEW_ROW=1 (marked
 // "written by schema 17" in renders.txt): it has no "before".
+// GU.1 (params store knob positions; driven controls through one `curve` atom): projects load with the device library
+// (their values converted); every IR hash re-recorded; the renders are unchanged except two whose wires drive a curved
+// control, re-recorded after measuring them against the pre-GU.1 build: free_wires −128.9 dBFS, views/fixtures/
+// meta-cables −117.1 dBFS (an LFO into the Phase accumulator's frequency: float rounding of a frequency becomes phase,
+// largest at the start, exact once the note ends — QUESTIONS Q?-GU.1-a). The gu1_curves fixtures got rows.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -166,7 +171,9 @@ void checkPart(size_t part) {
     }
     CAPTURE(rel);
     const std::string dir = (testRoot() / rel).string();
-    auto loaded = loadProject(dir);
+    LoadOptions opts;
+    opts.devices = &library();  // GU.1: values older than schema 20 become knob positions through the library's curves
+    auto loaded = loadProject(dir, opts);
     if (!loaded.ok()) {
       MESSAGE(rel << ": does not load (" << loaded.error().message << "): skipped");
       continue;
