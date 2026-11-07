@@ -155,6 +155,14 @@ struct RichProject : Fixture {
     REQUIRE_MESSAGE(wired.ok(), (wired.ok() ? std::string() : wired.error().message));
     const pq::Status sw = store.dispatch(wired->command);
     REQUIRE_MESSAGE(sw.ok(), (sw.ok() ? std::string() : sw.error().message));
+    // TX.pan-laws: every MIDI track pans with constant power (its law before schema 18): exactly what the schema
+    // 17 -> 18 migration gives the older fixtures (every other track keeps Balance, the default).
+    Batch laws{"pan laws", {}};
+    forEachTrack(*store.current(), [&](const Track& t, const Track*) {
+      if (t.kind == TrackKind::Midi) laws.commands.push_back(SetTrackPanMode{t.id, PanMode::ConstantPower});
+    });
+    const pq::Status sl = store.dispatch(laws);
+    REQUIRE_MESSAGE(sl.ok(), (sl.ok() ? std::string() : sl.error().message));
     // View state (not undoable, saved with the project).
     store.view().tracks[drums] = TrackView{true, 0};
     store.view().tracks[lead] = TrackView{false, 120};

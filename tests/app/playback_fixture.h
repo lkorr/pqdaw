@@ -127,6 +127,9 @@ inline Snapshot unwiredDefaultProject() {
 inline TrackPtr track(TrackId id, TrackKind kind, std::string name, DeviceId instrument = {}) {
   Track t = makeTrack(id, kind, std::move(name));
   if (instrument.valid()) t.devices.push_back(makeDefaultInstrument(instrument));
+  // TX.pan-laws: a MIDI track of these tests pans with constant power, the law their references (hand-built graphs,
+  // the committed fixtures, goldens) were made with before Balance became every track's default.
+  if (kind == TrackKind::Midi) t.mixer.panMode = PanMode::ConstantPower;
   return std::make_shared<const Track>(std::move(t));
 }
 

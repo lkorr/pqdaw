@@ -194,6 +194,73 @@ const MetaInstance* Device::metaAt(std::string_view path) const noexcept {
   return it != meta->end() && it->path == path ? &it->instance : nullptr;
 }
 
+// ---- TX.pan-laws ----
+
+std::string_view panModeName(PanMode m) noexcept {
+  switch (m) {
+    case PanMode::Balance: return "Balance";
+    case PanMode::ConstantPower: return "Constant Power (-3 dB)";
+    case PanMode::Linear: return "Linear (-6 dB)";
+    case PanMode::Stereo: return "True Stereo";
+  }
+  return "Balance";
+}
+
+std::string_view panModeShort(PanMode m) noexcept {
+  switch (m) {
+    case PanMode::Balance: return "BAL";
+    case PanMode::ConstantPower: return "-3 dB";
+    case PanMode::Linear: return "-6 dB";
+    case PanMode::Stereo: return "STEREO";
+  }
+  return "BAL";
+}
+
+std::string_view panModeKey(PanMode m) noexcept {
+  switch (m) {
+    case PanMode::Balance: return "balance";
+    case PanMode::ConstantPower: return "constantPower";
+    case PanMode::Linear: return "linear";
+    case PanMode::Stereo: return "stereo";
+  }
+  return "balance";
+}
+
+std::optional<PanMode> panModeFromKey(std::string_view key) noexcept {
+  for (const PanMode m : kPanModes)
+    if (panModeKey(m) == key) return m;
+  return std::nullopt;
+}
+
+PanMatrix panMatrix(PanMode m, double p) noexcept {
+  p = std::clamp(std::isnan(p) ? 0.0 : p, -1.0, 1.0);
+  constexpr double kQuarterPi = 0.78539816339744830962, kHalfPi = 1.57079632679489661923;
+  PanMatrix g;
+  switch (m) {
+    case PanMode::Balance:
+      g.ll = std::min(1.0, 1.0 - p);
+      g.rr = std::min(1.0, 1.0 + p);
+      break;
+    case PanMode::ConstantPower:
+      g.ll = std::cos((p + 1.0) * kQuarterPi);
+      g.rr = std::sin((p + 1.0) * kQuarterPi);
+      break;
+    case PanMode::Linear:
+      g.ll = 0.5 * (1.0 - p);
+      g.rr = 0.5 * (1.0 + p);
+      break;
+    case PanMode::Stereo: {
+      const double a = std::max(p, 0.0) * kHalfPi, b = std::max(-p, 0.0) * kHalfPi;
+      g.ll = std::cos(a);  // the left input: what stays left
+      g.lr = std::sin(a);  //                 what moves right
+      g.rr = std::cos(b);
+      g.rl = std::sin(b);
+      break;
+    }
+  }
+  return g;
+}
+
 bool isMetaDevice(const Device& d) noexcept { return !d.rack && d.patch.starts_with(kMetaDevicePrefix); }
 
 std::string_view metaDeviceType(const Device& d) noexcept {

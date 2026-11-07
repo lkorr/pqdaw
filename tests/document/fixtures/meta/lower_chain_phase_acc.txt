@@ -15,18 +15,17 @@ patch Midi8 {
   _n12 = voice_sum(d12 * _n10)
   _n19 = 0.002
   _n23 = volume <= -70 ? _n7 : db_to_gain(volume)
-  _n26 = (pan + _n9) * 0.7853981633974483
-  _n29 = sin(_n26 + 1.5707963267948966)
-  _n30 = sin(_n26)
-  _n35 = mute < 0.5
-  _n37 = _n35 ? sendGate : _n7
-  _n38 = _n23 * (_n35 ? gate : _n7)
-  _n44 = _n23 * _n37
+  _n25 = min(_n9, _n9 - pan)
+  _n27 = min(_n9, _n9 + pan)
+  _n32 = mute < 0.5
+  _n34 = _n32 ? sendGate : _n7
+  _n35 = _n23 * (_n32 ? gate : _n7)
+  _n41 = _n23 * _n34
   done = !_n1 && _n10 <= _n7
-  out = gain(_n12, (_n29 * _n38, _n30 * _n38), _n19)
+  out = gain(_n12, (_n25 * _n35, _n27 * _n35), _n19)
 
-  export post = gain(_n12, (_n29 * _n44, _n30 * _n44), _n19)
-  export pre = gain(_n12, (_n29 * _n37, _n30 * _n37), _n19)
+  export post = gain(_n12, (_n25 * _n41, _n27 * _n41), _n19)
+  export pre = gain(_n12, (_n25 * _n34, _n27 * _n34), _n19)
 
 }
 

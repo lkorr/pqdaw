@@ -530,6 +530,10 @@ public:
   void beginValueGesture(const char* label);
   void setVolume(doc::TrackId track, float db);
   void setPan(doc::TrackId track, float pan);
+  // TX.pan-laws: the track's pan law menu (Balance, Constant Power, Linear, True Stereo; the current one checked) at
+  // `at` (device px). A pick is one undo step ("Pan Law") and recompiles that track only.
+  ui::Menu* openPanLawMenu(doc::TrackId track, ui::Vec2 at);
+  std::vector<ui::MenuItem> panLawItems(doc::TrackId track);
   void setSend(doc::TrackId track, doc::TrackId ret, float db);
   void endValueGesture();
   void cancelValueGesture();

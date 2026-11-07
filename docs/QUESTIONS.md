@@ -2239,3 +2239,8 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **View state, not undoable** (like nudges, sizes and pinned ports); Reset Layout clears it; the mixer's menu has Mixer to Top Right.
 - **The meter** reads on the fader's scale (Live's fader law) over the fader, so the cap and the level line up; polled through the faces' voice-reader clock (an adapter, as the Spectrum / Scope faces do) only while the meter source is live; a poll repaints only when a drawn end moves a quarter of a world unit.
 - Status: open (provisional choices above).
+
+## Q?-TX.pan-laws-a · 2026-11-06 · TX.pan-laws · Pan-law defaults per track type
+- Chose Balance (0 dB centre, never boosts a channel) as the default of every new track, MIDI included (SPEC §8 "balance/split stereo"); the user's "hard R is louder" was a MIDI track's constant-power law: R +3.01 dB over the centre's, total power equal (measured). Groups / returns / master were Balance already.
+- Schema ≤ 17 MIDI tracks migrate to Constant Power (17 → 18), so old projects sound unchanged; switch them in the mixer. Alternative: migrate them to Balance too (+3 dB at the centre on every old MIDI track).
+- True Stereo is one knob (each input channel panned at constant power; hard R folds L into R: wide material keeps its power, identical L/R gains +3 dB). Live's two-knob split stereo is left for later. Status: open.

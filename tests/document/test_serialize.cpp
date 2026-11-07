@@ -310,7 +310,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
                              builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11],
                              builtinMigrations()[12], builtinMigrations()[13], builtinMigrations()[14],
-                             builtinMigrations()[15]};
+                             builtinMigrations()[15], builtinMigrations()[16]};
   const std::string old = schema0Text();
   SUBCASE("an old file is migrated, then decoded") {
     Result<LoadedProject> r = parseProject(old, LoadOptions{table, "old.pqd"});
@@ -337,14 +337,14 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
   SUBCASE("a newer file is refused") {
     std::string newer = readFile(fixturePath("minimal/project.pqd"));
-    const size_t at = newer.find("\"schemaVersion\": 17");
+    const size_t at = newer.find("\"schemaVersion\": 18");
     REQUIRE(at != std::string::npos);
-    newer.replace(at, 19, "\"schemaVersion\": 18");
+    newer.replace(at, 19, "\"schemaVersion\": 19");
     Result<LoadedProject> r = parseProject(newer);
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().code == pq::ErrorCode::Unsupported);
     CHECK(r.error().message ==
-          "$.schemaVersion: the project was saved by a newer pqdaw (schema 18; this build reads up to 17)");
+          "$.schemaVersion: the project was saved by a newer pqdaw (schema 19; this build reads up to 18)");
   }
   SUBCASE("a migration's output is validated like any file") {
     const Migration broken[] = {{0, [](nlohmann::json& d) -> pq::Status {
@@ -358,7 +358,7 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                              builtinMigrations()[6], builtinMigrations()[7], builtinMigrations()[8],
                              builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11],
                              builtinMigrations()[12], builtinMigrations()[13], builtinMigrations()[14],
-                             builtinMigrations()[15]};
+                             builtinMigrations()[15], builtinMigrations()[16]};
     Result<LoadedProject> r = parseProject(old, LoadOptions{broken, {}});
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.rfind("$.timeline.tempo: ", 0) == 0);
@@ -439,11 +439,26 @@ void stripDevices(nlohmann::json& t, StrippedDevices& s) {
   if (auto c = t.find("children"); c != t.end() && c->is_array())
     for (nlohmann::json& child : *c) stripDevices(child, s);
 }
+void stripPanLaws(nlohmann::json& t) {
+  if (!t.is_object()) return;
+  if (auto m = t.find("mixer"); m != t.end() && m->is_object())
+    if (const auto pm = m->find("panMode"); pm != m->end()) {
+      CHECK(t.value("kind", std::string()) == "midi");
+      CHECK(*pm == "constantPower");
+      m->erase(pm);
+    }
+  if (auto c = t.find("children"); c != t.end() && c->is_array())
+    for (nlohmann::json& child : *c) stripPanLaws(child);
+}
 StrippedDevices stripAllDevices(nlohmann::json& doc) {
   StrippedDevices s;
   for (const char* list : {"tracks", "returns"})
     for (nlohmann::json& t : doc[list]) stripDevices(t, s);
   stripDevices(doc["master"], s);
+  // TX.pan-laws: the 17 -> 18 step's "panMode": "constantPower" on every MIDI track goes too.
+  for (const char* list : {"tracks", "returns"})
+    for (nlohmann::json& t : doc[list]) stripPanLaws(t);
+  stripPanLaws(doc["master"]);
   // TX.all-free: the 16 -> 17 step's main links (every track's source → its chain → its mixer) go too.
   if (auto w = doc.find("wires"); w != doc.end()) {
     bool links = true;
@@ -454,7 +469,7 @@ StrippedDevices stripAllDevices(nlohmann::json& doc) {
 }
 
 TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as the current schema") {
-  static_assert(kSchemaVersion == 17);
+  static_assert(kSchemaVersion == 18);
   const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
   REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
 
@@ -463,7 +478,7 @@ TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick 
   CHECK(r->fileSchemaVersion == 1);
   Result<std::string> again = serializeProject(*r->project, r->view);
   REQUIRE(again.ok());
-  CHECK(again->rfind("{\n  \"schemaVersion\": 17,", 0) == 0);
+  CHECK(again->rfind("{\n  \"schemaVersion\": 18,", 0) == 0);
 
   nlohmann::json resaved = nlohmann::json::parse(*again);
   const StrippedDevices sd = stripAllDevices(resaved);  // 2 -> 3: checked on its own below
@@ -603,7 +618,7 @@ TEST_CASE("serialize: wires from a note source (schema 12) round-trip and are va
     Result<std::string> text = serializeProject(f.doc(), f.store.view());
     REQUIRE(text.ok());
     std::string old = *text;
-    old.replace(old.find("\"schemaVersion\": 17"), 19, "\"schemaVersion\": 11");
+    old.replace(old.find("\"schemaVersion\": 18"), 19, "\"schemaVersion\": 11");
     Result<LoadedProject> r = parseProject(old);
     REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
     CHECK(r->fileSchemaVersion == 11);
@@ -779,4 +794,62 @@ TEST_CASE("serialize: device chains round-trip; the reader checks the chain rule
             ", \"patch\": \"y\", \"kind\": \"audioEffect\"}]",
         "device id twice in a chain");
   fails("[{\"patch\": \"x\", \"kind\": \"instrument\"}]", "missing key \"id\"");
+}
+
+// ---- Schema 17 -> 18 (TX.pan-laws: a track's pan law) -------------------------------------------------------------
+
+namespace {
+void stripPanModes(nlohmann::json& node) {
+  if (node.is_object()) {
+    if (auto m = node.find("mixer"); m != node.end() && m->is_object()) m->erase("panMode");
+    for (auto it = node.begin(); it != node.end(); ++it) stripPanModes(*it);
+  } else if (node.is_array()) {
+    for (nlohmann::json& e : node) stripPanModes(e);
+  }
+}
+}  // namespace
+
+TEST_CASE("serialize: pan laws (schema 18) round-trip on every kind of track; schema 17 keeps constant power on MIDI tracks") {
+  RichProject f;
+  Batch b{"laws", {}};
+  b.commands.push_back(SetTrackPanMode{f.drums, PanMode::Stereo});       // a group
+  b.commands.push_back(SetTrackPanMode{f.reverb, PanMode::Linear});      // a return
+  b.commands.push_back(SetTrackPanMode{f.master, PanMode::ConstantPower});
+  b.commands.push_back(SetTrackPanMode{f.lead, PanMode::Balance});       // a MIDI track back on the default
+  REQUIRE(f.store.dispatch(b).ok());
+  std::string text;
+  const LoadedProject back = roundTrip(f.doc(), f.store.view(), &text);
+  CHECK(*back.project == f.doc());
+  CHECK(findTrackPtr(*back.project, f.drums)->mixer.panMode == PanMode::Stereo);
+  CHECK(findTrackPtr(*back.project, f.reverb)->mixer.panMode == PanMode::Linear);
+  CHECK(findTrackPtr(*back.project, f.master)->mixer.panMode == PanMode::ConstantPower);
+  CHECK(findTrackPtr(*back.project, f.lead)->mixer.panMode == PanMode::Balance);
+  CHECK(findTrackPtr(*back.project, f.kick)->mixer.panMode == PanMode::ConstantPower);  // RichProject: every MIDI track
+  CHECK(text.find("\"panMode\": \"stereo\"") != std::string::npos);
+  CHECK(text.find("\"panMode\": \"balance\"") == std::string::npos);  // the default is not written
+
+  // An unknown law is refused with its path.
+  std::string bad = text;
+  bad.replace(bad.find("\"panMode\": \"stereo\""), 19, "\"panMode\": \"wide\"");
+  Result<LoadedProject> refused = parseProject(bad);
+  REQUIRE_FALSE(refused.ok());
+  CHECK(refused.error().message.find("unknown pan law \"wide\"") != std::string::npos);
+
+  // The same project as schema 17 wrote it (no "panMode" anywhere): every MIDI track gets constant power (its law then),
+  // everything else Balance — the project sounds as it did.
+  nlohmann::json old = nlohmann::json::parse(text);
+  stripPanModes(old);
+  old["schemaVersion"] = 17;
+  Result<LoadedProject> r = parseProject(old.dump(2));
+  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
+  CHECK(r->fileSchemaVersion == 17);
+  size_t midi = 0;
+  forEachTrack(*r->project, [&](const Track& t, const Track*) {
+    CAPTURE(t.name);
+    CHECK(t.mixer.panMode == (t.kind == TrackKind::Midi ? PanMode::ConstantPower : PanMode::Balance));
+    midi += t.kind == TrackKind::Midi ? 1u : 0u;
+  });
+  CHECK(midi >= 3);
+  CHECK(r->project->master->mixer.panMode == PanMode::Balance);
+  for (const TrackPtr& t : r->project->returns) CHECK(t->mixer.panMode == PanMode::Balance);
 }

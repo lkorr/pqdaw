@@ -54,6 +54,8 @@ struct RenameTrack { TrackId track; std::string name; };          // Meta
 struct SetTrackColour { TrackId track; Colour colour; };          // Meta
 struct SetTrackVolume { TrackId track; float db = 0.0f; };        // Param (TrackVolume)
 struct SetTrackPan { TrackId track; float pan = 0.0f; };          // Param (TrackPan)
+// Structural (TX.pan-laws: the law is the track patch's pan math; a recompile of that track only).
+struct SetTrackPanMode { TrackId track; PanMode mode = PanMode::Balance; };
 struct SetTrackMute { TrackId track; bool mute = false; };        // Param (TrackMute), Q15
 struct SetTrackSolo { TrackId track; bool solo = false; };        // Param (TrackSolo): gains via effectiveAudible
 struct SetTrackArm { TrackId track; bool arm = false; };          // Meta until recording/monitoring exist (M5)
@@ -279,8 +281,8 @@ struct Batch {
 };
 
 using CommandVariant = std::variant<
-    AddTrack, RemoveTrack, MoveTrack, RenameTrack, SetTrackColour, SetTrackVolume, SetTrackPan, SetTrackMute,
-    SetTrackSolo, SetTrackArm, SetSendLevel, SetSendPreFader, SetTrackOutput, SetTrackActive, SetTrackTuning,
+    AddTrack, RemoveTrack, MoveTrack, RenameTrack, SetTrackColour, SetTrackVolume, SetTrackPan, SetTrackPanMode,
+    SetTrackMute, SetTrackSolo, SetTrackArm, SetSendLevel, SetSendPreFader, SetTrackOutput, SetTrackActive, SetTrackTuning,
     GroupTracks, UngroupTracks,
     AddClip, RemoveClip, MoveClip, SetClipBounds, SetClipLoop, SetClipTuning, RenameClip, SetClipColour,
     SetClipSignature, SetClipActive, SetClipFundamental, SetAudioClip, AddSample, RemoveSample, SetSample,

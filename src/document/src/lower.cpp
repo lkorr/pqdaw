@@ -912,6 +912,9 @@ enum Fixed : uint32_t {
   // TMM.10: a meta voice run's release (the declick ramp after note-off and the voice's end)
   kRelGate = 86, kRelNot, kRelRate, kRelSr, kRelStep, kRelPrev, kRelSub, kRelMax, kRelEnv, kRelMul, kRelLe, kRelDone,
   kCFreeZero = 98,  // TX.patching: a free device's unwired audio input (−0: an added zero the optimiser removes)
+  // TX.pan-laws: the True Stereo law's 2×2 matrix (gainStages)
+  kStPos = 100, kStNegPan, kStNeg, kStThP, kStThN, kStCosPIn, kStLL, kStLR, kStCosNIn, kStRR, kStRL, kStDirect,
+  kStCross, kStL, kStR, kStSwap, kStGain, kStSum,
   kLiteralPool = 256,  // T4.1: device setting literals take ids kLiteralPool … kEntityNodeBase − 1 (per track)
 };
 // Per entity (nodeIdFor): a tuning node's nodes, a send's nodes.
@@ -1005,8 +1008,25 @@ private:
   bool overflow_ = false;
 };
 
-// The gain stages (see lower.h): x → out (and for senders post / pre exports).
-void gainStages(Ir& ir, Kind kind, PortRef x, float smoothingMs) {
+// TX.pan-laws: True Stereo, each input channel panned on its own (model.h PanMode::Stereo): x' = gain(x, (ll, rr)) +
+// gain(swap(x), (rl, lr)), the four gains at block rate from the pan param and smoothed per sample like every mixer
+// gain (one more smoothed pair per track; at the centre the cross pair is 0 and gain_add passes x' through).
+PortRef stereoPan(Ir& ir, PortRef x, PortRef pan, PortRef c0, PortRef time) {
+  const PortRef halfPi = ir.konst(std::numbers::pi / 2, kCHalfPi);
+  const PortRef thP = ir.atom("mul", {ir.atom("max", {pan, c0}, kStPos), halfPi}, kStThP);
+  const PortRef thN = ir.atom("mul", {ir.atom("max", {ir.atom("neg", {pan}, kStNegPan), c0}, kStNeg), halfPi}, kStThN);
+  const PortRef ll = ir.atom("sin", {ir.atom("add", {thP, halfPi}, kStCosPIn)}, kStLL);  // cos: the left input, kept left
+  const PortRef lr = ir.atom("sin", {thP}, kStLR);                                        //      moved right
+  const PortRef rr = ir.atom("sin", {ir.atom("add", {thN, halfPi}, kStCosNIn)}, kStRR);
+  const PortRef rl = ir.atom("sin", {thN}, kStRL);
+  const PortRef swap = ir.atom("pack", {ir.atom("channel", {x, ir.konst(1.0, kC1)}, kStR), ir.atom("channel", {x, c0}, kStL)}, kStSwap, 2);
+  // start 1: the direct pair begins at its target (a switch to this law does not duck the track while it fades in).
+  const PortRef direct = ir.atom("gain", {x, ir.atom("pack", {ll, rr}, kStDirect, 2), time, ir.konst(1.0, kC1)}, kStGain);
+  return ir.atom("gain_add", {direct, swap, ir.atom("pack", {rl, lr}, kStCross, 2), time}, kStSum);
+}
+
+// The gain stages (see lower.h): x → out (and for senders post / pre exports). `mode`: the pan law (model.h PanMode).
+void gainStages(Ir& ir, Kind kind, PanMode mode, PortRef x, float smoothingMs) {
   const PortRef volume = ir.param("volume", 0.0, kMinVolumeDb, kMaxVolumeDb, kVolume);
   const PortRef pan = ir.param("pan", 0.0, -1.0, 1.0, kPan);
   const PortRef c0 = ir.konst(0.0, kC0), c1 = ir.konst(1.0, kC1);
@@ -1014,14 +1034,29 @@ void gainStages(Ir& ir, Kind kind, PortRef x, float smoothingMs) {
   const PortRef vg = ir.atom("select", {ir.atom("le", {volume, ir.konst(kMinVolumeDb, kCFloor)}, kVolLe), c0,
                                         ir.atom("db_to_gain", {volume}, kVolDb)},
                              kVg);
+  // The law's gains (block rate: the pan is a param), folded into each stage's one smoothed gain (TX.pan-laws).
   PortRef pl, pr;
-  if (kind == Kind::Midi) {  // a mono source: constant power, −3 dB per side at the centre
-    const PortRef th = ir.atom("mul", {ir.atom("add", {pan, c1}, kPanA), ir.konst(std::numbers::pi / 4, kCQuarterPi)}, kTheta);
-    pl = ir.atom("sin", {ir.atom("add", {th, ir.konst(std::numbers::pi / 2, kCHalfPi)}, kPanB)}, kPl);
-    pr = ir.atom("sin", {th}, kPr);
-  } else {  // a stereo bus: balance, 0 dB at the centre
-    pl = ir.atom("min", {c1, ir.atom("sub", {c1, pan}, kPanA)}, kPl);
-    pr = ir.atom("min", {c1, ir.atom("add", {c1, pan}, kPanB)}, kPr);
+  switch (mode) {
+    case PanMode::ConstantPower: {  // −3 dB per side at the centre
+      const PortRef th = ir.atom("mul", {ir.atom("add", {pan, c1}, kPanA), ir.konst(std::numbers::pi / 4, kCQuarterPi)}, kTheta);
+      pl = ir.atom("sin", {ir.atom("add", {th, ir.konst(std::numbers::pi / 2, kCHalfPi)}, kPanB)}, kPl);
+      pr = ir.atom("sin", {th}, kPr);
+      break;
+    }
+    case PanMode::Linear: {  // −6 dB per side at the centre
+      const PortRef half = ir.konst(0.5, kCHalf);
+      pl = ir.atom("mul", {ir.atom("sub", {c1, pan}, kPanA), half}, kPl);
+      pr = ir.atom("mul", {ir.atom("add", {c1, pan}, kPanB), half}, kPr);
+      break;
+    }
+    case PanMode::Stereo:  // the 2×2 matrix before the stages; the stages carry the volume and gates only
+      x = stereoPan(ir, x, pan, c0, time);
+      pl = pr = c1;
+      break;
+    case PanMode::Balance:  // 0 dB at the centre, never above it
+      pl = ir.atom("min", {c1, ir.atom("sub", {c1, pan}, kPanA)}, kPl);
+      pr = ir.atom("min", {c1, ir.atom("add", {c1, pan}, kPanB)}, kPr);
+      break;
   }
   auto stage = [&](PortRef g, uint32_t l, uint32_t r, uint32_t pack, uint32_t gain) {
     const PortRef gl = ir.atom("mul", {pl, g}, l), gr = ir.atom("mul", {pr, g}, r);
@@ -3875,7 +3910,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     if (y.node == graph::kNone) y = ir.konst(0.0, kC0);
     x = y;
   }
-  gainStages(ir, n.kind, x, o.smoothingMs);
+  gainStages(ir, n.kind, n.track->mixer.panMode, x, o.smoothingMs);
   lowerSites(b, index, track, wp, taps);  // T4.7, T4.8
   if (ir.literalOverflow())
     return Error{ErrorCode::Overflow, "lower: track " + std::to_string(n.track->id.value) + ": more than " +

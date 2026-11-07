@@ -185,7 +185,12 @@ void apply(DocumentStore& s, Command c) {
   REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
 }
 
-TrackId track(DocumentStore& s, TrackKind kind) { return run(s, ops::createTrack(*s.current(), s.ids(), kind)).tracks.at(0); }
+// TX.pan-laws: a MIDI track pans with constant power here (centrePan's 0.707: the loops' references decay with it).
+TrackId track(DocumentStore& s, TrackKind kind) {
+  const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), kind)).tracks.at(0);
+  if (kind == TrackKind::Midi) REQUIRE(s.dispatch(SetTrackPanMode{t, PanMode::ConstantPower}).ok());
+  return t;
+}
 DeviceId headOf(DocumentStore& s, TrackId t) { return mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.at(0)->id; }
 // A MIDI track without blocks (source → mixer): its mixer the same law as a MIDI track with a synth.
 TrackId emptyMidi(DocumentStore& s) {

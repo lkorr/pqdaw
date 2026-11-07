@@ -7,6 +7,7 @@
 //   header   the track's colour, "MIXER" ("MASTER"), and the M (the track activator: lit while the track plays) and S
 //            (solo; Ctrl+click additive) pills — none on the master.
 //   pan      a knob (±135°, its value arc from 12 o'clock); drag up / down (Shift: fine), double-click: centre.
+//            Above it the pan law's tag (TX.pan-laws: BAL, -3 dB, -6 dB, STEREO): a click opens the law menu.
 //   volume   a horizontal fader on Live's fader law (views/mixer: 0 dB at 0.708) with ticks at +6 … −48 dB (0 dB the
 //            long one) and the level in the accent; drag sideways (Shift: fine), double-click: 0 dB. The readout under
 //            it, the pan's under the knob.
@@ -55,7 +56,8 @@ constexpr float kMeterY0 = 27.0f, kMeterY1 = 30.5f;  // the level meter's L / R 
 constexpr float kSx0 = 24.0f;  // a send row's fader (left end); right end: w − 14 (expanded: w − 50, the level after it)
 constexpr float kLabelPx = 7.5f, kValuePx = 8.5f;
 
-enum Part : int32_t { kMute = 0, kSolo = 1, kPan = 2, kVolume = 3, kSend0 = 4 };
+enum Part : int32_t { kMute = 0, kSolo = 1, kPan = 2, kVolume = 3, kSend0 = 4, kPanLaw = 1000 /* after any send */ };
+constexpr Rect kLawRect{8.0f, 20.0f, 46.0f, 28.5f};  // TX.pan-laws: the law's tag, above the knob
 
 float sendY(size_t k) noexcept { return metrics::kMixerSendTop + metrics::kPinPitch * static_cast<float>(k); }
 float panAngle(float pan) noexcept { return -0.5f * kPi + kPanSweep * std::clamp(pan, -1.0f, 1.0f); }
@@ -191,6 +193,11 @@ public:
       pill(p, th, soloRect(), "S", t->mixer.solo, th.mixer.soloOn, th.mixer.activatorText, kSolo);
     }
 
+    // ---- the pan law's tag (TX.pan-laws) ----
+    if (hovered_ == kPanLaw) p.roundedRect(kLawRect, 2.5f, th.face.hover);
+    p.text({(kLawRect.x0 + kLawRect.x1) * 0.5f, (kLawRect.y0 + kLawRect.y1) * 0.5f}, std::string(doc::panModeShort(t->mixer.panMode)),
+           6.0f, th.face.ink);
+
     // ---- pan ----
     const float pan = std::clamp(t->mixer.pan, -1.0f, 1.0f);
     const float a0 = panAngle(0.0f), a1 = panAngle(pan);
@@ -260,6 +267,7 @@ public:
       if (in(grow(muteRect(), 1.5f), l)) return kMute;
       if (in(grow(soloRect(), 1.5f), l)) return kSolo;
     }
+    if (in(kLawRect, l)) return kPanLaw;
     if (std::hypot(l.x - kPanC.x, l.y - kPanC.y) <= kPanR + 4.0f) return kPan;
     if (in({kFx0 - 6.0f, kFy - 10.0f, faderX1() + 6.0f, kFy + 10.0f}, l)) return kVolume;
     for (size_t k = 0; k < sends_.size(); ++k)
@@ -284,6 +292,10 @@ public:
         }
         if (part == kSolo) {
           (void)v.solo(id, (e.mods & ui::mod::kCtrl) != 0);
+          return true;
+        }
+        if (part == kPanLaw) {
+          (void)v.openPanLawMenu(id, e.device);
           return true;
         }
         if (part == kVolume) {
@@ -351,7 +363,7 @@ public:
   }
   ui::Cursor cursor(int32_t part) const noexcept override {
     if (drag_ >= 0) part = drag_;  // a drag keeps its control's cursor wherever the pointer goes
-    if (part == kMute || part == kSolo) return ui::Cursor::Pointer;
+    if (part == kMute || part == kSolo || part == kPanLaw) return ui::Cursor::Pointer;
     if (part == kPan) return ui::Cursor::ResizeNS;
     if (part >= kVolume) return ui::Cursor::ResizeEW;
     return ui::Cursor::Inherit;  // the frame: the block's (the canvas: Move)
@@ -367,6 +379,7 @@ public:
       case kMute: body = std::string("Track Activator (") + (t->mixer.mute ? "off" : "on") + "): click to toggle."; break;
       case kSolo: body = "Solo: click (Ctrl+click: additive)."; break;
       case kPan: body = "Pan " + formatPan(t->mixer.pan) + ": drag up / down (Shift: fine), double-click: centre."; break;
+      case kPanLaw: body = "Pan law: " + std::string(doc::panModeName(t->mixer.panMode)) + ". Click to choose (also in the mixer's right-click menu)."; break;
       case kVolume: body = "Volume " + formatVolume(t->mixer.volumeDb) + " dB: drag sideways (Shift: fine), double-click: 0 dB."; break;
       default:
         if (part >= kSend0 && static_cast<size_t>(part - kSend0) < sends_.size()) {

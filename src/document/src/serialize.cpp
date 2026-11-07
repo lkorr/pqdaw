@@ -466,6 +466,10 @@ private:
     w_.number(PathSeg(&mx, "volumeDb"), m.volumeDb);
     w_.key("pan");
     w_.number(PathSeg(&mx, "pan"), m.pan);
+    if (m.panMode != PanMode::Balance) {  // TX.pan-laws (schema 18): written only when not the default
+      w_.key("panMode");
+      w_.string(PathSeg(&mx, "panMode"), panModeKey(m.panMode));
+    }
     w_.key("mute");
     w_.boolean(m.mute);
     w_.key("solo");
@@ -2554,7 +2558,7 @@ private:
   }
 
   Mixer mixer(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"volumeDb", "pan", "mute", "solo", "arm", "sends", "output"};
+    static constexpr std::string_view K[] = {"volumeDb", "pan", "mute", "solo", "arm", "sends", "output", "panMode"};
     Mixer mx;
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
@@ -2573,6 +2577,14 @@ private:
         case 4: mx.arm = r_.readBool(f); break;
         case 5: mx.sends = sends(f); break;
         case 6: mx.output = output(f); break;
+        case 7: {  // TX.pan-laws (schema 18)
+          std::string key;
+          r_.readString(f, key);
+          const std::optional<PanMode> pm = panModeFromKey(key);
+          if (!pm) r_.failHere(f, "unknown pan law \"" + key + "\"", ErrorCode::InvalidArgument);
+          mx.panMode = *pm;
+          break;
+        }
       }
     }
     m.require({0, 1, 2, 3, 4, 5, 6});
@@ -3774,6 +3786,25 @@ private:
 
 Status migrateChainToCables(nlohmann::json& doc) { return ChainWirer().run(doc); }
 
+// 17 → 18 (TX.pan-laws, model.h PanMode): a track's mixer may carry "panMode" (absent: Balance, the default of every
+// track since schema 18). A schema-17 MIDI track panned with constant power (the only law that differed): each gets
+// "panMode": "constantPower", so an old project sounds exactly as it did. Self-contained (renumber, do not merge, if
+// another schema step lands first).
+void constantPowerMidi(nlohmann::json& t) {
+  if (!t.is_object()) return;
+  if (const auto k = t.find("kind"); k != t.end() && k->is_string() && k->get<std::string>() == "midi")
+    if (auto m = t.find("mixer"); m != t.end() && m->is_object()) (*m)["panMode"] = "constantPower";
+  if (auto c = t.find("children"); c != t.end() && c->is_array())
+    for (nlohmann::json& child : *c) constantPowerMidi(child);
+}
+
+Status migratePanLaws(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  if (auto it = doc.find("tracks"); it != doc.end() && it->is_array())
+    for (nlohmann::json& t : *it) constantPowerMidi(t);
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3791,6 +3822,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {14, migrateAddChainLinks},
     {15, migrateUnitsWires},
     {16, migrateChainToCables},
+    {17, migratePanLaws},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

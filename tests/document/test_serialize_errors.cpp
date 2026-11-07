@@ -110,10 +110,10 @@ TEST_CASE("serialize errors: syntax") {
 }
 
 TEST_CASE("serialize errors: structure, types and ranges") {
-  expectError(replaced(minimalText(), "  \"schemaVersion\": 17,\n", ""), "$: missing key \"schemaVersion\"");
-  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 17", "\"schemaVersion\": \"3\"")).code ==
+  expectError(replaced(minimalText(), "  \"schemaVersion\": 18,\n", ""), "$: missing key \"schemaVersion\"");
+  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 18", "\"schemaVersion\": \"3\"")).code ==
         pq::ErrorCode::Type);
-  expectError(replaced(minimalText(), "\"schemaVersion\": 17", "\"schemaVersion\": \"3\""),
+  expectError(replaced(minimalText(), "\"schemaVersion\": 18", "\"schemaVersion\": \"3\""),
               "$.schemaVersion: expected an integer, found a string");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"bogus\": 1,"), "$.bogus: unknown key");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"tracks\": [],"), "$.tracks: duplicate key");

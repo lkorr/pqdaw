@@ -109,6 +109,7 @@ void addStockTrack(DocumentStore& store) {
   IdSource& ids = store.ids();
   const TrackId t = ids.track();
   REQUIRE(store.dispatch(AddTrack{playback_fixture::track(t, TrackKind::Midi, "MIDI", store.ids().device()), {}, kAppend}).ok());
+  REQUIRE(store.dispatch(SetTrackPanMode{t, PanMode::Balance}).ok());  // TX.pan-laws: a new track's law (the seed's)
   playback_fixture::wireSeries(store);  // TX.all-free: wired in series
   std::vector<Note> notes;
   for (int i = 0; i < 4; ++i) notes.push_back(playback_fixture::note(ids, i * kPpq, kPpq / 2, 4 * i, 0, 100.0f));
@@ -243,6 +244,7 @@ TEST_CASE("T4.12 / H5: a new Operator track, and Auto Filter added from the devi
       REQUIRE(s.dispatch(AddDevice{t, makeDevice(ids.device(), "auto_filter", DeviceKind::AudioEffect), 1}).ok());
       playback_fixture::wireSeries(s);  // TX.all-free: wired in series
     }
+    REQUIRE(s.dispatch(SetTrackPanMode{t, PanMode::Balance}).ok());  // TX.pan-laws: a new track's law (the seed's)
     std::vector<Note> notes;
     for (int i = 0; i < 4; ++i) notes.push_back(playback_fixture::note(ids, i * kPpq, kPpq / 2, 4 * i, 0, 100.0f));
     REQUIRE(s.dispatch(AddClip{t, playback_fixture::clip(ids, 0, kTicksPerWhole, notes, "clip")}).ok());

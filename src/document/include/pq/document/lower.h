@@ -115,27 +115,33 @@
 // ---- Signal flow --------------------------------------------------------------------------------------------------
 //   MIDI track    its instrument (the first device, normally BasicSynth, the M3 default instrument,
 //                 stdlib/instruments/basic_synth.pqp; QUESTIONS Q15 A) → voice_sum → its audio effects = x (mono, or
-//                 stereo after a stereo effect; the pan law stays constant power) → (without an active instrument:
-//                 x = 0, no voices, no event slot)
-//                   out  = gain(x, (pl·g, pr·g)),  g  = vg · gate · m         (constant-power pan, centre −3 dB/side)
+//                 stereo after a stereo effect) → (without an active instrument: x = 0, no voices, no event slot)
+//                   out  = gain(x, (pl·g, pr·g)),  g  = vg · gate · m         (pl, pr: the track's pan law, below)
 //                   post = gain(x, (pl·s, pr·s)),  s  = vg · sendGate · m     (export: what post-fader sends read)
 //                   pre  = gain(x, (pl·q, pr·q)),  q  = sendGate · m          (export: what pre-fader sends read)
 //                 vg = volume ≤ −70 dB ? 0 : 10^(volume/20); m = mute < 0.5 (the activator, a param: its lane plays).
+//                 Pan law (TX.pan-laws, Mixer::panMode, the same on every kind of track, model.h PanMode for the
+//                 gains): Balance pl = min(1, 1 − pan), pr = min(1, 1 + pan); Constant Power θ = (pan + 1)·π/4,
+//                 pl = sin(θ + π/2), pr = sin θ; Linear pl = (1 − pan)/2, pr = (1 + pan)/2 — all block-rate math on the
+//                 pan param, folded into each stage's one smoothed gain. True Stereo: x first goes through
+//                 x' = gain(x, (cos a, cos b)) + gain(swap(x), (sin b, sin a)), a = max(pan, 0)·π/2,
+//                 b = max(−pan, 0)·π/2 (one smoothed 2×2 matrix per sample), and pl = pr = 1. The law is structural
+//                 (SetTrackPanMode recompiles that track; the exports stay, so nothing else does).
 //   Audio         (T5.3) x = clipPlayer(clip: <slot>) (LowerOptions::clipSlotOf; global stereo audio: the engine's player of
 //                 that slot's audio sequence, audio_sequence.h; a mono sample is duplicated) → its audio effects →
-//                 balance pan (centre 0 dB) and the same three stages as a MIDI track (sends, groups, solo, mute and
+//                 its pan law and the same three stages as a MIDI track (sends, groups, solo, mute and
 //                 audibility as for MIDI tracks). Its role is graph::TrackRole::Audio (no voices, no event slot). The
 //                 clips themselves are not in the graph: an audio clip edit (gain, fades, transpose, reverse, warp,
 //                 crossfade, bounds) changes only the sequence data (ChangeSet Sequence: no compile); creating the track
 //                 or editing its chain compiles its unit. T5.4: the engine's clip player renders the slot's clips
 //                 (pq/engine/clip_player.h), published by the app from lowerAudioTrack (audio_sequence.h).
-//   Group         x = `in` (stereo: the sum of what is routed into it) → its audio effects, balance pan (centre
-//                 0 dB), the same three stages.
+//   Group         x = `in` (stereo: the sum of what is routed into it) → its audio effects, its pan law, the same
+//                 three stages.
 //   Return        x = the sum of its sends: for each track k that sends to it, `in s<k>` (that track's post or pre
 //                 export) → gain_add(acc, s<k>, sg_k), sg_k = send<k> ≤ −70 ? 0 : 10^(send<k>/20). A send at −∞
-//                 costs nothing (gain_add passes the accumulator through, in place). Then its audio effects, balance
-//                 → out / post / pre as a group.
-//   Master        x = `in` → its audio effects → balance → out = gain(x, (pl·vg, pr·vg)) (the device output).
+//                 costs nothing (gain_add passes the accumulator through, in place). Then its audio effects, its pan
+//                 law → out / post / pre as a group.
+//   Master        x = `in` → its audio effects → its pan law → out = gain(x, (pl·vg, pr·vg)) (the device output).
 //   gain / gain_add (pq/dsp/atoms.h) apply a param gain at block rate and smooth it per sample (one-pole,
 //   smoothingMs) only while it moves, so a mixer move, a mute or a solo is click-free and a settled mixer costs one
 //   multiply per sample per channel (M3 review H1).

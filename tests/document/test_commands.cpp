@@ -90,6 +90,12 @@ std::vector<Case> cases() {
                [](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.params == std::vector<ParamRef>{ParamRef::track(ParamKind::TrackPan, f.lead)});
                }});
+  c.push_back({"SetTrackPanMode", [](Fixture& f) -> Command { return SetTrackPanMode{f.drums, PanMode::Stereo}; }, S,
+               [](Fixture& f, const ChangeSet& cs) {  // TX.pan-laws: structural, that track only
+                 CHECK(cs.tracks == std::vector<TrackId>{f.drums});
+                 CHECK(cs.params.empty());
+                 CHECK(f.track(f.drums).mixer.panMode == PanMode::Stereo);
+               }});
   c.push_back({"SetTrackMute", [](Fixture& f) -> Command { return SetTrackMute{f.kick, true}; }, P,
                [](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.params == std::vector<ParamRef>{ParamRef::track(ParamKind::TrackMute, f.kick)});
@@ -910,6 +916,7 @@ TEST_CASE("commands: no-op commands keep the snapshot and record nothing") {
       SetTuningParam{f.t31, ParamKind::TuningReference, pq::tuning::kDefaultReferenceHz},
       RenameClip{{f.lead, f.clipA}, "A"},
       Batch{"nothing", {SetTrackPan{f.lead, 0.0f}}},
+      SetTrackPanMode{f.lead, PanMode::Balance},  // TX.pan-laws: the default
   };
   for (const Command& c : noops) {
     CAPTURE(std::string(label(c)));
@@ -931,6 +938,8 @@ TEST_CASE("commands: invalid commands fail and leave the document untouched") {
       SetTrackMute{f.master, true},                                   // master has no mute
       SetSendLevel{f.lead, f.lead, 0.0f},                             // send to a non-return
       SetTrackArm{f.drums, true},                                     // groups cannot be armed
+      SetTrackPanMode{TrackId{9999}, PanMode::Linear},                // TX.pan-laws: unknown track
+      SetTrackPanMode{f.lead, static_cast<PanMode>(9)},               //              unknown law
       RemoveTrack{f.master},
       MoveTrack{f.drums, f.kick, 0},                                  // into a MIDI track
       MoveTrack{f.drums, f.drums, 0},                                 // into itself

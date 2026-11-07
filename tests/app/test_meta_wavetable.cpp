@@ -125,6 +125,7 @@ struct WtSong {
     REQUIRE(t.ok());
     must(t->command);
     const TrackId id = t->tracks.at(0);
+    must(SetTrackPanMode{id, PanMode::ConstantPower});  // TX.pan-laws: the law the golden and the −3 dB below assume
     auto w = ops::addMetaDevice(doc(), store.ids(), id, "wavetable", 0);
     REQUIRE(w.ok());
     must(w->command);

@@ -1590,6 +1590,27 @@ void ProjectPatchView::beginValueGesture(const char* label) {
 
 void ProjectPatchView::setVolume(doc::TrackId track, float db) { (void)ctx_.store().dispatch(doc::SetTrackVolume{track, db}); }
 void ProjectPatchView::setPan(doc::TrackId track, float pan) { (void)ctx_.store().dispatch(doc::SetTrackPan{track, pan}); }
+
+std::vector<ui::MenuItem> ProjectPatchView::panLawItems(doc::TrackId track) {
+  std::vector<ui::MenuItem> items;
+  const doc::Track* t = ctx_.doc() ? doc::findTrackPtr(*ctx_.doc(), track) : nullptr;
+  if (t == nullptr) return items;
+  for (const doc::PanMode m : doc::kPanModes) {
+    ViewContext* cx = &ctx_;
+    ui::MenuItem it = ui::MenuItem::item(std::string(doc::panModeName(m)), [cx, track, m] {
+      if (Status st = cx->store().dispatch(doc::SetTrackPanMode{track, m}); !st) cx->setStatus("Pan Law: " + st.error().message);
+    });
+    it.checked = t->mixer.panMode == m;
+    items.push_back(std::move(it));
+  }
+  return items;
+}
+
+ui::Menu* ProjectPatchView::openPanLawMenu(doc::TrackId track, Vec2 at) {
+  std::vector<ui::MenuItem> items = panLawItems(track);
+  if (items.empty()) return nullptr;
+  return ui::openContextMenu(*canvas_, at, std::move(items));
+}
 void ProjectPatchView::setSend(doc::TrackId track, doc::TrackId ret, float db) {
   (void)ctx_.store().dispatch(doc::SetSendLevel{track, ret, db});
 }
@@ -1885,6 +1906,7 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
     items.push_back(std::move(size));
   } else if (n.kind == NodeKind::Mixer) {
     const doc::TrackId t = patch_.bands[n.band].track;
+    items.push_back(ui::MenuItem::sub("Pan Law", panLawItems(t)));  // TX.pan-laws
     items.push_back(ui::MenuItem::item(mixerExpanded(t) ? "Collapse Mixer" : "Expand Mixer", [this, t] { setMixerExpanded(t, !mixerExpanded(t)); }));
     // TX.mixer-look: a placed mixer back where the layout puts it (the band's top right).
     ui::MenuItem home = ui::MenuItem::item("Mixer to Top Right", [this, t] { (void)unplaceMixer(t); });

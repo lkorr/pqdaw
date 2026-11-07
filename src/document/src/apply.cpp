@@ -450,6 +450,16 @@ Res apply_(const Snapshot& s, const SetTrackPan& c, ChangeSet& cs) {
       [&](Track& t) { t.mixer.pan = c.pan; }, true);
 }
 
+// TX.pan-laws: structural (the law is the track patch's pan math), so the link recompiles that track alone (its exports
+// do not change: no other unit's IR moves).
+Res apply_(const Snapshot& s, const SetTrackPanMode& c, ChangeSet& cs) {
+  if (static_cast<uint8_t>(c.mode) > static_cast<uint8_t>(PanMode::Stereo)) return invalid("unknown pan law");
+  Result<Loc> loc = locate(*s, c.track);
+  if (!loc) return std::move(loc).error();
+  if (loc->track->mixer.panMode == c.mode) return s;
+  return editTrack(s, loc->path, cs, kChangeStructural, [&](Track& t) { t.mixer.panMode = c.mode; return ok(); });
+}
+
 Res apply_(const Snapshot& s, const SetTrackMute& c, ChangeSet& cs) {
   return setMixerParam(
       s, c.track, ParamKind::TrackMute, cs, [&](const Track& t) { return t.mixer.mute == c.mute; },
@@ -2470,7 +2480,7 @@ Res applyAny(const Snapshot& s, const Command& c, ChangeSet& cs) {
 // Labels in CommandVariant order.
 constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLabels = {
     "Add Track", "Delete Track", "Move Track", "Rename Track", "Track Colour", "Set Volume", "Set Pan",
-    "Mute", "Solo", "Arm", "Set Send", "Send Pre/Post", "Set Output", "Activate Track", "Track Tuning",
+    "Pan Law", "Mute", "Solo", "Arm", "Set Send", "Send Pre/Post", "Set Output", "Activate Track", "Track Tuning",
     "Group Tracks", "Ungroup Tracks",
     "Add Clip", "Delete Clip", "Move Clip", "Resize Clip", "Clip Loop", "Clip Tuning", "Rename Clip",
     "Clip Colour", "Clip Signature", "Activate Clip", "Clip Fundamental", "Edit Audio Clip", "Add Sample",

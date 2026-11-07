@@ -114,6 +114,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_live_jit.cpp
     app/test_tuning_coverage.cpp
     app/test_jit_aot.cpp
+    app/test_pan_laws.cpp  # TX.pan-laws: every pan law through the lowered mixer; a law change compiles its track only
     app/test_device_chains.cpp  # T4.1: device chains through the link (migration bit-identity, unit compiles, hand-built graph)
     app/test_wires.cpp  # T4.7: modulation wires (audible LFO wire, hand-built graph diff 0, interpreter == JIT, loops, taps)
     app/test_patching.cpp  # TX.patching: wires add in units, any output into any param / input at audio rate, free devices

@@ -387,9 +387,37 @@ struct Output {
   friend bool operator==(const Output&, const Output&) noexcept = default;
 };
 
+// TX.pan-laws (bug report 2026-11-05, QUESTIONS Q?-TX.pan-laws-a): how a track's pan p ∈ [−1, 1] sets its output's
+// gains (lower.h "Signal flow"; gL / gR per channel, x the track's signal):
+//   Balance        gL = min(1, 1 − p), gR = min(1, 1 + p): 0 dB on both at the centre, the far side fades out, the near
+//                  side never rises above 0 dB (a mono source loses 3 dB of power at the edges). The default.
+//   ConstantPower  θ = (p + 1)·π/4, gL = cos θ, gR = sin θ: −3 dB per side at the centre, 0 dB on the near side at the
+//                  edge (that side +3 dB over the centre); the power of a mono source is the same everywhere. A MIDI
+//                  track's law before TX.pan-laws (schema ≤ 17 MIDI tracks load with it).
+//   Linear         gL = (1 − p)/2, gR = (1 + p)/2: −6 dB per side at the centre, 0 dB at the edge; the mono sum L + R
+//                  of a mono source is the same everywhere (its power is +3 dB at the edges over the centre, by design).
+//   Stereo         a true stereo pan, each input channel panned on its own (constant power): p > 0 moves the left input
+//                  towards the right (L → (L·cos φ, L·sin φ), φ = p·π/2) while the right one stays; p < 0 mirrors it.
+//                  0 dB at the centre (the image unchanged); at p = 1 both inputs come out of the right. Uncorrelated
+//                  (wide) material keeps its power; identical L and R add coherently at the edge (+3 dB of power).
+enum class PanMode : uint8_t { Balance, ConstantPower, Linear, Stereo };
+inline constexpr PanMode kPanModes[] = {PanMode::Balance, PanMode::ConstantPower, PanMode::Linear, PanMode::Stereo};
+std::string_view panModeName(PanMode m) noexcept;   // the menu's: "Balance", "Constant Power (-3 dB)", …
+std::string_view panModeShort(PanMode m) noexcept;  // the mixer face's tag: "BAL", "-3 dB", "-6 dB", "STEREO"
+std::string_view panModeKey(PanMode m) noexcept;    // the project file's: "balance", "constantPower", "linear", "stereo"
+std::optional<PanMode> panModeFromKey(std::string_view key) noexcept;
+// The 2×2 gain matrix law `m` applies at pan `p` (clamped to [−1, 1]; diagonal for every law but Stereo): the
+// reference the lowering's graph computes and the tests measure against. Not RT code.
+struct PanMatrix {
+  double ll = 1.0, rl = 0.0;  // out L = ll·L + rl·R
+  double lr = 0.0, rr = 1.0;  // out R = lr·L + rr·R
+};
+PanMatrix panMatrix(PanMode m, double p) noexcept;
+
 struct Mixer {
   float volumeDb = 0.0f;
   float pan = 0.0f;
+  PanMode panMode = PanMode::Balance;  // TX.pan-laws: a structural choice (a recompile of the track)
   bool mute = false;
   bool solo = false;
   bool arm = false;

@@ -783,3 +783,8 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - Try it (`pqdaw --project bug_reports/fixed/2026-11-03_22-37-50`, Ctrl+Alt+P): the mixer at the band's top right; drag a block past it (it moves right); drag the mixer somewhere else in its band, move blocks around, save, reopen; right-click it → Mixer to Top Right. Play: the meter moves.
 - To judge (Q?-TX.mixer-look-a): the face's look and size (120 × 72; 168 wide expanded), the meter over the fader (vs a vertical meter), that a placed mixer cannot leave its band, that an unplaced mixer moves right with blocks dragged past it, that the mixer sits at the band's top even when a scaled block lowers the band's spine.
 - Known gaps: no type-in on the mixer's values (drag and double-click only); the meter has no hold tick or clip lamp (the mixer view's meters keep those).
+
+## 👁 TX.pan-laws · the pan law tag on the mixer face (bug report 2026-11-05_21-34-42)
+- Every mixer face in the project patch shows its pan law above the knob (BAL / -3 dB / -6 dB / STEREO); click it, or right-click the mixer → Pan Law ▸, to pick Balance, Constant Power, Linear or True Stereo (one undo step). The project-patch goldens show the tag (`project-mixer`).
+- Try `pqdaw --project bug_reports/2026-11-05_21-34-42`: its MIDI track loads as Constant Power (the old law, kept); set Balance and pan hard R: no louder than the centre.
+- To judge: the tag's size and place; whether the mixer view's strips need the selector too (only the face and its menu have it now).

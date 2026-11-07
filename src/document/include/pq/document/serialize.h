@@ -86,7 +86,9 @@ namespace pq::doc {
 // instead of "to", "port" / "param" "" are main ports, and "notes" with "port" "" is any track's own signal; devices no
 // longer carry "free". Migration 16 → 17 turns each track's chain into main links (source → … → mixer) at new ids, so
 // the project sounds exactly as it did.
-inline constexpr int32_t kSchemaVersion = 17;
+// 18 = pan laws (TX.pan-laws, model.h PanMode): a track's "mixer" may carry "panMode": "constantPower" | "linear" |
+// "stereo" (absent: "balance"). Migration 17 → 18 gives every MIDI track "constantPower" (its law until then).
+inline constexpr int32_t kSchemaVersion = 18;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader

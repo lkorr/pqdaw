@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 17,
+  "schemaVersion": 18,
   "timeline": {
     "tempo": [
       {"tick": 0, "bpm": 120.0, "curve": "linear"},
@@ -88,7 +88,7 @@
       "colour": "#FF00A0",
       "active": true,
       "tuning": {"main": 8},
-      "mixer": {"volumeDb": -70.0, "pan": 0.0, "mute": true, "solo": false, "arm": true, "sends": [{"target": 3, "levelDb": -10.0, "preFader": true}], "output": "default"},
+      "mixer": {"volumeDb": -70.0, "pan": 0.0, "panMode": "constantPower", "mute": true, "solo": false, "arm": true, "sends": [{"target": 3, "levelDb": -10.0, "preFader": true}], "output": "default"},
       "lanes": [
         {
           "id": 321,
@@ -492,7 +492,7 @@
           "colour": "#808080",
           "active": false,
           "tuning": "inherit",
-          "mixer": {"volumeDb": 0.0, "pan": 0.1, "mute": false, "solo": false, "arm": false, "sends": [], "output": "master"},
+          "mixer": {"volumeDb": 0.0, "pan": 0.1, "panMode": "constantPower", "mute": false, "solo": false, "arm": false, "sends": [], "output": "master"},
           "lanes": [
             {
               "id": 349,
@@ -565,7 +565,7 @@
                   "referenceHz": 432.1
                 }
               },
-              "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+              "mixer": {"volumeDb": 0.0, "pan": 0.0, "panMode": "constantPower", "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
               "lanes": [
                 {
                   "id": 355,
@@ -603,7 +603,7 @@
       "colour": "#808080",
       "active": true,
       "tuning": "inherit",
-      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": true, "arm": false, "sends": [{"target": 3, "levelDb": -70.0, "preFader": true}], "output": {"track": 5}},
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "panMode": "constantPower", "mute": false, "solo": true, "arm": false, "sends": [{"target": 3, "levelDb": -70.0, "preFader": true}], "output": {"track": 5}},
       "lanes": [
         {
           "id": 325,

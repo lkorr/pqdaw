@@ -146,6 +146,12 @@ TEST_CASE("wire laws: schema 13 writes the law, 12 -> 13 makes every wire Travel
   d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "freq1", 0.4));
   d.run(ops::connectTravelNoteWire(d.doc(), d.store.ids(), d.keys, "velocity", d.eq, "gain2", -0.25));
   const DeviceId util = d.add("utility");
+  // TX.pan-laws: a MIDI track of schema 12 panned with constant power (the 17 -> 18 step gives it that law back).
+  Batch laws{"laws", {}};
+  forEachTrack(d.doc(), [&](const Track& t, const Track*) {
+    if (t.kind == TrackKind::Midi) laws.commands.push_back(SetTrackPanMode{t.id, PanMode::ConstantPower});
+  });
+  REQUIRE(d.store.dispatch(laws).ok());
   Result<std::string> text = serializeProject(d.doc());
   REQUIRE(text.ok());
   CHECK(text->find("\"law\": \"travel\"") != std::string::npos);

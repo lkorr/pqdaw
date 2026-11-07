@@ -10,20 +10,20 @@ patch Midi4 {
   d5 = BasicSynth__u5_0db0c13ccdfb86ab__m5_cf61ace271698ecd()
   _n1 = voice_sum(d5)
   _n5 = 0
+  _n6 = 1
   _n7 = 0.002
   _n11 = volume <= -70 ? _n5 : db_to_gain(volume)
-  _n14 = (pan + 1) * 0.7853981633974483
-  _n17 = sin(_n14 + 1.5707963267948966)
-  _n18 = sin(_n14)
-  _n23 = mute < 0.5
-  _n25 = _n23 ? sendGate : _n5
-  _n26 = _n11 * (_n23 ? gate : _n5)
-  _n32 = _n11 * _n25
+  _n13 = min(_n6, _n6 - pan)
+  _n15 = min(_n6, _n6 + pan)
+  _n20 = mute < 0.5
+  _n22 = _n20 ? sendGate : _n5
+  _n23 = _n11 * (_n20 ? gate : _n5)
+  _n29 = _n11 * _n22
   done = d5.done
-  out = gain(_n1, (_n17 * _n26, _n18 * _n26), _n7)
+  out = gain(_n1, (_n13 * _n23, _n15 * _n23), _n7)
 
-  export post = gain(_n1, (_n17 * _n32, _n18 * _n32), _n7)
-  export pre = gain(_n1, (_n17 * _n25, _n18 * _n25), _n7)
+  export post = gain(_n1, (_n13 * _n29, _n15 * _n29), _n7)
+  export pre = gain(_n1, (_n13 * _n22, _n15 * _n22), _n7)
 
 }
 

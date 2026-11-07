@@ -164,7 +164,12 @@ void apply(DocumentStore& s, Command c) {
 }
 
 // A MIDI track as ops::createTrack makes it: source → BasicSynth → mixer.
-TrackId midiTrack(DocumentStore& s) { return run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0); }
+// TX.pan-laws: constant power (−3 dB at the centre: the loop below decays with gain ≈ 0.707).
+TrackId midiTrack(DocumentStore& s) {
+  const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
+  REQUIRE(s.dispatch(SetTrackPanMode{t, PanMode::ConstantPower}).ok());
+  return t;
+}
 DeviceId headOf(DocumentStore& s, TrackId t) { return mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.at(0)->id; }
 
 DeviceId offPath(DocumentStore& s, TrackId t, std::string patch, DeviceKind kind) {

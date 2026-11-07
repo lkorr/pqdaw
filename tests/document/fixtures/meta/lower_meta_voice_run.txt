@@ -19,18 +19,17 @@ patch Midi4 {
   _n25 = signal_tap(_n18[_n8], _n18[_n10], d15[_n8], d15[_n10], 61)
   _n28 = 0.002
   _n32 = volume <= -70 ? _n8 : db_to_gain(volume)
-  _n35 = (pan + _n10) * 0.7853981633974483
-  _n38 = sin(_n35 + 1.5707963267948966)
-  _n39 = sin(_n35)
-  _n44 = mute < 0.5
-  _n46 = _n44 ? sendGate : _n8
-  _n47 = _n32 * (_n44 ? gate : _n8)
-  _n53 = _n32 * _n46
+  _n34 = min(_n10, _n10 - pan)
+  _n36 = min(_n10, _n10 + pan)
+  _n41 = mute < 0.5
+  _n43 = _n41 ? sendGate : _n8
+  _n44 = _n32 * (_n41 ? gate : _n8)
+  _n50 = _n32 * _n43
   done = !_n2 && _n11 <= _n8
-  out = gain(d15, (_n38 * _n47, _n39 * _n47), _n28)
+  out = gain(d15, (_n34 * _n44, _n36 * _n44), _n28)
 
-  export post = gain(d15, (_n38 * _n53, _n39 * _n53), _n28)
-  export pre = gain(d15, (_n38 * _n46, _n39 * _n46), _n28)
+  export post = gain(d15, (_n34 * _n50, _n36 * _n50), _n28)
+  export pre = gain(d15, (_n34 * _n43, _n36 * _n43), _n28)
 
 }
 

@@ -780,6 +780,54 @@ TEST_CASE("project patch (TX.mixer-look): the mixer's face — pan, double-click
   CHECK(after > before);
 }
 
+// TX.pan-laws (bug report 2026-11-05): the law's tag above the pan knob opens the law menu; a pick (a click on the
+// item, through the window and the overlay) closes the menu, is one undo step, recompiles the track and the scene
+// rebuilds during the event; the tag shows the new law; the mixer's right-click menu carries Pan Law too.
+TEST_CASE("project patch (TX.pan-laws): the mixer face's pan law tag — a click, the menu, a pick, undo — through dispatch") {
+  Ui u;
+  u.show();
+  const doc::TrackId keys = u.track("Keys").id;
+  u.zoomTo("Keys");
+  auto mixer = [&] { return u.pp().bands[u.pp().bandOf(keys)].mixer; };
+  CHECK(u.track("Keys").mixer.panMode == doc::PanMode::Balance);
+  const size_t h0 = u.history();
+  u.d.click(u.onMixer(mixer(), 27.0f, 24.0f));
+  Menu* m = u.openMenu();
+  REQUIRE(m != nullptr);
+  REQUIRE(m->items().size() == std::size(doc::kPanModes));
+  CHECK(m->items()[0].checked);  // Balance
+  int32_t stereo = -1;
+  for (int32_t i = 0; i < static_cast<int32_t>(m->items().size()); ++i)
+    if (m->items()[static_cast<size_t>(i)].label == doc::panModeName(doc::PanMode::Stereo)) stereo = i;
+  REQUIRE(stereo >= 0);
+  const IRect r = m->itemRect(stereo);
+  u.d.click(Ui::mid(r));
+  u.d.step();
+  CHECK(u.openMenu() == nullptr);  // the menu closed itself
+  CHECK(u.track("Keys").mixer.panMode == doc::PanMode::Stereo);
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.ctx.store().history().undoLabel() == "Pan Law");
+  // The face still works after the rebuild: the pan knob drags, the tag opens the menu again with True Stereo checked.
+  const Vec2 pan = u.mixerPan(mixer());
+  u.d.drag(pan, {pan.x, pan.y - 30.0f}, 6);
+  CHECK(u.track("Keys").mixer.pan > 0.0f);
+  u.d.click(u.onMixer(mixer(), 27.0f, 24.0f));
+  m = u.openMenu();
+  REQUIRE(m != nullptr);
+  CHECK(m->items()[static_cast<size_t>(stereo)].checked);
+  u.d.click(u.emptyIn(u.pp().bandOf(keys)));  // a press outside dismisses it
+  u.d.step();
+  CHECK(u.openMenu() == nullptr);
+  REQUIRE(u.ctx.store().undo());  // the pan drag
+  REQUIRE(u.ctx.store().undo());  // the law
+  CHECK(u.track("Keys").mixer.panMode == doc::PanMode::Balance);
+  // Right-click on the mixer: its menu has Pan Law ▸ first.
+  u.d.click(u.mixerFrame(mixer()), mod::kNone, PointerButton::Right);
+  m = u.openMenu();
+  REQUIRE(m != nullptr);
+  CHECK(m->items()[0].label == "Pan Law");
+}
+
 TEST_CASE("project patch: Ctrl+Alt+P morphs from the arrangement (lanes keep their place) and back") {
   Ui u;
   ArrangementView& arr = u.arrangement();
