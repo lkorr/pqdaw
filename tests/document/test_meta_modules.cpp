@@ -1,11 +1,12 @@
-// TMM.3: meta modules in the document — the project file (schema 10: nested and chain-level instances deep-equal after
-// save → load, a schema-9 file loads unchanged, strict errors with JSON paths, type versions), the edit builders (one undo
-// step each, a drag gesture one step, a fresh call's first drag no compile), the lowering (golden texts for a chain
-// `meta:envelope` and a nested `meta_envelope` in a user device; an attack drag keeps the IR and its hash; settings and
-// static-ness change the expansion; resources and their slots), and renames that keep the state. GU.4: the example
-// module was the Phase accumulator (a group preset now); the Envelope plays its part (attack for its frequency, sustain
-// for its phase, acurve for its amplitude: linear knobs where the test reads stored positions back).
+// TMM.3: meta modules in the document — the project file (schema 10: a native engine's own state deep-equal after save
+// → load, strict errors with JSON paths, type versions), the edit builders (one undo step each, a drag gesture one
+// step), the lowering (the golden text of a chain `meta:envelope`; an attack drag keeps the IR and its hash; settings and
+// static-ness change the expansion; resources and their slots). GU.4: the example module was the Phase accumulator (a
+// group preset now); the Envelope plays its part. GU.11: a native engine (`meta:<type>`) is a leaf block holding only
+// its own state (path ""); nested meta calls in a device's own patch text are gone with user devices.
 #include <doctest/doctest.h>
+
+#include <nlohmann/json.hpp>
 
 #include <cstdlib>
 #include <fstream>
@@ -19,13 +20,13 @@
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
+#include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
 #include "pq/graph/parse.h"
 #include "pq/meta/envelope.h"
 #include "pq/meta/registry.h"
-#include "../support/stand_in_synth.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -66,21 +67,8 @@ DeviceLibrary& library() {
   return *lib;
 }
 
-std::string replaced(std::string s, const std::string& from, const std::string& to) {
-  const size_t at = s.find(from);
-  REQUIRE_MESSAGE(at != std::string::npos, from);
-  s.replace(at, from.size(), to);
-  return s;
-}
-
-// BasicSynth with its phase through an Envelope named `name` (a nested meta call).
-std::string synthWithAcc(const std::string& name) {
-  return replaced(library().stockText("BasicSynth"), "ph  = phasor(voice.hz)",
-                  name + " = meta_envelope(phasor(voice.hz))\n  ph  = " + name);
-}
-
-// A MIDI track "Synth" (BasicSynth), a MIDI track "Acc" whose instrument is a chain Envelope, an audio track with a
-// chain test module after nothing.
+// A MIDI track "Synth" (its default instrument group), a MIDI track "Acc" whose instrument is a chain Envelope (its
+// default instrument group deleted first, so the Envelope takes the notes).
 struct Song {
   DocumentStore store;
   TrackId synthTrack, accTrack;
@@ -88,13 +76,10 @@ struct Song {
   Song() {
     meta::testing::registerTestType();
     synthTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
-    REQUIRE(stand_in::useBasicSynth(store, synthTrack).valid());  // (GU.10: the IG.1-2 layout)
     accTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
-    REQUIRE(stand_in::useBasicSynth(store, accTrack).valid());  // (GU.10: the IG.1-2 layout)
-    synth = findTrackPtr(doc(), synthTrack)->devices.at(0)->id;
-    // (IG.1-2: Acc's default instrument out of its instrument group first, alone on the path.)
-    edit(ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(doc(), accTrack)->devices.at(1)->id));
-    // At slot 0: it takes the note source, replacing the default instrument (TMM.10-fix1: appended it would follow it).
+    synth = mainPath(doc(), *findTrackPtr(doc(), synthTrack)).blocks.at(0)->id;
+    const DeviceId inst = mainPath(doc(), *findTrackPtr(doc(), accTrack)).blocks.at(0)->id;
+    edit(ops::deleteDevices(doc(), std::vector<DeviceId>{inst}));
     acc = edit(ops::addMetaDevice(doc(), store.ids(), accTrack, "envelope", 0)).devices.at(0);
   }
   const Project& doc() const { return *store.current(); }
@@ -106,8 +91,13 @@ struct Song {
     CHECK(store.history().cursor() == before + 1);  // one undo step
     return *e;
   }
-  // Forks the synth into a user device calling an Envelope `name` (one step), via the patch editor's builder.
-  void addAccCall(const std::string& name) { edit(ops::addMetaCall(doc(), synth, synthWithAcc(name), name, "envelope")); }
+  // A chain test module (settings, data, a resource) as an audio effect after the synth's instrument group (added off
+  // the path, then spliced in at its end: two steps).
+  DeviceId addTestShape() {
+    const DeviceId d = edit(ops::addMetaDevice(doc(), store.ids(), synthTrack, "test_shape", ops::kOffPath)).devices.at(0);
+    edit(ops::insertOnPath(doc(), store.ids(), d, kAppend));
+    return d;
+  }
 };
 
 LoweredProject lowered(const Project& p, const LowerOptions* base = nullptr, const LoweredProject* previous = nullptr) {
@@ -142,7 +132,7 @@ std::string calleeOf(const LoweredProject& lp, TrackId t, DeviceId d) {
   return p.subcircuit(*n).patch;
 }
 
-// The resources of one type (TMM.5: the Song's chain Envelope lists its voice tap too).
+// The resources of one type (TMM.5: a chain Envelope lists its voice tap too).
 std::vector<LoweredProject::MetaResource> resourcesOf(const LoweredProject& lp, std::string_view type) {
   std::vector<LoweredProject::MetaResource> out;
   for (const LoweredProject::MetaResource& r : lp.metaResources)
@@ -150,18 +140,20 @@ std::vector<LoweredProject::MetaResource> resourcesOf(const LoweredProject& lp, 
   return out;
 }
 
+meta::DataPtr testData(std::vector<float> v) {
+  return std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray(std::move(v))}}));
+}
+
 }  // namespace
 
-TEST_CASE("meta modules: save -> load is deep-equal with nested and chain-level instances (schema 10)") {
+TEST_CASE("meta modules: save -> load is deep-equal with native engines' own state (schema 10)") {
   Song s;
-  s.addAccCall("acc1");
-  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "envelope", "attack", 1.235));
   s.edit(ops::setMetaParamValue(s.doc(), s.acc, "", "envelope", "acurve", 0.5));
-  // A test module with settings and data, nested in the synth (its call need not exist: the document is library-free).
-  s.edit(ops::setMetaSetting(s.doc(), s.synth, "opA.ts", "test_shape", "stages", 3.0));
+  // A test module with settings and data.
+  const DeviceId ts = s.addTestShape();
+  s.edit(ops::setMetaSetting(s.doc(), ts, "", "test_shape", "stages", 3.0));
   const std::vector<float> cycle = {0.0f, 0.5f, -0.25f, 1e-30f, -3.5f, 1.0f / 3.0f, 7.0f};
-  s.edit(ops::setMetaData(s.doc(), s.synth, "opA.ts", "test_shape",
-                          std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray(cycle)}}))));
+  s.edit(ops::setMetaData(s.doc(), ts, "", "test_shape", testData(cycle)));
   Result<std::string> text = serializeProject(s.doc(), s.store.view());
   REQUIRE(text.ok());
   CHECK(text->rfind("{\n  \"schemaVersion\": 21,", 0) == 0);
@@ -170,33 +162,24 @@ TEST_CASE("meta modules: save -> load is deep-equal with nested and chain-level 
   Result<LoadedProject> back = parseProject(*text);
   REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
   CHECK(*back->project == s.doc());
-  const MetaInstance* ts = findDevice(*back->project, s.synth).device->metaAt("opA.ts");
-  REQUIRE(ts != nullptr);
-  CHECK(ts->data->field("values")->floats == cycle);  // bit-exact
-  CHECK(ts->setting("stages")->value == 3.0);
+  const Device& tb = *findDevice(*back->project, ts).device;
+  const MetaInstance* inst = tb.metaAt("");
+  REQUIRE(inst != nullptr);
+  CHECK(inst->data->field("values")->floats == cycle);  // bit-exact
+  REQUIRE(tb.setting("stages") != nullptr);
+  CHECK(tb.setting("stages")->value == 3.0);  // a chain device's settings are its own
   // The writer is stable: a second save is byte-equal.
   Result<std::string> again = serializeProject(*back->project, back->view);
   REQUIRE(again.ok());
   CHECK(*again == *text);
 }
 
-TEST_CASE("meta modules: a schema-9 file loads unchanged") {
-  Result<LoadedProject> old = loadProject(fixturePath("schema9"));
-  REQUIRE_MESSAGE(old.ok(), (old.ok() ? std::string() : old.error().message));
-  CHECK(old->fileSchemaVersion == 9);
-  Result<LoadedProject> cur = loadProject(fixturePath("full"));
-  REQUIRE(cur.ok());
-  CHECK(*old->project == *cur->project);
-  bool anyMeta = false;
-  forEachDevice(*old->project, [&](const Device& d, const Track&) { anyMeta = anyMeta || d.meta || isMetaDevice(d); });
-  CHECK_FALSE(anyMeta);
-}
-
 TEST_CASE("meta modules: the reader is strict, with JSON paths") {
   Song s;
-  s.addAccCall("acc1");
-  s.edit(ops::setMetaParam(s.doc(), s.synth, "acc1", "envelope", "attack", 0.25));  // GU.1: a knob position
+  const DeviceId ts = s.addTestShape();
   const std::string good = *serializeProject(s.doc(), s.store.view());
+  const std::string head = "\"\": {\"type\": \"test_shape\", \"version\": 2";
+  REQUIRE_MESSAGE(good.find(head) != std::string::npos, good);
   auto broken = [&](const std::string& from, const std::string& to) {
     std::string t = good;
     const size_t at = t.find(from);
@@ -213,45 +196,43 @@ TEST_CASE("meta modules: the reader is strict, with JSON paths") {
     CHECK(r.error().message.find(".meta") != std::string::npos);  // the path names the meta member
     CHECK(r.error().code == code);
   };
-  fails("\"type\": \"envelope\", \"version\": 1, \"params\"", "\"type\": \"nope\", \"version\": 1, \"params\"",
-        "unknown meta module type 'nope'", pq::ErrorCode::Unsupported);
-  fails("\"version\": 1, \"params\": {\"attack\"", "\"version\": 7, \"params\": {\"attack\"", "newer pqdaw",
+  fails(head, "\"\": {\"type\": \"nope\", \"version\": 2", "unknown meta module type 'nope'",
         pq::ErrorCode::Unsupported);
-  fails("\"version\": 1, \"params\": {\"attack\"", "\"version\": 0, \"params\": {\"attack\"", "at least 1");
-  fails("\"params\": {\"attack\"", "\"params\": {\"atak\"", "'atak' is not a param of envelope");
-  fails("\"acc1\": {", "\"a..b\": {", "not a meta module path");
-  fails("\"acc1\": {", "\"\": {", "only a 'meta:envelope' device");
-  fails("\"params\": {\"attack\": 0.25}", "\"params\": {\"attack\": 0.25}, \"data\": 1.0", "keeps no data");
+  fails(head, "\"\": {\"type\": \"test_shape\", \"version\": 7", "newer pqdaw", pq::ErrorCode::Unsupported);
+  fails(head, "\"\": {\"type\": \"test_shape\", \"version\": 0", "at least 1");
+  fails(head, head + ", \"params\": {\"gain\": 0.5}", "as the device's own");
+  fails(head, "\"a..b\": {\"type\": \"test_shape\", \"version\": 2", "not a meta module path");
+  fails(head, "\"x\": {\"type\": \"test_shape\", \"version\": 2", "holds only its own state");
+  fails(head, "\"\": {\"type\": \"envelope\", \"version\": 1", "only a 'meta:envelope' device");
   // TMM.10-fix1 (SPEC §15 2026-11-01 "no instrument special cases"): a chain meta device's kind is never refused for
-  // its type (it is its position; what it plays follows from its chain input's signal); its chain input must be the
-  // type's, "-" or one of its inputs.
+  // its type (it is its position; what it plays follows from what reaches its main input). GU.11: its main input is
+  // its type's, so a file choosing another ("chainInput") is refused.
   {
-    auto edited = [&](bool asEffect, const std::string& chainInput) {
-      std::string t = good;
-      const size_t dev = t.find("\"meta:envelope\"");
-      REQUIRE(dev != std::string::npos);
-      if (asEffect) {  // the other kind than the one it has (TX.all-free: a track's meta block is an audio effect)
-        const size_t inst = t.find("\"instrument\"", dev), fx = t.find("\"audioEffect\"", dev);
-        REQUIRE((inst != std::string::npos || fx != std::string::npos));
-        if (inst != std::string::npos && (fx == std::string::npos || inst < fx)) t.replace(inst, 12, "\"audioEffect\"");
-        else t.replace(fx, 13, "\"instrument\"");
-      }
-      if (!chainInput.empty()) t.insert(dev + 15, ", \"chainInput\": \"" + chainInput + "\"");
-      return parseProject(t);
+    const nlohmann::json j = nlohmann::json::parse(good);
+    auto edited = [&](auto&& change) {
+      nlohmann::json k = j;
+      bool found = false;
+      for (nlohmann::json& t : k["tracks"])
+        for (nlohmann::json& d : t["devices"])
+          if (d["id"] == ts.value) {
+            change(d);
+            found = true;
+          }
+      REQUIRE(found);
+      return parseProject(k.dump(2));
     };
-    CHECK(edited(true, "").ok());
-    CHECK(edited(false, "-").ok());
-    CHECK(edited(false, "gate").ok());
-    Result<LoadedProject> r = edited(false, "nope");
+    CHECK(edited([](nlohmann::json& d) { d["kind"] = d["kind"] == "instrument" ? "audioEffect" : "instrument"; }).ok());
+    Result<LoadedProject> r = edited([](nlohmann::json& d) { d["chainInput"] = "x"; });
     REQUIRE_FALSE(r.ok());
-    CHECK(r.error().message.find("has no input 'nope'") != std::string::npos);
+    CHECK(r.error().message.find("main input is its type's") != std::string::npos);
   }
 }
 
 TEST_CASE("meta modules: data values round-trip through the file; a type's older state is upgraded") {
   const meta::Type& t = meta::testing::registerTestType();
   Song s;
-  s.edit(ops::setMetaSetting(s.doc(), s.synth, "ts", "test_shape", "stages", 2.0));
+  const DeviceId ts = s.addTestShape();
+  s.edit(ops::setMetaSetting(s.doc(), ts, "", "test_shape", "stages", 2.0));
   std::string text = *serializeProject(s.doc(), s.store.view());
   // The test type is at version 2; a version-1 state is upgraded by its hook.
   const std::string v2 = "\"type\": \"test_shape\", \"version\": 2";
@@ -259,7 +240,7 @@ TEST_CASE("meta modules: data values round-trip through the file; a type's older
   text.replace(text.find(v2), v2.size(), "\"type\": \"test_shape\", \"version\": 1");
   Result<LoadedProject> r = parseProject(text);
   REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
-  CHECK(findDevice(*r->project, s.synth).device->metaAt("ts")->version == t.version);
+  CHECK(findDevice(*r->project, ts).device->metaAt("")->version == t.version);
   CHECK(*r->project == s.doc());
   // Data the type rejects fails with its reason.
   std::string bad = *serializeProject(s.doc(), s.store.view());
@@ -275,50 +256,36 @@ TEST_CASE("meta modules: every edit is one undo step; a drag gesture is one; und
   Song s;
   const Snapshot fresh = s.store.current();
   const size_t freshCursor = s.store.history().cursor();
-  s.addAccCall("acc1");                                                  // fork + default state: one step
-  REQUIRE(s.dev(s.synth).metaAt("acc1") != nullptr);
-  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "envelope", "sustain", 0.25));
+  const DeviceId ts = s.addTestShape();
+  s.edit(ops::setMetaParamValue(s.doc(), s.acc, "", "envelope", "sustain", 0.25));
   s.edit(ops::setMetaParamValue(s.doc(), s.acc, "", "envelope", "attack", 0.3));
-  s.edit(ops::setMetaSetting(s.doc(), s.synth, "x.ts", "test_shape", "stages", 4.0));  // creates "x.ts" too
-  s.edit(ops::setMetaData(s.doc(), s.synth, "x.ts", "test_shape",
-                          std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray({1.0f})}}))));
-  s.edit(ops::renameMetaCall(s.doc(), s.synth, synthWithAcc("osc"), "acc1", "osc"));
-  CHECK(s.dev(s.synth).metaAt("acc1") == nullptr);
-  CHECK(s.dev(s.synth).metaAt("osc")->param("sustain")->value == 0.25);
-  s.edit(ops::removeMetaCall(s.doc(), s.synth, library().stockText("BasicSynth"), "osc"));
-  CHECK(s.dev(s.synth).metaAt("osc") == nullptr);
+  s.edit(ops::setMetaSetting(s.doc(), ts, "", "test_shape", "stages", 4.0));
+  s.edit(ops::setMetaData(s.doc(), ts, "", "test_shape", testData({1.0f})));
+  CHECK(s.dev(ts).metaAt("")->data->field("values")->floats == std::vector<float>{1.0f});
+  const size_t envAttack = static_cast<size_t>(meta::envelopeType().paramIndex("attack"));
+  CHECK(metaParamValue(s.dev(s.acc), "", meta::envelopeType(), envAttack) == doctest::Approx(0.3).epsilon(1e-12));  // GU.1
   // A drag: many param writes inside one gesture, one history entry.
-  s.addAccCall("acc1");
   const size_t before = s.store.history().cursor();
   REQUIRE(s.store.beginGesture().ok());
   for (int i = 1; i <= 20; ++i) {
-    auto e = ops::setMetaParamValue(s.doc(), s.synth, "acc1", "envelope", "attack", 0.1 * i);
+    auto e = ops::setMetaParamValue(s.doc(), s.acc, "", "envelope", "attack", 0.1 * i);
     REQUIRE(e.ok());
     REQUIRE(s.store.dispatch(e->command).ok());
     CHECK(s.store.lastChanges().paramOnly());
   }
   REQUIRE(s.store.commitGesture().ok());
   CHECK(s.store.history().cursor() == before + 1);
-  CHECK(metaParamValue(s.dev(s.synth), "acc1", pq::meta::envelopeType(), 0) == doctest::Approx(2.0).epsilon(1e-12));  // GU.1
+  CHECK(metaParamValue(s.dev(s.acc), "", meta::envelopeType(), envAttack) == doctest::Approx(2.0).epsilon(1e-12));
   REQUIRE(s.store.undo());
-  CHECK(s.dev(s.synth).metaAt("acc1")->param("attack") == nullptr);
-  // A fresh call (no state yet): its first drag adds the default state in the same step, still only a param write.
-  s.edit(ops::removeMetaCall(s.doc(), s.synth, synthWithAcc("acc9"), "acc1"));
-  REQUIRE(s.dev(s.synth).metaAt("acc9") == nullptr);
-  auto first = ops::setMetaParamValue(s.doc(), s.synth, "acc9", "envelope", "attack", 0.05);
-  REQUIRE(first.ok());
-  REQUIRE(s.store.dispatch(first->command).ok());
-  CHECK(s.store.lastChanges().paramOnly());
-  CHECK(metaParamValue(s.dev(s.synth), "acc9", pq::meta::envelopeType(), 0) == doctest::Approx(0.05).epsilon(1e-12));
-  // Undo every step: the stock synth again (the same snapshot).
+  CHECK(metaParamValue(s.dev(s.acc), "", meta::envelopeType(), envAttack) == doctest::Approx(0.3).epsilon(1e-12));
+  // Undo every step: the fresh song again (the same snapshot).
   while (s.store.history().cursor() > freshCursor) REQUIRE(s.store.undo());
   CHECK(s.store.current() == fresh);
 }
 
-TEST_CASE("meta modules: golden lowering texts (a chain meta:envelope; a nested meta_envelope in a user device)") {
+TEST_CASE("meta modules: golden lowering text (a chain meta:envelope)") {
   Song s;
-  s.addAccCall("acc1");
-  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "envelope", "attack", 1.0));
+  s.edit(ops::setMetaParamValue(s.doc(), s.acc, "", "envelope", "attack", 1.0));
   const LoweredProject lp = lowered(s.doc());
   auto textOf = [&](TrackId t, DeviceId d) {
     std::string out = patchText(*lp.patches[trackIndex(lp, t)]);
@@ -340,23 +307,17 @@ TEST_CASE("meta modules: golden lowering texts (a chain meta:envelope; a nested 
   };
   // Ids differ per run of the fixture only through the store's id source, which is deterministic.
   checkGolden("lower_chain_envelope.txt", textOf(s.accTrack, s.acc));
-  checkGolden("lower_nested_envelope.txt", textOf(s.synthTrack, s.synth));
   // The chain device: an instrument expansion; its params are the device's own.
   CHECK(calleeOf(lp, s.accTrack, s.acc).starts_with("meta_envelope__d" + std::to_string(s.acc.value) + "__"));
-  CHECK(paramOf(lp, "dev" + std::to_string(s.acc.value) + ":attack") != nullptr);
-  // The nested instance: a specialised root, its params "dev<id>:acc1.<name>" at their values.
-  CHECK(calleeOf(lp, s.synthTrack, s.synth).find("__m" + std::to_string(s.synth.value) + "_") != std::string::npos);
-  const LoweredParam* f = paramOf(lp, metaParamKey(s.synth, "acc1", "attack"));
+  const LoweredParam* f = paramOf(lp, "dev" + std::to_string(s.acc.value) + ":attack");
   REQUIRE(f != nullptr);
   CHECK(f->value == doctest::Approx(1.0f));
-  CHECK(f->name == "d" + std::to_string(s.synth.value) + "__acc1__attack");
-  CHECK(f->ref == ParamRef::metaParam(s.synth, "acc1", "attack"));
-  REQUIRE(paramOf(lp, metaParamKey(s.synth, "acc1", "acurve")) != nullptr);
-  CHECK(paramOf(lp, metaParamKey(s.synth, "acc1", "acurve"))->value == 0.0f);
+  CHECK(f->ref == ParamRef::device(s.acc, "attack"));
   // The param fast path lists the same params with the same values.
   const std::vector<LoweredParam> fast = lowerParams(s.doc(), true, library());
   for (const char* name : {"attack", "sustain", "acurve"}) {
-    const std::string key = metaParamKey(s.synth, "acc1", name);
+    const std::string key = "dev" + std::to_string(s.acc.value) + ":" + name;
+    REQUIRE(paramOf(lp, key) != nullptr);
     const auto it = std::find_if(fast.begin(), fast.end(), [&](const LoweredParam& p) { return p.key == key; });
     REQUIRE(it != fast.end());
     CHECK(it->value == paramOf(lp, key)->value);
@@ -364,83 +325,71 @@ TEST_CASE("meta modules: golden lowering texts (a chain meta:envelope; a nested 
   }
 }
 
-TEST_CASE("meta modules: an attack drag lowers to the same IR (shared patch, same hash); settings and static-ness do not") {
+TEST_CASE("meta modules: an attack drag lowers to the same IR (shared patch, same hash)") {
   Song s;
-  s.addAccCall("acc1");
   const LoweredProject a = lowered(s.doc());
-  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "envelope", "attack", 4.4));
+  s.edit(ops::setMetaParamValue(s.doc(), s.acc, "", "envelope", "attack", 0.07));
   CHECK(s.store.lastChanges().paramOnly());
   const LoweredProject b = lowered(s.doc(), nullptr, &a);
-  const size_t ia = trackIndex(a, s.synthTrack), ib = trackIndex(b, s.synthTrack);
+  const size_t ia = trackIndex(a, s.accTrack), ib = trackIndex(b, s.accTrack);
   CHECK(b.patches[ib] == a.patches[ia]);  // the same patch object: its unit does not recompile
   CHECK(b.patches[ib]->hash == a.patches[ia]->hash);
-  CHECK(calleeOf(a, s.synthTrack, s.synth) == calleeOf(b, s.synthTrack, s.synth));
-  CHECK(paramOf(b, metaParamKey(s.synth, "acc1", "attack"))->value == doctest::Approx(4.4f));
-  // A chain device's param: the same.
-  s.edit(ops::setMetaParamValue(s.doc(), s.acc, "", "envelope", "attack", 0.07));
-  const LoweredProject c = lowered(s.doc(), nullptr, &b);
-  CHECK(c.patches[trackIndex(c, s.accTrack)] == b.patches[trackIndex(b, s.accTrack)]);
-  CHECK(paramOf(c, "dev" + std::to_string(s.acc.value) + ":attack")->value == doctest::Approx(0.07f));
+  CHECK(calleeOf(a, s.accTrack, s.acc) == calleeOf(b, s.accTrack, s.acc));
+  CHECK(paramOf(b, "dev" + std::to_string(s.acc.value) + ":attack")->value == doctest::Approx(0.07f));
 }
 
-TEST_CASE("meta modules: settings, wired pins and automation make other expansions; resources get their slots") {
+TEST_CASE("meta modules: settings, wires and automation make other expansions; resources get their slots") {
   meta::testing::registerTestType();
   Song s;
-  // A nested test module in the synth: its call `ts = meta_test_shape(…)` multiplies the oscillator.
-  const std::string base = replaced(library().stockText("BasicSynth"), "  out = osc * env * vel * level",
-                                    "  ts = meta_test_shape(osc)\n  out = ts * env * vel * level");
-  s.edit(ops::addMetaCall(s.doc(), s.synth, base, "ts", "test_shape"));
+  const DeviceId ts = s.addTestShape();
   LowerOptions o;
   o.metaSlotOf = [](DeviceId d, std::string_view path, uint32_t index) {
     return static_cast<uint32_t>(d.value * 100 + path.size() * 10 + index + 1);
   };
   const LoweredProject a = lowered(s.doc(), &o);
-  const std::string calleeA = calleeOf(a, s.synthTrack, s.synth);
+  const std::string calleeA = calleeOf(a, s.synthTrack, ts);
   const std::vector<LoweredProject::MetaResource> ra = resourcesOf(a, "test_shape");
   REQUIRE(ra.size() == 1);
   const LoweredProject::MetaResource& r = ra[0];
-  CHECK(r.device == s.synth);
-  CHECK(r.path == "ts");
+  CHECK(r.device == ts);
+  CHECK(r.path.empty());
   CHECK(r.type == "test_shape");
   CHECK(r.track == s.synthTrack);
   CHECK(r.request.kind == meta::ResourceKind::FrameTable);
-  CHECK(r.slot == s.synth.value * 100 + 20 + 1);
+  CHECK(r.slot == ts.value * 100 + 1);
   REQUIRE(r.data != nullptr);
   CHECK(*r.data == *meta::testing::testDefaultData());
   // A setting: another expansion (a structural change).
-  s.edit(ops::setMetaSetting(s.doc(), s.synth, "ts", "test_shape", "stages", 3.0));
+  s.edit(ops::setMetaSetting(s.doc(), ts, "", "test_shape", "stages", 3.0));
   CHECK(s.store.lastChanges().structural());
   const LoweredProject b = lowered(s.doc(), &o, &a);
-  CHECK(calleeOf(b, s.synthTrack, s.synth) != calleeA);
+  CHECK(calleeOf(b, s.synthTrack, ts) != calleeA);
   CHECK(b.patches[trackIndex(b, s.synthTrack)] != a.patches[trackIndex(a, s.synthTrack)]);
   // Data: never part of the expansion (MetaData only; the IR stays shared).
-  s.edit(ops::setMetaData(s.doc(), s.synth, "ts", "test_shape",
-                          std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray({0.5f})}}))));
+  s.edit(ops::setMetaData(s.doc(), ts, "", "test_shape", testData({0.5f})));
   CHECK(s.store.lastChanges().metaDataOnly());
   const LoweredProject c = lowered(s.doc(), &o, &b);
   CHECK(c.patches[trackIndex(c, s.synthTrack)] == b.patches[trackIndex(b, s.synthTrack)]);
   REQUIRE(resourcesOf(c, "test_shape").size() == 1);
   CHECK(resourcesOf(c, "test_shape")[0].data->field("values")->floats == std::vector<float>{0.5f});
-  // A wired param pin is not static: `meta_test_shape(osc, gain: …)` expands to the modulated (clipped) form, and the
-  // wired param is no runtime param.
-  const std::string wired = replaced(base, "meta_test_shape(osc)", "meta_test_shape(osc, gain: env)");
-  s.edit(ops::editDevicePatch(s.doc(), s.synth, wired));
+  // A wired param is not static: the modulated (clipped) form.
+  s.edit(ops::connectWire(s.doc(), s.store.ids(), s.acc, "out", ts, "gain"));
   const LoweredProject d = lowered(s.doc(), &o);
-  CHECK(paramOf(d, metaParamKey(s.synth, "ts", "gain")) == nullptr);
-  CHECK(paramOf(c, metaParamKey(s.synth, "ts", "gain")) != nullptr);
-  const pq::graph::Patch* exp = nullptr;
-  for (const std::string& n : {calleeOf(d, s.synthTrack, s.synth)}) {
-    const pq::graph::Patch* root = d.graph.library->find(n);
-    REQUIRE(root != nullptr);
-    const auto call = root->findByName("ts");
-    REQUIRE(call.has_value());
-    exp = d.graph.library->find(root->subcircuit(*call).patch);
-  }
+  const std::string calleeD = calleeOf(d, s.synthTrack, ts);
+  CHECK(calleeD != calleeOf(c, s.synthTrack, ts));
+  const pq::graph::Patch* exp = d.graph.library->find(calleeD);
   REQUIRE(exp != nullptr);
   bool clipped = false;
-  for (pq::graph::NodeIndex n = 0; n < exp->nodeCount(); ++n)
-    clipped = clipped || (exp->node(n).kind == pq::graph::NodeKind::Atom &&
-                          pq::graph::atomSignature(exp->node(n).atom).name == "clip");
+  std::vector<const pq::graph::Patch*> todo{exp};
+  while (!todo.empty() && !clipped) {
+    const pq::graph::Patch* p = todo.back();
+    todo.pop_back();
+    for (pq::graph::NodeIndex n = 0; n < p->nodeCount(); ++n) {
+      if (p->node(n).kind == pq::graph::NodeKind::Atom && pq::graph::atomSignature(p->node(n).atom).name == "clip") clipped = true;
+      if (p->node(n).kind == pq::graph::NodeKind::Subcircuit)
+        if (const pq::graph::Patch* sub = d.graph.library->find(p->subcircuit(n).patch)) todo.push_back(sub);
+    }
+  }
   CHECK(clipped);
 }
 
@@ -448,7 +397,7 @@ TEST_CASE("meta modules: a chain device's static-ness follows its automation lan
   meta::testing::registerTestType();
   Song s;
   // A chain test module as an audio effect after the synth.
-  const DeviceId ts = s.edit(ops::addMetaDevice(s.doc(), s.store.ids(), s.synthTrack, "test_shape")).devices.at(0);
+  const DeviceId ts = s.addTestShape();
   CHECK(s.dev(ts).kind == DeviceKind::AudioEffect);
   const LoweredProject a = lowered(s.doc());
   const std::string before = calleeOf(a, s.synthTrack, ts);
@@ -464,69 +413,37 @@ TEST_CASE("meta modules: a chain device's static-ness follows its automation lan
   CHECK(resourcesOf(b, "test_shape")[0].path.empty());
 }
 
-TEST_CASE("meta modules: renaming a nested instance keeps its state (the patch editor's rename and a hand edit)") {
-  Song s;
-  s.addAccCall("acc1");
-  s.edit(ops::setMetaParamValue(s.doc(), s.synth, "acc1", "envelope", "attack", 0.55));
-  // A hand edit of the text pane: the binding renamed; the new parse carries the NodeIds of the previous one.
-  pq::graph::ParseOptions po;
-  po.externals = library().signatures();
-  po.lenientLayout = true;
-  po.deferMissingInputs = true;
-  const std::string t1 = synthWithAcc("acc1"), t2 = synthWithAcc("lfo");
-  pq::graph::ParseResult p1 = pq::graph::parseDetailed(t1, "basic_synth.pqp", po);
-  REQUIRE(p1.lowered);
-  po.previous = &p1.file;
-  auto p2 = std::make_shared<pq::graph::ParseResult>(pq::graph::parseDetailed(t2, "basic_synth.pqp", po));
-  REQUIRE(p2->lowered);
-  const std::vector<MetaRename> renames = metaRenames(p1.file, p2->file, "BasicSynth");
-  REQUIRE(renames.size() == 1);
-  CHECK(renames[0] == MetaRename{"acc1", "lfo"});
-  const auto ids = std::shared_ptr<const pq::graph::PatchFile>(p2, &p2->file);
-  s.edit(ops::editDevicePatchKeepingMeta(s.doc(), s.synth, t2, ids, p1.file));
-  CHECK(s.dev(s.synth).metaAt("acc1") == nullptr);
-  REQUIRE(s.dev(s.synth).metaAt("lfo") != nullptr);
-  CHECK(metaParamValue(s.dev(s.synth), "lfo", pq::meta::envelopeType(), 0) == doctest::Approx(0.55).epsilon(1e-12));
-  const LoweredProject lp = lowered(s.doc());
-  REQUIRE(paramOf(lp, metaParamKey(s.synth, "lfo", "attack")) != nullptr);
-  CHECK(paramOf(lp, metaParamKey(s.synth, "lfo", "attack"))->value == doctest::Approx(0.55f));
-  // Nested renames: an outer call renamed moves everything below it.
-  Song n;
-  n.edit(ops::setMetaParamValue(n.doc(), n.synth, "opA.acc", "envelope", "acurve", -0.5));
-  n.edit(ops::setMetaParamValue(n.doc(), n.synth, "opA.ts", "test_shape", "gain", 1.0));
-  REQUIRE(n.store.dispatch(RenameMetaInstance{n.synth, "opA", "opB"}).ok());
-  CHECK(metaParamValue(n.dev(n.synth), "opB.acc", pq::meta::envelopeType(),
-                       static_cast<size_t>(pq::meta::envelopeType().paramIndex("acurve"))) == doctest::Approx(-0.5).epsilon(1e-12));
-  CHECK(n.dev(n.synth).metaAt("opB.ts") != nullptr);
-  CHECK(n.dev(n.synth).metaAt("opA.acc") == nullptr);
-  CHECK_FALSE(n.store.dispatch(RenameMetaInstance{n.synth, "opB", "opB.x"}).ok());  // into itself
-}
-
 TEST_CASE("meta modules: commands refuse what the state cannot hold") {
   Song s;
+  int step = 0;
   auto fails = [&](const Command& c) {
+    ++step;
+    CAPTURE(step);
     const Snapshot before = s.store.current();
     CHECK_FALSE(s.store.dispatch(c).ok());
     CHECK(s.store.current() == before);
   };
-  MetaInstance acc = defaultMetaInstance(meta::envelopeType());
-  fails(AddMetaInstance{s.synth, "", acc});  // "" only on a meta device
-  fails(AddMetaInstance{s.synth, "a..b", acc});
-  MetaInstance badParam = acc;
+  // A bare engine (no state yet).
+  const DeviceId bare = s.store.ids().device();
+  REQUIRE(s.store.dispatch(AddDevice{s.synthTrack, makeDevice(bare, "meta:envelope", DeviceKind::AudioEffect), kAppend}).ok());
+  MetaInstance env = defaultMetaInstance(meta::envelopeType());
+  fails(AddMetaInstance{s.synth, "", env});      // "" only on a meta device (a group holds no state: see test_devices.cpp)
+  fails(AddMetaInstance{bare, "a..b", env});
+  fails(AddMetaInstance{bare, "acc1", env});     // GU.11: a native engine holds only its own state
+  MetaInstance badParam = env;
   badParam.params = {DeviceValue{"nope", 1.0}};
-  fails(AddMetaInstance{s.synth, "acc1", badParam});
-  MetaInstance badVersion = acc;
+  fails(AddMetaInstance{bare, "", badParam});
+  MetaInstance badVersion = env;
   badVersion.version = 9;
-  fails(AddMetaInstance{s.synth, "acc1", badVersion});
-  MetaInstance unknown = acc;
+  fails(AddMetaInstance{bare, "", badVersion});
+  MetaInstance unknown = env;
   unknown.type = "nope";
-  fails(AddMetaInstance{s.synth, "acc1", unknown});
-  fails(SetMetaParam{s.synth, "acc1", "attack", 1.0});  // no state there yet (ops::setMetaParam adds it)
-  REQUIRE(s.store.dispatch(AddMetaInstance{s.synth, "acc1", acc}).ok());
-  fails(AddMetaInstance{s.synth, "acc1", acc});  // twice
-  fails(SetMetaParam{s.synth, "acc1", "nope", 1.0});
-  fails(SetMetaSetting{s.synth, "acc1", "nope", 1.0});
-  fails(SetMetaData{s.synth, "acc1", std::make_shared<const meta::DataValue>(meta::DataValue::num(1.0))});  // keeps none
+  fails(AddMetaInstance{bare, "", unknown});
+  fails(SetMetaData{bare, "", testData({1.0f})});  // no state there yet
+  REQUIRE(s.store.dispatch(AddMetaInstance{bare, "", env}).ok());
+  fails(AddMetaInstance{bare, "", env});  // twice
+  fails(SetMetaParam{bare, "", "nope", 1.0});
+  fails(SetMetaSetting{bare, "", "nope", 1.0});
   fails(SetMetaParam{s.acc, "", "nope", 1.0});
   // An unknown type is refused.
   CHECK_FALSE(ops::addMetaDevice(s.doc(), s.store.ids(), s.synthTrack, "nope").ok());

@@ -8,31 +8,102 @@ patch Midi4 {
   out out : real audio global stereo
 
   _n0 = 0
-  d61 = GroupNotes(d55)
+  d245 = GroupNotes(d49)
   _n2 = voice.gate
   _n9 = 1
   _n10 = _n2 ? _n9 : max(z1(_n10) - 200 / sr, _n0)
-  _n15 = voice_sum(d61 * _n10)
-  d58 = auto_filter((_n15, _n15))
-  d51 = meta_envelope__d51__888cdf3f088a5a6b()
-  d55 = meta_wavetable__d55__60304c8f8cdcd64e(d51)
-  _n23 = 0.002
-  _n27 = volume <= -70 ? _n0 : db_to_gain(volume)
-  _n29 = min(_n9, _n9 - pan)
-  _n31 = min(_n9, _n9 + pan)
-  _n36 = mute < 0.5
-  _n38 = _n36 ? sendGate : _n0
-  _n39 = _n27 * (_n36 ? gate : _n0)
-  _n45 = _n27 * _n38
+  d52 = Group(voice_sum(d245 * _n10), d123)
+  d46 = meta_envelope__d46__144b834b85bddc1f()
+  d49 = meta_wavetable__d49__88b3f5e4926dcb56(d46)
+  d53 = Value()
+  d54 = Value()
+  d55 = Value()
+  d56 = Value()
+  d57 = Value()
+  d58 = Value()
+  d59 = Value()
+  d60 = Value()
+  d61 = Value()
+  d62 = Value()
+  d63 = Value()
+  d64 = Value()
+  d65 = Value()
+  d66 = Atom_mul(d53, d65)
+  _n33 = -0
+  d67 = Atom_mux(d66, d63, d64)
+  d68 = Atom_sub(d63, d67)
+  d69 = Value()
+  d70 = Atom_mod(d53, d69)
+  d71 = Atom_sub(d63, d70)
+  d72 = Value()
+  d73 = Atom_mux(d54, d63, d72)
+  d74 = Atom_mux(d55, d63, d72)
+  d75 = Atom_sub(d63, d58)
+  d76 = Atom_min(d63, d75)
+  d77 = Atom_mux(d57, d63, d76)
+  d78 = Atom_mux(d59, d77, d63)
+  d79 = Atom_add(d63, d58)
+  d80 = Atom_min(d63, d79)
+  d81 = Atom_mux(d57, d56, d80)
+  d82 = Atom_mux(d59, d81, d64)
+  d83 = Atom_mul(d65, d78)
+  d84 = Atom_mul(d65, d82)
+  d85 = Atom_mul(d73, d67)
+  d86 = Atom_mul(d74, d70)
+  d87 = Atom_mul(d73, d68)
+  d88 = Atom_mul(d74, d71)
+  d89 = Atom_add(d85, d86)
+  d90 = Atom_mul(d83, d89)
+  d91 = Atom_add(d87, d88)
+  d92 = Atom_mul(d83, d91)
+  d93 = Atom_sub(d85, d86)
+  d94 = Atom_mul(d84, d93)
+  d95 = Atom_sub(d87, d88)
+  d96 = Atom_mul(d84, d95)
+  d97 = Value()
+  d98 = Atom_sub(d97, d61)
+  d99 = Atom_clip(d98, d64, d63)
+  d100 = Atom_max(d62, d99)
+  d101 = Atom_db_to_gain(d61)
+  d102 = Atom_mux(d100, d101, d64)
+  d103 = Atom_sub(d63, d60)
+  d104 = Atom_min(d63, d103)
+  d105 = Atom_mul(d102, d104)
+  d106 = Atom_add(d63, d60)
+  d107 = Atom_min(d63, d106)
+  d108 = Atom_mul(d102, d107)
+  d109 = Atom_channel(d52.input, 0)
+  d110 = Atom_channel(d52.input, 1)
+  d111 = Atom_add(d92, d96)
+  d112 = Atom_mul(d105, d111)
+  d113 = Atom_add(d90, d94)
+  d114 = Atom_mul(d105, d113)
+  d115 = Atom_gain(d109, d114, start: 1)
+  d116 = Atom_gain_add(d115, d110, d112, start: 1)
+  d117 = Atom_sub(d92, d96)
+  d118 = Atom_mul(d108, d117)
+  d119 = Atom_sub(d90, d94)
+  d120 = Atom_mul(d108, d119)
+  d121 = Atom_gain(d109, d120, start: 1)
+  d122 = Atom_gain_add(d121, d110, d118, start: 1)
+  d123 = Atom_pack(d116, d122)
+  _n100 = 0.002
+  _n104 = volume <= -70 ? _n0 : db_to_gain(volume)
+  _n106 = min(_n9, _n9 - pan)
+  _n108 = min(_n9, _n9 + pan)
+  _n113 = mute < 0.5
+  _n115 = _n113 ? sendGate : _n0
+  _n116 = _n104 * (_n113 ? gate : _n0)
+  _n122 = _n104 * _n115
   done = !_n2 && _n10 <= _n0
-  out = gain(d58, (_n29 * _n39, _n31 * _n39), _n23)
+  out = gain(d52, (_n106 * _n116, _n108 * _n116), _n100)
 
-  export post = gain(d58, (_n29 * _n45, _n31 * _n45), _n23)
-  export pre = gain(d58, (_n29 * _n38, _n31 * _n38), _n23)
+  export post = gain(d52, (_n106 * _n122, _n108 * _n122), _n100)
+  export pre = gain(d52, (_n106 * _n115, _n108 * _n115), _n100)
 
 }
 
-patch meta_wavetable__d55__60304c8f8cdcd64e {
+patch meta_wavetable__d49__88b3f5e4926dcb56 {
   param phase = 0 [0..1] @label("Phase") @wrap
   param position = 0 [0..1] @label("Position")
   param fold = 0 [0..1] @label("Fold")
@@ -42,6 +113,6 @@ patch meta_wavetable__d55__60304c8f8cdcd64e {
   in pos : audio = -0
   out out : audio mono
 
-  out = wavetable_pos(frac(x + phase), clip(position + pos, 0, 1), 221)
+  out = wavetable_pos(frac(x + phase), clip(position + pos, 0, 1), 197)
 
 }

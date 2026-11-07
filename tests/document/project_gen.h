@@ -4,7 +4,8 @@
 //   richProject: the doc_fixture project plus one of every entity kind, every PitchId kind and anchor kind, every
 //                tuning kind (incl. private tunings, a MOS with MODMOS/generator sequence/region, a Scala scale
 //                with a ratio beyond int64 and a .kbm), every ParamKind lane, nested groups, every output kind,
-//                non-default note fields and number edge cases (-0.0, denormals, extreme exponents), and view state.
+//                non-default note fields and number edge cases (-0.0, denormals, extreme exponents), view state, and
+//                every MIDI track's instrument (a Wavetable engine in an instrument group).
 //   randomProject: richProject plus seeded random notes, breakpoints, tempo and mixer values.
 
 #include <bit>
@@ -15,9 +16,34 @@
 
 #include "doc_fixture.h"
 #include "pq/document/edit_ops.h"
-#include "pq/document/instrument_groups.h"
+#include "../support/blocks.h"
 
 namespace doctest_fixture {
+
+inline const DeviceLibrary& deviceLibrary() {
+  static std::unique_ptr<DeviceLibrary> lib = [] {
+    auto r = loadDeviceLibrary(std::string(PQ_TEST_DATA_DIR) + "/../stdlib");
+    REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
+    return std::move(*r);
+  }();
+  return *lib;
+}
+
+// A Wavetable engine Ctrl+G'd into an instrument group at a MIDI track's notes (test_blocks::addEngineInstrument), as a
+// block set: the group, the engine and the wires inside the group.
+inline const BlockSet& engineInstrument() {
+  static const BlockSet set = [] {
+    DocumentStore s;
+    auto t = ops::createTrack(*s.current(), s.ids(), TrackKind::Midi);
+    REQUIRE(t.ok());
+    REQUIRE(s.dispatch(t->command).ok());
+    const DeviceId g = test_blocks::addEngineInstrument(s, t->tracks.at(0), "wavetable", deviceLibrary(), true);
+    auto copied = ops::copyBlocks(*s.current(), std::vector<DeviceId>{g});
+    REQUIRE(copied.ok());
+    return std::move(*copied);
+  }();
+  return set;
+}
 
 struct RichProject : Fixture {
   TrackId inner, innerMidi;
@@ -142,54 +168,31 @@ struct RichProject : Fixture {
     b.commands.push_back(RenameTuning{tScale, "Scala \xF0\x9F\x8E\xB5"});
     const pq::Status st = store.dispatch(b);
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
-    // T4.1: every MIDI track's default instrument, with ids after every other entity in track order: exactly what the
-    // schema 2 -> 3 migration gives fixtures/schema2 (fixtures/full as schema 2 wrote it).
-    Batch inst{"default instruments", {}};
+    // Every MIDI track's instrument: a Wavetable engine in an instrument group (engineInstrument: a small instrument
+    // with no knob curves, so the serialization tests may relabel the project as an older schema; GU.11: no stock
+    // instrument), ids after every other entity in track order; then every track wired in series (source → its path →
+    // its mixer).
+    std::vector<TrackId> midi;
     forEachTrack(*store.current(), [&](const Track& t, const Track*) {
-      if (t.kind == TrackKind::Midi) inst.commands.push_back(AddDevice{t.id, makeDefaultInstrument(ids.device()), 0});
+      if (t.kind == TrackKind::Midi) midi.push_back(t.id);
     });
-    const pq::Status si = store.dispatch(inst);
-    REQUIRE_MESSAGE(si.ok(), (si.ok() ? std::string() : si.error().message));
-    // TX.all-free: every track wired in series (source → its devices → its mixer), ids after everything else, in track
-    // order: exactly what the schema 16 -> 17 migration gives the older fixtures.
+    for (const TrackId t : midi) {
+      auto e = ops::pasteBlocks(*store.current(), ids, t, engineInstrument());
+      REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+      const pq::Status si = store.dispatch(e->command);
+      REQUIRE_MESSAGE(si.ok(), (si.ok() ? std::string() : si.error().message));
+    }
     auto wired = ops::wireSeries(*store.current(), ids);
     REQUIRE_MESSAGE(wired.ok(), (wired.ok() ? std::string() : wired.error().message));
     const pq::Status sw = store.dispatch(wired->command);
     REQUIRE_MESSAGE(sw.ok(), (sw.ok() ? std::string() : sw.error().message));
-    // TX.pan-laws: every MIDI track pans with constant power (its law before schema 18): exactly what the schema
-    // 17 -> 18 migration gives the older fixtures (every other track keeps Balance, the default).
+    // TX.pan-laws: every MIDI track pans with constant power (a non-default law on every MIDI track).
     Batch laws{"pan laws", {}};
     forEachTrack(*store.current(), [&](const Track& t, const Track*) {
       if (t.kind == TrackKind::Midi) laws.commands.push_back(SetTrackPanMode{t.id, PanMode::ConstantPower});
     });
     const pq::Status sl = store.dispatch(laws);
     REQUIRE_MESSAGE(sl.ok(), (sl.ok() ? std::string() : sl.error().message));
-    // IG.1-2: every MIDI track's instrument wrapped into an instrument group, ids after everything else: exactly what
-    // the schema 18 -> 19 step gives the older fixtures, dispatched as one undoable batch (its difference).
-    {
-      const Snapshot before = store.current();
-      Project wrapped = *before;
-      REQUIRE(migrateToInstrumentGroups(wrapped));
-      ids.reserveThrough(maxEntityId(wrapped));
-      Batch ig{"instrument groups", {}};
-      forEachTrack(wrapped, [&](const Track& t, const Track*) {
-        const Track* old = findTrackPtr(*before, t.id);
-        for (uint32_t i = 0; i < t.devices.size(); ++i)
-          if (old->deviceIndex(t.devices[i]->id) < 0) ig.commands.push_back(AddDevice{t.id, t.devices[i], i});
-      });
-      for (const Wire& w : wiresOf(*before))
-        if (const Wire* n = findWire(wrapped, w.id); n == nullptr || !(*n == w)) ig.commands.push_back(RemoveWire{w.id});
-      forEachTrack(wrapped, [&](const Track& t, const Track*) {
-        for (const DevicePtr& d : t.devices)
-          if (const DeviceLoc l = findDevice(*before, d->id); l.device != nullptr && l.device->group != d->group)
-            ig.commands.push_back(SetDeviceGroup{d->id, d->group});
-      });
-      for (const Wire& w : wiresOf(wrapped))
-        if (const Wire* o = findWire(*before, w.id); o == nullptr || !(*o == w)) ig.commands.push_back(AddWire{w});
-      const pq::Status sg = store.dispatch(ig);
-      REQUIRE_MESSAGE(sg.ok(), (sg.ok() ? std::string() : sg.error().message));
-      REQUIRE(*store.current() == wrapped);
-    }
     // View state (not undoable, saved with the project).
     store.view().tracks[drums] = TrackView{true, 0};
     store.view().tracks[lead] = TrackView{false, 120};

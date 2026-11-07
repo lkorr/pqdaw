@@ -1,8 +1,8 @@
 // T5.11: user-library files (pq/document/library_files.h) and the edits that bring them into a project
-// (ops::replaceDevice = hot-swap, ops::placeClip): save → load is deep-equal for every kind (device, nested rack, user
-// device, EDO / MOS / Scala tunings exact, note clip, audio clip); the category key sits at the top of a preset (Q153);
-// strict reading; hot-swap keeps the id, the position, wires and mappings onto params that still exist (one undo step);
-// a project using a library user device needs no library to open.
+// (ops::replaceDevice = hot-swap, ops::placeClip): save → load is deep-equal for every kind (device, nested rack,
+// EDO / MOS / Scala tunings exact, note clip, audio clip); the category key sits at the top of a preset (Q153);
+// strict reading; hot-swap keeps the id, the position, wires and mappings onto params that still exist (one undo step).
+// (GU.11: user devices are gone.)
 
 #include <doctest/doctest.h>
 
@@ -50,7 +50,7 @@ struct Lib {
     CHECK(store.history().cursor() == before + (e->empty() ? 0u : 1u));
     return *e;
   }
-  DeviceId add(TrackId t, const char* patch, DeviceKind k = DeviceKind::AudioEffect) {
+  DeviceId add(TrackId t, std::string patch, DeviceKind k = DeviceKind::AudioEffect) {
     return edit(ops::addDevice(doc(), store.ids(), t, patch, k, kAppend)).devices.at(0);
   }
 };
@@ -59,7 +59,6 @@ struct Lib {
 bool sameUpToIds(const Device& a, const Device& b) {
   if (a.patch != b.patch || a.kind != b.kind || a.active != b.active || a.params != b.params || a.settings != b.settings)
     return false;
-  if ((a.source == nullptr) != (b.source == nullptr) || (a.source && a.source->text != b.source->text)) return false;
   return true;
 }
 
@@ -67,8 +66,8 @@ bool sameUpToIds(const Device& a, const Device& b) {
 
 TEST_CASE("library files: a device preset round-trips exactly; its kind is in the first bytes") {
   Lib l;
-  const DeviceId sat = l.add(l.midi, "saturator");
-  l.edit(ops::setDeviceParam(l.doc(), sat, "drive", 0.75));  // GU.1: a knob position
+  const DeviceId sat = l.add(l.midi, std::string(kValueDevice));  // (GU.11: a value block)
+  l.edit(ops::setDeviceParam(l.doc(), sat, std::string(kValueParam), 0.75));  // GU.1: a knob position
   l.edit(ops::setDevicesActive(l.doc(), std::span<const DeviceId>(&sat, 1), false));
   const std::string text = must(serializePreset(l.device(sat), "Warm"));
   CHECK(text.find("\"pqpreset\"") < 64);
@@ -92,23 +91,7 @@ TEST_CASE("library files: a device preset round-trips exactly; its kind is in th
   CHECK(newer.error().message.find("newer") != std::string::npos);
 }
 
-TEST_CASE("library files: user devices, tunings and clips round-trip exactly") {
-  // A user device (CRLF text, panel).
-  UserDeviceFile u;
-  u.name = "Grit";
-  u.patch = "saturator";
-  u.kind = DeviceKind::AudioEffect;
-  u.origin = "devices/saturator.pqp";
-  u.text = "import \"../lib/x.pqp\"\r\npatch saturator {\r\n}\r\n";
-  u.panel = "{\"rows\": []}";
-  const std::string ut = must(serializeUserDevice(u));
-  CHECK(must(parseUserDevice(ut)) == u);
-  u.text = "patch saturator {\n}";  // LF
-  CHECK(must(parseUserDevice(must(serializeUserDevice(u)))) == u);
-  const DevicePtr d = makeUserDevice(DeviceId{9}, u);
-  CHECK(d->source->text == u.text);
-  CHECK(d->patch == "saturator");
-
+TEST_CASE("library files: tunings and clips round-trip exactly") {
   // Tunings: EDO with a ratio equave, MOS, Scala with a mapping (exact ratios and cents).
   std::vector<TuningDef> defs;
   {
@@ -240,21 +223,4 @@ TEST_CASE("library: a clip placed from the library gets fresh ids and overwrites
   CHECK(at.clips[0].audio->sample == s.id);
   CHECK(at.clips[0].audio->length == pq::kPpq);  // 0.5 s at 120 BPM, re-derived at its new start
   CHECK_FALSE(ops::placeClip(l.doc(), l.store.ids(), l.midi, as, 0, s).ok());
-}
-
-TEST_CASE("library: a project using a library user device opens without the library") {
-  Lib l;
-  UserDeviceFile u;
-  u.name = "Mine";
-  u.patch = "saturator";
-  u.kind = DeviceKind::AudioEffect;
-  u.origin = "devices/saturator.pqp";
-  u.text = "patch saturator {}\n";
-  const DevicePtr d = makeUserDevice(DeviceId{1}, u);
-  const DeviceId id = l.edit(ops::pasteDevices(l.doc(), l.store.ids(), l.fx, std::span<const DevicePtr>(&d, 1))).devices.at(0);
-  const LoadedProject back = must(parseProject(must(serializeProject(l.doc()))));
-  const DeviceLoc loc = findDevice(*back.project, id);
-  REQUIRE(loc.device);
-  REQUIRE(loc.device->source);
-  CHECK(loc.device->source->text == u.text);
 }

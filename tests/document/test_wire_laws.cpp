@@ -1,7 +1,9 @@
 // TX.patching (SPEC §15 2026-11-01 "a wire adds its value in the target param's own units", "free patching in the
 // circuit"): the document side — wire laws (Add for new wires, Travel only from migration), schema 13 and its
 // 12 → 13 migration (an old project lowers to exactly the same graph), wires from any output into params and inputs,
-// TX.all-free: blocks off the main path (takeOffPath, the file, trackStages).
+// TX.all-free: blocks off the main path (takeOffPath, the file, trackStages). GU.11: blocks only — the LFO module's
+// main output is the source; the targets are native engines (an Envelope "env" on the path: attack curved, sustain
+// linear; a Wavetable "wt"), atom blocks and modules.
 #include <doctest/doctest.h>
 
 #include <nlohmann/json.hpp>
@@ -19,7 +21,7 @@
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
 #include "pq/meta/type.h"
-#include "../support/stand_in_synth.h"
+#include "../support/blocks.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -37,31 +39,33 @@ DeviceLibrary& library() {
   return *lib;
 }
 
+// A MIDI track: its instrument a Wavetable engine in an instrument group (inst; test_blocks::addEngineInstrument: no
+// knob curves, so the project may be relabelled as an older schema), an LFO (a Wavetable engine off the path: its
+// `out` is the modulation source) and an Envelope engine after the instrument (env).
 struct Doc {
   DocumentStore store;
   TrackId keys;
-  DeviceId inst, lfo, eq;
+  DeviceId inst, lfo, env;
   Doc() {
     auto t = ops::createTrack(*store.current(), store.ids(), TrackKind::Midi, {}, "Keys");
     REQUIRE(t.ok());
     REQUIRE(store.dispatch(t->command).ok());
     keys = t->tracks.at(0);
-    REQUIRE(stand_in::useBasicSynth(store, keys).valid());  // (GU.10: the IG.1-2 layout)
-    inst = findTrackPtr(*store.current(), keys)->devices.at(0)->id;
-    // IG.1-2: the instrument out of its instrument group, alone on the path (a lone instrument: the same sound), as the
-    // wire-law cases were written (their old files have no instrument groups).
-    auto ug = ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(*store.current(), keys)->devices.at(1)->id);
-    REQUIRE_MESSAGE(ug.ok(), (ug.ok() ? std::string() : ug.error().message));
-    REQUIRE(store.dispatch(ug->command).ok());
-    lfo = add("lfo_device");
-    eq = add("eq_eight");
+    inst = test_blocks::addEngineInstrument(store, keys, "wavetable", library(), true);  // (relabelled as schema 12)
+    auto o = ops::addMetaDevice(*store.current(), store.ids(), keys, "wavetable", ops::kOffPath);
+    REQUIRE(o.ok());
+    REQUIRE(store.dispatch(o->command).ok());
+    lfo = o->devices.at(0);
+    env = engine("envelope");
   }
-  DeviceId add(const char* patch) {
-    auto e = ops::addDevice(*store.current(), store.ids(), keys, patch, DeviceKind::AudioEffect);
+  DeviceId add(std::string patch, uint32_t slot = kAppend) {
+    auto e = ops::addDevice(*store.current(), store.ids(), keys, std::move(patch), DeviceKind::AudioEffect, slot);
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
     REQUIRE(store.dispatch(e->command).ok());
     return e->devices.at(0);
   }
+  // A native engine spliced in at the path's end (after the instrument group).
+  DeviceId engine(const char* type) { return test_blocks::appendEngineAfter(store, keys, type); }
   WireId run(const ops::EditResult& e) {
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
     REQUIRE(store.dispatch(e->command).ok());
@@ -91,8 +95,8 @@ WireStatus statusOf(const LoweredProject& l, WireId w) {
 
 TEST_CASE("wire laws: a new wire adds in units and has no amount; a Travel wire keeps its depth") {
   Doc d;
-  const WireId add = d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "freq1"));
-  const WireId travel = d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "gain2", 0.4));
+  const WireId add = d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "out", d.env, "attack"));
+  const WireId travel = d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.lfo, "out", d.env, "sustain", 0.4));
   const Wire* a = findWire(d.doc(), add);
   const Wire* t = findWire(d.doc(), travel);
   REQUIRE(a != nullptr);
@@ -121,22 +125,23 @@ TEST_CASE("wire laws: a new wire adds in units and has no amount; a Travel wire 
   CHECK_FALSE(addAmount);
   CHECK(travelAmount);
   REQUIRE(l.taps.size() == 2);
-  // freq1 is on its declared octave curve, so the added wire adds in knob position (GU.1; its tap too).
+  // attack is on its declared Exp0 curve, so the added wire adds in knob position (GU.1; its tap too).
   for (const ModulationTap& tap : l.taps) CHECK(tap.domain == ModulationTap::Domain::Position);
 }
 
 TEST_CASE("wire laws: any output into any param or input; a Travel wire goes into params only") {
   Doc d;
-  const DeviceId util = d.add("utility");
+  const DeviceId util = d.engine("wavetable");
+  const DeviceId cmp = d.add("atom:gt", ops::kOffPath);  // a bool output
   // An effect's main output (an `out`, not an export) into a param and into another device's audio input.
-  const WireId outToParam = d.run(ops::connectWire(d.doc(), d.store.ids(), d.eq, "out", util, "balance"));
-  const WireId outToInput = d.run(ops::connectWire(d.doc(), d.store.ids(), d.inst, "out", util, "x"));
+  const WireId outToParam = d.run(ops::connectWire(d.doc(), d.store.ids(), d.env, "out", util, "position"));
+  const WireId outToInput = d.run(ops::connectWire(d.doc(), d.store.ids(), d.inst, std::string(kMainPort), util, "pos"));
   // A Travel wire into an input does not play; GU.9: from an `out` into a param it does (a rack macro's mapping).
-  const WireId oldOut = d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.eq, "out", util, "width", 0.5));
-  const WireId oldIn = d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.lfo, "lfo", util, "x", 0.5));
-  // A bool output (an instrument's `done`) is not a signal; a const input (a setting) is not a target.
-  const WireId done = d.run(ops::connectWire(d.doc(), d.store.ids(), d.inst, "done", util, "gain"));
-  const WireId setting = d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", util, "bassMono"));
+  const WireId oldOut = d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.env, "out", util, "fold", 0.5));
+  const WireId oldIn = d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.lfo, "out", util, "x", 0.5));
+  // A bool output (a comparison's) is not a signal; a const input (a setting) is not a target.
+  const WireId done = d.run(ops::connectWire(d.doc(), d.store.ids(), cmp, "out", util, "warp"));
+  const WireId setting = d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "out", util, "mode"));
   const LoweredProject l = lowerDoc(d.doc());
   CHECK(statusOf(l, outToParam) == WireStatus::Lowered);
   CHECK(statusOf(l, outToInput) == WireStatus::Lowered);
@@ -144,16 +149,17 @@ TEST_CASE("wire laws: any output into any param or input; a Travel wire goes int
   CHECK(statusOf(l, oldIn) == WireStatus::Invalid);
   CHECK(statusOf(l, done) == WireStatus::Invalid);
   CHECK(statusOf(l, setting) == WireStatus::Invalid);
-  // The EQ's output into a later utility's param is no loop; the utility's output back into the EQ's input is one.
-  const WireId back = d.run(ops::connectWire(d.doc(), d.store.ids(), util, "out", d.eq, "x"));
+  // The Envelope's output into a later engine's param is no loop; that engine's output back into the Envelope's input
+  // is one.
+  const WireId back = d.run(ops::connectWire(d.doc(), d.store.ids(), util, "out", d.env, "in"));
   CHECK(statusOf(lowerDoc(d.doc()), back) == WireStatus::Delayed);
 }
 
 TEST_CASE("wire laws: schema 13 writes the law, 12 -> 13 makes every wire Travel and lowers to the same graph") {
   Doc d;
-  d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.lfo, "lfo", d.eq, "freq1", 0.4));
-  d.run(ops::connectTravelNoteWire(d.doc(), d.store.ids(), d.keys, "velocity", d.eq, "gain2", -0.25));
-  const DeviceId util = d.add("utility");
+  d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.lfo, "out", d.env, "attack", 0.4));
+  d.run(ops::connectTravelNoteWire(d.doc(), d.store.ids(), d.keys, "velocity", d.env, "sustain", -0.25));
+  const DeviceId util = d.engine("wavetable");
   // TX.pan-laws: a MIDI track of schema 12 panned with constant power (the 17 -> 18 step gives it that law back).
   Batch laws{"laws", {}};
   forEachTrack(d.doc(), [&](const Track& t, const Track*) {
@@ -166,7 +172,9 @@ TEST_CASE("wire laws: schema 13 writes the law, 12 -> 13 makes every wire Travel
   // The same project as schema 12 wrote it: no "law" (every wire was the knob-travel law), version 12.
   nlohmann::json j = nlohmann::json::parse(*text);
   for (nlohmann::json& w : j["wires"]) {
-    if (w.value("port", std::string("?")).empty() && w.value("param", std::string("?")).empty()) continue;  // a main link
+    // A wire on a main port (a main link, an instrument group's In → engine → Out: one end "") adds, as it did then.
+    if (w.value("port", std::string("?")).empty() || w.value("param", std::string("?")).empty()) continue;
+    if (w.value("chain", false)) continue;  // (IG.1-2: an instrument group's chain links: added, no "law")
     REQUIRE(w.contains("law"));
     w.erase("law");
   }
@@ -174,12 +182,13 @@ TEST_CASE("wire laws: schema 13 writes the law, 12 -> 13 makes every wire Travel
   Result<LoadedProject> old = parseProject(j.dump(2));
   REQUIRE_MESSAGE(old.ok(), (old.ok() ? std::string() : old.error().message));
   CHECK(old->fileSchemaVersion == 12);
-  // (IG.1-2: the 18 -> 19 step wraps the instrument into an instrument group, as for every older file.)
+  // (IG.1-2: the 18 -> 19 step wraps an instrument into an instrument group, as for every older file; this one's is one
+  // already.)
   Project want = *d.store.current();
-  REQUIRE(migrateToInstrumentGroups(want));
+  (void)migrateToInstrumentGroups(want);
   CHECK(*old->project == want);
   for (const Wire& w : wiresOf(*old->project))
-    if (!w.mainLink() && !w.chain) CHECK(w.law == WireLaw::Travel);  // (the main links of this relabelled text add)
+    if (!w.port.empty() && !w.param.empty() && !w.chain) CHECK(w.law == WireLaw::Travel);  // (the main links of this relabelled text add)
   // The lowered graph of the migrated file is the one the Travel law built before TX.patching (the same IR, so the
   // same audio: tests/app/test_wires.cpp renders that law bit for bit like a hand-built graph).
   const LoweredProject a = lowerDoc(want), b = lowerDoc(*old->project);
@@ -187,7 +196,7 @@ TEST_CASE("wire laws: schema 13 writes the law, 12 -> 13 makes every wire Travel
   for (size_t i = 0; i < a.patches.size(); ++i) CHECK(a.patches[i]->hash == b.patches[i]->hash);
   // An added wire is written without "law" and "amount"; reading one with an amount is refused, as is a Travel wire
   // without one.
-  const WireId w = d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "lfo", util, "balance"));
+  const WireId w = d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "out", util, "position"));
   Result<std::string> now = serializeProject(d.doc());
   REQUIRE(now.ok());
   nlohmann::json k = nlohmann::json::parse(*now);
@@ -211,8 +220,9 @@ TEST_CASE("wire laws: schema 13 writes the law, 12 -> 13 makes every wire Travel
 
 TEST_CASE("TX.all-free: blocks off the main path — taken off it in one undo step, out of the flow, called, in the file") {
   Doc d;
-  const DeviceId sat = d.add("saturator");
-  const DeviceId devs[] = {d.lfo, sat};
+  const DeviceId mod = test_blocks::appendEngineAfter(d.store, d.keys, "wavetable");
+  const DeviceId sat = test_blocks::appendAfter(d.store, d.keys, "atom:tanh");
+  const DeviceId devs[] = {mod, sat};
   auto e = ops::takeOffPath(d.doc(), d.store.ids(), nullptr, devs);
   REQUIRE(e.ok());
   const size_t steps = d.store.history().entries().size();
@@ -220,22 +230,30 @@ TEST_CASE("TX.all-free: blocks off the main path — taken off it in one undo st
   CHECK(d.store.history().entries().size() == steps + 1);
   const Track& t = *findTrackPtr(d.doc(), d.keys);
   const MainPath path = mainPath(d.doc(), t);
-  CHECK_FALSE(path.contains(d.lfo));
+  CHECK_FALSE(path.contains(mod));
   CHECK_FALSE(path.contains(sat));
-  REQUIRE(path.blocks.size() == 2);  // the synth → the EQ (the path closed up where they were)
-  CHECK(path.blocks[1]->id == d.eq);
+  REQUIRE(path.blocks.size() == 2);  // the instrument → the Envelope (the path closed up where they were)
+  CHECK(path.blocks[1]->id == d.env);
   CHECK(path.complete);
-  // trackStages lists them but leaves them out of the flow: the EQ receives the instrument's audio.
+  // trackStages lists them but leaves them out of the flow: the Envelope receives the instrument's audio.
   const std::vector<ChainStage> st = trackStages(d.doc(), t);
-  REQUIRE(st.size() == 4);
-  CHECK(st[1].device->id == d.eq);
-  CHECK(st[1].in == ChainSignal::Audio);
-  CHECK(st[2].offPath);
-  CHECK(st[2].in == ChainSignal::None);
+  auto stageOf = [&](DeviceId id) -> const ChainStage* {
+    for (const ChainStage& x : st)
+      if (x.device->id == id) return &x;
+    return nullptr;
+  };
+  REQUIRE(stageOf(d.env) != nullptr);
+  CHECK(stageOf(d.env)->in == ChainSignal::Audio);
+  CHECK_FALSE(stageOf(d.env)->offPath);
+  for (const DeviceId x : {mod, sat, d.lfo}) {
+    REQUIRE(stageOf(x) != nullptr);
+    CHECK(stageOf(x)->offPath);
+    CHECK(stageOf(x)->in == ChainSignal::None);
+  }
   // The lowering calls them (the views draw them) but they are not on the path.
   const LoweredProject l = lowerDoc(d.doc());
   const pq::graph::Patch& tp = *l.graph.tracks.at(0).patch;
-  CHECK(tp.findByName("d" + std::to_string(d.lfo.value)).has_value());
+  CHECK(tp.findByName("d" + std::to_string(mod.value)).has_value());
   CHECK(tp.findByName("d" + std::to_string(sat.value)).has_value());
   CHECK(l.missingDevices.empty());
   // The file keeps the wiring (there is no "free" flag any more); undo puts them back on the path.
@@ -246,7 +264,8 @@ TEST_CASE("TX.all-free: blocks off the main path — taken off it in one undo st
   REQUIRE(back.ok());
   CHECK(*back->project == d.doc());
   REQUIRE(d.store.undo());
-  CHECK(mainPath(d.doc(), *findTrackPtr(d.doc(), d.keys)).contains(d.lfo));
+  CHECK(mainPath(d.doc(), *findTrackPtr(d.doc(), d.keys)).contains(mod));
+  CHECK(mainPath(d.doc(), *findTrackPtr(d.doc(), d.keys)).contains(sat));
 }
 
 TEST_CASE("TX.all-free: a meta device taken off the path no longer takes the notes; the next one on the path does") {
@@ -255,13 +274,14 @@ TEST_CASE("TX.all-free: a meta device taken off the path no longer takes the not
   REQUIRE(t.ok());
   REQUIRE(store.dispatch(t->command).ok());
   const TrackId keys = t->tracks.at(0);
-  REQUIRE(stand_in::useBasicSynth(store, keys).valid());  // (GU.10: the IG.1-2 layout)
-  {  // IG.1-2: the instrument alone on the path first (out of its instrument group)
-    auto ug = ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(*store.current(), keys)->devices.at(1)->id);
-    REQUIRE(ug.ok());
-    REQUIRE(store.dispatch(ug->command).ok());
+  {  // the default instrument group out: the path empty (source → mixer)
+    const DeviceId inst = mainPath(*store.current(), *findTrackPtr(*store.current(), keys)).blocks.at(0)->id;
+    auto del = ops::deleteDevices(*store.current(), std::vector<DeviceId>{inst});
+    REQUIRE(del.ok());
+    REQUIRE(store.dispatch(del->command).ok());
+    REQUIRE(mainPath(*store.current(), *findTrackPtr(*store.current(), keys)).blocks.empty());
   }
-  auto a = ops::addMetaDevice(*store.current(), store.ids(), keys, "envelope", 0);  // replaces the instrument (GU.4: was a PA)
+  auto a = ops::addMetaDevice(*store.current(), store.ids(), keys, "envelope", 0);  // takes the notes (GU.4: was a PA)
   REQUIRE(a.ok());
   REQUIRE(store.dispatch(a->command).ok());
   auto b = ops::addMetaDevice(*store.current(), store.ids(), keys, "wavetable");
