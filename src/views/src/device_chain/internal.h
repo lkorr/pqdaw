@@ -25,6 +25,9 @@ namespace pq::views {
 namespace project_patch {
 class ProjectPatchView;
 }
+namespace panel {
+class PanelHost;
+}
 
 namespace device_chain {
 
@@ -222,6 +225,9 @@ std::unique_ptr<FrameBase> makeRackFrame(DeviceChainView::Impl& impl, ViewContex
 // patch view); groupPatchView: that view, or null for another frame.
 std::unique_ptr<FrameBase> makeGroupFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d);
 project_patch::ProjectPatchView* groupPatchView(FrameBase& f);
+// GU.3: a group frame's panel host (its panel with elements; null: it shows its mini circuit) or its inspector (an
+// instrument group's polyphony; null: none).
+panel::PanelHost* groupPanelHost(FrameBase& f, bool inspector);
 // The devices the Device view shows for a rack chain: all of them, in order.
 std::vector<doc::DevicePtr> shownDevices(const std::vector<doc::DevicePtr>& list);
 // TX.all-free (SPEC §15 2026-11-03 "everything is free"): the blocks the Device view lists for a track — its MAIN PATH,

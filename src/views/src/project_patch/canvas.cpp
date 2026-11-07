@@ -513,7 +513,7 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
         if (!mine(n)) continue;
         if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal) continue;  // the symbol says it
         // TMM.4: a face is label-free; TX.panel-faces: a panel has its title; TX.mixer-look: so has a mixer's face.
-        if (n.face != nullptr || n.panel || n.kind == NodeKind::Mixer) continue;
+        if (n.face != nullptr || n.panel || n.groupPanel || n.kind == NodeKind::Mixer) continue;  // GU.3: a group's panel
         const Rect nr = deviceRect(n.x, n.y, n.w, n.h);
         if (nr.x1 - nr.x0 < 24.0f * us || !overlaps(nr, clip)) continue;
         const ui::TextRun run = ts.shape(font, n.title);

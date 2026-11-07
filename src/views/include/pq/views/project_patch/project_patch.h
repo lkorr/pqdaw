@@ -138,6 +138,10 @@ struct Node {
   // drawn as an instrument; `voices` its polyphony (1: mono; 0: the link's default).
   bool group = false;
   bool groupOpen = false;
+  // GU.3 (pq/document/panel.h): a closed group whose panel has elements is drawn AS ITS PANEL (the view's panel maker:
+  // pq/views/panel/group_panel_face.h GroupPanelFace), at the panel's size; no miniature (`mini` empty). An empty panel:
+  // the miniature as before.
+  bool groupPanel = false;
   uint32_t voices = 0;
   uint32_t capsule = kNone;
   std::vector<uint32_t> members;

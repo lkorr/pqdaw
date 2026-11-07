@@ -1031,6 +1031,17 @@ struct FreeRackIds {
   doc::DeviceId acc;
 };
 Status buildFreeRackProject(doc::DocumentStore& store, uint32_t lfos = 3, FreeRackIds* ids = nullptr);
+// GU.3: "Keys" whose instrument group "Synth" (In → Phase accumulator → mul ← Level → Out; value blocks Level, Cutoff
+// (octave 20 Hz … 20 kHz), Drive (logarithmic), Mix (%); legato, steal quietest, 8 voices) has a 480 × 220 PANEL of
+// every generic element kind: knobs in four styles, sliders (h, v), number boxes, a button, a mod source, shapes, labels,
+// tabs switching a curve editor (Cutoff) and an XY pad + knob, a toggle (mono) and a button-look toggle (legato), a menu
+// (steal) and a number (voices) on the group's polyphony settings. The ids (`tabs`: the tabs element's id).
+struct PanelProjectIds {
+  doc::TrackId keys;
+  doc::DeviceId group, pa, mul, level, cutoff, drive, mix;
+  uint32_t tabs = 0;
+};
+Status buildPanelProject(doc::DocumentStore& store, PanelProjectIds* ids = nullptr);
 
 }  // namespace project_patch
 

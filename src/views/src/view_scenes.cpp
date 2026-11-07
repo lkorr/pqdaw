@@ -2099,6 +2099,41 @@ Status setupProjectPatchNested(Shell& shell) {
   return Ok{};
 }
 
+// GU.3: a group drawn as its panel (project_patch::buildPanelProject): Keys' instrument group "Synth" closed — the block
+// is its 480 × 220 panel of every generic element kind (the Curve tab shown), the whole project fitted.
+Status setupProjectPatchGroupPanel(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "group panel: no device library", {}};
+  project_patch::PanelProjectIds ids;
+  if (Status s = project_patch::buildPanelProject(ctx.store(), &ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "group panel: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->setGroupOpen(ids.group, false);
+  v->selectGroup({});
+  v->fitAll(false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// GU.3: the same project in the Device view — the instrument group's frame: its inspector (the polyphony settings) and
+// its panel, fitted to the frame's height.
+Status setupDeviceGroupPanelElements(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "group panel: no device library", {}};
+  project_patch::PanelProjectIds ids;
+  if (Status s = project_patch::buildPanelProject(ctx.store(), &ids); !s) return s;
+  ctx.setSelectedTrack(ids.keys);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TX.groups: the same project's Keys in the Device view — the default synth, then the group, whose panel is the circuit
 // of its contents (the embedded, scoped canvas: In, the three modules, Out, the wires between them).
 Status setupDeviceGroupPanel(Shell& shell) {
@@ -2986,6 +3021,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-block-drag", 1600, 900, setupProjectBlockDrag},          // TX.block-drag
     {"project-patch-group", 1600, 900, setupProjectPatchGroup},        // TX.groups
     {"project-patch-nested", 1600, 900, setupProjectPatchNested},      // GU.2
+    {"project-patch-group-panel", 1600, 900, setupProjectPatchGroupPanel},          // GU.3
+    {"device-group-panel-elements", 1600, 900, setupDeviceGroupPanelElements},      // GU.3
     {"device-group-panel", 1600, 900, setupDeviceGroupPanel},          // TX.groups
     {"device-free-rack", 1600, 900, [](Shell& s) { return setupDeviceFreeRack(s, true); }},              // TX.free-rack
     {"device-free-rack-collapsed", 1600, 900, [](Shell& s) { return setupDeviceFreeRack(s, false); }},   // TX.free-rack

@@ -63,7 +63,7 @@ SymbolSpec specOf(const Node& n) {
     inStub = outStub = 0.0f;
   }
   // TX.panel-faces: the panel face draws its sockets on the edges; TX.mixer-look: so does the mixer's face.
-  if (n.panel || n.kind == NodeKind::Mixer) inStub = outStub = 0.0f;
+  if (n.panel || n.groupPanel || n.kind == NodeKind::Mixer) inStub = outStub = 0.0f;  // GU.3: a group's panel too
   for (size_t i = 0; i < n.inputs.size(); ++i) {
     PinSpec p;
     p.y = pinYOf(n, i);
@@ -230,6 +230,16 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
       f.node = v;
       f.owner = n.device.value;
       f.path = n.title;
+      f.panel = true;
+      sc.faces.push_back(std::move(f));
+    }
+    // GU.3: a closed group with a panel is drawn as it (GroupPanelFace: the view's panelMaker makes it; a new size is a
+    // new face, a new panel of the same size is the same face, which follows the document).
+    if (n.groupPanel) {
+      circuit::SceneFace f;
+      f.node = v;
+      f.owner = n.device.value;
+      f.path = std::string(kGroupPanelFacePrefix) + std::to_string(std::lround(n.w)) + "x" + std::to_string(std::lround(n.h));
       f.panel = true;
       sc.faces.push_back(std::move(f));
     }

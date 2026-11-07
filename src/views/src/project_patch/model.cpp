@@ -17,6 +17,7 @@
 #include "pq/meta/registry.h"
 #include "pq/views/devices/panel_face.h"
 #include "pq/views/meta/meta_face.h"
+#include "pq/views/panel/group_panel_face.h"
 
 namespace pq::views::project_patch {
 
@@ -501,6 +502,14 @@ struct Builder {
       c.pinTop = 0.0f;
       sizeBlock(c, m::kClosedGroupW);
       c.h = roundUp4(std::max(c.h, m::kClosedGroupH));
+      if (g.hasPanel()) {  // GU.3: drawn as its panel (at the panel's size; its pins on the edges)
+        c.groupPanel = true;
+        c.mini.clear();
+        c.miniWires.clear();
+        const size_t rows = pinRows(c);
+        c.w = roundUp4(std::max(g.panel->width, 24.0f));
+        c.h = roundUp4(std::max(g.panel->height, m::kPinTop + m::kPinPitch * static_cast<float>(rows - 1) + 16.0f));
+      }
       return addNode(scaled(std::move(c)));
     }
     // Opened: the capsule first, then In, the members (a nested group recursively: its capsule and contents), Out.
@@ -1102,8 +1111,9 @@ struct Builder {
       o.x0 = n.x, o.y0 = n.y, o.x1 = n.x + sz.x * k, o.y1 = n.y + sz.y * k, o.corner = fs.radius * k;
       return o;
     }
-    if (n.panel) {
-      o.x0 = n.x, o.y0 = n.y, o.x1 = n.x + n.w, o.y1 = n.y + n.h, o.corner = devices::PanelFace::kPanelCorner * k;
+    if (n.panel || n.groupPanel) {  // GU.3: a group drawn as its panel too
+      o.x0 = n.x, o.y0 = n.y, o.x1 = n.x + n.w, o.y1 = n.y + n.h;
+      o.corner = (n.panel ? devices::PanelFace::kPanelCorner : panel::GroupPanelFace::kCorner) * k;
       return o;
     }
     const float in = std::min(8.0f, n.w * 0.25f);

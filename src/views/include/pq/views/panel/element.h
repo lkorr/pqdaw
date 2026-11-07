@@ -1,0 +1,183 @@
+#pragma once
+
+// GU.3 (docs/plans/GU.md "Panels and the panel window"): the ELEMENTS a group's panel is built from (the document's
+// pq/document/panel.h PanelElement) and the ELEMENT REGISTRY. An element is vector code in its own world units (its
+// rect's size; pq/ui/face_painter.h), drawn by the panel's face (group_panel_face.h) at every zoom:
+//
+//   static layers  ≤ 2 value-independent layers in white (the host tints them): a knob's track, a slider's groove,
+//                  frames and ticks. They depend only on the kind, the style fields and the size (staticKey), so every
+//                  element with the same kind + style + size shares ONE coverage tile per layer and scale (the face's
+//                  tile cache: rasterised once per zoom, drawn as one quad).
+//   live layer     the value (arc, handle, readout), hover and drag highlights: geometry every frame.
+//   interaction    pointer events in element-local world units (FacePointer: drags measured in device px, so a control
+//                  travels the same per pointer pixel at every zoom; Shift: fine; double-click: reset), keys and text
+//                  while it holds the face's key focus (a number being typed into), its cursor and info text.
+//   binding        through a PanelTarget (below): what the bound control / setting is (label, curve, choices) and where it
+//                  is (its knob position), and the edits — a control dragged in one store gesture (one undo step, param
+//                  writes, no compile), a setting committed once at the end of its gesture (one recompile), a curve
+//                  edited inside a gesture (SetParamCurve: no compile within its class).
+//
+// Registry: registerElement(kind, factory, schema) — the generic kinds register themselves (elements.cpp); GU.7's rich
+// elements add one factory each. The schema lists a kind's style fields (name, type, default, choices) for GU.5's
+// inspector and GU.8's style schemas; an element reads its fields from the document element with those defaults.
+//
+// UI thread only.
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "pq/document/panel.h"
+#include "pq/dsp/curve.h"
+#include "pq/ui/face_painter.h"
+#include "pq/ui/input.h"
+#include "pq/ui/theme.h"
+#include "pq/views/meta/meta_face.h"
+
+namespace pq::views::panel {
+
+// What a binding is, resolved against the document (and the device library) by the target.
+struct BoundInfo {
+  bool valid = false;     // resolves now (the block exists, the param / setting is the patch's)
+  bool setting = false;   // a structural value: committed once per gesture
+  bool editable = true;
+  std::string label;      // the param's @label / the setting's label
+  dsp::Curve curve;       // knob position → value (a setting: linear over its range with its step)
+  std::vector<std::string> choices;  // a choice (value = index); empty: none
+  bool isSwitch = false;  // a bool param / a 0 … 1 step-1 setting
+  int32_t steps = 0;      // discrete positions (≥ 2), 0: continuous
+};
+
+// What elements read and edit. A gesture is begin, any number of setPosition / setCurve, then end (one undo step) or
+// cancel (nothing changes). A setting's positions inside a gesture are a preview (position() returns it); end() commits
+// it as one command.
+class PanelTarget {
+public:
+  virtual ~PanelTarget() = default;
+  // (The reference stays valid for the target's life; its content follows the document.)
+  virtual const BoundInfo& info(const doc::Binding& b) const = 0;
+  // The knob position in [0, 1] now (a setting: its value's share of its range; a preview while its gesture runs).
+  virtual double position(const doc::Binding& b) const = 0;
+  // The value at `position` in the binding's units as text ("1.00 kHz", "Quietest", "On").
+  virtual std::string format(const doc::Binding& b, double position) const = 0;
+  // Typed text → a knob position (nearest the current one on a curve that turns back); nullopt: not a value.
+  virtual std::optional<double> parse(const doc::Binding& b, std::string_view text) const = 0;
+  virtual void begin(const doc::Binding& b, const char* label) = 0;
+  virtual void setPosition(const doc::Binding& b, double position) = 0;
+  virtual void setCurve(const doc::Binding& b, const dsp::Curve& c) = 0;
+  virtual void end() = 0;
+  virtual void cancel() = 0;
+  // One step of its own: a click on a toggle / menu / tab, a typed value.
+  virtual void setOnce(const doc::Binding& b, double position, const char* label) = 0;
+  virtual void reset(const doc::Binding& b) = 0;  // back to the default (one step)
+  // Changes whenever anything a binding resolves to may have (a new document): cached resolutions are redone.
+  virtual uint64_t revision() const = 0;
+  virtual void notice(std::string_view /*message*/) {}
+  // The host widget (menus open from it) — null: no menus (tests without a tree).
+  virtual ui::Widget* menuHost() const noexcept { return nullptr; }
+};
+
+// What an element paints with.
+struct ElementEnv {
+  const ui::Theme* theme = nullptr;
+  PanelTarget* target = nullptr;
+  bool hovered = false;
+  bool focused = false;  // holds the face's key focus
+};
+
+// One style field of a kind (registry schema).
+struct StyleSpec {
+  enum class Type : uint8_t { Number, Choice, Token, Text };
+  std::string_view name;
+  Type type = Type::Number;
+  double number = 0.0;          // Number default
+  std::string_view text;        // Choice / Token / Text default
+  std::span<const std::string_view> choices;  // Choice
+  double min = 0.0, max = 0.0;  // Number (min == max: unbounded)
+};
+struct ElementSchema {
+  std::string_view kind, label;
+  std::span<const StyleSpec> style;
+  std::span<const std::string_view> slots;  // binding slots ("value"; an XY pad: "x", "y")
+  float defaultW = 48.0f, defaultH = 48.0f;
+};
+
+// The theme colour a token names ("value", "signal", "track", "handle", "ink", "frame", "tick", "hover", "glow",
+// "body", "accent" = value); unknown: `fallback`.
+ui::Rgba themeToken(const ui::Theme& th, std::string_view token, ui::Rgba fallback) noexcept;
+
+class Element {
+public:
+  explicit Element(doc::PanelElement desc);
+  virtual ~Element() = default;
+  Element(const Element&) = delete;
+  Element& operator=(const Element&) = delete;
+
+  const doc::PanelElement& desc() const noexcept { return desc_; }
+  uint32_t id() const noexcept { return desc_.id; }
+  ui::Rect rect() const noexcept { return {desc_.x, desc_.y, desc_.x + desc_.w, desc_.y + desc_.h}; }
+  ui::Vec2 size() const noexcept { return {desc_.w, desc_.h}; }
+  const doc::Binding* binding(size_t slot = 0) const noexcept { return desc_.binding(slot); }
+
+  // ---- painting (element-local world units: (0, 0) … size()) ----
+  virtual uint32_t staticLayerCount() const noexcept { return 0; }
+  virtual ui::Rgba staticLayerColour(const ui::Theme& /*th*/, uint32_t /*layer*/) const noexcept { return 0; }
+  virtual void paintStatic(ui::FacePainter& /*p*/, uint32_t /*layer*/) const {}
+  // Kind + style + size: the static layers' shared tile key (computed once).
+  uint64_t staticKey() const noexcept { return staticKey_; }
+  virtual void paintLive(ui::FacePainter& p, const ElementEnv& env) = 0;
+
+  // ---- interaction ----
+  virtual bool hit(ui::Vec2 local) const noexcept;  // default: inside the rect
+  virtual bool interactive() const noexcept { return false; }
+  virtual bool onPointer(const FacePointer& /*e*/, PanelTarget& /*t*/) { return false; }
+  virtual bool dragging() const noexcept { return false; }
+  virtual void cancelDrag(PanelTarget& /*t*/) {}
+  virtual bool onKey(const ui::KeyEvent& /*e*/, PanelTarget& /*t*/) { return false; }
+  virtual bool onText(const ui::TextEvent& /*e*/, PanelTarget& /*t*/) { return false; }
+  virtual bool wantsText() const noexcept { return false; }
+  virtual void focusLost(PanelTarget& /*t*/) {}
+  virtual ui::Cursor cursor() const noexcept { return interactive() ? ui::Cursor::Pointer : ui::Cursor::Inherit; }
+  virtual void describe(const PanelTarget& t, std::string& title, std::string& body) const;
+  // Its value as a visibility source (a tabs / menu element: the index; a toggle: 0 / 1); nullopt: it is none.
+  virtual std::optional<double> selection(const PanelTarget& /*t*/) const { return std::nullopt; }
+  // An unbound selection's own state (tabs: kept by the face across rebuilds of the panel).
+  virtual void setLocalSelection(double /*v*/) {}
+  // Where a wire into the bound param ends (element-local), nullopt: nowhere particular.
+  virtual std::optional<ControlAnchor> anchor() const { return std::nullopt; }
+
+protected:
+  // Style fields with the schema's defaults.
+  double num(std::string_view name, double def) const noexcept { return desc_.number(name, def); }
+  std::string_view txt(std::string_view name, std::string_view def) const noexcept { return desc_.text(name, def); }
+  ui::Rgba colour(const ui::Theme& th, std::string_view field, std::string_view def, ui::Rgba fallback) const noexcept {
+    return themeToken(th, txt(field, def), fallback);
+  }
+  // The label shown: the "label" field ("-": none), else the binding's label.
+  std::string labelText(const PanelTarget& t, size_t slot = 0) const;
+  doc::PanelElement desc_;
+
+private:
+  uint64_t staticKey_ = 0;
+};
+
+using ElementFactory = std::unique_ptr<Element> (*)(const doc::PanelElement& desc);
+// Registers kind `schema.kind` (false: taken). The generic kinds are registered by registerGenericElements(), which
+// makeElement / elementSchema call once.
+bool registerElement(const ElementSchema& schema, ElementFactory factory);
+// An element of `desc.kind`; an unknown kind becomes a placeholder (a dashed frame with the kind's name), so a panel
+// from a newer build still opens.
+std::unique_ptr<Element> makeElement(const doc::PanelElement& desc);
+const ElementSchema* elementSchema(std::string_view kind);
+std::vector<std::string_view> elementKinds();  // registered kinds, registration order
+
+// ---- a small library of drawing helpers shared by elements (element-local units) ----
+// A rounded rect's outline (the painter fills rounded rects only).
+void outlineRect(ui::FacePainter& p, const ui::Rect& r, float radius, float thickness, ui::Rgba col);
+
+}  // namespace pq::views::panel

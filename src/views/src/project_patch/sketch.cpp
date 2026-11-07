@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/meta/wavetable.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -640,6 +641,186 @@ Status buildNestedGroupProject(doc::DocumentStore& store, NestedProjectIds* ids)
   }
   r.clip(o.keys, 0, 4 * kTicksPerWhole, "Chord", {0, 4, 7});
   r.clip(o.bass, 0, 4 * kTicksPerWhole, "Root", {0, 7});
+  if (ids != nullptr) *ids = o;
+  return r.status;
+}
+
+// GU.3: a group with a panel of every generic element kind (buildPanelProject in project_patch_view.h).
+Status buildPanelProject(doc::DocumentStore& store, PanelProjectIds* ids) {
+  Runner r{store};
+  using K = doc::DeviceKind;
+  PanelProjectIds o;
+  o.keys = r.track(doc::TrackKind::Midi, {}, "Keys", 0xF6A23B);
+  if (!r.status) return r.status;
+  {
+    const doc::Track* tr = doc::findTrackPtr(*store.current(), o.keys);
+    const doc::MainPath path = doc::mainPath(*store.current(), *tr);
+    o.group = path.blocks.empty() ? doc::DeviceId{} : path.blocks.front()->id;
+    std::vector<doc::DeviceId> del;
+    for (const doc::DevicePtr& d : tr->devices)
+      if (d->group == o.group) del.push_back(d->id);
+    (void)r.run(doc::ops::deleteDevices(*store.current(), del));
+  }
+  if (!r.status || !o.group.valid()) return r.status ? Status(Error{ErrorCode::NotFound, "panel project: no instrument group", {}}) : r.status;
+  (void)r.run(doc::ops::renameDevice(*store.current(), o.group, "Synth"));
+  const doc::DeviceLibrary* lib = store.deviceLibrary();
+  if (lib == nullptr) return Error{ErrorCode::InvalidArgument, "panel project: the store has no device library", {}};
+  auto into = [&](doc::DeviceId d) { (void)r.run(doc::ops::setDeviceGroup(*store.current(), store.ids(), lib, d, o.group)); };
+  auto value = [&](const char* name) {
+    const doc::DeviceId v = r.device(o.keys, "Value", K::AudioEffect, doc::ops::kOffPath);
+    (void)r.run(doc::ops::renameDevice(*store.current(), v, name));
+    into(v);
+    return v;
+  };
+  {
+    auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), o.keys, "phase_acc", doc::ops::kOffPath));
+    o.pa = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+    into(o.pa);
+  }
+  o.mul = r.device(o.keys, "atom:mul", K::AudioEffect, doc::ops::kOffPath);
+  into(o.mul);
+  o.level = value("Level");
+  o.cutoff = value("Cutoff");
+  o.drive = value("Drive");
+  o.mix = value("Mix");
+  if (!r.status) return r.status;
+  const std::string vp(doc::kValueParam);
+  {
+    dsp::Curve c = dsp::curvePreset(dsp::CurvePreset::Octave, 20.0, 20000.0);
+    c.unit = dsp::CurveUnit::Hz;
+    (void)r.run(doc::ops::setParamCurve(*store.current(), *lib, o.cutoff, vp, c));
+    dsp::Curve d = dsp::curvePreset(dsp::CurvePreset::Logarithmic, 0.0, 1.0, dsp::kCurveBendK);
+    (void)r.run(doc::ops::setParamCurve(*store.current(), *lib, o.drive, vp, d));
+    dsp::Curve m = dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, 1.0);
+    m.unit = dsp::CurveUnit::Percent;
+    (void)r.run(doc::ops::setParamCurve(*store.current(), *lib, o.mix, vp, m));
+  }
+  r.param(o.level, vp, 0.8);
+  r.param(o.cutoff, vp, 1000.0);
+  r.param(o.drive, vp, 0.35);
+  r.param(o.mix, vp, 0.6);
+  (void)r.run(doc::ops::setDeviceSetting(*store.current(), o.group, std::string(doc::kGroupLegato), 1.0));
+  (void)r.run(doc::ops::setDeviceSetting(*store.current(), o.group, std::string(doc::kGroupSteal), 1.0));
+  (void)r.run(doc::ops::setDeviceSetting(*store.current(), o.group, std::string(doc::kGroupVoices), 8.0));
+  auto wire = [&](doc::DeviceId a, const char* port, doc::DeviceId b, const char* param) {
+    (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), a, port, b, param));
+  };
+  wire(o.group, "input", o.pa, "hz");
+  wire(o.pa, "", o.mul, "a");
+  wire(o.level, "y", o.mul, "b");
+  wire(o.mul, "out", o.group, "output");
+  if (!r.status) return r.status;
+  // The panel: two sections — the oscillator's knobs, sliders, a number, a button and a mod source; a tabbed curve
+  // editor / XY pad, the polyphony settings, a label and decorations.
+  using doc::styleNumber;
+  using doc::styleText;
+  std::vector<doc::PanelElement> es;
+  auto el = [&](const char* kind, float x, float y, float w, float h, std::vector<doc::Binding> b = {}) -> doc::PanelElement& {
+    doc::PanelElement e;
+    e.kind = kind;
+    e.x = x, e.y = y, e.w = w, e.h = h;
+    e.bindings = std::move(b);
+    es.push_back(std::move(e));
+    return es.back();
+  };
+  auto ctl = [&](doc::DeviceId d) { return doc::controlBinding(d, vp); };
+  auto set = [&](std::string_view s) { return doc::settingBinding(o.group, std::string(s)); };
+  {
+    doc::PanelElement& a = el("shape", 4, 4, 232, 212);
+    a.setField(styleText("stroke", "none"));
+    a.setField(styleNumber("opacity", 0.35));
+    a.setField(styleNumber("radius", 6));
+    doc::PanelElement& b = el("shape", 240, 4, 236, 212);
+    b.setField(styleText("stroke", "none"));
+    b.setField(styleNumber("opacity", 0.35));
+  }
+  el("label", 12, 8, 60, 12).setField(styleText("text", "OSC"));
+  es.back().setField(styleText("align", "left"));
+  es.back().setField(styleNumber("size", 8));
+  el("knob", 12, 22, 48, 60, {ctl(o.level)});
+  {
+    doc::PanelElement& k = el("knob", 66, 22, 48, 60, {ctl(o.cutoff)});
+    k.setField(styleText("pointer", "pie"));
+    k.setField(styleText("readout", "above"));
+  }
+  {
+    doc::PanelElement& k = el("knob", 120, 22, 48, 60, {ctl(o.drive)});
+    k.setField(styleText("pointer", "dot"));
+    k.setField(styleNumber("track", 2));
+    k.setField(styleText("colour", "signal"));
+  }
+  {
+    doc::PanelElement& k = el("knob", 174, 30, 48, 48, {ctl(o.mix)});
+    k.setField(styleText("pointer", "line"));
+    k.setField(styleText("readout", "inside"));
+    k.setField(styleText("label", "-"));
+    k.setField(styleNumber("sweep", 300));
+  }
+  el("slider", 12, 88, 150, 26, {ctl(o.level)});
+  {
+    doc::PanelElement& s = el("slider", 186, 86, 24, 84, {ctl(o.drive)});
+    s.setField(styleText("handle", "dot"));
+    s.setField(styleNumber("track", 3));
+  }
+  el("number", 12, 122, 70, 26, {ctl(o.cutoff)});
+  el("modsource", 92, 120, 24, 32, {doc::signalBinding(o.level, "y")}).setField(styleText("label", "LVL"));
+  el("button", 12, 160, 70, 20, {ctl(o.mix)}).setField(styleText("text", "Hold"));
+  {
+    doc::PanelElement& l = el("shape", 124, 136, 52, 4);
+    l.setField(styleText("shape", "line"));
+    l.setField(styleText("stroke", "tick"));
+  }
+  {
+    doc::PanelElement& t = el("tabs", 248, 8, 120, 16);
+    t.setField(styleText("items", "Curve|XY"));
+  }
+  {
+    doc::PanelElement& l = el("label", 380, 8, 88, 14);
+    l.setField(styleText("text", "SYNTH"));
+    l.setField(styleText("align", "right"));
+    l.setField(styleText("colour", "value"));
+  }
+  el("curve", 248, 30, 220, 110, {ctl(o.cutoff)});
+  el("xy", 248, 30, 110, 110, {ctl(o.drive), ctl(o.mix)});
+  {
+    doc::PanelElement& k = el("knob", 380, 46, 60, 76, {ctl(o.level)});
+    k.setField(styleText("pointer", "pie"));
+    k.setField(styleText("colour", "signal"));
+  }
+  el("toggle", 248, 150, 80, 16, {set(doc::kGroupMono)}).setField(styleText("text", "Mono"));
+  {
+    doc::PanelElement& t = el("toggle", 336, 148, 64, 20, {set(doc::kGroupLegato)});
+    t.setField(styleText("look", "button"));
+    t.setField(styleText("text", "Legato"));
+  }
+  el("menu", 248, 176, 90, 20, {set(doc::kGroupSteal)}).setField(styleText("label", "-"));
+  el("number", 346, 176, 56, 20, {set(doc::kGroupVoices)}).setField(styleText("label", "-"));
+  {
+    doc::PanelElement& c = el("shape", 452, 194, 14, 14);
+    c.setField(styleText("shape", "circle"));
+    c.setField(styleText("fill", "value"));
+    c.setField(styleText("stroke", "none"));
+  }
+  std::vector<uint32_t> made;
+  (void)r.run(doc::ops::addPanelElements(*store.current(), o.group, std::move(es), &made));
+  if (!r.status) return r.status;
+  // The curve on tab 0, the XY pad and the big knob on tab 1.
+  const doc::Panel& pnl = *doc::findDevice(*store.current(), o.group).device->panel;
+  uint32_t tabs = 0;
+  for (const doc::PanelElement& e : pnl.elements)
+    if (e.kind == "tabs") tabs = e.id;
+  for (const doc::PanelElement& e : pnl.elements) {
+    const bool curve = e.kind == "curve", second = e.kind == "xy" || (e.kind == "knob" && e.x >= 370.0f);
+    if (!curve && !second) continue;
+    doc::PanelElement c = e;
+    c.when = doc::Visibility{tabs, {curve ? 0.0 : 1.0}};
+    (void)r.run(doc::ops::setPanelElement(*store.current(), o.group, std::move(c)));
+  }
+  {  // a size with its margin
+    (void)r.run(doc::ops::setPanelSize(*store.current(), o.group, 480.0f, 220.0f));
+  }
+  r.clip(o.keys, 0, 4 * kTicksPerWhole, "Chord", {0, 4, 7});
+  o.tabs = tabs;
   if (ids != nullptr) *ids = o;
   return r.status;
 }

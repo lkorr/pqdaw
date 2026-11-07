@@ -15,6 +15,7 @@
 #include "pq/views/devices/analysis.h"
 #include "pq/views/devices/panel_face.h"
 #include "pq/views/meta/face_targets.h"
+#include "pq/views/panel/group_panel_face.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
 namespace pq::views::project_patch {
@@ -120,6 +121,12 @@ std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
     const uint32_t mn = f.node < scene_.modelNode.size() ? scene_.modelNode[f.node] : kNone;
     return mn < patch_.nodes.size() ? makeMixerFace(*this, patch_, patch_.nodes[mn]) : nullptr;
   }
+  // GU.3: a closed group drawn as its panel, bound to the document (menus open from the canvas).
+  if (std::string_view(f.path).starts_with(kGroupPanelFacePrefix)) {
+    const doc::DeviceId g{f.owner};
+    return std::make_unique<panel::GroupPanelFace>(panel::docPanelSource(ctx_, g),
+                                                   panel::makeDocPanelTarget(ctx_, g, [c = canvas_]() -> ui::Widget* { return c; }));
+  }
   const doc::DeviceLoc loc = doc::findDevice(*ctx_.doc(), doc::DeviceId{f.owner});
   if (loc.device == nullptr) return nullptr;
   const doc::Device& d = *loc.device;
@@ -184,7 +191,7 @@ std::optional<LayoutOptions::Anchor> ProjectPatchView::controlAnchorOf(const doc
 
 devices::PanelFace* ProjectPatchView::panelOf(doc::DeviceId device) const noexcept {
   const uint32_t mn = patch_.nodeOf(device);
-  if (mn == kNone || mn >= scene_.sceneNode.size() || scene_.sceneNode[mn] == kNone) return nullptr;
+  if (mn == kNone || mn >= scene_.sceneNode.size() || scene_.sceneNode[mn] == kNone || patch_.nodes[mn].groupPanel) return nullptr;
   return static_cast<devices::PanelFace*>(canvas_->panelOn(scene_.sceneNode[mn]));  // the canvas's panels are ours
 }
 
@@ -201,6 +208,7 @@ void ProjectPatchView::syncPanels() {
     const uint32_t sn = canvas_->panelNode(i);
     const uint32_t mn = sn < scene_.modelNode.size() ? scene_.modelNode[sn] : kNone;
     if (mn >= patch_.nodes.size() || patch_.nodes[mn].kind != NodeKind::Device) continue;  // TX.mixer-look: a mixer's face
+    if (patch_.nodes[mn].groupPanel) continue;  // GU.3: a group's panel follows the document itself
     auto& face = static_cast<devices::PanelFace&>(canvas_->panelAt(i));
     const Node& n = patch_.nodes[mn];
     face.setWorldSize({n.w / n.scale, n.h / n.scale});  // TX.resize: its own units

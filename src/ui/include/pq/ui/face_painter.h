@@ -70,6 +70,17 @@ public:
   // face that keeps its own image (the Spectrogram's scrolling picture).
   void setImages(TexturePool* images) noexcept { images_ = images; }
   TexturePool* images() const noexcept { return images_; }
+  // GU.3: a painter for a part of this face at its own transform (a panel's element), with the same text system,
+  // images and tint.
+  FacePainter at(FaceTransform t) const noexcept {
+    FacePainter p(dl_, t);
+    p.text_ = text_;
+    p.face_ = face_;
+    p.images_ = images_;
+    p.tint_ = tint_;
+    p.tinted_ = tinted_;
+    return p;
+  }
 
   // ---- primitives (positions, radii and thicknesses in world units; angles in radians, screen space: 0 = +x,
   // π/2 = down, increasing clockwise) ----

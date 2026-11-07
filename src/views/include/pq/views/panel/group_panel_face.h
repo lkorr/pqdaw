@@ -1,0 +1,153 @@
+#pragma once
+
+// GU.3 (docs/plans/GU.md "Panels and the panel window"): a GROUP'S PANEL as a Face (pq/views/meta/meta_face.h), so every
+// host that draws faces draws it — the project patch canvas (a collapsed group with a panel is drawn as its panel:
+// project_patch.h Node::groupPanel), the Device view's group frame (PanelHost below), GU.5's floating panel window.
+//
+//   source     where the panel comes from: the group's document panel (re-read at each paint and event; the elements
+//              are rebuilt only when the panel's pointer changes — a persistent document) or a fixed one (the group
+//              inspector's generated panel).
+//   elements   one pq/views/panel/element.h Element per document element, in paint order; hit-tested topmost first.
+//              An element with a visibility condition is drawn and hit only while its source element (a tabs / menu /
+//              toggle) has one of the values. Tabs that bind nothing keep their own selection across rebuilds.
+//   drawing    the plate (body + frame) and each shown element: its static layers from the shared ELEMENT TILE CACHE —
+//              one coverage tile per (kind + style + size, layer, scale) in the renderer's atlas, shared by every element
+//              alike on every panel (200 identical knobs: one raster per layer) — drawn as one quad each (directly while
+//              the tile is missing or no atlas exists: goldens); then its live layer. Tiles are built in prepare() (the
+//              host's onFrame at a settled zoom), never in paint.
+//   input      the canvas's face routing: a press goes to the element under it (it captures until Up), hover moves to
+//              the element under the pointer, keys and text to the element the last press went to (a number box being
+//              typed into). A press on no element is the block's (kFrame: select / move).
+//   target     a PanelTarget (element.h): makeDocPanelTarget binds the document (gestures through the store: one undo
+//              step per drag; a setting committed once).
+//
+// UI thread only.
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "pq/document/panel.h"
+#include "pq/ui/widget.h"
+#include "pq/views/meta/meta_face.h"
+#include "pq/views/panel/element.h"
+
+namespace pq::views {
+class ViewContext;
+}
+
+namespace pq::views::panel {
+
+class GroupPanelFace final : public Face {
+public:
+  using Source = std::function<doc::PanelPtr()>;
+  GroupPanelFace(Source source, std::unique_ptr<PanelTarget> target);
+  ~GroupPanelFace() override;
+
+  // ---- geometry ----
+  ui::Vec2 worldSize() const noexcept override;  // the panel's size (as of the last sync)
+  FaceShape shape() const noexcept override { return {false, {0.0f, 0.0f}, kCorner}; }
+  static constexpr float kCorner = 8.0f;
+
+  // ---- painting ----
+  void paintLive(ui::FacePainter& p, const FaceEnv& env) override;
+  void liveRects(std::vector<ui::Rect>& out) const override;
+  bool needsPrepare(float pxPerUnit) const noexcept override;
+  bool prepare(float pxPerUnit) override;
+  void attach(FaceHost* host) override { host_ = host; }
+
+  // ---- interaction ----
+  int32_t hitTest(ui::Vec2 local, float pxPerUnit) const noexcept override;
+  bool onPointer(const FacePointer& e) override;
+  bool dragging() const noexcept override;
+  bool onKey(const ui::KeyEvent& e) override;
+  bool onText(const ui::TextEvent& e) override;
+  bool wantsText() const noexcept override;
+  void focusLost() override;
+  void cancelDrag() override;
+  ui::Cursor cursor(int32_t part) const noexcept override;
+  void describe(int32_t part, std::string& title, std::string& body) const override;
+  bool setHoveredPart(int32_t part) noexcept override;
+
+  // ---- the panel ----
+  // Re-reads the source: the elements rebuilt when the panel changed (true). Paint and the events call it.
+  bool sync();
+  PanelTarget& target() const noexcept { return *target_; }
+  size_t elementCount() const noexcept { return elements_.size(); }
+  Element& element(size_t i) const noexcept { return *elements_[i]; }
+  int32_t indexOf(uint32_t id) const noexcept;  // −1: none
+  bool shown(size_t i) const;                   // its visibility condition holds now
+  // The element under `local` that takes presses (topmost, shown), −1: none.
+  int32_t elementAt(ui::Vec2 local) const;
+  // Stats of the last paint (the bench, tests): elements drawn, static layers from tiles / drawn directly.
+  struct Stats {
+    uint32_t drawn = 0, fromTiles = 0, direct = 0, tilesBuilt = 0;
+  };
+  const Stats& stats() const noexcept { return stats_; }
+
+private:
+  void rebuild(const doc::PanelPtr& p);
+  bool shownNow(size_t i, std::vector<int8_t>& memo) const;
+  std::vector<int8_t>& freshMemo() const;  // memo_ cleared for this many elements (no allocation once grown)
+  ui::TileAtlas* atlas() const noexcept;
+
+  Source source_;
+  std::unique_ptr<PanelTarget> target_;
+  doc::PanelPtr panel_;
+  std::vector<std::unique_ptr<Element>> elements_;
+  std::vector<int32_t> whenSource_;  // per element: the index of its condition's source element (−1: always shown)
+  FaceHost* host_ = nullptr;
+  int32_t capture_ = -1, focus_ = -1;
+  mutable std::vector<int8_t> memo_;
+  float tilesWanted_ = 0.0f;  // the scale the last paint missed tiles at (0: none missing)
+  Stats stats_;
+};
+
+// The group's document panel: Device::panel of `group` in the current snapshot (null: none).
+GroupPanelFace::Source docPanelSource(ViewContext& ctx, doc::DeviceId group);
+// A PanelTarget on the document, for the panel of group `group`: bindings resolved through the context's device library
+// (a control: its param's label and curve — the device's own or the declared one —; a setting: the group's polyphony
+// specs, a patch's `real const`, a meta module's setting), edits through doc::ops in store gestures. `menuHost`: the
+// widget menus open from (null: none).
+std::unique_ptr<PanelTarget> makeDocPanelTarget(ViewContext& ctx, doc::DeviceId group, std::function<ui::Widget*()> menuHost);
+
+// The generated panel of a group's own settings (the GROUP INSPECTOR, GU.3: an instrument group's polyphony — voices,
+// mono, legato, glide, steal — as number / toggle / menu elements bound to its settings), `width` wide.
+doc::Panel inspectorPanel(doc::DeviceId group, float width);
+
+// A widget that hosts one Face fitted into its rect (aspect kept, centred, whole device px at its origin), routing pointer
+// events, keys and text to it as the canvas does, preparing it at its scale in onFrame (its tiles), and polling nothing
+// (a panel repaints when its document changes: notifyChanged). The Device view's group frame and inspector use it.
+class PanelHost final : public ui::Widget, public FaceHost {
+public:
+  PanelHost(std::string name, std::unique_ptr<Face> face);
+  ~PanelHost() override;
+  Face& face() const noexcept { return *face_; }
+  ui::FaceTransform transform() const noexcept;
+  // The document changed: repaint (and re-sync a group panel).
+  void notifyChanged();
+
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+  bool onKey(const ui::KeyEvent& e) override;
+  bool onText(const ui::TextEvent& e) override;
+  void onFrame(double now) override;
+  void onCaptureLost() override;
+  void onFocusChanged(bool focused) override;
+  ui::Cursor cursorAt(ui::Vec2 p) const override;
+  ui::InfoText info() const override;
+  // FaceHost
+  ui::Widget* hostWidget() noexcept override { return this; }
+  void faceNeedsUpdate(Face& f) noexcept override;
+
+private:
+  FacePointer pointerOf(const ui::PointerEvent& e) const;
+  std::unique_ptr<Face> face_;
+  int32_t hover_ = Face::kNone;
+  bool captured_ = false;
+  mutable std::string title_, body_;
+};
+
+}  // namespace pq::views::panel

@@ -53,6 +53,8 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
 // and mixerFacePath as its path (the prefix, its size and its send pins: a new layout of the strip is a new face); the
 // view's panelMaker makes the face for it.
 inline constexpr std::string_view kMixerFacePrefix = "\x01mixer:";
+// GU.3: the SceneFace path of a closed group drawn as its panel ("<prefix><w>x<h>").
+inline constexpr std::string_view kGroupPanelFacePrefix = "\x01group-panel:";
 struct MixerSend {
   doc::TrackId target;  // the return
   std::string letter;   // its letter (the pin's label)
