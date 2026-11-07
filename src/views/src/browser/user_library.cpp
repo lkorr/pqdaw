@@ -142,6 +142,15 @@ Result<std::string> Library::savePreset(const doc::Device& d, std::string_view d
   return path;
 }
 
+Result<std::string> Library::saveGroupPreset(const doc::BlockSet& blocks, std::string_view name) {
+  if (userLibrary_.empty()) return noLibrary();
+  const std::string path = uniqueFile(userPath("Groups"), name.empty() ? std::string_view("Group") : name, doc::kPresetExtension);
+  auto text = doc::serializeGroupPreset(blocks, utf8Of(pathOf(path).stem()));
+  if (!text) return std::move(text).error();
+  if (Status s = doc::writeTextFileAtomic(path, *text); !s) return std::move(s).error();
+  return path;
+}
+
 Result<std::string> Library::saveDefaultPreset(const doc::Device& d, std::string_view deviceName) {
   if (userLibrary_.empty()) return noLibrary();
   const std::string path = userPath("Defaults\\" + safeStem(deviceName) + std::string(doc::kPresetExtension));

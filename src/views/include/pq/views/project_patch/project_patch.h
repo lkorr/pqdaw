@@ -133,8 +133,12 @@ struct Node {
   // pins (`x` in, `y` out) on its edges at `pinTop`, level with the band's spine. Closed: one block (like a rack:
   // `inner` = its members, wires to and from them end on it as "<port>@<device id>") showing a miniature of its contents
   // (`mini`, in the block's unit square). A member's or terminal's `capsule` is its group's node.
+  // GU.2: groups nest — a member may be a group (its capsule inside its parent's, or a closed block there); `capsule` is
+  // the innermost capsule a node sits in. `instrument` on a group: an instrument group (the outermost group fed notes),
+  // drawn as an instrument; `voices` its polyphony (1: mono; 0: the link's default).
   bool group = false;
   bool groupOpen = false;
+  uint32_t voices = 0;
   uint32_t capsule = kNone;
   std::vector<uint32_t> members;
   uint32_t groupIn = kNone, groupOut = kNone;

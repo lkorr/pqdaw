@@ -2079,6 +2079,26 @@ Status setupProjectPatchGroup(Shell& shell) {
   return Ok{};
 }
 
+// GU.2: groups in groups (project_patch::buildNestedGroupProject): Keys' instrument group drawn as an instrument (its
+// accent, "Instrument · 16 voices") holding the opened "Osc" capsule and the closed "Level" block (its miniature); Bass's
+// plain "FX" group on the path holding the opened "Tone" capsule. The whole project fitted.
+Status setupProjectPatchNested(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "nested groups: no device library", {}};
+  project_patch::NestedProjectIds ids;
+  if (Status s = project_patch::buildNestedGroupProject(ctx.store(), &ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "nested groups: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  shell.tree().layoutNow();
+  v->setGroupOpen(ids.level, false);
+  v->selectGroup({});
+  v->fitAll(false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TX.groups: the same project's Keys in the Device view — the default synth, then the group, whose panel is the circuit
 // of its contents (the embedded, scoped canvas: In, the three modules, Out, the wires between them).
 Status setupDeviceGroupPanel(Shell& shell) {
@@ -2965,6 +2985,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-resize", 1600, 900, setupProjectPatchResize},      // TX.resize
     {"project-block-drag", 1600, 900, setupProjectBlockDrag},          // TX.block-drag
     {"project-patch-group", 1600, 900, setupProjectPatchGroup},        // TX.groups
+    {"project-patch-nested", 1600, 900, setupProjectPatchNested},      // GU.2
     {"device-group-panel", 1600, 900, setupDeviceGroupPanel},          // TX.groups
     {"device-free-rack", 1600, 900, [](Shell& s) { return setupDeviceFreeRack(s, true); }},              // TX.free-rack
     {"device-free-rack-collapsed", 1600, 900, [](Shell& s) { return setupDeviceFreeRack(s, false); }},   // TX.free-rack

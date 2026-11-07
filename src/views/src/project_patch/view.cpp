@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include "pq/views/browser/library_load.h"
 #include "pq/document/edit_ops.h"
+#include "pq/views/browser/library.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
 #include "pq/views/arrangement/arrangement.h"
@@ -1554,6 +1555,90 @@ bool ProjectPatchView::setDeviceGroup(doc::DeviceId device, doc::DeviceId group)
                group.valid() ? "Into Group" : "Out of Group");
 }
 
+// ---- GU.2: copy / paste of blocks, group presets ------------------------------------------------------------------
+
+bool ProjectPatchView::copyBlocks(std::span<const doc::DeviceId> devices) {
+  if (devices.empty()) {
+    ctx_.setStatus("Copy: select blocks first");
+    return false;
+  }
+  Result<doc::BlockSet> set = doc::ops::copyBlocks(*ctx_.doc(), devices);
+  if (!set) {
+    ctx_.setStatus(set.error().message);
+    return false;
+  }
+  const size_t n = set->devices.size();
+  ctx_.setBlockClipboard(std::move(*set));
+  ctx_.setStatus("Copied " + std::to_string(n) + (n == 1 ? " block" : " blocks") + " (Ctrl+V pastes at the pointer)");
+  return true;
+}
+
+bool ProjectPatchView::copySelection() {
+  std::vector<doc::DeviceId> d = selectedDevices();
+  if (selectedGroup_.valid() && std::find(d.begin(), d.end(), selectedGroup_) == d.end()) d.push_back(selectedGroup_);
+  if (scope_.valid()) std::erase(d, scope_);  // a group panel never copies its own group (its frame is not a block there)
+  if (d.empty()) {
+    if (scope_.valid()) return false;
+    ctx_.setStatus("Copy: select blocks first (click, Ctrl+click or drag a box around them)");
+    return false;
+  }
+  return copyBlocks(d);
+}
+
+bool ProjectPatchView::pasteAt(graph::Point2 at) {
+  sync();
+  const doc::BlockSet& clip = ctx_.blockClipboard();
+  if (clip.empty()) {
+    ctx_.setStatus("Paste: nothing copied (Ctrl+C copies the selected blocks)");
+    return false;
+  }
+  doc::TrackId track;
+  doc::DeviceId group;
+  uint32_t band = kNone;
+  if (!placeTarget(at, track, group, band)) {
+    ctx_.setStatus("Paste: there is no track to place it on");
+    return false;
+  }
+  doc::ops::EditResult e = doc::ops::pasteBlocks(*ctx_.doc(), ctx_.store().ids(), track, clip, group);
+  if (!e) {
+    ctx_.setStatus(e.error().message);
+    return false;
+  }
+  // The top-level blocks of the copy come first in Edit::devices (the rest are inside them).
+  size_t count = 0;
+  for (const doc::DevicePtr& d : clip.devices) count += d->group.valid() ? 0 : 1;
+  const std::vector<doc::DeviceId> top(e->devices.begin(), e->devices.begin() + static_cast<std::ptrdiff_t>(std::min(count, e->devices.size())));
+  if (!apply(e, "Paste")) return false;
+  // Each at the pointer, a step apart (the overlap rule then gives them room).
+  for (size_t i = 0; i < top.size(); ++i)
+    placeAt(top[i], {at.x + 24.0f * static_cast<float>(i), at.y + 24.0f * static_cast<float>(i)}, {}, {});
+  canvas_->clearSelection();
+  if (top.size() == 1 && doc::isGroupDevice(*doc::findDevice(*ctx_.doc(), top.front()).device)) selectGroup(top.front());
+  ctx_.setStatus("Pasted " + std::to_string(e->devices.size()) + (e->devices.size() == 1 ? " block" : " blocks"));
+  return true;
+}
+
+bool ProjectPatchView::saveGroupPreset(doc::DeviceId group) {
+  const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), group);
+  if (l.device == nullptr || !doc::isGroupDevice(*l.device)) {
+    ctx_.setStatus("Save as Group Preset: not a group");
+    return false;
+  }
+  const doc::DeviceId one[1] = {group};
+  Result<doc::BlockSet> set = doc::ops::copyBlocks(*ctx_.doc(), one);
+  if (!set) {
+    ctx_.setStatus(set.error().message);
+    return false;
+  }
+  Result<std::string> path = ctx_.library().saveGroupPreset(*set, l.device->name.empty() ? std::string("Group") : l.device->name);
+  if (!path) {
+    ctx_.setStatus("Save as Group Preset: " + path.error().message);
+    return false;
+  }
+  ctx_.setStatus("Saved group preset " + *path);
+  return true;
+}
+
 void ProjectPatchView::setGroupOpen(doc::DeviceId group, bool open) {
   const bool now = groupOpen(group);
   if (now == open) return;
@@ -1840,17 +1925,23 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
     {
       std::vector<doc::DeviceId> sel = selectedDevices();
       if (std::find(sel.begin(), sel.end(), d) == sel.end()) sel.assign(1, d);
-      ui::MenuItem g = ui::MenuItem::item("Group", [this, sel] { (void)groupDevices(sel); }, "Ctrl+G");
-      g.enabled = !n.group && !(n.capsule != kNone);
-      items.push_back(std::move(g));
+      // GU.2: groups nest — a group, or blocks inside a capsule, group too (the builder says why when it cannot).
+      items.push_back(ui::MenuItem::item("Group", [this, sel] { (void)groupDevices(sel); }, "Ctrl+G"));
       const doc::DeviceId grp = n.group ? d : n.capsule != kNone ? patch_.nodes[n.capsule].device : doc::DeviceId{};
       if (grp.valid()) {
         items.push_back(ui::MenuItem::item("Ungroup", [this, grp] { (void)ungroup(grp); }, "Ctrl+Shift+G"));
         const bool open = groupOpen(grp);
         items.push_back(ui::MenuItem::item(open ? "Close Group" : "Open Group", [this, grp, open] { setGroupOpen(grp, !open); }));
       }
-      if (n.capsule != kNone)
-        items.push_back(ui::MenuItem::item("Take Out of Group", [this, d] { (void)setDeviceGroup(d, {}); }));
+      if (n.capsule != kNone) {  // GU.2: out into the group around its capsule (or out of every group)
+        const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), patch_.nodes[n.capsule].device);
+        const doc::DeviceId outer = l.device != nullptr ? l.device->group : doc::DeviceId{};
+        items.push_back(ui::MenuItem::item("Take Out of Group", [this, d, outer] { (void)setDeviceGroup(d, outer); }));
+      }
+      // GU.2: copy / paste of blocks with the wires among them; a group saved as a group preset (the node menu spawns it).
+      items.push_back(ui::MenuItem::item("Copy", [this, sel] { (void)copyBlocks(sel); }, "Ctrl+C"));
+      if (n.group)
+        items.push_back(ui::MenuItem::item("Save as Group Preset", [this, d] { (void)saveGroupPreset(d); }));
     }
     items.push_back(ui::MenuItem::item("Delete", [this, d] {
       const doc::DeviceId one[1] = {d};

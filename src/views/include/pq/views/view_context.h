@@ -226,6 +226,10 @@ public:
   // chains without param controls and offers nothing to add). Must outlive its use. Notifies kDevices.
   void setDeviceLibrary(const doc::DeviceLibrary* lib);
   const doc::DeviceLibrary* deviceLibrary() const noexcept { return devices_; }
+  // GU.2: the blocks Ctrl+C copied in a circuit (doc::BlockSet: blocks with the wires among them, the ids they had;
+  // Ctrl+V pastes a fresh copy). One per session, shared by every project patch view (the main one, group panels).
+  void setBlockClipboard(doc::BlockSet blocks) { blockClipboard_ = std::move(blocks); }
+  const doc::BlockSet& blockClipboard() const noexcept { return blockClipboard_; }
   // T4.7: where the modulated knobs' live rings read their sweeps (the playback link; null: no rings move). Must
   // outlive its use. Notifies kModulation.
   void setModulationSource(ModulationSource* source);
@@ -505,6 +509,7 @@ private:
   FileDialogs* dialogs_ = nullptr;
   AudioPrefsPort* audioPrefs_ = nullptr;
   const doc::DeviceLibrary* devices_ = nullptr;
+  doc::BlockSet blockClipboard_;  // GU.2
   ModulationSource* modulation_ = nullptr;
   std::unique_ptr<devices::AnalysisHub> analysis_;  // TX.spectrum
   DevicePlayerFactory devicePlayers_;

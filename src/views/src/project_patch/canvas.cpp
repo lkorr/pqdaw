@@ -46,6 +46,16 @@ bool wireEnd(const Node& n) noexcept {
   return n.kind == NodeKind::Device || n.kind == NodeKind::Mixer || (n.kind == NodeKind::Terminal && !n.inputs.empty());
 }
 
+// GU.2: whether model node `n` sits inside the opened capsule `cap` at any depth.
+static bool insideNode(const ProjectPatch& pp, uint32_t n, uint32_t cap) noexcept {
+  if (cap == kNone) return false;
+  uint32_t guard = 0;
+  for (uint32_t c = n < pp.nodes.size() ? pp.nodes[n].capsule : kNone; c != kNone && c < pp.nodes.size() && guard < 32;
+       c = pp.nodes[c].capsule, ++guard)
+    if (c == cap) return true;
+  return false;
+}
+
 // TX.patching: the port of node `n`'s input pin `i` a wire dropped on it targets, or null. TX.all-free: an instrument's
 // `notes` and a rack's own input are their main inputs (kMainPort: the main path's notes / audio).
 const Port* wireTarget(const Node& n, uint32_t i) noexcept {
@@ -306,23 +316,31 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
         circuit::paintChainBoxes(ctx, *this, *cc, n.x + metrics::kExpandedPad - cc->scene->x0, n.y + 16.0f + metrics::kExpandedPad - cc->scene->y0);
   }
   // TX.groups: opened groups' capsules (a rounded frame with its title strip; its contents are scene nodes over it).
+  // GU.2: nested capsules come after their parent in the model, so each is drawn over the one it sits in. An instrument
+  // group (the outermost group fed notes) is drawn as an instrument: the instruments' accent, a heavier frame, and its
+  // kind and polyphony in the title strip ("Instrument · 16 voices") where a plain group shows its device count.
   for (const Node& n : pp.nodes) {
     if (!n.group || !n.groupOpen) continue;
     if (lifted(static_cast<uint32_t>(&n - pp.nodes.data())) != liftPass) continue;
     const Rect r = snapRect(deviceRect(n.x, n.y, n.w, n.h));
     if (!overlaps(r, clip)) continue;
-    const Rgba accent = th.circuit.wireAudio;
+    const Rgba accent = n.instrument ? th.accent.primary : th.circuit.wireAudio;
     // TMM.13-fix2 (MM review "UI and aesthetic" 9: "a grouped capsule", the user's word): pill-round ends — a short
     // capsule is a true stadium, a tall one keeps a 28-unit radius so its contents stay inside the curve.
     const float rad = std::min(std::round(28.0f * s), (r.y1 - r.y0) * 0.5f);
     const float stripH = std::round(metrics::kCapsuleTitle * s);
     const float sw = std::max(1.0f, std::round(circuit::strokeWidth(s)));
     const bool sel = view_.selectedGroup() == n.device;
-    dl.addRoundedRectFilled(r, rad, ui::lerp(th.circuit.background, th.circuit.subcircuitFill, n.active ? 0.6f : 0.3f));
+    // A nested capsule's body a step lighter than its parent's, so the levels read apart.
+    uint32_t depth = 0;
+    for (uint32_t c = n.capsule; c != kNone && c < pp.nodes.size() && depth < 16; c = pp.nodes[c].capsule) ++depth;
+    const float body = std::min(0.6f + 0.12f * static_cast<float>(depth), 0.95f);
+    dl.addRoundedRectFilled(r, rad, ui::lerp(th.circuit.background, th.circuit.subcircuitFill, n.active ? body : 0.3f));
     if (stripH >= 3.0f)
       dl.addRoundedRectFilled({r.x0, r.y0, r.x1, std::min(r.y1, r.y0 + std::max(stripH, rad))}, rad,
-                              ui::lerp(th.circuit.background, accent, n.active ? 0.18f : 0.08f));
-    dl.addRoundedRectStroke(r, rad, sel ? th.circuit.selected : ui::mulAlpha(accent, n.active ? 0.9f : 0.4f), sel ? 2.0f * sw : sw);
+                              ui::lerp(th.circuit.background, accent, n.active ? (n.instrument ? 0.26f : 0.18f) : 0.08f));
+    const float frame = n.instrument ? 1.5f * sw : sw;
+    dl.addRoundedRectStroke(r, rad, sel ? th.circuit.selected : ui::mulAlpha(accent, n.active ? 0.9f : 0.4f), sel ? 2.0f * sw : frame);
     if (names && stripH >= 8.0f) {
       const ui::FontId font = ctx.res.uiFonts->small;
       const auto px = static_cast<float>(ctx.res.text->metrics(font).pixelSize);
@@ -331,7 +349,9 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
                             static_cast<int32_t>(stripH)};
         const int32_t adv = paint::text(ctx, font, box, n.title, th.circuit.symbolText, ui::TextAlign::Left);
         const int32_t gap = static_cast<int32_t>(std::round(10.0f * us));
-        const std::string count = std::to_string(n.members.size()) + (n.members.size() == 1 ? " device" : " devices");
+        const std::string count =
+            n.instrument ? std::string("Instrument") + (n.voices == 1 ? " \xC2\xB7 mono" : n.voices > 1 ? " \xC2\xB7 " + std::to_string(n.voices) + " voices" : "")
+                         : std::to_string(n.members.size()) + (n.members.size() == 1 ? " device" : " devices");
         if (adv > 0 && adv + gap + 12 < box.w)
           paint::text(ctx, font, {box.x + adv + gap, box.y, box.w - adv - gap, box.h}, count,
                       ui::lerp(th.circuit.pinText, th.circuit.symbolText, 0.85f), ui::TextAlign::Left);  // TMM.13-fix2: was 2.79:1
@@ -1403,16 +1423,20 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
     leaveOutside(pos);
     const Node& moved = pp.nodes[dragNode_];
     const graph::Point2 w = toWorld(pos), start = toWorld(press_);
+    // GU.2: the innermost opened capsule under the drop (nested capsules come after their parent), never the dragged
+    // block itself or a capsule inside it.
     uint32_t into = kNone;
     for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
       const Node& c = pp.nodes[i];
-      if (i != dragNode_ && c.group && c.groupOpen && w.x >= c.x && w.x <= c.x + c.w && w.y >= c.y && w.y <= c.y + c.h) into = i;
+      if (i != dragNode_ && !insideNode(pp, i, dragNode_) && c.group && c.groupOpen && w.x >= c.x && w.x <= c.x + c.w &&
+          w.y >= c.y && w.y <= c.y + c.h)
+        into = i;
     }
     if (moved.capsule != kNone && into != moved.capsule) {
       (void)v.setDeviceGroup(device, into != kNone ? pp.nodes[into].device : doc::DeviceId{});
       return;
     }
-    if (moved.capsule == kNone && into != kNone && !moved.group) {
+    if (moved.capsule == kNone && into != kNone) {
       (void)v.setDeviceGroup(device, pp.nodes[into].device);
       return;
     }
@@ -1430,16 +1454,20 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
   // TX.groups: inside a capsule a block moves freely (a nudge); dragged out of it, it leaves the group; a block dropped
   // into another opened capsule of its band joins that group (from the main path: it leaves the path, joined there).
   {
-    auto insideNode = [&](const Node& c) { return w.x >= c.x && w.x <= c.x + c.w && w.y >= c.y && w.y <= c.y + c.h; };
+    // GU.2: the innermost opened capsule under the drop, never the dragged block or a capsule inside it; a group joins
+    // a capsule as any block does (groups nest).
+    auto under = [&](const Node& c) { return w.x >= c.x && w.x <= c.x + c.w && w.y >= c.y && w.y <= c.y + c.h; };
     uint32_t into = kNone;
     for (uint32_t i = 0; i < pp.nodes.size(); ++i)
-      if (i != dragNode_ && pp.nodes[i].group && pp.nodes[i].groupOpen && pp.nodes[i].band == b && insideNode(pp.nodes[i])) into = i;
+      if (i != dragNode_ && !insideNode(pp, i, dragNode_) && pp.nodes[i].group && pp.nodes[i].groupOpen &&
+          pp.nodes[i].band == b && under(pp.nodes[i]))
+        into = i;
     if (moved.capsule != kNone) {
       if (into == moved.capsule) v.nudge(moved.device.value, w.x - start.x, w.y - start.y);
       else if (now != nullptr && now->id == band.track) (void)v.setDeviceGroup(moved.device, into != kNone ? pp.nodes[into].device : doc::DeviceId{});
       return;
     }
-    if (into != kNone && !moved.group && now != nullptr && now->id == band.track) {
+    if (into != kNone && now != nullptr && now->id == band.track) {
       (void)v.setDeviceGroup(moved.device, pp.nodes[into].device);
       return;
     }
@@ -1581,6 +1609,13 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
 
   // TX.groups: Ctrl+G groups the selection, Ctrl+Shift+G ungroups (before the keymap: the Device view's Ctrl+G makes a
   // rack there).
+  // GU.2: Ctrl+C copies the selected blocks with the wires among them, Ctrl+V pastes a fresh copy at the pointer.
+  if (e.key == 'c' && mods == ui::mod::kCtrl) return view_.copySelection() || swallow;
+  if (e.key == 'v' && mods == ui::mod::kCtrl) {
+    Vec2 at = pointer_;
+    if (!rect().contains(at)) at = {static_cast<float>(rect().x + rect().w / 2), static_cast<float>(rect().y + rect().h / 2)};
+    return view_.pasteAt(toWorld(at)) || swallow;
+  }
   if (e.key == 'g' && mods == ui::mod::kCtrl) return view_.groupSelection() || swallow;
   if (e.key == 'g' && mods == (ui::mod::kCtrl | ui::mod::kShift)) return view_.ungroupSelection() || swallow;
   if (mods == ui::mod::kNone && e.key == '0') {
@@ -2061,7 +2096,8 @@ ui::InfoText ProjectCanvas::info() const {
           "alone, inside an opened device to edit its circuit. Over a lane window the wheel scrolls time, Ctrl+wheel zooms it; "
           "double-click a clip to edit it; a window edits its track as the arrangement does (drag: a time selection, "
           "Ctrl+Shift+M: a MIDI clip there, a clip's title moves it, Alt copies, its edges trim; A: automation). "
-          "Ctrl+G groups the selected blocks into a capsule (Ctrl+Shift+G ungroups). "
+          "Ctrl+G groups the selected blocks into a capsule (Ctrl+Shift+G ungroups; inside a capsule it nests). "
+          "Ctrl+C copies the selected blocks, Ctrl+V pastes them at the pointer. "
           "Ctrl+Alt+P returns to the arrangement."};
 }
 

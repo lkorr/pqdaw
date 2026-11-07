@@ -124,6 +124,9 @@ public:
   static std::string uniqueFile(std::string_view dir, std::string_view stem, std::string_view ext);
   // Device presets ("Save Preset": Presets/<deviceName>/<name or deviceName>.pqpreset; a rack: Racks/…).
   Result<std::string> savePreset(const doc::Device& d, std::string_view deviceName, std::string_view name = {});
+  // GU.2: "Save as Group Preset": Groups/<name>.pqpreset (a group preset: doc::serializeGroupPreset of the group's block
+  // set; the node menu spawns it).
+  Result<std::string> saveGroupPreset(const doc::BlockSet& blocks, std::string_view name);
   // "Save as Default Preset": Defaults/<deviceName>.pqpreset (replaced).
   Result<std::string> saveDefaultPreset(const doc::Device& d, std::string_view deviceName);
   // The default preset of a device (by display name) when it exists and is for `patch`; null otherwise. Cached by the

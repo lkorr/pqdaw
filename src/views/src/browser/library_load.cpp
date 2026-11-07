@@ -68,6 +68,16 @@ Result<doc::DevicePtr> deviceOfFile(std::string_view path) {
 
 Result<doc::DevicePtr> libraryDeviceOf(std::string_view path) { return deviceOfFile(path); }
 
+Result<doc::BlockSet> libraryBlocksOf(std::string_view path) {
+  if (libraryItemOf(path) != LibraryItem::Preset) return doc::BlockSet{};
+  auto text = doc::readTextFile(path);
+  if (!text) return std::move(text).error();
+  auto f = doc::parsePreset(*text, path);
+  if (!f) return std::move(f).error();
+  if (!f->groupPreset()) return doc::BlockSet{};
+  return std::move(f->blocks);
+}
+
 std::string catalogItemPath(std::string_view patch) { return std::string(kCatalogScheme) + std::string(patch); }
 
 std::string_view catalogPatchOf(std::string_view path) noexcept {
@@ -152,6 +162,11 @@ Result<doc::DeviceId> loadDeviceItem(ViewContext& ctx, std::string_view path, De
       for (const doc::StockDevice& s : doc::stockDevices())
         if (s.patch == patch) kind = s.kind;
     return addCatalogDevice(ctx, patch, kind, at);
+  }
+  // GU.2: a group preset is pasted whole (fresh ids) onto the track, off its path (outside a rack chain only).
+  if (auto blocks = libraryBlocksOf(path); blocks && !blocks->empty()) {
+    if (at.chain.valid()) return Error{ErrorCode::InvalidArgument, "a group preset goes into a track's circuit, not a rack chain", {}};
+    return firstDevice(ctx, doc::ops::pasteBlocks(*ctx.doc(), ctx.store().ids(), at.track, *blocks));
   }
   auto d = deviceOfFile(path);
   if (!d) return std::move(d).error();

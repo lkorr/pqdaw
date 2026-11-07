@@ -560,6 +560,90 @@ Status buildGroupProject(doc::DocumentStore& store, GroupProjectIds* ids) {
   return r.status;
 }
 
+Status buildNestedGroupProject(doc::DocumentStore& store, NestedProjectIds* ids) {
+  Runner r{store};
+  using K = doc::DeviceKind;
+  NestedProjectIds o;
+  o.keys = r.track(doc::TrackKind::Midi, {}, "Keys", 0xF6A23B);
+  o.bass = r.track(doc::TrackKind::Midi, o.keys, "Bass", 0x8ED36C);
+  if (!r.status) return r.status;
+  auto headOf = [&](doc::TrackId t) {
+    const doc::Track* tr = doc::findTrackPtr(*store.current(), t);
+    const doc::MainPath path = doc::mainPath(*store.current(), *tr);
+    return path.blocks.empty() ? doc::DeviceId{} : path.blocks.front()->id;
+  };
+  auto into = [&](doc::DeviceId d, doc::DeviceId g) {
+    (void)r.run(doc::ops::setDeviceGroup(*store.current(), store.ids(), store.deviceLibrary(), d, g));
+  };
+  auto wire = [&](doc::DeviceId a, const char* port, doc::DeviceId b, const char* param) {
+    (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), a, port, b, param));
+  };
+  auto group = [&](doc::TrackId t, const char* name, doc::DeviceId parent) {
+    const doc::DeviceId g = r.device(t, "Group", K::AudioEffect, doc::ops::kOffPath);
+    (void)r.run(doc::ops::renameDevice(*store.current(), g, name));
+    if (parent.valid()) into(g, parent);
+    return g;
+  };
+  auto meta = [&](doc::TrackId t, const char* type, doc::DeviceId g) -> doc::DeviceId {
+    auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, type, doc::ops::kOffPath));
+    const doc::DeviceId d = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+    if (d.valid() && g.valid()) into(d, g);
+    return d;
+  };
+  // Keys: its instrument group without the Basic Synth.
+  o.group = headOf(o.keys);
+  {
+    const doc::Track* tr = doc::findTrackPtr(*store.current(), o.keys);
+    std::vector<doc::DeviceId> del;
+    for (const doc::DevicePtr& d : tr->devices)
+      if (d->group == o.group) del.push_back(d->id);
+    (void)r.run(doc::ops::deleteDevices(*store.current(), del));
+  }
+  if (!r.status) return r.status;
+  o.pa = meta(o.keys, "phase_acc", o.group);
+  o.osc = group(o.keys, "Osc", o.group);
+  o.wt = meta(o.keys, "wavetable", o.osc);
+  o.env = meta(o.keys, "envelope", o.group);
+  o.level = group(o.keys, "Level", o.group);
+  o.mul = r.device(o.keys, "atom:mul", K::AudioEffect, doc::ops::kOffPath);
+  into(o.mul, o.level);
+  o.value = r.device(o.keys, "Value", K::AudioEffect, doc::ops::kOffPath);
+  into(o.value, o.level);
+  if (!r.status) return r.status;
+  (void)r.run(doc::ops::setMetaData(*store.current(), o.wt, "", "wavetable", demoWavetableData()));
+  r.param(o.value, "value", 0.8);
+  wire(o.group, "input", o.pa, "hz");
+  wire(o.pa, "", o.osc, "x");
+  wire(o.osc, "input", o.wt, "");
+  wire(o.wt, "", o.osc, "output");
+  wire(o.osc, "y", o.env, "");
+  wire(o.env, "", o.level, "x");
+  wire(o.level, "input", o.mul, "a");
+  wire(o.value, "y", o.mul, "b");
+  wire(o.mul, "out", o.level, "output");
+  wire(o.level, "y", o.group, "output");
+  // Bass: Basic Synth (its instrument group) → FX [Saturator → Tone [Utility]] on the path.
+  o.sat = r.device(o.bass, "saturator", K::AudioEffect);
+  o.util = r.device(o.bass, "utility", K::AudioEffect);
+  if (!r.status) return r.status;
+  r.param(o.sat, "drive", 4.0);
+  r.param(o.util, "width", 1.6);
+  if (const doc::DeviceLibrary* lib = store.deviceLibrary()) {
+    const doc::DeviceId series[2] = {o.sat, o.util};
+    auto fx = r.run(doc::ops::groupInCircuit(store.current(), store.ids(), *lib, series));
+    if (fx && !fx->devices.empty()) o.fx = fx->devices[0];
+    (void)r.run(doc::ops::renameDevice(*store.current(), o.fx, "FX"));
+    const doc::DeviceId inner[1] = {o.util};
+    auto tone = r.run(doc::ops::groupInCircuit(store.current(), store.ids(), *lib, inner));
+    if (tone && !tone->devices.empty()) o.tone = tone->devices[0];
+    (void)r.run(doc::ops::renameDevice(*store.current(), o.tone, "Tone"));
+  }
+  r.clip(o.keys, 0, 4 * kTicksPerWhole, "Chord", {0, 4, 7});
+  r.clip(o.bass, 0, 4 * kTicksPerWhole, "Root", {0, 7});
+  if (ids != nullptr) *ids = o;
+  return r.status;
+}
+
 Status buildFreeRackProject(doc::DocumentStore& store, uint32_t lfos, FreeRackIds* ids) {
   Runner r{store};
   using K = doc::DeviceKind;

@@ -57,6 +57,9 @@ Result<doc::DeviceId> loadDeviceItem(ViewContext& ctx, std::string_view path, De
 // TX.node-menu: the device a preset or user-device file holds (its own ids: give it fresh ones, e.g. through
 // doc::ops::pasteDevices), for callers that place it themselves.
 Result<doc::DevicePtr> libraryDeviceOf(std::string_view path);
+// GU.2: a group preset's block set (doc::PresetFile::groupPreset: the group, everything inside it, their wires), or an
+// empty set for any other file (a one-device preset, a user device). Errors: unreadable, not a preset that parses.
+Result<doc::BlockSet> libraryBlocksOf(std::string_view path);
 // Hot-swap: the preset (or user device) at `path` replaces `target` in place (doc::ops::replaceDevice; wires and macro
 // mappings onto params the new device still has are kept).
 Status hotSwapDevice(ViewContext& ctx, doc::DeviceId target, std::string_view path);

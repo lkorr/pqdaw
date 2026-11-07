@@ -105,19 +105,9 @@ bool visualiser(std::string_view metaId) noexcept { return metaId == "spectrum" 
 // Atoms that make a free device on their own at the project level: none that needs a voice, the transport's
 // sample position, sample data, an engine I/O or is internal; no structure atoms (channels and voice reducers belong
 // inside a circuit).
-bool projectAtom(const graph::AtomSignature& s) noexcept {
-  if (s.has(graph::atom_flags::kInternal) || s.has(graph::atom_flags::kNeedsVoice) || s.has(graph::atom_flags::kSideEffect))
-    return false;
-  switch (s.category) {
-    case graph::AtomCategory::Voice:
-    case graph::AtomCategory::Io:
-    case graph::AtomCategory::Sample:
-    case graph::AtomCategory::Structure: return false;
-    default: break;
-  }
-  // Tables read data a free device cannot hold (wavetables, shapers): the meta modules are their form.
-  return s.name.find("wavetable") == std::string_view::npos && s.name != "shaper" && s.name != "tuning_hz";
-}
+// GU.2: the atoms that are atom blocks (doc::atomBlockAllowed: tables read data a block cannot hold — wavetables,
+// shapers: the meta modules are their form —, voice sources need a voice context, I/O and structure atoms the lowering's).
+bool projectAtom(const graph::AtomSignature& s) noexcept { return doc::atomBlockAllowed(s); }
 
 void finish(NodeEntry& e) {
   e.foldedName = fold(e.name);
@@ -159,6 +149,23 @@ void addAtoms(NodeCatalog& c) {
     }
     e.hasIn = !e.inputs.empty();
     e.hasOut = !e.outputs.empty();
+    finish(e);
+    atoms.push_back(std::move(e));
+  }
+  // GU.2: the value block — one control as a signal (its curve gives the range) — beside the atoms, at the project level.
+  if (c.scope == NodeCatalog::Scope::Project) {
+    NodeEntry e;
+    e.item = NodeItem::Device;
+    e.category = NodeCategory::Atoms;
+    e.id = std::string(doc::kValueDevice);
+    e.key = "device:" + e.id;
+    e.name = "Value";
+    e.aliases = "value control knob constant param";
+    e.description = "One control as a signal: its knob's value (through its curve) is the output.";
+    e.chip = "VALUE";
+    e.params.push_back({"Value", "0"});
+    e.outputs = {std::string(doc::kValueOutput)};
+    e.hasOut = true;
     finish(e);
     atoms.push_back(std::move(e));
   }

@@ -90,6 +90,8 @@ doc::ops::EditResult addChoice(ViewContext& ctx, const doc::Project& p, doc::IdS
     case circuit::NodeItem::Rack:
       return doc::ops::addDevice(p, ids, track, c.id, c.id == doc::kInstrumentRack ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect, index);
     case circuit::NodeItem::LibraryFile: {
+      // GU.2: a group preset spawns as a paste of its blocks (fresh ids), off the path (the view places it).
+      if (auto blocks = libraryBlocksOf(c.id); blocks && !blocks->empty()) return doc::ops::pasteBlocks(p, ids, track, *blocks);
       auto d = libraryDeviceOf(c.id);
       if (!d) return std::move(d).error();
       if (doc::isMetaDevice(**d))
@@ -103,6 +105,10 @@ doc::ops::EditResult addChoice(ViewContext& ctx, const doc::Project& p, doc::IdS
       return paste(*d);
     }
     case circuit::NodeItem::Atom:
+      // GU.2: an atom is an atom block ("atom:<name>": the atom itself, no generated text) when it can be one.
+      if (doc::atomBlockPatch(c.id) != nullptr)
+        return doc::ops::addDevice(p, ids, track, std::string(doc::kAtomDevicePrefix) + c.id, doc::DeviceKind::AudioEffect, index);
+      [[fallthrough]];
     case circuit::NodeItem::Spec: {
       // A typed `meta_<type>` is that meta module (its face), not a device around a call.
       if (c.item == circuit::NodeItem::Spec && c.id.starts_with(meta::kCallPrefix))
@@ -170,15 +176,13 @@ bool ProjectPatchView::dispatchSteps(const char* label, std::vector<doc::Command
 
 // ---- spawn ---------------------------------------------------------------------------------------------------------
 
-doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at, const SpawnLink& link) {
-  sync();
-  const doc::Snapshot start = ctx_.doc();
-  const doc::Project& p = *start;
+bool ProjectPatchView::placeTarget(graph::Point2 at, doc::TrackId& track, doc::DeviceId& group, uint32_t& band) const {
+  const doc::Project& p = *ctx_.doc();
   // Where: the free rack's track, the group panel's group, else the band under the point (the nearest one) and an opened
-  // capsule of it under the point.
-  doc::TrackId track;
-  doc::DeviceId group;
-  uint32_t band = kNone;
+  // capsule of it under the point (GU.2: the innermost one: nested capsules come after their parent).
+  track = {};
+  group = {};
+  band = kNone;
   if (freeRack_) track = rackTrack_;
   if (scope_.valid()) {
     group = scope_;
@@ -195,18 +199,29 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
         best = d;
       }
     }
-    if (band == kNone) {
-      ctx_.setStatus("Add: there is no track to place it on");
-      return {};
-    }
+    if (band == kNone) return false;
     track = patch_.bands[band].track;
   } else {
     band = patch_.bandOf(track);
   }
-  if (!group.valid())
-    for (const Node& n : patch_.nodes)
-      if (n.group && n.groupOpen && (band == kNone || n.band == band) && at.x >= n.x && at.x <= n.x + n.w && at.y >= n.y && at.y <= n.y + n.h)
-        group = n.device;
+  for (const Node& n : patch_.nodes)
+    if (n.group && n.groupOpen && (band == kNone || n.band == band) && at.x >= n.x && at.x <= n.x + n.w && at.y >= n.y &&
+        at.y <= n.y + n.h && (!scope_.valid() || n.device == scope_ || doc::groupContains(doc::findTrackPtr(p, track)->devices, scope_, n.device)))
+      group = n.device;
+  return true;
+}
+
+doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at, const SpawnLink& link) {
+  sync();
+  const doc::Snapshot start = ctx_.doc();
+  const doc::Project& p = *start;
+  doc::TrackId track;
+  doc::DeviceId group;
+  uint32_t band = kNone;
+  if (!placeTarget(at, track, group, band)) {
+    ctx_.setStatus("Add: there is no track to place it on");
+    return {};
+  }
   // TX.all-free (SPEC §15 2026-11-03 "everything is free"): every node spawns as a free block at the pointer, unwired
   // (doc::ops::kOffPath) but for the cable it was dropped from; into the capsule under it, in a group panel into the
   // group. (A stock instrument plays once the notes reach it: a cable from the track's notes into its main input.)

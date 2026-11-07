@@ -593,6 +593,9 @@ public:
   };
   // Places `c` at world point `at` (see "node menu" above), wired by `link`. The new device (invalid: refused).
   doc::DeviceId spawnNode(const NodeChoice& c, graph::Point2 at, const SpawnLink& link = {});
+  // Where a block placed at world point `at` goes: its track, the capsule (innermost opened one under it; the group
+  // panel's group) and the band. False: no track to place it on.
+  bool placeTarget(graph::Point2 at, doc::TrackId& track, doc::DeviceId& group, uint32_t& band) const;
   // Over a cable (a model edge): `c` between its ends; Z: a VCA at 1.
   bool insertOnEdge(uint32_t edge, const NodeChoice& c);
   bool insertVca(uint32_t edge);
@@ -640,6 +643,15 @@ public:
   bool ungroupSelection();  // Ctrl+Shift+G: the selected groups (or the groups of the selected members)
   // A device into a group (invalid: out of its group; a device of the series leaves it first): one undo step.
   bool setDeviceGroup(doc::DeviceId device, doc::DeviceId group);
+  // ---- GU.2: copy / paste of blocks (doc::ops::copyBlocks / pasteBlocks; ViewContext::blockClipboard) and group
+  // presets. Ctrl+C copies the selected blocks (a group with everything inside it) and the wires among them; Ctrl+V
+  // pastes a fresh copy at the pointer — into the innermost opened capsule under it (or the group panel's group), else
+  // free on the band under it — one undo step, the pasted blocks selected. "Save as Group Preset" (a group's block menu)
+  // writes it to the User Library (Groups/<name>.pqpreset); the node menu spawns it like any preset.
+  bool copyBlocks(std::span<const doc::DeviceId> devices);
+  bool copySelection();
+  bool pasteAt(graph::Point2 at);
+  bool saveGroupPreset(doc::DeviceId group);
   // An opened group's capsule (its contents placed inside) or a closed block (a miniature): view state of the session.
   void setGroupOpen(doc::DeviceId group, bool open);
   bool groupOpen(doc::DeviceId group) const noexcept;
@@ -997,6 +1009,17 @@ struct GroupProjectIds {
   doc::DeviceId sat, util;
 };
 Status buildGroupProject(doc::DocumentStore& store, GroupProjectIds* ids = nullptr);
+// GU.2: groups in groups. "Keys" keeps its instrument group (an instrument: the outermost group fed notes), its Basic
+// Synth replaced by In → Phase accumulator → [Osc: In → Wavetable → Out] → Envelope → [Level: In → mul(·, Value) → Out]
+// → Out — "Osc" and "Level" plain groups nested in it. "Bass" plays its instrument group (Basic Synth), then a plain
+// group "FX" on the path holding Saturator → [Tone: Utility]. The ids.
+struct NestedProjectIds {
+  doc::TrackId keys;
+  doc::DeviceId group, pa, osc, wt, env, level, mul, value;
+  doc::TrackId bass;
+  doc::DeviceId fx, sat, tone, util;
+};
+Status buildNestedGroupProject(doc::DocumentStore& store, NestedProjectIds* ids = nullptr);
 // TX.free-rack: "Lead" plays the default synth → Saturator → Auto Filter → Utility; `lfos` free LFOs (0.25 Hz apart) are
 // each wired onto a knob of the chain (Saturator drive, Auto Filter frequency, Utility width, Auto Filter resonance,
 // Saturator dry / wet, Utility balance, Auto Filter drive, Saturator output, then again), and a free Phase accumulator

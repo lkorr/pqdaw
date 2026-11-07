@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "pq/document/instrument_groups.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/graph/patch_file.h"
@@ -95,6 +96,7 @@ struct Builder {
   // TX.all-free: each track's main path (doc::mainPath), by track id.
   std::unordered_map<uint32_t, doc::MainPath> paths;
   std::optional<doc::MainLinks> mainLinks;  // made once per build (one pass over the wires)
+  std::optional<doc::VoiceContexts> contexts;  // GU.2: made at the first group (which is an instrument group)
   // TX.groups: each opened group's contents, placed relative to its capsule's top-left (layout() adds the capsule's
   // place, then the nudges).
   struct Capsule {
@@ -361,7 +363,11 @@ struct Builder {
     return n;
   }
 
-  // TX.groups: a group device's capsule (project_patch.h Node::group) and, opened, its terminals and members.
+  // TX.groups: a group device's capsule (project_patch.h Node::group) and, opened, its terminals and members. GU.2: a
+  // member that is a group is drawn the same way inside it (recursively): opened, its capsule inside the parent's with
+  // its own terminals and members; closed, a block of the parent's. The capsule node is added before its contents (it is
+  // painted under them and hit after them). An instrument group (only the outermost group fed notes: doc::voiceContexts)
+  // is drawn as an instrument (Node::instrument, its polyphony).
   uint32_t groupNode(uint32_t band, const doc::Device& g, const doc::Track& t, const graph::Patch* tp) {
     Node c;
     c.kind = NodeKind::Device;
@@ -370,9 +376,12 @@ struct Builder {
     c.active = g.active;
     c.group = true;
     c.groupOpen = !closedGroup(g.id);
-    // IG.1-2: an instrument group — the notes reach its In (its stage), so In gives its members the notes.
-    for (const doc::ChainStage& s : bandStages)
-      if (s.device == &g) c.instrument = s.in == doc::ChainSignal::Notes;
+    if (!contexts) contexts.emplace(doc::voiceContexts(p));
+    if (const doc::VoiceContext* vc = contexts->blockOf(g.id); vc != nullptr && vc->group) {
+      c.instrument = true;
+      const doc::GroupPolyphony gp = doc::groupPolyphony(g);
+      c.voices = gp.mono ? 1u : gp.voices;
+    }
     c.title = g.name.empty() ? std::string("Group") : g.name;
     const graph::NodeIndex call = callOf(tp, g.id);
     c.lowered = call != graph::kNone;
@@ -380,50 +389,58 @@ struct Builder {
     c.inputs.push_back({"x", ""});
     c.outputs.push_back({"y", ""});
     const std::vector<const doc::Device*> members = doc::groupMembers(t.devices, g.id);
+    auto terminal = [&](bool in) {
+      Node k;
+      k.kind = NodeKind::Terminal;
+      k.band = band;
+      k.device = g.id;
+      k.title = in ? "In" : "Out";
+      if (in) k.outputs.push_back({std::string(doc::kGroupInPort), ""});
+      else k.inputs.push_back({std::string(doc::kGroupOutPort), ""});
+      k.w = m::kTerminalW;
+      k.h = m::kTerminalH;
+      k.lowered = c.lowered;
+      k.call = c.call;
+      return k;
+    };
     // The inner layout (relative to the capsule): In, the members in list order, Out, on one spine; members' nudges.
-    std::vector<Node> kids;
-    {
-      Node in;
-      in.kind = NodeKind::Terminal;
-      in.band = band;
-      in.device = g.id;
-      in.title = "In";
-      in.outputs.push_back({std::string(doc::kGroupInPort), ""});
-      in.w = m::kTerminalW;
-      in.h = m::kTerminalH;
-      in.lowered = c.lowered;
-      in.call = c.call;
-      kids.push_back(std::move(in));
-    }
-    for (const doc::Device* d : members) kids.push_back(scaled(deviceNode(band, *d, tp)));
-    {
-      Node o;
-      o.kind = NodeKind::Terminal;
-      o.band = band;
-      o.device = g.id;
-      o.title = "Out";
-      o.inputs.push_back({std::string(doc::kGroupOutPort), ""});
-      o.w = m::kTerminalW;
-      o.h = m::kTerminalH;
-      o.lowered = c.lowered;
-      o.call = c.call;
-      kids.push_back(std::move(o));
-    }
-    float spine = 0.0f;
-    for (const Node& k : kids) spine = std::max(spine, spineOf(k));
-    const float innerSpine = m::kCapsuleTitle + m::kCapsulePad + spine;
-    std::vector<graph::Point2> rel;
-    float x = m::kCapsulePad, bottom = m::kCapsuleTitle + 48.0f;
-    for (const Node& k : kids) {
-      rel.push_back({x, innerSpine - spineOf(k)});
-      bottom = std::max(bottom, rel.back().y + k.h);
-      x += k.w + m::kNodeGap * 0.75f;
-    }
-    c.w = roundUp4(x - m::kNodeGap * 0.75f + m::kCapsulePad);
-    c.h = roundUp4(bottom + m::kCapsulePad);
-    c.pinTop = innerSpine;
+    auto innerLayout = [&](const std::vector<const Node*>& kids, std::vector<graph::Point2>& rel) {
+      float spine = 0.0f;
+      for (const Node* k : kids) spine = std::max(spine, spineOf(*k));
+      const float innerSpine = m::kCapsuleTitle + m::kCapsulePad + spine;
+      float x = m::kCapsulePad, bottom = m::kCapsuleTitle + 48.0f;
+      for (const Node* k : kids) {
+        rel.push_back({x, innerSpine - spineOf(*k)});
+        bottom = std::max(bottom, rel.back().y + k->h);
+        x += k->w + m::kNodeGap * 0.75f;
+      }
+      c.w = roundUp4(x - m::kNodeGap * 0.75f + m::kCapsulePad);
+      c.h = roundUp4(bottom + m::kCapsulePad);
+      c.pinTop = innerSpine;
+    };
     if (!c.groupOpen) {
-      // Closed: one block holding a miniature of the contents (each box and wire in its unit square).
+      // Closed: one block holding a miniature of its own contents (each box and wire in its unit square); a nested group
+      // is one box there.
+      std::vector<Node> kids;
+      kids.push_back(terminal(true));
+      for (const doc::Device* d : members) {
+        if (doc::isGroupDevice(*d)) {
+          Node b;
+          b.kind = NodeKind::Device;
+          b.device = d->id;
+          b.title = d->name.empty() ? std::string("Group") : d->name;
+          b.w = m::kClosedGroupW;
+          b.h = m::kClosedGroupH;
+          kids.push_back(std::move(b));
+        } else {
+          kids.push_back(scaled(deviceNode(band, *d, tp)));
+        }
+      }
+      kids.push_back(terminal(false));
+      std::vector<const Node*> kp;
+      for (const Node& k : kids) kp.push_back(&k);
+      std::vector<graph::Point2> rel;
+      innerLayout(kp, rel);
       float x0 = 0.0f, y0 = 0.0f, x1 = c.w, y1 = c.h;
       for (size_t i = 0; i < kids.size(); ++i) {
         const graph::Point2 nd = i == 0 || i + 1 == kids.size() ? graph::Point2{0.0f, 0.0f} : nudgeOf(kids[i].device);
@@ -436,24 +453,27 @@ struct Builder {
       for (size_t i = 0; i < kids.size(); ++i)
         c.mini.push_back({(rel[i].x - x0) / sw, (rel[i].y - y0) / sh, (rel[i].x + kids[i].w - x0) / sw,
                           (rel[i].y + kids[i].h - y0) / sh, kids[i].kind == NodeKind::Terminal, kids[i].title});
+      // The box a device of the group stands in: its own, or the nested group's it sits in (any depth).
       auto kidOf = [&](doc::DeviceId d, std::string_view port, bool source) -> int32_t {
         if (d == g.id)
           return port == (source ? doc::kGroupInPort : doc::kGroupOutPort) ? (source ? 0 : static_cast<int32_t>(kids.size()) - 1) : -1;
         for (size_t i = 1; i + 1 < kids.size(); ++i)
-          if (kids[i].device == d) return static_cast<int32_t>(i);
+          if (kids[i].device == d || (doc::isGroupDevice(*members[i - 1]) && doc::groupContains(t.devices, kids[i].device, d)))
+            return static_cast<int32_t>(i);
         return -1;
       };
       for (const doc::Wire& w : doc::wiresOf(p)) {
         if (w.fromNoteSource() || statusOf(w.id) == doc::WireStatus::Invalid) continue;
         const int32_t a = kidOf(w.from, w.port, true), b = kidOf(w.to, w.param, false);
-        if (a < 0 || b < 0) continue;
+        if (a < 0 || b < 0 || a == b) continue;
         const Node::MiniBox& ma = c.mini[static_cast<size_t>(a)];
         const Node::MiniBox& mb = c.mini[static_cast<size_t>(b)];
         c.miniWires.push_back({ma.x1, (ma.y0 + ma.y1) * 0.5f});
         c.miniWires.push_back({mb.x0, (mb.y0 + mb.y1) * 0.5f});
       }
-      // Its members (wires to and from them end on the block, as a rack's do) and their ports that cross its edge.
-      for (const doc::Device* d : members) c.inner.push_back(d->id);
+      // Everything inside it at any depth (wires to and from them end on the block, as a rack's do) and their ports that
+      // cross its edge.
+      for (const doc::Device* d : doc::groupMembersDeep(t.devices, g.id)) c.inner.push_back(d->id);
       auto inside = [&](doc::DeviceId d) {
         return d == g.id || std::find(c.inner.begin(), c.inner.end(), d) != c.inner.end();
       };
@@ -475,18 +495,29 @@ struct Builder {
       c.h = roundUp4(std::max(c.h, m::kClosedGroupH));
       return addNode(scaled(std::move(c)));
     }
-    const uint32_t ci = addNode(std::move(c));
-    Capsule cap;
-    cap.node = ci;
+    // Opened: the capsule first, then In, the members (a nested group recursively: its capsule and contents), Out.
+    const uint32_t ci = addNode(Node{});
+    const size_t capIndex = capsules.size();
+    capsules.emplace_back();
+    capsules[capIndex].node = ci;
+    std::vector<uint32_t> kids;
+    kids.push_back(addNode(terminal(true)));
+    for (const doc::Device* d : members)
+      kids.push_back(doc::isGroupDevice(*d) ? groupNode(band, *d, t, tp) : addNode(scaled(deviceNode(band, *d, tp))));
+    kids.push_back(addNode(terminal(false)));
+    std::vector<const Node*> kp;
+    for (const uint32_t k : kids) kp.push_back(&out.nodes[k]);
+    std::vector<graph::Point2> rel;
+    innerLayout(kp, rel);
+    out.nodes[ci] = std::move(c);
+    Node& cn = out.nodes[ci];
     for (size_t i = 0; i < kids.size(); ++i) {
-      kids[i].capsule = ci;
-      const uint32_t k = addNode(std::move(kids[i]));
-      cap.rel.push_back({k, rel[i]});
-      if (i == 0) out.nodes[ci].groupIn = k;
-      else if (i + 1 == kids.size()) out.nodes[ci].groupOut = k;
-      else out.nodes[ci].members.push_back(k);
+      out.nodes[kids[i]].capsule = ci;
+      capsules[capIndex].rel.push_back({kids[i], rel[i]});
+      if (i == 0) cn.groupIn = kids[i];
+      else if (i + 1 == kids.size()) cn.groupOut = kids[i];
+      else cn.members.push_back(kids[i]);
     }
-    capsules.push_back(std::move(cap));
     return ci;
   }
 
@@ -905,14 +936,21 @@ struct Builder {
         out.nodes[k].y = out.nodes[c.node].y + r.y;
       }
     // A capsule's contents move with it (a band nudge, the group's own nudge).
+    // GU.2: and a nested capsule's contents with it (any depth).
     auto moveKids = [&](uint32_t n, float dx, float dy) {
-      if (n == kNone || !out.nodes[n].group || !out.nodes[n].groupOpen) return;
-      for (const Capsule& c : capsules)
-        if (c.node == n)
-          for (const auto& kr : c.rel) {
-            out.nodes[kr.first].x += dx;
-            out.nodes[kr.first].y += dy;
-          }
+      std::vector<uint32_t> todo{n};
+      while (!todo.empty()) {
+        const uint32_t at = todo.back();
+        todo.pop_back();
+        if (at == kNone || !out.nodes[at].group || !out.nodes[at].groupOpen) continue;
+        for (const Capsule& c : capsules)
+          if (c.node == at)
+            for (const auto& kr : c.rel) {
+              out.nodes[kr.first].x += dx;
+              out.nodes[kr.first].y += dy;
+              todo.push_back(kr.first);
+            }
+      }
     };
     // Nudges (view state): a band moves with its nodes, a device block alone.
     if (opt.nudges != nullptr && !opt.nudges->empty()) {
@@ -945,8 +983,10 @@ struct Builder {
       }
     }
     // TX.groups: a capsule grows to hold its members wherever their nudges put them; its terminals stay at its edges and
-    // its chain pins at the height they had (pinTop follows a top edge that moved up).
-    for (const Capsule& c : capsules) {
+    // its chain pins at the height they had (pinTop follows a top edge that moved up). GU.2: inner capsules first (they
+    // come after their parent's in `capsules`), so a parent holds its nested capsules as they have grown.
+    for (auto it = capsules.rbegin(); it != capsules.rend(); ++it) {
+      const Capsule& c = *it;
       Node& cn = out.nodes[c.node];
       float x0 = cn.x, y0 = cn.y, x1 = cn.x + cn.w, y1 = cn.y + cn.h;
       for (const uint32_t k : cn.members) {
@@ -1207,6 +1247,18 @@ struct Builder {
     else if (opt.freeTrack.valid()) pruneFree();
   }
 
+  // An opened capsule's contents — its terminals, its members and (GU.2) a nested capsule's contents, any depth.
+  void contentsOf(uint32_t cap, std::vector<uint32_t>& order) const {
+    const Node& c = out.nodes[cap];
+    if (!c.group || !c.groupOpen) return;
+    if (c.groupIn != kNone) order.push_back(c.groupIn);
+    for (const uint32_t k : c.members) {
+      order.push_back(k);
+      contentsOf(k, order);
+    }
+    if (c.groupOut != kNone) order.push_back(c.groupOut);
+  }
+
   // TX.free-rack (LayoutOptions::freeTrack): only the track's free blocks (not group members; a free group's capsule
   // with its terminals and members) and the wires among them; one band without source, mixer or strip, around them.
   void pruneFree() {
@@ -1222,11 +1274,7 @@ struct Builder {
       const Node& n = out.nodes[i];
       if (n.band != b || n.kind != NodeKind::Device || !n.offPath || n.capsule != kNone) continue;
       order.push_back(i);
-      if (n.group && n.groupOpen) {
-        if (n.groupIn != kNone) order.push_back(n.groupIn);
-        order.insert(order.end(), n.members.begin(), n.members.end());
-        if (n.groupOut != kNone) order.push_back(n.groupOut);
-      }
+      contentsOf(i, order);
     }
     std::sort(order.begin(), order.end());  // model order (a capsule before its contents)
     order.erase(std::unique(order.begin(), order.end()), order.end());
@@ -1284,11 +1332,9 @@ struct Builder {
     }
     std::vector<uint32_t> map(out.nodes.size(), kNone);
     std::vector<uint32_t> order{cap};
-    const Node& c = out.nodes[cap];
-    if (c.groupIn != kNone) order.push_back(c.groupIn);
-    order.insert(order.end(), c.members.begin(), c.members.end());
-    if (c.groupOut != kNone) order.push_back(c.groupOut);
+    contentsOf(cap, order);
     std::sort(order.begin(), order.end());  // model order (the capsule first: its contents are hit before it)
+    const Node& c = out.nodes[cap];
     Band band = out.bands[c.band];
     band.source = band.mixer = band.output = kNone;
     band.devices.clear();
@@ -1353,9 +1399,10 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
     const graph::Patch& tp = *g.tracks[t].patch;
     const Band& b = pp.bands[bandOfGraph[t]];
     // TX.groups: an opened group's members are blocks of the band too (inside its capsule).
+    // GU.2: and a nested capsule's members (any depth).
     std::vector<uint32_t> blocks = b.devices;
-    for (const uint32_t d : b.devices)
-      if (pp.nodes[d].group && pp.nodes[d].groupOpen) blocks.insert(blocks.end(), pp.nodes[d].members.begin(), pp.nodes[d].members.end());
+    for (size_t i = 0; i < blocks.size(); ++i)
+      if (const Node& d = pp.nodes[blocks[i]]; d.group && d.groupOpen) blocks.insert(blocks.end(), d.members.begin(), d.members.end());
     uint32_t calls = 0;
     for (graph::NodeIndex n = 0; n < tp.nodeCount(); ++n) {
       const std::string& name = tp.nodeName(n);

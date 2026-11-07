@@ -551,7 +551,8 @@ std::vector<WireId> wiresFrom(const Project& p, DeviceId device, std::string_vie
 // are (a selection of those only makes a group off the path, wired to nothing). Every other wire stays exactly as it is: wires
 // name devices, so modulation across the capsule's boundary keeps working. Refused, with the reason, when the result
 // could sound different or could not be ungrouped: devices of several tracks or inside a rack, a rack, a stock
-// instrument (its voices are summed at its output), a group (no nesting), a member, a gap in the series; where the
+// instrument (its voices are summed at its output), an instrument group (GU.2: other groups nest), blocks of
+// several capsules, a gap in the series; where the
 // notes or voices reach, anything but a stretch of the voice run (a stock device or an unplugged device inside: the run
 // is summed there; a switched-off device where the notes arrive; a stock effect at the note source); a switched-off
 // device that is unplugged, an unplugged device whose output the next unplugged one drops (no link would place them);
