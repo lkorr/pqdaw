@@ -18,6 +18,13 @@
 //                Log      the inverse of Exp: ln(1 + (e^k − 1)·u)/k
 //                Power    u^q, q = 2^bend
 //                SCurve   the two halves of Exp(k) mirrored about the middle (k > 0: flat ends, steep middle)
+//                Joined   (GU.4) an exponential with a straight part: its FLAT end continues the neighbour there without
+//                         a kink (C1). k > 0: flat at the start, joined to the previous segment; k < 0: flat at the end,
+//                         joined to the next. From the flat end (u from there, K = |k|, span the segment's rise, A the
+//                         neighbour's slope there × the width, clamped to [0, span]): h(u) = α·u + β·(e^(K·u) − 1),
+//                         β = (span − A)/(e^K − 1 − K), α = A − β·K, so h(0) = 0, h'(0) = A, h(1) = span. Without a
+//                         neighbour there (or a Joined neighbour whose flat end meets this one) A = 0. The VCA's law:
+//                         log ends joined to its fine ±1 zone (CurvePreset::Vca).
 //              where u ∈ [0, 1] is the position inside the segment.
 //   wrap       the knob drags around its range and a wire's sum wraps: the position is frac(t) (a phase)
 //   signed     mirrored for negative positions: value(−t) = −value(t), so a wire can push the value below zero (the
@@ -32,6 +39,8 @@
 //   Linear  Y0 + (dY / w)·x                        Exp     Y0 + dY / expm1(k) · expm1(k / w · x)
 //   Log     Y0 + dY / k · log1p(expm1(k) / w · x)  Power   Y0 + dY·clamp(x / w, 0, 1)^q
 //   SCurve  Y0 + dY·g, u = clamp(x / w, 0, 1), h = expm1(2k·min(u, 1 − u)) / (2·expm1(k)), g = u < 0.5 ? h : 1 − h
+//   Joined  a + e·x' + b·expm1(c·x'), x' = x − f (measured from the flat end: f = 0 for k > 0, f = w for k < 0, so the
+//           value near the join, where the exponential term is small, keeps its precision)
 // evalCurve does this in double (the UI, the lowering); the atom (pq/dsp/atoms.h `curve`) in float with the same
 // coefficients rounded to float and the exact transcendental family (simd.h: SVML, 1 lane == 8 lanes), so the two agree
 // to float rounding (tests/dsp/test_curve.cpp bounds it).
@@ -64,8 +73,8 @@ namespace pq::dsp {
 
 inline constexpr uint32_t kMaxCurveSegments = 16;
 
-enum class CurveShape : uint8_t { Linear, Exp, Log, Power, SCurve };
-inline constexpr uint32_t kCurveShapeCount = 5;
+enum class CurveShape : uint8_t { Linear, Exp, Log, Power, SCurve, Joined };
+inline constexpr uint32_t kCurveShapeCount = 6;
 enum class CurveOutput : uint8_t { None, DbToGain };
 enum class CurveMode : uint8_t { Clip, Wrap, Signed };
 // The readout's unit (the curve's own units; a DbToGain curve reads in dB).
@@ -80,7 +89,14 @@ enum class CurvePreset : uint8_t {
   Logarithmic,  // one Exp segment, k = −arg (default kCurveBendK): fine at the high end
   Exp0,         // `@curve(exp0, k)`: exponential from exactly min, one Exp segment of bend k·ln 2 (the Phase accumulator's
                 // frequency: k = 14; the Envelope's times: 15.87)
+  Vca,          // GU.4, `@curve(vca, zone)`: the VCA's law (the old meta module's Log curve, exactly): linear through the
+                // fine zone [−1, 1] (clipped to the range), which takes `zone` (0.05 … 0.9, default kCurveVcaZone) of the
+                // travel when the range reaches past it on both sides; beyond it on each side a Joined segment of bend
+                // ±max(ln(end / 1), 1) (C1 at ±1), the two outers sharing the rest of the travel in proportion to their
+                // log extents; a range wholly beyond ±1 on one side is one pure exponential (Exp, bend ln(max / min)).
 };
+inline constexpr double kCurveVcaZone = 0.4;
+inline constexpr double kCurveVcaZoneMin = 0.05, kCurveVcaZoneMax = 0.9;
 inline constexpr double kCurveBendK = 4.8;  // the Exponential / Logarithmic presets (today's knob curves: 8 · ±0.6)
 
 struct CurvePoint {
@@ -104,17 +120,17 @@ struct Curve {
   CurveMode mode = CurveMode::Clip;
   CurveOutput output = CurveOutput::None;
   CurvePreset preset = CurvePreset::Linear;
-  double presetArg = 0.0;  // the preset's argument (Exponential / Logarithmic: |k|; Exp0: k)
+  double presetArg = 0.0;  // the preset's argument (Exponential / Logarithmic: |k|; Exp0: k; Vca: the zone, 0: default)
   friend bool operator==(const Curve&, const Curve&) noexcept;
 };
 
 // Whether `c` is well formed (segments in range, points from 0 to 1 strictly increasing in t, every number finite,
 // y ∈ [0, 1], step ≥ 0, a DbToGain range finite). Unused points / shapes (past `segments`) are ignored.
 bool validCurve(const Curve& c) noexcept;
-// A preset over [min, max]. Octave needs min > 0 (else Linear).
+// A preset over [min, max]. Octave needs min > 0 (else Linear). Vca: max below min is a constant min.
 Curve curvePreset(CurvePreset p, double min, double max, double arg = 0.0) noexcept;
 // The patch language's names ("linear", "octave" — "exp" is its historical alias —, "exponential", "logarithmic",
-// "exp0"); Custom has none.
+// "exp0", "vca"); Custom has none.
 std::string_view curvePresetName(CurvePreset p) noexcept;
 std::optional<CurvePreset> curvePresetFromName(std::string_view name) noexcept;
 // Whether every segment is straight (Linear, or a bend of 0): a wire then adds in the curve's units by default.
@@ -136,12 +152,14 @@ double curvePosition(const Curve& c, double value, double hint = 0.0) noexcept;
 // ---- The atom's data -------------------------------------------------------------------------------------------------
 // The coefficient form of segment i (double; the atom's data rounds it to float), on x = p − t0: a = Y0 for every
 // shape; Linear b = dY / w; Exp b = dY / expm1(k), c = k / w; Log b = dY / k, c = expm1(k) / w; Power b = dY, c = 1 / w,
-// e = q; SCurve b = dY, c = 1 / w, e = 2k, f = 1 / (2·expm1(k)). A segment with a zero bend is compiled as Linear.
+// e = q; SCurve b = dY, c = 1 / w, e = 2k, f = 1 / (2·expm1(k)); Joined (from its flat end) a = the flat end's value,
+// e = α / w, b = ±β, c = ±K / w, f = 0 or w (see "Evaluation"). A segment with a zero bend is compiled as Linear.
 // (x rather than p: the kernel's float x = p − t0 is exact near t0, where a folded c·p − c·t0 would cancel.)
 struct SegmentCoeffs {
   CurveShape shape = CurveShape::Linear;
   double t0 = 0.0;
   double a = 0.0, b = 0.0, c = 0.0, e = 0.0, f = 0.0;
+  double w = 0.0;  // the segment's width (in position)
 };
 SegmentCoeffs segmentCoeffs(const Curve& c, uint32_t i) noexcept;
 

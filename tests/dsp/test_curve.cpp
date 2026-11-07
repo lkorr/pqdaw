@@ -155,6 +155,91 @@ TEST_CASE("curve presets reproduce the knob laws before them") {
   CHECK(evalCurve(curvePreset(CurvePreset::Linear, 3.0, 9.0), -1.0) == 3.0);
 }
 
+namespace {
+
+// GU.4: the VCA meta module's Log law before GU.4 (pq/meta/vca.h at 04c59ffe, markers at their places), written out
+// from its definition as the reference for CurvePreset::Vca.
+double oldVcaLog(double lo, double hi, double zone, double p) {
+  hi = std::max(hi, lo);
+  zone = std::clamp(zone, 0.05, 0.9);
+  p = std::clamp(p, 0.0, 1.0);
+  const double fLo = std::clamp(-1.0, lo, hi), fw = std::clamp(1.0, lo, hi) - fLo;
+  const double sP = std::max(1.0, lo), sN = std::max(1.0, -hi);
+  const double endP = std::max(hi, sP), endN = std::max(-lo, sN);
+  const double eP = std::log(endP / sP), eN = std::log(endN / sN), e = eN + eP;
+  const double zf = e > 0.0 ? zone * fw / 2.0 : 1.0;
+  const double share = (1.0 - zf) / std::max(e, 1e-30);
+  const double lenN = share * eN, lenP = share * eP, pN = lenN, pP = pN + zf;
+  const double slope = fw / std::max(zf, 1e-30);
+  struct Side {
+    double s0, alpha, b, k, len;
+  };
+  auto side = [&](double s0, double end, double extent, double len, bool join) {
+    if (!join) return Side{s0, 0.0, s0, extent, len};  // s0 + s0·(e^(K·u) − 1) = s0·(end / s0)^u
+    const double k = std::max(extent, 1.0);
+    const double a = std::min(slope * len, end - s0);
+    const double b = (end - s0 - a) / (std::exp(k) - 1.0 - k);
+    return Side{s0, a - b * k, b, k, len};
+  };
+  const Side pos = side(sP, endP, eP, lenP, lo < 1.0), neg = side(sN, endN, eN, lenN, hi > -1.0);
+  auto outer = [](const Side& s, double u) { return s.s0 + s.alpha * u + s.b * std::expm1(s.k * u); };
+  if (eN > 0.0 && p < pN) return -outer(neg, (pN - p) / neg.len);
+  if (eP > 0.0 && p > pP) return outer(pos, (p - pP) / pos.len);
+  return fLo + (p - pN) * slope;
+}
+
+}  // namespace
+
+TEST_CASE("curve preset vca: the VCA's Log law exactly, C1 at the fine zone, every range and zone") {
+  struct Range {
+    double lo, hi, zone;
+  };
+  const Range ranges[] = {{-20000.0, 20000.0, 0.4}, {-20000.0, 20000.0, 0.05}, {-20000.0, 20000.0, 0.9}, {-2.0, 50.0, 0.6},
+                          {0.0, 2.0, 0.4},         {-1.0, 1.0, 0.4},          {20.0, 20000.0, 0.4},    {-20000.0, -3.0, 0.4},
+                          {-0.5, 100.0, 0.3},      {0.35, 0.35, 0.4},         {0.25, 0.8, 0.4},        {-300.0, 0.5, 0.7},
+                          {5.0, 1.0, 0.4}};
+  for (const Range& r : ranges) {
+    CAPTURE(r.lo);
+    CAPTURE(r.hi);
+    CAPTURE(r.zone);
+    const Curve c = curvePreset(CurvePreset::Vca, r.lo, r.hi, r.zone);
+    REQUIRE(validCurve(c));
+    const double scale = std::max({std::fabs(r.lo), std::fabs(r.hi), 1.0});
+    for (int i = 0; i <= 4096; ++i) {
+      const double p = i / 4096.0;
+      const double want = oldVcaLog(r.lo, r.hi, r.zone, p);
+      CHECK_MESSAGE(std::fabs(evalCurve(c, p) - want) <= 1e-12 * scale, "p " << p << " got " << evalCurve(c, p) << " want " << want);
+    }
+    // Typed values come back (monotonic: one position per value).
+    for (int i = 1; i < 32; ++i) {
+      const double p = i / 32.0, v = evalCurve(c, p);
+      if (r.hi > r.lo) CHECK(std::fabs(evalCurve(c, curvePosition(c, v, 0.5)) - v) <= 1e-9 * scale);
+    }
+  }
+  // The default: 0.7 → 1 (the knob's default), 0.3 → −1, 0.5 → 0, the ends ±20000; three segments.
+  const Curve d = curvePreset(CurvePreset::Vca, -20000.0, 20000.0);
+  CHECK(d.segments == 3);
+  CHECK(d.presetArg == 0.0);
+  close(evalCurve(d, 0.7), 1.0, 1e-11);  // (points are shares of the range: ≈ 1e-16 of it)
+  close(evalCurve(d, 0.3), -1.0, 1e-11);
+  CHECK(std::fabs(evalCurve(d, 0.5)) < 1e-11);
+  CHECK(static_cast<float>(evalCurve(d, 0.7)) == 1.0f);  // what an undriven knob writes
+  close(evalCurve(d, 1.0), 20000.0, 1e-14);
+  close(evalCurve(d, 0.0), -20000.0, 1e-14);
+  // C1 at the joins (the slope on both sides of ±1 is the fine zone's: 5 per unit of travel).
+  for (const double t : {0.3, 0.7}) {
+    const double h = 1e-7;
+    const double left = (evalCurve(d, t) - evalCurve(d, t - h)) / h, right = (evalCurve(d, t + h) - evalCurve(d, t)) / h;
+    CHECK(std::fabs(left - 5.0) < 1e-4);
+    CHECK(std::fabs(right - 5.0) < 1e-4);
+  }
+  CHECK(curvePresetFromName(curvePresetName(CurvePreset::Vca)) == CurvePreset::Vca);
+  // The atom agrees with the evaluator (the Joined shape at float precision).
+  kernelMatches(d, "vca default");
+  kernelMatches(curvePreset(CurvePreset::Vca, -2.0, 50.0, 0.6), "vca -2 … 50");
+  kernelMatches(curvePreset(CurvePreset::Vca, 20.0, 20000.0), "vca 20 … 20000");
+}
+
 TEST_CASE("curve shapes: every shape from its first point to its last, bend 0 straight") {
   for (uint32_t s = 0; s < kCurveShapeCount; ++s)
     for (const double bend : {-6.0, -1.0, 0.0, 0.7, 3.0}) {

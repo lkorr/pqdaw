@@ -55,6 +55,10 @@ double segValue(const SegmentCoeffs& s, double p) noexcept {
       const double h = s.f * std::expm1(s.e * std::min(u, 1.0 - u));
       return s.a + s.b * (u < 0.5 ? h : 1.0 - h);
     }
+    case CurveShape::Joined: {
+      const double xf = x - s.f;
+      return s.a + s.e * xf + s.b * std::expm1(s.c * xf);
+    }
   }
   return s.a;
 }
@@ -78,11 +82,71 @@ double segInverse(const SegmentCoeffs& s, double u) noexcept {
       x = (g <= 0.5 ? m : 1.0 - m) / s.c;
       break;
     }
+    case CurveShape::Joined: {
+      // No closed form (a line plus an exponential): bisection over the segment, which is monotonic (h' = α + β·K·e^(Ku)
+      // runs from A ≥ 0 upward). The caller checked u lies between the end values.
+      const double w = s.w;
+      if (!(w > 0.0)) break;
+      auto f = [&](double xx) { return s.a + s.e * (xx - s.f) + s.b * std::expm1(s.c * (xx - s.f)); };
+      double lo = 0.0, hi = w;
+      const bool rising = f(hi) >= f(lo);
+      for (int it = 0; it < 80 && hi - lo > 0.0; ++it) {
+        const double mid = 0.5 * (lo + hi);
+        if ((f(mid) < u) == rising) lo = mid;
+        else hi = mid;
+      }
+      x = 0.5 * (lo + hi);
+      break;
+    }
   }
   return s.t0 + x;
 }
 
 double pointValue(const Curve& c, uint32_t i) noexcept { return c.min + c.points[i].y * (c.max - c.min); }
+
+// GU.4: the VCA's law (CurvePreset::Vca; the old meta module's Log curve, pq/meta/vca.h before GU.4) over c.min …
+// c.max as segments: [negative outer] [fine zone] [positive outer], each present only when it has travel.
+void vcaPreset(Curve& c, double zoneArg) noexcept {
+  constexpr double kFine = 1.0;
+  const double zone = std::clamp(zoneArg != 0.0 ? zoneArg : kCurveVcaZone, kCurveVcaZoneMin, kCurveVcaZoneMax);
+  c.presetArg = zoneArg != 0.0 ? zone : 0.0;
+  const double lo = c.min, hi = std::max(c.max, c.min);
+  c.max = hi;
+  const double fLo = std::clamp(-kFine, lo, hi), fHi = std::clamp(kFine, lo, hi), fw = fHi - fLo;
+  const double sP = std::max(kFine, lo), sN = std::max(kFine, -hi);
+  const double endP = std::max(hi, sP), endN = std::max(-lo, sN);
+  const double eP = std::log(endP / sP), eN = std::log(endN / sN), e = eN + eP;
+  const double zf = e > 0.0 ? zone * fw * (0.5 / kFine) : 1.0;
+  const double share = (1.0 - zf) / std::max(e, 1e-30);
+  const double pN = share * eN, pP = pN + zf;
+  const double range = hi - lo;
+  auto y = [&](double v) { return range > 0.0 ? std::clamp((v - lo) / range, 0.0, 1.0) : 0.0; };
+  uint8_t n = 0;
+  auto point = [&](double t, double v) { c.points[n] = {t, y(v)}; };
+  point(0.0, lo);
+  if (eN > 0.0 && pN > 0.0) {  // the negative outer: joined to the fine zone at its end, or a pure exponential
+    c.shapes[n] = hi > -kFine ? CurveSegment{CurveShape::Joined, -std::max(eN, 1.0)} : CurveSegment{CurveShape::Exp, -eN};
+    ++n;
+    point(pN < 1.0 ? pN : 1.0, -sN);
+  }
+  if (zf > 0.0 && fw > 0.0 && pP > c.points[n].t) {  // the fine zone (linear)
+    c.shapes[n] = {CurveShape::Linear, 0.0};
+    ++n;
+    point(eP > 0.0 && pP < 1.0 ? pP : 1.0, fHi);
+  }
+  if (eP > 0.0 && c.points[n].t < 1.0) {  // the positive outer: joined to the fine zone at its start, or pure
+    c.shapes[n] = lo < kFine ? CurveSegment{CurveShape::Joined, std::max(eP, 1.0)} : CurveSegment{CurveShape::Exp, eP};
+    ++n;
+    point(1.0, endP);
+  }
+  if (n == 0) {  // no travel anywhere (a constant)
+    c.shapes[0] = {CurveShape::Linear, 0.0};
+    n = 1;
+    c.points[1] = {1.0, y(hi)};
+  }
+  c.points[n].t = 1.0;
+  c.segments = n;
+}
 
 }  // namespace
 
@@ -104,7 +168,7 @@ bool validCurve(const Curve& c) noexcept {
   if (static_cast<uint8_t>(c.mode) > static_cast<uint8_t>(CurveMode::Signed)) return false;
   if (static_cast<uint8_t>(c.output) > static_cast<uint8_t>(CurveOutput::DbToGain)) return false;
   if (static_cast<uint8_t>(c.unit) > static_cast<uint8_t>(CurveUnit::Cents)) return false;
-  if (static_cast<uint8_t>(c.preset) > static_cast<uint8_t>(CurvePreset::Exp0)) return false;
+  if (static_cast<uint8_t>(c.preset) > static_cast<uint8_t>(CurvePreset::Vca)) return false;
   if (c.points[0].t != 0.0 || c.points[c.segments].t != 1.0) return false;
   for (uint32_t i = 0; i <= c.segments; ++i) {
     const CurvePoint& p = c.points[i];
@@ -150,6 +214,7 @@ Curve curvePreset(CurvePreset p, double min, double max, double arg) noexcept {
       if (arg != 0.0) s = {CurveShape::Exp, arg * std::numbers::ln2};
       else c.preset = CurvePreset::Linear;
       break;
+    case CurvePreset::Vca: vcaPreset(c, arg); break;
   }
   return c;
 }
@@ -161,6 +226,7 @@ std::string_view curvePresetName(CurvePreset p) noexcept {
     case CurvePreset::Exponential: return "exponential";
     case CurvePreset::Logarithmic: return "logarithmic";
     case CurvePreset::Exp0: return "exp0";
+    case CurvePreset::Vca: return "vca";
     case CurvePreset::Custom: break;
   }
   return {};
@@ -172,6 +238,7 @@ std::optional<CurvePreset> curvePresetFromName(std::string_view n) noexcept {
   if (n == "exponential") return CurvePreset::Exponential;
   if (n == "logarithmic") return CurvePreset::Logarithmic;
   if (n == "exp0") return CurvePreset::Exp0;
+  if (n == "vca") return CurvePreset::Vca;
   return std::nullopt;
 }
 
@@ -189,11 +256,36 @@ uint32_t curveClass(const Curve& c) noexcept {
     shapes |= 1u << s;
     single = i == 0 ? s : (single == s ? s : kCurveShapeCount);
   }
-  return static_cast<uint32_t>(c.segments) | shapes << 5 | static_cast<uint32_t>(c.mode) << 10 |
-         static_cast<uint32_t>(c.output) << 12 | (c.step > 0.0 ? 1u : 0u) << 14 | single << 15;
+  static_assert(kCurveShapeCount <= 7, "the class packs the shape mask in 7 bits, `single` in 3");
+  return static_cast<uint32_t>(c.segments) | shapes << 5 | static_cast<uint32_t>(c.mode) << 12 |
+         static_cast<uint32_t>(c.output) << 14 | (c.step > 0.0 ? 1u : 0u) << 16 | single << 17;
 }
 
-SegmentCoeffs segmentCoeffs(const Curve& c, uint32_t i) noexcept {
+namespace {
+
+SegmentCoeffs coeffsAt(const Curve& c, uint32_t i, uint32_t depth) noexcept;
+
+// The slope (value per unit of position) of segment i at its start or end (a Joined neighbour computed recursively:
+// its own join points away from here, so the recursion ends within the segment count).
+double slopeAt(const Curve& c, uint32_t i, bool atEnd, uint32_t depth) noexcept {
+  const SegmentCoeffs s = coeffsAt(c, i, depth + 1);
+  const double x = atEnd ? s.w : 0.0;
+  switch (s.shape) {
+    case CurveShape::Linear: return s.b;
+    case CurveShape::Exp: return s.b * s.c * std::exp(s.c * x);
+    case CurveShape::Log: return s.b * s.c / (1.0 + s.c * x);
+    case CurveShape::Power: {
+      if (s.e == 1.0) return s.b * s.c;
+      if (!atEnd) return s.e < 1.0 ? std::copysign(std::numeric_limits<double>::infinity(), s.b) : 0.0;
+      return s.b * s.e * s.c;
+    }
+    case CurveShape::SCurve: return s.b * s.f * s.e * s.c;
+    case CurveShape::Joined: return s.e + s.b * s.c * std::exp(s.c * (x - s.f));
+  }
+  return 0.0;
+}
+
+SegmentCoeffs coeffsAt(const Curve& c, uint32_t i, uint32_t depth) noexcept {
   SegmentCoeffs s;
   const double t0 = c.points[i].t, t1 = c.points[i + 1].t;
   const double w = t1 - t0;
@@ -228,9 +320,45 @@ SegmentCoeffs segmentCoeffs(const Curve& c, uint32_t i) noexcept {
       s.e = 2.0 * k;
       s.f = 0.5 / std::expm1(k);
       break;
+    case CurveShape::Joined: {
+      // The neighbour at the flat end (k > 0: the previous segment's end, k < 0: the next one's start); none, or a
+      // Joined one whose flat end meets this one: slope 0 there.
+      const bool atStart = k > 0.0;
+      const int64_t nb = atStart ? static_cast<int64_t>(i) - 1 : static_cast<int64_t>(i) + 1;
+      double slope = 0.0;
+      if (nb >= 0 && nb < static_cast<int64_t>(c.segments) && depth < kMaxCurveSegments) {
+        const CurveSegment& ns = c.shapes[static_cast<size_t>(nb)];
+        const bool facing = ns.shape == CurveShape::Joined && std::fabs(ns.bend) >= kStraight && ((ns.bend > 0.0) != atStart);
+        if (!facing) slope = slopeAt(c, static_cast<uint32_t>(nb), atStart, depth);
+      }
+      const double K = std::fabs(k);
+      double A = slope * w;  // the rise the neighbour's slope would make over this segment
+      if (!std::isfinite(A)) A = dy;
+      A = dy >= 0.0 ? std::clamp(A, 0.0, dy) : std::clamp(A, dy, 0.0);
+      const double beta = (dy - A) / (std::expm1(K) - K);
+      const double alpha = A - beta * K;
+      s.e = alpha / w;
+      if (atStart) {  // from the start: Y0 + α·u + β·expm1(K·u), u = x / w
+        s.a = y0;
+        s.b = beta;
+        s.c = K / w;
+        s.f = 0.0;
+      } else {  // from the end: Y1 − α·u − β·expm1(K·u), u = (w − x) / w = −x' / w
+        s.a = y1;
+        s.b = -beta;
+        s.c = -K / w;
+        s.f = w;
+      }
+      break;
+    }
   }
+  s.w = w;
   return s;
 }
+
+}  // namespace
+
+SegmentCoeffs segmentCoeffs(const Curve& c, uint32_t i) noexcept { return coeffsAt(c, i, 0); }
 
 double curveOutput(const Curve& c, double u) noexcept {
   return c.output == CurveOutput::DbToGain ? std::pow(10.0, u / 20.0) : u;

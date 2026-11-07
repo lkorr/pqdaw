@@ -33,7 +33,7 @@ constexpr StyleSpec kStyle[] = {
 constexpr size_t kSamples = 64;
 constexpr float kGrabPx = 7.0f;  // device px around a point / handle that grabs it
 
-constexpr std::array<const char*, dsp::kCurveShapeCount> kShapeNames = {"Linear", "Exponential", "Logarithmic", "Power", "S-curve"};
+constexpr std::array<const char*, dsp::kCurveShapeCount> kShapeNames = {"Linear", "Exponential", "Logarithmic", "Power", "S-curve", "Joined exponential"};
 
 double shareAt(const dsp::Curve& c, double t) noexcept {
   const double span = c.max - c.min;
@@ -303,6 +303,8 @@ private:
     preset("Exponential", dsp::CurvePreset::Exponential, dsp::kCurveBendK);
     preset("Logarithmic", dsp::CurvePreset::Logarithmic, dsp::kCurveBendK);
     if (c.min > 0.0 && c.max > c.min) preset("Octave", dsp::CurvePreset::Octave, 0.0);
+    // GU.4: the VCA's law (a fine ±1 zone, log ends joined to it), over the curve's range.
+    preset("VCA (fine zone)", dsp::CurvePreset::Vca, c.preset == dsp::CurvePreset::Vca ? c.presetArg : 0.0);
     (void)ui::openContextMenu(*host, e.device, std::move(items));
   }
 

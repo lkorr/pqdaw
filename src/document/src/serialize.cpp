@@ -49,11 +49,11 @@ constexpr std::array<std::string_view, 2> kChainLaneNames = {"volume", "pan"};
 constexpr std::array<std::string_view, 5> kWireReducerNames = {"sum", "last", "highest", "lowest", "loudest"};
 constexpr std::array<std::string_view, 3> kWireLawNames = {"add", "travel", "units"};  // TX.patching (13), TX.knob-curves (16)
 // GU.1 (schema 20): a device's "curves" {param: {curve}} (model.h ControlCurve, pq/dsp/curve.h).
-constexpr std::array<std::string_view, 5> kCurveShapeNames = {"linear", "exp", "log", "power", "scurve"};
+constexpr std::array<std::string_view, 6> kCurveShapeNames = {"linear", "exp", "log", "power", "scurve", "joined"};
 constexpr std::array<std::string_view, 6> kCurveUnitNames = {"none", "hz", "db", "percent", "seconds", "cents"};
 constexpr std::array<std::string_view, 3> kCurveModeNames = {"clip", "wrap", "signed"};
 constexpr std::array<std::string_view, 2> kCurveOutputNames = {"none", "dbToGain"};
-constexpr std::array<std::string_view, 6> kCurvePresetNames = {"custom", "linear", "octave", "exponential", "logarithmic", "exp0"};
+constexpr std::array<std::string_view, 7> kCurvePresetNames = {"custom", "linear", "octave", "exponential", "logarithmic", "exp0", "vca"};
 // Schema 16 … 19's knob curve names (TX.knob-curves; migration 19 → 20 resolves them against the library).
 constexpr std::array<std::string_view, 5> kKnobCurveNames = {"default", "linear", "octave", "exponential", "logarithmic"};
 constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "audioEffect"};

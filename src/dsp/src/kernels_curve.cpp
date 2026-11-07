@@ -5,7 +5,8 @@
 // scalar: S1 and S8 are the same bits per element). One acquire load of the slot per call, then the call's
 // specialisation by the data's class: one segment (no search) or several (a compare per segment boundary, the
 // coefficients gathered per lane), and the shape — Linear without a transcendental, one exact expm1 / log1p / pow
-// otherwise (one exp for a single Exp segment through zero, the Octave preset); mixed shapes compute each shape present
+// otherwise (one exp for a single Exp segment through zero, the Octave preset; GU.4's Joined: one expm1 and a line);
+// mixed shapes compute each shape present
 // and blend. The flags are per-call branches outside the
 // arithmetic (uniform over the call).
 
@@ -38,6 +39,9 @@ typename S::F shapeValue(const Coeffs<S>& k, typename S::F x) noexcept {
   } else if constexpr (Sh == CurveShape::Power) {
     const F u = S::min(S::max(S::mul(k.c, x), S::zero()), S::set(1.0f));
     return S::fma(k.b, S::exactPow(u, k.e), k.a);
+  } else if constexpr (Sh == CurveShape::Joined) {  // GU.4: from the flat end, x' = x − f
+    const F xf = S::sub(x, k.f);
+    return S::fma(k.e, xf, S::fma(k.b, S::exactExpm1(S::mul(k.c, xf)), k.a));
   } else {
     const F one = S::set(1.0f);
     const F u = S::min(S::max(S::mul(k.c, x), S::zero()), one);
@@ -62,6 +66,7 @@ typename S::F segValue(const Coeffs<S>& k, typename S::F p, uint32_t shapes) noe
     if (shapes & (1u << static_cast<uint32_t>(CurveShape::Log))) blend(CurveShape::Log, shapeValue<S, CurveShape::Log>(k, p));
     if (shapes & (1u << static_cast<uint32_t>(CurveShape::Power))) blend(CurveShape::Power, shapeValue<S, CurveShape::Power>(k, p));
     if (shapes & (1u << static_cast<uint32_t>(CurveShape::SCurve))) blend(CurveShape::SCurve, shapeValue<S, CurveShape::SCurve>(k, p));
+    if (shapes & (1u << static_cast<uint32_t>(CurveShape::Joined))) blend(CurveShape::Joined, shapeValue<S, CurveShape::Joined>(k, p));
     return y;
   }
 }
@@ -93,7 +98,7 @@ typename S::F evalOne(const CurveData& D, typename S::F x, bool convert) noexcep
     k.b = S::gather(D.b, idx);
     if constexpr (kShape != static_cast<uint32_t>(CurveShape::Linear)) k.c = S::gather(D.c, idx);
     if constexpr (kShape == kMixed || kShape == static_cast<uint32_t>(CurveShape::Power) ||
-                  kShape == static_cast<uint32_t>(CurveShape::SCurve)) {
+                  kShape == static_cast<uint32_t>(CurveShape::SCurve) || kShape == static_cast<uint32_t>(CurveShape::Joined)) {
       k.e = S::gather(D.e, idx);
       k.f = S::gather(D.f, idx);
     }
@@ -137,6 +142,7 @@ void runShape(const KernelArgs& a, uint32_t count, const CurveData& D, bool conv
     case static_cast<uint32_t>(CurveShape::Log): return run<kSpl, kMulti, 2>(a, count, D, convert);
     case static_cast<uint32_t>(CurveShape::Power): return run<kSpl, kMulti, 3>(a, count, D, convert);
     case static_cast<uint32_t>(CurveShape::SCurve): return run<kSpl, kMulti, 4>(a, count, D, convert);
+    case static_cast<uint32_t>(CurveShape::Joined): return run<kSpl, kMulti, 5>(a, count, D, convert);
     default: return run<kSpl, kMulti, kMixed>(a, count, D, convert);
   }
 }
