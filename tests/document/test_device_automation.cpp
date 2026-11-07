@@ -17,6 +17,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
 #include "pq/document/serialize.h"
+#include "pq/document/modules.h"
 #include "pq/document/store.h"
 
 using namespace pq::doc;
@@ -35,8 +36,9 @@ const DeviceLibrary& library() {
   return *lib;
 }
 
-// Two MIDI tracks: the first with its instrument, an LFO, an Auto Filter and a Utility (the LFO's jack wired to the
-// filter's frequency); the second with its instrument.
+// Two MIDI tracks: the first with its instrument, an LFO (a Wavetable engine off the path), a control (a value block
+// standing for a filter's frequency) and a Utility (GU.11: the module's group preset); the LFO's `out` wired to the
+// control (a Travel wire); the second with its instrument.
 struct Auto {
   DocumentStore store;
   TrackId a, b;
@@ -46,10 +48,10 @@ struct Auto {
     a = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
     b = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
     inst = track(a).devices.at(0)->id;
-    lfo = add(a, "lfo_device");
-    filter = add(a, "auto_filter");
-    util = add(a, "utility");
-    wire = edit(ops::connectTravelWire(doc(), store.ids(), lfo, "lfo", filter, "freq", 0.25)).wires.at(0);
+    lfo = edit(ops::addMetaDevice(doc(), store.ids(), a, "wavetable", ops::kOffPath)).devices.at(0);
+    filter = add(a, std::string(kValueDevice));
+    util = add(a, std::string(kModuleItemPrefix) + "utility");
+    wire = edit(ops::connectTravelWire(doc(), store.ids(), lfo, "out", filter, std::string(kValueParam), 0.25)).wires.at(0);
   }
   const Project& doc() const { return *store.current(); }
   const Track& track(TrackId id) const { return *findTrackPtr(doc(), id); }
@@ -61,7 +63,7 @@ struct Auto {
     CHECK(store.history().cursor() == before + (e->empty() ? 0u : 1u));  // one undo step
     return *e;
   }
-  DeviceId add(TrackId t, const char* patch) {
+  DeviceId add(TrackId t, std::string patch) {
     return edit(ops::addDevice(doc(), store.ids(), t, patch, DeviceKind::AudioEffect, kAppend)).devices.at(0);
   }
   // A lane automating `r` on `t` (two points), as one undo step.
@@ -99,7 +101,7 @@ struct Auto {
 
 TEST_CASE("device automation: deleting a device removes its lanes (and its wires' lanes) in one undo step") {
   Auto f;
-  const LaneId freq = f.lane(f.a, ParamRef::device(f.filter, "freq"), "freq", 200.0f, 8000.0f);
+  const LaneId freq = f.lane(f.a, ParamRef::device(f.filter, std::string(kValueParam)), std::string(kValueParam), 0.2f, 0.8f);
   const LaneId amount = f.lane(f.a, ParamRef::wireAmount(f.wire), "", -0.5f, 0.5f);
   const LaneId vol = f.lane(f.a, ParamRef::track(ParamKind::TrackVolume, f.a), "", -6.0f, 0.0f);
   SUBCASE("the wire's source") {

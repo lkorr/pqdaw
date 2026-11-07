@@ -418,7 +418,6 @@ pq_add_test(pq_tests_document
     document/test_main_tunings.cpp
     document/test_virtual_fundamental.cpp
     document/test_devices.cpp  # T4.1: device chains (commands, builders, catalog, lowering)
-    document/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit, file, resolution, lowering, coalescing)
     document/test_audio.cpp    # T5.3: audio tracks + clips (commands, builders, warp laws, file)
     document/test_samples.cpp  # T5.8: project samples (resolve, relink, collect all and save)
     document/test_library_files.cpp  # T5.11: user-library files, hot-swap, library clips
@@ -430,6 +429,7 @@ pq_add_test(pq_tests_document
     document/test_main_path.cpp  # TX.all-free: the main path, its rewiring builders, the 16 -> 17 migration, the lowering of the wiring
     document/test_knob_curves.cpp  # TX.knob-curves: knob curves, the wire laws they decide, schema 16 + migration
     document/test_blocks.cpp  # GU.2: nested groups (rules, remove / move, nest / unnest), atom + value blocks, block sets, group presets
+    document/test_one_hierarchy.cpp  # GU.11: every fixture and module preset holds only blocks, groups and native engines
     document/test_panels.cpp  # GU.3: group panels (rules, SetGroupPanel + builders, final pass on delete / move out, save / load, paste remap, presets)
   DEPS pq_doc)
 

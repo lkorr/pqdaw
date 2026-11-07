@@ -15,6 +15,7 @@
 #include "edit_helpers.h"
 #include "pq/document/audio_clip.h"
 #include "pq/document/audio_sequence.h"
+#include "pq/document/modules.h"
 #include "pq/document/serialize.h"
 
 using namespace pq;
@@ -115,8 +116,8 @@ TEST_CASE("audio: Ctrl+T makes an audio track (one undo step, empty chain, effec
   // Inserted after the given track.
   CHECK(f.doc().tracks.at(1)->id == f.audio);
   // No instrument on an audio track; audio effects are fine.
-  CHECK_FALSE(ops::addDevice(f.doc(), f.store.ids(), f.audio, "BasicSynth", DeviceKind::Instrument).ok());
-  commit(f.store, ops::addDevice(f.doc(), f.store.ids(), f.audio, "utility", DeviceKind::AudioEffect));
+  CHECK_FALSE(ops::addDevice(f.doc(), f.store.ids(), f.audio, std::string(kModuleItemPrefix) + "operator", DeviceKind::Instrument).ok());
+  commit(f.store, ops::addDevice(f.doc(), f.store.ids(), f.audio, std::string(kValueDevice), DeviceKind::AudioEffect));
   CHECK(f.track(f.audio).devices.size() == 1);
   // Mixer: sends to a return, solo, mute.
   const TrackId ret = f.commit1(ops::createTrack(f.doc(), f.store.ids(), TrackKind::Return)).tracks.at(0);

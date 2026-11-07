@@ -259,12 +259,8 @@ TEST_CASE("serialize: hand-written fixtures load") {
     CHECK(store.ids().peek() == maxEntityId(p) + 1);
   }
   SUBCASE("hand-edited: CRLF, BOM, keys in any order, schemaVersion not first, escapes, notes unsorted") {
-    // (Schema 3 with a synth's values: GU.1's 19 → 20 turns them into knob positions through the library's curves.)
-    static const auto lib = loadDeviceLibrary(std::string(PQ_TEST_DATA_DIR) + "/../stdlib");
-    REQUIRE(lib.ok());
-    LoadOptions lo;
-    lo.devices = lib->get();
-    Result<LoadedProject> r = loadProject(fixturePath("hand_edited"), lo);
+    // (Schema 3; GU.11: its one device a value block.)
+    Result<LoadedProject> r = loadProject(fixturePath("hand_edited"));
     REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
     const Project& p = *r->project;
     REQUIRE(p.tracks.size() == 1);
@@ -373,198 +369,6 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
 }
 
-// ---- Schema 1 -> 2 (T0.5-fix1: PPQ 27,720 -> 221,760) --------------------------------------------------------------
-
-namespace {
-
-// Walks the schema-1 document and its re-saved form in parallel: same structure and values everywhere, except
-// schemaVersion (1 -> the current one) and every tick member, which must be exactly 8x the old value. (T4.1: the
-// re-saved form passes 2 -> 3 as well, which adds "devices" to every track; the caller strips them first and checks
-// them on their own.)
-struct ScaleCheck {
-  size_t scaled = 0;              // tick values compared
-  size_t scaledNonZero = 0;       // of which != 0 (so the factor is really observed)
-  std::set<std::string> keys;     // tick member names seen
-  std::set<std::string> owners;   // where they were seen
-  std::vector<std::string> mismatches;
-
-  static bool isTickKey(std::string_view k) {
-    return k == "tick" || k == "start" || k == "end" || k == "length" || k == "contentStart";
-  }
-
-  void walk(const nlohmann::json& a, const nlohmann::json& b, std::string_view key, const std::string& path) {
-    if (a.is_object()) {
-      if (!b.is_object() || a.size() != b.size()) return fail(path, "object shape differs");
-      for (const auto& [k, v] : a.items()) {
-        if (!b.contains(k)) return fail(path, "missing key " + k);
-        walk(v, b.at(k), k, path + "." + k);
-      }
-    } else if (a.is_array()) {
-      if (!b.is_array() || a.size() != b.size()) return fail(path, "array shape differs");
-      for (size_t i = 0; i < a.size(); ++i) walk(a[i], b[i], key, path + "[" + std::to_string(i) + "]");
-    } else if (a.is_number_integer()) {
-      if (!b.is_number_integer()) return fail(path, "type differs");
-      const int64_t x = a.get<int64_t>(), y = b.get<int64_t>();
-      if (path == "$.schemaVersion") {
-        if (x != 1 || y != kSchemaVersion) fail(path, "schema version");
-      } else if (isTickKey(key)) {
-        ++scaled;
-        if (x != 0) ++scaledNonZero;
-        keys.insert(std::string(key));
-        for (const char* o : {"$.tracks", "$.returns", "$.master", "$.loop", "$.locators", "$.timeline", ".children",
-                              ".notes", ".points", ".clips"})
-          if (path.find(o) != std::string::npos) owners.insert(o);
-        if (y != 8 * x) fail(path, std::to_string(y) + " != 8 * " + std::to_string(x));
-      } else if (x != y) {
-        fail(path, "value changed");
-      }
-    } else if (a != b) {
-      fail(path, "value changed");
-    }
-  }
-  void fail(const std::string& path, const std::string& what) { mismatches.push_back(path + ": " + what); }
-};
-
-}  // namespace
-
-// fixtures/schema1 is fixtures/full as the schema-1 build wrote it (main at 39797d7), except that its two edge notes
-// at ±2^52 (kMaxTicks) are reduced to ±2^49, the largest schema-1 ticks that still fit kMaxTicks after × 8, and the
-// return track got an automation lane (ids 365–367) so every place a tick can live is covered.
-// T4.1: the device chains the 2 -> 3 step adds, removed from every track of a re-saved document (and counted).
-struct StrippedDevices {
-  size_t midi = 0, other = 0;  // tracks whose chain was [BasicSynth] / []
-  size_t unexpected = 0;       // any other chain
-};
-void stripDevices(nlohmann::json& t, StrippedDevices& s) {
-  if (!t.is_object()) return;
-  if (auto it = t.find("devices"); it != t.end()) {
-    const bool midi = t.value("kind", std::string()) == "midi";
-    // IG.1-2: the 18 -> 19 step wraps the instrument into an instrument group (the Basic Synth its member, the group
-    // after it in the list).
-    if (midi && it->size() == 2 && (*it)[0].value("patch", std::string()) == "BasicSynth" && (*it)[0].contains("group") &&
-        (*it)[1].value("patch", std::string()) == "Group")
-      ++s.midi;
-    else if (!midi && it->empty()) ++s.other;
-    else ++s.unexpected;
-    t.erase(it);
-  }
-  if (auto c = t.find("children"); c != t.end() && c->is_array())
-    for (nlohmann::json& child : *c) stripDevices(child, s);
-}
-void stripPanLaws(nlohmann::json& t) {
-  if (!t.is_object()) return;
-  if (auto m = t.find("mixer"); m != t.end() && m->is_object())
-    if (const auto pm = m->find("panMode"); pm != m->end()) {
-      CHECK(t.value("kind", std::string()) == "midi");
-      CHECK(*pm == "constantPower");
-      m->erase(pm);
-    }
-  if (auto c = t.find("children"); c != t.end() && c->is_array())
-    for (nlohmann::json& child : *c) stripPanLaws(child);
-}
-StrippedDevices stripAllDevices(nlohmann::json& doc) {
-  StrippedDevices s;
-  for (const char* list : {"tracks", "returns"})
-    for (nlohmann::json& t : doc[list]) stripDevices(t, s);
-  stripDevices(doc["master"], s);
-  // TX.pan-laws: the 17 -> 18 step's "panMode": "constantPower" on every MIDI track goes too.
-  for (const char* list : {"tracks", "returns"})
-    for (nlohmann::json& t : doc[list]) stripPanLaws(t);
-  stripPanLaws(doc["master"]);
-  // TX.all-free: the 16 -> 17 step's main links (every track's source → its chain → its mixer) go too.
-  if (auto w = doc.find("wires"); w != doc.end()) {
-    bool links = true;
-    // (IG.1-2: and the 18 -> 19 step's chain links inside each instrument group, In → Basic Synth → Out)
-    for (const nlohmann::json& x : *w)
-      links = links && ((x.value("port", std::string("?")).empty() && x.value("param", std::string("?")).empty()) ||
-                        x.value("chain", false));
-    if (links) doc.erase(w);
-  }
-  return s;
-}
-
-TEST_CASE("serialize: a schema-1 project (PPQ 27720) loads, migrates every tick x8 and re-saves as the current schema") {
-  static_assert(kSchemaVersion == 21);
-  const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
-  REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 1,", 0) == 0);
-
-  Result<LoadedProject> r = loadProject(fixturePath("schema1"));
-  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
-  CHECK(r->fileSchemaVersion == 1);
-  Result<std::string> again = serializeProject(*r->project, r->view);
-  REQUIRE(again.ok());
-  CHECK(again->rfind("{\n  \"schemaVersion\": 21,", 0) == 0);
-
-  nlohmann::json resaved = nlohmann::json::parse(*again);
-  const StrippedDevices sd = stripAllDevices(resaved);  // 2 -> 3: checked on its own below
-  CHECK(sd.midi > 0);
-  CHECK(sd.unexpected == 0);
-  ScaleCheck c;
-  c.walk(nlohmann::json::parse(oldText), resaved, {}, "$");
-  for (const std::string& m : c.mismatches) MESSAGE(m);
-  CHECK(c.mismatches.empty());
-  MESSAGE(c.scaled << " tick values scaled (" << c.scaledNonZero << " non-zero)");
-  CHECK(c.scaled > 300);
-  CHECK(c.scaledNonZero > 300);
-  CHECK(c.keys == std::set<std::string>{"tick", "start", "end", "length", "contentStart"});
-  CHECK(c.owners == std::set<std::string>{"$.tracks", "$.returns", "$.master", "$.loop", "$.locators", "$.timeline",
-                                          ".children", ".notes", ".points", ".clips"});
-
-  // The re-saved file is current: it loads without migration to the same project.
-  Result<LoadedProject> back = parseProject(*again);
-  REQUIRE(back.ok());
-  CHECK(back->fileSchemaVersion == kSchemaVersion);
-  CHECK(*back->project == *r->project);
-  CHECK(viewEq(back->view, r->view));
-  // Musical positions are unchanged: the old loop (bar 2 to bar 4 at PPQ 27720) is bar 2 to bar 4 now.
-  CHECK(r->project->loop.start == pq::kTicksPerWhole);
-  CHECK(r->project->loop.end == 3 * pq::kTicksPerWhole);
-}
-
-TEST_CASE("serialize: schema 1 -> 2 migration range errors") {
-  const std::string oldText = readFile(fixturePath("schema1/project.pqd"));
-  const std::string loop = "\"loop\": {\"start\": 110880,";
-  REQUIRE(oldText.find(loop) != std::string::npos);
-  auto withLoopStart = [&](const std::string& v) {
-    std::string t = oldText;
-    t.replace(t.find(loop), loop.size(), "\"loop\": {\"start\": " + v + ",");
-    return t;
-  };
-  // x8 would overflow int64: refused by the migration.
-  Result<LoadedProject> big = parseProject(withLoopStart("2305843009213693952"));  // 2^61
-  REQUIRE_FALSE(big.ok());
-  CHECK(big.error().message == "$: migrating schema 1 to 2 failed: $.loop.start: tick out of range");
-  Result<LoadedProject> neg = parseProject(withLoopStart("-2305843009213693952"));
-  REQUIRE_FALSE(neg.ok());
-  CHECK(neg.error().message == "$: migrating schema 1 to 2 failed: $.loop.start: tick out of range");
-  // Fits int64 after x8 but beyond kMaxTicks: the decoder rejects the migrated value with its path.
-  Result<LoadedProject> far = parseProject(withLoopStart(std::to_string(-(kMaxTicks / 8 + 1))));
-  REQUIRE_FALSE(far.ok());
-  CHECK(far.error().message == "$.loop.start: tick out of range");
-  // The most negative schema-1 tick that still fits migrates.
-  Result<LoadedProject> edge = parseProject(withLoopStart(std::to_string(-(kMaxTicks / 8))));
-  REQUIRE_MESSAGE(edge.ok(), (edge.ok() ? std::string() : edge.error().message));
-  CHECK(edge->project->loop.start == -kMaxTicks);
-}
-
-// ---- Schema 3 -> 4 (T4.7: modulation wires) -------------------------------------------------------------------------
-
-// fixtures/schema3 is fixtures/full as the schema-3 build wrote it (main at 01210d7). Schema 4 only adds the optional
-// "wires" list, so the migrated project is the rich project itself and re-saves as fixtures/full.
-TEST_CASE("serialize: a schema-3 project loads unchanged into schema 4 (no wires)") {
-  const std::string oldText = readFile(fixturePath("schema3/project.pqd"));
-  REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 3,", 0) == 0);
-  Result<LoadedProject> r = loadProject(fixturePath("schema3"));
-  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
-  CHECK(r->fileSchemaVersion == 3);
-  RichProject f;
-  CHECK(*r->project == f.doc());
-  for (const Wire& w : wiresOf(*r->project)) CHECK((w.mainLink() || w.chain));  // TX.all-free: only the 16 -> 17 step's main links
-  Result<std::string> again = serializeProject(*r->project, r->view);
-  REQUIRE(again.ok());
-  CHECK(*again == readFile(fixturePath("full/project.pqd")));
-}
-
 // T4.7: wires round-trip (ids, ends, ports, amounts to the bit, reducers), sorted by id; a broken file is refused.
 TEST_CASE("serialize: modulation wires round-trip and are validated") {
   RichProject f;
@@ -584,9 +388,9 @@ TEST_CASE("serialize: modulation wires round-trip and are validated") {
   REQUIRE(f.store.dispatch(b).ok());
   const LoadedProject back = roundTrip(f.doc(), f.store.view());
   CHECK(*back.project == f.doc());
-  WireList drawn;  // TX.all-free: the wires beside the main paths' links
+  WireList drawn;  // the three drawn here (TX.all-free: beside the main paths' links and the instruments' inner wires)
   for (const Wire& x : wiresOf(*back.project))
-    if (!x.mainLink() && !x.chain) drawn.push_back(x);  // (IG.1-2: and the instrument groups' chain links)
+    if (x.id == a.id || x.id == c.id || x.id == d.id) drawn.push_back(x);
   REQUIRE(drawn.size() == 3);
   CHECK(drawn[0] == a);
   CHECK(drawn[1] == c);
@@ -691,104 +495,44 @@ TEST_CASE("serialize: wires from a note source (schema 12) round-trip and are va
   CHECK(findWire(f.doc(), n.id) == nullptr);
 }
 
-// ---- Schema 2 -> 3 (T4.1: device chains) ---------------------------------------------------------------------------
-
-// fixtures/schema2 is fixtures/full as the schema-2 build wrote it (main at f775b67). Before T4.1 every MIDI track
-// played the default instrument implicitly; the migration makes it the first device of the track's chain, with new
-// ids above the file's largest id in track order, and gives every other track an empty chain.
-namespace {
-// The largest "id" anywhere in a JSON text (what the 2 -> 3 migration continues after).
-uint32_t maxJsonId(const nlohmann::json& v) {
-  uint32_t m = 0;
-  if (v.is_object()) {
-    for (const auto& [k, x] : v.items()) {
-      if (k == "id" && x.is_number_unsigned()) m = std::max(m, x.get<uint32_t>());
-      m = std::max(m, maxJsonId(x));
-    }
-  } else if (v.is_array()) {
-    for (const nlohmann::json& x : v) m = std::max(m, maxJsonId(x));
-  }
-  return m;
-}
-}  // namespace
-
-TEST_CASE("serialize: a schema-2 project migrates to device chains (the default instrument on every MIDI track)") {
-  const std::string oldText = readFile(fixturePath("schema2/project.pqd"));
-  REQUIRE(oldText.rfind("{\n  \"schemaVersion\": 2,", 0) == 0);
-  Result<LoadedProject> r = loadProject(fixturePath("schema2"));
-  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
-  CHECK(r->fileSchemaVersion == 2);
-
-  // The rich project gives its MIDI tracks their default instruments last (ids after everything, in track order):
-  // the migrated file is exactly it.
-  RichProject f;
-  size_t midiTracks = 0;
-  forEachTrack(f.doc(), [&](const Track& t, const Track*) {
-    if (t.kind != TrackKind::Midi) {
-      CHECK(t.devices.empty());
-      return;
-    }
-    ++midiTracks;
-    REQUIRE(t.devices.size() == 2);  // IG.1-2: the instrument and its instrument group (the 18 -> 19 step)
-    CHECK(isGroupDevice(*t.devices[1]));
-    CHECK(t.devices[0]->patch == kDefaultInstrument);
-    CHECK(t.devices[0]->id.value > maxJsonId(nlohmann::json::parse(oldText)));
-  });
-  REQUIRE(midiTracks >= 2);
-  CHECK(*r->project == f.doc());
-  CHECK(viewEq(r->view, f.store.view()));
-
-  // Re-saved, it is the current schema and loads to the same project without migration.
-  Result<std::string> again = serializeProject(*r->project, r->view);
-  REQUIRE(again.ok());
-  Result<LoadedProject> back = parseProject(*again);
-  REQUIRE(back.ok());
-  CHECK(back->fileSchemaVersion == kSchemaVersion);
-  CHECK(*back->project == *r->project);
-  // Apart from the chains, the re-saved file is the old one value for value.
-  nlohmann::json resaved = nlohmann::json::parse(*again);
-  nlohmann::json old = nlohmann::json::parse(oldText);
-  const StrippedDevices sd = stripAllDevices(resaved);
-  CHECK(sd.midi == midiTracks);
-  CHECK(sd.unexpected == 0);
-  resaved["schemaVersion"] = 2;
-  CHECK(resaved == old);
-}
+// ---- Device lists (T4.1; GU.11: blocks only) ----------------------------------------------------------------------
 
 TEST_CASE("serialize: device chains round-trip; the reader checks the chain rule and the values") {
   RichProject f;
   IdSource& ids = f.store.ids();
   const Snapshot s = f.store.current();
-  TrackId midi, other;
+  TrackId other;
   forEachTrack(*s, [&](const Track& t, const Track*) {
-    if (t.kind == TrackKind::Midi && !midi.valid()) midi = t.id;
     if (t.kind == TrackKind::Group && !other.valid()) other = t.id;
   });
-  REQUIRE(midi.valid());
-  const DeviceId old = findTrackPtr(*s, midi)->devices.at(0)->id;
-  Device inst = *makeDefaultInstrument(ids.device());
-  inst.params = {{"attack", 0.02}, {"level", 0.5}};
-  Device fx = *makeDevice(ids.device(), "saturator", DeviceKind::AudioEffect);
+  REQUIRE(other.valid());
+  Device fx = *makeDevice(ids.device(), std::string(kValueDevice), DeviceKind::AudioEffect);
   fx.active = false;
-  fx.settings = {{"hq", 4.0}, {"type", 6.0}};
-  fx.params = {{"drive", 3.981071705534973}};
-  Batch b{"chain", {RemoveDevice{old}, AddDevice{midi, std::make_shared<const Device>(inst), 0},
-                    AddDevice{midi, std::make_shared<const Device>(fx), kAppend}}};
-  if (other.valid()) b.commands.push_back(AddDevice{other, makeDevice(ids.device(), "utility", DeviceKind::AudioEffect), 0});
+  fx.params = {{std::string(kValueParam), 0.3981071705534973}};
+  const DevicePtr atom = makeDevice(ids.device(), std::string(kAtomDevicePrefix) + "mul", DeviceKind::AudioEffect);
+  Batch b{"chain", {AddDevice{other, std::make_shared<const Device>(fx), 0}, AddDevice{other, atom, kAppend}}};
   REQUIRE(f.store.dispatch(b).ok());
   std::string text;
   const LoadedProject back = roundTrip(*f.store.current(), f.store.view(), &text);
   CHECK(*back.project == *f.store.current());
   CHECK(text.find("{\"id\": " + std::to_string(fx.id.value) +
-                  ", \"patch\": \"saturator\", \"kind\": \"audioEffect\", \"active\": false, \"params\": {\"drive\": "
-                  "3.981071705534973}, \"settings\": {\"hq\": 4.0, \"type\": 6.0}}") != std::string::npos);
+                  ", \"patch\": \"Value\", \"kind\": \"audioEffect\", \"active\": false, \"params\": {\"value\": "
+                  "0.3981071705534973}}") != std::string::npos);
+  CHECK(text.find("{\"id\": " + std::to_string(atom->id.value) + ", \"patch\": \"atom:mul\"") != std::string::npos);
 
   auto withChain = [&](const std::string& chain) {
     std::string t = text;
-    const std::string key = "\"id\": " + std::to_string(inst.id.value) + ", \"patch\": \"BasicSynth\"";
+    const std::string key = "\"id\": " + std::to_string(fx.id.value) + ", \"patch\": \"Value\"";
     const size_t at = t.find(key);
     REQUIRE(at != std::string::npos);
-    const size_t open = t.rfind('[', at), close = t.find("]\n", at);
+    // The device list holding it: its '[' and the matching ']'.
+    const size_t open = t.rfind('[', at);
+    size_t close = open;
+    for (int depth = 0; close < t.size(); ++close) {
+      if (t[close] == '[') ++depth;
+      if (t[close] == ']' && --depth == 0) break;
+    }
+    REQUIRE(close < t.size());
     t.replace(open, close + 1 - open, chain);
     return t;
   };
@@ -798,18 +542,27 @@ TEST_CASE("serialize: device chains round-trip; the reader checks the chain rule
     CHECK(r.error().message.find(message) != std::string::npos);
     if (r.error().message.find(message) == std::string::npos) MESSAGE(r.error().message);
   };
-  const std::string idA = std::to_string(inst.id.value), idB = std::to_string(fx.id.value);
+  REQUIRE(parseProject(withChain("[{\"id\": " + std::to_string(fx.id.value) + ", \"patch\": \"Value\", \"kind\": \"audioEffect\"}]")).ok());
+  const std::string idA = std::to_string(fx.id.value);
   // (TX.all-free: a track's blocks have no order rule — the cables are the signal path; test_devices.cpp checks it.)
-  fails("[{\"id\": " + idA + ", \"patch\": \"\", \"kind\": \"instrument\"}]", "must not be empty");
-  fails("[{\"id\": " + idA + ", \"patch\": \"x\", \"kind\": \"midiEffect\"}]", "device kind must be");
-  fails("[{\"id\": " + idA + ", \"patch\": \"x\", \"kind\": \"instrument\", \"params\": {\"a b\": 1}}]",
+  fails("[{\"id\": " + idA + ", \"patch\": \"\", \"kind\": \"audioEffect\"}]", "must not be empty");
+  fails("[{\"id\": " + idA + ", \"patch\": \"Value\", \"kind\": \"midiEffect\"}]", "device kind must be");
+  fails("[{\"id\": " + idA + ", \"patch\": \"Value\", \"kind\": \"audioEffect\", \"params\": {\"a b\": 1}}]",
         "is not a device param or setting name");
-  fails("[{\"id\": " + idA + ", \"patch\": \"x\", \"kind\": \"instrument\", \"params\": {\"a\": 1, \"a\": 2}}]",
+  fails("[{\"id\": " + idA + ", \"patch\": \"Value\", \"kind\": \"audioEffect\", \"params\": {\"a\": 1, \"a\": 2}}]",
         "duplicate key");
-  fails("[{\"id\": " + idA + ", \"patch\": \"x\", \"kind\": \"instrument\"}, {\"id\": " + idA +
-            ", \"patch\": \"y\", \"kind\": \"audioEffect\"}]",
+  fails("[{\"id\": " + idA + ", \"patch\": \"Value\", \"kind\": \"audioEffect\"}, {\"id\": " + idA +
+            ", \"patch\": \"atom:add\", \"kind\": \"audioEffect\"}]",
         "device id twice in a chain");
-  fails("[{\"patch\": \"x\", \"kind\": \"instrument\"}]", "missing key \"id\"");
+  fails("[{\"patch\": \"Value\", \"kind\": \"audioEffect\"}]", "missing key \"id\"");
+  // GU.11: only blocks (a group, an atom block, a value block, a native engine); a stock patch name, an unknown atom,
+  // a device's own patch text and a chain-input choice are refused.
+  fails("[{\"id\": " + idA + ", \"patch\": \"utility\", \"kind\": \"audioEffect\"}]", "is not a block");
+  fails("[{\"id\": " + idA + ", \"patch\": \"atom:no_such_atom\", \"kind\": \"audioEffect\"}]", "is not a block");
+  fails("[{\"id\": " + idA + ", \"patch\": \"Value\", \"kind\": \"audioEffect\", \"source\": [\"x\"]}]",
+        "no patch text of its own");
+  fails("[{\"id\": " + idA + ", \"patch\": \"meta:wavetable\", \"kind\": \"audioEffect\", \"chainInput\": \"x\"}]",
+        "main input is its type's");
 }
 
 // ---- Schema 17 -> 18 (TX.pan-laws: a track's pan law) -------------------------------------------------------------

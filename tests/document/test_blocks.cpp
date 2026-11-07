@@ -18,7 +18,6 @@
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
 #include "pq/graph/patch.h"
-#include "../support/stand_in_synth.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -41,7 +40,6 @@ struct Doc {
   TrackId keys;
   Doc() {
     keys = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi, {}, "Keys")).tracks.at(0);
-    REQUIRE(stand_in::useBasicSynth(store, keys).valid());  // (GU.10: the IG.1-2 layout)
   }
   const Project& doc() const { return *store.current(); }
   const Track& track() const { return *findTrackPtr(doc(), keys); }
@@ -72,7 +70,9 @@ struct Doc {
 TEST_CASE("blocks: groups nest — at any depth, never inside themselves, at most kMaxGroupDepth deep; a group goes and "
           "moves with everything inside it") {
   Doc d;
-  const DeviceId g = d.group();
+  const DeviceId g = d.group();  // the default instrument group (Basic Synth: its three modules inside)
+  const size_t deep0 = groupMembersDeep(d.track().devices, g).size(), direct0 = groupMembers(d.track().devices, g).size();
+  CHECK(direct0 == 3);
   const DeviceId a = d.block(std::string(kGroupDevice), g);
   const DeviceId b = d.block(std::string(kGroupDevice), a);
   const DeviceId x = d.block("atom:tanh", b);
@@ -81,8 +81,8 @@ TEST_CASE("blocks: groups nest — at any depth, never inside themselves, at mos
   CHECK(groupContains(list, a, x));
   CHECK_FALSE(groupContains(list, x, g));
   CHECK(outermostGroup(list, x) == g);
-  CHECK(groupMembersDeep(list, g).size() == 4);  // Basic Synth, a, b, x
-  CHECK(groupMembers(list, g).size() == 2);      // Basic Synth, a
+  CHECK(groupMembersDeep(list, g).size() == deep0 + 3);  // + a, b, x
+  CHECK(groupMembers(list, g).size() == direct0 + 1);    // + a
   // A cycle is refused (the command fails, nothing changes).
   const Snapshot before = d.store.current();
   CHECK_FALSE(d.store.dispatch(SetDeviceGroup{a, b}).ok());
@@ -104,7 +104,6 @@ TEST_CASE("blocks: groups nest — at any depth, never inside themselves, at mos
   }
   // Moving the outer group to another track takes everything inside with it; removing it removes it all (one step).
   const TrackId other = d.edit(ops::createTrack(d.doc(), d.store.ids(), TrackKind::Midi, {}, "Other")).tracks.at(0);
-  REQUIRE(stand_in::useBasicSynth(d.store, other).valid());  // (GU.10: the IG.1-2 layout)
   d.edit(ops::moveDevice(d.doc(), g, other, kAppend));
   const Track& o = *findTrackPtr(d.doc(), other);
   CHECK(o.deviceIndex(g) >= 0);
@@ -263,7 +262,6 @@ TEST_CASE("blocks: copy takes a group with everything inside and the wires among
   CHECK(d.store.current().get() == before.get());
   // Ctrl+V into a group of another track: refused (a group of this track only).
   const TrackId other = d.edit(ops::createTrack(d.doc(), d.store.ids(), TrackKind::Midi, {}, "Other")).tracks.at(0);
-  REQUIRE(stand_in::useBasicSynth(d.store, other).valid());  // (GU.10: the IG.1-2 layout)
   CHECK_FALSE(ops::pasteBlocks(d.doc(), d.store.ids(), other, *set, g).ok());
   // A group preset: the set (its group first) written and read back equal.
   auto text = serializeGroupPreset(*set, "Nested");

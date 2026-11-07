@@ -1,7 +1,8 @@
 // TMM.5: the Wavetable meta module in the document — keyframe cycles save and load bit-exact (64 keyframes within
 // 20 ms), and its data reaches the lowering's resources for the link. TMM.8: fold / warp / sync take lanes, wires and
 // macros (the live path; the lowering says which params the table must not bake; TX.mod-all: in Shape mode too —
-// it refused them before), an effect Wavetable starts in Shape mode, a wired nested fold pin runs live.
+// it refused them before), an effect Wavetable starts in Shape mode, a Wavetable inside a group (the default
+// instrument's) lowers with its data and a wired fold runs live.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -17,6 +18,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
+#include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
@@ -24,7 +26,6 @@
 #include "pq/meta/wavetable.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/meta/data.h"
-#include "../support/stand_in_synth.h"
 
 using namespace pq::doc;
 using pq::Result;
@@ -50,20 +51,25 @@ std::string replaced(std::string s, const std::string& from, const std::string& 
   return s;
 }
 
-// A MIDI track whose instrument is a chain Wavetable, and a MIDI track with BasicSynth.
+// A MIDI track whose instrument is a chain Wavetable, and a MIDI track with the default instrument group (synth).
 struct Song {
   DocumentStore store;
   TrackId wtTrack, synthTrack;
   DeviceId wt, synth;
   Song() {
     wtTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
-    REQUIRE(stand_in::useBasicSynth(store, wtTrack).valid());  // (GU.10: the IG.1-2 layout)
     synthTrack = edit(ops::createTrack(doc(), store.ids(), TrackKind::Midi)).tracks.at(0);
-    REQUIRE(stand_in::useBasicSynth(store, synthTrack).valid());  // (GU.10: the IG.1-2 layout)
-    synth = findTrackPtr(doc(), synthTrack)->devices.at(0)->id;
-    // (IG.1-2: the instrument alone on the path first, so the Wavetable replaces it there — a rack can take it)
-    edit(ops::ungroupInCircuit(store.current(), store.ids(), library(), findTrackPtr(doc(), wtTrack)->devices.at(1)->id));
+    synth = mainPath(doc(), *findTrackPtr(doc(), synthTrack)).blocks.at(0)->id;
+    // (the default instrument group out first, so the Wavetable takes the notes alone — a rack can take it)
+    const DeviceId inst = mainPath(doc(), *findTrackPtr(doc(), wtTrack)).blocks.at(0)->id;
+    edit(ops::deleteDevices(doc(), std::vector<DeviceId>{inst}));
     wt = edit(ops::addMetaDevice(doc(), store.ids(), wtTrack, "wavetable", 0)).devices.at(0);
+  }
+  // The native engine of `type` inside group `g` (any depth).
+  DeviceId engineIn(DeviceId g, std::string_view type) const {
+    for (const Device* d : groupMembersDeep(findDevice(doc(), g).track->devices, g))
+      if (isMetaDevice(*d) && metaDeviceType(*d) == type) return d->id;
+    return {};
   }
   const Project& doc() const { return *store.current(); }
   ops::Edit edit(Result<ops::Edit> e) {
@@ -211,19 +217,22 @@ TEST_CASE("wavetable document: fold / warp / sync are automated, wired and mappe
   REQUIRE_MESSAGE(lp.ok(), (lp.ok() ? std::string() : lp.error().message));
   CHECK(lp->deviceErrors.empty());
   CHECK(expansionHas(*lp, "wavetable_live"));
-  REQUIRE(lp->metaResources.size() == 1);
-  CHECK(lp->metaResources[0].type == "wavetable");
-  CHECK(lp->metaResources[0].slot == 40u);
-  REQUIRE(lp->metaResources[0].modulated.size() == meta::wavetableType().params.size());
-  CHECK(lp->metaResources[0].modulated[meta::kWtFold] == 1);
-  CHECK(lp->metaResources[0].modulated[meta::kWtWarp] == 0);
+  // (the synth track's default instrument holds a Wavetable engine too: its own resource)
+  const auto res = std::find_if(lp->metaResources.begin(), lp->metaResources.end(),
+                                [&](const LoweredProject::MetaResource& m) { return m.device == s.wt; });
+  REQUIRE(res != lp->metaResources.end());
+  CHECK(res->type == "wavetable");
+  CHECK(res->slot >= 40u);
+  REQUIRE(res->modulated.size() == meta::wavetableType().params.size());
+  CHECK(res->modulated[meta::kWtFold] == 1);
+  CHECK(res->modulated[meta::kWtWarp] == 0);
   // Lanes on warp and sync, a wire to warp, a macro on sync: all accepted.
   CHECK(laneFor(s.wt, s.wtTrack, "warp").ok());
   CHECK(laneFor(s.wt, s.wtTrack, "sync").ok());
   Wire w;
   w.id = s.store.ids().wire();
   w.from = s.synth;
-  w.port = "out";
+  w.port = std::string(kMainPort);
   w.to = s.wt;
   w.param = "warp";
   CHECK(s.store.dispatch(AddWire{w}).ok());
@@ -258,13 +267,15 @@ TEST_CASE("wavetable document: fold / warp / sync are automated, wired and mappe
   CHECK(shapeLive);
 }
 
-TEST_CASE("wavetable document: a nested Wavetable lowers with its data; a wired fold pin runs on the live path") {
+TEST_CASE("wavetable document: a Wavetable inside a group lowers with its data; a wired fold runs on the live path") {
   Song s;
-  const std::string base = library().stockText("BasicSynth");
-  const std::string text = replaced(base, "  out = osc * env * vel * level", "  wt1 = meta_wavetable()\n  out = wt1 * env * vel * level");
-  s.edit(ops::addMetaCall(s.doc(), s.synth, text, "wt1", "wavetable"));
+  // The default instrument's Wavetable module: a group around the engine (GU.7), inside the instrument group.
+  const DeviceId wt1 = s.engineIn(s.synth, "wavetable");
+  const DeviceId env = s.engineIn(s.synth, "envelope");
+  REQUIRE(wt1.valid());
+  REQUIRE(env.valid());
   const meta::DataPtr data = manyKeyframes(3, 9);
-  s.edit(ops::setMetaData(s.doc(), s.synth, "wt1", "wavetable", data));
+  s.edit(ops::setMetaData(s.doc(), wt1, "", "wavetable", data));
   LowerOptions o;
   o.library = &library().library();
   o.devices = &library();
@@ -273,21 +284,19 @@ TEST_CASE("wavetable document: a nested Wavetable lowers with its data; a wired 
   Result<LoweredProject> lp = lower(s.doc(), o);
   REQUIRE(lp.ok());
   CHECK(lp->deviceErrors.empty());
-  REQUIRE(lp->metaResources.size() == 2);  // the chain Wavetable's, and the nested one's
-  const auto nested = std::find_if(lp->metaResources.begin(), lp->metaResources.end(),
-                                   [&](const LoweredProject::MetaResource& r) { return r.device == s.synth; });
-  REQUIRE(nested != lp->metaResources.end());
-  CHECK(nested->path == "wt1");
-  CHECK(meta::dataEqual(nested->data, data));
-  // A wired fold pin (TMM.8): the nested instance expands onto its live path; fold is not baked.
-  const std::string wired = replaced(text, "meta_wavetable()", "meta_wavetable(fold: env)");
-  s.edit(ops::editDevicePatch(s.doc(), s.synth, wired));
+  const auto inner = std::find_if(lp->metaResources.begin(), lp->metaResources.end(),
+                                  [&](const LoweredProject::MetaResource& r) { return r.device == wt1; });
+  REQUIRE(inner != lp->metaResources.end());
+  CHECK(inner->path.empty());
+  CHECK(meta::dataEqual(inner->data, data));
+  // A wired fold (TMM.8): the engine expands onto its live path; fold is not baked.
+  s.edit(ops::connectWire(s.doc(), s.store.ids(), env, "out", wt1, "fold"));
   Result<LoweredProject> lw = lower(s.doc(), o);
   REQUIRE(lw.ok());
   CHECK(lw->deviceErrors.empty());
   CHECK(expansionHas(*lw, "wavetable_live"));
   const auto wn = std::find_if(lw->metaResources.begin(), lw->metaResources.end(),
-                               [&](const LoweredProject::MetaResource& r) { return r.device == s.synth; });
+                               [&](const LoweredProject::MetaResource& r) { return r.device == wt1; });
   REQUIRE(wn != lw->metaResources.end());
   CHECK(wn->modulated.at(meta::kWtFold) == 1);
 }
