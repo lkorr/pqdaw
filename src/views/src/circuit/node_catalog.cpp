@@ -173,6 +173,8 @@ void addAtoms(NodeCatalog& c) {
 void addMetas(NodeCatalog& c, std::vector<NodeEntry>& visualisers) {
   for (const meta::Type* t : meta::types()) {
     if (!hasFace(*t)) continue;
+    // GU.7: in a project the engines with a module are spawned as it (the group around the engine, its panel the face)
+    if (c.scope == NodeCatalog::Scope::Project && doc::moduleOfEngine(t->id) != nullptr) continue;
     NodeEntry e;
     e.item = NodeItem::Meta;
     e.id = std::string(t->id);
@@ -197,15 +199,16 @@ void addMetas(NodeCatalog& c, std::vector<NodeEntry>& visualisers) {
 
 // GU.4: the built-in modules (group presets of atom and value blocks with a panel: doc::moduleInfos), beside the meta
 // modules (the project only: a module is a group, which lives in a track's circuit).
-void addModules(NodeCatalog& c) {
+void addModules(NodeCatalog& c, std::vector<NodeEntry>& visualisers) {
   for (const doc::ModuleInfo& m : doc::moduleInfos()) {
     NodeEntry e;
     e.item = NodeItem::Module;
     e.id = std::string(m.key);
     e.key = std::string(doc::kModuleItemPrefix) + e.id;
     e.name = std::string(m.name);
-    e.category = NodeCategory::MetaModules;
-    e.chip = "MODULE";
+    const bool vis = visualiser(doc::moduleEngineType(m.kind));
+    e.category = vis ? NodeCategory::Visualisers : NodeCategory::MetaModules;
+    e.chip = vis ? "VISUALISER" : "MODULE";
     e.aliases = e.id + " module group preset meta";
     e.description = std::string(m.description);
     e.inputs = {"in"};
@@ -219,7 +222,7 @@ void addModules(NodeCatalog& c) {
         e.params.push_back({d->name, number(dsp::evalCurve(cv, v != nullptr ? v->value : 0.0))});
       }
     finish(e);
-    c.entries.push_back(std::move(e));
+    (vis ? visualisers : c.entries).push_back(std::move(e));
   }
 }
 
@@ -312,7 +315,7 @@ std::shared_ptr<const NodeCatalog> build(NodeCatalog::Scope scope, const doc::De
   std::vector<NodeEntry> visualisers, instruments, effects;
   addAtoms(*c);
   addMetas(*c, visualisers);
-  if (scope == NodeCatalog::Scope::Project) addModules(*c);
+  if (scope == NodeCatalog::Scope::Project) addModules(*c, visualisers);
   if (scope == NodeCatalog::Scope::Project) {
     addDevices(lib, instruments, effects);
     auto byName = [](const NodeEntry& a, const NodeEntry& b) { return a.foldedName < b.foldedName; };

@@ -243,6 +243,11 @@ public:
   void setSource(TapOf tapOf, double sampleRate);
   // The device's feed (null: it has no tap). Stable while its tap is.
   SpectrumFeed* feed(doc::DeviceId device);
+  // GU.7: the feed of a display's signal tap (pq/document/panel.h: the tap of `device` under name path `path`), from
+  // the path source (null: none set, or no such tap). Stable while its tap is.
+  using PathTapOf = std::function<std::shared_ptr<TapRing>(doc::DeviceId, std::string_view)>;
+  void setPathSource(PathTapOf tapOf) { pathTapOf_ = std::move(tapOf); }
+  SpectrumFeed* feed(doc::DeviceId device, std::string_view path);
   size_t feeds() const noexcept { return feeds_.size(); }
   double sampleRate() const noexcept { return rate_; }
   // Scenes and tests: `feed` (on `tap`) is the device's feed while the tap source gives `tap` for it.
@@ -255,10 +260,13 @@ private:
     std::shared_ptr<TapRing> tap;
     std::shared_ptr<SpectrumFeed> feed;
   };
+  SpectrumFeed* feedOn(Entry* found, std::shared_ptr<TapRing> tap, Entry& slot);
   TapOf tapOf_;
   double rate_;
   Poster post_;
   std::map<uint32_t, Entry> feeds_;
+  PathTapOf pathTapOf_;
+  std::map<std::pair<uint32_t, std::string>, Entry, std::less<>> pathFeeds_;
   std::vector<std::shared_ptr<SpectrumFeed>> retired_;
 };
 

@@ -36,6 +36,7 @@ Binding settingBinding(DeviceId device, std::string setting, std::string meta) {
 }
 Binding signalBinding(DeviceId device, std::string output) { return Binding{BindingKind::Signal, device, {}, std::move(output)}; }
 Binding panelBinding(DeviceId group) { return Binding{BindingKind::Panel, group, {}, {}}; }
+Binding dataBinding(DeviceId device, std::string meta) { return Binding{BindingKind::Data, device, std::move(meta), {}}; }
 
 EmbedFit embedFit(float w, float h, float childW, float childH) noexcept {
   EmbedFit f;
@@ -223,6 +224,33 @@ Panel remapPanel(const Panel& p, std::span<const std::pair<DeviceId, DeviceId>> 
           break;
         }
     }
+  return out;
+}
+
+ElementTap elementTap(std::string_view kind) noexcept {
+  if (kind == "orbit") return ElementTap::Voice;
+  if (kind == "scope" || kind == "spectrum" || kind == "spectrogram" || kind == "meter") return ElementTap::Signal;
+  return ElementTap::None;
+}
+
+std::string tapPath(ElementTap kind, std::string_view port) {
+  return std::string(kind == ElementTap::Voice ? "#voice:" : "#signal:") + std::string(port);
+}
+
+std::vector<PanelTap> panelTaps(const Panel& p) {
+  std::vector<PanelTap> out;
+  for (const PanelElement& e : p.elements) {
+    const ElementTap k = elementTap(e.kind);
+    const Binding* b = e.binding(0);
+    if (k == ElementTap::None || b == nullptr || b->kind != BindingKind::Signal || !b->device.valid() || b->name.empty()) continue;
+    out.push_back(PanelTap{b->device, b->name, k});
+  }
+  std::sort(out.begin(), out.end(), [](const PanelTap& a, const PanelTap& b) {
+    if (a.device != b.device) return a.device < b.device;
+    if (a.kind != b.kind) return a.kind < b.kind;
+    return a.port < b.port;
+  });
+  out.erase(std::unique(out.begin(), out.end()), out.end());
   return out;
 }
 

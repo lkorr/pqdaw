@@ -92,8 +92,11 @@ void GroupPanelFace::rebuild(const doc::PanelPtr& p) {
   }
   for (const doc::PanelElement& d : p->elements) whenSource_.push_back(d.when ? indexOf(d.when->element) : -1);
   round_ = false;
+  corner_ = kCorner;
   if (!elements_.empty())
-    if (const std::optional<FaceShape> o = elements_.front()->outline()) {
+    if (const std::optional<FaceShape> o = elements_.front()->outline(); o && !o->round) {
+      corner_ = o->radius;  // GU.7: a plate shape: the panel keeps its rectangle with that corner
+    } else if (o) {
       round_ = true;
       roundShape_ = *o;
       const Rect r = elements_.front()->rect();
@@ -103,7 +106,7 @@ void GroupPanelFace::rebuild(const doc::PanelPtr& p) {
 
 FaceShape GroupPanelFace::shape() const noexcept {
   if (round_) return roundShape_;
-  return {false, {0.0f, 0.0f}, kCorner};
+  return {false, {0.0f, 0.0f}, corner_};
 }
 
 std::optional<FaceShape> panelShape(const doc::Panel& panel, const std::vector<doc::DevicePtr>* list) {
@@ -168,10 +171,26 @@ void GroupPanelFace::setPopupOverFace(bool on) {
   for (const std::unique_ptr<Element>& e : elements_) e->setPopupOverFace(on);
 }
 
+// GU.7: the host polls the panel while ANY element's reader is live (several displays and voice faces on one panel).
+uint32_t GroupPanelFace::AnyReader::read(std::span<FaceVoice>) { return 0; }
+uint64_t GroupPanelFace::AnyReader::serial() const noexcept { return 0; }
+bool GroupPanelFace::AnyReader::live() const noexcept {
+  for (const std::unique_ptr<Element>& e : face->elements_)
+    if (VoiceTapReader* r = e->voiceReader(*face->target_); r != nullptr && r->live()) return true;
+  return false;
+}
+
 VoiceTapReader* GroupPanelFace::voices() const noexcept {
+  VoiceTapReader* one = nullptr;
+  size_t n = 0;
   for (const std::unique_ptr<Element>& e : elements_)
-    if (VoiceTapReader* r = e->voiceReader(*target_)) return r;
-  return nullptr;
+    if (VoiceTapReader* r = e->voiceReader(*target_)) {
+      one = r;
+      ++n;
+    }
+  if (n <= 1) return one;
+  any_.face = this;
+  return &any_;
 }
 
 bool GroupPanelFace::pollVoices() {
@@ -250,8 +269,8 @@ void GroupPanelFace::paintLive(ui::FacePainter& p, const FaceEnv& env) {
   stats_ = {};
   // The plate: the meta faces' body and frame (GU.5b: a round panel's bottom element is its plate).
   if (!round_) {
-    p.roundedRect({0.0f, 0.0f, ws.x, ws.y}, kCorner, th.face.body);
-    outlineRect(p, {0.6f, 0.6f, ws.x - 0.6f, ws.y - 0.6f}, kCorner - 0.6f, 1.2f, th.face.frame);
+    p.roundedRect({0.0f, 0.0f, ws.x, ws.y}, corner_, th.face.body);
+    outlineRect(p, {0.6f, 0.6f, ws.x - 0.6f, ws.y - 0.6f}, std::max(0.0f, corner_ - 0.6f), 1.2f, th.face.frame);
   }
   ui::TileAtlas* at = atlas();
   ElementTiles& cache = elementTiles();
@@ -490,8 +509,11 @@ bool GroupPanelFace::onPointer(const FacePointer& e) {
       const int32_t i = elementAt(e.local);
       return i >= 0 && elements_[static_cast<size_t>(i)]->onPointer(local(i), *target_);
     }
+    case K::Wheel: {  // GU.7: an element that uses the wheel (the harmonic editor's scroll / zoom, a scope's zoom)
+      const int32_t i = elementAt(e.local);
+      return i >= 0 && elements_[static_cast<size_t>(i)]->onPointer(local(i), *target_);
+    }
     case K::Up:
-    case K::Wheel:
     case K::Leave: return false;
   }
   return false;

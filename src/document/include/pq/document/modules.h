@@ -50,11 +50,12 @@
 #include "pq/core/result.h"
 #include "pq/document/ids.h"
 #include "pq/document/model.h"
+#include "pq/document/panel.h"
 #include "pq/dsp/curve.h"
 
 namespace pq::doc {
 
-enum class ModuleKind : uint8_t { PhaseAccumulator, Vca };
+enum class ModuleKind : uint8_t { PhaseAccumulator, Vca, Wavetable, Envelope, Oscilloscope, Spectrum, Spectrogram };
 struct ModuleInfo {
   ModuleKind kind;
   std::string_view key;   // "phase_acc", "vca" (a menu / browser item: kModuleItemPrefix + key)
@@ -104,6 +105,38 @@ struct VcaOptions {
 BlockSet vcaBlocks(IdSource& ids, const VcaOptions& o = {}, VcaRoles* roles = nullptr);
 // The VCA's curve: its law over [min, max] with fine zone `zone` (0: the default 0.4).
 dsp::Curve vcaCurve(double min = -20000.0, double max = 20000.0, double zone = 0.0);
+
+// ---- GU.7: modules around a NATIVE ENGINE (docs/plans/GU.md "Phases" 7, "One hierarchy") ----
+// The Wavetable, the Envelope and the analysers (Oscilloscope, Spectrum, Spectrogram) are groups holding one native
+// engine — a meta device (`meta:<type>`, a leaf: its expansion is its DSP; the analysers' is their tap) — wired
+// In → the engine's chain input, its `out` → Out, with a panel that reproduces the engine's old face from elements:
+//   Wavetable    the rich elements "drawtools" (mode switch, draw tools, basic shapes), "harmonics" (the harmonic
+//                editor), "wavetable" (the table display with the position slider and its keyframe markers) and
+//                "warpmode" (the warp-mode glyphs and the oversampling cell), bound to the engine's DATA; the phase
+//                slider and the fold / warp / sync knobs generic elements bound to its controls
+//   Envelope     "envelope" (the shape with its breakpoints and bends) bound to the engine's data; the amount slider a
+//                generic slider
+//   analysers    "scope" / "spectrum" / "spectrogram" filling the panel, bound to the engine's data (the display
+//                state: saved, undoable); the engine's own tap feeds them
+// The engine is the one block inside; the elements' rects are the old face's (the views' rich kinds show the same
+// sections of it). A Wavetable module at an instrument group's In hears the note's frequency, not its phase (a nested
+// group's main input reads the note's Hz: GU.4): put a Phase Accumulator before it (QUESTIONS Q?-GU.7-a).
+struct EngineRoles {
+  DeviceId group, engine;
+};
+struct EngineModuleOptions {
+  DeviceId id;       // the group's (invalid: a fresh one)
+  DeviceId inGroup;  // the group it sits in, or none
+  std::string name;  // "" = the module's name
+  bool active = true;
+};
+// The engine type of an engine module ("wavetable" …), "" for the Phase Accumulator and the VCA.
+std::string_view moduleEngineType(ModuleKind k) noexcept;
+// The module built around engine type `typeId` (null: none).
+const ModuleInfo* moduleOfEngine(std::string_view typeId) noexcept;
+BlockSet engineModuleBlocks(IdSource& ids, ModuleKind k, const EngineModuleOptions& o = {}, EngineRoles* roles = nullptr);
+// The module's panel bound to engine block `engine` (the Phase Accumulator and the VCA: an empty panel).
+Panel enginePanel(ModuleKind k, DeviceId engine);
 
 // A module's default group preset with ids from 1 (the group first): what spawning it pastes (ops::pasteBlocks gives
 // fresh ids).

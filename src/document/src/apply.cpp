@@ -2195,7 +2195,10 @@ Res apply_(const Snapshot& s, const SetGroupPanel& c, ChangeSet& cs) {  // GU.3 
     if (std::string why = bindingsProblem(loc.track->devices, c.group, *panel); !why.empty()) return invalid(why);
   }
   if (panel == loc.device->panel || (panel && loc.device->panel && *panel == *loc.device->panel)) return s;
-  return editDeviceAt(s, c.group, cs, kChangeMeta, [&](Device& d) {
+  // GU.7 (panel.h "Displays tapped by the lowering"): a change of the displays' taps changes the track patch.
+  const auto taps = [](const PanelPtr& x) { return x ? panelTaps(*x) : std::vector<PanelTap>{}; };
+  const ChangeFlag cls = taps(panel) == taps(loc.device->panel) ? kChangeMeta : kChangeStructural;
+  return editDeviceAt(s, c.group, cs, cls, [&](Device& d) {
     d.panel = std::move(panel);
     return ok();
   });

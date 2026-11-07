@@ -141,6 +141,14 @@ private:
   int32_t cableTargetAt(ui::Vec2 local) const;
   int32_t popupAt(ui::Vec2 local) const;  // the element whose open popup holds `local` (−1: none)
   bool round_ = false;                    // GU.5b: the bottom element's outline is the panel's
+  float corner_ = kCorner;                // GU.7: the plate's corner (a bottom plate shape's radius)
+  struct AnyReader final : VoiceTapReader {  // GU.7: live while any element's reader is
+    const GroupPanelFace* face = nullptr;
+    uint32_t read(std::span<FaceVoice> out) override;
+    uint64_t serial() const noexcept override;
+    bool live() const noexcept override;
+  };
+  mutable AnyReader any_;
   FaceShape roundShape_;
 };
 

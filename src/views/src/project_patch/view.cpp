@@ -1320,7 +1320,7 @@ std::vector<ui::MenuItem> ProjectPatchView::addFreeDeviceItems(doc::TrackId trac
     ui::MenuItem head = ui::MenuItem::item("Meta Modules");
     head.enabled = false;
     addFree.push_back(std::move(head));
-    for (const meta::Type* t : metaModuleTypes()) {
+    for (const meta::Type* t : metaModuleTypes(true)) {
       const std::string patch = std::string(doc::kMetaDevicePrefix) + std::string(t->id);
       addFree.push_back(ui::MenuItem::item("   " + std::string(t->name), [pick, patch] { pick(patch); }));
     }

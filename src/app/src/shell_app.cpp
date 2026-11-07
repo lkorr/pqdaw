@@ -235,6 +235,8 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
                                    lk->engine().config().sampleRate);
       views::ViewContext* vc = app->ctx_.get();
       lk->onAnalysisTaps = [vc] { vc->analysisTapsChanged(); };
+      // GU.7: a display placed on a panel reads the tap the lowering put on its signal
+      app->ctx_->setSignalTapSource([lk](doc::DeviceId d, std::string_view path) { return lk->metaSignalTap(d, path, 0); });
     }
     // T4.4-fix1: the circuit editor on a project device probes and measures it in the project's own unit.
     ProjectLink* link = app->link_.get();
@@ -250,6 +252,8 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
       app->faceVoices_ = std::make_unique<FaceVoiceHub>(*app->link_);
       FaceVoiceHub* hub = app->faceVoices_.get();
       patch->faceVoices = [hub](doc::DeviceId d, std::string_view path) { return hub->voices(d, path); };
+      // GU.7: group panels' rich elements (the engines' dots, the phase orbit's voices on the lowering's tap)
+      app->ctx_->setFaceVoices([hub](doc::DeviceId d, std::string_view path) { return hub->voices(d, path); });
       patch->rebindFaces();
       app->faceView_ = patch;
       // TMM.10: chain meta devices' faces in the Device view read the same readers.

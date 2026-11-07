@@ -169,10 +169,21 @@ void ViewContext::setAnalysisSource(std::function<std::shared_ptr<TapRing>(doc::
     analysis_ = std::make_unique<devices::AnalysisHub>(std::move(tapOf), sampleRate, [this](std::function<void()> f) {
       if (post_) post_(std::move(f));
     });
+  if (signalTapOf_) analysis_->setPathSource(signalTapOf_);  // GU.7
 }
 
 devices::SpectrumFeed* ViewContext::analysisFeed(doc::DeviceId device) {
   return analysis_ ? analysis_->feed(device) : nullptr;
+}
+
+void ViewContext::setSignalTapSource(std::function<std::shared_ptr<TapRing>(doc::DeviceId, std::string_view)> tapOf) {
+  signalTapOf_ = std::move(tapOf);
+  if (analysis_) analysis_->setPathSource(signalTapOf_);
+}
+
+devices::SpectrumFeed* ViewContext::analysisFeed(doc::DeviceId device, std::string_view path) {
+  if (!analysis_) return nullptr;
+  return analysis_->feed(device, path);
 }
 
 void ViewContext::onStoreEvent(const doc::StoreEvent& e) {

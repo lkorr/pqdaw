@@ -20,7 +20,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 2> kModules = {{
+constexpr std::array<ModuleInfo, 7> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -28,6 +28,18 @@ constexpr std::array<ModuleInfo, 2> kModules = {{
     {ModuleKind::Vca, "vca", "VCA",
      "One input, one output, one knob: out = in × value. The knob's curve is the VCA's law: fine between −1 and +1 in "
      "the middle of its travel, logarithmic out to ±20000 (edit it with the curve editor)."},
+    {ModuleKind::Wavetable, "wavetable", "Wavetable",
+     "A wavetable oscillator read by its phase input (feed it a Phase Accumulator): keyframes drawn or built from "
+     "harmonics, blended by the position, shaped by fold, warp and sync. Its engine is a native block; its face is a "
+     "panel of the harmonic editor, the table display, the draw tools and knobs."},
+    {ModuleKind::Envelope, "envelope", "Envelope",
+     "Attack, decay, sustain and release with a curve per segment, multiplying its input (a VCA) or, unwired, the "
+     "envelope itself. Drag the breakpoints and bends on its display."},
+    {ModuleKind::Oscilloscope, "oscilloscope", "Oscilloscope",
+     "Shows the signal passing through it as a scope (fixed, pitch-locked or beat-locked timebase); changes nothing."},
+    {ModuleKind::Spectrum, "spectrum", "Spectrum", "Shows the spectrum of the signal passing through it; changes nothing."},
+    {ModuleKind::Spectrogram, "spectrogram", "Spectrogram",
+     "Shows the signal passing through it as a scrolling spectrogram; changes nothing."},
 }};
 
 struct Builder {
@@ -205,7 +217,9 @@ BlockSet phaseAccumulatorBlocks(IdSource& ids, const PhaseAccumulatorOptions& o,
   p.setField(styleText("readout", "corner"));
   PanelElement ph = arc(5, r.phase, 130.0, -80.0, 43.0, 140.0, "horizontal");
   ph.setField(styleText("ticks", "0.25|0.5|0.75"));
-  PanelElement orbit = element(6, "orbit", 0, 0, 120, 120, signalBinding(r.out, "out"));
+  // (GU.7: the orbit shows the phase each voice reads — frac's output, what the old module tapped — through the tap
+  // the lowering puts on it while the orbit is placed.)
+  PanelElement orbit = element(6, "orbit", 0, 0, 120, 120, signalBinding(r.frac, "out"));
   orbit.bindings.push_back(controlBinding(r.amp, vp));
   panel.elements = {std::move(body), std::move(f), std::move(a), std::move(p), std::move(ph), std::move(orbit)};
   BlockSet out;
@@ -243,9 +257,127 @@ BlockSet vcaBlocks(IdSource& ids, const VcaOptions& o, VcaRoles* roles) {
   return out;
 }
 
+// ---- GU.7: engine modules -----------------------------------------------------------------------------------------
+
+std::string_view moduleEngineType(ModuleKind k) noexcept {
+  switch (k) {
+    case ModuleKind::Wavetable: return "wavetable";
+    case ModuleKind::Envelope: return "envelope";
+    case ModuleKind::Oscilloscope: return "oscilloscope";
+    case ModuleKind::Spectrum: return "spectrum";
+    case ModuleKind::Spectrogram: return "spectrogram";
+    case ModuleKind::PhaseAccumulator:
+    case ModuleKind::Vca: break;
+  }
+  return {};
+}
+
+const ModuleInfo* moduleOfEngine(std::string_view typeId) noexcept {
+  if (typeId.empty()) return nullptr;
+  for (const ModuleInfo& m : kModules)
+    if (moduleEngineType(m.kind) == typeId) return &m;
+  return nullptr;
+}
+
+namespace {
+
+// A generic element drawn as the old face's control: no label, no readout.
+PanelElement plainControl(uint32_t id, const char* kind, float x, float y, float w, float h, DeviceId engine, const char* param) {
+  PanelElement e = element(id, kind, x, y, w, h, controlBinding(engine, param));
+  e.setField(styleText("label", "-"));
+  e.setField(styleText("readout", "none"));
+  return e;
+}
+// The bottom element giving the panel the old face's corner (the views: a "shape" with plate 1 is the plate's outline).
+PanelElement plate(float w, float h, double radius) {
+  PanelElement e = element(1, "shape", 0, 0, w, h, {});
+  e.bindings.clear();
+  e.setField(styleNumber("plate", 1.0));
+  e.setField(styleText("fill", "none"));
+  e.setField(styleText("stroke", "none"));
+  e.setField(styleNumber("radius", radius));
+  return e;
+}
+
+}  // namespace
+
+Panel enginePanel(ModuleKind k, DeviceId engine) {
+  Panel p;
+  const Binding data = dataBinding(engine);
+  auto rich = [&](uint32_t id, const char* kind, float x, float y, float w, float h) { return element(id, kind, x, y, w, h, data); };
+  switch (k) {
+    case ModuleKind::Wavetable: {  // the old face: 204 × 248 (views wavetable_face.cpp)
+      p.width = 204.0f;
+      p.height = 248.0f;
+      p.elements.push_back(plate(p.width, p.height, 12.0));
+      p.elements.push_back(rich(2, "drawtools", 8, 13, 188, 21));
+      p.elements.push_back(rich(3, "harmonics", 10, 34, 184, 42));
+      p.elements.push_back(rich(4, "wavetable", 8, 76, 192, 100));
+      PanelElement phase = plainControl(5, "slider", 12, 176, 154, 12, engine, "phase");
+      phase.setField(styleText("orientation", "horizontal"));
+      p.elements.push_back(std::move(phase));
+      constexpr float kKnobX[3] = {38.0f, 89.0f, 140.0f};
+      constexpr const char* kKnobs[3] = {"fold", "warp", "sync"};
+      for (uint32_t i = 0; i < 3; ++i) {
+        PanelElement kn = plainControl(6 + i, "knob", kKnobX[i] - 17.75f, 212.0f - 17.75f, 35.5f, 35.5f, engine, kKnobs[i]);
+        kn.setField(styleNumber("track", 3.5));
+        p.elements.push_back(std::move(kn));
+      }
+      p.elements.push_back(rich(9, "warpmode", 20, 225, 168, 16));
+      break;
+    }
+    case ModuleKind::Envelope: {  // 208 × 128 (views envelope_face.cpp)
+      p.width = 208.0f;
+      p.height = 128.0f;
+      p.elements.push_back(plate(p.width, p.height, 12.0));
+      p.elements.push_back(rich(2, "envelope", 6, 6, 178, 116));
+      PanelElement amt = plainControl(3, "slider", 184, 12, 16, 104, engine, "amount");
+      amt.setField(styleText("orientation", "vertical"));
+      p.elements.push_back(std::move(amt));
+      break;
+    }
+    case ModuleKind::Oscilloscope:
+    case ModuleKind::Spectrum:
+    case ModuleKind::Spectrogram: {  // the display fills the panel (260 × 160, 240 × 150, 300 × 170)
+      const char* kind = k == ModuleKind::Oscilloscope ? "scope" : k == ModuleKind::Spectrum ? "spectrum" : "spectrogram";
+      p.width = k == ModuleKind::Oscilloscope ? 260.0f : k == ModuleKind::Spectrum ? 240.0f : 300.0f;
+      p.height = k == ModuleKind::Oscilloscope ? 160.0f : k == ModuleKind::Spectrum ? 150.0f : 170.0f;
+      p.elements.push_back(plate(p.width, p.height, 10.0));
+      p.elements.push_back(rich(2, kind, 0, 0, p.width, p.height));
+      break;
+    }
+    case ModuleKind::PhaseAccumulator:
+    case ModuleKind::Vca: break;
+  }
+  return p;
+}
+
+BlockSet engineModuleBlocks(IdSource& ids, ModuleKind k, const EngineModuleOptions& o, EngineRoles* roles) {
+  const std::string_view type = moduleEngineType(k);
+  const meta::Type* t = meta::findType(type);
+  EngineRoles r;
+  r.group = o.id.valid() ? o.id : ids.device();
+  Builder b{ids, {}, r.group};
+  r.engine = b.add(std::string(kMetaDevicePrefix) + std::string(type), t != nullptr ? std::string(t->name) : std::string(type));
+  if (t != nullptr && t->chainInput >= 0) b.wire(r.group, kGroupInPort, r.engine, t->inputs[static_cast<size_t>(t->chainInput)].name);
+  b.wire(r.engine, "out", r.group, kGroupOutPort);
+  const ModuleInfo* info = nullptr;
+  for (const ModuleInfo& m : kModules)
+    if (m.kind == k) info = &m;
+  BlockSet out;
+  out.devices.push_back(groupDevice(r.group, o.inGroup, o.name.empty() ? std::string(info != nullptr ? info->name : type) : o.name,
+                                    o.active, enginePanel(k, r.engine)));
+  for (DevicePtr& d : b.set.devices) out.devices.push_back(std::move(d));
+  out.wires = std::move(b.set.wires);
+  if (roles != nullptr) *roles = r;
+  return out;
+}
+
 BlockSet moduleBlocks(ModuleKind k) {
   IdSource ids;
-  return k == ModuleKind::PhaseAccumulator ? phaseAccumulatorBlocks(ids) : vcaBlocks(ids);
+  if (k == ModuleKind::PhaseAccumulator) return phaseAccumulatorBlocks(ids);
+  if (k == ModuleKind::Vca) return vcaBlocks(ids);
+  return engineModuleBlocks(ids, k);
 }
 
 // ==== Load conversion =================================================================================================

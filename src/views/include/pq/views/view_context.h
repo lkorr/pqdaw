@@ -53,6 +53,7 @@ class Waveforms;       // pq/views/waveforms.h (T5.5)
 class FileProbes;      // pq/views/file_probes.h (T5.7)
 class Library;         // pq/views/browser/library.h (T5.10)
 class ModulationSource;  // pq/views/device_chain/wiring.h (T4.7)
+class VoiceTapReader;    // pq/views/meta/meta_face.h
 namespace devices {
 class AnalysisHub;  // pq/views/devices/analysis.h (TX.spectrum)
 class SpectrumFeed;
@@ -240,6 +241,17 @@ public:
   void setAnalysisSource(std::function<std::shared_ptr<TapRing>(doc::DeviceId)> tapOf, double sampleRate);
   devices::SpectrumFeed* analysisFeed(doc::DeviceId device);
   devices::AnalysisHub* analysisHub() noexcept { return analysis_.get(); }
+  // GU.7 (pq/document/panel.h "Displays tapped by the lowering"): the analysis feed of a display's signal tap, requested
+  // under name path `path` (doc::tapPath) of `device`; the app gives the source (the link's metaSignalTap). Null: no
+  // source, or the lowering has not made that tap (yet).
+  void setSignalTapSource(std::function<std::shared_ptr<TapRing>(doc::DeviceId, std::string_view)> tapOf);
+  devices::SpectrumFeed* analysisFeed(doc::DeviceId device, std::string_view path);
+  // GU.7: the voice readers of meta instances and of the lowering's voice taps, by (device, name path) — the app's
+  // FaceVoiceHub — for group panels' rich elements (the Wavetable's and the Envelope's dots, the phase orbit's). Null:
+  // none (tests, scenes without an engine).
+  using FaceVoices = std::function<VoiceTapReader*(doc::DeviceId, std::string_view)>;
+  void setFaceVoices(FaceVoices f) { faceVoices_ = std::move(f); }
+  VoiceTapReader* faceVoices(doc::DeviceId device, std::string_view path) const { return faceVoices_ ? faceVoices_(device, path) : nullptr; }
   // The app, after a compile made new taps: displays waiting for their device's feed look again (notifies kAnalysis).
   void analysisTapsChanged() { notify(view_change::kAnalysis); }
   // T4.4-fix1: the circuit editor's player for a device of the project — probes and cost through the project unit
@@ -512,6 +524,8 @@ private:
   doc::BlockSet blockClipboard_;  // GU.2
   ModulationSource* modulation_ = nullptr;
   std::unique_ptr<devices::AnalysisHub> analysis_;  // TX.spectrum
+  std::function<std::shared_ptr<TapRing>(doc::DeviceId, std::string_view)> signalTapOf_;  // GU.7
+  FaceVoices faceVoices_;  // GU.7
   DevicePlayerFactory devicePlayers_;
   CircuitOpener circuitOpener_;
   ViewPrefs viewPrefs_;

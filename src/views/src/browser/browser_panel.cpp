@@ -511,7 +511,7 @@ void BrowserPanel::buildDeviceTree() {
   const doc::DeviceKind kind = instruments ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect;
   const bool metaModules = source_.index == static_cast<uint32_t>(library::Category::MetaModules);
   if (metaModules) {  // TMM.10: the meta modules (a chain meta device: the kind follows where it lands)
-    for (const meta::Type* t : metaModuleTypes())
+    for (const meta::Type* t : metaModuleTypes(true))
       deviceRows_.push_back({std::string(t->name), std::string(doc::kMetaDevicePrefix) + std::string(t->id),
                              doc::DeviceKind::Instrument});
     for (const doc::ModuleInfo& m : doc::moduleInfos())  // GU.4: the modules (group presets) beside them

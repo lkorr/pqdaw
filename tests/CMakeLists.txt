@@ -128,6 +128,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_cross_track.cpp  # TX.cross-track: loops between tracks per sample (hand-written references), notes cables across tracks
     app/test_mod_all.cpp  # TX.mod-all: a wire into any param makes it live at audio rate (repro, the sweep over every device)
     app/test_module_presets.cpp  # GU.4: the Phase Accumulator / VCA presets render as the meta modules they replace; load conversion
+    app/test_engine_modules.cpp  # GU.7: the Wavetable / Envelope modules render as their engines; the orbit's lowering tap
     app/test_curve_renders.cpp  # GU.1: driven / automated / mapped / undriven controls render as before the curves (references)
     app/test_user_devices.cpp  # T4.4-fix1: user devices (fork on edit: one unit compile, state kept; save/load; wires)
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
@@ -192,6 +193,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_nested_groups_view.cpp  # GU.2: capsules in capsules, the instrument group's look, nest / unnest, copy / paste, group presets from the node menu (real dispatch), golden
     views/test_group_panels.cpp  # GU.3: element goldens, a group drawn as its panel (circuit, Device view + inspector), every element edit through real dispatch
     views/test_module_faces.cpp  # GU.5b: the modules' old faces from rich elements (dial markers as curve points), an opened group as a circuit, goldens
+    views/test_engine_elements.cpp  # GU.7: the engines' faces as rich elements, the modules' panels, harmonic / envelope drags
     views/test_panel_window.cpp  # GU.5: the panel window (open / move / resize / minimise), send to panel (button, P, drag), the editor and inspector, mod-source cables, link lines, goldens
     views/test_panel_embed.cpp  # GU.6: a child group embedded on its parent's panel (send, play, rename, move out), break apart, any depth, golden
     views/test_groups_view.cpp  # TX.groups: Ctrl+G / Ctrl+Shift+G in the circuit, capsules, the Device view group panel, goldens

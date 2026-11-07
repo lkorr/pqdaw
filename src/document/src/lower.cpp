@@ -21,6 +21,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/instrument_groups.h"
 #include "pq/document/main_path.h"
+#include "pq/document/panel.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/graph/kernel_map.h"
 #include "pq/graph/patch_file.h"
@@ -3543,6 +3544,60 @@ void contextPolyphony(const TrackDevs& devs, const Callees* lib, uint32_t& polyp
   }
 }
 
+// GU.7 (panel.h "Displays tapped by the lowering"): the taps of the displays placed on this patch's groups' panels, on
+// the outputs they show. Node ids: the tapped device's TuningNode / SendInput spaces (a device id is never a tuning or
+// track id; a rack, which uses them, is never tapped): a signal tap of output p < 2 takes TuningNode k = 6p … 6p + 5,
+// a voice tap of output p < 16 SendInput k = p. Without metaSlotOf (tools, tests) or a slot: none.
+void panelTapsOf(Build& b) {
+  if (b.resources == nullptr || !b.o.metaSlotOf) return;
+  std::vector<PanelTap> want;
+  for (size_t k = 0; k < b.td.size(); ++k) {
+    const Device& g = *b.td[k].device;
+    if (!isGroupDevice(g) || !g.hasPanel() || b.td[k].remote) continue;
+    for (PanelTap& t : panelTaps(*g.panel)) want.push_back(std::move(t));
+  }
+  if (want.empty()) return;
+  std::sort(want.begin(), want.end(), [](const PanelTap& x, const PanelTap& y) {
+    return std::tie(x.device, x.kind, x.port) < std::tie(y.device, y.kind, y.port);
+  });
+  want.erase(std::unique(want.begin(), want.end()), want.end());
+  std::unordered_map<uint32_t, uint32_t> at;
+  for (uint32_t k = 0; k < b.td.size(); ++k) at.emplace(b.td[k].device->id.value, k);
+  for (const PanelTap& t : want) {
+    const auto it = at.find(t.device.value);
+    if (it == at.end()) continue;
+    const uint32_t k = it->second;
+    const LDev& d = b.td[k];
+    if (d.rack >= 0 || d.remote || d.callee == nullptr || b.calls[k] == graph::kNone) continue;
+    const uint32_t port = signalOutput(*d.callee, t.port);
+    if (port == graph::kNone || (t.kind == ElementTap::Signal ? port >= 2 : port >= kEntityNodeSlots)) continue;
+    const PortRef x = outOf(b, k, static_cast<uint16_t>(port));
+    if (x.node == graph::kNone) continue;
+    const std::string path = tapPath(t.kind, t.port);
+    const uint32_t slot = b.o.metaSlotOf(t.device, path, 0);
+    if (slot == 0) continue;
+    const uint32_t id = t.device.value;
+    const PortRef sl = b.ir.literal(static_cast<double>(slot));
+    if (t.kind == ElementTap::Voice) {
+      b.ir.atom("voice_tap", {x, sl}, nodeIdFor(NodeRole::SendInput, id, port));
+    } else {
+      auto nid = [&](uint32_t j) { return nodeIdFor(NodeRole::TuningNode, id, 6 * port + j); };
+      const PortRef l = b.ir.atom("channel", {x, b.c0()}, nid(0)), r = b.ir.atom("channel", {x, b.c1()}, nid(1));
+      const PortRef beat = b.ir.atom("transport.beat", {}, nid(2));
+      // The note-locked timebase: the lowest sounding voice's pitch where the signal runs per voice.
+      const PortRef note = d.voice ? b.ir.atom("voice_lowest", {b.ir.atom("voice.hz", {}, nid(3))}, nid(4)) : b.c0();
+      b.ir.atom("signal_tap", {beat, note, l, r, sl}, nid(5));
+    }
+    LoweredProject::MetaResource m;
+    m.track = b.track != nullptr ? b.track->id : TrackId{};
+    m.device = t.device;
+    m.path = path;
+    m.request = meta::ResourceRequest{t.kind == ElementTap::Voice ? meta::ResourceKind::VoiceTap : meta::ResourceKind::SignalTap, 0};
+    m.slot = slot;
+    b.resources->push_back(std::move(m));
+  }
+}
+
 Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptions& o, const TrackDevs& devs,
                                 const WirePlan& wp, bool& voices, uint32_t& polyphony, int32_t& steal, uint32_t track,
                                 std::vector<ModulationTap>* taps, uint32_t clipSlot,
@@ -3726,6 +3781,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     x = y;
   }
   gainStages(ir, n.kind, n.track->mixer.panMode, x, o.smoothingMs);
+  panelTapsOf(b);  // GU.7
   lowerSites(b, index, track, wp, taps, curves);  // T4.7, T4.8; GU.1
   if (ir.literalOverflow())
     return Error{ErrorCode::Overflow, "lower: track " + std::to_string(n.track->id.value) + ": more than " +

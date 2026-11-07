@@ -64,6 +64,7 @@ Binding controlBinding(DeviceId device, std::string param, std::string meta = {}
 Binding settingBinding(DeviceId device, std::string setting, std::string meta = {});
 Binding signalBinding(DeviceId device, std::string output);
 Binding panelBinding(DeviceId group);  // GU.6: a child group's whole panel (embedded)
+Binding dataBinding(DeviceId device, std::string meta = {});  // GU.7: a native engine's data (and its face's state)
 
 // A style field: a number or a text (a theme token, an enum's name, a label).
 struct StyleField {
@@ -147,6 +148,30 @@ DeviceId embeddedGroup(const PanelElement& e) noexcept;
 
 // Whether any element of `p` binds device `d`.
 bool panelBinds(const Panel& p, DeviceId d) noexcept;
+
+// ---- GU.7: displays tapped by the lowering (docs/plans/GU.md "Phases" 7) -------------------------------------------
+// A DISPLAY element whose main binding (slot 0) is a Signal — a block's output port — gets a tap from the lowering
+// while it is placed: the panel's taps are part of the track patch, so placing / removing one (or rebinding it) is a
+// structural edit (SetGroupPanel: one recompile), and a display that is not placed costs nothing. The tap kind follows
+// from the element's kind (the document's one fact about kinds):
+//   Voice   "orbit"                                  voice_tap(x): per sounding voice its newest value and the values
+//                                                     sampled since the last read (the phase orbit's dots)
+//   Signal  "scope", "spectrum", "spectrogram",       signal_tap(transport.beat, note, x[0], x[1]): the analysis feed's
+//           "meter"                                   four channels (note: the lowest voice's Hz in a voice context, else 0)
+// The tap's slot is LowerOptions::metaSlotOf(device, tapPath(kind, port), 0), listed in LoweredProject::metaResources
+// (type "", VoiceTap / SignalTap). Several displays of one output share one tap.
+enum class ElementTap : uint8_t { None, Voice, Signal };
+ElementTap elementTap(std::string_view kind) noexcept;
+// The name path a tap is requested under: "#voice:<port>" / "#signal:<port>" (no meta path starts with '#').
+std::string tapPath(ElementTap kind, std::string_view port);
+struct PanelTap {
+  DeviceId device;
+  std::string port;
+  ElementTap kind = ElementTap::None;
+  friend bool operator==(const PanelTap&, const PanelTap&) = default;
+};
+// The taps `p`'s displays need, sorted (device, kind, port), unique.
+std::vector<PanelTap> panelTaps(const Panel& p);
 
 // ---- Settings that are not a patch's `real const` inputs (GU.3: an instrument group's polyphony) ------------------
 // What a panel element (and the group's inspector) needs to show and edit one: its range, step, default, and for a

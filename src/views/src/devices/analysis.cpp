@@ -554,6 +554,38 @@ void AnalysisHub::setSource(TapOf tapOf, double sampleRate) {
   for (auto& [id, e] : feeds_)
     if (e.feed && e.feed->consumers() > 0) retired_.push_back(std::move(e.feed));
   feeds_.clear();
+  for (auto& [id, e] : pathFeeds_)
+    if (e.feed && e.feed->consumers() > 0) retired_.push_back(std::move(e.feed));
+  pathFeeds_.clear();
+}
+
+SpectrumFeed* AnalysisHub::feed(doc::DeviceId device, std::string_view path) {
+  std::shared_ptr<TapRing> tap = pathTapOf_ ? pathTapOf_(device, path) : nullptr;
+  const auto it = pathFeeds_.find(std::make_pair(device.value, std::string(path)));
+  if (it != pathFeeds_.end() && it->second.tap == tap) return it->second.feed.get();
+  if (it != pathFeeds_.end()) {
+    if (it->second.feed && it->second.feed->consumers() > 0) retired_.push_back(std::move(it->second.feed));
+    pathFeeds_.erase(it);
+  }
+  if (!tap) return nullptr;
+  Entry& e = pathFeeds_[std::make_pair(device.value, std::string(path))];
+  return feedOn(nullptr, std::move(tap), e);
+}
+
+SpectrumFeed* AnalysisHub::feedOn(Entry* /*found*/, std::shared_ptr<TapRing> tap, Entry& slot) {
+  std::erase_if(retired_, [](const std::shared_ptr<SpectrumFeed>& f) { return f->consumers() == 0; });
+  auto f = std::make_shared<SpectrumFeed>(tap, config(rate_));
+  f->setWatch(true);
+  std::weak_ptr<SpectrumFeed> weak = f;
+  if (post_)
+    f->setWakePost([post = post_, weak] {
+      post([weak] {
+        if (std::shared_ptr<SpectrumFeed> s = weak.lock()) s->runWakers();
+      });
+    });
+  SpectrumFeed* raw = f.get();
+  slot = Entry{std::move(tap), std::move(f)};
+  return raw;
 }
 
 dsp::SpectrumConfig AnalysisHub::config(double sampleRate) {

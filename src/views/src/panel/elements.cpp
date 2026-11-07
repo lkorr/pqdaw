@@ -851,6 +851,7 @@ public:
       {"radius", StyleSpec::Type::Number, 6.0, {}, {}, 0.0, 256.0},
       {"thickness", StyleSpec::Type::Number, 1.0, {}, {}, 0.0, 32.0},
       {"opacity", StyleSpec::Type::Number, 1.0, {}, {}, 0.0, 1.0},
+      {"plate", StyleSpec::Type::Number, 0.0, {}, {}, 0.0, 1.0},  // GU.7: at the bottom, the panel's plate takes its corner
   };
   uint32_t staticLayerCount() const noexcept override { return 2; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
@@ -882,6 +883,8 @@ public:
   bool hit(Vec2) const noexcept override { return false; }  // a decoration: presses go through it
   // GU.5b: a circle at the bottom of a panel makes the panel round.
   std::optional<FaceShape> outline() const noexcept override {
+    if (num("plate", 0.0) >= 0.5 && txt("shape", "round") == "round")  // GU.7: the plate's corner (a rounded rect)
+      return FaceShape{false, {desc_.w * 0.5f, desc_.h * 0.5f}, static_cast<float>(std::clamp(num("radius", 6.0), 0.0, 256.0))};
     if (txt("shape", "round") != "circle") return std::nullopt;
     const float t = static_cast<float>(std::clamp(num("thickness", 1.0), 0.0, 32.0));
     return FaceShape{true, {desc_.w * 0.5f, desc_.h * 0.5f}, std::min(desc_.w, desc_.h) * 0.5f - t * 0.5f};
@@ -1088,6 +1091,7 @@ void registerGeneric() {
     reg("modsource", "Mod Source", ModSource::kStyle, kSignalSlot, 24, 32, &make<ModSource>);
     registerRichElements(reg);  // GU.5b
     registerEmbedElement(reg);  // GU.6
+    registerEngineElements(reg);  // GU.7
   });
 }
 

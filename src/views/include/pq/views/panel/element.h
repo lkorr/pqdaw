@@ -97,6 +97,18 @@ public:
   virtual VoiceTapReader* voices(const doc::Binding& /*b*/) { return nullptr; }
   // GU.6: the panel of the group a Panel binding names (an embedded child panel), null: none (or no document).
   virtual doc::PanelPtr childPanel(const doc::Binding& /*b*/) const { return nullptr; }
+  // GU.7: the NATIVE ENGINE FACE a rich element shows a section of (engine_elements.cpp): for a Data binding the face of
+  // the engine block it names (its params, settings and data edited through the document, its voices and analysis
+  // from the app), for a Signal binding a face of meta type `typeId` (an analyser) reading the lowering's tap of that
+  // signal, its display state its own (not saved). Shared by every element of the target bound alike, so a face's state
+  // is one (a keyframe selected on the table display is the one the harmonic editor edits). `host` wakes the face's
+  // host when an analysis feed gets sound. Null: none (no document, a test target, an unknown block or type).
+  virtual std::shared_ptr<MetaFace> engineFace(const doc::Binding& /*b*/, std::string_view /*typeId*/, FaceHost* /*host*/) {
+    return nullptr;
+  }
+  // GU.7: the analysis feed a meter reads: a Signal binding's tap (the lowering's), or a Data binding's analyser
+  // engine's own tap. Null: none yet.
+  virtual devices::SpectrumFeed* signalFeed(const doc::Binding& /*b*/) { return nullptr; }
 };
 
 // What an element paints with.

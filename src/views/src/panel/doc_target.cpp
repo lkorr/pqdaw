@@ -27,6 +27,7 @@
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
 #include "pq/views/devices/device_model.h"
+#include "pq/document/panel.h"
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/panel/group_panel_face.h"
 #include "pq/views/view_context.h"
@@ -66,6 +67,28 @@ dsp::Curve linearOver(double min, double max, double step) {
 }
 
 double settingValue(const dsp::Curve& c, double position) noexcept { return dsp::evalCurve(c, std::clamp(position, 0.0, 1.0)); }
+
+// GU.7: the display state of an analyser shown on a signal (no engine block holds it): the type's defaults, edited in
+// place (not saved, not undoable).
+class LocalTarget final : public MetaTarget {
+public:
+  explicit LocalTarget(const meta::Type& t) : type_(&t), data_(t.defaultData ? t.defaultData() : nullptr) {}
+  const meta::Type* targetType() const noexcept override { return type_; }
+  double value(size_t param) const override { return param < type_->params.size() ? type_->params[param].def : 0.0; }
+  void begin(const char*) override {}
+  void set(size_t, double) override {}
+  void end() override {}
+  void cancel() override {}
+  void reset(size_t) override {}
+  meta::DataPtr data() const override { return data_; }
+  void setData(meta::DataPtr d) override {
+    if (d) data_ = std::move(d);
+  }
+
+private:
+  const meta::Type* type_;
+  meta::DataPtr data_;
+};
 
 class DocPanelTarget final : public PanelTarget {
 public:
@@ -255,6 +278,42 @@ public:
     return d != nullptr && doc::isGroupDevice(*d) && d->hasPanel() ? d->panel : nullptr;
   }
   ui::Widget* menuHost() const noexcept override { return host_ ? host_() : nullptr; }
+
+  // GU.7: voices of a Signal binding (the lowering's voice tap while a display shows it), of a Data binding (the
+  // engine's own: the Wavetable's frame-table tap, the Envelope's voice tap).
+  VoiceTapReader* voices(const doc::Binding& b) override {
+    if (b.kind == doc::BindingKind::Signal) return ctx_.faceVoices(b.device, doc::tapPath(doc::ElementTap::Voice, b.name));
+    if (b.kind == doc::BindingKind::Data) return ctx_.faceVoices(b.device, b.meta);
+    return nullptr;
+  }
+  devices::SpectrumFeed* signalFeed(const doc::Binding& b) override {
+    if (b.kind == doc::BindingKind::Signal) return ctx_.analysisFeed(b.device, doc::tapPath(doc::ElementTap::Signal, b.name));
+    if (b.kind == doc::BindingKind::Data && b.meta.empty()) return ctx_.analysisFeed(b.device);
+    return nullptr;
+  }
+  std::shared_ptr<MetaFace> engineFace(const doc::Binding& b, std::string_view typeId, FaceHost* host) override {
+    const bool signal = b.kind == doc::BindingKind::Signal;
+    if (!signal && b.kind != doc::BindingKind::Data) return nullptr;
+    const meta::Type* type = signal ? meta::findType(typeId) : metaTypeAt(ctx_, b.device, b.meta);
+    if (type == nullptr || (!typeId.empty() && type->id != typeId)) return nullptr;
+    std::string key = std::to_string(b.device.value) + (signal ? "|s|" : "|d|") + b.meta + "|" + b.name + "|" + std::string(type->id);
+    if (auto it = faces_.find(key); it != faces_.end()) return it->second;
+    std::shared_ptr<MetaFace> f = makeFace(*type);
+    if (!f) return nullptr;
+    const doc::DeviceId dev = b.device;
+    ViewContext* ctx = &ctx_;
+    if (signal) {
+      const std::string path = doc::tapPath(doc::ElementTap::Signal, b.name);
+      f->bind(std::make_unique<LocalTarget>(*type), nullptr);
+      if (f->wantsAnalysis())
+        f->setAnalysis([ctx, dev, path] { return ctx->analysisFeed(dev, path); }, wakeOf(host, f.get()));
+    } else {
+      f->bind(std::make_unique<DocTarget>(ctx_, dev, b.meta, *type), ctx_.faceVoices(dev, b.meta));
+      if (f->wantsAnalysis()) f->setAnalysis([ctx, dev] { return ctx->analysisFeed(dev); }, wakeOf(host, f.get()));
+    }
+    faces_.emplace(std::move(key), f);
+    return f;
+  }
 
   // GU.5: the controls a wire drives, indexed once per wire list (a persistent document: the list is the same object
   // until a wire changes), so a paint asks a sorted vector.
@@ -495,6 +554,13 @@ private:
   mutable const doc::WireList* drivenOf_ = nullptr;
   mutable doc::Snapshot drivenSnap_;  // (holds the wire list driven_ was built from)
   mutable std::vector<std::pair<uint32_t, std::string>> driven_;
+  std::unordered_map<std::string, std::shared_ptr<MetaFace>> faces_;  // GU.7: engine faces by binding and type
+
+  static std::function<void()> wakeOf(FaceHost* host, Face* f) {
+    return [host, f] {
+      if (host != nullptr) host->faceNeedsUpdate(*f);
+    };
+  }
 };
 
 }  // namespace

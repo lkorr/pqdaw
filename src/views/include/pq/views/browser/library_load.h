@@ -46,7 +46,8 @@ std::string deviceDisplayName(const ViewContext& ctx, std::string_view patch);
 
 // TMM.10: the meta-module types offered as chain devices (those with a face that may be a chain device), in
 // registration order: the "Meta Modules" of the device menus and the browser.
-std::vector<const meta::Type*> metaModuleTypes();
+// GU.7: `project` — where modules can be spawned (a track's circuit): without the engines a module is built around.
+std::vector<const meta::Type*> metaModuleTypes(bool project = false);
 
 // A new device of the catalog with its default preset (Library::defaultPreset) when the User Library has one. Returns
 // the new device's id. TMM.10: a "meta:<type>" patch is a chain meta device (doc::ops::addMetaDevice; its kind follows
