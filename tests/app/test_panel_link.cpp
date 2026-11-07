@@ -1,8 +1,8 @@
 // GU.3 (docs/plans/GU.md "Phases" 3): a group panel's edits through the playback link — the panel's own target (what
 // the elements call: pq/views/panel/group_panel_face.h makeDocPanelTarget) on a document the link plays: a setting
 // (the instrument group's voices) dragged through several positions recompiles exactly ONCE (at the end of the
-// gesture); a control drag recompiles nothing (param writes); a curve point moved within the curve's class recompiles
-// nothing, a shape change once; a panel edit (Meta) never.
+// gesture); a control drag recompiles nothing (param writes); on a driven control a curve point moved within the curve's
+// class recompiles nothing, a shape change once; a panel edit (Meta) never.
 #include <doctest/doctest.h>
 
 #include <memory>
@@ -84,7 +84,14 @@ TEST_CASE("panel link: a setting dragged on a panel recompiles once; a control d
   t.end();
   CHECK(r.compiles() == c0);
   CHECK(r.link->stats().paramWrites > w0);
-  // A curve point moved within its class: no compile; a shape change: one.
+  // A DRIVEN control's curve (a wire into Cutoff: its curve is the `curve` atom's data): a point moved within the class
+  // swaps the data (no compile); a shape change is a new class (one compile). (An undriven control's curve is never
+  // compiled at all: its value is a param write.)
+  {
+    auto w = doc::ops::connectWire(*r.ctx.doc(), r.ctx.store().ids(), r.ids.level, "y", r.ids.cutoff, std::string(doc::kValueParam));
+    REQUIRE(w.ok());
+    REQUIRE(r.ctx.store().dispatch(w->command).ok());
+  }
   dsp::Curve c = t.info(cutoff).curve;
   c.preset = dsp::CurvePreset::Custom;
   c.points[1].y = 0.8;
