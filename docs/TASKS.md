@@ -704,6 +704,9 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [ ] **GU.6 Embed and break apart** (plan §Phases 6).
 - [ ] **GU.7 Rich elements; Wavetable, Envelope and analysers as group presets** (plan §Phases 7).
 - [ ] **GU.8 The example instrument, style schemas, outline of the next ingredients** (plan §Phases 8). 👁
+- [ ] **GU.9 Racks are groups (parallel child groups, macros as value blocks + wires; Device view shows them as racks; Rack/Chain removed)** (plan §One hierarchy; user 2026-11-07).
+- [ ] **GU.10 Stock devices as group presets (Utility, Saturator, LFO, Operator); Auto Filter and EQ Eight retired to `retired/` until a Filter module exists** (plan §One hierarchy). 👁
+- [ ] **GU.11 One view, one panel system (circuit editor / user devices merge into the group view; panel.json system retired; model = blocks, groups, native engines)** (plan §One hierarchy). 👁
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁

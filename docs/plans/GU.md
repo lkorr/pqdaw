@@ -217,6 +217,55 @@ part of the group drawing.
    - Outline the next native ingredients (Filter, Delay), the modules built from them (EQ, Auto Filter) and Meta
      Operator rebuilt with the kit.
 
+### One hierarchy (user 2026-11-07): GU.9 – GU.11
+
+"Racks are parallel groups with macros, just viewed in the device viewer instead of the circuit viewer. I want one
+hierarchy." After GU.11 there is **one container, the group**. Leaves are atom blocks, value blocks and native
+engines (`meta:<type>` that are real DSP, e.g. the wavetable oscillator, the envelope, taps): those have faces but no
+inside. Every other block is a group (a module, a rack, a stock device) and opens to show its blocks. The patch
+language stays as the stdlib's atom / function library and the lowering's output; it is no longer a second container.
+
+Retired code: code that cannot be rebuilt yet (no Filter module: Auto Filter, EQ Eight) is **moved to `retired/`**
+(top level, not built, with a README saying what each file was and why it left) instead of commented out in place: it
+stays readable for the rewrite, never rots inside live files, and greps of `src/` stay clean. Git history keeps
+everything as well.
+
+9. **GU.9 Racks are groups.**
+   - A rack is a group whose chains are child groups, each fed by the rack's In and summed into its Out by ordinary
+     wires (a parallel group: no special lowering); an Instrument Rack is an instrument group whose chains are its
+     child groups (only the outermost fed group voices, as already decided). Chain selector / key / velocity zones
+     become a gate per chain driven by atoms and value blocks inside the rack group (not a lowering special case);
+     macros are value blocks on the rack group's panel, and a macro mapping is a wire from the macro's value block to
+     the mapped control (its min / max as the wire's amount / offset in knob position).
+   - The **Device view** shows a group made of parallel chains as today's rack (chain list, macros from its panel);
+     the circuit shows it as a group. Same object, two views.
+   - Delete `Rack` / `Chain` from the model, the rack lowering path, the rack-only commands; load conversion of
+     projects / presets / fixtures with racks (via `convertRetiredModules`' pattern), a test each for chains, zones,
+     macros, Instrument Rack voicing.
+   - Accept: renders of every rack fixture vs today's (diff 0 where arithmetic is unchanged, else the GU tolerance),
+     interpreter == JIT; Device-view rack gestures through real dispatch (add chain, select chain, macro drag, map);
+     goldens + REVIEW 👁.
+10. **GU.10 Stock devices as group presets; the unbuildable ones retired.**
+   - Utility, Saturator, the LFO device and Operator rebuilt as group presets from atom blocks, value blocks and the
+     modules (PA, VCA, Wavetable, Envelope), each with a panel from elements (looking like their faces today where
+     elements allow; differences listed in REVIEW). Patch-language functions they use (e.g. `sat_mix`) stay as atoms
+     or become nested groups, whichever keeps the circuit readable.
+   - Auto Filter and EQ Eight are retired to `retired/` (their `.pqp`, `panel.json`, tests, fixtures, catalogue
+     entries, bench rows) until a Filter module exists; projects / fixtures holding them load with the device
+     replaced by an empty pass-through group named after it (a status line says so).
+   - The default instrument on new MIDI tracks becomes a group preset (no stock instrument patch left).
+   - Accept: renders vs today's devices (GU tolerance; list any deliberate change), load conversion tests,
+     goldens + REVIEW 👁, compile / CPU no worse than the stock patches (ship rows).
+11. **GU.11 One view, one panel system.**
+   - The circuit editor and text pane of a device's patch (user devices, `Device::source`) merge into the group view:
+     opening any block that has an inside is opening a group; the text pane shows the group's lowered patch
+     (read-only), or is retired if nothing needs it. User devices with their own patch text are converted on load
+     (the text's blocks become a group) or retired with the reason recorded.
+   - The old panel system (`panel_desc.h`, the `panel.json` reader, stock bespoke faces) retired; `Device::source`,
+     `Device::rack`, `chainInput` and other per-kind fields that no longer have users removed.
+   - Accept: the model has exactly blocks, groups and native engines (a test asserting it over every fixture and
+     library preset); ARCHITECTURE rewritten around the one hierarchy; goldens + REVIEW 👁.
+
 ## CPU efficiency
 
 The GUI is UI-thread only. An undriven control costs nothing on the audio thread (its curve is evaluated on the UI
@@ -227,9 +276,9 @@ shared per kind + style + size.
 
 ## Out of scope
 
-Stock Live-parity devices' panels; Meta Operator (deleted in GU.4, rebuilt with the kit after GU); racks (unchanged;
-groups are the way to build new instruments, user 2026-11-06); drawn / imported knob graphics; automating or modulating
-curves.
+Auto Filter and EQ Eight rebuilt (they wait for a Filter module; GU.10 retires them); Meta Operator as such (GU.10's
+Operator preset replaces it); drawn / imported knob graphics; automating or modulating curves. (Racks and stock devices
+were out of scope until the user's 2026-11-07 "one hierarchy" decision: now GU.9 – GU.11.)
 
 ## Decided (user 2026-11-06, or decided by the planner where the answer was clear)
 
