@@ -1190,6 +1190,8 @@ bool ProjectPatchView::addFreeDevice(doc::TrackId track, const std::string& patc
   if (patch.starts_with(doc::kModuleItemPrefix)) {  // GU.4: a built-in module: its group preset, pasted
     const doc::ModuleInfo* m = doc::findModule(std::string_view(patch).substr(doc::kModuleItemPrefix.size()));
     if (m == nullptr) return false;
+    if (m->instrument)  // GU.8: an instrument module takes the notes of a MIDI track with an empty path
+      return apply(doc::ops::pasteBlocksAtNotes(p, ctx_.store().ids(), track, doc::moduleBlocks(m->kind)), "Add Module");
     return apply(doc::ops::pasteBlocks(p, ctx_.store().ids(), track, doc::moduleBlocks(m->kind)), "Add Module");
   }
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();

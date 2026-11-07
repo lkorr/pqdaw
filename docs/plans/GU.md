@@ -302,3 +302,37 @@ were out of scope until the user's 2026-11-07 "one hierarchy" decision: now GU.9
 - IG.4's "group panel" (voice count, mono / legato, glide, stealing) becomes the instrument group's own settings and
   controls: GU.3 shows them in the group's inspector and binds them to panels like any other (IG.4 no longer does).
 - Only the outermost group fed notes is an instrument; nested groups never voice again.
+
+## Next native ingredients (outline, GU.8; not yet tasks)
+
+The kit after GU.8 makes oscillators, envelopes, VCAs and displays. What it cannot make yet is filtering and time
+(memory beyond one sample). Each ingredient below is a **native engine leaf** (a `meta:<type>` with real DSP and no
+inside, like the Wavetable) or a plain atom, wrapped as a module group with a panel from elements; the modules after
+them are then group presets with no new C++.
+
+- **Filter** (engine leaf `meta:filter`): the SVF (stdlib `filters/svf.pqp`, `svf_fast.pqp`: LP / BP / HP / notch /
+  peak / shelves from one state, cheap per-sample cutoff modulation) and a ladder (4-pole, resonance to
+  self-oscillation, drive). One engine, the topology a structural setting (each mode specialises the kernel); cutoff
+  and resonance controls with octave / linear curves, audio-rate inputs for cutoff and resonance so a wire is
+  per-sample without a live-path switch. Voice-lane SIMD inside instrument groups (one filter per note is the common
+  case). Its rich element: a response display (magnitude curve from the exact transfer function, as EQ Eight's view
+  computes today), drag cutoff / resonance on it.
+- **Delay** (engine leaf `meta:delay`, on the `delay` / `delay_cubic` / `delay_allpass` atoms' memory): time in ms
+  or synced to the tempo (beats: a setting), feedback with an optional filter in the loop (a nested Filter module on
+  the feedback wire, the loop's z⁻¹ handled as the existing per-sample loops), ping-pong as two lines cross-wired.
+  Smoothly modulated time (no zipper: the cubic read); memory preallocated for the maximum time off-thread.
+- **EQ** (group preset, retires EQ Eight from `retired/`): N Filter modules in series, each with mode / frequency /
+  gain / Q value blocks, their panels embedded behind a shared response display that sums the bands. Band count is
+  how many modules the preset holds; a band switched off is an inactive group (no ops).
+- **Auto Filter** (group preset): Filter module + an LFO pair (Phase Accumulator + Wavetable, as in the Wavetable
+  Synth) and an envelope follower (needs a small `follower` atom: rectify → one-pole attack / release) into its
+  cutoff through value blocks for depth. Retires Auto Filter from `retired/`.
+- **Meta Operator, rebuilt from the kit**: four (or N) operator groups, each Phase Accumulator → Wavetable → Envelope
+  → VCA, the phase-modulation input being the PA's `+ pm` add fed by other operators' outputs (the algorithm = the
+  wires; a few algorithm presets rewire them in one step), feedback as a wire with the per-sample loop. Its panel:
+  tabs per operator (embedded operator panels), an algorithm display (a rich element drawing the operators' wiring),
+  and the shared pitch / envelope controls bound across the operators. A user can open it and change any of it.
+
+Order when they become tasks: Filter (unblocks EQ and Auto Filter, and GU.10's retirements) → Auto Filter → EQ →
+Delay → Meta Operator. Each: renders vs the stock device it replaces (GU tolerance), interpreter == JIT, a ship bench
+row per engine (per voice and free), goldens + REVIEW.

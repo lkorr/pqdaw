@@ -8,4 +8,5 @@ set(PQ_VIEWS_PANEL_SOURCES
   src/panel/engine_elements.cpp  # GU.7: the native engines' faces as elements, the meter
   src/panel/group_panel_face.cpp
   src/panel/doc_target.cpp
+  src/panel/style_schemas.cpp  # GU.8: named style sets per element kind
   src/panel/panel_window.cpp)  # GU.5: the panel window, its editor and inspector

@@ -407,6 +407,10 @@ BlockSet remapBlocks(const BlockSet& set, IdSource& ids, std::vector<std::pair<D
 // MIDI tracks. Edit::devices: the new top-level blocks first (set order), then everything inside them; Edit::wires: the
 // new wires. One step; undo removes it all.
 EditResult pasteBlocks(const Project& p, IdSource& ids, TrackId track, const BlockSet& set, DeviceId intoGroup = {});
+// GU.8: spawning an instrument module (doc::ModuleInfo::instrument): pasteBlocks, and on a MIDI track whose main path
+// holds no block the set's first top-level block goes onto it (source → it → mixer: it takes the notes, the
+// instrument group). Elsewhere it stays off the path, as pasteBlocks leaves it. One step.
+EditResult pasteBlocksAtNotes(const Project& p, IdSource& ids, TrackId track, const BlockSet& set);
 
 // ---- GU.3: group panels (pq/document/panel.h) -----------------------------------------------------------------------
 // Each one Meta step ("Edit Panel"; a panel is never lowered). Refused: `group` not a group, a panel failing

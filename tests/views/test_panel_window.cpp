@@ -30,6 +30,7 @@
 #include "pq/views/panel/element.h"
 #include "pq/views/panel/group_panel_face.h"
 #include "pq/views/panel/panel_window.h"
+#include "pq/views/panel/style_schemas.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "views_test_util.h"
@@ -790,4 +791,74 @@ TEST_CASE("render: panel-window-closed, -open, -edit (a selection and the snap g
   REQUIRE(w.previewing());
   checkImage("panel-window-edit", u.render());
   u.d.up({from.x + 10.0f * sc, from.y + (e0.y - e1.y + 2.0f) * sc});
+}
+
+TEST_CASE("panel window: style schemas (GU.8) — the selected knob's style saved by name from the inspector; a built-in "
+          "and the saved schema applied to two selected knobs, each one undo step; labels are content, kept") {
+  panel::StyleSchemas::shared().clearUser();
+  WinUi u;
+  const uint32_t k1 = u.sendLevel();
+  {  // a second knob (on Cutoff) and k1 restyled: set up through the document
+    doc::PanelElement k = *u.panel()->find(k1);
+    k.setField(doc::styleText("pointer", "pie"));
+    k.setField(doc::styleNumber("track", 6.0));
+    k.setField(doc::styleText("label", "Lvl"));
+    auto e = doc::ops::setPanelElement(*u.ctx.doc(), u.ids.group, k);
+    REQUIRE(e.ok());
+    REQUIRE(u.ctx.store().dispatch(e->command).ok());
+    doc::PanelElement c = *u.panel()->find(k1);
+    c.id = 0;
+    c.x += 80.0f;
+    c.bindings = {doc::controlBinding(u.ids.cutoff, std::string(doc::kValueParam))};
+    c.style.clear();
+    c.setField(doc::styleText("label", "Cut"));
+    auto a = doc::ops::addPanelElements(*u.ctx.doc(), u.ids.group, {c});
+    REQUIRE(a.ok());
+    REQUIRE(u.ctx.store().dispatch(a->command).ok());
+  }
+  const uint32_t k2 = u.panel()->elements.back().id;
+  panel::PanelWindow& w = u.open(1000.0f, 30.0f, 760.0f, 600.0f);
+  REQUIRE(w.editMode());
+  u.d.click(u.atId(k1));
+  u.d.step();
+  u.d.step();
+  REQUIRE(w.selection() == std::vector<uint32_t>{k1});
+  // Save: type a name into "Save as", Enter. No document change.
+  const size_t h0 = u.history();
+  u.d.click(mid(u.inspectorRow("row:schema-save", "schema-name")->rect()));
+  u.d.step();
+  CHECK(u.d.type("Soft"));
+  CHECK(u.d.press("Enter") != KeyResult::Unhandled);
+  u.d.step();
+  const panel::StyleSchema* soft = panel::StyleSchemas::shared().find("knob", "Soft");
+  REQUIRE(soft != nullptr);
+  CHECK_FALSE(soft->builtIn);
+  CHECK(u.history() == h0);
+  // Both knobs selected; "Minimal" applied: one step, both changed, labels kept.
+  u.d.click(u.atId(k2), mod::kShift);
+  u.d.step();
+  u.d.step();
+  REQUIRE(w.selection().size() == 2);
+  u.d.click(mid(u.inspectorRow("row:schema", "schema")->rect()));
+  u.d.step();
+  u.choose("Minimal");
+  CHECK(u.history() == h0 + 1);
+  for (const uint32_t k : {k1, k2}) {
+    CHECK(u.panel()->find(k)->text("pointer", "") == "dot");
+    CHECK(u.panel()->find(k)->text("readout", "") == "none");
+  }
+  CHECK(u.panel()->find(k1)->text("label", "") == "Lvl");
+  CHECK(u.panel()->find(k2)->text("label", "") == "Cut");
+  // The saved one: back to k1's pie look on both, one more step.
+  u.d.step();
+  u.d.click(mid(u.inspectorRow("row:schema", "schema")->rect()));
+  u.d.step();
+  u.choose("Soft");
+  CHECK(u.history() == h0 + 2);
+  for (const uint32_t k : {k1, k2}) {
+    CHECK(u.panel()->find(k)->text("pointer", "") == "pie");
+    CHECK(u.panel()->find(k)->number("track", 0.0) == doctest::Approx(6.0));
+  }
+  CHECK(u.structural == 0);
+  panel::StyleSchemas::shared().clearUser();
 }

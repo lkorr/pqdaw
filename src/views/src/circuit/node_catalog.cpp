@@ -207,8 +207,9 @@ void addModules(NodeCatalog& c, std::vector<NodeEntry>& visualisers) {
     e.key = std::string(doc::kModuleItemPrefix) + e.id;
     e.name = std::string(m.name);
     const bool vis = visualiser(doc::moduleEngineType(m.kind));
-    e.category = vis ? NodeCategory::Visualisers : NodeCategory::MetaModules;
-    e.chip = vis ? "VISUALISER" : "MODULE";
+    e.category = vis ? NodeCategory::Visualisers : m.instrument ? NodeCategory::Instruments : NodeCategory::MetaModules;
+    e.chip = vis ? "VISUALISER" : m.instrument ? "INSTRUMENT" : "MODULE";
+    e.instrument = m.instrument;  // GU.8: the Wavetable Synth
     e.aliases = e.id + " module group preset meta";
     e.description = std::string(m.description);
     e.inputs = {"in"};
@@ -216,7 +217,8 @@ void addModules(NodeCatalog& c, std::vector<NodeEntry>& visualisers) {
     e.hasIn = e.hasOut = true;
     const doc::BlockSet set = doc::moduleBlocks(m.kind);
     for (const doc::DevicePtr& d : set.devices)
-      if (doc::isValueDevice(*d) && d->curve(doc::kValueParam) != nullptr && d->name != doc::kPaReference) {
+      if (doc::isValueDevice(*d) && d->group == set.devices.front()->id && d->curve(doc::kValueParam) != nullptr &&
+          d->name != doc::kPaReference) {
         const dsp::Curve& cv = *d->curve(doc::kValueParam);
         const doc::DeviceValue* v = d->param(doc::kValueParam);
         e.params.push_back({d->name, number(dsp::evalCurve(cv, v != nullptr ? v->value : 0.0))});

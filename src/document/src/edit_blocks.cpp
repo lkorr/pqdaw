@@ -4,6 +4,8 @@
 #include <unordered_set>
 
 #include "edit_common.h"
+#include "edit_paths.h"
+#include "pq/document/main_path.h"
 
 namespace pq::doc {
 
@@ -144,6 +146,19 @@ EditResult pasteBlocks(const Project& p, IdSource& ids, TrackId track, const Blo
     b.commands.push_back(AddWire{std::move(w)});
   }
   e.tracks.push_back(track);
+  return e;
+}
+
+EditResult pasteBlocksAtNotes(const Project& p, IdSource& ids, TrackId track, const BlockSet& set) {
+  EditResult pasted = pasteBlocks(p, ids, track, set);
+  if (!pasted) return pasted;
+  const Track* t = findTrackPtr(p, track);
+  if (t->kind != TrackKind::Midi || !mainPath(p, *t).blocks.empty() || pasted->devices.empty()) return pasted;
+  Steps k(p);
+  PQ_DOC_TRY(k.add(pasted));
+  PQ_DOC_TRY(splice(k, ids, track, pasted->devices.front(), 0));
+  Edit e = std::move(*pasted);
+  batchOf(e).commands = std::move(k.commands);
   return e;
 }
 

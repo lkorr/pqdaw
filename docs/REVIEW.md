@@ -881,3 +881,11 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   Gate is 0) instead of being left out; "Open Lowered Rack Patch" is gone (the circuit is the rack); the stacked chains'
   layout in the circuit is plain (no rack frame drawn around them). QUESTIONS Q?-GU.9b-a.
 
+## 👁 GU.8 The example instrument (Wavetable Synth), style schemas · 2026-11-07
+- What changed:
+  - **Wavetable Synth** (browser → Instruments, or Tab → "wavetable synth": an INSTRUMENT entry). An instrument group built only from the modules: Phase Accumulator ("Osc") → Wavetable → Envelope per note, plus two LFO pairs (each a free Phase Accumulator → Wavetable at ×2 oversampling → × Depth): LFO 1 on the wavetable position (rate 0.5 Hz, depth 0.25), LFO 2 on the pitch (5 Hz, depth 0 c: turn it up for vibrato). Its panel: tabs **Osc / Env / LFO 1 / LFO 2** with the child modules' panels embedded (Osc: the Wavetable; Env: the Envelope; LFO n: its PA, with the rate on its Frequency arc, its shape Wavetable and its Depth knob) and the **Pitch** knob always shown. Spawned on a MIDI track whose path is empty it takes the notes (plays at once); elsewhere it lands off the path like any module. Double-click the rim to open its circuit and rewire anything.
+  - **Style schemas** (panel window, edit mode, inspector): "Schema" applies a named style set to the selected elements of that kind (one undo step; labels and texts kept); "Save as" + Enter saves the selected element's style under a name. Built-ins: knob Classic / Minimal / Pie, slider Classic / Minimal. User schemas are saved to `<User Library>\Styles\schemas.json`.
+- What to look at: goldens `wavetable-synth-osc`, `-env`, `-lfo1`, `-lfo2` (2x).
+- Try it: `pqdaw`; new MIDI track, delete its instrument, browser → Instruments → Wavetable Synth; play a chord; click the tabs; on LFO 2 raise Depth. Open its panel window (header button), Edit, click the Pitch knob → Schema → Minimal.
+- To judge (Q?-GU.8-a): the panel layout (embedded module panels scaled down on the LFO tabs); LFO rates / depths; LFOs restart per note (they run inside the voice); spawning at the notes only when the path is empty.
+- Known gaps: the tab is not saved (an unbound tabs element is view state); schemas do not follow a User Library moved in Preferences until restart; no schema delete / rename UI.

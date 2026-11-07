@@ -515,10 +515,15 @@ void BrowserPanel::buildDeviceTree() {
       deviceRows_.push_back({std::string(t->name), std::string(doc::kMetaDevicePrefix) + std::string(t->id),
                              doc::DeviceKind::Instrument});
     for (const doc::ModuleInfo& m : doc::moduleInfos())  // GU.4: the modules (group presets) beside them
-      deviceRows_.push_back({std::string(m.name), std::string(doc::kModuleItemPrefix) + std::string(m.key), doc::DeviceKind::AudioEffect});
+      if (!m.instrument)
+        deviceRows_.push_back({std::string(m.name), std::string(doc::kModuleItemPrefix) + std::string(m.key), doc::DeviceKind::AudioEffect});
   } else if (const doc::DeviceLibrary* dl = ctx_.deviceLibrary()) {
     for (const doc::DeviceInfo& d : dl->catalog().devices())
       if (d.kind == kind) deviceRows_.push_back({d.name, d.patch, d.kind});
+    if (instruments)  // GU.8: the instrument modules (the Wavetable Synth) after the stock instruments
+      for (const doc::ModuleInfo& m : doc::moduleInfos())
+        if (m.instrument)
+          deviceRows_.push_back({std::string(m.name), std::string(doc::kModuleItemPrefix) + std::string(m.key), doc::DeviceKind::Instrument});
   } else {
     for (const doc::StockDevice& d : doc::stockDevices())
       if (d.kind == kind) deviceRows_.push_back({std::string(d.name), std::string(d.patch), d.kind});

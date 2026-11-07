@@ -154,6 +154,8 @@ Result<doc::DeviceId> addCatalogDevice(ViewContext& ctx, std::string_view patch,
   if (patch.starts_with(doc::kModuleItemPrefix)) {  // GU.4: a built-in module: its group preset, pasted (off the path)
     const doc::ModuleInfo* m = doc::findModule(patch.substr(doc::kModuleItemPrefix.size()));
     if (m == nullptr) return Error{ErrorCode::NotFound, "unknown module '" + std::string(patch) + "'", {}};
+    if (m->instrument)  // GU.8: an instrument module takes the notes of a MIDI track with an empty path
+      return firstDevice(ctx, doc::ops::pasteBlocksAtNotes(p, ctx.store().ids(), at.track, doc::moduleBlocks(m->kind)));
     return firstDevice(ctx, doc::ops::pasteBlocks(p, ctx.store().ids(), at.track, doc::moduleBlocks(m->kind)));
   }
   if (patch.starts_with(doc::kMetaDevicePrefix)) {  // TMM.10: a chain meta device, its kind from the slot

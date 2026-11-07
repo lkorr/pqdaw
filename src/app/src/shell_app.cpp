@@ -25,6 +25,7 @@
 #include "pq/app/pipeline_cache.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/browser/library_load.h"
+#include "pq/views/panel/style_schemas.h"
 #include "pq/app/clip_export.h"
 #include "pq/app/os_drag.h"
 #include "pq/views/waveforms.h"
@@ -303,6 +304,9 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   {  // T5.10: the browser's places (persisted folders), index (background indexer) and tags
     views::Library& lib = app->ctx_->library();
     lib.setUserLibrary(userLibraryDir());
+    // GU.8: the user's style schemas beside the User Library's other files.
+    if (Status s = views::panel::StyleSchemas::shared().setFile(lib.userPath("Styles\\schemas.json")); !s)
+      std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
     lib.setFolders(loadLibraryFolders(userSettingsPath()));
     lib.setFoldersListener([](const std::vector<std::string>& folders) {
       if (Status s = saveLibraryFolders(userSettingsPath(), folders); !s)

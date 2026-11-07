@@ -48,6 +48,11 @@ public:
   bool connect(const doc::Binding& from, const doc::Binding& to) override { return t_.connect(from, to); }
   VoiceTapReader* voices(const doc::Binding& b) override { return t_.voices(b); }
   doc::PanelPtr childPanel(const doc::Binding& b) const override { return t_.childPanel(b); }
+  // GU.8: an embedded engine module (the Wavetable Synth's tabs) shows its engine's face, not the missing-face box.
+  std::shared_ptr<MetaFace> engineFace(const doc::Binding& b, std::string_view typeId, FaceHost* host) override {
+    return t_.engineFace(b, typeId, host);
+  }
+  devices::SpectrumFeed* signalFeed(const doc::Binding& b) override { return t_.signalFeed(b); }
 
 private:
   PanelTarget& t_;

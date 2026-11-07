@@ -93,6 +93,7 @@ doc::ops::EditResult addChoice(ViewContext& ctx, const doc::Project& p, doc::IdS
     case circuit::NodeItem::Module: {  // GU.4: a built-in module: its group preset, pasted (fresh ids, off the path)
       const doc::ModuleInfo* m = doc::findModule(c.id);
       if (m == nullptr) return Error{ErrorCode::NotFound, "no module '" + c.id + "'", {}};
+      if (m->instrument) return doc::ops::pasteBlocksAtNotes(p, ids, track, doc::moduleBlocks(m->kind));  // GU.8
       return doc::ops::pasteBlocks(p, ids, track, doc::moduleBlocks(m->kind));
     }
     case circuit::NodeItem::LibraryFile: {

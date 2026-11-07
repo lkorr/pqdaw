@@ -56,12 +56,13 @@
 
 namespace pq::doc {
 
-enum class ModuleKind : uint8_t { PhaseAccumulator, Vca, Wavetable, Envelope, Oscilloscope, Spectrum, Spectrogram };
+enum class ModuleKind : uint8_t { PhaseAccumulator, Vca, Wavetable, Envelope, Oscilloscope, Spectrum, Spectrogram, WavetableSynth };
 struct ModuleInfo {
   ModuleKind kind;
   std::string_view key;   // "phase_acc", "vca" (a menu / browser item: kModuleItemPrefix + key)
   std::string_view name;  // "Phase Accumulator", "VCA"
   std::string_view description;
+  bool instrument = false;  // GU.8: an instrument group (spawned at a MIDI track's notes when its path is empty)
 };
 inline constexpr std::string_view kModuleItemPrefix = "module:";
 std::span<const ModuleInfo> moduleInfos() noexcept;
@@ -138,6 +139,29 @@ const ModuleInfo* moduleOfEngine(std::string_view typeId) noexcept;
 BlockSet engineModuleBlocks(IdSource& ids, ModuleKind k, const EngineModuleOptions& o = {}, EngineRoles* roles = nullptr);
 // The module's panel bound to engine block `engine` (the Phase Accumulator and the VCA: an empty panel).
 Panel enginePanel(ModuleKind k, DeviceId engine);
+
+// ---- GU.8: the example instrument (docs/plans/GU.md "Phases" 8) ----------------------------------------------------
+// The Wavetable Synth: an instrument group (makeInstrumentGroup: 16 voices) built only from the modules above —
+//   In (the notes) → Phase Accumulator (Osc: its Pitch on the panel) → Wavetable → Envelope → Out
+//   LFO n (n = 1, 2): a free Phase Accumulator (its In unplugged: a ramp at its Frequency, restarting per note) →
+//                     Wavetable (oversampling ×2: an LFO) → mul ← Depth (a value block) → a Units wire into
+//                     LFO 1: the oscillator Wavetable's `position` (Depth 0 … 1)
+//                     LFO 2: the oscillator's Pitch value block (Depth 0 … 1200 cents: vibrato)
+// Its panel: a `tabs` element "Osc|Env|LFO 1|LFO 2" (unbound: view state), the Pitch knob always shown, and per tab the
+// child modules' panels embedded (GU.6): Osc the Wavetable, Env the Envelope, LFO n its Phase Accumulator (the rate on
+// its Frequency arc), its Wavetable (the shape) and its Depth knob. Everything is per voice (inside the instrument).
+struct WavetableSynthRoles {
+  DeviceId group;
+  PhaseAccumulatorRoles osc;
+  EngineRoles wavetable, envelope;
+  PhaseAccumulatorRoles lfo[2];
+  EngineRoles lfoShape[2];
+  DeviceId depth[2], mul[2];
+  uint32_t tabs = 0;      // the tabs element's id
+  uint32_t pitchKnob = 0;
+};
+inline constexpr const char* kSynthTabs = "Osc|Env|LFO 1|LFO 2";
+BlockSet wavetableSynthBlocks(IdSource& ids, DeviceId inGroup = {}, WavetableSynthRoles* roles = nullptr);
 
 // A module's default group preset with ids from 1 (the group first): what spawning it pastes (ops::pasteBlocks gives
 // fresh ids).

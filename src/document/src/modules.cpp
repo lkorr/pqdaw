@@ -20,7 +20,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 7> kModules = {{
+constexpr std::array<ModuleInfo, 8> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -40,6 +40,11 @@ constexpr std::array<ModuleInfo, 7> kModules = {{
     {ModuleKind::Spectrum, "spectrum", "Spectrum", "Shows the spectrum of the signal passing through it; changes nothing."},
     {ModuleKind::Spectrogram, "spectrogram", "Spectrogram",
      "Shows the signal passing through it as a scrolling spectrogram; changes nothing."},
+    {ModuleKind::WavetableSynth, "wavetable_synth", "Wavetable Synth",
+     "An instrument built from the modules: Phase Accumulator → Wavetable → Envelope per note, with two LFOs (each a "
+     "Phase Accumulator into a Wavetable) on the wavetable position and the pitch. Tabs for the oscillator, the "
+     "envelope and each LFO; open it to see and rewire the circuit.",
+     true},
 }};
 
 struct Builder {
@@ -267,7 +272,8 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::Spectrum: return "spectrum";
     case ModuleKind::Spectrogram: return "spectrogram";
     case ModuleKind::PhaseAccumulator:
-    case ModuleKind::Vca: break;
+    case ModuleKind::Vca:
+    case ModuleKind::WavetableSynth: break;
   }
   return {};
 }
@@ -347,7 +353,8 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
       break;
     }
     case ModuleKind::PhaseAccumulator:
-    case ModuleKind::Vca: break;
+    case ModuleKind::Vca:
+    case ModuleKind::WavetableSynth: break;
   }
   return p;
 }
@@ -373,10 +380,133 @@ BlockSet engineModuleBlocks(IdSource& ids, ModuleKind k, const EngineModuleOptio
   return out;
 }
 
+// ---- GU.8: the Wavetable Synth -------------------------------------------------------------------------------------
+
+BlockSet wavetableSynthBlocks(IdSource& ids, DeviceId inGroup, WavetableSynthRoles* roles) {
+  WavetableSynthRoles r;
+  r.group = ids.device();
+  BlockSet out;
+  {
+    auto g = std::make_shared<Device>(*makeInstrumentGroup(r.group));
+    g->name = "Wavetable Synth";
+    g->group = inGroup;
+    out.devices.push_back(std::move(g));
+  }
+  auto take = [&](BlockSet set) {
+    for (DevicePtr& d : set.devices) out.devices.push_back(std::move(d));
+    for (Wire& w : set.wires) out.wires.push_back(std::move(w));
+  };
+  auto wire = [&](DeviceId from, std::string_view port, DeviceId to, std::string_view param, WireLaw law = WireLaw::Add) {
+    Wire w;
+    w.id = ids.wire();
+    w.from = from;
+    w.port = std::string(port);
+    w.to = to;
+    w.param = std::string(param);
+    w.law = law;
+    out.wires.push_back(std::move(w));
+  };
+  // The voice: In → PA → Wavetable → Envelope → Out (module to module through their main ports).
+  {
+    PhaseAccumulatorOptions o;
+    o.inGroup = r.group;
+    o.name = "Osc";
+    take(phaseAccumulatorBlocks(ids, o, &r.osc));
+  }
+  take(engineModuleBlocks(ids, ModuleKind::Wavetable, {DeviceId{}, r.group, {}, true}, &r.wavetable));
+  {  // the Envelope's amount at 0.3 (−10 dB): a few voices of full-scale sines stay below full scale
+    BlockSet env = engineModuleBlocks(ids, ModuleKind::Envelope, {DeviceId{}, r.group, {}, true}, &r.envelope);
+    for (DevicePtr& d : env.devices)
+      if (d->id == r.envelope.engine) {
+        auto e = std::make_shared<Device>(*d);
+        e->params = {DeviceValue{"amount", 0.3}};
+        d = std::move(e);
+      }
+    take(std::move(env));
+  }
+  wire(r.group, kGroupInPort, r.osc.group, kMainPort);
+  wire(r.osc.group, kMainPort, r.wavetable.group, kMainPort);
+  wire(r.wavetable.group, kMainPort, r.envelope.group, kMainPort);
+  wire(r.envelope.group, kMainPort, r.group, kGroupOutPort);
+  // The LFOs: a free PA (the rate on its Frequency; it restarts with each note) → a Wavetable (the shape; ×2
+  // oversampling, the least there is, is plenty at LFO rates) → × Depth → a Units wire (adds after the target's curve:
+  // position, cents).
+  constexpr double kRate[2] = {0.5, 5.0};         // Hz
+  constexpr double kDepthMax[2] = {1.0, 1200.0};  // position, cents
+  constexpr double kDepth[2] = {0.25, 0.0};       // a quarter of the table; vibrato off
+  for (int i = 0; i < 2; ++i) {
+    PhaseAccumulatorOptions o;
+    o.inGroup = r.group;
+    o.name = i == 0 ? "LFO 1" : "LFO 2";
+    o.feed = PhaseAccumulatorOptions::Feed::None;
+    o.freq = dsp::curvePosition(phaseAccumulatorCurve(kPaFrequency), kRate[i], 0.0);
+    take(phaseAccumulatorBlocks(ids, o, &r.lfo[i]));
+    BlockSet shape = engineModuleBlocks(ids, ModuleKind::Wavetable, {DeviceId{}, r.group, i == 0 ? "LFO 1 Shape" : "LFO 2 Shape", true},
+                                        &r.lfoShape[i]);
+    for (DevicePtr& d : shape.devices)
+      if (d->id == r.lfoShape[i].engine) {
+        auto e = std::make_shared<Device>(*d);
+        e->settings = {DeviceValue{"os", 1.0}};
+        d = std::move(e);
+      }
+    take(std::move(shape));
+    Builder b{ids, {}, r.group};
+    dsp::Curve dc = dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, kDepthMax[i]);
+    if (i == 1) dc = withUnit(dc, dsp::CurveUnit::Cents);
+    r.depth[i] = b.value("Depth", dc, kDepth[i] / kDepthMax[i]);
+    r.mul[i] = b.atom("mul", "× depth");
+    for (DevicePtr& d : b.set.devices) out.devices.push_back(std::move(d));
+    wire(r.lfo[i].group, kMainPort, r.lfoShape[i].group, kMainPort);
+    wire(r.lfoShape[i].group, kMainPort, r.mul[i], "a");
+    wire(r.depth[i], kValueOutput, r.mul[i], "b");
+    if (i == 0) wire(r.mul[i], "out", r.wavetable.engine, "position", WireLaw::Units);
+    else wire(r.mul[i], "out", r.osc.pitch, kValueParam, WireLaw::Units);
+  }
+  std::sort(out.wires.begin(), out.wires.end(), [](const Wire& x, const Wire& y) { return x.id < y.id; });
+  // The panel: the tabs, the Pitch knob (always shown), each tab's child panels embedded.
+  Panel panel;
+  panel.width = 316.0f;
+  panel.height = 288.0f;
+  panel.elements.push_back(plate(panel.width, panel.height, 12.0));
+  r.tabs = 2;
+  PanelElement tabs = element(r.tabs, "tabs", 8, 8, 232, 18, {});
+  tabs.bindings.clear();
+  tabs.setField(styleText("items", kSynthTabs));
+  panel.elements.push_back(std::move(tabs));
+  const std::string vp(kValueParam);
+  r.pitchKnob = 3;
+  PanelElement pitch = element(r.pitchKnob, "knob", 250, 34, 58, 76, controlBinding(r.osc.pitch, vp));
+  pitch.setField(styleText("label", "Pitch"));
+  panel.elements.push_back(std::move(pitch));
+  auto onTab = [&](PanelElement e, double tab) {
+    e.when = Visibility{r.tabs, {tab}};
+    panel.elements.push_back(std::move(e));
+  };
+  uint32_t id = 4;
+  onTab(element(id++, "panel", 8, 32, 204, 248, panelBinding(r.wavetable.group)), 0.0);
+  onTab(element(id++, "panel", 8, 40, 232, 143, panelBinding(r.envelope.group)), 1.0);
+  for (int i = 0; i < 2; ++i) {
+    const double tab = 2.0 + i;
+    onTab(element(id++, "panel", 8, 40, 104, 104, panelBinding(r.lfo[i].group)), tab);
+    onTab(element(id++, "panel", 116, 32, 128, 154, panelBinding(r.lfoShape[i].group)), tab);
+    PanelElement depth = element(id++, "knob", 32, 160, 56, 76, controlBinding(r.depth[i], vp));
+    depth.setField(styleText("label", "Depth"));
+    onTab(std::move(depth), tab);
+  }
+  {
+    auto g = std::make_shared<Device>(*out.devices.front());
+    g->panel = std::make_shared<const Panel>(std::move(panel));
+    out.devices.front() = std::move(g);
+  }
+  if (roles != nullptr) *roles = r;
+  return out;
+}
+
 BlockSet moduleBlocks(ModuleKind k) {
   IdSource ids;
   if (k == ModuleKind::PhaseAccumulator) return phaseAccumulatorBlocks(ids);
   if (k == ModuleKind::Vca) return vcaBlocks(ids);
+  if (k == ModuleKind::WavetableSynth) return wavetableSynthBlocks(ids);
   return engineModuleBlocks(ids, k);
 }
 

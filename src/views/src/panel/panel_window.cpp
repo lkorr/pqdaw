@@ -21,6 +21,7 @@
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
 #include "pq/views/devices/device_model.h"
+#include "pq/views/panel/style_schemas.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views::panel {
@@ -641,7 +642,7 @@ private:
       }
       bool same = true;
       for (const doc::PanelElement* e : sel) same = same && e->kind == sel.front()->kind;
-      if (same) h += styleRows(*sel.front());
+      if (same) h += styleRows(*sel.front()) + schemaRows(*sel.front());
       setHeight(ui::Length::fixed(h));
       invalidateLayout();
       return;
@@ -730,6 +731,7 @@ private:
     geometryRow("h", "Height", e.h, [id = e.id](doc::Panel& q, double v) { if (doc::PanelElement* x = find(q, id)) x->h = std::max(1.0f, static_cast<float>(v)); });
     h += 4.0f * 24.0f;
     h += styleRows(e);
+    h += schemaRows(e);
     // The curve of a bound control (the curve editor element on the same binding: its edits are the document's).
     if (const doc::Binding* b = e.binding(); b != nullptr && b->kind == doc::BindingKind::Control && e.kind != "curve") {
       add<ui::Label>("curve-label", "Curve").setHeight(ui::Length::fixed(14.0f));
@@ -857,6 +859,41 @@ private:
       h += 24.0f;
     }
     return h;
+  }
+
+  // GU.8: the kind's style schemas — apply one to the selection (one step), save the element's style as one. Height.
+  float schemaRows(const doc::PanelElement& e) {
+    if (schemaFields(e).empty()) return 0.0f;
+    std::vector<std::string> names{"Apply…"};
+    for (const StyleSchema* s : StyleSchemas::shared().forKind(e.kind)) names.push_back(s->name);
+    PanelWindow* w = &win_;
+    {
+      ui::Widget& r = row(*this, "row:schema", "Schema");
+      auto& d = r.add<ui::Dropdown>("schema", names, 0);
+      d.setTooltip("Apply a named style set to the selected elements of this kind");
+      d.onChange = [w, kind = e.kind, names](int32_t i) {
+        if (i <= 0 || static_cast<size_t>(i) >= names.size()) return;
+        const StyleSchema* s = StyleSchemas::shared().find(kind, names[static_cast<size_t>(i)]);
+        if (s == nullptr) return;
+        const StyleSchema pick = *s;
+        (void)w->editSelected([&](doc::PanelElement& x) { (void)applyStyleSchema(pick, x); }, "Apply Style Schema");
+      };
+    }
+    {
+      ui::Widget& r = row(*this, "row:schema-save", "Save as");
+      auto& t = r.add<ui::TextEdit>("schema-name", std::string());
+      t.setTooltip("Type a name and press Enter: this element's style becomes a schema of its kind");
+      PanelInspector* self = this;
+      std::weak_ptr<int> alive = win_.alive_;
+      t.onCommit = [w, self, alive, id = e.id](const std::string& v) {
+        if (alive.expired()) return;
+        const doc::PanelPtr p = w->docPanel();
+        const doc::PanelElement* x = p ? p->find(id) : nullptr;
+        if (x == nullptr) return;
+        if (auto saved = StyleSchemas::shared().save(*x, v); saved) self->refresh();
+      };
+    }
+    return 48.0f;
   }
 
   std::string bindingText(const doc::PanelElement& e, size_t slot) const {
