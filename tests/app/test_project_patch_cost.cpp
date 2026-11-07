@@ -3,6 +3,8 @@
 // reported while metering is off; on, the devices that run report ns per sample; the audio is unchanged by metering.
 #include <doctest/doctest.h>
 
+#include <algorithm>
+
 #include <cmath>
 #include <memory>
 #include <string>
@@ -88,12 +90,20 @@ TEST_CASE("project patch cost: devices report ns per sample only while metered; 
       for (const float v : ns) CHECK(v < 0.0f);
       continue;
     }
-    // The keys' Operator (voices playing their clip) and Saturator run: both are charged a positive cost.
+    // The keys' Operator (voices playing their clip) and Saturator run: GU.11 — each a module (a group), its cost
+    // charged to the blocks inside it: some block of each has a positive cost.
+    auto inside = [&](doc::DeviceId g, doc::DeviceId d) {
+      return d == g || doc::groupContains(doc::findDevice(*s, g).track->devices, g, d);
+    };
+    float opNs = 0.0f, satNs = 0.0f;
     for (size_t i = 0; i < ids.size(); ++i) {
-      if (ids[i] == op || ids[i] == sat) {
-        CHECK(ns[i] > 0.0f);
-        MESSAGE("device " << ids[i].value << ": " << ns[i] << " ns per sample");
-      }
+      if (inside(op, ids[i])) opNs = std::max(opNs, ns[i]);
+      if (inside(sat, ids[i])) satNs = std::max(satNs, ns[i]);
+    }
+    MESSAGE("Operator's dearest block " << opNs << " ns per sample, the Saturator's " << satNs);
+    CHECK(opNs > 0.0f);
+    CHECK(satNs > 0.0f);
+    {
     }
     link->setCostMetering(false);
     link->readDeviceCosts(ids, ns);

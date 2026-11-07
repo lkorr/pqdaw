@@ -74,7 +74,8 @@ struct Chord {
     echo = ids.track();
     Batch b{"chord", {}};
     b.commands.push_back(AddTrack{playback_fixture::track(echo, TrackKind::Return, "Echo"), {}, kAppend});
-    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Keys", ids.device()), {}, kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Keys"), {}, kAppend});
+    (void)playback_fixture::instrument(b, ids, track, ids.device());
     b.commands.push_back(SetSendLevel{track, echo, -6.0f});
     std::vector<Note> notes;
     for (int32_t d : {0, 4, 7}) notes.push_back(playback_fixture::note(ids, 0, 16 * kPpq, d));

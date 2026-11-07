@@ -2,7 +2,7 @@
 //   H2  a unit's cost meter is held by every image bound to it (UnitImage::keepAlive), not freed 10 s after its schedule
 //       stopped being the compiler's: a held edit (interpretBudget) keeps the old image playing for as long as its JIT
 //       takes, writing that meter.
-//   L4  a probe tap slot is reused only once no image bound to it is alive, not after 1 s.
+//   (L4, the probe rings of the project-device circuit editor, left with that editor: GU.11.)
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -15,6 +15,7 @@
 #include <thread>
 #include <vector>
 
+#include "../support/blocks.h"
 #include "playback_fixture.h"
 #include "pq/app/device_player.h"
 #include "pq/app/project_link.h"
@@ -144,7 +145,7 @@ TEST_CASE("H2: a held edit's old image keeps its cost meter alive past 10 s (Poi
 
   gate.set(false);
   const uint64_t held0 = link->stats().heldForJit;
-  REQUIRE(f.store.dispatch(AddDevice{f.lead, makeDevice(f.store.ids().device(), "utility", DeviceKind::AudioEffect), kAppend}).ok());
+  (void)test_blocks::addModule(f.store, f.lead, "utility");  // GU.11: a module on Lead's path
   link->flush();
   REQUIRE(link->stats().heldForJit == held0 + 1);
   REQUIRE(gate.waitBlocked(30.0));  // the edit's JIT build waits at the gate
@@ -178,70 +179,3 @@ TEST_CASE("H2: a held edit's old image keeps its cost meter alive past 10 s (Poi
   CHECK(std::any_of(ns.begin(), ns.end(), [](float v) { return v > 0.0f; }));
 }
 
-// L4: under a held edit, probe tap slots freed by a re-inspection are not handed to new probes while the old image
-// (which still writes them) plays. The old code reused them after 1 s: the new probes' rings then received the old
-// image's data although nothing played their program.
-TEST_CASE("L4: a probe ring is not reused while an old image bound to it plays") {
-  playback_fixture::Fixture f;
-  Gate gate;
-  auto link = makeLink(f.snap(), &gate, 1e-9f);
-  [[maybe_unused]] const ListenerId sub = f.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
-  Player p(*link);
-  link->play(0);
-  REQUIRE(settle(*link, p));
-  const DeviceId synth = findTrackPtr(*f.snap(), f.lead)->devices.front()->id;
-  const graph::Patch* bs = link->devices().stockFile("BasicSynth")->find("BasicSynth");
-  REQUIRE(bs != nullptr);
-  const auto env = bs->findByName("env");
-  REQUIRE(env.has_value());
-  graph::ProbeTarget t;
-  t.node = bs->node(*env).id;
-  // Every ring slot (DeviceInspector::kProbeRings) in use: probes 1 … 8 on the envelope.
-  constexpr uint32_t kRings = app::DeviceInspector::kProbeRings;
-  auto probes = [&](app::DevicePlayer& pl, uint32_t base) {
-    std::vector<graph::ProbeTarget> targets(kRings, t);
-    std::vector<uint32_t> ids;
-    for (uint32_t i = 0; i < kRings; ++i) ids.push_back(base + i);
-    pl.setProbeSignals(ids);
-    pl.setProbeTargets(targets, ids);
-    link->flush();
-    return ids;
-  };
-  app::DevicePlayer player(*link, synth);
-  const std::vector<uint32_t> first = probes(player, 1);
-  REQUIRE(settle(*link, p));  // the probed unit on its JIT image, writing rings 1 … 8
-  p.run(20);
-  for (const uint32_t id : first) {
-    REQUIRE(player.probeSignal(id) != nullptr);
-    CHECK(player.probeSignal(id)->written() > 0);
-  }
-  // Two re-inspections, both held (their JIT builds wait at the gate), the second 1.2 s after the first: the old
-  // image with probes 1 … 8 plays on throughout.
-  gate.set(false);
-  (void)probes(player, 11);
-  REQUIRE(gate.waitBlocked(30.0));
-  const auto t0 = std::chrono::steady_clock::now();
-  while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1200)) {
-    p.run(2);
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
-  const std::vector<uint32_t> third = probes(player, 21);
-  CHECK(link->stats().heldForJit >= 2);
-  std::vector<uint64_t> before;
-  for (const uint32_t id : third) before.push_back(player.probeSignal(id) ? player.probeSignal(id)->written() : 0);
-  p.run(40);
-  for (size_t i = 0; i < third.size(); ++i) {
-    TapRing* ring = player.probeSignal(third[i]);
-    // Nothing plays the third program yet: a ring bound to one of its probes must not be written.
-    if (ring != nullptr) CHECK_MESSAGE(ring->written() == before[i], "probe " << third[i] << " written by an old image");
-  }
-  gate.set(true);
-  REQUIRE(settle(*link, p));
-  p.run(20);
-  // Once the third program plays, its probes have rings and data.
-  for (const uint32_t id : third) {
-    TapRing* ring = player.probeSignal(id);
-    REQUIRE(ring != nullptr);
-    CHECK(ring->written() > 0);
-  }
-}

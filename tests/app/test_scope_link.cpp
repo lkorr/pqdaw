@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "../support/blocks.h"
 #include "playback_fixture.h"
 #include "pq/app/project_link.h"
 #include "pq/core/denormal_guard.h"
@@ -94,7 +95,10 @@ struct ScopeProject {
       edit(ops::addMetaDevice(*store.current(), store.ids(), track, "envelope", 0));
       edit(ops::addMetaDevice(*store.current(), store.ids(), track, "wavetable"));
     }
-    if (withScope) scope = edit(ops::addMetaDevice(*store.current(), store.ids(), track, "oscilloscope")).devices.at(0);
+    // GU.11: after the instrument group (on the path, not appended inside it), else at the run's end.
+    if (withScope)
+      scope = instrument ? test_blocks::appendEngineAfter(store, track, "oscilloscope")
+                         : edit(ops::addMetaDevice(*store.current(), store.ids(), track, "oscilloscope")).devices.at(0);
   }
 };
 

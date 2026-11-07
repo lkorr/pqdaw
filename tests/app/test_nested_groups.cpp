@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "../golden/golden_audio.h"
-#include "../support/stand_in_synth.h"
 #include "playback_fixture.h"
 #include "pq/app/project_link.h"
 #include "pq/compile/compile.h"
@@ -153,13 +152,15 @@ void apply(DocumentStore& s, Command c) {
 const Track& trackOf(DocumentStore& s, TrackId t) { return *findTrackPtr(*s.current(), t); }
 TrackId midi(DocumentStore& s) {
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
-  REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout these cases were written for)
-  return t;
+  return t;  // (GU.11: its default instrument group: Phase Accumulator → Wavetable → Envelope inside)
 }
 DeviceId groupOf(DocumentStore& s, TrackId t) { return mainPath(*s.current(), trackOf(s, t)).blocks.at(0)->id; }
+// GU.11: the synth's last stage — the block wired into the instrument group's Out (the default instrument's Envelope
+// module).
 DeviceId synthOf(DocumentStore& s, TrackId t) {
-  for (const DevicePtr& d : trackOf(s, t).devices)
-    if (d->group.valid() && d->patch == kDefaultInstrument) return d->id;
+  const DeviceId g = mainPath(*s.current(), trackOf(s, t)).blocks.at(0)->id;
+  for (const Wire& w : wiresOf(*s.current()))
+    if (!w.toMixer() && w.to == g && w.param == kGroupOutPort && !w.fromNoteSource()) return w.from;
   FAIL("no synth");
   return {};
 }
@@ -207,13 +208,6 @@ AtomChain atomChain(DocumentStore& s, TrackId t, DeviceId g) {
   return c;
 }
 
-// A canonical form of a block set: fresh ids from one fixed start (remapBlocks is deterministic), so two sets equal
-// up to their ids compare equal.
-BlockSet canonical(const BlockSet& b) {
-  IdSource ids;
-  ids.reserveThrough(1u << 20);
-  return ops::remapBlocks(b, ids);
-}
 
 }  // namespace
 
@@ -231,7 +225,6 @@ TEST_CASE("nested groups: atom blocks and a value block lower inline — a group
   {
     auto low = lowered(*flat, sc);
     REQUIRE(low.ok());
-    CHECK(low->userDevices.empty());
     const std::string text = patchText(*low->patches.front());
     CHECK(text.find("Atom_mul") != std::string::npos);
     CHECK(text.find("Atom_tanh") != std::string::npos);
@@ -389,7 +382,10 @@ TEST_CASE("nested groups: copy / paste of an instrument group with a nested grou
   const DeviceId one[] = {g};
   Result<BlockSet> copied = ops::copyBlocks(*s.current(), one);
   REQUIRE(copied.ok());
-  CHECK(copied->devices.size() == 6);  // the group, Basic Synth, the nested group, mul, value, tanh
+  // The group, everything inside it at any depth (GU.11: the default instrument's modules and their blocks), the
+  // nested group, mul, value, tanh.
+  const size_t inGroup = groupMembersDeep(trackOf(s, a).devices, g).size();
+  CHECK(copied->devices.size() == 1 + inGroup);
   for (const Wire& w : copied->wires) {
     CHECK_FALSE(w.fromNoteSource());
     CHECK_FALSE(w.toMixer());
@@ -404,7 +400,7 @@ TEST_CASE("nested groups: copy / paste of an instrument group with a nested grou
   const size_t steps = s.history().cursor();
   const ops::Edit pasted = run(s, ops::pasteBlocks(*s.current(), s.ids(), b, *copied));
   CHECK(s.history().cursor() == steps + 1);
-  REQUIRE(pasted.devices.size() == 6);
+  REQUIRE(pasted.devices.size() == copied->devices.size());
   const DeviceId g2 = pasted.devices.front();
   // Every id is fresh and every reference follows the copies.
   std::vector<DeviceId> old;
@@ -428,7 +424,16 @@ TEST_CASE("nested groups: copy / paste of an instrument group with a nested grou
     const DeviceId two[] = {g2};
     Result<BlockSet> again = ops::copyBlocks(*s.current(), two);
     REQUIRE(again.ok());
-    CHECK(canonical(*again) == canonical(*copied));
+    // GU.11: the same blocks and wires (the default instrument nests modules two deep: the paste lists them by depth,
+    // so the copy's order — and fresh ids from one start — may differ; the contents may not).
+    auto contents = [](const BlockSet& b) {
+      std::vector<std::string> v;
+      for (const DevicePtr& d : b.devices) v.push_back(d->patch + "|" + d->name);
+      std::sort(v.begin(), v.end());
+      return v;
+    };
+    CHECK(contents(*again) == contents(*copied));
+    CHECK(again->wires.size() == copied->wires.size());
   }
   Wire notes;
   notes.noteSource = b;

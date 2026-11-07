@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 21,
   "timeline": {
     "tempo": [
       {"tick": 0, "bpm": 120.0, "curve": "step"}
@@ -48,7 +48,7 @@
       "colour": "#808080",
       "active": true,
       "tuning": {"main": 4},
-      "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "panMode": "constantPower", "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
       "lanes": [
         {
           "id": 7,
@@ -58,6 +58,87 @@
             {"id": 9, "tick": 887040, "value": 740.0, "curve": 0.0}
           ]
         }
+      ],
+      "devices": [
+        {"id": 10, "patch": "Group", "kind": "audioEffect", "name": "Basic Synth", "settings": {"glide": 0.0, "steal": 0.0, "voices": 16.0}},
+        {
+          "id": 11,
+          "patch": "Group",
+          "kind": "audioEffect",
+          "name": "Phase Accumulator",
+          "group": 10,
+          "panel": {
+            "size": [120.0, 120.0],
+            "elements": [
+              {"id": 1, "kind": "shape", "rect": [12.0, 16.0, 96.0, 96.0], "style": {"fill": "body", "shape": "circle", "stroke": "frame", "thickness": 1.25}},
+              {"id": 2, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 12, "name": "value"}], "style": {"drag": "vertical", "hitFrom": 140.0, "hitTo": 246.0, "start": 150.0, "sweep": 90.0, "ticks": "100|1000|10000"}},
+              {"id": 3, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 14, "name": "value"}], "style": {"drag": "diagonal", "hitFrom": 246.0, "hitTo": 299.0, "start": 252.0, "sweep": 40.0, "ticks": "1|2|3"}},
+              {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 15, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-3600|-2400|-1200|0|1200|2400|3600"}},
+              {"id": 5, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 13, "name": "value"}], "style": {"drag": "horizontal", "hitFrom": 43.0, "hitTo": 140.0, "start": 130.0, "sweep": -80.0, "ticks": "0.25|0.5|0.75"}},
+              {"id": 6, "kind": "orbit", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "signal", "device": 22, "name": "out"}, {"kind": "control", "device": 14, "name": "value"}]}
+            ]
+          }
+        },
+        {"id": 12, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 11, "params": {"value": 0.0}, "curves": {
+            "value": {"min": 0.0, "max": 20000.0, "unit": "hz", "mode": "signed", "preset": "exp0", "presetArg": 14.0, "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["exp", 9.704060527839234]]}
+          }},
+        {"id": 13, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 11, "params": {"value": 0.0}, "curves": {
+            "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 14, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 11, "params": {"value": 0.25}, "curves": {
+            "value": {"min": 0.0, "max": 4.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 15, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 11, "params": {"value": 0.5}, "curves": {
+            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0]]}
+          }},
+        {"id": 16, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 11, "params": {"value": 1.0}, "curves": {
+            "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 17, "patch": "atom:add", "kind": "audioEffect", "name": "hz + freq", "group": 11},
+        {"id": 18, "patch": "atom:cents_to_hz", "kind": "audioEffect", "name": "2^(pitch/1200)", "group": 11},
+        {"id": 19, "patch": "atom:mul", "kind": "audioEffect", "name": "× ratio", "group": 11},
+        {"id": 20, "patch": "atom:phasor", "kind": "audioEffect", "name": "phasor", "group": 11},
+        {"id": 21, "patch": "atom:add", "kind": "audioEffect", "name": "+ phase", "group": 11},
+        {"id": 22, "patch": "atom:frac", "kind": "audioEffect", "name": "frac", "group": 11},
+        {"id": 23, "patch": "atom:mul", "kind": "audioEffect", "name": "× amp", "group": 11},
+        {
+          "id": 37,
+          "patch": "Group",
+          "kind": "audioEffect",
+          "name": "Wavetable",
+          "group": 10,
+          "panel": {
+            "size": [204.0, 248.0],
+            "elements": [
+              {"id": 1, "kind": "shape", "rect": [0.0, 0.0, 204.0, 248.0], "style": {"fill": "none", "plate": 1.0, "radius": 12.0, "stroke": "none"}},
+              {"id": 2, "kind": "drawtools", "rect": [8.0, 13.0, 188.0, 21.0], "bind": [{"kind": "data", "device": 38}]},
+              {"id": 3, "kind": "harmonics", "rect": [10.0, 34.0, 184.0, 42.0], "bind": [{"kind": "data", "device": 38}]},
+              {"id": 4, "kind": "wavetable", "rect": [8.0, 76.0, 192.0, 100.0], "bind": [{"kind": "data", "device": 38}]},
+              {"id": 5, "kind": "slider", "rect": [12.0, 176.0, 154.0, 12.0], "bind": [{"kind": "control", "device": 38, "name": "phase"}], "style": {"label": "-", "orientation": "horizontal", "readout": "none"}},
+              {"id": 6, "kind": "knob", "rect": [20.25, 194.25, 35.5, 35.5], "bind": [{"kind": "control", "device": 38, "name": "fold"}], "style": {"label": "-", "readout": "none", "track": 3.5}},
+              {"id": 7, "kind": "knob", "rect": [71.25, 194.25, 35.5, 35.5], "bind": [{"kind": "control", "device": 38, "name": "warp"}], "style": {"label": "-", "readout": "none", "track": 3.5}},
+              {"id": 8, "kind": "knob", "rect": [122.25, 194.25, 35.5, 35.5], "bind": [{"kind": "control", "device": 38, "name": "sync"}], "style": {"label": "-", "readout": "none", "track": 3.5}},
+              {"id": 9, "kind": "warpmode", "rect": [20.0, 225.0, 168.0, 16.0], "bind": [{"kind": "data", "device": 38}]}
+            ]
+          }
+        },
+        {"id": 38, "patch": "meta:wavetable", "kind": "audioEffect", "name": "Wavetable", "group": 37},
+        {
+          "id": 41,
+          "patch": "Group",
+          "kind": "audioEffect",
+          "name": "Envelope",
+          "group": 10,
+          "panel": {
+            "size": [208.0, 128.0],
+            "elements": [
+              {"id": 1, "kind": "shape", "rect": [0.0, 0.0, 208.0, 128.0], "style": {"fill": "none", "plate": 1.0, "radius": 12.0, "stroke": "none"}},
+              {"id": 2, "kind": "envelope", "rect": [6.0, 6.0, 178.0, 116.0], "bind": [{"kind": "data", "device": 42}]},
+              {"id": 3, "kind": "slider", "rect": [184.0, 12.0, 16.0, 104.0], "bind": [{"kind": "control", "device": 42, "name": "amount"}], "style": {"label": "-", "orientation": "vertical", "readout": "none"}}
+            ]
+          }
+        },
+        {"id": 42, "patch": "meta:envelope", "kind": "audioEffect", "name": "Envelope", "group": 41, "params": {"amount": 0.25}}
       ],
       "clips": [
         {
@@ -87,8 +168,35 @@
     "active": true,
     "tuning": "inherit",
     "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
-    "lanes": []
+    "lanes": [],
+    "devices": []
   },
+  "wires": [
+    {"id": 24, "from": 11, "port": "input", "to": 17, "param": "a"},
+    {"id": 25, "from": 12, "port": "y", "to": 17, "param": "b"},
+    {"id": 26, "from": 15, "port": "y", "to": 18, "param": "cents"},
+    {"id": 27, "from": 16, "port": "y", "to": 18, "param": "ref"},
+    {"id": 28, "from": 17, "port": "out", "to": 19, "param": "a"},
+    {"id": 29, "from": 18, "port": "out", "to": 19, "param": "b"},
+    {"id": 30, "from": 19, "port": "out", "to": 20, "param": "hz"},
+    {"id": 31, "from": 20, "port": "out", "to": 21, "param": "a"},
+    {"id": 32, "from": 13, "port": "y", "to": 21, "param": "b"},
+    {"id": 33, "from": 21, "port": "out", "to": 22, "param": "x"},
+    {"id": 34, "from": 14, "port": "y", "to": 23, "param": "a"},
+    {"id": 35, "from": 22, "port": "out", "to": 23, "param": "b"},
+    {"id": 36, "from": 23, "port": "out", "to": 11, "param": "output"},
+    {"id": 39, "from": 37, "port": "input", "to": 38, "param": "x"},
+    {"id": 40, "from": 38, "port": "out", "to": 37, "param": "output"},
+    {"id": 43, "from": 41, "port": "input", "to": 42, "param": "in"},
+    {"id": 44, "from": 42, "port": "out", "to": 41, "param": "output"},
+    {"id": 45, "from": 10, "port": "input", "to": 11, "param": ""},
+    {"id": 46, "from": 11, "port": "", "to": 37, "param": ""},
+    {"id": 47, "from": 37, "port": "", "to": 41, "param": ""},
+    {"id": 48, "from": 41, "port": "", "to": 10, "param": "output"},
+    {"id": 49, "notes": 3, "port": "", "to": 10, "param": ""},
+    {"id": 50, "from": 10, "port": "", "mixer": 3, "param": ""},
+    {"id": 51, "notes": 2, "port": "", "mixer": 2, "param": ""}
+  ],
   "view": {
     "tracks": [],
     "lanes": []

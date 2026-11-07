@@ -19,7 +19,6 @@
 #include "pq/core/rt_scope.h"
 #include "pq/graph/atoms.h"
 #include "pq/views/circuit/patch_editor.h"
-#include "pq/views/devices/device_view.h"
 
 using namespace pq;
 using namespace pq::app;
@@ -32,8 +31,8 @@ constexpr double kRate = 48000.0;
 constexpr uint32_t kBlock = 256;
 
 std::string stdlibPath(const char* rel) { return (fs::path(PQ_TEST_DATA_DIR) / ".." / "stdlib" / rel).string(); }
-// GU.10: the retired stock devices' stand-in copies (tests/stand_in_devices).
-std::string standInPath(const char* rel) { return (fs::path(PQ_TEST_DATA_DIR) / "stand_in_devices" / rel).string(); }
+// GU.11: a loose patch file the circuit editor previews (the M3 Basic Synth as a patch-language instrument).
+std::string patchPath(const char* rel) { return (fs::path(PQ_TEST_DATA_DIR) / "app" / "fixtures" / "patches" / rel).string(); }
 
 // Renders `blocks` device blocks of the preview (stereo, zeroed first) and appends channel 0.
 void render(PatchPreview& p, uint32_t blocks, std::vector<float>& out, int64_t& t) {
@@ -200,7 +199,7 @@ TEST_CASE("patch preview: an instrument's voices keep sounding through an edit")
   PreviewConfig pc;
   pc.sampleRate = kRate;
   PatchPreview preview(pc);
-  auto made = PatchEditor::open(standInPath("instruments/basic_synth.pqp"));
+  auto made = PatchEditor::open(patchPath("basic_synth.pqp"));
   REQUIRE(made.ok());
   PatchEditor& ed = **made;
   ed.setPlayer(&preview);
@@ -262,37 +261,4 @@ TEST_CASE("patch preview: param writes by name reach the playing program (RT-saf
   // Stopped: writes are refused.
   ed.stop();
   CHECK_FALSE(preview.setParam("level", 0.1f));
-}
-
-TEST_CASE("patch preview: a device panel's preview plays the Saturator; a curve change hot-swaps click-free") {
-  PreviewConfig pc;
-  pc.sampleRate = kRate;
-  pc.gainDb = 0.0f;
-  PatchPreview preview(pc);
-  auto pv = views::devices::DevicePreview::open(standInPath("devices/saturator.pqp"), &preview);
-  REQUIRE_MESSAGE(pv.ok(), (pv.ok() ? std::string() : pv.error().message));
-  views::devices::DevicePreview& dev = **pv;
-  REQUIRE(dev.play().ok());
-  std::vector<float> y;
-  int64_t t = 0;
-  render(preview, 60, y, t);  // the arpeggio through the Saturator (Analog Clip)
-  float peak = 0.0f;
-  for (float v : y) peak = std::max(peak, std::fabs(v));
-  CHECK(peak > 0.05f);
-  // Drive up: a param write (no recompile), heard at once.
-  const uint64_t published = preview.stats().published;
-  dev.setParam("drive", std::pow(10.0, 18.0 / 20.0));
-  render(preview, 20, y, t);
-  CHECK(preview.stats().published == published);
-  // Type → Hard Curve: a recompile through the host patch's editor, crossfaded while it plays.
-  dev.setConst("type", 4.0);
-  CHECK(preview.stats().published == published + 1);
-  CHECK(preview.stats().lastMatched > 0);  // state carried (the source's phasors and envelopes)
-  const size_t mark = y.size();
-  render(preview, 40, y, t);
-  // No step at the swap larger than the signal's own largest step before it (a saturated arpeggio: steep but bounded).
-  const float before = maxStep(std::vector<float>(y.begin(), y.begin() + static_cast<std::ptrdiff_t>(mark)));
-  const float during = maxStep(std::vector<float>(y.begin() + static_cast<std::ptrdiff_t>(mark) - 1, y.end()));
-  CHECK(during <= 1.5f * before + 1e-3f);
-  dev.stop();
 }

@@ -18,6 +18,7 @@
 
 #include "../golden/golden_audio.h"
 #include "../support/alias_meter.h"
+#include "../support/blocks.h"
 #include "playback_fixture.h"
 #include "pq/app/face_voices.h"
 #include "pq/app/project_link.h"
@@ -135,10 +136,10 @@ struct WtSong {
     raw(e->command);
   }
   const Project& doc() const { return *store.current(); }
-  // IG.1-2: a meta module of `type` playing track `t`'s notes per note: the default instrument out of its group, the
-  // module at slot 0 in its place, then (as an older file loads) Ctrl+G'd into an instrument group.
+  // IG.1-2: a meta module of `type` playing track `t`'s notes per note: the default instrument group deleted (GU.11),
+  // the module at slot 0 in its place, then (as an older file loads) Ctrl+G'd into an instrument group.
   DeviceId metaFirst(TrackId t, const char* type) {
-    playback_fixture::ungroupHead(store, library(), t);
+    playback_fixture::clearHead(store, t);
     auto w = ops::addMetaDevice(doc(), store.ids(), t, type, 0);
     REQUIRE(w.ok());
     must(w->command);
@@ -537,16 +538,16 @@ TEST_CASE("meta wavetable: tables refresh only for meta devices' knobs; data is 
   WtSong s;
   const DeviceId wt = s.track({{0, 4 * kPpq, 0}});
   const DeviceId sat = [&] {
-    auto e = ops::addDevice(s.doc(), s.store.ids(), s.tracks.at(0), "saturator", DeviceKind::AudioEffect);
+    auto e = ops::addDevice(s.doc(), s.store.ids(), s.tracks.at(0), "module:saturator", DeviceKind::AudioEffect);
     REQUIRE(e.ok());
     s.must(e->command);
-    return e->devices.at(0);
+    return test_blocks::member(s.doc(), e->devices.at(0), "Drive");  // GU.11: a module's knob (its value block)
   }();
   auto link = makeLink(s.store.current());
   [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   REQUIRE(link->waitForMetaTables());
   const ProjectLink::MetaRefreshStats r0 = link->metaRefreshStats();
-  s.edit(ops::setDeviceParamValue(s.doc(), playback_fixture::unitsLibrary(), sat, "drive", 12.0));  // a stock device's knob: no table can change
+  s.edit(ops::setDeviceParamValue(s.doc(), playback_fixture::unitsLibrary(), sat, std::string(kValueParam), 4.0));  // a value block's knob: no table can change
   CHECK(link->metaRefreshStats().refreshes == r0.refreshes);
   s.param(wt, "position", 0.25);  // a meta device's knob: refreshed
   CHECK(link->metaRefreshStats().refreshes == r0.refreshes + 1);
@@ -618,29 +619,62 @@ struct AliasRig {
   std::unique_ptr<ProjectLink> link;
   ListenerId sub{};
   double rate;
+  DeviceId engine, d;  // GU.11: the Wavetable engine and the ramp's increment (a value block) inside the instrument
   explicit AliasRig(double sr) : rate(sr) {
     IdSource& ids = store.ids();
     track = ids.track();
-    inst = ids.device();
     Batch b{"alias rig", {}};
-    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "WT", inst), {}, kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "WT"), {}, kAppend});
     std::vector<Note> notes{playback_fixture::note(ids, 0, 256 * kTicksPerWhole, 0)};
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 256 * kTicksPerWhole, notes, "held")});
     REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
-    link = makeLink(store.current(), sr);
-    std::string text = link->devices().stockText("BasicSynth");
-    auto swap = [&](const std::string& from, const std::string& to) {
-      const size_t at = text.find(from);
-      REQUIRE_MESSAGE(at != std::string::npos, from);
-      text.replace(at, from.size(), to);
+    // GU.11 (was the Basic Synth's text forked): an instrument group of blocks — acc = frac(z1(acc) + d) into a
+    // Wavetable engine's phase, its output to Out.
+    BlockSet set;
+    auto add = [&](uint32_t id, std::string patch, uint32_t group) {
+      auto dv = std::make_shared<Device>(*makeDevice(DeviceId{id}, std::move(patch), DeviceKind::AudioEffect));
+      dv->group = DeviceId{group};
+      set.devices.push_back(dv);
+      return dv;
     };
-    swap("  out   out  : audio voice mono", "  param d = 0.01 [0..0.5]\n  out   out  : audio voice mono");
-    swap("  out = osc * env * vel * level", "  acc = frac(z1(acc) + d)\n  wt1 = meta_wavetable(x: acc)\n  out = wt1");
+    set.devices.push_back(std::make_shared<Device>(*makeInstrumentGroup(DeviceId{1})));
+    add(2, std::string(kValueDevice), 1)->params = {DeviceValue{std::string(kValueParam), 0.01}};
+    add(3, "atom:z1", 1);
+    add(4, "atom:add", 1);
+    add(5, "atom:frac", 1);
+    add(6, "meta:wavetable", 1)->meta =
+        std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(*meta::findType("wavetable"))}});
+    uint32_t w = 0;
+    auto wire = [&](uint32_t from, const char* port, uint32_t to, const char* param) {
+      Wire x;
+      x.id = WireId{++w};
+      x.from = DeviceId{from};
+      x.port = port;
+      x.to = DeviceId{to};
+      x.param = param;
+      set.wires.push_back(x);
+    };
+    wire(3, "out", 4, "a");
+    wire(2, "y", 4, "b");
+    wire(4, "out", 5, "x");
+    wire(5, "out", 3, "x");
+    wire(5, "out", 6, "x");
+    wire(6, "out", 1, "output");
+    auto pasted = ops::pasteBlocksAtNotes(*store.current(), ids, track, set);
+    REQUIRE_MESSAGE(pasted.ok(), (pasted.ok() ? std::string() : pasted.error().message));
+    REQUIRE(store.dispatch(pasted->command).ok());
+    inst = pasted->devices.at(0);
+    for (const Device* m : groupMembersDeep(findTrackPtr(*store.current(), track)->devices, inst)) {
+      if (isValueDevice(*m)) d = m->id;
+      if (isMetaDevice(*m)) engine = m->id;
+    }
+    REQUIRE(d.valid());
+    REQUIRE(engine.valid());
+    link = makeLink(store.current(), sr);
     sub = store.subscribe([this](const StoreEvent& e) { link->onDocumentChange(e); });
-    edit(ops::addMetaCall(*store.current(), inst, text, "wt1", "wavetable"));
-    edit(ops::setMetaData(*store.current(), inst, "wt1", "wavetable", sawToSquare()));
-    edit(ops::setMetaParamValue(*store.current(), inst, "wt1", "wavetable", "position", 0.5));
+    edit(ops::setMetaData(*store.current(), engine, "", "wavetable", sawToSquare()));
+    edit(ops::setMetaParamValue(*store.current(), engine, "", "wavetable", "position", 0.5));
     link->flush();
     REQUIRE(link->lastError().empty());
     REQUIRE(link->waitForMetaTables());
@@ -652,17 +686,17 @@ struct AliasRig {
     REQUIRE(store.dispatch(e->command).ok());
   }
   void bake(const char* param, double v) {
-    edit(ops::setMetaParamValue(*store.current(), inst, "wt1", "wavetable", param, v));
+    edit(ops::setMetaParamValue(*store.current(), engine, "", "wavetable", param, v));
     REQUIRE(link->waitForMetaTables());
   }
   void warpMode(int m) {
-    edit(ops::setMetaSetting(*store.current(), inst, "wt1", "wavetable", "warpMode", m));
+    edit(ops::setMetaSetting(*store.current(), engine, "", "wavetable", "warpMode", m));
     link->flush();  // a setting: one compile (the table follows it)
     REQUIRE(link->waitForMetaTables());
   }
   // N frames of the left channel after the phase increment `inc` (cycles per sample) has played `lead` frames.
   std::vector<float> capture(double inc, uint32_t n, uint32_t lead = 4096) {
-    REQUIRE(store.dispatch(playback_fixture::inUnits(store, SetDeviceParam{inst, "d", inc})).ok());
+    REQUIRE(store.dispatch(SetDeviceParam{d, std::string(kValueParam), inc}).ok());  // (linear 0 … 1: the value)
     std::vector<float> l(kBlock), r(kBlock), out;
     out.reserve(n);
     uint32_t done = 0;
@@ -1051,7 +1085,7 @@ TEST_CASE("meta faces: a face bound before its instance compiled follows the tap
   REQUIRE(t.ok());
   s.must(t->command);
   const TrackId track = t->tracks.at(0);
-  playback_fixture::ungroupHead(s.store, library(), track);  // IG.1-2 (WtSong::metaFirst)
+  playback_fixture::clearHead(s.store, track);  // IG.1-2 (WtSong::metaFirst)
   std::vector<Note> one{playback_fixture::note(s.store.ids(), 0, 64 * kPpq, 0)};
   s.must(AddClip{track, playback_fixture::clip(s.store.ids(), 0, 64 * kPpq, one, "one")});
   auto link = makeLink(s.store.current());

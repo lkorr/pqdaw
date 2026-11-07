@@ -18,6 +18,7 @@
 #include <thread>
 #include <vector>
 
+#include "../support/blocks.h"
 #include "playback_fixture.h"
 #include "pq/app/project_link.h"
 #include "pq/compile/compile.h"
@@ -124,9 +125,9 @@ TEST_CASE("T1b.5: live playback (NullDevice) starts interpreted and swaps every 
   CHECK(unitsOn(*lj, engine::ImageBackend::Interpreter) == units);
   // A structural edit meanwhile (a new track: a topology change compiling 3 units, interpreted, audible at once): the
   // JIT wants are renewed for the new schedules; the in-flight one may come back stale.
-  REQUIRE(fj.store.dispatch(AddTrack{playback_fixture::track(fj.store.ids().track(), TrackKind::Midi, "New", fj.store.ids().device()), {}, kAppend}).ok());
+  REQUIRE(fj.store.dispatch(playback_fixture::midiWithInstrument(fj.store.ids(), fj.store.ids().track(), "New")).ok());
   playback_fixture::wireSeries(fj.store);  // TX.all-free: wired in series
-  REQUIRE(fi.store.dispatch(AddTrack{playback_fixture::track(fi.store.ids().track(), TrackKind::Midi, "New", fi.store.ids().device()), {}, kAppend}).ok());
+  REQUIRE(fi.store.dispatch(playback_fixture::midiWithInstrument(fi.store.ids(), fi.store.ids().track(), "New")).ok());
   playback_fixture::wireSeries(fi.store);  // TX.all-free: wired in series
   lj->flush();
   li->flush();
@@ -178,7 +179,7 @@ TEST_CASE("T1b.x-perf: units above the interpreter budget keep their JIT image t
     const uint32_t units = l.engine().program()->numUnits();
     REQUIRE(unitsOn(l, engine::ImageBackend::Jit) == units);
     // A structural edit of one track (a unit update, not a topology change).
-    REQUIRE(f.store.dispatch(AddDevice{f.lead, makeDevice(f.store.ids().device(), "utility", DeviceKind::AudioEffect), kAppend}).ok());
+    (void)test_blocks::addModule(f.store, f.lead, "utility");  // GU.11: a module on Lead's path
     l.flush();
     uint32_t interpretedBlocks = 0;
     for (int b = 0; b < 400; ++b) {
@@ -358,7 +359,7 @@ TEST_CASE("M1: with the output stopped, a topology change and a held edit end on
   // (a track removed: the master's unit recompiles; held too, M3, until its JIT image is in; then published to the
   // program, where it waits for the audio thread).
   const uint64_t held0 = l.stats().heldForJit;
-  REQUIRE(f.store.dispatch(AddDevice{f.lead, makeDevice(f.store.ids().device(), "utility", DeviceKind::AudioEffect), kAppend}).ok());
+  (void)test_blocks::addModule(f.store, f.lead, "utility");  // GU.11: a module on Lead's path
   l.flush();
   CHECK(l.stats().heldForJit == held0 + 1);
   REQUIRE(f.store.dispatch(RemoveTrack{f.muted}).ok());
@@ -402,7 +403,7 @@ TEST_CASE("M2: a held edit whose JIT compile fails plays interpreted, not the pr
   REQUIRE(d.until([&] { return allOnJit(l, before); }, 60.0));
   backend.fail = true;
   const uint64_t held0 = l.stats().heldForJit;
-  REQUIRE(f.store.dispatch(AddDevice{f.lead, makeDevice(f.store.ids().device(), "utility", DeviceKind::AudioEffect), kAppend}).ok());
+  (void)test_blocks::addModule(f.store, f.lead, "utility");  // GU.11: a module on Lead's path
   l.flush();
   CHECK(l.stats().heldForJit == held0 + 1);
   const std::map<std::string, Shape> want = reference(f.snap());
@@ -414,24 +415,24 @@ TEST_CASE("M2: a held edit whose JIT compile fails plays interpreted, not the pr
   CHECK(l.stats().compileErrors == 0);
 }
 
-// M3: a topology rebuild that continues a unit playing a JIT image (Operator's `voices` setting makes a new unit for
+// M3: a topology rebuild that continues a unit playing a JIT image (the Operator group's `voices` makes a new unit for
 // the same track) holds like a unit edit: the old JIT image plays until the new unit's JIT image arrives; the track
 // never runs interpreted.
 TEST_CASE("M3: a polyphony change (a topology rebuild) keeps the JIT image playing until the new unit's JIT image") {
   DocumentStore store;
   IdSource& ids = store.ids();
   const TrackId op = ids.track();
-  const DeviceId opDev = ids.device();
+  DeviceId opDev;
   {
     Batch b{"op", {}};
     Track t = makeTrack(op, TrackKind::Midi, "Op");
-    t.devices.push_back(makeDevice(opDev, "operator", DeviceKind::Instrument));
     b.commands.push_back(AddTrack{std::make_shared<const Track>(std::move(t)), {}, kAppend});
     std::vector<Note> chord;
     for (int32_t k = 0; k < 4; ++k) chord.push_back(playback_fixture::note(ids, 0, 16 * pq::kPpq, 3 * k));
     b.commands.push_back(AddClip{op, playback_fixture::clip(ids, 0, 16 * pq::kPpq, chord, "chord")});
     REQUIRE(store.dispatch(b).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
+    opDev = test_blocks::addModule(store, op, "operator", 0);  // GU.11: the Operator module (an instrument group)
   }
   LinkConfig c;
   c.compileThread = false;  // topologies are published on this thread (flush), between blocks
@@ -449,7 +450,7 @@ TEST_CASE("M3: a polyphony change (a topology rebuild) keeps the JIT image playi
   REQUIRE(d.until([&] { return allOnJit(l, before); }, 60.0));
   d.watch = "Op";
   {
-    auto e = ops::setDeviceSetting(*store.current(), opDev, "voices", 12.0);
+    auto e = ops::setDeviceSetting(*store.current(), opDev, std::string(kGroupVoices), 12.0);  // its polyphony
     REQUIRE(e.ok());
     REQUIRE(store.dispatch(e->command).ok());
   }

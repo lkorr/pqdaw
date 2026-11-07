@@ -69,7 +69,8 @@ struct GramProject {
     IdSource& ids = store.ids();
     track = ids.track();
     Batch b{"gram", {}};
-    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Keys", ids.device()), {}, kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Keys"), {}, kAppend});
+    (void)playback_fixture::instrument(b, ids, track, ids.device());
     std::vector<Note> notes;
     for (const int32_t d : degrees) notes.push_back(playback_fixture::note(ids, 0, 64 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "chord")});

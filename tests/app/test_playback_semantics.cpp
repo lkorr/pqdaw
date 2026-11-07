@@ -94,7 +94,8 @@ struct Proj {
   Proj() { master = store.current()->master->id; }
   TrackId add(TrackKind kind, const char* name, TrackId parent = {}) {
     const TrackId id = store.ids().track();
-    batch.commands.push_back(AddTrack{playback_fixture::track(id, kind, name, kind == TrackKind::Midi ? store.ids().device() : DeviceId{}), parent, kAppend});
+    batch.commands.push_back(AddTrack{playback_fixture::track(id, kind, name), parent, kAppend});
+    if (kind == TrackKind::Midi) (void)playback_fixture::instrument(batch, store.ids(), id, store.ids().device());
     return id;
   }
   TrackId tone(int degree, TrackId parent = {}, double seconds = 3.0) {
