@@ -288,6 +288,16 @@ TEST_CASE("nested groups: atoms on the main path grouped by Ctrl+G render bit fo
   const golden::Channels grouped = played(*s.current(), sc, "the atoms grouped");
   MESSAGE("grouped vs series: max |diff| = " << maxDiff(grouped, ref));
   CHECK(maxDiff(grouped, ref) == 0.0);
+  // The group grouped again (a group on the path nests into a new one: its series In → group → Out as chain links).
+  const Snapshot once = s.current();
+  const DeviceId inner[] = {grp.devices.at(0)};
+  const ops::Edit outer = run(s, ops::groupInCircuit(s.current(), s.ids(), library(), inner));
+  CHECK(findDevice(*s.current(), grp.devices.at(0)).device->group == outer.devices.at(0));
+  const golden::Channels twice = played(*s.current(), sc, "the group in a group");
+  MESSAGE("group in a group vs series: max |diff| = " << maxDiff(twice, ref));
+  CHECK(maxDiff(twice, ref) == 0.0);
+  run(s, ops::ungroupInCircuit(s.current(), s.ids(), library(), outer.devices.at(0)));
+  CHECK(*s.current() == *once);
   run(s, ops::ungroupInCircuit(s.current(), s.ids(), library(), grp.devices.at(0)));
   CHECK(*s.current() == *series);
 }

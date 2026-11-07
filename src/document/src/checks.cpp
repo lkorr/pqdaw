@@ -539,11 +539,14 @@ std::string chainLinkProblem(const Project& p, const Wire& w) {
   const DeviceLoc a = findDevice(p, w.from), b = findDevice(p, w.to);
   if (a.device == nullptr || b.device == nullptr) return {};  // (a missing end is refused on its own)
   if (a.track != b.track) return "a chain link joins devices of one track (a grouped series)";
-  auto groupOf = [](const Device& d) { return isGroupDevice(d) ? d.id : d.group; };
-  const DeviceId g = groupOf(*a.device);
-  if (!g.valid() || groupOf(*b.device) != g)
+  // A group's end is one of its terminals (In: its output kGroupInPort; Out: its input kGroupOutPort), or — GU.2, a
+  // nested group in its parent's series — a member of its own group by its main ports.
+  auto groupAt = [](const Device& d, bool terminal) { return isGroupDevice(d) && terminal ? d.id : d.group; };
+  const DeviceId g = groupAt(*a.device, w.port == kGroupInPort);
+  if (!g.valid() || groupAt(*b.device, w.param == kGroupOutPort) != g)
     return "a chain link joins a group's terminals and its members (a grouped series), here devices of no one group";
-  const bool fromIn = isGroupDevice(*a.device), toOut = isGroupDevice(*b.device);
+  // (A group end that is not the series' own group is a nested member: its main ports, any.)
+  const bool fromIn = isGroupDevice(*a.device) && a.device->id == g, toOut = isGroupDevice(*b.device) && b.device->id == g;
   if (fromIn && w.port != kGroupInPort) return "a chain link leaves a group by its In terminal";
   if (toOut && w.param != kGroupOutPort) return "a chain link enters a group by its Out terminal";
   return {};

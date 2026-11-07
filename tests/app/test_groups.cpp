@@ -389,9 +389,16 @@ TEST_CASE("groups: refusals say why") {
   auto e = group(store, {c});
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
-  refused({e->devices.front()}, "a group into a group");
-  refused({c}, "already a member");
   CHECK_FALSE(playback_fixture::onPath(*store.current(), c));  // a member is never on the main path
+  // GU.2 (groups nest; these were refused under TX.groups): a member alone groups inside its capsule, and a group
+  // groups into a new one (each on its own, not applied). Still refused: blocks of two capsules (tests/document
+  // test_blocks.cpp) and an instrument group (it stays outermost).
+  CHECK(group(store, {c}).ok());
+  {
+    auto g2 = group(store, {e->devices.front()});
+    CHECK_MESSAGE(g2.ok(), (g2.ok() ? std::string() : g2.error().message));
+  }
+  refused({e->devices.front(), x}, "a group and a block of another track");
 }
 
 TEST_CASE("groups: the file reader refuses a broken group; duplicating a group copies its contents and wires") {

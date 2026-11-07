@@ -445,8 +445,15 @@ EditResult ungroupInCircuit(const Snapshot& snap, IdSource& ids, const DeviceLib
       return invalid("Ungroup: a wire reaches the group's own input; delete it first (after ungrouping there is no group)");
     if (w.from == group && w.port != kGroupInPort && !w.fromNoteSource() && !w.mainLink())
       return invalid("Ungroup: a wire leaves the group's own output; delete it first (after ungrouping there is no group)");
-    // TX.groups-fix1: the group's chain links (Ctrl+G's series).
-    if (w.chain && !w.fromNoteSource() && (w.from == group || w.to == group || isMember(w.from) || isMember(w.to)))
+    // TX.groups-fix1: the group's chain links (Ctrl+G's series). GU.2: a link of a nested group's own series (from its In
+    // terminal, into its Out terminal) is that group's, not this one's.
+    auto memberGroup = [&](DeviceId id) {
+      return std::any_of(members.begin(), members.end(), [&](const Device* m) { return m->id == id && isGroupDevice(*m); });
+    };
+    const bool nestedOwn = (!w.fromNoteSource() && w.port == kGroupInPort && memberGroup(w.from)) ||
+                           (!w.toMixer() && w.param == kGroupOutPort && memberGroup(w.to));
+    if (w.chain && !w.fromNoteSource() && !nestedOwn &&
+        (w.from == group || w.to == group || isMember(w.from) || isMember(w.to)))
       links.push_back(&w);
   }
   // TX.all-free: a group off the main path has no series to give back.
