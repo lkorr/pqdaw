@@ -220,6 +220,10 @@ BlockSet moduleBlocks(ModuleKind k) {
 
 namespace {
 
+// A group's chain ports by name (groupPatchText: `in x`, `out y`; edit_groups chainPortsOf, what Ctrl+G's links name).
+constexpr std::string_view kGroupChainIn = "x";
+constexpr std::string_view kGroupChainOut = "y";
+
 bool retired(const Device& d) noexcept {
   return isMetaDevice(d) && meta::findType(metaDeviceType(d)) == nullptr && meta::findRetiredType(metaDeviceType(d)) != nullptr;
 }
@@ -306,14 +310,15 @@ Converted convertPa(const Project& p, const Device& d, IdSource& ids, BlockSet* 
   c.internal = set.wires;
   const std::string vp(kValueParam);
   c.into[""] = {r.group, ""};
-  c.into["hz"] = o.feed == PhaseAccumulatorOptions::Feed::Hz ? Target{r.group, ""} : Target{r.sum, "a"};
-  c.into["pm"] = o.feed == PhaseAccumulatorOptions::Feed::Pm ? Target{r.group, ""} : Target{r.pm, "b"};
+  // (A wire into the chain input by its name goes to the group's by its name, `x`: Ctrl+G's chain links name the ports.)
+  c.into["hz"] = o.feed == PhaseAccumulatorOptions::Feed::Hz ? Target{r.group, std::string(kGroupChainIn)} : Target{r.sum, "a"};
+  c.into["pm"] = o.feed == PhaseAccumulatorOptions::Feed::Pm ? Target{r.group, std::string(kGroupChainIn)} : Target{r.pm, "b"};
   c.into["freq"] = {r.freq, vp};
   c.into["phase"] = {r.phase, vp};
   c.into["amp"] = {r.amp, vp};
   c.into["pitch"] = {r.pitch, vp};
   c.controls = {{"freq", r.freq}, {"phase", r.phase}, {"amp", r.amp}, {"pitch", r.pitch}};
-  c.out = {r.group, ""};
+  c.out = {r.group, std::string(kGroupChainOut)};
   if (presetOut != nullptr) *presetOut = std::move(set);
   return c;
 }
@@ -344,7 +349,7 @@ Converted convertVca(const Project* p, const Device& d, IdSource& ids, BlockSet*
     c.into[""] = {d.id, ""};  // (an unplugged VCA on a path: the link stays; a value block has no main input)
     c.into["in"] = {d.id, "", true};
     c.controls = {{"value", d.id}};
-    c.out = {d.id, ""};
+    c.out = {d.id, "y"};
     if (presetOut != nullptr) *presetOut = BlockSet{c.devices, {}};
     return c;
   }
@@ -361,10 +366,10 @@ Converted convertVca(const Project* p, const Device& d, IdSource& ids, BlockSet*
   c.devices = set.devices;
   c.internal = set.wires;
   c.into[""] = {r.group, ""};
-  c.into["in"] = plugged ? Target{r.group, ""} : Target{r.mul, "a"};
+  c.into["in"] = plugged ? Target{r.group, std::string(kGroupChainIn)} : Target{r.mul, "a"};
   c.into["value"] = {r.value, vp, false, bend};
   c.controls = {{"value", r.value}};
-  c.out = {r.group, ""};
+  c.out = {r.group, std::string(kGroupChainOut)};
   if (presetOut != nullptr) *presetOut = std::move(set);
   return c;
 }
@@ -454,7 +459,7 @@ Status convertRetiredModules(Project& p) {
     if (!w.fromNoteSource()) {
       if (const auto m = made.find(w.from.value); m != made.end()) {
         w.from = m->second.out.device;
-        w.port = m->second.out.port;
+        if (!w.port.empty()) w.port = m->second.out.port;  // the main output stays the main output; `out` by its name
       }
     }
     if (!w.toMixer()) {

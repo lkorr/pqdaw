@@ -229,12 +229,16 @@ std::vector<DevicePtr> groupSeries(const Project& p, const Track& t, DeviceId g)
   for (size_t guard = 0; guard < members.size(); ++guard) {
     const DevicePtr* next = nullptr;
     for (const Wire& w : wiresOf(p)) {
-      if (w.fromNoteSource() || w.toMixer() || w.from != cur || w.port != port) continue;
+      // (GU.4: a nested group's main output by its name too — `y`, as Ctrl+G's chain links name it.)
+      const bool fromCur = w.port == port || (cur != g && w.port == kMainPort && port == "y");
+      if (w.fromNoteSource() || w.toMixer() || w.from != cur || !fromCur) continue;
       for (const DevicePtr& m : members) {
         if (m->id != w.to || std::find(out.begin(), out.end(), m) != out.end()) continue;
         const meta::Type* ty = isMetaDevice(*m) ? meta::findTypeOrRetired(metaDeviceType(*m)) : nullptr;
         const int32_t ci = ty != nullptr ? metaChainInput(*m, *ty) : -1;
-        if (w.param == kMainPort || (ci >= 0 && w.param == ty->inputs[static_cast<size_t>(ci)].name)) next = &m;
+        if (w.param == kMainPort || (ci >= 0 && w.param == ty->inputs[static_cast<size_t>(ci)].name) ||
+            (isGroupDevice(*m) && w.param == "x"))
+          next = &m;
       }
       if (next != nullptr) break;
     }
@@ -242,7 +246,9 @@ std::vector<DevicePtr> groupSeries(const Project& p, const Track& t, DeviceId g)
     out.push_back(*next);
     cur = (*next)->id;
     const meta::Type* ty = isMetaDevice(**next) ? meta::findTypeOrRetired(metaDeviceType(**next)) : nullptr;
-    port = ty != nullptr && !ty->outputs.empty() ? std::string(ty->outputs.front().name) : std::string(kMainPort);
+    port = ty != nullptr && !ty->outputs.empty() ? std::string(ty->outputs.front().name)
+           : isGroupDevice(**next)                  ? std::string("y")
+                                                    : std::string(kMainPort);
   }
   return out;
 }
