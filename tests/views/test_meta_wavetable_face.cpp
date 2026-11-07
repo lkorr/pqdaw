@@ -531,7 +531,7 @@ TEST_CASE("wavetable face: a chain Wavetable is its face in the project patch vi
     if (c.faceAt(i).type().id == std::string_view("phase_acc")) ++accs;
   }
   CHECK(wts == 2u);
-  CHECK(accs == 1u);
+  CHECK(accs == 0u);  // GU.4: the Pair synth's phase is a phasor (the Phase accumulator is a group preset, not a call)
   CHECK(nested == 1u);
 }
 

@@ -18,7 +18,9 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/library_files.h"
 #include "pq/document/meta.h"
-#include "pq/meta/phase_acc.h"
+#include "pq/document/main_path.h"
+#include "pq/document/modules.h"
+#include "pq/meta/envelope.h"
 #include "pq/meta/registry.h"
 #include "pq/meta/wavetable.h"
 #include "pq/ui/controls.h"
@@ -109,9 +111,6 @@ struct Ui {
   double wtValue(const char* p) const {
     return doc::metaParamValue(dev(ids.wt), "", meta::wavetableType(), static_cast<size_t>(meta::wavetableType().paramIndex(p)));
   }
-  double accValue(const char* p) const {
-    return doc::metaParamValue(dev(ids.acc), "", meta::phaseAccType(), static_cast<size_t>(meta::phaseAccType().paramIndex(p)));
-  }
   devices::DevicePanel& panel(doc::DeviceId id) {
     d.tree().layoutNow();
     devices::DevicePanel* p = view().panelOf(id);
@@ -132,7 +131,6 @@ struct Ui {
     return {ox + x * s, oy + y * s};
   }
   Vec2 wt(float x, float y) { return at(ids.wt, x, y, 204.0f, 248.0f); }
-  Vec2 acc(float x, float y) { return at(ids.acc, x, y, 120.0f, 120.0f); }
   Menu* lastMenu() {
     for (size_t i = shell->overlay().childCount(); i-- > 0;)
       if (auto* m = dynamic_cast<Menu*>(&shell->overlay().child(i))) return m;
@@ -148,9 +146,8 @@ TEST_CASE("meta devices (views): a chain meta device's panel is its face, fitted
   CHECK(wp.desc().fitFace);
   CHECK(wp.desc().generated);
   CHECK(wp.title() == "Wavetable");
-  devices::DevicePanel& ap = u.panel(u.ids.acc);
-  CHECK(ap.desc().fitFace);
-  CHECK(ap.title() == "Phase Accumulator");
+  // (GU.4: the Phase Accumulator is its module — a group, free beside it — and the Wavetable heads the path.)
+  CHECK(doc::isGroupDevice(u.dev(u.ids.acc)));
   // The face fills the body: its control's height is the panel's minus the title bar and the body's padding, and the
   // frame's width follows the face's aspect at that height.
   const IRect fr = u.faceControl(u.ids.wt).rect();
@@ -162,7 +159,7 @@ TEST_CASE("meta devices (views): a chain meta device's panel is its face, fitted
   CHECK(faceScale <= devices::DevicePanel::kFaceMaxScale + 1e-3f);
   CHECK(std::abs(static_cast<float>(fr.w) - 204.0f * faceScale * s) <= 3.0f);
   // Auto Filter after them keeps its stock panel.
-  CHECK_FALSE(u.panel(doc::findTrackPtr(*u.ctx.doc(), u.ids.lead)->devices.at(2)->id).desc().fitFace);
+  CHECK_FALSE(u.panel(doc::mainPath(*u.ctx.doc(), *doc::findTrackPtr(*u.ctx.doc(), u.ids.lead)).blocks.at(1)->id).desc().fitFace);
   // Another Device view height scales the face with it (the frame's width follows).
   dynamic_cast<Splitter&>(*u.d.find("main/body")).setPosition(200.0f);
   u.d.tree().layoutNow();
@@ -170,22 +167,27 @@ TEST_CASE("meta devices (views): a chain meta device's panel is its face, fitted
   CHECK(fr2.h != fr.h);
   // The face fits whole (width at least its aspect's; a narrow face keeps the panel's minimum width for its title).
   CHECK(static_cast<float>(fr2.w) >= 204.0f * static_cast<float>(fr2.h) / 248.0f - 3.0f);
-  CHECK(static_cast<float>(u.panel(u.ids.acc).rect().w) >= devices::DevicePanel::kFaceMinWidth * s - 1.0f);
 }
 
 TEST_CASE("meta devices (views): the face's input socket shows where the chain is wired (TMM.10-fix1)") {
   Ui u;
-  CHECK(u.panel(u.ids.wt).signature().audioIn == "x");  // the Phase accumulator's voices into its phase
-  CHECK(u.panel(u.ids.acc).signature().audioIn.empty());  // first: the note source, read inside (no audio socket)
-  REQUIRE(u.view().setChainInput(u.ids.wt, "pos"));
-  CHECK(u.dev(u.ids.wt).chainInput == "pos");
-  CHECK(u.panel(u.ids.wt).signature().audioIn == "pos");
+  // GU.4: a second Wavetable after the Lead's (which heads the path, at the notes: no audio socket), where the
+  // Phase accumulator's Wavetable was — the first one's voices into its phase.
+  CHECK(u.panel(u.ids.wt).signature().audioIn.empty());
+  auto add = doc::ops::addMetaDevice(*u.ctx.doc(), u.ctx.store().ids(), u.ids.lead, "wavetable", 1);
+  REQUIRE(add.ok());
+  REQUIRE(u.ctx.store().dispatch(add->command).ok());
+  const doc::DeviceId wt2 = add->devices.at(0);
+  CHECK(u.panel(wt2).signature().audioIn == "x");
+  REQUIRE(u.view().setChainInput(wt2, "pos"));
+  CHECK(u.dev(wt2).chainInput == "pos");
+  CHECK(u.panel(wt2).signature().audioIn == "pos");
   const size_t h0 = u.history();
-  REQUIRE(u.view().setChainInput(u.ids.wt, std::string(doc::kChainUnplugged)));
+  REQUIRE(u.view().setChainInput(wt2, std::string(doc::kChainUnplugged)));
   CHECK(u.history() == h0 + 1);
-  CHECK(u.panel(u.ids.wt).signature().audioIn.empty());  // unplugged: no socket, no wire
-  REQUIRE(u.view().setChainInput(u.ids.wt, "x"));
-  CHECK(u.dev(u.ids.wt).chainInput.empty());  // the type's own input: the default
+  CHECK(u.panel(wt2).signature().audioIn.empty());  // unplugged: no socket, no wire
+  REQUIRE(u.view().setChainInput(wt2, "x"));
+  CHECK(u.dev(wt2).chainInput.empty());  // the type's own input: the default
 }
 
 TEST_CASE("meta devices (views): face drags in the Device view are one undo step each; double-click resets") {
@@ -205,19 +207,8 @@ TEST_CASE("meta devices (views): face drags in the Device view are one undo step
   u.d.drag(a, {a.x, a.y - 40.0f}, 6);
   CHECK(u.history() == h0 + 1);
   CHECK(u.wtValue("position") > pos0);
-  // Phase accumulator amplitude arc (TMM.15: on top): up 20 px.
-  h0 = u.history();
-  a = u.acc(60.0f, 64.0f - 43.0f);
-  u.d.drag(a, {a.x, a.y - 20.0f}, 6);
-  CHECK(u.history() == h0 + 1);
-  CHECK(u.accValue("amp") > 1.0);
-  // Its pitch arc (the right side): up 40 px, whole semitones.
-  h0 = u.history();
-  a = u.acc(60.0f + 43.0f, 64.0f);
-  u.d.drag(a, {a.x, a.y - 40.0f}, 8);
-  CHECK(u.history() == h0 + 1);
-  CHECK(u.accValue("pitch") > 0.0);
-  CHECK(std::fmod(u.accValue("pitch"), 100.0) == 0.0);
+  // (GU.4: the Phase accumulator face's arcs are gone with it: its module's knobs are panel elements,
+  // tests/views/test_group_panels.cpp drags them through real dispatch.)
   // The panel follows (the face reads the document): nothing was rebuilt, the frames are the same widgets.
   devices::DevicePanel* before = u.view().panelOf(u.ids.wt);
   // Double-click the fold knob: reset, one step; undo brings it back.
@@ -237,25 +228,25 @@ TEST_CASE("meta devices (views): face drags in the Device view are one undo step
 
 TEST_CASE("meta devices (views): automation LEDs and Show Automation sit on the face's controls") {
   Ui u;
-  devices::DevicePanel& ap = u.panel(u.ids.acc);
-  const std::optional<IRect> freq = ap.controlRect("freq");
+  // (GU.4: on the Wavetable's face; it was the Phase accumulator's.)
+  devices::DevicePanel& ap = u.panel(u.ids.wt);
+  const std::optional<IRect> freq = ap.controlRect("position");
   REQUIRE(freq.has_value());
-  const IRect face = u.faceControl(u.ids.acc).rect();
+  const IRect face = u.faceControl(u.ids.wt).rect();
   CHECK(freq->x >= face.x - 1);
   CHECK(freq->right() <= face.right() + 1);
-  CHECK(freq->x + freq->w / 2 < face.x + face.w / 2);  // the frequency arc is on the left
-  // An automation lane on the Phase accumulator's frequency: its LED.
+  // An automation lane on the Wavetable's position: its LED.
   auto l = std::make_shared<doc::AutomationLane>();
   l->id = u.ctx.store().ids().lane();
-  l->param = doc::ParamRef::device(u.ids.acc, "freq");
-  l->paramName = "freq";
+  l->param = doc::ParamRef::device(u.ids.wt, "position");
+  l->paramName = "position";
   l->points.push_back({0, 0.0f, 0.0f, u.ctx.store().ids().breakpoint()});
-  l->points.push_back({4 * kPpq, 220.0f, 0.0f, u.ctx.store().ids().breakpoint()});
+  l->points.push_back({4 * kPpq, 0.8f, 0.0f, u.ctx.store().ids().breakpoint()});
   REQUIRE(u.ctx.store().dispatch(doc::AddAutomationLane{u.ids.lead, l}).ok());
   u.d.tree().layoutNow();
-  const auto marks = u.view().automationMarks(u.ids.acc);
+  const auto marks = u.view().automationMarks(u.ids.wt);
   REQUIRE(marks.size() == 1);
-  CHECK(marks[0].first == "freq");
+  CHECK(marks[0].first == "position");
   // A right-click on the arc offers its lane.
   u.d.click(mid(*freq), mod::kNone, PointerButton::Right);
   u.d.step();
@@ -266,10 +257,20 @@ TEST_CASE("meta devices (views): automation LEDs and Show Automation sit on the 
   CHECK(show);
 }
 
+namespace {
+// What reaches block `d`'s main input along track `t`'s main path (meta.h trackStages).
+template <class U>
+doc::ChainSignal stageIn(const U& u, doc::TrackId t, doc::DeviceId d) {
+  for (const doc::ChainStage& st : doc::trackStages(*u.ctx.doc(), *doc::findTrackPtr(*u.ctx.doc(), t)))
+    if (st.device->id == d) return st.in;
+  return doc::ChainSignal::None;
+}
+}  // namespace
+
 TEST_CASE("meta devices (views): the device menu's Meta Modules — the kind follows the slot") {
   Ui u;
-  // After the Phase accumulator: a Wavetable continues its voices.
-  const doc::DeviceId one[1] = {u.ids.acc};
+  // After the Lead's Wavetable: another.
+  const doc::DeviceId one[1] = {u.ids.wt};
   u.view().select(one);
   std::vector<MenuItem> menu = u.view().deviceMenu();
   bool header = false;
@@ -285,37 +286,30 @@ TEST_CASE("meta devices (views): the device menu's Meta Modules — the kind fol
   menu[static_cast<size_t>(wtItem)].onChoose();
   CHECK(u.history() == h0 + 1);
   const doc::Track& t = *doc::findTrackPtr(*u.ctx.doc(), u.ids.lead);
-  REQUIRE(t.devices.size() == 4);
-  CHECK(t.devices[1]->patch == "meta:wavetable");
-  CHECK(t.devices[1]->kind == doc::DeviceKind::AudioEffect);
-  {  // TMM.10-fix1: the Phase accumulator's voice signal reaches both Wavetables (doc::chainStages)
-    const std::vector<doc::ChainStage> st = doc::trackStages(*u.ctx.doc(), t);
-    REQUIRE(st.size() >= 3);
-    CHECK(st[1].in == doc::ChainSignal::Voices);
-    CHECK(st[2].in == doc::ChainSignal::Voices);
+  const doc::MainPath path = doc::mainPath(*u.ctx.doc(), t);
+  REQUIRE(path.blocks.size() == 3);  // the two Wavetables, Auto Filter
+  CHECK(path.blocks[0]->id == u.ids.wt);
+  const doc::Device& added = *path.blocks[1];
+  CHECK(added.patch == "meta:wavetable");
+  CHECK(added.kind == doc::DeviceKind::AudioEffect);
+  {  // TMM.10-fix1: the voices reach both Wavetables (doc::trackStages; GU.4: the first at the notes)
+    CHECK(stageIn(u, u.ids.lead, u.ids.wt) == doc::ChainSignal::Notes);
+    CHECK(stageIn(u, u.ids.lead, added.id) == doc::ChainSignal::Voices);
   }
   // Every meta module fits every slot (no instrument-only or effect-only types).
   for (const MenuItem& m : menu)
     for (const meta::Type* x : metaModuleTypes())
       if (m.label == "   " + std::string(x->name)) CHECK(m.enabled);
   // Its panel is a face too.
-  CHECK(u.panel(t.devices[1]->id).desc().fitFace);
-  // The browser and the menus name it by its type.
-  CHECK(deviceDisplayName(u.ctx, "meta:phase_acc") == "Phase Accumulator");
+  CHECK(u.panel(added.id).desc().fitFace);
+  // The browser and the menus name it by its type; GU.4: the modules by their names (no meta type of theirs).
+  CHECK(deviceDisplayName(u.ctx, "meta:wavetable") == "Wavetable");
+  CHECK(deviceDisplayName(u.ctx, std::string(doc::kModuleItemPrefix) + "phase_acc") == "Phase Accumulator");
   const std::vector<const meta::Type*> types = metaModuleTypes();
   CHECK(std::find(types.begin(), types.end(), &meta::wavetableType()) != types.end());
-  CHECK(std::find(types.begin(), types.end(), &meta::phaseAccType()) != types.end());
+  for (const meta::Type* x : types) CHECK(x->id != "phase_acc");
 }
 
-namespace {
-// What reaches block `d`'s main input along track `t`'s main path (meta.h trackStages).
-template <class U>
-doc::ChainSignal stageIn(const U& u, doc::TrackId t, doc::DeviceId d) {
-  for (const doc::ChainStage& st : doc::trackStages(*u.ctx.doc(), *doc::findTrackPtr(*u.ctx.doc(), t)))
-    if (st.device->id == d) return st.in;
-  return doc::ChainSignal::None;
-}
-}  // namespace
 
 TEST_CASE("meta devices (views): a preset loads with its slot's kind (state kept); hot-swap keeps the wires") {
   Ui u;
@@ -335,38 +329,44 @@ TEST_CASE("meta devices (views): a preset loads with its slot's kind (state kept
   CHECK(loaded.params == src.params);
   REQUIRE(loaded.meta);
   CHECK(*loaded.meta == *src.meta);
-  // Hot-swap the Lead's Phase accumulator for a fresh one: a wire into its frequency is kept.
+  // Hot-swap the Lead's Wavetable for a fresh one: a wire into its position is kept (GU.4: was the Phase accumulator's
+  // frequency).
   const doc::DeviceId lfo = [&] {
     auto e = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.ids.bass, "lfo_device", doc::DeviceKind::AudioEffect);
     REQUIRE(e.ok());
     REQUIRE(u.ctx.store().dispatch(e->command).ok());
     return e->devices.at(0);
   }();
-  auto w = doc::ops::connectTravelWire(*u.ctx.doc(), u.ctx.store().ids(), lfo, "lfo", u.ids.acc, "freq");
+  auto w = doc::ops::connectTravelWire(*u.ctx.doc(), u.ctx.store().ids(), lfo, "lfo", u.ids.wt, "position");
   REQUIRE_MESSAGE(w.ok(), (w.ok() ? "" : w.error().message));
   REQUIRE(u.ctx.store().dispatch(w->command).ok());
-  REQUIRE(hotSwapDevice(u.ctx, u.ids.acc, catalogItemPath("meta:phase_acc")).ok());
-  const doc::Device& swapped = u.dev(u.ids.acc);
-  CHECK(swapped.patch == "meta:phase_acc");
-  CHECK(stageIn(u, u.ids.lead, u.ids.acc) == doc::ChainSignal::Notes);  // still where the notes arrive
+  const doc::ChainSignal before = stageIn(u, u.ids.lead, u.ids.wt);
+  REQUIRE(hotSwapDevice(u.ctx, u.ids.wt, catalogItemPath("meta:wavetable")).ok());
+  const doc::Device& swapped = u.dev(u.ids.wt);
+  CHECK(swapped.patch == "meta:wavetable");
+  CHECK(stageIn(u, u.ids.lead, u.ids.wt) == before);  // still where it was on the path
+  // A module cannot hot-swap a device (it is a group of blocks): refused, saying why.
+  CHECK_FALSE(hotSwapDevice(u.ctx, u.ids.wt, catalogItemPath(std::string(doc::kModuleItemPrefix) + "vca")).ok());
   bool kept = false;
-  for (const doc::Wire& x : doc::wiresOf(*u.ctx.doc())) kept = kept || (x.to == u.ids.acc && x.param == "freq");
+  for (const doc::Wire& x : doc::wiresOf(*u.ctx.doc())) kept = kept || (x.to == u.ids.wt && x.param == "position");
   CHECK(kept);
 }
 
 TEST_CASE("meta devices (views): the generic knob follows exp0 (Q167 8); a panel description's face control parses") {
-  const meta::Type& t = meta::phaseAccType();
+  // (GU.4: on the Envelope's attack, exp0 k 15.87; it was the Phase accumulator's frequency.)
+  const meta::Type& t = meta::envelopeType();
   auto pre = meta::prelude();
   const meta::Prelude::Entry* e = pre->find(&t);
   REQUIRE(e != nullptr);
   REQUIRE(e->notes.has_value());
   const devices::DeviceSignature sig = devices::signatureOf(*e->notes);
-  const devices::ParamInfo* f = sig.findParam("freq");
+  const devices::ParamInfo* f = sig.findParam("attack");
   REQUIRE(f != nullptr);
-  CHECK(f->exp0 == doctest::Approx(meta::kPhaseAccCurveK));
-  for (const double v : {0.0, 1.0, 100.0, 1000.0, 20000.0}) {
-    CHECK(devices::toPosition(*f, v) == doctest::Approx(meta::phaseAccTravelFromFreq(v)).epsilon(1e-9));
-    CHECK(devices::fromPosition(*f, meta::phaseAccTravelFromFreq(v)) == doctest::Approx(v).epsilon(1e-9));
+  const meta::ParamSpec& spec = t.params[static_cast<size_t>(t.paramIndex("attack"))];
+  CHECK(f->exp0 == doctest::Approx(spec.curveK));
+  for (const double v : {0.0, 0.01, 0.1, 1.0, 10.0}) {
+    CHECK(devices::toPosition(*f, v) == doctest::Approx(meta::valueToTravel(spec, v)).epsilon(1e-9));
+    CHECK(devices::fromPosition(*f, meta::valueToTravel(spec, v)) == doctest::Approx(v).epsilon(1e-9));
   }
   CHECK(devices::toPosition(*f, 0.0) == 0.0);
   // {"type": "face", "meta": "<path>"}: parsed with its path; a path that is not one is refused.

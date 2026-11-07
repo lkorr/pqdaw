@@ -4,7 +4,8 @@
 // element; the scene rebuilding during the event): knob / slider / toggle / menu / number edit the bound control or
 // setting in one undo step, a setting edit is exactly one structural change (one recompile), the tabs hide / show
 // elements, the curve editor's point drag changes no class (no recompile) and its shape menu does; the panel follows a
-// deleted block (and its undo) and survives paste.
+// deleted block (and its undo) and survives paste. GU.4: the Phase Accumulator and VCA modules' panels (goldens
+// module-phase-acc-panel, module-vca-panel) and their knobs and curve editor through real dispatch.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -18,6 +19,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/instrument_groups.h"
+#include "pq/document/modules.h"
 #include "pq/ui/image.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
@@ -535,4 +537,193 @@ TEST_CASE("group panels: the Device view shows the instrument group's panel with
   CHECK(u.setting(doc::kGroupMono) == 1.0);
   CHECK(u.history() == h0 + 1);
   CHECK(u.structural == s0 + 1);
+}
+
+// ---- GU.4: the built-in modules' panels ----------------------------------------------------------------------------
+
+namespace {
+
+// A MIDI track holding a Phase Accumulator module and a VCA module (doc::modules.h), both off the path.
+struct ModuleDoc {
+  doc::TrackId track;
+  doc::PhaseAccumulatorRoles pa;
+  doc::VcaRoles vca;
+};
+ModuleDoc buildModules(doc::DocumentStore& st) {
+  ModuleDoc m;
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(st.dispatch(e->command).ok());
+    return *e;
+  };
+  m.track = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Modules")).tracks.at(0);
+  {
+    doc::IdSource local;
+    doc::PhaseAccumulatorRoles l;
+    const doc::ops::Edit e = run(doc::ops::pasteBlocks(*st.current(), st.ids(), m.track, doc::phaseAccumulatorBlocks(local, {}, &l)));
+    auto id = [&](doc::DeviceId x) { return x.valid() ? e.devices.at(x.value - 1) : doc::DeviceId{}; };
+    m.pa = doc::PhaseAccumulatorRoles{id(l.group), id(l.freq), id(l.phase), id(l.amp), id(l.pitch), id(l.ref), id(l.sum),
+                                      id(l.ratio), id(l.pitched), id(l.phasor), id(l.addPhase), id(l.pm), id(l.frac), id(l.out)};
+  }
+  {
+    doc::IdSource local;
+    doc::VcaRoles l;
+    const doc::ops::Edit e = run(doc::ops::pasteBlocks(*st.current(), st.ids(), m.track, doc::vcaBlocks(local, {}, &l)));
+    m.vca = doc::VcaRoles{e.devices.at(l.group.value - 1), e.devices.at(l.value.value - 1), e.devices.at(l.mul.value - 1)};
+  }
+  return m;
+}
+
+// One module's panel in a plain tree (as Standalone does the panel project's): its golden at 2x.
+Image modulePanelImage(bool vca) {
+  FakeTransport port;
+  ViewContext ctx{port};
+  ctx.setDeviceLibrary(&devLib());
+  const ModuleDoc m = buildModules(ctx.store());
+  const doc::DeviceId g = vca ? m.vca.group : m.pa.group;
+  const doc::Panel* p = doc::findDevice(*ctx.doc(), g).device->panel.get();
+  REQUIRE(p != nullptr);
+  const float scale = 2.0f;
+  TestDriver d(static_cast<uint32_t>(p->width * scale), static_cast<uint32_t>(p->height * scale), scale);
+  panel::PanelHost* host = nullptr;
+  auto face = std::make_unique<panel::GroupPanelFace>(panel::docPanelSource(ctx, g),
+                                                      panel::makeDocPanelTarget(ctx, g, [&host]() -> Widget* { return host; }));
+  host = &d.setRoot<panel::PanelHost>("panel", std::move(face));
+  d.tree().layoutNow();
+  REQUIRE(d.enableGpu().ok());
+  d.advance(0.1);
+  auto img = d.render();
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+  Image out = std::move(*img);
+  d.tree().setRoot(std::make_unique<Widget>());
+  return out;
+}
+
+// The modules in the shell's project patch view, both closed (each drawn as its panel), the view at zoom 1 on one.
+struct ModuleUi {
+  FakeTransport port;
+  ViewContext ctx{port};
+  TestDriver d{1600, 900};
+  std::unique_ptr<Shell> shell;
+  ModuleDoc m;
+  int structural = 0;
+  ViewContext::Subscription sub;
+
+  explicit ModuleUi(bool onVca) {
+    ctx.setDeviceLibrary(&devLib());
+    m = buildModules(ctx.store());
+    auto s = Shell::create(d.tree(), ctx);
+    REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
+    shell = std::move(*s);
+    d.tree().layoutNow();
+    view().setPanelsShown(false);
+    view().setPushAnimated(false);
+    view().setShown(true, false);
+    d.tree().layoutNow();
+    view().setGroupOpen(m.pa.group, false);
+    view().setGroupOpen(m.vca.group, false);
+    d.tree().layoutNow();
+    const Node& n = node(onVca ? m.vca.group : m.pa.group);
+    circuit::CircuitCanvas::View v;
+    v.zoom = 1.0;
+    v.x = n.x - 40.0;
+    v.y = n.y - 40.0;
+    view().canvas().setView(v);
+    d.tree().layoutNow();
+    d.step();
+    d.tree().setFocus(&view().canvas());
+    sub = ctx.subscribe([this](const doc::StoreEvent& e) { structural += e.before != e.after && e.changes.structural() ? 1 : 0; });
+  }
+  ~ModuleUi() {
+    sub.reset();
+    d.tree().setRoot(std::make_unique<Widget>());
+  }
+  ProjectPatchView& view() const {
+    ProjectPatchView* v = findProjectPatch(*shell);
+    REQUIRE(v != nullptr);
+    return *v;
+  }
+  const Node& node(doc::DeviceId g) const {
+    const uint32_t n = view().patch().nodeOf(g);
+    REQUIRE(n != kNone);
+    return view().patch().nodes[n];
+  }
+  // Element `i` of group g's panel: a point of it (fractions of its rect), device px.
+  Vec2 at(doc::DeviceId g, size_t i, float fx = 0.5f, float fy = 0.5f) const {
+    const doc::PanelElement& e = dev(g).panel->elements.at(i);
+    const Node& n = node(g);
+    return view().canvas().toDevice({n.x + e.x + e.w * fx, n.y + e.y + e.h * fy});
+  }
+  size_t history() const { return ctx.store().history().cursor(); }
+  const doc::Device& dev(doc::DeviceId id) const { return *doc::findDevice(*ctx.doc(), id).device; }
+  double position(doc::DeviceId id) const {
+    const doc::DeviceValue* v = dev(id).param(doc::kValueParam);
+    return v != nullptr ? v->value : 0.0;  // (none stored: the Value block's default, 0)
+  }
+  size_t elementOf(doc::DeviceId g, std::string_view kind) const {
+    const auto& els = dev(g).panel->elements;
+    for (size_t i = 0; i < els.size(); ++i)
+      if (els[i].kind == kind) return i;
+    FAIL("no element " << kind);
+    return 0;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("render: module-phase-acc-panel and module-vca-panel (GU.4: the modules' panels of generic elements, 2x)") {
+  checkImage("module-phase-acc-panel", modulePanelImage(false));
+  checkImage("module-vca-panel", modulePanelImage(true));
+}
+
+TEST_CASE("group panels (GU.4): a closed module is its panel; its knobs edit their value blocks in one undo step, never "
+          "a recompile; the VCA's curve editor edits its value block's curve — real pointer dispatch") {
+  SUBCASE("the VCA: its knob, then its curve") {
+    ModuleUi u(true);
+    CHECK(u.node(u.m.vca.group).groupPanel);
+    // Its knob: x1 at its default (0.7 on the VCA's law); dragged down, less.
+    const double p0 = u.position(u.m.vca.value);
+    CHECK(p0 == doctest::Approx(doc::VcaOptions{}.value));
+    const dsp::Curve* law = u.dev(u.m.vca.value).curve(doc::kValueParam);
+    REQUIRE(law != nullptr);
+    CHECK(dsp::evalCurve(*law, p0) == doctest::Approx(1.0).epsilon(1e-9));
+    const size_t knob = u.elementOf(u.m.vca.group, "knob");
+    const size_t h0 = u.history();
+    const Vec2 c = u.at(u.m.vca.group, knob);
+    u.d.drag(c, {c.x, c.y + 60.0f}, 6);
+    u.d.step();
+    CHECK(u.position(u.m.vca.value) < p0 - 0.1);
+    CHECK(u.history() == h0 + 1);
+    CHECK(u.structural == 0);
+    REQUIRE(u.ctx.undo());
+    CHECK(u.position(u.m.vca.value) == doctest::Approx(p0));
+    // Its curve editor: the end point (t = 1) dragged down — the law's top lower, its class kept (no recompile).
+    const size_t ce = u.elementOf(u.m.vca.group, "curve");
+    const dsp::Curve before = *u.dev(u.m.vca.value).curve(doc::kValueParam);
+    const doc::PanelElement& e = u.dev(u.m.vca.group).panel->elements.at(ce);
+    const Node& n = u.node(u.m.vca.group);
+    const Vec2 end = u.view().canvas().toDevice({n.x + e.x + e.w - 6.0f, n.y + e.y + 6.0f});
+    const size_t h1 = u.history();
+    u.d.drag(end, {end.x, end.y + 12.0f}, 4);
+    u.d.step();
+    const dsp::Curve after = *u.dev(u.m.vca.value).curve(doc::kValueParam);
+    CHECK(after.points[after.segments].y < before.points[before.segments].y);
+    CHECK(dsp::curveClass(after) == dsp::curveClass(before));
+    CHECK(u.history() == h1 + 1);
+    CHECK(u.structural == 0);
+  }
+  SUBCASE("the Phase Accumulator: its Frequency knob") {
+    ModuleUi u(false);
+    CHECK(u.node(u.m.pa.group).groupPanel);
+    const size_t knob = u.elementOf(u.m.pa.group, "knob");  // the first: Frequency
+    REQUIRE(u.dev(u.m.pa.group).panel->elements.at(knob).bindings.at(0).device == u.m.pa.freq);
+    const double p0 = u.position(u.m.pa.freq);
+    const size_t h0 = u.history();
+    const Vec2 c = u.at(u.m.pa.group, knob);
+    u.d.drag(c, {c.x, c.y - 40.0f}, 6);
+    u.d.step();
+    CHECK(u.position(u.m.pa.freq) > p0 + 0.05);
+    CHECK(u.history() == h0 + 1);
+    CHECK(u.structural == 0);
+  }
 }

@@ -4,8 +4,10 @@
 // dispatch (window → canvas → face) over the user's meta patch (tests/views/fixtures/meta-cables): ports follow a moved
 // target during the lifted drag and after the drop (animated, then idle), a port dragged along its block's edge is pinned
 // (view state, saved), a double-click unpins it, an output dragged away from its block draws a cable; ports keep their
-// spacing; the round VCA's floating panel opens, edits (one undo step each) and closes with nothing moving; Delete over a
-// hovered cable deletes that cable (the hover wins over the selection). Goldens project-orbit-ports, project-vca-panel.
+// spacing; Delete over a hovered cable deletes that cable (the hover wins over the selection). Goldens
+// project-orbit-ports, project-vca-panel. GU.4: the fixture's Phase accumulator and VCA load as their modules (groups
+// drawn as their panels, the old devices' ids); the VCA's floating panel and markers are gone with its face (its
+// panel's curve editor replaces them: tests/views/test_group_panels.cpp).
 
 #include <doctest/doctest.h>
 
@@ -20,8 +22,8 @@
 #include "lone_instrument.h"
 #include "../ui/golden_check.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/modules.h"
 #include "pq/document/serialize.h"
-#include "pq/meta/vca.h"
 #include "pq/ui/image.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/circuit/orbit.h"
@@ -79,6 +81,12 @@ struct Ui {
     shell = std::move(*s);
     d.tree().layoutNow();
     view().setShown(true, false);
+    // GU.4: the fixture's Phase accumulator and VCA load as their modules (groups, open by default): closed, each is one
+    // block drawn as its panel, whose main ports orbit as the old faces' did.
+    doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+      for (const doc::DevicePtr& dv : t.devices)
+        if (doc::isGroupDevice(*dv) && doc::findModule(dv->name) != nullptr) view().setGroupOpen(dv->id, false);
+    });
     d.tree().layoutNow();
     canvas().setCablesAnimated(animated);
     const doc::Track* midi = nullptr;
@@ -102,10 +110,19 @@ struct Ui {
   const circuit::CircuitScene& scene() const { return *view().scene().scene; }
   size_t history() const { return ctx.store().history().cursor(); }
   Vec2 dev(Point2 w) const { return canvas().toDevice(w); }
-  // The model node of the face of meta type `id` (the fixture has one of each).
+  // The model node of the face of meta type `id` (the fixture has one of each). GU.4: "vca" and "phase_acc" are their
+  // modules' groups (by their names).
   uint32_t faceNode(std::string_view id) const {
-    for (uint32_t i = 0; i < pp().nodes.size(); ++i)
-      if (pp().nodes[i].face != nullptr && pp().nodes[i].face->id == id) return i;
+    const std::string_view group = id == "vca" ? "VCA" : id == "phase_acc" ? "Phase Accumulator" : "";
+    for (uint32_t i = 0; i < pp().nodes.size(); ++i) {
+      if (group.empty()) {
+        if (pp().nodes[i].face != nullptr && pp().nodes[i].face->id == id) return i;
+        continue;
+      }
+      if (pp().nodes[i].kind != NodeKind::Device) continue;
+      const doc::Device* dv = doc::findDevice(*ctx.doc(), pp().nodes[i].device).device;
+      if (dv != nullptr && doc::isGroupDevice(*dv) && dv->name == group) return i;
+    }
     FAIL("no " << id << " block");
     return kNone;
   }
@@ -124,12 +141,10 @@ struct Ui {
     while (d.now() - t0 < limit && (canvas().cablesMoving() || canvas().portsMoving() || d.tree().needsFrame())) d.advance(1.0 / 144.0);
     return d.now() - t0;
   }
-  // The VCA's frame (not a control): left of its knob, inside its circle.
-  // A press on the VCA's frame (its rim, outside the knob: TX.vca-knob's knob fills the circle to r ≈ 53 of 58, so the
-  // old grip at (12, 63) is on the knob now), at 9 o'clock where no marker's tick is.
+  // A press on the VCA's panel where no element is (GU.4: between its knob and its curve editor): the block's.
   Vec2 vcaGrip() const {
     const Node& n = node(faceNode("vca"));
-    return dev({n.x + 4.0f * n.scale, n.y + 61.0f * n.scale});
+    return dev({n.x + 60.0f * n.scale, n.y + 122.0f * n.scale});
   }
   // A point of the canvas over nothing (no block, cable, lane window): a press there is the canvas's.
   Vec2 emptyPoint() const {
@@ -143,11 +158,6 @@ struct Ui {
       }
     FAIL("no empty point on the canvas");
     return {};
-  }
-  MetaFace& vcaFace() const {
-    MetaFace* f = canvas().faceOn(view().scene().sceneNode[faceNode("vca")]);
-    REQUIRE(f != nullptr);
-    return *f;
   }
 };
 
@@ -218,6 +228,13 @@ TEST_CASE("orbit ports: outline points, the port's place, the mean direction, sp
 
 // ---- the model and the scene ----------------------------------------------------------------------------------------
 
+// GU.4: a member of a closed group is drawn inside its block (not a block of the band's).
+bool hiddenInClosed(const ProjectPatch& pp, uint32_t i) {
+  for (uint32_t c = pp.nodes[i].capsule; c != kNone; c = pp.nodes[c].capsule)
+    if (!pp.nodes[c].groupOpen) return true;
+  return false;
+}
+
 TEST_CASE("orbit ports: every block's main ports orbit its outline toward their cables; other pins keep their places") {
   Ui u;
   const ProjectPatch& pp = u.pp();
@@ -225,7 +242,7 @@ TEST_CASE("orbit ports: every block's main ports orbit its outline toward their 
   uint32_t blocks = 0, single = 0;
   for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
     const Node& n = pp.nodes[i];
-    if (n.kind != NodeKind::Device || n.expanded) {
+    if (n.kind != NodeKind::Device || n.expanded || (n.group && n.groupOpen) || hiddenInClosed(pp, i)) {
       CHECK_FALSE(n.orbitIn.on);
       CHECK_FALSE(n.orbitOut.on);
       continue;
@@ -286,10 +303,11 @@ TEST_CASE("orbit ports: every block's main ports orbit its outline toward their 
   }
   CHECK(blocks >= 5);  // accumulator, wavetable, envelope, oscilloscope, VCA
   CHECK(single >= 3);
-  // The VCA is round: its ports go round its circle.
+  // The VCA's ports go round its outline (GU.4: its module's panel, a rounded rectangle — the round VCA face is gone; a
+  // round outline's orbit is tested above).
   const Node& vca = pp.nodes[u.faceNode("vca")];
-  CHECK(vca.outline.round);
-  CHECK(dist(vca.orbitIn.at, vca.outline.centre()) == doctest::Approx(vca.outline.r + circuit::kOrbitPortR + circuit::kOrbitGap).epsilon(1e-4));
+  CHECK_FALSE(vca.outline.round);
+  CHECK(dist(vca.orbitIn.at, circuit::orbitPoint(vca.outline, vca.orbitIn.angle, vca.scale)) < 1e-3f);
 }
 
 // ---- through real dispatch --------------------------------------------------------------------------------------------
@@ -361,7 +379,8 @@ TEST_CASE("orbit ports: a port dragged along its block's edge is pinned (view st
   const uint32_t vin = u.mainPin(vca, true);
   const float a0 = u.canvas().portAngle(vin);
   const Point2 c = u.node(vca).outline.centre();
-  const float rr = u.node(vca).outline.r + circuit::kOrbitPortR + circuit::kOrbitGap;
+  // (GU.4: the VCA is its module's panel, a rounded rectangle: the path along its edge is its orbit.)
+  auto along = [&](float a) { return circuit::orbitPoint(u.node(vca).outline, a, u.node(vca).scale); };
   const size_t h0 = u.history();
   // Along the circle, 100° clockwise, through real dispatch: the port follows the pointer.
   const float a1 = circuit::wrapAngle(a0 + 100.0f * kPi / 180.0f);
@@ -369,17 +388,19 @@ TEST_CASE("orbit ports: a port dragged along its block's edge is pinned (view st
   u.d.down(u.dev(u.canvas().pinPoint(vin)));
   for (int k = 1; k <= 10; ++k) {
     const float a = a0 + (a1 - a0 + (a1 < a0 ? 2.0f * kPi : 0.0f)) * static_cast<float>(k) / 10.0f;
-    u.d.move(u.dev({c.x + rr * std::cos(a), c.y + rr * std::sin(a)}));
+    u.d.move(u.dev(along(a)));
   }
   CHECK(u.canvas().drag() == ProjectCanvas::Drag::Port);
-  CHECK(std::fabs(circuit::angleDelta(u.canvas().portAngle(vin), a1)) < 0.02f);
-  u.d.up(u.dev({c.x + rr * std::cos(a1), c.y + rr * std::sin(a1)}));
+  // (The pointer's direction from the centre: off a flat edge the orbit point is pushed out along the edge's normal.)
+  const float a1p = std::atan2(along(a1).y - c.y, along(a1).x - c.x);
+  CHECK(std::fabs(circuit::angleDelta(u.canvas().portAngle(vin), a1p)) < 0.02f);
+  u.d.up(u.dev(along(a1)));
   CHECK(u.history() == h0);  // view state, not an undo step
   REQUIRE(u.view().portPinned(vcaId, true));
   const doc::PatchNudge& pin = u.ctx.store().view().patchNudges.at(vcaId.value);
   CHECK(pin.inPinned);
   CHECK(pin.inAngle == doc::patchPinQuantise(pin.inAngle));
-  CHECK(std::fabs(circuit::angleDelta(pin.inAngle, a1)) < 0.02f);
+  CHECK(std::fabs(circuit::angleDelta(pin.inAngle, a1p)) < 0.02f);
   CHECK(u.node(u.faceNode("vca")).orbitIn.pinned);
   CHECK(u.node(u.faceNode("vca")).orbitIn.angle == doctest::Approx(pin.inAngle));
   // Saved with the project and read back exactly.
@@ -427,17 +448,18 @@ TEST_CASE("orbit ports: an output dragged away from its block draws a cable; alo
   u.d.up(u.dev({p0.x + std::cos(a0) * 80.0f, p0.y + std::sin(a0) * 80.0f}));
   CHECK_FALSE(u.canvas().looseCable());
   // Along its edge: it slides (no cable), and pins there on release.
-  const float rr = u.node(vca).outline.r + circuit::kOrbitPortR + circuit::kOrbitGap;
+  // (GU.4: the VCA is its module's panel, a rounded rectangle: the path along its edge is its orbit.)
+  auto along = [&](float a) { return circuit::orbitPoint(u.node(vca).outline, a, u.node(vca).scale); };
   u.d.move(u.dev(p0));
   u.d.down(u.dev(p0));
   for (int k = 1; k <= 12; ++k) {
     const float a = a0 - 0.12f * static_cast<float>(k);
-    u.d.move(u.dev({c.x + rr * std::cos(a), c.y + rr * std::sin(a)}));
+    u.d.move(u.dev(along(a)));
   }
   CHECK(u.canvas().drag() == ProjectCanvas::Drag::Port);
   CHECK_FALSE(u.canvas().looseCable());
   const float a1 = a0 - 0.12f * 12.0f;
-  u.d.up(u.dev({c.x + rr * std::cos(a1), c.y + rr * std::sin(a1)}));
+  u.d.up(u.dev(along(a1)));
   REQUIRE(u.view().portPinned(vcaId, false));
   // Ports never overlap: the input pinned onto the output's place, the output (pinned too) keeps it and the input…
   // both pinned is the user's choice; unpin the output and it gives way to the pinned input.
@@ -450,81 +472,6 @@ TEST_CASE("orbit ports: an output dragged away from its block draws a cable; alo
   CHECK(dist(n.orbitIn.at, n.orbitOut.at) >= (2.0f * circuit::kOrbitPortR + circuit::kOrbitSpacing) * n.scale - 1e-3f);
   const Point2 pi = u.portAt(u.faceNode("vca"), true), po = u.portAt(u.faceNode("vca"), false);
   CHECK(dist(pi, po) >= (2.0f * circuit::kOrbitPortR + circuit::kOrbitSpacing) * n.scale - 1e-3f);
-}
-
-TEST_CASE("orbit ports: the VCA's floating panel opens, edits and closes through dispatch; nothing moves") {
-  Ui u;
-  const uint32_t vca = u.faceNode("vca");
-  const Node n0 = u.node(vca);
-  REQUIRE(n0.outline.round);
-  std::vector<std::array<float, 4>> rects;
-  for (const Node& n : u.pp().nodes) rects.push_back({n.x, n.y, n.w, n.h});
-  const uint64_t rebuilds0 = u.view().stats().rebuilds, relayouts0 = u.view().stats().relayouts;
-  const size_t h0 = u.history();
-  auto at = [&](float lx, float ly) {
-    const Node& n = u.node(u.faceNode("vca"));
-    return u.dev({n.x + lx * n.scale, n.y + ly * n.scale});
-  };
-  for (const double zoom : {0.6, 2.0}) {
-    CAPTURE(zoom);
-    circuit::CircuitCanvas::View v;
-    v.zoom = zoom;
-    const IRect cr = u.canvas().rect();
-    v.x = n0.x + 60.0 - cr.w / zoom * 0.5;
-    v.y = n0.y + 120.0 - cr.h / zoom * 0.5;
-    u.canvas().setView(v);
-    u.d.step();
-    // The chevron opens it (no edit, no rebuild); the panel is under the face, over the canvas.
-    CHECK_FALSE(u.vcaFace().popupRect().has_value());
-    u.d.click(at(60.0f, 85.0f));
-    REQUIRE(u.vcaFace().popupRect().has_value());
-    CHECK(u.vcaFace().popupRect()->y0 >= 120.0f);
-    CHECK(u.history() == h0);
-    // It follows the face at this zoom: its controls are hit where the face's units put them.
-    u.d.move(at(24.0f, 143.0f));
-    CHECK(std::string(u.canvas().info().title) == "Min");
-    u.d.move(at(60.0f, 169.0f));
-    CHECK(std::string(u.canvas().info().title).starts_with("Curve"));
-    // Esc closes it; the chevron opens it again and closes it; a click on empty canvas closes it.
-    (void)u.d.keyDown(key::kEscape);
-    CHECK_FALSE(u.vcaFace().popupRect().has_value());
-    u.d.click(at(60.0f, 85.0f));
-    REQUIRE(u.vcaFace().popupRect().has_value());
-    u.d.click(at(60.0f, 85.0f));
-    CHECK_FALSE(u.vcaFace().popupRect().has_value());
-    u.d.click(at(60.0f, 85.0f));
-    REQUIRE(u.vcaFace().popupRect().has_value());
-    u.d.click(u.emptyPoint());
-    CHECK_FALSE(u.vcaFace().popupRect().has_value());
-  }
-  // An edit in the panel: one undo step (a drag on max, a preset click); the panel stays open over a press inside it.
-  u.d.click(at(60.0f, 85.0f));
-  REQUIRE(u.vcaFace().popupRect().has_value());
-  const doc::DeviceId id = u.device("vca");
-  auto value = [&](size_t p) { return doc::metaParamValue(*doc::findDevice(*u.ctx.doc(), id).device, "", meta::vcaType(), p); };
-  const double max0 = value(meta::kVcaMax);
-  const Vec2 mx = at(96.0f, 143.0f);
-  u.d.drag(mx, {mx.x, mx.y + 30.0f}, 6);
-  CHECK(u.history() == h0 + 1);
-  CHECK(value(meta::kVcaMax) < max0);
-  u.d.click(at(15.0f + 24.0f * 2.0f + 9.0f, 194.0f));  // the Exponential preset
-  CHECK(u.history() == h0 + 2);
-  CHECK(u.vcaFace().popupRect().has_value());
-  REQUIRE(u.ctx.undo());
-  REQUIRE(u.ctx.undo());
-  CHECK(value(meta::kVcaMax) == doctest::Approx(max0));
-  // Nothing moved: every block where it was, no re-layout for the panel (the preset's setting rebuilt the lowering only).
-  u.d.step();
-  REQUIRE(u.pp().nodes.size() == rects.size());
-  for (size_t i = 0; i < rects.size(); ++i) {
-    const Node& n = u.pp().nodes[i];
-    CHECK(n.x == rects[i][0]);
-    CHECK(n.y == rects[i][1]);
-    CHECK(n.w == rects[i][2]);
-    CHECK(n.h == rects[i][3]);
-  }
-  (void)rebuilds0;
-  (void)relayouts0;
 }
 
 TEST_CASE("orbit ports: Delete with the pointer on a cable deletes that cable — the hover wins over the selection") {
@@ -597,7 +544,5 @@ void golden(const char* name) {
 
 // The meta patch framed on the round VCA: every main port on its block's outline toward its cables.
 TEST_CASE("render: project-orbit-ports matches the golden image") { golden("project-orbit-ports"); }
-// … and the VCA's floating panel open under it (the range, the curve box, the presets).
+// GU.4: the VCA module drawn as its panel (its knob and its curve editor), framed close.
 TEST_CASE("render: project-vca-panel matches the golden image") { golden("project-vca-panel"); }
-// TX.vca-knob: … with +1 and −10 moved off their defaults (an asymmetric fine zone: the ticks, the box's corner points).
-TEST_CASE("render: project-vca-markers matches the golden image") { golden("project-vca-markers"); }

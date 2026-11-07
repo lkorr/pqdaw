@@ -15,11 +15,11 @@
 
 #include "all_free_helpers.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/document/serialize.h"
 #include "pq/meta/envelope.h"
-#include "pq/meta/phase_acc.h"
-#include "pq/meta/vca.h"
+#include "pq/meta/envelope.h"
 #include "pq/meta/wavetable.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
@@ -370,7 +370,7 @@ TEST_CASE("project patch: the note wire goes to the meta device the note source 
     return *e;
   };
   const doc::TrackId t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi)).tracks.at(0);
-  const doc::DeviceId acc = run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, "phase_acc", 0)).devices.at(0);
+  const doc::DeviceId acc = run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, "envelope", 0)).devices.at(0);  // (GU.4: was a Phase accumulator)
   const doc::DeviceId wt = run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, "wavetable")).devices.at(0);
   auto notesTo = [&](const ProjectPatch& pp, doc::DeviceId d) {
     for (const Edge& e : pp.edges)
@@ -1379,7 +1379,7 @@ TEST_CASE("project patch (TMM.10-fix2): note-source wires on the band and across
   doc::DocumentStore store;
   MetaChainIds ids;
   REQUIRE(buildMetaChainProject(store, &ids).ok());
-  const doc::DeviceId filter = doc::findTrackPtr(*store.current(), ids.lead)->devices.at(2)->id;
+  const doc::DeviceId filter = doc::mainPath(*store.current(), *doc::findTrackPtr(*store.current(), ids.lead)).blocks.at(1)->id;  // (GU.4: the Wavetable heads the path)
   auto run = [&](const doc::ops::EditResult& e) {
     REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
     REQUIRE(store.dispatch(e->command).ok());
@@ -1431,7 +1431,7 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
   const doc::Snapshot start = u.ctx.doc();
   const size_t h0 = u.history();
   // Add Free Device: one step, out of the series, under the chain.
-  REQUIRE(u.view().addFreeDevice(keys, "meta:phase_acc"));
+  REQUIRE(u.view().addFreeDevice(keys, "meta:envelope"));  // (GU.4: was a Phase accumulator)
   u.d.step();
   CHECK(u.history() == h0 + 1);
   REQUIRE(u.track("Keys").devices.size() == 3);
@@ -1459,13 +1459,13 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
   CHECK(all_free::offPath(*u.ctx.doc(), pa));  // a main link into the path from off it: a sum into that input
   CHECK(w1.law == doc::WireLaw::Add);
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
-  // The instrument's main output onto the accumulator face's frequency control: that param, no menu.
+  // The instrument's main output onto the Envelope face's sustain control: that param, no menu.
   {
     const uint32_t node = u.deviceNode(pa);
     const uint32_t sn = u.view().scene().sceneNode[node];
     MetaFace* face = u.view().canvas().faceOn(sn);
     REQUIRE(face != nullptr);
-    const std::optional<ui::Rect> r = face->paramRect(static_cast<size_t>(face->type().paramIndex("freq")));
+    const std::optional<ui::Rect> r = face->paramRect(static_cast<size_t>(face->type().paramIndex("sustain")));
     REQUIRE(r.has_value());
     const Node& n = u.pp().nodes[node];
     const Vec2 on = u.dev(n.x + 0.5f * (r->x0 + r->x1), n.y + 0.5f * (r->y0 + r->y1));
@@ -1476,7 +1476,7 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
     CHECK(w2.from == inst);
     CHECK(w2.port.empty());  // the instrument's main output
     CHECK(w2.to == pa);
-    CHECK(w2.param == "freq");
+    CHECK(w2.param == "sustain");
   }
   // Refused: onto the instrument's own `notes` pin (the chain's note wire).
   {
@@ -2264,9 +2264,26 @@ WarpSetup warpSetup(Ui& u) {
     REQUIRE(st.dispatch(e->command).ok());
     return e->devices.at(0);
   };
-  s.pa = add("phase_acc", 0);
+  {  // GU.4: a phasor atom block at the notes (the Phase accumulator's core: the note's Hz in, its phase out — small, as
+     // its face was), in place of the lone instrument; a Wavetable after it.
+    const doc::Track& tr = *doc::findTrackPtr(*st.current(), s.track);
+    const doc::DeviceId one[1] = {doc::mainPath(*st.current(), tr).blocks.at(0)->id};
+    auto d = doc::ops::deleteDevices(*st.current(), one);
+    REQUIRE(d.ok());
+    REQUIRE(st.dispatch(d->command).ok());
+    auto e = doc::ops::addDevice(*st.current(), st.ids(), s.track, "atom:phasor", doc::DeviceKind::AudioEffect, 0);
+    REQUIRE(e.ok());
+    REQUIRE(st.dispatch(e->command).ok());
+    s.pa = e->devices.at(0);
+    REQUIRE(doc::mainPath(*st.current(), *doc::findTrackPtr(*st.current(), s.track)).blocks.at(0)->id == s.pa);
+  }
   s.wt = add("wavetable", doc::kAppend);
-  s.mod = add("phase_acc", doc::ops::kOffPath);  // TX.all-free: a block off the path
+  {  // TX.all-free: a block off the path (GU.4: a phasor atom block — small and light, as the Phase accumulator was)
+    auto e = doc::ops::addDevice(*st.current(), st.ids(), s.track, "atom:phasor", doc::DeviceKind::AudioEffect, doc::ops::kOffPath);
+    REQUIRE(e.ok());
+    REQUIRE(st.dispatch(e->command).ok());
+    s.mod = e->devices.at(0);
+  }
   auto w = doc::ops::connectWire(*st.current(), st.ids(), s.mod, "out", s.wt, "warp");
   REQUIRE(w.ok());
   REQUIRE(st.dispatch(w->command).ok());
@@ -2409,7 +2426,7 @@ TEST_CASE("project patch (TX.mod-all): every face and panel param has a control 
       }
     }
   }
-  for (const meta::Type* type : {&meta::phaseAccType(), &meta::wavetableType(), &meta::envelopeType(), &meta::vcaType()}) {
+  for (const meta::Type* type : {&meta::wavetableType(), &meta::envelopeType()}) {
     std::unique_ptr<MetaFace> f = makeFace(*type);
     REQUIRE(f != nullptr);
     f->bind(std::make_unique<DefaultTarget>(*type), nullptr);
@@ -2430,7 +2447,7 @@ TEST_CASE("project patch (TX.mod-all): every face and panel param has a control 
   for (const std::string& s : without) list += "\n  " + s;
   MESSAGE(asked << " params asked (" << shownNow << " of the panels' shown in their default state); " << without.size()
                 << " have no control (a pin when wired):" << list);
-  CHECK(asked > 300);
+  CHECK(asked > 280);  // (GU.4: 292 — Meta Operator, the Phase accumulator and the VCA left with their types)
   CHECK(shownNow > 50);
 }
 

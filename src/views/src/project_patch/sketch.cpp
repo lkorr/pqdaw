@@ -209,8 +209,17 @@ doc::DeviceId phaseAccModule(Runner& r, doc::TrackId t, double freq, double phas
   }
   return ids[0];
 }
-// The head of MIDI track `t`'s path: a Phase Accumulator module (TMM.4's chain accumulator, GU.4's preset).
+// The head of MIDI track `t`'s path: a Phase Accumulator module (TMM.4's chain accumulator, GU.4's preset), in place of
+// the track's lone stock instrument (as adding the meta module at the head replaced it).
 doc::DeviceId phaseAccOn(Runner& r, doc::TrackId t, double freq, double phase, double amp) {
+  if (const doc::Track* tr = doc::findTrackPtr(*r.store.current(), t)) {
+    const doc::MainPath path = doc::mainPath(*r.store.current(), *tr);
+    if (!path.blocks.empty() && path.blocks.front()->kind == doc::DeviceKind::Instrument && !doc::isMetaDevice(*path.blocks.front()) &&
+        !doc::isGroupDevice(*path.blocks.front())) {
+      const doc::DeviceId one[1] = {path.blocks.front()->id};
+      (void)r.run(doc::ops::deleteDevices(*r.store.current(), one));
+    }
+  }
   return phaseAccModule(r, t, freq, phase, amp, 0);
 }
 
@@ -344,21 +353,38 @@ Status buildMetaChainProject(doc::DocumentStore& store, MetaChainIds* ids) {
   using K = doc::DeviceKind;
   const doc::TrackId lead = r.track(doc::TrackKind::Midi, {}, "Meta Lead", 0x3FA9F5);
   const doc::TrackId bass = r.track(doc::TrackKind::Midi, lead, "Meta Bass", 0x8ED36C);
-  for (const doc::TrackId t : {lead, bass}) r.lone(t);
   if (!r.status) return r.status;
-  // Lead: Phase accumulator → Wavetable → Auto Filter (a meta voice run, then the voices summed into the filter).
-  const doc::DeviceId acc = phaseAccOn(r, lead, 0.0, 0.0, 1.0);
-  auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), lead, "wavetable"));
+  for (const doc::TrackId t : {lead, bass}) r.lone(t);
+  // Lead: Wavetable → Auto Filter (a meta voice run, then the voices summed into the filter). GU.4: the Wavetable heads
+  // the path (at the notes its phase input reads the note's phase, as the Phase accumulator before it gave it); a
+  // Phase Accumulator module (a group: its panel) is free beside it, a slow ramp (0.25 Hz) into its warp.
+  const doc::DeviceId lone = doc::mainPath(*store.current(), *doc::findTrackPtr(*store.current(), lead)).blocks.empty()
+                                 ? doc::DeviceId{}
+                                 : doc::mainPath(*store.current(), *doc::findTrackPtr(*store.current(), lead)).blocks.front()->id;
+  auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), lead, "wavetable", 0));
   const doc::DeviceId wt = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
   if (!wt.valid()) return Error{ErrorCode::Unknown, "meta chain project: no Wavetable", {}};
+  if (lone.valid() && doc::findDevice(*store.current(), lone).device != nullptr) {  // (the lone instrument, if not replaced)
+    const doc::DeviceId one[1] = {lone};
+    (void)r.run(doc::ops::deleteDevices(*store.current(), one));
+  }
+  const doc::DeviceId acc = phaseAccModule(r, lead, 0.25, 0.0, 1.0, doc::ops::kOffPath);
+  if (acc.valid()) (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), acc, "", wt, "warp"));
   (void)r.run(doc::ops::setMetaData(*store.current(), wt, "", "wavetable", demoWavetableData()));
   (void)r.run(doc::ops::setMetaParamValue(*store.current(), wt, "", "wavetable", "position", 0.35));
   (void)r.run(doc::ops::setMetaParamValue(*store.current(), wt, "", "wavetable", "warp", 0.3));
   (void)r.device(lead, "auto_filter", K::AudioEffect);
-  // Bass: a detuned Phase accumulator (+1.5 Hz) → a saw Wavetable, nothing after it (the voices sum at the chain end).
-  const doc::DeviceId bacc = phaseAccOn(r, bass, 1.5, 0.0, 1.0);
-  e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), bass, "wavetable"));
+  // Bass: a saw Wavetable at the notes, nothing after it (the voices sum at the chain end). (GU.4: no accumulator.)
+  const doc::DeviceId blone = doc::mainPath(*store.current(), *doc::findTrackPtr(*store.current(), bass)).blocks.empty()
+                                  ? doc::DeviceId{}
+                                  : doc::mainPath(*store.current(), *doc::findTrackPtr(*store.current(), bass)).blocks.front()->id;
+  e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), bass, "wavetable", 0));
   const doc::DeviceId bwt = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
+  if (blone.valid() && doc::findDevice(*store.current(), blone).device != nullptr) {
+    const doc::DeviceId one[1] = {blone};
+    (void)r.run(doc::ops::deleteDevices(*store.current(), one));
+  }
+  const doc::DeviceId bacc{};
   if (bwt.valid()) {
     meta::WavetableData d;
     const AlignedBuffer<float> saw = dsp::basicCycle(dsp::BasicCycle::Saw);
@@ -520,14 +546,17 @@ Status buildGroupProject(doc::DocumentStore& store, GroupProjectIds* ids) {
     auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, type));
     return e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
   };
-  // (GU.4: the Phase accumulators are modules: their group presets on the path.)
-  const doc::DeviceId pa1 = phaseAccModule(r, keys, 110.0, 0.0, 1.0, doc::kAppend);
+  // (GU.4: Envelopes where the Phase accumulators were — a Phase Accumulator is a group preset now, and this project is
+  // about grouping single blocks.)
+  const doc::DeviceId pa1 = meta(keys, "envelope");
   const doc::DeviceId wt = meta(keys, "wavetable");
-  const doc::DeviceId pa2 = phaseAccModule(r, keys, 3.0, 0.0, 1.0, doc::kAppend);
+  const doc::DeviceId pa2 = meta(keys, "envelope");
   if (!r.status) return r.status;
   if (!pa1.valid() || !wt.valid() || !pa2.valid()) return Error{ErrorCode::Unknown, "group project: meta devices", {}};
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), pa1, "", "envelope", "sustain", 0.8));
   (void)r.run(doc::ops::setMetaData(*store.current(), wt, "", "wavetable", demoWavetableData()));
   (void)r.run(doc::ops::setMetaParamValue(*store.current(), wt, "", "wavetable", "position", 0.35));
+  (void)r.run(doc::ops::setMetaParamValue(*store.current(), pa2, "", "envelope", "attack", 0.3));
   const doc::DeviceId lfo = r.device(keys, "lfo_device", K::AudioEffect, doc::ops::kOffPath);
   if (lfo.valid()) {
     r.param(lfo, "rate", 0.5);
@@ -584,10 +613,7 @@ Status buildNestedGroupProject(doc::DocumentStore& store, NestedProjectIds* ids)
     (void)r.run(doc::ops::deleteDevices(*store.current(), del));
   }
   if (!r.status) return r.status;
-  {  // GU.4: the Phase Accumulator module, nested in the instrument group
-    o.pa = phaseAccModule(r, o.keys, 0.0, 0.0, 1.0, doc::ops::kOffPath);
-    if (o.pa.valid()) into(o.pa, o.group);
-  }
+  o.pa = meta(o.keys, "wavetable", o.group);  // (GU.4: a Wavetable reading the note's phase; was a Phase accumulator)
   o.osc = group(o.keys, "Osc", o.group);
   o.wt = meta(o.keys, "wavetable", o.osc);
   o.env = meta(o.keys, "envelope", o.group);
@@ -599,7 +625,7 @@ Status buildNestedGroupProject(doc::DocumentStore& store, NestedProjectIds* ids)
   if (!r.status) return r.status;
   (void)r.run(doc::ops::setMetaData(*store.current(), o.wt, "", "wavetable", demoWavetableData()));
   r.param(o.value, "value", 0.8);
-  wire(o.group, "input", o.pa, "");
+  wire(o.group, "input", o.pa, "x");
   wire(o.pa, "", o.osc, "x");
   wire(o.osc, "input", o.wt, "");
   wire(o.wt, "", o.osc, "output");
@@ -658,8 +684,9 @@ Status buildPanelProject(doc::DocumentStore& store, PanelProjectIds* ids) {
     into(v);
     return v;
   };
-  {  // GU.4: the Phase Accumulator module (a group nested in the instrument group)
-    o.pa = phaseAccModule(r, o.keys, 0.0, 0.0, 1.0, doc::ops::kOffPath);
+  {  // (GU.4: a Wavetable reading the note's phase; was a Phase accumulator, a group preset now)
+    auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), o.keys, "wavetable", doc::ops::kOffPath));
+    o.pa = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
     into(o.pa);
   }
   o.mul = r.device(o.keys, "atom:mul", K::AudioEffect, doc::ops::kOffPath);
@@ -690,7 +717,7 @@ Status buildPanelProject(doc::DocumentStore& store, PanelProjectIds* ids) {
   auto wire = [&](doc::DeviceId a, const char* port, doc::DeviceId b, const char* param) {
     (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), a, port, b, param));
   };
-  wire(o.group, "input", o.pa, "");
+  wire(o.group, "input", o.pa, "x");
   wire(o.pa, "", o.mul, "a");
   wire(o.level, "y", o.mul, "b");
   wire(o.mul, "out", o.group, "output");
@@ -839,16 +866,16 @@ Status buildFreeRackProject(doc::DocumentStore& store, uint32_t lfos, FreeRackId
     (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), lfo, "lfo", chain[t.first], t.second));
     out.lfos.push_back(lfo);
   }
-  {  // GU.4: the Phase Accumulator module (free); the LFO into its Frequency value block
-    doc::PhaseAccumulatorRoles roles;
-    out.acc = phaseAccModule(r, out.lead, 55.0, 0.0, 1.0, doc::ops::kOffPath, &roles);
+  {  // (GU.4: a free Wavetable — one block — where a free Phase accumulator was: a group preset now)
+    auto e = r.run(doc::ops::addMetaDevice(*store.current(), store.ids(), out.lead, "wavetable", doc::ops::kOffPath));
+    out.acc = e && !e->devices.empty() ? e->devices[0] : doc::DeviceId{};
     if (!out.acc.valid()) {
-      if (r.status) return Error{ErrorCode::Unknown, "free rack project: Phase accumulator", {}};
+      if (r.status) return Error{ErrorCode::Unknown, "free rack project: Wavetable", {}};
       return r.status;
     }
-    (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.acc, "", out.filter, "sc"));
-    if (!out.lfos.empty())
-      (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.lfos.front(), "lfo", roles.freq, std::string(doc::kValueParam)));
+    (void)r.run(doc::ops::setMetaParamValue(*store.current(), out.acc, "", "wavetable", "position", 0.4));
+    (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.acc, "out", out.filter, "sc"));
+    if (!out.lfos.empty()) (void)r.run(doc::ops::connectWire(*store.current(), store.ids(), out.lfos.front(), "lfo", out.acc, "position"));
   }
   r.clip(out.lead, 0, 4 * kTicksPerWhole, "Riff", {0, 3, 7});
   if (ids != nullptr) *ids = std::move(out);

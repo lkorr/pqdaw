@@ -200,10 +200,8 @@ TEST_CASE("circuit: every stdlib patch opens laid out without overlaps, wires or
         CHECK(scene->autoPlaced == p.nodeCount());  // stdlib files store no layout: everything auto-placed
         checkScene(*scene, fs::path(file).filename().string() + ":" + p.name());
       } else {
-        // TMM.12: the Meta Operator stores a hand-made layout for what its settings show (the algorithms' other arms
-        // share places: one is visible at a time): its visible scene at the defaults is checked.
-        CHECK(p.name() == "meta_operator");
-        checkScene(*buildDeviceScene(p, {}), fs::path(file).filename().string() + ":" + p.name());
+        // (TMM.12's Meta Operator stored a hand-made layout; GU.4 deleted it: no stdlib patch stores one now.)
+        FAIL_CHECK(fs::path(file).filename().string() << ":" << p.name() << " stores a layout");
       }
       ++patches;
     }
@@ -287,46 +285,6 @@ TEST_CASE("circuit: hand-placed nodes and routing points off the 4-unit grid ope
           CHECK_FALSE((na.x < nb.x + nb.w && nb.x < na.x + na.w && na.y < nb.y + nb.h && nb.y < na.y + na.h));
         }
     }
-}
-
-TEST_CASE("circuit: the Meta Operator with a node moved off the grid (env at y 61) opens in bounded time (TMM.12-fix2)") {
-  const auto doc = load(stdlibPath("devices/meta_operator.pqp"));
-  const graph::Patch* stock = doc->parsed.file.find("meta_operator");
-  REQUIRE(stock != nullptr);
-  const graph::NodeIndex envD = *stock->findByName("envD");
-  REQUIRE(stock->layout(envD).placed);
-  // The stored layout places every node. As during its development (Q178 8), some nodes are left unplaced (the D row's
-  // `nD`, `accD`, `wtD`) and envD sits off the grid: at its own place and on each unplaced node's automatic place, so
-  // that node is pushed below it.
-  const char* unplacedNames[] = {"nD", "accD", "wtD"};
-  std::vector<graph::NodeIndex> unplaced;
-  for (const char* name : unplacedNames) unplaced.push_back(*stock->findByName(name));
-  graph::Patch bare = *stock;  // the automatic places (completeLayout's own automatic layout of the whole patch)
-  for (graph::NodeIndex v = 0; v < bare.nodeCount(); ++v) bare.setLayout(v, graph::NodeLayout{});
-  graph::Patch laid;
-  (void)buildScene(bare, {}, &laid);
-  std::vector<graph::Point2> places = {{608, 61}, {608, 62}, {609, 63}, {-611, -61}};
-  for (const graph::NodeIndex v : unplaced) {
-    places.push_back({laid.layout(v).x + 1.0f, laid.layout(v).y + 1.0f});
-    places.push_back({laid.layout(v).x, laid.layout(v).y - 3.0f});
-  }
-  for (const graph::Point2& place : places) {
-    const float x = place.x, y = place.y;
-    auto p = std::make_shared<graph::Patch>(*stock);
-    for (const graph::NodeIndex v : unplaced) p->setLayout(v, graph::NodeLayout{});
-    graph::NodeLayout l = p->layout(envD);
-    l.x = x;
-    l.y = y;
-    p->setLayout(envD, l);
-    CAPTURE(x);
-    CAPTURE(y);
-    auto out = std::make_shared<std::shared_ptr<const CircuitScene>>();
-    const bool done = finishesWithin(std::chrono::seconds(30), [p, out] { *out = buildDeviceScene(*p, {}); });
-    REQUIRE_MESSAGE(done, "buildDeviceScene did not return");
-    REQUIRE(*out != nullptr);
-    CHECK((*out)->nodes[envD].x == x);
-    CHECK((*out)->nodes[envD].y == y);
-  }
 }
 
 TEST_CASE("circuit: tidy, then the layout spliced into the file text reads back identically (byte-stable)") {

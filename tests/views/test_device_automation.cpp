@@ -443,16 +443,19 @@ TEST_CASE("knob curves (views): a knob's Knob Curve submenu switches its curve, 
   // A bool control has no curve; a rack's macro neither.
   CHECK_FALSE(knobCurveMenu(u.ctx, u.filter, "lfoSync").has_value());
   CHECK_FALSE(knobCurveMenu(u.ctx, u.rack, "macro0").has_value());
-  // A meta module's continuous param has one (the Phase accumulator's frequency bar: Octave by default); the VCA's knob,
-  // whose curve is its own curve box, none.
-  const doc::DeviceId pa = u.run(doc::ops::addMetaDevice(*u.ctx.doc(), u.ctx.store().ids(), u.bass, "phase_acc", 0)).devices[0];
-  const doc::DeviceId vca = u.run(doc::ops::addMetaDevice(*u.ctx.doc(), u.ctx.store().ids(), u.bass, "vca")).devices[0];
-  const std::optional<MenuItem> paMenu = knobCurveMenu(u.ctx, pa, "freq");
-  REQUIRE(paMenu.has_value());
-  CHECK(paMenu->submenu.front().label == "Octave (default)");
-  CHECK(knobCurveMenu(u.ctx, pa, "pitch").has_value());  // linear (cents) by default
-  CHECK_FALSE(knobCurveMenu(u.ctx, vca, "value").has_value());
-  CHECK_FALSE(knobCurveMenu(u.ctx, vca, "min").has_value());
+  // A meta module's continuous param has one (the Envelope's attack: exp0, listed as Octave, by default; GU.4: it was
+  // the Phase accumulator's frequency bar). The VCA (a module now) has no knob of its own law any more: its value
+  // block's knob takes the curve menu like any control (its curve is edited in its panel's curve editor too).
+  const doc::DeviceId env = u.run(doc::ops::addMetaDevice(*u.ctx.doc(), u.ctx.store().ids(), u.bass, "envelope", 0)).devices[0];
+  const std::optional<MenuItem> envMenu = knobCurveMenu(u.ctx, env, "attack");
+  REQUIRE(envMenu.has_value());
+  CHECK(envMenu->submenu.front().label == "Octave (default)");
+  CHECK(knobCurveMenu(u.ctx, env, "sustain").has_value());  // linear by default
+  const doc::DeviceId valueBlock =
+      u.run(doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.bass, std::string(doc::kValueDevice), doc::DeviceKind::AudioEffect,
+                                doc::ops::kOffPath))
+          .devices[0];
+  CHECK(knobCurveMenu(u.ctx, valueBlock, std::string(doc::kValueParam)).has_value());
 }
 
 TEST_CASE("render: device-knob-curves matches the golden image") {

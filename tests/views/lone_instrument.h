@@ -8,12 +8,14 @@
 
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "pq/document/store.h"
 
 namespace view_fixture {
 
+// GU.4: the group on the track's main path (its instrument group), not a module's group (a Phase Accumulator, a VCA).
 inline void loneInstrument(pq::doc::DocumentStore& st, const pq::doc::DeviceLibrary& lib, pq::doc::TrackId t) {
-  for (const pq::doc::DevicePtr& d : pq::doc::findTrackPtr(*st.current(), t)->devices)
+  for (const pq::doc::Device* d : pq::doc::mainPath(*st.current(), *pq::doc::findTrackPtr(*st.current(), t)).blocks)
     if (pq::doc::isGroupDevice(*d)) {
       auto e = pq::doc::ops::ungroupInCircuit(st.current(), st.ids(), lib, d->id);
       REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));

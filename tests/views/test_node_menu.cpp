@@ -25,7 +25,7 @@
 #include "pq/document/meta.h"
 #include "pq/graph/atoms.h"
 #include "pq/meta/registry.h"
-#include "pq/meta/vca.h"
+#include "pq/document/modules.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
 #include "pq/ui/test_driver.h"
@@ -231,6 +231,13 @@ struct Ui {
       for (const doc::DevicePtr& d2 : t.devices)
         if (d2->id.value > best.value) best = d2->id;
     });
+    // GU.4: a module spawns its group with its blocks after it: the newest block is the module's group.
+    for (const doc::Device* b = device(best); b != nullptr && b->group.valid();) {
+      const doc::Device* g = device(b->group);
+      if (g == nullptr || doc::findModule(g->name) == nullptr) break;
+      best = g->id;
+      b = g;
+    }
     return best;
   }
 };
@@ -259,7 +266,9 @@ TEST_CASE("node catalog: every atom, meta module, stock device and rack; project
   CHECK(projectCat->find("device:BasicSynth")->category == NodeCategory::Instruments);
   CHECK_FALSE(projectCat->find("device:BasicSynth")->hasIn);
   CHECK(projectCat->find("device:utility")->hasIn);
-  CHECK(projectCat->find("meta:vca")->hasIn);
+  CHECK(projectCat->find("module:vca")->hasIn);  // GU.4: the VCA is a module (its group preset)
+  CHECK(projectCat->find("meta:vca") == nullptr);
+  CHECK(projectCat->find("module:phase_acc")->category == NodeCategory::MetaModules);
   // Every atom offered at the project level is a device that resolves (a free device of that one atom).
   size_t atoms = 0;
   for (const NodeEntry& e : projectCat->entries) {
@@ -285,7 +294,7 @@ TEST_CASE("node catalog: typed specs — literals, operators with an operand, at
   CHECK(nodeSpecValid("440Hz", NodeCatalog::Scope::Project));
   CHECK(nodeSpecValid("* 2", NodeCatalog::Scope::Project));
   CHECK(nodeSpecValid("param cutoff = 1kHz", NodeCatalog::Scope::Project));
-  CHECK(nodeSpecValid("meta_vca", NodeCatalog::Scope::Project));
+  CHECK(nodeSpecValid("meta_wavetable", NodeCatalog::Scope::Project));  // (GU.4: was meta_vca, a module now)
   CHECK_FALSE(nodeSpecValid("in x : audio", NodeCatalog::Scope::Project));  // a port, not a node
   CHECK(nodeSpecValid("in x : audio", NodeCatalog::Scope::Circuit));
   CHECK_FALSE(nodeSpecValid("no_such_thing", NodeCatalog::Scope::Project));
@@ -358,9 +367,9 @@ TEST_CASE("node search: fuzzy over names, aliases and descriptions; categories; 
   }
   // Recent: newest first.
   clearRecentNodes();
-  noteRecentNode("meta:vca");
+  noteRecentNode("module:vca");
   noteRecentNode("device:utility");
-  noteRecentNode("meta:vca");
+  noteRecentNode("module:vca");
   const auto rec = recentNodes();
   const auto hits = searchNodes(*c, "", NodeTab::Recent, NodeFilter::None, rec);
   REQUIRE(hits.size() == 2);
@@ -1073,7 +1082,8 @@ TEST_CASE("node menu: a cable from an output dropped on empty space spawns a nod
   CHECK(u.history() == h0 + 1);
   const doc::DeviceId vca = u.newest();
   REQUIRE(u.device(vca) != nullptr);
-  CHECK(u.device(vca)->patch == "meta:vca");
+  CHECK(doc::isGroupDevice(*u.device(vca)));  // GU.4: the VCA module's group
+  CHECK(u.device(vca)->name == "VCA");
   CHECK(all_free::offPath(*u.ctx.doc(), vca));
   const MainPorts mp = u.view().mainPorts(vca);
   REQUIRE_FALSE(mp.in.empty());
@@ -1108,7 +1118,8 @@ TEST_CASE("node menu: W + drag out of a param pin is a backwards cable — onto 
   CHECK(u.history() == h0 + 2);
   const doc::DeviceId acc = u.newest();
   REQUIRE(u.device(acc) != nullptr);
-  CHECK(u.device(acc)->patch == "meta:phase_acc");
+  CHECK(doc::isGroupDevice(*u.device(acc)));  // GU.4: the Phase Accumulator module's group
+  CHECK(u.device(acc)->name == "Phase Accumulator");
   CHECK(u.wired(acc, u.view().mainPorts(acc).out, u.util, "gain"));
   for (int i = 0; i < 2; ++i) REQUIRE(u.ctx.undo());
   CHECK(u.history() == h0);
@@ -1118,11 +1129,8 @@ TEST_CASE("node menu: Z over a chain cable inserts a VCA at 1 in the chain; over
   Ui u;
   const size_t h0 = u.history();
   const doc::Snapshot start = u.ctx.doc();
-  // A VCA at its default is x1 (the sound is unchanged).
-  {
-    const meta::VcaLaw law = meta::vcaLaw(meta::VcaCurve::Log, -meta::kVcaRange, meta::kVcaRange, 0.4, 0.0);
-    CHECK(meta::vcaValue(law, meta::kVcaDefaultPos) == doctest::Approx(1.0));
-  }
+  // A VCA at its default is x1 (the sound is unchanged): GU.4, its module's knob at 0.7 on the VCA's law.
+  CHECK(dsp::evalCurve(doc::vcaCurve(), 0.7) == doctest::Approx(1.0).epsilon(1e-9));
   // The chain cable Utility → Saturator.
   u.d.move(u.onCable(u.chainEdge(u.util, u.sat)));
   u.d.keyDown('z');
@@ -1133,8 +1141,8 @@ TEST_CASE("node menu: Z over a chain cable inserts a VCA at 1 in the chain; over
   REQUIRE(list.size() == 4);
   CHECK(list[1] == u.util);
   REQUIRE(u.device(list[2]) != nullptr);
-  CHECK(u.device(list[2])->patch == "meta:vca");
-  CHECK(u.device(list[2])->params.empty());  // the type's default: value 0.7 (x1)
+  CHECK(doc::isGroupDevice(*u.device(list[2])));  // the VCA module (its knob at 0.7: x1)
+  CHECK(u.device(list[2])->name == "VCA");
   CHECK(list[3] == u.sat);
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
   // The LFO's wire into the Utility's gain: LFO → VCA → gain, the VCA free.
@@ -1207,7 +1215,7 @@ TEST_CASE("node menu: Tab over a cable inserts the chosen node — in and out, o
   u.view().sync();
   CHECK(u.history() == h0 + 3);
   REQUIRE(u.device(u.path(u.keys).front()) != nullptr);
-  CHECK(u.device(u.path(u.keys).front())->patch == "meta:vca");
+  CHECK(u.device(u.path(u.keys).front())->name == "VCA");
   CHECK(u.path(u.keys).at(1) == u.synth);
   for (int i = 0; i < 3; ++i) REQUIRE(u.ctx.undo());
   CHECK(u.history() == h0);
@@ -1388,15 +1396,15 @@ TEST_CASE("node menu: the circuit editor — Tab at the pointer, an atom, a meta
       }
     CHECK(found);
   }
-  // A meta module: its call.
+  // A meta module: its call. (GU.4: the Envelope; the VCA is a module now, a project block.)
   d.move(at);
   REQUIRE(d.press("Tab") == KeyResult::Widget);
-  d.type("vca");
+  d.type("envelope");
   REQUIRE(menuOf() != nullptr);
   REQUIRE(menuOf()->highlightedEntry() != nullptr);
   d.press("Return");
   d.step();
-  CHECK_MESSAGE(ed->document().text().find("meta_vca(") != std::string::npos, ed->status() << " | " << ed->document().text());
+  CHECK_MESSAGE(ed->document().text().find("meta_envelope(") != std::string::npos, ed->status() << " | " << ed->document().text());
   // `* 2`: the multiply and its literal operand, one history step.
   const size_t steps = ed->document().historySize();
   d.move(at);

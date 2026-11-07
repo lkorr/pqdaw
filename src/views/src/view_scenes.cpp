@@ -51,6 +51,17 @@
 namespace pq::views {
 
 namespace {
+
+// GU.4: the scenes show each built-in module (a Phase Accumulator, a VCA: a group preset, open by default in the view)
+// closed — one block drawn as its panel, where the old meta faces were.
+void closeModules(project_patch::ProjectPatchView& v) {
+  std::vector<doc::DeviceId> modules;
+  doc::forEachTrack(*v.context().doc(), [&](const doc::Track& t, const doc::Track*) {
+    for (const doc::DevicePtr& d : t.devices)
+      if (doc::isGroupDevice(*d) && doc::findModule(d->name) != nullptr) modules.push_back(d->id);
+  });
+  for (const doc::DeviceId g : modules) v.setGroupOpen(g, false);
+}
 // TMM.13-fix2 (MM review "UI and aesthetic" 8): synthetic Phase accumulator voices play an A major chord (A3 C#4 E4
 // A4 E3 C#5): increments at 48 kHz, so each voice is drawn in the colour of a real note (they were all 0 Hz: red).
 constexpr double kSceneRate = 48000.0;
@@ -1188,6 +1199,7 @@ Status setupProjectPatch(Shell& shell, bool band) {
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch: the view is not installed", {}};
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   if (band) {
     const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
@@ -1254,6 +1266,7 @@ Status setupProjectPatchZoom(Shell& shell) {
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-zoom: the view is not installed", {}};
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
   if (keys == nullptr) return Error{ErrorCode::NotFound, "project-patch-zoom: no Keys track", {}};
@@ -1289,6 +1302,7 @@ Status setupProjectPatchLanes(Shell& shell) {
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-lanes: the view is not installed", {}};
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->setLaneTime(0, 2 * v->laneDefaultSpan());
   const project_patch::ProjectPatch& pp = v->patch();
@@ -1338,6 +1352,7 @@ Status setupProjectPatchLaneEdit(Shell& shell) {
   if (!store.dispatch(doc::AddAutomationLane{padId, lane}).ok()) return Error{ErrorCode::Unknown, "project-patch-lane-edit: lane", {}};
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->setLaneTime(0, 2 * v->laneDefaultSpan());  // 8 bars: twice the default width
   const project_patch::ProjectPatch& pp = v->patch();
@@ -1641,6 +1656,7 @@ Status setupProjectMetaFaces(Shell& shell) {
   };
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->rebindFaces();
   v->fitAll(false);
@@ -1680,6 +1696,7 @@ Status setupProjectMetaWavetable(Shell& shell) {
   };
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->setDeviceExpanded(pair, true);
   shell.tree().layoutNow();
@@ -1748,6 +1765,7 @@ Status setupProjectMetaChain(Shell& shell) {
   };
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->rebindFaces();
   v->focusBand(ids.lead, false);
@@ -1785,6 +1803,7 @@ Status setupProjectPatchFree(Shell& shell) {
   if (Status s = run(doc::ops::connectWire(*ctx.doc(), ctx.store().ids(), ids.acc, "", util, "x")); !s) return s;
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->rebindFaces();
   v->focusBand(ids.lead, false);
@@ -1904,6 +1923,7 @@ Status setupProjectPatchPanels(Shell& shell) {
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-panels: the view is not installed", {}};
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->focusBand(keys, false);
   shell.tree().layoutNow();
@@ -1953,6 +1973,7 @@ Status setupProjectPatchNotes(Shell& shell) {
   };
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->rebindFaces();
   v->focusBand(ids.lead, false);  // near enough for the outputs' names; Bass's wire arrives from below
@@ -1994,6 +2015,7 @@ Status setupProjectPatchResize(Shell& shell) {
   };
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   (void)v->setBlockScale(ids.wt, 1.5f);
   (void)v->setBlockScale(filter, 1.25f);
@@ -2071,6 +2093,7 @@ Status setupProjectPatchGroup(Shell& shell) {
   const doc::Track* bass = doc::findTrackPtr(*shell.context().doc(), ids.bass);
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   for (const doc::DevicePtr& d : bass->devices)
     if (doc::isGroupDevice(*d)) v->setGroupOpen(d->id, false);
@@ -2092,6 +2115,7 @@ Status setupProjectPatchNested(Shell& shell) {
   if (v == nullptr) return Error{ErrorCode::NotFound, "nested groups: the view is not installed", {}};
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->setGroupOpen(ids.level, false);
   v->selectGroup({});
@@ -2111,6 +2135,7 @@ Status setupProjectPatchGroupPanel(Shell& shell) {
   if (v == nullptr) return Error{ErrorCode::NotFound, "group panel: the view is not installed", {}};
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->setGroupOpen(ids.group, false);
   v->selectGroup({});
@@ -2287,6 +2312,7 @@ Status setupProjectMetaEnvelope(Shell& shell) {
   };
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->setDeviceExpanded(inst, true);
   shell.tree().layoutNow();
@@ -2387,6 +2413,7 @@ Status setupProjectMetaSpectrum(Shell& shell) {
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-spectrum: the view is not installed", {}};
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->rebindFaces();
   v->focusBand(ids.keys, false);
@@ -2549,6 +2576,7 @@ Status setupProjectCablesAt(Shell& shell, double zoom, bool glow) {
   }
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->rebindFaces();
   v->focusBand(id, false);
@@ -2612,6 +2640,7 @@ Status setupProjectMetaScope(Shell& shell) {
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-scope: the view is not installed", {}};
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->rebindFaces();
   v->focusBand(ids.track, false);
@@ -2778,6 +2807,7 @@ Status setupProjectMetaSpectrogram(Shell& shell) {
   if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-spectrogram: the view is not installed", {}};
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->rebindFaces();
   v->focusBand(ids.track, false);
@@ -2804,6 +2834,7 @@ Status setupProjectMetaVca(Shell& shell) {
   };
   shell.tree().layoutNow();
   v->setShown(true, false);
+  closeModules(*v);
   shell.tree().layoutNow();
   v->setDeviceExpanded(inst, true);
   shell.tree().layoutNow();

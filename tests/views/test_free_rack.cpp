@@ -362,7 +362,7 @@ TEST_CASE("free rack: the cables — the chain's path, wires into inputs, onto k
   REQUIRE(u.cable(sc) != nullptr);
   CHECK(u.cable(sc)->input);
   CHECK(u.cable(sc)->bDocked);
-  CHECK(u.cable(u.wireBetween(u.ids.lfos[0], u.ids.acc, "freq")) == nullptr);
+  CHECK(u.cable(u.wireBetween(u.ids.lfos[0], u.ids.acc, "position")) == nullptr);
   doc::WireId notes;
   for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc()))
     if (w.fromNoteSource()) notes = w.id;

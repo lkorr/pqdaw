@@ -14,6 +14,7 @@
 
 #include "lone_instrument.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/modules.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
 #include "pq/ui/test_driver.h"
@@ -81,6 +82,12 @@ struct Ui {
     shell = std::move(*s);
     d.tree().layoutNow();
     view().setShown(true, false);
+    // GU.4: a fixture's Phase accumulator and VCA load as their modules (groups, open by default): closed, each is one
+    // block (drawn as its panel), as the old meta blocks were.
+    doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+      for (const doc::DevicePtr& dv : t.devices)
+        if (doc::isGroupDevice(*dv) && doc::findModule(dv->name) != nullptr) view().setGroupOpen(dv->id, false);
+    });
     d.tree().layoutNow();
   }
   ~Ui() { d.tree().setRoot(std::make_unique<Widget>()); }
@@ -508,6 +515,22 @@ TEST_CASE("cables: hit tests follow the hanging curve (within 4 px), not the cho
   u.settle();
   // Over a face's control a cable yields to the control (a press there turns it) but for its plug.
   Ui m(fixture());
+  {  // GU.4: the fixture's cable onto a face control (the VCA into the Phase accumulator's frequency) ends on the
+     // accumulator module's Frequency value block now; one onto the Wavetable's position control stands in for it.
+    const doc::Device* env = nullptr;
+    const doc::Device* wt = nullptr;
+    doc::forEachTrack(*m.ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+      for (const doc::DevicePtr& d : t.devices) {
+        if (d->patch == "meta:envelope") env = d.get();
+        if (d->patch == "meta:wavetable") wt = d.get();
+      }
+    });
+    REQUIRE(env != nullptr);
+    REQUIRE(wt != nullptr);
+    auto e = doc::ops::connectWire(*m.ctx.doc(), m.ctx.store().ids(), env->id, "out", wt->id, "position");
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(m.ctx.store().dispatch(e->command).ok());
+  }
   m.view().rebindFaces();
   doc::TrackId midi;
   doc::forEachTrack(*m.ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
