@@ -696,7 +696,7 @@ Each task's full description and acceptance criteria are in docs/plans/MM.md und
 
 Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly in order (each phase owns its part of the group drawing; every panel is built once, on the group it ends up on).
 - [x] **GU.1 Curves: segment curves owned by controls, knob position stored, native curve atom** *(merged eb327ad7; Q219; lighter verification at the user's request; meta-cables render −117 dBFS vs the −120 bound, accepted by the orchestrator)* (plan §Phases 1).
-- [ ] **GU.2 Nested groups, atom and value blocks, group presets** (plan §Phases 2).
+- [x] **GU.2 Nested groups, atom and value blocks, group presets** *(merged 3956673e; Q220; lighter verification at the user's request, slow tier not run)* (plan §Phases 2).
 - [ ] **GU.3 Panel model (from PanelDesc), generic elements, collapsed group drawn as its panel** (plan §Phases 3). 👁
 - [ ] **GU.4 Phase Accumulator and VCA as group presets with panels; Meta Operator deleted** (plan §Phases 4). 👁
 - [ ] **GU.5 The panel window and send-to-panel** (plan §Phases 5). 👁
