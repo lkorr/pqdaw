@@ -1510,3 +1510,6 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Verified (worker): build.ps1 -NoTests (check) 0 warnings; views 572, ui 186, app 34, document 184 cases pass; new test_panel_gestures (real dispatch on a leaf and a group knob). 6 goldens re-recorded.
 - Perf: n/a. CPU-efficiency check: per-element damage via Element::liveKey (a value change damages only its control); voice polling only while live.
 - Notes/blockers: rack macros get no ring and are not cable targets; unmapped macros have no block.
+
+## 2026-11-07 · GU milestone · orchestrator
+- Verified: ./scripts/build.ps1 -Full on main 87c1f687 (check, default + slow; CMAKE_BUILD_PARALLEL_LEVEL=6, CTEST_PARALLEL_LEVEL=4 after an earlier run was stopped for low memory): 0 warnings, 88/88 entries passed (436 s).
