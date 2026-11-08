@@ -175,7 +175,7 @@ $result = [pscustomobject]@{
   Targets   = $(if ($all) { @() } else { $targets })
   TestRegex = $(if ($all -or -not $patterns) { '' } else { '^(' + ($patterns -join '|') + ')$' })
 }
-if ($all) { Say 'affected: EVERYTHING (whole suite, default + slow)' }
+if ($all) { Say 'affected: EVERYTHING (whole suite; default tier, -Slow adds slow)' }
 elseif (-not $result.Targets -and -not $result.TestRegex) { Say 'affected: nothing to build or test' }
 else {
   Say "affected: build $($result.Targets -join ' ')"
