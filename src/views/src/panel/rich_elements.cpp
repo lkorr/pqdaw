@@ -742,7 +742,7 @@ private:
     startCurve_ = curve_;
     startMarks_ = marks_;
     pair_ = (e.mods & ui::mod::kCtrl) == 0;
-    if (part == kKnob) dragT_ = pos_;
+    if (part == kKnob) dragT_ = anchorT_ = pos_, coarse_ = 0.0;
     else if (part == kMinText) dragT_ = dsp::curvePosition(endScale(), curve_.min, 0.5);
     else if (part == kMaxText) dragT_ = dsp::curvePosition(endScale(), curve_.max, 0.5);
     else if (part == kCurveBox) dragT_ = 0.0;
@@ -789,12 +789,23 @@ private:
       t.setCurve(b, c);
       return;
     }
-    dragT_ = std::clamp(dragT_ + dy / span * fine, 0.0, 1.0);
     if (dragPart_ == kKnob) {
+      // TX.detent: the coarse travel since the anchor goes through the curve's detents (pq/dsp/curve.h "Detents"); a
+      // fine (Shift) move ignores them and moves the anchor, and so does a limit (reversing there moves at once).
+      if (fine < 1.0) {
+        dragT_ = anchorT_ = std::clamp(dragT_ + dy / span * fine, 0.0, 1.0);
+        coarse_ = 0.0;
+      } else {
+        coarse_ += dy / span;
+        const double p = dsp::detentDrag(curve_, anchorT_, coarse_, detentZone(e, span));
+        dragT_ = std::clamp(p, 0.0, 1.0);
+        if (dragT_ != p) anchorT_ = dragT_, coarse_ = 0.0;
+      }
       begin(t, "Set Value");
       t.setPosition(b, dragT_);
       return;
     }
+    dragT_ = std::clamp(dragT_ + dy / span * fine, 0.0, 1.0);
     const double v = roundSig(dsp::evalCurve(endScale(), dragT_));
     const dsp::Curve c = withRange(dragPart_ == kMinText ? std::min(v, curve_.max) : curve_.min, dragPart_ == kMaxText ? std::max(v, curve_.min) : curve_.max);
     if (c == curve_) return;
@@ -877,6 +888,7 @@ private:
   bool begun_ = false, pair_ = true, open_ = false, over_ = false;
   Vec2 last_{0.0f, 0.0f};
   double dragT_ = 0.0;
+  double anchorT_ = 0.0, coarse_ = 0.0;  // TX.detent: the knob drag's anchor and its coarse travel since
   std::string editText_;
   dsp::Curve startCurve_;
   std::vector<Mark> startMarks_;
@@ -997,9 +1009,8 @@ public:
       const std::string_view ax = txt("drag", "vertical");
       const float dx = ax == "vertical" ? 0.0f : 1.0f, dy = ax == "horizontal" ? 0.0f : 1.0f;
       const float px = static_cast<float>(num("dragPx", 150.0)) * e.uiScale;
-      const double fine = (e.mods & ui::mod::kShift) != 0 ? 0.1 : 1.0;
       const double d = (static_cast<double>(e.device.x) - startDev_.x) * dx - (static_cast<double>(e.device.y) - startDev_.y) * dy;
-      double p = start_[0] + d * fine / std::max(4.0, static_cast<double>(px));
+      double p = travelled(t, e, 0, d, px);  // (Shift: fine; TX.detent: held at the curve's detents)
       if (t.info(*b).curve.mode == dsp::CurveMode::Wrap) p -= std::floor(p);
       t.setPosition(*b, quantise(t, std::clamp(p, 0.0, 1.0)));
       return true;

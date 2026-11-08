@@ -6,7 +6,9 @@
 //   drag a segment's handle bends that segment (its middle follows the pointer up / down); a straight segment becomes a
 //                           Power segment at the first bend (a new class: the one recompile of that drag)
 //   double-click the curve  adds a point there (≤ 16 segments); double-click a point: removes it
-//   right-click             the segment's shape (Linear, Exponential, Logarithmic, Power, S-curve) and the presets
+//   right-click             the segment's shape (Linear, Exponential, Logarithmic, Power, S-curve) and the presets;
+//                           on an inner point first its Detent toggle (TX.detent: a knob drag sticks there; drawn as
+//                           a ring round the point and a notch on the plot's floor)
 // Each drag or menu choice is one undo step.
 
 #include <algorithm>
@@ -98,6 +100,10 @@ public:
     for (uint32_t i = 0; i <= c.segments; ++i) {
       const Vec2 q = toLocal(c.points[i].t, c.points[i].y);
       const bool hot = (drag_ == Drag::Point && index_ == i) || (hoverKind_ == Drag::Point && hoverIndex_ == i);
+      if (c.points[i].detent && i > 0 && i < c.segments) {  // TX.detent: a ring round it, a notch on the floor
+        p.line({q.x, r.y1 - 3.0f}, {q.x, r.y1}, 1.4f, th.face.handle);
+        p.ring(q, hot ? 5.6f : 4.8f, 1.1f, th.face.handle);
+      }
       p.disc(q, hot ? 3.8f : 3.0f, ui::mulAlpha(th.face.body, 0.9f));
       p.disc(q, hot ? 2.9f : 2.2f, hot ? th.face.handle : accent);
     }
@@ -123,7 +129,8 @@ public:
       uint32_t i = 0;
       grab(c, e, k, i);
       if (e.button == ui::PointerButton::Right) {
-        openMenu(t, *b, c, e, k == Drag::Bend ? static_cast<int32_t>(i) : segmentAt(c, fromLocal(e.local).x));
+        const int32_t point = k == Drag::Point && i > 0 && i < c.segments ? static_cast<int32_t>(i) : -1;
+        openMenu(t, *b, c, e, k == Drag::Bend ? static_cast<int32_t>(i) : segmentAt(c, fromLocal(e.local).x), point);
         return true;
       }
       if (e.button != ui::PointerButton::Left) return false;
@@ -183,7 +190,7 @@ public:
   void describe(const PanelTarget& t, std::string& title, std::string& body) const override {
     title = "Curve · " + labelText(t);
     body = "Drag a point to move it, a segment's handle to bend it; double-click to add or remove a point; right-click "
-           "for the segment's shape and the presets.";
+           "for the segment's shape and the presets (on a point: Detent, where a knob drag sticks).";
   }
 
   // Tests: where point i / segment i's bend handle is (element-local).
@@ -269,11 +276,23 @@ private:
     n.segments = static_cast<uint8_t>(c.segments - 1);
     once(t, b, n, "Remove Curve Point");
   }
-  void openMenu(PanelTarget& t, const doc::Binding& b, const dsp::Curve& c, const FacePointer& e, int32_t segment) {
+  void openMenu(PanelTarget& t, const doc::Binding& b, const dsp::Curve& c, const FacePointer& e, int32_t segment,
+                int32_t point = -1) {
     ui::Widget* host = t.menuHost();
     if (host == nullptr) return;
     std::vector<ui::MenuItem> items;
     PanelTarget* target = &t;
+    if (point > 0) {  // TX.detent: an inner point's detent flag (no class change: a Param step)
+      const auto i = static_cast<uint32_t>(point);
+      ui::MenuItem m = ui::MenuItem::item("Detent", [target, b, c, i] {
+        dsp::Curve n = c;
+        n.points[i].detent = !c.points[i].detent;
+        once(*target, b, n, n.points[i].detent ? "Set Detent" : "Clear Detent");
+      });
+      m.checked = c.points[i].detent;
+      items.push_back(std::move(m));
+      items.push_back(ui::MenuItem::sep());
+    }
     if (segment >= 0) {
       const uint32_t i = static_cast<uint32_t>(segment);
       for (uint32_t k = 0; k < dsp::kCurveShapeCount; ++k) {

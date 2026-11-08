@@ -146,7 +146,18 @@ dsp::Curve phaseAccumulatorCurve(std::string_view control) {
     c.mode = dsp::CurveMode::Wrap;
     return c;
   }
-  if (control == kPaAmplitude) return dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, 4.0);
+  if (control == kPaAmplitude) {
+    // TX.detent: ×1 at the centre of the travel, a detent: 0 … 1 over the first half, 1 … 4 over the second, both
+    // straight (a piecewise-linear curve: a wire still adds in amplitude). The point's value is exactly 1 (0.25 · 4).
+    dsp::Curve c = dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, 4.0);
+    c.segments = 2;
+    c.points[0] = {0.0, 0.0};
+    c.points[1] = {0.5, 0.25, true};
+    c.points[2] = {1.0, 1.0};
+    c.shapes[0] = c.shapes[1] = {dsp::CurveShape::Linear, 0.0};
+    c.preset = dsp::CurvePreset::Custom;
+    return c;
+  }
   if (control == kPaPitch) {
     // GU.5b: the old face's pitch arc scale — ±12 semitones over the middle half of the travel, the rest of ±4 octaves
     // over the outer quarters (straight segments: a wire still adds in cents).
@@ -158,6 +169,7 @@ dsp::Curve phaseAccumulatorCurve(std::string_view control) {
     c.points[3] = {1.0, 1.0};
     c.shapes[0] = c.shapes[1] = c.shapes[2] = {dsp::CurveShape::Linear, 0.0};
     c.preset = dsp::CurvePreset::Custom;
+    (void)dsp::setCurveDetent(c, 0.5);  // TX.detent: 0 cents (the middle segment split there: still straight)
     return c;
   }
   return dsp::curvePreset(dsp::CurvePreset::Linear, 1.0, 1.0);  // kPaReference: a constant 1
@@ -632,6 +644,12 @@ dsp::Curve gainDb(double min, double max) {
   return c;
 }
 
+// TX.detent: `c` with a detent where it has `value` (in its units: dB for a gain), its neutral value.
+dsp::Curve detent(dsp::Curve c, double value) {
+  (void)dsp::setCurveDetent(c, dsp::curvePosition(c, dsp::curveOutput(c, value), 0.5));
+  return c;
+}
+
 // Elements: a control bound to a value block (labelled by the block's name unless a style field says otherwise).
 PanelElement control(uint32_t id, const char* kind, float x, float y, float w, float h, const Sig& v) {
   return element(id, kind, x, y, w, h, controlBinding(v.dev, std::string(kValueParam)));
@@ -666,12 +684,12 @@ BlockSet utilityBlocks(IdSource& ids, const StockModuleOptions& o) {
   // The controls (the old device's params; the panel's labels are the blocks' names).
   const Sig chan = k.val("Channel Mode", stepped(4), 0.0);
   const Sig invL = k.val("Phase L", stepped(2), 0.0), invR = k.val("Phase R", stepped(2), 0.0);
-  const Sig width = k.val("Width", linear(0.0, 4.0, dsp::CurveUnit::Percent), 1.0);
+  const Sig width = k.val("Width", detent(linear(0.0, 4.0, dsp::CurveUnit::Percent), 1.0), 1.0);
   const Sig msMode = k.val("Mid/Side Mode", stepped(2), 0.0);
-  const Sig ms = k.val("Mid/Side", linear(-1.0, 1.0), 0.0);
+  const Sig ms = k.val("Mid/Side", detent(linear(-1.0, 1.0), 0.0), 0.0);
   const Sig mono = k.val("Mono", stepped(2), 0.0);
-  const Sig balance = k.val("Balance", linear(-1.0, 1.0), 0.0);
-  const Sig gain = k.val("Gain", linear(-70.0, 35.0, dsp::CurveUnit::Db), 0.0);
+  const Sig balance = k.val("Balance", detent(linear(-1.0, 1.0), 0.0), 0.0);
+  const Sig gain = k.val("Gain", detent(linear(-70.0, 35.0, dsp::CurveUnit::Db), 0.0), 0.0);
   const Sig mute = k.val("Mute", stepped(2), 0.0);
   // The matrix, at param rate (the old patch's Control region, term for term): channel mode, phase, mid / side
   // (width, the Mid/Side balance, mono), balance, gain and mute.
@@ -738,9 +756,9 @@ BlockSet utilityBlocks(IdSource& ids, const StockModuleOptions& o) {
 BlockSet saturatorBlocks(IdSource& ids, const StockModuleOptions& o) {
   const DeviceId group = o.id.valid() ? o.id : ids.device();
   Kit k(ids, group);
-  const Sig drive = k.val("Drive", gainDb(-36.0, 36.0), 0.0);
+  const Sig drive = k.val("Drive", detent(gainDb(-36.0, 36.0), 0.0), 0.0);
   const Sig type = k.val("Type", stepped(7), 0.0);
-  const Sig output = k.val("Output", gainDb(-36.0, 36.0), 0.0);
+  const Sig output = k.val("Output", detent(gainDb(-36.0, 36.0), 0.0), 0.0);
   const Sig softClip = k.val("Soft Clip", stepped(2), 0.0);
   const Sig dryWet = k.val("Dry/Wet", linear(0.0, 1.0, dsp::CurveUnit::Percent), 1.0);
   // u = drive · x (smoothed, from its first value)
@@ -821,7 +839,7 @@ BlockSet lfoBlocks(IdSource& ids, const StockModuleOptions& o) {
   const Sig beats = k.val("Beats", octave(1.0 / 16.0, 64.0), 1.0);
   const Sig phase = k.val("Phase", linear(0.0, 1.0), 0.0);
   const Sig depth = k.val("Depth", linear(0.0, 1.0, dsp::CurveUnit::Percent), 1.0);
-  const Sig offset = k.val("Offset", linear(-1.0, 1.0), 0.0);
+  const Sig offset = k.val("Offset", detent(linear(-1.0, 1.0), 0.0), 0.0);
   // stdlib/control/lfo.pqp, atom for atom: free = phasor(rate); song = frac(beat / beats); ph = frac((sync ? song :
   // free) + phase); the waves; then offset + depth · wave.
   const Sig free = k.op("phasor", "phasor", {{"hz", rate}});
@@ -1198,7 +1216,7 @@ BlockSet eqBandBlocks(IdSource& ids, const EqBandOptions& o) {
   stagesCurve.step = 1.0;
   const Sig freq = k.val("Frequency", bandFrequencyCurve(), o.freqHz);
   const Sig q = k.val("Q", octave(0.1, 40.0), o.q);
-  const Sig gain = k.val("Gain", gainDb(-24.0, 24.0), o.gainDb);
+  const Sig gain = k.val("Gain", detent(gainDb(-24.0, 24.0), 0.0), o.gainDb);
   const Sig stages = k.val("Stages", stagesCurve, static_cast<double>(std::clamp<uint32_t>(o.stages, 1, 64)));
   const Sig ty = k.val("Type", stepped(8.0), static_cast<double>(type));
   addRole(k, freq, kBandRoleSetting, static_cast<double>(BandRole::Frequency));
@@ -1303,7 +1321,7 @@ BlockSet eqBlocks(IdSource& ids, const StockModuleOptions& o) {
   const DeviceId group = o.id.valid() ? o.id : ids.device();
   Kit k(ids, group);
   const Sig mode = k.val("Mode", stepped(3.0), 0.0);
-  const Sig output = k.val("Output", gainDb(-24.0, 24.0), 0.0);
+  const Sig output = k.val("Output", detent(gainDb(-24.0, 24.0), 0.0), 0.0);
   const Sig edit = k.val("Edit Chain", stepped(2.0), 0.0);
   addRole(k, mode, kEqRoleSetting, static_cast<double>(EqRole::Mode));
   addRole(k, output, kEqRoleSetting, static_cast<double>(EqRole::Output));

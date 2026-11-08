@@ -40,7 +40,9 @@ segments**. Each segment runs from one point (t, y) to the next and has its own 
 logarithmic, power, S-curve — with its own **bend** (tension, continuous, 0 = straight). Points are draggable, bends are
 dragged on the segment (the curve editor element: Vital / Serum style). Presets: linear, exponential, logarithmic,
 octave (Hz), the VCA's law (three segments: log ends around a fine ±1 zone). A plain exponential knob is one segment;
-a drawn curve is many. Curves need not be monotonic.
+a drawn curve is many. Curves need not be monotonic. TX.detent: a point can be a **detent** (saved with the curve): a
+knob drag sticks there for a few px and releases without a jump; Shift ignores it; a wheel / key step across it lands on
+it (`pq/dsp/curve.h` "Detents").
 
 Three flags cover what today's laws do beyond a shape (needed for GU.4's identical renders):
 - **wrap**: the knob drags around its range and a wire's sum wraps (a phase: today's `@wrap`).

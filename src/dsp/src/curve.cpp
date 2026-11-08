@@ -219,6 +219,9 @@ Curve curvePreset(CurvePreset p, double min, double max, double arg) noexcept {
       // GU.5b: the VCA's markers (±10, ±100 where the range reaches past them) are points of the curve: dragging one
       // edits the curve. Splitting a segment where the curve has that value keeps the function exactly.
       for (const double v : {-100.0, -10.0, 10.0, 100.0}) (void)splitCurveAt(c, curvePosition(c, v, 0.5));
+      // TX.detent: ×1 and ×−1 (the fine zone's edges, points of the law) are detents where the range reaches them.
+      for (const double v : {-1.0, 1.0})
+        if (v > c.min && v < c.max) (void)setCurveDetent(c, curvePosition(c, v, 0.5));
       break;
   }
   return c;
@@ -248,6 +251,69 @@ bool splitCurveAt(Curve& c, double t) noexcept {
   }
   ++c.segments;
   return true;
+}
+
+bool setCurveDetent(Curve& c, double t, bool on) noexcept {
+  if (!(t > 0.0 && t < 1.0)) return false;
+  constexpr double kSame = 1e-7;
+  for (uint32_t i = 1; i < c.segments; ++i)
+    if (std::fabs(c.points[i].t - t) <= kSame) {
+      c.points[i].detent = on;
+      return true;
+    }
+  if (!on) return true;  // no point there: nothing to clear
+  if (!splitCurveAt(c, t)) return false;
+  for (uint32_t i = 1; i < c.segments; ++i)
+    if (c.points[i].t == t) {
+      c.points[i].detent = true;
+      return true;
+    }
+  return false;
+}
+
+uint32_t curveDetents(const Curve& c, std::array<double, kMaxCurveSegments + 1>& out) noexcept {
+  uint32_t n = 0;
+  const uint32_t segs = std::min<uint32_t>(c.segments, kMaxCurveSegments);
+  for (uint32_t i = 1; i < segs; ++i)
+    if (c.points[i].detent) out[n++] = c.points[i].t;
+  return n;
+}
+
+double detentDrag(const Curve& c, double start, double travel, double zone) noexcept {
+  std::array<double, kMaxCurveSegments + 1> d;
+  const uint32_t n = curveDetents(c, d);
+  if (n == 0 || !(zone > 0.0) || travel == 0.0) return start + travel;
+  constexpr double kOn = 1e-9;  // a start this close to a detent is on it
+  const bool up = travel > 0.0;
+  double left = std::fabs(travel), p = start;
+  for (uint32_t k = 0; k < n; ++k) {
+    const double at = d[up ? k : n - 1 - k];
+    const double dist = up ? at - p : p - at;
+    if (dist < -kOn) continue;  // behind the drag
+    const bool onStart = std::fabs(at - start) <= kOn;
+    if (!onStart) {
+      if (left <= dist) break;
+      left -= dist;
+    }
+    p = at;
+    const double hold = onStart ? zone : 2.0 * zone;
+    if (left <= hold) return at;
+    left -= hold;
+  }
+  return up ? p + left : p - left;
+}
+
+double detentStep(const Curve& c, double from, double to) noexcept {
+  std::array<double, kMaxCurveSegments + 1> d;
+  const uint32_t n = curveDetents(c, d);
+  if (to > from) {
+    for (uint32_t k = 0; k < n; ++k)
+      if (d[k] > from && d[k] < to) return d[k];
+  } else if (to < from) {
+    for (uint32_t k = n; k-- > 0;)
+      if (d[k] < from && d[k] > to) return d[k];
+  }
+  return to;
 }
 
 std::string_view curvePresetName(CurvePreset p) noexcept {

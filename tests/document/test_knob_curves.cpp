@@ -11,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -260,6 +261,71 @@ TEST_CASE("control curves: the file — curve objects under \"curves\", read bac
     REQUIRE(at != std::string::npos);
     t.replace(at, from.size(), to);
     CHECK_FALSE(parseProject(t).ok());
+  }
+}
+
+TEST_CASE("control curves: detents (TX.detent) are saved with the curve — written as point indices, read back equal, "
+          "a bad index refused") {
+  Doc d;
+  dsp::Curve c = dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, 1.0);
+  REQUIRE(dsp::setCurveDetent(c, 0.5));
+  REQUIRE(dsp::splitCurveAt(c, 0.75));  // a plain point after it
+  d.run(ops::setParamCurve(d.doc(), library(), d.env, "sustain", c));
+  Result<std::string> text = serializeProject(d.doc());
+  REQUIRE(text.ok());
+  CHECK(text->find("\"detents\": [1]") != std::string::npos);
+  Result<LoadedProject> back = parseProject(*text);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+  CHECK(*back->project == d.doc());
+  const Device* env = findDevice(*back->project, d.env).device;
+  REQUIRE(env != nullptr);
+  REQUIRE(env->curve("sustain") != nullptr);
+  CHECK(env->curve("sustain")->points[1].detent);
+  CHECK_FALSE(env->curve("sustain")->points[2].detent);
+  // A curve without detents writes none; an end point or a point past the curve is not a detent.
+  CHECK(text->find("\"detents\"", text->find("\"detents\"") + 1) == std::string::npos);
+  for (const char* bad : {"\"detents\": [0]", "\"detents\": [3]", "\"detents\": [7]"}) {
+    std::string t = *text;
+    t.replace(t.find("\"detents\": [1]"), std::string_view("\"detents\": [1]").size(), bad);
+    CHECK_FALSE(parseProject(t).ok());
+  }
+}
+
+TEST_CASE("control curves: the built-in modules' neutral values are detents (TX.detent)") {
+  // The Phase Accumulator: x1 amplitude at the centre (exactly 1.0), 0 cents.
+  const dsp::Curve amp = phaseAccumulatorCurve(kPaAmplitude), pitch = phaseAccumulatorCurve(kPaPitch);
+  std::array<double, dsp::kMaxCurveSegments + 1> at{};
+  REQUIRE(dsp::curveDetents(amp, at) == 1);
+  CHECK(at[0] == 0.5);
+  CHECK(dsp::evalCurve(amp, 0.5) == 1.0);
+  CHECK(dsp::curveIsLinear(amp));  // piecewise straight: a wire still adds in amplitude
+  REQUIRE(dsp::curveDetents(pitch, at) == 1);
+  CHECK(dsp::evalCurve(pitch, at[0]) == 0.0);
+  CHECK(dsp::evalCurve(pitch, 0.25) == doctest::Approx(-1200.0));  // GU.5b's scale kept
+  // The VCA: x1 and x-1.
+  REQUIRE(dsp::curveDetents(vcaCurve(), at) == 2);
+  // The stock modules: each named control has one detent, at its neutral value (in its units).
+  struct Want {
+    ModuleKind kind;
+    const char* control;
+    double neutral;
+  };
+  for (const Want& w : {Want{ModuleKind::Utility, "Gain", 0.0}, Want{ModuleKind::Utility, "Balance", 0.0},
+                        Want{ModuleKind::Utility, "Mid/Side", 0.0}, Want{ModuleKind::Utility, "Width", 1.0},
+                        Want{ModuleKind::Saturator, "Drive", 0.0}, Want{ModuleKind::Saturator, "Output", 0.0},
+                        Want{ModuleKind::Lfo, "Offset", 0.0}, Want{ModuleKind::EqBand, "Gain", 0.0},
+                        Want{ModuleKind::Eq, "Output", 0.0}}) {
+    CAPTURE(w.control);
+    const BlockSet set = moduleBlocks(w.kind);
+    const Device* found = nullptr;
+    for (const DevicePtr& dv : set.devices)
+      if (dv->name == w.control && isValueDevice(*dv) && found == nullptr) found = dv.get();
+    REQUIRE(found != nullptr);
+    const dsp::Curve* c = found->curve(kValueParam);
+    REQUIRE(c != nullptr);
+    REQUIRE(dsp::curveDetents(*c, at) == 1);
+    CHECK(dsp::evalCurveUnits(*c, at[0]) == doctest::Approx(w.neutral).epsilon(1e-12).scale(1.0));
+    CHECK(dsp::curveIsLinear(*c) == dsp::curveIsLinear(dsp::curvePreset(dsp::CurvePreset::Linear, c->min, c->max)));
   }
 }
 

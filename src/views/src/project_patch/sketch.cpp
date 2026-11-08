@@ -196,7 +196,7 @@ doc::DeviceId phaseAccModule(Runner& r, doc::TrackId t, double freq, double phas
   doc::PhaseAccumulatorOptions o;
   o.freq = dsp::curvePosition(doc::phaseAccumulatorCurve(doc::kPaFrequency), freq, 0.0);
   o.phase = dsp::curvePosition(doc::phaseAccumulatorCurve(doc::kPaPhase), phase, 0.0);
-  o.amp = dsp::curvePosition(doc::phaseAccumulatorCurve(doc::kPaAmplitude), amp, 0.25);
+  o.amp = dsp::curvePosition(doc::phaseAccumulatorCurve(doc::kPaAmplitude), amp, 0.5);
   doc::PhaseAccumulatorRoles lr;
   const std::vector<doc::DeviceId> ids = r.module(t, doc::phaseAccumulatorBlocks(local, o, &lr), slot);
   if (ids.empty()) return {};

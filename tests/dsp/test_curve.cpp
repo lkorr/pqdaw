@@ -9,6 +9,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numbers>
 #include <random>
@@ -404,4 +405,68 @@ TEST_CASE("curve slot: publication swaps the data, equal data is a no-op, the ol
   CHECK(sameData(slot.data(), compileCurve(b)));
   CHECK(reclaimer.pending() == 1);
   CHECK(reclaimer.collect() == 1);  // no reader registered: nothing holds it
+}
+
+TEST_CASE("curve detents (TX.detent): flagged points; a drag holds there and releases without a jump; a step lands") {
+  Curve c = curvePreset(CurvePreset::Linear, 0.0, 1.0);
+  // setCurveDetent splits a segment where no point is (the function unchanged), flags an existing point in place.
+  REQUIRE(setCurveDetent(c, 0.5));
+  CHECK(c.segments == 2);
+  CHECK(c.points[1].t == 0.5);
+  CHECK(c.points[1].detent);
+  for (int i = 0; i <= 64; ++i) CHECK(evalCurve(c, i / 64.0) == doctest::Approx(i / 64.0).epsilon(1e-15));
+  Curve plain = c;
+  plain.points[1].detent = false;
+  CHECK(curveClass(plain) == curveClass(c));          // not structural
+  CHECK(sameData(compileCurve(plain), compileCurve(c)));  // and not the atom's data
+  CHECK_FALSE(plain == c);                             // but a change of the curve (saved, undoable)
+  CHECK_FALSE(setCurveDetent(c, 0.0));                 // the ends are never detents
+  CHECK_FALSE(setCurveDetent(c, 1.0));
+  REQUIRE(setCurveDetent(c, 0.25));
+  std::array<double, kMaxCurveSegments + 1> d{};
+  REQUIRE(curveDetents(c, d) == 2);
+  CHECK(d[0] == 0.25);
+  CHECK(d[1] == 0.5);
+  REQUIRE(setCurveDetent(c, 0.25, false));
+  CHECK(curveDetents(c, d) == 1);
+
+  // The drag: zone 0.03. From 0.4 upward: free to 0.5, held over 0.06 of travel, then free again with that subtracted.
+  const double z = 0.03;
+  CHECK(detentDrag(c, 0.4, 0.05, z) == doctest::Approx(0.45));
+  CHECK(detentDrag(c, 0.4, 0.1, z) == 0.5);
+  CHECK(detentDrag(c, 0.4, 0.13, z) == 0.5);
+  CHECK(detentDrag(c, 0.4, 0.16, z) == 0.5);
+  CHECK(detentDrag(c, 0.4, 0.17, z) == doctest::Approx(0.51));
+  // Continuous everywhere (no leap into or out of the zone), monotonic.
+  double prev = detentDrag(c, 0.4, 0.0, z);
+  for (int i = 1; i <= 4000; ++i) {
+    const double p = detentDrag(c, 0.4, i * 1e-4, z);
+    CHECK(p >= prev);
+    CHECK(p - prev <= 1e-4 + 1e-12);
+    prev = p;
+  }
+  // Downward the same, mirrored; a drag that starts on the detent is held for ±zone.
+  CHECK(detentDrag(c, 0.6, -0.1, z) == 0.5);
+  CHECK(detentDrag(c, 0.6, -0.17, z) == doctest::Approx(0.49));
+  CHECK(detentDrag(c, 0.5, 0.02, z) == 0.5);
+  CHECK(detentDrag(c, 0.5, -0.03, z) == 0.5);
+  CHECK(detentDrag(c, 0.5, 0.05, z) == doctest::Approx(0.52));
+  CHECK(detentDrag(c, 0.5, -0.05, z) == doctest::Approx(0.48));
+  // A detent behind the drag does nothing; no detents: plain travel.
+  CHECK(detentDrag(c, 0.6, 0.1, z) == doctest::Approx(0.7));
+  CHECK(detentDrag(curvePreset(CurvePreset::Linear, 0.0, 1.0), 0.4, 0.13, z) == doctest::Approx(0.53));
+
+  // A step across a detent lands on it; one that starts on it or stops short passes it by.
+  CHECK(detentStep(c, 0.45, 0.55) == 0.5);
+  CHECK(detentStep(c, 0.55, 0.45) == 0.5);
+  CHECK(detentStep(c, 0.5, 0.51) == 0.51);
+  CHECK(detentStep(c, 0.5, 0.49) == 0.49);
+  CHECK(detentStep(c, 0.40, 0.49) == 0.49);
+  CHECK(detentStep(c, 0.40, 0.50) == 0.50);
+
+  // The VCA's law: ×1 and ×−1 are detents (its fine zone's edges).
+  const Curve v = curvePreset(CurvePreset::Vca, -20000.0, 20000.0);
+  REQUIRE(curveDetents(v, d) == 2);
+  close(evalCurve(v, d[0]), -1.0, 1e-11);
+  close(evalCurve(v, d[1]), 1.0, 1e-11);
 }

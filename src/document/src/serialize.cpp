@@ -713,7 +713,7 @@ private:
   }
 
   // GU.1 (schema 20): {"min", "max", "unit"?, "digits"?, "step"?, "mode"?, "output"?, "preset", "presetArg"?,
-  // "points": [[t, y], …], "shapes": [[shape, bend], …]} (one line).
+  // "points": [[t, y], …], "shapes": [[shape, bend], …], "detents"?: [point index, …] (TX.detent)} (one line).
   // GU.3 (schema 21, pq/document/panel.h): "panel": {"size": [w, h], "elements": [one element per line]}; an element
   // {"id", "kind", "rect": [x, y, w, h], "bind": [{"kind", "device", "name", "meta"}], "style": {name: number | text},
   // "when": {"element", "values"}} — "bind", "style" and "when" only when set, a binding's "meta" only when not "".
@@ -845,6 +845,15 @@ private:
       w_.endArray();
     }
     w_.endArray();
+    bool anyDetent = false;
+    for (uint32_t i = 1; i < c.segments; ++i) anyDetent = anyDetent || c.points[i].detent;
+    if (anyDetent) {  // TX.detent: the indices of the points that are detents
+      w_.key("detents");
+      w_.beginArray(false);
+      for (uint32_t i = 1; i < c.segments; ++i)
+        if (c.points[i].detent) w_.integer(i);
+      w_.endArray();
+    }
     w_.endObject();
   }
 
@@ -2319,10 +2328,11 @@ private:
 
   dsp::Curve curveObject(const PathSeg& at) {  // GU.1: the encoder's curveObject
     static constexpr std::string_view K[] = {"min",    "max",    "unit",   "digits",    "step",   "mode",
-                                             "output", "preset", "presetArg", "points", "shapes"};
+                                             "output", "preset", "presetArg", "points", "shapes", "detents"};
     dsp::Curve c;
     std::vector<dsp::CurvePoint> pts;
     std::vector<dsp::CurveSegment> segs;
+    std::vector<int64_t> detents;
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
       const PathSeg f(&at, K[static_cast<size_t>(k)]);
@@ -2371,6 +2381,10 @@ private:
             segs.push_back(seg);
           }
           break;
+        case 11:  // TX.detent
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) detents.push_back(r_.readInt(PathSeg(&f, i)));
+          break;
       }
     }
     m.require({0, 1, 7, 9, 10});
@@ -2378,6 +2392,11 @@ private:
       r_.failHere(at, "a curve has 1 … 16 shapes and one point more", ErrorCode::InvalidArgument);
     c.segments = static_cast<uint8_t>(segs.size());
     for (size_t i = 0; i < pts.size(); ++i) c.points[i] = pts[i];
+    for (const int64_t d : detents) {
+      if (d < 1 || d >= static_cast<int64_t>(segs.size()))
+        r_.failHere(PathSeg(&at, "detents"), "a detent is an interior point's index", ErrorCode::InvalidArgument);
+      c.points[static_cast<size_t>(d)].detent = true;
+    }
     for (size_t i = 0; i < segs.size(); ++i) c.shapes[i] = segs[i];
     for (size_t i = pts.size(); i < c.points.size(); ++i) c.points[i] = {};
     for (size_t i = segs.size(); i < c.shapes.size(); ++i) c.shapes[i] = {};

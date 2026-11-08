@@ -15,6 +15,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <memory>
@@ -30,6 +31,7 @@
 #include "pq/document/library_files.h"
 #include "pq/document/modules.h"
 #include "pq/document/serialize.h"
+#include "pq/document/store.h"
 #include "pq/engine/wav_file.h"
 
 using namespace pq;
@@ -151,6 +153,41 @@ TEST_CASE("GU.4 modules: the presets render as the meta modules (PA diff 0, VCA 
       if (pa) CHECK(d == 0.0);
       else CHECK(db(d / std::max(1.0, peak)) <= -110.0);
     }
+}
+
+TEST_CASE("TX.detent: the Phase Accumulator's Amplitude curve — x1 at the centre (a detent, exactly 1.0), the PA cases "
+          "render as before with it at its default") {
+  const dsp::Curve amp = phaseAccumulatorCurve(kPaAmplitude);
+  REQUIRE(dsp::validCurve(amp));
+  CHECK(dsp::evalCurve(amp, 0.5) == 1.0);
+  CHECK(dsp::curvePosition(amp, 1.0, 0.0) == 0.5);
+  CHECK(dsp::compileCurve(amp).a[1] == 1.0f);  // what the curve atom reads there (a driven knob)
+  CHECK(dsp::evalCurve(amp, 0.0) == 0.0);
+  CHECK(dsp::evalCurve(amp, 1.0) == 4.0);
+  std::array<double, dsp::kMaxCurveSegments + 1> d{};
+  REQUIRE(dsp::curveDetents(amp, d) == 1);
+  CHECK(d[0] == 0.5);
+  CHECK(PhaseAccumulatorOptions{}.amp == 0.5);
+  // The fixtures' Amplitude knobs at their old default (0.25 on 0 … 4) switched to the module's curve at 0.5: the
+  // renders stay bit-identical to the meta module's.
+  for (const char* n : kPaCases) {
+    const std::string name = n;
+    CAPTURE(name);
+    DocumentStore store(loadCase(name));
+    std::vector<DeviceId> moved;
+    forEachDevice(*store.current(), [&](const Device& dv, const Track&) {
+      const DeviceValue* v = dv.param(kValueParam);
+      if (dv.name == kPaAmplitude && v != nullptr && v->value == 0.25) moved.push_back(dv.id);
+    });
+    REQUIRE_FALSE(moved.empty());
+    for (const DeviceId id : moved) {
+      REQUIRE(store.dispatch(SetParamCurve{id, std::string(kValueParam), amp, true}).ok());
+      REQUIRE(store.dispatch(SetDeviceParam{id, std::string(kValueParam), 0.5}).ok());
+    }
+    auto ref = engine::readWav(caseDir(name) / "reference.wav");
+    REQUIRE(ref.ok());
+    CHECK(maxDiff(ref->channels, render(store.current(), false)) == 0.0);
+  }
 }
 
 TEST_CASE("GU.4 modules: an opened VCA is In → mul ← Value → Out; the knob keeps its position, the curve is the law") {

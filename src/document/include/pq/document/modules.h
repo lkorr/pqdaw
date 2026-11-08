@@ -68,7 +68,7 @@ struct PhaseAccumulatorOptions {
   DeviceId id;                  // the group's id (invalid: a fresh one)
   DeviceId inGroup;             // the group it sits in (nested), or none
   std::string name;             // the group's name ("" = "Phase Accumulator")
-  double freq = 0.0, phase = 0.0, amp = 0.25, pitch = 0.5;  // knob positions (the defaults: 0 Hz, 0, × 1, 0 cents)
+  double freq = 0.0, phase = 0.0, amp = 0.5, pitch = 0.5;  // knob positions (the defaults: 0 Hz, 0, × 1, 0 cents)
   std::optional<dsp::Curve> freqCurve, phaseCurve, ampCurve, pitchCurve;  // (none: the module's own)
   enum class Feed : uint8_t { Hz, None } feed = Feed::Hz;  // what the In terminal feeds (the old chain input)
   bool active = true;

@@ -227,10 +227,31 @@ double ValueElement::quantise(const PanelTarget& t, double p, size_t slot) const
 }
 
 // A relative drag: `axisPx` device px of pointer travel per whole range (Shift: a tenth).
-double ValueElement::dragged(const FacePointer& e, size_t slot, float dx, float dy, float axisPx) const {
-  const double fine = (e.mods & ui::mod::kShift) != 0 ? 0.1 : 1.0;
+double ValueElement::dragged(const PanelTarget& t, const FacePointer& e, size_t slot, float dx, float dy, float axisPx) const {
   const double d = (static_cast<double>(e.device.x) - startDev_.x) * dx - (static_cast<double>(e.device.y) - startDev_.y) * dy;
-  return std::clamp(start_[slot] + d * fine / std::max(4.0, static_cast<double>(axisPx)), 0.0, 1.0);
+  return std::clamp(travelled(t, e, slot, d, axisPx), 0.0, 1.0);
+}
+
+// TX.detent: the sticky zone, ±kDetentPx device px at the knob's 200 px travel (3 % of the drag's length), scaled with
+// the drag's length within 0.75 … 1.5 of that.
+double ValueElement::detentZone(const FacePointer& e, double axisPx) noexcept {
+  constexpr double kDetentPx = 6.0, kRefPx = 200.0;
+  const double s = std::max(1e-3, static_cast<double>(e.uiScale));
+  const double px = kDetentPx * s * std::clamp(axisPx / (kRefPx * s), 0.75, 1.5);
+  return px / std::max(4.0, axisPx);
+}
+
+double ValueElement::travelled(const PanelTarget& t, const FacePointer& e, size_t slot, double px, double axisPx) const {
+  const double axis = std::max(4.0, axisPx);
+  if ((e.mods & ui::mod::kShift) != 0) return start_[slot] + px * 0.1 / axis;  // fine: no detents
+  const BoundInfo& i = bound(t, slot);
+  if (!i.valid) return start_[slot] + px / axis;
+  return dsp::detentDrag(i.curve, start_[slot], px / axis, detentZone(e, axisPx));
+}
+
+double ValueElement::stepped(const PanelTarget& t, double from, double to, size_t slot) const {
+  const BoundInfo& i = bound(t, slot);
+  return i.valid ? dsp::detentStep(i.curve, from, to) : to;
 }
 
 void ValueElement::describe(const PanelTarget& t, std::string& title, std::string& body) const {
@@ -266,7 +287,8 @@ bool ValueElement::wheelStep(const FacePointer& e, PanelTarget& t) {
     wheelPos_ = pos(t);
     t.begin(b, "Panel Wheel");
   }
-  wheelPos_ = std::clamp(wheelPos_ + stepOf(t, (e.mods & ui::mod::kShift) != 0) * static_cast<double>(e.wheel.y), 0.0, 1.0);
+  const double to = std::clamp(wheelPos_ + stepOf(t, (e.mods & ui::mod::kShift) != 0) * static_cast<double>(e.wheel.y), 0.0, 1.0);
+  wheelPos_ = stepped(t, wheelPos_, to);  // TX.detent: a step across a detent lands on it
   t.setPosition(b, quantise(t, wheelPos_));
   return true;  // consumed at a limit too: the view under the panel does not scroll instead
 }
@@ -289,7 +311,8 @@ bool ValueElement::valueKey(const ui::KeyEvent& e, PanelTarget& t) {
   if ((e.key == ui::key::kUp || e.key == ui::key::kDown) && (chord & ~ui::mod::kShift) == 0) {
     endWheel(t);
     const double d = stepOf(t, (chord & ui::mod::kShift) != 0);
-    t.setOnce(b, quantise(t, std::clamp(pos(t) + (e.key == ui::key::kUp ? d : -d), 0.0, 1.0)), "Panel Key");
+    const double from = pos(t), to = std::clamp(from + (e.key == ui::key::kUp ? d : -d), 0.0, 1.0);
+    t.setOnce(b, quantise(t, stepped(t, from, to)), "Panel Key");
     return true;
   }
   return false;
@@ -406,7 +429,7 @@ public:
       return true;
     }
     if (e.kind == K::Move && drag_) {
-      t.setPosition(*binding(), quantise(t, dragged(e, 0, 0.0f, 1.0f, 200.0f * e.uiScale)));
+      t.setPosition(*binding(), quantise(t, dragged(t, e, 0, 0.0f, 1.0f, 200.0f * e.uiScale)));
       return true;
     }
     if (e.kind == K::Up && drag_) {
@@ -597,7 +620,7 @@ public:
     if (e.kind == K::Move && drag_) {
       const G g = geom();
       const float len = (g.vertical ? g.groove.y1 - g.groove.y0 : g.groove.x1 - g.groove.x0) * e.pxPerUnit;
-      t.setPosition(*binding(), quantise(t, g.vertical ? dragged(e, 0, 0.0f, 1.0f, len) : dragged(e, 0, 1.0f, 0.0f, len)));
+      t.setPosition(*binding(), quantise(t, g.vertical ? dragged(t, e, 0, 0.0f, 1.0f, len) : dragged(t, e, 0, 1.0f, 0.0f, len)));
       return true;
     }
     if (e.kind == K::Up && drag_) {
@@ -713,7 +736,7 @@ public:
       const BoundInfo& i = bound(t);
       // A step per 6 px for a stepped value, else 300 px per range.
       const float per = i.steps >= 2 ? 6.0f * static_cast<float>(i.steps - 1) : 300.0f;
-      t.setPosition(*binding(), quantise(t, dragged(e, 0, 0.0f, 1.0f, per * e.uiScale)));
+      t.setPosition(*binding(), quantise(t, dragged(t, e, 0, 0.0f, 1.0f, per * e.uiScale)));
       return true;
     }
     if (e.kind == K::Up && drag_) {

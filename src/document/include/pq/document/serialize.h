@@ -95,7 +95,8 @@ namespace pq::doc {
 // 20 = knob positions (GU.1, docs/plans/GU.md "Curves"): a device's (and a nested meta module's) "params" are knob
 // positions 0 … 1 (a rack's macros and selector keep 0 … 127); a device-param lane's points are positions; a device's
 // "curves" are curve objects {param: {"min", "max", "unit"?, "digits"?, "step"?, "mode"?, "output"?, "preset",
-// "presetArg"?, "points": [[t, y], …], "shapes": [[shape, bend], …]}} (pq/dsp/curve.h). Migration 19 → 20 marks the file
+// "presetArg"?, "points": [[t, y], …], "shapes": [[shape, bend], …], "detents"?: [interior point index, …] (TX.detent)}}
+// (pq/dsp/curve.h). Migration 19 → 20 marks the file
 // ("valuesInUnits", "legacyCurves": never written) and parseProject converts the decoded model with
 // LoadOptions::devices (knob_positions.h: the nearest-position rule through each param's curve); without the library a
 // file with values to convert is refused (Unsupported). Presets older than 20 holding params are refused (no library).

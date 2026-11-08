@@ -51,6 +51,13 @@
 // knob's current position) is chosen — the hint itself when it gives exactly `value` (so writing back the value a knob
 // shows never moves it); a value the curve never reaches snaps to the reachable value nearest it (ties: nearest `hint`). The knob's own domain [0, 1] (a signed curve's negative half is the wires', never the knob's).
 //
+// ---- Detents (TX.detent) ------------------------------------------------------------------------------------------
+// A point can be flagged a DETENT (CurvePoint::detent: saved with the curve, no effect on evaluation, the class or the
+// compiled data). A control dragging a knob position (every generic panel control: knob, slider, number, arc, dial)
+// sticks at an interior detent's t: crossing it, the knob stays there over 2·zone of drag travel; a drag that starts on
+// it stays for ±zone. The travel spent in the sticky zone is subtracted, so the position is a continuous function of the
+// drag (it never leaps when it leaves the zone): detentDrag. A fine (Shift) drag ignores detents; a step (wheel, arrow
+// key) that crosses one lands on it (detentStep); typed values and resets are unaffected.
 // ---- Classes ------------------------------------------------------------------------------------------------------
 // curveClass: the structural part of a curve (segment count, which shapes, the flags, whether it steps): what a change
 // of recompiles (doc lowering); everything else (points, bends, the range) is runtime data of the atom's slot
@@ -103,6 +110,7 @@ inline constexpr double kCurveBendK = 4.8;  // the Exponential / Logarithmic pre
 
 struct CurvePoint {
   double t = 0.0, y = 0.0;
+  bool detent = false;  // TX.detent: a knob drag sticks here (see "Detents"); no effect on the value
   friend bool operator==(const CurvePoint&, const CurvePoint&) = default;
 };
 struct CurveSegment {
@@ -154,6 +162,18 @@ double curvePosition(const Curve& c, double value, double hint = 0.0) noexcept;
 // segment: the bends in proportion to the parts' widths); false when t is not strictly inside a segment (by ≥ 1e-6),
 // the curve is full, or the shape cannot be split exactly. The VCA preset's markers are made this way.
 bool splitCurveAt(Curve& c, double t) noexcept;
+
+// TX.detent: flags (on) or clears the point at position t (within 1e-7), splitting the segment there first (splitCurveAt:
+// the function unchanged) when no point sits at t. false when t is not in (0, 1) or the point cannot be made.
+bool setCurveDetent(Curve& c, double t, bool on = true) noexcept;
+// The interior detents' positions, ascending, into out; their count.
+uint32_t curveDetents(const Curve& c, std::array<double, kMaxCurveSegments + 1>& out) noexcept;
+// A drag's position: from `start`, `travel` of knob position (signed, the pointer's travel / the drag's length), each
+// interior detent passed holding the knob for 2·zone of it (±zone around the start when it starts on one). Not clamped
+// (the caller clamps or wraps).
+double detentDrag(const Curve& c, double start, double travel, double zone) noexcept;
+// A step from `from` to `to`: the first interior detent strictly between them in the step's direction, else `to`.
+double detentStep(const Curve& c, double from, double to) noexcept;
 
 // ---- The atom's data -------------------------------------------------------------------------------------------------
 // The coefficient form of segment i (double; the atom's data rounds it to float), on x = p − t0: a = Y0 for every

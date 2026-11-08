@@ -34,8 +34,14 @@ protected:
   void endDrag(PanelTarget& t);
   // A stepped binding's position rounded to its steps.
   double quantise(const PanelTarget& t, double p, size_t slot = 0) const;
-  // The slot's position after a relative drag (dx, dy: the axis's weight; `axisPx` device px per whole range).
-  double dragged(const FacePointer& e, size_t slot, float dx, float dy, float axisPx) const;
+  // The slot's position after a relative drag (dx, dy: the axis's weight; `axisPx` device px per whole range), clamped.
+  double dragged(const PanelTarget& t, const FacePointer& e, size_t slot, float dx, float dy, float axisPx) const;
+  // TX.detent (pq/dsp/curve.h "Detents"): the position `px` device px of drag from the press (`axisPx` per whole range;
+  // Shift: a tenth, no detents), held at the bound curve's detents; not clamped. detentZone: the sticky zone's half
+  // width in position. stepped: a step from → to that crosses a detent lands on it.
+  double travelled(const PanelTarget& t, const FacePointer& e, size_t slot, double px, double axisPx) const;
+  static double detentZone(const FacePointer& e, double axisPx) noexcept;
+  double stepped(const PanelTarget& t, double from, double to, size_t slot = 0) const;
   virtual std::string hint() const { return {}; }
   // GU.13: the DEVICE-PANEL GESTURES (FacePointer::valueGestures; the old device panel's knobs): a wheel notch steps the
   // binding by stepOf (a run of notches is one gesture: endWheel ends it), and after a press the keys — Delete /
