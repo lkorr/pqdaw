@@ -1032,6 +1032,18 @@ double settingOf(const Device& d, std::string_view name) noexcept {
 constexpr const char* kEqTag = "eq";
 constexpr std::string_view kTagStrip = "strip", kTagChains = "chains", kTagDisplay = "display";
 
+// EQ.4b: a band's Q box reads "Q 0.71", its Stages box "×16" (the number element's format fields).
+PanelElement qBox(PanelElement e) {
+  e.setField(styleNumber("decimals", 2.0));
+  e.setField(styleText("prefix", "Q "));
+  return e;
+}
+PanelElement stagesBox(PanelElement e) {
+  e.setField(styleNumber("decimals", 0.0));
+  e.setField(styleText("prefix", "\xC3\x97"));
+  return e;
+}
+
 PanelElement tagged(PanelElement e, std::string_view tag) {
   e.setField(styleText(kEqTag, std::string(tag)));
   return e;
@@ -1196,16 +1208,22 @@ BlockSet eqBandBlocks(IdSource& ids, const EqBandOptions& o) {
   addRole(k, ty, kBandRoleSetting, static_cast<double>(BandRole::Type));
   const DeviceId svf = k.block("svf", "svf", {{"x", k.in()}, {"cutoff", freq}, {"q", q}, {"gain", gain}, {"mode", ty}, {"stages", stages}});
   k.out(Sig{svf, "out"});
-  // Its own panel (the band opened or placed alone): the strip's column laid flat.
+  // Its own panel (the band opened or placed alone): EQ.4b: its curve (the response display with the analyser on its
+  // output, its input dimmed; the phase strip under it), then the strip's column laid flat.
   Panel p;
-  p.width = 136.0f;
-  p.height = 102.0f;
+  p.width = 240.0f;
+  p.height = 228.0f;
   p.elements.push_back(plate(p.width, p.height, 6.0));
-  p.elements.push_back(menu(control(2, "menu", 8, 8, 120, 18, ty), kBandTypeItems));
-  p.elements.push_back(control(3, "number", 8, 30, 58, 18, freq));
-  p.elements.push_back(control(4, "number", 70, 30, 58, 18, q));
-  p.elements.push_back(shownWhen(control(5, "knob", 8, 52, 58, 44, gain), 2, {4.0, 5.0, 6.0}));
-  p.elements.push_back(shownWhen(control(6, "number", 70, 52, 58, 18, stages), 2, {0.0, 1.0, 2.0, 5.0, 6.0, 7.0}));
+  PanelElement display = element(7, "response", 8, 8, p.width - 16.0f, 100, signalBinding(group, "y"));
+  display.bindings.push_back(signalBinding(group, std::string(kGroupInPort)));
+  p.elements.push_back(std::move(display));
+  p.elements.push_back(element(8, "phase", 8, 110, p.width - 16.0f, 36, signalBinding(group, "y")));
+  constexpr float kRow = 154.0f;
+  p.elements.push_back(menu(control(2, "menu", 8, kRow, 96, 18, ty), kBandTypeItems));
+  p.elements.push_back(control(3, "number", 110, kRow, 60, 18, freq));
+  p.elements.push_back(qBox(control(4, "number", 174, kRow, 58, 18, q)));
+  p.elements.push_back(shownWhen(control(5, "knob", 8, kRow + 22, 58, 44, gain), 2, {4.0, 5.0, 6.0}));
+  p.elements.push_back(shownWhen(stagesBox(control(6, "number", 110, kRow + 22, 60, 18, stages)), 2, {0.0, 1.0, 2.0, 5.0, 6.0, 7.0}));
   return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("Band") : o.name, o.active, std::move(p)));
 }
 
@@ -1257,7 +1275,7 @@ Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]) {
       f.setField(styleText("label", "-"));
       p.elements.push_back(follow(std::move(f), all));
       if (b.q.valid()) {
-        PanelElement q = control(id++, "number", x, kStripTop + 44, kColumnW, 18, bound(b.q));
+        PanelElement q = qBox(control(id++, "number", x, kStripTop + 44, kColumnW, 18, bound(b.q)));
         q.setField(styleText("label", "-"));
         p.elements.push_back(follow(std::move(q), all));
       }
@@ -1267,7 +1285,7 @@ Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]) {
         p.elements.push_back(follow(std::move(g), b.type.valid() ? std::vector<double>{4, 5, 6} : all));
       }
       if (b.stages.valid()) {
-        PanelElement s = control(id++, "number", x, kStripTop + 134, kColumnW, 18, bound(b.stages));
+        PanelElement s = stagesBox(control(id++, "number", x, kStripTop + 134, kColumnW, 18, bound(b.stages)));
         s.setField(styleText("label", "-"));
         p.elements.push_back(follow(std::move(s), b.type.valid() ? std::vector<double>{0, 1, 2, 5, 6, 7} : all));
       }

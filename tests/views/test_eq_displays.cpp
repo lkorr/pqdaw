@@ -7,13 +7,18 @@
 //              step), Alt + wheel steps Stages, double-click a node resets its gain, right-click: Type / Bypass / Solo /
 //              Delete, a click selects, Delete removes the selected band, the Mode menu splits through setEqMode (A
 //              copied into B) — each one undo step
-//   reuse      the response element on a lone EQ Band's panel draws the band's own response
+//   reuse      (EQ.4b) a lone EQ Band's own panel: its response, phase and analyser
+//   EQ.4b      the curve after the circuit view opens and closes the EQ (real dispatch); the phase strip wrapped by
+//              default, unwrapped / group delay by its chips; the strip's "Q 0.71" / "×16"; with the app's lowering a
+//              structural edit lowers nothing on the UI thread (the curve stays until the compile arrives)
 //   goldens    (2x) eq-default, eq-eight-bands (a 16-stage low cut, a Q 40 bell, a spectrum behind, a band selected),
 //              eq-lr-mode (chain B translucent behind A), eq-phase-delay (the phase strip in group delay),
 //              eq-band-response (the element on a lone band's panel)
-//   perf       a drag on a 32-band EQ re-evaluates and redraws the curve within a frame (< 2 ms, optimised builds)
+//   perf       a drag on a 31-band EQ re-evaluates and redraws the curve within a frame (< 2 ms, optimised builds); the
+//              frame after a 32nd band is added, lowered here (before EQ.4b) and with the app's lowering
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -37,6 +42,7 @@
 #include "pq/views/panel/group_panel_face.h"
 #include "pq/views/panel/group_responses.h"
 #include "pq/views/panel/response_display.h"
+#include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
 #include "views_test_util.h"
@@ -197,10 +203,10 @@ struct EqUi {
   doc::TrackId track;
   doc::DeviceId eq;
 
-  EqUi() {
+  explicit EqUi(bool midi = false) {
     ctx.setDeviceLibrary(&devLib());
     doc::DocumentStore& st = ctx.store();
-    track = run(st, doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Audio, {}, "Audio")).tracks.at(0);
+    track = run(st, doc::ops::createTrack(*st.current(), st.ids(), midi ? doc::TrackKind::Midi : doc::TrackKind::Audio, {}, midi ? "MIDI" : "Audio")).tracks.at(0);
     eq = test_blocks::addModule(st, track, "eq");
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
@@ -305,6 +311,225 @@ TEST_CASE("EQ.4 response: the drawn total is the chain's GroupResponse; a drag n
   a.host->notifyChanged();
   a.d->step();
   CHECK(gr.lowerings() == n0 + 1);
+}
+
+TEST_CASE("EQ.4b response: the curve stays after the EQ is opened and closed in the circuit view (real dispatch)") {
+  bool midi = false;
+  SUBCASE("an audio track") {}
+  SUBCASE("a MIDI track, after its instrument") { midi = true; }
+  CAPTURE(midi);
+  EqUi u(midi);
+  const doc::EqInfo e = u.info();
+  setUnits(u.st(), e.bands[0][1].gain, 7.5);
+  setUnits(u.st(), e.bands[0][2].gain, -6.0);
+  u.d.step();
+  std::vector<double> hz;
+  const std::vector<uint32_t> ks = {60, 200, 400, 523, 700};
+  for (const uint32_t k : ks) hz.push_back(panel::test::responseHz(k));
+  auto checkCurve = [&] {
+    u.d.step();
+    panel::Element& r = u.element("response");
+    const std::vector<double> want = groupDb(u.doc(), e.chain[0], hz, u.ctx.sampleRate());
+    for (size_t i = 0; i < ks.size(); ++i) {
+      CAPTURE(hz[i]);
+      const std::optional<float> got = panel::test::drawnDb(r, panel::test::responseX(r, ks[i]));
+      REQUIRE(got.has_value());
+      CHECK(*got == doctest::Approx(want[i]).epsilon(1e-4).scale(1.0));
+    }
+    for (const doc::BandInfo& b : e.bands[0]) CHECK(u.ctx.groupResponses().get(b.group) != nullptr);
+  };
+  checkCurve();
+  // The circuit view, as the app opens it (Open in Circuit View on the device), the EQ opened and closed there by a
+  // double-click (its closed block; its title strip), then back to the Device view.
+  REQUIRE(u.view().openInCircuitView(u.eq));
+  auto* pv = findProjectPatch(*u.shell);
+  REQUIRE(pv != nullptr);
+  pv->setPushAnimated(false);
+  u.d.advance(1.0);
+  u.d.tree().layoutNow();
+  u.d.step();
+  pv->setGroupOpen(u.eq, true);
+  u.d.advance(1.0);
+  u.d.step();
+  pv->setGroupOpen(u.eq, false);
+  u.d.advance(1.0);
+  u.d.step();
+  {  // The closed EQ in the circuit: its panel face draws the same curve.
+    const uint32_t mn = pv->patch().nodeOf(u.eq);
+    REQUIRE(mn != project_patch::kNone);
+    REQUIRE(mn < pv->scene().sceneNode.size());
+    auto* f = dynamic_cast<panel::GroupPanelFace*>(pv->canvas().panelOn(pv->scene().sceneNode[mn]));
+    REQUIRE(f != nullptr);
+    (void)f->sync();
+    panel::Element* r = elementOf(*f, "response");
+    REQUIRE(r != nullptr);
+    u.d.step();
+    const std::vector<double> want = groupDb(u.doc(), e.chain[0], hz, u.ctx.sampleRate());
+    for (size_t i = 0; i < ks.size(); ++i) {
+      const std::optional<float> got = panel::test::drawnDb(*r, panel::test::responseX(*r, ks[i]));
+      REQUIRE(got.has_value());
+      CHECK(*got == doctest::Approx(want[i]).epsilon(1e-4).scale(1.0));
+    }
+  }
+  pv->setShown(false, false);
+  u.d.advance(1.0);
+  u.d.tree().layoutNow();
+  u.d.step();
+  checkCurve();
+}
+
+TEST_CASE("EQ.4b phase: wrapped to ±180° by default; WRAP / UNWRAP unwraps (auto-scaled); PHASE / DELAY: group delay") {
+  EqUi u;
+  const doc::EqInfo e = u.info();
+  // A 16-stage low cut at 60 Hz: thousands of degrees unwrapped.
+  run(u.st(), doc::ops::setBandType(u.doc(), e.bands[0][0].group, 1));
+  run(u.st(), doc::ops::setBandStages(u.doc(), e.bands[0][0].group, 16));
+  setUnits(u.st(), e.bands[0][0].frequency, 60.0);
+  setUnits(u.st(), e.bands[0][2].gain, 9.0);
+  u.d.step();
+  panel::Element& ph = u.element("phase");
+  panel::PanelTarget& t = u.target();
+  // The chain's H at a few grid points (its own response on a fresh lowering).
+  doc::LowerOptions lo;
+  lo.library = &devLib().library();
+  lo.devices = &devLib();
+  lo.clipSlotOf = [](doc::TrackId) { return 0u; };
+  auto low = doc::lower(u.doc(), lo);
+  REQUIRE(low.ok());
+  doc::GroupResponse gr;
+  REQUIRE(gr.prepare(u.doc(), *low, devLib(), e.chain[0]).ok());
+  const std::vector<uint32_t> ks = {40, 120, 300, 520, 700};
+  std::vector<double> hz;
+  for (const uint32_t k : ks) hz.push_back(panel::test::responseHz(k));
+  std::vector<Cx> h(hz.size() * gr.inChannels() * gr.outChannels());
+  gr.evaluate(hz, u.ctx.sampleRate(), h);
+  auto xOf = [&](uint32_t k) { return ph.desc().w * static_cast<float>(k) / static_cast<float>(panel::test::responsePoints() - 1); };
+  // Wrapped (the default): arg H in degrees, the scale ±180°.
+  CHECK(panel::test::phaseView(ph, t) == 0);
+  CHECK(panel::test::phaseScale(ph) == std::pair<double, double>{-180.0, 180.0});
+  for (size_t i = 0; i < ks.size(); ++i) {
+    CAPTURE(hz[i]);
+    const double want = std::arg(h[i * gr.inChannels() * gr.outChannels()]) * 180.0 / 3.141592653589793;
+    const float got = panel::test::phaseAt(ph, xOf(ks[i]));
+    CHECK(got >= -180.0f);
+    CHECK(got <= 180.0f);
+    CHECK(std::fabs(std::remainder(got - want, 360.0)) < 0.01);
+  }
+  // The WRAP chip (real dispatch): unwrapped, auto-scaled over the cut's thousands of degrees; the same angles mod 360.
+  u.d.click(u.at("phase", panel::test::phaseChip(ph, 1)));
+  u.d.step();
+  CHECK(panel::test::phaseView(ph, t) == 1);
+  const auto [lo1, hi1] = panel::test::phaseScale(ph);
+  CHECK(hi1 - lo1 > 1000.0);
+  for (size_t i = 0; i < ks.size(); ++i) {
+    const double want = std::arg(h[i * gr.inChannels() * gr.outChannels()]) * 180.0 / 3.141592653589793;
+    CHECK(std::fabs(std::remainder(panel::test::phaseAt(ph, xOf(ks[i])) - want, 360.0)) < 0.01);
+  }
+  // PHASE / DELAY: group delay in ms; the WRAP chip is not there (a click on its place does nothing).
+  u.d.click(u.at("phase", panel::test::phaseChip(ph, 0)));
+  u.d.step();
+  CHECK(panel::test::phaseView(ph, t) == 2);
+  u.d.click(u.at("phase", panel::test::phaseChip(ph, 1)));
+  u.d.step();
+  CHECK(panel::test::phaseView(ph, t) == 2);
+  CHECK(panel::test::phaseScale(ph).second > 0.0);
+  // Back to phase: unwrapped still (the two choices are kept apart); the WRAP chip wraps again.
+  u.d.click(u.at("phase", panel::test::phaseChip(ph, 0)));
+  u.d.step();
+  CHECK(panel::test::phaseView(ph, t) == 1);
+  u.d.click(u.at("phase", panel::test::phaseChip(ph, 1)));
+  u.d.step();
+  CHECK(panel::test::phaseView(ph, t) == 0);
+}
+
+TEST_CASE("EQ.4b strip and band panel: Q boxes read \"Q 0.71\", Stages boxes \"×16\"; other number boxes keep their readout") {
+  Alone a;
+  const doc::EqInfo e = a.info();
+  run(a.st(), doc::ops::setBandType(*a.ctx.doc(), e.bands[0][0].group, 1));
+  run(a.st(), doc::ops::setBandStages(*a.ctx.doc(), e.bands[0][0].group, 16));
+  setUnits(a.st(), e.bands[0][1].q, 4.0);
+  a.show(1.0f);
+  panel::GroupPanelFace& f = a.face();
+  (void)f.sync();
+  panel::PanelTarget& t = f.target();
+  auto textOf = [&](doc::DeviceId block) -> std::string {
+    for (size_t i = 0; i < f.elementCount(); ++i) {
+      const panel::Element& x = f.element(i);
+      if (x.desc().kind == "number" && x.binding() != nullptr && x.binding()->device == block) return panel::test::numberText(x, t).value_or("?");
+    }
+    return "none";
+  };
+  CHECK(textOf(e.bands[0][0].stages) == "\xC3\x97" "16");
+  CHECK(textOf(e.bands[0][0].q) == "Q 0.71");
+  CHECK(textOf(e.bands[0][1].q) == "Q 4.00");
+  CHECK(textOf(e.bands[0][1].frequency) == "400 Hz");  // (the Frequency box: the control's own readout)
+  // The lone band's own panel too.
+  Alone b("eq_band");
+  const doc::BandInfo bi = *doc::bandInfo(*b.ctx.doc(), b.group);
+  run(b.st(), doc::ops::setBandType(*b.ctx.doc(), b.group, 0));
+  run(b.st(), doc::ops::setBandStages(*b.ctx.doc(), b.group, 4));
+  b.show(1.0f);
+  panel::GroupPanelFace& g = b.face();
+  (void)g.sync();
+  std::vector<std::string> texts;
+  for (size_t i = 0; i < g.elementCount(); ++i)
+    if (g.element(i).desc().kind == "number") texts.push_back(panel::test::numberText(g.element(i), g.target()).value_or("?"));
+  CHECK(std::find(texts.begin(), texts.end(), "Q 0.71") != texts.end());
+  CHECK(std::find(texts.begin(), texts.end(), "\xC3\x97" "4") != texts.end());
+  (void)bi;
+}
+
+TEST_CASE("EQ.4b response: with the app's lowering a structural edit lowers nothing here; the curve stays until the compile arrives") {
+  Alone a;
+  a.ctx.setLoweringProvided(true);
+  // The app's compile (here: a lowering made by the test, handed over as the link does).
+  auto compile = [&] {
+    doc::LowerOptions lo;
+    lo.library = &devLib().library();
+    lo.devices = &devLib();
+    lo.clipSlotOf = [](doc::TrackId) { return 0u; };
+    auto low = doc::lower(*a.ctx.doc(), lo);
+    REQUIRE(low.ok());
+    a.ctx.setLowering(a.ctx.docSerial(), a.ctx.doc(), std::make_shared<const doc::LoweredProject>(std::move(*low)));
+  };
+  const doc::EqInfo e = a.info();
+  setUnits(a.st(), e.bands[0][1].gain, 6.0);
+  a.show(1.0f);
+  GroupResponses& gr = a.ctx.groupResponses();
+  panel::Element* r = &a.element("response");
+  CHECK(gr.waiting());  // (nothing compiled yet: no curve)
+  CHECK(std::isnan(*panel::test::drawnDb(*r, panel::test::responseX(*r, 400))));
+  compile();
+  a.host->notifyChanged();
+  a.d->step();
+  std::vector<double> hz;
+  const std::vector<uint32_t> ks = {100, 300, 400, 523, 700};
+  for (const uint32_t k : ks) hz.push_back(panel::test::responseHz(k));
+  auto check = [&](const std::vector<double>& want) {
+    r = &a.element("response");
+    for (size_t i = 0; i < ks.size(); ++i)
+      CHECK(*panel::test::drawnDb(*r, panel::test::responseX(*r, ks[i])) == doctest::Approx(want[i]).epsilon(1e-4).scale(1.0));
+  };
+  const std::vector<double> before = groupDb(*a.ctx.doc(), e.chain[0], hz, a.ctx.sampleRate());
+  check(before);
+  // A band added (structural): the next frames draw the previous curve (no lowering here) …
+  run(a.st(), doc::ops::addBand(*a.ctx.doc(), a.st().ids(), a.group, 0, 4, 5000.0, 9.0));
+  a.host->notifyChanged();
+  a.d->step();
+  CHECK(gr.waiting());
+  check(before);
+  // … a knob of a band it had still moves it …
+  setUnits(a.st(), e.bands[0][1].gain, -4.0);
+  a.host->notifyChanged();
+  a.d->step();
+  CHECK(*panel::test::drawnDb(*r, panel::test::responseX(*r, 400)) < -1.0f);
+  // … and the compile of the new structure draws the new band.
+  compile();
+  a.host->notifyChanged();
+  a.d->step();
+  CHECK_FALSE(gr.waiting());
+  check(groupDb(*a.ctx.doc(), e.chain[0], hz, a.ctx.sampleRate()));
+  CHECK(gr.lowerings() == 0);
 }
 
 TEST_CASE("EQ.4 response: a node drags frequency and gain (one undo step); Shift is fine; a gainless type's y is Q") {
@@ -486,28 +711,19 @@ TEST_CASE("EQ.4 EQ panel: the Mode menu splits through setEqMode (chain A copied
   CHECK(!panel::test::nodeOf(u.element("response"), e1.bands[0][0].group).has_value());
 }
 
-TEST_CASE("EQ.4 response: the element on a lone EQ Band's panel draws the band's own response (reuse)") {
+TEST_CASE("EQ.4b band panel: a lone EQ Band's own panel draws its curve, its phase and its analyser") {
   Alone a("eq_band");
   const doc::BandInfo b = *doc::bandInfo(*a.ctx.doc(), a.group);
   setUnits(a.st(), b.gain, 9.0);
   setUnits(a.st(), b.q, 2.0);
-  // Its panel with a response display above the controls.
-  doc::Panel p = *dev(*a.ctx.doc(), a.group).panel;
-  for (doc::PanelElement& x : p.elements)
-    if (x.number("plate", 0.0) == 0.0) x.y += 112.0f;
-  p.height += 112.0f;
-  p.width = 240.0f;
-  for (doc::PanelElement& x : p.elements)
-    if (x.number("plate", 0.0) != 0.0) x.w = p.width, x.h = p.height;
-  doc::PanelElement r;
-  r.id = p.nextId();
-  r.kind = "response";
-  r.x = 8, r.y = 8, r.w = p.width - 16.0f, r.h = 104.0f;
-  r.bindings = {doc::signalBinding(a.group, "y")};
-  p.elements.push_back(r);
-  run(a.st(), doc::ops::setGroupPanel(*a.ctx.doc(), a.group, std::make_shared<doc::Panel>(std::move(p))));
   a.show(2.0f);
   panel::Element& e = a.element("response");
+  // Bound to the band: its output (the analyser's tap) and its input (the dimmed input spectrum).
+  REQUIRE(e.binding(0) != nullptr);
+  CHECK(e.binding(0)->device == a.group);
+  REQUIRE(e.binding(1) != nullptr);
+  CHECK(e.binding(1)->device == a.group);
+  CHECK(e.binding(1)->kind == doc::BindingKind::Signal);
   std::vector<double> hz;
   const std::vector<uint32_t> ks = {100, 380, 450, 520, 700};
   for (const uint32_t k : ks) hz.push_back(panel::test::responseHz(k));
@@ -515,6 +731,11 @@ TEST_CASE("EQ.4 response: the element on a lone EQ Band's panel draws the band's
   for (size_t i = 0; i < ks.size(); ++i)
     CHECK(*panel::test::drawnDb(e, panel::test::responseX(e, ks[i])) == doctest::Approx(want[i]).epsilon(1e-4).scale(1.0));
   CHECK(panel::test::nodeOf(e, a.group).has_value());  // its one node
+  // The phase strip draws the band's phase (wrapped).
+  panel::Element& ph = a.element("phase");
+  CHECK(std::isfinite(panel::test::phaseAt(ph, ph.desc().w * 0.5f)));
+  // The analyser: the display shows a spectrum on its own axis (a golden's, without an engine).
+  CHECK(panel::test::showSpectrum(e, fakeSpectrum()));
   checkImage("eq-band-response", a.render());
 }
 
@@ -584,9 +805,9 @@ TEST_CASE("render: eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay (EQ.4,
 TEST_CASE("EQ.4 perf: a drag on a 32-band EQ re-evaluates and draws the curve within a frame" * doctest::test_suite("perf")) {
   Alone a;
   doc::DocumentStore& st = a.st();
-  for (int i = 0; i < 28; ++i)
+  for (int i = 0; i < 27; ++i)
     run(st, doc::ops::addBand(*a.ctx.doc(), st.ids(), a.group, 0, static_cast<uint32_t>(i % 8), 30.0 * std::pow(1.2, i), (i % 5) - 2.0));
-  REQUIRE(a.info().bands[0].size() == 32);
+  REQUIRE(a.info().bands[0].size() == 31);
   using Clock = std::chrono::steady_clock;
   const auto t0 = Clock::now();
   a.show(1.0f);  // (the lowering and the preparation of the chain and its 32 bands)
@@ -617,29 +838,46 @@ TEST_CASE("EQ.4 perf: a drag on a 32-band EQ re-evaluates and draws the curve wi
     sum += ms;
   }
   t.end();
-  // A structural edit (a band's type): the next frame lowers the project again and prepares the 32 bands (one
-  // inference of the track patch).
-  run(st, doc::ops::setBandType(*a.ctx.doc(), a.info().bands[0][3].group, 4));
-  (void)a.face().sync();
-  panel::Element& r2 = a.element("response");
-  dl.reset(4096, 4096);
-  const auto s0 = Clock::now();
-  r2.paintLive(p, env);
-  const double structuralMs = std::chrono::duration<double, std::milli>(Clock::now() - s0).count();
-  double lowerMs = 0.0;
-  {
+  // EQ.4b: the frame after a structural edit (a 32nd band added). Before: the display lowered the project on the UI
+  // thread and prepared every group again in that frame. After: the app's compile lowers; the frame after the edit
+  // draws the curve it has (the new band waits), the frame its lowering arrives in prepares the groups.
+  auto frame = [&] {
+    (void)a.face().sync();
+    panel::Element& rr = a.element("response");
+    dl.reset(4096, 4096);
+    const auto s0 = Clock::now();
+    rr.paintLive(p, env);
+    return std::chrono::duration<double, std::milli>(Clock::now() - s0).count();
+  };
+  auto addOne = [&] { run(st, doc::ops::addBand(*a.ctx.doc(), st.ids(), a.group, 0, 4, 9000.0, 3.0)); };
+  addOne();
+  const double beforeMs = frame();  // (no app: lowered here)
+  REQUIRE(a.ctx.undo());
+  (void)frame();
+  a.ctx.setLoweringProvided(true);
+  auto compile = [&] {
     doc::LowerOptions lo;
     lo.library = &devLib().library();
     lo.devices = &devLib();
     lo.clipSlotOf = [](doc::TrackId) { return 0u; };
     const auto l0 = Clock::now();
     auto low = doc::lower(*a.ctx.doc(), lo);
-    lowerMs = std::chrono::duration<double, std::milli>(Clock::now() - l0).count();
     REQUIRE(low.ok());
-  }
-  MESSAGE("32-band EQ: first paint " << prepareMs << " ms; the frame after a structural edit " << structuralMs
-          << " ms (of it the project's lowering " << lowerMs << " ms; the rest one inference and 32 bands prepared); a drag frame: mean "
-          << sum / n << " ms, worst " << worst << " ms");
+    a.ctx.setLowering(a.ctx.docSerial(), a.ctx.doc(), std::make_shared<const doc::LoweredProject>(std::move(*low)));
+    return std::chrono::duration<double, std::milli>(Clock::now() - l0).count();
+  };
+  (void)compile();
+  (void)frame();
+  const uint32_t lowerings = a.ctx.groupResponses().lowerings();
+  addOne();
+  const double afterMs = frame();  // (the app's compile not here yet: the curve as it was)
+  CHECK(a.ctx.groupResponses().waiting());
+  const double lowerMs = compile();  // (the app's compile thread)
+  const double arrivalMs = frame();
+  CHECK(a.ctx.groupResponses().lowerings() == lowerings);
+  MESSAGE("32-band EQ: first paint " << prepareMs << " ms; a drag frame: mean " << sum / n << " ms, worst " << worst
+          << " ms; the frame after addBand: before (lowered on the UI thread) " << beforeMs << " ms, after (the app's compile) "
+          << afterMs << " ms, the frame its lowering arrives in " << arrivalMs << " ms (the lowering, off the UI thread: " << lowerMs << " ms)");
 #if defined(PQ_OPTIMIZED)
   CHECK(sum / n < 2.0);
 #endif

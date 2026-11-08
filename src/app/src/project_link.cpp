@@ -550,7 +550,7 @@ Status ProjectLink::setSampleRate(double rate) {
   report_ = engine::TransportReport{};
   commandsPosted_ = 0;
   applyParams(*current_, true);
-  const Status compiled = compileNow(current_);
+  const Status compiled = compileNow(current_, ctx_ != nullptr && ctx_->doc() == current_ ? ctx_->docSerial() : 0);
   publishTempo(*current_);
   publishSequences(*current_);
   lastAudio_ = nullptr;
@@ -594,6 +594,8 @@ ProjectLink::~ProjectLink() {
 void ProjectLink::attach(views::ViewContext& ctx) {
   detach();
   ctx_ = &ctx;
+  // EQ.4b: the response displays read this link's lowerings (ViewContext::setLowering) instead of lowering themselves.
+  ctx.setLoweringProvided(true);
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onDocumentChange(e); });
   // "Re-enable Automation" and hand-made overrides (T3.15) change which lanes play (T3.17-fix3, M3 review M4).
   observer_ = ctx.observe([this](uint32_t what) {
@@ -607,12 +609,20 @@ void ProjectLink::attach(views::ViewContext& ctx) {
     const doc::ChangeSet none;
     const doc::StoreEvent e{doc::StoreEventKind::Reset, current_, ctx.doc(), none};
     onDocumentChange(e);
+  } else {
+    std::shared_ptr<const doc::LoweredProject> low;
+    {
+      std::lock_guard compileLock(compileMutex_);
+      low = lowered_;
+    }
+    if (low) ctx.setLowering(ctx.docSerial(), current_, std::move(low));  // (the context's document, compiled already)
   }
 }
 
 void ProjectLink::detach() {
   observer_ = views::ViewContext::Subscription();
   sub_ = views::ViewContext::Subscription();
+  if (ctx_ != nullptr) ctx_->setLoweringProvided(false);
   ctx_ = nullptr;
 }
 
@@ -1045,6 +1055,7 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
       std::lock_guard lock(mutex_);
       pending_ = true;
       pendingSnap_ = current_;
+      pendingSerial_ = ctx_ != nullptr ? ctx_->docSerial() : 0;
       pendingSince_ = nowSeconds();
     }
     cv_.notify_all();
@@ -1184,11 +1195,12 @@ void ProjectLink::workerMain() {
     }
     if (quit_) return;
     doc::Snapshot s = std::move(pendingSnap_);
+    const uint64_t serial = pendingSerial_;
     pending_ = false;
     flushNow_ = false;
     busy_ = true;
     lock.unlock();
-    (void)compileNow(s);
+    (void)compileNow(s, serial);
     lock.lock();
     busy_ = false;
     collects = 20;  // about 2 s of collects
@@ -1199,15 +1211,17 @@ void ProjectLink::workerMain() {
 void ProjectLink::flush() {
   if (!cfg_.compileThread) {
     doc::Snapshot s;
+    uint64_t serial = 0;
     {
       std::lock_guard lock(mutex_);
       if (pending_) {
         s = std::move(pendingSnap_);
+        serial = pendingSerial_;
         pending_ = false;
       }
     }
     if (s) {
-      (void)compileNow(s);
+      (void)compileNow(s, serial);
     } else if (anyDeferred_.load(std::memory_order_acquire)) {
       std::lock_guard compileLock(compileMutex_);
       bool drained = true;
@@ -1220,6 +1234,21 @@ void ProjectLink::flush() {
   cv_.notify_all();
   cv_.wait(lock, [&] { return quit_ || (!pending_ && !busy_); });
   flushNow_ = false;
+}
+
+void ProjectLink::handLowering(const doc::Snapshot& s, uint64_t serial, const std::shared_ptr<const doc::LoweredProject>& lowered) {
+  if (!cfg_.compileThread) {  // compiled on the UI thread (flush, init, a rate change)
+    if (ctx_ != nullptr) ctx_->setLowering(serial, s, lowered);
+    return;
+  }
+  std::function<void(std::function<void()>)> post;
+  {
+    std::lock_guard lock(loadMutex_);
+    post = post_;
+  }
+  if (post) post([alive = std::weak_ptr<int>(alive_), this, s, serial, lowered] {
+    if (alive.lock() && ctx_ != nullptr) ctx_->setLowering(serial, s, lowered);
+  });
 }
 
 void ProjectLink::setError(std::string message) {
@@ -1672,7 +1701,7 @@ uint32_t ProjectLink::metaSlotsInUse() const {
   return static_cast<uint32_t>(metaIds_.size());
 }
 
-Status ProjectLink::compileNow(const doc::Snapshot& s) {
+Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
   std::lock_guard compileLock(compileMutex_);  // vs the JIT worker's deliveries (compiler_, program publishes)
   {
     // The tables this compile names (tuningTable) go to compileHeld_ (its images hold them through keepAlive) and to
@@ -1709,7 +1738,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   lo.metaSlotOf = [this](doc::DeviceId d, std::string_view path, uint32_t index) { return metaSlotFor(d, path, index); };
   curveTouched_.clear();  // GU.1: the control curves' slots (syncCurveSlots below)
   lo.curveSlotOf = [this](doc::DeviceId d, std::string_view param) { return curveSlotFor(d, param); };
-  auto lowered = doc::lower(*s, lo, lowered_ ? &*lowered_ : nullptr);
+  auto lowered = doc::lower(*s, lo, lowered_.get());
   auto fail = [&](const Error& e) {
     ++stats_.compileErrors;
     setError(e.message);
@@ -1717,7 +1746,11 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     return Status(e);
   };
   if (!lowered.ok()) return fail(lowered.error());
-  doc::LoweredProject& lp = lowered.value();
+  // EQ.4b: shared (no copy) with the response displays, which get it now: before the build and the publish, so a
+  // display draws the new structure as soon as it is lowered, whatever the build costs (or if it fails).
+  const std::shared_ptr<const doc::LoweredProject> shared = std::make_shared<const doc::LoweredProject>(std::move(lowered.value()));
+  const doc::LoweredProject& lp = *shared;
+  if (serial != 0) handLowering(s, serial, shared);
   metaFresh_.clear();
   syncMetaSlots(lp.metaResources);  // before any image is built: resourceFor reads the slots by id
   syncCurveSlots(lp.curves);         // GU.1: likewise
@@ -1857,7 +1890,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
   }
   if (compiledUnits > 0) ++stats_.compiles;
   stats_.unitCompiles += compiledUnits;
-  lowered_ = std::move(lp);
+  lowered_ = shared;
   endJob.ok = true;
   engine_->wake();
   wantJit();

@@ -967,3 +967,16 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **To judge** (QUESTIONS Q?-EQ.4-a): the colours (mint / teal against the app's amber controls), the node size and
   numbers, the strip column look, the phase strip's height (40 units), the Stages box still reads "16.0" (EQ.3's number
   format).
+
+## 👁 EQ.4b EQ review fixes · 2026-11-08
+- **What changed:** the phase strip shows phase wrapped to ±180° by default (a fixed scale: a 16-stage cut no longer
+  flattens it); a WRAP / UNWRAP chip beside PHASE / DELAY switches to unwrapped (auto-scaled). Strip boxes read
+  "Q 0.71" and "×16" (Stages). A lone EQ Band's own panel (and a band drawn closed in the circuit) now has the response
+  display with its analyser and the phase strip above its controls (240 × 228). The curves come from the app's own
+  compile: after adding a band the curve stays as it was until the compile arrives (a few tens of ms), instead of a
+  stall on the UI thread.
+- **Goldens re-recorded (2x):** eq-default, eq-eight-bands, eq-lr-mode (wrapped phase strip, Q / Stages labels),
+  eq-phase-delay (labels only: the strip is in delay), eq-band-response (the band's stock panel).
+- **To judge:** "×16" vs "16 st"; "Q 40.00" (two decimals at any Q); the wrapped phase of a deep cut (many wrap
+  lines at low frequencies); the band panel's size in the circuit (four of them inside an opened EQ).
+- **Not confirmed:** the "no curve after opening and closing the circuit" bug did not reproduce here (see PROGRESS).

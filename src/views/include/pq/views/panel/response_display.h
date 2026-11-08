@@ -5,6 +5,8 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <utility>
 
 #include "pq/views/devices/analysis.h"
 #include "pq/views/panel/element.h"
@@ -28,5 +30,14 @@ bool drawsSeries(const Element& e);
 // The axis: x share t ∈ [0, 1] ↔ Hz (t = log(1 + f / 10 Hz) / log(2001)).
 double axisHz(double t) noexcept;
 double axisT(double hz) noexcept;
+// EQ.4b: the `phase` display. What it shows (0 wrapped phase, 1 unwrapped, 2 group delay; -1: not a phase display),
+// the total's value drawn at element x (degrees or ms; NaN: no curve), the scale of the last paint, the centre of chip
+// c (0: PHASE / DELAY, 1: WRAP / UNWRAP).
+int32_t phaseView(const Element& e, const PanelTarget& t);
+float phaseAt(const Element& e, float x);
+std::pair<double, double> phaseScale(const Element& e);
+ui::Vec2 phaseChip(const Element& e, int32_t c);
+// A `number` element's readout as drawn (its style's format: "Q 0.71", "×16"); nullopt: not a bound number.
+std::optional<std::string> numberText(const Element& e, const PanelTarget& t);
 
 }  // namespace pq::views::panel::test

@@ -779,6 +779,11 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
     if (bits & view_change::kModulation) refreshRings();
     if (bits & view_change::kAnalysis)  // TX.spectrum: a device's analysis tap appeared: its displays and face look again
       wakeFaces();
+    if (bits & view_change::kResponses) {  // EQ.4b: the compile of a new structure arrived: the response displays draw it
+      std::vector<panel::PanelHost*> hs;
+      for (const auto& [id, f] : impl_->all) f->hosts(hs);
+      for (panel::PanelHost* h : hs) h->notifyChanged();
+    }
     if (bits & view_change::kAutomation) refreshAutomation();  // T4.18: overridden / re-enabled
     else if ((bits & view_change::kTransport) && (!impl_->autoTargets.empty() || impl_->chainAuto)) applyAutomation();
   });

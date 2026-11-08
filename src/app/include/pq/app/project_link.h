@@ -514,7 +514,10 @@ private:
   void engageDisk(bool on);
   void reportDisk();              // UI thread: a burst of underruns names itself in the status line
   // Compile path (worker or flush()).
-  Status compileNow(const doc::Snapshot& s);
+  // `serial`: the ViewContext's docSerial() of `s` (0: none): the lowering is handed to the context with it (EQ.4b).
+  Status compileNow(const doc::Snapshot& s, uint64_t serial = 0);
+  // EQ.4b: a compile's lowering to the attached context (UI thread: directly without a compile thread, else posted).
+  void handLowering(const doc::Snapshot& s, uint64_t serial, const std::shared_ptr<const doc::LoweredProject>& lowered);
   // A compile's result for the program, published in order (compileMutex_).
   struct Deferred {
     bool topology = false;
@@ -610,7 +613,7 @@ private:
   std::vector<doc::DeviceId> missingReported_;   // UI thread: devices the status line named as missing
   std::unique_ptr<engine::Engine> engine_;
   std::unique_ptr<engine::ProjectCompiler> compiler_;
-  std::optional<doc::LoweredProject> lowered_;   // compile path
+  std::shared_ptr<const doc::LoweredProject> lowered_;  // compile path (EQ.4b: shared with the response displays)
   doc::Snapshot current_;                        // UI thread: the snapshot the engine follows
 
   // Slots (mutex_).
@@ -753,6 +756,7 @@ private:
   std::thread worker_;
   bool quit_ = false, pending_ = false, busy_ = false, flushNow_ = false;
   doc::Snapshot pendingSnap_;
+  uint64_t pendingSerial_ = 0;  // EQ.4b: its ViewContext::docSerial()
   double pendingSince_ = 0.0;   // seconds (steady clock) of the last structural change
   LinkStats stats_;
   mutable std::mutex errorMutex_;

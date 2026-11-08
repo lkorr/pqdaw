@@ -11,11 +11,13 @@
 #include <cstdio>
 #include <mutex>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "elements_internal.h"
+#include "pq/views/panel/response_display.h"
 #include "pq/ui/overlay.h"
 #include "pq/views/devices/device_model.h"
 
@@ -649,11 +651,29 @@ public:
       {"colour", StyleSpec::Type::Token, 0, "value"},
       {"label", StyleSpec::Type::Text, 0, ""},
       {"size", StyleSpec::Type::Number, 8.5, {}, {}, 4.0, 32.0},
+      // EQ.4b: the readout's own format: `decimals` ≥ 0 shows the value in its units with that many decimals (-1: the
+      // control's readout, its unit included), between `prefix` and `suffix` ("Q 0.71", "×16").
+      {"decimals", StyleSpec::Type::Number, -1.0, {}, {}, -1.0, 6.0},
+      {"prefix", StyleSpec::Type::Text, 0, ""},
+      {"suffix", StyleSpec::Type::Text, 0, ""},
   };
   bool interactive() const noexcept override { return true; }
   uint32_t staticLayerCount() const noexcept override { return 2; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
     return layer == 0 ? ui::lerp(th.face.body, th.face.track, 0.5f) : th.face.frame;
+  }
+  // The readout shown (the style's format, else the control's own).
+  std::string shownText(const PanelTarget& t, double position) const {
+    const double decimals = num("decimals", -1.0);
+    const std::string_view prefix = txt("prefix", ""), suffix = txt("suffix", "");
+    const BoundInfo& i = bound(t);
+    if (decimals < 0.0 || !i.valid) {
+      if (prefix.empty() && suffix.empty()) return readoutText(t, position);
+      return std::string(prefix) + readoutText(t, position) + std::string(suffix);
+    }
+    char b[48];
+    std::snprintf(b, sizeof b, "%.*f", static_cast<int>(std::lround(decimals)), dsp::evalCurveUnits(i.curve, std::clamp(position, 0.0, 1.0)));
+    return std::string(prefix) + b + std::string(suffix);
   }
   void paintStatic(ui::FacePainter& p, uint32_t layer) const override {
     const Rect r = box();
@@ -670,7 +690,7 @@ public:
     const float px = static_cast<float>(std::clamp(num("size", 8.5), 4.0, 32.0));
     const Vec2 c{(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f};
     if (typing_) p.text(c, text_ + "|", px, th.face.ink);
-    else if (binding() != nullptr) p.text(c, readoutText(t, pos(t)), px, accent);
+    else if (binding() != nullptr) p.text(c, shownText(t, pos(t)), px, accent);
     const std::string& label = labelText(t);
     if (!label.empty() && r.y0 > 6.0f) p.textAligned({r.x0, 4.5f}, label, kLabelPx, th.face.ink, 0.0f);
   }
@@ -1313,6 +1333,13 @@ const ElementSchema* elementSchema(std::string_view kind) {
   for (const Registered& r : registry())
     if (r.schema.kind == kind) return &r.schema;
   return nullptr;
+}
+
+// EQ.4b (pq/views/panel/response_display.h): a `number` element's readout as it draws it.
+std::optional<std::string> test::numberText(const Element& e, const PanelTarget& t) {
+  const auto* n = dynamic_cast<const Number*>(&e);
+  if (n == nullptr || e.binding() == nullptr) return std::nullopt;
+  return n->shownText(t, t.position(*e.binding()));
 }
 
 std::vector<std::string_view> elementKinds() {

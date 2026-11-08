@@ -13,8 +13,9 @@
 //                a band (doc::bandInfo) its own curve and its one node
 //                any other group       its In → Out curve, no nodes
 //              Each band's own curve is the band group's own GroupResponse (exact for any band circuit, a user's too).
-//   phase      the same axis; the active chain's total as unwrapped phase in degrees (auto-scaled), or group delay in
-//              ms (the chip), the selected band's faint behind.
+//   phase      the same axis; the active chain's total as phase in degrees — WRAPPED to ±180° (the default: a fixed
+//              scale, so a 16-stage cut's thousands of degrees never flatten the strip), or UNWRAPPED (auto-scaled; the
+//              WRAP / UNWRAP chip) — or group delay in ms (the PHASE / DELAY chip); the selected band's faint behind.
 //   bandtype   a band's Type as its glyph and short code (LP, HP, BP, NO, PK, LS, HS, AP) in the band's colour, a
 //              menu on click (the EQ's strip columns).
 //
@@ -24,8 +25,8 @@
 // 0 dB, right-click a node: Type, Stages, Bypass, Solo, Delete; a click selects (PanelTarget::selectGroup: the strip
 // column lights up), Delete removes the selected band.
 //
-// Cost: the curves come from views::GroupResponses (one lowering per structural revision, one evaluation per changed
-// response, shared by the panel's displays); a display re-derives a curve's dB / phase only when that evaluation is
+// Cost: the curves come from views::GroupResponses (the app's compile's lowering, prepared once per structural
+// revision; one evaluation per changed response, shared by the panel's displays); a display re-derives a curve's dB / phase only when that evaluation is
 // new, so a drag on one band of 32 re-evaluates that band and its chain, nothing else. The geometry is drawn every
 // paint (the curves are live layers); a band's fill and line cover only the span where it is off 0 dB.
 
@@ -294,10 +295,13 @@ void deriveDb(const GroupResponses::Curve* c, Derived& d) {
   }
 }
 
-// Unwrapped phase in degrees, or group delay in ms (−dφ/dω).
-void derivePhase(const GroupResponses::Curve* c, bool delay, Derived& d, uint64_t mode) {
+// What the phase strip shows.
+enum class PhaseView : uint8_t { Wrapped, Unwrapped, Delay };
+
+// Phase in degrees (wrapped to (−180°, 180°] or unwrapped), or group delay in ms (−dφ/dω).
+void derivePhase(const GroupResponses::Curve* c, PhaseView view, Derived& d) {
   if (c == nullptr) return d.clear();
-  const uint64_t key = c->version * 2 + mode;
+  const uint64_t key = c->version * 3 + static_cast<uint64_t>(view);
   if (key == d.version) return;
   d.version = key;
   d.kind = c->kind;
@@ -316,7 +320,11 @@ void derivePhase(const GroupResponses::Curve* c, bool delay, Derived& d, uint64_
   }
   const std::vector<double>& f = grid();
   for (uint32_t k = 0; k < kPoints; ++k) {
-    if (!delay) {
+    if (view == PhaseView::Wrapped) {
+      d.v[k] = static_cast<float>(std::arg(c->at(k)) * 180.0 / kPi);
+      continue;
+    }
+    if (view == PhaseView::Unwrapped) {
       d.v[k] = static_cast<float>(ph[k] * 180.0 / kPi);
       continue;
     }
@@ -984,14 +992,15 @@ class PhaseDisplay final : public Element {
 public:
   using Element::Element;
   bool interactive() const noexcept override { return true; }
-  ui::Cursor cursor() const noexcept override { return hoverChip_ ? ui::Cursor::Pointer : ui::Cursor::Inherit; }
+  ui::Cursor cursor() const noexcept override { return hoverChip_ >= 0 ? ui::Cursor::Pointer : ui::Cursor::Inherit; }
 
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
     PanelTarget& t = *env.target;
-    if (!env.hovered) hoverChip_ = false;
-    const bool delay = delayOn(t);
-    refresh(t, delay);
+    if (!env.hovered) hoverChip_ = -1;
+    const PhaseView view = viewOf(t);
+    const bool delay = view == PhaseView::Delay;
+    refresh(t, view);
     const float w = desc_.w, h = desc_.h;
     const ui::FaceTransform& tr = p.transform();
     const Rect dev{tr.origin.x, tr.origin.y, tr.origin.x + w * tr.scale, tr.origin.y + h * tr.scale};
@@ -1006,6 +1015,7 @@ public:
           if (std::isfinite(v)) lo = any ? std::min(lo, v) : v, hi = any ? std::max(hi, v) : v, any = true;
     if (!any) lo = hi = 0.0f;
     if (delay) lo = std::min(lo, 0.0f);
+    if (view == PhaseView::Wrapped) lo = -180.0f, hi = 180.0f;  // (fixed: rules at ±90°)
     static constexpr double kDeg[] = {5, 10, 15, 30, 45, 90, 180, 360, 720, 1440, 2880, 5760, 11520, 23040};
     static constexpr double kMs[] = {0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000};
     const std::span<const double> steps = delay ? std::span<const double>(kMs) : std::span<const double>(kDeg);
@@ -1020,8 +1030,10 @@ public:
       }
     }
     if ((b - a) / step > 3.0 + 1e-9) a = std::floor(lo / step) * step, b = std::ceil(hi / step) * step;
+    if (view == PhaseView::Wrapped) a = -180.0, b = 180.0, step = 90.0;
     lo_ = a;
     hi_ = std::max(b, a + step);
+    const bool wrapped = view == PhaseView::Wrapped;
     for (double v = lo_; v <= hi_ + 1e-9; v += step) {
       const float y = yOf(v);
       const bool zero = std::fabs(v) < 1e-9;
@@ -1033,57 +1045,96 @@ public:
                       5.0f, th.device.displayText, 1.0f);
     }
     // The selected band, faint; the total.
-    if (sel_.valid()) {
-      points(sel_.v, pts_);
-      p.polyline(pts_, 0.9f, ui::mulAlpha(selColour_, 0.55f));
-    }
+    // A wrapped curve is cut where it wraps (no vertical line across the strip).
+    if (sel_.valid())
+      forRuns(sel_.v, wrapped, [&](uint32_t a, uint32_t b) {
+        points(sel_.v, a, b, pts_);
+        p.polyline(pts_, 0.9f, ui::mulAlpha(selColour_, 0.55f));
+      });
     if (total_.valid()) {
-      points(total_.v, pts_);
       const Rgba m = th.device.response;
-      p.polyline(pts_, 3.0f, ui::mulAlpha(m, 0.12f));
-      if (total_.kind == graph::ResponseKind::Approximate) p.dashed(pts_, 1.2f, 4.0f, 3.0f, ui::mulAlpha(m, 0.9f));
-      else p.polyline(pts_, 1.2f, ui::mulAlpha(m, 0.9f));
+      forRuns(total_.v, wrapped, [&](uint32_t a, uint32_t b) {
+        points(total_.v, a, b, pts_);
+        p.polyline(pts_, 3.0f, ui::mulAlpha(m, 0.12f));
+        if (total_.kind == graph::ResponseKind::Approximate) p.dashed(pts_, 1.2f, 4.0f, 3.0f, ui::mulAlpha(m, 0.9f));
+        else p.polyline(pts_, 1.2f, ui::mulAlpha(m, 0.9f));
+      });
     } else {
       p.text({w * 0.5f, h * 0.5f}, "no curve", 6.0f, th.device.displayText);
     }
-    chip(p, th, chipRect(), delay ? "DELAY" : "PHASE", delay, hoverChip_);
+    chip(p, th, chipRect(0), delay ? "DELAY" : "PHASE", delay, hoverChip_ == 0);
+    if (!delay) chip(p, th, chipRect(1), wrapped ? "WRAP" : "UNWRAP", !wrapped, hoverChip_ == 1);
     p.drawList().popClip();
     outlineRect(p, {0.5f, 0.5f, w - 0.5f, h - 0.5f}, 4.0f, 1.0f, ui::mulAlpha(th.device.responseGrid, 1.6f));
   }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
     using K = FacePointer::Kind;
     if (e.kind == K::Move) {
-      const bool h = inside(chipRect(), e.local), changed = h != hoverChip_;
+      const int32_t h = chipAt(e.local, t);
+      const bool changed = h != hoverChip_;
       hoverChip_ = h;
       return changed;
     }
-    if (e.kind == K::Down && e.button == ui::PointerButton::Left && inside(chipRect(), e.local)) {
-      t.setViewValue(id(), "delay", delayOn(t) ? 0.0 : 1.0);
-      return true;
+    if (e.kind == K::Down && e.button == ui::PointerButton::Left) {
+      const int32_t c = chipAt(e.local, t);
+      if (c == 0) t.setViewValue(id(), "delay", viewOf(t) == PhaseView::Delay ? 0.0 : 1.0);
+      if (c == 1) t.setViewValue(id(), "unwrap", viewOf(t) == PhaseView::Unwrapped ? 0.0 : 1.0);
+      return c >= 0;
     }
     return false;
   }
   void describe(const PanelTarget&, std::string& title, std::string& body) const override {
     title = "Phase";
-    body = "The unwrapped phase of the response (the selected band faint), or its group delay: the chip switches.";
+    body = "The phase of the response (the selected band faint): wrapped to \xC2\xB1" "180\xC2\xB0, or unwrapped (the WRAP chip); "
+           "or its group delay (the PHASE chip).";
   }
 
   // Tests.
-  bool delayShown(const PanelTarget& t) const { return delayOn(t); }
+  bool delayShown(const PanelTarget& t) const { return viewOf(t) == PhaseView::Delay; }
+  // 0 wrapped, 1 unwrapped, 2 delay; the drawn value at x (NaN: none); the scale.
+  int32_t viewShown(const PanelTarget& t) const { return static_cast<int32_t>(viewOf(t)); }
+  float drawnAt(float x) const {
+    if (!total_.valid()) return std::numeric_limits<float>::quiet_NaN();
+    return total_.v[static_cast<size_t>(std::lround(std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1)))];
+  }
+  std::pair<double, double> scale() const noexcept { return {lo_, hi_}; }
+  Vec2 chipCentre(int32_t c) const noexcept {
+    const Rect r = chipRect(c);
+    return {(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f};
+  }
 
 private:
-  bool delayOn(const PanelTarget& t) const { return t.viewValue(id(), "delay", 0.0) >= 0.5; }
-  Rect chipRect() const noexcept { return {3.0f, 3.0f, 29.0f, 12.0f}; }  // (the title: a click switches)
+  PhaseView viewOf(const PanelTarget& t) const {
+    if (t.viewValue(id(), "delay", 0.0) >= 0.5) return PhaseView::Delay;
+    return t.viewValue(id(), "unwrap", 0.0) >= 0.5 ? PhaseView::Unwrapped : PhaseView::Wrapped;
+  }
+  // The title chip (PHASE / DELAY), then the WRAP / UNWRAP chip beside it (phase only).
+  Rect chipRect(int32_t c) const noexcept { return c == 0 ? Rect{3.0f, 3.0f, 29.0f, 12.0f} : Rect{32.0f, 3.0f, 62.0f, 12.0f}; }
+  int32_t chipAt(Vec2 l, const PanelTarget& t) const {
+    if (inside(chipRect(0), l)) return 0;
+    if (viewOf(t) != PhaseView::Delay && inside(chipRect(1), l)) return 1;
+    return -1;
+  }
+  // Runs [a, b) of points to draw as one line: all of them, or (wrapped) cut where the phase wraps.
+  template <class F>
+  static void forRuns(const std::vector<float>& v, bool wrapped, F&& draw) {
+    uint32_t a = 0;
+    for (uint32_t k = 1; k <= kPoints; ++k)
+      if (k == kPoints || (wrapped && std::fabs(v[k] - v[k - 1]) > 180.0f)) {
+        if (k - a >= 2) draw(a, k);
+        a = k;
+      }
+  }
   float yOf(double v) const noexcept {
     const float top = 4.0f, bot = desc_.h - 4.0f;
     return bot - static_cast<float>((v - lo_) / std::max(hi_ - lo_, 1e-9)) * (bot - top);
   }
-  void points(const std::vector<float>& v, std::vector<Vec2>& out) const {
-    out.resize(kPoints);
-    for (uint32_t k = 0; k < kPoints; ++k)
-      out[k] = {desc_.w * static_cast<float>(k) / (kPoints - 1), std::clamp(yOf(std::isfinite(v[k]) ? v[k] : 0.0), -4.0f, desc_.h + 4.0f)};
+  void points(const std::vector<float>& v, uint32_t a, uint32_t b, std::vector<Vec2>& out) const {
+    out.resize(b - a);
+    for (uint32_t k = a; k < b; ++k)
+      out[k - a] = {desc_.w * static_cast<float>(k) / (kPoints - 1), std::clamp(yOf(std::isfinite(v[k]) ? v[k] : 0.0), -4.0f, desc_.h + 4.0f)};
   }
-  void refresh(PanelTarget& t, bool delay) {
+  void refresh(PanelTarget& t, PhaseView view) {
     GroupResponses* r = t.responses();
     const doc::Binding* b = binding();
     if (r == nullptr || b == nullptr) {
@@ -1098,9 +1149,9 @@ private:
     shown_.groups(want_, false);
     if (s != nullptr) want_.push_back(s->group);
     r->want(want_);
-    derivePhase(shown_.total(*r, shown_.active, grid(), kGridKey), delay, total_, delay ? 1 : 0);
+    derivePhase(shown_.total(*r, shown_.active, grid(), kGridKey), view, total_);
     if (s != nullptr) {
-      derivePhase(r->curve(s->group, grid(), kGridKey), delay, sel_, delay ? 1 : 0);
+      derivePhase(r->curve(s->group, grid(), kGridKey), view, sel_);
       selColour_ = bandColour(s->index);
     } else {
       sel_.clear();
@@ -1113,7 +1164,7 @@ private:
   Rgba selColour_ = 0;
   std::vector<Vec2> pts_;
   double lo_ = -180.0, hi_ = 180.0;
-  bool hoverChip_ = false;
+  int32_t hoverChip_ = -1;
 };
 
 // ---- band type -----------------------------------------------------------------------------------------------------
@@ -1240,6 +1291,22 @@ std::optional<float> yOfDb(const Element& e, double db) {
 bool drawsSeries(const Element& e) {
   const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
   return r != nullptr && r->series();
+}
+int32_t phaseView(const Element& e, const PanelTarget& t) {
+  const auto* p = dynamic_cast<const PhaseDisplay*>(&e);
+  return p != nullptr ? p->viewShown(t) : -1;
+}
+float phaseAt(const Element& e, float x) {
+  const auto* p = dynamic_cast<const PhaseDisplay*>(&e);
+  return p != nullptr ? p->drawnAt(x) : std::numeric_limits<float>::quiet_NaN();
+}
+std::pair<double, double> phaseScale(const Element& e) {
+  const auto* p = dynamic_cast<const PhaseDisplay*>(&e);
+  return p != nullptr ? p->scale() : std::pair<double, double>{0.0, 0.0};
+}
+ui::Vec2 phaseChip(const Element& e, int32_t c) {
+  const auto* p = dynamic_cast<const PhaseDisplay*>(&e);
+  return p != nullptr ? p->chipCentre(c) : ui::Vec2{0.0f, 0.0f};
 }
 double axisHz(double t) noexcept { return hzOfT(t); }
 double axisT(double hz) noexcept { return tOfHz(hz); }

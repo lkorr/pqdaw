@@ -65,6 +65,7 @@ class PatchPlayer;  // pq/views/circuit/patch_player.h
 }  // namespace pq::views::circuit
 namespace pq::doc {
 class DeviceLibrary;  // pq/document/devices.h
+struct LoweredProject;  // pq/document/lower.h
 }  // namespace pq::doc
 namespace pq::views {
 
@@ -88,6 +89,7 @@ inline constexpr uint32_t kWaveforms = 1u << 14;     // a waveform overview arri
 inline constexpr uint32_t kLibrary = 1u << 15;       // the browser's places, index or tags changed (T5.10)
 inline constexpr uint32_t kShowAutomation = 1u << 16; // T4.18: a view asked to show a parameter's automation lane
 inline constexpr uint32_t kAnalysis = 1u << 17;      // TX.spectrum: new analysis taps exist (displays without a feed look again)
+inline constexpr uint32_t kResponses = 1u << 18;     // EQ.4b: the app's lowering of the current structure arrived (the response displays draw again)
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -261,6 +263,17 @@ public:
   // EQ.4: the analytic responses of groups the displays draw (pq/views/panel/group_responses.h): one lowering per
   // structural revision, shared by every panel.
   GroupResponses& groupResponses();
+  // EQ.4b: the app's own lowering for the response displays (no second lowering on the UI thread). The app (the
+  // playback link, ProjectLink::attach) says it provides them (setLoweringProvided), then hands over each compile's
+  // lowering with the docSerial() of the snapshot it lowered (setLowering, UI thread; notifies kResponses).
+  // currentLowering(): the last one handed over while no structural change came after its snapshot, else null (the
+  // displays keep the curves they have until the compile of the new structure arrives). docSerial(): counts the
+  // document's changes (store events); a structural change, a reset or a new device library start a revision there.
+  void setLoweringProvided(bool on) noexcept { loweringProvided_ = on; }
+  bool loweringProvided() const noexcept { return loweringProvided_; }
+  uint64_t docSerial() const noexcept { return docSerial_; }
+  void setLowering(uint64_t serial, doc::Snapshot from, std::shared_ptr<const doc::LoweredProject> lowered);
+  std::shared_ptr<const doc::LoweredProject> currentLowering(doc::Snapshot* from = nullptr) const;
   // The app, after a compile made new taps: displays waiting for their device's feed look again (notifies kAnalysis).
   void analysisTapsChanged() { notify(view_change::kAnalysis); }
   // T5.x-one-circuit (SPEC §15 2026-10-31: the whole project is one circuit): every "Open in Circuit View" (a device's
@@ -527,6 +540,11 @@ private:
   std::unique_ptr<devices::AnalysisHub> analysis_;  // TX.spectrum
   double sampleRate_ = 48000.0;                       // EQ.4
   uint64_t structural_ = 1;                           // EQ.4
+  uint64_t docSerial_ = 1, structuralSerial_ = 1;     // EQ.4b: store events; the one the revision started at
+  bool loweringProvided_ = false;                     // EQ.4b
+  uint64_t loweringSerial_ = 0;                       // EQ.4b: the app's lowering (setLowering)
+  doc::Snapshot loweringFrom_;
+  std::shared_ptr<const doc::LoweredProject> lowering_;
   std::unique_ptr<GroupResponses> responses_;         // EQ.4
   std::function<std::shared_ptr<TapRing>(doc::DeviceId, std::string_view)> signalTapOf_;  // GU.7
   FaceVoices faceVoices_;  // GU.7

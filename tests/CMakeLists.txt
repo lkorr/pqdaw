@@ -136,6 +136,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_racks.cpp  # GU.9: racks are parallel groups (renders vs the T4.8 racks' references, interpreter == JIT)
     app/test_audio_tracks.cpp  # T5.3: audio tracks (golden lowering text, clip slot, clip edits compile nothing)
     app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
+    app/test_eq_link.cpp  # EQ.4b: the EQ displays in the app wiring (the curve after the circuit opens / closes the EQ; the link's lowering)
     app/test_drop_playback.cpp  # T5.7: a dropped file plays at once (the hover preloads it into the pool)
     app/test_clip_export.cpp  # T5.12: clips rendered for drag-out (== the solo render, WAV files; 60-s clip in perf)
     app/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes reach the DSP, click-free, idle when stopped

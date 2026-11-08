@@ -3,10 +3,14 @@
 // EQ.4 (docs/plans/EQ.md "Displays (EQ.4)"): the analytic responses (doc::GroupResponse, pq/document/group_response.h)
 // the `response` and `phase` displays draw, shared by every panel of a ViewContext.
 //
-//   lowering   one doc::lower() of the current document per STRUCTURAL REVISION (ViewContext::structuralRevision: a
-//              band added, a Type / Stages / Mode literal, an undo of one), made on the UI thread the first time a
-//              display asks after the revision changed, and kept for that revision. A knob turn, a drag, a typed value
-//              (param changes) never lowers again.
+//   lowering   EQ.4b: the APP'S OWN COMPILE (ViewContext::currentLowering: the playback link hands each compile's
+//              doc::LoweredProject over, shared, no copy): nothing is lowered on the UI thread. After a structural
+//              edit (ViewContext::structuralRevision: a band added, a Type / Stages / Mode literal, an undo of one) the
+//              groups prepared before keep their responses (the displays keep drawing, their controls re-read from
+//              the document) until the compile of the new structure arrives (view_change::kResponses); a group new in
+//              the edit has none until then. Without an app (tests, scenes: !ViewContext::loweringProvided) one
+//              doc::lower() of the document per structural revision, on the UI thread, the first time a display asks.
+//              A knob turn, a drag, a typed value (param changes) never lowers or prepares again.
 //   prepare    want(groups): the groups a display draws that are not prepared yet at this revision, prepared together
 //              (GroupResponse::prepareMany: one inference per track patch, not one per group).
 //   update     get(group): the response with its controls read from the current snapshot (GroupResponse::update, once
@@ -67,8 +71,10 @@ public:
   // The current document (null: none) and the rate the displays evaluate at.
   const doc::Snapshot& doc() const;
   double sampleRate() const noexcept;
-  // Tests: lowerings made so far (one per structural revision a display asked at).
+  // Tests: lowerings made here so far (one per structural revision a display asked at; none with the app's).
   uint32_t lowerings() const noexcept { return lowerings_; }
+  // A structural edit's compile has not arrived yet (the entries are the previous structure's).
+  bool waiting() const noexcept { return waiting_; }
 
 private:
   struct Entry {
@@ -79,6 +85,7 @@ private:
     Curve curve;
     uint64_t curveStamp = 0, curveKey = 0;
     size_t curvePoints = 0;
+    double curveRate = 0.0;  // (the rate it was evaluated at)
   };
   struct Series {
     doc::DeviceId name;
@@ -91,12 +98,14 @@ private:
 
   ViewContext& ctx_;
   uint64_t revision_ = 0;
-  std::unique_ptr<doc::LoweredProject> lowered_;
+  std::shared_ptr<const doc::LoweredProject> lowered_;  // the app's (shared), or made here
   std::string lowerError_;
   bool lowerTried_ = false;
+  bool waiting_ = false;  // EQ.4b: a structural revision the app's compile has not lowered yet
   std::deque<Entry> entries_;  // (references stay valid while entries are added)
   std::deque<Series> series_;
   std::vector<uint64_t> scratchVersions_;
+  std::vector<doc::DeviceId> scratchMissing_;
   std::vector<const Curve*> scratchCurves_;
   std::vector<std::complex<double>> scratchH_, scratchNext_;
   uint32_t lowerings_ = 0;

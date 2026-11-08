@@ -410,7 +410,7 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
 - Status: open (provisional choices above).
 
 ## Q?-EQ.4-a · Response displays: where the lowering comes from, what the total includes, the Mode menu route
-- **Lowering**: the app's current `LoweredProject` lives on ProjectLink's compile path (another thread). The displays
+- **Lowering** (superseded by EQ.4b, Q?-EQ.4b-a: the app's compile's lowering, shared): the app's current `LoweredProject` lives on ProjectLink's compile path (another thread). The displays
   instead lower the document themselves on the UI thread, once per structural revision, when a display first asks
   (`views::GroupResponses`; 0.9 ms here, the whole frame after a structural edit on a 32-band EQ ≈ 13 ms in check).
   Alternative: hand the compile path's lowering to the UI thread (a shared_ptr swap) — no second lowering, but the
@@ -424,4 +424,17 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   (the panel's plain menu, or any control a user binds to it), instead of a dedicated element kind.
 - **Band highlight**: a strip column's plate is a `shape` with a Panel binding on its band (lit while selected);
   `embeddedGroup` now counts Panel bindings on kind `panel` only.
+- Status: open (provisional choices above).
+
+## Q?-EQ.4b-a · EQ review fixes: the curve while the compile catches up, labels, the band panel
+- **While a structural edit's compile is pending** (the link debounces, then lowers): the groups prepared before keep
+  their responses (their knobs still move them), a band new in the edit passes through until its compile arrives.
+  Alternatives: freeze the old curve entirely; show "no curve". Chosen: pass-through (the curve stays live, the new
+  band appears one compile later). A failed compile keeps the previous structure's curves.
+- **Stages label**: "×16" (prefix ×, integer) over "16 st" (shorter in a 56-unit column). Q: "Q 0.71", two decimals at
+  any Q ("Q 40.00"). Both through the `number` element's new style fields, so no other panel changes.
+- **Phase default**: wrapped ±180°, fixed scale; the WRAP / UNWRAP choice and PHASE / DELAY are separate view state
+  (back from DELAY returns to the phase view last used).
+- **Band panel**: 240 × 228 (response 100, phase 36, then the column laid flat); its display has no double-click add
+  (a band is not an EQ).
 - Status: open (provisional choices above).

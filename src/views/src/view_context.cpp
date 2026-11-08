@@ -153,6 +153,7 @@ void ViewContext::setDeviceLibrary(const doc::DeviceLibrary* lib) {
   if (devices_ == lib) return;
   devices_ = lib;
   ++structural_;  // EQ.4
+  structuralSerial_ = docSerial_;  // EQ.4b: (the current document starts the new revision: a lowering of it with this library is current)
   notify(view_change::kDevices);
 }
 
@@ -193,8 +194,26 @@ GroupResponses& ViewContext::groupResponses() {
   return *responses_;
 }
 
+void ViewContext::setLowering(uint64_t serial, doc::Snapshot from, std::shared_ptr<const doc::LoweredProject> lowered) {
+  if (!lowered || serial < loweringSerial_) return;  // (an older compile's, arriving late)
+  loweringSerial_ = serial;
+  loweringFrom_ = std::move(from);
+  lowering_ = std::move(lowered);
+  if (serial >= structuralSerial_) notify(view_change::kResponses);
+}
+
+std::shared_ptr<const doc::LoweredProject> ViewContext::currentLowering(doc::Snapshot* from) const {
+  if (!lowering_ || loweringSerial_ < structuralSerial_) return nullptr;
+  if (from != nullptr) *from = loweringFrom_;
+  return lowering_;
+}
+
 void ViewContext::onStoreEvent(const doc::StoreEvent& e) {
-  if (e.kind == doc::StoreEventKind::Reset || e.changes.structural()) ++structural_;  // EQ.4
+  if (e.before != e.after || e.kind == doc::StoreEventKind::Reset) ++docSerial_;  // EQ.4b
+  if (e.kind == doc::StoreEventKind::Reset || e.changes.structural()) {
+    ++structural_;  // EQ.4
+    structuralSerial_ = docSerial_;
+  }
   if (e.kind == doc::StoreEventKind::Reset || !(e.before->loop == e.after->loop)) syncLoop();
   // T5.8: the sample table changed (a drop, undo / redo of one): resolve it again (cheap: a file check per entry).
   if (e.kind != doc::StoreEventKind::SamplesRelocated && e.kind != doc::StoreEventKind::Reset &&

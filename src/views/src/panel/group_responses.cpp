@@ -16,8 +16,37 @@ const doc::Snapshot& GroupResponses::doc() const { return ctx_.doc(); }
 double GroupResponses::sampleRate() const noexcept { return ctx_.sampleRate(); }
 
 void GroupResponses::sync() {
-  if (revision_ == ctx_.structuralRevision()) return;
-  revision_ = ctx_.structuralRevision();
+  const uint64_t rev = ctx_.structuralRevision();
+  if (ctx_.loweringProvided()) {
+    // EQ.4b: the app's compile lowers; its lowering of the current structure, once it is here, replaces what was
+    // prepared. Until then (a structural edit the compile has not caught up with) the entries prepared before stay:
+    // the displays keep their curves (their controls still follow the document), groups new in the edit wait.
+    doc::Snapshot from;
+    std::shared_ptr<const doc::LoweredProject> low = ctx_.currentLowering(&from);
+    if (!low) {
+      waiting_ = revision_ != rev || !lowered_;
+      return;
+    }
+    if (low == lowered_) return;
+    // Another compile at the same structure (new tables, sends) changes no response: kept, unless some were not
+    // prepared (an error: tried again with it).
+    const bool errors = std::any_of(entries_.begin(), entries_.end(), [](const Entry& e) { return !e.error.empty(); });
+    if (revision_ == rev && lowered_ && !waiting_ && !errors) {
+      lowered_ = std::move(low);
+      return;
+    }
+    revision_ = rev;
+    lowered_ = std::move(low);
+    lowerError_.clear();
+    waiting_ = false;
+    entries_.clear();
+    series_.clear();
+    return;
+  }
+  // No app (tests, scenes): one lowering of the document here, once per structural revision a display asks at.
+  waiting_ = false;
+  if (revision_ == rev) return;
+  revision_ = rev;
   lowered_.reset();
   lowerError_.clear();
   lowerTried_ = false;
@@ -33,13 +62,14 @@ GroupResponses::Entry* GroupResponses::find(doc::DeviceId g) noexcept {
 
 void GroupResponses::want(std::span<const doc::DeviceId> groups) {
   sync();
-  std::vector<doc::DeviceId> missing;
+  std::vector<doc::DeviceId>& missing = scratchMissing_;
+  missing.clear();
   for (const doc::DeviceId g : groups)
     if (g.valid() && find(g) == nullptr && std::find(missing.begin(), missing.end(), g) == missing.end()) missing.push_back(g);
-  if (missing.empty()) return;
+  if (missing.empty() || waiting_) return;  // (waiting: prepared once the compile of the new structure is here)
   const doc::Snapshot& snap = ctx_.doc();
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-  if (!lowerTried_ && snap && lib != nullptr) {
+  if (!ctx_.loweringProvided() && !lowerTried_ && snap && lib != nullptr) {
     lowerTried_ = true;
     doc::LowerOptions lo;
     lo.library = &lib->library();
@@ -47,7 +77,7 @@ void GroupResponses::want(std::span<const doc::DeviceId> groups) {
     lo.clipSlotOf = [](doc::TrackId) { return 0u; };
     auto low = doc::lower(*snap, lo);
     ++lowerings_;
-    if (low) lowered_ = std::make_unique<doc::LoweredProject>(std::move(*low));
+    if (low) lowered_ = std::make_shared<const doc::LoweredProject>(std::move(*low));
     else lowerError_ = low.error().message;
   }
   const size_t first = entries_.size();
@@ -57,7 +87,7 @@ void GroupResponses::want(std::span<const doc::DeviceId> groups) {
     e.response = std::make_unique<doc::GroupResponse>();
     entries_.push_back(std::move(e));
   }
-  if (!lowered_ || lib == nullptr) {
+  if (!lowered_ || lib == nullptr || !snap) {
     for (size_t k = first; k < entries_.size(); ++k)
       entries_[k].error = lowerError_.empty() ? std::string("no document or device library") : lowerError_;
     return;
@@ -93,16 +123,19 @@ const GroupResponses::Curve* GroupResponses::curve(doc::DeviceId group, std::spa
   doc::GroupResponse* r = get(group);
   if (r == nullptr) return nullptr;
   Entry& e = *find(group);
-  if (e.curve.version != 0 && e.curveStamp == r->stamp() && e.curveKey == key && e.curvePoints == hz.size()) return &e.curve;
+  const double rate = sampleRate();
+  if (e.curve.version != 0 && e.curveStamp == r->stamp() && e.curveKey == key && e.curvePoints == hz.size() && e.curveRate == rate)
+    return &e.curve;
   Curve& c = e.curve;
   c.in = std::max<uint16_t>(1, r->inChannels());
   c.out = std::max<uint16_t>(1, r->outChannels());
   c.h.resize(hz.size() * c.in * c.out);
-  c.kind = r->evaluate(hz, sampleRate(), c.h);
+  c.kind = r->evaluate(hz, rate, c.h);
   c.version = ++versions_;
   e.curveStamp = r->stamp();
   e.curveKey = key;
   e.curvePoints = hz.size();
+  e.curveRate = rate;
   return &c;
 }
 
@@ -112,17 +145,24 @@ const GroupResponses::Curve* GroupResponses::series(doc::DeviceId name, std::spa
   std::vector<uint64_t>& vs = scratchVersions_;
   cs.clear();
   vs.clear();
-  for (size_t i = 0; i < members.size(); ++i) {
-    const Curve* c = curve(members[i], hz, key);
-    if (c == nullptr && !(i < passes.size() && passes[i] != 0)) return nullptr;
-    if (c != nullptr) cs.push_back(c);
-    vs.push_back(c != nullptr ? c->version : 0);
-  }
-  for (size_t i = 0; i + 1 < cs.size(); ++i)
-    if (cs[i]->out != cs[i + 1]->in) return nullptr;
   Series* s = nullptr;
   for (Series& x : series_)
     if (x.name == name) s = &x;
+  for (size_t i = 0; i < members.size(); ++i) {
+    const Curve* c = curve(members[i], hz, key);
+    if (c == nullptr && !(i < passes.size() && passes[i] != 0)) {
+      // EQ.4b: a member new in a structural edit the compile has not caught up with passes through until it is here
+      // (the others' knobs still move the curve).
+      if (!waiting_) return nullptr;
+      vs.push_back(0);
+      continue;
+    }
+    if (c != nullptr) cs.push_back(c);
+    vs.push_back(c != nullptr ? c->version : 0);
+  }
+  if (waiting_ && cs.empty() && !members.empty()) return nullptr;  // (nothing prepared yet: no curve, not a flat one)
+  for (size_t i = 0; i + 1 < cs.size(); ++i)
+    if (cs[i]->out != cs[i + 1]->in) return nullptr;
   if (s == nullptr) {
     series_.push_back({});
     s = &series_.back();
@@ -195,7 +235,7 @@ const GroupResponses::Curve* GroupResponses::series(doc::DeviceId name, std::spa
 std::string GroupResponses::why(doc::DeviceId group) const {
   for (const Entry& e : entries_)
     if (e.group == group) return e.error;
-  return "not asked for";
+  return waiting_ ? "waiting for the compile" : "not asked for";
 }
 
 }  // namespace pq::views
