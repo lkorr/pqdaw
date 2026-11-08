@@ -118,7 +118,8 @@ TEST_CASE("pqc check: ok patches, every diagnostic of a broken one, missing file
   CHECK(r.err.find("bad_names.pqp:4:") != std::string::npos);
   fs::remove(syntax);
 
-  const fs::path typeErr = writeTemp("bad_type.pqp", "patch A {\n  out y : audio\n  y = voice.gate\n}\n");
+  // (TX.bool-real: a bool into a real out is its 0 / 1; a real into a bool is the type error.)
+  const fs::path typeErr = writeTemp("bad_type.pqp", "patch A {\n  out y : bool\n  y = not(sr)\n}\n");
   r = pqc({"check", typeErr.string()});
   CHECK(r.code == pq::pqc::kExitCompileError);
   CHECK_FALSE(r.err.empty());
