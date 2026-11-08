@@ -715,10 +715,10 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [x] **GU.f3 Group-panel knobs at parity with the old faces** (wheel, Show Automation, Knob Curve menu, modulation ring). 👁 Merged cc0793db as GU.13.
 - [x] **GU.f4 Undriven stepped value block into a mux index lowers as a literal** (Saturator computes all 7 curves, LFO all 5 shapes; also folds a muted chain's Gate 0). Merged 7a227722; Q234; muted-chain fold not done (needs select(gate,…) in the chain mixer).
 - [x] **GU.f5 Voice end ignores modulation taps** (per-voice cable into a control ends voices once the tap is silent; Q230). Merged 7a227722.
-- [ ] **GU.f6 Closed panels readable** (name strip on closed groups, minimum text size, cables under panel content, visible off state of toggles, Operator Coarse/Level readouts, clipped value-block captions, inspector scroll). 👁
-- [ ] **GU.f7 Dead code removal** (lone-stock-instrument lowering branches, metaSites, app::DeviceInspector, CircuitEditor::Host, retired PA/VCA load conversion in modules.cpp).
-- [ ] **GU.f8 Bool wire law for atom bool inputs** (select / comparisons wireable).
-- [ ] **GU.f9 Ship-row comparison of module presets vs the retired patches; deep-nest stress test restored.**
+- [ ] **GU.f6 Closed panels readable** (name strip on closed groups, minimum text size, cables under panel content, visible off state of toggles, Operator Coarse/Level readouts, clipped value-block captions, inspector scroll). 👁 Stopped by the user 2026-11-07; not started again.
+- [x] **GU.f7 Dead code removal** (lone-stock-instrument lowering branches, metaSites, app::DeviceInspector, CircuitEditor::Host, retired PA/VCA load conversion in modules.cpp). Merged a25f45bc; Q235; also: muted rack chains folded, Operator FM as a plain cable.
+- [-] **GU.f8 Bool wire law for atom bool inputs** (select / comparisons wireable). Dropped: a bool in a circuit is a 0/1 signal; summing wires is normal (user 2026-11-07).
+- [ ] **GU.f9 Ship-row comparison of module presets vs the retired patches; deep-nest stress test restored.** Not started (user 2026-11-07: done after GU.f7).
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁

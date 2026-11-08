@@ -2567,7 +2567,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   per-voice cable into a control; left as it is (no preset change here).
 - Status: open (provisional choices above).
 
-## Q?-GU.f7-a · 2026-11-07 · GU.f7 · Dead-code removal, muted chains, Operator FM: the choices made
+## Q235 · 2026-11-07 · GU.f7 · Dead-code removal, muted chains, Operator FM: the choices made
 - **Deleted** (no compatibility kept): the lone-stock-instrument voice contexts (`VoiceContext::group` is gone: every
   context is an instrument group) and every lowering branch for them (`playInstrument`, `kSilent`, the notes-cable /
   In-terminal cases into a stock instrument, stock-instrument enders and `voices` polyphony, `devicePolyphony`,

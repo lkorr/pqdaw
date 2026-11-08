@@ -1525,3 +1525,9 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Verified (worker): build.ps1 -NoTests 0 warnings; default tier graph, engine, project, timeline, render, jit, stdlib, playback, app, document, meta 20/20; ship pq_bench_dsp linked; new op-count, recompile and voice-end tests; GU.10 Saturator / LFO goldens unchanged.
 - Perf: op counts above (no preset bench yet, GU.f9). CPU-efficiency check: unchosen branches removed at compile time.
 - Notes/blockers: muted rack chains still compute (gain by Gate is not a choice; follow-up: chain mixer via select(gate, y, 0)); Operator's + pm workaround could now be a plain cable.
+
+## 2026-11-07 · GU.f7 · orchestrator (merge of task/GU.f7-cleanup)
+- Did: fast-forwarded main to a25f45bc. Dead code deleted (src +193 −1529): lone-stock-instrument lowering and placement, nested meta sites, app::DeviceInspector and engine inspect plumbing, CircuitEditor::Host, the GU.4 PA/VCA load conversion (fixtures re-saved first). Chain mixer Out = mux(Gate, 0, gain(...)): an undriven Gate folds, so a muted chain is not computed (mute/solo now recompile with the ≈ 11 ms swap fade). Operator FM is a plain per-voice cable into the next row's Phase. Q235.
+- Verified (worker): build.ps1 -NoTests 0 warnings; default tier document, app, playback s0–s3, views, ui, meta, graph, engine 11/11; PA renders diff 0, VCA ≤ −110 dB, rack renders pass; golden project-circuit-device updated (Operator + pm atoms gone).
+- Perf: muted rack chain 0 ops (was the full chain). CPU-efficiency check: reuses the GU.f4 literal fold.
+- Notes/blockers: the user stopped GU.f6 and ended the GU follow-ups after GU.f7; GU.f8 dropped (bool wires summing is normal circuit behaviour); GU.f6 and GU.f9 not done.
