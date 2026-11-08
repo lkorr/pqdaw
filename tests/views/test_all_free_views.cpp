@@ -12,9 +12,10 @@
 #include <string>
 #include <vector>
 
-#include "lone_instrument.h"
+#include "../support/blocks.h"
 #include "all_free_helpers.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/main_path.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
@@ -46,7 +47,7 @@ const doc::DeviceLibrary& library() {
 
 Vec2 mid(const IRect& r) { return {static_cast<float>(r.x) + static_cast<float>(r.w) / 2.0f, static_cast<float>(r.y) + static_cast<float>(r.h) / 2.0f}; }
 
-// A project with one MIDI track Keys: source → BasicSynth → Utility → Saturator → mixer, and an LFO off the path (it
+// A project with one MIDI track Keys: source → its instrument group (Basic Synth) → Utility → Saturator → mixer, and an LFO off the path (it
 // modulates the Utility's gain).
 struct Doc {
   doc::TrackId keys;
@@ -59,13 +60,12 @@ struct Doc {
       return *e;
     };
     keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks.at(0);
-    view_fixture::loneInstrument(st, library(), keys);  // IG.1-2 (lone_instrument.h)
-    synth = doc::findTrackPtr(*st.current(), keys)->devices.at(0)->id;
-    util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices.at(0);
-    sat = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "saturator", doc::DeviceKind::AudioEffect)).devices.at(0);
-    lfo = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "lfo_device", doc::DeviceKind::AudioEffect, doc::ops::kOffPath))
-              .devices.at(0);
-    lfoWire = run(doc::ops::connectWire(*st.current(), st.ids(), lfo, "lfo", util, "gain")).wires.at(0);
+    synth = doc::mainPath(*st.current(), *doc::findTrackPtr(*st.current(), keys)).blocks.at(0)->id;  // its instrument group
+    util = test_blocks::addModule(st, keys, "utility");
+    sat = test_blocks::addModule(st, keys, "saturator");
+    lfo = test_blocks::addModule(st, keys, "lfo", doc::ops::kOffPath);
+    lfoWire = run(doc::ops::connectWire(*st.current(), st.ids(), lfo, "y", test_blocks::member(*st.current(), util, "Gain"),
+                                        std::string(doc::kValueParam))).wires.at(0);
   }
 };
 
@@ -167,7 +167,7 @@ TEST_CASE("all-free (Device view): the list is the main path in signal order; a 
   CHECK(u.listed() == Ids{u.synth, u.sat, u.util});
   CHECK(u.track().deviceIndex(u.util) < u.track().deviceIndex(u.sat));
   // An unconnected block (the node menu's spawn, a cable deleted) is in the rack and not in the list.
-  auto add = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "eq_eight", doc::DeviceKind::AudioEffect,
+  auto add = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "module:saturator", doc::DeviceKind::AudioEffect,
                                  doc::ops::kOffPath);
   REQUIRE(add.ok());
   REQUIRE(u.ctx.store().dispatch(add->command).ok());
@@ -232,6 +232,14 @@ TEST_CASE("all-free (Device view): Delete dissolves — the block and its wires 
 TEST_CASE("all-free (Device view): a block dragged from the free rack onto the list is spliced in; back onto the rack, "
           "taken off") {
   DeviceUi u;
+  // (GU.11: the LFO module's only output is its main port; the wire it keeps is one into its Rate, from the notes.)
+  const doc::WireId rateWire = [&] {
+    auto e = doc::ops::connectNoteWire(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "velocity",
+                                       test_blocks::member(*u.ctx.doc(), u.lfo, "Rate"), std::string(doc::kValueParam));
+    REQUIRE(e.ok());
+    REQUIRE(u.ctx.store().dispatch(e->command).ok());
+    return e->wires.at(0);
+  }();
   // The LFO block's top strip in the rack onto the Saturator's left half: between the Utility and the Saturator.
   const ProjectPatch& pp = u.rack().patch();
   const uint32_t n = pp.nodeOf(u.lfo);
@@ -256,7 +264,7 @@ TEST_CASE("all-free (Device view): a block dragged from the free rack onto the l
   CHECK(u.onPath() == Ids{u.synth, u.util, u.sat});
   CHECK(u.linked(u.util, u.sat));
   CHECK(u.inRack(u.lfo));
-  CHECK(doc::findWire(*u.ctx.doc(), u.lfoWire) != nullptr);  // a block taken off keeps its other wires
+  CHECK(doc::findWire(*u.ctx.doc(), rateWire) != nullptr);  // a block taken off keeps its other wires
 }
 
 TEST_CASE("all-free (Device view): a broken path lists what is still on it; the rest is in the free rack") {
@@ -296,7 +304,6 @@ struct PatchUi : Doc {
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
     d.tree().layoutNow();
-    view().setPanelsShown(false);
     view().setPushAnimated(false);
     view().setShown(true, false);
     d.tree().layoutNow();
@@ -388,7 +395,7 @@ TEST_CASE("all-free (project patch): cables drawn between main ports and onto th
   PatchUi u;
   // A second Utility off the path (unconnected).
   const doc::DeviceId u2 = [&] {
-    auto e = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "utility", doc::DeviceKind::AudioEffect, doc::ops::kOffPath);
+    auto e = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "module:utility", doc::DeviceKind::AudioEffect, doc::ops::kOffPath);
     REQUIRE(e.ok());
     REQUIRE(u.ctx.store().dispatch(e->command).ok());
     return e->devices.at(0);
@@ -397,7 +404,7 @@ TEST_CASE("all-free (project patch): cables drawn between main ports and onto th
   u.d.step();
   const size_t h0 = u.history();
   // The Saturator's main output dragged onto the new block's main input: a main link (both ends "").
-  u.d.drag(u.outPin(u.sat, "out"), u.inPin(u2, "x"), 8);
+  u.d.drag(u.outPin(u.sat, "y"), u.inPin(u2, "x"), 8);
   u.d.step();
   CHECK(u.history() == h0 + 1);
   bool satToEq = false;
@@ -407,7 +414,7 @@ TEST_CASE("all-free (project patch): cables drawn between main ports and onto th
   // The new block's output onto the band's mixer.
   u.d.tree().layoutNow();
   u.d.step();
-  u.d.drag(u.outPin(u2, "out"), u.mixer(), 8);
+  u.d.drag(u.outPin(u2, "y"), u.mixer(), 8);
   u.d.step();
   CHECK(u.history() == h0 + 2);
   bool eqToMixer = false;
@@ -430,7 +437,7 @@ TEST_CASE("all-free (project patch): a cable from a block on the path onto its m
   PatchUi u;
   const size_t h0 = u.history();
   // The Utility (on the path: synth → Utility → Saturator → mixer) dragged from its output onto the band's mixer.
-  u.d.drag(u.outPin(u.util, "out"), u.mixer(), 8);
+  u.d.drag(u.outPin(u.util, "y"), u.mixer(), 8);
   u.d.step();
   CHECK(u.history() == h0 + 1);
   doc::WireId branch;
@@ -553,7 +560,7 @@ bool callsDevice(PatchUi& u, doc::DeviceId d) {
 TEST_CASE("all-free-fix1 (project patch): notes dragged onto an off-path instrument and its output onto the mixer play it") {
   PatchUi u;
   const doc::DeviceId synth2 = [&] {
-    auto e = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "BasicSynth", doc::DeviceKind::Instrument,
+    auto e = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "module:operator", doc::DeviceKind::Instrument,
                                  doc::ops::kOffPath);
     REQUIRE(e.ok());
     REQUIRE(u.ctx.store().dispatch(e->command).ok());
@@ -562,7 +569,9 @@ TEST_CASE("all-free-fix1 (project patch): notes dragged onto an off-path instrum
   u.d.tree().layoutNow();
   u.d.step();
   CHECK(all_free::offPath(*u.ctx.doc(), synth2));
-  CHECK_FALSE(callsDevice(u, synth2));  // nothing feeds it notes: it plays nothing (and is not missing)
+  // Nothing feeds it notes: it is no instrument group (GU.11: a group's blocks are lowered wherever it is; it plays
+  // per note only once the notes reach it), and it is not missing.
+  CHECK_FALSE(doc::isInstrumentGroup(*u.ctx.doc(), synth2));
   {
     u.view().sync();
     const auto& missing = u.view().lowered()->missingDevices;
@@ -570,7 +579,7 @@ TEST_CASE("all-free-fix1 (project patch): notes dragged onto an off-path instrum
   }
   const size_t h0 = u.history();
   // The band's notes (the source's output 0) onto the new synth's notes input.
-  u.d.drag(sourceOut(u, 0), u.inPin(synth2, "notes"), 8);
+  u.d.drag(sourceOut(u, 0), u.inPin(synth2, "x"), 8);
   u.d.step();
   CHECK(u.history() == h0 + 1);
   doc::WireId notes;
@@ -581,7 +590,7 @@ TEST_CASE("all-free-fix1 (project patch): notes dragged onto an off-path instrum
   // Its output onto the band's mixer.
   u.d.tree().layoutNow();
   u.d.step();
-  u.d.drag(u.outPin(synth2, "out"), u.mixer(), 8);
+  u.d.drag(u.outPin(synth2, "y"), u.mixer(), 8);
   u.d.step();
   CHECK(u.history() == h0 + 2);
   doc::WireId out;
@@ -594,12 +603,13 @@ TEST_CASE("all-free-fix1 (project patch): notes dragged onto an off-path instrum
   const doc::WireState* os = loweredState(u, out);
   REQUIRE(os != nullptr);
   CHECK(os->status == doc::WireStatus::Lowered);
+  CHECK(doc::isInstrumentGroup(*u.ctx.doc(), synth2));
   CHECK(callsDevice(u, synth2));
   CHECK(u.view().lowered()->missingDevices.empty());
   // One undo step each: back to the unconnected synth.
   REQUIRE(u.ctx.undo());
   REQUIRE(u.ctx.undo());
-  CHECK_FALSE(callsDevice(u, synth2));
+  CHECK_FALSE(doc::isInstrumentGroup(*u.ctx.doc(), synth2));
 }
 
 TEST_CASE("all-free-fix1 (project patch): a block's output dragged onto another track's mixer is a send-like route") {
@@ -629,7 +639,7 @@ TEST_CASE("all-free-fix1 (project patch): a block's output dragged onto another 
   const Node& m = u.pp().nodes[u.pp().bands[u.pp().bandOf(other)].mixer];
   const Vec2 otherMixer = u.dev({m.x + m.w * 0.5f, m.y + m.h * 0.5f});
   const size_t h0 = u.history();
-  u.d.drag(u.outPin(u.sat, "out"), otherMixer, 8);
+  u.d.drag(u.outPin(u.sat, "y"), otherMixer, 8);
   u.d.step();
   CHECK(u.history() == h0 + 1);
   doc::WireId route;
@@ -696,10 +706,10 @@ TEST_CASE("cross-track (project patch): a cable that closes a loop between track
     return *e;
   };
   const doc::TrackId group = run(doc::ops::groupTracks(*u.ctx.doc(), u.ctx.store().ids(), std::vector<doc::TrackId>{u.keys})).tracks.at(0);
-  const doc::DeviceId gu = run(doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), group, "utility", doc::DeviceKind::AudioEffect)).devices.at(0);
+  const doc::DeviceId gu = run(doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), group, "module:utility", doc::DeviceKind::AudioEffect)).devices.at(0);
   showBands(u, {group});
   const size_t h0 = u.history();
-  u.d.drag(u.outPin(gu, "out"), u.mixer(), 8);
+  u.d.drag(u.outPin(gu, "y"), u.mixer(), 8);
   u.d.step();
   CHECK(u.history() == h0 + 1);
   doc::WireId loop;

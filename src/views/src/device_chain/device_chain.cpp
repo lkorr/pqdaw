@@ -1706,6 +1706,14 @@ std::vector<DeviceChainView::ParamControl> DeviceChainView::paramControls() cons
       out.push_back({f->id(), p.name, r});
     }
   }
+  // GU.11: a group frame showing its panel — the controls of its elements (each bound to a block of the group: a value
+  // block's `value`, a native engine's param) are drop targets too, as the stock devices' knobs were.
+  for (const auto& [id, f] : impl_->all)
+    device_chain::forEachPanelControl(*f, [&](const device_chain::PanelControl& c) {
+      const ui::IRect r = ui::intersect(c.rect, vp);
+      if (!r.empty()) out.push_back({c.device, std::string(c.param), r});
+      return false;
+    });
   return out;
 }
 
@@ -1740,7 +1748,18 @@ std::optional<ui::Vec2> DeviceChainView::jackPoint(doc::DeviceId device, std::st
 
 std::optional<ui::Vec2> DeviceChainView::paramPoint(doc::DeviceId device, std::string_view param, bool* docked) const {
   const devices::DevicePanel* panel = panelOf(device);
-  if (panel == nullptr) return groupPoint(device, false, docked);
+  if (panel == nullptr) {
+    // GU.11: a control on its group's panel (a module's value block): docked on its element.
+    if (const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), device); l.device != nullptr && l.device->group.valid() && l.track != nullptr)
+      if (device_chain::FrameBase* gf = impl_->frameOf(doc::outermostGroup(l.track->devices, device)); gf != nullptr)
+        if (const auto p = device_chain::panelControlPoint(*gf, device, param)) {
+          bool inside = false;
+          const ui::Vec2 q = clampInto(*p, chainViewport(), inside);
+          if (docked != nullptr) *docked = inside;
+          return q;
+        }
+    return groupPoint(device, false, docked);
+  }
   const std::optional<ui::IRect> cr = panel->controlRect(param);  // TMM.10: a face's control too
   bool ok = cr.has_value() && shownNow(*panel);
   ui::Vec2 p;

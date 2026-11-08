@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "lone_instrument.h"
+#include "../support/blocks.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
 #include "pq/ui/controls.h"
@@ -40,11 +40,11 @@ const doc::DeviceLibrary& library() {
 
 Vec2 mid(const IRect& r) { return {static_cast<float>(r.x) + static_cast<float>(r.w) / 2.0f, static_cast<float>(r.y) + static_cast<float>(r.h) / 2.0f}; }
 
-// One MIDI track: BasicSynth → Utility → an Audio Effect Rack holding a Saturator (one chain), in the Device view.
+// One MIDI track: its instrument group (Basic Synth) → Utility → Saturator (modules: groups), in the Device view.
 struct Ui {
   FakeTransport port;
   ViewContext ctx{port};
-  TestDriver d{1600, 900};
+  TestDriver d{2600, 900};  // (GU.11: the instrument group's frame is wide)
   std::unique_ptr<Shell> shell;
   doc::TrackId keys;
   doc::DeviceId inst, util, sat;
@@ -53,10 +53,9 @@ struct Ui {
     ctx.setDeviceLibrary(&library());
     doc::DocumentStore& st = ctx.store();
     keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks[0];
-    view_fixture::loneInstrument(st, library(), keys);  // IG.1-2 (lone_instrument.h)
-    inst = track().devices.at(0)->id;
-    util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices[0];
-    sat = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "saturator", doc::DeviceKind::AudioEffect)).devices[0];
+    inst = doc::mainPath(*st.current(), track()).blocks.at(0)->id;
+    util = test_blocks::addModule(st, keys, "utility");
+    sat = test_blocks::addModule(st, keys, "saturator");
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
@@ -119,9 +118,9 @@ using Ids = std::vector<doc::DeviceId>;
 TEST_CASE("device keys: the selection scrolls into view") {
   Ui u;
   DeviceChainView& v = u.view();
-  for (int k = 0; k < 6; ++k) u.run(doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "eq_eight", doc::DeviceKind::AudioEffect));
+  for (int k = 0; k < 6; ++k) u.run(doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "module:saturator", doc::DeviceKind::AudioEffect));
   u.d.tree().layoutNow();
-  const doc::DeviceId last = u.track().devices.back()->id;
+  const doc::DeviceId last = u.chain().back();
   const IRect vp = v.chainViewport();
   REQUIRE(u.frame(last).x > vp.right());  // scrolled away
   u.d.click(u.title(u.inst));
@@ -136,11 +135,17 @@ TEST_CASE("device keys: the selection scrolls into view") {
 }
 
 TEST_CASE("device panel knobs: the wheel steps them (a run = one undo step), a double-click returns the default (T4.16-fix1)") {
+  // GU.11: a generic knob of a DevicePanel — a rack's macro (the Saturator grouped into an Audio Effect Rack, macro 1
+  // mapped onto its Drive). (A module's knobs are its group panel's elements: drags and double-clicks, no wheel.)
   Ui u;
-  devices::DevicePanel* p = u.view().panelOf(u.util);
-  REQUIRE(p != nullptr);
+  const doc::DeviceId rack =
+      u.run(doc::ops::groupDevices(*u.ctx.doc(), u.ctx.store().ids(), std::vector<doc::DeviceId>{u.sat})).devices.at(0);
+  u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), rack, 0, test_blocks::member(*u.ctx.doc(), u.sat, "Drive"),
+                           std::string(doc::kValueParam)));
   u.d.tree().layoutNow();
-  auto* knob = dynamic_cast<ui::ValueControl*>(p->controlFor("width"));
+  devices::DevicePanel* p = u.view().panelOf(rack);
+  REQUIRE(p != nullptr);
+  auto* knob = dynamic_cast<ui::ValueControl*>(p->controlFor("macro1"));
   REQUIRE(knob != nullptr);
   const double v0 = knob->value();
   const Vec2 c = mid(knob->rect());
@@ -152,6 +157,6 @@ TEST_CASE("device panel knobs: the wheel steps them (a run = one undo step), a d
   u.d.advance(ui::ValueControl::kWheelGestureSeconds + 0.1);
   CHECK(u.history() == h0 + 1);
   u.d.doubleClick(c);
-  CHECK(knob->value() == doctest::Approx(v0));
+  CHECK(knob->value() == doctest::Approx(0.0));  // a macro's default: 0 (mapping it took the Drive's position)
   CHECK(u.history() == h0 + 2);
 }

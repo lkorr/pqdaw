@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "pq/document/main_path.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
@@ -352,16 +353,17 @@ TEST_CASE("lane edit: one selection with the arrangement; the canvas's own keys 
   // A press on a device block: the canvas's keys again (Delete deletes the block, not the clip).
   v.focusBand(u.track("Keys").id, false);
   u.d.tree().layoutNow();
-  const doc::DeviceId sat = u.track("Keys").devices.at(1)->id;
+  const doc::DeviceId sat = doc::mainPath(*u.ctx.doc(), u.track("Keys")).blocks.at(1)->id;  // (GU.11: the Saturator module)
   const uint32_t n = v.patch().nodeOf(sat);
   REQUIRE(n != kNone);
   const Node& nd = v.patch().nodes[n];
   u.d.click(v.canvas().toDevice({nd.x + nd.w * 0.5f, nd.y + (nd.panel ? 10.0f : nd.h * 0.5f)}));
   CHECK_FALSE(v.canvas().laneFocused());
-  const size_t clips = u.track("Pad").clips.size(), devs = u.track("Keys").devices.size();
+  const size_t clips = u.track("Pad").clips.size(), blocks = doc::mainPath(*u.ctx.doc(), u.track("Keys")).blocks.size();
   (void)u.d.press("Delete");
   CHECK(u.track("Pad").clips.size() == clips);
-  CHECK(u.track("Keys").devices.size() == devs - 1);
+  CHECK(doc::findDevice(*u.ctx.doc(), sat).device == nullptr);  // the module with its blocks
+  CHECK(doc::mainPath(*u.ctx.doc(), u.track("Keys")).blocks.size() == blocks - 1);
 }
 
 TEST_CASE("lane edit: audio clips move and trim in their windows like MIDI clips") {

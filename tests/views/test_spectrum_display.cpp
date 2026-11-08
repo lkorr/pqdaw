@@ -22,7 +22,7 @@
 #include "pq/ui/image.h"
 #include "pq/ui/theme.h"
 #include "pq/views/devices/analysis.h"
-#include "pq/views/devices/device_view.h"
+#include "pq/views/devices/analysis.h"
 #include "pq/views/devices/spectrum_plot.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/view_scenes.h"

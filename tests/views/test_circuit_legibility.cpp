@@ -1,7 +1,7 @@
 // T4.15: circuit-view legibility (SPEC §15 2026-10-26) — node tooltips (every node kind; every atom has its line;
 // shown after the overlay's delay, built on hover, nothing compiled, idle afterwards), the recognised-form table of
 // constants (and no false match on arbitrary values), branches switched off by structural constants hidden by default
-// and drawn dimmed with Inactive (Saturator and Operator at their defaults: node counts), a device's settings deciding
+// and drawn dimmed with Inactive (msenv at its defaults, a call's arguments), a device's settings deciding
 // what is hidden, circuit edits while hidden keeping the shown layout, and the goldens circuit-inactive-hidden,
 // circuit-inactive-shown and circuit-tooltip.
 
@@ -20,7 +20,7 @@
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/circuit/circuit_editor.h"
-#include "pq/views/circuit/device_circuit.h"
+#include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/circuit/node_info.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/view_context.h"
@@ -35,8 +35,6 @@ namespace fs = std::filesystem;
 namespace {
 
 std::string stdlibPath(const char* rel) { return (fs::path(PQ_TEST_DATA_DIR) / ".." / "stdlib" / rel).string(); }
-// GU.10: the retired stock devices' stand-in copies (tests/stand_in_devices).
-std::string standInPath(const char* rel) { return (fs::path(PQ_TEST_DATA_DIR) / "stand_in_devices" / rel).string(); }
 
 const char* kPatch =
     "// A drive stage with a mode switch. The second sentence is not shown.\n"
@@ -311,104 +309,101 @@ TEST_CASE("legibility: a circuit edit while hidden stores the layout that is sho
   CHECK(r.scene().nodes[r.named("cl")].y == clBefore.y);
 }
 
-TEST_CASE("legibility: Saturator at its defaults shows only its active path; Inactive shows every curve") {
-  Rig r(0, standInPath("devices/saturator.pqp"));
-  REQUIRE(r.editor->shownPatch() == "saturator");
+// GU.11: the stock Saturator and Operator patches are retired (their devices are group presets now): the multi-stage
+// envelope (stdlib/envelopes/msenv.pqp: `mode` and `soft`, structural constants) stands for a stock file at its
+// defaults, and a two-level patch here for the arguments a call passes down (what Saturator's sat_shape and Operator's
+// op_bank / op_wave showed).
+TEST_CASE("legibility: msenv at its defaults shows only its active logic; Inactive shows every branch") {
+  Rig r(0, stdlibPath("envelopes/msenv.pqp"));
+  REQUIRE(r.editor->shownPatch() == "msenv");
   const CircuitScene& top = r.scene();
   const uint32_t total = static_cast<uint32_t>(top.nodes.size());
-  MESSAGE("saturator: " << total << " nodes, " << countIf(top, true) << " hidden at hq 1");
+  MESSAGE("msenv: " << total << " nodes, " << countIf(top, true) << " hidden at mode 0");
   CHECK(countIf(top, true) == r.editor->structure().inactiveNodes);
-  // hq 1: the 2×, 4×, 8× paths (their 1 + 2 + 4 + 8 … sat_shape calls and oversampling stages) are hidden.
-  for (const char* off : {"y2", "y4", "y8", "a", "b4", "e8"}) CHECK_MESSAGE(top.nodes[r.named(off)].hidden, off);
-  CHECK_FALSE(top.nodes[r.named("y1")].hidden);
-  // T4.x-fix-dsp: 145 (was 81): the HQ paths mix dry/wet per oversampled sample (sat_mix, the input's own up
-  // chains), drive and dry/wet are smoothed gains (their `start: 1` literals), the `wet` export has its own down chains.
-  CHECK(total == 145);
-  CHECK(countIf(top, true) == 88);  // 57 visible
-  CHECK(top.visibleNodes() == 57);
-  // The curve: only Analog Clip's branch (the default since M4 review L11).
-  r.open("y1");
-  REQUIRE(r.editor->shownPatch() == "sat_shape");
-  CHECK(r.editor->shownArguments().size() == 2);  // type 0 and softClip 0 from the root's defaults
-  const uint32_t curveTotal = static_cast<uint32_t>(r.scene().nodes.size());
-  MESSAGE("sat_shape: " << curveTotal << " nodes, " << r.scene().visibleNodes() << " visible at type 0");
-  CHECK_FALSE(r.scene().nodes[r.named("analog")].hidden);
-  for (const char* off : {"softsine", "bass", "medium", "hard", "fold", "digital", "ws", "drawn"})
-    CHECK_MESSAGE(r.scene().nodes[r.named(off)].hidden, off);
-  // v, type, softClip (and their default literals), outGain, Analog Clip (ca = clip(v, −1.5, 1.5) with its two
-  // literals, ca − 4/27·ca·ca·ca: three multiplies, the subtraction, the literal), the mux, the output gain
-  // gain(…, outGain, start: 1) and its literal, the soft-clip select with its comparison and 0.5, y: 21 of 85.
-  CHECK(curveTotal == 85);
-  CHECK(r.scene().visibleNodes() == 21);
+  CHECK(countIf(top, true) > 0);
+  // mode 0 (None): the Loop / Beat / Sync retriggers and Trigger's latch are switched off; soft 1: the hard start.
+  for (const char* off : {"loopTrig", "beatTrig", "syncTrig", "beatPh", "songPh", "settled"})
+    CHECK_MESSAGE(top.nodes[r.named(off)].hidden, off);
+  for (const char* on : {"start0", "held", "start", "next", "out", "done", "b"})
+    CHECK_FALSE_MESSAGE(top.nodes[r.named(on)].hidden, on);
+  CHECK(top.visibleNodes() == total - countIf(top, true));
   r.editor->setShowInactive(true);
   CHECK(r.scene().hiddenNodes == 0);
-  CHECK(r.scene().visibleNodes() == curveTotal);
-  for (const char* c : {"analog", "softsine", "bass", "medium", "hard", "fold", "digital", "ws", "drawn"})
-    CHECK_FALSE(r.scene().nodes[r.named(c)].hidden);
+  CHECK(r.scene().visibleNodes() == total);
+  for (const char* off : {"loopTrig", "beatTrig", "syncTrig", "settled"}) {
+    CHECK_FALSE(r.scene().nodes[r.named(off)].hidden);
+    CHECK_MESSAGE(r.scene().nodes[r.named(off)].inactive, off);  // drawn dimmed
+  }
 }
 
-TEST_CASE("legibility: Operator at its defaults: the unused operators, waveforms and algorithm arms are hidden") {
-  Rig r(0, standInPath("devices/operator.pqp"));
-  REQUIRE(r.editor->shownPatch() == "operator");
-  const uint32_t total = static_cast<uint32_t>(r.scene().nodes.size());
-  MESSAGE("operator: " << total << " nodes, " << r.scene().hiddenNodes << " hidden");
-  CHECK(total == 720);  // T4.x-fix-dsp: + min(key · kc, 0) and its 0 per operator (M4 review M11)
-  CHECK(r.scene().hiddenNodes == 254);  // 458 visible
-  for (const char* off : {"bankS", "bankR", "fL", "fR"}) CHECK_MESSAGE(r.scene().nodes[r.named(off)].hidden, off);
-  CHECK_FALSE(r.scene().nodes[r.named("bankL")].hidden);
-  {  // What a toggle costs (no compile: the structure analysis, the layout of the visible part, the scene).
-    const auto t0 = std::chrono::steady_clock::now();
-    r.editor->setShowInactive(true);
-    const auto t1 = std::chrono::steady_clock::now();
-    r.editor->setShowInactive(false);
-    const auto t2 = std::chrono::steady_clock::now();
-    MESSAGE("operator toggle: show " << std::chrono::duration<double, std::milli>(t1 - t0).count() << " ms, hide "
-                                      << std::chrono::duration<double, std::milli>(t2 - t1).count() << " ms (dev build)");
-    CHECK(r.scene().hiddenNodes == 254);
-  }
-  // The bank of algorithm 1 with only A on.
-  r.open("bankL");
-  REQUIRE(r.editor->shownPatch() == "op_bank");
-  MESSAGE("op_bank: " << r.scene().nodes.size() << " nodes, " << r.scene().hiddenNodes << " hidden");
-  CHECK(r.scene().nodes.size() == 362);
-  CHECK(r.scene().hiddenNodes == 244);  // operators B, C, D (off) and the algorithm table's other arms
-  // One waveform: Sine.
-  r.open("wA");
-  REQUIRE(r.editor->shownPatch() == "op_wave");
-  MESSAGE("op_wave: " << r.scene().nodes.size() << " nodes, " << r.scene().visibleNodes() << " visible");
-  CHECK(r.scene().nodes.size() == 87);
-  CHECK(r.scene().visibleNodes() == 6);  // p, wave (and its default), s = sine(p), the mux, y
-  CHECK_FALSE(r.scene().nodes[r.named("s")].hidden);
+const char* kNested =
+    "// A shaper whose curve is chosen by a structural constant, called with it.\n"
+    "patch Shaper {\n"
+    "  in    x    : audio\n"
+    "  in    type : real const = 1\n"
+    "  in    soft : real const = 0\n"
+    "  param amount = 2 [1..10] @label(\"Amount\")\n"
+    "  out   y : audio\n"
+    "  pre = x * amount\n"
+    "  ya  = Curve(pre, type)\n"
+    "  yb  = Curve(pre * 2, 0)\n"
+    "  y   = soft >= 0.5 ? yb : ya\n"
+    "}\n"
+    "\n"
+    "// One of three curves.\n"
+    "patch Curve {\n"
+    "  in    v    : audio\n"
+    "  in    type : real const = 0\n"
+    "  out   o : audio\n"
+    "  clean = abs(v)\n"
+    "  sh    = tanh(v)\n"
+    "  cl    = clip(v, -1, 1)\n"
+    "  o     = type >= 1.5 ? cl : type >= 0.5 ? sh : clean\n"
+    "}\n";
+
+TEST_CASE("legibility: inside a call only the branch its arguments choose is shown; the arguments follow the stack") {
+  Rig r(kNested, stdlibPath("legibility_nested.pqp"));
+  REQUIRE(r.editor->shownPatch() == "Shaper");
+  // soft 0: the second call (yb) is switched off.
+  CHECK(r.scene().nodes[r.named("yb")].hidden);
+  CHECK_FALSE(r.scene().nodes[r.named("ya")].hidden);
+  MESSAGE("Shaper: " << r.scene().nodes.size() << " nodes, " << r.scene().hiddenNodes << " hidden");
+  // Into ya = Curve(pre, type): type 1 arrives there from the root's default — only tanh is drawn.
+  r.open("ya");
+  REQUIRE(r.editor->shownPatch() == "Curve");
+  CHECK(r.editor->shownArguments().size() == 1);  // type 1 from the root's default
+  CHECK_FALSE(r.scene().nodes[r.named("sh")].hidden);
+  CHECK(r.scene().nodes[r.named("cl")].hidden);
+  CHECK(r.scene().nodes[r.named("clean")].hidden);
   r.editor->setShowInactive(true);
   CHECK(r.scene().hiddenNodes == 0);
+  r.editor->setShowInactive(false);
   // Back up: the arguments follow the stack.
   REQUIRE(r.editor->back());
-  CHECK(r.editor->shownPatch() == "op_bank");
+  CHECK(r.editor->shownPatch() == "Shaper");
+  CHECK(r.editor->shownArguments().empty());
 }
 
 TEST_CASE("legibility: a device's settings decide what is hidden; the view prefs remember the toggle") {
-  Rig r(0, standInPath("devices/saturator.pqp"));
-  const uint32_t at1 = r.scene().hiddenNodes;
-  r.editor->setInstance("saturator", {{"hq", 4.0}, {"type", 0.0}}, {{"drive", 2.0}});
-  CHECK_FALSE(r.scene().nodes[r.named("y4")].hidden);
-  CHECK(r.scene().nodes[r.named("y1")].hidden);
-  CHECK(r.scene().hiddenNodes != at1);
+  Rig r(0, stdlibPath("envelopes/msenv.pqp"));
+  const uint32_t at0 = r.scene().hiddenNodes;
+  CHECK(r.scene().nodes[r.named("loopTrig")].hidden);
+  r.editor->setInstance("msenv", {{"mode", 1.0}, {"soft", 1.0}}, {{"rep", 2.0}});  // Loop
+  CHECK_FALSE(r.scene().nodes[r.named("loopTrig")].hidden);
+  CHECK(r.scene().nodes[r.named("beatTrig")].hidden);
+  CHECK(r.scene().hiddenNodes != at0);
   // Its params' current values in the tooltips.
-  CHECK(r.editor->nodeTooltipText(r.named("drive")).find("now 6.0 dB") != std::string::npos);
-  // Into a curve of the 4× path (an oversampled sample's sat_mix, then its sat_shape): type 0 (Analog Clip) arrives
-  // there.
-  const graph::Patch& p = r.patch();
-  graph::NodeIndex call = graph::kNone;
-  for (graph::NodeIndex v = 0; v < p.nodeCount() && call == graph::kNone; ++v)
-    if (p.node(v).kind == graph::NodeKind::Subcircuit && p.subcircuit(v).patch == "sat_mix" && !r.scene().nodes[v].hidden)
-      call = v;
-  REQUIRE(call != graph::kNone);
-  REQUIRE(r.editor->openNode(call));
-  REQUIRE(r.editor->shownPatch() == "sat_mix");
-  r.open("v");
-  REQUIRE(r.editor->shownPatch() == "sat_shape");
-  CHECK_FALSE(r.scene().nodes[r.named("analog")].hidden);
-  CHECK(r.scene().nodes[r.named("medium")].hidden);
+  MESSAGE("rep tooltip: " << r.editor->nodeTooltipText(r.named("rep")));
+  CHECK(r.editor->nodeTooltipText(r.named("rep")).find("now 2") != std::string::npos);
+  // A call's arguments come from the instance too: Shaper with type 2 shows the clip curve inside.
+  {
+    Rig n(kNested, stdlibPath("legibility_nested.pqp"));
+    n.editor->setInstance("Shaper", {{"type", 2.0}, {"soft", 0.0}}, {{"amount", 3.0}});
+    n.open("ya");
+    REQUIRE(n.editor->shownPatch() == "Curve");
+    CHECK_FALSE(n.scene().nodes[n.named("cl")].hidden);
+    CHECK(n.scene().nodes[n.named("sh")].hidden);
+  }
 
   FakeTransport port;
   ViewContext ctx(port);
@@ -429,6 +424,6 @@ TEST_CASE("legibility: a device's settings decide what is hidden; the view prefs
   CHECK(ctx.viewPrefs().circuitShowInactive);
 }
 
-TEST_CASE("render: circuit-inactive-hidden matches the golden image") { checkGolden("circuit-inactive-hidden", standInPath("devices/saturator.pqp")); }
-TEST_CASE("render: circuit-inactive-shown matches the golden image") { checkGolden("circuit-inactive-shown", standInPath("devices/saturator.pqp")); }
-TEST_CASE("render: circuit-tooltip matches the golden image") { checkGolden("circuit-tooltip", standInPath("devices/saturator.pqp")); }
+TEST_CASE("render: circuit-inactive-hidden matches the golden image") { checkGolden("circuit-inactive-hidden", stdlibPath("envelopes/msenv.pqp")); }
+TEST_CASE("render: circuit-inactive-shown matches the golden image") { checkGolden("circuit-inactive-shown", stdlibPath("envelopes/msenv.pqp")); }
+TEST_CASE("render: circuit-tooltip matches the golden image") { checkGolden("circuit-tooltip", stdlibPath("envelopes/msenv.pqp")); }

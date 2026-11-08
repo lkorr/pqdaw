@@ -870,39 +870,38 @@ Status setupCircuitEditor(Shell& shell, std::string_view file) {
   shell.tree().layoutNow();
   return Ok{};
 }
-// T4.15: Saturator's curve — sat_shape opened from the 1× path (`y1`) of the stock Saturator (--project
-// stdlib/devices/saturator.pqp) at its defaults (Analog Clip): with Inactive off only the active branch is drawn (the
-// other eight curves are hidden, the visible nodes laid out on their own); with it on, all nine, the switched-off ones
-// dimmed.
-Result<circuit::CircuitEditor*> openSatShapeScene(Shell& shell, std::string_view file, bool showInactive) {
+// T4.15: branches switched off by structural constants — the multi-stage envelope (--project
+// stdlib/envelopes/msenv.pqp; GU.11: was the retired stock Saturator's curve) at its defaults (mode 0 None, soft 1):
+// with Inactive off only the active logic is drawn (the Loop / Beat / Sync / Trigger retriggers and the hard start are
+// hidden, the visible nodes laid out on their own); with it on, all of it, the switched-off nodes dimmed.
+Result<circuit::CircuitEditor*> openInactiveScene(Shell& shell, std::string_view file, bool showInactive) {
   auto e = openEditorScene(shell, file);
   if (!e) return std::move(e).error();
   (*e)->setShowInactive(showInactive);
-  const graph::Patch& p = (*e)->document().drawn((*e)->shownIndex());
-  const auto y1 = p.findByName("y1");
-  if (!y1 || !(*e)->openNode(*y1)) return Error{ErrorCode::NotFound, "circuit-inactive: no `y1 = sat_shape(…)` to open", {}};
+  if ((*e)->structure().inactiveNodes == 0)
+    return Error{ErrorCode::NotFound, "circuit-inactive: nothing is switched off by a structural constant", {}};
   shell.tree().layoutNow();
   (*e)->canvas().fitToRead();  // M4 review M15: as the editor opens it
   shell.tree().layoutNow();
   return *e;
 }
 Status setupCircuitInactiveHidden(Shell& shell, std::string_view file) {
-  auto e = openSatShapeScene(shell, file, false);
+  auto e = openInactiveScene(shell, file, false);
   return e ? Status(Ok{}) : Status(std::move(e).error());
 }
 Status setupCircuitInactiveShown(Shell& shell, std::string_view file) {
-  auto e = openSatShapeScene(shell, file, true);
+  auto e = openInactiveScene(shell, file, true);
   return e ? Status(Ok{}) : Status(std::move(e).error());
 }
-// The same with Inactive on, zoomed in on Analog Clip (switched off, dimmed) and the pointer resting on its 4/27: the
-// constant's tooltip with its recognised form.
+// The same with Inactive on, zoomed in on the `done` threshold 0.0001 and the pointer resting on it: the constant's
+// tooltip with its recognised form (−80 dB).
 Status setupCircuitTooltip(Shell& shell, std::string_view file) {
-  auto e = openSatShapeScene(shell, file, true);
+  auto e = openInactiveScene(shell, file, true);
   if (!e) return std::move(e).error();
   circuit::CircuitEditor& ed = **e;
   const graph::Patch& p = ed.document().drawn(ed.shownIndex());
   for (graph::NodeIndex v = 0; v < p.nodeCount(); ++v) {
-    if (p.node(v).kind != graph::NodeKind::Const || std::fabs(p.constant(v).literal - 4.0 / 27.0) > 1e-12) continue;
+    if (p.node(v).kind != graph::NodeKind::Const || std::fabs(p.constant(v).literal - 1e-4) > 1e-12) continue;
     const circuit::SceneNode& n = ed.canvas().scene()->nodes[v];
     const float s = shell.tree().scale();
     const ui::IRect cr = ed.canvas().rect();
@@ -917,7 +916,7 @@ Status setupCircuitTooltip(Shell& shell, std::string_view file) {
     shell.tree().layoutNow();
     return Ok{};
   }
-  return Error{ErrorCode::NotFound, "circuit-tooltip: no 4/27 constant in sat_shape", {}};
+  return Error{ErrorCode::NotFound, "circuit-tooltip: no 0.0001 constant", {}};
 }
 
 // The same with a typing slip in the text pane: the inline error, and the canvas veiled over the last good version.
@@ -1570,7 +1569,8 @@ Status setupInstrumentRack(Shell& shell) {
   const doc::DeviceId hi = doc::findDevice(*store.current(), op).device->group;
   const doc::DeviceId soft = doc::findDevice(*store.current(), soc->devices[0]).device->group;
   const std::string vp(doc::kValueParam);
-  const doc::DeviceId bright = memberNamed(*store.current(), inst, "Amount"), level = memberNamed(*store.current(), op, "Level A");
+  // (the macros map controls of the chains' instruments: the default instrument's and Operator's first Amplitude)
+  const doc::DeviceId bright = memberNamed(*store.current(), inst, "Amplitude"), level = memberNamed(*store.current(), op, "Amplitude");
   const bool ok =
       run(doc::ops::renameChain(*store.current(), lo, "Low")) && run(doc::ops::renameChain(*store.current(), hi, "High")) &&
       run(doc::ops::renameChain(*store.current(), soft, "Soft")) &&
@@ -2916,7 +2916,7 @@ constexpr SceneEntry kScenes[] = {
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)
     {"device-knob-curves", 1600, 900, setupDeviceKnobCurves},  // TX.knob-curves
-    {"circuit-inactive-hidden", 1280, 800, nullptr, setupCircuitInactiveHidden},  // T4.15: --project stdlib/devices/saturator.pqp
+    {"circuit-inactive-hidden", 1280, 800, nullptr, setupCircuitInactiveHidden},  // T4.15: --project stdlib/envelopes/msenv.pqp
     {"circuit-inactive-shown", 1280, 800, nullptr, setupCircuitInactiveShown},
     {"circuit-tooltip", 1280, 800, nullptr, setupCircuitTooltip},
     {"arrangement-hover", 1280, 800, setupArrangementHover},  // T4.16b

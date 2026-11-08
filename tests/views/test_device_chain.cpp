@@ -1,5 +1,5 @@
-// T4.1 the Device view through the real shell: the selected track's chain left → right, one T4.6 device panel per
-// device; add (the device menu), reorder (dragging a title bar), remove (Delete), deactivate (`0`), copy / paste /
+// T4.1 the Device view through the real shell: the selected track's chain left → right, one frame per block of its
+// main path (GU.11: a group — a module — shows its panel, a leaf its generated DevicePanel); add (the device menu), reorder (dragging a title bar), remove (Delete), deactivate (`0`), copy / paste /
 // duplicate (keys), a param drag and a structural const — each exactly one undo step; a param change from elsewhere
 // repaints only its control. Golden: device-chain.
 
@@ -10,9 +10,11 @@
 #include <string>
 #include <vector>
 
-#include "lone_instrument.h"
+#include "../support/blocks.h"
+#include "pq/views/panel/group_panel_face.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
+#include "pq/document/racks.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
@@ -47,7 +49,7 @@ Vec2 mid(const IRect& r) { return {static_cast<float>(r.x) + static_cast<float>(
 struct Ui {
   FakeTransport port;
   ViewContext ctx{port};
-  TestDriver d{1280, 800};
+  TestDriver d{2200, 800};  // (GU.11: the default instrument group's frame is wide: the + slot in view)
   std::unique_ptr<Shell> shell;
   doc::TrackId keys, grp;
 
@@ -60,7 +62,6 @@ struct Ui {
       return *e;
     };
     keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks[0];
-    view_fixture::loneInstrument(st, library(), keys);  // IG.1-2 (lone_instrument.h)
     grp = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Group, {}, "Bus")).tracks[0];
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
@@ -82,10 +83,29 @@ struct Ui {
   // TX.all-free: the track's main path (what the Device view lists), in signal order.
   std::vector<std::string> chain(doc::TrackId id) const {
     std::vector<std::string> v;
-    for (const doc::Device* dev : doc::mainPath(*ctx.doc(), track(id)).blocks) v.push_back(dev->patch + (dev->active ? "" : "(off)"));
+    for (const doc::Device* dev : doc::mainPath(*ctx.doc(), track(id)).blocks) v.push_back(dev->name + (dev->active ? "" : "(off)"));
     return v;
   }
   size_t history() const { return ctx.store().history().cursor(); }
+  // TX.all-free: the block at `slot` of the main path.
+  doc::DeviceId onPath(doc::TrackId id, size_t slot) const { return doc::mainPath(*ctx.doc(), track(id)).blocks.at(slot)->id; }
+  // GU.11: the element of group `group`'s panel (its frame) bound to block `control`'s value: its rect, device px.
+  IRect element(doc::DeviceId group, doc::DeviceId control) {
+    d.tree().layoutNow();
+    Widget* f = view().frameOf(group);
+    REQUIRE(f != nullptr);
+    auto* host = dynamic_cast<panel::PanelHost*>(f->find("panel[" + std::to_string(group.value) + "]"));
+    REQUIRE(host != nullptr);
+    auto& face = static_cast<panel::GroupPanelFace&>(host->face());
+    for (size_t i = 0; i < face.elementCount(); ++i)
+      if (const doc::Binding* b = face.element(i).binding(); b != nullptr && b->device == control && b->name == doc::kValueParam) {
+        const doc::PanelElement& e = face.element(i).desc();
+        const Vec2 a = host->transform().map({e.x, e.y}), z = host->transform().map({e.x + e.w, e.y + e.h});
+        return {static_cast<int32_t>(a.x), static_cast<int32_t>(a.y), static_cast<int32_t>(z.x - a.x), static_cast<int32_t>(z.y - a.y)};
+      }
+    FAIL("no element bound to the control");
+    return {};
+  }
   IRect frame(doc::DeviceId id) {
     d.tree().layoutNow();
     Widget* f = view().frameOf(id);
@@ -113,22 +133,32 @@ struct Ui {
 
 }  // namespace
 
-TEST_CASE("device view: shows the selected track's chain, one T4.6 device panel per device") {
+TEST_CASE("device view: shows the selected track's chain, one frame per block — a group's panel, a leaf's DevicePanel") {
   Ui u;
   DeviceChainView& v = u.view();
   CHECK(v.track() == u.keys);
-  const doc::DeviceId inst = u.track(u.keys).devices.at(0)->id;
+  // The default instrument: a group (GU.10) — its frame shows its panel / mini circuit, no DevicePanel of its own.
+  const doc::DeviceId inst = u.onPath(u.keys, 0);
+  REQUIRE(doc::isGroupDevice(*doc::findDevice(*u.ctx.doc(), inst).device));
   REQUIRE(v.frameOf(inst) != nullptr);
-  devices::DevicePanel* p = v.panelOf(inst);
-  REQUIRE(p != nullptr);
-  CHECK(p->signature().patch == "BasicSynth");
-  CHECK(p->desc().generated);  // no panel description: the generic panel, one control per param
-  for (const devices::ParamInfo& pi : p->signature().params) CHECK(p->controlFor(pi.name) != nullptr);
-  // A stock effect gets its own panel description (stdlib/devices/utility.panel.json).
+  CHECK(v.panelOf(inst) == nullptr);
+  // A module from the menu: its group's panel (elements bound to its value blocks).
   u.addFromMenu("Utility");
-  const doc::DeviceId util = u.track(u.keys).devices.at(1)->id;
-  REQUIRE(v.panelOf(util) != nullptr);
-  CHECK_FALSE(v.panelOf(util)->desc().generated);
+  const doc::DeviceId util = u.onPath(u.keys, 1);
+  REQUIRE(v.frameOf(util) != nullptr);
+  CHECK(v.panelOf(util) == nullptr);
+  CHECK(u.element(util, test_blocks::member(*u.ctx.doc(), util, "Width")).w > 0);
+  // A leaf (an atom block): the generated body, one control per param and setting (GU.11 autoPanel).
+  auto e = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "atom:gain", doc::DeviceKind::AudioEffect);
+  REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
+  REQUIRE(u.ctx.store().dispatch(e->command).ok());
+  const doc::DeviceId atom = e->devices.at(0);
+  devices::DevicePanel* p = v.panelOf(atom);
+  REQUIRE(p != nullptr);
+  CHECK(doc::findDevice(*u.ctx.doc(), atom).device->patch == "atom:gain");
+  CHECK_FALSE(p->desc().fitFace);
+  for (const devices::ParamInfo& pi : p->signature().params) CHECK_MESSAGE(p->controlFor(pi.name) != nullptr, pi.name);
+  for (const devices::ConstInfo& ci : p->signature().consts) CHECK_MESSAGE(p->control(ci.name) != nullptr, ci.name);
   // Selecting another track shows its (empty) chain.
   u.ctx.setSelectedTrack(u.grp);
   CHECK(v.track() == u.grp);
@@ -144,8 +174,8 @@ TEST_CASE("device view: add, reorder, remove, deactivate, copy / paste and dupli
   CHECK(u.history() == h0 + 1);
   u.addFromMenu("Saturator");
   CHECK(u.history() == h0 + 2);
-  CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth", "utility", "saturator"});
-  const doc::DeviceId util = u.track(u.keys).devices[1]->id, sat = u.track(u.keys).devices[2]->id;
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"Basic Synth", "Utility", "Saturator"});
+  const doc::DeviceId util = u.onPath(u.keys, 1), sat = u.onPath(u.keys, 2);
   CHECK(v.selection().size() == 1);
   CHECK(v.selection()[0] == sat);  // the new device is selected
 
@@ -153,20 +183,20 @@ TEST_CASE("device view: add, reorder, remove, deactivate, copy / paste and dupli
   const IRect fs = u.frame(sat), fu = u.frame(util);
   u.d.drag({static_cast<float>(fs.x + fs.w / 2), static_cast<float>(fs.y + 18)}, {static_cast<float>(fu.x + 10), static_cast<float>(fu.y + 18)}, 8);
   CHECK(u.history() == h0 + 3);
-  CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth", "saturator", "utility"});
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"Basic Synth", "Saturator", "Utility"});
   // TX.all-free: the path has no order rule — dragged to the far left, the Utility goes before the instrument (one
   // step; undone here).
-  const IRect fu2 = u.frame(util), fi = u.frame(u.track(u.keys).devices[0]->id);
+  const IRect fu2 = u.frame(util), fi = u.frame(u.onPath(u.keys, 0));
   u.d.drag({static_cast<float>(fu2.x + fu2.w / 2), static_cast<float>(fu2.y + 18)}, {static_cast<float>(fi.x + 2), static_cast<float>(fi.y + 18)}, 8);
   CHECK(u.history() == h0 + 4);
-  CHECK(u.chain(u.keys) == std::vector<std::string>{"utility", "BasicSynth", "saturator"});
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"Utility", "Basic Synth", "Saturator"});
   REQUIRE(u.ctx.undo());
-  CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth", "saturator", "utility"});
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"Basic Synth", "Saturator", "Utility"});
   // Onto the Saturator's left half: between the instrument and the Saturator.
   const IRect fu4 = u.frame(util), fs4 = u.frame(sat);
   u.d.drag({static_cast<float>(fu4.x + fu4.w / 2), static_cast<float>(fu4.y + 18)}, {static_cast<float>(fs4.x + 10), static_cast<float>(fs4.y + 18)}, 8);
   CHECK(u.history() == h0 + 4);
-  CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth", "utility", "saturator"});
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"Basic Synth", "Utility", "Saturator"});
 
   // Deactivate: select Saturator (its title bar), `0`.
   const IRect fs1 = u.frame(sat);
@@ -175,8 +205,8 @@ TEST_CASE("device view: add, reorder, remove, deactivate, copy / paste and dupli
   CHECK(v.selection()[0] == sat);
   CHECK(u.d.press("0") == KeyResult::Action);
   CHECK(u.history() == h0 + 5);
-  CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth", "utility", "saturator(off)"});
-  CHECK_FALSE(v.panelOf(sat)->active());  // the panel shows it
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"Basic Synth", "Utility", "Saturator(off)"});
+  CHECK_FALSE(doc::findDevice(*u.ctx.doc(), sat).device->active);
 
   // Keys: select Utility (a click on its title), Ctrl+D duplicates, 0 toggles, Ctrl+C / Ctrl+V on the group, Delete.
   const IRect fu3 = u.frame(util);
@@ -185,89 +215,128 @@ TEST_CASE("device view: add, reorder, remove, deactivate, copy / paste and dupli
   CHECK(v.selection()[0] == util);
   CHECK(u.d.press("Ctrl+D") == KeyResult::Action);
   CHECK(u.history() == h0 + 6);
-  CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth", "utility", "utility", "saturator(off)"});
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"Basic Synth", "Utility", "Utility", "Saturator(off)"});
   CHECK(u.d.press("0") == KeyResult::Action);  // the duplicate is selected now
   CHECK(u.history() == h0 + 7);
-  CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth", "utility", "utility(off)", "saturator(off)"});
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"Basic Synth", "Utility", "Utility(off)", "Saturator(off)"});
   CHECK(u.d.press("Ctrl+C") == KeyResult::Action);
   u.ctx.setSelectedTrack(u.grp);
   u.d.click(mid(v.rect()));  // focus the view (empty space)
   CHECK(u.d.press("Ctrl+V") == KeyResult::Action);
   CHECK(u.history() == h0 + 8);
-  CHECK(u.chain(u.grp) == std::vector<std::string>{"utility(off)"});
+  CHECK(u.chain(u.grp) == std::vector<std::string>{"Utility(off)"});
   u.ctx.setSelectedTrack(u.keys);
   const IRect fs2 = u.frame(sat);
   u.d.click({static_cast<float>(fs2.x + fs2.w / 2), static_cast<float>(fs2.y + 18)});
   CHECK(u.d.press("Delete") == KeyResult::Action);
   CHECK(u.history() == h0 + 9);
-  CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth", "utility", "utility(off)"});
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"Basic Synth", "Utility", "Utility(off)"});
 
   // Every step undoes on its own, back to the start.
   for (size_t k = 0; k < 9; ++k) REQUIRE(u.ctx.undo());
-  CHECK(u.chain(u.keys) == std::vector<std::string>{"BasicSynth"});
+  CHECK(u.chain(u.keys) == std::vector<std::string>{"Basic Synth"});
   CHECK(u.chain(u.grp).empty());
 }
 
 TEST_CASE("device view: a param drag is one undo step of Param changes; a const is one structural step") {
   Ui u;
   u.addFromMenu("Saturator");
-  const doc::DeviceId sat = u.track(u.keys).devices[1]->id;
+  const doc::DeviceId sat = u.onPath(u.keys, 1);
+  const doc::DeviceId drive = test_blocks::member(*u.ctx.doc(), sat, "Drive");
+  REQUIRE(drive.valid());
+  const double v0 = doc::findDevice(*u.ctx.doc(), drive).device->param(doc::kValueParam) != nullptr
+                        ? doc::findDevice(*u.ctx.doc(), drive).device->param(doc::kValueParam)->value
+                        : 0.5;
   const size_t h0 = u.history();
-  devices::DevicePanel* panel = u.view().panelOf(sat);
-  REQUIRE(panel != nullptr);
-  ui::Widget* drive = panel->controlFor("drive");
-  REQUIRE(drive != nullptr);
-  u.d.tree().layoutNow();
-  const Vec2 c = mid(drive->rect());
+  // GU.11: the Drive knob of the Saturator's panel (an element bound to its Drive value block).
+  const Vec2 c = mid(u.element(sat, drive));
   u.d.drag(c, {c.x, c.y - 40.0f}, 6);
   CHECK(u.history() == h0 + 1);
   const doc::ChangeSet& cs = u.ctx.store().history().entries()[h0].changes;
   CHECK(cs.paramOnly());
   REQUIRE(cs.params.size() == 1);
-  CHECK(cs.params[0] == doc::ParamRef::device(sat, "drive"));
-  const doc::Device& d = *doc::findDevice(*u.ctx.doc(), sat).device;
-  REQUIRE(d.param("drive") != nullptr);
-  // Up from 0 dB (a linear gain above 1; GU.1: the param stores the knob position, the value is its curve's).
-  CHECK(devices::storedValue(*panel->signature().findParam("drive"), d) > 1.0);
-  // A structural const through the panel's target: one structural step, shown back in the panel.
-  devices::DeviceTarget* target = u.view().targetOf(sat);
+  CHECK(cs.params[0] == doc::ParamRef::device(drive, std::string(doc::kValueParam)));
+  const doc::Device& d = *doc::findDevice(*u.ctx.doc(), drive).device;
+  REQUIRE(d.param(doc::kValueParam) != nullptr);
+  CHECK(d.param(doc::kValueParam)->value > v0);  // up (GU.1: the param stores the knob position)
+  // A structural const through a leaf's panel target (an atom block's setting): one structural step, shown back.
+  auto e = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "atom:gain", doc::DeviceKind::AudioEffect);
+  REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
+  REQUIRE(u.ctx.store().dispatch(e->command).ok());
+  const doc::DeviceId atom = e->devices.at(0);
+  const size_t h1 = u.history();
+  devices::DeviceTarget* target = u.view().targetOf(atom);
   REQUIRE(target != nullptr);
-  target->setConst("type", 6.0);
-  CHECK(u.history() == h0 + 2);
-  CHECK(u.ctx.store().history().entries()[h0 + 1].changes.structural());
-  CHECK(doc::findDevice(*u.ctx.doc(), sat).device->setting("type")->value == 6.0);
-  CHECK(u.view().panelOf(sat)->constValue("type") == 6.0);
+  REQUIRE(u.view().panelOf(atom) != nullptr);
+  const double s0 = u.view().panelOf(atom)->constValue("start");
+  target->setConst("start", s0 == 1.0 ? 0.0 : 1.0);
+  CHECK(u.history() == h1 + 1);
+  CHECK(u.ctx.store().history().entries()[h1].changes.structural());
+  REQUIRE(doc::findDevice(*u.ctx.doc(), atom).device->setting("start") != nullptr);
+  CHECK(doc::findDevice(*u.ctx.doc(), atom).device->setting("start")->value == (s0 == 1.0 ? 0.0 : 1.0));
+  CHECK(u.view().panelOf(atom)->constValue("start") == (s0 == 1.0 ? 0.0 : 1.0));
   REQUIRE(u.ctx.undo());
-  CHECK(u.view().panelOf(sat)->constValue("type") == 0.0);  // undo comes back to the panel (Analog Clip: M4 review L11)
+  CHECK(u.view().panelOf(atom)->constValue("start") == s0);  // undo comes back to the panel
 }
 
 TEST_CASE("device view: a param change from elsewhere repaints only its control") {
+  // GU.11: on a generic knob — a rack's macro (its frame's DevicePanel), on the Bus track (no group frame beside it: a
+  // group frame repaints its whole panel or mini circuit on any document change; a native engine's face is one
+  // control).
   Ui u;
-  u.addFromMenu("Utility");
-  const doc::DeviceId util = u.track(u.keys).devices[1]->id;
+  auto add = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.grp, std::string(doc::kAudioEffectRack), doc::DeviceKind::AudioEffect);
+  REQUIRE_MESSAGE(add.ok(), (add.ok() ? "" : add.error().message));
+  REQUIRE(u.ctx.store().dispatch(add->command).ok());
+  const doc::DeviceId rack = add->devices.at(0);
+  {  // macro 1 mapped (an unmapped macro has no value): onto a Value block in the rack's first chain, off its series
+    const std::optional<doc::RackInfo> ri = doc::rackOf(*u.ctx.doc(), rack);
+    REQUIRE(ri.has_value());
+    REQUIRE_FALSE(ri->chains.empty());
+    auto v = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.grp, std::string(doc::kValueDevice), doc::DeviceKind::AudioEffect,
+                                 doc::ops::kOffPath);
+    REQUIRE(v.ok());
+    REQUIRE(u.ctx.store().dispatch(v->command).ok());
+    auto g = doc::ops::setDeviceGroup(*u.ctx.doc(), u.ctx.store().ids(), &library(), v->devices.at(0), ri->chains[0].id);
+    REQUIRE_MESSAGE(g.ok(), (g.ok() ? "" : g.error().message));
+    REQUIRE(u.ctx.store().dispatch(g->command).ok());
+    auto m = doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), rack, 0, v->devices.at(0), std::string(doc::kValueParam));
+    REQUIRE_MESSAGE(m.ok(), (m.ok() ? "" : m.error().message));
+    REQUIRE(u.ctx.store().dispatch(m->command).ok());
+  }
+  u.ctx.setSelectedTrack(u.grp);
+  u.d.tree().layoutNow();
+  // (a first change: the shell shows the project changed — the change below is the one measured)
+  REQUIRE(u.ctx.store().dispatch(doc::ops::setMacroValue(*u.ctx.doc(), rack, 0, 0.25 * doc::kMacroMax)->command).ok());
   u.d.step();
   u.d.step();  // settle: nothing damaged
-  devices::DevicePanel* panel = u.view().panelOf(util);
+  devices::DevicePanel* panel = u.view().panelOf(rack);
   REQUIRE(panel != nullptr);
-  ui::Widget* width = panel->controlFor("width");
-  REQUIRE(width != nullptr);
-  auto e = doc::ops::setDeviceParamValue(*u.ctx.doc(), library(), util, "width", 2.0);  // GU.1: in units
+  ui::Widget* knob = panel->controlFor("macro1");
+  REQUIRE(knob != nullptr);
+  auto e = doc::ops::setMacroValue(*u.ctx.doc(), rack, 0, 0.75 * doc::kMacroMax);
   REQUIRE(e.ok());
   REQUIRE(u.ctx.store().dispatch(e->command).ok());
-  CHECK(panel->paramValue("width") == doctest::Approx(2.0).epsilon(1e-12));
+  CHECK(panel->paramValue("macro1") == doctest::Approx(0.75 * doc::kMacroMax).epsilon(1e-9));
   IRect rects[Damage::kMaxRects];
   int64_t area = 0;
   const uint32_t n = u.d.tree().damageRects(rects, area);
   REQUIRE(n >= 1);
+  const IRect rf = u.view().frameOf(rack)->rect();
   for (uint32_t i = 0; i < n; ++i) {  // inside the control (a knob may damage its value readout with it)
     const IRect& r = rects[i];
-    const IRect& w = width->rect();
+    const IRect& w = knob->rect();
+    // (GU.9: the rack frame's strip — its left column — follows every edit of what the rack derives from)
+    if (r.x >= rf.x && r.right() <= rf.x + 40) continue;
+    CAPTURE(r.x);
+    CAPTURE(r.y);
+    CAPTURE(r.w);
+    CAPTURE(r.h);
     CHECK(r.x >= w.x - 40);
     CHECK(r.right() <= w.right() + 40);
     CHECK(r.y >= w.y - 40);
     CHECK(r.bottom() <= w.bottom() + 40);
   }
-  CHECK(area < static_cast<int64_t>(panel->rect().w) * panel->rect().h / 4);
+  CHECK(area < static_cast<int64_t>(panel->rect().w) * panel->rect().h / 4 + 40LL * rf.h);
 }
 
 TEST_CASE("render: device-chain matches the golden image") {

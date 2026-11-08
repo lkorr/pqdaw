@@ -69,7 +69,6 @@ struct Ui {
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
     d.tree().layoutNow();
-    view().setPanelsShown(false);
     view().setPushAnimated(false);
     view().setShown(true, false);
     d.tree().layoutNow();
@@ -353,7 +352,6 @@ TEST_CASE("nested groups view: Save as Group Preset (the block menu), then the n
   REQUIRE(atom.size() == 1);
   CHECK(doc::isAtomDevice(*u.device(atom.front())));
   CHECK(u.device(atom.front())->patch == "atom:tanh");
-  CHECK_FALSE(u.device(atom.front())->source);
 }
 
 TEST_CASE("render: project-patch-nested matches the golden image") {

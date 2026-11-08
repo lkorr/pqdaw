@@ -143,8 +143,12 @@ Result<doc::DeviceId> addCatalogDevice(ViewContext& ctx, std::string_view patch,
   if (patch.starts_with(doc::kModuleItemPrefix)) {  // GU.4: a built-in module: its group preset
     const doc::ModuleInfo* m = doc::findModule(patch.substr(doc::kModuleItemPrefix.size()));
     if (m == nullptr) return Error{ErrorCode::NotFound, "unknown module '" + std::string(patch) + "'", {}};
-    if (m->instrument)  // GU.8: an instrument module takes the notes of a MIDI track with an empty path
+    if (m->instrument) {  // GU.8: an instrument module takes the notes of a MIDI track with an empty path
+      // (GU.11: as an instrument did — only on a MIDI track: no notes reach an audio track's path)
+      if (const doc::Track* t = doc::findTrackPtr(p, at.track); t == nullptr || t->kind != doc::TrackKind::Midi)
+        return Error{ErrorCode::InvalidArgument, "instruments go on MIDI tracks", {}};
       return firstDevice(ctx, doc::ops::pasteBlocksAtNotes(p, ctx.store().ids(), at.track, doc::moduleBlocks(m->kind)));
+    }
     // GU.11: an effect module goes onto the path at the slot (its group: one block of the chain).
     return firstDevice(ctx, doc::ops::addDevice(p, ctx.store().ids(), at.track, std::string(patch), doc::DeviceKind::AudioEffect, at.index));
   }

@@ -270,6 +270,9 @@ TEST_CASE("cables: a kept connection keeps its motion across a rebuild; a new on
 
 TEST_CASE("cables: every connection between blocks is a cable from port to port; buses stay traces") {
   Ui u;
+  // (GU.11: the modules' panels lay out at their first paint: the LFO's wires end on their knobs from there)
+  REQUIRE(u.d.enableGpu().ok());
+  u.d.advance(1.0);
   const ProjectPatch& pp = u.pp();
   const circuit::CircuitScene& sc = u.scene();
   uint32_t cables = 0, traces = 0;
@@ -279,10 +282,12 @@ TEST_CASE("cables: every connection between blocks is a cable from port to port;
     REQUIRE(w != kNone);
     const circuit::SceneWire& sw = sc.wires[w];
     CHECK(sw.cable == e.cable);
-    CHECK(e.cable == isCable(e.kind, pp.nodes[e.from].kind));
+    // GU.5b: a wire between two blocks of one opened group is a circuit trace (the modules open by default).
+    const bool inside = pp.nodes[e.from].capsule != kNone && pp.nodes[e.from].capsule == pp.nodes[e.to].capsule;
+    CHECK(e.cable == (isCable(e.kind, pp.nodes[e.from].kind) && !inside));
     if (!sw.cable) {
       ++traces;
-      CHECK((e.kind == EdgeKind::Route || e.kind == EdgeKind::Send || pp.nodes[e.from].kind == NodeKind::Mixer));
+      CHECK((inside || e.kind == EdgeKind::Route || e.kind == EdgeKind::Send || pp.nodes[e.from].kind == NodeKind::Mixer));
       continue;
     }
     ++cables;
@@ -295,6 +300,16 @@ TEST_CASE("cables: every connection between blocks is a cable from port to port;
     // The canvas's rope at rest is the scene's rest shape.
     const std::span<const Point2> rope = u.canvas().cablePoints(w);
     REQUIRE(rope.size() == sw.pointCount);
+    CAPTURE(k);
+    CAPTURE(pp.nodes[e.from].title);
+    CAPTURE(pp.nodes[e.to].title);
+    if (sw.control != UINT32_MAX) {
+      // Onto a control (GU.11: a module's knob on its closed group's panel): the rope ends on the control's rim, toward
+      // its source (CircuitCanvas cableEnds), the scene's rest shape at its centre.
+      CHECK(dist(rope.front(), sc.points[sw.firstPoint]) < 0.05f);
+      CHECK(dist(rope.back(), sc.points[sw.firstPoint + sw.pointCount - 1]) < 30.0f);
+      continue;
+    }
     for (uint32_t i = 0; i < sw.pointCount; ++i) CHECK(dist(rope[i], sc.points[sw.firstPoint + i]) < 0.05f);
   }
   CHECK(cables >= 8);

@@ -39,6 +39,7 @@
     {
       "id": 3,
       "kind": "midi",
+      "devices": [],
       "name": "1 MIDI",
       "colour": "#46A5E8",
       "active": true,

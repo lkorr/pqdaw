@@ -239,13 +239,7 @@
         "output": "default"
       },
       "lanes": [],
-      "devices": [
-        {
-          "id": 13,
-          "patch": "BasicSynth",
-          "kind": "instrument"
-        }
-      ],
+      "devices": [],
       "clips": [
         {
           "id": 30,

@@ -128,7 +128,6 @@ TEST_CASE("Wavetable Synth: in the project patch view (closed at the notes), a c
   d.tree().layoutNow();
   ProjectPatchView* v = findProjectPatch(*shell);
   REQUIRE(v != nullptr);
-  v->setPanelsShown(false);
   v->setPushAnimated(false);
   v->setShown(true, false);
   d.tree().layoutNow();
