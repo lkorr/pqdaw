@@ -371,3 +371,23 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   Chosen: the patch is renamed `svf_multi` (every response of one core as an output; the circuit goldens show it).
   Alternative: delete it (the atom covers its responses one mode at a time).
 - Status: open (provisional choices above).
+
+## Q?-EQ.3-a · EQ modules: const inputs from value blocks, the EQ panel's Mode menu, PanelTarget::run's shape
+- **Const inputs**: an atom's `real const` input could only take a setting, so a band's Type / Stages menu could not
+  reach the svf's `mode` / `stages`. Chosen: a stepped / constant value block wired straight into a const input sets it
+  to its knob value (a literal at the call); such a block is structural even when driven, and a wire or automation lane
+  INTO it is ignored by the const input (it still drives the block's output elsewhere). Alternative: refuse those wires
+  (a WireRefusal reason + the views' tooltip) — more code, same sound.
+- **Widths**: the EQ's matrix needs A's input to be the stereo In in Stereo and a mono channel in L/R / M/S; the
+  optimiser's fold of a typed mux cannot change width (it kept A stereo in L/R: 2× its cost, and pack(A, B) three
+  channels). Chosen: a mux block with a literal index is resolved in the lowering (its wires start at the picked
+  source). This applies to every module (Saturator / LFO / Utility switches): same programs after optimisation.
+- **Mode menu**: the EQ panel's Mode menu is a plain menu on the Mode block, so switching there does NOT copy chain A into
+  an empty chain B (only `ops::setEqMode` does). Chosen: leave it to EQ.4, whose elements call setEqMode through
+  `PanelTarget::run`. Alternative now: a dedicated element kind for the Mode menu.
+- **run()**: `PanelTarget::run(EditBuilder)` takes a builder `(const Project&, IdSource&) → EditResult` rather than a
+  ready Edit: an element has no document or id source to build one with. The doc target runs it on the current
+  document and dispatches through the store (a refusal: a notice, false).
+- **Strip relayout**: the ops rebuild only the elements tagged `eq: strip` (the user's own additions to the EQ panel
+  stay; edits to the strip columns themselves are replaced on the next band op).
+- Status: open (provisional choices above).

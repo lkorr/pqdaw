@@ -32,6 +32,7 @@
 #include <string_view>
 #include <vector>
 
+#include "pq/document/edit_ops.h"
 #include "pq/document/panel.h"
 #include "pq/dsp/curve.h"
 #include "pq/ui/controls.h"
@@ -120,6 +121,12 @@ public:
   // A position SHOWN instead of the stored one (an automated control follows its envelope at the playhead while the
   // transport plays); nullopt: the stored one again. Returns whether it changed.
   virtual bool showPosition(const doc::Binding& /*b*/, std::optional<double> /*position*/) { return false; }
+  // ---- EQ.3: a STRUCTURAL EDIT an element asks for (the EQ's band ops: doc::ops::addBand, setEqMode …) ----
+  // `build` makes it from the document as it is now and the store's id source; the target dispatches it through its
+  // host's history (one undo step). False — with a notice saying why — when the builder refuses (its message: "A chain
+  // holds at most 32 bands"), the store refuses, or there is no document; an empty edit is true and records nothing.
+  using EditBuilder = std::function<doc::ops::EditResult(const doc::Project&, doc::IdSource&)>;
+  virtual bool run(const EditBuilder& /*build*/) { return false; }
 };
 
 // What an element paints with.

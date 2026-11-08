@@ -374,6 +374,21 @@ public:
     return std::binary_search(driven_.begin(), driven_.end(), std::pair<uint32_t, std::string>(b.device.value, b.name));
   }
 
+  bool run(const EditBuilder& build) override {
+    if (!build || ctx_.doc() == nullptr) return false;
+    const doc::ops::EditResult e = build(*ctx_.doc(), ctx_.store().ids());
+    if (!e) {
+      notice(e.error().message);
+      return false;
+    }
+    if (e->empty()) return true;
+    if (Status st = ctx_.store().dispatch(e->command); !st) {
+      notice(st.error().message);
+      return false;
+    }
+    return true;
+  }
+
   bool connect(const doc::Binding& from, const doc::Binding& to) override {
     if (from.kind != doc::BindingKind::Signal || to.kind != doc::BindingKind::Control || !from.meta.empty() || !to.meta.empty()) {
       notice("A mod source makes a cable into a control");

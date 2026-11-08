@@ -241,7 +241,9 @@ bool GroupPanelFace::shownNow(size_t i, std::vector<int8_t>& memo) const {
   if (src < 0) return (memo[i] = 1) == 1;
   memo[i] = 2;  // (while it is evaluated: a cycle is hidden)
   bool on = shownNow(static_cast<size_t>(src), memo);
-  if (on) {
+  if (!on) {  // EQ.3 (panel.h kWhenHidden): shown while its source is hidden
+    for (const double want : elements_[i]->desc().when->values) on = on || want == doc::kWhenHidden;
+  } else {
     const std::optional<double> v = elements_[static_cast<size_t>(src)]->selection(*target_);
     on = false;
     if (v)
