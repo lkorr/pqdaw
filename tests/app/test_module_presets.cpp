@@ -170,6 +170,7 @@ TEST_CASE("TX.detent: the Phase Accumulator's Amplitude curve — x1 at the cent
   CHECK(PhaseAccumulatorOptions{}.amp == 0.5);
   // The fixtures' Amplitude knobs at their old default (0.25 on 0 … 4) switched to the module's curve at 0.5: the
   // renders stay bit-identical to the meta module's.
+  size_t switched = 0;
   for (const char* n : kPaCases) {
     const std::string name = n;
     CAPTURE(name);
@@ -179,7 +180,8 @@ TEST_CASE("TX.detent: the Phase Accumulator's Amplitude curve — x1 at the cent
       const DeviceValue* v = dv.param(kValueParam);
       if (dv.name == kPaAmplitude && v != nullptr && v->value == 0.25) moved.push_back(dv.id);
     });
-    REQUIRE_FALSE(moved.empty());
+    if (moved.empty()) continue;  // (pa_voice's Amplitude is turned down)
+    switched += moved.size();
     for (const DeviceId id : moved) {
       REQUIRE(store.dispatch(SetParamCurve{id, std::string(kValueParam), amp, true}).ok());
       REQUIRE(store.dispatch(SetDeviceParam{id, std::string(kValueParam), 0.5}).ok());
@@ -188,6 +190,7 @@ TEST_CASE("TX.detent: the Phase Accumulator's Amplitude curve — x1 at the cent
     REQUIRE(ref.ok());
     CHECK(maxDiff(ref->channels, render(store.current(), false)) == 0.0);
   }
+  CHECK(switched >= 3);
 }
 
 TEST_CASE("GU.4 modules: an opened VCA is In → mul ← Value → Out; the knob keeps its position, the curve is the law") {

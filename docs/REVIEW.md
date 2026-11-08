@@ -1005,3 +1005,17 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **To judge:** the 3 : 1 : 1 split (the magnitude area gets small with all three open in the band panel); the closed
   bar's look; the wrapped phase of the 23-stage allpass near 1.27 kHz is still a thicket of short segments and wrap
   markers (several turns per point: wrapped phase cannot show that at this resolution; unwrapped is correct).
+
+## 2026-11-08 · TX.detent · 👁 the feel of detents
+- **What:** a curve point can be a detent. Dragging a knob, slider, arc, number box or the VCA's dial onto one holds it
+  for 12 px of travel when crossing (±6 px when the drag starts on it; the zone scales with the drag length: 4.5 … 9
+  px), then it moves on with the held travel subtracted (no leap). Shift ignores detents; a wheel notch or arrow key
+  across one lands on it. The curve editor draws a detent as a ring round the point and a notch on the floor;
+  right-click an inner point → Detent toggles it.
+- **Phase Accumulator:** Amplitude is ×1 at the centre of its arc (0 … 1 over the first half, 1 … 4 over the second,
+  both straight), a detent; the default sits there. Pitch 0 c is a detent too.
+- **Elsewhere:** VCA ×1 and ×−1; Utility Gain 0 dB, Balance and Mid/Side centre, Width 100 %; Saturator Drive and Output
+  0 dB; LFO Offset 0; EQ Band Gain 0 dB; EQ Output 0 dB.
+- **To judge:** whether 12 px is sticky enough (too sticky?) at 1× and on the small PA arc (150 px per range); whether the
+  Amplitude's kink at ×1 (the upper half is 3× steeper) feels uneven.
+- **Goldens re-recorded:** every view showing a Phase Accumulator (its Amplitude arc / knob now at the centre): 28.
