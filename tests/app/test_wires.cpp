@@ -1,20 +1,23 @@
-// T4.7: cross-device modulation wires through the lowering and the playback link — an LFO export on track 1 wired into
-// a filter cutoff on track 3 is audible after the compile (one undo step); the lowered project renders exactly like a
-// hand-built ProjectGraph of the same wires (diff 0) and the interpreter like the JIT; a wire that closes a delay-free
-// loop gets its 1-sample delay (and only such a wire); a loop through two instruments is refused; the taps the knob
-// rings read sweep while the LFO runs; a wire's amount is a param write.
+// T4.7: cross-block modulation wires through the lowering and the playback link (GU.11: on modules — LFO, Utility,
+// Saturator — and the default instrument group) — an LFO on track 1 wired into a gain on track 3 is audible after the
+// compile (one undo step); a cross-track wire renders exactly like the same wire on one track (diff 0) and the
+// interpreter like the JIT; a wire that closes a delay-free loop gets its 1-sample delay (and only such a wire); a loop
+// through two instruments is refused; the taps the knob rings read sweep while the LFO runs; a wire's amount is a
+// param write.
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "../golden/golden_audio.h"
 #include "../support/knob_positions.h"
 #include "playback_fixture.h"
+#include "../support/module_batch.h"
 #include "pq/app/project_link.h"
 #include "pq/compile/compile.h"
 #include "pq/core/alloc_trap.h"
@@ -92,107 +95,6 @@ double spreadDb(const std::vector<double>& rms) {
   return 20.0 * std::log10(*hi / std::max(*lo, 1e-12));
 }
 
-// Track 1: an LFO (a MIDI track without an instrument: the LFO's audio passes silence); track 2: the default
-// instrument, idle; track 3: a held note through EQ Eight with band 1 a 12 dB low-pass ("a filter cutoff").
-struct ThreeTracks {
-  DocumentStore store;
-  TrackId t1, t2, t3;
-  DeviceId lfo, inst2, inst3, eq;
-  explicit ThreeTracks(double lfoRate = 3.0) {
-    IdSource& ids = store.ids();
-    t1 = ids.track();
-    t2 = ids.track();
-    t3 = ids.track();
-    lfo = ids.device();
-    inst2 = ids.device();
-    inst3 = ids.device();
-    eq = ids.device();
-    Batch b{"three tracks", {}};
-    b.commands.push_back(AddTrack{playback_fixture::track(t1, TrackKind::Midi, "LFO"), {}, kAppend});
-    b.commands.push_back(AddTrack{playback_fixture::track(t2, TrackKind::Midi, "Pad", inst2), {}, kAppend});
-    b.commands.push_back(AddTrack{playback_fixture::track(t3, TrackKind::Midi, "Keys", inst3), {}, kAppend});
-    b.commands.push_back(AddDevice{t1, makeDevice(lfo, "lfo_device", DeviceKind::AudioEffect), kAppend});
-    b.commands.push_back(SetDeviceParam{lfo, "rate", lfoRate});
-    b.commands.push_back(AddDevice{t3, makeDevice(eq, "eq_eight", DeviceKind::AudioEffect), kAppend});
-    b.commands.push_back(SetDeviceSetting{eq, "on1", 1.0});
-    b.commands.push_back(SetDeviceSetting{eq, "type1", 6.0});  // High Cut 12
-    b.commands.push_back(SetDeviceParam{eq, "freq1", 800.0});
-    // A note every 2 s (4 beats at 120 BPM), 1.75 s long (single notes: a chord would beat in the 10 ms windows the
-    // test measures); track 2 plays nothing.
-    std::vector<Note> notes;
-    for (int k = 0; k < 16; ++k) notes.push_back(playback_fixture::note(ids, 4 * k * kPpq, 7 * kPpq / 2, 0));
-    b.commands.push_back(AddClip{t3, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "notes")});
-    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
-    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
-  }
-};
-
-}  // namespace
-
-TEST_CASE("wires: an LFO on track 1 wired into a filter cutoff on track 3 is audible after the compile, one undo step") {
-  ThreeTracks f;
-  auto link = makeLink(f.store.current());
-  [[maybe_unused]] const ListenerId sub = f.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
-  Driver d{*link};
-  auto runTo = [&](double seconds) { d.run(static_cast<uint32_t>((seconds * kRate - static_cast<double>(d.time)) / kBlock)); };
-  auto spreadOver = [&](double from, double to) {
-    return spreadDb(windowRms(d.out[0], static_cast<size_t>(from * kRate), static_cast<size_t>(to * kRate), 480));
-  };
-  link->play(0);
-  runTo(1.6);
-  const double flat = spreadOver(0.6, 1.6);  // the first note on its sustain
-  runTo(1.8);
-  // Wire it (between two notes): one undo step, a compile (both tracks change: an export on 1, an input on 3; the
-  // wire merges their units, which start afresh: QUESTIONS Q135).
-  const app::LinkStats s0 = link->stats();
-  auto e = ops::connectTravelWire(*f.store.current(), f.store.ids(), f.lfo, "lfo", f.eq, "freq1", 0.6);
-  REQUIRE(e.ok());
-  const size_t h = f.store.history().cursor();
-  REQUIRE(f.store.dispatch(e->command).ok());
-  CHECK(f.store.history().cursor() == h + 1);
-  link->flush();
-  CHECK(link->lastError().empty());
-  CHECK(link->stats().compiles == s0.compiles + 1);
-  CHECK(link->stats().compileErrors == s0.compileErrors);
-  REQUIRE(playback_fixture::drawn(link->wireStates(), *f.store.current()).size() == 1);
-  CHECK(playback_fixture::drawn(link->wireStates(), *f.store.current())[0].status == WireStatus::Lowered);
-  runTo(3.6);
-  const double swept = spreadOver(2.6, 3.6);  // the second note (from 2 s), modulated
-  MESSAGE("10 ms RMS spread over 1 s: unwired " << flat << " dB, wired " << swept << " dB");
-  CHECK(flat < 1.0);
-  CHECK(swept > 6.0);  // the cutoff sweeps 800 Hz ± 0.6 of the knob travel at 3 Hz: plainly audible
-  // The knob ring's tap sweeps both ways while the LFO runs.
-  views::ModSweep sw;
-  const views::ModTarget tgt{f.eq, "freq1"};
-  link->readModulation(std::span(&tgt, 1), std::span(&sw, 1));
-  runTo(4.0);
-  link->readModulation(std::span(&tgt, 1), std::span(&sw, 1));
-  CHECK(sw.known);
-  CHECK(sw.up > 0.3f);
-  CHECK(sw.down > 0.3f);
-  CHECK(sw.up <= 0.6f + 1e-4f);
-  // The amount is a param: a write, no compile.
-  {
-    const app::LinkStats s1 = link->stats();
-    const WireId w = playback_fixture::drawnWires(*f.store.current()).at(0).id;
-    REQUIRE(f.store.dispatch(ops::setWireAmount(*f.store.current(), w, 0.0)->command).ok());
-    link->flush();
-    CHECK(link->stats().compiles == s1.compiles);
-    CHECK(link->stats().paramWrites == s1.paramWrites + 1);
-    CHECK(link->paramSlot("wire" + std::to_string(w.value) + ":amount") != ProjectLink::kNoSlot);
-    runTo(5.6);
-    CHECK(spreadOver(4.6, 5.6) < 1.0);  // the third note, unmodulated again
-  }
-  // Undo of the wire: a compile back to the unwired graph.
-  REQUIRE(f.store.undo());
-  REQUIRE(f.store.undo());
-  link->flush();
-  CHECK(playback_fixture::drawnWires(*f.store.current()).empty());
-  CHECK(playback_fixture::drawn(link->wireStates(), *f.store.current()).empty());
-}
-
-namespace {
-
 // Renders a graph through the per-track compile path (the interpreter, or `backend`) with fixed notes on slot 0.
 golden::Channels renderGraph(const graph::ProjectGraph& g, const std::vector<engine::ProjectParamLink>& links,
                              const std::vector<float>& values, uint32_t frames, engine::UnitBackend backend = {},
@@ -236,181 +138,214 @@ golden::Channels renderGraph(const graph::ProjectGraph& g, const std::vector<eng
   return out;
 }
 
-std::string num(double v) {
-  char b[40];
-  std::snprintf(b, sizeof b, "%.17g", v);
-  std::string s = b;
-  if (s.find_first_of(".e") == std::string::npos) s += ".0";
-  return s;
-}
+// GU.11: blocks for these cases — the LFO / Utility / Saturator modules (pq/document/modules.h) and the default
+// instrument group. A module's controls are value blocks (a wire into one targets its kValueParam); an LFO module
+// passes no audio (its Out is the wave), so it sits off the path as a modulation source.
+using module_batch::Kind;
+using module_batch::Module;
 
-// The mixer stages of lower.h for a MIDI track (constant-power pan, out / post / pre) as text, after signal `x`.
-std::string midiStages(const std::string& x) {
-  return "  param volume = 0 [-70..6]\n  param pan = 0 [-1..1]\n  param gate = 1 [0..1]\n  param sendGate = 1 [0..1]\n"
-         "  param mute = 0 [0..1]\n"
-         "  vg = volume <= -70 ? 0 : db_to_gain(volume)\n"
-         "  th = (pan + 1) * 0.78539816339744828\n  pl = sin(th + 1.5707963267948966)\n  pr = sin(th)\n"
-         "  un = mute < 0.5\n  go = un ? gate : 0\n  so = un ? sendGate : 0\n"
-         "  out = gain(" + x + ", pack(pl * (vg * go), pr * (vg * go)), 0.002)\n"
-         "  export post = gain(" + x + ", pack(pl * (vg * so), pr * (vg * so)), 0.002)\n"
-         "  export pre = gain(" + x + ", pack(pl * so, pr * so), 0.002)\n";
-}
+// Track 1: an LFO (off the path of a MIDI track without an instrument); track 2: the default instrument, idle; track 3:
+// a held note through a Utility at −30 dB (the wire's target: its Gain).
+struct ThreeTracks {
+  DocumentStore store;
+  TrackId t1, t2, t3;
+  DeviceId lfo, inst2, inst3, util, gain;
+  explicit ThreeTracks(double lfoRate = 3.0) {
+    IdSource& ids = store.ids();
+    t1 = ids.track();
+    t2 = ids.track();
+    t3 = ids.track();
+    lfo = ids.device();
+    inst2 = ids.device();
+    inst3 = ids.device();
+    util = ids.device();
+    Batch b{"three tracks", {}};
+    b.commands.push_back(AddTrack{playback_fixture::track(t1, TrackKind::Midi, "LFO"), {}, kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(t2, TrackKind::Midi, "Pad"), {}, kAppend});
+    (void)playback_fixture::instrument(b, ids, t2, inst2);
+    b.commands.push_back(AddTrack{playback_fixture::track(t3, TrackKind::Midi, "Keys"), {}, kAppend});
+    (void)playback_fixture::instrument(b, ids, t3, inst3);
+    const Module l = module_batch::push(b, ids, t1, Kind::Lfo, lfo);
+    b.commands.push_back(SetDeviceParam{l.at("Rate"), std::string(kValueParam), lfoRate});
+    const Module u = module_batch::push(b, ids, t3, Kind::Utility, util);
+    gain = u.at("Gain");
+    b.commands.push_back(SetDeviceParam{gain, std::string(kValueParam), -30.0});
+    // A note every 2 s (4 beats at 120 BPM), 1.75 s long (single notes: a chord would beat in the 10 ms windows the
+    // test measures); track 2 plays nothing.
+    std::vector<Note> notes;
+    for (int k = 0; k < 16; ++k) notes.push_back(playback_fixture::note(ids, 4 * k * kPpq, 7 * kPpq / 2, 0));
+    b.commands.push_back(AddClip{t3, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "notes")});
+    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
+    playback_fixture::wireSeries(store, {lfo});  // TX.all-free: wired in series (the LFO off the path)
+  }
+};
 
-// The modulation math of lower.h for a Log param (lo, hi) driven by `s` into `value`, with its tap (locals pk<t>, p<t>).
-// GU.1 (lower.h "Modulation wires"): a driven control by hand — its knob position `knob` + the wires' sum `s`, the
-// `curve` atom on the slot the lowering gave it (the hand graph reads the lowering's own curve slots), and the tap.
-std::string curveModulation(const std::string& t, const std::string& knob, const std::string& s, const std::string& value,
-                            const std::string& tap, uint32_t slot) {
-  const std::string p = "p" + t;
-  return "  " + p + " = " + knob + " + " + s + "\n"
-         "  " + value + " = curve(" + p + ", 1, " + std::to_string(slot) + ")\n"
-         "  export " + tap + " = pack(max(" + p + " - " + knob + ", 0), max(" + knob + " - " + p + ", 0))\n";
+// The wires a test drew (not main links, not chain links, not a module's own wiring).
+std::vector<WireState> drawn(std::span<const WireState> states, const Project& p) {
+  std::vector<WireState> out;
+  for (const WireState& s : playback_fixture::drawn(states, p))
+    if (const Wire* w = findWire(p, s.id); w != nullptr && !w->chain && !module_batch::innerWire(p, *w)) out.push_back(s);
+  return out;
 }
-uint32_t slotOf(const LoweredProject& low, DeviceId d, std::string_view param) {
-  for (const CurveSite& c : low.curves)
-    if (c.device == d && c.param == param) return c.slot;
-  FAIL("no curve site for the param");
-  return 0;
+WireList drawnWires(const Project& p) {
+  WireList out;
+  for (const Wire& w : playback_fixture::drawnWires(p))
+    if (!w.chain && !module_batch::innerWire(p, w)) out.push_back(w);
+  return out;
 }
 
 }  // namespace
 
-TEST_CASE("wires: a lowered project with wires renders exactly like the hand-built ProjectGraph; interpreter == JIT") {
-  auto lib = app::loadDeviceLibrary();
-  REQUIRE_MESSAGE(lib.ok(), (lib.ok() ? std::string() : lib.error().message));
-  // Track A: LFO (rate 5 Hz) only — its `lfo` export wired across tracks into Keys' EQ Eight freq1 (amount 0.4) and,
-  // inside Keys, BasicSynth → EQ Eight → LFO2 whose export modulates the EQ's gain2 (amount −0.3) and BasicSynth's
-  // bright (amount 0.25; voice param from a global source).
-  DocumentStore store;
-  IdSource& ids = store.ids();
-  const TrackId ta = ids.track(), keys = ids.track();
-  const DeviceId lfoA = ids.device(), inst = ids.device(), eq = ids.device(), lfoB = ids.device();
-  const WireId w1 = ids.wire(), w2 = ids.wire(), w3 = ids.wire();
-  Batch b{"wired", {}};
-  b.commands.push_back(AddTrack{playback_fixture::track(ta, TrackKind::Midi, "A"), {}, kAppend});
-  b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys", inst), {}, kAppend});
-  b.commands.push_back(AddDevice{ta, makeDevice(lfoA, "lfo_device", DeviceKind::AudioEffect), kAppend});
-  b.commands.push_back(AddDevice{keys, makeDevice(eq, "eq_eight", DeviceKind::AudioEffect), kAppend});
-  b.commands.push_back(AddDevice{keys, makeDevice(lfoB, "lfo_device", DeviceKind::AudioEffect), kAppend});
-  b.commands.push_back(SetDeviceParam{lfoA, "rate", 5.0});
-  b.commands.push_back(SetDeviceParam{lfoB, "rate", 0.7});
-  b.commands.push_back(SetDeviceSetting{lfoB, "shape", 1.0});  // triangle
-  b.commands.push_back(SetDeviceSetting{eq, "on1", 1.0});
-  b.commands.push_back(SetDeviceSetting{eq, "type1", 6.0});
-  b.commands.push_back(SetDeviceParam{eq, "freq1", 900.0});
-  b.commands.push_back(SetDeviceParam{eq, "gain2", 2.0});  // +6 dB at 100 Hz (a linear gain)
-  b.commands.push_back(AddWire{Wire{w1, lfoA, "lfo", eq, "freq1", 0.4, WireReducer::Sum, {}, WireLaw::Travel}});
-  b.commands.push_back(AddWire{Wire{w2, lfoB, "lfo", eq, "gain2", -0.3, WireReducer::Sum, {}, WireLaw::Travel}});
-  b.commands.push_back(AddWire{Wire{w3, lfoB, "lfo", inst, "bright", 0.25, WireReducer::Sum, {}, WireLaw::Travel}});
-  REQUIRE(store.dispatch(knob_positions::knobPositions(*store.current(), b, **lib)).ok());  // GU.1: values → positions
-  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
-  LowerOptions lo;
-  lo.library = &(*lib)->library();
-  lo.slotOf = [](TrackId) { return 0u; };
-  auto low = lower(*store.current(), lo);
-  REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
-  REQUIRE(playback_fixture::drawn(low->wires, *store.current()).size() == 3);
-  for (const WireState& s : low->wires) CHECK(s.status == WireStatus::Lowered);  // LFO2 after the EQ: no loop
-  CHECK(low->taps.size() == 3);
+TEST_CASE("wires: an LFO on track 1 wired into a gain on track 3 is audible after the compile, one undo step") {
+  ThreeTracks f;
+  auto link = makeLink(f.store.current());
+  [[maybe_unused]] const ListenerId sub = f.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  Driver d{*link};
+  auto runTo = [&](double seconds) { d.run(static_cast<uint32_t>((seconds * kRate - static_cast<double>(d.time)) / kBlock)); };
+  auto spreadOver = [&](double from, double to) {
+    return spreadDb(windowRms(d.out[0], static_cast<size_t>(from * kRate), static_cast<size_t>(to * kRate), 480));
+  };
+  link->play(0);
+  runTo(1.6);
+  const double flat = spreadOver(0.6, 1.6);  // the first note on its sustain
+  runTo(1.8);
+  // Wire it (between two notes): one undo step, a compile (both tracks change: an output on 1, an input on 3; the wire
+  // merges their units, which start afresh: QUESTIONS Q135).
+  const app::LinkStats s0 = link->stats();
+  auto e = ops::connectTravelWire(*f.store.current(), f.store.ids(), f.lfo, "y", f.gain, std::string(kValueParam), 0.6);
+  REQUIRE(e.ok());
+  const size_t h = f.store.history().cursor();
+  REQUIRE(f.store.dispatch(e->command).ok());
+  CHECK(f.store.history().cursor() == h + 1);
+  link->flush();
+  CHECK(link->lastError().empty());
+  CHECK(link->stats().compiles == s0.compiles + 1);
+  CHECK(link->stats().compileErrors == s0.compileErrors);
+  REQUIRE(drawn(link->wireStates(), *f.store.current()).size() == 1);
+  CHECK(drawn(link->wireStates(), *f.store.current())[0].status == WireStatus::Lowered);
+  runTo(3.6);
+  const double swept = spreadOver(2.6, 3.6);  // the second note (from 2 s), modulated
+  MESSAGE("10 ms RMS spread over 1 s: unwired " << flat << " dB, wired " << swept << " dB");
+  CHECK(flat < 1.0);
+  CHECK(swept > 6.0);  // the gain sweeps −30 dB ± 0.6 of the knob travel at 3 Hz: plainly audible
+  // The knob ring's tap sweeps both ways while the LFO runs.
+  views::ModSweep sw;
+  const views::ModTarget tgt{f.gain, std::string(kValueParam)};
+  link->readModulation(std::span(&tgt, 1), std::span(&sw, 1));
+  runTo(4.0);
+  link->readModulation(std::span(&tgt, 1), std::span(&sw, 1));
+  CHECK(sw.known);
+  CHECK(sw.up > 0.3f);
+  CHECK(sw.down > 0.3f);
+  CHECK(sw.up <= 0.6f + 1e-4f);
+  // The amount is a param: a write, no compile.
+  {
+    const app::LinkStats s1 = link->stats();
+    const WireId w = drawnWires(*f.store.current()).at(0).id;
+    REQUIRE(f.store.dispatch(ops::setWireAmount(*f.store.current(), w, 0.0)->command).ok());
+    link->flush();
+    CHECK(link->stats().compiles == s1.compiles);
+    CHECK(link->stats().paramWrites == s1.paramWrites + 1);
+    CHECK(link->paramSlot("wire" + std::to_string(w.value) + ":amount") != ProjectLink::kNoSlot);
+    runTo(5.6);
+    CHECK(spreadOver(4.6, 5.6) < 1.0);  // the third note, unmodulated again
+  }
+  // Undo of the wire: a compile back to the unwired graph.
+  REQUIRE(f.store.undo());
+  REQUIRE(f.store.undo());
+  link->flush();
+  CHECK(drawnWires(*f.store.current()).empty());
+  CHECK(drawn(link->wireStates(), *f.store.current()).empty());
+}
+
+namespace {
+
+// The lowered project's render (interpreter, or `backend`) with fixed notes on slot 0.
+golden::Channels renderLowered(const LoweredProject& low, uint32_t frames, engine::UnitBackend backend = {},
+                               std::vector<std::string>* warnings = nullptr) {
   std::vector<engine::ProjectParamLink> links;
   std::vector<float> values;
-  for (const LoweredParam& p : low->params) {
+  for (const LoweredParam& p : low.params) {
     links.push_back({p.track, p.name, static_cast<uint32_t>(values.size())});
     values.push_back(p.value);
   }
-  constexpr uint32_t kFrames = 48000;
-  std::vector<std::string> warnings;
-  const golden::Channels lowered = renderGraph(low->graph, links, values, kFrames, {}, &warnings);
-  CHECK(warnings.empty());  // no implicit z1 anywhere: the lowering left no delay-free cycle to the scheduler
+  return renderGraph(low.graph, links, values, frames, backend, warnings);
+}
 
-  // The same written by hand (lower.h: the chains, the mixer stages, the modulation math).
-  const auto i = [](auto id) { return std::to_string(id.value); };
-  // GU.1: the knobs are positions (each driven one's value is its `curve` atom on the lowering's slot).
-  const Device& eqd = *findDevice(*store.current(), eq).device;
-  const Device& instd = *findDevice(*store.current(), inst).device;
-  const double f1 = eqd.param("freq1")->value, g2 = eqd.param("gain2")->value;
-  const double bright = instd.param("bright") != nullptr ? instd.param("bright")->value : 0.35;
-  std::string text = "patch A {\n  param rate = 5\n  out out : audio global stereo\n"
-                     "  l = lfo_device(pack(0, 0), rate: rate)\n"
-                     "  export m" + i(w1) + " = channel(l.lfo, 0)\n" + midiStages("l.out") + "}\n";
-  text += "patch Keys {\n  param bright = " + num(bright) + " [0..1]\n  param f1 = " + num(f1) + " [0..1]\n  param g2 = " +
-          num(g2) + " [0..1]\n  param brate = 0.7\n  param w" + i(w1) + " = 0.4 [-1..1]\n  param w" + i(w2) +
-          " = -0.3 [-1..1]\n  param w" + i(w3) + " = 0.25 [-1..1]\n  in m" + i(w1) + " : real global mono = 0\n"
-          "  out out : audio global stereo\n  out done : bool voice mono\n"
-          "  s = BasicSynth(bright: bv)\n  x = voice_sum(s.out)\n"
-          "  e = eq_eight(pack(x, x), on1: 1, type1: 6, freq1: fv, gain2: gv)\n"
-          // IG.1-2: a signal from outside the voice context is broadcast: one LFO for every voice (shared)
-          "  b = lfo_device(e.out, shape: 1, rate: brate)\n  src = shared(channel(b.lfo, 0))\n"
-          "  done = s.done\n";
-  // freq1 ← m (wire 1); gain2 ← src (wire 2); bright ← src (wire 3; Linear 0..1)
-  text += curveModulation("a", "f1", "w" + i(w1) + " * m" + i(w1), "fv", "tap_d" + i(eq) + "_freq1", slotOf(*low, eq, "freq1"));
-  text += curveModulation("b", "g2", "w" + i(w2) + " * src", "gv", "tap_d" + i(eq) + "_gain2", slotOf(*low, eq, "gain2"));
-  text += curveModulation("c", "bright", "w" + i(w3) + " * src", "bv", "tap_d" + i(inst) + "_bright", slotOf(*low, inst, "bright"));
-  text += midiStages("b.out") + "}\n";
-  text += "patch Main {\n  param volume = 0 [-70..6]\n  param pan = 0 [-1..1]\n  in in : audio global stereo\n"
-          "  out out : audio global stereo\n  vg = volume <= -70 ? 0 : db_to_gain(volume)\n"
-          "  out = gain(in, pack(min(1, 1 - pan) * vg, min(1, 1 + pan) * vg), 0.002)\n}\n";
-  graph::ParseOptions po;
-  po.externals = (*lib)->signatures();
-  auto file = graph::parse(text, "hand.pqp", po);
-  REQUIRE_MESSAGE(file.ok(), (file.ok() ? std::string() : file.error().message + "\n" + text));
-  graph::PatchLibrary handLib;
-  handLib.add(*file);
-  handLib.addAll((*lib)->library());
-  graph::ProjectGraph hand;
-  hand.library = &handLib;
-  hand.curveSlots = low->graph.curveSlots;  // GU.1: the lowering's own curve slots
-  hand.curveOwner = low->graph.curveOwner;
-  hand.tracks.push_back({ta.value, "A", file->find("A"), graph::TrackRole::Audio, graph::kNone});
-  hand.tracks.push_back({keys.value, "Keys", file->find("Keys"), graph::TrackRole::Instrument, 0});
-  hand.tracks.push_back({store.current()->master->id.value, "Main", file->find("Main"), graph::TrackRole::Master, graph::kNone});
-  hand.wires.push_back({{0, "out"}, {2, "in"}, graph::WireKind::Audio});
-  hand.wires.push_back({{1, "out"}, {2, "in"}, graph::WireKind::Audio});
-  hand.wires.push_back({{0, "m" + i(w1)}, {1, "m" + i(w1)}, graph::WireKind::Modulation});
-  hand.output = {2, "out"};
-  // The hand params: the same values as the lowered ones (by meaning).
-  std::vector<engine::ProjectParamLink> handLinks;
-  std::vector<float> handValues;
-  auto link = [&](uint32_t track, const std::string& name, float v) {
-    handLinks.push_back({track, name, static_cast<uint32_t>(handValues.size())});
-    handValues.push_back(v);
+const DeviceLibrary& library() {
+  static auto lib = app::loadDeviceLibrary();
+  REQUIRE_MESSAGE(lib.ok(), (lib.ok() ? std::string() : lib.error().message));
+  return **lib;
+}
+
+LoweredProject lowered(const Project& p) {
+  LowerOptions lo;
+  lo.library = &library().library();
+  lo.devices = &library();
+  lo.slotOf = [](TrackId) { return 0u; };
+  auto low = lower(p, lo);
+  REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
+  return std::move(*low);
+}
+
+}  // namespace
+
+TEST_CASE("wires: a cross-track wire renders exactly like the same wire on one track; a global source into a voice "
+          "control; interpreter == JIT") {
+  // GU.11 (no stock patches to hand-build the graph from): Track A: an LFO (5 Hz) wired across tracks into Keys'
+  // Utility Gain (amount 0.4) and, inside Keys, a free LFO 2 (0.7 Hz, triangle) into the Utility's Balance (amount −0.3)
+  // and the instrument's Pitch (amount 0.25; a voice control from a global source: one LFO for every voice). Its second
+  // form: the first LFO on Keys itself (the same wires within one track) — the same math per sample: bit for bit.
+  auto build = [](bool crossTrack) {
+    DocumentStore store;
+    IdSource& ids = store.ids();
+    const TrackId ta = ids.track(), keys = ids.track();
+    const DeviceId lfoA = ids.device(), inst = ids.device(), util = ids.device(), lfoB = ids.device();
+    Batch b{"wired", {}};
+    b.commands.push_back(AddTrack{playback_fixture::track(ta, TrackKind::Midi, "A"), {}, kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(keys, TrackKind::Midi, "Keys"), {}, kAppend});
+    (void)playback_fixture::instrument(b, ids, keys, inst);
+    const Module la = module_batch::push(b, ids, crossTrack ? ta : keys, Kind::Lfo, lfoA);
+    const Module u = module_batch::push(b, ids, keys, Kind::Utility, util);
+    const Module lb = module_batch::push(b, ids, keys, Kind::Lfo, lfoB);
+    b.commands.push_back(SetDeviceParam{la.at("Rate"), std::string(kValueParam), 5.0});
+    b.commands.push_back(SetDeviceParam{lb.at("Rate"), std::string(kValueParam), 0.7});
+    b.commands.push_back(SetDeviceParam{lb.at("Shape"), std::string(kValueParam), 2.0});  // triangle
+    b.commands.push_back(SetDeviceParam{u.at("Gain"), std::string(kValueParam), -6.0});
+    REQUIRE(store.dispatch(knob_positions::knobPositions(*store.current(), b, library())).ok());  // GU.1: values → positions
+    playback_fixture::wireSeries(store, {lfoA, lfoB});  // TX.all-free: wired in series (the LFOs off the paths)
+    const DeviceId pitch = test_blocks::member(*store.current(), inst, kPaPitch);
+    REQUIRE(pitch.valid());
+    Batch w{"wires", {}};
+    w.commands.push_back(AddWire{Wire{ids.wire(), lfoA, "y", u.at("Gain"), std::string(kValueParam), 0.4, WireReducer::Sum, {}, WireLaw::Travel}});
+    w.commands.push_back(AddWire{Wire{ids.wire(), lfoB, "y", u.at("Balance"), std::string(kValueParam), -0.3, WireReducer::Sum, {}, WireLaw::Travel}});
+    w.commands.push_back(AddWire{Wire{ids.wire(), lfoB, "y", pitch, std::string(kValueParam), 0.25, WireReducer::Sum, {}, WireLaw::Travel}});
+    REQUIRE(store.dispatch(w).ok());
+    LoweredProject low = lowered(*store.current());
+    REQUIRE(drawn(low.wires, *store.current()).size() == 3);
+    for (const WireState& s : low.wires) CHECK(s.status == WireStatus::Lowered);  // no loop
+    CHECK(low.taps.size() == 3);
+    return low;
   };
-  link(0, "rate", 5.0f);
-  link(1, "bright", static_cast<float>(bright));
-  link(1, "f1", static_cast<float>(f1));
-  link(1, "g2", static_cast<float>(g2));
-  link(1, "brate", 0.7f);
-  link(1, "w" + i(w1), 0.4f);
-  link(1, "w" + i(w2), -0.3f);
-  link(1, "w" + i(w3), 0.25f);
-  for (uint32_t t : {0u, 1u}) {
-    link(t, "volume", 0.0f);
-    link(t, "pan", 0.0f);
-    link(t, "gate", 1.0f);
-    link(t, "sendGate", 1.0f);
-    link(t, "mute", 0.0f);
-  }
-  link(2, "volume", 0.0f);
-  link(2, "pan", 0.0f);
-  const golden::Channels manual = renderGraph(hand, handLinks, handValues, kFrames);
+  constexpr uint32_t kFrames = 48000;
+  const LoweredProject cross = build(true), one = build(false);
+  std::vector<std::string> warnings;
+  const golden::Channels a = renderLowered(cross, kFrames, {}, &warnings);
+  CHECK(warnings.empty());  // no implicit z1 anywhere: the lowering left no delay-free cycle to the scheduler
   float peak = 0.0f;
-  for (const auto& c : manual)
+  for (const auto& c : a)
     for (float v : c) peak = std::max(peak, std::fabs(v));
   CHECK(peak > 0.02f);
-  const double diff = maxDiff(lowered, manual);
-  MESSAGE("lowered wires vs hand-built graph: max |diff| = " << diff);
+  const double diff = maxDiff(a, renderLowered(one, kFrames));
+  MESSAGE("cross-track wire vs the same wire on one track: max |diff| = " << diff);
   CHECK(diff == 0.0);
-
   // The JIT renders the lowered project bit for bit like the interpreter.
-  const golden::Channels jit = renderGraph(low->graph, links, values, kFrames, compile::jitUnitBackend());
-  const double dj = maxDiff(lowered, jit);
+  const double dj = maxDiff(a, renderLowered(cross, kFrames, compile::jitUnitBackend()));
   MESSAGE("interpreter vs JIT: max |diff| = " << dj);
   CHECK(dj == 0.0);
 }
 
 TEST_CASE("wires: a wire that closes a delay-free loop gets a 1-sample delay; an LFO's own loop does not") {
-  auto lib = app::loadDeviceLibrary();
-  REQUIRE(lib.ok());
   DocumentStore store;
   IdSource& ids = store.ids();
   const TrackId t = ids.track(), grp = ids.track(), other = ids.track();
@@ -418,29 +353,34 @@ TEST_CASE("wires: a wire that closes a delay-free loop gets a 1-sample delay; an
                  inst2 = ids.device(), lfo2 = ids.device();
   Batch b{"loops", {}};
   b.commands.push_back(AddTrack{playback_fixture::track(grp, TrackKind::Group, "Grp"), {}, kAppend});
-  b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "Keys", inst), grp, kAppend});
-  b.commands.push_back(AddTrack{playback_fixture::track(other, TrackKind::Midi, "Other", inst2), {}, kAppend});
-  b.commands.push_back(AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
-  b.commands.push_back(AddDevice{t, makeDevice(sat, "saturator", DeviceKind::AudioEffect), kAppend});
-  b.commands.push_back(AddDevice{t, makeDevice(lfo, "lfo_device", DeviceKind::AudioEffect), kAppend});
-  b.commands.push_back(AddDevice{grp, makeDevice(glfo, "lfo_device", DeviceKind::AudioEffect), kAppend});
-  b.commands.push_back(AddDevice{other, makeDevice(lfo2, "lfo_device", DeviceKind::AudioEffect), kAppend});
-  const WireId wLoop = ids.wire(), wSelf = ids.wire(), wBack = ids.wire(), wFeed = ids.wire(), wGroup = ids.wire();
-  // saturator.wet depends on utility's output: wet → utility.gain closes a loop (delayed).
-  b.commands.push_back(AddWire{Wire{wLoop, sat, "wet", util, "gain", 0.2, WireReducer::Sum, {}, WireLaw::Travel}});
-  // the LFO's export reads its rate through the phasor's frequency, which the scheduler cannot split a loop at
-  // (PATCH_LANGUAGE §3, Q43): a loop, delayed like any other.
-  b.commands.push_back(AddWire{Wire{wSelf, lfo, "lfo", lfo, "rate", 0.1, WireReducer::Sum, {}, WireLaw::Travel}});
-  // the LFO (last in the chain) into the first effect: its export does not depend on its audio input: not a loop.
-  b.commands.push_back(AddWire{Wire{wBack, lfo, "lfo", util, "width", 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
-  // across tracks: the saturator's wet into the group LFO's depth (Keys plays into the group: no loop yet); then the
-  // group LFO into the saturator's drive closes Keys' saturator → group LFO → saturator (delayed; one instrument in
-  // the track cycle, so the partition merges Keys and the group into one unit).
-  b.commands.push_back(AddWire{Wire{wFeed, sat, "wet", glfo, "depth", 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
-  b.commands.push_back(AddWire{Wire{wGroup, glfo, "lfo", sat, "drive", 0.3, WireReducer::Sum, {}, WireLaw::Travel}});
+  b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "Keys"), grp, kAppend});
+  (void)playback_fixture::instrument(b, ids, t, inst);
+  b.commands.push_back(AddTrack{playback_fixture::track(other, TrackKind::Midi, "Other"), {}, kAppend});
+  (void)playback_fixture::instrument(b, ids, other, inst2);
+  const Module u = module_batch::push(b, ids, t, Kind::Utility, util);
+  const Module s = module_batch::push(b, ids, t, Kind::Saturator, sat);
+  const Module l = module_batch::push(b, ids, t, Kind::Lfo, lfo);
+  const Module gl = module_batch::push(b, ids, grp, Kind::Lfo, glfo);
+  (void)module_batch::push(b, ids, other, Kind::Lfo, lfo2);
   REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
-  playback_fixture::wireSeries(store);  // TX.all-free: wired in series
-  const std::vector<WireState> st = playback_fixture::drawn(wireStates(*store.current(), (*lib)->library()), *store.current());
+  playback_fixture::wireSeries(store, {lfo, glfo, lfo2});  // TX.all-free: wired in series (the LFOs off the paths)
+  const WireId wLoop = ids.wire(), wSelf = ids.wire(), wBack = ids.wire(), wFeed = ids.wire(), wGroup = ids.wire();
+  const std::string v(kValueParam);
+  Batch w{"wires", {}};
+  // the Saturator's output depends on the Utility's: Saturator → Utility.Gain closes a loop (delayed).
+  w.commands.push_back(AddWire{Wire{wLoop, sat, "y", u.at("Gain"), v, 0.2, WireReducer::Sum, {}, WireLaw::Travel}});
+  // the LFO's output reads its rate through the phasor's frequency, which the scheduler cannot split a loop at
+  // (PATCH_LANGUAGE §3, Q43): a loop, delayed like any other.
+  w.commands.push_back(AddWire{Wire{wSelf, lfo, "y", l.at("Rate"), v, 0.1, WireReducer::Sum, {}, WireLaw::Travel}});
+  // the LFO into the first effect: its output does not depend on the audio: not a loop.
+  w.commands.push_back(AddWire{Wire{wBack, lfo, "y", u.at("Width"), v, 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
+  // across tracks: the Saturator's output into the group LFO's depth (Keys plays into the group: no loop yet); then the
+  // group LFO into the Saturator's drive closes Keys' Saturator → group LFO → Saturator (delayed; one instrument in the
+  // track cycle, so the partition merges Keys and the group into one unit).
+  w.commands.push_back(AddWire{Wire{wFeed, sat, "y", gl.at("Depth"), v, 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
+  w.commands.push_back(AddWire{Wire{wGroup, glfo, "y", s.at("Drive"), v, 0.3, WireReducer::Sum, {}, WireLaw::Travel}});
+  REQUIRE(store.dispatch(w).ok());
+  const std::vector<WireState> st = drawn(wireStates(*store.current(), library()), *store.current());
   REQUIRE(st.size() == 5);
   CHECK(st[0] == WireState{wLoop, WireStatus::Delayed});
   CHECK(st[1] == WireState{wSelf, WireStatus::Delayed});
@@ -457,75 +397,58 @@ TEST_CASE("wires: a wire that closes a delay-free loop gets a 1-sample delay; an
   d.run(200);
   // A loop through two instrument tracks is refused (the engine runs one voice table per image, Q84).
   const WireId wa = ids.wire(), wb = ids.wire();
-  REQUIRE(store.dispatch(Batch{"cross", {AddWire{Wire{wa, lfo, "lfo", inst2, "bright", 0.2, WireReducer::Sum, {}, WireLaw::Travel}},
-                                         AddWire{Wire{wb, lfo2, "lfo", inst, "bright", 0.2, WireReducer::Sum, {}, WireLaw::Travel}}}})
+  const DeviceId pitch = test_blocks::member(*store.current(), inst, kPaPitch);
+  const DeviceId pitch2 = test_blocks::member(*store.current(), inst2, kPaPitch);
+  REQUIRE(store.dispatch(Batch{"cross", {AddWire{Wire{wa, lfo, "y", pitch2, v, 0.2, WireReducer::Sum, {}, WireLaw::Travel}},
+                                         AddWire{Wire{wb, lfo2, "y", pitch, v, 0.2, WireReducer::Sum, {}, WireLaw::Travel}}}})
               .ok());
-  const std::vector<WireState> st2 = playback_fixture::drawn(wireStates(*store.current(), (*lib)->library()), *store.current());
+  const std::vector<WireState> st2 = drawn(wireStates(*store.current(), library()), *store.current());
   REQUIRE(st2.size() == 7);
   CHECK(st2[5] == WireState{wa, WireStatus::Lowered});
   CHECK(st2[6] == WireState{wb, WireStatus::Refused, WireRefusal::VoiceLoop});
-  // Deactivating a device leaves its wires out (inactive), and the project still compiles.
+  // Deactivating a block leaves its wires out (inactive), and the project still compiles.
   REQUIRE(store.dispatch(SetDeviceActive{sat, false}).ok());
-  const std::vector<WireState> st3 = playback_fixture::drawn(wireStates(*store.current(), (*lib)->library()), *store.current());
+  const std::vector<WireState> st3 = drawn(wireStates(*store.current(), library()), *store.current());
   CHECK(st3[0].status == WireStatus::Inactive);
-  CHECK(st3[4].status == WireStatus::Inactive);
+  // GU.11: a wire into a control INSIDE the switched-off module (its Drive value block, itself on) still reads as
+  // lowered (reported: the status does not look at the enclosing group's activator); the loop it closed is gone, so no
+  // delay.
+  CHECK(st3[4].status != WireStatus::Delayed);
   auto link2 = makeLink(store.current());
   CHECK(link2->lastError().empty());
 }
 
 TEST_CASE("wires: a voice source into a global target is reduced by the wire's reducer") {
-  auto lib = app::loadDeviceLibrary();
-  REQUIRE(lib.ok());
-  // BasicSynth exports nothing: a probe instrument with a per-voice export (its velocity) stands in for Operator's
-  // oscillator exports (T4.12).
-  graph::ParseOptions po;
-  po.externals = (*lib)->signatures();
-  auto probe = graph::parse(R"(
-patch Probe {
-  out out : audio voice mono
-  out done : bool voice mono
-  out = 0.1 * sine(phasor(voice.hz))
-  done = !voice.gate
-  export vel = voice.velocity
-}
-)", "probe.pqp", po);
-  REQUIRE_MESSAGE(probe.ok(), (probe.ok() ? std::string() : probe.error().message));
-  graph::PatchLibrary plib;
-  plib.add(*probe);
-  plib.addAll((*lib)->library());
+  // A probe instrument group (Out = voice.hz) holding a per-voice `voice.velocity` atom, wired into a Utility's Balance
+  // after the group: the voices' velocities reduced by the wire's reducer.
   auto render = [&](WireReducer reducer, bool* reducerFound) {
     DocumentStore store;
     IdSource& ids = store.ids();
     const TrackId t = ids.track();
-    const DeviceId inst = ids.device(), util = ids.device();
-    Batch b{"probe", {}};
-    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend});
-    b.commands.push_back(AddDevice{t, makeDevice(inst, "Probe", DeviceKind::Instrument), 0});
-    b.commands.push_back(AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
-    b.commands.push_back(AddWire{Wire{ids.wire(), inst, "vel", util, "balance", 0.8, reducer, {}, WireLaw::Travel}});
-    REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
-    playback_fixture::wireSeries(store);  // TX.all-free: wired in series
-    LowerOptions lo;
-    lo.library = &plib;
-    lo.slotOf = [](TrackId) { return 0u; };
-    auto low = lower(*store.current(), lo);
-    REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
-    REQUIRE(playback_fixture::drawn(low->wires, *store.current()).size() == 1);
-    CHECK(playback_fixture::drawn(low->wires, *store.current())[0].status == WireStatus::Lowered);
-    const graph::Patch& tp = low->patches[0]->patch;
+    REQUIRE(store.dispatch(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend}).ok());
+    const DeviceId inst = test_blocks::addProbeInstrument(store, t);
+    const DeviceId vel = ids.device();
+    auto a = std::make_shared<Device>(*makeDevice(vel, std::string(kAtomDevicePrefix) + "voice.velocity", DeviceKind::AudioEffect));
+    a->group = inst;
+    REQUIRE(store.dispatch(AddDevice{t, a, kAppend}).ok());
+    const DeviceId util = test_blocks::appendAfter(store, t, "module:utility");
+    const DeviceId balance = test_blocks::member(*store.current(), util, "Balance");
+    const WireId wid = ids.wire();
+    REQUIRE(store.dispatch(AddWire{Wire{wid, vel, "out", balance, std::string(kValueParam), 0.8, reducer, {}, WireLaw::Travel}}).ok());
+    const LoweredProject low = lowered(*store.current());
+    const WireState* ws = nullptr;
+    for (const WireState& s : low.wires)
+      if (s.id == wid) ws = &s;
+    REQUIRE(ws != nullptr);
+    CHECK(ws->status == WireStatus::Lowered);
+    const graph::Patch& tp = low.patches[0]->patch;
     const std::string_view want = reducer == WireReducer::Last ? "voice_last" : "voice_sum";
     *reducerFound = false;
     for (graph::NodeIndex n = 0; n < tp.nodeCount(); ++n)
       if (tp.node(n).kind == graph::NodeKind::Atom && graph::atomSignature(tp.node(n).atom).name == want &&
-          tp.node(n).id.value == nodeIdFor(NodeRole::Wire, playback_fixture::drawnWires(*store.current())[0].id.value, 4))
+          tp.node(n).id.value == nodeIdFor(NodeRole::Wire, wid.value, 4))
         *reducerFound = true;
-    std::vector<engine::ProjectParamLink> links;
-    std::vector<float> values;
-    for (const LoweredParam& p : low->params) {
-      links.push_back({p.track, p.name, static_cast<uint32_t>(values.size())});
-      values.push_back(p.value);
-    }
-    return renderGraph(low->graph, links, values, 24000);
+    return renderLowered(low, 24000);
   };
   bool sumFound = false, lastFound = false;
   const golden::Channels sum = render(WireReducer::Sum, &sumFound);
@@ -536,25 +459,25 @@ patch Probe {
   CHECK(maxDiff(sum, last) > 1e-3);
 }
 
-TEST_CASE("wires: deleting a device deletes its wires, in one undo step") {
-  auto lib = app::loadDeviceLibrary();
-  REQUIRE(lib.ok());
+TEST_CASE("wires: deleting a block deletes its wires, in one undo step") {
   DocumentStore store;
   IdSource& ids = store.ids();
   const TrackId t = ids.track();
   const DeviceId lfo = ids.device(), util = ids.device();
-  REQUIRE(store.dispatch(Batch{"t", {AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend},
-                                     AddDevice{t, makeDevice(lfo, "lfo_device", DeviceKind::AudioEffect), kAppend},
-                                     AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend}}})
-              .ok());
-  auto e = ops::connectTravelWire(*store.current(), ids, lfo, "lfo", util, "balance", 1.0);
+  Batch b{"t", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend});
+  (void)module_batch::push(b, ids, t, Kind::Lfo, lfo);
+  const Module u = module_batch::push(b, ids, t, Kind::Utility, util);
+  REQUIRE(store.dispatch(b).ok());
+  const std::string v(kValueParam);
+  auto e = ops::connectTravelWire(*store.current(), ids, lfo, "y", u.at("Balance"), v, 1.0);
   REQUIRE(e.ok());
   REQUIRE(store.dispatch(e->command).ok());
-  CHECK_FALSE(ops::connectTravelWire(*store.current(), ids, lfo, "lfo", util, "balance").ok());  // already wired
+  CHECK_FALSE(ops::connectTravelWire(*store.current(), ids, lfo, "y", u.at("Balance"), v).ok());  // already wired
   REQUIRE(store.dispatch(ops::deleteDevices(*store.current(), std::vector<DeviceId>{lfo})->command).ok());
-  CHECK(playback_fixture::drawnWires(*store.current()).empty());
+  CHECK(drawnWires(*store.current()).empty());
   REQUIRE(store.undo());
-  CHECK(playback_fixture::drawnWires(*store.current()).size() == 1);  // one undo step restores the device and its wire
+  CHECK(drawnWires(*store.current()).size() == 1);  // one undo step restores the block and its wire
 }
 
 // T1.x-silence: a modulation source on another track keeps the target's unit running (and its ring moving) while it is
@@ -565,23 +488,26 @@ TEST_CASE("wires: a cross-track modulation keeps the target unit awake while it 
   const TrackId a = ids.track(), bt = ids.track();
   const DeviceId instA = ids.device(), utilA = ids.device(), instB = ids.device(), utilB = ids.device();
   Batch b{"two", {}};
-  b.commands.push_back(AddTrack{playback_fixture::track(a, TrackKind::Midi, "Src", instA), {}, kAppend});
-  b.commands.push_back(AddTrack{playback_fixture::track(bt, TrackKind::Midi, "Dst", instB), {}, kAppend});
-  b.commands.push_back(AddDevice{a, makeDevice(utilA, "utility", DeviceKind::AudioEffect), kAppend});
-  b.commands.push_back(AddDevice{bt, makeDevice(utilB, "utility", DeviceKind::AudioEffect), kAppend});
+  b.commands.push_back(AddTrack{playback_fixture::track(a, TrackKind::Midi, "Src"), {}, kAppend});
+  (void)playback_fixture::instrument(b, ids, a, instA);
+  b.commands.push_back(AddTrack{playback_fixture::track(bt, TrackKind::Midi, "Dst"), {}, kAppend});
+  (void)playback_fixture::instrument(b, ids, bt, instB);
+  (void)module_batch::push(b, ids, a, Kind::Utility, utilA);
+  const Module ub = module_batch::push(b, ids, bt, Kind::Utility, utilB);
   // Src plays a note 2.0–2.5 s; Dst never plays (two instruments: the wire stays a bus between their units, Q84).
   b.commands.push_back(AddClip{a, playback_fixture::clip(ids, 0, 16 * kPpq, {playback_fixture::note(ids, 4 * kPpq, kPpq, 0)}, "n")});
-  b.commands.push_back(AddWire{Wire{ids.wire(), utilA, "mid", utilB, "width", 0.5, WireReducer::Sum, {}, WireLaw::Travel}});
   REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
   playback_fixture::wireSeries(store);  // TX.all-free: wired in series
+  // Src's Utility output (its left channel) into Dst's Utility Balance.
+  REQUIRE(store.dispatch(AddWire{Wire{ids.wire(), utilA, "y", ub.at("Balance"), std::string(kValueParam), 0.5, WireReducer::Sum, {}, WireLaw::Travel}}).ok());
   auto link = makeLink(store.current());
   REQUIRE(link->lastError().empty());
-  REQUIRE(playback_fixture::drawn(link->wireStates(), *store.current()).size() == 1);
-  CHECK(playback_fixture::drawn(link->wireStates(), *store.current())[0].status == WireStatus::Lowered);
+  REQUIRE(drawn(link->wireStates(), *store.current()).size() == 1);
+  CHECK(drawn(link->wireStates(), *store.current())[0].status == WireStatus::Lowered);
   Driver d{*link};
   engine::ProjectProgram& program = *link->engine().program();
   REQUIRE(program.numUnits() >= 3);
-  const views::ModTarget tgt{utilB, "width"};
+  const views::ModTarget tgt{ub.at("Balance"), std::string(kValueParam)};
   views::ModSweep sw;
   link->play(0);
   d.run(static_cast<uint32_t>(1.5 * kRate / kBlock));  // silence: nothing modulates
@@ -598,50 +524,40 @@ TEST_CASE("wires: a cross-track modulation keeps the target unit awake while it 
   // Not asserted: the modulated value (knob ± modulation) is not 0 at silence, so the region computing it is not
   // sleepable (Q130.3: no rate demotion while a modulator is silent): a wired target stays awake. QUESTIONS
   // Q135 item 7 records the cost and the follow-up.
-  d.run(static_cast<uint32_t>(0.4 * kRate / kBlock));  // the note: Src's mid moves Dst's width
+  d.run(static_cast<uint32_t>(0.4 * kRate / kBlock));  // the note: Src's output moves Dst's Balance
   link->readModulation(std::span(&tgt, 1), std::span(&sw, 1));
   CHECK(sw.up + sw.down > 1e-3f);
 }
 
 // TMM.10-fix2 (SPEC §15 2026-11-01 "the note source is a Hz piano roll"): wires from a MIDI track's note source. Its
-// velocity into the instrument's brightness is per voice (each of three notes of velocities 0.8 / 0.6 / 0.9 brighter
-// by its own); into a stock effect's param (Utility's balance) through the wire's reducer (sum vs last differ). Every
-// block runs under the allocation trap (renderGraph); the JIT renders it bit for bit like the interpreter.
+// velocity into the instrument's Pitch is per voice (each of three notes of velocities 0.8 / 0.6 / 0.9 detuned by its
+// own); into an effect's control (Utility's Balance) through the wire's reducer (sum vs last differ). Every block runs
+// under the allocation trap (renderGraph); the JIT renders it bit for bit like the interpreter.
 TEST_CASE("wires (TMM.10-fix2): the note source's outputs wired per voice and through a reducer; interpreter == JIT") {
-  auto lib = app::loadDeviceLibrary();
-  REQUIRE(lib.ok());
   auto render = [&](bool velocityWire, WireReducer reducer, engine::UnitBackend backend, std::vector<WireStatus>* states) {
     DocumentStore store;
     IdSource& ids = store.ids();
     const TrackId t = ids.track();
     const DeviceId inst = ids.device(), util = ids.device();
     Batch b{"notes", {}};
-    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T", inst), {}, kAppend});
-    b.commands.push_back(AddDevice{t, makeDevice(util, "utility", DeviceKind::AudioEffect), kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend});
+    (void)playback_fixture::instrument(b, ids, t, inst);
+    const Module u = module_batch::push(b, ids, t, Kind::Utility, util);
     REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     if (velocityWire) {
-      auto e = ops::connectTravelNoteWire(*store.current(), ids, t, "velocity", inst, "bright", 0.6);
+      auto e = ops::connectTravelNoteWire(*store.current(), ids, t, "velocity", test_blocks::member(*store.current(), inst, kPaPitch),
+                                          std::string(kValueParam), 0.6);
       REQUIRE(e.ok());
       REQUIRE(store.dispatch(e->command).ok());
     }
-    auto e = ops::connectTravelNoteWire(*store.current(), ids, t, "velocity", util, "balance", 0.8);
+    auto e = ops::connectTravelNoteWire(*store.current(), ids, t, "velocity", u.at("Balance"), std::string(kValueParam), 0.8);
     REQUIRE(e.ok());
     REQUIRE(store.dispatch(e->command).ok());
     REQUIRE(store.dispatch(ops::setWireReducer(*store.current(), e->wires.at(0), reducer)->command).ok());
-    LowerOptions lo;
-    lo.library = &(*lib)->library();
-    lo.slotOf = [](TrackId) { return 0u; };
-    auto low = lower(*store.current(), lo);
-    REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
-    for (const WireState& s : low->wires) states->push_back(s.status);
-    std::vector<engine::ProjectParamLink> links;
-    std::vector<float> values;
-    for (const LoweredParam& p : low->params) {
-      links.push_back({p.track, p.name, static_cast<uint32_t>(values.size())});
-      values.push_back(p.value);
-    }
-    return renderGraph(low->graph, links, values, 24000, backend);
+    const LoweredProject low = lowered(*store.current());
+    for (const WireState& s : low.wires) states->push_back(s.status);
+    return renderLowered(low, 24000, backend);
   };
   std::vector<WireStatus> st;
   const golden::Channels sum = render(true, WireReducer::Sum, {}, &st);

@@ -1,16 +1,15 @@
-// TX.all-free-fix1 (SPEC §15 2026-11-03 "everything is free"; QUESTIONS Q208): stock instruments and racks are ordinary
-// blocks. A stock instrument is a block with a notes input and an audio output, like a meta module that takes notes:
-// it plays the notes that reach its notes input by a cable (the main path's first link, or any other notes cable from
-// its track's source), wherever it is; a block before it on the path feeds its audio input — it has none, so nothing; an
-// instrument nothing feeds notes to plays nothing (and is not "missing"). Several instruments on one track each play
-// (the voices end when every one is done). A notes cable into a meta module off the path gives the input the note's
-// signal of its meaning. A cable into another track's mixer is a send-like route (TX.cross-track: one closing a cycle
-// between tracks is delayed by a sample, as every loop). Racks are blocks too: off the path an Instrument Rack plays the notes cabled into it, an Audio Effect
-// Rack takes what is wired into its input; inside a rack each chain is a series with the same rule.
+// TX.all-free-fix1 (SPEC §15 2026-11-03 "everything is free"; QUESTIONS Q208): instruments are ordinary blocks. GU.11
+// (one hierarchy): an instrument is an instrument group (the default instrument, pasted where a test wants a synth); it
+// plays the notes that reach its main input by a cable (the main path's first link, or any other notes cable from its
+// track's source), wherever it is; an instrument nothing feeds notes to plays nothing (and is not "missing"). Several
+// instruments on one track each play. A notes cable into an engine off the path gives the input the note's signal of
+// its meaning. A cable into another track's mixer is a send-like route (TX.cross-track: one closing a cycle between
+// tracks is delayed by a sample, as every loop). (The stock instrument's missing audio input — an effect before it on
+// the path feeding nothing — went with the stock instruments: a group before which an effect sits is fed its audio.)
 //
 // Each case renders a three-note chord through the lowered project (interpreter, under the allocation trap) and through
 // the JIT (equal to the interpreter, bit for bit), and compares it with what it must equal: the sum of the instruments
-// rendered alone, the meta voice run it stands for, twice a track.
+// rendered alone, the voice run it stands for, twice a track.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -34,7 +33,8 @@
 #include "pq/engine/project_compile.h"
 #include "pq/engine/project_program.h"
 #include "pq/meta/registry.h"
-#include "../support/stand_in_synth.h"
+#include "../support/blocks.h"
+#include "pq/document/modules.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -172,33 +172,19 @@ void apply(DocumentStore& s, Command c) {
   REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
 }
 
-// A MIDI track as ops::createTrack makes it: source → BasicSynth → mixer.
+// A MIDI track as ops::createTrack makes it: source → its instrument group (the default instrument) → mixer.
 // TX.pan-laws: constant power (−3 dB at the centre: the loop below decays with gain ≈ 0.707).
-// IG.1-2: its Basic Synth out of the instrument group createTrack puts it in, alone on the path (a lone stock
-// instrument: its own voice context, the same sound) — these cases are about instruments as free blocks.
 TrackId midiTrack(DocumentStore& s) {
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
-  REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout)
   REQUIRE(s.dispatch(SetTrackPanMode{t, PanMode::ConstantPower}).ok());
-  for (const DevicePtr& d : findTrackPtr(*s.current(), t)->devices)
-    if (isGroupDevice(*d)) {
-      run(s, ops::ungroupInCircuit(s.current(), s.ids(), library(), d->id));
-      break;
-    }
   return t;
 }
-// The instrument heading track `t` (IG.1-2: the stock instrument inside the instrument group heading its path).
-DeviceId headOf(DocumentStore& s, TrackId t) {
-  const Track& tr = *findTrackPtr(*s.current(), t);
-  const Device* h = mainPath(*s.current(), tr).blocks.at(0);
-  if (isGroupDevice(*h))
-    for (const DevicePtr& d : tr.devices)
-      if (d->group == h->id && d->kind == DeviceKind::Instrument) return d->id;
-  return h->id;
-}
-
-DeviceId offPath(DocumentStore& s, TrackId t, std::string patch, DeviceKind kind) {
-  return run(s, ops::addDevice(*s.current(), s.ids(), t, std::move(patch), kind, ops::kOffPath)).devices.at(0);
+// The instrument group heading track `t`.
+DeviceId headOf(DocumentStore& s, TrackId t) { return mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.at(0)->id; }
+// GU.11: a synth (the default instrument group) pasted off the path of `t`.
+DeviceId synthOff(DocumentStore& s, TrackId t) {
+  IdSource local;
+  return run(s, ops::pasteBlocks(*s.current(), s.ids(), t, defaultInstrumentBlocks(local))).devices.at(0);
 }
 
 // A meta module off the path (raw: the type's defaults, the same settings wherever it goes).
@@ -235,10 +221,11 @@ Wire intoMixer(DeviceId from, TrackId mixer) {
   return w;
 }
 
-// A BasicSynth's sound made different from the default one's (same envelope: the same voice end).
+// A synth's sound made different from the default one's (same envelope: the same voice end): its Pitch a fifth up.
 void voiced(DocumentStore& s, DeviceId synth) {
-  apply(s, SetDeviceParam{synth, "bright", 0.9});
-  apply(s, SetDeviceParam{synth, "level", 0.13});
+  const DeviceId pitch = test_blocks::member(*s.current(), synth, kPaPitch);
+  REQUIRE(pitch.valid());
+  run(s, ops::setDeviceParamValue(*s.current(), library(), pitch, std::string(kValueParam), 702.0));
 }
 
 WireStatus stateOf(const Project& p, WireId w) {
@@ -261,10 +248,10 @@ golden::Channels alone(bool varied, const std::string& what) {
 
 }  // namespace
 
-TEST_CASE("free instruments: a stock instrument off the main path, its notes and its output cabled, plays beside the path's") {
+TEST_CASE("free instruments: an instrument group off the main path, its notes and its output cabled, plays beside the path's") {
   DocumentStore s;
   const TrackId t = midiTrack(s);
-  const DeviceId b = offPath(s, t, "BasicSynth", DeviceKind::Instrument);
+  const DeviceId b = synthOff(s, t);
   voiced(s, b);
   {  // unconnected it plays nothing, and is not missing
     auto low = lowered(*s.current());
@@ -297,7 +284,7 @@ TEST_CASE("free instruments: two instruments fed by the same notes, both off the
     CHECK(low->missingDevices.empty());
     CHECK(peak(played(*s.current(), "a synth no notes reach")) == 0.0f);
   }
-  const DeviceId b = offPath(s, t, "BasicSynth", DeviceKind::Instrument);
+  const DeviceId b = synthOff(s, t);
   voiced(s, b);
   cable(s, notesInto(t, a));
   cable(s, notesInto(t, b));
@@ -307,44 +294,6 @@ TEST_CASE("free instruments: two instruments fed by the same notes, both off the
   const double d = maxDiff(both, plus(alone(false, "a alone"), alone(true, "b alone")));
   MESSAGE("two off-path synths vs each alone: max |diff| = " << d);
   CHECK(d <= 1e-6);
-}
-
-TEST_CASE("free instruments: an effect before the instrument feeds its audio input (none): the notes cable plays it") {
-  DocumentStore s;
-  const TrackId t = midiTrack(s);
-  const DeviceId synth = headOf(s, t);
-  const DeviceId sat = offPath(s, t, "saturator", DeviceKind::AudioEffect);
-  apply(s, SetDeviceParam{sat, "drive", 9.0});
-  run(s, ops::insertOnPath(*s.current(), s.ids(), sat, 0));  // source → Saturator → BasicSynth → mixer
-  {
-    const MainPath path = mainPath(*s.current(), *findTrackPtr(*s.current(), t));
-    REQUIRE(path.blocks.size() == 2);
-    CHECK(path.blocks[0]->id == sat);
-    CHECK(path.blocks[1]->id == synth);
-  }
-  // The Saturator takes the notes (it reads nothing of them) and feeds the synth's audio input, which it has not: no
-  // notes reach the synth. It plays nothing and is not missing.
-  CHECK(peak(played(*s.current(), "Saturator → BasicSynth")) == 0.0f);
-  // A notes cable from the source into the synth: it plays them, exactly as alone (the Saturator's output goes nowhere).
-  const WireId n = cable(s, notesInto(t, synth));
-  CHECK(stateOf(*s.current(), n) == WireStatus::Lowered);
-  const golden::Channels with = played(*s.current(), "Saturator → BasicSynth, notes cabled to the synth");
-  const double d = maxDiff(with, alone(false, "the synth alone"));
-  MESSAGE("effect before the instrument (notes cabled) vs the synth alone: max |diff| = " << d);
-  CHECK(d <= 1e-6);
-  // A meta module before it (a VCA at the note source: a voice run of its own, the synth after it fed its audio): the
-  // same — silent, then with the notes cabled the synth exactly (the voices end when both are done: the synth last).
-  DocumentStore m;
-  const TrackId mt = midiTrack(m);
-  const DeviceId msynth = headOf(m, mt);
-  const DeviceId vca = metaOffPath(m, mt, "envelope");  // (GU.4: was a VCA; any meta module)
-  run(m, ops::insertOnPath(*m.current(), m.ids(), vca, 0));
-  REQUIRE(mainPath(*m.current(), *findTrackPtr(*m.current(), mt)).blocks.at(1)->id == msynth);
-  CHECK(peak(played(*m.current(), "Envelope → BasicSynth")) == 0.0f);
-  cable(m, notesInto(mt, msynth));
-  const double dm = maxDiff(played(*m.current(), "Envelope → BasicSynth, notes cabled to the synth"), alone(false, "the synth alone"));
-  MESSAGE("a meta module before the instrument (notes cabled) vs the synth alone: max |diff| = " << dm);
-  CHECK(dm <= 1e-6);
 }
 
 TEST_CASE("free instruments: notes cabled into a meta module off the path play it as the run at the note source") {
@@ -412,7 +361,7 @@ TEST_CASE("free instruments: a cable into another track's mixer is a send-like r
   DocumentStore g;
   const TrackId ga = midiTrack(g);
   const TrackId grp = run(g, ops::groupTracks(*g.current(), g.ids(), std::vector<TrackId>{ga})).tracks.at(0);
-  const DeviceId util = run(g, ops::addDevice(*g.current(), g.ids(), grp, "utility", DeviceKind::AudioEffect)).devices.at(0);
+  const DeviceId util = run(g, ops::addDevice(*g.current(), g.ids(), grp, "module:utility", DeviceKind::AudioEffect)).devices.at(0);
   const golden::Channels before = played(*g.current(), "a track in a group with a Utility");
   const WireId loop = cable(g, intoMixer(util, ga));
   CHECK(stateOf(*g.current(), loop) == WireStatus::Delayed);

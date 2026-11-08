@@ -1,7 +1,9 @@
-// T4.18: device automation through the playback link — a filter-cutoff sweep, a macro lane and a chain volume lane
-// reach the DSP (and match the static render where they hold a value), a wire-amount lane drives its wire, an automated
-// gain jump is click-free (block rate + the `gain` stage's smoothing), a hand-written value never reaches an automated
-// slot, and a stopped project with device lanes costs what an idle one does (no automation writes, the engine sleeps).
+// T4.18: device automation through the playback link — a gain ramp reaches the DSP (and matches the static render where
+// it holds a value), a wire-amount lane drives its wire, an automated gain jump is click-free (block rate + the `gain`
+// stage's smoothing), a hand-written value never reaches an automated slot, and a stopped project with device lanes
+// costs what an idle one does (no automation writes, the engine sleeps). GU.11: the lanes automate a block's param — a
+// module's control, its value block (Utility's Gain, in dB) — after the default instrument group; the filter sweep went
+// with Auto Filter (retired).
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -60,20 +62,19 @@ struct Driver {
   uint32_t blocksFor(double seconds) const { return static_cast<uint32_t>(seconds * kRate / kBlock); }
 };
 
-// One MIDI track with BasicSynth holding one note for `bars` bars (bright: a saw-like spectrum; else a sine-like one).
+// One MIDI track with the default instrument group holding one note for `bars` bars.
 struct Song {
   DocumentStore store;
   TrackId t;
   DeviceId inst;
-  explicit Song(bool bright, int bars = 4) {
+  explicit Song(int bars = 4) {
     IdSource& ids = store.ids();
     t = ids.track();
     inst = ids.device();
     Batch b{"song", {}};
     b.commands.push_back(SetTempoMap{{{0, 120.0, TempoCurve::Step}}});
-    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T", inst), {}, kAppend});
-    b.commands.push_back(SetDeviceParam{inst, "bright", bright ? 1.0 : 0.0});
-    b.commands.push_back(SetDeviceParam{inst, "sustain", 1.0});
+    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T"), {}, kAppend});
+    (void)playback_fixture::instrument(b, ids, t, inst);
     std::vector<Note> notes{playback_fixture::note(ids, 0, bars * kBar, 0)};
     b.commands.push_back(AddClip{t, playback_fixture::clip(ids, 0, bars * kBar, notes, "held")});
     must(b);
@@ -83,11 +84,18 @@ struct Song {
     const Status st = store.dispatch(playback_fixture::inUnits(store, std::move(c)));
     REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
   }
-  DeviceId add(const char* patch) {
-    auto e = ops::addDevice(*store.current(), store.ids(), t, patch, DeviceKind::AudioEffect);
-    REQUIRE(e.ok());
+  // A module ("module:<key>") on the path after the instrument group (or off it); its group.
+  DeviceId add(const char* key, uint32_t slot = kAppend) {
+    auto e = ops::addDevice(*store.current(), store.ids(), t, std::string("module:") + key, DeviceKind::AudioEffect, slot);
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
     must(e->command);
     return e->devices.at(0);
+  }
+  // A module's control (its value block).
+  DeviceId control(DeviceId module, std::string_view name) const {
+    const DeviceId v = test_blocks::member(*store.current(), module, name);
+    REQUIRE(v.valid());
+    return v;
   }
   // A lane on `r` with `points` ({ticks, value, curve}).
   LaneId lane(ParamRef r, std::string name, std::vector<Breakpoint> points) {
@@ -108,17 +116,6 @@ double rms(const golden::Channels& a, size_t from, size_t to) {
   size_t n = 0;
   for (const auto& c : a)
     for (size_t i = from; i < to && i < c.size(); ++i, ++n) s += static_cast<double>(c[i]) * c[i];
-  return n != 0 ? std::sqrt(s / static_cast<double>(n)) : 0.0;
-}
-// RMS of the first difference: a cheap measure of high-frequency energy (a brighter signal has larger steps).
-double rmsD1(const golden::Channels& a, size_t from, size_t to) {
-  double s = 0.0;
-  size_t n = 0;
-  for (const auto& c : a)
-    for (size_t i = std::max<size_t>(from, 1); i < to && i < c.size(); ++i, ++n) {
-      const double d = static_cast<double>(c[i]) - c[i - 1];
-      s += d * d;
-    }
   return n != 0 ? std::sqrt(s / static_cast<double>(n)) : 0.0;
 }
 double maxDiff(const golden::Channels& a, const golden::Channels& b, size_t from, size_t to) {
@@ -156,38 +153,32 @@ golden::Channels play(Song& s, double seconds, bool jit = false) {
 
 }  // namespace
 
-TEST_CASE("device automation: a filter-cutoff sweep reaches Auto Filter; where the lane holds, it equals the static setting") {
-  Song s(true);
-  const DeviceId af = s.add("auto_filter");
-  s.must(SetDeviceParam{af, "res", 0.1});
-  Song ref(true);  // the same song with the filter fixed at the lane's first value
-  const DeviceId afRef = ref.add("auto_filter");
-  ref.must(SetDeviceParam{afRef, "res", 0.1});
-  ref.must(SetDeviceParam{afRef, "freq", 150.0});
-  // 150 Hz for the first bar, then up to 12 kHz over the second, then held. GU.1: the lane holds knob positions, so the
-  // ramp moves linearly in position — on the octave cutoff, equal ratios per time: 150 · 80^(s) over the bar's share s.
-  s.lane(ParamRef::device(af, "freq"), "freq", {{0, 150.0f, 0.0f, {}}, {kBar, 150.0f, 0.0f, {}}, {2 * kBar, 12000.0f, 0.0f, {}}});
+TEST_CASE("device automation: a gain ramp reaches the Utility's Gain; where the lane holds, it equals the static setting") {
+  Song s;
+  const DeviceId gain = s.control(s.add("utility"), "Gain");
+  Song ref;  // the same song with the Gain fixed at the lane's first value
+  ref.must(SetDeviceParam{ref.control(ref.add("utility"), "Gain"), std::string(kValueParam), 0.0});
+  // 0 dB for the first bar, then down to −24 dB over the second (linear in dB: the Gain's curve), then held.
+  s.lane(ParamRef::device(gain, std::string(kValueParam)), std::string(kValueParam),
+         {{0, 0.0f, 0.0f, {}}, {kBar, 0.0f, 0.0f, {}}, {2 * kBar, -24.0f, 0.0f, {}}});
   const golden::Channels out = play(s, 6.0);
   const golden::Channels st = play(ref, 6.0);
   const auto at = [](double sec) { return static_cast<size_t>(sec * kRate); };
-  // Bar 1 (0–2 s): the lane holds 150 Hz: the static render, sample for sample.
+  // Bar 1 (0–2 s): the lane holds 0 dB: the static render, sample for sample.
   CHECK(maxDiff(out, st, 0, at(1.9)) <= 1e-6);
-  // The sweep opens the filter: high-frequency energy grows through the second bar (≈ 450 Hz at 2.5 s, ≈ 1.6 kHz at
-  // 2.8 s), and the static filter stays closed.
-  const double hf0 = rmsD1(out, at(1.0), at(1.9)), hfA = rmsD1(out, at(2.48), at(2.52)), hf1 = rmsD1(out, at(2.7), at(2.9));
-  MESSAGE("HF (first-difference RMS): 150 Hz " << hf0 << ", ~450 Hz " << hfA << ", ~1.6 kHz " << hf1);
-  CHECK(hfA > 1.5 * hf0);
-  CHECK(hf1 > hfA);
-  CHECK(rmsD1(st, at(4.5), at(5.5)) < 1.5 * hf0);
-  // Held at 12 kHz (4–6 s), it plays as the filter set to 12 kHz by hand (the filter's memory of the sweep has decayed).
-  Song open(true);
-  const DeviceId afOpen = open.add("auto_filter");
-  open.must(SetDeviceParam{afOpen, "res", 0.1});
-  open.must(SetDeviceParam{afOpen, "freq", 12000.0});
-  const golden::Channels st12 = play(open, 6.0);
-  const double d12 = maxDiff(out, st12, at(4.5), at(5.5));
-  MESSAGE("held at 12 kHz vs set to 12 kHz: max diff " << d12);
-  CHECK(d12 <= 1e-4);
+  // The ramp lowers the level through the second bar (−6 dB at 2.5 s, −18 dB at 3.5 s); the static one stays.
+  const double l0 = rms(out, at(1.0), at(1.9)), lA = rms(out, at(2.45), at(2.55)), l1 = rms(out, at(3.45), at(3.55));
+  MESSAGE("RMS: 0 dB " << l0 << ", ~-6 dB " << lA << ", ~-18 dB " << l1);
+  CHECK(lA < 0.7 * l0);
+  CHECK(l1 < 0.3 * lA);
+  CHECK(rms(st, at(3.45), at(3.55)) > 0.7 * l0);
+  // Held at −24 dB (4–6 s), it plays as the Gain set to −24 dB by hand.
+  Song low;
+  low.must(SetDeviceParam{low.control(low.add("utility"), "Gain"), std::string(kValueParam), -24.0});
+  const golden::Channels st24 = play(low, 6.0);
+  const double d24 = maxDiff(out, st24, at(4.5), at(5.5));
+  MESSAGE("held at -24 dB vs set to -24 dB: max diff " << d24);
+  CHECK(d24 <= 1e-4);
   // The JIT images follow the same lane.
   const golden::Channels jit = play(s, 6.0, true);
   const double dj = maxDiff(out, jit, 0, at(6.0));
@@ -197,11 +188,11 @@ TEST_CASE("device automation: a filter-cutoff sweep reaches Auto Filter; where t
 
 TEST_CASE("device automation: an automated gain jump is click-free; the wire amount lane drives its wire") {
   SUBCASE("Utility gain: 0 dB → −12 dB → +6 dB as jumps") {
-    Song s(false);
-    const DeviceId u = s.add("utility");
-    const float k12 = static_cast<float>(std::pow(10.0, -12.0 / 20.0)), k6 = static_cast<float>(std::pow(10.0, 6.0 / 20.0));
-    s.lane(ParamRef::device(u, "gain"), "gain",
-           {{0, 1.0f, 0.0f, {}}, {kBar / 2, 1.0f, 0.0f, {}}, {kBar / 2, k12, 0.0f, {}}, {kBar, k12, 0.0f, {}}, {kBar, k6, 0.0f, {}}});
+    Song s;
+    const DeviceId u = s.control(s.add("utility"), "Gain");
+    const float k12 = static_cast<float>(std::pow(10.0, -12.0 / 20.0));
+    s.lane(ParamRef::device(u, std::string(kValueParam)), std::string(kValueParam),
+           {{0, 0.0f, 0.0f, {}}, {kBar / 2, 0.0f, 0.0f, {}}, {kBar / 2, -12.0f, 0.0f, {}}, {kBar, -12.0f, 0.0f, {}}, {kBar, 6.0f, 0.0f, {}}});
     const golden::Channels out = play(s, 3.0);
     const auto at = [](double sec) { return static_cast<size_t>(sec * kRate); };
     auto maxD1 = [&](size_t from, size_t to) {
@@ -227,19 +218,19 @@ TEST_CASE("device automation: an automated gain jump is click-free; the wire amo
     CHECK(jumps <= 1.5 * steady * scale);  // the rack crossfade test's bound
     CHECK(rms(out, at(1.2), at(1.9)) / rms(out, at(0.3), at(0.95)) == doctest::Approx(k12).epsilon(0.02));
   }
-  SUBCASE("a wire amount lane at 0 plays as the wire at amount 0; at 1 the LFO sweeps the filter") {
+  SUBCASE("a wire amount lane at 0 plays as the wire at amount 0; at 1 the LFO sweeps the gain") {
     auto build = [](Song& s, bool laneOn) {
-      const DeviceId lfo = s.add("lfo_device");
-      const DeviceId af = s.add("auto_filter");
-      s.must(SetDeviceParam{lfo, "rate", 4.0});
-      s.must(SetDeviceParam{af, "freq", 400.0});
-      auto w = ops::connectTravelWire(*s.store.current(), s.store.ids(), lfo, "lfo", af, "freq", 0.0);
+      const DeviceId lfo = s.add("lfo", ops::kOffPath);
+      const DeviceId gain = s.control(s.add("utility"), "Gain");
+      s.must(SetDeviceParam{s.control(lfo, "Rate"), std::string(kValueParam), 4.0});
+      s.must(SetDeviceParam{gain, std::string(kValueParam), -12.0});
+      auto w = ops::connectTravelWire(*s.store.current(), s.store.ids(), lfo, "y", gain, std::string(kValueParam), 0.0);
       REQUIRE(w.ok());
       s.must(w->command);
       if (laneOn)
         s.lane(ParamRef::wireAmount(w->wires.at(0)), "", {{0, 0.0f, 0.0f, {}}, {kBar / 2, 0.0f, 0.0f, {}}, {kBar / 2, 1.0f, 0.0f, {}}});
     };
-    Song a(true), b(true);
+    Song a, b;
     build(a, true);
     build(b, false);
     const golden::Channels la = play(a, 2.0), lb = play(b, 2.0);
@@ -250,9 +241,9 @@ TEST_CASE("device automation: an automated gain jump is click-free; the wire amo
 }
 
 TEST_CASE("device automation: automation owns its slot; a stopped project with device lanes stays idle") {
-  Song s(false, 2);
-  const DeviceId u = s.add("utility");
-  s.lane(ParamRef::device(u, "gain"), "gain", {{0, 1.0f, 0.0f, {}}, {2 * kBar, 0.25f, 0.0f, {}}});
+  Song s(2);
+  const DeviceId u = s.control(s.add("utility"), "Gain");
+  s.lane(ParamRef::device(u, std::string(kValueParam)), std::string(kValueParam), {{0, 0.0f, 0.0f, {}}, {2 * kBar, -12.0f, 0.0f, {}}});
   auto link = makeLink(s.store.current(), 250.0f);
   [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   Driver d{*link};
@@ -273,7 +264,7 @@ TEST_CASE("device automation: automation owns its slot; a stopped project with d
   // A hand edit of the automated param (the views override the lane first; here the document change alone) never
   // reaches the slot: the automation keeps writing it.
   const app::LinkStats s0 = link->stats();
-  s.must(SetDeviceParam{u, "gain", 2.0});
+  s.must(SetDeviceParam{u, std::string(kValueParam), 6.0});
   link->flush();
   CHECK(link->stats().paramWrites == s0.paramWrites);
   CHECK(link->stats().compiles == s0.compiles);

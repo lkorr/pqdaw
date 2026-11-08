@@ -14,7 +14,6 @@
 #include <vector>
 
 #include "../golden/golden_audio.h"
-#include "../support/stand_in_synth.h"
 #include "playback_fixture.h"
 #include "pq/app/project_link.h"
 #include "pq/compile/compile.h"
@@ -168,11 +167,14 @@ golden::Channels perVoice(const Project& p, TrackId track, const Notes& notes, c
 }
 
 // ---- building projects --------------------------------------------------------------------------------------------
+// GU.11: a new MIDI track's instrument group is the default instrument (In → Phase Accumulator → Wavetable → Envelope
+// → Out); the effects are modules (groups of blocks: Saturator, Utility, LFO), a module's control a value block.
 
 template <class E>
 E run(DocumentStore& s, Result<E> e) {
   REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
-  REQUIRE(s.dispatch(e->command).ok());
+  const Status st = s.dispatch(e->command);
+  REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
   return *e;
 }
 void apply(DocumentStore& s, Command c) {
@@ -180,19 +182,9 @@ void apply(DocumentStore& s, Command c) {
   REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
 }
 const Track& trackOf(DocumentStore& s, TrackId t) { return *findTrackPtr(*s.current(), t); }
-// A new MIDI track (IG.1-2: an instrument group holding Basic Synth heads its path).
-TrackId midi(DocumentStore& s) {
-  const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
-  REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout these cases were written for)
-  return t;
-}
+// A new MIDI track (its default instrument group heads its path).
+TrackId midi(DocumentStore& s) { return run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0); }
 DeviceId groupOf(DocumentStore& s, TrackId t) { return mainPath(*s.current(), trackOf(s, t)).blocks.at(0)->id; }
-DeviceId synthOf(DocumentStore& s, TrackId t) {
-  for (const DevicePtr& d : trackOf(s, t).devices)
-    if (d->group.valid() && d->patch == kDefaultInstrument) return d->id;
-  FAIL("no synth");
-  return {};
-}
 WireId cable(DocumentStore& s, Wire w) { return run(s, ops::connect(*s.current(), s.ids(), std::move(w))).wires.at(0); }
 Wire link(DeviceId from, std::string port, DeviceId to, std::string param) {
   Wire w;
@@ -217,7 +209,7 @@ Wire notesInto(TrackId t, DeviceId to, std::string port = {}, std::string param 
   w.param = std::move(param);
   return w;
 }
-// A block added off the path of `t`, inside group `g` when given.
+// A block added off the path of `t` (a "module:<key>": its group), inside group `g` when given.
 DeviceId block(DocumentStore& s, TrackId t, std::string patch, DeviceId g = {}) {
   const DeviceId d = run(s, ops::addDevice(*s.current(), s.ids(), t, std::move(patch), DeviceKind::AudioEffect, ops::kOffPath)).devices.at(0);
   if (g.valid()) apply(s, SetDeviceGroup{d, g});
@@ -246,13 +238,38 @@ DeviceId paBlock(DocumentStore& s, TrackId t, DeviceId g = {}, PhaseAccumulatorR
   return ids.at(0);
 }
 DeviceId vcaBlock(DocumentStore& s, TrackId t, DeviceId g = {}) { return moduleBlock(s, t, moduleBlocks(ModuleKind::Vca), g).at(0); }
+// A control of module `m` (its value block named `control`) set to `value` in its units.
+void setControl(DocumentStore& s, DeviceId m, std::string_view control, double value) {
+  const DeviceId v = test_blocks::member(*s.current(), m, control);
+  REQUIRE(v.valid());
+  run(s, ops::setDeviceParamValue(*s.current(), library(), v, std::string(kValueParam), value));
+}
+// Saturator's Drive in dB as the linear gain its curve takes.
+double driveDb(double db) { return std::pow(10.0, db / 20.0); }
 
-// The cable from the synth into its group's Out (what createTrack wires).
+// The cable into the group's Out (what createTrack wires: from the Envelope).
 WireId intoOut(DocumentStore& s, DeviceId g) {
   for (const Wire& w : wiresOf(*s.current()))
     if (w.to == g && w.param == kGroupOutPort) return w.id;
   FAIL("nothing into Out");
   return {};
+}
+// The block feeding the group's Out: its voices' sound (the default instrument's Envelope).
+DeviceId voiceOut(DocumentStore& s, DeviceId g) { return findWire(*s.current(), intoOut(s, g))->from; }
+// The default instrument's Pitch (its Phase Accumulator's, cents): a per-voice control.
+DeviceId pitchOf(DocumentStore& s, TrackId t) {
+  const DeviceId p = test_blocks::member(*s.current(), groupOf(s, t), kPaPitch);
+  REQUIRE(p.valid());
+  return p;
+}
+// The group's blocks deleted (an empty instrument group: In and Out unwired).
+void clearGroup(DocumentStore& s, DeviceId g) {
+  std::vector<DeviceId> inside;
+  forEachTrack(*s.current(), [&](const Track& t, const Track*) {
+    for (const DevicePtr& d : t.devices)
+      if (d->group == g) inside.push_back(d->id);
+  });
+  run(s, ops::deleteDevices(*s.current(), inside));
 }
 // `d` spliced in before the group's Out: the cable into Out now enters `d`, `d` goes to Out.
 void beforeOut(DocumentStore& s, DeviceId g, DeviceId d, bool single = false) {
@@ -270,8 +287,9 @@ WireState stateOf(const Project& p, WireId w, const Score& score) {
   FAIL("no state");
   return {};
 }
-// The poly of the values a device's flattened nodes compute (`d<id>__…`) in track `t`'s typed patch: Voice when any
-// of them runs per voice.
+// The poly of the values a block computes (GU.11: its call node's flattened atoms — and a group's, those of its blocks
+// at any depth: each block is a call `d<id>` of the track patch) in track `t`'s typed patch: Voice when any of them runs
+// per voice.
 graph::Poly polyOf(const Project& p, const Score& score, TrackId t, DeviceId d) {
   auto low = lowered(p, score);
   REQUIRE(low.ok());
@@ -283,11 +301,22 @@ graph::Poly polyOf(const Project& p, const Score& score, TrackId t, DeviceId d) 
   io.library = low->graph.library;
   auto typed = graph::infer(*tp, io);
   REQUIRE_MESSAGE(typed.ok(), (typed.ok() ? std::string() : typed.error().message));
-  const std::string prefix = "d" + std::to_string(d.value) + "__";
+  std::vector<std::string> names{"d" + std::to_string(d.value)};
+  const DeviceLoc l = findDevice(p, d);
+  REQUIRE(l.track != nullptr);
+  for (const Device* m : groupMembersDeep(l.track->devices, d)) names.push_back("d" + std::to_string(m->id.value));
   bool any = false;
   graph::Poly poly = graph::Poly::Global;
   for (graph::NodeIndex n = 0; n < typed->patch.nodeCount(); ++n) {
-    if (typed->patch.node(n).kind != graph::NodeKind::Atom || !typed->patch.nodeName(n).starts_with(prefix)) continue;
+    if (typed->patch.node(n).kind != graph::NodeKind::Atom) continue;
+    // The root-level call this node was flattened from.
+    uint32_t inst = typed->origin[n].instance;
+    if (inst == 0) continue;  // a node of the track patch itself
+    while (typed->instances[inst].parent != 0 && typed->instances[inst].parent != graph::kNone) inst = typed->instances[inst].parent;
+    const graph::NodeIndex call = typed->instances[inst].callNode;
+    if (call == graph::kNone || call >= tp->nodeCount()) continue;
+    const std::string_view name = tp->nodeName(call);
+    if (std::find(names.begin(), names.end(), name) == names.end()) continue;
     any = true;
     for (uint32_t o = 0; o < typed->patch.node(n).numOutputs; ++o)
       if (typed->types[typed->patch.flatOutput(n, o)].poly == graph::Poly::Voice) poly = graph::Poly::Voice;
@@ -311,7 +340,7 @@ TEST_CASE("instrument groups: a new MIDI track holds an instrument group (16 voi
   CHECK(gp.voices == kDefaultGroupVoices);
   CHECK(gp.steal == GroupSteal::Oldest);
   CHECK(gp.glide == 0.0);
-  CHECK(findDevice(*s.current(), synthOf(s, t)).device->group == g);
+  CHECK(findDevice(*s.current(), voiceOut(s, g)).device->group == g);
   const Score sc{{{t, chord()}}};
   {
     auto low = lowered(*s.current(), sc);
@@ -359,8 +388,8 @@ TEST_CASE("instrument groups: a Saturator inside runs per note (= each note satu
   DocumentStore s;
   const TrackId t = midi(s);
   const DeviceId g = groupOf(s, t);
-  const DeviceId sat = block(s, t, "saturator", g);
-  apply(s, SetDeviceParam{sat, "drive", 18.0});
+  const DeviceId sat = block(s, t, "module:saturator", g);
+  setControl(s, sat, "Drive", driveDb(18.0));
   beforeOut(s, g, sat);
   const Score sc{{{t, chord()}}};
   CHECK(polyOf(*s.current(), sc, t, sat) == graph::Poly::Voice);
@@ -373,8 +402,8 @@ TEST_CASE("instrument groups: a Saturator inside runs per note (= each note satu
   // The same Saturator outside the group (on the path after it) saturates the chord's sum: not the per-voice sound.
   DocumentStore o;
   const TrackId ot = midi(o);
-  const DeviceId os = run(o, ops::addDevice(*o.current(), o.ids(), ot, "saturator", DeviceKind::AudioEffect)).devices.at(0);
-  apply(o, SetDeviceParam{os, "drive", 18.0});
+  const DeviceId os = run(o, ops::addDevice(*o.current(), o.ids(), ot, "module:saturator", DeviceKind::AudioEffect)).devices.at(0);
+  setControl(o, os, "Drive", driveDb(18.0));
   const Score osc{{{ot, chord()}}};
   CHECK(polyOf(*o.current(), osc, ot, os) == graph::Poly::Global);
   const golden::Channels outside = played(*o.current(), osc, "the chord through the Saturator after the group");
@@ -384,13 +413,12 @@ TEST_CASE("instrument groups: a Saturator inside runs per note (= each note satu
 
 TEST_CASE("instrument groups: the Envelope last decides each voice's end; without it the voices end 5 ms after "
           "note-off") {
-  // In → Phase Accumulator (GU.4: its module, a nested group) → Wavetable [→ Envelope] → Out, the Basic Synth taken out.
+  // In → Phase Accumulator (GU.4: its module, a nested group) → Wavetable [→ Envelope] → Out, the default's blocks taken
+  // out.
   auto build = [](DocumentStore& s, bool envelope) {
     const TrackId t = midi(s);
     const DeviceId g = groupOf(s, t);
-    const DeviceId syn = synthOf(s, t);
-    const DeviceId del[1] = {syn};
-    run(s, ops::deleteDevices(*s.current(), del));
+    clearGroup(s, g);
     const DeviceId pa = paBlock(s, t, g), wt = metaBlock(s, t, "wavetable", g);
     cable(s, link(g, std::string(kGroupInPort), pa, ""));
     cable(s, link(pa, "", wt, ""));
@@ -433,7 +461,7 @@ TEST_CASE("instrument groups: a cable leaving the group reduces its voices — s
     const TrackId t = midi(s);
     const DeviceId g = groupOf(s, t);
     apply(s, RemoveWire{intoOut(s, g)});
-    const DeviceId u = block(s, t, "utility", g);
+    const DeviceId u = block(s, t, "module:utility", g);
     cable(s, notesInto(t, u, "velocity", "x"));
     const WireId out = cable(s, intoMixer(u, t));
     if (r != WireReducer::Sum) run(s, ops::setWireReducer(*s.current(), out, r));
@@ -454,20 +482,16 @@ TEST_CASE("instrument groups: a cable leaving the group reduces its voices — s
 }
 
 TEST_CASE("instrument groups: layering — two instrument groups on one track play each its own voices") {
-  // Track A: its default group, and a second group off the path fed by A's notes cable (a brighter Basic Synth), its
-  // `y` into the mixer. The reference: each group alone.
+  // Track A: its default group, and a second instrument group off the path fed by A's notes cable (a default instrument
+  // a fifth up: its Pitch at +702 cents), its `y` into the mixer. The reference: each group alone.
   auto build = [](DocumentStore& s, bool first, bool second) {
     const TrackId t = midi(s);
     if (!first) apply(s, SetDeviceActive{groupOf(s, t), false});
     if (second) {
-      const DeviceId g2 = s.ids().device();
-      apply(s, AddDevice{t, makeInstrumentGroup(g2), kAppend});
-      const DeviceId syn = run(s, ops::addDevice(*s.current(), s.ids(), t, "BasicSynth", DeviceKind::Instrument, ops::kOffPath)).devices.at(0);
-      apply(s, SetDeviceGroup{syn, g2});
-      apply(s, SetDeviceParam{syn, "bright", 0.9});
+      IdSource local;
+      const DeviceId g2 = moduleBlock(s, t, defaultInstrumentBlocks(local)).at(0);
+      setControl(s, g2, kPaPitch, 702.0);
       cable(s, notesInto(t, g2));
-      cable(s, link(g2, std::string(kGroupInPort), syn, ""));
-      cable(s, link(syn, "", g2, std::string(kGroupOutPort)));
       cable(s, intoMixer(g2, t));
     }
     return t;
@@ -488,8 +512,8 @@ TEST_CASE("instrument groups: cross-track — a group on B fed by A's notes play
   // The reference: A's own path, its group then a Saturator.
   DocumentStore r;
   const TrackId ra = midi(r);
-  const DeviceId rs = run(r, ops::addDevice(*r.current(), r.ids(), ra, "saturator", DeviceKind::AudioEffect)).devices.at(0);
-  apply(r, SetDeviceParam{rs, "drive", 9.0});
+  const DeviceId rs = run(r, ops::addDevice(*r.current(), r.ids(), ra, "module:saturator", DeviceKind::AudioEffect)).devices.at(0);
+  setControl(r, rs, "Drive", driveDb(9.0));
   apply(r, SetDeviceActive{groupOf(r, ra), true});
   const TrackId rb = midi(r);
   apply(r, SetDeviceActive{groupOf(r, rb), false});
@@ -500,8 +524,8 @@ TEST_CASE("instrument groups: cross-track — a group on B fed by A's notes play
   const TrackId a = midi(s);
   apply(s, SetDeviceActive{groupOf(s, a), false});
   const TrackId b = midi(s);
-  const DeviceId sb = run(s, ops::addDevice(*s.current(), s.ids(), b, "saturator", DeviceKind::AudioEffect)).devices.at(0);
-  apply(s, SetDeviceParam{sb, "drive", 9.0});
+  const DeviceId sb = run(s, ops::addDevice(*s.current(), s.ids(), b, "module:saturator", DeviceKind::AudioEffect)).devices.at(0);
+  setControl(s, sb, "Drive", driveDb(9.0));
   const DeviceId gb = groupOf(s, b);
   const WireId n = cable(s, notesInto(a, gb));
   const Score sc{{{a, chord()}, {b, otherChord()}}};  // (B's own notes: not played — A's cable wins)
@@ -511,18 +535,18 @@ TEST_CASE("instrument groups: cross-track — a group on B fed by A's notes play
   MESSAGE("cross-played group + B's path vs A's own: max |diff| = " << d);
   CHECK(peak(ref) > 1e-2);
   CHECK(d <= 1e-6);
-  // B's LFO modulating the synth inside that group (the home modulating a cross-played block): broadcast into every
-  // voice, as an outside signal is — the same as that LFO on B modulating A's own synth.
-  auto lfoInto = [](DocumentStore& st, TrackId home, DeviceId synth) {
-    const DeviceId lfo = block(st, home, "lfo_device");
-    apply(st, SetDeviceParam{lfo, "rate", 3.0});
-    apply(st, SetDeviceParam{lfo, "depth", 0.4});
-    cable(st, link(lfo, "lfo", synth, "bright"));
+  // B's LFO modulating the Pitch inside that group (the home modulating a cross-played block): broadcast into every
+  // voice, as an outside signal is — the same as that LFO on B modulating A's own Pitch.
+  auto lfoInto = [](DocumentStore& st, TrackId home, DeviceId pitch) {
+    const DeviceId lfo = block(st, home, "module:lfo");
+    setControl(st, lfo, "Rate", 3.0);
+    setControl(st, lfo, "Depth", 0.4);
+    cable(st, link(lfo, "y", pitch, std::string(kValueParam)));
   };
-  lfoInto(s, b, synthOf(s, b));
-  lfoInto(r, rb, synthOf(r, ra));
-  const golden::Channels mod = played(*s.current(), sc, "B's LFO into the cross-played synth");
-  const golden::Channels modRef = played(*r.current(), Score{{{ra, chord()}, {rb, {}}}}, "B's LFO into A's synth");
+  lfoInto(s, b, pitchOf(s, b));
+  lfoInto(r, rb, pitchOf(r, ra));
+  const golden::Channels mod = played(*s.current(), sc, "B's LFO into the cross-played Pitch");
+  const golden::Channels modRef = played(*r.current(), Score{{{ra, chord()}, {rb, {}}}}, "B's LFO into A's Pitch");
   const double dm = maxDiff(mod, modRef);
   MESSAGE("home modulation of a cross-played block vs of A's own: max |diff| = " << dm);
   CHECK(maxDiff(mod, got) > 1e-4);  // the modulation is heard
@@ -543,7 +567,7 @@ TEST_CASE("instrument groups: cross-track — a group on B fed by A's notes play
   const TrackId mb = midi(m);
   const DeviceId mg = groupOf(m, mb);
   apply(m, RemoveWire{intoOut(m, mg)});
-  const DeviceId u = block(m, mb, "utility", mg);
+  const DeviceId u = block(m, mb, "module:utility", mg);
   cable(m, notesInto(ma, mg));
   cable(m, notesInto(ma, u, "velocity", "x"));
   const WireId out = cable(m, intoMixer(u, mb));
@@ -556,24 +580,29 @@ TEST_CASE("instrument groups: cross-track — a group on B fed by A's notes play
 }
 
 // ---- single-signal cables (SPEC §15 2026-11-06) --------------------------------------------------------------------
+// (GU.11: on a Saturator — the Auto Filter is retired; a nonlinear block, so per note and once differ.)
 
-TEST_CASE("instrument groups: an Auto Filter behind a single-signal cable runs once — the same filter outside the "
+TEST_CASE("instrument groups: a Saturator behind a single-signal cable runs once — the same Saturator outside the "
           "group") {
   DocumentStore s;
   const TrackId t = midi(s);
   const DeviceId g = groupOf(s, t);
-  const DeviceId f = block(s, t, "auto_filter", g);
+  const DeviceId f = block(s, t, "module:saturator", g);
+  setControl(s, f, "Drive", driveDb(18.0));
   beforeOut(s, g, f, /*single=*/true);
   const Score sc{{{t, chord()}}};
   CHECK(polyOf(*s.current(), sc, t, f) == graph::Poly::Global);
-  const golden::Channels got = played(*s.current(), sc, "synth →(single) Auto Filter → Out");
+  const golden::Channels got = played(*s.current(), sc, "synth →(single) Saturator → Out");
   DocumentStore o;
   const TrackId ot = midi(o);
-  const DeviceId of = run(o, ops::addDevice(*o.current(), o.ids(), ot, "auto_filter", DeviceKind::AudioEffect)).devices.at(0);
-  (void)of;
-  const golden::Channels ref = played(*o.current(), Score{{{ot, chord()}}}, "group → Auto Filter on the path");
-  const double d = maxDiff(got, ref);
-  MESSAGE("filter behind a single-signal cable vs outside: max |diff| = " << d);
+  const DeviceId of = run(o, ops::addDevice(*o.current(), o.ids(), ot, "module:saturator", DeviceKind::AudioEffect)).devices.at(0);
+  setControl(o, of, "Drive", driveDb(18.0));
+  const golden::Channels ref = played(*o.current(), Score{{{ot, chord()}}}, "group → Saturator on the path");
+  // GU.11: while the notes are held (to 24000). After the note-offs a group whose Out no Envelope feeds per note ends
+  // its voices 5 ms after note-off (the Envelope's release tail outside the group plays on): the old Auto Filter's
+  // reference had the stock synth's own `done` deciding the voice ends inside.
+  const double d = maxDiff(got, ref, 0, 24000);
+  MESSAGE("Saturator behind a single-signal cable vs outside: max |diff| = " << d);
   CHECK(peak(ref) > 1e-2);
   CHECK(d <= 1e-7);
 }
@@ -583,33 +612,38 @@ TEST_CASE("instrument groups: a block with a per-note and a single-signal input 
   DocumentStore s;
   const TrackId t = midi(s);
   const DeviceId g = groupOf(s, t);
-  const DeviceId syn = synthOf(s, t);
+  const DeviceId syn = voiceOut(s, g);
   const Score sc{{{t, chord()}}};
-  const DeviceId sat2 = block(s, t, "saturator", g);
+  const DeviceId sat2 = block(s, t, "module:saturator", g);
   cable(s, link(syn, "", sat2, ""));  // per note
-  const DeviceId flt = block(s, t, "auto_filter", g);
+  const DeviceId flt = block(s, t, "module:saturator", g);
+  setControl(s, flt, "Drive", driveDb(18.0));
   const WireId fin = cable(s, link(syn, "", flt, ""));
   run(s, ops::setWireSignal(*s.current(), fin, true, WireReducer::Sum));
-  const DeviceId mix = block(s, t, "utility", g);
+  const DeviceId mix = block(s, t, "module:utility", g);
   cable(s, link(sat2, "", mix, ""));      // per note …
   cable(s, link(flt, "", mix, ""));       // … plus a once-running block: still per note
   CHECK(polyOf(*s.current(), sc, t, sat2) == graph::Poly::Voice);
   CHECK(polyOf(*s.current(), sc, t, flt) == graph::Poly::Global);
   CHECK(polyOf(*s.current(), sc, t, mix) == graph::Poly::Voice);
-  // Out with both kinds: the synth per note (createTrack's cable) and the filter once. = the synth group alone + the
-  // filter (behind a single-signal cable) alone.
+  // Out with both kinds: the synth per note (createTrack's cable) and the Saturator once. = the synth group alone + the
+  // Saturator (behind a single-signal cable) alone.
   cable(s, link(flt, "", g, std::string(kGroupOutPort)));
-  const golden::Channels both = played(*s.current(), sc, "Out: the voices summed + the filter once");
+  const golden::Channels both = played(*s.current(), sc, "Out: the voices summed + the Saturator once");
   DocumentStore a;
   const TrackId ta = midi(a);
   const golden::Channels synthAlone = played(*a.current(), Score{{{ta, chord()}}}, "the synth group alone");
   DocumentStore fo;
   const TrackId tf = midi(fo);
   const DeviceId gf = groupOf(fo, tf);
-  const DeviceId ff = block(fo, tf, "auto_filter", gf);
+  const DeviceId ff = block(fo, tf, "module:saturator", gf);
+  setControl(fo, ff, "Drive", driveDb(18.0));
   beforeOut(fo, gf, ff, /*single=*/true);
-  const golden::Channels filterAlone = played(*fo.current(), Score{{{tf, chord()}}}, "the filter once alone");
-  const double d = maxDiff(both, plus(synthAlone, filterAlone));
+  const golden::Channels filterAlone = played(*fo.current(), Score{{{tf, chord()}}}, "the Saturator once alone");
+  // GU.11: while the notes are held (to 24000). After the note-offs a group whose Out no Envelope feeds per note ends
+  // its voices 5 ms after note-off (the Envelope's release tail outside the group plays on): the old Auto Filter's
+  // reference had the stock synth's own `done` deciding the voice ends inside.
+  const double d = maxDiff(both, plus(synthAlone, filterAlone), 0, 24000);
   MESSAGE("Out with per-note and single-signal terms vs each alone summed: max |diff| = " << d);
   CHECK(d <= 1e-6);
 }
@@ -619,9 +653,7 @@ TEST_CASE("instrument groups: a single-signal path back into a per-note block is
   DocumentStore s;
   const TrackId t = midi(s);
   const DeviceId g = groupOf(s, t);
-  const DeviceId syn = synthOf(s, t);
-  const DeviceId del[1] = {syn};
-  run(s, ops::deleteDevices(*s.current(), del));
+  clearGroup(s, g);
   PhaseAccumulatorRoles roles;
   const DeviceId pa = paBlock(s, t, g, &roles), wt = metaBlock(s, t, "wavetable", g);
   cable(s, link(g, std::string(kGroupInPort), pa, ""));
@@ -632,19 +664,19 @@ TEST_CASE("instrument groups: a single-signal path back into a per-note block is
   const WireId inside = cable(s, link(wt, "", roles.sum, "a"));
   CHECK(stateOf(*s.current(), inside, sc).status == WireStatus::Delayed);
   // Through a single-signal cable (the voices reduced, a Utility once) back into the accumulator: refused.
-  const DeviceId u = block(s, t, "utility", g);
+  const DeviceId u = block(s, t, "module:utility", g);
   const WireId toU = cable(s, link(wt, "", u, ""));
   run(s, ops::setWireSignal(*s.current(), toU, true, WireReducer::Sum));
-  const WireId back = cable(s, link(u, "", roles.phase, std::string(kValueParam)));
+  const WireId back = cable(s, link(u, "y", roles.phase, std::string(kValueParam)));
   const WireState st = stateOf(*s.current(), back, sc);
   CHECK(st.status == WireStatus::Refused);
   CHECK(st.reason == WireRefusal::VoiceLoop);
   (void)played(*s.current(), sc, "the group with the refused loop");
   // Outside, single-signal: an effect on the path fed back into itself through a Utility: delayed, plays.
-  const DeviceId e1 = run(s, ops::addDevice(*s.current(), s.ids(), t, "utility", DeviceKind::AudioEffect)).devices.at(0);
-  const DeviceId e2 = block(s, t, "utility");
-  cable(s, link(e1, "", e2, ""));
-  const WireId outside = cable(s, link(e2, "", e1, ""));
+  const DeviceId e1 = run(s, ops::addDevice(*s.current(), s.ids(), t, "module:utility", DeviceKind::AudioEffect)).devices.at(0);
+  const DeviceId e2 = block(s, t, "module:utility");
+  cable(s, link(e1, "y", e2, "x"));
+  const WireId outside = cable(s, link(e2, "y", e1, "x"));
   CHECK(stateOf(*s.current(), outside, sc).status == WireStatus::Delayed);
   (void)played(*s.current(), sc, "a loop outside the group");
 }
@@ -686,27 +718,5 @@ TEST_CASE("instrument groups: a monitoring cable from the note source (an Oscill
   CHECK(d == 0.0);
 }
 
-// ---- the migration: an older file's instrument and meta voice run, wrapped -----------------------------------------
-
-TEST_CASE("instrument groups: an older file's stock instrument and meta voice run load into instrument groups; no "
-          "Envelope is added") {
-  for (const char* rel : {"app/fixtures/all_free/meta_run", "app/fixtures/all_free/chains"}) {
-    CAPTURE(rel);
-    auto l = loadProject(std::string(PQ_TEST_DATA_DIR) + "/" + rel);
-    REQUIRE(l.ok());
-    const Project& p = *l->project;
-    const Track& t = *p.tracks.front();
-    const MainPath path = mainPath(p, t);
-    REQUIRE_FALSE(path.blocks.empty());
-    CHECK(isGroupDevice(*path.blocks.front()));
-    CHECK(isInstrumentGroup(p, path.blocks.front()->id));
-    size_t envelopes = 0, members = 0;
-    for (const DevicePtr& d : t.devices) {
-      envelopes += metaDeviceType(*d) == "envelope" ? 1u : 0u;
-      members += d->group == path.blocks.front()->id ? 1u : 0u;
-    }
-    CHECK(members >= 1);
-    CHECK(envelopes <= 1);  // (meta_run had its own Envelope; nothing is added)
-    CHECK(groupPolyphony(*path.blocks.front()).voices == 0);  // the link's default, as before
-  }
-}
+// (GU.11: "an older file's stock instrument and meta voice run load into instrument groups" went with the all_free
+// fixtures and the stock instrument.)

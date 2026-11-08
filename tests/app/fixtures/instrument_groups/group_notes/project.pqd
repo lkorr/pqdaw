@@ -62,7 +62,7 @@
             "": {"type": "envelope", "version": 1}
           }
         },
-        {"id": 8, "patch": "saturator", "kind": "audioEffect"}
+        {"id": 8, "patch": "atom:tanh", "kind": "audioEffect"}
       ],
       "clips": [
         {
