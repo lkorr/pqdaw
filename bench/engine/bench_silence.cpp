@@ -1,11 +1,12 @@
 // T1.x-silence (SPEC §7.7): what sleeping saves and what it costs, per 64-frame block at 48 kHz.
 //   idle/30 tracks <backend>        the acceptance fixture (tests/engine/idle_project_fixture.h: 30 stdlib tracks —
-//                                   basic_synth → comb/comb_lp/allpass_delay reverb + a 375 ms feedback echo → EQ
-//                                   Eight → gain — a return with a comb/allpass reverb, a master) after its chords
+//                                   basic_synth → comb/comb_lp/allpass_delay reverb + a 375 ms feedback echo → a
+//                                   biquad low-pass → gain — a return with a comb/allpass reverb, a master) after its chords
 //                                   and every tail have died away: every unit asleep (acceptance: ≤ 1 % of a core)
 //   idle/30 tracks <backend> nosleep  the same project compiled without sleep plans (what it cost before)
 //   idle/30 tracks <backend> links  the idle project with every track's params linked to project params (vol, the
-//                                   synth's and EQ Eight's: ~100 links per unit, as ProjectLink links device params):
+//                                   synth's; GU.12: EQ Eight's left with it, so 6 links per unit, as ProjectLink
+//                                   links device params):
 //                                   M4 review L1 (an idle unit compares its links only after a param write)
 //   awake/30-track fixture <backend> sleep|nosleep   tests/engine/project_fixture.h (30 FM tracks × 28 effects, chords
 //                                   held): everything sounds, so every segment is awake every block: the cost of the
@@ -71,7 +72,8 @@ struct Rig {
     co.paramRamps = ramps;
     if (jit) co.backend = compile::jitUnitBackend();
     uint32_t numParams = 0;
-    if (links && idleProject) {  // vol, and every param of the synth and the EQ the track patch leaves unconnected
+    if (links && idleProject) {  // vol, and every param of the synth the track patch leaves unconnected (GU.12: the EQ
+                                 // Eight whose params were linked too is retired; the fixture's biquads take literals)
       auto paramsOf = [&](std::string_view name) {
         std::vector<std::string> out;
         if (const graph::Patch* d = idle->library.find(name))
@@ -79,12 +81,11 @@ struct Rig {
             if (d->node(v).kind == graph::NodeKind::Param) out.push_back(d->nodeName(v));
         return out;
       };
-      const std::vector<std::string> syn = paramsOf("BasicSynth"), eq = paramsOf("eq_eight");
+      const std::vector<std::string> syn = paramsOf("BasicSynth");
       for (uint32_t t = 0; t < tracks; ++t) {
         co.paramLinks.push_back({t, "vol", numParams++});
         for (const std::string& n : syn)
           if (n != "release") co.paramLinks.push_back({t, "syn__" + n, numParams++});
-        for (const std::string& n : eq) co.paramLinks.push_back({t, "eq__" + n, numParams++});
       }
     }
     e::ProjectCompiler compiler(co);

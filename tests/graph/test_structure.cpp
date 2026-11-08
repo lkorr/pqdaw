@@ -35,7 +35,8 @@ NodeIndex named(const Patch& p, std::string_view n) {
 bool inactive(const StructuralInfo& s, const Patch& p, std::string_view n) { return s.nodeInactive[named(p, n)] != 0; }
 
 std::string satShapeText() {
-  std::ifstream in(std::filesystem::path(PQ_TEST_DATA_DIR) / ".." / "stdlib" / "devices" / "saturator.pqp", std::ios::binary);
+  // GU.12: the retired Saturator's test copy (tests/retired_devices/): a real multi-curve selector.
+  std::ifstream in(std::filesystem::path(PQ_TEST_DATA_DIR) / "retired_devices" / "saturator.pqp", std::ios::binary);
   REQUIRE(in.good());
   std::ostringstream ss;
   ss << in.rdbuf();

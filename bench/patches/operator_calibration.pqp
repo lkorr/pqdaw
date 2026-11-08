@@ -1,5 +1,5 @@
 // T4.12: the SPEC §13 calibration patches of pq_bench_render's operator/stock benchmarks: the stock Operator
-// (stdlib/devices/operator.pqp) as an instrument, in six configurations.
+// (retired in GU.10; its test copy tests/retired_devices/operator.pqp) as an instrument, in six configurations.
 //   OpDefault  the device as it loads: operator A, a sine, its envelope; everything else off
 //   OpFull     all four operators (algorithm 1, sines), feedback, pitch envelope, a per-voice LFO into pitch and
 //              filter, the 24 dB low-pass with its envelope, glide: every per-voice path on except spread
@@ -9,7 +9,7 @@
 //   OpSpreadMs2  OpMs2 with spread (two filters per voice: the most expensive filter configuration)
 //   OpFour     TMM.12: four sine operators (algorithm 1, ratios 1 / 2 / 3:2 / 7:4), feedback, envelopes; nothing else
 //              (the work of TMM.12's Meta Operator, deleted in GU.4)
-import "../../tests/stand_in_devices/operator.pqp"  // GU.10: the retired stock Operator (the tests' stand-in copy)
+import "../../tests/retired_devices/operator.pqp"  // GU.12: the retired stock Operator (its test copy)
 
 patch OpDefault {
   out out  : audio voice stereo

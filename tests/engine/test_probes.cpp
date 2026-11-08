@@ -203,9 +203,10 @@ patch D {
 }
 
 TEST_CASE("cost meter: regions are timed only while the meter is enabled, and add up to the block (T4.5)") {
-  // A stdlib device instead of a hand-made filter: its regions are the real mix of Control / Block / Loop.
+  // A real device instead of a hand-made filter (the retired Saturator's test copy, GU.12): its regions are the real
+  // mix of Control / Block / Loop.
   std::vector<std::string> skipped;
-  const fs::path sat = fs::path(PQ_TEST_DATA_DIR).parent_path() / "stdlib" / "devices" / "saturator.pqp";
+  const fs::path sat = text_util::retiredDevicesDir() / "saturator.pqp";
   std::vector<Pair> pairs = compileFilePairs(sat, 48000.0, skipped);
   REQUIRE(!pairs.empty());
   const interp_test::Compiled& comp = pairs.front().plain;
@@ -284,7 +285,7 @@ TEST_CASE("cost meter: regions are timed only while the meter is enabled, and ad
 // JIT image waiting for room) used to take the meter at bind time, so the playing image stopped being measured.
 TEST_CASE("cost meter: a bound image takes the meter when it first runs, not when it is bound (L5)") {
   std::vector<std::string> skipped;
-  const fs::path sat = fs::path(PQ_TEST_DATA_DIR).parent_path() / "stdlib" / "devices" / "saturator.pqp";
+  const fs::path sat = text_util::retiredDevicesDir() / "saturator.pqp";
   std::vector<Pair> pairs = compileFilePairs(sat, 48000.0, skipped);
   REQUIRE(!pairs.empty());
   const interp_test::Compiled& comp = pairs.front().plain;
@@ -424,7 +425,7 @@ TEST_CASE("probes: every node output of the corpus probed, audio bit-identical t
 // the two alternated, so machine load and memory layout are the same for both.
 // Wall-clock, so label `perf` (run on a quiet machine: build.ps1 -Preset release -Perf).
 TEST_CASE("cost meter: its total is within 20 % of a benchmark of the same patch (T4.5)" * doctest::test_suite("perf")) {
-  const fs::path dev = fs::path(PQ_TEST_DATA_DIR).parent_path() / "stdlib" / "devices";
+  const fs::path dev = text_util::retiredDevicesDir();  // GU.12: the retired stock devices' test copies
   for (const char* file : {"saturator.pqp", "eq_eight.pqp", "utility.pqp"}) {
     INFO(file);
     std::vector<std::string> skipped;

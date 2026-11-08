@@ -63,6 +63,7 @@ std::vector<fs::path> rampCorpus() {
   std::vector<fs::path> files = text_util::pqpFiles(text_util::casesDir());
   for (const fs::path& p : text_util::pqpFiles(patchesDir())) files.push_back(p);
   for (const fs::path& p : text_util::pqpFiles(fs::path(PQ_TEST_DATA_DIR) / "jit" / "patches")) files.push_back(p);
+  for (const fs::path& p : text_util::pqpFiles(text_util::retiredDevicesDir())) files.push_back(p);
   const fs::path stdlib = fs::path(PQ_TEST_DATA_DIR).parent_path() / "stdlib";
   for (const auto& e : fs::recursive_directory_iterator(stdlib))
     if (e.path().extension() == ".pqp") files.push_back(e.path());

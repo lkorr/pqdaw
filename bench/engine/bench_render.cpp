@@ -9,7 +9,7 @@
 //                          voices through a ProgramHost (as on the device): ns per frame (rounds and single blocks),
 //                          "core" = % of one core at 48 kHz (the §13 target: < 10 %), and the blocks of a 20 ms
 //                          crossfade to a fresh image of the same program (both images run: the cost of every edit)
-//   operator/stock-<config> <backend> xN   T4.12, SPEC §13 calibration of the stock Operator (stdlib/devices/
+//   operator/stock-<config> <backend> xN   T4.12, SPEC §13 calibration of the retired stock Operator (tests/retired_devices/
 //                          operator.pqp through bench/patches/operator_calibration.pqp): default (operator A only),
 //                          full (four operators, feedback, pitch envelope, per-voice LFO, 24 dB filter with its
 //                          envelope, glide), spread (full + spread) and, T4.12-fix1, ms2 / prd (full with the MS2 /

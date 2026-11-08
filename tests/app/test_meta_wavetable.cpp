@@ -625,8 +625,10 @@ struct AliasRig {
     track = ids.track();
     Batch b{"alias rig", {}};
     b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "WT"), {}, kAppend});
-    std::vector<Note> notes{playback_fixture::note(ids, 0, 256 * kTicksPerWhole, 0)};
-    b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 256 * kTicksPerWhole, notes, "held")});
+    // GU.12: held for the whole slow suite (26 tables x 25 pitches x ~70k frames ≈ 1030 s at 44.1 kHz): with 256 whole
+    // notes the GU.11 instrument group fell silent mid-suite at 44.1 and 48 kHz (its voice ends at the note-off).
+    std::vector<Note> notes{playback_fixture::note(ids, 0, 1024 * kTicksPerWhole, 0)};
+    b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 1024 * kTicksPerWhole, notes, "held")});
     REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
     // GU.11 (was the Basic Synth's text forked): an instrument group of blocks — acc = frac(z1(acc) + d) into a

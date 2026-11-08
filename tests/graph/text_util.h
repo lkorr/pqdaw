@@ -28,6 +28,9 @@ inline std::string readFile(const fs::path& path) {
 
 inline fs::path casesDir() { return fs::path(PQ_TEST_DATA_DIR) / "graph" / "cases"; }
 inline fs::path stdlibDir() { return fs::path(PQ_TEST_DATA_DIR) / ".." / "stdlib"; }
+// GU.12: test copies of the retired stock devices (Saturator, EQ Eight, Utility, Auto Filter, Operator, the LFO device;
+// retired/README.md): the corpus sweeps that walked stdlib/devices keep them as large real-world patches.
+inline fs::path retiredDevicesDir() { return fs::path(PQ_TEST_DATA_DIR) / "retired_devices"; }
 
 // TMM.12: does the file call meta modules (`meta_<type>(…)`)? Those parse only with the meta prelude (pq_meta's
 // signatures, ParseOptions::externals) and infer only with its patches in the library: the corpus sweeps of the

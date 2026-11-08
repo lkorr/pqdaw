@@ -55,3 +55,9 @@ Deleted outright (git history keeps them): the user devices (`Device::source`, `
 `Device::chainInput`, the stock device list and its `PQ_STAND_IN_DEVICES` test hook with `tests/stand_in_devices`, the
 analysis tap of analysed stock devices, the app's `DevicePlayer`, and the tests of those (test_user_devices, the
 schema-migration and all-free fixture renders, the GU.1 curve renders of stock devices).
+
+GU.12 (2026-11-07): `tests/retired_devices/` holds test copies of six retired stock patches (Saturator, EQ Eight,
+Utility, Auto Filter, Operator, the LFO device; imports pointed at the live stdlib). They are never loaded by the app;
+the compiler / JIT / param-ramp / probe / uniform-branch corpus sweeps, the structure test of Saturator's curve
+selector, the click sweep (`test_smooth`) and the benches `pq_bench_inspect` and `pq_bench_render` (operator/stock-*,
+`bench/patches/operator_calibration.pqp`) keep them as large real-world patches.

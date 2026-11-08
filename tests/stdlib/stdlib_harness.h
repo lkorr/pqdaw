@@ -79,8 +79,9 @@ struct Program {
   std::vector<std::string> inputs;  // root `in` names by ordinal
 };
 
-// Compiles the first patch of `text` (a file in stdlib/'s directory, so `import "filters/svf.pqp"` works).
-inline Program compile(const std::string& text, double sr = 48000.0) {
+// Compiles the first patch of `text` (a file in stdlib/'s directory, so `import "filters/svf.pqp"` works). `base`: the
+// library its calls resolve into (default: the stdlib's).
+inline Program compile(const std::string& text, double sr = 48000.0, const g::PatchLibrary* base = nullptr) {
   Program p;
   p.text = text;
   g::ParseOptions po;
@@ -92,7 +93,7 @@ inline Program compile(const std::string& text, double sr = 48000.0) {
     std::abort();
   }
   p.file = std::move(parsed.value());
-  g::PatchLibrary lib = stdlib().library;
+  g::PatchLibrary lib = base ? *base : stdlib().library;
   lib.add(p.file);
   g::InferOptions io;
   io.library = &lib;

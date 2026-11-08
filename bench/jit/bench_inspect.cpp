@@ -1,5 +1,5 @@
 // T4.5: what live probes and cost meters cost (pq/engine/inspect.h), and how well the meter agrees with a benchmark.
-// Stock devices of bench_devices.cpp (same patches, params and stereo input, 64-frame blocks), JIT and interpreter:
+// Stock devices of bench_devices.cpp (now retired; GU.12: their test copies in tests/retired_devices/; same patches, params and stereo input, 64-frame blocks), JIT and interpreter:
 //
 //   plain        the schedule without probes, nothing bound: what every image costs while no probe or meter is shown
 //   meter off    the same image bound to a CostMeter that is disabled (the circuit editor with the Cost toggle off)
@@ -51,6 +51,33 @@ const Signals& sig() {
   return s;
 }
 
+// GU.12: the stdlib plus the retired stock devices' test copies (tests/retired_devices/), parsed once.
+const g::PatchLibrary& benchLibrary() {
+  static const struct Lib {
+    std::vector<std::string> texts;
+    std::vector<g::PatchFile> files;
+    g::PatchLibrary library = st::stdlib().library;
+    Lib() {
+      const auto paths = text_util::pqpFiles(text_util::retiredDevicesDir());
+      texts.reserve(paths.size());
+      files.reserve(paths.size());
+      for (const auto& path : paths) {
+        texts.push_back(text_util::readFile(path));
+        g::ParseOptions po;
+        po.imports = &st::stdlib().loader;
+        auto r = g::parse(texts.back(), path.string(), po);
+        if (!r) {
+          std::fprintf(stderr, "%s\n", r.error().message.c_str());
+          std::abort();
+        }
+        files.push_back(std::move(r.value()));
+      }
+      for (const g::PatchFile& f : files) library.add(f);
+    }
+  } lib;
+  return lib.library;
+}
+
 // st::compile with a probe on every output of every node of the test patch.
 st::Program compileProbed(const std::string& text) {
   st::Program p;
@@ -60,7 +87,7 @@ st::Program compileProbed(const std::string& text) {
   auto parsed = g::parse(p.text, (st::stdlibDir() / "__t45_bench.pqp").string(), po);
   if (!parsed) std::abort();
   p.file = std::move(parsed.value());
-  g::PatchLibrary lib = st::stdlib().library;
+  g::PatchLibrary lib = benchLibrary();
   lib.add(p.file);
   const g::Patch& root = p.file.patches[0];
   std::vector<g::ProbeTarget> targets;
@@ -164,7 +191,7 @@ double gWorstMeterErr = 0.0;
 void runCase(const Case& c, st::Backend backend) {
   const std::string name = std::string(st::toText(backend)) + "/" + c.name;
   if (!gFilter.empty() && name.find(gFilter) == std::string::npos) return;
-  const st::Program plainP = st::compile(c.text);
+  const st::Program plainP = st::compile(c.text, 48000.0, &benchLibrary());
   const st::Program probedP = compileProbed(c.text);
   Rig plain(plainP, backend, c.params), meterOff(plainP, backend, c.params), metered(plainP, backend, c.params);
   Rig idle(probedP, backend, c.params), read(probedP, backend, c.params);
@@ -220,18 +247,18 @@ int main(int argc, char** argv) {
               "inner %.0f, outer %.0f cycles\n",
               kBlock, st::jitCompiler().hostCpu().c_str(), tc.innerCycles, tc.outerCycles);
   std::vector<Case> cases;
-  cases.push_back({"utility", R"(import "devices/utility.pqp"
+  cases.push_back({"utility", R"(import "../tests/retired_devices/utility.pqp"
 patch T { in x : audio stereo
   out y : audio stereo
   u = utility(x)
   y = u })", {{"u__width", 1.4}, {"u__balance", 0.2}, {"u__gain", 0.8}}});
   for (const auto& [type, hq] : std::vector<std::pair<int, int>>{{3, 2}, {7, 2}, {3, 8}})
     cases.push_back({"saturator type " + std::to_string(type) + " hq " + std::to_string(hq),
-                     "import \"devices/saturator.pqp\"\npatch T { in x : audio stereo\n  out y : audio stereo\n  s = saturator(x, type: " +
+                     "import \"../tests/retired_devices/saturator.pqp\"\npatch T { in x : audio stereo\n  out y : audio stereo\n  s = saturator(x, type: " +
                          std::to_string(type) + ", hq: " + std::to_string(hq) + ")\n  y = s }",
                      {{"s__drive", 3.981}, {"s__output", 0.7}}});
   cases.push_back({"eq_eight defaults (6 bands)",
-                   "import \"devices/eq_eight.pqp\"\npatch T { in x : audio stereo\n  out y : audio stereo\n  e = eq_eight(x)\n  y = e }",
+                   "import \"../tests/retired_devices/eq_eight.pqp\"\npatch T { in x : audio stereo\n  out y : audio stereo\n  e = eq_eight(x)\n  y = e }",
                    {}});
   for (const Case& c : cases) runCase(c, st::Backend::Jit);
   for (const Case& c : cases) runCase(c, st::Backend::Interp);
