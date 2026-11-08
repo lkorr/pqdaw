@@ -35,7 +35,7 @@
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/devices/device_model.h"
-#include "pq/views/devices/device_panel.h"
+#include "pq/views/panel/block_frame.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
@@ -379,11 +379,9 @@ TEST_CASE("wiring: show / fade / hide (hidden: no cables, no work); the rings sh
   u.d.step();
   CHECK(wireCount() == 1);
   // The ring: knob ± Σ|amount| (faint), and the polled sweep (bright).
-  devices::DevicePanel* panel = u.view().panelOf(wt);
+  panel::BlockFrame* panel = u.view().panelOf(wt);
   REQUIRE(panel != nullptr);
-  const devices::ParamInfo* info = panel->signature().findParam("position");
-  REQUIRE(info != nullptr);
-  const auto pk = static_cast<float>(devices::toPosition(*info, panel->paramValue("position")));
+  const auto pk = static_cast<float>(panel->target().position(doc::controlBinding(wt, "position")));
   CHECK(pk >= 0.0f);
   FixedModulationSource src;
   src.set(wt, "position", ModSweep{true, 0.1f, 0.2f});

@@ -31,8 +31,7 @@
 #include "pq/views/browser/library_load.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/devices/device_model.h"
-#include "pq/views/devices/device_panel.h"
-#include "pq/views/devices/panel_layout.h"
+#include "pq/views/panel/block_frame.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -111,16 +110,23 @@ struct Ui {
   double wtValue(const char* p) const {
     return doc::metaParamValue(dev(ids.wt), "", meta::wavetableType(), static_cast<size_t>(meta::wavetableType().paramIndex(p)));
   }
-  devices::DevicePanel& panel(doc::DeviceId id) {
+  panel::BlockFrame& panel(doc::DeviceId id) {
     d.tree().layoutNow();
-    devices::DevicePanel* p = view().panelOf(id);
+    panel::BlockFrame* p = view().panelOf(id);
     REQUIRE(p != nullptr);
     return *p;
   }
-  Widget& faceControl(doc::DeviceId id) {
-    Widget* w = panel(id).control("face");
-    REQUIRE(w != nullptr);
-    return *w;
+  // GU.13: a native engine's face is its module's panel (the face's sections and controls) in the frame's PanelHost.
+  panel::PanelHost& faceControl(doc::DeviceId id) { return panel(id).host(); }
+  // The block's signature as its frame shows it: its patch's in the form its place on the path gives it (the note source
+  // reaching it: an instrument, else an effect: DeviceChainView's pathDevices).
+  devices::DeviceSignature sig(doc::DeviceId id) const {
+    doc::Device copy = dev(id);
+    const doc::DeviceLoc l = doc::findDevice(*ctx.doc(), id);
+    for (const doc::ChainStage& st : doc::trackStages(*ctx.doc(), *l.track))
+      if (st.device != nullptr && st.device->id == id)
+        copy.kind = st.in == doc::ChainSignal::Notes ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect;
+    return devices::signatureOf(*library().patchOf(copy));
   }
   // A face-local point (world units) of device `id`'s face, in device px (the face is fitted into its control).
   Vec2 at(doc::DeviceId id, float x, float y, float worldW, float worldH) {
@@ -142,8 +148,8 @@ struct Ui {
 
 TEST_CASE("meta devices (views): a chain meta device's panel is its face, fitted to the Device view's height") {
   Ui u;
-  devices::DevicePanel& wp = u.panel(u.ids.wt);
-  CHECK(wp.desc().fitFace);
+  panel::BlockFrame& wp = u.panel(u.ids.wt);
+  CHECK(wp.face().elementCount() > 1);  // its module's panel: the face's sections and plain controls
   CHECK(wp.title() == "Wavetable");
   // (GU.4: the Phase Accumulator is its module — a group, free beside it — and the Wavetable heads the path.)
   CHECK(doc::isGroupDevice(u.dev(u.ids.acc)));
@@ -153,15 +159,13 @@ TEST_CASE("meta devices (views): a chain meta device's panel is its face, fitted
   const IRect pr = wp.rect();
   const float s = u.d.tree().scale();
   CHECK(std::abs(static_cast<float>(fr.h) - (static_cast<float>(pr.h) - (20.0f + 12.0f) * s)) <= 2.0f);
-  const float faceScale = static_cast<float>(fr.h) / (248.0f * s);
+  const float faceScale = u.faceControl(u.ids.wt).transform().scale / s;
+  CHECK(std::abs(static_cast<float>(fr.h) / (248.0f * s) - faceScale) <= 0.02f);
   CHECK(faceScale > 0.7f);
-  CHECK(faceScale <= devices::DevicePanel::kFaceMaxScale + 1e-3f);
-  CHECK(std::abs(static_cast<float>(fr.w) - 204.0f * faceScale * s) <= 3.0f);
-  // The block after it (GU.11: a module where Auto Filter was — a group, its frame its panel) has no fitted face.
-  {
-    const devices::DevicePanel* next = u.view().panelOf(doc::mainPath(*u.ctx.doc(), *doc::findTrackPtr(*u.ctx.doc(), u.ids.lead)).blocks.at(1)->id);
-    CHECK((next == nullptr || !next->desc().fitFace));
-  }
+  CHECK(faceScale <= 2.0f + 1e-3f);  // (the frame's maximum face scale)
+  CHECK(static_cast<float>(fr.w) >= 204.0f * faceScale * s - 3.0f);
+  // The block after it (GU.11: a module where Auto Filter was — a group, its frame its panel) has no leaf frame.
+  CHECK(u.view().panelOf(doc::mainPath(*u.ctx.doc(), *doc::findTrackPtr(*u.ctx.doc(), u.ids.lead)).blocks.at(1)->id) == nullptr);
   // Another Device view height scales the face with it (the frame's width follows).
   dynamic_cast<Splitter&>(*u.d.find("main/body")).setPosition(200.0f);
   u.d.tree().layoutNow();
@@ -175,12 +179,13 @@ TEST_CASE("meta devices (views): the face's input socket shows where the chain i
   Ui u;
   // GU.4: a second Wavetable after the Lead's (which heads the path, at the notes: no audio socket), where the
   // Phase accumulator's Wavetable was — the first one's voices into its phase.
-  CHECK(u.panel(u.ids.wt).signature().audioIn.empty());
+  CHECK(u.sig(u.ids.wt).audioIn.empty());
   auto add = doc::ops::addMetaDevice(*u.ctx.doc(), u.ctx.store().ids(), u.ids.lead, "wavetable", 1);
   REQUIRE(add.ok());
   REQUIRE(u.ctx.store().dispatch(add->command).ok());
   const doc::DeviceId wt2 = add->devices.at(0);
-  CHECK(u.panel(wt2).signature().audioIn == "x");  // (GU.11: the type's own input; no chain-input choice any more)
+  (void)u.panel(wt2);
+  CHECK(u.sig(wt2).audioIn == "x");  // (GU.11: the type's own input; no chain-input choice any more)
 }
 
 TEST_CASE("meta devices (views): face drags in the Device view are one undo step each; double-click resets") {
@@ -203,7 +208,7 @@ TEST_CASE("meta devices (views): face drags in the Device view are one undo step
   // (GU.4: the Phase accumulator face's arcs are gone with it: its module's knobs are panel elements,
   // tests/views/test_group_panels.cpp drags them through real dispatch.)
   // The panel follows (the face reads the document): nothing was rebuilt, the frames are the same widgets.
-  devices::DevicePanel* before = u.view().panelOf(u.ids.wt);
+  panel::BlockFrame* before = u.view().panelOf(u.ids.wt);
   // Double-click the fold knob: reset, one step; undo brings it back.
   h0 = u.history();
   u.d.doubleClick(u.wt(38.0f, 212.0f));
@@ -222,8 +227,8 @@ TEST_CASE("meta devices (views): face drags in the Device view are one undo step
 TEST_CASE("meta devices (views): automation LEDs and Show Automation sit on the face's controls") {
   Ui u;
   // (GU.4: on the Wavetable's face; it was the Phase accumulator's.)
-  devices::DevicePanel& ap = u.panel(u.ids.wt);
-  const std::optional<IRect> freq = ap.controlRect("position");
+  (void)u.panel(u.ids.wt);
+  const std::optional<IRect> freq = u.view().controlRect(u.ids.wt, "position");
   REQUIRE(freq.has_value());
   const IRect face = u.faceControl(u.ids.wt).rect();
   CHECK(freq->x >= face.x - 1);
@@ -294,7 +299,7 @@ TEST_CASE("meta devices (views): the device menu's Meta Modules — the kind fol
     for (const meta::Type* x : metaModuleTypes())
       if (m.label == "   " + std::string(x->name)) CHECK(m.enabled);
   // Its panel is a face too.
-  CHECK(u.panel(added.id).desc().fitFace);
+  CHECK(u.panel(added.id).face().elementCount() > 1);
   // The browser and the menus name it by its type; GU.4: the modules by their names (no meta type of theirs).
   CHECK(deviceDisplayName(u.ctx, "meta:wavetable") == "Wavetable");
   CHECK(deviceDisplayName(u.ctx, std::string(doc::kModuleItemPrefix) + "phase_acc") == "Phase Accumulator");

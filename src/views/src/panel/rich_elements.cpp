@@ -982,6 +982,8 @@ public:
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
     using K = FacePointer::Kind;
     const doc::Binding* b = binding();
+    noteGestures(e, t);  // GU.13
+    if (wheelStep(e, t)) return true;
     if (e.kind == K::Down) {
       if (e.button != ui::PointerButton::Left || !editable(t)) return false;
       if (e.clicks >= 2) {

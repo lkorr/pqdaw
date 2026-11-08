@@ -34,6 +34,7 @@
 
 #include "pq/document/panel.h"
 #include "pq/dsp/curve.h"
+#include "pq/ui/controls.h"
 #include "pq/ui/face_painter.h"
 #include "pq/ui/input.h"
 #include "pq/ui/theme.h"
@@ -51,6 +52,7 @@ struct BoundInfo {
   std::vector<std::string> choices;  // a choice (value = index); empty: none
   bool isSwitch = false;  // a bool param / a 0 … 1 step-1 setting
   int32_t steps = 0;      // discrete positions (≥ 2), 0: continuous
+  bool curveSwitched = false;  // GU.13: a control switched off its declared curve (Knob Curve): the knob shows its glyph
   // Changes whenever the target resolved the binding again (its block changed): what an element caches from it (its
   // label, a readout's text) is keyed on it.
   uint64_t generation = 0;
@@ -109,6 +111,15 @@ public:
   // GU.7: the analysis feed a meter reads: a Signal binding's tap (the lowering's), or a Data binding's analyser
   // engine's own tap. Null: none yet.
   virtual devices::SpectrumFeed* signalFeed(const doc::Binding& /*b*/) { return nullptr; }
+  // ---- GU.13: what a host shows on the controls (the Device view: pq/views/device_chain/device_chain.h) ----
+  // The LIVE MODULATION RING of a control (the range its wires sweep, what they swept since the last poll, where the
+  // modulation puts it), drawn by a knob instead of the static driven() ring; null: none set. setModulation returns
+  // whether it changed (the host repaints).
+  virtual const ui::ModulationRing* modulation(const doc::Binding& /*b*/) const { return nullptr; }
+  virtual bool setModulation(const doc::Binding& /*b*/, const ui::ModulationRing& /*ring*/) { return false; }
+  // A position SHOWN instead of the stored one (an automated control follows its envelope at the playhead while the
+  // transport plays); nullopt: the stored one again. Returns whether it changed.
+  virtual bool showPosition(const doc::Binding& /*b*/, std::optional<double> /*position*/) { return false; }
 };
 
 // What an element paints with.
@@ -160,6 +171,11 @@ public:
   // Kind + style + size: the static layers' shared tile key (computed once).
   uint64_t staticKey() const noexcept { return staticKey_; }
   virtual void paintLive(ui::FacePainter& p, const ElementEnv& env) = 0;
+  // GU.13: a key of what the live layer shows from the target (its bindings' positions, resolutions, rings): a document
+  // change repaints only the elements whose key changed (the old device panel's rule: a value change damages only its
+  // control). kAnyChange: it cannot tell (an engine's face, an embedded panel, a display): repainted on every change.
+  static constexpr uint64_t kAnyChange = ~0ull;
+  virtual uint64_t liveKey(const PanelTarget& t) const;
 
   // ---- interaction ----
   virtual bool hit(ui::Vec2 local) const noexcept;  // default: inside the rect
@@ -210,6 +226,13 @@ public:
   virtual bool prepare(float /*pxPerUnit*/) { return false; }
   virtual const doc::Binding* controlAt(ui::Vec2 /*local*/) const { return binding(); }
   virtual std::optional<ControlAnchor> anchorFor(const doc::Binding& want, bool shownOnly) const;
+  // GU.13: every CONTROL the element shows (a Control binding) with its rect (element-local): its own binding, an engine
+  // section's face controls, an embedded panel's controls (shown ones only). The Device view's drop targets, automation
+  // LEDs and modulation rings visit them.
+  using ControlVisitor = std::function<void(const doc::Binding& b, const ui::Rect& r)>;
+  virtual void visitControls(const ControlVisitor& fn) const;
+  // GU.13: the run of wheel notches the element was turned by ended (one undo step).
+  virtual void endWheel(PanelTarget& /*t*/) {}
 
 protected:
   // Style fields with the schema's defaults.

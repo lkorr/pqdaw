@@ -34,7 +34,7 @@
 #include "pq/views/browser/library.h"
 #include "pq/views/browser/library_load.h"
 #include "pq/views/device_chain/device_chain.h"
-#include "pq/views/devices/device_panel.h"
+#include "pq/views/panel/block_frame.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/shell/shell.h"
@@ -256,7 +256,7 @@ TEST_CASE("user library: hot-swap replaces the device's preset in place, keeping
   if (l.browser().list().renaming()) l.browser().list().renameField()->onCancel();
   const uint32_t index = doc::findDevice(*l.ctx.doc(), l.sat).index;
   // The title bar's preset slot puts the browser in hot-swap mode for this device.
-  devices::DevicePanel* panel = l.chain().panelOf(l.sat);
+  panel::BlockFrame* panel = l.chain().panelOf(l.sat);
   REQUIRE(panel != nullptr);
   REQUIRE(panel->onPresetClick);
   panel->onPresetClick();

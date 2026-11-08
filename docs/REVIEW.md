@@ -932,3 +932,23 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **To judge** (QUESTIONS Q?-GU.11-a): modules on the path from the Device view vs off it from the circuit; a group
   frame repaints whole on any document change; group-panel knobs in the Device view have no wheel / Show Automation /
   Knob Curve / ring; an engine appended to a path holding only the instrument group goes inside the group.
+
+## 👁 GU.13 One panel system for leaves too; group-panel knobs at parity (GU.f2 + GU.f3) · 2026-11-07
+- **What changed:** a leaf on a track's path (a native engine, an atom or value block) is drawn in the Device view as a
+  panel of the group-panel system — its engine module's panel (the Wavetable's, the Envelope's, an analyser's) or one
+  knob / toggle / number element per param and setting — inside the same Live-style frame (jacks, title bar, activator,
+  fold, preset slot, rename). A rack's macros are knob elements too. The old `DevicePanel` is deleted. Every knob of every
+  panel (leaf, module, rack macro) now takes the same gestures in the Device view and the panel window: the wheel (a run
+  of notches is one undo step; the circuit's wheel still pans / zooms), type a number after a click (Enter commits),
+  Delete / Up / Down, double-click default; right-click Show Automation and Knob Curve on a module's knob too; the
+  automation LED and the envelope at the playhead on a module's knob; the live modulation ring (range faint, sweep
+  bright, a dot) instead of the static driven ring; Map mode on any knob; a small curve glyph on a knob switched off its
+  default curve (not on value blocks: their curve is what they are). A value change repaints only that control.
+- **Goldens re-recorded (6):** device-automation (the Utility's Width shows its envelope at the playhead and the LEDs),
+  device-meta-chain, device-meta-scope / -spectrogram / -spectrum (the face's own in/out jack dots are gone: the frame's
+  sockets remain), instrument-rack (the macros as panel knobs on a panel plate).
+- **Look at:** instrument-rack (macro labels are the panel system's small 7.5-unit labels now: GU.f6 covers minimum text
+  size), device-meta-chain (the Wavetable leaf).
+- **Try it:** `pqdaw`, add an Audio Effect Rack with a Saturator inside, wheel over Drive; right-click it → Show
+  Automation; Map → macro 1 → click Drive.
+- **To judge** (QUESTIONS Q?-GU.13-a): wheel and typed values in the panel window too; the generic leaf panel's look.

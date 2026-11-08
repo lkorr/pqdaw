@@ -182,6 +182,10 @@ struct FacePointer {
   // TMM.9: Down / Up: the button (a face gets right presses only where it uses them: onPointer returns false
   // otherwise and the host opens its menu). Move without a drag: the hover (a face may track it; true = repaint).
   ui::PointerButton button = ui::PointerButton::Left;
+  // GU.13: the host lets a panel's value controls take the DEVICE-PANEL GESTURES — the wheel turns a knob (a run of notches
+  // is one undo step: Face::endWheel), a press gives it the keys (type a value, Delete: default, Up / Down: a step). The
+  // Device view's and the panel window's PanelHost set it; the circuit canvas does not (its wheel pans and zooms).
+  bool valueGestures = false;
 };
 
 // TX.mod-all: where a modulation wire into a param ends on a face — the control that shows the param (the user: "the
@@ -309,6 +313,8 @@ public:
   // The key focus went elsewhere (a press outside the face): a type-in commits.
   virtual void focusLost() {}
   virtual void cancelDrag() = 0;  // capture lost / Esc: the drag's edits are undone
+  // GU.13: a run of wheel notches on a control ended (the host's timer after the last notch, or any press): one undo step.
+  virtual void endWheel() {}
   virtual ui::Cursor cursor(int32_t part) const noexcept;
   // The info view's text for a part (title, body).
   virtual void describe(int32_t part, std::string& title, std::string& body) const;

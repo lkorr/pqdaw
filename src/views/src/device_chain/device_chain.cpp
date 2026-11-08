@@ -80,7 +80,54 @@ const PanelTemplate* DeviceChainView::Impl::templateFor(const doc::Device& d) {
   const std::string key = templateKey(lib, d);
   if (key.empty()) return nullptr;
   if (const auto it = templates.find(key); it != templates.end()) return it->second.get();
-  return (templates[key] = buildPanelTemplate(lib, d)).get();  // TX.panel-faces: shared with the project patch view
+  std::unique_ptr<PanelTemplate>& t = templates[key];
+  const graph::Patch* callee = lib != nullptr ? lib->patchOf(d) : nullptr;
+  if (callee == nullptr) return nullptr;
+  t = std::make_unique<PanelTemplate>();
+  t->sig = devices::signatureOf(*callee);
+  if (const meta::Type* type = meta::findType(doc::metaDeviceType(d)); type != nullptr) t->title = std::string(type->name);
+  else if (const doc::DeviceInfo* info = lib->infoOf(d)) t->title = info->name;
+  else t->title = d.patch;
+  return t.get();
+}
+
+const devices::ParamInfo* DeviceChainView::Impl::paramInfo(doc::DeviceId device, std::string_view param) {
+  const doc::DeviceLibrary* lib = view.ctx_.deviceLibrary();
+  const doc::Device* d = doc::findDevice(doc(), device).device;
+  const graph::Patch* patch = lib != nullptr && d != nullptr ? lib->patchOf(*d) : nullptr;
+  if (patch == nullptr) return nullptr;
+  std::unique_ptr<devices::DeviceSignature>& sig = sigs[patch];
+  if (!sig) sig = std::make_unique<devices::DeviceSignature>(devices::signatureOf(*patch));
+  const devices::ParamInfo* info = sig->findParam(param);
+  if (info == nullptr) return nullptr;
+  paramScratch = *info;
+  paramScratch.curve = devices::storedCurve(*info, *d);  // GU.1: the block's own knob curve
+  return &paramScratch;
+}
+
+FrameBase* DeviceChainView::Impl::frameFor(doc::DeviceId device) const {
+  if (FrameBase* f = frameOf(device)) return f;
+  // A member: the nearest group around it that has a frame of its own (not a rack: its chains' blocks have theirs).
+  const doc::Project& p = doc();
+  const doc::Device* d = doc::findDevice(p, device).device;
+  for (uint32_t depth = 0; d != nullptr && d->group.valid() && depth < 64; ++depth) {
+    if (FrameBase* f = frameOf(d->group)) return f->isRack() ? nullptr : f;
+    d = doc::findDevice(p, d->group).device;
+  }
+  return nullptr;
+}
+
+panel::PanelHost* DeviceChainView::Impl::hostOf(doc::DeviceId device, std::string_view param, doc::Binding* binding) const {
+  const FrameBase* f = frameFor(device);
+  if (f == nullptr) return nullptr;
+  panel::PanelHost* out = nullptr;
+  forEachPanelControl(*f, [&](const PanelControl& c) {
+    if (c.device != device || c.param != param) return false;
+    out = c.host;
+    if (binding != nullptr) *binding = *c.binding;
+    return true;
+  });
+  return out;
 }
 
 std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId, doc::ChainId chain, uint32_t index,
@@ -277,86 +324,35 @@ void DeviceChainView::Impl::endDrag(bool commit) {
 
 namespace {
 
-// ---- A device panel's target: the document's device instance ---------------------------------------------------
-
-class ChainTarget final : public devices::DeviceTarget {
-public:
-  ChainTarget(DeviceChainView::Impl& impl, ViewContext& ctx, doc::DeviceId id) : impl_(impl), ctx_(ctx), id_(id) {}
-  void paramGestureBegin(std::string_view) override {
-    if (!ctx_.store().inGesture()) {
-      (void)ctx_.store().beginGesture("Device Parameter");
-      ownGesture_ = true;
-    }
-  }
-  void setParam(std::string_view param, double value) override {
-    // T4.8: a knob a macro drives turns its macro (the inverse of the mapping), as Live's mapped controls follow theirs.
-    // GU.9: the mapping is a Travel wire from the macro's value block (position = min + (max − min) · macro).
-    if (const auto m = macroMappingOf(*ctx_.doc(), id_, param)) {
-      FrameBase* f = impl_.frameOf(id_);
-      const devices::ParamInfo* info = f != nullptr && f->panel() != nullptr ? f->panel()->signature().findParam(param) : nullptr;
-      if (info == nullptr) return;
-      const doc::RackMapping& mm = m->second;
-      const double span = mm.max - mm.min;
-      const double x = std::abs(span) < 1e-9 ? 0.0 : std::clamp((devices::toPosition(*info, value) - mm.min) / span, 0.0, 1.0);
-      impl_.live(doc::ops::setMacroValue(*ctx_.doc(), m->first.id, mm.macro, x * doc::kMacroMax));
-      return;
-    }
-    // Inside the gesture each change is applied at once (live param writes); outside it is one undo step of its own.
-    // GU.1: the document stores the knob position that gives the value (nearest the knob's current one).
-    const doc::Device* d = doc::findDevice(*ctx_.doc(), id_).device;
-    FrameBase* f = impl_.frameOf(id_);
-    const devices::ParamInfo* info = f != nullptr && f->panel() != nullptr ? f->panel()->signature().findParam(param) : nullptr;
-    if (d != nullptr && info != nullptr) {
-      impl_.live(doc::ops::setDeviceParam(*ctx_.doc(), id_, std::string(param),
-                                          devices::toPosition(*info, value, devices::storedPosition(*info, *d))));
-      return;
-    }
-    impl_.live(doc::ops::setDeviceParam(*ctx_.doc(), id_, std::string(param), value));
-  }
-  void paramGestureEnd(std::string_view) override {
-    if (ownGesture_ && ctx_.store().inGesture()) (void)ctx_.store().commitGesture();
-    ownGesture_ = false;
-  }
-  void setConst(std::string_view name, double value) override {
-    impl_.run(doc::ops::setDeviceSetting(*ctx_.doc(), id_, std::string(name), value), false);
-  }
-  void setActive(bool on) override {
-    impl_.run(doc::ops::setDevicesActive(*ctx_.doc(), std::vector<doc::DeviceId>{id_}, on), false);
-  }
-  // TMM.10: a face control's instance — "" is this chain meta device; a nested path is a meta call in its circuit.
-  const meta::Type* metaType(std::string_view path) const override { return metaTypeAt(ctx_, id_, path); }
-  std::unique_ptr<MetaTarget> metaTarget(std::string_view path, const meta::Type& type) override {
-    return std::make_unique<DocTarget>(ctx_, id_, std::string(path), type);
-  }
-  VoiceTapReader* metaVoices(std::string_view path) override {
-    return impl_.view.faceVoices ? impl_.view.faceVoices(id_, path) : nullptr;
-  }
-  // TX.spectrum: the device's analysis (a Spectrum native engine's face).
-  devices::SpectrumFeed* outputSpectrum() override { return ctx_.analysisFeed(id_); }
-
-private:
-  DeviceChainView::Impl& impl_;
-  ViewContext& ctx_;
-  doc::DeviceId id_;
-  bool ownGesture_ = false;
-};
-
-// ---- A device frame: the device's panel, plus selection, the reorder drag and the context menu ---------------------
+// ---- A leaf's frame: its panel (GU.13: a synthetic group-system panel in a Live-style frame), plus selection, the reorder
+// drag and the context menu ------------------------------------------------------------------------------------------
 
 class DeviceFrame final : public FrameBase {
 public:
   DeviceFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d, const PanelTemplate* tpl, std::string key)
-      : FrameBase("device[" + std::to_string(d.id.value) + "]", impl, ctx, d.id), target_(impl, ctx, d.id),
-        key_(std::move(key)) {
+      : FrameBase("device[" + std::to_string(d.id.value) + "]", impl, ctx, d.id), key_(std::move(key)) {
     setLayout(ui::LayoutKind::Custom);
     if (tpl != nullptr) {
-      std::map<std::string, double, std::less<>> values;
-      for (const doc::DeviceValue& v : d.params)  // GU.1: the panel shows values: the curve at the stored position
-        if (const devices::ParamInfo* p = tpl->sig.findParam(v.name)) values[v.name] = devices::storedValue(*p, d);
-      for (const doc::DeviceValue& v : d.settings) values[v.name] = v.value;
-      panel_ = &add<devices::DevicePanel>("panel", tpl->sig, tpl->desc, &target_, values);
-      for (const doc::ControlCurve& c : d.curves) panel_->setParamCurve(c.param, &c.curve);  // GU.1
+      bool face = false;
+      auto p = std::make_shared<const doc::Panel>(panel::leafPanel(tpl->sig, d, &face));
+      auto gf = std::make_unique<panel::GroupPanelFace>([p]() -> doc::PanelPtr { return p; },
+                                                         panel::makeDocPanelTarget(ctx, d.id, [this]() -> ui::Widget* {
+                                                           return panel_ != nullptr ? &panel_->host() : nullptr;
+                                                         }));
+      gf->setOwner(d.id);
+      panel::BlockFrame::Options o;
+      o.title = tpl->title;
+      o.exports = tpl->sig.exports;
+      if (face) {  // TMM.10: a native engine's face scales with the Device view's height
+        o.minScale = 0.5f;
+        o.maxScale = 2.0f;
+        o.minWidth = 212.0f;  // the title bar keeps room for a module's name
+      }
+      panel_ = &add<panel::BlockFrame>("panel", std::move(gf), std::move(o));
       panel_->setActive(d.active);
+      panel_->onActivate = [this](bool on) {
+        impl_.run(doc::ops::setDevicesActive(*ctx_.doc(), std::vector<doc::DeviceId>{id_}, on), false);
+      };
       panel_->onSizeChanged = [this] { impl_.content->invalidateLayout(); };
       // T4.7: a jack press and the drag after it go to the cable layer (installWiring).
       panel_->onJackPressed = [this](std::string_view port, ui::Vec2 pos) {
@@ -369,6 +365,7 @@ public:
       panel_->onJackDrag = [this](const ui::PointerEvent& e) {
         if (impl_.view.onJack) impl_.view.onJack(id_, {}, e);
       };
+      title_ = tpl->title;
       if (!d.name.empty()) panel_->setTitle(d.name);  // T4.17
       // T5.11: the preset slot names the last preset loaded here; a click hot-swaps the device's presets in the browser.
       panel_->setPresetName(ctx.library().presetName(d.id));
@@ -382,33 +379,17 @@ public:
     return DeviceChainView::Impl::templateKey(ctx_.deviceLibrary(), d) == key_;
   }
 
-  devices::DevicePanel* panel() const noexcept override { return panel_; }
-  devices::DeviceTarget* target() noexcept override { return &target_; }
-  // The device changed in the document (values, settings, activation): the panel repaints what moved.
+  panel::BlockFrame* panel() const noexcept override { return panel_; }
+  // The device changed in the document (values, settings, activation): the panel shows it.
   void update(const doc::Device& d) override {
     if (!panel_) return;
-    panel_->setTitle(d.name.empty() ? panel_->desc().title : d.name);  // T4.17
+    panel_->setTitle(d.name.empty() ? title_ : d.name);  // T4.17
     panel_->setActive(d.active);
     panel_->setPresetName(ctx_.library().presetName(d.id));
-    for (const devices::ParamInfo& p : panel_->signature().params) {
-      panel_->setParamCurve(p.name, d.curve(p.name));  // GU.1
-      panel_->setParamValue(p.name, devices::storedValue(p, d));
-    }
-    for (const devices::ConstInfo& c : panel_->signature().consts) {
-      const doc::DeviceValue* v = d.setting(c.name);
-      panel_->setConstValue(c.name, v != nullptr ? v->value : c.def);
-    }
+    panel_->host().notifyChanged();
   }
-  void paramsChanged(const doc::Device& d, std::span<const doc::ParamRef> params) override {
-    if (!panel_) return;
-    for (const doc::ParamRef& r : params) {
-      if (r.kind != doc::ParamKind::DeviceParam || r.owner != d.id.value) continue;
-      for (const devices::ParamInfo& p : panel_->signature().params)
-        if (doc::deviceParamHash(p.name) == r.target) {
-          panel_->setParamCurve(p.name, d.curve(p.name));  // GU.1: a curve edit is a Param change too
-          panel_->setParamValue(p.name, devices::storedValue(p, d));
-        }
-    }
+  void paramsChanged(const doc::Device&, std::span<const doc::ParamRef>) override {
+    if (panel_) panel_->host().notifyChanged();
   }
   float logicalWidth() const override { return panel_ ? panel_->logicalWidth() : 160.0f; }
   // TMM.10: a face panel scales with the Device view's height.
@@ -441,20 +422,12 @@ public:
                   ui::TextAlign::Left);
   }
 
-  bool inTitle(ui::Vec2 p) const override {
-    const ui::IRect r = rect();
-    // The title bar is the panel's top kTitleH (below the jack strip of a device with exports).
-    const float strip = panel_ && !panel_->signature().exports.empty() ? 10.0f : 0.0f;  // T4.6 kJackStripH
-    const int32_t top = tree() ? tree()->uiScale().px(strip) : 0;
-    const int32_t th = tree() ? tree()->uiScale().px(kTitleH) : 20;
-    return p.x >= static_cast<float>(r.x) && p.x < static_cast<float>(r.right()) &&
-           p.y >= static_cast<float>(r.y + top) && p.y < static_cast<float>(r.y + top + th);
-  }
+  bool inTitle(ui::Vec2 p) const override { return panel_ ? panel_->titleRect().contains(p) : FrameBase::inTitle(p); }
 
 private:
-  ChainTarget target_;
-  std::string key_;           // the template it was built from (Impl::templateKey)
-  devices::DevicePanel* panel_ = nullptr;
+  std::string key_;  // the template it was built from (Impl::templateKey)
+  std::string title_;
+  panel::BlockFrame* panel_ = nullptr;
   std::string missing_;
 };
 
@@ -564,36 +537,61 @@ void FrameBase::setSelected(bool s) {
 
 void FrameBase::paintOver(ui::PaintContext& ctx) {
   if (!ctx.res.theme) return;
-  // T4.18: an automated param's control carries Live's LED in its corner (grey while overridden by hand).
-  if (!automated_.empty())
-    if (devices::DevicePanel* panel = this->panel(); panel != nullptr && !panel->folded()) {
-      const auto& at = ctx.res.theme->automation;
-      const float size = static_cast<float>(std::max(2, ctx.scale.px(4.0f)));
-      for (const auto& [name, overridden] : automated_) {
-        const std::optional<ui::IRect> cr = panel->controlRect(name);  // TMM.10: a face's control too
-        if (!cr) continue;
-        const ui::IRect r = ui::intersect(*cr, rect());
-        if (r.w < 2 * static_cast<int32_t>(size) || r.h < 2 * static_cast<int32_t>(size)) continue;
-        // Left of the control (clear of its centred label) where the frame has room, else inside its corner.
-        const int32_t outside = r.x - static_cast<int32_t>(size) - 1;
-        const float x = static_cast<float>(outside >= rect().x + 1 ? outside : r.x + 1), y = static_cast<float>(r.y + 1);
-        ctx.dl.addRectFilled({x, y, x + size, y + size}, overridden ? at.ledOverridden : at.led);
-      }
+  // T4.18: an automated param's control carries Live's LED in its corner (grey while overridden by hand). GU.13: on any of
+  // the frame's panels (a leaf's, a group's: a member's control).
+  if (!automated_.empty()) {
+    std::vector<panel::PanelHost*> hs;
+    hosts(hs);
+    const auto& at = ctx.res.theme->automation;
+    const float size = static_cast<float>(std::max(2, ctx.scale.px(4.0f)));
+    for (const Mark& mk : automated_) {
+      const doc::Binding b = doc::controlBinding(mk.device, mk.param);
+      std::optional<ui::IRect> cr;
+      for (const panel::PanelHost* h : hs)
+        if (!cr) cr = h->controlRect(b);
+      if (!cr) continue;
+      const ui::IRect r = ui::intersect(*cr, rect());
+      if (r.w < 2 * static_cast<int32_t>(size) || r.h < 2 * static_cast<int32_t>(size)) continue;
+      // Left of the control (clear of its centred label) where the frame has room, else inside its corner.
+      const int32_t outside = r.x - static_cast<int32_t>(size) - 1;
+      const float x = static_cast<float>(outside >= rect().x + 1 ? outside : r.x + 1), y = static_cast<float>(r.y + 1);
+      ctx.dl.addRectFilled({x, y, x + size, y + size}, mk.overridden ? at.ledOverridden : at.led);
     }
+  }
   if (!selected_) return;
   // The selected device: an outline in the focus colour (Live highlights the selected device).
   paint::box(ctx.dl, rect(), 0.0f, 0, ctx.res.theme->accent.focus);
 }
 
-std::string FrameBase::paramAt(ui::Vec2 p) const {
-  const devices::DevicePanel* panel = this->panel();
-  return panel != nullptr ? panel->paramAt(p) : std::string();
+void FrameBase::hosts(std::vector<panel::PanelHost*>& out) const {
+  if (panel::BlockFrame* b = panel(); b != nullptr && !b->folded()) out.push_back(&b->host());
 }
 
-void FrameBase::setAutomated(std::vector<std::pair<std::string, bool>> params) {
-  if (params == automated_) return;
-  automated_ = std::move(params);
+std::optional<std::pair<doc::DeviceId, std::string>> FrameBase::controlAt(ui::Vec2 p) const {
+  std::vector<panel::PanelHost*> hs;
+  hosts(hs);
+  for (const panel::PanelHost* h : hs)
+    if (const doc::Binding* b = h->controlAt(p); b != nullptr && b->meta.empty()) return std::make_pair(b->device, b->name);
+  return std::nullopt;
+}
+
+void FrameBase::setAutomated(std::vector<Mark> marks) {
+  if (marks == automated_) return;
+  automated_ = std::move(marks);
   markDirty();
+}
+
+void device_chain::forEachPanelControl(const FrameBase& f, const std::function<bool(const PanelControl&)>& fn) {
+  std::vector<panel::PanelHost*> hs;
+  f.hosts(hs);
+  for (panel::PanelHost* h : hs) {
+    bool stop = false;
+    h->visitControls([&](const doc::Binding& b, const ui::IRect& r) {
+      if (stop || !b.meta.empty()) return;
+      stop = fn(PanelControl{b.device, b.name, r, h, &b});
+    });
+    if (stop) return;
+  }
 }
 
 ui::Cursor FrameBase::cursorAt(ui::Vec2 p) const {
@@ -620,24 +618,28 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       // T4.8: a rack opens its lowered subcircuit (read-only) instead.
       const doc::DeviceId id = id_;
       contextItems(e.pos, items);  // T4.16c (a macro's Rename Macro first)
-      // T4.18: over a param's control (a knob, a box, a toggle, a macro): its automation lane in the arrangement.
-      // A macro-mapped param plays its macro: no lane of its own unless it already has one (the arrangement's chooser).
-      if (const std::string param = paramAt(e.pos);
-          !param.empty() && loc.track != nullptr &&
-          (!macroMappingOf(*ctx_.doc(), id, param) ||
-           findAutomationLane(*ctx_.doc(), doc::ParamRef::device(id, param)).lane != nullptr)) {
-        ViewContext* c = &ctx_;
-        const doc::TrackId t = loc.track->id;
-        items.push_back(ui::MenuItem::item("Show Automation", [c, t, id, param] {
-          c->showAutomation(t, doc::ParamRef::device(id, param));
-        }));
-        if (std::optional<ui::MenuItem> curve = knobCurveMenu(ctx_, id, param)) items.push_back(std::move(*curve));  // TX.knob-curves
-        items.push_back(ui::MenuItem::sep());
-      } else if (const std::string kp = paramAt(e.pos); !kp.empty()) {
-        if (std::optional<ui::MenuItem> curve = knobCurveMenu(ctx_, id, kp)) {  // TX.knob-curves (a mapped knob too)
-          items.push_back(std::move(*curve));
-          items.push_back(ui::MenuItem::sep());
+      // T4.18: over a control (a knob, a box, a toggle, a macro; GU.13: on any of the frame's panels — a leaf's, a
+      // group's member, a rack's macro block): its automation lane in the arrangement. A macro-mapped param plays its
+      // macro: no lane of its own unless it already has one (the arrangement's chooser).
+      if (const std::optional<std::pair<doc::DeviceId, std::string>> ctl = controlAt(e.pos)) {
+        const doc::DeviceId cd = ctl->first;
+        const std::string param = ctl->second;
+        const doc::DeviceLoc cl = doc::findDevice(*ctx_.doc(), cd);
+        bool any = false;
+        if (cl.track != nullptr && (!macroMappingOf(*ctx_.doc(), cd, param) ||
+                                    findAutomationLane(*ctx_.doc(), doc::ParamRef::device(cd, param)).lane != nullptr)) {
+          ViewContext* c = &ctx_;
+          const doc::TrackId t = cl.track->id;
+          items.push_back(ui::MenuItem::item("Show Automation", [c, t, cd, param] {
+            c->showAutomation(t, doc::ParamRef::device(cd, param));
+          }));
+          any = true;
         }
+        if (std::optional<ui::MenuItem> curve = knobCurveMenu(ctx_, cd, param)) {  // TX.knob-curves (a mapped knob too)
+          items.push_back(std::move(*curve));
+          any = true;
+        }
+        if (any) items.push_back(ui::MenuItem::sep());
       }
       // T5.x-circuit-chain: Open in Circuit View shows the whole track's chain as one circuit focused on this device.
       items.push_back(ui::MenuItem::item("Open in Circuit View", [v, id] { v->openInCircuitView(id); }));
@@ -766,20 +768,17 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
   observer_ = ctx.observe([this](uint32_t bits) {
     if (bits & view_change::kDevices) {
       impl_->templates.clear();  // another library: other signatures
+      impl_->sigs.clear();
       sync(true);
     }
     else if (bits & (view_change::kSelection | view_change::kDetailClip)) follow();
     if (bits & view_change::kLibrary)  // T5.11: preset names in the title bars
       for (auto& [id, f] : impl_->all)
-        if (devices::DevicePanel* panel = f->panel(); panel != nullptr && !f->isRack())
+        if (panel::BlockFrame* panel = f->panel(); panel != nullptr && !f->isRack())
           panel->setPresetName(ctx_.library().presetName(doc::DeviceId{id}));
     if (bits & view_change::kModulation) refreshRings();
     if (bits & view_change::kAnalysis)  // TX.spectrum: a device's analysis tap appeared: its displays and face look again
-      for (auto& [id, f] : impl_->all)
-        if (devices::DevicePanel* panel = f->panel()) {
-          panel->wakeDisplays();
-          panel->wakeFaces();
-        }
+      wakeFaces();
     if (bits & view_change::kAutomation) refreshAutomation();  // T4.18: overridden / re-enabled
     else if ((bits & view_change::kTransport) && (!impl_->autoTargets.empty() || impl_->chainAuto)) applyAutomation();
   });
@@ -1082,8 +1081,9 @@ std::vector<ui::MenuItem> DeviceChainView::deviceMenu() {
 }
 
 void DeviceChainView::wakeFaces() {
-  for (const auto& [id, f] : impl_->all)
-    if (devices::DevicePanel* p = f->panel()) p->wakeFaces();
+  std::vector<panel::PanelHost*> hs;
+  for (const auto& [id, f] : impl_->all) f->hosts(hs);
+  for (panel::PanelHost* h : hs) h->wake();
 }
 
 bool DeviceChainView::addDevice(const doc::DeviceInfo& info) {
@@ -1309,7 +1309,7 @@ bool DeviceChainView::renameSelected() {
   if (selection_.size() != 1) return false;
   const doc::DeviceId id = selection_.front();
   FrameBase* f = impl_->frameOf(id);
-  devices::DevicePanel* p = f != nullptr ? f->panel() : nullptr;
+  panel::BlockFrame* p = f != nullptr ? f->panel() : nullptr;
   if (p == nullptr) return false;
   if (p->folded()) p->setFolded(false);
   ViewContext* c = &ctx_;
@@ -1320,14 +1320,35 @@ bool DeviceChainView::renameSelected() {
 
 ui::Widget* DeviceChainView::frameOf(doc::DeviceId device) const noexcept { return impl_->frameOf(device); }
 
-devices::DeviceTarget* DeviceChainView::targetOf(doc::DeviceId device) const noexcept {
-  FrameBase* f = impl_->frameOf(device);
-  return f != nullptr ? f->target() : nullptr;
-}
-
-devices::DevicePanel* DeviceChainView::panelOf(doc::DeviceId device) const noexcept {
+panel::BlockFrame* DeviceChainView::panelOf(doc::DeviceId device) const noexcept {
   FrameBase* f = impl_->frameOf(device);
   return f != nullptr ? f->panel() : nullptr;
+}
+
+std::optional<ui::IRect> DeviceChainView::controlRect(doc::DeviceId device, std::string_view param) const {
+  if (FrameBase* f = impl_->frameOf(device); f != nullptr && f->isRack()) {  // a rack's macro ("macro<k>")
+    std::optional<ui::IRect> out;
+    forEachPanelControl(*f, [&](const PanelControl& c) {
+      if (c.device == device && c.param == param) out = c.rect;
+      return out.has_value();
+    });
+    return out;
+  }
+  doc::Binding b;
+  const panel::PanelHost* h = impl_->hostOf(device, param, &b);
+  return h != nullptr ? h->controlRect(b) : std::nullopt;
+}
+
+panel::PanelHost* DeviceChainView::controlHost(doc::DeviceId device, std::string_view param) const {
+  if (FrameBase* f = impl_->frameOf(device); f != nullptr && f->isRack()) {
+    panel::PanelHost* out = nullptr;
+    forEachPanelControl(*f, [&](const PanelControl& c) {
+      if (c.device == device && c.param == param) out = c.host;
+      return out != nullptr;
+    });
+    return out;
+  }
+  return impl_->hostOf(device, param);
 }
 
 void DeviceChainView::paint(ui::PaintContext& ctx) {
@@ -1541,9 +1562,9 @@ std::optional<DeviceChainView::CableEnd> DeviceChainView::sourceEnd(doc::DeviceI
         return CableEnd{*q, docked, EndDir::Right};
     return CableEnd{tabPoint(device), false, EndDir::Down};
   }
-  const devices::DevicePanel* panel = panelOf(device);
+  const panel::BlockFrame* panel = panelOf(device);
   if (panel != nullptr)
-    for (const devices::DevicePanel::Jack& j : panel->jacks())
+    for (const panel::BlockFrame::Jack& j : panel->jacks())
       if (j.name == port) {  // an export's jack on the panel's top strip
         bool docked = false;
         const auto q = jackPoint(device, port, &docked);
@@ -1694,22 +1715,12 @@ ui::Vec2 clampInto(ui::Vec2 p, const ui::IRect& r, bool& inside) {
 std::vector<DeviceChainView::ParamControl> DeviceChainView::paramControls() const {
   std::vector<ParamControl> out;
   const ui::IRect vp = chainViewport();
-  for (const auto& [id, f] : impl_->all) {
-    const devices::DevicePanel* panel = f->panel();
-    if (panel == nullptr || panel->folded() || !shownNow(*panel)) continue;
-    for (const devices::ParamInfo& p : panel->signature().params) {
-      if (p.isBool) continue;
-      const std::optional<ui::IRect> cr = panel->controlRect(p.name);  // TMM.10: a face's control too
-      if (!cr) continue;
-      const ui::IRect r = ui::intersect(*cr, vp);
-      if (r.empty()) continue;
-      out.push_back({f->id(), p.name, r});
-    }
-  }
-  // GU.11: a group frame showing its panel — the controls of its elements (each bound to a block of the group: a value
-  // block's `value`, a native engine's param) are drop targets too, as the stock devices' knobs were.
+  // GU.11 / GU.13: the controls of every frame's panels — a leaf's (its knobs, its face's controls), a group's (each bound
+  // to a block of the group: a value block's `value`, a native engine's param) — but not a switch, nor a rack's macros.
   for (const auto& [id, f] : impl_->all)
     device_chain::forEachPanelControl(*f, [&](const device_chain::PanelControl& c) {
+      if (f->isRack() && c.device == f->id()) return false;
+      if (c.host->panelFace()->target().info(*c.binding).isSwitch) return false;
       const ui::IRect r = ui::intersect(c.rect, vp);
       if (!r.empty()) out.push_back({c.device, std::string(c.param), r});
       return false;
@@ -1734,10 +1745,10 @@ std::optional<ui::Vec2> DeviceChainView::groupPoint(doc::DeviceId device, bool o
 }
 
 std::optional<ui::Vec2> DeviceChainView::jackPoint(doc::DeviceId device, std::string_view port, bool* docked) const {
-  const devices::DevicePanel* panel = panelOf(device);
+  const panel::BlockFrame* panel = panelOf(device);
   if (panel == nullptr) return groupPoint(device, true, docked);
   ui::Vec2 p{static_cast<float>(panel->rect().x) + 8.0f, static_cast<float>(panel->rect().y)};
-  for (const devices::DevicePanel::Jack& j : panel->jacks())
+  for (const panel::BlockFrame::Jack& j : panel->jacks())
     if (j.name == port) p = {static_cast<float>(j.rect.x) + 0.5f * static_cast<float>(j.rect.w),
                              static_cast<float>(j.rect.y) + 0.5f * static_cast<float>(j.rect.h)};
   bool inside = false;
@@ -1747,32 +1758,21 @@ std::optional<ui::Vec2> DeviceChainView::jackPoint(doc::DeviceId device, std::st
 }
 
 std::optional<ui::Vec2> DeviceChainView::paramPoint(doc::DeviceId device, std::string_view param, bool* docked) const {
-  const devices::DevicePanel* panel = panelOf(device);
-  if (panel == nullptr) {
-    // GU.11: a control on its group's panel (a module's value block): docked on its element.
-    if (const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), device); l.device != nullptr && l.device->group.valid() && l.track != nullptr)
-      if (device_chain::FrameBase* gf = impl_->frameOf(doc::outermostGroup(l.track->devices, device)); gf != nullptr)
-        if (const auto p = device_chain::panelControlPoint(*gf, device, param)) {
-          bool inside = false;
-          const ui::Vec2 q = clampInto(*p, chainViewport(), inside);
-          if (docked != nullptr) *docked = inside;
-          return q;
-        }
-    return groupPoint(device, false, docked);
-  }
-  const std::optional<ui::IRect> cr = panel->controlRect(param);  // TMM.10: a face's control too
-  bool ok = cr.has_value() && shownNow(*panel);
-  ui::Vec2 p;
-  if (ok) {
-    const ui::IRect r = *cr;
-    p = {static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.25f * static_cast<float>(r.h)};
-  } else {  // the title bar's right end
-    const ui::IRect r = panel->rect();
-    p = {static_cast<float>(r.right()) - 6.0f, static_cast<float>(r.y) + 14.0f};
-  }
+  // GU.13: the control on whichever panel shows it (a leaf's, its group's): docked on it while it is in view.
+  doc::Binding b;
+  if (const panel::PanelHost* h = impl_->hostOf(device, param, &b))
+    if (const std::optional<ui::Vec2> p = h->controlPoint(b)) {
+      bool inside = false;
+      const ui::Vec2 q = clampInto(*p, chainViewport(), inside);
+      if (docked != nullptr) *docked = inside;
+      return q;
+    }
+  const panel::BlockFrame* panel = panelOf(device);
+  if (panel == nullptr) return groupPoint(device, false, docked);
+  const ui::IRect r = panel->rect();  // not shown now (folded, another tab): the title bar's right end
   bool inside = false;
-  const ui::Vec2 q = clampInto(p, chainViewport(), inside);
-  if (docked != nullptr) *docked = ok && inside;
+  const ui::Vec2 q = clampInto({static_cast<float>(r.right()) - 6.0f, static_cast<float>(r.y) + 14.0f}, chainViewport(), inside);
+  if (docked != nullptr) *docked = false;
   return q;
 }
 
@@ -1795,7 +1795,7 @@ void DeviceChainView::refreshRings() {
   m.ringSpan.clear();
   m.ringUnits.clear();
   for (const doc::Wire& w : doc::wiresOf(p)) {
-    if (m.frameOf(w.to) == nullptr) continue;
+    if (m.frameFor(w.to) == nullptr) continue;  // GU.13: a group member's control is on its group's panel
     // GU.9: a macro mapping (a Travel wire from a macro's value block) is drawn as the mapping's range, not a ring.
     if (w.travels() && !w.fromNoteSource())
       if (const doc::Device* src = doc::findDevice(p, w.from).device;
@@ -1817,51 +1817,64 @@ void DeviceChainView::refreshRings() {
     }
   }
   m.ringSweeps.resize(m.ringTargets.size());
+  // The controls a macro drives (a Travel wire from a macro's value block): found once here, resolved below.
+  std::vector<std::pair<doc::DeviceId, std::string>> mappedCtl;
+  for (const doc::Wire& w : doc::wiresOf(p))
+    if (!w.toMixer() && !w.param.empty() && w.travels() && !w.fromNoteSource())
+      if (const doc::Device* src = doc::findDevice(p, w.from).device;
+          src != nullptr && doc::isValueDevice(*src) && src->setting(doc::kMacroSetting) != nullptr)
+        mappedCtl.emplace_back(w.to, w.param);
+  // GU.13: every control of every frame's panels (a leaf's, a group's members') — one ring law for all.
+  std::vector<panel::PanelHost*> moved;  // the panels whose rings changed (each repaints those controls only)
   for (auto& [id, f] : m.all) {
-    devices::DevicePanel* panel = f->panel();
-    if (panel == nullptr) continue;
-    for (const devices::ParamInfo& info : panel->signature().params) {
+    device_chain::forEachPanelControl(*f, [&](const device_chain::PanelControl& c) {
+      if (f->isRack() && c.device == f->id()) return false;  // a rack's macros: no ring
+      panel::PanelTarget& t = c.host->panelFace()->target();
       ui::ModulationRing ring;
-      // T4.8: a macro-mapped param shows the mapping's range and where the macro puts it now (the mapping is the centre
-      // the wires add to).
-      float pk = static_cast<float>(devices::toPosition(info, panel->paramValue(info.name)));
-      bool mapped = false;
-      if (const auto ml = macroMappingOf(p, f->id(), info.name)) {
-        // GU.9: the macro's value block as it stands (a macro another rack's macro drives plays what its wire adds).
-        const doc::RackMapping& mm = ml->second;
-        const double macro = playedPosition(p, ml->first.macros[mm.macro].block);
-        pk = static_cast<float>(std::clamp(mm.min + (mm.max - mm.min) * macro, 0.0, 1.0));
-        mapped = true;
-        ring.active = true;
-        ring.lo = static_cast<float>(std::min(mm.min, mm.max));
-        ring.hi = static_cast<float>(std::max(mm.min, mm.max));
-        ring.current = pk;
-        // The knob shows what the macro sets (its own stored value is not played while mapped).
-        panel->setParamValue(info.name, devices::fromPosition(info, pk));
-      }
-      for (size_t i = 0; i < m.ringTargets.size(); ++i) {
-        if (m.ringTargets[i].device != f->id() || m.ringTargets[i].param != info.name) continue;
-        if (mapped && m.ringSpan[i] <= 0.0f && m.ringUnits[i] == 0) continue;  // (only its mapping: shown above)
-        ring.active = true;
-        ring.lo = std::clamp(pk - m.ringSpan[i], 0.0f, 1.0f);
-        ring.hi = std::clamp(pk + m.ringSpan[i], 0.0f, 1.0f);
-        ring.current = -1.0f;
-        const ModSweep& s = m.ringSweeps[i];
-        if (s.known && (s.up > 0.0f || s.down > 0.0f)) {
-          if (m.ringUnits[i] != 0) {  // TX.patching / GU.1: an added wire's sweep in its tap's domain (sweptPosition)
-            const doc::ModulationTap::Domain dom = ringDomain(m.ringUnits[i], info);
-            ring.liveLo = std::clamp(static_cast<float>(devices::sweptPosition(info, pk, -s.down, dom)), 0.0f, 1.0f);
-            ring.liveHi = std::clamp(static_cast<float>(devices::sweptPosition(info, pk, s.up, dom)), 0.0f, 1.0f);
-          } else {
-            ring.liveLo = std::clamp(pk - s.down, 0.0f, 1.0f);
-            ring.liveHi = std::clamp(pk + s.up, 0.0f, 1.0f);
+      bool modulated = false, isMapped = false;
+      for (const ModTarget& rt : m.ringTargets) modulated = modulated || (rt.device == c.device && rt.param == c.param);
+      for (const auto& [d, prm] : mappedCtl) isMapped = isMapped || (d == c.device && prm == c.param);
+      if (modulated || isMapped) {
+        const devices::ParamInfo* infoP = m.paramInfo(c.device, c.param);
+        if (infoP == nullptr) return false;
+        const devices::ParamInfo info = *infoP;
+        // The position shown (T4.8: a macro-mapped control where its macro puts it: the centre the wires add to).
+        const float pk = static_cast<float>(std::clamp(t.position(*c.binding), 0.0, 1.0));
+        bool mapped = false;
+        if (const auto ml = isMapped ? macroMappingOf(p, c.device, c.param) : std::nullopt) {
+          const doc::RackMapping& mm = ml->second;
+          mapped = true;
+          ring.active = true;
+          ring.lo = static_cast<float>(std::min(mm.min, mm.max));
+          ring.hi = static_cast<float>(std::max(mm.min, mm.max));
+          ring.current = pk;
+        }
+        for (size_t i = 0; i < m.ringTargets.size(); ++i) {
+          if (m.ringTargets[i].device != c.device || m.ringTargets[i].param != c.param) continue;
+          if (mapped && m.ringSpan[i] <= 0.0f && m.ringUnits[i] == 0) continue;  // (only its mapping: shown above)
+          ring.active = true;
+          ring.lo = std::clamp(pk - m.ringSpan[i], 0.0f, 1.0f);
+          ring.hi = std::clamp(pk + m.ringSpan[i], 0.0f, 1.0f);
+          ring.current = -1.0f;
+          const ModSweep& sw = m.ringSweeps[i];
+          if (sw.known && (sw.up > 0.0f || sw.down > 0.0f)) {
+            if (m.ringUnits[i] != 0) {  // TX.patching / GU.1: an added wire's sweep in its tap's domain (sweptPosition)
+              const doc::ModulationTap::Domain dom = ringDomain(m.ringUnits[i], info);
+              ring.liveLo = std::clamp(static_cast<float>(devices::sweptPosition(info, pk, -sw.down, dom)), 0.0f, 1.0f);
+              ring.liveHi = std::clamp(static_cast<float>(devices::sweptPosition(info, pk, sw.up, dom)), 0.0f, 1.0f);
+            } else {
+              ring.liveLo = std::clamp(pk - sw.down, 0.0f, 1.0f);
+              ring.liveHi = std::clamp(pk + sw.up, 0.0f, 1.0f);
+            }
+            ring.current = 0.5f * (ring.liveLo + ring.liveHi);
           }
-          ring.current = 0.5f * (ring.liveLo + ring.liveHi);
         }
       }
-      panel->setModulation(info.name, ring);
-    }
+      if (t.setModulation(*c.binding, ring) && std::find(moved.begin(), moved.end(), c.host) == moved.end()) moved.push_back(c.host);
+      return false;
+    });
   }
+  for (panel::PanelHost* h : moved) h->notifyChanged();
   // Poll while a modulated knob is shown and the source runs (and once after it stops: the rings fall still).
   ModulationSource* src = ctx_.modulationSource();
   const bool want = src != nullptr && !m.ringTargets.empty() && (src->modulationLive() || m.ringsLit);
@@ -1890,35 +1903,49 @@ void DeviceChainView::onTimer(uint32_t id) {
 bool DeviceChainView::automationPolling() const noexcept { return impl_->autoTimer != 0; }
 
 std::vector<std::pair<std::string, bool>> DeviceChainView::automationMarks(doc::DeviceId device) const {
-  const FrameBase* f = impl_->frameOf(device);
-  return f != nullptr ? f->automated() : std::vector<std::pair<std::string, bool>>{};
+  std::vector<std::pair<std::string, bool>> out;
+  for (const Impl::AutoTarget& a : impl_->autoTargets)
+    if (a.device == device) out.emplace_back(a.param, a.overridden);
+  for (const auto& [d, prm] : impl_->autoMapped)
+    if (d == device) out.emplace_back(prm, true);
+  return out;
 }
 
 void DeviceChainView::refreshAutomation() {
   Impl& m = *impl_;
+  // The positions shown for the old targets go (the controls show their own until applyAutomation shows the envelope).
+  for (const Impl::AutoTarget& a : m.autoTargets) {
+    doc::Binding b;
+    if (panel::PanelHost* h = m.hostOf(a.device, a.param, &b); h != nullptr && h->panelFace()->target().showPosition(b, std::nullopt))
+      h->notifyChanged();
+  }
   m.autoTargets.clear();
+  m.autoMapped.clear();
   m.chainAuto = false;
-  std::map<uint32_t, std::vector<std::pair<std::string, bool>>> marks;
+  std::map<FrameBase*, std::vector<FrameBase::Mark>> marks;
   if (const doc::Track* t = m.track())
     for (const doc::LanePtr& l : t->lanes) {  // a device's lanes live on its track (the shown one)
+      if (l->param.kind != doc::ParamKind::DeviceParam || l->points.empty()) continue;
+      const doc::DeviceId owner{l->param.owner};
       // GU.9: a chain's volume / pan lane is its Mixer value block's (no frame of its own: the rack's rows show it).
-      if (l->param.kind == doc::ParamKind::DeviceParam && !l->points.empty() && m.frameOf(doc::DeviceId{l->param.owner}) == nullptr)
-        if (const doc::Device* vb = doc::findDevice(*ctx_.doc(), doc::DeviceId{l->param.owner}).device; vb != nullptr && doc::isValueDevice(*vb))
+      if (m.frameOf(owner) == nullptr)
+        if (const doc::Device* vb = doc::findDevice(*ctx_.doc(), owner).device; vb != nullptr && doc::isValueDevice(*vb))
           m.chainAuto = true;
-      if (l->param.kind != doc::ParamKind::DeviceParam || l->points.empty() || m.frameOf(doc::DeviceId{l->param.owner}) == nullptr)
-        continue;
+      FrameBase* f = m.frameFor(owner);  // GU.13: a group member's control is on its group's panel
+      if (f == nullptr) continue;
       // A macro-mapped param plays its macro, not its lane (lower.h): its knob is left to the macro, its LED grey.
-      if (macroMappingOf(*ctx_.doc(), doc::DeviceId{l->param.owner}, l->paramName)) {
-        marks[l->param.owner].emplace_back(l->paramName, true);
+      if (macroMappingOf(*ctx_.doc(), owner, l->paramName)) {
+        marks[f].push_back({owner, l->paramName, true});
+        m.autoMapped.emplace_back(owner, l->paramName);
         continue;
       }
       const bool overridden = ctx_.automationOverridden(l->param);
-      m.autoTargets.push_back({doc::DeviceId{l->param.owner}, l->paramName, l, overridden});
-      marks[l->param.owner].emplace_back(l->paramName, overridden);
+      m.autoTargets.push_back({owner, l->paramName, l, overridden});
+      marks[f].push_back({owner, l->paramName, overridden});
     }
   for (auto& [id, f] : m.all) {
-    auto it = marks.find(id);
-    f->setAutomated(it != marks.end() ? std::move(it->second) : std::vector<std::pair<std::string, bool>>{});
+    auto it = marks.find(f);
+    f->setAutomated(it != marks.end() ? std::move(it->second) : std::vector<FrameBase::Mark>{});
     if (f->isRack()) f->automationChanged();
   }
   applyAutomation();
@@ -1929,24 +1956,23 @@ void DeviceChainView::applyAutomation() {
   const PlayheadSnapshot ph = ctx_.transport().playhead();
   bool live = false;
   for (const Impl::AutoTarget& a : m.autoTargets) {
-    FrameBase* f = m.frameOf(a.device);
-    devices::DevicePanel* panel = f != nullptr ? f->panel() : nullptr;
-    const devices::ParamInfo* info = panel != nullptr ? panel->signature().findParam(a.param) : nullptr;
-    if (info == nullptr) continue;
+    doc::Binding b;
+    panel::PanelHost* h = m.hostOf(a.device, a.param, &b);
+    if (h == nullptr) continue;
+    panel::PanelTarget& t = h->panelFace()->target();
     if (a.overridden) {  // overridden by hand: the knob shows (and plays) its own value until re-enabled
-      const doc::Device* d = doc::findDevice(*ctx_.doc(), a.device).device;
-      if (d == nullptr) continue;
-      const double own = devices::storedValue(*info, *d);  // GU.1: in units
-      if (panel->paramValue(a.param) != own) panel->setParamValue(a.param, own);
+      if (t.showPosition(b, std::nullopt)) h->notifyChanged();
       continue;
     }
     live = true;
     // The envelope at the playhead (Live: an automated knob follows its automation, moving while it plays). GU.1: a
-    // device param's lane holds knob positions: the knob shows the value its curve gives.
-    const double v = devices::fromPosition(*info, evalAutomation(std::span<const doc::Breakpoint>(a.lane->points),
-                                                                 static_cast<double>(ph.tick),
-                                                                 devices::toPosition(*info, panel->paramValue(a.param))));
-    if (panel->paramValue(a.param) != v) panel->setParamValue(a.param, v);  // repaints the bound control only
+    // device param's lane holds knob positions.
+    const doc::Device* d = doc::findDevice(*ctx_.doc(), a.device).device;
+    const devices::ParamInfo* info = m.paramInfo(a.device, a.param);
+    const double own = d != nullptr && info != nullptr ? devices::storedPosition(*info, *d) : t.position(b);
+    const double pos = std::clamp(evalAutomation(std::span<const doc::Breakpoint>(a.lane->points), static_cast<double>(ph.tick), own),
+                                  0.0, 1.0);
+    if (t.showPosition(b, pos)) h->notifyChanged();  // repaints that control only when its shown position moved
   }
   if (m.chainAuto || live)  // racks: their chains' volume / pan (refreshAutomation also clears them)
     for (auto& [id, f] : m.all)

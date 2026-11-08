@@ -29,7 +29,7 @@
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/arrangement/automation.h"
 #include "pq/views/device_chain/device_chain.h"
-#include "pq/views/devices/device_panel.h"
+#include "pq/views/panel/block_frame.h"
 #include "pq/views/devices/knob_curve_menu.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/shell/shell.h"
@@ -117,6 +117,22 @@ struct Ui {
   ArrangementAutomation& au() const { return arr->automation(); }
   size_t history() const { return ctx.store().history().cursor(); }
   const doc::AutomationLane* lane(const doc::ParamRef& r) const { return findAutomationLane(*ctx.doc(), r).lane; }
+  // GU.13: the filter's param as its patch declares it, on the block's own knob curve; the value its control shows (in
+  // units: the position its panel shows through that curve — an automated control: the envelope at the playhead).
+  devices::ParamInfo info(std::string_view param) const {
+    const doc::Device& dv = *doc::findDevice(*ctx.doc(), filter).device;
+    const devices::DeviceSignature sig = devices::signatureOf(*library().patchOf(dv));
+    const devices::ParamInfo* p = sig.findParam(param);
+    REQUIRE(p != nullptr);
+    devices::ParamInfo out = *p;
+    out.curve = devices::storedCurve(*p, dv);
+    return out;
+  }
+  double shown(std::string_view param) const {
+    panel::BlockFrame* f = view().panelOf(filter);
+    REQUIRE(f != nullptr);
+    return devices::fromPosition(info(param), f->target().position(doc::controlBinding(filter, std::string(param))));
+  }
   // GU.1: the knob position of a device param's value in units (lanes and params store positions).
   double pos(doc::DeviceId dev, std::string_view param, double v) const {
     return knob_positions::positionOf(*ctx.doc(), dev, param, v, library());
@@ -156,7 +172,7 @@ TEST_CASE("device automation (views): the first click on a device param's line m
   const size_t h0 = u.history();
   // The dashed line at the knob's value (the attack's default; GU.1: lanes are positions), at bar 2.
   REQUIRE(u.view().panelOf(u.filter) != nullptr);
-  const double p1k = u.pos(u.filter, "attack", u.view().panelOf(u.filter)->paramValue("attack"));
+  const double p1k = u.pos(u.filter, "attack", u.shown("attack"));
   u.d.click({u.arr->xOfTick(2.0 * kBar), u.au().yOfValue(b, p1k)});
   REQUIRE(u.history() == h0 + 1);
   const doc::AutomationLane* l = u.lane(freq);
@@ -185,11 +201,10 @@ TEST_CASE("device automation (views): the first click on a device param's line m
 
 TEST_CASE("device automation (views): a knob's Show Automation opens its lane; automated knobs show the envelope and an LED") {
   Ui u;
-  devices::DevicePanel* panel = u.view().panelOf(u.filter);
-  REQUIRE(panel != nullptr);
+  REQUIRE(u.view().panelOf(u.filter) != nullptr);
   u.view().revealDevice(u.filter);
   u.d.tree().layoutNow();
-  const std::optional<IRect> knob = panel->controlRect("attack");  // the face's control
+  const std::optional<IRect> knob = u.view().controlRect(u.filter, "attack");  // the face's control (its panel's)
   REQUIRE(knob.has_value());
   u.d.click(mid(*knob), mod::kNone, PointerButton::Right);
   Menu* m = u.lastMenu();
@@ -210,15 +225,14 @@ TEST_CASE("device automation (views): a knob's Show Automation opens its lane; a
 
   // Automated: the knob shows the envelope at the playhead and carries the LED; it moves with the playhead.
   u.addLane(doc::ParamRef::device(u.filter, "attack"), "attack", {{0.0, 0.01f}, {2.0, 2.0f}});
-  CHECK(panel->paramValue("attack") == doctest::Approx(0.01).epsilon(1e-4));
+  CHECK(u.shown("attack") == doctest::Approx(0.01).epsilon(1e-4));
   u.port.setPlayheadTick(kBar);
   u.view().applyAutomation();
   // GU.1: halfway in knob position (the lane stores positions), not halfway in seconds.
-  const devices::ParamInfo* attack = panel->signature().findParam("attack");
-  REQUIRE(attack != nullptr);
-  const double halfway = devices::fromPosition(*attack, 0.5 * (u.pos(u.filter, "attack", 0.01) + u.pos(u.filter, "attack", 2.0)));
+  const devices::ParamInfo attack = u.info("attack");
+  const double halfway = devices::fromPosition(attack, 0.5 * (u.pos(u.filter, "attack", 0.01) + u.pos(u.filter, "attack", 2.0)));
   CHECK(halfway < 0.5 * (0.01 + 2.0));
-  CHECK(panel->paramValue("attack") == doctest::Approx(halfway).epsilon(1e-4));
+  CHECK(u.shown("attack") == doctest::Approx(halfway).epsilon(1e-4));
   const auto marks = u.view().automationMarks(u.filter);
   REQUIRE(marks.size() == 1);
   CHECK(marks[0].first == "attack");
@@ -233,11 +247,11 @@ TEST_CASE("device automation (views): a knob's Show Automation opens its lane; a
   // A hand edit overrides it (Live): the knob keeps its own value; Re-enable brings the envelope back.
   REQUIRE(u.ctx.store().dispatch(doc::SetDeviceParam{u.filter, "attack", u.pos(u.filter, "attack", 0.3)}).ok());
   CHECK(u.ctx.automationOverridden(doc::ParamRef::device(u.filter, "attack")));
-  CHECK(panel->paramValue("attack") == doctest::Approx(0.3).epsilon(1e-6));
+  CHECK(u.shown("attack") == doctest::Approx(0.3).epsilon(1e-6));
   CHECK(u.view().automationMarks(u.filter).at(0).second);  // its LED grey
   u.ctx.reenableAutomation();
   CHECK_FALSE(u.view().automationMarks(u.filter).at(0).second);
-  CHECK(panel->paramValue("attack") == doctest::Approx(halfway).epsilon(1e-4));
+  CHECK(u.shown("attack") == doctest::Approx(halfway).epsilon(1e-4));
 }
 
 TEST_CASE("device automation (views): moving the device to another track takes its lane along; deleting it removes the lane") {
@@ -285,16 +299,14 @@ TEST_CASE("render: device-automation matches the golden image") {
 
 TEST_CASE("knob curves (views): a knob's Knob Curve submenu switches its curve, the knob re-maps, the value stays, one undo") {
   Ui u;
-  devices::DevicePanel* panel = u.view().panelOf(u.filter);
-  REQUIRE(panel != nullptr);
+  REQUIRE(u.view().panelOf(u.filter) != nullptr);
   u.view().revealDevice(u.filter);
   u.d.tree().layoutNow();
-  const std::optional<IRect> knob = panel->controlRect("attack");  // the Envelope face's attack control
+  const std::optional<IRect> knob = u.view().controlRect(u.filter, "attack");  // the Envelope face's attack control
   REQUIRE(knob.has_value());
-  const devices::ParamInfo* info = panel->signature().findParam("attack");
-  REQUIRE(info != nullptr);
-  const double value = panel->paramValue("attack");
-  const double octavePos = devices::toPosition(*info, value);
+  const devices::ParamInfo info = u.info("attack");
+  const double value = u.shown("attack");
+  const double octavePos = devices::toPosition(info, value);
   u.d.click(mid(*knob), mod::kNone, PointerButton::Right);
   Menu* m = u.lastMenu();
   REQUIRE(m != nullptr);
@@ -316,16 +328,13 @@ TEST_CASE("knob curves (views): a knob's Knob Curve submenu switches its curve, 
   u.d.step();
   CHECK(u.history() == h0 + 1);
   // GU.1: the knob stays where it is; the value follows the new curve.
-  devices::DevicePanel* after = u.view().panelOf(u.filter);
-  REQUIRE(after != nullptr);
-  const devices::ParamInfo* linear = after->signature().findParam("attack");
-  REQUIRE(linear != nullptr);
-  const double lo = devices::fromPosition(*linear, 0.0), hi = devices::fromPosition(*linear, 1.0);
-  CHECK(after->paramValue("attack") == doctest::Approx(lo + octavePos * (hi - lo)).epsilon(1e-6));
-  CHECK(after->paramValue("attack") != doctest::Approx(value));
+  const devices::ParamInfo linear = u.info("attack");
+  const double lo = devices::fromPosition(linear, 0.0), hi = devices::fromPosition(linear, 1.0);
+  CHECK(u.shown("attack") == doctest::Approx(lo + octavePos * (hi - lo)).epsilon(1e-6));
+  CHECK(u.shown("attack") != doctest::Approx(value));
   REQUIRE(u.ctx.undo());
   u.d.step();
-  CHECK(u.view().panelOf(u.filter)->paramValue("attack") == doctest::Approx(value));
+  CHECK(u.shown("attack") == doctest::Approx(value));
   // A rack's macro has none (no rack here: no menu).
   CHECK_FALSE(knobCurveMenu(u.ctx, u.rack, "macro0").has_value());
   // A meta module's continuous param has one (the Envelope's attack: exp0, listed as Octave, by default; GU.4: it was

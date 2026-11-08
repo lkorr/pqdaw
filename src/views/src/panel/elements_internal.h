@@ -24,6 +24,7 @@ public:
   bool dragging() const noexcept override { return drag_; }
   void cancelDrag(PanelTarget& t) override;
   void describe(const PanelTarget& t, std::string& title, std::string& body) const override;
+  void endWheel(PanelTarget& t) override;
 
 protected:
   double pos(const PanelTarget& t, size_t slot = 0) const;
@@ -36,8 +37,18 @@ protected:
   // The slot's position after a relative drag (dx, dy: the axis's weight; `axisPx` device px per whole range).
   double dragged(const FacePointer& e, size_t slot, float dx, float dy, float axisPx) const;
   virtual std::string hint() const { return {}; }
+  // GU.13: the DEVICE-PANEL GESTURES (FacePointer::valueGestures; the old device panel's knobs): a wheel notch steps the
+  // binding by stepOf (a run of notches is one gesture: endWheel ends it), and after a press the keys — Delete /
+  // Backspace: the default, Up / Down: a step (Shift: fine). true: used.
+  bool wheelStep(const FacePointer& e, PanelTarget& t);
+  bool valueKey(const ui::KeyEvent& e, PanelTarget& t);
+  double stepOf(const PanelTarget& t, bool fine) const;
+  // Called first by a kind's onPointer: notes whether its host allows the gestures (a press) and ends a wheel run.
+  void noteGestures(const FacePointer& e, PanelTarget& t);
 
   bool drag_ = false;
+  bool wheel_ = false, keys_ = false;
+  double wheelPos_ = 0.0;
   ui::Vec2 startDev_{0.0f, 0.0f};
   double start_[kSlots] = {0.0, 0.0};
 };

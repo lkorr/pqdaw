@@ -30,7 +30,7 @@
 // move. Settled (every level below the display floor and nothing new to analyse) the UI stops asking for frames;
 // the worker then
 //   - for a feed whose source says when it plays (setSourceLive: the device preview) blocks too, and the display
-//     releases the feed; the source's start (DevicePanel::wakeDisplays) restarts it;
+//     releases the feed; the source's start (DeviceChainView::wakeFaces: the panels' hosts wake) restarts it;
 //   - for a WATCHED feed (setWatch: the project's taps, whose source is any audio the engine runs) keeps the reader
 //     and looks at the tap every 100 ms (an atomic load, and a scan of what arrived for a non-silent sample); new sound
 //     wakes the displays through the wake post (setWakePost: posts to the UI thread, which runs the wakers the

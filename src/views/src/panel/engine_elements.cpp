@@ -196,6 +196,20 @@ public:
     scratch_ = doc::controlBinding(binding()->device, param, binding()->meta);
     return &scratch_;
   }
+  // GU.13: the face's controls inside this section (the drop targets, LEDs and rings of a native engine's params).
+  void visitControls(const ControlVisitor& fn) const override {
+    const doc::Binding* b = binding();
+    if (!face_ || b == nullptr || b->kind != doc::BindingKind::Data) return;
+    const Fit f = fit();
+    const meta::Type& type = face_->type();
+    for (size_t k = 0; k < type.params.size(); ++k) {
+      const std::optional<Rect> r = face_->paramRect(k);
+      if (!r || !inside({(r->x0 + r->x1) * 0.5f, (r->y0 + r->y1) * 0.5f})) continue;
+      const Rect er{f.ox + (r->x0 - sec_.r.x0) * f.k, f.oy + (r->y0 - sec_.r.y0) * f.k, f.ox + (r->x1 - sec_.r.x0) * f.k,
+                    f.oy + (r->y1 - sec_.r.y0) * f.k};
+      fn(doc::controlBinding(b->device, std::string(type.params[k].name), b->meta), er);
+    }
+  }
   std::optional<ControlAnchor> anchorFor(const doc::Binding& want, bool /*shownOnly*/) const override {
     const doc::Binding* b = binding();
     if (!face_ || b == nullptr || b->kind != doc::BindingKind::Data || want.kind != doc::BindingKind::Control ||

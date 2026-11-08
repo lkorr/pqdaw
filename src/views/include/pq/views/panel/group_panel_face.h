@@ -77,6 +77,7 @@ public:
   bool wantsText() const noexcept override;
   void focusLost() override;
   void cancelDrag() override;
+  void endWheel() override;  // GU.13: every element's wheel run ends (one undo step each)
   ui::Cursor cursor(int32_t part) const noexcept override;
   void describe(int32_t part, std::string& title, std::string& body) const override;
   bool setHoveredPart(int32_t part) noexcept override;
@@ -95,6 +96,10 @@ public:
   // GU.6: where Control binding `want` sits (panel units): an element bound to it, or one inside an embedded child
   // panel; `shownOnly`: only on elements shown now (not on another tab). nullopt: nowhere.
   std::optional<ControlAnchor> bindingAnchor(const doc::Binding& want, bool shownOnly) const;
+  // GU.13: every control the shown elements show (Element::visitControls), its rect in panel units; and the control
+  // under `local` (a Control binding: an element's own, an engine face's control, an embedded panel's), null: none.
+  void visitControls(const Element::ControlVisitor& fn) const;
+  const doc::Binding* controlAt(ui::Vec2 local) const;
   // Where element i's control sits (panel units): its anchor (a knob's centre) or its rect's centre; nullopt: none.
   std::optional<ControlAnchor> elementAnchor(size_t i) const;
   // GU.5: a mod source's cable on the pointer (a drag from its handle; the face draws it to the pointer and outlines the
@@ -105,6 +110,9 @@ public:
   // ---- the panel ----
   // Re-reads the source: the elements rebuilt when the panel changed (true). Paint and the events call it.
   bool sync();
+  // GU.13: the rects (panel units) of the shown elements whose live key (Element::liveKey) changed since the last call,
+  // or that were shown or hidden; false: no keys yet (the first call, a rebuild): repaint the whole panel.
+  bool changedRects(std::vector<ui::Rect>& out);
   PanelTarget& target() const noexcept { return *target_; }
   size_t elementCount() const noexcept { return elements_.size(); }
   Element& element(size_t i) const noexcept { return *elements_[i]; }
@@ -134,6 +142,7 @@ private:
   mutable std::vector<int8_t> memo_;
   float tilesWanted_ = 0.0f;  // the scale the last paint missed tiles at (0: none missing)
   Stats stats_;
+  std::vector<uint64_t> liveKeys_;  // GU.13: per element, its live key at the last changedRects (0: hidden)
   doc::DeviceId owner_;
   // GU.5: the mod source whose cable is on the pointer (-1: none), the pointer (panel units), the control under it.
   int32_t cable_ = -1, cableTarget_ = -1;
@@ -174,16 +183,32 @@ std::unique_ptr<PanelTarget> makeDocPanelTarget(ViewContext& ctx, doc::DeviceId 
 doc::Panel inspectorPanel(doc::DeviceId group, float width);
 
 // A widget that hosts one Face fitted into its rect (aspect kept, centred, whole device px at its origin), routing pointer
-// events, keys and text to it as the canvas does, preparing it at its scale in onFrame (its tiles), and polling nothing
-// (a panel repaints when its document changes: notifyChanged). The Device view's group frame and inspector use it.
+// events, keys and text to it as the canvas does, preparing it at its scale in onFrame (its tiles). A panel repaints when
+// its document changes (notifyChanged); its voices are polled at ≤ 60 Hz only while its reader is live or it animates
+// (idle: no timer; wake() looks again). GU.13: its controls take the DEVICE-PANEL GESTURES (FacePointer::valueGestures:
+// the wheel, a run of notches one undo step ended kWheelRunSeconds after the last; the keys after a press) and its
+// popups are drawn over it. The Device view's frames (a group's panel, its inspector, a leaf's: block_frame.h) and the
+// panel window use it.
 class PanelHost final : public ui::Widget, public FaceHost {
 public:
   PanelHost(std::string name, std::unique_ptr<Face> face);
   ~PanelHost() override;
   Face& face() const noexcept { return *face_; }
+  GroupPanelFace* panelFace() const noexcept;  // the face as a group panel (null: another kind)
   ui::FaceTransform transform() const noexcept;
+  // GU.13: the panel's controls in device px (GroupPanelFace::visitControls mapped through transform(), clipped to the
+  // host's rect; nothing while it is hidden or another kind of face), the control under device point `p`, the rect of
+  // a control and the top centre of its anchor (where a cable ends on it).
+  using ControlFn = std::function<void(const doc::Binding& b, const ui::IRect& r)>;
+  void visitControls(const ControlFn& fn) const;
+  const doc::Binding* controlAt(ui::Vec2 p) const;
+  std::optional<ui::IRect> controlRect(const doc::Binding& b) const;
+  std::optional<ui::Vec2> controlPoint(const doc::Binding& b) const;
   // The document changed: repaint (and re-sync a group panel).
   void notifyChanged();
+  // GU.13: the face's voices may have become live (a note while nothing animated): it polls again.
+  void wake();
+  static constexpr double kWheelRunSeconds = 0.4;  // ui::ValueControl::kWheelGestureSeconds
   // GU.5: the face part under the pointer changed (a panel window's link line follows the hovered element).
   std::function<void()> onHoverPart;
   int32_t hoveredPart() const noexcept { return hover_; }
@@ -196,6 +221,7 @@ public:
   void onCaptureLost() override;
   void onFocusChanged(bool focused) override;
   void onHoverChanged(bool hovered) override;
+  void onTimer(uint32_t id) override;
   ui::Cursor cursorAt(ui::Vec2 p) const override;
   ui::InfoText info() const override;
   // FaceHost
@@ -207,6 +233,8 @@ private:
   std::unique_ptr<Face> face_;
   int32_t hover_ = Face::kNone;
   bool captured_ = false;
+  uint32_t wheelTimer_ = 0, voiceTimer_ = 0;  // GU.13
+  void endWheel();
   mutable std::string title_, body_;
 };
 

@@ -1,5 +1,5 @@
 // T4.1 the Device view through the real shell: the selected track's chain left → right, one frame per block of its
-// main path (GU.11: a group — a module — shows its panel, a leaf its generated DevicePanel); add (the device menu), reorder (dragging a title bar), remove (Delete), deactivate (`0`), copy / paste /
+// main path (GU.11: a group — a module — shows its panel; GU.13: a leaf its synthetic panel of the same system); add (the device menu), reorder (dragging a title bar), remove (Delete), deactivate (`0`), copy / paste /
 // duplicate (keys), a param drag and a structural const — each exactly one undo step; a param change from elsewhere
 // repaints only its control. Golden: device-chain.
 
@@ -21,7 +21,7 @@
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/device_chain/device_chain.h"
-#include "pq/views/devices/device_panel.h"
+#include "pq/views/panel/block_frame.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
@@ -133,11 +133,11 @@ struct Ui {
 
 }  // namespace
 
-TEST_CASE("device view: shows the selected track's chain, one frame per block — a group's panel, a leaf's DevicePanel") {
+TEST_CASE("device view: shows the selected track's chain, one frame per block — a group's panel, a leaf's synthetic panel") {
   Ui u;
   DeviceChainView& v = u.view();
   CHECK(v.track() == u.keys);
-  // The default instrument: a group (GU.10) — its frame shows its panel / mini circuit, no DevicePanel of its own.
+  // The default instrument: a group (GU.10) — its frame shows its panel / mini circuit, no leaf frame of its own.
   const doc::DeviceId inst = u.onPath(u.keys, 0);
   REQUIRE(doc::isGroupDevice(*doc::findDevice(*u.ctx.doc(), inst).device));
   REQUIRE(v.frameOf(inst) != nullptr);
@@ -148,17 +148,25 @@ TEST_CASE("device view: shows the selected track's chain, one frame per block �
   REQUIRE(v.frameOf(util) != nullptr);
   CHECK(v.panelOf(util) == nullptr);
   CHECK(u.element(util, test_blocks::member(*u.ctx.doc(), util, "Width")).w > 0);
-  // A leaf (an atom block): the generated body, one control per param and setting (GU.11 autoPanel).
+  // A leaf (an atom block): GU.13 a synthetic panel of the group-panel system, one control element per param and setting.
   auto e = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "atom:gain", doc::DeviceKind::AudioEffect);
   REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
   REQUIRE(u.ctx.store().dispatch(e->command).ok());
   const doc::DeviceId atom = e->devices.at(0);
-  devices::DevicePanel* p = v.panelOf(atom);
+  panel::BlockFrame* p = v.panelOf(atom);
   REQUIRE(p != nullptr);
-  CHECK(doc::findDevice(*u.ctx.doc(), atom).device->patch == "atom:gain");
-  CHECK_FALSE(p->desc().fitFace);
-  for (const devices::ParamInfo& pi : p->signature().params) CHECK_MESSAGE(p->controlFor(pi.name) != nullptr, pi.name);
-  for (const devices::ConstInfo& ci : p->signature().consts) CHECK_MESSAGE(p->control(ci.name) != nullptr, ci.name);
+  const doc::Device& ad = *doc::findDevice(*u.ctx.doc(), atom).device;
+  CHECK(ad.patch == "atom:gain");
+  u.d.tree().layoutNow();
+  const devices::DeviceSignature sig = devices::signatureOf(*library().patchOf(ad));
+  for (const devices::ParamInfo& pi : sig.params)
+    if (!pi.hidden) CHECK_MESSAGE(v.controlRect(atom, pi.name).has_value(), pi.name);
+  for (const devices::ConstInfo& ci : sig.consts) {
+    bool found = false;
+    for (size_t i = 0; i < p->face().elementCount(); ++i)
+      if (const doc::Binding* b = p->face().element(i).binding(); b != nullptr && *b == doc::settingBinding(atom, ci.name)) found = true;
+    CHECK_MESSAGE(found, ci.name);
+  }
   // Selecting another track shows its (empty) chain.
   u.ctx.setSelectedTrack(u.grp);
   CHECK(v.track() == u.grp);
@@ -265,22 +273,23 @@ TEST_CASE("device view: a param drag is one undo step of Param changes; a const 
   REQUIRE(u.ctx.store().dispatch(e->command).ok());
   const doc::DeviceId atom = e->devices.at(0);
   const size_t h1 = u.history();
-  devices::DeviceTarget* target = u.view().targetOf(atom);
-  REQUIRE(target != nullptr);
   REQUIRE(u.view().panelOf(atom) != nullptr);
-  const double s0 = u.view().panelOf(atom)->constValue("start");
-  target->setConst("start", s0 == 1.0 ? 0.0 : 1.0);
+  panel::PanelTarget& target = u.view().panelOf(atom)->target();  // GU.13: the document's panel target
+  const doc::Binding sb = doc::settingBinding(atom, "start");
+  REQUIRE(target.info(sb).valid);
+  const double p0 = target.position(sb);
+  const double want = p0 > 0.5 ? 0.0 : 1.0;
+  target.setOnce(sb, want, "Set");
   CHECK(u.history() == h1 + 1);
   CHECK(u.ctx.store().history().entries()[h1].changes.structural());
   REQUIRE(doc::findDevice(*u.ctx.doc(), atom).device->setting("start") != nullptr);
-  CHECK(doc::findDevice(*u.ctx.doc(), atom).device->setting("start")->value == (s0 == 1.0 ? 0.0 : 1.0));
-  CHECK(u.view().panelOf(atom)->constValue("start") == (s0 == 1.0 ? 0.0 : 1.0));
+  CHECK(target.position(sb) == doctest::Approx(want));
   REQUIRE(u.ctx.undo());
-  CHECK(u.view().panelOf(atom)->constValue("start") == s0);  // undo comes back to the panel
+  CHECK(target.position(sb) == doctest::Approx(p0));  // undo comes back to the panel
 }
 
 TEST_CASE("device view: a param change from elsewhere repaints only its control") {
-  // GU.11: on a generic knob — a rack's macro (its frame's DevicePanel), on the Bus track (no group frame beside it: a
+  // GU.11 / GU.13: on a generic knob — a rack's macro (its macro panel: a panel of the one system), on the Bus track (no group frame beside it: a
   // group frame repaints its whole panel or mini circuit on any document change; a native engine's face is one
   // control).
   Ui u;
@@ -309,14 +318,14 @@ TEST_CASE("device view: a param change from elsewhere repaints only its control"
   REQUIRE(u.ctx.store().dispatch(doc::ops::setMacroValue(*u.ctx.doc(), rack, 0, 0.25 * doc::kMacroMax)->command).ok());
   u.d.step();
   u.d.step();  // settle: nothing damaged
-  devices::DevicePanel* panel = u.view().panelOf(rack);
+  panel::BlockFrame* panel = u.view().panelOf(rack);
   REQUIRE(panel != nullptr);
-  ui::Widget* knob = panel->controlFor("macro1");
-  REQUIRE(knob != nullptr);
+  const std::optional<IRect> knob = u.view().controlRect(rack, "macro1");
+  REQUIRE(knob.has_value());
   auto e = doc::ops::setMacroValue(*u.ctx.doc(), rack, 0, 0.75 * doc::kMacroMax);
   REQUIRE(e.ok());
   REQUIRE(u.ctx.store().dispatch(e->command).ok());
-  CHECK(panel->paramValue("macro1") == doctest::Approx(0.75 * doc::kMacroMax).epsilon(1e-9));
+  CHECK(panel->target().position(doc::controlBinding(rack, "macro1")) == doctest::Approx(0.75).epsilon(1e-9));
   IRect rects[Damage::kMaxRects];
   int64_t area = 0;
   const uint32_t n = u.d.tree().damageRects(rects, area);
@@ -324,7 +333,7 @@ TEST_CASE("device view: a param change from elsewhere repaints only its control"
   const IRect rf = u.view().frameOf(rack)->rect();
   for (uint32_t i = 0; i < n; ++i) {  // inside the control (a knob may damage its value readout with it)
     const IRect& r = rects[i];
-    const IRect& w = knob->rect();
+    const IRect& w = *knob;
     // (GU.9: the rack frame's strip — its left column — follows every edit of what the rack derives from)
     if (r.x >= rf.x && r.right() <= rf.x + 40) continue;
     CAPTURE(r.x);

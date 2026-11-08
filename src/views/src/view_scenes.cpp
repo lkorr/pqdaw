@@ -1704,6 +1704,7 @@ Status setupDeviceMetaChain(Shell& shell) {
     if (!path.empty()) return nullptr;
     return d == acc ? &accVoices : (d == wt ? &wtVoices : nullptr);
   };
+  ctx.setFaceVoices(v->faceVoices);  // GU.13: a leaf's panel reads them through the context, as the app's
   ctx.setSelectedTrack(ids.lead);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
@@ -2249,6 +2250,7 @@ Status setupDeviceMetaEnvelope(Shell& shell) {
     if (!path.empty()) return nullptr;
     return d == acc ? &accVoices : (d == wt ? &wtVoices : (d == env ? static_cast<VoiceTapReader*>(&envVoices) : nullptr));
   };
+  ctx.setFaceVoices(v->faceVoices);  // GU.13: a leaf's panel reads them through the context, as the app's
   ctx.setSelectedTrack(ids.pluck);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);

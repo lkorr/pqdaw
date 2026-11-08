@@ -547,12 +547,20 @@ stdlib's atom / function library and the lowering's output — not a container: 
 a device's own, no per-device circuit editor (the circuit editor opens loose `.pqp` files only).
 `DeviceLibrary` (`devices.h`) is the fixed block patches (group variants, value, one per atom) plus the meta prelude;
 `patchOf` / `infoOf` describe a block. **Views**: one panel system — a group is drawn as its panel (`GroupPanelFace`) in
-the circuit, the Device view and the panel window; a leaf in the Device view gets a generated frame (`DevicePanel` over
-`panel_layout.h`: an engine's face, else one control per param / setting); in the circuit an atom is its symbol, a value
-block a knob, an engine its face. Opening a block opens a group (a leaf has no inside). Retired code: `retired/`.
+the circuit, the Device view and the panel window; GU.13: a leaf in the Device view is a panel of the same system — a
+synthetic `doc::Panel` (`pq/views/panel/block_frame.h` `leafPanel`: its engine module's panel, else one control element
+per param / setting) through `makeDocPanelTarget`, in a `BlockFrame` (jacks, title bar, activator, fold, preset slot,
+rename); a rack's macro panel is a `BlockFrame` too (its own `PanelTarget`). Every panel's controls behave alike: the
+elements take the device-panel gestures where the host allows them (`FacePointer::valueGestures`: `PanelHost` sets it,
+the circuit canvas does not — its wheel pans), the Device view visits every frame's `PanelHost`s for its drop targets,
+automation LEDs, live modulation rings (`PanelTarget::setModulation`), the envelope at the playhead
+(`PanelTarget::showPosition`), map mode and the control menu (Show Automation, Knob Curve); a document change repaints
+only the elements whose `Element::liveKey` changed. `DevicePanel` / `PanelLayout` are deleted. In the circuit an atom is
+its symbol, a value block a knob, an engine its face. Opening a block opens a group (a leaf has no inside). Retired code: `retired/`.
 **Older bullets below**: wherever one still names stock devices, user devices (`Device::source`), panel descriptions
 (`.panel.json`), `Device::chainInput`, the device preview or the project-device circuit editor, that part is gone
-(GU.10 / GU.11; retired/README.md lists the files).
+(GU.10 / GU.11; retired/README.md lists the files); so is any `DevicePanel`, `PanelLayout`, `facePanel` / `autoPanel`,
+`DeviceTarget` or `face_display.cpp` (GU.13: deleted; the leaf's frame is a `panel::BlockFrame`).
 
 ### Document model (`pq/document/*.h`, T3.4)
 - `Snapshot = shared_ptr<const Project>`. `Project`: timeline (tempo + time-signature points and their built maps), main tunings (`TuningSlot`: name, colour, `TuningDef` = EDO | MOS params | `ScaleDef` (Scala .scl + optional .kbm) + reference Hz), locators, loop, track tree (`tracks`, Midi + nested Group), `returns`, `master`. `Track`: kind, name, colour, `TuningAssignment` (Inherit | Main | Private), `Mixer` (volume dB, pan, mute, solo, arm, non-default sends, output), active, children, clips (`ClipSlot {id, ClipPtr}` sorted by start), automation lanes (`ParamRef` + breakpoints). `NoteClip`: start, length, content start, loop, signature, tuning, active, `ClipFundamental` (T3.6-fix1), `NoteSeq`. **Virtual fundamental** (T3.6-fix1, Q40): stored = `ClipFundamental { steps: HarmonicStep {note, denominator, ratio} sorted by note id, lock: optional Rational }`; derived on read = `doc::virtualFundamental(clip[, ownDenominators])`: the lock, else 1/D with D = lcm over the reference-anchored Ratio notes of their effective denominators (a step's denominator while the note still has the ratio that step produced, else its own; D > 2^20 = none). `ops::transposeNotes` / `moveNotes` step those notes on F' = gcd(note, F) and write the step memory in the same Batch (`SetClipFundamental`, Meta); `ops::lockFundamental(clip, note, N)` = note / N, `unlockFundamental`. Ratios stay reduced and exact; undo, redo and the project file carry the memory (JSON `"fundamental"` on a clip, written only when set). `Note`: 64 bytes (start, length, `PitchId`, id, velocity, release, chance, velocity range, flags).

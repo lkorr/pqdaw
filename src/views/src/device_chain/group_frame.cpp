@@ -102,6 +102,11 @@ public:
     return l.track != nullptr && doc::rackOfChain(*ctx_.doc(), *l.track, d.id).has_value();
   }
 
+  // GU.13: its panel and its inspector are the frame's panel hosts (their controls: drop targets, LEDs, rings, map mode).
+  void hosts(std::vector<panel::PanelHost*>& out) const override {
+    if (panel_ != nullptr && panel_->visible()) out.push_back(panel_);
+    if (inspector_ != nullptr && inspector_->visible()) out.push_back(inspector_);
+  }
   project_patch::ProjectPatchView* patchView() const noexcept { return view_; }  // null: the group shows its panel
   panel::PanelHost* panelHost() const noexcept { return panel_; }
   panel::PanelHost* inspectorHost() const noexcept { return inspector_; }
@@ -205,35 +210,6 @@ project_patch::ProjectPatchView* groupPatchView(FrameBase& f) {
 panel::PanelHost* groupPanelHost(FrameBase& f, bool inspector) {
   auto* g = dynamic_cast<GroupFrame*>(&f);
   return g == nullptr ? nullptr : inspector ? g->inspectorHost() : g->panelHost();
-}
-
-void forEachPanelControl(FrameBase& f, const std::function<bool(const PanelControl&)>& fn) {
-  panel::PanelHost* host = groupPanelHost(f, false);
-  if (host == nullptr || !host->visible() || host->rect().empty()) return;
-  auto* face = dynamic_cast<panel::GroupPanelFace*>(&host->face());
-  if (face == nullptr) return;
-  const ui::FaceTransform t = host->transform();
-  for (size_t i = 0; i < face->elementCount(); ++i) {
-    const doc::Binding* b = face->element(i).binding();
-    if (b == nullptr || b->kind != doc::BindingKind::Control || !b->meta.empty() || !face->shown(i)) continue;
-    const ui::Rect er = face->element(i).rect();
-    const ui::Vec2 a = t.map({er.x0, er.y0}), z = t.map({er.x1, er.y1});
-    const ui::IRect cr{static_cast<int32_t>(std::floor(a.x)), static_cast<int32_t>(std::floor(a.y)),
-                       static_cast<int32_t>(std::ceil(z.x) - std::floor(a.x)), static_cast<int32_t>(std::ceil(z.y) - std::floor(a.y))};
-    const ui::IRect r = ui::intersect(cr, host->rect());
-    if (r.empty()) continue;
-    if (fn(PanelControl{b->device, b->name, r})) return;
-  }
-}
-
-std::optional<ui::Vec2> panelControlPoint(FrameBase& f, doc::DeviceId device, std::string_view param) {
-  panel::PanelHost* host = groupPanelHost(f, false);
-  if (host == nullptr || !host->visible() || host->rect().empty()) return std::nullopt;
-  auto* face = dynamic_cast<panel::GroupPanelFace*>(&host->face());
-  if (face == nullptr) return std::nullopt;
-  const std::optional<ControlAnchor> a = face->bindingAnchor(doc::controlBinding(device, std::string(param)), true);
-  if (!a) return std::nullopt;
-  return host->transform().map({a->at.x, a->at.y - 0.5f * a->radius});
 }
 
 }  // namespace pq::views::device_chain

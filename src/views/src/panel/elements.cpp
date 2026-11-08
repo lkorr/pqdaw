@@ -17,6 +17,7 @@
 
 #include "elements_internal.h"
 #include "pq/ui/overlay.h"
+#include "pq/views/devices/device_model.h"
 
 namespace pq::views::panel {
 
@@ -58,6 +59,24 @@ std::optional<ControlAnchor> Element::anchorFor(const doc::Binding& want, bool /
   return anchor().value_or(ControlAnchor{{desc_.w * 0.5f, desc_.h * 0.5f}, 0.0f, desc_.w * 0.5f});
 }
 
+uint64_t Element::liveKey(const PanelTarget& t) const {
+  uint64_t h = 0x4C495645ull;
+  for (const doc::Binding& b : desc_.bindings) {
+    if (!b.bound()) continue;
+    if (b.kind != doc::BindingKind::Control && b.kind != doc::BindingKind::Setting) return kAnyChange;
+    h = mix(h, t.info(b).generation);
+    h = mix(h, std::bit_cast<uint64_t>(t.position(b)));
+    h = mix(h, t.driven(b) ? 1u : 0u);
+    if (const ui::ModulationRing* m = t.modulation(b))
+      for (const float x : {m->lo, m->hi, m->current, m->liveLo, m->liveHi}) h = mix(h, std::bit_cast<uint32_t>(x));
+  }
+  return h == kAnyChange ? h - 1 : h;
+}
+
+void Element::visitControls(const ControlVisitor& fn) const {
+  if (const doc::Binding* b = binding(); b != nullptr && b->kind == doc::BindingKind::Control) fn(*b, {0.0f, 0.0f, desc_.w, desc_.h});
+}
+
 bool Element::hit(Vec2 l) const noexcept { return l.x >= 0.0f && l.y >= 0.0f && l.x <= desc_.w && l.y <= desc_.h; }
 
 const std::string& Element::labelText(const PanelTarget& t, size_t slot) const {
@@ -88,6 +107,7 @@ const std::string& Element::readoutText(const PanelTarget& t, double position, s
 
 void Element::describe(const PanelTarget& t, std::string& title, std::string& body) const {
   title = labelText(t);
+  if (title.empty() && binding() != nullptr) title = t.info(*binding()).label;  // GU.13: a hidden label still names it
   if (title.empty()) title = std::string(desc_.kind);
   const doc::Binding* b = binding();
   if (b == nullptr) {
@@ -198,6 +218,63 @@ double ValueElement::dragged(const FacePointer& e, size_t slot, float dx, float 
 void ValueElement::describe(const PanelTarget& t, std::string& title, std::string& body) const {
   Element::describe(t, title, body);
   if (!body.empty() && interactive()) body += hint();
+  if (body.empty() || binding() == nullptr || binding()->kind != doc::BindingKind::Control || !keys_) return;
+  body += " Wheel: steps; type a number to enter a value; Delete: default.";
+  if (t.info(*binding()).curveSwitched) body += " Off its default curve (right-click: Knob Curve).";
+}
+
+// ---- GU.13: the device-panel gestures -----------------------------------------------------------------------------
+
+double ValueElement::stepOf(const PanelTarget& t, bool fine) const {
+  const BoundInfo& i = bound(t);
+  const double step = i.steps >= 2 ? 1.0 / static_cast<double>(i.steps - 1) : 0.0;
+  const double d = 0.01 * (fine ? 0.1 : 1.0);  // ui::ValueControl's key step (1 % of the travel; Shift: a tenth)
+  return step > 0.0 ? std::max(d, step) : d;
+}
+
+void ValueElement::noteGestures(const FacePointer& e, PanelTarget& t) {
+  if (e.kind == FacePointer::Kind::Down) {
+    keys_ = e.valueGestures;
+    endWheel(t);
+  }
+}
+
+bool ValueElement::wheelStep(const FacePointer& e, PanelTarget& t) {
+  if (!e.valueGestures || e.kind != FacePointer::Kind::Wheel || drag_ || !editable(t)) return false;
+  if ((e.mods & (ui::mod::kCtrl | ui::mod::kAlt | ui::mod::kSuper)) != 0 || e.wheel.y == 0.0f) return false;
+  const doc::Binding& b = *binding();
+  if (!wheel_) {  // a new run: one gesture until the host ends it (endWheel)
+    wheel_ = true;
+    wheelPos_ = pos(t);
+    t.begin(b, "Panel Wheel");
+  }
+  wheelPos_ = std::clamp(wheelPos_ + stepOf(t, (e.mods & ui::mod::kShift) != 0) * static_cast<double>(e.wheel.y), 0.0, 1.0);
+  t.setPosition(b, quantise(t, wheelPos_));
+  return true;  // consumed at a limit too: the view under the panel does not scroll instead
+}
+
+void ValueElement::endWheel(PanelTarget& t) {
+  if (!wheel_) return;
+  wheel_ = false;
+  t.end();
+}
+
+bool ValueElement::valueKey(const ui::KeyEvent& e, PanelTarget& t) {
+  if (!keys_ || !e.down || drag_ || !editable(t)) return false;
+  const ui::Mods chord = e.mods & ui::mod::kChordMask;
+  const doc::Binding& b = *binding();
+  if ((e.key == ui::key::kDelete || e.key == ui::key::kBackspace) && chord == ui::mod::kNone) {
+    endWheel(t);
+    t.reset(b);
+    return true;
+  }
+  if ((e.key == ui::key::kUp || e.key == ui::key::kDown) && (chord & ~ui::mod::kShift) == 0) {
+    endWheel(t);
+    const double d = stepOf(t, (chord & ui::mod::kShift) != 0);
+    t.setOnce(b, quantise(t, std::clamp(pos(t) + (e.key == ui::key::kUp ? d : -d), 0.0, 1.0)), "Panel Key");
+    return true;
+  }
+  return false;
 }
 
 // ---- knob ---------------------------------------------------------------------------------------------------------
@@ -259,8 +336,14 @@ public:
     const bool hot = env.hovered || drag_;
     const std::string_view ptr = pointer();
     if (hot) p.ring(g.c, g.r, track() + 2.0f, th.face.hover);
-    // GU.5: a cable drives the control — its modulation ring, just outside the track (and its end ticks).
-    if (binding() != nullptr && t.driven(*binding())) p.ring(g.c, g.r + track() * 0.5f + 5.0f, 1.5f, th.face.valueDriven);
+    // GU.5: a cable drives the control — its modulation ring, just outside the track (and its end ticks). GU.13: the
+    // host's live ring when it set one (the old device panel's: the range the wires sweep faint, what they swept since
+    // the last poll bright, a dot where the modulation puts it).
+    if (const ui::ModulationRing* m = binding() != nullptr ? t.modulation(*binding()) : nullptr; m != nullptr && m->active) {
+      paintRing(p, g, *m);
+    } else if (binding() != nullptr && t.driven(*binding())) {
+      p.ring(g.c, g.r + track() * 0.5f + 5.0f, 1.5f, th.face.valueDriven);
+    }
     if (ptr == "pie") {
       // A filled wedge from the start to the value: an arc as thick as the radius (one primitive, no seams).
       if (a > g.a0 + 1e-4f) p.arc(g.c, g.r * 0.5f, g.a0, a, g.r, ui::mulAlpha(accent, 0.9f));
@@ -275,14 +358,27 @@ public:
       p.disc(g.c, std::max(1.0f, g.r - track() * 0.5f - 1.0f), ui::lerp(th.face.body, th.face.track, 0.45f));
       p.line(g.c, polar(g.c, g.r, a), std::max(1.2f, track() * 0.6f), accent);
     }
+    // TX.knob-curves / GU.13: a knob switched off its declared curve shows that curve, boxed beside the arc's lower right.
+    if (binding() != nullptr && g.r >= 8.0f)
+      if (const BoundInfo& bi = t.info(*binding()); bi.curveSwitched) paintCurveGlyph(p, g, bi.curve, th);
     const std::string& label = labelText(t);
     if (!label.empty()) p.text({desc_.w * 0.5f, g.labelY}, label, kLabelPx, th.face.ink);
-    if (g.readoutY > 0.0f && binding() != nullptr)
+    if (typing_) {  // GU.13: the type-in over the readout
+      const float y = g.readoutY > 0.0f ? g.readoutY : g.c.y;
+      const Rect box{1.0f, y - 5.5f, desc_.w - 1.0f, y + 5.5f};
+      p.roundedRect(box, 2.0f, ui::lerp(th.face.body, th.face.track, 0.6f));
+      outlineRect(p, box, 2.0f, 1.0f, th.circuit.selected);
+      p.text({desc_.w * 0.5f, y}, text_ + "|", kValuePx, th.face.ink);
+    } else if (g.readoutY > 0.0f && binding() != nullptr) {
       p.text({desc_.w * 0.5f, g.readoutY}, readoutText(t, v), g.inside ? kLabelPx : kValuePx, ok ? accent : th.face.ink);
+    }
   }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
     using K = FacePointer::Kind;
+    noteGestures(e, t);
+    if (wheelStep(e, t)) return true;
     if (e.kind == K::Down) {
+      if (typing_) commit(t);
       if (e.button != ui::PointerButton::Left || !editable(t)) return false;
       if (e.clicks >= 2) {
         t.reset(*binding());
@@ -301,7 +397,43 @@ public:
     }
     return false;
   }
-  ui::Cursor cursor() const noexcept override { return ui::Cursor::ResizeNS; }
+  ui::Cursor cursor() const noexcept override { return typing_ ? ui::Cursor::Text : ui::Cursor::ResizeNS; }
+  // GU.13 (the old device panel's T4.17): after a press, a number key opens a type-in over the readout (Enter commits
+  // one undo step, Esc cancels; an unparsable entry reverts); Delete / Up / Down as ValueElement::valueKey.
+  bool wantsText() const noexcept override { return typing_; }
+  bool onText(const ui::TextEvent& e, PanelTarget&) override {
+    if (!typing_) return false;
+    text_ += e.text();
+    return true;
+  }
+  bool onKey(const ui::KeyEvent& e, PanelTarget& t) override {
+    if (typing_) {
+      if (!e.down) return true;
+      if (e.key == ui::key::kReturn) {
+        commit(t);
+      } else if (e.key == ui::key::kEscape) {
+        typing_ = false;
+      } else if (e.key == ui::key::kBackspace) {
+        if (!text_.empty()) text_.pop_back();
+      } else if (e.key == ui::key::kTab) {
+        commit(t);
+        return false;
+      }
+      return true;  // nothing else while typing
+    }
+    if (keys_ && e.down && !e.repeat && (e.mods & ui::mod::kChordMask) == 0 && editable(t) && !drag_ &&
+        ((e.key >= '0' && e.key <= '9') || e.key == '.' || e.key == '-')) {
+      endWheel(t);
+      typing_ = true;
+      text_.assign(1, static_cast<char>(e.key));
+      return true;
+    }
+    return valueKey(e, t);
+  }
+  void focusLost(PanelTarget& t) override {
+    if (typing_) commit(t);
+  }
+  bool typing() const noexcept { return typing_; }
   // GU.5b: the dial and a little around it (its label and readout are the panel's: a value block's knob is moved by them).
   bool hit(Vec2 l) const noexcept override {
     const G g = geom();
@@ -345,6 +477,36 @@ private:
     return g;
   }
   std::string hint() const override { return " Drag up / down (Shift: fine), double-click: default."; }
+  void commit(PanelTarget& t) {
+    typing_ = false;
+    const doc::Binding* b = binding();
+    if (b == nullptr || text_.empty()) return;
+    if (const std::optional<double> p = t.parse(*b, text_)) t.setOnce(*b, quantise(t, std::clamp(*p, 0.0, 1.0)), "Panel Value");
+  }
+  void paintRing(ui::FacePainter& p, const G& g, const ui::ModulationRing& m) const {
+    const float mr = g.r + track() * 0.5f + 2.5f;
+    auto ang = [&](float x) { return g.a0 + g.sweep * std::clamp(x, 0.0f, 1.0f); };
+    const float m0 = ang(std::min(m.lo, m.hi)), m1 = ang(std::max(m.lo, m.hi));
+    if (m1 - m0 > 1e-4f) p.arc(g.c, mr, m0, m1, 1.5f, ui::withAlpha(ui::signal_theme::kAccent, 90), ui::LineCap::Round);
+    if (m.liveHi >= m.liveLo) {
+      const float l0 = ang(m.liveLo), l1 = ang(m.liveHi);
+      if (l1 - l0 > 1e-4f) p.arc(g.c, mr, l0, l1, 2.0f, ui::withAlpha(ui::signal_theme::kAccent, 235), ui::LineCap::Round);
+    }
+    if (m.current >= 0.0f) p.disc(polar(g.c, mr, ang(m.current)), 2.0f, ui::signal_theme::kAccent);
+  }
+  void paintCurveGlyph(ui::FacePainter& p, const G& g, const dsp::Curve& c, const ui::Theme& th) const {
+    const float bw = 10.0f, bh = 8.0f;
+    float bx = g.c.x + g.r + track() * 0.5f + 1.5f;
+    if (bx + bw > desc_.w) bx = g.c.x - g.r - track() * 0.5f - 1.5f - bw;  // no room: left
+    const Rect box{bx, g.c.y + 0.15f * g.r, bx + bw, g.c.y + 0.15f * g.r + bh};
+    p.roundedRect(box, 1.5f, th.surface.sunken);
+    outlineRect(p, box, 1.5f, 0.75f, ui::withAlpha(th.face.ink, 140));
+    std::array<Vec2, devices::kCurveGlyphPoints> pts;
+    devices::curveGlyphPoints(c, {box.x0 + 2.0f, box.y0 + 2.0f, box.x1 - 2.0f, box.y1 - 2.0f}, pts);
+    p.polyline(pts, 0.75f, ui::withAlpha(th.face.ink, 230));
+  }
+  bool typing_ = false;
+  std::string text_;
 };
 
 // ---- slider -------------------------------------------------------------------------------------------------------
@@ -403,6 +565,8 @@ public:
   }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
     using K = FacePointer::Kind;
+    noteGestures(e, t);
+    if (wheelStep(e, t)) return true;
     if (e.kind == K::Down) {
       if (e.button != ui::PointerButton::Left || !editable(t)) return false;
       if (e.clicks >= 2) {
@@ -424,6 +588,7 @@ public:
     }
     return false;
   }
+  bool onKey(const ui::KeyEvent& e, PanelTarget& t) override { return valueKey(e, t); }
   ui::Cursor cursor() const noexcept override { return geom().vertical ? ui::Cursor::ResizeNS : ui::Cursor::ResizeEW; }
   std::optional<ControlAnchor> anchor() const override {
     const G g = geom();
@@ -495,6 +660,8 @@ public:
   }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
     using K = FacePointer::Kind;
+    noteGestures(e, t);
+    if (!typing_ && wheelStep(e, t)) return true;
     if (e.kind == K::Down) {
       if (e.button != ui::PointerButton::Left || !editable(t)) return false;
       if (typing_) return true;
@@ -526,7 +693,8 @@ public:
     return true;
   }
   bool onKey(const ui::KeyEvent& e, PanelTarget& t) override {
-    if (!typing_ || !e.down) return false;
+    if (!typing_) return valueKey(e, t);
+    if (!e.down) return false;
     if (e.key == ui::key::kEscape) {
       typing_ = false;
       return true;

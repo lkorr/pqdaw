@@ -1,8 +1,11 @@
 #pragma once
 
 // Private to the device view (T4.1; racks T4.8): its sizes (logical px), the view's shared state (Impl) and the frames
-// it shows — a device's panel (DeviceFrame, device_chain.cpp) or a rack (RackFrame, rack_frame.cpp: its macro panel, its
-// chain list with the chain mixer and the zone editor, and the frames of the chain it shows, nested to any depth).
+// it shows — a leaf's framed panel (DeviceFrame, device_chain.cpp: GU.13 a panel::BlockFrame), a group's panel
+// (group_frame.cpp) or a rack (RackFrame, rack_frame.cpp: its macro panel, its chain list with the chain mixer and the
+// zone editor, and the frames of the chain it shows, nested to any depth). Every frame's panels are PanelHosts of the one
+// panel system (hosts()): the view's control features (drop targets, LEDs, rings, map mode, the control menu) visit
+// their controls alike.
 
 #include <cstdint>
 #include <functional>
@@ -15,14 +18,13 @@
 #include <vector>
 
 #include "../common/drag.h"
-#include "../common/panel_template.h"
 #include "pq/document/main_path.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/racks.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
-#include "pq/views/devices/device_panel.h"
-#include "pq/views/devices/panel_layout.h"
+#include "pq/views/devices/device_model.h"
+#include "pq/views/panel/block_frame.h"
 
 namespace pq::views {
 
@@ -59,6 +61,12 @@ struct DropTarget {
 };
 
 }  // namespace device_chain
+
+// A leaf block's frame template (per patch, built on first use): its signature and its title.
+struct PanelTemplate {
+  devices::DeviceSignature sig;
+  std::string title;
+};
 
 struct DeviceChainView::Impl {
   DeviceChainView& view;
@@ -110,6 +118,14 @@ struct DeviceChainView::Impl {
   std::map<std::string, std::unique_ptr<PanelTemplate>, std::less<>> templates;
   static std::string templateKey(const doc::DeviceLibrary* lib, const doc::Device& d);
   const PanelTemplate* templateFor(const doc::Device& d);
+  // GU.13: the param `param` of block `device` as its patch declares it, with the block's own knob curve (null: none).
+  const devices::ParamInfo* paramInfo(doc::DeviceId device, std::string_view param);
+  std::map<const graph::Patch*, std::unique_ptr<devices::DeviceSignature>> sigs;
+  devices::ParamInfo paramScratch;
+  // GU.13: the frame that shows `device`'s controls: its own, else its outermost group's (a member's on the panel).
+  device_chain::FrameBase* frameFor(doc::DeviceId device) const;
+  // The panel host showing control `device`.`param` now (null: none) and the control's binding there.
+  panel::PanelHost* hostOf(doc::DeviceId device, std::string_view param, doc::Binding* binding = nullptr) const;
   void startDrag(doc::DeviceId id, const ui::PointerEvent& e);
   void moveDrag(const ui::PointerEvent& e);
   void endDrag(bool commit);
@@ -136,6 +152,7 @@ struct DeviceChainView::Impl {
     bool overridden = false;
   };
   std::vector<AutoTarget> autoTargets;
+  std::vector<std::pair<doc::DeviceId, std::string>> autoMapped;  // lanes on macro-mapped params (their LEDs grey)
   bool chainAuto = false;  // a rack chain's volume / pan lane on the shown track
   uint32_t autoTimer = 0;
   // TX.groups: a group panel's width (logical px) after its right edge was dragged, by group id (this session).
@@ -181,9 +198,11 @@ public:
   virtual bool derived() const noexcept { return false; }
   // Only these params changed (a Param ChangeSet): repaint what shows them.
   virtual void paramsChanged(const doc::Device& d, std::span<const doc::ParamRef> params) = 0;
-  // The panel showing this device's params (a rack: its macro panel), and its binding.
-  virtual devices::DevicePanel* panel() const noexcept { return nullptr; }
-  virtual devices::DeviceTarget* target() noexcept { return nullptr; }
+  // A leaf's framed panel (a rack: its macro panel); null: none (a group frame: its own panel hosts).
+  virtual panel::BlockFrame* panel() const noexcept { return nullptr; }
+  // GU.13: the panel hosts the frame shows (a leaf's, a group's panel and inspector, a rack's macros; not those of the
+  // frames inside a rack): their controls are the view's drop targets, LEDs, rings and map targets.
+  virtual void hosts(std::vector<panel::PanelHost*>& out) const;
   virtual bool isRack() const noexcept { return false; }
   // Adds itself (and what it shows inside: a rack's frames) to `all`.
   virtual void collect(std::map<uint32_t, FrameBase*>& all) { all[id_.value] = this; }
@@ -195,11 +214,17 @@ public:
   // T4.18: the automation lanes of the shown track or the playhead changed: a rack re-shows its chains' volume / pan
   // (an automated one: the envelope at the playhead and an LED).
   virtual void automationChanged() {}
-  // T4.18: the param of panel() whose control is under `p` ("" none: no panel, or not over a param's control).
-  std::string paramAt(ui::Vec2 p) const;
-  // T4.18: the params with an automation lane (second: overridden): their controls get Live's LED (paintOver).
-  void setAutomated(std::vector<std::pair<std::string, bool>> params);
-  const std::vector<std::pair<std::string, bool>>& automated() const noexcept { return automated_; }
+  // T4.18 / GU.13: the control under `p` on one of the frame's panels, as the block param it edits (a rack's macro: its
+  // value block's); nullopt: none.
+  virtual std::optional<std::pair<doc::DeviceId, std::string>> controlAt(ui::Vec2 p) const;
+  // T4.18: the controls on the frame's panels with an automation lane: Live's LED on each (paintOver; grey: overridden).
+  struct Mark {
+    doc::DeviceId device;
+    std::string param;
+    bool overridden = false;
+    bool operator==(const Mark&) const = default;
+  };
+  void setAutomated(std::vector<Mark> marks);
   // T4.8: a drop for a dragged device at `p` inside this frame (racks: their chain list and shown chain).
   virtual bool dropAt(ui::Vec2 /*p*/, DropTarget& /*out*/) { return false; }
   // The title-bar band a reorder drag starts from.
@@ -221,7 +246,7 @@ protected:
   ViewContext& ctx_;
   doc::DeviceId id_;
   bool selected_ = false;
-  std::vector<std::pair<std::string, bool>> automated_;  // T4.18
+  std::vector<Mark> automated_;  // T4.18
 };
 
 // A frame for `d` (a rack or a device).
@@ -234,17 +259,17 @@ project_patch::ProjectPatchView* groupPatchView(FrameBase& f);
 // GU.3: a group frame's panel host (its panel with elements; null: it shows its mini circuit) or its inspector (an
 // instrument group's polyphony; null: none).
 panel::PanelHost* groupPanelHost(FrameBase& f, bool inspector);
-// GU.11: the controls a group frame's panel shows now (its elements bound to a control of a block of the group: a
-// module's knobs), each as (block, param, its rect in device px clipped to the panel); `fn` returns true to stop.
-// Nothing for a frame showing no panel. The cable layer and map mode drop on them as on a DevicePanel's knobs.
+// GU.11 / GU.13: the controls frame `f`'s panels show now (FrameBase::hosts: a leaf's knobs, a module's, a rack's
+// macros), each as (block, param, its rect in device px clipped to its panel, its host); `fn` returns true to stop.
+// Bindings into a native engine's inner meta instance are left out (no cable ends there).
 struct PanelControl {
   doc::DeviceId device;
   std::string_view param;  // the element's binding (alive while the visit runs)
   ui::IRect rect;
+  panel::PanelHost* host = nullptr;
+  const doc::Binding* binding = nullptr;
 };
-void forEachPanelControl(FrameBase& f, const std::function<bool(const PanelControl&)>& fn);
-// The top centre of the control of `device`.`param` on group frame `f`'s panel (device px); nullopt: not shown there.
-std::optional<ui::Vec2> panelControlPoint(FrameBase& f, doc::DeviceId device, std::string_view param);
+void forEachPanelControl(const FrameBase& f, const std::function<bool(const PanelControl&)>& fn);
 // The devices the Device view shows for a rack chain: all of them, in order.
 std::vector<doc::DevicePtr> shownDevices(const std::vector<doc::DevicePtr>& list);
 // TX.all-free (SPEC §15 2026-11-03 "everything is free"): the blocks the Device view lists for a track — its MAIN PATH,

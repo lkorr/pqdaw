@@ -18,7 +18,7 @@
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/device_chain/device_chain.h"
-#include "pq/views/devices/device_panel.h"
+#include "pq/views/panel/block_frame.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/shell/shell.h"
 #include "views_test_util.h"
@@ -99,9 +99,11 @@ struct Ui {
   }
   Vec2 title(doc::DeviceId id) {
     const IRect r = frame(id);
-    devices::DevicePanel* p = view().panelOf(id);
-    const int32_t strip = p != nullptr && !p->signature().exports.empty() ? 10 : 0;
-    return {static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + strip + 10)};
+    if (const panel::BlockFrame* p = view().panelOf(id)) {  // GU.13: below its jack strip
+      const IRect t = p->titleRect();
+      return {static_cast<float>(t.x + t.w / 2), static_cast<float>(t.y + t.h / 2)};
+    }
+    return {static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + 10)};
   }
   std::vector<doc::DeviceId> selection() const { return {view().selection().begin(), view().selection().end()}; }
   // The cursor with the pointer at p (a move there first).
@@ -135,28 +137,29 @@ TEST_CASE("device keys: the selection scrolls into view") {
 }
 
 TEST_CASE("device panel knobs: the wheel steps them (a run = one undo step), a double-click returns the default (T4.16-fix1)") {
-  // GU.11: a generic knob of a DevicePanel — a rack's macro (the Saturator grouped into an Audio Effect Rack, macro 1
-  // mapped onto its Drive). (A module's knobs are its group panel's elements: drags and double-clicks, no wheel.)
+  // GU.13: a rack's macro knob (the Saturator grouped into an Audio Effect Rack, macro 1 mapped onto its Drive) — a knob
+  // element of the one panel system, as a module's (test_panel_gestures.cpp: the same on a leaf's and a group's).
   Ui u;
   const doc::DeviceId rack =
       u.run(doc::ops::groupDevices(*u.ctx.doc(), u.ctx.store().ids(), std::vector<doc::DeviceId>{u.sat})).devices.at(0);
   u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), rack, 0, test_blocks::member(*u.ctx.doc(), u.sat, "Drive"),
                            std::string(doc::kValueParam)));
   u.d.tree().layoutNow();
-  devices::DevicePanel* p = u.view().panelOf(rack);
+  panel::BlockFrame* p = u.view().panelOf(rack);
   REQUIRE(p != nullptr);
-  auto* knob = dynamic_cast<ui::ValueControl*>(p->controlFor("macro1"));
-  REQUIRE(knob != nullptr);
-  const double v0 = knob->value();
-  const Vec2 c = mid(knob->rect());
+  const doc::Binding mb = doc::controlBinding(rack, "macro1");
+  const std::optional<IRect> knob = u.view().controlRect(rack, "macro1");
+  REQUIRE(knob.has_value());
+  const double v0 = p->target().position(mb);
+  const Vec2 c = mid(*knob);
   const size_t h0 = u.history();
   u.d.move(c);
   u.d.wheel(c, -1.0f);
   u.d.wheel(c, -1.0f);
-  CHECK(knob->value() < v0);
-  u.d.advance(ui::ValueControl::kWheelGestureSeconds + 0.1);
+  CHECK(p->target().position(mb) < v0);
+  u.d.advance(panel::PanelHost::kWheelRunSeconds + 0.1);
   CHECK(u.history() == h0 + 1);
   u.d.doubleClick(c);
-  CHECK(knob->value() == doctest::Approx(0.0));  // a macro's default: 0 (mapping it took the Drive's position)
+  CHECK(p->target().position(mb) == doctest::Approx(0.0));  // a macro's default: 0 (mapping it took the Drive's position)
   CHECK(u.history() == h0 + 2);
 }

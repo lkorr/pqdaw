@@ -27,7 +27,7 @@
 #include "pq/ui/test_driver.h"
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/device_chain/device_chain.h"
-#include "pq/views/devices/device_panel.h"
+#include "pq/views/panel/block_frame.h"
 #include "pq/views/fake_transport.h"
 #include "../../src/views/src/shell/shell_widgets.h"
 #include "pq/views/shell/shell.h"
@@ -130,9 +130,16 @@ struct Ui {
   // A point in a frame's title bar (below the jack strip of a device with exports).
   Vec2 title(doc::DeviceId id) {
     const IRect r = frame(id);
-    devices::DevicePanel* p = view().panelOf(id);
-    const int32_t strip = p != nullptr && !p->signature().exports.empty() ? 10 : 0;
-    return {static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + strip + 10)};
+    if (const panel::BlockFrame* p = view().panelOf(id); p != nullptr && !view().frameOf(id)->find("chains")) {
+      const IRect t = p->titleRect();  // GU.13: below its jack strip
+      return {static_cast<float>(t.x + t.w / 2), static_cast<float>(t.y + t.h / 2)};
+    }
+    return {static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + 10)};
+  }
+  // GU.13: whether the rack's macro panel shows macro `k` (1-based) now.
+  bool macroShown(doc::DeviceId r, int k) {
+    d.tree().layoutNow();
+    return view().controlRect(r, "macro" + std::to_string(k)).has_value();
   }
 };
 
@@ -145,21 +152,18 @@ TEST_CASE("rack view: the frame shows macros, chain rows with their mixer, and t
   // The macro panel is the rack's panel. M4 review UI item 2: a rack with no macro in use shows one column of four
   // (always one free macro past the highest mapped or named one, up to visibleMacros); the chain selector is the zone
   // editor's (its Chain tab), not a knob.
-  devices::DevicePanel* p = v.panelOf(u.rack);
-  REQUIRE(p != nullptr);
-  CHECK(p->controlFor("macro1") != nullptr);
-  CHECK(p->controlFor("macro4") != nullptr);
-  CHECK(p->controlFor("macro5") == nullptr);
-  CHECK(p->controlFor("select") == nullptr);
+  REQUIRE(v.panelOf(u.rack) != nullptr);
+  CHECK(u.macroShown(u.rack, 1));
+  CHECK(u.macroShown(u.rack, 4));
+  CHECK_FALSE(u.macroShown(u.rack, 5));
+  CHECK_FALSE(v.controlRect(u.rack, "select").has_value());
   u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 3, u.drive, std::string(doc::kValueParam)));  // macro 4 in use
-  p = v.panelOf(u.rack);
-  REQUIRE(p != nullptr);
-  CHECK(p->controlFor("macro5") != nullptr);  // the next column: a free macro to map next
-  CHECK(p->controlFor("macro8") != nullptr);
-  CHECK(p->controlFor("macro9") == nullptr);  // visibleMacros (8) caps it
+  REQUIRE(v.panelOf(u.rack) != nullptr);
+  CHECK(u.macroShown(u.rack, 5));  // the next column: a free macro to map next
+  CHECK(u.macroShown(u.rack, 8));
+  CHECK_FALSE(u.macroShown(u.rack, 9));  // visibleMacros (8) caps it
   REQUIRE(u.ctx.undo());
-  p = v.panelOf(u.rack);
-  REQUIRE(p != nullptr);
+  REQUIRE(v.panelOf(u.rack) != nullptr);
   // The chain shown is the first; its device has a frame and a panel nested in the rack's frame.
   const doc::ChainId c1 = u.rackOf(u.rack).chains[0].id;
   CHECK(v.shownChain(u.rack) == c1);
@@ -262,10 +266,10 @@ TEST_CASE("rack view: map mode — a macro, then a knob maps it (one step); agai
   CHECK(v.mapRack() == u.rack);
   u.d.tree().layoutNow();
   // Click macro 2, then the saturator's drive knob.
-  devices::DevicePanel* rp = v.panelOf(u.rack);
-  REQUIRE(rp != nullptr);
+  const std::optional<IRect> m2 = v.controlRect(u.rack, "macro2");
+  REQUIRE(m2.has_value());
   const size_t h0 = u.history();
-  u.d.click(mid(rp->controlFor("macro2")->rect()));
+  u.d.click(mid(*m2));
   CHECK(v.mapMacro() == 1);
   CHECK(u.history() == h0);  // picking a macro is view state
   u.d.click(u.knob(u.drive));
@@ -299,11 +303,12 @@ TEST_CASE("rack view: a macro drag is one step of Param changes; a chain volume 
   Ui u;
   DeviceChainView& v = u.view();
   u.run(doc::ops::mapMacro(*u.ctx.doc(), u.ctx.store().ids(), u.rack, 0, u.drive, std::string(doc::kValueParam)));
-  devices::DevicePanel* rp = v.panelOf(u.rack);
-  REQUIRE(rp != nullptr);
+  REQUIRE(v.panelOf(u.rack) != nullptr);
   u.d.tree().layoutNow();
   const size_t h0 = u.history();
-  const Vec2 c = mid(rp->controlFor("macro1")->rect());
+  const std::optional<IRect> m1 = v.controlRect(u.rack, "macro1");
+  REQUIRE(m1.has_value());
+  const Vec2 c = mid(*m1);
   u.d.drag(c, {c.x, c.y - 40.0f}, 6);
   CHECK(u.history() == h0 + 1);
   const doc::ChangeSet& cs = u.ctx.store().history().entries()[h0].changes;
@@ -421,7 +426,7 @@ TEST_CASE("rack view: Ctrl+R renames a device in its title bar; Ctrl+Shift+G ung
   CHECK_FALSE(has("arrangement.split"));
   CHECK_FALSE(has("arrangement.insertTime"));
   // Rename (GU.9: a device inside the rack's chain; the rack itself has no name of its own; GU.11: a leaf — an atom
-  // block after the Saturator — whose frame is a DevicePanel): a field over the title; typing replaces the selected
+  // block after the Saturator — whose frame is a leaf's BlockFrame): a field over the title; typing replaces the selected
   // name; Enter: one step.
   const doc::DeviceId leaf =
       u.run(doc::ops::addToChain(*u.ctx.doc(), u.ctx.store().ids(), u.rackOf(u.rack).chains[0].id, "atom:tanh", doc::DeviceKind::AudioEffect))
@@ -431,7 +436,7 @@ TEST_CASE("rack view: Ctrl+R renames a device in its title bar; Ctrl+Shift+G ung
   const doc::DeviceId leafOnly[1] = {leaf};
   v.select(leafOnly);
   CHECK(u.d.press("Ctrl+R") == KeyResult::Action);
-  devices::DevicePanel* p = v.panelOf(leaf);
+  panel::BlockFrame* p = v.panelOf(leaf);
   REQUIRE(p != nullptr);
   CHECK(p->renaming());
   CHECK(u.d.type("Dirt"));
@@ -465,8 +470,8 @@ TEST_CASE("rack view: Ctrl+R renames a device in its title bar; Ctrl+Shift+G ung
 // M4 review L3: a knob mapped to a macro that an outer rack's macro maps shows the value as played (down the chain of
 // mappings from the outer macro), not the inner macro's stored value.
 TEST_CASE("rack view: a knob under nested macro mappings shows the played value (M4 review L3)") {
-  // GU.11: on a leaf's knob in the rack's chain (a Wavetable's position, its face's control: a DevicePanel shows the
-  // played value).
+  // GU.11 / GU.13: on a leaf's knob in the rack's chain (a Wavetable's position, its face's control: its panel's target
+  // shows the played value — the position the outer macro puts it at, down the chain of mappings).
   Ui u;
   DeviceChainView& v = u.view();
   const doc::DeviceId wt =
@@ -480,14 +485,12 @@ TEST_CASE("rack view: a knob under nested macro mappings shows the played value 
   u.run(doc::ops::setMacroValue(*u.ctx.doc(), outer, 0, doc::kMacroMax));  // the inner macro's stored knob stays 0
   u.d.tree().layoutNow();
   v.refreshRings();
-  devices::DevicePanel* panel = v.panelOf(wt);
+  panel::BlockFrame* panel = v.panelOf(wt);
   REQUIRE(panel != nullptr);
   const doc::RackInfo inner = u.rackOf(u.rack);
   REQUIRE(inner.mappings.size() == 1);
   const doc::RackMapping* mapping = &inner.mappings[0];
-  const devices::ParamInfo* info = panel->signature().findParam("position");
-  REQUIRE(info != nullptr);
-  CHECK(devices::toPosition(*info, panel->paramValue("position")) == doctest::Approx(mapping->max).epsilon(1e-6));
+  CHECK(panel->target().position(doc::controlBinding(wt, "position")) == doctest::Approx(mapping->max).epsilon(1e-6));
 }
 
 // M4 review M16: the zone editor's hovered bar shows its range in the info view; UI item 6: Create > Insert Audio

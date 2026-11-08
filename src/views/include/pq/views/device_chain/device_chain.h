@@ -2,8 +2,9 @@
 
 // The Device view (T4.1, SPEC §9; QUESTIONS Q129): the detail view's Device tab shows the selected track's MAIN PATH
 // (TX.all-free, pq/document/main_path.h: the blocks the main cables lead through from the source to the mixer, in
-// signal order) left → right — one T4.6 device panel per device (pq/views/devices/device_panel.h: Live-style frame, its
-// panel description or the generated generic one) — and an add slot at the end. Every edit is a document command
+// signal order) left → right — one frame per block: a group's panel (group_frame.cpp), a leaf's panel in a Live-style
+// frame (GU.13, pq/views/panel/block_frame.h: one panel system, the leaf's panel synthetic), a rack's frame — and an add
+// slot at the end. Every edit is a document command
 // (pq/document/edit_ops.h), one undo step each; the list's gestures rewire the path (ops::insertOnPath / moveOnPath /
 // dissolveDevices: the path stays connected):
 //   add            the + slot or a right-click: a menu of the device catalog (instruments, audio effects; until M5's
@@ -17,11 +18,12 @@
 //                  drag a title bar onto the rack to take a block off the path, a block of the rack onto the list to
 //                  splice it in
 //
-// Each panel's DeviceTarget is the document's device instance: a param gesture (drag, type-in, reset) is one store
-// gesture = one undo step of Param changes (the playback link writes params; no compile); a structural const is a
+// Every panel's target is the document (panel::makeDocPanelTarget): a control gesture (drag, a wheel run, type-in, reset)
+// is one store gesture = one undo step of Param changes (the playback link writes params; no compile); a setting is a
 // SetDeviceSetting (one step; that track's unit recompiles); the activator is SetDeviceActive. Changes from elsewhere
-// (undo, another view) come back through DevicePanel::setParamValue / setConstValue / setActive, which repaint only
-// the controls bound to what changed.
+// (undo, another view) repaint the panels. GU.13: every panel's controls — a leaf's, a group's, a rack's macros —
+// behave alike: right-click Show Automation / Knob Curve, the automation LED, the live modulation ring, the cable drop,
+// map mode's tint, the wheel and type-in.
 //
 // The view follows ViewContext::selectedTrack() (else the clip in the clip view's track) and the context's device
 // library (ViewContext::setDeviceLibrary). T4.6's stand-alone preview (View > Open Device…, devices::DeviceView) shares
@@ -40,7 +42,7 @@
 #include "pq/document/racks.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
-#include "pq/views/devices/device_panel.h"
+#include "pq/views/panel/block_frame.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views {
@@ -133,10 +135,14 @@ public:
   std::function<VoiceTapReader*(doc::DeviceId device, std::string_view path)> faceVoices;
   // TMM.10: a face's reader may have become live (a note while nothing animated): the faces shown poll again.
   void wakeFaces();
-  // A device's frame, its panel and the panel's target (tests).
+  // A device's frame and a leaf's (or a rack's) framed panel (tests).
   ui::Widget* frameOf(doc::DeviceId device) const noexcept;
-  devices::DevicePanel* panelOf(doc::DeviceId device) const noexcept;
-  devices::DeviceTarget* targetOf(doc::DeviceId device) const noexcept;
+  panel::BlockFrame* panelOf(doc::DeviceId device) const noexcept;
+  // GU.13: the device-px rect of the control of `device`.`param` shown now — on a leaf's panel, a group's panel (a
+  // member's control), a rack's macro panel ("macro<k>" of the rack) — and the panel host it is on; nullopt / null: not
+  // shown.
+  std::optional<ui::IRect> controlRect(doc::DeviceId device, std::string_view param) const;
+  panel::PanelHost* controlHost(doc::DeviceId device, std::string_view param) const;
   ui::Widget* addSlot() const noexcept { return addSlot_; }
 
   void paint(ui::PaintContext& ctx) override;

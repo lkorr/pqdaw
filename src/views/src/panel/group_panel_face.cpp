@@ -68,7 +68,24 @@ bool GroupPanelFace::sync() {
   return true;
 }
 
+bool GroupPanelFace::changedRects(std::vector<Rect>& out) {
+  std::vector<int8_t>& memo = freshMemo();
+  const bool known = liveKeys_.size() == elements_.size();
+  liveKeys_.resize(elements_.size(), 0);
+  for (size_t i = 0; i < elements_.size(); ++i) {
+    const uint64_t key = shownNow(i, memo) ? elements_[i]->liveKey(*target_) | 1u : 0u;
+    if (known && (key == Element::kAnyChange || key != liveKeys_[i])) {
+      const Rect r = elements_[i]->rect();
+      constexpr float kOut = 3.0f;  // a driven ring reaches a unit past a knob's rect
+      out.push_back({r.x0 - kOut, r.y0 - kOut, r.x1 + kOut, r.y1 + kOut});
+    }
+    liveKeys_[i] = key;
+  }
+  return known;
+}
+
 void GroupPanelFace::rebuild(const doc::PanelPtr& p) {
+  liveKeys_.clear();
   // Unbound tabs keep their selection (by element id) across the rebuild.
   std::vector<std::pair<uint32_t, double>> keep;
   for (const std::unique_ptr<Element>& e : elements_)
@@ -490,6 +507,7 @@ bool GroupPanelFace::onPointer(const FacePointer& e) {
   switch (e.kind) {
     case K::Down: {
       const int32_t i = elementAt(e.local);
+      endWheel();  // GU.13: a press ends a wheel run (its undo step) before anything else
       if (focus_ >= 0 && focus_ != i && static_cast<size_t>(focus_) < elements_.size()) elements_[static_cast<size_t>(focus_)]->focusLost(*target_);
       focus_ = i;
       if (i < 0) return false;
@@ -517,6 +535,29 @@ bool GroupPanelFace::onPointer(const FacePointer& e) {
     case K::Leave: return false;
   }
   return false;
+}
+
+void GroupPanelFace::endWheel() {
+  for (const std::unique_ptr<Element>& e : elements_) e->endWheel(*target_);
+}
+
+void GroupPanelFace::visitControls(const Element::ControlVisitor& fn) const {
+  std::vector<int8_t>& memo = freshMemo();
+  for (size_t i = 0; i < elements_.size(); ++i) {
+    if (!shownNow(i, memo)) continue;
+    const Rect er = elements_[i]->rect();
+    elements_[i]->visitControls([&](const doc::Binding& b, const Rect& r) {
+      fn(b, {er.x0 + r.x0, er.y0 + r.y0, er.x0 + r.x1, er.y0 + r.y1});
+    });
+  }
+}
+
+const doc::Binding* GroupPanelFace::controlAt(Vec2 local) const {
+  const int32_t i = elementAt(local);
+  if (i < 0) return nullptr;
+  const Element& e = *elements_[static_cast<size_t>(i)];
+  const doc::Binding* b = e.controlAt({local.x - e.rect().x0, local.y - e.rect().y0});
+  return b != nullptr && b->kind == doc::BindingKind::Control ? b : nullptr;
 }
 
 bool GroupPanelFace::dragging() const noexcept {
@@ -640,7 +681,38 @@ PanelHost::PanelHost(std::string name, std::unique_ptr<Face> face) : Widget(std:
   face_->attach(this);
 }
 
-PanelHost::~PanelHost() { face_->attach(nullptr); }
+PanelHost::~PanelHost() {
+  endWheel();
+  face_->attach(nullptr);
+}
+
+void PanelHost::endWheel() {
+  if (wheelTimer_ == 0) return;
+  cancelTimer(wheelTimer_);
+  wheelTimer_ = 0;
+  face_->endWheel();
+  markDirty();
+}
+
+void PanelHost::wake() {
+  markDirty();
+  if (voiceTimer_ == 0 && face_->voices() != nullptr && tree() != nullptr) voiceTimer_ = requestTimer(1.0 / 60.0);
+}
+
+void PanelHost::onTimer(uint32_t id) {
+  if (id == wheelTimer_) {
+    wheelTimer_ = 0;
+    face_->endWheel();
+    markDirty();
+    return;
+  }
+  if (id != voiceTimer_) return;
+  voiceTimer_ = 0;
+  VoiceTapReader* v = face_->voices();
+  if (v == nullptr || !visible()) return;
+  if (face_->pollVoices()) markDirty();
+  if (v->live() || face_->animating()) voiceTimer_ = requestTimer(1.0 / 60.0);
+}
 
 ui::FaceTransform PanelHost::transform() const noexcept {
   const ui::IRect r = rect();
@@ -649,8 +721,70 @@ ui::FaceTransform PanelHost::transform() const noexcept {
   return {{std::round(static_cast<float>(r.x) + (static_cast<float>(r.w) - ws.x * s) * 0.5f), std::round(static_cast<float>(r.y))}, s};
 }
 
+GroupPanelFace* PanelHost::panelFace() const noexcept { return dynamic_cast<GroupPanelFace*>(face_.get()); }
+
+namespace {
+bool shownInTree(const ui::Widget& w) noexcept {
+  if (w.tree() == nullptr) return false;
+  for (const ui::Widget* p = &w; p != nullptr; p = p->parent())
+    if (!p->visible()) return false;
+  return true;
+}
+}  // namespace
+
+void PanelHost::visitControls(const ControlFn& fn) const {
+  const GroupPanelFace* g = panelFace();
+  const ui::IRect hr = rect();
+  if (g == nullptr || hr.empty() || !shownInTree(*this)) return;
+  const ui::FaceTransform t = transform();
+  g->visitControls([&](const doc::Binding& b, const Rect& r) {
+    const Vec2 a = t.map({r.x0, r.y0}), z = t.map({r.x1, r.y1});
+    const ui::IRect cr{static_cast<int32_t>(std::floor(a.x)), static_cast<int32_t>(std::floor(a.y)),
+                       static_cast<int32_t>(std::ceil(z.x) - std::floor(a.x)), static_cast<int32_t>(std::ceil(z.y) - std::floor(a.y))};
+    const ui::IRect clipped = ui::intersect(cr, hr);
+    if (!clipped.empty()) fn(b, clipped);
+  });
+}
+
+const doc::Binding* PanelHost::controlAt(Vec2 p) const {
+  const GroupPanelFace* g = panelFace();
+  if (g == nullptr || !rect().contains(p)) return nullptr;
+  return g->controlAt(transform().unmap(p));
+}
+
+std::optional<ui::IRect> PanelHost::controlRect(const doc::Binding& b) const {
+  std::optional<ui::IRect> out;
+  visitControls([&](const doc::Binding& x, const ui::IRect& r) {
+    if (!out && x == b) out = r;
+  });
+  return out;
+}
+
+std::optional<Vec2> PanelHost::controlPoint(const doc::Binding& b) const {
+  const GroupPanelFace* g = panelFace();
+  if (g == nullptr || rect().empty() || !shownInTree(*this)) return std::nullopt;
+  const std::optional<ControlAnchor> a = g->bindingAnchor(b, true);
+  if (!a) return std::nullopt;
+  return transform().map({a->at.x, a->at.y - 0.5f * a->radius});
+}
+
 void PanelHost::notifyChanged() {
-  if (auto* g = dynamic_cast<GroupPanelFace*>(face_.get())) (void)g->sync();
+  if (auto* g = dynamic_cast<GroupPanelFace*>(face_.get()); g != nullptr && tree() != nullptr) {
+    // GU.13: only the elements whose shown values changed are repainted (the rest of the panel is not damaged).
+    std::vector<Rect> rs;
+    if (!g->sync() && g->changedRects(rs) && !g->popupRect()) {
+      const ui::FaceTransform t = transform();
+      for (const Rect& r : rs) {
+        const Vec2 a = t.map({r.x0, r.y0}), z = t.map({r.x1, r.y1});
+        const ui::IRect d = ui::intersect(ui::IRect{static_cast<int32_t>(std::floor(a.x)), static_cast<int32_t>(std::floor(a.y)),
+                                                    static_cast<int32_t>(std::ceil(z.x) - std::floor(a.x)),
+                                                    static_cast<int32_t>(std::ceil(z.y) - std::floor(a.y))},
+                                          rect());
+        if (!d.empty()) tree()->damage().add(d.toRect());
+      }
+      return;
+    }
+  }
   markDirty();
 }
 
@@ -665,7 +799,11 @@ void PanelHost::paint(ui::PaintContext& ctx) {
   p.setText(ctx.res.text);
   p.setImages(ctx.res.images);
   face_->paintLive(p, env);
+  face_->paintPopup(p, env);  // GU.13: an element's floating popup (the dial's range and curve), over the panel
   if (face_->needsPrepare(tr.scale)) requestFrame();
+  // GU.13: voices (an engine face's dots, a phase orbit): polled while live (as the old device panel's faces were).
+  if (voiceTimer_ == 0)
+    if (VoiceTapReader* v = face_->voices(); v != nullptr && (v->live() || face_->animating())) voiceTimer_ = requestTimer(1.0 / 60.0);
 }
 
 void PanelHost::onFrame(double /*now*/) {
@@ -673,7 +811,10 @@ void PanelHost::onFrame(double /*now*/) {
   if (face_->needsPrepare(s) && face_->prepare(s)) markDirty();
 }
 
-void PanelHost::faceNeedsUpdate(Face& /*f*/) noexcept { requestFrame(); }
+void PanelHost::faceNeedsUpdate(Face& /*f*/) noexcept {
+  markDirty();  // (an analysis feed got sound: the display draws it)
+  requestFrame();
+}
 
 FacePointer PanelHost::pointerOf(const ui::PointerEvent& e) const {
   const ui::FaceTransform tr = transform();
@@ -686,6 +827,7 @@ FacePointer PanelHost::pointerOf(const ui::PointerEvent& e) const {
   f.clicks = std::max<uint8_t>(1, e.clickCount);
   f.wheel = e.wheel;
   f.button = e.button;
+  f.valueGestures = true;  // GU.13
   switch (e.type) {
     case ui::PointerType::Down: f.kind = FacePointer::Kind::Down; break;
     case ui::PointerType::Up: f.kind = FacePointer::Kind::Up; break;
@@ -708,14 +850,22 @@ bool PanelHost::onPointer(const ui::PointerEvent& e) {
     return part != Face::kNone;
   }
   if (e.type == ui::PointerType::Leave) {
+    endWheel();  // (ui::ValueControl: a run ends when the pointer leaves)
     if (face_->setHoveredPart(Face::kNone)) markDirty();
     const bool moved = hover_ != Face::kNone;
     hover_ = Face::kNone;
     if (moved && onHoverPart) onHoverPart();
     return false;
   }
-  if (e.type == ui::PointerType::Down && tree() != nullptr) tree()->setFocus(this);
+  if (e.type == ui::PointerType::Down) {
+    endWheel();
+    if (tree() != nullptr) tree()->setFocus(this);
+  }
   const bool used = face_->onPointer(f);
+  if (e.type == ui::PointerType::Wheel && used) {  // GU.13: the run's end, re-armed by every notch
+    if (wheelTimer_ != 0) cancelTimer(wheelTimer_);
+    wheelTimer_ = requestTimer(kWheelRunSeconds);
+  }
   if (e.type == ui::PointerType::Down) captured_ = used && face_->dragging();
   if (e.type == ui::PointerType::Up) captured_ = false;
   if (used) markDirty();

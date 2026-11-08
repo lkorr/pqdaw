@@ -203,6 +203,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_racks_view.cpp  # GU.9: racks (parallel groups) in the Device view: chains, mixer, macros, Map, zones (real dispatch), goldens
     views/test_circuit_legibility.cpp  # T4.15: node tooltips, inactive branches, recognised constants, goldens
     views/test_device_affordances.cpp  # T4.16c: Device view keys (arrows, Shift, Ctrl, Home / End, chains), cursors, rename
+    views/test_panel_gestures.cpp  # GU.13: one panel system: a leaf's and a group's knob take the same gestures (wheel, type-in, menu, map mode) through real dispatch
     views/test_affordances.cpp  # T4.16b: cursors, hover highlights and editing keys (arrangement, piano roll, automation)
     views/test_file_drop.cpp  # T5.7: files / browser items dropped on the arrangement (rules, ghosts, one undo step, 100 files)
     views/test_browser.cpp  # T5.10: the browser panel (tree, search, keys, preview strip, drag out, goldens, 200k rows)

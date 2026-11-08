@@ -2507,3 +2507,22 @@ Agents: add questions here instead of guessing on anything important. Use this f
   device files at run time (not run; they fail those cases). `tests/engine/idle_project_fixture.h` (pq_tests_project)
   imports the retired `instruments/basic_synth.pqp` and `devices/eq_eight.pqp` since GU.10 (not run here).
 - Status: open (provisional choices above).
+
+## Q?-GU.13-a · 2026-11-07 · GU.13 · One panel system for leaves (Q231 follow-up): the choices made
+- **Done as Q231's alternative**: a leaf's Device-view frame is a synthetic panel of the group-panel system
+  (`panel::leafPanel`: its engine module's `doc::enginePanel`, else knob / toggle / number elements per param and
+  setting, the old generic layout's 64-px columns), bound through `makeDocPanelTarget(ctx, leaf)`, in a `panel::BlockFrame`
+  (the old frame's chrome kept: jacks, activator, fold, preset slot, rename). A rack's macro panel is a `BlockFrame` with
+  its own `PanelTarget` (macros by index; a macro not mapped yet has no block: dragging it does nothing). Alternative: a
+  group-frame title bar for leaves too (one chrome) — not done, the leaf keeps Live's device chrome.
+- **The device-panel gestures are the host's choice** (`FacePointer::valueGestures`): `PanelHost` (the Device view's
+  frames, the panel window) turns them on; the circuit canvas leaves them off so its wheel keeps panning / zooming and a
+  press on a closed group's knob does not take Delete away from the block. Alternative: on everywhere.
+- **Macro-mapped controls** are handled by the document target for every panel: it shows where the macro puts the
+  control and a drag turns the macro (the old ChainTarget's rule, now group knobs too).
+- **Partial repaints**: `Element::liveKey` (positions, resolutions, rings of its bindings) — a document change damages
+  only the elements whose key changed; engine sections, embeds and displays repaint on every change (kAnyChange).
+- **Dropped**: the face's own in/out jack dots on an engine's leaf frame (the Device view's sockets on the frame edges
+  stay); a bool param is no cable drop / Map target on a group panel either (as on the old leaf panels). Rack macros
+  get no ring and are no cable targets.
+- Status: open (provisional choices above).

@@ -11,6 +11,11 @@
 //             setting. Inside a gesture its positions are a preview; end() commits it once (one Structural step: one
 //             recompile).
 //   curve     ops::setParamCurve inside the gesture (no compile within the curve's class).
+//   macro     (GU.13, the old device panel's T4.8) a control a rack's macro drives (a Travel wire from the macro's value
+//             block) shows where the macro puts it and, edited, turns the macro (the inverse of the mapping); the mapped
+//             controls are indexed once per snapshot (a scan of the wires; racks resolved for macro wires only).
+//   shown     (GU.13) the host's per-control overrides: a live modulation ring, a position shown instead of the stored
+//             one (an automated control at the playhead).
 
 #include <algorithm>
 #include <cmath>
@@ -28,6 +33,7 @@
 #include "pq/meta/registry.h"
 #include "pq/views/devices/device_model.h"
 #include "pq/document/panel.h"
+#include "pq/document/racks.h"
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/panel/group_panel_face.h"
 #include "pq/views/view_context.h"
@@ -101,11 +107,15 @@ public:
   double position(const doc::Binding& b) const override {
     for (const Pending& p : pending_)
       if (p.b == b) return p.position;
+    for (const auto& [k, v] : shown_)
+      if (k == b) return v;
     const Resolved& r = resolved(b);
     if (!r.info.valid || r.device == nullptr) return 0.0;
     const doc::Device& d = *r.device;
     switch (r.how) {
-      case How::Param: return devices::storedPosition(r.param, d);
+      case How::Param:
+        if (const Mapped* m = mapped(b)) return std::clamp(m->min + (m->max - m->min) * played(*ctx_.doc(), m->block, 0), 0.0, 1.0);
+        return devices::storedPosition(r.param, d);
       case How::MetaParam: return doc::metaParamPosition(d, b.meta, *r.type, r.index);
       case How::GroupSetting:
       case How::Const:
@@ -266,6 +276,35 @@ public:
   }
 
   void bindingsChanged() override { cache_.clear(); }  // (keyed by the elements' binding addresses)
+  const ui::ModulationRing* modulation(const doc::Binding& b) const override {
+    for (const auto& [k, r] : rings_)
+      if (k == b) return &r;
+    return nullptr;
+  }
+  bool setModulation(const doc::Binding& b, const ui::ModulationRing& ring) override {
+    for (auto it = rings_.begin(); it != rings_.end(); ++it)
+      if (it->first == b) {
+        if (it->second == ring) return false;
+        if (ring.active) it->second = ring;
+        else rings_.erase(it);
+        return true;
+      }
+    if (!ring.active) return false;
+    rings_.emplace_back(b, ring);
+    return true;
+  }
+  bool showPosition(const doc::Binding& b, std::optional<double> position) override {
+    for (auto it = shown_.begin(); it != shown_.end(); ++it)
+      if (it->first == b) {
+        if (position && it->second == *position) return false;
+        if (position) it->second = *position;
+        else shown_.erase(it);
+        return true;
+      }
+    if (!position) return false;
+    shown_.emplace_back(b, *position);
+    return true;
+  }
   uint64_t revision() const override {
     sync();
     return rev_;
@@ -378,6 +417,49 @@ private:
     doc::Binding b;
     double position = 0.0;
   };
+  // A control a rack's macro drives: the mapping's range and the macro's value block. Indexed once per wire list (a
+  // persistent document: the same object until a wire changes; a macro's value is read when asked).
+  struct Mapped {
+    doc::DeviceId device;
+    std::string param;
+    doc::DeviceId rack, block;
+    uint32_t macro = 0;
+    double min = 0.0, max = 1.0;
+  };
+  const Mapped* mapped(const doc::Binding& b) const {
+    if (b.kind != doc::BindingKind::Control || !b.meta.empty()) return nullptr;
+    const doc::Snapshot& s = ctx_.doc();
+    if (!s) return nullptr;
+    if (const doc::WireList* wl = &doc::wiresOf(*s); wl != mappedOf_) {
+      mappedOf_ = wl;
+      mappedSnap_ = s;  // (holds the wire list)
+      mapped_.clear();
+      for (const doc::Wire& w : *wl) {
+        if (w.toMixer() || w.param.empty() || !w.travels() || w.fromNoteSource()) continue;
+        const doc::Device* m = doc::findDevice(*s, w.from).device;
+        if (m == nullptr || !doc::isValueDevice(*m) || m->setting(doc::kMacroSetting) == nullptr) continue;
+        const std::optional<doc::RackInfo> r = doc::rackOf(*s, w.from);
+        if (!r) continue;
+        for (const doc::RackMapping& x : r->mappings)
+          if (x.wire == w.id) mapped_.push_back({w.to, w.param, r->id, w.from, x.macro, x.min, x.max});
+      }
+    }
+    for (const Mapped& m : mapped_)
+      if (m.device == b.device && m.param == b.name) return &m;
+    return nullptr;
+  }
+  // A value block's knob position as played: its own plus what Travel wires (an outer rack's macro) add.
+  static double played(const doc::Project& p, doc::DeviceId block, uint32_t depth) {
+    const doc::Device* d = doc::findDevice(p, block).device;
+    if (d == nullptr) return 0.0;
+    const doc::DeviceValue* v = d->param(doc::kValueParam);
+    double pos = v != nullptr ? v->value : 0.0;
+    if (depth < 16)
+      for (const doc::Wire& w : doc::wiresOf(p))
+        if (!w.toMixer() && w.to == block && w.param == doc::kValueParam && w.travels() && !w.fromNoteSource())
+          pos += w.amount * played(p, w.from, depth + 1);
+    return std::clamp(pos, 0.0, 1.0);
+  }
 
   void sync() const {
     const doc::Snapshot& s = ctx_.doc();
@@ -449,6 +531,8 @@ private:
         // A value block is its one control: its own name (when it has one) is the control's.
         i.label = doc::isValueDevice(*d) && !d->name.empty() ? d->name : pi->label;
         i.curve = devices::storedCurve(*pi, *d);
+        // (a value block's curve is what the block is — set where it was made — not a knob switched off its default)
+        i.curveSwitched = !doc::isValueDevice(*d) && !(i.curve == pi->declared);
         i.isSwitch = pi->isBool;
         i.steps = pi->isBool ? 2 : pi->steps;
         i.editable = true;
@@ -519,6 +603,11 @@ private:
   doc::ops::EditResult paramEdit(const doc::Binding& b, const Resolved& r, double position) const {
     const doc::Project& p = *ctx_.doc();
     if (r.how == How::MetaParam) return doc::ops::setMetaParam(p, b.device, b.meta, r.type->id, b.name, position);
+    if (const Mapped* m = mapped(b)) {  // the macro turns (the inverse of its mapping)
+      const double span = m->max - m->min;
+      const double x = std::abs(span) < 1e-9 ? 0.0 : std::clamp((position - m->min) / span, 0.0, 1.0);
+      return doc::ops::setMacroValue(p, m->rack, m->macro, x * doc::kMacroMax);
+    }
     return doc::ops::setDeviceParam(p, b.device, b.name, position);
   }
   doc::ops::EditResult settingEdit(const doc::Binding& b, const Resolved& r, double position) const {
@@ -552,6 +641,11 @@ private:
   mutable doc::Snapshot drivenSnap_;  // (holds the wire list driven_ was built from)
   mutable std::vector<std::pair<uint32_t, std::string>> driven_;
   std::unordered_map<std::string, std::shared_ptr<MetaFace>> faces_;  // GU.7: engine faces by binding and type
+  std::vector<std::pair<doc::Binding, ui::ModulationRing>> rings_;    // GU.13: the host's live rings
+  std::vector<std::pair<doc::Binding, double>> shown_;                // GU.13: positions shown instead of the stored
+  mutable const doc::WireList* mappedOf_ = nullptr;
+  mutable doc::Snapshot mappedSnap_;
+  mutable std::vector<Mapped> mapped_;
 
   static std::function<void()> wakeOf(FaceHost* host, Face* f) {
     return [host, f] {

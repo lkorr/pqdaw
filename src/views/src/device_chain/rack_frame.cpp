@@ -2,8 +2,8 @@
 // set of PARALLEL GROUPS derived from the wiring (pq/document/racks.h, doc::RackInfo); this frame is its other view —
 // the same objects the circuit draws as group capsules. The frame stands for the rack's chain on the main path (its id;
 // any chain id names the rack to the edit builders). Left to right: a strip of buttons (show macros / chains / zones,
-// Map, Rand, variations), the macro panel (a T4.6 DevicePanel over the macros — value blocks of the rack — and the
-// chain selector), the chain list (one row per chain group: activator, name, solo, volume, pan — its Mixer group's value
+// Map, Rand, variations), the macro panel (GU.13: a panel of the one panel system in a BlockFrame, its knobs bound to the
+// macros — value blocks of the rack — through RackPanelTarget), the chain list (one row per chain group: activator, name, solo, volume, pan — its Mixer group's value
 // blocks), the zone editor (its zone groups' value blocks as bars aligned with the rows), then the frames of the chain
 // it shows (the chain group's series, framed like the track's) and a slot that adds to that chain. Every edit is a
 // document command (edit_ops.h, racks.h's builders), one undo step each; drags are store gestures (one step).
@@ -62,30 +62,6 @@ std::optional<uint32_t> macroIndex(std::string_view p) {
   return static_cast<uint32_t>(k - 1);
 }
 
-devices::DeviceSignature rackSignature(const doc::RackInfo& r) {
-  devices::DeviceSignature s;
-  s.patch = r.instrument ? std::string(doc::kInstrumentRack) : std::string(doc::kAudioEffectRack);
-  for (uint32_t k = 0; k < doc::kMacroCount; ++k) {
-    devices::ParamInfo p;
-    p.name = macroParamName(k);
-    p.label = r.macroName(k);
-    p.min = 0.0;
-    p.max = doc::kMacroMax;
-    p.steps = 128;  // shown and dragged in whole steps 0 … 127 (Live's macros); the param itself is continuous
-    p.declared = p.curve = dsp::curvePreset(dsp::CurvePreset::Linear, p.min, p.max);  // GU.1: a rack keeps its 0 … 127
-    s.params.push_back(std::move(p));
-  }
-  devices::ParamInfo sel;
-  sel.name = std::string(kSelectParam);
-  sel.label = "Chain";
-  sel.min = 0.0;
-  sel.max = doc::kSelectMax;
-  sel.steps = 128;
-  sel.declared = sel.curve = dsp::curvePreset(dsp::CurvePreset::Linear, sel.min, sel.max);
-  s.params.push_back(std::move(sel));
-  return s;
-}
-
 // M4 review UI item 2: how many macros the panel shows: up to the rack's visibleMacros, but only the columns of four
 // up to one past the highest macro in use (mapped or renamed: never a value, so a macro drag does not rebuild the
 // panel under the pointer), at least one column: a new rack shows four, and there is always a free macro to map next.
@@ -99,12 +75,10 @@ uint32_t shownMacros(const doc::RackInfo& r, uint32_t visibleMacros) {
   return std::clamp<uint32_t>(std::min<uint32_t>(visibleMacros, std::max(4u, want)), 1, doc::kMacroCount);
 }
 
-// The macro panel's layout: the shown macros in columns of four; only the title bar when the macros are hidden.
-devices::PanelLayout rackPanel(const doc::RackInfo& r, const devices::DeviceSignature& sig, bool showMacros,
-                             uint32_t visibleMacros) {
-  devices::PanelLayout p;
-  p.patch = sig.patch;
-  p.title = r.instrument ? "Instrument Rack" : "Audio Effect Rack";
+// The macro panel: the shown macros as knobs in columns of four, bound to Control "macro<k>" of the rack's frame id
+// (RackPanelTarget resolves them); no elements (the title bar only) when the macros are hidden.
+doc::Panel macroPanel(const doc::RackInfo& r, doc::DeviceId id, bool showMacros, uint32_t visibleMacros) {
+  doc::Panel p;
   if (!showMacros) {
     p.width = 112.0f;
     p.height = 0.0f;
@@ -113,58 +87,105 @@ devices::PanelLayout rackPanel(const doc::RackInfo& r, const devices::DeviceSign
   const uint32_t n = shownMacros(r, visibleMacros);
   const uint32_t rows = std::min<uint32_t>(4, n), cols = (n + 3) / 4;
   for (uint32_t k = 0; k < n; ++k) {
-    devices::ControlLayout c;
-    c.kind = devices::ControlKind::Knob;
-    c.param = c.id = macroParamName(k);
-    c.x = static_cast<float>(k / 4) * kMacroCell;
-    c.y = static_cast<float>(k % 4) * kMacroCell;
-    c.w = kMacroCell - 4.0f;
-    c.h = kMacroCell;
-    p.controls.push_back(std::move(c));
+    doc::PanelElement e;
+    e.id = k + 1;
+    e.kind = "knob";
+    e.x = static_cast<float>(k / 4) * kMacroCell;
+    e.y = static_cast<float>(k % 4) * kMacroCell;
+    e.w = kMacroCell - 4.0f;
+    e.h = kMacroCell;
+    e.bindings = {doc::controlBinding(id, macroParamName(k))};
+    p.elements.push_back(std::move(e));
   }
   p.width = std::max(144.0f, static_cast<float>(cols) * kMacroCell);  // room for the title
   p.height = static_cast<float>(rows) * kMacroCell;
   return p;
 }
 
-// The macro panel's target: the rack's params (macros, selector), its activator.
-class RackTarget final : public devices::DeviceTarget {
+// The macro panel's target: the rack's macros (0 … 127, whole steps; GU.9: each its value block), as the frame last
+// showed them (refresh). A drag is one store gesture of macro writes; a macro not mapped yet has no block (no edit).
+class RackPanelTarget final : public panel::PanelTarget {
 public:
-  RackTarget(DeviceChainView::Impl& impl, doc::DeviceId id) : impl_(impl), id_(id) {}
-  void paramGestureBegin(std::string_view) override {
-    if (!impl_.ctx().store().inGesture()) {
-      (void)impl_.ctx().store().beginGesture("Device Parameter");
-      own_ = true;
+  RackPanelTarget(DeviceChainView::Impl& impl, doc::DeviceId id, std::function<ui::Widget*()> host)
+      : impl_(impl), id_(id), host_(std::move(host)) {
+    for (panel::BoundInfo& i : infos_) {
+      i.valid = true;
+      i.curve = dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, doc::kMacroMax);
+      i.steps = static_cast<int32_t>(doc::kMacroMax) + 1;
     }
   }
-  void setParam(std::string_view param, double value) override {
-    // GU.9: a macro is its value block (0 … 1), the selector its own (0 … 127).
-    if (const std::optional<uint32_t> k = macroIndex(param))
-      impl_.live(doc::ops::setMacroValue(impl_.doc(), id_, *k, std::clamp(value, 0.0, doc::kMacroMax)));
-    else if (param == kSelectParam)
-      impl_.live(doc::ops::setSelectorValue(impl_.doc(), id_, std::clamp(value, 0.0, doc::kSelectMax)));
+  void refresh(const doc::RackInfo& r) {
+    for (uint32_t k = 0; k < doc::kMacroCount; ++k) {
+      values_[k] = r.macros[k].value;
+      if (std::string name = r.macroName(k); name != infos_[k].label) {
+        infos_[k].label = std::move(name);
+        infos_[k].generation = ++generation_;
+      }
+    }
+    ++rev_;
   }
-  void paramGestureEnd(std::string_view) override {
+  const panel::BoundInfo& info(const doc::Binding& b) const override {
+    const std::optional<uint32_t> k = indexOf(b);
+    return k ? infos_[*k] : none_;
+  }
+  double position(const doc::Binding& b) const override {
+    const std::optional<uint32_t> k = indexOf(b);
+    return k ? std::clamp(values_[*k] / doc::kMacroMax, 0.0, 1.0) : 0.0;
+  }
+  std::string format(const doc::Binding&, double position) const override {
+    return std::to_string(std::lround(std::clamp(position, 0.0, 1.0) * doc::kMacroMax));
+  }
+  std::optional<double> parse(const doc::Binding&, std::string_view text) const override {
+    const std::string t(text);
+    char* end = nullptr;
+    const double v = std::strtod(t.c_str(), &end);
+    if (end == t.c_str()) return std::nullopt;
+    return std::clamp(v, 0.0, doc::kMacroMax) / doc::kMacroMax;
+  }
+  void begin(const doc::Binding&, const char* label) override {
+    doc::DocumentStore& st = impl_.ctx().store();
+    if (!own_ && !st.inGesture()) own_ = st.beginGesture(label).ok();
+  }
+  void setPosition(const doc::Binding& b, double position) override {
+    if (const std::optional<uint32_t> k = indexOf(b))
+      impl_.live(doc::ops::setMacroValue(impl_.doc(), id_, *k, std::clamp(position, 0.0, 1.0) * doc::kMacroMax));
+  }
+  void setCurve(const doc::Binding&, const dsp::Curve&) override {}
+  void end() override {
     if (own_ && impl_.ctx().store().inGesture()) (void)impl_.ctx().store().commitGesture();
     own_ = false;
   }
-  void setConst(std::string_view, double) override {}
-  void setActive(bool on) override {  // GU.9: every chain's activator (a rack has no switch of its own)
-    const std::optional<doc::RackInfo> r = doc::rackOf(impl_.doc(), id_);
-    if (!r) return;
-    doc::DocumentStore& st = impl_.ctx().store();
-    const bool own = !st.inGesture() && st.beginGesture(on ? "Activate Rack" : "Deactivate Rack").ok();
-    for (const doc::RackChain& c : r->chains) impl_.live(doc::ops::setChainActive(impl_.doc(), c.id, on));
-    if (own) (void)st.commitGesture();
+  void cancel() override {
+    if (own_ && impl_.ctx().store().inGesture()) (void)impl_.ctx().store().cancelGesture();
+    own_ = false;
   }
+  void setOnce(const doc::Binding& b, double position, const char*) override {
+    if (const std::optional<uint32_t> k = indexOf(b))
+      impl_.run(doc::ops::setMacroValue(impl_.doc(), id_, *k, std::clamp(position, 0.0, 1.0) * doc::kMacroMax), false);
+  }
+  void reset(const doc::Binding& b) override { setOnce(b, 0.0, "Reset Macro"); }
+  uint64_t revision() const override { return rev_; }
+  void notice(std::string_view message) override { impl_.ctx().setStatus(std::string(message)); }
+  ui::Widget* menuHost() const noexcept override { return host_ ? host_() : nullptr; }
 
 private:
+  std::optional<uint32_t> indexOf(const doc::Binding& b) const {
+    if (b.kind != doc::BindingKind::Control || b.device != id_) return std::nullopt;
+    return macroIndex(b.name);
+  }
   DeviceChainView::Impl& impl_;
   doc::DeviceId id_;
+  std::function<ui::Widget*()> host_;
+  std::array<panel::BoundInfo, doc::kMacroCount> infos_{};
+  std::array<double, doc::kMacroCount> values_{};
+  panel::BoundInfo none_;
+  uint64_t rev_ = 1, generation_ = 0;
   bool own_ = false;
 };
 
 class RackFrame;
+
+// One chain rowclass RackFrame;
 
 // One chain row: activator, name, solo, volume, pan (the chain mixer).
 class ChainRow final : public ui::Widget {
@@ -351,8 +372,7 @@ private:
 class RackFrame final : public FrameBase {
 public:
   RackFrame(DeviceChainView::Impl& impl, ViewContext& ctx, const doc::Device& d)
-      : FrameBase("rack[" + std::to_string(d.id.value) + "]", impl, ctx, d.id), target_(impl, d.id),
-        nesting_(impl.nestingBuilt) {
+      : FrameBase("rack[" + std::to_string(d.id.value) + "]", impl, ctx, d.id), nesting_(impl.nestingBuilt) {
     track_ = doc::findDevice(impl.doc(), d.id).track != nullptr ? doc::findDevice(impl.doc(), d.id).track->id : doc::TrackId{};
     setLayout(ui::LayoutKind::Custom);
     strip_ = &add<RackStrip>(*this, impl);
@@ -394,9 +414,16 @@ public:
   ChainList& list() noexcept { return *list_; }
   RackStrip& strip() noexcept { return *strip_; }
 
-  devices::DevicePanel* panel() const noexcept override { return panel_; }
-  devices::DeviceTarget* target() noexcept override { return &target_; }
+  panel::BlockFrame* panel() const noexcept override { return panel_; }
   bool isRack() const noexcept override { return true; }
+  // GU.13: a macro's control is its value block's (Show Automation, Knob Curve); a macro not mapped yet has none.
+  std::optional<std::pair<doc::DeviceId, std::string>> controlAt(ui::Vec2 p) const override {
+    std::optional<std::pair<doc::DeviceId, std::string>> c = FrameBase::controlAt(p);
+    if (!c || c->first != id_) return c;
+    const std::optional<uint32_t> k = macroIndex(c->second);
+    if (!k || !rack_.macros[*k].block.valid()) return std::nullopt;
+    return std::make_pair(rack_.macros[*k].block, std::string(doc::kValueParam));
+  }
 
   void collect(std::map<uint32_t, FrameBase*>& all) override {
     all[id_.value] = this;
@@ -453,20 +480,33 @@ public:
         (void)removeChild(*panel_);
         panel_ = nullptr;
       }
-      sig_ = rackSignature(rack_);
-      desc_ = rackPanel(rack_, sig_, showMacros(), visibleMacros());
-      std::map<std::string, double, std::less<>> values;
-      for (const doc::DeviceValue& v : params_) values[v.name] = v.value;
-      panel_ = &add<devices::DevicePanel>("panel", sig_, desc_, &target_, values);
+      auto mp = std::make_shared<const doc::Panel>(macroPanel(rack_, id_, showMacros(), visibleMacros()));
+      auto target = std::make_unique<RackPanelTarget>(impl_, id_, [this]() -> ui::Widget* { return panel_ != nullptr ? &panel_->host() : nullptr; });
+      macros_ = target.get();
+      auto face = std::make_unique<panel::GroupPanelFace>([mp]() -> doc::PanelPtr { return mp; }, std::move(target));
+      face->setOwner(id_);
+      panel::BlockFrame::Options o;
+      o.title = rack_.instrument ? "Instrument Rack" : "Audio Effect Rack";
+      title_ = o.title;
+      panel_ = &add<panel::BlockFrame>("panel", std::move(face), std::move(o));
       panel_->setFolded(folded);
+      panel_->onActivate = [this](bool on) {  // GU.9: every chain's activator (a rack has no switch of its own)
+        const std::optional<doc::RackInfo> r = doc::rackOf(impl_.doc(), id_);
+        if (!r) return;
+        doc::DocumentStore& st = impl_.ctx().store();
+        const bool own = !st.inGesture() && st.beginGesture(on ? "Activate Rack" : "Deactivate Rack").ok();
+        for (const doc::RackChain& c : r->chains) impl_.live(doc::ops::setChainActive(impl_.doc(), c.id, on));
+        if (own) (void)st.commitGesture();
+      };
       panel_->onSizeChanged = [this] {
         applyVisibility();
         relayout();
       };
     }
     panel_->setActive(active_);
-    panel_->setTitle(desc_.title);
-    for (const devices::ParamInfo& p : sig_.params) panel_->setParamValue(p.name, paramValue(p.name));
+    panel_->setTitle(title_);
+    macros_->refresh(rack_);
+    panel_->host().notifyChanged();
     // The chain rows.
     bool sameRows = list_->rows.size() == rack_.chains.size();
     for (size_t i = 0; sameRows && i < rack_.chains.size(); ++i) sameRows = list_->rows[i]->chain() == rack_.chains[i].id;
@@ -555,7 +595,7 @@ public:
     x += pass.px(kFrameGap);
     pass.place(*slot_, {x, r.y + pass.px(kTitleH), pass.px(kSlotW), std::max(0, r.h - pass.px(kTitleH) - pass.px(kPad))});
     if (macroRename_ != nullptr)  // over the macro's label
-      if (const ui::Widget* k = macroKnob(renamingMacro_)) pass.place(*macroRename_, {k->rect().x, k->rect().y, k->rect().w, pass.px(16.0f)});
+      if (const std::optional<ui::IRect> k = macroKnob(renamingMacro_)) pass.place(*macroRename_, {k->x, k->y, k->w, pass.px(16.0f)});
   }
 
   void paint(ui::PaintContext& ctx) override {
@@ -653,17 +693,18 @@ public:
     return true;
   }
 
-  // The rack's own macro knobs (map mode picks them).
-  ui::Widget* macroKnob(uint32_t k) const {
-    return panel_ != nullptr && !panel_->folded() ? panel_->controlFor(macroParamName(k)) : nullptr;
+  // The rack's own macro knobs (device px; map mode picks them).
+  std::optional<ui::IRect> macroKnob(uint32_t k) const {
+    if (panel_ == nullptr || panel_->folded()) return std::nullopt;
+    return panel_->host().controlRect(doc::controlBinding(id_, macroParamName(k)));
   }
 
   // T4.16c: a right-click on a macro knob offers Rename Macro: a field over the knob's label, Enter commits (one undo
   // step), Esc cancels.
   void contextItems(ui::Vec2 p, std::vector<ui::MenuItem>& items) override {
     for (uint32_t k = 0; k < doc::kMacroCount; ++k) {
-      const ui::Widget* w = macroKnob(k);
-      if (w == nullptr || !w->visible() || !w->rect().contains(p)) continue;
+      const std::optional<ui::IRect> w = macroKnob(k);
+      if (!w || !w->contains(p)) continue;
       DeviceChainView::Impl* im = &impl_;
       const doc::DeviceId rack = id_;
       items.push_back(ui::MenuItem::item("Rename Macro", [im, rack, k] {
@@ -674,8 +715,7 @@ public:
     }
   }
   void beginMacroRename(uint32_t k) {
-    const ui::Widget* knob = macroKnob(k);
-    if (knob == nullptr || macroRename_ != nullptr) return;
+    if (!macroKnob(k) || macroRename_ != nullptr) return;
     renamingMacro_ = k;
     macroRename_ = &add<ui::TextEdit>("macro-rename", rack_.macroName(k));
     macroRenameDone_ = false;
@@ -745,7 +785,8 @@ private:
     return !same;
   }
 
-  RackTarget target_;
+  RackPanelTarget* macros_ = nullptr;  // the macro panel's target (owned by its face)
+  std::string title_;
   uint32_t nesting_ = 0;  // racks around this one in the Device view (0: on the track's chain)
   doc::TrackId track_;
   doc::RackInfo rack_;
@@ -754,9 +795,7 @@ private:
   bool showMacrosBuilt_ = true;
   bool active_ = true;
   std::vector<doc::DeviceValue> params_;
-  devices::DeviceSignature sig_;
-  devices::PanelLayout desc_;
-  devices::DevicePanel* panel_ = nullptr;
+  panel::BlockFrame* panel_ = nullptr;
   RackStrip* strip_ = nullptr;
   ChainList* list_ = nullptr;
   ZoneEditor* zones_ = nullptr;
@@ -1502,29 +1541,27 @@ public:
     for (const auto& [id, fr] : impl_.all) {
       const doc::DeviceId dev{id};
       const bool self = dev == impl_.mapRack;
-      if (!self && !rk->holds(impl_.doc(), dev)) continue;
-      if (!self) {  // GU.11: a module's knobs (its group panel's elements, bound to blocks inside the rack)
-        bool stop = false;
-        device_chain::forEachPanelControl(*fr, [&](const device_chain::PanelControl& c) {
-          return stop = rk->holds(impl_.doc(), c.device) && f(Target{c.device, c.param, c.rect, -1});
-        });
-        if (stop) return;
-      }
-      const devices::DevicePanel* panel = fr->panel();
-      if (panel == nullptr || panel->folded()) continue;
-      for (const devices::ParamInfo& p : panel->signature().params) {
-        if (p.isBool) continue;
-        const std::optional<ui::IRect> cr = panel->controlRect(p.name);  // TMM.10: a face's control too
-        if (!cr || cr->empty()) continue;
-        Target t{dev, p.name, *cr, -1};
+      // GU.11 / GU.13: the controls of the frame's panels (a leaf's, a module's), bound to blocks inside the rack; the
+      // rack's own frame: its macros (picks); a nested rack's macros: their value blocks. Switches are not mapped.
+      bool stop = false;
+      device_chain::forEachPanelControl(*fr, [&](const device_chain::PanelControl& c) {
         if (self) {
-          const std::optional<uint32_t> m = macroIndex(p.name);
-          if (m) t.macro = static_cast<int32_t>(*m);
-          else if (p.name != kSelectParam || !rk->selector.valid()) continue;
-          else t.device = rk->selector, t.param = doc::kValueParam;  // the selector's knob maps its value block
+          if (c.device != dev) return false;
+          const std::optional<uint32_t> m = macroIndex(c.param);
+          return stop = m.has_value() && f(Target{dev, c.param, c.rect, static_cast<int32_t>(*m)});
         }
-        if (f(t)) return;
-      }
+        Target t{c.device, c.param, c.rect, -1};
+        if (fr->isRack() && c.device == dev) {  // a nested rack's macro
+          const std::optional<uint32_t> m = macroIndex(c.param);
+          const std::optional<doc::RackInfo> inner = m ? doc::rackOf(impl_.doc(), dev) : std::nullopt;
+          if (!inner || !inner->macros[*m].block.valid()) return false;
+          t.device = inner->macros[*m].block;
+          t.param = doc::kValueParam;
+        }
+        if (!rk->holds(impl_.doc(), t.device) || c.host->panelFace()->target().info(*c.binding).isSwitch) return false;
+        return stop = f(t);
+      });
+      if (stop) return;
     }
   }
   bool overMapButton(ui::Vec2 p) const {
@@ -1746,10 +1783,10 @@ bool DeviceChainView::mapPicked(doc::DeviceId device, std::string_view param) {
     // A macro's first mapping takes over the param's position (Live).
     std::optional<double> macroValue;
     const bool hasMappings = rk->macros[static_cast<size_t>(m.mapMacro)].block.valid();
-    if (!hasMappings)
-      if (devices::DevicePanel* panel = panelOf(device))
-        if (const devices::ParamInfo* info = panel->signature().findParam(param))
-          macroValue = devices::toPosition(*info, panel->paramValue(param)) * doc::kMacroMax;
+    if (!hasMappings) {  // the control's position as shown (GU.13: on whichever panel shows it)
+      doc::Binding b;
+      if (panel::PanelHost* h = m.hostOf(device, param, &b)) macroValue = h->panelFace()->target().position(b) * doc::kMacroMax;
+    }
     r = m.run(doc::ops::mapMacro(p, ctx_.store().ids(), m.mapRack, static_cast<uint32_t>(m.mapMacro), device,
                                  std::string(param), macroValue),
               false);

@@ -53,6 +53,9 @@ public:
     return t_.engineFace(b, typeId, host);
   }
   devices::SpectrumFeed* signalFeed(const doc::Binding& b) override { return t_.signalFeed(b); }
+  const ui::ModulationRing* modulation(const doc::Binding& b) const override { return t_.modulation(b); }
+  bool setModulation(const doc::Binding& b, const ui::ModulationRing& r) override { return t_.setModulation(b, r); }
+  bool showPosition(const doc::Binding& b, std::optional<double> p) override { return t_.showPosition(b, p); }
 
 private:
   PanelTarget& t_;
@@ -138,6 +141,16 @@ public:
     if (i < 0) return nullptr;
     const Element& e = face_->element(static_cast<size_t>(i));
     return e.controlAt({c.x - e.rect().x0, c.y - e.rect().y0});
+  }
+  void visitControls(const ControlVisitor& fn) const override {
+    if (face_ == nullptr) return;
+    const doc::EmbedFit f = fit();
+    face_->visitControls([&](const doc::Binding& b, const Rect& r) {
+      fn(b, {f.x + r.x0 * f.k, f.y + r.y0 * f.k, f.x + r.x1 * f.k, f.y + r.y1 * f.k});
+    });
+  }
+  void endWheel(PanelTarget& /*t*/) override {
+    if (face_ != nullptr) face_->endWheel();
   }
   std::optional<ControlAnchor> anchorFor(const doc::Binding& want, bool shownOnly) const override {
     if (face_ == nullptr) return std::nullopt;
