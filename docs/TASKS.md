@@ -732,6 +732,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [ ] **EQ.6 Milestone -Full + critique.**
 
 ### Bugs
+- [~] **AU.stream Click ≈ 100 ms after Play from idle** (user 2026-11-08, bug_reports/2026-11-08_11-45-59: FL Studio ASIO, 1024 frames, the stream suspended after 1 s idle; the click comes after the driver restarts on Play). Keep the stream running while a project is open; a cold start pre-rolls silence until the driver settles before the transport starts. Worker, branch task/AU.stream.
 - [x] **AU.voices Click near the start of MIDI playback; notes sound too long after release** (user 2026-11-08) *(merged 57be5cb6; engine renders clean in every scenario; piano-roll preview now ends on release; ASIO halves zeroed per start; suspect: the 1 s idle stream stop restarting the ASIO driver on Play, Q?-AU.voices-a, user to confirm)*.
 - [x] **AU.fold Clicks from the Wavetable's fold in a Phase Accumulator → Wavetable setup** (user 2026-11-08) *(merged 8f93a477; baked-table swaps crossfade 25 ms and queue; live-path ramp start fixed; Q?-AU.fold-a Saturator oversampling, Q?-AU.fold-b non-integer PA Amplitude: user decisions pending)*.
 - [x] **TX.insert-group Insert on a cable lands in the cable's group** *(merged 5bac9256)* (user 2026-11-08: Z on a cable into a Phase Accumulator inserts the VCA inside the PA group; insertImpl takes the target device's group). Worker, branch task/TX.insert-group.
