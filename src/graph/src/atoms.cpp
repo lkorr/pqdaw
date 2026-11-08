@@ -6,6 +6,7 @@
 #include <cstdlib>
 
 #include "pq/dsp/atom_state.h"
+#include "response_rules.h"
 
 namespace pq::graph {
 
@@ -190,46 +191,46 @@ const AtomSignature kAtoms[] = {
     {"noise", C::Generator, pNoise, pOutRAudio, sizeof(dsp::NoiseState), kStateful, 0, {}, "white noise in −1..1 (uint32 generator state)"},
 
     // Math (exact). Operators: + − * / % unary − map to add sub mul div mod neg.
-    {"add", C::Math, pAB, pOutR, 0, kMathC, 0, {}, "a + b"},
-    {"sub", C::Math, pAB, pOutR, 0, kMath, 0, {}, "a − b"},
-    {"mul", C::Math, pAB, pOutR, 0, kMathC, 0, {}, "a · b"},
-    {"div", C::Math, pAB, pOutR, 0, kMath, 0, {}, "a / b"},
+    {"add", C::Math, pAB, pOutR, 0, kMathC, 0, {}, "a + b", rules::add},
+    {"sub", C::Math, pAB, pOutR, 0, kMath, 0, {}, "a − b", rules::sub},
+    {"mul", C::Math, pAB, pOutR, 0, kMathC, 0, {}, "a · b", rules::mul},
+    {"div", C::Math, pAB, pOutR, 0, kMath, 0, {}, "a / b", rules::div},
     {"mod", C::Math, pAB, pOutR, 0, kMath, 0, {}, "a − b·floor(a/b) (result has the sign of b)"},
-    {"neg", C::Math, pX, pOutR, 0, kMath, 0, {}, "−x"},
+    {"neg", C::Math, pX, pOutR, 0, kMath, 0, {}, "−x", rules::neg},
     {"min", C::Math, pAB, pOutR, 0, kMathC, 0, {}, "min(a, b)"},
     {"max", C::Math, pAB, pOutR, 0, kMathC, 0, {}, "max(a, b)"},
-    {"clip", C::Math, pClip, pOutR, 0, kMath, 0, {}, "clamp x to [lo, hi]"},
+    {"clip", C::Math, pClip, pOutR, 0, kMath, 0, {}, "clamp x to [lo, hi]", rules::clip},
     {"abs", C::Math, pX, pOutR, 0, kMath, 0, {}, "|x|"},
     {"sign", C::Math, pX, pOutR, 0, kMath, 0, {}, "−1, 0 or 1"},
     {"floor", C::Math, pX, pOutR, 0, kMath, 0, {}, "largest integer ≤ x"},
     {"frac", C::Math, pX, pOutR, 0, kMath, 0, {}, "x − floor(x)"},
     {"tan", C::Math, pX, pOutR, 0, kMath, 0, {}, "tan(x)"},
-    {"tanh", C::Math, pX, pOutR, 0, kMath, 0, {}, "tanh(x)"},
+    {"tanh", C::Math, pX, pOutR, 0, kMath, 0, {}, "tanh(x)", rules::slopeOne},
     {"exp", C::Math, pX, pOutR, 0, kMath, 0, {}, "e^x"},
     {"log", C::Math, pX, pOutR, 0, kMath, 0, {}, "natural log"},
     {"pow", C::Math, pAB, pOutR, 0, kMath, 0, {}, "a^b"},
     {"sqrt", C::Math, pX, pOutR, 0, kMath, 0, {}, "√x"},
-    {"sin", C::Math, pX, pOutR, 0, kMath, 0, {}, "sin(x), x in radians"},
+    {"sin", C::Math, pX, pOutR, 0, kMath, 0, {}, "sin(x), x in radians", rules::slopeOne},
     // Math (fast approximations; error bounds documented with the core fast-math functions, T0.4).
     {"fast_tan", C::Math, pX, pOutR, 0, kFast, 0, "tan", "approximate tan(x)"},
-    {"fast_tanh", C::Math, pX, pOutR, 0, kFast, 0, "tanh", "approximate tanh(x)"},
+    {"fast_tanh", C::Math, pX, pOutR, 0, kFast, 0, "tanh", "approximate tanh(x)", rules::slopeOne},
     {"fast_exp", C::Math, pX, pOutR, 0, kFast, 0, "exp", "approximate e^x"},
     {"fast_log", C::Math, pX, pOutR, 0, kFast, 0, "log", "approximate natural log"},
     {"fast_pow", C::Math, pAB, pOutR, 0, kFast, 0, "pow", "approximate a^b"},
     {"fast_sqrt", C::Math, pX, pOutR, 0, kFast, 0, "sqrt", "approximate √x"},
-    {"fast_sin", C::Math, pX, pOutR, 0, kFast, 0, "sin", "approximate sin(x)"},
+    {"fast_sin", C::Math, pX, pOutR, 0, kFast, 0, "sin", "approximate sin(x)", rules::slopeOne},
     {"fast_cents_to_hz", C::Math, pCentsToHz, pOutR, 0, kFast, 0, "cents_to_hz", "approximate ref · 2^(cents/1200)"},
     {"fast_hz_to_cents", C::Math, pHzToCents, pOutR, 0, kFast, 0, "hz_to_cents", "approximate 1200 · log2(hz/ref)"},
     {"fast_db_to_gain", C::Math, pDb, pOutR, 0, kFast, 0, "db_to_gain", "approximate 10^(db/20)"},
     {"fast_gain_to_db", C::Math, pGain, pOutR, 0, kFast, 0, "gain_to_db", "approximate 20 · log10(gain)"},
-    {"muladd", C::Math, pMulAdd, pOutR, 0, kMath, 0, {}, "a · b + c, fused (one rounding)"},
+    {"muladd", C::Math, pMulAdd, pOutR, 0, kMath, 0, {}, "a · b + c, fused (one rounding)", rules::muladd},
     // Conversions and selection.
     {"cents_to_hz", C::Math, pCentsToHz, pOutR, 0, kMath, 0, {}, "ref · 2^(cents/1200)"},
     {"hz_to_cents", C::Math, pHzToCents, pOutR, 0, kMath, 0, {}, "1200 · log2(hz/ref)"},
     {"db_to_gain", C::Math, pDb, pOutR, 0, kMath, 0, {}, "10^(db/20)"},
     {"gain_to_db", C::Math, pGain, pOutR, 0, kMath, 0, {}, "20 · log10(gain)"},
-    {"select", C::Math, pSelect, pOutAny, 0, kMath, 0, {}, "cond ? a : b"},
-    {"lerp", C::Math, pLerp, pOutR, 0, kMath, 0, {}, "a + (b − a)·t"},
+    {"select", C::Math, pSelect, pOutAny, 0, kMath, 0, {}, "cond ? a : b", rules::select},
+    {"lerp", C::Math, pLerp, pOutR, 0, kMath, 0, {}, "a + (b − a)·t", rules::lerp},
     {"gate_to_real", C::Math, pGate, pOutR, 0, kMath, 0, {}, "false → 0, true → 1"},
 
     // Shaping.
@@ -239,13 +240,13 @@ const AtomSignature kAtoms[] = {
     // Memory. delay*: time in seconds (the compiler multiplies by sr; the kernels take samples), max (const,
     // seconds) sizes the buffer. The read is clamped to at least 1 (linear), 2 (cubic) or 1.5 (allpass) samples,
     // so every interpolation tap is ≥ 1 sample old: that is what makes x a delayed input (Q14).
-    {"z1", C::Memory, pZ1, pOutAny, sizeof(dsp::Z1State), kStateful, 0, {}, "one-sample delay (starts at init)"},
+    {"z1", C::Memory, pZ1, pOutAny, sizeof(dsp::Z1State), kStateful, 0, {}, "one-sample delay (starts at init)", rules::z1},
     {"delay", C::Memory, pDelay, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
-     "delay line, linear read (≥ 1 sample)"},
+     "delay line, linear read (≥ 1 sample)", rules::delayLinear},
     {"delay_allpass", C::Memory, pDelay, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
-     "delay line, allpass-interpolated read (≥ 1.5 samples)"},
+     "delay line, allpass-interpolated read (≥ 1.5 samples)", rules::delayAllpass},
     {"delay_cubic", C::Memory, pDelay, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
-     "delay line, cubic read (≥ 2 samples)"},
+     "delay line, cubic read (≥ 2 samples)", rules::delayCubic},
     {"samplehold", C::Memory, pSampleHold, pOutR, sizeof(dsp::SampleHoldState), kStateful | kBroadcast, 0, {},
      "x sampled on each rising edge of trig"},
     {"latch", C::Memory, pLatch, pOutAny, sizeof(dsp::LatchState), kStateful, 0, {},
@@ -278,16 +279,16 @@ const AtomSignature kAtoms[] = {
      "+1 on rising up, −1 on rising down, 0 while reset; wraps within [0, wrap − 1] when wrap ≥ 1"},
     {"clockdiv", C::Logic, pClockdiv, pOutBAudio, sizeof(dsp::ClockDivState), kStateful, 0, {},
      "passes every div-th clk pulse (the first one included)"},
-    {"mux", C::Logic, pMux, pOutAny, 0, kVariadicInputs, 2, {}, "in[clamp(floor(index))]"},
-    {"demux", C::Logic, pDemuxIn, pOutAny, 0, kVariadicOutputs, 2, {}, "x to out[floor(index)], others 0/false"},
+    {"mux", C::Logic, pMux, pOutAny, 0, kVariadicInputs, 2, {}, "in[clamp(floor(index))]", rules::mux},
+    {"demux", C::Logic, pDemuxIn, pOutAny, 0, kVariadicOutputs, 2, {}, "x to out[floor(index)], others 0/false", rules::demux},
     {"pulse", C::Logic, pPulse, pOutBAudio, sizeof(dsp::PulseState), kStateful, 0, {},
      "one-sample pulse when the instance starts, then every period seconds (period ≤ 0: once)"},
     {"timer", C::Logic, pTimer, pOutBAudio, sizeof(dsp::TimerState), kStateful, 0, {},
      "true for dur seconds from each rising trig"},
 
     // Structure: x[i] is channel(x, i); a tuple (a, b, …) is pack(a, b, …).
-    {"channel", C::Structure, pChannel, pChannelOut, 0, 0, 0, {}, "channel i of a multichannel signal"},
-    {"pack", C::Structure, pPack, pOutAny, 0, kVariadicInputs, 2, {}, "channels side by side (a, b, …)"},
+    {"channel", C::Structure, pChannel, pChannelOut, 0, 0, 0, {}, "channel i of a multichannel signal", rules::identity},
+    {"pack", C::Structure, pPack, pOutAny, 0, kVariadicInputs, 2, {}, "channels side by side (a, b, …)", rules::identity},
     // Voice → global reducers (SPEC §7.4). infer() inserts voice_sum where a voice signal meets a global input;
     // calling one explicitly is the per-wire override. A global x passes through unchanged. On bools, sum is any
     // (or); highest/lowest are or/and; loudest is the value with the largest magnitude.
@@ -327,9 +328,9 @@ const AtomSignature kAtoms[] = {
      "voice.hz (and voice.cents) of the subcircuits this patch instantiates"},
     // Smoothed gains (T3.17-fix2, the mixer): a param gain at block rate, smoothed per sample only while it moves.
     {"gain", C::Math, pGainIn, pOutRAudio, sizeof(dsp::GainState), kStateful | kBroadcast, 0, {},
-     "x · g, g smoothed (one-pole, time) when it changes; settled: one multiply; start 1: no fade-in from 0"},
+     "x · g, g smoothed (one-pole, time) when it changes; settled: one multiply; start 1: no fade-in from 0", rules::gain},
     {"gain_add", C::Math, pGainAddIn, pOutRAudio, sizeof(dsp::GainState), kStateful | kBroadcast, 0, {},
-     "acc + x · g, g smoothed as in gain; settled at 0: acc passes through (a closed send costs nothing)"},
+     "acc + x · g, g smoothed as in gain; settled at 0: acc passes through (a closed send costs nothing)", rules::gainAdd},
 
     // Transport and sample rate.
     {"transport.bpm", C::Transport, kNoPorts, pGlobalRP, 0, kNeedsTransport, 0, {}, "tempo in BPM"},

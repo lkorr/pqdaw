@@ -13,6 +13,7 @@
 #include <span>
 #include <string_view>
 
+#include "pq/graph/response_rule.h"
 #include "pq/graph/types.h"
 
 namespace pq::graph {
@@ -72,6 +73,9 @@ struct AtomSignature {
   uint16_t minRepeat = 0;               // for variadic signatures: minimum count of the repeated port
   std::string_view exactVariant = {};   // for kFastApprox atoms: the exact atom this approximates
   std::string_view summary = {};        // one line, for tooltips and `pqc` listings
+  // EQ.2: the small-signal response at one frequency (pq/graph/response_rule.h); null: nonlinear, no rule (a response
+  // through this atom is Unavailable).
+  ResponseRule response = nullptr;
 
   bool has(uint32_t flag) const noexcept { return (flags & flag) != 0; }
   // Number of fixed (non-repeating) input/output ports.

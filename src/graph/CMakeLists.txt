@@ -24,5 +24,7 @@ pq_add_module(pq_graph
     src/inspect.cpp
     src/project.cpp
     src/param_curve.cpp
+    src/response_rules.cpp
+    src/response.cpp
   DEPS pq_core pq_dsp
 )

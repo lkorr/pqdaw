@@ -40,6 +40,7 @@ pq_add_module(pq_doc
     src/instrument_groups.cpp
     src/audibility.cpp
     src/lower.cpp
+    src/group_response.cpp
     src/pitch_resolve.cpp
   # nlohmann/json: schema migrations (generic DOM transforms of old project files); the public header names
   # nlohmann::json in MigrationFn.

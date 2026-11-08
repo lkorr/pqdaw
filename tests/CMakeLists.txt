@@ -302,6 +302,7 @@ pq_add_test(pq_tests_engine PERF
     engine/test_tuning_voices.cpp
     engine/test_silence.cpp
     engine/test_probes.cpp  # T4.5: live probes and cost meters on images
+    engine/test_linear_response.cpp  # EQ.2: analytic responses vs interpreted impulse responses
   DEPS pq_engine nlohmann_json::nlohmann_json)
 
 # T1.x-arch1: per-track compile units (partition, composition, the project runner, per-unit hot swap).
@@ -427,6 +428,7 @@ pq_add_test(pq_tests_document
     document/test_knob_curves.cpp  # TX.knob-curves: knob curves, the wire laws they decide, schema 16 + migration
     document/test_blocks.cpp  # GU.2: nested groups (rules, remove / move, nest / unnest), atom + value blocks, block sets, group presets
     document/test_one_hierarchy.cpp  # GU.11: every fixture and module preset holds only blocks, groups and native engines
+    document/test_group_response.cpp  # EQ.2: a group's analytic In -> Out response (lowered once, knobs re-read)
     document/test_panels.cpp  # GU.3: group panels (rules, SetGroupPanel + builders, final pass on delete / move out, save / load, paste remap, presets)
   DEPS pq_doc)
 
