@@ -182,3 +182,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker: AU.fold* 2/2 (fail before), meta wavetable incl. slow alias suites 19/19, dsp wavetable/frame-table 25/25, jit 12/12. Orchestrator: build.ps1 -Affected -Slow on 8f93a477 passed; ship pq_bench_dsp linked. Goldens: none.
 - Perf: non-harmonic energy during a fold drag −29.4 → −45.9 dB (warp −42.7 → −59.3, sync −19.8 → −36.8); live steps −32.2 → −48.1 dB; idle cost unchanged, ≈ 0.08 % of a core during a 30 Hz drag.
 - Notes/blockers: Q?-AU.fold-a (Saturator aliases: Digital Clip −38 dB at 1760 Hz +18 dB; ×4 oversampling ≈ +15 ns/sample/channel; Type switch clicks), Q?-AU.fold-b (non-integer PA Amplitude jumps per cycle).
+
+## 2026-11-08 · EQ.4c · orchestrator (merge of task/EQ.4c-wrap-lines)
+- Did: merged 89a8b5b2. Wrapped phase draws a dotted vertical line (0.7 px, curve colour 40 % / band 30 %) at each ±180° crossing, interpolated in the existing cut pass (no extra evaluation).
+- Verified (worker): pq_tests_views default tier 588/588 (16-stage low cut: 8 wraps, each within 1 px of a finer reference). Golden eq-eight-bands re-recorded (only the 8 lines).
+- Perf: n/a. Notes: deferred idea recorded in docs/plans/EQ.md (FIR phase lead, after PDC).

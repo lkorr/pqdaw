@@ -728,7 +728,8 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [x] **EQ.3 Band and EQ modules + ops** (plan §Structure, §Ops). Merged b2445ddd; Q?-EQ.3-a; the panel's Mode menu doesn't copy A → B (EQ.4 calls setEqMode through PanelTarget::run).
 - [x] **EQ.4 `response` and `phase` elements, band strip, EQ panel** (plan §Displays). 👁 Depends on EQ.2, EQ.3. Merged 6a33e3bc; Q?-EQ.4-a; user review pending.
 - [x] **EQ.4b User review fixes** *(merged 94596c06; Q?-EQ.4b-a; the open/close no-curve bug did not reproduce, three candidate causes fixed)* (user 2026-11-08: a lone EQ Band shows only knobs, "no visible spectrum or eq curve"; labels; phase wrapped ±180°; "reuse its own compile"): the band module gets response + phase + analyser; labelled integer Stages, Q prefix; wrapped phase default; responses from the app's compile, not UI-thread lowering; verified in the real app. Also (user 08:49): the total curve shows "no curve" after opening and closing the group's circuit until a band moves. Run by session pqdaw-f8 in ../pqdaw-EQ.4b.
-- [~] **EQ.4c Wrap markers on the phase strip** (user 2026-11-08: where wrapped phase jumps ±180°, a dotted vertical line joins the two ends). 👁 Worker, branch task/EQ.4c-wrap-lines.
+- [x] **EQ.4c Wrap markers on the phase strip** (user 2026-11-08: where wrapped phase jumps ±180°, a dotted vertical line joins the two ends). 👁 *(merged 89a8b5b2)*
+- [~] **EQ.4d Delay as its own view; 0 ms floor; delay folding bug** (user bug_reports/2026-11-08_12-29-32: magnitude, phase and delay views each open / close independently, all three at once; delay axis from 0 at the bottom; a 23-stage Q 5 allpass's delay folds negative: group delay from neighbouring wrapped-phase differences). 👁 Worker, branch task/EQ.4d-delay-view.
 - [ ] **EQ.5 Custom band types** (plan §Phases 5). Depends on EQ.4.
 - [ ] **EQ.6 Milestone -Full + critique.**
 
