@@ -727,7 +727,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [x] **EQ.2 Linear response evaluator** (plan §Analytic responses; atom response rules, SCC solve, param re-evaluation). Merged 35f42cbd; svf rule left to EQ.1.
 - [x] **EQ.3 Band and EQ modules + ops** (plan §Structure, §Ops). Merged b2445ddd; Q?-EQ.3-a; the panel's Mode menu doesn't copy A → B (EQ.4 calls setEqMode through PanelTarget::run).
 - [x] **EQ.4 `response` and `phase` elements, band strip, EQ panel** (plan §Displays). 👁 Depends on EQ.2, EQ.3. Merged 6a33e3bc; Q?-EQ.4-a; user review pending.
-- [~] **EQ.4b User review fixes** (user 2026-11-08: a lone EQ Band shows only knobs, "no visible spectrum or eq curve"; labels; phase wrapped ±180°; "reuse its own compile"): the band module gets response + phase + analyser; labelled integer Stages, Q prefix; wrapped phase default; responses from the app's compile, not UI-thread lowering; verified in the real app.
+- [~] **EQ.4b User review fixes** (user 2026-11-08: a lone EQ Band shows only knobs, "no visible spectrum or eq curve"; labels; phase wrapped ±180°; "reuse its own compile"): the band module gets response + phase + analyser; labelled integer Stages, Q prefix; wrapped phase default; responses from the app's compile, not UI-thread lowering; verified in the real app. Also (user 08:49): the total curve shows "no curve" after opening and closing the group's circuit until a band moves. Run by session pqdaw-f8 in ../pqdaw-EQ.4b.
 - [ ] **EQ.5 Custom band types** (plan §Phases 5). Depends on EQ.4.
 - [ ] **EQ.6 Milestone -Full + critique.**
 
