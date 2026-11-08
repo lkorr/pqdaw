@@ -235,3 +235,63 @@ TEST_CASE("panel gestures: map mode maps a leaf's and a group's knob alike (a ma
     CHECK(ring->active);
   }
 }
+
+TEST_CASE("panel gestures: detents (TX.detent) — a knob drag sticks at the Saturator's 0 dB and leaves it without a jump; "
+          "Shift ignores it; a wheel notch across it lands on it — real dispatch") {
+  Ui u;
+  const Ui::Knob k{u.drive, std::string(doc::kValueParam)};
+  const dsp::Curve* c = doc::findDevice(*u.ctx.doc(), u.drive).device->curve(doc::kValueParam);
+  REQUIRE(c != nullptr);
+  REQUIRE(c->segments == 2);
+  REQUIRE(c->points[1].detent);
+  REQUIRE(c->points[1].t == 0.5);  // 0 dB: the knob's default
+  CHECK(u.stored(k) == 0.5);
+  const Vec2 at = u.at(k);
+  // From the detent: held for 6 px (the knob's 200 px travel: ±0.03), then free with the held travel subtracted.
+  u.d.down(at);
+  double prev = u.pos(k);
+  for (int px = 1; px <= 30; ++px) {
+    u.d.move({at.x, at.y - static_cast<float>(px)});
+    const double p = u.pos(k);
+    CAPTURE(px);
+    if (px <= 6) CHECK(p == 0.5);
+    else CHECK(p == doctest::Approx(0.5 + (px - 6) / 200.0));
+    CHECK(p - prev <= 1.0 / 200.0 + 1e-9);  // never a jump
+    prev = p;
+  }
+  // Back down through it in the same gesture: held again over its whole zone (12 px when crossing), then below.
+  for (int px = 29; px >= -30; --px) {
+    u.d.move({at.x, at.y - static_cast<float>(px)});
+    const double p = u.pos(k);
+    CAPTURE(px);
+    CHECK(prev - p <= 1.0 / 200.0 + 1e-9);
+    CHECK(p <= prev);
+    if (px >= -6 && px <= 6) CHECK(p == 0.5);
+    prev = p;
+  }
+  CHECK(u.pos(k) == doctest::Approx(0.5 - 24.0 / 200.0));
+  u.d.up({at.x, at.y + 30.0f});
+  u.d.step();
+  CHECK(u.stored(k) == doctest::Approx(0.5 - 24.0 / 200.0));
+  REQUIRE(u.ctx.undo());
+  CHECK(u.stored(k) == 0.5);
+  // Shift (fine): no detent — 2 px is a tenth of 2 / 200.
+  u.d.down(at, PointerButton::Left, mod::kShift);
+  u.d.move({at.x, at.y - 2.0f}, mod::kShift);
+  CHECK(u.pos(k) == doctest::Approx(0.5 + 0.1 * 2.0 / 200.0));
+  u.d.up({at.x, at.y - 2.0f}, PointerButton::Left, mod::kShift);
+  u.d.step();
+  REQUIRE(u.ctx.undo());
+  // The wheel: from just below 0 dB a notch (1 % of the travel) lands on it; the next leaves it.
+  (void)u.run(doc::ops::setDeviceParam(*u.ctx.doc(), u.drive, std::string(doc::kValueParam), 0.495));
+  u.d.move(at);
+  u.d.wheel(at, 1.0f);
+  CHECK(u.pos(k) == 0.5);
+  u.d.wheel(at, 1.0f);
+  CHECK(u.pos(k) == doctest::Approx(0.51));
+  u.d.wheel(at, -1.0f);
+  CHECK(u.pos(k) == doctest::Approx(0.50));
+  u.d.wheel(at, -1.0f);
+  CHECK(u.pos(k) == doctest::Approx(0.49));
+  u.d.advance(panel::PanelHost::kWheelRunSeconds + 0.1);
+}

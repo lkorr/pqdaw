@@ -336,6 +336,50 @@ TEST_CASE("module faces: the Phase Accumulator's frequency arc dragged up — on
   CHECK(dsp::curveIsLinear(pitch));
 }
 
+TEST_CASE("module faces: the Phase Accumulator's Amplitude arc (TX.detent) — x1 at the centre of its travel, the knob "
+          "latches there, leaves it without a jump, Shift ignores it — real dispatch") {
+  ModuleUi u(false);
+  const doc::DeviceId g = u.m.pa.group, amp = u.m.pa.amp;
+  REQUIRE(u.position(amp) == 0.5);
+  CHECK(dsp::evalCurve(u.curve(amp), 0.5) == 1.0);
+  // The arc's handle at 0.5 (252° + 40° · 0.5 round (60, 64) at radius 39); its drag is diagonal, 150 px per range:
+  // the zone ±4.5 px (±0.03).
+  const float a = (252.0f + 40.0f * 0.5f) * kPi / 180.0f;
+  const Vec2 h = u.at(g, {60.0f + 39.0f * std::cos(a), 64.0f + 39.0f * std::sin(a)});
+  panel::GroupPanelFace* f = dynamic_cast<panel::GroupPanelFace*>(u.view().canvas().panelOn(u.view().scene().sceneNode[u.view().patch().nodeOf(g)]));
+  REQUIRE(f != nullptr);
+  const doc::Binding b = doc::controlBinding(amp, std::string(doc::kValueParam));
+  const size_t h0 = u.history();
+  u.d.down(h);
+  double prev = 0.5;
+  for (int px = 1; px <= 15; ++px) {  // right: up the travel
+    u.d.move({h.x + static_cast<float>(px), h.y});
+    const double p = f->target().position(b);
+    CAPTURE(px);
+    if (px <= 4) CHECK(p == 0.5);
+    if (px >= 5) CHECK(p == doctest::Approx(0.5 + (px - 4.5) / 150.0));
+    CHECK(p - prev <= 1.0 / 150.0 + 1e-9);
+    prev = p;
+  }
+  for (int px = 14; px >= -15; --px) {  // back left through it
+    u.d.move({h.x + static_cast<float>(px), h.y});
+    const double p = f->target().position(b);
+    CAPTURE(px);
+    CHECK(p <= prev);
+    CHECK(prev - p <= 1.0 / 150.0 + 1e-9);
+    if (px >= -4 && px <= 4) CHECK(p == 0.5);
+    prev = p;
+  }
+  // Shift: a tenth, no detent (3 px from the press: 0.002 below the centre).
+  u.d.move({h.x - 3.0f, h.y}, mod::kShift);
+  CHECK(f->target().position(b) == doctest::Approx(0.5 - 0.1 * 3.0 / 150.0));
+  u.d.up({h.x - 3.0f, h.y}, PointerButton::Left, mod::kShift);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.structural == 0);
+  CHECK(dsp::evalCurve(u.curve(amp), u.position(amp)) == doctest::Approx(1.0 - 2.0 * 0.002));  // (0 … 1 over the first half: 2 per travel)
+}
+
 TEST_CASE("module faces: a double-click opens a module into its circuit (atoms as symbols, values as knobs, traces) and "
           "on its title strip closes it — real dispatch") {
   ModuleUi u(true);

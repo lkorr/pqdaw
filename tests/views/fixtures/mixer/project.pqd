@@ -69,11 +69,11 @@
         {"id": 9, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 7, "params": {"value": 0.0}, "curves": {
             "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
           }},
-        {"id": 10, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 7, "params": {"value": 0.25}, "curves": {
-            "value": {"min": 0.0, "max": 4.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+        {"id": 10, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 7, "params": {"value": 0.5}, "curves": {
+            "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
           }},
         {"id": 11, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 7, "params": {"value": 0.5}, "curves": {
-            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0]]}
+            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
           }},
         {"id": 12, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 7, "params": {"value": 1.0}, "curves": {
             "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
@@ -184,11 +184,11 @@
         {"id": 51, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 49, "params": {"value": 0.0}, "curves": {
             "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
           }},
-        {"id": 52, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 49, "params": {"value": 0.25}, "curves": {
-            "value": {"min": 0.0, "max": 4.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+        {"id": 52, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 49, "params": {"value": 0.5}, "curves": {
+            "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
           }},
         {"id": 53, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 49, "params": {"value": 0.5}, "curves": {
-            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0]]}
+            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
           }},
         {"id": 54, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 49, "params": {"value": 1.0}, "curves": {
             "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
@@ -310,11 +310,11 @@
             {"id": 93, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 91, "params": {"value": 0.0}, "curves": {
                 "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
               }},
-            {"id": 94, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 91, "params": {"value": 0.25}, "curves": {
-                "value": {"min": 0.0, "max": 4.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+            {"id": 94, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 91, "params": {"value": 0.5}, "curves": {
+                "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
               }},
             {"id": 95, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 91, "params": {"value": 0.5}, "curves": {
-                "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0]]}
+                "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
               }},
             {"id": 96, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 91, "params": {"value": 1.0}, "curves": {
                 "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
@@ -436,11 +436,11 @@
             {"id": 135, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 133, "params": {"value": 0.0}, "curves": {
                 "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
               }},
-            {"id": 136, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 133, "params": {"value": 0.25}, "curves": {
-                "value": {"min": 0.0, "max": 4.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+            {"id": 136, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 133, "params": {"value": 0.5}, "curves": {
+                "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
               }},
             {"id": 137, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 133, "params": {"value": 0.5}, "curves": {
-                "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0]]}
+                "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
               }},
             {"id": 138, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 133, "params": {"value": 1.0}, "curves": {
                 "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
@@ -548,11 +548,11 @@
         {"id": 177, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 175, "params": {"value": 0.0}, "curves": {
             "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
           }},
-        {"id": 178, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 175, "params": {"value": 0.25}, "curves": {
-            "value": {"min": 0.0, "max": 4.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+        {"id": 178, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 175, "params": {"value": 0.5}, "curves": {
+            "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
           }},
         {"id": 179, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 175, "params": {"value": 0.5}, "curves": {
-            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0]]}
+            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
           }},
         {"id": 180, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 175, "params": {"value": 1.0}, "curves": {
             "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}

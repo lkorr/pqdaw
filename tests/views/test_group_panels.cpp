@@ -461,6 +461,95 @@ TEST_CASE("group panels: the curve editor — dragging a point keeps the curve's
   CHECK(u.dev(u.ids.cutoff).curve(doc::kValueParam)->segments == 2);
 }
 
+TEST_CASE("group panels: detents (TX.detent) — a slider sticks at its curve's detent and releases without a jump; the "
+          "curve editor shows a point's detent and toggles it from the point's menu (one step, no recompile)") {
+  Ui u;
+  const std::string vp(doc::kValueParam);
+  {  // Level: linear 0 … 1 with a detent at 0.5, the knob at 0.4.
+    dsp::Curve c = dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, 1.0);
+    REQUIRE(dsp::setCurveDetent(c, 0.5));
+    auto e = doc::ops::setParamCurve(*u.ctx.doc(), devLib(), u.ids.level, vp, c);
+    REQUIRE(e.ok());
+    REQUIRE(u.ctx.store().dispatch(e->command).ok());
+    auto p = doc::ops::setDeviceParam(*u.ctx.doc(), u.ids.level, vp, 0.4);
+    REQUIRE(p.ok());
+    REQUIRE(u.ctx.store().dispatch(p->command).ok());
+    u.d.step();
+  }
+  SUBCASE("slider") {
+    const int32_t s = u.element("slider");
+    const Vec2 c = u.at(s, 0.5f, 0.75f);
+    const size_t h0 = u.history();
+    const int s0 = u.structural;  // (the setup's curve was one)
+    u.d.down(c);
+    panel::PanelTarget& t = u.face().target();
+    const doc::Binding b = doc::controlBinding(u.ids.level, vp);
+    double prev = t.position(b), maxStep = 0.0;
+    int held = 0, px = 0;
+    for (px = 1; px <= 200 && t.position(b) < 0.55; ++px) {
+      u.d.move({c.x + static_cast<float>(px), c.y});
+      const double p = t.position(b);
+      CHECK(p >= prev);
+      maxStep = std::max(maxStep, p - prev);
+      held += p == 0.5 ? 1 : 0;
+      prev = p;
+    }
+    // The groove's length per whole range: the free moves' step. Held over 2 · zone px (±6 at 200 px, scaled with the
+    // length: 4.5 … 9 px), never a jump (no move further than a free one).
+    MESSAGE("slider: " << held << " px held, a free px " << maxStep);
+    CHECK(t.position(b) >= 0.55);
+    CHECK(held >= 8);
+    CHECK(held <= 19);
+    const double len = 1.0 / maxStep;
+    CHECK(held == doctest::Approx(2.0 * 6.0 * std::clamp(len / 200.0, 0.75, 1.5)).epsilon(0.15));
+    // Shift: fine, no detent — the same gesture's position follows a tenth of the travel, through 0.5.
+    u.d.move({c.x + static_cast<float>(px), c.y}, mod::kShift);
+    CHECK(t.position(b) == doctest::Approx(0.4 + 0.1 * px * maxStep).epsilon(0.02));
+    u.d.up({c.x + static_cast<float>(px), c.y}, PointerButton::Left, mod::kShift);
+    u.d.step();
+    CHECK(u.history() == h0 + 1);
+    CHECK(u.structural == s0);
+  }
+  SUBCASE("curve editor: the point's menu toggles its detent") {
+    const int32_t ce = u.element("curve");
+    u.d.doubleClick(u.at(ce, 0.5f, 0.5f));  // a point in the middle
+    u.d.step();
+    const dsp::Curve two = *u.dev(u.ids.cutoff).curve(vp);
+    REQUIRE(two.segments == 2);
+    CHECK_FALSE(two.points[1].detent);
+    const doc::PanelElement& e = u.face().element(static_cast<size_t>(ce)).desc();
+    const Node& n = u.node();
+    const float lx = 6.0f + (e.w - 12.0f) * static_cast<float>(two.points[1].t);
+    const float ly = e.h - 6.0f - (e.h - 12.0f) * static_cast<float>(two.points[1].y);
+    const Vec2 pt = u.view().canvas().toDevice({n.x + e.x + lx, n.y + e.y + ly});
+    const size_t h0 = u.history();
+    const int s0 = u.structural;  // (the setup's curve and the new point were structural)
+    u.d.click(pt, mod::kNone, PointerButton::Right);
+    u.d.step();
+    REQUIRE(u.menu() != nullptr);
+    CHECK_FALSE(u.menu()->items().front().checked);
+    u.choose("Detent");
+    const dsp::Curve on = *u.dev(u.ids.cutoff).curve(vp);
+    CHECK(on.points[1].detent);
+    CHECK(on.points[1].t == two.points[1].t);
+    CHECK(u.history() == h0 + 1);
+    CHECK(u.structural == s0);  // not the curve's class
+    u.d.click(pt, mod::kNone, PointerButton::Right);
+    u.d.step();
+    REQUIRE(u.menu() != nullptr);
+    CHECK(u.menu()->items().front().checked);
+    u.choose("Detent");
+    CHECK_FALSE(u.dev(u.ids.cutoff).curve(vp)->points[1].detent);
+    CHECK(u.history() == h0 + 2);
+    // An end point has no detent item (its menu starts with the segment's shapes).
+    const Vec2 end = u.view().canvas().toDevice({n.x + e.x + e.w - 6.0f, n.y + e.y + 6.0f});
+    u.d.click(end, mod::kNone, PointerButton::Right);
+    u.d.step();
+    REQUIRE(u.menu() != nullptr);
+    CHECK(u.menu()->items().front().label != "Detent");
+  }
+}
+
 TEST_CASE("group panels: a deleted block takes its elements off the face (undo brings them back); a pasted group keeps "
           "its panel, remapped") {
   Ui u;
