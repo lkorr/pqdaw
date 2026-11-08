@@ -121,4 +121,5 @@ element needs a structural-edit hook: `PanelTarget::run(doc::Edit)` (the host ru
 
 - **Phase lead / free-form phase** (user 2026-11-08, deferred until PDC, M6): a rising phase (an allpass "ramp up") is non-causal; done as MFreeformPhase-style FIR: drawn phase → IFFT of e^{jφ} → shift by N/2 + window → partitioned FFT convolution, N/2 reported as latency. Resolution costs latency; phase lead pre-rings. A "phase" band type (draw a phase, or invert any band) and/or a linear / lead EQ mode; the analytic response draws it (an FIR is delays and gains).
 
-Dynamic EQ, per-band M/S inside one chain, linear-phase mode, oversampled HQ, Auto Filter (next, on the same atom).
+Dynamic EQ, per-band M/S inside one chain, linear-phase mode, Auto Filter (next, on the same atom). (Oversampling: done as
+TX.group-oversample — any group's Oversample setting; the EQ and EQ Band panels have the menu.)

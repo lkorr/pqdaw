@@ -1019,3 +1019,15 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **To judge:** whether 12 px is sticky enough (too sticky?) at 1× and on the small PA arc (150 px per range); whether the
   Amplitude's kink at ×1 (the upper half is 3× steeper) feels uneven.
 - **Goldens re-recorded:** every view showing a Phase Accumulator (its Amplitude arc / knob now at the centre): 28.
+
+## 👁 TX.group-oversample Oversample menus and the group inspector · 2026-11-08
+- **What changed:** every group in the Device view has an inspector column on its left: OVERSAMPLE (1× / 2× · 3.6 smp /
+  4× · 4.7 smp / 8× · 5.2 smp: the factor and its uncompensated latency); an instrument group keeps POLYPHONY above it.
+  The EQ panel has "Oversample" under its Output knob (the knob is shorter: 64 px); the EQ Band panel has the menu
+  right of Stages with its caption under it.
+- **Goldens re-recorded:** eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay, eq-all-views, eq-band-response (the
+  menus); device-chain, device-path-broken, device-automation, device-knob-curves, device-free-rack,
+  device-free-rack-collapsed, device-group-panel, device-group-panel-elements, device-meta-chain, device-meta-envelope,
+  device-meta-spectrum, device-wiring, audio-rack, instrument-rack (the inspector column on every group frame).
+- **To judge:** whether a 96 px column on every plain group is worth it (Q?-TX.group-oversample-b), the latency text in
+  the menu items, the band panel's caption under the menu.

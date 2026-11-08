@@ -518,3 +518,24 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   "a bool is a 0 / 1 signal, summing wires is normal" (GU.f8). Into a bool input the sum stays "any voice". Also: a
   kind-polymorphic atom (select, mux, z1, pack, eq …) where a bool meets a real is real, its bool inputs converted.
 - Status: decided (reversible: the order is two lines in infer.cpp emit).
+
+## Q?-TX.group-oversample-a · Nested oversampled groups, members with a region of their own, loops through the edge
+- **Context**: TX.group-oversample runs a group's contents in an oversample region; the language's regions do not nest
+  (PATCH_LANGUAGE §2.3), and a feedback loop must lie entirely inside or outside one.
+- **Options** (nesting): (1) multiply (inner 2× in outer 4× = 8×: a region inside a region, new converters between two
+  oversampled rates); (2) one region per outermost oversampled group at the LARGEST factor of its nest (an inner group
+  asking for less is covered; one asking for more raises the whole outer group).
+- **Choice**: (2): no new converter kind, no extra half-band pair inside the outer region (an inner region crossed
+  through the base rate would also cut the outer's above-Nyquist content). A member whose own patch has a region (the
+  Wavetable's live path, Shape mode) cannot sit in another: it stays outside and runs at its own factor (its cables to
+  the other members cross down and up). A feedback loop through the group's edge (a member's output fed back into the
+  group from outside) is refused by the compiler (the track does not compile); not special-cased.
+- Status: decided (reversible: `oversampledGroups` / `assignOversampleRegions` in lower.cpp).
+
+## Q?-TX.group-oversample-b · Every group's Device-view frame now has an inspector column
+- **Context**: the task asked that every group's inspector shows the setting; before, only an instrument group had an
+  inspector (POLYPHONY).
+- **Choice**: every group frame shows one: 96 px with OVERSAMPLE only, 150 px with POLYPHONY on an instrument group.
+  This widens every group in the Device view (20 view goldens moved). Alternative if it reads as clutter: show the
+  inspector only while the setting is above 1× and offer it from the frame's title-bar menu instead.
+- Status: decided (reversible: group_frame.cpp).
