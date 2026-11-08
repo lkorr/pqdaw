@@ -7,12 +7,15 @@
 //              retired patch's stand-in copy within 1e-5 of its peak before the stand-ins were deleted)
 //   Saturator  drive +12 dB, Analog Clip and Medium Curve: gu10_saturator_type0.wav / _type3.wav (the same way)
 //   LFO        its output into an audio track's mixer is the 1 Hz sine it should be
+//   GU.f4      an undriven menu / switch choosing a branch lowers as a literal: the optimised program holds only the
+//              chosen curve / shape; changing it recompiles and plays the new choice
 //   Operator   A alone is the default instrument's chain at level 1 (4 × the default's 0.25); B modulating A changes
 //              the sound and stays finite
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -24,7 +27,10 @@
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/lower.h"
 #include "pq/document/modules.h"
+#include "pq/engine/project_compile.h"
+#include "pq/graph/atoms.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -262,3 +268,209 @@ TEST_CASE("GU.10 Operator: A alone is the default chain at level 1; B modulating
   CHECK(maxDiff(fm, a) > 0.01);
   CHECK(peakOf(fm) <= peakOf(a) * 1.001 + 1e-6);
 }
+
+// ---- GU.f4: structural value blocks (lower.h "Structural value blocks") ---------------------------------------------
+namespace {
+
+// Atom name -> count over every optimised unit of `s` (lowered and compiled as the link does, without resources).
+std::map<std::string, int> atomsOf(const Snapshot& s) {
+  LowerOptions lo;
+  lo.library = &library().library();
+  lo.devices = &library();
+  lo.slotOf = [](TrackId) { return 0u; };
+  auto low = lower(*s, lo);
+  REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
+  engine::ProjectCompileOptions co;
+  co.sampleRate = kRate;
+  co.maxBlockFrames = kBlock;
+  engine::ProjectCompiler compiler(co);
+  auto build = compiler.build(low->graph);
+  REQUIRE_MESSAGE(build.ok(), (build.ok() ? std::string() : build.error().message));
+  std::map<std::string, int> out;
+  for (uint32_t u = 0; u < compiler.numUnits(); ++u)
+    for (const graph::Node& n : compiler.unit(u).typed->patch.nodes())
+      if (n.kind == graph::NodeKind::Atom) ++out[std::string(graph::atomSignature(n.atom).name)];
+  return out;
+}
+
+using MakeBlocks = BlockSet (*)(IdSource&, const StockModuleOptions&);
+
+// An audio track with the preset `make` builds on its path (or, `toMixer`, its group's output wired into the mixer).
+struct Bench {
+  DocumentStore store;
+  TrackId track;
+  DeviceId group;
+  Bench(MakeBlocks make, bool toMixer) {
+    store.setDeviceLibrary(&library());
+    auto t = ops::createTrack(*store.current(), store.ids(), TrackKind::Audio, {}, "A");
+    REQUIRE(t.ok());
+    REQUIRE(store.dispatch(t->command).ok());
+    track = t->tracks.at(0);
+    if (make == nullptr) return;
+    auto e = ops::pasteBlocks(*store.current(), store.ids(), track, make(store.ids(), StockModuleOptions{}));
+    REQUIRE(e.ok());
+    REQUIRE(store.dispatch(e->command).ok());
+    group = e->devices.at(0);
+    if (toMixer) {
+      Wire w;
+      w.from = group;
+      w.port = std::string(kMainPort);
+      w.mixer = track;
+      auto c = ops::connect(*store.current(), store.ids(), w);
+      REQUIRE_MESSAGE(c.ok(), (c.ok() ? std::string() : c.error().message));
+      REQUIRE(store.dispatch(c->command).ok());
+    } else {
+      auto c = ops::insertOnPath(*store.current(), store.ids(), group, 0);
+      REQUIRE_MESSAGE(c.ok(), (c.ok() ? std::string() : c.error().message));
+      REQUIRE(store.dispatch(c->command).ok());
+    }
+  }
+  DeviceId named(std::string_view name) const {
+    const Track& t = *findTrackPtr(*store.current(), track);
+    for (const Device* d : groupMembersDeep(t.devices, group))
+      if (d->name == name) return d->id;
+    FAIL("no block " << std::string(name));
+    return {};
+  }
+  bool literal(std::string_view name) const {
+    return lowersAsLiteral(*store.current(), *findDevice(*store.current(), named(name)).device);
+  }
+  void set(std::string_view name, double value) {
+    const DeviceId v = named(name);
+    const dsp::Curve& c = *findDevice(*store.current(), v).device->curve(kValueParam);
+    REQUIRE(store.dispatch(SetDeviceParam{v, std::string(kValueParam), dsp::curvePosition(c, dsp::curveOutput(c, value), 0.0)}).ok());
+  }
+  // `atom`'s count in this project's program minus an empty audio track's.
+  int count(std::string_view atom) const {
+    static const std::map<std::string, int> base = [] {
+      const Bench empty(nullptr, false);
+      return atomsOf(empty.store.current());
+    }();
+    const std::map<std::string, int> m = atomsOf(store.current());
+    const auto at = [&](const std::map<std::string, int>& x) {
+      const auto it = x.find(std::string(atom));
+      return it == x.end() ? 0 : it->second;
+    };
+    return at(m) - at(base);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("GU.f4 Saturator: only the chosen curve is compiled (Type and Soft Clip lower as literals)") {
+  Bench b(&saturatorBlocks, false);
+  CHECK(b.literal("Type"));
+  CHECK(b.literal("Soft Clip"));
+  CHECK_FALSE(b.literal("Drive"));  // not stepped
+  // Analog Clip (the default): its clip and c^3, nothing of the six others; no mux left, no soft-clip tanh.
+  CHECK(b.count("mux") == 0);
+  CHECK(b.count("clip") == 1);
+  CHECK(b.count("fast_tanh") == 0);
+  CHECK(b.count("sine") == 0);
+  CHECK(b.count("sqrt") == 0);
+  CHECK(b.count("div") == 0);
+  CHECK(b.count("abs") == 0);
+  b.set("Type", 4.0);  // Hard Curve: v / sqrt(sqrt(1 + v^4))
+  CHECK(b.count("sqrt") == 2);
+  CHECK(b.count("div") == 1);
+  CHECK(b.count("clip") == 0);
+  CHECK(b.count("mux") == 0);
+  b.set("Type", 3.0);  // Medium Curve, and Soft Clip on: two tanh
+  b.set("Soft Clip", 1.0);
+  CHECK(b.count("fast_tanh") == 2);
+  CHECK(b.count("sqrt") == 0);
+  CHECK(b.count("mux") == 0);
+  // Its param is a literal of the patch: no runtime param for it.
+  const ParamRef type = ParamRef::device(b.named("Type"), kValueParam);
+  for (const LoweredParam& p : lowerParams(*b.store.current(), false, library())) CHECK(p.ref != type);
+}
+
+TEST_CASE("GU.f4 LFO: only the chosen shape and phase path are compiled") {
+  Bench b(&lfoBlocks, true);
+  CHECK(b.literal("Shape"));
+  CHECK(b.literal("Sync"));
+  CHECK(b.count("sine") == 1);  // Sine, free-running
+  CHECK(b.count("mux") == 0);
+  CHECK(b.count("transport.beat") == 0);
+  CHECK(b.count("phasor") == 1);
+  b.set("Shape", 4.0);  // Square: its own mux on the phase
+  b.set("Sync", 1.0);   // synced: the song position, no phasor
+  CHECK(b.count("sine") == 0);
+  CHECK(b.count("mux") == 1);
+  CHECK(b.count("transport.beat") == 1);
+  CHECK(b.count("phasor") == 0);
+}
+
+TEST_CASE("GU.f4 a driven menu stays a runtime choice (a wire into it: every branch compiled)") {
+  Bench b(&saturatorBlocks, false);
+  const DeviceId type = b.named("Type"), drive = b.named("Drive");
+  Wire w;
+  w.from = drive;
+  w.port = std::string(kValueOutput);
+  w.to = type;
+  w.param = std::string(kValueParam);
+  auto c = ops::connect(*b.store.current(), b.store.ids(), w);
+  REQUIRE_MESSAGE(c.ok(), (c.ok() ? std::string() : c.error().message));
+  REQUIRE(b.store.dispatch(c->command).ok());
+  CHECK_FALSE(b.literal("Type"));
+  CHECK(b.count("mux") >= 6);
+  CHECK(b.count("sqrt") == 2);
+}
+
+TEST_CASE("GU.f4 Saturator: changing Type recompiles and plays the new curve (interpreter and JIT)") {
+  for (const bool jit : {false, true}) {
+    CAPTURE(jit);
+    Song a;
+    const DeviceId sat = a.insert(saturatorBlocks(a.store.ids()));
+    a.set(a.named(sat, "Drive"), 12.0);
+    app::LinkConfig c;
+    c.compileThread = false;
+    c.sleepAfterMs = 0.0f;
+    c.jit = jit;
+    c.sampleRate = kRate;
+    auto l = app::ProjectLink::create(c, a.store.current());
+    REQUIRE(l.ok());
+    app::ProjectLink& link = **l;
+    [[maybe_unused]] const ListenerId sub = a.store.subscribe([&](const StoreEvent& e) { link.onDocumentChange(e); });
+    REQUIRE(link.waitForMetaTables());
+    const auto s0 = link.stats();
+    a.set(a.named(sat, "Type"), 3.0);  // structural: one compile
+    link.flush();
+    CHECK(link.stats().compiles == s0.compiles + 1);
+    a.set(a.named(sat, "Output"), 1.0);  // a smooth knob stays a param write (no compile)
+    a.set(a.named(sat, "Output"), 0.0);
+    link.flush();
+    CHECK(link.stats().compiles == s0.compiles + 1);
+    REQUIRE(link.waitForMetaTables());
+    if (jit) REQUIRE(link.waitForJit(180.0));
+    link.play(0);
+    golden::Channels out(2);
+    std::vector<float> L(kBlock), R(kBlock);
+    int64_t t = 0;
+    for (uint32_t blk = 0; blk < kBlocks; ++blk) {
+      float* ch[2] = {L.data(), R.data()};
+      {
+        RtScope rt;
+        DenormalGuard dg;
+        link.engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, t});
+      }
+      t += kBlock;
+      out[0].insert(out[0].end(), L.begin(), L.end());
+      out[1].insert(out[1].end(), R.begin(), R.end());
+    }
+    CHECK(link.lastError().empty());
+    // The new curve, as a link compiled with it from the start plays it, once the swap's old → new fade (≈ 11 ms: the
+    // edit's compile replaces the unit compiled at create, which fades out) is over.
+    auto gold = engine::readWav(golden::goldenDir() / "audio" / "gu10_saturator_type3.wav");
+    REQUIRE(gold.ok());
+    const size_t from = 2048;
+    golden::Channels tail(2), want(2);
+    for (size_t ch = 0; ch < 2; ++ch) {
+      tail[ch].assign(out[ch].begin() + from, out[ch].end());
+      want[ch].assign(gold->channels[ch].begin() + from, gold->channels[ch].end());
+    }
+    CHECK(peakOf(want) > 0.1);
+    CHECK(maxDiff(tail, want) <= 1e-5 * std::max(peakOf(want), 1.0));
+  }
+}
+

@@ -146,17 +146,27 @@ TEST_CASE("device chains: add / reorder / remove / deactivate are one undo step 
   structuralEdit(ops::moveOnPath(*k.store.current(), k.store.ids(), nullptr, sat, k.track, 1), "reorder");  // TX.all-free: rewired
   // A reorder keeps every device's state: the unit's state keys are exactly the same.
   CHECK(stateKeys(program, keysUnit) == keysBefore);
-  // A control is a param write: no compile at all (the Utility's Width; the Saturator's Type menu too: a value block).
-  for (const auto& [m, control, value] : {std::tuple{util, "Width", 0.25}, std::tuple{sat, "Type", 6.0}}) {
-    CAPTURE(control);
-    const DeviceId block = test_blocks::member(*k.store.current(), m, control);
+  // A control is a param write: no compile at all (the Utility's Width: a value block).
+  {
+    const DeviceId block = test_blocks::member(*k.store.current(), util, "Width");
     REQUIRE(block.valid());
     const app::LinkStats s0 = link->stats();
-    k.edit(ops::setDeviceParamValue(*k.store.current(), playback_fixture::unitsLibrary(), block, std::string(kValueParam), value));
+    k.edit(ops::setDeviceParamValue(*k.store.current(), playback_fixture::unitsLibrary(), block, std::string(kValueParam), 0.25));
     link->flush();
     CHECK(link->stats().compiles == s0.compiles);
     CHECK(link->stats().paramWrites == s0.paramWrites + 1);
     CHECK(link->paramSlot("dev" + std::to_string(block.value) + ":value") != ProjectLink::kNoSlot);
+  }
+  // GU.f4 (lower.h "Structural value blocks"): the Saturator's Type menu chooses a curve, so it is a literal of the
+  // patch (only the chosen curve is compiled): a change recompiles its unit only, and it has no runtime param.
+  {
+    const DeviceId block = test_blocks::member(*k.store.current(), sat, "Type");
+    REQUIRE(block.valid());
+    const ops::Edit e = structuralEdit(ops::setDeviceParamValue(*k.store.current(), playback_fixture::unitsLibrary(), block,
+                                                                std::string(kValueParam), 6.0),
+                                       "Type menu");
+    (void)e;
+    CHECK(link->paramSlot("dev" + std::to_string(block.value) + ":value") == ProjectLink::kNoSlot);
   }
   // A structural setting of a block inside a module (the Saturator's drive gain starting from 0): its unit only.
   structuralEdit(ops::setDeviceSetting(*k.store.current(), test_blocks::member(*k.store.current(), sat, "x drive"), "start", 0.0),

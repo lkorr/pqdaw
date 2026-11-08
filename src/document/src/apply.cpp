@@ -15,6 +15,7 @@
 
 #include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
+#include "pq/document/lower.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
@@ -1608,7 +1609,9 @@ Res apply_(const Snapshot& s, const SetDeviceParam& c, ChangeSet& cs) {
   std::vector<DeviceValue> params = loc.device->params;
   if (!setValue(params, c.param, c.value)) return s;
   cs.params.push_back(ParamRef::device(c.device, c.param));
-  return editDeviceAt(s, c.device, cs, kChangeParam, [&](Device& d) {
+  // GU.f4 (lower.h "Structural value blocks"): a value block lowered as a literal recompiles.
+  const ChangeFlag cls = lowersAsLiteral(*s, *loc.device) ? kChangeStructural : kChangeParam;
+  return editDeviceAt(s, c.device, cs, cls, [&](Device& d) {
     d.params = std::move(params);
     return ok();
   });
@@ -1648,8 +1651,16 @@ Res apply_(const Snapshot& s, const SetParamCurve& c, ChangeSet& cs) {  // GU.1
   if (!loc.track) return notFound("device not found");
   const dsp::Curve* now = loc.device->curve(c.param);
   if (now == nullptr ? !c.curve : (c.curve && *now == *c.curve)) return s;
-  if (!c.structural) cs.params.push_back(ParamRef::device(c.device, c.param));
-  return editDeviceAt(s, c.device, cs, c.structural ? kChangeStructural : kChangeParam, [&](Device& d) {
+  // GU.f4: a curve edit that makes or unmakes a literal value block (a step), or moves a literal's value, recompiles.
+  bool structural = c.structural;
+  if (!structural && isValueDevice(*loc.device)) {
+    Device after = *loc.device;
+    std::erase_if(after.curves, [&](const ControlCurve& x) { return x.param == c.param; });
+    if (c.curve) after.curves.push_back(ControlCurve{c.param, *c.curve});
+    structural = lowersAsLiteral(*s, *loc.device) || lowersAsLiteral(*s, after);
+  }
+  if (!structural) cs.params.push_back(ParamRef::device(c.device, c.param));
+  return editDeviceAt(s, c.device, cs, structural ? kChangeStructural : kChangeParam, [&](Device& d) {
     auto it = std::lower_bound(d.curves.begin(), d.curves.end(), c.param,
                                [](const ControlCurve& a, const std::string& n) { return a.param < n; });
     if (!c.curve) {

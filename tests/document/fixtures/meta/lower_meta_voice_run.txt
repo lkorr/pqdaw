@@ -15,19 +15,19 @@ patch Midi4 {
   d52 = Group(voice_sum(d245 * _n10), d123)
   d46 = meta_envelope__d46__144b834b85bddc1f()
   d49 = meta_wavetable__d49__88b3f5e4926dcb56(d46)
-  d53 = Value()
-  d54 = Value()
-  d55 = Value()
+  d53 = Value(_n133)
+  d54 = Value(_n133)
+  d55 = Value(_n133)
   d56 = Value()
-  d57 = Value()
+  d57 = Value(_n133)
   d58 = Value()
-  d59 = Value()
+  d59 = Value(_n133)
   d60 = Value()
   d61 = Value()
-  d62 = Value()
-  d63 = Value()
-  d64 = Value()
-  d65 = Value()
+  d62 = Value(_n133)
+  d63 = Value(1)
+  d64 = Value(_n133)
+  d65 = Value(0.5)
   d66 = Atom_mul(d53, d65)
   _n33 = -0
   d67 = Atom_mux(d66, d63, d64)
@@ -60,7 +60,7 @@ patch Midi4 {
   d94 = Atom_mul(d84, d93)
   d95 = Atom_sub(d87, d88)
   d96 = Atom_mul(d84, d95)
-  d97 = Value()
+  d97 = Value(-69)
   d98 = Atom_sub(d97, d61)
   d99 = Atom_clip(d98, d64, d63)
   d100 = Atom_max(d62, d99)
@@ -95,6 +95,7 @@ patch Midi4 {
   _n115 = _n113 ? sendGate : _n0
   _n116 = _n104 * (_n113 ? gate : _n0)
   _n122 = _n104 * _n115
+  _n133 = 0
   done = !_n2 && _n10 <= _n0
   out = gain(d52, (_n106 * _n116, _n108 * _n116), _n100)
 

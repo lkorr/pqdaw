@@ -539,6 +539,15 @@ dsp::Curve controlCurve(const Device& device, std::string_view param, const grap
 double paramPosition(const Device& device, std::string_view param, const graph::ParamDecl& decl) noexcept;
 // The param's value in its units: controlCurve at paramPosition (an undriven control's runtime value).
 double paramValue(const Device& device, std::string_view param, const graph::ParamDecl& decl) noexcept;
+// GU.f4: STRUCTURAL VALUE BLOCKS. A value block whose control is stepped (its curve's step > 0: a menu, a switch) or a
+// constant (min == max: a preset's number, such as the 1 in `type − 1` of a menu's mux chain), that
+// nothing drives (no wire into it, no automation lane on it) and whose output reaches a choice — a mux / demux `index`
+// or a select `cond`, directly or through atom blocks — lowers as the LITERAL of its value instead of a runtime param,
+// so the optimiser folds the choice and dead-codes the branches not taken (a Saturator computes its one curve, an LFO
+// its one shape). Its value is then structural: SetDeviceParam on it (and a curve edit that makes or unmakes one) is a
+// kChangeStructural edit that recompiles, and lowerParams lists no runtime param for it. Same answer for `project` and
+// for the project as lowered (main-path links never reach an index input).
+bool lowersAsLiteral(const Project& project, const Device& device);
 // The knob curve menus' presets (the "Knob Curve" submenus; the patch language's names): the curves `declared` can
 // switch to, in menu order — Octave (min > 0 and not a dB gain, or a declared exp0 curve, which it keeps), Exponential,
 // Logarithmic, Linear; none for a stepped or empty range. curveWithPreset builds one over the declared range, unit,

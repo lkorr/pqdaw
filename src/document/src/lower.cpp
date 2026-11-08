@@ -77,9 +77,13 @@ struct Plan {
       if (name == param) return lane;
     return 0;
   }
+  // GU.f4: the value blocks that lower as literals (lowersAsLiteral; only computed with a callee library).
+  std::unordered_set<uint32_t> literal;
+  bool isLiteral(DeviceId d) const noexcept { return literal.count(d.value) != 0; }
 };
 
 using TableOf = std::function<uint32_t(TuningId, const TuningDef&)>;
+std::unordered_set<uint32_t> literalValueBlocks(const Project& p);  // GU.f4: lowersAsLiteral of every block (below)
 
 const Send* storedSend(const Track& t, TrackId ret) {
   for (const Send& s : t.mixer.sends)
@@ -719,6 +723,7 @@ Plan plan(const Project& p, const TableOf* tableOf, const Callees* lib) {
       else it->second = std::min(it->second, l->id.value);
     }
   });
+  if (lib != nullptr) pl.literal = literalValueBlocks(p);  // GU.f4 (lower.h "Structural value blocks")
   const auto mainCount = static_cast<uint32_t>(pl.nodes.size());
   for (const TrackPtr& r : p.returns)
     if (r->active) pl.nodes.push_back(Node{r.get(), Kind::Return, nullptr, {}});
@@ -2702,7 +2707,21 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
   for (size_t i = 0; i < sites.size(); ++i) {
     const PortRef v = compute(i);
     for (const PortRef& pin : sites[i].pins) ir.patch().connect(v, pin);
-
+  }
+  // GU.f4 (lower.h "Structural value blocks"): an undriven stepped (or constant) value block choosing a branch is its value's literal
+  // (the float the runtime param would hold), so the optimiser folds the choice.
+  if (b.pl != nullptr && !b.pl->literal.empty()) {
+    std::vector<std::pair<double, PortRef>> made;  // one literal node per value (the per-track literal pool is finite)
+    for (uint32_t k = 0; k < td.size(); ++k) {
+      const LDev& d = td[k];
+      if (d.callee == nullptr || d.remote || d.bypass || b.calls[k] == graph::kNone || !b.pl->isLiteral(d.device->id)) continue;
+      const auto pp = realParamPin(*d.callee, kValueParam);
+      if (!pp) continue;
+      const double v = static_cast<float>(paramValue(*d.device, kValueParam, d.callee->paramDecl(pp->node)));
+      auto it = std::find_if(made.begin(), made.end(), [&](const auto& m) { return std::bit_cast<uint64_t>(m.first) == std::bit_cast<uint64_t>(v); });
+      if (it == made.end()) it = made.insert(made.end(), {v, ir.literal(v)});
+      ir.patch().connect(it->second, PortRef{b.calls[k], pp->pin});
+    }
   }
 }
 
@@ -2992,6 +3011,7 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
         // GU.1: a driven control's knob position (its curve atom maps it), else its value: the curve at the position,
         // evaluated here (lower.h "Modulation wires": an undriven control has no op).
         const graph::ParamDecl& decl = d.callee->paramDecl(v);
+        if (!d.bypass && pl.isLiteral(d.device->id)) continue;  // GU.f4: a literal of the patch, no runtime param
         const bool driven = !d.bypass && paramDriven(pl, td, k, name, wp, index);
         const double value = driven ? paramPosition(*d.device, name, decl) : paramValue(*d.device, name, decl);
         out.push_back(LoweredParam{"dev" + dev + ":" + name + (driven ? std::string(kPositionKeySuffix) : std::string()), index,
@@ -3109,6 +3129,71 @@ double paramPosition(const Device& device, std::string_view param, const graph::
 
 double paramValue(const Device& device, std::string_view param, const graph::ParamDecl& decl) noexcept {
   return dsp::evalCurve(controlCurve(device, param, decl), paramPosition(device, param, decl));
+}
+
+namespace {
+// GU.f4: what lowersAsLiteral reads of a project, indexed once (plan() asks it of every value block).
+struct LiteralIndex {
+  std::unordered_map<uint32_t, std::vector<const Wire*>> from;  // device id → the wires out of it
+  std::unordered_set<uint32_t> driven;                          // devices a wire goes into
+  std::unordered_set<uint32_t> laned;                           // devices with a lane on their `value`
+  std::unordered_map<uint32_t, const Device*> devices;
+  explicit LiteralIndex(const Project& p) {
+    for (const Wire& w : wiresOf(p)) {
+      if (w.from.valid()) from[w.from.value].push_back(&w);
+      if (w.to.valid()) driven.insert(w.to.value);
+    }
+    const uint32_t valueHash = deviceParamHash(kValueParam);
+    forEachTrack(p, [&](const Track& t, const Track*) {
+      for (const LanePtr& l : t.lanes)
+        if (l->param.kind == ParamKind::DeviceParam && l->param.target == valueHash) laned.insert(l->param.owner);
+      for (const DevicePtr& d : t.devices) devices.emplace(d->id.value, d.get());
+    });
+  }
+};
+
+bool literalIn(const LiteralIndex& ix, const Device& d) {
+  if (!isValueDevice(d) || !d.active) return false;
+  const dsp::Curve* c = d.curve(kValueParam);  // the declared curve (linear 0 … 1) is neither stepped nor a constant
+  if (c == nullptr || !(c->step > 0.0 || c->min == c->max)) return false;
+  if (ix.driven.count(d.id.value) != 0 || ix.laned.count(d.id.value) != 0) return false;  // driven
+  // Forward through atom blocks to a choice's index (each block visited once: bounded by the block count).
+  std::vector<uint32_t> stack{d.id.value};
+  std::unordered_set<uint32_t> seen{d.id.value};
+  while (!stack.empty()) {
+    const uint32_t at = stack.back();
+    stack.pop_back();
+    const auto out = ix.from.find(at);
+    if (out == ix.from.end()) continue;
+    for (const Wire* w : out->second) {
+      if (!w->to.valid() || w->toMixer()) continue;
+      const auto t = ix.devices.find(w->to.value);
+      if (t == ix.devices.end() || !t->second->active || !isAtomDevice(*t->second)) continue;
+      const std::string_view atom = atomDeviceName(*t->second);
+      if (((atom == "mux" || atom == "demux") && w->param == "index") || (atom == "select" && w->param == "cond")) return true;
+      if (seen.insert(w->to.value).second) stack.push_back(w->to.value);
+    }
+  }
+  return false;
+}
+
+std::unordered_set<uint32_t> literalValueBlocks(const Project& p) {
+  std::unordered_set<uint32_t> out;
+  std::optional<LiteralIndex> ix;  // built at the first stepped or constant value block
+  forEachDevice(p, [&](const Device& d, const Track&) {
+    const dsp::Curve* c = isValueDevice(d) ? d.curve(kValueParam) : nullptr;
+    if (c == nullptr || !(c->step > 0.0 || c->min == c->max)) return;
+    if (!ix) ix.emplace(p);
+    if (literalIn(*ix, d)) out.insert(d.id.value);
+  });
+  return out;
+}
+}  // namespace
+
+bool lowersAsLiteral(const Project& p, const Device& d) {
+  const dsp::Curve* c = isValueDevice(d) ? d.curve(kValueParam) : nullptr;
+  if (c == nullptr || !(c->step > 0.0 || c->min == c->max)) return false;  // (before indexing the project)
+  return literalIn(LiteralIndex(p), d);
 }
 
 std::vector<dsp::CurvePreset> curvePresets(const dsp::Curve& d) {
