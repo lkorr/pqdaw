@@ -59,6 +59,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "oversample_up", "oversample_down", "oversample_phase", "oversample_hold", "oversample_any",
       // GU.1: a driven control's curve (its CurveSlot's data).
       "curve",
+      // EQ.1: the state-variable filter cascade (the filter / EQ core).
+      "svf",
   };
   for (const char* n : names) {
     CAPTURE(n);

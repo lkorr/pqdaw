@@ -250,14 +250,16 @@ TEST_CASE("device chains: an instrument group's voices are its track's polyphony
 }
 
 // M4 review M4: past 16,384 project params a new param got no slot and played its declared default (a muted Utility
-// played unmuted). The engine's param block now grows. Tracks of Operator → Utility (Mute on; GU.11: the modules, their
-// controls value blocks), each a held note: enough params that the last tracks' lie beyond the old limit; every track is
-// muted, so the render must be silent, and each Utility's Mute slot holds 1.
+// played unmuted). The engine's param block now grows. Tracks of Operator → Utility (Gain at −70 dB, which is silence;
+// GU.11: the modules, their controls value blocks), each a held note: enough params that the last tracks' lie beyond the
+// old limit; every track is silent, so the render must be silent, and each Utility's Gain slot holds its stored −70 dB
+// (the default is 0 dB). GU.f4 made the stepped Mute a literal (it chooses a mux branch: no runtime param, no
+// slot), so the Gain, a continuous runtime param, carries the check.
 TEST_CASE("device chains: a project with more than 16,384 params plays every stored value (M4)" * doctest::test_suite("slow")) {
   DocumentStore store;
   IdSource& ids = store.ids();
   constexpr int kTracks = 192;  // (about 97 params a track)
-  std::vector<DeviceId> utilities;  // their Mute value blocks
+  std::vector<DeviceId> utilities;  // their Gain value blocks
   {
     Batch b{"many", {}};
     for (int k = 0; k < kTracks; ++k) {
@@ -265,8 +267,8 @@ TEST_CASE("device chains: a project with more than 16,384 params plays every sto
       b.commands.push_back(AddTrack{playback_fixture::track(id, TrackKind::Midi, "T" + std::to_string(k)), {}, kAppend});
       (void)module_batch::push(b, id, operatorBlocks(ids));
       const module_batch::Module u = module_batch::push(b, ids, id, module_batch::Kind::Utility, ids.device());
-      utilities.push_back(u.at("Mute"));
-      b.commands.push_back(SetDeviceParam{u.at("Mute"), std::string(kValueParam), 1.0});
+      utilities.push_back(u.at("Gain"));
+      b.commands.push_back(SetDeviceParam{u.at("Gain"), std::string(kValueParam), -70.0});  // units (inUnits below)
       b.commands.push_back(AddClip{id, playback_fixture::clip(ids, 0, 16 * kPpq, {playback_fixture::note(ids, 0, 16 * kPpq, k % 12)}, "n")});
     }
     REQUIRE(store.dispatch(playback_fixture::inUnits(store, b)).ok());
@@ -284,13 +286,13 @@ TEST_CASE("device chains: a project with more than 16,384 params plays every sto
   for (const DeviceId u : utilities) {
     const uint32_t s = link->paramSlot("dev" + std::to_string(u.value) + ":value");
     REQUIRE(s != ProjectLink::kNoSlot);
-    CHECK(link->engine().program()->projectParams()[s] == 1.0f);
+    CHECK(link->engine().program()->projectParams()[s] == -70.0f);  // the stored −70 dB, not the default 0 dB
   }
   float peak = 0.0f;
   for (const auto& ch : d.out)
     for (float v : ch) peak = std::max(peak, std::fabs(v));
-  CHECK(peak == 0.0f);  // every track muted by its Utility
-  // An edit of a param beyond the old limit plays: unmute the last track.
+  CHECK(peak == 0.0f);  // every track silenced by its Utility
+  // An edit of a param beyond the old limit plays: the last track's Gain back to 0 dB.
   {
     auto e = ops::setDeviceParamValue(*store.current(), playback_fixture::unitsLibrary(), utilities.back(), std::string(kValueParam), 0.0);
     REQUIRE(e.ok());
