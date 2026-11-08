@@ -15,7 +15,8 @@
 //   program() publish / publishTopology, timeline() publish*         the compile / UI threads (their own rules)
 //   post, setParam, audition, wake   ONE producer thread (the UI thread): wait-free SPSC pushes
 //   process, callback                the audio thread (or the offline render loop)
-//   audioOffline / audioOnline       the device's owner, while the audio thread does not run
+//   audioOffline / audioOnline       the device's owner, while the audio thread does not run process(); audioOnline
+//                                    also on the audio thread itself, before its first process() (AU.stream's pre-roll)
 // Time: process() keeps its own sample count (time()), so the units and the timeline see one monotonic time base
 // across device reopens; a device block's frameTime is not used (T3.17-fix1).
 //
@@ -128,8 +129,9 @@ public:
   AudioCallback callback() noexcept { return {&Engine::onBlock, this}; }
   const EngineStats& stats() const noexcept { return stats_; }
   // The device stopped calling process() (lets collect() free while nothing runs; sounding auditions end with the
-  // next block: T3.17-fix1) / starts calling it again. Called by the device's owner, not by the audio thread, while
-  // the audio thread does not run. RT-safe.
+  // next block: T3.17-fix1) / starts calling it again. Called by the device's owner while the audio thread does not
+  // run process(); AU.stream: audioOnline may also come from the audio thread itself just before its first process()
+  // (AudioOutput's cold-start pre-roll keeps the engine offline until the driver has settled). RT-safe.
   void audioOffline() noexcept;
   void audioOnline() noexcept;
   // Any thread: audioOffline() was the last of the two calls (the owner stopped the device and nothing runs
