@@ -720,6 +720,15 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [-] **GU.f8 Bool wire law for atom bool inputs** (select / comparisons wireable). Dropped: a bool in a circuit is a 0/1 signal; summing wires is normal (user 2026-11-07).
 - [ ] **GU.f9 Ship-row comparison of module presets vs the retired patches; deep-nest stress test restored.** Not started (user 2026-11-07: done after GU.f7).
 
+## EQ: the filter / EQ module (plan: docs/plans/EQ.md; user decision 2026-11-07, SPEC §15 "the filter / EQ module"; approved by the user 2026-11-07)
+
+- [~] **EQ.1 `svf` atom** (plan §The svf atom; dsp/svf_design.h designer + exact response, matched / bilinear, stages 1–64, interpreter + JIT, ship bench). Worker, branch task/EQ.1-svf-atom.
+- [~] **EQ.2 Linear response evaluator** (plan §Analytic responses; atom response rules, SCC solve, param re-evaluation). Worker, branch task/EQ.2-linear-response.
+- [ ] **EQ.3 Band and EQ modules + ops** (plan §Structure, §Ops). Depends on EQ.1.
+- [ ] **EQ.4 `response` and `phase` elements, band strip, EQ panel** (plan §Displays). 👁 Depends on EQ.2, EQ.3.
+- [ ] **EQ.5 Custom band types** (plan §Phases 5). Depends on EQ.4.
+- [ ] **EQ.6 Milestone -Full + critique.**
+
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
 - **M5** (re-scoped by the user 2026-10-30, SPEC §15): **audio tracks + audio clips** (pulled forward from M6: samples dragged in from the browser or Explorer play on the timeline, without warping beyond Re-Pitch), **browser + user library** (index, search, preview, drag in/out, saving presets / user devices / racks). Plan: docs/plans/M5.md. Simpler and Drum Rack follow (M5b) once sample playback exists. 👁

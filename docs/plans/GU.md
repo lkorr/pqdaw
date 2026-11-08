@@ -310,6 +310,7 @@ The kit after GU.8 makes oscillators, envelopes, VCAs and displays. What it cann
 inside, like the Wavetable) or a plain atom, wrapped as a module group with a panel from elements; the modules after
 them are then group presets with no new C++.
 
+- *Filter and EQ: superseded by docs/plans/EQ.md (2026-11-07): an `svf` atom and band groups, not an engine leaf.*
 - **Filter** (engine leaf `meta:filter`): the SVF (stdlib `filters/svf.pqp`, `svf_fast.pqp`: LP / BP / HP / notch /
   peak / shelves from one state, cheap per-sample cutoff modulation) and a ladder (4-pole, resonance to
   self-oscillation, drive). One engine, the topology a structural setting (each mode specialises the kernel); cutoff
