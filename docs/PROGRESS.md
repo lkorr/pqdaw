@@ -199,3 +199,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): -Affected 24/24; views 591/591 (the report's allpass vs analytic τ at 768 points ≤ 0.1 % + 1e-4 ms; 8 open/closed combinations via real clicks). Goldens re-recorded: eq-default, eq-eight-bands, eq-lr-mode, eq-band-response, eq-phase-delay; new eq-all-views.
 - Perf (check, 32-band drag): 0.82 ms delay closed, 1.28–1.36 ms all open.
 - Notes/blockers: wrapped phase of a fast-turning allpass is a thicket of segments and wrap markers (several turns per point).
+
+## 2026-11-08 · TX.bool-real · orchestrator (merge of task/TX.bool-real)
+- Did: merged eb580ed1. graph::infer inserts gate_to_real wherever a bool reaches a real input (atom inputs, subcircuit `in x : real`, root out, kind-polymorphic atoms meeting a real), before the voice sum; validate / edit::connect accept bool → real; bool outputs are cable sources (converted at the source). real → bool stays an error.
+- Verified (worker): -Affected -Slow 87/88 → test_pqc's type-error example (voice.gate into a real) is valid now, changed to real → bool, pq_tests_render default + slow 2/2; graph / document / engine pass; new playback bool real* 2/2 on the report's project (interpreter == JIT).
+- Perf: one AND per lane per converted port; CSE merges duplicates.
+- Notes/blockers: TX.wire-isolation filed (other wire-kind errors still fail a whole unit); Q?-TX.bool-real-a.
