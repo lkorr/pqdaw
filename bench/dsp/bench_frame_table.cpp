@@ -13,7 +13,7 @@
 //   atom/wavetable_pos L1 | L8           the reads above plus the slot's acquire load, the state copy and the tap test;
 //                                        L1: per-sample position (blend), L8: per-voice positions (a Spl pattern)
 //   atom/wavetable_pos … (tap read)      the same with a registered tap reader (8 samples per block written)
-//   atom/wavetable_pos … (crossfade)     every block inside a swap's 64-sample fade (two reads + the mix)
+//   atom/wavetable_pos … (crossfade)     every block inside a swap's fade (kFrameTableFadeSeconds; two reads + the mix)
 //   atom/voice_tap L1 | L8 (…)           unwatched (one relaxed load) and watched
 // TMM.12-fix1: the sine fast path (a table of DC + harmonic 1 reads as a sine; frame_table.h "Sine tables"):
 //   frametable/read L1 | L8 (sine table)        a one-frame sine table, the voices as above (single frame)
@@ -226,7 +226,7 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
             in[0] = phase.data() + static_cast<std::size_t>(blk) * kFrames * L;
             in[1] = L == 1 ? pos.data() + static_cast<std::size_t>(blk) * kFrames : pos.data();
             if (mode == Mode::Crossfade) {
-              st.generation = slot->generation() - 1;  // as if the swap had just happened: a full 64-frame fade
+              st.generation = slot->generation() - 1;  // as if the swap had just happened: every frame fades
               st.fadeLeft = 0;
             }
             const pq::dsp::KernelArgs a{in, o, state.data(), slot, kFrames, 2, 1, mask};
