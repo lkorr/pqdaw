@@ -909,3 +909,26 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   out to the mixer), raise B's Level and Coarse: FM. Tab → "LFO", drag from its jack onto a knob.
 - **To judge** (QUESTIONS Q?-GU.10-a): the Operator rebuild's scope; the Saturator computing every curve (a switch block
   would make it structural); the tests' stand-in devices.
+
+
+## 👁 GU.11 One view, one panel system · 2026-11-07
+- **What changed:** every block is a group, an atom block, a value block or a native engine. Stock faces (the
+  `.panel.json` panels and their displays), the device preview (Developer > Preview Device File), the per-device circuit
+  editor ("Edit Device Circuit", Revert to Stock, Save as New Device, `.pqdevice`) and "Open to Atoms" of a leaf are
+  gone. Double-clicking a block opens it only when it is a group. The Device view's menus, the browser's Instruments /
+  Audio Effects and rack chains offer the modules (Utility, Saturator, LFO; Operator, Wavetable Synth; the rest under
+  Meta Modules); an effect module dropped on the chain lands ON the path. A leaf on the path (an engine, an atom or value
+  block) gets a generated frame (its face, or one control per param). Knobs on a module's panel in the Device view are
+  cable and Map-mode targets.
+- **Goldens re-recorded (36, `tests/views/golden/`):** audio-rack, browser-hotswap, circuit-inactive-hidden /
+  -shown, circuit-tooltip (now on `stdlib/envelopes/msenv.pqp`), device-automation, device-chain, device-free-rack
+  (+ -collapsed), device-group-panel, device-knob-curves, device-meta-chain, device-meta-spectrum, device-path-broken,
+  device-wiring, instrument-rack, project-block-drag, project-cable-drag, project-circuit-device, project-meta-chain,
+  -envelope, -faces, -spectrum, -wavetable, project-mixer, project-node-menu, project-patch-band, -free, -group,
+  -lane-edit, -lanes, -nested, -notes, -overview, -panels, -resize. Deleted: circuit-editor-device. Audio:
+  project_playback, project_tuning_automation, gu9_racks/*, new gu10_utility / gu10_saturator_type0 / _type3.
+- **Look at:** device-chain (Basic Synth → Saturator → Utility, all group panels), device-wiring (the default
+  instrument's frame is wider than 1280 px: the Utility is off-screen), project-patch-panels, instrument-rack.
+- **To judge** (QUESTIONS Q?-GU.11-a): modules on the path from the Device view vs off it from the circuit; a group
+  frame repaints whole on any document change; group-panel knobs in the Device view have no wheel / Show Automation /
+  Knob Curve / ring; an engine appended to a path holding only the instrument group goes inside the group.
