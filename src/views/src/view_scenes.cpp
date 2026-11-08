@@ -1249,6 +1249,45 @@ Status setupProjectPatchZoom(Shell& shell) {
   shell.tree().layoutNow();
   return Ok{};
 }
+// EQ.4b: the EQ's curve after its circuit is opened and closed (the user's report: "no curve" until a band moved). A
+// MIDI track's EQ (two bands boosted / cut) opened in the circuit view as "Open in Circuit View" does, the group
+// opened and closed there, the circuit view left: the Device view's EQ panel draws its curve.
+Status setupEqCircuitRoundTrip(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "eq-circuit-roundtrip: no device library", {}};
+  doc::DocumentStore& store = ctx.store();
+  const auto t = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Keys"));
+  if (!t) return Error{ErrorCode::Unknown, "eq-circuit-roundtrip: createTrack failed", {}};
+  const doc::TrackId track = t->tracks[0];
+  const auto eq = runEdit(store, doc::ops::addDevice(*store.current(), store.ids(), track, "module:eq", doc::DeviceKind::AudioEffect));
+  if (!eq) return Error{ErrorCode::Unknown, "eq-circuit-roundtrip: addDevice failed", {}};
+  const doc::DeviceId eqId = eq->devices[0];
+  const std::optional<doc::EqInfo> info = doc::eqInfo(*store.current(), eqId);
+  if (!info || info->bands[0].size() < 3) return Error{ErrorCode::Unknown, "eq-circuit-roundtrip: no bands", {}};
+  const std::string vp(doc::kValueParam);
+  if (!runEdit(store, doc::ops::setDeviceParamValue(*store.current(), *ctx.deviceLibrary(), info->bands[0][1].gain, vp, 1.9952623149688795)) ||
+      !runEdit(store, doc::ops::setDeviceParamValue(*store.current(), *ctx.deviceLibrary(), info->bands[0][2].gain, vp, 0.5011872336272722)))
+    return Error{ErrorCode::Unknown, "eq-circuit-roundtrip: band edits failed", {}};
+  ctx.setSelectedTrack(track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "eq-circuit-roundtrip: the circuit view is not installed", {}};
+  if (!ctx.openProjectCircuit({}, eqId)) return Error{ErrorCode::Unknown, "eq-circuit-roundtrip: did not open", {}};
+  shell.tree().layoutNow();
+  v->setDeviceExpanded(eqId, false);
+  shell.tree().layoutNow();
+  v->setDeviceExpanded(eqId, true);
+  shell.tree().layoutNow();
+  v->setDeviceExpanded(eqId, false);
+  shell.tree().layoutNow();
+  v->setShown(false, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // T5.x-one-circuit: "Open in Circuit View" on the Keys band's Saturator (the sketch project): the project patch view
 // with the band opened, framed on the Saturator (outlined: the focus), then zoomed out to the whole project with the
 // band still open: one circuit from the device's atoms to the master's Out.
@@ -2873,6 +2912,7 @@ constexpr SceneEntry kScenes[] = {
     {"circuit-editor-cost", 1280, 800, nullptr, setupCircuitEditorCost},    // T4.5: --project stdlib/filters/svf.pqp
     {"device-chain", 1280, 800, setupDeviceChain},
     {"device-wiring", 1280, 800, setupDeviceWiring},  // T4.7
+    {"eq-circuit-roundtrip", 1280, 800, setupEqCircuitRoundTrip},  // EQ.4b
     {"project-patch-overview", 1280, 800, setupProjectPatchOverview},  // T4.13
     {"project-patch-band", 1280, 800, setupProjectPatchBand},
     {"project-mixer", 1280, 800, setupProjectMixer},  // TX.mixer-look
