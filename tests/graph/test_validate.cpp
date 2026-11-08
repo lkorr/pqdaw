@@ -135,8 +135,8 @@ TEST_CASE("validate: an input may have only one driver") {
   CHECK_ERROR(p, "input 'in' of 'o' (out, #1) is driven by more than one wire");
 }
 
-TEST_CASE("validate: kind mismatches need explicit conversion (no implicit bool <-> real)") {
-  SUBCASE("bool into real") {
+TEST_CASE("validate: a bool into a real input is its 0 / 1; a real into a bool input needs a comparison") {
+  SUBCASE("bool into real is valid (TX.bool-real: infer inserts the gate_to_real)") {
     Patch p("P");
     const NodeIndex gate = p.addAtom(atomId("voice.gate"));
     const NodeIndex m = p.addAtom(atomId("mul"));
@@ -144,9 +144,7 @@ TEST_CASE("validate: kind mismatches need explicit conversion (no implicit bool 
     p.connect(gate, m, 0);
     p.connect(gate, m, 1);
     p.connect(m, o, 0);
-    CHECK_ERROR_CODE(p, "kind mismatch: bool into real: output 'out' of (atom voice.gate, #0) → input 'a' of (atom mul",
-                     pq::ErrorCode::Type);
-    CHECK_ERROR(p, "(convert with gate_to_real)");
+    CHECK_VALID(p);
   }
   SUBCASE("bool into real through gate_to_real is fine") {
     Patch p("P");
@@ -164,10 +162,10 @@ TEST_CASE("validate: kind mismatches need explicit conversion (no implicit bool 
     const NodeIndex o = p.addOutput("o", kBoolT);
     p.connect(x, n, 0);
     p.connect(n, o, 0);
-    CHECK_ERROR(p, "kind mismatch: real into bool");
+    CHECK_ERROR_CODE(p, "kind mismatch: real into bool: output 'out' of 'x' (in, #0)", pq::ErrorCode::Type);
     CHECK_ERROR(p, "(convert with a comparison)");
   }
-  SUBCASE("bool param into a real out") {
+  SUBCASE("bool param into a real out is valid") {
     Patch p("P");
     ParamDecl d;
     d.kind = Kind::Bool;
@@ -175,7 +173,7 @@ TEST_CASE("validate: kind mismatches need explicit conversion (no implicit bool 
     const NodeIndex b = p.addParam("on", d);
     const NodeIndex o = p.addOutput("o", kRealT);
     p.connect(b, o, 0);
-    CHECK_ERROR(p, "kind mismatch: bool into real");
+    CHECK_VALID(p);
   }
   SUBCASE("kind-polymorphic atoms accept either kind") {
     Patch p("P");
@@ -456,10 +454,10 @@ TEST_CASE("validate: solve blocks") {
 
 TEST_CASE("validate: validateAll reports every problem; validate returns the first") {
   Patch p("P");
-  const NodeIndex gate = p.addAtom(atomId("voice.gate"));
-  const NodeIndex m = p.addAtom(atomId("mul"));
-  p.connect(gate, m, 0);  // kind mismatch
-  p.connect(PortRef{gate, 0}, PortRef{40, 0});  // dangling wire
+  const NodeIndex x = p.addInput("x", kRealT);
+  const NodeIndex m = p.addAtom(atomId("and"));
+  p.connect(x, m, 0);  // kind mismatch (real into bool)
+  p.connect(PortRef{x, 0}, PortRef{40, 0});  // dangling wire
   p.addOutput("o", kRealT);  // dangling port, and m.b dangling
   const auto all = p.validateAll();
   CHECK(all.size() == 4);

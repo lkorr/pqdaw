@@ -197,12 +197,15 @@ TEST_CASE("parse errors: formatted diagnostic with source line and caret") {
 }
 
 TEST_CASE("parse errors: declared-type errors from validation have code Type") {
-  const std::string src = "patch P { out y : real\n y = voice.gate * 2 }";
+  // (TX.bool-real: a bool into a real input is its 0 / 1, so `voice.gate * 2` parses; a real into a bool does not.)
+  CHECK(parse("patch P { out y : real\n y = voice.gate * 2 }", "t.pqp").ok());
+  const std::string src = "patch P { out y : bool\n y = not(sr) }";
   const auto r = parse(src, "t.pqp");
   REQUIRE_FALSE(r.ok());
   CHECK(r.error().code == pq::ErrorCode::Type);
-  CHECK(r.error().message.find("t.pqp:2:6: error: patch 'P': kind mismatch: bool into real") == 0);
-  CHECK(r.error().message.find("\n y = voice.gate * 2 }\n     ^~~~~~~~~~") != std::string::npos);
+  CHECK_MESSAGE(r.error().message.find("t.pqp:2:10: error: patch 'P': kind mismatch: real into bool") == 0,
+                r.error().message);
+  CHECK(r.error().message.find("\n y = not(sr) }\n         ^~") != std::string::npos);
 }
 
 TEST_CASE("parse errors: recovery reports several problems in one pass") {

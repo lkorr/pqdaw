@@ -13,18 +13,23 @@
 //   rate   const < param < audio   (event: only into event; nothing produces event in v0)
 //   poly   global < voice
 //   width  mono < N (mono broadcasts; two different N > 1 are an error)
-//   kind   real | bool, never converted implicitly (gate_to_real / comparisons are explicit atoms)
+//   kind   bool < real (TX.bool-real): a bool reaching a real input — a real-bound port (an atom's real input, a
+//          callee's `in x : real`, a root `out`), or a kind-polymorphic input (select / mux / z1 / pack …) where a real
+//          meets it — is its 0 / 1: emit inserts a gate_to_real in front of that port (before its voice reducer, if
+//          any: a voice sum of bools into a real bound counts the voices, as a note gate cable does).
+//          A real into a bool bound is an error (compare it: x > 0).
 // Rules:
 //   - A declared port type is an UPPER BOUND for what flows into it: atom inputs (e.g. delay `max` is const), the
-//     `in`s of a callee, the root's `out`s. Exceeding a rate or width bound, or a kind mismatch, is an error,
+//     `in`s of a callee, the root's `out`s. Exceeding a rate or width bound, or a real into a bool bound, is an error,
 //     reported at the node's source position. Callee `param`s are modulation targets and accept any rate and poly
 //     (a modulation wire raises the parameter's path to audio rate); their kind and width bounds still apply.
 //   - A node's output rate is the max of its input rates; stateful atoms (z1, phasor, delay …) output audio, and
 //     sources output their declared rate (voice.velocity param, sr const …).
 //   - A node is per-voice if any input is (or it is a voice.* source). A voice signal into a GLOBAL bound (the
 //     root's `out … global`, a callee's `in … global`) is reduced by an inserted voice_sum node (SPEC §7.4: poly →
-//     global defaults to sum; on bools the sum is "any voice"). The per-wire override is an explicit reducer call
-//     in the text: voice_last / voice_highest / voice_lowest / voice_loudest (QUESTIONS Q28).
+//     global defaults to sum; on bools into a bool bound "any voice", into a real bound their 0 / 1 summed). The
+//     per-wire override is an explicit reducer call in the text: voice_last / voice_highest / voice_lowest /
+//     voice_loudest (QUESTIONS Q28).
 //   - Free-running sources (T1.3-fix1, QUESTIONS Q29 B): a stateful atom whose inputs are all global and at most
 //     param rate (noise(), pulse(), phasor(0.5Hz), phasor(rateParam)) is per-voice when InferOptions::voiceContext
 //     and freeRunningPoly = Voice (the default) and its output feeds voice processing (some path of consumers

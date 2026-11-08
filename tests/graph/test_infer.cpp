@@ -177,13 +177,21 @@ const Case kCases[] = {
     {"a z1 feedback loop is real audio",
      "patch R { in x : audio\n out o : audio\n lp = z1(lp + (x - lp) * 0.2)\n o = lp }",
      {{"lp", "real audio global mono"}}},
-    {"kind mismatch inside an any-kind atom",
+    // TX.bool-real: a bool reaching a real input is its 0 / 1 (a gate_to_real in front of the port).
+    {"a bool meeting a real inside an any-kind atom converts",
      "patch R { in x : audio\n in g : bool\n out o : real\n y = g ? x : x > 0\n o = y }",
-     {}, "kind mismatch: real and bool meet at 'y' (atom select", "4:8"},
-    {"inferred bool into a callee's real input",
+     {{"y", "real audio global mono"}}},
+    {"an inferred bool into a callee's real input converts",
      "patch R { in g : bool\n out o : real\n s = g ? g : false\n o = Gain(s) }\n"
      "patch Gain { in x : real\n out y : real\n y = x * 2 }",
-     {}, "kind mismatch: bool into real input 'x' of", "4:6"},
+     {{"s", "bool audio global mono"}, {"o", "real audio global mono"}}},
+    {"a bool into a real atom input, a real out and a voice bool into a global real out convert",
+     "patch R { in g : bool\n out o : real\n out p : real\n out q : audio global\n o = g * 0.5\n p = g\n q = voice.gate }",
+     {{"o", "real audio global mono"}, {"p", "real audio global mono"}, {"q", "real audio global mono"}}},
+    {"an inferred real into a callee's bool input is an error",
+     "patch R { in x : audio\n out o : bool\n s = select(x > 0, x, x)\n o = Not(s) }\n"
+     "patch Not { in b : bool\n out y : bool\n y = not(b) }",
+     {}, "kind mismatch: real into bool input 'b' of", "4:6"},
 
     // ---- poly ------------------------------------------------------------------------------------------------
     {"voice sources make everything downstream per-voice",
@@ -386,6 +394,48 @@ TEST_CASE("infer: voice → global sums are inserted once per boundary") {
   const Adjacency adj = tp.patch.adjacency();
   const Wire& w = tp.patch.wire(adj.driver[tp.patch.flatInput(o, 0)]);
   CHECK(tp.patch.node(w.from.node).atom == sum);
+  checkComplete(tp);
+}
+
+// TX.bool-real: a bool reaching a real input gets a gate_to_real in front of that port (before its voice reducer:
+// the voices' 0 / 1 are summed), typed real; a callee's `in x : real` converts once at the boundary; eq of a bool and a real compares reals.
+TEST_CASE("infer: a bool into a real input gets a gate_to_real; before the voice reducer; once per boundary") {
+  Run r;
+  runCase(r,
+          "patch R { out o : audio global\n out e : bool\n f = G(voice.gate)\n o = f + voice.gate * 0.5\n"
+          " e = voice_sum(voice.gate) == 1 }\n"
+          "patch G { in x : real global\n out y : real\n a = x * 2\n b = x + 1\n y = a + b }",
+          {});
+  REQUIRE_MESSAGE(r.inferred.ok(), diagText(r.inferred.diagnostics, ""));
+  const TypedPatch& tp = r.inferred.typed;
+  const Patch& p = tp.patch;
+  const Adjacency adj = p.adjacency();
+  auto driver = [&](NodeIndex n, uint32_t i) { return p.wire(adj.driver[p.flatInput(n, i)]).from.node; };
+  int convs = 0;
+  for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
+    if (p.node(n).kind != NodeKind::Atom || p.node(n).atom != atomId("gate_to_real")) continue;
+    ++convs;
+    CHECK(tp.inputType(n, 0).kind == Kind::Bool);
+    CHECK(tp.outputType(n, 0).kind == Kind::Real);
+    CHECK(tp.outputType(n, 0).poly == tp.inputType(n, 0).poly);
+    CHECK(tp.outputType(n, 0).rate == tp.inputType(n, 0).rate);
+    CHECK(tp.origin[n].what == NodeOrigin::What::Rewrite);
+  }
+  // One at G's `in x : real global` (per voice, then its voice_sum, shared by a and b), one at the mul's real `a`
+  // (per voice), one at eq's bool side (eq of a bool and a real compares reals).
+  CHECK(convs == 3);
+  const NodeIndex a = *p.findByName("f__a");
+  const NodeIndex sum = driver(a, 0);
+  REQUIRE(p.node(sum).atom == atomId("voice_sum"));
+  CHECK(tp.outputType(sum, 0).kind == Kind::Real);
+  CHECK(tp.outputType(sum, 0).poly == Poly::Global);
+  const NodeIndex c = driver(sum, 0);
+  REQUIRE(p.node(c).atom == atomId("gate_to_real"));
+  CHECK(tp.inputType(c, 0).poly == Poly::Voice);
+  CHECK(driver(*p.findByName("f__b"), 0) == sum);
+  const NodeIndex eq = driver(*p.findByName("e"), 0);
+  CHECK(p.node(eq).atom == atomId("eq"));
+  CHECK(p.node(driver(eq, 0)).atom == atomId("gate_to_real"));
   checkComplete(tp);
 }
 

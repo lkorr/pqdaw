@@ -1186,6 +1186,57 @@ patch Both {
   CHECK(g[50] == 1.0f);
 }
 
+// TX.bool-real: a bool reaching a real input is its 0 / 1 (infer's gate_to_real): the gate into gain's x, into a
+// callee's `in x : real` through a callee's bool `out` (group terminals), and into a global real out (the voices' 0 / 1
+// summed). Runs on the interpreter (pq_tests_engine) and on JIT images (pq_tests_jit), with exact values.
+TEST_CASE("voices: a gate into a real input is 0 / 1 (gain x, through bool and real terminals, summed into a global out)") {
+  VoiceConfig cfg;
+  cfg.maxVoices = 2;
+  const char* kBoolReal = R"(
+patch BoolReal {
+  out y : audio voice
+  out c : audio voice
+  out g : audio
+  y = gain(voice.gate, 0.5, start: 1)
+  c = Half(Pass(voice.gate))
+  g = voice.gate
+}
+patch Half {
+  in x : real
+  out h : real
+  h = x * 0.25
+}
+patch Pass {
+  in b : bool
+  out o : bool
+  o = b
+}
+)";
+  Rig r(kBoolReal, cfg, eng::voiceGroupsFor(2), 64, false);
+  const auto out = r.run(1024, 64, {on(100, 1, 100.0f), on(300, 2, 200.0f), off(600, 1)});
+  const auto& y = out[r.mixIndex("y")];
+  const auto& c = out[r.mixIndex("c")];
+  const auto& g = out.back();
+  CHECK(r.rtViolations == 0);
+  for (const size_t t : {size_t{0}, size_t{99}}) {
+    CHECK(y[t] == 0.0f);
+    CHECK(c[t] == 0.0f);
+    CHECK(g[t] == 0.0f);
+  }
+  for (const size_t t : {size_t{100}, size_t{299}}) {  // one note held
+    CHECK(y[t] == 0.5f);
+    CHECK(c[t] == 0.25f);
+    CHECK(g[t] == 1.0f);
+  }
+  for (const size_t t : {size_t{300}, size_t{599}}) {  // two
+    CHECK(y[t] == 1.0f);
+    CHECK(c[t] == 0.5f);
+    CHECK(g[t] == 2.0f);
+  }
+  CHECK(g[600] == 1.0f);  // note 1 released: its gate is low (its voice may still run)
+  CHECK(g[1023] == 1.0f);
+}
+
 TEST_CASE("voices: the M1 review's H4/H5 renders with the golden FmVoice (acceptance numbers)") {
   std::vector<std::string> skipped;
   auto files = compileFile(fs::path(PQ_TEST_DATA_DIR) / "golden" / "patches" / "fm_voice.pqp", kSr, skipped);

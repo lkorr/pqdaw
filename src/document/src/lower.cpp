@@ -1046,15 +1046,16 @@ uint32_t outputCount(const graph::Patch& callee) noexcept {
   for (NodeIndex v = 0; v < callee.nodeCount(); ++v) n += callee.node(v).kind == graph::NodeKind::Output ? 1u : 0u;
   return n;
 }
-// TX.patching: the signature index (the `out`s, then the exports) of a callee's output named `name` that carries a
-// signal (not a bool `out`, such as `done`), or kNone.
+// TX.patching: the signature index (the `out`s, then the exports) of a callee's output named `name`, or kNone.
+// TX.bool-real: a bool `out` (a comparison's, `done`) is a signal too: its 0 / 1 (graph::infer converts it where it
+// reaches a real input).
 uint32_t signalOutput(const graph::Patch& callee, std::string_view name) noexcept {
   const uint32_t outs = outputCount(callee);
   uint32_t o = 0, e = 0;
   for (NodeIndex v = 0; v < callee.nodeCount(); ++v) {
     const graph::NodeKind k = callee.node(v).kind;
     if (k == graph::NodeKind::Output) {
-      if (callee.nodeName(v) == name) return callee.inputType(v, 0).kind == graph::Kind::Bool ? graph::kNone : o;
+      if (callee.nodeName(v) == name) return o;
       ++o;
     } else if (k == graph::NodeKind::Export) {
       if (callee.nodeName(v) == name) return outs + e;
@@ -1062,6 +1063,15 @@ uint32_t signalOutput(const graph::Patch& callee, std::string_view name) noexcep
     }
   }
   return graph::kNone;
+}
+// TX.bool-real: whether a callee's output `port` (its signature index: the `out`s, then the exports) is a declared bool
+// `out` (a comparison's, `done`).
+bool boolOutput(const graph::Patch& callee, uint32_t port) noexcept {
+  uint32_t o = 0;
+  for (NodeIndex v = 0; v < callee.nodeCount(); ++v)
+    if (callee.node(v).kind == graph::NodeKind::Output && o++ == port)
+      return callee.inputType(v, 0).kind == graph::Kind::Bool;
+  return false;
 }
 // TX.groups: the declared width of a callee's output `port` (its signature index: the `out`s, then the exports; an
 // export carries its first channel's kind of signal: treated as mono).
@@ -1879,7 +1889,7 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     std::tie(lw.toNode, lw.toDev) = tgt;
     const LDev& dd = devs[lw.toNode][lw.toDev];
     // The source: an output of its callee (TX.patching: an `out` as well as an export; its signature index: outs first;
-    // a bool output is not a signal) or a note output; the target: a real param or (TX.patching) a non-const real input
+    // TX.bool-real: a bool output too, as its 0 / 1) or a note output; the target: a real param or (TX.patching) a non-const real input
     // of the callee.
     uint32_t sourcePort = graph::kNone;
     if (lw.fromTrack) {
@@ -2372,7 +2382,7 @@ void finishGroups(Build& b) {
 // NodeRole::Wire slots: a wire's own nodes, then (from kWTarget) the nodes of the param it modulates.
 enum WireK : uint32_t {
   kWAmount, kWIn, kWExport, kWChannel, kWReduce, kWDelay, kWTerm, kWSum,
-  kWNote, kWNoteReal,  // TMM.10-fix2: a note source's voice terminal, its bool → real
+  kWNote, kWNoteReal,  // TMM.10-fix2: a note source's voice terminal, its bool → real (TX.bool-real: a bool output's)
   kWMidL, kWMidR, kWMidAdd, kWMid,  // TX.groups: a wide signal into a meta module's input: its mid
   kWOwn14,  // TX.knob-curves: an Add wire's own free slots (kWAmount, kWTerm, this) hold its site's @signed / dB nodes
   kWNotePhase,  // TX.all-free-fix1: a notes cable into a phase input: phasor of the note's Hz
@@ -2428,7 +2438,9 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
   const TrackDevs& td = b.td;
   auto wid = [](const LWire& w, uint32_t k) { return nodeIdFor(NodeRole::Wire, w.wire->id.value, k); };
   // The source of a wire in this patch: its export's first channel (TMM.10-fix2: or the note output's voice terminal:
-  // "hz" the tuned pitch, a bool as 0 / 1), reduced over the voices when it leaves them.
+  // "hz" the tuned pitch, a bool as 0 / 1), reduced over the voices when it leaves them. TX.bool-real: a bool output is
+  // its 0 / 1 too, converted here, before the reducer (summed as a gate is), so a wire across tracks carries a real
+  // (graph::infer would convert it at a real input of this patch anyway; a bus into another unit's real `in` not).
   auto source = [&](const LWire& w) {
     PortRef s;
     auto from = [&] { return outOf(b, w.fromDev, w.fromPort); };
@@ -2463,6 +2475,8 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     } else {
       s = ir.atom("channel", {from(), b.c0()}, wid(w, kWChannel));
     }
+    if (!w.fromTrack && w.notes == nullptr && td[w.fromDev].callee != nullptr && boolOutput(*td[w.fromDev].callee, w.fromPort))
+      s = ir.atom("gate_to_real", {s}, wid(w, kWNoteReal));
     if (w.reduce) {
       s = ir.atom(reducerAtom(w.reducer), {s}, wid(w, kWReduce));
     } else if (w.broadcast) {  // IG.1-2: one value for every voice (−0 added: exact)

@@ -142,9 +142,8 @@ Result<ConnectResult> connect(Patch& p, PortRef from, PortRef to) {
   if (from.port >= p.node(from.node).numOutputs) return refuse("no such output");
   if (to.port >= p.node(to.node).numInputs) return refuse("no such input");
   const Kind ko = p.outputType(from.node, from.port).kind, ki = p.inputType(to.node, to.port).kind;
-  if (ko != Kind::Infer && ki != Kind::Infer && ko != ki)
-    return refuse(ko == Kind::Bool ? "a bool output cannot drive a real input (convert it: gate_to_real(x))"
-                                   : "a real output cannot drive a bool input (compare it: x > 0)");
+  if (ko == Kind::Real && ki == Kind::Bool)  // (TX.bool-real: a bool into a real input is its 0 / 1)
+    return refuse("a real output cannot drive a bool input (compare it: x > 0)");
   ConnectResult r;
   const bool cycle = closesDelayFreeCycle(p, from, to);
   r.replaced = disconnectInput(p, to);

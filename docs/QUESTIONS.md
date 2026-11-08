@@ -508,3 +508,13 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   or say so in its tooltip; (3) route a cabled phase that can jump to the live path (×16, ≈ 30× the baked read's cost).
 - **Choice for now**: none. Suggested: (2) (cheapest, honest); (1) if non-integer amplitudes are wanted as a sound.
 - Status: open (needs the user).
+
+## Q?-TX.bool-real-a · A voice bool into a global real input: count the voices or "any voice"?
+- **Context**: TX.bool-real converts a bool reaching a real input to 0 / 1 (`gate_to_real`, graph::infer). When the
+  bool is per voice and the input global, the implicit voice sum can run before the conversion (bool `voice_sum` =
+  any voice, then 0 / 1) or after it (the voices' 0 / 1 summed = how many voices hold it).
+- **Options**: (1) convert, then sum (a count); (2) sum, then convert (0 / 1, "any").
+- **Choice**: (1): it is what a note-gate cable already does (`voice_sum(gate_to_real(voice.gate))`, doc lowering), and
+  "a bool is a 0 / 1 signal, summing wires is normal" (GU.f8). Into a bool input the sum stays "any voice". Also: a
+  kind-polymorphic atom (select, mux, z1, pack, eq …) where a bool meets a real is real, its bool inputs converted.
+- Status: decided (reversible: the order is two lines in infer.cpp emit).

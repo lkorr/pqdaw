@@ -321,11 +321,9 @@ private:
     const PortType& a = p_.outputType(w.from.node, w.from.port);
     const PortType& b = p_.inputType(w.to.node, w.to.port);
     auto what = [&] { return outPort(w.from.node, w.from.port) + " → " + inPort(w.to.node, w.to.port); };
-    if (a.kind != Kind::Infer && b.kind != Kind::Infer && a.kind != b.kind) {
-      const char* hint = a.kind == Kind::Bool ? " (convert with gate_to_real)" : " (convert with a comparison)";
-      fail(ErrorCode::Type, "kind mismatch: " + std::string(toText(a.kind)) + " into " +
-                                std::string(toText(b.kind)) + ": " + what() + hint);
-    }
+    // TX.bool-real: a bool into a real input is its 0 / 1 (infer inserts the gate_to_real); a real into a bool is not.
+    if (a.kind == Kind::Real && b.kind == Kind::Bool)
+      fail(ErrorCode::Type, "kind mismatch: real into bool: " + what() + " (convert with a comparison)");
     if (a.rate != Rate::Infer && b.rate != Rate::Infer && ((a.rate == Rate::Event) != (b.rate == Rate::Event)))
       fail(ErrorCode::Type, "rate mismatch: " + std::string(toText(a.rate)) + " into " +
                                 std::string(toText(b.rate)) + ": " + what());

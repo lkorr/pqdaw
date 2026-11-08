@@ -72,7 +72,7 @@ TEST_CASE("edit: a call without a required argument lowers with deferMissingInpu
   CHECK(again.idMatch.matched == again.idMatch.nodes);
 }
 
-TEST_CASE("edit: connect replaces the input's driver, refuses bool into real, prints back to the same graph") {
+TEST_CASE("edit: connect replaces the input's driver, refuses real into bool, prints back to the same graph") {
   PatchFile f = strict("patch P {\n  in x : audio\n  in g : bool\n  out y : audio\n  y = tanh(x)\n}\n");
   Patch& p = f.patches[0];
   const NodeIndex t = atomNode(p, "tanh"), x = named(p, "x"), g = named(p, "g");
@@ -85,10 +85,16 @@ TEST_CASE("edit: connect replaces the input's driver, refuses bool into real, pr
   REQUIRE(c.ok());
   CHECK(c->replaced);
   CHECK(c->delay == kNone);
-  CHECK_FALSE(edit::connect(p, {g, 0}, {m, 0}).ok());
   CHECK(p.validate().ok());
   roundTrip(f);
   CHECK(print(f).find("y = tanh(x * x)") != std::string::npos);
+  // TX.bool-real: a bool into a real input is its 0 / 1 (infer converts it); a real into a bool input is refused.
+  REQUIRE(edit::connect(p, {g, 0}, {m, 1}).ok());
+  CHECK(p.validate().ok());
+  CHECK(print(f).find("y = tanh(x * g)") != std::string::npos);
+  PatchFile q = strict("patch Q {\n  in x : audio\n  in g : bool\n  out b : bool\n  b = g\n}\n");
+  Patch& qp = q.patches[0];
+  CHECK_FALSE(edit::connect(qp, {named(qp, "x"), 0}, {named(qp, "b"), 0}).ok());
 }
 
 TEST_CASE("edit: a wire that closes a delay-free cycle gets a z1; one through a delayed input does not") {

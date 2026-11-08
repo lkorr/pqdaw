@@ -139,7 +139,7 @@ TEST_CASE("wire laws: any output into any param or input; a Travel wire goes int
   // A Travel wire into an input does not play; GU.9: from an `out` into a param it does (a rack macro's mapping).
   const WireId oldOut = d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.env, "out", util, "fold", 0.5));
   const WireId oldIn = d.run(ops::connectTravelWire(d.doc(), d.store.ids(), d.lfo, "out", util, "x", 0.5));
-  // A bool output (a comparison's) is not a signal; a const input (a setting) is not a target.
+  // TX.bool-real: a bool output (a comparison's) is a signal, its 0 / 1; a const input (a setting) is not a target.
   const WireId done = d.run(ops::connectWire(d.doc(), d.store.ids(), cmp, "out", util, "warp"));
   const WireId setting = d.run(ops::connectWire(d.doc(), d.store.ids(), d.lfo, "out", util, "mode"));
   const LoweredProject l = lowerDoc(d.doc());
@@ -147,7 +147,7 @@ TEST_CASE("wire laws: any output into any param or input; a Travel wire goes int
   CHECK(statusOf(l, outToInput) == WireStatus::Lowered);
   CHECK(statusOf(l, oldOut) == WireStatus::Lowered);
   CHECK(statusOf(l, oldIn) == WireStatus::Invalid);
-  CHECK(statusOf(l, done) == WireStatus::Invalid);
+  CHECK(statusOf(l, done) == WireStatus::Lowered);
   CHECK(statusOf(l, setting) == WireStatus::Invalid);
   // The Envelope's output into a later engine's param is no loop; that engine's output back into the Envelope's input
   // is one.

@@ -75,14 +75,11 @@ bool joinWidth(uint16_t& a, uint16_t b) noexcept {
   return false;
 }
 
-// Kind join: Infer joins anything; Real and Bool conflict. Returns false on a conflict (a is kept).
-bool joinKind(Kind& a, Kind b) noexcept {
-  if (b == Kind::Infer || b == a) return true;
-  if (a == Kind::Infer) {
-    a = b;
-    return true;
-  }
-  return false;
+// Kind join (TX.bool-real): Infer < Bool < Real. A bool meeting a real is a 0 / 1 signal (gate_to_real, inserted by
+// emit), so the join never fails; only a real into a declared bool bound is an error (check).
+void joinKind(Kind& a, Kind b) noexcept {
+  if (b == Kind::Infer || b == a) return;
+  if (a == Kind::Infer || b == Kind::Real) a = b;
 }
 
 std::string widthText(uint16_t w) {
@@ -614,6 +611,7 @@ private:
     if (d == kNone) return portType(b.kind, Rate::Const, Poly::Global, kWidthMono);
     PortType t = outT_[d];
     if (b.poly == Poly::Global && t.poly == Poly::Voice) t.poly = Poly::Global;
+    if (b.kind == Kind::Real && t.kind == Kind::Bool) t.kind = Kind::Real;  // converted 0 / 1 (emit: gate_to_real)
     return t;
   }
 
@@ -623,9 +621,7 @@ private:
     PortType next = cur;
     next.rate = maxRate(cur.rate, t.rate);
     next.poly = maxPoly(cur.poly, t.poly);
-    if (!joinKind(next.kind, t.kind))
-      reportNode(f, ErrorCode::Type, "kind conflict: " + describe(fnodes_[f].inst, fnodes_[f].src) +
-                                         " would be both real and bool");
+    joinKind(next.kind, t.kind);
     if (joinWidthWithOld) {
       if (!joinWidth(next.width, t.width))
         reportNode(f, ErrorCode::Type, "width conflict: " + describe(fnodes_[f].inst, fnodes_[f].src) +
@@ -716,9 +712,7 @@ private:
         reportNode(f, ErrorCode::Type, "width mismatch: " + widthText(width) + " and " + widthText(t.width) +
                                            " meet at " + describe(fn.inst, fn.src) + " (only mono broadcasts)");
       }
-      if (inBound_[p].kind == Kind::Infer && !joinKind(kind, t.kind))
-        reportNode(f, ErrorCode::Type, "kind mismatch: real and bool meet at " + describe(fn.inst, fn.src) +
-                                           " (convert explicitly with gate_to_real or a comparison)");
+      if (inBound_[p].kind == Kind::Infer) joinKind(kind, t.kind);  // a bool meeting a real converts (emit)
     }
     const bool stateful = sig.has(atom_flags::kStateful);
     if (stateful) rate = maxRate(rate, Rate::Audio);
@@ -929,11 +923,9 @@ private:
           const FNode& s = fnodes_[outOwner_[d]];
           return std::string(insts_[s.inst].patch->describe(s.src));
         };
-        if (b.kind != Kind::Infer && t.kind != b.kind) {
-          const char* hint = t.kind == Kind::Bool ? " (convert with gate_to_real)" : " (convert with a comparison)";
-          reportPort(f, ErrorCode::Type, "kind mismatch: " + std::string(toText(t.kind)) + " into " +
-                                             std::string(toText(b.kind)) + " " + inPortText(f, i) + ", from " +
-                                             from() + hint);
+        if (b.kind == Kind::Bool && t.kind == Kind::Real) {  // (a bool into a real input converts: emit)
+          reportPort(f, ErrorCode::Type, "kind mismatch: real into bool " + inPortText(f, i) + ", from " + from() +
+                                             " (convert with a comparison)");
           continue;
         }
         if (b.rate != Rate::Infer && ((b.rate == Rate::Event) != (t.rate == Rate::Event))) {
@@ -993,6 +985,24 @@ private:
     return d != kNone && inBound_[p].poly == Poly::Global && outT_[d].poly == Poly::Voice;
   }
 
+  // TX.bool-real: the kind an atom's kind-polymorphic (Infer-bound) inputs meet at: real if any of them is real.
+  Kind polyKind(const FNode& fn) const {
+    Kind k = Kind::Infer;
+    for (uint32_t i = 0; i < fn.nIn; ++i) {
+      const uint32_t p = fn.firstIn + i;
+      if (inBound_[p].kind == Kind::Infer && inDrv_[p] != kNone) joinKind(k, outT_[inDrv_[p]].kind);
+    }
+    return k;
+  }
+  // TX.bool-real: whether in-port p (of a node whose kind-polymorphic inputs meet at `poly`) takes a bool as a real
+  // 0 / 1: a bool driver into a real bound, or into a polymorphic input where a real meets it.
+  bool converts(uint32_t p, Kind poly) const {
+    const uint32_t d = inDrv_[p];
+    if (d == kNone || outT_[d].kind != Kind::Bool) return false;
+    const Kind b = inBound_[p].kind;
+    return b == Kind::Real || (b == Kind::Infer && poly == Kind::Real);
+  }
+
   NodeIndex addFlat(TypedPatch& tp, NodeIndex n, uint64_t key, NodeOrigin origin) {
     tp.stateKey.push_back(key);
     tp.origin.push_back(origin);
@@ -1023,6 +1033,7 @@ private:
     const AtomId voiceSum = *reg.find("voice_sum");
     const AtomId atomXor = *reg.find("xor"), atomNot = *reg.find("not");
     const AtomId atomEq = *reg.find("eq"), atomNe = *reg.find("ne");
+    const AtomId gateToReal = *reg.find("gate_to_real");
     const auto nf = static_cast<uint32_t>(fnodes_.size());
     Patch& out = tp.patch;
     out.setName(root_.name());
@@ -1040,7 +1051,18 @@ private:
       PortRef reducerIn;  // the reducer input to wire from in-port p's source
       uint32_t p;
     };
-    std::vector<Pending> reducersBefore;  // reducers in front of a non-identity node's input
+    std::vector<Pending> reducersBefore;  // reducers / converters in front of a node's input
+    // TX.bool-real: a gate_to_real in front of an in-port that takes a bool as a real (before its voice reducer, if
+    // any: the voices' 0 / 1 are summed, as a note gate cable's are), typed as what arrives with kind real. Stateless,
+    // one AND per lane (bools are lane masks; the kernel keeps 1.0f's bits); the optimiser merges the converters of
+    // one value.
+    auto toReal = [&](PortType arrives, uint64_t key, NodeOrigin o) {
+      o.what = NodeOrigin::What::Rewrite;
+      const NodeIndex c = addFlat(tp, out.addAtom(gateToReal), key, o);
+      arrives.kind = Kind::Real;
+      extraOut_.emplace_back(c, arrives);
+      return c;
+    };
     for (uint32_t f = 0; f < nf; ++f) {
       const FNode& fn = fnodes_[f];
       const Patch& P = *insts_[fn.inst].patch;
@@ -1049,18 +1071,25 @@ private:
       const uint64_t key = nodeKey(fn.inst, fn.src);
       NodeIndex n = kNone;
       switch (fn.kind) {
-        case FKind::Identity:
+        case FKind::Identity: {
+          const bool conv = converts(fn.firstIn, Kind::Infer);
+          if (conv) {
+            const NodeIndex c = toReal(outT_[inDrv_[fn.firstIn]], hashMix(key, 0xB001u), {fn.inst, fn.src});
+            inTarget_[fn.firstIn] = {c, 0};
+            flatOut_[fn.firstOut] = {c, 0};
+          }
           if (reduces(fn.firstIn)) {
             n = addFlat(tp, out.addAtom(voiceSum), hashMix(key, 0x5E5Eu), {fn.inst, fn.src, NodeOrigin::What::Reducer});
-            inTarget_[fn.firstIn] = {n, 0};
+            if (conv) out.connect(flatOut_[fn.firstOut], PortRef{n, 0});
+            else inTarget_[fn.firstIn] = {n, 0};
             flatOut_[fn.firstOut] = {n, 0};
           }
           continue;
+        }
         case FKind::Atom: {
           const AtomSignature& sig = atomSignature(fn.atom);
           if (fn.atom == atomTuneVoices_) continue;  // consumed by bindVoiceTunings (no node of its own)
-          if ((fn.atom == atomEq || fn.atom == atomNe) && inDrv_[fn.firstIn] != kNone &&
-              outT_[inDrv_[fn.firstIn]].kind == Kind::Bool) {
+          if ((fn.atom == atomEq || fn.atom == atomNe) && polyKind(fn) == Kind::Bool) {
             // Bool equality: ne = xor, eq = not(xor). The dsp comparators are real-only (kernel_map.h).
             const NodeIndex x = addFlat(tp, out.addAtom(atomXor), fn.atom == atomEq ? hashMix(key, 1) : key,
                                         fn.atom == atomEq ? NodeOrigin{fn.inst, fn.src, NodeOrigin::What::Rewrite, region} : org);
@@ -1093,19 +1122,31 @@ private:
       }
       addFlat(tp, n, key, org);
       for (uint32_t j = 0; j < fn.nOut; ++j) flatOut_[fn.firstOut + j] = {n, static_cast<uint16_t>(j)};
+      const Kind poly = fn.kind == FKind::Atom ? polyKind(fn) : Kind::Infer;
       for (uint32_t i = 0; i < fn.nIn; ++i) {
         const uint32_t p = fn.firstIn + i;
+        const PortRef at{n, static_cast<uint16_t>(i)};
+        PortRef into = at;
+        const bool conv = converts(p, poly);
         if (reduces(p)) {
           const NodeIndex r = addFlat(tp, out.addAtom(voiceSum), hashMix(key, 0x5E5E0000u + i),
                                       {fn.inst, fn.src, NodeOrigin::What::Reducer});
-          out.connect(PortRef{r, 0}, PortRef{n, static_cast<uint16_t>(i)});
-          reducersBefore.push_back({PortRef{r, 0}, p});
+          out.connect(PortRef{r, 0}, into);
+          into = PortRef{r, 0};
           PortType rt = outT_[inDrv_[p]];
           rt.poly = Poly::Global;
+          if (conv) rt.kind = Kind::Real;
           extraOut_.emplace_back(r, rt);
-        } else {
-          inTarget_[p] = {n, static_cast<uint16_t>(i)};
         }
+        if (conv) {
+          // (in front of a reducer it runs at the base rate, as the reducer does)
+          const NodeIndex c = toReal(outT_[inDrv_[p]], hashMix(key, 0xB0010000u + i),
+                                     reduces(p) ? NodeOrigin{fn.inst, fn.src} : org);
+          out.connect(PortRef{c, 0}, into);
+          into = PortRef{c, 0};
+        }
+        if (into == at) inTarget_[p] = at;
+        else reducersBefore.push_back({into, p});
       }
       // A per-voice oscillator made from a free-running one (freeRunning) restarts at its voice's onset sample:
       // reset = voice.trigger (or'ed with its own reset). The lane's state is reset at the start of the onset's

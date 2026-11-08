@@ -123,6 +123,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_free_instruments.cpp  # TX.all-free-fix1: instruments / racks anywhere play by their cables; cross-track mixer cables
     app/test_panel_link.cpp  # GU.3: a panel's edits through the link (a setting drag compiles once, a control / curve point never, a shape once)
     app/test_nested_groups.cpp  # GU.2: nested groups / atom + value blocks / pasted block sets render as their references
+    app/test_bool_real.cpp  # TX.bool-real: a bool into a real input converts (the user project, gate into gain / a control / a group terminal)
     app/test_instrument_groups.cpp  # IG.1-2: per note inside instrument groups (per-voice references), reducers, layering, cross-track, single-signal cables
     app/test_cross_track.cpp  # TX.cross-track: loops between tracks per sample (hand-written references), notes cables across tracks
     app/test_mod_all.cpp  # TX.mod-all: a wire into any param makes it live at audio rate (repro, the sweep over every device)

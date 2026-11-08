@@ -1,0 +1,340 @@
+{
+  "schemaVersion": 21,
+  "timeline": {
+    "tempo": [
+      {"tick": 0, "bpm": 120.0, "curve": "step"}
+    ],
+    "signatures": [
+      {"bar": 0, "numerator": 4, "denominator": 4}
+    ]
+  },
+  "loop": {"start": 0, "end": 3548160, "enabled": false},
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "12-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 12,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 4,
+      "kind": "midi",
+      "name": "1 MIDI",
+      "colour": "#90A815",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 6.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [],
+      "devices": [
+        {
+          "id": 6,
+          "patch": "Group",
+          "kind": "audioEffect",
+          "name": "Phase Accumulator",
+          "group": 5,
+          "panel": {
+            "size": [120.0, 120.0],
+            "elements": [
+              {"id": 1, "kind": "shape", "rect": [12.0, 16.0, 96.0, 96.0], "style": {"fill": "body", "shape": "circle", "stroke": "frame", "thickness": 1.25}},
+              {"id": 2, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 7, "name": "value"}], "style": {"drag": "vertical", "hitFrom": 140.0, "hitTo": 246.0, "start": 150.0, "sweep": 90.0, "ticks": "100|1000|10000"}},
+              {"id": 3, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 9, "name": "value"}], "style": {"drag": "diagonal", "hitFrom": 246.0, "hitTo": 299.0, "start": 252.0, "sweep": 40.0, "ticks": "1|2|3"}},
+              {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 10, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-3600|-2400|-1200|0|1200|2400|3600"}},
+              {"id": 5, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 8, "name": "value"}], "style": {"drag": "horizontal", "hitFrom": 43.0, "hitTo": 140.0, "start": 130.0, "sweep": -80.0, "ticks": "0.25|0.5|0.75"}},
+              {"id": 6, "kind": "orbit", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "signal", "device": 17, "name": "out"}, {"kind": "control", "device": 9, "name": "value"}]}
+            ]
+          }
+        },
+        {"id": 7, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 6, "params": {"value": 0.0}, "curves": {
+            "value": {"min": 0.0, "max": 20000.0, "unit": "hz", "mode": "signed", "preset": "exp0", "presetArg": 14.0, "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["exp", 9.704060527839234]]}
+          }},
+        {"id": 8, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 6, "params": {"value": 0.0}, "curves": {
+            "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 9, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 6, "params": {"value": 0.25}, "curves": {
+            "value": {"min": 0.0, "max": 4.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 10, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 6, "params": {"value": 0.0}, "curves": {
+            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0]]}
+          }},
+        {"id": 11, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 6, "params": {"value": 1.0}, "curves": {
+            "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 12, "patch": "atom:add", "kind": "audioEffect", "name": "hz + freq", "group": 6},
+        {"id": 13, "patch": "atom:cents_to_hz", "kind": "audioEffect", "name": "2^(pitch/1200)", "group": 6},
+        {"id": 14, "patch": "atom:mul", "kind": "audioEffect", "name": "× ratio", "group": 6},
+        {"id": 15, "patch": "atom:phasor", "kind": "audioEffect", "name": "phasor", "group": 6},
+        {"id": 16, "patch": "atom:add", "kind": "audioEffect", "name": "+ phase", "group": 6},
+        {"id": 17, "patch": "atom:frac", "kind": "audioEffect", "name": "frac", "group": 6},
+        {"id": 18, "patch": "atom:mul", "kind": "audioEffect", "name": "× amp", "group": 6},
+        {
+          "id": 32,
+          "patch": "Group",
+          "kind": "audioEffect",
+          "name": "Wavetable",
+          "group": 5,
+          "panel": {
+            "size": [204.0, 248.0],
+            "elements": [
+              {"id": 1, "kind": "shape", "rect": [0.0, 0.0, 204.0, 248.0], "style": {"fill": "none", "plate": 1.0, "radius": 12.0, "stroke": "none"}},
+              {"id": 2, "kind": "drawtools", "rect": [8.0, 13.0, 188.0, 21.0], "bind": [{"kind": "data", "device": 33}]},
+              {"id": 3, "kind": "harmonics", "rect": [10.0, 34.0, 184.0, 42.0], "bind": [{"kind": "data", "device": 33}]},
+              {"id": 4, "kind": "wavetable", "rect": [8.0, 76.0, 192.0, 100.0], "bind": [{"kind": "data", "device": 33}]},
+              {"id": 5, "kind": "slider", "rect": [12.0, 176.0, 154.0, 12.0], "bind": [{"kind": "control", "device": 33, "name": "phase"}], "style": {"label": "-", "orientation": "horizontal", "readout": "none"}},
+              {"id": 6, "kind": "knob", "rect": [20.25, 194.25, 35.5, 35.5], "bind": [{"kind": "control", "device": 33, "name": "fold"}], "style": {"label": "-", "readout": "none", "track": 3.5}},
+              {"id": 7, "kind": "knob", "rect": [71.25, 194.25, 35.5, 35.5], "bind": [{"kind": "control", "device": 33, "name": "warp"}], "style": {"label": "-", "readout": "none", "track": 3.5}},
+              {"id": 8, "kind": "knob", "rect": [122.25, 194.25, 35.5, 35.5], "bind": [{"kind": "control", "device": 33, "name": "sync"}], "style": {"label": "-", "readout": "none", "track": 3.5}},
+              {"id": 9, "kind": "warpmode", "rect": [20.0, 225.0, 168.0, 16.0], "bind": [{"kind": "data", "device": 33}]}
+            ]
+          }
+        },
+        {
+          "id": 33,
+          "patch": "meta:wavetable",
+          "kind": "audioEffect",
+          "name": "Wavetable",
+          "group": 32,
+          "meta": {
+            "": {"type": "wavetable", "version": 1, "data": {"keyframes": [{"cycle": {"$f32": "AACAvwDAf78AgH+/AEB/vwAAf78AwH6/AIB+vwBAfr8AAH6/AMB9vwCAfb8AQH2/AAB9vwDAfL8AgHy/AEB8vwAAfL8AwHu/AIB7vwBAe78AAHu/AMB6vwCAer8AQHq/AAB6vwDAeb8AgHm/AEB5vwAAeb8AwHi/AIB4vwBAeL8AAHi/AMB3vwCAd78AQHe/AAB3vwDAdr8AgHa/AEB2vwAAdr8AwHW/AIB1vwBAdb8AAHW/AMB0vwCAdL8AQHS/AAB0vwDAc78AgHO/AEBzvwAAc78AwHK/AIByvwBAcr8AAHK/AMBxvwCAcb8AQHG/AABxvwDAcL8AgHC/AEBwvwAAcL8AwG+/AIBvvwBAb78AAG+/AMBuvwCAbr8AQG6/AABuvwDAbb8AgG2/AEBtvwAAbb8AwGy/AIBsvwBAbL8AAGy/AMBrvwCAa78AQGu/AABrvwDAar8AgGq/AEBqvwAAar8AwGm/AIBpvwBAab8AAGm/AMBovwCAaL8AQGi/AABovwDAZ78AgGe/AEBnvwAAZ78AwGa/AIBmvwBAZr8AAGa/AMBlvwCAZb8AQGW/AABlvwDAZL8AgGS/AEBkvwAAZL8AwGO/AIBjvwBAY78AAGO/AMBivwCAYr8AQGK/AABivwDAYb8AgGG/AEBhvwAAYb8AwGC/AIBgvwBAYL8AAGC/AMBfvwCAX78AQF+/AABfvwDAXr8AgF6/AEBevwAAXr8AwF2/AIBdvwBAXb8AAF2/AMBcvwCAXL8AQFy/AABcvwDAW78AgFu/AEBbvwAAW78AwFq/AIBavwBAWr8AAFq/AMBZvwCAWb8AQFm/AABZvwDAWL8AgFi/AEBYvwAAWL8AwFe/AIBXvwBAV78AAFe/AMBWvwCAVr8AQFa/AABWvwDAVb8AgFW/AEBVvwAAVb8AwFS/AIBUvwBAVL8AAFS/AMBTvwCAU78AQFO/AABTvwDAUr8AgFK/AEBSvwAAUr8AwFG/AIBRvwBAUb8AAFG/AMBQvwCAUL8AQFC/AABQvwDAT78AgE+/AEBPvwAAT78AwE6/AIBOvwBATr8AAE6/AMBNvwCATb8AQE2/AABNvwDATL8AgEy/AEBMvwAATL8AwEu/AIBLvwBAS78AAEu/AMBKvwCASr8AQEq/AABKvwDASb8AgEm/AEBJvwAASb8AwEi/AIBIvwBASL8AAEi/AMBHvwCAR78AQEe/AABHvwDARr8AgEa/AEBGvwAARr8AwEW/AIBFvwBARb8AAEW/AMBEvwCARL8AQES/AABEvwDAQ78AgEO/AEBDvwAAQ78AwEK/AIBCvwBAQr8AAEK/AMBBvwCAQb8AQEG/AABBvwDAQL8AgEC/AEBAvwAAQL8AwD+/AIA/vwBAP78AAD+/AMA+vwCAPr8AQD6/AAA+vwDAPb8AgD2/AEA9vwAAPb8AwDy/AIA8vwBAPL8AADy/AMA7vwCAO78AQDu/AAA7vwDAOr8AgDq/AEA6vwAAOr8AwDm/AIA5vwBAOb8AADm/AMA4vwCAOL8AQDi/AAA4vwDAN78AgDe/AEA3vwAAN78AwDa/AIA2vwBANr8AADa/AMA1vwCANb8AQDW/AAA1vwDANL8AgDS/AEA0vwAANL8AwDO/AIAzvwBAM78AADO/AMAyvwCAMr8AQDK/AAAyvwDAMb8AgDG/AEAxvwAAMb8AwDC/AIAwvwBAML8AADC/AMAvvwCAL78AQC+/AAAvvwDALr8AgC6/AEAuvwAALr8AwC2/AIAtvwBALb8AAC2/AMAsvwCALL8AQCy/AAAsvwDAK78AgCu/AEArvwAAK78AwCq/AIAqvwBAKr8AACq/AMApvwCAKb8AQCm/AAApvwDAKL8AgCi/AEAovwAAKL8AwCe/AIAnvwBAJ78AACe/AMAmvwCAJr8AQCa/AAAmvwDAJb8AgCW/AEAlvwAAJb8AwCS/AIAkvwBAJL8AACS/AMAjvwCAI78AQCO/AAAjvwDAIr8AgCK/AEAivwAAIr8AwCG/AIAhvwBAIb8AACG/AMAgvwCAIL8AQCC/AAAgvwDAH78AgB+/AEAfvwAAH78AwB6/AIAevwBAHr8AAB6/AMAdvwCAHb8AQB2/AAAdvwDAHL8AgBy/AEAcvwAAHL8AwBu/AIAbvwBAG78AABu/AMAavwCAGr8AQBq/AAAavwDAGb8AgBm/AEAZvwAAGb8AwBi/AIAYvwBAGL8AABi/AMAXvwCAF78AQBe/AAAXvwDAFr8AgBa/AEAWvwAAFr8AwBW/AIAVvwBAFb8AABW/AMAUvwCAFL8AQBS/AAAUvwDAE78AgBO/AEATvwAAE78AwBK/AIASvwBAEr8AABK/AMARvwCAEb8AQBG/AAARvwDAEL8AgBC/AEAQvwAAEL8AwA+/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AAD4vQAA9r0AAPS9AADyvQAA8L0AAO69AADsvQAA6r0AAOi9AADmvQAA5L0AAOK9AADgvQAA3r0AANy9AADavQAA2L0AANa9AADUvQAA0r0AANC9AADOvQAAzL0AAMq9AADIvQAAxr0AAMS9AADCvQAAwL0AAL69AAC8vQAAur0AALi9AAC2vQAAtL0AALK9AACwvQAArr0AAKy9AACqvQAAqL0AAKa9AACkvQAAor0AAKC9AACevQAAnL0AAJq9AACYvQAAlr0AAJS9AACSvQAAkL0AAI69AACMvQAAir0AAIi9AACGvQAAhL0AAIK9AACAvQAAfL0AAHi9AAB0vQAAcL0AAGy9AABovQAAZL0AAGC9AABcvQAAWL0AAFS9AABQvQAATL0AAEi9AABEvQAAQL0AADy9AAA4vQAANL0AADC9AAAsvQAAKL0AACS9AAAgvQAAHL0AABi9AAAUvQAAEL0AAAy9AAAIvQAABL0AAAC9AAD4vAAA8LwAAOi8AADgvAAA2LwAANC8AADIvAAAwLwAALi8AACwvAAAqLwAAKC8AACYvAAAkLwAAIi8AACAvAAAcLwAAGC8AABQvAAAQLwAADC8AAAgvAAAELwAAAC8AADguwAAwLsAAKC7AACAuwAAQLsAAAC7AACAugAAAAAAAIA6AAAAOwAAQDsAAIA7AACgOwAAwDsAAOA7AAAAPAAAEDwAACA8AAAwPAAAQDwAAFA8AABgPAAAcDwAAIA8AACIPAAAkDwAAJg8AACgPAAAqDwAALA8AAC4PAAAwDwAAMg8AADQPAAA2DwAAOA8AADoPAAA8DwAAPg8AAAAPQAABD0AAAg9AAAMPQAAED0AABQ9AAAYPQAAHD0AACA9AAAkPQAAKD0AACw9AAAwPQAAND0AADg9AAA8PQAAQD0AAEQ9AABIPQAATD0AAFA9AABUPQAAWD0AAFw9AABgPQAAZD0AAGg9AABsPQAAcD0AAHQ9AAB4PQAAfD0AAIA9AACCPQAAhD0AAIY9AACIPQAAij0AAIw9AACOPQAAkD0AAJI9AACUPQAAlj0AAJg9AACaPQAAnD0AAJ49AACgPQAAoj0AAKQ9AACmPQAAqD0AAKo9AACsPQAArj0AALA9AACyPQAAtD0AALY9AAC4PQAAuj0AALw9AAC+PQAAwD0AAMI9AADEPQAAxj0AAMg9AADKPQAAzD0AAM49AADQPQAA0j0AANQ9AADWPQAA2D0AANo9AADcPQAA3j0AAOA9AADiPQAA5D0AAOY9AADoPQAA6j0AAOw9AADuPQAA8D0AAPI9AAD0PQAA9j0AAPg9AAD6PQAA/D0AAP49AAAAPgAAAT4AAAI+AAADPgAABD4AAAU+AAAGPgAABz4AAAg+AAAJPgAACj4AAAs+AAAMPgAADT4AAA4+AAAPPgAAED4AABE+AAASPgAAEz4AABQ+AAAVPgAAFj4AABc+AAAYPgAAGT4AABo+AAAbPgAAHD4AAB0+AAAePgAAHz4AACA+AAAhPgAAIj4AACM+AAAkPgAAJT4AACY+AAAnPgAAKD4AACk+AAAqPgAAKz4AACw+AAAtPgAALj4AAC8+AAAwPgAAMT4AADI+AAAzPgAAND4AADU+AAA2PgAANz4AADg+AAA5PgAAOj4AADs+AAA8PgAAPT4AAD4+AAA/PgAAQD4AAEE+AABCPgAAQz4AAEQ+AABFPgAARj4AAEc+AABIPgAAST4AAEo+AABLPgAATD4AAE0+AABOPgAATz4AAFA+AABRPgAAUj4AAFM+AABUPgAAVT4AAFY+AABXPgAAWD4AAFk+AABaPgAAWz4AAFw+AABdPgAAXj4AAF8+AABgPgAAYT4AAGI+AABjPgAAZD4AAGU+AABmPgAAZz4AAGg+AABpPgAAaj4AAGs+AABsPgAAbT4AAG4+AABvPgAAcD4AAHE+AAByPgAAcz4AAHQ+AAB1PgAAdj4AAHc+AAB4PgAAeT4AAHo+AAB7PgAAfD4AAH0+AAB+PgAAfz4AAIA+AICAPgAAgT4AgIE+AACCPgCAgj4AAIM+AICDPgAAhD4AgIQ+AACFPgCAhT4AAIY+AICGPgAAhz4AgIc+AACIPgCAiD4AAIk+AICJPgAAij4AgIo+AACLPgCAiz4AAIw+AICMPgAAjT4AgI0+AACOPgCAjj4AAI8+AICPPgAAkD4AgJA+AACRPgCAkT4AAJI+AICSPgAAkz4AgJM+AACUPgCAlD4AAJU+AICVPgAAlj4AgJY+AACXPgCAlz4AAJg+AICYPgAAmT4AgJk+AACaPgCAmj4AAJs+AICbPgAAnD4AgJw+AACdPgCAnT4AAJ4+AICePgAAnz4AgJ8+AACgPgCAoD4AAKE+AIChPgAAoj4AgKI+AACjPgCAoz4AAKQ+AICkPgAApT4AgKU+AACmPgCApj4AAKc+AICnPgAAqD4AgKg+AACpPgCAqT4AAKo+AICqPgAAqz4AgKs+AACsPgCArD4AAK0+AICtPgAArj4AgK4+AACvPgCArz4AALA+AICwPgAAsT4AgLE+AACyPgCAsj4AALM+AICzPgAAtD4AgLQ+AAC1PgCAtT4AALY+AIC2PgAAtz4AgLc+AAC4PgCAuD4AALk+AIC5PgAAuj4AgLo+AAC7PgCAuz4AALw+AIC8PgAAvT4AgL0+AAC+PgCAvj4AAL8+AIC/PgAAwD4AgMA+AADBPgCAwT4AAMI+AIDCPgAAwz4AgMM+AADEPgCAxD4AAMU+AIDFPgAAxj4AgMY+AADHPgCAxz4AAMg+AIDIPgAAyT4AgMk+AADKPgCAyj4AAMs+AIDLPgAAzD4AgMw+AADNPgCAzT4AAM4+AIDOPgAAzz4AgM8+AADQPgCA0D4AANE+AIDRPgAA0j4AgNI+AADTPgCA0z4AANQ+AIDUPgAA1T4AgNU+AADWPgCA1j4AANc+AIDXPgAA2D4AgNg+AADZPgCA2T4AANo+AIDaPgAA2z4AgNs+AADcPgCA3D4AAN0+AIDdPgAA3j4AgN4+AADfPgCA3z4AAOA+AIDgPgAA4T4AgOE+AADiPgCA4j4AAOM+AIDjPgAA5D4AgOQ+AADlPgCA5T4AAOY+AIDmPgAA5z4AgOc+AADoPgCA6D4AAOk+AIDpPgAA6j4AgOo+AADrPgCA6z4AAOw+AIDsPgAA7T4AgO0+AADuPgCA7j4AAO8+AIDvPgAA8D4AgPA+AADxPgCA8T4AAPI+AIDyPgAA8z4AgPM+AAD0PgCA9D4AAPU+AID1PgAA9j4AgPY+AAD3PgCA9z4AAPg+AID4PgAA+T4AgPk+AAD6PgCA+j4AAPs+AID7PgAA/D4AgPw+AAD9PgCA/T4AAP4+AID+PgAA/z4AgP8+AAAAPwBAAD8AgAA/AMAAPwAAAT8AQAE/AIABPwDAAT8AAAI/AEACPwCAAj8AwAI/AAADPwBAAz8AgAM/AMADPwAABD8AQAQ/AIAEPwDABD8AAAU/AEAFPwCABT8AwAU/AAAGPwBABj8AgAY/AMAGPwAABz8AQAc/AIAHPwDABz8AAAg/AEAIPwCACD8AwAg/AAAJPwBACT8AgAk/AMAJPwAACj8AQAo/AIAKPwDACj8AAAs/AEALPwCACz8AwAs/AAAMPwBADD8AgAw/AMAMPwAADT8AQA0/AIANPwDADT8AAA4/AEAOPwCADj8AwA4/AAAPPwBADz8AgA8/AMAPPwAAED8AQBA/AIAQPwDAED8AABE/AEARPwCAET8AwBE/AAASPwBAEj8AgBI/AMASPwAAEz8AQBM/AIATPwDAEz8AABQ/AEAUPwCAFD8AwBQ/AAAVPwBAFT8AgBU/AMAVPwAAFj8AQBY/AIAWPwDAFj8AABc/AEAXPwCAFz8AwBc/AAAYPwBAGD8AgBg/AMAYPwAAGT8AQBk/AIAZPwDAGT8AABo/AEAaPwCAGj8AwBo/AAAbPwBAGz8AgBs/AMAbPwAAHD8AQBw/AIAcPwDAHD8AAB0/AEAdPwCAHT8AwB0/AAAePwBAHj8AgB4/AMAePwAAHz8AQB8/AIAfPwDAHz8AACA/AEAgPwCAID8AwCA/AAAhPwBAIT8AgCE/AMAhPwAAIj8AQCI/AIAiPwDAIj8AACM/AEAjPwCAIz8AwCM/AAAkPwBAJD8AgCQ/AMAkPwAAJT8AQCU/AIAlPwDAJT8AACY/AEAmPwCAJj8AwCY/AAAnPwBAJz8AgCc/AMAnPwAAKD8AQCg/AIAoPwDAKD8AACk/AEApPwCAKT8AwCk/AAAqPwBAKj8AgCo/AMAqPwAAKz8AQCs/AIArPwDAKz8AACw/AEAsPwCALD8AwCw/AAAtPwBALT8AgC0/AMAtPwAALj8AQC4/AIAuPwDALj8AAC8/AEAvPwCALz8AwC8/AAAwPwBAMD8AgDA/AMAwPwAAMT8AQDE/AIAxPwDAMT8AADI/AEAyPwCAMj8AwDI/AAAzPwBAMz8AgDM/AMAzPwAAND8AQDQ/AIA0PwDAND8AADU/AEA1PwCANT8AwDU/AAA2PwBANj8AgDY/AMA2PwAANz8AQDc/AIA3PwDANz8AADg/AEA4PwCAOD8AwDg/AAA5PwBAOT8AgDk/AMA5PwAAOj8AQDo/AIA6PwDAOj8AADs/AEA7PwCAOz8AwDs/AAA8PwBAPD8AgDw/AMA8PwAAPT8AQD0/AIA9PwDAPT8AAD4/AEA+PwCAPj8AwD4/AAA/PwBAPz8AgD8/AMA/PwAAQD8AQEA/AIBAPwDAQD8AAEE/AEBBPwCAQT8AwEE/AABCPwBAQj8AgEI/AMBCPwAAQz8AQEM/AIBDPwDAQz8AAEQ/AEBEPwCARD8AwEQ/AABFPwBART8AgEU/AMBFPwAARj8AQEY/AIBGPwDARj8AAEc/AEBHPwCARz8AwEc/AABIPwBASD8AgEg/AMBIPwAAST8AQEk/AIBJPwDAST8AAEo/AEBKPwCASj8AwEo/AABLPwBASz8AgEs/AMBLPwAATD8AQEw/AIBMPwDATD8AAE0/AEBNPwCATT8AwE0/AABOPwBATj8AgE4/AMBOPwAATz8AQE8/AIBPPwDATz8AAFA/AEBQPwCAUD8AwFA/AABRPwBAUT8AgFE/AMBRPwAAUj8AQFI/AIBSPwDAUj8AAFM/AEBTPwCAUz8AwFM/AABUPwBAVD8AgFQ/AMBUPwAAVT8AQFU/AIBVPwDAVT8AAFY/AEBWPwCAVj8AwFY/AABXPwBAVz8AgFc/AMBXPwAAWD8AQFg/AIBYPwDAWD8AAFk/AEBZPwCAWT8AwFk/AABaPwBAWj8AgFo/AMBaPwAAWz8AQFs/AIBbPwDAWz8AAFw/AEBcPwCAXD8AwFw/AABdPwBAXT8AgF0/AMBdPwAAXj8AQF4/AIBePwDAXj8AAF8/AEBfPwCAXz8AwF8/AABgPwBAYD8AgGA/AMBgPwAAYT8AQGE/AIBhPwDAYT8AAGI/AEBiPwCAYj8AwGI/AABjPwBAYz8AgGM/AMBjPwAAZD8AQGQ/AIBkPwDAZD8AAGU/AEBlPwCAZT8AwGU/AABmPwBAZj8AgGY/AMBmPwAAZz8AQGc/AIBnPwDAZz8AAGg/AEBoPwCAaD8AwGg/AABpPwBAaT8AgGk/AMBpPwAAaj8AQGo/AIBqPwDAaj8AAGs/AEBrPwCAaz8AwGs/AABsPwBAbD8AgGw/AMBsPwAAbT8AQG0/AIBtPwDAbT8AAG4/AEBuPwCAbj8AwG4/AABvPwBAbz8AgG8/AMBvPwAAcD8AQHA/AIBwPwDAcD8AAHE/AEBxPwCAcT8AwHE/AAByPwBAcj8AgHI/AMByPwAAcz8AQHM/AIBzPwDAcz8AAHQ/AEB0PwCAdD8AwHQ/AAB1PwBAdT8AgHU/AMB1PwAAdj8AQHY/AIB2PwDAdj8AAHc/AEB3PwCAdz8AwHc/AAB4PwBAeD8AgHg/AMB4PwAAeT8AQHk/AIB5PwDAeT8AAHo/AEB6PwCAej8AwHo/AAB7PwBAez8AgHs/AMB7PwAAfD8AQHw/AIB8PwDAfD8AAH0/AEB9PwCAfT8AwH0/AAB+PwBAfj8AgH4/AMB+PwAAfz8AQH8/AIB/PwDAfz8="}, "pos": 0.0}]}}
+          }
+        },
+        {
+          "id": 36,
+          "patch": "Group",
+          "kind": "audioEffect",
+          "name": "Envelope",
+          "group": 5,
+          "panel": {
+            "size": [208.0, 128.0],
+            "elements": [
+              {"id": 1, "kind": "shape", "rect": [0.0, 0.0, 208.0, 128.0], "style": {"fill": "none", "plate": 1.0, "radius": 12.0, "stroke": "none"}},
+              {"id": 2, "kind": "envelope", "rect": [6.0, 6.0, 178.0, 116.0], "bind": [{"kind": "data", "device": 37}]},
+              {"id": 3, "kind": "slider", "rect": [184.0, 12.0, 16.0, 104.0], "bind": [{"kind": "control", "device": 37, "name": "amount"}], "style": {"label": "-", "orientation": "vertical", "readout": "none"}}
+            ]
+          }
+        },
+        {"id": 37, "patch": "meta:envelope", "kind": "audioEffect", "name": "Envelope", "group": 36, "params": {"amount": 0.25}},
+        {"id": 5, "patch": "Group", "kind": "audioEffect", "name": "Basic Synth", "settings": {"glide": 0.0, "steal": 0.0, "voices": 16.0}},
+        {
+          "id": 51,
+          "patch": "Group",
+          "kind": "audioEffect",
+          "name": "EQ",
+          "panel": {
+            "size": [452.0, 384.0],
+            "elements": [
+              {"id": 1, "kind": "shape", "rect": [0.0, 0.0, 452.0, 384.0], "style": {"fill": "none", "plate": 1.0, "radius": 6.0, "stroke": "none"}},
+              {"id": 2, "kind": "response", "rect": [8.0, 8.0, 436.0, 156.0], "bind": [{"kind": "signal", "device": 51, "name": "y"}, {"kind": "signal", "device": 51, "name": "input"}], "style": {"eq": "display"}},
+              {"id": 9, "kind": "phase", "rect": [8.0, 166.0, 436.0, 40.0], "bind": [{"kind": "signal", "device": 51, "name": "y"}], "style": {"eq": "display"}},
+              {"id": 3, "kind": "label", "rect": [8.0, 218.0, 72.0, 12.0], "style": {"align": "left", "text": "Mode"}},
+              {"id": 4, "kind": "menu", "rect": [8.0, 232.0, 72.0, 18.0], "bind": [{"kind": "control", "device": 52, "name": "value"}], "style": {"items": "Stereo|L/R|M/S", "label": "-"}},
+              {"id": 5, "kind": "tabs", "rect": [8.0, 254.0, 72.0, 16.0], "bind": [{"kind": "control", "device": 54, "name": "value"}], "style": {"eq": "chains", "items": "A|B"}, "when": {"element": 4, "values": [1.0, 2.0]}},
+              {"id": 6, "kind": "tabs", "rect": [8.0, 254.0, 72.0, 16.0], "bind": [{"kind": "control", "device": 54, "name": "value"}], "style": {"items": "L|R"}, "when": {"element": 4, "values": [1.0]}},
+              {"id": 7, "kind": "tabs", "rect": [8.0, 254.0, 72.0, 16.0], "bind": [{"kind": "control", "device": 54, "name": "value"}], "style": {"items": "M|S"}, "when": {"element": 4, "values": [2.0]}},
+              {"id": 8, "kind": "knob", "rect": [8.0, 276.0, 72.0, 100.0], "bind": [{"kind": "control", "device": 53, "name": "value"}]},
+              {"id": 58, "kind": "shape", "rect": [86.0, 216.0, 60.0, 160.0], "bind": [{"kind": "panel", "device": 57}], "style": {"band": 0.0, "eq": "strip", "fill": "track", "opacity": 0.45, "radius": 4.0, "stroke": "none"}, "when": {"element": 5, "values": [0.0, -1.0]}},
+              {"id": 59, "kind": "bandtype", "rect": [88.0, 220.0, 56.0, 18.0], "bind": [{"kind": "control", "device": 62, "name": "value"}], "style": {"band": 0.0, "eq": "strip", "items": "High Cut|Low Cut|Band Pass|Notch|Bell|Low Shelf|High Shelf|All Pass", "label": "-"}, "when": {"element": 5, "values": [0.0, -1.0]}},
+              {"id": 60, "kind": "number", "rect": [88.0, 242.0, 56.0, 18.0], "bind": [{"kind": "control", "device": 58, "name": "value"}], "style": {"eq": "strip", "label": "-"}, "when": {"element": 59, "values": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]}},
+              {"id": 61, "kind": "number", "rect": [88.0, 264.0, 56.0, 18.0], "bind": [{"kind": "control", "device": 59, "name": "value"}], "style": {"decimals": 2.0, "eq": "strip", "label": "-", "prefix": "Q "}, "when": {"element": 59, "values": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]}},
+              {"id": 62, "kind": "slider", "rect": [88.0, 286.0, 56.0, 64.0], "bind": [{"kind": "control", "device": 60, "name": "value"}], "style": {"eq": "strip", "orientation": "vertical"}, "when": {"element": 59, "values": [4.0, 5.0, 6.0]}},
+              {"id": 63, "kind": "number", "rect": [88.0, 354.0, 56.0, 18.0], "bind": [{"kind": "control", "device": 61, "name": "value"}], "style": {"decimals": 0.0, "eq": "strip", "label": "-", "prefix": "×"}, "when": {"element": 59, "values": [0.0, 1.0, 2.0, 5.0, 6.0, 7.0]}}
+            ]
+          }
+        },
+        {"id": 52, "patch": "Value", "kind": "audioEffect", "name": "Mode", "group": 51, "params": {"value": 0.0}, "settings": {"eqRole": 1.0}, "curves": {
+            "value": {"min": 0.0, "max": 2.0, "step": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 53, "patch": "Value", "kind": "audioEffect", "name": "Output", "group": 51, "params": {"value": 0.5}, "settings": {"eqRole": 2.0}, "curves": {
+            "value": {"min": -24.0, "max": 24.0, "unit": "db", "output": "dbToGain", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 54, "patch": "Value", "kind": "audioEffect", "name": "Edit Chain", "group": 51, "params": {"value": 0.0}, "settings": {"eqRole": 3.0}, "curves": {
+            "value": {"min": 0.0, "max": 1.0, "step": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 55, "patch": "Group", "kind": "audioEffect", "name": "Chain A", "group": 51, "settings": {"bandChain": 1.0}},
+        {"id": 56, "patch": "Group", "kind": "audioEffect", "name": "Chain B", "group": 51, "settings": {"bandChain": 2.0}},
+        {"id": 85, "patch": "atom:channel", "kind": "audioEffect", "name": "L", "group": 51, "settings": {"index": 0.0}},
+        {"id": 86, "patch": "atom:channel", "kind": "audioEffect", "name": "R", "group": 51, "settings": {"index": 1.0}},
+        {"id": 87, "patch": "Value", "kind": "audioEffect", "name": "0.5", "group": 51, "params": {"value": 1.0}, "curves": {
+            "value": {"min": 0.5, "max": 0.5, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 88, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 51, "params": {"value": 1.0}, "curves": {
+            "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 89, "patch": "atom:sub", "kind": "audioEffect", "name": "Mode - 1", "group": 51},
+        {"id": 90, "patch": "atom:add", "kind": "audioEffect", "name": "L + R", "group": 51},
+        {"id": 91, "patch": "atom:mul", "kind": "audioEffect", "name": "M = (L + R) / 2", "group": 51},
+        {"id": 92, "patch": "atom:sub", "kind": "audioEffect", "name": "L - R", "group": 51},
+        {"id": 93, "patch": "atom:mul", "kind": "audioEffect", "name": "S = (L - R) / 2", "group": 51},
+        {"id": 94, "patch": "atom:mux", "kind": "audioEffect", "name": "L or M", "group": 51},
+        {"id": 95, "patch": "atom:mux", "kind": "audioEffect", "name": "into A", "group": 51},
+        {"id": 96, "patch": "atom:mux", "kind": "audioEffect", "name": "into B", "group": 51},
+        {"id": 97, "patch": "atom:channel", "kind": "audioEffect", "name": "A", "group": 51, "settings": {"index": 0.0}},
+        {"id": 98, "patch": "atom:pack", "kind": "audioEffect", "name": "(A, B)", "group": 51},
+        {"id": 99, "patch": "atom:add", "kind": "audioEffect", "name": "A + B", "group": 51},
+        {"id": 100, "patch": "atom:sub", "kind": "audioEffect", "name": "A - B", "group": 51},
+        {"id": 101, "patch": "atom:pack", "kind": "audioEffect", "name": "(A + B, A - B)", "group": 51},
+        {"id": 102, "patch": "atom:mux", "kind": "audioEffect", "name": "L/R or M/S", "group": 51},
+        {"id": 103, "patch": "atom:mux", "kind": "audioEffect", "name": "out", "group": 51},
+        {"id": 104, "patch": "atom:gain", "kind": "audioEffect", "name": "x output", "group": 51, "settings": {"start": 1.0}},
+        {
+          "id": 57,
+          "patch": "Group",
+          "kind": "audioEffect",
+          "name": "Band 1",
+          "group": 55,
+          "panel": {
+            "size": [240.0, 228.0],
+            "elements": [
+              {"id": 1, "kind": "shape", "rect": [0.0, 0.0, 240.0, 228.0], "style": {"fill": "none", "plate": 1.0, "radius": 6.0, "stroke": "none"}},
+              {"id": 7, "kind": "response", "rect": [8.0, 8.0, 224.0, 100.0], "bind": [{"kind": "signal", "device": 57, "name": "y"}, {"kind": "signal", "device": 57, "name": "input"}]},
+              {"id": 8, "kind": "phase", "rect": [8.0, 110.0, 224.0, 36.0], "bind": [{"kind": "signal", "device": 57, "name": "y"}]},
+              {"id": 2, "kind": "menu", "rect": [8.0, 154.0, 96.0, 18.0], "bind": [{"kind": "control", "device": 62, "name": "value"}], "style": {"items": "High Cut|Low Cut|Band Pass|Notch|Bell|Low Shelf|High Shelf|All Pass", "label": "-"}},
+              {"id": 3, "kind": "number", "rect": [110.0, 154.0, 60.0, 18.0], "bind": [{"kind": "control", "device": 58, "name": "value"}]},
+              {"id": 4, "kind": "number", "rect": [174.0, 154.0, 58.0, 18.0], "bind": [{"kind": "control", "device": 59, "name": "value"}], "style": {"decimals": 2.0, "prefix": "Q "}},
+              {"id": 5, "kind": "knob", "rect": [8.0, 176.0, 58.0, 44.0], "bind": [{"kind": "control", "device": 60, "name": "value"}], "when": {"element": 2, "values": [4.0, 5.0, 6.0]}},
+              {"id": 6, "kind": "number", "rect": [110.0, 176.0, 60.0, 18.0], "bind": [{"kind": "control", "device": 61, "name": "value"}], "style": {"decimals": 0.0, "prefix": "×"}, "when": {"element": 2, "values": [0.0, 1.0, 2.0, 5.0, 6.0, 7.0]}}
+            ]
+          }
+        },
+        {"id": 58, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 57, "params": {"value": 0.6379251480102539}, "settings": {"bandRole": 1.0}, "curves": {
+            "value": {"min": 0.0, "max": 20000.0, "unit": "hz", "preset": "exponential", "presetArg": 7.601402334583733, "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["exp", 7.601402334583733]]}
+          }},
+        {"id": 59, "patch": "Value", "kind": "audioEffect", "name": "Q", "group": 57, "params": {"value": 0.6583333333333333}, "settings": {"bandRole": 2.0}, "curves": {
+            "value": {"min": 0.1, "max": 40.0, "preset": "octave", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["exp", 5.991464547107982]]}
+          }},
+        {"id": 60, "patch": "Value", "kind": "audioEffect", "name": "Gain", "group": 57, "params": {"value": 0.6654539704322815}, "settings": {"bandRole": 3.0}, "curves": {
+            "value": {"min": -24.0, "max": 24.0, "unit": "db", "output": "dbToGain", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 61, "patch": "Value", "kind": "audioEffect", "name": "Stages", "group": 57, "params": {"value": 0.34666666666666657}, "settings": {"bandRole": 4.0}, "curves": {
+            "value": {"min": 1.0, "max": 64.0, "step": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 62, "patch": "Value", "kind": "audioEffect", "name": "Type", "group": 57, "params": {"value": 1.0}, "settings": {"bandRole": 5.0}, "curves": {
+            "value": {"min": 0.0, "max": 7.0, "step": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 63, "patch": "atom:svf", "kind": "audioEffect", "name": "svf", "group": 57}
+      ],
+      "clips": [
+        {
+          "id": 46,
+          "name": "",
+          "colour": "#90A815",
+          "start": 0,
+          "length": 2217600,
+          "contentStart": 0,
+          "loop": {"enabled": true, "start": 0, "end": 2217600},
+          "signature": {"numerator": 4, "denominator": 4},
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {"id": 47, "start": 0, "length": 2439360, "pitch": {"degree": 10, "equave": -3}, "velocity": 100.0}
+          ]
+        }
+      ]
+    }
+  ],
+  "returns": [],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+    "lanes": [],
+    "devices": []
+  },
+  "wires": [
+    {"id": 3, "notes": 2, "port": "", "mixer": 2, "param": ""},
+    {"id": 19, "from": 6, "port": "input", "to": 12, "param": "a"},
+    {"id": 20, "from": 7, "port": "y", "to": 12, "param": "b"},
+    {"id": 21, "from": 10, "port": "y", "to": 13, "param": "cents"},
+    {"id": 22, "from": 11, "port": "y", "to": 13, "param": "ref"},
+    {"id": 23, "from": 12, "port": "out", "to": 14, "param": "a"},
+    {"id": 24, "from": 13, "port": "out", "to": 14, "param": "b"},
+    {"id": 25, "from": 14, "port": "out", "to": 15, "param": "hz"},
+    {"id": 26, "from": 15, "port": "out", "to": 16, "param": "a"},
+    {"id": 27, "from": 8, "port": "y", "to": 16, "param": "b"},
+    {"id": 28, "from": 16, "port": "out", "to": 17, "param": "x"},
+    {"id": 29, "from": 9, "port": "y", "to": 18, "param": "a"},
+    {"id": 30, "from": 17, "port": "out", "to": 18, "param": "b"},
+    {"id": 31, "from": 18, "port": "out", "to": 6, "param": "output"},
+    {"id": 34, "from": 32, "port": "input", "to": 33, "param": "x"},
+    {"id": 35, "from": 33, "port": "out", "to": 32, "param": "output"},
+    {"id": 38, "from": 36, "port": "input", "to": 37, "param": "in"},
+    {"id": 39, "from": 37, "port": "out", "to": 36, "param": "output"},
+    {"id": 40, "from": 5, "port": "input", "to": 6, "param": ""},
+    {"id": 41, "from": 6, "port": "", "to": 32, "param": ""},
+    {"id": 42, "from": 32, "port": "", "to": 36, "param": ""},
+    {"id": 43, "from": 36, "port": "", "to": 5, "param": "output"},
+    {"id": 44, "notes": 4, "port": "", "to": 5, "param": ""},
+    {"id": 105, "from": 57, "port": "input", "to": 63, "param": "x"},
+    {"id": 106, "from": 58, "port": "y", "to": 63, "param": "cutoff"},
+    {"id": 107, "from": 59, "port": "y", "to": 63, "param": "q"},
+    {"id": 108, "from": 60, "port": "y", "to": 63, "param": "gain"},
+    {"id": 109, "from": 62, "port": "y", "to": 63, "param": "mode"},
+    {"id": 110, "from": 61, "port": "y", "to": 63, "param": "stages"},
+    {"id": 111, "from": 63, "port": "out", "to": 57, "param": "output"},
+    {"id": 138, "from": 56, "port": "input", "to": 56, "param": "output"},
+    {"id": 139, "from": 51, "port": "input", "to": 85, "param": "x"},
+    {"id": 140, "from": 51, "port": "input", "to": 86, "param": "x"},
+    {"id": 141, "from": 52, "port": "y", "to": 89, "param": "a"},
+    {"id": 142, "from": 88, "port": "y", "to": 89, "param": "b"},
+    {"id": 143, "from": 85, "port": "out", "to": 90, "param": "a"},
+    {"id": 144, "from": 86, "port": "out", "to": 90, "param": "b"},
+    {"id": 145, "from": 90, "port": "out", "to": 91, "param": "a"},
+    {"id": 146, "from": 87, "port": "y", "to": 91, "param": "b"},
+    {"id": 147, "from": 85, "port": "out", "to": 92, "param": "a"},
+    {"id": 148, "from": 86, "port": "out", "to": 92, "param": "b"},
+    {"id": 149, "from": 92, "port": "out", "to": 93, "param": "a"},
+    {"id": 150, "from": 87, "port": "y", "to": 93, "param": "b"},
+    {"id": 151, "from": 89, "port": "out", "to": 94, "param": "index"},
+    {"id": 152, "from": 85, "port": "out", "to": 94, "param": "in0"},
+    {"id": 153, "from": 91, "port": "out", "to": 94, "param": "in1"},
+    {"id": 154, "from": 52, "port": "y", "to": 95, "param": "index"},
+    {"id": 155, "from": 51, "port": "input", "to": 95, "param": "in0"},
+    {"id": 156, "from": 94, "port": "out", "to": 95, "param": "in1"},
+    {"id": 157, "from": 89, "port": "out", "to": 96, "param": "index"},
+    {"id": 158, "from": 86, "port": "out", "to": 96, "param": "in0"},
+    {"id": 159, "from": 93, "port": "out", "to": 96, "param": "in1"},
+    {"id": 160, "from": 95, "port": "out", "to": 55, "param": ""},
+    {"id": 161, "from": 96, "port": "out", "to": 56, "param": ""},
+    {"id": 162, "from": 55, "port": "", "to": 97, "param": "x"},
+    {"id": 163, "from": 97, "port": "out", "to": 98, "param": "in0"},
+    {"id": 164, "from": 56, "port": "", "to": 98, "param": "in1"},
+    {"id": 165, "from": 97, "port": "out", "to": 99, "param": "a"},
+    {"id": 166, "from": 56, "port": "", "to": 99, "param": "b"},
+    {"id": 167, "from": 97, "port": "out", "to": 100, "param": "a"},
+    {"id": 168, "from": 56, "port": "", "to": 100, "param": "b"},
+    {"id": 169, "from": 99, "port": "out", "to": 101, "param": "in0"},
+    {"id": 170, "from": 100, "port": "out", "to": 101, "param": "in1"},
+    {"id": 171, "from": 89, "port": "out", "to": 102, "param": "index"},
+    {"id": 172, "from": 98, "port": "out", "to": 102, "param": "in0"},
+    {"id": 173, "from": 101, "port": "out", "to": 102, "param": "in1"},
+    {"id": 174, "from": 52, "port": "y", "to": 103, "param": "index"},
+    {"id": 175, "from": 55, "port": "", "to": 103, "param": "in0"},
+    {"id": 176, "from": 102, "port": "out", "to": 103, "param": "in1"},
+    {"id": 177, "from": 103, "port": "out", "to": 104, "param": "x"},
+    {"id": 178, "from": 53, "port": "y", "to": 104, "param": "g"},
+    {"id": 179, "from": 104, "port": "out", "to": 51, "param": "output"},
+    {"id": 180, "from": 5, "port": "", "to": 51, "param": ""},
+    {"id": 181, "from": 51, "port": "", "mixer": 4, "param": ""},
+    {"id": 189, "from": 55, "port": "input", "to": 57, "param": ""},
+    {"id": 190, "from": 57, "port": "", "to": 55, "param": "output"}
+  ],
+  "view": {
+    "tracks": [],
+    "lanes": [],
+    "patch": [
+      {"id": 5, "dx": -28.0, "dy": 0.0},
+      {"id": 51, "dx": -45.0, "dy": 4.0}
+    ]
+  }
+}

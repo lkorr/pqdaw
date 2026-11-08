@@ -55,8 +55,8 @@ struct ConnectResult {
   NodeIndex delay = kNone;       // the inserted z1, or kNone
   bool replaced = false;         // `to` had a driver, which the new wire replaced (an input has one driver)
 };
-// Connects output `from` to input `to`. Refused: ports out of range, a declared bool output into a declared real input
-// or the other way round (convert explicitly: gate_to_real, x > 0). A wire that closes a delay-free cycle runs through
+// Connects output `from` to input `to`. Refused: ports out of range, a declared real output into a declared bool input
+// (compare it: x > 0; TX.bool-real: a bool into a real input is its 0 / 1, converted by infer). A wire that closes a delay-free cycle runs through
 // a new z1 (placed halfway between the two nodes when both are placed). Node indices stay valid (nodes are only added).
 Result<ConnectResult> connect(Patch& p, PortRef from, PortRef to);
 // Removes the wire into input `to` (false when it had none).
