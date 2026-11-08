@@ -2,8 +2,11 @@
 // pq/document/modules.h): a Phase Accumulator's Frequency drag is param writes only (no compile job, no unit compile,
 // the unit keeps its image: the unit hash is unchanged) and audible; a Phase Accumulator in an instrument group plays
 // its voices; a MetaData edit compiles nothing.
-// TMM.10: Phase Accumulator -> Wavetable -> Auto Filter (an instrument group: In -> PA -> Wavetable -> Out) plays exact
-// pitches in 31edo; its voices end with the group's release.
+// TMM.10: Phase Accumulator -> Wavetable (an instrument group: In -> PA -> Wavetable -> Out) -> Utility plays exact
+// pitches in 31edo; its voices end with the group's release. GU.11: the tracks' instruments are instrument groups (the
+// default instrument); a test meta type plays as a native engine block (meta:<type>) — the link's resource slots and a
+// MetaData edit through it; Auto Filter (retired) became a Utility; the missing stock device's status line went with the
+// stock devices (a document holds only blocks).
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -16,6 +19,7 @@
 
 #include "../meta/meta_test_type.h"
 #include "playback_fixture.h"
+#include "../support/blocks.h"
 #include "pq/app/project_link.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
@@ -80,14 +84,7 @@ struct Driver {
   }
 };
 
-std::string replaced(std::string s, const std::string& from, const std::string& to) {
-  const size_t at = s.find(from);
-  REQUIRE_MESSAGE(at != std::string::npos, from);
-  s.replace(at, from.size(), to);
-  return s;
-}
-
-// A held chord on a MIDI track with BasicSynth.
+// A held chord on a MIDI track with the default instrument group (`inst`).
 struct Keys {
   DocumentStore store;
   TrackId track;
@@ -97,7 +94,8 @@ struct Keys {
     track = ids.track();
     inst = ids.device();
     Batch b{"keys", {}};
-    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Keys", inst), {}, kAppend});
+    b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Keys"), {}, kAppend});
+    (void)playback_fixture::instrument(b, ids, track, inst);
     std::vector<Note> notes;
     for (int32_t d : {0, 4, 7}) notes.push_back(playback_fixture::note(ids, 0, 64 * kPpq, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "chord")});
@@ -111,8 +109,8 @@ struct Keys {
 };
 
 // GU.4: track `t`'s path made of `blocks` — "pa" a Phase Accumulator module (its roles in `pa`), else a meta type —
-// in an instrument group (In -> blocks -> Out, the way an older file's meta voice run loads), its instrument gone.
-// Returns the group.
+// in an instrument group (In -> blocks -> Out, the way an older file's meta voice run loads), its instrument gone
+// (GU.11: the instrument group heading the path emptied; an empty path gets one). Returns the group.
 DeviceId instrumentRun(DocumentStore& s, TrackId t, const std::vector<std::string>& blocks, PhaseAccumulatorRoles* pa = nullptr) {
   const DeviceLibrary& lib = playback_fixture::unitsLibrary();
   auto run = [&](Result<ops::Edit> e) {
@@ -120,12 +118,14 @@ DeviceId instrumentRun(DocumentStore& s, TrackId t, const std::vector<std::strin
     REQUIRE(s.dispatch(e->command).ok());
     return *e;
   };
-  // The track's instrument grouped (an instrument group at the notes), then taken out of it: the group stays, empty.
-  if (mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.empty())
-    run(ops::addDevice(*s.current(), s.ids(), t, std::string(kDefaultInstrument), DeviceKind::Instrument, 0));
-  const DeviceId inst = mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.at(0)->id;
-  const DeviceId g = run(ops::groupInCircuit(s.current(), s.ids(), lib, std::vector<DeviceId>{inst})).devices.at(0);
-  run(ops::deleteDevices(*s.current(), std::vector<DeviceId>{inst}));
+  if (mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.empty()) (void)test_blocks::addProbeInstrument(s, t);
+  const DeviceId g = mainPath(*s.current(), *findTrackPtr(*s.current(), t)).blocks.at(0)->id;
+  REQUIRE(isGroupDevice(*findDevice(*s.current(), g).device));
+  std::vector<DeviceId> inside;
+  for (const DevicePtr& d : findTrackPtr(*s.current(), t)->devices)
+    if (d->group == g) inside.push_back(d->id);
+  if (!inside.empty()) run(ops::deleteDevices(*s.current(), inside));
+  (void)lib;
   DeviceId at = g;
   std::string port(kGroupInPort);
   for (const std::string& b : blocks) {
@@ -144,7 +144,11 @@ DeviceId instrumentRun(DocumentStore& s, TrackId t, const std::vector<std::strin
       d = run(ops::addMetaDevice(*s.current(), s.ids(), t, b, ops::kOffPath)).devices.at(0);
       REQUIRE(s.dispatch(SetDeviceGroup{d, g}).ok());
     }
-    run(ops::connectWire(*s.current(), s.ids(), at, port, d, ""));
+    // (In into an engine: its first input by name — the main port reads no note signal into a test type's `hz`.)
+    std::string param;
+    if (at == g && b != "pa")
+      if (const meta::Type* mt = meta::findType(b); mt != nullptr && !mt->inputs.empty()) param = std::string(mt->inputs[0].name);
+    run(ops::connectWire(*s.current(), s.ids(), at, port, d, param));
     at = d;
     port.clear();
   }
@@ -251,18 +255,14 @@ TEST_CASE("meta link: a Phase Accumulator in an instrument group plays its voice
   link->flush();
   CHECK(link->stats().compiles == s0.compiles);
   CHECK(link->stats().paramWrites == s0.paramWrites + 1);
-  // A data edit (a nested test module's samples) compiles nothing either. (TMM.13-fix1 L6: the state sits on a stock
-  // device of the chain.)
-  const DeviceId util = [&] {
-    auto e = ops::addDevice(*k.store.current(), k.store.ids(), k.track, "utility", DeviceKind::AudioEffect);
-    REQUIRE(e.ok());
-    REQUIRE(k.store.dispatch(e->command).ok());
-    return e->devices.at(0);
-  }();
-  k.edit(ops::setMetaSetting(*k.store.current(), util, "x", "test_shape", "stages", 1.0));  // state only: no call
+  // A data edit (a test engine's samples) compiles nothing either. (TMM.13-fix1 L6; GU.11: the test type as an engine
+  // block after the group.)
+  const DeviceId shape = test_blocks::appendEngineAfter(k.store, k.track, "test_shape");
+  k.edit(ops::setMetaSetting(*k.store.current(), shape, "", "test_shape", "stages", 1.0));
   link->flush();
+  CHECK(link->lastError().empty());
   s0 = link->stats();
-  k.edit(ops::setMetaData(*k.store.current(), util, "x", "test_shape",
+  k.edit(ops::setMetaData(*k.store.current(), shape, "", "test_shape",
                           std::make_shared<const meta::DataValue>(meta::DataValue::record({{"values", meta::DataValue::floatArray({0.25f})}}))));
   CHECK(k.store.lastChanges().metaDataOnly());
   link->flush();
@@ -366,23 +366,26 @@ TEST_CASE("meta link: frame-table and voice-tap slots — stable ids, taps per v
   Driver d{*link};
   link->play(0);
   d.run(20);
-  const std::string base = link->devices().stockText("BasicSynth");
-  const std::string text =
-      replaced(base, "  out = osc * env * vel * level", "  wt1 = meta_tmm2_wt(voice.hz)\n  out = wt1 * env * vel * level");
-  k.edit(ops::addMetaCall(*k.store.current(), k.inst, text, "wt1", "tmm2_wt"));
+  // GU.11: the test type as the instrument group's engine (In → it → Out; its own chain path ""), where a nested call
+  // in Basic Synth's patch text was.
+  const DeviceId g = instrumentRun(k.store, k.track, {"tmm2_wt"});
+  DeviceId wt;
+  for (const DevicePtr& x : findTrackPtr(*k.store.current(), k.track)->devices)
+    if (x->group == g) wt = x->id;
+  REQUIRE(wt.valid());
   link->flush();
   CHECK(link->lastError().empty());
-  const uint32_t tableId = link->metaSlot(k.inst, "wt1", 0), tapId = link->metaSlot(k.inst, "wt1", 1);
+  const uint32_t tableId = link->metaSlot(wt, "", 0), tapId = link->metaSlot(wt, "", 1);
   CHECK(tableId != 0);
   CHECK(tapId != 0);
   CHECK(tableId != tapId);
   CHECK(link->metaSlotsInUse() == 2);
-  const auto slot = link->metaFrameTable(k.inst, "wt1", 0);
+  const auto slot = link->metaFrameTable(wt, "", 0);
   REQUIRE(slot != nullptr);
-  CHECK(link->metaFrameTable(k.inst, "wt1", 1) == nullptr);  // a tap, not a table
-  const auto tap = link->metaVoiceTap(k.inst, "wt1", 1);
+  CHECK(link->metaFrameTable(wt, "", 1) == nullptr);  // a tap, not a table
+  const auto tap = link->metaVoiceTap(wt, "", 1);
   REQUIRE(tap != nullptr);
-  CHECK(link->metaVoiceTap(k.inst, "wt1", 0) == slot->sharedTap());
+  CHECK(link->metaVoiceTap(wt, "", 0) == slot->sharedTap());
   CHECK(tap->stride() == 8);  // 64-frame blocks: one record per block
   // Readers: three voices (the held chord) in both taps, a record per block.
   VoiceTapReader phases(tap), reads(slot->sharedTap());
@@ -408,8 +411,8 @@ TEST_CASE("meta link: frame-table and voice-tap slots — stable ids, taps per v
   const size_t mark = d.out.size();
   d.run(50);
   app::LinkStats s0 = link->stats();
-  CHECK_FALSE(link->publishFrameTable(k.inst, "wt1", 0, sawTable(96000.0)).ok());  // another rate: refused
-  REQUIRE(link->publishFrameTable(k.inst, "wt1", 0, sawTable(48000.0)).ok());
+  CHECK_FALSE(link->publishFrameTable(wt, "", 0, sawTable(96000.0)).ok());  // another rate: refused
+  REQUIRE(link->publishFrameTable(wt, "", 0, sawTable(48000.0)).ok());
   CHECK(slot->generation() == 2);
   d.run(50);
   CHECK(link->stats().compiles == s0.compiles);
@@ -426,13 +429,13 @@ TEST_CASE("meta link: frame-table and voice-tap slots — stable ids, taps per v
   const double sine = brightness(mark, mark + 64 * 50), saw = brightness(mark + 64 * 55, mark + 64 * 100);
   MESSAGE("brightness: sine table " << sine << ", saw table " << saw);
   CHECK(saw > 5.0 * sine);
-  CHECK(link->metaSlot(k.inst, "wt1", 0) == tableId);  // stable
-  // Removing the call frees both ids; the slot objects live on in the images that held them.
-  k.edit(ops::editDevicePatch(*k.store.current(), k.inst, base));
+  CHECK(link->metaSlot(wt, "", 0) == tableId);  // stable
+  // Removing the engine frees both ids; the slot objects live on in the images that held them.
+  k.edit(ops::deleteDevices(*k.store.current(), std::vector<DeviceId>{wt}));
   link->flush();
   CHECK(link->lastError().empty());
   CHECK(link->metaSlotsInUse() == 0);
-  CHECK(link->metaSlot(k.inst, "wt1", 0) == 0);
+  CHECK(link->metaSlot(wt, "", 0) == 0);
   d.run(20);
   CHECK(slot->generation() == 2);  // our reference still works
 }
@@ -465,7 +468,7 @@ double measuredHz(const std::vector<float>& x, size_t from, size_t window, size_
 
 }  // namespace
 
-TEST_CASE("meta link: Phase Accumulator -> Wavetable -> Auto Filter plays an 8-voice 31edo chord, every pitch exact") {
+TEST_CASE("meta link: Phase Accumulator -> Wavetable -> Utility plays an 8-voice 31edo chord, every pitch exact") {
   DocumentStore store;
   IdSource& ids = store.ids();
   const TrackId track = ids.track();
@@ -492,9 +495,9 @@ TEST_CASE("meta link: Phase Accumulator -> Wavetable -> Auto Filter plays an 8-v
     REQUIRE(store.dispatch(e->command).ok());
     return *e;
   };
-  // GU.4: In -> Phase Accumulator -> Wavetable -> Out (an instrument group), then the Auto Filter.
+  // GU.4: In -> Phase Accumulator -> Wavetable -> Out (an instrument group), then a Utility (GU.11: was Auto Filter).
   const DeviceId g = instrumentRun(store, track, {"pa", "wavetable"});
-  edit(ops::addDevice(*store.current(), ids, track, "auto_filter", DeviceKind::AudioEffect));
+  edit(ops::addDevice(*store.current(), ids, track, "module:utility", DeviceKind::AudioEffect));
   CHECK(mainPath(*store.current(), *findTrackPtr(*store.current(), track)).blocks.at(0)->id == g);
   auto link = makeLink(store.current());
   CHECK(link->lastError().empty());
@@ -691,7 +694,7 @@ TEST_CASE("meta link (TMM.14): a VCA knob's changes glide over 20 ms (no click; 
 // context ("voice.hz is only available in a voice context": the track stayed silent, every later edit of it failed,
 // until something rebuilt the whole program).
 TEST_CASE("meta link (TMM.17): a MIDI track's instrument coming and going rebuilds its unit (no voice-context errors)") {
-  Keys k;  // BasicSynth and a held chord
+  Keys k;  // the default instrument group and a held chord
   auto link = makeLink(k.store.current());
   [[maybe_unused]] const ListenerId sub = k.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   Driver d{*link};
@@ -731,16 +734,16 @@ TEST_CASE("meta link (TMM.17): a MIDI track's instrument coming and going rebuil
   REQUIRE(k.store.redo());
   expectClean("redo add");
   CHECK(replay() > 1e-3);
-  // A stock instrument onto an empty track too.
+  // An instrument module onto an empty track too (GU.11: Operator, an instrument group, where Basic Synth was).
   REQUIRE(k.store.undo());
-  k.edit(ops::addDevice(*k.store.current(), k.store.ids(), k.track, "BasicSynth", DeviceKind::Instrument));
-  expectClean("BasicSynth added");
+  k.edit(ops::addDevice(*k.store.current(), k.store.ids(), k.track, "module:operator", DeviceKind::Instrument));
+  expectClean("Operator added");
   CHECK(replay() > 1e-3);
 }
 
 // The status line said "Device 'meta:<type>' is not available: it is bypassed" for every chain meta device (the same
 // reports): the check looked the device up in the library by its patch name, which a meta device is not in.
-TEST_CASE("meta link (TMM.17): chain meta devices are not reported as missing; a missing stock device still is") {
+TEST_CASE("meta link (TMM.17): chain meta devices are not reported as missing") {
   Keys k;
   auto link = makeLink(k.store.current());
   views::ViewContext ctx(*link);
@@ -757,9 +760,6 @@ TEST_CASE("meta link (TMM.17): chain meta devices are not reported as missing; a
   edit(ops::addMetaDevice(*ctx.doc(), ctx.store().ids(), k.track, "wavetable"));
   edit(ops::addMetaDevice(*ctx.doc(), ctx.store().ids(), k.track, "spectrum"));
   CHECK(ctx.status().find("not available") == std::string::npos);
-  edit(ops::addDevice(*ctx.doc(), ctx.store().ids(), k.track, "NoSuchDevice", DeviceKind::AudioEffect));
-  CHECK(ctx.status().find("Device 'NoSuchDevice' is not available") != std::string::npos);
-  CHECK(ctx.status().find("more") == std::string::npos);  // only that one
   link->detach();
 }
 
