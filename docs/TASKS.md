@@ -734,9 +734,10 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [ ] **EQ.6 Milestone -Full + critique.**
 
 ### Bugs
+- [ ] **TX.reset-default Delete / double-click on a value-block control resets to the module's default, not knob position 0** (found by TX.detent: a reset PA Amplitude goes silent, Pitch to −4800 c). Queued.
 - [x] **TX.bool-real A bool wired into a real input converts (gate_to_real) instead of failing the compile** (user report 2026-11-08_12-29-32 context: "kind mismatch: bool into real input 'x' of (atom gain)"; consistent with GU.f8: a bool in a circuit is a 0/1 signal). *(merged eb580ed1; Q?-TX.bool-real-a)*
 - [ ] **TX.wire-isolation One bad wire never fails a whole unit** (found by TX.bool-real: real into a bool main input, width mismatch, event-rate mismatch still fail the whole track's compile; such a wire should be refused when made, or dropped from the compile with a visible error on that wire). Queued.
-- [~] **TX.detent Curve points can be detents; Phase Accumulator Amplitude 1 at the centre of its travel, latching** (user 2026-11-08). Queued.
+- [x] **TX.detent Curve points can be detents; Phase Accumulator Amplitude 1 at the centre of its travel, latching** (user 2026-11-08). Queued.
 - [~] **TX.group-oversample Any group can be oversampled (1× / 2× / 4× / 8× setting; the lowering runs its contents in the compiler's oversample region); the EQ and EQ Band panels expose it; the analytic response gets an oversample-region rule** (user 2026-11-08: "oversampling option for filter"). Queued.
 - [ ] **Saturator rebuilt as the Wavetable used as a waveshaper, inheriting its oversampling option** (user 2026-11-08, answer to Q?-AU.fold-a). Later.
 - [x] **AU.stream Click ≈ 100 ms after Play from idle** (user 2026-11-08, bug_reports/2026-11-08_11-45-59: FL Studio ASIO, 1024 frames, the stream suspended after 1 s idle; the click comes after the driver restarts on Play). Keep the stream running while a project is open; a cold start pre-rolls silence until the driver settles before the transport starts. *(merged 4501d720; FL Studio ASIO dips its own output 125–131 ms after every start; stream kept while in use (suspend only after 300 s asleep + unfocused), cold-start pre-roll ≈ 280 ms, fade before app-initiated stops, stream trace in F12 reports; Q?-AU.stream-a)*.

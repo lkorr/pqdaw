@@ -205,3 +205,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): -Affected -Slow 87/88 → test_pqc's type-error example (voice.gate into a real) is valid now, changed to real → bool, pq_tests_render default + slow 2/2; graph / document / engine pass; new playback bool real* 2/2 on the report's project (interpreter == JIT).
 - Perf: one AND per lane per converted port; CSE merges duplicates.
 - Notes/blockers: TX.wire-isolation filed (other wire-kind errors still fail a whole unit); Q?-TX.bool-real-a.
+
+## 2026-11-08 · TX.detent · orchestrator (merge of task/TX.detent)
+- Did: merged 2192fdfc. CurvePoint::detent (saved as "detents"); knob / slider / number / arc / dial drags hold at a detent (2·zone crossing, ±zone from a start on one; zone ±6 px at 200 px travel, 4.5–9 px), no jump; Shift ignores; wheel / arrow steps land on it; curve editor shows and toggles detents. PA Amplitude 0…1 | 1…4 straight halves, 1.0 at t = 0.5 (detent, default). Detents on PA Pitch 0, VCA ×1 / ×−1, Utility Gain / Balance / Mid-Side / Width, Saturator Drive / Output, LFO Offset, EQ Band Gain, EQ Output.
+- Verified (worker): dsp / document / views default tiers; -Affected 37/38 → pq_tests_library test_progressive (filesystem timing) passed alone; PA fixture renders bit-identical to the meta module; playback / tuning WAV goldens byte-identical. 28 view goldens re-recorded (PA Amplitude at centre).
+- Perf: UI-thread only; one extra curve segment.
+- Notes/blockers: TX.reset-default filed (Delete / double-click resets value blocks to position 0, not the module default).
