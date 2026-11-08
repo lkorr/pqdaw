@@ -164,3 +164,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): pq_tests_views 1/1 incl. new real-dispatch Z / Tab cases (into a PA control / input, PA out, inside the PA, into its Out terminal, nested); -Affected 24/24.
 - Perf: n/a (UI edit path). CPU-efficiency check: ≤ kMaxGroupDepth steps per insert.
 - Notes/blockers: none.
+
+## 2026-11-08 · EQ.4b · orchestrator (merge of task/EQ.4b-eq-fixes)
+- Did: merged 94596c06. Displays read the app's own LoweredProject (ProjectLink → ViewContext::setLowering, shared; no UI-thread lowering; curves held until the compile arrives, view_change::kResponses); phase wrapped ±180° by default + WRAP / UNWRAP chip; number element decimals / prefix / suffix ("Q 0.71", "×16"); EQ Band panel with response + analyser + phase; embedded panels pass curves and edits through; curve cache keyed on sample rate.
+- Verified: worker: pq_tests_views default tier, pq_tests_playback EQ.4b* 2/2 (real ProjectLink), new circuit open/close regression; headless eq-circuit-roundtrip scene in release. Orchestrator: build.ps1 -Affected on 94596c06 passed (worker's run was killed for low memory). Goldens re-recorded: eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay, eq-band-response.
+- Perf (check): first frame after adding a 32nd band 9.2 → 2.5 ms, one 7.8 ms frame when the compile arrives (32 bands prepared); drag 1–1.4 ms.
+- Notes/blockers: the user's open/close no-curve bug did not reproduce (candidate causes removed); the worker's live-GUI attempt touched the user's own pqdaw window (rule: workers drive only processes they launched).
