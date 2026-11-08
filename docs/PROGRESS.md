@@ -1497,3 +1497,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: not measured.
 - CPU-efficiency check: nothing new on the audio thread; lowering does less; switched-off groups no longer compute.
 - Notes/blockers: bench_inspect names retired stdlib files at run time; code without callers left (app::DeviceInspector, CircuitEditor::Host, lone-stock-instrument lowering branches, metaSites); group-panel knobs lack wheel / Show Automation / Knob Curve / modulation ring; test_mod_all slow sweep not run.
+
+## 2026-11-07 · GU.12 · orchestrator (milestone -Full; merge of task/GU.12-full-suite-fix)
+- Did: ./scripts/build.ps1 -Full on main e454820d failed 9 entries (playback_slow, graph, engine, jit_s0/s2/s3, jit_slow_s0/s2, stdlib_slow_s0): tests reading stock patches GU.10 retired, plus the slow wavetable alias suite's held note ending mid-suite (the GU.11 instrument group stops at note-off; note lengthened 256 → 1024 whole notes). Worker fix merged as 3a0612c9: tests/retired_devices/ (test copies of the six retired patches, imports to the live stdlib) for the corpus sweeps, structure, probe and click-sweep tests and pq_bench_inspect / operator_calibration; pq_bench_silence links without EQ Eight (6 links per unit; old "links" rows not comparable).
+- Verified: worker: build.ps1 -NoTests (check, all targets) 0 warnings; the 9 entries + stdlib_s0..s3 13/13; bench smoke runs exit 0. Milestone review: docs/reviews/GU-critique.md, follow-ups GU.f1–f9 (GU.f2+f3 running as GU.13).
+- Perf: n/a.
+- CPU-efficiency check: no product code changed.
+- Notes/blockers: none.

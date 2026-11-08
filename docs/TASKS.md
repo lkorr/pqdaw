@@ -707,7 +707,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [x] **GU.9 Racks are parallel groups; the rack is the Device view of them** *(v2 merged b71adab3; Q228; muted chains still compute; Open Lowered Rack Patch removed)* (plan §One hierarchy; user 2026-11-07: "racks still exist but only as a visual indicator … in the circuit view racks are PARALLEL GROUPS, not a singular group … 1-1 isomorphic with parallel groups, just another way of viewing"). *First attempt (effcd6dc: one group holding chain groups, rack features stripped) reverted in 7eff8172.*
 - [x] **GU.10 Stock devices as group presets (Utility, Saturator, LFO, Operator); Auto Filter and EQ Eight retired to `retired/` until a Filter module exists** (plan §One hierarchy). 👁 Merged fc964e34; Q230.
 - [x] **GU.11 One view, one panel system (circuit editor / user devices merge into the group view; panel.json system retired; model = blocks, groups, native engines)** (plan §One hierarchy). 👁 Merged 7408bed5; Q231.
-- [ ] **GU.12 Full-suite fixes after the GU retirements** (graph / engine / jit / stdlib / playback slow entries and benches that read retired stdlib files; found by the milestone -Full on e454820d).
+- [x] **GU.12 Full-suite fixes after the GU retirements** Merged 3a0612c9. (graph / engine / jit / stdlib / playback slow entries and benches that read retired stdlib files; found by the milestone -Full on e454820d).
 
 ### GU follow-ups (milestone critique 2026-11-07, docs/reviews/GU-critique.md; not started, ordered by the reviewer's severity)
 - [ ] **GU.f1 Racks recognised by role, not by block name** ("Mixer", "Key Zone", "Chain Select" … are matched by name in racks.cpp / edit_racks.cpp; a renamed chain mixer drops out of the rack).
