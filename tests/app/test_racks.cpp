@@ -1,13 +1,16 @@
 // GU.9 v2 (pq/document/racks.h): racks are parallel groups. Each case builds a rack from the edit builders (groups,
-// value blocks, atom blocks, wires: nothing of its own in the lowering) and renders it against the reference the T4.8
-// racks (Rack / Chain, removed by GU.9) rendered for the same project (tests/app/fixtures/gu9_racks, recorded by
-// a6bcfd6a): diff 0 where the arithmetic is the same, a bound where it now runs in float atoms instead of document-side
-// doubles. Every render runs through the interpreter and the JIT (bit for bit equal), every block under the allocation
-// trap.
+// value blocks, atom blocks, wires: nothing of its own in the lowering) and renders it against a reference render
+// (tests/app/fixtures/gu9_racks). GU.9 recorded those from the T4.8 racks (Rack / Chain) with stock devices in the
+// chains; GU.11 (one hierarchy: the chains hold modules — Utility, Saturator, Operator — after the default instrument
+// group) re-recorded them from these racks (PQ_UPDATE_GOLDENS=1), so they now pin the rack's sound against change; the
+// relations between the renders (a zone off again = the zone-less render, a muted chain = half the two empty chains, a
+// soloed one = the other muted) are checked render against render. Every render runs through the interpreter and the
+// JIT (bit for bit equal), every block under the allocation trap.
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <ostream>
@@ -28,7 +31,7 @@
 #include "pq/engine/project_compile.h"
 #include "pq/engine/project_program.h"
 #include "pq/media/wav_file.h"
-#include "../support/stand_in_synth.h"
+#include "../support/blocks.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -117,19 +120,26 @@ float peak(const golden::Channels& a) {
     for (const float v : c) p = std::max(p, std::fabs(v));
   return p;
 }
-golden::Channels reference(const char* name) {
-  auto w = media::readWav(std::filesystem::path(PQ_TEST_DATA_DIR) / "app" / "fixtures" / "gu9_racks" / name);
-  REQUIRE_MESSAGE(w.ok(), name);
+bool updateGoldens() {
+  const char* v = std::getenv("PQ_UPDATE_GOLDENS");
+  return v != nullptr && *v != '\0' && *v != '0';
+}
+// The reference `name` (PQ_UPDATE_GOLDENS=1: `out` written as it first).
+golden::Channels reference(const char* name, const golden::Channels& out) {
+  const std::filesystem::path wav = std::filesystem::path(PQ_TEST_DATA_DIR) / "app" / "fixtures" / "gu9_racks" / name;
+  if (updateGoldens()) REQUIRE(media::writeWav(wav, out, static_cast<uint32_t>(kRate)).ok());
+  auto w = media::readWav(wav);
+  REQUIRE_MESSAGE(w.ok(), name << " (PQ_UPDATE_GOLDENS=1)");
   return w->channels;
 }
-// Interpreter and JIT, equal bit for bit; compared with the T4.8 reference `name`.
+// Interpreter and JIT, equal bit for bit; compared with the reference `name`.
 double againstReference(const Project& p, TrackId t, const char* name) {
   const golden::Channels a = render(p, t);
   const golden::Channels j = render(p, t, compile::jitUnitBackend());
   CHECK(maxDiff(a, j) == 0.0);
-  const golden::Channels ref = reference(name);
+  const golden::Channels ref = reference(name, a);
   const double d = maxDiff(a, ref);
-  MESSAGE(name << ": max |diff| vs the T4.8 rack = " << d << " (peak " << peak(ref) << ", " << peak(a) << ")");
+  MESSAGE(std::string(name) << ": max |diff| vs the reference = " << d << " (peak " << peak(ref) << ", " << peak(a) << ")");
   CHECK(peak(a) > 1e-3f);
   return d;
 }
@@ -149,11 +159,10 @@ RackInfo rackIn(DocumentStore& s, TrackId t) {
 
 }  // namespace
 
-TEST_CASE("racks are parallel groups: an Audio Effect Rack (two chains, a macro mapping, a chain mixer) renders as "
-          "the T4.8 rack did") {
+TEST_CASE("racks are parallel groups: an Audio Effect Rack (two chains of modules, a macro mapping, a chain mixer) "
+          "renders as its reference") {
   DocumentStore s;
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
-  REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout)
   const DeviceId a = run(s, ops::addRack(*s.current(), s.ids(), t, false)).devices.at(0);
   const DeviceId b = run(s, ops::addChain(*s.current(), s.ids(), a)).devices.at(0);
   {  // two sibling groups fed from the instrument, summed into the mixer: one rack, derived from the wiring
@@ -167,16 +176,19 @@ TEST_CASE("racks are parallel groups: an Audio Effect Rack (two chains, a macro 
     CHECK(r.chains[0].volumeBlock.valid());
     CHECK(mainPath(*s.current(), trackOf(s, t)).contains(a));  // the path runs through the first chain
   }
-  const DeviceId util = run(s, ops::addToChain(*s.current(), s.ids(), a, "utility", DeviceKind::AudioEffect)).devices.at(0);
-  run(s, ops::addToChain(*s.current(), s.ids(), b, "saturator", DeviceKind::AudioEffect));
-  const WireId m = run(s, ops::mapMacro(*s.current(), s.ids(), a, 0, util, "gain")).wires.at(0);
+  const DeviceId util = run(s, ops::addToChain(*s.current(), s.ids(), a, "module:utility", DeviceKind::AudioEffect)).devices.at(0);
+  run(s, ops::addToChain(*s.current(), s.ids(), b, "module:saturator", DeviceKind::AudioEffect));
+  // GU.11: a macro maps a module's control: its value block (the Utility's Gain).
+  const DeviceId gain = test_blocks::member(*s.current(), util, "Gain");
+  REQUIRE(gain.valid());
+  const WireId m = run(s, ops::mapMacro(*s.current(), s.ids(), a, 0, gain, std::string(kValueParam))).wires.at(0);
   run(s, ops::setMacroMapping(*s.current(), m, 0.2, 0.8));
   run(s, ops::setMacroValue(*s.current(), a, 0, 64.0));
   {
     const RackInfo r = rackIn(s, t);
     REQUIRE(r.mappings.size() == 1);
     CHECK(r.mappings[0].macro == 0);
-    CHECK(r.mappings[0].device == util);
+    CHECK(r.mappings[0].device == gain);
     CHECK(std::fabs(r.mappings[0].min - 0.2) < 1e-12);
     CHECK(std::fabs(r.mappings[0].max - 0.8) < 1e-12);
     CHECK(r.macros[0].block.valid());
@@ -189,23 +201,23 @@ TEST_CASE("racks are parallel groups: an Audio Effect Rack (two chains, a macro 
   CHECK(std::fabs(rackIn(s, t).chains[1].volumeDb + 6.0f) < 1e-4f);
   CHECK(std::fabs(rackIn(s, t).chains[1].pan - 0.4f) < 1e-6f);
   const double d2 = againstReference(*s.current(), t, "audio_rack_mix.wav");
-  CHECK(d2 <= 1e-5);  // the chain gains: float atoms now, document doubles then
+  CHECK(d2 <= 1e-5);
 }
 
 TEST_CASE("racks are parallel groups: an Instrument Rack's chains are instrument groups of the same notes (one voice "
-          "engine: voicing does not double) and render as the T4.8 rack did, a velocity zone too") {
+          "engine: voicing does not double) and render as their reference, a velocity zone too") {
   DocumentStore s;
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
-  REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout)
   std::vector<DeviceId> all;
   for (const DevicePtr& d : trackOf(s, t).devices) all.push_back(d->id);
   run(s, ops::deleteDevices(*s.current(), all));
   const DeviceId a = run(s, ops::addRack(*s.current(), s.ids(), t, true, 0)).devices.at(0);
   const DeviceId b = run(s, ops::addChain(*s.current(), s.ids(), a)).devices.at(0);
-  run(s, ops::addToChain(*s.current(), s.ids(), a, std::string(kDefaultInstrument), DeviceKind::Instrument));
-  run(s, ops::addToChain(*s.current(), s.ids(), b, std::string(kDefaultInstrument), DeviceKind::Instrument));
-  const DeviceId util = run(s, ops::addToChain(*s.current(), s.ids(), b, "utility", DeviceKind::AudioEffect)).devices.at(0);
-  run(s, ops::setDeviceParam(*s.current(), util, "gain", 0.6));
+  // GU.11: the chains' instruments are Operator modules (instrument groups pasted into the chains).
+  run(s, ops::addToChain(*s.current(), s.ids(), a, "module:operator", DeviceKind::Instrument));
+  run(s, ops::addToChain(*s.current(), s.ids(), b, "module:operator", DeviceKind::Instrument));
+  const DeviceId util = run(s, ops::addToChain(*s.current(), s.ids(), b, "module:utility", DeviceKind::AudioEffect)).devices.at(0);
+  run(s, ops::setDeviceParam(*s.current(), test_blocks::member(*s.current(), util, "Gain"), std::string(kValueParam), 0.6));
   {
     const RackInfo r = rackIn(s, t);
     CHECK(r.instrument);
@@ -224,7 +236,7 @@ TEST_CASE("racks are parallel groups: an Instrument Rack's chains are instrument
   CHECK(rackIn(s, t).chains[1].velocityZone.valid());
   CHECK(std::fabs(rackIn(s, t).chains[1].velocity.fadeHi - 100.0) < 1e-9);
   const double d2 = againstReference(*s.current(), t, "instrument_rack_zone.wav");
-  CHECK(d2 <= 1e-4);  // the zone's ramp in float atoms (v·a + b in document doubles then)
+  CHECK(d2 <= 1e-4);
   // Off again: the zone group goes (an off zone costs nothing) and the render is the zone-less one.
   run(s, ops::setChainZone(*s.current(), s.ids(), b, ZoneKind::Velocity, fullZone(ZoneKind::Velocity, KeyZoneUnit::Hz)));
   CHECK(!rackIn(s, t).chains[1].velocityZone.valid());
@@ -235,7 +247,6 @@ TEST_CASE("racks are parallel groups: wiring two groups in parallel by hand make
           "selector are blocks") {
   DocumentStore s;
   const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
-  REQUIRE(stand_in::useBasicSynth(s, t).valid());  // (GU.10: the IG.1-2 layout)
   const DeviceId a = run(s, ops::addRack(*s.current(), s.ids(), t, false)).devices.at(0);
   const DeviceId b = run(s, ops::addChain(*s.current(), s.ids(), a)).devices.at(0);
   const golden::Channels two = render(*s.current(), t);
@@ -258,7 +269,6 @@ TEST_CASE("racks are parallel groups: wiring two groups in parallel by hand make
   // Two groups wired by hand in parallel (fed from the same block, summed into the mixer): a rack.
   DocumentStore h;
   const TrackId t2 = run(h, ops::createTrack(*h.current(), h.ids(), TrackKind::Midi)).tracks.at(0);
-  REQUIRE(stand_in::useBasicSynth(h, t2).valid());  // (GU.10: the IG.1-2 layout)
   const MainPath path = mainPath(*h.current(), trackOf(h, t2));
   REQUIRE(!path.blocks.empty());
   const DeviceId g1 = h.ids().device(), g2 = h.ids().device();
