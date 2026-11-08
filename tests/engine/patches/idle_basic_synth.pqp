@@ -1,0 +1,25 @@
+// The retired M3 Basic Synth (retired/stdlib/instruments/basic_synth.pqp), kept here as the idle-project fixture's
+// instrument (tests/engine/idle_project_fixture.h): leaf atoms only, voice end by its `done`.
+patch BasicSynth {
+  param attack  = 5ms   [0.5ms..5s]
+  param decay   = 400ms [1ms..10s]
+  param sustain = 0.5   [0..1]
+  param release = 250ms [1ms..10s]
+  param level   = 0.2   [0..1]
+  param bright  = 0.35  [0..1]
+  out   out  : audio voice mono
+  out   done : bool voice mono
+
+  gate      = voice.gate
+  attacking = srff(rise(gate), env >= 0.99 || !gate)
+  target    = attacking ? 1.0 : gate ? sustain : 0.0
+  time      = attacking ? attack : gate ? decay : release
+  coef      = 1 - exp(-5 / max(time * sr, 1))
+  env       = z1(env + (target - env) * coef)
+
+  ph  = phasor(voice.hz)
+  osc = sine(ph) * (1 - bright * 0.4) + sine(frac(ph * 2)) * (bright * 0.3) + sine(frac(ph * 3)) * (bright * 0.1)
+  vel = 0.25 + 0.75 * voice.velocity
+  out = osc * env * vel * level
+  done = !gate && env < 0.00003
+}

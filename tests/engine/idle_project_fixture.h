@@ -2,9 +2,10 @@
 
 // T1.x-silence: the "idle project with reverbs and delays" of the acceptance (tests/engine/test_project_silence.cpp,
 // bench/engine/bench_silence.cpp), built from stdlib: `numTracks` MIDI tracks, each the stock instrument
-// (instruments/basic_synth.pqp, voice end by its `done`) → a Schroeder reverb (four filters/comb.pqp combs, one of them
-// comb_lp, then two allpass_delay diffusers) and a feedback echo (a long comb, 375 ms) → EQ Eight (devices/
-// eq_eight.pqp, stereo, its default curve) → a smoothed volume (gain), plus a send of the wet signal to a return with
+// (the retired Basic Synth, a copy in tests/engine/patches/idle_basic_synth.pqp, voice end by its `done`) → a Schroeder
+// reverb (four filters/comb.pqp combs, one of them comb_lp, then two allpass_delay diffusers) and a feedback echo (a
+// long comb, 375 ms) → a stereo 12 kHz biquad_lowpass (EQ Eight before GU.10 retired it) → a smoothed volume (gain),
+// plus a send of the wet signal to a return with
 // its own comb/allpass reverb; a master (tanh) plays the sum. Each track plays one short chord at the start
 // (`chord(k)`), after which every tail rings out: the echoes for ≈ 6–7 s, the return's reverb a little longer.
 
@@ -26,10 +27,10 @@ namespace fs = std::filesystem;
 inline std::string trackText(uint32_t k) {
   char buf[2048];
   std::snprintf(buf, sizeof buf, R"(
-import "instruments/basic_synth.pqp"
+import "../tests/engine/patches/idle_basic_synth.pqp"
 import "filters/comb.pqp"
 import "filters/allpass.pqp"
-import "devices/eq_eight.pqp"
+import "filters/biquad.pqp"
 
 patch Track%u {
   param vol = %.3f [0..1]
@@ -47,7 +48,7 @@ patch Track%u {
   a2   = allpass_delay(a1, time: 1.7ms, g: 0.7)
   echo = comb(x, 600ms, time: %.0fms, fb: 0.45)
   wet  = x + a2 * 0.35 + echo * 0.3
-  eq   = eq_eight((wet, wet))
+  eq   = (biquad_lowpass(wet, cutoff: 12kHz), biquad_lowpass(wet, cutoff: 12kHz))
   out  = gain(eq, vol, 2ms)
   send = wet * 0.2
 }
@@ -110,6 +111,8 @@ inline std::unique_ptr<Project> makeProject(uint32_t numTracks) {
   // The whole stdlib (the library every call resolves into), then the tracks.
   for (const fs::path& f : text_util::pqpFiles(stdlib))
     if (parse(*p, text_util::readFile(f), fs::relative(f, stdlib).string()) == nullptr) return nullptr;
+  const std::string synth = "../tests/engine/patches/idle_basic_synth.pqp";
+  if (parse(*p, text_util::readFile(stdlib / synth), synth) == nullptr) return nullptr;
   for (uint32_t k = 0; k < numTracks; ++k) {
     const graph::PatchFile* f = parse(*p, trackText(k), "__idle_track" + std::to_string(k) + ".pqp");
     if (f == nullptr) return nullptr;
