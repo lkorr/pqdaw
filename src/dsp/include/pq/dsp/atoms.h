@@ -195,6 +195,20 @@
 //                                     exactly db_to_gain's). Element-wise and stateless; equals curve.h evalCurve to
 //                                     float rounding. Without a slot (a lowering without the link's curve slots) it is
 //                                     the identity on x.
+// Filters (EQ.1; kernels_svf.cpp; the designer, the modes and the exact response in pq/dsp/svf_design.h):
+//   svf (x, cutoff, q, gain, mode, stages, prewarp)
+//                                     `stages` cascaded TPT state-variable sections (1 … 64; bell, notch: 1), each
+//                                     with an output mix over hp / bp / lp / x, so every mode is one recursion per
+//                                     section. cutoff in Hz (clamped to [1e−3, 0.49·sr]), q, gain a linear amplitude
+//                                     (bell and shelves; ≤ 0 reads −120 dB); mode 0 … 7 = lowpass, highpass, bandpass,
+//                                     notch, bell, lowshelf, highshelf, allpass (SvfMode, rounded and clamped);
+//                                     prewarp 0 = matched (poles impulse-invariant, numerator magnitude-matched:
+//                                     no cramping near Nyquist), 1 = bilinear (plain Simper). mode, stages, prewarp are
+//                                     consts (Spl); x, cutoff, q, gain any rate. Per lane the coefficients are designed
+//                                     (double, svfDesign) when that lane's inputs change bitwise: once per change at
+//                                     param rate, per frame at audio rate. The output is exactly svfResponse of the
+//                                     design (to float rounding of the recursion); any split of the frames into calls
+//                                     gives the same bits. A non-finite or > 1e30 state is reset to 0 after each call.
 
 #include <cstddef>
 #include <cstdint>
@@ -240,6 +254,8 @@ enum class Atom : uint16_t {
   SignalTap,
   // GU.1: a driven control's curve (see "Control curves" above)
   Curve,
+  // EQ.1: the state-variable filter cascade (see "Filters" above)
+  Svf,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);

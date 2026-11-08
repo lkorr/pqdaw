@@ -169,6 +169,15 @@ TEST_CASE("blocks: atom blocks are their atom (ports, settings, no params); a va
   CHECK(voicelessAtomPatch("mul") == nullptr);
   CHECK(atomBlockPatch("no_such_atom") == nullptr);
   CHECK(atomBlockPatch("curve") == nullptr);
+  // EQ.1: the svf filter is a block; its mode, stages and prewarp are settings (consts), x / cutoff / q / gain ports.
+  const DeviceInfo* svf = atomBlockInfo("svf");
+  REQUIRE(svf != nullptr);
+  REQUIRE(svf->settings.size() == 3);
+  CHECK(svf->settings[0].name == "mode");
+  CHECK(svf->settings[1].name == "stages");
+  CHECK(svf->settings[2].name == "prewarp");
+  REQUIRE(atomBlockPatch("svf") != nullptr);
+  CHECK(pq::graph::subcircuitSignature(*atomBlockPatch("svf")).inputs.size() == 7);
   const pq::graph::SubcircuitRef sig = pq::graph::subcircuitSignature(*mul);
   REQUIRE(sig.inputs.size() == 2);
   CHECK(sig.inputs[0].name == "a");

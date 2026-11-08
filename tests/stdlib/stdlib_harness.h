@@ -4,7 +4,7 @@
 // run it on the interpreter or the JIT with a caller-defined stimulus, and collect its outputs per voice.
 //
 //   Program p = compile(R"(import "filters/svf.pqp"
-//                          patch T { in x : audio  in c : audio  out y : audio  y = svf(x, cutoff: c).lp })");
+//                          patch T { in x : audio  in c : audio  out y : audio  y = svf_multi(x, cutoff: c).lp })");
 //   Stimulus st;  st.input = [](uint32_t ord, uint32_t voice, uint64_t t) { … };
 //   Outputs o = run(p, Backend::Jit, st);   o.at("y")[voice][t]
 //

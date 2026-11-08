@@ -24,6 +24,8 @@ pq_add_module(pq_dsp
     src/kernels_wave_live.cpp
     src/kernels_signal_tap.cpp
     src/kernels_curve.cpp
+    src/kernels_svf.cpp
+    src/svf_design.cpp
     src/curve.cpp
     src/fft_mixed.cpp
   DEPS pq_core

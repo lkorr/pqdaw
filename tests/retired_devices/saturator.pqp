@@ -68,7 +68,7 @@ patch saturator {
   param wsPeriod   = 0%    [0%..100%]      @label("Period")
   out   out : audio stereo
 
-  pre = color >= 0.5 ? svf(svf(x, cutoff: 200Hz, q: 0.7071067811865476, gain: base).lowshelf, cutoff: colorFreq, q: colorWidth, gain: depth).bell : x
+  pre = color >= 0.5 ? svf_multi(svf_multi(x, cutoff: 200Hz, q: 0.7071067811865476, gain: base).lowshelf, cutoff: colorFreq, q: colorWidth, gain: depth).bell : x
   u   = gain(pre, drive, start: 1)
 
   // Waveshaper coefficients (param rate unless modulated).

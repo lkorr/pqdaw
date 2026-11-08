@@ -838,7 +838,7 @@ Status openPatchScene(Shell& shell, std::string_view file, std::string_view patc
   return Ok{};
 }
 Status setupCircuit(Shell& shell, std::string_view file) { return openPatchScene(shell, file, {}); }
-Status setupCircuitSvf(Shell& shell, std::string_view file) { return openPatchScene(shell, file, "svf"); }
+Status setupCircuitSvf(Shell& shell, std::string_view file) { return openPatchScene(shell, file, "svf_multi"); }
 Status setupCircuitSvfCore(Shell& shell, std::string_view file) { return openPatchScene(shell, file, "svf_core"); }
 Status setupCircuitSymbols(Shell& shell) {
   if (!circuit::openCircuitViewer(shell.overlay(), circuit::symbolSheet())) return Error{ErrorCode::NotFound, "no overlay", {}};

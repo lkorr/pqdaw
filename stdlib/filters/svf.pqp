@@ -6,13 +6,13 @@
 //   g = tan(π·cutoff/sr), k = 1/q,  a1 = 1 / (1 + g·(g + k)),  a2 = g·a1,  a3 = g·a2
 //   v3 = x − ic2,  v1 = a1·ic1 + a2·v3 (band),  v2 = ic2 + a2·ic1 + a3·v3 (low),  ic1 ← 2·v1 − ic1,  ic2 ← 2·v2 − ic2
 //
-// `svf` gives every response of one filter core as an output: lp, bp (unity gain at the cutoff), hp, notch, peak
+// `svf_multi` gives every response of one filter core as an output: lp, bp (unity gain at the cutoff), hp, notch, peak
 // (lp − hp) and allpass, all from the same two states; read as many as you like at no extra cost. The bell and the
 // shelves use the gain-dependent coefficients of the RBJ / Cytomic designs, so each of them is its own core:
-// `svf(x, cutoff: c, q: q, gain: 6dB).lowshelf` costs one core, and cores whose outputs are not read are removed
+// `svf_multi(x, cutoff: c, q: q, gain: 6dB).lowshelf` costs one core, and cores whose outputs are not read are removed
 // by the compiler. Cost per core: about ten multiply/adds per sample; the coefficients run once per block unless
 // cutoff, q or gain are modulated.
-patch svf {
+patch svf_multi {
   in    x      : audio
   param cutoff = 1kHz   [20Hz..20kHz] @unit(Hz) @curve(exp) @label("Cutoff")
   param q      = 0.7071 [0.1..40]     @curve(exp) @label("Q")

@@ -87,7 +87,7 @@ Glyph filterGlyph(std::string_view callee) noexcept {
     Glyph glyph;
   };
   static constexpr Row kRows[] = {
-      {"onepole", Glyph::Lowpass},          {"svf", Glyph::Lowpass},            {"svf_core", Glyph::Bandpass},
+      {"onepole", Glyph::Lowpass},          {"svf", Glyph::Lowpass},            {"svf_multi", Glyph::Lowpass},      {"svf_core", Glyph::Bandpass},
       {"biquad", Glyph::Lowpass},           {"biquad_lowpass", Glyph::Lowpass}, {"biquad_highpass", Glyph::Highpass},
       {"biquad_bandpass", Glyph::Bandpass}, {"biquad_notch", Glyph::Notch},     {"biquad_allpass", Glyph::Allpass},
       {"biquad_peak", Glyph::Peak},         {"biquad_lowshelf", Glyph::Shelf},  {"biquad_highshelf", Glyph::Shelf},

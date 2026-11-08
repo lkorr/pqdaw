@@ -149,6 +149,16 @@ constexpr PortSpec pTuneVoices[] = {{"hz", kR}, {"cents", kR, true, 0.0f}};
 // T3.17-fix2: smoothed gains (time in seconds, 2 ms by default; the compiler converts it to samples). T4.x-fix-dsp:
 // `start` 1 = the first block starts at the target (0, the default: fade in from 0).
 constexpr PortSpec pGainIn[] = {{"x", kR}, {"g", kR}, {"time", kRConst, true, 0.002f}, {"start", kRConst, true, 0.0f}};
+// EQ.1 (pq/dsp/svf_design.h): the svf cascade. gain is a linear amplitude (a dB literal is one); mode 0..7 = lowpass,
+// highpass, bandpass, notch, bell, lowshelf, highshelf, allpass; stages 1..64 (bell, notch: 1); prewarp 0 matched,
+// 1 bilinear.
+constexpr PortSpec pSvf[] = {{"x", kR},
+                             {"cutoff", kR, true, 1000.0f},
+                             {"q", kR, true, 0.70710678f},
+                             {"gain", kR, true, 1.0f},
+                             {"mode", kRConst, true, 0.0f},
+                             {"stages", kRConst, true, 1.0f},
+                             {"prewarp", kRConst, true, 0.0f}};
 constexpr PortSpec pGainAddIn[] = {{"acc", kR}, {"x", kR}, {"g", kR}, {"time", kRConst, true, 0.002f},
                                    {"start", kRConst, true, 0.0f}};
 
@@ -251,6 +261,10 @@ const AtomSignature kAtoms[] = {
      "x sampled on each rising edge of trig"},
     {"latch", C::Memory, pLatch, pOutAny, sizeof(dsp::LatchState), kStateful, 0, {},
      "x while enable, else the last value"},
+    // EQ.1: the filter / EQ core (a band's circuit, docs/plans/EQ.md).
+    {"svf", C::Memory, pSvf, pOutRAudio, sizeof(dsp::SvfState), kStateful | kBroadcast, 0, {},
+     "state-variable filter cascade: mode (lp hp bp notch bell lowshelf highshelf allpass), stages 1..64, matched "
+     "or bilinear prewarp"},
 
     // Logic. Comparators (real → bool): < <= > >= == != map to lt le gt ge eq ne; && || ^^ ! map to and or xor not.
     {"lt", C::Logic, pAB, pOutB, 0, kMath, 0, {}, "a < b"},

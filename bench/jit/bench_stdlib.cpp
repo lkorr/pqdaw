@@ -244,7 +244,7 @@ patch T { in x : audio %P
   param c = 1kHz [20Hz..20kHz]
   param q = 2 [0.1..40]
   out y : audio %P
-  y = svf(x, cutoff: c, q: q).lp })", {X}, {{"c", 1000.0}, {"q", 2.0}},
+  y = svf_multi(x, cutoff: c, q: q).lp })", {X}, {{"c", 1000.0}, {"q", 2.0}},
                      [] {
                        auto f = m;
                        const auto c = SvfCore<float>::coef(prewarp(1000.0f, kSr), 1.0f / std::max(2.0f, 0.01f));
@@ -264,7 +264,7 @@ patch T { in x : audio %P
   in c : audio %P
   param q = 2 [0.1..40]
   out y : audio %P
-  y = svf(x, cutoff: c, q: q).lp })", {X, CUT}, {{"q", 2.0}},
+  y = svf_multi(x, cutoff: c, q: q).lp })", {X, CUT}, {{"q", 2.0}},
                      [] {
                        auto f = ma;
                        const float k = 1.0f / std::max(2.0f, 0.01f);

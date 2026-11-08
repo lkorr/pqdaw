@@ -255,7 +255,7 @@ patch T {
   param c = 1kHz [20Hz..20kHz]
   param q = 0.7071 [0.1..40]
   param gain = 0dB [-24dB..24dB]
-  f = svf(x, cutoff: c, q: q, gain: gain))") + kSvfOuts, voice));
+  f = svf_multi(x, cutoff: c, q: q, gain: gain))") + kSvfOuts, voice));
     struct Case {
       double c, q, gainDb;
     };
@@ -281,7 +281,7 @@ patch T {
   in    c : audio %P
   in    q : audio %P
   in    gain : audio %P
-  f = svf(x, cutoff: c, q: q, gain: gain))") + kSvfOuts, voice));
+  f = svf_multi(x, cutoff: c, q: q, gain: gain))") + kSvfOuts, voice));
     for (const uint32_t block : {64u, 37u}) {
       Stimulus st = stimulus(voice, kSignalFrames, block);
       st.input = [&](uint32_t ord, uint32_t v, uint64_t t) {

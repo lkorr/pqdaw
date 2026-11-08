@@ -46,6 +46,9 @@ constexpr ArgMap kGain[] = {{U::Input, 0}, {U::Input, 1}, {U::InputSeconds, 2}, 
 constexpr ArgMap kGainAdd[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::InputSeconds, 3},  // acc, x, g, time,
                                {U::Input, 4}};                                                     // start
 
+constexpr ArgMap kSvf[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // x, cutoff, q, gain,
+                           {U::Input, 4}, {U::Input, 5}, {U::Input, 6}};                 // mode, stages, prewarp
+
 struct Special {
   std::string_view atom;
   std::span<const ArgMap> args;
@@ -73,6 +76,7 @@ constexpr Special kSpecial[] = {
     {"tuning_hz", kTuningHz},
     {"gain", kGain},
     {"gain_add", kGainAdd},
+    {"svf", kSvf},
 };
 
 struct NoKernel {

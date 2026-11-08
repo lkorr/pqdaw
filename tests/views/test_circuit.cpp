@@ -481,7 +481,7 @@ TEST_CASE("circuit: symbol tiles draw what the direct path draws (1x, 1.5x, 2x; 
 TEST_CASE("circuit: level of detail; idle after a zoom settles; pan and zoom repaint only the canvas") {
   Rig rig(800, 500, 1.0f);
   const auto doc = load(stdlibPath("filters/svf.pqp"));
-  rig.canvas->setScene(buildScene(*doc->find("svf")));
+  rig.canvas->setScene(buildScene(*doc->find("svf_multi")));
   rig.settle();
   CHECK(!rig.tree.needsFrame());
   CHECK(std::isinf(rig.tree.nextWakeTime()));
@@ -643,10 +643,10 @@ TEST_CASE("circuit viewer: double-click a subcircuit opens its callee, Back retu
   (void)layer;
   d.tree().layoutNow();
   const auto doc = load(stdlibPath("filters/svf.pqp"));
-  CircuitViewer* v = openCircuitViewer(root, doc, "svf");
+  CircuitViewer* v = openCircuitViewer(root, doc, "svf_multi");
   REQUIRE(v != nullptr);
   d.tree().layoutNow();
-  CHECK(v->title() == "svf.pqp \xE2\x80\xBA svf");
+  CHECK(v->title() == "svf.pqp \xE2\x80\xBA svf_multi");
   // The first svf_core block.
   const CircuitScene& sc = *v->canvas().scene();
   uint32_t core = UINT32_MAX;
@@ -657,9 +657,9 @@ TEST_CASE("circuit viewer: double-click a subcircuit opens its callee, Back retu
   d.doubleClick(v->canvas().toDevice({n.x + n.w * 0.5f, n.y + n.h * 0.5f}));
   REQUIRE(v->shownPatch() != nullptr);
   CHECK(v->shownPatch()->name() == "svf_core");
-  CHECK(v->title() == "svf.pqp \xE2\x80\xBA svf \xE2\x80\xBA svf_core");
+  CHECK(v->title() == "svf.pqp \xE2\x80\xBA svf_multi \xE2\x80\xBA svf_core");
   CHECK(v->back());
-  CHECK(v->shownPatch()->name() == "svf");
+  CHECK(v->shownPatch()->name() == "svf_multi");
   CHECK_FALSE(v->back());
 }
 

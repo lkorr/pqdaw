@@ -107,6 +107,9 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // GU.1 (kernels_curve.cpp): a control's curve; x Spl or Blk; `convert` a const (Spl, or a block in a Control
     // region: the kernel reads its first float); element-wise (in place).
     {"curve", 2, 1, false, false, 0, 0, kB0 | kB1, 0, 0, Resource::Curve, true},
+    // EQ.1 (kernels_svf.cpp): x, cutoff, q, gain Blk or Spl (a template specialisation each); mode, stages, prewarp
+    // consts.
+    {"svf", 7, 1, false, false, 0, 0, kB0 | kB1 | kB2 | kB3, kB4 | kB5 | kB6, sizeof(SvfState), Resource::None, false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -170,6 +173,7 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   if (KernelFn f = findRampKernel(a, lanes)) return f;
   if (KernelFn f = findSignalTapKernel(a, lanes, spec)) return f;
   if (KernelFn f = findCurveKernel(a, lanes, spec)) return f;
+  if (KernelFn f = findSvfKernel(a, lanes, spec)) return f;
   return findTableKernel(a, lanes, spec);
 }
 
@@ -212,6 +216,8 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::GainAdd: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(GainState, rpow))};
     // TX.smooth: target, inc, rem, started per lane; `active` is the group's (this block's call wrote the output).
     case Atom::ParamRamp: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(ParamRampState, active))};
+    // EQ.1: the sections (8-lane layout: eight [8] arrays each), the designed-for inputs, keys and counts.
+    case Atom::Svf: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(SvfState, sampleRate))};
     case Atom::OversampleUp:
     case Atom::OversampleDown:
     case Atom::OversamplePhase: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
@@ -399,6 +405,7 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
       s.sampleRate = static_cast<float>(init.sampleRate);
       break;
     }
+    case Atom::Svf: static_cast<SvfState*>(state)->sampleRate = init.sampleRate; break;  // key 0: designed on first call
     default:
       break;
   }

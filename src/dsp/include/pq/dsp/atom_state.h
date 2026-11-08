@@ -217,6 +217,28 @@ struct alignas(32) OversamplePhaseState {
   float primed[8];
 };
 
+// svf (EQ.1, kernels_svf.cpp; pq/dsp/svf_design.h): up to 64 cascaded TPT sections, each its two integrator states in
+// float, the six coefficients the kernel runs, and the two states as doubles (a deep cascade runs in double), each
+// double as two 32-bit halves (lo, hi): ic1 ic2 d1 b1 b2 m0 h1 h2 ic1lo ic1hi ic2lo ic2hi. 8 lanes: section s, field j,
+// lane l at sec[s·96 + j·8 + l] (twelve [8] arrays per section, every word per lane); 1 lane: packed at sec[s·12 + j].
+// Per lane the inputs its coefficients were designed for (bitwise) and a key (0: none yet; else 1 | mode << 1 |
+// prewarp << 4 | stages << 8) with its section count. Sections from a lane's count on hold the identity (m0 = 1, no
+// recursion), so an 8-lane group runs the largest count of its lanes. Shared: the sample rate and which state set the
+// group last ran (0 float, 1 double).
+inline constexpr uint32_t kSvfStateSections = 64;  // = kSvfMaxStages (svf_design.h)
+struct alignas(32) SvfState {
+  float sec[kSvfStateSections * 96];
+  float cutoff[8];
+  float q[8];
+  float gain[8];
+  uint32_t key[8];
+  uint32_t count[8];
+  double sampleRate;   // shared (initState)
+  uint32_t precision;  // shared
+  uint32_t pad_[5];
+};
+
+static_assert(sizeof(SvfState) == kSvfStateSections * 384 + 6 * 32);
 static_assert(sizeof(OversampleState) == 26 * 32);
 static_assert(sizeof(OversamplePhaseState) == 64);
 static_assert(sizeof(Z1State) == 32);
