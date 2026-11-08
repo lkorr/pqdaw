@@ -549,6 +549,9 @@ void WasapiDevice::Impl::threadMain() noexcept {
   ComScope com;
   DWORD taskIndex = 0;
   HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+  // AU.stream: named, so pqdaw --idle-check can tell the device stream (it now keeps running while the app is in use)
+  // from the rest of the app. Once, before the stream starts.
+  SetThreadDescription(GetCurrentThread(), L"pqdaw audio (WASAPI)");
   bool pendingUnderrun = false;
 
   // Pre-fill: exclusive event mode wants one full buffer before Start; shared fills whole periods.
