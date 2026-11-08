@@ -3,6 +3,7 @@
 #include "pq/graph/response.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <numbers>
@@ -140,8 +141,18 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
     if (relNode[n] == 0) continue;
     const Node& node = p.node(n);
     if (node.kind != NodeKind::Atom || atomSignature(node.atom).response == nullptr) return;  // Unavailable
-    if (n < typed.origin.size() && typed.origin[n].region != 0) return;  // another rate (oversample region)
   }
+  // TX.group-oversample: the rate each node runs at (log2 of its oversample region's factor; 0: the base rate). The
+  // converters are evaluated at the base rate (their rules are the half-band cascades at the base omega).
+  const AtomId osUp = atomId("oversample_up"), osDown = atomId("oversample_down");
+  auto rateOf = [&](NodeIndex n) -> uint8_t {
+    if (n >= typed.origin.size() || typed.origin[n].region == 0) return 0;
+    const Node& node = p.node(n);
+    if (node.kind == NodeKind::Atom && (node.atom == osUp || node.atom == osDown)) return 0;
+    const uint16_t r = typed.origin[n].region;
+    const uint32_t f = r <= typed.oversample.size() ? typed.oversample[r - 1u].factor : 1u;
+    return static_cast<uint8_t>(std::min<uint32_t>(kRates - 1u, static_cast<uint32_t>(std::countr_zero(std::max(f, 1u)))));
+  };
 
   // ---- unknowns: one per (relevant port, channel) ----
   std::vector<uint32_t> varBase(ports, kNone);
@@ -163,6 +174,7 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
     const Node& node = p.node(n);
     CtrlOp op;
     op.atom = node.atom;
+    op.rate = rateOf(n);
     switch (node.kind) {
       case NodeKind::Const: {
         op.kind = OpKind::Const;
@@ -260,7 +272,7 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
   std::vector<std::pair<uint32_t, Term>> edges;  // (unknown, term)
   uint32_t argCount = 0;
   size_t cacheCount = 0;  // doubles
-  gain_.assign(1, Cx{});  // gain_[0]: z at the current point (the z1 terms read it)
+  gain_.assign(kRates, Cx{});  // gain_[r]: z at the current point at rate r (an oversample region; the z1 terms)
   for (NodeIndex n = 0; n < nodes; ++n) {
     if (relNode[n] == 0) continue;
     const Node& node = p.node(n);
@@ -288,6 +300,8 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
     for (uint16_t c = 0; c < width; ++c) {
       Cell cell;
       cell.rule = s.response;
+      cell.rate = rateOf(n);
+      usedRates_ |= static_cast<uint8_t>(1u << cell.rate);
       cell.inBegin = inBegin;
       cell.inCount = node.numInputs;
       cell.numOutputs = node.numOutputs;
@@ -322,7 +336,7 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
             ic = in.width == 1 ? 0u : std::min<uint32_t>(c, in.width - 1u);
           }
           if (in.signal == 0) continue;
-          edges.push_back({v, Term{varBase[in.port] + ic, cell.zOnly ? 0u : cell.gainBase + o * node.numInputs + i}});
+          edges.push_back({v, Term{varBase[in.port] + ic, cell.zOnly ? uint32_t{cell.rate} : cell.gainBase + o * node.numInputs + i}});
         }
       }
     }
@@ -431,7 +445,9 @@ void LinearResponse::runControl(double sampleRate) noexcept {
         std::fill_n(ctrlVal_.begin() + ctrlOff_[f0], op.width, v);
         break;
       }
-      case OpKind::Sr: std::fill_n(ctrlVal_.begin() + ctrlOff_[f0], op.width, static_cast<float>(sampleRate)); break;
+      case OpKind::Sr:  // (inside an oversample region: n·sr)
+        std::fill_n(ctrlVal_.begin() + ctrlOff_[f0], op.width, static_cast<float>(sampleRate * static_cast<double>(1u << op.rate)));
+        break;
       case OpKind::Curve: {
         float convert = 1.0f;
         known = curveSet_[op.index] != 0 && (op.inCount < 2 || readControl(ins_[op.inBegin + 1], 0, convert));
@@ -477,28 +493,29 @@ void LinearResponse::runControl(double sampleRate) noexcept {
   }
 }
 
-ResponseKind LinearResponse::firstCall(uint32_t c, double omega, Cx z, double sampleRate, bool& dynamic) noexcept {
+ResponseKind LinearResponse::firstCall(uint32_t c, const Point& pt, double sampleRate, bool& dynamic) noexcept {
   const Cell& cell = cells_[c];
+  const double cellRate = sampleRate * static_cast<double>(1u << cell.rate);  // (a region's durations count its samples)
   for (uint32_t i = 0; i < cell.inCount; ++i) {
     const InSrc& s = ins_[cell.inBegin + i];
     argSignal_[cell.argBase + i] = s.signal;
     float v = 0.0f;
     const bool known = s.signal == 0 && readControl(s, cell.channel, v);
     argKnown_[cell.argBase + i] = known ? 1 : 0;
-    argValue_[cell.argBase + i] = known && s.toSamples != 0 ? static_cast<float>(v * sampleRate) : v;
+    argValue_[cell.argBase + i] = known && s.toSamples != 0 ? static_cast<float>(v * cellRate) : v;
   }
   std::fill_n(gain_.data() + cell.gainBase, static_cast<size_t>(cell.numOutputs) * cell.inCount, Cx{});
-  return recall(c, omega, z, sampleRate, dynamic, true);
+  return recall(c, pt, sampleRate, dynamic, true);
 }
 
-ResponseKind LinearResponse::recall(uint32_t c, double omega, Cx z, double sampleRate, bool& dynamic, bool fresh) noexcept {
+ResponseKind LinearResponse::recall(uint32_t c, const Point& pt, double sampleRate, bool& dynamic, bool fresh) noexcept {
   const Cell& cell = cells_[c];
   Cx* g = gain_.data() + cell.gainBase;
   ResponseArgs a;
-  a.omega = omega;
-  a.z = z;
-  a.ejw1 = omega == ejw1Omega_ ? ejw1_ : dsp::svfEjwMinus1(omega);
-  a.sampleRate = sampleRate;
+  a.omega = pt.omega[cell.rate];
+  a.z = pt.z[cell.rate];
+  a.ejw1 = pt.ejw1[cell.rate];
+  a.sampleRate = sampleRate * static_cast<double>(1u << cell.rate);
   a.numInputs = cell.inCount;
   a.numOutputs = cell.numOutputs;
   a.value = argValue_.data() + cell.argBase;
@@ -661,13 +678,21 @@ ResponseKind LinearResponse::evaluate(std::span<const double> hz, double sampleR
   const double toOmega = 2.0 * std::numbers::pi / sampleRate;
   ResponseKind status = ResponseKind::Exact;
   dynamicCount_ = 0;
-  const double w0 = hz[0] * toOmega;
-  const Cx z0 = std::polar(1.0, -w0);
-  ejw1Omega_ = w0;
-  ejw1_ = dsp::svfEjwMinus1(w0);
+  // Each rate's omega, z and e^jw - 1 at a point (rate r: an oversample region at x2^r sees omega / 2^r).
+  auto pointAt = [&](double w, Point& pt) {
+    for (uint32_t r = 0; r < kRates; ++r) {
+      if ((usedRates_ >> r & 1u) == 0) continue;
+      const double wr = w / static_cast<double>(1u << r);
+      pt.omega[r] = wr;
+      pt.z[r] = std::polar(1.0, -wr);
+      pt.ejw1[r] = dsp::svfEjwMinus1(wr);
+    }
+  };
+  Point p0;
+  pointAt(hz[0] * toOmega, p0);
   for (uint32_t c = 0; c < cells_.size(); ++c) {
     bool dyn = false;
-    status = worse(status, firstCall(c, w0, z0, sampleRate, dyn));
+    status = worse(status, firstCall(c, p0, sampleRate, dyn));
     if (cells_[c].zOnly) continue;
     if (dyn) dynamicCells_[dynamicCount_++] = c;
     else
@@ -682,17 +707,16 @@ ResponseKind LinearResponse::evaluate(std::span<const double> hz, double sampleR
     const uint32_t count = std::min(kBatch, n - first);
     for (uint32_t p = 0; p < kBatch; ++p) {
       const uint32_t k = first + std::min(p, count - 1u);  // a partial batch repeats its last point
-      const double w = hz[k] * toOmega;
-      const Cx z = k == 0 ? z0 : std::polar(1.0, -w);
-      if (dynamicCount_ != 0 && w != ejw1Omega_) {  // e^jω − 1 once per point (the filters' rules share it)
-        ejw1Omega_ = w;
-        ejw1_ = dsp::svfEjwMinus1(w);
+      Point pt;
+      if (k == 0) pt = p0;
+      else pointAt(hz[k] * toOmega, pt);  // (e^jw - 1 once per point and rate: the filters' rules share it)
+      for (uint32_t r = 0; r < kRates; ++r) {  // slots 0 ... kRates - 1: z at each rate (the z1 terms)
+        gainRe_[static_cast<size_t>(r) * kBatch + p] = pt.z[r].real();
+        gainIm_[static_cast<size_t>(r) * kBatch + p] = pt.z[r].imag();
       }
-      gainRe_[p] = z.real();  // slot 0: z (the z1 terms)
-      gainIm_[p] = z.imag();
       bool dyn = false;
       for (uint32_t d = 0; d < dynamicCount_; ++d) {
-        status = worse(status, recall(dynamicCells_[d], w, z, sampleRate, dyn));
+        status = worse(status, recall(dynamicCells_[d], pt, sampleRate, dyn));
         storeGains(dynamicCells_[d], p);
       }
     }

@@ -1624,8 +1624,11 @@ Res apply_(const Snapshot& s, const SetDeviceSetting& c, ChangeSet& cs) {
   // GU.11: what checkList allows (model.h "Groups", racks.h): a group's polyphony and rack-chain settings, a value
   // block's rack-macro ones.
   if (c.value && isGroupDevice(*loc.device) && c.setting != kGroupVoices && c.setting != kGroupMono &&
-      c.setting != kGroupLegato && c.setting != kGroupGlide && c.setting != kGroupSteal && !rackGroupSetting(c.setting))
-    return invalid("a group's settings are its polyphony and its rack chain's");
+      c.setting != kGroupLegato && c.setting != kGroupGlide && c.setting != kGroupSteal && c.setting != kGroupOversample && !rackGroupSetting(c.setting))
+    return invalid("a group's settings are its polyphony, its oversampling and its rack chain's");
+  if (c.value && c.setting == kGroupOversample &&
+      !(*c.value >= 0.0 && *c.value <= kMaxGroupOversample && std::floor(*c.value) == *c.value))
+    return invalid("a group's 'oversample' is 0 … 3 (1×, 2×, 4×, 8×)");
   if (c.value && isValueDevice(*loc.device) && !rackValueSetting(c.setting))
     return invalid("a value block's settings are its rack macro's");
   std::vector<DeviceValue> settings = loc.device->settings;

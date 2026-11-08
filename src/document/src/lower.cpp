@@ -2781,11 +2781,132 @@ void panelTapsOf(Build& b) {
   }
 }
 
+// ---- Oversampled groups (TX.group-oversample; lower.h "Oversampled groups") ------------------------------------------
+// Per device inside an oversampled group (at any depth) and per oversampled group itself: the OUTERMOST oversampled
+// group holding it (its region) and that region's factor, the largest of the nest (regions do not nest: an inner
+// group asking for less is already covered, one asking for more raises the whole region).
+struct OsRegion {
+  uint32_t group = 0;   // the outermost oversampled group (device id)
+  uint32_t factor = 1;  // the region's factor
+};
+using OsRegions = std::unordered_map<uint32_t, OsRegion>;
+OsRegions oversampledGroups(const Project& p) {
+  OsRegions out;
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    std::unordered_map<uint32_t, const Device*> byId;
+    for (const DevicePtr& d : t.devices) byId.emplace(d->id.value, d.get());
+    auto factorOf = [](const Device& g) { return g.active ? groupOversampleFactor(g) : 1u; };
+    std::unordered_map<uint32_t, uint32_t> outer;  // device → its outermost oversampled group (self included)
+    for (const DevicePtr& d : t.devices) {
+      uint32_t o = 0;
+      const Device* cur = d.get();
+      for (uint32_t step = 0; cur != nullptr && step <= kMaxGroupDepth; ++step) {
+        if (factorOf(*cur) > 1) o = cur->id.value;
+        if (!cur->group.valid()) break;
+        const auto it = byId.find(cur->group.value);
+        cur = it != byId.end() ? it->second : nullptr;
+      }
+      if (o != 0) outer.emplace(d->id.value, o);
+    }
+    std::unordered_map<uint32_t, uint32_t> factor;  // outermost group → the largest factor of its nest
+    for (const auto& [d, o] : outer) {
+      uint32_t& f = factor[o];
+      f = std::max(f, factorOf(*byId.at(d)));
+    }
+    for (const auto& [d, o] : outer) out[d] = OsRegion{o, factor[o]};
+  });
+  return out;
+}
+
+// Whether a callee computes anything in an oversample region of its own (at any depth of its calls): it cannot be
+// called inside another region (PATCH_LANGUAGE §2.3), so a device playing it stays outside its group's region and runs
+// at its own rate (the Wavetable's live path, its Shape mode).
+bool calleeHasRegion(const graph::Patch& callee, const graph::PatchLibrary* lib, uint32_t depth = 0) {
+  for (const graph::OversampleRegion& r : callee.regions())
+    if (r.factor > 1 || !r.factorFrom.empty()) return true;
+  if (lib == nullptr || depth > 32) return false;
+  for (NodeIndex n = 0; n < callee.nodeCount(); ++n) {
+    if (callee.node(n).kind != graph::NodeKind::Subcircuit) continue;
+    const graph::Patch* c = lib->find(callee.subcircuit(n).patch);
+    if (c != nullptr && c != &callee && calleeHasRegion(*c, lib, depth + 1)) return true;
+  }
+  return false;
+}
+
+// Puts the nodes of the devices inside oversampled groups into their regions (one OversampleRegion per outermost
+// oversampled group lowered in this patch): a device's own nodes (NodeRole::Device, k 0 … 5: its call and its input
+// adapters; a nested group's call too, but not the outermost group's: its terminals are the region's edge, so its In
+// and Out — what the response displays probe — are base-rate values), the nodes of a wire whose
+// both ends are in one region, and the nodes of a modulated param of a device inside (k ≥ 16: they take the target's
+// region, so a loop through a delayed wire between members stays inside). Everything else — a group's voice sum,
+// release ramp and ends (other roles), taps, sends, mixer stages — runs at the base rate; infer() puts the converters
+// on every audio-rate wire across (params and constants pass as they are).
+void assignOversampleRegions(graph::Patch& p, const TrackDevs& devs, const WirePlan& wp, const OsRegions& os,
+                             const Callees* lib) {
+  if (os.empty()) return;
+  // Device id → its outermost oversampled group (absent: outside every region — the outermost group itself, whose
+  // terminals are the region's edge, or a callee with a region of its own).
+  std::unordered_map<uint32_t, uint32_t> devRegion;
+  std::unordered_map<uint32_t, std::string> notePhase;  // outermost instrument group → its In terminal's note phase
+  for (const LDev& d : devs.devs) {
+    const auto it = os.find(d.device->id.value);
+    if (it == os.end() || d.remote || d.callee == nullptr) continue;
+    if (it->second.group == d.device->id.value) {
+      // The In terminal at the note source gives the note's phase (groupNotesPatch: `phase` = phasor(voice.hz)),
+      // computed outside: it enters by phase interpolation, never through the half-bands.
+      if (d.callee == &groupNotesPatch()) notePhase.emplace(d.device->id.value, "d" + std::to_string(d.device->id.value) + ".phase");
+      continue;
+    }
+    if (calleeHasRegion(*d.callee, lib != nullptr ? lib->lib : nullptr)) continue;
+    devRegion.emplace(d.device->id.value, it->second.group);
+  }
+  if (devRegion.empty()) return;
+  auto regionOf = [&](DeviceId d) -> uint32_t {
+    const auto it = devRegion.find(d.value);
+    return it != devRegion.end() ? it->second : 0u;
+  };
+  // Wire id → (region of from, region of to). A notes cable into a phase input computes the note's phase on the wire
+  // (phasor of its Hz): into a region it is computed inside (a phase must not cross through the half-bands).
+  std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> wireEnds;
+  for (const LWire& w : wp.wires) {
+    if (w.wire == nullptr) continue;
+    const uint32_t to = w.toMixer ? 0u : regionOf(w.wire->to);
+    wireEnds.emplace(w.wire->id.value, std::pair{w.phase ? to : regionOf(w.wire->from), to});
+  }
+  std::unordered_map<uint32_t, uint16_t> regionId;  // outermost group → region id of this patch
+  auto region = [&](uint32_t group) -> uint16_t {
+    if (const auto it = regionId.find(group); it != regionId.end()) return it->second;
+    graph::OversampleRegion r;
+    r.factor = os.at(group).factor;
+    if (const auto ph = notePhase.find(group); ph != notePhase.end()) r.phase.push_back(ph->second);
+    const uint16_t id = p.addRegion(std::move(r));
+    regionId.emplace(group, id);
+    return id;
+  };
+  for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
+    const graph::NodeKind kind = p.node(n).kind;
+    if (kind != graph::NodeKind::Atom && kind != graph::NodeKind::Const && kind != graph::NodeKind::Subcircuit) continue;
+    const uint32_t id = p.node(n).id.value;
+    if (id < kEntityNodeBase) continue;
+    const uint32_t rel = id - kEntityNodeBase, q = rel / kEntityNodeSlots, k = rel % kEntityNodeSlots;
+    const uint32_t entity = q / 3, role = q % 3;
+    uint32_t g = 0;
+    if (const auto it = wireEnds.find(entity); it != wireEnds.end()) {
+      const uint32_t slot = role * kEntityNodeSlots + k;  // NodeRole::Wire spans the three role spaces
+      if (slot >= kEntityNodeSlots) g = it->second.second;                     // the modulated param's nodes
+      else if (it->second.first == it->second.second) g = it->second.first;  // the wire's own nodes
+    } else if (role == static_cast<uint32_t>(NodeRole::Device) && k <= 5) {
+      g = regionOf(DeviceId{entity});
+    }
+    if (g != 0) p.setNodeRegion(n, region(g));
+  }
+}
+
 Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptions& o, const TrackDevs& devs,
                                 const WirePlan& wp, bool& voices, uint32_t& polyphony, int32_t& steal, uint32_t track,
                                 std::vector<ModulationTap>* taps, uint32_t clipSlot,
                                 std::vector<LoweredProject::MetaResource>* resources, const Callees* lib,
-                                std::vector<CurveSite>* curves) {
+                                std::vector<CurveSite>* curves, const OsRegions* os) {
   const Node& n = pl.nodes[index];
   Ir ir(patchName(n));
   Build b{ir, o, devs, std::vector<NodeIndex>(devs.size(), graph::kNone), {}};
@@ -2943,6 +3064,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
   if (!ir.finish())
     return Error{ErrorCode::Overflow, "lower: track " + std::to_string(n.track->id.value) +
                                           ": a document id too large for a stable node id (nodeIdFor)", {}};
+  if (os != nullptr) assignOversampleRegions(ir.patch(), devs, wp, *os, lib);  // TX.group-oversample
   return std::move(ir.patch());
 }
 // ---- Rack chain params (T4.8): what the document derives for the lowered patch -------------------------------------
@@ -3217,6 +3339,7 @@ uint64_t patchHash(const graph::Patch& p) noexcept {
     h(nd.numInputs);
     h(nd.numOutputs);
     h.str(p.nodeName(n));
+    if (nd.region != 0) h(nd.region);  // TX.group-oversample (a patch without regions keeps its hash)
     switch (nd.kind) {
       case graph::NodeKind::Const: h.constant(p.constant(n)); break;
       case graph::NodeKind::Param: {
@@ -3237,6 +3360,11 @@ uint64_t patchHash(const graph::Patch& p) noexcept {
       h(t.poly);
       h(t.width);
     }
+  }
+  for (const graph::OversampleRegion& r : p.regions()) {  // TX.group-oversample: the oversampled groups
+    h(r.factor);
+    h.str(r.factorFrom);
+    for (const std::string& ph : r.phase) h.str(ph);
   }
   for (const graph::Wire& w : p.wires()) {
     h(p.node(w.from.node).id.value);
@@ -3337,6 +3465,7 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
   const std::vector<TrackDevs> devs = allDevices(pl, lib, &out.missingDevices);
   PortDeps deps(lib->lib);
   const WirePlan wp = planWires(q, pl, devs, deps, lib);  // T4.7
+  const OsRegions os = oversampledGroups(q);  // TX.group-oversample
   out.wires = withLinks(wp.states, *cables, pl);
   std::unordered_map<uint32_t, std::shared_ptr<const LoweredPatch>> prev;  // track id → its previous patch
   if (previous != nullptr)
@@ -3350,7 +3479,7 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
     const uint32_t clipSlot = n.kind == Kind::Audio && o.clipSlotOf ? o.clipSlotOf(n.track->id) : graph::kNone;
     if (n.kind == Kind::Audio && clipSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
     auto built = buildPatch(pl, i, o, devs[i], wp, voices, polyphony, steal, i, &out.taps, clipSlot, &out.metaResources, lib,
-                            &out.curves);
+                            &out.curves, &os);
     if (!built.ok()) return built.error();
     std::shared_ptr<const LoweredPatch> lp;
     const uint64_t hash = patchHash(built.value());

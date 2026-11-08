@@ -305,7 +305,7 @@ Status checkList(ListKind k, const std::vector<DevicePtr>& list, std::vector<siz
           // IG.1-2 (model.h "Instrument groups"): its settings are an instrument group's polyphony only.
           for (const DeviceValue& v : d->settings)
             if (v.name != kGroupVoices && v.name != kGroupMono && v.name != kGroupLegato && v.name != kGroupGlide &&
-                v.name != kGroupSteal && !rackGroupSetting(v.name))
+                v.name != kGroupSteal && v.name != kGroupOversample && !rackGroupSetting(v.name))
               return invalid("a group's settings are its polyphony (voices, mono, legato, glide, steal) and its rack "
                              "chain's on / solo / key unit, its role (racks.h)");
         }

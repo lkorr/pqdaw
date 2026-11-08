@@ -1233,13 +1233,8 @@ private:
       if (tp.types[out.flatOutput(wr.from.node, wr.from.port)].rate != Rate::Audio) continue;  // params pass as they are
       crossing.push_back(w);
     }
-    struct Made {
-      PortRef from;
-      uint16_t region;
-      AtomId atom;
-      PortRef out;
-    };
-    std::vector<Made> made;
+    std::vector<Made>& made = converters_;
+    made.clear();
     auto converter = [&](AtomId atom, PortRef from, uint16_t region, NodeIndex originNode) -> PortRef {
       for (const Made& m : made)
         if (m.from == from && m.region == region && m.atom == atom) return m.out;
@@ -1304,8 +1299,26 @@ private:
       if (!n) continue;
       const uint32_t o = sourceOf(I.gbase + *n, t.output);
       if (o == kNone) continue;
-      const PortRef src = flatSource(o);
+      PortRef src = flatSource(o);
       if (src.node == kNone) continue;
+      // TX.group-oversample: the value as the probed node's context sees it — a value computed in another region than
+      // the node's (a group's Out terminal summing what a member inside an oversampled group gives) is read after the
+      // converter that brings it there (when the patch has one: a consumer there reads it).
+      const uint32_t child = gChild_[I.gbase + *n], flat = gF_[I.gbase + *n];
+      const uint16_t ctx = child != kNone ? insts_[child].region : flat != kNone ? flatRegion(fnodes_[flat]) : uint16_t{0};
+      const auto& origin = r.typed.origin;
+      const uint16_t at = src.node < origin.size() ? origin[src.node].region : uint16_t{0};
+      if (at != ctx) {
+        auto convertedBy = [&](PortRef from, uint16_t region, std::initializer_list<AtomId> atoms) -> PortRef {
+          for (const Made& m : converters_)
+            if (m.from == from && m.region == region && std::find(atoms.begin(), atoms.end(), m.atom) != atoms.end()) return m.out;
+          return PortRef{kNone, 0};
+        };
+        PortRef cur = src;
+        if (at != 0) cur = convertedBy(cur, at, {atomOsDown_, atomOsAny_});
+        if (cur.node != kNone && ctx != 0) cur = convertedBy(cur, ctx, {atomOsUp_, atomOsPhase_, atomOsHold_});
+        if (cur.node != kNone) src = cur;
+      }
       r.probeSources[k] = r.typed.patch.flatOutput(src.node, src.port);
     }
   }
@@ -1347,7 +1360,14 @@ private:
   const AtomId atomSineHz_ = atomId("sine_hz");
   const AtomId atomVoiceTrigger_ = atomId("voice.trigger");
   const AtomId atomOr_ = atomId("or");
-  // TMM.6: the oversample regions and their rate converters.
+  // TMM.6: the oversample regions and their rate converters (insertConverters: one per value, region and atom).
+  struct Made {
+    PortRef from;
+    uint16_t region;
+    AtomId atom;
+    PortRef out;
+  };
+  std::vector<Made> converters_;
   std::vector<FlatRegion> regions_;
   const AtomId atomOsUp_ = atomId("oversample_up");
   const AtomId atomOsDown_ = atomId("oversample_down");

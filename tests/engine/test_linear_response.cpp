@@ -521,3 +521,41 @@ TEST_CASE("linear response (perf, EQ.1b): a 32-band svf chain at 1024 points: on
   CHECK(best < 0.25 * bestPerPoint);
 #endif
 }
+
+// TX.group-oversample: the response through oversample regions (pq/graph/response.h "Oversample regions"): the inner
+// nodes at omega / n, sr and durations at n·sr, the half-band converters' cascades on the edges. Up to 20 kHz (the
+// half-bands' passband; above it the transition band's images make the region time-varying).
+TEST_CASE("linear response (TX.group-oversample): through oversample regions at x2 / x4 / x8 (an sr-dependent one-pole "
+          "loop, an svf bell, a fractional delay inside; a second region in series) matches the DFT of the interpreted "
+          "impulse response within 0.01 dB / 0.1 degrees to 20 kHz") {
+  std::vector<double> hz;
+  for (int k = 0; k < 24; ++k) hz.push_back(20.0 * std::pow(1000.0, k / 23.0) * 0.999);  // 20 Hz … ~20 kHz
+  for (const int n : {2, 4, 8}) {
+    char text[1024];
+    std::snprintf(text, sizeof text, R"(patch O {
+  in x : audio global mono
+  param c = 1000 [20..20000]
+  out y : audio
+  oversample(%d) {
+    a = exp(-6.283185307179586 * 3000 / sr)
+    f = x * (1 - a) + a * z1(f)
+    b = svf(f, cutoff: c, q: 1.2, gain: 2, mode: 4, stages: 1, prewarp: 0) + 0.3 * delay(x, 0.00021s, 0.001s)
+  }
+  oversample(2) {
+    e = b * 0.5 + z1(b) * 0.25
+  }
+  y = e + 0.1 * x
+})", n);
+    INFO(text);
+    const Circuit c = compile(text);
+    REQUIRE(c.inferred.oversample.size() == 2);
+    LinearResponse r;
+    r.prepare(c.inferred, inEnd(c, "x"), outEnd(c, "y"));
+    for (uint32_t i = 0; i < r.paramNodes().size(); ++i) r.setParam(i, 9000.0f);
+    std::vector<Cx> h(hz.size());
+    REQUIRE(r.evaluate(hz, kSr, h) == ResponseKind::Exact);
+    const auto meas = impulse(c, "x", 0, "y", 16384, {{"c", 9000.0f}});
+    for (size_t k = 0; k < hz.size(); ++k) checkClose(h[k], dft(meas[0], hz[k]), "x" + std::to_string(n) + " at " + std::to_string(hz[k]) + " Hz");
+    CHECK(pq::alloc_trap::countRtViolations([&] { (void)r.evaluate(hz, kSr, h); }) == 0);
+  }
+}

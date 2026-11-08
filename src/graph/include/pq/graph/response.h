@@ -28,7 +28,12 @@
 //
 // Status (ResponseKind): Exact — every relevant atom is linear here; Approximate — a nonlinear atom with a slope at 0 is
 // on the path (tanh); Unavailable — an atom without a rule (or one that is not linear at these values) is on the path,
-// a relevant node is in an oversample region (another rate), or the ends are invalid. A sink the source does not
+// or the ends are invalid.
+// TX.group-oversample: OVERSAMPLE REGIONS (PATCH_LANGUAGE §2.3). A node of a region at ×n is evaluated at ω/n (its z1 /
+// delays / filters see z = e^(−jω/n)), with `sr` and its durations at n·sr; the converters on its edge are linear
+// (dsp::os::halfBandResponse: the up / down half-band cascades at the base ω), so the response through a region is
+// up(ω) · H_inner(ω/n at n·sr) · down(ω). It ignores what the region's images add (folded back by the down: below the
+// half-bands' stopbands, ≥ 116 dB, up to 20 kHz). A phase converter, a bool's hold / any: no rule (Unavailable). A sink the source does not
 // reach gives H = 0 (Exact). A frequency where a loop is singular (an undamped resonance exactly on it) gives a
 // non-finite H at that point.
 //
@@ -97,6 +102,14 @@ private:
     uint8_t toSamples = 0;  // a duration input fed in seconds: · sampleRate
   };
   enum class OpKind : uint8_t { Const, Param, Sr, Curve, Channel, Pack, Fold, Unknown };
+  // TX.group-oversample: rates — r = log2 of the oversample region's factor a node runs at (0: the base rate; ×16 is 4).
+  static constexpr uint32_t kRates = 5;
+  // One point at every rate: ω / 2^r, its z = e^(−jω/2^r) and e^(jω/2^r) − 1.
+  struct Point {
+    double omega[kRates] = {};
+    std::complex<double> z[kRates] = {};
+    std::complex<double> ejw1[kRates] = {};
+  };
   struct CtrlOp {
     OpKind kind = OpKind::Unknown;
     AtomId atom = 0;
@@ -105,6 +118,7 @@ private:
     uint16_t width = 1;                   // channels of every output
     uint32_t index = 0;                   // Param: param index; Curve: curve index; Const: the value (bits) in def
     float constant = 0.0f;
+    uint8_t rate = 0;                     // TX.group-oversample: its rate (Sr: 2^rate · sr)
   };
   struct Cell {  // one relevant node at one output channel
     ResponseRule rule = nullptr;
@@ -114,7 +128,8 @@ private:
     uint32_t gainBase = 0;              // into gain_: numOutputs × inCount
     uint32_t argBase = 0;               // into argValue_ / argKnown_ / argSignal_: inCount (this channel's values)
     uint32_t cacheBase = 0;             // into cache_: the rule's scratch (AtomSignature::responseCacheBytes)
-    bool zOnly = false;                 // a z1: its term reads the shared z slot (gain_[0]) instead of calling the rule
+    bool zOnly = false;                 // a z1: its term reads the shared z slot (gain_[rate]) instead of calling the rule
+    uint8_t rate = 0;                   // TX.group-oversample: evaluated at ω / 2^rate, 2^rate · sr (Point)
   };
   struct Term {
     uint32_t from = 0;  // unknown read
@@ -124,10 +139,9 @@ private:
   bool readControl(const InSrc& s, uint32_t channel, float& v) const noexcept;
   void runControl(double sampleRate) noexcept;
   // Gathers the cell's argument values (once per evaluate) and calls its rule.
-  ResponseKind firstCall(uint32_t c, double omega, std::complex<double> z, double sampleRate, bool& dynamic) noexcept;
+  ResponseKind firstCall(uint32_t c, const Point& pt, double sampleRate, bool& dynamic) noexcept;
   // Calls a dynamic cell's rule again at another frequency (its arguments as gathered).
-  ResponseKind recall(uint32_t c, double omega, std::complex<double> z, double sampleRate, bool& dynamic,
-                      bool fresh = false) noexcept;
+  ResponseKind recall(uint32_t c, const Point& pt, double sampleRate, bool& dynamic, bool fresh = false) noexcept;
   // Points are solved kBatch at a time, as lanes: every value and gain holds kBatch doubles (re and im apart).
   static constexpr uint32_t kBatch = 8;
   void storeGains(uint32_t cell, uint32_t lane) noexcept;
@@ -173,8 +187,7 @@ private:
   std::vector<float> argValue_;
   std::vector<uint8_t> argKnown_, argSignal_;
   std::vector<double> cache_;  // EQ.1b: every cell's rule scratch, kept across one evaluate's calls
-  double ejw1Omega_ = -1.0;    // the point ejw1_ is for (ResponseArgs::ejw1)
-  std::complex<double> ejw1_{0.0, 0.0};
+  uint8_t usedRates_ = 0;      // TX.group-oversample: bit r set — a cell runs at rate r
 };
 
 // One-shot convenience (allocates: prepare + evaluate): H of `typed` from `source` to `sink` at `hz`, params at their

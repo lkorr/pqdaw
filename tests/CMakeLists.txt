@@ -131,6 +131,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_wavetable_synth.cpp  # GU.8: the Wavetable Synth spawned at the notes; a chord plays, interpreter == JIT
     app/test_engine_modules.cpp  # GU.7: the Wavetable / Envelope modules render as their engines; the orbit's lowering tap
     app/test_stock_presets.cpp  # GU.10: the stock devices and the default instrument as group presets (renders vs the retired patches, interp == JIT)
+    app/test_group_oversample.cpp  # TX.group-oversample: oversampled groups (linear == 1x spectrum, tanh aliasing, nesting, per voice, response == impulse, the setting)
     app/test_eq_render.cpp  # EQ.3: a band == a plain svf bit for bit per type; the EQ's L/R and M/S == Stereo with equal chains; chain B costs nothing in Stereo
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
     app/test_voice_smooth.cpp  # AU.voices: no clicks at Play / note on / note off; voices end on time

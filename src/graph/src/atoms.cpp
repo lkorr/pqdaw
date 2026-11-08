@@ -375,9 +375,9 @@ const AtomSignature kAtoms[] = {
 
     // Oversample region converters (TMM.6; compiler-inserted, never written in text).
     {"oversample_up", C::Structure, pOversampleR, pOutRAudio, sizeof(dsp::OversampleState), kStateful | kInternal, 0, {},
-     "×factor upsampling into an oversample region (polyphase IIR half-bands)"},
+     "×factor upsampling into an oversample region (polyphase IIR half-bands)", rules::oversampleUp},
     {"oversample_down", C::Structure, pOversampleR, pOutRAudio, sizeof(dsp::OversampleState), kStateful | kInternal, 0,
-     {}, "×factor decimation out of an oversample region (polyphase IIR half-bands)"},
+     {}, "×factor decimation out of an oversample region (polyphase IIR half-bands)", rules::oversampleDown},
     {"oversample_phase", C::Structure, pOversampleR, pOutRAudio, sizeof(dsp::OversamplePhaseState),
      kStateful | kInternal, 0, {}, "×factor phase upsampling (unwrapped linear interpolation)"},
     {"oversample_hold", C::Structure, pOversampleB, pOutBAudio, 0, kInternal, 0, {},

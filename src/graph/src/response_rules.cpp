@@ -8,6 +8,7 @@
 
 #include "fold.h"
 #include "pq/dsp/kernel.h"
+#include "pq/dsp/oversample.h"
 #include "pq/dsp/svf_design.h"
 
 namespace pq::graph::rules {
@@ -120,6 +121,17 @@ ResponseKind z1(ResponseArgs& a) noexcept {
   a.dependsOnOmega = true;
   return ResponseKind::Exact;
 }
+
+namespace {
+ResponseKind halfBand(ResponseArgs& a, bool up) noexcept {
+  if (a.numInputs < 2 || a.known[1] == 0) return ResponseKind::Unavailable;
+  g(a, 0, 0) = dsp::os::halfBandResponse(dsp::os::sanitizeFactor(a.value[1]), a.omega, up);
+  a.dependsOnOmega = true;
+  return ResponseKind::Exact;
+}
+}  // namespace
+ResponseKind oversampleUp(ResponseArgs& a) noexcept { return halfBand(a, true); }
+ResponseKind oversampleDown(ResponseArgs& a) noexcept { return halfBand(a, false); }
 
 ResponseKind delayLinear(ResponseArgs& a) noexcept {
   float d = 0.0f;

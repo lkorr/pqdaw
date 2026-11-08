@@ -415,6 +415,21 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // of a voice run is the run's graph with its links as wires: rendered bit for bit equal, interpreter and JIT
 // (tests/app/test_groups.cpp, "groups-fix1"). A hand-built group there follows the same rules whatever is inside it (a
 // stock device inside sums what reaches it, as everywhere; ops::groupInCircuit only groups stretches of the run).
+// OVERSAMPLED GROUPS (TX.group-oversample; model.h "Oversampled groups"): every device inside a group whose
+// `oversample` setting is above 1× (at any depth), and the group's own call, is computed in one oversample region of
+// the track patch (graph::OversampleRegion, PATCH_LANGUAGE §2.3) — one region per OUTERMOST oversampled group, its factor
+// the largest of the oversampled groups nested in it (regions do not nest). Inside: the devices' own nodes (their call,
+// their input adapters), the nodes of a wire between two devices of the region, and the nodes of a modulated param of a
+// device inside (the knob, the wires' sum, its curve: at N×, so a loop through a delayed wire between members stays
+// inside); a notes cable into a phase input inside computes the note's phase inside. Outside (base rate): the group's
+// voice sum, release ramp and ends, panel taps, every wire to or from outside the region (its own nodes), sends,
+// mixers. infer() puts the converters on every AUDIO-rate wire across the edge (polyphase IIR half-bands; a bool held /
+// any); params and constants — an undriven control, a literal value block — pass as they are, so a knob costs nothing
+// more. A device whose callee has a region of its own (the Wavetable's live path or Shape mode) cannot be inside
+// another: it stays outside and runs at its own factor (its wires to the members cross down and up). A feedback loop
+// through the group's edge (a member's output back into the group from outside) is refused by the compiler (a loop
+// must be entirely inside a region or outside it). Instrument groups: the region runs per voice (8 voice lanes per
+// converter). Latency: groupOversampleLatency (not compensated: no PDC).
 enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused };
 // (TX.all-free-fix1's Cycle — a cable into another track's mixer closing a cycle between tracks — is gone: TX.cross-track
 // lowers that loop with its z⁻¹.)

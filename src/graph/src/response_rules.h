@@ -28,6 +28,10 @@ ResponseKind delayCubic(ResponseArgs& a) noexcept;    // the 4-point Hermite tap
 ResponseKind delayAllpass(ResponseArgs& a) noexcept;  // z^n (c + z) / (1 + c z)
 ResponseKind gain(ResponseArgs& a) noexcept;      // x · g, settled
 ResponseKind gainAdd(ResponseArgs& a) noexcept;   // acc + x · g, settled
+// TX.group-oversample: an oversample region's half-band converters (dsp::os::halfBandResponse at the BASE-rate ω: the
+// evaluator calls them at the base rate, whatever region they belong to; their factor input is the region's const).
+ResponseKind oversampleUp(ResponseArgs& a) noexcept;
+ResponseKind oversampleDown(ResponseArgs& a) noexcept;
 ResponseKind svf(ResponseArgs& a) noexcept;       // EQ.1: dsp::svfResponse of the kernel's design (consts, params known)
 // EQ.1b: the svf rule's cache (ResponseArgs::cache): its design, once per evaluation, as the sections' ω-independent
 // polynomials (dsp::svfSectionPoly of the kernel's coefficients).

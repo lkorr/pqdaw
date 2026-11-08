@@ -450,6 +450,24 @@ GroupPolyphony groupPolyphony(const Device& g) noexcept {
   return p;
 }
 
+uint32_t groupOversampleFactor(const Device& g) noexcept {
+  if (!isGroupDevice(g)) return 1;
+  const DeviceValue* v = g.setting(kGroupOversample);
+  if (v == nullptr || !std::isfinite(v->value)) return 1;
+  return 1u << static_cast<uint32_t>(std::clamp(std::lround(v->value), 0l, static_cast<long>(kMaxGroupOversample)));
+}
+
+double groupOversampleLatency(uint32_t factor) noexcept {
+  // pq/dsp/oversample.h (tests/dsp/test_oversample.cpp measures these): up + down at DC, base-rate samples.
+  switch (factor) {
+    case 2: return 3.62;
+    case 4: return 4.74;
+    case 8: return 5.17;
+    case 16: return 5.31;
+    default: return 0.0;
+  }
+}
+
 DevicePtr makeInstrumentGroup(DeviceId id) {
   auto d = std::make_shared<Device>(*makeGroup(id));
   // (sorted by name: Device::settings)

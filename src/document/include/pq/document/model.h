@@ -658,6 +658,21 @@ GroupPolyphony groupPolyphony(const Device& group) noexcept;
 // A new instrument group (kGroupDevice) with the default polyphony written out (16 voices, steal oldest, no glide).
 DevicePtr makeInstrumentGroup(DeviceId id);
 
+// ---- Oversampled groups (TX.group-oversample; lower.h "Oversampled groups") -----------------------------------------
+// ANY group may run its contents at N times the sample rate: the setting `oversample` of the group device
+// (Device::settings; SetDeviceSetting: one undo step, a structural change — one recompile; absent = 0) holds the
+// exponent, 0 … kMaxGroupOversample: 1× / 2× / 4× / 8×. The lowering puts every device inside the group (at any depth)
+// into one oversample region of the track patch (PATCH_LANGUAGE §2.3): its atoms see sr = N·sr, wires across the
+// group's edge go through the region's half-band converters. Nested oversampled groups share the OUTERMOST one's region
+// at the largest factor of the nest (regions do not nest). Latency: the half-bands' group delay (not reported, no PDC
+// until M6), groupOversampleLatency.
+inline constexpr std::string_view kGroupOversample = "oversample";
+inline constexpr uint32_t kMaxGroupOversample = 3;  // 8×
+uint32_t groupOversampleFactor(const Device& group) noexcept;  // 1, 2, 4 or 8 (1: not a group, or not set)
+// The up + down converters' group delay at DC in base-rate samples (the same at every rate: PATCH_LANGUAGE §2.3):
+// 1× 0, 2× 3.62, 4× 4.74, 8× 5.17.
+double groupOversampleLatency(uint32_t factor) noexcept;
+
 // ---- Racks (GU.9 v2; pq/document/racks.h) -----------------------------------------------------------------------
 // A rack is not stored: it is a set of PARALLEL GROUPS derived from the wiring (racks.h). These are the spawn ids the
 // menus and the browser offer (ops::addDevice / ops::addRack build the groups).

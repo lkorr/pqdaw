@@ -42,6 +42,7 @@
 // down / any read frames and write frames / n. Everything is RT-safe.
 
 #include <array>
+#include <complex>
 #include <cstdint>
 
 namespace pq::dsp::os {
@@ -72,5 +73,36 @@ constexpr uint32_t stagesOf(uint32_t factor) noexcept {
   return factor >= 16 ? 4u : factor >= 8 ? 3u : factor >= 4 ? 2u : factor >= 2 ? 1u : 0u;
 }
 constexpr bool validFactor(uint32_t n) noexcept { return n == 1 || n == 2 || n == 4 || n == 8 || n == 16; }
+
+// TX.group-oversample: the converters' frequency responses at a base-rate frequency ω (radians per base sample), as the
+// kernels compute them (the float32-rounded coefficients), for the analytic response through a region
+// (pq/graph/response.h). The region's sub-sample n·k + j is base time k + j/n; stage s (0-based) runs between 2^s·sr
+// and 2^(s+1)·sr, θ = ω / 2^(s+1) at its high rate, its allpasses at the low rate (z⁻¹ = e^(−j2θ)):
+//   up    ½·(A0 + e^(−jθ)·A1)    (x → (A0(x), A1(x)) in time order: zero-stuffing then H(z) = ½(A0(z²) + z⁻¹A1(z²)),
+//                                  the image rejected)
+//   down  ½·(e^(jθ)·A0 + A1)     ((e, o) → ½(A0(o) + A1(e)): o is one high-rate sample later than e)
+// the product over the stages. up · down is A0·A1 per stage (|H| = 1). What a region's images add (the up filter's
+// leak above the base Nyquist, folded back by the down) is below the stopbands (≥ 116 dB) up to 20 kHz
+// (no allocation, RT-safe).
+inline std::complex<double> allpassChain(uint32_t first, uint32_t count, std::complex<double> zInv) noexcept {  // RT-safe
+  std::complex<double> h{1.0, 0.0};
+  for (uint32_t k = 0; k < count; ++k) {
+    const double c = static_cast<double>(static_cast<float>(kCoefs[first + 2 * k]));
+    h *= (c + zInv) / (1.0 + c * zInv);
+  }
+  return h;
+}
+inline std::complex<double> halfBandResponse(uint32_t factor, double omega, bool up) noexcept {  // RT-safe
+  std::complex<double> h{1.0, 0.0};
+  const uint32_t stages = stagesOf(factor);
+  for (uint32_t s = 0; s < stages; ++s) {
+    const double theta = omega / static_cast<double>(2u << s);
+    const std::complex<double> zl = std::polar(1.0, -2.0 * theta);
+    const uint32_t first = kStageFirst[s], size = kStageSize[s];
+    const std::complex<double> a0 = allpassChain(first, (size + 1) / 2, zl), a1 = allpassChain(first + 1, size / 2, zl);
+    h *= up ? 0.5 * (a0 + std::polar(1.0, -theta) * a1) : 0.5 * (std::polar(1.0, theta) * a0 + a1);
+  }
+  return h;
+}
 
 }  // namespace pq::dsp::os
