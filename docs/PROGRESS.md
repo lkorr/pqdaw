@@ -170,3 +170,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker: pq_tests_views default tier, pq_tests_playback EQ.4b* 2/2 (real ProjectLink), new circuit open/close regression; headless eq-circuit-roundtrip scene in release. Orchestrator: build.ps1 -Affected on 94596c06 passed (worker's run was killed for low memory). Goldens re-recorded: eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay, eq-band-response.
 - Perf (check): first frame after adding a 32nd band 9.2 → 2.5 ms, one 7.8 ms frame when the compile arrives (32 bands prepared); drag 1–1.4 ms.
 - Notes/blockers: the user's open/close no-curve bug did not reproduce (candidate causes removed); the worker's live-GUI attempt touched the user's own pqdaw window (rule: workers drive only processes they launched).
+
+## 2026-11-08 · AU.voices · orchestrator (merge of task/AU.voices)
+- Did: fast-forwarded main to 57be5cb6. Offline jump-detector renders (≈ −70 dBFS step sensitivity, proven by a deliberate compaction break) ruled out stale voice state, attack, block alignment, Play-triggered swaps, param ramps, voice-end DC and late voice end (abutting / overlapping same pitch, chords, Stop, restart, loop wrap). Fixed: the piano-roll preview played a clicked note for its full length (≤ 2 s) / a key for a beat; releaseAuditions() ends it on mouse-up (≥ 50 ms). ASIO output halves zeroed at every stream start.
+- Verified (worker): playback AU.voices* 6/6, engine and views default tier; -Affected -Slow 88/88. Goldens: none.
+- Perf: no hot path changed.
+- Notes/blockers: the Play click not reproduced in the engine; suspect the app stopping the audio stream after 1 s of engine sleep (every Play from idle restarts the ASIO driver). Q?-AU.voices-a; diagnostic for the user: Play within 1 s of Stop.

@@ -732,7 +732,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [ ] **EQ.6 Milestone -Full + critique.**
 
 ### Bugs
-- [~] **AU.voices Click near the start of MIDI playback; notes sound too long after release** (user 2026-11-08; audit the same causes everywhere). Worker, branch task/AU.voices.
+- [x] **AU.voices Click near the start of MIDI playback; notes sound too long after release** (user 2026-11-08) *(merged 57be5cb6; engine renders clean in every scenario; piano-roll preview now ends on release; ASIO halves zeroed per start; suspect: the 1 s idle stream stop restarting the ASIO driver on Play, Q?-AU.voices-a, user to confirm)*.
 - [~] **AU.fold Clicks from the Wavetable's fold in a Phase Accumulator → Wavetable setup** (user 2026-11-08; audit the same causes everywhere). Worker, branch task/AU.fold.
 - [x] **TX.insert-group Insert on a cable lands in the cable's group** *(merged 5bac9256)* (user 2026-11-08: Z on a cable into a Phase Accumulator inserts the VCA inside the PA group; insertImpl takes the target device's group). Worker, branch task/TX.insert-group.
 
