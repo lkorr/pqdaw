@@ -1006,7 +1006,7 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   bar's look; the wrapped phase of the 23-stage allpass near 1.27 kHz is still a thicket of short segments and wrap
   markers (several turns per point: wrapped phase cannot show that at this resolution; unwrapped is correct).
 
-## 2026-11-08 · TX.detent · 👁 the feel of detents
+## 👁 TX.detent the feel of detents; PA Amplitude ×1 at the centre · 2026-11-08
 - **What:** a curve point can be a detent. Dragging a knob, slider, arc, number box or the VCA's dial onto one holds it
   for 12 px of travel when crossing (±6 px when the drag starts on it; the zone scales with the drag length: 4.5 … 9
   px), then it moves on with the held travel subtracted (no leap). Shift ignores detents; a wheel notch or arrow key
