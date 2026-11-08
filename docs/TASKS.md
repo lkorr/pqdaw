@@ -723,7 +723,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 ## EQ: the filter / EQ module (plan: docs/plans/EQ.md; user decision 2026-11-07, SPEC §15 "the filter / EQ module"; approved by the user 2026-11-07)
 
 - [~] **EQ.1 `svf` atom** (plan §The svf atom; dsp/svf_design.h designer + exact response, matched / bilinear, stages 1–64, interpreter + JIT, ship bench). Worker, branch task/EQ.1-svf-atom.
-- [~] **EQ.2 Linear response evaluator** (plan §Analytic responses; atom response rules, SCC solve, param re-evaluation). Worker, branch task/EQ.2-linear-response.
+- [x] **EQ.2 Linear response evaluator** (plan §Analytic responses; atom response rules, SCC solve, param re-evaluation). Merged 35f42cbd; svf rule left to EQ.1.
 - [ ] **EQ.3 Band and EQ modules + ops** (plan §Structure, §Ops). Depends on EQ.1.
 - [ ] **EQ.4 `response` and `phase` elements, band strip, EQ panel** (plan §Displays). 👁 Depends on EQ.2, EQ.3.
 - [ ] **EQ.5 Custom band types** (plan §Phases 5). Depends on EQ.4.

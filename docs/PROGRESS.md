@@ -128,3 +128,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): build.ps1 -NoTests 0 warnings; default tier document, app, playback s0–s3, views, ui, meta, graph, engine 11/11; PA renders diff 0, VCA ≤ −110 dB, rack renders pass; golden project-circuit-device updated (Operator + pm atoms gone).
 - Perf: muted rack chain 0 ops (was the full chain). CPU-efficiency check: reuses the GU.f4 literal fold.
 - Notes/blockers: the user stopped GU.f6 and ended the GU follow-ups after GU.f7; GU.f8 dropped (bool wires summing is normal circuit behaviour); GU.f6 and GU.f9 not done.
+
+## 2026-11-08 · EQ.2 · orchestrator (merge of task/EQ.2-linear-response)
+- Did: fast-forwarded main to 35f42cbd. Optional per-atom response rules (pq/graph/response_rule.h; 23 atoms incl. z1, the three delay interpolators exactly, mux/select with a known choice, channel/pack; tanh/sin/clip approximate, shaper none); graph::LinearResponse on the inferred patch, loops solved per frequency by complex elimination over the SCC, every (in ch, out ch) pair, evaluate() allocation-free; doc::GroupResponse maps a group's In→Out on a LoweredProject, update() re-reads knob positions through the curves without relowering.
+- Verified (worker): engine tests: 40 random linear circuits + M/S matrix vs interpreted impulse DFT within 0.01 dB / 0.1°; document tests (VCA, z1 feedback group, update == relower); build.ps1 -Affected (whole suite, default tier) 45/45.
+- Perf: 32 × 9-atom chain, 1024 points: 0.60 ms per evaluate (check preset; 8 points per SIMD lane group). CPU-efficiency check: no audio-thread code.
+- Notes/blockers: svf rule waits for EQ.1; no curve through solve blocks, oversample regions, voice reducers or audio-rate-modulated params; a group nothing feeds returns an error.
