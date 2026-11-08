@@ -515,7 +515,8 @@ struct AsioDevice::Impl {
     return out;
   }
 
-  // Both halves of every output start silent (the driver may play them before the first switch).
+  // Both halves of every output start silent (the driver may play them before the first switch). Control thread,
+  // the driver stopped.
   void zeroOutputBuffers() {
     for (uint32_t c = 0; c < numOut; ++c)
       for (uint32_t h = 0; h < 2; ++h) std::memset(devOut[h][c], 0, static_cast<size_t>(frames) * outBytes[c]);
@@ -682,6 +683,9 @@ struct AsioDevice::Impl {
     lateness.reset({frames, frames, false});
     tsc0 = 0;
     delivered = 0;
+    // AU.voices: every start, not only the first (a resume after an idle suspend): the halves still hold the last
+    // two buffers of the previous run, which the driver may play before the first switch.
+    zeroOutputBuffers();
     streamActive.store(true, std::memory_order_release);
     if (asio::Status s = driver->start(); s != asio::kOk) {
       streamActive.store(false, std::memory_order_release);

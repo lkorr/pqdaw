@@ -24,6 +24,9 @@
 //                       roll, a key pressed in its gutter): `hz` resolved from the note's pitch identity, velocity
 //                       in (0, 127], the sound released after durationMs. Fire and forget, independent of playback;
 //                       T3.17 implements it over the engine (the app's simulated transport ignores it).
+//   releaseAuditions()  AU.voices: the press that auditioned ended (the pointer let go): every sounding audition is
+//                       released now, or at its own end when that comes first (≥ 50 ms after its onset), so a note
+//                       clicked in the piano roll sounds while it is held, at most its own length.
 
 #include <cstdint>
 
@@ -55,6 +58,7 @@ public:
   virtual void setLoop(const TransportLoop& loop) = 0;
   virtual PlayheadSnapshot playhead() = 0;
   virtual void auditionHz(float hz, float velocity, float durationMs) = 0;
+  virtual void releaseAuditions() = 0;
 };
 
 }  // namespace pq::views

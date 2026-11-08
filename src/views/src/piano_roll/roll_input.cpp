@@ -83,6 +83,7 @@ void NoteAreaWidget::pressNote(const PointerEvent& e, const doc::Note& n, int zo
   if (!s_.rows().empty()) d.pressDegree = s_.rows().row(s_.rows().indexAtY(s_.contentY(e.pos.y))).degree;
   s_.beginDragTracking();
   s_.audition(n.pitch, n.velocity, n.start, n.length);
+  s_.auditionHeld = true;  // AU.voices: released on pointer up
 }
 
 // The note a draw gesture puts in cell `c` at device y: a Degree note on the row there; with Overlay (Alt, while a
@@ -130,6 +131,7 @@ void NoteAreaWidget::pressEmpty(const PointerEvent& e) {
     d.drawn.push_back(cellNote(c, e.pos.y, drawPitchFor(e.mods)));
     d.trackDamage = true;  // no notes tracked: the drawn cells are
     s_.audition(s_.drawnPitch(d.drawn.back()), 100.0f, c.start, c.end - c.start);
+    s_.auditionHeld = true;  // AU.voices: released on pointer up
     s_.damageDrag();
     return;
   }
@@ -184,6 +186,7 @@ void NoteAreaWidget::dragTo(Vec2 p) {
       if (!have) {
         d.drawn.push_back(cellNote(c, p.y, d.drawn.empty() ? DrawPitch::Row : d.drawn.front().mode));
         s_.audition(s_.drawnPitch(d.drawn.back()), 100.0f, c.start, c.end - c.start);
+        s_.auditionHeld = true;  // AU.voices: released on pointer up
       }
       break;
     }
@@ -235,6 +238,7 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
           const DrawnNote dn = cellNote(c, e.pos.y, drawPitchFor(e.mods));
           s_.addNotes({dn});
           s_.audition(s_.drawnPitch(dn), 100.0f, c.start, c.end - c.start);
+          s_.auditionHeld = true;  // AU.voices: released on pointer up
         }
       } else {
         pressEmpty(e);
@@ -254,6 +258,7 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
     case PointerType::Up: {
       if (e.button == PointerButton::Right) return true;
       if (e.button != PointerButton::Left) return false;
+      s_.releaseAudition();
       DragState& d = s_.drag;
       if (d.kind == DragKind::None) {
         s_.hoverPartAt(e.pos);
@@ -303,7 +308,10 @@ bool NoteAreaWidget::onKey(const KeyEvent& e) {
   return false;
 }
 
-void NoteAreaWidget::onCaptureLost() { s_.abortDrag(); }
+void NoteAreaWidget::onCaptureLost() {
+  s_.releaseAudition();
+  s_.abortDrag();
+}
 
 void NoteAreaWidget::onHoverChanged(bool hovered) {
   Control::onHoverChanged(hovered);
@@ -452,6 +460,7 @@ bool KeysWidget::onPointer(const PointerEvent& e) {
       if (s_.noteArea && tree()) tree()->setFocus(s_.noteArea);
       const PitchRow& row = s_.rows().row(s_.rows().indexAtY(s_.contentY(e.pos.y)));
       s_.audition(s_.degreePitch(row.degree), 100.0f, 0, kPpq);
+      s_.auditionHeld = true;  // AU.voices: released on pointer up
       s_.selectRow(row.degree, (e.mods & mod::kShift) != 0);
       d = {};
       d.kind = DragKind::KeysZoom;
@@ -471,6 +480,7 @@ bool KeysWidget::onPointer(const PointerEvent& e) {
       return false;
     case PointerType::Up:
       if (d.kind == DragKind::KeysZoom) d = {};
+      s_.releaseAudition();
       return true;
     case PointerType::Wheel:
       if (e.mods & mod::kCtrl) s_.setRowHeight(s_.rowPx() + static_cast<int32_t>(std::lround(e.wheel.y)));
@@ -486,6 +496,7 @@ Cursor KeysWidget::cursorAt(Vec2) const {
 }
 
 void KeysWidget::onCaptureLost() {
+  s_.releaseAudition();
   if (s_.drag.kind == DragKind::KeysZoom) s_.drag = {};
 }
 

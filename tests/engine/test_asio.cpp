@@ -340,6 +340,12 @@ TEST_CASE("asio host: enumerate, open, double-buffer switching with conversion, 
     // A late switch after stop() is ignored (no callback, no crash).
     f.tick(0);
     CHECK(eng.blocks == 10);
+    // AU.voices: a restart (the app's resume after an idle suspend) starts both halves silent again, not with the
+    // last two buffers of the previous run.
+    REQUIRE(dev.start().ok());
+    for (int32_t h = 0; h < 2; ++h)
+      for (float v : readOutput(f, 0, h, 64)) CHECK(v == 0.0f);
+    REQUIRE(dev.stop().ok());
     const CallbackStats::Snapshot st = dev.stats().snapshot();
     CHECK(st.callbacks == 10);
     CHECK(st.frames == 640);

@@ -2223,6 +2223,8 @@ void ProjectLink::auditionHz(float hz, float velocity, float durationMs) {
   engine_->audition(slot, hz, velocity, frames);
 }
 
+void ProjectLink::releaseAuditions() { engine_->releaseAuditions(); }
+
 // ---- Meters (UI thread) -----------------------------------------------------------------------------------------
 
 bool ProjectLink::live() const noexcept { return !engine_->asleep() || metersLit_; }  // asleep ⇒ stopped

@@ -1544,6 +1544,12 @@ void RollState::audition(const tuning::PitchId& p, float velocity, Ticks content
   ctx.transport().auditionHz(static_cast<float>(*hz), velocity, static_cast<float>(std::clamp(ms, 50.0, 2000.0)));
 }
 
+void RollState::releaseAudition() {
+  if (!auditionHeld) return;
+  auditionHeld = false;
+  ctx.transport().releaseAuditions();
+}
+
 // --- repaint ---------------------------------------------------------------------------------------------
 
 void RollState::markNotesDirty() {

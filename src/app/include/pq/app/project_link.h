@@ -420,6 +420,7 @@ public:
   void setLoop(const views::TransportLoop& loop) override;
   views::PlayheadSnapshot playhead() override;
   void auditionHz(float hz, float velocity, float durationMs) override;
+  void releaseAuditions() override;
 
   // ---- views::MeterSource (UI thread) ----
   // True while the engine runs (it never sleeps while playing), and afterwards until every meter the views read has decayed

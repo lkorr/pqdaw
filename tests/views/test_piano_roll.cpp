@@ -224,7 +224,8 @@ TEST_CASE("clip view: B-mode draw on a 5-tuplet grid lands on exact ticks; a dra
   CHECK(drawn->start % kCell == 0);
   // Audition of the drawn note through the port.
   REQUIRE(r.port.count(FakeTransport::Call::Audition) >= 1);
-  CHECK(r.port.calls.back().hz == doctest::Approx(261.626 * std::exp2(2.0 / 12.0)).epsilon(1e-5));
+  CHECK(r.port.last(FakeTransport::Call::Audition)->hz == doctest::Approx(261.626 * std::exp2(2.0 / 12.0)).epsilon(1e-5));
+  CHECK(r.port.calls.back().call == FakeTransport::Call::ReleaseAuditions);  // AU.voices: the release ends it
 
   // A drag across three cells on the D#3 row: three notes, one undo step.
   const size_t n1 = r.clip().notes.size(), h1 = r.history();
@@ -416,9 +417,21 @@ TEST_CASE("clip view: a click selects without editing; Esc cancels a drag; drags
   CHECK(r.view->selection()[0] == 116);
   // Audition on click: the note's pitch (degree 12 = C4) for its duration at 120 BPM (a quarter − 1/16 = 0.375 s).
   REQUIRE(r.port.count(FakeTransport::Call::Audition) == 1);
-  CHECK(r.port.calls.back().hz == doctest::Approx(2.0 * 261.626).epsilon(1e-5));
-  CHECK(r.port.calls.back().velocity == doctest::Approx(120.0f));
-  CHECK(r.port.calls.back().durationMs == doctest::Approx(375.0f).epsilon(1e-4));
+  const FakeTransport::Record& heard = *r.port.last(FakeTransport::Call::Audition);
+  CHECK(heard.hz == doctest::Approx(2.0 * 261.626).epsilon(1e-5));
+  CHECK(heard.velocity == doctest::Approx(120.0f));
+  CHECK(heard.durationMs == doctest::Approx(375.0f).epsilon(1e-4));
+  // AU.voices: the note sounds while it is held: the release (pointer up) comes after it, once.
+  CHECK(r.port.count(FakeTransport::Call::ReleaseAuditions) == 1);
+  CHECK(r.port.calls.back().call == FakeTransport::Call::ReleaseAuditions);
+  {  // held: no release until the pointer lets go
+    const size_t releases = r.port.count(FakeTransport::Call::ReleaseAuditions);
+    r.d.down(r.centreOf(116));
+    CHECK(r.port.count(FakeTransport::Call::Audition) == 2);
+    CHECK(r.port.count(FakeTransport::Call::ReleaseAuditions) == releases);
+    r.d.up(r.centreOf(116));
+    CHECK(r.port.count(FakeTransport::Call::ReleaseAuditions) == releases + 1);
+  }
 
   // Mid-drag: nothing dispatched; Esc cancels and leaves no history.
   const Vec2 from = r.centreOf(116);
@@ -593,7 +606,8 @@ TEST_CASE("clip view: copy / paste, fold to used notes, keys click selects a row
   REQUIRE(r.view->yOfDegree(18) < static_cast<float>(keys.bottom()));
   r.d.click({static_cast<float>(keys.x) + 10.0f, r.view->yOfDegree(18)});
   REQUIRE(r.port.count(FakeTransport::Call::Audition) == 1);
-  CHECK(r.port.calls.back().hz == doctest::Approx(261.626 * std::exp2(18.0 / 31.0)).epsilon(1e-5));
+  CHECK(r.port.last(FakeTransport::Call::Audition)->hz == doctest::Approx(261.626 * std::exp2(18.0 / 31.0)).epsilon(1e-5));
+  CHECK(r.port.calls.back().call == FakeTransport::Call::ReleaseAuditions);  // AU.voices: the key's note ends on release
   REQUIRE(r.view->selection().size() == 1);
   CHECK(r.view->selection()[0] == 202);
 

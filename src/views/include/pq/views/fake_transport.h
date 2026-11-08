@@ -13,7 +13,7 @@ namespace pq::views {
 
 class FakeTransport final : public TransportPort {
 public:
-  enum class Call : uint8_t { Play, Stop, Continue, Locate, SetLoop, Audition };
+  enum class Call : uint8_t { Play, Stop, Continue, Locate, SetLoop, Audition, ReleaseAuditions };
   struct Record {
     Call call;
     Ticks tick = 0;          // Play: from; Locate: the target
@@ -56,11 +56,18 @@ public:
     r.durationMs = durationMs;
     calls.push_back(r);
   }
+  void releaseAuditions() override { calls.push_back({Call::ReleaseAuditions, state_.tick, {}}); }
 
   // Test control: the position a running transport would report next.
   void setPlayheadTick(Ticks t) noexcept {
     state_.tick = t;
     ++state_.sequence;
+  }
+  // The last request of kind c (nullptr: none).
+  const Record* last(Call c) const noexcept {
+    for (auto it = calls.rbegin(); it != calls.rend(); ++it)
+      if (it->call == c) return &*it;
+    return nullptr;
   }
   size_t count(Call c) const noexcept {
     size_t n = 0;

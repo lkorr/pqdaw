@@ -417,6 +417,10 @@ public:
 
   // --- audition ---
   void audition(const tuning::PitchId& p, float velocity, Ticks contentStart, Ticks length);
+  // AU.voices: the press that auditioned ended (pointer up, capture lost): its notes stop sounding (released now, at
+  // most their own length). Only after a press that auditioned (auditionHeld).
+  void releaseAudition();
+  bool auditionHeld = false;
 
   // Repaint helpers.
   void markNotesDirty();  // note area + velocity lane

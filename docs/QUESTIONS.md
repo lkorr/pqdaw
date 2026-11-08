@@ -438,3 +438,17 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
 - **Band panel**: 240 × 228 (response 100, phase 36, then the column laid flat); its display has no double-click add
   (a band is not an EQ).
 - Status: open (provisional choices above).
+
+## Q?-AU.voices-a · The click at Play: the engine renders it clean; the device restart after the idle suspend is left
+- **Measured** (tests/app/test_voice_smooth.cpp, the real ProjectLink → VoiceEngine path, 4th-difference click detector,
+  bound ≈ a −70 dBFS step): Play from a stopped, an asleep and a new engine, restart / stop + play / loop wraps, a
+  structural edit or a new track mid-note (bit-identical to no edit), > 8 voices with compaction, interp and JIT, device
+  blocks 64 / 480: no click; voices end within a block of the Envelope's done. No engine cause was found.
+- **Not measurable here**: AudioOutput stops the stream once the engine has slept for kSuspendAfterSeconds (1 s), so
+  every Play after a short idle restarts the device (the user's FL Studio ASIO, 1024 frames). A driver / hardware start
+  transient or a late first switch would be a click "near the beginning", "sometimes" (only after ≥ 1.25 s idle).
+  Diagnostic for the user: does it click on Play right after Stop (< 1 s, stream still running)? If never, it is this.
+- Options: (A) keep the stream running while a project window is open (asleep engine: a memset per buffer);
+  (B) suspend after a long idle (e.g. 60 s); (C) keep 1 s. Chosen for now: (C), unchanged (no evidence yet; A/B are a
+  one-constant change). Done: the ASIO halves are zeroed at every start (they kept the last run's buffers).
+- Status: open.

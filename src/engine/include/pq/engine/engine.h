@@ -6,7 +6,8 @@
 //   Timeline (T3.16)        transport, note sequencer, automation renderer; its blockHook runs before every unit
 //   ProjectProgram (T1.x-arch1 + T3.17)   the per-track units, per-unit hot swap, topology swaps, bus meters
 //   param ring              UI → audio project-param writes (a knob, a fader, a mute: no recompile, SPEC §2)
-//   audition ring           UI → audio one-off notes on an instrument slot (the piano roll's click preview)
+//   audition ring           UI → audio one-off notes on an instrument slot (the piano roll's click preview), and
+//                           releaseAuditions() (the press ended), in order
 //   idle gate               see below
 //
 // ---- Threads ---------------------------------------------------------------------------------------------------
@@ -100,6 +101,11 @@ public:
   uint32_t paramRingCapacity() const noexcept;
   // A note on instrument slot `slot` for durationFrames frames (velocity 0..127).
   bool audition(uint32_t slot, float hz, float velocity, uint32_t durationFrames) noexcept;
+  // AU.voices: every audition requested so far is released now (the piano roll's pointer let go), or at its own end
+  // when that comes first; a note always sounds for kAuditionMinMs at least (a click is still heard). In order with
+  // audition(): one requested before this call is released by it.
+  bool releaseAuditions() noexcept;
+  static constexpr double kAuditionMinMs = 50.0;
   // After a publish (and inside post / setParam / audition). Calls the wake hook, if any: never call it from the
   // audio thread.
   void wake() noexcept {
@@ -146,7 +152,9 @@ private:
     float hz, velocity;
     int64_t offTime;  // engine sample time of the note-off
     bool started;
+    int64_t onTime;   // engine sample time of the note-on (AU.voices: the earliest release is kAuditionMinMs after it)
   };
+  static constexpr uint32_t kReleaseAuditions = 0xFFFFFFFFu;  // AuditionRequest::slot of a releaseAuditions()
   struct AuditionRequest {
     uint32_t slot;
     float hz, velocity;

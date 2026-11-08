@@ -31,6 +31,7 @@ public:
   views::PlayheadSnapshot playhead() override;
   // Nothing sounds before T3.17 puts the port over the engine: auditions are ignored.
   void auditionHz(float, float, float) override {}
+  void releaseAuditions() override {}
 
 private:
   Ticks currentTick() const;

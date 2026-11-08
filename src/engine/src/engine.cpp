@@ -82,6 +82,12 @@ bool Engine::post(const TransportCommand& c) noexcept {  // UI thread (wait-free
   return ok;
 }
 
+bool Engine::releaseAuditions() noexcept {  // UI thread (wait-free push + wake hook)
+  const bool ok = auditionIn_.tryPush(AuditionRequest{kReleaseAuditions, 0.0f, 0.0f, 0});
+  wake();
+  return ok;
+}
+
 bool Engine::setParam(uint32_t index, float value) noexcept {  // UI thread (wait-free push + wake hook)
   if (!paramProducer_->ring.tryPush(ParamWrite{index, value})) {
     droppedParams_.fetch_add(1, std::memory_order_relaxed);
@@ -202,6 +208,12 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
   AuditionRequest ar;
   while (auditionIn_.tryPop(ar)) {
     activity = true;
+    if (ar.slot == kReleaseAuditions) {  // AU.voices: the note-offs go out at once (≥ kAuditionMinMs after the onsets)
+      const auto minFrames = static_cast<int64_t>(kAuditionMinMs * 1e-3 * cfg_.sampleRate);
+      for (uint32_t i = 0; i < numAuditions_; ++i)
+        auditions_[i].offTime = std::min(auditions_[i].offTime, std::max(block.frameTime, auditions_[i].onTime + minFrames));
+      continue;
+    }
     ++stats_.auditions;
     if (numAuditions_ == auditions_.size()) {  // full: end the oldest now (its note-off goes out next block)
       auditions_[0].offTime = block.frameTime;
@@ -209,7 +221,7 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
     if (numAuditions_ < auditions_.size()) {
       nextAuditionId_ = (nextAuditionId_ + 1) & 0x0FFFFFFFu;
       auditions_[numAuditions_++] =
-          Audition{ar.slot, 0xF0000000u | nextAuditionId_, ar.hz, ar.velocity, block.frameTime + ar.frames, false};
+          Audition{ar.slot, 0xF0000000u | nextAuditionId_, ar.hz, ar.velocity, block.frameTime + ar.frames, false, block.frameTime};
     }
   }
   const uint32_t w = wake_.load(std::memory_order_acquire);
