@@ -13,10 +13,21 @@
 //                a band (doc::bandInfo) its own curve and its one node
 //                any other group       its In → Out curve, no nodes
 //              Each band's own curve is the band group's own GroupResponse (exact for any band circuit, a user's too).
-//   phase      the same axis; the active chain's total as phase in degrees — WRAPPED to ±180° (the default: a fixed
-//              scale, so a 16-stage cut's thousands of degrees never flatten the strip), or UNWRAPPED (auto-scaled; the
-//              WRAP / UNWRAP chip) — or group delay in ms (the PHASE / DELAY chip); the selected band's faint behind.
-//              Wrapped, a thin dotted line in the curve's colour joins the two ends of each wrap (at the crossing).
+//              EQ.4d: the element is a stack of three AREAS, each opened / closed by its title chip (MAG, PHASE,
+//              DELAY; view state), all three open at once if wanted; a closed area keeps a thin bar with its chip, the
+//              open ones share the rest (3 : 1 : 1), so the element keeps its size:
+//                magnitude   the above
+//                phase       the active chain's total as phase in degrees — WRAPPED to ±180° (the default: a fixed
+//                            scale, so a 16-stage cut's thousands of degrees never flatten the strip), or UNWRAPPED
+//                            (auto-scaled; the WRAP / UNWRAP chip); the selected band's faint behind. Wrapped, a thin
+//                            dotted line in the curve's colour joins the two ends of each wrap (at the crossing).
+//                delay       group delay τ = −dφ/dω in ms, 0 at the floor, auto-scaled upward; true values (a cut's
+//                            negative delay goes below the floor, in a shaded band of at most a quarter of the strip).
+//              Group delay is a forward difference over ε_k = 10⁻³ of the grid step at each point, from a second
+//              evaluation on the grid shifted by ε (its own GroupResponses key): the phase step 2π·ε·τ stays below π
+//              for τ < 1 / (2ε) (≥ 2.5 s at 20 kHz), so it never aliases; the value is τ(f + ε/2) to second order. (The
+//              neighbouring-point difference it replaces folded whenever 2π·Δf·τ > π: a 23-stage Q 5 allpass.) The
+//              unwrapped phase uses the same τ to pick each step's turn count.
 //   bandtype   a band's Type as its glyph and short code (LP, HP, BP, NO, PK, LS, HS, AP) in the band's colour, a
 //              menu on click (the EQ's strip columns).
 //
@@ -271,12 +282,12 @@ struct Shown {
 
 // A curve derived from an evaluation (kept until the evaluation is a new one).
 struct Derived {
-  uint64_t version = 0;
+  uint64_t version = 0, version2 = 0;  // the evaluation(s) it was derived from
   graph::ResponseKind kind = graph::ResponseKind::Unavailable;
   std::vector<float> v;  // per grid point
   bool valid() const noexcept { return version != 0 && kind != graph::ResponseKind::Unavailable; }
   void clear() noexcept {
-    version = 0;
+    version = version2 = 0;
     kind = graph::ResponseKind::Unavailable;
   }
 };
@@ -296,42 +307,67 @@ void deriveDb(const GroupResponses::Curve* c, Derived& d) {
   }
 }
 
-// What the phase strip shows.
-enum class PhaseView : uint8_t { Wrapped, Unwrapped, Delay };
+// The grid shifted by ε_k = 10⁻³ of the step to the next point (the delay area's second evaluation).
+constexpr uint64_t kShiftedKey = kPoints + 1;
+const std::vector<double>& shiftedGrid() {
+  static const std::vector<double> g = [] {
+    const std::vector<double>& f = grid();
+    std::vector<double> v(kPoints);
+    for (uint32_t k = 0; k < kPoints; ++k) v[k] = f[k] + 1e-3 * (k + 1 < kPoints ? f[k + 1] - f[k] : f[k] - f[k - 1]);
+    return v;
+  }();
+  return g;
+}
 
-// Phase in degrees (wrapped to (−180°, 180°] or unwrapped), or group delay in ms (−dφ/dω).
-void derivePhase(const GroupResponses::Curve* c, PhaseView view, Derived& d) {
-  if (c == nullptr) return d.clear();
-  const uint64_t key = c->version * 3 + static_cast<uint64_t>(view);
-  if (key == d.version) return;
+// Group delay in ms at each grid point: −arg(H(f + ε) / H(f)) / (2π·ε) (the principal arg: exact while 2π·ε·τ < π).
+// A point where H is 0 or not finite keeps the previous value.
+void deriveDelay(const GroupResponses::Curve* c, const GroupResponses::Curve* s, Derived& d) {
+  if (c == nullptr || s == nullptr || c->h.size() != s->h.size()) return d.clear();
+  if (c->version == d.version && s->version == d.version2) return;
+  d.version = c->version;
+  d.version2 = s->version;
+  d.kind = c->kind == graph::ResponseKind::Unavailable || s->kind == graph::ResponseKind::Unavailable ? graph::ResponseKind::Unavailable
+           : c->kind == graph::ResponseKind::Approximate || s->kind == graph::ResponseKind::Approximate ? graph::ResponseKind::Approximate
+                                                                                                         : graph::ResponseKind::Exact;
+  d.v.resize(kPoints);
+  const std::vector<double>& f = grid();
+  const std::vector<double>& g = shiftedGrid();
+  float last = 0.0f;
+  for (uint32_t k = 0; k < kPoints; ++k) {
+    const std::complex<double> a = c->at(k), b = s->at(k);
+    const std::complex<double> r = b * std::conj(a);
+    const double ms = -std::arg(r) / (2.0 * std::numbers::pi * (g[k] - f[k])) * 1000.0;
+    d.v[k] = last = std::isfinite(ms) && std::norm(r) > 0.0 ? static_cast<float>(ms) : last;
+  }
+}
+
+// Phase in degrees: wrapped to (−180°, 180°], or unwrapped — each step's turn count from the group delay `tau` (ms per
+// grid point, trapezoid over the step; the phase step between neighbours can be many turns), or without `tau` the
+// principal step.
+void derivePhase(const GroupResponses::Curve* c, bool unwrap, const Derived* tau, Derived& d) {
+  if (c == nullptr || (unwrap && (tau == nullptr || !tau->valid()))) return d.clear();
+  const uint64_t key = c->version * 2 + (unwrap ? 1 : 0), key2 = unwrap ? tau->version2 : 0;
+  if (key == d.version && key2 == d.version2) return;
   d.version = key;
+  d.version2 = key2;
   d.kind = c->kind;
   d.v.resize(kPoints);
   constexpr double kPi = std::numbers::pi;
-  std::vector<double> ph(kPoints);
-  double prev = std::arg(c->at(0)), acc = prev;
-  for (uint32_t k = 0; k < kPoints; ++k) {
-    const double a = std::arg(c->at(k));
-    double step = a - prev;
-    while (step > kPi) step -= 2.0 * kPi;
-    while (step < -kPi) step += 2.0 * kPi;
-    acc = k == 0 ? a : acc + step;
-    prev = a;
-    ph[k] = acc;
+  if (!unwrap) {
+    for (uint32_t k = 0; k < kPoints; ++k) d.v[k] = static_cast<float>(std::arg(c->at(k)) * 180.0 / kPi);
+    return;
   }
   const std::vector<double>& f = grid();
-  for (uint32_t k = 0; k < kPoints; ++k) {
-    if (view == PhaseView::Wrapped) {
-      d.v[k] = static_cast<float>(std::arg(c->at(k)) * 180.0 / kPi);
-      continue;
-    }
-    if (view == PhaseView::Unwrapped) {
-      d.v[k] = static_cast<float>(ph[k] * 180.0 / kPi);
-      continue;
-    }
-    const uint32_t a = k == 0 ? 0 : k - 1, b = k + 1 < kPoints ? k + 1 : k;
-    const double df = f[b] - f[a];
-    d.v[k] = df > 0.0 ? static_cast<float>(-(ph[b] - ph[a]) / (2.0 * kPi * df) * 1000.0) : 0.0f;
+  double prev = std::arg(c->at(0)), acc = prev;
+  d.v[0] = static_cast<float>(acc * 180.0 / kPi);
+  for (uint32_t k = 1; k < kPoints; ++k) {
+    const double a = std::arg(c->at(k));
+    const double principal = std::remainder(a - prev, 2.0 * kPi);
+    const double predicted = -2.0 * kPi * (f[k] - f[k - 1]) * 0.5 * (tau->v[k - 1] + tau->v[k]) * 1e-3;
+    const double turns = std::isfinite(predicted) ? std::round((predicted - principal) / (2.0 * kPi)) : 0.0;
+    acc += principal + 2.0 * kPi * turns;
+    prev = a;
+    d.v[k] = static_cast<float>(acc * 180.0 / kPi);
   }
 }
 
@@ -357,16 +393,18 @@ struct FreqLabel {
 constexpr FreqLabel kLabels[] = {{0, "0"},     {20000, "20k"}, {100, "100"}, {1000, "1k"}, {10000, "10k"}, {20, "20"},
                                  {50, "50"},   {200, "200"},   {500, "500"}, {2000, "2k"}, {5000, "5k"}};
 
-// The display's backdrop, frequency rules and labels (both displays).
-void paintPlate(ui::FacePainter& p, const ui::Theme& th, float w, float h) {
-  p.roundedRect({0.0f, 0.0f, w, h}, 4.0f, th.device.display);
+// An area's backdrop, frequency rules and labels (y0 … y1 of the element; `rules`: false for a closed area's bar).
+void paintPlate(ui::FacePainter& p, const ui::Theme& th, float w, float y0, float y1, bool rules = true) {
+  const float h = y1 - y0;
+  p.roundedRect({0.0f, y0, w, y1}, 4.0f, th.device.display);
+  if (!rules) return;
   // A faint teal rise from the bottom.
-  const Vec2 haze[2] = {{0.0f, h * 0.45f}, {w, h * 0.45f}};
-  p.fillUnder(haze, h, ui::withAlpha(th.device.response, 0), ui::mulAlpha(th.device.response, 0.07f));
+  const Vec2 haze[2] = {{0.0f, y0 + h * 0.45f}, {w, y0 + h * 0.45f}};
+  p.fillUnder(haze, y1, ui::withAlpha(th.device.response, 0), ui::mulAlpha(th.device.response, 0.07f));
   for (const double f : kRules) {
     const float x = static_cast<float>(tOfHz(f)) * w;
     const bool major = f == 100 || f == 1000 || f == 10000;
-    p.line({x, 0.0f}, {x, h}, major ? 0.9f : 0.6f, major ? ui::mulAlpha(th.device.responseGrid, 2.0f) : th.device.responseGrid);
+    p.line({x, y0}, {x, y1}, major ? 0.9f : 0.6f, major ? ui::mulAlpha(th.device.responseGrid, 2.0f) : th.device.responseGrid);
   }
 }
 
@@ -405,7 +443,6 @@ double nowSeconds() {
 // ---- response ------------------------------------------------------------------------------------------------------
 
 constexpr std::array<std::string_view, 2> kResponseSlots = {"signal", "input"};
-constexpr std::array<std::string_view, 1> kSignalSlot = {"signal"};
 constexpr std::array<std::string_view, 1> kValueSlot = {"value"};
 constexpr double kZooms[] = {6.0, 12.0, 24.0, 48.0};
 
@@ -416,30 +453,421 @@ public:
   bool interactive() const noexcept override { return true; }
   ui::Cursor cursor() const noexcept override {
     if (drag_.on) return ui::Cursor::Move;
-    return hover_ >= 0 ? ui::Cursor::Pointer : ui::Cursor::Crosshair;
+    if (hover_ >= 0 || hoverChip_ >= 0) return ui::Cursor::Pointer;
+    return hoverMag_ ? ui::Cursor::Crosshair : ui::Cursor::Inherit;
   }
 
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
     PanelTarget& t = *env.target;
     if (!env.hovered && !drag_.on) hover_ = -1, hoverChip_ = -1;
-    refresh(t);
-    const float w = desc_.w, h = desc_.h;
+    layout(t);
     zoom_ = t.viewValue(id(), "zoom", 24.0);
+    refresh(t);
+    for (int32_t a = 0; a < kAreas; ++a) {
+      if (!area_[a].open) {
+        paintBar(p, th, a);
+        continue;
+      }
+      if (a == kMag) paintMagnitude(p, th, t);
+      else if (a == kPhase) paintPhase(p, th, t);
+      else paintDelay(p, th, t);
+    }
+  }
+
+  bool onPointer(const FacePointer& e, PanelTarget& t) override {
+    using K = FacePointer::Kind;
+    layout(t);
+    refresh(t);
+    const bool inMag = area_[kMag].open && e.local.y >= area_[kMag].y0 && e.local.y <= area_[kMag].y1;
+    switch (e.kind) {
+      case K::Move: {
+        if (drag_.on) {
+          dragTo(e, t);
+          return true;
+        }
+        const int32_t c = chipAt(e.local), n = c < 0 && inMag ? nodeAt(e.local, e.pxPerUnit) : -1;
+        const bool changed = n != hover_ || c != hoverChip_;
+        hover_ = n;
+        hoverChip_ = c;
+        hoverMag_ = inMag;
+        return changed;
+      }
+      case K::Down: {
+        endWheel(t);
+        if (const int32_t c = chipAt(e.local); c >= 0 && e.button == ui::PointerButton::Left) {
+          toggleChip(c, t);
+          return true;
+        }
+        if (!inMag) return false;
+        const int32_t n = nodeAt(e.local, e.pxPerUnit);
+        if (e.button == ui::PointerButton::Right) {
+          if (n < 0) return false;
+          select(n, t);
+          openMenu(n, e, t);
+          return true;
+        }
+        if (e.button != ui::PointerButton::Left) return false;
+        if (n >= 0) {
+          const BandRef& b = band(n);
+          select(n, t);
+          if (e.clicks >= 2) {
+            if (b.hasGain()) t.setOnce(b.gain, positionOf(t, b.gain, 0.0), "Reset Band Gain");
+            return true;
+          }
+          drag_ = {};
+          drag_.on = true;
+          drag_.band = n;
+          drag_.startDev = e.device;
+          drag_.startLocal = nodePos(b);
+          drag_.qPos = b.q.bound() ? t.position(b.q) : 0.0;
+          t.begin(b.freq, "Move Band");
+          return true;
+        }
+        if (e.clicks >= 2 && shown_.eq) {
+          addAt(e.local, t);
+          return true;
+        }
+        t.selectGroup({});
+        return true;
+      }
+      case K::Up:
+        if (!drag_.on) return false;
+        drag_.on = false;
+        t.end();
+        return true;
+      case K::Wheel: return inMag && wheel(e, t);
+      case K::Leave: {
+        const bool changed = hover_ >= 0 || hoverChip_ >= 0;
+        hover_ = hoverChip_ = -1;
+        hoverMag_ = false;
+        return changed;
+      }
+    }
+    return false;
+  }
+  bool dragging() const noexcept override { return drag_.on; }
+  void cancelDrag(PanelTarget& t) override {
+    if (!drag_.on) return;
+    drag_.on = false;
+    t.cancel();
+  }
+  void endWheel(PanelTarget& t) override {
+    if (!wheel_) return;
+    wheel_ = false;
+    t.end();
+  }
+  bool onKey(const ui::KeyEvent& e, PanelTarget& t) override {
+    if (!e.down || (e.mods & ui::mod::kChordMask) != 0) return false;
+    if (e.key != ui::key::kDelete && e.key != ui::key::kBackspace) return false;
+    uint32_t chain = 0;
+    const BandRef* b = shown_.find(t.selectedGroup(), &chain);
+    if (b == nullptr || !shown_.eq || chain != shown_.active) return false;
+    const doc::DeviceId g = b->group;
+    t.selectGroup({});
+    t.run([g](const doc::Project& p, doc::IdSource& ids) { return doc::ops::removeBand(p, ids, g); });
+    return true;
+  }
+  void describe(const PanelTarget& t, std::string& title, std::string& body) const override {
+    title = shown_.eq ? "EQ Response" : "Response";
+    body = "The analytic response of " + (shown_.eq ? std::string("the chain being edited") : std::string("the group")) +
+           ": magnitude, phase and group delay, each opened or closed by its title chip (MAG, PHASE, DELAY).";
+    if (shown_.eq) body += " Double-click: add a band.";
+    if (!shown_.bands[shown_.active].empty())
+      body += " Drag a node: frequency and gain (Q for cuts and pass filters; Shift: fine). Wheel: Q, Alt + wheel: stages. "
+              "Double-click a node: 0 dB. Right-click: type, stages, bypass, solo, delete.";
+    (void)t;
+  }
+
+  // ---- the analyser ----
+  VoiceTapReader* voiceReader(PanelTarget& t) const override {
+    reader_.feed = spectrumOn(t) ? feedOf(t, 0) : nullptr;
+    return reader_.feed != nullptr ? &reader_ : nullptr;
+  }
+  bool pollVoices(PanelTarget& t) override {
+    if (!spectrumOn(t)) {
+      out_.release();
+      in_.release();
+      return false;
+    }
+    syncFeeds(t);
+    const double now = nowSeconds();
+    bool changed = out_.frame(now, true);
+    if (inputOn(t)) changed = in_.frame(now, true) || changed;
+    return changed;
+  }
+  bool animating() const noexcept override { return out_.feed() != nullptr && out_.feed()->live(); }
+
+  // Tests.
+  void showSpectrum(devices::SpectrumSnapshot s) { out_.setShownForTest(std::move(s), 256.0f); }
+  float drawnDb(float x) const {
+    const Derived& d = total_[shown_.active];
+    if (!d.valid()) return std::numeric_limits<float>::quiet_NaN();
+    const float k = std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1);
+    return d.v[static_cast<size_t>(std::lround(k))];
+  }
+  float pointX(uint32_t k) const noexcept { return desc_.w * static_cast<float>(k) / (kPoints - 1); }
+  std::optional<Vec2> nodeOf(doc::DeviceId g) const {
+    for (const auto& b : shown_.bands[shown_.active])
+      if (b->group == g) return nodePos(*b);
+    return std::nullopt;
+  }
+  float yOfDb(double db) const noexcept { return yOf(db); }
+  bool series() const noexcept { return shown_.series[shown_.active]; }
+  // EQ.4d: the areas (as laid out in the last paint / pointer event), the phase and delay areas' values and scales.
+  test::ResponseArea areaOf(int32_t a) const noexcept { return {area_[a].open, area_[a].y0, area_[a].y1}; }
+  bool unwrapped(const PanelTarget& t) const { return unwrapOn(t); }
+  float stripAt(int32_t a, float x) const {
+    const Derived& d = a == kPhase ? phaseTotal_ : delayTotal_;
+    if (!d.valid()) return std::numeric_limits<float>::quiet_NaN();
+    return d.v[static_cast<size_t>(std::lround(std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1)))];
+  }
+  std::pair<double, double> stripScale(int32_t a) const noexcept {
+    return a == kPhase ? std::pair<double, double>{phaseLo_, phaseHi_} : std::pair<double, double>{delayLo_, delayHi_};
+  }
+  float delayY(double ms) const noexcept { return yOfDelay(ms); }
+  const std::vector<float>& wraps() const noexcept { return wraps_; }
+  Vec2 chipCentre(int32_t c) const noexcept {
+    const Rect r = chipRect(c);
+    return {(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f};
+  }
+
+private:
+  struct Reader final : VoiceTapReader {
+    devices::SpectrumFeed* feed = nullptr;
+    uint32_t read(std::span<FaceVoice>) override { return 0; }
+    uint64_t serial() const noexcept override { return 0; }
+    bool live() const noexcept override { return feed != nullptr && feed->live(); }
+  };
+  struct Drag {
+    bool on = false;
+    int32_t band = -1;
+    Vec2 startDev{0.0f, 0.0f}, startLocal{0.0f, 0.0f};
+    double qPos = 0.0;
+  };
+
+  // ---- view state and the areas ----
+  enum : int32_t { kMag = 0, kPhase = 1, kDelay = 2, kAreas = 3 };
+  static constexpr float kGap = 2.0f, kBar = 15.0f;          // between areas; a closed area's bar
+  static constexpr float kWeight[kAreas] = {3.0f, 1.0f, 1.0f};  // how the open areas share the height
+  static constexpr std::string_view kOpenKey[kAreas] = {"magnitude", "phase", "delay"};
+  static constexpr double kOpenDefault[kAreas] = {1.0, 1.0, 0.0};
+  struct Span {
+    float y0 = 0.0f, y1 = 0.0f;
+    bool open = false;
+  };
+  bool areaOpen(const PanelTarget& t, int32_t a) const { return t.viewValue(id(), kOpenKey[a], kOpenDefault[a]) >= 0.5; }
+  bool spectrumOn(const PanelTarget& t) const { return areaOpen(t, kMag) && t.viewValue(id(), "spectrum", 1.0) >= 0.5; }
+  bool inputOn(const PanelTarget& t) const { return binding(1) != nullptr && t.viewValue(id(), "input", 0.0) >= 0.5; }
+  bool unwrapOn(const PanelTarget& t) const { return t.viewValue(id(), "unwrap", 0.0) >= 0.5; }
+  // The areas top to bottom: a closed one a bar, the open ones sharing the rest by kWeight (the element keeps its size).
+  void layout(const PanelTarget& t) {
+    float free = desc_.h - kGap * (kAreas - 1), weights = 0.0f;
+    for (int32_t a = 0; a < kAreas; ++a) {
+      area_[a].open = areaOpen(t, a);
+      if (area_[a].open) weights += kWeight[a];
+      else free -= kBar;
+    }
+    float y = 0.0f;
+    for (int32_t a = 0; a < kAreas; ++a) {
+      const float h = area_[a].open ? std::max(free, 0.0f) * kWeight[a] / weights : kBar;
+      area_[a].y0 = y;
+      area_[a].y1 = y + h;
+      y += h + kGap;
+    }
+  }
+  // Chips: 0 SPEC, 1 IN, 2 the dB zoom (on the magnitude area), 3 / 4 / 6 the areas' titles (MAG, PHASE, DELAY: open /
+  // close; a closed area's whole bar), 5 WRAP / UNWRAP (on the phase area). test::ResponseChip names them.
+  static int32_t titleChip(int32_t a) noexcept { return a == kMag ? 3 : a == kPhase ? 4 : 6; }
+  Rect chipRect(int32_t c) const noexcept {
+    if (c >= 3) {
+      const int32_t a = c == 3 ? kMag : c == 6 ? kDelay : kPhase;
+      const float y0 = area_[a].y0 + 3.0f, y1 = area_[a].y0 + 12.0f;
+      if (c == 5) return {32.0f, y0, 62.0f, y1};
+      return {3.0f, y0, c == 3 ? 23.0f : 29.0f, y1};
+    }
+    // From the right of the magnitude area: the zoom, IN, SPEC.
+    const float wz = 20.0f, wi = 13.0f, ws = 20.0f, y0 = area_[kMag].y0 + 3.0f, y1 = area_[kMag].y0 + 13.0f, r = desc_.w - 3.0f;
+    if (c == 2) return {r - wz, y0, r, y1};
+    if (c == 1) return {r - wz - 3.0f - wi, y0, r - wz - 3.0f, y1};
+    const float x1 = binding(1) != nullptr ? r - wz - wi - 6.0f : r - wz - 3.0f;
+    return {x1 - ws, y0, x1, y1};
+  }
+  int32_t chipAt(Vec2 l) const noexcept {
+    for (int32_t a = 0; a < kAreas; ++a) {
+      const Span& s = area_[a];
+      if (!s.open) {
+        if (l.y >= s.y0 && l.y <= s.y1 && l.x >= 0.0f && l.x <= desc_.w) return titleChip(a);
+        continue;
+      }
+      if (inside(chipRect(titleChip(a)), l)) return titleChip(a);
+    }
+    if (area_[kMag].open)
+      for (int32_t c = 0; c < 3; ++c)
+        if ((c != 1 || binding(1) != nullptr) && inside(chipRect(c), l)) return c;
+    if (area_[kPhase].open && inside(chipRect(5), l)) return 5;
+    return -1;
+  }
+  void toggleChip(int32_t c, PanelTarget& t) {
+    if (c == 0) t.setViewValue(id(), "spectrum", t.viewValue(id(), "spectrum", 1.0) >= 0.5 ? 0.0 : 1.0);
+    if (c == 1) t.setViewValue(id(), "input", inputOn(t) ? 0.0 : 1.0);
+    if (c == 2) {
+      const double z = t.viewValue(id(), "zoom", 24.0);
+      size_t k = 0;
+      while (k < std::size(kZooms) && kZooms[k] <= z + 1e-9) ++k;
+      t.setViewValue(id(), "zoom", kZooms[k % std::size(kZooms)]);
+    }
+    for (int32_t a = 0; a < kAreas; ++a)
+      if (c == titleChip(a)) t.setViewValue(id(), kOpenKey[a], areaOpen(t, a) ? 0.0 : 1.0);
+    if (c == 5) t.setViewValue(id(), "unwrap", unwrapOn(t) ? 0.0 : 1.0);
+    if (!spectrumOn(t)) {
+      out_.release();
+      in_.release();
+    }
+  }
+  devices::SpectrumFeed* feedOf(PanelTarget& t, size_t slot) const {
+    const doc::Binding* b = binding(slot);
+    return b != nullptr && b->kind == doc::BindingKind::Signal ? t.signalFeed(*b) : nullptr;
+  }
+  void syncFeeds(PanelTarget& t) {
+    if (!styled_) {
+      devices::SpectrumPlotStyle s;
+      s.bands = s.grid = s.freqLabels = s.dbLabels = false;
+      s.floorDb = -90.0f;
+      s.ceilDb = -6.0f;
+      s.glow = 0.7f;
+      s.fill = 0.45f;
+      s.alpha = 0.6f;
+      s.lineWidth = 1.2f;
+      out_.setStyle(s);
+      s.glow = 0.0f;
+      s.fill = 0.25f;
+      s.alpha = 0.28f;
+      in_.setStyle(s);
+      styled_ = true;
+    }
+    if (devices::SpectrumFeed* f = feedOf(t, 0); f != out_.feed()) out_.setFeed(f, {});
+    devices::SpectrumFeed* fi = inputOn(t) ? feedOf(t, 1) : nullptr;
+    if (fi != in_.feed()) in_.setFeed(fi, {});
+  }
+
+  // ---- geometry ----
+  float yOf(double db) const noexcept {
+    const float top = area_[kMag].y0 + 6.0f, bot = area_[kMag].y1 - 14.0f, mid = (top + bot) * 0.5f, half = (bot - top) * 0.5f;
+    return mid - static_cast<float>(db / zoom_) * half;
+  }
+  double dbOf(float y) const noexcept {
+    const float top = area_[kMag].y0 + 6.0f, bot = area_[kMag].y1 - 14.0f, mid = (top + bot) * 0.5f, half = (bot - top) * 0.5f;
+    return (mid - y) / std::max(half, 1e-3f) * zoom_;
+  }
+  float xOf(double hz) const noexcept { return static_cast<float>(tOfHz(hz)) * desc_.w; }
+  void curvePoints(const std::vector<float>& db, uint32_t a, uint32_t b, std::vector<Vec2>& out) const {
+    out.resize(b - a);
+    const float lo = area_[kMag].y0 - 4.0f, hi = area_[kMag].y1 + 4.0f;
+    for (uint32_t k = a; k < b; ++k) out[k - a] = {pointX(k), std::clamp(yOf(db[k]), lo, hi)};
+  }
+  const BandRef& band(int32_t i) const { return *shown_.bands[shown_.active][static_cast<size_t>(i)]; }
+  // A node: at its gain for the gain types, else on its own curve at its frequency.
+  Vec2 nodePos(const BandRef& b, uint32_t chain = ~0u) const {
+    const float x = xOf(b.hz);
+    if (b.hasGain()) return {x, yOf(b.db)};
+    if (chain == ~0u || chain == shown_.active)
+      if (b.index < band_.size() && band_[b.index].valid()) {
+        const float k = std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1);
+        return {x, std::clamp(yOf(band_[b.index].v[static_cast<size_t>(std::lround(k))]), area_[kMag].y0 + 4.0f, area_[kMag].y1 - 4.0f)};
+      }
+    return {x, yOf(0.0)};
+  }
+  int32_t nodeAt(Vec2 l, float pxPerUnit) const {
+    const float r = std::max(7.0f, 9.0f / std::max(pxPerUnit, 0.1f));
+    int32_t best = -1;
+    float bestD = r * r;
+    const auto& v = shown_.bands[shown_.active];
+    for (size_t i = 0; i < v.size(); ++i) {
+      const Vec2 c = nodePos(*v[i]);
+      const float d = (c.x - l.x) * (c.x - l.x) + (c.y - l.y) * (c.y - l.y);
+      if (d <= bestD) best = static_cast<int32_t>(i), bestD = d;
+    }
+    return best;
+  }
+
+  // ---- the model and the curves ----
+  void refresh(PanelTarget& t) {
+    GroupResponses* r = t.responses();
+    const doc::Binding* b = binding();
+    if (r == nullptr || b == nullptr) {
+      total_[0].clear();
+      total_[1].clear();
+      band_.clear();
+      phaseTotal_.clear();
+      phaseSel_.clear();
+      delayTotal_.clear();
+      delaySel_.clear();
+      return;
+    }
+    shown_.sync(r->doc(), b->device);
+    shown_.groups(want_, true);
+    r->want(want_);
+    const std::vector<double>& hz = grid();
+    const uint32_t act = shown_.active;
+    // Only what an open area draws is derived (a closed area costs nothing).
+    if (area_[kMag].open) {
+      deriveDb(shown_.total(*r, act, hz, kGridKey), total_[act]);
+      if (shown_.split()) deriveDb(shown_.total(*r, 1 - act, hz, kGridKey), total_[1 - act]);
+      else total_[1 - act].clear();
+      const auto& bands = shown_.bands[act];
+      band_.resize(bands.size());
+      for (size_t i = 0; i < bands.size(); ++i) deriveDb(bands[i]->off ? nullptr : r->curve(bands[i]->group, hz, kGridKey), band_[i]);
+    }
+    const bool phase = area_[kPhase].open, delay = area_[kDelay].open, unwrap = phase && unwrapOn(t);
+    if (!phase && !delay) return;
+    // The selected band (of the active chain, on), faint behind the total.
+    uint32_t chain = 0;
+    const BandRef* sel = shown_.find(t.selectedGroup(), &chain);
+    if (sel != nullptr && (chain != act || sel->off)) sel = nullptr;
+    if (sel != nullptr) selColour_ = bandColour(sel->index);
+    const GroupResponses::Curve* tot = shown_.total(*r, act, hz, kGridKey);
+    const GroupResponses::Curve* one = sel != nullptr ? r->curve(sel->group, hz, kGridKey) : nullptr;
+    // The delay (the delay area, and the unwrapped phase's turn counts): the second evaluation, on the shifted grid.
+    if (delay || unwrap) {
+      const std::vector<double>& sh = shiftedGrid();
+      deriveDelay(tot, tot != nullptr ? shown_.total(*r, act, sh, kShiftedKey) : nullptr, delayTotal_);
+      deriveDelay(one, one != nullptr ? r->curve(sel->group, sh, kShiftedKey) : nullptr, delaySel_);
+    }
+    if (phase) {
+      derivePhase(tot, unwrap, &delayTotal_, phaseTotal_);
+      derivePhase(one, unwrap, &delaySel_, phaseSel_);
+    }
+  }
+
+  // ---- the areas ----
+  Rect devRect(const ui::FacePainter& p, const Span& a) const noexcept {
     const ui::FaceTransform& tr = p.transform();
+    return {tr.origin.x, tr.origin.y + a.y0 * tr.scale, tr.origin.x + desc_.w * tr.scale, tr.origin.y + a.y1 * tr.scale};
+  }
+  void paintBar(ui::FacePainter& p, const ui::Theme& th, int32_t a) {
+    const Span& s = area_[a];
+    paintPlate(p, th, desc_.w, s.y0, s.y1, false);
+    chip(p, th, chipRect(titleChip(a)), a == kMag ? "MAG" : a == kPhase ? "PHASE" : "DELAY", false, hoverChip_ == titleChip(a));
+    outlineRect(p, {0.5f, s.y0 + 0.5f, desc_.w - 0.5f, s.y1 - 0.5f}, 4.0f, 1.0f, ui::mulAlpha(th.device.responseGrid, 1.6f));
+  }
+
+  void paintMagnitude(ui::FacePainter& p, const ui::Theme& th, PanelTarget& t) {
+    const Span& A = area_[kMag];
+    const float w = desc_.w;
     ui::DrawList& dl = p.drawList();
-    const Rect dev{tr.origin.x, tr.origin.y, tr.origin.x + w * tr.scale, tr.origin.y + h * tr.scale};
-    paintPlate(p, th, w, h);
+    const Rect dev = devRect(p, A);
+    paintPlate(p, th, w, A.y0, A.y1);
     dl.pushClip(dev);
     // The analyser behind: the output, the input dimmed.
     if (spectrumOn(t)) {
       devices::SpectrumAxis ax{dev.x0, dev.x1, static_cast<float>(kAxisHz), static_cast<float>(kTopHz)};
       if (inputOn(t) && in_.feed() != nullptr) {
         in_.wake();
-        in_.paintSpectrum(dl, dev, ax, tr.scale);
+        in_.paintSpectrum(dl, dev, ax, p.transform().scale);
       }
       out_.wake();
-      out_.paintSpectrum(dl, dev, ax, tr.scale);
+      out_.paintSpectrum(dl, dev, ax, p.transform().scale);
     }
     // dB rules.
     const double step = zoom_ <= 6.0 ? 2.0 : zoom_ <= 12.0 ? 3.0 : zoom_ <= 24.0 ? 6.0 : 12.0;
@@ -498,7 +926,7 @@ public:
         p.polyline(pts_, 1.5f, m);
       }
     } else {
-      p.text({w * 0.5f, 12.0f}, "no curve", 6.5f, th.device.displayText);
+      p.text({w * 0.5f, A.y0 + 12.0f}, "no curve", 6.5f, th.device.displayText);
     }
     paintNodes(p, th, t);
     // dB labels on the right, frequency labels along the bottom.
@@ -506,9 +934,10 @@ public:
       if (std::fmod(std::fabs(db), 2.0 * step) > 1e-9 && std::fabs(db) > 1e-9) continue;
       p.textAligned({w - 3.0f, yOf(db) - 3.0f}, db > 0 ? fmt("+%.0f", db) : fmt("%.0f", db), 5.5f, th.device.displayText, 1.0f);
     }
-    paintFreqLabels(p, th, w, h - 5.5f, 5.8f);
+    paintFreqLabels(p, th, w, A.y1 - 5.5f, 5.8f);
     paintReadout(p, th, t);
     // The chips.
+    chip(p, th, chipRect(3), "MAG", true, hoverChip_ == 3);
     for (int32_t c = 0; c < 3; ++c) {
       const bool on = c == 0 ? spectrumOn(t) : c == 1 ? inputOn(t) : true;
       std::string label = c == 0 ? "SPEC" : c == 1 ? "IN" : fmt("\xC2\xB1%.0f", zoom_);
@@ -516,273 +945,185 @@ public:
       chip(p, th, chipRect(c), label, on && (c != 1 || spectrumOn(t)), hoverChip_ == c);
     }
     dl.popClip();
-    outlineRect(p, {0.5f, 0.5f, w - 0.5f, h - 0.5f}, 4.0f, 1.0f, ui::mulAlpha(th.device.responseGrid, 1.6f));
+    outlineRect(p, {0.5f, A.y0 + 0.5f, w - 0.5f, A.y1 - 0.5f}, 4.0f, 1.0f, ui::mulAlpha(th.device.responseGrid, 1.6f));
   }
 
-  bool onPointer(const FacePointer& e, PanelTarget& t) override {
-    using K = FacePointer::Kind;
-    refresh(t);
-    switch (e.kind) {
-      case K::Move: {
-        if (drag_.on) {
-          dragTo(e, t);
-          return true;
-        }
-        const int32_t n = nodeAt(e.local, e.pxPerUnit), c = chipAt(e.local);
-        const bool changed = n != hover_ || c != hoverChip_;
-        hover_ = n;
-        hoverChip_ = c;
-        return changed;
-      }
-      case K::Down: {
-        endWheel(t);
-        if (const int32_t c = chipAt(e.local); c >= 0 && e.button == ui::PointerButton::Left) {
-          toggleChip(c, t);
-          return true;
-        }
-        const int32_t n = nodeAt(e.local, e.pxPerUnit);
-        if (e.button == ui::PointerButton::Right) {
-          if (n < 0) return false;
-          select(n, t);
-          openMenu(n, e, t);
-          return true;
-        }
-        if (e.button != ui::PointerButton::Left) return false;
-        if (n >= 0) {
-          const BandRef& b = band(n);
-          select(n, t);
-          if (e.clicks >= 2) {
-            if (b.hasGain()) t.setOnce(b.gain, positionOf(t, b.gain, 0.0), "Reset Band Gain");
-            return true;
-          }
-          drag_ = {};
-          drag_.on = true;
-          drag_.band = n;
-          drag_.startDev = e.device;
-          drag_.startLocal = nodePos(b);
-          drag_.qPos = b.q.bound() ? t.position(b.q) : 0.0;
-          t.begin(b.freq, "Move Band");
-          return true;
-        }
-        if (e.clicks >= 2 && shown_.eq) {
-          addAt(e.local, t);
-          return true;
-        }
-        t.selectGroup({});
-        return true;
-      }
-      case K::Up:
-        if (!drag_.on) return false;
-        drag_.on = false;
-        t.end();
-        return true;
-      case K::Wheel: return wheel(e, t);
-      case K::Leave: {
-        const bool changed = hover_ >= 0 || hoverChip_ >= 0;
-        hover_ = hoverChip_ = -1;
-        return changed;
-      }
-    }
-    return false;
+  // The phase / delay areas' value → y.
+  static float stripY(const Span& a, double v, double lo, double hi) noexcept {
+    const float top = a.y0 + 4.0f, bot = a.y1 - 4.0f;
+    return bot - static_cast<float>((v - lo) / std::max(hi - lo, 1e-9)) * (bot - top);
   }
-  bool dragging() const noexcept override { return drag_.on; }
-  void cancelDrag(PanelTarget& t) override {
-    if (!drag_.on) return;
-    drag_.on = false;
-    t.cancel();
+  // Delay: 0 at the floor; below it (a negative delay) the shaded band, at the same scale when it fits in a quarter of
+  // the strip, else squeezed into that quarter.
+  float yOfDelay(double ms) const noexcept {
+    const Span& a = area_[kDelay];
+    const float top = a.y0 + 4.0f, bot = a.y1 - 4.0f;
+    const float floorY = delayFloorY_;
+    if (ms >= 0.0) return floorY - static_cast<float>(ms / std::max(delayHi_, 1e-12)) * (floorY - top);
+    return floorY + static_cast<float>(ms / std::min(delayLo_, -1e-12)) * (bot - floorY);
   }
-  void endWheel(PanelTarget& t) override {
-    if (!wheel_) return;
-    wheel_ = false;
-    t.end();
-  }
-  bool onKey(const ui::KeyEvent& e, PanelTarget& t) override {
-    if (!e.down || (e.mods & ui::mod::kChordMask) != 0) return false;
-    if (e.key != ui::key::kDelete && e.key != ui::key::kBackspace) return false;
-    uint32_t chain = 0;
-    const BandRef* b = shown_.find(t.selectedGroup(), &chain);
-    if (b == nullptr || !shown_.eq || chain != shown_.active) return false;
-    const doc::DeviceId g = b->group;
-    t.selectGroup({});
-    t.run([g](const doc::Project& p, doc::IdSource& ids) { return doc::ops::removeBand(p, ids, g); });
-    return true;
-  }
-  void describe(const PanelTarget& t, std::string& title, std::string& body) const override {
-    title = shown_.eq ? "EQ Response" : "Response";
-    body = "The analytic response of " + (shown_.eq ? std::string("the chain being edited") : std::string("the group")) + ".";
-    if (shown_.eq) body += " Double-click: add a band.";
-    if (!shown_.bands[shown_.active].empty())
-      body += " Drag a node: frequency and gain (Q for cuts and pass filters; Shift: fine). Wheel: Q, Alt + wheel: stages. "
-              "Double-click a node: 0 dB. Right-click: type, stages, bypass, solo, delete.";
-    (void)t;
-  }
-
-  // ---- the analyser ----
-  VoiceTapReader* voiceReader(PanelTarget& t) const override {
-    reader_.feed = spectrumOn(t) ? feedOf(t, 0) : nullptr;
-    return reader_.feed != nullptr ? &reader_ : nullptr;
-  }
-  bool pollVoices(PanelTarget& t) override {
-    if (!spectrumOn(t)) {
-      out_.release();
-      in_.release();
-      return false;
-    }
-    syncFeeds(t);
-    const double now = nowSeconds();
-    bool changed = out_.frame(now, true);
-    if (inputOn(t)) changed = in_.frame(now, true) || changed;
-    return changed;
-  }
-  bool animating() const noexcept override { return out_.feed() != nullptr && out_.feed()->live(); }
-
-  // Tests.
-  void showSpectrum(devices::SpectrumSnapshot s) { out_.setShownForTest(std::move(s), 256.0f); }
-  float drawnDb(float x) const {
-    const Derived& d = total_[shown_.active];
-    if (!d.valid()) return std::numeric_limits<float>::quiet_NaN();
-    const float k = std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1);
-    return d.v[static_cast<size_t>(std::lround(k))];
-  }
-  float pointX(uint32_t k) const noexcept { return desc_.w * static_cast<float>(k) / (kPoints - 1); }
-  std::optional<Vec2> nodeOf(doc::DeviceId g) const {
-    for (const auto& b : shown_.bands[shown_.active])
-      if (b->group == g) return nodePos(*b);
-    return std::nullopt;
-  }
-  float yOfDb(double db) const noexcept { return yOf(db); }
-  bool series() const noexcept { return shown_.series[shown_.active]; }
-
-private:
-  struct Reader final : VoiceTapReader {
-    devices::SpectrumFeed* feed = nullptr;
-    uint32_t read(std::span<FaceVoice>) override { return 0; }
-    uint64_t serial() const noexcept override { return 0; }
-    bool live() const noexcept override { return feed != nullptr && feed->live(); }
-  };
-  struct Drag {
-    bool on = false;
-    int32_t band = -1;
-    Vec2 startDev{0.0f, 0.0f}, startLocal{0.0f, 0.0f};
-    double qPos = 0.0;
-  };
-
-  // ---- view state ----
-  bool spectrumOn(const PanelTarget& t) const { return t.viewValue(id(), "spectrum", 1.0) >= 0.5; }
-  bool inputOn(const PanelTarget& t) const { return binding(1) != nullptr && t.viewValue(id(), "input", 0.0) >= 0.5; }
-  Rect chipRect(int32_t c) const noexcept {
-    // From the right: the zoom, IN, SPEC.
-    const float wz = 20.0f, wi = 13.0f, ws = 20.0f, y0 = 3.0f, y1 = 13.0f, r = desc_.w - 3.0f;
-    if (c == 2) return {r - wz, y0, r, y1};
-    if (c == 1) return {r - wz - 3.0f - wi, y0, r - wz - 3.0f, y1};
-    const float x1 = binding(1) != nullptr ? r - wz - wi - 6.0f : r - wz - 3.0f;
-    return {x1 - ws, y0, x1, y1};
-  }
-  int32_t chipAt(Vec2 l) const noexcept {
-    for (int32_t c = 0; c < 3; ++c)
-      if ((c != 1 || binding(1) != nullptr) && inside(chipRect(c), l)) return c;
-    return -1;
-  }
-  void toggleChip(int32_t c, PanelTarget& t) {
-    if (c == 0) t.setViewValue(id(), "spectrum", spectrumOn(t) ? 0.0 : 1.0);
-    if (c == 1) t.setViewValue(id(), "input", inputOn(t) ? 0.0 : 1.0);
-    if (c == 2) {
-      const double z = t.viewValue(id(), "zoom", 24.0);
-      size_t k = 0;
-      while (k < std::size(kZooms) && kZooms[k] <= z + 1e-9) ++k;
-      t.setViewValue(id(), "zoom", kZooms[k % std::size(kZooms)]);
-    }
-    if (!spectrumOn(t)) {
-      out_.release();
-      in_.release();
-    }
-  }
-  devices::SpectrumFeed* feedOf(PanelTarget& t, size_t slot) const {
-    const doc::Binding* b = binding(slot);
-    return b != nullptr && b->kind == doc::BindingKind::Signal ? t.signalFeed(*b) : nullptr;
-  }
-  void syncFeeds(PanelTarget& t) {
-    if (!styled_) {
-      devices::SpectrumPlotStyle s;
-      s.bands = s.grid = s.freqLabels = s.dbLabels = false;
-      s.floorDb = -90.0f;
-      s.ceilDb = -6.0f;
-      s.glow = 0.7f;
-      s.fill = 0.45f;
-      s.alpha = 0.6f;
-      s.lineWidth = 1.2f;
-      out_.setStyle(s);
-      s.glow = 0.0f;
-      s.fill = 0.25f;
-      s.alpha = 0.28f;
-      in_.setStyle(s);
-      styled_ = true;
-    }
-    if (devices::SpectrumFeed* f = feedOf(t, 0); f != out_.feed()) out_.setFeed(f, {});
-    devices::SpectrumFeed* fi = inputOn(t) ? feedOf(t, 1) : nullptr;
-    if (fi != in_.feed()) in_.setFeed(fi, {});
-  }
-
-  // ---- geometry ----
-  float yOf(double db) const noexcept {
-    const float top = 6.0f, bot = desc_.h - 14.0f, mid = (top + bot) * 0.5f, half = (bot - top) * 0.5f;
-    return mid - static_cast<float>(db / zoom_) * half;
-  }
-  double dbOf(float y) const noexcept {
-    const float top = 6.0f, bot = desc_.h - 14.0f, mid = (top + bot) * 0.5f, half = (bot - top) * 0.5f;
-    return (mid - y) / half * zoom_;
-  }
-  float xOf(double hz) const noexcept { return static_cast<float>(tOfHz(hz)) * desc_.w; }
-  void curvePoints(const std::vector<float>& db, uint32_t a, uint32_t b, std::vector<Vec2>& out) const {
+  void stripPoints(const std::vector<float>& v, uint32_t a, uint32_t b, const Span& s, bool delay, std::vector<Vec2>& out) const {
     out.resize(b - a);
-    const float lo = -4.0f, hi = desc_.h + 4.0f;
-    for (uint32_t k = a; k < b; ++k) out[k - a] = {pointX(k), std::clamp(yOf(db[k]), lo, hi)};
-  }
-  const BandRef& band(int32_t i) const { return *shown_.bands[shown_.active][static_cast<size_t>(i)]; }
-  // A node: at its gain for the gain types, else on its own curve at its frequency.
-  Vec2 nodePos(const BandRef& b, uint32_t chain = ~0u) const {
-    const float x = xOf(b.hz);
-    if (b.hasGain()) return {x, yOf(b.db)};
-    if (chain == ~0u || chain == shown_.active)
-      if (b.index < band_.size() && band_[b.index].valid()) {
-        const float k = std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1);
-        return {x, std::clamp(yOf(band_[b.index].v[static_cast<size_t>(std::lround(k))]), 4.0f, desc_.h - 4.0f)};
-      }
-    return {x, yOf(0.0)};
-  }
-  int32_t nodeAt(Vec2 l, float pxPerUnit) const {
-    const float r = std::max(7.0f, 9.0f / std::max(pxPerUnit, 0.1f));
-    int32_t best = -1;
-    float bestD = r * r;
-    const auto& v = shown_.bands[shown_.active];
-    for (size_t i = 0; i < v.size(); ++i) {
-      const Vec2 c = nodePos(*v[i]);
-      const float d = (c.x - l.x) * (c.x - l.x) + (c.y - l.y) * (c.y - l.y);
-      if (d <= bestD) best = static_cast<int32_t>(i), bestD = d;
+    for (uint32_t k = a; k < b; ++k) {
+      const double x = std::isfinite(v[k]) ? v[k] : 0.0;
+      const float y = delay ? yOfDelay(x) : stripY(s, x, phaseLo_, phaseHi_);
+      out[k - a] = {desc_.w * static_cast<float>(k) / (kPoints - 1), std::clamp(y, s.y0 - 4.0f, s.y1 + 4.0f)};
     }
-    return best;
+  }
+  // The selected band's curve (faint) and the total's on a strip.
+  template <class Runs>
+  void paintStripCurves(ui::FacePainter& p, const ui::Theme& th, const Span& s, const Derived& tot, const Derived& sel, bool delay,
+                        Runs&& runs) {
+    if (sel.valid())
+      runs(sel.v, [&](uint32_t a, uint32_t b) {
+        stripPoints(sel.v, a, b, s, delay, pts_);
+        p.polyline(pts_, 0.9f, ui::mulAlpha(selColour_, 0.55f));
+      }, ui::mulAlpha(selColour_, 0.3f), false);
+    if (tot.valid()) {
+      const Rgba m = th.device.response;
+      runs(tot.v, [&](uint32_t a, uint32_t b) {
+        stripPoints(tot.v, a, b, s, delay, pts_);
+        p.polyline(pts_, 3.0f, ui::mulAlpha(m, 0.12f));
+        if (tot.kind == graph::ResponseKind::Approximate) p.dashed(pts_, 1.2f, 4.0f, 3.0f, ui::mulAlpha(m, 0.9f));
+        else p.polyline(pts_, 1.2f, ui::mulAlpha(m, 0.9f));
+      }, ui::mulAlpha(m, 0.4f), true);
+    } else {
+      p.text({desc_.w * 0.5f, (s.y0 + s.y1) * 0.5f}, "no curve", 6.0f, th.device.displayText);
+    }
   }
 
-  // ---- the model and the curves ----
-  void refresh(PanelTarget& t) {
-    GroupResponses* r = t.responses();
-    const doc::Binding* b = binding();
-    if (r == nullptr || b == nullptr) {
-      total_[0].clear();
-      total_[1].clear();
-      band_.clear();
-      return;
+  void paintPhase(ui::FacePainter& p, const ui::Theme& th, PanelTarget& t) {
+    const Span& A = area_[kPhase];
+    const float w = desc_.w;
+    const bool wrapped = !unwrapOn(t);
+    paintPlate(p, th, w, A.y0, A.y1);
+    p.drawList().pushClip(devRect(p, A));
+    // The scale: wrapped ±180° (rules at ±90°); unwrapped auto over the total and the selected band, ≤ 3 spans.
+    double lo = -180.0, hi = 180.0, step = 90.0;
+    if (!wrapped) {
+      float vlo = 0.0f, vhi = 0.0f;
+      bool any = false;
+      for (const Derived* d : {&phaseTotal_, &phaseSel_})
+        if (d->valid())
+          for (const float v : d->v)
+            if (std::isfinite(v)) vlo = any ? std::min(vlo, v) : v, vhi = any ? std::max(vhi, v) : v, any = true;
+      static constexpr double kDeg[] = {5, 10, 15, 30, 45, 90, 180, 360, 720, 1440, 2880, 5760, 11520, 23040, 46080};
+      step = kDeg[std::size(kDeg) - 1];
+      for (const double st : kDeg) {
+        lo = std::floor(vlo / st - 1e-6) * st;
+        hi = std::ceil(vhi / st + 1e-6) * st;
+        if (hi - lo < st) hi = lo + st;
+        if ((hi - lo) / st <= 3.0 + 1e-9) {
+          step = st;
+          break;
+        }
+      }
+      if ((hi - lo) / step > 3.0 + 1e-9) lo = std::floor(vlo / step) * step, hi = std::ceil(vhi / step) * step;
+      hi = std::max(hi, lo + step);
     }
-    shown_.sync(r->doc(), b->device);
-    shown_.groups(want_, true);
-    r->want(want_);
-    const std::vector<double>& hz = grid();
-    deriveDb(shown_.total(*r, shown_.active, hz, kGridKey), total_[shown_.active]);
-    if (shown_.split()) deriveDb(shown_.total(*r, 1 - shown_.active, hz, kGridKey), total_[1 - shown_.active]);
-    else total_[1 - shown_.active].clear();
-    const auto& bands = shown_.bands[shown_.active];
-    band_.resize(bands.size());
-    for (size_t i = 0; i < bands.size(); ++i) deriveDb(bands[i]->off ? nullptr : r->curve(bands[i]->group, hz, kGridKey), band_[i]);
+    phaseLo_ = lo;
+    phaseHi_ = hi;
+    for (double v = lo; v <= hi + 1e-9; v += step) {
+      const float y = stripY(A, v, lo, hi);
+      const bool zero = std::fabs(v) < 1e-9;
+      p.line({0.0f, y}, {w, y}, zero ? 0.9f : 0.6f, zero ? ui::mulAlpha(th.device.responseGrid, 2.6f) : th.device.responseGrid);
+      if (v > lo + 1e-9 && v < hi - 1e-9)
+        p.textAligned({w - 3.0f, y - 2.8f}, std::fabs(v) < 1e-9 ? std::string("0\xC2\xB0") : fmt("%+.0f\xC2\xB0", v), 5.0f,
+                      th.device.displayText, 1.0f);
+    }
+    // A wrapped curve is cut where it wraps (no vertical line across the strip); at each cut a thin dotted line in its
+    // colour joins its end at one edge (±180°) to its continuation at the other (EQ.4c), at the interpolated crossing.
+    const float yTop = stripY(A, 180.0, lo, hi), yBot = stripY(A, -180.0, lo, hi);
+    wraps_.clear();
+    paintStripCurves(p, th, A, phaseTotal_, phaseSel_, false, [&](const std::vector<float>& v, auto&& draw, Rgba markerCol, bool total) {
+      forRuns(v, wrapped, draw, [&](float k) {
+        const float x = w * k / static_cast<float>(kPoints - 1);
+        if (total) wraps_.push_back(x);
+        const Vec2 seg[2] = {{x, yTop}, {x, yBot}};
+        p.dashed(seg, 0.7f, 1.0f, 2.0f, markerCol);
+      });
+    });
+    chip(p, th, chipRect(4), "PHASE", true, hoverChip_ == 4);
+    chip(p, th, chipRect(5), wrapped ? "WRAP" : "UNWRAP", !wrapped, hoverChip_ == 5);
+    p.drawList().popClip();
+    outlineRect(p, {0.5f, A.y0 + 0.5f, w - 0.5f, A.y1 - 0.5f}, 4.0f, 1.0f, ui::mulAlpha(th.device.responseGrid, 1.6f));
+  }
+
+  void paintDelay(ui::FacePainter& p, const ui::Theme& th, PanelTarget& t) {
+    (void)t;
+    const Span& A = area_[kDelay];
+    const float w = desc_.w, top = A.y0 + 4.0f, bot = A.y1 - 4.0f;
+    paintPlate(p, th, w, A.y0, A.y1);
+    p.drawList().pushClip(devRect(p, A));
+    // The scale: 0 at the floor up to the largest delay drawn plus a little headroom, in ≤ 4 nice steps (ms).
+    float vmin = 0.0f, vmax = 0.0f;
+    for (const Derived* d : {&delayTotal_, &delaySel_})
+      if (d->valid())
+        for (const float v : d->v)
+          if (std::isfinite(v)) vmin = std::min(vmin, v), vmax = std::max(vmax, v);
+    static constexpr double kMs[] = {0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000};
+    const double want = std::max(static_cast<double>(vmax) * 1.08, kMs[0]);
+    double step = kMs[std::size(kMs) - 1];
+    for (const double st : kMs)
+      if (std::ceil(want / st - 1e-9) <= 4.0) {
+        step = st;
+        break;
+      }
+    delayHi_ = std::max(std::ceil(want / step - 1e-9), 1.0) * step;
+    // True negative values (a cut's group delay near its centre) below the floor: ignored when they are only rounding.
+    const bool negative = vmin < -std::max(1e-6, 1e-3 * delayHi_);
+    delayLo_ = negative ? static_cast<double>(vmin) : 0.0;
+    const double share = negative ? std::min(-delayLo_ / (delayHi_ - delayLo_), 0.25) : 0.0;
+    delayFloorY_ = bot - static_cast<float>(share) * (bot - top);
+    if (negative) p.roundedRect({0.0f, delayFloorY_, w, bot + 1.0f}, 0.0f, ui::mulAlpha(th.device.responseGrid, 0.9f));
+    // The rules (0: the floor, brighter), then the labels on the right: 0 and the top first, the others where they do
+    // not crowd a placed one; the unit beside the top; the most negative value inside its band when it has room.
+    const char* f = step < 0.01 ? "%.3f" : step < 0.1 ? "%.2f" : step < 1.0 ? "%.1f" : "%.0f";
+    const int32_t ticks = static_cast<int32_t>(std::lround(delayHi_ / step));
+    for (int32_t i = 0; i <= ticks; ++i) {
+      const float y = yOfDelay(step * i);
+      p.line({0.0f, y}, {w, y}, i == 0 ? 1.0f : 0.6f, i == 0 ? ui::mulAlpha(th.device.responseGrid, 3.0f) : th.device.responseGrid);
+    }
+    float placed[24];
+    size_t n = 0;
+    auto label = [&](float y, const std::string& text, float px, Rgba col) {
+      for (size_t k = 0; k < n; ++k)
+        if (std::fabs(placed[k] - y) < 6.0f) return;
+      if (n < std::size(placed)) placed[n++] = y;
+      p.textAligned({w - 3.0f, y}, text, px, col, 1.0f);
+    };
+    label(delayFloorY_ - 2.8f, "0", 5.0f, th.device.displayText);
+    const std::string topText = fmt(f, delayHi_);
+    label(yOfDelay(delayHi_) + 3.2f, topText, 5.0f, th.device.displayText);
+    p.textAligned({w - 5.0f - 0.56f * 5.0f * static_cast<float>(topText.size()), yOfDelay(delayHi_) + 3.4f}, "ms", 4.2f,
+                  ui::mulAlpha(th.device.displayText, 0.7f), 1.0f);
+    for (int32_t i = 1; i < ticks; ++i) label(yOfDelay(step * i) - 2.8f, fmt(f, step * i), 5.0f, th.device.displayText);
+    if (negative && bot - delayFloorY_ >= 5.0f)
+      label((delayFloorY_ + bot) * 0.5f + 0.5f, fmt(-delayLo_ < 0.1 ? "%.3f" : -delayLo_ < 1.0 ? "%.2f" : "%.1f", delayLo_), 4.2f,
+            ui::mulAlpha(th.device.displayText, 0.8f));
+    paintStripCurves(p, th, A, delayTotal_, delaySel_, true, [&](const std::vector<float>& v, auto&& draw, Rgba, bool) {
+      forRuns(v, false, draw, [](float) {});
+    });
+    chip(p, th, chipRect(6), "DELAY", true, hoverChip_ == 6);
+    p.drawList().popClip();
+    outlineRect(p, {0.5f, A.y0 + 0.5f, w - 0.5f, A.y1 - 0.5f}, 4.0f, 1.0f, ui::mulAlpha(th.device.responseGrid, 1.6f));
+  }
+
+  // Runs [a, b) of points to draw as one line: all of them, or (wrapped) cut where the phase wraps; each cut also
+  // reports its crossing (a fractional point index): where the unwrapped phase, linear between the two points, passes
+  // the odd multiple of 180° (so it does not move with the grid's resolution).
+  template <class F, class W>
+  static void forRuns(const std::vector<float>& v, bool wrapped, F&& draw, W&& wrap) {
+    uint32_t a = 0;
+    for (uint32_t k = 1; k <= kPoints; ++k)
+      if (k == kPoints || (wrapped && std::fabs(v[k] - v[k - 1]) > 180.0f)) {
+        if (k - a >= 2) draw(a, k);
+        a = k;
+        if (k == kPoints) continue;
+        const float d = v[k] - v[k - 1] + (v[k] < v[k - 1] ? 360.0f : -360.0f);  // the unwrapped step
+        const float edge = d > 0.0f ? 180.0f : -180.0f;
+        wrap(static_cast<float>(k - 1) + (d != 0.0f ? std::clamp((edge - v[k - 1]) / d, 0.0f, 1.0f) : 0.5f));
+      }
   }
 
   void paintNodes(ui::FacePainter& p, const ui::Theme& th, PanelTarget& t) {
@@ -859,7 +1200,7 @@ private:
     if (b.q.bound()) s += "   Q " + t.format(b.q, t.position(b.q));
     if (b.hasStages() && b.stagesV > 1) s += "   \xC3\x97" + std::to_string(b.stagesV);
     if (b.off) s += "   off";
-    const float x = 5.0f, y = 8.0f;
+    const float x = 27.0f, y = area_[kMag].y0 + 8.0f;
     if (b.type.bound()) {
       typeGlyph(p, {x, y - 3.0f, x + 10.0f, y + 3.4f}, b.typeV, 0.9f, col);
       p.textAligned({x + 13.0f, y}, kCodes[b.typeV], 5.8f, col, 0.0f);
@@ -972,12 +1313,19 @@ private:
 
   Shown shown_;
   std::vector<doc::DeviceId> want_;
+  Span area_[kAreas];
   Derived total_[2];
   std::vector<Derived> band_;
+  Derived phaseTotal_, phaseSel_, delayTotal_, delaySel_;  // the phase / delay areas: the total, the selected band
+  Rgba selColour_ = 0;
+  double phaseLo_ = -180.0, phaseHi_ = 180.0, delayLo_ = 0.0, delayHi_ = 1.0;  // their scales (last paint)
+  float delayFloorY_ = 0.0f;                                                    // the y of 0 ms (last paint)
+  std::vector<float> wraps_;  // the phase total's wrap markers' x (last paint; tests)
   std::vector<Vec2> pts_, dev_;
   std::vector<Rgba> cols_;
   double zoom_ = 24.0;
   int32_t hover_ = -1, hoverChip_ = -1;
+  bool hoverMag_ = false;
   Drag drag_;
   bool wheel_ = false;
   doc::DeviceId wheelBand_;
@@ -985,213 +1333,6 @@ private:
   devices::SpectrumPlot out_, in_;
   bool styled_ = false;
   mutable Reader reader_;
-};
-
-// ---- phase ---------------------------------------------------------------------------------------------------------
-
-class PhaseDisplay final : public Element {
-public:
-  using Element::Element;
-  bool interactive() const noexcept override { return true; }
-  ui::Cursor cursor() const noexcept override { return hoverChip_ >= 0 ? ui::Cursor::Pointer : ui::Cursor::Inherit; }
-
-  void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
-    const ui::Theme& th = *env.theme;
-    PanelTarget& t = *env.target;
-    if (!env.hovered) hoverChip_ = -1;
-    const PhaseView view = viewOf(t);
-    const bool delay = view == PhaseView::Delay;
-    refresh(t, view);
-    const float w = desc_.w, h = desc_.h;
-    const ui::FaceTransform& tr = p.transform();
-    const Rect dev{tr.origin.x, tr.origin.y, tr.origin.x + w * tr.scale, tr.origin.y + h * tr.scale};
-    paintPlate(p, th, w, h);
-    p.drawList().pushClip(dev);
-    // The scale: auto over the total (and the selected band), in steps that give ≤ 3 spans.
-    float lo = 0.0f, hi = 0.0f;
-    bool any = false;
-    for (const Derived* d : {&total_, &sel_})
-      if (d->valid())
-        for (const float v : d->v)
-          if (std::isfinite(v)) lo = any ? std::min(lo, v) : v, hi = any ? std::max(hi, v) : v, any = true;
-    if (!any) lo = hi = 0.0f;
-    if (delay) lo = std::min(lo, 0.0f);
-    if (view == PhaseView::Wrapped) lo = -180.0f, hi = 180.0f;  // (fixed: rules at ±90°)
-    static constexpr double kDeg[] = {5, 10, 15, 30, 45, 90, 180, 360, 720, 1440, 2880, 5760, 11520, 23040};
-    static constexpr double kMs[] = {0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000};
-    const std::span<const double> steps = delay ? std::span<const double>(kMs) : std::span<const double>(kDeg);
-    double step = steps.back(), a = 0.0, b = 0.0;
-    for (const double s : steps) {
-      a = std::floor(lo / s - 1e-6) * s;
-      b = std::ceil(hi / s + 1e-6) * s;
-      if (b - a < s) b = a + s;
-      if ((b - a) / s <= 3.0 + 1e-9) {
-        step = s;
-        break;
-      }
-    }
-    if ((b - a) / step > 3.0 + 1e-9) a = std::floor(lo / step) * step, b = std::ceil(hi / step) * step;
-    if (view == PhaseView::Wrapped) a = -180.0, b = 180.0, step = 90.0;
-    lo_ = a;
-    hi_ = std::max(b, a + step);
-    const bool wrapped = view == PhaseView::Wrapped;
-    for (double v = lo_; v <= hi_ + 1e-9; v += step) {
-      const float y = yOf(v);
-      const bool zero = std::fabs(v) < 1e-9;
-      p.line({0.0f, y}, {w, y}, zero ? 0.9f : 0.6f, zero ? ui::mulAlpha(th.device.responseGrid, 2.6f) : th.device.responseGrid);
-      if (v > lo_ + 1e-9 && v < hi_ - 1e-9)
-        p.textAligned({w - 3.0f, y - 2.8f},
-                      delay ? fmt(step < 0.1 ? "%.2f ms" : step < 1 ? "%.1f ms" : "%.0f ms", v)
-                            : (std::fabs(v) < 1e-9 ? std::string("0\xC2\xB0") : fmt("%+.0f\xC2\xB0", v)),
-                      5.0f, th.device.displayText, 1.0f);
-    }
-    // The selected band, faint; the total.
-    // A wrapped curve is cut where it wraps (no vertical line across the strip); at each cut a thin dotted line in its
-    // colour joins its end at one edge (±180°) to its continuation at the other (EQ.4c), at the interpolated crossing.
-    const float yTop = yOf(180.0), yBot = yOf(-180.0);
-    auto marker = [&](float x, Rgba c) {
-      const Vec2 seg[2] = {{x, yTop}, {x, yBot}};
-      p.dashed(seg, 0.7f, 1.0f, 2.0f, c);
-    };
-    wraps_.clear();
-    if (sel_.valid())
-      forRuns(
-          sel_.v, wrapped,
-          [&](uint32_t a, uint32_t b) {
-            points(sel_.v, a, b, pts_);
-            p.polyline(pts_, 0.9f, ui::mulAlpha(selColour_, 0.55f));
-          },
-          [&](float k) { marker(xOfIndex(k), ui::mulAlpha(selColour_, 0.3f)); });
-    if (total_.valid()) {
-      const Rgba m = th.device.response;
-      forRuns(
-          total_.v, wrapped,
-          [&](uint32_t a, uint32_t b) {
-            points(total_.v, a, b, pts_);
-            p.polyline(pts_, 3.0f, ui::mulAlpha(m, 0.12f));
-            if (total_.kind == graph::ResponseKind::Approximate) p.dashed(pts_, 1.2f, 4.0f, 3.0f, ui::mulAlpha(m, 0.9f));
-            else p.polyline(pts_, 1.2f, ui::mulAlpha(m, 0.9f));
-          },
-          [&](float k) {
-            const float x = xOfIndex(k);
-            wraps_.push_back(x);
-            marker(x, ui::mulAlpha(m, 0.4f));
-          });
-    } else {
-      p.text({w * 0.5f, h * 0.5f}, "no curve", 6.0f, th.device.displayText);
-    }
-    chip(p, th, chipRect(0), delay ? "DELAY" : "PHASE", delay, hoverChip_ == 0);
-    if (!delay) chip(p, th, chipRect(1), wrapped ? "WRAP" : "UNWRAP", !wrapped, hoverChip_ == 1);
-    p.drawList().popClip();
-    outlineRect(p, {0.5f, 0.5f, w - 0.5f, h - 0.5f}, 4.0f, 1.0f, ui::mulAlpha(th.device.responseGrid, 1.6f));
-  }
-  bool onPointer(const FacePointer& e, PanelTarget& t) override {
-    using K = FacePointer::Kind;
-    if (e.kind == K::Move) {
-      const int32_t h = chipAt(e.local, t);
-      const bool changed = h != hoverChip_;
-      hoverChip_ = h;
-      return changed;
-    }
-    if (e.kind == K::Down && e.button == ui::PointerButton::Left) {
-      const int32_t c = chipAt(e.local, t);
-      if (c == 0) t.setViewValue(id(), "delay", viewOf(t) == PhaseView::Delay ? 0.0 : 1.0);
-      if (c == 1) t.setViewValue(id(), "unwrap", viewOf(t) == PhaseView::Unwrapped ? 0.0 : 1.0);
-      return c >= 0;
-    }
-    return false;
-  }
-  void describe(const PanelTarget&, std::string& title, std::string& body) const override {
-    title = "Phase";
-    body = "The phase of the response (the selected band faint): wrapped to \xC2\xB1" "180\xC2\xB0, or unwrapped (the WRAP chip); "
-           "or its group delay (the PHASE chip).";
-  }
-
-  // Tests.
-  bool delayShown(const PanelTarget& t) const { return viewOf(t) == PhaseView::Delay; }
-  // 0 wrapped, 1 unwrapped, 2 delay; the drawn value at x (NaN: none); the scale.
-  int32_t viewShown(const PanelTarget& t) const { return static_cast<int32_t>(viewOf(t)); }
-  float drawnAt(float x) const {
-    if (!total_.valid()) return std::numeric_limits<float>::quiet_NaN();
-    return total_.v[static_cast<size_t>(std::lround(std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1)))];
-  }
-  std::pair<double, double> scale() const noexcept { return {lo_, hi_}; }
-  const std::vector<float>& wraps() const noexcept { return wraps_; }
-  Vec2 chipCentre(int32_t c) const noexcept {
-    const Rect r = chipRect(c);
-    return {(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f};
-  }
-
-private:
-  PhaseView viewOf(const PanelTarget& t) const {
-    if (t.viewValue(id(), "delay", 0.0) >= 0.5) return PhaseView::Delay;
-    return t.viewValue(id(), "unwrap", 0.0) >= 0.5 ? PhaseView::Unwrapped : PhaseView::Wrapped;
-  }
-  // The title chip (PHASE / DELAY), then the WRAP / UNWRAP chip beside it (phase only).
-  Rect chipRect(int32_t c) const noexcept { return c == 0 ? Rect{3.0f, 3.0f, 29.0f, 12.0f} : Rect{32.0f, 3.0f, 62.0f, 12.0f}; }
-  int32_t chipAt(Vec2 l, const PanelTarget& t) const {
-    if (inside(chipRect(0), l)) return 0;
-    if (viewOf(t) != PhaseView::Delay && inside(chipRect(1), l)) return 1;
-    return -1;
-  }
-  // Runs [a, b) of points to draw as one line: all of them, or (wrapped) cut where the phase wraps; each cut also
-  // reports its crossing (a fractional point index): where the unwrapped phase, linear between the two points, passes
-  // the odd multiple of 180° (so it does not move with the grid's resolution).
-  template <class F, class W>
-  static void forRuns(const std::vector<float>& v, bool wrapped, F&& draw, W&& wrap) {
-    uint32_t a = 0;
-    for (uint32_t k = 1; k <= kPoints; ++k)
-      if (k == kPoints || (wrapped && std::fabs(v[k] - v[k - 1]) > 180.0f)) {
-        if (k - a >= 2) draw(a, k);
-        a = k;
-        if (k == kPoints) continue;
-        const float d = v[k] - v[k - 1] + (v[k] < v[k - 1] ? 360.0f : -360.0f);  // the unwrapped step
-        const float edge = d > 0.0f ? 180.0f : -180.0f;
-        wrap(static_cast<float>(k - 1) + (d != 0.0f ? std::clamp((edge - v[k - 1]) / d, 0.0f, 1.0f) : 0.5f));
-      }
-  }
-  float xOfIndex(float k) const noexcept { return desc_.w * k / static_cast<float>(kPoints - 1); }
-  float yOf(double v) const noexcept {
-    const float top = 4.0f, bot = desc_.h - 4.0f;
-    return bot - static_cast<float>((v - lo_) / std::max(hi_ - lo_, 1e-9)) * (bot - top);
-  }
-  void points(const std::vector<float>& v, uint32_t a, uint32_t b, std::vector<Vec2>& out) const {
-    out.resize(b - a);
-    for (uint32_t k = a; k < b; ++k)
-      out[k - a] = {desc_.w * static_cast<float>(k) / (kPoints - 1), std::clamp(yOf(std::isfinite(v[k]) ? v[k] : 0.0), -4.0f, desc_.h + 4.0f)};
-  }
-  void refresh(PanelTarget& t, PhaseView view) {
-    GroupResponses* r = t.responses();
-    const doc::Binding* b = binding();
-    if (r == nullptr || b == nullptr) {
-      total_.clear();
-      sel_.clear();
-      return;
-    }
-    shown_.sync(r->doc(), b->device);
-    uint32_t chain = 0;
-    const BandRef* s = shown_.find(t.selectedGroup(), &chain);
-    if (s != nullptr && (chain != shown_.active || s->off)) s = nullptr;
-    shown_.groups(want_, false);
-    if (s != nullptr) want_.push_back(s->group);
-    r->want(want_);
-    derivePhase(shown_.total(*r, shown_.active, grid(), kGridKey), view, total_);
-    if (s != nullptr) {
-      derivePhase(r->curve(s->group, grid(), kGridKey), view, sel_);
-      selColour_ = bandColour(s->index);
-    } else {
-      sel_.clear();
-    }
-  }
-
-  Shown shown_;
-  std::vector<doc::DeviceId> want_;
-  Derived total_, sel_;
-  Rgba selColour_ = 0;
-  std::vector<Vec2> pts_;
-  std::vector<float> wraps_;  // the total's wrap markers' x (last paint; tests)
-  double lo_ = -180.0, hi_ = 180.0;
-  int32_t hoverChip_ = -1;
 };
 
 // ---- band type -----------------------------------------------------------------------------------------------------
@@ -1281,7 +1422,6 @@ std::unique_ptr<Element> make(const doc::PanelElement& d) {
 void registerResponseElements(void (*reg)(std::string_view, std::string_view, std::span<const StyleSpec>, std::span<const std::string_view>,
                                           float, float, ElementFactory)) {
   reg("response", "Response", {}, kResponseSlots, 400, 156, &make<ResponseDisplay>);
-  reg("phase", "Phase", {}, kSignalSlot, 400, 40, &make<PhaseDisplay>);
   reg("bandtype", "Band Type", BandType::kStyle, kValueSlot, 56, 18, &make<BandType>);
 }
 
@@ -1319,25 +1459,42 @@ bool drawsSeries(const Element& e) {
   const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
   return r != nullptr && r->series();
 }
-int32_t phaseView(const Element& e, const PanelTarget& t) {
-  const auto* p = dynamic_cast<const PhaseDisplay*>(&e);
-  return p != nullptr ? p->viewShown(t) : -1;
+std::optional<ResponseArea> area(const Element& e, int32_t a) {
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  if (r == nullptr || a < 0 || a > 2) return std::nullopt;
+  return r->areaOf(a);
+}
+ui::Vec2 chip(const Element& e, ResponseChip c) {
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  return r != nullptr ? r->chipCentre(static_cast<int32_t>(c)) : ui::Vec2{0.0f, 0.0f};
+}
+bool phaseUnwrapped(const Element& e, const PanelTarget& t) {
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  return r != nullptr && r->unwrapped(t);
 }
 float phaseAt(const Element& e, float x) {
-  const auto* p = dynamic_cast<const PhaseDisplay*>(&e);
-  return p != nullptr ? p->drawnAt(x) : std::numeric_limits<float>::quiet_NaN();
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  return r != nullptr ? r->stripAt(1, x) : std::numeric_limits<float>::quiet_NaN();
 }
 std::pair<double, double> phaseScale(const Element& e) {
-  const auto* p = dynamic_cast<const PhaseDisplay*>(&e);
-  return p != nullptr ? p->scale() : std::pair<double, double>{0.0, 0.0};
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  return r != nullptr ? r->stripScale(1) : std::pair<double, double>{0.0, 0.0};
 }
 std::vector<float> phaseWraps(const Element& e) {
-  const auto* p = dynamic_cast<const PhaseDisplay*>(&e);
-  return p != nullptr ? p->wraps() : std::vector<float>{};
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  return r != nullptr ? r->wraps() : std::vector<float>{};
 }
-ui::Vec2 phaseChip(const Element& e, int32_t c) {
-  const auto* p = dynamic_cast<const PhaseDisplay*>(&e);
-  return p != nullptr ? p->chipCentre(c) : ui::Vec2{0.0f, 0.0f};
+float delayAt(const Element& e, float x) {
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  return r != nullptr ? r->stripAt(2, x) : std::numeric_limits<float>::quiet_NaN();
+}
+std::pair<double, double> delayScale(const Element& e) {
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  return r != nullptr ? r->stripScale(2) : std::pair<double, double>{0.0, 0.0};
+}
+float delayY(const Element& e, double ms) {
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  return r != nullptr ? r->delayY(ms) : 0.0f;
 }
 double axisHz(double t) noexcept { return hzOfT(t); }
 double axisT(double hz) noexcept { return tOfHz(hz); }

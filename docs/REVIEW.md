@@ -988,3 +988,20 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **Golden re-recorded:** eq-eight-bands (only the markers moved; the other eq-* scenes have no wrap in view).
 - **To judge:** dot size / alpha (0.7 px, 1 on / 2 off, 40 % alpha); whether it reads as "continues here" and not as
   a grid line on a deep cut with many wraps.
+
+## 👁 EQ.4d magnitude, phase and delay as three views; delay from 0 ms; the delay fold fixed · 2026-11-08
+- **What changed:** the EQ (and lone EQ Band) display is a stack of three areas — MAG, PHASE, DELAY — each opened and
+  closed by its title chip (a closed one is a thin bar with its chip; click anywhere on it to open). Defaults: magnitude
+  and phase open, delay closed. The open areas share the display's height 3 : 1 : 1, so the panel itself never moves.
+  The PHASE / DELAY toggle is gone; phase keeps WRAP / UNWRAP.
+- **Delay:** 0 ms at the bottom, scaled up to the largest delay + a little headroom (1-2-5 ms steps, "ms" beside the top
+  label). Real negative delay (a cut bell near its centre) is drawn honestly: the floor lifts into a shaded band, at most
+  a quarter of the strip.
+- **The fold:** the delay was the difference of neighbouring display points' phase; a 23-stage Q 5 allpass turns more
+  than half a turn between points, so it aliased negative (−36 ms drawn for a 59.6 ms peak). Now every point is exact.
+- **Goldens re-recorded:** eq-default, eq-eight-bands, eq-lr-mode, eq-band-response (the MAG chip, the DELAY bar, the
+  magnitude area 17 units shorter), eq-phase-delay (now magnitude + delay open, phase closed). New: eq-all-views (all
+  three open: the bug report's 23-stage allpass and a −12 dB cut).
+- **To judge:** the 3 : 1 : 1 split (the magnitude area gets small with all three open in the band panel); the closed
+  bar's look; the wrapped phase of the 23-stage allpass near 1.27 kHz is still a thicket of short segments and wrap
+  markers (several turns per point: wrapped phase cannot show that at this resolution; unwrapped is correct).

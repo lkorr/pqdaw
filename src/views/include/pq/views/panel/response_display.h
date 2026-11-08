@@ -31,15 +31,28 @@ bool drawsSeries(const Element& e);
 // The axis: x share t ∈ [0, 1] ↔ Hz (t = log(1 + f / 10 Hz) / log(2001)).
 double axisHz(double t) noexcept;
 double axisT(double hz) noexcept;
-// EQ.4b: the `phase` display. What it shows (0 wrapped phase, 1 unwrapped, 2 group delay; -1: not a phase display),
-// the total's value drawn at element x (degrees or ms; NaN: no curve), the scale of the last paint, the centre of chip
-// c (0: PHASE / DELAY, 1: WRAP / UNWRAP).
-int32_t phaseView(const Element& e, const PanelTarget& t);
+// EQ.4d: the display's three areas, top to bottom: 0 magnitude, 1 phase, 2 delay — open, and their element-local y span
+// (as laid out by the last paint or pointer event); nullopt: not a response.
+struct ResponseArea {
+  bool open = false;
+  float y0 = 0.0f, y1 = 0.0f;
+};
+std::optional<ResponseArea> area(const Element& e, int32_t a);
+// The display's chips: the magnitude area's analyser / input / dB zoom, the areas' title chips (open / close; a closed
+// area's whole bar), the phase area's WRAP / UNWRAP.
+enum class ResponseChip : int32_t { Spectrum = 0, Input = 1, Zoom = 2, Magnitude = 3, Phase = 4, Wrap = 5, Delay = 6 };
+ui::Vec2 chip(const Element& e, ResponseChip c);
+// The phase area: unwrapped (else wrapped to ±180°), the total's value drawn at element x (degrees; NaN: none), the scale
+// of the last paint, the x of each wrap marker the total drew (wrapped only).
+bool phaseUnwrapped(const Element& e, const PanelTarget& t);
 float phaseAt(const Element& e, float x);
 std::pair<double, double> phaseScale(const Element& e);
-ui::Vec2 phaseChip(const Element& e, int32_t c);
-// EQ.4c: the x of each wrap marker the total drew in the last paint (wrapped phase only; empty otherwise).
 std::vector<float> phaseWraps(const Element& e);
+// The delay area: the total's group delay drawn at element x (ms; NaN: none), the scale of the last paint (lo: 0, or the
+// most negative value drawn below the floor), the y of a value.
+float delayAt(const Element& e, float x);
+std::pair<double, double> delayScale(const Element& e);
+float delayY(const Element& e, double ms);
 // A `number` element's readout as drawn (its style's format: "Q 0.71", "×16"); nullopt: not a bound number.
 std::optional<std::string> numberText(const Element& e, const PanelTarget& t);
 

@@ -1,5 +1,5 @@
-// EQ.4 (docs/plans/EQ.md "Displays (EQ.4)"; response_elements.cpp): the `response` and `phase` displays and the EQ
-// panel.
+// EQ.4 (docs/plans/EQ.md "Displays (EQ.4)"; response_elements.cpp): the `response` display (its magnitude, phase and
+// delay areas) and the EQ panel.
 //   curve      the total the response display draws is the chain group's GroupResponse (In 0 → Out 0) at its grid
 //              points; a drag re-reads the knobs without lowering again, a structural edit lowers once
 //   gestures   (real dispatch: the Shell's Device view hosts the EQ's panel) double-click empty space adds a bell there,
@@ -8,12 +8,15 @@
 //              Delete, a click selects, Delete removes the selected band, the Mode menu splits through setEqMode (A
 //              copied into B) — each one undo step
 //   reuse      (EQ.4b) a lone EQ Band's own panel: its response, phase and analyser
-//   EQ.4b      the curve after the circuit view opens and closes the EQ (real dispatch); the phase strip wrapped by
-//              default, unwrapped / group delay by its chips; the strip's "Q 0.71" / "×16"; with the app's lowering a
-//              structural edit lowers nothing on the UI thread (the curve stays until the compile arrives)
+//   EQ.4b      the curve after the circuit view opens and closes the EQ (real dispatch); the phase area wrapped by
+//              default, unwrapped by its chip; the strip's "Q 0.71" / "×16"; with the app's lowering a structural edit
+//              lowers nothing on the UI thread (the curve stays until the compile arrives)
+//   EQ.4d      the delay area: a 23-stage Q 5.16 allpass's group delay is the analytic one everywhere (no fold; the
+//              unwrapped phase keeps every turn), 0 ms at the floor, a cut's true negative delay below it; the three
+//              areas open / close by their title chips (real dispatch), all 8 combinations stacked in order
 //   goldens    (2x) eq-default, eq-eight-bands (a 16-stage low cut, a Q 40 bell, a spectrum behind, a band selected),
-//              eq-lr-mode (chain B translucent behind A), eq-phase-delay (the phase strip in group delay),
-//              eq-band-response (the element on a lone band's panel)
+//              eq-lr-mode (chain B translucent behind A), eq-phase-delay (magnitude and delay open, phase closed),
+//              eq-all-views (all three areas: the 23-stage allpass and a cut bell), eq-band-response (a lone band's)
 //   perf       a drag on a 31-band EQ re-evaluates and redraws the curve within a frame (< 2 ms, optimised builds); the
 //              frame after a 32nd band is added, lowered here (before EQ.4b) and with the app's lowering
 #include <doctest/doctest.h>
@@ -29,6 +32,7 @@
 #include "../support/blocks.h"
 #include "../ui/golden_check.h"
 #include "pq/document/devices.h"
+#include "pq/dsp/svf_design.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/group_response.h"
 #include "pq/document/lower.h"
@@ -378,7 +382,7 @@ TEST_CASE("EQ.4b response: the curve stays after the EQ is opened and closed in 
   checkCurve();
 }
 
-TEST_CASE("EQ.4b phase: wrapped to ±180° by default; WRAP / UNWRAP unwraps (auto-scaled); PHASE / DELAY: group delay") {
+TEST_CASE("EQ.4b phase: wrapped to ±180° by default; WRAP / UNWRAP unwraps (auto-scaled); the delay area apart (EQ.4d)") {
   EqUi u;
   const doc::EqInfo e = u.info();
   // A 16-stage low cut at 60 Hz: thousands of degrees unwrapped.
@@ -387,8 +391,9 @@ TEST_CASE("EQ.4b phase: wrapped to ±180° by default; WRAP / UNWRAP unwraps (au
   setUnits(u.st(), e.bands[0][0].frequency, 60.0);
   setUnits(u.st(), e.bands[0][2].gain, 9.0);
   u.d.step();
-  panel::Element& ph = u.element("phase");
+  panel::Element& ph = u.element("response");
   panel::PanelTarget& t = u.target();
+  using Chip = panel::test::ResponseChip;
   // The chain's H at a few grid points (its own response on a fresh lowering).
   doc::LowerOptions lo;
   lo.library = &devLib().library();
@@ -405,7 +410,7 @@ TEST_CASE("EQ.4b phase: wrapped to ±180° by default; WRAP / UNWRAP unwraps (au
   gr.evaluate(hz, u.ctx.sampleRate(), h);
   auto xOf = [&](uint32_t k) { return ph.desc().w * static_cast<float>(k) / static_cast<float>(panel::test::responsePoints() - 1); };
   // Wrapped (the default): arg H in degrees, the scale ±180°.
-  CHECK(panel::test::phaseView(ph, t) == 0);
+  CHECK(!panel::test::phaseUnwrapped(ph, t));
   CHECK(panel::test::phaseScale(ph) == std::pair<double, double>{-180.0, 180.0});
   for (size_t i = 0; i < ks.size(); ++i) {
     CAPTURE(hz[i]);
@@ -416,42 +421,37 @@ TEST_CASE("EQ.4b phase: wrapped to ±180° by default; WRAP / UNWRAP unwraps (au
     CHECK(std::fabs(std::remainder(got - want, 360.0)) < 0.01);
   }
   // The WRAP chip (real dispatch): unwrapped, auto-scaled over the cut's thousands of degrees; the same angles mod 360.
-  u.d.click(u.at("phase", panel::test::phaseChip(ph, 1)));
+  u.d.click(u.at("response", panel::test::chip(ph, Chip::Wrap)));
   u.d.step();
-  CHECK(panel::test::phaseView(ph, t) == 1);
+  CHECK(panel::test::phaseUnwrapped(ph, t));
   const auto [lo1, hi1] = panel::test::phaseScale(ph);
   CHECK(hi1 - lo1 > 1000.0);
   for (size_t i = 0; i < ks.size(); ++i) {
     const double want = std::arg(h[i * gr.inChannels() * gr.outChannels()]) * 180.0 / 3.141592653589793;
     CHECK(std::fabs(std::remainder(panel::test::phaseAt(ph, xOf(ks[i])) - want, 360.0)) < 0.01);
   }
-  // PHASE / DELAY: group delay in ms; the WRAP chip is not there (a click on its place does nothing).
-  u.d.click(u.at("phase", panel::test::phaseChip(ph, 0)));
+  // EQ.4d: the delay area opens beside it (its bar's chip); the phase stays unwrapped, the delay has its own scale.
+  u.d.click(u.at("response", panel::test::chip(ph, Chip::Delay)));
   u.d.step();
-  CHECK(panel::test::phaseView(ph, t) == 2);
-  u.d.click(u.at("phase", panel::test::phaseChip(ph, 1)));
+  CHECK(panel::test::area(ph, 2)->open);
+  CHECK(panel::test::phaseUnwrapped(ph, t));
+  CHECK(panel::test::delayScale(ph).second > 0.0);
+  // The WRAP chip wraps again.
+  u.d.click(u.at("response", panel::test::chip(ph, Chip::Wrap)));
   u.d.step();
-  CHECK(panel::test::phaseView(ph, t) == 2);
-  CHECK(panel::test::phaseScale(ph).second > 0.0);
-  // Back to phase: unwrapped still (the two choices are kept apart); the WRAP chip wraps again.
-  u.d.click(u.at("phase", panel::test::phaseChip(ph, 0)));
-  u.d.step();
-  CHECK(panel::test::phaseView(ph, t) == 1);
-  u.d.click(u.at("phase", panel::test::phaseChip(ph, 1)));
-  u.d.step();
-  CHECK(panel::test::phaseView(ph, t) == 0);
+  CHECK(!panel::test::phaseUnwrapped(ph, t));
 }
 
-TEST_CASE("EQ.4c phase: a dotted wrap marker at each wrap of the wrapped curve, at the crossing; none unwrapped / delay") {
+TEST_CASE("EQ.4c phase: a dotted wrap marker at each wrap of the wrapped curve, at the crossing; none unwrapped") {
   EqUi u;
   const doc::EqInfo e = u.info();
   run(u.st(), doc::ops::setBandType(u.doc(), e.bands[0][0].group, 1));
   run(u.st(), doc::ops::setBandStages(u.doc(), e.bands[0][0].group, 16));
   setUnits(u.st(), e.bands[0][0].frequency, 60.0);
   u.d.step();
-  panel::Element& ph = u.element("phase");
+  panel::Element& ph = u.element("response");
   panel::PanelTarget& t = u.target();
-  REQUIRE(panel::test::phaseView(ph, t) == 0);
+  REQUIRE(!panel::test::phaseUnwrapped(ph, t));
   // The reference: the chain's own H on a grid 8× finer than the strip's, unwrapped; each crossing of an odd multiple
   // of 180° (linear between samples) is one wrap, at its x on the axis.
   doc::LowerOptions lo;
@@ -491,14 +491,10 @@ TEST_CASE("EQ.4c phase: a dotted wrap marker at each wrap of the wrapped curve, 
     CAPTURE(i);
     CHECK(std::fabs(got[i] - want[i]) <= 1.0f);
   }
-  // Unwrapped and group delay: no markers.
-  u.d.click(u.at("phase", panel::test::phaseChip(ph, 1)));
+  // Unwrapped: no markers.
+  u.d.click(u.at("response", panel::test::chip(ph, panel::test::ResponseChip::Wrap)));
   u.d.step();
-  REQUIRE(panel::test::phaseView(ph, t) == 1);
-  CHECK(panel::test::phaseWraps(ph).empty());
-  u.d.click(u.at("phase", panel::test::phaseChip(ph, 0)));
-  u.d.step();
-  REQUIRE(panel::test::phaseView(ph, t) == 2);
+  REQUIRE(panel::test::phaseUnwrapped(ph, t));
   CHECK(panel::test::phaseWraps(ph).empty());
 }
 
@@ -791,15 +787,224 @@ TEST_CASE("EQ.4b band panel: a lone EQ Band's own panel draws its curve, its pha
   for (size_t i = 0; i < ks.size(); ++i)
     CHECK(*panel::test::drawnDb(e, panel::test::responseX(e, ks[i])) == doctest::Approx(want[i]).epsilon(1e-4).scale(1.0));
   CHECK(panel::test::nodeOf(e, a.group).has_value());  // its one node
-  // The phase strip draws the band's phase (wrapped).
-  panel::Element& ph = a.element("phase");
-  CHECK(std::isfinite(panel::test::phaseAt(ph, ph.desc().w * 0.5f)));
+  // The phase area draws the band's phase (wrapped); EQ.4d: the delay area opens on it too.
+  CHECK(std::isfinite(panel::test::phaseAt(e, e.desc().w * 0.5f)));
+  a.face().target().setViewValue(e.id(), "delay", 1.0);
+  (void)a.render();
+  CHECK(panel::test::area(e, 2)->open);
+  CHECK(std::isfinite(panel::test::delayAt(e, e.desc().w * 0.5f)));
+  a.face().target().setViewValue(e.id(), "delay", 0.0);
   // The analyser: the display shows a spectrum on its own axis (a golden's, without an engine).
   CHECK(panel::test::showSpectrum(e, fakeSpectrum()));
   checkImage("eq-band-response", a.render());
 }
 
-TEST_CASE("render: eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay (EQ.4, 2x)") {
+// ---- EQ.4d: the delay area -------------------------------------------------------------------------------------------
+
+namespace {
+
+// The analytic group delay (ms) of an svf design at `hz`: the sum over its sections (as the kernel runs them: float
+// coefficients) of −d/dω arg(N / D), N and D quadratics in u = e^jω − 1 with du/dω = j·e^jω. Exact: no differences.
+double svfDelayMs(const dsp::SvfParams& sp, double hz, double sr) {
+  dsp::SvfSection s[dsp::kSvfMaxStages];
+  const uint32_t n = dsp::svfDesign(sp, s);
+  const Cx u = dsp::svfEjwMinus1(2.0 * 3.141592653589793 * hz / sr), du = Cx(0.0, 1.0) * (u + 1.0);
+  double tau = 0.0;  // samples
+  for (uint32_t i = 0; i < n; ++i) {
+    const dsp::SvfSectionPoly p = dsp::svfSectionPoly(dsp::svfKernelCoefs(s[i]));
+    if (p.e1 == 0.0 && p.e0 == 0.0) continue;
+    const Cx num = p.n2 * u * u + p.n1 * u + p.n0, den = u * u + p.e1 * u + p.e0;
+    tau += -std::imag((2.0 * p.n2 * u + p.n1) * du / num) + std::imag((2.0 * u + p.e1) * du / den);
+  }
+  return tau / sr * 1000.0;
+}
+
+// A lone EQ Band as the bug report's: an allpass, 23 stages, 1.27 kHz, Q 5.16.
+struct Allpass23 {
+  Alone a{"eq_band"};
+  doc::BandInfo b;
+  Allpass23() {
+    run(a.st(), doc::ops::setBandType(*a.ctx.doc(), a.group, 7));
+    run(a.st(), doc::ops::setBandStages(*a.ctx.doc(), a.group, 23));
+    b = *doc::bandInfo(*a.ctx.doc(), a.group);
+    setUnits(a.st(), b.frequency, 1270.0);
+    setUnits(a.st(), b.q, 5.16);
+  }
+  dsp::SvfParams params() {
+    return dsp::svfParamsFromInputs(static_cast<float>(units(*a.ctx.doc(), b.frequency)), static_cast<float>(units(*a.ctx.doc(), b.q)),
+                                    1.0f, 7.0f, 23.0f, 0.0f, a.ctx.sampleRate());
+  }
+};
+
+}  // namespace
+
+TEST_CASE("EQ.4d delay: a 23-stage Q 5.16 allpass at 1.27 kHz draws its analytic group delay at every point (no fold); 0 ms at the floor") {
+  Allpass23 ap;
+  Alone& a = ap.a;
+  a.show(1.0f);
+  panel::Element& r = a.element("response");
+  panel::PanelTarget& t = a.face().target();
+  t.setViewValue(r.id(), "delay", 1.0);
+  t.setViewValue(r.id(), "unwrap", 1.0);
+  (void)a.render();
+  REQUIRE(panel::test::area(r, 2)->open);
+  const dsp::SvfParams sp = ap.params();
+  const double sr = a.ctx.sampleRate();
+  const uint32_t n = panel::test::responsePoints();
+  auto xOf = [&](uint32_t k) { return r.desc().w * static_cast<float>(k) / static_cast<float>(n - 1); };
+  // Every grid point: the drawn delay is the analytic one within 0.1 % + 1e-4 ms, and never negative (an allpass's
+  // group delay is positive everywhere). The old neighbouring-point difference drew −36 ms at the 59.6 ms peak.
+  double peak = 0.0, worstErr = 0.0;
+  uint32_t bad = 0, negative = 0;
+  for (uint32_t k = 0; k < n; ++k) {
+    const double want = svfDelayMs(sp, panel::test::responseHz(k), sr);
+    const float got = panel::test::delayAt(r, xOf(k));
+    const double err = std::fabs(got - want), tol = 1e-3 * std::fabs(want) + 1e-4;
+    peak = std::max(peak, want);
+    worstErr = std::max(worstErr, err / tol);
+    if (!(err <= tol)) {
+      if (bad++ < 5) MESSAGE("point " << k << " (" << panel::test::responseHz(k) << " Hz): drawn " << got << " ms, analytic " << want << " ms");
+    }
+    if (got < 0.0f) ++negative;
+  }
+  MESSAGE("peak " << peak << " ms; worst error " << worstErr << " of the tolerance");
+  CHECK(peak > 50.0);  // (23 stages at Q 5.16: ≈ 60 ms at the cutoff)
+  CHECK(bad == 0);
+  CHECK(negative == 0);
+  // The axis: 0 at the floor (the area's bottom inset), the peak inside the top with a little headroom.
+  const panel::test::ResponseArea A = *panel::test::area(r, 2);
+  const auto [lo, hi] = panel::test::delayScale(r);
+  CHECK(lo == 0.0);
+  CHECK(hi >= peak);
+  CHECK(hi <= peak * 1.6);
+  CHECK(panel::test::delayY(r, 0.0) == doctest::Approx(A.y1 - 4.0f));
+  CHECK(panel::test::delayY(r, hi) == doctest::Approx(A.y0 + 4.0f));
+  // The unwrapped phase keeps every turn (it took the principal step between neighbours before, losing a turn wherever
+  // the phase moved more than 180° per point): a fine-grid unwrap of the same design, 171 points per strip point.
+  const uint32_t sub = 171, m = (n - 1) * sub + 1;
+  double prev = 0.0, acc = 0.0;
+  uint32_t phaseBad = 0;
+  for (uint32_t i = 0; i < m; ++i) {
+    const double hz = i == 0 ? panel::test::responseHz(0) : panel::test::axisHz(static_cast<double>(i) / (m - 1));
+    const double ph = std::arg(dsp::svfResponse(sp, 2.0 * 3.141592653589793 * hz / sr));
+    acc = i == 0 ? ph : acc + std::remainder(ph - prev, 2.0 * 3.141592653589793);
+    prev = ph;
+    if (i % sub != 0) continue;
+    const uint32_t k = i / sub;
+    const double want = acc * 180.0 / 3.141592653589793;
+    const float got = panel::test::phaseAt(r, xOf(k));
+    if (!(std::fabs(got - want) <= 0.5) && phaseBad++ < 5) MESSAGE("phase at point " << k << ": drawn " << got << "°, reference " << want << "°");
+  }
+  CHECK(phaseBad == 0);
+  CHECK(acc * 180.0 / 3.141592653589793 < -22.0 * 360.0);  // (23 turns from DC to Nyquist: almost all of them by 20 kHz)
+}
+
+TEST_CASE("EQ.4d delay: a cut bell's true negative group delay is drawn below the 0 ms floor, in at most a quarter of the area") {
+  Alone a("eq_band");
+  const doc::BandInfo b = *doc::bandInfo(*a.ctx.doc(), a.group);
+  setUnits(a.st(), b.gain, -12.0);
+  setUnits(a.st(), b.q, 2.0);
+  a.show(1.0f);
+  panel::Element& r = a.element("response");
+  a.face().target().setViewValue(r.id(), "delay", 1.0);
+  (void)a.render();
+  // The reference: the band's own response (a fresh lowering), a central difference over ±10⁻⁴ of the grid step.
+  doc::LowerOptions lo;
+  lo.library = &devLib().library();
+  lo.devices = &devLib();
+  lo.clipSlotOf = [](doc::TrackId) { return 0u; };
+  auto low = doc::lower(*a.ctx.doc(), lo);
+  REQUIRE(low.ok());
+  doc::GroupResponse gr;
+  REQUIRE(gr.prepare(*a.ctx.doc(), *low, devLib(), a.group).ok());
+  const uint32_t n = panel::test::responsePoints();
+  std::vector<double> hz(2 * n);
+  std::vector<double> eps(n);
+  for (uint32_t k = 0; k < n; ++k) {
+    const double f = panel::test::responseHz(k), step = panel::test::responseHz(std::min(k + 1, n - 1)) - panel::test::responseHz(k == n - 1 ? k - 1 : k);
+    eps[k] = 1e-4 * std::fabs(step);
+    hz[2 * k] = f - eps[k];
+    hz[2 * k + 1] = f + eps[k];
+  }
+  const size_t stride = gr.inChannels() * gr.outChannels();
+  std::vector<Cx> h(hz.size() * stride);
+  gr.evaluate(hz, a.ctx.sampleRate(), h);
+  double minWant = 0.0;
+  float minGot = 0.0f;
+  uint32_t bad = 0;
+  for (uint32_t k = 1; k < n; ++k) {
+    const double want = -std::arg(h[(2 * k + 1) * stride] * std::conj(h[2 * k * stride])) / (2.0 * 3.141592653589793 * 2.0 * eps[k]) * 1000.0;
+    const float got = panel::test::delayAt(r, r.desc().w * static_cast<float>(k) / static_cast<float>(n - 1));
+    if (!(std::fabs(got - want) <= 2e-3 * std::fabs(want) + 1e-4) && bad++ < 5) MESSAGE("point " << k << ": drawn " << got << ", reference " << want);
+    minWant = std::min(minWant, want);
+    minGot = std::min(minGot, got);
+  }
+  CHECK(bad == 0);
+  MESSAGE("most negative delay: reference " << minWant << " ms, drawn " << minGot << " ms");
+  REQUIRE(minWant < -0.01);  // (a real negative delay: a minimum-phase cut near its centre)
+  CHECK(minGot < 0.0f);
+  // The floor rises to make room for it: the most negative value at the bottom, 0 at most a quarter of the area up.
+  const panel::test::ResponseArea A = *panel::test::area(r, 2);
+  const auto [lo2, hi2] = panel::test::delayScale(r);
+  CHECK(lo2 == doctest::Approx(minGot));
+  CHECK(hi2 > 0.0);
+  const float floorY = panel::test::delayY(r, 0.0), bottom = A.y1 - 4.0f;
+  CHECK(floorY < bottom);
+  CHECK(bottom - floorY <= 0.25f * (A.y1 - A.y0 - 8.0f) + 1e-3f);
+  CHECK(panel::test::delayY(r, lo2) == doctest::Approx(bottom));
+}
+
+TEST_CASE("EQ.4d views: magnitude, phase and delay open and close by their title chips (real dispatch); all 8 stack in order") {
+  EqUi u;
+  panel::Element& r = u.element("response");
+  using Chip = panel::test::ResponseChip;
+  const Chip title[3] = {Chip::Magnitude, Chip::Phase, Chip::Delay};
+  u.d.step();
+  const size_t h0 = u.history();
+  // The default: magnitude and phase open, delay a bar under them.
+  CHECK(panel::test::area(r, 0)->open);
+  CHECK(panel::test::area(r, 1)->open);
+  CHECK(!panel::test::area(r, 2)->open);
+  const float h = r.desc().h;
+  for (uint32_t m = 0; m < 8; ++m) {
+    CAPTURE(m);
+    for (int32_t a = 0; a < 3; ++a) {
+      const bool want = ((m >> a) & 1u) != 0;
+      if (panel::test::area(r, a)->open != want) {
+        u.d.click(u.at("response", panel::test::chip(r, title[a])));
+        u.d.step();
+      }
+      REQUIRE(panel::test::area(r, a)->open == want);
+    }
+    // Top to bottom, no overlap; a closed area a 15-unit bar; the open ones fill the rest (the element keeps its size).
+    float y = 0.0f;
+    bool anyOpen = false;
+    for (int32_t a = 0; a < 3; ++a) {
+      const panel::test::ResponseArea ar = *panel::test::area(r, a);
+      CHECK(ar.open == (((m >> a) & 1u) != 0));
+      CHECK(ar.y0 >= y - 1e-3f);
+      CHECK(ar.y1 > ar.y0);
+      if (!ar.open) CHECK(ar.y1 - ar.y0 == doctest::Approx(15.0f));
+      else CHECK(ar.y1 - ar.y0 > 15.0f);
+      anyOpen = anyOpen || ar.open;
+      y = ar.y1;
+    }
+    CHECK(y <= h + 1e-3f);
+    if (anyOpen) CHECK(y == doctest::Approx(h));
+  }
+  // A click on a closed bar anywhere along it opens it (the delay's, at its right end).
+  REQUIRE(panel::test::area(r, 2)->open);
+  u.d.click(u.at("response", panel::test::chip(r, Chip::Delay)));
+  u.d.step();
+  REQUIRE(!panel::test::area(r, 2)->open);
+  const panel::test::ResponseArea bar = *panel::test::area(r, 2);
+  u.d.click(u.at("response", {r.desc().w - 20.0f, (bar.y0 + bar.y1) * 0.5f}));
+  u.d.step();
+  CHECK(panel::test::area(r, 2)->open);
+  CHECK(u.history() == h0);  // (view state: no document edit)
+}
+
+TEST_CASE("render: eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay, eq-all-views (EQ.4, 2x)") {
   {
     Alone a;
     a.show();
@@ -845,7 +1050,7 @@ TEST_CASE("render: eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay (EQ.4,
     a.show();
     checkImage("eq-lr-mode", a.render());
   }
-  {  // The phase strip in group delay (a 16-stage low cut: its delay peak), the bell selected.
+  {  // The delay area open, the phase closed (a 16-stage low cut: its delay peak), the bell selected.
     Alone a;
     doc::DocumentStore& st = a.st();
     const doc::EqInfo e = a.info();
@@ -855,10 +1060,28 @@ TEST_CASE("render: eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay (EQ.4,
     setUnits(st, e.bands[0][2].gain, 9.0);
     setUnits(st, e.bands[0][2].q, 3.0);
     a.show();
-    panel::Element& ph = a.element("phase");
-    a.face().target().setViewValue(ph.id(), "delay", 1.0);
+    panel::Element& r = a.element("response");
+    a.face().target().setViewValue(r.id(), "delay", 1.0);
+    a.face().target().setViewValue(r.id(), "phase", 0.0);
     a.face().target().selectGroup(e.bands[0][2].group);
     checkImage("eq-phase-delay", a.render());
+  }
+  {  // EQ.4d: all three areas: the bug report's 23-stage Q 5.16 allpass at 1.27 kHz (a tall delay peak, no fold) and a
+     // cut bell (its true negative delay below the floor), the allpass selected.
+    Alone a;
+    doc::DocumentStore& st = a.st();
+    const doc::EqInfo e = a.info();
+    run(st, doc::ops::setBandType(*a.ctx.doc(), e.bands[0][2].group, 7));
+    run(st, doc::ops::setBandStages(*a.ctx.doc(), e.bands[0][2].group, 23));
+    setUnits(st, e.bands[0][2].frequency, 1270.0);
+    setUnits(st, e.bands[0][2].q, 5.16);
+    setUnits(st, e.bands[0][1].gain, -12.0);
+    setUnits(st, e.bands[0][1].q, 2.0);
+    a.show();
+    panel::Element& r = a.element("response");
+    a.face().target().setViewValue(r.id(), "delay", 1.0);
+    a.face().target().selectGroup(e.bands[0][2].group);
+    checkImage("eq-all-views", a.render());
   }
 }
 
@@ -898,6 +1121,22 @@ TEST_CASE("EQ.4 perf: a drag on a 32-band EQ re-evaluates and draws the curve wi
     sum += ms;
   }
   t.end();
+  // EQ.4d: the same drag with all three areas open (the delay area's second evaluation, on the shifted grid).
+  t.setViewValue(r.id(), "delay", 1.0);
+  r.paintLive(p, env);  // warm
+  t.begin(fb, "Drag");
+  double worstAll = 0.0, sumAll = 0.0;
+  for (int i = 0; i < n; ++i) {
+    t.setPosition(fb, 0.3 + 0.01 * i);
+    dl.reset(4096, 4096);
+    const auto s = Clock::now();
+    r.paintLive(p, env);
+    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - s).count();
+    worstAll = std::max(worstAll, ms);
+    sumAll += ms;
+  }
+  t.end();
+  t.setViewValue(r.id(), "delay", 0.0);
   // EQ.4b: the frame after a structural edit (a 32nd band added). Before: the display lowered the project on the UI
   // thread and prepared every group again in that frame. After: the app's compile lowers; the frame after the edit
   // draws the curve it has (the new band waits), the frame its lowering arrives in prepares the groups.
@@ -936,9 +1175,12 @@ TEST_CASE("EQ.4 perf: a drag on a 32-band EQ re-evaluates and draws the curve wi
   const double arrivalMs = frame();
   CHECK(a.ctx.groupResponses().lowerings() == lowerings);
   MESSAGE("32-band EQ: first paint " << prepareMs << " ms; a drag frame: mean " << sum / n << " ms, worst " << worst
-          << " ms; the frame after addBand: before (lowered on the UI thread) " << beforeMs << " ms, after (the app's compile) "
+          << " ms (all three areas open: mean " << sumAll / n << " ms, worst " << worstAll << " ms)"
+          << "; the frame after addBand: before (lowered on the UI thread) " << beforeMs << " ms, after (the app's compile) "
           << afterMs << " ms, the frame its lowering arrives in " << arrivalMs << " ms (the lowering, off the UI thread: " << lowerMs << " ms)");
 #if defined(PQ_OPTIMIZED)
   CHECK(sum / n < 2.0);
+  CHECK(sumAll / n < 2.0);
 #endif
 }
+

@@ -124,19 +124,29 @@ const GroupResponses::Curve* GroupResponses::curve(doc::DeviceId group, std::spa
   if (r == nullptr) return nullptr;
   Entry& e = *find(group);
   const double rate = sampleRate();
-  if (e.curve.version != 0 && e.curveStamp == r->stamp() && e.curveKey == key && e.curvePoints == hz.size() && e.curveRate == rate)
-    return &e.curve;
-  Curve& c = e.curve;
-  c.in = std::max<uint16_t>(1, r->inChannels());
-  c.out = std::max<uint16_t>(1, r->outChannels());
-  c.h.resize(hz.size() * c.in * c.out);
-  c.kind = r->evaluate(hz, rate, c.h);
-  c.version = ++versions_;
-  e.curveStamp = r->stamp();
-  e.curveKey = key;
-  e.curvePoints = hz.size();
-  e.curveRate = rate;
-  return &c;
+  // The slot of this key (else the least recently used one).
+  Cached* c = &e.cached[0];
+  for (Cached& x : e.cached)
+    if (x.curve.version != 0 && x.key == key) {
+      c = &x;
+      break;
+    } else if (x.used < c->used) {
+      c = &x;
+    }
+  c->used = ++uses_;
+  if (c->curve.version != 0 && c->key == key && c->stamp == r->stamp() && c->points == hz.size() && c->rate == rate)
+    return &c->curve;
+  Curve& out = c->curve;
+  out.in = std::max<uint16_t>(1, r->inChannels());
+  out.out = std::max<uint16_t>(1, r->outChannels());
+  out.h.resize(hz.size() * out.in * out.out);
+  out.kind = r->evaluate(hz, rate, out.h);
+  out.version = ++versions_;
+  c->stamp = r->stamp();
+  c->key = key;
+  c->points = hz.size();
+  c->rate = rate;
+  return &out;
 }
 
 const GroupResponses::Curve* GroupResponses::series(doc::DeviceId name, std::span<const doc::DeviceId> members,
@@ -147,7 +157,7 @@ const GroupResponses::Curve* GroupResponses::series(doc::DeviceId name, std::spa
   vs.clear();
   Series* s = nullptr;
   for (Series& x : series_)
-    if (x.name == name) s = &x;
+    if (x.name == name && x.key == key) s = &x;
   for (size_t i = 0; i < members.size(); ++i) {
     const Curve* c = curve(members[i], hz, key);
     if (c == nullptr && !(i < passes.size() && passes[i] != 0)) {
@@ -167,11 +177,11 @@ const GroupResponses::Curve* GroupResponses::series(doc::DeviceId name, std::spa
     series_.push_back({});
     s = &series_.back();
     s->name = name;
+    s->key = key;
   }
   Curve& out = s->curve;
-  if (out.version != 0 && s->key == key && s->versions == vs && out.h.size() == hz.size() * out.in * out.out) return &out;
+  if (out.version != 0 && s->versions == vs && out.h.size() == hz.size() * out.in * out.out) return &out;
   s->versions = vs;
-  s->key = key;
   out.in = cs.empty() ? 1 : cs.front()->in;
   out.out = cs.empty() ? 1 : cs.back()->out;
   out.kind = graph::ResponseKind::Exact;

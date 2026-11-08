@@ -1049,9 +1049,9 @@ PanelElement tagged(PanelElement e, std::string_view tag) {
   return e;
 }
 
-// The panel's geometry (world units): the response display, the phase strip right under it, the controls on the left
-// and the band strip.
-constexpr float kResponseY = 8.0f, kResponseH = 156.0f, kPhaseY = 166.0f, kPhaseH = 40.0f;
+// The panel's geometry (world units): the response display (EQ.4d: its magnitude, phase and delay areas stacked in it),
+// the controls on the left and the band strip.
+constexpr float kResponseY = 8.0f, kResponseH = 198.0f;
 constexpr float kStripX = 88.0f, kColumnStep = 60.0f, kColumnW = 56.0f, kStripTop = 220.0f, kEqHeight = kStripTop + 164.0f;
 constexpr uint32_t kMinColumns = 6;
 
@@ -1209,15 +1209,14 @@ BlockSet eqBandBlocks(IdSource& ids, const EqBandOptions& o) {
   const DeviceId svf = k.block("svf", "svf", {{"x", k.in()}, {"cutoff", freq}, {"q", q}, {"gain", gain}, {"mode", ty}, {"stages", stages}});
   k.out(Sig{svf, "out"});
   // Its own panel (the band opened or placed alone): EQ.4b: its curve (the response display with the analyser on its
-  // output, its input dimmed; the phase strip under it), then the strip's column laid flat.
+  // output, its input dimmed; EQ.4d: its phase and delay areas under the magnitude), then the strip's column laid flat.
   Panel p;
   p.width = 240.0f;
   p.height = 228.0f;
   p.elements.push_back(plate(p.width, p.height, 6.0));
-  PanelElement display = element(7, "response", 8, 8, p.width - 16.0f, 100, signalBinding(group, "y"));
+  PanelElement display = element(7, "response", 8, 8, p.width - 16.0f, 138, signalBinding(group, "y"));
   display.bindings.push_back(signalBinding(group, std::string(kGroupInPort)));
   p.elements.push_back(std::move(display));
-  p.elements.push_back(element(8, "phase", 8, 110, p.width - 16.0f, 36, signalBinding(group, "y")));
   constexpr float kRow = 154.0f;
   p.elements.push_back(menu(control(2, "menu", 8, kRow, 96, 18, ty), kBandTypeItems));
   p.elements.push_back(control(3, "number", 110, kRow, 60, 18, freq));
@@ -1372,8 +1371,8 @@ BlockSet eqBlocks(IdSource& ids, const StockModuleOptions& o) {
   const DeviceId outGain = k.block("gain", "x output", {{"x", z}, {"g", output}});
   k.setting(outGain, "start", 1.0);
   k.out(Sig{outGain, "out"});
-  // The panel: the response display (the analyser on the EQ's output, its input dimmed) with the phase strip right
-  // under it, the controls on the left, the band strip.
+  // The panel: the response display (the analyser on the EQ's output, its input dimmed; its magnitude, phase and delay
+  // areas), the controls on the left, the band strip.
   Panel p;
   p.width = kStripX + kColumnStep * kMinColumns + 4.0f;
   p.height = kEqHeight;
@@ -1381,7 +1380,6 @@ BlockSet eqBlocks(IdSource& ids, const StockModuleOptions& o) {
   PanelElement display = element(2, "response", 8, kResponseY, p.width - 16.0f, kResponseH, signalBinding(group, "y"));
   display.bindings.push_back(signalBinding(group, std::string(kGroupInPort)));
   p.elements.push_back(tagged(std::move(display), kTagDisplay));
-  p.elements.push_back(tagged(element(9, "phase", 8, kPhaseY, p.width - 16.0f, kPhaseH, signalBinding(group, "y")), kTagDisplay));
   p.elements.push_back(caption(3, 8, kStripTop - 2, 72, 12, "Mode"));
   p.elements.push_back(menu(control(4, "menu", 8, kStripTop + 12, 72, 18, mode), kEqModeItems));
   // The chain tabs: one bound to Edit Chain that the columns follow (shown when Mode ≠ Stereo; while it is hidden chain

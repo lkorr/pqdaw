@@ -48,8 +48,9 @@ public:
   doc::GroupResponse* get(doc::DeviceId group);
   std::string why(doc::DeviceId group) const;
   // H of `group` at frequencies `hz` (In channel i → Out channel j: graph::LinearResponse::evaluate's layout), cached per
-  // group until its response changes (a structural revision, a control it reads) or `key` changes (the caller's name
-  // for `hz`: equal keys, equal frequencies) — the response and phase displays of one panel share one evaluation.
+  // group and `key` (the caller's name for `hz`: equal keys, equal frequencies; kKeys of them per group, least recently
+  // used replaced) until its response changes (a structural revision, a control it reads) — the response and phase
+  // areas share one evaluation, the delay area (EQ.4d: the grid shifted by ε) keeps its own beside it.
   // `version` is unique per evaluation (a display keeps what it derived from it until it changes). Null: no response.
   struct Curve {
     graph::ResponseKind kind = graph::ResponseKind::Unavailable;
@@ -64,7 +65,7 @@ public:
   // the caller checks the wires) — as the matrix product of their own curves at each point; a member marked in
   // `passes` (switched off: it passes its input through) without a response is the identity. Exact for any linear
   // members, and a drag re-evaluates only the member it moves (a 32-band chain evaluated whole costs ≈ 30× more).
-  // Cached under `name` until a member's evaluation changes. Null: a member has no response (and does not pass), or
+  // Cached under (`name`, `key`) until a member's evaluation changes. Null: a member has no response (and does not pass), or
   // the members' channel counts do not chain.
   const Curve* series(doc::DeviceId name, std::span<const doc::DeviceId> members, std::span<const uint8_t> passes,
                       std::span<const double> hz, uint64_t key);
@@ -77,15 +78,19 @@ public:
   bool waiting() const noexcept { return waiting_; }
 
 private:
+  struct Cached {  // one evaluation of a group (one grid)
+    Curve curve;
+    uint64_t stamp = 0, key = 0, used = 0;
+    size_t points = 0;
+    double rate = 0.0;  // (the rate it was evaluated at)
+  };
+  static constexpr size_t kKeys = 2;  // grids per group: the displays' grid and the delay area's shifted one
   struct Entry {
     doc::DeviceId group;
     std::unique_ptr<doc::GroupResponse> response;
     std::string error;            // empty: prepared
     doc::Snapshot updated;        // the snapshot its controls were read from
-    Curve curve;
-    uint64_t curveStamp = 0, curveKey = 0;
-    size_t curvePoints = 0;
-    double curveRate = 0.0;  // (the rate it was evaluated at)
+    Cached cached[kKeys];
   };
   struct Series {
     doc::DeviceId name;
@@ -109,7 +114,7 @@ private:
   std::vector<const Curve*> scratchCurves_;
   std::vector<std::complex<double>> scratchH_, scratchNext_;
   uint32_t lowerings_ = 0;
-  uint64_t versions_ = 0;
+  uint64_t versions_ = 0, uses_ = 0;
 };
 
 }  // namespace pq::views

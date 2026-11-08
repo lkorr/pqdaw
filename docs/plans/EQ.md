@@ -91,7 +91,8 @@ Two element kinds, bound to a group (`panelBinding`-style group id + an optional
   Solo, Delete; Delete key → delete the selected band. Edits go through the bound value blocks (one undo step per
   gesture), so modulation rings / automation / cables behave as on knobs.
 - **`phase`**: the same x axis; unwrapped phase in degrees, auto-scaled (default), or group delay in ms (toggle). The
-  total of the active chain, the selected band faint.
+  total of the active chain, the selected band faint. (EQ.4d: no separate element any more — magnitude, phase and delay
+  are three areas of `response`, each opened / closed by its title chip; ARCHITECTURE "Response displays".)
 - **Band strip**: per band a column of ordinary elements bound to its value blocks (type menu, Hz, Q, gain slider or
   stages); added / removed / relaid out by the band ops in the same undo step; the selected node highlighted.
 - Solo = the other bands of the chain switched off while held (no special audition filter). Output gain knob.
