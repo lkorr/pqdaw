@@ -497,3 +497,75 @@ TEST_CASE("TX.group-oversample: the EQ and the EQ Band panels carry an Oversampl
     CHECK(found == 1);
   }
 }
+
+TEST_CASE("TX.group-oversample (measure): the svf bell at 15 kHz, 48 kHz — its distance from the analog prototype at "
+          "1x (matched) and inside a 2x / 4x / 8x region") {
+  // (|H| only: the converters' up · down is an allpass; its phase is the half-bands', not the prototype's)
+  for (const double gainDb : {9.0, -9.0}) {
+    double err[4] = {};
+    for (uint32_t e = 0; e < 4; ++e) {
+      const double n = static_cast<double>(1u << e);
+      dsp::SvfParams p;
+      p.mode = dsp::SvfMode::Bell;
+      p.cutoffHz = 15000.0;
+      p.q = 1.5;
+      p.gainDb = gainDb;
+      p.sampleRate = kRate * n;
+      for (int k = 0; k <= 200; ++k) {
+        const double hz = 20.0 * std::pow(1000.0, k / 200.0);  // 20 Hz … 20 kHz
+        const double w = 2.0 * std::numbers::pi * hz / (kRate * n);
+        const double d = 20.0 * std::log10(std::abs(dsp::svfResponse(p, w)) / std::abs(dsp::svfAnalogResponse(p, w)));
+        err[e] = std::max(err[e], std::fabs(d));
+      }
+    }
+    MESSAGE("svf bell 15 kHz Q 1.5 " << gainDb << " dB at 48 kHz: max |dB| from the analog prototype to 20 kHz: 1x "
+                                     << err[0] << ", 2x " << err[1] << ", 4x " << err[2] << ", 8x " << err[3]);
+    CHECK(err[1] <= err[0] + 1e-3);
+    CHECK(err[2] <= err[1] + 1e-3);
+  }
+}
+
+TEST_CASE("TX.group-oversample (measure): an audio-rate cutoff sweep (a band-pass svf, Q 4, its cutoff 12 kHz ± 9 kHz "
+          "at 2.1 kHz, on a 15 kHz sine) aliases less at 2x / 4x") {
+  Doc d(TrackKind::Audio);
+  const DeviceId g = d.edit(ops::addDevice(d.doc(), d.store.ids(), d.track, std::string(kGroupDevice), DeviceKind::AudioEffect, 0)).devices.at(0);
+  const uint32_t a = 5120, b = 717;  // bins: 15000 Hz, 2101 Hz (16384 − 2a is no multiple of b: no alias lands on the grid)
+  const DeviceId tone = d.atom("sine_hz", DeviceId{}), lfo = d.atom("sine_hz", DeviceId{});
+  d.wire(d.constant(binHz(a), DeviceId{}), std::string(kValueOutput), tone, "hz");
+  d.wire(d.constant(binHz(b), DeviceId{}), std::string(kValueOutput), lfo, "hz");
+  const DeviceId depth = d.atom("mul", DeviceId{}), centre = d.atom("add", DeviceId{});
+  d.wire(lfo, "out", depth, "a");
+  d.wire(d.constant(9000.0, DeviceId{}), std::string(kValueOutput), depth, "b");
+  d.wire(depth, "out", centre, "a");
+  d.wire(d.constant(12000.0, DeviceId{}), std::string(kValueOutput), centre, "b");
+  const DeviceId svf = d.atom("svf", g);
+  d.cmd(SetDeviceSetting{svf, "mode", 2.0});
+  d.wire(d.constant(4.0, DeviceId{}), std::string(kValueOutput), svf, "q");
+  d.wire(tone, "out", g, std::string(kMainPort));
+  d.wire(g, std::string(kGroupInPort), svf, "x");
+  d.wire(centre, "out", svf, "cutoff");  // a cable from outside into a control inside: upsampled (audio rate)
+  d.wire(svf, "out", g, std::string(kGroupOutPort));
+  // Power off the grid |a + j·b| (the sweep's sidebands, ±6 bins) relative to the total, to 20 kHz.
+  auto aliasDb = [&](const golden::Channels& r) {
+    const std::vector<double> s = spectrumDb(r[0], 8192);
+    double on = 0.0, off = 0.0;
+    for (size_t k = 8; k < s.size() && binHz(k) < 20000.0; ++k) {
+      bool grid = false;
+      for (int j = -80; j <= 80 && !grid; ++j) grid = std::abs(static_cast<long>(k) - std::abs(static_cast<long>(a) + j * static_cast<long>(b))) <= 6;
+      const double p = std::pow(10.0, s[k] / 10.0);
+      (grid ? on : off) += p;
+    }
+    return 10.0 * std::log10(off / on);
+  };
+  double db[4] = {};
+  for (uint32_t e = 0; e < 3; ++e) {
+    d.oversample(g, e);
+    const golden::Channels r = render(d.doc(), 32768);
+    CHECK(peakOf(r) > 0.01);
+    db[e] = aliasDb(r);
+  }
+  MESSAGE("audio-rate cutoff sweep, power off the sidebands / on them: 1x " << db[0] << " dB, 2x " << db[1] << " dB, 4x "
+                                                                            << db[2] << " dB");
+  CHECK(db[1] < db[0] - 10.0);
+  CHECK(db[2] <= db[1] + 1.0);
+}

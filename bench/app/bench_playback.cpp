@@ -25,6 +25,9 @@
 //   modules/<case> compile interp   ProjectLink::create (lowering, every unit's interpreter image), ms
 //   modules/<case> compile jit      the same with the JIT, until every unit is on its final image, ms
 //   modules/<case> play jit         one 64-frame block on the JIT images, ns/block
+// TX.group-oversample: eq oversample/<n>x — a held chord → Utility → a 4-band EQ at oversample n (stereo), JIT, ns/block;
+// eq oversample/none the same track without the EQ (the EQ's cost is the difference); instrument oversample/<n>x — the
+// track without the EQ, its instrument group (3 voices) at n (the region per voice).
 // Release / ship build. Usage: pq_bench_playback [runner options]
 #include <cmath>
 #include <cstdio>
@@ -40,6 +43,7 @@
 #include "pq/core/time.h"
 #include "pq/document/commands.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/main_path.h"
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
 #include "pq/engine/wav_file.h"
@@ -369,6 +373,77 @@ std::unique_ptr<app::ProjectLink> moduleLink(const Snapshot& s, bool jit, jit::C
 
 }  // namespace
 
+// TX.group-oversample: one MIDI track — the default instrument with a held chord → Utility (stereo) → EQ (its 4 default
+// bands, gains ±4 … 8 dB) — JIT images; the EQ at oversample 1× / 2× / 4× / 8× (its group's setting), or no EQ at all
+// (the reference). EQ cost = row − reference.
+struct EqRig {
+  DocumentStore store;
+  std::unique_ptr<app::ProjectLink> link;
+  std::vector<float> l = std::vector<float>(kBlock), r = std::vector<float>(kBlock);
+  int64_t time = 0;
+  EqRig(int exponent, int instrument = 0) {  // exponent −1: no EQ; instrument: the instrument group's oversampling
+    IdSource& ids = store.ids();
+    auto run = [&](const ops::EditResult& e) {
+      if (!e.ok() || !store.dispatch(e->command).ok()) std::exit(5);
+      return *e;
+    };
+    const TrackId id = run(ops::createTrack(*store.current(), ids, TrackKind::Midi)).tracks.at(0);
+    if (instrument > 0) {
+      const DeviceId inst = mainPath(*store.current(), *findTrackPtr(*store.current(), id)).blocks.front()->id;
+      (void)run(ops::setDeviceSetting(*store.current(), inst, std::string(kGroupOversample), instrument));
+    }
+    (void)run(ops::addDevice(*store.current(), ids, id, "module:utility", DeviceKind::AudioEffect));
+    if (exponent >= 0) {
+      const DeviceId eq = run(ops::addDevice(*store.current(), ids, id, "module:eq", DeviceKind::AudioEffect)).devices.at(0);
+      if (exponent > 0) (void)run(ops::setDeviceSetting(*store.current(), eq, std::string(kGroupOversample), exponent));
+    }
+    Batch b{"bench", {}};
+    NoteClip c;
+    c.id = ids.clip();
+    c.start = 0;
+    c.length = 1000 * kPpq;
+    std::vector<Note> notes;
+    for (const int32_t deg : {0, 4, 7}) {
+      Note n;
+      n.id = ids.note();
+      n.start = 0;
+      n.length = 1000 * kPpq;
+      n.pitch = tuning::PitchId::fromDegree(deg, 0);
+      n.velocity = 90.0f;
+      notes.push_back(n);
+    }
+    c.notes = NoteSeq::fromNotes(std::move(notes)).value();
+    b.commands.push_back(AddClip{id, std::make_shared<const NoteClip>(std::move(c))});
+    if (!store.dispatch(b).ok()) std::exit(6);
+    app::LinkConfig lc;
+    lc.compileThread = false;
+    lc.sleepAfterMs = 0.0f;
+    lc.jit = true;
+    auto made = app::ProjectLink::create(lc, store.current());
+    if (!made.ok()) {
+      std::fprintf(stderr, "%s
+", made.error().message.c_str());
+      std::exit(3);
+    }
+    link = std::move(made.value());
+    (void)link->waitForMetaTables();
+    link->play(0);
+    for (int i = 0; i < 200000; ++i) {
+      const app::JitStats js = link->jitStats();
+      if (js.published + js.errors + js.stale >= js.wanted && js.refined + js.refineStale + js.refineErrors >= js.firstImages)
+        break;
+      block();
+    }
+    link->collect();
+    for (int i = 0; i < 400; ++i) block();
+  }
+  void block() {
+    float* ch[2] = {l.data(), r.data()};
+    link->engine().process(engine::AudioBlock{nullptr, 0, ch, 2, kBlock, time});
+    time += kBlock;
+  }
+};
+
 int main(int argc, char** argv) {
   DenormalGuard dg;
   bench::Runner runner("pq_bench_playback");
@@ -424,6 +499,26 @@ int main(int argc, char** argv) {
         std::printf("  %s: %.2f %% of a core (median)\n", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
       });
     }
+  // TX.group-oversample: a 4-band EQ (stereo) at 1× … 8×, and the track without it.
+  for (const int e : {-1, 0, 1, 2, 3}) {
+    const std::string name = e < 0 ? std::string("eq oversample/none jit") : "eq oversample/" + std::to_string(1 << e) + "x jit";
+    runner.add(name, [e, name](bench::Context& c) {
+      EqRig rig(e);
+      const bench::Stats s = c.measure([&] { rig.block(); }, 1, "ns/block");
+      std::printf("  %s: %.2f %% of a core (median)
+", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
+    });
+  }
+  // TX.group-oversample: the instrument group (3 held voices, its region per voice) at 1× … 4× (no EQ).
+  for (const int e : {0, 1, 2}) {
+    const std::string name = "instrument oversample/" + std::to_string(1 << e) + "x jit";
+    runner.add(name, [e, name](bench::Context& c) {
+      EqRig rig(-1, e);
+      const bench::Stats s = c.measure([&] { rig.block(); }, 1, "ns/block");
+      std::printf("  %s: %.2f %% of a core (median)
+", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
+    });
+  }
   // GU.4: compile and play the Phase Accumulator / VCA projects.
   for (const char* m : {"pa_voice", "pa_free", "vca_law", "vca_driven"}) {
     const std::string mod = m;
