@@ -193,3 +193,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): audio and engine default tier; -Affected 32/33 → pqdaw_idle_shell budget assumed a stopped stream (audio thread now < 0.5 %, rest 0.1 %), re-run passed. Probes: AudioOutput on the real driver, dip gone 9/9.
 - Perf: idle with stream running: FL ASIO 0.62 % of one core (callback 3.5 µs / 21.3 ms); WASAPI audio thread 0.25 %.
 - Notes/blockers: Q?-AU.stream-a: FL Studio ASIO also drops 5–10 ms every few seconds in steady playback (driver-internal); suggest Focusrite USB ASIO or WASAPI.
+
+## 2026-11-08 · EQ.4d · orchestrator (merge of task/EQ.4d-delay-view)
+- Did: merged 608ac318. Cause: delay was the difference of neighbouring points' unwrapped phase; a 23-stage Q 5.16 allpass at 1.27 kHz turns 4.6 rad per 12.3 Hz point, so turns were lost (−36 ms drawn at a 59.6 ms peak). Fix: a second evaluation on a grid shifted by 1/1000 of a step (exact to 2.5 s at 20 kHz); the unwrapped phase counts turns from it too; GroupResponses caches both. MAG / PHASE / DELAY are three areas in one display, each collapsible by its chip (3 : 1 : 1, display size kept; view state); the `phase` element kind and the PHASE / DELAY toggle removed; delay axis 0 ms at the bottom, real negative delay (a cut bell, −0.95 ms) drawn below the floor, not clamped.
+- Verified (worker): -Affected 24/24; views 591/591 (the report's allpass vs analytic τ at 768 points ≤ 0.1 % + 1e-4 ms; 8 open/closed combinations via real clicks). Goldens re-recorded: eq-default, eq-eight-bands, eq-lr-mode, eq-band-response, eq-phase-delay; new eq-all-views.
+- Perf (check, 32-band drag): 0.82 ms delay closed, 1.28–1.36 ms all open.
+- Notes/blockers: wrapped phase of a fast-turning allpass is a thicket of segments and wrap markers (several turns per point).
