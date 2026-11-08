@@ -277,15 +277,16 @@ TEST_CASE("meta wavetable: a keyframe edit is audible without a compile; the swa
   CHECK(slot->table()->frames() == meta::kWtDefaultFrames);
   CHECK(sameTable(*slot->table(), *directTable(s.doc(), wt, "", 48000.0)));
   // Click-free (TMM.2's bound end to end, QUESTIONS Q170 1): around the swap no step exceeds the larger of the two
-  // tables' own steps plus the fade's share of their difference (≤ (peak_a + peak_b) / 64).
-  const size_t w = 4096;
-  const double stepA = maxStep(d.out, mark - w, mark), stepB = maxStep(d.out, swap + 4 * kBlock, swap + 4 * kBlock + w);
-  const double peakA = peakOf(d.out, mark - w, mark), peakB = peakOf(d.out, swap + 4 * kBlock, swap + 4 * kBlock + w);
-  const double stepSwap = maxStep(d.out, swap - 2 * kBlock, swap + 3 * kBlock);
+  // tables' own steps plus the fade's share of their difference (≤ (peak_a + peak_b) / fade frames; AU.fold: the fade
+  // is kFrameTableFadeSeconds, the steady saw is measured after it).
+  const size_t w = 4096, fade = dsp::frameTableFadeFrames(48000.0), after = swap + fade + 4 * kBlock;
+  const double stepA = maxStep(d.out, mark - w, mark), stepB = maxStep(d.out, after, after + w);
+  const double peakA = peakOf(d.out, mark - w, mark), peakB = peakOf(d.out, after, after + w);
+  const double stepSwap = maxStep(d.out, swap - 2 * kBlock, after);
   MESSAGE("steps: sine " << stepA << ", saw " << stepB << ", around the swap " << stepSwap);
-  CHECK(stepSwap <= std::max(stepA, stepB) + (peakA + peakB) / dsp::kFrameTableFadeFrames + 1e-6);
+  CHECK(stepSwap <= std::max(stepA, stepB) + (peakA + peakB) / static_cast<double>(fade) + 1e-6);
   // Audible: sine → saw.
-  CHECK(brightness(d.out, swap + 8 * kBlock, d.out.size()) > 5.0 * brightness(d.out, mark - w, mark));
+  CHECK(brightness(d.out, after, d.out.size()) > 5.0 * brightness(d.out, mark - w, mark));
 }
 
 TEST_CASE("meta wavetable: a baked fold drag compiles nothing, is one undo step, and the audio follows") {

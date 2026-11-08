@@ -114,8 +114,9 @@ struct alignas(32) WavetableState {
 };
 
 // wavetable_pos (TMM.2): the frame-table reader's state (FrameReadState's layout: previous phase and |Δphase| per
-// lane), then the table generation last read (0 = fresh: no fade), the crossfade frames still to run and the voice
-// group (StateInit::voiceGroup) its tap record goes to.
+// lane), then the table generation it plays (0 = fresh: no fade), the crossfade frames still to run and the voice
+// group (StateInit::voiceGroup) its tap record goes to; AU.fold: the generation it fades from (frame_table_slot.h
+// "Publication").
 // TMM.12-fix1: then the JIT's inline sine path (jit/src/codegen.cpp, a wavetable_pos in a per-sample loop): every
 // call leaves sineOn = 1 when the frames after it in this block may be computed inline as the readers' sine path
 // (frame_table.h "Sine tables": a sine table, no crossfade running, no tap reader, every lane on one frame), with the
@@ -127,7 +128,8 @@ struct alignas(32) WavetablePosState {
   uint32_t fadeLeft;
   uint32_t group;
   uint32_t sineOn;
-  uint32_t pad_[3];
+  uint32_t pad_;
+  uint64_t fromGen;
   float sineDc[8];
   float sineAmp[8];
   float sineTh[8];
@@ -136,7 +138,8 @@ struct alignas(32) WavetablePosState {
 // wavetable_live (TMM.8, pq/dsp/wave_live.h): per lane the previous phase, |Δphase|, synced phase ψ and its
 // sub-period count, the controls of the previous block (a param-rate control ramps from it), whether the lane has a
 // previous sample, and the correction ring (2·kLiveCorrHalf slots of the delayed output, residuals stamped ahead);
-// then the group's table generation, crossfade, tap group, ring position and the state's sample rate.
+// then the group's table generation, crossfade, tap group, ring position and the state's sample rate; AU.fold: the
+// generation it fades from.
 struct alignas(32) WavetableLiveState {
   float prevPhase[8];
   float prevDelta[8];
@@ -152,7 +155,7 @@ struct alignas(32) WavetableLiveState {
   uint32_t group;
   uint32_t ringPos;
   float sampleRate;
-  uint32_t pad_[2];
+  uint64_t fromGen;
 };
 
 // wavetable_shape (TMM.8): per lane the previous input position u (unclamped), the held |Δu| that picks the level,
@@ -166,7 +169,8 @@ struct alignas(32) WavetableShapeState {
   uint32_t fadeLeft;
   uint32_t group;
   float sampleRate;
-  uint32_t pad_[3];
+  uint32_t pad_;
+  uint64_t fromGen;
 };
 
 // voice_tap (TMM.2): the previous input per lane (the record's increment), the voice group.

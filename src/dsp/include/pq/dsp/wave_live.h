@@ -1,7 +1,7 @@
 #pragma once
 
 // The Wavetable's live path and Shape mode (TMM.8; docs/plans/MM.md Decisions → DSP, SPEC §15 2026-11-01 "absolutely
-// no aliasing"). Two atoms over a live frame-table slot (frame_table_slot.h; swaps crossfade over 64 samples and the
+// no aliasing"). Two atoms over a live frame-table slot (frame_table_slot.h; swaps crossfade over kFrameTableFadeSeconds and the
 // slot's voice tap is written exactly as wavetable_pos does), meant to run inside an `oversample(n)` region:
 //
 // ---- wavetable_live (phase, position, warp, fold, sync; table, mode, corr) ------------------------------------------
@@ -10,8 +10,9 @@
 //   v = (1 − m)·x(a) + m·x(b) (m = |warp| in Mirror, else 0);  y = foldValue(v, fold).
 // Controls are clamped to their ranges (warp [−1, 1], fold and sync [0, 1]); `mode` is a const (0 Bend, 1 Mirror,
 // 2 Pulse width). A param-rate (Spl) control ramps linearly from its previous block's value over the block (a
-// lane's first block starts at the value), so automation and macros never step the waveform; an audio-rate one is
-// used per sample.
+// lane's first block starts at the value; AU.fold: the previous block's LAST value, also when that block had it per
+// sample — the compiler's param ramp, TX.smooth — so the end of a ramp never jumps back), so automation and macros
+// never step the waveform; an audio-rate one is used per sample.
 //
 // Level choice (TMM.8-fix: the same rule as the live-band bake, so baked and live agree): per sample from each tap's
 // instantaneous BASE-RATE speed |a′·ψ′ + ∂a/∂warp·Δwarp| with ψ′ = e·s + φ·Δs, where e is the representative

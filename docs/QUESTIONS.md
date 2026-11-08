@@ -452,3 +452,35 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   (B) suspend after a long idle (e.g. 60 s); (C) keep 1 s. Chosen for now: (C), unchanged (no evidence yet; A/B are a
   one-constant change). Done: the ASIO halves are zeroed at every start (they kept the last run's buffers).
 - Status: open.
+
+## Q?-AU.fold-a · Saturator (and the shaper / tanh / clip atoms): aliasing, no oversampling
+- **Measured** (AU.fold, offline renders: the default instrument's sine into the Saturator, Drive +18 dB, non-harmonic
+  energy re the total / largest non-harmonic bin below 20 kHz): at 440 Hz Digital Clip −55 dB / −64 dBFS, Bass Shaper
+  −74 / −83, Analog Clip −83 / −92, the rest ≤ −93 / −97; at 1760 Hz Digital Clip −38 / −43, Bass Shaper −42 / −45,
+  Hard Curve −51 / −56, Analog Clip −53 / −57, Soft Sine −55 / −63, Medium (tanh) −71 / −80, Sinoid Fold −93 / −98 (at
+  this drive its sin(u) is gentle; more drive aliases it too). Since GU.10 the curves are plain per-sample atoms: no
+  oversampling, no ADAA. The same holds for any patch using `shaper`, `tanh`, `fast_tanh`, `clip`, `sine` as a folder
+  outside an `oversample(n)` region.
+- **Options**: (1) the Saturator's curves inside an `oversample(n)` region by default (TMM.6's converters; recorded cost
+  for tanh: ×1 1.6, ×2 8.1, ×4 16.8, ×8 30.7 ns/sample mono, JIT, ship — so ×4 ≈ +15 ns/sample per channel, about ten
+  times the plain curve), with an "HQ" setting to turn it off; (2) first-order ADAA per curve (closed-form antiderivatives
+  exist for all seven; ≈ 2× the curve, one division, attenuates aliases ≈ 6 dB/oct more but not to −100 dB, and the
+  clips' corners need care); (3) leave it, documented. Also: the Type menu is a mux index (TX.smooth never ramps
+  indices), so switching Type while playing steps the waveform (a click per switch).
+- **Choice for now**: none (AU.fold did not change the Saturator). Suggested: (1) at ×2 by default with an HQ ×4 /
+  off setting, the cheapest that gets the clips' aliases below −80 dBFS at 2 kHz (to be measured with the region).
+- Status: open (needs the user: CPU vs aliasing for a stock device).
+
+## Q?-AU.fold-b · A phase that jumps (a Phase Accumulator's Amplitude off an integer) aliases in the Wavetable
+- **Measured**: Phase Accumulator → Wavetable at 880 Hz, fold 0.3: Amplitude 1 or 2 → non-harmonic −98 / −93 dB
+  (clean); Amplitude 1.5 → −35 dB, largest alias −65 dBFS. frac(1.5·φ) jumps once per cycle (a hard-sync-like reset)
+  and `wavetable_pos` reads a phase that comes through a cable as it is: its mip level follows the phase increment, but a
+  jump in the read phase is a step in the output that nothing band-limits. The live path's own sync (the Wavetable's
+  Sync knob) is corrected with band-limited residuals; a jump arriving on the cable is not.
+- **Options**: (1) detect phase jumps in `wavetable_pos` (|Δφ| unlike the increment) and correct them with the live
+  path's residuals (value + slope jump, Kaiser half-width 4: a 4-sample output delay and a ring in the state of every
+  baked read, a compare per sample on the hot path); (2) leave it: Amplitude is a "repeat the cycle n times" control,
+  whole numbers are clean, the Sync knob is the band-limited way; snap Amplitude to integers when it feeds a Wavetable,
+  or say so in its tooltip; (3) route a cabled phase that can jump to the live path (×16, ≈ 30× the baked read's cost).
+- **Choice for now**: none. Suggested: (2) (cheapest, honest); (1) if non-integer amplitudes are wanted as a sound.
+- Status: open (needs the user).

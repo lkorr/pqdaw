@@ -664,3 +664,52 @@ TEST_CASE("wavetable_shape: the alias suite, 44.1 / 96 kHz, amplitudes 0.5 / 1 /
     shapeSuite(sr, N, ks, {{0.5, 2}, {1.0, 2}, {4.0, 4}, {4.0, 8}}, {});
   }
 }
+
+TEST_CASE("wavetable_live: a control that turns param-rate after an audio-rate block continues from its last value") {
+  // AU.fold: the compiler's param ramp (TX.smooth) feeds a moving param per sample (an audio-rate block), then the param
+  // itself once it rests. The kernel ramps a param-rate control from the previous block's value: that must be the
+  // ramp's last value, not the one before the ramp (the click at the end of every knob move / lane step on a live
+  // fold, warp or sync: the control jumped back and re-ramped over one block). So a param-rate block after a ramp
+  // renders bit for bit as the same block given the value per sample.
+  const TablePtr t = build({ftfix::basic(BasicCycle::Saw), ftfix::basic(BasicCycle::Square)}, kSr);
+  FrameTableSlot slot(t);
+  constexpr uint32_t F = 64;
+  std::vector<float> phase(2 * F), pos(8, 0.3f);
+  for (uint32_t i = 0; i < 2 * F; ++i) phase[i] = static_cast<float>(std::fmod(0.0071 * i, 1.0));
+  alignas(32) float modeV[8], corrV[8];
+  for (const WarpMode mode : {WarpMode::Bend, WarpMode::PulseWidth}) {
+    std::fill(modeV, modeV + 8, static_cast<float>(mode));
+    std::fill(corrV, corrV + 8, 1.0f);
+    // Block 1: warp, fold, sync ramp per sample to (0.3, 0.6, 0.25); block 2: those values, as params or per sample.
+    const float end[3] = {0.3f, 0.6f, 0.25f};
+    std::vector<float> ramp[3], hold[3];
+    alignas(32) float spl[3][8];
+    for (int c = 0; c < 3; ++c) {
+      ramp[c].resize(F);
+      hold[c].assign(F, end[c]);
+      for (uint32_t i = 0; i < F; ++i) ramp[c][i] = end[c] * static_cast<float>(i + 1) / F;
+      std::fill(spl[c], spl[c] + 8, end[c]);
+    }
+    auto render = [&](bool paramRate) {
+      State st(Atom::WavetableLive, 1, kSr);
+      std::vector<float> out(2 * F);
+      for (int blk = 0; blk < 2; ++blk) {
+        const bool p = blk == 1 && paramRate;
+        const uint32_t mask = (1u << 1) | (1u << 5) | (1u << 6) | (p ? (1u << 2) | (1u << 3) | (1u << 4) : 0u);
+        const float* ins[7] = {phase.data() + blk * F, pos.data(),
+                               p ? spl[0] : (blk == 0 ? ramp[0] : hold[0]).data(),
+                               p ? spl[1] : (blk == 0 ? ramp[1] : hold[1]).data(),
+                               p ? spl[2] : (blk == 0 ? ramp[2] : hold[2]).data(), modeV, corrV};
+        float* outs[1] = {out.data() + blk * F};
+        KernelArgs a{ins, outs, st.mem.data(), &slot, F, 7, 1, mask};
+        const KernelFn fn = findKernel(Atom::WavetableLive, 1, mask);
+        REQUIRE(fn != nullptr);
+        fn(a);
+      }
+      return out;
+    };
+    const std::vector<float> asParams = render(true), perSample = render(false);
+    CAPTURE(static_cast<int>(mode));
+    CHECK(std::memcmp(asParams.data(), perSample.data(), asParams.size() * sizeof(float)) == 0);
+  }
+}

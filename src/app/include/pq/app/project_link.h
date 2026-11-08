@@ -387,7 +387,7 @@ public:
   // link derives a TableJob from the instance's state in the newest snapshot (its data, its baked params' values, its
   // settings, the link's rate) and, when the job's key differs from the one last requested for the slot, hands it to
   // its TableBuilder (one worker thread, below normal priority, newest wins per slot, identical specs share one
-  // table). A finished table is published into the slot (a 64-sample crossfade, never a compile) if the slot still
+  // table). A finished table is published into the slot (a crossfade of kFrameTableFadeSeconds, never a compile) if the slot still
   // wants that key. Triggers: a MetaData change, a param change (a baked knob: fold / warp / sync go to the builder,
   // their runtime params are never read), every compile (a new instance, a setting such as the warp mode, a rate).
   // Offline renders wait for pending builds (renderOffline). Any thread but the audio thread.

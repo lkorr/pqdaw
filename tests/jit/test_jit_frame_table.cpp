@@ -168,7 +168,7 @@ TEST_CASE("wavetable_pos (global): interpreter and JIT bit-identical through swa
     float* outP[2] = {out[0].data(), out[1].data()};
     for (uint32_t t0 = 0, blk = 0; t0 < kN; t0 += kBlock, ++blk) {
       if (blk == 40) rig.swap(tableB());
-      if (blk == 41) rig.swap(tableA());  // inside the first fade (37-frame blocks): it restarts
+      if (blk == 41) rig.swap(tableA());  // inside the first fade (37-frame blocks): it waits (AU.fold), then fades on
       if (blk == 80) rig.swap(tableB());
       for (uint32_t s = 0; s < 2; ++s)
         std::copy_n((face.globalIn[s].ordinal == 0 ? phase : u).begin() + t0, kBlock, in[s].begin());
@@ -456,7 +456,7 @@ std::vector<float> renderFeedback(int backend, jit::VoiceCode vc, const Schedule
   for (uint32_t b = 0; b < kBlocks; ++b) {
     if (b == 40) rig.swap(sineMorph());               // many sine frames: still inline
     if (b == 80) rig.swap(tableB());                  // the rows (saw → square): the kernel every frame
-    if (b == 81) rig.swap(sineOne());                 // inside that fade: it restarts; inline again after it
+    if (b == 81) rig.swap(sineOne());                 // inside that fade: it waits, then fades on; inline again after
     if (b == 120) rig.slot->tap()->addReader();       // the kernel writes the tap: every frame calls it
     if (b == 160) rig.slot->tap()->removeReader();
     if (b == 200) rig.swap(sineMorph());

@@ -459,8 +459,7 @@ namespace detail {
 namespace {
 
 // ---- wavetable_live ---------------------------------------------------------------------------------------------
-constexpr uint32_t kFade = kFrameTableFadeFrames;
-constexpr float kInvFade = 1.0f / static_cast<float>(kFade);
+constexpr uint32_t kFadeChunk = kFrameTableFadeChunk;
 
 struct LiveArgs {
   const float* in[5];  // phase, position, warp, fold, sync (at the run's first frame)
@@ -768,46 +767,46 @@ void liveRun(const FrameTableView& t, WavetableLiveState& st, const LiveArgs& a,
     S::store(st.prevPhase, phi);
     S::store(st.primed, S::ones());
   }
-  if (a.last) {
+  if (a.last && n > 0) {
+    // The value a param-rate control ramps from next block. AU.fold: also after an audio-rate block (the compiler's
+    // param ramp, TX.smooth, feeds a moving param per sample, then the param itself again once it rests): the last
+    // frame's value, so the next param-rate block continues from where the ramp ended instead of jumping back to the
+    // value before it (a click at the end of every knob move or lane step on a live control).
     for (int c = 0; c < 3; ++c)
-      if (splBit(a.spl, 2 + c)) S::store(st.prevCtl[c], S::load(a.in[2 + c]));
+      S::store(st.prevCtl[c], S::load(a.in[2 + c] + (splBit(a.spl, 2 + c) ? 0 : static_cast<size_t>(n - 1) * W)));
   }
 }
 
+// n frames, crossfaded while the state's fade runs (AU.fold: frame_table_slot.h "Publication", chunk by chunk).
 template <class S, WarpMode M, bool kCorr>
-void liveSpan(const FrameTableSlot::Entry& e, WavetableLiveState& s, const LiveArgs& a0, uint32_t n,
+void liveSpan(const FrameTableSlot::Entry& newest, WavetableLiveState& s, const LiveArgs& a0, uint32_t n,
               float* out) noexcept {  // RT-safe
   constexpr uint32_t W = S::kW;
+  const uint32_t fadeFrames = frameTableFadeFrames(s.sampleRate > 0.0f ? s.sampleRate : newest.view.sampleRate);
   uint32_t f0 = 0;
-  LiveArgs a = a0;
-  if (s.fadeLeft > 0) {
-    const uint32_t m = s.fadeLeft < n ? s.fadeLeft : n;
-    alignas(32) float old[kFade * 8];
-    WavetableLiveState so = s;  // the old table's run on a copy (its corrections and history are discarded)
-    LiveArgs ao = a;
-    ao.last = false;
-    LiveArgs an = a;
-    an.last = a.last && m == n;
-    liveRun<S, M, kCorr>(e.prev->view, so, ao, m, old);
-    liveRun<S, M, kCorr>(e.view, s, an, m, out);
-    const uint32_t k0 = kFade - s.fadeLeft;
-    for (uint32_t f = 0; f < m; ++f) {
-      const uint32_t k = k0 + f + 1;
-      if (k >= kFade) continue;
-      const float g = static_cast<float>(k) * kInvFade;
-      for (uint32_t l = 0; l < W; ++l) {
-        float& o = out[f * W + l];
-        o = std::fma(g, o - old[f * W + l], old[f * W + l]);
-      }
-    }
-    s.fadeLeft -= m;
-    f0 = m;
-  }
-  if (f0 < n) {
+  while (f0 < n) {
+    const FrameTableFade fd = frameTableFade(&newest, s, fadeFrames);
+    LiveArgs a = a0;
     for (int i = 0; i < 5; ++i)
       if (!splBit(a.spl, static_cast<uint32_t>(i))) a.in[i] += static_cast<size_t>(f0) * W;
     a.f0 += f0;
-    liveRun<S, M, kCorr>(e.view, s, a, n - f0, out + static_cast<size_t>(f0) * W);
+    float* o = out + static_cast<size_t>(f0) * W;
+    if (fd.from == nullptr) {
+      liveRun<S, M, kCorr>(fd.to->view, s, a, n - f0, o);
+      return;
+    }
+    uint32_t m = n - f0 < kFadeChunk ? n - f0 : kFadeChunk;
+    if (s.fadeLeft < m) m = s.fadeLeft;
+    alignas(32) float old[kFadeChunk * 8];
+    WavetableLiveState so = s;  // the old table's run on a copy (its corrections and history are discarded)
+    LiveArgs ao = a;
+    ao.last = false;
+    a.last = a0.last && f0 + m == n;
+    liveRun<S, M, kCorr>(fd.from->view, so, ao, m, old);
+    liveRun<S, M, kCorr>(fd.to->view, s, a, m, o);
+    frameTableFadeMix(o, old, m, W, fadeFrames, s.fadeLeft);
+    s.fadeLeft -= m;
+    f0 += m;
   }
 }
 
@@ -825,10 +824,6 @@ void wavetableLiveK(const KernelArgs& k) noexcept {  // RT-safe
   auto& s = *static_cast<WavetableLiveState*>(k.state);
   const auto& slot = *static_cast<const FrameTableSlot*>(k.resource);
   const FrameTableSlot::Entry& e = *slot.acquire();
-  if (e.generation != s.generation) {
-    s.fadeLeft = s.generation != 0 && e.prev != nullptr && e.prev->generation == s.generation ? kFade : 0u;  // L1 (kernels_frame_table.cpp)
-    s.generation = e.generation;
-  }
   LiveArgs a;
   for (int i = 0; i < 5; ++i) a.in[i] = k.in[i];
   a.spl = k.splMask;
@@ -959,36 +954,39 @@ void shapeRun(const FrameTableView& t, WavetableShapeState& st, const ShapeArgs&
   }
 }
 
+// n frames, crossfaded while the state's fade runs (AU.fold: frame_table_slot.h "Publication", chunk by chunk). A
+// table built without the antiderivative (not Shape mode's: the engine's default, one still being built for the mode)
+// is not read: silence rather than what is not there; a fade from one is skipped.
 template <class S>
-void shapeSpan(const FrameTableSlot::Entry& e, WavetableShapeState& s, const ShapeArgs& a0, uint32_t n,
+void shapeSpan(const FrameTableSlot::Entry& newest, WavetableShapeState& s, const ShapeArgs& a0, uint32_t n,
                float* out) noexcept {  // RT-safe
   constexpr uint32_t W = S::kW;
+  const uint32_t fadeFrames = frameTableFadeFrames(s.sampleRate > 0.0f ? s.sampleRate : newest.view.sampleRate);
   uint32_t f0 = 0;
-  ShapeArgs a = a0;
-  // A table built without the antiderivative (not Shape mode's): the plain level-held read.
-  if (s.fadeLeft > 0) {
-    const uint32_t m = s.fadeLeft < n ? s.fadeLeft : n;
-    alignas(32) float old[kFade * 8];
-    WavetableShapeState so = s;
-    shapeRun<S>(e.prev->view, so, a, m, old);
-    shapeRun<S>(e.view, s, a, m, out);
-    const uint32_t k0 = kFade - s.fadeLeft;
-    for (uint32_t f = 0; f < m; ++f) {
-      const uint32_t k = k0 + f + 1;
-      if (k >= kFade) continue;
-      const float g = static_cast<float>(k) * kInvFade;
-      for (uint32_t l = 0; l < W; ++l) {
-        float& o = out[f * W + l];
-        o = std::fma(g, o - old[f * W + l], old[f * W + l]);
-      }
+  while (f0 < n) {
+    FrameTableFade fd = frameTableFade(&newest, s, fadeFrames);
+    if (fd.from != nullptr && (fd.from->view.adData == nullptr || fd.to->view.adData == nullptr)) {
+      s.fadeLeft = 0;
+      continue;
     }
-    s.fadeLeft -= m;
-    f0 = m;
-  }
-  if (f0 < n) {
+    ShapeArgs a = a0;
     if (!a.xSpl) a.x += static_cast<size_t>(f0) * W;
     if (!a.posSpl) a.pos += static_cast<size_t>(f0) * W;
-    shapeRun<S>(e.view, s, a, n - f0, out + static_cast<size_t>(f0) * W);
+    float* o = out + static_cast<size_t>(f0) * W;
+    if (fd.from == nullptr) {
+      if (fd.to->view.adData == nullptr) std::memset(o, 0, sizeof(float) * (n - f0) * W);
+      else shapeRun<S>(fd.to->view, s, a, n - f0, o);
+      return;
+    }
+    uint32_t m = n - f0 < kFadeChunk ? n - f0 : kFadeChunk;
+    if (s.fadeLeft < m) m = s.fadeLeft;
+    alignas(32) float old[kFadeChunk * 8];
+    WavetableShapeState so = s;
+    shapeRun<S>(fd.from->view, so, a, m, old);
+    shapeRun<S>(fd.to->view, s, a, m, o);
+    frameTableFadeMix(o, old, m, W, fadeFrames, s.fadeLeft);
+    s.fadeLeft -= m;
+    f0 += m;
   }
 }
 
@@ -999,18 +997,7 @@ void wavetableShapeK(const KernelArgs& k) noexcept {  // RT-safe
   auto& s = *static_cast<WavetableShapeState*>(k.state);
   const auto& slot = *static_cast<const FrameTableSlot*>(k.resource);
   const FrameTableSlot::Entry& e = *slot.acquire();
-  if (e.generation != s.generation) {
-    s.fadeLeft = s.generation != 0 && e.prev != nullptr && e.prev->generation == s.generation ? kFade : 0u;  // L1 (kernels_frame_table.cpp)
-    s.generation = e.generation;
-  }
   float* out = k.out[0];
-  // Shape mode needs the antiderivative arrays (a table built for Shape mode); a table without them (the engine's
-  // default, a table still being built for the mode) plays silence rather than read what is not there.
-  if (e.view.adData == nullptr || (s.fadeLeft > 0 && e.prev->view.adData == nullptr)) {
-    std::memset(out, 0, sizeof(float) * k.frames * L);
-    s.fadeLeft = 0;
-    return;
-  }
   ShapeArgs a;
   a.x = k.in[0];
   a.pos = k.in[1];

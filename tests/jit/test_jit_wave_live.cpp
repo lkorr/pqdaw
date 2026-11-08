@@ -133,7 +133,7 @@ TEST_CASE("wavetable_live / wavetable_shape in oversample regions: interpreter =
     float* outP[2] = {out[0].data(), out[1].data()};
     for (uint32_t t0 = 0, blk = 0; t0 < kN; t0 += kBlock, ++blk) {
       if (blk == 30) rig.swap(true);
-      if (blk == 31) rig.swap(false);  // inside the first fade: it restarts
+      if (blk == 31) rig.swap(false);  // inside the first fade: it waits (AU.fold), then fades on
       if (blk == 70) rig.swap(true);
       for (uint32_t s = 0; s < 2; ++s)
         std::copy_n((face.globalIn[s].ordinal == 0 ? phase : mod).begin() + t0, kBlock, in[s].begin());

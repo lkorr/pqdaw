@@ -2,8 +2,8 @@
 // generic voice-tap sink. Semantics: pq/dsp/atoms.h; slots: pq/dsp/frame_table_slot.h; taps: pq/core/voice_tap.h.
 //
 // CPU: the steady path is one acquire load (the slot entry), a 64-byte state copy, the TMM.1 reader, and one relaxed
-// load (the tap's reader count). The crossfade is its own loop over at most 64 frames per swap, so the steady loop
-// carries no fade branch or second read. Tap writes cost frames / stride sample copies, only while a face watches.
+// load (the tap's reader count). The crossfade (AU.fold: kFrameTableFadeSeconds per swap) is its own loop in chunks of
+// 64 frames, so the steady loop carries no fade branch or second read. Tap writes cost frames / stride sample copies, only while a face watches.
 
 #include <immintrin.h>
 
@@ -19,9 +19,8 @@
 namespace pq::dsp::detail {
 namespace {
 
-constexpr uint32_t kFade = kFrameTableFadeFrames;
 constexpr uint32_t kChunk = 64;  // frames per expansion of a Spl phase
-constexpr float kInvFade = 1.0f / static_cast<float>(kFade);
+constexpr uint32_t kFadeChunk = kFrameTableFadeChunk;
 
 static_assert(sizeof(FrameReadState) == offsetof(WavetablePosState, generation));
 
@@ -32,37 +31,32 @@ inline void readSpan(const FrameTableView& t, FrameReadState& st, const float* p
   else readFrameTableL8(t, st, phase, pos, !kPosSpl, n, out);
 }
 
-// n frames from the entry's table, the first ones crossfaded from entry->prev while the state's fade runs.
+// n frames, crossfaded while the state's fade runs (AU.fold: from the table it played to the newest, chunk by chunk;
+// a fade that ends inside the call is followed by the next one if a newer table waits).
 template <uint32_t L, bool kPosSpl>
-void readFading(const FrameTableSlot::Entry& e, WavetablePosState& s, FrameReadState& rs, const float* phase,
+void readFading(const FrameTableSlot::Entry& newest, WavetablePosState& s, FrameReadState& rs, const float* phase,
                 const float* pos, uint32_t n, float* out) noexcept {  // RT-safe
+  const uint32_t fadeFrames = frameTableFadeFrames(newest.view.sampleRate);
   uint32_t f0 = 0;
-  if (s.fadeLeft > 0) {
-    const uint32_t m = s.fadeLeft < n ? s.fadeLeft : n;
-    alignas(32) float old[kFade * L];
-    FrameReadState ro = rs;  // the reader state depends only on the phases: both reads see the same history
-    readSpan<L, kPosSpl>(e.prev->view, ro, phase, pos, m, old);
-    readSpan<L, kPosSpl>(e.view, rs, phase, pos, m, out);
-    const uint32_t k0 = kFade - s.fadeLeft;
-    for (uint32_t f = 0; f < m; ++f) {
-      const uint32_t k = k0 + f + 1;
-      if (k >= kFade) continue;  // g = 1: the new table exactly
-      const float g = static_cast<float>(k) * kInvFade;
-      float* o = out + static_cast<size_t>(f) * L;
-      const float* q = old + static_cast<size_t>(f) * L;
-      if constexpr (L == 8) {
-        const __m256 a = _mm256_load_ps(q);
-        _mm256_storeu_ps(o, _mm256_fmadd_ps(_mm256_set1_ps(g), _mm256_sub_ps(_mm256_loadu_ps(o), a), a));
-      } else {
-        o[0] = std::fma(g, o[0] - q[0], q[0]);
-      }
+  while (f0 < n) {
+    const FrameTableFade fd = frameTableFade(&newest, s, fadeFrames);
+    const float* ph = phase + static_cast<size_t>(f0) * L;
+    const float* ps = kPosSpl ? pos : pos + static_cast<size_t>(f0) * L;
+    float* o = out + static_cast<size_t>(f0) * L;
+    if (fd.from == nullptr) {
+      readSpan<L, kPosSpl>(fd.to->view, rs, ph, ps, n - f0, o);
+      return;
     }
+    uint32_t m = n - f0 < kFadeChunk ? n - f0 : kFadeChunk;
+    if (s.fadeLeft < m) m = s.fadeLeft;
+    alignas(32) float old[kFadeChunk * L];
+    FrameReadState ro = rs;  // the reader state depends only on the phases: both reads see the same history
+    readSpan<L, kPosSpl>(fd.from->view, ro, ph, ps, m, old);
+    readSpan<L, kPosSpl>(fd.to->view, rs, ph, ps, m, o);
+    frameTableFadeMix(o, old, m, L, fadeFrames, s.fadeLeft);
     s.fadeLeft -= m;
-    f0 = m;
+    f0 += m;
   }
-  if (f0 < n)
-    readSpan<L, kPosSpl>(e.view, rs, phase + static_cast<size_t>(f0) * L, kPosSpl ? pos : pos + static_cast<size_t>(f0) * L,
-                         n - f0, out + static_cast<size_t>(f0) * L);
 }
 
 template <uint32_t L, bool kPhaseSpl, bool kPosSpl>
@@ -71,12 +65,6 @@ void wavetablePosK(const KernelArgs& a) noexcept {  // RT-safe
   auto& s = *static_cast<WavetablePosState*>(a.state);
   const auto& slot = *static_cast<const FrameTableSlot*>(a.resource);
   const FrameTableSlot::Entry& e = *slot.acquire();
-  if (e.generation != s.generation) {
-    // A fade from the table this voice group played (TMM.13-fix1 L1: only when that is e.prev). A group that missed
-    // publishes while it was idle (a voice compacted into it starts there) played neither: it reads e at once.
-    s.fadeLeft = s.generation != 0 && e.prev != nullptr && e.prev->generation == s.generation ? kFade : 0u;
-    s.generation = e.generation;
-  }
   FrameReadState rs;
   std::memcpy(&rs, &s, sizeof(rs));
   const float* phase = a.in[0];
@@ -100,7 +88,7 @@ void wavetablePosK(const KernelArgs& a) noexcept {  // RT-safe
   VoiceTap* tap = slot.tap();
   const bool watched = tap->wanted();
   // TMM.12-fix1: whether the JIT may compute this block's next frames inline (atom_state.h WavetablePosState).
-  s.sineOn = !watched && s.fadeLeft == 0 &&
+  s.sineOn = !watched && s.fadeLeft == 0 && s.generation == e.generation &&
              frameTableSineCoefs(e.view, kPosSpl ? pos : nullptr, L, s.sineDc, s.sineAmp, s.sineTh);
   if (!watched) return;
   float position[8];
