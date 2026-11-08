@@ -707,6 +707,18 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [x] **GU.9 Racks are parallel groups; the rack is the Device view of them** *(v2 merged b71adab3; Q228; muted chains still compute; Open Lowered Rack Patch removed)* (plan §One hierarchy; user 2026-11-07: "racks still exist but only as a visual indicator … in the circuit view racks are PARALLEL GROUPS, not a singular group … 1-1 isomorphic with parallel groups, just another way of viewing"). *First attempt (effcd6dc: one group holding chain groups, rack features stripped) reverted in 7eff8172.*
 - [x] **GU.10 Stock devices as group presets (Utility, Saturator, LFO, Operator); Auto Filter and EQ Eight retired to `retired/` until a Filter module exists** (plan §One hierarchy). 👁 Merged fc964e34; Q230.
 - [x] **GU.11 One view, one panel system (circuit editor / user devices merge into the group view; panel.json system retired; model = blocks, groups, native engines)** (plan §One hierarchy). 👁 Merged 7408bed5; Q231.
+- [ ] **GU.12 Full-suite fixes after the GU retirements** (graph / engine / jit / stdlib / playback slow entries and benches that read retired stdlib files; found by the milestone -Full on e454820d).
+
+### GU follow-ups (milestone critique 2026-11-07, docs/reviews/GU-critique.md; not started, ordered by the reviewer's severity)
+- [ ] **GU.f1 Racks recognised by role, not by block name** ("Mixer", "Key Zone", "Chain Select" … are matched by name in racks.cpp / edit_racks.cpp; a renamed chain mixer drops out of the rack).
+- [ ] **GU.f2 One panel system for leaves too** (DevicePanel + PanelLayout still draw leaf frames beside GroupPanelFace; draw a leaf as a one-element group panel). 👁
+- [ ] **GU.f3 Group-panel knobs at parity with the old faces** (wheel, Show Automation, Knob Curve menu, modulation ring). 👁
+- [ ] **GU.f4 Undriven stepped value block into a mux index lowers as a literal** (Saturator computes all 7 curves, LFO all 5 shapes; also folds a muted chain's Gate 0).
+- [ ] **GU.f5 Voice end ignores modulation taps** (per-voice cable into a control ends voices once the tap is silent; Q230).
+- [ ] **GU.f6 Closed panels readable** (name strip on closed groups, minimum text size, cables under panel content, visible off state of toggles, Operator Coarse/Level readouts, clipped value-block captions, inspector scroll). 👁
+- [ ] **GU.f7 Dead code removal** (lone-stock-instrument lowering branches, metaSites, app::DeviceInspector, CircuitEditor::Host, retired PA/VCA load conversion in modules.cpp).
+- [ ] **GU.f8 Bool wire law for atom bool inputs** (select / comparisons wireable).
+- [ ] **GU.f9 Ship-row comparison of module presets vs the retired patches; deep-nest stress test restored.**
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
