@@ -152,3 +152,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): -Affected -Slow 76/77, the 1 = document wavetable save/load timing (22.4 vs 20 ms, load-sensitive), rerun 193/193; ship pq_bench_dsp linked, ^svf/ rows (EQ.1b) in bench/RESULTS.md.
 - Perf (release, ns/sample L1): ramp lowpass s1 113 → 21, lowshelf s1 506 → 47, lowshelf s8 3463 → 300; evaluate() 32-svf chain × 1024 pts 12.0 → 1.2 ms; param rate unchanged (≈ 2.4); curved audio-rate inputs +5–15 %.
 - Notes/blockers: curved audio-rate modulation still designs per frame (vectorised float design not done); Q?-EQ.1b-a.
+
+## 2026-11-08 · EQ.4 · orchestrator (merge of task/EQ.4-eq-displays)
+- Did: fast-forwarded main to 6a33e3bc. `response` element (axis log(1 + f/10 Hz) 0–20 kHz, zoom ±6–48, SpectrumPlot analyser behind with SPEC / IN chips, band curves filled, total with glow, dashed when approximate, inactive chain at 35 %, numbered nodes), all plan gestures through PanelTarget (one undo step each), `phase` element (unwrapped / group delay), `bandtype` element; EQ panel; views::GroupResponses (lowered once per structural revision, prepareMany; total = product of band curves for a plain series chain).
+- Verified: worker: pq_tests_views default tier 582 cases incl. test_eq_displays (drawn total == GroupResponse, real-dispatch gestures). Orchestrator: build.ps1 -Affected on 6a33e3bc (worker's run was killed for low memory) passed. Goldens added: eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay, eq-band-response.
+- Perf (check): 32-band drag frame 0.95–1.3 ms mean, worst 1.9 ms; first frame after a structural edit ≈ 13 ms (UI-thread lowering 0.9 ms).
+- Notes/blockers: strip Stages box shows "16.0" / "1.00" unlabeled; unwrapped phase of deep cuts flattens the strip; lowering on the UI thread, not the app's compile path; Q?-EQ.4-a.
