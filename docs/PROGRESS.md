@@ -1504,3 +1504,9 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: n/a.
 - CPU-efficiency check: no product code changed.
 - Notes/blockers: none.
+
+## 2026-11-07 · GU.13 (GU.f2 + GU.f3) · orchestrator (merge of task/GU.13-one-panel)
+- Did: fast-forwarded main to cc0793db. One panel system: a leaf in the Device view is a synthetic group-system panel (panel::leafPanel, drawn in panel::BlockFrame, which keeps jacks, title bar, activator, fold, preset slot, rename); the rack macro panel is a BlockFrame; DevicePanel, PanelLayout and their targets deleted. Knob parity in the panel system: wheel (one undo step per run; host opt-in, the circuit keeps its wheel pan), type-in, Delete default, Up/Down step, curve glyph, modulation ring, automation envelope at the playhead and LEDs, Show Automation / Knob Curve, cable drops, macro Map mode. Q232.
+- Verified (worker): build.ps1 -NoTests (check) 0 warnings; views 572, ui 186, app 34, document 184 cases pass; new test_panel_gestures (real dispatch on a leaf and a group knob). 6 goldens re-recorded.
+- Perf: n/a. CPU-efficiency check: per-element damage via Element::liveKey (a value change damages only its control); voice polling only while live.
+- Notes/blockers: rack macros get no ring and are not cable targets; unmapped macros have no block.

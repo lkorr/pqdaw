@@ -2508,7 +2508,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   imports the retired `instruments/basic_synth.pqp` and `devices/eq_eight.pqp` since GU.10 (not run here).
 - Status: open (provisional choices above).
 
-## Q?-GU.13-a · 2026-11-07 · GU.13 · One panel system for leaves (Q231 follow-up): the choices made
+## Q232 · 2026-11-07 · GU.13 · One panel system for leaves (Q231 follow-up): the choices made
 - **Done as Q231's alternative**: a leaf's Device-view frame is a synthetic panel of the group-panel system
   (`panel::leafPanel`: its engine module's `doc::enginePanel`, else knob / toggle / number elements per param and
   setting, the old generic layout's 64-px columns), bound through `makeDocPanelTarget(ctx, leaf)`, in a `panel::BlockFrame`
