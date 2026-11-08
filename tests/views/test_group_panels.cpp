@@ -8,6 +8,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 #include <memory>
 #include <ostream>
@@ -624,4 +625,45 @@ TEST_CASE("group panels: the Device view shows the instrument group's panel with
   CHECK(u.setting(doc::kGroupMono) == 1.0);
   CHECK(u.history() == h0 + 1);
   CHECK(u.structural == s0 + 1);
+}
+
+TEST_CASE("group panels (TX.group-oversample): the inspector's Oversample menu (each factor with its latency) sets the "
+          "group's oversampling in one step and one structural change — real pointer dispatch through the overlay") {
+  Ui u;
+  u.ctx.setSelectedTrack(u.ids.keys);
+  u.ctx.setDetailVisible(true);
+  u.ctx.setDetailMode(DetailMode::Device);
+  u.d.tree().layoutNow();
+  u.d.step();
+  DeviceChainView* dv = findDeviceChain(*u.shell);
+  REQUIRE(dv != nullptr);
+  Widget* frame = dv->frameOf(u.ids.group);
+  REQUIRE(frame != nullptr);
+  auto* inspector = dynamic_cast<panel::PanelHost*>(frame->find("inspector[" + std::to_string(u.ids.group.value) + "]"));
+  REQUIRE(inspector != nullptr);
+  auto& f = static_cast<panel::GroupPanelFace&>(inspector->face());
+  int32_t os = -1;
+  for (size_t i = 0; i < f.elementCount(); ++i)
+    if (f.element(i).desc().kind == "menu" && f.element(i).binding() != nullptr && f.element(i).binding()->name == doc::kGroupOversample)
+      os = static_cast<int32_t>(i);
+  REQUIRE(os >= 0);
+  const doc::PanelElement& e = f.element(static_cast<size_t>(os)).desc();
+  const size_t h0 = u.history();
+  const int s0 = u.structural;
+  u.d.click(inspector->transform().map({e.x + e.w * 0.5f, e.y + e.h * 0.5f}));
+  u.d.step();
+  REQUIRE(u.menu() != nullptr);
+  CHECK(u.structural == s0);  // opening changes nothing
+  u.choose("4× · 4.7 smp");
+  CHECK(u.setting(doc::kGroupOversample) == 2.0);
+  CHECK(doc::groupOversampleFactor(u.dev(u.ids.group)) == 4);
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.structural == s0 + 1);
+  // The latencies the menu shows are the converters' (model.h groupOversampleLatency, rounded to 0.1 sample).
+  const doc::SettingSpec& spec = doc::groupOversampleSetting();
+  for (uint32_t k = 1; k < spec.choices.size(); ++k) {
+    char want[32];
+    std::snprintf(want, sizeof want, "%.1f smp", doc::groupOversampleLatency(1u << k));
+    CHECK(spec.choices[k].find(want) != std::string_view::npos);
+  }
 }

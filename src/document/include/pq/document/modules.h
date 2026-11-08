@@ -214,6 +214,7 @@ inline constexpr std::string_view kBandChainSetting = "bandChain";  // a chain g
 inline constexpr std::string_view kBandSoloSetting = "bandSolo", kSoloRestoreSetting = "soloRestore";
 inline constexpr const char* kBandTypeItems = "High Cut|Low Cut|Band Pass|Notch|Bell|Low Shelf|High Shelf|All Pass";
 inline constexpr const char* kEqModeItems = "Stereo|L/R|M/S";
+inline constexpr const char* kOversampleItems = "1×|2×|4×|8×";  // TX.group-oversample: a group's `oversample` (model.h)
 inline constexpr uint32_t kMaxBandsPerChain = 32;
 inline constexpr double kBandMaxHz = 20000.0, kBandAxisHz = 10.0;  // the Frequency curve: f = 10 · (2001^t − 1)
 enum class EqMode : uint8_t { Stereo = 0, LeftRight, MidSide };

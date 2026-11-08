@@ -1243,6 +1243,9 @@ BlockSet eqBandBlocks(IdSource& ids, const EqBandOptions& o) {
   p.elements.push_back(qBox(control(4, "number", 174, kRow, 58, 18, q)));
   p.elements.push_back(shownWhen(control(5, "knob", 8, kRow + 22, 58, 44, gain), 2, {4.0, 5.0, 6.0}));
   p.elements.push_back(shownWhen(stagesBox(control(6, "number", 110, kRow + 22, 60, 18, stages)), 2, {0.0, 1.0, 2.0, 5.0, 6.0, 7.0}));
+  // TX.group-oversample: a band placed alone oversamples itself (inside an EQ, the EQ's setting covers it).
+  p.elements.push_back(menu(element(8, "menu", 174, kRow + 22, 58, 18, settingBinding(group, std::string(kGroupOversample))), kOversampleItems));
+  p.elements.push_back(caption(9, 174, kRow + 42, 58, 12, "Oversample"));
   return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("Band") : o.name, o.active, std::move(p)));
 }
 
@@ -1413,7 +1416,11 @@ BlockSet eqBlocks(IdSource& ids, const StockModuleOptions& o) {
   PanelElement msTabs = shownWhen(control(7, "tabs", 8, kStripTop + 34, 72, 16, edit), 4, {2.0});
   msTabs.setField(styleText("items", "M|S"));
   p.elements.push_back(std::move(msTabs));
-  p.elements.push_back(control(8, "knob", 8, kStripTop + 56, 72, 100, output));
+  p.elements.push_back(control(8, "knob", 8, kStripTop + 56, 72, 64, output));
+  // TX.group-oversample: the EQ's oversampling (its group's setting: every band shares one up / down conversion).
+  p.elements.push_back(caption(9, 8, kStripTop + 124, 72, 12, "Oversample"));
+  p.elements.push_back(menu(element(10, "menu", 8, kStripTop + 138, 72, 18, settingBinding(group, std::string(kGroupOversample))),
+                            kOversampleItems));
   p = layEqStrip(p, bands);
   return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("EQ") : o.name, o.active, std::move(p)));
 }

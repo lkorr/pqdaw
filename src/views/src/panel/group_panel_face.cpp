@@ -641,7 +641,7 @@ doc::Panel valueKnobPanel(doc::DeviceId block, float w, float h) {
   return p;
 }
 
-doc::Panel inspectorPanel(doc::DeviceId group, float width) {
+doc::Panel inspectorPanel(doc::DeviceId group, float width, bool polyphony) {
   doc::Panel p;
   constexpr float kRow = 24.0f, kPad = 8.0f;
   const float w = std::max(80.0f, width);
@@ -656,21 +656,33 @@ doc::Panel inspectorPanel(doc::DeviceId group, float width) {
     p.elements.push_back(std::move(e));
     return p.elements.back();
   };
-  doc::PanelElement& title = add("label", kPad, w - 2.0f * kPad, 12.0f, {});
-  title.setField(doc::styleText("text", "POLYPHONY"));
-  title.setField(doc::styleText("align", "left"));
-  title.setField(doc::styleNumber("size", 7.5));
-  y += 16.0f;
-  for (const doc::SettingSpec& s : doc::groupSettings()) {
-    doc::PanelElement& l = add("label", kPad, w * 0.42f - kPad, 18.0f, {});
-    l.setField(doc::styleText("text", std::string(s.label)));
-    l.setField(doc::styleText("align", "left"));
-    l.setField(doc::styleNumber("size", 8.0));
-    const std::string kind = s.isSwitch() ? "toggle" : !s.choices.empty() ? "menu" : "number";
-    doc::PanelElement& c = add(kind, w * 0.42f, w * 0.58f - kPad, 18.0f, {doc::settingBinding(group, std::string(s.name))});
-    c.setField(doc::styleText("label", "-"));
-    y += kRow;
+  auto title = [&](const char* text) {
+    doc::PanelElement& t = add("label", kPad, w - 2.0f * kPad, 12.0f, {});
+    t.setField(doc::styleText("text", text));
+    t.setField(doc::styleText("align", "left"));
+    t.setField(doc::styleNumber("size", 7.5));
+    y += 16.0f;
+  };
+  if (polyphony) {
+    title("POLYPHONY");
+    for (const doc::SettingSpec& s : doc::groupSettings()) {
+      doc::PanelElement& l = add("label", kPad, w * 0.42f - kPad, 18.0f, {});
+      l.setField(doc::styleText("text", std::string(s.label)));
+      l.setField(doc::styleText("align", "left"));
+      l.setField(doc::styleNumber("size", 8.0));
+      const std::string kind = s.isSwitch() ? "toggle" : !s.choices.empty() ? "menu" : "number";
+      doc::PanelElement& c = add(kind, w * 0.42f, w * 0.58f - kPad, 18.0f, {doc::settingBinding(group, std::string(s.name))});
+      c.setField(doc::styleText("label", "-"));
+      y += kRow;
+    }
+    y += 4.0f;
   }
+  // TX.group-oversample: every group's oversampling, the menu's items with their latency (not compensated).
+  title("OVERSAMPLE");
+  doc::PanelElement& os = add("menu", kPad, w - 2.0f * kPad, 18.0f,
+                              {doc::settingBinding(group, std::string(doc::groupOversampleSetting().name))});
+  os.setField(doc::styleText("label", "-"));
+  y += kRow;
   p.width = w;
   p.height = y + kPad - (kRow - 18.0f);
   return p;

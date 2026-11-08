@@ -277,7 +277,16 @@ std::span<const SettingSpec> groupSettings() noexcept {
   return kSpecs;
 }
 
+const SettingSpec& groupOversampleSetting() noexcept {
+  // (the latencies: groupOversampleLatency, rounded)
+  static constexpr std::array<std::string_view, 4> kFactors = {"1×", "2× · 3.6 smp", "4× · 4.7 smp", "8× · 5.2 smp"};
+  static const SettingSpec kSpec{kGroupOversample, "Oversample", 0.0, static_cast<double>(kMaxGroupOversample), 1.0, 0.0,
+                                 std::span<const std::string_view>(kFactors), ""};
+  return kSpec;
+}
+
 const SettingSpec* groupSetting(std::string_view name) noexcept {
+  if (name == kGroupOversample) return &groupOversampleSetting();
   for (const SettingSpec& s : groupSettings())
     if (s.name == name) return &s;
   return nullptr;

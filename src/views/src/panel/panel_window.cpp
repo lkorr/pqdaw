@@ -948,6 +948,8 @@ private:
         sub.push_back(ui::MenuItem::item(std::string(s.label), bind(doc::settingBinding(w.group_, std::string(s.name)))));
       items.push_back(ui::MenuItem::sub("Polyphony", std::move(sub)));
     }
+    // TX.group-oversample: every group's oversampling.
+    items.push_back(ui::MenuItem::item("Oversample", bind(doc::settingBinding(w.group_, std::string(doc::kGroupOversample)))));
     return items;
   }
 

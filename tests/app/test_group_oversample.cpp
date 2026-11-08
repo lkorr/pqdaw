@@ -479,3 +479,21 @@ TEST_CASE("TX.group-oversample: a member with an oversample region of its own (t
   const golden::Channels r = render(d.doc(), 8192);
   CHECK(std::isfinite(peakOf(r)));
 }
+
+TEST_CASE("TX.group-oversample: the EQ and the EQ Band panels carry an Oversample menu bound to their group's setting") {
+  for (const bool whole : {true, false}) {
+    IdSource ids;
+    const BlockSet set = whole ? eqBlocks(ids) : eqBandBlocks(ids);
+    const Device& g = *set.devices.front();
+    REQUIRE(g.panel != nullptr);
+    int found = 0;
+    for (const PanelElement& e : g.panel->elements)
+      for (const Binding& b : e.bindings)
+        if (b.kind == BindingKind::Setting && b.device == g.id && b.name == kGroupOversample) {
+          CHECK(e.kind == "menu");
+          CHECK(e.text("items", "") == kOversampleItems);
+          ++found;
+        }
+    CHECK(found == 1);
+  }
+}

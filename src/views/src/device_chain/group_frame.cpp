@@ -5,9 +5,9 @@
 // and selects the group as any device's; its right edge drags the panel wider or narrower (view state of the session).
 // GU.3 (docs/plans/GU.md "Decided"): a group whose PANEL has elements shows its panel instead (pq/views/panel/
 // group_panel_face.h: the same face the circuit draws for the closed group, fitted to the frame's height, edited in
-// place); an empty panel keeps the mini circuit. An INSTRUMENT GROUP shows its INSPECTOR on the left: its polyphony
-// (voices, mono, legato, glide, steal) as panel elements bound to the group's settings (an edit: one undo step, one
-// recompile) — what IG.4's group panel was to be.
+// place); an empty panel keeps the mini circuit. Every group shows its INSPECTOR on the left: an instrument group's
+// polyphony (voices, mono, legato, glide, steal) and (TX.group-oversample) every group's Oversample menu as panel
+// elements bound to the group's settings (an edit: one undo step, one recompile) — what IG.4's group panel was to be.
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -27,6 +27,7 @@ namespace {
 constexpr float kDefaultW = 420.0f, kMinW = 220.0f, kMaxW = 1600.0f;
 constexpr float kEdgeGrab = 5.0f;  // logical px at the right edge that resize the panel
 constexpr float kInspectorW = 150.0f;  // GU.3: an instrument group's inspector column
+constexpr float kPlainInspectorW = 96.0f;  // TX.group-oversample: any other group's (its Oversample menu)
 
 class GroupFrame final : public FrameBase {
 public:
@@ -35,9 +36,9 @@ public:
     setLayout(ui::LayoutKind::Custom);
     hasPanel_ = d.hasPanel();
     instrument_ = doc::isInstrumentGroup(*ctx.doc(), d.id);
-    if (instrument_) {  // GU.3: the inspector (a generated panel of the group's own settings)
+    {  // GU.3: the inspector (a generated panel of the group's own settings; TX.group-oversample: every group has one)
       auto face = std::make_unique<panel::GroupPanelFace>(
-          [p = std::make_shared<const doc::Panel>(panel::inspectorPanel(d.id, kInspectorW))]() -> doc::PanelPtr { return p; },
+          [p = std::make_shared<const doc::Panel>(panel::inspectorPanel(d.id, inspectorW(), instrument_))]() -> doc::PanelPtr { return p; },
           panel::makeDocPanelTarget(ctx, d.id, [this]() -> ui::Widget* { return inspector_; }));
       inspector_ = &add<panel::PanelHost>("inspector[" + std::to_string(d.id.value) + "]", std::move(face));
     }
@@ -67,7 +68,7 @@ public:
   float logicalWidthFor(float available) const override {
     const auto it = impl_.groupWidths.find(id_.value);
     if (it != impl_.groupWidths.end()) return it->second;
-    const float side = inspector_ != nullptr ? kInspectorW : 0.0f;
+    const float side = inspector_ != nullptr ? inspectorW() : 0.0f;
     if (panel_ != nullptr) {  // GU.3: the panel at the scale that fills the height (at most 1), the inspector beside it
       const ui::Vec2 ws = panel_->face().worldSize();
       const float h = available > 0.0f ? available - kTitleH - 1.0f : ws.y;
@@ -122,7 +123,7 @@ public:
   void arrange(ui::LayoutPass& pass) override {
     const ui::IRect r = rect();
     const int32_t th = tree() ? tree()->uiScale().px(kTitleH) : 20;
-    const int32_t side = inspector_ != nullptr ? (tree() ? tree()->uiScale().px(kInspectorW) : static_cast<int32_t>(kInspectorW)) : 0;
+    const int32_t side = inspector_ != nullptr ? (tree() ? tree()->uiScale().px(inspectorW()) : static_cast<int32_t>(inspectorW())) : 0;
     const ui::IRect body{r.x + 1, r.y + th, std::max(0, r.w - 2), std::max(0, r.h - th - 1)};
     if (inspector_ != nullptr) pass.place(*inspector_, {body.x, body.y, std::min(side, body.w), body.h});
     const ui::IRect rest{body.x + std::min(side, body.w), body.y, std::max(0, body.w - side), body.h};
@@ -186,7 +187,8 @@ private:
 
   project_patch::ProjectPatchView* view_ = nullptr;
   panel::PanelHost* panel_ = nullptr;      // GU.3: the group's panel (when it has elements)
-  panel::PanelHost* inspector_ = nullptr;  // GU.3: an instrument group's inspector
+  panel::PanelHost* inspector_ = nullptr;  // GU.3: the group's inspector (its polyphony when an instrument group, its oversampling)
+  float inspectorW() const noexcept { return instrument_ ? kInspectorW : kPlainInspectorW; }
   bool hasPanel_ = false, instrument_ = false;
   ViewContext::Subscription sub_;
   std::string name_;

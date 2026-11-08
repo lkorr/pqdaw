@@ -179,8 +179,9 @@ GroupPanelFace::Source docPanelSource(ViewContext& ctx, doc::DeviceId group);
 std::unique_ptr<PanelTarget> makeDocPanelTarget(ViewContext& ctx, doc::DeviceId group, std::function<ui::Widget*()> menuHost);
 
 // The generated panel of a group's own settings (the GROUP INSPECTOR, GU.3: an instrument group's polyphony — voices,
-// mono, legato, glide, steal — as number / toggle / menu elements bound to its settings), `width` wide.
-doc::Panel inspectorPanel(doc::DeviceId group, float width);
+// mono, legato, glide, steal — when `polyphony`; TX.group-oversample: every group's Oversample menu, 1× … 8× with each
+// factor's latency) as number / toggle / menu elements bound to its settings, `width` wide.
+doc::Panel inspectorPanel(doc::DeviceId group, float width, bool polyphony);
 
 // A widget that hosts one Face fitted into its rect (aspect kept, centred, whole device px at its origin), routing pointer
 // events, keys and text to it as the canvas does, preparing it at its scale in onFrame (its tiles). A panel repaints when
