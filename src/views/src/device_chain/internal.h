@@ -5,6 +5,7 @@
 // chain list with the chain mixer and the zone editor, and the frames of the chain it shows, nested to any depth).
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <unordered_set>
 #include <optional>
@@ -233,6 +234,17 @@ project_patch::ProjectPatchView* groupPatchView(FrameBase& f);
 // GU.3: a group frame's panel host (its panel with elements; null: it shows its mini circuit) or its inspector (an
 // instrument group's polyphony; null: none).
 panel::PanelHost* groupPanelHost(FrameBase& f, bool inspector);
+// GU.11: the controls a group frame's panel shows now (its elements bound to a control of a block of the group: a
+// module's knobs), each as (block, param, its rect in device px clipped to the panel); `fn` returns true to stop.
+// Nothing for a frame showing no panel. The cable layer and map mode drop on them as on a DevicePanel's knobs.
+struct PanelControl {
+  doc::DeviceId device;
+  std::string_view param;  // the element's binding (alive while the visit runs)
+  ui::IRect rect;
+};
+void forEachPanelControl(FrameBase& f, const std::function<bool(const PanelControl&)>& fn);
+// The top centre of the control of `device`.`param` on group frame `f`'s panel (device px); nullopt: not shown there.
+std::optional<ui::Vec2> panelControlPoint(FrameBase& f, doc::DeviceId device, std::string_view param);
 // The devices the Device view shows for a rack chain: all of them, in order.
 std::vector<doc::DevicePtr> shownDevices(const std::vector<doc::DevicePtr>& list);
 // TX.all-free (SPEC §15 2026-11-03 "everything is free"): the blocks the Device view lists for a track — its MAIN PATH,

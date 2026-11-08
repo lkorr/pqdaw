@@ -1503,6 +1503,13 @@ public:
       const doc::DeviceId dev{id};
       const bool self = dev == impl_.mapRack;
       if (!self && !rk->holds(impl_.doc(), dev)) continue;
+      if (!self) {  // GU.11: a module's knobs (its group panel's elements, bound to blocks inside the rack)
+        bool stop = false;
+        device_chain::forEachPanelControl(*fr, [&](const device_chain::PanelControl& c) {
+          return stop = rk->holds(impl_.doc(), c.device) && f(Target{c.device, c.param, c.rect, -1});
+        });
+        if (stop) return;
+      }
       const devices::DevicePanel* panel = fr->panel();
       if (panel == nullptr || panel->folded()) continue;
       for (const devices::ParamInfo& p : panel->signature().params) {
