@@ -113,6 +113,7 @@ private:
     uint16_t channel = 0;
     uint32_t gainBase = 0;              // into gain_: numOutputs × inCount
     uint32_t argBase = 0;               // into argValue_ / argKnown_ / argSignal_: inCount (this channel's values)
+    uint32_t cacheBase = 0;             // into cache_: the rule's scratch (AtomSignature::responseCacheBytes)
     bool zOnly = false;                 // a z1: its term reads the shared z slot (gain_[0]) instead of calling the rule
   };
   struct Term {
@@ -125,7 +126,8 @@ private:
   // Gathers the cell's argument values (once per evaluate) and calls its rule.
   ResponseKind firstCall(uint32_t c, double omega, std::complex<double> z, double sampleRate, bool& dynamic) noexcept;
   // Calls a dynamic cell's rule again at another frequency (its arguments as gathered).
-  ResponseKind recall(uint32_t c, double omega, std::complex<double> z, double sampleRate, bool& dynamic) noexcept;
+  ResponseKind recall(uint32_t c, double omega, std::complex<double> z, double sampleRate, bool& dynamic,
+                      bool fresh = false) noexcept;
   // Points are solved kBatch at a time, as lanes: every value and gain holds kBatch doubles (re and im apart).
   static constexpr uint32_t kBatch = 8;
   void storeGains(uint32_t cell, uint32_t lane) noexcept;
@@ -170,6 +172,9 @@ private:
   // Each cell's rule arguments (Cell::argBase), gathered once per evaluate.
   std::vector<float> argValue_;
   std::vector<uint8_t> argKnown_, argSignal_;
+  std::vector<double> cache_;  // EQ.1b: every cell's rule scratch, kept across one evaluate's calls
+  double ejw1Omega_ = -1.0;    // the point ejw1_ is for (ResponseArgs::ejw1)
+  std::complex<double> ejw1_{0.0, 0.0};
 };
 
 // One-shot convenience (allocates: prepare + evaluate): H of `typed` from `source` to `sink` at `hz`, params at their

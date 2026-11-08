@@ -157,8 +157,9 @@ Result<std::unique_ptr<VoiceBinding>> VoiceEngine::makeBinding(ProgramImage* ima
       const dsp::LaneStateInfo lane = dsp::laneStateInfo(atom);
       if (lane.kind == dsp::LaneState::None || lane.kind == dsp::LaneState::DelayLine || lane.perLaneBytes > e.size)
         return bad("unexpected side state lane layout");
-      if (lane.perLaneBytes == 0) continue;
-      const VoiceBinding::Span sp{e.offset / 4, lane.perLaneBytes / 4};
+      const uint32_t laneBytes = lane.kind == dsp::LaneState::Whole ? e.size : lane.perLaneBytes;
+      if (laneBytes == 0) continue;
+      const VoiceBinding::Span sp{e.offset / 4, laneBytes / 4};
       if (!B.sideSpans.empty() && B.sideSpans.back().firstWord + B.sideSpans.back().numWords == sp.firstWord)
         B.sideSpans.back().numWords += sp.numWords;
       else
@@ -191,8 +192,10 @@ Result<std::unique_ptr<VoiceBinding>> VoiceEngine::makeBinding(ProgramImage* ima
         B.delays.push_back({e.offset / 4, h[0], static_cast<uint32_t>(maxDelay) + 2u});
         continue;
       }
-      if (lane.perLaneBytes > e.size) return bad("lane layout larger than the state entry");
-      size = lane.perLaneBytes;  // the rest of the entry is shared by the group's lanes
+      if (lane.kind != dsp::LaneState::Whole) {
+        if (lane.perLaneBytes > e.size) return bad("lane layout larger than the state entry");
+        size = lane.perLaneBytes;  // the rest of the entry is shared by the group's lanes
+      }
       if (size == 0) continue;   // e.g. noise: per-lane seeds are constant, the counter is shared
     }
     addSpan(B.resetSpans, {e.offset / 4, size / 4});

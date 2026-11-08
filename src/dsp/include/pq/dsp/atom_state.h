@@ -217,28 +217,45 @@ struct alignas(32) OversamplePhaseState {
   float primed[8];
 };
 
-// svf (EQ.1, kernels_svf.cpp; pq/dsp/svf_design.h): up to 64 cascaded TPT sections, each its two integrator states in
-// float, the six coefficients the kernel runs, and the two states as doubles (a deep cascade runs in double), each
-// double as two 32-bit halves (lo, hi): ic1 ic2 d1 b1 b2 m0 h1 h2 ic1lo ic1hi ic2lo ic2hi. 8 lanes: section s, field j,
-// lane l at sec[s·96 + j·8 + l] (twelve [8] arrays per section, every word per lane); 1 lane: packed at sec[s·12 + j].
-// Per lane the inputs its coefficients were designed for (bitwise) and a key (0: none yet; else 1 | mode << 1 |
-// prewarp << 4 | stages << 8) with its section count. Sections from a lane's count on hold the identity (m0 = 1, no
-// recursion), so an 8-lane group runs the largest count of its lanes. Shared: the sample rate and which state set the
-// group last ran (0 float, 1 double).
-inline constexpr uint32_t kSvfStateSections = 64;  // = kSvfMaxStages (svf_design.h)
+// svf (EQ.1, kernels_svf.cpp; pq/dsp/svf_design.h; EQ.1b: sized by its sections, param ramps interpolated): a header
+// of per-lane [8] arrays, then `sections` (StateInit::svfSections: the count its mode / stages consts give, else 64)
+// cascaded TPT sections. EVERY word is per lane (LaneState::Whole): the values the group shares (sample rate, layout,
+// section capacity) are replicated in each lane, and the precision flag is per lane (the group's precision is any
+// lane's: a lane reset to the initial state holds zeros, valid in either precision).
+// Per lane: the inputs its coefficients are for and whether they are their exact design (0: interpolated along a ramp),
+// a key (0: none yet; else 1 | mode << 1 | prewarp << 4 | stages << 8) with its section count, the inputs of the last
+// two frames, and the ramp segment being interpolated (its first frame's inputs, the inputs' step per frame, its
+// length and the frames left; 0: none).
+// Per section kSvfFields fields: the two integrator states (float; in double, the 32-bit halves lo = the float field, hi
+// = the next field, so a 1-lane double is one aligned 8-byte word), the six coefficients the kernel runs (d1 b1 b2 m0
+// h1 h2), and their first and second forward differences per frame along a ramp segment (6 + 6). 8 lanes: section s,
+// field f, lane l at sec[s·kSvfFields·8 + f·8 + l]; 1 lane: sec[s·kSvfFields + f]. Sections from a lane's count on hold
+// the identity (m0 = 1, no recursion), so an 8-lane group runs the largest count of its lanes.
+inline constexpr uint32_t kSvfStateSections = 64;  // = kSvfMaxStages (svf_design.h): the most a state can hold
+inline constexpr uint32_t kSvfFields = 22;
 struct alignas(32) SvfState {
-  float sec[kSvfStateSections * 96];
   float cutoff[8];
   float q[8];
-  float gain[8];
+  float gain[8];         // 1 for the modes without a gain (the design ignores it)
   uint32_t key[8];
   uint32_t count[8];
-  double sampleRate;   // shared (initState)
-  uint32_t precision;  // shared
-  uint32_t pad_[5];
+  uint32_t exact[8];     // 1: the coefficients are svfDesign(cutoff, q, gain) exactly
+  float prev[3][8];      // cutoff, q, gain of the last frame
+  float prev2[3][8];     // and of the one before
+  float base[3][8];      // ramp segment: the inputs at its first frame
+  float slope[3][8];     // and their step per frame
+  uint32_t len[8];       // its length in frames
+  uint32_t rem[8];       // frames left (0: no segment)
+  uint32_t primed[8];    // prev / prev2 hold inputs (0 after a reset)
+  float sampleRate[8];   // replicated (initState)
+  uint32_t precision[8]; // 1: the states are doubles
+  uint32_t sections[8];  // replicated: the sections this block holds (initState)
+  uint32_t lanes[8];     // replicated: 1 or 8, the section layout (initState)
+  float sec[kSvfStateSections * kSvfFields * 8];
 };
-
-static_assert(sizeof(SvfState) == kSvfStateSections * 384 + 6 * 32);
+// The header: what stateBytes() adds sections to (kernelInfo(svf).stateSize).
+inline constexpr uint32_t kSvfHeaderBytes = static_cast<uint32_t>(sizeof(SvfState) - sizeof(SvfState::sec));
+static_assert(kSvfHeaderBytes % 32 == 0 && kSvfHeaderBytes == 25 * 32);
 static_assert(sizeof(OversampleState) == 26 * 32);
 static_assert(sizeof(OversamplePhaseState) == 64);
 static_assert(sizeof(Z1State) == 32);

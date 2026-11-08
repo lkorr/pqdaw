@@ -301,13 +301,15 @@ void gainAudioPrologue(void* state, float g0, float tau, float start) noexcept;
 
 struct StateInit {
   double sampleRate = 48000.0;
-  uint32_t lanes = 1;            // 1 or 8 (only the delay line's ring layout depends on it)
+  uint32_t lanes = 1;            // 1 or 8 (the delay line's ring layout and the svf's section layout depend on it)
   uint32_t maxDelayFrames = 0;   // delay lines: largest delay in samples (≤ maxDelayFramesLimit(lanes))
   uint32_t seed = 0;             // noise: per-node seed (e.g. the NodeId), mixed with the lane index
   float z1Init = 0.0f;           // z1, z1:read, z1:write: the output before the first input (the language's `init`
                                  // input, a const; for a bool z1 pass boolMask(true) or 0)
   uint32_t voiceGroup = 0;       // TMM.2: the voice group a voice-arena state block belongs to (the image host sets
                                  // it per group; 0 in schedules): wavetable_pos / voice_tap write their tap record there
+  uint32_t svfSections = kSvfStateSections;  // EQ.1b, svf: the sections its state holds (1 … 64; the compiler gives
+                                             // svfSectionCount of its mode / stages consts; the kernel clamps to it)
 };
 
 // Largest delay-line ring a state block may hold: 1 GiB. Keeps every ring float index (frame · lanes) far inside
@@ -321,7 +323,7 @@ inline constexpr size_t kMaxDelayRingBytes = size_t{1} << 30;
 uint32_t maxDelayFramesLimit(uint32_t lanes) noexcept;  // RT-safe
 
 // Bytes of state (0 for stateless atoms). For delay lines: header + ring (≤ sizeof(DelayState) + kMaxDelayRingBytes), computed in
-// size_t. Not RT-relevant.
+// size_t. svf (EQ.1b): kSvfHeaderBytes + svfSections sections of `lanes` lanes (≤ sizeof(SvfState)). Not RT-relevant.
 size_t stateBytes(Atom a, const StateInit& init) noexcept;
 
 // Which bytes of an atom's 8-lane state block belong to one voice lane (M1 review L7): what the VoiceEngine resets at
@@ -334,6 +336,8 @@ enum class LaneState : uint8_t {
   PerLane,    // bytes [0, perLaneBytes) are per-lane [8] arrays; the rest is shared by the group's lanes (phasor's
               // incScale/halfSr, noise's counter; noise's per-lane seeds are constant from StateInit, so 0 bytes)
   DelayLine,  // DelayState: shared header, apY1[8] per lane, start[8] + the ring handled by the VoiceEngine in O(1)
+  Whole,      // every word of the entry (whatever its size: svf, sized by its sections) is per lane; the values the
+              // group shares are replicated in each lane
 };
 struct LaneStateInfo {
   LaneState kind = LaneState::None;
@@ -353,7 +357,8 @@ enum class SilenceRule : uint8_t {
   Clip,      // clip(x, lo, hi): All over {x} when lo ≤ 0 ≤ hi (the scheduler checks constant bounds)
   MulAdd,    // muladd(a, b, c): (a or b) and c
   Memory,    // z1, delay lines, rise/fall/change: the output is the stored history of `inputs` (the split reads: of the
-             // write's input). Silent once `inputs` have been silent for silenceTail() frames: the TAIL
+             // write's input). Silent once `inputs` have been silent for silenceTail() frames: the TAIL. svf (EQ.1b):
+             // its history decays (hasDecayState): silent once `inputs` are silent and decayStateSmall()
   Smoother,  // gain / gain_add: All over `inputs`; the state (target, residual) is settled once its residual is
              // exactly 0, and stays settled while the `settle` inputs (target, time) keep their values
 };
@@ -366,6 +371,13 @@ SilenceInfo silenceInfo(Atom a) noexcept;  // RT-safe
 // The tail: frames of history a stateful atom keeps (z1 and edge detectors 1; a delay line floor(max) + 3, its
 // oldest tap; stateless atoms and smoothers 0).
 uint32_t silenceTail(Atom a, const StateInit& init) noexcept;  // RT-safe
+// EQ.1b: an atom whose history DECAYS rather than ends (svf: an IIR) is a Memory atom with tail 0 whose state the host
+// checks instead: decayStateSmall = every state word (of every lane; the host's are global 1-lane blocks) is ≤ eps (NaN:
+// false); decayStateFlush sets those words to exactly 0 (the block's output is then exactly 0 for a silent input) and
+// returns whether one was not 0 yet. False / nothing for other atoms. RT-safe.
+bool hasDecayState(Atom a) noexcept;
+bool decayStateSmall(Atom a, const void* state, float eps) noexcept;
+bool decayStateFlush(Atom a, void* state) noexcept;
 
 // Writes the initial state into `state` (stateBytes bytes, kStateAlign-aligned). No allocation: RT-safe, so it
 // can also reset a voice's state on the audio thread (cost: proportional to the delay ring for delay lines; the

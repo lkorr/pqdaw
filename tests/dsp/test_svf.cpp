@@ -11,6 +11,9 @@
 //   behaviour  audio-rate cutoff / q / gain sweeps stay bounded and finite; any split of the frames into calls gives
 //              the same bits (param and audio rate); a NaN input does not poison the filter; RtScope on the process
 //              path (designs at param and audio rate, 1 and 8 lanes)
+//   EQ.1b      20 ms param ramps (interpolated coefficients) within −90 dB of a design per frame, no clicks, 8 lanes = 1
+//              lane bit for bit (a group on one ramp designs once); after a ramp the exact design runs (bit-identical
+//              to a filter set there from the start); the state is sized by its sections; RtScope on the new paths
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -432,3 +435,279 @@ TEST_CASE("svf: no allocation on the process path (designs at param and audio ra
   CHECK(violations == 0);
 }
 
+
+// ---- EQ.1b: state size, param ramps, exactness at rest ---------------------------------------------------------------
+namespace {
+
+// A ramp of cutoff, q and gain over 20 ms (960 frames at 48 kHz), with the param ramp kernel's arithmetic
+// (target − inc·rem: within a few ulp of its line), held before and after.
+struct Ramp {
+  const char* name;
+  float from[3], to[3];
+};
+constexpr Ramp kRamps[] = {
+    {"fc 100 -> 10k", {100, 0.7071f, 4}, {10000, 0.7071f, 4}},
+    {"fc 10k -> 100", {10000, 0.7071f, 4}, {100, 0.7071f, 4}},
+    {"fc 20 -> 20k", {20, 0.7071f, 4}, {20000, 0.7071f, 4}},
+    {"fc 20k -> 20", {20000, 0.7071f, 4}, {20, 0.7071f, 4}},
+    {"fc 1k -> 1.2k", {1000, 0.7071f, 4}, {1200, 0.7071f, 4}},
+    {"q 0.5 -> 10 at 1k", {1000, 0.5f, 4}, {1000, 10, 4}},
+    {"gain -18 -> +18 dB at 1k", {1000, 0.7071f, 0.1259f}, {1000, 0.7071f, 7.943f}},
+    {"gain +18 -> -18 dB at 200", {200, 2.0f, 7.943f}, {200, 2.0f, 0.1259f}},
+    {"all three", {300, 0.5f, 0.5f}, {5000, 3.0f, 3.0f}},
+};
+constexpr uint32_t kPre = 128, kRampLen = 960, kPost = 512, kRun = kPre + kRampLen + kPost;
+
+float rampAt(const Ramp& r, uint32_t i, uint32_t t) {
+  if (t < kPre) return r.from[i];
+  const float inc = (r.to[i] - r.from[i]) / static_cast<float>(kRampLen);
+  const float rem = static_cast<float>(kPre + kRampLen - 1) - static_cast<float>(t);
+  return rem > 0.0f ? r.to[i] - inc * rem : r.to[i];
+}
+
+// The kernel on 1 or 8 lanes (lane l: ramp ramps[l]), cutoff / q / gain Blk, in calls of 64 frames; per lane outputs.
+std::vector<std::vector<float>> runRamps(const Filt& f, const std::vector<const Ramp*>& ramps, const std::vector<float>& x) {
+  const uint32_t lanes = static_cast<uint32_t>(ramps.size());
+  Rig r(lanes, 64);
+  r.setPatterns({f});
+  std::vector<std::vector<float>> out(lanes);
+  for (uint32_t t0 = 0; t0 < kRun; t0 += 64) {
+    const uint32_t n = std::min<uint32_t>(64, kRun - t0);
+    for (uint32_t t = 0; t < n; ++t)
+      for (uint32_t l = 0; l < lanes; ++l) {
+        r.in[0][t * lanes + l] = x[t0 + t];
+        for (uint32_t i = 0; i < 3; ++i) r.in[1 + i][t * lanes + l] = rampAt(*ramps[l], i, t0 + t);
+      }
+    r.call(n, 0x70u);
+    for (uint32_t t = 0; t < n; ++t)
+      for (uint32_t l = 0; l < lanes; ++l) out[l].push_back(r.out[t * lanes + l]);
+  }
+  return out;
+}
+
+// The reference: a design per frame (svfDesign of that frame's inputs, the kernel's float coefficients), run in double.
+std::vector<double> perFrameDesign(const Filt& f, const Ramp& ramp, const std::vector<float>& x) {
+  std::vector<double> y;
+  std::vector<double> ic(2 * kSvfMaxStages, 0.0);
+  std::vector<SvfSection> s(kSvfMaxStages);
+  for (uint32_t t = 0; t < kRun; ++t) {
+    Filt g = f;
+    g.cutoff = rampAt(ramp, 0, t);
+    g.q = rampAt(ramp, 1, t);
+    g.gain = rampAt(ramp, 2, t);
+    const uint32_t n = svfDesign(g.params(), s.data());
+    double v = x[t];
+    for (uint32_t k = 0; k < n; ++k) {
+      const SvfKernelCoefs c = svfKernelCoefs(s[k]);
+      double& i1 = ic[2 * k];
+      double& i2 = ic[2 * k + 1];
+      const double w = v - i2;
+      const double n1 = c.b1 * w + (c.d1 * i1 + i1), n2 = c.b2 * w + (c.b1 * i1 + i2);
+      v = c.h1 * (i1 + n1) + (c.h2 * (i2 + n2) + c.m0 * v);
+      i1 = n1;
+      i2 = n2;
+    }
+    y.push_back(v);
+  }
+  return y;
+}
+
+}  // namespace
+
+TEST_CASE("svf (EQ.1b): 20 ms param ramps follow a design per frame within -90 dB, no clicks (every mode, 1 / 8 "
+          "stages, both prewarps); 8 lanes = 1 lane bit for bit") {
+  pq::DenormalGuard dg;
+  std::mt19937 rng(11);
+  std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+  std::vector<float> x(kRun);
+  for (float& v : x) v = u(rng);
+  double worstAll = -300.0;
+  std::string worstWhere;
+  for (uint32_t mode = 0; mode < kSvfModeCount; ++mode)
+    for (uint32_t stages : {1u, 8u})
+      for (uint32_t prewarp : {0u, 1u}) {
+        const auto m = static_cast<SvfMode>(mode);
+        if ((m == SvfMode::Bell || m == SvfMode::Notch) && stages > 1) continue;
+        if (prewarp == 1 && stages > 1) continue;
+        Filt f;
+        f.mode = mode;
+        f.stages = stages;
+        f.prewarp = prewarp;
+        std::vector<const Ramp*> all;
+        for (const Ramp& r : kRamps) all.push_back(&r);
+        const std::vector<const Ramp*> eight(all.begin(), all.begin() + 8);
+        const auto got8 = runRamps(f, eight, x);
+        for (size_t k = 0; k < all.size(); ++k) {
+          const Ramp& r = *all[k];
+          INFO(std::string(kModeNames[mode]) << " stages " << stages << (prewarp ? " bilinear " : " matched ") << r.name);
+          const std::vector<float> got = runRamps(f, {&r}, x)[0];
+          if (k < 8) CHECK(std::memcmp(got.data(), got8[k].data(), got.size() * 4) == 0);
+          const std::vector<double> want = perFrameDesign(f, r, x);
+          double e2 = 0.0, r2 = 0.0, emax = 0.0, rmax = 0.0;
+          for (uint32_t t = 0; t < kRun; ++t) {
+            const double d = got[t] - want[t];
+            e2 += d * d;
+            r2 += want[t] * want[t];
+            emax = std::max(emax, std::fabs(d));
+            rmax = std::max(rmax, std::fabs(want[t]));
+          }
+          const double db = 10.0 * std::log10(e2 / r2 + 1e-300);
+          if (db > worstAll) {
+            worstAll = db;
+            worstWhere = std::string(kModeNames[mode]) + " s" + std::to_string(stages) + (prewarp ? " bil " : " mat ") + r.name;
+          }
+          CHECK(db <= -90.0);
+          CHECK(emax <= 1e-4 * rmax);  // no click: the largest deviation is far below the signal
+        }
+      }
+  MESSAGE("ramps vs a design per frame: worst " << worstAll << " dB (" << worstWhere << ")");
+}
+
+TEST_CASE("svf (EQ.1b): eight lanes on the same ramp are each the 1-lane filter (one design for the group)") {
+  pq::DenormalGuard dg;
+  std::mt19937 rng(12);
+  std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+  std::vector<float> x(kRun);
+  for (float& v : x) v = u(rng);
+  for (uint32_t mode : {0u, 5u}) {
+    Filt f;
+    f.mode = mode;
+    f.stages = 4;
+    for (size_t k : {size_t{4}, size_t{8}}) {
+      const Ramp& r = kRamps[k];
+      INFO(std::string(kModeNames[mode]) << " " << r.name);
+      const std::vector<float> one = runRamps(f, {&r}, x)[0];
+      const auto eight = runRamps(f, std::vector<const Ramp*>(8, &r), x);
+      for (uint32_t l = 0; l < 8; ++l) CHECK(std::memcmp(one.data(), eight[l].data(), one.size() * 4) == 0);
+    }
+  }
+}
+
+TEST_CASE("svf (EQ.1b): after a ramp (and with gain ramped on a mode without a gain) the filter runs its exact design") {
+  pq::DenormalGuard dg;
+  for (uint32_t lanes : {1u, 8u})
+    for (uint32_t mode : {0u, 4u, 5u, 6u}) {
+      INFO("lanes " << lanes << " " << std::string(kModeNames[mode]));
+      const Filt target = filt(mode, mode == 4 ? 1 : 6, 0, 2400.0f);
+      // A: ramps from 300 Hz (and half the gain) to the target, its inputs Blk throughout (held after the ramp);
+      // B: the target as a pattern from the start.
+      Rig a(lanes, 64), b(lanes, 64);
+      a.setPatterns({target});
+      b.setPatterns({target});
+      std::mt19937 rng(13);
+      std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+      auto block = [&](uint32_t t0, bool noise) {
+        for (uint32_t t = 0; t < 64; ++t) {
+          const float frac = std::min(1.0f, static_cast<float>(t0 + t) / 960.0f);
+          for (uint32_t l = 0; l < lanes; ++l) {
+            const float xv = noise ? u(rng) : 0.0f;
+            a.in[0][t * lanes + l] = xv;
+            b.in[0][t * lanes + l] = xv;
+            a.in[1][t * lanes + l] = 300.0f + (target.cutoff - 300.0f) * frac;
+            a.in[2][t * lanes + l] = target.q;
+            // a lowpass ignores its gain: ramped all the time here, it must not move the filter
+            a.in[3][t * lanes + l] = mode == 0 ? 0.5f + 0.001f * static_cast<float>(t0 + t)
+                                               : target.gain * (0.5f + 0.5f * frac);
+          }
+        }
+        a.call(64, 0x70u);
+        b.call(64, kAllSpl);
+      };
+      uint32_t t0 = 0;
+      for (; t0 < 1600; t0 += 64) block(t0, true);
+      // Silence until both have decayed to exactly 0 (FTZ), then the same noise: the same bits iff the same coefficients.
+      for (int k = 0; k < 2000; ++k, t0 += 64) {
+        block(t0, false);
+        if (decayStateSmall(Atom::Svf, a.state.data(), 0.0f) && decayStateSmall(Atom::Svf, b.state.data(), 0.0f)) break;
+      }
+      REQUIRE(decayStateSmall(Atom::Svf, a.state.data(), 0.0f));
+      REQUIRE(decayStateSmall(Atom::Svf, b.state.data(), 0.0f));
+      bool same = true;
+      for (int k = 0; k < 8; ++k, t0 += 64) {
+        block(t0, true);
+        same = same && std::memcmp(a.out.data(), b.out.data(), static_cast<size_t>(64) * lanes * 4) == 0;
+      }
+      CHECK(same);
+    }
+}
+
+TEST_CASE("svf (EQ.1b): the state is sized by its sections; a state holds what it was sized for and no more") {
+  StateInit init;
+  init.svfSections = 1;
+  init.lanes = 1;
+  CHECK(stateBytes(Atom::Svf, init) <= 1024);
+  CHECK(stateBytes(Atom::Svf, init) == kSvfHeaderBytes + 96);  // 22 fields of 4 bytes, rounded to 32
+  init.lanes = 8;
+  CHECK(stateBytes(Atom::Svf, init) == kSvfHeaderBytes + kSvfFields * 32);
+  init.svfSections = 64;
+  CHECK(stateBytes(Atom::Svf, init) == sizeof(SvfState));
+  init.svfSections = 0;  // clamped to 1 … 64
+  CHECK(stateBytes(Atom::Svf, init) == kSvfHeaderBytes + kSvfFields * 32);
+  // A 2-section state: a 2-stage lowpass in it is its design; a 64-stage const runs its first 2 sections and never
+  // writes past the state (param and audio rate).
+  pq::DenormalGuard dg;
+  for (uint32_t lanes : {1u, 8u}) {
+    INFO("lanes " << lanes);
+    StateInit si;
+    si.lanes = lanes;
+    si.svfSections = 2;
+    const size_t bytes = stateBytes(Atom::Svf, si);
+    pq::AlignedBuffer<uint8_t> mem(bytes + 256);
+    std::memset(mem.data() + bytes, 0xA5, 256);
+    initState(Atom::Svf, mem.data(), si);
+    Rig r(lanes, 64);
+    for (uint32_t stages : {2u, 64u}) {
+      r.setPatterns({filt(0, stages, 0, 1000.0f)});
+      for (uint32_t i = 0; i < 64 * 8; ++i) {
+        r.in[0][i] = std::sin(0.05f * static_cast<float>(i));
+        r.in[1][i] = 900.0f + static_cast<float>(i);  // audio rate: the segment fields too
+      }
+      if (stages == 2) {  // the impulse response of the sized state = svfResponse
+        Rig full(lanes, 64);  // the full-size state, the same inputs
+        for (uint32_t k = 0; k < 7; ++k)
+          for (uint32_t i = 0; i < 64 * 8; ++i) full.in[k][i] = r.in[k][i];
+        full.call(64, kAllSpl);
+        const float* ins[7];
+        for (uint32_t i = 0; i < 7; ++i) ins[i] = r.in[i].data();
+        float* outs[1] = {r.out.data()};
+        const KernelArgs ka{ins, outs, mem.data(), nullptr, 64, 7, 1, kAllSpl};
+        findKernel(Atom::Svf, lanes, kAllSpl)(ka);
+        CHECK(std::memcmp(full.out.data(), r.out.data(), static_cast<size_t>(64) * lanes * 4) == 0);
+      }
+      const float* ins[7];
+      for (uint32_t i = 0; i < 7; ++i) ins[i] = r.in[i].data();
+      float* outs[1] = {r.out.data()};
+      for (uint32_t spl : {kAllSpl, 0x7Cu}) {
+        const KernelArgs ka{ins, outs, mem.data(), nullptr, 64, 7, 1, spl};
+        findKernel(Atom::Svf, lanes, spl)(ka);
+      }
+      bool finite = true;
+      for (uint32_t i = 0; i < 64 * lanes; ++i) finite = finite && std::isfinite(r.out[i]);
+      CHECK(finite);
+    }
+    bool canary = true;
+    for (size_t i = 0; i < 256; ++i) canary = canary && mem[bytes + i] == 0xA5;
+    CHECK(canary);
+  }
+}
+
+TEST_CASE("svf (EQ.1b): no allocation on the ramp, lane-follow and held-block paths (1 and 8 lanes)") {
+  pq::DenormalGuard dg;
+  uint64_t violations = 0;
+  for (uint32_t lanes : {1u, 8u})
+    for (uint32_t mode : {0u, 5u}) {
+      Rig r(lanes, 64);
+      r.setPatterns({filt(mode, 8, 0, 1000.0f)});
+      violations += pq::alloc_trap::countRtViolations([&] {
+        for (uint32_t t0 = 0; t0 + 64 <= kRun; t0 += 64) {  // a ramp (segments; 8 lanes on one ramp: followed), held
+          for (uint32_t t = 0; t < 64; ++t)
+            for (uint32_t l = 0; l < lanes; ++l) {
+              r.in[0][t * lanes + l] = 0.25f;
+              for (uint32_t i = 0; i < 3; ++i) r.in[1 + i][t * lanes + l] = rampAt(kRamps[8], i, t0 + t);
+            }
+          r.call(64, 0x70u);
+        }
+      });
+    }
+  CHECK(violations == 0);
+}

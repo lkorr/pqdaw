@@ -352,21 +352,67 @@ SvfKernelCoefs svfKernelCoefs(const SvfSection& s) noexcept {
   return c;
 }
 
-std::complex<double> svfSectionResponse(const SvfKernelCoefs& c, double omega) noexcept {
+SvfSectionPoly svfSectionPoly(const SvfKernelCoefs& c) noexcept {
   const double d1 = c.d1, b1 = c.b1, b2 = c.b2, m0 = c.m0, h1 = c.h1, h2 = c.h2;
-  const double sh = std::sin(0.5 * omega);
-  const cd zm1(-2.0 * sh * sh, std::sin(omega));  // z − 1 without cancellation
-  const cd det = (zm1 - d1) * (zm1 + b2) + b1 * b1;
-  const cd s1 = b1 * zm1 / det;
-  const cd s2 = (b1 * b1 + (zm1 - d1) * b2) / det;
   const double C1 = h1 * (2.0 + d1) + h2 * b1, C2 = -h1 * b1 + h2 * (2.0 - b2), D = m0 + h1 * b1 + h2 * b2;
-  return D + C1 * s1 + C2 * s2;
+  SvfSectionPoly p{};
+  // det = u² + (b2 − d1)·u + (b1² − d1·b2) (each a sum of non-negative terms for a stable section: d1 ≤ 0 ≤ b1, b2);
+  // H·det = D·det + C1·b1·u + C2·(b1² − d1·b2 + b2·u).
+  p.e1 = b2 - d1;
+  p.e0 = b1 * b1 - d1 * b2;
+  p.n2 = D;
+  p.n1 = D * p.e1 + C1 * b1 + C2 * b2;
+  p.n0 = (D + C2) * p.e0;
+  return p;
+}
+
+std::complex<double> svfEjwMinus1(double omega) noexcept {
+  const double sh = std::sin(0.5 * omega);
+  return {-2.0 * sh * sh, std::sin(omega)};
+}
+
+std::complex<double> svfCascadeResponse(const SvfSectionPoly* sections, uint32_t count, double omega) noexcept {
+  return svfCascadeResponseAt(sections, count, svfEjwMinus1(omega));
+}
+
+namespace {
+// a / b as a·conj(b) / |b|² (|b|² stays in range: b is a product of at most 8 denominators). std::complex's division
+// guards against overflow at several times the cost.
+cd quotient(cd a, cd b) noexcept {
+  const double r = 1.0 / (b.real() * b.real() + b.imag() * b.imag());
+  return {(a.real() * b.real() + a.imag() * b.imag()) * r, (a.imag() * b.real() - a.real() * b.imag()) * r};
+}
+}  // namespace
+
+std::complex<double> svfCascadeResponseAt(const SvfSectionPoly* sections, uint32_t count, std::complex<double> u) noexcept {
+  const cd u2 = u * u;
+  cd h(1.0, 0.0), num(1.0, 0.0), den(1.0, 0.0);
+  for (uint32_t k = 0; k < count; ++k) {
+    const SvfSectionPoly& p = sections[k];
+    if (p.e1 == 0.0 && p.e0 == 0.0) {  // no recursion: a constant
+      num *= p.n2;
+      continue;
+    }
+    num *= p.n2 * u2 + p.n1 * u + p.n0;
+    den *= u2 + p.e1 * u + p.e0;
+    if ((k & 7u) == 7u) {  // keep the products in range (a deep cascade's denominators reach 1e−6 each near DC)
+      h *= quotient(num, den);
+      num = den = cd(1.0, 0.0);
+    }
+  }
+  return h * quotient(num, den);
+}
+
+std::complex<double> svfSectionResponse(const SvfKernelCoefs& c, double omega) noexcept {
+  const SvfSectionPoly p = svfSectionPoly(c);
+  return svfCascadeResponse(&p, 1, omega);
 }
 
 std::complex<double> svfResponse(std::span<const SvfSection> sections, double omega) noexcept {
-  cd h(1.0, 0.0);
-  for (const SvfSection& s : sections) h *= svfSectionResponse(svfKernelCoefs(s), omega);
-  return h;
+  SvfSectionPoly p[kSvfMaxStages];
+  const uint32_t n = static_cast<uint32_t>(std::min<size_t>(sections.size(), kSvfMaxStages));
+  for (uint32_t k = 0; k < n; ++k) p[k] = svfSectionPoly(svfKernelCoefs(sections[k]));
+  return svfCascadeResponse(p, n, omega);
 }
 
 std::complex<double> svfResponse(const SvfParams& p, double omega) noexcept {

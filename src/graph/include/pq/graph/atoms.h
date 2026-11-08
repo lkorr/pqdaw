@@ -76,6 +76,8 @@ struct AtomSignature {
   // EQ.2: the small-signal response at one frequency (pq/graph/response_rule.h); null: nonlinear, no rule (a response
   // through this atom is Unavailable).
   ResponseRule response = nullptr;
+  // EQ.1b: bytes of scratch the response rule keeps between the calls of one evaluation (ResponseArgs::cache).
+  uint32_t responseCacheBytes = 0;
 
   bool has(uint32_t flag) const noexcept { return (flags & flag) != 0; }
   // Number of fixed (non-repeating) input/output ports.

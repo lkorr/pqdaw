@@ -4,6 +4,8 @@
 //                               Blk/Spl combination, random finite coefficients);
 //   Memory                      after silenceTail() frames of silent input, from any history, the outputs are ±0
 //                               and the history it keeps is too (the split read halves: from the write's history);
+//                               a decaying state (svf, EQ.1b: dsp::hasDecayState) instead decays under silence until
+//                               decayStateSmall(ε), and once flushed the outputs are ±0;
 //   Smoother                    with silent signal inputs the output is ±0 whatever the residual; a settled state
 //                               (residual exactly 0) stays bit for bit unchanged while target and time do.
 #include <doctest/doctest.h>
@@ -48,6 +50,15 @@ float coefficient(Atom atom, uint32_t i, const pq::dsp::KernelInfo& info, std::m
     case Atom::DelayReadLinear:
     case Atom::DelayReadCubic:
     case Atom::DelayReadAllpass: return std::uniform_real_distribution<float>(1.0f, 40.0f)(rng);  // delay time
+    case Atom::Svf:  // cutoff, q, gain, mode, stages, prewarp: a filter that decays in well under a second
+      switch (i) {
+        case 1: return std::uniform_real_distribution<float>(200.0f, 5000.0f)(rng);
+        case 2: return std::uniform_real_distribution<float>(0.5f, 4.0f)(rng);
+        case 3: return std::uniform_real_distribution<float>(0.25f, 4.0f)(rng);
+        case 4: return static_cast<float>(std::uniform_int_distribution<int>(0, 7)(rng));
+        case 5: return static_cast<float>(std::uniform_int_distribution<int>(1, 20)(rng));  // 17+: the double states
+        default: return coin(rng) ? 1.0f : 0.0f;
+      }
     case Atom::Gain:
     case Atom::GainAdd:
       if (i == (atom == Atom::Gain ? 2u : 3u)) return std::uniform_real_distribution<float>(0.0f, 200.0f)(rng);  // time
@@ -171,6 +182,29 @@ TEST_CASE("dsp silence: every declaration holds for its kernel (T1.x-silence)") 
               return i == 0 ? ((winfo.boolIn & 1u) ? pq::dsp::boolMask(u(rng) > 0.0f) : u(rng)) : coefficient(writer, i, winfo, rng);
             });
             const uint32_t tail = pq::dsp::silenceTail(atom, init);
+            if (pq::dsp::hasDecayState(atom)) {
+              // Decays under silence (any coefficients, held: a design per frame would make this slow) until ≤ ε, then
+              // the host flushes it.
+              CHECK(tail == 0);
+              std::vector<float> fixedIn(numIn);
+              for (uint32_t i = 1; i < numIn; ++i) fixedIn[i] = coefficient(atom, i, info, rng);
+              auto in = [&](uint32_t i, uint32_t, uint32_t) { return i == 0 ? silentValue(rng) : fixedIn[i]; };
+              bool small = false;
+              for (uint32_t b = 0; b < 4096 && !small; ++b) {
+                runKernel(k, state.data(), 64, r, in);
+                small = pq::dsp::decayStateSmall(atom, state.data(), 9.313225746154785e-10f);
+              }
+              REQUIRE(small);
+              pq::dsp::decayStateFlush(atom, state.data());
+              CHECK(pq::dsp::decayStateSmall(atom, state.data(), 0.0f));
+              runKernel(k, state.data(), 29, r, in);
+              for (uint32_t o = 0; o < numOut; ++o)
+                for (uint32_t x = 0; x < 29 * lanes; ++x) {
+                  INFO("output " << o << ", element " << x << " = " << r.out[o][x]);
+                  REQUIRE(silent(r.out[o][x]));
+                }
+              continue;
+            }
             CHECK(tail >= 1);
             runKernel(w, state.data(), tail, r, [&](uint32_t i, uint32_t, uint32_t) {
               return i == 0 ? silentValue(rng) : coefficient(writer, i, winfo, rng);

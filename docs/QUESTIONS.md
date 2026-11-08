@@ -390,4 +390,21 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   document and dispatches through the store (a refusal: a notice, false).
 - **Strip relayout**: the ops rebuild only the elements tagged `eq: strip` (the user's own additions to the EQ panel
   stay; edits to the strip columns themselves are replaced on the next band op).
+
+## Q?-EQ.1b-a · svf ramp segments: the error budget, the curved audio-rate case, the 64-section state size
+- **Ramps**: coefficients follow the quadratic through designs now, half a segment and a segment ahead on the inputs'
+  line (≤ 32 frames, the relative step of tan(π·fc/sr), q, gain ≤ 0.1 per segment). Measured against a design per
+  frame on 20 ms sweeps (20 Hz ↔ 20 kHz, q 0.5 → 10, ±18 dB gain, all three at once; every mode, 1 and 8 stages): worst
+  −93.8 dB, no frame off by more than 1e−4 of the signal's peak (test: ≤ −90 dB). Linear interpolation needed a step
+  bound of 0.007 for −80 dB (≈ 7× the designs); a segment through 0 dB (where a bell / shelf is the identity, a form
+  without recursion) cost −66 dB, so segments stop a frame short of it and start only off it. Alternatives: a tighter
+  step bound (more designs) or linear interpolation over shorter segments.
+- **Curved audio-rate inputs** (an LFO or audio wire into cutoff) still design per frame, exactly: matched lowpass s1
+  ≈ 120 ns/sample, matched low shelf ≈ 530 (the per-frame bookkeeping added 5–15 % there). Not done: a vectorised float
+  design across lanes, or segments that predict curvature (a second difference estimated from float inputs is too noisy
+  for the 2e−6 line test: segments would break after ~4 frames). Chosen for now: exact per-frame designs; bilinear stays
+  the cheaper prewarp for audio-rate sweeps.
+- **State size**: sized by the sections (896 B for a 1-section mono filter, was 24.8 KiB), but a section now holds
+  22 fields (the 12 forward differences of a ramp), so 64 sections of a voice group are 44.8 KiB (was 24.8).
+  Alternative: keep the differences in a per-call scratch (they must survive calls: a ramp spans many blocks).
 - Status: open (provisional choices above).

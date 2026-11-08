@@ -259,6 +259,7 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
   // ---- cells and terms ----
   std::vector<std::pair<uint32_t, Term>> edges;  // (unknown, term)
   uint32_t argCount = 0;
+  size_t cacheCount = 0;  // doubles
   gain_.assign(1, Cx{});  // gain_[0]: z at the current point (the z1 terms read it)
   for (NodeIndex n = 0; n < nodes; ++n) {
     if (relNode[n] == 0) continue;
@@ -295,6 +296,8 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
       gain_.resize(gain_.size() + static_cast<size_t>(node.numOutputs) * node.numInputs);
       cell.argBase = argCount;
       argCount += node.numInputs;
+      cell.cacheBase = static_cast<uint32_t>(cacheCount);  // EQ.1b: the rule's scratch for one evaluate
+      cacheCount += (s.responseCacheBytes + sizeof(double) - 1) / sizeof(double);
       // CPU: z1 is the commonest atom whose gain depends on the frequency; its term reads the one shared slot that
       // holds z (set once per point) instead of calling the rule per point.
       cell.zOnly = s.response == &rules::z1;
@@ -395,6 +398,7 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
   mat_.assign(static_cast<size_t>(maxLoop) * (maxLoop + srcWidth_), Cx{});
   dynamicCells_.assign(cells_.size(), 0);
   argValue_.assign(argCount, 0.0f);
+  cache_.assign(cacheCount, 0.0);
   argKnown_.assign(argCount, 0);
   argSignal_.assign(argCount, 0);
   curve_.resize(curveNode_.size());
@@ -484,15 +488,16 @@ ResponseKind LinearResponse::firstCall(uint32_t c, double omega, Cx z, double sa
     argValue_[cell.argBase + i] = known && s.toSamples != 0 ? static_cast<float>(v * sampleRate) : v;
   }
   std::fill_n(gain_.data() + cell.gainBase, static_cast<size_t>(cell.numOutputs) * cell.inCount, Cx{});
-  return recall(c, omega, z, sampleRate, dynamic);
+  return recall(c, omega, z, sampleRate, dynamic, true);
 }
 
-ResponseKind LinearResponse::recall(uint32_t c, double omega, Cx z, double sampleRate, bool& dynamic) noexcept {
+ResponseKind LinearResponse::recall(uint32_t c, double omega, Cx z, double sampleRate, bool& dynamic, bool fresh) noexcept {
   const Cell& cell = cells_[c];
   Cx* g = gain_.data() + cell.gainBase;
   ResponseArgs a;
   a.omega = omega;
   a.z = z;
+  a.ejw1 = omega == ejw1Omega_ ? ejw1_ : dsp::svfEjwMinus1(omega);
   a.sampleRate = sampleRate;
   a.numInputs = cell.inCount;
   a.numOutputs = cell.numOutputs;
@@ -500,6 +505,8 @@ ResponseKind LinearResponse::recall(uint32_t c, double omega, Cx z, double sampl
   a.known = argKnown_.data() + cell.argBase;
   a.signal = argSignal_.data() + cell.argBase;
   a.gain = g;
+  a.cache = cache_.data() + cell.cacheBase;
+  a.fresh = fresh;
   const ResponseKind k = cell.rule(a);
   dynamic = a.dependsOnOmega;
   return k;
@@ -656,6 +663,8 @@ ResponseKind LinearResponse::evaluate(std::span<const double> hz, double sampleR
   dynamicCount_ = 0;
   const double w0 = hz[0] * toOmega;
   const Cx z0 = std::polar(1.0, -w0);
+  ejw1Omega_ = w0;
+  ejw1_ = dsp::svfEjwMinus1(w0);
   for (uint32_t c = 0; c < cells_.size(); ++c) {
     bool dyn = false;
     status = worse(status, firstCall(c, w0, z0, sampleRate, dyn));
@@ -675,6 +684,10 @@ ResponseKind LinearResponse::evaluate(std::span<const double> hz, double sampleR
       const uint32_t k = first + std::min(p, count - 1u);  // a partial batch repeats its last point
       const double w = hz[k] * toOmega;
       const Cx z = k == 0 ? z0 : std::polar(1.0, -w);
+      if (dynamicCount_ != 0 && w != ejw1Omega_) {  // e^jω − 1 once per point (the filters' rules share it)
+        ejw1Omega_ = w;
+        ejw1_ = dsp::svfEjwMinus1(w);
+      }
       gainRe_[p] = z.real();  // slot 0: z (the z1 terms)
       gainIm_[p] = z.imag();
       bool dyn = false;

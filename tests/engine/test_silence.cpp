@@ -170,3 +170,42 @@ TEST_CASE("silence: corpus — skipped regions would have produced zeros, sleepi
   CHECK(planned >= 40);
   CHECK(slept >= 30);
 }
+
+TEST_CASE("silence: an svf (EQ.1b) sleeps once its states decay below ε, wakes sample-accurately, a cutoff move while "
+          "asleep does not wake it") {
+  // A 4-section matched low shelf and a resonant bell in series; the cutoff param moves while the input is silent.
+  const interp_test::Compiled c = interp_test::compileText(R"(
+patch Eq {
+  in    x : audio
+  param fc = 800 [20..20000]
+  out   y : audio
+  s = svf(x, fc, 0.7, 2, 5, 4, 0)
+  y = svf(s, 3000, 4, 0.5, 4, 1, 0)
+}
+)");
+  REQUIRE(c.sched.sleep.segments.size() == 1);
+  uint32_t decays = 0;
+  for (const SleepState& st : c.sched.sleep.states) decays += st.kind == SleepStateKind::Decay ? 1u : 0u;
+  CHECK(decays == 2);
+  auto params = [](uint64_t t, std::vector<float>& p) { p[0] = t < 30000 ? 800.0f : 2500.0f; };
+  const std::vector<uint32_t> blocks{64, 37, 1, 100, 13};
+  const Run on = run(c, eng::SleepMode::On, burst(), 130000, blocks, interp_test::rigImageBuilder(), params);
+  const Run shadow = run(c, eng::SleepMode::Shadow, burst(), 130000, blocks, interp_test::rigImageBuilder(), params);
+  const Run off = run(c, eng::SleepMode::Off, burst(), 130000, blocks, interp_test::rigImageBuilder(), params);
+  REQUIRE(on.error.empty());
+  REQUIRE(shadow.error.empty());
+  CHECK(on.stats.sleeps >= 2);  // after each burst
+  CHECK(on.stats.wakes >= 1);   // at the resume, not at the cutoff move (a coefficient)
+  CHECK(on.stats.asleepBlocks > 500);
+  CHECK(shadow.stats.violations == 0);
+  std::string where;
+  CHECK_MESSAGE(sameValues(on, shadow, where), where);
+  const uint64_t first = firstSleepFrame(on);
+  REQUIRE(first < 30000);  // asleep well before the cutoff moves
+  for (uint64_t t = 0; t < first; ++t) REQUIRE(on.out[0][t] == off.out[0][t]);
+  CHECK(on.out[0][kResume] != 0.0f);
+  const double d = maxAbsDiff(on, off);
+  MESSAGE("svf chain: first sleep at frame " << first << ", max |sleeping - never sleeping| " << d);
+  CHECK(d <= 4e-6);
+  CHECK(on.rtViolations == 0);
+}

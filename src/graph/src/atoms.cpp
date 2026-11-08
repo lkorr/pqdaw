@@ -262,9 +262,10 @@ const AtomSignature kAtoms[] = {
     {"latch", C::Memory, pLatch, pOutAny, sizeof(dsp::LatchState), kStateful, 0, {},
      "x while enable, else the last value"},
     // EQ.1: the filter / EQ core (a band's circuit, docs/plans/EQ.md).
-    {"svf", C::Memory, pSvf, pOutRAudio, sizeof(dsp::SvfState), kStateful | kBroadcast, 0, {},
+    // EQ.1b: the state is sized by the sections its mode / stages give (the header here; the scheduler adds them).
+    {"svf", C::Memory, pSvf, pOutRAudio, dsp::kSvfHeaderBytes, kStateful | kVariableState | kBroadcast, 0, {},
      "state-variable filter cascade: mode (lp hp bp notch bell lowshelf highshelf allpass), stages 1..64, matched "
-     "or bilinear prewarp", rules::svf},
+     "or bilinear prewarp", rules::svf, sizeof(rules::SvfRuleCache)},
 
     // Logic. Comparators (real → bool): < <= > >= == != map to lt le gt ge eq ne; && || ^^ ! map to and or xor not.
     {"lt", C::Logic, pAB, pOutB, 0, kMath, 0, {}, "a < b"},

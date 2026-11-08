@@ -3,6 +3,9 @@
 // EQ.2: the response rules of the registry's atoms (pq/graph/response_rule.h). The table in atoms.cpp names them as the
 // last field of an atom's entry. Each is RT-safe (no allocation; pure arithmetic).
 
+#include <cstdint>
+
+#include "pq/dsp/svf_design.h"
 #include "pq/graph/response_rule.h"
 
 namespace pq::graph::rules {
@@ -26,6 +29,12 @@ ResponseKind delayAllpass(ResponseArgs& a) noexcept;  // z^n (c + z) / (1 + c z)
 ResponseKind gain(ResponseArgs& a) noexcept;      // x · g, settled
 ResponseKind gainAdd(ResponseArgs& a) noexcept;   // acc + x · g, settled
 ResponseKind svf(ResponseArgs& a) noexcept;       // EQ.1: dsp::svfResponse of the kernel's design (consts, params known)
+// EQ.1b: the svf rule's cache (ResponseArgs::cache): its design, once per evaluation, as the sections' ω-independent
+// polynomials (dsp::svfSectionPoly of the kernel's coefficients).
+struct SvfRuleCache {
+  uint32_t count;
+  dsp::SvfSectionPoly polys[dsp::kSvfMaxStages];
+};
 // Nonlinear atoms with a slope at 0 (Approximate).
 ResponseKind slopeOne(ResponseArgs& a) noexcept;  // tanh, fast_tanh, sin, fast_sin: slope 1 at 0
 ResponseKind clip(ResponseArgs& a) noexcept;      // clamp(x, lo, hi): 1 when lo < 0 < hi, else 0

@@ -103,8 +103,23 @@ SvfKernelCoefs svfKernelCoefs(const SvfSection& s) noexcept;
 
 // Exact H(e^jω) of one section as the kernel runs it (its float coefficients, evaluated in double through the state
 // space of the recursion above), and of a cascade (the product). ω in radians per sample. RT-safe.
+// EQ.1b: through the ω-independent form below (svfSectionPoly), so a response evaluator that keeps a design's polys
+// (graph's svf rule) computes exactly these values.
 std::complex<double> svfSectionResponse(const SvfKernelCoefs& c, double omega) noexcept;
 std::complex<double> svfResponse(std::span<const SvfSection> sections, double omega) noexcept;
+
+// A section's H as a ratio of quadratics in u = z − 1 (no cancellation near DC): H = (n2·u² + n1·u + n0) / (u² + e1·u
+// + e0), from the state space of the recursion (H = D + C1·s1 + C2·s2 over det = (u − d1)(u + b2) + b1²); a section
+// without recursion (the identity, a plain gain) is the constant n2 (e1 = e0 = 0). RT-safe.
+struct SvfSectionPoly {
+  double n2, n1, n0, e1, e0;
+};
+SvfSectionPoly svfSectionPoly(const SvfKernelCoefs& c) noexcept;
+// The cascade's H at ω: the product of the sections' numerators and denominators, divided every 8 sections. RT-safe.
+std::complex<double> svfCascadeResponse(const SvfSectionPoly* sections, uint32_t count, double omega) noexcept;
+// The same given u = e^jω − 1 as svfEjwMinus1(ω) computes it (an evaluator shares it between its filters). RT-safe.
+std::complex<double> svfEjwMinus1(double omega) noexcept;  // (−2·sin²(ω/2), sin ω): no cancellation near DC
+std::complex<double> svfCascadeResponseAt(const SvfSectionPoly* sections, uint32_t count, std::complex<double> u) noexcept;
 // The same for a whole design from its parameters (designs into a stack array: ~3.5 KiB). RT-safe.
 std::complex<double> svfResponse(const SvfParams& p, double omega) noexcept;
 

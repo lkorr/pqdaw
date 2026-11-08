@@ -287,7 +287,7 @@ struct StateTag {
   uint16_t kernel = 0;    // dsp::Atom of the fused kernel (split pairs use the fused atom's tag), or kSolveGuess
   uint8_t lanes = 1;
   uint8_t factor = 1;     // TMM.6: the oversample factor it runs at (a phasor's increment scale depends on it)
-  uint32_t extra = 0;     // delay lines: StateInit::maxDelayFrames (the ring size); 0 otherwise
+  uint32_t extra = 0;     // delay lines: StateInit::maxDelayFrames (the ring size); svf: StateInit::svfSections; 0 otherwise
   friend bool operator==(const StateTag&, const StateTag&) = default;
 };
 
@@ -336,7 +336,8 @@ struct StateLayout {
 //   - a segment's SOURCES are the values its Z-ness assumes silent that exist when its stage starts: root inputs,
 //     track.in / sidechain.in, and values of earlier stages (voice reducers);
 //   - its STATES are the stateful entries the host checks and flushes: memory (z1 / edge: |v| ≤ ε; a delay line: its
-//     last silenceTail() written frames ≤ ε), smoothers (residual exactly 0), settled z1s (nothing to check);
+//     last silenceTail() written frames ≤ ε; an svf: every section's states ≤ ε), smoothers (residual exactly 0),
+//     settled z1s (nothing to check);
 //   - its PARAMS are the params whose change wakes it (the K inputs of its smoothers and settled z1s).
 // Each sleepable region lists the buffers it FILLS while asleep (its values read outside its segment).
 enum class SleepStateKind : uint8_t {
@@ -344,6 +345,7 @@ enum class SleepStateKind : uint8_t {
   Delay,     // a global delay line: the last `tail` frames written ≤ ε (then flushed)
   Smoother,  // gain / gain_add: lane 0's residual exactly 0
   Settled,   // a z1 of a K value: equal to its input while the params are unchanged (not checked)
+  Decay,     // EQ.1b, an svf (dsp::hasDecayState): every state word of lane 0 ≤ ε (dsp::decayStateSmall; then flushed)
 };
 
 struct SleepState {

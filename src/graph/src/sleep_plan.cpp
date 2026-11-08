@@ -384,7 +384,9 @@ private:
     const Op& op = s_.ops[i];
     const dsp::SilenceInfo si = dsp::silenceInfo(op.kernel);
     if (si.rule == SilenceRule::Memory && Z_[i]) {
-      kind = isDelayAtom(op.kernel) ? SleepStateKind::Delay : SleepStateKind::Memory;
+      kind = isDelayAtom(op.kernel)         ? SleepStateKind::Delay
+             : dsp::hasDecayState(op.kernel) ? SleepStateKind::Decay
+                                             : SleepStateKind::Memory;
       return true;
     }
     if (op.kernel == Atom::Z1 && op.numOut == 1 && K_[valBase_[i]]) {

@@ -91,6 +91,7 @@ TEST_CASE("dsp lane state: every stateful atom declares which state bytes are pe
       CHECK(info.stateSize == sizeof(pq::dsp::DelayState));  // the VoiceEngine's delay handling knows this struct
       continue;
     }
+    if (lane.kind == LaneState::Whole) CHECK(lane.perLaneBytes == 0);  // every word of the entry, whatever its size
     CHECK(lane.perLaneBytes % (4 * kLanes) == 0);  // whole [8] arrays
     CHECK(lane.perLaneBytes <= info.stateSize);
     if (info.resource != pq::dsp::Resource::None) continue;  // needs a table; covered by the declaration checks only
@@ -98,14 +99,15 @@ TEST_CASE("dsp lane state: every stateful atom declares which state bytes are pe
     pq::dsp::StateInit init;
     init.lanes = kLanes;
     init.seed = 1234;
-    std::vector<uint32_t> s1(info.stateSize / 4);
+    // The block initState writes (stateBytes: the fixed size, or an svf's header and its default 64 sections).
+    std::vector<uint32_t> s1(pq::dsp::stateBytes(atom, init) / 4);
     {
       pq::AlignedBuffer<uint32_t> tmp(s1.size());
       pq::dsp::initState(atom, tmp.data(), init);
       std::memcpy(s1.data(), tmp.data(), s1.size() * 4);
     }
     std::mt19937 rng(77 + k);
-    const uint32_t perLaneWords = lane.perLaneBytes / 4;
+    const uint32_t perLaneWords = lane.kind == LaneState::Whole ? static_cast<uint32_t>(s1.size()) : lane.perLaneBytes / 4;
     for (int block = 0; block < 4; ++block) {
       const Inputs in = makeInputs(info, rng);
       std::vector<uint32_t> s2 = permuteLanes(s1, perLaneWords);

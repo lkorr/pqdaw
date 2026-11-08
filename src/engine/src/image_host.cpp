@@ -1129,11 +1129,15 @@ bool ImageHost::sleepLayout(const g::Schedule& s, SleepMode mode) {
       const g::StateEntry& e = s.state.entries[st.entry];
       const size_t need = st.kind == g::SleepStateKind::Delay      ? sizeof(dsp::DelayState)
                           : st.kind == g::SleepStateKind::Smoother ? sizeof(dsp::GainState)
+                          : st.kind == g::SleepStateKind::Decay    ? dsp::stateBytes(static_cast<dsp::Atom>(e.tag.kernel), e.init)
                                                                    : sizeof(float);
+      if (st.kind == g::SleepStateKind::Decay && (e.tag.lanes != 1 || !dsp::hasDecayState(static_cast<dsp::Atom>(e.tag.kernel))))
+        return fail("decaying sleep state is not a global filter");
       if (e.size < need) return fail("sleep state smaller than its kind");
       SegState ss;
       ss.ptr = globalState() + e.offset;
       ss.kind = st.kind;
+      ss.atom = e.tag.kernel;
       ss.tail = std::max<uint32_t>(st.tail, 1u);
       segStates_.push_back(ss);
     }
@@ -1224,6 +1228,9 @@ bool ImageHost::segmentQuiescent(SegRun& g) noexcept {  // RT-safe
         quiet = quiet && (std::bit_cast<uint32_t>(reinterpret_cast<const dsp::GainState*>(st.ptr)->d[0]) & 0x7FFFFFFFu) == 0;
         break;
       case g::SleepStateKind::Settled: break;
+      case g::SleepStateKind::Decay:
+        quiet = quiet && dsp::decayStateSmall(static_cast<dsp::Atom>(st.atom), st.ptr, kSleepEpsilon);
+        break;
       case g::SleepStateKind::Delay: {
         auto& d = *reinterpret_cast<dsp::DelayState*>(st.ptr);
         if (d.lanes != 1) {
@@ -1258,7 +1265,9 @@ bool ImageHost::segmentQuiescent(SegRun& g) noexcept {  // RT-safe
   if (!quiet) return false;
   for (uint32_t k = g.firstState; k < g.firstState + g.numStates; ++k) {  // flush the ≤ ε residue
     SegState& st = segStates_[k];
-    if (st.kind == g::SleepStateKind::Memory) {
+    if (st.kind == g::SleepStateKind::Decay) {
+      if (dsp::decayStateFlush(static_cast<dsp::Atom>(st.atom), st.ptr)) ++sleepStats_.flushes;  // ≤ ε → exactly 0
+    } else if (st.kind == g::SleepStateKind::Memory) {
       float& v = *reinterpret_cast<float*>(st.ptr);
       if ((std::bit_cast<uint32_t>(v) & 0x7FFFFFFFu) != 0) {
         v = 0.0f;

@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "pq/dsp/svf_design.h"
 #include "pq/graph/kernel_map.h"
 
 namespace pq::graph {
@@ -1669,6 +1670,7 @@ private:
             return;
           }
         }
+        if (m.kernel == dsp::Atom::Svf) init.svfSections = svfSectionsOf(n);  // EQ.1b: the state its consts need
         if (m.kernel == dsp::Atom::Noise)
           init.seed = static_cast<uint32_t>(mix64(tp_->stateKey[n] ^ mix64(ch))) +
                       static_cast<uint32_t>(static_cast<int64_t>(seed));
@@ -1679,7 +1681,7 @@ private:
         tag.kernel = static_cast<uint16_t>(m.kernel);
         tag.lanes = lanes;
         tag.factor = static_cast<uint8_t>(factor_[n]);
-        tag.extra = init.maxDelayFrames;
+        tag.extra = m.kernel == dsp::Atom::Svf ? init.svfSections : init.maxDelayFrames;
         // ≤ sizeof(DelayState) + kMaxDelayRingBytes after the check above, so it fits the uint32 entry size.
         stateIdx = stateEntry(n, static_cast<uint16_t>(ch), tag, static_cast<uint32_t>(dsp::stateBytes(m.kernel, init)), init,
                               lanes == 8 ? Poly::Voice : Poly::Global);
@@ -1745,6 +1747,17 @@ private:
     const double frames = u == Unit::smp ? std::ceil(v) : std::ceil(v * opt_.sampleRate * factor_[n]);
     if (!(frames >= 0) || frames > static_cast<double>(1u << 30)) return kNone;
     return static_cast<uint32_t>(frames);
+  }
+
+  // EQ.1b: the sections an svf's state holds: svfSectionCount of its mode / stages consts (the kernel's rounding and
+  // clamps, svfParamsFromInputs), or the most (64) when one is not a known constant.
+  uint32_t svfSectionsOf(NodeIndex n) const {
+    double mode = 0, stages = 0;
+    Unit u = Unit::None;
+    if (!constInputQuiet(n, 4, mode, u) || !constInputQuiet(n, 5, stages, u)) return dsp::kSvfMaxStages;
+    const dsp::SvfParams p = dsp::svfParamsFromInputs(1000.0f, 1.0f, 1.0f, static_cast<float>(mode),
+                                                      static_cast<float>(stages), 0.0f, opt_.sampleRate);
+    return dsp::svfSectionCount(p.mode, p.stages);
   }
 
   bool constInputQuiet(NodeIndex n, uint32_t i, double& v, Unit& u) const {

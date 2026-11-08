@@ -16,6 +16,7 @@
 
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
+#include "pq/dsp/svf_design.h"
 #include "pq/engine/interpreter.h"
 #include "pq/graph/infer.h"
 #include "pq/graph/optimise.h"
@@ -404,5 +405,119 @@ TEST_CASE("linear response (perf): a 32-section feed-forward chain at 1024 point
   MESSAGE("32-section chain (" << r.paramNodes().size() << " params), 1024 points: " << best << " ms per evaluate");
 #ifdef PQ_OPTIMIZED
   CHECK(best < 1.0);
+#endif
+}
+
+// ---- EQ.1b: the svf rule designs once per evaluation ------------------------------------------------------------------
+namespace {
+
+// 32 bands in series (an EQ's chain), band k a param cutoff c<k> and gain g<k>, mode and stages consts.
+struct Band {
+  float cutoff, q, gain;
+  int mode, stages;
+};
+std::vector<Band> eqBands() {
+  std::vector<Band> b;
+  // Values the patch text spells exactly (whole Hz, binary fractions), so its params are these floats.
+  constexpr float kGains[] = {0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f, 4.0f};
+  for (int k = 0; k < 32; ++k)
+    b.push_back({std::round(40.0f * std::pow(1.2f, static_cast<float>(k))), 0.5f + 0.125f * static_cast<float>(k % 7),
+                 kGains[k % 9], k % 8, k % 8 == 3 || k % 8 == 4 ? 1 : 1 + k % 4});
+  return b;
+}
+std::string eqText(const std::vector<Band>& bands) {
+  std::string t = "patch Eq {\n  in x : audio global mono\n";
+  std::string prev = "x";
+  for (size_t k = 0; k < bands.size(); ++k) {
+    const Band& b = bands[k];
+    const std::string s = std::to_string(k);
+    t += "  param c" + s + " = " + std::to_string(b.cutoff) + " [20..20000]\n";
+    t += "  param g" + s + " = " + std::to_string(b.gain) + " [0..4]\n";
+    t += "  b" + s + " = svf(" + prev + ", cutoff: c" + s + ", q: " + std::to_string(b.q) + ", gain: g" + s +
+         ", mode: " + std::to_string(b.mode) + ", stages: " + std::to_string(b.stages) + ", prewarp: 0)\n";
+    prev = "b" + s;
+  }
+  return t + "  out y : audio\n  y = " + prev + "\n}\n";
+}
+// The product of every band's svfResponse (what the rule computed per frequency before EQ.1b, a design each time).
+Cx bandsProduct(const std::vector<Band>& bands, const std::vector<float>& cutoffs, double hz) {
+  Cx h(1.0, 0.0);
+  for (size_t k = 0; k < bands.size(); ++k) {
+    const Band& b = bands[k];
+    const pq::dsp::SvfParams p = pq::dsp::svfParamsFromInputs(cutoffs[k], b.q, b.gain, static_cast<float>(b.mode),
+                                                              static_cast<float>(b.stages), 0.0f, kSr);
+    h *= pq::dsp::svfResponse(p, 2.0 * std::numbers::pi * hz / kSr);
+  }
+  return h;
+}
+std::vector<double> logHz(size_t n) {
+  std::vector<double> hz(n);
+  for (size_t k = 0; k < n; ++k) hz[k] = 20.0 * std::pow(1000.0, static_cast<double>(k) / static_cast<double>(n - 1));
+  return hz;
+}
+
+}  // namespace
+
+TEST_CASE("linear response (EQ.1b): a 32-band svf chain is the product of its bands' svfResponse, before and after a "
+          "param moves; evaluate() allocation-free") {
+  const std::vector<Band> bands = eqBands();
+  const Circuit c = compile(eqText(bands));
+  LinearResponse r;
+  r.prepare(c.inferred, inEnd(c, "x"), outEnd(c, "y"));
+  const std::vector<double> hz = logHz(200);
+  std::vector<Cx> h(hz.size());
+  std::vector<float> cutoffs;
+  for (const Band& b : bands) cutoffs.push_back(b.cutoff);
+  auto check = [&](const char* what) {
+    INFO(what);
+    for (size_t k = 0; k < hz.size(); ++k) {
+      const Cx want = bandsProduct(bands, cutoffs, hz[k]);
+      CHECK(std::abs(h[k] - want) <= 1e-12 * std::abs(want) + 1e-300);
+    }
+  };
+  REQUIRE(r.evaluate(hz, kSr, h) == ResponseKind::Exact);
+  check("params at their defaults");
+  // A drag on band 7's cutoff: the cache is refreshed by the next evaluation (and only that band's design changes).
+  uint32_t c7 = 0;
+  for (uint32_t i = 0; i < r.paramNodes().size(); ++i)
+    if (c.inferred.patch.nodeName(r.paramNodes()[i]) == "c7") c7 = i;
+  for (float v : {300.0f, 1234.5f, 8000.0f}) {
+    r.setParam(c7, v);
+    cutoffs[7] = v;
+    uint64_t violations = pq::alloc_trap::countRtViolations([&] { (void)r.evaluate(hz, kSr, h); });
+    CHECK(violations == 0);
+    check("band 7 moved");
+  }
+}
+
+TEST_CASE("linear response (perf, EQ.1b): a 32-band svf chain at 1024 points: one design per band per evaluation" *
+          doctest::test_suite("perf")) {
+  const std::vector<Band> bands = eqBands();
+  const Circuit c = compile(eqText(bands));
+  LinearResponse r;
+  r.prepare(c.inferred, inEnd(c, "x"), outEnd(c, "y"));
+  const std::vector<double> hz = logHz(1024);
+  std::vector<Cx> h(hz.size());
+  REQUIRE(r.evaluate(hz, kSr, h) == ResponseKind::Exact);
+  std::vector<float> cutoffs;
+  for (const Band& b : bands) cutoffs.push_back(b.cutoff);
+  double best = 1e9, bestPerPoint = 1e9;
+  Cx sink{};
+  for (int rep = 0; rep < 10; ++rep) {
+    r.setParam(0, 40.0f + static_cast<float>(rep));  // a drag: one param moves
+    auto t0 = std::chrono::steady_clock::now();
+    (void)r.evaluate(hz, kSr, h);
+    best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    // What the rule cost before EQ.1b: every band designed again at every point (its rule work only).
+    t0 = std::chrono::steady_clock::now();
+    for (double f : hz) sink += bandsProduct(bands, cutoffs, f);
+    bestPerPoint = std::min(bestPerPoint, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  }
+  MESSAGE("32-band svf chain, 1024 points: evaluate " << best << " ms (a design per band); a design per band and point "
+          "(the pre-EQ.1b rule's work alone) " << bestPerPoint << " ms" << (sink == Cx{} ? "" : ""));
+  // Before EQ.1b (a design per band and point inside evaluate): 12.0 ms in the check preset; after: 1.2 ms.
+#ifdef PQ_OPTIMIZED
+  CHECK(best < 3.0);
+  CHECK(best < 0.25 * bestPerPoint);
 #endif
 }

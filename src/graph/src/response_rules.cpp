@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <new>
 
 #include "fold.h"
 #include "pq/dsp/kernel.h"
@@ -191,15 +192,24 @@ ResponseKind clip(ResponseArgs& a) noexcept {
 }
 
 // EQ.1: the svf atom, exactly as its kernel runs it: svfParamsFromInputs (the kernel's input conversion) → svfDesign →
-// the float coefficients' response (svfResponse). Cutoff / q / gain must be known values (a modulated filter is not
-// time-invariant: Unavailable); mode / stages / prewarp are consts. Designs per frequency (≈ 0.1 µs per section).
+// the float coefficients' response (svfResponse: svfCascadeResponse of the sections' polys). Cutoff / q / gain
+// must be known values (a modulated filter is not time-invariant: Unavailable); mode / stages / prewarp are consts.
+// EQ.1b: designed once per evaluation (the first call, into its cache); the other frequencies only evaluate.
 ResponseKind svf(ResponseArgs& a) noexcept {
   if (a.signal[0] == 0) return ResponseKind::Exact;  // x is not on the path
   for (uint32_t i = 1; i < 7; ++i)
     if (!usable(a, i)) return ResponseKind::Unavailable;
-  const dsp::SvfParams p =
-      dsp::svfParamsFromInputs(a.value[1], a.value[2], a.value[3], a.value[4], a.value[5], a.value[6], a.sampleRate);
-  g(a, 0, 0) = dsp::svfResponse(p, a.omega);
+  SvfRuleCache local;
+  SvfRuleCache* c = a.cache != nullptr ? static_cast<SvfRuleCache*>(a.cache) : &local;
+  if (a.fresh || a.cache == nullptr) {
+    if (a.cache != nullptr) c = new (a.cache) SvfRuleCache;
+    const dsp::SvfParams p =
+        dsp::svfParamsFromInputs(a.value[1], a.value[2], a.value[3], a.value[4], a.value[5], a.value[6], a.sampleRate);
+    dsp::SvfSection s[dsp::kSvfMaxStages];
+    c->count = dsp::svfDesign(p, s);
+    for (uint32_t k = 0; k < c->count; ++k) c->polys[k] = dsp::svfSectionPoly(dsp::svfKernelCoefs(s[k]));
+  }
+  g(a, 0, 0) = dsp::svfCascadeResponseAt(c->polys, c->count, a.ejw1);  // = dsp::svfResponse, operation for operation
   a.dependsOnOmega = true;
   return ResponseKind::Exact;
 }

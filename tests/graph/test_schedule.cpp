@@ -2220,3 +2220,41 @@ TEST_CASE("schedule: uniform branches, replayed over random patches: guards and 
   CHECK(nested >= 100);
   CHECK(cov.skippedOps > 1000);
 }
+
+TEST_CASE("schedule: an svf's state is sized by the sections its mode / stages consts give (EQ.1b)") {
+  Compiled c;
+  compile(c, R"(patch S {
+  in x : audio
+  out y : audio
+  out o : audio voice
+  a = svf(x, 1000, 0.7, 1, 0, 1, 0)
+  b = svf(a, 1000, 0.7, 2, 5, 8, 0)
+  m = svf(b, 1000, 0.7, 2, 4, 8, 0)
+  d = svf(m, 1000, 0.7, 2, 0, 64, 1)
+  y = d
+  v = svf(sine(phasor(voice.hz)), 1000, 0.7, 1, 1, 2, 0)
+  o = v
+}
+)");
+  const Schedule& s = ok(c);
+  auto bytes = [](uint32_t sections, uint32_t lanes) {
+    dsp::StateInit init;
+    init.lanes = lanes;
+    init.svfSections = sections;
+    return static_cast<uint32_t>(dsp::stateBytes(dsp::Atom::Svf, init));
+  };
+  // name, sections (bell: one whatever its stages), lanes
+  const std::tuple<const char*, uint32_t, uint32_t> want[] = {{"a", 1, 1}, {"b", 8, 1}, {"m", 1, 1}, {"d", 64, 1},
+                                                               {"v", 2, 8}};
+  for (const auto& [name, sections, lanes] : want) {
+    INFO(name);
+    const StateEntry* e = entryNamed(s, c.typed, name);
+    REQUIRE(e != nullptr);
+    CHECK(e->init.svfSections == sections);
+    CHECK(e->tag.extra == sections);  // a different section count is a different state type (no transfer)
+    CHECK(e->size == bytes(sections, lanes));
+  }
+  CHECK(entryNamed(s, c.typed, "a")->size <= 1024);       // a 1-section mono filter: under 1 KiB (was 24.8 KiB)
+  CHECK(entryNamed(s, c.typed, "v")->size <= 3 * 1024);   // 2 sections of a voice group
+  CHECK(bytes(64, 8) == sizeof(dsp::SvfState));           // the most a state holds
+}

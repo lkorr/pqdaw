@@ -108,8 +108,8 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // region: the kernel reads its first float); element-wise (in place).
     {"curve", 2, 1, false, false, 0, 0, kB0 | kB1, 0, 0, Resource::Curve, true},
     // EQ.1 (kernels_svf.cpp): x, cutoff, q, gain Blk or Spl (a template specialisation each); mode, stages, prewarp
-    // consts.
-    {"svf", 7, 1, false, false, 0, 0, kB0 | kB1 | kB2 | kB3, kB4 | kB5 | kB6, sizeof(SvfState), Resource::None, false},
+    // consts. EQ.1b: the state's size is the header; stateBytes() adds the sections (StateInit::svfSections).
+    {"svf", 7, 1, false, false, 0, 0, kB0 | kB1 | kB2 | kB3, kB4 | kB5 | kB6, kSvfHeaderBytes, Resource::None, false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -216,8 +216,8 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::GainAdd: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(GainState, rpow))};
     // TX.smooth: target, inc, rem, started per lane; `active` is the group's (this block's call wrote the output).
     case Atom::ParamRamp: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(ParamRampState, active))};
-    // EQ.1: the sections (8-lane layout: eight [8] arrays each), the designed-for inputs, keys and counts.
-    case Atom::Svf: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(SvfState, sampleRate))};
+    // EQ.1 / EQ.1b: [8] arrays only, its size set by its sections (shared values replicated per lane).
+    case Atom::Svf: return {LaneState::Whole, 0};
     case Atom::OversampleUp:
     case Atom::OversampleDown:
     case Atom::OversamplePhase: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
@@ -278,7 +278,8 @@ SilenceInfo silenceInfo(Atom a) noexcept {  // RT-safe
     case Atom::DelayLinear:
     case Atom::DelayCubic:
     case Atom::DelayAllpass:
-    case Atom::DelayWrite: return {R::Memory, i0, 0};
+    case Atom::DelayWrite:
+    case Atom::Svf: return {R::Memory, i0, 0};  // svf: x; its state decays (hasDecayState)
     case Atom::Z1Read:
     case Atom::DelayReadLinear:
     case Atom::DelayReadCubic:
@@ -299,9 +300,19 @@ uint32_t silenceTail(Atom a, const StateInit& init) noexcept {  // RT-safe
     case Atom::Change: return 1;
     default: break;
   }
-  if (!isDelay(a)) return 0;
+  if (!isDelay(a)) return 0;  // svf: 0 (its state decays: decayStateSmall)
   // The oldest tap: floor(d) + 1 (linear, allpass after its borrow) or + 2 (cubic) frames for d ≤ max.
   return clampMaxDelay(init.maxDelayFrames, ringLanes(init)) + 3u;
+}
+
+bool hasDecayState(Atom a) noexcept { return a == Atom::Svf; }  // RT-safe
+
+bool decayStateSmall(Atom a, const void* state, float eps) noexcept {  // RT-safe
+  return a == Atom::Svf && detail::svfStateSmall(state, eps);
+}
+
+bool decayStateFlush(Atom a, void* state) noexcept {  // RT-safe
+  return a == Atom::Svf && detail::svfStateFlush(state);
 }
 
 uint32_t maxDelayFramesLimit(uint32_t lanes) noexcept {
@@ -309,8 +320,15 @@ uint32_t maxDelayFramesLimit(uint32_t lanes) noexcept {
   return static_cast<uint32_t>(kMaxDelayRingBytes / sizeof(float) / l) - kRingHeadroom;
 }
 
+static size_t svfStateBytes(const StateInit& init) noexcept {
+  const uint32_t n = init.svfSections < 1 ? 1u : init.svfSections > kSvfStateSections ? kSvfStateSections : init.svfSections;
+  const size_t bytes = kSvfHeaderBytes + static_cast<size_t>(n) * kSvfFields * sizeof(float) * (init.lanes == kGroupLanes ? 8u : 1u);
+  return (bytes + kStateAlign - 1) / kStateAlign * kStateAlign;
+}
+
 size_t stateBytes(Atom a, const StateInit& init) noexcept {
   if (static_cast<uint32_t>(a) >= kAtomCount) return 0;
+  if (a == Atom::Svf) return svfStateBytes(init);
   const size_t base = kernelInfo(a).stateSize;
   if (!isDelay(a)) return base;
   const uint32_t lanes = ringLanes(init);
@@ -405,7 +423,16 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
       s.sampleRate = static_cast<float>(init.sampleRate);
       break;
     }
-    case Atom::Svf: static_cast<SvfState*>(state)->sampleRate = init.sampleRate; break;  // key 0: designed on first call
+    case Atom::Svf: {  // key 0: designed on the first call
+      auto& s = *static_cast<SvfState*>(state);
+      const uint32_t n = init.svfSections < 1 ? 1u : init.svfSections > kSvfStateSections ? kSvfStateSections : init.svfSections;
+      for (uint32_t l = 0; l < 8; ++l) {
+        s.sampleRate[l] = static_cast<float>(init.sampleRate);
+        s.sections[l] = n;
+        s.lanes[l] = init.lanes == kGroupLanes ? 8u : 1u;
+      }
+      break;
+    }
     default:
       break;
   }

@@ -343,6 +343,7 @@ private:
   struct SegState {
     std::byte* ptr = nullptr;
     graph::SleepStateKind kind = graph::SleepStateKind::Memory;
+    uint16_t atom = 0;               // Decay: the dsp::Atom whose state it is (dsp::decayStateSmall)
     uint32_t tail = 0;
     bool known = false;              // delay: the ring positions below are valid
     uint32_t scanPos = 0;            // delay: writes before this ring counter are accounted for
