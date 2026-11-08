@@ -9,6 +9,7 @@
 //   LFO        its output into an audio track's mixer is the 1 Hz sine it should be
 //   GU.f4      an undriven menu / switch choosing a branch lowers as a literal: the optimised program holds only the
 //              chosen curve / shape; changing it recompiles and plays the new choice
+//   GU.f7      a muted rack chain (its Gate a literal 0) is not in the optimised program
 //   Operator   A alone is the default instrument's chain at level 1 (4 × the default's 0.25); B modulating A changes
 //              the sound and stays finite
 #include <doctest/doctest.h>
@@ -29,6 +30,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/lower.h"
 #include "pq/document/modules.h"
+#include "pq/document/racks.h"
 #include "pq/engine/project_compile.h"
 #include "pq/graph/atoms.h"
 
@@ -507,4 +509,37 @@ TEST_CASE("GU.f5 a per-voice cable into a control of an instrument group keeps t
   const size_t off = static_cast<size_t>(kRate);
   CHECK(peakOf(base, off + static_cast<size_t>(0.05 * kRate), off + static_cast<size_t>(0.1 * kRate)) > 0.01);
   CHECK(maxDiff(a, base) <= 1e-5 * std::max(peakOf(base), 1.0));
+}
+
+TEST_CASE("GU.f7 a muted rack chain is not computed (its Gate lowers as a literal; the choice folds to silence)") {
+  Bench b(nullptr, false);
+  auto run = [&](ops::EditResult e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(b.store.dispatch(e->command).ok());
+    return *e;
+  };
+  // An Audio Effect Rack of two chains, a Saturator in each (Analog Clip: one `clip` atom each).
+  const DeviceId rack = run(ops::addRack(*b.store.current(), b.store.ids(), b.track, false, 0)).devices.at(0);
+  (void)run(ops::addToChain(*b.store.current(), b.store.ids(), rack, "module:saturator", DeviceKind::AudioEffect));
+  (void)run(ops::addChainWithDevice(*b.store.current(), b.store.ids(), rack, "module:saturator", DeviceKind::AudioEffect));
+  auto chains = [&] {
+    const std::vector<RackInfo> racks = findRacks(*b.store.current(), *findTrackPtr(*b.store.current(), b.track));
+    REQUIRE(racks.size() == 1);
+    REQUIRE(racks[0].chains.size() == 2);
+    return racks[0].chains;
+  };
+  const DeviceId second = chains()[1].id;
+  const DeviceId gate = chains()[1].gateBlock;
+  REQUIRE(gate.valid());
+  CHECK(lowersAsLiteral(*b.store.current(), *findDevice(*b.store.current(), gate).device));
+  CHECK(b.count("clip") == 2);
+  const int gains = b.count("gain");  // per chain: the Saturator's gains and the chain mixer's
+  CHECK(gains % 2 == 0);
+  CHECK(b.count("mux") == 0);  // (the Gates' choices folded: both chains play)
+  run(ops::setChainActive(*b.store.current(), second, false));
+  CHECK(b.count("clip") == 1);  // the muted chain's Saturator is gone, its mixer's gain too
+  CHECK(b.count("gain") == gains / 2);
+  CHECK(b.count("mux") == 0);
+  run(ops::setChainActive(*b.store.current(), second, true));
+  CHECK(b.count("clip") == 2);
 }

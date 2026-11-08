@@ -74,29 +74,6 @@ struct ProjectParamLink {
   uint32_t projectParam = 0;
 };
 
-// T4.4-fix1: inspection of one track inside its unit (the circuit editor on a device of the project, T4.5's probes and
-// cost meters through the project). `targets` name values inside the TRACK's patch (paths start at its call nodes, e.g.
-// a device call `d<id>`); the unit holding the track compiles them in with the track's call node in front (probes
-// change buffer lifetimes only: the audio is bit-identical, pq/graph/inspect.h). Even without targets, the unit is
-// compiled with its instance tree kept (CompiledUnit::inspect, for cost attribution) and its images go through
-// ProjectCompileOptions::onBind like every image, where the owner binds taps and a cost meter.
-struct TrackInspect {
-  uint32_t trackId = 0;                     // graph::ProjectTrack::id
-  std::vector<graph::ProbeTarget> targets;
-  std::vector<uint32_t> ids;                // per target: the id its taps are bound by (Schedule::probes)
-};
-
-// What a unit compiled under a TrackInspect keeps of its instance tree, in NodeIds (valid while the text changes): the
-// circuit editor's PlayedProgram for its cost attribution.
-struct UnitInspect {
-  uint32_t trackId = 0;
-  std::vector<uint32_t> instanceParent;     // per instance (TypedPatch::instances): its caller (kNone: the root)
-  std::vector<graph::NodeId> instanceCall;  // … and the call node in the caller
-  std::vector<uint32_t> nodeInstance;       // per node of the scheduled patch: its instance
-  std::vector<graph::NodeId> nodeSource;    // … the node it comes from in that instance's patch (invalid: none)
-  std::vector<graph::NodeOrigin::What> nodeWhat;
-};
-
 struct CompiledUnit;
 
 struct ProjectCompileOptions {
@@ -116,12 +93,10 @@ struct ProjectCompileOptions {
   // image goes through it), on whichever thread binds: the compile thread, or a background image's (T1b.5), so the
   // owner must still know the resources of every schedule that may be bound.
   std::function<std::shared_ptr<const void>(dsp::Resource kind, uint32_t index)> keepAlive;
-  // T4.4-fix1 (optional): the inspected tracks (see TrackInspect; ProjectCompiler::setInspect), and a hook every image
-  // passes through in bind() before it is returned — the compile path's and a background (JIT) image's alike — so the
-  // owner can bind probe taps and a cost meter (ProgramImage::bindInspect) to the images of an inspected unit.
-  // T4.x-fix-safety (M4 review H2, L4): what it returns (may be null) goes to UnitImage::keepAlive, so whatever the image
-  // writes on the audio thread (a meter, probe tap slots) lives until the program's epoch reclaimer frees the image.
-  std::vector<TrackInspect> inspect;
+  // T4.4-fix1 (optional): a hook every image passes through in bind() before it is returned — the compile path's and a
+  // background (JIT) image's alike — so the owner can bind a cost meter (ProgramImage::bindInspect) to it.
+  // T4.x-fix-safety (M4 review H2): what it returns (may be null) goes to UnitImage::keepAlive, so whatever the image
+  // writes on the audio thread (a meter) lives until the program's epoch reclaimer frees the image.
   std::function<std::shared_ptr<const void>(uint32_t unit, const CompiledUnit& cu, ProgramImage& image)> onBind;
 };
 
@@ -146,9 +121,6 @@ struct CompiledUnit {
   std::vector<std::string> inKeys;          // per root `in` ordinal: its bus key
   std::vector<std::pair<uint32_t, std::string>> busNumbers;  // (k of a `bus<k>` name in the schedule, its bus key)
   std::vector<uint32_t> busRemap;           // k of a `bus<k>` name → the current bus index (empty: identity)
-  // T4.4-fix1: set when the unit holds an inspected track (ProjectCompileOptions::inspect); its probes are in
-  // schedule->probes, and the compile-cache key includes them (a probe change recompiles the unit).
-  std::shared_ptr<const UnitInspect> inspect;
 };
 
 struct ProjectBuild {
@@ -200,7 +172,6 @@ public:
   // The project params units link to (ProjectParamLink::track indexes the graph passed next).
   void setParamLinks(std::vector<ProjectParamLink> links) { opt_.paramLinks = std::move(links); }
   // T4.4-fix1: the inspected tracks from the next compile on (update() with the track dirty recompiles its unit).
-  void setInspect(std::vector<TrackInspect> inspect) { opt_.inspect = std::move(inspect); }
   void setOnBind(std::function<std::shared_ptr<const void>(uint32_t, const CompiledUnit&, ProgramImage&)> fn) { opt_.onBind = std::move(fn); }
   // The bus key of graph port `p` ("<track id>:<port>").
   static std::string busKey(const graph::ProjectGraph& graph, const graph::ProjectPort& p);

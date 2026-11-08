@@ -36,135 +36,54 @@ Result<ListView> listOf(const Project& p, TrackId track) {
   return v;
 }
 
-// TX.all-free: a new block `dev` (already added to `track`) onto its main path at `slot`. `notes`: a stock instrument
-// (it takes the notes: slot 0). A stock instrument or Instrument Rack heading the path is replaced by an instrument, or
-// by a meta module landing at slot 0 (it takes the notes: TMM.10-fix1's rule); an effect at slot 0 goes after it.
-Status placeOnPath(Steps& k, IdSource& ids, TrackId track, DeviceId dev, bool notes, bool meta, uint32_t slot) {
+// TX.all-free: a new block `dev` (already added to `track`) onto its main path at `slot`. IG.1-2: on a MIDI track headed
+// by its instrument group, a meta module where the instrument is (slot 0), or appended while the group is all the path
+// holds, builds the instrument: it goes INTO the group at the end of its series (into what reached Out; it now feeds
+// Out); anything else at slot 0 goes after the group.
+Status placeOnPath(Steps& k, IdSource& ids, TrackId track, DeviceId dev, bool meta, uint32_t slot) {
   const Track* t = findTrackPtr(k.doc(), track);
   if (t == nullptr) return notFound("track not found");
   const MainPath path = mainPath(k.doc(), *t);
   const Device* head = path.blocks.empty() ? nullptr : path.blocks.front();
-  const bool stockHead = head != nullptr && head->kind == DeviceKind::Instrument && !isMetaDevice(*head);
-  if (notes) slot = 0;
-  // IG.1-2: a MIDI track headed by its instrument group — an instrument goes INTO the group, taking the place of the
-  // stock instrument there (its cables, In → it → Out, move to the new one), or wired In → it → Out when there is none;
-  // anything else at slot 0 goes after the group.
-  if (head != nullptr && isGroupDevice(*head) && t->kind == TrackKind::Midi) {
-    // A meta module where the instrument is (slot 0), or appended while the group is all the path holds, builds the
-    // instrument: it goes into the group — in place of its stock instrument at slot 0, else at the end of its series
-    // (into what reached Out; it now feeds Out).
-    const bool intoGroup = meta && (slot == 0 || (slot >= path.blocks.size() && path.blocks.size() == 1));
-    if (!notes && !intoGroup) return splice(k, ids, track, dev, slot == 0 ? 1 : slot);
-    if (!notes) {
-      const DeviceId g = head->id;
-      DeviceId stock;
-      uint32_t index = 0;  // (the stock instrument's place in the device list: the new one takes it)
-      for (uint32_t i = 0; i < t->devices.size(); ++i) {
-        const Device& d = *t->devices[i];
-        if (d.group == g && d.kind == DeviceKind::Instrument && !isMetaDevice(d)) {
-          stock = d.id;
-          index = i;
-        }
-      }
-      PQ_DOC_TRY(k.add(SetDeviceGroup{dev, g}));
-      // (its ports by name, as Ctrl+G's series names them: ungroup reads the series back)
-      std::string chainIn, firstOut;
-      if (const DeviceLoc dl = findDevice(k.doc(), dev); dl.device != nullptr)
-        if (const meta::Type* ty = meta::findType(metaDeviceType(*dl.device))) {
-          if (const int32_t ci = metaChainInput(*dl.device, *ty); ci >= 0) chainIn = std::string(ty->inputs[static_cast<size_t>(ci)].name);
-          if (!ty->outputs.empty()) firstOut = std::string(ty->outputs.front().name);
-        }
-      if (slot == 0 && stock.valid()) {
-        const DeviceId gone = stock;
-        std::vector<Wire> moved;
-        for (const Wire& w : wiresOf(k.doc()))
-          if ((!w.fromNoteSource() && w.from == gone) || (!w.toMixer() && w.to == gone)) moved.push_back(w);
-        PQ_DOC_TRY(k.add(RemoveDevice{gone}));
-        PQ_DOC_TRY(k.add(MoveDevice{dev, track, index}));
-        for (Wire w : moved) {
-          w.id = ids.wire();
-          if (!w.fromNoteSource() && w.from == gone) {
-            w.from = dev;
-            w.port = firstOut;
-          }
-          if (!w.toMixer() && w.to == gone) {
-            w.to = dev;
-            w.param = chainIn;  // (the notes from In reach its chain input)
-          }
-          PQ_DOC_TRY(k.add(AddWire{w}));
-        }
-        return ok();
-      }
-      std::optional<Wire> last;
-      for (const Wire& w : wiresOf(k.doc()))
-        if (!w.toMixer() && w.to == g && w.param == kGroupOutPort) last = w;
-      Wire in;
-      in.id = ids.wire();
-      in.chain = true;
-      in.to = dev;
-      in.param = chainIn;
-      if (last) {
-        PQ_DOC_TRY(k.add(RemoveWire{last->id}));
-        in.from = last->from;
-        in.noteSource = last->noteSource;
-        in.port = last->port;
-      } else {
-        in.from = g;
-        in.port = std::string(kGroupInPort);
-      }
-      PQ_DOC_TRY(k.add(AddWire{in}));
-      Wire out;
-      out.id = ids.wire();
-      out.chain = true;
-      out.from = dev;
-      out.port = firstOut;
-      out.to = g;
-      out.param = std::string(kGroupOutPort);
-      PQ_DOC_TRY(k.add(AddWire{out}));
-      return ok();
+  if (head == nullptr || !isGroupDevice(*head) || t->kind != TrackKind::Midi) return splice(k, ids, track, dev, slot);
+  const bool intoGroup = meta && (slot == 0 || (slot >= path.blocks.size() && path.blocks.size() == 1));
+  if (!intoGroup) return splice(k, ids, track, dev, slot == 0 ? 1 : slot);
+  const DeviceId g = head->id;
+  PQ_DOC_TRY(k.add(SetDeviceGroup{dev, g}));
+  // (its ports by name, as Ctrl+G's series names them: ungroup reads the series back)
+  std::string chainIn, firstOut;
+  if (const DeviceLoc dl = findDevice(k.doc(), dev); dl.device != nullptr)
+    if (const meta::Type* ty = meta::findType(metaDeviceType(*dl.device))) {
+      if (const int32_t ci = metaChainInput(*dl.device, *ty); ci >= 0) chainIn = std::string(ty->inputs[static_cast<size_t>(ci)].name);
+      if (!ty->outputs.empty()) firstOut = std::string(ty->outputs.front().name);
     }
-    const DeviceId g = head->id;
-    const Device* old = nullptr;
-    for (const DevicePtr& d : t->devices)
-      if (d->group == g && d->kind == DeviceKind::Instrument && !isMetaDevice(*d)) {
-        old = d.get();
-        break;
-      }
-    PQ_DOC_TRY(k.add(SetDeviceGroup{dev, g}));
-    if (old != nullptr) {
-      const DeviceId gone = old->id;
-      std::vector<Wire> moved;
-      for (const Wire& w : wiresOf(k.doc()))
-        if ((!w.fromNoteSource() && w.from == gone) || (!w.toMixer() && w.to == gone)) moved.push_back(w);
-      PQ_DOC_TRY(k.add(RemoveDevice{gone}));
-      for (Wire w : moved) {
-        w.id = ids.wire();
-        if (!w.fromNoteSource() && w.from == gone) w.from = dev;
-        if (!w.toMixer() && w.to == gone) w.to = dev;
-        PQ_DOC_TRY(k.add(AddWire{w}));
-      }
-      return ok();
-    }
-    for (const auto& [from, port, to, param] : {std::tuple{g, kGroupInPort, dev, kMainPort}, std::tuple{dev, kMainPort, g, kGroupOutPort}}) {
-      Wire w;
-      w.id = ids.wire();
-      w.from = from;
-      w.port = std::string(port);
-      w.to = to;
-      w.param = std::string(param);
-      w.chain = true;
-      PQ_DOC_TRY(k.add(AddWire{w}));
-    }
-    return ok();
+  std::optional<Wire> last;
+  for (const Wire& w : wiresOf(k.doc()))
+    if (!w.toMixer() && w.to == g && w.param == kGroupOutPort) last = w;
+  Wire in;
+  in.id = ids.wire();
+  in.chain = true;
+  in.to = dev;
+  in.param = chainIn;
+  if (last) {
+    PQ_DOC_TRY(k.add(RemoveWire{last->id}));
+    in.from = last->from;
+    in.noteSource = last->noteSource;
+    in.port = last->port;
+  } else {
+    in.from = g;
+    in.port = std::string(kGroupInPort);
   }
-  if (stockHead && slot == 0 && (notes || meta) && t->kind == TrackKind::Midi) {
-    const DeviceId gone = head->id;
-    PQ_DOC_TRY(detach(k, ids, nullptr, gone));
-    PQ_DOC_TRY(k.add(RemoveDevice{gone}));
-  } else if (stockHead && slot == 0) {
-    slot = 1;
-  }
-  return splice(k, ids, track, dev, slot);
+  PQ_DOC_TRY(k.add(AddWire{in}));
+  Wire out;
+  out.id = ids.wire();
+  out.chain = true;
+  out.from = dev;
+  out.port = firstOut;
+  out.to = g;
+  out.param = std::string(kGroupOutPort);
+  PQ_DOC_TRY(k.add(AddWire{out}));
+  return ok();
 }
 
 }  // namespace
@@ -201,7 +120,7 @@ EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string
       }
       PQ_DOC_TRY(splice(k, ids, track, g, 0));
     } else {
-      PQ_DOC_TRY(placeOnPath(k, ids, track, g, false, false, index));
+      PQ_DOC_TRY(placeOnPath(k, ids, track, g, false, index));
     }
     Edit e = std::move(*pasted);
     batchOf(e).label = m->instrument ? "Add Instrument" : "Add Device";
@@ -220,7 +139,7 @@ EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string
   e.tracks.push_back(l->track);
   Steps k(p);
   PQ_DOC_TRY(k.add(AddDevice{l->track, std::move(d), kAppend}));
-  if (index != kOffPath) PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, kind == DeviceKind::Instrument, false, index));
+  if (index != kOffPath) PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, false, index));
   batchOf(e).commands = std::move(k.commands);
   return e;
 }
@@ -261,7 +180,7 @@ EditResult addMetaDevice(const Project& p, IdSource& ids, TrackId track, std::st
   e.tracks.push_back(l->track);
   Steps k(p);
   PQ_DOC_TRY(k.add(AddDevice{l->track, std::move(d), kAppend}));
-  if (index != kOffPath) PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, false, true, index));
+  if (index != kOffPath) PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, true, index));
   batchOf(e).commands = std::move(k.commands);
   return e;
 }
@@ -375,7 +294,6 @@ EditResult pasteDevices(const Project& p, IdSource& ids, TrackId track, std::spa
   if (!l) return std::move(l).error();
   Edit e = makeEdit(devices.size() == 1 ? "Paste Device" : "Paste Devices");
   e.tracks.push_back(l->track);
-  bool instrumentPasted = false;
   std::vector<Command> after;  // TX.groups: a pasted group's members and wires, after the devices
   // TX.all-free: a track's blocks, spliced into its main path from slot `index` on, in order (kOffPath: unwired).
   Steps k(p);
@@ -384,15 +302,12 @@ EditResult pasteDevices(const Project& p, IdSource& ids, TrackId track, std::spa
     if (!src) continue;
     DevicePtr d = copyForPaste(p, ids, *src, l->track, e, after);
     const DeviceId id = d->id;
-    const bool notes = d->kind == DeviceKind::Instrument && !isMetaDevice(*d);
     const bool meta = isMetaDevice(*d);
     e.devices.push_back(id);
     if (d->kind == DeviceKind::Instrument && !l->instrumentAllowed) return invalid("instruments go on MIDI tracks");
-    if (notes && instrumentPasted) return invalid("one instrument takes a track's notes (paste the others one by one)");
-    instrumentPasted = instrumentPasted || notes;
     PQ_DOC_TRY(k.add(AddDevice{l->track, std::move(d), kAppend}));
     if (index == kOffPath) continue;
-    PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, notes, meta, slot));
+    PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, meta, slot));
     // The next one goes after it.
     const MainPath path = mainPath(k.doc(), *findTrackPtr(k.doc(), l->track));
     if (const int32_t i = path.indexOf(id); i >= 0) slot = static_cast<uint32_t>(i) + 1;

@@ -196,7 +196,7 @@ void PatchPreview::setProbeSignals(std::span<const uint32_t> ids) {
 }
 
 // Under mutex_. Frees the slots of probes that are gone and binds a slot per probe of `schedule`. A freed slot is
-// reused only once no image that was bound to it is alive (M4 review L4, as DeviceInspector): each image holds the
+// reused only once no image that was bound to it is alive (M4 review L4): each image holds the
 // leases of the slots it writes (the host's keepAlive, released after the audio thread has let go of the image), so a
 // lease count back at 1 (ours) means nothing writes the slot any more. When every ring is still leased the pool grows,
 // up to kMaxProbeRings (a probe beyond that gets no ring: its signal is not shown); the levels' pool does not need to.

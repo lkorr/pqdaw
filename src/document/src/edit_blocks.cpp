@@ -121,8 +121,6 @@ EditResult pasteBlocks(const Project& p, IdSource& ids, TrackId track, const Blo
   }
   BlockSet fresh = remapBlocks(set, ids);
   for (DevicePtr& d : fresh.devices) {
-    if (d->kind == DeviceKind::Instrument && !isMetaDevice(*d) && t->kind != TrackKind::Midi)
-      return invalid("Paste: instruments go on MIDI tracks (the notes are their main input)");
     if (!d->group.valid() && intoGroup.valid()) {
       auto c = std::make_shared<Device>(*d);
       c->group = intoGroup;

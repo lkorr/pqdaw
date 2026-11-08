@@ -26,8 +26,7 @@ struct Registry {
   std::vector<const Type*> types;
   std::shared_ptr<const Prelude> prelude;  // null: rebuild on next use
   Registry() {
-    // (GU.4: the Phase accumulator and the VCA are group presets now: pq/document/modules.h; pq/meta/retired.h keeps
-    // their old state's description for loading older files.)
+    // (GU.4: the Phase accumulator and the VCA are group presets now: pq/document/modules.h.)
     types.push_back(&wavetableType());  // TMM.5
     types.push_back(&envelopeType());   // TMM.11
     types.push_back(&spectrumType());   // TX.spectrum

@@ -233,7 +233,7 @@ DeviceId paBlock(DocumentStore& s, TrackId t, DeviceId g = {}, PhaseAccumulatorR
     auto at = [&](DeviceId l) { return l.valid() ? ids.at(l.value - 1) : DeviceId{}; };
     *roles = PhaseAccumulatorRoles{at(lr.group), at(lr.freq), at(lr.phase), at(lr.amp), at(lr.pitch), at(lr.ref),
                                    at(lr.sum), at(lr.ratio), at(lr.pitched), at(lr.phasor), at(lr.addPhase),
-                                   at(lr.pm), at(lr.frac), at(lr.out)};
+                                   at(lr.frac), at(lr.out)};
   }
   return ids.at(0);
 }

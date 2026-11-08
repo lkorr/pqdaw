@@ -9,7 +9,6 @@
 #include "pq/graph/parse.h"
 #include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
-#include "pq/meta/retired.h"
 #include "pq/meta/wavetable.h"
 
 using namespace pq;
@@ -32,15 +31,11 @@ std::vector<uint32_t> idsOf(const graph::Patch& p) {
 }  // namespace
 
 TEST_CASE("meta registry: built-in types, call names, instance names, paths") {
-  // (GU.4: the Phase accumulator's and the VCA's types are retired — group presets now —: findType never gives them.)
+  // (GU.4: the Phase accumulator and the VCA are group presets now: no such types.)
   const Type& acc = wavetableType();
   CHECK(findType("wavetable") == &acc);
   CHECK(findType("phase_acc") == nullptr);
   CHECK(findType("vca") == nullptr);
-  CHECK(findRetiredType("phase_acc") != nullptr);
-  CHECK(findRetiredType("phase_acc")->body == nullptr);
-  CHECK(findTypeOrRetired("vca") == findRetiredType("vca"));
-  CHECK(findTypeOrRetired("wavetable") == &acc);
   CHECK(typeOfCall("meta_phase_acc") == nullptr);
   CHECK(callName(acc) == "meta_wavetable");
   CHECK(typeOfCall("meta_wavetable") == &acc);
@@ -260,10 +255,8 @@ TEST_CASE("meta data: deep equality, hash, base64 floats, problems") {
   CHECK_FALSE(decodeFloats("AACA", out));  // 3 bytes: not a whole float
 }
 
-TEST_CASE("meta laws: the (retired) Phase accumulator's frequency travel; a param's declared curve") {
-  // GU.4: the retired type's state description keeps the law its files were saved with (their positions convert
-  // through it), the same curve its preset's Frequency value block carries.
-  const ParamSpec& freq = findRetiredType("phase_acc")->params[0];
+TEST_CASE("meta laws: an Exp0 frequency travel (the old Phase accumulator's); a param's declared curve") {
+  const ParamSpec freq{"freq", "Frequency", 0.0, 0.0, 20000.0, graph::Unit::Hz, dsp::CurvePreset::Exp0, 14.0, false, false, true};
   CHECK(travelToValue(freq, 0.0) == 0.0);
   CHECK(travelToValue(freq, 1.0) == doctest::Approx(20000.0).epsilon(1e-12));
   CHECK(travelToValue(freq, -1.0) == 0.0);

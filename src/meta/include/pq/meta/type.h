@@ -52,8 +52,7 @@ struct ParamSpec {
   bool bakeable = false;                 // static, it may be baked into table data (TMM.5); else always runtime
   // TMM.18: the param's value is SIGNED beyond its knob range: the knob covers min … max, but what wires add may take
   // it down to −max(|min|, |max|) (an `@signed` attribute on the expansion's param; its curve is mirrored below 0:
-  // dsp::CurveMode::Signed). The retired Phase accumulator's frequency (pq/meta/retired.h); GU.4: its preset's value
-  // block carries the same curve.
+  // dsp::CurveMode::Signed). (GU.4: the Phase Accumulator preset's Frequency value block carries such a curve.)
   bool signedValue = false;
 };
 // GU.1: the param's declared curve — graph::declaredCurve of the expansion's declaration of it (the same curve the

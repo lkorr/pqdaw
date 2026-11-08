@@ -35,8 +35,11 @@
 //   mixer      the group of role Mixer: value blocks Volume (dB, −70 … +6, through dB → gain), Pan (−1 … 1), Gate (0 / 1:
 //              the chain plays — its activator and solo, below, and Volume above −70 dB; written by the edits) and a
 //              constant 1; atoms g = Volume · Gate, gl = g · min(1, 1 − Pan), gr = g · min(1, 1 + Pan),
-//              Out = gain(In, pack(gl, gr)) (smoothed 2 ms: the old chain mixer's law and stage). Undriven, Volume / Pan
-//              are runtime params (a drag is a param write); the atoms run at block rate.
+//              Out = mux(Gate, pack(0, 0), gain(In, pack(gl, gr))) (the gain smoothed 2 ms: the old chain mixer's law
+//              and stage). Undriven, Volume / Pan are runtime params (a drag is a param write); the atoms run at block
+//              rate. GU.f7: the undriven Gate chooses, so it lowers as a literal (lower.h "Structural value blocks"): a
+//              muted chain folds to silence and nothing of it is computed; muting recompiles the unit (the swap's
+//              ≈ 11 ms crossfade; a driven Gate stays a runtime choice and cuts at once).
 //   on / solo  settings kChainOnSetting (absent: on) and kChainSoloSetting of the chain group (any soloed chain: only
 //              soloed chains play; Meta: the Gate carries the sound).
 //   zones      groups of roles KeyZone / VelocityZone / SelectZone, only while a zone is on (not its whole range:

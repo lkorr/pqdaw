@@ -486,8 +486,7 @@ struct Builder {
         if (s.device == &g) c.instrument = s.in == doc::ChainSignal::Notes;
     } else {
       if (!contexts) contexts.emplace(doc::voiceContexts(p));
-      const doc::VoiceContext* vc = contexts->blockOf(g.id);
-      c.instrument = vc != nullptr && vc->group;
+      c.instrument = contexts->blockOf(g.id) != nullptr;
     }
     if (c.instrument) {
       const doc::GroupPolyphony gp = doc::groupPolyphony(g);

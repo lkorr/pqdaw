@@ -20,7 +20,6 @@
 #include <limits>
 #include <sstream>
 
-#include "pq/app/device_player.h"
 #include "pq/compile/compile.h"
 #include "pq/document/audibility.h"
 #include "pq/document/clip_time.h"
@@ -391,7 +390,6 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   auto lib = loadDeviceLibrary(cfg_.stdlib.empty() ? stdlibDir() : cfg_.stdlib);
   if (!lib.ok()) return lib.error();
   devices_ = std::move(lib.value());
-  inspector_ = std::make_unique<DeviceInspector>();  // T4.4-fix1
   {  // T5.4: the sample pool (its disk thread blocks while nothing streams) and the loader thread
     media::PoolConfig pc = cfg_.pool;
     pc.reclaimer = &sampleReclaimer_;
@@ -495,59 +493,13 @@ Status ProjectLink::makeEngine() {
     const auto it = compileHeld_.find(index);
     return it != compileHeld_.end() ? it->second : nullptr;
   };
-  // T4.4-fix1: the circuit editor's device inspection (probe taps, cost meter) on the inspected unit's images.
-  // T4.13: every other unit's images get its schedule's cost meter (the project patch view's per-device labels); an image
-  // has one meter, so the inspected unit is measured by the editor's meter only.
-  // M4 review H2, L4: the meter / tap slots an image writes are kept alive by that image (UnitImage::keepAlive).
+  // T4.13: every unit's images get its schedule's cost meter (the project patch view's per-device labels).
+  // M4 review H2: the meter an image writes is kept alive by that image (UnitImage::keepAlive).
   co.onBind = [this](uint32_t, const engine::CompiledUnit& cu, engine::ProgramImage& image) -> std::shared_ptr<const void> {
-    if (cu.inspect) return inspector_->bind(cu, image);
     return bindCost(image, cu.schedule);
   };
-  {
-    std::lock_guard lock(mutex_);
-    if (inspect_) co.inspect.push_back(*inspect_);
-  }
   compiler_ = std::make_unique<engine::ProjectCompiler>(co);
   return Ok{};
-}
-
-void ProjectLink::setDeviceInspect(doc::DeviceId device, std::vector<graph::ProbeTarget> targets,
-                                   std::vector<uint32_t> ids, bool inspect) {
-  const doc::DeviceLoc l = current_ ? doc::findDevice(*current_, device) : doc::DeviceLoc{};
-  std::optional<engine::TrackInspect> want;
-  if (inspect && l.track != nullptr) {
-    engine::TrackInspect ti;
-    ti.trackId = l.track->id.value;
-    const graph::NodeId call{doc::nodeIdFor(doc::NodeRole::Device, device.value, 0)};
-    for (graph::ProbeTarget& t : targets) t.path.insert(t.path.begin(), call);  // paths from the track's patch
-    ti.targets = std::move(targets);
-    ti.ids = std::move(ids);
-    ti.ids.resize(ti.targets.size(), 0);
-    want = std::move(ti);
-  }
-  {
-    std::lock_guard lock(mutex_);
-    if (!inspect && inspectDevice_ != device) return;  // another device's editor is inspecting
-    auto same = [](const engine::TrackInspect& a, const engine::TrackInspect& b) {
-      if (a.trackId != b.trackId || a.ids != b.ids || a.targets.size() != b.targets.size()) return false;
-      for (size_t i = 0; i < a.targets.size(); ++i)
-        if (a.targets[i].path != b.targets[i].path || a.targets[i].node != b.targets[i].node ||
-            a.targets[i].output != b.targets[i].output)
-          return false;
-      return true;
-    };
-    if (want.has_value() == inspect_.has_value() && (!want || same(*want, *inspect_))) return;
-    if (inspect_) inspectDirty_.push_back(inspect_->trackId);
-    if (want) inspectDirty_.push_back(want->trackId);
-    inspect_ = std::move(want);
-    inspectDevice_ = inspect ? device : doc::DeviceId{};
-    inspectChanged_ = true;
-    // A compile of the snapshot the engine follows (no document change: only the inspected unit recompiles).
-    pending_ = true;
-    pendingSnap_ = current_;
-    pendingSince_ = nowSeconds();
-  }
-  cv_.notify_all();
 }
 
 Status ProjectLink::setSampleRate(double rate) {
@@ -1792,19 +1744,6 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     if (slot != kNone) links.push_back({p.track, p.name, slot});
   }
   compiler_->setParamLinks(std::move(links));
-  // T4.4-fix1: an inspection change (the circuit editor's probes on a device) recompiles the units of those tracks.
-  std::vector<uint32_t> inspectTracks;
-  {
-    std::lock_guard lock(mutex_);
-    if (inspectChanged_) {
-      std::vector<engine::TrackInspect> ins;
-      if (inspect_) ins.push_back(*inspect_);
-      compiler_->setInspect(std::move(ins));
-      inspectTracks = std::move(inspectDirty_);
-      inspectDirty_.clear();
-      inspectChanged_ = false;
-    }
-  }
   // Dirty tracks: a patch that is not shared with the previous lowering (new text or a new track).
   std::vector<uint32_t> dirty;
   for (uint32_t i = 0; i < lp.patches.size(); ++i) {
@@ -1812,8 +1751,6 @@ Status ProjectLink::compileNow(const doc::Snapshot& s) {
     if (lowered_)
       for (uint32_t j = 0; j < lowered_->patches.size() && !same; ++j)
         same = lowered_->trackIds[j] == lp.trackIds[i] && lowered_->patches[j] == lp.patches[i];
-    if (same && std::find(inspectTracks.begin(), inspectTracks.end(), lp.trackIds[i].value) != inspectTracks.end())
-      same = false;
     if (!same) dirty.push_back(i);
   }
   auto meterMap = [&](const engine::ProjectLayout& layout) {

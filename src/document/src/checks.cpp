@@ -10,7 +10,6 @@
 #include "pq/document/meta.h"
 #include "pq/document/racks.h"
 #include "pq/meta/registry.h"
-#include "pq/meta/retired.h"
 
 namespace pq::doc::detail {
 
@@ -361,7 +360,7 @@ Status checkList(ListKind k, const std::vector<DevicePtr>& list, std::vector<siz
 Status checkMetaInstance(const Device& d, std::string_view path, const MetaInstance& inst) {
   const std::string at = path.empty() ? std::string("the device's meta module") : "meta module '" + std::string(path) + "'";
   if (!meta::validPath(path)) return invalid("'" + std::string(path) + "' is not a meta module path");
-  const meta::Type* t = meta::findTypeOrRetired(inst.type);
+  const meta::Type* t = meta::findType(inst.type);
   if (t == nullptr) return unsupported(at + ": unknown meta module type '" + inst.type + "'");
   if (inst.version != t->version)
     return invalid(at + ": version " + std::to_string(inst.version) + " is not the type's (" + std::to_string(t->version) + ")");
@@ -386,7 +385,7 @@ Status checkMetaInstance(const Device& d, std::string_view path, const MetaInsta
 
 Status checkDeviceMeta(const Device& d) {
   if (isMetaDevice(d)) {
-    const meta::Type* t = meta::findTypeOrRetired(metaDeviceType(d));
+    const meta::Type* t = meta::findType(metaDeviceType(d));
     if (t == nullptr) return unsupported("unknown meta module type '" + std::string(metaDeviceType(d)) + "'");
     (void)t;  // TMM.10-fix1: any type in either kind (its kind is its position: model.h "Meta modules")
   }

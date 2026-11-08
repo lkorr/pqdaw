@@ -5,88 +5,11 @@
 
 #include "pq/graph/infer.h"
 #include "pq/meta/registry.h"
-#include "pq/meta/retired.h"
 
 namespace pq::doc {
 
-namespace {
-
-using graph::NodeIndex;
-
-void collect(const graph::Patch& p, const std::string& prefix, const PatchLookup& lookup,
-             std::vector<const graph::Patch*>& active, std::vector<MetaSite>& out) {
-  if (active.size() >= graph::kMaxSubcircuitDepth || std::find(active.begin(), active.end(), &p) != active.end()) return;
-  active.push_back(&p);
-  std::optional<graph::Adjacency> adj;
-  for (NodeIndex n = 0; n < p.nodeCount(); ++n) {
-    if (p.node(n).kind != graph::NodeKind::Subcircuit) continue;
-    const std::string& name = p.nodeName(n);
-    if (name.empty()) continue;
-    const std::string& callee = p.subcircuit(n).patch;
-    if (const meta::Type* t = meta::typeOfCall(callee)) {
-      if (!adj) adj = p.adjacency();
-      MetaSite s;
-      s.path = prefix + name;
-      s.type = t;
-      s.wired.assign(t->params.size(), 0);
-      for (size_t i = 0; i < t->params.size(); ++i)
-        if (const auto pin = p.findInput(n, t->params[i].name))
-          s.wired[i] = adj->driver[p.flatInput(n, *pin)] != graph::kNone ? 1 : 0;
-      out.push_back(std::move(s));
-    } else if (lookup) {
-      if (const graph::Patch* c = lookup(callee)) collect(*c, prefix + name + ".", lookup, active, out);
-    }
-  }
-  active.pop_back();
-}
-
-bool anyMeta(const graph::Patch& p, const PatchLookup& lookup, std::vector<const graph::Patch*>& active) {
-  if (active.size() >= graph::kMaxSubcircuitDepth || std::find(active.begin(), active.end(), &p) != active.end())
-    return false;
-  active.push_back(&p);
-  bool found = false;
-  for (NodeIndex n = 0; n < p.nodeCount() && !found; ++n) {
-    if (p.node(n).kind != graph::NodeKind::Subcircuit || p.nodeName(n).empty()) continue;
-    const std::string& callee = p.subcircuit(n).patch;
-    if (meta::typeOfCall(callee) != nullptr) {
-      found = true;
-    } else if (lookup) {
-      if (const graph::Patch* c = lookup(callee)) found = anyMeta(*c, lookup, active);
-    }
-  }
-  active.pop_back();
-  return found;
-}
-
-std::string flatPath(std::string_view path) {
-  std::string s;
-  for (const char c : path) {
-    if (c == '.') s += "__";
-    else s += c;
-  }
-  return s;
-}
-
-}  // namespace
-
-std::vector<MetaSite> metaSites(const graph::Patch& root, const PatchLookup& lookup) {
-  std::vector<MetaSite> out;
-  std::vector<const graph::Patch*> active;
-  collect(root, std::string(), lookup, active, out);
-  return out;
-}
-
-bool callsMeta(const graph::Patch& p, const PatchLookup& lookup) {
-  std::vector<const graph::Patch*> active;
-  return anyMeta(p, lookup, active);
-}
-
 std::string metaParamKey(DeviceId device, std::string_view path, std::string_view param) {
   return "dev" + std::to_string(device.value) + ":" + std::string(path) + "." + std::string(param);
-}
-
-std::string metaParamFlatName(DeviceId device, std::string_view path, std::string_view param) {
-  return "d" + std::to_string(device.value) + "__" + flatPath(path) + "__" + std::string(param);
 }
 
 double metaParamPosition(const Device& d, std::string_view path, const meta::Type& t, size_t i) {  // GU.1
@@ -112,7 +35,7 @@ double metaParamValue(const Device& d, std::string_view path, const meta::Type& 
 
 std::string metaParamBakedOnly(const Device& d, std::string_view param) {
   if (!isMetaDevice(d)) return {};
-  const meta::Type* t = meta::findTypeOrRetired(metaDeviceType(d));
+  const meta::Type* t = meta::findType(metaDeviceType(d));
   if (t == nullptr) return {};
   const int32_t i = t->paramIndex(param);
   if (i < 0 || !t->params[static_cast<size_t>(i)].bakeable) return {};
@@ -158,7 +81,7 @@ std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool not
     if (!d.active) continue;
     ChainStage st;
     st.device = &d;
-    const meta::Type* t = isMetaDevice(d) ? meta::findTypeOrRetired(metaDeviceType(d)) : nullptr;
+    const meta::Type* t = isMetaDevice(d) ? meta::findType(metaDeviceType(d)) : nullptr;
     if (path != nullptr && !path->contains(d.id)) {  // TX.all-free: off the main path: nothing reaches it from the flow
       st.offPath = true;
       st.in = ChainSignal::None;
@@ -208,7 +131,7 @@ std::vector<DevicePtr> groupSeries(const Project& p, const Track& t, DeviceId g)
       if (w.fromNoteSource() || w.toMixer() || w.from != cur || !fromCur) continue;
       for (const DevicePtr& m : members) {
         if (m->id != w.to || std::find(out.begin(), out.end(), m) != out.end()) continue;
-        const meta::Type* ty = isMetaDevice(*m) ? meta::findTypeOrRetired(metaDeviceType(*m)) : nullptr;
+        const meta::Type* ty = isMetaDevice(*m) ? meta::findType(metaDeviceType(*m)) : nullptr;
         const int32_t ci = ty != nullptr ? metaChainInput(*m, *ty) : -1;
         if (w.param == kMainPort || (ci >= 0 && w.param == ty->inputs[static_cast<size_t>(ci)].name) ||
             (isGroupDevice(*m) && w.param == "x"))
@@ -219,7 +142,7 @@ std::vector<DevicePtr> groupSeries(const Project& p, const Track& t, DeviceId g)
     if (next == nullptr) break;
     out.push_back(*next);
     cur = (*next)->id;
-    const meta::Type* ty = isMetaDevice(**next) ? meta::findTypeOrRetired(metaDeviceType(**next)) : nullptr;
+    const meta::Type* ty = isMetaDevice(**next) ? meta::findType(metaDeviceType(**next)) : nullptr;
     port = ty != nullptr && !ty->outputs.empty() ? std::string(ty->outputs.front().name)
            : isGroupDevice(**next)                  ? std::string("y")
                                                     : std::string(kMainPort);

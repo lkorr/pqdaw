@@ -12,7 +12,6 @@
 #include <string_view>
 #include <utility>
 
-#include "pq/app/device_player.h"
 #include "pq/views/devices/analysis.h"
 #include "pq/app/startup.h"
 #include "pq/compile/compile.h"

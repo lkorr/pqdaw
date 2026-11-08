@@ -1,22 +1,17 @@
 // GU.4 (docs/plans/GU.md "Phases" 4): the Phase Accumulator and the VCA are group presets (pq/document/modules.h) —
-// renders against the meta modules they replace. tests/app/fixtures/gu4_modules/<case>/ holds a schema-21 project with
-// meta:phase_acc / meta:vca devices and its interpreter render, recorded on the code before GU.4 (04c59ffe + the
-// recorder this file replaced, commit 7b3a94f2): notes into a PA in an instrument group (pitch, amplitude, phase
-// offset, frequency), a free-running PA with its pm and its (wrapping) phase modulated, a wire taking a PA's frequency
-// below zero (the phase runs backwards: its curve is signed), the VCA's Log law at three positions, other ranges / zones
-// / the Bend curve / an unwired VCA as a value source, and a VCA's knob automated and wired (Log: in position; Bend:
-// in units).
-//   load        each file converts on load: no meta:phase_acc / meta:vca is left; every module is a group (the old
-//               device's id) of atom and value blocks, or (the unwired VCA) a Value block
+// renders against the meta modules they replaced. tests/app/fixtures/gu4_modules/<case>/ holds a project with the
+// presets and the interpreter render of the same project with the meta modules, recorded on the code before GU.4
+// (04c59ffe + the recorder this file replaced, commit 7b3a94f2); GU.f7 re-saved the projects as the load conversion
+// (deleted) made them: notes into a PA in an instrument group (pitch, amplitude, phase offset, frequency), a
+// free-running PA with its pm and its (wrapping) phase modulated, a wire taking a PA's frequency below zero (the phase
+// runs backwards: its curve is signed), the VCA's Log law at three positions, other ranges / zones / the Bend curve /
+// an unwired VCA as a value source, and a VCA's knob automated and wired (Log: in position; Bend: in units).
 //   renders     interpreter == JIT bit for bit; the Phase Accumulator cases equal their references bit for bit (the
 //               preset is the expansion's atoms, operand for operand); the VCA cases within −110 dB of the reference's
 //               peak: its law is a curve now (dsp::CurvePreset::Vca, the same function: tests/dsp/test_curve.cpp checks
 //               it against the old law to 1e-15 of the range), evaluated in double on the UI thread and rounded once,
-//               where the module computed it in float atoms — e^(K·u) with K ≈ 10 on a float u: a few float ulps of
-//               relative error per VCA, three in series here (QUESTIONS Q?-GU.4-a); `mul` where it had the 2 ms gain
+//               where the module computed it in float atoms (QUESTIONS Q?-GU.4-a); `mul` where it had the 2 ms gain
 //   circuit     an opened VCA is In → mul ← Value → Out
-//   conversion  a wire (into pm and phase: the inner add and value block), a lane (the knob's: onto the value block),
-//               a macro (a module inside a rack chain: refused, with the reason)
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -137,7 +132,7 @@ const Device* member(const Project& p, DeviceId group, std::string_view name) {
 
 }  // namespace
 
-TEST_CASE("GU.4 modules: the files convert on load; the presets render as the meta modules (PA diff 0, VCA ≤ −110 dB)") {
+TEST_CASE("GU.4 modules: the presets render as the meta modules (PA diff 0, VCA ≤ −110 dB)") {
   for (const bool pa : {true, false})
     for (const char* n : pa ? std::span<const char* const>(kPaCases) : std::span<const char* const>(kVcaCases)) {
       const std::string name = n;
@@ -194,7 +189,7 @@ TEST_CASE("GU.4 modules: an opened VCA is In → mul ← Value → Out; the knob
   CHECK(dsp::evalCurve(*value->curve(kValueParam), 0.62) == doctest::Approx(0.6).epsilon(1e-9));
   // The path: … → PA → VCA → VCA → VCA → mixer, the groups by their main ports, as the meta modules were.
   CHECK(into(*s, vca->id, "").size() == 1);
-  // Saved again it is the same project (no retired device left to convert), without the library.
+  // Saved again it is the same project, without the library.
   auto text = serializeProject(*s);
   REQUIRE(text.ok());
   auto back = parseProject(*text);
@@ -202,80 +197,7 @@ TEST_CASE("GU.4 modules: an opened VCA is In → mul ← Value → Out; the knob
   CHECK(*back->project == *s);
 }
 
-TEST_CASE("GU.4 modules: conversion — wires into pm / phase, a lane on the knob, the unwired VCA, a module in a rack") {
-  // Wires: pa_free's PA (6) had wires into `pm` and `phase`; now into its "+ pm" add's b and its Phase value block.
-  const Snapshot f = loadCase("pa_free");
-  const Device* pa = byId(*f, DeviceId{6});
-  REQUIRE(pa != nullptr);
-  REQUIRE(isGroupDevice(*pa));
-  const Device* pm = member(*f, pa->id, "+ pm");
-  const Device* phase = member(*f, pa->id, kPaPhase);
-  REQUIRE(pm != nullptr);
-  REQUIRE(phase != nullptr);
-  CHECK(into(*f, pa->id, "pm").empty());
-  CHECK(into(*f, pa->id, "phase").empty());
-  const std::vector<Wire> wpm = into(*f, pm->id, "b"), wph = into(*f, phase->id, kValueParam);
-  REQUIRE(wpm.size() == 1);
-  CHECK(wpm[0].id == WireId{12});  // the old wire, its id kept
-  REQUIRE(wph.size() == 1);
-  CHECK(wph[0].id == WireId{16});
-  // The PA's value blocks: Frequency signed (a wire below zero runs it backwards), Phase wrapping.
-  const Device* freq = member(*f, pa->id, kPaFrequency);
-  REQUIRE(freq != nullptr);
-  REQUIRE(freq->curve(kValueParam) != nullptr);
-  CHECK(freq->curve(kValueParam)->mode == dsp::CurveMode::Signed);
-  CHECK(dsp::evalCurve(*freq->curve(kValueParam), -0.5) == -dsp::evalCurve(*freq->curve(kValueParam), 0.5));
-  REQUIRE(phase->curve(kValueParam) != nullptr);
-  CHECK(phase->curve(kValueParam)->mode == dsp::CurveMode::Wrap);
-  CHECK(dsp::evalCurve(*phase->curve(kValueParam), 1.25) == doctest::Approx(0.25));
-  // A PA nothing feeds `pm` into has no pm add (an unused input costs no op).
-  const Snapshot sg = loadCase("pa_signed");
-  CHECK(member(*sg, DeviceId{6}, "+ pm") == nullptr);
-  // A lane: vca_driven's lane on the first VCA's knob (9) is on its value block now, the same breakpoints.
-  const Snapshot dv = loadCase("vca_driven");
-  const Device* v9 = byId(*dv, DeviceId{9});
-  REQUIRE(v9 != nullptr);
-  const Device* knob = member(*dv, v9->id, kVcaValueName);
-  REQUIRE(knob != nullptr);
-  const AutomationLane* lane = nullptr;
-  forEachTrack(*dv, [&](const Track& t, const Track*) {
-    for (const LanePtr& l : t.lanes) lane = l.get();
-  });
-  REQUIRE(lane != nullptr);
-  CHECK(lane->param == ParamRef::device(knob->id, kValueParam));
-  CHECK(lane->paramName == kValueParam);
-  REQUIRE(lane->points.size() == 3);
-  CHECK(lane->points[1].value == doctest::Approx(0.9f));
-  // The Bend-curve VCA's wire (into its knob) adds in units after the curve, as it did: a Units wire now.
-  const Device* v23 = byId(*dv, DeviceId{23});
-  REQUIRE(v23 != nullptr);
-  const Device* bendKnob = member(*dv, v23->id, kVcaValueName);
-  REQUIRE(bendKnob != nullptr);
-  const std::vector<Wire> wb = into(*dv, bendKnob->id, kValueParam);
-  REQUIRE(wb.size() == 1);
-  CHECK(wb[0].law == WireLaw::Units);
-  // The Log-curve VCA's wire stays an Add wire (it adds to the knob's position through the curve).
-  const Device* v12 = byId(*dv, DeviceId{12});
-  REQUIRE(v12 != nullptr);
-  const std::vector<Wire> wl = into(*dv, member(*dv, v12->id, kVcaValueName)->id, kValueParam);
-  REQUIRE(wl.size() == 1);
-  CHECK(wl[0].law == WireLaw::Add);
-  // The unwired VCA (vca_ranges' 18: a constant source of its value) is a Value block with its curve and knob.
-  const Snapshot rg = loadCase("vca_ranges");
-  const Device* src = byId(*rg, DeviceId{18});
-  REQUIRE(src != nullptr);
-  CHECK(isValueDevice(*src));
-  REQUIRE(src->curve(kValueParam) != nullptr);
-  // 20 … 20000: the VCA law's positive outer, split at its +100 marker (GU.5b, dsp::splitCurveAt: the same function)
-  const dsp::Curve& law = *src->curve(kValueParam);
-  CHECK(law.segments == 2);
-  CHECK(dsp::evalCurve(law, law.points[1].t) == doctest::Approx(100.0));
-  for (int k = 1; k <= 64; ++k) CHECK(dsp::evalCurve(law, k / 64.0) > dsp::evalCurve(law, (k - 1) / 64.0));
-  CHECK(dsp::evalCurve(*src->curve(kValueParam), 0.0) == doctest::Approx(20.0));
-  CHECK(dsp::evalCurve(*src->curve(kValueParam), 1.0) == doctest::Approx(20000.0));
-}
-
-TEST_CASE("GU.4 modules: a preset of a retired module loads as its group preset; the built-in presets are valid") {
+TEST_CASE("GU.4 modules: the built-in presets are valid") {
   // The built-in presets paste into a track and validate (the commands' checks), each with its panel.
   DocumentStore store;
   auto t = ops::createTrack(*store.current(), store.ids(), TrackKind::Audio);
@@ -293,16 +215,6 @@ TEST_CASE("GU.4 modules: a preset of a retired module loads as its group preset;
     CHECK(findModule(m.key) == &m);
     CHECK(findModule(m.name) == &m);
   }
-  // A .pqpreset of a VCA saved before GU.4 (one meta device) is the VCA group preset now.
-  Device old = *makeDevice(DeviceId{3}, "meta:vca", DeviceKind::AudioEffect);
-  old.meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", MetaInstance{"vca", 1, {}, {}, nullptr}}});
-  old.params = {DeviceValue{"value", 0.62}};
-  auto text = serializePreset(old, "Old VCA");
-  REQUIRE(text.ok());
-  auto f = parsePreset(*text, "Old VCA.pqpreset");
-  REQUIRE_MESSAGE(f.ok(), (f.ok() ? std::string() : f.error().message));
-  REQUIRE(f->groupPreset());
-  CHECK(isGroupDevice(*f->device));
-  CHECK(f->blocks.devices.size() == 3);  // the group, its value block, its mul
 }
+
 

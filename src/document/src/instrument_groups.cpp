@@ -9,14 +9,10 @@
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
-#include "pq/meta/retired.h"
 
 namespace pq::doc {
 
 namespace {
-
-// A stock instrument or an Instrument Rack: a block whose own code is per voice (its main input is notes).
-bool playsNotes(const Device& d) noexcept { return !isMetaDevice(d) && !isGroupDevice(d) && d.kind == DeviceKind::Instrument; }
 
 bool midiTrack(const Project& p, TrackId t) {
   const Track* x = findTrackPtr(p, t);
@@ -49,7 +45,7 @@ VoiceContexts voiceContexts(const Project& p) {
   VoiceContexts out;
   bool any = false;
   forEachTrack(p, [&](const Track& t, const Track*) {
-    for (const DevicePtr& d : t.devices) any = any || isGroupDevice(*d) || playsNotes(*d);
+    for (const DevicePtr& d : t.devices) any = any || isGroupDevice(*d);
   });
   if (!any) return out;
   std::unordered_map<uint32_t, std::vector<const Wire*>> feeds;  // block id → notes cables into it (id order)
@@ -71,7 +67,6 @@ VoiceContexts voiceContexts(const Project& p) {
       }
     c.block = &d;
     c.home = &t;
-    c.group = isGroupDevice(d);
     c.onPath = onPath;
     if (cross != nullptr) {
       c.source = cross->noteSource;
@@ -98,7 +93,7 @@ VoiceContexts voiceContexts(const Project& p) {
           head = b;
           break;
         }
-    // Instrument groups first (their members are not lone instruments). GU.2 (docs/plans/GU.md "Nesting and instrument
+    // GU.2 (docs/plans/GU.md "Nesting and instrument
     // groups"): only the OUTERMOST group fed notes is an instrument — a group inside one is a plain member that runs
     // per note because its parent does (it never voices again); a group fed notes inside a plain group is one. Outer
     // groups first (by depth), so a group's ancestors are decided before it.
@@ -120,8 +115,7 @@ VoiceContexts voiceContexts(const Project& p) {
       uint32_t found = UINT32_MAX;
       const Device* at = &d;
       for (uint32_t step = 0; at->group.valid() && step < kMaxGroupDepth; ++step) {
-        if (const auto it = out.byBlock.find(at->group.value); it != out.byBlock.end() && out.list[it->second].group)
-          found = it->second;
+        if (const auto it = out.byBlock.find(at->group.value); it != out.byBlock.end()) found = it->second;
         const int32_t gi = t.deviceIndex(at->group);
         if (gi < 0) break;
         at = t.devices[static_cast<size_t>(gi)].get();
@@ -138,25 +132,17 @@ VoiceContexts voiceContexts(const Project& p) {
       out.byBlock.emplace(d->id.value, i);
       groups.insert(d->id.value);
     }
-    for (const DevicePtr& d : t.devices) {
-      if (d->group.valid() && !groups.empty())
-        if (const uint32_t ctx = contextAbove(*d); ctx != UINT32_MAX) {
-          out.byMember.emplace(d->id.value, ctx);  // GU.2: a member at any depth runs in its outermost instrument group
-          continue;
-        }
-      if (!playsNotes(*d) || !d->active) continue;
-      VoiceContext c;
-      if (!contextFor(t, *d, head, path.contains(d->id), c)) continue;
-      out.byBlock.emplace(d->id.value, static_cast<uint32_t>(out.list.size()));
-      out.list.push_back(c);
-    }
+    if (!groups.empty())
+      for (const DevicePtr& d : t.devices)
+        if (d->group.valid())
+          if (const uint32_t ctx = contextAbove(*d); ctx != UINT32_MAX)
+            out.byMember.emplace(d->id.value, ctx);  // GU.2: a member at any depth runs in its outermost instrument group
   });
   return out;
 }
 
 bool isInstrumentGroup(const Project& p, DeviceId d) {
-  const VoiceContext* c = voiceContexts(p).blockOf(d);
-  return c != nullptr && c->group;
+  return voiceContexts(p).blockOf(d) != nullptr;
 }
 
 // ---- Migration 17 → 18 ----------------------------------------------------------------------------------------------
@@ -174,7 +160,7 @@ struct TrackPlan {
 };
 
 std::string firstOutput(const Device& d) {
-  const meta::Type* t = isMetaDevice(d) ? meta::findTypeOrRetired(metaDeviceType(d)) : nullptr;
+  const meta::Type* t = isMetaDevice(d) ? meta::findType(metaDeviceType(d)) : nullptr;
   return t != nullptr && !t->outputs.empty() ? std::string(t->outputs.front().name) : std::string();
 }
 
@@ -231,7 +217,7 @@ bool migrateToInstrumentGroups(Project& p, IdSource* given) {
     return nullptr;
   };
   auto isMetaOff = [&](const Device& d, const MainPath& path) {
-    return isMetaDevice(d) && d.active && !d.group.valid() && !path.contains(d.id) && meta::findTypeOrRetired(metaDeviceType(d)) != nullptr;
+    return isMetaDevice(d) && d.active && !d.group.valid() && !path.contains(d.id) && meta::findType(metaDeviceType(d)) != nullptr;
   };
   auto newGroup = [&](TrackPlan& pl, uint32_t index) {
     const DeviceId g = ids.device();
@@ -260,8 +246,6 @@ bool migrateToInstrumentGroups(Project& p, IdSource* given) {
     if (head != nullptr) {
       if (isGroupDevice(*head)) {
         existing = head->id;
-      } else if (playsNotes(*head)) {
-        series.push_back(head);
       } else if (isMetaDevice(*head)) {
         const ChainStage* s = stageOf(head);
         if (s != nullptr && s->in == ChainSignal::Notes) {
@@ -345,16 +329,11 @@ bool migrateToInstrumentGroups(Project& p, IdSource* given) {
       std::string port(kGroupInPort);
       for (const Device* d : series) {
         std::string in, out;
-        bool plugged = true;
-        if (playsNotes(*d)) {
-          in = out = std::string(kMainPort);  // an instrument's main input is its notes, its main output its sound
-        } else {
-          const meta::Type* ty = meta::findTypeOrRetired(metaDeviceType(*d));
-          const int32_t ci = ty != nullptr ? metaChainInput(*d, *ty) : -1;
-          plugged = ci >= 0;
-          if (plugged) in = std::string(ty->inputs[static_cast<size_t>(ci)].name);
-          out = firstOutput(*d);
-        }
+        const meta::Type* ty = meta::findType(metaDeviceType(*d));
+        const int32_t ci = ty != nullptr ? metaChainInput(*d, *ty) : -1;
+        const bool plugged = ci >= 0;
+        if (plugged) in = std::string(ty->inputs[static_cast<size_t>(ci)].name);
+        out = firstOutput(*d);
         if (plugged) {
           Wire w = makeWire(ids.wire());
           w.from = at;
@@ -390,7 +369,7 @@ bool migrateToInstrumentGroups(Project& p, IdSource* given) {
     for (const DevicePtr& dp : t.devices) {
       const Device& d = *dp;
       if (placed.count(d.id.value) != 0 || !isMetaOff(d, path)) continue;
-      const meta::Type* ty = meta::findTypeOrRetired(metaDeviceType(d));
+      const meta::Type* ty = meta::findType(metaDeviceType(d));
       TrackId src;
       for (const Wire& w : wiresOf(p))
         if (w.fromNoteSource() && w.port.empty() && w.to == d.id && w.noteSource != t.id && midiTrack(p, w.noteSource) &&

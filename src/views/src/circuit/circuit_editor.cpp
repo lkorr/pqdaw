@@ -405,14 +405,6 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
   back_ = &bar.add<ui::Button>("back", "Back");
   back_->setWidth(ui::Length::fixed(48));
   back_->onClick = [this] { (void)back(); };
-  // T5.x-circuit-chain: Track · (this) Device, the breadcrumb's levels; Track is shown only for a project device.
-  track_ = &bar.add<ui::Button>("track", "Track");
-  track_->setWidth(ui::Length::fixed(48));
-  track_->setTooltip("The whole track's chain as one circuit (read-only), focused on this device");
-  track_->setVisible(false);
-  track_->onClick = [this] {
-    if (trackAction_) trackAction_();
-  };
   title_ = &bar.add<ui::Label>("title", "", ui::FontRoleId::Small, ui::TextTone::Primary);
   title_->setWidth(ui::Length::flex());
   play_ = &bar.add<ui::Toggle>("play", "Play", ui::ToggleStyle::Accent, false);
@@ -445,7 +437,7 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
   auto& close = bar.add<ui::Button>("close", "Close");
   close.setWidth(ui::Length::fixed(48));
   close.onClick = [this] {
-    if (!host_ && doc_->dirty() && !closeArmed_) {
+    if (doc_->dirty() && !closeArmed_) {
       closeArmed_ = true;
       setStatus("Unsaved changes: Save keeps them; Close again closes without saving.");
       return;
@@ -471,13 +463,6 @@ CircuitEditor::CircuitEditor(std::unique_ptr<PatchEditor> document) : Popover("c
   };
   doc_->onChange = [this](const EditorChange& c) { documentChanged(c); };
   canvas_->onOpen = [this](uint32_t node) { (void)openNode(node); };
-  // TMM.4: a meta call's face edits the instance the host addresses (a project device: its document state), only in
-  // the patch the editor opened on (its root: the name path is the call's binding name there).
-  canvas_->faceBinder = [this](const SceneFace& f) {
-    CircuitCanvas::FaceBinding b;
-    if (host_ != nullptr && f.type != nullptr && backStack_.empty() && !readOnly()) b.target = host_->metaTarget(shown_, f.path, *f.type);
-    return b;
-  };
   canvas_->onMove = [this](std::vector<uint32_t> nodes, float dx, float dy) {
     const size_t idx = shownIndex();
     if (idx == graph::kNone) return;
@@ -515,7 +500,6 @@ CircuitEditor::~CircuitEditor() {
     if (PatchPlayer* pl = doc_->player()) pl->setMetering(false);
     doc_->setPlayer(nullptr);
   }
-  host_.reset();  // T4.4-fix1: then the host (it may own the player), before the document it observes
 }
 
 size_t CircuitEditor::shownIndex() const noexcept { return doc_->patchIndex(shown_); }
@@ -535,10 +519,10 @@ void CircuitEditor::setStatus(std::string s) {
 void CircuitEditor::updateTitle() {
   std::string file = doc_->path();
   if (const size_t k = file.find_last_of("/\\"); k != std::string::npos) file = file.substr(k + 1);
-  titleText_ = host_ ? host_->title() : file;
+  titleText_ = file;
   for (const std::string& q : backStack_) titleText_ += " \xE2\x80\xBA " + q;
   titleText_ += " \xE2\x80\xBA " + shown_;
-  if (!host_ && doc_->dirty()) titleText_ += " \xE2\x80\xA2";  // M4 review L14: the unsaved dot after the breadcrumb
+  if (doc_->dirty()) titleText_ += " \xE2\x80\xA2";  // M4 review L14: the unsaved dot after the breadcrumb
   if (readOnly()) titleText_ += "  (imported: read-only)";
   title_->setText(titleText_);
   back_->setEnabled(!backStack_.empty());
@@ -718,12 +702,6 @@ void CircuitEditor::scheduleCheck() {
 }
 
 void CircuitEditor::onTimer(uint32_t id) {
-  if (id == closeTimer_) {  // T4.4-fix1: closeSoon
-    closeTimer_ = 0;
-    if (doc_->playing()) doc_->stop();
-    if (ui::OverlayLayer* layer = ui::OverlayLayer::of(*this)) layer->close(*this);
-    return;  // `this` may be gone
-  }
   if (id == tipTimer_) {  // T4.15: the pointer rested on a node
     tipTimer_ = 0;
     const ui::UiTree* t = tree();
@@ -769,9 +747,6 @@ void CircuitEditor::checkNow() {
   if (!doc_->playing() && idx == graph::kNone) idx = 0;
   const Status s = doc_->check(idx);
   if (!s && doc_->playing()) setStatus("Not swapped (the last good version keeps playing): " + s.error().message);
-  else if (s && doc_->playing() && host_) {
-    if (statusText_.empty()) setStatus("The project plays the edit (only this track recompiles).");
-  }
   else if (s && doc_->playing()) setStatus("Playing " + doc_->playingPatch() + ": swapped in the edit");
 }
 
@@ -852,32 +827,10 @@ bool CircuitEditor::makeParam() {
   return true;
 }
 
-bool CircuitEditor::undo() { return host_ ? host_->undo() : doc_->undo(); }
-bool CircuitEditor::redo() { return host_ ? host_->redo() : doc_->redo(); }
-
-void CircuitEditor::setHost(std::unique_ptr<Host> host) {
-  host_ = std::move(host);
-  const bool device = host_ != nullptr;
-  if (save_) save_->setVisible(!device);
-  if (play_) play_->setVisible(!device);
-  updateTitle();
-  canvas_->rebindFaces();  // TMM.4: the host addresses the faces' state
-}
-
-void CircuitEditor::setTrackAction(std::function<void()> action) {
-  trackAction_ = std::move(action);
-  track_->setVisible(static_cast<bool>(trackAction_));
-}
-
-void CircuitEditor::closeSoon() {
-  if (!closeTimer_) closeTimer_ = requestTimer(0.0);
-}
+bool CircuitEditor::undo() { return doc_->undo(); }
+bool CircuitEditor::redo() { return doc_->redo(); }
 
 bool CircuitEditor::save() {
-  if (host_) {  // T4.4-fix1: the project holds the device's text
-    setStatus("This device's patch is part of the project: File > Save Set saves it.");
-    return false;
-  }
   if (Status s = doc_->save(); !s) {
     setStatus("Not saved: " + s.error().message);
     return false;
@@ -907,8 +860,7 @@ bool CircuitEditor::togglePlay() {
     updateTitle();
     return false;
   }
-  setStatus(host_ ? "Edits play in the project at once; hover a wire to probe it as the project plays it, Cost to measure it."
-                  : "Playing " + doc_->playingPatch() + ": edits swap in as you make them.");
+  setStatus("Playing " + doc_->playingPatch() + ": edits swap in as you make them.");
   refreshProbes(true);  // T4.5: the LED trace of the bool wires (a second, bit-identical program)
   if (costShown() && !costTimer_) costTimer_ = requestTimer(0.25);
   updateTitle();
@@ -1060,7 +1012,7 @@ bool CircuitEditor::onKey(const ui::KeyEvent& e) {
       if (tree()) tree()->setFocus(canvas_);
       return true;
     }
-    if (!host_ && doc_->dirty() && !closeArmed_) {
+    if (doc_->dirty() && !closeArmed_) {
       closeArmed_ = true;
       setStatus("Unsaved changes: Ctrl+S saves; Esc again closes without saving.");
       return true;
@@ -1071,12 +1023,6 @@ bool CircuitEditor::onKey(const ui::KeyEvent& e) {
 }
 
 ui::InfoText CircuitEditor::info() const {
-  if (host_)
-    return {"Circuit Editor: " + host_->title(),
-            "Drag pins to wire, drag nodes to move, double-click to add or rename. The text on the right is the same patch: "
-            "edit either. Edits play at once and belong to the project (the first one makes this device the track's own "
-            "copy); Ctrl+Z undoes them like any other edit. Rest the pointer on a node to see what it is; Inactive shows "
-            "the branches a structural constant switches off."};
   return {"Circuit Editor",
           "Drag pins to wire, drag nodes to move, double-click to add or rename. The text on the right is the same patch: "
           "edit either. Ctrl+Z undoes both, Ctrl+S saves, Ctrl+Enter plays. Rest the pointer on a node to see what it is; "

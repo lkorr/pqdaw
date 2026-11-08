@@ -1,5 +1,4 @@
-// GU.4: the built-in modules (group presets) and the load conversion of the retired meta modules:
-// pq/document/modules.h.
+// GU.4: the built-in modules (group presets): pq/document/modules.h.
 #include "pq/document/modules.h"
 
 #include <algorithm>
@@ -15,7 +14,6 @@
 
 #include "pq/document/panel.h"
 #include "pq/meta/registry.h"
-#include "pq/meta/retired.h"
 
 namespace pq::doc {
 
@@ -130,7 +128,7 @@ const ModuleInfo* findModule(std::string_view key) noexcept {
 }
 
 dsp::Curve phaseAccumulatorCurve(std::string_view control) {
-  // The retired meta module's declared curves (meta::paramCurve of pq/meta/retired.h's specs, written out).
+  // The old Phase accumulator meta module's declared curves, written out.
   if (control == kPaFrequency) {
     dsp::Curve c = withUnit(dsp::curvePreset(dsp::CurvePreset::Exp0, 0.0, 20000.0, 14.0), dsp::CurveUnit::Hz);
     c.mode = dsp::CurveMode::Signed;
@@ -173,8 +171,6 @@ BlockSet phaseAccumulatorBlocks(IdSource& ids, const PhaseAccumulatorOptions& o,
   r.pitched = b.atom("mul", "× ratio");
   r.phasor = b.atom("phasor", "phasor");
   r.addPhase = b.atom("add", "+ phase");
-  const bool pm = o.pm || o.feed == PhaseAccumulatorOptions::Feed::Pm;
-  if (pm) r.pm = b.atom("add", "+ pm");
   r.frac = b.atom("frac", "frac");
   r.out = b.atom("mul", "× amp");
   const std::string y(kValueOutput);
@@ -187,13 +183,7 @@ BlockSet phaseAccumulatorBlocks(IdSource& ids, const PhaseAccumulatorOptions& o,
   b.wire(r.pitched, "out", r.phasor, "hz");
   b.wire(r.phasor, "out", r.addPhase, "a");
   b.wire(r.phase, y, r.addPhase, "b");
-  if (pm) {
-    b.wire(r.addPhase, "out", r.pm, "a");
-    if (o.feed == PhaseAccumulatorOptions::Feed::Pm) b.wire(r.group, kGroupInPort, r.pm, "b");
-    b.wire(r.pm, "out", r.frac, "x");
-  } else {
-    b.wire(r.addPhase, "out", r.frac, "x");
-  }
+  b.wire(r.addPhase, "out", r.frac, "x");
   b.wire(r.amp, y, r.out, "a");
   b.wire(r.frac, "out", r.out, "b");
   b.wire(r.out, "out", r.group, kGroupOutPort);
@@ -886,10 +876,10 @@ void sortWires(BlockSet& s) {
 // One voice: In → [× Coarse] → Phase Accumulator → Wavetable (its default table, a sine) → Envelope (Amount = `level`)
 // → Out, inside group `group` (an operator of Operator, or the default instrument).
 struct VoiceRoles {
-  DeviceId coarse, pa, pitch, phase, pm, wavetable, wavetableGroup, envelope, envelopeGroup;
+  DeviceId coarse, pa, pitch, phase, wavetable, wavetableGroup, envelope, envelopeGroup;
 };
 BlockSet voiceChain(IdSource& ids, DeviceId group, bool coarse, double level, VoiceRoles& r, std::string_view suffix = {},
-                    bool toOut = true, bool pm = false) {
+                    bool toOut = true) {
   Kit k(ids, group);
   const std::string sfx = suffix.empty() ? std::string() : " " + std::string(suffix);
   Sig feed = k.in();
@@ -904,13 +894,11 @@ BlockSet voiceChain(IdSource& ids, DeviceId group, bool coarse, double level, Vo
   PhaseAccumulatorRoles pr;
   PhaseAccumulatorOptions po;
   po.inGroup = group;
-  po.pm = pm;  // (the Phase Accumulator's phase-modulation add: its `b` takes the modulator)
   if (!sfx.empty()) po.name = "Phase Accumulator" + sfx;
   BlockSet pa = phaseAccumulatorBlocks(ids, po, &pr);
   r.pa = pr.group;
   r.pitch = pr.pitch;
   r.phase = pr.phase;
-  r.pm = pr.pm;
   EngineRoles wr, er;
   EngineModuleOptions eo;
   eo.inGroup = group;
@@ -959,9 +947,10 @@ BlockSet operatorBlocks(IdSource& ids, const StockModuleOptions& o) {
   // QUESTIONS Q?-GU.10-a.)
   constexpr std::array<const char*, 4> kOps = {"A", "B", "C", "D"};
   std::array<VoiceRoles, 4> roles{};
-  for (size_t i = 0; i < 4; ++i) append(out, voiceChain(ids, group, true, i == 0 ? 1.0 : 0.0, roles[i], kOps[i], i == 0, i < 3));
+  for (size_t i = 0; i < 4; ++i) append(out, voiceChain(ids, group, true, i == 0 ? 1.0 : 0.0, roles[i], kOps[i], i == 0));
   Builder b{ids, {}, group};
-  for (size_t i = 3; i > 0; --i) b.wire(roles[i].envelopeGroup, kMainPort, roles[i - 1].pm, "b");
+  // GU.f7: a plain per-voice cable into the Phase control (GU.f5: a modulation tap never ends a voice).
+  for (size_t i = 3; i > 0; --i) b.wire(roles[i].envelopeGroup, kMainPort, roles[i - 1].phase, std::string(kValueParam));
   for (Wire& w : b.set.wires) out.wires.push_back(std::move(w));
   sortWires(out);
   // The panel: the old face's oscillator rows (A … D: Coarse, Fine, Level) and its envelope display under the A … D
@@ -1015,290 +1004,6 @@ BlockSet defaultInstrumentBlocks(IdSource& ids, const StockModuleOptions& o) {
   append(out, voiceChain(ids, group, false, 0.25, r));
   sortWires(out);
   return out;
-}
-
-// ==== Load conversion =================================================================================================
-
-namespace {
-
-// A group's chain ports by name (groupPatchText: `in x`, `out y`; edit_groups chainPortsOf, what Ctrl+G's links name).
-constexpr std::string_view kGroupChainIn = "x";
-constexpr std::string_view kGroupChainOut = "y";
-
-bool retired(const Device& d) noexcept {
-  return isMetaDevice(d) && meta::findType(metaDeviceType(d)) == nullptr && meta::findRetiredType(metaDeviceType(d)) != nullptr;
-}
-
-// A retired param's value in units (its stored knob position through its declared curve; absent: its default).
-double unitsOf(const Device& d, const meta::Type& t, std::string_view name) {
-  const int32_t i = t.paramIndex(name);
-  if (i < 0) return 0.0;
-  const meta::ParamSpec& s = t.params[static_cast<size_t>(i)];
-  if (const DeviceValue* v = d.param(name)) return dsp::evalCurve(meta::paramCurve(s), v->value);
-  return s.def;
-}
-double positionOf(const Device& d, const meta::Type& t, std::string_view name) {
-  const int32_t i = t.paramIndex(name);
-  if (const DeviceValue* v = d.param(name)) return v->value;
-  return i < 0 ? 0.0 : dsp::curvePosition(meta::paramCurve(t.params[static_cast<size_t>(i)]), t.params[static_cast<size_t>(i)].def, 0.0);
-}
-
-// The old VCA's law as a curve (markers aside) and whether it was its Bend curve.
-dsp::Curve oldVcaCurve(const Device& d, const meta::Type& t, bool& bendCurve) {
-  const double lo = unitsOf(d, t, "min"), max = unitsOf(d, t, "max");
-  const DeviceValue* cs = d.setting("curve");
-  bendCurve = cs != nullptr && std::lround(cs->value) == 1;
-  if (!bendCurve) return vcaCurve(lo, max, unitsOf(d, t, "zone"));
-  const double hi = std::max(max, lo);
-  const double k = meta::kRetiredVcaBendK * std::clamp(unitsOf(d, t, "bend"), -1.0, 1.0);
-  if (std::fabs(k) < meta::kRetiredVcaLinearK) return dsp::curvePreset(dsp::CurvePreset::Linear, lo, hi);
-  // lo + (hi − lo)·(e^(K·p) − 1)/(e^K − 1): one Exp segment of bend K (the Exponential / Logarithmic presets' form).
-  return dsp::curvePreset(k > 0.0 ? dsp::CurvePreset::Exponential : dsp::CurvePreset::Logarithmic, lo, hi, std::fabs(k));
-}
-
-// Where an old device's ends go.
-struct Target {
-  DeviceId device;
-  std::string port;  // a param / input (into), an output (out of)
-  bool drop = false;
-  bool units = false;  // an Add wire becomes a Units wire (the VCA's Bend curve)
-};
-struct Converted {
-  std::vector<DevicePtr> devices;  // the replacement (the group first) in list order
-  WireList internal;
-  std::unordered_map<std::string, Target> into;  // by the old param / input name ("" = the main input)
-  Target out;                                    // the old outputs ("" and "out")
-  std::unordered_map<std::string, DeviceId> controls;  // old param → its value block (lanes)
-};
-
-bool wiredInto(const Project& p, DeviceId d, std::string_view param) {
-  for (const Wire& w : wiresOf(p))
-    if (w.to == d && !w.toMixer() && w.param == param) return true;
-  return false;
-}
-
-Converted convertPa(const Project& p, const Device& d, IdSource& ids, BlockSet* presetOut = nullptr) {
-  const meta::Type& t = *meta::findRetiredType(meta::kRetiredPhaseAcc);
-  PhaseAccumulatorOptions o;
-  o.id = d.id;
-  o.inGroup = d.group;
-  o.name = d.name;
-  o.active = d.active;
-  o.freq = positionOf(d, t, "freq");
-  o.phase = positionOf(d, t, "phase");
-  o.amp = positionOf(d, t, "amp");
-  o.pitch = positionOf(d, t, "pitch");
-  if (d.curve("pitch") == nullptr) {
-    // The module's Pitch curve is not the retired type's (GU.5b's arc scale): keep the pitch in cents, not the position.
-    const int32_t i = t.paramIndex("pitch");
-    if (i >= 0) {
-      const double cents = dsp::evalCurve(meta::paramCurve(t.params[static_cast<size_t>(i)]), o.pitch);
-      o.pitch = dsp::curvePosition(phaseAccumulatorCurve(kPaPitch), cents, o.pitch);
-    }
-  }
-  if (const dsp::Curve* c = d.curve("freq")) o.freqCurve = *c;
-  if (const dsp::Curve* c = d.curve("phase")) o.phaseCurve = *c;
-  if (const dsp::Curve* c = d.curve("amp")) o.ampCurve = *c;
-  if (const dsp::Curve* c = d.curve("pitch")) o.pitchCurve = *c;
-  // The chain input (the main input): the type's own (hz). (GU.11: a device's own choice of it is gone.)
-  o.feed = PhaseAccumulatorOptions::Feed::Hz;
-  o.pm = wiredInto(p, d.id, "pm");
-  PhaseAccumulatorRoles r;
-  BlockSet set = phaseAccumulatorBlocks(ids, o, &r);
-  Converted c;
-  c.devices = set.devices;
-  c.internal = set.wires;
-  const std::string vp(kValueParam);
-  c.into[""] = {r.group, ""};
-  // (A wire into the chain input by its name goes to the group's by its name, `x`: Ctrl+G's chain links name the ports.)
-  c.into["hz"] = o.feed == PhaseAccumulatorOptions::Feed::Hz ? Target{r.group, std::string(kGroupChainIn)} : Target{r.sum, "a"};
-  c.into["pm"] = o.feed == PhaseAccumulatorOptions::Feed::Pm ? Target{r.group, std::string(kGroupChainIn)} : Target{r.pm, "b"};
-  c.into["freq"] = {r.freq, vp};
-  c.into["phase"] = {r.phase, vp};
-  c.into["amp"] = {r.amp, vp};
-  c.into["pitch"] = {r.pitch, vp};
-  c.controls = {{"freq", r.freq}, {"phase", r.phase}, {"amp", r.amp}, {"pitch", r.pitch}};
-  c.out = {r.group, std::string(kGroupChainOut)};
-  if (presetOut != nullptr) *presetOut = std::move(set);
-  return c;
-}
-
-Converted convertVca(const Project* p, const Device& d, IdSource& ids, BlockSet* presetOut = nullptr) {
-  const meta::Type& t = *meta::findRetiredType(meta::kRetiredVca);
-  bool bend = false;
-  const dsp::Curve curve = oldVcaCurve(d, t, bend);
-  const double pos = positionOf(d, t, "value");
-  // Whether anything fed `in` (its own wire, or the main input while it is the chain input): else the module was a
-  // constant source of its value (in read its default 1) — a Value block.
-  const bool plugged = true;  // GU.11: the type's own chain input (a device's own choice of it is gone)
-  bool fed = presetOut != nullptr;  // a preset: as the module (its wires come with its use)
-  if (p != nullptr)
-    for (const Wire& w : wiresOf(*p))
-      if (w.to == d.id && !w.toMixer() && (w.param == "in" || (plugged && w.param.empty()))) fed = true;
-  Converted c;
-  const std::string vp(kValueParam);
-  if (!fed) {
-    auto v = std::make_shared<Device>(*makeDevice(d.id, std::string(kValueDevice), DeviceKind::AudioEffect));
-    v->name = d.name.empty() ? std::string("VCA") : d.name;
-    v->group = d.group;
-    v->active = d.active;
-    v->params = {DeviceValue{vp, std::clamp(pos, 0.0, 1.0)}};
-    v->curves = {ControlCurve{vp, curve}};
-    c.devices = {v};
-    c.into["value"] = {d.id, vp, false, bend};
-    c.into[""] = {d.id, ""};  // (an unplugged VCA on a path: the link stays; a value block has no main input)
-    c.into["in"] = {d.id, "", true};
-    c.controls = {{"value", d.id}};
-    c.out = {d.id, "y"};
-    if (presetOut != nullptr) *presetOut = BlockSet{c.devices, {}};
-    return c;
-  }
-  VcaOptions o;
-  o.id = d.id;
-  o.inGroup = d.group;
-  o.name = d.name;
-  o.active = d.active;
-  o.value = pos;
-  o.curve = curve;
-  o.plugged = plugged;
-  VcaRoles r;
-  BlockSet set = vcaBlocks(ids, o, &r);
-  c.devices = set.devices;
-  c.internal = set.wires;
-  c.into[""] = {r.group, ""};
-  c.into["in"] = plugged ? Target{r.group, std::string(kGroupChainIn)} : Target{r.mul, "a"};
-  c.into["value"] = {r.value, vp, false, bend};
-  c.controls = {{"value", r.value}};
-  c.out = {r.group, std::string(kGroupChainOut)};
-  if (presetOut != nullptr) *presetOut = std::move(set);
-  return c;
-}
-
-void rebuildTracks(std::vector<TrackPtr>& list, const std::unordered_map<uint32_t, std::vector<DevicePtr>>& devices,
-                   const std::unordered_map<uint32_t, std::vector<LanePtr>>& lanes) {
-  for (TrackPtr& tp : list) {
-    std::vector<TrackPtr> children = tp->children;
-    rebuildTracks(children, devices, lanes);
-    const auto d = devices.find(tp->id.value);
-    const auto l = lanes.find(tp->id.value);
-    if (d == devices.end() && l == lanes.end() && children == tp->children) continue;
-    auto t = std::make_shared<Track>(*tp);
-    t->children = std::move(children);
-    if (d != devices.end()) t->devices = d->second;
-    if (l != lanes.end()) t->lanes = l->second;
-    tp = std::move(t);
-  }
-}
-
-}  // namespace
-
-bool holdsRetiredModules(const Project& p) noexcept {
-  bool any = false;
-  forEachTrack(p, [&](const Track& t, const Track*) {
-    for (const DevicePtr& d : t.devices)
-      if (retired(*d)) any = true;
-  });
-  return any;
-}
-
-Status convertRetiredModules(Project& p) {
-  if (!holdsRetiredModules(p)) return Ok{};
-  IdSource ids;
-  ids.reserveThrough(maxEntityId(p));
-  std::unordered_map<uint32_t, Converted> made;  // by old device id
-  std::unordered_map<uint32_t, std::vector<DevicePtr>> newDevices;
-  std::unordered_map<uint32_t, std::vector<LanePtr>> newLanes;
-  forEachTrack(p, [&](const Track& t, const Track*) {
-    bool changed = false;
-    std::vector<DevicePtr> list;
-    for (const DevicePtr& d : t.devices) {
-      if (!retired(*d)) {
-        list.push_back(d);
-        continue;
-      }
-      Converted c = metaDeviceType(*d) == meta::kRetiredPhaseAcc ? convertPa(p, *d, ids) : convertVca(&p, *d, ids);
-      for (const DevicePtr& x : c.devices) list.push_back(x);
-      made.emplace(d->id.value, std::move(c));
-      changed = true;
-    }
-    if (!changed) return;
-    newDevices[t.id.value] = std::move(list);
-    // Lanes of the old controls follow onto their value blocks; lanes of the curve's params go.
-    std::vector<LanePtr> lanes;
-    bool lanesChanged = false;
-    for (const LanePtr& l : t.lanes) {
-      const auto m = l->param.kind == ParamKind::DeviceParam ? made.find(l->param.owner) : made.end();
-      if (m == made.end()) {
-        lanes.push_back(l);
-        continue;
-      }
-      lanesChanged = true;
-      const auto ctl = m->second.controls.find(l->paramName);
-      if (ctl == m->second.controls.end()) continue;  // a VCA's min / max / zone / bend / marker: the curve holds it now
-      auto n = std::make_shared<AutomationLane>(*l);
-      n->param = ParamRef::device(ctl->second, kValueParam);
-      n->paramName = std::string(kValueParam);
-      lanes.push_back(std::move(n));
-    }
-    if (lanesChanged) newLanes[t.id.value] = std::move(lanes);
-  });
-  // Wires: ends on the old devices follow their targets; the modules' own wires join.
-  WireList wires;
-  for (const Wire& w0 : wiresOf(p)) {
-    Wire w = w0;
-    bool drop = false;
-    if (!w.fromNoteSource()) {
-      if (const auto m = made.find(w.from.value); m != made.end()) {
-        w.from = m->second.out.device;
-        if (!w.port.empty()) w.port = m->second.out.port;  // the main output stays the main output; `out` by its name
-      }
-    }
-    if (!w.toMixer()) {
-      if (const auto m = made.find(w.to.value); m != made.end()) {
-        const auto it = m->second.into.find(w.param);
-        if (it == m->second.into.end() || it->second.drop || !it->second.device.valid()) {
-          drop = true;
-        } else {
-          w.to = it->second.device;
-          w.param = it->second.port;
-          if (it->second.units && w.law == WireLaw::Add) w.law = WireLaw::Units;
-        }
-      }
-    }
-    if (!drop) wires.push_back(std::move(w));
-  }
-  for (auto& [id, c] : made)
-    for (const Wire& w : c.internal) wires.push_back(w);
-  std::sort(wires.begin(), wires.end(), [](const Wire& a, const Wire& b) { return a.id < b.id; });
-  rebuildTracks(p.tracks, newDevices, newLanes);
-  rebuildTracks(p.returns, newDevices, newLanes);
-  if (p.master) {
-    std::vector<TrackPtr> m{p.master};
-    rebuildTracks(m, newDevices, newLanes);
-    p.master = m.front();
-  }
-  p.wires = wires.empty() ? nullptr : std::make_shared<const WireList>(std::move(wires));
-  return Ok{};
-}
-
-std::optional<BlockSet> convertRetiredPreset(const Device& d) {
-  if (!retired(d)) return std::nullopt;
-  IdSource ids;
-  ids.reserveThrough(d.id.value);
-  BlockSet set;
-  if (metaDeviceType(d) == meta::kRetiredPhaseAcc) {
-    Project empty;
-    (void)convertPa(empty, d, ids, &set);
-  } else {
-    (void)convertVca(nullptr, d, ids, &set);
-  }
-  // A preset's top-level block is in no group.
-  if (!set.devices.empty() && set.devices.front()->group.valid()) {
-    auto g = std::make_shared<Device>(*set.devices.front());
-    g->group = {};
-    set.devices.front() = std::move(g);
-  }
-  return set;
 }
 
 }  // namespace pq::doc

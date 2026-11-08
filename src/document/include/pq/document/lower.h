@@ -44,8 +44,8 @@
 // VOICE CONTEXTS (IG.1-2; SPEC §15 2026-11-04 "instrument groups", 2026-11-06 "single-signal cables"; docs/plans/IG.md;
 // pq/document/instrument_groups.h). What runs per note is decided by structure alone: a block inside an INSTRUMENT
 // GROUP (a group whose main input is fed notes: it heads a MIDI track's path, or a notes cable enters it) runs per note
-// of that group's notes source; a LONE stock instrument or Instrument Rack fed notes is a context of its own (its code is
-// per voice). Everything else is single-signal. (The TMM.10 voice runs — meta modules continuing the notes along a
+// of that group's notes source (GU.f7: the lone stock instruments that were contexts of their own are gone). Everything
+// else is single-signal. (The TMM.10 voice runs — meta modules continuing the notes along a
 // path, the ChainNotes / ChainVoice forms on a track, "a stock device ends the voices" — are gone: a meta module on a
 // path is ChainAudio, global; heading a MIDI track's path it reads the NEWEST note, voice_last of the signal of its chain
 // input's meaning. Rack chains keep their forms.)
@@ -56,8 +56,8 @@
 //             One notes source per context: a notes cable from another MIDI track (lowest wire id) wins over the
 //             block's own track; any other notes into it are Inactive. (TX.cross-track's guests — g<e>_<o>,
 //             gp<X>_<pin>, phantoms, the 8-pin limit, the TwoInstruments refusal — are gone.)
-//   group     its call is GroupNotes: In gives the note's Hz / phase by the meaning of the input it reaches (a stock
-//             instrument member plays the notes through In or a notes cable of the same source), Out is per voice.
+//   group     its call is GroupNotes: In gives the note's Hz / phase by the meaning of the input it reaches, Out is
+//             per voice.
 //             Members run per note unless every input they have from inside the group is SINGLE-SIGNAL — a cable
 //             marked single (Wire::single, reduced by its reducer) or one from a member that runs once — then once
 //             (LDev::voice false, a fixpoint over the cables: Callees::perNote). A per-note member's single-signal
@@ -67,15 +67,14 @@
 //             voice_last). The group's `y` (what its main output gives) = voice_sum of Out's per-note terms (× the
 //             release ramp) + Out's single-signal terms added once (LWire::outGlobal).
 //   end       a group's voices end when every ender is done: the device whose output alone reaches Out's per-note
-//             terms (through pass-throughs: TX.scope-sound) when it is a voiceEnd meta type (the Envelope) or a
-//             stock instrument, and every stock instrument / Instrument Rack inside. Without an ender reaching Out the
-//             voices get the 5 ms linear release after note-off (kMetaReleaseSeconds: env = gate ? 1 : max(z1(env) −
-//             1/(0.005·sr), 0), done = !gate && env ≤ 0) and that ends them (with the instruments'). The track's
+//             terms (through pass-throughs: TX.scope-sound) when it is a voiceEnd meta type (the Envelope). Without
+//             an ender reaching Out the voices get the 5 ms linear release after note-off (kMetaReleaseSeconds: env =
+//             gate ? 1 : max(z1(env) − 1/(0.005·sr), 0), done = !gate && env ≤ 0) and that ends them. The track's
 //             `done` is the AND of every context lowered in its patch.
 //   voices    a track plays voices when its notes are played or read anywhere (a context's source, a note output wire,
 //             a notes cable into a meta module, a meta module heading its path); a unit whose patch then schedules no
 //             voice stage runs as a plain unit (project_compile). Its polyphony is the largest of its groups' `voices`
-//             settings (mono: 1) and its stock instruments' `voices`; its stealing the first group's `steal` setting
+//             settings (mono: 1); its stealing the first group's `steal` setting
 //             (ProjectTrack::steal; model.h "Instrument groups").
 //   loops     a delay-free loop entirely inside a context (per voice) or entirely outside plays (Delayed, z⁻¹); one
 //             that crosses a voice sum — out of a group (or through a single-signal cable) and back into per-note
@@ -340,23 +339,14 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // 1-sample delay; a per-voice source goes through the wire's reducer). A wire from a track's SOURCE with port "" is that
 // track's own signal (an audio track's clips, a group's / return's summed input; a MIDI track's notes: a notes cable,
 // below).
-// TX.all-free-fix1 (QUESTIONS Q208, Q?-TX.all-free-fix1-a): STOCK INSTRUMENTS AND RACKS ARE ORDINARY BLOCKS. A stock
-// instrument (or an Instrument Rack) is a block whose main input is notes: it plays the notes that reach it by a cable —
-// the path's first link on a MIDI track (it heads the path: lowered exactly as before), or a NOTES CABLE (a wire from its
-// own MIDI track's source, port "", into its main input; Cables::notesTo) wherever it is: after the head on the path (its
-// voices summed, voice_sum NodeId nodeIdFor(Device, id, 6); what reached it in the series is dropped — it has no audio
-// input), or off the path (called after the path, per voice; wires from it reduce as from any voice device). One no notes
-// reach is not called and is not missing; in a series (the path, a rack chain) what follows it hears silence (kSilent).
-// Several such voice consumers share the track's voices; its `done` is then the AND of theirs (nodeIdFor(Device, id, 7);
-// none when one has none: the engine's own end), its polyphony the largest `voices` setting. A notes cable into an input
-// of a meta module off the path runs it in the track's voice context: a Frequency input reads the note's Hz (the tuned
-// pitch, as a note source's "hz" wire), a Phase input its phase (phasor of it, NodeRole::Wire slot 15), a Gate or Signal
-// input its own default (the voice's gate, or the default: as a chain input at the note source); it holds no voice
-// (no `done`). Into anything else (a stock effect, a param) a notes cable is Inactive. RACKS off the path play by their
-// wires: an Instrument Rack by its notes cable, an Audio Effect Rack while a wire reads its output (`out`); a wire into an
-// Audio Effect Rack's input (`in`, on the path too) adds to what reaches it (an `add` with −0 at nodeIdFor(Device, rack,
-// 0), whose first term the wires replace). Inside a rack each chain is a series with the same rule: an instrument plays
-// first in an Instrument Rack's chain (the notes), else nothing (the document no longer refuses one elsewhere in a chain).
+// NOTES CABLES (TX.all-free-fix1; GU.f7: the stock instruments and racks that played them are gone): a notes cable (a
+// wire from a MIDI track's source, port "") into an instrument group's main input plays it (instrument_groups.h). A notes
+// cable into an input of a meta module off the path runs it in the track's voice context: a Frequency input reads the
+// note's Hz (the tuned pitch, as a note source's "hz" wire), a Phase input its phase (phasor of it, NodeRole::Wire slot
+// 15), a Gate or Signal input its own default (the voice's gate, or the default: as a chain input at the note source);
+// it holds no voice (no `done`). Into anything else (a param) a notes cable is Inactive. Several voice contexts lowered
+// in one patch share the track's voices; its `done` is then the AND of theirs (nodeIdFor(Device, id, 7); none when one
+// has none: the engine's own end).
 // A cable into ANOTHER TRACK'S MIXER (from a block or a track's own signal) is a send-like route: its every channel (voices
 // summed by its reducer) leaves as `export m<wire>`, arrives as `in m<wire>` (width inferred) and is summed into that
 // mixer; graph::WireKind::Audio between the tracks. TX.cross-track (SPEC §15 2026-11-03 "tracks are not walls"): one that

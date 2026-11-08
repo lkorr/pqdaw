@@ -4,13 +4,10 @@
 // model.h "Instrument groups"): which blocks are VOICE CONTEXTS — where a MIDI track's notes are played per note — and
 // the schema 17 → 18 migration that wraps an existing track's instrument into one.
 //
-// THE RULE. A voice context is a block whose main input is fed notes:
-//   an instrument group   a group device (model.h "Groups") heading a MIDI track's main path, or one a notes cable (a
-//                         wire from a MIDI track's source, port "", into its main input "" / `x`) enters. Everything
-//                         inside it (its members) runs per note of that source; its Out sums the voices.
-//   a lone instrument     a stock instrument or an Instrument Rack (their own code is per voice) fed the same way while
-//                         it is not a member of an instrument group: it is a context of its own (one block), as if
-//                         grouped alone, so a stock instrument plays its notes wherever it sits.
+// THE RULE. A voice context is an INSTRUMENT GROUP: a group device (model.h "Groups") heading a MIDI track's main path,
+// or one a notes cable (a wire from a MIDI track's source, port "", into its main input "" / `x`) enters. Everything
+// inside it (its members) runs per note of that source; its Out sums the voices. (GU.f7: only a group is one; the lone
+// stock instruments that were contexts of their own are gone with the stock devices.)
 // GU.2 (groups nest): only the OUTERMOST group fed notes is an instrument group; every device inside it at any depth
 // is its member (byMember), a nested group included (it runs per note because its parent does and never voices again).
 // A group fed notes inside a plain group is an instrument group of its own.
@@ -30,11 +27,10 @@
 namespace pq::doc {
 
 struct VoiceContext {
-  const Device* block = nullptr;  // the group, or the lone instrument
+  const Device* block = nullptr;  // the instrument group
   const Track* home = nullptr;    // the block's own track
   TrackId source;                 // the MIDI track whose notes play it
   WireId feed;                    // the notes cable that feeds it (invalid: its track's main path)
-  bool group = false;             // an instrument group (else a lone stock instrument / Instrument Rack)
   bool onPath = false;            // the block is on its home track's main path
 };
 
@@ -60,8 +56,7 @@ bool isInstrumentGroup(const Project& p, DeviceId d);
 
 // ---- Schema 18 → 19 (serialize.h): wrap each MIDI track's instrument into an instrument group ----------------------
 // Sound-identical (tests/app/test_instrument_groups.cpp, every fixture: diff 0, interpreter == JIT). Per MIDI track:
-//   * the main path's first active block, when it takes the notes: a stock instrument or an Instrument Rack (alone), or
-//     a meta voice run (a meta module whose chain input takes the notes and the meta modules after it the voices reach;
+//   * the main path's first active block, when it takes the notes: a meta voice run (a meta module whose chain input takes the notes and the meta modules after it the voices reach;
 //     switched-off blocks between them pass the voices on) becomes the members of a new group G that takes its place on
 //     the path (the path links keep their ids), the series as chain links (In → … → Out, the chain's flow: groupInCircuit's
 //     rule); a group there already is an instrument group (TX.groups-fix1) and is left as it is;
@@ -72,8 +67,7 @@ bool isInstrumentGroup(const Project& p, DeviceId d);
 //   * an off-path meta module another MIDI track's notes cable played (TX.cross-track's guest) gets a group of its own
 //     on its track, fed by a notes cable from that source.
 // No Envelope is added (it would change the sound); no polyphony is written (absent = the link's default, as before).
-// Lone stock instruments fed by notes cables are contexts already and stay as they are. New ids continue above the
-// project's largest. Returns whether anything changed.
+// New ids continue above the project's largest. Returns whether anything changed.
 bool migrateToInstrumentGroups(Project& p, IdSource* ids = nullptr);
 
 }  // namespace pq::doc

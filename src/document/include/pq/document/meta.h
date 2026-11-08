@@ -3,9 +3,7 @@
 // Meta modules in the document (TMM.3; docs/plans/MM.md "Architecture"; model.h "Meta modules" holds the state,
 // pq/meta/type.h the types). Helpers shared by the lowering (lower.h "Meta modules"), the device library, the edit
 // builders and the views:
-//   sites      every `name = meta_<type>(…)` call reachable from a device's root patch, by name path
-//   keys       the runtime param of a nested instance: key "dev<id>:<path>.<name>", flattened name in the track patch
-//              "d<id>__<path, '.' → '__'>__<name>" (the call path the compiler flattens), ParamRef::metaParam
+//   keys       the runtime param of a nested instance: key "dev<id>:<path>.<name>", ParamRef::metaParam
 // Not RT code.
 
 #include <cstdint>
@@ -23,25 +21,7 @@
 
 namespace pq::doc {
 
-// One meta call in a device's circuit.
-struct MetaSite {
-  std::string path;                 // "acc1", "opA.acc" (pq/meta/registry.h validPath)
-  const meta::Type* type = nullptr;
-  std::vector<uint8_t> wired;       // per param of the type: its pin is connected at the call (a wire, not static)
-  friend bool operator==(const MetaSite&, const MetaSite&) = default;
-};
-// Callee name → patch (the library a device's patches call into); null: unknown (not descended into).
-using PatchLookup = std::function<const graph::Patch*(std::string_view)>;
-// Every NAMED meta call reachable from `root` through named subcircuit calls, depth-first in node order (an unnamed
-// call has no path: it plays its default state, and nothing below an unnamed helper call is listed). Bounded by
-// graph::kMaxSubcircuitDepth; a cycle is not followed.
-std::vector<MetaSite> metaSites(const graph::Patch& root, const PatchLookup& lookup);
-// Whether `p` calls a meta module anywhere below it (cheap when nothing does: one pass over its subcircuit nodes per
-// patch reached).
-bool callsMeta(const graph::Patch& p, const PatchLookup& lookup);
-
 std::string metaParamKey(DeviceId device, std::string_view path, std::string_view param);       // "dev<id>:<path>.<name>"
-std::string metaParamFlatName(DeviceId device, std::string_view path, std::string_view param);  // "d<id>__<p>__<name>"
 // The value param `i` of type `t` plays at `path` of `d`: GU.1 — its curve (a chain device's own for path "", else the
 // type's: meta::paramCurve) at its knob position (metaParamPosition: the instance's, a chain device's own param for
 // path "", else the type's default through its declared curve), in the param's units.

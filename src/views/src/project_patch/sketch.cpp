@@ -204,7 +204,7 @@ doc::DeviceId phaseAccModule(Runner& r, doc::TrackId t, double freq, double phas
     auto at = [&](doc::DeviceId l) { return l.valid() && l.value - 1 < ids.size() ? ids[l.value - 1] : doc::DeviceId{}; };
     *roles = doc::PhaseAccumulatorRoles{at(lr.group), at(lr.freq), at(lr.phase), at(lr.amp), at(lr.pitch), at(lr.ref),
                                         at(lr.sum), at(lr.ratio), at(lr.pitched), at(lr.phasor), at(lr.addPhase),
-                                        at(lr.pm), at(lr.frac), at(lr.out)};
+                                        at(lr.frac), at(lr.out)};
   }
   return ids[0];
 }

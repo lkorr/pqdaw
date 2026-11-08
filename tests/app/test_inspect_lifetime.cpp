@@ -17,7 +17,6 @@
 
 #include "../support/blocks.h"
 #include "playback_fixture.h"
-#include "pq/app/device_player.h"
 #include "pq/app/project_link.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/document/edit_ops.h"

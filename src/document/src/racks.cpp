@@ -490,10 +490,11 @@ BlockSet chainBlocks(IdSource& ids, DeviceId parent, std::string name, bool inst
   dsp::Curve gc = dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, 1.0);
   gc.step = 1.0;
   const DeviceId gate = b.value(std::string(kChainGateName), gc, 1.0, RackRole::Gate);
-  const DeviceId one = b.constant("1", 1.0);
+  const DeviceId one = b.constant("1", 1.0), zero = b.constant("0", 0.0);
   const DeviceId g = b.atom("mul", "volume · gate"), l1 = b.atom("sub", "1 − pan"), r1 = b.atom("add", "1 + pan"),
                  l = b.atom("min", "left"), r = b.atom("min", "right"), gl = b.atom("mul", "gain L"),
-                 gr = b.atom("mul", "gain R"), pk = b.atom("pack", "L | R"), y = b.atom("gain", "chain gain");
+                 gr = b.atom("mul", "gain R"), pk = b.atom("pack", "L | R"), y = b.atom("gain", "chain gain"),
+                 silent = b.atom("pack", "0 | 0"), on = b.atom("mux", "plays?");
   b.val(vol, g, "a");
   b.val(gate, g, "b");
   b.val(one, l1, "a");
@@ -512,7 +513,14 @@ BlockSet chainBlocks(IdSource& ids, DeviceId parent, std::string name, bool inst
   b.out(gr, pk, "in1");
   b.wire(mixer, kGroupInPort, y, "x", true);
   b.out(pk, y, "g");
-  b.wire(y, kMainPort, mixer, kGroupOutPort, true);
+  // GU.f7 (Q234): the Gate chooses — a muted chain's Gate (undriven, stepped) lowers as a literal 0 (lower.h
+  // "Structural value blocks"), the choice folds to silence and nothing of the chain is computed.
+  b.val(zero, silent, "in0");
+  b.val(zero, silent, "in1");
+  b.val(gate, on, "index");
+  b.out(silent, on, "in0");
+  b.wire(y, kMainPort, on, "in1", true);
+  b.wire(on, kMainPort, mixer, kGroupOutPort, true);
   for (DevicePtr& d : b.set.devices) out.devices.push_back(std::move(d));
   out.wires = std::move(b.set.wires);
   // The chain's series: In → Mixer → Out (an Instrument Rack's empty chain: nothing reaches the mixer yet).

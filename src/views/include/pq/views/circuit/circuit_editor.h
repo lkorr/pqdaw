@@ -172,37 +172,6 @@ public:
   const std::vector<graph::ProbeTarget>& probeTargets() const noexcept { return compiledTargets_; }
   const std::vector<uint32_t>& probeIds() const noexcept { return compiledIds_; }
 
-  // ---- T4.4-fix1: an editor with a host (none since GU.11 retired the project-device editor; the hook stays for a ----
-  // ---- host that owns undo and the title) ----
-  // The host owns undo / redo (the document's: one history with the Ableton view) and the title; there is no file to
-  // save (the project holds the text: Save is hidden, closing never asks) and nothing to start (the project plays the
-  // device: Play is hidden; probes and cost follow the player the editor was opened with). It lives as long as the
-  // editor and goes first.
-  class Host {
-  public:
-    virtual ~Host() = default;
-    virtual bool undo() = 0;
-    virtual bool redo() = 0;
-    virtual std::string title() const = 0;  // in place of the file name
-    // TMM.4: what a meta call's face at `path` (call names from the device's root) edits; null: the defaults,
-    // read-only.
-    virtual std::unique_ptr<MetaTarget> metaTarget(std::string_view /*shownPatch*/, std::string_view /*path*/,
-                                                   const meta::Type& /*type*/) {
-      return nullptr;
-    }
-  };
-  void setHost(std::unique_ptr<Host> host);
-  Host* host() const noexcept { return host_.get(); }
-  // Closes the editor at its next timer tick (safe from inside a callback the editor owns).
-  void closeSoon();
-  void refreshTitle() { updateTitle(); }
-  // T5.x-circuit-chain: the breadcrumb's Track level (T5.x-one-circuit: the project patch view on the device's band,
-  // ViewContext::openProjectCircuit): a "Track" button before the title while an action is set (the project-device
-  // editor sets it).
-  void setTrackAction(std::function<void()> action);
-  bool hasTrackAction() const noexcept { return static_cast<bool>(trackAction_); }
-  void showStatus(std::string s) { setStatus(std::move(s)); }  // the host's notes (e.g. the fork)
-
   // ---- T4.15: tooltips and inactive branches ----
   // The Inactive toggle: draw the branches a structural constant switches off, dimmed (off, the default: hidden).
   void setShowInactive(bool on);
@@ -235,11 +204,7 @@ private:
   const graph::Patch* shownGraph();
 
   std::unique_ptr<PatchEditor> doc_;
-  std::unique_ptr<Host> host_;  // T4.4-fix1 (declared after doc_: destroyed first)
   ui::Button* save_ = nullptr;
-  ui::Button* track_ = nullptr;  // T5.x-circuit-chain
-  std::function<void()> trackAction_;
-  uint32_t closeTimer_ = 0;
   std::string shown_;
   std::vector<std::string> backStack_;
   std::vector<graph::NodeId> keepSelection_;

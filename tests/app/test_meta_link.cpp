@@ -138,7 +138,7 @@ DeviceId instrumentRun(DocumentStore& s, TrackId t, const std::vector<std::strin
       if (pa != nullptr)
         *pa = PhaseAccumulatorRoles{id(lr.group), id(lr.freq), id(lr.phase), id(lr.amp), id(lr.pitch), id(lr.ref),
                                     id(lr.sum), id(lr.ratio), id(lr.pitched), id(lr.phasor), id(lr.addPhase),
-                                    id(lr.pm), id(lr.frac), id(lr.out)};
+                                    id(lr.frac), id(lr.out)};
       d = e.devices.at(0);
     } else {
       d = run(ops::addMetaDevice(*s.current(), s.ids(), t, b, ops::kOffPath)).devices.at(0);

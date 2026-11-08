@@ -20,7 +20,6 @@ pq_add_module(pq_app
     src/render_command.cpp
     src/jit_cache.cpp
     src/patch_preview.cpp
-    src/device_player.cpp
     src/os_drop.cpp
     src/os_drag.cpp
     src/clip_export.cpp

@@ -2566,3 +2566,37 @@ Agents: add questions here instead of guessing on anything important. Use this f
   never by a silent modulation tap. Operator's FM into the PA's `+ pm` atom (Q230's workaround) can now be a plain
   per-voice cable into a control; left as it is (no preset change here).
 - Status: open (provisional choices above).
+
+## Q?-GU.f7-a · 2026-11-07 · GU.f7 · Dead-code removal, muted chains, Operator FM: the choices made
+- **Deleted** (no compatibility kept): the lone-stock-instrument voice contexts (`VoiceContext::group` is gone: every
+  context is an instrument group) and every lowering branch for them (`playInstrument`, `kSilent`, the notes-cable /
+  In-terminal cases into a stock instrument, stock-instrument enders and `voices` polyphony, `devicePolyphony`,
+  `Cables::notesTo` / `fedNotes`); the stock-instrument cases of `placeOnPath` (its `notes` flag), paste and
+  `pasteBlocks`; the nested meta-site machinery (`MetaSite`, `metaSites`, `callsMeta`, `metaParamFlatName`,
+  `Callees::metaSites`); `app::DeviceInspector` with `ProjectLink::setDeviceInspect` and the engine's `TrackInspect` /
+  `UnitInspect` (nothing else compiled probes into a project unit); `CircuitEditor::Host` with its Track button,
+  `closeSoon`, `refreshTitle`, `showStatus`; the GU.4 load conversion of `meta:phase_acc` / `meta:vca` (projects and
+  presets) and `pq/meta/retired.*` (such a file is refused: unknown meta module type). The PA's `pm` option / `Feed::Pm`
+  went with it (its only users were the conversion and Operator).
+- **Fixtures**: the six `gu4_modules` projects, `instrument_groups/group_notes` and `views/fixtures/meta-cables` held
+  retired devices; they were loaded with the conversion once and re-saved (same ids, same sound: the GU.4 render
+  references still match bit for bit / ≤ −110 dB). The conversion-only test cases were deleted.
+- **Kept on purpose**: `checks.cpp`'s "instruments go on MIDI tracks" (a meta device may still be stored with kind
+  Instrument, so it is live); `calleeIsInstrument` in `lowerList` (an atom block whose patch reads as an instrument is
+  "missing", as before). Not touched (outside this task, but compatibility code by the same rule): the schema migration
+  chain in serialize.cpp (Travel / Units wire laws, 16 → 17 chain wiring, 18 → 19 `migrateToInstrumentGroups`, 19 → 20
+  knob positions) and the views' remaining stock-instrument checks (`device_chain.cpp`, `rack_frame.cpp`,
+  `node_menu_edits.cpp`, `edit_racks.cpp`, `edit_groups.cpp`). Option: one follow-up that raises the minimum schema to
+  21 and deletes all of it; `DeviceKind::Instrument` could then be derived (GU-critique).
+- **Muted chains (Q234 option a)**: the chain mixer's Out is `mux(Gate, pack(0, 0), gain(In, pack(gl, gr)))`; the
+  undriven Gate now lowers as a literal (GU.f4's rule), so a muted chain folds to silence and nothing of it is compiled
+  (test: GU.f7 in test_stock_presets.cpp). Unmuted the program is the same (mux index 1 folds to its input; volume ×
+  literal 1). Racks saved before keep their old mixer (no conversion). Mute / solo / activator now recompile the unit
+  (debounced 50 ms) and switch by the swap's ≈ 11 ms crossfade instead of the gain's 2 ms ramp — click-free. A Gate a
+  user wires or automates stays a runtime choice: it then cuts at once (a click on mute; on unmute the gain ramps up
+  from 0). Alternative: lower a muted chain out like a switched-off group (option b).
+- **Operator FM**: each modulator's Envelope is a plain per-voice cable into the next row's Phase value block (GU.f5:
+  a modulation tap no longer ends a voice); the `+ pm` atoms are gone. Phase's curve wraps, so phase + env wraps before
+  the phasor's add and `frac`: the same sound up to float rounding of the wrap (identical while B … D are at level 0,
+  the default). Golden `project-circuit-device` updated (the operator rows lost their `+ pm` atoms).
+- Status: open (provisional choices above).

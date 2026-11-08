@@ -84,7 +84,7 @@ ModuleDoc buildModules(doc::DocumentStore& st) {
     const doc::ops::Edit e = run(doc::ops::pasteBlocks(*st.current(), st.ids(), m.track, doc::phaseAccumulatorBlocks(local, {}, &l)));
     auto id = [&](doc::DeviceId x) { return x.valid() ? e.devices.at(x.value - 1) : doc::DeviceId{}; };
     m.pa = doc::PhaseAccumulatorRoles{id(l.group), id(l.freq), id(l.phase), id(l.amp), id(l.pitch), id(l.ref), id(l.sum),
-                                      id(l.ratio), id(l.pitched), id(l.phasor), id(l.addPhase), id(l.pm), id(l.frac), id(l.out)};
+                                      id(l.ratio), id(l.pitched), id(l.phasor), id(l.addPhase), id(l.frac), id(l.out)};
   }
   {
     doc::IdSource local;
