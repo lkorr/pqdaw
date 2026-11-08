@@ -158,3 +158,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker: pq_tests_views default tier 582 cases incl. test_eq_displays (drawn total == GroupResponse, real-dispatch gestures). Orchestrator: build.ps1 -Affected on 6a33e3bc (worker's run was killed for low memory) passed. Goldens added: eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay, eq-band-response.
 - Perf (check): 32-band drag frame 0.95–1.3 ms mean, worst 1.9 ms; first frame after a structural edit ≈ 13 ms (UI-thread lowering 0.9 ms).
 - Notes/blockers: strip Stages box shows "16.0" / "1.00" unlabeled; unwrapped phase of deep cuts flattens the strip; lowering on the UI thread, not the app's compile path; Q?-EQ.4-a.
+
+## 2026-11-08 · TX.insert-group · orchestrator (merge of task/TX.insert-group)
+- Did: merged 5bac9256. doc::wireContainer(project, wire) → {track, group}: the innermost group holding both ends (a group's In / Out terminal from inside counts as inside, its main ports as outside; mixer / note-source / cross-track wires: the target track's top level). insertImpl (Z and Tab on a cable) uses it; the target-device group rule is gone. Splice, dissolve and cable-drop spawn checked: not affected.
+- Verified (worker): pq_tests_views 1/1 incl. new real-dispatch Z / Tab cases (into a PA control / input, PA out, inside the PA, into its Out terminal, nested); -Affected 24/24.
+- Perf: n/a (UI edit path). CPU-efficiency check: ≤ kMaxGroupDepth steps per insert.
+- Notes/blockers: none.

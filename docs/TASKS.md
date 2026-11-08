@@ -732,7 +732,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [ ] **EQ.6 Milestone -Full + critique.**
 
 ### Bugs
-- [~] **TX.insert-group Insert on a cable lands in the cable's group** (user 2026-11-08: Z on a cable into a Phase Accumulator inserts the VCA inside the PA group; insertImpl takes the target device's group). Worker, branch task/TX.insert-group.
+- [x] **TX.insert-group Insert on a cable lands in the cable's group** *(merged 5bac9256)* (user 2026-11-08: Z on a cable into a Phase Accumulator inserts the VCA inside the PA group; insertImpl takes the target device's group). Worker, branch task/TX.insert-group.
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
