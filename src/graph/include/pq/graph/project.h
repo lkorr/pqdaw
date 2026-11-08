@@ -46,7 +46,8 @@
 // through an identity subcircuit with a global bound (the voice reduction above); every bus the unit reads becomes a
 // root `in bus<k>` (global audio, the producer's kind and width), every bus it writes a root `out bus<k>`. An
 // Instrument member also gets a root voice `export vmon_<port>` per voice out/export of its patch (the VoiceEngine
-// monitors them for voice end; a voice port named `done` becomes `export done`, VoiceConfig::doneSlot).
+// monitors them for voice end; a voice port named `done` becomes `export done`, VoiceConfig::doneSlot) — except the
+// ports listed in ProjectGraph::taps (GU.f5: analysis, not the voice's sound, so a silent tap never ends a voice).
 // wholeProject() + composeUnit(…, 0) is the single whole-project program of the same graph (tests compare it with
 // the per-unit project; M12's background whole-project re-optimisation starts from it).
 

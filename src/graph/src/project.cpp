@@ -452,6 +452,12 @@ Result<UnitPatch> composeUnit(const ProjectGraph& g, const ProjectPartition& par
     for (uint16_t o = 0; o < sig[t].outputs.size(); ++o) {
       const SubcircuitPort& port = sig[t].outputs[o];
       if (port.type.poly == Poly::Global) continue;
+      // GU.f5: an analysis tap (ProjectGraph::taps: a modulated control's range) is not the voice's sound: a silent
+      // modulator must not end a voice whose audio still rings (only its `done` and audio outputs decide).
+      if (port.name != "done" && std::any_of(g.taps.begin(), g.taps.end(), [&](const ProjectPort& tp) {
+            return tp.track == t && tp.port == port.name;
+          }))
+        continue;
       std::string name = port.name == "done" ? std::string("done") : "vmon_" + port.name;
       if (numInstruments > 1) name += "_t" + std::to_string(g.tracks[t].id);
       const NodeIndex ex = P.addExport(name);

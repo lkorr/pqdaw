@@ -474,3 +474,37 @@ TEST_CASE("GU.f4 Saturator: changing Type recompiles and plays the new curve (in
   }
 }
 
+// ---- GU.f5: a modulation tap is not the voice's sound ---------------------------------------------------------------
+TEST_CASE("GU.f5 a per-voice cable into a control of an instrument group keeps the release tail (interpreter == JIT)") {
+  Song plain, cabled;
+  // In the default instrument: In − In (a per-voice signal that is 0) into the Phase Accumulator's Phase. The control
+  // is driven per voice, so the lowering exports its modulation tap per voice; that tap is silent all along.
+  {
+    Song& s = cabled;
+    const Track& t = *findTrackPtr(*s.store.current(), s.keys);
+    DeviceId g;
+    for (const DevicePtr& d : t.devices)
+      if (isGroupDevice(*d) && !d->group.valid()) g = d->id;
+    REQUIRE(g.valid());
+    const DeviceId phase = s.named(g, "Phase");
+    auto sub = std::make_shared<Device>(*makeDevice(s.store.ids().device(), "atom:sub", DeviceKind::AudioEffect));
+    sub->group = g;
+    REQUIRE(s.store.dispatch(AddDevice{s.keys, sub, kAppend}).ok());
+    const auto connect = [&](DeviceId from, std::string_view port, DeviceId to, std::string_view param) {
+      Wire w;
+      w.from = from;
+      w.port = std::string(port);
+      w.to = to;
+      w.param = std::string(param);
+      s.edit(ops::connect(*s.store.current(), s.store.ids(), w));
+    };
+    connect(g, kGroupInPort, sub->id, "a");
+    connect(g, kGroupInPort, sub->id, "b");
+    connect(sub->id, "out", phase, kValueParam);
+  }
+  const golden::Channels a = both(cabled.store.current()), base = render(plain.store.current(), false);
+  // The release (after note-off at 1 s) sounds as without the cable, to its natural end — not cut 20 ms after note-off.
+  const size_t off = static_cast<size_t>(kRate);
+  CHECK(peakOf(base, off + static_cast<size_t>(0.05 * kRate), off + static_cast<size_t>(0.1 * kRate)) > 0.01);
+  CHECK(maxDiff(a, base) <= 1e-5 * std::max(peakOf(base), 1.0));
+}
