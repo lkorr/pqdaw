@@ -146,3 +146,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): document EQ.3* 5/5, playback 2/2, views 1/1 (band == svf bit for bit, GroupResponse == matrix of svfResponse products within 1e-9, M/S with B = A == Stereo ≤ −120 dB, Stereo schedules none of B); -Affected -Slow 85/88, the 3 = goldens re-recorded by design (lowering fixtures audio-track.pqp, lower_meta_voice_run.txt; project-node-menu), re-run pass.
 - Perf: Stereo 4 stereo svf, 0 matrix ops; L/R and M/S mono chains (half the cost of stereo A). CPU-efficiency check: Type / Stages / Mode fold at compile time.
 - Notes/blockers: Mode menu is a plain binding (no A → B copy) until EQ.4; Q?-EQ.3-a.
+
+## 2026-11-08 · EQ.1b · orchestrator (merge of task/EQ.1b-svf-cost)
+- Did: fast-forwarded main to f0e15b66. svf state sized by its sections (1 section mono 896 B, was 24.8 KiB; 64 × 8 lanes 44.8 KiB with ramp differences); svf sleeps (Memory atom, SleepStateKind::Decay); straight-line inputs (param ramps) run ≤ 32-frame segments with quadratic coefficient interpolation (≤ −93.8 dB vs per-frame design on 20 ms sweeps, exact design once still); svf response rule designs once per evaluate (AtomSignature::responseCacheBytes).
+- Verified (worker): -Affected -Slow 76/77, the 1 = document wavetable save/load timing (22.4 vs 20 ms, load-sensitive), rerun 193/193; ship pq_bench_dsp linked, ^svf/ rows (EQ.1b) in bench/RESULTS.md.
+- Perf (release, ns/sample L1): ramp lowpass s1 113 → 21, lowshelf s1 506 → 47, lowshelf s8 3463 → 300; evaluate() 32-svf chain × 1024 pts 12.0 → 1.2 ms; param rate unchanged (≈ 2.4); curved audio-rate inputs +5–15 %.
+- Notes/blockers: curved audio-rate modulation still designs per frame (vectorised float design not done); Q?-EQ.1b-a.
