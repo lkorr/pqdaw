@@ -211,3 +211,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): dsp / document / views default tiers; -Affected 37/38 → pq_tests_library test_progressive (filesystem timing) passed alone; PA fixture renders bit-identical to the meta module; playback / tuning WAV goldens byte-identical. 28 view goldens re-recorded (PA Amplitude at centre).
 - Perf: UI-thread only; one extra curve segment.
 - Notes/blockers: TX.reset-default filed (Delete / double-click resets value blocks to position 0, not the module default).
+
+## 2026-11-08 · TX.reset-default · orchestrator (merge of task/TX.reset-default)
+- Did: merged 03fab80b. Device::defaultPosition on value blocks (saved "default"; module builders set it; rack macros their made-at position; user blocks 0); every reset path (Delete, double-click, macro reset) goes to it. Arc / Dial now handle Delete / Up / Down (Delete on a focused PA arc deleted the module). Detents: VCA ×0 / ±1 / ±2 (curve split, law unchanged to 1e-12), EQ band Q 0.7071.
+- Verified (worker): views 598/598, document 196/196, dsp 180/180; -Affected 42/45 → stale VCA point counts in test_curve and two playback fixtures, fixed, re-run passed. Goldens: module-vca-panel, project-meta-faces, project-patch-overview, project-patch-band, project-circuit-device (VCA ticks). Playback WAVs unchanged.
+- Perf: n/a. Notes: Toggle / Menu / XyPad / BandType still ignore Delete.

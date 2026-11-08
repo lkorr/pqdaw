@@ -734,7 +734,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [ ] **EQ.6 Milestone -Full + critique.**
 
 ### Bugs
-- [~] **TX.reset-default Delete / double-click on a value-block control resets to the module's default, not knob position 0** (found by TX.detent: a reset PA Amplitude goes silent, Pitch to −4800 c). Queued.
+- [x] **TX.reset-default Delete / double-click on a value-block control resets to the module's default, not knob position 0** (found by TX.detent: a reset PA Amplitude goes silent, Pitch to −4800 c). *(merged 03fab80b; also VCA detents ×0 / ±1 / ±2, EQ Q 0.7071; Arc / Dial take Delete / Up / Down (Delete on a PA arc deleted the module))*
 - [x] **TX.bool-real A bool wired into a real input converts (gate_to_real) instead of failing the compile** (user report 2026-11-08_12-29-32 context: "kind mismatch: bool into real input 'x' of (atom gain)"; consistent with GU.f8: a bool in a circuit is a 0/1 signal). *(merged eb580ed1; Q?-TX.bool-real-a)*
 - [ ] **TX.wire-isolation One bad wire never fails a whole unit** (found by TX.bool-real: real into a bool main input, width mismatch, event-rate mismatch still fail the whole track's compile; such a wire should be refused when made, or dropped from the compile with a visible error on that wire). Queued.
 - [x] **TX.detent Curve points can be detents; Phase Accumulator Amplitude 1 at the centre of its travel, latching** (user 2026-11-08). Queued.
