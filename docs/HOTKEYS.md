@@ -137,6 +137,8 @@ These keys belong to the focused control and never reach a keymap while it has f
 | Number box | a digit, `.` or `-` (no modifiers) while focused | T4.16a: the type-in opens with that character (Live: click the tempo, type `128`, `Enter`); a focused box takes these keys before the keymap (`0` and `-` included) |
 | Number box, knob, fader | mouse wheel over it (`Shift`: fine; `Ctrl` / `Alt` pass it on) | T4.16a: one key step per notch; a run of notches is one undo step (ends 0.4 s after the last notch, or when the pointer leaves); `Esc` during the run cancels it. The arrangement headers' boxes leave the wheel to the track scroll |
 | Knob, fader | double-click | T4.16a: return to the default value (one undo step) |
+| Response display (EQ, filter band: panel element `response`) | double-click empty space; drag a node (`Shift`: fine); wheel / `Alt`+wheel over a node; double-click a node; right-click a node; click a node, then `Delete` / `Backspace` | EQ.4: add a bell there (an EQ); frequency (x) and gain (y; Q for the gainless types); Q (a run of notches is one undo step) / one Stage per notch; gain to 0 dB; Type, Stages, Bypass, Solo, Delete; select it (its strip column lights up), then remove it. The chips: SPEC (analyser), IN (input spectrum), ±dB (zoom 6 / 12 / 24 / 48) |
+| Phase display (panel element `phase`) | click its PHASE / DELAY chip | EQ.4: unwrapped phase ↔ group delay |
 | Text field | `Left` / `Right` (`Ctrl`: by word, `Shift`: select), `Home` / `End`, `Backspace` / `Delete` (`Ctrl`: word), `Ctrl+A` / `C` / `X` / `V` | editing; `Enter` commits, `Esc` reverts |
 | Button, toggle | `Space` / `Enter` | press / flip |
 | Dropdown | `Up` / `Down` change the item; `Space` / `Enter` open the list | |

@@ -243,6 +243,8 @@
     "device.bandOff": "#5E7176",
     "device.bandText": "#0F2026",
     "device.bandSelected": "#F2EDD8",
+    "device.response": "#7DF0C6",
+    "device.responseGrid": "#4FD8B21C",
     "face.body": "#0C1A1F",
     "face.frame": "#4A5D63",
     "face.track": "#22353B",

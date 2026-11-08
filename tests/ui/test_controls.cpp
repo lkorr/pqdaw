@@ -111,7 +111,7 @@ TEST_CASE("theme: the default file loads with every token and the full clip pale
   CHECK(t->fonts.title.px == 12);
   CHECK(t->size.gutter == 6.0f);
   CHECK(alphaOf(t->surface.panel) == 255);
-  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 19 + 20 + 25 + 17 + 17 + 29 + 18 + 24 + 5 + 15 + 1 + 14);  // + 13 face.* (TMM.4), + face.ink and circuit.wireMod / wireNotes (TMM.13-fix2); metrics: + size.gutter (T3.x-fix-look)  // + arrangement.* (T3.8), roll.* (T3.11 + 7 T3.12), mosChart.* (T3.13), mosCircle.* (T3.14), mixer.* (T3.10), automation.* (T3.15), circuit.* (T4.2; + 6 probe / cost tokens T4.5), code.* (T4.4), device.* (T4.6)
+  CHECK(themeTokenNames().size() == 1 + 57 + 16 + 19 + 20 + 25 + 17 + 17 + 29 + 18 + 24 + 5 + 15 + 1 + 14 + 2);  // + 2 device.response / responseGrid (EQ.4); + 13 face.* (TMM.4), + face.ink and circuit.wireMod / wireNotes (TMM.13-fix2); metrics: + size.gutter (T3.x-fix-look)  // + arrangement.* (T3.8), roll.* (T3.11 + 7 T3.12), mosChart.* (T3.13), mosCircle.* (T3.14), mixer.* (T3.10), automation.* (T3.15), circuit.* (T4.2; + 6 probe / cost tokens T4.5), code.* (T4.4), device.* (T4.6)
 }
 
 TEST_CASE("theme: the file round-trips (struct and bytes)") {
@@ -159,7 +159,7 @@ TEST_CASE("theme: a missing, unknown or malformed token fails with its name") {
     CHECK_MESSAGE(r.error().message.find("missing token \"" + name + "\"") != std::string::npos, r.error().message);
     ++checked;
   }
-  CHECK(checked == 57 + 16 + 19 + 20 + 25 + 17 + 17 + 29 + 18 + 24 + 5 + 15 + 14);  // + 13 face.* (TMM.4), + 3 (TMM.13-fix2: face.ink, circuit.wireMod, circuit.wireNotes), + size.gutter (T3.x-fix-look), + 16 arrangement.* (T3.8), 19 roll.* (T3.11, T3.12), 20 mosChart.* (T3.13), 25 mosCircle.* (T3.14), 17 mixer.* (T3.10), 17 automation.* (T3.15), 27 circuit.* (T4.2, T4.5), 18 code.* (T4.4), 24 device.* (T4.6)
+  CHECK(checked == 57 + 16 + 19 + 20 + 25 + 17 + 17 + 29 + 18 + 24 + 5 + 15 + 14 + 2);  // + 2 device.* (EQ.4)  // + 13 face.* (TMM.4), + 3 (TMM.13-fix2: face.ink, circuit.wireMod, circuit.wireNotes), + size.gutter (T3.x-fix-look), + 16 arrangement.* (T3.8), 19 roll.* (T3.11, T3.12), 20 mosChart.* (T3.13), 25 mosCircle.* (T3.14), 17 mixer.* (T3.10), 17 automation.* (T3.15), 27 circuit.* (T4.2, T4.5), 18 code.* (T4.4), 24 device.* (T4.6)
   {
     auto r = parseTheme(removeLine("\"name\":"));
     REQUIRE_FALSE(r.ok());

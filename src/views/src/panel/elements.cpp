@@ -59,6 +59,22 @@ std::optional<ControlAnchor> Element::anchorFor(const doc::Binding& want, bool /
   return anchor().value_or(ControlAnchor{{desc_.w * 0.5f, desc_.h * 0.5f}, 0.0f, desc_.w * 0.5f});
 }
 
+double PanelTarget::viewValue(uint32_t element, std::string_view key, double def) const {
+  const std::string k = std::to_string(element) + ":" + std::string(key);
+  for (const auto& [n, v] : view_)
+    if (n == k) return v;
+  return def;
+}
+void PanelTarget::setViewValue(uint32_t element, std::string_view key, double v) {
+  std::string k = std::to_string(element) + ":" + std::string(key);
+  for (auto& [n, x] : view_)
+    if (n == k) {
+      x = v;
+      return;
+    }
+  view_.emplace_back(std::move(k), v);
+}
+
 uint64_t Element::liveKey(const PanelTarget& t) const {
   uint64_t h = 0x4C495645ull;
   for (const doc::Binding& b : desc_.bindings) {
@@ -1047,7 +1063,18 @@ public:
     if (layer == 0) p.roundedRect(r, rad, w);
     else if (t > 0.0f) outlineRect(p, r, rad, t, w);
   }
-  void paintLive(ui::FacePainter&, const ElementEnv&) override {}
+  // EQ.4: a shape bound to a group (a Panel binding: the EQ's band columns) lights up while that group is the panel's
+  // selected one (a node picked on a response display).
+  void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
+    const doc::Binding* b = binding();
+    if (b == nullptr || b->kind != doc::BindingKind::Panel || env.target == nullptr || !b->device.valid() ||
+        env.target->selectedGroup() != b->device)
+      return;
+    const float rad = txt("shape", "round") == "rect" ? 0.0f : static_cast<float>(std::clamp(num("radius", 6.0), 0.0, 256.0));
+    const Rect r{0.5f, 0.5f, desc_.w - 0.5f, desc_.h - 0.5f};
+    p.roundedRect(r, rad, ui::mulAlpha(env.theme->device.response, 0.07f));
+    outlineRect(p, r, rad, 1.2f, ui::mulAlpha(env.theme->device.response, 0.75f));
+  }
   bool hit(Vec2) const noexcept override { return false; }  // a decoration: presses go through it
   // GU.5b: a circle at the bottom of a panel makes the panel round.
   std::optional<FaceShape> outline() const noexcept override {
@@ -1260,6 +1287,7 @@ void registerGeneric() {
     registerRichElements(reg);  // GU.5b
     registerEmbedElement(reg);  // GU.6
     registerEngineElements(reg);  // GU.7
+    registerResponseElements(reg);  // EQ.4
   });
 }
 

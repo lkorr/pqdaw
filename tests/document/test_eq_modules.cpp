@@ -185,7 +185,7 @@ TEST_CASE("EQ.3 EQ: the default (4 bands in A in frequency order, B empty) and e
   REQUIRE(e.bands[0].size() == 5);
   CHECK(e.bands[0][2].group == added);
   CHECK(d.units(e.bands[0][2].gain) == doctest::Approx(3.0));
-  CHECK(d.dev(eq).panel->elements.size() == elements + 5);  // type, Hz, Q, gain, stages
+  CHECK(d.dev(eq).panel->elements.size() == elements + 6);  // the column's plate (EQ.4), type, Hz, Q, gain, stages
   CHECK(bindingsProblem(findDevice(d.doc(), eq).track->devices, eq, *d.dev(eq).panel) == "");
   // setBandType / setBandStages.
   d.step(ops::setBandType(d.doc(), added, 1));
@@ -206,7 +206,7 @@ TEST_CASE("EQ.3 EQ: the default (4 bands in A in frequency order, B empty) and e
   CHECK(near(d.freqs(e.bands[1]), d.freqs(e.bands[0])));
   for (size_t i = 0; i < 5; ++i) CHECK(e.bands[1][i].group != e.bands[0][i].group);
   CHECK_FALSE(d.dev(e.bands[1][2].group).active);  // (the copy keeps the bypass)
-  CHECK(d.dev(eq).panel->elements.size() == elements + 5 + 5 * 5);
+  CHECK(d.dev(eq).panel->elements.size() == elements + 6 + 5 * 6);
   // A second switch copies nothing more.
   d.step(ops::setEqMode(d.doc(), d.store.ids(), eq, EqMode::LeftRight));
   CHECK(d.info(eq).bands[1].size() == 5);
@@ -215,7 +215,7 @@ TEST_CASE("EQ.3 EQ: the default (4 bands in A in frequency order, B empty) and e
   e = d.info(eq);
   CHECK(e.bands[0].size() == 4);
   CHECK(near(d.freqs(e.bands[0]), {100.0, 400.0, 2500.0, 8000.0}));
-  CHECK(d.dev(eq).panel->elements.size() == elements + 5 * 5);
+  CHECK(d.dev(eq).panel->elements.size() == elements + 5 * 6);
   CHECK(bindingsProblem(findDevice(d.doc(), eq).track->devices, eq, *d.dev(eq).panel) == "");
   // (B's copy of the bypassed band is off: its inner wires wait, Inactive)
   for (const WireState& s : wireStates(d.doc(), library()))

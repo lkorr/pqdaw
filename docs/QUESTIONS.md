@@ -408,3 +408,20 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   22 fields (the 12 forward differences of a ramp), so 64 sections of a voice group are 44.8 KiB (was 24.8).
   Alternative: keep the differences in a per-call scratch (they must survive calls: a ramp spans many blocks).
 - Status: open (provisional choices above).
+
+## Q?-EQ.4-a · Response displays: where the lowering comes from, what the total includes, the Mode menu route
+- **Lowering**: the app's current `LoweredProject` lives on ProjectLink's compile path (another thread). The displays
+  instead lower the document themselves on the UI thread, once per structural revision, when a display first asks
+  (`views::GroupResponses`; 0.9 ms here, the whole frame after a structural edit on a 32-band EQ ≈ 13 ms in check).
+  Alternative: hand the compile path's lowering to the UI thread (a shared_ptr swap) — no second lowering, but the
+  curve would lag the compile. Chosen: UI-thread lowering (reversible: one function).
+- **Total**: the EQ's curve is the ACTIVE CHAIN's response (the chain group, or the product of its bands when they are a
+  pure series), without the Output gain and the M/S matrix (in M/S the curve is the Mid or Side filter, not L → L).
+  Alternative: the EQ group's In → Out (includes Output; in M/S a mix of both chains). Chosen: the chain (what the user
+  edits; Live's L/R / M/S display does the same).
+- **Nodes of gainless types** sit on their own curve at their frequency (a cut at −3 dB), the gain types at their gain.
+- **Mode menu** (Q?-EQ.3-a): the doc target routes any edit of a value block with `eqRole` Mode through `ops::setEqMode`
+  (the panel's plain menu, or any control a user binds to it), instead of a dedicated element kind.
+- **Band highlight**: a strip column's plate is a `shape` with a Panel binding on its band (lit while selected);
+  `embeddedGroup` now counts Panel bindings on kind `panel` only.
+- Status: open (provisional choices above).

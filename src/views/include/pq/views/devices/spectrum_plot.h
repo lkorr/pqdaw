@@ -42,10 +42,12 @@
 
 namespace pq::views::devices {
 
-// The displays' frequency axis: log, 10 Hz … 22 kHz across [x0, x1] (device px).
+// The displays' frequency axis: log, 10 Hz … 22 kHz across [x0, x1] (device px). EQ.4: with `offsetHz` > 0 the
+// response displays' axis instead: x ∝ log(1 + f / offsetHz) over 0 … topHz (0 Hz at x0; near-linear below offsetHz).
 struct SpectrumAxis {
   static constexpr float kLoHz = 10.0f, kHiHz = 22000.0f;
   float x0 = 0, x1 = 1;
+  float offsetHz = 0.0f, topHz = kHiHz;
   float x(float hz) const noexcept;
   float hz(float px) const noexcept;
 };
@@ -62,6 +64,7 @@ struct SpectrumPlotStyle {
   bool response = false;                   // the measured response
   float respTopDb = 24.0f, respBottomDb = -48.0f;  // the response's dB axis (an EQ display: its ± range)
   float respInset = 2.0f;                  // device px kept free above the top and below the bottom of that axis
+  float alpha = 1.0f;                      // EQ.4: the spectrum's opacity (a display that draws curves over it)
 };
 
 // How the plot writes text (a panel: the tree's fonts; a face: its painter). width: device px of a string (null: an

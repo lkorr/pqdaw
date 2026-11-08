@@ -199,10 +199,12 @@ BlockSet defaultInstrumentBlocks(IdSource& ids, const StockModuleOptions& o = {}
 //   Stereo  In → A → Out (B and the matrix folded away: no op of theirs is scheduled)
 //   L/R     channel 0 → A, channel 1 → B, pack(A, B)
 //   M/S     M = (L + R)/2 → A, S = (L − R)/2 → B, pack(M + S, M − S)
-// then a smoothed gain by Output. Its panel: a placeholder rect for EQ.4's displays at the top, the Mode menu, the Output
-// knob, the chain tabs (L|R or M|S, shown when Mode ≠ Stereo) and the BAND STRIP: per band of each chain a column of
-// elements bound to its blocks (Type menu, Hz, Q, a gain slider for the gain types, Stages for the others), chain A's
-// shown in Stereo or when the tabs pick A, chain B's when they pick B. The ops (edit_ops.h "EQ") lay the strip out again.
+// then a smoothed gain by Output. Its panel: the `response` display (EQ.4; its analyser on the EQ's Out, its input dimmed)
+// with the `phase` strip under it, the Mode menu, the Output knob, the chain tabs (L|R or M|S, shown when Mode ≠ Stereo)
+// and the BAND STRIP: per band of each chain a column — a plate bound to the band (lit while it is selected on the
+// display), its Type as a `bandtype` glyph menu, Hz, Q, a gain slider for the gain types, Stages for the others —, chain
+// A's shown in Stereo or when the tabs pick A, chain B's when they pick B. The ops (edit_ops.h "EQ") lay the strip out
+// again.
 enum class BandRole : uint8_t { None = 0, Frequency, Q, Gain, Stages, Type };
 enum class EqRole : uint8_t { None = 0, Mode, Output, EditChain };
 inline constexpr std::string_view kBandRoleSetting = "bandRole", kEqRoleSetting = "eqRole";

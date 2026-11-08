@@ -26,6 +26,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/lower.h"
 #include "pq/document/model.h"
+#include "pq/graph/infer.h"
 #include "pq/graph/response.h"
 
 namespace pq::doc {
@@ -36,8 +37,16 @@ public:
   // terminal carries nothing (a free group with no wire into it). `devices`: the library `lowered` was made with
   // (the callees' param declarations).
   Status prepare(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices, DeviceId group);
+  // EQ.4: prepare() for several groups at once (out[k] for groups[k]): one inference per track patch, with probes on
+  // every group's In and Out there (a display's EQ, its chains and its 64 bands: one flattening, not 67). Per group its
+  // status.
+  static std::vector<Status> prepareMany(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices,
+                                         std::span<const DeviceId> groups, std::span<GroupResponse* const> out);
   // The controls' current values from `project` (the same structural revision as prepared).
   void update(const Project& project) noexcept;
+  // EQ.4: changes whenever prepare() ran or update() changed a value the response reads (a display re-evaluates only
+  // then: a drag on one band leaves the other bands' curves as they are).
+  uint64_t stamp() const noexcept { return stamp_; }
   // H from In channel i to Out channel j at each frequency (graph::LinearResponse::evaluate's layout).
   graph::ResponseKind evaluate(std::span<const double> hz, double sampleRate,
                                std::span<std::complex<double>> out) noexcept {
@@ -54,9 +63,14 @@ private:
     std::string param;
     graph::ParamDecl decl;  // the callee's declaration
     bool position = false;  // a driven control: its knob position
+    dsp::Curve curve;       // curves_: the curve set last
+    bool curveSet = false;
   };
+  Status finish(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices, DeviceId group,
+                const graph::InferResult& inf, uint32_t track, uint32_t inSource, uint32_t outSource);
   graph::LinearResponse response_;
   std::vector<Control> params_, curves_;
+  uint64_t stamp_ = 0;
 };
 
 }  // namespace pq::doc

@@ -148,7 +148,8 @@ struct Theme {
   } code{};
   struct Device {  // device panels (T4.6, SPEC §7.3 / §9): frame, jacks, knob arcs, displays (transfer curve, EQ)
     Rgba background, titleBar, titleText, titleTextOff, border, jackStrip, jack, jackRing, jackRingHover, activatorOn, activatorOff, label,
-        value, knob, display, displayGrid, displayGridMajor, displayText, curve, curveFill, band, bandOff, bandText, bandSelected;
+        value, knob, display, displayGrid, displayGridMajor, displayText, curve, curveFill, band, bandOff, bandText, bandSelected,
+        response, responseGrid;  // EQ.4: the response display's total curve (mint) and its grid (teal)
     bool operator==(const Device&) const = default;
   } device{};
   struct Face {  // meta-module faces (TMM.4, docs/plans/MM.md "UI"): label-free vector faces on the circuit canvas —

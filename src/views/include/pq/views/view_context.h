@@ -54,6 +54,7 @@ class FileProbes;      // pq/views/file_probes.h (T5.7)
 class Library;         // pq/views/browser/library.h (T5.10)
 class ModulationSource;  // pq/views/device_chain/wiring.h (T4.7)
 class VoiceTapReader;    // pq/views/meta/meta_face.h
+class GroupResponses;    // pq/views/panel/group_responses.h (EQ.4)
 namespace devices {
 class AnalysisHub;  // pq/views/devices/analysis.h (TX.spectrum)
 class SpectrumFeed;
@@ -252,6 +253,14 @@ public:
   using FaceVoices = std::function<VoiceTapReader*(doc::DeviceId, std::string_view)>;
   void setFaceVoices(FaceVoices f) { faceVoices_ = std::move(f); }
   VoiceTapReader* faceVoices(doc::DeviceId device, std::string_view path) const { return faceVoices_ ? faceVoices_(device, path) : nullptr; }
+  // EQ.4: the sample rate the analysis source runs at (48 kHz until one is set): the response displays evaluate at it.
+  double sampleRate() const noexcept { return sampleRate_; }
+  // EQ.4: changes with every structural change of the document (a kChangeStructural edit, its undo / redo, a reset)
+  // and a new device library: what a lowering of the project depends on (a knob turn does not change it).
+  uint64_t structuralRevision() const noexcept { return structural_; }
+  // EQ.4: the analytic responses of groups the displays draw (pq/views/panel/group_responses.h): one lowering per
+  // structural revision, shared by every panel.
+  GroupResponses& groupResponses();
   // The app, after a compile made new taps: displays waiting for their device's feed look again (notifies kAnalysis).
   void analysisTapsChanged() { notify(view_change::kAnalysis); }
   // T5.x-one-circuit (SPEC §15 2026-10-31: the whole project is one circuit): every "Open in Circuit View" (a device's
@@ -516,6 +525,9 @@ private:
   doc::BlockSet blockClipboard_;  // GU.2
   ModulationSource* modulation_ = nullptr;
   std::unique_ptr<devices::AnalysisHub> analysis_;  // TX.spectrum
+  double sampleRate_ = 48000.0;                       // EQ.4
+  uint64_t structural_ = 1;                           // EQ.4
+  std::unique_ptr<GroupResponses> responses_;         // EQ.4
   std::function<std::shared_ptr<TapRing>(doc::DeviceId, std::string_view)> signalTapOf_;  // GU.7
   FaceVoices faceVoices_;  // GU.7
   CircuitOpener circuitOpener_;

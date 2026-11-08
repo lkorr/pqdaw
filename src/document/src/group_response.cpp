@@ -37,40 +37,89 @@ bool deviceParam(std::string_view n, uint32_t& id, std::string_view& name) noexc
 
 Status GroupResponse::prepare(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices,
                               DeviceId group) {
-  response_ = graph::LinearResponse{};
-  params_.clear();
-  curves_.clear();
-  const DeviceLoc loc = findDevice(project, group);
-  if (loc.device == nullptr || !isGroupDevice(*loc.device))
-    return Error{ErrorCode::InvalidArgument, "group response: device " + std::to_string(group.value) + " is not a group", {}};
-  // The track patch the group's call is in (its own track's, or its host's for a hosted context).
-  const graph::NodeId call{nodeIdFor(NodeRole::Device, group.value, 0)};
-  uint32_t track = graph::kNone;
-  graph::NodeIndex callNode = graph::kNone;
-  for (uint32_t t = 0; t < lowered.patches.size() && track == graph::kNone; ++t) {
-    if (lowered.patches[t] == nullptr) continue;
-    const graph::Patch& p = lowered.patches[t]->patch;
-    if (const auto n = p.indexOf(call); n && p.node(*n).kind == graph::NodeKind::Subcircuit) {
-      track = t;
-      callNode = *n;
+  GroupResponse* self = this;
+  return prepareMany(project, lowered, devices, std::span<const DeviceId>(&group, 1), std::span<GroupResponse* const>(&self, 1))
+      .front();
+}
+
+std::vector<Status> GroupResponse::prepareMany(const Project& project, const LoweredProject& lowered,
+                                               const DeviceLibrary& devices, std::span<const DeviceId> groups,
+                                               std::span<GroupResponse* const> out) {
+  std::vector<Status> st(groups.size(), Status{Ok{}});
+  // Each group's track patch and call node (kNone: none).
+  struct Where {
+    uint32_t track = graph::kNone;
+    graph::NodeIndex call = graph::kNone;
+  };
+  std::vector<Where> at(groups.size());
+  for (size_t k = 0; k < groups.size(); ++k) {
+    GroupResponse& r = *out[k];
+    r.response_ = graph::LinearResponse{};
+    r.params_.clear();
+    r.curves_.clear();
+    ++r.stamp_;
+    const DeviceId group = groups[k];
+    const DeviceLoc loc = findDevice(project, group);
+    if (loc.device == nullptr || !isGroupDevice(*loc.device)) {
+      st[k] = Error{ErrorCode::InvalidArgument, "group response: device " + std::to_string(group.value) + " is not a group", {}};
+      continue;
+    }
+    // The track patch the group's call is in (its own track's, or its host's for a hosted context).
+    const graph::NodeId call{nodeIdFor(NodeRole::Device, group.value, 0)};
+    for (uint32_t t = 0; t < lowered.patches.size() && at[k].track == graph::kNone; ++t) {
+      if (lowered.patches[t] == nullptr) continue;
+      const graph::Patch& p = lowered.patches[t]->patch;
+      if (const auto n = p.indexOf(call); n && p.node(*n).kind == graph::NodeKind::Subcircuit) at[k] = {t, *n};
+    }
+    if (at[k].track == graph::kNone)
+      st[k] = Error{ErrorCode::NotFound, "group response: group " + std::to_string(group.value) + " is not lowered", {}};
+  }
+  // One inference per track, with probes on every group's In and Out there.
+  std::vector<uint8_t> done(groups.size(), 0);
+  for (size_t k0 = 0; k0 < groups.size(); ++k0) {
+    if (done[k0] || at[k0].track == graph::kNone) continue;
+    const uint32_t track = at[k0].track;
+    const graph::Patch& patch = lowered.patches[track]->patch;
+    std::vector<size_t> members;
+    std::vector<graph::ProbeTarget> probes;
+    for (size_t k = k0; k < groups.size(); ++k) {
+      if (done[k] || at[k].track != track) continue;
+      done[k] = 1;
+      const graph::NodeId call{nodeIdFor(NodeRole::Device, groups[k].value, 0)};
+      const auto inPort = patch.findOutput(at[k].call, kGroupInPort);
+      const auto outPort = patch.findOutput(at[k].call, "y");
+      if (!inPort || !outPort) {
+        st[k] = Error{ErrorCode::Unknown, "group response: the group call has no In / Out", {}};
+        continue;
+      }
+      members.push_back(k);
+      probes.push_back({{}, call, static_cast<uint16_t>(*inPort)});
+      probes.push_back({{}, call, static_cast<uint16_t>(*outPort)});
+    }
+    if (members.empty()) continue;
+    graph::InferOptions io;
+    io.library = lowered.graph.library;
+    io.voiceContext = track < lowered.graph.tracks.size() && lowered.graph.tracks[track].role == graph::TrackRole::Instrument;
+    io.probes = probes;
+    graph::InferResult inf = graph::inferDetailed(patch, io);
+    for (size_t m = 0; m < members.size(); ++m) {
+      const size_t k = members[m];
+      if (!inf.ok()) {
+        st[k] = Error{ErrorCode::Type, "group response: " + inf.diagnostics.front().message, {}};
+        continue;
+      }
+      st[k] = out[k]->finish(project, lowered, devices, groups[k], inf, track, inf.probeSources[2 * m], inf.probeSources[2 * m + 1]);
     }
   }
-  if (track == graph::kNone)
-    return Error{ErrorCode::NotFound, "group response: group " + std::to_string(group.value) + " is not lowered", {}};
-  const graph::Patch& patch = lowered.patches[track]->patch;
-  const auto inPort = patch.findOutput(callNode, kGroupInPort);
-  const auto outPort = patch.findOutput(callNode, "y");
-  if (!inPort || !outPort) return Error{ErrorCode::Unknown, "group response: the group call has no In / Out", {}};
-  const graph::ProbeTarget probes[] = {{{}, call, static_cast<uint16_t>(*inPort)}, {{}, call, static_cast<uint16_t>(*outPort)}};
-  graph::InferOptions io;
-  io.library = lowered.graph.library;
-  io.voiceContext = track < lowered.graph.tracks.size() && lowered.graph.tracks[track].role == graph::TrackRole::Instrument;
-  io.probes = probes;
-  graph::InferResult inf = graph::inferDetailed(patch, io);
-  if (!inf.ok()) return Error{ErrorCode::Type, "group response: " + inf.diagnostics.front().message, {}};
+  return st;
+}
+
+Status GroupResponse::finish(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices,
+                             DeviceId group, const graph::InferResult& inf, uint32_t track, uint32_t inSource,
+                             uint32_t outSource) {
   const graph::Patch& flat = inf.typed.patch;
-  const graph::ResponseEnd src = endOf(flat, inf.probeSources[0]);
-  const graph::ResponseEnd sink = endOf(flat, inf.probeSources[1]);
+  const graph::ResponseEnd src = endOf(flat, inSource);
+  const graph::ResponseEnd sink = endOf(flat, outSource);
   if (src.node == graph::kNone)
     return Error{ErrorCode::NotFound, "group response: nothing reaches the In terminal of group " + std::to_string(group.value), {}};
   if (sink.node == graph::kNone)
@@ -129,16 +178,27 @@ Status GroupResponse::prepare(const Project& project, const LoweredProject& lowe
 }
 
 void GroupResponse::update(const Project& project) noexcept {
+  bool changed = false;
   for (const Control& c : params_) {
     const DeviceLoc l = findDevice(project, c.device);
     if (l.device == nullptr) continue;
     const double v = c.position ? paramPosition(*l.device, c.param, c.decl) : paramValue(*l.device, c.param, c.decl);
-    response_.setParam(c.index, static_cast<float>(v));
+    const float f = static_cast<float>(v);
+    if (response_.param(c.index) == f) continue;
+    response_.setParam(c.index, f);
+    changed = true;
   }
-  for (const Control& c : curves_) {
+  for (Control& c : curves_) {
     const DeviceLoc l = findDevice(project, c.device);
-    if (l.device != nullptr) response_.setCurve(c.index, controlCurve(*l.device, c.param, c.decl));
+    if (l.device == nullptr) continue;
+    const dsp::Curve k = controlCurve(*l.device, c.param, c.decl);
+    if (c.curveSet && k == c.curve) continue;
+    c.curve = k;
+    c.curveSet = true;
+    response_.setCurve(c.index, k);
+    changed = true;
   }
+  if (changed) ++stamp_;
 }
 
 }  // namespace pq::doc

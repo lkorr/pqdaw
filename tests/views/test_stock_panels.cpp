@@ -107,14 +107,14 @@ TEST_CASE("EQ.3 doc target: run() dispatches an op as one undo step (a refusal i
   panel::GroupPanelFace face(panel::docPanelSource(ctx, eq), panel::makeDocPanelTarget(ctx, eq, []() -> Widget* { return nullptr; }));
   face.sync();
   panel::PanelTarget& target = face.target();
-  // The Type menus of chain c's bands: their elements' indices.
+  // The Type menus of chain c's bands (EQ.4: `bandtype` glyph menus): their elements' indices.
   auto typeMenus = [&](uint32_t c) {
     std::vector<size_t> out;
     const std::optional<doc::EqInfo> e = doc::eqInfo(*ctx.doc(), eq);
     REQUIRE(e.has_value());
     for (const doc::BandInfo& b : e->bands[c])
       for (size_t i = 0; i < face.elementCount(); ++i)
-        if (face.element(i).desc().kind == "menu" && face.element(i).desc().binding() != nullptr &&
+        if (face.element(i).desc().kind == "bandtype" && face.element(i).desc().binding() != nullptr &&
             face.element(i).desc().binding()->device == b.type)
           out.push_back(i);
     CHECK(out.size() == e->bands[c].size());

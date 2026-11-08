@@ -146,7 +146,8 @@ struct EmbedFit {
 };
 // The fit of a `childW` × `childH` panel into a `w` × `h` element (k = 1 when either size is not positive).
 EmbedFit embedFit(float w, float h, float childW, float childH) noexcept;
-// The group an embed element shows (its Panel binding), invalid: `e` is not one.
+// The group an embed element shows (its Panel binding), invalid: `e` is not one. (EQ.4: a Panel binding on another kind
+// names a group without embedding it: the EQ's band columns, a `shape` that lights up while its band is selected.)
 DeviceId embeddedGroup(const PanelElement& e) noexcept;
 
 // Whether any element of `p` binds device `d`.
@@ -160,7 +161,8 @@ bool panelBinds(const Panel& p, DeviceId d) noexcept;
 //   Voice   "orbit"                                  voice_tap(x): per sounding voice its newest value and the values
 //                                                     sampled since the last read (the phase orbit's dots)
 //   Signal  "scope", "spectrum", "spectrogram",       signal_tap(transport.beat, note, x[0], x[1]): the analysis feed's
-//           "meter"                                   four channels (note: the lowest voice's Hz in a voice context, else 0)
+//           "meter", "response" (EQ.4: slot 1 too,    four channels (note: the lowest voice's Hz in a voice context, else 0)
+//           the input spectrum)
 // The tap's slot is LowerOptions::metaSlotOf(device, tapPath(kind, port), 0), listed in LoweredProject::metaResources
 // (type "", VoiceTap / SignalTap). Several displays of one output share one tap.
 enum class ElementTap : uint8_t { None, Voice, Signal };

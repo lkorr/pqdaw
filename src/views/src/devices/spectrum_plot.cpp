@@ -58,10 +58,14 @@ void noteName(float hz, char* out, size_t n) {
 }  // namespace
 
 float SpectrumAxis::x(float hz) const noexcept {
+  if (offsetHz > 0.0f)
+    return x0 + (x1 - x0) * std::log1p(std::max(hz, 0.0f) / offsetHz) / std::log1p(topHz / offsetHz);
   return x0 + (x1 - x0) * std::log(std::max(hz, 1.0f) / kLoHz) / kLogSpan;
 }
 float SpectrumAxis::hz(float px) const noexcept {
-  return kLoHz * std::exp(kLogSpan * std::clamp((px - x0) / std::max(x1 - x0, 1e-3f), 0.0f, 1.0f));
+  const float t = std::clamp((px - x0) / std::max(x1 - x0, 1e-3f), 0.0f, 1.0f);
+  if (offsetHz > 0.0f) return offsetHz * std::expm1(t * std::log1p(topHz / offsetHz));
+  return kLoHz * std::exp(kLogSpan * t);
 }
 
 SpectrumPlot::~SpectrumPlot() { release(); }
@@ -274,7 +278,7 @@ void SpectrumPlot::paintSpectrum(ui::DrawList& dl, const ui::Rect& r, const Spec
     for (uint32_t s = 0; s < steps; ++s) {
       const float x = xAt(s), db = sampleAt(shown_.in, ax.hz(x));
       poly_[s] = {x, levelY(r, db)};
-      cols_[s] = ui::setAlpha(kInputColour, 0.55f * visT(db));
+      cols_[s] = ui::setAlpha(kInputColour, 0.55f * visT(db) * style_.alpha);
       any = any || visT(db) > 0.0f;
     }
     if (any) {
@@ -296,13 +300,13 @@ void SpectrumPlot::paintSpectrum(ui::DrawList& dl, const ui::Rect& r, const Spec
     poly_[s] = {x, levelY(r, db)};
     lvl_[s] = lt;
     vis_[s] = vis;
-    cols_[s] = ui::mulAlpha(ui::lutAt(lut, 0.25f + 0.75f * lt), vis);
+    cols_[s] = ui::mulAlpha(ui::lutAt(lut, 0.25f + 0.75f * lt), vis * style_.alpha);
   }
   if (any) {
     ui::SpectrumCurveStyle st;
     st.glowAmount = style_.glow;
     st.glow = style_.glow > 0.01f;
-    st.fillAlpha = style_.fill;
+    st.fillAlpha = style_.fill * style_.alpha;
     st.lineWidth = style_.lineWidth * scale;
     ui::spectrumCurve(dl, poly_.data(), cols_.data(), lvl_.data(), steps, r.y1, st);
   }

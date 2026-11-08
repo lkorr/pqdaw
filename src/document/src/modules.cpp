@@ -1037,9 +1037,11 @@ PanelElement tagged(PanelElement e, std::string_view tag) {
   return e;
 }
 
-// The strip's geometry (world units).
-constexpr float kStripX = 88.0f, kColumnStep = 60.0f, kColumnW = 56.0f, kStripTop = 128.0f, kEqHeight = 288.0f;
-constexpr uint32_t kMinColumns = 4;
+// The panel's geometry (world units): the response display, the phase strip right under it, the controls on the left
+// and the band strip.
+constexpr float kResponseY = 8.0f, kResponseH = 156.0f, kPhaseY = 166.0f, kPhaseH = 40.0f;
+constexpr float kStripX = 88.0f, kColumnStep = 60.0f, kColumnW = 56.0f, kStripTop = 220.0f, kEqHeight = kStripTop + 164.0f;
+constexpr uint32_t kMinColumns = 6;
 
 void addRole(Kit& k, const Sig& v, std::string_view setting, double role) { k.setting(v.dev, std::string(setting), role); }
 
@@ -1225,9 +1227,22 @@ Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]) {
       const float x = kStripX + kColumnStep * static_cast<float>(i);
       auto bound = [](DeviceId v) { return Sig{v, std::string(kValueOutput)}; };
       const std::vector<double> chainValues = c == 0 ? std::vector<double>{0.0, kWhenHidden} : std::vector<double>{1.0};
+      // The column's plate: bound to the band (a Panel binding on a shape: it lights up while the band is selected on
+      // the response display), shown with its chain.
+      PanelElement plate = element(id++, "shape", x - 2.0f, kStripTop - 4.0f, kColumnW + 4.0f, 160.0f, panelBinding(b.group));
+      plate.setField(styleText("fill", "track"));
+      plate.setField(styleNumber("opacity", 0.45));
+      plate.setField(styleText("stroke", "none"));
+      plate.setField(styleNumber("radius", 4.0));
+      plate.setField(styleNumber("band", static_cast<double>(i)));
+      if (chains != 0) plate.when = Visibility{chains, chainValues};
+      p.elements.push_back(tagged(std::move(plate), kTagStrip));
       const uint32_t typeMenu = id;
       if (b.type.valid()) {
-        PanelElement m = tagged(menu(control(id++, "menu", x, kStripTop, kColumnW, 18, bound(b.type)), kBandTypeItems), kTagStrip);
+        // The type as its glyph and short code (LP, PK …) in the band's colour (`band`: its index in the chain).
+        PanelElement m = menu(control(id++, "bandtype", x, kStripTop, kColumnW, 18, bound(b.type)), kBandTypeItems);
+        m.setField(styleNumber("band", static_cast<double>(i)));
+        m = tagged(std::move(m), kTagStrip);
         if (chains != 0) m.when = Visibility{chains, chainValues};
         p.elements.push_back(std::move(m));
       }
@@ -1339,16 +1354,16 @@ BlockSet eqBlocks(IdSource& ids, const StockModuleOptions& o) {
   const DeviceId outGain = k.block("gain", "x output", {{"x", z}, {"g", output}});
   k.setting(outGain, "start", 1.0);
   k.out(Sig{outGain, "out"});
-  // The panel: EQ.4's displays above (a placeholder), the controls on the left, the band strip.
+  // The panel: the response display (the analyser on the EQ's output, its input dimmed) with the phase strip right
+  // under it, the controls on the left, the band strip.
   Panel p;
   p.width = kStripX + kColumnStep * kMinColumns + 4.0f;
   p.height = kEqHeight;
   p.elements.push_back(plate(p.width, p.height, 6.0));
-  PanelElement display = element(2, "shape", 8, 8, p.width - 16.0f, 112, {});
-  display.bindings.clear();
-  display.setField(styleText("fill", "track"));
-  display.setField(styleNumber("radius", 4.0));
+  PanelElement display = element(2, "response", 8, kResponseY, p.width - 16.0f, kResponseH, signalBinding(group, "y"));
+  display.bindings.push_back(signalBinding(group, std::string(kGroupInPort)));
   p.elements.push_back(tagged(std::move(display), kTagDisplay));
+  p.elements.push_back(tagged(element(9, "phase", 8, kPhaseY, p.width - 16.0f, kPhaseH, signalBinding(group, "y")), kTagDisplay));
   p.elements.push_back(caption(3, 8, kStripTop - 2, 72, 12, "Mode"));
   p.elements.push_back(menu(control(4, "menu", 8, kStripTop + 12, 72, 18, mode), kEqModeItems));
   // The chain tabs: one bound to Edit Chain that the columns follow (shown when Mode ≠ Stereo; while it is hidden chain

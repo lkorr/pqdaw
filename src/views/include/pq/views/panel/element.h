@@ -41,6 +41,10 @@
 #include "pq/ui/theme.h"
 #include "pq/views/meta/meta_face.h"
 
+namespace pq::views {
+class GroupResponses;  // pq/views/panel/group_responses.h (EQ.4)
+}
+
 namespace pq::views::panel {
 
 // What a binding is, resolved against the document (and the device library) by the target.
@@ -127,6 +131,21 @@ public:
   // holds at most 32 bands"), the store refuses, or there is no document; an empty edit is true and records nothing.
   using EditBuilder = std::function<doc::ops::EditResult(const doc::Project&, doc::IdSource&)>;
   virtual bool run(const EditBuilder& /*build*/) { return false; }
+  // ---- EQ.4: the response displays (response_elements.cpp) ----
+  // Groups' analytic responses (prepared once per structural revision, their controls re-read per change), null: none
+  // (no document: the displays draw their grid and "no curve").
+  virtual GroupResponses* responses() { return nullptr; }
+  // The SELECTED GROUP of the panel (a band picked on a response display: its strip column lights up, Delete removes
+  // it) and the displays' VIEW STATE (zoom, toggles) by element id and key: kept by the target, so they survive the
+  // panel's rebuilds (a band added rebuilds the elements); not saved, not undoable.
+  doc::DeviceId selectedGroup() const noexcept { return selected_; }
+  void selectGroup(doc::DeviceId g) noexcept { selected_ = g; }
+  double viewValue(uint32_t element, std::string_view key, double def) const;
+  void setViewValue(uint32_t element, std::string_view key, double v);
+
+private:
+  doc::DeviceId selected_;
+  std::vector<std::pair<std::string, double>> view_;
 };
 
 // What an element paints with.

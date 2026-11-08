@@ -30,12 +30,14 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
+#include "pq/document/modules.h"
 #include "pq/meta/registry.h"
 #include "pq/views/devices/device_model.h"
 #include "pq/document/panel.h"
 #include "pq/document/racks.h"
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/panel/group_panel_face.h"
+#include "pq/views/panel/group_responses.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views::panel {
@@ -374,6 +376,8 @@ public:
     return std::binary_search(driven_.begin(), driven_.end(), std::pair<uint32_t, std::string>(b.device.value, b.name));
   }
 
+  GroupResponses* responses() override { return &ctx_.groupResponses(); }
+
   bool run(const EditBuilder& build) override {
     if (!build || ctx_.doc() == nullptr) return false;
     const doc::ops::EditResult e = build(*ctx_.doc(), ctx_.store().ids());
@@ -618,6 +622,13 @@ private:
   doc::ops::EditResult paramEdit(const doc::Binding& b, const Resolved& r, double position) const {
     const doc::Project& p = *ctx_.doc();
     if (r.how == How::MetaParam) return doc::ops::setMetaParam(p, b.device, b.meta, r.type->id, b.name, position);
+    // EQ.3 / EQ.4: the EQ's Mode block (its eqRole) is set through ops::setEqMode — the first split copies chain A into
+    // the empty chain B (one step) — whatever control shows it (the panel's Mode menu, a knob a user placed).
+    if (r.device != nullptr && doc::isValueDevice(*r.device) && b.name == doc::kValueParam && doc::eqRole(*r.device) == doc::EqRole::Mode &&
+        r.device->group.valid() && doc::eqInfo(p, r.device->group)) {
+      const double v = std::round(dsp::evalCurveUnits(r.info.curve, std::clamp(position, 0.0, 1.0)));
+      return doc::ops::setEqMode(p, ctx_.store().ids(), r.device->group, static_cast<doc::EqMode>(std::clamp(v, 0.0, 2.0)));
+    }
     if (const Mapped* m = mapped(b)) {  // the macro turns (the inverse of its mapping)
       const double span = m->max - m->min;
       const double x = std::abs(span) < 1e-9 ? 0.0 : std::clamp((position - m->min) / span, 0.0, 1.0);

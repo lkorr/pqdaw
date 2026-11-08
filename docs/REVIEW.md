@@ -952,3 +952,18 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **Try it:** `pqdaw`, add an Audio Effect Rack with a Saturator inside, wheel over Drive; right-click it → Show
   Automation; Map → macro 1 → click Drive.
 - **To judge** (QUESTIONS Q?-GU.13-a): wheel and typed values in the panel window too; the generic leaf panel's look.
+
+## 👁 EQ.4 The EQ's response and phase displays, the band strip · 2026-11-08
+- **What changed:** the EQ's placeholder is now the `response` display (mint total curve with glow and fill on a teal
+  grid, each band's own curve faint in its colour, numbered nodes, the analyser behind) and a `phase` strip under it
+  (unwrapped phase, or group delay: click its PHASE chip). The band columns: a filter glyph + code (LP / HP / PK …) menu,
+  Hz and Q boxes, a vertical gain slider; the selected band's column lights up. Two new theme tokens:
+  `device.response` (#7DF0C6) and `device.responseGrid` (#4FD8B21C).
+- **Goldens (new, 2x):** eq-default, eq-eight-bands (a 16-stage low cut, a Q 40 bell, a notch, a fake spectrum behind,
+  the bell selected), eq-lr-mode (chain B translucent behind A), eq-phase-delay (group delay strip), eq-band-response
+  (the same element on a lone EQ Band's panel).
+- **Try it:** add an EQ to a track; double-click the curve to add a bell, drag nodes (Shift: fine), wheel = Q,
+  Alt + wheel = stages, right-click a node, Mode → L/R and the L | R tabs.
+- **To judge** (QUESTIONS Q?-EQ.4-a): the colours (mint / teal against the app's amber controls), the node size and
+  numbers, the strip column look, the phase strip's height (40 units), the Stages box still reads "16.0" (EQ.3's number
+  format).

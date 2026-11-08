@@ -66,6 +66,10 @@ void registerEmbedElement(void (*reg)(std::string_view kind, std::string_view la
 void registerEngineElements(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
                                         std::span<const std::string_view> slots, float w, float h, ElementFactory f));
 
+// EQ.4: the response and phase displays and the band type chooser (response_elements.cpp).
+void registerResponseElements(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
+                                          std::span<const std::string_view> slots, float w, float h, ElementFactory f));
+
 // The curve editor (curve_element.cpp).
 std::span<const StyleSpec> curveElementStyle() noexcept;
 std::unique_ptr<Element> makeCurveElement(const doc::PanelElement& desc);

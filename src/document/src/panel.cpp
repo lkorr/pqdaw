@@ -49,7 +49,7 @@ EmbedFit embedFit(float w, float h, float childW, float childH) noexcept {
 
 DeviceId embeddedGroup(const PanelElement& e) noexcept {
   const Binding* b = e.binding();
-  return b != nullptr && b->kind == BindingKind::Panel ? b->device : DeviceId{};
+  return b != nullptr && b->kind == BindingKind::Panel && e.kind == kEmbedKind ? b->device : DeviceId{};
 }
 
 StyleField styleNumber(std::string name, double v) {
@@ -229,7 +229,8 @@ Panel remapPanel(const Panel& p, std::span<const std::pair<DeviceId, DeviceId>> 
 
 ElementTap elementTap(std::string_view kind) noexcept {
   if (kind == "orbit") return ElementTap::Voice;
-  if (kind == "scope" || kind == "spectrum" || kind == "spectrogram" || kind == "meter") return ElementTap::Signal;
+  if (kind == "scope" || kind == "spectrum" || kind == "spectrogram" || kind == "meter" || kind == "response")
+    return ElementTap::Signal;
   return ElementTap::None;
 }
 
@@ -241,9 +242,12 @@ std::vector<PanelTap> panelTaps(const Panel& p) {
   std::vector<PanelTap> out;
   for (const PanelElement& e : p.elements) {
     const ElementTap k = elementTap(e.kind);
-    const Binding* b = e.binding(0);
-    if (k == ElementTap::None || b == nullptr || b->kind != BindingKind::Signal || !b->device.valid() || b->name.empty()) continue;
-    out.push_back(PanelTap{b->device, b->name, k});
+    // (EQ.4: a response display's analyser also shows its input spectrum: slot 1)
+    for (size_t slot = 0; slot < (e.kind == "response" ? 2u : 1u); ++slot) {
+      const Binding* b = e.binding(slot);
+      if (k == ElementTap::None || b == nullptr || b->kind != BindingKind::Signal || !b->device.valid() || b->name.empty()) continue;
+      out.push_back(PanelTap{b->device, b->name, k});
+    }
   }
   std::sort(out.begin(), out.end(), [](const PanelTap& a, const PanelTap& b) {
     if (a.device != b.device) return a.device < b.device;

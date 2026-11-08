@@ -12,6 +12,7 @@
 #include "pq/views/browser/library.h"
 #include "pq/views/devices/analysis.h"
 #include "pq/views/file_probes.h"
+#include "pq/views/panel/group_responses.h"
 #include "pq/views/waveforms.h"
 
 namespace pq::views {
@@ -151,6 +152,7 @@ void ViewContext::setDeviceLibrary(const doc::DeviceLibrary* lib) {
   store_.setDeviceLibrary(lib);  // GU.1: edits in units resolve curves with it
   if (devices_ == lib) return;
   devices_ = lib;
+  ++structural_;  // EQ.4
   notify(view_change::kDevices);
 }
 
@@ -163,6 +165,7 @@ void ViewContext::setModulationSource(ModulationSource* source) {
 void ViewContext::setAnalysisSource(std::function<std::shared_ptr<TapRing>(doc::DeviceId)> tapOf, double sampleRate) {
   // A new source (another rate): the hub keeps the feeds displays still hold until they let go (their targets ask for
   // the new ones at their next frame).
+  if (sampleRate > 0.0) sampleRate_ = sampleRate;
   if (analysis_) analysis_->setSource(std::move(tapOf), sampleRate);
   else  // the poster is looked up when a wake is posted (the app may set it later)
     analysis_ = std::make_unique<devices::AnalysisHub>(std::move(tapOf), sampleRate, [this](std::function<void()> f) {
@@ -185,7 +188,13 @@ devices::SpectrumFeed* ViewContext::analysisFeed(doc::DeviceId device, std::stri
   return analysis_->feed(device, path);
 }
 
+GroupResponses& ViewContext::groupResponses() {
+  if (!responses_) responses_ = std::make_unique<GroupResponses>(*this);
+  return *responses_;
+}
+
 void ViewContext::onStoreEvent(const doc::StoreEvent& e) {
+  if (e.kind == doc::StoreEventKind::Reset || e.changes.structural()) ++structural_;  // EQ.4
   if (e.kind == doc::StoreEventKind::Reset || !(e.before->loop == e.after->loop)) syncLoop();
   // T5.8: the sample table changed (a drop, undo / redo of one): resolve it again (cheap: a file check per entry).
   if (e.kind != doc::StoreEventKind::SamplesRelocated && e.kind != doc::StoreEventKind::Reset &&
