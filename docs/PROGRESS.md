@@ -176,3 +176,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): playback AU.voices* 6/6, engine and views default tier; -Affected -Slow 88/88. Goldens: none.
 - Perf: no hot path changed.
 - Notes/blockers: the Play click not reproduced in the engine; suspect the app stopping the audio stream after 1 s of engine sleep (every Play from idle restarts the ASIO driver). Q?-AU.voices-a; diagnostic for the user: Play within 1 s of Stop.
+
+## 2026-11-08 · AU.fold · orchestrator (merge of task/AU.fold)
+- Did: fast-forwarded main to 8f93a477. Cause: an unwired fold / warp / sync is baked into the table; a drag publishes ≈ 30 tables/s and each swap crossfaded 64 samples (1.3 ms), so the wave stepped. Swaps now fade over 25 ms and a table arriving mid-fade waits (recent tables kept ≤ 0.5 s / 64). Live path: the per-block ramp restarted from the pre-smoothing value (a jump back per move); fixed. Ruled out: the fold curve (static ≤ −109.7 dBFS non-harmonic), phase-domain fold, PA wrap at integer Amplitude, mips, cable-driven fold.
+- Verified: worker: AU.fold* 2/2 (fail before), meta wavetable incl. slow alias suites 19/19, dsp wavetable/frame-table 25/25, jit 12/12. Orchestrator: build.ps1 -Affected -Slow on 8f93a477 passed; ship pq_bench_dsp linked. Goldens: none.
+- Perf: non-harmonic energy during a fold drag −29.4 → −45.9 dB (warp −42.7 → −59.3, sync −19.8 → −36.8); live steps −32.2 → −48.1 dB; idle cost unchanged, ≈ 0.08 % of a core during a 30 Hz drag.
+- Notes/blockers: Q?-AU.fold-a (Saturator aliases: Digital Clip −38 dB at 1760 Hz +18 dB; ×4 oversampling ≈ +15 ns/sample/channel; Type switch clicks), Q?-AU.fold-b (non-integer PA Amplitude jumps per cycle).
