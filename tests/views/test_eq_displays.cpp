@@ -442,6 +442,66 @@ TEST_CASE("EQ.4b phase: wrapped to ±180° by default; WRAP / UNWRAP unwraps (au
   CHECK(panel::test::phaseView(ph, t) == 0);
 }
 
+TEST_CASE("EQ.4c phase: a dotted wrap marker at each wrap of the wrapped curve, at the crossing; none unwrapped / delay") {
+  EqUi u;
+  const doc::EqInfo e = u.info();
+  run(u.st(), doc::ops::setBandType(u.doc(), e.bands[0][0].group, 1));
+  run(u.st(), doc::ops::setBandStages(u.doc(), e.bands[0][0].group, 16));
+  setUnits(u.st(), e.bands[0][0].frequency, 60.0);
+  u.d.step();
+  panel::Element& ph = u.element("phase");
+  panel::PanelTarget& t = u.target();
+  REQUIRE(panel::test::phaseView(ph, t) == 0);
+  // The reference: the chain's own H on a grid 8× finer than the strip's, unwrapped; each crossing of an odd multiple
+  // of 180° (linear between samples) is one wrap, at its x on the axis.
+  doc::LowerOptions lo;
+  lo.library = &devLib().library();
+  lo.devices = &devLib();
+  lo.clipSlotOf = [](doc::TrackId) { return 0u; };
+  auto low = doc::lower(u.doc(), lo);
+  REQUIRE(low.ok());
+  doc::GroupResponse gr;
+  REQUIRE(gr.prepare(u.doc(), *low, devLib(), e.chain[0]).ok());
+  const uint32_t n = (panel::test::responsePoints() - 1) * 8 + 1;
+  std::vector<double> hz(n);
+  for (uint32_t i = 0; i < n; ++i) hz[i] = panel::test::axisHz(static_cast<double>(i) / (n - 1));
+  hz[0] = panel::test::responseHz(0);  // (as the strip: not DC itself, where a cut's H is 0)
+  const size_t stride = gr.inChannels() * gr.outChannels();
+  std::vector<Cx> h(n * stride);
+  gr.evaluate(hz, u.ctx.sampleRate(), h);
+  constexpr double kPi = 3.141592653589793;
+  std::vector<float> want;
+  double prev = std::arg(h[0]) * 180.0 / kPi, acc = prev;
+  for (uint32_t i = 1; i < n; ++i) {
+    const double a = std::arg(h[i * stride]) * 180.0 / kPi;
+    const double next = acc + std::remainder(a - prev, 360.0);
+    prev = a;
+    // Odd multiples of 180° in (acc, next] or [next, acc).
+    const double lo2 = std::min(acc, next), hi2 = std::max(acc, next);
+    for (double m = std::ceil((lo2 - 180.0) / 360.0) * 360.0 + 180.0; m <= hi2; m += 360.0)
+      if (m > lo2)
+        want.push_back(ph.desc().w * static_cast<float>((i - 1 + (m - acc) / (next - acc)) / (n - 1)));
+    acc = next;
+  }
+  const std::vector<float> got = panel::test::phaseWraps(ph);
+  CAPTURE(want.size());
+  REQUIRE(want.size() == 8);  // 16 two-pole stages: 16 × 180° = 2880° from DC to the top, eight wraps
+  REQUIRE(got.size() == want.size());
+  for (size_t i = 0; i < got.size(); ++i) {
+    CAPTURE(i);
+    CHECK(std::fabs(got[i] - want[i]) <= 1.0f);
+  }
+  // Unwrapped and group delay: no markers.
+  u.d.click(u.at("phase", panel::test::phaseChip(ph, 1)));
+  u.d.step();
+  REQUIRE(panel::test::phaseView(ph, t) == 1);
+  CHECK(panel::test::phaseWraps(ph).empty());
+  u.d.click(u.at("phase", panel::test::phaseChip(ph, 0)));
+  u.d.step();
+  REQUIRE(panel::test::phaseView(ph, t) == 2);
+  CHECK(panel::test::phaseWraps(ph).empty());
+}
+
 TEST_CASE("EQ.4b strip and band panel: Q boxes read \"Q 0.71\", Stages boxes \"×16\"; other number boxes keep their readout") {
   Alone a;
   const doc::EqInfo e = a.info();

@@ -16,6 +16,7 @@
 //   phase      the same axis; the active chain's total as phase in degrees — WRAPPED to ±180° (the default: a fixed
 //              scale, so a 16-stage cut's thousands of degrees never flatten the strip), or UNWRAPPED (auto-scaled; the
 //              WRAP / UNWRAP chip) — or group delay in ms (the PHASE / DELAY chip); the selected band's faint behind.
+//              Wrapped, a thin dotted line in the curve's colour joins the two ends of each wrap (at the crossing).
 //   bandtype   a band's Type as its glyph and short code (LP, HP, BP, NO, PK, LS, HS, AP) in the band's colour, a
 //              menu on click (the EQ's strip columns).
 //
@@ -1045,20 +1046,37 @@ public:
                       5.0f, th.device.displayText, 1.0f);
     }
     // The selected band, faint; the total.
-    // A wrapped curve is cut where it wraps (no vertical line across the strip).
+    // A wrapped curve is cut where it wraps (no vertical line across the strip); at each cut a thin dotted line in its
+    // colour joins its end at one edge (±180°) to its continuation at the other (EQ.4c), at the interpolated crossing.
+    const float yTop = yOf(180.0), yBot = yOf(-180.0);
+    auto marker = [&](float x, Rgba c) {
+      const Vec2 seg[2] = {{x, yTop}, {x, yBot}};
+      p.dashed(seg, 0.7f, 1.0f, 2.0f, c);
+    };
+    wraps_.clear();
     if (sel_.valid())
-      forRuns(sel_.v, wrapped, [&](uint32_t a, uint32_t b) {
-        points(sel_.v, a, b, pts_);
-        p.polyline(pts_, 0.9f, ui::mulAlpha(selColour_, 0.55f));
-      });
+      forRuns(
+          sel_.v, wrapped,
+          [&](uint32_t a, uint32_t b) {
+            points(sel_.v, a, b, pts_);
+            p.polyline(pts_, 0.9f, ui::mulAlpha(selColour_, 0.55f));
+          },
+          [&](float k) { marker(xOfIndex(k), ui::mulAlpha(selColour_, 0.3f)); });
     if (total_.valid()) {
       const Rgba m = th.device.response;
-      forRuns(total_.v, wrapped, [&](uint32_t a, uint32_t b) {
-        points(total_.v, a, b, pts_);
-        p.polyline(pts_, 3.0f, ui::mulAlpha(m, 0.12f));
-        if (total_.kind == graph::ResponseKind::Approximate) p.dashed(pts_, 1.2f, 4.0f, 3.0f, ui::mulAlpha(m, 0.9f));
-        else p.polyline(pts_, 1.2f, ui::mulAlpha(m, 0.9f));
-      });
+      forRuns(
+          total_.v, wrapped,
+          [&](uint32_t a, uint32_t b) {
+            points(total_.v, a, b, pts_);
+            p.polyline(pts_, 3.0f, ui::mulAlpha(m, 0.12f));
+            if (total_.kind == graph::ResponseKind::Approximate) p.dashed(pts_, 1.2f, 4.0f, 3.0f, ui::mulAlpha(m, 0.9f));
+            else p.polyline(pts_, 1.2f, ui::mulAlpha(m, 0.9f));
+          },
+          [&](float k) {
+            const float x = xOfIndex(k);
+            wraps_.push_back(x);
+            marker(x, ui::mulAlpha(m, 0.4f));
+          });
     } else {
       p.text({w * 0.5f, h * 0.5f}, "no curve", 6.0f, th.device.displayText);
     }
@@ -1098,6 +1116,7 @@ public:
     return total_.v[static_cast<size_t>(std::lround(std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1)))];
   }
   std::pair<double, double> scale() const noexcept { return {lo_, hi_}; }
+  const std::vector<float>& wraps() const noexcept { return wraps_; }
   Vec2 chipCentre(int32_t c) const noexcept {
     const Rect r = chipRect(c);
     return {(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f};
@@ -1115,16 +1134,23 @@ private:
     if (viewOf(t) != PhaseView::Delay && inside(chipRect(1), l)) return 1;
     return -1;
   }
-  // Runs [a, b) of points to draw as one line: all of them, or (wrapped) cut where the phase wraps.
-  template <class F>
-  static void forRuns(const std::vector<float>& v, bool wrapped, F&& draw) {
+  // Runs [a, b) of points to draw as one line: all of them, or (wrapped) cut where the phase wraps; each cut also
+  // reports its crossing (a fractional point index): where the unwrapped phase, linear between the two points, passes
+  // the odd multiple of 180° (so it does not move with the grid's resolution).
+  template <class F, class W>
+  static void forRuns(const std::vector<float>& v, bool wrapped, F&& draw, W&& wrap) {
     uint32_t a = 0;
     for (uint32_t k = 1; k <= kPoints; ++k)
       if (k == kPoints || (wrapped && std::fabs(v[k] - v[k - 1]) > 180.0f)) {
         if (k - a >= 2) draw(a, k);
         a = k;
+        if (k == kPoints) continue;
+        const float d = v[k] - v[k - 1] + (v[k] < v[k - 1] ? 360.0f : -360.0f);  // the unwrapped step
+        const float edge = d > 0.0f ? 180.0f : -180.0f;
+        wrap(static_cast<float>(k - 1) + (d != 0.0f ? std::clamp((edge - v[k - 1]) / d, 0.0f, 1.0f) : 0.5f));
       }
   }
+  float xOfIndex(float k) const noexcept { return desc_.w * k / static_cast<float>(kPoints - 1); }
   float yOf(double v) const noexcept {
     const float top = 4.0f, bot = desc_.h - 4.0f;
     return bot - static_cast<float>((v - lo_) / std::max(hi_ - lo_, 1e-9)) * (bot - top);
@@ -1163,6 +1189,7 @@ private:
   Derived total_, sel_;
   Rgba selColour_ = 0;
   std::vector<Vec2> pts_;
+  std::vector<float> wraps_;  // the total's wrap markers' x (last paint; tests)
   double lo_ = -180.0, hi_ = 180.0;
   int32_t hoverChip_ = -1;
 };
@@ -1303,6 +1330,10 @@ float phaseAt(const Element& e, float x) {
 std::pair<double, double> phaseScale(const Element& e) {
   const auto* p = dynamic_cast<const PhaseDisplay*>(&e);
   return p != nullptr ? p->scale() : std::pair<double, double>{0.0, 0.0};
+}
+std::vector<float> phaseWraps(const Element& e) {
+  const auto* p = dynamic_cast<const PhaseDisplay*>(&e);
+  return p != nullptr ? p->wraps() : std::vector<float>{};
 }
 ui::Vec2 phaseChip(const Element& e, int32_t c) {
   const auto* p = dynamic_cast<const PhaseDisplay*>(&e);

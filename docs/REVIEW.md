@@ -980,3 +980,11 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **To judge:** "×16" vs "16 st"; "Q 40.00" (two decimals at any Q); the wrapped phase of a deep cut (many wrap
   lines at low frequencies); the band panel's size in the circuit (four of them inside an opened EQ).
 - **Not confirmed:** the "no curve after opening and closing the circuit" bug did not reproduce here (see PROGRESS).
+
+## 👁 EQ.4c wrap markers on the phase strip · 2026-11-08
+- **What changed:** in wrapped phase (the default), each wrap now has a thin dotted vertical line in the curve's colour
+  (faint) joining its end at one edge (±180°) to its continuation at the other, at the interpolated crossing; the
+  selected band's faint curve gets fainter ones. Unwrapped and group-delay views have none.
+- **Golden re-recorded:** eq-eight-bands (only the markers moved; the other eq-* scenes have no wrap in view).
+- **To judge:** dot size / alpha (0.7 px, 1 on / 2 off, 40 % alpha); whether it reads as "continues here" and not as
+  a grid line on a deep cut with many wraps.
