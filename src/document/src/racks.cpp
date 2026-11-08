@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "pq/document/instrument_groups.h"
+#include "pq/document/modules.h"
 #include "pq/dsp/curve.h"
 
 namespace pq::doc {
@@ -291,10 +292,12 @@ RackInfo makeInfo(const Project& p, const TrackIndex& ix, const std::vector<cons
 
 bool rackValueSetting(std::string_view name) noexcept {
   if (name == kMacroSetting || name == kRandExcludeSetting || name == kRoleSetting) return true;
+  if (name == kBandRoleSetting || name == kEqRoleSetting) return true;  // EQ.3 (modules.h)
   return name.size() > kVariationPrefix.size() && name.substr(0, kVariationPrefix.size()) == kVariationPrefix;
 }
 bool rackGroupSetting(std::string_view name) noexcept {
-  return name == kRoleSetting || name == kChainOnSetting || name == kChainSoloSetting || name == kKeyUnitSetting;
+  return name == kRoleSetting || name == kChainOnSetting || name == kChainSoloSetting || name == kKeyUnitSetting ||
+         name == kBandChainSetting || name == kBandSoloSetting || name == kSoloRestoreSetting;  // EQ.3 (modules.h)
 }
 
 ZoneRange zoneRange(ZoneKind kind, KeyZoneUnit unit) noexcept {

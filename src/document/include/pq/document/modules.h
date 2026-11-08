@@ -40,7 +40,8 @@ namespace pq::doc {
 
 enum class ModuleKind : uint8_t {
   PhaseAccumulator, Vca, Wavetable, Envelope, Oscilloscope, Spectrum, Spectrogram, WavetableSynth,
-  Utility, Saturator, Lfo, Operator  // GU.10: the stock devices
+  Utility, Saturator, Lfo, Operator,  // GU.10: the stock devices
+  EqBand, Eq                          // EQ.3
 };
 struct ModuleInfo {
   ModuleKind kind;
@@ -181,6 +182,80 @@ BlockSet lfoBlocks(IdSource& ids, const StockModuleOptions& o = {});
 BlockSet operatorBlocks(IdSource& ids, const StockModuleOptions& o = {});
 // The default instrument (an instrument group, its polyphony written out, and its blocks; the group first).
 BlockSet defaultInstrumentBlocks(IdSource& ids, const StockModuleOptions& o = {});
+
+// ---- EQ.3: the band and the EQ (docs/plans/EQ.md "Structure") ------------------------------------------------------
+// BAND (module:eq_band): a group In → svf atom → Out whose value blocks carry a `bandRole` setting (found by role, never
+// by name, as racks.h's rackRole):
+//   Frequency  0 … 20 kHz on one Exp segment of bend ln 2001: the knob travel t is the response display's axis
+//              x = log(1 + f / 10 Hz) / log(2001) exactly (f = 10 Hz · (2001^t − 1)) → the svf's cutoff
+//   Q          0.1 … 40, octave law → q
+//   Gain       ±24 dB (a dB curve with the DbToGain output: the block gives the linear gain the svf's `gain` takes)
+//   Stages     1 … 64, stepped → the svf's const input `stages` (a structural value: lower.h "Structural value blocks")
+//   Type       0 … 7, stepped, the svf modes in their order (kBandTypeItems) → the const input `mode`
+// Bell and Notch run one stage whatever Stages says (the atom's rule). Bypass = the band group switched off.
+// EQ (module:eq): value blocks Mode (Stereo | L/R | M/S, stepped: structural), Output (±24 dB) and Edit Chain (the strip's
+// A / B tabs; feeds nothing), each with an `eqRole`; two chain groups with a `bandChain` setting (1 = A, 2 = B) holding
+// bands in series (In → band → … → Out; an empty chain wires In to Out); the matrix as literal muxes on Mode:
+//   Stereo  In → A → Out (B and the matrix folded away: no op of theirs is scheduled)
+//   L/R     channel 0 → A, channel 1 → B, pack(A, B)
+//   M/S     M = (L + R)/2 → A, S = (L − R)/2 → B, pack(M + S, M − S)
+// then a smoothed gain by Output. Its panel: a placeholder rect for EQ.4's displays at the top, the Mode menu, the Output
+// knob, the chain tabs (L|R or M|S, shown when Mode ≠ Stereo) and the BAND STRIP: per band of each chain a column of
+// elements bound to its blocks (Type menu, Hz, Q, a gain slider for the gain types, Stages for the others), chain A's
+// shown in Stereo or when the tabs pick A, chain B's when they pick B. The ops (edit_ops.h "EQ") lay the strip out again.
+enum class BandRole : uint8_t { None = 0, Frequency, Q, Gain, Stages, Type };
+enum class EqRole : uint8_t { None = 0, Mode, Output, EditChain };
+inline constexpr std::string_view kBandRoleSetting = "bandRole", kEqRoleSetting = "eqRole";
+inline constexpr std::string_view kBandChainSetting = "bandChain";  // a chain group: 1 = A, 2 = B
+// Band solo (ops::setBandSolo): the soloed band carries kBandSoloSetting = 1, each other band of its chain the active
+// state it had (kSoloRestoreSetting 0 / 1) while it is held off.
+inline constexpr std::string_view kBandSoloSetting = "bandSolo", kSoloRestoreSetting = "soloRestore";
+inline constexpr const char* kBandTypeItems = "High Cut|Low Cut|Band Pass|Notch|Bell|Low Shelf|High Shelf|All Pass";
+inline constexpr const char* kEqModeItems = "Stereo|L/R|M/S";
+inline constexpr uint32_t kMaxBandsPerChain = 32;
+inline constexpr double kBandMaxHz = 20000.0, kBandAxisHz = 10.0;  // the Frequency curve: f = 10 · (2001^t − 1)
+enum class EqMode : uint8_t { Stereo = 0, LeftRight, MidSide };
+BandRole bandRole(const Device& d) noexcept;
+EqRole eqRole(const Device& d) noexcept;
+uint32_t bandChainOf(const Device& d) noexcept;  // 1 / 2, 0: not a chain group
+// Whether a svf mode has a gain (Bell, Low Shelf, High Shelf) / honours Stages (not Bell, Notch).
+bool bandTypeHasGain(uint32_t type) noexcept;
+bool bandTypeHasStages(uint32_t type) noexcept;
+dsp::Curve bandFrequencyCurve();
+
+struct BandInfo {
+  DeviceId group;
+  DeviceId frequency, q, gain, stages, type;  // the role blocks (invalid: missing)
+};
+struct EqInfo {
+  DeviceId group;
+  DeviceId mode, output, editChain;
+  DeviceId chain[2];               // A, B
+  std::vector<BandInfo> bands[2];  // per chain in series order (In → … → Out; bands off the series after them)
+};
+// The band group `band` (a group holding a Frequency role block), nullopt: not one.
+std::optional<BandInfo> bandInfo(const Project& p, DeviceId band);
+// The EQ group `eq` (a group holding chain groups A and B), nullopt: not one.
+std::optional<EqInfo> eqInfo(const Project& p, DeviceId eq);
+// The EQ (and chain index 0 / 1) a band sits in, nullopt: none.
+std::optional<std::pair<EqInfo, uint32_t>> eqOfBand(const Project& p, DeviceId band);
+// A value block's value in its curve's units (dB for a gain).
+double valueBlockUnits(const Device& valueBlock) noexcept;
+
+struct EqBandOptions {
+  DeviceId id;       // the group's (invalid: a fresh one)
+  DeviceId inGroup;  // the chain group it sits in, or none
+  std::string name;  // "" = "Band"
+  uint32_t type = 4; // dsp::SvfMode (Bell)
+  double freqHz = 1000.0, q = 0.70710678118654752, gainDb = 0.0;
+  uint32_t stages = 1;
+  bool active = true;
+};
+BlockSet eqBandBlocks(IdSource& ids, const EqBandOptions& o = {});
+BlockSet eqBlocks(IdSource& ids, const StockModuleOptions& o = {});
+// `panel` with its band strip laid out again for `bands` (A, B): the elements tagged as strip columns replaced, the
+// panel's width (and its plate) following the longest chain. Element ids: fresh ones past the panel's.
+Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]);
 
 // A module's default group preset with ids from 1 (the group first): what spawning it pastes (ops::pasteBlocks gives
 // fresh ids).

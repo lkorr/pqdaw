@@ -35,6 +35,7 @@
 #include "pq/core/result.h"
 #include "pq/document/commands.h"
 #include "pq/document/model.h"
+#include "pq/document/modules.h"
 #include "pq/document/racks.h"
 #include "pq/document/store.h"
 #include "pq/meta/type.h"
@@ -639,5 +640,26 @@ EditResult setMacroExcluded(const Project& p, DeviceId rack, uint32_t macro, boo
 // zones, macros and selector go).
 EditResult groupDevices(const Project& p, IdSource& ids, std::span<const DeviceId> devices);
 EditResult ungroupDevices(const Project& p, IdSource& ids, DeviceId rack);
+
+// ---- EQ.3: the EQ's bands (pq/document/modules.h "the band and the EQ"; docs/plans/EQ.md "Ops") -------------------
+// Each one undo step; the EQ's band strip is laid out again in the same step (modules.h layEqStrip) when the bands change.
+// Bands are found by role (modules.h eqInfo / bandInfo). Type, Stages and Mode are structural (one recompile), as a
+// knob on those blocks is.
+// A band (eqBandBlocks: `type` a dsp::SvfMode index 0 … 7, Q √½, one stage) into chain `chain` (0 = A, 1 = B) of EQ
+// `eq`, placed in the series by frequency (before the first band above `freqHz`). Refused past kMaxBandsPerChain (32).
+// Edit::devices: the band's group first.
+EditResult addBand(const Project& p, IdSource& ids, DeviceId eq, uint32_t chain, uint32_t type, double freqHz, double gainDb);
+// The band and what is inside it; its chain closes over it. Removing the soloed band restores the others.
+EditResult removeBand(const Project& p, IdSource& ids, DeviceId band);
+EditResult setBandType(const Project& p, DeviceId band, uint32_t type);
+EditResult setBandStages(const Project& p, DeviceId band, uint32_t stages);  // 1 … 64
+// Mode (doc::EqMode). The first switch to L/R or M/S while chain B is empty copies chain A into it (fresh ids).
+EditResult setEqMode(const Project& p, IdSource& ids, DeviceId eq, EqMode mode);
+// The band group switched off (passes its input through) or on. While another band of its chain is soloed it only
+// changes what unsoloing restores.
+EditResult setBandBypass(const Project& p, DeviceId band, bool bypass);
+// Solo: every other band of the chain switched off, each remembering its state (kSoloRestoreSetting), the band on and
+// marked (kBandSoloSetting); soloing another band unsolos the first. Unsolo restores them. Settings: undo and save keep it.
+EditResult setBandSolo(const Project& p, DeviceId band, bool solo);
 
 }  // namespace pq::doc::ops

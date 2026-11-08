@@ -130,6 +130,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_wavetable_synth.cpp  # GU.8: the Wavetable Synth spawned at the notes; a chord plays, interpreter == JIT
     app/test_engine_modules.cpp  # GU.7: the Wavetable / Envelope modules render as their engines; the orbit's lowering tap
     app/test_stock_presets.cpp  # GU.10: the stock devices and the default instrument as group presets (renders vs the retired patches, interp == JIT)
+    app/test_eq_render.cpp  # EQ.3: a band == a plain svf bit for bit per type; the EQ's L/R and M/S == Stereo with equal chains; chain B costs nothing in Stereo
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
     app/test_inspect_lifetime.cpp  # T4.x-fix-safety: cost meters and probe taps live as long as the images that write them
     app/test_racks.cpp  # GU.9: racks are parallel groups (renders vs the T4.8 racks' references, interpreter == JIT)
@@ -431,6 +432,7 @@ pq_add_test(pq_tests_document
     document/test_blocks.cpp  # GU.2: nested groups (rules, remove / move, nest / unnest), atom + value blocks, block sets, group presets
     document/test_one_hierarchy.cpp  # GU.11: every fixture and module preset holds only blocks, groups and native engines
     document/test_group_response.cpp  # EQ.2: a group's analytic In -> Out response (lowered once, knobs re-read)
+    document/test_eq_modules.cpp  # EQ.3: the band and EQ modules (roles, const inputs), their ops (one undo step, save / load), the EQ's response matrix
     document/test_panels.cpp  # GU.3: group panels (rules, SetGroupPanel + builders, final pass on delete / move out, save / load, paste remap, presets)
   DEPS pq_doc)
 

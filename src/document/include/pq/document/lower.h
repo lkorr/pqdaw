@@ -537,6 +537,17 @@ double paramValue(const Device& device, std::string_view param, const graph::Par
 // its one shape). Its value is then structural: SetDeviceParam on it (and a curve edit that makes or unmakes one) is a
 // kChangeStructural edit that recompiles, and lowerParams lists no runtime param for it. Same answer for `project` and
 // for the project as lowered (main-path links never reach an index input).
+// EQ.3: two more structural uses of such blocks —
+//   CONST INPUTS  a stepped / constant value block wired straight into an atom block's `real const` input (the svf's
+//                 mode and stages from a band's Type and Stages) sets that input to its knob value: a literal at the
+//                 call, as a setting (a setting of the same name is then ignored). The block is structural even when
+//                 driven: a wire into it or an automation lane on it is IGNORED by the const input (it still drives the
+//                 block's output wherever else that goes); lowersAsLiteral says true either way. A wire into a const
+//                 input from anything else stays Invalid (left out: the input keeps its setting or default).
+//   LITERAL MUX   a mux block whose `index` is one wire from a literal block and whose picked input is one wire lowers
+//                 as that wire: the wires out of the mux start at the picked source (the mux block stays, unread). The
+//                 choice is made before type inference, so each branch keeps its own width (the EQ's matrix: the
+//                 stereo In in Stereo mode, a mono channel in L/R and M/S).
 bool lowersAsLiteral(const Project& project, const Device& device);
 // The knob curve menus' presets (the "Knob Curve" submenus; the patch language's names): the curves `declared` can
 // switch to, in menu order — Octave (min > 0 and not a dB gain, or a declared exp0 curve, which it keeps), Exponential,

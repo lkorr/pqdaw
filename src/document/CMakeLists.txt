@@ -25,6 +25,7 @@ pq_add_module(pq_doc
     src/edit_audio.cpp
     src/edit_devices.cpp
     src/edit_racks.cpp
+    src/edit_eq.cpp
     src/racks.cpp
     src/edit_groups.cpp
     src/edit_blocks.cpp

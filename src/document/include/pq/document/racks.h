@@ -111,7 +111,8 @@ inline constexpr std::string_view kRandExcludeSetting = "randExclude";  // 1: Ra
 inline constexpr std::string_view kChainOnSetting = "chainOn";          // a chain group: 0 = its activator is off
 inline constexpr std::string_view kChainSoloSetting = "chainSolo";      // a chain group: 1 = soloed
 inline constexpr std::string_view kKeyUnitSetting = "keyUnit";          // a chain group: 1 = Degree key zones
-// Whether `name` is a setting a value block / a group may carry for its rack (checks.cpp).
+// Whether `name` is a setting a value block / a group may carry for its rack (checks.cpp); EQ.3: also the EQ's role and
+// solo settings (modules.h kBandRoleSetting …).
 bool rackValueSetting(std::string_view name) noexcept;
 bool rackGroupSetting(std::string_view name) noexcept;
 

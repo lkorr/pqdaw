@@ -19,7 +19,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 12> kModules = {{
+constexpr std::array<ModuleInfo, 14> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -57,6 +57,13 @@ constexpr std::array<ModuleInfo, 12> kModules = {{
     {ModuleKind::Operator, "operator", "Operator",
      "Four FM operators (Phase Accumulator, Wavetable, Envelope each), D into C into B into A: an instrument group.",
      true},
+    // EQ.3: the filter / EQ (docs/plans/EQ.md).
+    {ModuleKind::EqBand, "eq_band", "EQ Band",
+     "One filter band: a state-variable filter (bell, cuts, shelves, band pass, notch, all pass) with frequency, Q, gain "
+     "and up to 64 stages. Open it to rebuild the circuit; an EQ's chains are made of these."},
+    {ModuleKind::Eq, "eq", "EQ",
+     "A parametric EQ: bands in series (four to start), stereo, left/right or mid/side with a second chain, and an "
+     "output gain."},
 }};
 
 struct Builder {
@@ -281,7 +288,9 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::Utility:
     case ModuleKind::Saturator:
     case ModuleKind::Lfo:
-    case ModuleKind::Operator: break;
+    case ModuleKind::Operator:
+    case ModuleKind::EqBand:
+    case ModuleKind::Eq: break;
   }
   return {};
 }
@@ -366,7 +375,9 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
     case ModuleKind::Utility:
     case ModuleKind::Saturator:
     case ModuleKind::Lfo:
-    case ModuleKind::Operator: break;
+    case ModuleKind::Operator:
+    case ModuleKind::EqBand:
+    case ModuleKind::Eq: break;
   }
   return p;
 }
@@ -523,6 +534,8 @@ BlockSet moduleBlocks(ModuleKind k) {
   if (k == ModuleKind::Saturator) return saturatorBlocks(ids);
   if (k == ModuleKind::Lfo) return lfoBlocks(ids);
   if (k == ModuleKind::Operator) return operatorBlocks(ids);
+  if (k == ModuleKind::EqBand) return eqBandBlocks(ids);
+  if (k == ModuleKind::Eq) return eqBlocks(ids);
   return engineModuleBlocks(ids, k);
 }
 
@@ -1004,6 +1017,354 @@ BlockSet defaultInstrumentBlocks(IdSource& ids, const StockModuleOptions& o) {
   append(out, voiceChain(ids, group, false, 0.25, r));
   sortWires(out);
   return out;
+}
+
+// ---- EQ.3: the band and the EQ (modules.h; docs/plans/EQ.md "Structure") ------------------------------------------
+
+namespace {
+
+double settingOf(const Device& d, std::string_view name) noexcept {
+  const DeviceValue* v = d.setting(name);
+  return v != nullptr ? v->value : 0.0;
+}
+
+// The panel's tags (a style text "eq"): what layEqStrip finds or replaces.
+constexpr const char* kEqTag = "eq";
+constexpr std::string_view kTagStrip = "strip", kTagChains = "chains", kTagDisplay = "display";
+
+PanelElement tagged(PanelElement e, std::string_view tag) {
+  e.setField(styleText(kEqTag, std::string(tag)));
+  return e;
+}
+
+// The strip's geometry (world units).
+constexpr float kStripX = 88.0f, kColumnStep = 60.0f, kColumnW = 56.0f, kStripTop = 128.0f, kEqHeight = 288.0f;
+constexpr uint32_t kMinColumns = 4;
+
+void addRole(Kit& k, const Sig& v, std::string_view setting, double role) { k.setting(v.dev, std::string(setting), role); }
+
+BandInfo bandOfSet(const BlockSet& b) {
+  BandInfo info;
+  info.group = b.devices.front()->id;
+  for (const DevicePtr& dv : b.devices) {
+    switch (bandRole(*dv)) {
+      case BandRole::Frequency: info.frequency = dv->id; break;
+      case BandRole::Q: info.q = dv->id; break;
+      case BandRole::Gain: info.gain = dv->id; break;
+      case BandRole::Stages: info.stages = dv->id; break;
+      case BandRole::Type: info.type = dv->id; break;
+      case BandRole::None: break;
+    }
+  }
+  return info;
+}
+
+}  // namespace
+
+BandRole bandRole(const Device& d) noexcept {
+  const double v = settingOf(d, kBandRoleSetting);
+  return v >= 1.0 && v <= 5.0 && v == std::floor(v) ? static_cast<BandRole>(static_cast<uint8_t>(v)) : BandRole::None;
+}
+EqRole eqRole(const Device& d) noexcept {
+  const double v = settingOf(d, kEqRoleSetting);
+  return v >= 1.0 && v <= 3.0 && v == std::floor(v) ? static_cast<EqRole>(static_cast<uint8_t>(v)) : EqRole::None;
+}
+uint32_t bandChainOf(const Device& d) noexcept {
+  if (!isGroupDevice(d)) return 0;
+  const double v = settingOf(d, kBandChainSetting);
+  return v == 1.0 ? 1u : v == 2.0 ? 2u : 0u;
+}
+bool bandTypeHasGain(uint32_t type) noexcept { return type == 4 || type == 5 || type == 6; }
+bool bandTypeHasStages(uint32_t type) noexcept { return type != 3 && type != 4 && type <= 7; }
+
+dsp::Curve bandFrequencyCurve() {
+  // One Exp segment from 0 of bend ln(1 + 20 kHz / 10 Hz): f = 20 kHz · (2001^t − 1) / 2000 = 10 Hz · (2001^t − 1), so
+  // the knob travel is the display's x = log(1 + f / 10 Hz) / log(2001) exactly.
+  return withUnit(dsp::curvePreset(dsp::CurvePreset::Exponential, 0.0, kBandMaxHz, std::log(1.0 + kBandMaxHz / kBandAxisHz)),
+                  dsp::CurveUnit::Hz);
+}
+
+double valueBlockUnits(const Device& v) noexcept {
+  const dsp::Curve* c = v.curve(kValueParam);
+  const DeviceValue* pos = v.param(kValueParam);
+  if (c == nullptr) return pos != nullptr ? pos->value : 0.0;
+  const double y = dsp::evalCurve(*c, pos != nullptr ? pos->value : 0.0);
+  if (c->output == dsp::CurveOutput::DbToGain) return y > 0.0 ? 20.0 * std::log10(y) : c->min;
+  return y;
+}
+
+std::optional<BandInfo> bandInfo(const Project& p, DeviceId band) {
+  const DeviceLoc loc = findDevice(p, band);
+  if (loc.device == nullptr || !isGroupDevice(*loc.device)) return std::nullopt;
+  BandInfo b;
+  b.group = band;
+  for (const DevicePtr& d : loc.list()) {
+    if (d->group != band || !isValueDevice(*d)) continue;
+    switch (bandRole(*d)) {
+      case BandRole::Frequency: b.frequency = d->id; break;
+      case BandRole::Q: b.q = d->id; break;
+      case BandRole::Gain: b.gain = d->id; break;
+      case BandRole::Stages: b.stages = d->id; break;
+      case BandRole::Type: b.type = d->id; break;
+      case BandRole::None: break;
+    }
+  }
+  if (!b.frequency.valid()) return std::nullopt;
+  return b;
+}
+
+std::optional<EqInfo> eqInfo(const Project& p, DeviceId eq) {
+  const DeviceLoc loc = findDevice(p, eq);
+  if (loc.device == nullptr || !isGroupDevice(*loc.device)) return std::nullopt;
+  EqInfo e;
+  e.group = eq;
+  const std::vector<DevicePtr>& list = loc.list();
+  for (const DevicePtr& d : list) {
+    if (d->group != eq) continue;
+    if (isValueDevice(*d)) {
+      switch (eqRole(*d)) {
+        case EqRole::Mode: e.mode = d->id; break;
+        case EqRole::Output: e.output = d->id; break;
+        case EqRole::EditChain: e.editChain = d->id; break;
+        case EqRole::None: break;
+      }
+    } else if (const uint32_t c = bandChainOf(*d); c != 0 && !e.chain[c - 1].valid()) {
+      e.chain[c - 1] = d->id;
+    }
+  }
+  if (!e.chain[0].valid() || !e.chain[1].valid()) return std::nullopt;
+  const WireList& wires = wiresOf(p);
+  for (uint32_t c = 0; c < 2; ++c) {
+    const DeviceId chain = e.chain[c];
+    std::vector<BandInfo> members;
+    for (const DevicePtr& d : list)
+      if (d->group == chain && isGroupDevice(*d))
+        if (std::optional<BandInfo> b = bandInfo(p, d->id)) members.push_back(*b);
+    // The series: In → band → … (main ports), each band once.
+    std::vector<BandInfo>& out = e.bands[c];
+    auto taken = [&](DeviceId g) { return std::any_of(out.begin(), out.end(), [&](const BandInfo& x) { return x.group == g; }); };
+    DeviceId at = chain;
+    std::string_view port = kGroupInPort;
+    for (size_t hop = 0; hop <= members.size(); ++hop) {
+      const BandInfo* next = nullptr;
+      for (const Wire& w : wires) {
+        if (w.from != at || w.port != port || w.toMixer() || w.fromNoteSource() || w.param != kMainPort) continue;
+        for (const BandInfo& b : members)
+          if (b.group == w.to && !taken(b.group)) next = &b;
+        if (next != nullptr) break;
+      }
+      if (next == nullptr) break;
+      out.push_back(*next);
+      at = next->group;
+      port = kMainPort;
+    }
+    for (const BandInfo& b : members)  // (bands off the series: after it)
+      if (!taken(b.group)) out.push_back(b);
+  }
+  return e;
+}
+
+std::optional<std::pair<EqInfo, uint32_t>> eqOfBand(const Project& p, DeviceId band) {
+  const DeviceLoc loc = findDevice(p, band);
+  if (loc.device == nullptr || !loc.device->group.valid()) return std::nullopt;
+  const DeviceLoc chain = findDevice(p, loc.device->group);
+  if (chain.device == nullptr || bandChainOf(*chain.device) == 0 || !chain.device->group.valid()) return std::nullopt;
+  std::optional<EqInfo> e = eqInfo(p, chain.device->group);
+  if (!e) return std::nullopt;
+  for (uint32_t c = 0; c < 2; ++c)
+    if (e->chain[c] == chain.device->id) return std::make_pair(std::move(*e), c);
+  return std::nullopt;
+}
+
+BlockSet eqBandBlocks(IdSource& ids, const EqBandOptions& o) {
+  const DeviceId group = o.id.valid() ? o.id : ids.device();
+  Kit k(ids, group);
+  const uint32_t type = std::min<uint32_t>(o.type, 7);
+  dsp::Curve stagesCurve = linear(1.0, 64.0);
+  stagesCurve.step = 1.0;
+  const Sig freq = k.val("Frequency", bandFrequencyCurve(), o.freqHz);
+  const Sig q = k.val("Q", octave(0.1, 40.0), o.q);
+  const Sig gain = k.val("Gain", gainDb(-24.0, 24.0), o.gainDb);
+  const Sig stages = k.val("Stages", stagesCurve, static_cast<double>(std::clamp<uint32_t>(o.stages, 1, 64)));
+  const Sig ty = k.val("Type", stepped(8.0), static_cast<double>(type));
+  addRole(k, freq, kBandRoleSetting, static_cast<double>(BandRole::Frequency));
+  addRole(k, q, kBandRoleSetting, static_cast<double>(BandRole::Q));
+  addRole(k, gain, kBandRoleSetting, static_cast<double>(BandRole::Gain));
+  addRole(k, stages, kBandRoleSetting, static_cast<double>(BandRole::Stages));
+  addRole(k, ty, kBandRoleSetting, static_cast<double>(BandRole::Type));
+  const DeviceId svf = k.block("svf", "svf", {{"x", k.in()}, {"cutoff", freq}, {"q", q}, {"gain", gain}, {"mode", ty}, {"stages", stages}});
+  k.out(Sig{svf, "out"});
+  // Its own panel (the band opened or placed alone): the strip's column laid flat.
+  Panel p;
+  p.width = 136.0f;
+  p.height = 102.0f;
+  p.elements.push_back(plate(p.width, p.height, 6.0));
+  p.elements.push_back(menu(control(2, "menu", 8, 8, 120, 18, ty), kBandTypeItems));
+  p.elements.push_back(control(3, "number", 8, 30, 58, 18, freq));
+  p.elements.push_back(control(4, "number", 70, 30, 58, 18, q));
+  p.elements.push_back(shownWhen(control(5, "knob", 8, 52, 58, 44, gain), 2, {4.0, 5.0, 6.0}));
+  p.elements.push_back(shownWhen(control(6, "number", 70, 52, 58, 18, stages), 2, {0.0, 1.0, 2.0, 5.0, 6.0, 7.0}));
+  return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("Band") : o.name, o.active, std::move(p)));
+}
+
+Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]) {
+  Panel p;
+  p.height = panel.height;
+  uint32_t chains = 0;  // the chain tabs every column follows (0: none)
+  for (const PanelElement& e : panel.elements) {
+    if (e.text(kEqTag, "") == kTagStrip) continue;
+    if (e.text(kEqTag, "") == kTagChains) chains = e.id;
+    p.elements.push_back(e);
+  }
+  const size_t columns = std::max<size_t>({kMinColumns, bands[0].size(), bands[1].size()});
+  p.width = kStripX + kColumnStep * static_cast<float>(columns) + 4.0f;
+  uint32_t id = panel.nextId();
+  for (uint32_t c = 0; c < 2; ++c)
+    for (size_t i = 0; i < bands[c].size(); ++i) {
+      const BandInfo& b = bands[c][i];
+      const float x = kStripX + kColumnStep * static_cast<float>(i);
+      auto bound = [](DeviceId v) { return Sig{v, std::string(kValueOutput)}; };
+      const std::vector<double> chainValues = c == 0 ? std::vector<double>{0.0, kWhenHidden} : std::vector<double>{1.0};
+      const uint32_t typeMenu = id;
+      if (b.type.valid()) {
+        PanelElement m = tagged(menu(control(id++, "menu", x, kStripTop, kColumnW, 18, bound(b.type)), kBandTypeItems), kTagStrip);
+        if (chains != 0) m.when = Visibility{chains, chainValues};
+        p.elements.push_back(std::move(m));
+      }
+      // The rest follow the Type menu (shown with it for these types), or the tabs when the band has no Type block.
+      auto follow = [&](PanelElement e, std::vector<double> types) {
+        if (b.type.valid()) e.when = Visibility{typeMenu, std::move(types)};
+        else if (chains != 0) e.when = Visibility{chains, chainValues};
+        return tagged(std::move(e), kTagStrip);
+      };
+      const std::vector<double> all{0, 1, 2, 3, 4, 5, 6, 7};
+      PanelElement f = control(id++, "number", x, kStripTop + 22, kColumnW, 18, bound(b.frequency));
+      f.setField(styleText("label", "-"));
+      p.elements.push_back(follow(std::move(f), all));
+      if (b.q.valid()) {
+        PanelElement q = control(id++, "number", x, kStripTop + 44, kColumnW, 18, bound(b.q));
+        q.setField(styleText("label", "-"));
+        p.elements.push_back(follow(std::move(q), all));
+      }
+      if (b.gain.valid()) {
+        PanelElement g = control(id++, "slider", x, kStripTop + 66, kColumnW, 64, bound(b.gain));
+        g.setField(styleText("orientation", "vertical"));
+        p.elements.push_back(follow(std::move(g), b.type.valid() ? std::vector<double>{4, 5, 6} : all));
+      }
+      if (b.stages.valid()) {
+        PanelElement s = control(id++, "number", x, kStripTop + 134, kColumnW, 18, bound(b.stages));
+        s.setField(styleText("label", "-"));
+        p.elements.push_back(follow(std::move(s), b.type.valid() ? std::vector<double>{0, 1, 2, 5, 6, 7} : all));
+      }
+    }
+  for (PanelElement& e : p.elements) {
+    if (e.number("plate", 0.0) != 0.0) {
+      e.w = p.width;
+      e.h = p.height;
+    }
+    if (e.text(kEqTag, "") == kTagDisplay) e.w = p.width - 16.0f;
+  }
+  return p;
+}
+
+BlockSet eqBlocks(IdSource& ids, const StockModuleOptions& o) {
+  const DeviceId group = o.id.valid() ? o.id : ids.device();
+  Kit k(ids, group);
+  const Sig mode = k.val("Mode", stepped(3.0), 0.0);
+  const Sig output = k.val("Output", gainDb(-24.0, 24.0), 0.0);
+  const Sig edit = k.val("Edit Chain", stepped(2.0), 0.0);
+  addRole(k, mode, kEqRoleSetting, static_cast<double>(EqRole::Mode));
+  addRole(k, output, kEqRoleSetting, static_cast<double>(EqRole::Output));
+  addRole(k, edit, kEqRoleSetting, static_cast<double>(EqRole::EditChain));
+  // The chains: groups of bands in series.
+  auto chainGroup = [&](const char* name, uint32_t which) {
+    const DeviceId c = ids.device();
+    auto g = std::make_shared<Device>(*makeGroup(c));
+    g->name = name;
+    g->group = group;
+    g->settings = {DeviceValue{std::string(kBandChainSetting), static_cast<double>(which)}};
+    k.b.set.devices.push_back(std::move(g));
+    return c;
+  };
+  const DeviceId chainA = chainGroup("Chain A", 1), chainB = chainGroup("Chain B", 2);
+  std::vector<BandInfo> bands[2];
+  struct Default {
+    uint32_t type;
+    double hz;
+  };
+  constexpr Default kDefaults[] = {{5, 100.0}, {4, 400.0}, {4, 2500.0}, {6, 8000.0}};
+  DeviceId at = chainA;
+  std::string_view port = kGroupInPort;
+  uint32_t n = 0;
+  for (const Default& d : kDefaults) {
+    EqBandOptions bo;
+    bo.inGroup = chainA;
+    bo.type = d.type;
+    bo.freqHz = d.hz;
+    bo.name = "Band " + std::to_string(++n);
+    BlockSet b = eqBandBlocks(ids, bo);
+    const BandInfo info = bandOfSet(b);
+    bands[0].push_back(info);
+    for (DevicePtr& dv : b.devices) k.b.set.devices.push_back(std::move(dv));
+    for (Wire& w : b.wires) k.b.set.wires.push_back(std::move(w));
+    k.b.wire(at, port, info.group, kMainPort);
+    at = info.group;
+    port = kMainPort;
+  }
+  k.b.wire(at, port, chainA, kGroupOutPort);
+  k.b.wire(chainB, kGroupInPort, chainB, kGroupOutPort);  // (empty: In → Out)
+  // The matrix (literal muxes on Mode: lower.h "Structural value blocks"). Stereo folds every op of it and of chain B
+  // away; A's input is chosen before type inference, so A runs mono in L/R and M/S.
+  const DeviceId chL = k.block("channel", "L", {{"x", k.in()}}), chR = k.block("channel", "R", {{"x", k.in()}});
+  k.setting(chL, "index", 0.0);
+  k.setting(chR, "index", 1.0);
+  const Sig L{chL, "out"}, R{chR, "out"}, half = k.k(0.5);
+  const Sig m1 = k.op("sub", "Mode - 1", {{"a", mode}, {"b", k.k(1.0)}});
+  const Sig mid = k.op("mul", "M = (L + R) / 2", {{"a", k.op("add", "L + R", {{"a", L}, {"b", R}})}, {"b", half}});
+  const Sig side = k.op("mul", "S = (L - R) / 2", {{"a", k.op("sub", "L - R", {{"a", L}, {"b", R}})}, {"b", half}});
+  const Sig x = k.op("mux", "L or M", {{"index", m1}, {"in0", L}, {"in1", mid}});
+  const Sig inA = k.op("mux", "into A", {{"index", mode}, {"in0", k.in()}, {"in1", x}});
+  const Sig inB = k.op("mux", "into B", {{"index", m1}, {"in0", R}, {"in1", side}});
+  k.b.wire(inA.dev, inA.port, chainA, kMainPort);
+  k.b.wire(inB.dev, inB.port, chainB, kMainPort);
+  const Sig outA{chainA, std::string(kMainPort)}, outB{chainB, std::string(kMainPort)};
+  const DeviceId chA0 = k.block("channel", "A", {{"x", outA}});
+  k.setting(chA0, "index", 0.0);
+  const Sig a0{chA0, "out"};
+  const Sig lr = k.op("pack", "(A, B)", {{"in0", a0}, {"in1", outB}});
+  const Sig ms = k.op("pack", "(A + B, A - B)", {{"in0", k.op("add", "A + B", {{"a", a0}, {"b", outB}})},
+                                                  {"in1", k.op("sub", "A - B", {{"a", a0}, {"b", outB}})}});
+  const Sig y = k.op("mux", "L/R or M/S", {{"index", m1}, {"in0", lr}, {"in1", ms}});
+  const Sig z = k.op("mux", "out", {{"index", mode}, {"in0", outA}, {"in1", y}});
+  const DeviceId outGain = k.block("gain", "x output", {{"x", z}, {"g", output}});
+  k.setting(outGain, "start", 1.0);
+  k.out(Sig{outGain, "out"});
+  // The panel: EQ.4's displays above (a placeholder), the controls on the left, the band strip.
+  Panel p;
+  p.width = kStripX + kColumnStep * kMinColumns + 4.0f;
+  p.height = kEqHeight;
+  p.elements.push_back(plate(p.width, p.height, 6.0));
+  PanelElement display = element(2, "shape", 8, 8, p.width - 16.0f, 112, {});
+  display.bindings.clear();
+  display.setField(styleText("fill", "track"));
+  display.setField(styleNumber("radius", 4.0));
+  p.elements.push_back(tagged(std::move(display), kTagDisplay));
+  p.elements.push_back(caption(3, 8, kStripTop - 2, 72, 12, "Mode"));
+  p.elements.push_back(menu(control(4, "menu", 8, kStripTop + 12, 72, 18, mode), kEqModeItems));
+  // The chain tabs: one bound to Edit Chain that the columns follow (shown when Mode ≠ Stereo; while it is hidden chain
+  // A's columns show: kWhenHidden), under the two the user sees (the same block: L | R, M | S).
+  PanelElement chains = shownWhen(control(5, "tabs", 8, kStripTop + 34, 72, 16, edit), 4, {1.0, 2.0});
+  chains.setField(styleText("items", "A|B"));
+  p.elements.push_back(tagged(std::move(chains), kTagChains));
+  PanelElement lrTabs = shownWhen(control(6, "tabs", 8, kStripTop + 34, 72, 16, edit), 4, {1.0});
+  lrTabs.setField(styleText("items", "L|R"));
+  p.elements.push_back(std::move(lrTabs));
+  PanelElement msTabs = shownWhen(control(7, "tabs", 8, kStripTop + 34, 72, 16, edit), 4, {2.0});
+  msTabs.setField(styleText("items", "M|S"));
+  p.elements.push_back(std::move(msTabs));
+  p.elements.push_back(control(8, "knob", 8, kStripTop + 56, 72, 100, output));
+  p = layEqStrip(p, bands);
+  return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("EQ") : o.name, o.active, std::move(p)));
 }
 
 }  // namespace pq::doc

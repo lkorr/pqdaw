@@ -24,6 +24,7 @@
 #include "pq/document/main_path.h"
 #include "pq/document/panel.h"
 #include "pq/document/pitch_resolve.h"
+#include "pq/graph/atoms.h"
 #include "pq/graph/kernel_map.h"
 #include "pq/graph/patch_file.h"
 #include "pq/document/meta.h"
@@ -1464,6 +1465,12 @@ struct WirePlan {
     uint32_t home = 0, homeDev = 0;
   };
   std::vector<Remote> remotes;
+  // EQ.3 (lower.h "Structural value blocks"): per target device id, the const inputs a stepped / constant value block's
+  // wire sets (input name, the block's knob value): literals at the call, as settings are.
+  std::unordered_map<uint32_t, std::vector<std::pair<std::string, double>>> constFeeds;
+  // EQ.3: wires whose source was a mux block with a literal index, rewritten to start at the picked input's source (the
+  // LWires point here; a deque: the addresses stay when the plan is moved).
+  std::deque<Wire> folded;
 };
 
 // IG.1-2: the export a voice context's output crosses to its home's path under (a remote placeholder reads it).
@@ -1471,6 +1478,26 @@ std::string remotePortName(DeviceId d) { return "v" + std::to_string(d.value); }
 
 // IG.1-2: an instrument group's block lowered here (its call is GroupNotes: In per voice, Out per voice, `y` its sum).
 bool isContextGroup(const LDev& d) noexcept { return d.plays && isGroupDevice(*d.device); }
+
+// EQ.3 (lower.h "Structural value blocks"): whether `d` is a stepped (a menu, a switch) or constant value block.
+bool steppedOrConstant(const Device& d) noexcept {
+  const dsp::Curve* c = isValueDevice(d) ? d.curve(kValueParam) : nullptr;
+  return c != nullptr && (c->step > 0.0 || c->min == c->max);
+}
+// EQ.3: whether `input` is a `real const` input of atom block `d` (a structural input: the svf's mode, stages).
+bool atomConstInput(const Device& d, std::string_view input) noexcept {
+  if (!isAtomDevice(d)) return false;
+  const auto id = graph::AtomRegistry::builtin().find(atomDeviceName(d));
+  if (!id) return false;
+  for (const graph::PortSpec& ps : graph::atomSignature(*id).inputs)
+    if (ps.name == input) return ps.type.rate == graph::Rate::Const;
+  return false;
+}
+// The value block's runtime value (its curve at its knob position, rounded to float as its param would be).
+double valueBlockValue(const LDev& d) {
+  const auto pp = realParamPin(*d.callee, kValueParam);
+  return pp ? static_cast<double>(static_cast<float>(paramValue(*d.device, kValueParam, d.callee->paramDecl(pp->node)))) : 0.0;
+}
 
 // Decides how every wire is lowered (lower.h, "Modulation wires"): which are left out, which close a delay-free cycle
 // (delayed) and which a loop the engine cannot run yet (refused: VoiceLoop).
@@ -1646,7 +1673,55 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
   const bool anyChain = !order.empty();
   for (const Wire& w : wires)
     if (!w.chain) order.push_back(&w);
+  // EQ.3 (lower.h "Structural value blocks"): a mux block whose `index` is one wire from a literal value block and whose
+  // picked input is one wire lowers as that wire: every wire out of it starts at the picked input's source instead (the
+  // mux block stays, unread). Each branch keeps its own width (a stereo In and a mono channel, the EQ's matrix), which
+  // the optimiser's fold of a typed mux cannot give.
+  std::unordered_map<uint32_t, const Wire*> muxPicked;  // mux block id → the wire into its picked input
+  {
+    struct MuxIns {
+      const Wire* at[3] = {nullptr, nullptr, nullptr};  // index, in0, in1
+      uint8_t count[3] = {0, 0, 0};
+    };
+    std::unordered_map<uint32_t, MuxIns> muxes;
+    auto lowered = [&](DeviceId id) -> const LDev* {
+      const auto it = where.find(id.value);
+      return it == where.end() ? nullptr : &devs[it->second.first][it->second.second];
+    };
+    for (const Wire& w : wires) {
+      if (w.toMixer() || w.fromNoteSource()) continue;
+      const LDev* t = lowered(w.to);
+      if (t == nullptr || t->bypass || !isAtomDevice(*t->device) || atomDeviceName(*t->device) != "mux") continue;
+      const int slot = w.param == "index" ? 0 : w.param == "in0" ? 1 : w.param == "in1" ? 2 : -1;
+      if (slot < 0) continue;
+      MuxIns& m = muxes[w.to.value];
+      m.at[slot] = &w;
+      ++m.count[slot];
+    }
+    for (const auto& [mux, m] : muxes) {
+      if (m.count[0] != 1) continue;
+      const LDev* v = lowered(m.at[0]->from);
+      if (v == nullptr || v->bypass || !isValueDevice(*v->device) || m.at[0]->port != kValueOutput ||
+          !pl.isLiteral(v->device->id))
+        continue;
+      const float idx = static_cast<float>(valueBlockValue(*v));
+      const int pick = std::isnan(idx) || std::floor(idx) <= 0.0f ? 0 : 1;
+      if (m.count[1 + pick] == 1) muxPicked.emplace(mux, m.at[1 + pick]);
+    }
+  }
   for (const Wire* wp0 : order) {
+    if (!muxPicked.empty() && !wp0->fromNoteSource() && wp0->port == "out" && muxPicked.count(wp0->from.value) != 0) {
+      Wire f = *wp0;
+      for (size_t hops = 0; hops <= muxPicked.size(); ++hops) {
+        const auto it = muxPicked.find(f.from.value);
+        if (it == muxPicked.end() || f.fromNoteSource() || f.port != "out") break;
+        f.from = it->second->from;
+        f.port = it->second->port;
+        f.noteSource = it->second->noteSource;
+      }
+      wp.folded.push_back(std::move(f));
+      wp0 = &wp.folded.back();
+    }
     const Wire& w = *wp0;
     WireState st{w.id, WireStatus::Lowered};
     const auto b = w.toMixer() ? where.end() : where.find(w.to.value);
@@ -1864,6 +1939,19 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
         }
       }
     }
+    // EQ.3 (lower.h "Structural value blocks"): a stepped or constant value block's wire into an atom block's `real const`
+    // input (the svf's mode and stages) sets it to the block's knob value, a literal at the call (as a setting).
+    if (pin == graph::kNone && sourcePort != graph::kNone && !lw.fromTrack && !w.fromNoteSource() && !dd.bypass &&
+        lw.fromNode == lw.toNode && atomConstInput(*dd.device, w.param)) {
+      const LDev& sd = devs[lw.fromNode][lw.fromDev];
+      auto& feeds = wp.constFeeds[dd.device->id.value];
+      if (!sd.bypass && steppedOrConstant(*sd.device) && w.port == kValueOutput &&
+          std::none_of(feeds.begin(), feeds.end(), [&](const auto& f) { return f.first == w.param; })) {
+        feeds.emplace_back(w.param, valueBlockValue(sd));
+        wp.states.push_back(st);
+        continue;
+      }
+    }
     if (sourcePort == graph::kNone || pin == graph::kNone) {
       st.status = WireStatus::Invalid;
       wp.states.push_back(st);
@@ -1924,15 +2012,27 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
 }
 // A device's call node: named d<id>, NodeId nodeIdFor(Device, id, 0); the settings the user set become literals at
 // their `real const` inputs; params stay unconnected (runtime params d<id>__<name>, linked by the app).
-graph::NodeIndex callDevice(Ir& ir, const LDev& d) {
+// EQ.3: a const input a value block's wire sets (WirePlan::constFeeds) takes that value instead of a setting.
+graph::NodeIndex callDevice(Ir& ir, const LDev& d, const WirePlan* wp) {
   const graph::NodeIndex c = ir.call(graph::subcircuitSignature(*d.callee), nodeIdFor(NodeRole::Device, d.device->id.value, 0));
   graph::Patch& p = ir.patch();
   p.setNodeName(c, "d" + std::to_string(d.device->id.value));
+  const std::vector<std::pair<std::string, double>>* feeds = nullptr;
+  if (wp != nullptr && !d.bypass)
+    if (const auto it = wp->constFeeds.find(d.device->id.value); it != wp->constFeeds.end()) feeds = &it->second;
+  auto fed = [&](std::string_view name) {
+    return feeds != nullptr && std::any_of(feeds->begin(), feeds->end(), [&](const auto& f) { return f.first == name; });
+  };
   for (const DeviceValue& v : d.device->settings) {
     const auto in = p.findInput(c, v.name);
     if (!in || p.inputType(c, *in).rate != graph::Rate::Const) continue;  // not a setting of this patch (any more)
+    if (fed(v.name)) continue;
     p.connect(ir.literal(v.value), PortRef{c, static_cast<uint16_t>(*in)});
   }
+  if (feeds != nullptr)
+    for (const auto& [name, value] : *feeds)
+      if (const auto in = p.findInput(c, name); in && p.inputType(c, *in).rate == graph::Rate::Const)
+        p.connect(ir.literal(value), PortRef{c, static_cast<uint16_t>(*in)});
   return c;
 }
 
@@ -2057,7 +2157,7 @@ PortRef effectCall(Build& b, uint32_t k, PortRef x, uint16_t& width) {
                   nodeIdFor(NodeRole::Device, id, 5));
     width = graph::kWidthMono;
   }
-  const graph::NodeIndex c = callDevice(b.ir, d);
+  const graph::NodeIndex c = callDevice(b.ir, d, b.wp);
   b.calls[k] = c;
   // TMM.10-fix1: a device without an audio `in` (an unplugged chain meta device) takes nothing: the signal so far ends
   // there (its first pin is a param).
@@ -2159,7 +2259,7 @@ uint32_t doneOutput(const graph::Patch& callee) noexcept {
 PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
   const LDev& g = b.td[k];
   const uint32_t gid = g.device->id.value;
-  const NodeIndex call = callDevice(b.ir, g);
+  const NodeIndex call = callDevice(b.ir, g, b.wp);
   b.calls[k] = call;
   const PortRef y{call, 0};
   auto tid = [&](uint32_t s) { return nodeIdFor(NodeRole::TuningNode, gid, s); };
@@ -2775,7 +2875,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
       (void)playGroup(b, k, w);
       continue;
     }
-    const NodeIndex c = callDevice(ir, devs[k]);
+    const NodeIndex c = callDevice(ir, devs[k], b.wp);
     b.calls[k] = c;
     // (A free meta device plays its Nested form: every input has its default already.)
     const bool own = isMetaDevice(*devs[k].device) && !devs[k].bypass;
@@ -2998,11 +3098,24 @@ struct LiteralIndex {
   }
 };
 
+// EQ.3: whether stepped / constant value block `d` wires straight into an atom block's `real const` input.
+bool feedsConstIn(const LiteralIndex& ix, const Device& d) {
+  const auto out = ix.from.find(d.id.value);
+  if (out == ix.from.end()) return false;
+  for (const Wire* w : out->second) {
+    if (!w->to.valid() || w->toMixer() || w->port != kValueOutput) continue;
+    const auto t = ix.devices.find(w->to.value);
+    if (t != ix.devices.end() && t->second->active && atomConstInput(*t->second, w->param)) return true;
+  }
+  return false;
+}
+
 bool literalIn(const LiteralIndex& ix, const Device& d) {
   if (!isValueDevice(d) || !d.active) return false;
   const dsp::Curve* c = d.curve(kValueParam);  // the declared curve (linear 0 … 1) is neither stepped nor a constant
   if (c == nullptr || !(c->step > 0.0 || c->min == c->max)) return false;
   if (ix.driven.count(d.id.value) != 0 || ix.laned.count(d.id.value) != 0) return false;  // driven
+  if (feedsConstIn(ix, d)) return true;  // EQ.3: a structural input's value
   // Forward through atom blocks to a choice's index (each block visited once: bounded by the block count).
   std::vector<uint32_t> stack{d.id.value};
   std::unordered_set<uint32_t> seen{d.id.value};
@@ -3039,7 +3152,9 @@ std::unordered_set<uint32_t> literalValueBlocks(const Project& p) {
 bool lowersAsLiteral(const Project& p, const Device& d) {
   const dsp::Curve* c = isValueDevice(d) ? d.curve(kValueParam) : nullptr;
   if (c == nullptr || !(c->step > 0.0 || c->min == c->max)) return false;  // (before indexing the project)
-  return literalIn(LiteralIndex(p), d);
+  const LiteralIndex ix(p);
+  // EQ.3: a block setting a const input is structural even when driven (the input takes its knob value).
+  return literalIn(ix, d) || (d.active && feedsConstIn(ix, d));
 }
 
 std::vector<dsp::CurvePreset> curvePresets(const dsp::Curve& d) {
