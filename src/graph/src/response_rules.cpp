@@ -7,6 +7,7 @@
 
 #include "fold.h"
 #include "pq/dsp/kernel.h"
+#include "pq/dsp/svf_design.h"
 
 namespace pq::graph::rules {
 
@@ -187,6 +188,20 @@ ResponseKind clip(ResponseArgs& a) noexcept {
   if (!usable(a, 1) || !usable(a, 2)) return ResponseKind::Unavailable;
   g(a, 0, 0) = a.value[1] < 0.0f && 0.0f < a.value[2] ? 1.0 : 0.0;
   return ResponseKind::Approximate;
+}
+
+// EQ.1: the svf atom, exactly as its kernel runs it: svfParamsFromInputs (the kernel's input conversion) → svfDesign →
+// the float coefficients' response (svfResponse). Cutoff / q / gain must be known values (a modulated filter is not
+// time-invariant: Unavailable); mode / stages / prewarp are consts. Designs per frequency (≈ 0.1 µs per section).
+ResponseKind svf(ResponseArgs& a) noexcept {
+  if (a.signal[0] == 0) return ResponseKind::Exact;  // x is not on the path
+  for (uint32_t i = 1; i < 7; ++i)
+    if (!usable(a, i)) return ResponseKind::Unavailable;
+  const dsp::SvfParams p =
+      dsp::svfParamsFromInputs(a.value[1], a.value[2], a.value[3], a.value[4], a.value[5], a.value[6], a.sampleRate);
+  g(a, 0, 0) = dsp::svfResponse(p, a.omega);
+  a.dependsOnOmega = true;
+  return ResponseKind::Exact;
 }
 
 }  // namespace pq::graph::rules

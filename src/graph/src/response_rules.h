@@ -25,6 +25,7 @@ ResponseKind delayCubic(ResponseArgs& a) noexcept;    // the 4-point Hermite tap
 ResponseKind delayAllpass(ResponseArgs& a) noexcept;  // z^n (c + z) / (1 + c z)
 ResponseKind gain(ResponseArgs& a) noexcept;      // x · g, settled
 ResponseKind gainAdd(ResponseArgs& a) noexcept;   // acc + x · g, settled
+ResponseKind svf(ResponseArgs& a) noexcept;       // EQ.1: dsp::svfResponse of the kernel's design (consts, params known)
 // Nonlinear atoms with a slope at 0 (Approximate).
 ResponseKind slopeOne(ResponseArgs& a) noexcept;  // tanh, fast_tanh, sin, fast_sin: slope 1 at 0
 ResponseKind clip(ResponseArgs& a) noexcept;      // clamp(x, lo, hi): 1 when lo < 0 < hi, else 0

@@ -272,6 +272,26 @@ TEST_CASE("linear response: random linear circuits of atom blocks (feedback thro
   }
 }
 
+TEST_CASE("linear response: the svf atom (EQ.1) — every mode, both prewarps, stages 1 / 2 / 8 / 17, a param cutoff and "
+          "gain — matches the DFT of its interpreted impulse response within 0.01 dB / 0.1 degrees") {
+  for (int mode = 0; mode < 8; ++mode)
+    for (int prewarp = 0; prewarp < 2; ++prewarp)
+      for (int stages : {1, 2, 8, 17}) {
+        if ((mode == 3 || mode == 4) && stages > 1) continue;  // notch, bell: one section
+        char text[512];
+        std::snprintf(text, sizeof text, R"(patch F {
+  in x : audio global mono
+  param c = 1000 [20..20000]
+  param gn = 1 [0..4]
+  out y : audio
+  y = svf(x, cutoff: c, q: 1.2, gain: gn, mode: %d, stages: %d, prewarp: %d) + 0.5 * svf(x, cutoff: 7000, q: 0.8, gain: 0.5, mode: %d, stages: 2, prewarp: %d)
+})", mode, stages, prewarp, mode, prewarp);
+        INFO(text);
+        const Circuit c = compile(text);
+        compareAll(c, ResponseKind::Exact, {{"c", 1500.0f}, {"gn", 2.5f}});
+      }
+}
+
 TEST_CASE("linear response: an M/S matrix (channel / pack) with a different filter on mid and side matches per "
           "channel pair") {
   const Circuit c = compile(R"(patch MS {
