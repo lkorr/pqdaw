@@ -2526,3 +2526,18 @@ Agents: add questions here instead of guessing on anything important. Use this f
   stay); a bool param is no cable drop / Map target on a group panel either (as on the old leaf panels). Rack macros
   get no ring and are no cable targets.
 - Status: open (provisional choices above).
+
+## Q?-GU.f1-a · 2026-11-07 · GU.f1 · Rack roles: a role setting, not wiring (supersedes Q228 "Roles by name")
+- **Chosen:** every block a rack is made of carries the setting `rackRole` (`doc::RackRole`: Mixer, Volume, Pan, Gate,
+  Key / Velocity / Select Zone, zone Lo / Fade Lo / Fade Hi / Hi / Value, Selector), written by `chainBlocks`,
+  `zoneBlocks` and the selector builder. `findRacks` and the rack edits find them by role only; names are labels. A
+  rename keeps the rack (a one-chain rack is one because it holds its role-Mixer group); a user group called "Mixer"
+  is a plain group (no rack, or an ordinary chain device). Copies carry the role (Duplicate Chain, paste).
+- **Why not from wiring** (the user's preference, considered first): a chain mixer and a zone are gain stages driven by
+  value blocks, structurally the same as any user group (Utility is one). Telling them apart from wires would mean
+  matching each one's exact atom graph (Volume = the `mul` "a" input …), a per-type rule that breaks on any hand edit;
+  the role is one general mechanism (as `macro` already was for macros). The one-chain rack still needs a mark of some
+  kind: two parallel groups are a rack by wiring alone, one group is not.
+- **Open:** a role block edited by hand keeps its role (e.g. a Mixer group whose Volume block is deleted: the row has no
+  volume). Alternative: drop roles whose structure no longer matches. Not done (no known need).
+- Status: open (provisional).

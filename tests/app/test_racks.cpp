@@ -15,6 +15,7 @@
 #include <memory>
 #include <ostream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "../golden/golden_audio.h"
@@ -296,4 +297,98 @@ TEST_CASE("racks are parallel groups: wiring two groups in parallel by hand make
   REQUIRE(racks.size() == 1);
   CHECK(racks[0].chains.size() == 2);
   CHECK(!racks[0].chains[0].mixer.valid());  // hand-wired: no chain mixer (the Device view shows its row without one)
+}
+
+TEST_CASE("racks find their blocks by role, not by name (GU.f1): renames keep the rack; a user group named Mixer is no "
+          "chain mixer") {
+  DocumentStore s;
+  const TrackId t = run(s, ops::createTrack(*s.current(), s.ids(), TrackKind::Midi)).tracks.at(0);
+  const DeviceId a = run(s, ops::addRack(*s.current(), s.ids(), t, false)).devices.at(0);  // one chain
+  run(s, ops::setChainZone(*s.current(), s.ids(), a, ZoneKind::Select, Zone{64.0, 64.0, 127.0, 127.0}));
+  const RackInfo r0 = rackIn(s, t);
+  REQUIRE(r0.chains.size() == 1);
+  const RackChain c0 = r0.chains[0];
+  REQUIRE(c0.mixer.valid());
+  REQUIRE(c0.selectZone.valid());
+  REQUIRE(r0.selector.valid());
+  // Rename every role block: the mixer, its value blocks, the zone group, the selector.
+  for (const DeviceId d : {c0.mixer, c0.volumeBlock, c0.panBlock, c0.gateBlock, c0.selectZone, r0.selector})
+    run(s, ops::renameDevice(*s.current(), d, "renamed"));
+  const RackInfo r1 = rackIn(s, t);  // still a one-chain rack (it holds its mixer)
+  REQUIRE(r1.chains.size() == 1);
+  const RackChain& c1 = r1.chains[0];
+  CHECK(c1.mixer == c0.mixer);
+  CHECK(c1.volumeBlock == c0.volumeBlock);
+  CHECK(c1.panBlock == c0.panBlock);
+  CHECK(c1.gateBlock == c0.gateBlock);
+  CHECK(c1.selectZone == c0.selectZone);
+  CHECK(c1.select == c0.select);
+  CHECK(r1.selector == r0.selector);
+  CHECK(c1.devices.size() == c0.devices.size());
+  // The edits still find them: a zone drag writes the renamed zone's values; the mixer edit its renamed blocks.
+  run(s, ops::setChainZone(*s.current(), s.ids(), a, ZoneKind::Select, Zone{32.0, 40.0, 127.0, 127.0}));
+  CHECK(std::fabs(rackIn(s, t).chains[0].select.fadeLo - 40.0) < 1e-6);
+  CHECK(rackIn(s, t).chains[0].selectZone == c0.selectZone);
+  run(s, ops::setChainMixer(*s.current(), a, -6.0f, 0.25f));
+  CHECK(std::fabs(rackIn(s, t).chains[0].volumeDb + 6.0f) < 1e-4f);
+  CHECK(std::fabs(rackIn(s, t).chains[0].pan - 0.25f) < 1e-6f);
+
+  // A user's group named "Mixer" inside a hand-wired group: a plain group (no rack), and in a two-group rack an
+  // ordinary chain device (not the chain's mixer).
+  DocumentStore h;
+  const TrackId t2 = run(h, ops::createTrack(*h.current(), h.ids(), TrackKind::Midi)).tracks.at(0);
+  const MainPath path = mainPath(*h.current(), trackOf(h, t2));
+  REQUIRE(!path.blocks.empty());
+  auto handGroup = [&](bool withMixer) {
+    const DeviceId g = h.ids().device();
+    REQUIRE(h.dispatch(AddDevice{t2, makeGroup(g), kAppend}).ok());
+    Wire in;
+    in.id = h.ids().wire();
+    in.from = path.blocks.back()->id;
+    in.to = g;
+    REQUIRE(h.dispatch(AddWire{in}).ok());
+    Wire out;
+    out.id = h.ids().wire();
+    out.from = g;
+    out.mixer = t2;
+    REQUIRE(h.dispatch(AddWire{out}).ok());
+    if (!withMixer) {
+      Wire pass;
+      pass.id = h.ids().wire();
+      pass.from = g;
+      pass.port = std::string(kGroupInPort);
+      pass.to = g;
+      pass.param = std::string(kGroupOutPort);
+      REQUIRE(h.dispatch(AddWire{pass}).ok());
+      return std::pair{g, DeviceId{}};
+    }
+    const DeviceId m = h.ids().device();
+    auto md = std::make_shared<Device>(*makeGroup(m));
+    md->name = std::string(kChainMixerName);
+    md->group = g;
+    REQUIRE(h.dispatch(AddDevice{t2, std::move(md), kAppend}).ok());
+    for (const auto& [from, port, to, param] :
+         {std::tuple{g, kGroupInPort, m, kMainPort}, std::tuple{m, kGroupInPort, m, kGroupOutPort},
+          std::tuple{m, kMainPort, g, kGroupOutPort}}) {
+      Wire w;
+      w.id = h.ids().wire();
+      w.from = from;
+      w.port = std::string(port);
+      w.to = to;
+      w.param = std::string(param);
+      REQUIRE(h.dispatch(AddWire{w}).ok());
+    }
+    return std::pair{g, m};
+  };
+  const auto [g1, userMixer] = handGroup(true);
+  CHECK(findRacks(*h.current(), trackOf(h, t2)).empty());  // one group holding a "Mixer" of the user's: no rack
+  handGroup(false);
+  const std::vector<RackInfo> racks = findRacks(*h.current(), trackOf(h, t2));
+  REQUIRE(racks.size() == 1);
+  REQUIRE(racks[0].chains.size() == 2);
+  const RackChain* uc = racks[0].findChain(g1);
+  REQUIRE(uc != nullptr);
+  CHECK(!uc->mixer.valid());
+  REQUIRE(uc->devices.size() == 1);
+  CHECK(uc->devices[0]->id == userMixer);  // the user's "Mixer" is one of the chain's devices
 }

@@ -9,6 +9,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -190,6 +191,29 @@ TEST_CASE("rack view: the frame shows macros, chain rows with their mixer, and t
   u.d.click(mid(on->rect()));
   CHECK(u.history() == h0 + 2);
   CHECK_FALSE(u.rackOf(u.rack).chains[1].active);
+}
+
+TEST_CASE("rack view: a renamed chain mixer keeps the rack and its chain row (GU.f1: roles, not names)") {
+  Ui u;
+  const doc::RackInfo r0 = u.rackOf(u.rack);
+  REQUIRE(r0.chains.size() == 1);  // one chain: a rack only because it holds a chain mixer
+  const doc::RackChain& c = r0.chains[0];
+  REQUIRE(c.mixer.valid());
+  u.run(doc::ops::renameDevice(*u.ctx.doc(), c.mixer, "Blend"));
+  u.run(doc::ops::renameDevice(*u.ctx.doc(), c.volumeBlock, "Level"));
+  const doc::RackInfo r1 = u.rackOf(u.rack);
+  REQUIRE(r1.chains.size() == 1);
+  CHECK(r1.chains[0].mixer == c.mixer);
+  CHECK(r1.chains[0].volumeBlock == c.volumeBlock);
+  CHECK(r1.chains[0].devices.size() == r0.chains[0].devices.size());  // the mixer is still no chain device
+  // The Device view still shows the rack frame with the chain's row and its mixer.
+  REQUIRE(u.view().frameOf(u.rack) != nullptr);
+  Widget* vol = u.in(u.rack, "chains/chain[" + std::to_string(c.id.value) + "]/volume");
+  REQUIRE(vol != nullptr);
+  const size_t h0 = u.history();
+  u.run(doc::ops::setChainMixer(*u.ctx.doc(), c.id, -6.0f, 0.0f));
+  CHECK(u.history() == h0 + 1);
+  CHECK(std::fabs(u.rackOf(u.rack).chains[0].volumeDb + 6.0f) < 1e-4f);
 }
 
 TEST_CASE("rack view: dragging devices into a chain row, onto the empty chain list (a new chain), out to the track") {

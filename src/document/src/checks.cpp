@@ -308,7 +308,7 @@ Status checkList(ListKind k, const std::vector<DevicePtr>& list, std::vector<siz
             if (v.name != kGroupVoices && v.name != kGroupMono && v.name != kGroupLegato && v.name != kGroupGlide &&
                 v.name != kGroupSteal && !rackGroupSetting(v.name))
               return invalid("a group's settings are its polyphony (voices, mono, legato, glide, steal) and its rack "
-                             "chain's on / solo / key unit (racks.h)");
+                             "chain's on / solo / key unit, its role (racks.h)");
         }
         if (isAtomDevice(*d) || isValueDevice(*d)) {  // GU.2 (model.h "Atom blocks and value blocks")
           if (d->kind != DeviceKind::AudioEffect) return invalid("an atom or value block is an audio effect");
@@ -316,7 +316,7 @@ Status checkList(ListKind k, const std::vector<DevicePtr>& list, std::vector<siz
           if (isAtomDevice(*d) && !d->params.empty()) return invalid("an atom block has no params (its inputs are wired)");
           if (isValueDevice(*d)) {
             for (const DeviceValue& v : d->settings)  // GU.9: a macro's slot, variations and Rand exclusion (racks.h)
-              if (!rackValueSetting(v.name)) return invalid("a value block's settings are its rack macro's (racks.h)");
+              if (!rackValueSetting(v.name)) return invalid("a value block's settings are its rack macro's and its rack role (racks.h)");
             for (const DeviceValue& v : d->params)
               if (v.name != kValueParam) return invalid("a value block's one control is 'value'");
           }

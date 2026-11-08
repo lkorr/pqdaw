@@ -21,29 +21,29 @@
 //              Travel wire from the macro's output into a control, amount = max − min in knob position, the control's
 //              own knob = min (so position = min + (max − min) · macro, the macro 0 … 1 = Live's 0 … 127). A macro with
 //              no mapping is no block (its knob in the Device view waits for one).
-//   selector   the value block kChainSelectName (0 … kSelectMax, whole steps) at the chains' level wired into the
+//   selector   the value block of role Selector (made as kChainSelectName; 0 … kSelectMax, whole steps) at the chains' level wired into the
 //              chains' Chain Zones (made with the first chain zone).
 //   variations snapshots of the macro values: setting kVariationPrefix + k (1 …) of each macro block holds its position
 //              in variation k; kRandExcludeSetting excludes a macro from Rand.
 //
-// ---- What a chain holds (blocks inside its group, found by name: Device::name) -------------------------------------
+// ---- What a chain holds (blocks inside its group, found by their role: kRoleSetting, never by name) ----------------
 //   series     In → its devices → [zones] → Mixer → Out (main links). An Instrument Rack's chain: In → its instrument →
 //              [Key Zone] → [Velocity Zone] → its effects → [Chain Zone] → Mixer → Out; the wire out of the instrument's
 //              stage is SINGLE-SIGNAL (Wire::single: the voices are summed there, as T4.8 did) unless the rack's chains
 //              run per voice (setVoiceChains). An Audio Effect Rack's chain: In → [Chain Zone] → its devices → Mixer → Out
 //              (the select zone gates the chain's input, as T4.8 did).
-//   mixer      group kChainMixerName: value blocks Volume (dB, −70 … +6, through dB → gain), Pan (−1 … 1), Gate (0 / 1:
+//   mixer      the group of role Mixer: value blocks Volume (dB, −70 … +6, through dB → gain), Pan (−1 … 1), Gate (0 / 1:
 //              the chain plays — its activator and solo, below, and Volume above −70 dB; written by the edits) and a
 //              constant 1; atoms g = Volume · Gate, gl = g · min(1, 1 − Pan), gr = g · min(1, 1 + Pan),
 //              Out = gain(In, pack(gl, gr)) (smoothed 2 ms: the old chain mixer's law and stage). Undriven, Volume / Pan
 //              are runtime params (a drag is a param write); the atoms run at block rate.
 //   on / solo  settings kChainOnSetting (absent: on) and kChainSoloSetting of the chain group (any soloed chain: only
 //              soloed chains play; Meta: the Gate carries the sound).
-//   zones      groups kKeyZoneName / kVelocityZoneName / kSelectZoneName, only while a zone is on (not its whole range:
+//   zones      groups of roles KeyZone / VelocityZone / SelectZone, only while a zone is on (not its whole range:
 //              an off zone costs nothing): value blocks Lo / Fade Lo / Fade Hi / Hi (the zone), constants, atoms
 //              g = clip(min((v − lo + ε)/(fadeLo − lo + ε), (hi − v + ε)/(hi − fadeHi + ε)), 0, 1) and Out = gain(In, g)
 //              where v is the voice atom voice.noteHz (in ln: Hz zones, ε = 1e-4) or voice.noteDegree (Degree zones),
-//              voice.velocity · 127, or the selector (the zone's value block kZoneValueName fed by it); ε = 1e-3.
+//              voice.velocity · 127, or the selector (the zone's value block of role ZoneValue fed by it); ε = 1e-3.
 //
 // Not RT code (UI / compile threads). O(blocks + wires) per track.
 
@@ -67,7 +67,33 @@ inline constexpr double kMacroMax = 127.0;      // a macro shows 0 … 127 (its 
 inline constexpr double kSelectMax = 127.0;     // the chain selector's range (and a select zone's)
 inline constexpr double kVelocityMax = 127.0;
 
-// Names (Device::name) of the blocks a rack's views find.
+// ---- Roles (GU.f1) -----------------------------------------------------------------------------------------------
+// The blocks a rack is made of carry their ROLE as the setting kRoleSetting (a RackRole value), written when they are
+// made (chainBlocks, zoneBlocks, the selector). Racks find them by role, never by name: a rename (any of the names
+// below) changes the label only, and a user's own group called "Mixer" is a plain group. Not derived from wiring: a
+// chain mixer and a zone are gain stages driven by value blocks, the same shape as any user group (telling them apart
+// from the wires would mean matching each one's exact atom graph, a rule per type). Copies (Duplicate Chain, paste)
+// keep the role with the block.
+enum class RackRole : uint8_t {
+  None = 0,
+  Mixer,         // a chain's mixer group
+  Volume,        // its value blocks
+  Pan,
+  Gate,
+  KeyZone,       // a chain's zone groups
+  VelocityZone,
+  SelectZone,
+  ZoneLo,        // a zone group's value blocks
+  ZoneFadeLo,
+  ZoneFadeHi,
+  ZoneHi,
+  ZoneValue,     // a select zone's input (the selector adds into it)
+  Selector,      // the rack's Chain Select value block (at the chains' level)
+};
+inline constexpr std::string_view kRoleSetting = "rackRole";
+RackRole rackRole(const Device& d) noexcept;  // None: no (valid) role setting
+
+// The names (Device::name) the role blocks are MADE with (labels only: found by role).
 inline constexpr std::string_view kChainSelectName = "Chain Select";
 inline constexpr std::string_view kChainMixerName = "Mixer";
 inline constexpr std::string_view kChainVolumeName = "Volume", kChainPanName = "Pan", kChainGateName = "Gate";
@@ -75,7 +101,7 @@ inline constexpr std::string_view kKeyZoneName = "Key Zone", kVelocityZoneName =
                                   kSelectZoneName = "Chain Zone";
 inline constexpr std::string_view kZoneLoName = "Lo", kZoneFadeLoName = "Fade Lo", kZoneFadeHiName = "Fade Hi",
                                   kZoneHiName = "Hi", kZoneValueName = "Select";
-// Settings.
+// Settings (kRoleSetting above).
 inline constexpr std::string_view kMacroSetting = "macro";              // a macro block's slot (1 … kMacroCount)
 inline constexpr std::string_view kVariationPrefix = "var";             // "var<k>": its position in variation k
 inline constexpr std::string_view kRandExcludeSetting = "randExclude";  // 1: Rand leaves it alone
@@ -103,7 +129,8 @@ ZoneRange zoneRange(ZoneKind kind, KeyZoneUnit unit) noexcept;  // Key: Hz 1 …
 Zone fullZone(ZoneKind kind, KeyZoneUnit unit) noexcept;        // {min, min, max, max}: off
 bool zoneOff(const Zone& z, ZoneKind kind, KeyZoneUnit unit) noexcept;
 bool zoneValid(const Zone& z, ZoneKind kind, KeyZoneUnit unit) noexcept;  // ordered, finite, inside the range
-std::string_view zoneGroupName(ZoneKind kind) noexcept;
+std::string_view zoneGroupName(ZoneKind kind) noexcept;  // the name a zone group is made with
+RackRole zoneRole(ZoneKind kind) noexcept;               // KeyZone / VelocityZone / SelectZone
 
 // ---- The derived rack --------------------------------------------------------------------------------------------
 struct RackChain {

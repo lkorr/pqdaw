@@ -69,10 +69,10 @@ struct TrackIndex {
     const auto it = m.find(id.value);
     return it == m.end() ? kNone : it->second;
   }
-  // A direct member of `group` named `name` (a group when `group` is true, else a value block).
-  const Device* member(DeviceId group, std::string_view name) const {
+  // The direct member of `group` with role `role` (GU.f1: racks.h "Roles").
+  const Device* member(DeviceId group, RackRole role) const {
     for (const DevicePtr& d : t.devices)
-      if (d->group == group && d->name == name) return d.get();
+      if (d->group == group && rackRole(*d) == role) return d.get();
     return nullptr;
   }
 };
@@ -86,7 +86,7 @@ SumKey sumKey(const Wire& w) { return {w.to.value, w.param, w.mixer.value}; }
 
 // Whether group `g` qualifies as a chain on its own (one parallel group: it holds a chain mixer).
 bool holdsMixer(const TrackIndex& ix, const Device& g) {
-  const Device* m = ix.member(g.id, kChainMixerName);
+  const Device* m = ix.member(g.id, RackRole::Mixer);
   return m != nullptr && isGroupDevice(*m);
 }
 
@@ -161,16 +161,17 @@ std::vector<const Device*> seriesOf(const TrackIndex& ix, DeviceId group,
 }
 
 bool isRoleGroup(const Device& d) {
-  return isGroupDevice(d) &&
-         (d.name == kChainMixerName || d.name == kKeyZoneName || d.name == kVelocityZoneName || d.name == kSelectZoneName);
+  if (!isGroupDevice(d)) return false;
+  const RackRole r = rackRole(d);
+  return r == RackRole::Mixer || r == RackRole::KeyZone || r == RackRole::VelocityZone || r == RackRole::SelectZone;
 }
 
 Zone zoneFrom(const TrackIndex& ix, const Device& zg) {
-  auto v = [&](std::string_view n) {
-    const Device* d = ix.member(zg.id, n);
+  auto v = [&](RackRole r) {
+    const Device* d = ix.member(zg.id, r);
     return d != nullptr && isValueDevice(*d) ? valueOf(*d) : 0.0;
   };
-  return Zone{v(kZoneLoName), v(kZoneFadeLoName), v(kZoneFadeHiName), v(kZoneHiName)};
+  return Zone{v(RackRole::ZoneLo), v(RackRole::ZoneFadeLo), v(RackRole::ZoneFadeHi), v(RackRole::ZoneHi)};
 }
 
 RackInfo makeInfo(const Project& p, const TrackIndex& ix, const std::vector<const Device*>& set,
@@ -193,24 +194,24 @@ RackInfo makeInfo(const Project& p, const TrackIndex& ix, const std::vector<cons
     c.name = g->name;
     c.active = settingOr(*g, kChainOnSetting, 1.0) >= 0.5;
     c.solo = settingOr(*g, kChainSoloSetting, 0.0) >= 0.5;
-    if (const Device* m = ix.member(g->id, kChainMixerName); m != nullptr && isGroupDevice(*m)) {
+    if (const Device* m = ix.member(g->id, RackRole::Mixer); m != nullptr && isGroupDevice(*m)) {
       c.mixer = m->id;
-      if (const Device* v = ix.member(m->id, kChainVolumeName)) {
+      if (const Device* v = ix.member(m->id, RackRole::Volume)) {
         c.volumeBlock = v->id;
         c.volumeDb = static_cast<float>(valueOf(*v, true));
       }
-      if (const Device* v = ix.member(m->id, kChainPanName)) {
+      if (const Device* v = ix.member(m->id, RackRole::Pan)) {
         c.panBlock = v->id;
         c.pan = static_cast<float>(valueOf(*v));
       }
-      if (const Device* v = ix.member(m->id, kChainGateName)) c.gateBlock = v->id;
+      if (const Device* v = ix.member(m->id, RackRole::Gate)) c.gateBlock = v->id;
     }
     const ZoneKind kinds[3] = {ZoneKind::Key, ZoneKind::Velocity, ZoneKind::Select};
     for (ZoneKind k : kinds) {
       Zone& z = k == ZoneKind::Key ? c.key : k == ZoneKind::Velocity ? c.velocity : c.select;
       DeviceId& zid = k == ZoneKind::Key ? c.keyZone : k == ZoneKind::Velocity ? c.velocityZone : c.selectZone;
       z = fullZone(k, r.keyUnit);
-      if (const Device* zg = ix.member(g->id, zoneGroupName(k)); zg != nullptr && isGroupDevice(*zg)) {
+      if (const Device* zg = ix.member(g->id, zoneRole(k)); zg != nullptr && isGroupDevice(*zg)) {
         zid = zg->id;
         z = zoneFrom(ix, *zg);
       }
@@ -238,7 +239,7 @@ RackInfo makeInfo(const Project& p, const TrackIndex& ix, const std::vector<cons
     return false;
   };
   for (const DevicePtr& d : ix.t.devices) {  // the selector first (a macro may drive it)
-    if (!isValueDevice(*d) || d->group != r.parent || d->name != kChainSelectName) continue;
+    if (!isValueDevice(*d) || d->group != r.parent || rackRole(*d) != RackRole::Selector) continue;
     const auto& ws = TrackIndex::of(ix.from, d->id);
     if (std::any_of(ws.begin(), ws.end(), [&](const Wire* w) { return !w->toMixer() && inRack(w->to); })) {
       r.selector = d->id;
@@ -289,11 +290,11 @@ RackInfo makeInfo(const Project& p, const TrackIndex& ix, const std::vector<cons
 }  // namespace
 
 bool rackValueSetting(std::string_view name) noexcept {
-  if (name == kMacroSetting || name == kRandExcludeSetting) return true;
+  if (name == kMacroSetting || name == kRandExcludeSetting || name == kRoleSetting) return true;
   return name.size() > kVariationPrefix.size() && name.substr(0, kVariationPrefix.size()) == kVariationPrefix;
 }
 bool rackGroupSetting(std::string_view name) noexcept {
-  return name == kChainOnSetting || name == kChainSoloSetting || name == kKeyUnitSetting;
+  return name == kRoleSetting || name == kChainOnSetting || name == kChainSoloSetting || name == kKeyUnitSetting;
 }
 
 ZoneRange zoneRange(ZoneKind kind, KeyZoneUnit unit) noexcept {
@@ -320,6 +321,14 @@ bool zoneValid(const Zone& z, ZoneKind kind, KeyZoneUnit unit) noexcept {
 }
 std::string_view zoneGroupName(ZoneKind kind) noexcept {
   return kind == ZoneKind::Key ? kKeyZoneName : kind == ZoneKind::Velocity ? kVelocityZoneName : kSelectZoneName;
+}
+RackRole zoneRole(ZoneKind kind) noexcept {
+  return kind == ZoneKind::Key ? RackRole::KeyZone : kind == ZoneKind::Velocity ? RackRole::VelocityZone : RackRole::SelectZone;
+}
+RackRole rackRole(const Device& d) noexcept {
+  const DeviceValue* v = d.setting(kRoleSetting);
+  if (v == nullptr || !(v->value >= 1.0 && v->value <= static_cast<double>(RackRole::Selector))) return RackRole::None;
+  return static_cast<RackRole>(static_cast<uint8_t>(std::lround(v->value)));
 }
 
 const RackChain* RackInfo::findChain(DeviceId chain) const noexcept {
@@ -380,6 +389,8 @@ std::vector<const Device*> groupSeries(const Project& p, const Track& t, DeviceI
 
 namespace {
 
+DeviceValue roleSetting(RackRole r) { return DeviceValue{std::string(kRoleSetting), static_cast<double>(r)}; }
+
 struct Builder {
   IdSource& ids;
   BlockSet set;
@@ -392,11 +403,12 @@ struct Builder {
     set.devices.push_back(std::move(d));
     return id;
   }
-  DeviceId value(std::string name, const dsp::Curve& c, double position) {
+  DeviceId value(std::string name, const dsp::Curve& c, double position, RackRole role = RackRole::None) {
     const DeviceId id = add(std::string(kValueDevice), std::move(name));
     auto d = std::make_shared<Device>(*set.devices.back());
     d->params = {DeviceValue{std::string(kValueParam), std::clamp(position, 0.0, 1.0)}};
     d->curves = {ControlCurve{std::string(kValueParam), c}};
+    if (role != RackRole::None) d->settings = {roleSetting(role)};
     set.devices.back() = std::move(d);
     return id;
   }
@@ -429,10 +441,11 @@ struct Builder {
   void val(DeviceId from, DeviceId to, std::string_view param) { wire(from, kValueOutput, to, param); }
 };
 
-DevicePtr groupOf(DeviceId id, DeviceId parent, std::string name) {
+DevicePtr groupOf(DeviceId id, DeviceId parent, std::string name, RackRole role = RackRole::None) {
   auto g = std::make_shared<Device>(*makeGroup(id));
   g->name = std::move(name);
   g->group = parent;
+  if (role != RackRole::None) g->settings = {roleSetting(role)};
   return g;
 }
 
@@ -469,14 +482,14 @@ BlockSet chainBlocks(IdSource& ids, DeviceId parent, std::string name, bool inst
   const DeviceId chain = ids.device(), mixer = ids.device();
   BlockSet out;
   out.devices.push_back(groupOf(chain, parent, std::move(name)));
-  out.devices.push_back(groupOf(mixer, chain, std::string(kChainMixerName)));
+  out.devices.push_back(groupOf(mixer, chain, std::string(kChainMixerName), RackRole::Mixer));
   Builder b{ids, {}, mixer};
   const dsp::Curve vc = chainVolumeCurve();
-  const DeviceId vol = b.value(std::string(kChainVolumeName), vc, dsp::curvePosition(vc, 1.0));
-  const DeviceId pan = b.value(std::string(kChainPanName), chainPanCurve(), 0.5);
+  const DeviceId vol = b.value(std::string(kChainVolumeName), vc, dsp::curvePosition(vc, 1.0), RackRole::Volume);
+  const DeviceId pan = b.value(std::string(kChainPanName), chainPanCurve(), 0.5, RackRole::Pan);
   dsp::Curve gc = dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, 1.0);
   gc.step = 1.0;
-  const DeviceId gate = b.value(std::string(kChainGateName), gc, 1.0);
+  const DeviceId gate = b.value(std::string(kChainGateName), gc, 1.0, RackRole::Gate);
   const DeviceId one = b.constant("1", 1.0);
   const DeviceId g = b.atom("mul", "volume · gate"), l1 = b.atom("sub", "1 − pan"), r1 = b.atom("add", "1 + pan"),
                  l = b.atom("min", "left"), r = b.atom("min", "right"), gl = b.atom("mul", "gain L"),
@@ -514,13 +527,13 @@ BlockSet chainBlocks(IdSource& ids, DeviceId parent, std::string name, bool inst
 BlockSet zoneBlocks(IdSource& ids, DeviceId chain, ZoneKind kind, KeyZoneUnit unit, const Zone& z) {
   const DeviceId zg = ids.device();
   BlockSet out;
-  out.devices.push_back(groupOf(zg, chain, std::string(zoneGroupName(kind))));
+  out.devices.push_back(groupOf(zg, chain, std::string(zoneGroupName(kind)), zoneRole(kind)));
   Builder b{ids, {}, zg};
   const dsp::Curve c = zoneCurve(kind, unit);
-  const DeviceId lo = b.value(std::string(kZoneLoName), c, dsp::curvePosition(c, z.lo)),
-                 fl = b.value(std::string(kZoneFadeLoName), c, dsp::curvePosition(c, z.fadeLo)),
-                 fh = b.value(std::string(kZoneFadeHiName), c, dsp::curvePosition(c, z.fadeHi)),
-                 hi = b.value(std::string(kZoneHiName), c, dsp::curvePosition(c, z.hi));
+  const DeviceId lo = b.value(std::string(kZoneLoName), c, dsp::curvePosition(c, z.lo), RackRole::ZoneLo),
+                 fl = b.value(std::string(kZoneFadeLoName), c, dsp::curvePosition(c, z.fadeLo), RackRole::ZoneFadeLo),
+                 fh = b.value(std::string(kZoneFadeHiName), c, dsp::curvePosition(c, z.fadeHi), RackRole::ZoneFadeHi),
+                 hi = b.value(std::string(kZoneHiName), c, dsp::curvePosition(c, z.hi), RackRole::ZoneHi);
   const bool logHz = kind == ZoneKind::Key && unit == KeyZoneUnit::Hz;
   const DeviceId eps = b.constant("ε", logHz ? kZoneEpsLog : kZoneEps), zero = b.constant("0", 0.0), one = b.constant("1", 1.0);
   // v and the bounds in v's domain (ln Hz for Hz key zones).
@@ -539,7 +552,7 @@ BlockSet zoneBlocks(IdSource& ids, DeviceId chain, ZoneKind kind, KeyZoneUnit un
     b.out(vel, v, "a");
     b.val(k, v, "b");
   } else {
-    v = b.value(std::string(kZoneValueName), zoneCurve(kind, unit), 0.0);  // the selector adds into it
+    v = b.value(std::string(kZoneValueName), zoneCurve(kind, unit), 0.0, RackRole::ZoneValue);  // the selector adds into it
     vPort = kValueOutput;
   }
   auto bound = [&](DeviceId x, const char* name) -> std::pair<DeviceId, std::string_view> {

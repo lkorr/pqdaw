@@ -113,13 +113,13 @@ Status relay(Steps& k, IdSource& ids, DeviceId chain, const std::vector<DeviceId
   for (const Wire& w : wiresOf(k.doc()))
     if (seriesLink(*loc.track, chain, w)) gone.push_back(w.id);
   for (const WireId w : gone) PQ_DOC_TRY(k.add(RemoveWire{w}));
-  auto member = [&](std::string_view name) -> DeviceId {
+  auto member = [&](RackRole role) -> DeviceId {
     for (const DevicePtr& d : findDevice(k.doc(), chain).track->devices)
-      if (d->group == chain && d->name == name && isGroupDevice(*d)) return d->id;
+      if (d->group == chain && rackRole(*d) == role && isGroupDevice(*d)) return d->id;
     return {};
   };
-  const DeviceId keyZ = member(kKeyZoneName), velZ = member(kVelocityZoneName), selZ = member(kSelectZoneName),
-                 mixer = member(kChainMixerName);
+  const DeviceId keyZ = member(RackRole::KeyZone), velZ = member(RackRole::VelocityZone),
+                 selZ = member(RackRole::SelectZone), mixer = member(RackRole::Mixer);
   std::vector<Stage> user = stagesOf(k.doc(), *findDevice(k.doc(), chain).track, devices);
   std::vector<Stage> stages;
   int32_t voiceEnd = -1;  // the stage whose out wire is single-signal
@@ -283,18 +283,20 @@ Result<DeviceId> macroBlock(Steps& k, IdSource& ids, const RackInfo& r, uint32_t
   return id;
 }
 
-// The rack's selector (made when missing: kChainSelectName at the rack's level, 0 … kSelectMax at 0).
+// The rack's selector (made when missing: role Selector, named kChainSelectName, at the rack's level, 0 … kSelectMax
+// at 0).
 DeviceId selectorBlock(Steps& k, IdSource& ids, const RackInfo& r, Status& st) {
   if (r.selector.valid()) return r.selector;
   // One that exists but feeds nothing yet (this edit makes the first chain zone).
   for (const DevicePtr& d : findTrackPtr(k.doc(), r.track)->devices)
-    if (isValueDevice(*d) && d->group == r.parent && d->name == kChainSelectName) return d->id;
+    if (isValueDevice(*d) && d->group == r.parent && rackRole(*d) == RackRole::Selector) return d->id;
   const DeviceId id = ids.device();
   auto d = std::make_shared<Device>(*makeDevice(id, std::string(kValueDevice), DeviceKind::AudioEffect));
   d->name = std::string(kChainSelectName);
   d->group = r.parent;
   d->params = {DeviceValue{std::string(kValueParam), 0.0}};
   d->curves = {ControlCurve{std::string(kValueParam), selectorCurve()}};
+  d->settings = {DeviceValue{std::string(kRoleSetting), static_cast<double>(RackRole::Selector)}};
   st = k.add(AddDevice{r.track, std::move(d), kAppend});
   return id;
 }
@@ -585,7 +587,7 @@ EditResult duplicateChain(const Project& p, IdSource& ids, DeviceId chain) {
   // The selector into the copy's chain zone (its wire crossed the chain's edge: not in the copied set).
   if (c->chain.selectZone.valid() && c->rack.selector.valid())
     for (const DevicePtr& d : copy.devices)
-      if (isValueDevice(*d) && d->name == kZoneValueName) {
+      if (isValueDevice(*d) && rackRole(*d) == RackRole::ZoneValue) {
         PQ_DOC_TRY(k.add(AddWire{plainWire(ids, c->rack.selector, kValueOutput, d->id, kValueParam)}));
         break;
       }
@@ -670,18 +672,18 @@ EditResult setChainZone(const Project& p, IdSource& ids, DeviceId chain, ZoneKin
   } else if (zg.valid()) {  // a drag: the four values (param writes)
     const Track& t = *c->track;
     const dsp::Curve zc = zoneCurve(kind, unit);
-    auto setV = [&](std::string_view name, double v) -> Status {
+    auto setV = [&](RackRole role, double v) -> Status {
       for (const DevicePtr& d : t.devices)
-        if (d->group == zg && d->name == name && isValueDevice(*d)) {
+        if (d->group == zg && rackRole(*d) == role && isValueDevice(*d)) {
           const double pos = dsp::curvePosition(d->curve(kValueParam) ? *d->curve(kValueParam) : zc, v, positionOf(*d, kValueParam));
           if (pos != positionOf(*d, kValueParam, -1.0)) return k.add(SetDeviceParam{d->id, std::string(kValueParam), pos});
         }
       return ok();
     };
-    PQ_DOC_TRY(setV(kZoneLoName, zone.lo));
-    PQ_DOC_TRY(setV(kZoneFadeLoName, zone.fadeLo));
-    PQ_DOC_TRY(setV(kZoneFadeHiName, zone.fadeHi));
-    PQ_DOC_TRY(setV(kZoneHiName, zone.hi));
+    PQ_DOC_TRY(setV(RackRole::ZoneLo, zone.lo));
+    PQ_DOC_TRY(setV(RackRole::ZoneFadeLo, zone.fadeLo));
+    PQ_DOC_TRY(setV(RackRole::ZoneFadeHi, zone.fadeHi));
+    PQ_DOC_TRY(setV(RackRole::ZoneHi, zone.hi));
   } else {
     const BlockSet set = zoneBlocks(ids, chain, kind, unit, zone);
     PQ_DOC_TRY(addBlocks(k, c->track->id, set));
@@ -690,7 +692,7 @@ EditResult setChainZone(const Project& p, IdSource& ids, DeviceId chain, ZoneKin
       const DeviceId sel = selectorBlock(k, ids, c->rack, st);
       PQ_DOC_TRY(st);
       for (const DevicePtr& d : set.devices)
-        if (isValueDevice(*d) && d->name == kZoneValueName)
+        if (isValueDevice(*d) && rackRole(*d) == RackRole::ZoneValue)
           PQ_DOC_TRY(k.add(AddWire{plainWire(ids, sel, kValueOutput, d->id, kValueParam)}));
     }
     PQ_DOC_TRY(relayChain(k, ids, c->rack, c->chain, idsOf(c->chain.devices), fi));
