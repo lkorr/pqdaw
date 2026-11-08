@@ -2542,7 +2542,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   volume). Alternative: drop roles whose structure no longer matches. Not done (no known need).
 - Status: open (provisional).
 
-## Q?-GU.f45-a · 2026-11-07 · GU.f4 / GU.f5 · Structural value blocks and voice monitors: the choices made
+## Q234 · 2026-11-07 · GU.f4 / GU.f5 · Structural value blocks and voice monitors: the choices made
 - **Which value blocks lower as literals** (lower.h "Structural value blocks", `lowersAsLiteral`): a value block whose
   curve is stepped (step > 0) or constant (min == max: the presets' numbers, e.g. the `1` in `type − 1` of a menu's mux
   chain), with no wire into it and no automation lane on it, whose output reaches a `mux` / `demux` `index` or a `select`

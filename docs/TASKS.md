@@ -713,8 +713,8 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [x] **GU.f1 Racks recognised by role, not by block name** ("Mixer", "Key Zone", "Chain Select" … are matched by name in racks.cpp / edit_racks.cpp; a renamed chain mixer drops out of the rack). Merged 82f7e995; Q233.
 - [x] **GU.f2 One panel system for leaves too** (DevicePanel + PanelLayout still draw leaf frames beside GroupPanelFace; draw a leaf as a one-element group panel). 👁 Merged cc0793db as GU.13; Q232.
 - [x] **GU.f3 Group-panel knobs at parity with the old faces** (wheel, Show Automation, Knob Curve menu, modulation ring). 👁 Merged cc0793db as GU.13.
-- [ ] **GU.f4 Undriven stepped value block into a mux index lowers as a literal** (Saturator computes all 7 curves, LFO all 5 shapes; also folds a muted chain's Gate 0).
-- [ ] **GU.f5 Voice end ignores modulation taps** (per-voice cable into a control ends voices once the tap is silent; Q230).
+- [x] **GU.f4 Undriven stepped value block into a mux index lowers as a literal** (Saturator computes all 7 curves, LFO all 5 shapes; also folds a muted chain's Gate 0). Merged 7a227722; Q234; muted-chain fold not done (needs select(gate,…) in the chain mixer).
+- [x] **GU.f5 Voice end ignores modulation taps** (per-voice cable into a control ends voices once the tap is silent; Q230). Merged 7a227722.
 - [ ] **GU.f6 Closed panels readable** (name strip on closed groups, minimum text size, cables under panel content, visible off state of toggles, Operator Coarse/Level readouts, clipped value-block captions, inspector scroll). 👁
 - [ ] **GU.f7 Dead code removal** (lone-stock-instrument lowering branches, metaSites, app::DeviceInspector, CircuitEditor::Host, retired PA/VCA load conversion in modules.cpp).
 - [ ] **GU.f8 Bool wire law for atom bool inputs** (select / comparisons wireable).

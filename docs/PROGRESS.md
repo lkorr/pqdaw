@@ -1519,3 +1519,9 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Verified (worker): build.ps1 -NoTests 0 warnings; document / views / ui / app default tier 4/4; rack renders diff 0; rack goldens diff 0; new rename / user-"Mixer" tests.
 - Perf: n/a. CPU-efficiency check: document-side only; lowered graph identical.
 - Notes/blockers: a hand-edited role block keeps its role (Q233).
+
+## 2026-11-07 · GU.f4 + GU.f5 · orchestrator (merge of task/GU.f45-mux-voice-end)
+- Did: fast-forwarded main to 7a227722. GU.f4: an undriven value block with a stepped or constant curve that reaches a mux/demux index or select cond lowers as a literal (doc::lowersAsLiteral); changing it is structural (one recompile, swap fade). Saturator ≈ 53 → 14 schedule ops (Analog Clip); LFO 10 / 14 ops. GU.f5: composeUnit adds no voice monitors on modulation taps; voices end by done / audio / release timeout. Q234.
+- Verified (worker): build.ps1 -NoTests 0 warnings; default tier graph, engine, project, timeline, render, jit, stdlib, playback, app, document, meta 20/20; ship pq_bench_dsp linked; new op-count, recompile and voice-end tests; GU.10 Saturator / LFO goldens unchanged.
+- Perf: op counts above (no preset bench yet, GU.f9). CPU-efficiency check: unchosen branches removed at compile time.
+- Notes/blockers: muted rack chains still compute (gain by Gate is not a choice; follow-up: chain mixer via select(gate, y, 0)); Operator's + pm workaround could now be a plain cable.
