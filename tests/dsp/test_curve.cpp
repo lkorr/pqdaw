@@ -218,10 +218,10 @@ TEST_CASE("curve preset vca: the VCA's Log law exactly, C1 at the fine zone, eve
     }
   }
   // The default: 0.7 → 1 (the knob's default), 0.3 → −1, 0.5 → 0, the ends ±20000; three segments, the outers split
-  // at ±10 and ±100 (GU.5b: the markers are points), seven in all.
+  // at ±10 and ±100 (GU.5b: the markers are points) and at ±2 and 0 (TX.reset-default: detents), ten in all.
   const Curve d = curvePreset(CurvePreset::Vca, -20000.0, 20000.0);
-  REQUIRE(d.segments == 7);
-  for (const double v : {-100.0, -10.0, -1.0, 1.0, 10.0, 100.0}) {
+  REQUIRE(d.segments == 10);
+  for (const double v : {-100.0, -10.0, -2.0, -1.0, 0.0, 1.0, 2.0, 10.0, 100.0}) {
     bool found = false;
     for (uint32_t i = 1; i < d.segments; ++i) found = found || std::fabs(d.min + d.points[i].y * (d.max - d.min) - v) < 1e-9 * 20000.0;
     CHECK_MESSAGE(found, "marker " << v);
@@ -464,9 +464,12 @@ TEST_CASE("curve detents (TX.detent): flagged points; a drag holds there and rel
   CHECK(detentStep(c, 0.40, 0.49) == 0.49);
   CHECK(detentStep(c, 0.40, 0.50) == 0.50);
 
-  // The VCA's law: ×1 and ×−1 are detents (its fine zone's edges).
+  // The VCA's law: ×1 and ×−1 are detents (its fine zone's edges); TX.reset-default: ×0, ×2 and ×−2 too.
   const Curve v = curvePreset(CurvePreset::Vca, -20000.0, 20000.0);
-  REQUIRE(curveDetents(v, d) == 2);
-  close(evalCurve(v, d[0]), -1.0, 1e-11);
-  close(evalCurve(v, d[1]), 1.0, 1e-11);
+  REQUIRE(curveDetents(v, d) == 5);
+  close(evalCurve(v, d[0]), -2.0, 1e-11);
+  close(evalCurve(v, d[1]), -1.0, 1e-11);
+  CHECK(std::fabs(evalCurve(v, d[2])) < 1e-11);
+  close(evalCurve(v, d[3]), 1.0, 1e-11);
+  close(evalCurve(v, d[4]), 2.0, 1e-11);
 }
