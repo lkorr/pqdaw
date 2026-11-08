@@ -2527,7 +2527,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   get no ring and are no cable targets.
 - Status: open (provisional choices above).
 
-## Q?-GU.f1-a · 2026-11-07 · GU.f1 · Rack roles: a role setting, not wiring (supersedes Q228 "Roles by name")
+## Q233 · 2026-11-07 · GU.f1 · Rack roles: a role setting, not wiring (supersedes Q228 "Roles by name")
 - **Chosen:** every block a rack is made of carries the setting `rackRole` (`doc::RackRole`: Mixer, Volume, Pan, Gate,
   Key / Velocity / Select Zone, zone Lo / Fade Lo / Fade Hi / Hi / Value, Selector), written by `chainBlocks`,
   `zoneBlocks` and the selector builder. `findRacks` and the rack edits find them by role only; names are labels. A

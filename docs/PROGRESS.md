@@ -1513,3 +1513,9 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 
 ## 2026-11-07 · GU milestone · orchestrator
 - Verified: ./scripts/build.ps1 -Full on main 87c1f687 (check, default + slow; CMAKE_BUILD_PARALLEL_LEVEL=6, CTEST_PARALLEL_LEVEL=4 after an earlier run was stopped for low memory): 0 warnings, 88/88 entries passed (436 s).
+
+## 2026-11-07 · GU.f1 · orchestrator (merge of task/GU.f1-rack-roles)
+- Did: fast-forwarded main to 82f7e995. Rack blocks carry a `rackRole` setting (Mixer, Volume, Pan, Gate, zones, Selector) written when made; every by-name lookup in racks.cpp / edit_racks.cpp goes by role; names are labels only. Roles from wiring were not feasible without per-shape matching (Q233). Supersedes Q228 "roles by name".
+- Verified (worker): build.ps1 -NoTests 0 warnings; document / views / ui / app default tier 4/4; rack renders diff 0; rack goldens diff 0; new rename / user-"Mixer" tests.
+- Perf: n/a. CPU-efficiency check: document-side only; lowered graph identical.
+- Notes/blockers: a hand-edited role block keeps its role (Q233).
