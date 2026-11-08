@@ -14,7 +14,7 @@
 #include <vector>
 
 #include "all_free_helpers.h"
-#include "../support/stand_in_synth.h"
+#include "../support/blocks.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
@@ -30,13 +30,12 @@
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
-#include "pq/views/devices/panel_face.h"
+#include "pq/views/panel/group_panel_face.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
-#include "../../src/views/src/common/panel_template.h"
 #include "../../src/views/src/shell/shell_widgets.h"
 #include "../ui/golden_check.h"
 #include "views_test_util.h"
@@ -75,6 +74,20 @@ const doc::Track* named(const doc::Project& p, std::string_view name) {
 }
 
 float pinY(const Node& n, size_t i) { return pinOffset(n, i); }
+
+// GU.11: the block at `slot` of a track's main path (a module is a group: its members follow it in Track::devices).
+doc::DeviceId pathAt(const doc::Project& p, const doc::Track& t, size_t slot) {
+  const doc::MainPath path = doc::mainPath(p, t);
+  REQUIRE(slot < path.blocks.size());
+  return path.blocks[slot]->id;
+}
+// The first top-level group of a track (the free LFO module of the sketch's Mod track).
+doc::DeviceId firstGroup(const doc::Track& t) {
+  for (const doc::DevicePtr& d : t.devices)
+    if (doc::isGroupDevice(*d) && !d->group.valid()) return d->id;
+  FAIL("no group");
+  return {};
+}
 
 bool orthogonal(const std::vector<graph::Point2>& pts) {
   for (size_t i = 0; i + 1 < pts.size(); ++i)
@@ -125,6 +138,7 @@ struct Ui {
     return nullptr;
   }
   const doc::Track& track(std::string_view name) const { return *named(*ctx.doc(), name); }
+  doc::DeviceId onPath(std::string_view name, size_t slot) const { return pathAt(*ctx.doc(), track(name), slot); }
   const ProjectPatch& pp() const { return view().patch(); }
   uint32_t deviceNode(doc::DeviceId id) const {
     const uint32_t n = pp().nodeOf(id);
@@ -140,7 +154,7 @@ struct Ui {
   // other block's centre.
   Vec2 grip(uint32_t node) const {
     const Node& n = pp().nodes[node];
-    return n.panel ? dev(n.x + n.w * 0.5f, n.y + 10.0f) : centre(node);
+    return n.panel || n.groupPanel ? dev(n.x + n.w * 0.5f, n.y + 10.0f) : centre(node);  // (GU.11: a module's panel too)
   }
   Vec2 outPin(uint32_t node, std::string_view name) const {
     const Node& n = pp().nodes[node];
@@ -236,7 +250,7 @@ TEST_CASE("project patch: an audio track's source is its clip player (T5.3), the
   auto t = doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Audio, {}, "Loop");
   REQUIRE(t.ok());
   REQUIRE(store.dispatch(t->command).ok());
-  auto d = doc::ops::addDevice(*store.current(), store.ids(), t->tracks.at(0), "utility", doc::DeviceKind::AudioEffect);
+  auto d = doc::ops::addDevice(*store.current(), store.ids(), t->tracks.at(0), "module:utility", doc::DeviceKind::AudioEffect);
   REQUIRE(d.ok());
   REQUIRE(store.dispatch(d->command).ok());
   const doc::Project& p = *store.current();
@@ -245,7 +259,7 @@ TEST_CASE("project patch: an audio track's source is its clip player (T5.3), the
   o.clipSlotOf = [](doc::TrackId) { return 0u; };
   auto low = doc::lower(p, o);
   REQUIRE(low.ok());
-  const ProjectPatch pp = buildProjectPatch(p, *low, &library().catalog());
+  const ProjectPatch pp = buildProjectPatch(p, *low, &library());
   CHECK(checkAgainstGraph(pp, p, *low) == "");
   const auto band = std::find_if(pp.bands.begin(), pp.bands.end(), [](const Band& b) { return b.name == "Loop"; });
   REQUIRE(band != pp.bands.end());
@@ -261,7 +275,7 @@ TEST_CASE("project patch: the sketch project's view is its lowered ProjectGraph,
   REQUIRE(buildSketchProject(store).ok());
   const doc::Project& p = *store.current();
   const doc::LoweredProject low = lowerOf(p);
-  const ProjectPatch pp = buildProjectPatch(p, low, &library().catalog());
+  const ProjectPatch pp = buildProjectPatch(p, low, &library());
   CHECK(checkAgainstGraph(pp, p, low) == "");
   // One band per track in lane order: the group, its members, the LFO track, the return, the master.
   std::vector<std::string> names;
@@ -274,7 +288,7 @@ TEST_CASE("project patch: the sketch project's view is its lowered ProjectGraph,
     routes += e.kind == EdgeKind::Route;
     sends += e.kind == EdgeKind::Send;
     silent += e.kind == EdgeKind::Send && e.silent;
-    mods += e.kind == EdgeKind::Modulation;
+    mods += e.kind == EdgeKind::Modulation && e.graphWire != kNone;  // (GU.11: not the modules' inner wires)
     CHECK(routedAsDrawn(e));
   }
   size_t graphRoutes = 0, graphSends = 0, graphMods = 0;
@@ -302,7 +316,7 @@ TEST_CASE("project patch: the sketch project's view is its lowered ProjectGraph,
   CHECK(checkAgainstGraph(broken2, p, low) != "");
 }
 
-TEST_CASE("project patch: deactivated tracks and devices, missing devices, nested groups, return sends and loops match the graph") {
+TEST_CASE("project patch: deactivated tracks and devices, nested groups, return sends and loops match the graph") {
   doc::DocumentStore store;
   REQUIRE(buildSketchProject(store).ok());
   auto run = [&](const doc::ops::EditResult& e) {
@@ -317,24 +331,26 @@ TEST_CASE("project patch: deactivated tracks and devices, missing devices, neste
   const doc::TrackId inner = run(doc::ops::groupTracks(*store.current(), store.ids(), std::vector<doc::TrackId>{pad}, "Inner")).tracks[0];
   const doc::TrackId off = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Off")).tracks[0];
   run(doc::ops::setTracksActive(*store.current(), std::vector<doc::TrackId>{off}, false));
-  const doc::DeviceId util = run(doc::ops::addDevice(*store.current(), store.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices[0];
+  const doc::DeviceId util = run(doc::ops::addDevice(*store.current(), store.ids(), keys, "module:utility", doc::DeviceKind::AudioEffect)).devices[0];
   run(doc::ops::setDevicesActive(*store.current(), std::vector<doc::DeviceId>{util}, false));
-  REQUIRE(store.dispatch(doc::AddDevice{keys, doc::makeDevice(store.ids().device(), "nosuch", doc::DeviceKind::AudioEffect)}).ok());
+  // (GU.11: a device whose patch is not in the library cannot be in the model any more: checkList refuses it.)
+  CHECK_FALSE(store.dispatch(doc::AddDevice{keys, doc::makeDevice(store.ids().device(), "nosuch", doc::DeviceKind::AudioEffect)}).ok());
   // A second return; return → return sends both ways (stored: the second closes a loop and is delayed); a pre send.
   const doc::TrackId echo = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Return, space, "Echo")).tracks[0];
   REQUIRE(store.dispatch(doc::SetSendLevel{space, echo, -3.0f}).ok());
   REQUIRE(store.dispatch(doc::SetSendLevel{echo, space, -9.0f}).ok());
   run(doc::ops::setReturnSendsPreFader(*store.current(), echo, true));
   // A wire into a deactivated device: inactive (drawn dim, not in the graph).
-  const doc::DeviceId lfo = named(*store.current(), "Mod")->devices[0]->id;
-  run(doc::ops::connectTravelWire(*store.current(), store.ids(), lfo, "lfo", util, "width", 0.3));
+  const doc::DeviceId lfo = firstGroup(*named(*store.current(), "Mod"));
+  run(doc::ops::connectTravelWire(*store.current(), store.ids(), lfo, "y", test_blocks::member(*store.current(), util, "Width"),
+                                  std::string(doc::kValueParam), 0.3));
   // The group routed to sends only.
   REQUIRE(store.dispatch(doc::SetTrackOutput{grp, doc::Output{doc::OutputKind::None, {}}}).ok());
 
   const doc::Project& p = *store.current();
   const doc::LoweredProject low = lowerOf(p);
   REQUIRE_FALSE(low.delayedSends.empty());
-  const ProjectPatch pp = buildProjectPatch(p, low, &library().catalog());
+  const ProjectPatch pp = buildProjectPatch(p, low, &library());
   CHECK(checkAgainstGraph(pp, p, low) == "");
   const uint32_t ob = pp.bandOf(off);
   REQUIRE(ob != kNone);
@@ -349,14 +365,13 @@ TEST_CASE("project patch: deactivated tracks and devices, missing devices, neste
   REQUIRE(un != kNone);
   CHECK_FALSE(pp.nodes[un].lowered);
   CHECK_FALSE(pp.nodes[un].active);
-  bool missing = false, delayed = false, inactive = false, pre = false;
-  for (const Node& n : pp.nodes) missing = missing || (n.kind == NodeKind::Device && n.missing);
+  bool delayed = false, inactive = false, pre = false;
+  for (const Node& n : pp.nodes) CHECK_FALSE((n.kind == NodeKind::Device && n.missing));
   for (const Edge& e : pp.edges) {
     delayed = delayed || (e.kind == EdgeKind::Send && e.delayed);
     inactive = inactive || (e.kind == EdgeKind::Modulation && e.status == doc::WireStatus::Inactive && e.graphWire == kNone);
     pre = pre || (e.kind == EdgeKind::Send && e.pre);
   }
-  CHECK(missing);
   CHECK(delayed);
   CHECK(inactive);
   CHECK(pre);
@@ -374,7 +389,12 @@ TEST_CASE("project patch: the note wire goes to the meta device the note source 
     return *e;
   };
   const doc::TrackId t = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi)).tracks.at(0);
-  REQUIRE(stand_in::useBasicSynth(store, t).valid());  // (GU.10: the IG.1-2 layout: a meta module at slot 0 replaces Basic Synth)
+  {  // (GU.11: without its default instrument group — a meta module at slot 0 would go into it)
+    const doc::Track& tr = *doc::findTrackPtr(*store.current(), t);
+    std::vector<doc::DeviceId> all;
+    for (const doc::DevicePtr& d : tr.devices) all.push_back(d->id);
+    run(doc::ops::deleteDevices(*store.current(), all));
+  }
   const doc::DeviceId acc = run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, "envelope", 0)).devices.at(0);  // (GU.4: was a Phase accumulator)
   const doc::DeviceId wt = run(doc::ops::addMetaDevice(*store.current(), store.ids(), t, "wavetable")).devices.at(0);
   auto notesTo = [&](const ProjectPatch& pp, doc::DeviceId d) {
@@ -384,24 +404,20 @@ TEST_CASE("project patch: the note wire goes to the meta device the note source 
   };
   {
     const doc::LoweredProject low = lowerOf(*store.current());
-    const ProjectPatch pp = buildProjectPatch(*store.current(), low, &library().catalog());
+    const ProjectPatch pp = buildProjectPatch(*store.current(), low, &library());
     CHECK(checkAgainstGraph(pp, *store.current(), low) == "");
     CHECK(pp.nodes[pp.nodeOf(acc)].instrument);
     CHECK(notesTo(pp, acc));
     CHECK_FALSE(notesTo(pp, wt));
   }
-  // Unplugged: no note wire; it runs freely (one voice) and still feeds the Wavetable.
-  run(doc::ops::setDeviceChainInput(*store.current(), acc, std::string(doc::kChainUnplugged)));
+  // GU.11 (no chain inputs): taken off the path, no note wire reaches it; the notes reach what heads the path now.
+  run(doc::ops::takeOffPath(*store.current(), store.ids(), &library(), std::vector<doc::DeviceId>{acc}));
   {
     const doc::LoweredProject low = lowerOf(*store.current());
-    const ProjectPatch pp = buildProjectPatch(*store.current(), low, &library().catalog());
+    const ProjectPatch pp = buildProjectPatch(*store.current(), low, &library());
     CHECK(checkAgainstGraph(pp, *store.current(), low) == "");
     CHECK_FALSE(pp.nodes[pp.nodeOf(acc)].instrument);
     CHECK_FALSE(notesTo(pp, acc));
-    CHECK_FALSE(notesTo(pp, wt));
-    bool chained = false;
-    for (const Edge& e : pp.edges) chained = chained || (e.kind == EdgeKind::Chain && e.from == pp.nodeOf(acc) && e.to == pp.nodeOf(wt));
-    CHECK(chained);
   }
 }
 
@@ -412,7 +428,7 @@ TEST_CASE("project patch: the layout mirrors the arrangement (lane order, groups
   REQUIRE(buildWideProject(store, 20).ok());
   const doc::Project& p = *store.current();
   const doc::LoweredProject low = lowerOf(p);
-  const ProjectPatch pp = buildProjectPatch(p, low, &library().catalog());
+  const ProjectPatch pp = buildProjectPatch(p, low, &library());
   CHECK(checkAgainstGraph(pp, p, low) == "");
   // Bands in lane order (forEachTrack: the main tree depth-first, the returns, the master), stacked downwards.
   std::vector<doc::TrackId> order;
@@ -462,19 +478,19 @@ TEST_CASE("project patch: nudges are view state — not undoable, saved with the
   u.show();
   const doc::Track& keys = u.track("Keys");
   const uint32_t b = u.pp().bandOf(keys.id);
-  const uint32_t sat = u.deviceNode(keys.devices[1]->id);
+  const uint32_t sat = u.deviceNode(pathAt(*u.ctx.doc(), keys, 1));
   const float by = u.pp().bands[b].y, sx = u.pp().nodes[sat].x, mx = u.pp().nodes[u.pp().bands[b].mixer].x;
   const size_t h0 = u.history();
   u.view().nudge(keys.id.value, 0.0f, 20.0f);
-  u.view().nudge(keys.devices[1]->id.value, 48.0f, 0.0f);
+  u.view().nudge(pathAt(*u.ctx.doc(), keys, 1).value, 48.0f, 0.0f);
   CHECK(u.history() == h0);  // not an undo step
   CHECK(u.ctx.dirty());      // but saved
   CHECK(u.pp().bands[u.pp().bandOf(keys.id)].y == doctest::Approx(by + 20.0f));
-  CHECK(u.pp().nodes[u.pp().nodeOf(keys.devices[1]->id)].x == doctest::Approx(sx + 48.0f));
+  CHECK(u.pp().nodes[u.pp().nodeOf(pathAt(*u.ctx.doc(), keys, 1))].x == doctest::Approx(sx + 48.0f));
   // TX.mixer-look: the (unplaced) mixer stays the band's top-right block: the Saturator nudged into its column pushes it
   // right, a gap past the Saturator (it was a gap past it before, so by the same 48).
   {
-    const Node& sn = u.pp().nodes[u.pp().nodeOf(keys.devices[1]->id)];
+    const Node& sn = u.pp().nodes[u.pp().nodeOf(pathAt(*u.ctx.doc(), keys, 1))];
     const float mx1 = u.pp().nodes[u.pp().bands[u.pp().bandOf(keys.id)].mixer].x;
     CHECK(mx1 == doctest::Approx(std::max(mx, sn.x + sn.w + metrics::kNodeGap)));
     CHECK(mx1 > mx);
@@ -488,12 +504,12 @@ TEST_CASE("project patch: nudges are view state — not undoable, saved with the
   const auto& n = other.store().view().patchNudges;
   REQUIRE(n.size() == 2);
   CHECK(n.at(keys.id.value).dy == 20.0f);
-  CHECK(n.at(keys.devices[1]->id.value).dx == 48.0f);
+  CHECK(n.at(pathAt(*u.ctx.doc(), keys, 1).value).dx == 48.0f);
   // A nudge naming no entity is a load error (strict reader).
   auto text = doc::serializeProject(*u.ctx.doc(), u.ctx.store().view());
   REQUIRE(text.ok());
   std::string bad = *text;
-  const size_t at = bad.find("\"patch\"");
+  const size_t at = bad.find("\"patch\": [");  // the view state's nudges (not a device's "patch")
   REQUIRE(at != std::string::npos);
   const size_t id = bad.find("\"id\": ", at);
   REQUIRE(id != std::string::npos);
@@ -534,7 +550,7 @@ TEST_CASE("project patch (TX.mixer-look): the mixer is its band's top-right bloc
   u.show();
   ProjectPatchView& v = u.view();
   const doc::TrackId keys = u.track("Keys").id, pad = u.track("Pad").id;
-  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
+  const doc::DeviceId sat = u.onPath("Keys", 1);
   auto mixerOf = [&](doc::TrackId t) { return u.pp().bands[u.pp().bandOf(t)].mixer; };
   auto bandOf = [&](doc::TrackId t) -> const Band& { return u.pp().bands[u.pp().bandOf(t)]; };
   // Default: the top right of every band; drawn as its face (hosted like a panel).
@@ -590,7 +606,7 @@ TEST_CASE("project patch (TX.mixer-look): the mixer is its band's top-right bloc
   // with the band), the view hidden and shown again, the band opened.
   v.nudge(sat.value, 400.0f, 0.0f);
   placedStill();
-  REQUIRE(v.addDevice(keys, "utility"));
+  REQUIRE(v.addDevice(keys, "module:utility"));
   placedStill();
   v.nudge(keys.value, 30.0f, 12.0f);
   placedStill();
@@ -620,7 +636,7 @@ TEST_CASE("project patch (TX.mixer-look): the mixer is its band's top-right bloc
     LayoutOptions o;
     o.nudges = &n;
     const doc::LoweredProject low = lowerOf(*other.doc());
-    const ProjectPatch pp = buildProjectPatch(*other.doc(), low, &library().catalog(), o);
+    const ProjectPatch pp = buildProjectPatch(*other.doc(), low, &library(), o);
     const Band& b = pp.bands[pp.bandOf(keys)];
     CHECK(pp.nodes[b.mixer].x - b.x0 == doctest::Approx(rx));
     CHECK(pp.nodes[b.mixer].y - b.y == doctest::Approx(ry));
@@ -812,30 +828,32 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
   const size_t h0 = u.history();
   const doc::TrackId keys = u.track("Keys").id, pad = u.track("Pad").id, mod = u.track("Mod").id, grp = u.track("Group").id;
   const doc::TrackId space = u.track("Space").id;
-  const doc::DeviceId lfo = u.track("Mod").devices[0]->id, eq = u.track("Pad").devices[1]->id;
+  const doc::DeviceId lfo = firstGroup(u.track("Mod")), eq = u.onPath("Pad", 1);
 
   SUBCASE("wire: an export dragged onto a device, a param chosen") {
     u.zoomTo("Pad");
     u.view().fitAll(false);
     u.d.tree().layoutNow();
     const uint32_t lfoNode = u.deviceNode(lfo), eqNode = u.deviceNode(eq);
-    u.d.drag(u.outPin(lfoNode, "lfo"), u.centre(eqNode), 6);
-    Menu* m = u.openMenu();
-    REQUIRE(m != nullptr);
-    const std::string first = m->items().at(0).label;
-    m->choose(0);
+    u.d.drag(u.outPin(lfoNode, "y"), u.centre(eqNode), 6);
+    // (GU.11: onto a module's panel — a menu of what it takes when there is a choice, else the control under the drop)
+    if (Menu* m = u.openMenu()) {
+      MESSAGE("first menu item: " << m->items().at(0).label);
+      m->choose(0);
+    }
     u.d.step();
     CHECK(u.history() == h0 + 1);
-    const doc::DeviceInfo* info = library().catalog().find("eq_eight");
-    REQUIRE(info != nullptr);
-    std::string param;
-    for (const doc::DeviceParamInfo& pi : info->params)
-      if ((pi.label.empty() ? pi.name : pi.label) == first) param = pi.name;
-    CHECK_FALSE(doc::ops::wiresInto(*u.ctx.doc(), eq, param).empty());
+    // GU.11: Pad's VCA is a module — the wire ends on the block of its group the menu item names (its control's value
+    // block, or the group's main input).
+    const doc::Wire made0 = doc::wiresOf(*u.ctx.doc()).back();
+    CHECK(made0.from == lfo);
+    const doc::Device* target = doc::findDevice(*u.ctx.doc(), made0.to).device;
+    REQUIRE(target != nullptr);
+    CHECK((made0.to == eq || doc::groupContains(u.track("Pad").devices, eq, made0.to)));
     CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
-    // The Device view (Ableton view) draws the new wire's cable into Pad's EQ Eight (docked on its knob, or on the
-    // panel's frame when that knob is on another band's page).
-    const doc::WireId made = doc::ops::wiresInto(*u.ctx.doc(), eq, param).at(0);
+    // The Device view (Ableton view) draws the new wire's cable into Pad's VCA (docked on its knob, or on the
+    // panel's frame).
+    const doc::WireId made = made0.id;
     const CableLayer::Cable* cable = u.deviceViewCable(pad, made);
     CHECK(cable != nullptr);
     REQUIRE(u.ctx.undo());
@@ -890,9 +908,9 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     REQUIRE(sub != nullptr);
     u.choose(*sub, "Utility");
     CHECK(u.history() == h0 + 1);
-    REQUIRE(u.track("Pad").devices.size() == 3);
-    const doc::DeviceId util = u.track("Pad").devices[2]->id;
-    CHECK(u.track("Pad").devices[2]->patch == "utility");
+    REQUIRE(doc::mainPath(*u.ctx.doc(), u.track("Pad")).blocks.size() == 3);
+    const doc::DeviceId util = u.onPath("Pad", 2);
+    CHECK(doc::findDevice(*u.ctx.doc(), util).device->name == "Utility");
     // The Device view shows it.
     u.ctx.setSelectedTrack(pad);
     DeviceChainView* chain = findDeviceChain(*u.shell);
@@ -964,11 +982,14 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     u.d.tree().layoutNow();
     const ProjectScene& ps = u.view().scene();
     std::vector<uint32_t> wires;
-    for (uint32_t w = 0; w < ps.modelEdge.size(); ++w)
-      if (ps.modelEdge[w] != kNone && u.pp().edges[ps.modelEdge[w]].kind == EdgeKind::Modulation) {
-        wires.push_back(w);
-        break;
-      }
+    size_t drawnBefore = 0;  // TX.all-free: beside the main paths' links (GU.11: the modules hold wires of their own)
+    for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc())) drawnBefore += w.mainLink() ? 0 : 1;
+    for (uint32_t w = 0; w < ps.modelEdge.size(); ++w)  // (one of the LFO's)
+      if (ps.modelEdge[w] != kNone && u.pp().edges[ps.modelEdge[w]].kind == EdgeKind::Modulation)
+        if (const doc::Wire* dw = doc::findWire(*u.ctx.doc(), u.pp().edges[ps.modelEdge[w]].wire); dw != nullptr && dw->from == lfo) {
+          wires.push_back(w);
+          break;
+        }
     for (uint32_t w = 0; w < ps.modelEdge.size(); ++w)
       if (ps.modelEdge[w] != kNone) {
         const Edge& e = u.pp().edges[ps.modelEdge[w]];
@@ -984,7 +1005,7 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     CHECK(u.history() == h0 + 1);  // both in one step
     size_t drawn = 0;  // TX.all-free: beside the main paths' links
     for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc())) drawn += w.mainLink() ? 0 : 1;
-    CHECK(drawn == 1);
+    CHECK(drawn == drawnBefore - 1);
     REQUIRE(u.ctx.undo());
     CHECK(u.ctx.doc() == start);
   }
@@ -994,7 +1015,7 @@ TEST_CASE("project patch cursors (T4.16c): blocks Move, out pins Crosshair, M / 
   Ui u;
   u.show();
   const doc::TrackId keys = u.track("Keys").id, mod = u.track("Mod").id;
-  const doc::DeviceId lfo = u.track("Mod").devices[0]->id, eq = u.track("Pad").devices[1]->id;
+  const doc::DeviceId lfo = firstGroup(u.track("Mod")), eq = u.onPath("Pad", 1);
   auto at = [&](Vec2 p) {
     u.d.move(p);
     return u.d.tree().cursor();
@@ -1021,8 +1042,11 @@ TEST_CASE("project patch cursors (T4.16c): blocks Move, out pins Crosshair, M / 
   // Device blocks move; an export pin (and a mixer's out) starts a wire.
   u.view().fitAll(false);
   u.d.tree().layoutNow();
-  CHECK(at(u.centre(u.deviceNode(eq))) == Cursor::Move);
-  CHECK(at(u.outPin(u.deviceNode(lfo), "lfo")) == Cursor::Crosshair);
+  {  // (GU.11: Pad's instrument group, open: its capsule's title strip moves it)
+    const Node& g = u.pp().nodes[u.deviceNode(u.onPath("Pad", 0))];
+    CHECK(at(u.dev(g.x + 30.0f, g.y + 5.0f)) == Cursor::Move);
+  }
+  CHECK(at(u.outPin(u.deviceNode(lfo), "y")) == Cursor::Crosshair);
   const Vec2 out = u.outPin(u.pp().bands[u.pp().bandOf(mod)].mixer, "out");
   CHECK(at(out) == Cursor::Crosshair);
   // Dragging Mod's out: over the Group's Σ a route (Crosshair); over a MIDI track (Keys) refused: NotAllowed, and the
@@ -1054,51 +1078,6 @@ TEST_CASE("project patch cursors (T4.16c): blocks Move, out pins Crosshair, M / 
   u.d.up({c.x + 20.0f, c.y}, PointerButton::Middle);
 }
 
-TEST_CASE("project patch: a device edited in the circuit editor (a user device) — drawn as it plays, one model") {
-  Ui u;
-  u.show();
-  ProjectPatchView& v = u.view();
-  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
-  REQUIRE(v.editDeviceCircuit(sat));  // T5.x-circuit-chain: the Device level (openInCircuitView: the track's chain)
-  circuit::CircuitEditor* ed = u.editor();
-  REQUIRE(ed != nullptr);
-  // One edit in the text pane forks the device (SPEC §15 2026-10-26): one undo step; the patch view follows.
-  const size_t h0 = u.history();
-  const std::string& text = ed->document().text();
-  const size_t at = text.find("param output     = 0dB");
-  REQUIRE(at != std::string::npos);
-  ed->document().replaceText(static_cast<uint32_t>(at + 19), 1, "1", true);  // 0dB -> 1dB
-  ed->checkNow();
-  REQUIRE(doc::findDevice(*u.ctx.doc(), sat).device->edited());
-  CHECK(u.history() == h0 + 1);
-  ed->closeSoon();
-  u.d.step();
-  const uint32_t n = v.patch().nodeOf(sat);
-  REQUIRE(n != kNone);
-  CHECK(v.patch().nodes[n].edited);
-  CHECK(v.patch().nodes[n].lowered);
-  CHECK_FALSE(v.patch().nodes[n].missing);
-  CHECK(v.patch().nodes[n].title.find("(edited)") != std::string::npos);
-  CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
-  // Opened to its atoms: the user device's own patch (as resolved for the lowering).
-  const size_t nodes = v.scene().scene->nodes.size();
-  v.setDeviceExpanded(sat, true);
-  u.d.advance(0.5);
-  CHECK(v.scene().scene->nodes.size() > nodes + 10);
-  v.setDeviceExpanded(sat, false);
-  u.d.advance(0.5);
-  // Revert to Stock from its block's menu: one step, back to the stock device.
-  REQUIRE(v.openNodeMenu(v.patch().nodeOf(sat), u.centre(v.patch().nodeOf(sat))) != nullptr);
-  Menu* m = u.openMenu();
-  REQUIRE(m != nullptr);
-  u.choose(*m, "Revert to Stock");
-  CHECK(u.history() == h0 + 2);
-  CHECK_FALSE(doc::findDevice(*u.ctx.doc(), sat).device->edited());
-  u.d.step();
-  CHECK_FALSE(v.patch().nodes[v.patch().nodeOf(sat)].edited);
-  CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
-}
-
 TEST_CASE("project patch: semantic zoom — the whole project, one band, a device's atoms") {
   Ui u;
   u.show();
@@ -1112,14 +1091,16 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   // TX.panel-faces: the band is framed whole; its blocks are panels (Operator's is about 600 units wide), so in this
   // window the band fits below the canvas's Near level — the panels draw their own text at the canvas's scale.
   CHECK(v.canvas().lod() != circuit::CircuitCanvas::Lod::Far);
-  CHECK(v.panelOf(u.track("Keys").devices[1]->id) != nullptr);
-  // Open Keys' Saturator to its atoms: its patch's nodes are drawn inside its frame, the view zooms onto it.
-  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
+  {  // the Saturator (a module) closed: drawn as its group's panel
+    const uint32_t sn = v.scene().sceneNode[v.patch().nodeOf(u.onPath("Keys", 1))];
+    CHECK(v.canvas().panelOn(sn) != nullptr);
+  }
+  // Open Keys' Saturator (a group) to its blocks: drawn inside its capsule, the view zooms onto it.
+  const doc::DeviceId sat = u.onPath("Keys", 1);
   const size_t nodes = v.scene().scene->nodes.size();
   v.setDeviceExpanded(sat, true);
   u.d.advance(0.5);
   CHECK(v.deviceExpanded(sat));
-  CHECK(v.scene().sceneNode[v.patch().nodeOf(sat)] == kNone);
   CHECK(v.scene().scene->nodes.size() > nodes + 10);
   CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");  // the model is the same graph
   // Hovering one of its atoms names it in the info view (the atom and what it does), not the view's general help:
@@ -1146,15 +1127,10 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
     }
     CHECK(named > 0);
   }
-  // The chain still reaches the device: the wires into and out of its frame.
-  const graph::Patch* callee = library().library().find("saturator");
-  REQUIRE(callee != nullptr);
-  CHECK(v.scene().scene->nodes.size() - (nodes - 1) == callee->nodeCount());
   v.setDeviceExpanded(sat, false);
   u.d.advance(0.5);
   CHECK(v.scene().scene->nodes.size() == nodes);
-  // Its menu's Open in Circuit View opens its band here, framed on it and focused (T5.x-one-circuit: one circuit view);
-  // Edit Device Circuit the project-device circuit editor on it (T4.4-fix1; the next case edits).
+  // Its menu's Open in Circuit View opens its band here, framed on it and focused (T5.x-one-circuit: one circuit view).
   REQUIRE(v.openNodeMenu(v.patch().nodeOf(sat), u.centre(v.patch().nodeOf(sat))) != nullptr);
   Menu* m = u.openMenu();
   REQUIRE(m != nullptr);
@@ -1163,18 +1139,7 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   CHECK(v.focusedDevice() == sat);
   CHECK(v.openedBand() == u.track("Keys").id);
   CHECK(u.shell->overlay().childCount() == 0);
-  v.fitAll(false);
-  u.d.tree().layoutNow();
-  REQUIRE(v.openNodeMenu(v.patch().nodeOf(sat), u.centre(v.patch().nodeOf(sat))) != nullptr);
-  m = u.openMenu();
-  REQUIRE(m != nullptr);
-  u.choose(*m, "Edit Device Circuit");
-  circuit::CircuitEditor* ed = u.editor();
-  REQUIRE(ed != nullptr);
-  CHECK(ed->host() != nullptr);  // on the project's device (no Save, no Play)
-  CHECK(ed->shownPatch() == "saturator");
-  ed->closeSoon();
-  u.d.step();
+  // (GU.11: no device-level circuit editor: a module opens in place as a group.)
   CHECK(u.editor() == nullptr);
   // Double-click on a band's empty space opens it (T5.x-circuit-chain: zoomed onto it, its devices opened to their
   // atoms, so the band is larger than its blocks were: the view frames it, it does not zoom in by a fixed factor); F
@@ -1209,7 +1174,7 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
   const doc::Snapshot start = u.ctx.doc();
   const size_t h0 = u.history();
   const doc::TrackId keys = u.track("Keys").id;
-  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
+  const doc::DeviceId sat = u.onPath("Keys", 1);
   u.zoomTo("Keys");
   const uint32_t src = u.pp().bands[u.pp().bandOf(keys)].source;
   const Node& sn = u.pp().nodes[src];
@@ -1228,22 +1193,35 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
     CHECK(infoView->title() == "Keys notes: Hz");
     CHECK(infoView->body().find("piano roll") != std::string::npos);
   }
-  // velocity → the Saturator: its param menu, one step.
-  u.d.drag(u.outPin(src, "velocity"), u.centre(u.deviceNode(sat)), 6);
-  Menu* m = u.openMenu();
-  REQUIRE(m != nullptr);
-  m->choose(0);
-  u.d.step();
+  // velocity → the Saturator's Drive (GU.11: a module, drawn as its panel; its controls are value blocks: the drop on
+  // the knob wires that control, no menu), one step.
+  const doc::DeviceId drive = test_blocks::member(*u.ctx.doc(), sat, "Drive");
+  REQUIRE(drive.valid());
+  u.d.advance(0.5);  // the panel is laid out at this zoom
+  auto driveKnob = [&]() -> Vec2 {
+    const uint32_t sn = u.deviceNode(sat);
+    auto* pf = dynamic_cast<const panel::GroupPanelFace*>(u.view().canvas().panelOn(u.view().scene().sceneNode[sn]));
+    REQUIRE(pf != nullptr);
+    const std::optional<ControlAnchor> k = pf->bindingAnchor(doc::controlBinding(drive, std::string(doc::kValueParam)), true);
+    REQUIRE(k.has_value());
+    const Node& tn = u.pp().nodes[sn];
+    return u.dev(tn.x + k->at.x * tn.scale, tn.y + k->at.y * tn.scale);
+  };
+  size_t drawnBefore = 0;  // TX.all-free: beside the main paths' links (the modules hold wires of their own)
+  for (const doc::Wire& x : doc::wiresOf(*u.ctx.doc())) drawnBefore += x.mainLink() ? 0 : 1;
+  u.d.drag(u.outPin(src, "velocity"), driveKnob(), 6);
+  CHECK(u.openMenu() == nullptr);
   CHECK(u.history() == h0 + 1);
-  size_t drawnWires = 0;  // TX.all-free: beside the main paths' links
+  size_t drawnWires = 0;
   for (const doc::Wire& x : doc::wiresOf(*u.ctx.doc())) drawnWires += x.mainLink() ? 0 : 1;
-  REQUIRE(drawnWires == 3);  // the sketch's two LFO wires and this one
+  REQUIRE(drawnWires == drawnBefore + 1);  // this one
   const doc::Wire w = doc::wiresOf(*u.ctx.doc()).back();
   CHECK(w.noteSource == keys);
   CHECK(w.port == "velocity");
-  CHECK(w.to == sat);
+  CHECK(w.to == drive);
+  CHECK(w.param == doc::kValueParam);
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
-  // Drawn from the window's velocity pin into the Saturator's param pin, per voice, lowered.
+  // Drawn from the window's velocity pin onto the Saturator's block (its Drive knob), per voice, lowered.
   uint32_t edge = kNone;
   for (uint32_t k = 0; k < u.pp().edges.size(); ++k)
     if (u.pp().edges[k].kind == EdgeKind::Modulation && u.pp().edges[k].wire == w.id) edge = k;
@@ -1252,7 +1230,6 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
   CHECK(e.from == src);
   CHECK(u.pp().nodes[src].outputs[e.fromPort].name == "velocity");
   CHECK(e.to == u.deviceNode(sat));
-  CHECK(u.pp().nodes[e.to].inputs[e.toPort].param);
   CHECK(e.voice);
   CHECK(e.status == doc::WireStatus::Lowered);
   CHECK(routedAsDrawn(e));
@@ -1261,27 +1238,18 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
   // TX.knob-curves: an added wire says what it adds in (knob travel, the knob's units, dB: the target knob's curve).
   CHECK(u.view().readout().value.find("adds in ") != std::string::npos);
   u.view().updateReadout(kNone);
-  // Hz onto the param the first wire made: that param directly (no menu), one step. TX.mod-all: the Saturator is drawn
-  // as its panel and the param's knob is visible, so the param has no pin: the wire ends on the knob, and dropping
-  // onto the knob wires it.
+  // Hz onto the same knob: that control directly (no menu), one step. TX.mod-all: the param has no pin — the wire ends
+  // on the knob (its port anchored there), and dropping onto the knob wires it.
   {
     const Node& tn = u.pp().nodes[e.to];
     const Port& port = tn.inputs[e.toPort];
     CHECK(port.anchored);
-    u.d.advance(0.5);  // the panel is laid out at this zoom
-    const Face* panel = u.view().canvas().panelOn(u.view().scene().sceneNode[e.to]);
-    REQUIRE(panel != nullptr);
-    const std::optional<ControlAnchor> knob = panel->controlAnchor(port.name);
-    REQUIRE(knob.has_value());
-    // The layout placed the wire's entry by the same control (a prototype of the panel, laid out at scale 1).
-    CHECK(std::fabs(port.ax - knob->at.x) <= 2.0f);
-    CHECK(std::fabs(port.ay - knob->at.y) <= 2.0f);
-    const Vec2 pin = u.dev(tn.x + knob->at.x, tn.y + knob->at.y);
-    const size_t into = doc::ops::wiresInto(*u.ctx.doc(), sat, w.param).size();  // the sketch's LFO may drive it too
+    const Vec2 pin = driveKnob();
+    const size_t into = doc::ops::wiresInto(*u.ctx.doc(), drive, w.param).size();  // the sketch's LFO drives it too
     u.d.drag(u.outPin(src, "hz"), pin, 6);
     CHECK(u.openMenu() == nullptr);
     CHECK(u.history() == h0 + 2);
-    CHECK(doc::ops::wiresInto(*u.ctx.doc(), sat, w.param).size() == into + 1);
+    CHECK(doc::ops::wiresInto(*u.ctx.doc(), drive, w.param).size() == into + 1);
     CHECK(doc::wiresOf(*u.ctx.doc()).back().port == "hz");
   }
   // Refused: the chain's own `notes` pin (NotAllowed over a device), a note output onto a mixer.
@@ -1315,22 +1283,23 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
   REQUIRE(t.ok());
   REQUIRE(u.ctx.store().dispatch(t->command).ok());
   const doc::TrackId keys = t->tracks.at(0);
-  REQUIRE(makeLoneInstrument(u.ctx.store(), keys).ok());  // (IG.1-2: the instrument heading the path, as written)
-  auto ua = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), keys, "utility", doc::DeviceKind::AudioEffect);
+  auto ua = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), keys, "module:utility", doc::DeviceKind::AudioEffect);
   REQUIRE(ua.ok());
   REQUIRE(u.ctx.store().dispatch(ua->command).ok());
-  const doc::DeviceId inst = u.track("Keys").devices.at(0)->id, util = ua->devices.at(0);
+  const doc::DeviceId inst = u.onPath("Keys", 0), util = ua->devices.at(0);
   u.show();
+  u.view().setGroupOpen(inst, false);  // (GU.11: the instrument group closed: one block, its ports on its outline)
+  u.d.tree().layoutNow();
   const doc::Snapshot start = u.ctx.doc();
   const size_t h0 = u.history();
   // Add Free Device: one step, out of the series, under the chain.
   REQUIRE(u.view().addFreeDevice(keys, "meta:envelope"));  // (GU.4: was a Phase accumulator)
   u.d.step();
   CHECK(u.history() == h0 + 1);
-  REQUIRE(u.track("Keys").devices.size() == 3);
   const doc::DeviceId pa = u.track("Keys").devices.back()->id;
-  CHECK(all_free::offPath(*u.ctx.doc(), u.track("Keys").devices.back()->id));
-  CHECK(u.track("Keys").devices.at(0)->id == inst);  // the instrument still first: nothing replaced
+  REQUIRE(doc::isMetaDevice(*u.track("Keys").devices.back()));
+  CHECK(all_free::offPath(*u.ctx.doc(), pa));
+  CHECK(u.onPath("Keys", 0) == inst);  // the instrument still first: nothing replaced
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
   u.zoomTo("Keys");
   const Node& pn = u.pp().nodes[u.deviceNode(pa)];
@@ -1342,6 +1311,7 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
   u.d.drag(u.outPin(u.deviceNode(pa), "out"), u.centre(u.deviceNode(util)), 6);
   Menu* m = u.openMenu();
   REQUIRE(m != nullptr);
+  MESSAGE("first item: " << m->items().at(0).label);
   u.choose(*m, "Input: Audio In");
   CHECK(u.history() == h0 + 2);
   const doc::Wire w1 = doc::wiresOf(*u.ctx.doc()).back();
@@ -1362,7 +1332,7 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
     REQUIRE(r.has_value());
     const Node& n = u.pp().nodes[node];
     const Vec2 on = u.dev(n.x + 0.5f * (r->x0 + r->x1), n.y + 0.5f * (r->y0 + r->y1));
-    u.d.drag(u.outPin(u.deviceNode(inst), "out"), on, 6);
+    u.d.drag(u.outPin(u.deviceNode(inst), "y"), on, 6);
     CHECK(u.openMenu() == nullptr);
     CHECK(u.history() == h0 + 3);
     const doc::Wire w2 = doc::wiresOf(*u.ctx.doc()).back();
@@ -1371,18 +1341,8 @@ TEST_CASE("project patch (TX.patching): free devices, any output onto any input,
     CHECK(w2.to == pa);
     CHECK(w2.param == "sustain");
   }
-  // Refused: onto the instrument's own `notes` pin (the chain's note wire).
-  {
-    const Node& in = u.pp().nodes[u.deviceNode(inst)];
-    REQUIRE(in.input("notes") == 0);
-    (void)in;  // TX.orbit-ports: its main input (notes) orbits: where it is drawn
-    const Vec2 notes = u.view().canvas().toDevice(u.view().canvas().portWorld(u.deviceNode(inst), 0, true));
-    u.d.down(u.outPin(u.deviceNode(util), "out"));
-    u.d.move(notes);
-    CHECK(u.d.tree().cursor() == Cursor::NotAllowed);
-    u.d.up(notes);
-    CHECK(u.history() == h0 + 3);
-  }
+  // (GU.11: the instrument is a group: its main input takes any signal — the stock instrument's `notes` pin that refused
+  // audio is gone.)
   // The Utility dragged down out of its place: TX.all-free — placed there, nothing rewired (a nudge, no step); its
   // block menu's Take Off Path takes it off (one step; the instrument joined to the mixer), its other wires stay.
   {
@@ -1432,7 +1392,7 @@ TEST_CASE("project patch: hovering a wire reads its signal (meters, modulation s
 TEST_CASE("project patch: CPU cost labels meter only while asked for and shown") {
   Ui u;
   FixedDeviceCostSource src;
-  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
+  const doc::DeviceId sat = u.onPath("Keys", 1);
   src.set(sat, 42.5f);
   u.view().setCostSource(&src);
   u.show();
@@ -1462,13 +1422,13 @@ TEST_CASE("project patch: a document change while hidden costs nothing; shown, a
   ProjectPatchView& v = u.view();
   const uint64_t r0 = v.stats().rebuilds;
   REQUIRE(u.ctx.store().dispatch(doc::SetTrackVolume{u.track("Keys").id, -3.0f}).ok());
-  auto e = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.track("Pad").id, "utility", doc::DeviceKind::AudioEffect);
+  auto e = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.track("Pad").id, "module:utility", doc::DeviceKind::AudioEffect);
   REQUIRE(e.ok());
   REQUIRE(u.ctx.store().dispatch(e->command).ok());
   CHECK(v.stats().rebuilds == r0);  // hidden: nothing built
   u.show();
   CHECK(v.stats().rebuilds == r0 + 1);
-  auto e2 = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.track("Pad").id, "saturator", doc::DeviceKind::AudioEffect);
+  auto e2 = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.track("Pad").id, "module:saturator", doc::DeviceKind::AudioEffect);
   REQUIRE(e2.ok());
   REQUIRE(u.ctx.store().dispatch(e2->command).ok());
   CHECK(v.stats().rebuilds == r0 + 2);
@@ -1479,7 +1439,7 @@ TEST_CASE("project patch: 64 tracks build, lay out and match their graph" * doct
   doc::DocumentStore store;
   REQUIRE(buildWideProject(store, 64).ok());
   const doc::LoweredProject low = lowerOf(*store.current());
-  const ProjectPatch pp = buildProjectPatch(*store.current(), low, &library().catalog());
+  const ProjectPatch pp = buildProjectPatch(*store.current(), low, &library());
   CHECK(checkAgainstGraph(pp, *store.current(), low) == "");
   CHECK(pp.bands.size() == 64 + 8 + 2 + 1);
 }
@@ -1489,7 +1449,7 @@ TEST_CASE("project patch: 64 tracks build, lay out and match their graph" * doct
 
 TEST_CASE("one circuit: from a device's opened band, zooming out alone reaches every lane, group, return, the master and Out") {
   Ui u;
-  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
+  const doc::DeviceId sat = u.onPath("Keys", 1);
   REQUIRE(u.ctx.openProjectCircuit({}, sat));  // Open in Circuit View from the arrangement: the view comes up on it
   u.d.tree().layoutNow();
   ProjectPatchView& v = u.view();
@@ -1586,13 +1546,13 @@ TEST_CASE("lane windows: what each window shows is its lane's clips over the sho
   CHECK(v.laneClips(keys).size() == 1);  // Riff 2 (bars 7–10) now
   CHECK(v.laneClips(keys)[0].clip == u.track("Keys").clips[1].id);
   // Ctrl+wheel out: a longer span, a wider window, the bands re-laid out (the chain moved right), still the lanes.
-  const float devX = v.patch().nodes[u.deviceNode(u.track("Keys").devices[0]->id)].x;
+  const float devX = v.patch().nodes[u.deviceNode(u.onPath("Keys", 0))].x;
   (void)u.d.wheel(u.dev(kn.x + 8.0f, kn.y + kn.h * 0.5f), -3.0f, 0.0f, mod::kCtrl);
   CHECK(v.laneSpan() > ProjectPatchView::kLaneBars * bar);
   CHECK(v.laneWidth() > metrics::kSourceW);
   CHECK(v.stats().relayouts == relayouts + 1);
   CHECK(v.patch().nodes[v.patch().bands[keys].source].w == v.laneWidth());
-  CHECK(v.patch().nodes[u.deviceNode(u.track("Keys").devices[0]->id)].x > devX);
+  CHECK(v.patch().nodes[u.deviceNode(u.onPath("Keys", 0))].x > devX);
   CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
   check();
   // Far out: clamped to the widest window, the span keeps growing to its limit.
@@ -1800,269 +1760,6 @@ TEST_CASE("lane windows: 64 tracks — a time-zoom re-layout ≤ 2 ms, a full pa
   MESSAGE("64 tracks, a band framed: median full frame " << pm[pm.size() / 2] << " ms");
 }
 
-// ---- TX.panel-faces: closed stock devices drawn as their Device-view panels --------------------------------------
-
-namespace {
-
-// The device px centre of panel control `id` (DevicePanel::control: its binding's name by default) on `dev`'s block.
-Vec2 controlAt(Ui& u, doc::DeviceId dev, std::string_view id) {
-  devices::PanelFace* f = u.view().panelOf(dev);
-  REQUIRE(f != nullptr);
-  REQUIRE(f->layoutScale() > 0.0f);
-  Widget* w = f->panel().control(id);
-  REQUIRE_MESSAGE(w != nullptr, "no control " << std::string(id));
-  REQUIRE(w->visible());
-  const IRect r = w->rect();
-  const Node& n = u.pp().nodes[u.deviceNode(dev)];
-  const float k = n.scale / f->layoutScale();  // TX.resize: panel px → its own units → the (scaled) block's world units
-  return u.dev(n.x + (static_cast<float>(r.x) + static_cast<float>(r.w) * 0.5f) * k,
-               n.y + (static_cast<float>(r.y) + static_cast<float>(r.h) * 0.5f) * k);
-}
-
-double paramOf(const Ui& u, doc::DeviceId dev, std::string_view param) {
-  const doc::Device* d = doc::findDevice(*u.ctx.doc(), dev).device;
-  REQUIRE(d != nullptr);
-  const doc::DeviceInfo* info = library().catalog().find(d->patch);
-  REQUIRE(info != nullptr);
-  const doc::DeviceParamInfo* p = info->param(param);
-  REQUIRE(p != nullptr);
-  return doc::deviceParamValue(*d, *p);
-}
-
-}  // namespace
-
-TEST_CASE("project patch (TX.panel-faces): every closed stock device is drawn as its Device-view panel; opened, its atoms") {
-  Ui u;
-  REQUIRE(u.d.enableGpu().ok());  // a theme: the canvas paints (the panels lay out at their first paint)
-  // Every catalog device on a track of its own, beside the sketch (instruments on MIDI tracks of their own).
-  doc::DocumentStore& st = u.ctx.store();
-  std::vector<std::pair<doc::DeviceId, std::string>> added;
-  for (const doc::DeviceInfo& info : library().catalog().devices()) {
-    auto t = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "All " + info.name);
-    REQUIRE(t.ok());
-    REQUIRE(st.dispatch(t->command).ok());
-    REQUIRE(stand_in::useBasicSynth(st, t->tracks.at(0)).valid());  // (GU.10: the IG.1-2 layout)
-    auto e = doc::ops::addDevice(*st.current(), st.ids(), t->tracks.at(0), info.patch, info.kind);
-    REQUIRE_MESSAGE(e.ok(), info.patch);
-    REQUIRE(st.dispatch(e->command).ok());
-    added.emplace_back(e->devices.at(0), info.name);
-  }
-  u.show();
-  u.d.advance(0.5);
-  ProjectPatchView& v = u.view();
-  CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");  // the same graph, drawn bigger
-  size_t panels = 0, mixers = 0;  // TX.mixer-look: the canvas hosts the mixers' faces as panels too
-  for (const Node& n : v.patch().nodes) {
-    mixers += n.kind == NodeKind::Mixer ? 1u : 0u;
-    if (n.kind != NodeKind::Device) continue;
-    CAPTURE(n.title);
-    const bool stock = !n.group && !n.meta && !n.edited && !n.missing && !n.expanded;  // (IG.1-2: a group: a capsule)
-    CHECK(n.panel == stock);
-    if (!stock) continue;
-    ++panels;
-    devices::PanelFace* f = v.panelOf(n.device);
-    REQUIRE(f != nullptr);
-    // The Device view's panel: its description (title, size, controls) at the block's size, its exports as pins.
-    const doc::Device* d = doc::findDevice(*u.ctx.doc(), n.device).device;
-    REQUIRE(d != nullptr);
-    const doc::DeviceInfo* info = library().catalog().find(d->patch);
-    REQUIRE(info != nullptr);
-    CHECK(f->panel().title() == (d->name.empty() ? f->panel().desc().title : d->name));
-    const Vec2 s = devices::PanelFace::sizeFor(f->panel().desc());
-    CHECK(n.w >= s.x);
-    CHECK(n.w < s.x + 4.0f);
-    CHECK(n.h >= s.y);
-    CHECK(f->worldSize().x == n.w);
-    CHECK(f->panel().signature().exports.empty());
-    CHECK_FALSE(f->panel().foldable());
-  }
-  CHECK(panels + mixers == v.canvas().panelCount());
-  for (const auto& [id, name] : added) {
-    CAPTURE(name);
-    CHECK(v.panelOf(id) != nullptr);
-  }
-  CHECK(v.canvas().stats().panelsPainted > 0);
-  // Opened to its atoms: the atoms, no panel; closed again: the panel (the same face object is not required).
-  const doc::DeviceId sat = u.track("Keys").devices[1]->id;
-  REQUIRE(v.panelOf(sat) != nullptr);
-  v.setDeviceExpanded(sat, true);
-  u.d.advance(0.5);
-  CHECK(v.panelOf(sat) == nullptr);
-  CHECK_FALSE(v.patch().nodes[v.patch().nodeOf(sat)].panel);
-  CHECK(v.scene().sceneNode[v.patch().nodeOf(sat)] == kNone);
-  v.setDeviceExpanded(sat, false);
-  u.d.advance(0.5);
-  CHECK(v.panelOf(sat) != nullptr);
-  // A user device (its own patch text) keeps the plain block: its circuit is what it is.
-  const doc::DeviceId op = u.track("Keys").devices[0]->id;
-  {
-    const doc::Device* d = doc::findDevice(*u.ctx.doc(), op).device;
-    const std::string text = library().stockText(d->patch);
-    REQUIRE_FALSE(text.empty());
-    auto e = doc::ops::editDevicePatch(*u.ctx.doc(), op, text + "\n// edited\n");
-    REQUIRE(e.ok());
-    REQUIRE(st.dispatch(e->command).ok());
-  }
-  u.d.advance(0.5);
-  CHECK(v.panelOf(op) == nullptr);
-  CHECK(v.patch().nodes[v.patch().nodeOf(op)].edited);
-  // Panels off (the A/B): plain blocks again, the same graph.
-  v.setPanelsShown(false);
-  u.d.advance(0.5);
-  CHECK(v.canvas().panelCount() == mixers);  // the mixers keep their faces (they are no device panels)
-  CHECK(v.panelOf(sat) == nullptr);
-  CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
-}
-
-TEST_CASE("project patch (TX.panel-faces): a panel's controls edit the document in place — one undo step per gesture") {
-  Ui u;
-  REQUIRE(u.d.enableGpu().ok());  // a theme: the canvas paints (the panels lay out at their first paint)
-  u.show();
-  const doc::Track& group = u.track("Group");
-  REQUIRE(group.devices.size() == 2);
-  const doc::DeviceId util = group.devices[1]->id;
-  REQUIRE(group.devices[1]->patch == "utility");
-  ProjectPatchView& v = u.view();
-  {
-    // The Utility at zoom 1.2 (the Group's container, its members included, frames far out in this window).
-    const Node& n = u.pp().nodes[u.deviceNode(util)];
-    circuit::CircuitCanvas::View cv;
-    cv.zoom = 1.2;
-    cv.x = n.x - 120.0;
-    cv.y = n.y - 80.0;
-    v.canvas().setView(cv);
-  }
-  u.d.advance(0.5);  // settled: the panels laid out at the canvas's scale
-  devices::PanelFace* f = v.panelOf(util);
-  REQUIRE(f != nullptr);
-  CHECK(f->layoutScale() == doctest::Approx(v.canvas().deviceScale()));
-  const doc::Snapshot start = u.ctx.doc();
-  const size_t h0 = u.history();
-
-  SUBCASE("a knob drag: one step; undo; the panel follows the document") {
-    const double g0 = paramOf(u, util, "gain");
-    const Vec2 k = controlAt(u, util, "gain");
-    u.d.move(k);
-    CHECK(v.canvas().cursorAt(k) == Cursor::ResizeNS);
-    u.d.drag(k, {k.x, k.y - 40.0f}, 8);
-    CHECK(u.history() == h0 + 1);
-    const double g1 = paramOf(u, util, "gain");
-    CHECK(g1 > g0);
-    CHECK(f->panel().paramValue("gain") == doctest::Approx(g1));
-    REQUIRE(u.ctx.undo());
-    u.d.step();
-    CHECK(u.ctx.doc() == start);
-    CHECK(f->panel().paramValue("gain") == doctest::Approx(g0));
-    // Esc during a drag: the value returns, nothing is kept.
-    u.d.down(k);
-    u.d.move({k.x, k.y - 20.0f});
-    u.d.move({k.x, k.y - 30.0f});
-    CHECK(paramOf(u, util, "gain") > g0);
-    CHECK(u.d.press("Escape") != KeyResult::Unhandled);
-    u.d.up({k.x, k.y - 30.0f});
-    CHECK(paramOf(u, util, "gain") == doctest::Approx(g0));
-  }
-  SUBCASE("a toggle, a chooser (its menu in the shell's overlay, under the control), the activator: one step each") {
-    u.d.click(controlAt(u, util, "mute"));
-    CHECK(u.history() == h0 + 1);
-    CHECK(paramOf(u, util, "mute") == 1.0);
-    const Vec2 c = controlAt(u, util, "chan");
-    u.d.click(c);
-    Menu* m = u.openMenu();
-    REQUIRE(m != nullptr);
-    CHECK(std::fabs(static_cast<float>(m->rect().x) - (c.x - static_cast<float>(f->panel().control("chan")->rect().w) * 0.5f /
-                                                                   f->layoutScale() * v.canvas().deviceScale())) < 4.0f);
-    CHECK(static_cast<float>(m->rect().y) > c.y);
-    u.choose(*m, "Left");
-    CHECK(u.history() == h0 + 2);
-    CHECK(paramOf(u, util, "chan") == 1.0);
-    CHECK(f->panel().paramValue("chan") == 1.0);
-    const Node& n = v.patch().nodes[u.deviceNode(util)];
-    u.d.click(u.dev(n.x + 10.0f, n.y + 10.0f));  // the title bar's activator
-    CHECK(u.history() == h0 + 3);
-    CHECK_FALSE(doc::findDevice(*u.ctx.doc(), util).device->active);
-    for (int i = 0; i < 3; ++i) REQUIRE(u.ctx.undo());
-    CHECK(u.ctx.doc() == start);
-  }
-  SUBCASE("the title bar and the body are the block's: select, move; a double-click opens the atoms") {
-    const uint32_t node = u.deviceNode(util);
-    u.d.click(u.grip(node));
-    CHECK(v.selectedDevices() == std::vector<doc::DeviceId>{util});
-    CHECK(u.history() == h0);
-    CHECK(v.canvas().cursorAt(u.grip(node)) == Cursor::Move);
-    u.d.doubleClick(u.grip(node));
-    u.d.advance(0.5);
-    CHECK(v.deviceExpanded(util));
-    CHECK(v.panelOf(util) == nullptr);
-  }
-  SUBCASE("a value from elsewhere (the Device view, automation, undo) shows on the panel; a structural setting too") {
-    auto e = doc::ops::setDeviceParamValue(*u.ctx.doc(), *u.ctx.deviceLibrary(), util, "width", 2.0);  // GU.1: in units
-    REQUIRE(e.ok());
-    REQUIRE(u.ctx.store().dispatch(e->command).ok());
-    u.d.step();
-    CHECK(f->panel().paramValue("width") == doctest::Approx(2.0));
-    auto s = doc::ops::setDeviceSetting(*u.ctx.doc(), util, "bassMono", 1.0);
-    REQUIRE(s.ok());
-    REQUIRE(u.ctx.store().dispatch(s->command).ok());
-    u.d.advance(0.2);
-    devices::PanelFace* g = v.panelOf(util);  // a structural edit rebuilt the scene: the panel is kept
-    CHECK(g == f);
-    CHECK(f->panel().constValue("bassMono") == 1.0);
-    CHECK(f->panel().control("bassFreq")->visible());  // its conditional control shown
-  }
-  SUBCASE("a number box takes typed values while it has the keys") {
-    // The Utility has no box: Saturator's Drive knob takes a typed value (T4.17's type-in) after a press on it.
-    u.zoomTo("Keys");
-    u.d.advance(0.5);
-    const doc::DeviceId sat = u.track("Keys").devices[1]->id;
-    const Vec2 k = controlAt(u, sat, "drive");
-    u.d.click(k);
-    const size_t h1 = u.history();
-    CHECK(u.d.press("1") != KeyResult::Unhandled);
-    CHECK(v.canvas().acceptsTextInput());
-    CHECK(u.d.type("2"));
-    CHECK(u.d.press("Return") != KeyResult::Unhandled);
-    CHECK(u.history() == h1 + 1);
-    CHECK_FALSE(v.canvas().acceptsTextInput());
-  }
-}
-
-TEST_CASE("project patch (TX.panel-faces): a wire dropped on a panel's knob drives it; far out the panels are tiles and still work") {
-  Ui u;
-  REQUIRE(u.d.enableGpu().ok());  // a theme: the canvas paints (the panels lay out at their first paint)
-  u.show();
-  const doc::DeviceId lfo = u.track("Mod").devices[0]->id;
-  const doc::DeviceId util = u.track("Group").devices[1]->id;
-  ProjectPatchView& v = u.view();
-  // Both on screen: the whole project, readable enough to aim (the overview is far out).
-  v.fitAll(false);
-  u.d.advance(0.5);
-  CHECK(v.canvas().lod() == circuit::CircuitCanvas::Lod::Far);
-  CHECK(v.canvas().deviceScale() < devices::PanelFace::kMinScale);
-  // Far out the panels are drawn from their colour-layer tiles (static layers), still with their sockets.
-  CHECK(v.canvas().stats().panelsPainted > 0);
-  CHECK(v.canvas().stats().faceLayersFromTiles > 0);
-  const size_t h0 = u.history();
-  u.d.drag(u.outPin(u.deviceNode(lfo), "lfo"), controlAt(u, util, "balance"), 6);
-  CHECK(u.history() == h0 + 1);
-  bool wired = false;
-  for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc())) wired = wired || (w.from == lfo && w.to == util && w.param == "balance");
-  CHECK(wired);
-  CHECK(u.openMenu() == nullptr);  // straight onto the param, no menu
-  // A knob turns far out as it does near (the drag reads device px).
-  const double g0 = paramOf(u, util, "gain");
-  const Vec2 k = controlAt(u, util, "gain");
-  u.d.drag(k, {k.x, k.y - 30.0f}, 6);
-  CHECK(u.history() == h0 + 2);
-  CHECK(paramOf(u, util, "gain") > g0);
-  // Idle again: no frames, no timers.
-  u.d.advance(1.0);
-  CHECK_FALSE(u.d.tree().needsFrame());
-  CHECK(std::isinf(u.d.tree().nextWakeTime()));
-}
-
-// ---- goldens --------------------------------------------------------------------------------------------------------
-
 namespace {
 void golden(const char* name, const std::string& project = {}) {
   uint32_t w = 0, h = 0;
@@ -2094,8 +1791,8 @@ TEST_CASE("render: project-patch-lanes matches the golden image") { golden("proj
 TEST_CASE("render: project-patch-notes matches the golden image") { golden("project-patch-notes"); }
 // TX.patching: free devices under the Lead chain, a wire onto a face control, an output into an audio input.
 TEST_CASE("render: project-patch-free matches the golden image") { golden("project-patch-free"); }
-// TX.panel-faces: closed stock devices as their Device-view panels (the default synth's generic panel, an Auto Filter, a
-// Utility with Bass Mono on), an LFO wired onto the Utility's gain.
+// TX.panel-faces (GU.11: closed modules drawn as their group panels — a Saturator, a Utility — an LFO wired onto the
+// Utility's Gain).
 TEST_CASE("render: project-patch-panels matches the golden image") { golden("project-patch-panels"); }
 // TX.resize: a Wavetable face at 1.5×, an Auto Filter panel at 1.25×, a Wavetable at 0.6× below; note-velocity cables
 // onto the scaled Wavetable's position and the scaled filter's frequency.
@@ -2107,12 +1804,6 @@ TEST_CASE("render: project-block-drag matches the golden image") { golden("proje
 // ---- TX.mod-all: a modulation wire ends on the control it modulates ------------------------------------------------
 
 namespace {
-
-struct NullPanelTarget final : devices::DeviceTarget {
-  void setParam(std::string_view, double) override {}
-  void setConst(std::string_view, double) override {}
-  void setActive(bool) override {}
-};
 
 // A MIDI track "Lead WT": a Phase accumulator (the notes), a Wavetable, a free Phase accumulator (the modulator) wired
 // into the Wavetable's warp (the user's case: the bottom-middle knob).
@@ -2128,7 +1819,6 @@ WarpSetup warpSetup(Ui& u) {
   REQUIRE(t.ok());
   REQUIRE(st.dispatch(t->command).ok());
   s.track = t->tracks.at(0);
-  REQUIRE(makeLoneInstrument(st, s.track).ok());  // (IG.1-2: the Phase accumulator heads the path, as written)
   auto add = [&](std::string_view type, uint32_t index) {
     auto e = doc::ops::addMetaDevice(*st.current(), st.ids(), s.track, type, index);
     REQUIRE(e.ok());
@@ -2138,7 +1828,10 @@ WarpSetup warpSetup(Ui& u) {
   {  // GU.4: a phasor atom block at the notes (the Phase accumulator's core: the note's Hz in, its phase out — small, as
      // its face was), in place of the lone instrument; a Wavetable after it.
     const doc::Track& tr = *doc::findTrackPtr(*st.current(), s.track);
-    const doc::DeviceId one[1] = {doc::mainPath(*st.current(), tr).blocks.at(0)->id};
+    // (GU.11: the default instrument group and its blocks)
+    const doc::DeviceId g = doc::mainPath(*st.current(), tr).blocks.at(0)->id;
+    std::vector<doc::DeviceId> one{g};
+    for (const doc::Device* m : doc::groupMembersDeep(tr.devices, g)) one.push_back(m->id);
     auto d = doc::ops::deleteDevices(*st.current(), one);
     REQUIRE(d.ok());
     REQUIRE(st.dispatch(d->command).ok());
@@ -2260,43 +1953,12 @@ TEST_CASE("project patch (TX.mod-all): a wire into the Wavetable's warp ends on 
   CHECK(n3.input("warp") < 0);  // the deleted wire's param has no port any more
 }
 
-// Which params keep a pin: those no control shows. Every param of every stock device's panel (laid out with its
-// defaults: EQ Eight's first band selected) and every meta face's, asked for its control; the ones without one are
-// listed (they keep a pin on the block's left edge when wired).
-TEST_CASE("project patch (TX.mod-all): every face and panel param has a control to end on, except the listed ones") {
-  const doc::DeviceLibrary& lib = library();
+// Which params keep a pin: those no control shows. Every param of every meta face, asked for its control; the ones
+// without one are listed (they keep a pin on the block's left edge when wired). (GU.11: the stock devices' panels are
+// retired; a module's controls are its group panel's elements, each bound to a value block.)
+TEST_CASE("project patch (TX.mod-all): every face param has a control to end on, except the listed ones") {
   std::vector<std::string> without;
-  uint32_t asked = 0, shownNow = 0;
-  for (const doc::DeviceInfo& info : lib.catalog().devices()) {
-    const doc::DevicePtr d = doc::makeDevice(doc::DeviceId{1}, info.patch, info.kind);
-    const std::unique_ptr<PanelTemplate> t = buildPanelTemplate(&lib, *d);
-    REQUIRE(t != nullptr);
-    devices::PanelFace f(t->sig, t->desc, std::make_unique<NullPanelTarget>(), {}, devices::PanelFace::sizeFor(t->desc));
-    REQUIRE(f.prepare(1.0f));
-    for (const doc::DeviceParamInfo& p : info.params) {
-      ++asked;
-      // Its place in the panel (whatever the tab, band or setting shows now); where it shows now, the laid-out control
-      // is there.
-      const std::optional<ControlAnchor> home = f.controlHome(p.name);
-      if (!home) {
-        without.push_back(info.name + " " + p.name);
-        continue;
-      }
-      CHECK(home->at.x >= 0.0f);
-      CHECK(home->at.y >= 0.0f);
-      CHECK(home->at.x <= f.worldSize().x);
-      CHECK(home->at.y <= f.worldSize().y);
-      if (const std::optional<ControlAnchor> now = f.controlAnchor(p.name)) {
-        ++shownNow;
-        // Operator's per-oscillator LFO / pitch-envelope switches have two controls (the oscillator's tab, shown by
-        // default, and the LFO / pitch section, the home): the view routes to the one shown when it lays out.
-        const bool twoControls = info.patch == "operator" && (p.name.starts_with("lfoTo") || p.name.starts_with("penvTo"));
-        CHECK_MESSAGE((twoControls || (std::fabs(now->at.x - home->at.x) <= 2.0f && std::fabs(now->at.y - home->at.y) <= 2.0f)),
-                      info.name << " " << p.name << ": shown at " << now->at.x << "," << now->at.y << ", placed at "
-                                << home->at.x << "," << home->at.y);
-      }
-    }
-  }
+  uint32_t asked = 0;
   for (const meta::Type* type : {&meta::wavetableType(), &meta::envelopeType()}) {
     std::unique_ptr<MetaFace> f = makeFace(*type);
     REQUIRE(f != nullptr);
@@ -2316,10 +1978,8 @@ TEST_CASE("project patch (TX.mod-all): every face and panel param has a control 
   }
   std::string list;
   for (const std::string& s : without) list += "\n  " + s;
-  MESSAGE(asked << " params asked (" << shownNow << " of the panels' shown in their default state); " << without.size()
-                << " have no control (a pin when wired):" << list);
-  CHECK(asked > 280);  // (GU.4: 292 — Meta Operator, the Phase accumulator and the VCA left with their types)
-  CHECK(shownNow > 50);
+  MESSAGE(asked << " params asked; " << without.size() << " have no control (a pin when wired):" << list);
+  CHECK(asked >= 13);  // the Wavetable's and the Envelope's
 }
 
 // TX.mod-all's cost in the project patch frame: 16 tracks, each an LFO wired onto a Utility's gain knob and a Basic
@@ -2333,15 +1993,12 @@ TEST_CASE("project patch (TX.mod-all): 32 wires onto knobs — a full frame with
     REQUIRE(t.ok());
     REQUIRE(st.dispatch(t->command).ok());
     const doc::TrackId tr = t->tracks.at(0);
-    const doc::DeviceId synth = named(*st.current(), "T" + std::to_string(i))->devices.front()->id;
-    auto lfo = doc::ops::addDevice(*st.current(), st.ids(), tr, "lfo_device", doc::DeviceKind::AudioEffect);
-    REQUIRE(lfo.ok());
-    REQUIRE(st.dispatch(lfo->command).ok());
-    auto util = doc::ops::addDevice(*st.current(), st.ids(), tr, "utility", doc::DeviceKind::AudioEffect);
-    REQUIRE(util.ok());
-    REQUIRE(st.dispatch(util->command).ok());
-    for (const auto& [to, param] : {std::pair{util->devices.at(0), "gain"}, std::pair{synth, "bright"}}) {
-      auto w = doc::ops::connectWire(*st.current(), st.ids(), lfo->devices.at(0), "lfo", to, param);
+    // GU.11: an LFO module wired onto two of a Utility module's knobs (Gain and Width: their value blocks).
+    const doc::DeviceId lfo = test_blocks::addModule(st, tr, "lfo", doc::ops::kOffPath);
+    const doc::DeviceId util = test_blocks::addModule(st, tr, "utility");
+    for (const char* control : {"Gain", "Width"}) {
+      auto w = doc::ops::connectWire(*st.current(), st.ids(), lfo, "y", test_blocks::member(*st.current(), util, control),
+                                     std::string(doc::kValueParam));
       REQUIRE(w.ok());
       REQUIRE(st.dispatch(w->command).ok());
     }
@@ -2389,22 +2046,21 @@ TEST_CASE("project patch (TX.mod-all): 32 wires onto knobs — a full frame with
 
 namespace {
 
-// warpSetup's track plus an Auto Filter after its Wavetable whose frequency the free modulator drives (a cable onto a
-// panel's knob).
+// warpSetup's track plus a Saturator module after its Wavetable (GU.11: where an Auto Filter was) whose Drive the free
+// modulator drives (a cable onto a panel's knob: the Drive value block's).
 struct ResizeSetup {
   WarpSetup w;
-  doc::DeviceId filter;
+  doc::DeviceId filter, drive;
   doc::WireId filterWire;
 };
 ResizeSetup resizeSetup(Ui& u) {
   ResizeSetup r;
   r.w = warpSetup(u);
   doc::DocumentStore& st = u.ctx.store();
-  auto e = doc::ops::addDevice(*st.current(), st.ids(), r.w.track, "auto_filter", doc::DeviceKind::AudioEffect);
-  REQUIRE(e.ok());
-  REQUIRE(st.dispatch(e->command).ok());
-  r.filter = e->devices.at(0);
-  auto w = doc::ops::connectWire(*st.current(), st.ids(), r.w.mod, "out", r.filter, "freq");
+  r.filter = test_blocks::addModule(st, r.w.track, "saturator");
+  r.drive = test_blocks::member(*st.current(), r.filter, "Drive");
+  REQUIRE(r.drive.valid());
+  auto w = doc::ops::connectWire(*st.current(), st.ids(), r.w.mod, "out", r.drive, std::string(doc::kValueParam));
   REQUIRE(w.ok());
   REQUIRE(st.dispatch(w->command).ok());
   r.filterWire = doc::wiresOf(*st.current()).back().id;
@@ -2584,7 +2240,7 @@ TEST_CASE("project patch (TX.resize): a block's scale is saved view state — no
   CHECK(u.history() == h0);
   CHECK(u.pp().nodes[u.deviceNode(wt)].w == doctest::Approx(n0.w * 1.75f));
   // A document edit and its undo / redo leave the scales alone (they are not in the history).
-  REQUIRE(u.ctx.store().dispatch(doc::ops::setDeviceParam(*u.ctx.doc(), r.filter, "res", 0.5)->command).ok());
+  REQUIRE(u.ctx.store().dispatch(doc::ops::setDeviceParam(*u.ctx.doc(), r.drive, std::string(doc::kValueParam), 0.8)->command).ok());
   CHECK(u.history() == h0 + 1);
   REQUIRE(u.ctx.undo());
   CHECK(v.blockScale(wt) == doctest::Approx(1.75f));
@@ -2612,7 +2268,7 @@ TEST_CASE("project patch (TX.resize): a block's scale is saved view state — no
     LayoutOptions o;
     o.nudges = &n;
     const doc::LoweredProject low = lowerOf(*other.doc());
-    const ProjectPatch pp = buildProjectPatch(*other.doc(), low, &library().catalog(), o);
+    const ProjectPatch pp = buildProjectPatch(*other.doc(), low, &library(), o);
     const uint32_t k = pp.nodeOf(wt);
     REQUIRE(k != kNone);
     CHECK(pp.nodes[k].scale == doctest::Approx(1.75f));
@@ -2657,46 +2313,42 @@ TEST_CASE("project patch (TX.resize): a scaled face and panel — crisp, interac
   u.zoomTo("Lead WT");
   u.d.advance(0.5);  // the scale and zoom settle: tiles and the panel's layout at the new scale
   const float z = v.canvas().deviceScale();
-  // Crisp: the panel laid out at 1.5 × the canvas's px per unit; the face's layers from tiles, none stretched.
-  devices::PanelFace* pf = v.panelOf(r.filter);
+  (void)z;
+  // Crisp: the group's panel drawn at its scale; the faces' layers from tiles, none stretched.
+  const uint32_t fn = u.deviceNode(r.filter);
+  Face* pfFace = v.canvas().panelOn(v.scene().sceneNode[fn]);
+  REQUIRE(pfFace != nullptr);
+  auto* pf = dynamic_cast<panel::GroupPanelFace*>(pfFace);
   REQUIRE(pf != nullptr);
-  CHECK(pf->layoutScale() == doctest::Approx(std::clamp(z * 1.5f, devices::PanelFace::kMinScale, devices::PanelFace::kMaxScale)));
-  CHECK(pf->worldSize().x == doctest::Approx(u.pp().nodes[u.deviceNode(r.filter)].w / 1.5f));
+  CHECK(pf->worldSize().x == doctest::Approx(u.pp().nodes[fn].w / 1.5f));
   v.canvas().markDirty();
   u.d.step();
   CHECK(v.canvas().stats().faceLayersFromTiles > 0);
   CHECK(v.canvas().stats().faceLayersStretched == 0);
   CHECK(v.canvas().stats().panelsPainted >= 1);
   CHECK_FALSE(v.canvas().tilesPending());
-  // The cable onto the scaled panel's knob: its anchor is the panel's control × 1.5, and the drawn end (the block's
-  // origin + the face's anchor × its scale) is on the knob where the panel shows it.
+  // The cable onto the scaled panel's Drive knob: it ends on the knob where the panel shows it (× 1.5), and a drag
+  // there turns it (one undo step): hit-testing follows the scale.
   {
-    const Node& n = u.pp().nodes[u.deviceNode(r.filter)];
-    const int32_t k = n.input("freq");
-    REQUIRE(k >= 0);
-    const Port& p = n.inputs[static_cast<size_t>(k)];
-    REQUIRE(p.anchored);
-    const std::optional<ControlAnchor> a = pf->controlAnchor("freq");
+    const Node& n = u.pp().nodes[fn];
+    const std::optional<ControlAnchor> a = pf->bindingAnchor(doc::controlBinding(r.drive, std::string(doc::kValueParam)), true);
     REQUIRE(a.has_value());
-    CHECK(p.ax == doctest::Approx(a->at.x * 1.5f).epsilon(0.02));
-    CHECK(p.ay == doctest::Approx(a->at.y * 1.5f).epsilon(0.02));
-    const Vec2 knob = controlAt(u, r.filter, "freq");
-    const Vec2 drawn = u.dev(n.x + a->at.x * n.scale, n.y + a->at.y * n.scale);
-    CHECK(std::fabs(knob.x - drawn.x) < 2.0f);
-    CHECK(std::fabs(knob.y - drawn.y) < 2.0f);
+    const Vec2 knob = u.dev(n.x + a->at.x * n.scale, n.y + a->at.y * n.scale);
     const uint32_t w = sceneWireOf(v, r.filterWire);
     REQUIRE(w != kNone);
     const circuit::CircuitScene& sc = *v.scene().scene;
-    // TX.cables: the cable hangs onto the knob (the scene's end: its centre as laid out, at the scale).
     const graph::Point2 end = sc.points[sc.wires[w].firstPoint + sc.wires[w].pointCount - 1];
-    CHECK(end.x == doctest::Approx(n.x + p.ax));
-    CHECK(end.y == doctest::Approx(n.y + p.ay));
-    // The knob under the pointer turns (one undo step): hit-testing follows the scale.
+    CHECK(std::fabs(end.x - (n.x + a->at.x * n.scale)) < 2.0f);
+    CHECK(std::fabs(end.y - (n.y + a->at.y * n.scale)) < 2.0f);
+    auto driveOf = [&] {
+      const doc::DeviceValue* dv = doc::findDevice(*u.ctx.doc(), r.drive).device->param(doc::kValueParam);
+      return dv != nullptr ? dv->value : -1.0;
+    };
     const size_t h0 = u.history();
-    const double f0 = paramOf(u, r.filter, "freq");
+    const double f0 = driveOf();
     u.d.drag(knob, {knob.x, knob.y - 40.0f}, 4);
     CHECK(u.history() == h0 + 1);
-    CHECK(paramOf(u, r.filter, "freq") > f0);
+    CHECK(driveOf() > f0);
   }
   // The scaled Wavetable face: the wire on warp ends on warp × 2; its fold knob where the face puts it × 2, and a drag
   // there edits the Wavetable (one undo step).
@@ -2738,7 +2390,7 @@ TEST_CASE("project patch (TX.resize): 64 tracks — an S-drag step (re-layout + 
   u.zoomTo("Track 9");
   u.d.advance(1.0);
   ProjectPatchView& v = u.view();
-  const doc::DeviceId dev = u.track("Track 9").devices[1]->id;
+  const doc::DeviceId dev = u.onPath("Track 9", 1);
   const Vec2 c = u.centre(u.deviceNode(dev));
   u.d.keyDown('s');
   u.d.move(c);
@@ -2821,7 +2473,7 @@ TEST_CASE("project patch (TX.block-drag): a dragged block is drawn at the pointe
   v.canvas().setCablesAnimated(false);  // ends land at once: exact positions to compare
   const uint32_t mn = u.deviceNode(r.filter);
   const Node n0 = u.pp().nodes[mn];
-  REQUIRE(n0.panel);
+  REQUIRE(n0.groupPanel);  // (GU.11: the Saturator module, closed: its group's panel)
   const uint32_t sn = v.scene().sceneNode[mn];
   const auto mine = cablesAt(v, sn);
   REQUIRE(mine.size() >= 2);  // the Wavetable's into its input, the modulator's onto its frequency knob
@@ -3114,7 +2766,7 @@ TEST_CASE("project patch (TX.block-drag): far out — the dragged block over the
 // IG.1-2 (SPEC §15 2026-11-04 "instrument groups"): a new MIDI track is drawn with its instrument group — an opened
 // capsule holding In → Basic Synth → Out on the band's path, the notes into the capsule, In → the synth a note wire and
 // the synth → Out a chain inside it; the view is the lowered graph (the synth's call in the track patch).
-TEST_CASE("project patch (IG.1-2): a new MIDI track shows its instrument group — In → Basic Synth → Out in a capsule") {
+TEST_CASE("project patch (IG.1-2): a new MIDI track shows its instrument group — its modules in a capsule") {
   // GU.10: Basic Synth is the default instrument's group preset: In → Phase Accumulator → Wavetable → Envelope → Out,
   // each a module (a capsule of its own).
   doc::DocumentStore store;
@@ -3131,7 +2783,7 @@ TEST_CASE("project patch (IG.1-2): a new MIDI track shows its instrument group �
   for (const doc::Device* d : doc::groupMembers(t.devices, group)) modules.push_back(d->id);
   REQUIRE(modules.size() == 3);
   const doc::LoweredProject low = lowerOf(p);
-  const ProjectPatch pp = buildProjectPatch(p, low, &library().catalog());
+  const ProjectPatch pp = buildProjectPatch(p, low, &library());
   CHECK(checkAgainstGraph(pp, p, low) == "");
   const uint32_t cap = pp.nodeOf(group);
   REQUIRE(cap != kNone);

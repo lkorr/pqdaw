@@ -137,7 +137,6 @@ struct EngineUi {
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
     d.tree().layoutNow();
-    view().setPanelsShown(false);
     view().setPushAnimated(false);
     view().setShown(true, false);
     d.tree().layoutNow();

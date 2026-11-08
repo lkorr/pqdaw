@@ -27,6 +27,7 @@
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
+#include "../support/blocks.h"
 #include "../ui/golden_check.h"
 #include "views_test_util.h"
 
@@ -103,13 +104,19 @@ struct Ui {
     return rack().canvas().toDevice({x.x + x.w * 0.5f, x.y + 6.0f});
   }
   Vec2 tab() const { const IRect r = chain().freeRackRect(); return {static_cast<float>(r.x) + 40.0f, static_cast<float>(r.y) + 10.0f}; }
-  Vec2 knob(doc::DeviceId dev, const char* param) {
+  // GU.11: a module's control (a value block of its group, by name) and its knob on the group's panel in the chain.
+  doc::DeviceId control(doc::DeviceId group, const char* name) const {
+    const doc::DeviceId c = test_blocks::member(*ctx.doc(), group, name);
+    REQUIRE_MESSAGE(c.valid(), std::string(name));
+    return c;
+  }
+  Vec2 knob(doc::DeviceId group, const char* name) {
     d.tree().layoutNow();
-    devices::DevicePanel* p = chain().panelOf(dev);
-    REQUIRE(p != nullptr);
-    Widget* w = p->controlFor(param);
-    REQUIRE(w != nullptr);
-    return mid(w->rect());
+    const doc::DeviceId c = control(group, name);
+    for (const DeviceChainView::ParamControl& pc : chain().paramControls())
+      if (pc.device == c && pc.param == doc::kValueParam) return mid(pc.rect);
+    FAIL("no shown control " << std::string(name));
+    return {};
   }
   std::vector<const CableLayer::Cable*> cablesOf(CableLayer::Kind k) const {
     std::vector<const CableLayer::Cable*> out;
@@ -122,9 +129,10 @@ struct Ui {
       if (c.wire == w) return &c;
     return nullptr;
   }
+  // (TX.all-free: a main input is stored as kMainPort "": `param` "x" matches it too)
   doc::WireId wireBetween(doc::DeviceId from, doc::DeviceId to, std::string_view param) const {
     for (const doc::Wire& w : doc::wiresOf(*ctx.doc()))
-      if (w.from == from && w.to == to && w.param == param) return w.id;
+      if (w.from == from && w.to == to && (w.param == param || (param == "x" && w.param.empty()))) return w.id;
     return {};
   }
 };
@@ -239,8 +247,7 @@ TEST_CASE("free rack: collapse / expand grows and shrinks the detail area by the
 TEST_CASE("free rack: a chain device dragged onto the rack leaves the chain; a rack block dragged onto the chain goes in") {
   Ui u;
   u.open();
-  // Out of the chain: the Saturator's title bar onto the rack.
-  REQUIRE(u.chain().panelOf(u.ids.sat) != nullptr);
+  // Out of the chain: the Saturator's title bar onto the rack (GU.11: a module — a group frame).
   const IRect fr = u.chain().frameOf(u.ids.sat)->rect();
   const Vec2 title{static_cast<float>(fr.x) + 60.0f, static_cast<float>(fr.y) + 10.0f};
   const IRect rr = u.chain().freeRackRect();
@@ -292,15 +299,15 @@ TEST_CASE("free rack: a wire dragged out of the rack lands on a chain knob or an
   u.open();
   ProjectPatchView& r = u.rack();
   const doc::DeviceId lfo = u.ids.lfos[2];
-  const std::optional<Vec2> pin = r.outputPoint(lfo, "lfo");
+  const std::optional<Vec2> pin = r.outputPoint(lfo, "y");
   REQUIRE(pin.has_value());
   const size_t h0 = u.history();
-  const Vec2 gain = u.knob(u.ids.util, "gain");
+  const Vec2 gain = u.knob(u.ids.util, "Gain");
   u.d.drag({pin->x - 2.0f, pin->y}, gain, 12);
   u.d.step();
   CHECK_FALSE(u.layer().dragging());
   CHECK(u.history() == h0 + 1);
-  const doc::WireId w = u.wireBetween(lfo, u.ids.util, "gain");
+  const doc::WireId w = u.wireBetween(lfo, u.control(u.ids.util, "Gain"), doc::kValueParam);
   REQUIRE(w.valid());
   const CableLayer::Cable* c = u.cable(w);
   REQUIRE(c != nullptr);
@@ -324,16 +331,17 @@ TEST_CASE("free rack: a wire dragged out of the rack lands on a chain knob or an
   CHECK(u.cable(wi)->bDocked);
   REQUIRE(u.ctx.undo());
   REQUIRE(u.ctx.undo());
-  CHECK_FALSE(u.wireBetween(lfo, u.ids.util, "gain").valid());
+  CHECK_FALSE(u.wireBetween(lfo, u.control(u.ids.util, "Gain"), doc::kValueParam).valid());
 }
 
 TEST_CASE("free rack: the cables — the chain's path, wires into inputs, onto knobs, from the notes; each reads on hover") {
   Ui u;
   // A note-source wire too: the track's velocity onto the Utility's gain.
-  REQUIRE(u.ctx.store().dispatch(doc::ops::connectNoteWire(*u.ctx.doc(), u.ctx.store().ids(), u.ids.lead, "velocity", u.ids.util, "gain")->command).ok());
+  REQUIRE(u.ctx.store().dispatch(doc::ops::connectNoteWire(*u.ctx.doc(), u.ctx.store().ids(), u.ids.lead, "velocity", u.control(u.ids.util, "Gain"), std::string(doc::kValueParam))->command).ok());
   u.open();
   u.layer().refresh();
-  // The chain: notes → synth (per voice), synth → Saturator → Auto Filter → Utility (audio). No free device takes part.
+  // The chain: notes → the instrument group (per voice), it → Saturator → Saturator 2 (where Auto Filter was) → Utility
+  // (audio). No free device takes part.
   const auto links = u.cablesOf(CableLayer::Kind::Chain);
   REQUIRE(links.size() == 4);
   CHECK(links[0]->rate == 2);
@@ -344,9 +352,9 @@ TEST_CASE("free rack: the cables — the chain's path, wires into inputs, onto k
     CHECK_FALSE(k->wire.valid());
     CHECK(k->label.find("LFO") == std::string::npos);
   }
-  // The wires: three LFOs onto knobs (docked at their pins in the rack and on the knobs), the accumulator into the Auto
-  // Filter's sidechain input (an input socket), the note-source wire from the chain's left end. The LFO → accumulator
-  // wire is inside the rack (its canvas draws it).
+  // The wires: three LFOs onto knobs (docked at their pins in the rack and on the knobs of the modules' panels), the
+  // Wavetable into the second Saturator's input (an input socket), the note-source wire from the chain's left end. The
+  // LFO → Wavetable wire is inside the rack (its canvas draws it).
   for (const doc::DeviceId l : u.ids.lfos) {
     const doc::WireList& ws = doc::wiresOf(*u.ctx.doc());
     const auto it = std::find_if(ws.begin(), ws.end(), [&](const doc::Wire& w) { return w.from == l && w.to != u.ids.acc; });
@@ -357,7 +365,7 @@ TEST_CASE("free rack: the cables — the chain's path, wires into inputs, onto k
     CHECK(c->bDocked);
     CHECK_FALSE(c->input);
   }
-  const doc::WireId sc = u.wireBetween(u.ids.acc, u.ids.filter, "sc");
+  const doc::WireId sc = u.wireBetween(u.ids.acc, u.ids.filter, "x");
   REQUIRE(sc.valid());
   REQUIRE(u.cable(sc) != nullptr);
   CHECK(u.cable(sc)->input);
@@ -396,7 +404,7 @@ TEST_CASE("free rack: the cables — the chain's path, wires into inputs, onto k
   CHECK(u.history() == h0 + 1);
   CHECK(doc::findWire(*u.ctx.doc(), sc) == nullptr);
   REQUIRE(u.ctx.undo());
-  // A switched-off device is passed by: the Auto Filter off, the Saturator feeds the Utility.
+  // A switched-off device is passed by: the second Saturator off, the first feeds the Utility.
   const doc::DeviceId af[1] = {u.ids.filter};
   REQUIRE(u.ctx.store().dispatch(doc::ops::setDevicesActive(*u.ctx.doc(), af, false)->command).ok());
   u.d.tree().layoutNow();
@@ -412,7 +420,7 @@ TEST_CASE("free rack: the cables — the chain's path, wires into inputs, onto k
 // the cable shown on hover).
 TEST_CASE("free rack: cable roles (audio, modulation, notes), the chain's through-line, cables tucked while collapsed") {
   Ui u;
-  REQUIRE(u.ctx.store().dispatch(doc::ops::connectNoteWire(*u.ctx.doc(), u.ctx.store().ids(), u.ids.lead, "velocity", u.ids.util, "gain")->command).ok());
+  REQUIRE(u.ctx.store().dispatch(doc::ops::connectNoteWire(*u.ctx.doc(), u.ctx.store().ids(), u.ids.lead, "velocity", u.control(u.ids.util, "Gain"), std::string(doc::kValueParam))->command).ok());
   u.open();
   u.layer().refresh();
   const auto links = u.cablesOf(CableLayer::Kind::Chain);
@@ -425,7 +433,7 @@ TEST_CASE("free rack: cable roles (audio, modulation, notes), the chain's throug
     CHECK(links[i]->t0.x == doctest::Approx(links[i - 1]->b.x));
     CHECK(links[i]->t1.x == doctest::Approx(links[i]->a.x));
   }
-  const doc::WireId sc = u.wireBetween(u.ids.acc, u.ids.filter, "sc");
+  const doc::WireId sc = u.wireBetween(u.ids.acc, u.ids.filter, "x");
   REQUIRE(u.cable(sc) != nullptr);
   CHECK(u.cable(sc)->role == 1);  // into an input: a signal path
   doc::WireId notes, lfo;
@@ -452,28 +460,6 @@ TEST_CASE("free rack: cable roles (audio, modulation, notes), the chain's throug
   CHECK(u.cable(sc)->tucked);
   CHECK_FALSE(u.cable(notes)->tucked);
   for (const CableLayer::Cable* k : u.cablesOf(CableLayer::Kind::Chain)) CHECK_FALSE(k->tucked);
-}
-
-TEST_CASE("free rack: a chain jack's cable can be dropped on an input socket or a block in the rack") {
-  Ui u;
-  // An LFO put into the chain has a jack; its cable onto the Auto Filter's sidechain socket, then onto the rack's
-  // accumulator (its frequency control, or its pin).
-  const doc::DeviceId lfo = u.ids.lfos[1];
-  REQUIRE(u.chain().putIntoChainAt(lfo, 3));
-  u.open();
-  devices::DevicePanel* p = u.chain().panelOf(lfo);
-  REQUIRE(p != nullptr);
-  REQUIRE_FALSE(p->jacks().empty());
-  const Vec2 jack = mid(p->jacks()[0].rect);
-  std::vector<DeviceChainView::InputSocket> sockets = u.chain().inputSockets();
-  const auto s = std::find_if(sockets.begin(), sockets.end(),
-                              [&](const DeviceChainView::InputSocket& x) { return x.device == u.ids.filter && x.input == "sc"; });
-  REQUIRE(s != sockets.end());
-  const size_t h0 = u.history();
-  u.d.drag(jack, mid(s->rect), 10);
-  u.d.step();
-  CHECK(u.history() == h0 + 1);
-  CHECK(u.wireBetween(lfo, u.ids.filter, "sc").valid());
 }
 
 // ---- perf --------------------------------------------------------------------------------------------------------

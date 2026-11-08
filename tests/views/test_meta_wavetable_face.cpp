@@ -18,6 +18,7 @@
 
 #include "../../src/views/src/meta/wavetable_model.h"
 #include "../ui/golden_check.h"
+#include "../support/blocks.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/dsp/frame_table_build.h"
@@ -518,9 +519,13 @@ TEST_CASE("wavetable face: a chain Wavetable is its face in the project patch vi
   {
     const doc::Device* pd = doc::findDevice(*u.ctx.doc(), u.pair).device;
     REQUIRE(pd != nullptr);
-    CHECK(pd->edited());
-    REQUIRE(library().resolve(*pd) != nullptr);
-    CHECK(library().resolve(*pd)->error.empty());
+    CHECK(doc::isGroupDevice(*pd));  // GU.11: the Wavetable Synth module (a group: it opens in place)
+  }
+  {  // its oscillator is a Wavetable module (a group, closed: its panel) — opened too, its engine is a face
+    const doc::DeviceId osc = test_blocks::member(*u.ctx.doc(), u.pair, "Wavetable");
+    REQUIRE(osc.valid());
+    u.view().setDeviceExpanded(osc, true);
+    for (int i = 0; i < 4; ++i) u.d.step();
   }
   size_t wts = 0, accs = 0, nested = 0;
   for (size_t i = 0; i < c.faceCount(); ++i) {

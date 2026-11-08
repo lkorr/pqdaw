@@ -31,7 +31,6 @@
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/circuit_viewer.h"
-#include "pq/views/circuit/device_circuit.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/meta/meta_face.h"

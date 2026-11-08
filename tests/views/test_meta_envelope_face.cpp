@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "../ui/golden_check.h"
+#include "../support/blocks.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/meta/envelope.h"
@@ -377,6 +378,11 @@ TEST_CASE("envelope face: a chain Envelope is its face in the project patch view
   u.view().setDeviceExpanded(u.ids.shapeInst, true);
   for (int i = 0; i < 4; ++i) u.d.step();
   REQUIRE(u.view().deviceExpanded(u.ids.shapeInst));
+  // GU.11: its Envelope is a module (a group, closed: its panel) — opened too, its engine is a face.
+  const doc::DeviceId envModule = test_blocks::member(*u.ctx.doc(), u.ids.shapeInst, "Envelope");
+  REQUIRE(envModule.valid());
+  u.view().setDeviceExpanded(envModule, true);
+  for (int i = 0; i < 4; ++i) u.d.step();
   size_t envs = 0, nested = 0;
   for (size_t i = 0; i < c.faceCount(); ++i) {
     if (&c.faceAt(i).type() != &envType()) continue;

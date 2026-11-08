@@ -108,13 +108,11 @@ TEST_CASE("browser: categories, search (best first), collections, sorting") {
   Fixture f;
   f.b->setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::Samples)});
   CHECK(f.names().size() == 9);  // every sample of every place, in path order
-  // T5.11: Instruments lists the devices (no device library here: the stock list) with their presets under them; the
-  // demo's presets lie in Presets/Operator (the User Library's layout names their device).
+  // T5.11: Instruments lists the devices (GU.11: the instrument modules, then the rack); presets whose device is not one
+  // of the rows (the demo's index has no files to read a patch from) follow them, loose.
   f.b->setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::Instruments)});
-  CHECK(f.names() == std::vector<std::string>{"Basic Synth", "Operator", "Instrument Rack"});  // (GU.4: Meta Operator deleted)
-  f.b->setRowOpen(f.b->rows()[1], true);
-  CHECK(f.names() == std::vector<std::string>{"Basic Synth", "Operator", "Bright Pad.pqpreset", "Glass Bell.pqpreset",
-                                              "Sub Pluck.pqpreset", "Warm Keys.pqpreset", "Instrument Rack"});
+  CHECK(f.names() == std::vector<std::string>{"Wavetable Synth", "Operator", "Instrument Rack", "Bright Pad.pqpreset",
+                                              "Glass Bell.pqpreset", "Sub Pluck.pqpreset", "Warm Keys.pqpreset"});
   // A search text lists matching files flat, as before.
   f.b->setQuery("bright");
   CHECK(f.names() == std::vector<std::string>{"Bright Pad.pqpreset"});

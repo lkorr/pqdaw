@@ -188,7 +188,6 @@ struct ModuleUi {
     shell = std::move(*s);
     d.tree().layoutNow();
     if (gpu) REQUIRE(d.enableGpu().ok());
-    view().setPanelsShown(false);
     view().setPushAnimated(false);
     view().setShown(true, false);
     d.tree().layoutNow();

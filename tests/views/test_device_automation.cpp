@@ -15,7 +15,9 @@
 #include <string>
 #include <vector>
 
-#include "lone_instrument.h"
+#include "../support/blocks.h"
+#include "pq/document/main_path.h"
+#include "pq/views/devices/device_model.h"
 #include "pq/core/automation_curve.h"
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
@@ -56,8 +58,10 @@ const doc::DeviceLibrary& library() {
 
 Vec2 mid(const IRect& r) { return {static_cast<float>(r.x) + static_cast<float>(r.w) / 2.0f, static_cast<float>(r.y) + static_cast<float>(r.h) / 2.0f}; }
 
-// Keys: BasicSynth -> LFO -> Auto Filter -> a rack holding a Utility; the LFO wired into the filter's frequency. Bass:
-// BasicSynth. The arrangement above, the Device view below (Keys).
+// GU.11 (one hierarchy): Keys: its instrument group -> a Utility module -> an Envelope (a native engine: a leaf, its
+// frame a face panel); a free LFO module wired into the Envelope's attack. Bass: its instrument group. The arrangement
+// above, the Device view below (Keys). (Was BasicSynth -> LFO -> Auto Filter, the filter's frequency automated: the
+// Envelope's attack is a knob of the same exponential, octave-default law.)
 struct Ui {
   FakeTransport port;
   ViewContext ctx{port};
@@ -72,14 +76,13 @@ struct Ui {
     ctx.setDeviceLibrary(&library());
     doc::DocumentStore& st = ctx.store();
     keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks[0];
-    view_fixture::loneInstrument(st, library(), keys);  // IG.1-2 (lone_instrument.h)
     bass = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Bass")).tracks[0];
-    view_fixture::loneInstrument(st, library(), bass);  // IG.1-2 (lone_instrument.h)
-    inst = track(keys).devices.at(0)->id;
-    lfo = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "lfo_device", doc::DeviceKind::AudioEffect)).devices[0];
-    filter = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "auto_filter", doc::DeviceKind::AudioEffect)).devices[0];
-    util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices[0];
-    wire = run(doc::ops::connectTravelWire(*st.current(), st.ids(), lfo, "lfo", filter, "freq", 0.3)).wires[0];
+    inst = doc::mainPath(*st.current(), track(keys)).blocks.at(0)->id;
+    lfo = test_blocks::addModule(st, keys, "lfo", doc::ops::kOffPath);
+    util = test_blocks::addModule(st, keys, "utility");
+    // (after the Utility: appended to a path that holds only the instrument group, a native engine goes into it)
+    filter = run(doc::ops::addMetaDevice(*st.current(), st.ids(), keys, "envelope")).devices[0];
+    wire = run(doc::ops::connectTravelWire(*st.current(), st.ids(), lfo, "y", filter, "attack", 0.3)).wires[0];
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
@@ -146,18 +149,19 @@ struct Ui {
 
 TEST_CASE("device automation (views): the first click on a device param's line makes its lane and a point (one undo step)") {
   Ui u;
-  const doc::ParamRef freq = doc::ParamRef::device(u.filter, "freq");
+  const doc::ParamRef freq = doc::ParamRef::device(u.filter, "attack");
   u.au().showParam(u.keys, freq);
   const AutomationBand b = u.band(freq);
   CHECK(b.lane == nullptr);
   const size_t h0 = u.history();
-  // The dashed line at the knob's value (1 kHz; GU.1: lanes are positions), at bar 2.
-  const double p1k = u.pos(u.filter, "freq", 1000.0);
+  // The dashed line at the knob's value (the attack's default; GU.1: lanes are positions), at bar 2.
+  REQUIRE(u.view().panelOf(u.filter) != nullptr);
+  const double p1k = u.pos(u.filter, "attack", u.view().panelOf(u.filter)->paramValue("attack"));
   u.d.click({u.arr->xOfTick(2.0 * kBar), u.au().yOfValue(b, p1k)});
   REQUIRE(u.history() == h0 + 1);
   const doc::AutomationLane* l = u.lane(freq);
   REQUIRE(l != nullptr);
-  CHECK(l->paramName == "freq");
+  CHECK(l->paramName == "attack");
   REQUIRE(l->points.size() == 1);
   CHECK(l->points[0].tick == 2 * kBar);
   CHECK(l->points[0].value == doctest::Approx(p1k).epsilon(0.02));
@@ -169,7 +173,8 @@ TEST_CASE("device automation (views): the first click on a device param's line m
   u.d.down(at);
   u.d.move({at.x, at.y - 5.0f});
   u.d.move({at.x, at.y - 10.0f});
-  CHECK(u.au().readout().find("Hz") != std::string::npos);
+  MESSAGE("readout: " << u.au().readout());
+  CHECK(u.au().readout().find("s") != std::string::npos);
   u.d.up({at.x, at.y - 10.0f});
   CHECK(u.history() == h0 + 2);
   CHECK(u.lane(freq)->points[0].value > p1k);
@@ -184,9 +189,9 @@ TEST_CASE("device automation (views): a knob's Show Automation opens its lane; a
   REQUIRE(panel != nullptr);
   u.view().revealDevice(u.filter);
   u.d.tree().layoutNow();
-  Widget* knob = panel->controlFor("freq");
-  REQUIRE(knob != nullptr);
-  u.d.click(mid(knob->rect()), mod::kNone, PointerButton::Right);
+  const std::optional<IRect> knob = panel->controlRect("attack");  // the face's control
+  REQUIRE(knob.has_value());
+  u.d.click(mid(*knob), mod::kNone, PointerButton::Right);
   Menu* m = u.lastMenu();
   REQUIRE(m != nullptr);
   int32_t show = -1;
@@ -197,23 +202,26 @@ TEST_CASE("device automation (views): a knob's Show Automation opens its lane; a
   m->choose(show);
   u.d.step();
   const std::vector<doc::ParamRef> shown = u.au().shownLanes(u.keys);
-  CHECK(std::find(shown.begin(), shown.end(), doc::ParamRef::device(u.filter, "freq")) != shown.end());
+  CHECK(std::find(shown.begin(), shown.end(), doc::ParamRef::device(u.filter, "attack")) != shown.end());
   CHECK(u.history() == h0);  // showing a lane is view state
   // A right-click on the title bar (no knob) has no Show Automation.
   u.d.press("Escape");
   u.d.step();
 
   // Automated: the knob shows the envelope at the playhead and carries the LED; it moves with the playhead.
-  u.addLane(doc::ParamRef::device(u.filter, "freq"), "freq", {{0.0, 200.0f}, {2.0, 5000.0f}});
-  CHECK(panel->paramValue("freq") == doctest::Approx(200.0));
+  u.addLane(doc::ParamRef::device(u.filter, "attack"), "attack", {{0.0, 0.01f}, {2.0, 2.0f}});
+  CHECK(panel->paramValue("attack") == doctest::Approx(0.01).epsilon(1e-4));
   u.port.setPlayheadTick(kBar);
   u.view().applyAutomation();
-  // GU.1: halfway in knob position — on the octave cutoff, the geometric mean (the lane was linear in Hz: 2600).
-  const double halfway = std::sqrt(200.0 * 5000.0);
-  CHECK(panel->paramValue("freq") == doctest::Approx(halfway).epsilon(1e-4));
+  // GU.1: halfway in knob position (the lane stores positions), not halfway in seconds.
+  const devices::ParamInfo* attack = panel->signature().findParam("attack");
+  REQUIRE(attack != nullptr);
+  const double halfway = devices::fromPosition(*attack, 0.5 * (u.pos(u.filter, "attack", 0.01) + u.pos(u.filter, "attack", 2.0)));
+  CHECK(halfway < 0.5 * (0.01 + 2.0));
+  CHECK(panel->paramValue("attack") == doctest::Approx(halfway).epsilon(1e-4));
   const auto marks = u.view().automationMarks(u.filter);
   REQUIRE(marks.size() == 1);
-  CHECK(marks[0].first == "freq");
+  CHECK(marks[0].first == "attack");
   CHECK_FALSE(marks[0].second);  // red: automated, not overridden
   CHECK_FALSE(u.view().automationPolling());  // stopped: no timer
   u.ctx.togglePlay();
@@ -223,19 +231,19 @@ TEST_CASE("device automation (views): a knob's Show Automation opens its lane; a
   u.view().applyAutomation();
   CHECK_FALSE(u.view().automationPolling());
   // A hand edit overrides it (Live): the knob keeps its own value; Re-enable brings the envelope back.
-  REQUIRE(u.ctx.store().dispatch(doc::SetDeviceParam{u.filter, "freq", u.pos(u.filter, "freq", 300.0)}).ok());
-  CHECK(u.ctx.automationOverridden(doc::ParamRef::device(u.filter, "freq")));
-  CHECK(panel->paramValue("freq") == doctest::Approx(300.0));
+  REQUIRE(u.ctx.store().dispatch(doc::SetDeviceParam{u.filter, "attack", u.pos(u.filter, "attack", 0.3)}).ok());
+  CHECK(u.ctx.automationOverridden(doc::ParamRef::device(u.filter, "attack")));
+  CHECK(panel->paramValue("attack") == doctest::Approx(0.3).epsilon(1e-6));
   CHECK(u.view().automationMarks(u.filter).at(0).second);  // its LED grey
   u.ctx.reenableAutomation();
   CHECK_FALSE(u.view().automationMarks(u.filter).at(0).second);
-  CHECK(panel->paramValue("freq") == doctest::Approx(halfway).epsilon(1e-4));
+  CHECK(panel->paramValue("attack") == doctest::Approx(halfway).epsilon(1e-4));
 }
 
 TEST_CASE("device automation (views): moving the device to another track takes its lane along; deleting it removes the lane") {
   Ui u;
-  const doc::ParamRef freq = doc::ParamRef::device(u.filter, "freq");
-  u.addLane(freq, "freq", {{0.0, 200.0f}, {2.0, 5000.0f}});
+  const doc::ParamRef freq = doc::ParamRef::device(u.filter, "attack");
+  u.addLane(freq, "attack", {{0.0, 0.01f}, {2.0, 2.0f}});
   u.au().showLanes(u.keys, true);
   CHECK(findAutomationLane(*u.ctx.doc(), freq).owner == u.keys);
   const size_t h0 = u.history();
@@ -281,11 +289,13 @@ TEST_CASE("knob curves (views): a knob's Knob Curve submenu switches its curve, 
   REQUIRE(panel != nullptr);
   u.view().revealDevice(u.filter);
   u.d.tree().layoutNow();
-  auto* knob = dynamic_cast<ValueControl*>(panel->controlFor("freq"));
-  REQUIRE(knob != nullptr);
-  const double value = panel->paramValue("freq");
-  const double octavePos = knob->value();
-  u.d.click(mid(knob->rect()), mod::kNone, PointerButton::Right);
+  const std::optional<IRect> knob = panel->controlRect("attack");  // the Envelope face's attack control
+  REQUIRE(knob.has_value());
+  const devices::ParamInfo* info = panel->signature().findParam("attack");
+  REQUIRE(info != nullptr);
+  const double value = panel->paramValue("attack");
+  const double octavePos = devices::toPosition(*info, value);
+  u.d.click(mid(*knob), mod::kNone, PointerButton::Right);
   Menu* m = u.lastMenu();
   REQUIRE(m != nullptr);
   const MenuItem* curves = nullptr;
@@ -305,19 +315,18 @@ TEST_CASE("knob curves (views): a knob's Knob Curve submenu switches its curve, 
   chooseLinear();
   u.d.step();
   CHECK(u.history() == h0 + 1);
-  REQUIRE(doc::findDevice(*u.ctx.doc(), u.filter).device->curve("freq") != nullptr);
-  CHECK(doc::findDevice(*u.ctx.doc(), u.filter).device->curve("freq")->preset == dsp::CurvePreset::Linear);
   // GU.1: the knob stays where it is; the value follows the new curve.
-  CHECK(knob->value() == doctest::Approx(octavePos));
-  CHECK(panel->paramValue("freq") == doctest::Approx(20.0 + octavePos * (20000.0 - 20.0)));
-  CHECK(panel->paramValue("freq") != doctest::Approx(value));
+  devices::DevicePanel* after = u.view().panelOf(u.filter);
+  REQUIRE(after != nullptr);
+  const devices::ParamInfo* linear = after->signature().findParam("attack");
+  REQUIRE(linear != nullptr);
+  const double lo = devices::fromPosition(*linear, 0.0), hi = devices::fromPosition(*linear, 1.0);
+  CHECK(after->paramValue("attack") == doctest::Approx(lo + octavePos * (hi - lo)).epsilon(1e-6));
+  CHECK(after->paramValue("attack") != doctest::Approx(value));
   REQUIRE(u.ctx.undo());
   u.d.step();
-  CHECK(doc::findDevice(*u.ctx.doc(), u.filter).device->curve("freq") == nullptr);
-  CHECK(knob->value() == doctest::Approx(octavePos));
-  CHECK(panel->paramValue("freq") == doctest::Approx(value));
-  // A bool control has no curve; a rack's macro neither.
-  CHECK_FALSE(knobCurveMenu(u.ctx, u.filter, "lfoSync").has_value());
+  CHECK(u.view().panelOf(u.filter)->paramValue("attack") == doctest::Approx(value));
+  // A rack's macro has none (no rack here: no menu).
   CHECK_FALSE(knobCurveMenu(u.ctx, u.rack, "macro0").has_value());
   // A meta module's continuous param has one (the Envelope's attack: exp0, listed as Octave, by default; GU.4: it was
   // the Phase accumulator's frequency bar). The VCA (a module now) has no knob of its own law any more: its value

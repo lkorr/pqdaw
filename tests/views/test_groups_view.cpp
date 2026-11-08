@@ -120,12 +120,14 @@ TEST_CASE("groups view: select → Ctrl+G groups in one step, the capsule holds 
   REQUIRE(c.groupIn != kNone);
   REQUIRE(c.groupOut != kNone);
   CHECK(u.view().scene().sceneNode[cap] == kNone);  // the capsule is its frame; its contents are scene nodes
-  // The keys band's chain is now synth → group → mixer.
+  // The keys band's chain is now notes → group → mixer.
   const Band& band = u.pp().bands[c.band];
-  size_t chain = 0;
+  size_t chain = 0;  // (GU.11: the series inside the capsule is drawn as chain edges too: not counted here)
   for (const Edge& e : u.pp().edges)
-    if (e.kind == EdgeKind::Chain && u.pp().nodes[e.from].band == c.band) ++chain;
-  CHECK(chain == 2);
+    if (e.kind == EdgeKind::Chain && u.pp().nodes[e.from].band == c.band && u.pp().nodes[e.from].capsule != cap &&
+        u.pp().nodes[e.to].capsule != cap)
+      ++chain;
+  CHECK(chain == 1);  // (GU.11: no instrument heads Keys — the notes reach the group's In: group → mixer)
   CHECK(std::find(band.devices.begin(), band.devices.end(), cap) != band.devices.end());
   // Its series as edges from In to Out through the three modules; the LFO's wire crosses the boundary onto the Wavetable.
   auto edgeBetween = [&](uint32_t a, uint32_t b) {
@@ -250,24 +252,37 @@ TEST_CASE("groups view: the Device view shows the group as one device; its panel
   CHECK(pp.nodes[0].group);
   CHECK(pp.nodes.size() == 6);  // the capsule, In, three members, Out
   size_t wires = 0;
-  for (const Edge& e : pp.edges) wires += e.kind == EdgeKind::Modulation ? 1 : 0;
-  CHECK(wires == 4);  // In → … → Out (the LFO's wire comes from outside the panel)
+  for (const Edge& e : pp.edges) wires += e.kind != EdgeKind::Route && e.kind != EdgeKind::Send ? 1 : 0;
+  CHECK(wires == 4);  // In → … → Out, its series (GU.11: the notes into it, chain edges; the LFO's wire comes from outside)
   CHECK(pv.canvas().rect().w > 100);
-  // An edit inside the panel: In → Out dragged on the embedded canvas; one undo step; the main view's document too.
+  // An edit inside the panel: a cable dragged on the embedded canvas; one undo step; the main view's document too.
   const size_t h0 = u.history();
   const Node& c = pp.nodes[0];
   auto devOf = [&](float x, float y) { return pv.canvas().toDevice({x, y}); };
   const Node& in = pp.nodes[c.groupIn];
   const Node& out = pp.nodes[c.groupOut];
-  const Vec2 a = devOf(in.x + in.w, in.y + pinOffset(in, 0)), b = devOf(out.x, out.y + pinOffset(out, 0));
+  (void)in;
+  (void)out;
+  (void)devOf;
+  // (TX.orbit-ports: ports are drawn where they orbit. GU.11: the notes reach this group's In — an instrument group —
+  // so the edit is the Wavetable's output into Out, a second route into the sum, not In → Out.)
+  const uint32_t wtn = pp.nodeOf(u.ids.wt);
+  REQUIRE(wtn != kNone);
+  const Vec2 a = pv.canvas().toDevice(pv.canvas().portWorld(wtn, 0, false));
+  const Vec2 b = pv.canvas().toDevice(pv.canvas().portWorld(c.groupOut, 0, true));
   u.d.drag(a, b, 8);
   u.d.step();
   CHECK(u.history() == h0 + 1);
   CHECK(doc::wiresOf(*u.ctx.doc()).back().to == g);
+  CHECK(doc::wiresOf(*u.ctx.doc()).back().from == u.ids.wt);
   CHECK(pv.patch().edges.size() == pp.edges.size());  // rebuilt (the reference above is the new model)
   REQUIRE(u.ctx.undo());
   // Ungrouped elsewhere: the panel goes, the members are frames again.
-  REQUIRE(u.view().ungroup(g));
+  {
+    auto e = doc::ops::ungroupInCircuit(u.ctx.doc(), u.ctx.store().ids(), library(), g);
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(u.ctx.store().dispatch(e->command).ok());
+  }
   u.d.tree().layoutNow();
   u.d.step();
   embedded.clear();

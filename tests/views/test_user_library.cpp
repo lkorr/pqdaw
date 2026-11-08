@@ -20,6 +20,10 @@
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/library_files.h"
+#include "pq/document/main_path.h"
+#include "pq/document/meta.h"
+#include "pq/meta/registry.h"
+#include "pq/meta/wavetable.h"
 #include "pq/library/indexer.h"
 #include "pq/library/scan.h"
 #include "pq/ui/image.h"
@@ -58,7 +62,8 @@ std::string u8(const fs::path& p) {
   return std::string(s.begin(), s.end());
 }
 
-// The shell over a MIDI track (default instrument + Saturator) and an audio track, with a User Library in %TEMP%.
+// The shell over a MIDI track (default instrument + a Wavetable: GU.11, a native engine — a leaf block with its own
+// device presets; the modules are groups) and an audio track, with a User Library in %TEMP%.
 struct Lib {
   FakeTransport port;
   ViewContext ctx{port};
@@ -74,7 +79,12 @@ struct Lib {
     doc::DocumentStore& st = ctx.store();
     keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks[0];
     audio = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Audio, {}, "Audio")).tracks[0];
-    sat = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "saturator", doc::DeviceKind::AudioEffect)).devices[0];
+    {  // (without its default instrument group: a native engine appended to it would go into it)
+      std::vector<doc::DeviceId> all;
+      for (const doc::DevicePtr& x : doc::findTrackPtr(*st.current(), keys)->devices) all.push_back(x->id);
+      run(doc::ops::deleteDevices(*st.current(), all));
+    }
+    sat = run(doc::ops::addMetaDevice(*st.current(), st.ids(), keys, "wavetable")).devices[0];
     reindex();
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
@@ -122,6 +132,13 @@ struct Lib {
     const std::string p = path(rel);
     return fs::exists(fs::path(std::u8string(p.begin(), p.end())));
   }
+  // The Wavetable's position (its meta param).
+  double position(doc::DeviceId id) const {
+    const meta::Type& t = meta::wavetableType();
+    return doc::metaParamValue(*device(id), "", t, static_cast<size_t>(t.paramIndex("position")));
+  }
+  void setPosition(doc::DeviceId id, double v) { run(doc::ops::setMetaParamValue(*ctx.doc(), id, "", "wavetable", "position", v)); }
+  doc::DeviceId lastOnPath(doc::TrackId t) const { return doc::mainPath(*ctx.doc(), track(t)).blocks.back()->id; }
   std::vector<std::string> names() {
     std::vector<std::string> v;
     BrowserPanel& b = browser();
@@ -134,12 +151,12 @@ struct Lib {
 
 TEST_CASE("user library: Save Preset writes Presets/<Device>/, the browser renames it in place; it loads back exactly") {
   Lib l("save");
-  l.run(doc::ops::setDeviceParam(*l.ctx.doc(), l.sat, "drive", 0.7));
+  l.setPosition(l.sat, 0.7);
   const size_t h0 = l.history();
   REQUIRE(l.chain().savePreset(l.sat, false));
   CHECK(l.history() == h0);  // saving is not an edit
-  REQUIRE(l.exists("Presets\\Saturator\\Saturator.pqpreset"));
-  const std::string file = l.path("Presets\\Saturator\\Saturator.pqpreset");
+  REQUIRE(l.exists("Presets\\Wavetable\\Wavetable.pqpreset"));
+  const std::string file = l.path("Presets\\Wavetable\\Wavetable.pqpreset");
   CHECK(l.ctx.library().pendingRename == file);
   // The index shows it: the browser opens the name field on it.
   l.reindex();
@@ -149,8 +166,10 @@ TEST_CASE("user library: Save Preset writes Presets/<Device>/, the browser renam
   // The file is the device (ids aside).
   auto f = doc::parsePreset(*doc::readTextFile(file));
   REQUIRE(f.ok());
-  CHECK(f->device->patch == "saturator");
+  CHECK(f->device->patch == "meta:wavetable");
   CHECK(f->device->params == l.device(l.sat)->params);
+  REQUIRE(f->device->meta);
+  CHECK(*f->device->meta == *l.device(l.sat)->meta);
   // Loaded from the browser into the selected track: one undo step, a new device with the same values.
   l.browser().list().renameField()->onCancel();
   auto id = loadDeviceItem(l.ctx, file, DeviceSlot{l.keys, doc::kAppend});
@@ -158,102 +177,81 @@ TEST_CASE("user library: Save Preset writes Presets/<Device>/, the browser renam
   CHECK(l.history() == h0 + 1);
   CHECK(*id != l.sat);
   CHECK(l.device(*id)->params == l.device(l.sat)->params);
+  CHECK(l.position(*id) == doctest::Approx(0.7));
   // A second save does not overwrite the first.
   REQUIRE(l.chain().savePreset(l.sat, false));
-  CHECK(l.exists("Presets\\Saturator\\Saturator 2.pqpreset"));
+  CHECK(l.exists("Presets\\Wavetable\\Wavetable 2.pqpreset"));
 }
 
 TEST_CASE("user library: a new device starts from its default preset") {
   Lib l("defaults");
-  l.run(doc::ops::setDeviceParam(*l.ctx.doc(), l.sat, "drive", 0.25));
+  l.setPosition(l.sat, 0.25);
   REQUIRE(l.chain().savePreset(l.sat, true));
-  REQUIRE(l.exists("Defaults\\Saturator.pqpreset"));
-  const doc::DeviceInfo* info = devLib().catalog().find("saturator");
-  REQUIRE(info != nullptr);
+  REQUIRE(l.exists("Defaults\\Wavetable.pqpreset"));
+  doc::DeviceInfo info;
+  info.patch = "meta:wavetable";
+  info.name = "Wavetable";
+  info.kind = doc::DeviceKind::AudioEffect;
   const size_t h0 = l.history();
-  REQUIRE(l.chain().addDevice(*info));
+  REQUIRE(l.chain().addDevice(info));
   CHECK(l.history() == h0 + 1);
-  const doc::DevicePtr added = l.track(l.keys).devices.back();
-  CHECK(added->id != l.sat);
-  REQUIRE(added->param("drive") != nullptr);
-  CHECK(added->param("drive")->value == doctest::Approx(0.25));
-  // Another device without a default starts plain.
-  REQUIRE(l.chain().addDevice(*devLib().catalog().find("utility")));
-  CHECK(l.track(l.keys).devices.back()->params.empty());
+  const doc::DeviceId added = l.lastOnPath(l.keys);
+  CHECK(added != l.sat);
+  CHECK(l.device(added)->patch == "meta:wavetable");
+  CHECK(l.position(added) == doctest::Approx(0.25));
+  // Another device without a default starts plain (a module: its group as pasted).
+  doc::DeviceInfo util;
+  util.patch = "module:utility";
+  util.name = "Utility";
+  util.kind = doc::DeviceKind::AudioEffect;
+  REQUIRE(l.chain().addDevice(util));
+  const doc::Device* u = l.device(l.lastOnPath(l.keys));
+  REQUIRE(u != nullptr);
+  CHECK(u->name == "Utility");
+  CHECK(u->params.empty());
 }
 
-TEST_CASE("user library: Save as New Device joins the device menu and the browser; the project embeds its text") {
-  Lib l("userdev");
-  REQUIRE_FALSE(l.chain().saveAsNewDevice(l.sat));  // a stock device: nothing to save as a new device
-  const std::string text = devLib().stockText("saturator") + "\n// mine\n";
-  l.run(doc::ops::editDevicePatch(*l.ctx.doc(), l.sat, text));
-  REQUIRE(l.chain().saveAsNewDevice(l.sat));
-  REQUIRE(l.exists("Devices\\Saturator.pqdevice"));
-  l.reindex();
-  const auto& users = l.ctx.library().userDevices();
-  REQUIRE(users.size() == 1);
-  CHECK(users[0].file.text == text);
-  CHECK(users[0].file.origin == "devices/saturator.pqp");
-  // In the device menu under User Devices; choosing it adds a device playing that text.
-  std::vector<MenuItem> menu = l.chain().deviceMenu();
-  const MenuItem* item = nullptr;
-  for (const MenuItem& m : menu)
-    if (m.label == "   Saturator" && &m != &menu.front()) item = &m;  // the last "Saturator": the user device
-  REQUIRE(item != nullptr);
-  const size_t before = l.track(l.keys).devices.size();
-  item->onChoose();
-  REQUIRE(l.track(l.keys).devices.size() == before + 1);
-  const doc::DevicePtr made = l.track(l.keys).devices.back();
-  REQUIRE(made->source != nullptr);
-  CHECK(made->source->text == text);
-  // Audio Effects lists it (a user device of that kind).
-  l.browser().setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::AudioEffects)});
-  const auto names = l.names();
-  CHECK(std::find(names.begin(), names.end(), "Saturator.pqdevice") != names.end());
-}
-
-TEST_CASE("user library: Instruments / Audio Effects list each device with its presets under it") {
+TEST_CASE("user library: Instruments / Audio Effects list the modules and the rack; a row adds its module") {
+  // GU.11: the rows are the built-in modules (group presets) and the racks; device presets are a leaf's (a native
+  // engine's: its rows are the Meta Modules category's), so no module row folds presets under it any more.
   Lib l("tree");
-  REQUIRE(l.chain().savePreset(l.sat, false));
-  l.browser().list().beginRename(-1);
-  l.reindex();
-  if (l.browser().list().renaming()) l.browser().list().renameField()->onCancel();
   BrowserPanel& b = l.browser();
   b.setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::AudioEffects)});
   auto names = l.names();
   const auto it = std::find(names.begin(), names.end(), "Saturator");
   REQUIRE(it != names.end());
+  CHECK(std::find(names.begin(), names.end(), "Utility") != names.end());
   CHECK(std::find(names.begin(), names.end(), "Audio Effect Rack") != names.end());
-  CHECK(std::find(names.begin(), names.end(), "Saturator.pqpreset") == names.end());  // folded
   const int32_t row = static_cast<int32_t>(it - names.begin());
-  b.setRowOpen(b.rows()[static_cast<size_t>(row)], true);
-  names = l.names();
-  REQUIRE(static_cast<size_t>(row) + 1 < names.size());
-  CHECK(names[static_cast<size_t>(row) + 1] == "Saturator.pqpreset");
-  CHECK(b.rows()[static_cast<size_t>(row) + 1].depth == 1);
-  // Enter on the device row adds the device to the selected track (one undo step).
+  // Enter on the device row adds the module to the selected track (one undo step).
   b.select(row, false);
   const size_t h0 = l.history();
   REQUIRE(b.loadSelection());
   CHECK(l.history() == h0 + 1);
-  CHECK(l.track(l.keys).devices.back()->patch == "saturator");
-  // Its drag payload names the catalog device; the Device view takes it.
+  CHECK(l.device(l.lastOnPath(l.keys))->name == "Saturator");
+  CHECK(doc::isGroupDevice(*l.device(l.lastOnPath(l.keys))));
+  // Its drag payload names the catalog item; the Device view takes it.
   const DragPayload p = b.selectionPayload();
   REQUIRE(p.paths.size() == 1);
-  CHECK(catalogPatchOf(p.paths[0]) == "saturator");
+  CHECK(catalogPatchOf(p.paths[0]) == "module:saturator");
   CHECK(l.chain().dragOver(p, {}, mod::kNone).effect == DropEffect::Copy);
   CHECK(l.chain().drop(p, {}, mod::kNone) == DropEffect::Copy);
   CHECK(l.history() == h0 + 2);
+  // Instruments: the instrument modules and the Instrument Rack.
+  b.setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::Instruments)});
+  names = l.names();
+  CHECK(std::find(names.begin(), names.end(), "Operator") != names.end());
+  CHECK(std::find(names.begin(), names.end(), "Instrument Rack") != names.end());
 }
 
 TEST_CASE("user library: hot-swap replaces the device's preset in place, keeping its id, position and wires") {
   Lib l("hotswap");
-  const doc::DeviceId util = l.run(doc::ops::addDevice(*l.ctx.doc(), l.ctx.store().ids(), l.keys, "utility",
-                                                       doc::DeviceKind::AudioEffect)).devices[0];
-  l.run(doc::ops::setDeviceParam(*l.ctx.doc(), l.sat, "drive", 0.9));
-  REQUIRE(l.chain().savePreset(l.sat, false));  // "Saturator.pqpreset": drive 0.9
-  l.run(doc::ops::setDeviceParam(*l.ctx.doc(), l.sat, "drive", 0.1));
-  const doc::WireId w = l.run(doc::ops::connectTravelWire(*l.ctx.doc(), l.ctx.store().ids(), util, "out", l.sat, "drive")).wires[0];
+  const doc::DeviceId lfo = l.run(doc::ops::addDevice(*l.ctx.doc(), l.ctx.store().ids(), l.keys, "module:lfo",
+                                                      doc::DeviceKind::AudioEffect, doc::ops::kOffPath)).devices[0];
+  l.setPosition(l.sat, 0.9);
+  REQUIRE(l.chain().savePreset(l.sat, false));  // "Wavetable.pqpreset": position 0.9
+  l.setPosition(l.sat, 0.1);
+  const doc::WireId w = l.run(doc::ops::connectTravelWire(*l.ctx.doc(), l.ctx.store().ids(), lfo, "y", l.sat, "position")).wires[0];
   l.reindex();
   if (l.browser().list().renaming()) l.browser().list().renameField()->onCancel();
   const uint32_t index = doc::findDevice(*l.ctx.doc(), l.sat).index;
@@ -265,18 +263,17 @@ TEST_CASE("user library: hot-swap replaces the device's preset in place, keeping
   BrowserPanel& b = l.browser();
   CHECK(b.hotSwap().kind == HotSwapTarget::Kind::Device);
   CHECK(b.hotSwapBar().visible());
-  REQUIRE(l.names() == std::vector<std::string>{"Saturator.pqpreset"});
+  REQUIRE(l.names() == std::vector<std::string>{"Wavetable.pqpreset"});
   const size_t h0 = l.history();
   b.select(0);  // selecting loads it in place
   CHECK(l.history() == h0 + 1);
   const doc::DeviceLoc loc = doc::findDevice(*l.ctx.doc(), l.sat);
   REQUIRE(loc.device != nullptr);
   CHECK(loc.index == index);
-  REQUIRE(loc.device->param("drive") != nullptr);
-  CHECK(loc.device->param("drive")->value == doctest::Approx(0.9));
+  CHECK(l.position(l.sat) == doctest::Approx(0.9));
   CHECK(doc::findWire(*l.ctx.doc(), w) != nullptr);
-  CHECK(l.ctx.library().presetName(l.sat) == "Saturator");
-  CHECK(panel->presetName() == "Saturator");
+  CHECK(l.ctx.library().presetName(l.sat) == "Wavetable");
+  CHECK(panel->presetName() == "Wavetable");
   // Esc leaves hot-swap mode.
   l.d.tree().setFocus(&b.listWidget());
   l.d.press("Escape");
@@ -288,13 +285,13 @@ TEST_CASE("user library: hot-swap replaces the device's preset in place, keeping
   const size_t h1 = l.history();
   b.select(0);
   CHECK(l.history() == h1 + 1);
-  l.run(doc::ops::setDeviceParam(*l.ctx.doc(), l.sat, "drive", 0.3));  // a knob change after selecting
+  l.setPosition(l.sat, 0.3);  // a knob change after selecting
   const size_t h2 = l.history();
   l.d.tree().setFocus(&b.listWidget());
   l.d.press("Enter");
   CHECK(b.hotSwap().kind == HotSwapTarget::Kind::None);
   CHECK(l.history() == h2);
-  CHECK(doc::findDevice(*l.ctx.doc(), l.sat).device->param("drive")->value == doctest::Approx(0.3));
+  CHECK(l.position(l.sat) == doctest::Approx(0.3));
 }
 
 TEST_CASE("user library: tunings save to the library and hot-swap onto a track") {
@@ -539,7 +536,7 @@ TEST_CASE("user library: a saved file reaches the browser through the indexer's 
   l.ctx.library().setIndexer(&indexer);
   const auto t0 = std::chrono::steady_clock::now();
   REQUIRE(l.chain().savePreset(l.sat, false));
-  const std::string file = l.path("Presets\\Saturator\\Saturator.pqpreset");
+  const std::string file = l.path("Presets\\Wavetable\\Wavetable.pqpreset");
   double ms = -1;
   for (int i = 0; i < 1000 && ms < 0; ++i) {
     if (const auto idx = indexer.index(); idx && idx->findPath(file) != library::Index::kNone)

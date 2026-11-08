@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-#include "lone_instrument.h"
+#include "../support/blocks.h"
 #include "all_free_helpers.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/document/edit_ops.h"
@@ -56,8 +56,10 @@ const doc::DeviceLibrary& library() {
   return *lib;
 }
 
-// "Keys": the default synth → Utility → Saturator, with a free LFO whose `lfo` jack drives the Utility's gain; "Bass" under
-// it (the default synth). Plain blocks (panels off): pins are where the model says.
+// "Keys": the default instrument group → a gain block (`util`: x · g) → a tanh block (`sat`), with a free LFO module whose
+// output (its group's `y`) drives the gain block's `g`; "Bass" under it (the default instrument group). GU.11: the stock
+// Utility and Saturator were leaves with param pins; their stand-ins here are atom blocks (inputs as pins: x and g, out),
+// the LFO is its module (a closed group: its panel, main ports x / y).
 struct Ui {
   FakeTransport port;
   ViewContext ctx{port};
@@ -77,19 +79,16 @@ struct Ui {
       return *e;
     };
     keys = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks.at(0);
-    view_fixture::loneInstrument(st, library(), keys);  // IG.1-2 (lone_instrument.h)
     bass = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, keys, "Bass")).tracks.at(0);
-    view_fixture::loneInstrument(st, library(), bass);  // IG.1-2 (lone_instrument.h)
-    synth = doc::findTrackPtr(*st.current(), keys)->devices.at(0)->id;
-    util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "utility", doc::DeviceKind::AudioEffect)).devices.at(0);
-    sat = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "saturator", doc::DeviceKind::AudioEffect)).devices.at(0);
-    lfo = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "lfo_device", doc::DeviceKind::AudioEffect, doc::ops::kOffPath)).devices.at(0);
-    lfoWire = run(doc::ops::connectWire(*st.current(), st.ids(), lfo, "lfo", util, "gain")).wires.at(0);
+    synth = doc::mainPath(*st.current(), *doc::findTrackPtr(*st.current(), keys)).blocks.at(0)->id;
+    util = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "atom:gain", doc::DeviceKind::AudioEffect)).devices.at(0);
+    sat = run(doc::ops::addDevice(*st.current(), st.ids(), keys, "atom:tanh", doc::DeviceKind::AudioEffect)).devices.at(0);
+    lfo = test_blocks::addModule(st, keys, "lfo", doc::ops::kOffPath);
+    lfoWire = run(doc::ops::connectWire(*st.current(), st.ids(), lfo, "y", util, "g")).wires.at(0);
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
     d.tree().layoutNow();
-    view().setPanelsShown(false);
     view().setPushAnimated(false);
     view().setShown(true, false);
     d.tree().layoutNow();
@@ -194,13 +193,13 @@ struct Ui {
     NodeMenu* m = menu();
     REQUIRE(m != nullptr);
     m->setQuery(std::string(query));
-    // GU.10: the tests' stand-in patches share their names with the stock presets (modules): the patch is preferred.
+    // (A module and a native engine may share a name: the module is preferred.)
     int32_t row = -1;
-    for (const bool device : {true, false}) {
+    for (const bool module : {true, false}) {
       for (int32_t i = 0; row < 0 && i < static_cast<int32_t>(m->rows().size()); ++i) {
         const NodeMenu::Row& r = m->rows()[static_cast<size_t>(i)];
         if (r.kind == NodeMenu::Row::Kind::Entry && m->catalog().entries[r.entry].name == name &&
-            (!device || m->catalog().entries[r.entry].key.starts_with("device:")))
+            (!module || m->catalog().entries[r.entry].key.starts_with(doc::kModuleItemPrefix)))
           row = i;
       }
       if (row >= 0) break;
@@ -234,13 +233,10 @@ struct Ui {
       for (const doc::DevicePtr& d2 : t.devices)
         if (d2->id.value > best.value) best = d2->id;
     });
-    // GU.4: a module spawns its group with its blocks after it: the newest block is the module's group.
-    for (const doc::Device* b = device(best); b != nullptr && b->group.valid();) {
-      const doc::Device* g = device(b->group);
-      if (g == nullptr || doc::findModule(g->name) == nullptr) break;
-      best = g->id;
-      b = g;
-    }
+    // GU.4: a module spawns its group with its blocks after it (at any depth: an Operator's operators are groups of
+    // modules): the newest spawn is the outermost group of the newest block.
+    if (const doc::DeviceLoc l = doc::findDevice(*ctx.doc(), best); l.device != nullptr && l.device->group.valid())
+      best = doc::outermostGroup(l.track->devices, best);
     return best;
   }
 };
@@ -267,73 +263,67 @@ TEST_CASE("node catalog: every atom, meta module, stock device and rack; project
         CHECK(projectCat->find("meta:" + std::string(t->id)) != nullptr);
       }
     }
-  for (const doc::DeviceInfo& d : library().catalog().devices()) CHECK(projectCat->find("device:" + d.patch) != nullptr);
+  for (const doc::ModuleInfo& m : doc::moduleInfos()) CHECK(projectCat->find("module:" + std::string(m.key)) != nullptr);
+  CHECK(projectCat->find("device:" + std::string(doc::kValueDevice)) != nullptr);  // the value block
   CHECK(projectCat->find("rack:" + std::string(doc::kAudioEffectRack)) != nullptr);
   CHECK(projectCat->find("rack:" + std::string(doc::kInstrumentRack)) != nullptr);
   // The analysers are visualisers; instruments have no main input.
   CHECK(projectCat->find("module:spectrum")->category == NodeCategory::Visualisers);
   CHECK(projectCat->find("module:wavetable")->category == NodeCategory::MetaModules);
-  CHECK(projectCat->find("device:BasicSynth")->category == NodeCategory::Instruments);
-  CHECK_FALSE(projectCat->find("device:BasicSynth")->hasIn);
-  CHECK(projectCat->find("device:utility")->hasIn);
+  CHECK(projectCat->find("module:operator")->category == NodeCategory::Instruments);
+  CHECK(projectCat->find("module:operator")->hasIn);  // (GU.11: an instrument is a group: the notes enter by its main input)
+  CHECK(projectCat->find("module:utility")->hasIn);
   CHECK(projectCat->find("module:vca")->hasIn);  // GU.4: the VCA is a module (its group preset)
   CHECK(projectCat->find("meta:vca") == nullptr);
   CHECK(projectCat->find("module:phase_acc")->category == NodeCategory::MetaModules);
-  // Every atom offered at the project level is a device that resolves (a free device of that one atom).
+  // Every atom offered at the project level is an atom block whose patch resolves (GU.11: "atom:<name>").
   size_t atoms = 0;
   for (const NodeEntry& e : projectCat->entries) {
     if (e.item != NodeItem::Atom) continue;
     ++atoms;
-    auto sd = specDevice(e.id);
-    REQUIRE_MESSAGE(sd.ok(), e.id << ": " << (sd.ok() ? "" : sd.error().message));
+    auto patch = specBlockPatch(e.id);
+    REQUIRE_MESSAGE(patch.ok(), e.id << ": " << (patch.ok() ? "" : patch.error().message));
+    CHECK(*patch == std::string(doc::kAtomDevicePrefix) + e.id);
     doc::Device d;
     d.id = doc::DeviceId{900 + static_cast<uint32_t>(atoms)};
-    d.patch = sd->patch;
-    d.source = std::make_shared<const doc::UserPatch>(doc::UserPatch{sd->text, nullptr});
-    const auto r = library().resolve(d);
-    REQUIRE(r != nullptr);
-    CHECK_MESSAGE(r->error.empty(), e.id << ": " << r->error << "\n" << sd->text);
-    CHECK_MESSAGE(r->info.kind == doc::DeviceKind::AudioEffect, e.id);
+    d.patch = *patch;
+    CHECK_MESSAGE(library().patchOf(d) != nullptr, e.id);
+    const doc::DeviceInfo* info = library().infoOf(d);
+    REQUIRE_MESSAGE(info != nullptr, e.id);
+    CHECK_MESSAGE(info->kind == doc::DeviceKind::AudioEffect, e.id);
   }
   CHECK(atoms >= 40);
 }
 
 TEST_CASE("node catalog: typed specs — literals, operators with an operand, atoms, params; main ports from the signature") {
   CHECK(nodeSpecValid("tanh", NodeCatalog::Scope::Project));
-  CHECK(nodeSpecValid("0.5", NodeCatalog::Scope::Project));
-  CHECK(nodeSpecValid("440Hz", NodeCatalog::Scope::Project));
-  CHECK(nodeSpecValid("* 2", NodeCatalog::Scope::Project));
-  CHECK(nodeSpecValid("param cutoff = 1kHz", NodeCatalog::Scope::Project));
+  CHECK(nodeSpecValid("0.5", NodeCatalog::Scope::Circuit));
+  CHECK(nodeSpecValid("440Hz", NodeCatalog::Scope::Circuit));
+  CHECK(nodeSpecValid("* 2", NodeCatalog::Scope::Circuit));
+  CHECK(nodeSpecValid("param cutoff = 1kHz", NodeCatalog::Scope::Circuit));
+  CHECK_FALSE(nodeSpecValid("* 2", NodeCatalog::Scope::Project));  // GU.11: an operand has no block of its own
   CHECK(nodeSpecValid("meta_wavetable", NodeCatalog::Scope::Project));  // (GU.4: was meta_vca, a module now)
   CHECK_FALSE(nodeSpecValid("in x : audio", NodeCatalog::Scope::Project));  // a port, not a node
   CHECK(nodeSpecValid("in x : audio", NodeCatalog::Scope::Circuit));
   CHECK_FALSE(nodeSpecValid("no_such_thing", NodeCatalog::Scope::Project));
-  CHECK_FALSE(nodeSpecValid("* x", NodeCatalog::Scope::Project));  // an operand is a literal
+  CHECK_FALSE(nodeSpecValid("* x", NodeCatalog::Scope::Circuit));  // an operand is a literal
   CHECK(splitSpec("* 2").node == "*");
   CHECK(splitSpec("* 2").operand == "2");
   CHECK(splitSpec("-3dB").operand.empty());  // a negative literal, not an operator
-  // A literal: an output-only device (its audio input drives nothing: no main input).
-  auto half = specDevice("0.5");
-  REQUIRE(half.ok());
-  doc::Device d;
-  d.id = doc::DeviceId{77};
-  d.patch = half->patch;
-  d.source = std::make_shared<const doc::UserPatch>(doc::UserPatch{half->text, nullptr});
-  auto r = library().resolve(d);
-  REQUIRE(r != nullptr);
-  REQUIRE(r->error.empty());
-  MainPorts mp = mainPortsOf(graph::subcircuitSignature(*r->root()), r->root(), false);
+  // GU.11: the project places a typed spec only as one atom block; a literal or an operand has no block of its own.
+  CHECK_FALSE(specBlockPatch("0.5").ok());
+  CHECK_FALSE(specBlockPatch("* 2").ok());
+  CHECK_FALSE(nodeSpecValid("0.5", NodeCatalog::Scope::Project));
+  REQUIRE(specBlockPatch("tanh").ok());
+  CHECK(*specBlockPatch("tanh") == "atom:tanh");
+  // The value block (what a literal is now): an output-only block, no main input.
+  MainPorts mp = mainPortsOf(graph::subcircuitSignature(doc::valuePatch()), &doc::valuePatch(), false);
   CHECK(mp.in.empty());
   CHECK_FALSE(mp.out.empty());
-  // `* 2`: in and out.
-  auto twice = specDevice("* 2");
-  REQUIRE(twice.ok());
-  d.patch = twice->patch;
-  d.source = std::make_shared<const doc::UserPatch>(doc::UserPatch{twice->text, nullptr});
-  r = library().resolve(d);
-  REQUIRE(r != nullptr);
-  REQUIRE_MESSAGE(r->error.empty(), r->error);
-  mp = mainPortsOf(graph::subcircuitSignature(*r->root()), r->root(), false);
+  // An atom block (`mul`): in and out.
+  const graph::Patch* mul = doc::atomBlockPatch("mul");
+  REQUIRE(mul != nullptr);
+  mp = mainPortsOf(graph::subcircuitSignature(*mul), mul, false);
   CHECK_FALSE(mp.in.empty());
   CHECK_FALSE(mp.out.empty());
   // An input-only signature (no device has one: describeDevice needs an output) has no main output.
@@ -355,7 +345,7 @@ TEST_CASE("node search: fuzzy over names, aliases and descriptions; categories; 
     const auto hits = searchNodes(*c, q, tab, f);
     return hits.empty() ? std::string() : c->entries[hits.front().entry].name;
   };
-  CHECK(first("eqe") == "EQ Eight");       // a subsequence, word starts
+  CHECK(first("wvs") == "Wavetable Synth");  // a subsequence, word starts
   CHECK(first("utl") == "Utility");
   CHECK(first("vca") == "VCA");
   CHECK(first("phase acc") == "Phase Accumulator");  // every term
@@ -378,7 +368,7 @@ TEST_CASE("node search: fuzzy over names, aliases and descriptions; categories; 
   // Recent: newest first.
   clearRecentNodes();
   noteRecentNode("module:vca");
-  noteRecentNode("device:utility");
+  noteRecentNode("module:utility");
   noteRecentNode("module:vca");
   const auto rec = recentNodes();
   const auto hits = searchNodes(*c, "", NodeTab::Recent, NodeFilter::None, rec);
@@ -624,14 +614,14 @@ TEST_CASE("node menu: every gesture through real dispatch, animated, poisoned fr
   CHECK(u.history() == ++h);
   CHECK(u.device(inserted) == nullptr);
   // Shift-splice a free block into the LFO's wire, frames during the drag.
-  REQUIRE(u.view().addFreeDevice(u.keys, "saturator"));
+  REQUIRE(u.view().addFreeDevice(u.keys, "module:saturator"));
   settle();
   h = u.history();
   {
     const doc::DeviceId s2 = u.newest();
     doc::WireId lw;
     for (const doc::Wire& w : u.wires())
-      if (w.from == u.lfo && w.port == "lfo") lw = w.id;
+      if (w.from == u.lfo && w.port == "y") lw = w.id;
     REQUIRE(lw.valid());
     const Vec2 on = u.onCable(u.wireEdge(lw));
     const Vec2 from = u.centre(s2);
@@ -649,7 +639,7 @@ TEST_CASE("node menu: every gesture through real dispatch, animated, poisoned fr
   // Ctrl-release: the LFO's jack onto the Saturator's input with Ctrl held; frames while the cable is held; a click
   // on the Utility's input; then another Ctrl-release and Esc.
   {
-    const Vec2 jack = u.outPin(u.lfo, "lfo");
+    const Vec2 jack = u.outPin(u.lfo, "y");
     const Vec2 satIn = u.inPin(u.sat, "x");
     u.d.down(jack);
     frame();
@@ -680,7 +670,7 @@ TEST_CASE("node menu: every gesture through real dispatch, animated, poisoned fr
   {
     const graph::Point2 below{at.x + 60.0f, at.y + 190.0f};
     u.d.keyDown('w');
-    const Vec2 g = u.inPin(u.util, "gain");
+    const Vec2 g = u.inPin(u.util, "g");
     u.d.down(g);
     frame();
     for (int k = 1; k <= 5; ++k) {
@@ -701,7 +691,22 @@ TEST_CASE("node menu: every gesture through real dispatch, animated, poisoned fr
   }
   // A cable dropped on empty space: the menu; Esc closes it, the canvas has the keys again, nothing changed.
   {
-    u.d.drag(u.outPin(u.sat, "out"), u.dev({at.x + 260.0f, at.y + 40.0f}), 6);
+    // (GU.11: the spawned LFO is a module — its panel is large: the drop point is searched clear of every block)
+    graph::Point2 drop{at.x + 260.0f, at.y + 40.0f};
+    {
+      const ui::IRect cr = u.view().canvas().rect();
+      auto clear = [&](graph::Point2 w) {
+        const Vec2 p = u.dev(w);
+        return p.x > cr.x + 20 && p.y > cr.y + 20 && p.x < cr.right() - 20 && p.y < cr.bottom() - 20 &&
+               u.view().canvas().nodeAt(p) == kNone && u.view().canvas().edgeAt(p) == kNone;
+      };
+      bool found = clear(drop);
+      for (float dy = 0.0f; !found && dy <= 300.0f; dy += 20.0f)
+        for (float dx = 260.0f; !found && dx >= -200.0f; dx -= 20.0f)
+          if (clear({at.x + dx, at.y + 40.0f + dy})) drop = {at.x + dx, at.y + 40.0f + dy}, found = true;
+      REQUIRE(found);
+    }
+    u.d.drag(u.outPin(u.sat, "out"), u.dev(drop), 6);
     frame();
     REQUIRE(u.menu() != nullptr);
     u.d.press("Escape");
@@ -796,7 +801,7 @@ TEST_CASE("project patch: an undo during a block drag or a cable drag ends the g
     REQUIRE(u.device(made) != nullptr);
     // pass 0: the block itself; pass 1: a cable out of its output.
     const Vec2 from = pass == 0 ? u.centre(made) : u.outPin(made, "out");
-    const Vec2 to = u.inPin(u.util, "gain");
+    const Vec2 to = u.inPin(u.util, "g");
     u.d.down(from);
     frame();
     for (int k = 1; k <= 3; ++k) {
@@ -862,7 +867,7 @@ TEST_CASE("node menu: a new connection is the real cable on the pointer — snap
   auto frames = [&](int n) {
     for (int i = 0; i < n; ++i) u.d.step();
   };
-  const Vec2 jack = u.outPin(u.lfo, "lfo");
+  const Vec2 jack = u.outPin(u.lfo, "y");
   const Vec2 satIn = u.inPin(u.sat, "x");
   // Out of the LFO's jack: a cable from the port, its free end at the pointer.
   u.d.down(jack);
@@ -877,7 +882,10 @@ TEST_CASE("node menu: a new connection is the real cable on the pointer — snap
     REQUIRE(p.size() >= 2);
     const graph::Point2 port = p.front(), end = p.back();
     const Node& ln = u.pp().nodes[u.node(u.lfo)];
-    CHECK(std::abs(port.x - (ln.x + ln.w)) <= 0.01f);
+    // (TX.orbit-ports: the LFO module's main output orbits its outline: the cable starts where the port is drawn)
+    const graph::Point2 pw = u.view().canvas().portWorld(u.node(u.lfo), static_cast<uint32_t>(ln.output("y")), false);
+    CHECK(std::abs(port.x - pw.x) <= 0.01f);
+    CHECK(std::abs(port.y - pw.y) <= 0.01f);
     CHECK(std::abs(u.dev(end).x - mid.x) <= 1.0f);
     CHECK(std::abs(u.dev(end).y - mid.y) <= 1.0f);
     CHECK(cv.looseCableMoving());  // it swings after the pointer
@@ -937,7 +945,7 @@ TEST_CASE("node menu: a new connection is the real cable on the pointer — snap
   // W + drag out of the Utility's gain: a cable out of the param, snapped onto a block's main output.
   u.d.advance(2.0);
   u.d.keyDown('w');
-  u.d.down(u.inPin(u.util, "gain"));
+  u.d.down(u.inPin(u.util, "g"));
   CHECK(cv.looseCable());
   u.d.move(u.centre(u.synth));
   u.d.step();
@@ -1013,7 +1021,9 @@ TEST_CASE("node menu: open animation then idle; spawn mark; the insert cable sho
   }
   // A cable from the Saturator's output dropped on empty space: the Utility it spawns has its input pin there.
   {
-    const graph::Point2 drop{at.x + 40.0f, at.y + 24.0f};
+    // (GU.11: the Utility module is taller than the stock panel was: dropped lower, it fits below the band's title strip
+    // — placeAt never puts a block above it)
+    const graph::Point2 drop{at.x + 40.0f, at.y + 140.0f};
     u.d.drag(u.outPin(u.sat, "out"), u.dev(drop), 6);
     REQUIRE(u.menu() != nullptr);
     u.pick("utility", "Utility");
@@ -1022,8 +1032,13 @@ TEST_CASE("node menu: open animation then idle; spawn mark; the insert cable sho
     const int32_t k = n.input(u.view().mainPorts(made).in);
     REQUIRE(k >= 0);
     const graph::Point2 pin = inPortPoint(n, static_cast<size_t>(k));  // TX.orbit-ports: its orbiting input, settled
-    CHECK(std::abs(pin.x - drop.x) <= 1.0f);
-    CHECK(std::abs(pin.y - drop.y) <= 1.0f);
+    CAPTURE(pin.x);
+    CAPTURE(pin.y);
+    CAPTURE(drop.x);
+    CAPTURE(drop.y);
+    // (an orbiting port settles in whole-unit nudges: within a unit and a half)
+    CHECK(std::abs(pin.x - drop.x) <= 1.5f);
+    CHECK(std::abs(pin.y - drop.y) <= 1.5f);
   }
   // A small window: the menu fits inside it.
   u.d.resize(640, 420);
@@ -1040,7 +1055,7 @@ TEST_CASE("node menu: open animation then idle; spawn mark; the insert cable sho
   CHECK(r.bottom() <= 420);
   u.d.press("Escape");
 }
-TEST_CASE("node menu: a typed spec places that one node (`0.5`, `* 2`); an instrument is a block like any (TX.all-free)") {
+TEST_CASE("node menu: a typed spec places that one node (an atom; `* 2` has none); an instrument is a block like any (TX.all-free)") {
   Ui u;
   const graph::Point2 at = u.emptyWorld();
   const size_t h0 = u.history();
@@ -1048,29 +1063,34 @@ TEST_CASE("node menu: a typed spec places that one node (`0.5`, `* 2`); an instr
   REQUIRE(u.d.press("Tab") == KeyResult::Widget);
   u.d.type("* 2");
   REQUIRE(u.menu() != nullptr);
-  CHECK(u.menu()->specOffered());
+  CHECK_FALSE(u.menu()->specOffered());  // GU.11: an operand has no block of its own (wire a Value block)
+  // A typed atom (an operator's symbol: no entry is named so): its atom block.
+  for (int i = 0; i < 2; ++i) u.d.press("Backspace");  // "*"
+  u.d.step();
+  REQUIRE(u.menu()->specOffered());
   CHECK(u.menu()->rows().front().kind == NodeMenu::Row::Kind::Spec);
+  u.menu()->setHighlighted(0);
   u.d.press("Return");
   u.d.step();
   CHECK(u.history() == h0 + 1);
   const doc::DeviceId mul = u.newest();
   REQUIRE(u.device(mul) != nullptr);
-  CHECK(u.device(mul)->edited());
+  CHECK(u.device(mul)->patch == "atom:mul");
   CHECK(all_free::offPath(*u.ctx.doc(), mul));
-  CHECK(u.device(mul)->name == "* 2");
   const MainPorts mp = u.view().mainPorts(mul);
   CHECK_FALSE(mp.in.empty());
   CHECK_FALSE(mp.out.empty());
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
-  // A stock instrument: TX.all-free — a block like any other, placed where the menu opened, off the path until cabled
-  // (the path keeps its instrument). One step.
+  // An instrument module: TX.all-free — a block like any other, placed where the menu opened, off the path until
+  // cabled (the path keeps its instrument). One step.
   u.d.move(u.dev(at));
   REQUIRE(u.d.press("Tab") == KeyResult::Widget);
   u.pick("operator", "Operator");
   CHECK(u.history() == h0 + 2);
   const doc::DeviceId op = u.newest();
   REQUIRE(u.device(op) != nullptr);
-  CHECK(u.device(op)->patch == "operator");
+  CHECK(u.device(op)->name == "Operator");
+  CHECK(doc::isGroupDevice(*u.device(op)));
   CHECK(all_free::offPath(*u.ctx.doc(), op));
   CHECK(u.path(u.keys).front() == u.synth);
   REQUIRE(u.ctx.undo());
@@ -1113,15 +1133,15 @@ TEST_CASE("node menu: W + drag out of a param pin is a backwards cable — onto 
   Ui u;
   const size_t h0 = u.history();
   // The Utility's gain has a pin (its LFO wire); W held, dragged onto the Saturator's output: that output drives it.
-  const Vec2 gain = u.inPin(u.util, "gain");
+  const Vec2 gain = u.inPin(u.util, "g");
   u.d.keyDown('w');
   u.d.drag(gain, u.outPin(u.sat, "out"), 6);
   u.d.keyUp('w');
   CHECK(u.history() == h0 + 1);
-  CHECK(u.wired(u.sat, "out", u.util, "gain"));
+  CHECK(u.wired(u.sat, "out", u.util, "g"));
   // Onto empty space: the menu offers sources first; the spawned node's main output drives the param.
   u.d.keyDown('w');
-  u.d.drag(u.inPin(u.util, "gain"), u.dev(u.emptyWorld()), 6);
+  u.d.drag(u.inPin(u.util, "g"), u.dev(u.emptyWorld()), 6);
   u.d.keyUp('w');
   NodeMenu* m = u.menu();
   REQUIRE(m != nullptr);
@@ -1136,7 +1156,7 @@ TEST_CASE("node menu: W + drag out of a param pin is a backwards cable — onto 
   REQUIRE(u.device(acc) != nullptr);
   CHECK(doc::isGroupDevice(*u.device(acc)));  // GU.4: the Phase Accumulator module's group
   CHECK(u.device(acc)->name == "Phase Accumulator");
-  CHECK(u.wired(acc, u.view().mainPorts(acc).out, u.util, "gain"));
+  CHECK(u.wired(acc, u.view().mainPorts(acc).out, u.util, "g"));
   for (int i = 0; i < 2; ++i) REQUIRE(u.ctx.undo());
   CHECK(u.history() == h0);
 }
@@ -1172,8 +1192,8 @@ TEST_CASE("node menu: Z over a chain cable inserts a VCA at 1 in the chain; over
   CHECK(all_free::offPath(*u.ctx.doc(), vca));
   CHECK(doc::findWire(*u.ctx.doc(), u.lfoWire) == nullptr);
   const MainPorts mp = u.view().mainPorts(vca);
-  CHECK(u.wired(u.lfo, "lfo", vca, mp.in));
-  CHECK(u.wired(vca, mp.out, u.util, "gain"));
+  CHECK(u.wired(u.lfo, "y", vca, mp.in));
+  CHECK(u.wired(vca, mp.out, u.util, "g"));
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
   // Z over nothing does nothing.
   u.d.move(u.dev(u.emptyWorld()));
@@ -1196,28 +1216,24 @@ TEST_CASE("node menu: Tab over a cable inserts the chosen node — in and out, o
   const doc::DeviceId s2 = u.newest();
   const MainPorts mp = u.view().mainPorts(s2);
   REQUIRE_FALSE(mp.in.empty());
-  CHECK(u.wired(u.lfo, "lfo", s2, mp.in));
-  CHECK(u.wired(s2, mp.out, u.util, "gain"));
+  CHECK(u.wired(u.lfo, "y", s2, mp.in));
+  CHECK(u.wired(s2, mp.out, u.util, "g"));
   CHECK(doc::findWire(*u.ctx.doc(), u.lfoWire) == nullptr);
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
-  // Output only: `0.5` typed into the cable Saturator → gain: the constant drives the gain, the Saturator's wire goes.
+  // Output only: a Value block put into the cable Saturator → g: the value drives g, the Saturator's wire goes.
   doc::WireId into;
   for (const doc::Wire& w : u.wires())
     if (w.from == s2 && w.to == u.util) into = w.id;
   REQUIRE(into.valid());
   u.d.move(u.onCable(u.wireEdge(into)));
   REQUIRE(u.d.press("Tab") == KeyResult::Widget);
-  u.d.type("0.5");
   REQUIRE(u.menu() != nullptr);
-  REQUIRE(u.menu()->specOffered());
-  u.d.press("Return");
-  u.d.step();
-  u.view().sync();
+  u.pick("value", "Value");
   CHECK(u.history() == h0 + 2);
   const doc::DeviceId half = u.newest();
   REQUIRE(u.device(half) != nullptr);
   CHECK(u.view().mainPorts(half).in.empty());
-  CHECK(u.wired(half, u.view().mainPorts(half).out, u.util, "gain"));
+  CHECK(u.wired(half, u.view().mainPorts(half).out, u.util, "g"));
   for (const doc::Wire& w : u.wires()) CHECK_FALSE((w.from == s2 && w.to == u.util));
   for (const doc::Wire& w : u.wires()) CHECK_FALSE(w.to == half);  // nothing into it
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
@@ -1239,7 +1255,7 @@ TEST_CASE("node menu: Tab over a cable inserts the chosen node — in and out, o
 
 TEST_CASE("node menu: Shift-drag a block over a cable highlights it and splices the block in; Ctrl+Delete dissolves it") {
   Ui u;
-  REQUIRE(u.view().addFreeDevice(u.keys, "saturator"));
+  REQUIRE(u.view().addFreeDevice(u.keys, "module:saturator"));
   u.d.step();
   u.view().sync();
   const doc::DeviceId s2 = u.newest();
@@ -1257,8 +1273,8 @@ TEST_CASE("node menu: Shift-drag a block over a cable highlights it and splices 
   u.view().sync();
   CHECK(u.history() == h0 + 1);
   const MainPorts mp = u.view().mainPorts(s2);
-  CHECK(u.wired(u.lfo, "lfo", s2, mp.in));
-  CHECK(u.wired(s2, mp.out, u.util, "gain"));
+  CHECK(u.wired(u.lfo, "y", s2, mp.in));
+  CHECK(u.wired(s2, mp.out, u.util, "g"));
   CHECK(doc::findWire(*u.ctx.doc(), u.lfoWire) == nullptr);
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
   // Dissolve (Ctrl+Delete on the selected block): it goes; the LFO drives the gain again. One step.
@@ -1273,7 +1289,7 @@ TEST_CASE("node menu: Shift-drag a block over a cable highlights it and splices 
   }
   CHECK(u.history() == h0 + 2);
   CHECK(u.device(s2) == nullptr);
-  CHECK(u.wired(u.lfo, "lfo", u.util, "gain"));
+  CHECK(u.wired(u.lfo, "y", u.util, "g"));
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
   // A chain block: its output's wire is fed by the block before it in the chain (the chain closes up by itself).
   {
@@ -1282,7 +1298,7 @@ TEST_CASE("node menu: Shift-drag a block over a cable highlights it and splices 
     REQUIRE(u.ctx.store().dispatch(e->command).ok());
     REQUIRE(u.view().dissolve(u.util));
     CHECK(u.device(u.util) == nullptr);
-    CHECK(u.wired(u.synth, "out", u.lfo, "x"));
+    CHECK(u.wired(u.synth, "y", u.lfo, "x"));
     CHECK(u.history() == h0 + 4);
     REQUIRE(u.ctx.undo());
     REQUIRE(u.ctx.undo());
@@ -1296,7 +1312,7 @@ TEST_CASE("node menu: a cable released with Ctrl held keeps a new one on the poi
   Ui u;
   const size_t h0 = u.history();
   // The LFO's jack onto the Saturator's input pin, Ctrl held: connected, and a cable from the jack stays on the pointer.
-  const Vec2 jack = u.outPin(u.lfo, "lfo");
+  const Vec2 jack = u.outPin(u.lfo, "y");
   const Vec2 satIn = u.inPin(u.sat, "x");
   u.d.down(jack);
   u.d.move({(jack.x + satIn.x) * 0.5f, (jack.y + satIn.y) * 0.5f});
@@ -1304,7 +1320,7 @@ TEST_CASE("node menu: a cable released with Ctrl held keeps a new one on the poi
   u.d.up(satIn, PointerButton::Left, mod::kCtrl);
   u.d.step();
   CHECK(u.history() == h0 + 1);
-  CHECK(u.wired(u.lfo, "lfo", u.sat, "x"));
+  CHECK(u.wired(u.lfo, "y", u.sat, "x"));
   CHECK(u.view().canvas().stickyWire());
   // A plain click on the Utility's input wires it too and ends.
   const Vec2 utilIn = u.inPin(u.util, "x");
@@ -1312,12 +1328,13 @@ TEST_CASE("node menu: a cable released with Ctrl held keeps a new one on the poi
   u.d.click(utilIn);
   u.d.step();
   CHECK(u.history() == h0 + 2);
-  CHECK(u.wired(u.lfo, "lfo", u.util, "x"));
+  CHECK(u.wired(u.lfo, "y", u.util, "x"));
   CHECK_FALSE(u.view().canvas().stickyWire());
   // A plain release ends (no cable kept).
-  u.d.drag(u.outPin(u.lfo, "lfo"), u.inPin(u.synth, "notes") , 4);
+  u.d.drag(u.outPin(u.lfo, "y"), u.inPin(u.synth, "x") , 4);
   CHECK_FALSE(u.view().canvas().stickyWire());
-  for (int i = 0; i < 2; ++i) REQUIRE(u.ctx.undo());
+  // (GU.11: the instrument group's main input takes it: wired, one more step)
+  while (u.history() > h0) REQUIRE(u.ctx.undo());
   CHECK(u.history() == h0);
 }
 
