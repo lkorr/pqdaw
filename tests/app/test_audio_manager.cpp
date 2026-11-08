@@ -9,7 +9,10 @@
 //   - ASIO driver requests through the real AsioDevice and a fake driver (tests/engine/fake_asio_driver.h): a reset
 //     with a new buffer size re-prepares the block adapter; a driver rate change silences the output and the
 //     manager rebuilds the engine at the driver's rate;
-//   - the test tone (RT-safe, level-clamped) and the CPU meter (0 while the stream is suspended).
+//   - the test tone (RT-safe, level-clamped) and the CPU meter (0 while the stream is suspended);
+//   - AU.stream: no suspend while the app is in the foreground (only after a background idle); every driver start
+//     pre-rolls silence (the engine and its transport wait) until the driver has settled; an ASIO reset while audio
+//     sounds fades out, drains, and pre-rolls again; the stream trace records it all.
 // Real devices: opt-in with PQ_TEST_AUDIO_DEVICE=1 (short, quiet tones ≤ −30 dBFS), never in the default tier.
 #include <doctest/doctest.h>
 
@@ -30,6 +33,7 @@
 #include <vector>
 
 #include "../engine/fake_asio_driver.h"
+#include "../engine/loopback_probe.h"
 #include "playback_fixture.h"
 #include "pq/app/audio_manager.h"
 #include "pq/app/audio_output.h"
@@ -39,6 +43,7 @@
 #include "pq/core/alloc_trap.h"
 #include "pq/engine/asio_device.h"
 #include "pq/engine/null_device.h"
+#include "pq/engine/stream_trace.h"
 
 using namespace pq;
 using namespace pq::app;
@@ -225,6 +230,19 @@ bool waitUntil(AudioDeviceManager& m, Pred pred, double seconds = 10.0) {
 bool runningWith(AudioDeviceManager& m, const AudioSettings& s) {
   const views::AudioStatus st = m.status();
   return st.state == views::AudioStatus::State::Running && st.sampleRate == s.sampleRate && st.bufferFrames == s.bufferFrames;
+}
+
+// AU.stream: a cold start plays silence until the driver has settled; pumps a manual device through it (each tick
+// is one device callback). Returns the callbacks it took.
+template <class Tick>
+int throughPreroll(AudioOutput& out, Tick tick, int maxCallbacks = 4000) {
+  int n = 0;
+  while (out.prerolling() && n < maxCallbacks) {
+    tick();
+    ++n;
+  }
+  CHECK_FALSE(out.prerolling());
+  return n;
 }
 
 // The playhead moves (the engine runs on the device's thread) by at least `ticks` within 3 s.
@@ -528,6 +546,7 @@ TEST_CASE("audio output: the test tone is RT-safe, clamped to -12 dBFS and phase
     dev = hw.current;
   }
   REQUIRE(dev != nullptr);
+  CHECK(throughPreroll(out, [&] { dev->null().processBlock(); }) > 0);
   auto peakOf = [&](int blocks, std::vector<float>* keep = nullptr) {
     float pk = 0.0f;
     for (int b = 0; b < blocks; ++b) {
@@ -561,11 +580,14 @@ TEST_CASE("audio output: the test tone is RT-safe, clamped to -12 dBFS and phase
   CHECK(peakOf(5) == 0.0f);
 }
 
-TEST_CASE("manager: the CPU meter reads the callback load while running and 0 once the idle stream is suspended") {
+TEST_CASE("manager: the stream keeps running while the app is in the foreground; it suspends only after the "
+          "background idle (the CPU meter then reads 0); the foreground restarts it") {
   FakeHardware hw;
   const fs::path dir = tempDir("cpu");
   auto link = makeLink(48000.0, 50.0f);
-  AudioDeviceManager m(*link, AudioSettings{}, hw.hooks((dir / "settings.json").string()));
+  ManagerHooks hooks = hw.hooks((dir / "settings.json").string());
+  hooks.factory.backgroundSuspendSeconds = 0.5;
+  AudioDeviceManager m(*link, AudioSettings{}, hooks);
   REQUIRE(waitUntil(m, [&] { return m.status().state == views::AudioStatus::State::Running; }));
   link->play(0);
   (void)m.cpuLoad();
@@ -575,13 +597,28 @@ TEST_CASE("manager: the CPU meter reads the callback load while running and 0 on
   CHECK(load > 0.0);
   CHECK(load < 100.0);
   link->stop();
-  // Quiet → the engine sleeps (50 ms) → the output stops the stream after kSuspendAfterSeconds.
+  // AU.stream: quiet → the engine sleeps (50 ms); in the foreground the stream keeps running (it used to stop after
+  // 1 s, so every Play restarted the driver).
+  REQUIRE(waitUntil(m, [&] { return link->engine().asleep(); }));
+  CHECK_FALSE(waitUntil(m, [&] { return m.status().state == views::AudioStatus::State::Suspended; }, 2.0));
+  CHECK(m.status().state == views::AudioStatus::State::Running);
+  CHECK(m.output().suspensions() == 0);
+  // In the background, after backgroundSuspendSeconds of the engine asleep: suspended.
+  const auto bg = clock_t_::now();
+  m.output().setForeground(false);
   REQUIRE(waitUntil(m, [&] { return m.status().state == views::AudioStatus::State::Suspended; }, 15.0));
+  CHECK(std::chrono::duration<double>(clock_t_::now() - bg).count() >= 0.5);
   CHECK(m.cpuLoad() == 0.0);
-  CHECK(m.output().suspensions() >= 1);
-  // A wake (play) restarts it.
+  CHECK(m.output().suspensions() == 1);
+  // Back in the foreground: it restarts at once (and pre-rolls while the user reaches for Play).
+  m.output().setForeground(true);
+  REQUIRE(waitUntil(m, [&] { return m.status().state == views::AudioStatus::State::Running; }));
+  // In the background again, a wake (play) restarts a suspended stream too.
+  m.output().setForeground(false);
+  REQUIRE(waitUntil(m, [&] { return m.status().state == views::AudioStatus::State::Suspended; }, 15.0));
   link->play(0);
   REQUIRE(waitUntil(m, [&] { return m.status().state == views::AudioStatus::State::Running; }));
+  CHECK(advances(*link));
 }
 
 // ---- ASIO driver requests through the real AsioDevice -----------------------------------------------------------------
@@ -616,6 +653,9 @@ TEST_CASE("asio: a driver reset with a new buffer size re-prepares the block ada
     for (int i = 0; i < n; ++i) drv.tick(i & 1);
   };
   const uint64_t blocks0 = link->engine().stats().blocks;
+  int half = 0;
+  CHECK(throughPreroll(m.output(), [&] { drv.tick(half++ & 1); }) > 0);
+  CHECK(link->engine().stats().blocks == blocks0);  // AU.stream: the pre-roll does not run the engine
   ticks(8);
   CHECK(link->engine().stats().blocks == blocks0 + 8 * 256 / 64);
   // Capabilities come from the open driver.
@@ -634,6 +674,8 @@ TEST_CASE("asio: a driver reset with a new buffer size re-prepares the block ada
   CHECK(m.status().bufferFrames == 128);
   CHECK(m.output().config().bufferFrames == 128);
   CHECK_FALSE(m.output().status().rateMismatch);
+  CHECK(m.output().prerolls() == 2);  // the driver's reset is a cold start
+  (void)throughPreroll(m.output(), [&] { drv.tick(half++ & 1); });
   const uint64_t blocks1 = link->engine().stats().blocks;
   ticks(8);
   CHECK(link->engine().stats().blocks == blocks1 + 8 * 128 / 64);  // direct mode at the new size
@@ -650,6 +692,7 @@ TEST_CASE("asio: a driver reset with a new buffer size re-prepares the block ada
   }));
   CHECK(m.settings().sampleRate == 96000);
   CHECK(m.rateChanges() == 1);
+  (void)throughPreroll(m.output(), [&] { drv.tick(half++ & 1); });
   const uint64_t blocks2 = link->engine().stats().blocks;
   ticks(4);
   CHECK(link->engine().stats().blocks > blocks2);
@@ -657,7 +700,279 @@ TEST_CASE("asio: a driver reset with a new buffer size re-prepares the block ada
   CHECK(engine::AsioDevice().drivers().ok());  // (the registry list still works with a driver loaded)
 }
 
+// ---- AU.stream: the cold-start pre-roll and the fade before a driver reset --------------------------------------------
+
+TEST_CASE("output: a cold start pre-rolls silence until the driver has settled; Play pressed meanwhile starts with the "
+          "first block the engine runs; an xrun restarts the settling; the pre-roll is bounded") {
+  FakeHardware hw;
+  hw.manual = true;
+  auto link = makeLink(48000.0, 0.0f);
+  OutputConfig c;
+  c.bufferFrames = 256;
+  AudioOutput out(link->engine(), c, hw.factory());
+  const auto end = clock_t_::now() + std::chrono::seconds(10);
+  while (out.status().state != OutputStatus::State::Running && clock_t_::now() < end)
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  REQUIRE(out.status().state == OutputStatus::State::Running);
+  FakeDevice* dev = nullptr;
+  {
+    std::lock_guard lock(hw.m);
+    dev = hw.current;
+  }
+  REQUIRE(dev != nullptr);
+  REQUIRE(out.prerolling());
+  CHECK(link->engine().audioStopped());  // the engine waits offline
+  out.setTestTone(true, -24.0f, 1000.0f);  // sounding sources wait for the pre-roll too
+  link->play(0);                           // Play during the cold start: deferred, not lost
+  const uint64_t blocks0 = link->engine().stats().blocks;
+  const uint64_t trace0 = engine::streamTrace().head();
+  // The fake reports one buffer of latency: target = max(256 + 4 × 256, 0.25 s) = 12000 frames = 47 callbacks, the
+  // last kPrerollCleanBuffers of them clean. An xrun in the 45th (seen by the 46th: the device records it after the
+  // callback) restarts the clean count: settled at the 50th.
+  int n = 0;
+  float peak = 0;
+  while (out.prerolling() && n < 1000) {
+    CHECK(alloc_trap::countRtViolations([&] { dev->null().processBlock(0, false, n == 44); }) == 0);
+    for (uint32_t i = 0; i < 256; ++i) peak = std::max(peak, std::fabs(dev->null().output(0)[i]));
+    ++n;
+  }
+  CHECK(peak == 0.0f);                                  // silence throughout
+  CHECK(link->engine().stats().blocks == blocks0);      // the engine (and its transport) did not run
+  CHECK(n == 50);
+  CHECK(n * 256 >= std::lround(AudioOutput::kPrerollSeconds * 48000));
+  CHECK_FALSE(link->engine().audioStopped());           // online from the pre-roll's end
+  // The next callback runs the engine: the transport starts at 0 now, and the tone sounds.
+  dev->null().processBlock();
+  CHECK(link->engine().stats().blocks == blocks0 + 256 / 64);
+  float after = 0;
+  for (uint32_t i = 0; i < 256; ++i) after = std::max(after, std::fabs(dev->null().output(0)[i]));
+  CHECK(after > 0.01f);
+  CHECK(link->playhead().playing);
+  CHECK(link->playhead().tick < kPpq / 4);  // from 0, one callback in (not ahead by the pre-roll's length)
+  // The trace: PrerollBegin (before this window), PrerollEnd settled after 50 buffers.
+  std::vector<engine::TraceEvent> ev;
+  (void)engine::streamTrace().read(trace0, ev);
+  bool ended = false;
+  for (const engine::TraceEvent& e : ev)
+    if (e.kind == engine::TraceKind::PrerollEnd) {
+      ended = true;
+      CHECK(e.a == 50);
+      CHECK(e.flags == 0);
+    }
+  CHECK(ended);
+
+  // Bounded: a device that xruns on every buffer settles never; the engine starts after kPrerollMaxSeconds anyway.
+  out.reconfigure(c);
+  const auto end2 = clock_t_::now() + std::chrono::seconds(10);
+  FakeDevice* dev2 = nullptr;
+  while (clock_t_::now() < end2) {
+    {
+      std::lock_guard lock(hw.m);
+      dev2 = hw.opens >= 2 ? hw.current : nullptr;
+    }
+    if (dev2 && out.status().state == OutputStatus::State::Running) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  REQUIRE(dev2 != nullptr);
+  REQUIRE(out.prerolling());
+  int m = 0;
+  while (out.prerolling() && m < 1000) {
+    dev2->null().processBlock(0, false, true);
+    ++m;
+  }
+  CHECK(m == static_cast<int>((std::lround(AudioOutput::kPrerollMaxSeconds * 48000) + 255) / 256));  // 188 callbacks
+  out.setTestTone(false, -24.0f, 1000.0f);
+}
+
+TEST_CASE("asio: a driver reset while audio sounds fades out and drains before the driver stops, then pre-rolls "
+          "silence before the engine runs again") {
+  test::FakeDriver drv;
+  drv.outType = test::a::kFloat32Lsb;  // read the driver's halves directly
+  drv.minSize = drv.maxSize = drv.prefSize = 256;
+  drv.outLatency = 512;
+  drv.sendRateChangeOnSet = false;
+  auto link = makeLink(48000.0, 0.0f);
+  DeviceFactory f;
+  f.create = [&drv](engine::Backend) -> Result<std::unique_ptr<engine::AudioDevice>> {
+    return std::unique_ptr<engine::AudioDevice>(std::make_unique<engine::AsioDevice>(test::fakeSource(drv)));
+  };
+  f.watchHardware = false;
+  f.allowEnvDisable = false;
+  OutputConfig c;
+  c.backend = engine::Backend::Asio;
+  c.device = "Fake ASIO";
+  c.bufferFrames = 256;
+  AudioOutput out(link->engine(), c, f);
+  const auto end = clock_t_::now() + std::chrono::seconds(10);
+  while (out.status().state != OutputStatus::State::Running && clock_t_::now() < end)
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  REQUIRE(out.status().state == OutputStatus::State::Running);
+  REQUIRE(drv.started);
+  int half = 0;
+  (void)throughPreroll(out, [&] { drv.tick(half++ & 1); });
+  out.setTestTone(true, -24.0f, 1000.0f);  // audio sounding
+  const float level = std::pow(10.0f, -24.0f / 20.0f);
+  // The driver's audio thread: a switch every ~1 ms (the test's own clock), recording what each half got.
+  std::atomic<bool> stopTicking{false};
+  std::vector<std::vector<float>> got;
+  got.reserve(1 << 14);
+  std::thread driverThread([&] {
+    std::vector<float> one(256);
+    while (!stopTicking.load()) {
+      if (drv.tickIfStarted(half & 1, one.data(), 256)) {
+        ++half;
+        if (got.size() < got.capacity()) got.push_back(one);
+      }
+      // About 1 ms per switch (a sleep would last a 15.6 ms timer tick).
+      for (const auto until = clock_t_::now() + std::chrono::milliseconds(1); clock_t_::now() < until;)
+        std::this_thread::yield();
+    }
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  const uint64_t trace0 = engine::streamTrace().head();
+  drv.cb->message(test::a::kMsgResetRequest, 0, nullptr, nullptr);
+  const auto t0 = clock_t_::now();
+  while (out.status().streamChanges == 0 && clock_t_::now() - t0 < std::chrono::seconds(10))
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  REQUIRE(out.status().streamChanges == 1);
+  CHECK(out.fades() == 1);
+  // Through the new pre-roll and a little beyond, then stop ticking.
+  while (out.prerolling() && clock_t_::now() - t0 < std::chrono::seconds(10))
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  stopTicking = true;
+  driverThread.join();
+  out.setTestTone(false, -24.0f, 1000.0f);
+  // What the driver was given: tone → a ramp to 0 (no step) → silence for ≥ latency + one buffer → (the stop, the
+  // reopen) → silence for the pre-roll → a ramp back up into the tone. Never a jump between the tone and 0.
+  REQUIRE(got.size() > 10);
+  std::vector<float> x;
+  for (const auto& b : got) x.insert(x.end(), b.begin(), b.end());
+  float maxStep = 0;
+  for (size_t i = 1; i < x.size(); ++i) maxStep = std::max(maxStep, std::fabs(x[i] - x[i - 1]));
+  // The tone's own slope (1 kHz) is level·2π/48 per sample; a 5 ms ramp adds level/240 at most.
+  CHECK(maxStep <= level * (2.0f * 3.14159265f / 48.0f + 1.0f / 240.0f) * 1.05f);
+  // Silence between the fade and the restart: the longest zero run covers the drain (512 + 256) and the pre-roll.
+  size_t run = 0, longest = 0;
+  for (float v : x) {
+    run = v == 0.0f ? run + 1 : 0;
+    longest = std::max(longest, run);
+  }
+  CHECK(longest >= 512 + 256 + static_cast<size_t>(std::lround(AudioOutput::kPrerollSeconds * 48000)));
+  // The trace tells the story in order.
+  std::vector<engine::TraceEvent> ev;
+  (void)engine::streamTrace().read(trace0, ev);
+  std::vector<engine::TraceKind> story;
+  for (const engine::TraceEvent& e : ev)
+    if (e.kind != engine::TraceKind::Buffer && e.kind != engine::TraceKind::Message) story.push_back(e.kind);
+  const std::vector<engine::TraceKind> want = {engine::TraceKind::Reopen,   engine::TraceKind::FadeOut,
+                                               engine::TraceKind::Stop,     engine::TraceKind::Stopped,
+                                               engine::TraceKind::Open,     engine::TraceKind::Reopened,
+                                               engine::TraceKind::PrerollBegin, engine::TraceKind::Start,
+                                               engine::TraceKind::Started,  engine::TraceKind::PrerollEnd};
+  CHECK(story == want);
+  for (const engine::TraceEvent& e : ev)
+    if (e.kind == engine::TraceKind::FadeOut) CHECK(e.flags == 0);  // drained, not timed out
+  engine::TraceFormat fmt;
+  MESSAGE(engine::describeStreamTrace(ev, 0, fmt));
+}
+
+
 // ---- Real devices (opt-in) ----------------------------------------------------------------------------------------
+
+// AU.stream (opt-in, PQ_TEST_ASIO_LOOPBACK=1; real hardware, inaudible): through the app's own AudioOutput on a real
+// driver (PQ_TEST_ASIO_DRIVER, default "FL Studio ASIO"), every cold start pre-rolls past the driver's start-up
+// glitch (FL Studio ASIO dips its output ≈ 125 ms into every stream: tests/engine/test_asio.cpp's loopback probe);
+// a -90 dBFS 1500 Hz test tone switched on during the pre-roll is tracked on the endpoint's loopback. Then the idle cost
+// of a running stream with the engine asleep: process CPU time over 10 s and the callback's own time.
+TEST_CASE("live: a real driver's cold start through AudioOutput pre-rolls past its start-up glitch; the idle cost of "
+          "a running stream (PQ_TEST_ASIO_LOOPBACK=1)") {
+  const char* env = std::getenv("PQ_TEST_ASIO_LOOPBACK");
+  if (env == nullptr || std::string(env) != "1") {
+    MESSAGE("skipped: set PQ_TEST_ASIO_LOOPBACK=1 to start a real ASIO driver with a -90 dBFS tone and record its endpoint");
+    return;
+  }
+  float peak = 0;
+  std::string err;
+  if (!test::endpointQuiet(&peak, &err)) {
+    MESSAGE("skipped: the default endpoint is playing other audio (peak " << peak << ") " << err);
+    return;
+  }
+  auto link = makeLink(48000.0, 50.0f);
+  OutputConfig c;
+  const char* be = std::getenv("PQ_TEST_LOOPBACK_BACKEND");
+  const bool wasapi = be && std::string(be) == "wasapi";
+  c.backend = wasapi ? engine::Backend::Wasapi : engine::Backend::Asio;
+  const char* drv = std::getenv("PQ_TEST_ASIO_DRIVER");
+  if (!wasapi) c.device = drv ? drv : "FL Studio ASIO";
+  c.bufferFrames = 256;
+  DeviceFactory f;
+  f.watchHardware = false;
+  f.allowEnvDisable = false;
+  for (int run = 0; run < 3; ++run) {
+    std::unique_ptr<AudioOutput> out;
+    test::ProbeCapture cap;
+    cap.run(2500, [&] {
+      out = std::make_unique<AudioOutput>(link->engine(), c, f);
+      out->setTestTone(true, -90.0f, 1500.0f);
+    });
+    REQUIRE(cap.error.empty());
+    REQUIRE(out->status().state == OutputStatus::State::Running);
+    const OutputStatus st = out->status();
+    out.reset();  // the tone sounds: a fade, then the stop
+    int anomalies = 0;
+    std::vector<double> times;
+    double toneAt = -1;
+    const std::string text = test::analyseTone(cap, 1500.0, std::pow(10.0f, -90.0f / 20.0f), &anomalies, &times, &toneAt);
+    MESSAGE("run " << run << ": " << st.deviceName << ", " << st.stream.sampleRate << " Hz, " << st.stream.bufferFrames
+                   << " frames, output latency " << st.stream.latencyFrames << "\n" << text);
+    CHECK(toneAt > 0);
+    // FL Studio ASIO's start-up dip sits at a fixed place in its output: samples ≈ 6016-6272 (125 ms) of every stream.
+    // The pre-roll (≥ 12000 frames of output) puts the tone's first sample after it, so the dip falls in the silence.
+    // Its steady-state dropouts (5-10 ms of zeros every few seconds, whether or not the stream just started) can land
+    // anywhere, near the start too: they are listed above, not checked.
+    CHECK(toneAt > 250.0);
+  }
+  // Idle: a running stream with the engine asleep, against the same process with no stream.
+  auto cpu = [] {
+    FILETIME a, b, k, u;
+    GetProcessTimes(GetCurrentProcess(), &a, &b, &k, &u);
+    auto v = [](FILETIME t) { return static_cast<double>(static_cast<uint64_t>(t.dwHighDateTime) << 32 | t.dwLowDateTime) * 1e-7; };
+    return v(k) + v(u);
+  };
+  double baseline = 0;
+  {
+    const double c0 = cpu();
+    const auto w0 = clock_t_::now();
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+    baseline = 100.0 * (cpu() - c0) / std::chrono::duration<double>(clock_t_::now() - w0).count();
+  }
+  {
+    AudioOutput out(link->engine(), c, f);
+    const auto end = clock_t_::now() + std::chrono::seconds(10);
+    while ((out.status().state != OutputStatus::State::Running || out.prerolling()) && clock_t_::now() < end)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    REQUIRE(out.status().state == OutputStatus::State::Running);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    REQUIRE(link->engine().asleep());
+    const engine::CallbackStats::Snapshot s0 = out.callbackStats();
+    const double c0 = cpu();
+    const auto w0 = clock_t_::now();
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+    const double used = cpu() - c0;
+    const double wall = std::chrono::duration<double>(clock_t_::now() - w0).count();
+    const engine::CallbackStats::Snapshot s1 = out.callbackStats();
+    MESSAGE("idle, engine asleep, stream running (" << out.status().deviceName << ", " << out.status().stream.bufferFrames
+                                                    << " frames): process CPU " << 100.0 * used / wall
+                                                    << " % of one core over " << wall << " s (no stream: "
+                                                    << baseline << " %); callbacks "
+                                                    << (s1.callbacks - s0.callbacks) << ", mean callback "
+                                                    << s1.meanDurationUs << " us (period " << s1.periodUs << " us)");
+    CHECK(link->engine().asleep());
+    CHECK(out.suspensions() == 0);
+  }
+}
+
 
 TEST_CASE("live: switch WASAPI shared -> exclusive -> ASIO on this machine's devices with a quiet test tone "
           "(PQ_TEST_AUDIO_DEVICE=1)") {

@@ -555,15 +555,22 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
                  _wcsicmp(t.module.c_str(), L"kernel32.dll") == 0 || _wcsicmp(t.module.c_str(), L"KernelBase.dll") == 0 ||
                  _wcsicmp(t.module.c_str(), L"ucrtbase.dll") == 0;
         };
-        uint64_t ownCycles = uiCycles, foreignCycles = 0;
-        for (const ThreadCycles& t : threads) (ours(t) ? ownCycles : foreignCycles) += t.cycles;
+        // AU.stream: the audio stream keeps running while the app is in use (it used to stop after 1 s of engine sleep,
+        // and every Play then restarted the driver: a click on FL Studio ASIO). Its thread (WasapiDevice names it; an
+        // ASIO driver's thread is the driver's module) has its own budget: an asleep engine's buffers, ≈ 0.26 % of a
+        // core at 256 frames on WASAPI shared (190 wakes/s, mostly the wake and the endpoint calls).
+        auto audio = [](const ThreadCycles& t) { return t.description.rfind(L"pqdaw audio", 0) == 0; };
+        uint64_t ownCycles = uiCycles, audioCycles = 0, foreignCycles = 0;
+        for (const ThreadCycles& t : threads) (audio(t) ? audioCycles : ours(t) ? ownCycles : foreignCycles) += t.cycles;
         const double cpu = tsc ? ms(cycles) : coarseCpu;
         const double pct = 100.0 * cpu / wall, ownPct = 100.0 * ms(ownCycles) / wall;
-        const bool ok = frames == 0 && ownPct < 0.1;
+        const double audioPct = 100.0 * ms(audioCycles) / wall;
+        const bool ok = frames == 0 && ownPct < 0.1 && audioPct < 0.5;
         std::printf("idle check: %u frames drawn in %.2f s; pqdaw's threads %.3f ms CPU = %.4f %% of one core (UI thread "
-                    "%.3f ms); whole process %.3f ms = %.4f %% (GetProcessTimes: %.1f ms) -> %s\n",
-                    frames, wall * 1e-3, ms(ownCycles), ownPct, ms(uiCycles), cpu, pct, coarseCpu,
-                    ok ? "ok" : "FAILED (want 0 frames and < 0.1 % for pqdaw's threads)");
+                    "%.3f ms); the running audio stream %.3f ms = %.4f %%; whole process %.3f ms = %.4f %% "
+                    "(GetProcessTimes: %.1f ms) -> %s\n",
+                    frames, wall * 1e-3, ms(ownCycles), ownPct, ms(uiCycles), ms(audioCycles), audioPct, cpu, pct,
+                    coarseCpu, ok ? "ok" : "FAILED (want 0 frames, < 0.1 % for pqdaw's threads, < 0.5 % for the audio stream)");
         for (size_t i = 0; i < threads.size() && i < 6; ++i)
           std::printf("  thread %u [%ls]%s%ls: %.3f ms\n", threads[i].threadId, threads[i].module.c_str(),
                       threads[i].description.empty() ? "" : " ", threads[i].description.c_str(), ms(threads[i].cycles));
@@ -603,9 +610,14 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
     }
     case SDL_EVENT_WINDOW_FOCUS_LOST:
       if (shell_) shell_->cancelInteraction();
+      if (audio_) audio_->output().setForeground(false);  // AU.stream: the stream may suspend after a long background idle
+      return false;
+    case SDL_EVENT_WINDOW_MINIMIZED:
+      if (audio_) audio_->output().setForeground(false);
       return false;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:  // T5.10: network / removable places have no watch: rescan them now
       if (indexer_) indexer_->rescanUnwatched();
+      if (audio_) audio_->output().setForeground(true);  // AU.stream: a suspended stream starts (and pre-rolls) now
       return false;
     case SDL_EVENT_KEY_DOWN:
       return true;  // the shell's keys are all in its keymap; the test scenes' window keys (Esc quits, A animates) are off

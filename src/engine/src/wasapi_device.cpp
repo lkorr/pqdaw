@@ -24,6 +24,7 @@
 #include "pq/core/rt_scope.h"
 #include "pq/engine/callback_runner.h"
 #include "pq/engine/sample_convert.h"
+#include "pq/engine/stream_trace.h"
 #include "pq/engine/underrun_tracker.h"
 
 namespace pq::engine {
@@ -525,12 +526,20 @@ Result<StreamInfo> WasapiDevice::open(const StreamConfig& config, AudioCallback 
   // (frames written − IAudioClock position) and pqdaw --latency-test (loopback).
   const uint32_t streamLatencyFrames = hnsToFramesCeil(streamLatency, rate);
   info.latencyFrames = (m.exclusive ? m.period : m.endpointFrames) + streamLatencyFrames;
+  streamTrace().push(TraceKind::Open, 0, static_cast<int32_t>(m.period), rate, static_cast<float>(info.latencyFrames));
   return info;
 }
 
 void WasapiDevice::Impl::renderPeriods(BYTE* data, uint32_t periods, bool& pendingUnderrun) noexcept {  // RT-safe
   for (uint32_t k = 0; k < periods; ++k) {
     runner.run(nullptr, out, period, false, pendingUnderrun);
+    {  // AU.stream: the flight recorder (output 1's peak / first / last sample)
+      const float* o = out[0];
+      float peak = 0;
+      for (uint32_t i = 0; i < period; ++i) peak = std::max(peak, std::fabs(o[i]));
+      streamTrace().push(TraceKind::Buffer, static_cast<uint16_t>(kBufFilled | (pendingUnderrun ? kBufMissed : 0)), -1,
+                         kNoPosition, peak, o[0], o[period - 1]);
+    }
     pendingUnderrun = false;
     planarToInterleaved(out, numOut, deviceChannels, period, format, data + static_cast<size_t>(k) * period * frameBytes);
   }
@@ -540,6 +549,9 @@ void WasapiDevice::Impl::threadMain() noexcept {
   ComScope com;
   DWORD taskIndex = 0;
   HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+  // AU.stream: named, so pqdaw --idle-check can tell the device stream (it now keeps running while the app is in use)
+  // from the rest of the app. Once, before the stream starts.
+  SetThreadDescription(GetCurrentThread(), L"pqdaw audio (WASAPI)");
   bool pendingUnderrun = false;
 
   // Pre-fill: exclusive event mode wants one full buffer before Start; shared fills whole periods.
@@ -667,6 +679,7 @@ void WasapiDevice::Impl::threadMain() noexcept {
         break;
       }
       runner.recordRestart();
+      streamTrace().push(TraceKind::Recover);
       if (rtLog)
         rtLog->log(kLogRestart, "stream restarted after wake {} with one period ({} frames) in reserve", wake, period);
     }
@@ -704,6 +717,7 @@ Status WasapiDevice::start() {
   }
   m.startedEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!m.startedEvent) return Error{ErrorCode::Device, "WasapiDevice: CreateEvent failed"};
+  streamTrace().push(TraceKind::Start, 0, static_cast<int32_t>(Backend::Wasapi));
   m.setThreadError({});
   m.startHr.store(S_OK);
   m.running.store(true, std::memory_order_release);
@@ -722,20 +736,25 @@ Status WasapiDevice::start() {
   m.startedEvent = nullptr;
   const HRESULT hr = m.startHr.load();
   if (w != WAIT_OBJECT_0 || FAILED(hr)) {
+    streamTrace().push(TraceKind::Started, 0, 1);
     m.running.store(false, std::memory_order_release);
     SetEvent(m.event);
     m.thread.join();
     if (w != WAIT_OBJECT_0) return Error{ErrorCode::Device, "WasapiDevice: the audio thread did not start in 5 s"};
     return comError("WasapiDevice: starting the stream", hr);
   }
+  streamTrace().push(TraceKind::Started, 0, 0);
   return Ok{};
 }
 
 Status WasapiDevice::stop() {
   Impl& m = *impl_;
+  const bool wasRunning = m.thread.joinable();
+  if (wasRunning) streamTrace().push(TraceKind::Stop);
   m.running.store(false, std::memory_order_release);
   if (m.event) SetEvent(m.event);
   if (m.thread.joinable()) m.thread.join();
+  if (wasRunning) streamTrace().push(TraceKind::Stopped);
   // A later start() resets the client (drops queued audio, rewinds the clock) first. Not here: Reset takes
   // ~350 ms on some drivers (Focusrite USB), and stop() should return promptly.
   m.needsReset = m.client != nullptr;

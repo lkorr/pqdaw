@@ -7,10 +7,24 @@
 //
 // One control thread owns the device (COM objects stay on the thread that made them):
 //   1. opens and starts it in the background (startup, and every reconfigure()), so the UI never waits for a driver;
-//   2. idle: once the engine has been asleep (engine.h's idle gate) for kSuspendAfter, it stops the stream and
-//      prepares the restart (WASAPI's client reset, which can take ~350 ms, happens now rather than on play); a
-//      stopped stream costs nothing: no device callbacks, and the control thread blocks without a timeout;
-//   3. any engine wake (transport, param write, audition, publish: Engine::setWakeHook) restarts it at once;
+//   2. AU.stream: the stream keeps running while the app is in use. Only once the engine has been asleep (engine.h's
+//      idle gate) AND the window has been in the background (unfocused or minimised, setForeground) for
+//      kBackgroundSuspendSeconds does it stop the stream and prepare the restart (WASAPI's client reset, ~350 ms on
+//      some drivers, happens now rather than on play); a stopped stream costs nothing: no device callbacks, and the
+//      control thread blocks without a timeout. (Until AU.stream it stopped after 1 s of engine sleep, so every Play
+//      after a short pause restarted the driver: the user's click ≈ 100 ms into the sound.) A running stream with
+//      the engine asleep costs one memset per buffer and a sleeping engine's early-out;
+//   3. any engine wake (transport, param write, audition, publish: Engine::setWakeHook) or the window coming to the
+//      foreground restarts a suspended stream at once;
+//   3b. AU.stream: every driver start (open, device change, resume, an ASIO driver's reset) is a cold start: the
+//      output plays silence and does not run the engine (it stays audioOffline, so a Play pressed meanwhile waits in
+//      its queue and starts with the first block the engine runs) until the driver has settled: at least
+//      kPrerollSeconds and the stream's output latency + kPrerollCleanBuffers buffers of silence delivered, the last
+//      kPrerollCleanBuffers of them with no xrun; bounded by kPrerollMaxSeconds. The output then ramps in over
+//      kFadeSeconds. The null device needs none;
+//   3c. AU.stream: a stop this side initiates while audio sounds (reconfigure, close, an ASIO driver's reset) fades
+//      the output out over kFadeSeconds, then plays silence until the driver's latency has drained, then stops
+//      (bounded: a driver that stops calling back is stopped anyway);
 //   4. device changes (T3.18): reconfigure() = stop → close → open the new configuration → start (the Program, the
 //      engine and its state are untouched: only the device changes); a device that stops on its own while running
 //      (WASAPI device removed / invalidated, an ASIO driver whose reset failed) is reopened once, else the output
@@ -21,8 +35,9 @@
 //      size, and a new rate that differs from the engine's makes the output play silence (the engine is not run at
 //      the wrong rate) and reports `rateMismatch` + the device's rate: the owner (AudioDeviceManager) then rebuilds
 //      the engine at that rate (ProjectLink::setSampleRate) and reopens.
-// So a stopped DAW uses no CPU for audio, play after idle starts within one stream start (a few ms), and nothing
-// here runs on the audio thread except onDevice / onEngine (RT-safe: no allocation, no locks, no syscalls).
+// Every stream event (starts, stops, buffers, driver messages, pre-rolls, fades) goes to the process's flight recorder
+// (pq/engine/stream_trace.h); the control thread prints its notable events to stdout, the F12 report shows them.
+// Nothing here runs on the audio thread except onDevice / onEngine (RT-safe: no allocation, no locks, no syscalls).
 
 #include <atomic>
 #include <condition_variable>
@@ -39,6 +54,7 @@
 #include "pq/engine/block_adapter.h"
 #include "pq/engine/callback_stats.h"
 #include "pq/engine/engine.h"
+#include "pq/engine/stream_trace.h"
 
 namespace pq::app {
 
@@ -71,17 +87,26 @@ struct OutputStatus {
   std::optional<engine::DeviceInfo> asioInfo;
 };
 
+// How long the app must be idle in the background before the output stops its stream (AU.stream).
+inline constexpr double kBackgroundSuspendSeconds = 300.0;
+
 // Where devices come from (tests substitute fakes). Called on the control thread.
 struct DeviceFactory {
   std::function<Result<std::unique_ptr<engine::AudioDevice>>(engine::Backend)> create;  // null: createAudioDevice
   bool watchHardware = true;  // register a DeviceChangeNotifier (tests drive hardwareChanged() themselves)
   bool allowEnvDisable = true;  // PQ_NO_AUDIO_DEVICE=1 opens the NullDevice (CI, headless runs)
+  double backgroundSuspendSeconds = kBackgroundSuspendSeconds;  // tests shorten it
 };
 
 class AudioOutput {
 public:
-  static constexpr double kSuspendAfterSeconds = 1.0;
   static constexpr float kMaxToneDb = -12.0f;
+  // The cold-start pre-roll (3b above).
+  static constexpr double kPrerollSeconds = 0.25;
+  static constexpr double kPrerollMaxSeconds = 1.0;
+  static constexpr uint32_t kPrerollCleanBuffers = 4;
+  // The fade before a stop this side initiates (3c above).
+  static constexpr double kFadeSeconds = 0.005;
 
   // Starts the control thread, which opens `config` in the background. `engine` must outlive the output (or be
   // replaced with rebind()).
@@ -102,6 +127,10 @@ public:
   void rebind(engine::Engine& engine);
   // The hardware changed (a device arrived or left): retry the configured device if it is not open. Thread-safe.
   void hardwareChanged();
+  // AU.stream: the app window is in the foreground (focused, not minimised). The stream is suspended only after
+  // DeviceFactory::backgroundSuspendSeconds in the background with the engine asleep; coming back to the foreground
+  // restarts a suspended stream at once (its pre-roll then runs while the user reaches for Play). Any thread.
+  void setForeground(bool foreground);
 
   OutputStatus status() const;
   OutputConfig config() const;
@@ -128,6 +157,10 @@ public:
   bool ready() const noexcept { return ready_.load(std::memory_order_acquire); }  // the first open finished
   bool running() const noexcept { return running_.load(std::memory_order_acquire); }
   uint64_t suspensions() const noexcept { return suspensions_.load(std::memory_order_relaxed); }
+  // AU.stream: a cold-start pre-roll is running (the engine is not run yet); how many have been started.
+  bool prerolling() const noexcept { return prerolling_.load(std::memory_order_acquire); }
+  uint64_t prerolls() const noexcept { return prerolls_.load(std::memory_order_relaxed); }
+  uint64_t fades() const noexcept { return fades_.load(std::memory_order_relaxed); }
 
 private:
   static void onDevice(void* self, const engine::AudioBlock& b) noexcept;  // RT-safe
@@ -135,6 +168,10 @@ private:
   static void onWake(void* self);
   static void onHardware(void* self);
   static void onStreamChanged(void* self, const engine::StreamInfo& info);
+  static void onBeforeDriverStop(void* self);
+  void armPreroll(const engine::StreamInfo& si);  // control threads, the device stopped
+  void fadeOut(bool deviceRunning);               // control threads; returns when faded (or at once: nothing sounds)
+  void drainTrace(std::unique_lock<std::mutex>& lock);  // control thread: new notable trace events to stdout
   void controlMain();
   bool openDevice(const OutputConfig& c);  // control thread, lock not held
   void openFallback(const OutputConfig& c, std::string why);
@@ -162,6 +199,7 @@ private:
   std::condition_variable cv_;
   bool quit_ = false, wakeRequest_ = false, hwChanged_ = false, closeRequest_ = false, parked_ = false;
   bool panelRequest_ = false;
+  bool foreground_ = true;
   float toneHz_ = 440.0f;
   std::optional<OutputConfig> pending_;
   OutputConfig config_;
@@ -170,6 +208,31 @@ private:
   void* notifyUser_ = nullptr;
   std::atomic<bool> ready_{false}, running_{false};
   std::atomic<uint64_t> suspensions_{0};
+
+  // AU.stream: the cold-start pre-roll. Armed off the audio thread before a start (prerollArmed_ released after the
+  // targets), run by onDevice.
+  struct Preroll {
+    bool active = false;
+    uint32_t buffers = 0, clean = 0;
+    uint64_t frames = 0, xruns = 0, t0 = 0;
+  };
+  std::atomic<bool> prerollArmed_{false}, prerolling_{false};
+  uint64_t prerollTarget_ = 0, prerollMax_ = 0;  // frames; written before prerollArmed_ is released
+  double ticksPerUs_ = 1.0;
+  Preroll pre_;  // audio thread
+  std::atomic<const engine::CallbackStats*> devStats_{nullptr};
+  std::atomic<uint64_t> prerolls_{0}, fades_{0};
+  // AU.stream: the fade before a stop. fadeOut() sets the lengths, then requests; onDevice ramps, mutes, counts the
+  // drained silence, and reports drained.
+  static constexpr uint32_t kFadeNone = 0, kFadeArming = 1, kFadeRequested = 2, kFadeMuted = 3, kFadeDrained = 4;
+  std::atomic<uint32_t> fade_{kFadeNone};
+  uint32_t fadeLen_ = 1, fadePos_ = 0;  // fadePos_: audio thread
+  uint64_t fadeDrain_ = 0, fadeSilent_ = 0;  // fadeSilent_: audio thread
+  uint32_t fadeInLen_ = 1;   // the ramp in after a pre-roll (written with the pre-roll's targets)
+  uint32_t fadeInLeft_ = 0;  // audio thread
+  // The trace drain (control thread).
+  uint64_t traceCursor_ = 0, traceT0_ = 0;
+  engine::TraceFormat traceFmt_;
 
   // Test tone: written by any thread, read by the audio thread (relaxed: a tone change may take one block).
   std::atomic<bool> toneOn_{false};

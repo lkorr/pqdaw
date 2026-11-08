@@ -94,6 +94,11 @@ public:
   }
 
   void recordRestart() noexcept { bump(restarts_); }  // RT-safe
+  // Input overflows + output underflows so far, without a snapshot (AU.stream: the output's cold-start pre-roll
+  // reads it on the audio thread). RT-safe, any thread.
+  uint64_t xrunsNow() const noexcept {  // RT-safe
+    return inputOverflows_.load(std::memory_order_relaxed) + outputUnderflows_.load(std::memory_order_relaxed);
+  }
 
   // Any thread. Converts ticks to microseconds.
   Snapshot snapshot() const;
