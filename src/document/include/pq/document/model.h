@@ -590,6 +590,19 @@ bool groupContains(const std::vector<DevicePtr>& list, DeviceId group, DeviceId 
 // The outermost group `d` sits in (`d` itself is not counted; invalid: `d` is in no group). Follows Device::group up to
 // kMaxGroupDepth steps (a cycle, refused by checkList, stops there).
 DeviceId outermostGroup(const std::vector<DevicePtr>& list, DeviceId d) noexcept;
+// TX.insert-group: where a wire is drawn — its target's track (into a mixer: that track) and the innermost group
+// holding both its ends. An end sits in the group of the block it touches (Device::group), but a group's own terminal
+// reached from inside — its In terminal (the output kGroupInPort), its Out terminal (the input kGroupOutPort) — is
+// inside that group (its other ports, its main input and output, are reached from outside). A note source, a mixer or
+// an end on another track is the track's top level (an invalid group). An invalid track: the target is gone. A block
+// inserted on the cable goes there.
+struct Project;
+struct Wire;
+struct WireContainer {
+  TrackId track;
+  DeviceId group;
+};
+WireContainer wireContainer(const Project& p, const Wire& w) noexcept;
 
 // ---- Atom blocks and value blocks (GU.2; docs/plans/GU.md "Concepts") ---------------------------------------------
 // The native ingredients a module is built from, as document blocks (free devices of a track, inside groups or not):

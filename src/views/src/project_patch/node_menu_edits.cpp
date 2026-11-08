@@ -573,21 +573,16 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca) 
     ctx_.setStatus(label + ": an instrument takes the notes (insert it on the cable from the track's notes)");
     return false;
   }
-  // The block's track and group: the wire's target's (into a mixer: that track; into a group's Out: that group).
-  doc::TrackId track;
-  doc::DeviceId group;
-  if (old.toMixer()) {
-    track = old.mixer;
-  } else {
-    const doc::DeviceLoc target = doc::findDevice(p, old.to);
-    if (target.track == nullptr) {
-      ctx_.setStatus(label + ": the wire's target is gone");
-      return false;
-    }
-    track = target.track->id;
-    group = target.device->group;
-    if (target.device->patch == doc::kGroupDevice && old.param == doc::kGroupOutPort) group = old.to;
+  // TX.insert-group: the block goes where the cable is drawn — the innermost group holding both its ends (a cable from
+  // outside into a module's control or its main input stays outside the module; one between two blocks of a group, or
+  // into its Out terminal, is inside it).
+  const doc::WireContainer place = doc::wireContainer(p, old);
+  if (!place.track.valid()) {
+    ctx_.setStatus(label + ": the wire's target is gone");
+    return false;
   }
+  const doc::TrackId track = place.track;
+  const doc::DeviceId group = place.group;
   Composer k(start, ctx_.store().ids());
   doc::ops::EditResult add = addChoice(ctx_, p, k.ids(), c, track, doc::ops::kOffPath, vca);
   if (!add || add->devices.empty()) {

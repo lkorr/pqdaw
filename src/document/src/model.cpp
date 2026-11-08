@@ -372,6 +372,37 @@ DeviceId outermostGroup(const std::vector<DevicePtr>& list, DeviceId d) noexcept
   return out;
 }
 
+WireContainer wireContainer(const Project& p, const Wire& w) noexcept {
+  WireContainer out;
+  if (w.toMixer()) {
+    out.track = w.mixer;
+    return out;
+  }
+  const DeviceLoc to = findDevice(p, w.to);
+  if (to.track == nullptr) return out;
+  out.track = to.track->id;
+  if (w.fromNoteSource()) return out;
+  const DeviceLoc from = findDevice(p, w.from);
+  if (from.track != to.track) return out;
+  auto endGroup = [](const Device& d, bool terminal) { return terminal && isGroupDevice(d) ? d.id : d.group; };
+  const DeviceId target = endGroup(*to.device, w.param == kGroupOutPort);
+  if (!target.valid()) return out;
+  // The innermost group around the source's end that holds the target's end too (the walk outward is bounded as
+  // outermostGroup's is).
+  const std::vector<DevicePtr>& list = to.track->devices;
+  DeviceId g = endGroup(*from.device, w.port == kGroupInPort);
+  for (uint32_t step = 0; g.valid() && step <= kMaxGroupDepth; ++step) {
+    if (g == target || groupContains(list, g, target)) {
+      out.group = g;
+      return out;
+    }
+    const Device* at = inList(list, g);
+    if (at == nullptr) break;
+    g = at->group;
+  }
+  return out;
+}
+
 bool normaliseMetaKinds(std::vector<DevicePtr>& list, bool instrumentsGo, std::vector<DeviceId>* changed) {
   bool any = false;
   const size_t first = 0;  // (a rack chain: TX.all-free leaves a track's blocks' kinds alone)

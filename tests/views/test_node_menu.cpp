@@ -94,20 +94,22 @@ struct Ui {
     d.tree().layoutNow();
     view().focusBand(keys, false);
     d.tree().layoutNow();
-    // The Keys band with room on its right (empty canvas to place nodes on), zoom 1 at most.
-    {
-      const Band& b = pp().bands[pp().bandOf(keys)];
-      const ui::IRect r = view().canvas().rect();
-      const double span = static_cast<double>(b.x1 + 420.0f - (b.x0 - 40.0f));
-      CircuitCanvas::View v;
-      v.zoom = std::min(1.0, static_cast<double>(r.w) / span);
-      v.x = b.x0 - 40.0f;
-      v.y = b.y - 40.0f;
-      view().canvas().setView(v);
-    }
+    fit();
+    d.tree().setFocus(&view().canvas());
+  }
+  // The Keys band with room on its right (empty canvas to place nodes on), zoom 1 at most.
+  void fit() {
+    view().sync();
+    const Band& b = pp().bands[pp().bandOf(keys)];
+    const ui::IRect r = view().canvas().rect();
+    const double span = static_cast<double>(b.x1 + 420.0f - (b.x0 - 40.0f));
+    CircuitCanvas::View v;
+    v.zoom = std::min({1.0, static_cast<double>(r.w) / span, static_cast<double>(r.h) / static_cast<double>(b.h + 80.0f)});
+    v.x = b.x0 - 40.0f;
+    v.y = b.y - 40.0f;
+    view().canvas().setView(v);
     d.tree().layoutNow();
     d.step();
-    d.tree().setFocus(&view().canvas());
   }
   ~Ui() { d.tree().setRoot(std::make_unique<Widget>()); }
 
@@ -164,6 +166,18 @@ struct Ui {
     FAIL("no wire edge");
     return kNone;
   }
+  // The drawn cable of document wire `w`, of any kind (a main link too).
+  uint32_t cableOf(doc::WireId w) const {
+    for (uint32_t i = 0; i < pp().edges.size(); ++i)
+      if (pp().edges[i].wire == w) return i;
+    FAIL("no cable for the wire");
+    return kNone;
+  }
+  // Whether nothing but an opened capsule is under device point `m` (its contents are drawn over it).
+  bool clear(Vec2 m) const {
+    const uint32_t n = view().canvas().nodeAt(m);
+    return n == kNone || (pp().nodes[n].group && pp().nodes[n].groupOpen);
+  }
   // A device point on the cable of model edge `edge`, found through the canvas's own wire hit test (straight or curved).
   Vec2 onCable(uint32_t edge) const {
     const Edge& e = pp().edges[edge];
@@ -173,12 +187,12 @@ struct Ui {
     // First the route's segments (their middles), then a grid over its box.
     for (size_t i = 0; i + 1 < e.points.size(); ++i) {
       const Vec2 m = dev({(e.points[i].x + e.points[i + 1].x) * 0.5f, (e.points[i].y + e.points[i + 1].y) * 0.5f});
-      if (view().canvas().edgeAt(m) == edge && view().canvas().nodeAt(m) == kNone) return m;
+      if (view().canvas().edgeAt(m) == edge && clear(m)) return m;
     }
     for (float y = y0 - 40.0f; y <= y1 + 40.0f; y += 2.0f)
       for (float x = x0; x <= x1; x += 2.0f) {
         const Vec2 m = dev({x, y});
-        if (view().canvas().edgeAt(m) == edge && view().canvas().nodeAt(m) == kNone) return m;
+        if (view().canvas().edgeAt(m) == edge && clear(m)) return m;
       }
     FAIL("no point on the cable");
     return {};
@@ -1251,6 +1265,122 @@ TEST_CASE("node menu: Tab over a cable inserts the chosen node — in and out, o
   CHECK(u.path(u.keys).at(1) == u.synth);
   for (int i = 0; i < 3; ++i) REQUIRE(u.ctx.undo());
   CHECK(u.history() == h0);
+}
+
+// TX.insert-group (user bug: Z on a cable into a Phase Accumulator put the VCA inside it): a block inserted on a cable
+// goes where the cable is drawn — the innermost group holding both its ends (doc::wireContainer). A cable from outside
+// into a module's control or its main input, or from its output, stays outside; one between two of a group's blocks, or
+// into its Out terminal, is inside it; one from a nested group's block into a module nested beside it is in their
+// common group. Z and the Tab menu, through real key dispatch; each one undo step, the cable's two ends kept (the VCA
+// at its default: × 1).
+TEST_CASE("node menu: Z and Tab on a cable insert into the cable's group — not into the module the cable reaches") {
+  Ui u;
+  doc::DocumentStore& st = u.ctx.store();
+  const doc::DeviceId pa = test_blocks::addModule(st, u.keys, "phase_acc", doc::ops::kOffPath);
+  auto in = [&](std::string_view name) {
+    const doc::DeviceId id = test_blocks::member(*u.ctx.doc(), pa, name);
+    REQUIRE_MESSAGE(id.valid(), std::string(name));
+    return id;
+  };
+  const doc::DeviceId freq = in(doc::kPaFrequency), phasor = in("phasor"), addPhase = in("+ phase"), amp = in("× amp");
+  auto connect = [&](doc::DeviceId from, std::string_view port, doc::DeviceId to, std::string_view param) {
+    auto e = doc::ops::connectWire(*st.current(), st.ids(), from, std::string(port), to, std::string(param));
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? "" : e.error().message));
+    REQUIRE(st.dispatch(e->command).ok());
+    return e->wires.at(0);
+  };
+  auto find = [&](doc::DeviceId from, std::string_view port, doc::DeviceId to, std::string_view param) {
+    for (const doc::Wire& w : u.wires())
+      if (w.from == from && w.port == port && w.to == to && w.param == param) return w.id;
+    FAIL("no such wire");
+    return doc::WireId{};
+  };
+  const doc::WireId intoFreq = connect(u.lfo, "y", freq, doc::kValueParam);
+  const doc::WireId intoMain = connect(u.lfo, "y", pa, doc::kMainPort);
+  const doc::WireId fromPa = connect(pa, doc::kMainPort, u.sat, "x");
+  const doc::WireId inner = find(phasor, "out", addPhase, "a");
+  const doc::WireId intoOut = find(amp, "out", pa, doc::kGroupOutPort);
+  // The newest VCA module (Ui::newest gives the outermost group of the newest block: the PA when the VCA is inside it).
+  auto newestVca = [&] {
+    doc::DeviceId best;
+    for (const doc::DevicePtr& d : u.track(u.keys).devices)
+      if (doc::isGroupDevice(*d) && d->name == "VCA" && d->id.value > best.value) best = d->id;
+    return best;
+  };
+  struct Case {
+    const char* what;
+    doc::WireId wire;
+    doc::DeviceId group;  // where the inserted block belongs (invalid: the track's top level)
+  };
+  const Case cases[] = {
+      {"LFO -> the PA's Frequency control", intoFreq, {}},
+      {"LFO -> the PA's main input", intoMain, {}},
+      {"the PA's output -> Saturator", fromPa, {}},
+      {"inside the PA, between two of its blocks", inner, pa},
+      {"inside the PA, a block -> its Out terminal", intoOut, pa},
+  };
+  u.view().setGroupOpen(pa, true);
+  u.fit();
+  for (const Case& c : cases) {
+    // The helper first, then the gestures.
+    const doc::Wire w = *doc::findWire(*u.ctx.doc(), c.wire);
+    const doc::WireContainer at = doc::wireContainer(*u.ctx.doc(), w);
+    CHECK_MESSAGE(at.track == u.keys, c.what);
+    CHECK_MESSAGE(at.group == c.group, c.what);
+    for (const bool tab : {false, true}) {
+      const std::string label = std::string(c.what) + (tab ? " (Tab)" : " (Z)");
+      INFO(label);
+      u.view().sync();
+      const doc::Snapshot start = u.ctx.doc();
+      const size_t h0 = u.history();
+      u.d.move(u.onCable(u.cableOf(c.wire)));
+      if (tab) {
+        REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+        u.pick("vca", "VCA");
+      } else {
+        u.d.keyDown('z');
+        u.d.keyUp('z');
+        u.view().sync();
+      }
+      REQUIRE(u.history() == h0 + 1);
+      const doc::DeviceId vca = newestVca();
+      REQUIRE(u.device(vca) != nullptr);
+      CHECK(u.device(vca)->group == c.group);
+      CHECK(doc::findDevice(*u.ctx.doc(), vca).track->id == u.keys);
+      // The cable's two ends kept: its source -> the VCA -> its target (the VCA at its default: × 1).
+      CHECK(doc::findWire(*u.ctx.doc(), c.wire) == nullptr);
+      const MainPorts mp = u.view().mainPorts(vca);
+      bool fromSource = false, intoTarget = false;
+      for (const doc::Wire& x : u.wires()) {
+        fromSource = fromSource || (x.from == w.from && x.port == w.port && x.to == vca && (x.param.empty() || x.param == mp.in));
+        intoTarget = intoTarget || (x.from == vca && (x.port.empty() || x.port == mp.out) && x.to == w.to && x.param == w.param);
+      }
+      CHECK(fromSource);
+      CHECK(intoTarget);
+      CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+      REQUIRE(u.ctx.undo());
+      CHECK(u.ctx.doc() == start);
+    }
+  }
+  // Nested: the PA inside the LFO's group; a cable from an LFO block into the PA's Phase is drawn in the LFO's group
+  // (their common one), not in the PA.
+  REQUIRE(u.view().setDeviceGroup(pa, u.lfo));
+  doc::DeviceId lfoOut;
+  for (const doc::Wire& w : u.wires())
+    if (w.to == u.lfo && w.param == doc::kGroupOutPort) lfoOut = w.from;
+  REQUIRE(lfoOut.valid());
+  const doc::WireId nested = connect(lfoOut, "out", in(doc::kPaPhase), doc::kValueParam);
+  CHECK(doc::wireContainer(*u.ctx.doc(), *doc::findWire(*u.ctx.doc(), nested)).group == u.lfo);
+  u.view().setGroupOpen(u.lfo, true);
+  u.fit();
+  const size_t h0 = u.history();
+  u.d.move(u.onCable(u.cableOf(nested)));
+  u.d.keyDown('z');
+  u.d.keyUp('z');
+  u.view().sync();
+  CHECK(u.history() == h0 + 1);
+  REQUIRE(u.device(newestVca()) != nullptr);
+  CHECK(u.device(newestVca())->group == u.lfo);
 }
 
 TEST_CASE("node menu: Shift-drag a block over a cable highlights it and splices the block in; Ctrl+Delete dissolves it") {
