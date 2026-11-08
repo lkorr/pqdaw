@@ -603,8 +603,7 @@ TEST_CASE("groups-fix1: a series the voices reach is grouped only as a stretch o
 // (lower.cpp: a bypassed device has only its main ports, and Ctrl+G's chain links name the group's "x" / "y"), which
 // groupInCircuit reads as a moved loop delay ("a feedback loop runs through these devices"). Kept as the live check it
 // must pass once fixed.
-TEST_CASE("groups-fix1: a switched-off module inside a series passes its signal on, in a group as in the chain" *
-          doctest::should_fail()) {
+TEST_CASE("groups-fix1: a switched-off module inside a series passes its signal on, in a group as in the chain") {
   {
     DocumentStore store;
     IdSource& ids = store.ids();
@@ -631,8 +630,7 @@ TEST_CASE("groups-fix1: a switched-off module inside a series passes its signal 
 }
 
 // GU.11 (the same known gap): the last block of the series a switched-off module.
-TEST_CASE("groups-fix1: the last block off — Utility → Saturator (off); the group's Out hears the Utility" *
-          doctest::should_fail()) {
+TEST_CASE("groups-fix1: the last block off — Utility → Saturator (off); the group's Out hears the Utility") {
   {
     DocumentStore store;
     IdSource& ids = store.ids();

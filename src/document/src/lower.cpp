@@ -575,7 +575,8 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
   if (combined && !wiresOf(p).empty()) {
     std::unordered_map<std::string, const graph::Patch*> made;
     forEachDevice(p, [&](const Device& d, const Track&) {
-      if (d.active || !u.callees.isOffPath(d) || isGroupDevice(d)) return;
+      // (GU.11: a switched-off GROUP too — its x → y, what reaches it passes on, as a switched-off device's did.)
+      if (d.active || !u.callees.isOffPath(d)) return;
       std::string in, out;
       if (isMetaDevice(d)) {
         const meta::Type* type = meta::findType(metaDeviceType(d));
