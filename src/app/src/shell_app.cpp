@@ -603,9 +603,14 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
     }
     case SDL_EVENT_WINDOW_FOCUS_LOST:
       if (shell_) shell_->cancelInteraction();
+      if (audio_) audio_->output().setForeground(false);  // AU.stream: the stream may suspend after a long background idle
+      return false;
+    case SDL_EVENT_WINDOW_MINIMIZED:
+      if (audio_) audio_->output().setForeground(false);
       return false;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:  // T5.10: network / removable places have no watch: rescan them now
       if (indexer_) indexer_->rescanUnwatched();
+      if (audio_) audio_->output().setForeground(true);  // AU.stream: a suspended stream starts (and pre-rolls) now
       return false;
     case SDL_EVENT_KEY_DOWN:
       return true;  // the shell's keys are all in its keymap; the test scenes' window keys (Esc quits, A animates) are off

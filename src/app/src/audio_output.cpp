@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <vector>
 
 #include "pq/engine/asio_device.h"
 #include "pq/engine/null_device.h"
@@ -51,6 +52,9 @@ const float* toneSineTable() noexcept { return sineTable().data(); }
 AudioOutput::AudioOutput(engine::Engine& engine, OutputConfig config, DeviceFactory factory)
     : engine_(&engine), factory_(std::move(factory)), config_(config) {
   (void)sineTable();  // built here, never on the audio thread
+  ticksPerUs_ = engine::tscFrequencyHz() / 1e6;  // calibrated here (~20 ms once), never on the audio thread
+  traceCursor_ = engine::streamTrace().head();
+  traceT0_ = engine::readTsc();
   engine.setWakeHook(&AudioOutput::onWake, this);
   pending_ = config;
   control_ = std::thread([this] { controlMain(); });
@@ -117,6 +121,16 @@ void AudioOutput::hardwareChanged() {
   }
   cv_.notify_all();
   notify();
+}
+
+void AudioOutput::setForeground(bool foreground) {
+  {
+    std::lock_guard lock(mutex_);
+    if (foreground_ == foreground) return;
+    foreground_ = foreground;
+    if (foreground) wakeRequest_ = true;  // a suspended stream starts now (its pre-roll runs before Play)
+  }
+  cv_.notify_all();
 }
 
 void AudioOutput::onWake(void* self) {
@@ -197,8 +211,51 @@ Status AudioOutput::controlPanel() {
 void AudioOutput::onDevice(void* self, const engine::AudioBlock& b) noexcept {  // RT-safe
   auto& o = *static_cast<AudioOutput*>(self);
   const uint32_t outs = std::min(b.numOut, o.engineOuts_);
-  if (o.silence_.load(std::memory_order_relaxed)) {
+  auto silence = [&] {
     for (uint32_t c = 0; c < b.numOut; ++c) std::memset(b.out[c], 0, sizeof(float) * b.frames);
+  };
+  // AU.stream: the cold-start pre-roll. Silence (the engine is not run: it is audioOffline, so its transport waits)
+  // until the driver has taken enough clean buffers; then the engine goes online and runs from the next buffer.
+  if (o.prerollArmed_.load(std::memory_order_acquire)) {
+    o.prerollArmed_.store(false, std::memory_order_relaxed);
+    const engine::CallbackStats* st = o.devStats_.load(std::memory_order_relaxed);
+    o.pre_ = Preroll{true, 0, 0, 0, st ? st->xrunsNow() : 0, engine::readTsc()};
+  }
+  if (o.pre_.active) {
+    silence();
+    Preroll& p = o.pre_;
+    ++p.buffers;
+    p.frames += b.frames;
+    const engine::CallbackStats* st = o.devStats_.load(std::memory_order_relaxed);
+    const uint64_t x = st ? st->xrunsNow() : 0;
+    if (x != p.xruns) {
+      p.xruns = x;
+      p.clean = 0;
+    } else {
+      ++p.clean;
+    }
+    const bool settled = p.frames >= o.prerollTarget_ && p.clean >= kPrerollCleanBuffers;
+    if (settled || p.frames >= o.prerollMax_) {
+      p.active = false;
+      const auto us = static_cast<int64_t>(static_cast<double>(engine::readTsc() - p.t0) / o.ticksPerUs_);
+      engine::streamTrace().push(engine::TraceKind::PrerollEnd, settled ? 0 : 1, static_cast<int32_t>(p.buffers), us);
+      o.engine_.load(std::memory_order_relaxed)->audioOnline();  // this thread is the engine's reader from here
+      o.fadeInLeft_ = o.fadeInLen_;  // what resumes (a voice still sounding after a driver reset) ramps in
+      o.prerolling_.store(false, std::memory_order_release);
+    }
+    return;
+  }
+  // AU.stream: after a fade-out, silence until the stop (the engine is not run), counting what has drained.
+  if (const uint32_t fs = o.fade_.load(std::memory_order_acquire); fs >= kFadeMuted) {
+    silence();
+    if (fs == kFadeMuted) {
+      o.fadeSilent_ += b.frames;
+      if (o.fadeSilent_ >= o.fadeDrain_) o.fade_.store(kFadeDrained, std::memory_order_release);
+    }
+    return;
+  }
+  if (o.silence_.load(std::memory_order_relaxed)) {
+    silence();
     return;
   }
   engine::AudioBlock e = b;
@@ -219,6 +276,29 @@ void AudioOutput::onDevice(void* self, const engine::AudioBlock& b) noexcept {  
       for (uint32_t f = 0; f < b.frames; ++f) pair[c][f] = std::clamp(pair[c][f], -1.0f, 1.0f);
   }
   o.inCue_.store(0, std::memory_order_release);
+  // AU.stream: a requested fade-out: a linear ramp to 0 over fadeLen_ frames (across buffers), then silence.
+  if (o.fade_.load(std::memory_order_acquire) == kFadeRequested) {
+    const float inv = 1.0f / static_cast<float>(o.fadeLen_);
+    uint32_t f = 0;
+    for (; f < b.frames && o.fadePos_ < o.fadeLen_; ++f, ++o.fadePos_) {
+      const float g = 1.0f - static_cast<float>(o.fadePos_ + 1) * inv;
+      for (uint32_t c = 0; c < b.numOut; ++c) b.out[c][f] *= g;
+    }
+    if (o.fadePos_ >= o.fadeLen_) {
+      for (uint32_t c = 0; c < b.numOut; ++c) std::memset(b.out[c] + f, 0, sizeof(float) * (b.frames - f));
+      o.fadeSilent_ = b.frames - f;
+      o.fade_.store(o.fadeSilent_ >= o.fadeDrain_ ? kFadeDrained : kFadeMuted, std::memory_order_release);
+    }
+  }
+  // AU.stream: the first frames after a pre-roll ramp in from 0 (kFadeSeconds), so audio resuming after a driver
+  // reset does not step out of the silence. (After a Play the engine starts at the note's own onset anyway.)
+  if (o.fadeInLeft_ > 0) {
+    const float inv = 1.0f / static_cast<float>(o.fadeInLen_);
+    for (uint32_t f = 0; f < b.frames && o.fadeInLeft_ > 0; ++f, --o.fadeInLeft_) {
+      const float g = static_cast<float>(o.fadeInLen_ - o.fadeInLeft_ + 1) * inv;
+      for (uint32_t c = 0; c < b.numOut; ++c) b.out[c][f] *= g;
+    }
+  }
 }
 
 void AudioOutput::addTone(const engine::AudioBlock& b) noexcept {  // RT-safe
@@ -287,7 +367,58 @@ void AudioOutput::onStreamChanged(void* self, const engine::StreamInfo& info) {
     ++o.status_.revision;
   }
   o.toneInc_.store(toneIncrement(o.toneHzNow(), info.sampleRate), std::memory_order_relaxed);
+  // AU.stream: the driver restarts cold: the engine goes offline (the audio thread is stopped) and a pre-roll runs
+  // before it is run again.
+  eng.audioOffline();
+  o.armPreroll(info);
   o.notify();
+}
+
+// AsioDevice's control thread, the driver still running (it may or may not call back any more).
+void AudioOutput::onBeforeDriverStop(void* self) { static_cast<AudioOutput*>(self)->fadeOut(true); }
+
+void AudioOutput::armPreroll(const engine::StreamInfo& si) {
+  const double rate = si.sampleRate ? si.sampleRate : 48000.0;
+  const auto minFrames = static_cast<uint64_t>(std::llround(kPrerollSeconds * rate));
+  prerollTarget_ = std::max<uint64_t>(static_cast<uint64_t>(si.latencyFrames) + uint64_t{kPrerollCleanBuffers} * si.bufferFrames,
+                                      minFrames);
+  prerollMax_ = std::max<uint64_t>(prerollTarget_, static_cast<uint64_t>(std::llround(kPrerollMaxSeconds * rate)));
+  fadeInLen_ = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(kFadeSeconds * rate)));
+  fade_.store(kFadeNone, std::memory_order_relaxed);
+  prerolling_.store(true, std::memory_order_relaxed);
+  prerolls_.fetch_add(1, std::memory_order_relaxed);
+  engine::streamTrace().push(engine::TraceKind::PrerollBegin, 0, static_cast<int32_t>(prerollTarget_),
+                             static_cast<int64_t>(prerollMax_));
+  prerollArmed_.store(true, std::memory_order_release);
+}
+
+void AudioOutput::fadeOut(bool deviceRunning) {
+  if (!deviceRunning || !streamRunning_.load(std::memory_order_relaxed) || fallback_ ||
+      prerolling_.load(std::memory_order_acquire) || silence_.load(std::memory_order_relaxed))
+    return;
+  engine::Engine& eng = *engine_.load();
+  if (eng.asleep() && !toneOn_.load(std::memory_order_relaxed) && extra_.load() == nullptr && cue_.load() == nullptr)
+    return;  // nothing sounds
+  // One fade at a time (the control thread's stop and an ASIO reset's hook may race): claim it.
+  uint32_t idle = kFadeNone;
+  if (!fade_.compare_exchange_strong(idle, kFadeArming, std::memory_order_acq_rel)) return;  // faded or fading
+  const engine::StreamInfo si = status().stream;
+  const double rate = si.sampleRate ? si.sampleRate : 48000.0;
+  fadeLen_ = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(kFadeSeconds * rate)));
+  fadePos_ = 0;
+  fadeSilent_ = 0;
+  fadeDrain_ = uint64_t{si.latencyFrames} + si.bufferFrames;  // what the driver still holds, then one buffer
+  using clock = std::chrono::steady_clock;
+  const auto t0 = clock::now();
+  const auto bound = std::chrono::duration<double>(static_cast<double>(fadeLen_ + fadeDrain_ + 3ull * si.bufferFrames) / rate + 0.1);
+  fade_.store(kFadeRequested, std::memory_order_release);
+  bool drained = false;
+  while (!(drained = fade_.load(std::memory_order_acquire) == kFadeDrained) && clock::now() - t0 < bound)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  if (!drained) fade_.store(kFadeMuted, std::memory_order_release);  // a driver that stopped calling back: mute anyway
+  fades_.fetch_add(1, std::memory_order_relaxed);
+  const auto us = std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - t0).count();
+  engine::streamTrace().push(engine::TraceKind::FadeOut, drained ? 0 : 1, static_cast<int32_t>(fadeLen_), us);
 }
 
 // ---- Control thread ---------------------------------------------------------------------------------------------
@@ -331,6 +462,7 @@ void AudioOutput::openFallback(const OutputConfig& c, std::string why) {
   std::printf("pqdaw: audio: none (%s): the engine runs on a null device, silently\n", why.c_str());
   std::fflush(stdout);
   fallback_ = true;
+  devStats_.store(&null->stats(), std::memory_order_relaxed);
   {
     std::lock_guard lock(mutex_);
     device_ = std::move(null);
@@ -358,7 +490,10 @@ bool AudioOutput::openDevice(const OutputConfig& c) {
       why = created.error().message;
     } else {
       std::unique_ptr<engine::AudioDevice> dev = std::move(*created);
-      if (auto* asio = dynamic_cast<engine::AsioDevice*>(dev.get())) asio->setStreamChangedCallback(&AudioOutput::onStreamChanged, this);
+      if (auto* asio = dynamic_cast<engine::AsioDevice*>(dev.get())) {
+        asio->setStreamChangedCallback(&AudioOutput::onStreamChanged, this);
+        asio->setBeforeDriverStopCallback(&AudioOutput::onBeforeDriverStop, this);
+      }
       engine::StreamConfig sc;
       sc.outputDevice = c.deviceIndex;
       sc.outputEndpointId = c.device;
@@ -390,6 +525,7 @@ bool AudioOutput::openDevice(const OutputConfig& c) {
                       engine::backendName(si.backend), si.sampleRate, si.bufferFrames, block);
           std::fflush(stdout);
           fallback_ = false;
+          devStats_.store(&dev->stats(), std::memory_order_relaxed);
           {
             std::lock_guard lock(mutex_);
             device_ = std::move(dev);
@@ -411,6 +547,7 @@ bool AudioOutput::openDevice(const OutputConfig& c) {
 }
 
 void AudioOutput::closeDevice() {
+  fadeOut(device_ && device_->isRunning());  // AU.stream: no cut while audio sounds
   std::unique_ptr<engine::AudioDevice> d;
   {
     std::lock_guard lock(mutex_);
@@ -424,14 +561,23 @@ void AudioOutput::closeDevice() {
   streamRunning_.store(false, std::memory_order_relaxed);
   running_.store(false, std::memory_order_release);
   d->close();
+  devStats_.store(nullptr, std::memory_order_relaxed);
 }
 
 bool AudioOutput::startStream(bool notifyUi) {
   if (!device_ || streamRunning_.load(std::memory_order_relaxed)) return streamRunning_.load(std::memory_order_relaxed);
   engine::Engine& eng = *engine_.load();
-  eng.audioOnline();
+  if (fallback_) {  // the null device has no driver to settle
+    fade_.store(kFadeNone, std::memory_order_relaxed);
+    eng.audioOnline();
+  } else {  // AU.stream: a cold start: the engine stays offline until the pre-roll ends (on the audio thread)
+    eng.audioOffline();
+    armPreroll(status().stream);
+  }
   const Status st = device_->start();
   if (!st.ok()) {
+    prerollArmed_.store(false, std::memory_order_relaxed);
+    prerolling_.store(false, std::memory_order_release);
     eng.audioOffline();
     std::fprintf(stderr, "pqdaw: audio start failed: %s\n", st.error().message.c_str());
     return false;
@@ -445,6 +591,7 @@ bool AudioOutput::startStream(bool notifyUi) {
 
 void AudioOutput::stopStream(bool prepareRestart) {
   if (!device_ || !streamRunning_.load(std::memory_order_relaxed)) return;
+  fadeOut(device_->isRunning());  // AU.stream: no cut while audio sounds (a suspend is silent: it returns at once)
   (void)device_->stop();
   engine_.load()->audioOffline();
   if (prepareRestart)
@@ -458,8 +605,8 @@ void AudioOutput::controlMain() {
   engine::DeviceChangeNotifier notifier;
   if (factory_.watchHardware) (void)notifier.start(&AudioOutput::onHardware, this);
   std::unique_lock lock(mutex_);
-  clock::time_point asleepSince{}, openedAt{};
-  bool wasAsleep = false;
+  clock::time_point idleSince{}, openedAt{};
+  bool wasIdle = false;  // the engine asleep, nothing else sounding, the window in the background
   bool lostReopen = false;  // the device open now is a reopen after a loss
   // (Re)opens `c` and starts the stream; lock held on entry and exit.
   auto openAndStart = [&](const OutputConfig& c) {
@@ -475,7 +622,7 @@ void AudioOutput::controlMain() {
     }
     lock.lock();
     openedAt = clock::now();
-    wasAsleep = false;
+    wasIdle = false;
     ready_.store(true, std::memory_order_release);
   };
   while (!quit_) {
@@ -533,8 +680,9 @@ void AudioOutput::controlMain() {
       });
       if (quit_ || closeRequest_ || pending_ || hwChanged_ || panelRequest_) continue;
       wakeRequest_ = false;
-      wasAsleep = false;
+      wasIdle = false;
       lock.unlock();
+      engine::streamTrace().push(engine::TraceKind::Resume);
       const bool ok = startStream(false);  // a resume: the UI is not told (an open window polls the status)
       lock.lock();
       if (!ok) pending_ = config_;  // the device went away while suspended: reopen (or fall back)
@@ -542,6 +690,7 @@ void AudioOutput::controlMain() {
     }
     cv_.wait_for(lock, std::chrono::milliseconds(200),
                  [&] { return quit_ || closeRequest_ || pending_.has_value() || hwChanged_ || panelRequest_; });
+    drainTrace(lock);
     if (quit_ || closeRequest_ || pending_ || panelRequest_) continue;
     // The stream stopped on its own: the device was removed (WASAPI: the audio thread ended with an error) or an ASIO
     // driver's reset failed (AsioDevice closes the stream; during a successful reset it stays open).
@@ -574,23 +723,28 @@ void AudioOutput::controlMain() {
       openedAt = clock::now();
       continue;
     }
-    if (wakeRequest_ || toneOn_.load(std::memory_order_relaxed) || extra_.load(std::memory_order_relaxed) != nullptr ||
-        cue_.load(std::memory_order_relaxed) != nullptr || !engine_.load()->asleep()) {
+    // AU.stream: no suspend while the app is in use: only after backgroundSuspendSeconds of the engine asleep with the
+    // window in the background.
+    if (foreground_ || wakeRequest_ || toneOn_.load(std::memory_order_relaxed) ||
+        extra_.load(std::memory_order_relaxed) != nullptr || cue_.load(std::memory_order_relaxed) != nullptr ||
+        !engine_.load()->asleep()) {
       wakeRequest_ = false;
-      wasAsleep = false;
+      wasIdle = false;
       continue;
     }
     const auto now = clock::now();
-    if (!wasAsleep) {
-      wasAsleep = true;
-      asleepSince = now;
+    if (!wasIdle) {
+      wasIdle = true;
+      idleSince = now;
       continue;
     }
-    if (std::chrono::duration<double>(now - asleepSince).count() < kSuspendAfterSeconds) continue;
-    // Idle long enough: stop the stream (the next wake restarts it).
+    if (std::chrono::duration<double>(now - idleSince).count() < factory_.backgroundSuspendSeconds) continue;
+    // Idle in the background long enough: stop the stream (the next wake or the foreground restarts it).
     lock.unlock();
+    engine::streamTrace().push(engine::TraceKind::Suspend);
     stopStream(true);
     lock.lock();
+    drainTrace(lock);
     status_.state = fallback_ ? OutputStatus::State::Fallback : OutputStatus::State::Suspended;
     ++status_.suspensions;
     ++status_.revision;
@@ -601,6 +755,31 @@ void AudioOutput::controlMain() {
   lock.unlock();
   closeDevice();
   notifier.stop();
+}
+
+void AudioOutput::drainTrace(std::unique_lock<std::mutex>& lock) {
+  engine::StreamTrace& tr = engine::streamTrace();
+  if (tr.head() == traceCursor_) return;
+  lock.unlock();
+  std::vector<engine::TraceEvent> ev;
+  uint64_t lost = 0;
+  const uint64_t from = traceCursor_;
+  traceCursor_ = tr.read(from, ev, &lost);
+  traceFmt_.summarise = false;
+  traceFmt_.buffersAfterStart = 3;
+  const std::string text = engine::describeStreamTrace(ev, traceT0_, traceFmt_);
+  if (!text.empty() || lost) {
+    if (lost) std::printf("pqdaw: audio trace: %llu events overwritten before they were read\n", static_cast<unsigned long long>(lost));
+    size_t at = 0;
+    while (at < text.size()) {
+      const size_t nl = text.find('\n', at);
+      const size_t end = nl == std::string::npos ? text.size() : nl;
+      std::printf("pqdaw: audio trace: %.*s\n", static_cast<int>(end - at), text.data() + at);
+      at = end + 1;
+    }
+    std::fflush(stdout);
+  }
+  lock.lock();
 }
 
 }  // namespace pq::app

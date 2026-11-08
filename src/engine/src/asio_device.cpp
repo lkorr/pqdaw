@@ -4,6 +4,7 @@
 #include <atomic>
 #include <bit>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <condition_variable>
 #include <cstring>
@@ -21,6 +22,7 @@
 #include "pq/engine/asio_abi.h"
 #include "pq/engine/asio_convert.h"
 #include "pq/engine/callback_runner.h"
+#include "pq/engine/stream_trace.h"
 #include "pq/engine/underrun_tracker.h"
 
 namespace pq::engine {
@@ -282,6 +284,8 @@ struct AsioDevice::Impl {
   bool buffersCreated = false;
   StreamChangedFn changedFn = nullptr;
   void* changedUser = nullptr;
+  BeforeStopFn beforeStopFn = nullptr;
+  void* beforeStopUser = nullptr;
   std::atomic<bool> open{false};
   std::atomic<bool> running{false};
 
@@ -325,7 +329,10 @@ struct AsioDevice::Impl {
   void process(int32_t index, const asio::Time* t) noexcept {  // RT-safe
     // seq_cst pairs with stopDriver(): either it sees this callback in flight, or this callback sees the stop.
     inCallback.fetch_add(1, std::memory_order_seq_cst);
-    if (streamActive.load(std::memory_order_seq_cst)) {
+    if (!streamActive.load(std::memory_order_seq_cst)) {
+      // A switch the host does not fill (after stop(), before start() returned): the driver plays what the half holds.
+      streamTrace().push(TraceKind::Buffer, t ? kBufTimeInfo : 0, index, kNoPosition);
+    } else {
       RtScope rt;
       const uint32_t h = static_cast<uint32_t>(index) & 1u;
       int64_t pos = 0;
@@ -367,6 +374,17 @@ struct AsioDevice::Impl {
         toDevice[c](scratchOut[c], frames, devOut[h][c]);
       }
       if (postOutput) driver->outputReady();
+      // AU.stream: the flight recorder (output 1's peak / first / last sample of what the driver will play).
+      float peak = 0, first = 0, last = 0;
+      if (numOut > 0) {
+        const float* o = outPtr[h][0];
+        for (uint32_t i = 0; i < frames; ++i) peak = std::max(peak, std::fabs(o[i]));
+        first = o[0];
+        last = o[frames - 1];
+      }
+      streamTrace().push(TraceKind::Buffer,
+                         static_cast<uint16_t>(kBufFilled | (t ? kBufTimeInfo : 0) | (missed ? kBufMissed : 0)), index,
+                         posValid ? pos : kNoPosition, peak, first, last);
     }
     inCallback.fetch_sub(1, std::memory_order_release);
   }
@@ -379,11 +397,17 @@ struct AsioDevice::Impl {
     return nullptr;
   }
   static void onRateChanged(double rate) noexcept {  // RT-safe
+    streamTrace().push(TraceKind::RateChanged, 0, 0, static_cast<int64_t>(rate + 0.5));
     g_host.newRateBits.store(std::bit_cast<uint64_t>(rate), std::memory_order_relaxed);
     g_host.rateChanges.fetch_add(1, std::memory_order_relaxed);
     g_host.requests.fetch_or(kReqRate, std::memory_order_release);
   }
   static int32_t onMessage(int32_t selector, int32_t value, void*, double*) noexcept {  // RT-safe
+    const int32_t answer = answerMessage(selector, value);
+    streamTrace().push(TraceKind::Message, 0, selector, value, static_cast<float>(answer));
+    return answer;
+  }
+  static int32_t answerMessage(int32_t selector, int32_t value) noexcept {  // RT-safe
     switch (selector) {
       case asio::kMsgSelectorSupported:
         return value == asio::kMsgEngineVersion || value == asio::kMsgResetRequest ||
@@ -659,6 +683,7 @@ struct AsioDevice::Impl {
     si.endpointBufferFrames = bufferFrames;
     si.outputEndpointId = entry.name;
     if (prepareRunner) runner.prepare(cb, nIn, nOut, bufferFrames, si.sampleRate);
+    streamTrace().push(TraceKind::Open, 0, static_cast<int32_t>(bufferFrames), si.sampleRate, static_cast<float>(outLat));
     havePos = false;
     {
       std::lock_guard lock(infoMutex);
@@ -686,26 +711,32 @@ struct AsioDevice::Impl {
     // AU.voices: every start, not only the first (a resume after an idle suspend): the halves still hold the last
     // two buffers of the previous run, which the driver may play before the first switch.
     zeroOutputBuffers();
+    streamTrace().push(TraceKind::Start, 0, static_cast<int32_t>(Backend::Asio));
     streamActive.store(true, std::memory_order_release);
     if (asio::Status s = driver->start(); s != asio::kOk) {
       streamActive.store(false, std::memory_order_release);
+      streamTrace().push(TraceKind::Started, 0, 1);
       return Error{ErrorCode::Device, std::string("ASIO start failed: ") + statusText(s)};
     }
     running.store(true, std::memory_order_release);
+    streamTrace().push(TraceKind::Started, 0, 0);
     return Ok{};
   }
 
   void stopDriver() {
     if (!running.load(std::memory_order_acquire)) return;
+    streamTrace().push(TraceKind::Stop);
     driver->stop();
     streamActive.store(false, std::memory_order_seq_cst);
     // A callback that was already inside process() finishes; none runs the engine after streamActive is false.
     for (int i = 0; i < 2000 && inCallback.load(std::memory_order_seq_cst) != 0; ++i) Sleep(1);
     running.store(false, std::memory_order_release);
+    streamTrace().push(TraceKind::Stopped);
   }
 
   void closeAll() {
     stopDriver();
+    streamTrace().push(TraceKind::Close);
     teardownBuffers();
     unload(driver);
     open.store(false, std::memory_order_release);
@@ -738,12 +769,14 @@ struct AsioDevice::Impl {
         }
         if (!(req & kReqReset) && newRate == cur) return;  // nothing changed for us
       }
+      streamTrace().push(TraceKind::Reopen, 0, static_cast<int32_t>(req), newRate);
       reopen(newRate);
       return;
     }
     if (req & kReqLatencies) {
       int32_t inLat = 0, outLat = 0;
       if (driver->getLatencies(&inLat, &outLat) == asio::kOk) {
+        streamTrace().push(TraceKind::Latencies, 0, inLat, outLat);
         std::lock_guard lock(infoMutex);
         info.latencyFrames = static_cast<uint32_t>(std::max(0, outLat));
         info.inputLatencyFrames = static_cast<uint32_t>(std::max(0, inLat));
@@ -761,12 +794,14 @@ struct AsioDevice::Impl {
       std::lock_guard lock(infoMutex);
       before = info;
     }
+    if (wasRunning && beforeStopFn) beforeStopFn(beforeStopUser);  // AU.stream: the owner fades out first
     stopDriver();
     teardownBuffers();
     unload(driver);
     auto fail = [&](const std::string& why) {
       ++failedReopens;
       setError("ASIO driver '" + entry.name + "' asked for a reset and could not be reopened: " + why);
+      streamTrace().push(TraceKind::Reopened, 1);
       teardownBuffers();
       unload(driver);
       open.store(false, std::memory_order_release);
@@ -780,6 +815,8 @@ struct AsioDevice::Impl {
       runner.prepare(cb, numIn, numOut, s->bufferFrames, s->sampleRate);
     if (newRate) config.sampleRate = newRate;  // follow the driver's clock from now on (Q70)
     ++reopens;
+    streamTrace().push(TraceKind::Reopened, 0, static_cast<int32_t>(s->bufferFrames), s->sampleRate,
+                       static_cast<float>(s->latencyFrames));
     if (changedFn) changedFn(changedUser, *s);
     if (wasRunning)
       if (auto st = startDriver(); !st) return fail(st.error().message);
@@ -979,6 +1016,13 @@ void AsioDevice::setStreamChangedCallback(StreamChangedFn fn, void* user) {
   impl_->sta->call([&] {
     impl_->changedFn = fn;
     impl_->changedUser = user;
+  });
+}
+
+void AsioDevice::setBeforeDriverStopCallback(BeforeStopFn fn, void* user) {
+  impl_->sta->call([&] {
+    impl_->beforeStopFn = fn;
+    impl_->beforeStopUser = user;
   });
 }
 

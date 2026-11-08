@@ -89,6 +89,10 @@ struct Rig {
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     REQUIRE(out->status().state == OutputStatus::State::Running);
     REQUIRE(dev != nullptr);
+    // AU.stream: a driver start pre-rolls silence before the output runs anything.
+    for (int i = 0; i < 4000 && out->prerolling(); ++i) dev->null().processBlock();
+    REQUIRE_FALSE(out->prerolling());
+    for (int i = 0; i < 2; ++i) dev->null().processBlock();  // and its 5 ms ramp in (silent here)
   }
   ~Rig() {
     out.reset();

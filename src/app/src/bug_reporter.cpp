@@ -13,7 +13,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "build_info.h"
 #include "pq/app/audio_manager.h"
@@ -22,6 +24,8 @@
 #include "pq/app/startup.h"
 #include "pq/document/samples.h"
 #include "pq/document/serialize.h"
+#include "pq/engine/callback_stats.h"
+#include "pq/engine/stream_trace.h"
 #include "pq/views/shell/shell.h"
 
 namespace pq::app {
@@ -78,11 +82,50 @@ std::string indent(const std::string& lines, const char* prefix) {
 
 const char* driverName(views::AudioDriverType t) { return views::audioDriverTypeName(t); }
 
+// AU.stream: the stream's flight recorder (pq/engine/stream_trace.h) over the last `seconds`: starts, stops, driver
+// messages, pre-rolls, fades, and the buffers where something happened, as a code block (the last maxLines lines).
+std::string streamTraceText(double seconds, size_t maxLines) {
+  engine::StreamTrace& tr = engine::streamTrace();
+  const uint64_t head = tr.head();
+  std::vector<engine::TraceEvent> all;
+  (void)tr.read(head > engine::StreamTrace::kCapacity ? head - engine::StreamTrace::kCapacity : 0, all);
+  const uint64_t now = engine::readTsc();
+  const auto window = static_cast<uint64_t>(seconds * engine::tscFrequencyHz());
+  std::vector<engine::TraceEvent> recent;
+  engine::TraceFormat fmt;
+  for (const engine::TraceEvent& e : all) {
+    if (now - e.tsc <= window) {
+      recent.push_back(e);
+    } else if (e.kind == engine::TraceKind::Open || e.kind == engine::TraceKind::Reopened) {
+      fmt.frames = static_cast<uint32_t>(e.a);  // the stream's shape from before the window
+      fmt.rate = static_cast<uint32_t>(e.b);
+    }
+  }
+  if (recent.empty()) return "- audio stream trace: no events in the last " + std::to_string(static_cast<int>(seconds)) + " s\n";
+  const std::string text = engine::describeStreamTrace(recent, now, fmt);  // times: ms before this report (negative)
+  std::vector<std::string_view> lines;
+  for (size_t at = 0; at < text.size();) {
+    const size_t nl = text.find('\n', at);
+    const size_t end = nl == std::string::npos ? text.size() : nl;
+    lines.emplace_back(text.data() + at, end - at);
+    at = end + 1;
+  }
+  std::string s = "- audio stream trace (last " + std::to_string(static_cast<int>(seconds)) +
+                  " s; ms relative to this report; notable buffers only):\n\n```\n";
+  if (lines.size() > maxLines) s += "(" + std::to_string(lines.size() - maxLines) + " earlier lines left out)\n";
+  for (size_t i = lines.size() > maxLines ? lines.size() - maxLines : 0; i < lines.size(); ++i) {
+    s += lines[i];
+    s += '\n';
+  }
+  s += "```\n\n";
+  return s;
+}
+
 const char* stateName(views::AudioStatus::State s) {
   switch (s) {
     case views::AudioStatus::State::Opening: return "opening";
     case views::AudioStatus::State::Running: return "running";
-    case views::AudioStatus::State::Suspended: return "suspended (idle)";
+    case views::AudioStatus::State::Suspended: return "suspended (idle in the background)";
     case views::AudioStatus::State::NoDevice: return "no device";
   }
   return "?";
@@ -187,6 +230,7 @@ std::string BugReporter::firstShotContext(const BugWindowInfo& info) {
     s += b;
     if (!as.message.empty()) s += "- audio message: " + as.message + "\n";
     if (!audio_->lastError().empty()) s += "- audio last error: " + audio_->lastError() + "\n";
+    s += streamTraceText(30.0, 160);
   } else {
     s += "- audio: no device manager (playback engine unavailable)\n";
   }

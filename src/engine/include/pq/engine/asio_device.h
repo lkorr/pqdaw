@@ -124,6 +124,11 @@ public:
   // audio callback is not running during the call.
   using StreamChangedFn = void (*)(void* user, const StreamInfo& info);
   void setStreamChangedCallback(StreamChangedFn fn, void* user);
+  // AU.stream: called on the control thread just before the device stops a running stream to follow a driver request
+  // (reset, buffer-size or rate change), while the driver may still call back: the owner fades its output out there
+  // (it returns once the fade has reached the driver, or after its own bound). Not called for stop() / close().
+  using BeforeStopFn = void (*)(void* user);
+  void setBeforeDriverStopCallback(BeforeStopFn fn, void* user);
 
   // Handles pending driver requests now (normally the control thread polls them every 50 / 250 ms). For tests.
   void handlePendingRequests();

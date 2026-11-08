@@ -26,6 +26,7 @@ pq_add_module(pq_engine
     src/sample_convert.cpp
     src/sequence.cpp
     src/state_transfer.cpp
+    src/stream_trace.cpp
     src/timeline.cpp
     src/tuning_signal.cpp
     src/voices.cpp

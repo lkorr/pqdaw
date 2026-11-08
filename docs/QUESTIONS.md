@@ -451,7 +451,31 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
 - Options: (A) keep the stream running while a project window is open (asleep engine: a memset per buffer);
   (B) suspend after a long idle (e.g. 60 s); (C) keep 1 s. Chosen for now: (C), unchanged (no evidence yet; A/B are a
   one-constant change). Done: the ASIO halves are zeroed at every start (they kept the last run's buffers).
-- Status: open.
+- **Resolution (AU.stream, 2026-11-08)**: it was the driver restart. Measured on this machine (FL Studio ASIO → the
+  default endpoint, Focusrite USB, 48 kHz, 1024 frames): (1) the ASIO layer is clean at every start: no asioMessage at
+  all, sample positions +1024 from the first switch, switches on FL's 10 ms grid (20 / 30 ms, mean 21.3 ms), the first
+  ≈ 50 ms after start(); idle length (0.3, 1.5, 2, 10 s) makes no difference. (2) The endpoint's loopback with a
+  -90 dBFS tone (tests/engine/test_asio.cpp "asio loopback probe") shows FL Studio ASIO dipping its own output at a
+  fixed place of every stream: 125.3-130.7 ms into the sound (output samples ≈ 6016-6272, ≈ 220 ms after start()),
+  amplitude 75 % then 50 % in two 2.7 ms windows, 8 of 8 starts without a pre-roll, first start included; our own
+  WASAPI shared backend on the same endpoint: 0 anomalies in 4 × 8 s. With 250-500 ms of silence first the dip is gone
+  (9 of 9 through AudioOutput). (3) Separately FL Studio ASIO drops 5-10 ms (zeros, ±2-7 samples of phase) every few
+  seconds in steady state, start or not (WASAPI: none): Q?-AU.stream-a. Done: (A) chosen, plus a long background
+  suspend: the stream stops only after 300 s of the engine asleep with the window unfocused / minimised; every driver
+  start pre-rolls ≥ max(latency + 4 buffers, 0.25 s) of silence with the engine offline (Play waits), ≤ 1 s; an ASIO
+  reset while sounding fades out and drains first, then pre-rolls (ARCHITECTURE "AudioOutput", "Stream trace").
+- Status: resolved (AU.stream).
+
+## Q?-AU.stream-a · FL Studio ASIO drops 5-10 ms every few seconds (not a start effect)
+- **Measured** (the AU.stream loopback probe, 8 s captures, a -90 dBFS 1500 Hz tone): FL Studio ASIO → Focusrite USB
+  at 1024 frames: 1-3 dropouts per 8 s (2.7-8 ms of zeros, then the tone 2-7 samples off), at random times; our
+  WASAPI shared backend on the same endpoint: none. Our ASIO callbacks were on time throughout (the stream trace: no
+  late switch, no position step), so it is inside the driver (its FIFO / resampler against the endpoint's clock).
+- **Options**: (1) use the Focusrite USB ASIO driver (registered on this machine; native, low latency); (2) WASAPI
+  exclusive or shared in pqdaw (no wrapper); (3) keep FL Studio ASIO (its buffer is set only in its own panel:
+  Preferences → Audio → Hardware Setup; it offers no other size, so the app's 256 request gets 1024, 68.6 ms out).
+- **Choice for now**: none in code (a driver choice is the user's); suggested (1), else (2).
+- Status: open (needs the user).
 
 ## Q?-AU.fold-a · Saturator (and the shaper / tanh / clip atoms): aliasing, no oversampling
 - **Measured** (AU.fold, offline renders: the default instrument's sine into the Saturator, Drive +18 dB, non-harmonic

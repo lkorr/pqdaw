@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -63,12 +64,14 @@ public:
   int32_t getDriverVersion() override { return 7; }
   void getErrorMessage(char* text) override { std::strcpy(text, "fake hardware unplugged"); }
   a::Status start() override {
+    std::lock_guard lock(lifecycle);
     ++starts;
     started = true;
     position = 0;
     return a::kOk;
   }
   a::Status stop() override {
+    std::lock_guard lock(lifecycle);
     ++stops;
     started = false;
     return a::kOk;
@@ -131,6 +134,7 @@ public:
   }
   a::Status createBuffers(a::BufferInfo* bi, int32_t n, int32_t size, const a::HostCallbacks* callbacks) override {
     if (size < minSize || size > maxSize) return a::kInvalidMode;
+    std::lock_guard lock(lifecycle);
     ++creates;
     lastBufferSize = size;
     cb = callbacks;
@@ -154,6 +158,7 @@ public:
     return a::kOk;
   }
   a::Status disposeBuffers() override {
+    std::lock_guard lock(lifecycle);
     ++disposes;
     infos.clear();
     storage.clear();
@@ -176,6 +181,18 @@ public:
       if ((infos[k].isInput != 0) == input && infos[k].channelNum == ch) return infos[k].buffers[half];
     return nullptr;
   }
+  // A driver thread of the test's own (AU.stream): one switch if the driver is started, then a copy of output 1's
+  // half as float32 (outType must be kFloat32Lsb). Serialised against start / stop / createBuffers / disposeBuffers,
+  // as a real driver's stop waits for its callback.
+  bool tickIfStarted(int32_t half, float* out1, uint32_t frames) {
+    std::lock_guard lock(lifecycle);
+    if (!started || !cb || infos.empty()) return false;
+    tick(half);
+    if (const void* p = buffer(false, 0, half)) std::memcpy(out1, p, sizeof(float) * frames);
+    return true;
+  }
+  std::mutex lifecycle;
+
   // One buffer switch on the "driver thread" (the calling thread), with time info unless timeInfo = false.
   void tick(int32_t half, bool timeInfo = true, int64_t advance = -1) {
     a::Time t{};
