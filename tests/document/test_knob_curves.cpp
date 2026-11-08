@@ -302,8 +302,30 @@ TEST_CASE("control curves: the built-in modules' neutral values are detents (TX.
   REQUIRE(dsp::curveDetents(pitch, at) == 1);
   CHECK(dsp::evalCurve(pitch, at[0]) == 0.0);
   CHECK(dsp::evalCurve(pitch, 0.25) == doctest::Approx(-1200.0));  // GU.5b's scale kept
-  // The VCA: x1 and x-1.
-  REQUIRE(dsp::curveDetents(vcaCurve(), at) == 2);
+  // The VCA: x0, x1, x-1, x2, x-2 (TX.reset-default added x0 and x+-2), each exactly its value.
+  {
+    const dsp::Curve vca = vcaCurve();
+    REQUIRE(dsp::curveDetents(vca, at) == 5);
+    const std::array<double, 5> want = {-2.0, -1.0, 0.0, 1.0, 2.0};
+    for (size_t i = 0; i < want.size(); ++i) {
+      CAPTURE(i);
+      CAPTURE(dsp::evalCurveUnits(vca, at[i]) - want[i]);
+      CHECK(std::abs(dsp::evalCurveUnits(vca, at[i]) - want[i]) <= 1e-9);  // (the points hold their values as shares of ±20k)
+    }
+  }
+  // TX.reset-default: the EQ band's Q at 0.7071 (Butterworth), its default.
+  {
+    const BlockSet set = moduleBlocks(ModuleKind::EqBand);
+    const Device* q = nullptr;
+    for (const DevicePtr& dv : set.devices)
+      if (dv->name == "Q" && isValueDevice(*dv)) q = dv.get();
+    REQUIRE(q != nullptr);
+    REQUIRE(q->curve(kValueParam) != nullptr);
+    REQUIRE(dsp::curveDetents(*q->curve(kValueParam), at) == 1);
+    CHECK(dsp::evalCurveUnits(*q->curve(kValueParam), at[0]) == doctest::Approx(0.70710678118654752).epsilon(1e-12));
+    REQUIRE(q->param(kValueParam) != nullptr);
+    CHECK(q->param(kValueParam)->value == doctest::Approx(at[0]).epsilon(1e-12));
+  }
   // The stock modules: each named control has one detent, at its neutral value (in its units).
   struct Want {
     ModuleKind kind;
@@ -507,5 +529,68 @@ TEST_CASE("groups: a group has no knob curves; chain links join one in-series gr
     const Result<LoadedProject> r = parseProject(k.dump(2));
     REQUIRE_FALSE(r.ok());
     MESSAGE(r.error().message);
+  }
+}
+
+TEST_CASE("value blocks: a default knob position (TX.reset-default) — made with the module's default, a reset returns "
+          "there (one step), saved and read back, refused off a value block or outside [0, 1]") {
+  Doc d;
+  const DeviceId pa = test_blocks::addModule(d.store, d.keys, "phase_acc", ops::kOffPath);
+  const DeviceId amp = test_blocks::member(d.doc(), pa, kPaAmplitude), pitch = test_blocks::member(d.doc(), pa, kPaPitch);
+  const DeviceId eq = test_blocks::addModule(d.store, d.keys, "eq_band", ops::kOffPath);
+  const DeviceId gain = test_blocks::member(d.doc(), eq, "Gain");
+  REQUIRE(amp.valid());
+  REQUIRE(pitch.valid());
+  REQUIRE(gain.valid());
+  // A value block the user places: no default of its own (made at 0, the declaration's).
+  DeviceId user;
+  {
+    auto e = ops::addDevice(d.doc(), d.store.ids(), d.keys, std::string(kValueDevice), DeviceKind::AudioEffect, ops::kOffPath);
+    REQUIRE(e.ok());
+    REQUIRE(d.store.dispatch(e->command).ok());
+    user = e->devices.at(0);
+  }
+  auto dev = [&](DeviceId id) -> const Device& { return *findDevice(d.doc(), id).device; };
+  auto value = [&](DeviceId id) {
+    const Device& x = dev(id);
+    const DeviceValue* v = x.param(kValueParam);
+    const double pos = v != nullptr ? v->value : 0.0;
+    return x.curve(kValueParam) != nullptr ? dsp::evalCurveUnits(*x.curve(kValueParam), pos) : pos;
+  };
+  CHECK(dev(amp).defaultPosition == std::optional<double>(0.5));
+  CHECK_FALSE(dev(user).defaultPosition.has_value());
+  struct Want {
+    DeviceId id;
+    double value;  // in the curve's units
+  };
+  for (const Want& w : {Want{amp, 1.0}, Want{pitch, 0.0}, Want{gain, 0.0}, Want{user, 0.0}}) {
+    CAPTURE(w.id.value);
+    CHECK(value(w.id) == doctest::Approx(w.value).scale(1.0));
+    d.run(ops::setDeviceParam(d.doc(), w.id, std::string(kValueParam), 0.83));
+    CHECK(value(w.id) != doctest::Approx(w.value).scale(1.0));
+    const size_t h = d.store.history().cursor();
+    d.run(ops::setDeviceParam(d.doc(), w.id, std::string(kValueParam), std::nullopt));
+    CHECK(d.store.history().cursor() == h + 1);
+    CHECK(value(w.id) == doctest::Approx(w.value).epsilon(1e-12).scale(1.0));
+  }
+  // The file keeps it ("default": a value block's own); a module's blocks read back equal.
+  Result<std::string> text = serializeProject(d.doc());
+  REQUIRE(text.ok());
+  CHECK(text->find("\"default\": 0.5") != std::string::npos);
+  Result<LoadedProject> back = parseProject(*text);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+  CHECK(*back->project == d.doc());
+  CHECK(findDevice(*back->project, amp).device->defaultPosition == std::optional<double>(0.5));
+  CHECK_FALSE(findDevice(*back->project, user).device->defaultPosition.has_value());
+  // Refused: outside [0, 1]; on a block that is not a value block (the group).
+  {
+    std::string t = *text;
+    t.replace(t.find("\"default\": 0.5"), std::string_view("\"default\": 0.5").size(), "\"default\": 1.5");
+    CHECK_FALSE(parseProject(t).ok());
+  }
+  {
+    auto g = std::make_shared<Device>(*makeGroup(d.store.ids().device()));
+    g->defaultPosition = 0.5;
+    CHECK_FALSE(d.store.dispatch(AddDevice{d.keys, g, kAppend}).ok());
   }
 }

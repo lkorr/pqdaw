@@ -525,6 +525,12 @@ struct Device {
   // empty): the group is drawn as its mini circuit. Groups only. Shared, so a param edit copies the Device, never the
   // panel; SetGroupPanel replaces it whole (Meta: a panel is never lowered).
   PanelPtr panel;
+  // TX.reset-default: a VALUE BLOCK's default knob position in [0, 1] — where a reset (Delete, double-click: ops::
+  // setDeviceParam with nullopt) puts its knob. Set when the block is made: a module's builder gives the module's
+  // default (Phase Accumulator Amplitude ×1 at 0.5, Pitch 0 c, an EQ band's Gain 0 dB), a rack's macro the position it
+  // was made at; nullopt (a value block the user places, made at 0): the declaration's default, 0. Value blocks only.
+  // Meta (it changes no sound).
+  std::optional<double> defaultPosition;
   bool hasPanel() const noexcept { return panel != nullptr && !panel->empty(); }
   const dsp::Curve* curve(std::string_view param) const noexcept;  // null: the declared curve
   const MetaInstance* metaAt(std::string_view path) const noexcept;  // nullptr: no entry

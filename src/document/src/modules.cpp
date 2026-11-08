@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <numbers>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -82,6 +83,7 @@ struct Builder {
     const DeviceId id = add(std::string(kValueDevice), std::move(name));
     auto d = std::make_shared<Device>(*set.devices.back());
     d->params = {DeviceValue{std::string(kValueParam), std::clamp(position, 0.0, 1.0)}};
+    d->defaultPosition = d->params.front().value;  // TX.reset-default: the module's default
     d->curves = {ControlCurve{std::string(kValueParam), c}};
     set.devices.back() = std::move(d);
     return id;
@@ -1215,7 +1217,7 @@ BlockSet eqBandBlocks(IdSource& ids, const EqBandOptions& o) {
   dsp::Curve stagesCurve = linear(1.0, 64.0);
   stagesCurve.step = 1.0;
   const Sig freq = k.val("Frequency", bandFrequencyCurve(), o.freqHz);
-  const Sig q = k.val("Q", octave(0.1, 40.0), o.q);
+  const Sig q = k.val("Q", detent(octave(0.1, 40.0), std::numbers::sqrt2 / 2.0), o.q);  // TX.reset-default: Butterworth
   const Sig gain = k.val("Gain", detent(gainDb(-24.0, 24.0), 0.0), o.gainDb);
   const Sig stages = k.val("Stages", stagesCurve, static_cast<double>(std::clamp<uint32_t>(o.stages, 1, 64)));
   const Sig ty = k.val("Type", stepped(8.0), static_cast<double>(type));

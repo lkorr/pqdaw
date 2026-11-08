@@ -277,6 +277,7 @@ Result<DeviceId> macroBlock(Steps& k, IdSource& ids, const RackInfo& r, uint32_t
   d->name = "Macro " + std::to_string(macro + 1);
   d->group = r.parent;
   d->params = {DeviceValue{std::string(kValueParam), std::clamp(position, 0.0, 1.0)}};
+  d->defaultPosition = d->params.front().value;  // TX.reset-default: a reset returns to where it was made
   d->curves = {ControlCurve{std::string(kValueParam), macroCurve()}};
   d->settings = {DeviceValue{std::string(kMacroSetting), static_cast<double>(macro + 1)}};
   PQ_DOC_TRY(k.add(AddDevice{r.track, std::move(d), kAppend}));
@@ -295,6 +296,7 @@ DeviceId selectorBlock(Steps& k, IdSource& ids, const RackInfo& r, Status& st) {
   d->name = std::string(kChainSelectName);
   d->group = r.parent;
   d->params = {DeviceValue{std::string(kValueParam), 0.0}};
+  d->defaultPosition = 0.0;  // TX.reset-default
   d->curves = {ControlCurve{std::string(kValueParam), selectorCurve()}};
   d->settings = {DeviceValue{std::string(kRoleSetting), static_cast<double>(RackRole::Selector)}};
   st = k.add(AddDevice{r.track, std::move(d), kAppend});

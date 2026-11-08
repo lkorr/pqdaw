@@ -117,6 +117,7 @@ public:
   void refresh(const doc::RackInfo& r) {
     for (uint32_t k = 0; k < doc::kMacroCount; ++k) {
       values_[k] = r.macros[k].value;
+      blocks_[k] = r.macros[k].block;
       if (std::string name = r.macroName(k); name != infos_[k].label) {
         infos_[k].label = std::move(name);
         infos_[k].generation = ++generation_;
@@ -163,7 +164,11 @@ public:
     if (const std::optional<uint32_t> k = indexOf(b))
       impl_.run(doc::ops::setMacroValue(impl_.doc(), id_, *k, std::clamp(position, 0.0, 1.0) * doc::kMacroMax), false);
   }
-  void reset(const doc::Binding& b) override { setOnce(b, 0.0, "Reset Macro"); }
+  // TX.reset-default: the macro's value block's default (where the macro was made; ops::setDeviceParam).
+  void reset(const doc::Binding& b) override {
+    if (const std::optional<uint32_t> k = indexOf(b); k && blocks_[*k].valid())
+      impl_.run(doc::ops::setDeviceParam(impl_.doc(), blocks_[*k], std::string(doc::kValueParam), std::nullopt), false);
+  }
   uint64_t revision() const override { return rev_; }
   void notice(std::string_view message) override { impl_.ctx().setStatus(std::string(message)); }
   ui::Widget* menuHost() const noexcept override { return host_ ? host_() : nullptr; }
@@ -178,6 +183,7 @@ private:
   std::function<ui::Widget*()> host_;
   std::array<panel::BoundInfo, doc::kMacroCount> infos_{};
   std::array<double, doc::kMacroCount> values_{};
+  std::array<doc::DeviceId, doc::kMacroCount> blocks_{};  // TX.reset-default
   panel::BoundInfo none_;
   uint64_t rev_ = 1, generation_ = 0;
   bool own_ = false;

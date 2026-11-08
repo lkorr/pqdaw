@@ -411,7 +411,7 @@ public:
         open_ = false;
         return true;
       }
-      return false;
+      return valueKey(e, t);  // TX.reset-default: Delete resets, Up / Down step (as every value element)
     }
     if (!e.down) return true;
     if ((e.mods & (ui::mod::kCtrl | ui::mod::kAlt | ui::mod::kSuper)) != 0) return false;
@@ -991,6 +991,9 @@ public:
     to -= 360.0 * std::floor(to / 360.0);
     return from <= to ? a >= from && a < to : a >= from || a < to;
   }
+  // TX.reset-default: Delete resets, Up / Down step (as every value element); before, the keys fell through to the
+  // view (Delete removed the selected block).
+  bool onKey(const ui::KeyEvent& e, PanelTarget& t) override { return valueKey(e, t); }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
     using K = FacePointer::Kind;
     const doc::Binding* b = binding();

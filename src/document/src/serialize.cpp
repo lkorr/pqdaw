@@ -689,6 +689,10 @@ private:
     };
     values("params", d.params);
     values("settings", d.settings);
+    if (d.defaultPosition) {  // TX.reset-default: a value block's default knob position
+      w_.key("default");
+      w_.number(PathSeg(&at, "default"), *d.defaultPosition);
+    }
     if (!d.curves.empty()) {  // GU.1 (schema 20): the params off their declared curve
       const PathSeg cat(&at, "curves");
       w_.key("curves");
@@ -1937,7 +1941,7 @@ private:
   // own patch text) and "chainInput" (11: a native engine's main input is its type's).
   static constexpr std::string_view kDeviceKeys[] = {"id",       "patch",  "kind", "active", "params",
                                                      "settings", "source", "crlf", "rack", "name", "meta",
-                                                     "chainInput", "group", "curves", "panel"};
+                                                     "chainInput", "group", "curves", "panel", "default"};
 
   std::vector<DevicePtr> devices(const PathSeg& listAt) {
     std::vector<DevicePtr> list;
@@ -1976,6 +1980,7 @@ private:
       case 12: d.group = DeviceId{ref(f)}; break;  // TX.groups (schema 14); checkList: a group of the same list
       case 13: d.curves = paramCurves(f); break;  // GU.1 (schema 20; TX.knob-curves' names: schema 16 … 19)
       case 14: d.panel = panelObject(f); break;  // GU.3 (schema 21)
+      case 15: d.defaultPosition = r_.readDouble(f); break;  // TX.reset-default (checkList: value blocks, [0, 1])
     }
   }
 

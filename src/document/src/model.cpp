@@ -466,7 +466,8 @@ bool shallowDeviceEq(const Device& a, const Device& b) noexcept {
          deepEq(a.meta, b.meta) &&  // TMM.3 (an empty map is always null: the commands keep it so)
          a.group == b.group &&            // TX.groups
          a.curves == b.curves &&          // GU.1
-         deepEq(a.panel, b.panel);        // GU.3
+         deepEq(a.panel, b.panel) &&      // GU.3
+         a.defaultPosition == b.defaultPosition;  // TX.reset-default
 }
 
 }  // namespace

@@ -320,6 +320,11 @@ Status checkList(ListKind k, const std::vector<DevicePtr>& list, std::vector<siz
               if (v.name != kValueParam) return invalid("a value block's one control is 'value'");
           }
         }
+        if (d->defaultPosition) {  // TX.reset-default (model.h Device::defaultPosition)
+          if (!isValueDevice(*d)) return invalid("only a value block has a default knob position");
+          if (!(*d->defaultPosition >= 0.0 && *d->defaultPosition <= 1.0))
+            return invalid("a value block's default knob position is in [0, 1]");
+        }
         if (d->group.valid()) {
           // GU.2: groups nest (model.h "Groups"): the groups a member sits in, outward, end within kMaxGroupDepth and
           // never come back to it.

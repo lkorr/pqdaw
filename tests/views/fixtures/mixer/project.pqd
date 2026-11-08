@@ -63,19 +63,19 @@
             ]
           }
         },
-        {"id": 8, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 7, "params": {"value": 0.0}, "curves": {
+        {"id": 8, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 7, "params": {"value": 0.0}, "default": 0.0, "curves": {
             "value": {"min": 0.0, "max": 20000.0, "unit": "hz", "mode": "signed", "preset": "exp0", "presetArg": 14.0, "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["exp", 9.704060527839234]]}
           }},
-        {"id": 9, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 7, "params": {"value": 0.0}, "curves": {
+        {"id": 9, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 7, "params": {"value": 0.0}, "default": 0.0, "curves": {
             "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
           }},
-        {"id": 10, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 7, "params": {"value": 0.5}, "curves": {
+        {"id": 10, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 7, "params": {"value": 0.5}, "default": 0.5, "curves": {
             "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
           }},
-        {"id": 11, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 7, "params": {"value": 0.5}, "curves": {
+        {"id": 11, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 7, "params": {"value": 0.5}, "default": 0.5, "curves": {
             "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
           }},
-        {"id": 12, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 7, "params": {"value": 1.0}, "curves": {
+        {"id": 12, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 7, "params": {"value": 1.0}, "default": 1.0, "curves": {
             "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
           }},
         {"id": 13, "patch": "atom:add", "kind": "audioEffect", "name": "hz + freq", "group": 7},
@@ -178,19 +178,19 @@
             ]
           }
         },
-        {"id": 50, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 49, "params": {"value": 0.0}, "curves": {
+        {"id": 50, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 49, "params": {"value": 0.0}, "default": 0.0, "curves": {
             "value": {"min": 0.0, "max": 20000.0, "unit": "hz", "mode": "signed", "preset": "exp0", "presetArg": 14.0, "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["exp", 9.704060527839234]]}
           }},
-        {"id": 51, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 49, "params": {"value": 0.0}, "curves": {
+        {"id": 51, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 49, "params": {"value": 0.0}, "default": 0.0, "curves": {
             "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
           }},
-        {"id": 52, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 49, "params": {"value": 0.5}, "curves": {
+        {"id": 52, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 49, "params": {"value": 0.5}, "default": 0.5, "curves": {
             "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
           }},
-        {"id": 53, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 49, "params": {"value": 0.5}, "curves": {
+        {"id": 53, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 49, "params": {"value": 0.5}, "default": 0.5, "curves": {
             "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
           }},
-        {"id": 54, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 49, "params": {"value": 1.0}, "curves": {
+        {"id": 54, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 49, "params": {"value": 1.0}, "default": 1.0, "curves": {
             "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
           }},
         {"id": 55, "patch": "atom:add", "kind": "audioEffect", "name": "hz + freq", "group": 49},
@@ -304,19 +304,19 @@
                 ]
               }
             },
-            {"id": 92, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 91, "params": {"value": 0.0}, "curves": {
+            {"id": 92, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 91, "params": {"value": 0.0}, "default": 0.0, "curves": {
                 "value": {"min": 0.0, "max": 20000.0, "unit": "hz", "mode": "signed", "preset": "exp0", "presetArg": 14.0, "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["exp", 9.704060527839234]]}
               }},
-            {"id": 93, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 91, "params": {"value": 0.0}, "curves": {
+            {"id": 93, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 91, "params": {"value": 0.0}, "default": 0.0, "curves": {
                 "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
               }},
-            {"id": 94, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 91, "params": {"value": 0.5}, "curves": {
+            {"id": 94, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 91, "params": {"value": 0.5}, "default": 0.5, "curves": {
                 "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
               }},
-            {"id": 95, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 91, "params": {"value": 0.5}, "curves": {
+            {"id": 95, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 91, "params": {"value": 0.5}, "default": 0.5, "curves": {
                 "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
               }},
-            {"id": 96, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 91, "params": {"value": 1.0}, "curves": {
+            {"id": 96, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 91, "params": {"value": 1.0}, "default": 1.0, "curves": {
                 "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
               }},
             {"id": 97, "patch": "atom:add", "kind": "audioEffect", "name": "hz + freq", "group": 91},
@@ -430,19 +430,19 @@
                 ]
               }
             },
-            {"id": 134, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 133, "params": {"value": 0.0}, "curves": {
+            {"id": 134, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 133, "params": {"value": 0.0}, "default": 0.0, "curves": {
                 "value": {"min": 0.0, "max": 20000.0, "unit": "hz", "mode": "signed", "preset": "exp0", "presetArg": 14.0, "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["exp", 9.704060527839234]]}
               }},
-            {"id": 135, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 133, "params": {"value": 0.0}, "curves": {
+            {"id": 135, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 133, "params": {"value": 0.0}, "default": 0.0, "curves": {
                 "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
               }},
-            {"id": 136, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 133, "params": {"value": 0.5}, "curves": {
+            {"id": 136, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 133, "params": {"value": 0.5}, "default": 0.5, "curves": {
                 "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
               }},
-            {"id": 137, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 133, "params": {"value": 0.5}, "curves": {
+            {"id": 137, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 133, "params": {"value": 0.5}, "default": 0.5, "curves": {
                 "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
               }},
-            {"id": 138, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 133, "params": {"value": 1.0}, "curves": {
+            {"id": 138, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 133, "params": {"value": 1.0}, "default": 1.0, "curves": {
                 "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
               }},
             {"id": 139, "patch": "atom:add", "kind": "audioEffect", "name": "hz + freq", "group": 133},
@@ -542,19 +542,19 @@
             ]
           }
         },
-        {"id": 176, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 175, "params": {"value": 0.0}, "curves": {
+        {"id": 176, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 175, "params": {"value": 0.0}, "default": 0.0, "curves": {
             "value": {"min": 0.0, "max": 20000.0, "unit": "hz", "mode": "signed", "preset": "exp0", "presetArg": 14.0, "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["exp", 9.704060527839234]]}
           }},
-        {"id": 177, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 175, "params": {"value": 0.0}, "curves": {
+        {"id": 177, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 175, "params": {"value": 0.0}, "default": 0.0, "curves": {
             "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
           }},
-        {"id": 178, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 175, "params": {"value": 0.5}, "curves": {
+        {"id": 178, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 175, "params": {"value": 0.5}, "default": 0.5, "curves": {
             "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
           }},
-        {"id": 179, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 175, "params": {"value": 0.5}, "curves": {
+        {"id": 179, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 175, "params": {"value": 0.5}, "default": 0.5, "curves": {
             "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
           }},
-        {"id": 180, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 175, "params": {"value": 1.0}, "curves": {
+        {"id": 180, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 175, "params": {"value": 1.0}, "default": 1.0, "curves": {
             "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
           }},
         {"id": 181, "patch": "atom:add", "kind": "audioEffect", "name": "hz + freq", "group": 175},

@@ -410,6 +410,7 @@ struct Builder {
     const DeviceId id = add(std::string(kValueDevice), std::move(name));
     auto d = std::make_shared<Device>(*set.devices.back());
     d->params = {DeviceValue{std::string(kValueParam), std::clamp(position, 0.0, 1.0)}};
+    d->defaultPosition = d->params.front().value;  // TX.reset-default
     d->curves = {ControlCurve{std::string(kValueParam), c}};
     if (role != RackRole::None) d->settings = {roleSetting(role)};
     set.devices.back() = std::move(d);

@@ -374,7 +374,10 @@ EditResult duplicateDevices(const Project& p, IdSource& ids, std::span<const Dev
 }
 
 EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, std::optional<double> value) {
-  if (!findDevice(p, device).track) return notFound("device not found");
+  const DeviceLoc l = findDevice(p, device);
+  if (!l.track) return notFound("device not found");
+  // TX.reset-default: back to the default is a value block's own default position where it has one.
+  if (!value && isValueDevice(*l.device) && param == kValueParam) value = l.device->defaultPosition;
   PQ_DOC_TRY(checkDeviceValue(param, value));
   Edit e = makeEdit("Device Parameter");
   e.devices.push_back(device);

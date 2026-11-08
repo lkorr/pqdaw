@@ -151,6 +151,7 @@ TEST_CASE("device panel knobs: the wheel steps them (a run = one undo step), a d
   const std::optional<IRect> knob = u.view().controlRect(rack, "macro1");
   REQUIRE(knob.has_value());
   const double v0 = p->target().position(mb);
+  REQUIRE(v0 > 0.0);  // made at the Drive's position (0 dB)
   const Vec2 c = mid(*knob);
   const size_t h0 = u.history();
   u.d.move(c);
@@ -160,6 +161,7 @@ TEST_CASE("device panel knobs: the wheel steps them (a run = one undo step), a d
   u.d.advance(panel::PanelHost::kWheelRunSeconds + 0.1);
   CHECK(u.history() == h0 + 1);
   u.d.doubleClick(c);
-  CHECK(p->target().position(mb) == doctest::Approx(0.0));  // a macro's default: 0 (mapping it took the Drive's position)
+  // TX.reset-default: a macro's default is where it was made (mapping it took the Drive's position), not 0.
+  CHECK(p->target().position(mb) == doctest::Approx(v0));
   CHECK(u.history() == h0 + 2);
 }

@@ -442,7 +442,7 @@ EditResult breakApartPanelElements(const Project& p, DeviceId group, std::span<c
 // The panel's size (w, h > 0).
 EditResult setPanelSize(const Project& p, DeviceId group, float width, float height);
 // One param's knob position in [0, 1] (GU.1: what a param stores; a rack's macro or selector: its value 0 … 127;
-// nullopt: back to the patch's default). A drag is several of these inside one store gesture.
+// nullopt: back to the default — a value block's Device::defaultPosition where set, else the patch's). A drag is several of these inside one store gesture.
 EditResult setDeviceParam(const Project& p, DeviceId device, std::string param, std::optional<double> position);
 // GU.1: a param set by a value in its units (a typed value, a preset's, a script's): the knob position that gives it
 // through the param's curve (the device's own, else the declared one: dsp::curvePosition — on a curve that goes up and

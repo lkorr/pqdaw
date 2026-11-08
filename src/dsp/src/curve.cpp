@@ -219,8 +219,9 @@ Curve curvePreset(CurvePreset p, double min, double max, double arg) noexcept {
       // GU.5b: the VCA's markers (±10, ±100 where the range reaches past them) are points of the curve: dragging one
       // edits the curve. Splitting a segment where the curve has that value keeps the function exactly.
       for (const double v : {-100.0, -10.0, 10.0, 100.0}) (void)splitCurveAt(c, curvePosition(c, v, 0.5));
-      // TX.detent: ×1 and ×−1 (the fine zone's edges, points of the law) are detents where the range reaches them.
-      for (const double v : {-1.0, 1.0})
+      // TX.detent: ×1 and ×−1 (the fine zone's edges, points of the law) are detents where the range reaches them;
+      // TX.reset-default: so are ×0, ×2 and ×−2 (a point split in where none is: the function unchanged).
+      for (const double v : {-2.0, -1.0, 0.0, 1.0, 2.0})
         if (v > c.min && v < c.max) (void)setCurveDetent(c, curvePosition(c, v, 0.5));
       break;
   }
