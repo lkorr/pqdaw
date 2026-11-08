@@ -59,18 +59,19 @@ struct SvfParams {
 };
 
 // One section in analog-prototype form: H(S) = (cHp·S² + cBp·S + cLp) / (S² + S/qp + 1), S = jω / wp (ω, wp in
-// radians per sample); `invert`: the section is 1 / H (a cut designed as its boost).
+// radians per sample); `invert`: the section is 1 / H (a cut designed as its boost). Plain aggregates (no member
+// initialisers), so the designer's 64-entry arrays cost nothing to declare on the audio thread.
 struct SvfProto {
-  double wp = 1.0, qp = 0.70710678118654752;
-  double cHp = 0.0, cBp = 0.0, cLp = 1.0;
-  double wc = 1.0;  // the reference cutoff the bilinear form prewarps at (radians per sample)
-  bool invert = false;
+  double wp, qp;
+  double cHp, cBp, cLp;
+  double wc;  // the reference cutoff the bilinear form prewarps at (radians per sample)
+  bool invert;
 };
 
-// One designed section: the SVF's g and k and its output mix (see the header comment).
+// One designed section: the SVF's g and k and its output mix (see the header comment). A plain aggregate.
 struct SvfSection {
-  double g = 0.0, k = 1.0;
-  double cHp = 0.0, cBp = 0.0, cLp = 0.0, cX = 1.0;
+  double g, k;
+  double cHp, cBp, cLp, cX;
 };
 
 // What the kernel runs per section (the shallow form; svf_fast.pqp): v = x − ic2, n1 = ic1 + d1·ic1 + b1·v,
@@ -82,7 +83,8 @@ struct SvfKernelCoefs {
 
 // The design parameters the atom uses for its input values (exactly the kernel's conversion, so a response evaluator
 // reading the atom's inputs designs the same filter): mode rounded and clamped to 0 … 7, stages to 1 … 64, prewarp
-// ≥ 0.5 bilinear (else, NaN included, matched), gain a linear amplitude → dB (≤ 0: −120 dB; NaN: 0 dB). RT-safe.
+// ≥ 0.5 bilinear (else, NaN included, matched), gain a linear amplitude → dB (≤ 0: −120 dB; NaN: 0 dB; 0 dB for the
+// modes without a gain). RT-safe.
 SvfParams svfParamsFromInputs(float cutoff, float q, float gain, float mode, float stages, float prewarp,
                               double sampleRate) noexcept;
 

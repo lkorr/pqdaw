@@ -354,3 +354,20 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   the phasor's add and `frac`: the same sound up to float rounding of the wrap (identical while B … D are at level 0,
   the default). Golden `project-circuit-device` updated (the operator rows lost their `+ pm` atoms).
 - Status: open (provisional choices above).
+
+## Q?-EQ.1-a · svf atom: shelves' matched numerator, the deep-cascade precision, the stdlib name
+- **Shelves (matched)**: Vicanek 2016 covers lowpass / highpass / bandpass / peaking only. Chosen: a shelf section is
+  designed as the variant with its poles at fc/√A (low-shelf boost, high-shelf cut; the others inverted, poles ↔
+  zeros), poles impulse-invariant, |B|² of Vicanek eq. 25 fitted by weighted least squares on 16 log points up to
+  Nyquist with B0 exact (DC gain). Worst over 0 … 20 kHz at 48 kHz vs the analog shelf: ≤ 0.6 dB to 15 kHz for Q ≤ 2
+  (a 3-point fit DC / fc / Nyquist was up to 1.7 dB, 6 dB at Q 5). Alternatives: a 5-point fit that also moves the
+  poles (better fit, poles no longer the analog ones), or bilinear shelves. Cuts of bells are likewise the inverted
+  boost (0.38 dB worst at 15 kHz vs 0.99 dB direct).
+- **Precision**: a 64-section Butterworth in float is noise near its cutoff (rounding amplified by the high-Q sections
+  after it, ~1e9). Chosen: sections interleaved low / high Q (partial gains 1e4 instead of 1e9) and ≥ 17 sections run
+  in double (≈ 2× the float cost at 8 lanes; per-section cost ≈ unchanged at 1 lane). Alternative: float everywhere
+  and a looser response check at high stage counts.
+- **Name**: an atom named `svf` collides with stdlib/filters/svf.pqp's `patch svf` (a patch may not shadow an atom).
+  Chosen: the patch is renamed `svf_multi` (every response of one core as an output; the circuit goldens show it).
+  Alternative: delete it (the atom covers its responses one mode at a time).
+- Status: open (provisional choices above).

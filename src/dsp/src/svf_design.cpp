@@ -21,6 +21,7 @@ struct Clean {
   uint32_t n;
   double w0, q, db;
 };
+uint32_t protos(const Clean& c, SvfProto* out) noexcept;
 
 Clean sanitise(const SvfParams& p) noexcept {
   Clean c{};
@@ -82,9 +83,9 @@ double protoMag2(const SvfProto& p, double w) noexcept {
   return (nr * nr + ni * ni) / (dr * dr + di * di);
 }
 
-SvfSection identity(double wc, double qp) noexcept {
-  SvfSection s;
-  s.g = std::tan(0.5 * wc);
+SvfSection identity(double tanHalf, double qp) noexcept {
+  SvfSection s{};
+  s.g = tanHalf;
   s.k = 1.0 / qp;
   s.cHp = s.cBp = s.cLp = 0.0;
   s.cX = 1.0;
@@ -95,7 +96,7 @@ SvfSection identity(double wc, double qp) noexcept {
 SvfSection invert(const SvfSection& s) noexcept {
   const double cl = std::max(s.cLp, 1e-300), ch = std::max(s.cHp, 1e-300);
   const double r = std::sqrt(cl * ch);
-  SvfSection o;
+  SvfSection o{};
   o.g = s.g * std::sqrt(cl / ch);
   // The boost's zeros are minimum phase (Vicanek eq. 28), so k' > 0; a fit whose zeros landed on the unit circle (a
   // clamped W² + B2 at extreme Q) would give k' = 0, a marginal filter: keep Q' ≤ 1e5.
@@ -107,9 +108,9 @@ SvfSection invert(const SvfSection& s) noexcept {
   return o;
 }
 
-SvfSection bilinear(const SvfProto& p) noexcept {
-  SvfSection s;
-  s.g = std::tan(0.5 * p.wc) * (p.wp / p.wc);
+SvfSection bilinear(const SvfProto& p, double tanHalf) noexcept {  // tanHalf = tan(wc / 2)
+  SvfSection s{};
+  s.g = tanHalf * (p.wp / p.wc);
   s.k = 1.0 / p.qp;
   s.cHp = p.cHp;
   s.cBp = p.cBp;
@@ -148,7 +149,7 @@ void shelfFit(const SvfProto& p, const Poles& pl, double B0, double& B1, double&
 
 SvfSection matched(SvfMode mode, const SvfProto& p) noexcept {
   const Poles pl = matchedPoles(p.wp, p.qp);
-  SvfSection s;
+  SvfSection s{};
   s.g = std::sqrt(pl.P / pl.M);
   s.k = 2.0 * pl.omA2 / (s.g * pl.M);
   s.cX = 0.0;
@@ -232,7 +233,8 @@ SvfParams svfParamsFromInputs(float cutoff, float q, float gain, float mode, flo
   p.stages = roundClamp(stages, 1, kSvfMaxStages);
   p.cutoffHz = cutoff;
   p.q = q;
-  p.gainDb = std::isnan(gain) ? 0.0 : !(gain > 0.0f) ? -120.0 : 20.0 * std::log10(static_cast<double>(gain));
+  const bool gainMode = p.mode == SvfMode::Bell || p.mode == SvfMode::LowShelf || p.mode == SvfMode::HighShelf;
+  p.gainDb = !gainMode || std::isnan(gain) ? 0.0 : !(gain > 0.0f) ? -120.0 : 20.0 * std::log10(static_cast<double>(gain));
   p.sampleRate = sampleRate;
   return p;
 }
@@ -242,11 +244,15 @@ uint32_t svfSectionCount(SvfMode mode, uint32_t stages) noexcept {
   return std::clamp<uint32_t>(stages, 1u, kSvfMaxStages);
 }
 
-uint32_t svfPrototype(const SvfParams& in, SvfProto* out) noexcept {
-  const Clean c = sanitise(in);
+namespace {
+uint32_t protos(const Clean& c, SvfProto* out) noexcept {
+  const bool shelf = c.mode == SvfMode::LowShelf || c.mode == SvfMode::HighShelf;
+  const double shelfDb = shelf ? c.db / c.n : 0.0;
+  const double shelfA = shelf ? std::pow(10.0, std::fabs(shelfDb) / 40.0) : 1.0;  // per section
   for (uint32_t k = 0; k < c.n; ++k) {
     SvfProto& p = out[k];
     p = SvfProto{};
+    p.cLp = 1.0;
     p.wp = p.wc = c.w0;
     switch (c.mode) {
       case SvfMode::Lowpass:
@@ -283,8 +289,8 @@ uint32_t svfPrototype(const SvfParams& in, SvfProto* out) noexcept {
       }
       case SvfMode::LowShelf:
       case SvfMode::HighShelf: {  // the variant with its poles at ωc / √A: a low-shelf boost or a high-shelf cut
-        const double db = c.db / c.n;
-        const double A = std::pow(10.0, std::fabs(db) / 40.0);
+        const double db = shelfDb;
+        const double A = shelfA;
         p.qp = spreadQ(interleaved(k, c.n), c.n, c.q);
         p.wp = c.w0 / std::sqrt(A);
         if (c.mode == SvfMode::LowShelf) {
@@ -304,19 +310,25 @@ uint32_t svfPrototype(const SvfParams& in, SvfProto* out) noexcept {
   }
   return c.n;
 }
+}  // namespace
+
+uint32_t svfPrototype(const SvfParams& in, SvfProto* out) noexcept { return protos(sanitise(in), out); }
 
 uint32_t svfDesign(const SvfParams& in, SvfSection* out) noexcept {
   const Clean c = sanitise(in);
-  SvfProto protos[kSvfMaxStages];
-  const uint32_t n = svfPrototype(in, protos);
+  SvfProto pr[kSvfMaxStages];  // aggregates: no initialisation cost
+  const uint32_t n = protos(c, pr);
   const bool gainMode = c.mode == SvfMode::Bell || c.mode == SvfMode::LowShelf || c.mode == SvfMode::HighShelf;
+  double tanHalf = 0.0;  // tan(ω0 / 2): the bilinear prewarp, once per design (only when a section needs it)
   for (uint32_t k = 0; k < n; ++k) {
-    const SvfProto& p = protos[k];
+    const SvfProto& p = pr[k];
+    const bool lin = gainMode && c.db == 0.0 ? true : !(c.matched && p.wp >= kMatchedMin);
+    if (lin && tanHalf == 0.0) tanHalf = std::tan(0.5 * c.w0);
     if (gainMode && c.db == 0.0) {
-      out[k] = identity(p.wc, p.qp);
+      out[k] = identity(tanHalf, p.qp);
       continue;
     }
-    const SvfSection s = c.matched && p.wp >= kMatchedMin ? matched(c.mode, p) : bilinear(p);
+    const SvfSection s = lin ? bilinear(p, tanHalf) : matched(c.mode, p);
     out[k] = p.invert ? invert(s) : s;
   }
   return n;
