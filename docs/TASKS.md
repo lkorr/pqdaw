@@ -723,9 +723,9 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 ## EQ: the filter / EQ module (plan: docs/plans/EQ.md; user decision 2026-11-07, SPEC §15 "the filter / EQ module"; approved by the user 2026-11-07)
 
 - [x] **EQ.1 `svf` atom** (plan §The svf atom; dsp/svf_design.h designer + exact response, matched / bilinear, stages 1–64, interpreter + JIT, ship bench). Merged af2c065f; stdlib patch renamed svf_multi; svf response rule added.
-- [ ] **EQ.1b svf cost** (before EQ.4 ships knob drags): state sized by the `stages` const (now 24.8 KiB per node and channel); a SilenceRule; the audio-rate / param-ramp design cost (matched lowshelf 490 ns/sample vs 2.4 at param rate, and knob ramps run it: redesign every N samples with interpolated coefficients, or a SIMD float design); per-node cache in the svf response rule.
+- [~] **EQ.1b svf cost** (before EQ.4 ships knob drags): state sized by the `stages` const (now 24.8 KiB per node and channel); a SilenceRule; the audio-rate / param-ramp design cost (matched lowshelf 490 ns/sample vs 2.4 at param rate, and knob ramps run it: redesign every N samples with interpolated coefficients, or a SIMD float design); per-node cache in the svf response rule.
 - [x] **EQ.2 Linear response evaluator** (plan §Analytic responses; atom response rules, SCC solve, param re-evaluation). Merged 35f42cbd; svf rule left to EQ.1.
-- [ ] **EQ.3 Band and EQ modules + ops** (plan §Structure, §Ops). Depends on EQ.1.
+- [~] **EQ.3 Band and EQ modules + ops** (plan §Structure, §Ops). Depends on EQ.1.
 - [ ] **EQ.4 `response` and `phase` elements, band strip, EQ panel** (plan §Displays). 👁 Depends on EQ.2, EQ.3.
 - [ ] **EQ.5 Custom band types** (plan §Phases 5). Depends on EQ.4.
 - [ ] **EQ.6 Milestone -Full + critique.**
