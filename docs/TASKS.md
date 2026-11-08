@@ -734,6 +734,9 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [ ] **EQ.6 Milestone -Full + critique.**
 
 ### Bugs
+- [ ] **TX.bool-real A bool wired into a real input converts (gate_to_real) instead of failing the compile** (user report 2026-11-08_12-29-32 context: "kind mismatch: bool into real input 'x' of (atom gain)"; consistent with GU.f8: a bool in a circuit is a 0/1 signal). Queued.
+- [ ] **TX.detent Curve points can be detents; Phase Accumulator Amplitude 1 at the centre of its travel, latching** (user 2026-11-08). Queued.
+- [ ] **Saturator rebuilt as the Wavetable used as a waveshaper, inheriting its oversampling option** (user 2026-11-08, answer to Q?-AU.fold-a). Later.
 - [~] **AU.stream Click ≈ 100 ms after Play from idle** (user 2026-11-08, bug_reports/2026-11-08_11-45-59: FL Studio ASIO, 1024 frames, the stream suspended after 1 s idle; the click comes after the driver restarts on Play). Keep the stream running while a project is open; a cold start pre-rolls silence until the driver settles before the transport starts. Worker, branch task/AU.stream.
 - [x] **AU.voices Click near the start of MIDI playback; notes sound too long after release** (user 2026-11-08) *(merged 57be5cb6; engine renders clean in every scenario; piano-roll preview now ends on release; ASIO halves zeroed per start; suspect: the 1 s idle stream stop restarting the ASIO driver on Play, Q?-AU.voices-a, user to confirm)*.
 - [x] **AU.fold Clicks from the Wavetable's fold in a Phase Accumulator → Wavetable setup** (user 2026-11-08) *(merged 8f93a477; baked-table swaps crossfade 25 ms and queue; live-path ramp start fixed; Q?-AU.fold-a Saturator oversampling, Q?-AU.fold-b non-integer PA Amplitude: user decisions pending)*.
