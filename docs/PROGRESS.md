@@ -187,3 +187,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Did: merged 89a8b5b2. Wrapped phase draws a dotted vertical line (0.7 px, curve colour 40 % / band 30 %) at each ±180° crossing, interpolated in the existing cut pass (no extra evaluation).
 - Verified (worker): pq_tests_views default tier 588/588 (16-stage low cut: 8 wraps, each within 1 px of a finer reference). Golden eq-eight-bands re-recorded (only the 8 lines).
 - Perf: n/a. Notes: deferred idea recorded in docs/plans/EQ.md (FIR phase lead, after PDC).
+
+## 2026-11-08 · AU.stream · orchestrator (merge of task/AU.stream)
+- Did: merged 4501d720. Evidence: ASIO layer clean on every start (no asioMessage, positions +1024 exactly); WASAPI loopback of a −90 dBFS probe tone through FL Studio ASIO shows a dip (75 % → 50 %, ≈ 5 ms) 125.3–130.7 ms into every start without pre-roll (8/8); our WASAPI path 0 anomalies. Fix: no suspend while in use (only after 300 s asleep + unfocused/minimised; foreground restarts at once; WASAPI too); every driver start pre-rolls silence ≥ max(latency + 4 buffers, 0.25 s) with the last 4 xrun-free, bounded 1 s, 5 ms ramp-in, Play queued (≈ 280 ms on FL ASIO, cold starts only); 5 ms fade + drain before app-initiated stops; lock-free stream trace (pq/engine/stream_trace.h) in the F12 Context.
+- Verified (worker): audio and engine default tier; -Affected 32/33 → pqdaw_idle_shell budget assumed a stopped stream (audio thread now < 0.5 %, rest 0.1 %), re-run passed. Probes: AudioOutput on the real driver, dip gone 9/9.
+- Perf: idle with stream running: FL ASIO 0.62 % of one core (callback 3.5 µs / 21.3 ms); WASAPI audio thread 0.25 %.
+- Notes/blockers: Q?-AU.stream-a: FL Studio ASIO also drops 5–10 ms every few seconds in steady playback (driver-internal); suggest Focusrite USB ASIO or WASAPI.
