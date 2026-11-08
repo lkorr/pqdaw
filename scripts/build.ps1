@@ -13,8 +13,8 @@
   split into shards (pq_add_test SHARDS / SLOW_SHARDS) so they run in parallel too.
 
   -Affected (T0.x-buildspeed2): scripts/affected.ps1 maps this branch's changes (against origin/main, plus
-  uncommitted files) to the targets to build and the tests to run, default + slow tiers. This is the worker's
-  verification run.
+  uncommitted files) to the targets to build and the tests to run, default tier (add -Slow for the slow tier:
+  dsp kernels, JIT, engine, lowering). See CLAUDE.md "Verification by risk".
 
   Compiler cache: when scripts/get-sccache.ps1 has installed sccache, CMake uses it as the compiler launcher
   (cmake/PqCompilerCache.cmake). Every checkout shares one cache directory (%LOCALAPPDATA%\pqdaw\sccache-shared,
@@ -26,7 +26,7 @@
   %LOCALAPPDATA%\pqdaw\downloads.
 
 .EXAMPLE
-  ./scripts/build.ps1 -Affected                # worker verification: affected targets, default + slow tests (check)
+  ./scripts/build.ps1 -Affected                # affected targets, default tier (check); -Slow adds the slow tier
   ./scripts/build.ps1 -Target pq_tests_dsp -TestRegex pq_tests_dsp   # iterate on one test executable
   ./scripts/build.ps1 -Full                    # whole suite, default + slow (orchestrator, milestone boundaries)
   ./scripts/build.ps1 -Preset dev -Target pq_tests_core -NoTests      # unoptimised build for the debugger
@@ -41,6 +41,7 @@ param(
   [switch] $Full,
   [switch] $Perf,
   [switch] $Affected,
+  [switch] $Slow,                    # -Affected / -TestRegex: also run the slow tier
   [string] $Base = 'origin/main',   # -Affected: the branch point to diff against
   [switch] $Reconfigure
 )
@@ -130,10 +131,9 @@ try {
   $targets = @($Target | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
   $runTests = -not $NoTests
   $testRegex = $TestRegex
-  $fullTier = $Full
+  $fullTier = $Full -or $Slow
   if ($Affected) {
     $plan = & (Join-Path $PSScriptRoot 'affected.ps1') -Base $Base -BuildDir $buildDir
-    $fullTier = $true
     if ($plan.All) {
       $targets = @()
     } elseif (-not $plan.Targets -and -not $plan.TestRegex) {
