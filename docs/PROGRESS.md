@@ -1490,3 +1490,10 @@ Newest entries at the bottom. Format is in CLAUDE.md ("Logging your work").
 - Perf: not measured. Known regression: Saturator computes all seven curves and the LFO all five shapes per sample (no setting-indexed switch block yet; Q230).
 - CPU-efficiency check: see the regression above; Utility unchanged.
 - Notes/blockers: a per-voice cable into a control creates a modulation tap that ends voices once silent (open engine bug, Q230); Operator FM routed through `+ pm` to avoid it.
+
+## 2026-11-07 · GU.11 · orchestrator (merge of task/GU.11-one-view)
+- Did: fast-forwarded main to 7408bed5. The model holds only groups, atom blocks, value blocks and native engines (checkList refuses anything else); Device::source / chainInput / user patches / .pqdevice, the panel_desc + panel.json system, stock displays, device preview and the project-device circuit editor are gone or in retired/; ops::addDevice takes "module:<key>"; the GU.10 stand-in devices and the PQ_STAND_IN_DEVICES hook are deleted, tests ported to modules; new test_one_hierarchy over every fixture and module preset; a switched-off group now switches off its contents. Orchestrator fix: tests/engine/idle_project_fixture.h imported retired stdlib files (pq_tests_project failing since GU.10); it now uses a test copy of the retired Basic Synth and a biquad lowpass in place of EQ Eight. Q231.
+- Verified: worker: check build all targets 0 warnings; document, views, ui, app, library, stdlib, playback, audio, meta default tier 15/15. Orchestrator: pq_tests_project 1/1 after the fixture fix.
+- Perf: not measured.
+- CPU-efficiency check: nothing new on the audio thread; lowering does less; switched-off groups no longer compute.
+- Notes/blockers: bench_inspect names retired stdlib files at run time; code without callers left (app::DeviceInspector, CircuitEditor::Host, lone-stock-instrument lowering branches, metaSites); group-panel knobs lack wheel / Show Automation / Knob Curve / modulation ring; test_mod_all slow sweep not run.

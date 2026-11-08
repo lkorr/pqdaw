@@ -2472,7 +2472,7 @@ Agents: add questions here instead of guessing on anything important. Use this f
   Operator shapes are gone with the stock devices (and their test case).
 - Status: open (provisional choices above).
 
-## Q?-GU.11-a · 2026-11-07 · GU.11 · One view, one panel system: the choices made where the plan left room
+## Q231 · 2026-11-07 · GU.11 · One view, one panel system: the choices made where the plan left room
 - **No conversion, no compatibility** (user: "compatibility is a non-issue"): a file naming a non-block patch (a stock
   device, "BasicSynth"), a device "source" (patch text) or "chainInput" is REFUSED on load (checks.cpp, serialize.cpp);
   the schema 2 → 3 step no longer inserts the M3 default instrument (such a file's MIDI tracks load silent). The
