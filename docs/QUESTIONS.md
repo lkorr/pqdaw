@@ -2541,3 +2541,28 @@ Agents: add questions here instead of guessing on anything important. Use this f
 - **Open:** a role block edited by hand keeps its role (e.g. a Mixer group whose Volume block is deleted: the row has no
   volume). Alternative: drop roles whose structure no longer matches. Not done (no known need).
 - Status: open (provisional).
+
+## Q?-GU.f45-a · 2026-11-07 · GU.f4 / GU.f5 · Structural value blocks and voice monitors: the choices made
+- **Which value blocks lower as literals** (lower.h "Structural value blocks", `lowersAsLiteral`): a value block whose
+  curve is stepped (step > 0) or constant (min == max: the presets' numbers, e.g. the `1` in `type − 1` of a menu's mux
+  chain), with no wire into it and no automation lane on it, whose output reaches a `mux` / `demux` `index` or a `select`
+  `cond` through atom blocks only (not through group terminals or engine blocks). Rejected: every stepped block (a
+  rack's chain Gate / selector would then recompile on each change for no CPU win) and a new "switch" block type (Q230's
+  first proposal: the presets would need a second kind of control; the rule needs none). Reversible: one predicate.
+- **A literal's change recompiles**: SetDeviceParam on it (and a curve edit that makes or unmakes one) is
+  kChangeStructural, so the link compiles that unit (debounced 50 ms) and the swap fades old → new over ≈ 11 ms (the
+  recompile test compares after 2048 samples). A menu scrubbed by drag compiles once per debounce. If that latency is
+  unwanted on some control, wiring anything into it (or a lane) keeps it a runtime choice with every branch compiled.
+- **Muted rack chains (GU-critique CPU "med")**: NOT folded by this mechanism. The chain mixer's Gate (stepped 0 / 1)
+  multiplies the volume (`mul` → `pack` → `gain`), it reaches no choice; and even as a literal 0, `vol · 0` and the
+  `gain` of the chain's audio by 0 are not value-exact folds (x · 0 is folded only for x finite with a clear sign bit;
+  a param or audio signal is neither), so the chain's devices would still run. Options: (a) the chain mixer selects
+  (`select(gate, y, 0)`) and the optimiser treats a literal-false select as dead upstream (already the case) — then Gate
+  would be a choice and fold; (b) the lowering leaves a muted chain out like a switched-off group (T4.8's rule). (b) is
+  closer to what T4.8 did; (a) is the general mechanism but changes the chain mixer's graph. Provisional: neither (out of
+  GU.f4's scope); recommend (a) as a small follow-up.
+- **Voice monitors (GU.f5)**: composeUnit skips every port listed in ProjectGraph::taps (analysis taps) when it adds the
+  `vmon_` voice monitors, so a voice ends by its `done`, else its monitored audio outputs, else the release timeout —
+  never by a silent modulation tap. Operator's FM into the PA's `+ pm` atom (Q230's workaround) can now be a plain
+  per-voice cable into a control; left as it is (no preset change here).
+- Status: open (provisional choices above).
