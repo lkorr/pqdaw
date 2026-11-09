@@ -14,6 +14,11 @@
 // A structural edit (a literal value block, a band added, Stages, Mode: lower.h "GU.f4") changes the lowering: call
 // prepare() again. Params that are not a device's (a mixer's) keep the value the lowering had.
 //
+// TX.mod-bands: a DRIVEN control (a wire, an automation lane or a macro mapping on it) is a set port of the response
+// (graph::LinearResponse "SET PORTS"; its final value, doc::CurveSite::value), held at the control's curve at a
+// position: the LIVE MODULATED one a display gives (setLive: the ModulationRing's current), else the knob's. So a band
+// an LFO sweeps keeps its curve, drawn where the modulation has it, whatever the modulator is.
+//
 // Not RT code (prepare allocates; update reads the project); evaluate() is allocation-free (the UI calls it on every
 // drag).
 
@@ -26,6 +31,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/lower.h"
 #include "pq/document/model.h"
+#include "pq/document/panel.h"
 #include "pq/graph/infer.h"
 #include "pq/graph/response.h"
 
@@ -55,6 +61,11 @@ public:
   uint16_t inChannels() const noexcept { return response_.sourceChannels(); }
   uint16_t outChannels() const noexcept { return response_.sinkChannels(); }
   const graph::LinearResponse& response() const noexcept { return response_; }
+  // TX.mod-bands: the driven controls the response reads, as Control bindings (a display looks up their live rings).
+  std::span<const Binding> driven() const noexcept { return drivenBindings_; }
+  // The live modulated position of driven()[i] (in [0, 1]); < 0 or NaN: none (the knob's own). Allocation-free; true
+  // when the response changed (its stamp moved).
+  bool setLive(uint32_t i, double position) noexcept;
 
 private:
   struct Control {
@@ -68,8 +79,21 @@ private:
   };
   Status finish(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices, DeviceId group,
                 const graph::InferResult& inf, uint32_t track, uint32_t inSource, uint32_t outSource);
+  struct DrivenControl {
+    uint32_t index = 0;  // into response_.setPorts()
+    DeviceId device;
+    std::string param;
+    graph::ParamDecl decl;
+    dsp::Curve curve;
+    double knob = 0.0;   // its knob position (the document's)
+    double live = -1.0;  // the live modulated position (< 0: none)
+    bool held = false;   // a value was given
+  };
+  void hold(DrivenControl& c, bool& changed) noexcept;
   graph::LinearResponse response_;
   std::vector<Control> params_, curves_;
+  std::vector<DrivenControl> driven_;
+  std::vector<Binding> drivenBindings_;
   uint64_t stamp_ = 0;
 };
 

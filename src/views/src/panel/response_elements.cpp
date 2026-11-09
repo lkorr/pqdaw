@@ -124,6 +124,8 @@ struct BandRef {
   uint32_t index = 0;                        // its place in its chain: its colour and number
   bool off = false, solo = false;
   double hz = 1000.0, db = 0.0;
+  // TX.mod-bands: where the node is drawn — the modulated frequency / gain while a live ring has them, else hz / db.
+  double shownHz = 1000.0, shownDb = 0.0;
   uint32_t typeV = 4, stagesV = 1;
   bool hasGain() const noexcept { return gain.bound() && (!type.bound() || doc::bandTypeHasGain(typeV)); }
   bool hasStages() const noexcept { return stages.bound() && (!type.bound() || doc::bandTypeHasStages(typeV)); }
@@ -769,8 +771,8 @@ private:
   const BandRef& band(int32_t i) const { return *shown_.bands[shown_.active][static_cast<size_t>(i)]; }
   // A node: at its gain for the gain types, else on its own curve at its frequency.
   Vec2 nodePos(const BandRef& b, uint32_t chain = ~0u) const {
-    const float x = xOf(b.hz);
-    if (b.hasGain()) return {x, yOf(b.db)};
+    const float x = xOf(b.shownHz);
+    if (b.hasGain()) return {x, yOf(b.shownDb)};
     if (chain == ~0u || chain == shown_.active)
       if (b.index < band_.size() && band_[b.index].valid()) {
         const float k = std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1);
@@ -808,6 +810,7 @@ private:
     shown_.sync(r->doc(), b->device);
     shown_.groups(want_, true);
     r->want(want_);
+    follow(*r, t);
     const std::vector<double>& hz = grid();
     const uint32_t act = shown_.active;
     // Only what an open area draws is derived (a closed area costs nothing).
@@ -838,6 +841,27 @@ private:
       derivePhase(tot, unwrap, &delayTotal_, phaseTotal_);
       derivePhase(one, unwrap, &delaySel_, phaseSel_);
     }
+  }
+
+  // TX.mod-bands: the live modulation. Every drawn response's driven controls are held where their rings say the
+  // modulation has them now (GroupResponse::setLive: a curve moves only when a value does), and each node is drawn at
+  // its modulated frequency / gain. A control without a live ring (stopped, no knob of it on a panel) is at its knob.
+  // Polyphonic modulation: the ring's (the tap's newest voice). Called once per paint / gesture; allocation-free.
+  void follow(GroupResponses& r, PanelTarget& t) {
+    auto liveAt = [&](const doc::Binding& x) -> double {
+      const ui::ModulationRing* m = x.bound() ? t.modulation(x) : nullptr;
+      return m != nullptr && m->active && m->current >= 0.0f ? static_cast<double>(m->current) : -1.0;
+    };
+    for (const doc::DeviceId g : want_)
+      if (doc::GroupResponse* gr = r.get(g))
+        for (uint32_t i = 0; i < gr->driven().size(); ++i) (void)gr->setLive(i, liveAt(gr->driven()[i]));
+    for (auto& chain : shown_.bands)
+      for (const auto& bp : chain) {
+        BandRef& b = *bp;
+        const double f = liveAt(b.freq), d = b.hasGain() ? liveAt(b.gain) : -1.0;
+        b.shownHz = f >= 0.0 ? dsp::evalCurveUnits(t.info(b.freq).curve, std::clamp(f, 0.0, 1.0)) : b.hz;
+        b.shownDb = d >= 0.0 ? dsp::evalCurveUnits(t.info(b.gain).curve, std::clamp(d, 0.0, 1.0)) : b.db;
+      }
   }
 
   // ---- the areas ----
@@ -1183,6 +1207,11 @@ private:
     if (b.hasGain()) live(b.gain, false);
     else if (b.q.bound()) any = any || t.driven(b.q);
     if (any) p.ring(c, 9.0f, 1.2f, th.face.valueDriven);
+    // TX.mod-bands: the node moved with the modulation: a faint ring where the knob has it.
+    if (b.shownHz != b.hz || (b.hasGain() && b.shownDb != b.db)) {
+      const Vec2 k{xOf(b.hz), b.hasGain() ? yOf(b.db) : c.y};
+      if (std::fabs(k.x - c.x) + std::fabs(k.y - c.y) > 1.0f) p.ring(k, 3.0f, 0.9f, ui::mulAlpha(th.face.valueDriven, 0.7f));
+    }
   }
   void paintReadout(ui::FacePainter& p, const ui::Theme& th, PanelTarget& t) {
     int32_t i = drag_.on ? drag_.band : hover_;

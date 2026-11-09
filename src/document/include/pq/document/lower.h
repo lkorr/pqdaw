@@ -476,6 +476,11 @@ struct CurveSite {
   std::string param;
   uint32_t slot = 0;
   dsp::Curve curve;
+  // TX.mod-bands: the node (of the patch the control's nodes are lowered in: its NodeId) and output carrying the
+  // control's final value — after every stage, what reaches the device's pin; the response displays hold it at the
+  // live modulated value (graph::LinearResponse "SET PORTS").
+  graph::NodeId value;
+  uint16_t valuePort = 0;
 };
 
 // A send lowered with an automatic 1-sample delay because it closes a delay-free loop (see the file comment).

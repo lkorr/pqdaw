@@ -2,7 +2,10 @@
 
 #include "pq/document/group_response.h"
 
+#include <algorithm>
 #include <charconv>
+#include <cmath>
+#include <unordered_map>
 
 #include "pq/graph/infer.h"
 
@@ -57,6 +60,8 @@ std::vector<Status> GroupResponse::prepareMany(const Project& project, const Low
     r.response_ = graph::LinearResponse{};
     r.params_.clear();
     r.curves_.clear();
+    r.driven_.clear();
+    r.drivenBindings_.clear();
     ++r.stamp_;
     const DeviceId group = groups[k];
     const DeviceLoc loc = findDevice(project, group);
@@ -124,7 +129,27 @@ Status GroupResponse::finish(const Project& project, const LoweredProject& lower
     return Error{ErrorCode::NotFound, "group response: nothing reaches the In terminal of group " + std::to_string(group.value), {}};
   if (sink.node == graph::kNone)
     return Error{ErrorCode::NotFound, "group response: nothing reaches the Out terminal of group " + std::to_string(group.value), {}};
-  response_.prepare(inf.typed, src, sink);
+  // TX.mod-bands: every driven control's final value is a set port (its flat node: the one made from the CurveSite's
+  // value node, in whichever instance the control's nodes were lowered in).
+  std::unordered_map<uint32_t, size_t> siteOf;  // CurveSite::value → index into lowered.curves
+  for (size_t k = 0; k < lowered.curves.size(); ++k)
+    if (lowered.curves[k].value.valid()) siteOf.emplace(lowered.curves[k].value.value, k);
+  std::vector<uint32_t> settable;
+  std::vector<size_t> settableSite;
+  if (!siteOf.empty())
+    for (graph::NodeIndex n = 0; n < flat.nodeCount() && n < inf.typed.origin.size(); ++n) {
+      const graph::NodeOrigin& o = inf.typed.origin[n];
+      if (o.what != graph::NodeOrigin::What::Node || o.instance >= inf.typed.instances.size()) continue;
+      const graph::Patch* ip = inf.typed.instances[o.instance].patch;
+      if (ip == nullptr || o.node >= ip->nodeCount()) continue;
+      const auto it = siteOf.find(ip->node(o.node).id.value);
+      if (it == siteOf.end()) continue;
+      const CurveSite& site = lowered.curves[it->second];
+      if (site.valuePort >= flat.node(n).numOutputs) continue;
+      settable.push_back(flat.flatOutput(n, site.valuePort));
+      settableSite.push_back(it->second);
+    }
+  response_.prepare(inf.typed, src, sink, settable);
 
   // The params the response reads: device params are re-read by update(); others keep the lowering's value.
   auto calleeDecl = [&](DeviceId d, std::string_view name, graph::ParamDecl& out) {
@@ -173,8 +198,41 @@ Status GroupResponse::finish(const Project& project, const LoweredProject& lower
       break;
     }
   }
+  for (uint32_t i = 0; i < response_.setPorts().size(); ++i) {
+    const auto at = std::find(settable.begin(), settable.end(), response_.setPorts()[i]);
+    if (at == settable.end()) continue;
+    const CurveSite& site = lowered.curves[settableSite[static_cast<size_t>(at - settable.begin())]];
+    DrivenControl c;
+    c.index = i;
+    c.device = site.device;
+    c.param = site.param;
+    if (!calleeDecl(c.device, c.param, c.decl)) continue;
+    drivenBindings_.push_back(controlBinding(c.device, c.param));
+    driven_.push_back(std::move(c));
+  }
   update(project);
   return Ok{};
+}
+
+void GroupResponse::hold(DrivenControl& c, bool& changed) noexcept {
+  const double pos = c.live >= 0.0 ? c.live : c.knob;
+  const float v = static_cast<float>(dsp::evalCurve(c.curve, pos));
+  if (c.held && response_.value(c.index) == v) return;
+  c.held = true;
+  response_.setValue(c.index, v);
+  changed = true;
+}
+
+bool GroupResponse::setLive(uint32_t i, double position) noexcept {
+  if (i >= driven_.size()) return false;
+  DrivenControl& c = driven_[i];
+  const double live = std::isfinite(position) && position >= 0.0 ? position : -1.0;
+  if (live == c.live) return false;
+  c.live = live;
+  bool changed = false;
+  hold(c, changed);
+  if (changed) ++stamp_;
+  return changed;
 }
 
 void GroupResponse::update(const Project& project) noexcept {
@@ -197,6 +255,13 @@ void GroupResponse::update(const Project& project) noexcept {
     c.curveSet = true;
     response_.setCurve(c.index, k);
     changed = true;
+  }
+  for (DrivenControl& c : driven_) {
+    const DeviceLoc l = findDevice(project, c.device);
+    if (l.device == nullptr) continue;
+    c.curve = controlCurve(*l.device, c.param, c.decl);
+    c.knob = paramPosition(*l.device, c.param, c.decl);
+    hold(c, changed);
   }
   if (changed) ++stamp_;
 }

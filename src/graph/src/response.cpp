@@ -56,7 +56,7 @@ bool pureKernel(AtomId atom) noexcept {
 
 }  // namespace
 
-void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, ResponseEnd sink) {
+void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, ResponseEnd sink, std::span<const uint32_t> settable) {
   *this = LinearResponse{};
   const Patch& p = typed.patch;
   durationsInSamples_ = typed.durationsInSamples;
@@ -100,6 +100,11 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
     return;
   }
   const NodeIndex srcNode = owner[srcPort];
+  // TX.mod-bands: the set ports' nodes (setOut[n]: 1 + the set output; 0: none). The source's own node is never cut.
+  std::vector<uint16_t> setOut(nodes, 0);
+  for (const uint32_t f : settable)
+    if (f < ports && owner[f] != kNone && owner[f] != srcNode && setOut[owner[f]] == 0)
+      setOut[owner[f]] = static_cast<uint16_t>(1u + (f - p.flatOutput(owner[f], 0)));
 
   // ---- signal: forward from the source (its own inputs cut) ----
   std::vector<uint8_t> sig(ports, 0), seen(nodes, 0);
@@ -110,7 +115,7 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
   while (!work.empty()) {
     const NodeIndex n = work.back();
     work.pop_back();
-    if (n == srcNode || seen[n] != 0) continue;
+    if (n == srcNode || seen[n] != 0 || setOut[n] != 0) continue;  // (a set port's node: its value is given)
     seen[n] = 1;
     for (uint32_t o = 0; o < p.node(n).numOutputs; ++o) sig[p.flatOutput(n, o)] = 1;
     for (WireIndex w : adj.outgoing(n)) work.push_back(p.wire(w).to.node);
@@ -175,6 +180,12 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
     CtrlOp op;
     op.atom = node.atom;
     op.rate = rateOf(n);
+    if (setOut[n] != 0) {  // TX.mod-bands: a set port (its inputs are not evaluated)
+      op.kind = OpKind::Set;
+      op.index = static_cast<uint32_t>(setPort_.size());
+      op.setOutput = static_cast<uint16_t>(setOut[n] - 1u);
+      setPort_.push_back(p.flatOutput(n, op.setOutput));
+    } else
     switch (node.kind) {
       case NodeKind::Const: {
         op.kind = OpKind::Const;
@@ -208,7 +219,7 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
       default: break;  // Input, Unknown, Equation …: unknown
     }
     op.inBegin = static_cast<uint32_t>(ins_.size());
-    if (op.kind != OpKind::Unknown)
+    if (op.kind != OpKind::Unknown && op.kind != OpKind::Set)
       for (uint32_t i = 0; i < node.numInputs; ++i) {
         InSrc s;
         s.port = driverPort(n, i);
@@ -231,7 +242,7 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
   // Whether a node's inputs are evaluated (it is computed from them, so they are needed too).
   auto computes = [&](NodeIndex n) {
     const Node& node = p.node(n);
-    if (node.kind != NodeKind::Atom) return false;
+    if (node.kind != NodeKind::Atom || setOut[n] != 0) return false;
     const std::string_view name = atomSignature(node.atom).name;
     return name == "curve" || name == "channel" || name == "pack" || pureKernel(node.atom);
   };
@@ -417,6 +428,8 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
   argSignal_.assign(argCount, 0);
   curve_.resize(curveNode_.size());
   curveSet_.assign(curveNode_.size(), 0);
+  setValue_.assign(setPort_.size(), 0.0f);
+  setKnown_.assign(setPort_.size(), 0);
   prepared_ = ResponseKind::Exact;
 }
 
@@ -486,6 +499,13 @@ void LinearResponse::runControl(double sampleRate) noexcept {
           }
         }
         break;
+      }
+      case OpKind::Set: {  // the given value on the set output; the node's others are unknown
+        known = setKnown_[op.index] != 0;
+        const uint32_t f = ctrlOuts_[op.outBegin + op.setOutput];
+        std::fill_n(ctrlVal_.begin() + ctrlOff_[f], op.width, setValue_[op.index]);
+        for (uint32_t k = 0; k < op.outCount; ++k) ctrlKnown_[ctrlOuts_[op.outBegin + k]] = known && k == op.setOutput ? 1 : 0;
+        continue;
       }
       case OpKind::Unknown: known = false; break;
     }

@@ -1031,3 +1031,12 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   device-meta-spectrum, device-wiring, audio-rack, instrument-rack (the inspector column on every group frame).
 - **To judge:** whether a 96 px column on every plain group is worth it (Q?-TX.group-oversample-b), the latency text in
   the menu items, the band panel's caption under the menu.
+
+## 👁 TX.mod-bands Modulated EQ bands move with their modulation · 2026-11-08
+- **What changed:** a cable (an LFO, an envelope, anything) into a band's Frequency / Q / Gain no longer blanks the EQ
+  display. The band's curve, the total and the band's node are drawn where the modulation has the control right now
+  (the knob's live ring, polled at 30 Hz), so they move while it plays; stopped, they sit at the knob. The swept-range
+  line stays, and a small faint ring marks the knob's own place while the node is displaced.
+- **Goldens:** none changed (no golden has a modulated band).
+- **To judge:** in the app with an LFO on a bell's Frequency: whether the motion reads well at 30 Hz, and whether the
+  knob marker is useful or noise. Polyphonic modulation shows the ring's voice (the tap's newest).

@@ -878,6 +878,8 @@ public:
     p_.connect(value, PortRef{n, 0});
   }
   NodeIndex call(graph::SubcircuitRef ref, uint32_t id) { return take(p_.addSubcircuit(std::move(ref)), id); }
+  // The document-derived id node `n` gets at finish() (TX.mod-bands: CurveSite::value).
+  graph::NodeId idOf(NodeIndex n) const noexcept { return graph::NodeId{n < ids_.size() ? ids_[n] : 0u}; }
   // Gives every node its document-derived id. False: two nodes asked for one id, or an id did not fit (a bug, or an
   // entity id beyond nodeIdFor's range).
   bool finish() {
@@ -2657,6 +2659,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     const uint32_t slot = b.o.curveSlotOf  ? b.o.curveSlotOf(d.device->id, name)
                           : curves != nullptr ? static_cast<uint32_t>(curves->size() + 1)
                                               : 0u;
+    const size_t siteIndex = curves != nullptr ? curves->size() : 0;
     if (curves != nullptr) curves->push_back(CurveSite{b.track != nullptr ? b.track->id : TrackId{}, d.device->id, name, slot, curve});
     const bool convertLater = !added.empty() && curve.output != dsp::CurveOutput::None;
     v = ir.atom("curve", {p, ir.literal(convertLater ? 0.0 : 1.0), ir.literal(static_cast<double>(slot))}, sid(kTCurve));
@@ -2684,6 +2687,10 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
         lo = -hi;
       }
       addStage(units, lo, hi, ranged && !paramWraps(decl), curve.step, true, ModulationTap::Domain::Dsp);
+    }
+    if (curves != nullptr) {  // TX.mod-bands: the final value (the response displays' set port)
+      (*curves)[siteIndex].value = ir.idOf(v.node);
+      (*curves)[siteIndex].valuePort = v.port;
     }
     sites[si].resolved = true;
     sites[si].value = v;

@@ -37,6 +37,14 @@
 // reach gives H = 0 (Exact). A frequency where a loop is singular (an undamped resonance exactly on it) gives a
 // non-finite H at that point.
 //
+// TX.mod-bands: SET PORTS. prepare() may name flat output ports whose value the CALLER gives (setValue), as it gives a
+// param's: the control evaluation reads them without evaluating what drives them, and the signal pass stops at their
+// node (none of its outputs is signal). A driven control's modulated value is one (the port where its wires have been
+// summed into it, doc::CurveSite::value): whatever modulates it — an LFO, an envelope, the input itself through a
+// follower — the response is H with the control held at the value given (the system frozen at that instant), not
+// Unavailable. A set port's node's other outputs are unknown. Only the set ports the response reads are kept
+// (setPorts()); one never given a value is unknown.
+//
 // Cost and threads: prepare() allocates (once per structural revision of the graph; any thread). evaluate() never
 // allocates, locks or throws (UI thread, on every drag); setParam / setCurve are plain stores. One evaluator is not
 // thread-safe; prepare a copy per thread.
@@ -65,7 +73,8 @@ class LinearResponse {
 public:
   // Prepares `typed` (copied: the evaluator keeps no reference) from `source` to `sink`. The parameters start at their
   // declared defaults, curve atoms without a curve are unknown. Never fails: invalid ends give status() Unavailable.
-  void prepare(const TypedPatch& typed, ResponseEnd source, ResponseEnd sink);
+  // `settable`: candidate set ports (flat output ports of typed.patch; see "SET PORTS").
+  void prepare(const TypedPatch& typed, ResponseEnd source, ResponseEnd sink, std::span<const uint32_t> settable = {});
 
   // The Param nodes whose values the response depends on (control inputs of relevant nodes, at any depth), in node
   // order; setParam(i, …) sets paramNodes()[i]. Values in the param's units, as the engine writes them (bools: 0 / 1).
@@ -79,6 +88,15 @@ public:
     curve_[i] = c;
     curveSet_[i] = 1;
   }
+
+  // TX.mod-bands: the set ports the response reads (of prepare's `settable`); setValue(i, …) gives
+  // setPorts()[i] its value (every channel).
+  std::span<const uint32_t> setPorts() const noexcept { return setPort_; }
+  void setValue(uint32_t i, float v) noexcept {
+    setValue_[i] = v;
+    setKnown_[i] = 1;
+  }
+  float value(uint32_t i) const noexcept { return setValue_[i]; }
 
   uint16_t sourceChannels() const noexcept { return srcWidth_; }
   uint16_t sinkChannels() const noexcept { return sinkWidth_; }
@@ -101,7 +119,7 @@ private:
     uint8_t signal = 0;     // the driver is signal
     uint8_t toSamples = 0;  // a duration input fed in seconds: · sampleRate
   };
-  enum class OpKind : uint8_t { Const, Param, Sr, Curve, Channel, Pack, Fold, Unknown };
+  enum class OpKind : uint8_t { Const, Param, Sr, Curve, Channel, Pack, Fold, Set, Unknown };
   // TX.group-oversample: rates — r = log2 of the oversample region's factor a node runs at (0: the base rate; ×16 is 4).
   static constexpr uint32_t kRates = 5;
   // One point at every rate: ω / 2^r, its z = e^(−jω/2^r) and e^(jω/2^r) − 1.
@@ -116,7 +134,8 @@ private:
     uint32_t inBegin = 0, inCount = 0;    // into ins_
     uint32_t outBegin = 0, outCount = 0;  // into ctrlOuts_ (flat output ports)
     uint16_t width = 1;                   // channels of every output
-    uint32_t index = 0;                   // Param: param index; Curve: curve index; Const: the value (bits) in def
+    uint32_t index = 0;                   // Param: param index; Curve: curve index; Set: set port index
+    uint16_t setOutput = 0;               // Set: which output is the set port
     float constant = 0.0f;
     uint8_t rate = 0;                     // TX.group-oversample: its rate (Sr: 2^rate · sr)
   };
@@ -165,6 +184,9 @@ private:
   std::vector<NodeIndex> curveNode_;
   std::vector<dsp::Curve> curve_;
   std::vector<uint8_t> curveSet_;
+  std::vector<uint32_t> setPort_;  // TX.mod-bands
+  std::vector<float> setValue_;
+  std::vector<uint8_t> setKnown_;
 
   // The linear system.
   std::vector<Cell> cells_;

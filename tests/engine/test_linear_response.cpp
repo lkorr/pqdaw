@@ -377,6 +377,48 @@ TEST_CASE("linear response: re-evaluation after a param change equals a fresh pr
   for (size_t k = 0; k < hz.size(); ++k) checkClose(a[k], dft(meas[0], hz[k]), std::to_string(hz[k]) + " Hz");
 }
 
+TEST_CASE("linear response (TX.mod-bands): a control an LFO (or the input itself) modulates is Unavailable unless it is a "
+          "set port; held at a value, H equals the circuit with the modulation frozen there (measured)") {
+  // A band whose cutoff an LFO sweeps, and one an envelope of the input sweeps (signal-dependent: cut too).
+  const Circuit c = compile(R"(patch D {
+  in x : audio global mono
+  param base = 1000 [20..20000]
+  fc = clip(base + 600 * sine(phasor(2Hz)), 20, 20000)
+  fe = clip(2000 + 3000 * abs(x), 20, 20000)
+  out y : audio
+  y = svf(x, cutoff: fc, q: 2, gain: 2, mode: 4) + 0.5 * svf(x, cutoff: fe, q: 0.7, mode: 0, stages: 2)
+})");
+  // The same circuit with both controls as params: what a fixed modulator value plays.
+  const Circuit ref = compile(R"(patch R {
+  in x : audio global mono
+  param fc = 1000 [20..20000]
+  param fe = 2000 [20..20000]
+  out y : audio
+  y = svf(x, cutoff: fc, q: 2, gain: 2, mode: 4) + 0.5 * svf(x, cutoff: fe, q: 0.7, mode: 0, stages: 2)
+})");
+  const std::vector<double> hz = testFrequencies();
+  std::vector<Cx> h(hz.size());
+  {
+    LinearResponse plain;
+    plain.prepare(c.inferred, inEnd(c, "x"), outEnd(c, "y"));
+    CHECK(plain.evaluate(hz, kSr, h) == ResponseKind::Unavailable);
+  }
+  const Patch& p = c.inferred.patch;
+  const uint32_t ports[] = {p.flatOutput(named(p, "fc"), 0), p.flatOutput(named(p, "fe"), 0)};
+  LinearResponse r;
+  r.prepare(c.inferred, inEnd(c, "x"), outEnd(c, "y"), ports);
+  REQUIRE(r.setPorts().size() == 2);
+  CHECK(r.paramNodes().empty());  // (`base` is behind the cut)
+  CHECK(r.evaluate(hz, kSr, h) == ResponseKind::Unavailable);  // no value given yet: unknown
+  for (const auto& [vc, ve] : {std::pair{1450.0f, 4200.0f}, std::pair{520.0f, 2600.0f}}) {
+    for (uint32_t i = 0; i < 2; ++i) r.setValue(i, r.setPorts()[i] == ports[0] ? vc : ve);
+    CHECK(pq::alloc_trap::countRtViolations([&] { (void)r.evaluate(hz, kSr, h); }) == 0);
+    REQUIRE(r.evaluate(hz, kSr, h) == ResponseKind::Exact);
+    const auto meas = impulse(ref, "x", 0, "y", 16384, {{"fc", vc}, {"fe", ve}});
+    for (size_t k = 0; k < hz.size(); ++k) checkClose(h[k], dft(meas[0], hz[k]), std::to_string(hz[k]) + " Hz, fc " + std::to_string(vc));
+  }
+}
+
 TEST_CASE("linear response (perf): a 32-section feed-forward chain at 1024 points evaluates well under 1 ms" *
           doctest::test_suite("perf")) {
   std::string t = "patch Chain {\n  in x : audio global mono\n";

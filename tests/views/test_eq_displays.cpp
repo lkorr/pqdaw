@@ -22,6 +22,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -315,6 +316,80 @@ TEST_CASE("EQ.4 response: the drawn total is the chain's GroupResponse; a drag n
   a.host->notifyChanged();
   a.d->step();
   CHECK(gr.lowerings() == n0 + 1);
+}
+
+TEST_CASE("TX.mod-bands response: a band whose Frequency an LFO cable drives keeps its curve; its live ring moves the node "
+          "and the curve (no lowering), exactly as the knob there would") {
+  Alone a;
+  const doc::EqInfo e = a.info();
+  const doc::BandInfo band = e.bands[0][1];  // the 400 Hz bell
+  setUnits(a.st(), band.gain, 9.0);
+  const doc::DeviceId lfo = test_blocks::addModule(a.st(), a.track, "lfo", doc::ops::kOffPath);
+  run(a.st(), doc::ops::connectWire(*a.ctx.doc(), a.st().ids(), lfo, "y", band.frequency, std::string(doc::kValueParam)));
+  a.show(1.0f);
+  panel::Element& r = a.element("response");
+  const uint32_t n = panel::test::responsePoints();
+  auto drawn = [&] {
+    std::vector<float> v(n);
+    for (uint32_t k = 0; k < n; ++k) {
+      const std::optional<float> got = panel::test::drawnDb(a.element("response"), panel::test::responseX(r, k));
+      REQUIRE(got.has_value());
+      v[k] = *got;
+    }
+    return v;
+  };
+  auto peakHz = [&](const std::vector<float>& v) {
+    return panel::test::responseHz(static_cast<uint32_t>(std::max_element(v.begin(), v.end()) - v.begin()));
+  };
+  // The cable no longer blanks the curve: drawn, at the knob (no live ring), equal to the band's own response there.
+  const std::vector<float> still = drawn();
+  for (const float x : still) REQUIRE(std::isfinite(x));
+  CHECK(*std::max_element(still.begin(), still.end()) == doctest::Approx(9.0).epsilon(0.02));
+  CHECK(peakHz(still) == doctest::Approx(400.0).epsilon(0.03));
+  std::vector<double> hz;
+  for (const uint32_t k : {0u, 200u, 400u, 523u, n - 1}) hz.push_back(panel::test::responseHz(k));
+  const std::vector<double> want = groupDb(*a.ctx.doc(), e.chain[0], hz, a.ctx.sampleRate());
+  for (size_t i = 0; i < hz.size(); ++i) {
+    CAPTURE(hz[i]);
+    CHECK(*panel::test::drawnDb(r, panel::test::responseX(r, std::array{0u, 200u, 400u, 523u, n - 1}[i])) ==
+          doctest::Approx(want[i]).epsilon(1e-4).scale(1.0));
+  }
+  const float w = r.desc().w;
+  CHECK(panel::test::nodeOf(r, band.group)->x == doctest::Approx(panel::test::axisT(400.0) * w).epsilon(0.01));
+  // The host's live ring puts the modulated Frequency at 2.5 kHz: the node and the curve's peak go there.
+  GroupResponses& gr = a.ctx.groupResponses();
+  const uint32_t lowerings = gr.lowerings();
+  const dsp::Curve fc = *dev(*a.ctx.doc(), band.frequency).curve(doc::kValueParam);
+  const auto posOf = [&](double v) { return static_cast<float>(dsp::curvePosition(fc, dsp::curveOutput(fc, v), 0.5)); };
+  const doc::Binding fb = doc::controlBinding(band.frequency, std::string(doc::kValueParam));
+  ui::ModulationRing ring;
+  ring.active = true;
+  ring.lo = posOf(150.0);
+  ring.hi = posOf(4000.0);
+  ring.current = posOf(2500.0);
+  CHECK(a.face().target().setModulation(fb, ring));
+  a.host->notifyChanged();
+  a.d->step();
+  const std::vector<float> moved = drawn();
+  CHECK(peakHz(moved) == doctest::Approx(2500.0).epsilon(0.03));
+  CHECK(*std::max_element(moved.begin(), moved.end()) == doctest::Approx(9.0).epsilon(0.02));
+  CHECK(panel::test::nodeOf(a.element("response"), band.group)->x == doctest::Approx(panel::test::axisT(2500.0) * w).epsilon(0.01));
+  // It sweeps on: another live position, still no lowering (values only).
+  ring.current = posOf(800.0);
+  CHECK(a.face().target().setModulation(fb, ring));
+  a.host->notifyChanged();
+  a.d->step();
+  CHECK(peakHz(drawn()) == doctest::Approx(800.0).epsilon(0.03));
+  CHECK(gr.lowerings() == lowerings);
+  // The live curve at 800 Hz is exactly the curve with the knob itself at 800 Hz (the ring gone: stopped).
+  const std::vector<float> live = drawn();
+  setUnits(a.st(), band.frequency, 800.0);
+  ring.active = false;
+  CHECK(a.face().target().setModulation(fb, ring));
+  a.host->notifyChanged();
+  a.d->step();
+  const std::vector<float> knob = drawn();
+  for (uint32_t k = 0; k < n; k += 7) CHECK(knob[k] == doctest::Approx(live[k]).epsilon(1e-4).scale(1.0));
 }
 
 TEST_CASE("EQ.4b response: the curve stays after the EQ is opened and closed in the circuit view (real dispatch)") {
