@@ -265,3 +265,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: nothing runs without a shown automated control; 30 Hz poll only while playing; no per-tick allocation; repaints only moved controls (CircuitCanvas::damageFace).
 - Notes/blockers: band controls get no automation LED; pq_tests_views_perf run by accident: 3 timing failures (shared machine) + `legs == 32` (test_project_patch.cpp:2343) unverified on main.
 
+## 2026-11-09 · TL.4 · task/TL.4-look
+- Did: lanes paint the arrangement background (alternate bars, grid), inset frame, track-colour bar, arrangement clip painters; compact Ruler strip per lane (locate, playhead, markers); any plain click on a lane's time (empty, clip body, title) sets the start marker in both views, moves the playhead when stopped, Play restarts from it while playing; automation wire lands on the envelope line beside the control, thin half-transparent sagging curve; mixer faces 2× and S-drag resizable (saved, not undoable).
+- Verified: -Affected after rebase 19/20 → project-patch-lane-edit re-recorded for TL.6, passes; 3 new real-dispatch tests; confirmed in a launched app; 39 goldens re-recorded (project-*, panel-window-*, panel-embed, arrangement-selection, device-path-broken).
+- Perf / CPU-efficiency check: one compact ruler for all lanes, no per-frame allocation, LOD below 6 px / 5 px; wire samples 2×48 envelope points only while shown. 3 perf-label failures (64-track paint, S-drag step, mod-all wire count) also fail on origin/main.
+- Notes/blockers: Q240. Root cause of play-from: a click into a clip set only the insert marker.
+

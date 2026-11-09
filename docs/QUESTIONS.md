@@ -567,7 +567,7 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
 - Status: decided (reversible: project_patch/lane_edit.cpp showControlAutomation, ArrangementAutomation::showParam).
 - **User 2026-11-09:** option 1, one follow lane per track (TL.5).
 
-## Q?-TL.4-a · 2026-11-09 · TL.4 · A click while playing, the Play button while playing, the mixer size's undo
+## Q240 · 2026-11-09 · TL.4 · 2026-11-09 · TL.4 · A click while playing, the Play button while playing, the mixer size's undo
 - **Context**: TL.4 (docs/plans/TL.md TL.4 3, 5). Q238 (2) kept a lane click while playing to the insert marker only; the
   user's report ("click bar 4, press Play, it stays behind") and the plan's rule say the click moves where the next Play
   starts. The Play button did nothing while playing. The plan asks the mixer resize to be "saved, one undo step"; a
