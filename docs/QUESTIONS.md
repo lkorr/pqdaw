@@ -580,7 +580,7 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   blocks and mixers together.
 - Status: decided (reversible: editing.cpp Editor::placeStart, view_context.cpp ViewContext::play, view.cpp setMixerScale).
 
-## Q?-TL.5-a · 2026-11-09 · TL.5 · Pin semantics of the follow lane, and what is saved
+## Q241 · 2026-11-09 · TL.5 · 2026-11-09 · TL.5 · Pin semantics of the follow lane, and what is saved
 - **Context**: TL.5 (Q239 option 1): one follow lane per track; pinning keeps a parameter as a lane. Undefined: what the
   follow lane shows right after its parameter is pinned, what Hide does on each kind, what is saved.
 - **Choices**: (1) While the follow lane's parameter is pinned they are one lane (the pinned one; the next press re-points

@@ -271,3 +271,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: one compact ruler for all lanes, no per-frame allocation, LOD below 6 px / 5 px; wire samples 2×48 envelope points only while shown. 3 perf-label failures (64-track paint, S-drag step, mod-all wire count) also fail on origin/main.
 - Notes/blockers: Q240. Root cause of play-from: a click into a clip set only the insert marker.
 
+## 2026-11-09 · TL.5 · task/TL.5-follow-lane
+- Did: per track pinned lanes + one follow lane below; a band control press, Show Automation (arrangement / Device view / tunings panel) re-points the follow lane or reveals a pinned one; pin button on arrangement lane headers and band sub-lane labels, Pin / Unpin Lane menu items; "+" adds a pinned lane; the TL.3 wire lands on whichever lane shows the param.
+- Verified: pq_tests_views default tier 617/617; new real-dispatch tests "lane edit (TL.5)", "automation (TL.5)"; 9 goldens re-recorded (pin glyph, label shift, one sub-lane instead of a stack).
+- Perf / CPU-efficiency check: re-pointing the follow lane at an equal height updates sub-lanes in place (generation counter), no band re-layout.
+- Notes/blockers: Q241. Follow-lane param and pins of unautomated params are session-only (no ViewState entry).
+
