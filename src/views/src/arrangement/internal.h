@@ -510,6 +510,8 @@ private:
     // A press on a clip of a multiple selection: on release without a move, select just it (Live).
     doc::ClipRef pressed{};
     bool collapseOnClick = false;
+    // TL.4: a plain click on a clip's title / edge (no move) places the start marker here on release.
+    std::optional<Ticks> clickTick;
     // T5.6 Fade / Gain: the clip, its state at the press, which handle, and how (Alt: the curve).
     doc::AudioClipPtr audio;
     int zone = 0;
@@ -540,6 +542,9 @@ private:
   void dragTo(const ui::PointerEvent& e);
   void release(const ui::PointerEvent& e);
   void beginClipDrag(DragKind kind, const Hit& h);
+  // TL.4: a click on a lane's time (empty space or a clip; not a clip drag) is where Play starts: the start marker
+  // there; stopped, the playhead too; playing, the next Play (or Stop, then Play) starts there.
+  void placeStart(Ticks t);
   // T5.6: the audio handles (one store gesture per drag).
   void beginAudioDrag(const Hit& h, ui::Mods mods);
   void audioDragTo(const ui::PointerEvent& e);
@@ -729,7 +734,7 @@ public:
 class Ruler : public ui::Control {
 public:
   explicit Ruler(ArrangementView& view);
-  explicit Ruler(std::unique_ptr<RulerAxis> axis);  // TL.1
+  explicit Ruler(std::unique_ptr<RulerAxis> axis, std::string name = "ruler");  // TL.1
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override { cancelDrag(); }
@@ -749,6 +754,15 @@ public:
   Ticks shownLocator(uint32_t index) const noexcept;
 
   RulerAxis& axis() const noexcept { return *ax_; }
+  // TL.4: COMPACT — the bar-number row alone (ticks, numbers, the start marker, the playhead; no loop brace, no marker
+  // row): the thin scrub ruler along the top of every band lane. One compact ruler serves every lane: the canvas paints
+  // it into a lane's strip (paintStrip) and hands it a press there and the gesture after it (pointerStrip); a click
+  // locates, a drag zooms / scrolls, the wheel zooms / scrolls, exactly as the full ruler.
+  void setCompact(bool on) noexcept { compact_ = on; }
+  bool compact() const noexcept { return compact_; }
+  void paintStrip(ui::PaintContext& ctx, const ui::IRect& strip);
+  bool pointerStrip(const ui::PointerEvent& e, const ui::IRect& strip);
+  bool pressed() const noexcept { return pressed_; }
   // TL.1: the columns of rect `r` over the axis's lanes, and whether device x `x` is over them.
   ui::IRect columns(const ui::IRect& r) const {
     const ui::IRect a = ax_->range();
@@ -762,7 +776,11 @@ public:
 private:
   float xOf(double tick) const { return static_cast<float>(static_cast<double>(ax_->x0()) + (tick - ax_->origin()) * ax_->devicePxPerTick()); }
   double tickAt(float x) const { return ax_->origin() + (static_cast<double>(x) - static_cast<double>(ax_->x0())) / ax_->devicePxPerTick(); }
+  // The rect it draws and hits in: its own, or (TL.4) the strip it is painted into / pressed in now.
+  const ui::IRect& area() const noexcept { return strip_.empty() ? rect() : strip_; }
   std::unique_ptr<RulerAxis> ax_;
+  bool compact_ = false;
+  ui::IRect strip_{};
   Hit grab_{};
   Ticks dt_ = 0;  // the dragged part's snapped delta
   Ticks newLo_ = 0, newHi_ = 0;  // T4.17: a drawn loop's snapped range (Grab::LoopNew)

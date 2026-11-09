@@ -246,7 +246,7 @@ public:
   // dropped, ProjectPatchView::placeMixer); its controls are its face's (MixerFace: the canvas's face routing).
   enum class Drag : uint8_t {
     None, Wire, MaybeMoveDevice, MoveDevice, Nudge, MaybeMoveMixer, MoveMixer, Resize, Lane, BackWire, MaybeSplice, Splice, Port,
-    LaneSize, Tap
+    LaneSize, Tap, LaneRuler
   };
   Drag drag() const noexcept { return drag_; }
   // TX.lane-edit: the last press was in a lane (the arrangement's edit chords act there: laneKey).
@@ -376,6 +376,7 @@ private:
   uint32_t dragBand_ = kNone;      // a band's title being nudged
   // TX.resize: the block being resized (by device: the model is rebuilt per step), its scale and size at the press.
   doc::DeviceId resizeDevice_;
+  doc::TrackId resizeTrack_;  // TL.4: a mixer face resized (its track; resizeDevice_ invalid)
   float resizeK0_ = 1.0f, resizeW0_ = 0.0f, resizeH0_ = 0.0f;
   ui::Vec2 pointer_{0, 0};         // the last pointer position (the readout is drawn there)
   bool gesture_ = false;
@@ -392,6 +393,10 @@ private:
   // TL.1: the lanes' edges (a resize, a cable's end slid along the top edge, a new cable from it), the fold triangle,
   // the time wheel over the lanes; and the ruler placed over the canvas's top.
   bool laneEdgePointer(const ui::PointerEvent& e);
+  // TL.4: a press on a lane's compact scrub ruler and its gesture (the view's compact Ruler, in that lane's strip).
+  bool laneRulerPointer(const ui::PointerEvent& e);
+  uint32_t laneRulerAt(ui::Vec2 device) const;  // the band whose ruler strip is under it (not its top edge), else kNone
+  ui::IRect laneRulerStrip_{};          // LaneRuler: the pressed strip (device)
   doc::TrackId laneTrack_;               // LaneSize: the lane's track; its height and the press's y at the press
   float laneH0_ = 0.0f;
   std::optional<doc::ParamRef> laneSub_;  // TL.2: LaneSize of that track's automation sub-lane of this parameter
@@ -569,6 +574,8 @@ public:
   bool setCableTap(doc::WireId wire, std::optional<float> worldX);
   // The time ruler over the lanes (the arrangement's Ruler on the lanes' axis; null: none made).
   ui::Widget* ruler() const noexcept { return ruler_; }
+  // TL.4: the compact ruler every lane's scrub strip is drawn with and pressed through (a hidden child of the canvas).
+  ui::Widget* laneRuler() const noexcept { return laneRuler_; }
   // What band `b`'s lane shows: its clips meeting the time window, each with its world x span inside the lane.
   struct LaneClip {
     doc::ClipId clip;
@@ -734,6 +741,10 @@ public:
   // unchanged. 1 = its own size.
   float blockScale(doc::DeviceId device) const noexcept;
   bool setBlockScale(doc::DeviceId device, float scale);
+  // TL.4: a track's mixer face scale (effective: metrics::kMixerScale times the track's stored factor), resized the same
+  // way (S-drag; saved with the project like a block's scale).
+  float mixerScale(doc::TrackId track) const noexcept;
+  bool setMixerScale(doc::TrackId track, float scale);
   // TX.orbit-ports (SPEC §15 2026-11-03): a block's main input / output pinned on its outline at `angle` (radians,
   // quantised to what a file keeps: doc::patchPinQuantise), or back to following its cables (unpinPort). View state like
   // a nudge (doc::PatchNudge's pins: saved, not undoable); re-lays out. false: unchanged.
@@ -1033,6 +1044,7 @@ private:
   doc::DeviceId focus_;           // T5.x-one-circuit: the device "Open in Circuit View" framed
   // The playhead the lanes show (TL.1: the time window is the context's).
   std::optional<Ticks> playhead_;
+  ui::Widget* laneRuler_ = nullptr;  // TL.4
   ui::Widget* ruler_ = nullptr;  // TL.1: a child of the canvas (its top strip; hidden in an embedded view)
   // TL.1: a cable started from a lane's top edge: where (world x) and whose (the wire it makes gets the tap: stampTap).
   struct PendingTap {

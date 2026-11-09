@@ -705,6 +705,15 @@ struct Builder {
     n.w = expanded ? m::kMixerWideW : m::kMixerW;  // TX.mixer-look: expanded, longer send faders and their levels
     n.h = sends == 0 ? m::kMixerH : roundUp4(m::kMixerSendTop + m::kPinPitch * static_cast<float>(sends - 1) + 9.0f);
     n.expanded = expanded;
+    // TL.4: its scale (the default 2×, times the track's stored factor), the whole face in proportion.
+    float k = m::kMixerScale;
+    if (opt.nudges != nullptr)
+      if (const auto it = opt.nudges->find(t.id.value); it != opt.nudges->end() && std::isfinite(it->second.scale))
+        k *= it->second.scale;
+    k = std::clamp(k, doc::kMinPatchScale, doc::kMaxPatchScale);
+    n.scale = k;
+    n.w *= k;
+    n.h *= k;
     return n;
   }
 
@@ -735,7 +744,7 @@ struct Builder {
       band.laneH = m::kLaneH;
       if (opt.nudges != nullptr)
         if (const auto it = opt.nudges->find(t.id.value); it != opt.nudges->end()) {
-          if (it->second.laneH > 0.0f) band.laneH = roundUp4(std::clamp(it->second.laneH, doc::kMinPatchLaneH, doc::kMaxPatchLaneH));
+          if (it->second.laneH > 0.0f) band.laneH = roundUp4(std::clamp(it->second.laneH, std::max(doc::kMinPatchLaneH, m::kLaneMinH), doc::kMaxPatchLaneH));
           band.folded = it->second.folded;
         }
       if (opt.subLanes != nullptr)  // TL.2: its automation sub-lanes under the lane

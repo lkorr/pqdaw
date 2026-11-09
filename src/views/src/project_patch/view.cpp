@@ -61,7 +61,8 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
   setLayout(ui::LayoutKind::Custom);
   setClipChildren(true);
   canvas_ = &add<ProjectCanvas>(*this);
-  ruler_ = &addLaneRuler(*canvas_, *this);  // TL.1: over the lanes (hidden in an embedded view: ProjectCanvas::arrange)
+  ruler_ = &addLaneRuler(*canvas_, *this);
+  laneRuler_ = &addCompactLaneRuler(*canvas_, *this);  // TL.4: every lane's thin scrub ruler  // TL.1: over the lanes (hidden in an embedded view: ProjectCanvas::arrange)
   // TX.cables: the cables glow with their signal (polled by the canvas only while a source is live).
   canvas_->cableLevels = [this](std::span<const uint32_t> wires, std::span<float> levels) { cableLevels(wires, levels); };
   canvas_->cableSignalLive = [this] { return cableSignalLive(); };
@@ -1047,7 +1048,7 @@ float ProjectPatchView::laneHeight(doc::TrackId track) const noexcept {
 }
 
 void ProjectPatchView::setLaneHeight(doc::TrackId track, float h) {
-  h = std::round(std::clamp(h, doc::kMinPatchLaneH, doc::kMaxPatchLaneH) / 4.0f) * 4.0f;
+  h = std::round(std::clamp(h, std::max(doc::kMinPatchLaneH, metrics::kLaneMinH), doc::kMaxPatchLaneH) / 4.0f) * 4.0f;
   auto& nudges = ctx_.store().view().patchNudges;
   doc::PatchNudge& n = nudges[track.value];
   const float v = h == metrics::kLaneH ? 0.0f : h;
@@ -1947,6 +1948,28 @@ bool ProjectPatchView::setBlockScale(doc::DeviceId device, float scale) {
   ++stats_.rescales;
   if (std::find(resized_.begin(), resized_.end(), device.value) == resized_.end()) resized_.push_back(device.value);
   relayout();  // model + scene again (the lowering kept: view state is not the document)
+  return true;
+}
+
+float ProjectPatchView::mixerScale(doc::TrackId track) const noexcept {
+  const auto& nudges = ctx_.store().view().patchNudges;
+  const auto it = nudges.find(track.value);
+  const float f = it == nudges.end() || !std::isfinite(it->second.scale) ? 1.0f : it->second.scale;
+  return std::clamp(metrics::kMixerScale * f, doc::kMinPatchScale, doc::kMaxPatchScale);
+}
+
+bool ProjectPatchView::setMixerScale(doc::TrackId track, float scale) {
+  // Clamped and detented as a block's (at the default size), stored as the factor on the default.
+  const float k = std::clamp(clampBlockScale(scale / metrics::kMixerScale, false) * metrics::kMixerScale, doc::kMinPatchScale,
+                             doc::kMaxPatchScale);
+  if (k == mixerScale(track)) return false;
+  auto& nudges = ctx_.store().view().patchNudges;
+  doc::PatchNudge& n = nudges[track.value];
+  n.scale = k / metrics::kMixerScale;
+  if (n.empty()) nudges.erase(track.value);
+  ctx_.viewStateChanged();
+  ++stats_.rescales;
+  relayout();
   return true;
 }
 

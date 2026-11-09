@@ -313,6 +313,9 @@ public:
   bool playing() { return transport_.playhead().playing; }
   // Space: stop if playing, else play from the start marker. Shift+Space: continue from the stop position.
   void togglePlay();
+  // The Play button: plays from the start marker; TL.4: while playing too (restarts there: a lane click while playing
+  // moved the start marker, and the next Play starts from it).
+  void play();
   void continuePlayback();
   // The stop button: stops; when already stopped, returns the start marker to the beginning (Live).
   void stopButton();

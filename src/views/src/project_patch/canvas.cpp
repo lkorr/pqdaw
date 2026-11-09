@@ -672,7 +672,8 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
                      std::max(1.0f, std::round((spliceEdge_ != kNone ? 2.0f : 1.0f) * us)));
   }
   if (drag_ == Drag::Resize) {  // TX.resize: the block's outline and its scale at its bottom-right corner
-    const uint32_t rn = pp.nodeOf(resizeDevice_);
+    uint32_t rn = resizeTrack_.valid() ? kNone : pp.nodeOf(resizeDevice_);
+    if (const uint32_t b = resizeTrack_.valid() ? pp.bandOf(resizeTrack_) : kNone; b != kNone) rn = pp.bands[b].mixer;  // TL.4
     if (rn != kNone) {
       const Node& n = pp.nodes[rn];
       const Rect r = snapRect(deviceRect(n.x, n.y, n.w, n.h));
@@ -742,12 +743,15 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
     if (const uint32_t node = resizableAt(e.pos); node != kNone) {
       if (tree()) tree()->setFocus(this);
       const Node& n = pp.nodes[node];
+      const bool mixer = n.kind == NodeKind::Mixer && n.band < pp.bands.size();  // TL.4
       if (e.clickCount >= 2) {
-        (void)v.setBlockScale(n.device, 1.0f);
+        if (mixer) (void)v.setMixerScale(pp.bands[n.band].track, metrics::kMixerScale);
+        else (void)v.setBlockScale(n.device, 1.0f);
         return true;
       }
       drag_ = Drag::Resize;
-      resizeDevice_ = n.device;
+      resizeDevice_ = mixer ? doc::DeviceId{} : n.device;
+      resizeTrack_ = mixer ? pp.bands[n.band].track : doc::TrackId{};
       resizeK0_ = n.scale;
       resizeW0_ = n.w;
       resizeH0_ = n.h;
@@ -790,6 +794,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
   const bool overFace = drag_ == Drag::None && e.type != ui::PointerType::Wheel && faceTakes(e.pos);
   if (overFace && e.type == ui::PointerType::Down) laneFocus_ = false;  // a press elsewhere: the canvas's keys again
   if (!overFace && laneEdgePointer(e)) return true;  // TL.1: a lane's edges (resize, cable taps), the fold, the time wheel
+  if (!overFace && laneRulerPointer(e)) return true;  // TL.4: a lane's scrub ruler (under its top edge)
   if (!overFace && lanePointer(e)) return true;  // TX.lane-edit: a lane is the arrangement's editing surface
   // GU.5: a left press selects the control under it (a face's or panel's, a param pin, a value block): what P sends.
   if (drag_ == Drag::None && e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && !(e.mods & ui::mod::kAlt) &&
@@ -1072,7 +1077,8 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           const float dx = (e.pos.x - press_.x) / s, dy = (e.pos.y - press_.y) / s;
           const float d2 = std::max(1.0f, resizeW0_ * resizeW0_ + resizeH0_ * resizeH0_);
           const float k = resizeK0_ * (1.0f + (dx * resizeW0_ + dy * resizeH0_) / d2);
-          (void)v.setBlockScale(resizeDevice_, ProjectPatchView::clampBlockScale(k, (e.mods & ui::mod::kShift) != 0));
+          if (resizeTrack_.valid()) (void)v.setMixerScale(resizeTrack_, k);  // TL.4
+          else (void)v.setBlockScale(resizeDevice_, ProjectPatchView::clampBlockScale(k, (e.mods & ui::mod::kShift) != 0));
           markDirty();
           break;
         }
@@ -1110,6 +1116,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         case Drag::Lane:
         case Drag::LaneSize:  // TL.1: laneEdgePointer's
         case Drag::Tap:
+        case Drag::LaneRuler:  // TL.4: laneRulerPointer's
         case Drag::None: break;
       }
       return true;
@@ -1234,6 +1241,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         case Drag::Lane:
         case Drag::LaneSize:  // TL.1: laneEdgePointer's
         case Drag::Tap:
+        case Drag::LaneRuler:  // TL.4: laneRulerPointer's
         case Drag::None: break;
       }
       // TX.orbit-ports: the base canvas's press state ends too (a click's Down went to it to select: until its Up it
@@ -1310,6 +1318,7 @@ uint32_t ProjectCanvas::resizableAt(Vec2 pos) const {
   const uint32_t node = nodeAt(pos);
   if (node == kNone) return kNone;
   const Node& n = view_.patch().nodes[node];
+  if (n.kind == NodeKind::Mixer) return node;  // TL.4: a mixer face resizes as a block
   return n.kind == NodeKind::Device && !n.expanded && !(n.group && n.groupOpen) ? node : kNone;  // TX.groups: a capsule is its contents' size
 }
 
@@ -1335,6 +1344,7 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
     case Drag::Port: return ui::Cursor::Move;  // TX.orbit-ports
     case Drag::LaneSize: return ui::Cursor::ResizeNS;  // TL.1
     case Drag::Tap: return ui::Cursor::ResizeEW;
+    case Drag::LaneRuler: return ui::Cursor::ResizeNS;  // TL.4: a drag zooms (sideways: scrolls), as the ruler's
     case Drag::None: break;
   }
   // TL.1: over a lane's edges (what a press there grabs).
@@ -1346,6 +1356,7 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
       case LaneEdgeHit::Kind::Top: return ui::Cursor::Crosshair;
       case LaneEdgeHit::Kind::None: break;
     }
+  if (!panning() && scene() && laneRulerAt(pos) != kNone) return ui::Cursor::ResizeNS;  // TL.4: a lane's scrub ruler
   if (laneHover_ && !panning() && scene()) return laneCursor_;  // TX.lane-edit: over a window body (Alt: copy / curve)
   if (panning() || altHeld() || !scene()) return CircuitCanvas::cursorAt(pos);
   return hoverCursor_;
@@ -2087,6 +2098,7 @@ void ProjectCanvas::onCaptureLost() {
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit (as the arrangement's lanes: no partial edit)
   if (drag_ == Drag::Tap) view_.endTapDrag(false);  // TL.1: the cable back where it left the lane
   if (drag_ == Drag::LaneSize && laneTrack_.valid()) restoreLaneSize();
+  if (drag_ == Drag::LaneRuler && view_.laneRuler() != nullptr) cancelLaneRuler(*view_.laneRuler());  // TL.4
   laneStart_.reset();
   leaveOutside(last_);  // TX.free-rack
   if (drag_ != Drag::None) markDirty();
@@ -2106,11 +2118,13 @@ void ProjectCanvas::onInteractionCancelled() {
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit
   if (drag_ == Drag::Tap) view_.endTapDrag(false);  // TL.1: Esc: the cable back where it left the lane
   if (drag_ == Drag::LaneSize && laneTrack_.valid()) restoreLaneSize();
+  if (drag_ == Drag::LaneRuler && view_.laneRuler() != nullptr) cancelLaneRuler(*view_.laneRuler());  // TL.4
   laneStart_.reset();
   leaveOutside(last_);  // TX.free-rack
   if (drag_ == Drag::Resize) {  // TX.resize: Esc / focus lost: back to the size at the press
     drag_ = Drag::None;
-    (void)view_.setBlockScale(resizeDevice_, resizeK0_);
+    if (resizeTrack_.valid()) (void)view_.setMixerScale(resizeTrack_, resizeK0_);  // TL.4
+    else (void)view_.setBlockScale(resizeDevice_, resizeK0_);
   }
   if (drag_ != Drag::None) markDirty();
   drag_ = Drag::None;
@@ -2534,7 +2548,7 @@ ProjectCanvas::LaneEdgeHit ProjectCanvas::laneEdgeAt(Vec2 d) const {
   for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
     const Band& b = pp.bands[bi];
     if (b.laneH <= 0.0f || bandLifted(bi)) continue;
-    const Rect r = laneBodyDevice(*this, pp, b);
+    const Rect r = laneStripDevice(*this, pp, b);
     if (d.x < r.x0 || d.x > r.x1) continue;
     if (d.y >= r.y1 - 1.0f && d.y <= r.y1 + tol) {
       h.kind = LaneEdgeHit::Kind::Bottom;
@@ -2758,6 +2772,45 @@ bool ProjectCanvas::laneEdgePointer(const ui::PointerEvent& e) {
     case LaneEdgeHit::Kind::None: break;
   }
   return false;
+}
+
+// TL.4: the band whose lane's ruler strip is under device point `d` (below the top edge's grab: the cable taps win).
+uint32_t ProjectCanvas::laneRulerAt(Vec2 d) const {
+  const ProjectPatch& pp = view_.patch();
+  if (pp.scoped || view_.embedded() || view_.laneRuler() == nullptr) return kNone;
+  const float us = tree() ? tree()->scale() : 1.0f;
+  for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
+    const Band& b = pp.bands[bi];
+    if (b.laneH <= 0.0f || bandLifted(bi)) continue;
+    const Rect r = laneRulerDevice(*this, pp, b);
+    if (d.x >= r.x0 && d.x < r.x1 && d.y > r.y0 + 2.0f * us && d.y < r.y1) return bi;
+  }
+  return kNone;
+}
+
+bool ProjectCanvas::laneRulerPointer(const ui::PointerEvent& e) {
+  ui::Widget* ruler = view_.laneRuler();
+  if (ruler == nullptr) return false;
+  if (drag_ == Drag::LaneRuler) {  // the press's gesture: its moves zoom / scroll, its release (a click) locates
+    if (e.type == ui::PointerType::Wheel) return false;
+    (void)project_patch::laneRulerPointer(*ruler, e, laneRulerStrip_);
+    if (e.type == ui::PointerType::Up) {
+      drag_ = Drag::None;
+      laneRulerStrip_ = {};
+    }
+    return true;
+  }
+  if (e.type != ui::PointerType::Down || drag_ != Drag::None || e.button != ui::PointerButton::Left || (e.mods & ui::mod::kAlt))
+    return false;
+  const uint32_t b = laneRulerAt(e.pos);
+  if (b == kNone) return false;
+  const ProjectPatch& pp = view_.patch();
+  const ui::IRect strip = ui::intersect(toIRect(laneRulerDevice(*this, pp, pp.bands[b])), rect());
+  laneFocus_ = false;
+  if (!project_patch::laneRulerPointer(*ruler, e, strip)) return false;
+  drag_ = Drag::LaneRuler;
+  laneRulerStrip_ = strip;
+  return true;
 }
 
 void ProjectCanvas::arrange(ui::LayoutPass& pass) {

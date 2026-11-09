@@ -349,6 +349,22 @@ std::optional<AutomationBand> ArrangementAutomation::bandAt(Vec2 p) const {
   return std::nullopt;
 }
 
+bool ArrangementAutomation::envelopePoints(const arrangement::EditSurface& s, size_t laneIndex, float x0, float x1,
+                                           std::span<Vec2> out) const {
+  if (laneIndex >= s.laneRows().size() || out.size() < 2) return false;
+  const AutomationBand b = laneBand(s, laneIndex);
+  const std::span<const doc::Breakpoint> pts = pointsOf(b);
+  const double fallback = currentParamValue(*view_.shown(), b.param, ctx_.deviceLibrary());
+  const arrangement::TimeAxis ax = s.axis(b.row);
+  const size_t n = out.size();
+  for (size_t i = 0; i < n; ++i) {
+    const float x = x0 + (x1 - x0) * static_cast<float>(i) / static_cast<float>(n - 1);
+    const double tick = std::max(0.0, ax.tick(x));
+    out[i] = {x, yOfValue(b, pts.empty() ? fallback : pq::evalAutomation(pts, tick, fallback))};
+  }
+  return true;
+}
+
 float ArrangementAutomation::yOfValue(const AutomationBand& b, double v) const {
   const double n = displayNorm(paramDisplay(*view_.shown(), b.param, ctx_.deviceLibrary()), v);
   return static_cast<float>(static_cast<double>(b.bottom) - n * static_cast<double>(b.bottom - b.top));

@@ -529,12 +529,60 @@ std::optional<ProjectPatchView::AutomationWire> ProjectPatchView::automationWire
     w.centre = c.toDevice({at->x + no.x, at->y + no.y});
     w.radius = r * s;
   }
-  // The nearest point of the sub-lane (its visible x range), and which edge it is on.
+  // TL.4 (user 2026-11-09: "connect to the automation line itself"): it lands ON the envelope drawn in the sub-lane (the
+  // flat current value where the parameter has no points): the point of that line in the lane's visible x range nearest
+  // to an aim point beside the control — offset along x by ~0.4 of the drop, toward the side with room — so the lead
+  // always runs at a slant and hangs (never a straight drop).
   w.lane = R;
-  w.to = {std::clamp(w.centre.x, vx0, vx1), std::clamp(w.centre.y, R.y0, R.y1)};
-  if (w.centre.y <= R.y0) w.normal = {0.0f, 1.0f};
-  else if (w.centre.y >= R.y1) w.normal = {0.0f, -1.0f};
-  else w.normal = {w.centre.x < vx0 ? 1.0f : -1.0f, 0.0f};
+  const float drop = std::fabs(std::clamp(w.centre.y, R.y0, R.y1) - w.centre.y);
+  const float us = tree() != nullptr ? tree()->scale() : 1.0f;
+  const float off = std::clamp(0.4f * drop, 14.0f * us, 160.0f * us);
+  const float ax = w.centre.x + off <= vx1 ? w.centre.x + off : w.centre.x - off;
+  const Vec2 aim{std::clamp(ax, vx0, vx1), w.centre.y};
+  constexpr size_t kSamples = 48;
+  Vec2 env[kSamples];
+  size_t li = SIZE_MAX;
+  if (const LaneEditSurface* surf = laneEditReady(); surf != nullptr && !c.bandLifted(band)) {
+    const auto rows = surf->laneRows();
+    for (size_t i = 0; i < rows.size() && li == SIZE_MAX; ++i)
+      if (rows[i].track == track && rows[i].param == src.param) li = i;
+    // Coarse over the visible range, then fine round the best sample: ~2 × 48 envelope reads per paint, no allocation.
+    if (li != SIZE_MAX && laneArrangement()->automation().envelopePoints(*surf, li, vx0, vx1, env)) {
+      auto nearest = [&](float& bestD) {
+        size_t k = 0;
+        bestD = 1e30f;
+        for (size_t i = 0; i < kSamples; ++i) {
+          const float ex = env[i].x - aim.x, ey = env[i].y - aim.y, d2 = ex * ex + ey * ey;
+          if (d2 < bestD) bestD = d2, k = i;
+        }
+        return k;
+      };
+      float bd = 0.0f;
+      size_t k = nearest(bd);
+      const float step = (vx1 - vx0) / static_cast<float>(kSamples - 1);
+      const float f0 = std::max(vx0, env[k].x - step), f1 = std::min(vx1, env[k].x + step);
+      Vec2 best = env[k];
+      if (f1 > f0 && laneArrangement()->automation().envelopePoints(*surf, li, f0, f1, env)) {
+        k = nearest(bd);
+        best = env[k];
+        // Exact on the sampled line: the aim projected onto the segments either side of the best sample.
+        for (size_t j = k > 0 ? k - 1 : 0; j < k + 1 && j + 1 < kSamples; ++j) {
+          const Vec2 a = env[j], d{env[j + 1].x - a.x, env[j + 1].y - a.y};
+          const float l2 = d.x * d.x + d.y * d.y;
+          if (!(l2 > 0.0f)) continue;
+          const float t = std::clamp(((aim.x - a.x) * d.x + (aim.y - a.y) * d.y) / l2, 0.0f, 1.0f);
+          const Vec2 q{a.x + d.x * t, a.y + d.y * t};
+          const float d2 = (q.x - aim.x) * (q.x - aim.x) + (q.y - aim.y) * (q.y - aim.y);
+          if (d2 < bd) bd = d2, best = q;
+        }
+      }
+      w.to = {best.x, std::clamp(best.y, R.y0, R.y1)};
+    } else {
+      li = SIZE_MAX;
+    }
+  }
+  if (li == SIZE_MAX) w.to = {aim.x, (R.y0 + R.y1) * 0.5f};  // no envelope to read (a band dragged by its title): its middle
+  w.normal = w.centre.y <= w.to.y ? Vec2{0.0f, 1.0f} : Vec2{0.0f, -1.0f};
   const float dx = w.to.x - w.centre.x, dy = w.to.y - w.centre.y, d = std::sqrt(dx * dx + dy * dy);
   w.from = w.centre;
   if (d > 1e-4f && w.radius > 0.0f) {
@@ -562,58 +610,34 @@ void ProjectPatchView::paintAutomationWire(ui::PaintContext& ctx) {
   ui::DrawList& dl = ctx.dl;
   const float us = ctx.scale.factor;
   const AutomationWire& w = *aw;
-  // The lead: the cable look's rest shape (a catenary of kCableSlack, a table lookup) between its ends, its sag eased
-  // out as the chord turns vertical (a vertical rope would hang as a loop: this one drops straight), then a Catmull-Rom
-  // through it at ~8 px chords. Fixed-size buffers: nothing allocated per frame.
+  // TL.4 (user 2026-11-09: "slightly bendy … a thin cable that is less obtrusive"): a quadratic curve bowed off its chord
+  // toward the lower side (a lead hanging from the control: it leaves steeper and swings onto the line), ~0.14 of the
+  // chord, sampled at ~6 px; fixed-size buffer, nothing allocated per frame.
   const float dx = w.to.x - w.from.x, dy = w.to.y - w.from.y, chord = std::sqrt(dx * dx + dy * dy);
-  Vec2 pts[3 * circuit::kCableMaxPoints + 1];
+  constexpr uint32_t kMaxPts = 64;
+  Vec2 pts[kMaxPts];
   uint32_t m = 0;
   if (chord > 1.0f) {
-    const uint32_t n = circuit::cablePointCount(chord / std::max(1e-3f, canvas_->deviceScale()));
-    graph::Point2 rest[circuit::kCableMaxPoints];
-    circuit::cableRest({w.from.x, w.from.y}, {w.to.x, w.to.y}, n, rest);
-    const float deg = std::atan2(std::fabs(dy), std::fabs(dx)) * (180.0f / 3.14159265f);
-    const float u = std::clamp((deg - 40.0f) / 40.0f, 0.0f, 1.0f);
-    const float sag = 0.75f * (1.0f - u * u * (3.0f - 2.0f * u));  // a thinner, tauter lead than a signal cable
-    Vec2 q[circuit::kCableMaxPoints];
-    for (uint32_t i = 0; i < n; ++i) {
-      const float t = static_cast<float>(i) / static_cast<float>(n - 1);
-      const Vec2 l{w.from.x + dx * t, w.from.y + dy * t};
-      q[i] = {l.x + (rest[i].x - l.x) * sag, l.y + (rest[i].y - l.y) * sag};
+    Vec2 nrm{-dy / chord, dx / chord};
+    if (nrm.y < 0.0f || (nrm.y == 0.0f && nrm.x < 0.0f)) nrm = {-nrm.x, -nrm.y};  // the hanging side
+    const float bow = 0.14f * chord;
+    const Vec2 ctl{(w.from.x + w.to.x) * 0.5f + nrm.x * bow, (w.from.y + w.to.y) * 0.5f + nrm.y * bow};
+    m = std::clamp(static_cast<uint32_t>(std::ceil(chord / (6.0f * us))) + 1u, 3u, kMaxPts);
+    for (uint32_t i = 0; i < m; ++i) {
+      const float t = static_cast<float>(i) / static_cast<float>(m - 1), u1 = 1.0f - t;
+      pts[i] = {u1 * u1 * w.from.x + 2.0f * u1 * t * ctl.x + t * t * w.to.x, u1 * u1 * w.from.y + 2.0f * u1 * t * ctl.y + t * t * w.to.y};
     }
-    for (uint32_t k = 0; k + 1 < n; ++k) {
-      const Vec2 p0 = q[k > 0 ? k - 1 : 0], p1 = q[k], p2 = q[k + 1], p3 = q[k + 2 < n ? k + 2 : n - 1];
-      const uint32_t steps = std::clamp(static_cast<uint32_t>(std::ceil(std::hypot(p2.x - p1.x, p2.y - p1.y) / 8.0f)), 1u, 3u);
-      for (uint32_t t = 0; t < steps; ++t) pts[m++] = ui::catmullRom(p0, p1, p2, p3, static_cast<float>(t) / static_cast<float>(steps));
-    }
-    pts[m++] = q[n - 1];
   }
-  // Red as the envelopes it leads to (the automation line), deliberately unlike a signal cable: no tube, no plugs: a
-  // hairline core with a hot centre, a soft additive bloom, a ring round the control and a landing tick on the lane.
+  // The automation line's red, half transparent: a hairline with a faint dark edge (it reads on a light face), a small
+  // dot where it meets the envelope. No glow, no ring.
   const ui::Rgba red = th.automation.line;
-  const ui::Rgba hot = ui::lerp(red, ui::rgba(255, 255, 255), 0.55f);
-  const float lw = std::max(1.0f, 1.25f * us);
-  const Vec2 tan{-w.normal.y, w.normal.x};
-  const float tick = 6.0f * us;
-  const float ringR = w.radius > 0.0f ? w.radius + 2.5f * us : 0.0f;
-  dl.setBlend(ui::BlendMode::Additive);
+  const float lw = std::max(1.0f, 1.1f * us);
   if (m >= 2) {
-    ui::smoothPolyline(dl, pts, m, ui::setAlpha(red, 0.10f), 8.0f * lw);
-    ui::smoothPolyline(dl, pts, m, ui::setAlpha(red, 0.22f), 3.5f * lw);
+    ui::smoothPolyline(dl, pts, m, ui::setAlpha(ui::rgba(0, 0, 0), 0.18f), lw + 1.0f * us);
+    ui::smoothPolyline(dl, pts, m, ui::setAlpha(red, 0.58f), lw);
   }
-  if (ringR > 0.0f) dl.addCircleStroke(w.centre, ringR, ui::setAlpha(red, 0.25f), 4.0f * lw);
-  dl.addCircleFilled(w.to, 6.0f * us, ui::setAlpha(red, 0.2f));
-  dl.setBlend(ui::BlendMode::Alpha);
-  if (m >= 2) {
-    ui::smoothPolyline(dl, pts, m, ui::setAlpha(ui::rgba(0, 0, 0), 0.35f), lw + 1.5f * us);  // reads on a light face
-    ui::smoothPolyline(dl, pts, m, red, lw);
-    ui::smoothPolyline(dl, pts, m, hot, std::max(0.6f, 0.4f * lw), 0.5f);
-  }
-  if (ringR > 0.0f) dl.addCircleStroke(w.centre, ringR, ui::setAlpha(red, 0.9f), lw);
-  const Vec2 tk[2] = {{w.to.x - tan.x * tick, w.to.y - tan.y * tick}, {w.to.x + tan.x * tick, w.to.y + tan.y * tick}};
-  ui::smoothPolyline(dl, tk, 2, red, lw);
-  dl.addCircleFilled(w.to, 2.6f * us, red);
-  dl.addCircleFilled(w.to, 1.1f * us, hot);
+  dl.addCircleFilled(w.to, 2.2f * us, ui::setAlpha(red, 0.75f));
+  const float tick = 3.0f * us, ringR = 0.0f;
   // Its damage: where it moves without a repaint of the canvas (a mixer fader's cap dragged repaints the face alone).
   float x0 = std::min(w.to.x - tick, w.centre.x - ringR), y0 = std::min(w.to.y - tick, w.centre.y - ringR);
   float x1 = std::max(w.to.x + tick, w.centre.x + ringR), y1 = std::max(w.to.y + tick, w.centre.y + ringR);
@@ -691,6 +715,26 @@ private:
 };
 
 }  // namespace
+
+ui::Widget& addCompactLaneRuler(ProjectCanvas& canvas, ProjectPatchView& view) {
+  auto& r = canvas.add<arrangement::Ruler>(std::make_unique<LaneRulerAxis>(view), "lane-ruler");
+  r.setCompact(true);
+  r.setVisible(false);  // never laid out or hit by the tree: the canvas paints it into each lane and hands it the presses
+  return r;
+}
+
+void paintLaneRuler(ui::Widget& ruler, ui::PaintContext& ctx, const ui::IRect& strip) {
+  static_cast<arrangement::Ruler&>(ruler).paintStrip(ctx, strip);
+}
+
+bool laneRulerPointer(ui::Widget& ruler, const ui::PointerEvent& e, const ui::IRect& strip) {
+  return static_cast<arrangement::Ruler&>(ruler).pointerStrip(e, strip);
+}
+
+void cancelLaneRuler(ui::Widget& ruler) {
+  auto& r = static_cast<arrangement::Ruler&>(ruler);
+  r.onCaptureLost();
+}
 
 ui::Widget& addLaneRuler(ProjectCanvas& canvas, ProjectPatchView& view) {
   auto& r = canvas.add<arrangement::Ruler>(std::make_unique<LaneRulerAxis>(view));

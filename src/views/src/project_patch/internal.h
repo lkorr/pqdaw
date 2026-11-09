@@ -31,16 +31,25 @@ inline bool overlaps(const ui::Rect& r, const ui::IRect& clip) noexcept {
          r.y0 <= static_cast<float>(clip.bottom());
 }
 
-// TL.1: band `b`'s lane in device px, snapped (dy: world units it is drawn shifted by: a drag growing a band above it):
-// painting, hit tests and the playhead's damage agree on it.
+// TL.1: band `b`'s lane body (TL.4: its clip row, under its ruler) in device px, snapped (dy: world units it is drawn
+// shifted by: a drag growing a band above it): painting, hit tests and the playhead's damage agree on it.
 inline ui::Rect laneBodyDevice(const ProjectCanvas& c, const ProjectPatch& pp, const Band& b, float dy = 0.0f) {
   const LaneRect r = laneBody(pp, b);
+  return snapRect(c.deviceRect(r.x0, r.y0 + dy, r.x1 - r.x0, r.y1 - r.y0));
+}
+// TL.4: the whole lane (its ruler and clip row) and its ruler alone, as laneBodyDevice.
+inline ui::Rect laneStripDevice(const ProjectCanvas& c, const ProjectPatch& pp, const Band& b, float dy = 0.0f) {
+  const LaneRect r = laneStrip(pp, b);
+  return snapRect(c.deviceRect(r.x0, r.y0 + dy, r.x1 - r.x0, r.y1 - r.y0));
+}
+inline ui::Rect laneRulerDevice(const ProjectCanvas& c, const ProjectPatch& pp, const Band& b, float dy = 0.0f) {
+  const LaneRect r = laneRuler(pp, b);
   return snapRect(c.deviceRect(r.x0, r.y0 + dy, r.x1 - r.x0, r.y1 - r.y0));
 }
 
 // TL.2: band `b`'s lane and its automation sub-lanes under it, one device rect (snapped as laneBodyDevice).
 inline ui::Rect laneAreaDevice(const ProjectCanvas& c, const ProjectPatch& pp, const Band& b, float dy = 0.0f) {
-  const LaneRect r = laneBody(pp, b);
+  const LaneRect r = laneStrip(pp, b);
   return snapRect(c.deviceRect(r.x0, r.y0 + dy, r.x1 - r.x0, r.y1 - r.y0 + b.subH));
 }
 
@@ -59,6 +68,11 @@ inline float lanePlayheadX(const ui::Rect& body, double t, double start, double 
 void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatchView& view);
 // TL.1: the time ruler over the lanes — the arrangement's Ruler on the lanes' axis, a child of the canvas (lane_edit.cpp).
 ui::Widget& addLaneRuler(ProjectCanvas& canvas, ProjectPatchView& view);
+// TL.4: the compact one (hidden: drawn into each lane's ruler strip and handed the presses there) and its use.
+ui::Widget& addCompactLaneRuler(ProjectCanvas& canvas, ProjectPatchView& view);
+void paintLaneRuler(ui::Widget& ruler, ui::PaintContext& ctx, const ui::IRect& strip);
+bool laneRulerPointer(ui::Widget& ruler, const ui::PointerEvent& e, const ui::IRect& strip);
+void cancelLaneRuler(ui::Widget& ruler);
 
 // TX.mixer-look: a track's mixer drawn as a face (mixer_face.cpp). A mixer node's SceneFace has the track as its owner
 // and mixerFacePath as its path (the prefix, its size and its send pins: a new layout of the strip is a new face); the

@@ -566,3 +566,16 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   are the arrangement's lane heights (logical px = world units); the band view zooms them with the canvas.
 - Status: decided (reversible: project_patch/lane_edit.cpp showControlAutomation, ArrangementAutomation::showParam).
 - **User 2026-11-09:** option 1, one follow lane per track (TL.5).
+
+## Q?-TL.4-a · 2026-11-09 · TL.4 · A click while playing, the Play button while playing, the mixer size's undo
+- **Context**: TL.4 (docs/plans/TL.md TL.4 3, 5). Q238 (2) kept a lane click while playing to the insert marker only; the
+  user's report ("click bar 4, press Play, it stays behind") and the plan's rule say the click moves where the next Play
+  starts. The Play button did nothing while playing. The plan asks the mixer resize to be "saved, one undo step"; a
+  block's S-drag scale is view state (saved, no undo step: TX.resize).
+- **Choices**: (1) Any plain click on a lane's time (empty, a clip's body, a clip's title / edge without a drag) sets the
+  start marker in both views, stopped or playing; stopped it also locates (supersedes Q238 (2)). (2) The Play button
+  while playing restarts from the start marker (Live does the same); Space still stops. (3) The mixer face's size is the
+  track's `PatchNudge::scale` (a factor on the 2× default), resized exactly as a block (S-drag, S + double-click resets,
+  Esc restores): saved, not an undo step, like every block scale. Making view-state sizes undoable would be one change for
+  blocks and mixers together.
+- Status: decided (reversible: editing.cpp Editor::placeStart, view_context.cpp ViewContext::play, view.cpp setMixerScale).

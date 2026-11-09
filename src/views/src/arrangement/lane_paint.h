@@ -36,6 +36,10 @@ struct LanePaint {
   bool zooming() const noexcept { return arrangementLanes && view.zooming(); }
 };
 
+// The lanes' background over [y0, y1) of the painted columns: the alternate-bar shading (grid cells of several bars
+// when that coarse) and the dashed grid lines (bars, beats, the user's grid), at lp.k. TL.4: the band lanes paint theirs
+// with it too (the same look).
+void paintGrid(LanePaint& lp, float y0, float y1);
 // Solid rects in one reservation.
 void emitRects(ui::DrawList& dl, std::span<const Model::RectOut> rs);
 // Emits the queued tile quads (one draw command per page), then the deferred rects and overlay geometry of their clips.

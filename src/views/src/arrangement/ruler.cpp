@@ -61,7 +61,7 @@ private:
 
 Ruler::Ruler(ArrangementView& view) : Ruler(std::make_unique<ArrangementAxis>(view)) {}
 
-Ruler::Ruler(std::unique_ptr<RulerAxis> axis) : Control("ruler"), ax_(std::move(axis)) {
+Ruler::Ruler(std::unique_ptr<RulerAxis> axis, std::string name) : Control(std::move(name)), ax_(std::move(axis)) {
   setInfo("Beat Time Ruler",
           "Click to set the start marker and jump there (snapped to the grid). Drag up or down to zoom around the "
           "pressed position, left or right to scroll. Drag the loop brace or its ends to move or resize the loop, a "
@@ -74,7 +74,8 @@ Ruler::Hit Ruler::hitAt(Vec2 p) const {
   if (!proj) return h;
   const doc::Project& pr = *proj;
   const UiScale s = tree() ? tree()->uiScale() : UiScale{};
-  const float loopY = static_cast<float>(rect().y + s.px(am::kRulerNumberRow));
+  if (compact_) return h;  // TL.4: numbers only: a press zooms / scrolls, a click locates
+  const float loopY = static_cast<float>(area().y + s.px(am::kRulerNumberRow));
   const float markY = loopY + static_cast<float>(s.px(am::kRulerLoopRow));
   const float grab = static_cast<float>(s.px(4.0f));
   if (p.y >= loopY && p.y < markY) {
@@ -90,7 +91,7 @@ Ruler::Hit Ruler::hitAt(Vec2 p) const {
   }
   if (p.y >= markY && pr.locators) {
     // The flag drawn last (the latest at or before the pointer) wins: its triangle spans [x, x + 0.6 · row height].
-    const float w = std::max(grab, std::round((static_cast<float>(rect().bottom() - 1) - markY - 4.0f) * 0.6f));
+    const float w = std::max(grab, std::round((static_cast<float>(area().bottom() - 1) - markY - 4.0f) * 0.6f));
     for (size_t i = 0; i < pr.locators->size(); ++i) {
       const float x = std::floor(xOf(static_cast<double>((*pr.locators)[i].tick)));
       if (p.x >= x - 2.0f && p.x <= x + w) {
@@ -154,11 +155,26 @@ bool Ruler::cancelDrag() {
   return was;
 }
 
+void Ruler::paintStrip(PaintContext& ctx, const IRect& strip) {
+  if (strip.empty()) return;
+  strip_ = strip;
+  paint(ctx);
+  strip_ = {};
+}
+
+bool Ruler::pointerStrip(const PointerEvent& e, const IRect& strip) {
+  if (strip.empty()) return false;
+  strip_ = strip;
+  const bool r = onPointer(e);
+  strip_ = {};
+  return r;
+}
+
 void Ruler::paint(PaintContext& ctx) {
   const Theme* thp = ctx.res.theme;
   if (!thp) return;
   const Theme& th = *thp;
-  const IRect r = rect();
+  const IRect r = area();
   const IRect c0 = intersect(r, ctx.clip);
   if (c0.empty()) return;
   DrawList& dl = ctx.dl;
@@ -178,8 +194,9 @@ void Ruler::paint(PaintContext& ctx) {
 
   // Rows (Live 12): bar numbers on top, the loop brace under them, then the marker row (locators, tempo and
   // signature changes, the start marker).
-  const int32_t numH = s.px(am::kRulerNumberRow);
-  const int32_t loopH = s.px(am::kRulerLoopRow);
+  // TL.4: compact: the number row is the whole strip (no loop brace, no marker row).
+  const int32_t numH = compact_ ? std::max(1, r.h - 1) : s.px(am::kRulerNumberRow);
+  const int32_t loopH = compact_ ? 0 : s.px(am::kRulerLoopRow);
   const float y0 = static_cast<float>(r.y);
   const float numY = y0;
   const float loopY = numY + static_cast<float>(numH);
@@ -213,7 +230,7 @@ void Ruler::paint(PaintContext& ctx) {
     const float x = std::floor(X(static_cast<double>(g.tick)));
     if (x >= rx1) break;
     dl.addRectFilled({x, numY + std::round(static_cast<float>(numH) * 0.4f), x + 1.0f, tickB}, at.rulerText);
-    if (ts && font != kNoFont) {
+    if (ts && font != kNoFont && (!compact_ || numH >= cap)) {  // TL.4: a strip too thin: ticks only
       const size_t n = formatRulerPosition(rulerPosition(g), buf);
       ts->draw(dl, font, {x + static_cast<float>(s.px(3.0f)), numY + static_cast<float>((numH + cap) / 2)}, {buf, n},
                g.strength == GridStrength::Bar ? at.rulerText : withAlpha(at.rulerText, 170));
@@ -221,7 +238,7 @@ void Ruler::paint(PaintContext& ctx) {
   }
 
   // Loop brace (Live: a bar between two light edges under the numbers, with notched ends; dim when off).
-  {
+  if (!compact_) {
     const doc::LoopRegion loop = shownLoop();  // T4.16b: a brace drag's preview
     const float lx0 = std::round(X(static_cast<double>(loop.start)));
     const float lx1 = std::round(X(static_cast<double>(loop.end)));
@@ -250,12 +267,13 @@ void Ruler::paint(PaintContext& ctx) {
   const float pad = static_cast<float>(s.px(3.0f));
   auto& mk = markers_;
   mk.clear();
-  if (p.locators)
+  if (p.locators && !compact_)
     for (size_t i = 0; i < p.locators->size(); ++i) mk.push_back({shownLocator(static_cast<uint32_t>(i)), 0, static_cast<uint32_t>(i)});
-  if (sigs.changeCount() > 1)
+  if (sigs.changeCount() > 1 && !compact_)
     for (size_t i = 0; i < sigs.changeCount(); ++i) mk.push_back({sigs.changeStartTick(i), 1, static_cast<uint32_t>(i)});
   const auto& tempo = p.timeline->tempo;
-  if (tempo.size() > 1)
+  if (compact_) mk.clear();  // TL.4: no marker row
+  else if (tempo.size() > 1)
     for (size_t i = 0; i < tempo.size(); ++i) mk.push_back({tempo[i].tick, 2, static_cast<uint32_t>(i)});
   std::sort(mk.begin(), mk.end(), [](const Marker& x, const Marker& y) { return x.tick != y.tick ? x.tick < y.tick : x.kind < y.kind; });
   const Rgba dim = withAlpha(at.rulerText, 190);
@@ -298,10 +316,12 @@ void Ruler::paint(PaintContext& ctx) {
   }
   {
     // Start marker: a small downward triangle at the top of the marker row (where Space plays from).
+    // TL.4: compact: at the strip's bottom edge, pointing down into the lane.
     const float x = std::floor(X(static_cast<double>(ax_->context().startMarker())));
-    const float h = std::round(markH * 0.55f);
+    const float h = compact_ ? std::round(std::min(static_cast<float>(numH) * 0.5f, static_cast<float>(s.px(6.0f)))) : std::round(markH * 0.55f);
+    const float ty = compact_ ? bottom - h : markY;
     if (x + h >= rx0 && x - h < rx1)
-      dl.addTriangleFilled({x - h * 0.6f, markY}, {x + h * 0.6f + 1.0f, markY}, {x + 0.5f, markY + h}, at.startMarker);
+      dl.addTriangleFilled({x - h * 0.6f, ty}, {x + h * 0.6f + 1.0f, ty}, {x + 0.5f, ty + h}, at.startMarker);
   }
   if (const auto& ph = ax_->playhead()) {
     const float x = std::floor(X(static_cast<double>(*ph)));

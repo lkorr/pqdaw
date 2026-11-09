@@ -367,10 +367,9 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
   position_->setInfo("Arrangement Position", "The playback position in bars, beats and sixteenths. While stopped it "
                                              "shows the start marker, where Space starts playback.");
   play_ = &sized(add<TransportButton>("play", TransportButton::Icon::Play), 28);
-  play_->setInfo("Play", "Starts playback from the start marker (Space). Shift+Space continues from where playback stopped.");
-  play_->onPress = [this] {
-    if (!ctx_.playing()) ctx_.togglePlay();
-  };
+  play_->setInfo("Play", "Starts playback from the start marker (Space); while playing, starts again from it. Shift+Space "
+                        "continues from where playback stopped.");
+  play_->onPress = [this] { ctx_.play(); };
   stop_ = &sized(add<TransportButton>("stop", TransportButton::Icon::Stop), 28);
   stop_->setInfo("Stop", "Stops playback (Space). Press again while stopped to return the start marker to the beginning.");
   stop_->onPress = [this] { ctx_.stopButton(); };

@@ -1115,3 +1115,15 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   is located while stopped; grabbing one overrides it (it stays where you put it until Re-enable Automation).
 - Judge: whether the motion reads smoothly at 30 Hz; whether the band view should also carry the Device view's red /
   grey automation LED on these controls (not added: the sub-lane and TL.3's wire mark automation here).
+## 2026-11-09 · TL.4 · lanes look like the arrangement, a scrub ruler per lane, Play from the click, the wire, 2× mixer
+- Look at: `project-patch-lanes`, `project-patch-auto-wire`, `project-patch-lane-edit` goldens: each lane now has the
+  arrangement's background (alternate-bar shading, dashed grid), a dark inset frame, its track's colour bar at its left,
+  and a thin bar-number ruler along its top (under the cable tap edge); the red lead is thin, half transparent, bowed, and
+  lands ON the envelope line beside the control; mixer faces are twice the size. App screenshots (process I launched):
+  before C:\Users\Luke\AppData\Local\Temp\claude\C--Users-Luke-Desktop-programming-pqdaw\49ea863e-4f0e-4ff8-ae23-6093af5e19d4\scratchpad\shots\p1.png (old lane), C:\Users\Luke\AppData\Local\Temp\claude\C--Users-Luke-Desktop-programming-pqdaw\49ea863e-4f0e-4ff8-ae23-6093af5e19d4\scratchpad\shots\c12.png (the bug: a click into the clip at bar 2, Play starts at bar 6);
+  after C:\Users\Luke\AppData\Local\Temp\claude\C--Users-Luke-Desktop-programming-pqdaw\49ea863e-4f0e-4ff8-ae23-6093af5e19d4\scratchpad\shots\h_p2.png (lane + rulers), C:\Users\Luke\AppData\Local\Temp\claude\C--Users-Luke-Desktop-programming-pqdaw\49ea863e-4f0e-4ff8-ae23-6093af5e19d4\scratchpad\shots\cmp2.png (arrangement row over the lane), C:\Users\Luke\AppData\Local\Temp\claude\C--Users-Luke-Desktop-programming-pqdaw\49ea863e-4f0e-4ff8-ae23-6093af5e19d4\scratchpad\shots\w1.png (wire),
+  C:\Users\Luke\AppData\Local\Temp\claude\C--Users-Luke-Desktop-programming-pqdaw\49ea863e-4f0e-4ff8-ae23-6093af5e19d4\scratchpad\shots\f.png (click into the clip → Play from there; click while playing → next Play there).
+- Try: click into a MIDI clip in a lane, Space / Play → plays from the click (both views); click while playing, Play;
+  click / drag a lane's ruler; press a knob (lead to its sub-lane's line); S-drag a mixer face, S + double-click.
+- To judge: ruler strip height (16 units; numbers hide below ~9 px); the frame / colour bar; mixer 2× makes bands taller
+  (fits zoom out further). Mixer resize is view state like a block's (no undo step: Q?-TL.4-a).

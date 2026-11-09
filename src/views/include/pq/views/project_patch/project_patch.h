@@ -291,8 +291,12 @@ inline constexpr float kBusGap = 56.0f;     // before a summing node (room for i
 inline constexpr float kPinTop = 24.0f;     // the main pin's offset from a node's top (the band's spine)
 inline constexpr float kPinPitch = 12.0f;   // further pins
 // TL.1: a band's lane — its default height, the gap above it (from the circuit) and under it (the band's bottom edge),
-// and how far in from the deepest band's indent the lanes start.
-inline constexpr float kLaneH = 56.0f;
+// and how far in from the deepest band's indent the lanes start. TL.4: a lane's top kLaneRulerH is its compact scrub
+// ruler (under the cable tap edge), its clip row below it (kLaneH: both; the clip row as tall as before); a lane is at
+// least kLaneMinH (a clip row of 16 under its ruler).
+inline constexpr float kLaneRulerH = 16.0f;
+inline constexpr float kLaneH = 56.0f + kLaneRulerH;
+inline constexpr float kLaneMinH = kLaneRulerH + 16.0f;
 inline constexpr float kLaneGapAbove = 8.0f, kLaneGapBelow = 4.0f;
 inline constexpr float kLaneInset = 8.0f;
 inline constexpr float kSumW = 40.0f, kSumH = 32.0f;
@@ -300,6 +304,9 @@ inline constexpr float kSumW = 40.0f, kSumH = 32.0f;
 // the pan knob, the volume fader and readouts) kMixerH tall, then one row per send from kMixerSendTop (each send's pin
 // on the right edge level with its row); expanded (a double-click), wider: longer send faders and their levels.
 inline constexpr float kMixerW = 120.0f, kMixerWideW = 168.0f, kMixerH = 72.0f;
+// TL.4: a mixer face's default scale (the user: "2x larger by default"); S-drag resizes it as a block (its track's
+// doc::PatchNudge::scale is the factor on this default: 1 = 2×). Node::scale is the effective one.
+inline constexpr float kMixerScale = 2.0f;
 inline constexpr float kMixerSendTop = 82.0f;  // the first send row's centre (and its pin)
 inline constexpr float kExpandedPad = 16.0f;                // around an expanded device's atoms
 inline constexpr float kCapsuleTitle = 20.0f;               // TX.groups: an opened group's title strip
@@ -359,8 +366,15 @@ inline EntrySide entrySide(const Node& n, const Port& p) noexcept {
 struct LaneRect {
   float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 };
-// TL.1: band `b`'s lane (world units).
-inline LaneRect laneBody(const ProjectPatch& pp, const Band& b) noexcept { return {pp.laneX0, b.laneY, pp.laneX1, b.laneY + b.laneH}; }
+// TL.1: band `b`'s whole lane (world units): its top edge (the cable taps), its ruler, its clip row.
+inline LaneRect laneStrip(const ProjectPatch& pp, const Band& b) noexcept { return {pp.laneX0, b.laneY, pp.laneX1, b.laneY + b.laneH}; }
+// TL.4: its compact scrub ruler along its top, and its body under it (the clip row: what the lane editor edits).
+inline LaneRect laneRuler(const ProjectPatch& pp, const Band& b) noexcept {
+  return {pp.laneX0, b.laneY, pp.laneX1, b.laneY + std::min(b.laneH, metrics::kLaneRulerH)};
+}
+inline LaneRect laneBody(const ProjectPatch& pp, const Band& b) noexcept {
+  return {pp.laneX0, b.laneY + std::min(b.laneH, metrics::kLaneRulerH), pp.laneX1, b.laneY + b.laneH};
+}
 // Whether a band's lane has a clip row (a MIDI or an audio track; group / return / master lanes hold automation only).
 inline bool hasClipRow(const Band& b) noexcept { return b.kind == doc::TrackKind::Midi || b.kind == doc::TrackKind::Audio; }
 // TL.2: band `b`'s automation sub-lanes, all of them (world units: under its lane, as wide; empty when none).
@@ -396,8 +410,8 @@ inline float pinOffset(const Node& n, size_t i) noexcept {
     case NodeKind::Device:  // TX.resize; TX.groups: an opened group's chain pins at its inner spine
       return ((n.pinTop > 0.0f ? n.pinTop : metrics::kPinTop) + metrics::kPinPitch * static_cast<float>(i)) * n.scale;
     case NodeKind::Terminal: return metrics::kTerminalH * 0.5f;
-    case NodeKind::Mixer:  // TX.mixer-look: in / out under the header; a send's pin level with its row
-      return i == 0 ? metrics::kPinTop : metrics::kMixerSendTop + metrics::kPinPitch * static_cast<float>(i - 1);
+    case NodeKind::Mixer:  // TX.mixer-look: in / out under the header; a send's pin level with its row (TL.4: scaled)
+      return (i == 0 ? metrics::kPinTop : metrics::kMixerSendTop + metrics::kPinPitch * static_cast<float>(i - 1)) * n.scale;
     default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
   }
 }

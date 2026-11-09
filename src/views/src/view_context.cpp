@@ -562,6 +562,11 @@ void ViewContext::togglePlay() {
   notify(view_change::kTransport);
 }
 
+void ViewContext::play() {
+  transport_.play(startMarker_);
+  notify(view_change::kTransport);
+}
+
 void ViewContext::continuePlayback() {
   if (transport_.playhead().playing) return;
   transport_.continuePlayback();

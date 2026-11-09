@@ -97,6 +97,21 @@ bool orthogonal(const std::vector<graph::Point2>& pts) {
 // TX.cables: a bus (route / send) is an orthogonal trace; every other edge is a cable: its two ends (it hangs between).
 bool routedAsDrawn(const Edge& e) { return e.cable ? e.points.size() == 2 : orthogonal(e.points); }
 
+// TL.4: a band title strip's buttons (fold, automation) take presses only where they are readable (≥ 8 px titles); the
+// band fits (2× mixers make bands larger) may leave them smaller: zoom in on world point `w` first.
+inline void readableAt(ProjectPatchView& v, graph::Point2 w) {
+  ProjectCanvas& c = v.canvas();
+  if (metrics::kTitle * c.deviceScale() >= 12.0f) return;
+  const IRect r = c.rect();
+  const double us = static_cast<double>(c.deviceScale()) / c.view().zoom;  // device px per logical px
+  circuit::CircuitCanvas::View cv;
+  cv.zoom = 0.75;
+  cv.x = static_cast<double>(w.x) - static_cast<double>(r.w) * 0.5 / (cv.zoom * us);
+  cv.y = static_cast<double>(w.y) - static_cast<double>(r.h) * 0.5 / (cv.zoom * us);
+  c.setView(cv);
+  if (ui::UiTree* t = v.tree()) t->layoutNow();
+}
+
 // The shell over the sketch project (or a given builder), the patch view shown without the morph.
 struct Ui {
   FakeTransport port;
@@ -247,15 +262,16 @@ struct Ui {
     return {};
   }
   // TX.mixer-look: a point of a mixer's face (MixerFace's layout, face-local world units from its top-left).
+  // (x, y) in the face's own units (TL.4: the face is drawn at the node's scale, 2× by default).
   Vec2 onMixer(uint32_t node, float x, float y) const {
     const Node& n = pp().nodes[node];
-    return dev(n.x + x, n.y + y);
+    return dev(n.x + x * n.scale, n.y + y * n.scale);
   }
-  Vec2 mixerMute(uint32_t node) const { return onMixer(node, pp().nodes[node].w - 39.5f, 9.5f); }
-  Vec2 mixerSolo(uint32_t node) const { return onMixer(node, pp().nodes[node].w - 19.5f, 9.5f); }
+  Vec2 mixerMute(uint32_t node) const { return onMixer(node, pp().nodes[node].w / pp().nodes[node].scale - 39.5f, 9.5f); }
+  Vec2 mixerSolo(uint32_t node) const { return onMixer(node, pp().nodes[node].w / pp().nodes[node].scale - 19.5f, 9.5f); }
   Vec2 mixerPan(uint32_t node) const { return onMixer(node, 27.0f, 45.0f); }
   // On the volume fader's groove, `u` of the way along it (0 … 1).
-  Vec2 mixerFader(uint32_t node, float u) const { return onMixer(node, 52.0f + (pp().nodes[node].w - 66.0f) * u, 41.0f); }
+  Vec2 mixerFader(uint32_t node, float u) const { return onMixer(node, 52.0f + (pp().nodes[node].w / pp().nodes[node].scale - 66.0f) * u, 41.0f); }
   Vec2 mixerFrame(uint32_t node) const { return onMixer(node, 40.0f, 64.0f); }  // between the readouts: the block's
 };
 
@@ -594,7 +610,7 @@ TEST_CASE("project patch (TX.mixer-look): the mixer is its band's top-right bloc
   const float bx0 = bandOf(keys).x0, by0 = bandOf(keys).y;
   const size_t h0 = u.history();
   const Vec2 grip = u.mixerFrame(mixerOf(keys));
-  const Vec2 to = u.dev(m0.x + 40.0f - 160.0f, m0.y + 64.0f + 24.0f);  // 160 left, 24 down (world units)
+  const Vec2 to = u.dev(m0.x + 40.0f * m0.scale - 160.0f, m0.y + 64.0f * m0.scale + 24.0f);  // 160 left, 24 down (world units)
   u.d.move(grip);
   CHECK(u.d.tree().cursor() == Cursor::Move);
   u.d.down(grip);
@@ -728,13 +744,15 @@ TEST_CASE("project patch (TX.mixer-look): the mixer's face — pan, double-click
   CHECK(mx.w > w0);
   const int32_t s = mx.output("s" + std::to_string(space.value));
   REQUIRE(s >= 1);
-  CHECK(pinOffset(mx, static_cast<size_t>(s)) == metrics::kMixerSendTop + metrics::kPinPitch * static_cast<float>(s - 1));
-  CHECK(mx.h >= pinOffset(mx, static_cast<size_t>(s)) + 6.0f);
+  CHECK(pinOffset(mx, static_cast<size_t>(s)) == (metrics::kMixerSendTop + metrics::kPinPitch * static_cast<float>(s - 1)) * mx.scale);
+  CHECK(mx.h >= pinOffset(mx, static_cast<size_t>(s)) + 6.0f * mx.scale);
   float before = doc::kMinVolumeDb;
   for (const doc::Send& sd : u.track("Keys").mixer.sends)
     if (sd.target == space) before = sd.levelDb;
   const size_t h1 = u.history();
-  const Vec2 a = u.onMixer(mixer(), 24.0f + (mx.w - 50.0f - 24.0f) * static_cast<float>(volumeToFader(before)), pinOffset(mx, static_cast<size_t>(s)));
+  const float fw = mx.w / mx.scale;  // the face's own width (TL.4: drawn at the node's scale)
+  const Vec2 a = u.onMixer(mixer(), 24.0f + (fw - 50.0f - 24.0f) * static_cast<float>(volumeToFader(before)),
+                           pinOffset(mx, static_cast<size_t>(s)) / mx.scale);
   u.d.drag(a, {a.x + 40.0f, a.y}, 6);
   CHECK(u.history() == h1 + 1);
   float after = doc::kMinVolumeDb;
@@ -1692,8 +1710,8 @@ TEST_CASE("lanes (TL.1): idle costs nothing; the playhead repaints only the lane
   const IRect bar0 = u.d.rect("main/control-bar");
   std::vector<Rect> lanes;
   for (const Band& b : v.patch().bands) {
-    const LaneRect r = laneBody(v.patch(), b);
-    lanes.push_back(v.canvas().deviceRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0));
+    const LaneRect r = laneStrip(v.patch(), b);  // TL.4: its ruler strip too (the playhead runs through it)
+    lanes.push_back(v.canvas().deviceRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0 + b.subH));
   }
   const IRect ru = v.ruler()->rect();
   size_t columns = 0;
@@ -1821,13 +1839,19 @@ TEST_CASE("lanes (TL.1): a click on empty lane space moves where Space plays fro
   CHECK(u.port.playhead().tick == bar);  // played from the clicked tick
   REQUIRE(u.d.press("Space") == KeyResult::Action);  // stop
   u.d.step();
-  // While playing a click moves the insert marker only (as the arrangement's lanes always did).
+  // TL.4: while playing a click moves the start marker too (playback goes on); the next Play starts there.
   REQUIRE(u.d.press("Space") == KeyResult::Action);
   u.d.step();
   REQUIRE(u.port.playhead().playing);
   u.d.click(u.dev(pr.x0 + k * static_cast<float>(bar / 2), (pr.y0 + pr.y1) * 0.5f));
   u.d.step();
-  CHECK(u.ctx.startMarker() == bar);
+  CHECK(u.ctx.startMarker() == bar / 2);
+  CHECK(u.port.playhead().playing);
+  REQUIRE(u.d.press("Space") == KeyResult::Action);  // stop
+  u.d.step();
+  REQUIRE(u.d.press("Space") == KeyResult::Action);  // play: from the click
+  u.d.step();
+  CHECK(u.port.playhead().tick == bar / 2);
   REQUIRE(u.d.press("Space") == KeyResult::Action);  // stop
   u.d.step();
   // The arrangement: a click on Pad's empty lane at bar 2 + 2 beats.
@@ -1891,6 +1915,7 @@ TEST_CASE("lanes (TL.1): a lane's bottom edge resizes it; the fold triangle coll
   const uint32_t pad = v.patch().bandOf(u.track("Pad").id);
   const float padY = v.patch().bands[pad].y;
   const LaneRect fr = ProjectCanvas::foldButtonRect(v.patch().bands[keys]);
+  readableAt(v, {(fr.x0 + fr.x1) * 0.5f, (fr.y0 + fr.y1) * 0.5f});  // the title strip's buttons take presses when readable
   u.d.click(u.dev((fr.x0 + fr.x1) * 0.5f, (fr.y0 + fr.y1) * 0.5f));
   u.d.step();
   keys = v.patch().bandOf(keysId);
@@ -2790,8 +2815,13 @@ TEST_CASE("project patch (TX.block-drag): a dragged block is drawn at the pointe
   const ResizeSetup r = resizeSetup(u);
   u.show();
   u.zoomTo("Lead WT");
-  u.d.advance(0.5);
   ProjectPatchView& v = u.view();
+  // TL.4: 2× mixers make the band larger, its fit smaller: zoom back in on the block (its title bar several px tall).
+  {
+    const Node& b = u.pp().nodes[u.deviceNode(r.filter)];
+    readableAt(v, {b.x + b.w * 0.5f, b.y + b.h * 0.5f});
+  }
+  u.d.advance(0.5);
   ProjectCanvas& cv = v.canvas();
   v.canvas().setCablesAnimated(false);  // ends land at once: exact positions to compare
   const uint32_t mn = u.deviceNode(r.filter);
@@ -3134,4 +3164,195 @@ TEST_CASE("project patch (IG.1-2): a new MIDI track shows its instrument group �
   CHECK(edge(nodes[1], nodes[2]));   // → Envelope
   CHECK(edge(nodes[2], c.groupOut)); // → Out
   CHECK(edge(cap, band.mixer));      // the group's sum into the mixer
+}
+
+// TL.4 (user 2026-11-09: "if i click on bar 4 via the midi track and press play it doesnt play from there, it stays
+// behind"): the gesture the user made — a click INTO a MIDI clip in a band lane (TL.1 handled only empty lane space), then
+// Play — through real dispatch, in both views; a click on a clip's title strip (no drag) too; while playing, the click
+// moves where the next Play starts and the Play button restarts there.
+TEST_CASE("lanes (TL.4): a click on a clip in a lane moves where Play starts — body or title, stopped or playing, both views") {
+  Ui u;
+  GridSpec g = u.ctx.grid();
+  g.mode = GridMode::Fixed;
+  g.fixedExp = 2;
+  g.off = false;
+  g.snap = true;
+  u.ctx.setGrid(g);
+  const Ticks bar = ticksPerBar(u.ctx.doc()->timeline->sigMap.signatureAt(0));
+  const Ticks beat = ticksPerBeat(u.ctx.doc()->timeline->sigMap.signatureAt(0));
+  const doc::Track& pad = u.track("Pad");
+  REQUIRE_FALSE(pad.clips.empty());
+  const doc::ClipSlot clip = pad.clips.front();
+  REQUIRE(clip.length() >= 4 * beat);
+  u.show();
+  ProjectPatchView& v = u.view();
+  v.setLaneTime(0.0, static_cast<double>(clip.end() + bar));
+  u.zoomTo("Pad");
+  const uint32_t pb = v.patch().bandOf(pad.id);
+  const LaneRect pr = laneBody(v.patch(), v.patch().bands[pb]);
+  const float k = (pr.x1 - pr.x0) / static_cast<float>(clip.end() + bar);
+  auto xAt = [&](Ticks t) { return pr.x0 + k * static_cast<float>(t) + 0.5f; };
+  const Ticks want = clip.start() + beat;  // one beat into the clip
+  // Stopped: a click into the clip's body (below its title strip).
+  REQUIRE(u.ctx.startMarker() != want);
+  u.d.click(u.dev(xAt(want), pr.y1 - 3.0f));
+  u.d.step();
+  CHECK(u.ctx.startMarker() == want);
+  CHECK(u.port.playhead().tick == want);
+  REQUIRE(u.d.press("Space") == KeyResult::Action);
+  u.d.step();
+  CHECK(u.port.playhead().playing);
+  CHECK(u.port.playhead().tick == want);  // Play starts at the click, not where the start marker was
+  // Playing: a click on the clip's title strip (a click, not a drag) moves the start marker; playback goes on; the Play
+  // button starts again there.
+  const Ticks title = clip.start() + 2 * beat;
+  u.d.click(u.dev(xAt(title), pr.y0 + 2.0f));
+  u.d.step();
+  CHECK(u.ctx.startMarker() == title);
+  CHECK(u.port.playhead().playing);
+  const Vec2 play = u.d.center("main/control-bar/play");
+  REQUIRE(play.x > 0.0f);
+  u.port.setPlayheadTick(clip.end());  // playback went on
+  u.d.click(play);
+  u.d.step();
+  CHECK(u.port.playhead().playing);
+  CHECK(u.port.playhead().tick == title);
+  REQUIRE(u.d.press("Space") == KeyResult::Action);  // stop
+  u.d.step();
+  // A clip drag is no click: the start marker stays.
+  {
+    const Ticks before = u.ctx.startMarker();
+    const size_t h = u.history();
+    const Vec2 a = u.dev(xAt(clip.start() + beat), pr.y0 + 2.0f);
+    u.d.drag(a, {a.x + k * static_cast<float>(bar), a.y}, 6);
+    u.d.step();
+    CHECK(u.ctx.startMarker() == before);
+    CHECK(u.history() == h + 1);  // the clip moved
+    REQUIRE(u.ctx.undo());
+  }
+  // The arrangement: a click into the same clip's body.
+  v.setShown(false, false);
+  u.d.tree().layoutNow();
+  ArrangementView& arr = u.arrangement();
+  arr.setTimeView(0.0, arr.pxPerTick());
+  u.d.tree().layoutNow();
+  int32_t row = -1;
+  for (int32_t i = 0; i < static_cast<int32_t>(arr.rows().size()); ++i)
+    if (arr.rows()[static_cast<size_t>(i)].id == pad.id) row = i;
+  REQUIRE(row >= 0);
+  const IRect lr = arr.rowLaneRect(row);
+  const Ticks at = clip.start() + 3 * beat;
+  u.d.click({arr.xOfTick(static_cast<double>(at)) + 0.5f, static_cast<float>(lr.bottom()) - 3.0f});
+  u.d.step();
+  CHECK(u.ctx.startMarker() == at);
+  CHECK(u.port.playhead().tick == at);
+  REQUIRE(u.d.press("Space") == KeyResult::Action);
+  u.d.step();
+  CHECK(u.port.playhead().tick == at);
+}
+
+// TL.4 (user: "the header that you clickdrag on to scrub … a smaller thinner version of the one at the top"): every lane's
+// top strip is the compact Ruler on the lanes' axis — a click locates (snapped, the start marker and the playhead), a
+// drag zooms the shared window, exactly as the top ruler; the cable tap edge above it still takes its presses.
+TEST_CASE("lanes (TL.4): each lane's thin scrub ruler — a click locates, a drag zooms, through real dispatch") {
+  Ui u;
+  GridSpec g = u.ctx.grid();
+  g.mode = GridMode::Fixed;
+  g.fixedExp = 2;
+  g.off = false;
+  g.snap = true;
+  u.ctx.setGrid(g);
+  const Ticks bar = ticksPerBar(u.ctx.doc()->timeline->sigMap.signatureAt(0));
+  u.show();
+  ProjectPatchView& v = u.view();
+  v.setLaneTime(0.0, static_cast<double>(8 * bar));
+  u.zoomTo("Pad");
+  REQUIRE(v.laneRuler() != nullptr);
+  const uint32_t pb = v.patch().bandOf(u.track("Pad").id);
+  const Band& b = v.patch().bands[pb];
+  const LaneRect rr = laneRuler(v.patch(), b);
+  CHECK(rr.y0 == b.laneY);  // under the tap edge, the lane's top
+  CHECK(rr.y1 - rr.y0 == metrics::kLaneRulerH);
+  CHECK(laneBody(v.patch(), b).y0 == rr.y1);  // the clip row under it
+  const float k = (rr.x1 - rr.x0) / static_cast<float>(8 * bar);
+  const Vec2 at = u.dev(rr.x0 + k * static_cast<float>(3 * bar) + 0.5f, (rr.y0 + rr.y1) * 0.5f + 1.0f);
+  u.d.move(at);
+  CHECK(u.d.tree().cursor() == Cursor::ResizeNS);  // a drag zooms (the ruler's cursor)
+  CHECK_FALSE(v.laneEditAt(at));                    // not the clip row
+  const size_t h0 = u.history();
+  u.d.click(at);
+  u.d.step();
+  CHECK(u.ctx.startMarker() == 3 * bar);
+  CHECK(u.port.playhead().tick == 3 * bar);
+  CHECK(u.history() == h0);
+  CHECK(v.canvas().drag() == ProjectCanvas::Drag::None);
+  // A vertical drag zooms the shared window (down = in), the arrangement's with it.
+  const double span0 = u.ctx.timeWindow().span;
+  u.d.drag(at, {at.x, at.y + 60.0f}, 6);
+  u.d.step();
+  CHECK(u.ctx.timeWindow().span < span0 * 0.9);
+  CHECK(u.ctx.startMarker() == 3 * bar);  // a drag is no click
+  CHECK(v.canvas().drag() == ProjectCanvas::Drag::None);
+  // The tap edge above it is still the cable's (a press there starts a cable, not a locate).
+  const Vec2 edge = u.dev(rr.x0 + (rr.x1 - rr.x0) * 0.6f, b.laneY);
+  CHECK(v.canvas().laneEdgeAt(edge).kind != ProjectCanvas::LaneEdgeHit::Kind::None);
+}
+
+// TL.4 (user: "mixer needs to be resizeable, and made 2x larger by default"): the mixer face at 2× by default, its controls
+// where its face draws them; S + drag resizes it as a block (saved, Esc restores, S + double-click resets).
+TEST_CASE("project patch (TL.4): the mixer face is 2x by default and S-drag resizes it") {
+  Ui u;
+  u.show();
+  ProjectPatchView& v = u.view();
+  const doc::TrackId keys = u.track("Keys").id;
+  u.zoomTo("Keys");
+  auto mixer = [&] { return u.pp().bands[u.pp().bandOf(keys)].mixer; };
+  const Node m0 = u.pp().nodes[mixer()];
+  CHECK(m0.scale == metrics::kMixerScale);
+  CHECK(m0.w == doctest::Approx(metrics::kMixerW * metrics::kMixerScale));
+  CHECK(v.mixerScale(keys) == metrics::kMixerScale);
+  CHECK(pinOffset(m0, 0) == doctest::Approx(metrics::kPinTop * metrics::kMixerScale));
+  // Its pan knob where its face draws it (2×): a drag turns it (one undo step).
+  const size_t h0 = u.history();
+  const Vec2 pan = u.mixerPan(mixer());
+  u.d.drag(pan, {pan.x, pan.y - 30.0f}, 6);
+  CHECK(u.history() == h0 + 1);
+  // S + drag from its centre by a quarter of its diagonal outward: 1.25 × the default.
+  const float z = v.canvas().deviceScale();
+  const Vec2 c = u.centre(mixer());
+  const size_t h1 = u.history();
+  u.d.keyDown('s');
+  u.d.move(c);
+  CHECK(u.d.tree().cursor() == Cursor::ResizeNWSE);
+  u.d.down(c);
+  for (int i = 1; i <= 4; ++i)
+    u.d.move({c.x + m0.w * z * 0.25f * static_cast<float>(i) / 4.0f, c.y + m0.h * z * 0.25f * static_cast<float>(i) / 4.0f});
+  u.d.up({c.x + m0.w * z * 0.25f, c.y + m0.h * z * 0.25f});
+  u.d.keyUp('s');
+  CHECK(v.mixerScale(keys) == doctest::Approx(metrics::kMixerScale * 1.25f).epsilon(0.02));
+  const Node& m1 = u.pp().nodes[mixer()];
+  CHECK(m1.scale == doctest::Approx(v.mixerScale(keys)));
+  CHECK(m1.w == doctest::Approx(metrics::kMixerW * m1.scale));
+  CHECK(u.history() == h1);  // view state like a block's scale: saved, no undo step
+  CHECK(u.ctx.dirty());
+  CHECK(u.ctx.store().view().patchNudges.at(keys.value).scale == doctest::Approx(m1.scale / metrics::kMixerScale));
+  // Esc during a resize: back to the size at the press.
+  {
+    const float before = v.mixerScale(keys);
+    const Vec2 c2 = u.centre(mixer());
+    u.d.keyDown('s');
+    u.d.move(c2);
+    u.d.down(c2);
+    u.d.move({c2.x + 40.0f, c2.y + 40.0f});
+    CHECK(v.mixerScale(keys) != doctest::Approx(before));
+    u.d.press("Escape");
+    u.d.keyUp('s');
+    u.d.up({c2.x + 40.0f, c2.y + 40.0f});
+    CHECK(v.mixerScale(keys) == doctest::Approx(before));
+  }
+  // S + double-click: the default again.
+  u.d.keyDown('s');
+  u.d.doubleClick(u.centre(mixer()));
+  u.d.keyUp('s');
+  CHECK(v.mixerScale(keys) == metrics::kMixerScale);
 }

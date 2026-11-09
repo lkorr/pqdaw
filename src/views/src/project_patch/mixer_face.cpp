@@ -522,7 +522,8 @@ bool mixerShow(Face& f, const doc::ParamRef& p, std::optional<double> value, ui:
 }
 
 std::string mixerFacePath(const Node& n) {
-  std::string s = std::string(kMixerFacePrefix) + std::to_string(std::lround(n.w)) + "x" + std::to_string(std::lround(n.h));
+  const float sc = n.scale > 0.0f ? n.scale : 1.0f;  // TL.4: its own size (drawn at its scale)
+  std::string s = std::string(kMixerFacePrefix) + std::to_string(std::lround(n.w / sc)) + "x" + std::to_string(std::lround(n.h / sc));
   for (size_t k = 1; k < n.outputs.size(); ++k) s += ":" + n.outputs[k].name + "=" + n.outputs[k].label;
   return s;
 }
@@ -538,7 +539,8 @@ std::unique_ptr<Face> makeMixerFace(ProjectPatchView& view, const ProjectPatch& 
     s.letter = n.outputs[k].label;
     sends.push_back(std::move(s));
   }
-  return std::make_unique<MixerFace>(view, b.track, Vec2{n.w, n.h}, n.expanded, b.kind == doc::TrackKind::Master, std::move(sends));
+  const float sc = n.scale > 0.0f ? n.scale : 1.0f;  // TL.4: the face at its own size, drawn at the node's scale
+  return std::make_unique<MixerFace>(view, b.track, Vec2{n.w / sc, n.h / sc}, n.expanded, b.kind == doc::TrackKind::Master, std::move(sends));
 }
 
 }  // namespace pq::views::project_patch

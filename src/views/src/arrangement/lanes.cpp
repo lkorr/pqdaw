@@ -417,15 +417,13 @@ Cursor LaneCanvas::cursorAt(Vec2 p) const {
   return ed.cursorAt(p);
 }
 
-namespace {
-
 void paintGrid(LanePaint& lp, float y0, float y1) {
   DrawList& dl = lp.ctx.dl;
   const TimeSigMap& sigs = lp.p.timeline->sigMap;
   const Ticks from = std::max<Ticks>(0, lp.from);
   if (lp.to <= from || y1 <= y0) return;
-  const double logicalPxPerTick = lp.view.pxPerTick();
   const float scale = lp.ctx.scale.factor;
+  const double logicalPxPerTick = lp.k / static_cast<double>(scale);  // TL.4: this surface's zoom (a band lane's too)
 
   // Shading: alternate bars (or grid cells of several bars when the grid is that coarse), each cell at least
   // 6 logical px wide.
@@ -495,6 +493,8 @@ void paintGrid(LanePaint& lp, float y0, float y1) {
     }
   }
 }
+
+namespace {
 
 // The preview drawn directly: one rect per note run, clipped to the clip's visible part [vx0, vx1] (the painted
 // region plus a pixel) and the canvas. Returns the note rects emitted.

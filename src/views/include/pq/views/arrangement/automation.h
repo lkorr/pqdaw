@@ -308,6 +308,9 @@ public:
   // `clip` (the caller binds nothing; the bands carry their rows).
   void paintSurface(ui::PaintContext& ctx, arrangement::EditSurface& s, const ui::IRect& clip);
   std::optional<AutomationBand> rowBandOn(const arrangement::EditSurface& s, int32_t row) const { return rowBand(s, row, false); }
+  // TL.4: the envelope as drawn in lane `laneIndex` of surface `s`, sampled at device xs [x0, x1] in `n` steps (n ≥ 2;
+  // out: device points; the flat current value where the parameter has no points). False: no such lane.
+  bool envelopePoints(const arrangement::EditSurface& s, size_t laneIndex, float x0, float x1, std::span<ui::Vec2> out) const;
   const arrangement::EditSurface* dragSurface() const noexcept { return drag_.kind != DragKind::None ? drag_.surface : nullptr; }
 
   // ---- drag state (tests, the view) ----------------------------------------------------------------------------

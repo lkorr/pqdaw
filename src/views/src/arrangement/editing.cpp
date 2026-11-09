@@ -643,6 +643,9 @@ void Editor::press(const PointerEvent& e) {
       drag_.kind = DragKind::Range;
       drag_.origin = m;
       drag_.anchorRow = h.row;
+      // TL.4: the click is where Play starts, as on empty lane space (TL.1 missed it: a click into a MIDI clip left
+      // Play behind at the old start marker).
+      if (e.button == PointerButton::Left) placeStart(m);
       return;
     } else if (!was) {
       setSelection(selectionOfClips({h.ref}), true);
@@ -652,7 +655,10 @@ void Editor::press(const PointerEvent& e) {
       drag_.pressed = h.ref;
     }
     if (h.zone == 2) return;  // Shift / Ctrl on a body: selection only
+    const std::optional<Ticks> click =
+        toggle || add ? std::nullopt : std::optional<Ticks>(std::max<Ticks>(0, snapTick(tickAt(h.row, e.pos.x))));
     beginClipDrag(h.zone == 0 ? DragKind::Move : DragKind::Resize, h);
+    drag_.clickTick = click;  // TL.4: released without a move, the click places the start marker
     return;
   }
 
@@ -680,13 +686,14 @@ void Editor::press(const PointerEvent& e) {
   s.tracks = {geo().rows()[static_cast<size_t>(h.row)].id};
   s.time = TickRange{t, t};
   setSelection(std::move(s), false);
-  // TL.1 (SPEC §15 2026-11-08: "clicking the lane moves where play starts"): stopped, the insert marker is where Space
-  // plays from — the start marker there, the playhead too (every surface: the arrangement's lanes, the band lanes).
-  // While playing the click places the insert marker only.
-  if (e.button == PointerButton::Left && !ctx_.transport().playhead().playing) {
-    ctx_.setStartMarker(t);
-    ctx_.transport().locate(t);
-  }
+  // TL.1 / TL.4 (SPEC §15 2026-11-08: "clicking the lane moves where play starts"): every surface (the arrangement's
+  // lanes, the band lanes), stopped or playing.
+  if (e.button == PointerButton::Left) placeStart(t);
+}
+
+void Editor::placeStart(Ticks t) {
+  ctx_.setStartMarker(t);
+  if (!ctx_.transport().playhead().playing) ctx_.transport().locate(t);
 }
 
 void Editor::beginClipDrag(DragKind kind, const Hit& h) {
@@ -983,6 +990,7 @@ void Editor::release(const PointerEvent& e) {
     const Drag d = std::move(drag_);
     drag_ = {};
     if (d.collapseOnClick && !(e.mods & (mod::kShift | mod::kCtrl))) setSelection(selectionOfClips({d.pressed}), true);
+    if (d.clickTick) placeStart(*d.clickTick);  // TL.4: a click on a clip's title / edge
     return;
   }
   if (drag_.kind == DragKind::Range) {

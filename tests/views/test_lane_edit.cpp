@@ -34,6 +34,24 @@ using namespace pq::views;
 using namespace pq::views::project_patch;
 
 namespace {
+// TL.4: a band title strip's buttons (fold, automation) take presses only where they are readable (≥ 8 px titles); the
+// band fits (2× mixers make bands larger) may leave them smaller: zoom in on world point `w` first.
+inline void readableAt(ProjectPatchView& v, graph::Point2 w) {
+  ProjectCanvas& c = v.canvas();
+  if (metrics::kTitle * c.deviceScale() >= 12.0f) return;
+  const IRect r = c.rect();
+  const double us = static_cast<double>(c.deviceScale()) / c.view().zoom;  // device px per logical px
+  circuit::CircuitCanvas::View cv;
+  cv.zoom = 0.75;
+  cv.x = static_cast<double>(w.x) - static_cast<double>(r.w) * 0.5 / (cv.zoom * us);
+  cv.y = static_cast<double>(w.y) - static_cast<double>(r.h) * 0.5 / (cv.zoom * us);
+  c.setView(cv);
+  if (ui::UiTree* t = v.tree()) t->layoutNow();
+}
+
+}  // namespace
+
+namespace {
 
 const doc::DeviceLibrary& library() {
   static std::unique_ptr<doc::DeviceLibrary> lib = [] {
@@ -503,6 +521,7 @@ TEST_CASE("lane edit (TL.2): the band's toggle shows its sub-lanes; a point draw
   v.focusBand(keys, false);
   u.d.tree().layoutNow();
   const LaneRect tr = ProjectCanvas::subLaneButtonRect(v.patch().bands[v.patch().bandOf(keys)]);
+  readableAt(v, {(tr.x0 + tr.x1) * 0.5f, (tr.y0 + tr.y1) * 0.5f});
   u.d.click(v.canvas().toDevice({(tr.x0 + tr.x1) * 0.5f, (tr.y0 + tr.y1) * 0.5f}));
   u.d.step();
   CHECK(au.lanesShown(keys));
@@ -560,6 +579,7 @@ TEST_CASE("lane edit (TL.2): the band's toggle shows its sub-lanes; a point draw
   v.focusBand(keys, false);
   u.d.tree().layoutNow();
   const LaneRect tr2 = ProjectCanvas::subLaneButtonRect(v.patch().bands[v.patch().bandOf(keys)]);
+  readableAt(v, {(tr2.x0 + tr2.x1) * 0.5f, (tr2.y0 + tr2.y1) * 0.5f});
   u.d.click(v.canvas().toDevice({(tr2.x0 + tr2.x1) * 0.5f, (tr2.y0 + tr2.y1) * 0.5f}));
   u.d.step();
   CHECK_FALSE(au.lanesShown(keys));
@@ -576,7 +596,7 @@ TEST_CASE("lane edit (TL.2): a press on a band's control shows its sub-lane (mix
   const doc::TrackId keys = u.track("Keys").id;
   auto panAt = [&] {
     const Node& mx = v.patch().nodes[v.patch().bands[v.patch().bandOf(keys)].mixer];
-    return v.canvas().toDevice({mx.x + 27.0f, mx.y + 45.0f});  // TX.mixer-look: the pan knob's centre in its face
+    return v.canvas().toDevice({mx.x + 27.0f * mx.scale, mx.y + 45.0f * mx.scale});  // TX.mixer-look: the pan knob's centre in its face
   };
   // The mixer face's pan knob, pressed through the window.
   {
@@ -722,7 +742,21 @@ TEST_CASE("lane edit (TL.3): the automation wire from a pressed control to its s
   u.d.click(hit->first);
   u.d.step();
   REQUIRE(v.subLaneRect(keys, pr).has_value());
-  // Its ends: on the control's rim, toward the nearest point of the sub-lane (its top edge, under the control).
+  // The envelope drawn in its sub-lane at device x `x` (the arrangement's own evaluation on the band lanes' surface).
+  auto envelopeY = [&](const doc::ParamRef& p, float x) -> std::optional<float> {
+    const arrangement::EditSurface* sf = v.laneSurface();
+    if (sf == nullptr) return std::nullopt;
+    const auto rows = sf->laneRows();
+    for (size_t i = 0; i < rows.size(); ++i)
+      if (rows[i].track == keys && rows[i].param == p) {
+        Vec2 out[2];
+        if (!u.arrangement().automation().envelopePoints(*sf, i, x, x, out)) return std::nullopt;
+        return out[0].y;
+      }
+    return std::nullopt;
+  };
+  // Its ends: on the control's rim; TL.4: ON the envelope drawn in the sub-lane (the flat line of the current value: no
+  // points), landing beside the control (offset along x: a slant, never a straight drop).
   auto checkEnds = [&](const char* when) {
     INFO(when);
     const std::optional<ProjectPatchView::AutomationWire> w = v.automationWire();
@@ -738,10 +772,16 @@ TEST_CASE("lane edit (TL.3): the automation wire from a pressed control to its s
     CHECK(w->radius == doctest::Approx(cd->second));
     CHECK(std::hypot(w->from.x - c.x, w->from.y - c.y) == doctest::Approx(cd->second).epsilon(1e-3));
     REQUIRE(c.y < lane.y0);
-    CHECK(w->to.y == lane.y0);
+    CHECK(w->to.y > lane.y0);
+    CHECK(w->to.y < lane.y1);
+    const std::optional<float> ey = envelopeY(pr, w->to.x);
+    REQUIRE(ey.has_value());
+    CHECK(w->to.y == doctest::Approx(*ey).epsilon(1e-3));
     CHECK(w->normal.y == 1.0f);
     const float vx0 = std::max(lane.x0, static_cast<float>(cr.x)), vx1 = std::min(lane.x1, static_cast<float>(cr.right()));
-    CHECK(w->to.x == doctest::Approx(std::clamp(c.x, vx0, vx1)));
+    CHECK(w->to.x >= vx0);
+    CHECK(w->to.x <= vx1);
+    CHECK(std::fabs(w->to.x - c.x) >= 10.0f);  // beside the control, not under it
     return *w;
   };
   const ProjectPatchView::AutomationWire w0 = checkEnds("pressed");
@@ -804,6 +844,7 @@ TEST_CASE("lane edit (TL.3): the automation wire from a pressed control to its s
   u.d.step();
   REQUIRE(v.automationWire().has_value());
   const LaneRect tr = ProjectCanvas::subLaneButtonRect(v.patch().bands[v.patch().bandOf(keys)]);
+  readableAt(v, {(tr.x0 + tr.x1) * 0.5f, (tr.y0 + tr.y1) * 0.5f});
   u.d.click(v.canvas().toDevice({(tr.x0 + tr.x1) * 0.5f, (tr.y0 + tr.y1) * 0.5f}));
   u.d.step();
   CHECK_FALSE(v.subLanesShown(keys));
@@ -811,14 +852,19 @@ TEST_CASE("lane edit (TL.3): the automation wire from a pressed control to its s
   // The mixer's pan knob: a wire from its rim to the pan's sub-lane.
   {
     const Node& mx = v.patch().nodes[v.patch().bands[v.patch().bandOf(keys)].mixer];
-    const Vec2 pan = v.canvas().toDevice({mx.x + 27.0f, mx.y + 45.0f});
+    const Vec2 pan = v.canvas().toDevice({mx.x + 27.0f * mx.scale, mx.y + 45.0f * mx.scale});
     u.d.click(pan);
     u.d.step();
     const std::optional<ProjectPatchView::AutomationWire> w = v.automationWire();
     REQUIRE(w.has_value());
     CHECK(std::hypot(w->centre.x - pan.x, w->centre.y - pan.y) < 0.5f);
-    const Rect lane = *v.subLaneRect(keys, doc::ParamRef::track(doc::ParamKind::TrackPan, keys));
-    CHECK(w->to.y == lane.y0);
+    const doc::ParamRef panRef = doc::ParamRef::track(doc::ParamKind::TrackPan, keys);
+    const Rect lane = *v.subLaneRect(keys, panRef);
+    CHECK(w->to.y > lane.y0);
+    CHECK(w->to.y < lane.y1);
+    const std::optional<float> ey = envelopeY(panRef, w->to.x);
+    REQUIRE(ey.has_value());
+    CHECK(w->to.y == doctest::Approx(*ey).epsilon(1e-3));
   }
 }
 

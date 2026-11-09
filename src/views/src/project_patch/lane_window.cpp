@@ -198,31 +198,55 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
     }
   };
 
+  // TL.4: a lane's (or sub-lane's) background exactly as an arrangement track's: the lane colour, the selected tracks'
+  // lighter, the alternate-bar shading and the dashed grid (the arrangement's paintGrid at this lane's zoom).
+  // CPU: a lane a few px tall (a project fitted far out) is its fill alone: no grid to read there.
+  const float minGridH = 6.0f * us;
+  auto background = [&](const Rect& r, Rgba fill, bool selected) {
+    dl.addRectFilled(r, fill);
+    if (selected) dl.addRectFilled(r, th.arrangement.laneSelected);
+    if (r.y1 - r.y0 < minGridH) return;
+    if (arr == nullptr || model == nullptr) {
+      gridLines(r);
+      return;
+    }
+    const ui::IRect br = toIRect(r), bc = ui::intersect(br, clip);
+    if (bc.empty()) return;
+    const double k = static_cast<double>(r.x1 - r.x0) / spanD;
+    arrangement::LanePaint gp{ctx, th, *model, *arr, p, br, bc, k, origin,
+                              static_cast<Ticks>(std::floor(origin + (static_cast<double>(bc.x - br.x) - 1.0) / k)),
+                              static_cast<Ticks>(std::ceil(origin + (static_cast<double>(bc.right() - br.x) + 1.0) / k)), 0};
+    gp.arrangementLanes = false;
+    arrangement::paintGrid(gp, r.y0, r.y1);
+  };
+  ui::Widget* laneRuler = view.laneRuler();
+
   for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
     const Band& band = pp.bands[bi];
     if (band.laneH <= 0.0f || (canvas.bandLifted(bi) ? 1 : 0) != layer) continue;
     const ProjectCanvas::WorldRect now = canvas.bandNow(bi);
     const float dy = now.y1 - (band.y + band.h);  // TX.drag-grow: shifted with its strip
+    const Rect whole = laneStripDevice(canvas, pp, band, dy);
+    if (!overlaps(whole, clip) || whole.x1 - whole.x0 < 2.0f || whole.y1 - whole.y0 < 1.0f) continue;
     const Rect body = laneBodyDevice(canvas, pp, band, dy);
-    if (!overlaps(body, clip) || body.x1 - body.x0 < 2.0f || body.y1 - body.y0 < 1.0f) continue;
     const doc::Track* t = view.bandTrack(bi);
     if (t == nullptr) continue;
     ++view.mutableStats().lanesPainted;
     anyWindow = true;
+    // TL.4: its compact scrub ruler along the top (the top ruler's numbers, start marker and playhead).
+    // CPU: under 5 px it is a strip in the ruler's colour (no ticks to read: 64 lanes fitted far out cost nothing more).
+    if (const Rect rr = laneRulerDevice(canvas, pp, band, dy); laneRuler != nullptr && rr.y1 - rr.y0 >= 5.0f * us)
+      paintLaneRuler(*laneRuler, ctx, ui::intersect(toIRect(rr), canvas.rect()));
+    else if (rr.y1 > rr.y0)
+      dl.addRectFilled(rr, th.arrangement.ruler);
+    if (!(body.y1 - body.y0 >= 1.0f) || !overlaps(body, clip)) continue;
     const bool trackOn = band.active && !t->mixer.mute;
     const double k = static_cast<double>(body.x1 - body.x0) / spanD;  // device px per tick
     auto X = [&](Ticks tick) { return body.x0 + static_cast<float>((static_cast<double>(tick) - origin) * k); };
-    // The lane in the arrangement's lane colours, framed in its track's (it is the band's own: the same colour bar).
-    dl.addRectFilled(body, trackOn ? th.arrangement.lane : th.arrangement.laneShade);
-    const Rgba trackCol = ui::hex(band.colour);
-    dl.addRectStroke(body, ui::mulAlpha(trackCol, trackOn ? 0.55f : 0.25f), line);
     const int32_t row = surf != nullptr ? surf->rowOfBand(bi) : -1;
     const bool editing = row >= 0 && model != nullptr;
     // TX.lane-edit: the arrangement's selected tracks are lighter here too (one selection).
-    if (editing && ed->trackSelected(t->id)) dl.addRectFilled(body, th.arrangement.laneSelected);
-
-    // Bar lines (and beat lines where they are at least 6 logical px apart). TL.1: the bar numbers are the ruler's.
-    gridLines(body);
+    background(body, th.arrangement.lane, editing && ed->trackSelected(t->id));
     if (!hasClipRow(band)) continue;  // TL.1: a group / return / master lane (its automation: its sub-lanes, TL.2)
 
     // Clips.
@@ -342,12 +366,8 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
     const Rect r = snapRect(canvas.deviceRect(pp.laneX0, sl.y + dy, pp.laneX1 - pp.laneX0, sl.h));
     if (!overlaps(r, clip) || r.x1 - r.x0 < 2.0f || r.y1 - r.y0 < 2.0f) continue;
     anySub = true;
-    dl.addRectFilled(r, th.automation.lane);
-    gridLines(r);
-    dl.addRectFilled({r.x0, r.y1 - 1.0f, r.x1, r.y1}, th.arrangement.separator);
-    const Rgba trackCol = ui::hex(band.colour);
-    dl.addVLine(r.x0, r.y0, r.y1, ui::mulAlpha(trackCol, band.active ? 0.55f : 0.25f), line);
-    dl.addVLine(r.x1 - line, r.y0, r.y1, ui::mulAlpha(trackCol, band.active ? 0.55f : 0.25f), line);
+    background(r, th.automation.lane, false);  // TL.4: the arrangement's automation lane look
+    dl.addRectFilled({r.x0, r.y0, r.x1, r.y0 + line}, th.arrangement.separator);
     if (fonts && near && r.y1 - r.y0 >= px + 4.0f * us) {
       const std::string label = paramName(p, sl.param, view.context().deviceLibrary());
       const float w = std::min(r.x1 - r.x0 - 4.0f * us, 10.0f * px);
@@ -357,6 +377,22 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
       paint::text(ctx, font, toIRect({r.x0 + 5.0f * us, y0, r.x0 + 2.0f * us + w, y1}), label, th.automation.line, ui::TextAlign::Left);
     }
   }
+  // TL.4: each lane framed as a track (with its sub-lanes): a dark inset line round it, its track's colour down its
+  // left edge, outside it (the arrangement's header colour bar), a separator between its ruler and its clip row.
+  for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
+    const Band& band = pp.bands[bi];
+    if (band.laneH <= 0.0f || (canvas.bandLifted(bi) ? 1 : 0) != layer || view.bandTrack(bi) == nullptr) continue;
+    const float dy = canvas.bandNow(bi).y1 - (band.y + band.h);
+    const Rect a = laneAreaDevice(canvas, pp, band, dy);
+    if (!overlaps({a.x0 - 6.0f * us, a.y0 - 2.0f, a.x1 + 2.0f, a.y1 + 2.0f}, clip) || a.x1 - a.x0 < 2.0f) continue;
+    const Rect rl = laneRulerDevice(canvas, pp, band, dy);
+    dl.addRectFilled({a.x0, rl.y1 - line, a.x1, rl.y1}, th.arrangement.separator);
+    dl.addRectStroke({a.x0 - line, a.y0 - line, a.x1 + line, a.y1 + line}, ui::rgba(0, 0, 0, 150), line);
+    dl.addRectStroke(a, ui::withAlpha(th.arrangement.separator, 200), line);
+    const float bar = std::max(line, std::round(3.0f * us));
+    dl.addRectFilled({a.x0 - line - bar, a.y0 - line, a.x0 - line, a.y1 + line}, ui::mulAlpha(ui::hex(band.colour), band.active ? 1.0f : 0.4f));
+  }
+
   // Their envelopes (the arrangement's bands on this surface; not in the lifted pass: a band dragged by its title has its
   // sub-lanes drawn empty until it lands).
   if (surf != nullptr && anySub && !liftPass && !arr->automation().mode()) arr->automation().paintSurface(ctx, *surf, clip);
