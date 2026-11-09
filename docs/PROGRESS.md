@@ -216,3 +216,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Did: merged 03fab80b. Device::defaultPosition on value blocks (saved "default"; module builders set it; rack macros their made-at position; user blocks 0); every reset path (Delete, double-click, macro reset) goes to it. Arc / Dial now handle Delete / Up / Down (Delete on a focused PA arc deleted the module). Detents: VCA ×0 / ±1 / ±2 (curve split, law unchanged to 1e-12), EQ band Q 0.7071.
 - Verified (worker): views 598/598, document 196/196, dsp 180/180; -Affected 42/45 → stale VCA point counts in test_curve and two playback fixtures, fixed, re-run passed. Goldens: module-vca-panel, project-meta-faces, project-patch-overview, project-patch-band, project-circuit-device (VCA ticks). Playback WAVs unchanged.
 - Perf: n/a. Notes: Toggle / Menu / XyPad / BandType still ignore Delete.
+
+## 2026-11-08 · TX.group-oversample · orchestrator (merge of task/TX.group-oversample)
+- Did: merged 501d6732 (rebased by the orchestrator onto TX.reset-default, clean). Group setting `oversample` (1×/2×/4×/8×); the lowering runs an oversampled group's contents in one oversample region (nested: the outermost, largest factor; per voice in instruments); analytic response through regions (up·inner(ω/n)·down). Oversample menu in every group's inspector (96 px column) and on the EQ / EQ Band panels, each factor's latency shown (3.62 / 4.74 / 5.17 samples).
+- Verified (orchestrator, after the rebase): -Affected -Slow 88/88; -Preset ship -Target pq_bench_dsp -NoTests links.
+- Perf: 4-band stereo EQ 2.4 / 9.3 / 16.3 / 26.3 µs per block at 1× / 2× / 4× / 8× (ship, indicative). 15 kHz bell error vs analog 0.35 / 0.009 / 0.0005 dB; tanh aliasing −19.5 / −42 / −83 / −131 dB.
+- Notes: latency not compensated until PDC (M6); feedback through an oversampled group's edge is refused. Q?-TX.group-oversample-a/-b numbered at merge.
