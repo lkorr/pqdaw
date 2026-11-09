@@ -253,3 +253,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: zero cost with no sub-lanes shown; rects cached at model build; re-layout only when the shown set / heights change (lowering kept).
 - Notes/blockers: Q239 (pressed controls stack sub-lanes). Not done: auto-scroll to an off-screen sub-lane, sub-lanes empty while a band is dragged, floating panel windows.
 
+## 2026-11-09 · TL.3 · task/TL.3-auto-wire
+- Did: thin red automation wire (automation.line colour, glow, ring at the control, dot + tick at the lane) from the last pressed band control (face / panel control, value block, mixer volume / pan / send) to the nearest point of its sub-lane, clamped to the visible x range; cable-look catenary at 0.75 sag; follows drags / drag-grow / fold / sub-lane resize; gone on Esc, press elsewhere, hidden sub-lane, deleted device; closed group anchors at the panel element or the block edge. Draw-only (ProjectPatchView::automationWire()).
+- Verified: pq_tests_views default tier passed after rebase; new real-dispatch test "lane edit (TL.3)"; new golden project-patch-auto-wire; panel-window-{inspector,links,open,edit} re-recorded (only the wire strip changed).
+- Perf / CPU-efficiency check: zero cost without a wire; on paint only, stack buffers, damages only its bounding box when moving alone.
+- Notes/blockers: the nearest point is usually straight below, so the wire is mostly a vertical drop; floating panel windows draw none (TL.2 opens no sub-lanes there).
+
