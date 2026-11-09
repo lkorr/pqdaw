@@ -1,11 +1,12 @@
-// TX.lane-edit (bug report 2026-11-01_13-50-52): the project patch view's lane windows are an editing surface of their
-// tracks. No second implementation: the arrangement's Editor (selection, time selection, clip move / copy / trim, audio
+// TX.lane-edit (bug report 2026-11-01_13-50-52): the project patch view's lanes (TL.1: the band lanes) are an editing
+// surface of their tracks. No second implementation: the arrangement's Editor (selection, time selection, clip move / copy / trim, audio
 // handles, the edit commands and their menu) and ArrangementAutomation (breakpoints, curves, the envelope menu) run on
 // the windows through arrangement::EditSurface — one selection, one clipboard, one undo history for both views. This
-// file is the surface (rows = the windows, a time axis per window) and the routing of the canvas's pointer and keys.
+// file is the surface (rows = the lanes with a clip row, one time axis: the shared window over the lanes' x range) and the
+// routing of the canvas's pointer and keys.
 //
-// CPU: nothing runs unless the pointer or a key is in a window; the rows are rebuilt once per document version or model
-// rebuild (a vector of the windows), the geometry is computed per query from the model's nodes (a handful of multiplies).
+// CPU: nothing runs unless the pointer or a key is in a lane; the rows are rebuilt once per document version or model
+// rebuild (a vector of the lanes), the geometry is computed per query from the model's bands (a handful of multiplies).
 
 #include <algorithm>
 #include <array>
@@ -37,7 +38,7 @@ void LaneEditSurface::sync() const {
   bands_.clear();
   rowOfBand_.assign(pp.bands.size(), -1);
   for (uint32_t b = 0; b < pp.bands.size(); ++b) {
-    if (!hasLaneWindow(pp.bands[b]) || pp.bands[b].source == kNone) continue;
+    if (!hasClipRow(pp.bands[b]) || pp.bands[b].laneH <= 0.0f) continue;
     const doc::Track* t = view_.bandTrack(b);
     if (t == nullptr) continue;
     ArrangementRow row;
@@ -69,10 +70,10 @@ Rect LaneEditSurface::body(int32_t row) const {
   const uint32_t b = bandOf(row);
   if (b == kNone) return {};
   const ProjectPatch& pp = view_.patch();
-  return laneBodyDevice(view_.canvas(), pp.nodes[pp.bands[b].source]);
+  return laneBodyDevice(view_.canvas(), pp, pp.bands[b]);
 }
 
-// Windows sit in one column but bands may be nudged: a linear scan (a handful of rows, a few multiplies each).
+// Lanes sit in band order but bands may be nudged: a linear scan (a handful of rows, a few multiplies each).
 int32_t LaneEditSurface::rowAt(float y) const {
   const auto n = static_cast<int32_t>(rows().size());
   for (int32_t r = 0; r < n; ++r) {
@@ -111,9 +112,9 @@ arrangement::TimeAxis LaneEditSurface::axis(int32_t row) const {
   const int32_t n = static_cast<int32_t>(rows().size());
   if (n == 0) return {};
   const Rect b = body(std::clamp(row, 0, n - 1));
-  const Ticks span = std::max<Ticks>(1, view_.laneSpan());
-  const double k = std::max(1e-9, static_cast<double>(b.x1 - b.x0) / static_cast<double>(span));
-  return {static_cast<double>(b.x0), static_cast<double>(view_.laneStart()), k};
+  const double span = std::max(1.0, view_.laneSpan());
+  const double k = std::max(1e-9, static_cast<double>(b.x1 - b.x0) / span);
+  return {static_cast<double>(b.x0), view_.laneStart(), k};
 }
 
 double LaneEditSurface::gridPxPerTick() const {
@@ -127,13 +128,12 @@ int32_t LaneEditSurface::clipTitleHeight(int32_t row) const {
   return static_cast<int32_t>(laneClipTitleH(b.y1 - b.y0, us));
 }
 
-// The windows page so the tick shows (the insert marker moved by the arrow keys, Home / End).
+// The lanes page so the tick shows (the insert marker moved by the arrow keys, Home / End): as the arrangement, the tick a
+// quarter into the window (the shared window: the arrangement follows).
 void LaneEditSurface::revealTick(Ticks t) {
-  const Ticks start = view_.laneStart(), span = view_.laneSpan();
-  if (span <= 0 || (t >= start && t < start + span)) return;
-  const TimeSigMap& sig = view_.context().doc()->timeline->sigMap;
-  const Ticks bar = sig.barToTicks(sig.ticksToBarBeat(std::max<Ticks>(0, t)).bar);
-  view_.setLaneTime(t < start ? bar : std::max<Ticks>(0, bar + ticksPerBar(sig.signatureAt(bar)) - span), span);
+  const double start = view_.laneStart(), span = view_.laneSpan(), at = static_cast<double>(t);
+  if (!(span > 0.0) || (at >= start && at < start + span)) return;
+  view_.setLaneTime(at - 0.25 * span, span);
 }
 
 void LaneEditSurface::damageAll() { view_.damageLanes(); }
@@ -176,11 +176,11 @@ ArrangementView* ProjectPatchView::laneArrangement() const {
 arrangement::EditSurface* ProjectPatchView::laneSurface() const noexcept { return laneEditReady(); }
 
 uint32_t ProjectPatchView::laneBodyAt(Vec2 device) const {
-  if (laneSpan_ <= 0 || embedded()) return kNone;
+  if (!(laneSpan() > 0.0) || embedded()) return kNone;
   for (uint32_t i = 0; i < patch_.bands.size(); ++i) {
     const Band& b = patch_.bands[i];
-    if (!hasLaneWindow(b) || b.source == kNone) continue;
-    const Rect r = laneBodyDevice(*canvas_, patch_.nodes[b.source]);
+    if (!hasClipRow(b) || b.laneH <= 0.0f) continue;
+    const Rect r = laneBodyDevice(*canvas_, patch_, b);
     if (device.x >= r.x0 && device.x < r.x1 && device.y >= r.y0 && device.y < r.y1) return i;
   }
   return kNone;
@@ -238,9 +238,10 @@ ui::Cursor ProjectPatchView::laneCursor(Vec2 pos, ui::Mods mods) const {
 }
 
 namespace {
-// The arrangement's edit chords that act on the windows (its keymap scope "arrangement", so a rebinding follows). Not
-// here: zoom / follow (the arrangement's own view), track commands (global chords reach them anyway).
-constexpr std::array<std::string_view, 26> kLaneActions = {
+// The arrangement's edit chords that act on the lanes (its keymap scope "arrangement", so a rebinding follows). TL.1: its
+// zoom chords too (Z, X, + / −: the shared time window). Not here: follow, track commands (global chords reach them).
+constexpr std::array<std::string_view, 30> kLaneActions = {
+    "arrangement.zoomToSelection", "arrangement.zoomBack", "arrangement.zoomIn", "arrangement.zoomOut",
     "arrangement.copy",         "arrangement.cut",           "arrangement.paste",        "arrangement.duplicate",
     "arrangement.delete",       "arrangement.split",         "arrangement.consolidate",  "arrangement.loopSelection",
     "arrangement.insertMidiClip", "arrangement.insertTime",  "arrangement.duplicateTime", "arrangement.deleteTime",
@@ -269,6 +270,76 @@ void ProjectPatchView::laneAbort() {
   arrangement::Surfaces::Bind bind(arr->surfaces(), laneEdit_.get());
   if (arr->editor().dragSurface() == laneEdit_.get()) arr->editor().abortDrag();
   if (arr->automation().dragSurface() == laneEdit_.get()) arr->automation().abortDrag();
+}
+
+
+// ---- the time ruler over the lanes (TL.1) ------------------------------------------------------------------------------
+
+namespace {
+
+// The band lanes as the arrangement Ruler's axis: the lanes' x range on the canvas over the shared time window.
+class LaneRulerAxis final : public arrangement::RulerAxis {
+public:
+  explicit LaneRulerAxis(ProjectPatchView& v) : v_(v) {}
+  ViewContext& context() const override { return v_.context(); }
+  const doc::Project& project() const override { return *v_.context().doc(); }
+  float x0() const override { return lanes().x0; }
+  double origin() const override { return v_.laneStart(); }
+  double devicePxPerTick() const override {
+    const Rect r = lanes();
+    const double span = v_.laneSpan();
+    return span > 0.0 && r.x1 > r.x0 ? static_cast<double>(r.x1 - r.x0) / span : 0.0;
+  }
+  double pxPerTick() const override { return devicePxPerTick() / static_cast<double>(uiScale()); }
+  ui::IRect range() const override {
+    const ProjectPatch& pp = v_.patch();
+    if (pp.scoped || v_.embedded() || !(pp.laneX1 > pp.laneX0)) return {};
+    const Rect r = lanes();
+    const ui::IRect cr = v_.canvas().rect();
+    const auto x0 = static_cast<int32_t>(std::floor(r.x0)), x1 = static_cast<int32_t>(std::ceil(r.x1));
+    return ui::intersect(cr, {x0, cr.y, x1 - x0, cr.h});
+  }
+  void setTimeView(double origin, double pxPerTick) override {
+    const Rect r = lanes();
+    if (!(pxPerTick > 0.0) || !(r.x1 > r.x0)) return;
+    v_.setLaneTime(origin, static_cast<double>(r.x1 - r.x0) / (pxPerTick * static_cast<double>(uiScale())));
+  }
+  void zoomAt(float x, double factor) override {
+    if (!(factor > 0.0)) return;
+    v_.zoomLanes(std::log(factor) / std::log(ProjectPatchView::kLaneZoomStep), v_.laneAnchor({x, 0.0f}));
+  }
+  void scrollByPx(double px) override {
+    const double k = devicePxPerTick();
+    if (k > 0.0) v_.setLaneTime(v_.laneStart() + px / k, v_.laneSpan());
+  }
+  void locateAt(Ticks tick, bool snap) override {
+    ViewContext& ctx = v_.context();
+    tick = std::max<Ticks>(0, tick);
+    if (snap) tick = std::max<Ticks>(0, Grid(ctx.grid(), ctx.doc()->timeline->sigMap, pxPerTick()).snap(tick));
+    ctx.setStartMarker(tick);
+    ctx.transport().locate(tick);
+  }
+  std::optional<Ticks> playhead() const override { return v_.lanePlayhead(); }
+  ui::Widget* focusTarget() override { return &v_.canvas(); }
+
+private:
+  float uiScale() const { return v_.tree() != nullptr ? v_.tree()->scale() : 1.0f; }
+  Rect lanes() const {
+    const ProjectPatch& pp = v_.patch();
+    return v_.canvas().deviceRect(pp.laneX0, 0.0f, pp.laneX1 - pp.laneX0, 0.0f);
+  }
+  ProjectPatchView& v_;
+};
+
+}  // namespace
+
+ui::Widget& addLaneRuler(ProjectCanvas& canvas, ProjectPatchView& view) {
+  auto& r = canvas.add<arrangement::Ruler>(std::make_unique<LaneRulerAxis>(view));
+  r.setInfo("Time Ruler",
+            "The lanes' time (the arrangement's: one time window). Click to set the start marker and jump there. Drag up "
+            "or down to zoom, left or right to scroll; Ctrl+wheel zooms, Shift+wheel scrolls. Drag the loop brace or a "
+            "locator to move it.");
+  return r;
 }
 
 }  // namespace pq::views::project_patch

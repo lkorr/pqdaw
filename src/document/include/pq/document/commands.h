@@ -205,6 +205,9 @@ struct SetWireReducer { WireId wire; WireReducer reducer = WireReducer::Sum; }; 
 // IG.1-2 (model.h Wire::single): a cable per note (`single` false) or single-signal, reduced by `reducer` — one command,
 // one undo step. Structural.
 struct SetWireSignal { WireId wire; bool single = false; WireReducer reducer = WireReducer::Sum; };
+// TL.1 (model.h Wire::tap): where a source wire's cable leaves its track's lane (band-local world x; none: the view's
+// default). A source wire only; Meta (views only, never a compile).
+struct SetWireTap { WireId wire; std::optional<float> x; };
 
 // ---- Meta modules (TMM.3; model.h "Meta modules") -----------------------------------------------------------------
 // An instance is addressed by (device, path); "" is a chain-level meta device itself (Device::patch "meta:<type>"). The
@@ -247,7 +250,7 @@ using CommandVariant = std::variant<
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, RenameDevice,
-    SetDeviceGroup, SetParamCurve, SetGroupPanel, AddWire, RemoveWire, SetWireAmount, SetWireReducer, SetWireSignal,
+    SetDeviceGroup, SetParamCurve, SetGroupPanel, AddWire, RemoveWire, SetWireAmount, SetWireReducer, SetWireSignal, SetWireTap,
     AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,
     Batch>;
 

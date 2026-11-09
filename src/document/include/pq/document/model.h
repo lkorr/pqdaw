@@ -742,7 +742,8 @@ DevicePtr makeGroup(DeviceId id);              // TX.groups: an empty group devi
 inline constexpr std::string_view kMainPort = "";
 enum class WireReducer : uint8_t { Sum, Last, Highest, Lowest, Loudest };
 enum class WireLaw : uint8_t { Add, Travel, Units };
-inline constexpr double kDefaultWireAmount = 0.5;  // a Travel wire's default depth (ops::connectTravelWire)
+inline constexpr double kDefaultWireAmount = 0.5;
+inline constexpr float kMaxWireTap = 1.0e6f;  // TL.1: |Wire::tap| (world units)  // a Travel wire's default depth (ops::connectTravelWire)
 
 struct Wire {
   WireId id;
@@ -765,6 +766,10 @@ struct Wire {
   // group edge is the same rule by default); inside a group a cable is per note unless this is set. Structural
   // (SetWireSignal).
   bool single = false;
+  // TL.1 (SPEC §15 2026-11-08 "track lanes in the circuit view"): a SOURCE wire's cable leaves its track's lane (the
+  // project patch view's band lane) at this x: world units from the band's left edge (band-local, so it travels with the
+  // band). None: under the block it feeds. View only — never lowered, a Meta change (SetWireTap).
+  std::optional<float> tap;  // |tap| ≤ kMaxWireTap
   bool travels() const noexcept { return law == WireLaw::Travel; }
   bool adds() const noexcept { return law != WireLaw::Travel; }  // Add or Units: no amount
   bool fromNoteSource() const noexcept { return noteSource.valid(); }

@@ -583,6 +583,10 @@ private:
         w_.key("single");
         w_.boolean(true);
       }
+      if (wr.tap) {  // TL.1: where its cable leaves its track's lane (band-local world x; view only)
+        w_.key("tap");
+        w_.number(PathSeg(&el, "tap"), *wr.tap);
+      }
       w_.endObject();
     }
     w_.endArray();
@@ -1200,6 +1204,14 @@ private:
           w_.number(at, n.mixerX);
           w_.key("mixerY");
           w_.number(at, n.mixerY);
+        }
+        if (n.laneH != 0.0f) {  // TL.1: a band's lane height (world units; 0 = the default)
+          w_.key("laneH");
+          w_.number(at, n.laneH);
+        }
+        if (n.folded) {  // TL.1: a band's circuit collapsed (its lane stays)
+          w_.key("folded");
+          w_.boolean(true);
         }
         w_.endObject();
       }
@@ -2158,7 +2170,7 @@ private:
       // TX.groups-fix1 (schema 15): "chain": true for a grouped series' chain link.
       // TX.all-free (schema 17): "mixer" (a track's mixer input) instead of "to"; "port" / "param" "" are main ports.
       static constexpr std::string_view K[] = {"id",     "from",    "port",  "to",  "param",
-                                               "amount", "reducer", "notes", "law", "chain", "mixer", "single"};
+                                               "amount", "reducer", "notes", "law", "chain", "mixer", "single", "tap"};
       Wire w;
       Members m(r_, el, K);
       for (int k; (k = m.next()) >= 0;) {
@@ -2176,6 +2188,7 @@ private:
           case 9: w.chain = r_.readBool(f); break;
           case 10: w.mixer = TrackId{ref(f)}; break;
           case 11: w.single = r_.readBool(f); break;  // IG.1-2 (schema 19)
+          case 12: w.tap = r_.readFloat(f); break;    // TL.1 (checkWire: a source wire's, finite)
         }
       }
       if (m.has(1) && m.has(7)) json::fail(el, "a wire has either \"from\" (a device) or \"notes\" (a note source)");
@@ -3062,7 +3075,7 @@ private:
         r_.beginArray(list);
         for (size_t i = 0; r_.nextElement(list); ++i) {
           const PathSeg el(&list, i);
-          static constexpr std::string_view N[] = {"id", "dx", "dy", "scale", "pinIn", "pinOut", "mixerX", "mixerY"};
+          static constexpr std::string_view N[] = {"id", "dx", "dy", "scale", "pinIn", "pinOut", "mixerX", "mixerY", "laneH", "folded"};
           RawNudge e{0, {}, r_.pos()};
           bool mixerSeen[2] = {false, false};
           Members em(r_, el, N);
@@ -3088,6 +3101,12 @@ private:
               (q == 6 ? e.nudge.mixerX : e.nudge.mixerY) = d;
               mixerSeen[q - 6] = true;
             }
+            if (q == 8) {  // TL.1 (optional): a band's lane height
+              e.nudge.laneH = r_.readFloat(f);
+              if (!(e.nudge.laneH >= kMinPatchLaneH && e.nudge.laneH <= kMaxPatchLaneH))
+                r_.failValue(f, "a lane's height must be within 16 … 1024");
+            }
+            if (q == 9) e.nudge.folded = r_.readBool(f);  // TL.1 (optional)
           }
           em.require({0, 1, 2});
           if (mixerSeen[0] != mixerSeen[1]) r_.failValue(el, "a placed mixer needs both mixerX and mixerY");

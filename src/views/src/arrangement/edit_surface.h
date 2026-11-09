@@ -1,14 +1,14 @@
 #pragma once
 
 // TX.lane-edit: where the arrangement's editing code (Editor: clips and time selection; ArrangementAutomation:
-// breakpoints) draws and hit-tests. The arrangement's lanes are one EditSurface; the project patch view's lane windows
-// are another (pq/views/project_patch: LaneEditSurface). Both edit the same document through the same Editor and
+// breakpoints) draws and hit-tests. The arrangement's lanes are one EditSurface; the project patch view's band lanes
+// (TL.1) are another (pq/views/project_patch: LaneEditSurface). Both edit the same document through the same Editor and
 // ArrangementAutomation instances (one selection, one clipboard, one undo history): a gesture binds its surface for its
 // duration (drag state remembers it), damage of a selection or a hover goes to every active surface.
 //
 // A row is a clip track (a MIDI or audio track; the arrangement's rows also include groups). Each row has its own linear
-// time axis (TimeAxis): the arrangement's rows share one; each lane window has its own (their widths differ: a MIDI window
-// keeps a column for its note outputs; a nudged band's window moves). UI thread only.
+// time axis (TimeAxis): the arrangement's rows share one; the band lanes share theirs (TL.1: one x range over the same
+// time window), kept per row so a surface may differ. UI thread only.
 
 #include <cstdint>
 #include <optional>

@@ -86,19 +86,22 @@ struct Ui {
     view().setShown(true, false);
     d.tree().layoutNow();
   }
-  // Keys' and Pad's windows framed at zoom 1.5 (the windows' column, both bands).
+  // Keys' and Pad's lanes framed (TL.1: across the canvas, both bands).
   void frame(std::initializer_list<std::string_view> names = {"Keys", "Pad"}) {
     const ProjectPatch& pp = view().patch();
     float x = 1e9f, y = 1e9f;
     for (std::string_view n : names) {
-      const Node& s = pp.nodes[pp.bands[pp.bandOf(track(n).id)].source];
-      x = std::min(x, s.x);
-      y = std::min(y, s.y);
+      const Band& s = pp.bands[pp.bandOf(track(n).id)];
+      x = std::min(x, pp.laneX0);
+      y = std::min(y, s.laneY);
     }
+    // TL.1: the lanes span the bands' width: as close as fits them across the canvas (at most 1.5).
+    const IRect cr0 = view().canvas().rect();
+    const double fit = (static_cast<double>(cr0.w) - 64.0) / static_cast<double>(d.tree().scale()) / static_cast<double>(pp.laneX1 - pp.laneX0);
     circuit::CircuitCanvas::View v;
-    v.zoom = 1.5;
+    v.zoom = std::min(1.5, fit);
     v.x = static_cast<double>(x) - 24.0;
-    v.y = static_cast<double>(y) - 24.0;
+    v.y = static_cast<double>(y) - 60.0 / v.zoom;  // below the ruler
     view().canvas().setView(v);
     d.tree().layoutNow();
     const IRect cr = view().canvas().rect();
@@ -123,11 +126,11 @@ struct Ui {
     const ProjectPatch& pp = view().patch();
     const uint32_t b = pp.bandOf(track(name).id);
     REQUIRE(b != kNone);
-    return laneBodyDevice(view().canvas(), pp.nodes[pp.bands[b].source]);
+    return laneBodyDevice(view().canvas(), pp, pp.bands[b]);
   }
   Vec2 at(std::string_view name, Ticks tick, float yf = 0.75f) const {
     const Rect r = body(name);
-    const double u = static_cast<double>(tick - view().laneStart()) / static_cast<double>(view().laneSpan());
+    const double u = (static_cast<double>(tick) - view().laneStart()) / view().laneSpan();
     return {r.x0 + static_cast<float>(u * static_cast<double>(r.x1 - r.x0)), r.y0 + yf * (r.y1 - r.y0)};
   }
   // On a clip's title strip (its move grip) at `tick`.
@@ -169,7 +172,7 @@ TEST_CASE("lane edit: the windows are a surface of the arrangement's editor (its
   // Its rows are the windows in band order (MIDI and audio tracks; groups, returns and the master have none).
   std::vector<doc::TrackId> want;
   for (const Band& b : v.patch().bands)
-    if (hasLaneWindow(b)) want.push_back(b.track);
+    if (hasClipRow(b)) want.push_back(b.track);
   REQUIRE(s->rows().size() == want.size());
   for (size_t i = 0; i < want.size(); ++i) CHECK(s->rows()[i].id == want[i]);
   // A row's axis maps the window's time span onto its body; its lane rect is the body (a pixel above and below).
@@ -177,8 +180,8 @@ TEST_CASE("lane edit: the windows are a surface of the arrangement's editor (its
   REQUIRE(keys >= 0);
   const Rect kb = u.body("Keys");
   const arrangement::TimeAxis ax = s->axis(keys);
-  CHECK(ax.x(static_cast<double>(v.laneStart())) == doctest::Approx(kb.x0));
-  CHECK(ax.x(static_cast<double>(v.laneStart() + v.laneSpan())) == doctest::Approx(kb.x1));
+  CHECK(ax.x(v.laneStart()) == doctest::Approx(kb.x0));
+  CHECK(ax.x(v.laneStart() + v.laneSpan()) == doctest::Approx(kb.x1));
   CHECK(s->rowAt((kb.y0 + kb.y1) * 0.5f) == keys);
   CHECK(s->rowLaneRect(keys).y + 1 == static_cast<int32_t>(std::floor(kb.y0)));
   // Embedded views (a group panel, the free rack) have no windows to edit.
@@ -190,7 +193,7 @@ TEST_CASE("lane edit: a drag selects time; Ctrl+Shift+M (the arrangement's chord
   Ui u;
   u.show();
   ProjectPatchView& v = u.view();
-  v.setLaneTime(4 * u.bar, 4 * u.bar);  // bars 5–8: Keys is empty until Riff 2 at bar 7
+  v.setLaneTime(static_cast<double>(4 * u.bar), static_cast<double>(4 * u.bar));  // bars 5–8: Keys is empty until Riff 2 at bar 7
   u.frame();
   const size_t clips0 = u.track("Keys").clips.size();
   // Drag from bar 5 + 1/8 beat to bar 6 + 1/8 beat: snapped to beats, a range on Keys only.
@@ -234,7 +237,7 @@ TEST_CASE("lane edit: a drag selects time; Ctrl+Shift+M (the arrangement's chord
   REQUIRE(menuClip != nullptr);
   CHECK(menuClip->end() == 5 * u.bar + 2 * u.beat);
   // A drag across both windows selects time on both tracks (one range over the rows it crosses).
-  v.setLaneTime(0, 4 * u.bar);
+  v.setLaneTime(0.0, static_cast<double>(4 * u.bar));
   u.frame();
   u.d.drag(u.at("Keys", u.bar, 0.8f), u.at("Pad", 3 * u.bar, 0.8f), 8);
   u.d.step();

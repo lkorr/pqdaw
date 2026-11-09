@@ -11,14 +11,27 @@
 //              level meter over it, a row per send; double-click its frame for longer send faders with their levels) at
 //              the band's top right; drag its frame to put it anywhere in its band (view state; its menu's Mixer to
 //              Top Right, or Reset Layout, puts it back).
-//   lanes      (T5.x-one-circuit) a MIDI or audio track's source node is a LANE WINDOW: the lane itself — its clips
-//              (colours, names, MIDI notes, audio waveforms from the overview cache), bar and beat lines, the playhead —
-//              over one time window all windows share (4 bars by default; see laneStart). Wheel over a window scrolls
-//              time, Ctrl+wheel zooms it (zoomed out, the windows widen and the chains move right); double-click a clip
-//              opens its editor (a MIDI clip's piano roll, an audio clip's Clip View). TX.lane-edit: a window is an
-//              editing surface of its track run by the arrangement's own editor and automation (see "lane-window
-//              editing" below): select time, Ctrl+Shift+M / the menu make a MIDI clip, clips move / copy / trim / delete /
-//              duplicate, audio handles, automation mode (A) draws breakpoints over the clips.
+//   lanes      (TL.1, SPEC §15 2026-11-08 "track lanes in the circuit view") every band ENDS IN ITS TRACK'S LANE, inside
+//              the band (its colour, its title strip above): the arrangement's lane — clips (colours, names, MIDI notes,
+//              audio waveforms from the overview cache), bar and beat lines, the playhead — across the band's width; all
+//              lanes span one x range under ONE TIME RULER pinned to the top of the view (the arrangement's Ruler: click
+//              locates, the loop brace and locators drag, a vertical drag zooms). The time window is the arrangement's
+//              (ViewContext::timeWindow): the same range in both views, each on its own width; zooming / scrolling either
+//              moves both. Over a lane or the ruler: Ctrl+wheel zooms time about the pointer, Shift+wheel (or a sideways
+//              wheel) scrolls it; the plain wheel pans the canvas. Drag a lane's bottom edge to resize it (view state);
+//              a band's fold triangle (or its menu) collapses its circuit, leaving its title strip and lane (Fold All:
+//              the view reads as the arrangement). A lane is an editing surface of its track run by the arrangement's
+//              own editor and automation (see "lane editing" below): a click on empty lane space sets the insert marker
+//              and, stopped, the start marker and the playhead (Space plays from there); select time, Ctrl+Shift+M / the
+//              menu make a MIDI clip, clips move / copy / trim / delete / duplicate, audio handles, automation mode (A)
+//              draws breakpoints over the clips, Z / X / + / − zoom (the arrangement's chords); double-click a clip opens
+//              its editor (a MIDI clip's piano roll, an audio clip's Clip View). Group / return / master lanes have no
+//              clip row (their automation: TL.2).
+//   lane cables (TL.1) every cable from a track's own signal leaves its lane's TOP EDGE at its own x, saved on the wire
+//              (doc::Wire::tap; default: under the block it feeds). Drag a cable's lane end along the edge to move it
+//              (one undo step); drag up from anywhere else on the top edge to start a new cable from there — a MIDI
+//              lane's port chips at the edge's left end (notes, Hz, gate, vel) start a cable of that output (the old Notes
+//              node's outputs), the rest of the edge the notes (an audio lane: its audio).
 //   one view   (T5.x-one-circuit, SPEC §15 2026-10-31: the whole project is one circuit) every "Open in Circuit View"
 //              comes here (ViewContext::openProjectCircuit: openCircuit): the device's band opened, framed on the
 //              device and focused; zooming out shows the other bands, groups with their chains, returns, the master
@@ -109,16 +122,16 @@
 //              this session). Delete on a selected group deletes it with its contents. The Device view shows the group
 //              as one device whose panel is this canvas, scoped to the group (ProjectPatchView(ctx, group)).
 //   morph      toggling animates between the views (kMorphSeconds): each lane keeps its vertical position and unfolds
-//              into its band, its clips collapse into the source node's strip, and back.
+//              into its band, its clips move into the band's lane, and back.
 //   readouts   resting on a wire shows what is known of its signal: a route / send the source track's meter level
 //              (MeterSource), a modulation wire its target's live sweep (ModulationSource); chain wires their kind.
 //
 // CPU: idle = no frames, no timers. The model, lowering and scene are rebuilt only while shown, after a document change
 // that can change them (structural, names, colours, a send turned on / off); a mixer drag or a clip edit only repaints.
-// A lane-window time zoom that changes their width re-lays out (model + scene, the lowering kept); a scroll, a waveform
-// arriving, a clip edit repaint the windows' rects only. While playing, a timer wakes when the playhead has moved about
-// one device px in the windows and damages the old and new playhead columns of the visible windows only. The windows'
-// MIDI notes come from the arrangement's clip previews (one cache for both views), audio from the waveform overviews.
+// A time zoom or scroll (the shared window) repaints the lanes' rects and the ruler only (the lanes keep their width); a
+// lane resize or a fold re-lays out (model + scene, the lowering kept). While playing, a timer wakes when the playhead has
+// moved about one device px in the lanes and damages the old and new playhead columns of the visible lanes only. The
+// lanes' MIDI notes come from the arrangement's clip previews (one cache for both views), audio from the waveform overviews.
 // Painting is the canvas's (tiles; the whole project at a far zoom is ≈ 2 quads per 256-px chunk) plus one pass over
 // the visible bands. UI thread only.
 
@@ -155,6 +168,7 @@ class PanelWindow;
 }
 namespace arrangement {
 class EditSurface;
+class Ruler;
 }
 
 namespace project_patch {
@@ -211,17 +225,35 @@ public:
   // World rect → device rect.
   ui::Rect deviceRect(float x, float y, float w, float h) const;
 
-  // Lane (TX.lane-edit): a press in a lane window's body went to the arrangement's editor / automation, whose drag runs.
+  // Lane (TX.lane-edit): a press in a lane went to the arrangement's editor / automation, whose drag runs. TL.1: LaneSize
+  // (a lane's bottom edge dragged: its height), Tap (a lane cable's end slid along the lane's top edge).
   // TX.node-menu: BackWire (a backwards cable out of a param), MaybeSplice / Splice (a Shift-drag of a block).
   // TX.orbit-ports: Port (an orbiting main port dragged along its block's edge: pinned there on release).
   // TX.mixer-look: MaybeMoveMixer / MoveMixer (a mixer pressed outside its controls, then dragged: placed where it is
   // dropped, ProjectPatchView::placeMixer); its controls are its face's (MixerFace: the canvas's face routing).
   enum class Drag : uint8_t {
-    None, Wire, MaybeMoveDevice, MoveDevice, Nudge, MaybeMoveMixer, MoveMixer, Resize, Lane, BackWire, MaybeSplice, Splice, Port
+    None, Wire, MaybeMoveDevice, MoveDevice, Nudge, MaybeMoveMixer, MoveMixer, Resize, Lane, BackWire, MaybeSplice, Splice, Port,
+    LaneSize, Tap
   };
   Drag drag() const noexcept { return drag_; }
-  // TX.lane-edit: the last press was in a lane window (the arrangement's edit chords act there: laneKey).
+  // TX.lane-edit: the last press was in a lane (the arrangement's edit chords act there: laneKey).
   bool laneFocused() const noexcept { return laneFocus_; }
+  // TL.1: what a press on a lane's edges grabs (device point): its bottom edge (resize), a cable's end on its top edge
+  // (slide it), a MIDI lane's port chip, or the rest of its top edge (a new cable from there).
+  struct LaneEdgeHit {
+    enum class Kind : uint8_t { None, Bottom, Tap, Port, Top };
+    Kind kind = Kind::None;
+    uint32_t band = kNone;
+    uint32_t edge = kNone;  // Tap: the model edge
+    uint32_t port = 0;      // Port / Top: the lane node's output
+    float x = 0.0f;         // world x on the edge (Top: where the cable starts)
+  };
+  LaneEdgeHit laneEdgeAt(ui::Vec2 device) const;
+  // TL.1: a MIDI lane's port chips (project_patch.h lanePortChip: world rect of output `port`).
+  LaneRect lanePortChip(uint32_t band, uint32_t port) const;
+  static constexpr float kLaneEdgePx = 4.0f;  // logical px either side of a lane's edge that grab it
+  // TL.1: a band's fold triangle in its title strip (world rect).
+  static LaneRect foldButtonRect(const Band& b) noexcept;
   // TX.resize: S is held (and no text field has the focus): a left press on a block resizes it; the block a press at
   // `pos` would resize (a closed device block; kNone: none).
   bool resizeHeld() const noexcept;
@@ -280,6 +312,8 @@ public:
   static constexpr float kMinHitPx = 8.0f;
   static constexpr float kSmallPinReach = 0.3f;
 
+  void arrange(ui::LayoutPass& pass) override;  // TL.1: the ruler over the top strip
+
 protected:
   void paintUnderlay(ui::PaintContext& ctx) override;
   void paintNodeOverlay(ui::PaintContext& ctx) override;
@@ -334,10 +368,22 @@ private:
   ui::Cursor wireCursor_ = ui::Cursor::Crosshair;  // T4.16c: during a wire drag
   mutable std::string infoTitle_;                  // TMM.10-fix2: a hovered note source's info (info() returns views)
   // TX.lane-edit
-  bool laneFocus_ = false;   // the last press was in a lane window
+  bool laneFocus_ = false;   // the last press was in a lane
   bool laneHover_ = false;   // the pointer rests over a window body (laneCursor_ is what a press there would do)
   ui::Cursor laneCursor_ = ui::Cursor::Arrow;
-  bool lanePointer(const ui::PointerEvent& e);  // the windows' share of onPointer (true: taken)
+  bool lanePointer(const ui::PointerEvent& e);  // the lanes' share of onPointer (true: taken)
+  // TL.1: the lanes' edges (a resize, a cable's end slid along the top edge, a new cable from it), the fold triangle,
+  // the time wheel over the lanes; and the ruler placed over the canvas's top.
+  bool laneEdgePointer(const ui::PointerEvent& e);
+  doc::TrackId laneTrack_;               // LaneSize: the lane's track; its height and the press's y at the press
+  float laneH0_ = 0.0f;
+  doc::WireId tapWire_;                  // Tap: the cable whose lane end slides, its world x now
+  float tapX_ = 0.0f;
+  bool tapMoved_ = false;
+  std::optional<graph::Point2> laneStart_;  // Wire from a lane's top edge: where its cable starts (world)
+  LaneEdgeHit::Kind laneHoverKind_ = LaneEdgeHit::Kind::None;  // the edge part under the pointer (its highlight)
+  uint32_t laneHoverBand_ = kNone, laneHoverEdge_ = kNone, laneHoverPort_ = 0;
+  void paintLanePorts(ui::PaintContext& ctx);
   // TX.node-menu
   void finishBackWire(ui::Vec2 pos);
   bool pressBackWire(const ui::PointerEvent& e);  // W + a press on a param pin / control (true: a backwards cable)
@@ -478,46 +524,56 @@ public:
   // Where a device is drawn (world units): its block or opened frame, inside an opened rack its box. False: not drawn.
   bool deviceWorldRect(doc::DeviceId device, LaneRect& out) const;
 
-  // ---- lane windows (T5.x-one-circuit) --------------------------------------------------------------------------
-  // Every lane window shows [laneStart, laneStart + laneSpan). When the view is shown the window starts at the bar of
-  // the playhead (playing) or of the arrangement's left edge, kLaneBars bars long by default (pq::kPpq and the time
-  // signature there); while playing it pages on when the playhead runs out of it. The windows' width follows the span:
-  // kSourceW up to the default span, wider in proportion up to kSourceMaxW (4 × the default span), denser beyond.
-  static constexpr int64_t kLaneBars = 4, kLaneMaxBars = 64;
+  // ---- the lanes (TL.1) ----------------------------------------------------------------------------------------
+  // Every band's lane shows [laneStart, laneStart + laneSpan): the shared time window (ViewContext::timeWindow, the
+  // arrangement's); setting it here moves the arrangement too (clamped by the context). Before any view has set it, it is
+  // kDefaultBars bars from the start. While playing it pages on when the playhead runs out of it (as the arrangement's
+  // Follow).
+  static constexpr int64_t kDefaultBars = 8;
   static constexpr double kLaneZoomStep = 1.25;   // span factor per Ctrl+wheel notch
   static constexpr double kLaneScrollStep = 0.125;  // span fraction per wheel notch
-  Ticks laneStart() const noexcept { return laneStart_; }
-  Ticks laneSpan() const noexcept { return laneSpan_; }
-  Ticks laneDefaultSpan() const noexcept { return laneUnit_; }
-  float laneWidth() const noexcept;
-  // Clamped: start ≥ 0, one beat ≤ span ≤ kLaneMaxBars bars. A width change re-lays out; otherwise the windows repaint.
-  void setLaneTime(Ticks start, Ticks span);
+  double laneStart() const noexcept;
+  double laneSpan() const noexcept;
+  void setLaneTime(double start, double span);
   void scrollLanes(double notches);                  // + = later
-  void zoomLanes(double notches, float anchor = 0.0f);  // + = zoom in (a shorter span); anchor: 0..1 across the window
-  // What band `b`'s window shows: its clips meeting the time window, each with its world x span inside the window.
+  void zoomLanes(double notches, float anchor = 0.0f);  // + = zoom in (a shorter span); anchor: 0..1 across the lanes
+  float laneAnchor(ui::Vec2 device) const;           // where a device x is across the lanes (0..1)
+  double laneTickAt(float deviceX) const;            // the tick at a device x on the lanes
+  // A lane's height (world units; view state saved with the project, kLaneH by default) and a band's folded circuit.
+  float laneHeight(doc::TrackId track) const noexcept;
+  void setLaneHeight(doc::TrackId track, float h);
+  bool bandFolded(doc::TrackId track) const noexcept;
+  void setBandFolded(doc::TrackId track, bool folded);
+  void setAllFolded(bool folded);
+  // A lane cable's tap: where it leaves its lane's top edge (world x; nullopt: back under the block it feeds). One undo
+  // step (doc::SetWireTap).
+  bool setCableTap(doc::WireId wire, std::optional<float> worldX);
+  // The time ruler over the lanes (the arrangement's Ruler on the lanes' axis; null: none made).
+  ui::Widget* ruler() const noexcept { return ruler_; }
+  // What band `b`'s lane shows: its clips meeting the time window, each with its world x span inside the lane.
   struct LaneClip {
     doc::ClipId clip;
     float x0 = 0, x1 = 0;
     bool audio = false;
   };
   std::vector<LaneClip> laneClips(uint32_t band) const;
-  uint32_t laneAt(ui::Vec2 device) const;            // the band whose window is under a device point (kNone: none)
-  doc::ClipRef laneClipAt(ui::Vec2 device) const;    // the clip under a device point in a window (invalid: none)
+  uint32_t laneAt(ui::Vec2 device) const;            // the band whose lane is under a device point (kNone: none)
+  doc::ClipRef laneClipAt(ui::Vec2 device) const;    // the clip under a device point in a lane (invalid: none)
   // A clip's editor: the detail view shown in Clip mode on it (a MIDI clip: the piano roll; audio: the Clip View), the
   // clip selected in the arrangement, then onOpenClip (installProjectPatch: the editor takes the keyboard).
   void openClip(const doc::ClipRef& clip);
   std::function<void(const doc::ClipRef&)> onOpenClip;
-  // The playhead the windows draw (read while playing; empty when stopped).
+  // The playhead the lanes draw (read while playing; empty when stopped).
   const std::optional<Ticks>& lanePlayhead() const noexcept { return playhead_; }
 
-  // ---- lane-window editing (TX.lane-edit) ------------------------------------------------------------------------
-  // A window body is an editing surface of its track: the ARRANGEMENT's own editor and automation run there (one
+  // ---- lane editing (TX.lane-edit) ---------------------------------------------------------------------------------
+  // A lane with a clip row is an editing surface of its track: the ARRANGEMENT's own editor and automation run there (one
   // selection, one clipboard, one undo history; src/arrangement/edit_surface.h) — a drag selects time, the clip gestures
   // are the arrangement's (title strip: move, Alt: copy, edges: trim, audio handles: fades / gain), the right-click menu
   // is the arrangement's (Insert MIDI Clip = Ctrl+Shift+M …) plus Automation Mode and the parameter drawn over the clips;
   // in automation mode (A) the chosen parameter's envelope is drawn and edited over the clips as in the arrangement. While
-  // the last press was in a window, the arrangement's edit chords (its keymap scope) act there (laneKey).
-  uint32_t laneBodyAt(ui::Vec2 device) const;    // the band whose window body is under a device point (kNone: none)
+  // the last press was in a lane, the arrangement's edit chords (its keymap scope) act there (laneKey).
+  uint32_t laneBodyAt(ui::Vec2 device) const;    // the band whose clip lane is under a device point (kNone: none)
   bool lanePointer(const ui::PointerEvent& e);   // a press / drag / release in a window (true: taken)
   bool laneDragging() const noexcept;            // a clip, time-selection, handle or breakpoint drag runs in a window
   void laneHover(ui::Vec2 device, ui::Mods mods);  // the part a press would grab, highlighted (and laneCursor's)
@@ -619,6 +675,7 @@ public:
     doc::DeviceId device;  // FromOutput: the source (invalid with `notes`); IntoParam: the target
     std::string port;      // FromOutput: the output; IntoParam: the param or input
     doc::TrackId notes;    // FromOutput: a note source's track
+    std::optional<float> tap;  // TL.1: with `notes`, where the cable leaves its lane (band-local; doc::Wire::tap)
   };
   // Places `c` at world point `at` (see "node menu" above), wired by `link`. The new device (invalid: refused).
   doc::DeviceId spawnNode(const NodeChoice& c, graph::Point2 at, const SpawnLink& link = {});
@@ -789,8 +846,8 @@ public:
     double lastRebuildMs = 0.0;  // the last rebuild's wall time (lower + model + scene)
     uint64_t morphFrames = 0;
     double lastMorphPaintMs = 0.0;
-    // T5.x-one-circuit: lane-window time zooms that re-laid out (model + scene, no lowering) and the last one's wall
-    // time; playhead reads while playing; lane windows painted (with their clips).
+    // Re-layouts without a lowering (a lane resize, a fold, a nudge) and the last one's wall time; playhead reads while
+    // playing; lanes painted (with their clips).
     uint64_t relayouts = 0;
     double lastRelayoutMs = 0.0;
     uint64_t playheadReads = 0;
@@ -810,7 +867,7 @@ public:
   // per-snapshot table: painting never walks the track tree per band).
   const doc::Track* bandTrack(uint32_t b) const noexcept;
   // T5.x-one-circuit: the tuning band `b`'s track plays in (Inherit resolved; the same table as bandTrack), for its
-  // lane window's note previews; and the arrangement next to this view (its clip previews and audio layouts), or null.
+  // lane's note previews; and the arrangement next to this view (its clip previews and audio layouts), or null.
   const doc::TuningDef* bandTuning(uint32_t b) const noexcept;
   ArrangementView* arrangement() const noexcept;
   doc::Snapshot shownSnapshot() const noexcept { return built_; }
@@ -825,8 +882,10 @@ private:
   friend class LaneEditSurface;
   void onDocument(const doc::StoreEvent& e);
   void rebuild();
-  void relayout();  // T5.x-one-circuit: the lane windows' width changed: model + scene again, the lowering kept
-  void initLaneTime();
+  void relayout();  // model + scene again, the lowering kept (view state changed)
+  void ensureTimeWindow();   // TL.1
+  int32_t rulerInset() const noexcept;  // TL.1: the ruler's height over the canvas's top (fits leave it free)
+  void timeWindowChanged();  // TL.1: the shared window moved: the lanes and the ruler repaint
   void refreshTransport();
   void readPlayhead();
   void schedulePlayhead();
@@ -864,10 +923,21 @@ private:
   doc::TrackId openBand_;
   std::vector<doc::DeviceId> bandExpanded_;
   doc::DeviceId focus_;           // T5.x-one-circuit: the device "Open in Circuit View" framed
-  // T5.x-one-circuit: the lane windows' time window, its default span, the playhead the windows show.
-  Ticks laneStart_ = 0, laneSpan_ = 0, laneUnit_ = 0;
-  bool laneInit_ = false;
+  // The playhead the lanes show (TL.1: the time window is the context's).
   std::optional<Ticks> playhead_;
+  ui::Widget* ruler_ = nullptr;  // TL.1: a child of the canvas (its top strip; hidden in an embedded view)
+  // TL.1: a cable started from a lane's top edge: where (world x) and whose (the wire it makes gets the tap: stampTap).
+  struct PendingTap {
+    doc::TrackId track;
+    float x = 0.0f;
+  };
+  std::optional<PendingTap> pendingTap_;
+  bool tapOnly_ = false;   // TL.1: the change being dispatched moves cable taps only (the lowering is kept)
+  bool tapGesture_ = false;  // TL.1: a cable's lane end being slid (one store gesture: one undo step)
+  void beginTapDrag();
+  void endTapDrag(bool commit);
+  friend class ProjectCanvas;
+  void stampTap(doc::Wire& w);
   uint32_t playheadTimer_ = 0;
   // TX.lane-edit: main view only, made and registered with the arrangement next to the view on first use; laneArr_ is
   // that arrangement while the surface is registered (its Surfaces unregister it when the arrangement goes first).

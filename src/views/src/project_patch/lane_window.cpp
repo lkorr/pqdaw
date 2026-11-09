@@ -1,19 +1,20 @@
-// The project patch view's lane windows (T5.x-one-circuit, SPEC §15 2026-10-31): a MIDI or audio track's source node
-// shows the lane itself over the view's time window — bar and beat lines, the clips in their colours with their
-// names, MIDI notes, audio waveforms, the playhead. See pq/views/project_patch/project_patch_view.h.
+// The project patch view's band lanes (TL.1, SPEC §15 2026-11-08 "track lanes in the circuit view"; before it the
+// T5.x-one-circuit lane windows): every band ends in its track's lane — bar and beat lines, the clips in their colours
+// with their names, MIDI notes, audio waveforms, the playhead — over the shared time window (ViewContext::timeWindow, the
+// arrangement's too). See pq/views/project_patch/project_patch_view.h.
 //
-// TX.lane-edit: with the arrangement next to the view (the app, its scenes) a window is the arrangement's editing surface
+// TX.lane-edit: with the arrangement next to the view (the app, its scenes) a lane is the arrangement's editing surface
 // (lane_edit.cpp) and is drawn by the arrangement's own clip painters (src/arrangement/lane_paint.h: paintClip,
-// paintAudioClip) on the window's time axis, without its TileAtlas tiles (keyed by the arrangement's zoom) — so the
+// paintAudioClip) on the lane's time axis, without its TileAtlas tiles (keyed by the arrangement's zoom) — so the
 // selection outline, the hovered part, audio fades / gain handles, drag previews and the time selection look the same in
 // both views; in automation mode the envelopes are the arrangement's bands. The plain path below is for a view without an
 // arrangement (tests of the model alone).
 //
 // What is reused: the MIDI notes are the arrangement's clip previews (arrangement::Model::preview: per clip snapshot
 // and tuning, notes as content ticks with a normalised row, independent of the zoom), so a clip shown in both views is
-// resolved once; the clip index per track (Model::clips) finds a window's clips by binary search; audio clips use the
+// resolved once; the clip index per track (Model::clips) finds a lane's clips by binary search; audio clips use the
 // arrangement's audio layouts and the waveform overviews (pq/views/waveforms.h) through ui::drawWaveform, whose cost is
-// the visible columns only. Painting is limited to the damaged rect (the canvas's clip) and the windows that meet it.
+// the visible columns only. Painting is limited to the damaged rect (the canvas's clip) and the lanes that meet it.
 
 #include <algorithm>
 #include <cmath>
@@ -145,13 +146,15 @@ void paintWave(ui::DrawList& dl, const ui::WaveformData& data, const doc::AudioC
 
 }  // namespace
 
-void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatchView& view) {
+void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatchView& view) {
   if (ctx.res.theme == nullptr) return;
   const ui::Theme& th = *ctx.res.theme;
   const ProjectPatch& pp = view.patch();
-  const Ticks start = view.laneStart(), span = view.laneSpan();
-  if (span <= 0) return;
-  const Ticks end = start + span;
+  if (pp.scoped || view.embedded()) return;
+  // TL.1: the shared window; the ticks painted are whole ticks around it (the axis keeps its exact start).
+  const double origin = view.laneStart(), spanD = view.laneSpan();
+  if (!(spanD > 0.0)) return;
+  const Ticks start = static_cast<Ticks>(std::floor(origin)), end = static_cast<Ticks>(std::ceil(origin + spanD));
   const ui::IRect clip = ui::intersect(ctx.clip, canvas.rect());
   ui::DrawList& dl = ctx.dl;
   const doc::Project& p = *view.context().doc();
@@ -167,61 +170,54 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
   const bool fonts = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr;
   const ui::FontId font = fonts ? ctx.res.uiFonts->small : ui::kNoFont;
   const float px = fonts ? static_cast<float>(ctx.res.text->metrics(font).pixelSize) : 11.0f;
-  const bool header = fonts && canvas.lod() == circuit::CircuitCanvas::Lod::Near;
+  const bool near = canvas.lod() == circuit::CircuitCanvas::Lod::Near;
   const Rgba gridBar = ui::mulAlpha(th.arrangement.gridLine, 1.0f), gridBeat = ui::mulAlpha(th.arrangement.gridLine, 0.45f);
-  // TX.block-drag: a band dragged by its title has its window drawn with it (the canvas's lifted pass), not here.
-  const uint8_t layer = canvas.paintLayer();  // TX.drag-grow: a shift layer's pass draws its bands' windows
+  // TX.block-drag: a band dragged by its title has its lane drawn with it (the canvas's lifted pass), not here; TX.drag-grow:
+  // a band shifted down by a growing band above it has its lane where its strip is drawn now.
+  const uint8_t layer = canvas.paintLayer();
   const bool liftPass = layer != 0;
   if (model != nullptr && !liftPass) model->overlay.reset(dl.targetWidth(), dl.targetHeight());  // audio fades / handles of this paint
   bool anyWindow = false;
 
   for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
     const Band& band = pp.bands[bi];
-    if (!hasLaneWindow(band) || band.source == kNone || canvas.liftLayerOf(band.source) != layer) continue;
-    const Node& n = pp.nodes[band.source];
-    const Rect nr = canvas.deviceRect(n.x, n.y, n.w, n.h);
-    if (!overlaps(nr, clip)) continue;
+    if (band.laneH <= 0.0f || (canvas.bandLifted(bi) ? 1 : 0) != layer) continue;
+    const ProjectCanvas::WorldRect now = canvas.bandNow(bi);
+    const float dy = now.y1 - (band.y + band.h);  // TX.drag-grow: shifted with its strip
+    const Rect body = laneBodyDevice(canvas, pp, band, dy);
+    if (!overlaps(body, clip) || body.x1 - body.x0 < 2.0f || body.y1 - body.y0 < 1.0f) continue;
     const doc::Track* t = view.bandTrack(bi);
     if (t == nullptr) continue;
-    const Rect body = laneBodyDevice(canvas, n);
-    if (body.x1 - body.x0 < 2.0f || body.y1 - body.y0 < 1.0f) continue;
     ++view.mutableStats().lanesPainted;
     anyWindow = true;
     const bool trackOn = band.active && !t->mixer.mute;
-    const double k = static_cast<double>(body.x1 - body.x0) / static_cast<double>(span);  // device px per tick
-    auto X = [&](Ticks tick) { return body.x0 + static_cast<float>(static_cast<double>(tick - start) * k); };
+    const double k = static_cast<double>(body.x1 - body.x0) / spanD;  // device px per tick
+    auto X = [&](Ticks tick) { return body.x0 + static_cast<float>((static_cast<double>(tick) - origin) * k); };
+    // The lane in the arrangement's lane colours, framed in its track's (it is the band's own: the same colour bar).
     dl.addRectFilled(body, trackOn ? th.arrangement.lane : th.arrangement.laneShade);
+    const Rgba trackCol = ui::hex(band.colour);
+    dl.addRectStroke(body, ui::mulAlpha(trackCol, trackOn ? 0.55f : 0.25f), line);
     const int32_t row = surf != nullptr ? surf->rowOfBand(bi) : -1;
     const bool editing = row >= 0 && model != nullptr;
     // TX.lane-edit: the arrangement's selected tracks are lighter here too (one selection).
     if (editing && ed->trackSelected(t->id)) dl.addRectFilled(body, th.arrangement.laneSelected);
 
-    const int32_t titleW = header ? ctx.res.text->shape(font, n.title).advance : 0;
-    // Bar lines (and beat lines where they are at least 6 logical px apart).
-    const int64_t bar0 = sig.ticksToBarBeat(start).bar;
+    // Bar lines (and beat lines where they are at least 6 logical px apart). TL.1: the bar numbers are the ruler's.
+    const int64_t bar0 = sig.ticksToBarBeat(std::max<Ticks>(0, start)).bar;
     for (int64_t bar = bar0;; ++bar) {
       const Ticks bt = sig.barToTicks(bar);
       if (bt >= end) break;
       const TimeSignature ts = sig.signatureAt(bt);
-      if (bt >= start) dl.addVLine(std::round(X(bt)), body.y0, body.y1, gridBar, line);
+      if (static_cast<double>(bt) >= origin) dl.addVLine(std::round(X(bt)), body.y0, body.y1, gridBar, line);
       const Ticks beat = ticksPerBeat(ts);
       if (static_cast<double>(beat) * k >= 6.0 * static_cast<double>(us))
         for (int32_t b = 1; b < ts.numerator; ++b) {
           const Ticks at = bt + beat * b;
           if (at >= end) break;
-          if (at > start) dl.addVLine(std::round(X(at)), body.y0, body.y1, gridBeat, line);
+          if (static_cast<double>(at) > origin) dl.addVLine(std::round(X(at)), body.y0, body.y1, gridBeat, line);
         }
-      if (header && bt >= start) {  // the bar number in the title row, right of the window's title
-        const float x = std::round(X(bt)) + 2.0f * us;
-        // TMM.13-fix2 (L14): right of the window's title as the canvas draws it (scene.cpp: 12 units in), 6 px clear.
-        const float titleEnd = canvas.toDevice({n.x + 12.0f, n.y}).x + static_cast<float>(titleW) + 6.0f * us;
-        if (x > titleEnd && x + 2.0f * px < nr.x1) {
-          const std::string num = std::to_string(bar + 1);
-          paint::text(ctx, font, toIRect({x, nr.y0 + 1.0f, std::min(nr.x1 - 2.0f, x + 4.0f * px), body.y0}), num, th.circuit.pinText,
-                      ui::TextAlign::Left);
-        }
-      }
     }
+    if (!hasClipRow(band)) continue;  // TL.1: a group / return / master lane (its automation: TL.2)
 
     // Clips.
     if (model != nullptr && !begun) {
@@ -239,9 +235,9 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
       const ui::IRect bc = ui::intersect(br, clip);
       if (bc.empty()) continue;
       const ArrangementRow& arow = surf->rows()[static_cast<size_t>(row)];
-      arrangement::LanePaint lp{ctx, th, *model, *arr, p, br, bc, k, static_cast<double>(start),
-                                start + static_cast<Ticks>(std::floor((static_cast<double>(bc.x - br.x) - 1.0) / k)),
-                                start + static_cast<Ticks>(std::ceil((static_cast<double>(bc.right() - br.x) + 1.0) / k)),
+      arrangement::LanePaint lp{ctx, th, *model, *arr, p, br, bc, k, origin,
+                                static_cast<Ticks>(std::floor(origin + (static_cast<double>(bc.x - br.x) - 1.0) / k)),
+                                static_cast<Ticks>(std::ceil(origin + (static_cast<double>(bc.right() - br.x) + 1.0) / k)),
                                 static_cast<int32_t>(titleH)};
       lp.arrangementLanes = false;
       if (fonts && titleH >= px + 1.0f) {
@@ -330,37 +326,33 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
   }
   if (!anyWindow) return;
 
-  // TX.lane-edit: in automation mode the chosen parameter's envelope over each window's clips (the arrangement's bands,
-  // on this surface), and its name in the window's title row.
+  // TX.lane-edit: in automation mode the chosen parameter's envelope over each lane's clips (the arrangement's bands, on
+  // this surface), and its name at the lane's top right.
   if (surf != nullptr && arr->automation().mode() && !liftPass) {
     arr->automation().paintSurface(ctx, *surf, clip);
-    if (header)
+    if (fonts && near)
       for (int32_t r = 0; r < static_cast<int32_t>(surf->rows().size()); ++r) {
-        const uint32_t bi = surf->bandOf(r);
-        const Node& n = pp.nodes[pp.bands[bi].source];
-        const Rect nr = canvas.deviceRect(n.x, n.y, n.w, n.h);
-        if (!overlaps(nr, clip)) continue;
-        const Rect body = laneBodyDevice(canvas, n);
+        const Rect body = surf->body(r);
+        if (!overlaps(body, clip) || body.y1 - body.y0 < px + 4.0f * us) continue;
         const std::string label = paramShortName(p, arr->automation().chosen(surf->rows()[static_cast<size_t>(r)].id), view.context().deviceLibrary());
         const float w = std::min(body.x1 - body.x0, 8.0f * px);
-        // TMM.13-fix2 (MM review contrast table: 2.70:1 on the title row): on a dark pad as wide as the name.
+        // TMM.13-fix2 (MM review contrast table): on a dark pad as wide as the name.
         const float tw = std::min(w, static_cast<float>(ctx.res.text->shape(font, label).advance) + 6.0f * us);
-        const float padY0 = nr.y0 + 2.0f * us, padY1 = body.y0 - 1.0f * us;
-        if (padY1 > padY0) ctx.dl.addRoundedRectFilled({body.x1 - tw - 1.0f * us, padY0, body.x1 + 2.0f * us, padY1}, 2.0f * us, th.surface.sunken);
-        paint::text(ctx, font, toIRect({body.x1 - w, nr.y0 + 1.0f, body.x1, body.y0}), label, th.automation.line, ui::TextAlign::Right);
+        const float y0 = body.y0 + 2.0f * us, y1 = y0 + px + 2.0f * us;
+        ctx.dl.addRoundedRectFilled({body.x1 - tw - 3.0f * us, y0, body.x1 - 1.0f * us, y1}, 2.0f * us, th.surface.sunken);
+        paint::text(ctx, font, toIRect({body.x1 - w - 2.0f * us, y0, body.x1 - 2.0f * us, y1}), label, th.automation.line, ui::TextAlign::Right);
       }
   }
 
-  // The playheads, on top.
-  if (const std::optional<Ticks>& ph = view.lanePlayhead(); ph && *ph >= start && *ph < end)
+  // The playheads, on top (every lane, its clip row or not).
+  if (const std::optional<Ticks>& ph = view.lanePlayhead(); ph && static_cast<double>(*ph) >= origin && static_cast<double>(*ph) < origin + spanD)
     for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
       const Band& band = pp.bands[bi];
-      if (!hasLaneWindow(band) || band.source == kNone || view.bandTrack(bi) == nullptr || canvas.liftLayerOf(band.source) != layer) continue;
-      const Node& n = pp.nodes[band.source];
-      if (!overlaps(canvas.deviceRect(n.x, n.y, n.w, n.h), clip)) continue;
-      const Rect body = laneBodyDevice(canvas, n);
-      if (body.x1 - body.x0 < 2.0f || body.y1 - body.y0 < 1.0f) continue;
-      const float x = lanePlayheadX(body, *ph, start, span);
+      if (band.laneH <= 0.0f || view.bandTrack(bi) == nullptr || (canvas.bandLifted(bi) ? 1 : 0) != layer) continue;
+      const float dy = canvas.bandNow(bi).y1 - (band.y + band.h);
+      const Rect body = laneBodyDevice(canvas, pp, band, dy);
+      if (!overlaps(body, clip) || body.x1 - body.x0 < 2.0f || body.y1 - body.y0 < 1.0f) continue;
+      const float x = lanePlayheadX(body, static_cast<double>(*ph), origin, spanD);
       dl.addRectFilled({x, body.y0, x + std::max(1.0f, std::round(us)), body.y1}, th.arrangement.playhead);
     }
 }

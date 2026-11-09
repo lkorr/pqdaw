@@ -305,6 +305,9 @@ protected:
   // pointer).
   ui::Cursor faceCursor(ui::Vec2 pos) const;
   bool faceInfo(ui::InfoText& out) const;
+  // TL.1: a face (or its open popup) is under device point `pos`, or a face's drag runs (what is under the face, a lane
+  // of the project patch view, does not take the pointer then).
+  bool faceTakes(ui::Vec2 pos) const;
   // TX.patching: the param whose control is under device point `pos` on a face (Face::paramAt: a meta face's control,
   // a panel's knob), with the face's scene node; node UINT32_MAX / param "" when none (a cable drop target).
   struct FaceParamHit {

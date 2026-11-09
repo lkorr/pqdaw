@@ -12,6 +12,7 @@
 #include "pq/ui/theme.h"
 #include "internal.h"
 #include "pq/ui/face_painter.h"
+#include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/cables.h"
 #include "pq/views/circuit/probes.h"
 #include "pq/views/mixer/mixer.h"
@@ -28,13 +29,15 @@ using ui::Vec2;
 
 namespace {
 
-// TMM.10-fix2: a MIDI track's lane window (its note source), whose outputs start wires.
+// TMM.10-fix2: a MIDI track's note source (TL.1: its lane), whose outputs start wires.
 bool isNoteSource(const ProjectPatch& pp, const Node& n) noexcept {
-  return n.kind == NodeKind::Source && n.band < pp.bands.size() && pp.bands[n.band].kind == doc::TrackKind::Midi;
+  return n.kind == NodeKind::Lane && n.band < pp.bands.size() && pp.bands[n.band].kind == doc::TrackKind::Midi;
 }
-// TX.all-free: a band's source (a lane window, a Σ): its output 0 is the track's own signal (its notes, its clips, its
-// sum), a wire's kMainPort source.
-bool isTrackSource(const Node& n) noexcept { return n.kind == NodeKind::Source || n.kind == NodeKind::Sum; }
+// TX.all-free: a band's source (TL.1: its lane, or a Σ): its output 0 is the track's own signal (its notes, its clips,
+// its sum), a wire's kMainPort source.
+bool isTrackSource(const Node& n) noexcept { return n.kind == NodeKind::Lane || n.kind == NodeKind::Sum; }
+// TL.1: a node the canvas draws and hits (a lane is no block; a folded band's blocks are hidden).
+bool shownNode(const Node& n) noexcept { return n.kind != NodeKind::Lane && !n.folded; }
 // Whether a press on output pin `pin` starts a wire: a device's (TX.patching: any output, its main one too), a mixer's
 // (route, sends), a track's source (TX.all-free: its own signal; a MIDI track's note outputs).
 bool wireSource(const ProjectPatch& pp, const Node& n) noexcept {
@@ -122,6 +125,7 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
   const float floorReach = 2.0f * (tree() ? tree()->scale() : 1.0f) / std::max(s, 1e-6f);
   for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
     const Node& n = pp.nodes[i];
+    if (!shownNode(n)) continue;  // TL.1
     // TX.orbit-ports: an orbiting port sits outside the block (a port's width at its scale).
     const float out = n.orbitIn.on || n.orbitOut.on ? 2.0f * (circuit::kOrbitPortR + circuit::kOrbitGap) * n.scale : 0.0f;
     if (w.x < n.x - reach - out || w.x > n.x + n.w + reach + out || w.y < n.y - reach - out || w.y > n.y + n.h + reach + out) continue;
@@ -165,6 +169,7 @@ uint32_t ProjectCanvas::nodeAt(Vec2 d) const {
   const float minW = kMinHitPx * (tree() ? tree()->scale() : 1.0f) / std::max(deviceScale(), 1e-6f);
   for (uint32_t i = static_cast<uint32_t>(pp.nodes.size()); i-- > 0;) {
     const Node& n = pp.nodes[i];
+    if (!shownNode(n)) continue;  // TL.1
     float x0 = n.x, x1 = n.x + n.w, y0 = n.y, y1 = n.y + n.h;
     if (n.kind == NodeKind::Device) {
       if (n.w < minW) x0 = n.x + (n.w - minW) * 0.5f, x1 = x0 + minW;
@@ -266,17 +271,31 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
       // is a pill drawn over the band's blocks (paintOverlay), not text running down under its lane window.
       if ((stripH >= px + 2.0f || lod() == Lod::Near) && r.y1 - r.y0 >= px + 2.0f) {
         const float h = std::clamp(stripH, px + 2.0f, r.y1 - r.y0);
-        const ui::IRect box{static_cast<int32_t>(r.x0 + bar + 6.0f), static_cast<int32_t>(r.y0),
-                            static_cast<int32_t>(std::min(r.x1 - r.x0 - bar - 10.0f, 360.0f * us)), static_cast<int32_t>(h)};
+        const float fold = std::round(14.0f * s);  // TL.1: the fold triangle before the name
+        const ui::IRect box{static_cast<int32_t>(r.x0 + bar + 6.0f + fold), static_cast<int32_t>(r.y0),
+                            static_cast<int32_t>(std::min(r.x1 - r.x0 - bar - 10.0f - fold, 360.0f * us)), static_cast<int32_t>(h)};
         std::string label = b.name;
         if (!b.active) label += "  (deactivated)";
         paint::text(ctx, font, box, label, dim ? th.circuit.pinText : th.circuit.symbolText, ui::TextAlign::Left);
       }
     }
+    // TL.1: the fold triangle (down: the circuit shown; right: folded to the title strip and the lane).
+    if (!pp.scoped && !view_.embedded() && stripH >= 8.0f) {
+      const LaneRect fr = ProjectCanvas::foldButtonRect(b);
+      const float dyb = br.y0 - b.y;
+      const Rect f = deviceRect(fr.x0, fr.y0 + dyb, fr.x1 - fr.x0, fr.y1 - fr.y0);
+      const float cx = (f.x0 + f.x1) * 0.5f, cy = (f.y0 + f.y1) * 0.5f, hr = (f.x1 - f.x0) * 0.3f;
+      const Rgba ink = dim ? th.circuit.pinText : th.circuit.symbolText;
+      if (b.folded) dl.addTriangleFilled({cx - hr * 0.6f, cy - hr}, {cx + hr * 0.8f, cy}, {cx - hr * 0.6f, cy + hr}, ink);
+      else dl.addTriangleFilled({cx - hr, cy - hr * 0.6f}, {cx + hr, cy - hr * 0.6f}, {cx, cy + hr * 0.8f}, ink);
+    }
   }
+  // TL.1: the bands' lanes (the track's timeline; under the blocks and the cables).
+  paintLanes(ctx, *this, view_);
+  if (!liftPass) paintLanePorts(ctx);
   // Expanded devices: the frame their atoms are drawn in.
   for (const Node& n : pp.nodes) {
-    if (n.kind != NodeKind::Device || !n.expanded) continue;
+    if (n.kind != NodeKind::Device || !n.expanded || n.folded) continue;
     if (liftLayerOf(static_cast<uint32_t>(&n - pp.nodes.data())) != layer) continue;
     if (n.band < pp.bands.size() && view_.scene().sceneNode.size() > 0) {
       const uint32_t mi = static_cast<uint32_t>(&n - pp.nodes.data());
@@ -322,7 +341,7 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   // group (the outermost group fed notes) is drawn as an instrument: the instruments' accent, a heavier frame, and its
   // kind and polyphony in the title strip ("Instrument · 16 voices") where a plain group shows its device count.
   for (const Node& n : pp.nodes) {
-    if (!n.group || !n.groupOpen) continue;
+    if (!n.group || !n.groupOpen || n.folded) continue;
     if (liftLayerOf(static_cast<uint32_t>(&n - pp.nodes.data())) != layer) continue;
     const WorldRect fr = frameNow(static_cast<uint32_t>(&n - pp.nodes.data()));  // TX.drag-grow: grown by a drag
     const Rect r = snapRect(deviceRect(fr.x0, fr.y0, fr.x1 - fr.x0, fr.y1 - fr.y0));
@@ -407,7 +426,7 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
   auto mine = [&](const Node& n) { return liftLayerOf(static_cast<uint32_t>(&n - pp.nodes.data())) == layer; };
   // TX.groups: a closed group's miniature of its contents (its boxes and wires in the block's body, under the title).
   for (const Node& n : pp.nodes) {
-    if (!n.group || n.groupOpen || n.mini.empty() || !mine(n)) continue;
+    if (!n.group || n.groupOpen || n.mini.empty() || !mine(n) || n.folded) continue;
     const Rect r = deviceRect(n.x + 8.0f, n.y + 20.0f, n.w - 16.0f, n.h - 26.0f);
     if (!overlaps(r, clip) || r.x1 - r.x0 < 12.0f || r.y1 - r.y0 < 8.0f) continue;
     // The miniature keeps its aspect, centred in the body.
@@ -468,8 +487,6 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
                             th.circuit.symbolText);
   }
 
-  // T5.x-one-circuit: the MIDI / audio sources are windows onto their lanes (every level of detail).
-  paintLaneWindows(ctx, *this, view_);
   paintFocus(ctx, *this, view_);
   if (level != Lod::Far) {
     for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
@@ -479,8 +496,8 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
       const Rect nr = deviceRect(n.x, n.y, n.w, n.h);
       if (!overlaps(nr, clip)) continue;
       const Band& band = pp.bands[n.band];
-      if (n.kind == NodeKind::Source) {
-        continue;  // a lane window (above) or a Σ (the symbol)
+      if (!shownNode(n)) {
+        continue;  // TL.1: a lane (paintUnderlay), a folded band's block
       } else if (n.kind == NodeKind::Device && (!n.lowered || !n.active || !band.active) && !(n.panel && band.active)) {
         // (TX.panel-faces: a panel shows its own switched-off look, as in the Device view.)
         // Bypassed (deactivated, missing, on a deactivated track): veiled; the chain wire passes under it.
@@ -530,7 +547,7 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
       for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
         const Node& n = pp.nodes[i];
         if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;  // opened: its frame has the title
-        if (!mine(n)) continue;
+        if (!mine(n) || !shownNode(n)) continue;
         if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal) continue;  // the symbol says it
         // TMM.4: a face is label-free; TX.panel-faces: a panel has its title; TX.mixer-look: so has a mixer's face.
         if (n.face != nullptr || n.panel || n.groupPanel || n.kind == NodeKind::Mixer) continue;  // GU.3: a group's panel
@@ -749,27 +766,18 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
   if (drag_ == Drag::None && e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && !(e.mods & ui::mod::kAlt) &&
       backWireHeld() && pressBackWire(e))
     return true;
-  if (lanePointer(e)) return true;  // TX.lane-edit: a window body is the arrangement's editing surface
+  // TL.1: a face over a lane (a block, or its open popup reaching down over it) keeps the pointer.
+  const bool overFace = drag_ == Drag::None && e.type != ui::PointerType::Wheel && faceTakes(e.pos);
+  if (overFace && e.type == ui::PointerType::Down) laneFocus_ = false;  // a press elsewhere: the canvas's keys again
+  if (!overFace && laneEdgePointer(e)) return true;  // TL.1: a lane's edges (resize, cable taps), the fold, the time wheel
+  if (!overFace && lanePointer(e)) return true;  // TX.lane-edit: a lane is the arrangement's editing surface
   // GU.5: a left press selects the control under it (a face's or panel's, a param pin, a value block): what P sends.
   if (drag_ == Drag::None && e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && !(e.mods & ui::mod::kAlt) &&
       !v.embedded())
     v.setSelectedControl(v.controlAt(e.pos));
   if (drag_ == Drag::None && facePointer(e)) return true;  // TMM.4: a face's control (its drag, hover, wheel)
   switch (e.type) {
-    case ui::PointerType::Wheel: {
-      // T5.x-one-circuit: over a lane window the wheel scrolls its time, Ctrl+wheel zooms it (about the pointer).
-      const uint32_t lb = v.laneAt(e.pos);
-      if (lb == kNone) return CircuitCanvas::onPointer(e);
-      if (e.mods & ui::mod::kCtrl) {
-        const LaneRect r = laneBody(pp.nodes[pp.bands[lb].source]);
-        const float u = (toWorld(e.pos).x - r.x0) / std::max(1.0f, r.x1 - r.x0);
-        v.zoomLanes(static_cast<double>(e.wheel.y), u);
-      } else {
-        const float notches = std::fabs(e.wheel.x) > std::fabs(e.wheel.y) ? e.wheel.x : -e.wheel.y;
-        v.scrollLanes(static_cast<double>(notches));
-      }
-      return true;
-    }
+    case ui::PointerType::Wheel: return CircuitCanvas::onPointer(e);  // (over a lane: laneEdgePointer)
     case ui::PointerType::Down: {
       if (e.button == ui::PointerButton::Right) {
         if (tree()) tree()->setFocus(this);
@@ -840,12 +848,11 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           return true;
         }
       if (e.clickCount >= 2) {
-        // T5.x-one-circuit: a clip in a lane window opens its editor (the piano roll, an audio clip's Clip View).
+        // T5.x-one-circuit: a clip in a lane opens its editor (the piano roll, an audio clip's Clip View).
         if (const doc::ClipRef ref = v.laneClipAt(e.pos); ref.clip.valid()) {
           v.openClip(ref);
           return true;
         }
-        if (node != kNone && pp.nodes[node].kind == NodeKind::Source) return true;  // a window's empty lane: nothing
         if (node != kNone && pp.nodes[node].kind == NodeKind::Device && !pp.nodes[node].missing) {
           const Node& n = pp.nodes[node];
           v.setDeviceExpanded(n.device, true);  // GU.11: a group opens (a leaf has no inside: a status line)
@@ -888,6 +895,8 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         if (wireSource(pp, n)) {
           drag_ = Drag::Wire;
           from_ = pin;
+          laneStart_.reset();  // TL.1: from a pin (not a lane's edge)
+          v.pendingTap_.reset();
           wireCursor_ = ui::Cursor::Crosshair;
           updateLoose(e.pos);  // TX.node-menu-fix1: the real cable comes out of the port
           markDirty();
@@ -1073,6 +1082,8 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           updateSplice(e.pos);
           break;
         case Drag::Lane:
+        case Drag::LaneSize:  // TL.1: laneEdgePointer's
+        case Drag::Tap:
         case Drag::None: break;
       }
       return true;
@@ -1195,6 +1206,8 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         case Drag::MaybeMoveMixer: break;                      // a click on the mixer's frame: nothing
         case Drag::Resize: (void)v.settleOverlaps(); break;  // applied while dragging; TX.block-drag: then the rule
         case Drag::Lane:
+        case Drag::LaneSize:  // TL.1: laneEdgePointer's
+        case Drag::Tap:
         case Drag::None: break;
       }
       // TX.orbit-ports: the base canvas's press state ends too (a click's Down went to it to select: until its Up it
@@ -1203,6 +1216,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       endLift();  // TX.block-drag: the drop's scene placed the blocks (or they are back where they were)
       dragNode_ = dragBand_ = kNone;
       from_ = {};
+      if (!sticky_) laneStart_.reset();  // TL.1
       hoverCursor_ = pressCursor(e.pos);
       markDirty();
       return true;
@@ -1293,8 +1307,18 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
     case Drag::MaybeSplice:
     case Drag::Splice: return ui::Cursor::Move;
     case Drag::Port: return ui::Cursor::Move;  // TX.orbit-ports
+    case Drag::LaneSize: return ui::Cursor::ResizeNS;  // TL.1
+    case Drag::Tap: return ui::Cursor::ResizeEW;
     case Drag::None: break;
   }
+  // TL.1: over a lane's edges (what a press there grabs).
+  if (!panning() && scene()) switch (laneEdgeAt(pos).kind) {
+      case LaneEdgeHit::Kind::Bottom: return ui::Cursor::ResizeNS;
+      case LaneEdgeHit::Kind::Tap: return ui::Cursor::ResizeEW;
+      case LaneEdgeHit::Kind::Port:
+      case LaneEdgeHit::Kind::Top: return ui::Cursor::Crosshair;
+      case LaneEdgeHit::Kind::None: break;
+    }
   if (laneHover_ && !panning() && scene()) return laneCursor_;  // TX.lane-edit: over a window body (Alt: copy / curve)
   if (panning() || altHeld() || !scene()) return CircuitCanvas::cursorAt(pos);
   return hoverCursor_;
@@ -1335,6 +1359,10 @@ void ProjectCanvas::finishWire(Vec2 pos) {
     if (isTrackSource(a)) {
       link.notes = fromBand.track;
       if (from_.port == 0) link.port.clear();  // TX.all-free: the track's own signal (kMainPort)
+      if (v.pendingTap_ && v.pendingTap_->track == fromBand.track) {  // TL.1: the new cable leaves the lane there
+        link.tap = std::round(v.pendingTap_->x - fromBand.x0);
+        v.pendingTap_.reset();
+      }
     } else {
       link.device = a.device;
       if (const size_t at = link.port.rfind('@'); at != std::string::npos && a.group) {
@@ -1928,13 +1956,13 @@ void ProjectCanvas::updateGrow() {
       auto reach = [&](uint32_t k) {
         if (k < nn && growTop_[k] == 0 && pp.nodes[k].capsule == kNone) right = std::max(right, rectOf(k).x1);
       };
-      reach(b.source);
+      if (b.source != kNone && pp.nodes[b.source].kind != NodeKind::Lane) reach(b.source);
       for (const uint32_t d : b.devices) reach(d);
       for (const uint32_t t : tops)
         if (capsuleOf(t) == kNone && bandOf(t) == bi) right = std::max(right, rectOf(t).x1);
       growMixer_[bi] = std::max(b.mixerX0, right + metrics::kNodeGap) - pp.nodes[b.mixer].x;
     }
-    const float base = b.y + b.baseH;
+    const float base = b.y + b.baseH - laneBlock(b.laneH);  // TL.1: the circuit's bottom (the lane stays under it)
     float bottom = base - metrics::kBandPad, x1 = b.baseX1;
     auto take = [&](const WorldRect& q, bool down) {
       if (down) bottom = std::max(bottom, q.y1);
@@ -1946,7 +1974,7 @@ void ProjectCanvas::updateGrow() {
       q.x0 += ox, q.x1 += ox;
       take(q, down);
     };
-    keep(b.source, false, 0.0f);
+    if (b.source != kNone && pp.nodes[b.source].kind != NodeKind::Lane) keep(b.source, false, 0.0f);
     for (const uint32_t d : b.devices) keep(d, true, 0.0f);
     keep(b.mixer, true, growMixer_[bi]);
     keep(b.output, true, growMixer_[bi]);
@@ -2026,6 +2054,9 @@ void ProjectCanvas::onCaptureLost() {
   if (sticky_) return;  // TX.node-menu: a held cable has no capture (no button is down)
   if (drag_ == Drag::Wire || drag_ == Drag::BackWire) clearLooseCable();  // TX.node-menu-fix1
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit (as the arrangement's lanes: no partial edit)
+  if (drag_ == Drag::Tap) view_.endTapDrag(false);  // TL.1: the cable back where it left the lane
+  if (drag_ == Drag::LaneSize && laneTrack_.valid()) view_.setLaneHeight(laneTrack_, laneH0_);
+  laneStart_.reset();
   leaveOutside(last_);  // TX.free-rack
   if (drag_ != Drag::None) markDirty();
   drag_ = Drag::None;
@@ -2042,6 +2073,9 @@ void ProjectCanvas::onInteractionCancelled() {
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   sticky_ = false;
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit
+  if (drag_ == Drag::Tap) view_.endTapDrag(false);  // TL.1: Esc: the cable back where it left the lane
+  if (drag_ == Drag::LaneSize && laneTrack_.valid()) view_.setLaneHeight(laneTrack_, laneH0_);
+  laneStart_.reset();
   leaveOutside(last_);  // TX.free-rack
   if (drag_ == Drag::Resize) {  // TX.resize: Esc / focus lost: back to the size at the press
     drag_ = Drag::None;
@@ -2242,6 +2276,7 @@ void ProjectCanvas::updateLoose(Vec2 pos) {
   if (drag_ == Drag::Wire && from_.valid() && from_.node < pp.nodes.size() && !from_.input) {
     const Node& n = pp.nodes[from_.node];
     port = portWorld(from_.node, from_.port, false);  // where its cable will start (TX.orbit-ports: an orbiting port now)
+    if (n.kind == NodeKind::Lane && laneStart_) port = *laneStart_;  // TL.1: where it was drawn up from the lane's edge
     style.notes = isNoteSource(pp, n);
     if (wireRefusal(pos) == nullptr && (n.kind == NodeKind::Device || n.kind == NodeKind::Terminal || style.notes)) {
       // Snapped onto what a release here connects: an input pin (that port), a face's / panel's control (its param).
@@ -2386,36 +2421,281 @@ ui::InfoText ProjectCanvas::info() const {
     infoTitle_ = ro.value + "  ·  Z inserts a VCA at x1, Tab inserts a node, a block Shift-dragged onto it is spliced in.";
     return {ro.title, infoTitle_};
   }
-  // TMM.10-fix2: a MIDI track's lane window is its note source (its Hz piano roll), not a subcircuit.
-  if (const circuit::CanvasHit& h = hovered(); (h.kind == circuit::CanvasHit::Kind::Node || h.kind == circuit::CanvasHit::Kind::Pin) && scene()) {
-    const circuit::CircuitScene& sc = *scene();
-    const uint32_t v = h.kind == circuit::CanvasHit::Kind::Pin ? (h.index < sc.pins.size() ? sc.pins[h.index].node : kNone) : h.index;
-    const ProjectScene& ps = view_.scene();
+  // TL.1: a lane's edges — its cables' ends, its port chips (a MIDI lane's notes and note outputs), its bottom edge.
+  if (const LaneEdgeHit h = laneEdgeAt(pointer_); h.kind != LaneEdgeHit::Kind::None && drag_ == Drag::None) {
     const ProjectPatch& pp = view_.patch();
-    if (v < ps.modelNode.size() && ps.modelNode[v] < pp.nodes.size() && isNoteSource(pp, pp.nodes[ps.modelNode[v]])) {
-      const Node& n = pp.nodes[ps.modelNode[v]];
-      infoTitle_ = pp.bands[n.band].name + " notes";
-      if (h.kind == circuit::CanvasHit::Kind::Pin && !sc.pins[h.index].input && sc.pins[h.index].port > 0 &&
-          sc.pins[h.index].port < n.outputs.size())
-        if (const doc::NoteOutput* o = doc::findNoteOutput(n.outputs[sc.pins[h.index].port].name))
-          infoTitle_ += ": " + std::string(o->label);
+    const Band& b = pp.bands[h.band];
+    if (h.kind == LaneEdgeHit::Kind::Bottom)
+      return {b.name + " lane", "Drag the lane's bottom edge to change its height (saved with the project)."};
+    const Node& n = pp.nodes[b.source];
+    infoTitle_ = b.name + (b.kind == doc::TrackKind::Midi ? " notes" : " audio");
+    const uint32_t port = h.kind == LaneEdgeHit::Kind::Tap ? pp.edges[h.edge].fromPort : h.port;
+    if (port > 0 && port < n.outputs.size())
+      if (const doc::NoteOutput* o = doc::findNoteOutput(n.outputs[port].name)) infoTitle_ += ": " + std::string(o->label);
+    if (h.kind == LaneEdgeHit::Kind::Tap)
+      return {infoTitle_, "Where this cable leaves the track's lane: drag it along the lane's top edge to move it (one undo step); "
+                          "double-click puts it back under the block it feeds."};
+    if (b.kind == doc::TrackKind::Midi)
       return {infoTitle_,
-              "The track's note source: its piano roll, in Hz. Its notes play the chain; its note outputs (Hz, gate, velocity) "
-              "are per voice: drag one onto a device to wire it into a parameter (per voice into a device that runs per "
-              "voice, through the wire's reducer into any other)."};
-    }
+              "The track's note source: its lane, in Hz. Drag up from the lane's top edge for a cable of its notes (into an "
+              "instrument's or a meta module's input), from a chip for a note output (Hz, gate, velocity: per voice, onto any "
+              "parameter); the cable leaves the lane where it was drawn from."};
+    return {infoTitle_, "The track's audio: drag up from the lane's top edge for a cable of its clips' audio."};
   }
   if (hovered().kind != circuit::CanvasHit::Kind::None) return CircuitCanvas::info();  // the node, pin or wire under the pointer
   return {"Project Patch",
-          "The whole project as one circuit. Drag an export, or a note output of a track's Notes (Hz, gate, velocity), onto a "
+          "The whole project as one circuit. Drag an export, or a note output from a track's lane (Hz, gate, velocity), onto a "
           "device to wire it into a parameter, a mixer's output onto a group, return "
           "or the master to route it; double-click a band to open it (its devices opened to their atoms), a device to open it "
-          "alone, inside an opened device to edit its circuit. Over a lane window the wheel scrolls time, Ctrl+wheel zooms it; "
-          "double-click a clip to edit it; a window edits its track as the arrangement does (drag: a time selection, "
+          "alone, inside an opened device to edit its circuit. Every band ends in its track's lane (the arrangement's time: "
+          "Ctrl+wheel over it zooms, Shift+wheel scrolls; the ruler on top locates); double-click a clip to edit it; a lane "
+          "edits its track as the arrangement does (a click: the insert and start marker; drag: a time selection, "
           "Ctrl+Shift+M: a MIDI clip there, a clip's title moves it, Alt copies, its edges trim; A: automation). "
           "Ctrl+G groups the selected blocks into a capsule (Ctrl+Shift+G ungroups; inside a capsule it nests). "
           "Ctrl+C copies the selected blocks, Ctrl+V pastes them at the pointer. "
           "Ctrl+Alt+P returns to the arrangement."};
+}
+
+
+// ---- TL.1: the lanes' edges, the fold triangle, the ruler -----------------------------------------------------------
+
+LaneRect ProjectCanvas::foldButtonRect(const Band& b) noexcept {
+  return {b.x0 + 5.0f, b.y + 4.0f, b.x0 + 17.0f, b.y + 16.0f};
+}
+
+LaneRect ProjectCanvas::lanePortChip(uint32_t band, uint32_t port) const {
+  const ProjectPatch& pp = view_.patch();
+  return band < pp.bands.size() ? project_patch::lanePortChip(pp, pp.bands[band], port) : LaneRect{};
+}
+
+ProjectCanvas::LaneEdgeHit ProjectCanvas::laneEdgeAt(Vec2 d) const {
+  LaneEdgeHit h;
+  const ProjectPatch& pp = view_.patch();
+  if (pp.scoped || view_.embedded() || !scene()) return h;
+  const float us = tree() ? tree()->scale() : 1.0f;
+  const float tol = kLaneEdgePx * us;
+  const bool chips = kLaneChipH * deviceScale() >= 9.0f * us;  // readable: drawn (paintLanePorts) and hit
+  for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
+    const Band& b = pp.bands[bi];
+    if (b.laneH <= 0.0f || bandLifted(bi)) continue;
+    const Rect r = laneBodyDevice(*this, pp, b);
+    if (d.x < r.x0 || d.x > r.x1) continue;
+    if (d.y >= r.y1 - 1.0f && d.y <= r.y1 + tol) {
+      h.kind = LaneEdgeHit::Kind::Bottom;
+      h.band = bi;
+      return h;
+    }
+    const uint32_t src = b.source;
+    if (src == kNone || pp.nodes[src].kind != NodeKind::Lane) continue;  // a Σ's lane: its signal leaves the Σ
+    // A cable's end first (its plug may sit on a chip), then the chips, then the rest of the top edge.
+    const bool onTop = d.y >= r.y0 - tol && d.y <= r.y0 + 2.0f * us;
+    if (onTop) {
+      float best = 1.5f * tol;
+      for (uint32_t k = 0; k < pp.edges.size(); ++k) {
+        const Edge& e = pp.edges[k];
+        if (e.from != src || e.points.size() < 2) continue;
+        const float dx = std::fabs(toDevice({e.tapX, b.laneY}).x - d.x);
+        if (dx <= best) {
+          best = dx;
+          h.kind = LaneEdgeHit::Kind::Tap;
+          h.band = bi;
+          h.edge = k;
+          h.x = e.tapX;
+        }
+      }
+      if (h.kind == LaneEdgeHit::Kind::Tap) return h;
+    }
+    if (chips)
+      for (uint32_t port = 0; port < pp.nodes[src].outputs.size(); ++port) {
+        const LaneRect c = lanePortChip(bi, port);
+        if (!(c.x1 > c.x0)) continue;
+        const Rect cr = deviceRect(c.x0, c.y0, c.x1 - c.x0, c.y1 - c.y0);
+        if (d.x >= cr.x0 && d.x <= cr.x1 && d.y >= cr.y0 && d.y <= cr.y1) {
+          h.kind = LaneEdgeHit::Kind::Port;
+          h.band = bi;
+          h.port = port;
+          h.x = (c.x0 + c.x1) * 0.5f;
+          return h;
+        }
+      }
+    if (!onTop) continue;
+    h.kind = LaneEdgeHit::Kind::Top;
+    h.band = bi;
+    h.port = 0;
+    h.x = std::clamp(toWorld(d).x, pp.laneX0 + 4.0f, std::max(pp.laneX0 + 4.0f, pp.laneX1 - 4.0f));
+    return h;
+  }
+  return h;
+}
+
+// TL.1: a MIDI lane's port chips at its top left (notes, Hz, gate, vel: drag one up for a cable of that output), and
+// the sockets where its cables leave the top edge.
+void ProjectCanvas::paintLanePorts(ui::PaintContext& ctx) {
+  const ProjectPatch& pp = view_.patch();
+  if (pp.scoped || view_.embedded() || ctx.res.theme == nullptr) return;
+  const ui::Theme& th = *ctx.res.theme;
+  const float us = ctx.scale.factor;
+  const ui::IRect clip = ui::intersect(ctx.clip, rect());
+  const bool fonts = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr;
+  const bool chips = fonts && kLaneChipH * deviceScale() >= 9.0f * us;
+  ui::DrawList& dl = ctx.dl;
+  const LaneEdgeHit hover = drag_ == Drag::None ? laneEdgeAt(pointer_) : LaneEdgeHit{};
+  const Rgba notes = th.circuit.wireNotes;
+  if (chips)
+    for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
+      const Band& b = pp.bands[bi];
+      if (b.kind != doc::TrackKind::Midi || b.laneH <= 0.0f || b.source == kNone || bandLifted(bi)) continue;
+      const float dy = bandNow(bi).y1 - (b.y + b.h);
+      for (uint32_t port = 0; port < pp.nodes[b.source].outputs.size(); ++port) {
+        const LaneRect c = lanePortChip(bi, port);
+        if (!(c.x1 > c.x0)) continue;
+        const Rect cr = snapRect(deviceRect(c.x0, c.y0 + dy, c.x1 - c.x0, c.y1 - c.y0));
+        if (!overlaps(cr, clip)) continue;
+        const bool hot = hover.kind == LaneEdgeHit::Kind::Port && hover.band == bi && hover.port == port;
+        dl.addRoundedRectFilled(cr, 2.0f * us, ui::lerp(th.circuit.background, notes, hot ? 0.45f : 0.22f));
+        dl.addRoundedRectStroke(cr, 2.0f * us, ui::mulAlpha(notes, hot ? 1.0f : 0.7f), std::max(1.0f, std::round(us)));
+        paint::text(ctx, ctx.res.uiFonts->small, toIRect(cr), kLanePortLabels[port], th.circuit.symbolText, ui::TextAlign::Center);
+      }
+    }
+  // The sockets: a short notch on the edge where each lane cable leaves it (the cable's plug sits there). One pass.
+  const float t = std::max(2.0f, std::round(2.0f * us));
+  for (uint32_t k = 0; k < pp.edges.size(); ++k) {
+    const Edge& e = pp.edges[k];
+    const Node& a = pp.nodes[e.from];
+    if (a.kind != NodeKind::Lane || e.points.size() < 2 || a.band >= pp.bands.size() || bandLifted(a.band)) continue;
+    const Band& b = pp.bands[a.band];
+    const float y = std::round(toDevice({0.0f, b.laneY + (bandNow(a.band).y1 - (b.y + b.h))}).y);
+    const float x = std::round(toDevice({e.tapX, 0.0f}).x);
+    if (x < static_cast<float>(clip.x) - 8.0f || x > static_cast<float>(clip.right()) + 8.0f || y < static_cast<float>(clip.y) - 8.0f ||
+        y > static_cast<float>(clip.bottom()) + 8.0f)
+      continue;
+    const bool hot = (hover.kind == LaneEdgeHit::Kind::Tap && hover.edge == k) || (drag_ == Drag::Tap && e.wire == tapWire_);
+    const float w = (hot ? 5.0f : 3.0f) * us;
+    dl.addRectFilled({x - w, y - t, x + w, y + t}, hot ? th.circuit.selected : b.kind == doc::TrackKind::Midi ? notes : th.circuit.wireAudio);
+  }
+}
+
+bool ProjectCanvas::laneEdgePointer(const ui::PointerEvent& e) {
+  ProjectPatchView& v = view_;
+  const ProjectPatch& pp = v.patch();
+  const float us = tree() ? tree()->scale() : 1.0f;
+  if (drag_ == Drag::LaneSize) {
+    if (e.type == ui::PointerType::Move) {
+      last_ = e.pos;
+      v.setLaneHeight(laneTrack_, laneH0_ + (e.pos.y - press_.y) / std::max(deviceScale(), 1e-6f));
+    } else if (e.type == ui::PointerType::Up) {
+      drag_ = Drag::None;
+      laneTrack_ = {};
+      markDirty();
+    }
+    return true;
+  }
+  if (drag_ == Drag::Tap) {
+    if (e.type == ui::PointerType::Move) {
+      last_ = e.pos;
+      if (!tapMoved_ && std::fabs(e.pos.x - press_.x) >= drag::kClickSlop * us) {
+        tapMoved_ = true;
+        v.beginTapDrag();
+      }
+      if (tapMoved_) {
+        tapX_ = toWorld(e.pos).x;
+        (void)v.setCableTap(tapWire_, tapX_);  // shown at once (the lowering kept); one undo step at the release
+      }
+      markDirty();
+    } else if (e.type == ui::PointerType::Up) {
+      if (tapMoved_) v.endTapDrag(true);
+      drag_ = Drag::None;
+      tapMoved_ = false;
+      tapWire_ = {};
+      markDirty();
+    }
+    return true;
+  }
+  if (e.type == ui::PointerType::Wheel) {
+    // Over a lane (as over the arrangement's): Ctrl+wheel zooms time about the pointer, Shift+wheel or a sideways wheel
+    // scrolls it; the plain wheel pans the canvas.
+    if (drag_ != Drag::None || v.laneAt(e.pos) == kNone) return false;
+    if (e.mods & ui::mod::kCtrl) {
+      v.zoomLanes(static_cast<double>(e.wheel.y), v.laneAnchor(e.pos));
+      return true;
+    }
+    if ((e.mods & ui::mod::kShift) || e.wheel.x != 0.0f) {
+      const float notches = e.wheel.x != 0.0f ? e.wheel.x : -e.wheel.y;
+      v.scrollLanes(static_cast<double>(notches));
+      return true;
+    }
+    return false;
+  }
+  if (e.type == ui::PointerType::Move && drag_ == Drag::None) {
+    const LaneEdgeHit h = laneEdgeAt(e.pos);
+    if (h.kind != laneHoverKind_ || h.band != laneHoverBand_ || h.edge != laneHoverEdge_ || h.port != laneHoverPort_) {
+      laneHoverKind_ = h.kind, laneHoverBand_ = h.band, laneHoverEdge_ = h.edge, laneHoverPort_ = h.port;
+      markDirty();     // the chips' and sockets' hover
+      infoChanged();   // the info view names the lane part under the pointer
+    }
+    return false;
+  }
+  if (e.type != ui::PointerType::Down || drag_ != Drag::None || e.button != ui::PointerButton::Left || (e.mods & ui::mod::kAlt) ||
+      v.embedded() || pp.scoped)
+    return false;
+  // The fold triangle in a band's title strip.
+  if (const uint32_t b = bandAt(e.pos); b != kNone && metrics::kTitle * deviceScale() >= 8.0f) {
+    const LaneRect fr = ProjectCanvas::foldButtonRect(pp.bands[b]);
+    const graph::Point2 w = toWorld(e.pos);
+    if (w.x >= fr.x0 && w.x <= fr.x1 && w.y >= fr.y0 && w.y <= fr.y1) {
+      if (tree()) tree()->setFocus(this);
+      v.setBandFolded(pp.bands[b].track, !pp.bands[b].folded);
+      return true;
+    }
+  }
+  const LaneEdgeHit h = laneEdgeAt(e.pos);
+  if (h.kind == LaneEdgeHit::Kind::None) return false;
+  if (tree()) tree()->setFocus(this);
+  laneFocus_ = false;
+  press_ = last_ = e.pos;
+  const Band& band = pp.bands[h.band];
+  switch (h.kind) {
+    case LaneEdgeHit::Kind::Bottom:
+      drag_ = Drag::LaneSize;
+      laneTrack_ = band.track;
+      laneH0_ = band.laneH;
+      return true;
+    case LaneEdgeHit::Kind::Tap:
+      if (e.clickCount >= 2) {  // back under the block it feeds
+        (void)v.setCableTap(pp.edges[h.edge].wire, std::nullopt);
+        return true;
+      }
+      drag_ = Drag::Tap;
+      tapWire_ = pp.edges[h.edge].wire;
+      tapX_ = h.x;
+      tapMoved_ = false;
+      markDirty();
+      return true;
+    case LaneEdgeHit::Kind::Port:
+    case LaneEdgeHit::Kind::Top:
+      // A new cable from the lane's edge (from where it was drawn up): the old Notes node's outputs.
+      drag_ = Drag::Wire;
+      from_ = {band.source, h.port, false};
+      laneStart_ = graph::Point2{h.x, band.laneY};
+      v.pendingTap_ = ProjectPatchView::PendingTap{band.track, h.x};
+      wireCursor_ = ui::Cursor::Crosshair;
+      updateLoose(e.pos);
+      markDirty();
+      return true;
+    case LaneEdgeHit::Kind::None: break;
+  }
+  return false;
+}
+
+void ProjectCanvas::arrange(ui::LayoutPass& pass) {
+  CircuitCanvas::arrange(pass);
+  ui::Widget* ruler = view_.ruler();
+  if (ruler == nullptr) return;
+  // TL.1: the time ruler pinned along the canvas's top (it draws and takes presses only over the lanes' x range).
+  const bool on = !view_.embedded() && !view_.patch().scoped && view_.patch().laneX1 > view_.patch().laneX0;
+  if (ruler->visible() != on) ruler->setVisible(on);
+  const ui::IRect r = rect();
+  pass.place(*ruler, on ? ui::IRect{r.x, r.y, r.w, std::min(r.h, pass.px(arrangement_metrics::kRulerHeight))} : ui::IRect{});
 }
 
 }  // namespace pq::views::project_patch

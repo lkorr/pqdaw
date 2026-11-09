@@ -729,25 +729,32 @@ struct Builder {
     const bool lowered = tp != nullptr;
 
     Band& band = out.bands[bi];
+    // TL.1: the band's lane (its height and whether its circuit is folded: view state, by track id). A scoped model (a
+    // group's panel, the free rack) has no lanes.
+    if (lanes()) {
+      band.laneH = m::kLaneH;
+      if (opt.nudges != nullptr)
+        if (const auto it = opt.nudges->find(t.id.value); it != opt.nudges->end()) {
+          if (it->second.laneH > 0.0f) band.laneH = roundUp4(std::clamp(it->second.laneH, doc::kMinPatchLaneH, doc::kMaxPatchLaneH));
+          band.folded = it->second.folded;
+        }
+    }
     if (t.kind == doc::TrackKind::Midi) {
+      // TL.1: the track's note source is its lane (the node's rect is the strip: layout()); its notes and (TMM.10-fix2)
+      // its note outputs, each a wire source (as a device's export) onto any device param.
       Node s;
-      s.kind = NodeKind::Source;
+      s.kind = NodeKind::Lane;
       s.band = bi;
-      s.title = "Notes";  // the track's note source: its Hz piano roll (SPEC §15 2026-11-01)
+      s.title = "Notes";
       s.outputs.push_back({"notes", ""});
-      // TMM.10-fix2: its note outputs, each a wire source (as a device's export) onto any device param.
       for (const doc::NoteOutput& o : doc::kNoteOutputs) s.outputs.push_back({std::string(o.port), std::string(o.pin)});
-      s.w = roundUp4(std::clamp(opt.sourceW, m::kSourceW, m::kSourceMaxW));
-      s.h = m::kSourceH;
       band.source = addNode(std::move(s));
     } else if (t.kind == doc::TrackKind::Audio) {  // T5.3: the clip player (graph: clipPlayer → its chain)
       Node s;
-      s.kind = NodeKind::Source;
+      s.kind = NodeKind::Lane;
       s.band = bi;
       s.title = "Audio";
       s.outputs.push_back({"out", ""});
-      s.w = roundUp4(std::clamp(opt.sourceW, m::kSourceW, m::kSourceMaxW));
-      s.h = m::kSourceH;
       band.source = addNode(std::move(s));
     } else {
       Node s;
@@ -929,6 +936,11 @@ struct Builder {
       Edge e;
       e.wire = w.id;
       e.status = st;
+      // TL.1: a cable from a lane leaves its top edge at the wire's tap (band-local here; world in taps()).
+      if (out.nodes[a].kind == NodeKind::Lane && w.tap) {
+        e.tapPinned = true;
+        e.tapX = *w.tap;
+      }
       e.delayed = st == doc::WireStatus::Delayed;
       e.voice = (w.fromNoteSource() && fromMidi) || out.nodes[a].instrument;
       if (const auto it = modGraphWire.find(w.id.value); it != modGraphWire.end()) e.graphWire = it->second;
@@ -974,8 +986,9 @@ struct Builder {
   float placeChain(uint32_t bi, float x) {
     Band& b = out.bands[bi];
     std::vector<uint32_t> order;
-    order.push_back(b.source);
+    if (b.source != kNone && out.nodes[b.source].kind != NodeKind::Lane) order.push_back(b.source);  // TL.1: a Σ (a lane is no block)
     for (const uint32_t d : spineBlocks(b)) order.push_back(d);
+    const float rowX = x;
     for (const uint32_t n : order) {
       out.nodes[n].x = x;
       x += out.nodes[n].w + m::kNodeGap;
@@ -989,7 +1002,8 @@ struct Builder {
       }
     // The blocks off the main path on a row of their own under it, from its first block's place, in list order
     // (layout(): y; a nudge moves them anywhere).
-    float fx = out.nodes[b.source].x + out.nodes[b.source].w + m::kNodeGap;
+    float fx = order.empty() ? rowX : out.nodes[order.front()].x + out.nodes[order.front()].w + m::kNodeGap;
+    if (order.empty() || (b.source != kNone && out.nodes[b.source].kind == NodeKind::Lane)) fx = rowX;  // TL.1: from the band's start
     for (const uint32_t d : b.devices)
       if (out.nodes[d].offPath) {
         out.nodes[d].x = fx;
@@ -1026,7 +1040,7 @@ struct Builder {
       auto reach = [&](uint32_t n) {
         if (n != kNone && out.nodes[n].capsule == kNone) right = std::max(right, out.nodes[n].x + out.nodes[n].w);
       };
-      reach(b.source);
+      if (b.source != kNone && out.nodes[b.source].kind != NodeKind::Lane) reach(b.source);
       for (const uint32_t d : b.devices) reach(d);
       mx.x = std::max(mx.x, right + m::kNodeGap);
     }
@@ -1042,7 +1056,6 @@ struct Builder {
     Band& b = out.bands[bi];
     b.x0 = m::kLeft + m::kIndent * static_cast<float>(b.depth);
     float start = b.x0 + 8.0f;
-    if (hasLaneWindow(b)) start = std::max(start, laneX);  // T5.x-one-circuit: the lane windows in one column
     if (b.kind == doc::TrackKind::Group && b.lastMember != kNone) {
       float membersEnd = start;
       for (uint32_t c = bi + 1; c <= b.lastMember; ++c)
@@ -1056,14 +1069,11 @@ struct Builder {
     return end;
   }
 
-  float laneX = 0.0f;  // the lane windows' column (right of the deepest lane's indent)
+  // TL.1: whether bands have lanes (not in a scoped model: a group's panel, the free rack).
+  bool lanes() const noexcept { return !opt.scope.valid() && !opt.freeTrack.valid(); }
 
   void layout() {
     // x
-    uint16_t deepest = 0;
-    for (const Band& b : out.bands)
-      if (hasLaneWindow(b)) deepest = std::max(deepest, b.depth);
-    laneX = m::kLeft + m::kIndent * static_cast<float>(deepest) + 8.0f;
     float mainEnd = m::kLeft;
     for (uint32_t i = 0; i < out.bands.size(); ++i)
       if (out.bands[i].depth == 0 && (out.bands[i].kind == doc::TrackKind::Midi || out.bands[i].kind == doc::TrackKind::Audio ||
@@ -1099,7 +1109,7 @@ struct Builder {
         nd.y = spine - spineOf(nd);
         bottom = std::max(bottom, nd.y + nd.h);
       };
-      place(b.source);
+      if (b.source != kNone && out.nodes[b.source].kind != NodeKind::Lane) place(b.source);  // TL.1: a Σ (the lane: below)
       for (const uint32_t d : b.devices)
         if (!out.nodes[d].offPath && stackUnder.count(d) == 0) place(d);
       // GU.9: a rack's other chains, each under the one before it (the band grows to hold them).
@@ -1127,7 +1137,8 @@ struct Builder {
           out.nodes[d].y = row;
           bottom = std::max(bottom, row + out.nodes[d].h);
         }
-      b.h = roundUp4(bottom + m::kBandPad - y);
+      // TL.1: the lane under the circuit (a folded band: its title strip and its lane only).
+      b.h = (b.folded ? m::kTitle : roundUp4(bottom + m::kBandPad - y)) + laneBlock(b.laneH);
       y += b.h + m::kBandGap;
     }
     // TX.groups: an opened group's contents where its capsule is.
@@ -1209,12 +1220,14 @@ struct Builder {
     for (uint32_t i = 0; i < out.bands.size(); ++i) {
       Band& b = out.bands[i];
       b.baseH = b.h;  // TX.drag-grow (only its own growth below changes h)
+      if (b.folded) continue;  // TL.1: its blocks are hidden
       const float oldBottom = b.y + b.h;
-      float bottom = oldBottom - m::kBandPad;
+      const float circuitBottom = oldBottom - laneBlock(b.laneH);  // TL.1: the lane stays under the circuit
+      float bottom = circuitBottom - m::kBandPad;
       for (const uint32_t d : b.devices) bottom = std::max(bottom, out.nodes[d].y + out.nodes[d].h);
       for (const uint32_t n : {b.mixer, b.output})  // TX.mixer-look: a mixer placed low grows its band too
         if (n != kNone) bottom = std::max(bottom, out.nodes[n].y + out.nodes[n].h);
-      const float grow = roundUp4(bottom + m::kBandPad - oldBottom);
+      const float grow = roundUp4(bottom + m::kBandPad - circuitBottom);
       if (grow <= 0.0f) continue;
       b.h += grow;
       for (uint32_t j = 0; j < out.bands.size(); ++j)
@@ -1225,8 +1238,9 @@ struct Builder {
     // Bands reach their nodes (a nudged block stays inside its band's strip horizontally).
     for (Band& b : out.bands) {
       b.baseX1 = b.x1;  // TX.drag-grow
+      if (b.folded) continue;  // TL.1: its blocks are hidden
       auto reach = [&](uint32_t n) {
-        if (n == kNone) return;
+        if (n == kNone || out.nodes[n].kind == NodeKind::Lane) return;
         b.x1 = std::max(b.x1, out.nodes[n].x + out.nodes[n].w + 12.0f);
       };
       reach(b.source);
@@ -1234,6 +1248,7 @@ struct Builder {
       reach(b.mixer);
       reach(b.output);
     }
+    placeLanes();
     // Group containers: the group's band and its members' (inner groups first: they nest).
     for (uint32_t i = static_cast<uint32_t>(out.bands.size()); i-- > 0;) {
       Band& b = out.bands[i];
@@ -1267,7 +1282,69 @@ struct Builder {
       grow(b.x0, b.y, b.x1, b.y + b.h);
       if (b.kind == doc::TrackKind::Group) grow(b.cx0, b.cy0, b.cx1, b.cy1);
     }
-    for (const Node& n : out.nodes) grow(n.x, n.y - 12.0f, n.x + n.w, n.y + n.h);
+    for (const Node& n : out.nodes)
+      if (!n.folded) grow(n.x, n.y - 12.0f, n.x + n.w, n.y + n.h);
+  }
+
+  // TL.1: the lanes — every band's over one x range (from right of the deepest band's indent to the right end of the
+  // widest band; every band reaches it), at the bottom of its band; a lane node's rect is its lane.
+  void placeLanes() {
+    if (!lanes() || out.bands.empty()) return;
+    float left = m::kLeft, right = 0.0f;  // right of every band's indent (and nudge): every lane inside its band
+    for (const Band& b : out.bands) {
+      left = std::max(left, b.x0);
+      right = std::max(right, b.x1);
+    }
+    const float x0 = left + m::kLaneInset;
+    const float x1 = std::max(right - m::kLaneInset, x0 + 160.0f);
+    out.laneX0 = x0;
+    out.laneX1 = x1;
+    for (Band& b : out.bands) {
+      b.x1 = std::max(b.x1, x1 + m::kLaneInset);
+      b.baseX1 = std::max(b.baseX1, x1 + m::kLaneInset);
+      b.laneY = b.y + b.h - m::kLaneGapBelow - b.laneH;
+      if (b.source != kNone && out.nodes[b.source].kind == NodeKind::Lane) {
+        Node& n = out.nodes[b.source];
+        n.x = x0, n.y = b.laneY, n.w = x1 - x0, n.h = b.laneH;
+      }
+    }
+  }
+
+  // TL.1: where each cable from a lane leaves its top edge (world x): its wire's tap (band-local), else under the block
+  // it feeds, below where it plugs in (several unpinned cables into one block spread kTapSpread apart; a plug may sit on
+  // a port chip: a press there slides the cable); within the lane.
+  void taps() {
+    constexpr float kTapSpread = 12.0f;
+    std::unordered_map<uint64_t, std::pair<uint32_t, uint32_t>> under;  // (lane, block) → (cables, placed so far)
+    auto keyOf = [](const Edge& e) { return (uint64_t{e.from} << 32) | e.to; };
+    for (const Edge& e : out.edges)
+      if (out.nodes[e.from].kind == NodeKind::Lane && !e.tapPinned) ++under[keyOf(e)].first;
+    for (Edge& e : out.edges) {
+      const Node& a = out.nodes[e.from];
+      if (a.kind != NodeKind::Lane || a.band >= out.bands.size()) continue;
+      const Band& b = out.bands[a.band];
+      const Node& t = out.nodes[e.to];
+      // Under where it plugs in: an anchored param's control, a pin on the block's edge (an orbiting port: the block's
+      // middle, its angle is settled from the cables after this).
+      float x = t.x + t.w * 0.5f;
+      if (e.toPort < t.inputs.size() && t.inputs[e.toPort].anchored) x = t.x + t.inputs[e.toPort].ax;
+      else if (e.toPort < t.inputs.size() && !portOrbits(t, e.toPort, true)) x = inputEntry(t, e.toPort).x + 16.0f;
+      if (e.tapPinned) x = b.x0 + e.tapX;
+      if (!e.tapPinned) {
+        auto& [n, k] = under[keyOf(e)];
+        x += kTapSpread * (static_cast<float>(k++) - 0.5f * static_cast<float>(n - 1));
+      }
+      e.tapX = std::clamp(x, out.laneX0 + 4.0f, std::max(out.laneX0 + 4.0f, out.laneX1 - 4.0f));
+    }
+  }
+
+  // TL.1: a folded band's blocks (and what is inside them) are hidden; so are the wires that touch one.
+  void fold() {
+    if (!lanes()) return;
+    for (Node& n : out.nodes)
+      if (n.kind != NodeKind::Lane && n.band < out.bands.size() && out.bands[n.band].folded) n.folded = true;
+    for (Edge& e : out.edges)
+      if (out.nodes[e.from].folded || out.nodes[e.to].folded) e.points.clear();
   }
 
   // ---- routes ---------------------------------------------------------------------------------------------------
@@ -1335,8 +1412,9 @@ struct Builder {
       if (n.orbitIn.on || n.orbitOut.on) blocks.push_back(i);
     }
     if (blocks.empty()) return;
-    auto anchorOf = [&](uint32_t idx, uint32_t port, bool input) -> graph::Point2 {
+    auto anchorOf = [&](uint32_t idx, uint32_t port, bool input, const Edge& e) -> graph::Point2 {
       const Node& m = out.nodes[idx];
+      if (m.kind == NodeKind::Lane) return {e.tapX, m.y};  // TL.1: the cable's tap on the lane's top edge
       if (portOrbits(m, port, input)) return m.outline.centre();
       if (input && port < m.inputs.size() && m.inputs[port].anchored) return {m.x + m.inputs[port].ax, m.y + m.inputs[port].ay};
       return input ? inputEntry(m, port) : graph::Point2{m.x + m.w, m.y + pinOffset(m, port, false)};
@@ -1345,8 +1423,8 @@ struct Builder {
     std::vector<std::pair<uint32_t, graph::Point2>> ends;
     for (const Edge& e : out.edges) {
       if (!isCable(e.kind, out.nodes[e.from].kind)) continue;
-      if (portOrbits(out.nodes[e.from], e.fromPort, false)) ends.emplace_back(e.from * 2 + 1, anchorOf(e.to, e.toPort, true));
-      if (portOrbits(out.nodes[e.to], e.toPort, true)) ends.emplace_back(e.to * 2, anchorOf(e.from, e.fromPort, false));
+      if (portOrbits(out.nodes[e.from], e.fromPort, false)) ends.emplace_back(e.from * 2 + 1, anchorOf(e.to, e.toPort, true, e));
+      if (portOrbits(out.nodes[e.to], e.toPort, true)) ends.emplace_back(e.to * 2, anchorOf(e.from, e.fromPort, false, e));
     }
     std::stable_sort(ends.begin(), ends.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     std::vector<graph::Point2> pts(ends.size());
@@ -1411,7 +1489,7 @@ struct Builder {
       Edge& e = out.edges[k];
       const Node& a = out.nodes[e.from];
       const Node& b = out.nodes[e.to];
-      const graph::Point2 s = outPin(a, e.fromPort), t = inPin(b, e.toPort);
+      const graph::Point2 s = a.kind == NodeKind::Lane ? graph::Point2{e.tapX, a.y} : outPin(a, e.fromPort), t = inPin(b, e.toPort);
       std::vector<graph::Point2>& pts = e.points;
       pts.clear();
       pts.push_back(s);
@@ -1455,8 +1533,10 @@ struct Builder {
     for (uint32_t i = 0; i < out.bands.size(); ++i) outputEdge(i);
     graphEdges();
     layout();
+    taps();   // TL.1: where the lanes' cables leave them
     orbit();  // TX.orbit-ports: the main ports' places (the routes start there)
     route();
+    fold();   // TL.1
     if (opt.scope.valid()) prune();
     else if (opt.freeTrack.valid()) pruneFree();
   }
@@ -1494,6 +1574,7 @@ struct Builder {
     order.erase(std::unique(order.begin(), order.end()), order.end());
     Band band = out.bands[b];
     band.source = band.mixer = band.output = kNone;
+    band.laneY = band.laneH = 0.0f;  // TL.1: no lane in a scoped model
     band.devices.clear();
     band.parent = -1;
     band.lastMember = kNone;
@@ -1551,6 +1632,7 @@ struct Builder {
     const Node& c = out.nodes[cap];
     Band band = out.bands[c.band];
     band.source = band.mixer = band.output = kNone;
+    band.laneY = band.laneH = 0.0f;  // TL.1: no lane in a scoped model
     band.devices.clear();
     band.parent = -1;
     band.lastMember = kNone;

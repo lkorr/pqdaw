@@ -48,7 +48,7 @@ SymbolSpec specOf(const Node& n) {
   s.title = n.title;
   float inStub = 8.0f, outStub = 8.0f;
   switch (n.kind) {
-    case NodeKind::Source: s.symbol = Symbol::Subcircuit; break;  // T5.x-one-circuit: a lane window (title row, body)
+    case NodeKind::Lane: s.symbol = Symbol::Subcircuit; break;  // TL.1: a lane (hidden: the view draws the lane)
     case NodeKind::Sum:
       s.symbol = Symbol::Summer;
       s.glyph = Glyph::Plus;
@@ -82,9 +82,7 @@ SymbolSpec specOf(const Node& n) {
     PinSpec p;
     p.y = pinOffset(n, i, false);
     p.stub = outStub;
-    // TMM.10-fix2: a lane window's note outputs are named too (outside it: the window's body holds the lane).
-    p.label = n.kind == NodeKind::Device || n.kind == NodeKind::Mixer || n.kind == NodeKind::Source ? n.outputs[i].label
-                                                                                                    : std::string();
+    p.label = n.kind == NodeKind::Device || n.kind == NodeKind::Mixer ? n.outputs[i].label : std::string();
     s.outputs.push_back(std::move(p));
   }
   s.bodyKey = bodyKeyOf(s);
@@ -130,7 +128,7 @@ uint64_t nodeIdentity(const ProjectPatch& pp, uint32_t i) noexcept {
   switch (n.kind) {
     case NodeKind::Device: return (1ull << 60) | n.device.value;
     case NodeKind::Terminal: return (2ull << 60) | (static_cast<uint64_t>(n.device.value) << 1) | (n.inputs.empty() ? 0u : 1u);
-    case NodeKind::Source: return (3ull << 60) | track;
+    case NodeKind::Lane: return (3ull << 60) | track;
     case NodeKind::Sum: return (4ull << 60) | track;
     case NodeKind::Mixer: return (5ull << 60) | track;
     case NodeKind::Output: return (6ull << 60) | track;
@@ -190,6 +188,10 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     sn.w = n.w;
     sn.h = n.h;
     sn.scale = n.scale;  // TX.resize: its face or panel drawn at it
+    // TL.1: a lane is no block (the view draws it; its cables leave its top edge), a folded band's blocks are hidden.
+    const bool hidden = n.kind == NodeKind::Lane || n.folded;
+    sn.hidden = hidden;
+    sc.hiddenNodes += hidden ? 1u : 0u;
     sn.spec = v;
     sn.node = v;
     sn.firstPin = static_cast<uint32_t>(sc.pins.size());
@@ -204,6 +206,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
         pin.node = v;
         pin.port = static_cast<uint16_t>(k);
         if (!pins[k].label.empty()) pin.label = addString(pins[k].label);
+        if (hidden) pin.visible = false;  // TL.1
         // TX.mod-all: an anchored param has no pin (its wire ends on the control): an invisible one where the wire
         // meets the block, so the wire's end and the face's "driven" look (FaceJack::name) still find it.
         if (side == 0 && n.inputs[k].anchored) {
@@ -230,6 +233,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     sn.pinCount = static_cast<uint32_t>(sc.pins.size()) - sn.firstPin;
     if (n.orbitIn.on || n.orbitOut.on) sn.outline = n.outline;  // TX.orbit-ports
     sc.nodes.push_back(sn);
+    if (hidden) continue;  // TL.1: no face, no labels
     if (n.face != nullptr) sc.faces.push_back({v, n.face, std::string(), n.device.value});  // TMM.4: the device itself
     // TX.panel-faces: a stock device's panel (the view's panelMaker makes it; path: its patch, so a rebuild keeps it).
     if (n.panel) {
@@ -269,14 +273,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     title.x0 = n.x + 8.0f;
     title.x1 = n.x + n.w - 8.0f;
     switch (n.kind) {
-      case NodeKind::Source:  // the window's title at the left of its title row (bar numbers follow it)
-        // TMM.13-fix2 (MM review L14, "UI and aesthetic" 3): 4 units in from the window's frame, and the whole title row
-        // to fit in (the bar numbers start right of the title as drawn: lane_window.cpp), so it shows at every Near zoom.
-        title.y = n.y + 8.0f;
-        title.x0 = n.x + 12.0f;
-        title.x1 = n.x + n.w - (n.outputs.size() > 1 ? metrics::kNoteNamesW : metrics::kLaneInset);
-        title.align = SceneLabel::Align::Left;
-        break;
+      case NodeKind::Lane: title.node = UINT32_MAX; break;  // (hidden)
       case NodeKind::Device:
         title.y = n.y + 8.0f;
         // GU.5b: an atom block's symbol carries a name only in a box (frac, cents_to_hz …), centred; the rest say it.
@@ -324,10 +321,6 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
       lb.y = pin.y;
       lb.text = pin.label;
       lb.align = pin.input ? SceneLabel::Align::Left : SceneLabel::Align::Right;
-      if (n.kind == NodeKind::Source) {  // in the window's right column, beside the lane (laneBody leaves it free)
-        lb.x0 = n.x + n.w - metrics::kNoteNamesW + 2.0f;
-        lb.x1 = n.x + n.w - 10.0f;
-      }
       lb.role = SceneLabel::Role::Pin;
       lb.node = v;
       sc.labels.push_back(lb);
@@ -363,7 +356,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     if (e.points.size() < 2) continue;
     WireStyle style = styleOf(e);
     // TMM.13-fix2 (M10): a note output's wire (Hz, gate, velocity into a param or an input) is a note wire.
-    if (e.kind == EdgeKind::Modulation && pp.nodes[e.from].kind == NodeKind::Source) style.notes = true;
+    if (e.kind == EdgeKind::Modulation && pp.nodes[e.from].kind == NodeKind::Lane) style.notes = true;
     const bool cable = e.cable;
     if (cable) {  // TX.cables: its rest shape between its two ends (the canvas animates it from there)
       const Point2 a = e.points.front(), b = e.points.back();

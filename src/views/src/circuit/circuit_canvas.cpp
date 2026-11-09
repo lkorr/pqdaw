@@ -3591,6 +3591,8 @@ ui::Cursor CircuitCanvas::faceCursor(ui::Vec2 pos) const {
   return f.cursor(f.hitTest(m.localOf(h, toWorld(pos)), m.s() * h.scale));
 }
 
+bool CircuitCanvas::faceTakes(ui::Vec2 pos) const { return impl_->faceCapture >= 0 || impl_->faceUnder(pos) >= 0; }
+
 CircuitCanvas::FaceParamHit CircuitCanvas::faceParamAt(ui::Vec2 pos) const {
   const Impl& m = *impl_;
   FaceParamHit out;

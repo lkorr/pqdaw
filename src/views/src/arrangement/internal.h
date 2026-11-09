@@ -705,9 +705,31 @@ private:
 // Loop brace, bar numbers, ticks, locators, tempo / signature markers, start marker, playhead. Click locates,
 // drag zooms (vertical) and scrolls (horizontal). T4.16b: the loop brace's ends and the brace itself, and the
 // locators, drag (snapped relative to the grid, previewed, one undo step on release; Esc cancels).
+// TL.1: what a ruler draws on and acts on — the arrangement's lanes, or the project patch view's band lanes (one time
+// window: ViewContext::timeWindow). x0() is the device x of origin(); range() the device rect of the lanes it labels
+// (the ruler draws and takes presses only over its x span).
+class RulerAxis {
+public:
+  virtual ~RulerAxis() = default;
+  virtual ViewContext& context() const = 0;
+  virtual const doc::Project& project() const = 0;
+  virtual float x0() const = 0;
+  virtual double origin() const = 0;
+  virtual double devicePxPerTick() const = 0;
+  virtual double pxPerTick() const = 0;  // logical (the grids' density)
+  virtual ui::IRect range() const = 0;
+  virtual void setTimeView(double origin, double pxPerTick) = 0;  // origin at x0(), logical px per tick
+  virtual void zoomAt(float deviceX, double factor) = 0;
+  virtual void scrollByPx(double devicePx) = 0;
+  virtual void locateAt(Ticks tick, bool snapToGrid = true) = 0;
+  virtual std::optional<Ticks> playhead() const = 0;
+  virtual ui::Widget* focusTarget() = 0;
+};
+
 class Ruler : public ui::Control {
 public:
   explicit Ruler(ArrangementView& view);
+  explicit Ruler(std::unique_ptr<RulerAxis> axis);  // TL.1
   void paint(ui::PaintContext& ctx) override;
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override { cancelDrag(); }
@@ -726,8 +748,21 @@ public:
   doc::LoopRegion shownLoop() const noexcept;
   Ticks shownLocator(uint32_t index) const noexcept;
 
+  RulerAxis& axis() const noexcept { return *ax_; }
+  // TL.1: the columns of rect `r` over the axis's lanes, and whether device x `x` is over them.
+  ui::IRect columns(const ui::IRect& r) const {
+    const ui::IRect a = ax_->range();
+    return ui::intersect(r, {a.x, r.y, a.w, r.h});
+  }
+  bool inRange(float x) const {
+    const ui::IRect a = ax_->range();
+    return a.w > 0 && x >= static_cast<float>(a.x) && x < static_cast<float>(a.right());
+  }
+
 private:
-  ArrangementView& view_;
+  float xOf(double tick) const { return static_cast<float>(static_cast<double>(ax_->x0()) + (tick - ax_->origin()) * ax_->devicePxPerTick()); }
+  double tickAt(float x) const { return ax_->origin() + (static_cast<double>(x) - static_cast<double>(ax_->x0())) / ax_->devicePxPerTick(); }
+  std::unique_ptr<RulerAxis> ax_;
   Hit grab_{};
   Ticks dt_ = 0;  // the dragged part's snapped delta
   Ticks newLo_ = 0, newHi_ = 0;  // T4.17: a drawn loop's snapped range (Grab::LoopNew)

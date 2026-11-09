@@ -1068,3 +1068,18 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **Goldens:** none changed.
 - **To judge:** drag the free LFO in the group project down past Keys' bottom and back; a capsule member past the
   capsule's corner; whether the band jumping back when the pointer crosses into the next band reads clearly.
+
+## 👁 TL.1 Track lanes in the circuit view · 2026-11-08
+- **What changed:** the Notes / Audio window is gone; every band of the project patch view ends in its track's lane,
+  inside the band, as wide as the widest band (all lanes share one x range), with one time ruler pinned along the top
+  of the view. The time range IS the arrangement's: zoom / scroll in either view moves both (Ctrl+wheel, Shift+wheel
+  over a lane or the ruler; the arrangement's Z / X / + / − after a click in a lane). A click on empty lane space puts
+  the insert marker and (stopped) the start marker and playhead there — Space plays from it, in both views. Drag a
+  lane's bottom edge to resize it; the ▼ in a band's title folds its circuit away (band menu: Fold All for an
+  arrangement-like view). Cables from a track leave the lane's top edge: each at its own spot (drag its end along the
+  edge; double-click: back under its block), a new one by dragging up from the edge; a MIDI lane's notes / Hz / gate /
+  vel chips sit at the edge's left end. Group / return / master lanes are empty strips for now (automation: TL.2).
+- **Goldens:** every project-patch / project-* scene, panel-window-*, panel-embed, instrument-rack (bands and lanes).
+- **To judge:** the lanes' look inside the bands (colour frame, grid), the chips' place, the cable sag from the lane up
+  into an instrument's left input, the ruler covering the canvas's top 40 px, whether lanes as wide as the whole
+  project (returns and master on the far right) read well.

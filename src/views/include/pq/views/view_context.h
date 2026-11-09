@@ -90,6 +90,7 @@ inline constexpr uint32_t kLibrary = 1u << 15;       // the browser's places, in
 inline constexpr uint32_t kShowAutomation = 1u << 16; // T4.18: a view asked to show a parameter's automation lane
 inline constexpr uint32_t kAnalysis = 1u << 17;      // TX.spectrum: new analysis taps exist (displays without a feed look again)
 inline constexpr uint32_t kResponses = 1u << 18;     // EQ.4b: the app's lowering of the current structure arrived (the response displays draw again)
+inline constexpr uint32_t kTimeWindow = 1u << 19;    // TL.1: the shared visible time range (TimeWindow) moved or zoomed
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -317,6 +318,21 @@ public:
   void stopButton();
   Ticks startMarker() const noexcept { return startMarker_; }
   void setStartMarker(Ticks t);
+
+  // --- the visible time range (TL.1, SPEC §15 2026-11-08 "track lanes in the circuit view") ---
+  // ONE time window for every timeline view: the arrangement's lanes and the project patch view's band lanes show the
+  // same range, each mapping it onto its own pixel width ("the same range, endless zoom"). `start` is the tick at the
+  // left edge, `span` the ticks shown (0: not set yet — the first view laid out sets it). setTimeWindow clamps (start in
+  // [0, kMaxTicks / 2], span in [kMinTimeSpan, kMaxTimeSpan]) and notifies kTimeWindow when it changed. Not saved.
+  struct TimeWindow {
+    double start = 0.0;
+    double span = 0.0;
+    friend bool operator==(const TimeWindow&, const TimeWindow&) = default;
+  };
+  static constexpr double kMinTimeSpan = static_cast<double>(kPpq) / 64.0;          // a 1/256 note
+  static constexpr double kMaxTimeSpan = static_cast<double>(kPpq) * 4.0 * 100000.0;  // 100 000 bars of 4/4
+  const TimeWindow& timeWindow() const noexcept { return window_; }
+  void setTimeWindow(double start, double span);
 
   // --- grid (shared by the arrangement and the piano roll; Ctrl+1–5 and the grid menu edit it, T3.9/T3.11) ---
   const GridSpec& grid() const noexcept { return grid_; }
@@ -552,6 +568,7 @@ private:
   ViewPrefs viewPrefs_;
   std::function<void(const ViewPrefs&)> viewPrefsListener_;
   Ticks startMarker_ = 0;
+  TimeWindow window_{};  // TL.1
   GridSpec grid_{};
   std::optional<GridDivision> resolvedGrid_;
   bool detailVisible_ = false;  // T3.x-fix-look: collapsed until a clip is shown in it (Live)

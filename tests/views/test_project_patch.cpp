@@ -160,6 +160,11 @@ struct Ui {
     const Node& n = pp().nodes[node];
     const int32_t k = n.output(name);
     REQUIRE(k >= 0);
+    if (n.kind == NodeKind::Lane) {  // TL.1: a lane's output is its port chip (an audio lane: a spot on its top edge)
+      const LaneRect c = view().canvas().lanePortChip(n.band, static_cast<uint32_t>(k));
+      if (c.x1 > c.x0) return dev((c.x0 + c.x1) * 0.5f, (c.y0 + c.y1) * 0.5f);
+      return dev(pp().laneX0 + (pp().laneX1 - pp().laneX0) * 0.9f, n.y);
+    }
     (void)n;  // TX.orbit-ports: where the port is drawn (an orbiting main port sits on the block's outline)
     return view().canvas().toDevice(view().canvas().portWorld(node, static_cast<uint32_t>(k), false));
   }
@@ -209,6 +214,17 @@ struct Ui {
       if (c.wire == w) return &c;
     return nullptr;
   }
+  // TL.1: a band framed from its lane's left end (its port chips, its first blocks), at zoom 1.
+  void frameLane(std::string_view track) {
+    const ProjectPatch& p = pp();
+    const Band& b = p.bands[p.bandOf(named(*ctx.doc(), track)->id)];
+    circuit::CircuitCanvas::View cv;
+    cv.zoom = 1.0;
+    cv.x = static_cast<double>(p.laneX0) - 20.0 / cv.zoom;
+    cv.y = static_cast<double>(b.y) - 60.0 / cv.zoom;
+    view().canvas().setView(cv);
+    d.tree().layoutNow();
+  }
   // Zoomed so blocks and pins are big enough to hit reliably.
   void zoomTo(std::string_view track) {
     view().focusBand(named(*ctx.doc(), track)->id, false);
@@ -223,8 +239,9 @@ struct Ui {
       for (float x = band.x0 + 4.0f; x < band.x1; x += 7.0f) {
         const Vec2 p = dev(x, y);
         if (p.x < r.x + 4 || p.y < r.y + 4 || p.x > r.right() - 4 || p.y > r.bottom() - 4) continue;
-        if (c.nodeAt(p) == kNone && c.bandAt(p) == b && c.hitTest(p).kind == circuit::CanvasHit::Kind::None && view().laneAt(p) == kNone)
-          return p;
+        if (c.nodeAt(p) == kNone && c.bandAt(p) == b && c.hitTest(p).kind == circuit::CanvasHit::Kind::None && view().laneAt(p) == kNone &&
+            c.laneEdgeAt(p).kind == ProjectCanvas::LaneEdgeHit::Kind::None && !(view().ruler() && view().ruler()->visible() && view().ruler()->rect().contains(p)))
+          return p;  // (TL.1: nor a lane's edge, nor the ruler over the canvas's top)
       }
     FAIL("no empty point in the band");
     return {};
@@ -265,8 +282,8 @@ TEST_CASE("project patch: an audio track's source is its clip player (T5.3), the
   REQUIRE(band != pp.bands.end());
   CHECK(band->kind == doc::TrackKind::Audio);
   REQUIRE(band->source != kNone);
-  CHECK(pp.nodes[band->source].kind == NodeKind::Source);
-  CHECK(pp.nodes[band->source].title == "Audio");  // T5.x-one-circuit: was "Clips" (the lane window says what it plays)
+  CHECK(pp.nodes[band->source].kind == NodeKind::Lane);  // TL.1: an audio track's source is its lane
+  CHECK(pp.nodes[band->source].title == "Audio");
   REQUIRE(band->devices.size() == 1);
 }
 
@@ -440,8 +457,9 @@ TEST_CASE("project patch: the layout mirrors the arrangement (lane order, groups
   }
   float mainEnd = 0.0f, retStart = 1e9f, retEnd = 0.0f;
   for (const Band& b : pp.bands) {
-    // Within a band: left → right, no overlaps, every node inside the band's strip.
-    std::vector<uint32_t> chain{b.source};
+    // Within a band: left → right, no overlaps, every node inside the band's strip (TL.1: a lane is no block on it).
+    std::vector<uint32_t> chain;
+    if (pp.nodes[b.source].kind == NodeKind::Sum) chain.push_back(b.source);
     chain.insert(chain.end(), b.devices.begin(), b.devices.end());
     chain.push_back(b.mixer);
     for (size_t k = 0; k < chain.size(); ++k) {
@@ -538,9 +556,10 @@ void checkMixersTopRight(const ProjectPatch& pp) {
     auto leftOf = [&](uint32_t n) {
       if (n != kNone && pp.nodes[n].capsule == kNone) CHECK(pp.nodes[n].x + pp.nodes[n].w + metrics::kNodeGap <= m.x + 0.01f);
     };
-    leftOf(b.source);
+    if (pp.nodes[b.source].kind != NodeKind::Lane) leftOf(b.source);  // TL.1: the lane spans the band (under it all)
     for (const uint32_t d : b.devices) leftOf(d);
-    if (b.output == kNone) CHECK(m.x + m.w + 12.0f == doctest::Approx(b.x1));  // nothing right of it (the master: Out)
+    // Nothing right of it (the master: Out); TL.1: the band reaches the lanes' common right end.
+    if (b.output == kNone) CHECK(m.x + m.w + 12.0f <= b.x1 + 0.01f);
   }
 }
 }  // namespace
@@ -1163,8 +1182,8 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   CHECK(v.canvas().view().zoom == doctest::Approx(whole));
 }
 
-// TMM.10-fix2 (SPEC §15 2026-11-01 "the note source is a Hz piano roll"): a MIDI track's lane window is its note source
-// ("Notes"); its note outputs (Hz, gate, velocity) are wire sources like exports: Crosshair on them, a drop on a device a
+// TMM.10-fix2 (SPEC §15 2026-11-01 "the note source is a Hz piano roll"): a MIDI track's lane (TL.1) is its note source
+// ("Notes"); its note outputs (Hz, gate, velocity: its port chips) are wire sources like exports: Crosshair on them, a drop on a device a
 // param menu (one undo step), a drop on a param pin a wire already drives that param, the wire drawn from the window
 // (per voice) and read on hover, the chain's own `notes` pin and a drop off the devices refused (NotAllowed, status).
 TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wires it — menu, undo, drawn, readable, refusals") {
@@ -1176,9 +1195,11 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
   const doc::TrackId keys = u.track("Keys").id;
   const doc::DeviceId sat = u.onPath("Keys", 1);
   u.zoomTo("Keys");
+  u.frameLane("Keys");  // TL.1: from the lane's left end, its port chips readable
   const uint32_t src = u.pp().bands[u.pp().bandOf(keys)].source;
   const Node& sn = u.pp().nodes[src];
   CHECK(sn.title == "Notes");
+  CHECK(sn.kind == NodeKind::Lane);
   for (const char* port : {"notes", "hz", "gate", "velocity"}) CHECK(sn.output(port) >= 0);
   auto at = [&](Vec2 p) {
     u.d.move(p);
@@ -1191,7 +1212,7 @@ TEST_CASE("project patch (TMM.10-fix2): a note output dragged onto a device wire
     REQUIRE(infoView != nullptr);
     u.d.move(u.outPin(src, "hz"));
     CHECK(infoView->title() == "Keys notes: Hz");
-    CHECK(infoView->body().find("piano roll") != std::string::npos);
+    CHECK(infoView->body().find("lane") != std::string::npos);  // TL.1: the note source is the track's lane
   }
   // velocity → the Saturator's Drive (GU.11: a module, drawn as its panel; its controls are value blocks: the drop on
   // the knob wires that control, no menu), one step.
@@ -1482,146 +1503,209 @@ TEST_CASE("one circuit: from a device's opened band, zooming out alone reaches e
   CHECK(v.openedBand() == u.track("Keys").id);
 }
 
-TEST_CASE("lane windows: what each window shows is its lane's clips over the shown time window (4 bars by default)") {
+TEST_CASE("lanes (TL.1): every band ends in its lane, over one x range, showing its clips over the shared time window") {
   Ui u;
   u.show();
   ProjectPatchView& v = u.view();
-  const doc::Project& p = *u.ctx.doc();
-  const Ticks bar = ticksPerBar(p.timeline->sigMap.signatureAt(0));
-  CHECK(v.laneStart() == 0);
-  CHECK(v.laneSpan() == ProjectPatchView::kLaneBars * bar);
-  CHECK(v.laneWidth() == metrics::kSourceW);
-  // Every lane window lines up in one column (whatever the group depth) and is as wide as the view says.
-  float x = -1.0f;
-  for (const Band& b : v.patch().bands) {
-    if (!hasLaneWindow(b)) continue;
-    const Node& n = v.patch().nodes[b.source];
-    if (x < 0.0f) x = n.x;
-    CHECK(n.x == x);
-    CHECK(n.w == metrics::kSourceW);
+  const ProjectPatch& pp0 = v.patch();
+  REQUIRE(pp0.laneX1 > pp0.laneX0);
+  // Every band (MIDI, group, return, master) ends in a lane inside it, at its bottom, all over the same x range.
+  for (const Band& b : pp0.bands) {
+    CAPTURE(b.name);
+    CHECK(b.laneH == metrics::kLaneH);
+    CHECK(b.laneY + b.laneH + metrics::kLaneGapBelow == doctest::Approx(b.y + b.h));
+    CHECK(b.x0 <= pp0.laneX0);
+    CHECK(b.x1 >= pp0.laneX1);
+    for (const uint32_t n : b.devices) CHECK(pp0.nodes[n].y + pp0.nodes[n].h <= b.laneY);  // the circuit above it
+    // A MIDI / audio track's source IS its lane (no block); a group, return, master keeps its Σ.
+    if (hasClipRow(b)) {
+      const Node& s = pp0.nodes[b.source];
+      CHECK(s.kind == NodeKind::Lane);
+      CHECK(s.x == pp0.laneX0);
+      CHECK(s.y == b.laneY);
+      CHECK(s.w == pp0.laneX1 - pp0.laneX0);
+      CHECK(v.scene().scene->nodes[v.scene().sceneNode[b.source]].hidden);
+    } else {
+      CHECK(pp0.nodes[b.source].kind == NodeKind::Sum);
+    }
   }
   auto check = [&] {
     const doc::Project& q = *u.ctx.doc();
-    const Ticks a = v.laneStart(), e = v.laneStart() + v.laneSpan();
-    for (uint32_t bi = 0; bi < v.patch().bands.size(); ++bi) {
-      const Band& b = v.patch().bands[bi];
-      if (!hasLaneWindow(b)) continue;
+    const ProjectPatch& pp = v.patch();
+    const double a = v.laneStart(), e = v.laneStart() + v.laneSpan();
+    for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
+      const Band& b = pp.bands[bi];
+      if (!hasClipRow(b)) {
+        CHECK(v.laneClips(bi).empty());
+        continue;
+      }
       const doc::Track* t = doc::findTrackPtr(q, b.track);
       REQUIRE(t != nullptr);
-      const LaneRect r = laneBody(v.patch().nodes[b.source]);
-      const double k = static_cast<double>(r.x1 - r.x0) / static_cast<double>(v.laneSpan());
+      const LaneRect r = laneBody(pp, b);
+      const double k = static_cast<double>(r.x1 - r.x0) / v.laneSpan();
       std::vector<ProjectPatchView::LaneClip> want;
       for (const doc::ClipSlot& c : t->clips)
-        if (c.end() > a && c.start() < e)
-          want.push_back({c.id, r.x0 + static_cast<float>(static_cast<double>(std::max(c.start(), a) - a) * k),
-                          r.x0 + static_cast<float>(static_cast<double>(std::min(c.end(), e) - a) * k), c.isAudio()});
+        if (static_cast<double>(c.end()) > a && static_cast<double>(c.start()) < e)
+          want.push_back({c.id, r.x0 + static_cast<float>((std::max(static_cast<double>(c.start()), a) - a) * k),
+                          r.x0 + static_cast<float>((std::min(static_cast<double>(c.end()), e) - a) * k), c.isAudio()});
       const std::vector<ProjectPatchView::LaneClip> got = v.laneClips(bi);
       REQUIRE(got.size() == want.size());
       for (size_t i = 0; i < got.size(); ++i) {
         CHECK(got[i].clip == want[i].clip);
         CHECK(got[i].x0 == doctest::Approx(want[i].x0));
         CHECK(got[i].x1 == doctest::Approx(want[i].x1));
-        CHECK(got[i].x0 >= r.x0);
-        CHECK(got[i].x1 <= r.x1 + 0.01f);
       }
     }
   };
+  const doc::Project& p = *u.ctx.doc();
+  const Ticks bar = ticksPerBar(p.timeline->sigMap.signatureAt(0));
+  v.setLaneTime(0.0, static_cast<double>(4 * bar));
   check();
-  // Keys' Riff (bars 1–4) fills its window; Riff 2 (from bar 7) is not in it; Pad starts at bar 3.
   const uint32_t keys = v.patch().bandOf(u.track("Keys").id), pad = v.patch().bandOf(u.track("Pad").id);
-  CHECK(v.laneClips(keys).size() == 1);
+  CHECK(v.laneClips(keys).size() == 1);  // Riff (bars 1–4); Riff 2 starts at bar 7
   CHECK(v.laneClips(pad).size() == 1);
-  // Wheel over a window scrolls time (an eighth of the span per notch); no re-layout, the windows repaint.
+  // Over a lane (real dispatch): Shift+wheel scrolls time (an eighth of the span per notch), Ctrl+wheel zooms it about the
+  // pointer; the lanes keep their width (no re-layout), the canvas does not pan; the arrangement shows the same range.
   const uint64_t relayouts = v.stats().relayouts;
-  const Node& kn = v.patch().nodes[v.patch().bands[keys].source];
   u.zoomTo("Keys");
-  const Vec2 over = u.dev(kn.x + kn.w * 0.5f, kn.y + kn.h * 0.5f);
+  const Band& kb = v.patch().bands[keys];
+  const Vec2 over = u.dev((v.patch().laneX0 + v.patch().laneX1) * 0.5f, kb.laneY + kb.laneH * 0.5f);
   REQUIRE(v.laneAt(over) == keys);
   const circuit::CircuitCanvas::View before = v.canvas().view();
-  (void)u.d.wheel(over, -8.0f);  // eight notches towards the end: one span later
-  CHECK(v.laneStart() == v.laneSpan());
-  CHECK(v.canvas().view() == before);  // the canvas did not pan
+  (void)u.d.wheel(over, -8.0f, 0.0f, mod::kShift);  // eight notches towards the end: one span later
+  CHECK(v.laneStart() == doctest::Approx(static_cast<double>(4 * bar)));
+  CHECK(v.canvas().view() == before);
   CHECK(v.stats().relayouts == relayouts);
   check();
   CHECK(v.laneClips(keys).size() == 1);  // Riff 2 (bars 7–10) now
   CHECK(v.laneClips(keys)[0].clip == u.track("Keys").clips[1].id);
-  // Ctrl+wheel out: a longer span, a wider window, the bands re-laid out (the chain moved right), still the lanes.
-  const float devX = v.patch().nodes[u.deviceNode(u.onPath("Keys", 0))].x;
-  (void)u.d.wheel(u.dev(kn.x + 8.0f, kn.y + kn.h * 0.5f), -3.0f, 0.0f, mod::kCtrl);
-  CHECK(v.laneSpan() > ProjectPatchView::kLaneBars * bar);
-  CHECK(v.laneWidth() > metrics::kSourceW);
-  CHECK(v.stats().relayouts == relayouts + 1);
-  CHECK(v.patch().nodes[v.patch().bands[keys].source].w == v.laneWidth());
-  CHECK(v.patch().nodes[u.deviceNode(u.onPath("Keys", 0))].x > devX);
+  CHECK(u.arrangement().originTick() == doctest::Approx(v.laneStart()));
+  const float w0 = v.patch().laneX1 - v.patch().laneX0;
+  const double at = v.laneTickAt(over.x);
+  (void)u.d.wheel(over, -3.0f, 0.0f, mod::kCtrl);  // zoomed out about the pointer
+  CHECK(v.laneSpan() == doctest::Approx(static_cast<double>(4 * bar) * std::pow(ProjectPatchView::kLaneZoomStep, 3.0)));
+  CHECK(v.laneTickAt(over.x) == doctest::Approx(at));
+  CHECK(v.patch().laneX1 - v.patch().laneX0 == w0);
+  CHECK(v.stats().relayouts == relayouts);
+  CHECK(v.canvas().view() == before);
+  check();
+  // The plain wheel over a lane pans the canvas (as the arrangement's plain wheel scrolls its tracks).
+  const double s0 = v.laneStart();
+  (void)u.d.wheel(over, -1.0f);
+  CHECK(v.laneStart() == s0);
+  CHECK_FALSE(v.canvas().view() == before);
   CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
-  check();
-  // Far out: clamped to the widest window, the span keeps growing to its limit.
-  v.zoomLanes(-60.0);
-  CHECK(v.laneWidth() == metrics::kSourceMaxW);
-  CHECK(v.laneSpan() == ProjectPatchView::kLaneMaxBars * bar);
-  check();
-  // Zoomed in below the default: the default width, a span down to one beat.
-  v.zoomLanes(60.0);
-  CHECK(v.laneWidth() == metrics::kSourceW);
-  CHECK(v.laneSpan() == ticksPerBeat(p.timeline->sigMap.signatureAt(v.laneStart())));
-  check();
 }
 
-TEST_CASE("lane windows: shown again, they start at the arrangement's visible bar (or the playhead's while playing)") {
+TEST_CASE("lanes (TL.1): one time window with the arrangement — set in either, shown by both on their own widths") {
   Ui u;
   const Ticks bar = ticksPerBar(u.ctx.doc()->timeline->sigMap.signatureAt(0));
-  u.arrangement().setTimeView(static_cast<double>(5 * bar + bar / 3), u.arrangement().pxPerTick());
+  ArrangementView& arr = u.arrangement();
+  arr.setTimeView(static_cast<double>(5 * bar + bar / 3), arr.pxPerTick());
   u.show();
-  CHECK(u.view().laneStart() == 5 * bar);
-  u.view().setShown(false, false);
-  u.port.play(9 * bar + 7);
-  u.show();
-  CHECK(u.view().laneStart() == 9 * bar);
+  ProjectPatchView& v = u.view();
+  const double logicalW = static_cast<double>(arr.lanesViewport().w) / static_cast<double>(u.d.tree().scale());
+  CHECK(v.laneStart() == doctest::Approx(static_cast<double>(5 * bar + bar / 3)));
+  CHECK(v.laneSpan() == doctest::Approx(logicalW / arr.pxPerTick()));
+  // Zoomed in the patch view (hidden arrangement): the arrangement follows — same start, its px per tick from the span.
+  v.zoomLanes(2.0, 0.0f);
+  CHECK(arr.originTick() == doctest::Approx(v.laneStart()));
+  CHECK(arr.pxPerTick() == doctest::Approx(logicalW / v.laneSpan()));
+  // Back in the arrangement: the range the patch view left; its own zoom moves the lanes.
+  v.setShown(false, false);
+  u.d.tree().layoutNow();
+  CHECK(arr.originTick() == doctest::Approx(v.laneStart()));
+  const double span = v.laneSpan();
+  arr.zoomIn();
+  CHECK(v.laneSpan() == doctest::Approx(span * 0.5));
+  CHECK(arr.pxPerTick() == doctest::Approx(logicalW / v.laneSpan()));
 }
 
-TEST_CASE("lane windows: idle costs nothing; the playhead repaints only the windows' columns and pages them") {
+TEST_CASE("lanes (TL.1): one ruler over the lanes — its bar lines on the lanes' axis; a click locates; Ctrl+wheel zooms") {
   Ui u;
   u.show();
   ProjectPatchView& v = u.view();
+  Widget* ruler = v.ruler();
+  REQUIRE(ruler != nullptr);
+  CHECK(ruler->visible());
+  const IRect cr = v.canvas().rect();
+  CHECK(ruler->rect().y == cr.y);  // pinned to the canvas's top
+  CHECK(ruler->rect().w == cr.w);
+  const Ticks bar = ticksPerBar(u.ctx.doc()->timeline->sigMap.signatureAt(0));
+  v.setLaneTime(0.0, static_cast<double>(8 * bar));
+  u.zoomTo("Keys");
+  // A click on the ruler over the lanes, at bar 3: the start marker (and, stopped, the playhead) there — the lanes' axis.
+  const ProjectPatch& pp = v.patch();
+  const Rect lanes = v.canvas().deviceRect(pp.laneX0, 0.0f, pp.laneX1 - pp.laneX0, 0.0f);
+  const float x3 = lanes.x0 + (lanes.x1 - lanes.x0) * 2.0f / 8.0f;
+  REQUIRE(x3 > static_cast<float>(cr.x));
+  REQUIRE(x3 < static_cast<float>(cr.right()));
+  const Vec2 onRuler{x3 + 0.5f, static_cast<float>(ruler->rect().y) + 4.0f};
+  u.d.click(onRuler);
+  u.d.step();
+  CHECK(u.ctx.startMarker() == 2 * bar);
+  CHECK(u.port.playhead().tick == 2 * bar);
+  // Ctrl+wheel over the ruler zooms the shared window.
+  const double span = v.laneSpan();
+  (void)u.d.wheel(onRuler, 1.0f, 0.0f, mod::kCtrl);
+  CHECK(v.laneSpan() == doctest::Approx(span / ProjectPatchView::kLaneZoomStep));
+  // Off the lanes' x range the ruler takes nothing: a press there is the canvas's.
+  if (lanes.x0 - 20.0f > static_cast<float>(cr.x)) {
+    const Ticks marker = u.ctx.startMarker();
+    u.d.click({lanes.x0 - 10.0f, static_cast<float>(ruler->rect().y) + 4.0f});
+    u.d.step();
+    CHECK(u.ctx.startMarker() == marker);
+  }
+}
+
+TEST_CASE("lanes (TL.1): idle costs nothing; the playhead repaints only the lanes' columns and pages the shared window") {
+  Ui u;
+  u.show();
+  ProjectPatchView& v = u.view();
+  const Ticks bar = ticksPerBar(u.ctx.doc()->timeline->sigMap.signatureAt(0));
+  v.setLaneTime(0.0, static_cast<double>(4 * bar));
   u.zoomTo("Pad");
   u.d.advance(0.5);
   const uint64_t frames0 = u.d.framesDrawn();
   u.d.advance(5.0);  // stopped: no frames, no timers
   CHECK(u.d.framesDrawn() == frames0);
   CHECK(std::isinf(u.d.tree().nextWakeTime()));
-  const Ticks bar = ticksPerBar(u.ctx.doc()->timeline->sigMap.signatureAt(0));
   u.ctx.setStartMarker(bar);
   u.ctx.togglePlay();  // plays from the start marker through the fake port, notifies kTransport
   u.d.advance(0.2);
   REQUIRE(v.lanePlayhead().has_value());
   u.d.step();
-  // A move: the damage is the old and new playhead columns of the windows (and the control bar's readout).
+  // A move: the damage is the old and new playhead columns of the lanes, the ruler's strip (its playhead line) and the
+  // control bar's readout.
   u.port.setPlayheadTick(*v.lanePlayhead() + bar / 2);
   u.d.tree().update(u.d.now() + 0.15);
   const IRect bar0 = u.d.rect("main/control-bar");
-  std::vector<Rect> windows;
-  for (const Band& b : v.patch().bands)
-    if (hasLaneWindow(b)) {
-      const Node& n = v.patch().nodes[b.source];
-      windows.push_back(v.canvas().deviceRect(n.x, n.y, n.w, n.h));
-    }
+  std::vector<Rect> lanes;
+  for (const Band& b : v.patch().bands) {
+    const LaneRect r = laneBody(v.patch(), b);
+    lanes.push_back(v.canvas().deviceRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0));
+  }
+  const IRect ru = v.ruler()->rect();
   size_t columns = 0;
   for (const ClipRect& r : u.d.tree().damage().rects()) {
     if (r.y1 <= bar0.bottom()) continue;  // the control bar's position readout
-    bool inWindow = false;
-    for (const Rect& w : windows)
-      inWindow = inWindow || (static_cast<float>(r.x0) >= std::floor(w.x0) - 1.0f && static_cast<float>(r.x1) <= std::ceil(w.x1) + 1.0f &&
-                              static_cast<float>(r.y0) >= std::floor(w.y0) - 1.0f && static_cast<float>(r.y1) <= std::ceil(w.y1) + 1.0f);
-    CHECK_MESSAGE(inWindow, r.x0 << "," << r.y0 << " to " << r.x1 << "," << r.y1);
+    if (r.y0 >= ru.y && r.y1 <= ru.bottom()) continue;  // the ruler
+    bool inLane = false;
+    for (const Rect& w : lanes)
+      inLane = inLane || (static_cast<float>(r.x0) >= std::floor(w.x0) - 1.0f && static_cast<float>(r.x1) <= std::ceil(w.x1) + 1.0f &&
+                          static_cast<float>(r.y0) >= std::floor(w.y0) - 1.0f && static_cast<float>(r.y1) <= std::ceil(w.y1) + 1.0f);
+    CHECK_MESSAGE(inLane, r.x0 << "," << r.y0 << " to " << r.x1 << "," << r.y1);
     CHECK(r.x1 - r.x0 <= 8);
     ++columns;
   }
   CHECK(columns > 0);
   u.d.step();
-  // Running out of the window pages it on (follow).
-  u.port.setPlayheadTick(v.laneStart() + v.laneSpan() + bar);
+  // Running out of the window pages it on (follow: the playhead at its left edge), the arrangement with it.
+  const Ticks out = static_cast<Ticks>(v.laneStart() + v.laneSpan()) + bar;
+  u.port.setPlayheadTick(out);
   u.d.advance(0.3);
-  CHECK(v.laneStart() == v.laneSpan());
+  CHECK(v.laneStart() == doctest::Approx(static_cast<double>(out)));
+  CHECK(u.arrangement().originTick() == doctest::Approx(v.laneStart()));
   // Stopped: no playhead, idle again.
   u.ctx.togglePlay();
   u.d.advance(0.5);
@@ -1632,7 +1716,7 @@ TEST_CASE("lane windows: idle costs nothing; the playhead repaints only the wind
   CHECK(v.stats().playheadReads == reads);
 }
 
-TEST_CASE("lane windows: a double-click on a MIDI clip opens its piano roll; on an audio clip its Clip View") {
+TEST_CASE("lanes: a double-click on a MIDI clip opens its piano roll; on an audio clip its Clip View") {
   Ui u;
   // An audio track with an audio clip next to the sketch's MIDI tracks.
   doc::DocumentStore& st = u.ctx.store();
@@ -1652,13 +1736,14 @@ TEST_CASE("lane windows: a double-click on a MIDI clip opens its piano roll; on 
   REQUIRE(st.dispatch(a->command).ok());
   u.show();
   ProjectPatchView& v = u.view();
+  const Ticks bar = ticksPerBar(u.ctx.doc()->timeline->sigMap.signatureAt(0));
+  v.setLaneTime(0.0, static_cast<double>(4 * bar));
   u.zoomTo("Keys");
   // MIDI: Keys' Riff.
   const uint32_t keys = v.patch().bandOf(u.track("Keys").id);
   REQUIRE(v.laneClips(keys).size() == 1);
   const ProjectPatchView::LaneClip riff = v.laneClips(keys)[0];
-  const Node& kn = v.patch().nodes[v.patch().bands[keys].source];
-  const LaneRect kr = laneBody(kn);
+  const LaneRect kr = laneBody(v.patch(), v.patch().bands[keys]);
   u.d.doubleClick(u.dev((riff.x0 + riff.x1) * 0.5f, (kr.y0 + kr.y1) * 0.5f));
   u.d.step();
   CHECK(u.ctx.detailClip().clip == riff.clip);
@@ -1672,20 +1757,245 @@ TEST_CASE("lane windows: a double-click on a MIDI clip opens its piano roll; on 
   REQUIRE(v.laneClips(lb).size() == 1);
   CHECK(v.laneClips(lb)[0].audio);
   const ProjectPatchView::LaneClip ac = v.laneClips(lb)[0];
-  const LaneRect lr = laneBody(v.patch().nodes[v.patch().bands[lb].source]);
+  const LaneRect lr = laneBody(v.patch(), v.patch().bands[lb]);
   u.d.doubleClick(u.dev((ac.x0 + ac.x1) * 0.5f, (lr.y0 + lr.y1) * 0.5f));
   u.d.step();
   CHECK(u.ctx.detailClip().clip == ac.clip);
   CHECK(u.ctx.detailClip().track == loop);
   CHECK(u.ctx.detailMode() == DetailMode::Clip);
-  // Outside any clip (Keys' window past bar 4 when scrolled): nothing opens, nothing changes.
+  // Outside any clip (bar 1 of Pad, which starts at bar 3): nothing opens.
   const doc::ClipRef before = u.ctx.detailClip();
   u.zoomTo("Pad");
   const uint32_t pad = v.patch().bandOf(u.track("Pad").id);
-  const LaneRect pr = laneBody(v.patch().nodes[v.patch().bands[pad].source]);
-  u.d.doubleClick(u.dev(pr.x0 + 2.0f, (pr.y0 + pr.y1) * 0.5f));  // bar 1: Pad starts at bar 3
+  const LaneRect pr = laneBody(v.patch(), v.patch().bands[pad]);
+  u.d.doubleClick(u.dev(pr.x0 + 4.0f, (pr.y0 + pr.y1) * 0.5f));
   u.d.step();
   CHECK(u.ctx.detailClip().clip == before.clip);
+}
+
+TEST_CASE("lanes (TL.1): a click on empty lane space moves where Space plays from — in both views (real dispatch)") {
+  Ui u;
+  GridSpec g = u.ctx.grid();  // a fixed grid of one beat: the clicked ticks do not depend on the zoom
+  g.mode = GridMode::Fixed;
+  g.fixedExp = 2;
+  g.off = false;
+  g.snap = true;
+  u.ctx.setGrid(g);
+  const Ticks bar = ticksPerBar(u.ctx.doc()->timeline->sigMap.signatureAt(0));
+  // The patch view: a click on Pad's empty lane at bar 2 (Pad's clip starts at bar 3).
+  u.show();
+  ProjectPatchView& v = u.view();
+  v.setLaneTime(0.0, static_cast<double>(4 * bar));
+  u.zoomTo("Pad");
+  const uint32_t pad = v.patch().bandOf(u.track("Pad").id);
+  const LaneRect pr = laneBody(v.patch(), v.patch().bands[pad]);
+  const float k = (pr.x1 - pr.x0) / static_cast<float>(4 * bar);
+  u.d.click(u.dev(pr.x0 + k * static_cast<float>(bar), (pr.y0 + pr.y1) * 0.5f));
+  u.d.step();
+  CHECK(u.ctx.startMarker() == bar);
+  CHECK(u.port.playhead().tick == bar);  // stopped: the playhead moved there
+  CHECK(u.arrangement().selection().time.has_value());
+  CHECK(u.arrangement().selection().time->start == bar);  // the insert marker
+  REQUIRE(u.d.press("Space") == KeyResult::Action);
+  u.d.step();
+  CHECK(u.port.playhead().playing);
+  CHECK(u.port.playhead().tick == bar);  // played from the clicked tick
+  REQUIRE(u.d.press("Space") == KeyResult::Action);  // stop
+  u.d.step();
+  // While playing a click moves the insert marker only (as the arrangement's lanes always did).
+  REQUIRE(u.d.press("Space") == KeyResult::Action);
+  u.d.step();
+  REQUIRE(u.port.playhead().playing);
+  u.d.click(u.dev(pr.x0 + k * static_cast<float>(bar / 2), (pr.y0 + pr.y1) * 0.5f));
+  u.d.step();
+  CHECK(u.ctx.startMarker() == bar);
+  REQUIRE(u.d.press("Space") == KeyResult::Action);  // stop
+  u.d.step();
+  // The arrangement: a click on Pad's empty lane at bar 2 + 2 beats.
+  v.setShown(false, false);
+  u.d.tree().layoutNow();
+  ArrangementView& arr = u.arrangement();
+  arr.setTimeView(0.0, arr.pxPerTick());
+  u.d.tree().layoutNow();
+  int32_t row = -1;
+  for (int32_t i = 0; i < static_cast<int32_t>(arr.rows().size()); ++i)
+    if (arr.rows()[static_cast<size_t>(i)].id == u.track("Pad").id) row = i;
+  REQUIRE(row >= 0);
+  const IRect lr = arr.rowLaneRect(row);
+  const Ticks beat = ticksPerBeat(u.ctx.doc()->timeline->sigMap.signatureAt(0));
+  const Ticks want = bar + 2 * beat;
+  u.d.click({arr.xOfTick(static_cast<double>(want)) + 0.5f, static_cast<float>(lr.y) + static_cast<float>(lr.h) * 0.7f});
+  u.d.step();
+  CHECK(u.ctx.startMarker() == want);
+  CHECK(u.port.playhead().tick == want);
+  REQUIRE(u.d.press("Space") == KeyResult::Action);
+  u.d.step();
+  CHECK(u.port.playhead().playing);
+  CHECK(u.port.playhead().tick == want);
+}
+
+TEST_CASE("lanes (TL.1): a lane's bottom edge resizes it; the fold triangle collapses the circuit and leaves the lane") {
+  Ui u;
+  u.show();
+  ProjectPatchView& v = u.view();
+  u.zoomTo("Keys");
+  const doc::TrackId keysId = u.track("Keys").id;
+  uint32_t keys = v.patch().bandOf(keysId);
+  const Band b0 = v.patch().bands[keys];
+  const float s = v.canvas().deviceScale();
+  // Drag the bottom edge 30 units down: the lane is 30 taller (rounded to 4), saved as view state, the band grows.
+  const Vec2 edge = u.dev((v.patch().laneX0 + v.patch().laneX1) * 0.5f, b0.laneY + b0.laneH + 1.0f / s);
+  REQUIRE(v.canvas().laneEdgeAt(edge).kind == ProjectCanvas::LaneEdgeHit::Kind::Bottom);
+  u.d.move(edge);
+  CHECK(u.d.tree().cursor() == Cursor::ResizeNS);
+  const size_t h0 = u.history();
+  u.d.drag(edge, {edge.x, edge.y + 30.0f * s}, 6);
+  u.d.step();
+  keys = v.patch().bandOf(keysId);
+  CHECK(v.patch().bands[keys].laneH == doctest::Approx(b0.laneH + 32.0f).epsilon(0.08));
+  CHECK(v.laneHeight(keysId) == v.patch().bands[keys].laneH);
+  CHECK(v.patch().bands[keys].h - b0.h == doctest::Approx(v.patch().bands[keys].laneH - b0.laneH));
+  CHECK(u.ctx.store().view().patchNudges.at(keysId.value).laneH == v.patch().bands[keys].laneH);
+  CHECK(u.history() == h0);  // view state: no undo step
+  // Saved with the project (and read back).
+  {
+    const auto json = doc::serializeProject(*u.ctx.doc(), u.ctx.store().view());
+    REQUIRE(json.ok());
+    doc::LoadOptions lo;
+    lo.devices = &library();
+    auto back = doc::parseProject(*json, lo);
+    REQUIRE_MESSAGE(back.ok(), (back.ok() ? "" : back.error().message));
+    CHECK(back->view.patchNudges.at(keysId.value).laneH == v.patch().bands[keys].laneH);
+  }
+  // The fold triangle: Keys' blocks are hidden (not in the scene's drawn nodes, not hit), its band is its title strip and
+  // its lane; its lane still shows its clips; the bands under it move up.
+  const uint32_t pad = v.patch().bandOf(u.track("Pad").id);
+  const float padY = v.patch().bands[pad].y;
+  const LaneRect fr = ProjectCanvas::foldButtonRect(v.patch().bands[keys]);
+  u.d.click(u.dev((fr.x0 + fr.x1) * 0.5f, (fr.y0 + fr.y1) * 0.5f));
+  u.d.step();
+  keys = v.patch().bandOf(keysId);
+  const Band& kb = v.patch().bands[keys];
+  CHECK(kb.folded);
+  CHECK(v.bandFolded(keysId));
+  CHECK(kb.h == doctest::Approx(metrics::kTitle + laneBlock(kb.laneH)));
+  CHECK(v.patch().bands[v.patch().bandOf(u.track("Pad").id)].y < padY);
+  for (const uint32_t n : kb.devices) {
+    CHECK(v.patch().nodes[n].folded);
+    CHECK(v.scene().scene->nodes[v.scene().sceneNode[n]].hidden);
+    CHECK(v.canvas().nodeAt(u.centre(n)) == kNone);
+  }
+  CHECK(v.patch().nodes[kb.mixer].folded);
+  CHECK_FALSE(v.laneClips(keys).empty());
+  CHECK(u.history() == h0);
+  // Fold All: every band its title and lane (the view reads as the arrangement); Unfold All brings them back.
+  v.setAllFolded(true);
+  for (const Band& b : v.patch().bands) CHECK(b.folded);
+  v.setAllFolded(false);
+  for (const Band& b : v.patch().bands) CHECK_FALSE(b.folded);
+  CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
+}
+
+TEST_CASE("lanes (TL.1): cables leave the lane's top edge at their own spots — slide one (one undo step), draw new ones") {
+  Ui u;
+  REQUIRE(u.d.enableGpu().ok());
+  u.show();
+  ProjectPatchView& v = u.view();
+  u.zoomTo("Keys");
+  const doc::TrackId keysId = u.track("Keys").id;
+  const uint32_t keys = v.patch().bandOf(keysId);
+  // The notes cable into the instrument: under the block it feeds by default (its centre), on the lane's top edge.
+  const doc::DeviceId inst = u.onPath("Keys", 0);
+  const uint32_t instNode = u.deviceNode(inst);
+  uint32_t ek = kNone;
+  for (uint32_t k = 0; k < v.patch().edges.size(); ++k)
+    if (v.patch().edges[k].from == v.patch().bands[keys].source && v.patch().edges[k].to == instNode) ek = k;
+  REQUIRE(ek != kNone);
+  const Edge e0 = v.patch().edges[ek];
+  const Node& in = v.patch().nodes[instNode];
+  CHECK_FALSE(e0.tapPinned);
+  CHECK(e0.tapX >= in.x - 1.0f);  // under the block it feeds
+  CHECK(e0.tapX <= in.x + in.w + 1.0f);
+  CHECK(e0.points.front().x == doctest::Approx(e0.tapX));
+  CHECK(e0.points.front().y == doctest::Approx(v.patch().bands[keys].laneY));
+  // Slide its lane end 60 units right: saved on the wire (band-local), one undo step; the lowering untouched.
+  const Vec2 tap = u.dev(e0.tapX, v.patch().bands[keys].laneY);
+  REQUIRE(v.canvas().laneEdgeAt(tap).kind == ProjectCanvas::LaneEdgeHit::Kind::Tap);
+  const size_t h0 = u.history();
+  const uint64_t lowerings = v.stats().rebuilds;
+  const float s = v.canvas().deviceScale();
+  u.d.drag(tap, {tap.x + 60.0f * s, tap.y}, 8);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  const doc::Wire* w = doc::findWire(*u.ctx.doc(), e0.wire);
+  REQUIRE(w != nullptr);
+  REQUIRE(w->tap.has_value());
+  CHECK(*w->tap == doctest::Approx(e0.tapX + 60.0f - v.patch().bands[keys].x0).epsilon(0.02));
+  (void)lowerings;
+  uint32_t ek2 = kNone;
+  for (uint32_t k = 0; k < v.patch().edges.size(); ++k)
+    if (v.patch().edges[k].wire == e0.wire) ek2 = k;
+  REQUIRE(ek2 != kNone);
+  CHECK(v.patch().edges[ek2].tapPinned);
+  CHECK(v.patch().edges[ek2].tapX == doctest::Approx(e0.tapX + 60.0f).epsilon(0.02));
+  CHECK(v.patch().edges[ek2].points.front().x == doctest::Approx(v.patch().edges[ek2].tapX));
+  // Saved with the project.
+  {
+    const auto json = doc::serializeProject(*u.ctx.doc(), u.ctx.store().view());
+    REQUIRE(json.ok());
+    doc::LoadOptions lo;
+    lo.devices = &library();
+    auto back = doc::parseProject(*json, lo);
+    REQUIRE_MESSAGE(back.ok(), (back.ok() ? "" : back.error().message));
+    const doc::Wire* bw = doc::findWire(*back->project, e0.wire);
+    REQUIRE(bw != nullptr);
+    CHECK(bw->tap == w->tap);
+  }
+  REQUIRE(u.ctx.undo());
+  CHECK_FALSE(doc::findWire(*u.ctx.doc(), e0.wire)->tap.has_value());
+  REQUIRE(u.ctx.redo());
+  // A new cable drawn up from the lane's Hz chip onto the Saturator's drive pin... or its face: a note-output wire
+  // leaving the lane at the chip.
+  u.frameLane("Keys");  // from the lane's left end, its port chips readable
+  const LaneRect hz = v.canvas().lanePortChip(keys, 1);
+  REQUIRE(hz.x1 > hz.x0);
+  const Vec2 chip = u.dev((hz.x0 + hz.x1) * 0.5f, (hz.y0 + hz.y1) * 0.5f);
+  CHECK(v.canvas().laneEdgeAt(chip).kind == ProjectCanvas::LaneEdgeHit::Kind::Port);
+  const size_t wires0 = doc::wiresOf(*u.ctx.doc()).size();
+  const doc::DeviceId sat = u.onPath("Keys", 1);
+  const uint32_t satNode = u.deviceNode(sat);
+  u.d.drag(chip, u.grip(satNode), 10);
+  u.d.step();
+  // Dropped on a block's body: its params' menu; pick its first param.
+  if (Menu* m = u.openMenu()) {
+    REQUIRE_FALSE(m->items().empty());
+    int32_t first = -1;
+    for (int32_t i = 0; i < static_cast<int32_t>(m->items().size()) && first < 0; ++i)
+      if (m->items()[static_cast<size_t>(i)].enabled && !m->items()[static_cast<size_t>(i)].separator && m->items()[static_cast<size_t>(i)].submenu.empty())
+        first = i;
+    REQUIRE(first >= 0);
+    m->choose(first);
+    u.d.step();
+  }
+  REQUIRE(doc::wiresOf(*u.ctx.doc()).size() == wires0 + 1);
+  const doc::Wire& made = doc::wiresOf(*u.ctx.doc()).back();
+  CHECK(made.noteSource == keysId);
+  CHECK(made.port == "hz");
+  REQUIRE(made.tap.has_value());
+  CHECK(*made.tap == doctest::Approx((hz.x0 + hz.x1) * 0.5f - v.patch().bands[keys].x0).epsilon(0.02));
+  // Double-click a cable's lane end: back under the block it feeds (one undo step).
+  const size_t h1 = u.history();
+  const Vec2 tap2 = u.dev(v.patch().edges[ek2].tapX, v.patch().bands[keys].laneY);
+  uint32_t ek3 = kNone;
+  for (uint32_t k = 0; k < v.patch().edges.size(); ++k)
+    if (v.patch().edges[k].wire == e0.wire) ek3 = k;
+  REQUIRE(ek3 != kNone);
+  const Vec2 tap3 = u.dev(v.patch().edges[ek3].tapX, v.patch().bands[keys].laneY);
+  (void)tap2;
+  u.d.doubleClick(tap3);
+  u.d.step();
+  CHECK_FALSE(doc::findWire(*u.ctx.doc(), e0.wire)->tap.has_value());
+  CHECK(u.history() == h1 + 1);
 }
 
 // ---- wall clock (perf suite: load-sensitive) --------------------------------------------------------------------------
@@ -1729,7 +2039,7 @@ TEST_CASE("project patch: 64 tracks — full-project paint < 2 ms from tiles, a 
 }
 
 
-TEST_CASE("lane windows: 64 tracks — a time-zoom re-layout ≤ 2 ms, a full paint of the windows" * doctest::test_suite("perf")) {
+TEST_CASE("lanes: 64 tracks — a time zoom repaints the lanes only (no re-layout), a full paint of the lanes" * doctest::test_suite("perf")) {
   Ui u(false);
   REQUIRE(buildWideProject(u.ctx.store(), 64).ok());
   REQUIRE(u.d.enableGpu().ok());
@@ -1737,16 +2047,10 @@ TEST_CASE("lane windows: 64 tracks — a time-zoom re-layout ≤ 2 ms, a full pa
   ProjectPatchView& v = u.view();
   v.fitAll(false);
   u.d.advance(1.0);
-  std::vector<double> ms;
-  for (int i = 0; i < 20; ++i) {
-    v.zoomLanes(i % 2 == 0 ? -4.0 : 4.0);  // 4 bars ↔ ~10 bars: the width changes every time
-    ms.push_back(v.stats().lastRelayoutMs);
-  }
-  std::sort(ms.begin(), ms.end());
-  MESSAGE("64 tracks: lane re-layout median " << ms[ms.size() / 2] << " ms, max " << ms.back() << " ms (" << v.stats().relayouts << " re-layouts)");
-  CHECK(v.stats().relayouts >= 20);
-  CHECK(ms[ms.size() / 2] <= 2.0);
-  // Zoomed onto the windows (Mid / Near): repaint them all.
+  const uint64_t relayouts = v.stats().relayouts;
+  for (int i = 0; i < 20; ++i) v.zoomLanes(i % 2 == 0 ? -4.0 : 4.0);  // TL.1: the lanes keep their width
+  CHECK(v.stats().relayouts == relayouts);
+  // Zoomed onto the lanes (Mid / Near): repaint them all.
   u.zoomTo("Track 1");
   u.d.advance(0.5);
   std::vector<double> pm;
@@ -2621,7 +2925,7 @@ TEST_CASE("project patch (TX.block-drag): a block dropped on another repels it �
   u.d.advance(2.0);
   CHECK(v.overlappingBlocks().empty());
 
-  // A band by its title strip: every node of the band is lifted (its window, its blocks, its mixer).
+  // A band by its title strip: every node of the band is lifted (its lane, its blocks, its mixer).
   const uint32_t b = u.pp().bandOf(r.w.track);
   const Band& band = u.pp().bands[b];
   const Vec2 title = u.dev(band.x0 + 120.0f, band.y + metrics::kTitle * 0.5f);

@@ -8,15 +8,17 @@
 //   band       one per track, in lane order (the main tree depth-first, then the returns, then the master): a strip
 //              holding the track's chain left → right. Deactivated tracks keep a band (dim, no nodes: they are not in
 //              the graph), so every lane of the arrangement has its band.
-//   source     MIDI track: a "Notes" node (the track's note source: its Hz piano roll, SPEC §15 2026-11-01) playing the
-//              lane's clips, its output `notes` wired to the instrument when one is lowered (a "notes" wire, per voice),
-//              and below it the note outputs (doc::kNoteOutputs: Hz, gate, velocity; TMM.10-fix2), each a wire source
-//              like a device's export; an audio track: an "Audio" node (its clip player). Both are LANE
-//              WINDOWS (T5.x-one-circuit): the view draws the lane itself inside them over a time window it keeps
-//              (LayoutOptions::sourceW is the windows' width), and every lane window of the project sits in one column
-//              (the same x whatever the group depth), so the windows read as a narrow arrangement. Group, return, master:
-//              a summing node (Σ) whose one input is every Audio wire routed into the track (several wires into one
-//              port sum, graph::ProjectWire).
+//   lane       (TL.1, SPEC §15 2026-11-08 "track lanes in the circuit view") every band ENDS IN ITS TRACK'S LANE: a strip
+//              across the bottom of the band (Band::laneY / laneH), every band's over the same x range (ProjectPatch::
+//              laneX0 … laneX1, so one ruler labels them all), on which the view draws the track's timeline as the
+//              arrangement does (clips, notes, waveforms; group / return / master lanes have no clip row). A MIDI or audio
+//              track's source is that lane — a model node of kind Lane whose rect IS the strip (hidden in the scene: no
+//              block, no pins) with the outputs the track's signal leaves by: a MIDI track's `notes` (wired to the
+//              instrument, per voice) and its note outputs (doc::kNoteOutputs: Hz, gate, velocity), an audio track's
+//              `out` (its clip player). Each cable from it leaves the lane's TOP EDGE at its own x (doc::Wire::tap,
+//              band-local; none: under the block it feeds: Edge::tapX). Group, return, master: a summing node (Σ) whose
+//              one input is every Audio wire routed into the track (several wires into one port sum,
+//              graph::ProjectWire), on the spine as before.
 //   device     one block per device of the track (the call `d<id>` of the track patch, NodeId nodeIdFor(Device, id, 0));
 //              deactivated or missing devices stay in place, dim and bypassed. TX.all-free: every block is free; until
 //              placed (a nudge), the blocks of the main path sit on the band's spine in signal order and the others on a
@@ -38,7 +40,8 @@
 // dim); across tracks a wire is also a graph wire m<id> → m<id>.
 //
 // Layout (world units = logical px at zoom 1, multiples of 4): bands stacked in lane order, a group's members indented
-// under it; signal left → right; a group's own chain starts right of its members' mixers; returns start right of every
+// under it, each band's lane at its bottom (its height: doc::PatchNudge::laneH, else kLaneH; a FOLDED band —
+// PatchNudge::folded — is its title strip and its lane, its blocks and their wires hidden: Node::folded); signal left → right; a group's own chain starts right of its members' mixers; returns start right of every
 // main track (their sends arrive by buses), the master right of everything. Then the stored nudges (doc::ViewState::
 // patchNudges: by track id for a band, by device id for a block), the mixers (TX.mixer-look: placed, or pushed right of
 // any block nudged past them) and the wires' orthogonal routes (buses into each
@@ -53,9 +56,11 @@
 #include <cstdint>
 #include <memory>
 #include <functional>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -75,7 +80,7 @@ inline constexpr uint32_t kNone = 0xFFFFFFFFu;
 
 // TX.groups: Terminal = a group's In (its output kGroupInPort) or Out (its input kGroupOutPort) terminal inside an opened
 // group's capsule (`device` = the group's id).
-enum class NodeKind : uint8_t { Source, Sum, Device, Mixer, Output, Terminal };
+enum class NodeKind : uint8_t { Lane, Sum, Device, Mixer, Output, Terminal };
 
 struct Port {
   std::string name;   // the graph port (`in`, `out`, an export, a param, `notes`, a note output, "s<id>" for a send)
@@ -101,12 +106,13 @@ struct Node {
   NodeKind kind = NodeKind::Device;
   uint32_t band = kNone;
   doc::DeviceId device;        // Device
-  std::string title;           // device display name, "Notes", "Audio", "Σ", "Mixer", "Out"
+  std::string title;           // device display name, "Notes" / "Audio" (a lane), "Σ", "Mixer", "Out"
   bool lowered = true;         // Device: its call is in the track patch (active, in the library, of its kind)
   bool active = true;          // Device: its activator
   bool missing = false;        // Device: its patch is not in the library
   bool instrument = false;     // Device: an instrument
   bool expanded = false;       // Device: drawn opened to its atoms (LayoutOptions::expanded)
+  bool folded = false;         // TL.1: on a folded band (hidden: not drawn, not hit, its wires neither)
   // TX.all-free: off its track's main path (doc::mainPath): placed on the row under the path until a nudge moves it, and
   // listed in the Device view's free rack.
   bool offPath = false;
@@ -218,6 +224,10 @@ struct Edge {
   // target pin, or an anchored param's control centre (n.x + ax, n.y + ay) — and hangs between them (cables.h).
   std::vector<graph::Point2> points;
   uint32_t net = 0;                     // wires into one summing input share a net (junction dots on the bus)
+  // TL.1: from a lane (NodeKind::Lane): where the cable leaves its top edge (world x; doc::Wire::tap, else under the
+  // block it feeds), and whether the wire pins it (Wire::tap set).
+  float tapX = 0.0f;
+  bool tapPinned = false;
 };
 
 struct Band {
@@ -232,7 +242,7 @@ struct Band {
   bool muted = false;
   uint32_t graphTrack = kNone;  // index into the LoweredProject's graph.tracks (kNone: not lowered)
   graph::TrackRole role = graph::TrackRole::Audio;
-  uint32_t source = kNone, mixer = kNone, output = kNone;  // node indices
+  uint32_t source = kNone, mixer = kNone, output = kNone;  // node indices (source: the Lane, or the Σ)
   std::vector<uint32_t> devices;                           // node indices (its blocks, list order)
   float y = 0, h = 0;          // world: the band's strip
   float x0 = 0, x1 = 0;        // world: its strip from the indent to the end of its chain
@@ -244,6 +254,10 @@ struct Band {
   bool mixerFollows = false;
   // Groups: the container around the group's band and its members' bands.
   float cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
+  // TL.1: its lane (world: ProjectPatch::laneX0 … laneX1 × laneY … laneY + laneH), at the bottom of its strip; a folded
+  // band (its circuit collapsed) keeps its title strip and its lane.
+  float laneY = 0, laneH = 0;
+  bool folded = false;
 };
 
 struct ProjectPatch {
@@ -251,6 +265,7 @@ struct ProjectPatch {
   std::vector<Node> nodes;
   std::vector<Edge> edges;
   float x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // bounds of the bands and nodes
+  float laneX0 = 0, laneX1 = 0;          // TL.1: every band's lane spans this x range (one ruler)
   uint32_t master = kNone;               // band
   // TX.groups: the model holds only one group's contents (LayoutOptions::scope: the Device view's group panel): one band
   // (its track) without source, mixer or strip, the capsule and what is inside it. TX.free-rack: or one track's free
@@ -272,14 +287,11 @@ inline constexpr float kFreeRowGap = 20.0f;  // TX.patching: between the chain a
 inline constexpr float kBusGap = 56.0f;     // before a summing node (room for its bus)
 inline constexpr float kPinTop = 24.0f;     // the main pin's offset from a node's top (the band's spine)
 inline constexpr float kPinPitch = 12.0f;   // further pins
-inline constexpr float kNotePitch = 8.0f;   // TMM.10-fix2: a lane window's note outputs (Hz, gate, velocity)
-// Lane windows (MIDI / audio sources, T5.x-one-circuit): the default width (4 bars), the widest a time zoom-out makes
-// them, and the body the lane is drawn in (inset from the node's rect; the title row above it).
-inline constexpr float kSourceW = 192.0f, kSourceH = 60.0f;
-inline constexpr float kSourceMaxW = 768.0f;
-inline constexpr float kLaneInset = 11.0f, kLaneTop = 18.0f, kLaneBottom = 3.0f;  // the frame is drawn 8 in (pin stubs)
-inline constexpr float kLaneTitleW = 48.0f;  // the window's title ("Notes", "Audio") before the bar numbers
-inline constexpr float kNoteNamesW = 36.0f;  // TMM.10-fix2: a MIDI window's right column (its note outputs' names)
+// TL.1: a band's lane — its default height, the gap above it (from the circuit) and under it (the band's bottom edge),
+// and how far in from the deepest band's indent the lanes start.
+inline constexpr float kLaneH = 56.0f;
+inline constexpr float kLaneGapAbove = 8.0f, kLaneGapBelow = 4.0f;
+inline constexpr float kLaneInset = 8.0f;
 inline constexpr float kSumW = 40.0f, kSumH = 32.0f;
 // TX.mixer-look: the mixer's face (MixerFace, src/project_patch/mixer_face.cpp): its main section (header with M / S,
 // the pan knob, the volume fader and readouts) kMixerH tall, then one row per send from kMixerSendTop (each send's pin
@@ -301,7 +313,6 @@ struct ExpandedSize {
 };
 
 struct LayoutOptions {
-  float sourceW = metrics::kSourceW;  // the lane windows' width (T5.x-one-circuit: the view's time zoom)
   std::span<const ExpandedSize> expanded;
   std::span<const doc::TrackId> expandedMixers;  // mixer strips shown expanded (one row per send)
   const std::unordered_map<uint32_t, doc::PatchNudge>* nudges = nullptr;  // ViewState::patchNudges
@@ -337,29 +348,38 @@ inline EntrySide entrySide(const Node& n, const Port& p) noexcept {
   return dt <= db ? EntrySide::Top : EntrySide::Bottom;
 }
 
-// A lane window's body (world units): where the lane's clips are drawn (`n` is a MIDI / audio source node).
+// A world rect (x0, y0) … (x1, y1).
 struct LaneRect {
   float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 };
-// TMM.10-fix2: a MIDI track's window keeps a column on its right for its note outputs' names (Hz, gate, vel).
-inline LaneRect laneBody(const Node& n) noexcept {
-  const float right = n.kind == NodeKind::Source && n.outputs.size() > 1 ? metrics::kNoteNamesW : metrics::kLaneInset;
-  return {n.x + metrics::kLaneInset, n.y + metrics::kLaneTop, n.x + n.w - right, n.y + n.h - metrics::kLaneBottom};
+// TL.1: band `b`'s lane (world units).
+inline LaneRect laneBody(const ProjectPatch& pp, const Band& b) noexcept { return {pp.laneX0, b.laneY, pp.laneX1, b.laneY + b.laneH}; }
+// Whether a band's lane has a clip row (a MIDI or an audio track; group / return / master lanes hold automation only).
+inline bool hasClipRow(const Band& b) noexcept { return b.kind == doc::TrackKind::Midi || b.kind == doc::TrackKind::Audio; }
+// The space a band's lane takes at its bottom (with its gaps).
+inline float laneBlock(float laneH) noexcept { return laneH > 0.0f ? metrics::kLaneGapAbove + laneH + metrics::kLaneGapBelow : 0.0f; }
+// TL.1: a MIDI lane's PORT CHIPS over the left end of its top edge, one per output of its lane node in order (its notes,
+// then doc::kNoteOutputs: Hz, gate, velocity): a cable drawn up from one is of that output. World units.
+inline constexpr std::string_view kLanePortLabels[] = {"notes", "Hz", "gate", "vel"};
+inline constexpr float kLaneChipH = 12.0f, kLaneChipGap = 2.0f, kLaneChipLeft = 4.0f;
+inline constexpr float lanePortChipW(size_t port) noexcept { return 7.0f * static_cast<float>(kLanePortLabels[port].size()) + 10.0f; }
+// Chip `port` of band `b`'s lane (empty: not a MIDI lane, no such output, the lane too narrow for it).
+inline LaneRect lanePortChip(const ProjectPatch& pp, const Band& b, size_t port) noexcept {
+  if (b.kind != doc::TrackKind::Midi || b.laneH <= 0.0f || port >= std::size(kLanePortLabels)) return {};
+  float x = pp.laneX0 + kLaneChipLeft;
+  for (size_t i = 0; i < port; ++i) x += lanePortChipW(i) + kLaneChipGap;
+  if (x + lanePortChipW(port) > pp.laneX1) return {};
+  return {x, b.laneY - kLaneChipH - 1.0f, x + lanePortChipW(port), b.laneY - 1.0f};
 }
-// Whether a band's source is a lane window (a MIDI or an audio track).
-inline bool hasLaneWindow(const Band& b) noexcept { return b.kind == doc::TrackKind::Midi || b.kind == doc::TrackKind::Audio; }
 
 // The y offset of pin `i` (an input, or an output) from its node's top: the main pin (0) at the band's spine, the rest
-// a row below each; a Σ's and Out's at their middle. TMM.10-fix2: a lane window's note outputs (1 …) in its lower
-// right corner, 8 apart (the window keeps its height).
+// a row below each; a Σ's and Out's at their middle. TL.1: a lane's (hidden) pins on its top edge.
 inline float pinOffset(const Node& n, size_t i) noexcept {
   if (n.symbol && i < n.symbol->inputs.size()) return n.symbol->inputs[i].y;  // GU.5b (inputs: pinOffset(n, i, false) for outputs)
   switch (n.kind) {
     case NodeKind::Sum: return 16.0f;
     case NodeKind::Output: return 8.0f;
-    case NodeKind::Source:
-      if (i > 0) return metrics::kPinTop + 4.0f + metrics::kNotePitch * static_cast<float>(i);
-      return metrics::kPinTop;
+    case NodeKind::Lane: return 0.0f;
     case NodeKind::Device:  // TX.resize; TX.groups: an opened group's chain pins at its inner spine
       return ((n.pinTop > 0.0f ? n.pinTop : metrics::kPinTop) + metrics::kPinPitch * static_cast<float>(i)) * n.scale;
     case NodeKind::Terminal: return metrics::kTerminalH * 0.5f;
@@ -397,6 +417,7 @@ inline graph::Point2 inputEntry(const Node& n, size_t i) noexcept {
 // Orbit), else its pin on the right edge / inputEntry.
 inline graph::Point2 outPortPoint(const Node& n, size_t i) noexcept {
   if (i == 0 && n.orbitOut.on) return n.orbitOut.at;
+  if (n.kind == NodeKind::Lane) return {n.x, n.y};  // TL.1: each cable at its own tap (Edge::tapX)
   return {n.x + n.w, n.y + pinOffset(n, i, false)};
 }
 inline graph::Point2 inPortPoint(const Node& n, size_t i) noexcept {

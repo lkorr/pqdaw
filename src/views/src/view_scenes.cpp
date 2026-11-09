@@ -1307,7 +1307,7 @@ Status setupProjectCircuitDevice(Shell& shell) {
   return Ok{};
 }
 
-// T5.x-one-circuit: the lane windows (--project tests/views/fixtures/audio: audio tracks with stereo, mono, reversed,
+// TL.1: the band lanes (--project tests/views/fixtures/audio: audio tracks with stereo, mono, reversed,
 // Re-Pitch and missing clips and a MIDI row): the windows' column at a readable zoom, 8 bars (twice the default span,
 // so twice the default width), the bar lines, clip names, waveforms and the MIDI row's notes.
 Status setupProjectPatchLanes(Shell& shell) {
@@ -1318,17 +1318,17 @@ Status setupProjectPatchLanes(Shell& shell) {
   v->setShown(true, false);
   closeModules(*v);
   shell.tree().layoutNow();
-  v->setLaneTime(0, 2 * v->laneDefaultSpan());
+  v->setLaneTime(0.0, static_cast<double>(ctx.doc()->timeline->sigMap.barToTicks(8)));  // TL.1: 8 bars on the lanes
   const project_patch::ProjectPatch& pp = v->patch();
   float x = 0.0f, y = 0.0f;
   bool found = false;
   for (const project_patch::Band& b : pp.bands)
-    if (project_patch::hasLaneWindow(b) && !found) {
-      x = pp.nodes[b.source].x;
-      y = b.y;
+    if (project_patch::hasClipRow(b) && !found) {
+      x = pp.laneX0;
+      y = b.laneY - 60.0f;
       found = true;
     }
-  if (!found) return Error{ErrorCode::NotFound, "project-patch-lanes: no lane window (needs the audio fixture)", {}};
+  if (!found) return Error{ErrorCode::NotFound, "project-patch-lanes: no lane (needs the audio fixture)", {}};
   circuit::CircuitCanvas::View view;
   view.zoom = 1.5;
   view.x = static_cast<double>(x) - 24.0;
@@ -1339,7 +1339,7 @@ Status setupProjectPatchLanes(Shell& shell) {
   return Ok{};
 }
 
-// TX.lane-edit: the lane windows as an editing surface (the sketch project): a time selection dragged over Keys and Pad
+// TX.lane-edit: the band lanes as an editing surface (the sketch project): a time selection dragged over Keys and Pad
 // (bar 2 … 3.5: it selects the clips it touches, outlined, the windows lighter), and automation mode with Pad's volume
 // automated (a ramp and a curved fall) drawn over its clips, a breakpoint selected; the arrangement's painters throughout.
 Status setupProjectPatchLaneEdit(Shell& shell) {
@@ -1368,16 +1368,16 @@ Status setupProjectPatchLaneEdit(Shell& shell) {
   v->setShown(true, false);
   closeModules(*v);
   shell.tree().layoutNow();
-  v->setLaneTime(0, 2 * v->laneDefaultSpan());  // 8 bars: twice the default width
+  v->setLaneTime(0.0, 8.0 * static_cast<double>(bar));  // TL.1: 8 bars on the lanes
   const project_patch::ProjectPatch& pp = v->patch();
   const uint32_t kb = pp.bandOf(keysId), pb = pp.bandOf(padId);
   if (kb == project_patch::kNone || pb == project_patch::kNone) return Error{ErrorCode::NotFound, "project-patch-lane-edit: no bands", {}};
   const project_patch::Node& kn = pp.nodes[pp.bands[kb].source];
   const project_patch::Node& pn = pp.nodes[pp.bands[pb].source];
   circuit::CircuitCanvas::View view;
-  view.zoom = 2.0;
+  view.zoom = 1.0;
   view.x = static_cast<double>(kn.x) - 12.0;
-  view.y = static_cast<double>(std::min(kn.y, pn.y)) - 12.0;
+  view.y = static_cast<double>(std::min(kn.y, pn.y)) - 60.0;
   v->canvas().setView(view);
   shell.tree().layoutNow();
   // The range over both windows (as a drag would leave it), then the automation (its own selection: the arrangement

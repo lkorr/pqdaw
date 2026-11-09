@@ -30,24 +30,28 @@ inline bool overlaps(const ui::Rect& r, const ui::IRect& clip) noexcept {
          r.y0 <= static_cast<float>(clip.bottom());
 }
 
-// A lane window's body in device px, snapped: painting and the playhead's damage agree on it.
-inline ui::Rect laneBodyDevice(const ProjectCanvas& c, const Node& n) {
-  const LaneRect r = laneBody(n);
-  return snapRect(c.deviceRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0));
+// TL.1: band `b`'s lane in device px, snapped (dy: world units it is drawn shifted by: a drag growing a band above it):
+// painting, hit tests and the playhead's damage agree on it.
+inline ui::Rect laneBodyDevice(const ProjectCanvas& c, const ProjectPatch& pp, const Band& b, float dy = 0.0f) {
+  const LaneRect r = laneBody(pp, b);
+  return snapRect(c.deviceRect(r.x0, r.y0 + dy, r.x1 - r.x0, r.y1 - r.y0));
 }
 
-// The playhead's column (device px, the line's left edge) in a window body showing [start, start + span).
-inline float lanePlayheadX(const ui::Rect& body, Ticks t, Ticks start, Ticks span) noexcept {
-  const double u = static_cast<double>(t - start) / static_cast<double>(span > 0 ? span : 1);
+// The playhead's column (device px, the line's left edge) in a lane showing [start, start + span).
+inline float lanePlayheadX(const ui::Rect& body, double t, double start, double span) noexcept {
+  const double u = (t - start) / (span > 0.0 ? span : 1.0);
   return std::floor(body.x0 + static_cast<float>(u * static_cast<double>(body.x1 - body.x0)));
 }
 
-// Every visible lane window of the view (lane_window.cpp): the lane's grid, clips with their names, MIDI notes (the
-// arrangement's clip previews) and audio waveforms (the overview cache), the playhead. Called from paintOverlay.
+// TL.1: every visible band lane of the view (lane_window.cpp): the lane's grid, clips with their names, MIDI notes (the
+// arrangement's clip previews) and audio waveforms (the overview cache), the playhead; group / return / master lanes
+// are empty strips (their automation: TL.2). Called from paintUnderlay with each band (under the blocks and cables).
 // TX.lane-edit: with the arrangement next to the view, the clips are drawn by the arrangement's painters (selection
-// outline, hover, audio handles, drag previews of a gesture in a window), with the arrangement's time selection over the
-// selected tracks' windows and, in automation mode, their chosen envelopes.
-void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatchView& view);
+// outline, hover, audio handles, drag previews of a gesture in a lane), with the arrangement's time selection over the
+// selected tracks' lanes and, in automation mode, their chosen envelopes.
+void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatchView& view);
+// TL.1: the time ruler over the lanes — the arrangement's Ruler on the lanes' axis, a child of the canvas (lane_edit.cpp).
+ui::Widget& addLaneRuler(ProjectCanvas& canvas, ProjectPatchView& view);
 
 // TX.mixer-look: a track's mixer drawn as a face (mixer_face.cpp). A mixer node's SceneFace has the track as its owner
 // and mixerFacePath as its path (the prefix, its size and its send pins: a new layout of the strip is a new face); the
@@ -69,9 +73,9 @@ inline float laneClipTitleH(float bodyH, float uiScale) noexcept {
   return bodyH >= std::round(16.0f * uiScale) ? std::round(std::clamp(bodyH * 0.28f, 3.0f * uiScale, 14.0f * uiScale)) : 0.0f;
 }
 
-// TX.lane-edit: the lane windows as an edit surface of the arrangement's editor and automation (src/arrangement/
-// edit_surface.h): its rows are the windows (bands with a window, in band order), each with its own time axis (the
-// window body's x span over [laneStart, laneStart + laneSpan)). Registered with the arrangement next to the view.
+// TX.lane-edit: the band lanes as an edit surface of the arrangement's editor and automation (src/arrangement/
+// edit_surface.h): its rows are the lanes with a clip row (MIDI and audio bands, in band order), all on one time axis
+// (TL.1: the lanes' x range over the shared time window). Registered with the arrangement next to the view.
 class LaneEditSurface final : public arrangement::EditSurface {
 public:
   explicit LaneEditSurface(ProjectPatchView& view) : view_(view) {}
@@ -89,7 +93,7 @@ public:
   void damageAll() override;
   std::vector<ui::MenuItem> menuItems() override;
 
-  // The band of a row / the row of a band (−1: none); the window body of a row (device px, snapped).
+  // The band of a row / the row of a band (−1: none); the lane of a row (device px, snapped).
   uint32_t bandOf(int32_t row) const;
   int32_t rowOfBand(uint32_t band) const;
   ui::Rect body(int32_t row) const;

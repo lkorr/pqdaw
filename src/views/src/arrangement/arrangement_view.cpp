@@ -363,6 +363,7 @@ void ArrangementView::onDocument(const doc::StoreEvent& e) {
 }
 
 void ArrangementView::onViewChange(uint32_t bits) {
+  if (bits & view_change::kTimeWindow) applyTimeWindow();  // TL.1: zoomed or scrolled here or in the project patch view
   if (bits & view_change::kTransport) refreshTransport();
   if (bits & view_change::kGrid) {
     lanes_->markDirty();
@@ -669,6 +670,19 @@ void ArrangementView::arrange(LayoutPass& pass) {
   const int32_t ovH = std::min(r.h, s.px(am::kOverviewHeight));
   const int32_t ruH = std::min(r.h - ovH, s.px(am::kRulerHeight));
   const int32_t lanesW = std::max(0, r.w - sb - hdr - div);
+  // TL.1: the shared time window on this width. Shown, a new width keeps the zoom (the span follows, as the window
+  // holds more or less time); hidden (the project patch view in front), the zoom follows the span the other view sets.
+  if (lanesW > 0 && (lanesW != axisW_ || pass.scale() != axisScale_)) {
+    axisW_ = lanesW;
+    axisScale_ = pass.scale();
+    if (visible() || !(ctx_.timeWindow().span > 0.0)) {
+      pinnedPpt_ = pxPerTick_;
+      ctx_.setTimeWindow(originTick(), axisLogicalWidth() / pxPerTick_);
+      pinnedPpt_.reset();
+    } else {
+      applyTimeWindow();
+    }
+  }
   pass.place(*overview_, {r.x, r.y, lanesW, ovH});
   pass.place(*overviewCorner_, {r.x + lanesW, r.y, r.w - lanesW, ovH});
   pass.place(*ruler_, {r.x, r.y + ovH, lanesW, ruH});
@@ -764,28 +778,49 @@ IRect ArrangementView::lanesViewport() const noexcept {
 double ArrangementView::devicePxPerTick() const noexcept { return pxPerTick_ * (tree() ? tree()->scale() : 1.0f); }
 
 float ArrangementView::xOfTick(double tick) const noexcept {
-  return static_cast<float>(static_cast<double>(lanes_->rect().x) + (tick - originTick_) * devicePxPerTick());
+  return static_cast<float>(static_cast<double>(lanes_->rect().x) + (tick - originTick()) * devicePxPerTick());
 }
 
 double ArrangementView::tickAtX(float deviceX) const noexcept {
-  return originTick_ + (static_cast<double>(deviceX) - static_cast<double>(lanes_->rect().x)) / devicePxPerTick();
+  return originTick() + (static_cast<double>(deviceX) - static_cast<double>(lanes_->rect().x)) / devicePxPerTick();
 }
 
 TickRange ArrangementView::visibleTicks() const noexcept {
   const double w = static_cast<double>(lanes_->rect().w);
-  return {static_cast<Ticks>(std::floor(originTick_)), static_cast<Ticks>(std::ceil(originTick_ + w / devicePxPerTick()))};
+  const double o = originTick();
+  return {static_cast<Ticks>(std::floor(o)), static_cast<Ticks>(std::ceil(o + w / devicePxPerTick()))};
 }
 
 Ticks ArrangementView::songEnd() const noexcept { return model_->songEnd; }
+
+// TL.1: the lanes' width in logical px (the last layout that gave them one; before any, a nominal width so a zoom set
+// before the first layout keeps its px per tick once the lanes are laid out).
+double ArrangementView::axisLogicalWidth() const noexcept {
+  constexpr double kNominalWidth = 1000.0;
+  return axisW_ > 0 ? static_cast<double>(axisW_) / static_cast<double>(axisScale_ > 0.0f ? axisScale_ : 1.0f) : kNominalWidth;
+}
 
 void ArrangementView::setTimeView(double origin, double pxPerTick) {
   if (!std::isfinite(origin) || !std::isfinite(pxPerTick)) return;
   pxPerTick = std::clamp(pxPerTick, am::kMinPxPerTick, am::kMaxPxPerTick);
   origin = std::clamp(origin, 0.0, static_cast<double>(doc::kMaxTicks / 2));
-  if (origin == originTick_ && pxPerTick == pxPerTick_) return;
-  const bool zoomChanged = pxPerTick != pxPerTick_;
-  originTick_ = origin;
-  pxPerTick_ = pxPerTick;
+  if (origin == originTick() && pxPerTick == pxPerTick_ && ctx_.timeWindow().span > 0.0) return;
+  // TL.1: into the shared window (span = this view's width at this zoom); the notification applies it here (with the
+  // exact px per tick asked for) and in the project patch view.
+  pinnedPpt_ = pxPerTick;
+  ctx_.setTimeWindow(origin, axisLogicalWidth() / pxPerTick);
+  applyTimeWindow();  // (nothing when the notification did it: the window did not change)
+  pinnedPpt_.reset();
+}
+
+void ArrangementView::applyTimeWindow() {
+  const ViewContext::TimeWindow& tw = ctx_.timeWindow();
+  if (!(tw.span > 0.0)) return;
+  const double ppt = pinnedPpt_ ? *pinnedPpt_ : (axisW_ > 0 ? axisLogicalWidth() / tw.span : pxPerTick_);
+  if (tw.start == appliedStart_ && ppt == pxPerTick_) return;
+  const bool zoomChanged = ppt != pxPerTick_;
+  appliedStart_ = tw.start;
+  pxPerTick_ = ppt;
   markAxisDirty();
   if (zoomChanged) {
     reportResolvedGrid();
@@ -814,7 +849,7 @@ void ArrangementView::zoomAt(float anchorX, double factor) {
   setTimeView(anchor - (static_cast<double>(anchorX) - static_cast<double>(lanes_->rect().x)) / dz, z);
 }
 
-void ArrangementView::scrollByPx(double devicePx) { setTimeView(originTick_ + devicePx / devicePxPerTick(), pxPerTick_); }
+void ArrangementView::scrollByPx(double devicePx) { setTimeView(originTick() + devicePx / devicePxPerTick(), pxPerTick_); }
 
 int32_t ArrangementView::scrollY() const noexcept { return scroll_->scrollY(); }
 void ArrangementView::scrollToY(int32_t devicePx) { scroll_->scrollTo(0, devicePx); }
@@ -877,7 +912,7 @@ void ArrangementView::setTimeSelection(std::optional<TickRange> r) {
 
 void ArrangementView::pushZoom() {
   if (zoomStack_.size() == kMaxZoomStack) zoomStack_.erase(zoomStack_.begin());
-  zoomStack_.push_back({originTick_, pxPerTick_});
+  zoomStack_.push_back({originTick(), pxPerTick_});
 }
 
 void ArrangementView::zoomToSelection() {
@@ -918,7 +953,7 @@ void ArrangementView::reportResolvedGrid() {
     return;
   }
   const Grid g(spec, model_->shown->timeline->sigMap, pxPerTick_);
-  ctx_.setResolvedGrid(g.divisionAt(static_cast<Ticks>(originTick_)));
+  ctx_.setResolvedGrid(g.divisionAt(static_cast<Ticks>(originTick())));
 }
 
 void ArrangementView::onFocusChanged(bool focused) {

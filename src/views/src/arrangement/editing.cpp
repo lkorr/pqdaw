@@ -680,6 +680,13 @@ void Editor::press(const PointerEvent& e) {
   s.tracks = {geo().rows()[static_cast<size_t>(h.row)].id};
   s.time = TickRange{t, t};
   setSelection(std::move(s), false);
+  // TL.1 (SPEC §15 2026-11-08: "clicking the lane moves where play starts"): stopped, the insert marker is where Space
+  // plays from — the start marker there, the playhead too (every surface: the arrangement's lanes, the band lanes).
+  // While playing the click places the insert marker only.
+  if (e.button == PointerButton::Left && !ctx_.transport().playhead().playing) {
+    ctx_.setStartMarker(t);
+    ctx_.transport().locate(t);
+  }
 }
 
 void Editor::beginClipDrag(DragKind kind, const Hit& h) {

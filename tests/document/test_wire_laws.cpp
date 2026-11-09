@@ -8,7 +8,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -299,4 +301,45 @@ TEST_CASE("TX.all-free: a meta device taken off the path no longer takes the not
   CHECK(st[1].offPath);
   REQUIRE(store.undo());
   CHECK(trackStages(*store.current(), *findTrackPtr(*store.current(), keys)).at(0).device->id == pa);
+}
+
+// TL.1 (SPEC §15 2026-11-08 "track lanes in the circuit view"): a source wire's tap (where its cable leaves the track's
+// lane in the project patch view) — one undo step, view only (a Meta change: never a compile), saved and read back; a
+// wire from a device has none.
+TEST_CASE("TL.1: a source wire's tap is a Meta edit, saved with the wire; a device's wire has none") {
+  Doc d;
+  const Wire* notes = nullptr;
+  for (const Wire& w : wiresOf(*d.store.current()))
+    if (w.fromNoteSource() && w.noteSource == d.keys) notes = &w;
+  REQUIRE(notes != nullptr);
+  const WireId id = notes->id;
+  CHECK_FALSE(notes->tap.has_value());
+  const size_t h0 = d.store.history().cursor();
+  REQUIRE(d.store.dispatch(SetWireTap{id, 132.0f}).ok());
+  CHECK(d.store.lastChanges().metaOnly());
+  CHECK(d.store.history().cursor() == h0 + 1);
+  REQUIRE(findWire(*d.store.current(), id)->tap.has_value());
+  CHECK(*findWire(*d.store.current(), id)->tap == 132.0f);
+  // Saved and read back.
+  auto text = serializeProject(*d.store.current(), d.store.view());
+  REQUIRE(text.ok());
+  CHECK(text->find("\"tap\"") != std::string::npos);
+  LoadOptions lo;
+  lo.devices = &library();
+  auto back = parseProject(*text, lo);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? "" : back.error().message));
+  REQUIRE(findWire(*back->project, id) != nullptr);
+  CHECK(findWire(*back->project, id)->tap == std::optional<float>(132.0f));
+  // Cleared (back to the view's default), undone, redone.
+  REQUIRE(d.store.dispatch(SetWireTap{id, std::nullopt}).ok());
+  CHECK_FALSE(findWire(*d.store.current(), id)->tap.has_value());
+  REQUIRE(d.store.undo());
+  CHECK(findWire(*d.store.current(), id)->tap == std::optional<float>(132.0f));
+  // Refused: a wire from a device, a non-finite tap.
+  const Wire* dev = nullptr;
+  for (const Wire& w : wiresOf(*d.store.current()))
+    if (!w.fromNoteSource()) dev = &w;
+  REQUIRE(dev != nullptr);
+  CHECK_FALSE(d.store.dispatch(SetWireTap{dev->id, 10.0f}).ok());
+  CHECK_FALSE(d.store.dispatch(SetWireTap{id, std::numeric_limits<float>::infinity()}).ok());
 }

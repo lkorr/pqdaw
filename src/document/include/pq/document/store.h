@@ -57,6 +57,12 @@ inline constexpr float kMaxPatchScale = 3.0f;
 // top-left from its band's top-left, world units, so it travels with its band and no re-layout of the band's other
 // blocks moves it). Unplaced, the layout puts the mixer at the band's top right. Saved as the entry's optional "mixerX" /
 // "mixerY"; view state like the nudge (not undoable; Reset Layout clears it).
+// TL.1 (SPEC §15 2026-11-08 "track lanes in the circuit view"): a track's entry also keeps its band's LANE HEIGHT (world
+// units, kMinPatchLaneH … kMaxPatchLaneH; 0 = the view's default; dragging the lane's bottom edge) and whether its band's
+// circuit is FOLDED (collapsed: the band shows its title strip and its lane only). Saved as the entry's optional "laneH" /
+// "folded"; view state like the nudge (not undoable).
+inline constexpr float kMinPatchLaneH = 16.0f;
+inline constexpr float kMaxPatchLaneH = 1024.0f;
 struct PatchNudge {
   float dx = 0.0f;
   float dy = 0.0f;
@@ -65,8 +71,10 @@ struct PatchNudge {
   float inAngle = 0.0f, outAngle = 0.0f;
   bool mixerPlaced = false;
   float mixerX = 0.0f, mixerY = 0.0f;
+  float laneH = 0.0f;   // TL.1
+  bool folded = false;  // TL.1
   bool empty() const noexcept {
-    return dx == 0.0f && dy == 0.0f && scale == 1.0f && !inPinned && !outPinned && !mixerPlaced;
+    return dx == 0.0f && dy == 0.0f && scale == 1.0f && !inPinned && !outPinned && !mixerPlaced && laneH == 0.0f && !folded;
   }
   friend bool operator==(const PatchNudge&, const PatchNudge&) noexcept = default;
 };

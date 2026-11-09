@@ -61,13 +61,15 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
   setLayout(ui::LayoutKind::Custom);
   setClipChildren(true);
   canvas_ = &add<ProjectCanvas>(*this);
+  ruler_ = &addLaneRuler(*canvas_, *this);  // TL.1: over the lanes (hidden in an embedded view: ProjectCanvas::arrange)
   // TX.cables: the cables glow with their signal (polled by the canvas only while a source is live).
   canvas_->cableLevels = [this](std::span<const uint32_t> wires, std::span<float> levels) { cableLevels(wires, levels); };
   canvas_->cableSignalLive = [this] { return cableSignalLive(); };
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent& e) { onDocument(e); });
   viewSub_ = ctx_.observe([this](uint32_t bits) {
     if (bits & view_change::kTransport) refreshTransport();
-    if ((bits & view_change::kWaveforms) && shown()) damageLanes();  // an overview arrived or grew: the windows only
+    if (bits & view_change::kTimeWindow) timeWindowChanged();  // TL.1: zoomed / scrolled here or in the arrangement
+    if ((bits & view_change::kWaveforms) && shown()) damageLanes();  // an overview arrived or grew: the lanes only
     if (bits & view_change::kAnalysis) wakeFaces();  // TX.spectrum: a Spectrum face's tap appeared
     if (bits & view_change::kResponses) {  // EQ.4b: the response displays on its panels draw the new structure
       canvas_->markDirty();
@@ -137,7 +139,7 @@ void ProjectPatchView::setShown(bool on, bool animate) {
   if (on) {
     if (hideOthers) hideOthers();
     slot->setVisible(true);
-    initLaneTime();  // T5.x-one-circuit: the windows start where the arrangement is
+    ensureTimeWindow();  // TL.1: the lanes show the arrangement's time window (set by it once it was laid out)
     (void)laneEditReady();  // TX.lane-edit: the windows get the arrangement's selection damage from now on
     stale_ = stale_ || built_ != ctx_.doc();
     sync();
@@ -309,7 +311,7 @@ void ProjectPatchView::captureArrangement() {
   if (arr != nullptr) {
     const ui::IRect vp = arr->lanesViewport();
     const doc::Project& p = *ctx_.doc();
-    const double t0 = static_cast<double>(laneStart_), span = static_cast<double>(std::max<Ticks>(laneSpan_, 1));
+    const double t0 = ctx_.timeWindow().start, span = std::max(1.0, ctx_.timeWindow().span);
     for (uint32_t b = 0; b < patch_.bands.size() && morph_.clips.size() < 1024; ++b) {
       const Band& band = patch_.bands[b];
       if ((band.kind != doc::TrackKind::Midi && band.kind != doc::TrackKind::Audio) || laneOf[b] < 0) continue;
@@ -322,7 +324,7 @@ void ProjectPatchView::captureArrangement() {
         Morph::ClipGeom g;
         g.lane = v.toRect();
         g.band = b;
-        // T5.x-one-circuit: into the lane window's time window (clips outside it shrink onto its edges).
+        // TL.1: into the band's lane over the shared time window (clips outside it shrink onto its edges).
         g.u0 = static_cast<float>(std::clamp((static_cast<double>(c.start()) - t0) / span, 0.0, 1.0));
         g.u1 = static_cast<float>(std::clamp((static_cast<double>(c.end()) - t0) / span, 0.0, 1.0));
         g.colour = c.colour().rgb;
@@ -466,27 +468,27 @@ void ProjectPatchView::paint(ui::PaintContext& ctx) {
       if (r.x1 < static_cast<float>(ctx.clip.x) || r.x0 > static_cast<float>(ctx.clip.right()) || r.y1 < static_cast<float>(ctx.clip.y) ||
           r.y0 > static_cast<float>(ctx.clip.bottom()))
         continue;
-      const bool source = patch_.nodes[g.node].kind == NodeKind::Source;
-      const float a = source ? e : na;
+      if (patch_.nodes[g.node].folded) continue;  // TL.1: hidden on a folded band
+      const bool source = patch_.nodes[g.node].kind == NodeKind::Lane;
+      if (source) {  // TL.1: the band's lane (the arrangement's lane colour all along: it is the same lane)
+        dl.addRectFilled(r, th->arrangement.lane);
+        continue;
+      }
+      const float a = na;
       dl.addRectFilled(r, ui::mulAlpha(th->circuit.symbolFill, a));
       dl.addRectStroke(r, ui::mulAlpha(th->circuit.symbolStroke, a), 1.0f);
     }
-  // Clips: from their place in the lane into their source node's strip.
+  // Clips: from their place in the arrangement's lane into the band's lane (TL.1: the same time window).
   for (const Morph::ClipGeom& c : morph_.clips) {
     if (c.band >= now.size()) continue;
     const Band& band = patch_.bands[c.band];
     if (band.source == kNone) continue;
-    const Node& src = patch_.nodes[band.source];
     const Rect& br = morph_.bands[c.band].band;
     const float dx = now[c.band].x0 - br.x0, dy = now[c.band].y0 - br.y0;
-    const Rect sr = morph_.nodes[band.source].end;
-    const float k = (sr.x1 - sr.x0) / std::max(1.0f, src.w);
-    const LaneRect lb = laneBody(src);  // its insets (TMM.10-fix2: a MIDI window's names column on the right)
-    const float right = src.x + src.w - lb.x1;
-    const Rect strip{sr.x0 + metrics::kLaneInset * k + dx, sr.y0 + metrics::kLaneTop * k + dy, sr.x1 - right * k + dx,
-                     sr.y1 - metrics::kLaneBottom * k + dy};
-    const float sw = strip.x1 - strip.x0;
-    const Rect end{strip.x0 + c.u0 * sw, strip.y0, std::max(strip.x0 + c.u1 * sw, strip.x0 + c.u0 * sw + 1.0f), strip.y1};
+    const Rect strip = morph_.nodes[band.source].end;
+    const Rect sr{strip.x0 + dx, strip.y0 + dy, strip.x1 + dx, strip.y1 + dy};
+    const float sw = sr.x1 - sr.x0;
+    const Rect end{sr.x0 + c.u0 * sw, sr.y0, std::max(sr.x0 + c.u1 * sw, sr.x0 + c.u0 * sw + 1.0f), sr.y1};
     const Rect r = lerpRect(c.lane, end, e);
     dl.addRectFilled(r, ui::hex(c.colour));
   }
@@ -510,7 +512,8 @@ void ProjectPatchView::rebuild() {
   doc::LowerOptions lo;
   lo.library = devlib != nullptr ? &devlib->library() : &emptyLibrary();
   lo.devices = devlib;
-  if (!lowered_ || built_ != snap || loweredWith_ != devlib) {  // a nudge or an opened device: the same graph
+  // A nudge, an opened device or (TL.1) a cable's tap moved: the same graph.
+  if (!lowered_ || (built_ != snap && !tapOnly_) || loweredWith_ != devlib) {
     auto low = doc::lower(*snap, lo, lowered_.get());
     if (!low) {
       ctx_.setStatus("Project patch: " + low.error().message);
@@ -532,7 +535,6 @@ void ProjectPatchView::rebuild() {
   if (openBand_.valid() && doc::findTrackPtr(*snap, openBand_) == nullptr) openBand_ = {};
   if (focus_.valid() && doc::findDevice(*snap, focus_).device == nullptr) focus_ = {};
   LayoutOptions opt;
-  opt.sourceW = laneWidth();
   opt.expanded = sizes;
   opt.expandedMixers = expandedMixers_;
   opt.nudges = &ctx_.store().view().patchNudges;
@@ -655,7 +657,7 @@ const doc::Track* ProjectPatchView::bandTrack(uint32_t b) const noexcept {
     bandTunings_.assign(patch_.bands.size(), nullptr);
     for (size_t i = 0; i < patch_.bands.size(); ++i) {
       if (const auto it = byId.find(patch_.bands[i].track.value); it != byId.end()) bandTracks_[i] = it->second;
-      if (hasLaneWindow(patch_.bands[i]) && bandTracks_[i] != nullptr)
+      if (hasClipRow(patch_.bands[i]) && bandTracks_[i] != nullptr)
         if (const std::optional<doc::TrackPath> path = doc::findTrack(*snap, patch_.bands[i].track)) bandTunings_[i] = doc::effectiveTuning(*snap, *path);
     }
   }
@@ -680,18 +682,23 @@ void ProjectPatchView::animateViewTo(const circuit::CircuitCanvas::View& v) {
 }
 
 namespace {
-circuit::CircuitCanvas::View fitRect(const ui::IRect& r, float us, float x0, float y0, float x1, float y1, double maxZoom) {
+// `top`: device px at the canvas's top that the fit leaves free (TL.1: the time ruler over it).
+circuit::CircuitCanvas::View fitRect(const ui::IRect& r, float us, float x0, float y0, float x1, float y1, double maxZoom, int32_t top = 0) {
   circuit::CircuitCanvas::View v;
   const double margin = 24.0;
-  const double lw = r.w / static_cast<double>(us), lh = r.h / static_cast<double>(us);
+  const double lw = r.w / static_cast<double>(us), lh = std::max(1, r.h - top) / static_cast<double>(us);
   double z = std::min(lw / std::max(1.0, static_cast<double>(x1 - x0) + 2 * margin), lh / std::max(1.0, static_cast<double>(y1 - y0) + 2 * margin));
   z = std::clamp(z, circuit::CircuitCanvas::kMinZoom, maxZoom);
   v.zoom = z;
   v.x = static_cast<double>(x0 + x1) * 0.5 - lw / z * 0.5;
-  v.y = static_cast<double>(y0 + y1) * 0.5 - lh / z * 0.5;
+  v.y = static_cast<double>(y0 + y1) * 0.5 - lh / z * 0.5 - static_cast<double>(top) / static_cast<double>(us) / z;
   return v;
 }
 }  // namespace
+
+int32_t ProjectPatchView::rulerInset() const noexcept {
+  return ruler_ != nullptr && ruler_->visible() && !embedded() ? ruler_->rect().h : 0;
+}
 
 void ProjectPatchView::fitAll(bool animate) {
   if (embedded()) {  // TX.groups / TX.free-rack: an embedded view fits its own contents (and refits with its size)
@@ -703,7 +710,7 @@ void ProjectPatchView::fitAll(bool animate) {
   sync();
   if (!canvas_->scene()) return;
   const circuit::CircuitScene& s = *canvas_->scene();
-  const auto v = fitRect(canvas_->rect(), tree() ? tree()->scale() : 1.0f, s.x0, s.y0, s.x1, s.y1, 2.0);
+  const auto v = fitRect(canvas_->rect(), tree() ? tree()->scale() : 1.0f, s.x0, s.y0, s.x1, s.y1, 2.0, rulerInset());
   if (animate) animateViewTo(v);
   else canvas_->setView(v);
 }
@@ -715,7 +722,7 @@ void ProjectPatchView::focusBand(doc::TrackId track, bool animate) {
   const Band& band = patch_.bands[b];
   const float x0 = band.kind == doc::TrackKind::Group ? band.cx0 : band.x0;
   const float x1 = band.kind == doc::TrackKind::Group ? band.cx1 : band.x1;
-  const auto v = fitRect(canvas_->rect(), tree() ? tree()->scale() : 1.0f, x0, band.y, x1, band.y + band.h, 1.5);
+  const auto v = fitRect(canvas_->rect(), tree() ? tree()->scale() : 1.0f, x0, band.y, x1, band.y + band.h, 1.5, rulerInset());
   if (animate) animateViewTo(v);
   else canvas_->setView(v);
 }
@@ -775,7 +782,7 @@ void ProjectPatchView::setDeviceExpanded(doc::DeviceId device, bool on) {
   if (n == kNone) return;
   if (on) {
     const Node& nd = patch_.nodes[n];
-    animateViewTo(fitRect(canvas_->rect(), tree() ? tree()->scale() : 1.0f, nd.x, nd.y, nd.x + nd.w, nd.y + nd.h, 2.0));
+    animateViewTo(fitRect(canvas_->rect(), tree() ? tree()->scale() : 1.0f, nd.x, nd.y, nd.x + nd.w, nd.y + nd.h, 2.0, rulerInset()));
   } else {
     focusBand(patch_.bands[patch_.nodes[n].band].track);
   }
@@ -812,7 +819,7 @@ bool ProjectPatchView::deviceWorldRect(doc::DeviceId device, LaneRect& out) cons
 void ProjectPatchView::frameDevice(doc::DeviceId device, bool animate) {
   LaneRect r;
   if (!deviceWorldRect(device, r)) return;
-  const auto v = fitRect(canvas_->rect(), tree() ? tree()->scale() : 1.0f, r.x0, r.y0, r.x1, r.y1, 1.5);
+  const auto v = fitRect(canvas_->rect(), tree() ? tree()->scale() : 1.0f, r.x0, r.y0, r.x1, r.y1, 1.5, rulerInset());
   if (animate) animateViewTo(v);
   else canvas_->setView(v);
 }
@@ -852,58 +859,49 @@ bool ProjectPatchView::openCircuit(doc::TrackId track, doc::DeviceId device, boo
   return true;
 }
 
-// ---- lane windows (T5.x-one-circuit) --------------------------------------------------------------------------------
+// ---- the lanes (TL.1) ----------------------------------------------------------------------------------------------
 
-float ProjectPatchView::laneWidth() const noexcept {
-  if (laneUnit_ <= 0 || laneSpan_ <= laneUnit_) return metrics::kSourceW;
-  const double w = static_cast<double>(metrics::kSourceW) * static_cast<double>(laneSpan_) / static_cast<double>(laneUnit_);
-  return std::min(metrics::kSourceMaxW, std::ceil(static_cast<float>(w) / 4.0f) * 4.0f);
+double ProjectPatchView::laneStart() const noexcept { return ctx_.timeWindow().start; }
+double ProjectPatchView::laneSpan() const noexcept { return ctx_.timeWindow().span; }
+
+// Before any view has set the shared window (no arrangement laid out yet): kDefaultBars bars from the start.
+void ProjectPatchView::ensureTimeWindow() {
+  if (ctx_.timeWindow().span > 0.0 || !ctx_.doc()) return;
+  const TimeSigMap& sig = ctx_.doc()->timeline->sigMap;
+  ctx_.setTimeWindow(0.0, static_cast<double>(sig.barToTicks(kDefaultBars)));
 }
 
-void ProjectPatchView::initLaneTime() {
-  const doc::Project& p = *ctx_.doc();
-  const TimeSigMap& sig = p.timeline->sigMap;
-  Ticks at = 0;
-  if (const PlayheadSnapshot ph = ctx_.transport().playhead(); ph.playing) at = ph.tick;
-  else if (const ArrangementView* arr = arrangementNear(*this)) at = static_cast<Ticks>(std::max(0.0, arr->originTick()));
-  const int64_t bar = sig.ticksToBarBeat(std::max<Ticks>(0, at)).bar;
-  const Ticks start = sig.barToTicks(bar);
-  laneUnit_ = sig.barToTicks(bar + kLaneBars) - start;  // 4 bars of the signature there (never literal ticks)
-  if (!laneInit_) {
-    laneSpan_ = laneUnit_;
-    laneInit_ = true;
-  }
-  setLaneTime(start, laneSpan_);
-}
-
-void ProjectPatchView::setLaneTime(Ticks start, Ticks span) {
-  const doc::Project& p = *ctx_.doc();
-  const TimeSigMap& sig = p.timeline->sigMap;
-  start = std::max<Ticks>(0, start);
-  if (laneUnit_ <= 0) {
-    const int64_t bar = sig.ticksToBarBeat(start).bar;
-    laneUnit_ = sig.barToTicks(bar + kLaneBars) - sig.barToTicks(bar);
-    laneInit_ = true;
-  }
-  const Ticks beat = ticksPerBeat(sig.signatureAt(start));
-  span = std::clamp(span, beat, std::max(beat, laneUnit_ * (kLaneMaxBars / kLaneBars)));
-  if (start == laneStart_ && span == laneSpan_) return;
-  const float w0 = laneWidth();
-  laneStart_ = start;
-  laneSpan_ = span;
-  if (laneWidth() != w0) relayout();  // the windows widen / narrow: the bands re-lay out (the chains move)
-  else damageLanes();                 // the same width: only the windows repaint
-}
+void ProjectPatchView::setLaneTime(double start, double span) { ctx_.setTimeWindow(start, span); }
 
 void ProjectPatchView::scrollLanes(double notches) {
-  setLaneTime(laneStart_ + static_cast<Ticks>(std::llround(notches * kLaneScrollStep * static_cast<double>(laneSpan_))), laneSpan_);
+  const ViewContext::TimeWindow w = ctx_.timeWindow();
+  ctx_.setTimeWindow(w.start + notches * kLaneScrollStep * w.span, w.span);
 }
 
 void ProjectPatchView::zoomLanes(double notches, float anchor) {
+  const ViewContext::TimeWindow w = ctx_.timeWindow();
   const double u = std::clamp(static_cast<double>(anchor), 0.0, 1.0);
-  const double at = static_cast<double>(laneStart_) + u * static_cast<double>(laneSpan_);
-  const auto span = static_cast<Ticks>(std::llround(static_cast<double>(laneSpan_) / std::pow(kLaneZoomStep, notches)));
-  setLaneTime(static_cast<Ticks>(std::llround(at - u * static_cast<double>(span))), span);
+  const double at = w.start + u * w.span;
+  const double span = w.span / std::pow(kLaneZoomStep, notches);
+  ctx_.setTimeWindow(at - u * span, span);
+}
+
+float ProjectPatchView::laneAnchor(Vec2 device) const {
+  const Rect r = canvas_->deviceRect(patch_.laneX0, 0.0f, patch_.laneX1 - patch_.laneX0, 0.0f);
+  return (device.x - r.x0) / std::max(1.0f, r.x1 - r.x0);
+}
+
+// The shared window moved or zoomed (here or in the arrangement): the lanes and the ruler repaint (no re-layout: the
+// lanes keep their width, they show more or less time).
+void ProjectPatchView::timeWindowChanged() {
+  if (!shown()) return;
+  damageLanes();
+  if (ruler_ != nullptr) ruler_->markDirty();
+  if (playheadTimer_) {  // the playhead's wake-up follows the zoom
+    cancelTimer(playheadTimer_);
+    playheadTimer_ = 0;
+    schedulePlayhead();
+  }
 }
 
 void ProjectPatchView::relayout() {
@@ -917,45 +915,48 @@ void ProjectPatchView::relayout() {
 
 std::vector<ProjectPatchView::LaneClip> ProjectPatchView::laneClips(uint32_t band) const {
   std::vector<LaneClip> out;
-  if (band >= patch_.bands.size() || !hasLaneWindow(patch_.bands[band]) || patch_.bands[band].source == kNone || laneSpan_ <= 0) return out;
+  const ViewContext::TimeWindow tw = ctx_.timeWindow();
+  if (band >= patch_.bands.size() || !hasClipRow(patch_.bands[band]) || patch_.bands[band].laneH <= 0.0f || !(tw.span > 0.0)) return out;
   const doc::Track* t = bandTrack(band);
   if (t == nullptr) return out;
-  const LaneRect r = laneBody(patch_.nodes[patch_.bands[band].source]);
-  const double k = static_cast<double>(r.x1 - r.x0) / static_cast<double>(laneSpan_);
-  const Ticks end = laneStart_ + laneSpan_;
+  const LaneRect r = laneBody(patch_, patch_.bands[band]);
+  const double k = static_cast<double>(r.x1 - r.x0) / tw.span;
+  const double end = tw.start + tw.span;
   for (const doc::ClipSlot& c : t->clips) {
-    if (c.end() <= laneStart_ || c.start() >= end) continue;
+    if (static_cast<double>(c.end()) <= tw.start || static_cast<double>(c.start()) >= end) continue;
     LaneClip lc;
     lc.clip = c.id;
     lc.audio = c.isAudio();
-    lc.x0 = r.x0 + static_cast<float>(static_cast<double>(std::max(c.start(), laneStart_) - laneStart_) * k);
-    lc.x1 = r.x0 + static_cast<float>(static_cast<double>(std::min(c.end(), end) - laneStart_) * k);
+    lc.x0 = r.x0 + static_cast<float>((std::max(static_cast<double>(c.start()), tw.start) - tw.start) * k);
+    lc.x1 = r.x0 + static_cast<float>((std::min(static_cast<double>(c.end()), end) - tw.start) * k);
     out.push_back(lc);
   }
   return out;
 }
 
 uint32_t ProjectPatchView::laneAt(Vec2 device) const {
-  const graph::Point2 w = canvas_->toWorld(device);
+  if (embedded()) return kNone;
   for (uint32_t i = 0; i < patch_.bands.size(); ++i) {
     const Band& b = patch_.bands[i];
-    if (!hasLaneWindow(b) || b.source == kNone) continue;
-    const Node& n = patch_.nodes[b.source];
-    if (w.x >= n.x && w.x < n.x + n.w && w.y >= n.y && w.y < n.y + n.h) return i;
+    if (b.laneH <= 0.0f) continue;
+    const Rect r = laneBodyDevice(*canvas_, patch_, b);
+    if (device.x >= r.x0 && device.x < r.x1 && device.y >= r.y0 && device.y < r.y1) return i;
   }
   return kNone;
 }
 
+double ProjectPatchView::laneTickAt(float deviceX) const {
+  const ViewContext::TimeWindow tw = ctx_.timeWindow();
+  const Rect r = canvas_->deviceRect(patch_.laneX0, 0.0f, patch_.laneX1 - patch_.laneX0, 0.0f);
+  return tw.start + static_cast<double>(deviceX - r.x0) / static_cast<double>(std::max(1e-6f, r.x1 - r.x0)) * tw.span;
+}
+
 doc::ClipRef ProjectPatchView::laneClipAt(Vec2 device) const {
   const uint32_t b = laneAt(device);
-  if (b == kNone || laneSpan_ <= 0) return {};
+  if (b == kNone || !hasClipRow(patch_.bands[b]) || !(ctx_.timeWindow().span > 0.0)) return {};
   const doc::Track* t = bandTrack(b);
   if (t == nullptr) return {};
-  const LaneRect r = laneBody(patch_.nodes[patch_.bands[b].source]);
-  const graph::Point2 w = canvas_->toWorld(device);
-  if (w.x < r.x0 || w.x >= r.x1 || w.y < r.y0 || w.y >= r.y1) return {};
-  const auto tick = static_cast<Ticks>(std::floor(static_cast<double>(laneStart_) +
-                                                  static_cast<double>(w.x - r.x0) / static_cast<double>(r.x1 - r.x0) * static_cast<double>(laneSpan_)));
+  const auto tick = static_cast<Ticks>(std::floor(laneTickAt(device.x)));
   doc::ClipRef hit;
   for (const doc::ClipSlot& c : t->clips)  // the last one starting at or before the tick wins (drawn on top)
     if (c.start() <= tick && tick < c.end()) hit = {t->id, c.id};
@@ -977,9 +978,8 @@ void ProjectPatchView::damageLanes() {
   if (tr == nullptr || !shown()) return;
   const ui::IRect cr = canvas_->rect();
   for (const Band& b : patch_.bands) {
-    if (!hasLaneWindow(b) || b.source == kNone) continue;
-    const Node& n = patch_.nodes[b.source];
-    const Rect r = canvas_->deviceRect(n.x, n.y, n.w, n.h);
+    if (b.laneH <= 0.0f) continue;
+    const Rect r = laneBodyDevice(*canvas_, patch_, b);
     const ui::IRect d = ui::intersect(toIRect({r.x0 - 1.0f, r.y0 - 1.0f, r.x1 + 1.0f, r.y1 + 1.0f}), cr);
     if (!d.empty()) tr->damage().add(d.toRect());
   }
@@ -987,19 +987,114 @@ void ProjectPatchView::damageLanes() {
 
 void ProjectPatchView::damageLaneColumn(Ticks t) {
   ui::UiTree* tr = tree();
-  if (tr == nullptr || !shown() || laneSpan_ <= 0 || t < laneStart_ || t >= laneStart_ + laneSpan_) return;
+  const ViewContext::TimeWindow tw = ctx_.timeWindow();
+  const double tt = static_cast<double>(t);
+  if (tr == nullptr || !shown() || !(tw.span > 0.0) || tt < tw.start || tt >= tw.start + tw.span) return;
   const ui::IRect cr = canvas_->rect();
   const float w = static_cast<float>(std::max(1, tr->uiScale().px(1.0f)));
   for (const Band& b : patch_.bands) {
-    if (!hasLaneWindow(b) || b.source == kNone) continue;
-    const Rect body = laneBodyDevice(*canvas_, patch_.nodes[b.source]);
+    if (b.laneH <= 0.0f || !hasClipRow(b)) continue;
+    const Rect body = laneBodyDevice(*canvas_, patch_, b);
     if (body.y1 < static_cast<float>(cr.y) || body.y0 > static_cast<float>(cr.bottom()) || body.x1 < static_cast<float>(cr.x) ||
         body.x0 > static_cast<float>(cr.right()))
       continue;
-    const float x = lanePlayheadX(body, t, laneStart_, laneSpan_);
+    const float x = lanePlayheadX(body, tt, tw.start, tw.span);
     const ui::IRect col = ui::intersect(toIRect({x - 1.0f, body.y0, x + w + 1.0f, body.y1}), cr);
     if (!col.empty()) tr->damage().add(col.toRect());
   }
+  if (ruler_ != nullptr) ruler_->markDirty();  // its playhead line (a thin strip)
+}
+
+// ---- lane height, folding (TL.1: view state, saved, not undoable) ----------------------------------------------------
+
+float ProjectPatchView::laneHeight(doc::TrackId track) const noexcept {
+  const auto& nudges = ctx_.store().view().patchNudges;
+  const auto it = nudges.find(track.value);
+  return it != nudges.end() && it->second.laneH > 0.0f ? it->second.laneH : metrics::kLaneH;
+}
+
+void ProjectPatchView::setLaneHeight(doc::TrackId track, float h) {
+  h = std::round(std::clamp(h, doc::kMinPatchLaneH, doc::kMaxPatchLaneH) / 4.0f) * 4.0f;
+  auto& nudges = ctx_.store().view().patchNudges;
+  doc::PatchNudge& n = nudges[track.value];
+  const float v = h == metrics::kLaneH ? 0.0f : h;
+  if (n.laneH == v) {
+    if (n.empty()) nudges.erase(track.value);
+    return;
+  }
+  n.laneH = v;
+  if (n.empty()) nudges.erase(track.value);
+  ctx_.viewStateChanged();
+  relayout();  // model + scene again (the lowering kept: view state is not the document)
+}
+
+bool ProjectPatchView::bandFolded(doc::TrackId track) const noexcept {
+  const auto& nudges = ctx_.store().view().patchNudges;
+  const auto it = nudges.find(track.value);
+  return it != nudges.end() && it->second.folded;
+}
+
+void ProjectPatchView::setBandFolded(doc::TrackId track, bool folded) {
+  auto& nudges = ctx_.store().view().patchNudges;
+  if (bandFolded(track) == folded) return;
+  doc::PatchNudge& n = nudges[track.value];
+  n.folded = folded;
+  if (n.empty()) nudges.erase(track.value);
+  ctx_.viewStateChanged();
+  relayout();
+}
+
+void ProjectPatchView::setAllFolded(bool folded) {
+  auto& nudges = ctx_.store().view().patchNudges;
+  bool changed = false;
+  for (const Band& b : patch_.bands) {
+    if (bandFolded(b.track) == folded) continue;
+    doc::PatchNudge& n = nudges[b.track.value];
+    n.folded = folded;
+    if (n.empty()) nudges.erase(b.track.value);
+    changed = true;
+  }
+  if (!changed) return;
+  ctx_.viewStateChanged();
+  relayout();
+}
+
+// ---- cables from the lanes (TL.1) ------------------------------------------------------------------------------------
+
+bool ProjectPatchView::setCableTap(doc::WireId wire, std::optional<float> worldX) {
+  const doc::Wire* w = doc::findWire(*ctx_.doc(), wire);
+  if (w == nullptr || !w->fromNoteSource()) return false;
+  const uint32_t b = patch_.bandOf(w->noteSource);
+  if (b == kNone) return false;
+  std::optional<float> tap;
+  if (worldX) tap = std::round(std::clamp(*worldX, patch_.laneX0 + 4.0f, std::max(patch_.laneX0 + 4.0f, patch_.laneX1 - 4.0f)) - patch_.bands[b].x0);
+  tapOnly_ = true;  // a view-only change: the lowering stays
+  const bool done = dispatch(doc::SetWireTap{wire, tap}, "Move Cable");
+  tapOnly_ = false;
+  return done;
+}
+
+// A cable's lane end slid along the edge: one store gesture (each step shown at once, one undo step at the release).
+void ProjectPatchView::beginTapDrag() {
+  if (tapGesture_ || ctx_.store().inGesture()) return;
+  tapGesture_ = ctx_.store().beginGesture("Move Cable").ok();
+}
+
+void ProjectPatchView::endTapDrag(bool commit) {
+  if (!tapGesture_) return;
+  tapGesture_ = false;
+  tapOnly_ = true;
+  if (commit) (void)ctx_.store().commitGesture();
+  else (void)ctx_.store().cancelGesture();
+  tapOnly_ = false;
+}
+
+void ProjectPatchView::stampTap(doc::Wire& w) {
+  if (!pendingTap_ || !w.fromNoteSource() || w.noteSource != pendingTap_->track) return;
+  const uint32_t b = patch_.bandOf(w.noteSource);
+  if (b == kNone) return;
+  w.tap = std::round(pendingTap_->x - patch_.bands[b].x0);
+  pendingTap_.reset();
 }
 
 // Called on transport notifications (play / stop, the start marker) and when shown or hidden: the only reads while
@@ -1032,13 +1127,14 @@ void ProjectPatchView::refreshTransport() {
   }
 }
 
-// While playing, wake when the playhead will have moved about one device px in the windows (from the tempo there),
+// While playing, wake when the playhead will have moved about one device px in the lanes (from the tempo there),
 // bounded to one frame at 144 Hz … 100 ms.
 void ProjectPatchView::schedulePlayhead() {
   const doc::Project& p = *ctx_.doc();
-  const double bpm = p.timeline->tempoMap.bpmAt(playhead_.value_or(laneStart_));
+  const ViewContext::TimeWindow tw = ctx_.timeWindow();
+  const double bpm = p.timeline->tempoMap.bpmAt(playhead_.value_or(static_cast<Ticks>(tw.start)));
   const double ticksPerSecond = bpm / 60.0 * static_cast<double>(kPpq);
-  const double pxPerTick = static_cast<double>(laneWidth() * canvas_->deviceScale()) / static_cast<double>(std::max<Ticks>(laneSpan_, 1));
+  const double pxPerTick = static_cast<double>((patch_.laneX1 - patch_.laneX0) * canvas_->deviceScale()) / std::max(1.0, tw.span);
   const double secondsPerPx = 1.0 / std::max(1e-12, pxPerTick * ticksPerSecond);
   playheadTimer_ = requestTimer(std::clamp(secondsPerPx, 1.0 / 144.0, 0.1));
 }
@@ -1054,21 +1150,19 @@ void ProjectPatchView::readPlayhead() {
     refreshTransport();
     return;
   }
-  const Ticks end = laneStart_ + laneSpan_;
-  const bool wasIn = playhead_ && *playhead_ >= laneStart_ && *playhead_ < end;
-  if (wasIn && (ph.tick >= end || ph.tick < laneStart_)) {
-    // Follow: the windows page on (by whole spans; back to the playhead's bar after a jump back, a loop).
+  const ViewContext::TimeWindow tw = ctx_.timeWindow();
+  const double end = tw.start + tw.span, at = static_cast<double>(ph.tick);
+  const bool wasIn = playhead_ && static_cast<double>(*playhead_) >= tw.start && static_cast<double>(*playhead_) < end;
+  if (wasIn && (at >= end || at < tw.start) && tw.span > 0.0) {
+    // Follow (as the arrangement's): the shared window pages on, the playhead at its left edge.
     playhead_ = ph.tick;
-    Ticks start = laneStart_;
-    if (ph.tick >= end) start = laneStart_ + laneSpan_ * ((ph.tick - laneStart_) / laneSpan_);
-    else start = ctx_.doc()->timeline->sigMap.barToTicks(ctx_.doc()->timeline->sigMap.ticksToBarBeat(ph.tick).bar);
-    setLaneTime(start, laneSpan_);  // repaints the windows (or re-lays out)
-    schedulePlayhead();
+    ctx_.setTimeWindow(at, tw.span);  // the lanes repaint (timeWindowChanged), the arrangement follows
+    if (!playheadTimer_) schedulePlayhead();
     return;
   }
   if (!playhead_ || *playhead_ != ph.tick) {
-    const double k = static_cast<double>(laneWidth() * canvas_->deviceScale()) / static_cast<double>(std::max<Ticks>(laneSpan_, 1));
-    const bool moved = !playhead_ || std::floor(static_cast<double>(*playhead_ - laneStart_) * k) != std::floor(static_cast<double>(ph.tick - laneStart_) * k);
+    const double k = static_cast<double>((patch_.laneX1 - patch_.laneX0) * canvas_->deviceScale()) / std::max(1.0, tw.span);
+    const bool moved = !playhead_ || std::floor((static_cast<double>(*playhead_) - tw.start) * k) != std::floor((at - tw.start) * k);
     if (moved && playhead_) damageLaneColumn(*playhead_);
     playhead_ = ph.tick;
     if (moved) damageLaneColumn(ph.tick);
@@ -1106,6 +1200,7 @@ bool ProjectPatchView::dispatch(const doc::Command& c, const char* what) {
 bool ProjectPatchView::connectEnds(doc::Wire ends) {
   // TX.all-free: a cable between two main ports is written with kMainPort ends (a link of the main path when it lies
   // on it: doc::canonicalWire).
+  stampTap(ends);  // TL.1: a cable drawn up from a lane's edge leaves it there
   const doc::Wire w = doc::canonicalWire(*ctx_.doc(), std::move(ends), ctx_.deviceLibrary());
   return apply(doc::ops::connect(*ctx_.doc(), ctx_.store().ids(), w), "Wire");
 }
@@ -1905,6 +2000,13 @@ ui::Menu* ProjectPatchView::openBandMenu(uint32_t band, Vec2 at) {
   items.push_back(ui::MenuItem::item("Open Band", [this, track] { openBand(track); }));  // T5.x-circuit-chain
   items.push_back(ui::MenuItem::item("Zoom to Band", [this, track] { focusBand(track); }));
   items.push_back(ui::MenuItem::item("Zoom to Project", [this] { fitAll(); }, "F"));
+  // TL.1: a band's circuit folded to its title strip and its lane (all of them: the view reads as the arrangement).
+  items.push_back(ui::MenuItem::sep());
+  items.push_back(ui::MenuItem::item(b.folded ? "Unfold Circuit" : "Fold Circuit", [this, track, f = b.folded] { setBandFolded(track, !f); }));
+  items.push_back(ui::MenuItem::item("Fold All Circuits", [this] { setAllFolded(true); }));
+  items.push_back(ui::MenuItem::item("Unfold All Circuits", [this] { setAllFolded(false); }));
+  if (b.laneH != metrics::kLaneH)
+    items.push_back(ui::MenuItem::item("Reset Lane Height", [this, track] { setLaneHeight(track, metrics::kLaneH); }));
   ui::MenuItem reset = ui::MenuItem::item("Reset Layout", [this] { resetLayout(); });
   reset.enabled = !ctx_.store().view().patchNudges.empty();
   items.push_back(std::move(reset));
@@ -2322,7 +2424,7 @@ project_patch::ProjectPatchView& installProjectPatch(Shell& shell) {
   // T5.x-one-circuit: every "Open in Circuit View" opens this view on the device's band; Ctrl+Alt+C on the selected track.
   ctx.setCircuitOpener([&view](doc::TrackId track, doc::DeviceId device) { return view.openCircuit(track, device); });
   ctx.setViewAction("view.trackCircuit", [&ctx] { (void)ctx.openProjectCircuit(ctx.selectedTrack()); });
-  // A clip opened from a lane window: its editor takes the keyboard (as a double-click in the arrangement does).
+  // A clip opened from a band lane: its editor takes the keyboard (as a double-click in the arrangement does).
   view.onOpenClip = [&shell](const doc::ClipRef& ref) {
     const doc::ClipSlot* slot = nullptr;
     if (const doc::Track* t = doc::findTrackPtr(*shell.context().doc(), ref.track))

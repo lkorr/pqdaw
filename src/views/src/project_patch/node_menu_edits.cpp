@@ -137,10 +137,11 @@ bool choiceIsInstrument(ViewContext& ctx, const ProjectPatchView::NodeChoice& c)
 // Wires `from`.`port` (or track `notes`'s source: kMainPort its own signal, else a note output) → `to`.`param` in the
 // composition; TX.all-free: two main ports by name are written as kMainPort (doc::canonicalWire).
 bool wire(Composer& k, const doc::DeviceLibrary* lib, doc::DeviceId from, doc::TrackId notes, const std::string& port,
-          doc::DeviceId to, const std::string& param) {
+          doc::DeviceId to, const std::string& param, std::optional<float> tap = {}) {
   doc::Wire w;
   w.from = notes.valid() ? doc::DeviceId{} : from;
   w.noteSource = notes;
+  if (notes.valid()) w.tap = tap;  // TL.1: where its cable leaves the lane
   w.port = port;
   w.to = to;
   w.param = param;
@@ -248,7 +249,7 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
     const bool takesNotes = made->kind == doc::DeviceKind::Instrument && !doc::isMetaDevice(*made);
     if (link.kind == SpawnLink::Kind::FromOutput) {
       if (mp.in.empty() && !takesNotes) note = c.name + " has no input: placed unwired";
-      else if (!wire(k, lib, link.device, link.notes, link.port, id, std::string(doc::kMainPort))) note = "Wire: " + k.why;
+      else if (!wire(k, lib, link.device, link.notes, link.port, id, std::string(doc::kMainPort), link.tap)) note = "Wire: " + k.why;
       else inAt = mp.in.empty() ? std::string("notes") : mp.in;
     } else {
       if (mp.out.empty()) note = c.name + " has no output: placed unwired";
@@ -332,9 +333,9 @@ void ProjectPatchView::collectBodies(std::vector<Push::Body>& out, bool onlyOver
     const Node& n = patch_.nodes[i];
     if (n.band >= patch_.bands.size()) continue;
     const bool device = n.kind == NodeKind::Device;
-    const bool standing = n.kind == NodeKind::Source || n.kind == NodeKind::Sum || n.kind == NodeKind::Mixer ||
-                          n.kind == NodeKind::Output || n.kind == NodeKind::Terminal;
+    const bool standing = n.kind == NodeKind::Sum || n.kind == NodeKind::Mixer || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal;
     if (!device && !standing) continue;
+    if (n.folded) continue;  // TL.1: hidden on a folded band (a lane is no body)
     if (n.w <= 0.0f || n.h <= 0.0f) continue;
     Push::Body b;
     b.device = device ? n.device : doc::DeviceId{};
@@ -615,7 +616,7 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca) 
       ctx_.setStatus(label + ": " + k.why);
       return false;
     }
-    if (hasIn && !wire(k, ctx_.deviceLibrary(), old.from, old.noteSource, old.port, id, std::string(doc::kMainPort))) {
+    if (hasIn && !wire(k, ctx_.deviceLibrary(), old.from, old.noteSource, old.port, id, std::string(doc::kMainPort), old.tap)) {
       ctx_.setStatus(label + ": " + k.why);
       return false;
     }

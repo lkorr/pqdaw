@@ -435,6 +435,8 @@ Status checkWire(const Wire& w) {
     return invalid("a wire that adds in its target's units has no amount (scale its signal with a VCA)");
   }
   if (static_cast<uint8_t>(w.reducer) > static_cast<uint8_t>(WireReducer::Loudest)) return invalid("unknown wire reducer");
+  if (w.tap && (!w.fromNoteSource() || !(std::fabs(*w.tap) <= kMaxWireTap)))  // TL.1
+    return invalid("only a cable from a track's lane has a tap (finite, within ±1e6)");
   return ok();
 }
 

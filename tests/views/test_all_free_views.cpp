@@ -534,9 +534,22 @@ TEST_CASE("render: device-path-broken matches the golden image") {
 // input and its output onto the mixer make it play (lowered: a call of it in the track's patch, nothing missing, both
 // cables Lowered); a block's output dragged onto ANOTHER track's mixer is a send-like route (one undo step, lowered).
 namespace {
+// TL.1: a cable from the Keys lane's top edge (its notes: a spot where no cable leaves it), or a port chip (Hz, gate, vel).
 Vec2 sourceOut(const PatchUi& u, size_t port) {
-  const Node& n = u.pp().nodes[u.pp().bands[u.pp().bandOf(u.keys)].source];
-  return u.dev({n.x + n.w, n.y + pinOffset(n, port)});
+  const uint32_t b = u.pp().bandOf(u.keys);
+  const ProjectCanvas& c = u.view().canvas();
+  if (port > 0) {
+    const LaneRect chip = c.lanePortChip(b, static_cast<uint32_t>(port));
+    REQUIRE(chip.x1 > chip.x0);
+    return u.dev({(chip.x0 + chip.x1) * 0.5f, (chip.y0 + chip.y1) * 0.5f});
+  }
+  const Band& band = u.pp().bands[b];
+  for (float x = u.pp().laneX1 - 12.0f; x > u.pp().laneX0; x -= 6.0f) {
+    const Vec2 p = u.dev({x, band.laneY});
+    if (c.rect().contains(p) && c.laneEdgeAt(p).kind == ProjectCanvas::LaneEdgeHit::Kind::Top) return p;
+  }
+  FAIL("no free spot on the lane's top edge");
+  return {};
 }
 const doc::WireState* loweredState(PatchUi& u, doc::WireId w) {
   u.view().sync();

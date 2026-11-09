@@ -283,9 +283,13 @@ public:
   const doc::Snapshot& shown() const noexcept;
 
   // ---- horizontal axis -------------------------------------------------------------------------------------
+  // TL.1 (SPEC §15 2026-11-08): the visible time range is the context's (ViewContext::timeWindow, shared with the
+  // project patch view's band lanes); this view maps it onto its lanes' width — pxPerTick = lanes width / span. While
+  // the arrangement is shown a change of its lanes' width keeps the zoom (the span follows); hidden, it follows the span.
   double pxPerTick() const noexcept { return pxPerTick_; }    // logical px per tick
-  double originTick() const noexcept { return originTick_; }  // tick at the left edge of the lanes
-  // Sets both (zoom clamped to the limits, origin ≥ 0) and repaints what depends on them.
+  double originTick() const noexcept { return ctx_.timeWindow().start; }  // tick at the left edge of the lanes
+  // Sets both (zoom clamped to the limits, origin ≥ 0) and repaints what depends on them (the shared window: the project
+  // patch view's lanes follow).
   void setTimeView(double originTick, double pxPerTick);
   // Zooms by `factor` (> 1 = in) keeping the tick under device x `anchorX` where it is.
   void zoomAt(float anchorX, double factor);
@@ -495,6 +499,9 @@ public:
 private:
   void onDocument(const doc::StoreEvent& e);
   void onViewChange(uint32_t bits);
+  // TL.1: the shared time window → this view's axis (pxPerTick_ from the lanes' width; pinnedPpt_ when this view set it).
+  void applyTimeWindow();
+  double axisLogicalWidth() const noexcept;
   void rebuildRows(bool lanesUnchanged = false);
   void syncHeaders();
   void rebindTrackNodes();  // a mixer Param change: new track nodes, same rows (T3.x-fix-paint)
@@ -530,8 +537,11 @@ private:
   arrangement::BottomTracks* bottom_ = nullptr;
   HeaderDecorator decorator_;
 
-  double originTick_ = 0.0;
+  double appliedStart_ = 0.0;  // TL.1: the window's start the axis was last drawn at (change detection only)
   double pxPerTick_ = arrangement_metrics::kDefaultPxPerTick;
+  int32_t axisW_ = 0;          // TL.1: the lanes' width (device px) at the last layout that gave them one
+  float axisScale_ = 1.0f;
+  std::optional<double> pinnedPpt_;
   float headerWidth_ = arrangement_metrics::kHeaderWidth;
   float mixerWidth_ = arrangement_metrics::kHeaderMixerWidth;
   float rowsScale_ = 0.0f;  // UI scale the rows' device px were computed at

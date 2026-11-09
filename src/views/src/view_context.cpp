@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <thread>
 
@@ -581,6 +582,14 @@ void ViewContext::setStartMarker(Ticks t) {
   if (t == startMarker_) return;
   startMarker_ = t;
   notify(view_change::kTransport);
+}
+
+void ViewContext::setTimeWindow(double start, double span) {
+  if (!std::isfinite(start) || !std::isfinite(span)) return;
+  TimeWindow w{std::clamp(start, 0.0, static_cast<double>(doc::kMaxTicks / 2)), std::clamp(span, kMinTimeSpan, kMaxTimeSpan)};
+  if (w == window_) return;
+  window_ = w;
+  notify(view_change::kTimeWindow);
 }
 
 // --- grid -----------------------------------------------------------------------------------------------

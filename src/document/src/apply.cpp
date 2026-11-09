@@ -1823,6 +1823,14 @@ Res apply_(const Snapshot& s, const SetWireSignal& c, ChangeSet& cs) {  // IG.1-
   });
 }
 
+Res apply_(const Snapshot& s, const SetWireTap& c, ChangeSet& cs) {  // TL.1: view only (Meta)
+  const Wire* w = findWire(*s, c.wire);
+  if (w == nullptr) return notFound("wire not found");
+  if (!w->fromNoteSource()) return invalid("only a cable from a track's lane has a tap");
+  if (c.x && !(std::fabs(*c.x) <= kMaxWireTap)) return invalid("a cable's tap must be finite (within ±1e6)");
+  return editWire(s, c.wire, cs, kChangeMeta, [&](Wire& x) { x.tap = c.x; });
+}
+
 // ---- Meta modules (TMM.3) ------------------------------------------------------------------------------------------
 
 // The device's meta map with `f` applied to a copy of it (an empty result is stored as none).
@@ -2020,7 +2028,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
     "Rename Device", "Device Group", "Knob Curve", "Edit Panel",
-    "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer", "Cable Signal",
+    "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer", "Cable Signal", "Move Cable",
     "Add Meta Module", "Delete Meta Module", "Rename Meta Module", "Meta Module Parameter", "Meta Module Setting",
     "Edit Meta Module Data",
     "Batch"};

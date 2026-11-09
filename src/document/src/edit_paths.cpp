@@ -292,6 +292,7 @@ EditResult spliceIntoWire(const Project& p, IdSource& ids, const DeviceLibrary* 
   PQ_DOC_TRY(k.add(RemoveWire{old.id}));
   Wire a = mainLink(ids, endFrom(old), End{device, {}});
   a.port = old.port;
+  a.tap = old.tap;  // TL.1: a lane's cable keeps where it leaves the lane
   PQ_DOC_TRY(k.add(AddWire{a}));
   Wire b = mainLink(ids, End{device, {}}, endTo(old));
   b.param = old.param;

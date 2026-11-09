@@ -539,3 +539,15 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   This widens every group in the Device view (20 view goldens moved). Alternative if it reads as clutter: show the
   inspector only while the setting is above 1× and offer it from the frame's title-bar menu instead.
 - Status: decided (reversible: group_frame.cpp).
+
+## Q?-TL.1-a · Track lanes: where a lane's height and fold live, the click's start marker while playing, port chips
+- **Context**: TL.1 (docs/plans/TL.md 1, 5, 6, 7). A band lane's height is dragged at its bottom edge; a band's circuit
+  folds; a click on empty lane space moves where Space plays from; a MIDI lane still offers notes / Hz / gate / velocity.
+- **Choices**: (1) the lane height and the fold are view state on the track's `doc::PatchNudge` entry ("laneH",
+  "folded"; saved, not undoable) — like a block's scale, not the arrangement's `TrackView::height` (a different view,
+  a different height). (2) Stopped, a click on empty lane space sets the insert marker, the start marker and the playhead
+  (both views: the shared Editor); playing, only the insert marker, as the arrangement did ("while playing it behaves as
+  the arrangement does now"). (3) The note outputs are four small chips over the left end of the lane's top edge
+  (notes, Hz, gate, vel); a cable's default tap stays right of them. The old Notes node's pins are gone. (4) No load
+  conversion: a file whose layout placed the Notes node simply has none; its wires keep working (default taps).
+- Status: decided (reversible: store.h PatchNudge, editing.cpp Editor::press, project_patch.h lanePortChip).
