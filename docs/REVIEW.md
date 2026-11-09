@@ -1127,3 +1127,12 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   click / drag a lane's ruler; press a knob (lead to its sub-lane's line); S-drag a mixer face, S + double-click.
 - To judge: ruler strip height (16 units; numbers hide below ~9 px); the frame / colour bar; mixer 2× makes bands taller
   (fits zoom out further). Mixer resize is view state like a block's (no undo step: Q?-TL.4-a).
+
+## 2026-11-09 · TL.5 · one follow automation lane per track 👁
+- What: pressing controls in a band (or a knob's Show Automation in the arrangement / Device view) re-points ONE follow
+  lane per track instead of stacking a lane per press. A pin on each lane (arrangement lane header, left of + / −; in the
+  band view at the start of the sub-lane's name): outlined = the follow lane, click to keep it; filled red = pinned,
+  click to unpin. Pinned lanes stack above the follow lane. Also "Pin Lane" / "Unpin Lane" in the lane menus.
+- Try: press knob A then knob B in a band (one lane, B); pin it; press A (B pinned + A below); unpin B.
+- To judge: the pin glyph / its size (13 px); that a just-pinned lane shows no separate follow lane until the next press
+  (Q?-TL.5-a). Goldens moved: lane headers gained the pin; panel-window-* now show one sub-lane where two were stacked.

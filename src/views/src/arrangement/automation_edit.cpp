@@ -75,8 +75,8 @@ bool ArrangementAutomation::lanesShown(doc::TrackId t) const noexcept {
   return s && s->shown;
 }
 
-// The first time a track's lanes are shown: its automated parameters whose lanes are visible (LaneView), else the
-// chosen one.
+// The first time a track's lanes are shown: its automated parameters whose lanes are visible (LaneView) pinned (TL.5:
+// the saved pins).
 void ArrangementAutomation::initLanes(TrackState& s, doc::TrackId t) {
   if (s.initialised) return;
   s.initialised = true;
@@ -86,7 +86,7 @@ void ArrangementAutomation::initLanes(TrackState& s, doc::TrackId t) {
   const doc::ViewState& vs = ctx_.store().view();
   for (const doc::LanePtr& l : tr->lanes) {
     const auto it = vs.lanes.find(l->id);
-    if ((it == vs.lanes.end() || it->second.visible) && paramValid(p, l->param)) s.lanes.push_back(l->param);
+    if ((it == vs.lanes.end() || it->second.visible) && paramValid(p, l->param)) s.pinned.push_back(l->param);
   }
 }
 
@@ -99,8 +99,9 @@ void ArrangementAutomation::showLanes(doc::TrackId t, bool on) {
   s.shown = on;
   if (on) {
     initLanes(s, t);
-    std::erase_if(s.lanes, [&](const doc::ParamRef& r) { return !paramValid(*ctx_.doc(), r); });
-    if (s.lanes.empty()) s.lanes.push_back(chosen(t));
+    std::erase_if(s.pinned, [&](const doc::ParamRef& r) { return !paramValid(*ctx_.doc(), r); });
+    if (!s.follow || !paramValid(*ctx_.doc(), *s.follow)) s.follow = chosen(t);
+    s.followHidden = false;
   }
   view_.rowsChanged();
 }
@@ -111,12 +112,31 @@ std::vector<doc::ParamRef> ArrangementAutomation::shownLanes(doc::TrackId t) con
   return out;
 }
 
+// TL.5: the pinned lanes, then the follow lane unless its parameter is pinned (one lane per parameter) or it was hidden.
 void ArrangementAutomation::lanesFor(const doc::Project& p, const doc::Track& t, std::vector<doc::ParamRef>& out) const {
   out.clear();
   const TrackState* s = findState(t.id);
   if (!s || !s->shown) return;
-  for (const doc::ParamRef& r : s->lanes)
+  for (const doc::ParamRef& r : s->pinned)
     if (paramValid(p, r) && std::find(out.begin(), out.end(), r) == out.end()) out.push_back(r);
+  if (s->follow && !s->followHidden && paramValid(p, *s->follow) && std::find(out.begin(), out.end(), *s->follow) == out.end())
+    out.push_back(*s->follow);
+}
+
+bool ArrangementAutomation::pinned(doc::TrackId t, const doc::ParamRef& p) const noexcept {
+  const TrackState* s = findState(t);
+  return s && std::find(s->pinned.begin(), s->pinned.end(), p) != s->pinned.end();
+}
+
+std::optional<doc::ParamRef> ArrangementAutomation::followParam(doc::TrackId t) const {
+  const TrackState* s = findState(t);
+  if (!s || !s->follow || !paramValid(*ctx_.doc(), *s->follow)) return std::nullopt;
+  return s->follow;
+}
+
+bool ArrangementAutomation::isFollowLane(doc::TrackId t, const doc::ParamRef& p) const {
+  const TrackState* s = findState(t);
+  return s && s->shown && !s->followHidden && s->follow && *s->follow == p && !pinned(t, p);
 }
 
 // A lane's LaneView::visible (view state saved with the project): marks the project dirty when it changes.
@@ -129,11 +149,24 @@ void ArrangementAutomation::setLaneVisible(doc::LaneId lane, bool visible) {
 
 void ArrangementAutomation::setLaneParam(doc::TrackId t, size_t index, const doc::ParamRef& p) {
   TrackState& s = state(t);
-  if (index >= s.lanes.size() || s.lanes[index] == p) return;
-  const auto it = std::find(s.lanes.begin(), s.lanes.end(), p);
-  if (it != s.lanes.end()) std::swap(*it, s.lanes[index]);
-  else s.lanes[index] = p;
-  if (const LaneLookup l = view_.model().lane(p); l.lane) setLaneVisible(l.lane->id, true);
+  const std::vector<doc::ParamRef> shown = shownLanes(t);
+  if (index >= shown.size() || shown[index] == p || !paramValid(*ctx_.doc(), p)) return;
+  const doc::ParamRef cur = shown[index];
+  const auto at = std::find(s.pinned.begin(), s.pinned.end(), cur);
+  const auto other = std::find(s.pinned.begin(), s.pinned.end(), p);
+  if (at != s.pinned.end()) {  // a pinned lane shows p (a pinned p swaps places; the follow lane's p swaps with it)
+    if (other != s.pinned.end()) std::swap(*at, *other);
+    else {
+      *at = p;
+      // The follow lane showing p swaps with it; one merged with this lane (the same parameter) moves along with it.
+      if (s.follow && (*s.follow == p || *s.follow == cur)) s.follow = *s.follow == p ? cur : p;
+    }
+  } else {  // the follow lane: re-pointed (a pinned p: the two swap)
+    if (other != s.pinned.end()) *other = cur;
+    s.follow = p;
+    s.followHidden = false;
+  }
+  if (const LaneLookup l = view_.model().lane(p); l.lane && pinned(t, p)) setLaneVisible(l.lane->id, true);
   view_.rowsChanged();
 }
 
@@ -142,12 +175,47 @@ void ArrangementAutomation::showParam(doc::TrackId t, const doc::ParamRef& p) {
   if (!tr || !paramValid(*ctx_.doc(), p)) return;
   choose(t, p);
   // TL.2: a return / master's lane is shown too (under its band lane in the project patch view; the arrangement's pinned
-  // rows show only the chosen parameter, in A mode).
+  // rows show only the chosen parameter, in A mode). TL.5: the follow lane is re-pointed (one lane, not one per press);
+  // a pinned p is revealed.
+  TrackState& s = state(t);
+  const bool wasShown = s.shown;
+  if (!wasShown) showLanes(t, true);  // (init, the follow lane's default)
+  if (std::find(s.pinned.begin(), s.pinned.end(), p) != s.pinned.end()) {
+    if (wasShown) return;  // its pinned lane is shown already
+  } else {
+    if (wasShown && s.follow && *s.follow == p && !s.followHidden) return;  // shown already: nothing changes
+    s.follow = p;
+    s.followHidden = false;
+  }
+  view_.rowsChanged();
+}
+
+void ArrangementAutomation::pin(doc::TrackId t, const doc::ParamRef& p) {
+  if (doc::findTrackPtr(*ctx_.doc(), t) == nullptr || !paramValid(*ctx_.doc(), p)) return;
   TrackState& s = state(t);
   initLanes(s, t);
-  if (std::find(s.lanes.begin(), s.lanes.end(), p) == s.lanes.end()) s.lanes.push_back(p);
-  s.shown = true;
+  if (std::find(s.pinned.begin(), s.pinned.end(), p) != s.pinned.end()) return;
+  s.pinned.push_back(p);
+  if (!s.shown) {
+    s.shown = true;
+    if (!s.follow || !paramValid(*ctx_.doc(), *s.follow)) s.follow = p;
+    s.followHidden = false;
+  }
   if (const LaneLookup l = view_.model().lane(p); l.lane) setLaneVisible(l.lane->id, true);
+  ctx_.setStatus("Pinned " + paramName(*ctx_.doc(), p, ctx_.deviceLibrary()));
+  view_.rowsChanged();
+}
+
+void ArrangementAutomation::unpin(doc::TrackId t, const doc::ParamRef& p) {
+  TrackState& s = state(t);
+  if (std::erase(s.pinned, p) == 0) return;
+  const bool stays = s.shown && s.follow && *s.follow == p && !s.followHidden;  // the follow lane keeps showing it
+  if (!stays) {
+    if (const LaneLookup l = view_.model().lane(p); l.lane) setLaneVisible(l.lane->id, false);
+    if (drag_.kind != DragKind::None && !drag_.band.overClips && drag_.band.param == p && drag_.band.track == t) cancelDrag();
+  }
+  if (shownLanes(t).empty()) s.shown = false;
+  ctx_.setStatus("Unpinned " + paramName(*ctx_.doc(), p, ctx_.deviceLibrary()));
   view_.rowsChanged();
 }
 
@@ -157,11 +225,13 @@ bool ArrangementAutomation::addLane(doc::TrackId t) {
   if (!tr) return false;
   TrackState& s = state(t);
   initLanes(s, t);
+  const std::vector<doc::ParamRef> shown = shownLanes(t);
   const std::vector<ParamChoice> choices = paramChoices(p, *tr, ctx_.deviceLibrary());
   const ParamChoice* pick = nullptr;
   for (int pass = 0; pass < 2 && !pick; ++pass)  // automated parameters first (Live adds the next automated one)
     for (const ParamChoice& c : choices)
-      if ((pass == 1 || c.automated) && std::find(s.lanes.begin(), s.lanes.end(), c.param) == s.lanes.end()) {
+      if ((pass == 1 || c.automated) && std::find(shown.begin(), shown.end(), c.param) == shown.end() &&
+          std::find(s.pinned.begin(), s.pinned.end(), c.param) == s.pinned.end()) {
         pick = &c;
         break;
       }
@@ -169,8 +239,12 @@ bool ArrangementAutomation::addLane(doc::TrackId t) {
     ctx_.setStatus("Every parameter of this track already has a lane");
     return false;
   }
-  s.lanes.push_back(pick->param);
-  s.shown = true;
+  s.pinned.push_back(pick->param);  // TL.5: a lane of its own (pinned), above the follow lane
+  if (!s.shown) {
+    s.shown = true;
+    if (!s.follow || !paramValid(p, *s.follow)) s.follow = pick->param;
+    s.followHidden = false;
+  }
   if (const LaneLookup l = view_.model().lane(pick->param); l.lane) setLaneVisible(l.lane->id, true);
   view_.rowsChanged();
   return true;
@@ -178,14 +252,15 @@ bool ArrangementAutomation::addLane(doc::TrackId t) {
 
 void ArrangementAutomation::hideLane(doc::TrackId t, size_t index) {
   TrackState& s = state(t);
-  // `index` counts the shown (valid) lanes: map it onto the stored list.
+  // `index` counts the shown (valid) lanes: map it onto the pinned list / the follow lane.
   const std::vector<doc::ParamRef> shown = shownLanes(t);
   if (index >= shown.size()) return;
   const doc::ParamRef r = shown[index];
-  if (const LaneLookup l = view_.model().lane(r); l.lane) setLaneVisible(l.lane->id, false);
-  std::erase(s.lanes, r);
+  if (std::erase(s.pinned, r) > 0)
+    if (const LaneLookup l = view_.model().lane(r); l.lane) setLaneVisible(l.lane->id, false);
+  if (s.follow && *s.follow == r) s.followHidden = true;
   if (drag_.kind != DragKind::None && !drag_.band.overClips && drag_.band.param == r) cancelDrag();
-  if (s.lanes.empty()) s.shown = false;
+  if (shownLanes(t).empty()) s.shown = false;
   view_.rowsChanged();
 }
 
@@ -194,7 +269,17 @@ void ArrangementAutomation::hideLaneLater(doc::TrackId t, size_t index) {
   view_.requestFrame();
 }
 
+void ArrangementAutomation::togglePinLater(doc::TrackId t, const doc::ParamRef& p) {
+  pendingPin_ = {t, p};
+  view_.requestFrame();
+}
+
 void ArrangementAutomation::runPending() {
+  if (pendingPin_) {
+    const auto [t, p] = *pendingPin_;
+    pendingPin_.reset();
+    setPinned(t, p, !pinned(t, p));
+  }
   if (!pendingHide_) return;
   const auto [t, i] = *pendingHide_;
   pendingHide_.reset();
@@ -1089,6 +1174,14 @@ Menu* ArrangementAutomation::openChooser(Widget& from, doc::TrackId t, int32_t l
     if (laneIndex >= 0) setLaneParam(t, index, r);
     else choose(t, r);
   });
+  if (laneIndex >= 0) {  // TL.5: the lane's pin as a menu item (first)
+    const bool on = pinned(t, current);
+    std::vector<MenuItem> all;
+    all.push_back(MenuItem::item(on ? "Unpin Lane" : "Pin Lane", [this, t, current, on] { setPinned(t, current, !on); }));
+    all.push_back(MenuItem::sep());
+    for (MenuItem& m : items) all.push_back(std::move(m));
+    items = std::move(all);
+  }
   const IRect r = from.rect();
   return ui::openContextMenu(view_, {static_cast<float>(r.x), static_cast<float>(r.bottom())}, std::move(items));
 }
@@ -1141,6 +1234,10 @@ Menu* ArrangementAutomation::openMenu(Vec2 at, const AutomationBand& b) {
     // TL.2: on another surface (a band lane, which has no lane header with its "−") the lane can be hidden here, and a
     // return / master shows lanes there.
     const bool own = &geo() == &view_.surfaces().own();
+    if (!over) {  // TL.5: pin / unpin the lane (the follow lane's parameter kept as a lane of its own)
+      const bool on = pinned(t, b.param);
+      items.push_back(MenuItem::item(on ? "Unpin Lane" : "Pin Lane", [this, t, r = b.param, on] { setPinned(t, r, !on); }));
+    }
     if (!own && !over) items.push_back(MenuItem::item("Hide This Lane", [this, t, index] { hideLane(t, index); }));
     if (!own || (tr->kind != doc::TrackKind::Return && tr->kind != doc::TrackKind::Master)) {
       const bool shown = lanesShown(t);

@@ -588,7 +588,8 @@ void ProjectPatchView::rebuild() {
     uint32_t band = kNone, index = 0;
     doc::TrackId track;
     float y = 0.0f;
-    for (const SubLaneSpec& sl : subSpecs_) {
+    for (uint32_t k = 0; k < subSpecs_.size(); ++k) {
+      const SubLaneSpec& sl = subSpecs_[k];
       if (sl.track != track) {
         track = sl.track;
         band = patch_.bandOf(track);
@@ -596,7 +597,7 @@ void ProjectPatchView::rebuild() {
         if (band != kNone) y = patch_.bands[band].laneY + patch_.bands[band].laneH;
       }
       if (band == kNone || patch_.bands[band].laneH <= 0.0f) continue;
-      subLanes_.push_back({band, sl.param, index++, y, sl.h});
+      subLanes_.push_back({band, sl.param, index++, y, sl.h, k});
       y += sl.h;
     }
   }

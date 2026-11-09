@@ -846,6 +846,7 @@ private:
 // ---- Automation (T3.15) ----------------------------------------------------------------------------------------
 
 // The header of an automation lane (ArrangementView::laneRows()[index]): automated-state LED, the parameter chooser,
+// TL.5 the pin (filled: a pinned lane, a click unpins it; outlined: the track's follow lane, a click pins its parameter),
 // "+" (another lane) and "−" (hide this one) in the name column; the bottom edge resizes the lane.
 class LaneHeader : public ui::Control {
 public:
@@ -854,6 +855,7 @@ public:
   const AutomationLaneRow& lane() const noexcept { return lane_; }
   // Device rects of the parts (tests).
   ui::IRect chooserRect() const noexcept;
+  ui::IRect pinRect() const noexcept;
   ui::IRect addRect() const noexcept;
   ui::IRect hideRect() const noexcept;
   void paint(ui::PaintContext& ctx) override;
@@ -869,6 +871,7 @@ private:
   std::string label_;
   bool automated_ = false;
   bool overridden_ = false;
+  bool pinned_ = false;  // TL.5
   bool resizing_ = false;
   float resizeStartY_ = 0.0f;
   float resizeStartH_ = 0.0f;

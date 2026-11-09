@@ -579,3 +579,15 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   Esc restores): saved, not an undo step, like every block scale. Making view-state sizes undoable would be one change for
   blocks and mixers together.
 - Status: decided (reversible: editing.cpp Editor::placeStart, view_context.cpp ViewContext::play, view.cpp setMixerScale).
+
+## Q?-TL.5-a · 2026-11-09 · TL.5 · Pin semantics of the follow lane, and what is saved
+- **Context**: TL.5 (Q239 option 1): one follow lane per track; pinning keeps a parameter as a lane. Undefined: what the
+  follow lane shows right after its parameter is pinned, what Hide does on each kind, what is saved.
+- **Choices**: (1) While the follow lane's parameter is pinned they are one lane (the pinned one; the next press re-points
+  the follow lane below it), so a parameter never shows twice (the TL.3 wire, the lane lookups stay one-per-param).
+  Alternative: the follow lane jumps to some other parameter on pin — arbitrary. (2) Hide ("−", Hide This Lane) on a
+  pinned lane unpins it; on the follow lane hides it until the next press / Show Automation / lanes re-shown; "+" adds a
+  pinned lane. (3) Saved = pins of automated lanes (`LaneView::visible`, as before: the first show after loading pins the
+  visible automated lanes); the follow lane's parameter and pins of unautomated parameters are session view state, like
+  TL.2's shown flag. Saving them would need a per-track entry in `ViewState` (document schema).
+- Status: decided (reversible: ArrangementAutomation::lanesFor / pin / unpin / hideLane, automation_edit.cpp).

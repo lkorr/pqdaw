@@ -2728,6 +2728,13 @@ bool ProjectCanvas::laneEdgePointer(const ui::PointerEvent& e) {
       return true;
     }
   }
+  // TL.5: an automation sub-lane's pin (pins / unpins its parameter).
+  for (size_t i = 0; i < v.subLanes().size(); ++i)
+    if (const std::optional<Rect> pin = v.subLanePinDevice(i); pin && e.pos.x >= pin->x0 && e.pos.x < pin->x1 && e.pos.y >= pin->y0 && e.pos.y < pin->y1) {
+      if (tree()) tree()->setFocus(this);
+      (void)v.toggleSubLanePin(i);
+      return true;
+    }
   const LaneEdgeHit h = laneEdgeAt(e.pos);
   if (h.kind == LaneEdgeHit::Kind::None) return false;
   if (tree()) tree()->setFocus(this);

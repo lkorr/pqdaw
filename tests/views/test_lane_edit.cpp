@@ -708,6 +708,173 @@ TEST_CASE("lane edit (TL.2): a press on a band's control shows its sub-lane (mix
   }
 }
 
+// TL.5 (Q239 option 1): one FOLLOW lane per track that shows the last pressed control's parameter; pinning keeps a
+// parameter as a lane of its own (pinned lanes above the follow lane); the arrangement's Show Automation re-points the
+// follow lane (a pinned parameter: its lane revealed); the automation wire lands on whichever lane shows the parameter.
+// All view state: no undo steps.
+TEST_CASE("lane edit (TL.5): presses re-point the one follow lane; pin keeps a lane; Show Automation re-points; unpin; the wire") {
+  Ui u;
+  u.show();
+  u.frame();
+  ProjectPatchView& v = u.view();
+  ArrangementAutomation& au = u.arrangement().automation();
+  const doc::TrackId keys = u.track("Keys").id;
+  const uint32_t kb = v.patch().bandOf(keys);
+  auto lanesOf = [&] {  // Keys' sub-lanes in the band view, top to bottom
+    std::vector<doc::ParamRef> out;
+    for (const ProjectPatchView::SubLane& sl : v.subLanes())
+      if (sl.band == v.patch().bandOf(keys)) out.push_back(sl.param);
+    return out;
+  };
+  v.focusBand(keys, false);
+  u.d.tree().layoutNow();
+  // Knob A: the mixer face's pan. Knob B: a control of one of Keys' blocks (a face's, a panel's or a value block's).
+  const doc::ParamRef a = doc::ParamRef::track(doc::ParamKind::TrackPan, keys);
+  auto panAt = [&] {
+    const Node& mx = v.patch().nodes[v.patch().bands[v.patch().bandOf(keys)].mixer];
+    return v.canvas().toDevice({mx.x + 27.0f * mx.scale, mx.y + 45.0f * mx.scale});
+  };
+  std::optional<std::pair<doc::Binding, graph::Point2>> hitB;  // (world: the canvas may scroll)
+  {
+    const IRect cr = v.canvas().rect();
+    for (const uint32_t d : v.patch().bands[kb].devices) {
+      const Node& n = v.patch().nodes[d];
+      if (n.folded) continue;
+      for (float y = n.y + 4.0f; y < n.y + n.h && !hitB; y += 2.0f)
+        for (float x = n.x + 4.0f; x < n.x + n.w && !hitB; x += 2.0f) {
+          const Vec2 p = v.canvas().toDevice({x, y});
+          if (!cr.contains(p) || p.y < static_cast<float>(cr.y) + 60.0f || v.canvas().pinAt(p).valid() || v.laneEditAt(p)) continue;
+          const doc::Binding b = v.controlAt(p);
+          const doc::DeviceLoc dl = doc::findDevice(*u.ctx.doc(), b.device);
+          if (b.kind == doc::BindingKind::Control && b.meta.empty() && dl.track != nullptr && dl.track->id == keys &&
+              paramValid(*u.ctx.doc(), doc::ParamRef::device(b.device, b.name)))
+            hitB = std::make_pair(b, graph::Point2{x, y});
+        }
+    }
+  }
+  REQUIRE_MESSAGE(hitB.has_value(), "no control of Keys' blocks found on the canvas");
+  const doc::ParamRef b = doc::ParamRef::device(hitB->first.device, hitB->first.name);
+  auto pressB = [&] {
+    u.d.click(v.canvas().toDevice(hitB->second));
+    u.d.step();
+  };
+  auto pressA = [&] {
+    u.d.click(panAt());
+    u.d.step();
+  };
+  auto clickPin = [&](const doc::ParamRef& p) {
+    size_t i = v.subLanes().size();
+    for (size_t k = 0; k < v.subLanes().size(); ++k)
+      if (v.subLanes()[k].band == v.patch().bandOf(keys) && v.subLanes()[k].param == p) i = k;
+    REQUIRE(i < v.subLanes().size());
+    // Zoomed in on the sub-lane's left end (the pin is drawn and taken at the near level of detail), then back.
+    const circuit::CircuitCanvas::View keep = v.canvas().view();
+    circuit::CircuitCanvas::View cv = keep;
+    cv.zoom = 1.0;
+    cv.x = static_cast<double>(v.patch().laneX0) - 24.0;
+    cv.y = static_cast<double>(v.subLanes()[i].y) - 120.0;
+    v.canvas().setView(cv);
+    u.d.tree().layoutNow();
+    const std::optional<Rect> pin = v.subLanePinDevice(i);
+    REQUIRE_MESSAGE(pin.has_value(), "the sub-lane's pin is not drawn at this zoom");
+    u.d.click({(pin->x0 + pin->x1) * 0.5f, (pin->y0 + pin->y1) * 0.5f});
+    u.d.step();
+    v.canvas().setView(keep);
+    u.d.tree().layoutNow();
+  };
+  const size_t hist = u.history();
+
+  // A then B: one lane, showing B (re-pointed in place: the same height, no re-layout).
+  pressA();
+  REQUIRE(lanesOf() == std::vector<doc::ParamRef>{a});
+  CHECK(au.isFollowLane(keys, a));
+  const uint64_t rebuilds = v.stats().rebuilds;
+  pressB();
+  CHECK(v.selectedControl() == hitB->first);
+  REQUIRE(lanesOf() == std::vector<doc::ParamRef>{b});
+  CHECK(au.shownLanes(keys) == std::vector<doc::ParamRef>{b});  // the arrangement's lanes too (one state)
+  CHECK(au.followParam(keys) == b);
+  CHECK(v.stats().rebuilds == rebuilds);
+  {  // the wire lands on B's (follow) lane
+    const std::optional<ProjectPatchView::AutomationWire> w = v.automationWire();
+    REQUIRE(w.has_value());
+    REQUIRE(v.subLaneRect(keys, b).has_value());
+    CHECK(w->lane.y0 == doctest::Approx(v.subLaneRect(keys, b)->y0));
+  }
+
+  // Pin B (the pin on its label, through the window): still one lane, now pinned.
+  clickPin(b);
+  CHECK(au.pinned(keys, b));
+  CHECK_FALSE(au.isFollowLane(keys, b));
+  CHECK(lanesOf() == std::vector<doc::ParamRef>{b});
+  // A again: B stays pinned, the follow lane below it shows A.
+  pressA();
+  REQUIRE(lanesOf() == (std::vector<doc::ParamRef>{b, a}));
+  CHECK(au.pinned(keys, b));
+  CHECK(au.isFollowLane(keys, a));
+  CHECK(v.subLaneRect(keys, b)->y1 <= v.subLaneRect(keys, a)->y0 + 0.5f);  // pinned above the follow lane
+  {  // the wire lands on A's (follow) lane
+    const std::optional<ProjectPatchView::AutomationWire> w = v.automationWire();
+    REQUIRE(w.has_value());
+    CHECK(w->lane.y0 == doctest::Approx(v.subLaneRect(keys, a)->y0));
+  }
+  // B again: its pinned lane (nothing added, the follow lane keeps A); the wire lands on the pinned lane.
+  pressB();
+  CHECK(lanesOf() == (std::vector<doc::ParamRef>{b, a}));
+  {
+    const std::optional<ProjectPatchView::AutomationWire> w = v.automationWire();
+    REQUIRE(w.has_value());
+    CHECK(w->lane.y0 == doctest::Approx(v.subLaneRect(keys, b)->y0));
+  }
+
+  // The arrangement's Show Automation (a knob's menu: ViewContext::showAutomation) points the follow lane at its
+  // parameter; on a pinned parameter it only reveals that lane.
+  const doc::ParamRef vol = doc::ParamRef::track(doc::ParamKind::TrackVolume, keys);
+  u.ctx.showAutomation(keys, vol);
+  u.d.step();
+  CHECK(lanesOf() == (std::vector<doc::ParamRef>{b, vol}));
+  CHECK(au.chosen(keys) == vol);
+  u.ctx.showAutomation(keys, b);
+  u.d.step();
+  CHECK(lanesOf() == (std::vector<doc::ParamRef>{b, vol}));
+  CHECK(au.followParam(keys) == vol);
+  // Hidden lanes: Show Automation shows them again with the follow lane on it.
+  v.showSubLanes(keys, false);
+  u.d.step();
+  CHECK(lanesOf().empty());
+  u.ctx.showAutomation(keys, a);
+  u.d.step();
+  CHECK(lanesOf() == (std::vector<doc::ParamRef>{b, a}));
+
+  // Unpin B (its pin again): its lane goes, the follow lane stays.
+  clickPin(b);
+  CHECK_FALSE(au.pinned(keys, b));
+  CHECK(lanesOf() == std::vector<doc::ParamRef>{a});
+  // Pin / unpin from the envelope menu (a right-click in the sub-lane): "Pin Lane" on the follow lane, then "Unpin Lane".
+  auto menuOnA = [&](std::string_view label) {
+    const Rect r = *v.subLaneRect(keys, a);
+    const float x = std::max(r.x0, static_cast<float>(v.canvas().rect().x)) + 80.0f;
+    u.d.click({x, (r.y0 + r.y1) * 0.5f + 6.0f}, mod::kNone, PointerButton::Right);
+    u.d.step();
+    Menu* m = u.openMenu();
+    REQUIRE(m != nullptr);
+    const int32_t i = u.item(*m, label);
+    REQUIRE(i >= 0);
+    m->choose(i);
+    u.d.step();
+  };
+  menuOnA("Pin Lane");
+  CHECK(au.pinned(keys, a));
+  CHECK(lanesOf() == std::vector<doc::ParamRef>{a});
+  menuOnA("Unpin Lane");
+  CHECK_FALSE(au.pinned(keys, a));
+  CHECK(lanesOf() == std::vector<doc::ParamRef>{a});  // still the follow lane's parameter
+  CHECK(au.isFollowLane(keys, a));
+
+  // View state only: no undo steps.
+  CHECK(u.history() == hist);
+}
+
 TEST_CASE("lane edit (TL.3): the automation wire from a pressed control to its sub-lane; it follows a block drag; Esc, a press elsewhere, hiding the sub-lane end it") {
   Ui u;
   u.show();

@@ -651,13 +651,7 @@ bool TuningsPanel::showAutomationLane(const doc::ParamRef& r) {
     ctx_.setStatus("Automation: add a MIDI track to hold the lane");
     return false;
   }
-  ArrangementAutomation& au = view->automation();
-  au.showLanes(t, true);
-  std::vector<doc::ParamRef> shown = au.shownLanes(t);
-  if (std::find(shown.begin(), shown.end(), r) == shown.end()) {
-    if (au.addLane(t)) shown = au.shownLanes(t);
-    au.setLaneParam(t, shown.empty() ? 0 : shown.size() - 1, r);
-  }
+  view->automation().showParam(t, r);  // TL.5: the track's follow lane shows it (a pinned lane of it: revealed)
   return true;
 }
 

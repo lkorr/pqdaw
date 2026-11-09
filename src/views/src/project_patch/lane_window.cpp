@@ -368,13 +368,23 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
     anySub = true;
     background(r, th.automation.lane, false);  // TL.4: the arrangement's automation lane look
     dl.addRectFilled({r.x0, r.y0, r.x1, r.y0 + line}, th.arrangement.separator);
+    // TL.5: the pin first (filled: pinned; outlined: the track's follow lane), the name after it.
+    float lx = r.x0 + 2.0f * us;
+    if (const std::optional<Rect> pin = view.subLanePinDevice(i)) {
+      const bool pinned = arr != nullptr && sl.band < pp.bands.size() && arr->automation().pinned(pp.bands[sl.band].track, sl.param);
+      dl.addRoundedRectFilled(*pin, 2.0f * us, th.surface.sunken);
+      paintLanePin(dl, *pin, pinned, pinned ? th.automation.line : th.automation.laneHeaderText, us);
+      lx = pin->x1 + 2.0f * us;
+    }
     if (fonts && near && r.y1 - r.y0 >= px + 4.0f * us) {
       const std::string label = paramName(p, sl.param, view.context().deviceLibrary());
-      const float w = std::min(r.x1 - r.x0 - 4.0f * us, 10.0f * px);
+      const float w = std::min(r.x1 - lx - 2.0f * us, 10.0f * px);
       const float tw = std::min(w, static_cast<float>(ctx.res.text->shape(font, label).advance) + 6.0f * us);
       const float y0 = r.y0 + 2.0f * us, y1 = y0 + px + 2.0f * us;
-      dl.addRoundedRectFilled({r.x0 + 2.0f * us, y0, r.x0 + 2.0f * us + tw, y1}, 2.0f * us, th.surface.sunken);
-      paint::text(ctx, font, toIRect({r.x0 + 5.0f * us, y0, r.x0 + 2.0f * us + w, y1}), label, th.automation.line, ui::TextAlign::Left);
+      if (w > 4.0f * us) {
+        dl.addRoundedRectFilled({lx, y0, lx + tw, y1}, 2.0f * us, th.surface.sunken);
+        paint::text(ctx, font, toIRect({lx + 3.0f * us, y0, lx + w, y1}), label, th.automation.line, ui::TextAlign::Left);
+      }
     }
   }
   // TL.4: each lane framed as a track (with its sub-lanes): a dark inset line round it, its track's colour down its

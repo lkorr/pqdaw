@@ -345,14 +345,29 @@ void ArrangementAutomation::paintEnvelopeDirect(PaintContext& ctx, const Automat
   smoothPolyline(dl, poly_.data(), static_cast<uint32_t>(poly_.size()), lineCol, lineW);
 }
 
+// TL.5: a pushpin: a round head over a plate, a needle down from it; outlined when not pinned.
+void paintLanePin(DrawList& dl, const Rect& r, bool pinned, Rgba col, float unit) {
+  const float w = r.x1 - r.x0, h = r.y1 - r.y0;
+  if (w < 4.0f || h < 4.0f) return;
+  const float t = std::max(1.0f, std::round(unit));
+  const float cx = std::round(r.x0 + w * 0.5f), head = std::max(1.5f, std::min(w, h) * 0.2f);
+  const float hy = r.y0 + h * 0.36f;
+  if (pinned) dl.addCircleFilled({cx, hy}, head, col);
+  else dl.addCircleStroke({cx, hy}, head, col, t);
+  const float plate = std::round(head * 1.6f), py = std::round(hy + head + t);
+  dl.addRectFilled({cx - plate, py, cx + plate, py + t}, col);
+  dl.addRectFilled({cx - t * 0.5f, py + t, cx + t * 0.5f, std::round(r.y1 - h * 0.12f)}, col);
+}
+
 // ---- lane header -------------------------------------------------------------------------------------------------
 
 namespace arrangement {
 
 LaneHeader::LaneHeader(std::string name, ArrangementView& view) : Control(std::move(name)), view_(view) {
   setInfo("Automation Lane",
-          "Shows one parameter's automation. Choose the parameter with the chooser; + adds another lane, − hides this "
-          "one. Click the line to add a breakpoint, drag breakpoints to move them, Alt-drag a segment to curve it, "
+          "Shows one parameter's automation. Choose the parameter with the chooser. The lane at the bottom follows the "
+          "control you last pressed; the pin keeps its parameter as a lane of its own (a pinned lane's pin unpins it). + "
+          "adds another lane, − hides this one. Click the line to add a breakpoint, drag breakpoints to move them, Alt-drag a segment to curve it, "
           "double-click a breakpoint to delete it; right-click for shapes. Drag the lane's bottom edge to resize it.");
 }
 
@@ -361,9 +376,11 @@ void LaneHeader::bind(const AutomationLaneRow& lane, uint16_t depth) {
   std::string label = paramName(p, lane.param, view_.context().deviceLibrary());
   const bool automated = lane.lane != nullptr;
   const bool overridden = view_.context().automationOverridden(lane.param);
+  const bool pinned = view_.automation().pinned(lane.track, lane.param);
   const bool changed = label != label_ || automated != automated_ || overridden != overridden_ || depth != depth_ ||
-                       lane.param != lane_.param || lane.index != lane_.index;
+                       lane.param != lane_.param || lane.index != lane_.index || pinned != pinned_;
   lane_ = lane;
+  pinned_ = pinned;
   label_ = std::move(label);
   automated_ = automated;
   overridden_ = overridden;
@@ -385,8 +402,14 @@ IRect nameColumn(const IRect& r, const UiScale& s, float mixerW, uint16_t depth)
 IRect LaneHeader::chooserRect() const noexcept {
   const UiScale s = tree() ? tree()->uiScale() : UiScale{};
   const IRect n = nameColumn(rect(), s, 0.0f, depth_);
-  const int32_t x0 = n.x + s.px(14.0f), x1 = n.right() - s.px(44.0f);
+  const int32_t x0 = n.x + s.px(14.0f), x1 = n.right() - s.px(61.0f);
   return {x0, n.y + s.px(3.0f), std::max(0, x1 - x0), std::min(s.px(au::kChooserHeight), std::max(0, n.h - s.px(4.0f)))};
+}
+
+IRect LaneHeader::pinRect() const noexcept {
+  const UiScale s = tree() ? tree()->uiScale() : UiScale{};
+  const IRect n = nameColumn(rect(), s, 0.0f, depth_);
+  return {n.right() - s.px(55.0f), n.y + s.px(3.0f), s.px(14.0f), std::min(s.px(14.0f), std::max(0, n.h - s.px(4.0f)))};
 }
 
 IRect LaneHeader::addRect() const noexcept {
@@ -423,6 +446,10 @@ void LaneHeader::paint(PaintContext& ctx) {
     chevron(dl, static_cast<float>(ch.right()) - static_cast<float>(ctx.scale.px(7.0f)), static_cast<float>(ch.y) + static_cast<float>(ch.h) * 0.5f,
             static_cast<float>(ctx.scale.px(3.0f)), th.automation.laneHeaderText);
   }
+  if (const IRect pr = pinRect(); !pr.empty()) {  // TL.5
+    paint::box(dl, pr, 0.0f, th.mixer.buttonOff, th.mixer.boxBorder);
+    paintLanePin(dl, pr.toRect(), pinned_, pinned_ ? th.automation.line : th.mixer.buttonText, ctx.scale.factor);
+  }
   for (int i = 0; i < 2; ++i) {
     const IRect b = i == 0 ? addRect() : hideRect();
     if (b.empty()) continue;
@@ -441,7 +468,7 @@ bool LaneHeader::onResizeEdge(Vec2 p) const noexcept {
 
 Cursor LaneHeader::cursorAt(Vec2 p) const {
   if (resizing_ || onResizeEdge(p)) return Cursor::ResizeNS;
-  if (chooserRect().contains(p) || addRect().contains(p) || hideRect().contains(p)) return Cursor::Pointer;
+  if (chooserRect().contains(p) || pinRect().contains(p) || addRect().contains(p) || hideRect().contains(p)) return Cursor::Pointer;
   return Cursor::Inherit;  // a click selects the track
 }
 
@@ -474,6 +501,10 @@ bool LaneHeader::onPointer(const PointerEvent& e) {
     return true;
   }
   if (e.button != PointerButton::Left) return true;
+  if (pinRect().contains(e.pos)) {
+    a.togglePinLater(lane_.track, lane_.param);  // the lanes re-lay out: not from inside this widget's handler
+    return true;
+  }
   if (addRect().contains(e.pos)) {
     (void)a.addLane(lane_.track);
     return true;

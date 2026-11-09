@@ -298,6 +298,8 @@ inline constexpr float kLaneRulerH = 16.0f;
 inline constexpr float kLaneH = 56.0f + kLaneRulerH;
 inline constexpr float kLaneMinH = kLaneRulerH + 16.0f;
 inline constexpr float kLaneGapAbove = 8.0f, kLaneGapBelow = 4.0f;
+// TL.5: the pin at an automation sub-lane's top left, before its name (logical px: drawn at the UI scale, not zoomed).
+inline constexpr float kSubLanePin = 13.0f;
 inline constexpr float kLaneInset = 8.0f;
 inline constexpr float kSumW = 40.0f, kSumH = 32.0f;
 // TX.mixer-look: the mixer's face (MixerFace, src/project_patch/mixer_face.cpp): its main section (header with M / S,

@@ -137,7 +137,8 @@ void LaneEditSurface::syncLanes() const {
   const circuit::CircuitCanvas::View cv = c.view();
   const ui::IRect cr = c.rect();
   key.insert(key.end(), {cv.x, cv.y, cv.zoom, static_cast<double>(cr.x), static_cast<double>(cr.y), static_cast<double>(c.deviceScale()),
-                         static_cast<double>(view_.stats().rebuilds), static_cast<double>(subs.size())});
+                         static_cast<double>(view_.stats().rebuilds), static_cast<double>(subs.size()),
+                         static_cast<double>(view_.subLaneGeneration())});
   if (!subs.empty())
     for (uint32_t b = 0; b < pp.bands.size(); ++b)
       key.push_back(c.bandLifted(b) ? 1e300 : static_cast<double>(c.bandNow(b).y1 - (pp.bands[b].y + pp.bands[b].h)));
@@ -363,12 +364,50 @@ void ProjectPatchView::collectSubLanes(std::vector<SubLaneSpec>& out) const {
 
 // The arrangement's shown lanes or their heights changed (a lane shown, hidden, resized, a parameter chosen for one): the
 // bands re-lay out (model + scene; the lowering kept) when what the model holds differs. O(tracks + shown lanes).
+// TL.5: when only parameters changed (the same tracks and heights in the same order: a follow lane re-pointed, a lane's
+// chooser), the sub-lanes are re-pointed in place: no re-layout, the lanes and the wire repaint.
 void ProjectPatchView::subLanesChanged() {
   if (embedded()) return;
   thread_local std::vector<SubLaneSpec> now;
   collectSubLanes(now);
   if (now == subSpecs_) return;
-  relayout();
+  bool sameShape = now.size() == subSpecs_.size();
+  for (size_t i = 0; sameShape && i < now.size(); ++i) sameShape = now[i].track == subSpecs_[i].track && now[i].h == subSpecs_[i].h;
+  if (!sameShape) {
+    relayout();
+    return;
+  }
+  subSpecs_ = now;
+  for (SubLane& sl : subLanes_) sl.param = subSpecs_[sl.spec].param;
+  ++subLaneGen_;
+  damageLanes();
+  canvas_->markDirty();  // the labels and the automation wire
+}
+
+std::optional<ui::Rect> ProjectPatchView::subLanePinDevice(size_t i) const {
+  if (i >= subLanes_.size() || embedded() || canvas_->lod() != circuit::CircuitCanvas::Lod::Near) return std::nullopt;
+  const SubLane& sl = subLanes_[i];
+  if (sl.band >= patch_.bands.size() || canvas_->bandLifted(sl.band)) return std::nullopt;
+  const Band& band = patch_.bands[sl.band];
+  const float us = tree() != nullptr ? tree()->scale() : 1.0f;
+  const float dy = canvas_->bandNow(sl.band).y1 - (band.y + band.h);
+  const Rect r = snapRect(canvas_->deviceRect(patch_.laneX0, sl.y + dy, patch_.laneX1 - patch_.laneX0, sl.h));
+  const float sz = std::round(metrics::kSubLanePin * us);
+  if (r.y1 - r.y0 < sz + 4.0f * us || r.x1 - r.x0 < sz + 8.0f * us) return std::nullopt;
+  const float x0 = std::round(r.x0 + 2.0f * us), y0 = std::round(r.y0 + 2.0f * us);
+  return Rect{x0, y0, x0 + sz, y0 + sz};
+}
+
+bool ProjectPatchView::toggleSubLanePin(size_t i) {
+  ArrangementView* arr = embedded() ? nullptr : arrangement();
+  if (arr == nullptr || i >= subLanes_.size() || subLanes_[i].band >= patch_.bands.size()) return false;
+  const doc::TrackId t = patch_.bands[subLanes_[i].band].track;
+  const doc::ParamRef p = subLanes_[i].param;
+  (void)laneEditReady();
+  ArrangementAutomation& au = arr->automation();
+  au.setPinned(t, p, !au.pinned(t, p));
+  subLanesChanged();
+  return true;
 }
 
 ui::Rect ProjectPatchView::subLaneDevice(size_t i) const {

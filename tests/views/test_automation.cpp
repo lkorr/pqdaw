@@ -191,6 +191,71 @@ TEST_CASE("automation: the view's envelope evaluation equals evalAutomation with
   CHECK(checked > 2000);
 }
 
+// TL.5 (Q239 option 1): under a track, its pinned lanes and one follow lane; Show Automation re-points the follow lane
+// (a pinned parameter: revealed); the lane header's pin pins / unpins (through the window).
+TEST_CASE("automation (TL.5): Show Automation re-points the follow lane; the lane header's pin pins and unpins") {
+  Fixture f;
+  ArrangementAutomation& au = f.au();
+  const doc::Track& lead = f.track("Lead");
+  const size_t h0 = f.history();
+  au.showLanes(lead.id, true);  // its automated lanes (volume, send A, activator) pinned; the follow lane on volume: merged
+  REQUIRE(au.shownLanes(lead.id).size() == 3);
+  const doc::ParamRef vol = doc::ParamRef::track(doc::ParamKind::TrackVolume, lead.id);
+  const doc::ParamRef pan = doc::ParamRef::track(doc::ParamKind::TrackPan, lead.id);
+  CHECK(au.pinned(lead.id, vol));
+  CHECK(au.followParam(lead.id) == vol);
+  // Show Automation on pan: the follow lane shows it (a fourth lane, below the pinned ones).
+  f.ctx.showAutomation(lead.id, pan);
+  f.d.step();
+  std::vector<doc::ParamRef> shown = au.shownLanes(lead.id);
+  REQUIRE(shown.size() == 4);
+  CHECK(shown.back() == pan);
+  CHECK(au.isFollowLane(lead.id, pan));
+  // On a pinned parameter: nothing added, the follow lane keeps pan.
+  f.ctx.showAutomation(lead.id, vol);
+  f.d.step();
+  CHECK(au.shownLanes(lead.id).size() == 4);
+  CHECK(au.followParam(lead.id) == pan);
+  // Another parameter (not shown yet): the follow lane re-pointed, no lane added.
+  const std::vector<ParamChoice> choices = paramChoices(*f.ctx.doc(), lead);
+  const auto other = std::find_if(choices.begin(), choices.end(), [&](const ParamChoice& c) {
+    return c.param.kind != doc::ParamKind::TrackVolume && c.param.kind != doc::ParamKind::TrackPan && !c.automated;
+  });
+  REQUIRE(other != choices.end());
+  f.ctx.showAutomation(lead.id, other->param);
+  f.d.step();
+  shown = au.shownLanes(lead.id);
+  REQUIRE(shown.size() == 4);
+  CHECK(shown.back() == other->param);
+  CHECK(std::find(shown.begin(), shown.end(), pan) == shown.end());
+  // The follow lane's pin (lane[3], left of + and −), through the window: pinned; Show Automation on pan then adds the
+  // follow lane under it again.
+  f.d.tree().layoutNow();
+  auto pinAt = [&](int32_t lane) {
+    const IRect hr = f.d.rect(std::string(kArr) + "/tracks/lane[" + std::to_string(lane) + "]");
+    return Vec2{static_cast<float>(hr.right() - 48), static_cast<float>(hr.y + 10)};
+  };
+  f.d.click(pinAt(3));
+  f.d.step();
+  CHECK(au.pinned(lead.id, other->param));
+  CHECK(au.shownLanes(lead.id).size() == 4);
+  f.ctx.showAutomation(lead.id, pan);
+  f.d.step();
+  shown = au.shownLanes(lead.id);
+  REQUIRE(shown.size() == 5);
+  CHECK(shown[3] == other->param);
+  CHECK(shown[4] == pan);
+  // Its pin again unpins it: its lane goes, the follow lane (pan) stays.
+  f.d.tree().layoutNow();
+  f.d.click(pinAt(3));
+  f.d.step();
+  CHECK_FALSE(au.pinned(lead.id, other->param));
+  shown = au.shownLanes(lead.id);
+  REQUIRE(shown.size() == 4);
+  CHECK(shown.back() == pan);
+  CHECK(f.history() == h0);  // view state: no undo entries
+}
+
 TEST_CASE("automation: lanes show and hide under a track; the chooser offers mixer and main-tuning parameters") {
   Fixture f;
   ArrangementAutomation& au = f.au();

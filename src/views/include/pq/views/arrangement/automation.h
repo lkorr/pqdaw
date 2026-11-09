@@ -194,6 +194,10 @@ struct EnvelopeVertex {
 void envelopeVertices(std::span<const doc::Breakpoint> pts, double fallback, double t0, double t1, double maxChordTicks,
                       std::vector<EnvelopeVertex>& out);
 
+// TL.5: the pin glyph of a lane's header (arrangement lane header, band sub-lane badge): a pushpin, filled when the lane
+// is pinned, outlined on the follow lane. `r`: device px; `unit`: device px per logical px.
+void paintLanePin(ui::DrawList& dl, const ui::Rect& r, bool pinned, ui::Rgba col, float unit);
+
 // ---- the arrangement's automation (owned by ArrangementView) -----------------------------------------------------
 
 // An automation lane shown under a track (ArrangementView::laneRows()).
@@ -235,26 +239,47 @@ public:
   void setMode(bool on);
 
   // ---- lanes under a track (view state) ------------------------------------------------------------------------
+  // TL.5 (Q239 option 1): a track's lanes are its PINNED lanes (in order) and below them its one FOLLOW lane, which shows
+  // the parameter last asked for (a control pressed in the project patch view, a knob's "Show Automation", the tunings
+  // panel): asking for another parameter re-points it instead of adding a lane. Pinning keeps a parameter as a lane of its
+  // own; while the follow lane's parameter is pinned the two are one lane (the pinned one), so a parameter never shows
+  // twice. Pinned = an automated lane's LaneView::visible (saved with the project: the first show after loading pins the
+  // visible automated lanes); the follow lane's parameter is session view state like the shown flag (not undoable, Q15).
   bool lanesShown(doc::TrackId t) const noexcept;
-  // Shows / hides the track's lanes. The first time: its automated parameters (LaneView::visible ones), else the
-  // chosen parameter. TL.2: a return's / the master's too (shown under its band lane in the project patch view; the
-  // arrangement's pinned rows have no lanes).
+  // Shows / hides the track's lanes. The first time: its automated parameters (LaneView::visible ones) pinned and the
+  // follow lane on the chosen parameter. TL.2: a return's / the master's too (shown under its band lane in the project
+  // patch view; the arrangement's pinned rows have no lanes).
   void showLanes(doc::TrackId t, bool on);
-  // The parameters of the track's lanes, in order (empty while hidden). Invalid ones (a removed return) are dropped.
+  // The parameters of the track's lanes, in order: the pinned ones, then the follow lane's (empty while hidden). Invalid
+  // ones (a removed return) are dropped.
   std::vector<doc::ParamRef> shownLanes(doc::TrackId t) const;
-  // The lane chooser: shows `p` in lane `index` (a parameter shown in another lane of the track swaps places).
+  // The lane chooser: shows `p` in lane `index` (a parameter shown in another lane of the track swaps places; on the
+  // follow lane: re-points it).
   void setLaneParam(doc::TrackId t, size_t index, const doc::ParamRef& p);
-  // "+": a new lane with the next parameter not shown yet (automated ones first). False when every one is shown.
+  // "+": a new pinned lane with the next parameter not shown yet (automated ones first). False when every one is shown.
   bool addLane(doc::TrackId t);
-  // T4.18 ("Show Automation" on a knob): shows `p`'s lane under `t` (added after the shown ones when it is not shown)
-  // and makes it the parameter drawn over t's clips in automation mode. TL.2: a return / master likewise (its lanes show
-  // in the project patch view only).
+  // T4.18 ("Show Automation" on a knob) / TL.5: points t's follow lane at `p` (a pinned `p`: its pinned lane is revealed
+  // and the follow lane keeps its parameter), shows t's lanes and makes `p` the parameter drawn over t's clips in
+  // automation mode. TL.2: a return / master likewise (its lanes show in the project patch view only).
   void showParam(doc::TrackId t, const doc::ParamRef& p);
-  // "−": hides lane `index` (LaneView::visible = false when it is automated); the last one hides the lanes.
+  // TL.5: whether `p` is pinned under `t`; the follow lane's parameter (nullopt: none yet); whether lane `p` under `t` is
+  // the follow lane (shown and not pinned).
+  bool pinned(doc::TrackId t, const doc::ParamRef& p) const noexcept;
+  std::optional<doc::ParamRef> followParam(doc::TrackId t) const;
+  bool isFollowLane(doc::TrackId t, const doc::ParamRef& p) const;
+  // TL.5: pins `p` under `t` (a lane of its own above the follow lane; LaneView::visible on) / unpins it (its lane goes
+  // unless the follow lane shows it; LaneView::visible off). setPinned does either.
+  void pin(doc::TrackId t, const doc::ParamRef& p);
+  void unpin(doc::TrackId t, const doc::ParamRef& p);
+  void setPinned(doc::TrackId t, const doc::ParamRef& p, bool on) { on ? pin(t, p) : unpin(t, p); }
+  // "−": hides lane `index` (a pinned one is unpinned; the follow lane hides until a parameter is asked for or the lanes
+  // are shown again); the last one hides the lanes.
   void hideLane(doc::TrackId t, size_t index);
   // The same at the view's next frame: for the lane header's own "−" (hiding removes that header widget, which must
   // not happen inside its pointer handler).
   void hideLaneLater(doc::TrackId t, size_t index);
+  // TL.5: the lane header's pin: pins / unpins `p` at the view's next frame (the lanes re-lay out).
+  void togglePinLater(doc::TrackId t, const doc::ParamRef& p);
   void runPending();
   // The parameter drawn over the track's clips in automation mode (the header's chooser). Default: the track's
   // first automated parameter, else its volume.
@@ -379,7 +404,9 @@ private:
   struct TrackState {
     bool shown = false;
     bool initialised = false;
-    std::vector<doc::ParamRef> lanes;
+    std::vector<doc::ParamRef> pinned;        // TL.5: the pinned lanes, top to bottom
+    std::optional<doc::ParamRef> follow;      // TL.5: the follow lane's parameter
+    bool followHidden = false;                // TL.5: its "−" (until a parameter is asked for or the lanes are re-shown)
     std::optional<doc::ParamRef> chosen;
     std::vector<std::pair<doc::ParamRef, float>> heights;  // logical px, lanes without a document lane
   };
@@ -504,6 +531,7 @@ private:
   Hover hover_;
   std::string readoutText_;
   std::optional<std::pair<doc::TrackId, size_t>> pendingHide_;
+  std::optional<std::pair<doc::TrackId, doc::ParamRef>> pendingPin_;  // TL.5
   // Paint scratch (kept: painting does not allocate once warm).
   std::vector<EnvelopeVertex> verts_;
   std::vector<ui::Vec2> poly_;

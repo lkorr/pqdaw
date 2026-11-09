@@ -624,8 +624,16 @@ public:
     doc::ParamRef param;
     uint32_t index = 0;    // among its track's shown lanes
     float y = 0, h = 0;    // world units (x: the lanes' range)
+    uint32_t spec = 0;     // its entry of the shown set it was built from (TL.5: re-pointed in place)
   };
   std::span<const SubLane> subLanes() const noexcept { return subLanes_; }
+  // TL.5: bumped whenever a sub-lane's parameter changes without a re-layout (a follow lane re-pointed to a parameter of
+  // the same height: the bands keep their geometry, only what the sub-lane shows changes).
+  uint64_t subLaneGeneration() const noexcept { return subLaneGen_; }
+  // TL.5: the pin on sub-lane i's label (device px; nullopt: not drawn at this zoom). Filled red: a pinned lane (a click
+  // unpins it); outlined: the track's follow lane (a click pins its parameter). As ArrangementAutomation::setPinned.
+  std::optional<ui::Rect> subLanePinDevice(size_t i) const;
+  bool toggleSubLanePin(size_t i);
   // The sub-lane under a device point (index into subLanes(); kNone: none). Its rect / the one showing `param` under
   // `track`'s lane, in device px (nullopt: not shown).
   uint32_t subLaneAt(ui::Vec2 device) const;
@@ -1068,6 +1076,7 @@ private:
   std::vector<SubLane> subLanes_;
   std::vector<SubLaneSpec> subSpecs_;
   std::unordered_map<uint32_t, float> subHeights_;
+  uint64_t subLaneGen_ = 0;  // TL.5
   ArrangementView* laneArrangement() const;  // the arrangement laneEdit_ is registered with (null: none)
   bool valueGesture_ = false;
   Stats stats_;
