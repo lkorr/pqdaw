@@ -551,3 +551,17 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   (notes, Hz, gate, vel); a cable's default tap stays right of them. The old Notes node's pins are gone. (4) No load
   conversion: a file whose layout placed the Notes node simply has none; its wires keep working (default taps).
 - Status: decided (reversible: store.h PatchNudge, editing.cpp Editor::press, project_patch.h lanePortChip).
+
+## Q?-TL.2-a · 2026-11-09 · TL.2 · Which sub-lanes a band shows, and what a control press adds
+- **Context**: TL.2 (docs/plans/TL.md 8, 9). A band's automation sub-lanes and the arrangement's lanes under a track must
+  agree; a press on a control in a band shows its automation.
+- **Choices**: (1) The band's sub-lanes ARE the arrangement's per-track shown lanes (`ArrangementAutomation` TrackState:
+  shown flag, lane list, heights): no second state; the band toggle = the arrangement's lanes toggle. A return / the master
+  may have shown lanes now (only the band view draws them; the arrangement's pinned rows stay A-mode only). (2) A press on
+  a control calls `ViewContext::showAutomation`, which the arrangement already handles by ADDING the param's lane to the
+  track's shown lanes (T4.18's "Show Automation"): every newly pressed control adds a sub-lane, and the band grows by one
+  lane (one re-layout, lowering kept). Alternative (not done): a Live-like "follow" lane that switches to the last touched
+  param unless it is automated / pinned, so twiddling many knobs doesn't stack empty lanes — would change T4.18's
+  arrangement behaviour too. (3) Param pins don't count as controls (a press there draws a cable). (4) Sub-lane heights
+  are the arrangement's lane heights (logical px = world units); the band view zooms them with the canvas.
+- Status: decided (reversible: project_patch/lane_edit.cpp showControlAutomation, ArrangementAutomation::showParam).

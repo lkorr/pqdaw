@@ -142,6 +142,11 @@ void ProjectPatchView::setShown(bool on, bool animate) {
     ensureTimeWindow();  // TL.1: the lanes show the arrangement's time window (set by it once it was laid out)
     (void)laneEditReady();  // TX.lane-edit: the windows get the arrangement's selection damage from now on
     stale_ = stale_ || built_ != ctx_.doc();
+    if (!stale_) {  // TL.2: lanes shown / hidden in the arrangement meanwhile
+      std::vector<SubLaneSpec> now;
+      collectSubLanes(now);
+      stale_ = now != subSpecs_;
+    }
     sync();
     if (arr != nullptr && tree() != nullptr) {
       tree()->layoutNow();  // the arrangement's rows, the canvas's rect
@@ -556,6 +561,11 @@ void ProjectPatchView::rebuild() {
   // TX.mod-all: wires into a face's or panel's params end on their controls (no made-up pins).
   if (canvas_->facesShown())
     opt.controlAnchor = [this](const doc::Device& d, std::string_view param) { return controlAnchorOf(d, param); };
+  // TL.2: the automation sub-lanes the arrangement shows under each track (their heights grow the bands).
+  collectSubLanes(subSpecs_);
+  subHeights_.clear();
+  for (const SubLaneSpec& sl : subSpecs_) subHeights_[sl.track.value] += sl.h;
+  opt.subLanes = &subHeights_;
   // Keep the selection (devices, wires) across the rebuild.
   std::vector<doc::DeviceId> selDevices = selectedDevices();
   std::vector<doc::WireId> selWires;
@@ -568,6 +578,24 @@ void ProjectPatchView::rebuild() {
   canvas_->beforeRebuild();  // TX.node-menu-fix1: a gesture's model indices, by identity
   patch_ = buildProjectPatch(*snap, *lowered_, devlib, opt);
   tracksOf_ = nullptr;  // bandTrack's table follows the new bands
+  // TL.2: the sub-lanes under their bands' lanes, top to bottom in the order shown (a band without a lane has none).
+  subLanes_.clear();
+  {
+    uint32_t band = kNone, index = 0;
+    doc::TrackId track;
+    float y = 0.0f;
+    for (const SubLaneSpec& sl : subSpecs_) {
+      if (sl.track != track) {
+        track = sl.track;
+        band = patch_.bandOf(track);
+        index = 0;
+        if (band != kNone) y = patch_.bands[band].laneY + patch_.bands[band].laneH;
+      }
+      if (band == kNone || patch_.bands[band].laneH <= 0.0f) continue;
+      subLanes_.push_back({band, sl.param, index++, y, sl.h});
+      y += sl.h;
+    }
+  }
   scene_ = buildProjectScene(patch_, inner);
   const circuit::CircuitCanvas::View keep = canvas_->view();
   canvas_->setScene(scene_.scene, !fitted_ && !embedded(), true);
@@ -939,7 +967,7 @@ uint32_t ProjectPatchView::laneAt(Vec2 device) const {
   for (uint32_t i = 0; i < patch_.bands.size(); ++i) {
     const Band& b = patch_.bands[i];
     if (b.laneH <= 0.0f) continue;
-    const Rect r = laneBodyDevice(*canvas_, patch_, b);
+    const Rect r = laneAreaDevice(*canvas_, patch_, b);  // TL.2: its sub-lanes too (the time wheel)
     if (device.x >= r.x0 && device.x < r.x1 && device.y >= r.y0 && device.y < r.y1) return i;
   }
   return kNone;
@@ -952,7 +980,7 @@ double ProjectPatchView::laneTickAt(float deviceX) const {
 }
 
 doc::ClipRef ProjectPatchView::laneClipAt(Vec2 device) const {
-  const uint32_t b = laneAt(device);
+  const uint32_t b = laneBodyAt(device);  // (TL.2: not its sub-lanes)
   if (b == kNone || !hasClipRow(patch_.bands[b]) || !(ctx_.timeWindow().span > 0.0)) return {};
   const doc::Track* t = bandTrack(b);
   if (t == nullptr) return {};
@@ -979,7 +1007,7 @@ void ProjectPatchView::damageLanes() {
   const ui::IRect cr = canvas_->rect();
   for (const Band& b : patch_.bands) {
     if (b.laneH <= 0.0f) continue;
-    const Rect r = laneBodyDevice(*canvas_, patch_, b);
+    const Rect r = laneAreaDevice(*canvas_, patch_, b);  // TL.2: and its sub-lanes
     const ui::IRect d = ui::intersect(toIRect({r.x0 - 1.0f, r.y0 - 1.0f, r.x1 + 1.0f, r.y1 + 1.0f}), cr);
     if (!d.empty()) tr->damage().add(d.toRect());
   }
@@ -993,8 +1021,8 @@ void ProjectPatchView::damageLaneColumn(Ticks t) {
   const ui::IRect cr = canvas_->rect();
   const float w = static_cast<float>(std::max(1, tr->uiScale().px(1.0f)));
   for (const Band& b : patch_.bands) {
-    if (b.laneH <= 0.0f || !hasClipRow(b)) continue;
-    const Rect body = laneBodyDevice(*canvas_, patch_, b);
+    if (b.laneH <= 0.0f) continue;
+    const Rect body = laneAreaDevice(*canvas_, patch_, b);  // TL.2: the playhead runs down its sub-lanes too
     if (body.y1 < static_cast<float>(cr.y) || body.y0 > static_cast<float>(cr.bottom()) || body.x1 < static_cast<float>(cr.x) ||
         body.x0 > static_cast<float>(cr.right()))
       continue;
@@ -2007,6 +2035,16 @@ ui::Menu* ProjectPatchView::openBandMenu(uint32_t band, Vec2 at) {
   items.push_back(ui::MenuItem::item("Unfold All Circuits", [this] { setAllFolded(false); }));
   if (b.laneH != metrics::kLaneH)
     items.push_back(ui::MenuItem::item("Reset Lane Height", [this, track] { setLaneHeight(track, metrics::kLaneH); }));
+  // TL.2: the automation sub-lanes under the lane (the arrangement's lanes of the track: one state).
+  if (!embedded() && b.laneH > 0.0f && arrangement() != nullptr) {
+    const bool shown = subLanesShown(track);
+    items.push_back(ui::MenuItem::item(shown ? "Hide Automation Lanes" : "Show Automation Lanes", [this, track, shown] { showSubLanes(track, !shown); }));
+    items.push_back(ui::MenuItem::item("Add Automation Lane", [this, track] {
+      ArrangementView* arr = arrangement();
+      (void)laneEditReady();
+      if (arr != nullptr && arr->automation().addLane(track)) subLanesChanged();
+    }));
+  }
   ui::MenuItem reset = ui::MenuItem::item("Reset Layout", [this] { resetLayout(); });
   reset.enabled = !ctx_.store().view().patchNudges.empty();
   items.push_back(std::move(reset));

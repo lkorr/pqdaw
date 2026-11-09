@@ -27,6 +27,10 @@
 //              draws breakpoints over the clips, Z / X / + / − zoom (the arrangement's chords); double-click a clip opens
 //              its editor (a MIDI clip's piano roll, an audio clip's Clip View). Group / return / master lanes have no
 //              clip row (their automation: TL.2).
+//   sub-lanes  (TL.2) under every lane, its track's automation lanes as the arrangement shows them (one state): the
+//              band's toggle after the fold triangle shows / hides them, a press on a control in the band (a face's,
+//              a panel's, a value block, the mixer's volume / pan / sends) adds its parameter's, a bottom edge resizes one;
+//              the arrangement's ArrangementAutomation draws and edits their envelopes (subLanes(), below).
 //   lane cables (TL.1) every cable from a track's own signal leaves its lane's TOP EDGE at its own x, saved on the wire
 //              (doc::Wire::tap; default: under the block it feeds). Drag a cable's lane end along the edge to move it
 //              (one undo step); drag up from anywhere else on the top edge to start a new cable from there — a MIDI
@@ -239,14 +243,16 @@ public:
   // TX.lane-edit: the last press was in a lane (the arrangement's edit chords act there: laneKey).
   bool laneFocused() const noexcept { return laneFocus_; }
   // TL.1: what a press on a lane's edges grabs (device point): its bottom edge (resize), a cable's end on its top edge
-  // (slide it), a MIDI lane's port chip, or the rest of its top edge (a new cable from there).
+  // (slide it), a MIDI lane's port chip, or the rest of its top edge (a new cable from there). TL.2: an automation
+  // sub-lane's bottom edge (resize it: SubBottom, `sub` its index in ProjectPatchView::subLanes()).
   struct LaneEdgeHit {
-    enum class Kind : uint8_t { None, Bottom, Tap, Port, Top };
+    enum class Kind : uint8_t { None, Bottom, Tap, Port, Top, SubBottom };
     Kind kind = Kind::None;
     uint32_t band = kNone;
     uint32_t edge = kNone;  // Tap: the model edge
     uint32_t port = 0;      // Port / Top: the lane node's output
     float x = 0.0f;         // world x on the edge (Top: where the cable starts)
+    uint32_t sub = kNone;   // SubBottom: the sub-lane
   };
   LaneEdgeHit laneEdgeAt(ui::Vec2 device) const;
   // TL.1: a MIDI lane's port chips (project_patch.h lanePortChip: world rect of output `port`).
@@ -254,6 +260,8 @@ public:
   static constexpr float kLaneEdgePx = 4.0f;  // logical px either side of a lane's edge that grab it
   // TL.1: a band's fold triangle in its title strip (world rect).
   static LaneRect foldButtonRect(const Band& b) noexcept;
+  // TL.2: a band's automation toggle after it (shows / hides the sub-lanes under its lane; world rect).
+  static LaneRect subLaneButtonRect(const Band& b) noexcept;
   // TX.resize: S is held (and no text field has the focus): a left press on a block resizes it; the block a press at
   // `pos` would resize (a closed device block; kNone: none).
   bool resizeHeld() const noexcept;
@@ -377,6 +385,8 @@ private:
   bool laneEdgePointer(const ui::PointerEvent& e);
   doc::TrackId laneTrack_;               // LaneSize: the lane's track; its height and the press's y at the press
   float laneH0_ = 0.0f;
+  std::optional<doc::ParamRef> laneSub_;  // TL.2: LaneSize of that track's automation sub-lane of this parameter
+  void restoreLaneSize();
   doc::WireId tapWire_;                  // Tap: the cable whose lane end slides, its world x now
   float tapX_ = 0.0f;
   bool tapMoved_ = false;
@@ -557,7 +567,7 @@ public:
     bool audio = false;
   };
   std::vector<LaneClip> laneClips(uint32_t band) const;
-  uint32_t laneAt(ui::Vec2 device) const;            // the band whose lane is under a device point (kNone: none)
+  uint32_t laneAt(ui::Vec2 device) const;            // the band whose lane (TL.2: or sub-lanes) is under a device point (kNone: none)
   doc::ClipRef laneClipAt(ui::Vec2 device) const;    // the clip under a device point in a lane (invalid: none)
   // A clip's editor: the detail view shown in Clip mode on it (a MIDI clip: the piano roll; audio: the Clip View), the
   // clip selected in the arrangement, then onOpenClip (installProjectPatch: the editor takes the keyboard).
@@ -574,6 +584,8 @@ public:
   // in automation mode (A) the chosen parameter's envelope is drawn and edited over the clips as in the arrangement. While
   // the last press was in a lane, the arrangement's edit chords (its keymap scope) act there (laneKey).
   uint32_t laneBodyAt(ui::Vec2 device) const;    // the band whose clip lane is under a device point (kNone: none)
+  // A clip lane or (TL.2) an automation sub-lane is under a device point: a press there is the lane editing's.
+  bool laneEditAt(ui::Vec2 device) const { return laneBodyAt(device) != kNone || subLaneAt(device) != kNone; }
   bool lanePointer(const ui::PointerEvent& e);   // a press / drag / release in a window (true: taken)
   bool laneDragging() const noexcept;            // a clip, time-selection, handle or breakpoint drag runs in a window
   void laneHover(ui::Vec2 device, ui::Mods mods);  // the part a press would grab, highlighted (and laneCursor's)
@@ -582,6 +594,34 @@ public:
   bool laneKey(const ui::KeyEvent& e);           // an arrangement edit chord on the windows (true: it ran)
   void laneAbort();                              // Esc / capture lost: the window's drag ends without an edit
   arrangement::EditSurface* laneSurface() const noexcept;  // null: no arrangement next to the view (tests)
+
+  // ---- automation sub-lanes (TL.2, docs/plans/TL.md 8, 9) -----------------------------------------------------------
+  // Under a band's lane, one sub-lane per parameter the ARRANGEMENT shows under its track (ArrangementAutomation's
+  // per-track shown lanes and lane heights: one state, both views agree; a return / master too, shown here only), each as
+  // wide as the lane, its height the arrangement's lane height (logical px = world units). They are lanes of the lane
+  // surface (EditSurface::laneRows / laneRect): the same envelopes, edited by the same ArrangementAutomation (one
+  // selection, one undo history). The band's header toggle (subLaneButtonRect) shows / hides them; a press on a control
+  // in a band (a face's or panel's, a value block, the mixer's volume / pan / sends) asks for its parameter's automation
+  // (ViewContext::showAutomation: the arrangement shows its lane, so the band does). None without an arrangement.
+  struct SubLane {
+    uint32_t band = kNone;
+    doc::ParamRef param;
+    uint32_t index = 0;    // among its track's shown lanes
+    float y = 0, h = 0;    // world units (x: the lanes' range)
+  };
+  std::span<const SubLane> subLanes() const noexcept { return subLanes_; }
+  // The sub-lane under a device point (index into subLanes(); kNone: none). Its rect / the one showing `param` under
+  // `track`'s lane, in device px (nullopt: not shown).
+  uint32_t subLaneAt(ui::Vec2 device) const;
+  ui::Rect subLaneDevice(size_t i) const;
+  std::optional<ui::Rect> subLaneRect(doc::TrackId track, const doc::ParamRef& param) const;
+  bool subLanesShown(doc::TrackId track) const;
+  void showSubLanes(doc::TrackId track, bool on);
+  void setSubLaneHeight(doc::TrackId track, const doc::ParamRef& p, float h);  // ArrangementAutomation::setLaneHeight
+  // A press on control `b` (a face's, a panel's, a value block's): its parameter's automation shown (a device param
+  // with a lane of its own; a native engine's inner instance has none). False: nothing to show.
+  bool showControlAutomation(const doc::Binding& b);
+  bool showParamAutomation(doc::TrackId track, const doc::ParamRef& p);
 
   // ---- edits (each one undo step through pq::doc::ops / commands; false and the reason in the status line when it
   // could not be done) ---------------------------------------------------------------------------------------------
@@ -790,6 +830,9 @@ public:
   // Where a binding's control is drawn in the circuit now (world units; its rim's radius in `radius`): a face's or
   // panel's control, a pin, a closed group's panel element, else its block's centre. nullopt: not drawn.
   std::optional<graph::Point2> controlWorld(const doc::Binding& b, float* radius = nullptr) const;
+  // The control's place on the screen (device px: its centre and its rim's radius; TL.3's automation wire). nullopt: not
+  // drawn.
+  std::optional<std::pair<ui::Vec2, float>> controlDevice(const doc::Binding& b) const;
   // The panel-window button in an opened capsule's title strip (world units).
   static LaneRect panelButtonRect(const Node& capsule) noexcept;
   void paintPanelLinks(ui::PaintContext& ctx);  // (the canvas's overlay)
@@ -891,6 +934,16 @@ private:
   void schedulePlayhead();
   void damageLaneColumn(Ticks t);
   void damageLanes();
+  // TL.2: the sub-lanes the arrangement shows now (per track, in band order) into `out`; their heights per track into
+  // `heights` (null: not wanted). And: the shown set or a height changed since the model was built: re-layout.
+  struct SubLaneSpec {
+    doc::TrackId track;
+    doc::ParamRef param;
+    float h = 0;
+    friend bool operator==(const SubLaneSpec&, const SubLaneSpec&) = default;
+  };
+  void collectSubLanes(std::vector<SubLaneSpec>& out) const;
+  void subLanesChanged();
   void frameDevice(doc::DeviceId device, bool animate);
   void expandBand(doc::TrackId track);  // opens the band's devices (closing another opened band), without zooming
   bool apply(const doc::ops::EditResult& e, const char* what);
@@ -944,6 +997,10 @@ private:
   mutable std::unique_ptr<LaneEditSurface> laneEdit_;
   mutable ArrangementView* laneArr_ = nullptr;
   LaneEditSurface* laneEditReady() const;  // null: embedded, or no arrangement
+  // TL.2: the sub-lanes of the model (world), what they were built from, their total height per track (LayoutOptions).
+  std::vector<SubLane> subLanes_;
+  std::vector<SubLaneSpec> subSpecs_;
+  std::unordered_map<uint32_t, float> subHeights_;
   ArrangementView* laneArrangement() const;  // the arrangement laneEdit_ is registered with (null: none)
   bool valueGesture_ = false;
   Stats stats_;

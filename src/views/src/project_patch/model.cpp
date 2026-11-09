@@ -738,6 +738,8 @@ struct Builder {
           if (it->second.laneH > 0.0f) band.laneH = roundUp4(std::clamp(it->second.laneH, doc::kMinPatchLaneH, doc::kMaxPatchLaneH));
           band.folded = it->second.folded;
         }
+      if (opt.subLanes != nullptr)  // TL.2: its automation sub-lanes under the lane
+        if (const auto it = opt.subLanes->find(t.id.value); it != opt.subLanes->end()) band.subH = std::max(0.0f, it->second);
     }
     if (t.kind == doc::TrackKind::Midi) {
       // TL.1: the track's note source is its lane (the node's rect is the strip: layout()); its notes and (TMM.10-fix2)
@@ -1138,7 +1140,7 @@ struct Builder {
           bottom = std::max(bottom, row + out.nodes[d].h);
         }
       // TL.1: the lane under the circuit (a folded band: its title strip and its lane only).
-      b.h = (b.folded ? m::kTitle : roundUp4(bottom + m::kBandPad - y)) + laneBlock(b.laneH);
+      b.h = (b.folded ? m::kTitle : roundUp4(bottom + m::kBandPad - y)) + laneBlock(b);
       y += b.h + m::kBandGap;
     }
     // TX.groups: an opened group's contents where its capsule is.
@@ -1222,7 +1224,7 @@ struct Builder {
       b.baseH = b.h;  // TX.drag-grow (only its own growth below changes h)
       if (b.folded) continue;  // TL.1: its blocks are hidden
       const float oldBottom = b.y + b.h;
-      const float circuitBottom = oldBottom - laneBlock(b.laneH);  // TL.1: the lane stays under the circuit
+      const float circuitBottom = oldBottom - laneBlock(b);  // TL.1: the lane stays under the circuit
       float bottom = circuitBottom - m::kBandPad;
       for (const uint32_t d : b.devices) bottom = std::max(bottom, out.nodes[d].y + out.nodes[d].h);
       for (const uint32_t n : {b.mixer, b.output})  // TX.mixer-look: a mixer placed low grows its band too
@@ -1302,7 +1304,7 @@ struct Builder {
     for (Band& b : out.bands) {
       b.x1 = std::max(b.x1, x1 + m::kLaneInset);
       b.baseX1 = std::max(b.baseX1, x1 + m::kLaneInset);
-      b.laneY = b.y + b.h - m::kLaneGapBelow - b.laneH;
+      b.laneY = b.y + b.h - m::kLaneGapBelow - b.subH - b.laneH;  // TL.2: its sub-lanes under it
       if (b.source != kNone && out.nodes[b.source].kind == NodeKind::Lane) {
         Node& n = out.nodes[b.source];
         n.x = x0, n.y = b.laneY, n.w = x1 - x0, n.h = b.laneH;
@@ -1574,7 +1576,7 @@ struct Builder {
     order.erase(std::unique(order.begin(), order.end()), order.end());
     Band band = out.bands[b];
     band.source = band.mixer = band.output = kNone;
-    band.laneY = band.laneH = 0.0f;  // TL.1: no lane in a scoped model
+    band.laneY = band.laneH = band.subH = 0.0f;  // TL.1: no lane in a scoped model
     band.devices.clear();
     band.parent = -1;
     band.lastMember = kNone;
@@ -1632,7 +1634,7 @@ struct Builder {
     const Node& c = out.nodes[cap];
     Band band = out.bands[c.band];
     band.source = band.mixer = band.output = kNone;
-    band.laneY = band.laneH = 0.0f;  // TL.1: no lane in a scoped model
+    band.laneY = band.laneH = band.subH = 0.0f;  // TL.1: no lane in a scoped model
     band.devices.clear();
     band.parent = -1;
     band.lastMember = kNone;

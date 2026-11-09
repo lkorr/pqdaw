@@ -11,6 +11,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/ui/theme.h"
 #include "internal.h"
+#include "pq/ui/lines.h"
 #include "pq/ui/face_painter.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/cables.h"
@@ -248,6 +249,7 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
     dl.addRectStroke(r, ui::mulAlpha(col, b.active ? 0.8f : 0.35f), std::max(1.0f, std::round(us)));
   }
   const bool names = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr;
+  const bool autoToggle = !pp.scoped && !view_.embedded() && view_.laneSurface() != nullptr;
   for (const Band& b : pp.bands) {
     if (pp.scoped) break;
     if ((bandLifted(static_cast<uint32_t>(&b - pp.bands.data())) ? 1 : 0) != layer) continue;
@@ -271,7 +273,8 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
       // is a pill drawn over the band's blocks (paintOverlay), not text running down under its lane window.
       if ((stripH >= px + 2.0f || lod() == Lod::Near) && r.y1 - r.y0 >= px + 2.0f) {
         const float h = std::clamp(stripH, px + 2.0f, r.y1 - r.y0);
-        const float fold = std::round(14.0f * s);  // TL.1: the fold triangle before the name
+        // TL.1: the fold triangle before the name; TL.2: and the automation toggle (with an arrangement to edit in).
+        const float fold = std::round((autoToggle ? 28.0f : 14.0f) * s);
         const ui::IRect box{static_cast<int32_t>(r.x0 + bar + 6.0f + fold), static_cast<int32_t>(r.y0),
                             static_cast<int32_t>(std::min(r.x1 - r.x0 - bar - 10.0f - fold, 360.0f * us)), static_cast<int32_t>(h)};
         std::string label = b.name;
@@ -288,6 +291,21 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
       const Rgba ink = dim ? th.circuit.pinText : th.circuit.symbolText;
       if (b.folded) dl.addTriangleFilled({cx - hr * 0.6f, cy - hr}, {cx + hr * 0.8f, cy}, {cx - hr * 0.6f, cy + hr}, ink);
       else dl.addTriangleFilled({cx - hr, cy - hr * 0.6f}, {cx + hr, cy - hr * 0.6f}, {cx, cy + hr * 0.8f}, ink);
+      // TL.2: the automation toggle — a small envelope (a ramp with a breakpoint); lit while the sub-lanes show.
+      if (autoToggle && b.laneH > 0.0f) {
+        const LaneRect ar = ProjectCanvas::subLaneButtonRect(b);
+        const Rect a = snapRect(deviceRect(ar.x0, ar.y0 + dyb, ar.x1 - ar.x0, ar.y1 - ar.y0));
+        const bool on = b.subH > 0.0f;
+        const float lw = std::max(1.0f, std::round(1.25f * us));
+        if (on) dl.addRoundedRectFilled(a, 2.0f * us, ui::mulAlpha(th.automation.line, 0.30f));
+        dl.addRoundedRectStroke(a, 2.0f * us, ui::mulAlpha(on ? th.automation.line : ink, on ? 0.9f : 0.45f), lw);
+        const float w = a.x1 - a.x0, hgt = a.y1 - a.y0;
+        const ui::Vec2 p0{a.x0 + w * 0.2f, a.y0 + hgt * 0.72f}, p1{a.x0 + w * 0.5f, a.y0 + hgt * 0.32f}, p2{a.x0 + w * 0.8f, a.y0 + hgt * 0.55f};
+        const Rgba lc = on ? th.automation.line : ink;
+        const ui::Vec2 pts[3] = {p0, p1, p2};
+        ui::smoothPolyline(dl, pts, 3, lc, lw);
+        dl.addCircleFilled(p1, std::max(1.5f, 1.6f * us), lc);
+      }
     }
   }
   // TL.1: the bands' lanes (the track's timeline; under the blocks and the cables).
@@ -773,8 +791,13 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
   if (!overFace && lanePointer(e)) return true;  // TX.lane-edit: a lane is the arrangement's editing surface
   // GU.5: a left press selects the control under it (a face's or panel's, a param pin, a value block): what P sends.
   if (drag_ == Drag::None && e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && !(e.mods & ui::mod::kAlt) &&
-      !v.embedded())
-    v.setSelectedControl(v.controlAt(e.pos));
+      !v.embedded()) {
+    doc::Binding ctl = v.controlAt(e.pos);
+    // TL.2: a press on a control (a face's or panel's, a value block; not a param pin: that press draws a cable) shows its
+    // automation sub-lane under its band's lane (and its lane in the arrangement).
+    if (ctl.bound() && (!faceParamAt(e.pos).param.empty() || !pinAt(e.pos).valid())) (void)v.showControlAutomation(ctl);
+    v.setSelectedControl(std::move(ctl));
+  }
   if (drag_ == Drag::None && facePointer(e)) return true;  // TMM.4: a face's control (its drag, hover, wheel)
   switch (e.type) {
     case ui::PointerType::Wheel: return CircuitCanvas::onPointer(e);  // (over a lane: laneEdgePointer)
@@ -1313,7 +1336,8 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
   }
   // TL.1: over a lane's edges (what a press there grabs).
   if (!panning() && scene()) switch (laneEdgeAt(pos).kind) {
-      case LaneEdgeHit::Kind::Bottom: return ui::Cursor::ResizeNS;
+      case LaneEdgeHit::Kind::Bottom:
+      case LaneEdgeHit::Kind::SubBottom: return ui::Cursor::ResizeNS;
       case LaneEdgeHit::Kind::Tap: return ui::Cursor::ResizeEW;
       case LaneEdgeHit::Kind::Port:
       case LaneEdgeHit::Kind::Top: return ui::Cursor::Crosshair;
@@ -1586,7 +1610,7 @@ bool ProjectCanvas::lanePointer(const ui::PointerEvent& e) {
     if (e.type == ui::PointerType::Move || e.type == ui::PointerType::Up) laneCursor_ = v.laneCursor(e.pos, e.mods);
     if (!v.laneDragging()) {
       drag_ = Drag::None;
-      laneHover_ = v.laneBodyAt(e.pos) != kNone;
+      laneHover_ = v.laneEditAt(e.pos);
       if (laneHover_) v.laneHover(e.pos, e.mods);
     }
     return true;
@@ -1594,7 +1618,7 @@ bool ProjectCanvas::lanePointer(const ui::PointerEvent& e) {
   switch (e.type) {
     case ui::PointerType::Down: {
       if (drag_ != Drag::None || (e.button != ui::PointerButton::Left && e.button != ui::PointerButton::Right) ||
-          v.laneBodyAt(e.pos) == kNone) {
+          !v.laneEditAt(e.pos)) {
         if (e.button == ui::PointerButton::Left || e.button == ui::PointerButton::Right) laneFocus_ = false;
         return false;
       }
@@ -1618,7 +1642,7 @@ bool ProjectCanvas::lanePointer(const ui::PointerEvent& e) {
     }
     case ui::PointerType::Move: {
       if (drag_ != Drag::None) return false;
-      if (!panning() && v.laneBodyAt(e.pos) != kNone) {
+      if (!panning() && v.laneEditAt(e.pos)) {
         v.laneHover(e.pos, e.mods);
         laneCursor_ = v.laneCursor(e.pos, e.mods);
         laneHover_ = true;
@@ -1962,7 +1986,7 @@ void ProjectCanvas::updateGrow() {
         if (capsuleOf(t) == kNone && bandOf(t) == bi) right = std::max(right, rectOf(t).x1);
       growMixer_[bi] = std::max(b.mixerX0, right + metrics::kNodeGap) - pp.nodes[b.mixer].x;
     }
-    const float base = b.y + b.baseH - laneBlock(b.laneH);  // TL.1: the circuit's bottom (the lane stays under it)
+    const float base = b.y + b.baseH - laneBlock(b);  // TL.1: the circuit's bottom (the lane stays under it)
     float bottom = base - metrics::kBandPad, x1 = b.baseX1;
     auto take = [&](const WorldRect& q, bool down) {
       if (down) bottom = std::max(bottom, q.y1);
@@ -2055,7 +2079,7 @@ void ProjectCanvas::onCaptureLost() {
   if (drag_ == Drag::Wire || drag_ == Drag::BackWire) clearLooseCable();  // TX.node-menu-fix1
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit (as the arrangement's lanes: no partial edit)
   if (drag_ == Drag::Tap) view_.endTapDrag(false);  // TL.1: the cable back where it left the lane
-  if (drag_ == Drag::LaneSize && laneTrack_.valid()) view_.setLaneHeight(laneTrack_, laneH0_);
+  if (drag_ == Drag::LaneSize && laneTrack_.valid()) restoreLaneSize();
   laneStart_.reset();
   leaveOutside(last_);  // TX.free-rack
   if (drag_ != Drag::None) markDirty();
@@ -2074,7 +2098,7 @@ void ProjectCanvas::onInteractionCancelled() {
   sticky_ = false;
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit
   if (drag_ == Drag::Tap) view_.endTapDrag(false);  // TL.1: Esc: the cable back where it left the lane
-  if (drag_ == Drag::LaneSize && laneTrack_.valid()) view_.setLaneHeight(laneTrack_, laneH0_);
+  if (drag_ == Drag::LaneSize && laneTrack_.valid()) restoreLaneSize();
   laneStart_.reset();
   leaveOutside(last_);  // TX.free-rack
   if (drag_ == Drag::Resize) {  // TX.resize: Esc / focus lost: back to the size at the press
@@ -2427,6 +2451,8 @@ ui::InfoText ProjectCanvas::info() const {
     const Band& b = pp.bands[h.band];
     if (h.kind == LaneEdgeHit::Kind::Bottom)
       return {b.name + " lane", "Drag the lane's bottom edge to change its height (saved with the project)."};
+    if (h.kind == LaneEdgeHit::Kind::SubBottom)
+      return {b.name + " automation lane", "Drag its bottom edge to change its height (the arrangement's lane: the same height)."};
     const Node& n = pp.nodes[b.source];
     infoTitle_ = b.name + (b.kind == doc::TrackKind::Midi ? " notes" : " audio");
     const uint32_t port = h.kind == LaneEdgeHit::Kind::Tap ? pp.edges[h.edge].fromPort : h.port;
@@ -2463,6 +2489,17 @@ LaneRect ProjectCanvas::foldButtonRect(const Band& b) noexcept {
   return {b.x0 + 5.0f, b.y + 4.0f, b.x0 + 17.0f, b.y + 16.0f};
 }
 
+LaneRect ProjectCanvas::subLaneButtonRect(const Band& b) noexcept {
+  return {b.x0 + 19.0f, b.y + 4.0f, b.x0 + 31.0f, b.y + 16.0f};
+}
+
+// Esc / capture lost during a lane resize: the height at the press (the lane's, or TL.2 a sub-lane's).
+void ProjectCanvas::restoreLaneSize() {
+  if (laneSub_) view_.setSubLaneHeight(laneTrack_, *laneSub_, laneH0_);
+  else view_.setLaneHeight(laneTrack_, laneH0_);
+  laneSub_.reset();
+}
+
 LaneRect ProjectCanvas::lanePortChip(uint32_t band, uint32_t port) const {
   const ProjectPatch& pp = view_.patch();
   return band < pp.bands.size() ? project_patch::lanePortChip(pp, pp.bands[band], port) : LaneRect{};
@@ -2475,6 +2512,18 @@ ProjectCanvas::LaneEdgeHit ProjectCanvas::laneEdgeAt(Vec2 d) const {
   const float us = tree() ? tree()->scale() : 1.0f;
   const float tol = kLaneEdgePx * us;
   const bool chips = kLaneChipH * deviceScale() >= 9.0f * us;  // readable: drawn (paintLanePorts) and hit
+  // TL.2: an automation sub-lane's bottom edge (its resize).
+  const auto subs = view_.subLanes();
+  for (uint32_t i = 0; i < subs.size(); ++i) {
+    if (bandLifted(subs[i].band)) continue;
+    const Rect r = view_.subLaneDevice(i);
+    if (d.x >= r.x0 && d.x <= r.x1 && d.y >= r.y1 - 1.0f && d.y <= r.y1 + tol) {
+      h.kind = LaneEdgeHit::Kind::SubBottom;
+      h.band = subs[i].band;
+      h.sub = i;
+      return h;
+    }
+  }
   for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
     const Band& b = pp.bands[bi];
     if (b.laneH <= 0.0f || bandLifted(bi)) continue;
@@ -2582,10 +2631,13 @@ bool ProjectCanvas::laneEdgePointer(const ui::PointerEvent& e) {
   if (drag_ == Drag::LaneSize) {
     if (e.type == ui::PointerType::Move) {
       last_ = e.pos;
-      v.setLaneHeight(laneTrack_, laneH0_ + (e.pos.y - press_.y) / std::max(deviceScale(), 1e-6f));
+      const float h = laneH0_ + (e.pos.y - press_.y) / std::max(deviceScale(), 1e-6f);
+      if (laneSub_) v.setSubLaneHeight(laneTrack_, *laneSub_, h);  // TL.2: an automation sub-lane
+      else v.setLaneHeight(laneTrack_, h);
     } else if (e.type == ui::PointerType::Up) {
       drag_ = Drag::None;
       laneTrack_ = {};
+      laneSub_.reset();
       markDirty();
     }
     return true;
@@ -2638,13 +2690,20 @@ bool ProjectCanvas::laneEdgePointer(const ui::PointerEvent& e) {
   if (e.type != ui::PointerType::Down || drag_ != Drag::None || e.button != ui::PointerButton::Left || (e.mods & ui::mod::kAlt) ||
       v.embedded() || pp.scoped)
     return false;
-  // The fold triangle in a band's title strip.
+  // The fold triangle in a band's title strip; TL.2: the automation toggle after it.
   if (const uint32_t b = bandAt(e.pos); b != kNone && metrics::kTitle * deviceScale() >= 8.0f) {
     const LaneRect fr = ProjectCanvas::foldButtonRect(pp.bands[b]);
     const graph::Point2 w = toWorld(e.pos);
     if (w.x >= fr.x0 && w.x <= fr.x1 && w.y >= fr.y0 && w.y <= fr.y1) {
       if (tree()) tree()->setFocus(this);
       v.setBandFolded(pp.bands[b].track, !pp.bands[b].folded);
+      return true;
+    }
+    const LaneRect ar = ProjectCanvas::subLaneButtonRect(pp.bands[b]);
+    if (v.laneSurface() != nullptr && pp.bands[b].laneH > 0.0f && w.x >= ar.x0 && w.x <= ar.x1 && w.y >= ar.y0 && w.y <= ar.y1) {
+      if (tree()) tree()->setFocus(this);
+      const doc::TrackId t = pp.bands[b].track;
+      v.showSubLanes(t, !v.subLanesShown(t));
       return true;
     }
   }
@@ -2658,7 +2717,14 @@ bool ProjectCanvas::laneEdgePointer(const ui::PointerEvent& e) {
     case LaneEdgeHit::Kind::Bottom:
       drag_ = Drag::LaneSize;
       laneTrack_ = band.track;
+      laneSub_.reset();
       laneH0_ = band.laneH;
+      return true;
+    case LaneEdgeHit::Kind::SubBottom:  // TL.2: an automation sub-lane's height (the arrangement's lane height)
+      drag_ = Drag::LaneSize;
+      laneTrack_ = band.track;
+      laneSub_ = v.subLanes()[h.sub].param;
+      laneH0_ = v.subLanes()[h.sub].h;
       return true;
     case LaneEdgeHit::Kind::Tap:
       if (e.clickCount >= 2) {  // back under the block it feeds

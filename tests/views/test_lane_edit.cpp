@@ -485,6 +485,209 @@ TEST_CASE("lane edit: automation mode draws, moves and deletes breakpoints over 
   CHECK(std::any_of(params.begin(), params.end(), [](const MenuItem& m) { return m.label == "Track Panning"; }));
 }
 
+// TL.2 (docs/plans/TL.md 8, 9): a band lane's automation sub-lanes are the arrangement's shown lanes of its track (one
+// state), edited by the arrangement's ArrangementAutomation on the lane surface (one selection, one undo history).
+TEST_CASE("lane edit (TL.2): the band's toggle shows its sub-lanes; a point drawn there is the arrangement's; undo") {
+  Ui u;
+  u.show();
+  u.frame();
+  ProjectPatchView& v = u.view();
+  ArrangementAutomation& au = u.arrangement().automation();
+  arrangement::EditSurface& s = *v.laneSurface();
+  const doc::TrackId keys = u.track("Keys").id;
+  const doc::ParamRef vol = doc::ParamRef::track(doc::ParamKind::TrackVolume, keys);
+  REQUIRE(v.subLanes().empty());
+  REQUIRE(s.laneRows().empty());
+  const float h0 = v.patch().bands[v.patch().bandOf(keys)].h;
+  // The automation toggle in Keys' title strip (after the fold triangle), through the window's dispatch.
+  v.focusBand(keys, false);
+  u.d.tree().layoutNow();
+  const LaneRect tr = ProjectCanvas::subLaneButtonRect(v.patch().bands[v.patch().bandOf(keys)]);
+  u.d.click(v.canvas().toDevice({(tr.x0 + tr.x1) * 0.5f, (tr.y0 + tr.y1) * 0.5f}));
+  u.d.step();
+  CHECK(au.lanesShown(keys));
+  CHECK(v.subLanesShown(keys));
+  REQUIRE(v.subLanes().size() == 1);  // the chosen parameter (volume) the first time, as the arrangement's header toggle
+  CHECK(v.subLanes()[0].param == vol);
+  const Band& kb = v.patch().bands[v.patch().bandOf(keys)];
+  CHECK(v.subLanes()[0].band == v.patch().bandOf(keys));
+  CHECK(kb.subH == doctest::Approx(au.laneHeight(keys, vol)));
+  CHECK(kb.h == doctest::Approx(h0 + kb.subH));
+  CHECK(v.subLanes()[0].y == doctest::Approx(kb.laneY + kb.laneH));  // right under the lane
+  // The arrangement shows the same lane under Keys (one state).
+  const std::vector<doc::ParamRef> shown = au.shownLanes(keys);
+  CHECK(std::find(shown.begin(), shown.end(), vol) != shown.end());
+  u.frame();
+  // It is a lane of the surface: its rect is the sub-lane's, on the lanes' axis.
+  REQUIRE(s.laneRows().size() == 1);
+  const Rect sr = v.subLaneDevice(0);
+  CHECK(s.laneRect(0).y == static_cast<int32_t>(sr.y0));
+  CHECK(s.laneRows()[0].param == vol);
+  CHECK(s.laneRows()[0].track == keys);
+  REQUIRE(v.subLaneRect(keys, vol).has_value());
+  // A click on its (dashed) line at bar 2: a breakpoint there, the lane made in the same step.
+  std::optional<AutomationBand> b0;
+  {
+    arrangement::Surfaces::Bind bind(u.arrangement().surfaces(), &s);
+    b0 = au.band(keys, vol, false);
+  }
+  REQUIRE(b0.has_value());
+  CHECK(b0->rect.y == s.laneRect(0).y);
+  const double v0 = currentParamValue(*u.ctx.doc(), vol);
+  const Vec2 on{s.axis(s.laneRows()[0].row).x(static_cast<double>(u.bar)), au.yOfValue(*b0, v0)};
+  CHECK(v.subLaneAt(on) == 0u);
+  const size_t hist = u.history();
+  u.d.click(on);
+  u.d.step();
+  CHECK(u.history() == hist + 1);
+  LaneLookup l = findAutomationLane(*u.ctx.doc(), vol);
+  REQUIRE(l.lane != nullptr);
+  REQUIRE(l.lane->points.size() == 1);
+  CHECK(l.lane->points[0].tick == u.bar);
+  // The same envelope in the arrangement: its lane under Keys shows the point (its own surface and axis).
+  const std::optional<AutomationBand> ab = au.band(keys, vol, false);
+  REQUIRE(ab.has_value());
+  CHECK(ab->lane == l.lane);
+  CHECK(au.pointPos(*ab, l.lane->points[0].id).has_value());
+  // One selection: the point drawn in the band is the arrangement's selected breakpoint.
+  CHECK(au.selectedParam() == vol);
+  CHECK(au.selectedPoints().size() == 1);
+  // Undo: the point and the lane gone, in both views.
+  REQUIRE(u.ctx.undo());
+  CHECK(findAutomationLane(*u.ctx.doc(), vol).lane == nullptr);
+  u.d.step();
+  // The toggle again: hidden (both views), the band back to its height.
+  v.focusBand(keys, false);
+  u.d.tree().layoutNow();
+  const LaneRect tr2 = ProjectCanvas::subLaneButtonRect(v.patch().bands[v.patch().bandOf(keys)]);
+  u.d.click(v.canvas().toDevice({(tr2.x0 + tr2.x1) * 0.5f, (tr2.y0 + tr2.y1) * 0.5f}));
+  u.d.step();
+  CHECK_FALSE(au.lanesShown(keys));
+  CHECK(v.subLanes().empty());
+  CHECK(v.patch().bands[v.patch().bandOf(keys)].h == doctest::Approx(h0));
+}
+
+TEST_CASE("lane edit (TL.2): a press on a band's control shows its sub-lane (mixer, a device's control); master; folded") {
+  Ui u;
+  u.show();
+  u.frame();
+  ProjectPatchView& v = u.view();
+  ArrangementAutomation& au = u.arrangement().automation();
+  const doc::TrackId keys = u.track("Keys").id;
+  auto panAt = [&] {
+    const Node& mx = v.patch().nodes[v.patch().bands[v.patch().bandOf(keys)].mixer];
+    return v.canvas().toDevice({mx.x + 27.0f, mx.y + 45.0f});  // TX.mixer-look: the pan knob's centre in its face
+  };
+  // The mixer face's pan knob, pressed through the window.
+  {
+    v.focusBand(keys, false);
+    u.d.tree().layoutNow();
+    u.d.click(panAt());
+    u.d.step();
+    const doc::ParamRef pr = doc::ParamRef::track(doc::ParamKind::TrackPan, keys);
+    CHECK(au.lanesShown(keys));
+    const std::vector<doc::ParamRef> shown = au.shownLanes(keys);
+    CHECK(std::find(shown.begin(), shown.end(), pr) != shown.end());  // the arrangement's lane too
+    CHECK(au.chosen(keys) == pr);
+    CHECK(v.subLaneRect(keys, pr).has_value());
+    // Pressed again: nothing new (no re-layout).
+    const uint64_t rebuilds = v.stats().rebuilds;
+    const size_t n = v.subLanes().size();
+    u.d.click(panAt());
+    u.d.step();
+    CHECK(v.subLanes().size() == n);
+    CHECK(v.stats().rebuilds == rebuilds);
+  }
+  // A device's control (a face's, a panel's or a value block's: the first one found over Keys' blocks): its sub-lane.
+  {
+    std::optional<std::pair<Vec2, doc::Binding>> hit;
+    const Band& kb = v.patch().bands[v.patch().bandOf(keys)];
+    const IRect cr = v.canvas().rect();
+    for (const uint32_t d : kb.devices) {
+      const Node& n = v.patch().nodes[d];
+      if (n.folded) continue;
+      for (float y = n.y + 4.0f; y < n.y + n.h && !hit; y += 2.0f)
+        for (float x = n.x + 4.0f; x < n.x + n.w && !hit; x += 2.0f) {
+          const Vec2 p = v.canvas().toDevice({x, y});
+          if (!cr.contains(p) || p.y < static_cast<float>(cr.y) + 60.0f || v.canvas().pinAt(p).valid() || v.laneEditAt(p)) continue;
+          const doc::Binding b = v.controlAt(p);
+          const doc::DeviceLoc dl = doc::findDevice(*u.ctx.doc(), b.device);
+          if (b.kind == doc::BindingKind::Control && b.meta.empty() && dl.track != nullptr && dl.track->id == keys &&
+              paramValid(*u.ctx.doc(), doc::ParamRef::device(b.device, b.name)))
+            hit = std::make_pair(p, b);
+        }
+    }
+    REQUIRE_MESSAGE(hit.has_value(), "no control of Keys' blocks found on the canvas");
+    const doc::ParamRef dr = doc::ParamRef::device(hit->second.device, hit->second.name);
+    u.d.click(hit->first);
+    u.d.step();
+    CHECK(v.selectedControl() == hit->second);
+    CHECK(v.subLaneRect(keys, dr).has_value());
+    const std::vector<doc::ParamRef> shown = au.shownLanes(keys);
+    CHECK(std::find(shown.begin(), shown.end(), dr) != shown.end());
+  }
+  // The master (a lane with no clip row) gets sub-lanes too; a point drawn there is the master's lane (one step).
+  const doc::TrackId master = u.ctx.doc()->master->id;
+  const doc::ParamRef mv = doc::ParamRef::track(doc::ParamKind::TrackVolume, master);
+  {
+    v.showSubLanes(master, true);
+    u.d.step();
+    REQUIRE(v.subLaneRect(master, mv).has_value());
+    const uint32_t mb = v.patch().bandOf(master);
+    circuit::CircuitCanvas::View cv = v.canvas().view();
+    cv.zoom = 1.0;
+    cv.x = static_cast<double>(v.patch().laneX0) - 24.0;
+    cv.y = static_cast<double>(v.patch().bands[mb].laneY) - 120.0;
+    v.canvas().setView(cv);
+    u.d.tree().layoutNow();
+    const Rect r = *v.subLaneRect(master, mv);
+    REQUIRE(r.y1 < static_cast<float>(v.canvas().rect().bottom()));
+    arrangement::EditSurface& s = *v.laneSurface();
+    std::optional<AutomationBand> b;
+    {
+      arrangement::Surfaces::Bind bind(u.arrangement().surfaces(), &s);
+      b = au.band(master, mv, false);
+    }
+    REQUIRE(b.has_value());
+    const size_t hist = u.history();
+    const Vec2 on{s.axis(-1).x(static_cast<double>(2 * u.bar)), au.yOfValue(*b, currentParamValue(*u.ctx.doc(), mv))};
+    u.d.click(on);
+    u.d.step();
+    CHECK(u.history() == hist + 1);
+    const LaneLookup l = findAutomationLane(*u.ctx.doc(), mv);
+    REQUIRE(l.lane != nullptr);
+    CHECK(l.owner == master);
+    CHECK(l.lane->points.size() == 1);
+  }
+  // A sub-lane's bottom edge resizes it (the arrangement's lane height: one height for both views).
+  {
+    const Rect r = *v.subLaneRect(master, mv);
+    const float before = au.laneHeight(master, mv);
+    const float x = std::max(r.x0, static_cast<float>(v.canvas().rect().x)) + 60.0f;  // on the canvas
+    CHECK(v.canvas().laneEdgeAt({x, r.y1 - 0.5f}).kind == ProjectCanvas::LaneEdgeHit::Kind::SubBottom);
+    CHECK(u.d.down({x, r.y1 - 0.5f}));
+    CHECK(v.canvas().drag() == ProjectCanvas::Drag::LaneSize);
+    CHECK(u.d.move({x, r.y1 - 0.5f + 10.0f * v.canvas().deviceScale()}));
+    CHECK(u.d.move({x, r.y1 - 0.5f + 20.0f * v.canvas().deviceScale()}));
+    CHECK(u.d.up({x, r.y1 - 0.5f + 20.0f * v.canvas().deviceScale()}));
+    u.d.step();
+    CHECK(au.laneHeight(master, mv) == doctest::Approx(before + 20.0f).epsilon(0.05));
+    CHECK(v.subLaneRect(master, mv)->y1 - v.subLaneRect(master, mv)->y0 > r.y1 - r.y0);
+  }
+  // A folded band keeps its lane and its sub-lanes.
+  {
+    v.setBandFolded(keys, true);
+    u.d.step();
+    const Band& kb = v.patch().bands[v.patch().bandOf(keys)];
+    CHECK(kb.folded);
+    CHECK(kb.subH > 0.0f);
+    CHECK(kb.h == doctest::Approx(metrics::kTitle + laneBlock(kb)));
+    bool any = false;
+    for (const ProjectPatchView::SubLane& sl : v.subLanes()) any = any || sl.band == v.patch().bandOf(keys);
+    CHECK(any);
+  }
+}
+
 TEST_CASE("render: project-patch-lane-edit matches the golden image") {
   uint32_t w = 0, h = 0;
   const char* name = "project-patch-lane-edit";

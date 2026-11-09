@@ -981,13 +981,23 @@ TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer
     CHECK(u.track("Keys").mixer.solo);
     const uint32_t mixer2 = u.pp().bands[u.pp().bandOf(keys)].mixer;
     const uint64_t rebuilds = u.view().stats().rebuilds;
+    const size_t subs = u.view().subLanes().size();
     const float vol = u.track("Keys").mixer.volumeDb;
     const Vec2 a = u.mixerFader(mixer2, static_cast<float>(volumeToFader(vol))), b = {a.x - 40.0f, a.y};  // the cap, left
     u.d.drag(a, b, 6);
     CHECK(u.history() == h0 + 3);
     CHECK(u.track("Keys").mixer.volumeDb < vol);
     CHECK(st.lastChanges().paramOnly());
-    CHECK(u.view().stats().rebuilds == rebuilds);  // param changes repaint; no lowering, no new scene
+    // Param changes repaint; no lowering, no new scene. TL.2: the press on the fader showed Keys' volume sub-lane (one
+    // re-layout, the lowering kept); a second drag re-lays out nothing.
+    CHECK(u.view().subLanes().size() == subs + 1);
+    CHECK(u.view().stats().rebuilds == rebuilds + 1);
+    const uint64_t rebuilds2 = u.view().stats().rebuilds;
+    const Vec2 a2 = u.mixerFader(u.pp().bands[u.pp().bandOf(keys)].mixer, static_cast<float>(volumeToFader(u.track("Keys").mixer.volumeDb)));
+    u.d.drag(a2, {a2.x + 10.0f, a2.y}, 4);
+    CHECK(u.history() == h0 + 4);
+    CHECK(u.view().stats().rebuilds == rebuilds2);
+    REQUIRE(u.ctx.undo());
     // The mixer (Ableton view) shows all three.
     MixerStrip& ks = u.mixerStrip("Keys");
     CHECK_FALSE(ks.activator()->on());  // muted
@@ -1690,10 +1700,19 @@ TEST_CASE("lanes (TL.1): idle costs nothing; the playhead repaints only the lane
   for (const ClipRect& r : u.d.tree().damage().rects()) {
     if (r.y1 <= bar0.bottom()) continue;  // the control bar's position readout
     if (r.y0 >= ru.y && r.y1 <= ru.bottom()) continue;  // the ruler
+    // TL.2: every lane's column is damaged (a group / return / master lane draws the playhead too), so the damage list may
+    // merge the columns of lanes above one another into one column from the first lane's top to the last one's bottom.
     bool inLane = false;
-    for (const Rect& w : lanes)
+    float top = 1e9f, bottom = -1e9f;
+    for (const Rect& w : lanes) {
       inLane = inLane || (static_cast<float>(r.x0) >= std::floor(w.x0) - 1.0f && static_cast<float>(r.x1) <= std::ceil(w.x1) + 1.0f &&
                           static_cast<float>(r.y0) >= std::floor(w.y0) - 1.0f && static_cast<float>(r.y1) <= std::ceil(w.y1) + 1.0f);
+      top = std::min(top, std::floor(w.y0) - 1.0f);
+      bottom = std::max(bottom, std::ceil(w.y1) + 1.0f);
+    }
+    inLane = inLane || (static_cast<float>(r.x0) >= std::floor(lanes.front().x0) - 1.0f &&
+                        static_cast<float>(r.x1) <= std::ceil(lanes.front().x1) + 1.0f && static_cast<float>(r.y0) >= top &&
+                        static_cast<float>(r.y1) <= bottom);
     CHECK_MESSAGE(inLane, r.x0 << "," << r.y0 << " to " << r.x1 << "," << r.y1);
     CHECK(r.x1 - r.x0 <= 8);
     ++columns;
@@ -1878,7 +1897,7 @@ TEST_CASE("lanes (TL.1): a lane's bottom edge resizes it; the fold triangle coll
   const Band& kb = v.patch().bands[keys];
   CHECK(kb.folded);
   CHECK(v.bandFolded(keysId));
-  CHECK(kb.h == doctest::Approx(metrics::kTitle + laneBlock(kb.laneH)));
+  CHECK(kb.h == doctest::Approx(metrics::kTitle + laneBlock(kb)));
   CHECK(v.patch().bands[v.patch().bandOf(u.track("Pad").id)].y < padY);
   for (const uint32_t n : kb.devices) {
     CHECK(v.patch().nodes[n].folded);

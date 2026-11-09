@@ -1342,6 +1342,7 @@ Status setupProjectPatchLanes(Shell& shell) {
 // TX.lane-edit: the band lanes as an editing surface (the sketch project): a time selection dragged over Keys and Pad
 // (bar 2 … 3.5: it selects the clips it touches, outlined, the windows lighter), and automation mode with Pad's volume
 // automated (a ramp and a curved fall) drawn over its clips, a breakpoint selected; the arrangement's painters throughout.
+// TL.2: Pad's lanes shown (its volume's sub-lane under its lane, the same envelope and selected point).
 Status setupProjectPatchLaneEdit(Shell& shell) {
   ViewContext& ctx = shell.context();
   if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-patch-lane-edit: no device library", {}};
@@ -1383,6 +1384,7 @@ Status setupProjectPatchLaneEdit(Shell& shell) {
   // The range over both windows (as a drag would leave it), then the automation (its own selection: the arrangement
   // keeps one at a time, so the clips' range is set after it).
   ArrangementAutomation& au = arr->automation();
+  au.showLanes(padId, true);  // TL.2: Pad's automated volume as a sub-lane under its lane too (the arrangement's lanes)
   au.choose(padId, lane->param);
   au.setMode(true);
   au.select(padId, lane->param, {picked});

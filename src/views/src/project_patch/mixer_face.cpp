@@ -299,6 +299,7 @@ public:
           return true;
         }
         if (part == kVolume) {
+          (void)v.showParamAutomation(id, doc::ParamRef::track(doc::ParamKind::TrackVolume, id));  // TL.2: its sub-lane
           if (reset) {
             set(v, "Set Volume", [&] { v.setVolume(id, 0.0f); });
             return true;
@@ -307,6 +308,7 @@ public:
           return true;
         }
         if (part == kPan) {
+          (void)v.showParamAutomation(id, doc::ParamRef::track(doc::ParamKind::TrackPan, id));  // TL.2
           if (reset) {
             set(v, "Set Pan", [&] { v.setPan(id, 0.0f); });
             return true;
@@ -316,6 +318,7 @@ public:
         }
         const size_t k = static_cast<size_t>(part - kSend0);
         if (k >= sends_.size()) return false;
+        (void)v.showParamAutomation(id, doc::ParamRef::track(doc::ParamKind::TrackSend, id, sends_[k].target));  // TL.2
         if (reset) {
           const doc::TrackId ret = sends_[k].target;
           set(v, "Set Send Level", [&] { v.setSend(id, ret, 0.0f); });

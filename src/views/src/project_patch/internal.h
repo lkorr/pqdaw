@@ -37,6 +37,12 @@ inline ui::Rect laneBodyDevice(const ProjectCanvas& c, const ProjectPatch& pp, c
   return snapRect(c.deviceRect(r.x0, r.y0 + dy, r.x1 - r.x0, r.y1 - r.y0));
 }
 
+// TL.2: band `b`'s lane and its automation sub-lanes under it, one device rect (snapped as laneBodyDevice).
+inline ui::Rect laneAreaDevice(const ProjectCanvas& c, const ProjectPatch& pp, const Band& b, float dy = 0.0f) {
+  const LaneRect r = laneBody(pp, b);
+  return snapRect(c.deviceRect(r.x0, r.y0 + dy, r.x1 - r.x0, r.y1 - r.y0 + b.subH));
+}
+
 // The playhead's column (device px, the line's left edge) in a lane showing [start, start + span).
 inline float lanePlayheadX(const ui::Rect& body, double t, double start, double span) noexcept {
   const double u = (t - start) / (span > 0.0 ? span : 1.0);
@@ -45,7 +51,7 @@ inline float lanePlayheadX(const ui::Rect& body, double t, double start, double 
 
 // TL.1: every visible band lane of the view (lane_window.cpp): the lane's grid, clips with their names, MIDI notes (the
 // arrangement's clip previews) and audio waveforms (the overview cache), the playhead; group / return / master lanes
-// are empty strips (their automation: TL.2). Called from paintUnderlay with each band (under the blocks and cables).
+// are empty strips (their automation: TL.2 sub-lanes under every lane, drawn here, their envelopes by the arrangement). Called from paintUnderlay with each band (under the blocks and cables).
 // TX.lane-edit: with the arrangement next to the view, the clips are drawn by the arrangement's painters (selection
 // outline, hover, audio handles, drag previews of a gesture in a lane), with the arrangement's time selection over the
 // selected tracks' lanes and, in automation mode, their chosen envelopes.
@@ -90,6 +96,12 @@ public:
   double gridPxPerTick() const override;
   int32_t clipTitleHeight(int32_t row) const override;
   void revealTick(Ticks t) override;
+  // TL.2: the bands' automation sub-lanes (ProjectPatchView::subLanes) in device px, sorted top to bottom: y is the
+  // window y of a lane's top (laneRect(i).y == laneRows()[i].y), row its band's row (−1: a group / return / master).
+  // Recomputed when the model, the canvas's view or rect, or a drag's band shift changed; a band dragged by its title
+  // (lifted) has none meanwhile.
+  std::span<const AutomationLaneRow> laneRows() const override;
+  ui::IRect laneRect(size_t i) const override;
   void damageAll() override;
   std::vector<ui::MenuItem> menuItems() override;
 
@@ -102,7 +114,13 @@ public:
 
 private:
   void sync() const;
+  void syncLanes() const;
   ProjectPatchView& view_;
+  // TL.2: laneRows' cache and what it was computed at.
+  mutable std::vector<AutomationLaneRow> lanes_;
+  mutable int32_t laneX_ = 0, laneW_ = 0;  // every lane's x range (device px)
+  mutable std::vector<double> laneKey_;    // view x, y, zoom, rect, scale, rebuilds, then each band's drag shift (lifted: 1e300)
+  mutable doc::Snapshot laneDoc_;          // the document lanes_' lane pointers point into
   mutable doc::Snapshot doc_;          // what rows_ point into
   mutable uint64_t built_ = ~uint64_t{0};  // the view's rebuild count rows_ were made at
   mutable std::vector<ArrangementRow> rows_;

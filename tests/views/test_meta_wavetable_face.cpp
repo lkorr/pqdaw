@@ -548,6 +548,7 @@ TEST_CASE("wavetable face: position, phase and knob drags at zoom 0.1 and 1.5 â€
     const double us = u.d.tree().scale();
     const auto span = [&](float extent) { return std::max(extent * zoom * us, 150.0 * us); };
     const uint64_t rebuilds = u.view().stats().rebuilds;
+    const size_t subs = u.view().subLanes().size();
     // Position: up the track (between the markers), 40 px.
     size_t h0 = u.history();
     Vec2 a = u.at(178.0f, posY(0.2f));
@@ -572,7 +573,9 @@ TEST_CASE("wavetable face: position, phase and knob drags at zoom 0.1 and 1.5 â€
     a = u.at(140.0f, 212.0f);
     u.d.drag(a, {a.x, a.y - 30.0f}, 6, mod::kShift);
     CHECK(u.value("sync") == doctest::Approx(3.0 / span(60.0f)).epsilon(1e-4));
-    CHECK(u.view().stats().rebuilds == rebuilds);  // param writes: nothing re-lowers
+    // Param writes: nothing re-lowers. TL.2: a press on a control shows its automation sub-lane â€” one re-layout (the
+    // lowering kept) per sub-lane it opened, nothing else.
+    CHECK(u.view().stats().rebuilds - rebuilds == u.view().subLanes().size() - subs);
     // Double-click a knob: reset (one step).
     h0 = u.history();
     u.d.doubleClick(u.at(38.0f, 212.0f));

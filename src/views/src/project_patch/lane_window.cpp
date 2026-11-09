@@ -178,6 +178,25 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
   const bool liftPass = layer != 0;
   if (model != nullptr && !liftPass) model->overlay.reset(dl.targetWidth(), dl.targetHeight());  // audio fades / handles of this paint
   bool anyWindow = false;
+  // Bar and beat lines over a lane's (or sub-lane's) body: every lane spans the same x range on one time axis.
+  const int64_t bar0 = sig.ticksToBarBeat(std::max<Ticks>(0, start)).bar;
+  auto gridLines = [&](const Rect& body) {
+    const double k = static_cast<double>(body.x1 - body.x0) / spanD;
+    auto X = [&](Ticks tick) { return body.x0 + static_cast<float>((static_cast<double>(tick) - origin) * k); };
+    for (int64_t bar = bar0;; ++bar) {
+      const Ticks bt = sig.barToTicks(bar);
+      if (bt >= end) break;
+      const TimeSignature ts = sig.signatureAt(bt);
+      if (static_cast<double>(bt) >= origin) dl.addVLine(std::round(X(bt)), body.y0, body.y1, gridBar, line);
+      const Ticks beat = ticksPerBeat(ts);
+      if (static_cast<double>(beat) * k >= 6.0 * static_cast<double>(us))
+        for (int32_t b = 1; b < ts.numerator; ++b) {
+          const Ticks at = bt + beat * b;
+          if (at >= end) break;
+          if (static_cast<double>(at) > origin) dl.addVLine(std::round(X(at)), body.y0, body.y1, gridBeat, line);
+        }
+    }
+  };
 
   for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
     const Band& band = pp.bands[bi];
@@ -203,21 +222,8 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
     if (editing && ed->trackSelected(t->id)) dl.addRectFilled(body, th.arrangement.laneSelected);
 
     // Bar lines (and beat lines where they are at least 6 logical px apart). TL.1: the bar numbers are the ruler's.
-    const int64_t bar0 = sig.ticksToBarBeat(std::max<Ticks>(0, start)).bar;
-    for (int64_t bar = bar0;; ++bar) {
-      const Ticks bt = sig.barToTicks(bar);
-      if (bt >= end) break;
-      const TimeSignature ts = sig.signatureAt(bt);
-      if (static_cast<double>(bt) >= origin) dl.addVLine(std::round(X(bt)), body.y0, body.y1, gridBar, line);
-      const Ticks beat = ticksPerBeat(ts);
-      if (static_cast<double>(beat) * k >= 6.0 * static_cast<double>(us))
-        for (int32_t b = 1; b < ts.numerator; ++b) {
-          const Ticks at = bt + beat * b;
-          if (at >= end) break;
-          if (static_cast<double>(at) > origin) dl.addVLine(std::round(X(at)), body.y0, body.y1, gridBeat, line);
-        }
-    }
-    if (!hasClipRow(band)) continue;  // TL.1: a group / return / master lane (its automation: TL.2)
+    gridLines(body);
+    if (!hasClipRow(band)) continue;  // TL.1: a group / return / master lane (its automation: its sub-lanes, TL.2)
 
     // Clips.
     if (model != nullptr && !begun) {
@@ -324,13 +330,43 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
       }
     }
   }
-  if (!anyWindow) return;
+  // TL.2: the automation sub-lanes under the lanes (the arrangement's lane colour, its bar lines, a separator under each,
+  // the parameter's name at the top left; framed in the track's colour as its lane). Their envelopes: paintSurface below.
+  const auto subs = view.subLanes();
+  bool anySub = false;
+  for (size_t i = 0; i < subs.size(); ++i) {
+    const ProjectPatchView::SubLane& sl = subs[i];
+    if (sl.band >= pp.bands.size() || (canvas.bandLifted(sl.band) ? 1 : 0) != layer) continue;
+    const Band& band = pp.bands[sl.band];
+    const float dy = canvas.bandNow(sl.band).y1 - (band.y + band.h);
+    const Rect r = snapRect(canvas.deviceRect(pp.laneX0, sl.y + dy, pp.laneX1 - pp.laneX0, sl.h));
+    if (!overlaps(r, clip) || r.x1 - r.x0 < 2.0f || r.y1 - r.y0 < 2.0f) continue;
+    anySub = true;
+    dl.addRectFilled(r, th.automation.lane);
+    gridLines(r);
+    dl.addRectFilled({r.x0, r.y1 - 1.0f, r.x1, r.y1}, th.arrangement.separator);
+    const Rgba trackCol = ui::hex(band.colour);
+    dl.addVLine(r.x0, r.y0, r.y1, ui::mulAlpha(trackCol, band.active ? 0.55f : 0.25f), line);
+    dl.addVLine(r.x1 - line, r.y0, r.y1, ui::mulAlpha(trackCol, band.active ? 0.55f : 0.25f), line);
+    if (fonts && near && r.y1 - r.y0 >= px + 4.0f * us) {
+      const std::string label = paramName(p, sl.param, view.context().deviceLibrary());
+      const float w = std::min(r.x1 - r.x0 - 4.0f * us, 10.0f * px);
+      const float tw = std::min(w, static_cast<float>(ctx.res.text->shape(font, label).advance) + 6.0f * us);
+      const float y0 = r.y0 + 2.0f * us, y1 = y0 + px + 2.0f * us;
+      dl.addRoundedRectFilled({r.x0 + 2.0f * us, y0, r.x0 + 2.0f * us + tw, y1}, 2.0f * us, th.surface.sunken);
+      paint::text(ctx, font, toIRect({r.x0 + 5.0f * us, y0, r.x0 + 2.0f * us + w, y1}), label, th.automation.line, ui::TextAlign::Left);
+    }
+  }
+  // Their envelopes (the arrangement's bands on this surface; not in the lifted pass: a band dragged by its title has its
+  // sub-lanes drawn empty until it lands).
+  if (surf != nullptr && anySub && !liftPass && !arr->automation().mode()) arr->automation().paintSurface(ctx, *surf, clip);
+  if (!anyWindow && !anySub) return;
 
   // TX.lane-edit: in automation mode the chosen parameter's envelope over each lane's clips (the arrangement's bands, on
-  // this surface), and its name at the lane's top right.
+  // this surface), and its name at the lane's top right. (TL.2: paintSurface draws the sub-lanes' envelopes too.)
   if (surf != nullptr && arr->automation().mode() && !liftPass) {
     arr->automation().paintSurface(ctx, *surf, clip);
-    if (fonts && near)
+    if (fonts && near && anyWindow)
       for (int32_t r = 0; r < static_cast<int32_t>(surf->rows().size()); ++r) {
         const Rect body = surf->body(r);
         if (!overlaps(body, clip) || body.y1 - body.y0 < px + 4.0f * us) continue;
@@ -350,7 +386,7 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
       const Band& band = pp.bands[bi];
       if (band.laneH <= 0.0f || view.bandTrack(bi) == nullptr || (canvas.bandLifted(bi) ? 1 : 0) != layer) continue;
       const float dy = canvas.bandNow(bi).y1 - (band.y + band.h);
-      const Rect body = laneBodyDevice(canvas, pp, band, dy);
+      const Rect body = laneAreaDevice(canvas, pp, band, dy);  // TL.2: down its sub-lanes too
       if (!overlaps(body, clip) || body.x1 - body.x0 < 2.0f || body.y1 - body.y0 < 1.0f) continue;
       const float x = lanePlayheadX(body, static_cast<double>(*ph), origin, spanD);
       dl.addRectFilled({x, body.y0, x + std::max(1.0f, std::round(us)), body.y1}, th.arrangement.playhead);

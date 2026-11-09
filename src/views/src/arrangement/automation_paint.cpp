@@ -90,13 +90,19 @@ void ArrangementAutomation::paintPinned(PaintContext& ctx, const IRect& canvas) 
   painting_ = nullptr;
 }
 
-// TX.lane-edit: another surface's rows in automation mode (a lane window's envelope over its clips).
+// TX.lane-edit: another surface's rows in automation mode (a lane window's envelope over its clips); TL.2: and its lanes
+// (a band lane's automation sub-lanes), always. The surface draws their backgrounds and separators.
 void ArrangementAutomation::paintSurface(PaintContext& ctx, arrangement::EditSurface& s, const IRect& clip) {
-  if (!mode_ || ctx.res.theme == nullptr) return;
+  if (ctx.res.theme == nullptr) return;
   painting_ = &s;
-  const auto rows = s.rows();
-  for (size_t i = 0; i < rows.size(); ++i)
-    if (const auto b = rowBand(s, static_cast<int32_t>(i), false); b && !intersect(b->rect, clip).empty()) paintBand(ctx, *b, clip);
+  if (mode_) {
+    const auto rows = s.rows();
+    for (size_t i = 0; i < rows.size(); ++i)
+      if (const auto b = rowBand(s, static_cast<int32_t>(i), false); b && !intersect(b->rect, clip).empty()) paintBand(ctx, *b, clip);
+  }
+  const auto lanes = s.laneRows();
+  for (size_t i = 0; i < lanes.size(); ++i)
+    if (const IRect r = s.laneRect(i); !intersect(r, clip).empty()) paintBand(ctx, laneBand(s, i), clip);
   painting_ = nullptr;
 }
 

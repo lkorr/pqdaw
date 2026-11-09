@@ -237,7 +237,8 @@ public:
   // ---- lanes under a track (view state) ------------------------------------------------------------------------
   bool lanesShown(doc::TrackId t) const noexcept;
   // Shows / hides the track's lanes. The first time: its automated parameters (LaneView::visible ones), else the
-  // chosen parameter.
+  // chosen parameter. TL.2: a return's / the master's too (shown under its band lane in the project patch view; the
+  // arrangement's pinned rows have no lanes).
   void showLanes(doc::TrackId t, bool on);
   // The parameters of the track's lanes, in order (empty while hidden). Invalid ones (a removed return) are dropped.
   std::vector<doc::ParamRef> shownLanes(doc::TrackId t) const;
@@ -246,7 +247,8 @@ public:
   // "+": a new lane with the next parameter not shown yet (automated ones first). False when every one is shown.
   bool addLane(doc::TrackId t);
   // T4.18 ("Show Automation" on a knob): shows `p`'s lane under `t` (added after the shown ones when it is not shown)
-  // and makes it the parameter drawn over t's clips in automation mode. A return / master (no lanes): only the latter.
+  // and makes it the parameter drawn over t's clips in automation mode. TL.2: a return / master likewise (its lanes show
+  // in the project patch view only).
   void showParam(doc::TrackId t, const doc::ParamRef& p);
   // "−": hides lane `index` (LaneView::visible = false when it is automated); the last one hides the lanes.
   void hideLane(doc::TrackId t, size_t index);
@@ -301,8 +303,9 @@ public:
 
   // ---- other surfaces (TX.lane-edit) ------------------------------------------------------------------------------
   // Pointer input, cursor and hover work on the surface bound by the caller (arrangement::Surfaces::Bind); a gesture
-  // keeps the surface it began on. In automation mode a surface's rows show their chosen envelopes over the clips:
-  // paintSurface paints those meeting `clip` (the caller binds nothing; the bands carry their rows).
+  // keeps the surface it began on. In automation mode a surface's rows show their chosen envelopes over the clips;
+  // TL.2: a surface's lanes (laneRows: a band lane's sub-lanes) show theirs always. paintSurface paints those meeting
+  // `clip` (the caller binds nothing; the bands carry their rows).
   void paintSurface(ui::PaintContext& ctx, arrangement::EditSurface& s, const ui::IRect& clip);
   std::optional<AutomationBand> rowBandOn(const arrangement::EditSurface& s, int32_t row) const { return rowBand(s, row, false); }
   const arrangement::EditSurface* dragSurface() const noexcept { return drag_.kind != DragKind::None ? drag_.surface : nullptr; }

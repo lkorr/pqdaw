@@ -402,6 +402,7 @@ TEST_CASE("envelope face: breakpoint, plateau, bend and amount drags at zoom 0.1
     const auto span = [&](float extent) { return std::max(extent * zoom * us, 150.0 * us); };
     const auto& P = envType().params;
     const uint64_t rebuilds = u.view().stats().rebuilds;
+    const size_t subs = u.view().subLanes().size();
     // Attack: the peak right by 30 px.
     size_t h0 = u.history();
     double t0 = travelOf(meta::kEnvAttack, u.value(meta::kEnvAttack));
@@ -457,7 +458,9 @@ TEST_CASE("envelope face: breakpoint, plateau, bend and amount drags at zoom 0.1
     u.d.drag(a, {a.x, a.y + 40.0f}, 6);
     CHECK(u.history() == h0 + 1);
     CHECK(u.value(meta::kEnvAmount) == doctest::Approx(1.0 - 40.0 / span(92.0f)).epsilon(1e-4));
-    CHECK(u.view().stats().rebuilds == rebuilds);  // param writes: nothing re-lowers
+    // Param writes: nothing re-lowers. TL.2: a press on a control shows its automation sub-lane — one re-layout (the
+    // lowering kept) per sub-lane it opened, nothing else.
+    CHECK(u.view().stats().rebuilds - rebuilds == u.view().subLanes().size() - subs);
     // Double-click the decay's end: decay and sustain back to their defaults in one step; undo takes it back.
     h0 = u.history();
     u.d.doubleClick(u.at(u.decayEnd().x, u.decayEnd().y));

@@ -15,7 +15,13 @@
 
 #include "../arrangement/internal.h"
 #include "internal.h"
+#include "pq/document/racks.h"
 #include "pq/views/arrangement/arrangement.h"
+
+namespace pq::views::device_chain {
+// The macro mapping onto device.param (src/device_chain/rack_frame.cpp; its header pulls in the Device view's internals).
+std::optional<std::pair<doc::RackInfo, doc::RackMapping>> macroMappingOf(const doc::Project& p, doc::DeviceId device, std::string_view param);
+}  // namespace pq::views::device_chain
 
 namespace pq::views::project_patch {
 
@@ -108,13 +114,72 @@ ui::IRect LaneEditSurface::rowLaneRect(int32_t row) const {
 
 ui::IRect LaneEditSurface::viewport() const { return view_.canvas().rect(); }
 
-arrangement::TimeAxis LaneEditSurface::axis(int32_t row) const {
-  const int32_t n = static_cast<int32_t>(rows().size());
-  if (n == 0) return {};
-  const Rect b = body(std::clamp(row, 0, n - 1));
+// Every lane spans the same x range (TL.1): one axis for the clip rows and (TL.2) the sub-lanes of bands without one.
+arrangement::TimeAxis LaneEditSurface::axis(int32_t) const {
+  const ProjectPatch& pp = view_.patch();
+  if (!(pp.laneX1 > pp.laneX0)) return {};
+  const Rect b = snapRect(view_.canvas().deviceRect(pp.laneX0, 0.0f, pp.laneX1 - pp.laneX0, 0.0f));
   const double span = std::max(1.0, view_.laneSpan());
   const double k = std::max(1e-9, static_cast<double>(b.x1 - b.x0) / span);
   return {static_cast<double>(b.x0), view_.laneStart(), k};
+}
+
+// TL.2: the sub-lanes as the surface's lanes. Cached: a pointer move asks for them several times (bandAt, hover, damage);
+// the key is what their device rects depend on (a handful of numbers per band).
+void LaneEditSurface::syncLanes() const {
+  const ProjectCanvas& c = view_.canvas();
+  const ProjectPatch& pp = view_.patch();
+  const auto subs = view_.subLanes();
+  thread_local std::vector<double> key;
+  key.clear();
+  const circuit::CircuitCanvas::View cv = c.view();
+  const ui::IRect cr = c.rect();
+  key.insert(key.end(), {cv.x, cv.y, cv.zoom, static_cast<double>(cr.x), static_cast<double>(cr.y), static_cast<double>(c.deviceScale()),
+                         static_cast<double>(view_.stats().rebuilds), static_cast<double>(subs.size())});
+  if (!subs.empty())
+    for (uint32_t b = 0; b < pp.bands.size(); ++b)
+      key.push_back(c.bandLifted(b) ? 1e300 : static_cast<double>(c.bandNow(b).y1 - (pp.bands[b].y + pp.bands[b].h)));
+  // The lanes' document entries (an Automation-only edit makes a new lane without a re-layout).
+  const doc::Snapshot& snap = view_.context().doc();
+  if (key == laneKey_ && snap == laneDoc_) return;
+  laneKey_ = key;
+  laneDoc_ = snap;
+  lanes_.clear();
+  laneX_ = laneW_ = 0;
+  if (subs.empty() || !(pp.laneX1 > pp.laneX0)) return;
+  const ui::IRect xr = toIRect(snapRect(c.deviceRect(pp.laneX0, 0.0f, pp.laneX1 - pp.laneX0, 0.0f)));
+  laneX_ = xr.x;
+  laneW_ = xr.w;
+  sync();
+  for (const ProjectPatchView::SubLane& sl : subs) {
+    if (sl.band >= pp.bands.size() || c.bandLifted(sl.band)) continue;
+    const Band& band = pp.bands[sl.band];
+    const float dy = c.bandNow(sl.band).y1 - (band.y + band.h);
+    const Rect r = snapRect(c.deviceRect(pp.laneX0, sl.y + dy, pp.laneX1 - pp.laneX0, sl.h));
+    AutomationLaneRow lr;
+    lr.track = band.track;
+    lr.row = sl.band < rowOfBand_.size() ? rowOfBand_[sl.band] : -1;
+    lr.index = sl.index;
+    lr.param = sl.param;
+    const LaneLookup l = findAutomationLane(*view_.context().doc(), sl.param);
+    lr.owner = l.owner;
+    lr.lane = l.lane;
+    lr.y = static_cast<int32_t>(r.y0);
+    lr.h = std::max(1, static_cast<int32_t>(r.y1 - r.y0));
+    lanes_.push_back(lr);
+  }
+  std::stable_sort(lanes_.begin(), lanes_.end(), [](const AutomationLaneRow& a, const AutomationLaneRow& b) { return a.y < b.y; });
+}
+
+std::span<const AutomationLaneRow> LaneEditSurface::laneRows() const {
+  syncLanes();
+  return lanes_;
+}
+
+ui::IRect LaneEditSurface::laneRect(size_t i) const {
+  syncLanes();
+  if (i >= lanes_.size()) return {};
+  return {laneX_, lanes_[i].y, laneW_, lanes_[i].h};
 }
 
 double LaneEditSurface::gridPxPerTick() const {
@@ -136,7 +201,12 @@ void LaneEditSurface::revealTick(Ticks t) {
   view_.setLaneTime(at - 0.25 * span, span);
 }
 
-void LaneEditSurface::damageAll() { view_.damageLanes(); }
+// The arrangement's rows changed (ArrangementView::rowsChanged: lanes shown / hidden / resized, a parameter chosen,
+// automation mode) or its editing state wants a full repaint. TL.2: the sub-lanes follow the arrangement's shown lanes.
+void LaneEditSurface::damageAll() {
+  view_.subLanesChanged();
+  view_.damageLanes();
+}
 
 // Appended to the arrangement's edit menu in a window: automation mode and the parameter drawn over this track's clips.
 std::vector<ui::MenuItem> LaneEditSurface::menuItems() {
@@ -272,6 +342,103 @@ void ProjectPatchView::laneAbort() {
   if (arr->automation().dragSurface() == laneEdit_.get()) arr->automation().abortDrag();
 }
 
+
+// ---- automation sub-lanes (TL.2) ----------------------------------------------------------------------------------------
+
+void ProjectPatchView::collectSubLanes(std::vector<SubLaneSpec>& out) const {
+  out.clear();
+  if (embedded()) return;
+  ArrangementView* arr = arrangement();
+  const doc::Snapshot& snap = ctx_.doc();
+  if (arr == nullptr || !snap) return;
+  const ArrangementAutomation& au = arr->automation();
+  thread_local std::vector<doc::ParamRef> params;  // (UI thread; kept: no allocation once warm)
+  doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) {
+    au.lanesFor(*snap, t, params);
+    for (const doc::ParamRef& r : params) out.push_back({t.id, r, std::round(au.laneHeight(t.id, r))});
+  });
+}
+
+// The arrangement's shown lanes or their heights changed (a lane shown, hidden, resized, a parameter chosen for one): the
+// bands re-lay out (model + scene; the lowering kept) when what the model holds differs. O(tracks + shown lanes).
+void ProjectPatchView::subLanesChanged() {
+  if (embedded()) return;
+  thread_local std::vector<SubLaneSpec> now;
+  collectSubLanes(now);
+  if (now == subSpecs_) return;
+  relayout();
+}
+
+ui::Rect ProjectPatchView::subLaneDevice(size_t i) const {
+  if (i >= subLanes_.size()) return {};
+  const SubLane& sl = subLanes_[i];
+  return snapRect(canvas_->deviceRect(patch_.laneX0, sl.y, patch_.laneX1 - patch_.laneX0, sl.h));
+}
+
+uint32_t ProjectPatchView::subLaneAt(Vec2 device) const {
+  if (embedded()) return kNone;
+  for (size_t i = 0; i < subLanes_.size(); ++i) {
+    const Rect r = subLaneDevice(i);
+    if (device.x >= r.x0 && device.x < r.x1 && device.y >= r.y0 && device.y < r.y1) return static_cast<uint32_t>(i);
+  }
+  return kNone;
+}
+
+std::optional<ui::Rect> ProjectPatchView::subLaneRect(doc::TrackId track, const doc::ParamRef& param) const {
+  const uint32_t b = patch_.bandOf(track);
+  if (b == kNone) return std::nullopt;
+  for (size_t i = 0; i < subLanes_.size(); ++i)
+    if (subLanes_[i].band == b && subLanes_[i].param == param) return subLaneDevice(i);
+  return std::nullopt;
+}
+
+bool ProjectPatchView::subLanesShown(doc::TrackId track) const {
+  ArrangementView* arr = embedded() ? nullptr : arrangement();
+  return arr != nullptr && arr->automation().lanesShown(track);
+}
+
+void ProjectPatchView::showSubLanes(doc::TrackId track, bool on) {
+  ArrangementView* arr = embedded() ? nullptr : arrangement();
+  if (arr == nullptr) return;
+  (void)laneEditReady();  // registered: the arrangement's rowsChanged reaches the surface (damageAll → subLanesChanged)
+  arr->automation().showLanes(track, on);
+  subLanesChanged();  // (also when the surface is not active yet)
+}
+
+void ProjectPatchView::setSubLaneHeight(doc::TrackId track, const doc::ParamRef& p, float h) {
+  ArrangementView* arr = embedded() ? nullptr : arrangement();
+  if (arr == nullptr) return;
+  arr->automation().setLaneHeight(track, p, h);
+  subLanesChanged();
+}
+
+bool ProjectPatchView::showParamAutomation(doc::TrackId track, const doc::ParamRef& p) {
+  if (embedded() || arrangement() == nullptr || !paramValid(*ctx_.doc(), p)) return false;
+  (void)laneEditReady();
+  ctx_.showAutomation(track, p);  // the arrangement shows it (ArrangementAutomation::showParam): so does the band
+  subLanesChanged();
+  return true;
+}
+
+bool ProjectPatchView::showControlAutomation(const doc::Binding& b) {
+  // A device's param (a value block's value, a face's or panel's control). A native engine's inner instance (`meta`) is
+  // no document param; a macro-mapped param plays its macro: no lane of its own unless it has one (the Device view's
+  // "Show Automation" rule).
+  if (b.kind != doc::BindingKind::Control || !b.meta.empty() || !b.device.valid() || b.name.empty()) return false;
+  const doc::Snapshot& snap = ctx_.doc();
+  const doc::DeviceLoc l = snap ? doc::findDevice(*snap, b.device) : doc::DeviceLoc{};
+  if (l.track == nullptr || l.device == nullptr) return false;
+  const doc::ParamRef r = doc::ParamRef::device(b.device, b.name);
+  if (device_chain::macroMappingOf(*snap, b.device, b.name) && findAutomationLane(*snap, r).lane == nullptr) return false;
+  return showParamAutomation(l.track->id, r);
+}
+
+std::optional<std::pair<Vec2, float>> ProjectPatchView::controlDevice(const doc::Binding& b) const {
+  float r = 0.0f;
+  const std::optional<graph::Point2> c = controlWorld(b, &r);
+  if (!c) return std::nullopt;
+  return std::make_pair(canvas_->toDevice(*c), r * canvas_->deviceScale());
+}
 
 // ---- the time ruler over the lanes (TL.1) ------------------------------------------------------------------------------
 

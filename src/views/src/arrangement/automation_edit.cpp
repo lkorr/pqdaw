@@ -91,8 +91,9 @@ void ArrangementAutomation::initLanes(TrackState& s, doc::TrackId t) {
 }
 
 void ArrangementAutomation::showLanes(doc::TrackId t, bool on) {
-  const doc::Track* tr = doc::findTrackPtr(*ctx_.doc(), t);
-  if (!tr || tr->kind == doc::TrackKind::Return || tr->kind == doc::TrackKind::Master) return;  // pinned rows: A mode only
+  // TL.2: a return / master too — its lanes show under its band lane in the project patch view (the arrangement's pinned
+  // rows have none: A mode only; rebuildRows lays lanes out for the main rows).
+  if (doc::findTrackPtr(*ctx_.doc(), t) == nullptr) return;
   TrackState& s = state(t);
   if (s.shown == on) return;
   s.shown = on;
@@ -140,7 +141,8 @@ void ArrangementAutomation::showParam(doc::TrackId t, const doc::ParamRef& p) {
   const doc::Track* tr = doc::findTrackPtr(*ctx_.doc(), t);
   if (!tr || !paramValid(*ctx_.doc(), p)) return;
   choose(t, p);
-  if (tr->kind == doc::TrackKind::Return || tr->kind == doc::TrackKind::Master) return;  // pinned rows: A mode only
+  // TL.2: a return / master's lane is shown too (under its band lane in the project patch view; the arrangement's pinned
+  // rows show only the chosen parameter, in A mode).
   TrackState& s = state(t);
   initLanes(s, t);
   if (std::find(s.lanes.begin(), s.lanes.end(), p) == s.lanes.end()) s.lanes.push_back(p);
@@ -1113,12 +1115,18 @@ Menu* ArrangementAutomation::openMenu(Vec2 at, const AutomationBand& b) {
   if (const doc::Track* tr = doc::findTrackPtr(p, b.track)) {
     const doc::TrackId t = b.track;
     const bool over = b.overClips;
-    const uint32_t index = b.laneIndex >= 0 ? view_.laneRows()[static_cast<size_t>(b.laneIndex)].index : 0;
+    // TX.lane-edit / TL.2: the band's lane index is on its own surface (a band lane's sub-lane: the project patch view's).
+    const auto lanes = geo().laneRows();
+    const uint32_t index = b.laneIndex >= 0 && static_cast<size_t>(b.laneIndex) < lanes.size() ? lanes[static_cast<size_t>(b.laneIndex)].index : 0;
     items.push_back(MenuItem::sub("Parameter", chooserItems(p, *tr, b.param, ctx_.deviceLibrary(), [this, t, over, index](doc::ParamRef r) {
       if (over) choose(t, r);
       else setLaneParam(t, index, r);
     })));
-    if (tr->kind != doc::TrackKind::Return && tr->kind != doc::TrackKind::Master) {
+    // TL.2: on another surface (a band lane, which has no lane header with its "−") the lane can be hidden here, and a
+    // return / master shows lanes there.
+    const bool own = &geo() == &view_.surfaces().own();
+    if (!own && !over) items.push_back(MenuItem::item("Hide This Lane", [this, t, index] { hideLane(t, index); }));
+    if (!own || (tr->kind != doc::TrackKind::Return && tr->kind != doc::TrackKind::Master)) {
       const bool shown = lanesShown(t);
       items.push_back(MenuItem::item(shown ? "Hide Automation Lanes" : "Show Automation Lanes", [this, t, shown] { showLanes(t, !shown); }));
     }

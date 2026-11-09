@@ -1083,3 +1083,13 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **To judge:** the lanes' look inside the bands (colour frame, grid), the chips' place, the cable sag from the lane up
   into an instrument's left input, the ruler covering the canvas's top 40 px, whether lanes as wide as the whole
   project (returns and master on the far right) read well.
+
+## 2026-11-09 · TL.2 · automation sub-lanes under the band lanes
+- Look at: `project-patch-lane-edit` golden (Pad's volume sub-lane under its lane, the same envelope and selected point as
+  over the clips), the new automation toggle after each band's fold triangle (lit while its sub-lanes show), the sub-lane
+  label (parameter name on a dark pad at the left), `panel-window-*` goldens (the controls the scene presses now open
+  their value blocks' sub-lanes).
+- Try: press a knob / the mixer's pan in a band → its sub-lane opens under the lane (and in the arrangement); draw a
+  point there, undo; drag a sub-lane's bottom edge; the master's toggle; fold a band (the sub-lanes stay).
+- Known: every newly pressed control adds a lane (Q?-TL.2-a: a "follow" lane may read better); a band dragged by its title
+  draws its sub-lanes empty until it lands; no auto-scroll to a sub-lane off screen.

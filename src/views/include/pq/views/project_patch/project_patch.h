@@ -258,6 +258,9 @@ struct Band {
   // band (its circuit collapsed) keeps its title strip and its lane.
   float laneY = 0, laneH = 0;
   bool folded = false;
+  // TL.2: the automation sub-lanes shown under its lane (LayoutOptions::subLanes): their total height (world units), from
+  // laneY + laneH down. A folded band keeps them.
+  float subH = 0;
 };
 
 struct ProjectPatch {
@@ -335,6 +338,10 @@ struct LayoutOptions {
   // path with its contents), and the wires among them (ProjectPatch::scoped; the Device view's free rack). Ignored with
   // `scope`.
   doc::TrackId freeTrack;
+  // TL.2: per track id, the total height (world units) of the automation sub-lanes shown under its lane (the
+  // arrangement's per-track shown lanes, ArrangementAutomation; their heights its lane heights, logical px = world
+  // units). Absent: none. Ignored in a scoped model (no lanes).
+  const std::unordered_map<uint32_t, float>* subLanes = nullptr;
 };
 
 // TX.mod-all: which edge of its block an anchored param's wire enters by (the one nearest the control; never the
@@ -356,8 +363,14 @@ struct LaneRect {
 inline LaneRect laneBody(const ProjectPatch& pp, const Band& b) noexcept { return {pp.laneX0, b.laneY, pp.laneX1, b.laneY + b.laneH}; }
 // Whether a band's lane has a clip row (a MIDI or an audio track; group / return / master lanes hold automation only).
 inline bool hasClipRow(const Band& b) noexcept { return b.kind == doc::TrackKind::Midi || b.kind == doc::TrackKind::Audio; }
-// The space a band's lane takes at its bottom (with its gaps).
-inline float laneBlock(float laneH) noexcept { return laneH > 0.0f ? metrics::kLaneGapAbove + laneH + metrics::kLaneGapBelow : 0.0f; }
+// TL.2: band `b`'s automation sub-lanes, all of them (world units: under its lane, as wide; empty when none).
+inline LaneRect subLanesBody(const ProjectPatch& pp, const Band& b) noexcept {
+  return {pp.laneX0, b.laneY + b.laneH, pp.laneX1, b.laneY + b.laneH + b.subH};
+}
+// The space a band's lane takes at its bottom (with its gaps; TL.2: and its automation sub-lanes under it).
+inline float laneBlock(const Band& b) noexcept {
+  return b.laneH > 0.0f ? metrics::kLaneGapAbove + b.laneH + b.subH + metrics::kLaneGapBelow : 0.0f;
+}
 // TL.1: a MIDI lane's PORT CHIPS over the left end of its top edge, one per output of its lane node in order (its notes,
 // then doc::kNoteOutputs: Hz, gate, velocity): a cable drawn up from one is of that output. World units.
 inline constexpr std::string_view kLanePortLabels[] = {"notes", "Hz", "gate", "vel"};
