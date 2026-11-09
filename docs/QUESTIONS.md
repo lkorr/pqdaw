@@ -552,7 +552,7 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   conversion: a file whose layout placed the Notes node simply has none; its wires keep working (default taps).
 - Status: decided (reversible: store.h PatchNudge, editing.cpp Editor::press, project_patch.h lanePortChip).
 
-## Q?-TL.2-a · 2026-11-09 · TL.2 · Which sub-lanes a band shows, and what a control press adds
+## Q239 · 2026-11-09 · TL.2 · 2026-11-09 · TL.2 · Which sub-lanes a band shows, and what a control press adds
 - **Context**: TL.2 (docs/plans/TL.md 8, 9). A band's automation sub-lanes and the arrangement's lanes under a track must
   agree; a press on a control in a band shows its automation.
 - **Choices**: (1) The band's sub-lanes ARE the arrangement's per-track shown lanes (`ArrangementAutomation` TrackState:

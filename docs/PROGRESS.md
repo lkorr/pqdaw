@@ -247,3 +247,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: time zoom / scroll repaints lanes + ruler only (64 tracks: zero re-layouts); a tap slide skips re-lowering; lane paint culls to visible ticks.
 - Notes/blockers: Q238. Ruler overlays the canvas top 40 px; taps reset to default on wire-rebuilding ops other than splice / insert, and on sticky cables after Ctrl-release.
 
+## 2026-11-09 · TL.2 · task/TL.2-automation
+- Did: band sub-lanes = the arrangement's per-track shown lanes / heights (returns + master too); LaneEditSurface fills laneRows / laneRect so ArrangementAutomation edits them (one selection / undo); Band::subH, fold keeps sub-lanes, header toggle, band menu Show / Hide / Add, sub-lane resize, Hide This Lane; a press on a face / panel control, value block or mixer control calls showAutomation; subLaneRect / controlDevice for TL.3. Fixed: envelope menu read the wrong surface's lane index; playhead damage on Σ lanes; sub-lane double-click opened a clip.
+- Verified: pq_tests_views default tier passed after rebase; pqdaw compiles; 2 new real-dispatch tests; 3 no-rebuild drag tests now allow one re-layout per newly opened sub-lane (by design); 29 goldens re-recorded.
+- Perf / CPU-efficiency check: zero cost with no sub-lanes shown; rects cached at model build; re-layout only when the shown set / heights change (lowering kept).
+- Notes/blockers: Q239 (pressed controls stack sub-lanes). Not done: auto-scroll to an off-screen sub-lane, sub-lanes empty while a band is dragged, floating panel windows.
+
