@@ -85,3 +85,26 @@ band view re-recorded and reviewed); TL.1 also touches the document (`Wire` tap 
 
 CPU: the lane paints only its visible tick range (`LanePaint` already culls); the shared time window is one struct read,
 no per-frame allocation; the red wire is one curve per selected control.
+
+## TL.4: the look pass, scrub ruler, Play-from-click, wire curve, mixer size (user 2026-11-09)
+
+1. **Lane look.** The lane must read as a proper track, as good as the arrangement's: a border / inset frame round the
+   lane (and its sub-lanes), the arrangement's alternating bar shading (every bar / the zoom-dependent grid the
+   arrangement background uses, `paintGrid` / `LanePaint` with the arrangement's colours), clip styling identical to the
+   arrangement. Take a screenshot of both views at the same zoom and make the lane indistinguishable from an arrangement
+   track except for its width.
+2. **Thin scrub ruler per lane.** Each lane gets a thin version of the top ruler along its top (just under the cable
+   tap edge, which stays the topmost edge): bar numbers, the playhead, click / drag scrubs exactly as the top ruler does
+   (same `Ruler` code, a compact mode). The top ruler stays.
+3. **Play from the click (bug).** The user: clicking bar 4 in the MIDI lane then pressing Play does not play from bar 4;
+   it "stays behind". TL.1 claimed this and its test passed, so the test doesn't model what the user does: reproduce in
+   the real app (a process you launch), likely cases: clicking on / near a clip, clicking while playing, the
+   arrangement's start marker vs insert marker, Space vs the Play button, the transport not locating when stopped at
+   a different position. Rule: a click anywhere on a lane's time area (empty space or a clip, not a clip drag) moves
+   where Play starts to the click (snapped as the arrangement snaps); stopped: the playhead moves there now; playing:
+   the next Play / Stop-then-Play starts there. Same in the arrangement. Test the exact gesture through real dispatch.
+4. **Wire curve.** The automation wire curves visibly: end on the sub-lane at a point offset along x from the control
+   (e.g. towards the sub-lane's label / left, or a fixed lateral offset), with a gentle sag, never a straight drop.
+5. **Mixer face.** Resizable (drag its corner like other resizable blocks, saved, one undo step) and 2× its current size
+   by default.
+
