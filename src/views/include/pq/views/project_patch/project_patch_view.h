@@ -129,6 +129,14 @@
 //              into its band, its clips move into the band's lane, and back.
 //   readouts   resting on a wire shows what is known of its signal: a route / send the source track's meter level
 //              (MeterSource), a modulation wire its target's live sweep (ModulationSource); chain wires their kind.
+//   automated  (TL.6, the user 2026-11-09: "knobs that are automated should be shown turning of their own accord") every
+//              control whose param has an automation lane shows the envelope at the playhead and moves by itself while
+//              the transport plays (and when the playhead is located while stopped), as in the Device view (T4.18; one
+//              mechanism: pq/views/arrangement/automation_follow.h): meta faces' controls, panel controls of closed
+//              groups and embedded panels (native engine sections too), value blocks, the mixer face's volume / pan /
+//              sends. Grabbed by hand it overrides (ViewContext::automationOverridden: its own value until Re-enable);
+//              a macro-mapped param is left to its macro. A 30 Hz timer runs only while such a control is shown and the
+//              transport plays; each tick repaints only the controls that moved (a meta face: the face).
 //
 // CPU: idle = no frames, no timers. The model, lowering and scene are rebuilt only while shown, after a document change
 // that can change them (structural, names, colours, a send turned on / off); a mixer drag or a clip edit only repaints.
@@ -155,6 +163,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
+#include "pq/views/arrangement/automation_follow.h"
 #include "pq/views/circuit/circuit_canvas.h"
 #include "pq/views/circuit/circuit_scene.h"
 #include "pq/views/circuit/node_menu.h"
@@ -649,6 +658,25 @@ public:
   // unless the press is on its control or on the block drawing it (a drag of that block, the mixer's other controls).
   void automationWirePress(uint32_t node, const doc::Binding& ctl);
 
+  // TL.6 automated controls follow the playhead (see "automated" above). refreshAutomation re-reads which params are
+  // automated and which shown controls show them (a document, override or face change); applyAutomation moves them to
+  // the envelope at the playhead (the timer's work; tests call it directly). automatedShown: the controls following
+  // now (tests).
+  void refreshAutomation();
+  void applyAutomation();
+  bool automationPolling() const noexcept { return autoFollow_.polling(); }
+  size_t automatedShown() const noexcept { return autoControls_.size(); }
+  // A shown control following its automation: on a face (checked against the canvas before use), of target `target`.
+  struct AutoControl {
+    enum class Kind : uint8_t { Panel, Meta, Mixer };
+    Kind kind = Kind::Panel;
+    Face* face = nullptr;
+    uint32_t node = 0;      // its scene node
+    uint32_t target = 0;    // index into autoFollow_.targets()
+    uint32_t param = 0;     // Meta: the type's param index
+    doc::Binding binding;   // Panel: the control
+  };
+
   // ---- edits (each one undo step through pq::doc::ops / commands; false and the reason in the status line when it
   // could not be done) ---------------------------------------------------------------------------------------------
   bool connect(doc::DeviceId from, const std::string& port, doc::DeviceId to, const std::string& param);
@@ -1068,6 +1096,12 @@ private:
   };
   std::optional<AutoWireSource> autoWire_;
   ui::Rect autoWireBox_{};
+  // TL.6: the automated params of the bands' tracks and the shown controls following them (grouped by face); a face is
+  // checked against the canvas before use.
+  AutomationFollow autoFollow_;
+  std::vector<AutoControl> autoControls_;
+  std::vector<ui::Rect> autoRects_;  // scratch: a panel's moved controls
+  Face* autoFace(const AutoControl& c) const noexcept;  // the face if the canvas still shows it there, else null
   bool windowsStale_ = false;
   void syncWindows();
   panel::PanelWindow& makeWindow(doc::DeviceId group);

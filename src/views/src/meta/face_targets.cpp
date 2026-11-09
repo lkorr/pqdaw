@@ -9,6 +9,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/meta/registry.h"
 #include "pq/document/meta.h"
+#include "pq/dsp/curve.h"
 #include "pq/tuning/tuning.h"
 #include "pq/views/view_context.h"
 
@@ -39,7 +40,23 @@ const doc::Device* DocTarget::dev() const {
 double DocTarget::value(size_t param) const {
   if (param >= type_.params.size()) return 0.0;
   const doc::Device* d = dev();
-  return d != nullptr ? doc::metaParamValue(*d, path_, type_, param) : type_.params[param].def;
+  if (d == nullptr) return type_.params[param].def;
+  for (const auto& [k, pos] : shown_)  // TL.6: an automated param at the playhead (a position: through its curve)
+    if (k == param) return dsp::evalCurve(doc::metaParamCurve(*d, path_, type_, param), pos);
+  return doc::metaParamValue(*d, path_, type_, param);
+}
+
+bool DocTarget::showPosition(size_t param, std::optional<double> position) {
+  for (auto it = shown_.begin(); it != shown_.end(); ++it)
+    if (it->first == param) {
+      if (position && it->second == *position) return false;
+      if (position) it->second = *position;
+      else shown_.erase(it);
+      return true;
+    }
+  if (!position || param >= type_.params.size()) return false;
+  shown_.emplace_back(param, *position);
+  return true;
 }
 
 bool DocTarget::editable() const noexcept { return dev() != nullptr; }

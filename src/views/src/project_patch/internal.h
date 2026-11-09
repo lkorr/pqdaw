@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -76,6 +77,11 @@ std::unique_ptr<Face> makeMixerFace(ProjectPatchView& view, const ProjectPatch& 
 // TL.3: where a mixer face draws its control of track param `p` now (face-local; nullopt: not a mixer face, not its
 // track's, no such control).
 std::optional<ControlAnchor> mixerControlAnchor(const Face& f, const doc::ParamRef& p);
+// TL.6: the track a mixer face shows (invalid: not a mixer face); what its control of track param `p` shows instead of
+// the track's value (an automated control at the playhead; nullopt: the track's own): true when that changed, with
+// the face-local rect to repaint in `area`.
+doc::TrackId mixerFaceTrack(const Face& f);
+bool mixerShow(Face& f, const doc::ParamRef& p, std::optional<double> value, ui::Rect& area);
 
 // TX.lane-edit: the title strip of the clips in a window body `bodyH` device px high (0: the body is too low for one).
 inline float laneClipTitleH(float bodyH, float uiScale) noexcept {

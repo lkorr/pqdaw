@@ -68,6 +68,8 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent& e) { onDocument(e); });
   viewSub_ = ctx_.observe([this](uint32_t bits) {
     if (bits & view_change::kTransport) refreshTransport();
+    if (bits & view_change::kAutomation) refreshAutomation();  // TL.6: overridden / re-enabled
+    else if ((bits & view_change::kTransport) && !autoControls_.empty()) applyAutomation();  // TL.6: played, located
     if (bits & view_change::kTimeWindow) timeWindowChanged();  // TL.1: zoomed / scrolled here or in the arrangement
     if ((bits & view_change::kWaveforms) && shown()) damageLanes();  // an overview arrived or grew: the lanes only
     if (bits & view_change::kAnalysis) wakeFaces();  // TX.spectrum: a Spectrum face's tap appeared
@@ -148,6 +150,7 @@ void ProjectPatchView::setShown(bool on, bool animate) {
       stale_ = now != subSpecs_;
     }
     sync();
+    refreshAutomation();  // TL.6: what changed while hidden (overrides, lanes)
     if (arr != nullptr && tree() != nullptr) {
       tree()->layoutNow();  // the arrangement's rows, the canvas's rect
       canvas_->setView(viewForArrangement());
@@ -620,6 +623,7 @@ void ProjectPatchView::rebuild() {
     if (!costTimer_) pollCosts();
   }
   syncWindows();  // GU.5: the panel windows of the view state (a group gone: its window goes)
+  refreshAutomation();  // TL.6: the new faces' automated controls
   ++stats_.rebuilds;
   stats_.lastRebuildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   // TX.block-drag: blocks never overlap — every re-layout settles (not inside a push's own re-layout, nor while a block
@@ -670,6 +674,7 @@ void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
     ++stats_.repaints;
     built_ = ctx_.doc();  // same graph; the overlay reads the values
     canvas_->markDirty();
+    refreshAutomation();  // TL.6: a lane edited, an automated control set by hand
   }
   for (panel::PanelWindow* w : windows_)  // GU.5: the panels follow the document (values, elements)
     if (w->visible()) w->documentChanged();
@@ -1419,7 +1424,10 @@ ui::Menu* ProjectPatchView::openRackMenu(Vec2 at) {
   return ui::openContextMenu(*canvas_, at, std::move(items));
 }
 
-void ProjectPatchView::rebindFaces() { canvas_->rebindFaces(); }
+void ProjectPatchView::rebindFaces() {
+  canvas_->rebindFaces();
+  refreshAutomation();  // TL.6: new faces
+}
 
 void ProjectPatchView::wakeFaces() {
   if (shown() && !canvas_->animatingFaces()) canvas_->wakeFaces();
@@ -2268,6 +2276,10 @@ void ProjectPatchView::updateReadout(uint32_t edge) {
 }
 
 void ProjectPatchView::onTimer(uint32_t id) {
+  if (autoFollow_.fired(id)) {  // TL.6
+    applyAutomation();
+    return;
+  }
   if (id == playheadTimer_) {
     playheadTimer_ = 0;
     readPlayhead();

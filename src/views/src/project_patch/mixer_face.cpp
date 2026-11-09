@@ -98,7 +98,40 @@ private:
 class MixerFace final : public Face {
 public:
   MixerFace(ProjectPatchView& view, doc::TrackId track, Vec2 size, bool expanded, bool master, std::vector<MixerSend> sends)
-      : view_(view), track_(track), size_(size), expanded_(expanded), master_(master), sends_(std::move(sends)), tap_(view) {}
+      : view_(view), track_(track), size_(size), expanded_(expanded), master_(master), sends_(std::move(sends)), tap_(view) {
+    shownSends_.resize(sends_.size());
+  }
+
+  doc::TrackId trackId() const noexcept { return track_; }
+  // TL.6: the value an automated control shows at the playhead instead of the track's own (nullopt: its own again);
+  // true when it changed, with the face-local rect to repaint.
+  bool show(const doc::ParamRef& p, std::optional<double> v, Rect& area) {
+    if (p.owner != track_.value) return false;
+    std::optional<float>* slot = nullptr;
+    switch (p.kind) {
+      case doc::ParamKind::TrackPan:
+        slot = &shownPan_;
+        area = {kPanC.x - kPanR - 8.0f, kPanC.y - kPanR - 3.0f, kPanC.x + kPanR + 8.0f, 69.0f};  // the knob and its text
+        break;
+      case doc::ParamKind::TrackVolume:
+        slot = &shownVolume_;
+        area = {kFx0 - 12.0f, kFy - 12.0f, size_.x, 69.0f};  // the fader, its cap's glow and its readout
+        break;
+      case doc::ParamKind::TrackSend:
+        for (size_t k = 0; k < sends_.size(); ++k)
+          if (sends_[k].target.value == p.target) {
+            slot = &shownSends_[k];
+            area = {0.0f, sendY(k) - 5.0f, size_.x, sendY(k) + 5.0f};  // the send's row
+          }
+        break;
+      default: break;
+    }
+    if (slot == nullptr) return false;
+    const std::optional<float> want = v ? std::optional<float>(static_cast<float>(*v)) : std::nullopt;
+    if (*slot == want) return false;
+    *slot = want;
+    return true;
+  }
 
   Vec2 worldSize() const noexcept override { return size_; }
 
@@ -108,10 +141,10 @@ public:
     if (t == nullptr || p.owner != track_.value) return std::nullopt;
     switch (p.kind) {
       case doc::ParamKind::TrackPan: return ControlAnchor{kPanC, kPanR + 0.5f * kPanW};
-      case doc::ParamKind::TrackVolume: return ControlAnchor{{faderX(t->mixer.volumeDb), kFy}, 6.0f};
+      case doc::ParamKind::TrackVolume: return ControlAnchor{{faderX(volNow(*t)), kFy}, 6.0f};
       case doc::ParamKind::TrackSend:
         for (size_t k = 0; k < sends_.size(); ++k)
-          if (sends_[k].target.value == p.target) return ControlAnchor{{sendX(sendDb(*t, k)), sendY(k)}, 3.4f};
+          if (sends_[k].target.value == p.target) return ControlAnchor{{sendX(sendNow(*t, k)), sendY(k)}, 3.4f};
         return std::nullopt;
       default: return std::nullopt;
     }
@@ -214,7 +247,7 @@ public:
            6.0f, th.face.ink);
 
     // ---- pan ----
-    const float pan = std::clamp(t->mixer.pan, -1.0f, 1.0f);
+    const float pan = std::clamp(panNow(*t), -1.0f, 1.0f);
     const float a0 = panAngle(0.0f), a1 = panAngle(pan);
     const bool panHot = hovered_ == kPan || drag_ == kPan;
     p.ring(kPanC, kPanR, kPanW + 1.5f, panHot ? th.face.hover : 0);
@@ -237,7 +270,7 @@ public:
     }
 
     // ---- volume ----
-    const float db = t->mixer.volumeDb;
+    const float db = volNow(*t);
     const float fx = faderX(db);
     const bool volHot = hovered_ == kVolume || drag_ == kVolume;
     if (fx > kFx0 + 0.5f) {
@@ -257,7 +290,7 @@ public:
     // ---- sends ----
     for (size_t k = 0; k < sends_.size(); ++k) {
       const float y = sendY(k);
-      const float sdb = sendDb(*t, k);
+      const float sdb = sendNow(*t, k);
       const float sx = sendX(sdb);
       const bool hot = hovered_ == kSend0 + static_cast<int32_t>(k) || drag_ == kSend0 + static_cast<int32_t>(k);
       p.text({14.0f, y}, sends_[k].letter, 6.5f, th.face.ink);
@@ -319,7 +352,7 @@ public:
             set(v, "Set Volume", [&] { v.setVolume(id, 0.0f); });
             return true;
           }
-          start(part, e, volumeToFader(t->mixer.volumeDb));
+          start(part, e, volumeToFader(volNow(*t)));
           return true;
         }
         if (part == kPan) {
@@ -328,7 +361,7 @@ public:
             set(v, "Set Pan", [&] { v.setPan(id, 0.0f); });
             return true;
           }
-          start(part, e, t->mixer.pan);
+          start(part, e, panNow(*t));
           return true;
         }
         const size_t k = static_cast<size_t>(part - kSend0);
@@ -339,7 +372,7 @@ public:
           set(v, "Set Send Level", [&] { v.setSend(id, ret, 0.0f); });
           return true;
         }
-        start(part, e, volumeToFader(sendDb(*t, k)));
+        start(part, e, volumeToFader(sendNow(*t, k)));
         return true;
       }
       case K::Move: {
@@ -396,13 +429,13 @@ public:
     switch (part) {
       case kMute: body = std::string("Track Activator (") + (t->mixer.mute ? "off" : "on") + "): click to toggle."; break;
       case kSolo: body = "Solo: click (Ctrl+click: additive)."; break;
-      case kPan: body = "Pan " + formatPan(t->mixer.pan) + ": drag up / down (Shift: fine), double-click: centre."; break;
+      case kPan: body = "Pan " + formatPan(panNow(*t)) + ": drag up / down (Shift: fine), double-click: centre."; break;
       case kPanLaw: body = "Pan law: " + std::string(doc::panModeName(t->mixer.panMode)) + ". Click to choose (also in the mixer's right-click menu)."; break;
-      case kVolume: body = "Volume " + formatVolume(t->mixer.volumeDb) + " dB: drag sideways (Shift: fine), double-click: 0 dB."; break;
+      case kVolume: body = "Volume " + formatVolume(volNow(*t)) + " dB: drag sideways (Shift: fine), double-click: 0 dB."; break;
       default:
         if (part >= kSend0 && static_cast<size_t>(part - kSend0) < sends_.size()) {
           const size_t k = static_cast<size_t>(part - kSend0);
-          body = "Send " + sends_[k].letter + " " + formatVolume(sendDb(*t, k)) + " dB: drag sideways (Shift: fine), double-click: 0 dB.";
+          body = "Send " + sends_[k].letter + " " + formatVolume(sendNow(*t, k)) + " dB: drag sideways (Shift: fine), double-click: 0 dB.";
         } else {
           body = "The track's output: drag to place it (it stays where it is put), double-click to show the sends' levels; "
                  "its menu puts it back at the top right.";
@@ -422,6 +455,12 @@ private:
   mutable MeterTap tap_;
   ui::MeterLevels meter_{};         // the last level read (silence until the meter source is live)
   std::array<int32_t, 4> shown_{};  // its drawn ends (quarter units): a poll that moves none repaints nothing
+  // TL.6: automated controls at the playhead (nullopt: the track's own value).
+  std::optional<float> shownPan_, shownVolume_;
+  std::vector<std::optional<float>> shownSends_;
+  float panNow(const doc::Track& t) const noexcept { return shownPan_ ? *shownPan_ : t.mixer.pan; }
+  float volNow(const doc::Track& t) const noexcept { return shownVolume_ ? *shownVolume_ : t.mixer.volumeDb; }
+  float sendNow(const doc::Track& t, size_t k) const noexcept { return shownSends_[k] ? *shownSends_[k] : sendDb(t, k); }
 
   float meterX(float db) const noexcept { return faderX(db); }  // the meter reads on the fader's scale
 
@@ -470,6 +509,16 @@ private:
 std::optional<ControlAnchor> mixerControlAnchor(const Face& f, const doc::ParamRef& p) {
   const auto* m = dynamic_cast<const MixerFace*>(&f);
   return m != nullptr ? m->anchorOf(p) : std::nullopt;
+}
+
+doc::TrackId mixerFaceTrack(const Face& f) {
+  const auto* m = dynamic_cast<const MixerFace*>(&f);
+  return m != nullptr ? m->trackId() : doc::TrackId{};
+}
+
+bool mixerShow(Face& f, const doc::ParamRef& p, std::optional<double> value, ui::Rect& area) {
+  auto* m = dynamic_cast<MixerFace*>(&f);
+  return m != nullptr && m->show(p, value, area);
 }
 
 std::string mixerFacePath(const Node& n) {

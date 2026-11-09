@@ -11,6 +11,8 @@
 // UI thread only.
 
 #include <cstdint>
+#include <optional>
+#include <utility>
 #include <span>
 #include <string>
 #include <vector>
@@ -46,6 +48,7 @@ public:
   void pitchGuides(float loHz, float hiHz, std::vector<PitchGuide>& out) const override;
   uint64_t guidesKey() const override;
   const dsp::Curve* curve(size_t param) const override;  // GU.1: a chain meta device's own (path ""); nested: null
+  bool showPosition(size_t param, std::optional<double> position) override;  // TL.6
   doc::DeviceId device() const noexcept { return device_; }
   const std::string& path() const noexcept { return path_; }
 
@@ -62,6 +65,7 @@ private:
   bool gesture_ = false;
   mutable doc::Snapshot seen_;
   mutable const doc::Device* seenDevice_ = nullptr;
+  std::vector<std::pair<size_t, double>> shown_;  // TL.6: positions shown instead of the stored ones (by param)
 };
 
 // TMM.10 / TX.panel-faces: the meta type of the instance at name path `path` of device `device` ("" = a chain meta

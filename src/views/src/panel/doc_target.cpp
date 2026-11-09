@@ -296,14 +296,20 @@ public:
     return true;
   }
   bool showPosition(const doc::Binding& b, std::optional<double> position) override {
+    // TL.6: a native engine's face shows it too (its controls read the engine's DocTarget, not this target).
+    bool engine = false;
+    for (const Engine& e : engines_)
+      if (e.device == b.device && e.meta == b.meta)
+        if (const int32_t i = e.face->type().paramIndex(b.name); i >= 0)
+          engine = e.face->target().showPosition(static_cast<size_t>(i), position) || engine;
     for (auto it = shown_.begin(); it != shown_.end(); ++it)
       if (it->first == b) {
-        if (position && it->second == *position) return false;
+        if (position && it->second == *position) return engine;
         if (position) it->second = *position;
         else shown_.erase(it);
         return true;
       }
-    if (!position) return false;
+    if (!position) return engine;
     shown_.emplace_back(b, *position);
     return true;
   }
@@ -350,6 +356,7 @@ public:
         f->setAnalysis([ctx, dev, path] { return ctx->analysisFeed(dev, path); }, wakeOf(host, f.get()));
     } else {
       f->bind(std::make_unique<DocTarget>(ctx_, dev, b.meta, *type), ctx_.faceVoices(dev, b.meta));
+      engines_.push_back({dev, b.meta, f.get()});  // TL.6: shown positions reach it (showPosition)
       if (f->wantsAnalysis()) f->setAnalysis([ctx, dev] { return ctx->analysisFeed(dev); }, wakeOf(host, f.get()));
     }
     faces_.emplace(std::move(key), f);
@@ -667,6 +674,12 @@ private:
   mutable doc::Snapshot drivenSnap_;  // (holds the wire list driven_ was built from)
   mutable std::vector<std::pair<uint32_t, std::string>> driven_;
   std::unordered_map<std::string, std::shared_ptr<MetaFace>> faces_;  // GU.7: engine faces by binding and type
+  struct Engine {  // TL.6: the engine faces of Data bindings (held by faces_), by device and meta path
+    doc::DeviceId device;
+    std::string meta;
+    MetaFace* face = nullptr;
+  };
+  std::vector<Engine> engines_;
   std::vector<std::pair<doc::Binding, ui::ModulationRing>> rings_;    // GU.13: the host's live rings
   std::vector<std::pair<doc::Binding, double>> shown_;                // GU.13: positions shown instead of the stored
   mutable const doc::WireList* mappedOf_ = nullptr;

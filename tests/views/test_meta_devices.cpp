@@ -18,6 +18,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/library_files.h"
 #include "pq/document/meta.h"
+#include "pq/dsp/curve.h"
 #include "pq/document/main_path.h"
 #include "pq/document/modules.h"
 #include "pq/meta/envelope.h"
@@ -245,6 +246,18 @@ TEST_CASE("meta devices (views): automation LEDs and Show Automation sit on the 
   const auto marks = u.view().automationMarks(u.ids.wt);
   REQUIRE(marks.size() == 1);
   CHECK(marks[0].first == "position");
+  // TL.6: the face's control follows the envelope at the playhead (the engine's face reads the shown position).
+  u.port.setPlayheadTick(2 * kPpq);
+  u.view().applyAutomation();
+  const std::shared_ptr<MetaFace> ef =
+      u.faceControl(u.ids.wt).panelFace()->target().engineFace(doc::dataBinding(u.ids.wt), "", nullptr);
+  REQUIRE(ef != nullptr);
+  const int32_t pi = ef->type().paramIndex("position");
+  REQUIRE(pi >= 0);
+  const doc::Device* wd = doc::findDevice(*u.ctx.doc(), u.ids.wt).device;
+  REQUIRE(wd != nullptr);
+  CHECK(ef->target().value(static_cast<size_t>(pi)) ==
+        doctest::Approx(dsp::evalCurve(doc::metaParamCurve(*wd, "", ef->type(), static_cast<size_t>(pi)), 0.4)).epsilon(1e-5));
   // A right-click on the arc offers its lane.
   u.d.click(mid(*freq), mod::kNone, PointerButton::Right);
   u.d.step();

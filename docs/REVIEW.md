@@ -1107,3 +1107,11 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   whether crossing the blocks under the control is too busy. Closed group: anchored at the group panel's element showing
   the control, else at the group block's edge. Floating panel-window presses draw no lead (TL.2 does not open sub-lanes
   from there).
+
+## 2026-11-09 · TL.6 · automated controls move by themselves in the band view
+- Look at: play a project with automation in the project patch view — a lane on Keys' volume / pan / a send, on a
+  closed module's knob (Saturator drive), on a value block, and on a meta face's control (open a module down to its
+  Wavetable / Envelope face). Each control should turn with the envelope while playing and jump to it when the playhead
+  is located while stopped; grabbing one overrides it (it stays where you put it until Re-enable Automation).
+- Judge: whether the motion reads smoothly at 30 Hz; whether the band view should also carry the Device view's red /
+  grey automation LED on these controls (not added: the sub-lane and TL.3's wire mark automation here).

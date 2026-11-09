@@ -90,6 +90,10 @@ public:
   // GU.1: param i's own curve (doc::Device::curves of a chain meta device; null: the declared one, meta::paramCurve).
   // The face's controls travel along it (faceTravelToValue / faceValueToTravel).
   virtual const dsp::Curve* curve(size_t /*param*/) const { return nullptr; }
+  // T4.18 / TL.6: a knob POSITION (GU.1: what an automation lane holds) shown instead of the stored one: an automated
+  // param follows its envelope at the playhead (pq/views/arrangement/automation_follow.h); value() then reads it
+  // through the param's curve. nullopt: the stored one again. Returns whether it changed. Default: not supported.
+  virtual bool showPosition(size_t /*param*/, std::optional<double> /*position*/) { return false; }
 };
 
 // GU.1: a face control's position t in [0, 1] ↔ param i's value on the target's curve (the declared one:

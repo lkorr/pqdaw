@@ -4,6 +4,7 @@ set(PQ_VIEWS_ARRANGEMENT_SOURCES
   src/arrangement/audio_paint.cpp
   src/arrangement/automation.cpp
   src/arrangement/automation_edit.cpp
+  src/arrangement/automation_follow.cpp  # TL.6: automated controls follow the playhead (Device and band views)
   src/arrangement/automation_paint.cpp
   src/arrangement/automation_tiles.cpp
   src/arrangement/editing.cpp

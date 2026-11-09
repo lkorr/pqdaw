@@ -3240,6 +3240,27 @@ Face* CircuitCanvas::panelOn(uint32_t node) const noexcept {
   const auto& h = m.faces[static_cast<size_t>(m.faceOf[node])];
   return h.panel ? h.face.get() : nullptr;
 }
+bool CircuitCanvas::faceVisible(uint32_t node) const noexcept {
+  const Impl& m = *impl_;
+  return m.facesShown && m.scene && node < m.faceOf.size() && m.faceOf[node] >= 0 &&
+         m.faceVisible(m.faces[static_cast<size_t>(m.faceOf[node])]);
+}
+void CircuitCanvas::damageFace(uint32_t node, const ui::Rect* local) {  // TL.6
+  Impl& m = *impl_;
+  ui::UiTree* tr = tree();
+  if (tr == nullptr || !faceVisible(node)) return;
+  const auto& h = m.faces[static_cast<size_t>(m.faceOf[node])];
+  if (local == nullptr) return m.damageFace(h);
+  SceneNode n = m.scene->nodes[h.node];
+  n.x += m.shiftOf(h.node).x, n.y += m.shiftOf(h.node).y;  // TX.block-drag
+  const float k = h.scale;
+  const ui::IRect cr = rect();
+  const ui::Rect d{std::max(m.devX(n.x + local->x0 * k) - 2.0f, static_cast<float>(cr.x)),
+                   std::max(m.devY(n.y + local->y0 * k) - 2.0f, static_cast<float>(cr.y)),
+                   std::min(m.devX(n.x + local->x1 * k) + 2.0f, static_cast<float>(cr.right())),
+                   std::min(m.devY(n.y + local->y1 * k) + 2.0f, static_cast<float>(cr.bottom()))};
+  if (d.x1 > d.x0 && d.y1 > d.y0) tr->damage().add(d);
+}
 void CircuitCanvas::wakeFaces() { impl_->pollFaces(); }
 bool CircuitCanvas::animatingFaces() const noexcept { return impl_->faceTimer != 0; }
 void CircuitCanvas::setFacesShown(bool on) {

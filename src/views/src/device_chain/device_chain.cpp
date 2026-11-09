@@ -7,7 +7,6 @@
 #include <string>
 
 #include "../common/paint.h"
-#include "pq/core/automation_curve.h"
 #include "internal.h"
 #include "pq/views/arrangement/automation.h"
 #include "pq/views/browser/library.h"
@@ -785,7 +784,7 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
       for (panel::PanelHost* h : hs) h->notifyChanged();
     }
     if (bits & view_change::kAutomation) refreshAutomation();  // T4.18: overridden / re-enabled
-    else if ((bits & view_change::kTransport) && (!impl_->autoTargets.empty() || impl_->chainAuto)) applyAutomation();
+    else if ((bits & view_change::kTransport) && (!impl_->autoShown.empty() || impl_->chainAuto)) applyAutomation();
   });
   sync(true);
 }
@@ -907,7 +906,7 @@ void DeviceChainView::onStore(const doc::StoreEvent& e) {
     if (std::any_of(ws.begin(), ws.end(), [](const doc::Wire& w) { return !w.mainLink(); }) ||
         std::any_of(m.all.begin(), m.all.end(), [](const auto& f) { return f.second->isRack(); }))
       refreshRings();
-    if (!m.autoTargets.empty()) refreshAutomation();  // T4.18: an automated knob shows its envelope, not the new value
+    if (!m.autoShown.empty()) refreshAutomation();  // T4.18: an automated knob shows its envelope, not the new value
     return;
   }
   sync(e.kind == doc::StoreEventKind::Reset);
@@ -1893,8 +1892,7 @@ void DeviceChainView::refreshRings() {
 void DeviceChainView::onFrame(double) { impl_->retiredFrames.clear(); }  // no handler of a retired frame runs now
 
 void DeviceChainView::onTimer(uint32_t id) {
-  if (id == impl_->autoTimer) {  // T4.18
-    impl_->autoTimer = 0;
+  if (impl_->follow.fired(id)) {  // T4.18
     applyAutomation();
     return;
   }
@@ -1905,49 +1903,44 @@ void DeviceChainView::onTimer(uint32_t id) {
 
 // ---- T4.18: automated knobs ----------------------------------------------------------------------------------------
 
-bool DeviceChainView::automationPolling() const noexcept { return impl_->autoTimer != 0; }
+bool DeviceChainView::automationPolling() const noexcept { return impl_->follow.polling(); }
 
 std::vector<std::pair<std::string, bool>> DeviceChainView::automationMarks(doc::DeviceId device) const {
   std::vector<std::pair<std::string, bool>> out;
-  for (const Impl::AutoTarget& a : impl_->autoTargets)
-    if (a.device == device) out.emplace_back(a.param, a.overridden);
-  for (const auto& [d, prm] : impl_->autoMapped)
-    if (d == device) out.emplace_back(prm, true);
+  const std::vector<AutomationFollow::Target>& ts = impl_->follow.targets();
+  for (const uint32_t i : impl_->autoShown)
+    if (ts[i].param.owner == device.value) out.emplace_back(ts[i].name, !ts[i].follows());
   return out;
 }
 
 void DeviceChainView::refreshAutomation() {
   Impl& m = *impl_;
   // The positions shown for the old targets go (the controls show their own until applyAutomation shows the envelope).
-  for (const Impl::AutoTarget& a : m.autoTargets) {
+  for (const uint32_t i : m.autoShown) {
+    const AutomationFollow::Target& a = m.follow.targets()[i];
     doc::Binding b;
-    if (panel::PanelHost* h = m.hostOf(a.device, a.param, &b); h != nullptr && h->panelFace()->target().showPosition(b, std::nullopt))
+    if (panel::PanelHost* h = m.hostOf(doc::DeviceId{a.param.owner}, a.name, &b); h != nullptr && h->panelFace()->target().showPosition(b, std::nullopt))
       h->notifyChanged();
   }
-  m.autoTargets.clear();
-  m.autoMapped.clear();
+  m.follow.clear();
+  m.autoShown.clear();
   m.chainAuto = false;
   std::map<FrameBase*, std::vector<FrameBase::Mark>> marks;
-  if (const doc::Track* t = m.track())
-    for (const doc::LanePtr& l : t->lanes) {  // a device's lanes live on its track (the shown one)
-      if (l->param.kind != doc::ParamKind::DeviceParam || l->points.empty()) continue;
-      const doc::DeviceId owner{l->param.owner};
-      // GU.9: a chain's volume / pan lane is its Mixer value block's (no frame of its own: the rack's rows show it).
-      if (m.frameOf(owner) == nullptr)
-        if (const doc::Device* vb = doc::findDevice(*ctx_.doc(), owner).device; vb != nullptr && doc::isValueDevice(*vb))
-          m.chainAuto = true;
-      FrameBase* f = m.frameFor(owner);  // GU.13: a group member's control is on its group's panel
-      if (f == nullptr) continue;
-      // A macro-mapped param plays its macro, not its lane (lower.h): its knob is left to the macro, its LED grey.
-      if (macroMappingOf(*ctx_.doc(), owner, l->paramName)) {
-        marks[f].push_back({owner, l->paramName, true});
-        m.autoMapped.emplace_back(owner, l->paramName);
-        continue;
-      }
-      const bool overridden = ctx_.automationOverridden(l->param);
-      m.autoTargets.push_back({owner, l->paramName, l, overridden});
-      marks[f].push_back({owner, l->paramName, overridden});
-    }
+  if (const doc::Track* t = m.track()) m.follow.collect(ctx_, *t, false);  // a device's lanes live on its track (the shown one)
+  const std::vector<AutomationFollow::Target>& ts = m.follow.targets();
+  for (uint32_t i = 0; i < ts.size(); ++i) {
+    const AutomationFollow::Target& a = ts[i];
+    const doc::DeviceId owner{a.param.owner};
+    // GU.9: a chain's volume / pan lane is its Mixer value block's (no frame of its own: the rack's rows show it).
+    if (m.frameOf(owner) == nullptr)
+      if (const doc::Device* vb = doc::findDevice(*ctx_.doc(), owner).device; vb != nullptr && doc::isValueDevice(*vb))
+        m.chainAuto = true;
+    FrameBase* f = m.frameFor(owner);  // GU.13: a group member's control is on its group's panel
+    if (f == nullptr) continue;
+    // A macro-mapped param plays its macro, not its lane (lower.h): its knob is left to the macro, its LED grey.
+    marks[f].push_back({owner, a.name, !a.follows()});
+    m.autoShown.push_back(i);
+  }
   for (auto& [id, f] : m.all) {
     auto it = marks.find(f);
     f->setAutomated(it != marks.end() ? std::move(it->second) : std::vector<FrameBase::Mark>{});
@@ -1960,9 +1953,12 @@ void DeviceChainView::applyAutomation() {
   Impl& m = *impl_;
   const PlayheadSnapshot ph = ctx_.transport().playhead();
   bool live = false;
-  for (const Impl::AutoTarget& a : m.autoTargets) {
+  for (const uint32_t i : m.autoShown) {
+    const AutomationFollow::Target& a = m.follow.targets()[i];
+    if (a.mapped) continue;  // left to the macro
+    const doc::DeviceId device{a.param.owner};
     doc::Binding b;
-    panel::PanelHost* h = m.hostOf(a.device, a.param, &b);
+    panel::PanelHost* h = m.hostOf(device, a.name, &b);
     if (h == nullptr) continue;
     panel::PanelTarget& t = h->panelFace()->target();
     if (a.overridden) {  // overridden by hand: the knob shows (and plays) its own value until re-enabled
@@ -1972,22 +1968,16 @@ void DeviceChainView::applyAutomation() {
     live = true;
     // The envelope at the playhead (Live: an automated knob follows its automation, moving while it plays). GU.1: a
     // device param's lane holds knob positions.
-    const doc::Device* d = doc::findDevice(*ctx_.doc(), a.device).device;
-    const devices::ParamInfo* info = m.paramInfo(a.device, a.param);
+    const doc::Device* d = doc::findDevice(*ctx_.doc(), device).device;
+    const devices::ParamInfo* info = m.paramInfo(device, a.name);
     const double own = d != nullptr && info != nullptr ? devices::storedPosition(*info, *d) : t.position(b);
-    const double pos = std::clamp(evalAutomation(std::span<const doc::Breakpoint>(a.lane->points), static_cast<double>(ph.tick), own),
-                                  0.0, 1.0);
+    const double pos = AutomationFollow::valueAt(a, static_cast<double>(ph.tick), own);
     if (t.showPosition(b, pos)) h->notifyChanged();  // repaints that control only when its shown position moved
   }
   if (m.chainAuto || live)  // racks: their chains' volume / pan (refreshAutomation also clears them)
     for (auto& [id, f] : m.all)
       if (f->isRack()) f->automationChanged();
-  const bool want = (live || m.chainAuto) && ph.playing;
-  if (want && m.autoTimer == 0) m.autoTimer = requestTimer(1.0 / 30.0);
-  if (!want && m.autoTimer != 0) {
-    cancelTimer(m.autoTimer);
-    m.autoTimer = 0;
-  }
+  m.follow.poll(*this, (live || m.chainAuto) && ph.playing);
 }
 
 void DeviceChainView::pollRings() {

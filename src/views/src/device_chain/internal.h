@@ -21,6 +21,7 @@
 #include "pq/document/main_path.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/racks.h"
+#include "pq/views/arrangement/automation_follow.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/devices/device_model.h"
@@ -143,18 +144,12 @@ struct DeviceChainView::Impl {
   std::vector<ModSweep> ringSweeps;
   uint32_t ringTimer = 0;
   bool ringsLit = false;
-  // T4.18: the automated params of the shown devices (a lane with points, on the shown track) and the 30 Hz timer
-  // that moves their knobs to the envelope at the playhead while the transport plays.
-  struct AutoTarget {
-    doc::DeviceId device;
-    std::string param;
-    doc::LanePtr lane;
-    bool overridden = false;
-  };
-  std::vector<AutoTarget> autoTargets;
-  std::vector<std::pair<doc::DeviceId, std::string>> autoMapped;  // lanes on macro-mapped params (their LEDs grey)
+  // T4.18 / TL.6: the automated params of the shown track (pq/views/arrangement/automation_follow.h: shared with the
+  // project patch view) and its 30 Hz poll that moves their knobs to the envelope at the playhead while the transport
+  // plays; `autoShown`: the targets whose control a frame shows (indices into follow.targets()).
+  AutomationFollow follow;
+  std::vector<uint32_t> autoShown;
   bool chainAuto = false;  // a rack chain's volume / pan lane on the shown track
-  uint32_t autoTimer = 0;
   // TX.groups: a group panel's width (logical px) after its right edge was dragged, by group id (this session).
   std::map<uint32_t, float> groupWidths;
   // TX.free-rack: the free-device rack over the chain (free_rack.cpp), and a block of it dragged over the chain (the

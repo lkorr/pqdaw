@@ -169,6 +169,11 @@ public:
   Face& panelAt(size_t i) const noexcept;
   uint32_t panelNode(size_t i) const noexcept;
   Face* panelOn(uint32_t node) const noexcept;
+  // TL.6: repaints part of the face on scene node `node` — face-local rect `local` (null: the whole face) — in device px
+  // clipped to the canvas; nothing while it is not on the canvas (an automated control the playhead moved).
+  void damageFace(uint32_t node, const ui::Rect* local = nullptr);
+  // TL.6: whether the face on scene node `node` is on the canvas now (shown, inside its rect).
+  bool faceVisible(uint32_t node) const noexcept;
   // A reader may have become live (a note, the transport): poll the faces now and keep animating while one is live.
   void wakeFaces();
   bool animatingFaces() const noexcept;  // the ≤ 60 Hz face timer is armed

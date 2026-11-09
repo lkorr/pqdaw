@@ -83,4 +83,135 @@ std::optional<LayoutOptions::Anchor> ProjectPatchView::controlAnchorOf(const doc
   return std::nullopt;
 }
 
+// ---- TL.6: automated controls follow the playhead ------------------------------------------------------------------
+
+Face* ProjectPatchView::autoFace(const AutoControl& c) const noexcept {
+  Face* f = c.kind == AutoControl::Kind::Meta ? static_cast<Face*>(canvas_->faceOn(c.node)) : canvas_->panelOn(c.node);
+  return f == c.face ? f : nullptr;
+}
+
+namespace {
+// Shows `v` (nullopt: its own value) on control `c` of face `f`; true when what the face shows changed. A mixer
+// control damages its own rect here (`area` face-local).
+bool showOn(Face& f, const doc::ParamRef& p, const ProjectPatchView::AutoControl& c, std::optional<double> v, ProjectCanvas& canvas) {
+  using Kind = ProjectPatchView::AutoControl::Kind;
+  switch (c.kind) {
+    case Kind::Panel:
+      if (auto* g = dynamic_cast<panel::GroupPanelFace*>(&f)) return g->target().showPosition(c.binding, v);
+      return false;
+    case Kind::Meta: return static_cast<MetaFace&>(f).target().showPosition(c.param, v);
+    case Kind::Mixer: {
+      ui::Rect area{};
+      if (mixerShow(f, p, v, area)) canvas.damageFace(c.node, &area);
+      return false;  // repainted
+    }
+  }
+  return false;
+}
+}  // namespace
+
+void ProjectPatchView::refreshAutomation() {
+  // The controls followed so far show their own values again (their faces may be on other nodes now, or gone: found
+  // by pointer among the canvas's faces; never through a stale pointer).
+  if (!autoControls_.empty()) {
+    auto release = [&](Face& f, uint32_t node) {
+      bool changed = false;
+      for (const AutoControl& c : autoControls_)
+        if (c.face == &f && c.target < autoFollow_.targets().size())
+          changed = showOn(f, autoFollow_.targets()[c.target].param, AutoControl{c.kind, &f, node, c.target, c.param, c.binding},
+                           std::nullopt, *canvas_) || changed;
+      if (changed) canvas_->damageFace(node);
+    };
+    for (size_t i = 0; i < canvas_->panelCount(); ++i) release(canvas_->panelAt(i), canvas_->panelNode(i));
+    for (size_t i = 0; i < canvas_->faceCount(); ++i) release(canvas_->faceAt(i), canvas_->faceNode(i));
+  }
+  autoControls_.clear();
+  autoFollow_.clear();
+  if (shown()) {
+    std::vector<uint32_t> seen;  // a track's lanes once
+    for (uint32_t b = 0; b < patch_.bands.size(); ++b)
+      if (const doc::Track* t = bandTrack(b); t != nullptr && std::find(seen.begin(), seen.end(), t->id.value) == seen.end()) {
+        seen.push_back(t->id.value);
+        autoFollow_.collect(ctx_, *t, true);
+      }
+  }
+  const std::vector<AutomationFollow::Target>& ts = autoFollow_.targets();
+  if (ts.empty()) return autoFollow_.poll(*this, false);
+  auto add = [&](AutoControl c) {
+    for (const AutoControl& x : autoControls_)  // two elements bound to one control: once
+      if (x.face == c.face && x.target == c.target) return;
+    autoControls_.push_back(std::move(c));
+  };
+  // Panels: a track's mixer face, a closed group's panel (its members' and embedded panels' controls, native engine
+  // sections), a value block's knob. A macro-mapped param is left to its macro (the panel target shows it).
+  for (size_t i = 0; i < canvas_->panelCount(); ++i) {
+    Face& f = canvas_->panelAt(i);
+    const uint32_t node = canvas_->panelNode(i);
+    if (const doc::TrackId tr = mixerFaceTrack(f); tr.valid()) {
+      for (uint32_t k = 0; k < ts.size(); ++k)
+        if (!doc::isDeviceParamKind(ts[k].param.kind) && ts[k].param.owner == tr.value)
+          add({AutoControl::Kind::Mixer, &f, node, k, 0, {}});
+      continue;
+    }
+    auto* g = dynamic_cast<panel::GroupPanelFace*>(&f);
+    if (g == nullptr) continue;
+    (void)g->sync();
+    g->visitControls([&](const doc::Binding& b, const ui::Rect&) {
+      if (b.kind != doc::BindingKind::Control || !b.meta.empty()) return;
+      for (uint32_t k = 0; k < ts.size(); ++k)
+        if (ts[k].param.kind == doc::ParamKind::DeviceParam && !ts[k].mapped && ts[k].param.owner == b.device.value && ts[k].name == b.name)
+          add({AutoControl::Kind::Panel, &f, node, k, 0, b});
+    });
+  }
+  // Meta faces (a chain meta device's own params).
+  for (size_t i = 0; i < canvas_->faceCount(); ++i) {
+    MetaFace& f = canvas_->faceAt(i);
+    const auto* dt = dynamic_cast<const DocTarget*>(&f.target());
+    if (dt == nullptr || !dt->path().empty()) continue;
+    for (uint32_t k = 0; k < ts.size(); ++k) {
+      if (ts[k].param.kind != doc::ParamKind::DeviceParam || ts[k].mapped || ts[k].param.owner != dt->device().value) continue;
+      const int32_t idx = f.type().paramIndex(ts[k].name);
+      if (idx >= 0) add({AutoControl::Kind::Meta, &f, canvas_->faceNode(i), k, static_cast<uint32_t>(idx), {}});
+    }
+  }
+  applyAutomation();
+}
+
+void ProjectPatchView::applyAutomation() {
+  if (autoControls_.empty()) return autoFollow_.poll(*this, false);
+  const PlayheadSnapshot ph = ctx_.transport().playhead();
+  const double tick = static_cast<double>(ph.tick);
+  const std::vector<AutomationFollow::Target>& ts = autoFollow_.targets();
+  bool live = false;
+  for (size_t i = 0; i < autoControls_.size();) {  // by face (the list is grouped so)
+    const AutoControl& first = autoControls_[i];
+    Face* f = autoFace(first);
+    if (f == nullptr) return refreshAutomation();  // the canvas's faces changed under the list (fresh after: no loop)
+    bool changed = false;
+    size_t j = i;
+    for (; j < autoControls_.size() && autoControls_[j].face == first.face; ++j) {
+      const AutoControl& c = autoControls_[j];
+      const AutomationFollow::Target& t = ts[c.target];
+      std::optional<double> v;
+      if (t.follows()) {
+        v = AutomationFollow::valueAt(t, tick, 0.0);
+        live = true;
+      }
+      changed = showOn(*f, t.param, c, v, *canvas_) || changed;
+    }
+    if (changed) {
+      // A panel: only its controls that moved (GroupPanelFace::changedRects; the whole panel the first time). A meta
+      // face: the face (its curves and plots read the params anywhere on it).
+      auto* g = first.kind == AutoControl::Kind::Panel ? dynamic_cast<panel::GroupPanelFace*>(f) : nullptr;
+      autoRects_.clear();
+      if (g != nullptr && g->changedRects(autoRects_))
+        for (const ui::Rect& r : autoRects_) canvas_->damageFace(first.node, &r);
+      else
+        canvas_->damageFace(first.node);
+    }
+    i = j;
+  }
+  autoFollow_.poll(*this, live && ph.playing && shown());
+}
+
 }  // namespace pq::views::project_patch
