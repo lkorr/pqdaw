@@ -228,3 +228,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): engine linear response 10/10 (set port == impulse at a fixed cutoff, 0.01 dB / 0.1°; evaluate allocation-free), views eq displays 17/17 (LFO cable keeps the curve; ring 2.5 kHz / 800 Hz moves node and peak with no relowering), document group_response 2/2; -Affected 37/37. Goldens: none.
 - Perf: values only per change (no lowering / prepare / allocation), re-evaluated only when a live value changes, at the UI ring poll (30 Hz).
 - Notes: live position = the ring's current (mid of the span swept since the last poll); per-voice: the ring's newest voice; no ring (stopped) → knob position.
+
+## 2026-11-08 · TX.cable-look · task/TX.cable-look
+- Did: wires between blocks of an opened group (terminals included) are hanging cables; only routes, sends, mixer outputs stay traces; dead GU.5b inner-route code removed; closed-group miniature wires curve. `addedControl`: a cable into a closed panelled group's main input whose In feeds one `add` with one value block lands on that value's control (Port::anchorKey) — the gold notes cable ends on the PA's Frequency arc. Visual only.
+- Verified: pq_tests_views default tier passed; new anchoring test (PA anchored, unwired PA orbits, VCA not anchored); 32 goldens re-recorded (project patch, device views, panels).
+- Perf / CPU-efficiency check: anchoring at model build only (two passes over a closed panelled group's wires); miniature uses the cached catenary table, 8 points per wire; nothing new per frame.
+- Notes/blockers: blocks inside opened groups don't orbit their ports (tried, broke a real-dispatch drag test; reverted, in REVIEW.md).
