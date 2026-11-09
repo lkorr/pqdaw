@@ -259,3 +259,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: zero cost without a wire; on paint only, stack buffers, damages only its bounding box when moving alone.
 - Notes/blockers: the nearest point is usually straight below, so the wire is mostly a vertical drop; floating panel windows draw none (TL.2 opens no sub-lanes there).
 
+## 2026-11-09 · TL.6 · task/TL.6-auto-knobs
+- Did: one AutomationFollow (arrangement/automation_follow.h) used by the Device view and the band view: meta face controls (MetaTarget::showPosition), closed / embedded group panels and value blocks (PanelTarget::showPosition), the mixer face (mixerShow) show the envelope at the playhead, move while playing, jump on locate; grab = override until Re-enable. Fixed: Device-view native-engine faces inside panels didn't follow automation.
+- Verified: pq_tests_views default tier 612/612 after rebase; new test_band_automation.cpp; golden project-patch-lane-edit re-recorded (mixer shows the automated volume).
+- Perf / CPU-efficiency check: nothing runs without a shown automated control; 30 Hz poll only while playing; no per-tick allocation; repaints only moved controls (CircuitCanvas::damageFace).
+- Notes/blockers: band controls get no automation LED; pq_tests_views_perf run by accident: 3 timing failures (shared machine) + `legs == 32` (test_project_patch.cpp:2343) unverified on main.
+
