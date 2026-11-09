@@ -745,18 +745,16 @@ int main(int argc, char** argv) {
   std::printf("morph: %zu frames over 6 morphs\n", morph.size());
   pq::bench::reportStats("project_patch.morph frame (arrangement <-> patch) 64 tracks 2560x1440", pq::bench::summarize(morph), "ns CPU/frame");
 
-  // ---- T5.x-one-circuit: lane windows, 64 tracks ----
+  // ---- T5.x-one-circuit / TL.1: the band lanes, 64 tracks ----
   {
     view->setShown(true, false);
     settle();
     view->fitAll(false);
     settle();
+    // TL.1: a time zoom is the shared window: the lanes and the ruler repaint (the lanes keep their width, no re-layout).
     std::vector<double> rl;
-    for (int i = 0; i < 40; ++i) {
-      view->zoomLanes(i % 2 == 0 ? -4.0 : 4.0);  // 4 bars <-> ~10 bars: the windows' width changes every time
-      rl.push_back(view->stats().lastRelayoutMs * 1e6);
-    }
-    pq::bench::reportStats("one_circuit.lane time zoom re-layout (model + scene + canvas, no lowering) 64 tracks", pq::bench::summarize(rl), "ns/relayout");
+    for (int i = 0; i < 300; ++i) rl.push_back(timed([&] { view->zoomLanes(i % 2 == 0 ? -4.0 : 4.0); }));
+    pq::bench::reportStats("one_circuit.lane time zoom frame (lanes + ruler repainted, fitted far) 64 tracks 2560x1440", pq::bench::summarize(rl), "ns CPU/frame");
     std::vector<double> sc;
     for (int i = 0; i < 300; ++i) sc.push_back(timed([&] { view->scrollLanes(i % 2 == 0 ? 1.0 : -1.0); }));
     pq::bench::reportStats("one_circuit.lane scroll frame (windows repainted, fitted far) 64 tracks 2560x1440", pq::bench::summarize(sc), "ns CPU/frame");

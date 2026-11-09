@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <functional>
 #include <set>
+#include <optional>
 #include <string>
 
 #include "../meta/meta_test_type.h"
@@ -529,6 +530,21 @@ std::vector<Case> cases() {
                }, S, [](Fixture& f, const ChangeSet&) {
                  CHECK(findWire(f.doc(), wire)->single);
                  CHECK(findWire(f.doc(), wire)->reducer == WireReducer::Last);
+               }});
+  c.push_back({"SetWireTap", [withChain](Fixture& f) -> Command {  // TL.1: a lane cable's tap (view only: Meta)
+                 withChain(f);
+                 wire = f.store.ids().wire();
+                 Wire w;
+                 w.id = wire;
+                 w.noteSource = f.lead;
+                 w.port = "hz";
+                 w.to = chain.fx;
+                 w.param = "gain";
+                 REQUIRE(f.store.dispatch(AddWire{w}).ok());
+                 return SetWireTap{wire, 96.0f};
+               }, M, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.wires == std::vector<WireId>{wire});
+                 CHECK(findWire(f.doc(), wire)->tap == std::optional<float>(96.0f));
                }});
   c.push_back({"RemoveDevice (takes its wires)", [withWire](Fixture& f) -> Command {
                  withWire(f);
