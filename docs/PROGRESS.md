@@ -234,3 +234,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views default tier passed; new anchoring test (PA anchored, unwired PA orbits, VCA not anchored); 32 goldens re-recorded (project patch, device views, panels).
 - Perf / CPU-efficiency check: anchoring at model build only (two passes over a closed panelled group's wires); miniature uses the cached catenary table, 8 points per wire; nothing new per frame.
 - Notes/blockers: blocks inside opened groups don't orbit their ports (tried, broke a real-dispatch drag test; reverted, in REVIEW.md).
+
+## 2026-11-08 · TX.drag-grow · task/TX.drag-grow
+- Did: a dragged block / selection / opened capsule / mixer grows (or shrinks back) the band and opened capsules it will drop into every frame by the layout's own rule; bands below slide down, capsule terminals stay at its edges; drop = one edit landing on what was shown, Esc restores. Target decided from the pre-drag layout (no jitter). CircuitCanvas::setNodeShift (nodes drawn / hit-tested / cabled at an offset). Fixed: cables on an opened capsule's frame edge now follow the capsule.
+- Verified: new real-dispatch test "groups view (TX.drag-grow)"; pq_tests_views default tier 602/602 before and after rebase; goldens unchanged.
+- Perf / CPU-efficiency check: per move linear in nodes/bands, no re-layout, no edit, no allocation after the drag's sets are built; one extra paint pass per distinct shift.
+- Notes/blockers: push-apart not previewed (needs a per-frame re-layout); leaving band closes up only at drop; routes between shifted/unshifted bands drawn as a Z during the drag.
