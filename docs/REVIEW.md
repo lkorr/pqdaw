@@ -1055,3 +1055,16 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   -lane-edit/-nested/-overview/-panels, project-vca-panel.
 - **To judge:** blocks inside an opened group keep their pins on their edges (no orbiting ports there yet); cables over
   the dense opened Wavetable Synth crossing faces; the very short In → Frequency cable when the PA sits right after In.
+
+## 👁 TX.drag-grow A dragged block grows its band and capsule live · 2026-11-08
+- **What changed:** dragging a block (a selection, an opened capsule, a mixer) in the project patch view now grows the
+  space it is in every frame, as the drop will: a band's strip grows down (or shrinks back when the block that grew it
+  moves up), the bands under it slide down with everything on them, a capsule's frame grows with its Out / In terminal
+  and its band, an unplaced mixer follows its band's blocks right. Release lands exactly on what was shown; Esc puts it
+  all back. Cables plugged into an opened capsule's edge now follow the capsule when it moves (they stayed behind).
+- **Not previewed:** push-apart (an overlap at the drop still glides apart after the release); onto another band only
+  that band grows (the band the block leaves closes up at the drop); routes / sends between a moved and an unmoved band
+  are drawn as a Z while dragging (re-routed at the drop, as for the dragged block's own traces).
+- **Goldens:** none changed.
+- **To judge:** drag the free LFO in the group project down past Keys' bottom and back; a capsule member past the
+  capsule's corner; whether the band jumping back when the pointer crosses into the next band reads clearly.

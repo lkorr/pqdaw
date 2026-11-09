@@ -380,6 +380,12 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     const uint32_t a = out.sceneNode[e.from], b = out.sceneNode[e.to];
     sw.fromPin = a != kNone ? sc.nodes[a].firstPin + static_cast<uint32_t>(pp.nodes[e.from].inputs.size()) + e.fromPort : 0;
     sw.toPin = b != kNone ? sc.nodes[b].firstPin + e.toPort : 0;
+    // TX.drag-grow: the chain into / out of an opened capsule ends on its frame's edge (no pin): it moves with the
+    // terminal at that edge (a drag that moves or grows the capsule moves its end).
+    if (a == kNone && pp.nodes[e.from].group && pp.nodes[e.from].groupOpen && pp.nodes[e.from].groupOut != kNone)
+      sw.fromNode = out.sceneNode[pp.nodes[e.from].groupOut];
+    if (b == kNone && pp.nodes[e.to].group && pp.nodes[e.to].groupOpen && pp.nodes[e.to].groupIn != kNone)
+      sw.toNode = out.sceneNode[pp.nodes[e.to].groupIn];
     // TX.mod-all: it goes on over the face to the control of its param (CircuitCanvas draws that part).
     if (b != kNone && e.toPort < pp.nodes[e.to].inputs.size() && pp.nodes[e.to].inputs[e.toPort].anchored) {
       const Port& q = pp.nodes[e.to].inputs[e.toPort];

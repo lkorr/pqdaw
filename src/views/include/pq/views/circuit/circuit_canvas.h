@@ -208,6 +208,21 @@ public:
   bool nodeLifted(uint32_t node) const noexcept;
   // The lifted pass is being painted (paintUnderlay / paintNodeOverlay and what they call draw only the lifted parts).
   bool lifting() const noexcept;
+  // TX.drag-grow: while blocks are lifted, nodes a drag moves without dragging them (what makes room for the dragged
+  // blocks: the bands under a band that grows, a growing capsule's terminals). Scene nodes `nodes` (sorted, none of them
+  // lifted), node i in shift layer layers[i] (< offsets.size()): drawn, hit and plugged offsets[layer] (world units) from
+  // their place, each layer in a pass of its own (as the lifted pass: the view shifted by its offset; paintLayer()
+  // kShiftLayer0 + layer) after the scene's and before the lifted one. The same sets again (each move of a drag): only
+  // the offsets change (no allocation). Empty: none. Dropped with the lift (clearNodeDrag, a new scene).
+  static constexpr uint8_t kShiftLayer0 = 2;
+  void setNodeShift(std::span<const uint32_t> nodes, std::span<const uint8_t> layers, std::span<const graph::Point2> offsets);
+  std::span<const uint32_t> shiftedNodes() const noexcept;
+  // Where scene node `node` is drawn from its place now (its lift or shift offset; {0, 0}: in place).
+  graph::Point2 nodeOffset(uint32_t node) const noexcept;
+  // The layer of scene node `node` (0 in place, 1 lifted, kShiftLayer0 + k shifted) and of the pass being painted (0:
+  // the scene; the host's paintUnderlay / paintNodeOverlay draw the parts of the nodes of that layer).
+  uint8_t nodeLayer(uint32_t node) const noexcept;
+  uint8_t paintLayer() const noexcept;
   // TX.node-menu-fix1: the LOOSE cable — a new connection being drawn out (a drag from an output, a backwards cable,
   // a cable kept on the pointer after a Ctrl-release): a real cable from world point `from` (its port) to `to` (the
   // pointer, or the port / control it snaps to), drawn as every cable (tube, plugs, `style`'s colour) over the blocks
@@ -305,7 +320,8 @@ protected:
   virtual void paintOverlay(ui::PaintContext& /*ctx*/) {}
   // TX.block-drag: what the host draws over its nodes (after the scene's cables): once per pass — lifting() false for
   // the scene (leave lifted nodes' parts out: nodeLifted), true for the lifted nodes only (the view is shifted by their
-  // offset then, so toDevice places them where they are drawn).
+  // offset then, so toDevice places them where they are drawn). TX.drag-grow: with shifted nodes, once per layer too
+  // (paintLayer(): draw the parts of the nodes whose nodeLayer is it).
   virtual void paintNodeOverlay(ui::PaintContext& /*ctx*/) {}
   // T4.13: drawn under the scene (after the background, before wires and symbols; at every level of detail, so not
   // cached in the Far chunks): the project patch view's bands and group containers.

@@ -160,6 +160,9 @@ struct Node {
   std::vector<uint32_t> members;
   uint32_t groupIn = kNone, groupOut = kNone;
   float pinTop = 0.0f;  // Device: the main pin's offset from the top (0: metrics::kPinTop)
+  // TX.drag-grow: an opened capsule's frame before it grew to hold its members (world; the canvas grows it again live
+  // from where a drag has them).
+  float frameX0 = 0, frameY0 = 0, frameX1 = 0, frameY1 = 0;
   struct MiniBox {
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // in the block's unit square
     bool terminal = false;
@@ -233,6 +236,12 @@ struct Band {
   std::vector<uint32_t> devices;                           // node indices (its blocks, list order)
   float y = 0, h = 0;          // world: the band's strip
   float x0 = 0, x1 = 0;        // world: its strip from the indent to the end of its chain
+  // TX.drag-grow: its height before it grew down to hold its blocks and its right end before it reached them (the
+  // canvas grows it again live from where a drag has them).
+  float baseH = 0, baseX1 = 0;
+  // TX.drag-grow: its mixer's x before it was placed right of the band's blocks (mixerFollows: not placed by the user).
+  float mixerX0 = 0;
+  bool mixerFollows = false;
   // Groups: the container around the group's band and its members' bands.
   float cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
 };

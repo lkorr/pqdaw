@@ -88,11 +88,17 @@
 //   drag       (TX.block-drag, the user 2026-11-03) a block dragged (a selection of blocks with it when it is selected; an
 //              opened capsule with its contents; a band by its title) is the block itself at the pointer every frame —
 //              its panel / face, its cables plugged into its real ports, drawn over the rest (CircuitCanvas::setNodeDrag;
-//              no re-layout while it moves); the drop is the edit (a nudge, one re-layout; onto another band: one undo
-//              step). Blocks never overlap: after any move, drop, spawn, resize or layout change, overlapping blocks
-//              push each other apart (the one just dropped gives way most) and glide until each has its space with a
-//              small gap; bands and capsules grow to hold them; then no frames (see "Push-apart" below). A block shrunk
-//              below CircuitCanvas::kFaceMiniatureScale is a miniature (no controls: a press grabs it).
+//              no re-layout while it moves). (TX.drag-grow, the user 2026-11-08: "so you can see exactly how it shifts
+//              the space") While it moves, the band and the opened capsules it will be in after the drop grow (or
+//              shrink back) live to hold it, exactly as the drop's layout will: a capsule's frame and its In / Out
+//              terminals, the band's strip, the bands under it shifting down with everything on them, the group
+//              containers (ProjectCanvas "TX.drag-grow": computed from the dragged rects, no re-layout; the shifted
+//              nodes drawn by CircuitCanvas::setNodeShift). The drop is the edit (a nudge, one re-layout; onto another
+//              band: one undo step) and lands on what was shown; Esc puts everything back. Blocks never overlap: after
+//              any move, drop, spawn, resize or layout change, overlapping blocks push each other apart (the one just
+//              dropped gives way most) and glide until each has its space with a small gap; bands and capsules grow to
+//              hold them; then no frames (see "Push-apart" below; the push is not previewed during the drag). A block
+//              shrunk below CircuitCanvas::kFaceMiniatureScale is a miniature (no controls: a press grabs it).
 //   groups     (TX.groups; doc model.h "Groups") select devices (or meta modules, free devices) of one band and press
 //              Ctrl+G: they become a group — one capsule in the chain where they were, its contents placed freely inside
 //              between its In and Out terminals, the series kept as wires (so it sounds the same); Ctrl+Shift+G (or the
@@ -246,9 +252,29 @@ public:
   // TX.block-drag: a dragged block (a selection of blocks, an opened capsule with its contents, a band by its title) is
   // drawn live where the pointer has it (CircuitCanvas::setNodeDrag), its cables on its ports; the model nodes lifted now
   // (empty / false: no block drag), and the blocks a drag moves (the pressed one, or the selection it belongs to).
-  bool lifted(uint32_t modelNode) const noexcept { return modelNode < liftModel_.size() && liftModel_[modelNode] != 0; }
+  bool lifted(uint32_t modelNode) const noexcept { return liftLayerOf(modelNode) == 1; }
   bool bandLifted(uint32_t band) const noexcept { return liftBuilt_ && dragBand_ != kNone && band == dragBand_; }
   const std::vector<doc::DeviceId>& dragDevices() const noexcept { return dragDevices_; }
+  // TX.drag-grow: while a block (a selection, an opened capsule) is dragged, the band and the opened capsules it will be
+  // in after the drop grow live to hold it, by the layout's own rule (a capsule: its frame before growing ∪ its members
+  // + kCapsulePad; a band: down to its blocks + kBandPad, right to them), from where the drag has the blocks (their
+  // nudges rounded as the drop rounds them) — the bands under a band that grows (or shrinks: the block that grew it moves
+  // up) shift by as much with everything on them, a grown capsule's In / Out terminals stay at its edges; drawn so every
+  // frame (CircuitCanvas::setNodeShift: the canvas draws those nodes shifted; the strips, containers and frames here
+  // from these rects), no re-layout. Where the drop puts the blocks is the drop's own rule on the model as laid out (the
+  // band and the capsule under the pointer; no feedback from the growth). In place (a nudge, a mixer placed, a block
+  // into / out of a capsule of its band) the rects are the drop's exactly; onto another band only that band grows (the
+  // band it leaves closes up at the drop, its path re-joined). A push-apart is the drop's (it glides after it). Esc:
+  // back to the model's. O(the model's nodes) per move, no allocation once the drag's sets are built.
+  struct WorldRect {
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  };
+  bool growing() const noexcept { return growing_; }
+  WorldRect bandNow(uint32_t band) const noexcept;       // a band's strip as drawn now (x0, y, x1, y + h)
+  WorldRect containerNow(uint32_t band) const noexcept;  // a group band's container as drawn now
+  WorldRect frameNow(uint32_t node) const noexcept;      // a node's rect as drawn now (an opened capsule: its frame)
+  // The layer the canvas draws model node `node` in (CircuitCanvas::nodeLayer: 0 in place, 1 lifted, ≥ 2 shifted).
+  uint8_t liftLayerOf(uint32_t node) const noexcept { return node < liftModel_.size() ? liftModel_[node] : 0; }
   // TX.block-drag: below this many device px across, a block is hit as if it were this size (a tiny block can be grabbed)
   // and its pins reach no further than kSmallPinReach of its size (its body is not all pins).
   static constexpr float kMinHitPx = 8.0f;
@@ -270,8 +296,20 @@ private:
   void buildLift();
   void endLift();
   void pickDragDevices(uint32_t pressed);  // the pressed block, or the selection it is in
+  // TX.drag-grow: the live growth for the lift's offset now (liftDrag), and none (endLift).
+  void updateGrow();
+  void clearGrow();
   std::vector<doc::DeviceId> dragDevices_;
-  std::vector<uint8_t> liftModel_;
+  std::vector<uint8_t> liftModel_;  // per model node: its canvas layer (1 lifted, ≥ 2 shifted by the growth)
+  bool growing_ = false;
+  std::vector<WorldRect> growBand_, growCont_;  // per band (growing_)
+  std::vector<WorldRect> growFrame_;            // per model node: an opened capsule's frame (growing_)
+  std::vector<float> growShift_, growDelta_;    // per band: its shift down, its growth (growing_)
+  std::vector<float> growMixer_;                // per band: how far its mixer (and Out) follow its blocks right
+  std::vector<uint8_t> growTop_;                // per model node: 1 a dragged block the drop places (scratch)
+  std::vector<uint32_t> shiftScene_;
+  std::vector<uint8_t> shiftLayers_;
+  std::vector<graph::Point2> shiftOffsets_;
   std::vector<uint32_t> liftScene_;
   bool liftBuilt_ = false;
   bool liftDragging() const noexcept {

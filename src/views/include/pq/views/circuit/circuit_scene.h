@@ -104,6 +104,9 @@ struct SceneWire {
   // `control` ends on that control (its last point is the control's centre when the scene was built).
   bool cable = false;
   uint64_t cableKey = 0;
+  // TX.drag-grow: an end with no pin of its own (the project patch view's chain into / out of an opened capsule's frame
+  // edge): the scene node it moves with (the capsule's In / Out terminal at that edge); UINT32_MAX: its pin's node.
+  uint32_t fromNode = UINT32_MAX, toNode = UINT32_MAX;
 };
 
 // Text drawn at a world position: centred in [x0, x1] at y (the cap-centre line) when it fits, else hidden.

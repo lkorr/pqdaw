@@ -170,13 +170,14 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
   const bool header = fonts && canvas.lod() == circuit::CircuitCanvas::Lod::Near;
   const Rgba gridBar = ui::mulAlpha(th.arrangement.gridLine, 1.0f), gridBeat = ui::mulAlpha(th.arrangement.gridLine, 0.45f);
   // TX.block-drag: a band dragged by its title has its window drawn with it (the canvas's lifted pass), not here.
-  const bool liftPass = canvas.lifting();
+  const uint8_t layer = canvas.paintLayer();  // TX.drag-grow: a shift layer's pass draws its bands' windows
+  const bool liftPass = layer != 0;
   if (model != nullptr && !liftPass) model->overlay.reset(dl.targetWidth(), dl.targetHeight());  // audio fades / handles of this paint
   bool anyWindow = false;
 
   for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
     const Band& band = pp.bands[bi];
-    if (!hasLaneWindow(band) || band.source == kNone || canvas.lifted(band.source) != liftPass) continue;
+    if (!hasLaneWindow(band) || band.source == kNone || canvas.liftLayerOf(band.source) != layer) continue;
     const Node& n = pp.nodes[band.source];
     const Rect nr = canvas.deviceRect(n.x, n.y, n.w, n.h);
     if (!overlaps(nr, clip)) continue;
@@ -354,7 +355,7 @@ void paintLaneWindows(ui::PaintContext& ctx, const ProjectCanvas& canvas, Projec
   if (const std::optional<Ticks>& ph = view.lanePlayhead(); ph && *ph >= start && *ph < end)
     for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
       const Band& band = pp.bands[bi];
-      if (!hasLaneWindow(band) || band.source == kNone || view.bandTrack(bi) == nullptr || canvas.lifted(band.source) != liftPass) continue;
+      if (!hasLaneWindow(band) || band.source == kNone || view.bandTrack(bi) == nullptr || canvas.liftLayerOf(band.source) != layer) continue;
       const Node& n = pp.nodes[band.source];
       if (!overlaps(canvas.deviceRect(n.x, n.y, n.w, n.h), clip)) continue;
       const Rect body = laneBodyDevice(canvas, n);

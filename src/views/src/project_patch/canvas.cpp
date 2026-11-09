@@ -228,11 +228,15 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   // Group containers first (outer before inner), then the band strips. TX.groups: a scoped canvas (a group's panel)
   // has no bands to draw.
   // TX.block-drag: the lifted pass draws only the parts of what is dragged (a band by its title, opened frames, capsules).
-  const bool liftPass = lifting();
+  // TX.drag-grow: a shift layer's pass the parts of its nodes; the strips and containers are drawn where a drag has grown
+  // and shifted them (bandNow / containerNow), in the scene's pass.
+  const uint8_t layer = paintLayer();
+  const bool liftPass = layer != 0;
   for (const Band& b : pp.bands) {
     if (pp.scoped || liftPass) break;
     if (b.kind != doc::TrackKind::Group) continue;
-    const Rect r = snapRect(deviceRect(b.cx0, b.cy0, b.cx1 - b.cx0, b.cy1 - b.cy0));
+    const WorldRect cr = containerNow(static_cast<uint32_t>(&b - pp.bands.data()));
+    const Rect r = snapRect(deviceRect(cr.x0, cr.y0, cr.x1 - cr.x0, cr.y1 - cr.y0));
     if (!overlaps(r, clip)) continue;
     const Rgba col = ui::hex(b.colour);
     dl.addRectFilled(r, ui::lerp(th.circuit.background, col, b.active ? 0.07f : 0.03f));
@@ -241,8 +245,9 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   const bool names = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr;
   for (const Band& b : pp.bands) {
     if (pp.scoped) break;
-    if (bandLifted(static_cast<uint32_t>(&b - pp.bands.data())) != liftPass) continue;
-    const Rect r = snapRect(deviceRect(b.x0, b.y, b.x1 - b.x0, b.h));
+    if ((bandLifted(static_cast<uint32_t>(&b - pp.bands.data())) ? 1 : 0) != layer) continue;
+    const WorldRect br = bandNow(static_cast<uint32_t>(&b - pp.bands.data()));
+    const Rect r = snapRect(deviceRect(br.x0, br.y0, br.x1 - br.x0, br.y1 - br.y0));
     if (!overlaps(r, clip)) continue;
     const Rgba col = ui::hex(b.colour);
     const doc::Track* t = view_.bandTrack(static_cast<uint32_t>(&b - pp.bands.data()));
@@ -272,7 +277,7 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   // Expanded devices: the frame their atoms are drawn in.
   for (const Node& n : pp.nodes) {
     if (n.kind != NodeKind::Device || !n.expanded) continue;
-    if (lifted(static_cast<uint32_t>(&n - pp.nodes.data())) != liftPass) continue;
+    if (liftLayerOf(static_cast<uint32_t>(&n - pp.nodes.data())) != layer) continue;
     if (n.band < pp.bands.size() && view_.scene().sceneNode.size() > 0) {
       const uint32_t mi = static_cast<uint32_t>(&n - pp.nodes.data());
       if (view_.scene().sceneNode[mi] != kNone) continue;  // not opened (no inner scene)
@@ -318,8 +323,9 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
   // kind and polyphony in the title strip ("Instrument · 16 voices") where a plain group shows its device count.
   for (const Node& n : pp.nodes) {
     if (!n.group || !n.groupOpen) continue;
-    if (lifted(static_cast<uint32_t>(&n - pp.nodes.data())) != liftPass) continue;
-    const Rect r = snapRect(deviceRect(n.x, n.y, n.w, n.h));
+    if (liftLayerOf(static_cast<uint32_t>(&n - pp.nodes.data())) != layer) continue;
+    const WorldRect fr = frameNow(static_cast<uint32_t>(&n - pp.nodes.data()));  // TX.drag-grow: grown by a drag
+    const Rect r = snapRect(deviceRect(fr.x0, fr.y0, fr.x1 - fr.x0, fr.y1 - fr.y0));
     if (!overlaps(r, clip)) continue;
     const Rgba accent = n.instrument ? th.accent.primary : th.circuit.wireAudio;
     // TMM.13-fix2 (MM review "UI and aesthetic" 9: "a grouped capsule", the user's word): pill-round ends — a short
@@ -341,7 +347,8 @@ void ProjectCanvas::paintUnderlay(ui::PaintContext& ctx) {
     // GU.5: the panel-window button at the title strip's right end (a small window glyph; lit while its window is open).
     if (stripH >= 12.0f && !view_.embedded()) {
       const LaneRect br = ProjectPatchView::panelButtonRect(n);
-      const Rect b = snapRect(deviceRect(br.x0, br.y0, br.x1 - br.x0, br.y1 - br.y0));
+      const float ox = fr.x1 - (n.x + n.w), oy = fr.y0 - n.y;  // TX.drag-grow: at the grown frame's top-right
+      const Rect b = snapRect(deviceRect(br.x0 + ox, br.y0 + oy, br.x1 - br.x0, br.y1 - br.y0));
       if (b.x0 > r.x0 + rad) {
         const bool on = view_.panelWindowOpen(n.device);
         const float bw = std::max(1.0f, std::round(us));
@@ -377,7 +384,7 @@ static void paintFocus(ui::PaintContext& ctx, const ProjectCanvas& c, const Proj
   LaneRect r;
   if (!v.focusedDevice().valid() || !v.deviceWorldRect(v.focusedDevice(), r)) return;
   const uint32_t fn = v.patch().nodeOf(v.focusedDevice());
-  if ((fn != kNone && c.lifted(fn)) != c.lifting()) return;  // TX.block-drag: with its block
+  if ((fn != kNone ? c.liftLayerOf(fn) : 0) != c.paintLayer()) return;  // TX.block-drag: with its block (TX.drag-grow: layer)
   const float us = ctx.scale.factor;
   const float t = std::max(2.0f, std::round(2.0f * us));
   const Rect d = snapRect(c.deviceRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0));
@@ -395,8 +402,9 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
   const float s = deviceScale();
   const float us = ctx.scale.factor;
   const Lod level = lod();
-  const bool liftPass = lifting();
-  auto mine = [&](const Node& n) { return lifted(static_cast<uint32_t>(&n - pp.nodes.data())) == liftPass; };
+  const uint8_t layer = paintLayer();  // TX.drag-grow: the pass's layer (0 the scene, 1 lifted, ≥ 2 shifted)
+  const bool liftPass = layer != 0;
+  auto mine = [&](const Node& n) { return liftLayerOf(static_cast<uint32_t>(&n - pp.nodes.data())) == layer; };
   // TX.groups: a closed group's miniature of its contents (its boxes and wires in the block's body, under the title).
   for (const Node& n : pp.nodes) {
     if (!n.group || n.groupOpen || n.mini.empty() || !mine(n)) continue;
@@ -501,8 +509,9 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
       // lane windows' "Notes" sat on "Keys", "Pad", "Mod"): it moves into its block's top, or is left out.
       for (const Band& b : pp.bands) {
         if (pp.scoped) break;
-        if (bandLifted(static_cast<uint32_t>(&b - pp.bands.data())) != liftPass) continue;
-        const Rect br = snapRect(deviceRect(b.x0, b.y, b.x1 - b.x0, b.h));
+        if ((bandLifted(static_cast<uint32_t>(&b - pp.bands.data())) ? 1 : 0) != layer) continue;
+        const WorldRect bw = bandNow(static_cast<uint32_t>(&b - pp.bands.data()));
+        const Rect br = snapRect(deviceRect(bw.x0, bw.y0, bw.x1 - bw.x0, bw.y1 - bw.y0));
         if (!overlaps(br, clip) || br.y1 - br.y0 < px + 2.0f) continue;
         const float bar = std::max(2.0f, std::round(3.0f * us));
         const ui::TextRun run = ts.shape(font, b.name);
@@ -1747,6 +1756,7 @@ void ProjectCanvas::liftDrag() {
   if (!liftBuilt_) buildLift();
   const float s = std::max(deviceScale(), 1e-6f);
   setNodeDrag(liftScene_, {(last_.x - press_.x) / s, (last_.y - press_.y) / s});
+  updateGrow();  // TX.drag-grow
   markDirty();
 }
 
@@ -1755,7 +1765,256 @@ void ProjectCanvas::endLift() {
   liftModel_.clear();
   liftScene_.clear();
   dragDevices_.clear();
+  clearGrow();
   clearNodeDrag();
+}
+
+// ---- TX.drag-grow: the band and the capsules a drag is in grow live (project_patch_view.h "TX.drag-grow") -----------
+
+void ProjectCanvas::clearGrow() {
+  growing_ = false;
+  shiftScene_.clear();
+  shiftLayers_.clear();
+  shiftOffsets_.clear();
+}
+
+ProjectCanvas::WorldRect ProjectCanvas::bandNow(uint32_t band) const noexcept {
+  const ProjectPatch& pp = view_.patch();
+  if (band >= pp.bands.size()) return {};
+  if (growing_ && band < growBand_.size()) return growBand_[band];
+  const Band& b = pp.bands[band];
+  return {b.x0, b.y, b.x1, b.y + b.h};
+}
+
+ProjectCanvas::WorldRect ProjectCanvas::containerNow(uint32_t band) const noexcept {
+  const ProjectPatch& pp = view_.patch();
+  if (band >= pp.bands.size()) return {};
+  if (growing_ && band < growCont_.size()) return growCont_[band];
+  const Band& b = pp.bands[band];
+  return {b.cx0, b.cy0, b.cx1, b.cy1};
+}
+
+ProjectCanvas::WorldRect ProjectCanvas::frameNow(uint32_t node) const noexcept {
+  const ProjectPatch& pp = view_.patch();
+  if (node >= pp.nodes.size()) return {};
+  const Node& n = pp.nodes[node];
+  if (growing_ && n.group && n.groupOpen && node < growFrame_.size()) return growFrame_[node];
+  return {n.x, n.y, n.x + n.w, n.y + n.h};
+}
+
+void ProjectCanvas::updateGrow() {
+  ProjectPatchView& v = view_;
+  const ProjectPatch& pp = v.patch();
+  const ProjectScene& ps = v.scene();
+  const size_t nn = pp.nodes.size(), nb = pp.bands.size();
+  for (uint8_t& k : liftModel_)
+    if (k > 1) k = 0;
+  growing_ = false;
+  shiftScene_.clear();
+  shiftLayers_.clear();
+  shiftOffsets_.clear();
+  auto finish = [&] { setNodeShift(shiftScene_, shiftLayers_, shiftOffsets_); };
+  if (!liftBuilt_ || dragNode_ >= nn || liftModel_.size() != nn) return finish();
+  // Where the drop will put the dragged blocks: finishDeviceMove's / finishMixerMove's / a nudge's rule, on the model as
+  // laid out (so the growth never feeds back into it).
+  enum class Plan : uint8_t { None, InPlace, Into, Band };
+  Plan plan = Plan::None;
+  uint32_t into = kNone, toBand = kNone;
+  const Node& moved = pp.nodes[dragNode_];
+  const uint32_t under = bandAt(last_);
+  switch (drag_) {
+    case Drag::Nudge: plan = Plan::InPlace; break;
+    case Drag::MoveMixer: plan = moved.kind == NodeKind::Mixer && under == moved.band ? Plan::InPlace : Plan::None; break;
+    case Drag::MoveDevice: {
+      if (v.panelWindowAt(last_) != nullptr) break;  // GU.5: its controls go onto the panel; the blocks stay
+      const graph::Point2 w = toWorld(last_);
+      auto openUnder = [&](uint32_t band) {  // the innermost opened capsule under the pointer (not the block or in it)
+        uint32_t found = kNone;
+        for (uint32_t i = 0; i < nn; ++i) {
+          const Node& c = pp.nodes[i];
+          if (i != dragNode_ && c.group && c.groupOpen && (band == kNone || c.band == band) && w.x >= c.x && w.x <= c.x + c.w &&
+              w.y >= c.y && w.y <= c.y + c.h && !insideNode(pp, i, dragNode_))
+            found = i;
+        }
+        return found;
+      };
+      if (v.freeRack()) {
+        if (!rect().contains(last_)) break;
+        toBand = moved.band;
+        if (dragDevices_.size() > 1) {
+          plan = Plan::InPlace;
+          break;
+        }
+        into = openUnder(kNone);
+        const bool regroup = moved.capsule != kNone ? into != moved.capsule : into != kNone;
+        plan = !regroup ? Plan::InPlace : into != kNone ? Plan::Into : Plan::Band;
+        break;
+      }
+      if (under == kNone) break;
+      toBand = under;
+      if (dragDevices_.size() > 1) {
+        plan = under == moved.band ? Plan::InPlace : Plan::Band;
+        break;
+      }
+      if (pp.scoped && moved.group) break;
+      into = openUnder(under);
+      if (moved.capsule != kNone) {
+        if (into == moved.capsule) plan = Plan::InPlace;
+        else if (under == moved.band) plan = into != kNone ? Plan::Into : Plan::Band;
+      } else if (into != kNone && under == moved.band) {
+        plan = Plan::Into;
+      } else {
+        plan = under == moved.band ? Plan::InPlace : Plan::Band;
+      }
+      break;
+    }
+    default: break;  // a band by its title, a splice: nothing grows
+  }
+  if (plan == Plan::None) return finish();
+  // The blocks the drop places (the dragged selection's tops) and where each goes: its capsule (kNone: its band's level)
+  // and its band. Their rects: where the drag has them, the offset rounded as the nudge rounds it.
+  const float s = std::max(deviceScale(), 1e-6f);
+  const float dx = std::round((last_.x - press_.x) / s), dy = std::round((last_.y - press_.y) / s);
+  growTop_.assign(nn, 0);
+  thread_local std::vector<uint32_t> tops;
+  tops.clear();
+  if (dragDevices_.empty()) growTop_[dragNode_] = 1, tops.push_back(dragNode_);
+  for (const doc::DeviceId d : dragDevices_)
+    if (const uint32_t n = pp.nodeOf(d); n != kNone && n < nn && growTop_[n] == 0) growTop_[n] = 1, tops.push_back(n);
+  auto capsuleOf = [&](uint32_t t) { return plan == Plan::InPlace ? pp.nodes[t].capsule : plan == Plan::Into ? into : kNone; };
+  auto bandOf = [&](uint32_t t) { return plan == Plan::InPlace ? pp.nodes[t].band : plan == Plan::Into ? pp.nodes[into].band : toBand; };
+  thread_local std::vector<uint8_t> affected;
+  affected.assign(nb, 0);
+  for (const uint32_t t : tops)
+    if (bandOf(t) < nb) affected[bandOf(t)] = 1;
+  auto rectOf = [&](uint32_t k) -> WorldRect {
+    const Node& n = pp.nodes[k];
+    if (liftModel_[k] == 1) return {n.x + dx, n.y + dy, n.x + n.w + dx, n.y + n.h + dy};
+    if (n.group && n.groupOpen) return growFrame_[k];
+    return {n.x, n.y, n.x + n.w, n.y + n.h};
+  };
+  // Capsules, inner first (a nested one comes after its parent in the model): the layout's growth, from these rects.
+  growFrame_.resize(nn);
+  for (uint32_t i = static_cast<uint32_t>(nn); i-- > 0;) {
+    const Node& c = pp.nodes[i];
+    if (!c.group || !c.groupOpen) continue;
+    WorldRect r{c.x, c.y, c.x + c.w, c.y + c.h};
+    if (liftModel_[i] != 1 && c.band < nb && affected[c.band] != 0) {
+      r = {c.frameX0, c.frameY0, c.frameX1, c.frameY1};
+      auto add = [&](const WorldRect& q) {
+        r.x0 = std::min(r.x0, q.x0 - metrics::kCapsulePad), r.x1 = std::max(r.x1, q.x1 + metrics::kCapsulePad);
+        r.y0 = std::min(r.y0, q.y0 - metrics::kCapsulePad - metrics::kCapsuleTitle), r.y1 = std::max(r.y1, q.y1 + metrics::kCapsulePad);
+      };
+      for (const uint32_t k : c.members)
+        if (k < nn && (growTop_[k] == 0 || capsuleOf(k) == i)) add(rectOf(k));
+      for (const uint32_t t : tops)  // a block dropped into it
+        if (capsuleOf(t) == i && pp.nodes[t].capsule != i) add(rectOf(t));
+    }
+    growFrame_[i] = r;
+  }
+  // Bands: down to their blocks and right to them (the layout's rule), then the bands under one shift by its growth.
+  growBand_.resize(nb);
+  growDelta_.assign(nb, 0.0f);
+  growShift_.assign(nb, 0.0f);
+  growMixer_.assign(nb, 0.0f);
+  auto roundUp4 = [](float x) { return std::ceil(x / 4.0f) * 4.0f; };
+  for (uint32_t bi = 0; bi < nb; ++bi) {
+    const Band& b = pp.bands[bi];
+    growBand_[bi] = {b.x0, b.y, b.x1, b.y + b.h};
+    if (pp.scoped || affected[bi] == 0) continue;
+    // A mixer the user has not placed sits right of the band's blocks (the layout's placeMixer): it follows them.
+    if (b.mixer < nn && b.mixerFollows && growTop_[b.mixer] == 0) {
+      float right = -1e30f;
+      auto reach = [&](uint32_t k) {
+        if (k < nn && growTop_[k] == 0 && pp.nodes[k].capsule == kNone) right = std::max(right, rectOf(k).x1);
+      };
+      reach(b.source);
+      for (const uint32_t d : b.devices) reach(d);
+      for (const uint32_t t : tops)
+        if (capsuleOf(t) == kNone && bandOf(t) == bi) right = std::max(right, rectOf(t).x1);
+      growMixer_[bi] = std::max(b.mixerX0, right + metrics::kNodeGap) - pp.nodes[b.mixer].x;
+    }
+    const float base = b.y + b.baseH;
+    float bottom = base - metrics::kBandPad, x1 = b.baseX1;
+    auto take = [&](const WorldRect& q, bool down) {
+      if (down) bottom = std::max(bottom, q.y1);
+      x1 = std::max(x1, q.x1 + 12.0f);
+    };
+    auto keep = [&](uint32_t k, bool down, float ox) {
+      if (k == kNone || k >= nn || growTop_[k] != 0) return;
+      WorldRect q = rectOf(k);
+      q.x0 += ox, q.x1 += ox;
+      take(q, down);
+    };
+    keep(b.source, false, 0.0f);
+    for (const uint32_t d : b.devices) keep(d, true, 0.0f);
+    keep(b.mixer, true, growMixer_[bi]);
+    keep(b.output, true, growMixer_[bi]);
+    for (const uint32_t t : tops)
+      if (capsuleOf(t) == kNone && bandOf(t) == bi) take(rectOf(t), true);
+    const float h = b.baseH + std::max(0.0f, roundUp4(bottom + metrics::kBandPad - base));
+    growDelta_[bi] = h - b.h;
+    growBand_[bi].y1 = b.y + h;
+    growBand_[bi].x1 = x1;
+  }
+  for (uint32_t a = 0; a < nb; ++a) {
+    if (growDelta_[a] == 0.0f) continue;
+    const float below = pp.bands[a].y + pp.bands[a].h - 0.5f;
+    for (uint32_t j = 0; j < nb; ++j)
+      if (j != a && pp.bands[j].y >= below) growShift_[j] += growDelta_[a];
+  }
+  for (uint32_t j = 0; j < nb; ++j) growBand_[j].y0 += growShift_[j], growBand_[j].y1 += growShift_[j];
+  // Group containers from those strips (the layout's rule; inner groups first).
+  growCont_.resize(nb);
+  for (uint32_t i = static_cast<uint32_t>(nb); i-- > 0;) {
+    const Band& b = pp.bands[i];
+    if (b.kind != doc::TrackKind::Group) {
+      growCont_[i] = {b.cx0, b.cy0, b.cx1, b.cy1};
+      continue;
+    }
+    const WorldRect& sb = growBand_[i];
+    WorldRect c{sb.x0 - 4.0f, sb.y0 - 4.0f, sb.x1 + 4.0f, sb.y1 + 4.0f};
+    if (b.lastMember != kNone)
+      for (uint32_t m = i + 1; m <= b.lastMember && m < nb; ++m) {
+        const bool grp = pp.bands[m].kind == doc::TrackKind::Group;
+        const WorldRect& mb = grp ? growCont_[m] : growBand_[m];
+        c.x0 = std::min(c.x0, mb.x0 - 4.0f);
+        c.x1 = std::max(c.x1, mb.x1 + 4.0f);
+        c.y1 = std::max(c.y1, mb.y1 + 4.0f);
+      }
+    growCont_[i] = c;
+  }
+  growing_ = true;
+  // What moves without being dragged: everything on a shifted band, a grown capsule's terminals (at its edges). One
+  // canvas layer per distinct offset (a few: one per band that grows, two per capsule).
+  constexpr uint8_t k0 = circuit::CircuitCanvas::kShiftLayer0;
+  auto layerOf = [&](graph::Point2 o) -> uint8_t {
+    for (size_t k = 0; k < shiftOffsets_.size(); ++k)
+      if (shiftOffsets_[k] == o) return static_cast<uint8_t>(k0 + k);
+    if (shiftOffsets_.size() + k0 >= 0xF0) return 0;  // (never: bounded by the bands and capsules)
+    shiftOffsets_.push_back(o);
+    return static_cast<uint8_t>(k0 + shiftOffsets_.size() - 1);
+  };
+  for (uint32_t k = 0; k < nn; ++k) {
+    if (liftModel_[k] == 1) continue;
+    const Node& n = pp.nodes[k];
+    graph::Point2 o{0.0f, n.band < nb ? growShift_[n.band] : 0.0f};
+    if (n.band < nb && (k == pp.bands[n.band].mixer || k == pp.bands[n.band].output)) o.x = growMixer_[n.band];
+    if (n.kind == NodeKind::Terminal && n.capsule < nn) {
+      const Node& c = pp.nodes[n.capsule];
+      if (k == c.groupIn) o.x = growFrame_[n.capsule].x0 - c.x;
+      else if (k == c.groupOut) o.x = growFrame_[n.capsule].x1 - (c.x + c.w);
+    }
+    if (o.x != 0.0f || o.y != 0.0f) liftModel_[k] = layerOf(o);
+  }
+  for (uint32_t sv = 0; sv < ps.modelNode.size(); ++sv) {
+    const uint32_t m = ps.modelNode[sv];
+    if (m < nn && liftModel_[m] >= k0) {
+      shiftScene_.push_back(sv);
+      shiftLayers_.push_back(static_cast<uint8_t>(liftModel_[m] - k0));
+    }
+  }
+  finish();
 }
 
 void ProjectCanvas::onCaptureLost() {

@@ -1017,6 +1017,7 @@ struct Builder {
     const doc::PatchNudge* placed = nullptr;
     if (opt.nudges != nullptr)
       if (const auto it = opt.nudges->find(b.track.value); it != opt.nudges->end() && it->second.mixerPlaced) placed = &it->second;
+    b.mixerX0 = x0, b.mixerFollows = placed == nullptr;  // TX.drag-grow
     if (placed != nullptr) {
       mx.x = b.x0 + placed->mixerX;
       mx.y = b.y + std::max(m::kTitle, placed->mixerY);  // never over the band's title strip (a wall, as for blocks)
@@ -1190,6 +1191,7 @@ struct Builder {
       const Capsule& c = *it;
       Node& cn = out.nodes[c.node];
       float x0 = cn.x, y0 = cn.y, x1 = cn.x + cn.w, y1 = cn.y + cn.h;
+      cn.frameX0 = x0, cn.frameY0 = y0, cn.frameX1 = x1, cn.frameY1 = y1;  // TX.drag-grow
       for (const uint32_t k : cn.members) {
         const Node& mn = out.nodes[k];
         x0 = std::min(x0, mn.x - m::kCapsulePad), x1 = std::max(x1, mn.x + mn.w + m::kCapsulePad);
@@ -1206,6 +1208,7 @@ struct Builder {
     for (Band& b : out.bands) placeMixer(b);  // TX.mixer-look
     for (uint32_t i = 0; i < out.bands.size(); ++i) {
       Band& b = out.bands[i];
+      b.baseH = b.h;  // TX.drag-grow (only its own growth below changes h)
       const float oldBottom = b.y + b.h;
       float bottom = oldBottom - m::kBandPad;
       for (const uint32_t d : b.devices) bottom = std::max(bottom, out.nodes[d].y + out.nodes[d].h);
@@ -1221,6 +1224,7 @@ struct Builder {
     }
     // Bands reach their nodes (a nudged block stays inside its band's strip horizontally).
     for (Band& b : out.bands) {
+      b.baseX1 = b.x1;  // TX.drag-grow
       auto reach = [&](uint32_t n) {
         if (n == kNone) return;
         b.x1 = std::max(b.x1, out.nodes[n].x + out.nodes[n].w + 12.0f);

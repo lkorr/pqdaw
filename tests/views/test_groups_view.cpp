@@ -361,6 +361,185 @@ TEST_CASE("groups view: Delete and Ctrl+Shift+G inside a group's own panel (pois
   CHECK(embedded() == nullptr);
 }
 
+// TX.drag-grow (the user 2026-11-08: "dragging a module should actively expand the space its in while being dragged …
+// so you can see exactly how it shifts the space"). Through the window: a block dragged past its band's bottom (the
+// pointer still in the band) grows the band every frame, the band under it shifting down with its blocks, no re-layout;
+// what was shown is what the drop lays out; Esc puts it back. A capsule's member dragged past the capsule's corner grows
+// the capsule (its Out terminal at its new right edge) and the band holding it, the same way.
+TEST_CASE("groups view (TX.drag-grow): a dragged block grows its band and its capsule live; the drop lands on what was shown; Esc restores") {
+  Ui u;
+  u.show();
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& cv = v.canvas();
+  cv.setCablesAnimated(false);
+  const size_t h0 = u.history();
+  auto rectOf = [](const Band& b) { return ProjectCanvas::WorldRect{b.x0, b.y, b.x1, b.y + b.h}; };
+  auto sceneOf = [&](doc::DeviceId d) { return v.scene().sceneNode[u.node(d)]; };
+  // ---- a block below its band's bottom: the free LFO of Keys, dragged down (the pointer stays in Keys) ----
+  {
+    v.fitAll(false);  // both bands on the canvas
+    u.d.tree().layoutNow();
+    u.d.step();
+    const uint32_t kb = u.pp().bandOf(u.ids.keys), bb = u.pp().bandOf(u.ids.bass);
+    REQUIRE(kb != kNone);
+    REQUIRE(bb != kNone);
+    const Band keys0 = u.pp().bands[kb], bass0 = u.pp().bands[bb];
+    REQUIRE(bass0.y >= keys0.y + keys0.h);  // Bass is under Keys
+    const Node lfo0 = u.pp().nodes[u.node(u.ids.lfo)];
+    const Node sat0 = u.pp().nodes[u.node(u.ids.sat)];
+    const Vec2 grip = u.dev(lfo0.x + lfo0.w * 0.5f, lfo0.y + 10.0f);  // its panel's title bar
+    // To 6 units above the band's bottom: the block hangs below it by most of its height.
+    const float dy = keys0.y + keys0.h - 6.0f - (lfo0.y + 10.0f);
+    REQUIRE(dy > 0.0f);
+    const float s = cv.deviceScale();
+    const Vec2 to{grip.x, grip.y + dy * s};
+    REQUIRE(cv.rect().contains(to));
+    auto dragDown = [&] {
+      u.d.move(grip);
+      u.d.down(grip);
+      for (int i = 1; i <= 6; ++i) {
+        u.d.move({grip.x, grip.y + (to.y - grip.y) * static_cast<float>(i) / 6.0f});
+        u.d.step();
+      }
+      REQUIRE(cv.drag() == ProjectCanvas::Drag::MoveDevice);
+    };
+    const uint64_t relayouts0 = v.stats().relayouts;
+    dragDown();
+    // Grown before the release: Keys down to the block + its pad, Bass shifted by as much, its blocks drawn with it.
+    CHECK(cv.growing());
+    const ProjectCanvas::WorldRect kLive = cv.bandNow(kb), bLive = cv.bandNow(bb);
+    const float grow = kLive.y1 - (keys0.y + keys0.h);
+    CHECK(grow > lfo0.h * 0.5f);
+    CHECK(kLive.y1 >= lfo0.y + std::round(dy) + lfo0.h + metrics::kBandPad);
+    CHECK(kLive.y0 == keys0.y);
+    CHECK(bLive.y0 == doctest::Approx(bass0.y + grow));
+    CHECK(bLive.y1 == doctest::Approx(bass0.y + bass0.h + grow));
+    const uint32_t satScene = sceneOf(u.ids.sat);
+    const std::span<const uint32_t> shifted = cv.shiftedNodes();
+    CHECK(std::find(shifted.begin(), shifted.end(), satScene) != shifted.end());
+    CHECK(cv.nodeOffset(satScene).y == doctest::Approx(grow));
+    CHECK(cv.nodeOffset(satScene).x == 0.0f);
+    CHECK(cv.nodeLayer(satScene) >= circuit::CircuitCanvas::kShiftLayer0);
+    // Hit where it is drawn now (shifted), not where it was.
+    {
+      const Vec2 at = u.dev(sat0.x + sat0.w * 0.5f, sat0.y + 10.0f + grow);
+      const circuit::CanvasHit h = cv.hitTest(at);
+      REQUIRE(cv.rect().contains(at));
+      CHECK(h.kind == circuit::CanvasHit::Kind::Node);
+      CHECK(h.index == satScene);
+    }
+    CHECK(v.stats().relayouts == relayouts0);  // no re-layout while it moves
+    CHECK(u.pp().bands[kb].h == keys0.h);
+    // Esc: everything back as the model has it, nothing changed.
+    u.d.keyDown(key::kEscape);
+    u.d.keyUp(key::kEscape);
+    CHECK_FALSE(cv.growing());
+    CHECK(cv.shiftedNodes().empty());
+    CHECK(cv.nodeOffset(satScene).y == 0.0f);
+    CHECK(cv.bandNow(kb).y1 == keys0.y + keys0.h);
+    CHECK(cv.bandNow(bb).y0 == bass0.y);
+    u.d.up(to);
+    u.d.step();
+    CHECK(u.history() == h0);
+    CHECK(u.pp().bands[kb].h == keys0.h);
+    CHECK(u.pp().nodes[u.node(u.ids.lfo)].y == lfo0.y);
+    // Again, released: the drop lays out exactly what was shown (Keys' strip, Bass's strip and its blocks).
+    dragDown();
+    const ProjectCanvas::WorldRect kShown = cv.bandNow(kb), bShown = cv.bandNow(bb);
+    u.d.up(to);
+    CHECK_FALSE(cv.growing());
+    CHECK_FALSE(v.pushing());  // (dropped clear of every block: the layout alone)
+    const Band& k1 = u.pp().bands[kb];
+    const Band& b1 = u.pp().bands[bb];
+    CHECK(k1.h > keys0.h);
+    CHECK(rectOf(k1).y0 == kShown.y0);
+    CHECK(rectOf(k1).y1 == kShown.y1);
+    CHECK(rectOf(k1).x1 == kShown.x1);
+    CHECK(rectOf(b1).y0 == bShown.y0);
+    CHECK(rectOf(b1).y1 == bShown.y1);
+    CHECK(u.pp().nodes[u.node(u.ids.sat)].y == doctest::Approx(sat0.y + grow));
+    CHECK(u.history() == h0);  // a nudge: view state
+  }
+  // ---- a capsule's member past the capsule's bottom-right corner (the pointer stays inside it) ----
+  {
+    const doc::DeviceId sel[3] = {u.ids.pa1, u.ids.wt, u.ids.pa2};
+    REQUIRE(v.groupDevices(sel));
+    u.d.step();
+    const doc::DeviceId g = u.groupOf(u.ids.wt);
+    REQUIRE(g.valid());
+    v.nudge(u.ids.lfo.value, 0.0f, 600.0f);  // the LFO out of the way (the grown capsule overlaps nothing)
+    v.focusBand(u.ids.keys, false);
+    u.d.tree().layoutNow();
+    u.d.advance(1.0);
+    const size_t h1 = u.history();
+    const uint32_t cap = u.node(g);
+    const Node c0 = u.pp().nodes[cap];
+    REQUIRE(c0.groupOpen);
+    const Node out0 = u.pp().nodes[c0.groupOut];
+    const Node in0 = u.pp().nodes[c0.groupIn];
+    const uint32_t kb = c0.band;
+    const Band keys0 = u.pp().bands[kb];
+    const Node p20 = u.pp().nodes[u.node(u.ids.pa2)];
+    const Vec2 from = u.dev(p20.x + 6.0f, p20.y + 6.0f);
+    const Vec2 to = u.dev(c0.x + c0.w - 4.0f, c0.y + c0.h - 4.0f);  // inside the capsule as laid out
+    REQUIRE(cv.rect().contains(to));
+    auto dragOut = [&] {
+      u.d.move(from);
+      u.d.down(from);
+      for (int i = 1; i <= 6; ++i) {
+        const float t = static_cast<float>(i) / 6.0f;
+        u.d.move({from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t});
+        u.d.step();
+      }
+      REQUIRE(cv.drag() == ProjectCanvas::Drag::MoveDevice);
+    };
+    dragOut();
+    CHECK(cv.growing());
+    const ProjectCanvas::WorldRect f = cv.frameNow(cap);
+    CHECK(f.x1 > c0.x + c0.w + 20.0f);
+    CHECK(f.y1 > c0.y + c0.h + 20.0f);
+    CHECK(f.x0 == c0.x);
+    CHECK(f.y0 == c0.y);
+    // Its Out terminal at its new right edge (shifted), its In where it was; the band grown to hold it.
+    const uint32_t outScene = v.scene().sceneNode[c0.groupOut], inScene = v.scene().sceneNode[c0.groupIn];
+    CHECK(cv.nodeOffset(outScene).x == doctest::Approx(f.x1 - (c0.x + c0.w)));
+    CHECK(cv.nodeOffset(inScene).x == 0.0f);
+    CHECK(cv.bandNow(kb).y1 >= f.y1 + metrics::kBandPad);
+    // Esc: as it was.
+    u.d.keyDown(key::kEscape);
+    u.d.keyUp(key::kEscape);
+    CHECK_FALSE(cv.growing());
+    CHECK(cv.frameNow(cap).x1 == c0.x + c0.w);
+    CHECK(cv.nodeOffset(outScene).x == 0.0f);
+    u.d.up(to);
+    u.d.step();
+    CHECK(u.history() == h1);
+    CHECK(u.pp().nodes[cap].w == c0.w);
+    // Released: the capsule, its terminals and the band as shown.
+    dragOut();
+    const ProjectCanvas::WorldRect fShown = cv.frameNow(cap), kShown = cv.bandNow(kb);
+    const float outShift = cv.nodeOffset(outScene).x;
+    const Node mixer0 = u.pp().nodes[keys0.mixer];
+    const float mixerShift = cv.nodeOffset(v.scene().sceneNode[keys0.mixer]).x;
+    u.d.up(to);
+    CHECK_FALSE(cv.growing());
+    CHECK_FALSE(v.pushing());
+    CHECK(u.groupOf(u.ids.pa2) == g);  // still a member (moved inside its capsule)
+    const Node& c1 = u.pp().nodes[u.node(g)];
+    CHECK(c1.x == fShown.x0);
+    CHECK(c1.y == fShown.y0);
+    CHECK(c1.x + c1.w == fShown.x1);
+    CHECK(c1.y + c1.h == fShown.y1);
+    CHECK(u.pp().nodes[c1.groupOut].x == doctest::Approx(out0.x + outShift));
+    CHECK(u.pp().nodes[c1.groupIn].x == in0.x);
+    const Band& k1 = u.pp().bands[kb];
+    CHECK(k1.y + k1.h == kShown.y1);
+    CHECK(k1.x1 == kShown.x1);
+    CHECK(u.pp().nodes[k1.mixer].x == doctest::Approx(mixer0.x + mixerShift));  // it followed the capsule right
+    CHECK(u.history() == h1);
+  }
+}
+
 TEST_CASE("groups view: a group panel's frame — an idle frame costs nothing, a full repaint of the embedded circuit" * doctest::test_suite("perf")) {
   Ui u;
   const doc::DeviceId sel[3] = {u.ids.pa1, u.ids.wt, u.ids.pa2};
