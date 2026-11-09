@@ -749,7 +749,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [x] **TX.insert-group Insert on a cable lands in the cable's group** *(merged 5bac9256)* (user 2026-11-08: Z on a cable into a Phase Accumulator inserts the VCA inside the PA group; insertImpl takes the target device's group). Worker, branch task/TX.insert-group.
 
 ## TL: Track lanes in the project patch view (plan: docs/plans/TL.md; user decision 2026-11-08, SPEC §15 "track lanes in the circuit view")
-- [ ] **TL.1 Each band ends in its track's timeline lane; one time window shared with the arrangement; cables leave the lane's top edge at pinned spots** (plan "The design" 1–7; may split TL.1a / TL.1b). Replaces the Notes / Audio source node. 👁
+- [x] **TL.1 Each band ends in its track's timeline lane; one time window shared with the arrangement; cables leave the lane's top edge at pinned spots** (plan "The design" 1–7; may split TL.1a / TL.1b). Replaces the Notes / Audio source node. 👁 *(merged 4c543864; Q238; all 7 items incl. pinned taps; ruler overlays the canvas top 40 px; taps fall back to default after wire-rebuilding ops other than splice / insert)*
 - [ ] **TL.2 Automation sub-lanes under a band's lane (master / returns too); clicking a control shows its sub-lane** (plan 8, 9). After TL.1. 👁
 - [ ] **TL.3 A thin red automation wire from the selected control to the nearest point of its sub-lane** (plan 10). After TL.2. 👁
 

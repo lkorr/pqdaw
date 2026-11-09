@@ -240,3 +240,10 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: new real-dispatch test "groups view (TX.drag-grow)"; pq_tests_views default tier 602/602 before and after rebase; goldens unchanged.
 - Perf / CPU-efficiency check: per move linear in nodes/bands, no re-layout, no edit, no allocation after the drag's sets are built; one extra paint pass per distinct shift.
 - Notes/blockers: push-apart not previewed (needs a per-frame re-layout); leaving band closes up only at drop; routes between shifted/unshifted bands drawn as a Z during the drag.
+
+## 2026-11-08 · TL.1 · task/TL.1-lanes
+- Did: Notes / Audio node gone; every band ends in its track's lane (one x range; group / return / master lanes empty strips for TL.2); hidden NodeKind::Lane keeps edges / lowering unchanged; one time window (ViewContext::timeWindow) shared with the arrangement, one Ruler over the lanes; arrangement lane hotkeys; empty-lane click sets insert marker + (stopped) start marker and playhead in both views; lane resize, band fold; cables leave the lane top at Wire::tap (SetWireTap, one undo step, double-click = default, drag up from the edge or a notes / Hz / gate / vel chip = new cable).
+- Verified: pq_tests_views default tier 606/606 (real-dispatch tests: Space plays from clicked tick in both views, ruler, resize / fold, tap slide + undo, chip cable); -Affected 23/24 → every-command test needed a SetWireTap case, fixed, pq_tests_document passes; 36 goldens re-recorded (project-*, panel-window-*, panel-embed, instrument-rack).
+- Perf / CPU-efficiency check: time zoom / scroll repaints lanes + ruler only (64 tracks: zero re-layouts); a tap slide skips re-lowering; lane paint culls to visible ticks.
+- Notes/blockers: Q238. Ruler overlays the canvas top 40 px; taps reset to default on wire-rebuilding ops other than splice / insert, and on sticky cables after Ctrl-release.
+

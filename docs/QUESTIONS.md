@@ -540,7 +540,7 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   inspector only while the setting is above 1× and offer it from the frame's title-bar menu instead.
 - Status: decided (reversible: group_frame.cpp).
 
-## Q?-TL.1-a · Track lanes: where a lane's height and fold live, the click's start marker while playing, port chips
+## Q238 · 2026-11-08 · TL.1 · Track lanes: where a lane's height and fold live, the click's start marker while playing, port chips
 - **Context**: TL.1 (docs/plans/TL.md 1, 5, 6, 7). A band lane's height is dragged at its bottom edge; a band's circuit
   folds; a click on empty lane space moves where Space plays from; a MIDI lane still offers notes / Hz / gate / velocity.
 - **Choices**: (1) the lane height and the fold are view state on the track's `doc::PatchNudge` entry ("laneH",
