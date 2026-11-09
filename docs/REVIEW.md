@@ -1040,3 +1040,18 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **Goldens:** none changed (no golden has a modulated band).
 - **To judge:** in the app with an LFO on a bell's Frequency: whether the motion reads well at 30 Hz, and whether the
   knob marker is useful or noise. Polyphonic modulation shows the ring's voice (the tap's newest).
+
+## 👁 TX.cable-look Cables inside groups hang; the notes land on the Phase Accumulator's Frequency · 2026-11-08
+- **What changed:** every wire between blocks of an opened group (instrument groups, opened modules, the Device view's
+  capsules, In / Out terminals included) is a hanging cable like the rest; the only rigid traces left are routes, sends
+  and mixer outputs. A closed group's miniature draws its wires as small curves. A cable into a closed module's main
+  input whose signal inside is only added (an `add` atom) to one value control on its panel lands on that control: the
+  notes (gold) into the Phase Accumulator now end on its Frequency arc. Unwired, the PA keeps its orbiting input port.
+  The opened group's layout puts the In terminal level with that control, so the band's spine can sit lower.
+- **Goldens re-recorded (32):** audio-rack, device-automation, device-chain, device-free-rack(-collapsed),
+  device-group-panel, device-knob-curves, device-path-broken, device-wiring, instrument-rack, panel-embed,
+  panel-window-closed/-edit/-inspector/-links/-open, project-cables(-far, -glow), project-circuit-device,
+  project-meta-envelope/-faces/-wavetable, project-module-circuits, project-orbit-ports, project-patch-band/-group/
+  -lane-edit/-nested/-overview/-panels, project-vca-panel.
+- **To judge:** blocks inside an opened group keep their pins on their edges (no orbiting ports there yet); cables over
+  the dense opened Wavetable Synth crossing faces; the very short In → Frequency cable when the PA sits right after In.

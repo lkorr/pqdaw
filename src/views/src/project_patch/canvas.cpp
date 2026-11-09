@@ -11,6 +11,8 @@
 #include "pq/document/edit_ops.h"
 #include "pq/ui/theme.h"
 #include "internal.h"
+#include "pq/ui/face_painter.h"
+#include "pq/views/circuit/cables.h"
 #include "pq/views/circuit/probes.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/meta/face_targets.h"
@@ -408,13 +410,17 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
     const float ox = std::round((r.x0 + r.x1 - w) * 0.5f), oy = std::round((r.y0 + r.y1 - h) * 0.5f);
     auto at = [&](float u, float v) { return Vec2{ox + u * w, oy + v * h}; };
     const float lw = std::max(1.0f, std::round(us));
+    // TX.cable-look: hanging, as the group's cables are opened (their rest shape: a cached catenary, a few points).
+    const ui::Rgba wc = ui::mulAlpha(th.circuit.wireAudio, 0.8f);
+    ui::FacePainter fp(dl, ui::FaceTransform{});
     for (size_t i = 0; i + 1 < n.miniWires.size(); i += 2) {
       const Vec2 a = at(n.miniWires[i].x, n.miniWires[i].y), b = at(n.miniWires[i + 1].x, n.miniWires[i + 1].y);
-      const ui::Rgba wc = ui::mulAlpha(th.circuit.wireAudio, 0.8f);  // orthogonal, as the circuit's wires
-      const float mx = std::round((a.x + b.x) * 0.5f);
-      dl.addHLine(std::min(a.x, mx), std::max(a.x, mx), std::round(a.y), wc, lw);
-      dl.addVLine(mx, std::min(a.y, b.y), std::max(a.y, b.y) + lw, wc, lw);
-      dl.addHLine(std::min(mx, b.x), std::max(mx, b.x), std::round(b.y), wc, lw);
+      constexpr uint32_t kMiniCablePoints = 8;
+      graph::Point2 rest[kMiniCablePoints];
+      circuit::cableRest({a.x, a.y}, {b.x, b.y}, kMiniCablePoints, rest);
+      Vec2 line[kMiniCablePoints];
+      for (uint32_t q = 0; q < kMiniCablePoints; ++q) line[q] = {rest[q].x, rest[q].y};
+      fp.polyline(line, lw, wc);
     }
     const bool names = ctx.res.uiFonts != nullptr && ctx.res.text != nullptr && level == Lod::Near;
     for (const Node::MiniBox& b : n.mini) {

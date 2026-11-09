@@ -381,8 +381,10 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     sw.fromPin = a != kNone ? sc.nodes[a].firstPin + static_cast<uint32_t>(pp.nodes[e.from].inputs.size()) + e.fromPort : 0;
     sw.toPin = b != kNone ? sc.nodes[b].firstPin + e.toPort : 0;
     // TX.mod-all: it goes on over the face to the control of its param (CircuitCanvas draws that part).
-    if (b != kNone && e.toPort < pp.nodes[e.to].inputs.size() && pp.nodes[e.to].inputs[e.toPort].anchored)
-      sw.control = addString(pp.nodes[e.to].inputs[e.toPort].name);
+    if (b != kNone && e.toPort < pp.nodes[e.to].inputs.size() && pp.nodes[e.to].inputs[e.toPort].anchored) {
+      const Port& q = pp.nodes[e.to].inputs[e.toPort];
+      sw.control = addString(q.anchorKey.empty() ? q.name : q.anchorKey);
+    }
   }
   // Pins are connected where an edge ends.
   for (const Edge& e : pp.edges) {

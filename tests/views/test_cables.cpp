@@ -282,12 +282,11 @@ TEST_CASE("cables: every connection between blocks is a cable from port to port;
     REQUIRE(w != kNone);
     const circuit::SceneWire& sw = sc.wires[w];
     CHECK(sw.cable == e.cable);
-    // GU.5b: a wire between two blocks of one opened group is a circuit trace (the modules open by default).
-    const bool inside = pp.nodes[e.from].capsule != kNone && pp.nodes[e.from].capsule == pp.nodes[e.to].capsule;
-    CHECK(e.cable == (isCable(e.kind, pp.nodes[e.from].kind) && !inside));
+    // TX.cable-look: a wire between two blocks of one opened group is a cable too; only the bus structure is a trace.
+    CHECK(e.cable == isCable(e.kind, pp.nodes[e.from].kind));
     if (!sw.cable) {
       ++traces;
-      CHECK((inside || e.kind == EdgeKind::Route || e.kind == EdgeKind::Send || pp.nodes[e.from].kind == NodeKind::Mixer));
+      CHECK((e.kind == EdgeKind::Route || e.kind == EdgeKind::Send || pp.nodes[e.from].kind == NodeKind::Mixer));
       continue;
     }
     ++cables;
@@ -299,17 +298,20 @@ TEST_CASE("cables: every connection between blocks is a cable from port to port;
     for (uint32_t w2 = 0; w2 < w; ++w2) CHECK((!sc.wires[w2].cable || sc.wires[w2].cableKey != sw.cableKey));
     // The canvas's rope at rest is the scene's rest shape.
     const std::span<const Point2> rope = u.canvas().cablePoints(w);
-    REQUIRE(rope.size() == sw.pointCount);
     CAPTURE(k);
     CAPTURE(pp.nodes[e.from].title);
     CAPTURE(pp.nodes[e.to].title);
     if (sw.control != UINT32_MAX) {
-      // Onto a control (GU.11: a module's knob on its closed group's panel): the rope ends on the control's rim, toward
-      // its source (CircuitCanvas cableEnds), the scene's rest shape at its centre.
+      // Onto a control (GU.11: a module's knob on its closed group's panel; TX.cable-look: the notes onto the Phase
+      // Accumulator's Frequency arc): the rope ends on the control's rim, toward its source (CircuitCanvas cableEnds), the
+      // scene's rest shape at its centre — a shorter chord, so its point count may be one less.
+      REQUIRE_FALSE(rope.empty());
+      CHECK(rope.size() <= sw.pointCount);
       CHECK(dist(rope.front(), sc.points[sw.firstPoint]) < 0.05f);
       CHECK(dist(rope.back(), sc.points[sw.firstPoint + sw.pointCount - 1]) < 30.0f);
       continue;
     }
+    REQUIRE(rope.size() == sw.pointCount);
     for (uint32_t i = 0; i < sw.pointCount; ++i) CHECK(dist(rope[i], sc.points[sw.firstPoint + i]) < 0.05f);
   }
   CHECK(cables >= 8);

@@ -92,6 +92,9 @@ struct Port {
   // TMM.13-fix2 (MM review H6): how far left of ax a top / bottom entry runs down (the control's clear column: beside
   // its labels, not through them); the canvas then enters the control from its left.
   float aclear = 0;
+  // TX.cable-look: the face's key of the control when it is not the port's own name (a closed group's main input landing
+  // on the control its signal is added to inside: "value@<id>"; the canvas follows that control).
+  std::string anchorKey;
 };
 
 struct Node {

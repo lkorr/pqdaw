@@ -270,6 +270,55 @@ TEST_CASE("module faces: modules spawn closed as their panels; the VCA is round 
   CHECK(u.node(u.m.vca.group).w == doctest::Approx(120.0f));  // the old face's size
 }
 
+TEST_CASE("module faces: a cable into the Phase Accumulator's main input lands on its Frequency arc (its In is added to "
+          "the Frequency value inside); the VCA's (a multiply) keeps its port") {
+  ModuleUi u(false);
+  {  // Nothing wired into it yet: its main input keeps its port, to be plugged.
+    const Node& n = u.node(u.m.pa.group);
+    REQUIRE(n.mainIn >= 0);
+    CHECK_FALSE(n.inputs[static_cast<size_t>(n.mainIn)].anchored);
+    CHECK(n.orbitIn.on);
+  }
+  doc::DocumentStore& st = u.ctx.store();
+  for (const doc::DeviceId g : {u.m.pa.group, u.m.vca.group}) {
+    auto e = doc::ops::connectNoteWire(*st.current(), st.ids(), u.m.track, "", g, "");
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(st.dispatch(e->command).ok());
+  }
+  u.d.step();
+  const ProjectPatch& pp = u.view().patch();
+  const uint32_t pa = pp.nodeOf(u.m.pa.group), vca = pp.nodeOf(u.m.vca.group);
+  const Node& n = pp.nodes[pa];
+  REQUIRE(n.mainIn >= 0);
+  const Port& q = n.inputs[static_cast<size_t>(n.mainIn)];
+  CHECK(q.anchored);
+  CHECK(q.anchorKey == std::string(doc::kValueParam) + "@" + std::to_string(u.m.pa.freq.value));
+  CHECK(q.ax < n.w * 0.5f);  // the Frequency arc runs up the left side of the body
+  CHECK_FALSE(n.orbitIn.on);  // its end is the control, not an orbiting port
+  const Node& v = pp.nodes[vca];
+  REQUIRE(v.mainIn >= 0);
+  CHECK_FALSE(v.inputs[static_cast<size_t>(v.mainIn)].anchored);
+  CHECK(v.inputs[static_cast<size_t>(v.mainIn)].anchorKey.empty());
+  // The note cable (gold) hangs onto the control, and the scene names that control for the canvas to follow.
+  REQUIRE(u.view().canvas().scene() != nullptr);
+  const circuit::CircuitScene& sc = *u.view().canvas().scene();
+  uint32_t found = 0;
+  for (uint32_t k = 0; k < pp.edges.size(); ++k) {
+    const Edge& e = pp.edges[k];
+    if (e.to != pa || e.toPort != static_cast<uint32_t>(n.mainIn)) continue;
+    ++found;
+    CHECK(e.kind == EdgeKind::Notes);
+    CHECK(e.cable);
+    CHECK(e.points.back().x == doctest::Approx(n.x + q.ax));
+    CHECK(e.points.back().y == doctest::Approx(n.y + q.ay));
+    bool named = false;
+    for (const circuit::SceneWire& sw : sc.wires)
+      if (sw.cable && sw.control != UINT32_MAX && sc.strings[sw.control] == q.anchorKey) named = true;
+    CHECK(named);
+  }
+  CHECK(found == 1);
+}
+
 TEST_CASE("module faces: the VCA's markers are its curve's points — a tick dragged round the dial moves the point and its "
           "opposite, one undo step, no recompile; the chevron's popup sets a preset — real dispatch") {
   ModuleUi u(true);
@@ -380,7 +429,7 @@ TEST_CASE("module faces: the Phase Accumulator's Amplitude arc (TX.detent) — x
   CHECK(dsp::evalCurve(u.curve(amp), u.position(amp)) == doctest::Approx(1.0 - 2.0 * 0.002));  // (0 … 1 over the first half: 2 per travel)
 }
 
-TEST_CASE("module faces: a double-click opens a module into its circuit (atoms as symbols, values as knobs, traces) and "
+TEST_CASE("module faces: a double-click opens a module into its circuit (atoms as symbols, values as knobs, cables) and "
           "on its title strip closes it — real dispatch") {
   ModuleUi u(true);
   const doc::DeviceId g = u.m.vca.group;
@@ -410,16 +459,15 @@ TEST_CASE("module faces: a double-click opens a module into its circuit (atoms a
     CHECK(k->y >= cap.y + metrics::kCapsuleTitle);
     CHECK(k->y + k->h <= cap.y + cap.h);
   }
-  // The wires among them are orthogonal traces (no hanging cables).
-  size_t traces = 0;
+  // TX.cable-look: the wires among them are hanging cables (two ends: the scene hangs them), as every other.
+  size_t cables = 0;
   for (const Edge& e : pp.edges) {
     if (pp.nodes[e.from].capsule != u.view().patch().nodeOf(g) || pp.nodes[e.to].capsule != u.view().patch().nodeOf(g)) continue;
-    ++traces;
-    CHECK_FALSE(e.cable);
-    for (size_t k = 1; k < e.points.size(); ++k)
-      CHECK((e.points[k].x == e.points[k - 1].x || e.points[k].y == e.points[k - 1].y));
+    ++cables;
+    CHECK(e.cable);
+    CHECK(e.points.size() == 2);
   }
-  CHECK(traces == 3);  // In → ×, value → ×, × → Out
+  CHECK(cables == 3);  // In → ×, value → ×, × → Out
   // The title strip: a double-click closes it again (its panel).
   u.d.doubleClick(u.view().canvas().toDevice({cap.x + 40.0f, cap.y + metrics::kCapsuleTitle * 0.5f}));
   u.d.step();
