@@ -621,7 +621,33 @@ public:
   // A press on control `b` (a face's, a panel's, a value block's): its parameter's automation shown (a device param
   // with a lane of its own; a native engine's inner instance has none). False: nothing to show.
   bool showControlAutomation(const doc::Binding& b);
-  bool showParamAutomation(doc::TrackId track, const doc::ParamRef& p);
+  // `control`: the device control pressed for it (null: the track's mixer control, volume / pan / a send). TL.3: the
+  // automation wire's source.
+  bool showParamAutomation(doc::TrackId track, const doc::ParamRef& p, const doc::Binding* control = nullptr);
+
+  // TL.3 THE AUTOMATION WIRE (SPEC §15 2026-11-08 "track lanes in the circuit view"): from the last control pressed in a
+  // band whose automation sub-lane that press showed (a face's or panel's control, a value block, the mixer's volume /
+  // pan / sends) to the nearest point of that sub-lane, clamped to the canvas's visible x range of it: a thin red
+  // hanging lead with a soft glow (the cable look's catenary, its sag fading out as the chord turns vertical), drawn in
+  // the canvas overlay. Draw-only (no document state, no undo). It follows the control as drawn now (a block dragged or
+  // shifted, a fader's cap, a pan / zoom of the canvas, the band folded: the band's title strip) and the sub-lane (its
+  // band's shift, resize, scroll). Gone while the sub-lane is hidden, the control's device is gone, after a press
+  // elsewhere in the circuit (not on a lane: editing the envelope keeps it) and after Esc. A control inside a closed
+  // group: the group's panel element showing it, else the group's block (its edge). Computed on paint only, while
+  // there is a source (no cost otherwise; no allocation).
+  struct AutomationWire {
+    ui::Vec2 from{0.0f, 0.0f}, to{0.0f, 0.0f};  // device px: on the control's rim (a block's edge), on the sub-lane's edge
+    ui::Vec2 centre{0.0f, 0.0f};                // the control's centre
+    float radius = 0.0f;                        // its rim (device px; 0: a block's edge, a title strip)
+    ui::Vec2 normal{0.0f, 1.0f};                // into the sub-lane at `to`
+    ui::Rect lane{};                            // the sub-lane as drawn now (device px)
+  };
+  std::optional<AutomationWire> automationWire() const;
+  bool automationWireSource() const noexcept { return autoWire_.has_value(); }
+  void clearAutomationWire();
+  // A left press in the circuit on model node `node` (kNone: none) and control `ctl` (unbound: none): the wire goes
+  // unless the press is on its control or on the block drawing it (a drag of that block, the mixer's other controls).
+  void automationWirePress(uint32_t node, const doc::Binding& ctl);
 
   // ---- edits (each one undo step through pq::doc::ops / commands; false and the reason in the status line when it
   // could not be done) ---------------------------------------------------------------------------------------------
@@ -836,6 +862,7 @@ public:
   // The panel-window button in an opened capsule's title strip (world units).
   static LaneRect panelButtonRect(const Node& capsule) noexcept;
   void paintPanelLinks(ui::PaintContext& ctx);  // (the canvas's overlay)
+  void paintAutomationWire(ui::PaintContext& ctx);  // TL.3 (the canvas's overlay)
 
   // Menus: the band's (add device, focus, reset layout), a block's (delete, (de)activate, open, expand), a wire's.
   ui::Menu* openBandMenu(uint32_t band, ui::Vec2 at);
@@ -1033,6 +1060,14 @@ private:
   // went: removed at the next frame, never inside an event of theirs).
   std::vector<panel::PanelWindow*> windows_;
   doc::Binding selectedControl_;
+  // TL.3: the automation wire's source (nullopt: none) and the device rect it was last painted in (its damage).
+  struct AutoWireSource {
+    doc::TrackId track;  // a mixer control's track (a device control: its device's, looked up when drawn)
+    doc::ParamRef param;
+    doc::Binding control;  // unbound: the track's mixer
+  };
+  std::optional<AutoWireSource> autoWire_;
+  ui::Rect autoWireBox_{};
   bool windowsStale_ = false;
   void syncWindows();
   panel::PanelWindow& makeWindow(doc::DeviceId group);

@@ -16,7 +16,9 @@
 #include "../arrangement/internal.h"
 #include "internal.h"
 #include "pq/document/racks.h"
+#include "pq/ui/lines.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/circuit/cables.h"
 
 namespace pq::views::device_chain {
 // The macro mapping onto device.param (src/device_chain/rack_frame.cpp; its header pulls in the Device view's internals).
@@ -412,11 +414,13 @@ void ProjectPatchView::setSubLaneHeight(doc::TrackId track, const doc::ParamRef&
   subLanesChanged();
 }
 
-bool ProjectPatchView::showParamAutomation(doc::TrackId track, const doc::ParamRef& p) {
+bool ProjectPatchView::showParamAutomation(doc::TrackId track, const doc::ParamRef& p, const doc::Binding* control) {
   if (embedded() || arrangement() == nullptr || !paramValid(*ctx_.doc(), p)) return false;
   (void)laneEditReady();
   ctx_.showAutomation(track, p);  // the arrangement shows it (ArrangementAutomation::showParam): so does the band
   subLanesChanged();
+  autoWire_ = AutoWireSource{track, p, control != nullptr ? *control : doc::Binding{}};  // TL.3: the wire from it
+  canvas_->markDirty();
   return true;
 }
 
@@ -430,7 +434,7 @@ bool ProjectPatchView::showControlAutomation(const doc::Binding& b) {
   if (l.track == nullptr || l.device == nullptr) return false;
   const doc::ParamRef r = doc::ParamRef::device(b.device, b.name);
   if (device_chain::macroMappingOf(*snap, b.device, b.name) && findAutomationLane(*snap, r).lane == nullptr) return false;
-  return showParamAutomation(l.track->id, r);
+  return showParamAutomation(l.track->id, r, &b);
 }
 
 std::optional<std::pair<Vec2, float>> ProjectPatchView::controlDevice(const doc::Binding& b) const {
@@ -438,6 +442,194 @@ std::optional<std::pair<Vec2, float>> ProjectPatchView::controlDevice(const doc:
   const std::optional<graph::Point2> c = controlWorld(b, &r);
   if (!c) return std::nullopt;
   return std::make_pair(canvas_->toDevice(*c), r * canvas_->deviceScale());
+}
+
+// ---- the automation wire (TL.3) ---------------------------------------------------------------------------------------
+
+void ProjectPatchView::clearAutomationWire() {
+  if (!autoWire_) return;
+  autoWire_.reset();
+  canvas_->markDirty();
+}
+
+void ProjectPatchView::automationWirePress(uint32_t node, const doc::Binding& ctl) {
+  if (!autoWire_) return;
+  const AutoWireSource& src = *autoWire_;
+  if (src.control.bound() && ctl == src.control) return;
+  uint32_t own = kNone;
+  if (src.control.bound()) {
+    own = patch_.nodeOf(src.control.device);
+  } else if (const uint32_t b = patch_.bandOf(src.track); b != kNone) {
+    own = patch_.bands[b].mixer;
+  }
+  if (node != kNone && node == own && !ctl.bound()) return;
+  clearAutomationWire();
+}
+
+std::optional<ProjectPatchView::AutomationWire> ProjectPatchView::automationWire() const {
+  if (!autoWire_ || embedded() || !canvas_->scene()) return std::nullopt;
+  const AutoWireSource& src = *autoWire_;
+  const doc::Snapshot& snap = ctx_.doc();
+  if (!snap) return std::nullopt;
+  // The control's track (a device's: where it is now) and the model node it is drawn on.
+  doc::TrackId track = src.track;
+  uint32_t mn = kNone;
+  if (src.control.bound()) {
+    const doc::DeviceLoc l = doc::findDevice(*snap, src.control.device);
+    if (l.track == nullptr || l.device == nullptr) return std::nullopt;  // deleted
+    track = l.track->id;
+    mn = patch_.nodeOf(src.control.device);  // (inside a closed group: the group's block)
+  } else if (const uint32_t b = patch_.bandOf(track); b != kNone) {
+    mn = patch_.bands[b].mixer;
+  }
+  if (mn == kNone || mn >= patch_.nodes.size()) return std::nullopt;
+  // Its sub-lane, as drawn now (shifted with its band's strip, lifted with a band dragged by its title).
+  const uint32_t band = patch_.bandOf(track);
+  if (band == kNone) return std::nullopt;
+  size_t si = subLanes_.size();
+  for (size_t i = 0; i < subLanes_.size() && si == subLanes_.size(); ++i)
+    if (subLanes_[i].band == band && subLanes_[i].param == src.param) si = i;
+  if (si == subLanes_.size()) return std::nullopt;  // hidden
+  const ProjectCanvas& c = *canvas_;
+  const float s = c.deviceScale();
+  const Band& B = patch_.bands[band];
+  Vec2 shift{0.0f, (c.bandNow(band).y1 - (B.y + B.h)) * s};
+  if (c.bandLifted(band)) {
+    const graph::Point2 o = c.nodeDragOffset();
+    shift = {shift.x + o.x * s, shift.y + o.y * s};
+  }
+  Rect R = subLaneDevice(si);
+  R = {R.x0 + shift.x, R.y0 + shift.y, R.x1 + shift.x, R.y1 + shift.y};
+  const ui::IRect cr = c.rect();
+  const float vx0 = std::max(R.x0, static_cast<float>(cr.x)), vx1 = std::min(R.x1, static_cast<float>(cr.right()));
+  if (!(vx1 > vx0) || !(R.y1 > R.y0)) return std::nullopt;
+  // The control as drawn now: its rim (a face's or panel's control, the mixer's knob / cap / handle), else its block's
+  // edge (a closed group without a panel element for it); a folded band's: its title strip.
+  const Node& n = patch_.nodes[mn];
+  const uint32_t sn = mn < scene_.sceneNode.size() ? scene_.sceneNode[mn] : kNone;
+  const graph::Point2 no = sn != kNone ? c.nodeOffset(sn) : graph::Point2{0.0f, 0.0f};
+  AutomationWire w;
+  bool box = false;
+  if (n.folded && n.band < patch_.bands.size()) {
+    const ProjectCanvas::WorldRect bn = c.bandNow(n.band);
+    w.centre = c.toDevice({std::clamp(n.x + 0.5f * n.w, bn.x0, bn.x1), bn.y0 + metrics::kTitle});
+  } else {
+    std::optional<graph::Point2> at;
+    float r = 0.0f;
+    if (src.control.bound()) {
+      at = controlWorld(src.control, &r);
+    } else if (const Face* f = sn != kNone ? c.panelOn(sn) : nullptr) {
+      if (const std::optional<ControlAnchor> a = mixerControlAnchor(*f, src.param)) {
+        at = graph::Point2{n.x + a->at.x * n.scale, n.y + a->at.y * n.scale};
+        r = a->radius * n.scale;
+      }
+    }
+    if (!at) return std::nullopt;
+    box = !(r > 0.0f) && std::fabs(at->x - (n.x + 0.5f * n.w)) < 1e-3f && std::fabs(at->y - (n.y + 0.5f * n.h)) < 1e-3f;
+    w.centre = c.toDevice({at->x + no.x, at->y + no.y});
+    w.radius = r * s;
+  }
+  // The nearest point of the sub-lane (its visible x range), and which edge it is on.
+  w.lane = R;
+  w.to = {std::clamp(w.centre.x, vx0, vx1), std::clamp(w.centre.y, R.y0, R.y1)};
+  if (w.centre.y <= R.y0) w.normal = {0.0f, 1.0f};
+  else if (w.centre.y >= R.y1) w.normal = {0.0f, -1.0f};
+  else w.normal = {w.centre.x < vx0 ? 1.0f : -1.0f, 0.0f};
+  const float dx = w.to.x - w.centre.x, dy = w.to.y - w.centre.y, d = std::sqrt(dx * dx + dy * dy);
+  w.from = w.centre;
+  if (d > 1e-4f && w.radius > 0.0f) {
+    const float k = std::min(1.0f, w.radius / d);
+    w.from = {w.centre.x + dx * k, w.centre.y + dy * k};
+  } else if (d > 1e-4f && box) {  // where the ray to the lane leaves the block
+    const Rect nr = c.deviceRect(n.x + no.x, n.y + no.y, n.w, n.h);
+    const float tx = dx > 0.0f ? (nr.x1 - w.centre.x) / dx : dx < 0.0f ? (nr.x0 - w.centre.x) / dx : 1.0f;
+    const float ty = dy > 0.0f ? (nr.y1 - w.centre.y) / dy : dy < 0.0f ? (nr.y0 - w.centre.y) / dy : 1.0f;
+    const float t = std::clamp(std::min(tx, ty), 0.0f, 1.0f);
+    w.from = {w.centre.x + dx * t, w.centre.y + dy * t};
+  }
+  return w;
+}
+
+void ProjectPatchView::paintAutomationWire(ui::PaintContext& ctx) {
+  ui::UiTree* tr = tree();
+  const std::optional<AutomationWire> aw = ctx.res.theme != nullptr ? automationWire() : std::nullopt;
+  if (!aw) {
+    if (tr != nullptr && autoWireBox_.x1 > autoWireBox_.x0) tr->damage().add(autoWireBox_);
+    autoWireBox_ = {};
+    return;
+  }
+  const ui::Theme& th = *ctx.res.theme;
+  ui::DrawList& dl = ctx.dl;
+  const float us = ctx.scale.factor;
+  const AutomationWire& w = *aw;
+  // The lead: the cable look's rest shape (a catenary of kCableSlack, a table lookup) between its ends, its sag eased
+  // out as the chord turns vertical (a vertical rope would hang as a loop: this one drops straight), then a Catmull-Rom
+  // through it at ~8 px chords. Fixed-size buffers: nothing allocated per frame.
+  const float dx = w.to.x - w.from.x, dy = w.to.y - w.from.y, chord = std::sqrt(dx * dx + dy * dy);
+  Vec2 pts[3 * circuit::kCableMaxPoints + 1];
+  uint32_t m = 0;
+  if (chord > 1.0f) {
+    const uint32_t n = circuit::cablePointCount(chord / std::max(1e-3f, canvas_->deviceScale()));
+    graph::Point2 rest[circuit::kCableMaxPoints];
+    circuit::cableRest({w.from.x, w.from.y}, {w.to.x, w.to.y}, n, rest);
+    const float deg = std::atan2(std::fabs(dy), std::fabs(dx)) * (180.0f / 3.14159265f);
+    const float u = std::clamp((deg - 40.0f) / 40.0f, 0.0f, 1.0f);
+    const float sag = 0.75f * (1.0f - u * u * (3.0f - 2.0f * u));  // a thinner, tauter lead than a signal cable
+    Vec2 q[circuit::kCableMaxPoints];
+    for (uint32_t i = 0; i < n; ++i) {
+      const float t = static_cast<float>(i) / static_cast<float>(n - 1);
+      const Vec2 l{w.from.x + dx * t, w.from.y + dy * t};
+      q[i] = {l.x + (rest[i].x - l.x) * sag, l.y + (rest[i].y - l.y) * sag};
+    }
+    for (uint32_t k = 0; k + 1 < n; ++k) {
+      const Vec2 p0 = q[k > 0 ? k - 1 : 0], p1 = q[k], p2 = q[k + 1], p3 = q[k + 2 < n ? k + 2 : n - 1];
+      const uint32_t steps = std::clamp(static_cast<uint32_t>(std::ceil(std::hypot(p2.x - p1.x, p2.y - p1.y) / 8.0f)), 1u, 3u);
+      for (uint32_t t = 0; t < steps; ++t) pts[m++] = ui::catmullRom(p0, p1, p2, p3, static_cast<float>(t) / static_cast<float>(steps));
+    }
+    pts[m++] = q[n - 1];
+  }
+  // Red as the envelopes it leads to (the automation line), deliberately unlike a signal cable: no tube, no plugs: a
+  // hairline core with a hot centre, a soft additive bloom, a ring round the control and a landing tick on the lane.
+  const ui::Rgba red = th.automation.line;
+  const ui::Rgba hot = ui::lerp(red, ui::rgba(255, 255, 255), 0.55f);
+  const float lw = std::max(1.0f, 1.25f * us);
+  const Vec2 tan{-w.normal.y, w.normal.x};
+  const float tick = 6.0f * us;
+  const float ringR = w.radius > 0.0f ? w.radius + 2.5f * us : 0.0f;
+  dl.setBlend(ui::BlendMode::Additive);
+  if (m >= 2) {
+    ui::smoothPolyline(dl, pts, m, ui::setAlpha(red, 0.10f), 8.0f * lw);
+    ui::smoothPolyline(dl, pts, m, ui::setAlpha(red, 0.22f), 3.5f * lw);
+  }
+  if (ringR > 0.0f) dl.addCircleStroke(w.centre, ringR, ui::setAlpha(red, 0.25f), 4.0f * lw);
+  dl.addCircleFilled(w.to, 6.0f * us, ui::setAlpha(red, 0.2f));
+  dl.setBlend(ui::BlendMode::Alpha);
+  if (m >= 2) {
+    ui::smoothPolyline(dl, pts, m, ui::setAlpha(ui::rgba(0, 0, 0), 0.35f), lw + 1.5f * us);  // reads on a light face
+    ui::smoothPolyline(dl, pts, m, red, lw);
+    ui::smoothPolyline(dl, pts, m, hot, std::max(0.6f, 0.4f * lw), 0.5f);
+  }
+  if (ringR > 0.0f) dl.addCircleStroke(w.centre, ringR, ui::setAlpha(red, 0.9f), lw);
+  const Vec2 tk[2] = {{w.to.x - tan.x * tick, w.to.y - tan.y * tick}, {w.to.x + tan.x * tick, w.to.y + tan.y * tick}};
+  ui::smoothPolyline(dl, tk, 2, red, lw);
+  dl.addCircleFilled(w.to, 2.6f * us, red);
+  dl.addCircleFilled(w.to, 1.1f * us, hot);
+  // Its damage: where it moves without a repaint of the canvas (a mixer fader's cap dragged repaints the face alone).
+  float x0 = std::min(w.to.x - tick, w.centre.x - ringR), y0 = std::min(w.to.y - tick, w.centre.y - ringR);
+  float x1 = std::max(w.to.x + tick, w.centre.x + ringR), y1 = std::max(w.to.y + tick, w.centre.y + ringR);
+  for (uint32_t i = 0; i < m; ++i) {
+    x0 = std::min(x0, pts[i].x), y0 = std::min(y0, pts[i].y);
+    x1 = std::max(x1, pts[i].x), y1 = std::max(y1, pts[i].y);
+  }
+  const float pad = 4.0f * lw + 4.0f * us;
+  const Rect bx{std::floor(x0 - pad), std::floor(y0 - pad), std::ceil(x1 + pad), std::ceil(y1 + pad)};
+  if (bx.x0 != autoWireBox_.x0 || bx.y0 != autoWireBox_.y0 || bx.x1 != autoWireBox_.x1 || bx.y1 != autoWireBox_.y1) {
+    if (tr != nullptr) {
+      if (autoWireBox_.x1 > autoWireBox_.x0) tr->damage().add(autoWireBox_);
+      tr->damage().add(bx);
+    }
+    autoWireBox_ = bx;
+  }
 }
 
 // ---- the time ruler over the lanes (TL.1) ------------------------------------------------------------------------------

@@ -1402,6 +1402,49 @@ Status setupProjectPatchLaneEdit(Shell& shell) {
   return Ok{};
 }
 
+// TL.3: the automation wire (the sketch project): the first control of Keys' blocks with automation of its own pressed
+// (its sub-lane shown under Keys' lane): one thin red lead from it to the nearest point of that sub-lane, at zoom 1.
+Status setupProjectPatchAutoWire(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "project-patch-auto-wire: no device library", {}};
+  if (Status s = project_patch::buildSketchProject(ctx.store()); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-auto-wire: the view is not installed", {}};
+  const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
+  if (keys == nullptr) return Error{ErrorCode::NotFound, "project-patch-auto-wire: no Keys", {}};
+  const doc::TrackId keysId = keys->id;
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  closeModules(*v);
+  shell.tree().layoutNow();
+  const Ticks bar = ticksPerBar(ctx.doc()->timeline->sigMap.signatureAt(0));
+  v->setLaneTime(0.0, 8.0 * static_cast<double>(bar));
+  const project_patch::ProjectPatch& pp = v->patch();
+  const uint32_t kb = pp.bandOf(keysId);
+  if (kb == project_patch::kNone) return Error{ErrorCode::NotFound, "project-patch-auto-wire: no band", {}};
+  circuit::CircuitCanvas::View view;
+  view.zoom = 1.0;
+  view.x = static_cast<double>(pp.bands[kb].x0) - 12.0;
+  view.y = static_cast<double>(pp.bands[kb].y) - 50.0;
+  v->canvas().setView(view);
+  shell.tree().layoutNow();
+  // The first control of Keys' devices drawn as a knob (a rim on the canvas) with automation of its own: pressed.
+  std::vector<doc::DeviceId> devices;
+  doc::forEachDeviceIn(keys->devices, [&](const doc::Device& d) { devices.push_back(d.id); });
+  bool shown = false;
+  for (const doc::DeviceId d : devices)
+    for (const doc::Binding& b : v->controlsOf(d)) {
+      if (shown || b.kind != doc::BindingKind::Control) continue;
+      const auto at = v->controlDevice(b);
+      if (!at || at->second < 3.0f || !v->showControlAutomation(b)) continue;
+      v->setSelectedControl(b);
+      shown = true;
+    }
+  if (!shown) return Error{ErrorCode::NotFound, "project-patch-auto-wire: no control of Keys with automation", {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // GU.9 v2: racks in the Device view (a rack is a set of parallel groups, pq/document/racks.h). audio-rack (the T4.8
 // scene rebuilt from blocks): Keys = Basic Synth → an Audio Effect Rack [Dry: Utility | Crunch: Saturator (shown) |
 // Wide: Utility] with chain zones (a crossfade over the chain selector), chain mixers, macros Drive / Width / Blend
@@ -2922,6 +2965,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-circuit-device", 1280, 800, setupProjectCircuitDevice},  // T5.x-one-circuit
     {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio
     {"project-patch-lane-edit", 1280, 800, setupProjectPatchLaneEdit},  // TX.lane-edit: a range and automation in the windows
+    {"project-patch-auto-wire", 1280, 800, setupProjectPatchAutoWire},  // TL.3: the automation wire
     {"project-meta-faces", 1280, 800, setupProjectMetaFaces},          // TMM.4
     {"project-meta-wavetable", 1280, 800, setupProjectMetaWavetable},  // TMM.7
     {"device-meta-chain", 1280, 800, setupDeviceMetaChain},            // TMM.10

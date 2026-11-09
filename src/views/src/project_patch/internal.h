@@ -73,6 +73,9 @@ struct MixerSend {
 };
 std::string mixerFacePath(const Node& n);
 std::unique_ptr<Face> makeMixerFace(ProjectPatchView& view, const ProjectPatch& pp, const Node& n);
+// TL.3: where a mixer face draws its control of track param `p` now (face-local; nullopt: not a mixer face, not its
+// track's, no such control).
+std::optional<ControlAnchor> mixerControlAnchor(const Face& f, const doc::ParamRef& p);
 
 // TX.lane-edit: the title strip of the clips in a window body `bodyH` device px high (0: the body is too low for one).
 inline float laneClipTitleH(float bodyH, float uiScale) noexcept {

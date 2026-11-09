@@ -688,6 +688,155 @@ TEST_CASE("lane edit (TL.2): a press on a band's control shows its sub-lane (mix
   }
 }
 
+TEST_CASE("lane edit (TL.3): the automation wire from a pressed control to its sub-lane; it follows a block drag; Esc, a press elsewhere, hiding the sub-lane end it") {
+  Ui u;
+  u.show();
+  u.frame();
+  ProjectPatchView& v = u.view();
+  const doc::TrackId keys = u.track("Keys").id;
+  CHECK_FALSE(v.automationWire().has_value());
+  v.focusBand(keys, false);
+  u.d.tree().layoutNow();
+  // A device's control on Keys' blocks with a rim (a face's or a panel's knob), pressed through the window.
+  std::optional<std::pair<Vec2, doc::Binding>> hit;
+  const Band& kb = v.patch().bands[v.patch().bandOf(keys)];
+  const IRect cr = v.canvas().rect();
+  for (const uint32_t d : kb.devices) {
+    const Node& n = v.patch().nodes[d];
+    if (n.folded) continue;
+    for (float y = n.y + 4.0f; y < n.y + n.h && !hit; y += 2.0f)
+      for (float x = n.x + 4.0f; x < n.x + n.w && !hit; x += 2.0f) {
+        const Vec2 p = v.canvas().toDevice({x, y});
+        if (!cr.contains(p) || p.y < static_cast<float>(cr.y) + 60.0f || v.canvas().pinAt(p).valid() || v.laneEditAt(p)) continue;
+        const doc::Binding b = v.controlAt(p);
+        const doc::DeviceLoc dl = doc::findDevice(*u.ctx.doc(), b.device);
+        const auto cd = v.controlDevice(b);
+        if (b.kind == doc::BindingKind::Control && b.meta.empty() && dl.track != nullptr && dl.track->id == keys && cd &&
+            cd->second > 2.0f && paramValid(*u.ctx.doc(), doc::ParamRef::device(b.device, b.name)))
+          hit = std::make_pair(p, b);
+      }
+  }
+  REQUIRE_MESSAGE(hit.has_value(), "no knob of Keys' blocks found on the canvas");
+  const doc::Binding ctl = hit->second;
+  const doc::ParamRef pr = doc::ParamRef::device(ctl.device, ctl.name);
+  u.d.click(hit->first);
+  u.d.step();
+  REQUIRE(v.subLaneRect(keys, pr).has_value());
+  // Its ends: on the control's rim, toward the nearest point of the sub-lane (its top edge, under the control).
+  auto checkEnds = [&](const char* when) {
+    INFO(when);
+    const std::optional<ProjectPatchView::AutomationWire> w = v.automationWire();
+    REQUIRE(w.has_value());
+    const auto cd = v.controlDevice(ctl);
+    REQUIRE(cd.has_value());
+    const Rect lane = *v.subLaneRect(keys, pr);
+    const graph::Point2 off = v.canvas().drag() == ProjectCanvas::Drag::MoveDevice ? v.canvas().nodeDragOffset() : graph::Point2{0.0f, 0.0f};
+    const float s = v.canvas().deviceScale();
+    const Vec2 c{cd->first.x + off.x * s, cd->first.y + off.y * s};
+    CHECK(w->centre.x == doctest::Approx(c.x).epsilon(1e-4));
+    CHECK(w->centre.y == doctest::Approx(c.y).epsilon(1e-4));
+    CHECK(w->radius == doctest::Approx(cd->second));
+    CHECK(std::hypot(w->from.x - c.x, w->from.y - c.y) == doctest::Approx(cd->second).epsilon(1e-3));
+    REQUIRE(c.y < lane.y0);
+    CHECK(w->to.y == lane.y0);
+    CHECK(w->normal.y == 1.0f);
+    const float vx0 = std::max(lane.x0, static_cast<float>(cr.x)), vx1 = std::min(lane.x1, static_cast<float>(cr.right()));
+    CHECK(w->to.x == doctest::Approx(std::clamp(c.x, vx0, vx1)));
+    return *w;
+  };
+  const ProjectPatchView::AutomationWire w0 = checkEnds("pressed");
+  // Drag its block by a grip on it that is no control (its title bar, its body): the wire follows the control drawn live.
+  const uint32_t mn = v.patch().nodeOf(ctl.device);
+  REQUIRE(mn != kNone);
+  std::optional<Vec2> grip;
+  {
+    const Node& n = v.patch().nodes[mn];
+    for (float y = n.y + 2.0f; y < n.y + n.h && !grip; y += 2.0f)
+      for (float x = n.x + 4.0f; x < n.x + n.w && !grip; x += 2.0f) {
+        const Vec2 p = v.canvas().toDevice({x, y});
+        if (cr.contains(p) && v.canvas().nodeAt(p) == mn && !v.controlAt(p).bound() && !v.canvas().pinAt(p).valid() &&
+            !v.laneEditAt(p))
+          grip = p;
+      }
+  }
+  REQUIRE_MESSAGE(grip.has_value(), "no grip on the control's block");
+  const float s = v.canvas().deviceScale();
+  const Vec2 to{grip->x + 30.0f * s, grip->y};
+  u.d.move(*grip);
+  u.d.down(*grip);
+  for (int k = 1; k <= 6; ++k) {
+    u.d.move({grip->x + (to.x - grip->x) * static_cast<float>(k) / 6.0f, grip->y});
+    u.d.step();
+  }
+  REQUIRE(v.canvas().drag() == ProjectCanvas::Drag::MoveDevice);
+  const ProjectPatchView::AutomationWire w1 = checkEnds("dragged");
+  CHECK(w1.centre.x == doctest::Approx(w0.centre.x + 30.0f * s).epsilon(1e-3));
+  CHECK(w1.to.x == doctest::Approx(w0.to.x + 30.0f * s).epsilon(1e-3));
+  u.d.up(to);
+  u.d.step();
+  CHECK(v.canvas().drag() == ProjectCanvas::Drag::None);
+  (void)checkEnds("dropped");  // still there: the press was on its own block
+  // Esc: gone.
+  u.d.press("Escape");
+  u.d.step();
+  CHECK_FALSE(v.automationWire().has_value());
+  // Pressed again: back; a press on empty canvas ends it.
+  const auto cd = v.controlDevice(ctl);
+  REQUIRE(cd.has_value());
+  u.d.click(cd->first);
+  u.d.step();
+  REQUIRE(v.automationWire().has_value());
+  {
+    std::optional<Vec2> empty;
+    for (float y = static_cast<float>(cr.y) + 70.0f; y < static_cast<float>(cr.bottom()) && !empty; y += 7.0f)
+      for (float x = static_cast<float>(cr.x) + 10.0f; x < static_cast<float>(cr.right()) && !empty; x += 7.0f)
+        if (v.canvas().nodeAt({x, y}) == kNone && !v.laneEditAt({x, y}) && v.subLaneAt({x, y}) == kNone &&
+            v.canvas().laneEdgeAt({x, y}).kind == ProjectCanvas::LaneEdgeHit::Kind::None && !v.canvas().pinAt({x, y}).valid() &&
+            v.canvas().edgeAt({x, y}) == kNone && v.panelWindowAt({x, y}) == nullptr)
+          empty = Vec2{x, y};
+    REQUIRE(empty.has_value());
+    u.d.click(*empty);
+    u.d.step();
+    CHECK_FALSE(v.automationWire().has_value());
+  }
+  // Pressed again, then its sub-lane hidden (the band's toggle): gone with it.
+  u.d.click(v.controlDevice(ctl)->first);
+  u.d.step();
+  REQUIRE(v.automationWire().has_value());
+  const LaneRect tr = ProjectCanvas::subLaneButtonRect(v.patch().bands[v.patch().bandOf(keys)]);
+  u.d.click(v.canvas().toDevice({(tr.x0 + tr.x1) * 0.5f, (tr.y0 + tr.y1) * 0.5f}));
+  u.d.step();
+  CHECK_FALSE(v.subLanesShown(keys));
+  CHECK_FALSE(v.automationWire().has_value());
+  // The mixer's pan knob: a wire from its rim to the pan's sub-lane.
+  {
+    const Node& mx = v.patch().nodes[v.patch().bands[v.patch().bandOf(keys)].mixer];
+    const Vec2 pan = v.canvas().toDevice({mx.x + 27.0f, mx.y + 45.0f});
+    u.d.click(pan);
+    u.d.step();
+    const std::optional<ProjectPatchView::AutomationWire> w = v.automationWire();
+    REQUIRE(w.has_value());
+    CHECK(std::hypot(w->centre.x - pan.x, w->centre.y - pan.y) < 0.5f);
+    const Rect lane = *v.subLaneRect(keys, doc::ParamRef::track(doc::ParamKind::TrackPan, keys));
+    CHECK(w->to.y == lane.y0);
+  }
+}
+
+TEST_CASE("render: project-patch-auto-wire matches the golden image") {
+  uint32_t w = 0, h = 0;
+  const char* name = "project-patch-auto-wire";
+  viewSceneDefaultSize(name, w, h);
+  GpuOptions o;
+  o.validation = true;
+  auto img = renderViewScene(name, {}, w, h, {}, o, &library());
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+  const std::string path = std::string(PQ_TEST_DATA_DIR) + "/views/golden/" + name + ".png";
+  auto ref = readPng(path);
+  if (!ref) (void)writePng(std::string(name) + ".actual.png", *img);
+  REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
+  CHECK(pq::ui::test::matchesGolden(name, *img, *ref, true));
+}
+
 TEST_CASE("render: project-patch-lane-edit matches the golden image") {
   uint32_t w = 0, h = 0;
   const char* name = "project-patch-lane-edit";

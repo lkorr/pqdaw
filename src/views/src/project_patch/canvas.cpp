@@ -690,6 +690,8 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
     }
   }
 
+  // TL.3: the automation wire from the last pressed control to its sub-lane.
+  view_.paintAutomationWire(ctx);
   // GU.5: the link lines from the panel windows' elements to their controls, and the selected control's ring.
   view_.paintPanelLinks(ctx);
 
@@ -796,6 +798,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
     // TL.2: a press on a control (a face's or panel's, a value block; not a param pin: that press draws a cable) shows its
     // automation sub-lane under its band's lane (and its lane in the arrangement).
     if (ctl.bound() && (!faceParamAt(e.pos).param.empty() || !pinAt(e.pos).valid())) (void)v.showControlAutomation(ctl);
+    v.automationWirePress(nodeAt(e.pos), ctl);  // TL.3: a press elsewhere ends the automation wire
     v.setSelectedControl(std::move(ctl));
   }
   if (drag_ == Drag::None && facePointer(e)) return true;  // TMM.4: a face's control (its drag, hover, wheel)
@@ -1744,6 +1747,10 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
   if (mods == ui::mod::kNone && e.key == 'f') {
     view_.fitAll();
     return true;
+  }
+  if (mods == ui::mod::kNone && e.key == ui::key::kEscape && view_.automationWireSource()) {  // TL.3: the wire goes first
+    view_.clearAutomationWire();
+    if (selection().nodes.empty() && selection().wires.empty()) return true;
   }
   if (mods == ui::mod::kNone && e.key == ui::key::kEscape && selection().nodes.empty() && selection().wires.empty()) {
     view_.fitAll();  // Esc with nothing selected: back to the whole project (semantic zoom out)

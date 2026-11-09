@@ -1093,3 +1093,17 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   point there, undo; drag a sub-lane's bottom edge; the master's toggle; fold a band (the sub-lanes stay).
 - Known: every newly pressed control adds a lane (Q?-TL.2-a: a "follow" lane may read better); a band dragged by its title
   draws its sub-lanes empty until it lands; no auto-scroll to a sub-lane off screen.
+
+## 2026-11-09 · TL.3 · the automation wire
+- Look at: `project-patch-auto-wire` golden (new: Operator's envelope Attack handle pressed, a thin red lead with a soft
+  bloom down to its "Envelope: Attack" sub-lane, a ring round the handle, a landing dot and tick on the lane's edge);
+  `panel-window-*` goldens (the pressed Cutoff knob's lead down to its sub-lane, over the Drive / Mix knobs below it).
+- Try: press a knob / a mixer's pan or fader in a band → the lead; drag the block, pan / zoom, fold the band, resize the
+  sub-lane, drag the mixer's fader (the lead follows its cap); Esc, a press on empty canvas or on another block, hiding
+  the sub-lanes or deleting the device → gone. Editing the envelope in the sub-lane keeps it.
+- To judge: red = the envelope colour (`automation.line`); the lead's sag is the cable look's catenary at 75 % slack,
+  eased to a straight drop as it turns vertical (a vertical catenary is a loop) — and the nearest point is nearly always
+  straight below, so it is mostly a straight drop. Whether it should instead curve to the sub-lane's label at the left;
+  whether crossing the blocks under the control is too busy. Closed group: anchored at the group panel's element showing
+  the control, else at the group block's edge. Floating panel-window presses draw no lead (TL.2 does not open sub-lanes
+  from there).

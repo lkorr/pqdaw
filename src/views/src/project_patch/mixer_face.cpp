@@ -102,6 +102,21 @@ public:
 
   Vec2 worldSize() const noexcept override { return size_; }
 
+  // TL.3: where its control of `p` is drawn now (face-local): the pan knob, the volume fader's cap, a send's handle.
+  std::optional<ControlAnchor> anchorOf(const doc::ParamRef& p) const noexcept {
+    const doc::Track* t = track();
+    if (t == nullptr || p.owner != track_.value) return std::nullopt;
+    switch (p.kind) {
+      case doc::ParamKind::TrackPan: return ControlAnchor{kPanC, kPanR + 0.5f * kPanW};
+      case doc::ParamKind::TrackVolume: return ControlAnchor{{faderX(t->mixer.volumeDb), kFy}, 6.0f};
+      case doc::ParamKind::TrackSend:
+        for (size_t k = 0; k < sends_.size(); ++k)
+          if (sends_[k].target.value == p.target) return ControlAnchor{{sendX(sendDb(*t, k)), sendY(k)}, 3.4f};
+        return std::nullopt;
+      default: return std::nullopt;
+    }
+  }
+
   // ---- the level meter: polled by the host while the view's meter source is live ----
   VoiceTapReader* voices() const noexcept override { return view_.meterSource() != nullptr ? &tap_ : nullptr; }
   bool pollVoices() override {
@@ -451,6 +466,11 @@ private:
 };
 
 }  // namespace
+
+std::optional<ControlAnchor> mixerControlAnchor(const Face& f, const doc::ParamRef& p) {
+  const auto* m = dynamic_cast<const MixerFace*>(&f);
+  return m != nullptr ? m->anchorOf(p) : std::nullopt;
+}
 
 std::string mixerFacePath(const Node& n) {
   std::string s = std::string(kMixerFacePrefix) + std::to_string(std::lround(n.w)) + "x" + std::to_string(std::lround(n.h));
