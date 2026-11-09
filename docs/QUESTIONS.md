@@ -565,3 +565,4 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   arrangement behaviour too. (3) Param pins don't count as controls (a press there draws a cable). (4) Sub-lane heights
   are the arrangement's lane heights (logical px = world units); the band view zooms them with the canvas.
 - Status: decided (reversible: project_patch/lane_edit.cpp showControlAutomation, ArrangementAutomation::showParam).
+- **User 2026-11-09:** option 1, one follow lane per track (TL.5).
