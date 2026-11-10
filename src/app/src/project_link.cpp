@@ -702,8 +702,9 @@ uint32_t ProjectLink::slotForTrack(doc::TrackId id) {
 }
 
 uint32_t ProjectLink::paramSlot(const std::string& key) const {
+  const std::string k = current_ ? paramSlotKey(*current_, key) : key;  // L4: a tuning param's slot of the current table
   std::lock_guard lock(mutex_);
-  auto it = paramSlots_.find(key);
+  auto it = paramSlots_.find(k);
   return it == paramSlots_.end() ? kNone : it->second;
 }
 

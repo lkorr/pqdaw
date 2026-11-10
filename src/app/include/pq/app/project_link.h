@@ -391,7 +391,8 @@ public:
   // Note-event slots: MIDI tracks the engine can play at once (T3.17-fix3, M3 review M5: was 128, silently). A track
   // beyond it is lowered without notes and the status line names the limit.
   static constexpr uint32_t kEventSlots = 512;
-  // Slot lookups (tests, tools). kNoSlot when unknown.
+  // Slot lookups (tests, tools; UI thread). kNoSlot when unknown. A tuning param's key names the slot of the
+  // document's current table (paramSlotKey).
   uint32_t paramSlot(const std::string& key) const;
   uint32_t eventSlot(doc::TrackId track) const;
   // Tuning tables (see the file comment): the index into Resources::tunings of main tuning `id` in `def`'s shape
