@@ -775,7 +775,7 @@ Result<TopologyInfo> ProjectProgram::publishTopology(ProjectLayout layout, std::
       ne.unit = e.unit;
       ne.events = e.events;
       ne.eventDelay = e.eventDelay;
-      ne.clipIn = e.clipIn;
+      if (!e.clipIn.empty()) ne.clipIn.assign(e.clipIn.size(), nullptr);  // (refreshed every block before it is read)
       if (e.events != nullptr) keep(e.events);
       for (const Compensation::Line& l : e.lines) {
         const BusStore* b = l.line->bus.get();
