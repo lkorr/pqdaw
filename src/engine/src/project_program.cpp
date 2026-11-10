@@ -83,32 +83,35 @@ static inline void copyBlock(float* d, const float* s, uint32_t n) noexcept {  /
 // them, kept equal by every write: a tap of up to `mirror` frames is always contiguous, so the reader's image reads it
 // in place (outBase) and a steady line costs one copy per channel per block (the push). Only during a delay change's
 // fade does the line write a block (`fade`: the crossfade of the two taps).
-struct ProjectProgram::DelayLine {
-  DelayLine(std::shared_ptr<BusStore> b, uint32_t clipSlot, uint16_t w, uint32_t frames, uint32_t stride)
-      : bus(std::move(b)), clip(clipSlot), width(w), size(frames), mirror(stride),
-        ring(static_cast<size_t>(w) * (frames + stride)), fade(static_cast<size_t>(w) * stride) {}
-  std::shared_ptr<BusStore> bus;  // the input bus (kept alive while a plan names the line); null: a clip slot's line
-  uint32_t clip;                  // T6.2b: the clip slot (kNoSlot: a bus line)
-  uint16_t width;
+// T6.2b: what every block touches comes first, on the line's own cache lines (no pointer chase through the bus).
+struct alignas(128) ProjectProgram::DelayLine {
+  DelayLine(std::shared_ptr<BusStore> b, uint32_t clipSlot, uint16_t w, uint32_t frames, uint32_t stride);
+  // Hot (audio thread, every block).
+  AlignedBuffer<float> ring;      // width × (size + mirror), zeroed
+  const float* src;               // the bus's channel 0 (null: a clip slot's line) …
+  const bool* srcSilent;          // … its silence flag …
+  uint32_t srcStride;             // … and its channel stride
   uint32_t size;                  // ring frames (≥ the largest tap + one block; a multiple of kRingGrain: as small as the
                                   // delay allows, so the history the readers touch stays in cache)
   uint32_t mirror;                // frames mirrored after the ring (the program's stride)
-  AlignedBuffer<float> ring;      // width × (size + mirror), zeroed
+  uint32_t write = 0;             // ring frame of the next block's frame 0 (< size)
+  uint32_t delay = 0, from = 0;   // the tap, and the tap it fades from
+  uint32_t fadePos = 0, fadeLen = 0;
+  uint32_t clip;                  // T6.2b: the clip slot (kNoSlot: a bus line)
+  uint64_t silentRun = uint64_t{1} << 62;  // trailing frames of the ring known to be zero
+  // Where the reader reads channel c of the delayed block (valid after runLine, while not outSilent).
+  const float* outBase = nullptr;
+  size_t outStride = 0;
+  uint16_t width;
+  bool active = false;            // false: bypassed (delay 0, no fade): the reader reads the bus; the ring is stale
+  bool outSilent = true;          // the last block read only zeros (the reader then reads the program's zeros)
+  bool copied = false;
+  // Cold.
+  std::shared_ptr<BusStore> bus;  // the input bus (kept alive while a plan names the line); null: a clip slot's line
   AlignedBuffer<float> fade;      // width × stride: the crossfaded block while a delay change fades
   DelayLine* prev = nullptr;      // a smaller line this one replaces: its history is copied at the switch (once)
   bool sameSource(const DelayLine& o) const noexcept { return bus == o.bus && clip == o.clip; }
   float* chan(uint16_t c) noexcept { return ring.data() + static_cast<size_t>(c) * (size + mirror); }
-  // Audio thread: where the reader reads channel c of the delayed block (valid after runLine, while not outSilent).
-  const float* outBase = nullptr;
-  size_t outStride = 0;
-  // Audio thread.
-  bool copied = false;
-  bool active = false;            // false: bypassed (delay 0, no fade): the reader reads the bus; the ring is stale
-  bool outSilent = true;          // the last block read only zeros (the reader then reads the program's zeros)
-  uint32_t write = 0;             // ring frame of the next block's frame 0 (< size)
-  uint32_t delay = 0, from = 0;   // the tap, and the tap it fades from
-  uint32_t fadePos = 0, fadeLen = 0;
-  uint64_t silentRun = uint64_t{1} << 62;  // trailing frames of the ring known to be zero
 };
 
 // T6.2: a voice unit's notes, `delay` frames late (preallocated FIFO; time order kept).
@@ -198,6 +201,19 @@ struct ProjectProgram::BusStore {
   float* channel(uint16_t c) noexcept { return data.data() + static_cast<size_t>(c) * stride; }
   bool silent = false;  // audio thread: its producer is idle and zeroed it (idle units)
 };
+
+ProjectProgram::DelayLine::DelayLine(std::shared_ptr<BusStore> b, uint32_t clipSlot, uint16_t w, uint32_t frames,
+                                     uint32_t stride)
+    : ring(static_cast<size_t>(w) * (frames + stride)),
+      src(b != nullptr ? b->data.data() : nullptr),
+      srcSilent(b != nullptr ? &b->silent : nullptr),
+      srcStride(b != nullptr ? b->stride : 0u),
+      size(frames),
+      mirror(stride),
+      clip(clipSlot),
+      width(w),
+      bus(std::move(b)),
+      fade(static_cast<size_t>(w) * stride) {}
 
 // One entry of a topology's run order.
 struct ProjectProgram::Slot {
@@ -1177,8 +1193,8 @@ void ProjectProgram::runLine(DelayLine& L, uint32_t target, uint32_t frames) noe
   }
   if (!L.active) return;
   // Its source: a bus, or (T6.2b) a clip slot of the timeline's clip player.
-  const float* const* clipCh = L.bus == nullptr ? cfg_.clipIn + static_cast<size_t>(L.clip) * kClipChannels : nullptr;
-  const bool silent = L.bus != nullptr ? L.bus->silent : cfg_.clipActive[L.clip] == 0;
+  const float* const* clipCh = L.src == nullptr ? cfg_.clipIn + static_cast<size_t>(L.clip) * kClipChannels : nullptr;
+  const bool silent = L.src != nullptr ? *L.srcSilent : cfg_.clipActive[L.clip] == 0;
   // Push: [at, at + first) and the wrapped [0, rest); what lands below `mirror` is written to the mirror too.
   const uint32_t at = L.write, first = std::min(frames, L.size - at), rest = frames - first;
   const uint32_t mirrored = at < L.mirror ? std::min(first, L.mirror - at) : 0u;
@@ -1197,7 +1213,7 @@ void ProjectProgram::runLine(DelayLine& L, uint32_t target, uint32_t frames) noe
   } else {
     for (uint16_t c = 0; c < L.width; ++c) {
       float* r = L.chan(c);
-      const float* x = L.bus != nullptr ? L.bus->data.data() + static_cast<size_t>(c) * L.bus->stride
+      const float* x = L.src != nullptr ? L.src + static_cast<size_t>(c) * L.srcStride
                        : clipCh[c] != nullptr ? clipCh[c]
                                               : zeros_.data();
       copyBlock(r + at, x, first);
