@@ -313,3 +313,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: arm/monitor = param writes, no compile (patch object shared, tested); input map build 7.2 µs (target 50); unheard takes never lowered; no input → no track.in, no gate.
 - Notes/blockers: app plays new warp modes as Re-Pitch until T6.3/T6.5; metronome / track delay stored but Meta until T6.6. Q?-T6.1-a.
 
+## 2026-11-10 · T6.2 · task/T6.2-pdc (merged c601362b by the orchestrator)
+- Did: `graph::pathLatency` + atom `latency` rule and `latency(x, frames)` atom; `engine::planCompensation`; reader-owned preallocated delay lines (10 ms crossfade on change, silent inputs skip the copy); merged units aligned at compose (`wireDelay`); compensated instruments' notes delayed by A_u, automation via `AutomationLaneDesc::shiftFrames`; ProjectLink plans after each compile, `outputLatency()`.
+- Verified: -Affected -Slow after rebase all pass (after a `.gitattributes` -text rule for T6.1's new golden, which failed under autocrlf); test_pdc 15 cases (groups, sends/returns, 3-deep nests, 64 tracks total 480, 4× oversampled ≤ 0.5 sample, no-latency bit-identical, live change ≤ −60 dBFS, sidechain merge, modulation undelayed, notes, automation, RtScope, per-unit == whole-project); ship pq_bench_dsp links. One views NVIDIA flake pre-rebase, passed on re-run.
+- Perf / CPU-efficiency check: pq_bench_pdc (release) 86 ns per compensated stereo input per block (target 40; 166 before caching the slot → line map; rest is ring memory traffic); plan 12 µs @128 tracks; no latency = one pointer compare per unit per block.
+- Notes/blockers: T6.2b filed (clip players in compensated units, tap automation lanes, per-input cost, stale comments). Q?-T6.2-a.
+
