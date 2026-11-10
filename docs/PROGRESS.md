@@ -385,3 +385,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker pq_tests_project 35/35, -Affected -Slow 76/76, ship pq_bench_dsp links; after re-rebase onto a3af785f: pdc 21/21, playback T6.9+T6.7 10/10, timeline live input 15/15.
 - Perf / CPU-efficiency check: per compensated stereo input @64: 78–80 → 53–61 ns (target 40 not reached; breakdown in Q?-T6.2b-a / worker rdtsc); plan 12 µs @128 tracks; no-latency projects unchanged.
 - Notes/blockers: shared params take the smallest shift; loop-wrap lane start — for the M6 review.
+
+## 2026-11-10 · T6.7b merged · main
+- Did: merged task/T6.7b-recording-leftovers (8258f6cf): Record prefs tab with a record latency offset, untitled-discard cleanup of the run's Unsaved folder (guarded; kept when a save couldn't move a recording), WASAPI shared-mode capture input, inputs opened by use; Input Channels pref removed.
+- Verified: worker -Affected -Slow 56/56 on cbc70a70 (parallel 4); T6.7b recording cases 5/5 incl. failed-move-then-discard; loopback click 1440 vs measured 1424 frames.
+- Perf / CPU-efficiency check: no inputs = nothing extra; one conversion pass per capture packet + one copy per channel per period; RtScope clean.
+- Notes/blockers: Q?-T6.7b-a; goldens audio-prefs(-wasapi), library-prefs, midi-prefs re-recorded; real mic / ASIO reopen hand checks in REVIEW.
