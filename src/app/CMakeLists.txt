@@ -15,6 +15,8 @@ pq_add_module(pq_app
     src/project_link_latency.cpp
     src/project_link_audio.cpp
     src/project_link_input.cpp
+    src/project_link_record.cpp
+    src/recording.cpp
     src/midi_input.cpp
     src/face_voices.cpp
     src/audio_output.cpp

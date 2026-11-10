@@ -178,7 +178,8 @@ WavWriter::~WavWriter() {
   if (out_.is_open()) (void)close();
 }
 
-Status WavWriter::open(const std::filesystem::path& path, uint32_t numChannels, uint32_t sampleRate) {
+Status WavWriter::open(const std::filesystem::path& path, uint32_t numChannels, uint32_t sampleRate,
+                       uint64_t patchEveryFrames) {
   if (out_.is_open()) return Error{ErrorCode::InvalidArgument, "WavWriter: already open", {}};
   if (numChannels == 0 || numChannels > kMaxWavChannels || sampleRate == 0)
     return Error{ErrorCode::InvalidArgument, "WavWriter: bad format", {}};
@@ -187,6 +188,8 @@ Status WavWriter::open(const std::filesystem::path& path, uint32_t numChannels, 
   path_ = path;
   channels_ = numChannels;
   frames_ = 0;
+  patched_ = 0;
+  patchEvery_ = patchEveryFrames;
   const std::vector<uint8_t> h = header(numChannels, sampleRate, 0, factOffset_);
   headerBytes_ = static_cast<uint32_t>(h.size());
   out_.write(reinterpret_cast<const char*>(h.data()), static_cast<std::streamsize>(h.size()));
@@ -212,21 +215,41 @@ Status WavWriter::write(const float* const* channels, uint32_t frames) {
   }
   if (!out_) return ioError(path_, "cannot write");
   frames_ += frames;
+  if (patchEvery_ != 0 && frames_ - patched_ >= patchEvery_) return patchHeader();
+  return Ok{};
+}
+
+namespace {
+void writeSizes(std::ofstream& out, uint32_t headerBytes, uint32_t factOffset, uint64_t frames, uint32_t channels) {
+  const uint32_t dataBytes = static_cast<uint32_t>(frames * channels * 4u);
+  const uint32_t riff = headerBytes - 8 + dataBytes;
+  const uint32_t frames32 = static_cast<uint32_t>(frames);
+  out.seekp(4);
+  out.write(reinterpret_cast<const char*>(&riff), 4);
+  out.seekp(factOffset);
+  out.write(reinterpret_cast<const char*>(&frames32), 4);
+  out.seekp(headerBytes - 4);
+  out.write(reinterpret_cast<const char*>(&dataBytes), 4);
+}
+}  // namespace
+
+Status WavWriter::patchHeader() {
+  if (!out_.is_open()) return Error{ErrorCode::InvalidArgument, "WavWriter: not open", {}};
+  // The data first (a reader that sees the new sizes finds the frames they cover), then the sizes, then back to the end.
+  out_.flush();
+  writeSizes(out_, headerBytes_, factOffset_, frames_, channels_);
+  out_.seekp(0, std::ios::end);
+  out_.flush();
+  if (!out_) return ioError(path_, "cannot write");
+  patched_ = frames_;
   return Ok{};
 }
 
 Status WavWriter::close() {
   if (!out_.is_open()) return Ok{};
-  const uint32_t dataBytes = static_cast<uint32_t>(frames_ * channels_ * 4u);
-  const uint32_t riff = headerBytes_ - 8 + dataBytes;
-  const uint32_t frames32 = static_cast<uint32_t>(frames_);
-  out_.seekp(4);
-  out_.write(reinterpret_cast<const char*>(&riff), 4);
-  out_.seekp(factOffset_);
-  out_.write(reinterpret_cast<const char*>(&frames32), 4);
-  out_.seekp(headerBytes_ - 4);
-  out_.write(reinterpret_cast<const char*>(&dataBytes), 4);
+  writeSizes(out_, headerBytes_, factOffset_, frames_, channels_);
   const bool ok = static_cast<bool>(out_);
+  patched_ = frames_;
   out_.close();
   if (!ok || out_.fail()) return ioError(path_, "cannot write");
   return Ok{};

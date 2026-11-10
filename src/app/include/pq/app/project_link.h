@@ -112,6 +112,28 @@
 // from InputPitchMap::pitchForDegree. Rebuilt (per-track tables cached on the track's tuning definition, its node table
 // and its NoteInput) on a Reset, a structural / Meta / Param change, a port list change and a new engine; published
 // only when a route changed. liveKey (TransportPort) stamps the computer keyboard's notes into its ring.
+//
+// ---- Recording (T6.7; src/app/src/project_link_record.cpp, pq/app/recording.h) --------------------------------------
+// Inputs: every audio track with an input reads its device channels through `track.in` (ProjectProgram::setUnitInputs
+// after every compile; a channel change compiles nothing that differs). Its monitor gate is the engine's
+// (engine::MonitorImage: param slot, mode, arm, clip slot; rebuilt on Param / Meta / structural changes), so Auto
+// follows the transport. The capture channels (the armed audio tracks' inputs) get their rings when the first track
+// is armed (RecordingService::prepareChannels). The punch region reaches the timeline (SetPunch) when it changes.
+// record(): stopped → a session begins (the armed tracks: an audio track with an input records a WAV into
+// recordDir(), a MIDI track its live notes), then Record with the count-in; playing → a session begins at the playhead
+// (Record `here`); recording → RecordOff. playhead() polls the session: its notes, an automatic RecordOff once the
+// playhead passes the punch-out (+ the record latency) without a loop, and its end (the report says the transport no
+// longer records, after the Record command was taken), which commits it: ONE undo step (doc::ops::commitRecording):
+// per pass of each track a take lane, the last pass also in the main lane (MIDI with overdub: merged into the main
+// lane). Audio takes: warp Off clips of the session's file; a pass covers what was PLAYED: its captured song range
+// shifted by the record latency (engine::Recorder::latencyOffset), except at a loop wrap where the file runs on: there
+// the take boundary stays on the loop point and its file frames are those `offset` later, so consecutive takes are
+// contiguous regions of one file. Each clip starts on the tick whose sample is exactly its first sample (the file frame
+// there is whole: sample-exact copies). Notes: a note's song sample = the song time the transport played at its stamp
+// (engine time − the live latency − the output latency, through the session's runs) minus the PDC total; identities
+// from the record tap (Keys: the map's Degree; Hz: the frozen Cents, a note-on bend frozen through
+// InputPitchMap::atNoteOn); RecordSettings::recordQuantize snaps starts. recordDir(): <project>/samples/recorded, or
+// for an untitled project LinkConfig::unsavedDir (default %LOCALAPPDATA%/pqdaw/Unsaved/<session>/samples/recorded).
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -146,6 +168,7 @@
 #include "pq/engine/engine.h"
 #include "pq/engine/project_compile.h"
 #include "pq/engine/sequence.h"
+#include "pq/app/recording.h"
 #include "pq/media/sample_pool.h"
 #include "pq/meta/table_builder.h"
 #include "pq/tuning/tuning.h"
@@ -202,6 +225,8 @@ struct LinkConfig {
   // T5.4: audio clips.
   bool edgeDeclick = true;           // 2 ms fades at clip edges without a longer fade or a crossfade (plan "Decisions")
   std::string projectDir;            // without a ViewContext (--render): resolves the project's sample paths
+  // T6.7: where an untitled project records (empty: %LOCALAPPDATA%/pqdaw/Unsaved/<pid-time>/samples/recorded).
+  std::string unsavedDir;
   media::PoolConfig pool;            // the sample pool (its reclaimer is the link's)
   double clipLookaheadSeconds = 0.5; // a streamed clip claims its stream this long before it starts
 };
@@ -453,8 +478,7 @@ public:
   void auditionHz(float hz, float velocity, float durationMs) override;
   void releaseAuditions() override;
   void liveKey(int32_t equave, int32_t step, float velocity, bool on) override;  // T6.4: the computer keyboard
-  // T6.6: Record = the project's count-in (RecordSettings::countInBars), then play from `from`. Nothing is recorded
-  // until T6.7 (engine::TransportCommandKind::Record).
+  // T6.6 / T6.7: Record (see "Recording" in the file comment).
   void record(Ticks from) override;
   double outputLatencyMs() override;                 // T6.6: outputLatency() in ms
   double trackLatencyMs(uint32_t trackId) override;  // T6.6: the track's own latency, ms (see above)
@@ -570,6 +594,7 @@ private:
   struct LatencyJob {
     engine::CompensationPlan plan;
     std::vector<uint32_t> shift;
+    std::vector<engine::UnitInput> inputs;  // T6.7: per unit, its track input
   };
   // `lp`: the lowering the compiler just built (its trackIds name the partition's tracks: Track Delay, T6.6).
   LatencyJob planLatency(const doc::LoweredProject& lp);  // compile path (compileMutex_), after the build
@@ -868,6 +893,32 @@ private:
   JitStats jitStats_;
   std::unique_ptr<engine::BackgroundCompiler> jit_;  // destroyed first (~ProjectLink): no delivery after it
   engine::BackgroundCompiler* jitWorker_ = nullptr;  // jit_, for its own worker's deliveries (never reassigned)
+
+  // ---- T6.7: recording (project_link_record.cpp; "Recording" in the file comment) ----
+public:
+  // Where a committed session goes when no ViewContext is attached (tests, tools). UI thread.
+  void setRecordStore(doc::DocumentStore* store) noexcept { recordStore_ = store; }
+  RecordingService& recording() noexcept { return *recording_; }
+  std::string recordDir() const;
+  uint64_t recordCommits() const noexcept { return recordCommits_; }
+  uint32_t audioInputChannels() override;                        // views::TransportPort
+  bool recordingOverlay(views::RecordingOverlay& out) override;  // views::TransportPort
+
+private:
+  void syncRecordInputs(const doc::Project& p, bool force);       // UI thread
+  std::vector<engine::UnitInput> unitInputs(const doc::LoweredProject& lp) const;  // compile path (compileMutex_)
+  void pollRecording();    // UI thread (playhead())
+  void finishRecording();  // UI thread: the session's commit
+  std::unique_ptr<RecordingService> recording_;
+  doc::DocumentStore* recordStore_ = nullptr;
+  uint64_t recordCommand_ = 0;        // commandsPosted_ once the session's Record was posted
+  bool recordOffSent_ = false;        // the automatic punch-out RecordOff
+  std::vector<uint64_t> monitorKey_;  // what the published MonitorImage was built from
+  std::optional<doc::PunchRegion> punchSent_;
+  uint64_t recordCommits_ = 0;
+  RecordingService::Live recLive_;    // the overlay's copy
+  uint64_t overlayRevision_ = 0;
+  int64_t overlaySongEnd_ = 0;
 };
 
 }  // namespace pq::app

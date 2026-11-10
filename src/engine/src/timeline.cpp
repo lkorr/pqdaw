@@ -222,8 +222,13 @@ void Timeline::apply(const TransportCommand& cmd) noexcept {  // RT-safe
     seekPending_ = true;
   };
   switch (cmd.kind) {
+    case TransportCommandKind::Record:  // T6.7: a new session; while playing with `here`, nothing else changes
+      if (!recording_) ++recordSession_;
+      recording_ = true;
+      if (cmd.here && (playing_ || countIn_.active)) break;
+      [[fallthrough]];
     case TransportCommandKind::Play:
-    case TransportCommandKind::Record:  // T6.6: recording itself is T6.7; until then Record = (count-in +) play
+      if (cmd.kind == TransportCommandKind::Play) recording_ = false;
       if (cmd.countInBars > 0) {
         locate(cmd.tick);
         startCountIn(cmd.tick, cmd.countInBars);
@@ -234,7 +239,17 @@ void Timeline::apply(const TransportCommand& cmd) noexcept {  // RT-safe
       playing_ = true;
       ++playbackPass_;
       break;
+    case TransportCommandKind::RecordOff:  // T6.7
+      recording_ = false;
+      break;
+    case TransportCommandKind::SetPunch:  // T6.7
+      punchEnabled_ = cmd.punchEnabled;
+      punchIn_ = cmd.punchIn;
+      punchOut_ = cmd.punchOut;
+      updateLoopSamples();
+      break;
     case TransportCommandKind::Stop:
+      recording_ = false;  // T6.7
       if (playing_) releasePending_ = true;
       playing_ = false;
       countIn_.active = false;  // T6.6: cancels a count-in (the position stays where it would have started)
@@ -301,6 +316,9 @@ void Timeline::updateLoopSamples() noexcept {  // RT-safe
   loopStartSample_ = tm.ticksToSamples(loopStart_, cfg_.sampleRate);
   loopEndSample_ = tm.ticksToSamples(loopEnd_, cfg_.sampleRate);
   loopOn_ = loopEnabled_ && loopEnd_ > loopStart_ && loopEndSample_ > loopStartSample_;
+  punch_.in = tm.ticksToSamples(punchIn_, cfg_.sampleRate);  // T6.7
+  punch_.out = tm.ticksToSamples(punchOut_, cfg_.sampleRate);
+  punch_.punch = punchEnabled_ && punch_.out > punch_.in;
 }
 
 // The published image of one kind, protected before it is dereferenced (see Timeline::Hazard): `cur` if nothing
@@ -862,6 +880,8 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
       r.countInBeat = std::min(countIn_.beats - 1,
                                static_cast<uint32_t>(static_cast<double>(countIn_.pos) / countIn_.beatFrames));
     }
+    r.recording = recording_;  // T6.7
+    r.recordSession = recordSession_;
     if (!reports_.tryPush(r)) ++stats_.droppedReports;
     reportPending_ = false;
   }

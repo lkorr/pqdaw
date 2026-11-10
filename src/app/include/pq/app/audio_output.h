@@ -67,7 +67,7 @@ struct OutputConfig {
   uint32_t deviceIndex = engine::kDefaultDevice;  // the backend's numeric id (--device <n>), or its default
   uint32_t sampleRate = 48000;
   uint32_t bufferFrames = 256;
-  uint32_t inputChannels = 0;  // opened (ASIO duplex) but not read yet: recording is M6
+  uint32_t inputChannels = 0;  // ASIO duplex: the engine's inputs (T6.7: the tracks' inputs, recording)
   uint32_t outputChannels = 2;  // the master plays on outputs 1/2, the rest get silence
   bool operator==(const OutputConfig&) const = default;
 };
@@ -194,6 +194,8 @@ private:
   std::unique_ptr<engine::AudioDevice> device_;
   engine::BlockAdapter adapter_;
   uint32_t engineOuts_ = 2;  // channels the adapter / engine produce (≤ 2); the device's others are zeroed
+  uint32_t engineIns_ = 0;   // T6.7: the device's input channels handed to the engine (≤ kMaxChannels)
+  AlignedBuffer<float> zeroIn_{16384};  // T6.7: an input the device did not deliver this block reads silence
   // T6.6: a device with 4 or more outputs also runs the engine's click pair (Engine::setClickPair): two more adapter
   // channels into clickBuf_ (clickCap_ frames each), added into the cue pair while the metronome plays on it.
   uint32_t clickOuts_ = 0;
@@ -201,7 +203,7 @@ private:
   AlignedBuffer<float> clickBuf_;
   // T6.6: prepares adapter_ for a device with `deviceOuts` outputs and `deviceFrames` frames (engineOuts_, the click
   // pair). Control thread (or AsioDevice's, the driver stopped).
-  bool prepareAdapter(uint32_t deviceOuts, uint32_t blockFrames, uint32_t deviceFrames);
+  bool prepareAdapter(uint32_t deviceIns, uint32_t deviceOuts, uint32_t blockFrames, uint32_t deviceFrames);
   bool fallback_ = false;
   std::atomic<bool> silence_{false};  // rate mismatch: the engine is not run
   std::atomic<bool> streamRunning_{false};

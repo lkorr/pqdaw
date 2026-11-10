@@ -142,6 +142,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_audio_tracks.cpp  # T5.3: audio tracks (golden lowering text, clip slot, clip edits compile nothing)
     app/test_live_input.cpp  # T6.4: live MIDI input (live == drawn bit for bit in Keys / Hz across tunings, routes, keyboard, MIDI service)
     app/test_metronome_link.cpp  # T6.6: Track Delay ±480 through the link, a delay edit compiles nothing, metronome settings, Record counts in
+    app/test_recording_link.cpp  # T6.7: recording through the link (audio bit-exact + latency placement, loop takes, punch, Keys / Hz notes, overdub)
     app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
     app/test_tuning_live.cpp  # TU.1: live retune by real dispatch (panel / wheel drags: the held note at every step, 0 compiles; EDO steps; T6.4b bend)
     app/test_eq_link.cpp  # EQ.4b: the EQ displays in the app wiring (the curve after the circuit opens / closes the EQ; the link's lowering)
@@ -341,6 +342,7 @@ pq_add_test(pq_tests_timeline
     engine/test_live_input.cpp  # T6.4: live note input (routing, stamps → frames, held notes, bend, 10k ev/s)
     engine/test_stretch_pool.cpp  # T6.5: signalsmith-stretch allocation-free (the spike), claims, determinism, latency
     engine/test_metronome.cpp  # T6.6: metronome beats (ramps, signatures, PDC), count-in, the click pair, offline
+    engine/test_recorder.cpp  # T6.7: the recorder (capture bit-exact with song time, punch + latency, overflow, monitor gates), crash-safe WAV
   DEPS pq_engine pq_doc)
 
 # T1.10: golden offline renders (tests/golden: patches, committed WAVs, the absolute + spectral comparison helper) on

@@ -29,6 +29,8 @@
 // plan's "below half full" stalls a reader whose block exceeds the gap; rings stay nearly full instead). It waits on an event that only non-RT code sets (engage(), wake(), prefetch(), waitFilled()):
 // while engaged or while any stream is claimed it polls every 2 ms (a high-resolution waitable timer); otherwise it
 // blocks without a timeout (0 wakeups when idle).
+// T6.7: a disk client (setDiskClient: the recording writer) runs on the same thread after every pass; while it reports
+// work (or the pool is engaged) the thread keeps polling every 2 ms.
 
 #include <atomic>
 #include <chrono>
@@ -155,6 +157,9 @@ public:
   // stream slots every 2 ms, so RT claims are served. Non-RT.
   void engage();
   void disengage();
+  // T6.7: `fn(user)` runs on the disk thread after every pass (true: it has more to do: poll again in 2 ms); null
+  // removes it. Returns once a call in progress has finished (the caller may free `user` afterwards). Non-RT.
+  void setDiskClient(bool (*fn)(void*), void* user);
   // One pass soon (after a claim made outside engagement, or a new prefetch). Non-RT.
   void wake();
   // Prefetch for a locate while stopped: a stream for `sample` read from `frame` in `dir` (the part outside the
@@ -217,6 +222,9 @@ private:
 
   std::unique_ptr<DiskState> disk_;
   std::thread diskThread_;
+  std::mutex clientMutex_;  // T6.7: the disk client (held while it runs)
+  bool (*clientFn_)(void*) = nullptr;
+  void* clientUser_ = nullptr;
   std::atomic<bool> stop_{false};
   std::atomic<int32_t> engaged_{0};
   std::atomic<int32_t> waiters_{0};

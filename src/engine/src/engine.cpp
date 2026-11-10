@@ -48,6 +48,7 @@ Engine::Engine(const EngineConfig& config)
   lc.maxSlots = cfg_.maxSlots;
   live_ = std::make_unique<LiveInput>(lc, cfg_.livePorts);
   metronome_ = std::make_unique<Metronome>(cfg_.sampleRate);
+  recorder_ = std::make_unique<Recorder>();
   timelineHook_ = timeline_->blockHook();
   for (uint32_t k = 0; k < cfg_.maxSlots; ++k) slots_.push_back({this, k});
   paramRings_.push_back(std::make_unique<ParamRing>(std::bit_ceil(std::max(cfg_.paramRing, 2u))));
@@ -69,7 +70,7 @@ ProjectConfig Engine::projectConfig() noexcept {
   pc.sampleRate = cfg_.sampleRate;
   pc.maxBlockFrames = cfg_.blockFrames;
   pc.numOut = cfg_.numOut;
-  pc.hook = {&Engine::onHook, this, timelineHook_.paramWrites};  // T6.6: the timeline's hook + the metronome
+  pc.hook = {&Engine::onHook, this, &hookWrites_};  // T6.6: the timeline's hook + the metronome; T6.7: + the recorder
   pc.numProjectParams = cfg_.numProjectParams;
   pc.idleUnits = cfg_.idleUnits;
   pc.clipIn = timeline_->clipPlayer().channels();  // T5.4
@@ -126,6 +127,7 @@ void Engine::collect() {
   while (paramRings_.size() > 1 && paramRings_.front().get() != reading) paramRings_.erase(paramRings_.begin());
   timeline_->collect();
   live_->collect(audioStopped());
+  recorder_->collect(audioStopped());
   if (program_) program_->collect();
 }
 
@@ -185,6 +187,10 @@ void Engine::onHook(void* self, int64_t sampleTime, uint32_t frames, TransportSn
                     std::span<float> params) noexcept {  // RT-safe
   Engine& e = *static_cast<Engine*>(self);
   e.timelineHook_.fn(e.timelineHook_.user, sampleTime, frames, transport, params);
+  // T6.7: the monitor gates (a changed one is a param write), then the capture of what the transport just played.
+  if (e.recorder_->monitor(*e.timeline_, params)) ++e.monitorWrites_;
+  e.hookWrites_ = (e.timelineHook_.paramWrites != nullptr ? *e.timelineHook_.paramWrites : 0) + e.monitorWrites_;
+  if (e.timeline_->recording()) e.recorder_->capture(*e.timeline_, sampleTime, frames, e.program_ ? e.program_->outputLatency() : 0u);
   const std::span<const TransportRun> runs = e.timeline_->runs();  // empty while stopped
   if (runs.empty() || e.offline_) return;
   const bool song = e.metronome_->enabled();
@@ -211,6 +217,7 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
   AudioBlock block = device;
   block.frameTime = nextTime_;
   nextTime_ += block.frames;
+  recorder_->beginBlock(block);  // T6.7: the inputs of this block (engine time)
   bool activity = false;
   ParamWrite pw;
   if (program_) {
@@ -291,7 +298,7 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
   if (clickPair_ || metronome_->pending()) mixClicks(block);  // T6.6
   if (sleepFrames_ == 0) return;
   bool quiet = !activity && numAuditions_ == 0 && live_->idle() && !timeline_->playing() && !timeline_->countingIn() &&
-               !metronome_->pending() && program_->quiet();
+               !metronome_->pending() && !recorder_->monitoring() && program_->quiet();  // T6.7: a monitored input
   if (quiet)
     for (uint32_t c = 0; c < block.numOut && quiet; ++c)
       for (uint32_t f = 0; f < block.frames; ++f)

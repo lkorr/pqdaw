@@ -246,6 +246,24 @@ inline constexpr Ticks kCompCrossfade = kPpq / 32;  // ≈ 16 ms at 120 BPM
 EditResult compRegion(const Project& p, IdSource& ids, TrackId track, LaneId lane, Ticks t0, Ticks t1,
                       Ticks crossfade = kCompCrossfade);
 
+// T6.7: what one recording session made, committed as ONE undo step ("Record"). `samples` are added to the table (ids
+// drawn by the caller). Per track, `passes` = one clip per record pass (loop recording: one per loop pass), in order,
+// of the track's kind (their clip / note ids are ignored: fresh ones; audio clips warp Off, synced here). Each pass
+// becomes a take lane ("Take <n>", after the track's others) and the LAST pass is also copied into the main lane
+// (overwriting what lies under it; ClipSlot::take = its lane). `overdub` (MIDI tracks): no take lanes — every note goes
+// into the main-lane clip under its start (content ticks), and notes under no clip into a new clip per gap between the
+// main lane's clips (spanning the recorded passes' range within the gap, and those notes). Errors: unknown tracks, clips of the wrong kind.
+struct RecordedTrack {
+  TrackId track;
+  std::vector<ClipSlot> passes;
+  bool overdub = false;
+};
+struct RecordingCommit {
+  std::vector<SampleRef> samples;
+  std::vector<RecordedTrack> tracks;
+};
+EditResult commitRecording(const Project& p, IdSource& ids, const RecordingCommit& commit);
+
 // ---- Notes -----------------------------------------------------------------------------------------------------
 
 // Adds notes (their `id` fields are ignored: fresh ids are assigned). Returns their keys.

@@ -141,6 +141,8 @@ struct ProjectProgram::Unit {
   // T6.2: its entry in the plan the audio thread runs (valid while compSeq is that plan's sequence).
   const Compensation::Entry* compEntry = nullptr;
   uint64_t compSeq = 0;
+  // T6.7: its track input (setUnitInputs): first | channels << 16 (0: none).
+  std::atomic<uint32_t> input{0};
 };
 
 // A bus: `width` planar channels of `stride` floats at fixed addresses for its whole life (shared by every topology
@@ -790,6 +792,15 @@ bool ProjectProgram::topologyPending() const {
   return !topoInflight_.empty() && topoInflight_.back()->seq > topoCurrent_.load(std::memory_order_acquire);
 }
 
+void ProjectProgram::setUnitInputs(std::span<const UnitInput> perUnit) {  // non-RT
+  std::lock_guard lock(mutex_);
+  for (size_t u = 0; u < units_.size(); ++u) {
+    const UnitInput in = u < perUnit.size() ? perUnit[u] : UnitInput{};
+    const uint32_t word = in.channels == 0 ? 0u : (uint32_t{in.first} | uint32_t{std::min<uint8_t>(in.channels, 2)} << 16);
+    units_[u]->input.store(word, std::memory_order_relaxed);
+  }
+}
+
 Status ProjectProgram::setCompensation(const CompensationPlan& plan) {
   std::lock_guard lock(mutex_);
   collectLocked();
@@ -1224,6 +1235,16 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     mapLines(*p);
     if (old != nullptr) mapLines(*old);
   }
+  // T6.7: the unit's track input (device channels of this block; null: silence).
+  const float* trackIn[2] = {nullptr, nullptr};
+  if (const uint32_t inp = U.input.load(std::memory_order_relaxed); inp != 0 && blockIn_ != nullptr) {
+    const uint32_t first = inp & 0xFFFFu, n = inp >> 16;
+    for (uint32_t c = 0; c < 2; ++c) {
+      const uint32_t ch = first + std::min(c, n - 1);
+      trackIn[c] = ch < blockNumIn_ && blockIn_[ch] != nullptr ? blockIn_[ch] + blockInOff_ : nullptr;
+    }
+  }
+  const bool liveInput = trackIn[0] != nullptr || trackIn[1] != nullptr;
   // Whether a bus (through its delay line, if one runs) reads silent for this unit.
   auto silentVia = [](const BusStore* b, const DelayLine* l) noexcept {
     return l != nullptr && l->active ? l->outSilent : b->silent;
@@ -1232,7 +1253,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     // Idle units (see the header): bit-exact skip of a unit that would change nothing — proven by the compiler
     // (idleAfterBlocks: settled gains only), or reported by its image after its last block (T1.x-silence: dormant,
     // every sleepable region asleep, nothing else keeping state, outputs silent).
-    bool quiet = old == nullptr && (!U.voices || (U.voices->liveVoices() == 0 && U.eventBuf.list().count == 0));
+    bool quiet = old == nullptr && !liveInput && (!U.voices || (U.voices->liveVoices() == 0 && U.eventBuf.list().count == 0));
     if (ce != nullptr) {
       for (size_t k = 0; k < p->inStores.size(); ++k) quiet = quiet && silentVia(p->inStores[k], p->storeLine[k]);
     } else {
@@ -1309,6 +1330,8 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   ctx.paramsUnchanged = paramsSame && !U.voices;  // a voice engine's images get their own contexts
   ctx.clipIn = cfg_.clipIn;  // T5.4
   ctx.numClipSlots = cfg_.clipIn != nullptr ? cfg_.numClipSlots : 0u;
+  ctx.trackIn = trackIn;  // T6.7
+  ctx.numTrackIn = 2;
   ProcessContext fctx;
   if (old != nullptr) {
     for (const auto& [slot, param] : old->paramLinks) old->params[slot] = params_[param];
@@ -1357,9 +1380,12 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
   if (pendingParams_.load(std::memory_order_relaxed) != nullptr) adoptProjectParams();  // M4: a grown param block
   const uint32_t maxBlock = cfg_.maxBlockFrames;
   const uint32_t numOut = std::min(cfg_.numOut, block.numOut);
+  blockIn_ = block.numIn != 0 ? block.in : nullptr;  // T6.7: the tracks' inputs
+  blockNumIn_ = blockIn_ != nullptr ? block.numIn : 0u;
   for (uint32_t off = 0; off < block.frames; off += maxBlock) {
     const uint32_t n = std::min(maxBlock, block.frames - off);
     const int64_t time = block.frameTime + off;
+    blockInOff_ = off;
     if (cfg_.hook.fn != nullptr) cfg_.hook.fn(cfg_.hook.user, time, n, transport_, std::span<float>(params_, numParams_));
     // L1: this block's param generation (a hook without a counter may have written anything: a new generation).
     const uint64_t hookWrites =

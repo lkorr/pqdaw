@@ -27,6 +27,11 @@
 // the frames before it hold, the frames from it play). Stop cancels it (the position stays at `tick`), Continue cancels
 // it and plays, Locate moves where it will start. The block in which it ends describes frame 0 in its snapshot (still
 // stopped); the next block's snapshot is playing.
+// Recording (T6.7): Record also sets recording() and starts a new record session (recordSession() + 1); with
+// TransportCommand::here while playing (or counting in) it only does that — the transport goes on where it is (Live's
+// Record pressed during playback). RecordOff ends recording and keeps playing; Stop and Play end it too. What is
+// recorded is the recorder's business (pq/engine/recorder.h: the song runs while recording()). SetPunch sets the punch
+// region (ticks; recordWindow() gives it in samples, recomputed with every tempo map).
 // A new tempo map keeps the musical position (the next tick to play) and recomputes the sample position from it.
 // The ProcessContext snapshot (TransportSnapshot) describes frame 0 of the block: beat = fractional ticks / PPQ
 // (quarter notes), bpm at that tick, beatsPerFrame = bpm / 60 / sr while playing, beatsPerBar and barStartBeat from
@@ -126,9 +131,11 @@ enum class TransportCommandKind : uint8_t {
   Continue,  // play from the held position
   Locate,    // move to `tick` (playing or not)
   SetLoop,   // arrangement loop [loopStart, loopEnd), on when loopEnabled and loopEnd > loopStart
-  // T6.6: the record entry point. Plays from `tick` like Play (after the count-in when countInBars > 0). Recording
-  // itself (inputs to WAV / notes, punch, takes) is T6.7: until then Record is count-in + play, nothing is captured.
+  // T6.6: the record entry point. Plays from `tick` like Play (after the count-in when countInBars > 0); T6.7: and
+  // records (see "Recording" above).
   Record,
+  RecordOff,  // T6.7: recording ends, the transport plays on
+  SetPunch,   // T6.7: the punch region [punchIn, punchOut), on when punchEnabled and punchOut > punchIn
 };
 
 struct TransportCommand {
@@ -138,6 +145,16 @@ struct TransportCommand {
   Ticks loopStart = 0, loopEnd = 0;
   // T6.6: Play / Record: this many bars of count-in first (0: none). See "Count-in" above.
   uint8_t countInBars = 0;
+  // T6.7: Record while playing / counting in: record from here (no locate, no count-in). SetPunch: the region.
+  bool here = false;
+  bool punchEnabled = false;
+  Ticks punchIn = 0, punchOut = 0;
+};
+
+// T6.7: the punch region in song samples (Timeline::recordWindow).
+struct RecordWindow {
+  bool punch = false;
+  SampleTime in = 0, out = 0;
 };
 
 // T6.6: what the transport played in one process() call, as runs of consecutive samples (the metronome reads them,
@@ -174,6 +191,9 @@ struct TransportReport {
   // (0-based, of countInBeats), with countInBeatsPerBar beats per bar.
   bool countingIn = false;
   uint32_t countInBeat = 0, countInBeats = 0, countInBeatsPerBar = 0;
+  // T6.7: recording (see "Recording"), and the session it belongs to.
+  bool recording = false;
+  uint32_t recordSession = 0;
 };
 
 struct TimelineConfig {
@@ -278,6 +298,10 @@ public:
   bool countingIn() const noexcept { return countIn_.active; }
   const CountInState& countIn() const noexcept { return countIn_; }
   std::span<const TransportRun> runs() const noexcept { return {runs_, numRuns_}; }
+  // T6.7: recording state (see "Recording").
+  bool recording() const noexcept { return recording_; }
+  uint32_t recordSession() const noexcept { return recordSession_; }
+  RecordWindow recordWindow() const noexcept { return punch_; }
   static constexpr uint32_t kMaxRuns = 16;
   Ticks position() const noexcept;                         // the next tick to play
   SampleTime songSample() const noexcept { return pos_; }  // its sample
@@ -406,6 +430,11 @@ private:
   CountInState countIn_;         // T6.6
   TransportRun runs_[kMaxRuns];  // T6.6: the runs of the current block
   uint32_t numRuns_ = 0;
+  bool recording_ = false;       // T6.7
+  uint32_t recordSession_ = 0;
+  bool punchEnabled_ = false;
+  Ticks punchIn_ = 0, punchOut_ = 0;
+  RecordWindow punch_;
   bool loopEnabled_ = false, loopOn_ = false;
   Ticks loopStart_ = 0, loopEnd_ = 0;
   SampleTime loopStartSample_ = 0, loopEndSample_ = 0;

@@ -6,6 +6,10 @@
 // Writing: 32-bit IEEE float, any channel count 1..kMaxWavChannels (WAVE_FORMAT_IEEE_FLOAT for 1–2 channels,
 // WAVE_FORMAT_EXTENSIBLE with the float subtype above that), a `fact` chunk, little endian. WavWriter streams: the
 // header is written with placeholder sizes and patched by close(), so a render never holds the whole file in memory.
+// T6.7 (recording): crash-safe streaming — open(…, patchEveryFrames) also patches the sizes (and flushes the stream to
+// the OS) whenever that many frames were written since the last patch, so a process killed mid-take leaves a readable
+// file holding everything up to the last patch (the recorder: one second). A reader ignores the bytes after the
+// patched data size (parseWav: unknown trailing chunks are skipped).
 // Reading: 32-bit float and 16/24/32-bit integer PCM (plain or extensible); unknown chunks are skipped. Samples are
 // returned planar as float (integers scaled to [−1, 1)).
 // T5.1: moved from engine to media (pq/engine/wav_file.h forwards here). This whole-file reader stays the golden /
@@ -52,12 +56,19 @@ public:
   WavWriter(const WavWriter&) = delete;
   WavWriter& operator=(const WavWriter&) = delete;
 
-  Status open(const std::filesystem::path& path, uint32_t numChannels, uint32_t sampleRate);
+  // `patchEveryFrames` (T6.7): > 0 patches the header every that many frames written (see the file comment).
+  Status open(const std::filesystem::path& path, uint32_t numChannels, uint32_t sampleRate,
+              uint64_t patchEveryFrames = 0);
   // `frames` frames from planar channel pointers (numChannels of them).
   Status write(const float* const* channels, uint32_t frames);
+  // T6.7: writes the RIFF/data/fact sizes of what was written so far and flushes the stream (the file stays open and
+  // the next write appends).
+  Status patchHeader();
   // Patches the RIFF/data/fact sizes and closes the file.
   Status close();
   uint64_t framesWritten() const noexcept { return frames_; }
+  uint64_t framesPatched() const noexcept { return patched_; }  // T6.7: frames the header on disk covers
+  bool isOpen() const noexcept { return out_.is_open(); }
 
 private:
   std::ofstream out_;
@@ -66,6 +77,8 @@ private:
   uint64_t frames_ = 0;
   uint32_t headerBytes_ = 0;    // bytes before the sample data
   uint32_t factOffset_ = 0;     // file offset of the fact chunk's sample count
+  uint64_t patchEvery_ = 0;     // T6.7
+  uint64_t patched_ = 0;
   std::vector<float> interleaved_;
 };
 

@@ -42,6 +42,7 @@ ProjectLink::LatencyJob ProjectLink::planLatency(const doc::LoweredProject& lp) 
   }
   LatencyJob job;
   job.plan = engine::planCompensation(layout, compiler_->latencies(), offset);
+  job.inputs = unitInputs(lp);  // T6.7: the units' track inputs
   for (const engine::ProjectParamLink& l : compiler_->options().paramLinks) {
     if (l.track >= part.unitOf.size() || part.unitOf[l.track] >= job.plan.unitLatency.size()) continue;
     const uint32_t a = job.plan.unitLatency[part.unitOf[l.track]];
@@ -55,6 +56,7 @@ ProjectLink::LatencyJob ProjectLink::planLatency(const doc::LoweredProject& lp) 
 Status ProjectLink::applyLatency(const LatencyJob& job) {  // compile path (compileMutex_)
   engine::ProjectProgram* program = engine_->program();
   if (program == nullptr) return Ok{};
+  program->setUnitInputs(job.inputs);  // T6.7
   {
     std::lock_guard lock(mutex_);  // T6.6: the strips' readouts
     busLatency_ = job.plan.busLatency;

@@ -23,6 +23,7 @@ pq_add_module(pq_engine
     src/program_host.cpp
     src/project_program.cpp
     src/project_compile.cpp
+    src/recorder.cpp
     src/latency_plan.cpp
     src/live_input.cpp
     src/metronome.cpp

@@ -13,6 +13,8 @@
 //                           auditions'
 //   metronome (T6.6)        the click (pq/engine/metronome.h): scheduled from the timeline's runs in the block hook,
 //                           mixed after the project's output (see "Per block" 4)
+//   recorder (T6.7)         device inputs → capture rings with song time, and the tracks' monitor gates
+//                           (pq/engine/recorder.h); run from the block hook
 //   idle gate               see below
 //
 // ---- Threads ---------------------------------------------------------------------------------------------------
@@ -46,6 +48,11 @@
 //    numOut + 1 (the click pair: zeroed, then the clicks; the app's audio output adds it into the cue pair). Off and
 //    idle: one flag per image block, one per device block. The gate stays awake while a count-in runs or clicks wait.
 //    Offline renders (renderOffline) never click.
+// 5. T6.7: the recorder. Every device block first hands it the block (its input channels); the block hook, after the
+//    timeline's, writes the monitor gates (Recorder::monitor: a changed gate counts as a param write for the idle-unit
+//    scan) and captures the image block's song runs while the timeline records (Recorder::capture). The tracks'
+//    `track.in` reads the device inputs through ProjectProgram (ProjectProgram::setUnitInputs). The gate stays awake
+//    while recording (the transport plays).
 //
 // ---- Offline (SPEC §9.8 "same Program, deterministic") -----------------------------------------------------------
 // renderOffline drives process() from a loop at a fixed device block, chunk by chunk into an AudioSink, under
@@ -64,6 +71,7 @@
 #include "pq/engine/offline_render.h"
 #include "pq/engine/project_compile.h"
 #include "pq/engine/project_program.h"
+#include "pq/engine/recorder.h"
 #include "pq/engine/timeline.h"
 
 namespace pq::engine {
@@ -117,6 +125,9 @@ public:
   // T6.6, audio thread (the device's owner, before each device block it runs through the engine): channels numOut,
   // numOut + 1 of the blocks are the click pair (the cue output) instead of nothing. RT-safe.
   void setClickPair(bool on) noexcept { clickPair_ = on; }
+  // T6.7: the recorder (capture sets, monitor images and latencies from the UI thread; its segments from the consumer
+  // thread; see recorder.h).
+  Recorder& recorder() noexcept { return *recorder_; }
 
   // ---- UI thread (one producer) ----
   // The pushes are wait-free SPSC; each then calls wake() (and so the wake hook, which may take a lock): UI thread.
@@ -209,6 +220,9 @@ private:
   std::unique_ptr<ProjectProgram> program_;
   std::unique_ptr<LiveInput> live_;  // T6.4
   std::unique_ptr<Metronome> metronome_;  // T6.6
+  std::unique_ptr<Recorder> recorder_;    // T6.7
+  uint64_t hookWrites_ = 0;               // T6.7: the hook's param-write counter (the timeline's + monitor writes)
+  uint64_t monitorWrites_ = 0;
   BlockHook timelineHook_{};              // T6.6: the timeline's own hook (onHook calls it)
   bool clickPair_ = false;                // T6.6: audio thread
   bool offline_ = false;                  // T6.6: renderOffline is running (no clicks)

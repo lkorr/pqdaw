@@ -191,11 +191,20 @@ TEST_CASE("shell + T6.6: metronome switch and menu, Record / F9 with the count-i
   // Stopped: F9 records again.
   f.d.press("F9");
   CHECK(f.port.calls.back().call == FakeTransport::Call::Record);
-  // Playing (not counting in): Record does nothing yet (T6.7), and says so.
-  const size_t n = f.port.calls.size();
+  // T6.7: recording: Record is lit; F9 again ends recording, playback goes on (the transport decides what Record does).
+  f.d.advance(0.2);
+  CHECK(f.port.playhead().recording);
+  CHECK(f.get<shell::TransportButton>("main/control-bar/record").on());
   f.d.press("F9");
-  CHECK(f.port.calls.size() == n);
-  CHECK(f.ctx.status().find("T6.7") != std::string::npos);
+  CHECK(f.port.calls.back().call == FakeTransport::Call::Record);
+  CHECK_FALSE(f.port.playhead().recording);
+  CHECK(f.port.playhead().playing);
+  f.d.advance(0.2);
+  CHECK_FALSE(f.get<shell::TransportButton>("main/control-bar/record").on());
+  // Playing: F9 records from the playhead.
+  f.d.press("F9");
+  CHECK(f.port.calls.back().call == FakeTransport::Call::Record);
+  CHECK(f.port.playhead().recording);
   // The CPU meter's info adds the PDC total.
   f.port.latencyMs = 12.5;
   f.d.move(f.d.center("main/control-bar/cpu"));

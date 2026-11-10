@@ -577,16 +577,9 @@ void ViewContext::continuePlayback() {
   notify(view_change::kTransport);
 }
 
-void ViewContext::record() {  // T6.6
-  const PlayheadSnapshot ph = transport_.playhead();
-  if (ph.countingIn) {
-    transport_.stop();
-  } else if (ph.playing) {
-    setStatus("Recording while playing arrives with audio and note recording (M6, T6.7).");
-    return;
-  } else {
-    transport_.record(startMarker_);
-  }
+void ViewContext::record() {  // T6.6; T6.7: while playing it records from the playhead, while recording it ends
+  if (transport_.playhead().countingIn) transport_.stop();
+  else transport_.record(startMarker_);  // stopped: count-in, play, record; playing: record here; recording: off
   notify(view_change::kTransport);
 }
 
@@ -841,7 +834,7 @@ void ViewContext::registerGlobalActions() {
   };
   add("transport.playStop", [this] { togglePlay(); });
   add("transport.continue", [this] { continuePlayback(); });
-  add("transport.record", [this] { record(); });  // T6.6: count-in + play (capture: T6.7)
+  add("transport.record", [this] { record(); });  // T6.6 / T6.7: Record (F9)
   // T6.4: the computer MIDI keyboard (Live's M).
   add("keyboard.toggleComputerMidi", [this] { computerKeyboard_.setActive(!computerKeyboard_.active()); });
   computerKeyboard_.onChanged = [this](const ComputerKeyboard& k) {

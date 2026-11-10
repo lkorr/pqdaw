@@ -93,6 +93,13 @@
 // delay is replaced by a larger one that copies the history over at the switch (once, bounded by the ring).
 // A project without latency publishes no plan (CompensationPlan::none()): no line exists and a unit's only cost is
 // one pointer compare per block (output bit-identical to a program that never heard of PDC).
+//
+// ---- Track inputs (T6.7) ---------------------------------------------------------------------------------------------
+// setUnitInputs (non-RT, for the last published layout) binds each unit's `track.in` (ProcessContext::trackIn, 2
+// channels) to device input channels of the blocks process() is given (AudioBlock::in): `channels` = 1 reads channel
+// `first` on both, 2 reads `first`, `first + 1`; 0 (the default) or a channel the device does not have reads silence.
+// A binding is one relaxed atomic word per unit (no compile: the channels are not part of the image). A unit with a
+// bound input that the device has is never idle (its input is live audio).
 
 #include <atomic>
 #include <cstdint>
@@ -225,6 +232,13 @@ struct TopologyInfo {
 
 struct CompensationPlan;  // pq/engine/latency_plan.h
 
+// T6.7: a unit's track input (see "Track inputs").
+struct UnitInput {
+  uint16_t first = 0;
+  uint8_t channels = 0;  // 0: none, 1: mono (both track.in channels), 2: stereo
+  friend bool operator==(const UnitInput&, const UnitInput&) = default;
+};
+
 class ProjectProgram {
 public:
   // Non-RT. Errors: an invalid layout (no units, a bus without a valid producer, an output bus that does not exist,
@@ -251,6 +265,9 @@ public:
   // layout (one entry per unit; buses of it). Errors: a plan of another layout (InvalidArgument), a delay ring above
   // 2^26 frames (InvalidArgument), too many plans pending (Overflow: retry after a block).
   Status setCompensation(const CompensationPlan& plan);
+  // T6.7 (see "Track inputs"). Non-RT (serialised with publish). `perUnit` is parallel to the last published layout's
+  // units (shorter: the rest get none).
+  void setUnitInputs(std::span<const UnitInput> perUnit);
   // The plan's total (CompensationPlan::total) of the last setCompensation: how late the output is. Any thread.
   uint32_t outputLatency() const noexcept { return outputLatency_.load(std::memory_order_acquire); }
   // Audio thread (tests): a delay line of the current plan reads unit `unit`'s input bus `bus` (of the topology it runs).
@@ -381,6 +398,10 @@ private:
   SpscRing<Compensation*> compRing_{8};
   std::atomic<uint64_t> compCurrent_{0};            // sequence of the plan the audio thread runs
   std::atomic<uint32_t> outputLatency_{0};
+  // T6.7: the device block's inputs (audio thread) and the offset of the current image block in it.
+  const float* const* blockIn_ = nullptr;
+  uint32_t blockNumIn_ = 0;
+  uint32_t blockInOff_ = 0;
   uint32_t fadeFrames10ms_ = 1;
   // Audio thread.
   Compensation* comp_ = nullptr;

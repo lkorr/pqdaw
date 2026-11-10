@@ -32,16 +32,22 @@ public:
     state_.tick = from;
     ++state_.sequence;
   }
-  void record(Ticks from) override {  // T6.6
+  void record(Ticks from) override {  // T6.6; T6.7: playing records from the playhead, recording stops recording
     calls.push_back({Call::Record, from, {}});
-    state_.playing = true;
-    state_.tick = from;
+    if (state_.recording) {
+      state_.recording = false;
+    } else {
+      if (!state_.playing) state_.tick = from;
+      state_.playing = true;
+      state_.recording = true;
+    }
     ++state_.sequence;
   }
   void stop() override {
     calls.push_back({Call::Stop, state_.tick, {}});
     state_.playing = false;
     state_.countingIn = false;
+    state_.recording = false;
     ++state_.sequence;
   }
   void continuePlayback() override {

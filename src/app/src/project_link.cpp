@@ -431,6 +431,9 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   publishTempo(*current_);
   publishSequences(*current_);
   publishLiveRoutes(*current_, true);  // T6.4
+  recording_ = std::make_unique<RecordingService>(pool_.get());  // T6.7
+  recording_->bind(engine_.get());
+  syncRecordInputs(*current_, true);
   publishAudio(*current_);
   publishAutomation(*current_);
   if (cfg_.compileThread) worker_ = std::thread([this] { workerMain(); });
@@ -512,6 +515,7 @@ Status ProjectLink::setSampleRate(double rate) {
   if (rate == cfg_.sampleRate) return Ok{};
   flush();  // no structural compile pending or running (and none can start: only this thread queues them)
   const views::PlayheadSnapshot ph = playhead();
+  if (recording_ && recording_->active()) finishRecording();  // T6.7: the session ends with the old engine
   const double oldRate = cfg_.sampleRate;
   std::unique_ptr<engine::Engine> oldEngine;
   std::unique_ptr<engine::ProjectCompiler> oldCompiler;
@@ -560,6 +564,8 @@ Status ProjectLink::setSampleRate(double rate) {
   publishSequences(*current_);
   publishLiveRoutes(*current_, true);  // T6.4: the new engine has no routes yet
   syncRecording(*current_);            // T6.6: nor a metronome setting
+  recording_->bind(engine_.get());     // T6.7: the new engine's recorder (capture rings, monitors, punch)
+  syncRecordInputs(*current_, true);
   lastAudio_ = nullptr;
   publishAudio(*current_, true);  // T5.4: the new engine's timeline has no audio image yet
   publishAutomation(*current_);
@@ -588,6 +594,7 @@ ProjectLink::~ProjectLink() {
   loadCv_.notify_all();
   if (loader_.joinable()) loader_.join();
   engageDisk(false);
+  recording_.reset();  // T6.7: a running session is committed; no disk-thread pump after this
   // The engine before the tuning tables: its images point into them, and its timeline clears the automation taps
   // that point at their live inputs (T2.6-fix2). T5.4: and before the sample pool (its images hold samples).
   compiler_.reset();
@@ -1060,6 +1067,9 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   // one changed).
   if (reset || compile || c.has(doc::kChangeParam) || c.has(doc::kChangeMeta)) publishLiveRoutes(p, reset);
   if (reset || structural || c.has(doc::kChangeMeta)) syncRecording(p);  // T6.6: metronome, Track Delay
+  // T6.7: monitor gates, capture channels, punch (arm / monitor are params, inputs structural, punch Meta).
+  if (reset || structural || c.has(doc::kChangeParam) || c.has(doc::kChangeMeta) || c.has(doc::kChangeTimeline))
+    syncRecordInputs(p, reset);
   // T5.4: audio clips (edits are runtime data, never a compile); a tuning param can move a Steps transpose, a tempo
   // edit the clips' samples. Published only when something an audio track plays changed.
   if (reset || compile || relocated || c.has(doc::kChangeSequence) || c.has(doc::kChangeTimeline) ||
@@ -1865,6 +1875,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
     compiledUnits = static_cast<uint32_t>(b.value().images.size());
     {  // T6.2: the first plan (a new program: nothing sent before)
       LatencyJob job = planLatency(lp);
+      prog.value()->setUnitInputs(job.inputs);  // T6.7
       lastPlan_.reset();
       pendingLatency_.reset();
       if (!job.plan.none()) {
@@ -1936,6 +1947,8 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
       bool drained = true;
       if (Status st = drainDeferred(drained); !st.ok()) return st;
       if (!drained || queued) ++stats_.deferredPublishes;
+    } else if (deferred_.empty()) {
+      program->setUnitInputs(unitInputs(lp));  // T6.7: an input change alone compiles nothing that differs
     }
   }
   if (compiledUnits > 0) ++stats_.compiles;
@@ -2201,16 +2214,6 @@ void ProjectLink::play(Ticks from) {
   optimistic_ = {true, from, 0};
 }
 
-void ProjectLink::record(Ticks from) {  // T6.6: count-in + play (recording itself is T6.7)
-  if (!playhead().playing) prefetchAt(from);
-  engageDisk(true);
-  engine::TransportCommand c{engine::TransportCommandKind::Record, false, from, 0, 0};
-  c.countInBars = current_ ? current_->record.countInBars : 0;
-  postTransport(c);
-  optimistic_ = {true, from, 0};
-  optimistic_.countingIn = c.countInBars > 0;
-}
-
 void ProjectLink::stop() {
   const views::PlayheadSnapshot now = playhead();
   postTransport({engine::TransportCommandKind::Stop, false, 0, 0, 0});
@@ -2257,9 +2260,11 @@ views::PlayheadSnapshot ProjectLink::playhead() {
   if (fresh) ++reportSeq_;
   collectIdle();
   takeLatencyShifts();  // T6.2
+  pollRecording();      // T6.7: notes, punch-out, the end of a session (its commit)
   views::PlayheadSnapshot s;
   if (report_.commands >= commandsPosted_) {
     s.playing = report_.playing || report_.countingIn;  // T6.6: a count-in is the transport running
+    s.recording = report_.recording;  // T6.7
     s.tick = report_.tick;
     if (report_.countingIn) {
       s.countingIn = true;
@@ -2271,6 +2276,7 @@ views::PlayheadSnapshot ProjectLink::playhead() {
     s.playing = optimistic_.playing;
     s.tick = optimistic_.tick;
     s.countingIn = optimistic_.countingIn;
+    s.recording = optimistic_.recording;
   }
   s.sequence = reportSeq_;
   return s;

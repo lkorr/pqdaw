@@ -31,13 +31,20 @@
 //                       T6.4: the computer MIDI keyboard (`M`): degree `step` (0 … 16) above equave offset `equave`
 //                       (−5 … 5) went down (velocity 1 … 127) or up, into the armed tracks that listen to it (each in its
 //                       own tuning and note input mode). A key-up repeats its key-down's equave and step.
-//   record(from)        T6.6: the Record button: the project's count-in (RecordSettings::countInBars; the transport
-//                       holds at `from` meanwhile and playhead() reports countingIn), then playback from `from`.
-//                       Capturing inputs is T6.7; until then Record records nothing. Default: play(from).
+//   record(from)        T6.6 / T6.7: the Record button (F9). Stopped: the project's count-in (RecordSettings::countInBars;
+//                       the transport holds at `from` meanwhile and playhead() reports countingIn), then playback and
+//                       recording from `from` (the armed tracks' inputs: audio to WAV, notes; punch, loop takes).
+//                       Playing: recording starts where the playhead is. Recording: recording ends, playback goes on
+//                       (the session is committed as one undo step). Default: play(from).
 //   outputLatencyMs()   T6.6: how late the output is behind the transport (the PDC total), ms. Default 0.
 //   trackLatencyMs(id)  T6.6: how late track `id`'s output is (its compensated latency, Track Delay included), ms.
+//   audioInputChannels()   T6.7: the open device's input channels (the strips' input chooser). Default 0.
+//   recordingOverlay(out)  T6.7: what the running (or last) recording session made so far, for the arrangement's
+//                       live overlay: false when nothing changed since `out` was filled (out.revision), else `out` is
+//                       updated (its waveform appended). Default: false.
 
 #include <cstdint>
+#include <vector>
 
 #include "pq/core/time.h"
 
@@ -58,7 +65,32 @@ struct PlayheadSnapshot {
   // countInBeats, countInBeatsPerBar per bar.
   bool countingIn = false;
   uint32_t countInBeat = 0, countInBeats = 0, countInBeatsPerBar = 0;
+  bool recording = false;  // T6.7: the transport records (Record pressed, until Stop / Record again)
   friend constexpr bool operator==(const PlayheadSnapshot&, const PlayheadSnapshot&) noexcept = default;
+};
+
+// T6.7: a recording session as the arrangement draws it (plain data; ticks).
+struct RecordingOverlay {
+  uint64_t revision = 0;             // bumps whenever something below changed
+  uint32_t session = 0;              // 0: none
+  bool active = false;               // the session still records
+  struct Region {                    // one pass on one track
+    uint32_t trackId = 0;
+    Ticks start = 0, end = 0;        // what it covers so far
+    // Audio: the waveform: pairs (min, max) [peak0, peak0 + peakCount) of peaks[peakList] cover [audioStart, end).
+    bool audio = false;
+    Ticks audioStart = 0;
+    uint32_t peakList = 0, peak0 = 0, peakCount = 0;
+  };
+  std::vector<Region> regions;
+  std::vector<std::vector<float>> peaks;  // per recorded audio track: min, max per bucket of its file
+  struct Note {
+    uint32_t trackId = 0;
+    Ticks start = 0, length = 0;     // a held note grows to the current end
+    double hz = 0.0;
+    float velocity = 0.0f;
+  };
+  std::vector<Note> notes;
 };
 
 class TransportPort {
@@ -77,6 +109,11 @@ public:
   }
   virtual void record(Ticks from) { play(from); }
   virtual double outputLatencyMs() { return 0.0; }
+  virtual uint32_t audioInputChannels() { return 0; }
+  virtual bool recordingOverlay(RecordingOverlay& out) {
+    (void)out;
+    return false;
+  }
   virtual double trackLatencyMs(uint32_t trackId) {
     (void)trackId;
     return 0.0;

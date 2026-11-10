@@ -421,9 +421,11 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
   stop_->setInfo("Stop", "Stops playback (Space). Press again while stopped to return the start marker to the beginning.");
   stop_->onPress = [this] { ctx_.stopButton(); };
   record_ = &sized(add<TransportButton>("record", TransportButton::Icon::Record), 28);
-  record_->setInfo("Arrangement Record", "Counts in (the metronome menu's Count-In) and starts playback from the start "
-                                        "marker; lit while counting in, and a press then cancels. Capturing audio and "
-                                        "notes is not built yet (M6, T6.7): nothing is recorded.");
+  record_->setInfo("Arrangement Record (F9)", "Records the armed tracks: audio inputs to WAV, notes from MIDI and the "
+                                             "computer keyboard. Stopped: counts in (the metronome menu's Count-In) and "
+                                             "records from the start marker; playing: records from the playhead; "
+                                             "recording: stops recording (playback goes on). Lit while counting in "
+                                             "(a press then cancels) and while recording.");
   record_->onPress = [this] { ctx_.record(); };
   gap(*this, 10);
 
@@ -600,7 +602,7 @@ void ControlBar::openMetronomeMenu() {  // T6.6
 void ControlBar::refreshTransport() {
   const PlayheadSnapshot ph = ctx_.transport().playhead();
   play_->setOn(ph.playing && !ph.countingIn);
-  record_->setOn(ph.countingIn);  // T6.6
+  record_->setOn(ph.countingIn || ph.recording);  // T6.6; T6.7
   position_->setText(positionText(ph));
   if (ph.playing && timer_ == 0) schedulePositionTimer(ph.tick);
   if (!ph.playing && timer_ != 0) {
@@ -627,7 +629,7 @@ void ControlBar::onTimer(uint32_t id) {
     return;
   }
   position_->setText(positionText(ph));
-  record_->setOn(ph.countingIn);  // T6.6
+  record_->setOn(ph.countingIn || ph.recording);  // T6.6; T6.7
   play_->setOn(!ph.countingIn);
   schedulePositionTimer(ph.tick);
 }
