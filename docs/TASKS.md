@@ -778,7 +778,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [ ] **T6.5b Complex priming burst** (Q?-T6.5-a): starting playback inside a Complex clip primes ~10k frames in one block (~3 ms of a core per voice, estimated) — several such clips at Play can overrun a small buffer; spread the priming (e.g. prime ahead on a worker at locate, or over several blocks with a short fade-in). Also: mono sources through a stereo stretcher (2× work). Before the M6 review.
 - [x] **T6.6 Metronome, count-in, Track Delay, latency readouts** *(merged 1112712b; Q?-T6.6-a; 86 goldens moved (control bar strip; mixer-view strip rows); level is 4 presets; Record = count-in + play until T6.7)* (plan §T6.6). After T6.2, T6.4.
 - [ ] **T6.7 Recording: audio inputs to WAV, notes, monitoring, punch, takes** (plan §T6.7). After T6.1, T6.4, T6.6.
-- [ ] **T6.8 Warp UI, BPM detection, auto-warp** 👁 (plan §T6.8). After T6.3, T6.5.
+- [x] **T6.8 Warp UI, BPM detection, auto-warp** 👁 *(merged feeca5c7; Q?-T6.8-a; REVIEW: marker drag feel, mode rows; tempo detection tested on synthetic loops only (20/20); Warp as N-Bar Loop assumes 4/4; cold-cache analysis can run twice (link + views))* (plan §T6.8). After T6.3, T6.5.
 - [ ] **T6.9 Capture MIDI** (plan §T6.9). After T6.4, T6.7.
 - [ ] **T6.10 Take lanes and comping in the arrangement** 👁 (plan §T6.10). After T6.1, T6.7.
 - [ ] **T6.11 M6 review** (plan §T6.11).

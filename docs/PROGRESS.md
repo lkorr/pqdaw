@@ -343,3 +343,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: off = one test per image block; on 10.6 ns per 64-frame block (target 1 µs).
 - Notes/blockers: Q?-T6.6-a. 86 goldens re-recorded (control bar y 26–46; mixer-view two rows per strip).
 
+## 2026-11-10 · T6.8 · task/T6.8-warp-ui (merged feeca5c7 by the orchestrator)
+- Did: media/tempo_detect.* (weighted IOI histogram 60–200 BPM, prior on loud-hit spacing, confidence, hash-cached); doc ops slideWarpMarker / warpFromHere / warpAsLoop / autoWarpClips; views::SampleAnalysis off-thread; audio Clip View 7-mode chooser + per-mode settings, :2 / *2, content-axis waveform with marker strip, beat grid, faint transients; marker gestures (add/drag/Ctrl-slide/Delete/Esc, one undo step each); Warp From Here / Warp as N-Bar Loop; auto-warp on drop (pref off by default; default mode Beats); Preferences → Warp; arrangement badge names the mode.
+- Verified: pq_tests_media tempo 3/3 (20/20 loops ±1 BPM, 7 jitter seeds); document recording 9/9; views default tier by real dispatch; -Affected 45/45; after the orchestrator-requested re-rebase onto T6.6 the views default tier passes (7 goldens re-recorded with both changes).
+- Perf / CPU-efficiency check: nothing on the audio thread; detection once per file, off-thread, cached; ≤ 64 waveform pieces per view, ≤ 1 transient line per pixel column.
+- Notes/blockers: Q?-T6.8-a. Goldens: new audio-clip-warp-beats / -markers; re-recorded clip-view-audio, audio-prefs(-wasapi), library-prefs, midi-prefs.
+
