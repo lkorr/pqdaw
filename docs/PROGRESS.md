@@ -295,3 +295,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check (ship): wide64 105–121 → 22–25 ms; heavy30 498–509 → 47–65 ms; was lowerSites (all wires per track per input), makeCallees, paramDriven, findDevice.
 - Notes/blockers: per-track reuse not done; remaining time mostly project-wide (engine / group expansion 9 ms, wire planning 8, main paths 7, routing 7); next: shared indexes (~5 ms), cache native-engine expansions by meta::expansionKey.
 
+## 2026-11-10 · PF.3 · task/PF.3-ramp-copy
+- Did: one stage entry with a `ramp` argument; ramp-free units emitted once for both modes; each span of ramp-reading units branches once per block to its own noinline `<stage>_ramp<k>` copy (pointer args captures(none)); cache kFormat 3; new interleaved-ramp tests + IR bound.
+- Verified: -Affected -Slow after rebase 46/46; slow ramp sweep 680 runs interpreter == JIT; ship pq_bench_dsp links.
+- Perf / CPU-efficiency check (ship): fixture IR 384k → 260k; per-unit JIT 5579–6647 → 3899–3907 ms; largest unit 231 → 163 ms; at-rest run time equal, moving +0.5 %.
+- Notes/blockers: voice stage IR unchanged (every unit reads a ramp); all-param chains ~5 % slower to compile; one-function variant compiled 15 % slower (rejected).
+
