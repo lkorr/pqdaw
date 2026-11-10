@@ -12,7 +12,13 @@
 //                unit on another core, then the JIT image's crossfade. Per-block audio-thread times (ns) of the
 //                whole edit window vs steady state (acceptance: peak ≤ 1.3× steady)
 //   edit-interp/* the same with every unit interpreted (no JIT at all)
-// Usage: pq_bench_project [--rounds N] [--whole-jit]
+//   parallel/*    PF.4, with --threads-sweep (only that): the cold open of the fixture through the background compiler
+//                 (quick first images, then the final ones; a fresh Compiler per run: no cache) at 1/2/4/6 workers:
+//                 the time until every unit has a JIT image and until every unit has its final one, the process's peak
+//                 private memory above the start
+//   largest unit  PF.4, with --largest N (only that): N fresh compiles of the largest unit's final image (an edit of it
+//                 waits for one): median time and its phases
+// Usage: pq_bench_project [--rounds N] [--whole-jit] [--threads-sweep [--sweep-rounds N] [--sweep-threads 1|2|4|6]] [--largest N]
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -26,11 +32,22 @@
 
 #include "../../tests/engine/project_fixture.h"
 #include "pq/core/denormal_guard.h"
+#include "pq/engine/background_compile.h"
 #include "pq/engine/note_list.h"
 #include "pq/engine/project_compile.h"
 #include "pq/engine/project_program.h"
 #include "pq/jit/compiler.h"
 #include "pq_bench.h"
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+// psapi.h needs windows.h first.
+#include <psapi.h>
 
 using namespace pq;
 namespace g = pq::graph;
@@ -252,14 +269,146 @@ void editScenario(const char* prefix, project_fixture::Project& proj, e::Project
   }
 }
 
+double privateMb() {
+  PROCESS_MEMORY_COUNTERS_EX pmc{};
+  GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc));
+  return static_cast<double>(pmc.PrivateUsage) / (1024.0 * 1024.0);
+}
+
+Result<std::unique_ptr<e::ProgramImage>> jitQuick(void* user, const g::Schedule& s, uint32_t maxBlock, uint32_t groups,
+                                                  const e::Resources* res, bool* refine) {
+  jit::CompileOptions o;
+  o.maxBlockFrames = maxBlock;
+  o.maxVoiceGroups = groups;
+  o.resources = res;
+  o.quickFirst = true;
+  jit::CompileStats st;
+  auto img = static_cast<jit::Compiler*>(user)->compile(s, o, &st);
+  *refine = img.ok() && st.refine;
+  return img;
+}
+
+// PF.4: the fixture's cold open through BackgroundCompiler at 1/2/4/6 workers (see the header).
+int threadsSweep(const e::ProjectCompiler& units, int rounds, uint32_t only) {
+  struct Run {
+    std::mutex m;
+    uint32_t units = 0, firstOrFinal = 0, finals = 0;
+    std::chrono::steady_clock::time_point t0, allFirst, allFinal;
+    std::vector<std::unique_ptr<e::ProgramImage>> keep;
+  };
+  for (int round = 0; round < rounds; ++round)
+    for (uint32_t threads : {1u, 2u, 4u, 6u}) {
+      if (only != 0 && threads != only) continue;
+      auto jc = jit::Compiler::create();
+      if (!jc.ok()) return 20;
+      Run run;
+      run.units = units.numUnits();
+      e::BackgroundCompilerConfig bc;
+      bc.backend = {&jitBuild, jc.value().get(), &jitQuick};
+      bc.threads = threads;
+      bc.user = &run;
+      bc.deliver = [](void* user, const e::BackgroundJob& job, Result<std::unique_ptr<e::ProgramImage>> img) {
+        Run& r = *static_cast<Run*>(user);
+        if (!img.ok()) std::exit(21);
+        std::lock_guard lock(r.m);
+        const auto now = std::chrono::steady_clock::now();
+        if (!job.refine && ++r.firstOrFinal == r.units) r.allFirst = now;
+        if (!job.first && ++r.finals == r.units) r.allFinal = now;
+        r.keep.push_back(std::move(img.value()));  // keeps every code alive (no release while compiling)
+      };
+      std::vector<e::BackgroundJob> jobs;
+      for (uint32_t u = 0; u < units.numUnits(); ++u) {
+        e::BackgroundJob j;
+        j.schedule = units.unit(u).schedule;
+        j.maxBlockFrames = kBlock;
+        j.maxVoiceGroups = units.imageVoiceGroups(u);
+        j.tag = u;
+        jobs.push_back(std::move(j));
+      }
+      const double mb0 = privateMb();
+      std::atomic<bool> sampling{true};
+      std::atomic<double> peak{mb0};
+      std::thread sampler([&] {
+        while (sampling.load()) {
+          const double mb = privateMb();
+          if (mb > peak.load()) peak.store(mb);
+          std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+      });
+      {
+        e::BackgroundCompiler worker(bc);
+        run.t0 = std::chrono::steady_clock::now();
+        worker.want(std::move(jobs));
+        if (!worker.waitIdle(600.0)) return 22;
+      }
+      sampling.store(false);
+      sampler.join();
+      const jit::CacheCounters cc = jc.value()->counters();
+      auto ms = [&](std::chrono::steady_clock::time_point t) {
+        return std::chrono::duration<double, std::milli>(t - run.t0).count();
+      };
+      std::printf("BENCH parallel/%u threads: every unit on a JIT image after %.0f ms, every final image after %.0f ms; "
+                  "%llu LLVM compiles; peak private memory %.0f MB (+%.0f MB over the start)\n",
+                  threads, ms(run.allFirst), ms(run.allFinal), static_cast<unsigned long long>(cc.compiles), peak.load(),
+                  peak.load() - mb0);
+      std::fflush(stdout);
+    }
+  return 0;
+}
+
+// PF.4: the largest unit's final JIT image (what an edit of it waits for), `rounds` fresh compiles: median times.
+int largestUnit(const e::ProjectCompiler& units, int rounds) {
+  uint32_t big = 0;
+  for (uint32_t u = 1; u < units.numUnits(); ++u)
+    if (units.unit(u).ops > units.unit(big).ops) big = u;
+  std::vector<double> total, gen, opt, mc, quick;
+  jit::CompileStats st;
+  for (int r = 0; r < rounds; ++r) {
+    auto jc = jit::Compiler::create();
+    if (!jc.ok()) return 30;
+    jit::CompileOptions o;
+    o.maxBlockFrames = kBlock;
+    o.maxVoiceGroups = units.imageVoiceGroups(big);
+    o.quickFirst = true;
+    jit::CompileStats qs;
+    auto first = jc.value()->compile(*units.unit(big).schedule, o, &qs);
+    if (!first.ok()) return 31;
+    quick.push_back(qs.totalMs);
+    o.quickFirst = false;
+    auto img = jc.value()->compile(*units.unit(big).schedule, o, &st);
+    if (!img.ok()) return 31;
+    total.push_back(st.totalMs);
+    gen.push_back(st.codegenMs);
+    opt.push_back(st.optimiseMs);
+    mc.push_back(st.machineCodeMs);
+  }
+  auto median = [](std::vector<double> v) {
+    std::sort(v.begin(), v.end());
+    return v[v.size() / 2];
+  };
+  std::printf("BENCH largest unit (%u ops, %u IR instructions, %llu B of code): JIT median %.1f ms (min %.1f): IR generation "
+              "%.1f, IR passes %.1f, machine code %.1f ms (%d compiles); its quick first image %.1f ms\n",
+              units.unit(big).ops, st.irInstructions, static_cast<unsigned long long>(st.objectBytes), median(total),
+              *std::min_element(total.begin(), total.end()), median(gen), median(opt), median(mc), rounds,
+              median(quick));
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   int rounds = 5;
-  bool wholeJit = false;
+  bool wholeJit = false, sweep = false;
+  int sweepRounds = 1;
+  uint32_t sweepOnly = 0;
+  int largest = 0;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--rounds") == 0 && i + 1 < argc) rounds = std::max(1, std::atoi(argv[++i]));
     if (std::strcmp(argv[i], "--whole-jit") == 0) wholeJit = true;
+    if (std::strcmp(argv[i], "--threads-sweep") == 0) sweep = true;
+    if (std::strcmp(argv[i], "--largest") == 0 && i + 1 < argc) largest = std::max(1, std::atoi(argv[++i]));
+    if (std::strcmp(argv[i], "--sweep-rounds") == 0 && i + 1 < argc) sweepRounds = std::max(1, std::atoi(argv[++i]));
+    if (std::strcmp(argv[i], "--sweep-threads") == 0 && i + 1 < argc) sweepOnly = static_cast<uint32_t>(std::atoi(argv[++i]));
   }
   bench::pinCurrentThread(bench::cpuTopology().coreMask(1));
   bench::raisePriority();
@@ -282,6 +431,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "%s\n", bi.error().message.c_str());
     return 3;
   }
+  if (largest > 0) return largestUnit(interp, largest);
+  if (sweep) return threadsSweep(interp, sweepRounds, sweepOnly);  // (new threads take the process's affinity, not this one's)
   const BuildTimes ti = times(interp);
   std::printf("T1.x-arch1 per-track units, 30-track fixture: %u units, %u schedule ops (largest unit %u), block %u, 48 kHz\n",
               interp.numUnits(), ti.ops, ti.maxUnitOps, kBlock);

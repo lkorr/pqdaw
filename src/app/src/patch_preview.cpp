@@ -32,6 +32,7 @@ PatchPreview::PatchPreview(const PreviewConfig& config)
     bc.backend = cfg_.jit;
     bc.deliver = &PatchPreview::deliver;
     bc.user = this;
+    bc.threads = 1;  // PF.4: one patch, the latest edit: more workers would only build superseded schedules
     jit_ = std::make_unique<engine::BackgroundCompiler>(bc);
   }
 }

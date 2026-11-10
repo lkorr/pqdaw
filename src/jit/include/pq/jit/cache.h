@@ -20,7 +20,7 @@
 //
 // Disk entries (<32 hex digits>.pqjit): a 64-byte header (magic, format version, key, payload size, xxh3-128 of the
 // payload), then the stage function names, the pointer-table description (host slots, kernel offsets), statistics and
-// the COFF object. Written to a unique temporary file and renamed over the entry (MoveFileExW), so readers see an old
+// the COFF object(s) (PF.4: two for a module split by function). Written to a unique temporary file and renamed over the entry (MoveFileExW), so readers see an old
 // entry or a new one, never half of one; concurrent writers of one key both succeed (last rename wins, same content).
 // Readers open with FILE_SHARE_DELETE, so an eviction or a replacing rename never waits for them. Anything that does
 // not validate (truncated, flipped bits, another format) is a miss: the entry is deleted (read-write dir only) and

@@ -58,7 +58,7 @@ struct Entry {
   uint64_t objectBytes = 0;
   uint32_t irInstructions = 0, inlinedOps = 0, calledOps = 0;
   bool stackProbes = false;
-  std::vector<uint8_t> object;      // the COFF object
+  std::vector<std::vector<uint8_t>> objects;  // the COFF object(s): PF.4, one per part of a split module
 };
 
 enum class ReadResult { Miss, Hit, Rejected };

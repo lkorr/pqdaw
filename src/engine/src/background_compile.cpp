@@ -9,13 +9,26 @@
 #endif
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <utility>
 
 namespace pq::engine {
 
+uint32_t defaultCompileThreads() noexcept {
+  if (const char* env = std::getenv("PQ_JIT_THREADS"); env != nullptr && *env != '\0') {
+    const long n = std::strtol(env, nullptr, 10);
+    if (n >= 1 && n <= 64) return static_cast<uint32_t>(n);
+  }
+  const unsigned hw = std::thread::hardware_concurrency();
+  return std::clamp<uint32_t>(hw > 2 ? hw - 2 : 1, 1, 6);
+}
+
 BackgroundCompiler::BackgroundCompiler(const BackgroundCompilerConfig& config) : cfg_(config) {
-  worker_ = std::thread([this] { run(); });
+  const uint32_t n = cfg_.threads != 0 ? cfg_.threads : defaultCompileThreads();
+  workers_.reserve(n);
+  for (uint32_t k = 0; k < n; ++k) workers_.emplace_back([this] { run(); });
 }
 
 BackgroundCompiler::~BackgroundCompiler() {
@@ -25,7 +38,14 @@ BackgroundCompiler::~BackgroundCompiler() {
     queue_.clear();
   }
   cv_.notify_all();
-  if (worker_.joinable()) worker_.join();
+  for (std::thread& w : workers_)
+    if (w.joinable()) w.join();
+}
+
+bool BackgroundCompiler::isRunning(const graph::Schedule* s) const noexcept {
+  for (const Running& r : running_)
+    if (r.schedule == s) return true;
+  return false;
 }
 
 void BackgroundCompiler::want(std::vector<BackgroundJob> jobs) {
@@ -36,13 +56,20 @@ void BackgroundCompiler::want(std::vector<BackgroundJob> jobs) {
         if (j.schedule.get() == s) return true;
       return false;
     };
-    std::deque<BackgroundJob> next;
-    bool runningListed = false;
+    for (Running& r : running_) r.wanted = false;
+    // PF.4: new schedules (an edit) first, then those already queued, then refinements — each in the caller's order.
+    std::deque<BackgroundJob> fresh, queued, refine;
     for (BackgroundJob& j : jobs) {
-      runningListed = runningListed || (j.schedule != nullptr && j.schedule.get() == running_);
-      if (j.schedule != nullptr && j.schedule.get() != running_ && !in(next, j.schedule.get())) next.push_back(std::move(j));
+      if (j.schedule == nullptr) continue;
+      bool running = false;
+      for (Running& r : running_)
+        if (r.schedule == j.schedule.get()) running = r.wanted = true;
+      if (running || in(fresh, j.schedule.get()) || in(queued, j.schedule.get()) || in(refine, j.schedule.get())) continue;
+      (j.refine ? refine : in(queue_, j.schedule.get()) ? queued : fresh).push_back(std::move(j));
     }
-    runningWanted_ = runningListed;
+    std::deque<BackgroundJob> next = std::move(fresh);
+    for (BackgroundJob& j : queued) next.push_back(std::move(j));
+    for (BackgroundJob& j : refine) next.push_back(std::move(j));
     for (const BackgroundJob& j : queue_) stats_.dropped += in(next, j.schedule.get()) ? 0u : 1u;
     for (const BackgroundJob& j : next) stats_.wanted += in(queue_, j.schedule.get()) ? 0u : 1u;
     queue_ = std::move(next);
@@ -53,7 +80,7 @@ void BackgroundCompiler::want(std::vector<BackgroundJob> jobs) {
 bool BackgroundCompiler::waitIdle(double timeoutSeconds) {
   std::unique_lock lock(mutex_);
   return cv_.wait_for(lock, std::chrono::duration<double>(timeoutSeconds),
-                      [&] { return quit_ || (queue_.empty() && running_ == nullptr); });
+                      [&] { return quit_ || (queue_.empty() && running_.empty()); });
 }
 
 bool BackgroundCompiler::stopping() const noexcept {
@@ -74,8 +101,7 @@ void BackgroundCompiler::run() {
     if (quit_) return;
     BackgroundJob job = std::move(queue_.front());
     queue_.pop_front();
-    running_ = job.schedule.get();
-    runningWanted_ = true;
+    running_.push_back(Running{job.schedule.get(), true});
     lock.unlock();
     if (cfg_.beforeBuild != nullptr) cfg_.beforeBuild(cfg_.user, job);
     const auto t0 = std::chrono::steady_clock::now();
@@ -97,7 +123,10 @@ void BackgroundCompiler::run() {
     job.first = ok && refine;
     if (cfg_.deliver != nullptr) cfg_.deliver(cfg_.user, job, std::move(img));
     lock.lock();
-    if (job.first && runningWanted_ && !quit_) {  // Q111 C: the final image after every queued first one
+    auto self = std::find_if(running_.begin(), running_.end(), [&](const Running& r) { return r.schedule == job.schedule.get(); });
+    const bool wanted = self != running_.end() && self->wanted;
+    if (self != running_.end()) running_.erase(self);
+    if (job.first && wanted && !quit_) {  // Q111 C: the final image after every queued first one
       bool queued = false;
       for (const BackgroundJob& j : queue_) queued = queued || j.schedule == job.schedule;
       if (!queued) {
@@ -109,7 +138,6 @@ void BackgroundCompiler::run() {
         ++stats_.refinements;
       }
     }
-    running_ = nullptr;
     if (ok) {
       ++stats_.built;
       stats_.lastBuildMs = ms;

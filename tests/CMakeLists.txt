@@ -349,6 +349,7 @@ pq_add_test(pq_tests_jit PERF SHARDS 4 SLOW_SHARDS 8
     engine/test_voices.cpp  # the T1.8 voice suite again, on JIT images (rigImageBuilder, set in test_jit.cpp)
     engine/test_tuning_voices.cpp  # T2.6: the tuning node through the VoiceEngine, on JIT images
     jit/test_live_swap.cpp  # T1b.5: interpreter -> JIT live swap through the background compiler
+    jit/test_jit_parallel.cpp  # PF.4: parallel compiles and split units: same code bytes, bit-identical output
     jit/test_jit_cache.cpp  # T1b.4: the compile cache (memory, disk, read-only AOT directories)
     engine/test_silence.cpp  # T1.x-silence: the sleep suite again, on JIT images
     jit/test_jit_silence.cpp  # T1.x-silence: interpreter and JIT sleep identically

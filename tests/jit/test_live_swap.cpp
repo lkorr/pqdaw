@@ -1,6 +1,6 @@
-// T1b.5: the interpreter → JIT live swap. A project plays interpreted units; the background compiler (one low-priority
-// worker, pq/engine/background_compile.h) builds their JIT images while it plays — here with a SIMULATED compile
-// delay: the worker is held in its beforeBuild hook until the render has passed a chosen block — and each image is
+// T1b.5: the interpreter → JIT live swap. A project plays interpreted units; the background compiler (low-priority
+// workers, pq/engine/background_compile.h; PF.4: several at once) builds their JIT images while it plays — here with a SIMULATED compile
+// delay: the workers are held in their beforeBuild hook until the render has passed a chosen block — and each image is
 // published into its unit with an Instant swap. Rendered offline block by block, the output must equal a project
 // that stays interpreted, sample for sample (JIT == interpreter bit for bit since T1b.1-fix1, and the swap transfers
 // every state word): the swap is click-free by T1.9's criteria trivially (zero difference to the no-swap render).
@@ -121,6 +121,7 @@ struct Live {
   Gate* gate = nullptr;
   eng::SwapPolicy policy{eng::SwapMode::Instant};
   std::atomic<int> published{0}, stale{0}, failed{0}, firsts{0};
+  std::mutex deliverMutex;  // PF.4: deliveries come from several workers (ProjectLink: its compile mutex)
   static void before(void* self, const eng::BackgroundJob&) {
     Gate& gt = *static_cast<Live*>(self)->gate;
     std::unique_lock lock(gt.m);
@@ -131,6 +132,7 @@ struct Live {
   // What ProjectLink::deliverJit does: publish into the unit only if it still runs this schedule.
   static void deliver(void* self, const eng::BackgroundJob& job, pq::Result<std::unique_ptr<eng::ProgramImage>> img) {
     Live& l = *static_cast<Live*>(self);
+    std::lock_guard lock(l.deliverMutex);
     if (!img.ok()) {
       ++l.failed;
       return;
@@ -170,9 +172,10 @@ TEST_CASE("T1b.5: interpreted units swap to their background JIT images after a 
     const uint32_t units = live.compiler->numUnits();
     REQUIRE(units >= 3);
     jit.want(live.jobs());
-    {  // the worker holds the first job at the gate: the compile is "slow"
+    const int busy = static_cast<int>(std::min(jit.threads(), units));
+    {  // every worker holds a job at the gate (PF.4: in parallel): the compiles are "slow"
       std::unique_lock lock(gate.m);
-      REQUIRE(gate.cv.wait_for(lock, std::chrono::seconds(30), [&] { return gate.waiting == 1; }));
+      REQUIRE(gate.cv.wait_for(lock, std::chrono::seconds(30), [&] { return gate.waiting == busy; }));
     }
     std::vector<float> a, b;
     live.render(400, a);  // 0.53 s of interpreted playback while the JIT "compiles"
@@ -258,4 +261,89 @@ TEST_CASE("T1b.x-perf: quick first JIT images (voice groups), then the pair imag
   CHECK_MESSAGE(firstDiff == a.size(), "first difference at sample " << firstDiff / 2);
   CHECK(live.rtViolations == 0);
   live.program->collect();
+}
+
+// PF.4: the background compiler's pool. Workers build at once (up to `threads`), a schedule never runs on two workers
+// at once, a schedule new to the queue (the unit the user just edited) starts before those already queued, and every
+// first image starts before any refinement. The backend is the interpreter with a "quick" path that always asks for a
+// refinement; the workers are held at a gate until every one of them has a job.
+TEST_CASE("PF.4: background compiler pool: parallel builds, one worker per schedule, the edited unit first, refinements last") {
+  Rig rig, other;  // `other`'s schedules stand in for an edit's new ones
+  struct Pool {
+    Gate gate;
+    std::mutex m;
+    std::vector<std::pair<const g::Schedule*, bool>> starts;  // (schedule, refine) in start order
+    std::vector<const g::Schedule*> active;
+    int concurrent = 0, maxConcurrent = 0, twice = 0, delivered = 0;
+  } pool;
+  pq::engine::UnitBackend backend;
+  backend.quick = [](void*, const g::Schedule& s, uint32_t maxBlock, uint32_t groups, const eng::Resources* res,
+                     bool* refine) -> pq::Result<std::unique_ptr<eng::ProgramImage>> {
+    eng::InterpretOptions io;
+    io.maxBlockFrames = maxBlock;
+    io.maxVoiceGroups = groups;
+    io.resources = res;
+    *refine = true;
+    return eng::buildInterpreted(s, io);
+  };
+  eng::BackgroundCompilerConfig bc;
+  bc.backend = backend;
+  bc.threads = 2;
+  bc.user = &pool;
+  bc.beforeBuild = [](void* user, const eng::BackgroundJob& job) {
+    Pool& p = *static_cast<Pool*>(user);
+    {
+      std::lock_guard lock(p.m);
+      p.starts.emplace_back(job.schedule.get(), job.refine);
+      p.twice += std::count(p.active.begin(), p.active.end(), job.schedule.get()) > 0 ? 1 : 0;
+      p.active.push_back(job.schedule.get());
+      p.maxConcurrent = std::max(p.maxConcurrent, ++p.concurrent);
+    }
+    std::unique_lock lock(p.gate.m);
+    ++p.gate.waiting;
+    p.gate.cv.notify_all();
+    p.gate.cv.wait(lock, [&] { return p.gate.open; });
+  };
+  bc.deliver = [](void* user, const eng::BackgroundJob& job, pq::Result<std::unique_ptr<eng::ProgramImage>> img) {
+    Pool& p = *static_cast<Pool*>(user);
+    REQUIRE(img.ok());
+    std::lock_guard lock(p.m);
+    p.active.erase(std::find(p.active.begin(), p.active.end(), job.schedule.get()));
+    --p.concurrent;
+    ++p.delivered;
+  };
+  eng::BackgroundCompiler jit(bc);
+  REQUIRE(jit.threads() == 2);
+  std::vector<eng::BackgroundJob> jobs = rig.jobs();
+  const size_t n = jobs.size();
+  REQUIRE(n >= 3);
+  jit.want(jobs);
+  {
+    std::unique_lock lock(pool.gate.m);
+    REQUIRE(pool.gate.cv.wait_for(lock, std::chrono::seconds(30), [&] { return pool.gate.waiting == 2; }));
+  }
+  // An "edit": the same jobs plus a new schedule, listed last; the two running jobs listed again (not re-queued).
+  std::vector<eng::BackgroundJob> edited = rig.jobs();
+  eng::BackgroundJob fresh = other.jobs().front();
+  edited.push_back(fresh);
+  jit.want(edited);
+  {
+    std::lock_guard lock(pool.gate.m);
+    pool.gate.open = true;
+  }
+  pool.gate.cv.notify_all();
+  REQUIRE(jit.waitIdle(60.0));
+  std::lock_guard lock(pool.m);
+  CHECK(pool.maxConcurrent == 2);
+  CHECK(pool.twice == 0);
+  REQUIRE(pool.starts.size() == 2 * (n + 1));  // a first image and a refinement per schedule
+  CHECK(pool.starts[2].first == fresh.schedule.get());  // the edit's schedule before the queued ones
+  CHECK_FALSE(pool.starts[2].second);
+  for (size_t k = 0; k < n + 1; ++k) {
+    CAPTURE(k);
+    CHECK_FALSE(pool.starts[k].second);  // every first image …
+    CHECK(pool.starts[n + 1 + k].second);  // … before any refinement
+  }
+  CHECK(pool.delivered == static_cast<int>(2 * (n + 1)));
+  CHECK(jit.stats().refinements == n + 1);
 }

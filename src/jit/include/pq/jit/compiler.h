@@ -29,10 +29,16 @@
 // same key shares it), then on disk (CacheConfig), and runs LLVM only on a miss. A cached image is bit-identical in
 // output to a freshly compiled one. counters() says what happened (the "no JIT compile" test hook).
 //
-// Threads: Compiler::compile is NOT RT-safe (the compiler worker thread; it allocates, takes a lock, runs LLVM, reads
-// and writes the cache directory). The returned image's process() is RT-safe. An image keeps its machine code alive
-// on its own (it may outlive the Compiler); destroy it off the audio thread. Destroying it never waits for a compile in
-// progress (M1 review L6): its code is released at once when the compiler is idle, else by that compile when it ends.
+// Threads: Compiler::compile is NOT RT-safe (compiler worker threads; it allocates, takes locks, runs LLVM, reads and
+// writes the cache directory). PF.4: any number of threads may compile at once (engine::BackgroundCompiler's pool):
+// each compile has its own LLVM context and a TargetMachine of its own, they share the LLJIT and the cache; a compile
+// of a key another compile is running waits for it and shares its code. The machine code does not depend on how many
+// compile at once. A module of >= 3000 IR instructions is split by function into two parts compiled to two objects,
+// in parallel while no other compile runs (an edit's latency: the 30-track fixture's largest unit 161 → 113 ms), one
+// after the other otherwise; the split depends on the module only. The returned image's process() is RT-safe. An image
+// keeps its machine code alive on its own (it may outlive the Compiler); destroy it off the audio thread. Destroying it
+// never waits for a compile in progress (M1 review L6): its code is released at once when no compile runs, else by
+// the last running compile when it ends.
 
 #include <cstdint>
 #include <memory>
@@ -87,6 +93,7 @@ struct CompileStats {
   uint32_t calledOps = 0;       // schedule ops that call a dsp kernel or a runtime helper
   uint32_t pairedStages = 0;    // voice stages that got a two-group function (VoiceCode::Pairs*, T1b.2)
   uint64_t objectBytes = 0;     // size of the machine-code object(s) linked
+  uint32_t objects = 0;         // machine-code objects linked: 2 for a module split by function (PF.4), else 0 or 1
   bool stackProbes = false;     // the object calls __chkstk: some stage function has a frame > 4 KiB, whose guard-page
                                 // probes may fault on the audio thread the first time (must stay false; tests/jit)
   bool refine = false;          // CompileOptions::quickFirst gave a first image: compile without it for the final one
@@ -101,7 +108,7 @@ enum class Target : uint8_t {
 };
 inline constexpr const char* kBaselineCpu = "x86-64-v3";
 
-// Per-Compiler settings (one LLJIT instance and target machine each).
+// Per-Compiler settings (one LLJIT instance each; target machines, one per compile running, made from it).
 struct CompilerConfig {
   // LLVM CodeGenOptLevel for instruction selection and register allocation: 0 None (FastISel, fast register
   // allocator), 1 Less, 2 Default, 3 Aggressive. Measured in bench/RESULTS.md (T1b.1-fix1).
@@ -109,8 +116,8 @@ struct CompilerConfig {
   static constexpr uint32_t kDefaultCodeGenLevel = 3;  // Aggressive, as in T1b.1: levels 1–3 measured equal (Q99)
   Target target = Target::Host;
   CacheConfig cache;  // default: code shared in memory, no disk cache
-  // Test hook: called by compile() on its thread, with the compiler's lock held, right before an LLVM compile (cache
-  // misses only); may block (a simulated slow compile).
+  // Test hook: called by compile() on its thread right before an LLVM compile (cache misses only), while that compile
+  // counts as running (code released meanwhile waits for it); may block (a simulated slow compile).
   void (*beforeCompile)(void* user) = nullptr;
   void* beforeCompileUser = nullptr;
 };

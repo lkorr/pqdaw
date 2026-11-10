@@ -52,7 +52,7 @@ namespace g = pq::graph;
 
 // Entry format: bump kFormat whenever the payload layout or the meaning of a key field changes.
 constexpr char kMagic[8] = {'P', 'Q', 'J', 'I', 'T', 'C', 'C', 'H'};
-constexpr uint32_t kFormat = 3;  // 2: pair functions (T1b.2); 3: no ramp-mode functions (PF.3)
+constexpr uint32_t kFormat = 4;  // 2: pair functions (T1b.2); 3: no ramp-mode functions (PF.3); 4: objects (PF.4)
 constexpr uint32_t kHeaderBytes = 64;
 constexpr uint64_t kMaxPayload = uint64_t{256} << 20;
 constexpr const wchar_t* kExt = L".pqjit";
@@ -460,18 +460,24 @@ bool parsePayload(const uint8_t* p, size_t n, Entry& e) {
       !r.get(e.inlinedOps) || !r.get(e.calledOps) || !r.get(probes) || probes > 1)
     return false;
   e.stackProbes = probes != 0;
-  uint64_t objLen = 0;
-  const uint8_t* obj = nullptr;
-  // A schedule without stages has no code (and no object).
-  if (!r.get(objLen) || (objLen == 0) != (stages == 0) || objLen > kMaxPayload || !r.bytes(static_cast<size_t>(objLen), obj))
-    return false;
-  e.object.assign(obj, obj + objLen);
+  // A schedule without stages has no code (and no object); a split module has one object per part (PF.4).
+  uint32_t objects = 0;
+  if (!r.get(objects) || (objects == 0) != (stages == 0) || objects > 64) return false;
+  e.objects.assign(objects, {});
+  for (std::vector<uint8_t>& o : e.objects) {
+    uint64_t objLen = 0;
+    const uint8_t* obj = nullptr;
+    if (!r.get(objLen) || objLen == 0 || objLen > kMaxPayload || !r.bytes(static_cast<size_t>(objLen), obj)) return false;
+    o.assign(obj, obj + objLen);
+  }
   return r.done();
 }
 
 std::vector<uint8_t> payloadOf(const Entry& e) {
   Stream s;
-  s.reserve(e.object.size() + 256 + e.fnOffsets.size() * 8);
+  size_t objectBytes = 0;
+  for (const std::vector<uint8_t>& o : e.objects) objectBytes += o.size();
+  s.reserve(objectBytes + 256 + e.fnOffsets.size() * 8);
   s.put(static_cast<uint32_t>(e.stageFunctions.size()));
   for (const std::string& name : e.stageFunctions) {
     s.put(static_cast<uint32_t>(name.size()));
@@ -488,9 +494,14 @@ std::vector<uint8_t> payloadOf(const Entry& e) {
   for (uint64_t off : e.fnOffsets) s.put(off);
   s.put(e.irHash.lo), s.put(e.irHash.hi), s.put(e.objectBytes), s.put(e.irInstructions), s.put(e.inlinedOps);
   s.put(e.calledOps), s.put(static_cast<uint8_t>(e.stackProbes));
-  s.put(static_cast<uint64_t>(e.object.size()));
+  s.put(static_cast<uint32_t>(e.objects.size()));
   std::vector<uint8_t> out = s.bytes();
-  out.insert(out.end(), e.object.begin(), e.object.end());
+  for (const std::vector<uint8_t>& o : e.objects) {
+    const uint64_t len = o.size();
+    const auto* l = reinterpret_cast<const uint8_t*>(&len);
+    out.insert(out.end(), l, l + sizeof len);
+    out.insert(out.end(), o.begin(), o.end());
+  }
   return out;
 }
 

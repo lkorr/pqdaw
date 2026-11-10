@@ -408,6 +408,7 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
     bc.beforeBuild = cfg_.jitBeforeCompile != nullptr ? &ProjectLink::beforeJit : nullptr;
     bc.user = this;
     bc.lowPriority = true;
+    bc.threads = cfg_.jitThreads;
     jit_ = std::make_unique<engine::BackgroundCompiler>(bc);
     jitWorker_ = jit_.get();
   }

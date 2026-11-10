@@ -167,7 +167,9 @@ struct LinkConfig {
   // T1b.x-perf's quick first images: QUESTIONS Q111 option C); tests and the AOT seed pass
   // compile::jitUnitBackend(&theirCompiler[, quickFirst]).
   engine::UnitBackend jitBackend;
-  // Test hook (the "simulated slow compile"): called on the JIT worker before each compile; may block.
+  // PF.4: the background compiler's worker threads (0: engine::defaultCompileThreads(), min(6, cores − 2)).
+  uint32_t jitThreads = 0;
+  // Test hook (the "simulated slow compile"): called on a JIT worker before each compile; may block.
   void (*jitBeforeCompile)(void* user) = nullptr;
   void* jitUser = nullptr;
   // T5.4: audio clips.
