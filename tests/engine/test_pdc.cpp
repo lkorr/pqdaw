@@ -983,10 +983,11 @@ TEST_CASE("pdc (M6 review M2): 63 delay lines that outgrow their rings copy thei
   // Every line's history arrived intact: once the copies and the fades are over, the master reads tap 24100 of the
   // copied history exactly where the sum says.
   for (size_t f = 64 * 48; f < y.size(); ++f) REQUIRE(std::fabs(y[f] - want(48000 + f, 24100)) < 1e-3f);
-  // And no click while it moved (64 unit sines: a sample-to-sample step of at most 64 * 2 pi * 100 / 48000 = 0.84).
+  // And no click while it moved: 64 unit sines step by at most 64 * 2 pi * 100 / 48000 = 0.84 per sample, and the
+  // 63 fades from tap 24000 to 24100 (75 degrees apart) add at most 63 * 2 sin(37.5 deg) / 480 = 0.16.
   double jump = 0.0;
   for (size_t f = 1; f < y.size(); ++f) jump = std::max(jump, static_cast<double>(std::fabs(y[f] - y[f - 1])));
-  CHECK(jump < 0.9);
+  CHECK(jump < 1.0);
   CHECK(r->rtViolations == 0);
 }
 
