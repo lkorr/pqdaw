@@ -965,8 +965,9 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
 - **Choices** (most reversible): (1) L3: held live **Hz-input** notes never retune (raw pitches, like drawn Hz notes and
   their recorded identity); Keys notes still follow every new route image (a Generator drag publishes one per step).
   (2) L4: the app keys a tuning param's project slot per node table (`"tuning:<id>:<name>#t<table>"`), so a MOS
-  size + generator change keeps the old table AND the old params until the compiled image swaps in (the held note goes
-  straight from the old pitch to the new; ~50 ms + compile of the old pitch instead of a third one). (3) L13: stale
+  size + generator change keeps the old table AND the old params until the compiled image swaps in: no third pitch
+  (measured: a held drawn note on 7@700 → 5@710 sounded 10 ¢ off the new pitch during the compile before; now its
+  sequence swap gives it the new pitch at once). (3) L13: stale
   `Unsaved\<pid-time>` folders (process gone, by pid + creation time) with .wav files are offered at start in a small
   popover: Open as Project (a new untitled project: the takes are MOVED into its own Unsaved folder, one after another
   on an audio track "Recovered", one undo step), Show in Explorer, Discard (the only delete), Later. Empty stale

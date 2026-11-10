@@ -11,8 +11,8 @@
 //               compile each), the held drawn note retuned at every step with no gap in the sound, then a held live
 //               Keys note likewise (LiveInput moves held keys to a new route image's pitch)
 //   hz input    M6 review L3: a held live Hz-input note keeps its Hz through a Generator drag (a raw pitch)
-//   mos shape   M6 review L4: a MOS size + generator change (a new table): until the compile publishes, the held note
-//               keeps the old pitch (old table, old params); then the new one; never a third pitch in between
+//   mos shape   M6 review L4: a MOS size + generator change (a new table): before and after the compile the held
+//               note sounds the old or the new pitch, never a third (the old table at the new generator)
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -394,8 +394,8 @@ TEST_CASE("tuning live: a held Hz-input live note keeps its Hz through a Generat
   CHECK(a.link->engine().liveInput().stats().retuned == retuned);
 }
 
-TEST_CASE("tuning live: a MOS size + generator change sounds the old pitch until the compile, then the new one; no third "
-          "pitch (M6 review L4)") {
+TEST_CASE("tuning live: a MOS size + generator change sounds the old or the new pitch while it compiles, never a third "
+          "(M6 review L4)") {
   LiveApp a(mosDef(700.0));  // 5L 2s at 700 ¢, the held drawn note on degree 4
   (void)a.run(0.2);
   const double oldHz = a.expectedHz();
@@ -410,10 +410,12 @@ TEST_CASE("tuning live: a MOS size + generator change sounds the old pitch until
   REQUIRE(a.ctx->store().dispatch(SetTuningDef{a.tuning, next}).ok());
   const double newHz = a.expectedHz();
   REQUIRE(std::fabs(cents(newHz, oldHz)) > 5.0);
-  // The audio thread plays on while the worker compiles: the old pitch (before: the old table at the new generator,
-  // a pitch that is neither, up to 540 ¢ off).
-  const std::vector<float> waiting = a.run(0.15, false);
-  CHECK(std::fabs(cents(hzOfTail(waiting, 0.12), oldHz)) < 0.05);
+  // The audio thread plays on while the worker compiles. The drawn note's sequence swap is published at once; with
+  // the playing image keeping its table AND its params it already sounds the new pitch (before: the old table at the
+  // new generator, 10 ¢ off the new pitch here, up to 540 ¢ for other shapes). Either pitch is fine, a third is not.
+  const double during = hzOfTail(a.run(0.15, false), 0.12);
+  MESSAGE("while compiling: " << cents(during, oldHz) << " c from the old pitch, " << cents(during, newHz) << " c from the new");
+  CHECK((std::fabs(cents(during, oldHz)) < 0.05 || std::fabs(cents(during, newHz)) < 0.05));
   // Published: straight to the new pitch.
   CHECK(std::fabs(cents(hzOfTail(a.run(0.12), 0.08), newHz)) < 0.05);
 }
