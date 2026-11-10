@@ -760,9 +760,10 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 
 ## PF: Performance pass (survey: docs/reviews/PERF-2026-11-09.md; user 2026-11-09: "yea i want all of this done")
 - [ ] **PF.1 JIT: identical units share code; no LSR; exe hash once; the stale `legs` test** (survey #1, #4, #10, verdict 3). Cache key hashes "resource present", not the slot (verify: identical IR / bit-identical renders, shared-code hits); `-disable-lsr` in the JIT pipeline (verify run time unchanged on bench_jit / bench_project / bench_render, ship numbers in bench/RESULTS.md); the TX.mod-all test counts modulation wires only.
-- [ ] **PF.2 Project patch: re-layout linear in the project, far zoom cheap, one lowering** (survey #2, #3, #9; perf tests "64-track full paint < 2 ms" and "S-drag step" pass again).
+- [x] **PF.2 Project patch: re-layout linear in the project, far zoom cheap, one lowering** (survey #2, #3, #9; perf tests "64-track full paint < 2 ms" and "S-drag step" pass again). *(merged a591f94f; 64 tracks: paint 8.8–20.6 → 0.6–0.9 ms, S-drag 795–858 → 6.3–9.7 ms quiet, structural edit model 540 → 24–40 ms; the view still lowers itself after an edit while shown)*
 - [ ] **PF.3 JIT: the ramp-mode copy compiles only what reads ramps** (survey #6). After PF.1.
 - [ ] **PF.4 JIT: units compile in parallel; one unit's functions in parallel; FastISel for the quick first image** (survey #5, #7, #8; bit-identical quick vs final output). After PF.3.
+- [ ] **PF.6 Lowering a 64-track project takes 111–200 ms per structural edit** (found by PF.2; `pq/document` lowering on the UI thread and in the playback link). Profile; make it incremental per track (reuse unchanged tracks' lowered units keyed on their inputs) or otherwise cut it to tens of ms; identical output.
 - [ ] **PF.5 Engine: units run on several audio threads** (survey #11; SPEC M12; core structure: design restated to the user before it starts). *Postponed by the user 2026-11-09; design proposed: worker pool, per-block unit dependency graph, bit-identical, single-thread below a work threshold; measure voice-lane utilisation first.*
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)

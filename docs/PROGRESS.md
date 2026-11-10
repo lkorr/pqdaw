@@ -277,3 +277,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: re-pointing the follow lane at an equal height updates sub-lanes in place (generation counter), no band re-layout.
 - Notes/blockers: Q241. Follow-lane param and pins of unautomated params are session-only (no ViewState entry).
 
+## 2026-11-09 · PF.2 · task/PF.2-patch-perf
+- Did: project wires indexed per track per build; ModelCache (document-derived tables reused while snapshot + lowering are the same; opened groups' autoLayout keyed on input bytes); group-chain hash walks; no unseen miniatures; Device-view cable layer skips wires off the shown chain; far-zoom panel stand-in under 6 px; the view takes ProjectLink's lowering when it is of the same snapshot.
+- Verified: pq_tests_views default tier passed after rebase, no golden moved; new layout-cache invalidation test; perf (release, 64 tracks): paint 8.8–20.6 → 0.59–0.91 ms, S-drag step 795–858 → 6.3–9.7 ms quiet (11–14 under load), structural edit model + scene ~540 → 24–40 ms.
+- Perf / CPU-efficiency check: per group one track's wires instead of all 8.5k; far-zoom vertices 774k → 70k per frame.
+- Notes/blockers: lowering 111–200 ms per structural edit remains (PF.6); after an edit while shown the view lowers itself (the link's lowering arrives ≥ 50 ms later); the shared-lowering path has no test (no link in views tests).
+
