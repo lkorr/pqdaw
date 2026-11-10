@@ -13,3 +13,5 @@ tests/document/fixtures/**/*.pqd -text
 tests/app/fixtures/lowering/*.pqp -text
 # TMM.3: the golden meta-module lowering texts are compared byte for byte
 tests/document/fixtures/meta/*.txt -text
+# T6.1: the document's golden lowering texts are compared byte for byte too
+tests/document/fixtures/lowering/*.pqp -text
