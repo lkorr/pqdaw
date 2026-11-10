@@ -83,10 +83,10 @@ struct Rig {
   pq::TempoMap map;
   int64_t time = 0;
 
-  explicit Rig(uint32_t block = 64, pq::media::StreamPool* streams = nullptr) {
-    cfg.sampleRate = kSr;
+  explicit Rig(uint32_t block = 64, pq::media::StreamPool* streams = nullptr, double sampleRate = kSr, uint32_t tracks = 8) {
+    cfg.sampleRate = sampleRate;
     cfg.maxBlockFrames = block;
-    cfg.maxTracks = 8;
+    cfg.maxTracks = tracks;
     cfg.clipDeclickSeconds = 0.002;
     cfg.streams = streams;
     tl = std::make_unique<e::Timeline>(cfg);
@@ -99,7 +99,7 @@ struct Rig {
   }
   std::unique_ptr<e::AudioSequenceImage> build(std::vector<e::AudioTrackDesc> slots, std::vector<e::ClipSample> samples) const {
     e::AudioBuildOptions o;
-    o.sampleRate = kSr;
+    o.sampleRate = cfg.sampleRate;
     auto r = e::AudioSequenceImage::build(slots, std::move(samples), map, o);
     REQUIRE_MESSAGE(r.ok(), (r.ok() ? "" : r.error().message));
     return std::move(r.value());
@@ -1145,5 +1145,194 @@ TEST_CASE("T6.5b: a mono source runs a mono stretcher (half the work), the same 
     MESSAGE("mono vs stereo stretcher: peak ", peak, ", largest difference ", worst);
     CHECK(peak > 0.1);
     CHECK(worst == 0.0);
+  }
+}
+
+// ---- T6.x-fix-warp (M6 review) ----------------------------------------------------------------------------------------
+
+namespace {
+
+// One Complex clip of a 220 Hz stereo sine from beat 1, played from 0 at its own tempo (120 BPM), `seconds` of slot 0
+// channel 0 at `block` frames per engine block; `stats` gets the clip player's counters.
+std::vector<float> complexSine(double engineRate, uint32_t block, double ratio, double seconds, e::ClipPlayerStats* stats) {
+  const e::ClipSample s = makeSample(48000 * 12, 2, [](uint32_t c, int64_t i) {
+    return static_cast<float>(0.5 * std::sin(2.0 * std::numbers::pi * 220.0 * static_cast<double>(i) / kSr + c));
+  });
+  Rig rig(block, nullptr, engineRate);
+  rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
+  e::AudioClipDesc c = warped(e::ClipWarp::Complex, 1, kPpq, kPpq * 12, 120.0);  // framesPerTick of a 48 kHz file
+  c.stretch.pitchRatio = ratio;
+  rig.audio({{1, {c}}}, {s});
+  rig.play(0);
+  std::vector<float> out = rig.render(static_cast<uint64_t>(engineRate * seconds));
+  *stats = rig.tl->clipPlayer().stats();
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("M6 C2: a Complex voice read slower than its resampler's reach per block never re-primes (block 64 == 1024)") {
+  // The vocoder runs in chunks on a grid fixed by the voice's start, so a render must not depend on the engine block.
+  // Before the fix, a read that moved less than ~taps/2 frames per block (pitch rate x block) reset the stretcher on
+  // most blocks: ratio 0.5 at block 64 ran 2813 chunks instead of 1112 (81 in one block), with 0.96 steps on a 0.5 sine;
+  // a 48 kHz file in a 96 kHz engine (pitch rate 0.5 from the file rate alone) 12142 instead of 2220 (160 in a block).
+  struct Case {
+    double engineRate, ratio;
+    const char* name;
+  };
+  for (const Case k : {Case{kSr, 0.5, "48 kHz, ratio 0.5"}, Case{kSr, 0.3, "48 kHz, ratio 0.3"},
+                       Case{96000.0, 1.0, "48 kHz file in a 96 kHz engine"}}) {
+    CAPTURE(std::string(k.name));
+    e::ClipPlayerStats s64, s1024;
+    const std::vector<float> a = complexSine(k.engineRate, 64, k.ratio, 6.0, &s64);
+    const std::vector<float> b = complexSine(k.engineRate, 1024, k.ratio, 6.0, &s1024);
+    MESSAGE(std::string(k.name), ": block 64 ", s64.stretchCells, " chunks (at most ", s64.stretchCellsBlockMax, " in a block), block 1024 ",
+            s1024.stretchCells, " (", s1024.stretchCellsBlockMax, ")");
+    REQUIRE(a.size() == b.size());
+    size_t diff = 0;
+    for (size_t i = 0; i < a.size(); ++i) diff += a[i] != b[i] ? 1u : 0u;
+    CHECK(diff == 0);
+    CHECK(s64.stretchCells == s1024.stretchCells);
+    // Playing: pitch rate x 64 frames < one chunk per block; priming (pending, from the look-ahead): at most
+    // kStretchPrimeRate x that, rounded up, plus the chunk a block boundary splits.
+    CHECK(s64.stretchCellsBlockMax <= 3);
+    double peak = 0.0;
+    for (size_t i = static_cast<size_t>(k.engineRate * 0.6); i < a.size(); ++i) peak = std::max(peak, static_cast<double>(std::abs(a[i])));
+    CHECK(peak > 0.3);
+  }
+}
+
+TEST_CASE("M6 H2 / L15: the stretch pool is sized from the project's Complex clips (none without), no Tones fallback") {
+  const e::ClipSample s = makeSample(48000 * 10, 2, busy);
+  const e::ClipSample m = makeSample(48000 * 10, 1, [](uint32_t, int64_t i) { return busy(0, i); });
+  // No Complex clip: no stretcher at all.
+  {
+    Rig rig(64);
+    rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
+    rig.audio({{1, {warped(e::ClipWarp::Tones, 1, 0, kPpq * 4, 120.0)}}}, {s});
+    rig.play(0);
+    (void)rig.render(4800);
+    const e::StretchPool* pool = rig.tl->clipPlayer().stretchPool();
+    REQUIRE(pool != nullptr);
+    CHECK(pool->size() == 0);
+    CHECK(pool->memoryBytes() == 0);
+  }
+  // 24 tracks (the review's probe saw fallbacks from 17 on with the fixed pool of 32), each with two back-to-back
+  // Complex clips (bar 1 → 2), under a 2 s arrangement loop across the boundary: every clip boundary and loop wrap
+  // needs a second stretcher per track (the next clip's look-ahead claim, the cue before the wrap).
+  constexpr uint32_t kTracks = 24;
+  Rig rig(64, nullptr, kSr, kTracks);
+  rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
+  std::vector<e::AudioTrackDesc> t;
+  for (uint32_t k = 0; k < kTracks; ++k) {
+    e::AudioClipDesc a = warped(e::ClipWarp::Complex, 1 + 2 * k, 0, kPpq * 4, 120.0);
+    e::AudioClipDesc b = warped(e::ClipWarp::ComplexPro, 2 + 2 * k, kPpq * 4, kPpq * 4, 120.0);
+    a.sample = b.sample = k % 4 == 3 ? 1u : 0u;  // every fourth track mono
+    a.crossfadeIn = b.crossfadeIn = 0;
+    t.push_back({1 + k, {a, b}});
+  }
+  rig.audio(t, {s, m});
+  e::TransportCommand loop;
+  loop.kind = e::TransportCommandKind::SetLoop;
+  loop.loopEnabled = true;
+  loop.loopStart = kPpq * 2;
+  loop.loopEnd = kPpq * 6;
+  rig.tl->apply(loop);
+  rig.play(0);
+  (void)rig.render(static_cast<uint64_t>(kSr * 7.5));  // the boundary at 2 s, wraps at 3, 5 and 7 s
+  const e::ClipPlayer& cp = rig.tl->clipPlayer();
+  const e::ClipPlayerStats& st = cp.stats();
+  CHECK(rig.tl->stats().loopWraps == 3);
+  MESSAGE(kTracks, " tracks of back-to-back Complex clips over 3 loop wraps: ", st.stretchClaims, " claims, ",
+          st.stretchFallbacks, " fallbacks; pool ", cp.stretchPool()->size(), " stretchers, ",
+          static_cast<double>(cp.stretchPool()->memoryBytes()) / 1048576.0, " MiB (estimated)");
+  CHECK(st.stretchFallbacks == 0);
+  CHECK(cp.stretchFallbacksShared() == 0);
+  CHECK(st.stretchCuesAdopted > 0);
+  const e::ClipPlayer::StretchDemand d = e::ClipPlayer::stretchDemand(*rig.build(t, {s, m}));
+  CHECK(d.stereo == 18 * 3);
+  CHECK(d.mono == 6 * 3);
+  CHECK(cp.stretchPool()->size() == d.stereo + d.mono);
+  // A smaller project later: the pool keeps what it has (it grows only).
+  rig.audio({{1, {warped(e::ClipWarp::Complex, 900, 0, kPpq * 4, 120.0)}}}, {s});
+  (void)rig.render(640);
+  CHECK(cp.stretchPool()->size() == d.stereo + d.mono);
+}
+
+TEST_CASE("M6 H2: a Complex voice that fell back to Tones takes a stretcher when one frees (2 ms crossfade, no click)") {
+  const e::ClipSample sine = makeSample(48000 * 10, 2, [](uint32_t, int64_t i) {
+    return static_cast<float>(0.5 * std::sin(2.0 * std::numbers::pi * 220.0 * static_cast<double>(i) / kSr));
+  });
+  // One stretcher: clip a holds it for 2 beats; clip b (another slot) starts at beat 1 as Tones, and takes the
+  // stretcher once a has ended (beat 2 = 1 s at 120 BPM), primed like a locate's start (late, faded in).
+  e::AudioClipDesc a = warped(e::ClipWarp::Complex, 1, 0, kPpq * 2, 120.0);
+  e::AudioClipDesc b = warped(e::ClipWarp::Complex, 2, kPpq, kPpq * 8, 120.0);
+  b.stretch.pitchRatio = 1.25;
+  e::AudioBuildOptions o;
+  o.sampleRate = kSr;
+  auto r = e::AudioSequenceImage::build(std::vector<e::AudioTrackDesc>{{1, {a}}, {2, {b}}}, {sine},
+                                        tempoMap({{0, 120.0, pq::TempoCurve::Step}}), o);
+  REQUIRE(r.ok());
+  e::ClipPlayerConfig pc;
+  pc.slots = 2;
+  pc.maxBlockFrames = 256;
+  pc.sampleRate = kSr;
+  pc.stretchVoices = 1;
+  pc.stretchCapacity = 1;
+  e::ClipPlayer p(pc);
+  const auto got = playDirect(p, *r.value(), 2, static_cast<SampleTime>(kSr * 3.0), 256);
+  const e::ClipPlayerStats& st = p.stats();
+  CHECK(st.stretchFallbacks == 1);
+  CHECK(p.stretchFallbacksShared() == 1);
+  CHECK(st.stretchRetries == 1);
+  CHECK(st.stretchClaims == 2);
+  CHECK(st.stretchLateStarts == 2);  // a (Play at its start, uncued) and b's replacement (primed from the retry)
+  const std::vector<float>& y = got[2];
+  // Sounding throughout from beat 1 on: no gap where the Tones voice hands over.
+  double minRms = 1.0;
+  for (size_t at = 24000 + 960; at + 480 < y.size(); at += 480) minRms = std::min(minRms, rmsOf(y, at, at + 480));
+  MESSAGE("fallen-back voice: quietest 10 ms after its start ", minRms);
+  CHECK(minRms > 0.25);
+  // No click: no step larger than the 275 Hz sine's own (0.5 · 2π · 275 / 48000 = 0.018) beyond a small margin.
+  double worst = 0.0;
+  for (size_t i = 24000 + 96; i + 1 < y.size(); ++i) worst = std::max(worst, static_cast<double>(std::abs(y[i + 1] - y[i])));
+  MESSAGE("largest step ", worst);
+  CHECK(worst < 0.025);
+}
+
+TEST_CASE("M6 M12: Tones is exact for one pitched voice only; on a chord its partials drift (pinned); Complex keeps them") {
+  // Tones aligns each grain by one lag (WSOLA), which can continue one period: a triad's partials drift. Pinned as
+  // measured (the M6 review's probe), so a change of behaviour shows; the mode's docs and tooltip say "monophonic".
+  const double fs[3] = {220.0, 277.18, 329.63};
+  const e::ClipSample chord = makeSample(static_cast<int64_t>(kSr * 20.0), 1, [&](uint32_t, int64_t i) {
+    double v = 0.0;
+    for (const double f : fs) v += 0.25 * std::sin(2.0 * std::numbers::pi * f * static_cast<double>(i) / kSr);
+    return static_cast<float>(v);
+  });
+  for (const e::ClipWarp w : {e::ClipWarp::Tones, e::ClipWarp::Complex}) {
+    CAPTURE(static_cast<int>(w));
+    Rig rig(128);
+    rig.tempo({{0, 97.0, pq::TempoCurve::Step}});
+    rig.audio({{1, {warped(w, 1, 0, kPpq * 16, 120.0)}}}, {chord});
+    rig.play(0);
+    const std::vector<float> o = rig.render(static_cast<uint64_t>(kSr * 3.2));
+    double err[3], level[3];
+    for (int k = 0; k < 3; ++k) {
+      err[k] = cents(peakHz(o, 4800, 131072, fs[k]), fs[k]);
+      level[k] = dtftMag(o, 4800, 131072, fs[k]) / (0.25 * 131072 / 4);
+    }
+    MESSAGE(std::string(w == e::ClipWarp::Tones ? "Tones" : "Complex"), " on a 220 / 277 / 330 Hz triad at 97 BPM: errors ", err[0], " / ",
+            err[1], " / ", err[2], " cents; levels ", level[0], " / ", level[1], " / ", level[2]);
+    if (w == e::ClipWarp::Tones) {  // measured +20.1 / −0.6 / −5.6 ¢, levels 0.28 / 0.88 / 0.43
+      CHECK(err[0] == doctest::Approx(20.1).epsilon(0.1));
+      CHECK(std::abs(err[1]) < 2.0);
+      CHECK(err[2] == doctest::Approx(-5.6).epsilon(0.2));
+      CHECK(level[0] == doctest::Approx(0.28).epsilon(0.2));
+    } else {
+      for (int k = 0; k < 3; ++k) {
+        CHECK(std::abs(err[k]) <= 1.0);
+        CHECK(level[k] > 0.8);
+      }
+    }
   }
 }

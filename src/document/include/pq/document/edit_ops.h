@@ -234,6 +234,7 @@ EditResult warpFromHere(const Project& p, ClipRef clip, Ticks content, double bp
 // start, the source BPM set so the region spans the bars, the loop on over it, the clip `bars` bars long (kept short of
 // the next clip on the track: these commands never overwrite). An Off clip
 // switches to `offMode` (a warped mode) first. InvalidArgument when the tempo would leave [kMinBpm, kMaxBpm].
+// `bars` (any whole number, 1..1024) of the time signature at the clip's start (M6 review M11).
 EditResult warpAsLoop(const Project& p, ClipRef clip, int32_t bars, AudioWarp offMode = AudioWarp::Beats);
 // T6.8: auto-warp (a long sample dropped with the "Auto-Warp long samples" preference on): each warp-Off clip switched
 // to `warp` at source tempo `bpm`, its length re-derived so it still plays to the file's end (short of the next clip).

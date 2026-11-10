@@ -14,6 +14,7 @@
 #include "pq/ui/test_driver.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/fake_transport.h"
+#include "pq/views/prefs/audio_prefs.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
 #include "../ui/golden_check.h"
@@ -210,6 +211,15 @@ TEST_CASE("shell + T6.6: metronome switch and menu, Record / F9 with the count-i
   f.d.move(f.d.center("main/control-bar/cpu"));
   CHECK(f.shell->infoTitle() == "CPU Load Meter");
   CHECK(f.shell->infoBody().find("12.5 ms behind") != std::string::npos);
+  CHECK(f.shell->infoBody().find("Complex") == std::string::npos);
+  // M6 review H2: Complex clips that played as Tones for want of a stretcher are named there (not silent).
+  FakeAudioPrefsPort audio = FakeAudioPrefsPort::studio();
+  audio.fallbacks = 3;
+  f.ctx.setAudioPrefs(&audio);
+  f.d.move(f.d.center("main/control-bar/record"));
+  f.d.move(f.d.center("main/control-bar/cpu"));
+  CHECK(f.shell->infoBody().find("3 clip starts found no free stretcher and played as Tones") != std::string::npos);
+  f.ctx.setAudioPrefs(nullptr);
 }
 
 TEST_CASE("shell + T6.9: Capture MIDI by Ctrl+Shift+C and the control bar's button, at the start marker") {

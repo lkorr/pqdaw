@@ -178,6 +178,9 @@ public:
   virtual double cpuLoad() = 0;
   // T5.4: streamed sample reads that came late (played silence) since the start: the control bar's disk indicator.
   virtual uint64_t diskUnderruns() { return 0; }
+  // T6.x-fix-warp (M6 review H2): Complex clips that found no free stretcher and played as Tones meanwhile, since the
+  // start: the CPU meter's info text names them.
+  virtual uint64_t stretchFallbacks() { return 0; }
   // Test tone (Live's Test Tone / Tone Volume / Tone Frequency): a sine added to outputs 1/2 while on.
   virtual void setTestTone(bool on, float levelDb, float hz) = 0;
   virtual bool testTone() = 0;
@@ -205,6 +208,7 @@ public:
   AudioSettings current;
   AudioStatus running;
   double load = 0.0;
+  uint64_t fallbacks = 0;  // T6.x-fix-warp: stretchFallbacks()
   bool tone = false;
   float toneDb = -36.0f, toneHz = 440.0f;
   std::vector<AudioSettings> applied;  // every apply()
@@ -270,6 +274,7 @@ public:
   }
   // A Focusrite-like machine: an ASIO driver plus WASAPI endpoints (the preferences golden and tests).
   static FakeAudioPrefsPort studio();
+  uint64_t stretchFallbacks() override { return fallbacks; }
 };
 
 // The window (see the file comment). Owned by the overlay layer while open.

@@ -367,6 +367,9 @@ public:
   media::SamplePool& samplePool() noexcept { return *pool_; }
   // Spans that read silence because the disk thread was late, since the link was created. Any thread.
   uint64_t diskUnderruns() const;
+  // T6.x-fix-warp (M6 review H2): Complex / Complex Pro voices that found no free stretcher and played as Tones (until
+  // a retry got one), since the engine was made. Any thread.
+  uint64_t stretchFallbacks() const;
   // Posts work to the UI thread (the window: an SDL user event): a finished sample load republishes the audio
   // sequences there. Null: flush() and playhead() pick finished loads up.
   void setUiPoster(std::function<void(std::function<void()>)> post);

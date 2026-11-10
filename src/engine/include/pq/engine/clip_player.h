@@ -39,15 +39,28 @@
 // whatever the block.
 //
 // T6.5, Complex / Complex Pro (audio_sequence.h "Complex"): a voice claims a stretcher of the player's StretchPool when
-// it starts (none free: it plays as Tones, counted; a mono source claims a mono stretcher) and runs its vocoder in
-// chunks of kStretchCell of its own frames into a per-stretcher buffer, which the run reads at the pitch rate (a copy,
-// or the sinc resampler). A voice primes (an output latency + a block + the resampler's reach ≈ 10k vocoder frames)
-// before it sounds, and never in a burst (T6.5b): its vocoder runs at most kStretchPrimeRate × its playing rate per
-// song sample, on a schedule anchored in song time (so renders do not depend on the block). A pending voice primes in
-// step with the song from its look-ahead on, so a clip start costs nothing extra. A voice that must sound at once
-// (Play / a locate inside the clip or just before its start, a loop wrap) without being primed starts late instead,
-// at the first sample its schedule has caught up (≈ 70 ms at pitch rate 1), faded in; its output from then on is
-// exactly what it would have been. To avoid that, the timeline CUES: while stopped (and counting in) it calls cue() at
+// it starts (a mono source claims a mono stretcher) and runs its vocoder in chunks of kStretchCell of its own frames
+// into the stretcher's buffer, which the run reads at the pitch rate (a copy, or the sinc resampler). A run keeps the
+// vocoder frames from its own first read on, and a voice re-primes only when its next read needs a frame below that
+// (M6 review C2: the test was on y − the resampler's whole reach, which reset a voice read slower than ~taps/2 frames
+// per block — pitch rate ≤ 0.55 at block 64, e.g. a 48 kHz file in a 96 kHz project — on most blocks).
+// The pool grows to what the project's Complex clips need (stretchDemand(): the timeline builds the stretchers off the
+// audio thread when it publishes an image, adoptStretchers() takes them; M6 review H2 / L15). A voice that still finds
+// none free plays as Tones (counted: stretchFallbacks) and retries its claim every block; once it gets one, a second
+// voice of the clip primes like a locate's start and takes over with a 2 ms crossfade (stretchRetries).
+// A voice primes (an output latency + a block + the resampler's reach ≈ 10k vocoder frames, plus its phase offset)
+// before it sounds, and never in a burst (T6.5b): its vocoder runs at most kStretchPrimeRate × max(1, its pitch rate)
+// vocoder frames per song sample, on a schedule anchored in song time (so renders do not depend on the block). A
+// pending voice primes in step with the song from its look-ahead on, so a clip start costs nothing extra. A voice that
+// must sound at once (Play / a locate inside the clip or just before its start, a loop wrap) without being primed
+// starts late instead, at the first sample its schedule has caught up, faded in: ≈ 70 ms at pitch rate 1, ≈ 60 ms below
+// it (the priming rate does not fall with the pitch rate, M6 review L14), ≈ 36 ms at 2; its output from then on is
+// exactly what it would have been.
+// Phase offset (M6 review M10): signalsmith's split computation spreads one voice's spectrum work over its interval,
+// but voices primed on the same song sample would do their heavy steps in the same blocks (16 voices: peaks of 14–18
+// Mcycles in a 64-frame block every interval). Each voice's chunk grid therefore starts a clip-dependent whole number of
+// chunks earlier (a golden-ratio sequence over the clip's seed, within one interval), so voices started together are
+// spread over the interval. It depends on the clip only, so renders stay deterministic whatever the claim order. To avoid that, the timeline CUES: while stopped (and counting in) it calls cue() at
 // the playhead and, while looping, at the loop start for the last look-ahead before the wrap; cue voices claim a
 // stretcher and prime (at the same rate, per block) without sounding, and the seek() to the cue position (Play, the
 // wrap) adopts them, so Play / a wrap starts primed and on time.
@@ -78,6 +91,7 @@
 // fades out over the declick while the new image's clips under the playhead start with a fade in. The voices of the
 // old image keep it alive until their fades end (the timeline holds it: Timeline's audio hazards).
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -102,8 +116,12 @@ struct ClipPlayerConfig {
   media::StreamPool* streams = nullptr;  // null: frames past a streamed sample's head read as silence
   double lookaheadSeconds = 0.5;    // a clip's voice exists (and claims its stream) this long before it starts
   double declickSeconds = 0.002;    // stop / locate / wrap / swap fades
-  uint32_t stretchVoices = 32;      // T6.5: Complex / Complex Pro voices at once (pq/engine/stretch_pool.h; beyond: Tones)
-  uint32_t stretchMonoVoices = 32;  // T6.5b: ... on mono sources (mono stretchers; beyond: they take stereo ones)
+  // T6.5: stereo / mono stretchers made with the player (pq/engine/stretch_pool.h); T6.x-fix-warp: 0 by default, the
+  // timeline grows the pool to its images' stretchDemand(). stretchCapacity: the most it can grow to (0: no Complex at
+  // all: no pool, those clips play as Tones).
+  uint32_t stretchVoices = 0;
+  uint32_t stretchMonoVoices = 0;
+  uint32_t stretchCapacity = 256;
 };
 
 struct ClipPlayerStats {
@@ -122,7 +140,8 @@ struct ClipPlayerStats {
   uint64_t sliceClaims = 0;       // T6.3: Beats: next slices' streams claimed ahead
   uint64_t streamRestarts = 0;    // a read left the history: the stream restarted (T6.3 stretch voices, jumps)
   uint64_t stretchClaims = 0;     // T6.5: Complex / Complex Pro voices that got a stretcher
-  uint64_t stretchFallbacks = 0;  // ... and ones that found none free: played as Tones
+  uint64_t stretchFallbacks = 0;  // ... and ones that found none free: played as Tones (until a retry gets one)
+  uint64_t stretchRetries = 0;    // T6.x-fix-warp: fallen-back voices that got a stretcher later and took over
   uint64_t stretchCells = 0;      // vocoder chunks processed (kStretchCell of its output frames each, priming included)
   uint64_t stretchCellsBlockMax = 0;  // T6.5b: the most chunks any one block processed (the priming burst bound)
   uint64_t stretchMonoClaims = 0;     // T6.5b: claims that got a mono stretcher
@@ -170,13 +189,26 @@ public:
   uint32_t liveVoices() const noexcept { return static_cast<uint32_t>(live_.size()); }
   bool anyActive() const noexcept { return !touched_.empty(); }
   const ClipPlayerStats& stats() const noexcept { return stats_; }
-  // T6.5: the Complex / Complex Pro stretchers (null with stretchVoices 0): free count, latency, memory.
+  // T6.5: the Complex / Complex Pro stretchers (null with stretchCapacity 0): free count, latency, memory.
   const StretchPool* stretchPool() const noexcept { return stretch_.get(); }
+  // T6.x-fix-warp (M6 review H2): stretchFallbacks for other threads (the CPU meter's info text). RT-safe to read.
+  uint64_t stretchFallbacksShared() const noexcept { return fallbacksShared_.load(std::memory_order_relaxed); }
+  // The stretchers an image's Complex clips need at once (M6 review H2, L15), per kind: for each slot with Complex
+  // clips of that kind, 2 (the playing voice and its cue before a loop wrap, or its fade-out after a swap / locate) or
+  // 3 when it has more than one (and the next clip's look-ahead claim). Not RT-safe (the publishing thread).
+  struct StretchDemand {
+    uint32_t stereo = 0, mono = 0;
+  };
+  static StretchDemand stretchDemand(const AudioSequenceImage& img);
+  // Audio thread: takes over stretchers StretchPool::build() made off the thread (at this player's rate, with
+  // kStretchFrames output frames). Those beyond the capacity stay unused until the player is destroyed. RT-safe.
+  void adoptStretchers(StretchPool::Slot* list) noexcept;
   // T6.5: Complex voices run their vocoder in chunks of this many of its output frames, on a grid fixed by the voice's
   // start (audio_sequence.h "Complex"), into a buffer of kStretchFrames per stretcher.
   static constexpr uint32_t kStretchCell = 128;
   static constexpr uint32_t kStretchFrames = 8192;
-  // T6.5b: a voice primes at most this many times its playing rate (vocoder frames per song sample / pitch rate).
+  // T6.5b: a voice primes at most this many times max(1, its pitch rate) vocoder frames per song sample (L14: not
+  // slower below pitch rate 1, so a late start stays ≈ 60–70 ms).
   static constexpr uint32_t kStretchPrimeRate = 4;
 
   // Non-RT, while the audio thread does not run (offline renders): see StreamFill. Null removes it. While one is set
@@ -238,6 +270,10 @@ private:
     // T6.5b: the priming schedule: by song sample t, frames up to primeBase + (t − primeFrom) · kStretchPrimeRate ·
     // pitch rate may be computed. cue: a cue voice (cue()), silent until a seek adopts it.
     uint32_t stretch = 0xFFFFFFFFu;
+    // T6.x-fix-warp (H2): a Complex voice playing as Tones that got a stretcher later: `takeover` is the voice index
+    // that will replace it (it fades out where that one starts); the replacement's `replaces` points back. kNone: none.
+    uint32_t takeover = 0xFFFFFFFFu, replaces = 0xFFFFFFFFu;
+    SampleTime soundFrom = 0;          // the song sample it started sounding at (Pending → Playing)
     SampleTime primeFrom = 0;
     int64_t primeBase = 0;
     bool cue = false;
@@ -315,6 +351,9 @@ private:
   void complexEnsure(Voice& v, const media::SampleView& view, int64_t keepFrom, int64_t last) noexcept;
   void complexChunk(Voice& v, const media::SampleView& view) noexcept;  // vocoder frames [vHi, vHi + kStretchCell)
   void complexInput(Voice& v, const media::SampleView& view, int64_t k0, int64_t k1) noexcept;  // → stretchIn_
+  void retryStretch(Voice& v, SampleTime s0) noexcept;      // H2: a fallen-back voice claims again
+  SampleTime takeoverAt(Voice& v, SampleTime s1) noexcept;  // where its replacement starts (INT64_MAX: not before s1)
+  void unlinkTakeover(Voice& v) noexcept;
   float* touch(uint32_t slot) noexcept;  // the slot's channel 0 (channel 1 follows), cleared on its first write
   void seekCursors(SampleTime s) noexcept;
 
@@ -335,12 +374,14 @@ private:
   AlignedBuffer<float> gain_;           // maxBlockFrames: a slice's / grain's gains (T6.3)
   AlignedBuffer<float> corrA_, corrB_;  // Tones' alignment: the previous grain's and the candidates' mono frames
   AlignedBuffer<float> zeros_;          // maxBlockFrames
-  std::unique_ptr<StretchPool> stretch_;  // T6.5 (null: stretchVoices 0)
-  AlignedBuffer<float> stretchOut_;     // stretchVoices × 2 × kStretchFrames: each stretcher's recent output
+  std::unique_ptr<StretchPool> stretch_;  // T6.5 (null: stretchCapacity 0); each stretcher's recent output in it
+  StretchPool::Slot* stretchSpill_ = nullptr;  // adopted beyond the capacity: freed with the player
+  std::atomic<uint64_t> fallbacksShared_{0};
   AlignedBuffer<float> stretchIn_;      // 2 × stretchInCap_: a cell's (or a seek's) input, gathered
   uint32_t stretchInCap_ = 0;
   SampleTime cueAt_ = INT64_MIN;        // T6.5b: the cue position (INT64_MIN: none)
   bool cueScanned_ = false;             // ... its voices are made
+  SampleTime cueFrames_ = 0;            // M10: song samples cued at this position so far (staggers the voices' starts)
   uint64_t blockCells_ = 0;             // vocoder chunks this block
   std::vector<const float*> ptrs_;      // slots × 2
   std::vector<uint8_t> active_;         // slots

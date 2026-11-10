@@ -68,7 +68,10 @@ std::string formatTranspose(const doc::AudioTranspose& t);
 double sourceBpmFor(double fileBpm, double durationSeconds);
 // T6.8: the bars of "Warp as N-Bar Loop" for a region of `seconds`: the power of two (1 … 64) whose tempo is nearest
 // (in octaves) to `bpm` (> 0: the detected tempo), else to 120 BPM.
-int32_t loopBarsFor(double seconds, double bpm);
+// The bar count "Warp as N-Bar Loop" uses for `seconds` of source in bars of `beatsPerBar` quarter notes (M6 review
+// M11: the signature at the clip's start): with a detected tempo (bpm > 0) the whole number of bars nearest to it;
+// without, the power of two (1 … 64) whose tempo is nearest to 120 BPM. Always within kMinBpm … kMaxBpm when one is.
+int32_t loopBarsFor(double seconds, double bpm, double beatsPerBar = 4.0);
 // T6.8: the warp chooser's items, index = doc::AudioWarp.
 inline constexpr const char* kWarpModeNames[] = {"Off", "Re-Pitch", "Beats", "Tones", "Texture", "Complex", "Complex Pro"};
 
@@ -95,6 +98,7 @@ public:
   // T6.8: the warp commands (also the context menu's). `content`: a content tick of the clip.
   bool warpFromHere(Ticks content);
   bool warpAsLoop();
+  double beatsPerBarAtClip() const;  // quarter notes per bar at the clip's start (M11)
   bool removeWarpMarker(size_t index);
   // The tempo the warp commands use: the sample's detected tempo when confident (>= 0.6), else 0.
   double detectedBpm();

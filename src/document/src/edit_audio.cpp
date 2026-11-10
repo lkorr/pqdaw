@@ -298,7 +298,8 @@ EditResult warpAsLoop(const Project& p, ClipRef clip, int32_t bars, AudioWarp of
       b = warpFrameAt(c, rate, static_cast<double>(c1));
     }
     if (!(b > a)) return invalid("Warp as Loop: the clip plays no source");
-    const Ticks len = static_cast<Ticks>(bars) * kTicksPerWhole;
+    // M6 review M11: bars of the signature at the clip's start (content time has none of its own).
+    const Ticks len = static_cast<Ticks>(bars) * ticksPerBar(p.timeline->sigMap.signatureAt(c.start));
     // sourceBpm so that `len` content ticks span b − a frames: fpt = (b − a) / len = rate · 60 / (bpm · kPpq).
     const double bpm = rate * 60.0 * static_cast<double>(len) / ((b - a) * static_cast<double>(kPpq));
     if (!(bpm >= kMinBpm && bpm <= kMaxBpm)) return invalid("Warp as Loop: the tempo would be out of range");

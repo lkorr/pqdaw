@@ -10,11 +10,16 @@
 // kMaxLagSeconds (a comb). The comb alone cannot tell a tempo from half of it (a back-beat repeats every two beats), so
 // a log-normal prior (σ = 0.8 octave) picks among its peaks, centred on the spacing of the LOUD hits: the median
 // interval between consecutive onsets of at least 0.2 × the largest weight (kicks and snares, not hats), folded by
-// octaves into the range (120 BPM with fewer than 4 such onsets). The best candidate is refined by a parabola through
-// its neighbours. Confidence = log(best / median) / log(30) of the prior-free comb scores (the median floored at
-// best / 1000), in [0, 1]: a steady loop reads ≈ 1 (its comb is zero between peaks), scattered onsets ≈ 0.2 – 0.4.
-// Tested on 20 synthesised loops (tests/media/test_tempo_detect.cpp), not on recordings: real material may need the
-// clip view's ×2 / ÷2.
+// octaves into the range (120 BPM with fewer than 4 such onsets). M6 review H3: when the file is a whole number of 4/4
+// bars long at a candidate the comb supports, it is taken as a loop and every candidate is weighted by its bar count
+// (a power of two 1, another whole number 0.8, a fraction 0.35): a one-bar loop at 90 is not read as 60. The best
+// candidate is refined by a parabola through its neighbours. Confidence = log(best / median) / log(30) of the
+// prior-free comb scores (the median floored at best / 1000), in [0, 1] (a steady loop ≈ 1, scattered onsets
+// ≈ 0.2 – 0.4), then lowered by up to 60 % for a near-tie at ×2 / ÷2 (another octave explains the same onsets: a
+// back-beat below 100 BPM with 8ths or 16ths is a half-time groove at twice the tempo) or ×2/3 / ×3/2, so auto-warp
+// (≥ 0.6) leaves those to the user. Tested on synthesised loops (tests/media/test_tempo_detect.cpp: the 20 labelled
+// ones, one-bar broken-beat / two-step loops, half-time grooves, 16th-hat loops), not on recordings: real material may
+// need the clip view's ×2 / ÷2. Known: a loop of 16th hats alone below ~100 BPM still reads confidently doubled.
 //
 // Weights (onsetStrengths): the RMS rise over the onset (40 ms after minus 40 ms before, from an energy envelope of
 // kEnvelopeBlock-frame blocks), divided by the largest, floored at 0.05.

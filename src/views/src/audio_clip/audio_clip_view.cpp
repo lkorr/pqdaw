@@ -110,15 +110,30 @@ double sourceBpmFor(double fileBpm, double durationSeconds) {
   return std::clamp(bars * 4.0 * 60.0 / durationSeconds, kMinBpm, kMaxBpm);
 }
 
-int32_t loopBarsFor(double seconds, double bpm) {
-  if (!(seconds > 0.0)) return 1;
-  const double want = bpm > 0.0 ? bpm : 120.0;
+int32_t loopBarsFor(double seconds, double bpm, double beatsPerBar) {
+  if (!(seconds > 0.0) || !(beatsPerBar > 0.0)) return 1;
+  const auto tempoOf = [&](int32_t bars) { return bars * beatsPerBar * 60.0 / seconds; };
+  if (bpm > 0.0) {  // any whole number of bars: the nearest to the detected tempo, kept in range
+    const double exact = bpm * seconds / (60.0 * beatsPerBar);
+    int32_t best = 1;
+    double bestD = 1e300;
+    for (const double cand : {std::floor(exact), std::ceil(exact)}) {
+      const auto bars = static_cast<int32_t>(std::clamp(cand, 1.0, 1024.0));
+      const double t = tempoOf(bars);
+      const double d = std::abs(std::log2(t / bpm)) + (t < kMinBpm || t > kMaxBpm ? 1e6 : 0.0);
+      if (d < bestD - 1e-9) {
+        bestD = d;
+        best = bars;
+      }
+    }
+    if (bestD < 1e6) return best;
+  }
   int32_t best = 1;
   double bestD = 1e300;
   for (int32_t bars = 1; bars <= 64; bars *= 2) {
-    const double t = bars * 4.0 * 60.0 / seconds;
+    const double t = tempoOf(bars);
     if (t < kMinBpm || t > kMaxBpm) continue;
-    const double d = std::abs(std::log2(t / want));
+    const double d = std::abs(std::log2(t / 120.0));
     if (d < bestD - 1e-9) {
       bestD = d;
       best = bars;
@@ -651,7 +666,7 @@ Menu* SampleDisplay::openMenu(Vec2 at) {
       b = a + c.seconds * rate() * speedRatio();
     }
   }
-  const int32_t bars = loopBarsFor((b - a) / rate(), v_.detectedBpm());
+  const int32_t bars = loopBarsFor((b - a) / rate(), v_.detectedBpm(), v_.beatsPerBarAtClip());
   items.push_back(MenuItem::item("Warp as " + std::to_string(bars) + "-Bar Loop", [this] { (void)v_.warpAsLoop(); }));
   if (m >= 0) {
     items.push_back(MenuItem::sep());
@@ -766,7 +781,7 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   warp_->setFocusable(false);
   warp_->setInfo("Warp", "Off: the file's own speed, its duration in seconds. Re-Pitch: follows the song tempo like a tape "
                          "(speed and pitch together). Beats: slices at transients or the grid, for drums. Tones: grains "
-                         "that keep pitched sounds smooth. Texture: grains with randomness, for pads and noise. Complex: "
+                         "that keep a single pitched voice (monophonic) exactly in tune; chords drift, use Complex. Texture: grains with randomness, for pads and noise. Complex: "
                          "a phase vocoder for whole mixes. Complex Pro: Complex keeping the formants (voices).");
   warp_->onChange = [this](int32_t i) {
     if (i >= 0 && i <= static_cast<int32_t>(doc::kLastAudioWarp)) (void)setWarp(static_cast<doc::AudioWarp>(i));
@@ -1122,6 +1137,12 @@ bool AudioClipView::warpFromHere(Ticks content) {
   return dispatch(doc::ops::warpFromHere(*ctx_.doc(), ref_, content, bpm > 0.0 ? bpm : clip_->sourceBpm), "Warp From Here");
 }
 
+double AudioClipView::beatsPerBarAtClip() const {  // M11: quarter notes per bar of the signature at the clip's start
+  if (!clip_ || !ctx_.doc()) return 4.0;
+  return static_cast<double>(ticksPerBar(ctx_.doc()->timeline->sigMap.signatureAt(clip_->start))) /
+         static_cast<double>(kPpq);
+}
+
 bool AudioClipView::warpAsLoop() {
   if (!clip_) return false;
   const doc::SampleRef* s = doc::findSample(*ctx_.doc(), clip_->sample);
@@ -1136,7 +1157,7 @@ bool AudioClipView::warpAsLoop() {
     a = c.contentStartFrame;
     b = a + c.seconds * s->rate * display_->speedRatio();
   }
-  const int32_t bars = loopBarsFor((b - a) / s->rate, detectedBpm());
+  const int32_t bars = loopBarsFor((b - a) / s->rate, detectedBpm(), beatsPerBarAtClip());
   return dispatch(doc::ops::warpAsLoop(*ctx_.doc(), ref_, bars, ctx_.viewPrefs().defaultWarpMode), "Warp as Loop");
 }
 

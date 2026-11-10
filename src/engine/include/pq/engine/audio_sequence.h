@@ -38,8 +38,10 @@
 //            song samples, periodic Hann windows (they sum to 1); grain k covers [bodyStart + (k − 1)·H,
 //            bodyStart + (k + 1)·H), is centred at C_k = bodyStart + k·H and reads around P_k = f(C_k) at rate r.
 //            Tones moves P_k by the lag (within ±H·r / 2, ≤ 12 ms) whose source best continues grain k − 1
-//            (pq/dsp/warp.h warpBestLag, WSOLA), so periodic sources keep their pitch exactly (the lags chain from the
-//            voice's first grain); Texture jitters P_k by ±flux % · H · r (warpJitter, seeded per clip), unaligned.
+//            (pq/dsp/warp.h warpBestLag, WSOLA), so a MONOPHONIC periodic source keeps its pitch exactly (the lags
+//            chain from the voice's first grain). One lag per grain can continue only one period: a chord's partials
+//            drift (M6 review M12: a 220 / 277 / 330 Hz triad at 97 BPM, +20 / −0.6 / −5.6 ¢, the 220 Hz partial at
+//            0.28 of its level; tests/engine/test_warp.cpp pins it). Chords and mixes: Complex. Texture jitters P_k by ±flux % · H · r (warpJitter, seeded per clip), unaligned.
 //     Every slice / grain position is anchored at a song sample that depends on the clip alone (its entry, its grain
 //     start), so renders are bit-identical whatever the engine block.
 //     Complex / Complex Pro (T6.5): a phase vocoder (signalsmith-stretch, pq/engine/stretch_pool.h) only stretches

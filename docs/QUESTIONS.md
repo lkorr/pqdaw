@@ -819,6 +819,9 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   start would. Offline renders prime at once. Mono sources get mono stretchers: `stretchMonoVoices` 32 by default
   (≈ +half the stereo pool's memory, see the T6.5b test's message); the rate (`kStretchPrimeRate` 4) and the pool
   split are constants to revisit if the CPU meter shows Play spikes or memory matters.
+- **Update (T6.x-fix-warp, M6 review L14 / L15 / H2)**: the late start was ≈ 70 ms / pitch ratio (145 ms at 0.5); the
+  priming rate is now kStretchPrimeRate × max(1, ratio), so it is ≈ 60–80 ms below ratio 1, ≈ 40 ms at 2. The pool is
+  sized from the project's Complex clips (no stretcher without them): Q?-T6.x-fix-warp-a (1).
 
 ## Q?-T6.10-a · 2026-11-10 · T6.10 · Take lanes and comping: what the plan left open
 - **Context**: docs/plans/M6.md "### T6.10" names the gestures; their exact rules and the look had to be chosen.
@@ -905,3 +908,44 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   store's snapshots after a New / Open. (5) L16: `transport.panic` on Ctrl+Shift+Space (Live has none), an
   AllNotesOff (voices release) rather than AllSoundOff (fast fade); the transport keeps playing.
 - Status: decided (1)–(5) (reversible).
+
+## Q?-T6.x-fix-warp-a · 2026-11-10 · T6.x-fix-warp · Warp / tempo review fixes: what was chosen
+- **Context**: docs/reviews/M6.md C2, H2, H3, M10–M12, L14, L15 (Q?-T6.5-a (2) (4) (6), Q?-T6.5b-a, Q?-T6.8-a (1) (3)).
+- **Choices** (most reversible): (1) **Stretch pool** (H2, L15): starts empty and grows to `ClipPlayer::stretchDemand`
+  of each published image (per slot with Complex clips of a kind: 2 stretchers, 3 with more than one clip), built in
+  `Timeline::publishAudio`, adopted lock-free; capacity 256; never shrinks while the clip player lives. A voice that
+  still finds none plays as Tones and retries every block; its replacement primes like a locate (late ≈ 70 ms) and the
+  two crossfade over 2 ms (a seam, not a click). The CPU meter's info text names the fallback count when non-zero.
+  (2) **Phase spread** (M10): not a phase shift of the analysis (that changes the audio: the Complex drum-onset test
+  moved from 2.2 to 3.7 ms), but a per-clip READ-AHEAD (`stretchLead`, golden-ratio sequence over the clip seed, within
+  one interval) plus staggered priming starts: same audio, spikes spread. Cost: late starts + 0–10 ms. (3) **Priming
+  rate** (L14): kStretchPrimeRate × max(1, pitch rate) vocoder frames per song sample, so a late start no longer grows
+  as 1 / ratio (145 → 67 ms at 0.5); below ratio 1 a priming block costs up to 4 vocoder frames per sample (as at 1).
+  (4) **Tempo** (H3): the length prior is applied only when some supported candidate makes the file a whole number of
+  bars (a loop); octave near-ties lower the confidence (×0.4 at a full tie). Consequence: back-beats / four-on-the-floor
+  below 100 BPM with 8th or 16th hats now read < 0.6 (they are onset-for-onset half-time grooves at twice the tempo),
+  so auto-warp leaves them to the user; T6.8's labelled test asked ≥ 18 / 20 confident and now asks "confident ≥ 100
+  BPM, never confidently wrong". A loop of 16th hats alone below ~100 BPM still reads confidently doubled (no measure
+  separated it from a back-beat at double tempo). Options if this trades wrong: drop the octave penalty (back to
+  confident half-time errors), or a stronger absolute-tempo prior. (5) **N-Bar Loop** (M11): bars of the signature at
+  the clip's start; the menu offers the whole number nearest the detected tempo (no detection: the power of two nearest
+  120 BPM), no chooser of N.
+- Status: decided (reversible).
+
+## Q?-T6.x-fix-warp-b · 2026-11-10 · T6.x-fix-warp · M13: audio/64 rate 1 is +21 % since M5 — mostly PF.4, not M6
+- **Context**: M6 review M13 asked to bisect across the M6 merges and remove the idle per-unit cost. Release A/B of
+  `pq_bench_playback --filter "audio/64 rate 1"` (interleaved, each binary with its own stdlib, quiet machine): T5.x-fix
+  (M5 closed) 14.0 µs · TL.5 14.5 · PF.3 14.2–14.4 · **PF.4 15.6–16.0** · T6.1 15.6–15.7 · T6.2 15.9–16.8 · T6.6
+  16.3–16.5 · T6.7 15.9–16.5 · T6.2b 16.5–16.7 · ecbfb622 16.5–16.8. TSC-instrumented split (ticks per 64-frame
+  block, 2.5 GHz): unit loop PF.3 28.1–29.1k → PF.4 32.3–32.9k → now 33.2–34.0k; timeline hook 7.6k → 7.7k → 8.4–8.6k
+  (the clip player alone 7.6–7.9k of it); everything else M6 added (recorder, metronome, live input) < 0.1k.
+- **Findings**: PF.4 adds ≈ 4k ticks (1.6 µs) in the JIT unit loop although its machine code for these units is
+  byte-identical to PF.3's (PQ_JIT_DUMP); the cause is probably where / how the code is placed or shared (one object per
+  compile, code released between compiles) — not investigated further (JIT, outside this task). M6 adds ≈ 1.9k ticks
+  (0.76 µs): ≈ 1.0k in `runUnit` (≈ 16 ticks per unit of T6.2 / T6.7 bookkeeping; a plain-unit fast path for the idle
+  check measured no gain, so `project_program.cpp` is unchanged for T6.x-fix-pdc) and ≈ 0.75k in the clip player
+  (≈ 12 ticks per voice: the T6.3 / T6.5 voice state and dispatch).
+- **Options**: (a) a PF task: find PF.4's placement cost (compare one object per unit vs per compile, page placement of
+  shared code); (b) shrink the clip player's hot voice state (split Voice into hot / cold parts). Target ≤ M5 (13.7 µs
+  ship) not met by this task.
+- Status: open.

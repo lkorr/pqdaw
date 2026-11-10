@@ -1,7 +1,10 @@
 // T6.8: tempo detection (pq/media/tempo_detect.h) on 20 labelled drum loops synthesised here (four-on-the-floor,
 // back-beats with 8th / 16th hats, broken beats over a bass line; 62 … 178 BPM, 44.1 / 48 kHz, ±3 ms of timing jitter
-// and velocity variation): within ±1 BPM on at least 18 of 20 (half / double tempo counts as a miss), and confident
-// (≥ 0.6, the auto-warp threshold); scattered onsets read unconfident; the decoder path equals the in-memory one; the
+// and velocity variation): within ±1 BPM on at least 18 of 20 (half / double tempo counts as a miss), never confidently
+// wrong, confident (≥ 0.6, the auto-warp threshold) where no other octave reads the same onsets (T6.x-fix-warp);
+// T6.x-fix-warp (M6 review H3): one-bar broken-beat / two-step loops (the length prior), half-time grooves (ambiguous,
+// never confidently wrong), 16th hats alone (right from 104 BPM; doubled below, documented); scattered onsets read
+// unconfident; the decoder path equals the in-memory one; the
 // result is cached on disk (a second run ≤ 1 ms, no decode) and in memory, and the transients found on the way land in
 // the transient cache.
 #include <doctest/doctest.h>
@@ -62,17 +65,15 @@ void addHit(Loop& l, Rng& r, Hit h, double atSeconds, double gain) {
   }
 }
 
-// Loop k of the labelled set: its pattern, tempo, rate and length (at least 8.5 s, whole bars).
-Loop makeLoop(int k, double bpm) {
+// `bars` bars of 4/4 of a pattern at `bpm` (the file exactly that long, as a loop is cut).
+Loop makePattern(int pattern, double bpm, uint32_t rate, int bars, uint32_t seed) {
   Loop l;
   l.bpm = bpm;
-  l.rate = (k % 2) == 0 ? 48000 : 44100;
+  l.rate = rate;
   const double beat = 60.0 / bpm;
-  const int bars = static_cast<int>(std::ceil(8.5 / (4.0 * beat)));
   const auto frames = static_cast<size_t>(std::ceil(bars * 4.0 * beat * l.rate));
   l.ch.assign(2, std::vector<float>(frames, 0.0f));
-  Rng r{static_cast<uint32_t>(1000 + 77 * k)};
-  const int pattern = k % 4;
+  Rng r{seed};
   auto hit = [&](Hit h, double beatPos, double gain) {
     const double jitter = 0.003 * r.signedNext();
     addHit(l, r, h, beatPos * beat + jitter + 0.01, gain * (0.85 + 0.15 * r.next()));
@@ -106,16 +107,38 @@ Loop makeLoop(int k, double bpm) {
           else hit(Hit::Snare, at, 0.9);
           for (int s = 0; s < 4; ++s) hit(Hit::Hat, at + 0.25 * s, s == 0 ? 0.4 : 0.25);
           break;
-        default:  // broken beat: kick on 1 and the and of 2, snare on 2 and 4, 8th hats
+        case 3:  // broken beat: kick on 1 and the and of 2, snare on 2 and 4, 8th hats
           if (b == 0) hit(Hit::Kick, at, 1.0);
           if (b == 1) hit(Hit::Kick, at + 0.5, 0.8);
           if (b % 2 == 1) hit(Hit::Snare, at, 0.9);
           hit(Hit::Hat, at, 0.35);
           hit(Hit::Hat, at + 0.5, 0.3);
           break;
+        case 4:  // T6.x-fix-warp (M6 review H3) — half-time: kick on 1, snare on 3, 8th hats
+          if (b == 0) hit(Hit::Kick, at, 1.0);
+          if (b == 2) hit(Hit::Snare, at, 0.9);
+          hit(Hit::Hat, at, 0.4);
+          hit(Hit::Hat, at + 0.5, 0.3);
+          break;
+        case 5:  // two-step: kick on 1 and the and of 3, snare on 2 and 4, 8th hats
+          if (b == 0) hit(Hit::Kick, at, 1.0);
+          if (b == 2) hit(Hit::Kick, at + 0.5, 0.9);
+          if (b % 2 == 1) hit(Hit::Snare, at, 0.95);
+          hit(Hit::Hat, at, 0.3);
+          hit(Hit::Hat, at + 0.5, 0.25);
+          break;
+        default:  // 16th hats alone, accented on the beat
+          for (int s = 0; s < 4; ++s) hit(Hit::Hat, at + 0.25 * s, s == 0 ? 0.8 : 0.4);
+          break;
       }
     }
   return l;
+}
+
+// Loop k of the labelled set: its pattern, tempo, rate and length (at least 8.5 s, whole bars).
+Loop makeLoop(int k, double bpm) {
+  const int bars = static_cast<int>(std::ceil(8.5 / (4.0 * 60.0 / bpm)));
+  return makePattern(k % 4, bpm, (k % 2) == 0 ? 48000 : 44100, bars, static_cast<uint32_t>(1000 + 77 * k));
 }
 
 constexpr double kLabels[20] = {62.0,  68.0,  72.0,  75.0,  80.0,  85.0,  88.0,  92.0,  96.0,  100.0,
@@ -128,19 +151,75 @@ pq::media::TempoEstimate detect(const Loop& l) {
 
 }  // namespace
 
-TEST_CASE("tempo: ±1 BPM on at least 18 of 20 labelled loops (half / double = miss), confident") {
-  int hits = 0, confident = 0;
+// T6.x-fix-warp (M6 review H3): the confidence part of this test changed. It asked for ≥ 18 of 20 confident, but the
+// loops below 100 BPM are back-beats / four-on-the-floor with 8th or 16th hats, onset for onset the same as a
+// half-time groove at twice their tempo (in range up to 200): the detector cannot know the octave, and a confident
+// wrong octave makes auto-warp play the clip at double / half speed (the review's H3: half-time grooves read as half,
+// confidence 1). Those now read ambiguous (< 0.6, the user's ×2 / ÷2); the rest must stay confident, and none may be
+// confidently wrong.
+TEST_CASE("tempo: ±1 BPM on at least 18 of 20 labelled loops (half / double = miss); confident unless the octave is "
+          "ambiguous, never confidently wrong") {
+  int hits = 0, confident = 0, confidentWrong = 0, unambiguous = 0, unambiguousConfident = 0;
   for (int k = 0; k < 20; ++k) {
     const Loop l = makeLoop(k, kLabels[k]);
     const pq::media::TempoEstimate e = detect(l);
     const bool hit = std::abs(e.bpm - l.bpm) <= 1.0;
+    const bool sure = e.confidence >= 0.6f;
     hits += hit ? 1 : 0;
-    confident += e.confidence >= 0.6f ? 1 : 0;
+    confident += sure ? 1 : 0;
+    confidentWrong += sure && !hit ? 1 : 0;
+    if (l.bpm >= 100.0) {  // no other octave in 60 … 200 that reads the same onsets
+      ++unambiguous;
+      unambiguousConfident += sure ? 1 : 0;
+    }
     MESSAGE("loop ", k, " (pattern ", k % 4, ", ", l.rate, " Hz): label ", l.bpm, " BPM, detected ", e.bpm,
             " confidence ", e.confidence, std::string(hit ? "" : "  MISS"));
   }
+  MESSAGE(hits, "/20 right, ", confident, "/20 confident (", unambiguousConfident, "/", unambiguous, " of those >= 100 BPM)");
   CHECK(hits >= 18);
-  CHECK(confident >= 18);
+  CHECK(confidentWrong == 0);
+  CHECK(unambiguousConfident == unambiguous);
+}
+
+// T6.x-fix-warp (M6 review H3): the families the review's probe found wrong, 62 … 188 BPM in 14 BPM steps at 48 and
+// 44.1 kHz. Measured before the fix (same generator) / after:
+//   one-bar broken beat      8/40 right, 32 confidently wrong (mostly 2/3 of the tempo)  →  39/40, 0
+//   one-bar two-step        19/40, 21 confidently wrong                                  →  40/40, 0
+//   half-time, 4 bars       18/40 (the rest half), 22 confidently wrong                  →  18/40, 0 (the rest flagged)
+//   16th hats alone, 4 bars 28/40 (the rest double), 12 confidently wrong               →  28/40, 12 (unchanged: see
+//                           tempo_detect.h; their octave cannot be told from a back-beat's by the comb)
+TEST_CASE("tempo (M6 H3): one-bar broken-beat / two-step loops, half-time grooves, 16th hats — rates per family") {
+  struct Family {
+    const char* name;
+    int pattern, bars;
+  };
+  for (const Family f : {Family{"one-bar broken beat", 3, 1}, Family{"one-bar two-step", 5, 1}, Family{"half-time", 4, 4},
+                         Family{"16th hats", 6, 4}}) {
+    int n = 0, right = 0, confidentWrong = 0, rightAbove = 0, nAbove = 0;
+    for (double bpm = 62.0; bpm <= 190.0; bpm += 14.0)
+      for (const uint32_t rate : {48000u, 44100u}) {
+        const Loop l = makePattern(f.pattern, bpm, rate, f.bars, 7000u + static_cast<uint32_t>(bpm) * 3u + rate);
+        const pq::media::TempoEstimate e = detect(l);
+        const bool hit = std::abs(e.bpm - bpm) <= 1.0;
+        ++n;
+        right += hit ? 1 : 0;
+        confidentWrong += !hit && e.confidence >= 0.6f ? 1 : 0;
+        if (bpm >= 104.0) {
+          ++nAbove;
+          rightAbove += hit ? 1 : 0;
+        }
+        if (!hit) MESSAGE(f.name, " at ", bpm, " BPM (", rate, " Hz): ", e.bpm, " confidence ", e.confidence);
+      }
+    MESSAGE(f.name, ": ", right, "/", n, " right, ", confidentWrong, " confidently wrong");
+    if (f.pattern == 3 || f.pattern == 5) {  // the length prior: whole bars at the right tempo, 2/3 of a bar at 2/3 of it
+      CHECK(right >= n - 2);
+      CHECK(confidentWrong == 0);
+    } else if (f.pattern == 4) {  // half-time: the octave is ambiguous, never confidently wrong
+      CHECK(confidentWrong == 0);
+    } else {  // 16th hats alone: right from 104 BPM on; below, still doubled (known, documented)
+      CHECK(rightAbove == nAbove);
+    }
+  }
 }
 
 TEST_CASE("tempo: scattered onsets are not confident; too few onsets give no tempo") {

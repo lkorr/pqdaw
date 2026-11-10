@@ -87,6 +87,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <vector>
 
@@ -388,6 +389,11 @@ private:
   std::atomic<AutomationImage*> pubAuto_{nullptr};
   std::atomic<TempoImage*> pubTempo_{nullptr};
   std::atomic<AudioSequenceImage*> pubAudio_{nullptr};  // T5.4
+  // T6.x-fix-warp (M6 review H2, L15): stretchers publishAudio built for its images' Complex clips, handed to the clip
+  // player at the next block before the image (a lock-free push; the audio thread takes the whole list).
+  std::atomic<StretchPool::Slot*> pubStretch_{nullptr};
+  std::mutex stretchMutex_;           // publishers: the planned counts
+  uint32_t stretchPlanned_[2] = {0, 0};  // stereo, mono stretchers built so far
   // T3.17-fix1: which images the audio thread holds, per kind (sequence, automation, tempo): `cur` = the one it uses
   // (kept across blocks and across a device stop), `cand` = a newer one it is about to take (hazard-pointer
   // protocol: store the candidate, re-read the published pointer, take it only if it did not change; bounded, else

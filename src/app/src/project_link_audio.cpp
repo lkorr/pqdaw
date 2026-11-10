@@ -171,6 +171,10 @@ engine::AudioClipDesc toEngine(const doc::AudioClipDesc& d, uint32_t sample, boo
 
 uint64_t ProjectLink::diskUnderruns() const { return pool_ != nullptr ? pool_->stats().underruns : 0; }
 
+uint64_t ProjectLink::stretchFallbacks() const {
+  return engine_ != nullptr ? engine_->timeline().clipPlayer().stretchFallbacksShared() : 0;
+}
+
 void ProjectLink::setUiPoster(std::function<void(std::function<void()>)> post) {
   std::lock_guard lock(loadMutex_);
   post_ = std::move(post);
@@ -542,8 +546,11 @@ Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Proje
   pc.streamBuffers = 2;
   pc.streams = &pool_->streams();
   pc.lookaheadSeconds = cfg_.clipLookaheadSeconds;
-  pc.stretchVoices = 2;  // T6.5: one clip (a Complex one and its fade-out after a swap at most)
-  pc.stretchMonoVoices = 2;
+  // T6.5: one clip (a Complex one and its fade-out after a swap at most); none for the other modes (L15).
+  const bool complex = engine::clipComplex(c.warp);
+  pc.stretchVoices = complex && channels == 2 ? 2u : 0u;
+  pc.stretchMonoVoices = complex && channels == 1 ? 2u : 0u;
+  pc.stretchCapacity = 0;
   engine::ClipPlayer player(pc);
   player.setStreamFill(&waitFill, pool_.get());
   const bool wasEngaged = engaged_;

@@ -18,7 +18,7 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr uint32_t kMagic = 0x50545150u;  // "PQTP"
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;  // 2: M6 review H3 (length prior, near-tie confidence)
 constexpr double kBinSeconds = 0.001;     // histogram resolution
 constexpr double kSigmaBins = 2.0;        // Gaussian smoothing (2 ms)
 constexpr double kMinLagSeconds = 0.06;   // shorter intervals are flams, not rhythm
@@ -28,7 +28,17 @@ constexpr double kPriorOctaves = 0.8;
 constexpr double kConfidentRatio = 30.0;  // best / median comb score that reads as confidence 1
 constexpr double kStrengthWindow = 0.04;  // seconds on each side of an onset
 constexpr float kMinStrength = 0.05f;
-constexpr double kStrongWeight = 0.2;  // a loud hit (of the largest weight), for the prior's centre  // a loud hit, for the prior's centre
+constexpr double kStrongWeight = 0.2;  // a loud hit (of the largest weight), for the prior's centre
+// M6 review H3 (the length prior and the near-tie confidence; estimateTempo steps 5 and 7).
+constexpr double kBarTolerance = 0.02;  // |bars − n| within this × max(1, n): a whole number of bars
+constexpr double kLoopSupport = 0.25;   // a whole-bar candidate scoring this × the best makes the file a loop
+constexpr double kWholeBars = 0.8;      // score weight of a whole, not power-of-two, number of bars
+constexpr double kNoBars = 0.35;        // ... and of a fraction of a bar
+constexpr double kTieWindow = 0.015;    // a related tempo's peak is searched within ±1.5 %
+constexpr double kFinerLow = 0.04;      // finer-beat support (odd / even multiples) above which 2·bpm also fits
+constexpr double kFinerHigh = 0.5;      // ... below which bpm / 2 also fits
+constexpr double kTieFrom = 0.6;        // a 2/3 or 3/2 tempo scoring this × the chosen one starts to lower confidence
+constexpr double kTiePenalty = 0.6;     // a full tie scales the confidence by 1 − this
 
 uint64_t cacheKey(uint64_t hash, int64_t frames) { return hash ^ (static_cast<uint64_t>(frames) * 0x9E3779B97F4A7C15ull); }
 
@@ -152,9 +162,9 @@ TempoEstimate estimateTempo(std::span<const double> onsets, std::span<const floa
   // 4. The comb score of each candidate tempo, and the prior.
   const auto nc = static_cast<size_t>(std::floor((opt.maxBpm - opt.minBpm) / kBpmStep)) + 1;
   std::vector<double> raw(nc), scored(nc);
-  size_t best = 0;
+  auto bpmAt = [&](size_t c) { return opt.minBpm + static_cast<double>(c) * kBpmStep; };
   for (size_t c = 0; c < nc; ++c) {
-    const double bpm = opt.minBpm + static_cast<double>(c) * kBpmStep;
+    const double bpm = bpmAt(c);
     const double period = 60.0 / bpm;
     const auto kmax = static_cast<int32_t>(std::floor(lagMax / period));
     double s = 0.0;
@@ -162,11 +172,35 @@ TempoEstimate estimateTempo(std::span<const double> onsets, std::span<const floa
     raw[c] = kmax > 0 ? s / kmax : 0.0;
     const double oct = std::log2(bpm / centre) / kPriorOctaves;
     scored[c] = raw[c] * std::exp(-0.5 * oct * oct);
-    if (scored[c] > scored[best]) best = c;
   }
+  // 5. M6 review H3: the length prior. A loop is usually a whole number of 4/4 bars long, most often a power of two
+  //    (1, 2, 4, 8 … bars). When the file's length is a whole number of bars at some candidate the comb supports, that
+  //    file is taken as a loop and every candidate's score is weighted by how well its bar count fits (a power of two
+  //    1, another whole number kWholeBars, neither kNoBars): this is what tells a one-bar loop at 90 from 60 (2/3 of
+  //    it: 2/3 of a bar), which the comb and the octave prior cannot.
+  const double barsPerBpm = dur / 240.0;
+  auto barFit = [&](double bpm) {  // 0: neither, 1: whole, 2: a power of two
+    const double bars = bpm * barsPerBpm;
+    const double n = std::round(bars);
+    if (n < 1.0 || std::abs(bars - n) > kBarTolerance * std::max(1.0, n)) return 0;
+    const auto in = static_cast<int64_t>(n);
+    return (in & (in - 1)) == 0 ? 2 : 1;
+  };
+  size_t best = 0;
+  for (size_t c = 0; c < nc; ++c)
+    if (scored[c] > scored[best]) best = c;
   if (!(raw[best] > 0.0)) return out;
-  // 5. Refinement (a parabola through the neighbours) and confidence.
-  double bpm = opt.minBpm + static_cast<double>(best) * kBpmStep;
+  bool loop = false;
+  for (size_t c = 0; c < nc && !loop; ++c) loop = barFit(bpmAt(c)) > 0 && scored[c] >= kLoopSupport * scored[best];
+  if (loop) {
+    for (size_t c = 0; c < nc; ++c) {
+      const int fit = barFit(bpmAt(c));
+      scored[c] *= fit == 2 ? 1.0 : fit == 1 ? kWholeBars : kNoBars;
+      if (scored[c] > scored[best]) best = c;
+    }
+  }
+  // 6. Refinement (a parabola through the neighbours) and confidence.
+  double bpm = bpmAt(best);
   if (best > 0 && best + 1 < nc) {
     const double a = scored[best - 1], b = scored[best], c = scored[best + 1];
     const double den = a - 2.0 * b + c;
@@ -177,7 +211,63 @@ TempoEstimate estimateTempo(std::span<const double> onsets, std::span<const floa
   const double median = sorted[nc / 2];
   out.bpm = bpm;
   const double ratio = raw[best] / std::max(median, 1e-3 * raw[best]);
-  out.confidence = static_cast<float>(std::clamp(std::log(ratio) / std::log(kConfidentRatio), 0.0, 1.0));
+  double confidence = std::clamp(std::log(ratio) / std::log(kConfidentRatio), 0.0, 1.0);
+  // 7. M6 review H3: how periodic the material is says nothing about whether the octave (or the 2/3) is right, so the
+  //    confidence also falls with the strongest near-tie among the related tempos.
+  //    • ×2 / ÷2: of a pair (lo, hi = 2·lo), hi's finer beats are the odd multiples of its period (finerSupport: the
+  //      histogram there over the even ones). Chosen lo: when anything falls between lo's beats (support above
+  //      kFinerLow) hi is another reading of the same onsets — a back-beat at lo with 8ths / 16ths IS a half-time groove
+  //      at hi, onset for onset — so the confidence falls (fully from 2 × kFinerLow). Chosen hi: when its odd multiples
+  //      are weak (below kFinerHigh) lo explains the onsets as well. Measured (the M6 review's families, 62 … 196 BPM):
+  //      no setting separates a 16th-hat loop at lo read as hi from a back-beat at hi (both 0.67 … 0.91), so that
+  //      case stays confidently doubled.
+  //    • ×2/3, ×3/2: their own score (prior and bar fit included) against the chosen one's.
+  auto rawNear = [&](double b) {  // the comb's local maximum within ±kTieWindow of b (0 out of range)
+    if (b < opt.minBpm || b > opt.maxBpm) return 0.0;
+    const auto lo = static_cast<size_t>(std::max(0.0, std::floor((b * (1.0 - kTieWindow) - opt.minBpm) / kBpmStep)));
+    const auto hi = std::min(nc - 1, static_cast<size_t>(std::ceil((b * (1.0 + kTieWindow) - opt.minBpm) / kBpmStep)));
+    double m = 0.0;
+    for (size_t c = lo; c <= hi; ++c) m = std::max(m, raw[c]);
+    return m;
+  };
+  auto finerSupport = [&](double b) {  // mean at odd multiples of b's period / mean at even ones
+    const double period = 60.0 / b;
+    double odd = 0.0, even = 0.0;
+    int no = 0, ne = 0;
+    for (int32_t k = 1; k * period <= lagMax; ++k) {
+      if (k % 2 == 1) {
+        odd += at(k * period);
+        ++no;
+      } else {
+        even += at(k * period);
+        ++ne;
+      }
+    }
+    if (no == 0 || ne == 0) {  // too short for even multiples: the first odd one against the comb at half the tempo
+      const double h2 = rawNear(b / 2.0);
+      return h2 > 0.0 ? at(period) / h2 : 1.0;
+    }
+    return even > 0.0 ? (odd / no) / (even / ne) : 1.0;
+  };
+  double tie = 0.0;
+  if (bpm / 2.0 >= opt.minBpm) {  // chosen as the finer of (bpm / 2, bpm): a tie when its odd multiples are weak
+    const double fHi = finerSupport(bpm);
+    tie = std::max(tie, std::clamp((kFinerHigh - fHi) / (0.5 * kFinerHigh), 0.0, 1.0));
+  }
+  if (bpm * 2.0 <= opt.maxBpm) {  // chosen as the coarser of (bpm, 2·bpm): a tie unless nothing falls between beats
+    const double fLo = finerSupport(bpm * 2.0);
+    tie = std::max(tie, std::clamp((fLo - kFinerLow) / kFinerLow, 0.0, 1.0));
+  }
+  for (const double m : {2.0 / 3.0, 1.5}) {
+    const double b = bpm * m;
+    if (b < opt.minBpm || b > opt.maxBpm) continue;
+    const auto c = static_cast<size_t>(std::llround((b - opt.minBpm) / kBpmStep));
+    double s = 0.0;
+    const auto w0 = static_cast<size_t>(std::llround(b * kTieWindow / kBpmStep));
+    for (size_t j = c > w0 ? c - w0 : 0; j <= std::min(nc - 1, c + w0); ++j) s = std::max(s, scored[j]);
+    tie = std::max(tie, std::clamp((s / scored[best] - kTieFrom) / (1.0 - kTieFrom), 0.0, 1.0));
+  }
+  out.confidence = static_cast<float>(confidence * (1.0 - kTiePenalty * tie));
   return out;
 }
 

@@ -118,6 +118,7 @@ public:
   void setProgram(std::unique_ptr<ProjectProgram> program);
   ProjectProgram* program() noexcept { return program_.get(); }
   Timeline& timeline() noexcept { return *timeline_; }
+  const Timeline& timeline() const noexcept { return *timeline_; }
   const EngineConfig& config() const noexcept { return cfg_; }
   // T6.4: the live input (publish its routes, set its latency, read its record tap on the UI thread; see live_input.h).
   LiveInput& liveInput() noexcept { return *live_; }

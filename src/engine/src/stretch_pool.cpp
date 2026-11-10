@@ -6,6 +6,7 @@
 #include <cmath>
 #include <complex>
 
+#include "pq/core/aligned_buffer.h"
 #include "signalsmith-stretch/signalsmith-stretch.h"
 
 namespace pq::engine {
@@ -43,51 +44,116 @@ struct In {  // in[c][k] = frame `lead` + k; frames before `lead` read as zeros
   Ch operator[](int c) const noexcept { return {p[c], lead}; }
 };
 
+float rateOf(double sampleRate) noexcept { return static_cast<float>(sampleRate >= 1000.0 ? sampleRate : 48000.0); }
+
+// The configuration's buffers (an estimate from the preset's sizes: signalsmith's members are private). Per stretcher:
+// the STFT's input history (block + interval, ×2 with the stashed copy), output (block + window products, ×2), spectra
+// and FFT work buffers (~4 × block complex), and per band (block / 2 + 1, per channel): 2 Band (28 B), a Prediction
+// (12 B), and ~6 floats of maps and energies. The M6 review (L15) measured ~25 % more in process private bytes.
+size_t stretcherBytes(const Stretch& probe, size_t ch) noexcept {
+  const auto block = static_cast<size_t>(probe.blockSamples()), interval = static_cast<size_t>(probe.intervalSamples());
+  const size_t bands = block / 2 + 1;
+  const size_t floats = ch * 2 * (block + interval) + ch * (2 * block + block) + 4 * block * ch + block + interval +
+                        static_cast<size_t>(probe.outputLatency()) * ch;
+  return floats * sizeof(float) + bands * ch * (28 + 12) + bands * 6 * sizeof(float);
+}
+
 }  // namespace
 
 struct StretchPool::Slot {
   Stretch s{0};
   uint64_t rng = 0;
+  uint32_t channels = 2;
+  size_t bytes = 0;
+  AlignedBuffer<float> out;  // 2 × outFrames
+  Slot* next = nullptr;      // build() lists
 };
 
-StretchPool::StretchPool(uint32_t voices, double sampleRate, uint32_t monoVoices) : stereo_(voices) {
-  const auto sr = static_cast<float>(sampleRate >= 1000.0 ? sampleRate : 48000.0);
-  slots_.reserve(voices + monoVoices);
-  free_.reserve(voices);
-  freeMono_.reserve(monoVoices);
-  for (uint32_t i = 0; i < voices + monoVoices; ++i) {
+StretchPool::Slot* StretchPool::build(uint32_t stereo, uint32_t mono, double sampleRate, uint32_t outFrames) {
+  const float sr = rateOf(sampleRate);
+  Slot* head = nullptr;
+  Slot** tail = &head;
+  for (uint32_t i = 0; i < stereo + mono; ++i) {
     auto slot = std::make_unique<Slot>();
-    slot->s.presetDefault(i < voices ? 2 : 1, sr, true);
-    slots_.push_back(std::move(slot));
+    slot->channels = i < stereo ? 2u : 1u;
+    slot->s.presetDefault(static_cast<int>(slot->channels), sr, true);
+    if (outFrames > 0) {
+      slot->out = AlignedBuffer<float>(static_cast<size_t>(2) * outFrames);
+      std::fill(slot->out.data(), slot->out.data() + slot->out.size(), 0.0f);
+    }
+    slot->bytes = stretcherBytes(slot->s, slot->channels) + sizeof(float) * 2 * static_cast<size_t>(outFrames);
+    *tail = slot.release();
+    tail = &(*tail)->next;
   }
-  for (uint32_t i = voices; i-- > 0;) free_.push_back(i);
-  for (uint32_t i = voices + monoVoices; i-- > voices;) freeMono_.push_back(i);
-  // The configuration's buffers (an estimate from the preset's sizes: signalsmith's members are private). Per
-  // stretcher: the STFT's input history (block + interval, ×2 with the stashed copy), output (block + window products,
-  // ×2), spectra and FFT work buffers (~4 × block complex), and per band (block / 2 + 1, two channels): 2 Band (28 B),
-  // a Prediction (12 B), and ~6 floats of maps and energies.
+  return head;
+}
+
+void StretchPool::destroy(Slot* list) noexcept {
+  while (list != nullptr) {
+    Slot* next = list->next;
+    delete list;
+    list = next;
+  }
+}
+
+StretchPool::Slot* StretchPool::append(Slot* list, Slot* more) noexcept {
+  if (list == nullptr) return more;
+  Slot* t = list;
+  while (t->next != nullptr) t = t->next;
+  t->next = more;
+  return list;
+}
+
+void StretchPool::push(std::atomic<Slot*>& head, Slot* list) noexcept {
+  if (list == nullptr) return;
+  Slot* last = list;
+  while (last->next != nullptr) last = last->next;
+  Slot* h = head.load(std::memory_order_relaxed);
+  do {
+    last->next = h;
+  } while (!head.compare_exchange_weak(h, list, std::memory_order_seq_cst, std::memory_order_relaxed));
+}
+
+StretchPool::StretchPool(uint32_t voices, double sampleRate, uint32_t monoVoices, uint32_t capacity, uint32_t outFrames)
+    : capacity_(std::max(capacity, voices + monoVoices)) {
+  slots_.reserve(capacity_);
+  free_.reserve(capacity_);
+  freeMono_.reserve(capacity_);
   Stretch probe{0};
-  probe.presetDefault(2, sr, true);
-  const auto block = static_cast<size_t>(probe.blockSamples()), interval = static_cast<size_t>(probe.intervalSamples());
-  const size_t bands = block / 2 + 1;
-  auto perStretcher = [&](size_t ch) {
-    const size_t floats = ch * 2 * (block + interval) + ch * (2 * block + block) + 4 * block * ch + block + interval +
-                          static_cast<size_t>(probe.outputLatency()) * ch;
-    return floats * sizeof(float) + bands * ch * (28 + 12) + bands * 6 * sizeof(float);
-  };
-  memory_ = static_cast<size_t>(voices) * perStretcher(2) + static_cast<size_t>(monoVoices) * perStretcher(1);
-  latency_ = {probe.inputLatency(), probe.outputLatency(), probe.seekLength(), probe.blockSamples()};
+  probe.presetDefault(2, rateOf(sampleRate), true);
+  latency_ = {probe.inputLatency(), probe.outputLatency(), probe.seekLength(), probe.blockSamples(), probe.intervalSamples()};
+  destroy(adopt(build(voices, monoVoices, sampleRate, outFrames)));  // the capacity covers them all
 }
 
 StretchPool::Latency StretchPool::latencyFor(double sampleRate) noexcept {  // RT-safe
   // presetDefault: block 0.12 s, interval 0.03 s; the Kaiser window's analysis / synthesis offsets are half a block;
   // split computation delays the output by one more interval.
-  const auto sr = static_cast<float>(sampleRate >= 1000.0 ? sampleRate : 48000.0);
+  const float sr = rateOf(sampleRate);
   const auto block = static_cast<int>(sr * 0.12f), interval = static_cast<int>(sr * 0.03f);
-  return {block - block / 2, block / 2 + interval, block + interval, block};
+  return {block - block / 2, block / 2 + interval, block + interval, block, interval};
 }
 
 StretchPool::~StretchPool() = default;
+
+StretchPool::Slot* StretchPool::adopt(Slot* list) noexcept {  // RT-safe
+  while (list != nullptr && slots_.size() < capacity_) {
+    Slot* next = list->next;
+    list->next = nullptr;
+    const auto i = static_cast<uint32_t>(slots_.size());
+    memory_ += list->bytes;
+    // Claims pop from the back: the stretchers adopted first are claimed first. Within the reserved capacity, so
+    // neither the insert nor the emplace allocates.
+    std::vector<uint32_t>& f = list->channels == 1 ? freeMono_ : free_;
+    f.insert(f.begin(), i);
+    slots_.emplace_back(list);
+    list = next;
+  }
+  return list;
+}
+
+uint32_t StretchPool::channels(uint32_t i) const noexcept { return slots_[i]->channels; }  // RT-safe
+
+float* StretchPool::output(uint32_t i) noexcept { return slots_[i]->out.data(); }  // RT-safe
 
 uint32_t StretchPool::claim(uint32_t seed, uint32_t channels) noexcept {  // RT-safe
   std::vector<uint32_t>& list = channels == 1 && !freeMono_.empty() ? freeMono_ : free_;
@@ -109,7 +175,7 @@ void StretchPool::reset(uint32_t i, uint32_t seed) noexcept {  // RT-safe
 }
 
 void StretchPool::release(uint32_t i) noexcept {  // RT-safe
-  if (i < slots_.size()) (i < stereo_ ? free_ : freeMono_).push_back(i);
+  if (i < slots_.size()) (slots_[i]->channels == 1 ? freeMono_ : free_).push_back(i);  // reserved: no allocation
 }
 
 void StretchPool::setParams(uint32_t i, const StretchParams& p) noexcept {  // RT-safe

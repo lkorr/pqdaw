@@ -6,7 +6,8 @@
 //   Tones / Texture  granular overlap-add: grains of N output frames every H = N / 2, a periodic Hann window
 //                    (hannWindow: w(j) = 0.5 − 0.5·cos(2πj / N); Σ_k w(t − kH) = 1 exactly, so a stationary source
 //                    keeps its level). Tones aligns each grain with the one before (warpBestLag: the lag that best
-//                    continues the previous grain's waveform, WSOLA), so a periodic source keeps its pitch exactly;
+//                    continues the previous grain's waveform, WSOLA), so a monophonic periodic source keeps its pitch
+//                    exactly (one lag per grain: a chord's partials drift; Complex is the mode for chords);
 //                    Texture leaves grains where the warp law puts them and jitters them (warpJitter, Flux).
 //   Beats            slices cut at transients or a grid; each slice's gain is piecewise linear (fade in, Envelope
 //                    decay, the 2 ms crossfade into the next slice, a loop's declick): warpRampGain.

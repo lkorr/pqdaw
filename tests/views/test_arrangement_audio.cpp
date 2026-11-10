@@ -340,6 +340,12 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   CHECK(formatTranspose(*parseTranspose("3/2")) == "3/2");
   CHECK(sourceBpmFor(0.0, 1.5) == doctest::Approx(160.0));  // one bar of 4/4 in 1.5 s
   CHECK(sourceBpmFor(98.0, 1.5) == 98.0);
+  // M6 review M11: Warp as N-Bar Loop's count in the clip's signature, any whole number with a detected tempo.
+  CHECK(loopBarsFor(4.0, 0.0) == 2);             // no detection: the power of two nearest 120 BPM (2 bars of 4/4)
+  CHECK(loopBarsFor(6.0, 120.0) == 3);           // 3 bars of 4/4 at 120: no longer forced to 2 or 4
+  CHECK(loopBarsFor(6.0, 90.0, 3.0) == 3);       // 3/4 at 90 BPM: 3 bars
+  CHECK(loopBarsFor(3.5, 120.0, 3.5) == 2);      // 7/8 at 120: two bars of 3.5 quarters
+  CHECK(loopBarsFor(6.0, 2000.0) <= 1024);
 
   size_t h = f.history();
   CHECK(v.setWarp(doc::AudioWarp::Off));

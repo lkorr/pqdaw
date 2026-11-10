@@ -252,12 +252,21 @@ void CpuMeter::poll() {
 
 ui::InfoText CpuMeter::info() const {  // T6.6: the PDC total, read when hovered
   const double ms = ctx_.transport().outputLatencyMs();
-  char buf[112];
+  char buf[160];
   std::snprintf(buf, sizeof buf, " Plugin delay compensation: the output is %.1f ms behind the transport.", ms);
   infoBody_ = "How much of the audio callback's time the engine uses while it plays (the share of each audio buffer "
               "spent computing it). It updates twice a second during playback. It reads DISK for two seconds when the "
               "disk could not deliver a streamed sample in time (that part played silence).";
   infoBody_ += buf;
+  // M6 review H2: a Complex clip that found every stretcher busy plays as Tones until one frees (the pool is sized from
+  // the project's Complex clips, so this is rare): say so instead of failing silently.
+  if (AudioPrefsPort* port = ctx_.audioPrefs(); port != nullptr) {
+    if (const uint64_t f = port->stretchFallbacks(); f > 0) {
+      std::snprintf(buf, sizeof buf, " Complex warping: %llu clip start%s found no free stretcher and played as Tones until one freed.",
+                    static_cast<unsigned long long>(f), f == 1 ? "" : "s");
+      infoBody_ += buf;
+    }
+  }
   return {"CPU Load Meter", infoBody_};
 }
 

@@ -60,7 +60,8 @@ public:
   explicit CpuMeter(ViewContext& ctx);
   void paint(ui::PaintContext& ctx) override;
   void onTimer(uint32_t id) override;
-  // T6.6: the info text ends with the plugin delay compensation total (read from the transport when hovered).
+  // T6.6: the info text ends with the plugin delay compensation total (read from the transport when hovered);
+  // T6.x-fix-warp: and, when any, the Complex clips that played as Tones for want of a stretcher.
   ui::InfoText info() const override;
   // The transport started or stopped (the control bar forwards view_change::kTransport).
   void transportChanged();

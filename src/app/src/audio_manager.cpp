@@ -371,6 +371,7 @@ views::AudioStatus AudioDeviceManager::status() {
 }
 
 uint64_t AudioDeviceManager::diskUnderruns() { return link_.diskUnderruns(); }  // T5.4
+uint64_t AudioDeviceManager::stretchFallbacks() { return link_.stretchFallbacks(); }  // T6.x-fix-warp (M6 review H2)
 
 double AudioDeviceManager::cpuLoad() {
   const auto now = std::chrono::steady_clock::now();

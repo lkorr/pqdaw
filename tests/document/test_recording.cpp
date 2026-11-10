@@ -485,6 +485,17 @@ TEST_CASE("recording: T6.8 warp commands — slide keeps the content tick, Warp 
   CHECK(clip().warp == AudioWarp::Tones);
   CHECK(warpFrameAt(clip(), 48000.0, static_cast<double>(clip().loop.start)) == doctest::Approx(w0));
   CHECK(warpFrameAt(clip(), 48000.0, static_cast<double>(clip().loop.end)) == doctest::Approx(w1));
+
+  // M6 review M11: bars of the signature at the clip's start, any whole number of them (3 bars of 3/4 = 9 quarters;
+  // one bar of 7/8 = 3.5), the region still spanning the same source frames.
+  REQUIRE(r.store.dispatch(SetTimeSignatures{{{0, {3, 4}}}}).ok());
+  commit(r.store, ops::warpAsLoop(r.doc(), c, 3));
+  CHECK(clip().loop.end - clip().loop.start == 9 * kPpq);
+  CHECK(warpFrameAt(clip(), 48000.0, static_cast<double>(clip().loop.start)) == doctest::Approx(w0));
+  CHECK(warpFrameAt(clip(), 48000.0, static_cast<double>(clip().loop.end)) == doctest::Approx(w1));
+  REQUIRE(r.store.dispatch(SetTimeSignatures{{{0, {7, 8}}}}).ok());
+  commit(r.store, ops::warpAsLoop(r.doc(), c, 1));
+  CHECK(clip().loop.end - clip().loop.start == 7 * kPpq / 2);
   (void)warped;
 }
 

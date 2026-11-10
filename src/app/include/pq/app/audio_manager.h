@@ -90,6 +90,7 @@ public:
   views::AudioStatus status() override;
   double cpuLoad() override;
   uint64_t diskUnderruns() override;  // T5.4: the link's sample pool
+  uint64_t stretchFallbacks() override;  // T6.x-fix-warp: the link's clip player
   void setTestTone(bool on, float levelDb, float hz) override;
   bool testTone() override { return output_->testTone(); }
   bool openControlPanel() override;
