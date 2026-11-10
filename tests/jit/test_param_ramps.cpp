@@ -275,3 +275,80 @@ TEST_CASE("param ramps: ramp mode only while a change ramps; at rest the ramp-fr
     }
   }
 }
+
+// PF.3 (codegen.cpp emitUnits): a stage function holds its ramp-mode code only for the units that read a ramp; units
+// that read none are emitted once and run in both modes. Ramp-reading and ramp-free units interleave here (a
+// feedback loop between ramped reads, a smoothed gain, a voice stage), the params step, ramp and settle: the JIT
+// equals the interpreter bit for bit in ramp mode and at rest, and at rest the output is the ramp-free schedule's.
+TEST_CASE("param ramps: units with and without ramp reads interleaved, ramp moving vs settled (both backends)") {
+  constexpr uint32_t kRampBlocks = 960 / 64;
+  const Compiled g = compileText(R"(patch Mixed {
+  in x : audio
+  param g = 0.5 [0..1]
+  param k = 0.3 [0..1]
+  out y : audio
+  out z : audio
+  out w : audio
+  a  = x * g
+  fb = z1(b, init: 0)
+  b  = tanh(a * 0.7 + fb * 0.5)
+  c  = fast_sin(b * 3) * 0.5 + b * 0.25
+  y  = c * k
+  w  = gain(c, k, start: 1)
+  z  = fast_tanh(c * 2 + b) * 0.5
+})");
+  const Compiled v = compileText(R"(patch MixedVoice {
+  param lvl = 0.5 [0..1]
+  param det = 0.1 [0..1]
+  out y : audio voice
+  s  = sine(phasor(voice.hz)) * lvl
+  fb = z1(t, init: 0)
+  t  = tanh(s * 0.8 + fb * 0.3)
+  y  = t * (det * voice.velocity) + t * 0.5
+})");
+  REQUIRE(g.sched.ramps.size() == 2);
+  REQUIRE(v.sched.ramps.size() == 2);
+  // g, k (lvl, det) step at blocks 10 and 30 (k / det also at 33: a ramp restarted mid-way), then rest.
+  auto motion = [](uint32_t slot, const ParamSlot&, uint64_t t0, float base) {
+    const uint64_t b = t0 / 64;
+    if (slot == 0) return b < 10 ? base : b < 30 ? 0.9f : 0.2f;
+    return b < 10 ? base : b < 33 ? 0.6f : 0.05f;
+  };
+  for (const Compiled* c : {&g, &v}) {
+    INFO(c->name);
+    const uint32_t voices = c == &v ? 11u : 0u;
+    const uint32_t runsPerBlock = c == &v ? 2u : 1u;
+    Setup st(*c, voices, 0);
+    st.paramAt = motion;
+    for (const uint32_t block : {64u, 37u}) {
+      INFO("block " << block);
+      const InterpRun interp = runInterp(st, 64 * 80, block, 1024);
+      const InterpRun jit = runInterp(st, 64 * 80, block, 1024, rigImageBuilder());
+      REQUIRE(interp.error.empty());
+      REQUIRE(jit.error.empty());
+      CHECK(interp.rtViolations == 0);
+      CHECK(jit.rtViolations == 0);
+      std::string where;
+      CHECK_MESSAGE(bitDiffs(interp.streams, jit.streams, where) == 0, "not bit-identical at " << where);
+    }
+    // Ramp mode exactly while a step ramps (blocks of 64: 10.., 30.., 33..), the ramp-free code in between and after.
+    const InterpRun jit = runInterp(st, 64 * 80, 64, 1024, rigImageBuilder());
+    REQUIRE(jit.rampRunsPerBlock.size() == 80);
+    for (uint32_t b = 0; b < 80; ++b) {
+      const bool on = b < kRampBlocks || (b >= 10 && b < 10 + kRampBlocks) || (b >= 30 && b < 33 + kRampBlocks);
+      CHECK(jit.rampRunsPerBlock[b] == (on ? runsPerBlock : 0u));
+    }
+    // Held params: the ramp-free schedule's output bit for bit (the units shared by both modes included).
+    Setup held(*c, voices, 0);
+    held.paramAt = [](uint32_t, const ParamSlot&, uint64_t, float base) { return base; };
+    Compiled plain = withoutRampsHere(*c);
+    Setup hp(plain, voices, 0);
+    hp.paramAt = held.paramAt;
+    const InterpRun r = runInterp(held, 64 * 40, 64, 1024, rigImageBuilder());
+    const InterpRun p = runInterp(hp, 64 * 40, 64, 1024, rigImageBuilder());
+    REQUIRE(r.error.empty());
+    REQUIRE(p.error.empty());
+    std::string where;
+    CHECK_MESSAGE(bitDiffs(r.streams, p.streams, where) == 0, "not the ramp-free output at " << where);
+  }
+}

@@ -1084,7 +1084,7 @@ TEST_CASE("jit: compile-size proxy for compile time: IR and machine code of the 
   // regression M14 found (an 8x interleave duplicating every select of the mux into one huge block) multiplied both.
   // Bounds = about 1.5x what T1.11-fix1 measured (printed below), so a real blow-up fails here in every tier.
   // TX.smooth: the chain reads its param `p` in its per-sample loop, so with param ramps the loop is generated twice
-  // (the ramp-mode copy for blocks in which p moves, codegen.cpp emitRampBranch): the bounds hold for the schedule
+  // (the ramp-mode copy for blocks in which p moves, codegen.cpp emitUnits): the bounds hold for the schedule
   // without ramps, and the ramped one is at most one more copy of it.
   const Compiled chain = compileText(mixedChain(100));
   const Compiled chainPlain = withoutRamps(chain);
@@ -1102,6 +1102,23 @@ TEST_CASE("jit: compile-size proxy for compile time: IR and machine code of the 
   CHECK(a2.objectBytes <= 2 * kChainCodeBound);
   CHECK(b.irInstructions <= kMuxIrBound);
   CHECK(b.objectBytes <= kMuxCodeBound);
+}
+
+TEST_CASE("jit: a stage's ramp-mode code covers only the units that read a ramp (PF.3)") {
+  // codegen.cpp emitUnits: a unit (region / chain) that reads no ramp is emitted once and runs in both modes. Here a
+  // 100-step chain that reads no param feeds a Block region of three ops reading one: with the ramp, the chain must
+  // not be generated twice (before PF.3 the whole stage was: about +100 %).
+  std::string t = mixedChain(100);
+  for (size_t at = t.find(" * p)"); at != std::string::npos; at = t.find(" * p)")) t.replace(at, 5, " * 0.5)");
+  t.replace(t.rfind("  y = "), std::string::npos, "  y = sin(a100) * p + x * p\n}\n");
+  const Compiled c = compileText(t);
+  REQUIRE(c.sched.ramps.size() == 1);
+  const Compiled plain = withoutRamps(c);
+  jit::CompileStats a, b;
+  REQUIRE(compiler().compile(plain.sched, {}, &a).ok());
+  REQUIRE(compiler().compile(c.sched, {}, &b).ok());
+  MESSAGE("chain + ramped tail: " << a.irInstructions << " IR instructions without ramps, " << b.irInstructions << " with");
+  CHECK(b.irInstructions <= a.irInstructions + a.irInstructions / 4);
 }
 
 TEST_CASE("jit: no stage function needs stack probes (the 1200-input mux, the corpus)") {

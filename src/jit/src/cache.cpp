@@ -52,7 +52,7 @@ namespace g = pq::graph;
 
 // Entry format: bump kFormat whenever the payload layout or the meaning of a key field changes.
 constexpr char kMagic[8] = {'P', 'Q', 'J', 'I', 'T', 'C', 'C', 'H'};
-constexpr uint32_t kFormat = 2;  // 2: pair functions (T1b.2)
+constexpr uint32_t kFormat = 3;  // 2: pair functions (T1b.2); 3: no ramp-mode functions (PF.3)
 constexpr uint32_t kHeaderBytes = 64;
 constexpr uint64_t kMaxPayload = uint64_t{256} << 20;
 constexpr const wchar_t* kExt = L".pqjit";
@@ -450,13 +450,6 @@ bool parsePayload(const uint8_t* p, size_t n, Entry& e) {
     if (!r.get(len) || len > 4096 || !r.bytes(len, b)) return false;
     name.assign(reinterpret_cast<const char*>(b), len);
   }
-  e.rampFunctions.assign(stages, {});
-  for (std::string& name : e.rampFunctions) {  // TX.smooth-fix1; empty: no ramps in that stage
-    uint32_t len = 0;
-    const uint8_t* b = nullptr;
-    if (!r.get(len) || len > 4096 || !r.bytes(len, b)) return false;
-    name.assign(reinterpret_cast<const char*>(b), len);
-  }
   uint32_t fns = 0;
   if (!r.get(e.hostSlots) || !r.get(fns) || fns > (1u << 20)) return false;
   e.fnOffsets.assign(fns, 0);
@@ -487,12 +480,6 @@ std::vector<uint8_t> payloadOf(const Entry& e) {
   for (size_t k = 0; k < e.stageFunctions.size(); ++k) {
     const std::string none;
     const std::string& name = k < e.pairFunctions.size() ? e.pairFunctions[k] : none;
-    s.put(static_cast<uint32_t>(name.size()));
-    for (char c : name) s.put(c);
-  }
-  for (size_t k = 0; k < e.stageFunctions.size(); ++k) {  // TX.smooth-fix1
-    const std::string none;
-    const std::string& name = k < e.rampFunctions.size() ? e.rampFunctions[k] : none;
     s.put(static_cast<uint32_t>(name.size()));
     for (char c : name) s.put(c);
   }

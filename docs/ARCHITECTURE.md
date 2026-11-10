@@ -209,11 +209,13 @@ namespace pq::graph {
   //   Run time, both backends, the same bits: an op with a moving ramp among its inputs runs with every ramped input
   // as a block (findKernel without those Spl bits; resting ramps held), else as scheduled — the interpreter per record
   // (InterpretedImage::prepareRamps: pool cells swapped, relocated in loops), the JIT per call (pointer / kernel /
-  // mask selects in emitCallHalf) and, for inline code, per stage: after the Control and ramp regions one branch on
-  // "any ramp an inline op (or a call in a loop) reads moved" either continues with the code as scheduled (hoisted
-  // patterns, every specialisation) or tail-calls `<stage>_ramps`, a noinline copy of the rest of the stage in ramp
-  // mode (ramped operands read per frame from their blocks; fused runs not interleaved) whose prologue holds every
-  // resting ramp of the unit. A pair function stages its voice state after that branch when the regions before it
+  // mask selects in emitCallHalf) and, for inline code, per stage: the units (regions, chains) that read a ramp exist
+  // twice, as scheduled (hoisted patterns, every specialisation) and in ramp mode (ramped operands read per frame
+  // from their blocks; fused runs not interleaved): per span of such units one cold branch per block calls the span's
+  // ramp-mode copy, a noinline function `<stage>_ramp<k>`; `<stage>_ramp0`, called after the Control region, runs
+  // the param_ramp regions and holds every resting ramp inline code reads. PF.3: units that read no ramp are emitted
+  // once and run in both modes (codegen.cpp emitUnits; the ramp-mode copy of the whole stage was ~45 % of a unit's
+  // IR); the copies stay separate functions because one function holding both took longer in machine code. A pair function stages its voice state after that branch when the regions before it
   // touch none (so nothing staged is live there); a stage with ramps pairs only up to chain cost 256 (the Operator's
   // pair frame grew past 4 KiB at 320). Smoothed gains: their `g` is ramped like any input; in ramp mode an inline
   // gain runs the kernel's audio-rate path (gainAudioPrologue; per frame g + residual), whose target is stored before
@@ -228,17 +230,18 @@ namespace pq::graph {
   // sideVoiceStride; ImageHost's own allocation; state transfer, VoiceEngine lane reset and lane move cover it) and
   // the ramp outputs' buffers come after every other buffer (allocateBuffers' second pass), so the arenas, the voice
   // stride and every buffer are the ramp-free schedule's (tests/graph test_schedule "leave the ramp-free schedule's
-  // buffers and state as they are"). (2) Code: a stage function is the ramp-free code (no checks, no ramp state);
-  // `<stage>_rampmode` (Control region + tail call of `<stage>_ramps`) is a second entry, emitted with every ramp
-  // function after all ramp-free ones (same order and placement as without ramps); pair functions are ramp-free only.
+  // buffers and state as they are"). (2) Code: one entry per stage with a `ramp` argument (StageFn); ramp off it
+  // runs the ramp-free code (no checks, no ramp state touched) plus one never-taken branch per span of ramp-reading
+  // units (PF.3; before, a second entry `<stage>_rampmode` repeated the whole stage); pair functions are ramp-free
+  // only (ramp 0).
   // (3) Choice, outside the stage code: Schedule::rampStages (per stage: has ramps, `checked`, the params and global
   // param-rate externals its static ramps follow, the ramp length in frames). ImageHost::decideRamps (begin()) sets
   // a stage's frames-left counter to the ramp length when one of those params / externals changed bitwise (the param
   // pass already computes paramChanged_; the externals' lane 0 is compared) and in the first block; run() passes
   // `ramp` = counter > 0, or for a voice group a lane reset this block (VoiceGroupIO::startMask, set by
-  // VoiceEngine::resetLaneState) to the backends, which call the ramp mode (JIT: JitImage::rampFns_; interpreter:
-  // InterpretedImage::rampMode_, which otherwise skips the param_ramp regions and prepareRamps). A group in ramp mode
-  // never pairs. Static sources (Ramp::staticSource: params, constants, note-on-static voice signals, global param-rate
+  // VoiceEngine::resetLaneState) to the backends, which run the ramp mode (JIT: the stage function's `ramp`
+  // argument; interpreter: InterpretedImage::rampMode_, which otherwise skips the param_ramp regions and
+  // prepareRamps). A group in ramp mode never pairs. Static sources (Ramp::staticSource: params, constants, note-on-static voice signals, global param-rate
   // engine sources and root inputs such as transport.bpm, through stateless ops) cannot move otherwise, so held
   // automation, a released knob or a held note costs nothing. Only ramps of other sources (a stateful Control op, a
   // per-voice signal that moves) keep a per-block check after the Control region (`checked`; the stock Operator has

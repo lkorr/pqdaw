@@ -34,10 +34,11 @@ using engine::host::isPatternOperand;  // shared with codegen
 using engine::host::lanesOfOperand;
 
 // The generated function of one stage. RT-safe (generated code: no allocation, locks, syscalls or exceptions).
-// vstate1 / group1: a pair function's second group (null / 0 otherwise); lane: the scalar baseline's voice lane.
+// vstate1 / group1: a pair function's second group (null / 0 otherwise); lane: the scalar baseline's voice lane;
+// ramp: non-zero runs the block in the stage's ramp mode (TX.smooth-fix1, ImageHost::run; 0 for pair functions).
 using StageFn = void (*)(float* buf, const float* aux, std::byte* gstate, std::byte* vstate, std::byte* vstate1,
                          float* const* ext, const void* const* tab, uint32_t frames, uint32_t group, uint32_t group1,
-                         uint32_t lane) noexcept;
+                         uint32_t lane, uint32_t ramp) noexcept;
 
 // Kernel calls with at most this many inputs and outputs keep their KernelArgs pointer arrays on the stage
 // function's stack; wider ones (a mux over many inputs) use HostLayout::callOff, so no frame needs stack probes.
@@ -117,7 +118,6 @@ public:
   HostLayout layout_;
   std::vector<StageFn> fns_;                 // per Schedule::stages entry (set by the Compiler)
   std::vector<StageFn> pairFns_;             // per stage: the two-group function, or null (T1b.2)
-  std::vector<StageFn> rampFns_;             // TX.smooth-fix1: per stage, its ramp mode (one group), or null
   bool scalarLanes_ = false;                 // the scalar baseline: voice stages run once per lane
   std::vector<const void*> tab_;
   // Releases the machine code (set by the Compiler; runs in the destructor, off the audio thread).

@@ -176,25 +176,16 @@ public:
                            {}};
       }
     res_.pairFunctions.assign(s_.stages.size(), {});
-    res_.rampFunctions.assign(s_.stages.size(), {});
     for (uint32_t k = 0; k < s_.stages.size(); ++k) {
       const g::Stage& st = s_.stages[k];
       const bool voice = st.poly == g::Poly::Voice;
       const std::string name = o_.prefix + "_stage" + std::to_string(k);
-      stageFunction(k, name, voice ? (o_.scalarLanes ? 1u : 8u) : 0u, false);
+      stageFunction(name, k, voice ? (o_.scalarLanes ? 1u : 8u) : 0u);
       res_.stageFunctions.push_back(name);
       if (wantsPair(k)) {
-        stageFunction(k, name + "_pair", 16, false);
+        stageFunction(name + "_pair", k, 16);
         res_.pairFunctions[k] = name + "_pair";
       }
-    }
-    // TX.smooth-fix1: the ramp-mode functions after every ramp-free one, so that the code the engine runs at rest is
-    // the ramp-free schedule's, function for function and in the same order (its placement included).
-    for (uint32_t k = 0; k < s_.stages.size(); ++k) {
-      const bool voice = s_.stages[k].poly == g::Poly::Voice;
-      const std::string name = o_.prefix + "_stage" + std::to_string(k);
-      stageFunction(k, name, voice ? (o_.scalarLanes ? 1u : 8u) : 0u, true);
-      if (wantsPair(k)) stageFunction(k, name + "_pair", 16, true);
     }
     for (uint32_t i = 0; i < s_.ops.size(); ++i) (inline_[i] ? res_.inlinedOps : res_.calledOps) += 1;
     std::string err;
@@ -549,7 +540,7 @@ private:
   // One function per stage, all regions in it. (Splitting a stage into one function per region was measured: it
   // makes compiles slower, since every function repeats its base-pointer setup; bench/RESULTS.md.)
   // vw: the voice width of a voice stage's function (1 scalar lanes, 8 a group, 16 a pair); 0 for a global stage.
-  void stageFunction(uint32_t k, const std::string& name, unsigned vw, bool rampPart) {
+  void stageFunction(const std::string& name, uint32_t k, unsigned vw) {
     const g::Stage& st = s_.stages[k];
     // The kernel-call pointer arrays are sized for this stage's calls only (an inline op never uses them): the
     // M1 review's 1200-input mux sized them at 2 × 9.6 KB for every stage, a frame that needs __chkstk probes.
@@ -577,15 +568,16 @@ private:
       }
     }
     const uint32_t end = st.firstRegion + st.numRegions;
-    // TX.smooth-fix1 (pq/graph/schedule.h "Param ramps"): the stage function is the stage's ramp-free code — the
-    // schedule without its param_ramp regions, every ramped input its pattern, no ramp state touched — and the image
-    // host calls `<name>_rampmode` instead in a block in which a static ramp of the stage may move (one group, or
-    // global: a pair function is ramp-free code only). Ramps whose source is not static (Ramp::staticSource: it can
-    // move with no param changing) are the exception: after the Control region the stage function checks those
-    // (at rest: `active` cleared, as their kernel would) and, if one moves, ends in a tail call of `<name>_ramps`
-    // (a pair function hands the block back instead when its Control region may run twice, emitRampBail).
-    // `<name>_ramps` runs the param_ramp regions and the rest of the stage in ramp mode; `<name>_rampmode` is the
-    // Control region and a tail call of it.
+    // TX.smooth-fix1 / PF.3 (pq/graph/schedule.h "Param ramps"): one entry function per stage, called with the host's
+    // `ramp` argument (ImageHost::run: a block in which a static ramp of the stage may move; one group or global, never
+    // a pair). Ramp off, it runs the stage's ramp-free code (the schedule without its param_ramp regions, every ramped
+    // input its pattern, no ramp state touched) plus one predictable branch per span of units that read ramps. Ramps
+    // whose source is not static (Ramp::staticSource: it can move with no param changing) are the exception: after the
+    // Control region the function checks those (at rest: `active` cleared, as their kernel would) and enters ramp mode
+    // itself if one moves (a pair function hands the block back instead when its Control region may run twice,
+    // emitRampBail). Ramp mode: `<name>_ramp0` runs the param_ramp regions and the unit holds, then every span of
+    // units that read a ramp runs its ramp-mode copy (`<name>_ramp<k>`); units that read none are emitted once and run
+    // the same code in both modes (emitUnits).
     uint32_t ctrlEnd = st.firstRegion;
     while (ctrlEnd < end && s_.regions[ctrlEnd].kind == g::RegionKind::Control) ++ctrlEnd;
     uint32_t split = ctrlEnd;
@@ -600,7 +592,7 @@ private:
         }
     }
     const std::vector<uint32_t> ramps = split < end ? unitRamps(split, end - 1) : std::vector<uint32_t>{};
-    // A pair function stages its voice state after the dispatch when the Control region touches none of it.
+    // A pair function stages its voice state after the ramp check when the Control region touches none of it.
     bool lateStage = vw == 16 && !checked.empty();
     for (uint32_t r = st.firstRegion; r < split && lateStage; ++r) {
       const g::Region& reg = s_.regions[r];
@@ -610,63 +602,130 @@ private:
         for (uint32_t u = s_.solves[q].firstUnknown; u < s_.solves[q].firstUnknown + s_.solves[q].numUnknowns; ++u)
           if (s_.unknowns[u].state != g::kNone && staged_[s_.unknowns[u].state]) lateStage = false;
     }
-    // The ramp-mode body: needed for the checked ramps' dispatch, and (one group / global) for the host's ramp mode.
-    // run() emits it in a second pass (rampPart), after every ramp-free function.
     const bool hostRampMode = vw != 16 && !stageRamps.empty();
     const bool bail = vw == 16 && !checked.empty() && pairCanBail(st);
     const bool dispatch = !bail && !checked.empty();
-    if (!rampPart) {
-      beginFunction(name, llvm::Function::ExternalLinkage, maxOperands);
-      if (vw == 16 && !lateStage) stagePairState(true);
-      emitRegions(st.firstRegion, ctrlEnd);
-      if (bail) emitRampBail(checked);
-      else if (dispatch) emitRampDispatch(checked, name + "_ramps", lateStage);
-      if (lateStage) stagePairState(true);
-      steady_ = !stageRamps.empty();  // no ramp moves in the code below: no ramp handling
-      emitRegions(split, end);
-      steady_ = false;
-      if (vw == 16) stagePairState(false);
+    beginFunction(name, llvm::Function::ExternalLinkage, maxOperands);
+    if (vw == 16 && !lateStage) stagePairState(true);
+    emitRegions(st.firstRegion, ctrlEnd);
+    Value* rampOn = nullptr;  // i1: this block runs in ramp mode (null: never)
+    if (bail) emitRampBail(checked);
+    else if (dispatch) rampOn = emitRampsMoving(checked);
+    if (hostRampMode) {
+      Value* host = B_.CreateICmpNE(rampArg_, c32(0));
+      rampOn = rampOn ? B_.CreateOr(host, rampOn) : host;
+    }
+    if (lateStage) stagePairState(true);
+    rampSpans_.clear();
+    if (rampOn) emitRampCall(name + "_ramp0", rampOn);  // the prologue: param_ramp ops, holds
+    steady_ = !stageRamps.empty();  // the units' code for blocks in which no ramp moves: no ramp handling
+    emitUnits(name, split, end, rampOn);
+    steady_ = false;
+    if (vw == 16) stagePairState(false);
+    B_.CreateRetVoid();
+    // The ramp-mode functions this one calls: the prologue (the param_ramp ops, then the holds of every ramp that
+    // inline code or a call in a loop reads), then each span of units that read ramps, in ramp mode.
+    if (rampOn) {
+      beginFunction(name + "_ramp0", llvm::Function::InternalLinkage, maxOperands);
+      gainTarget_.clear();
+      emitRegions(ctrlEnd, split);
+      const unsigned halves = vw == 16 ? 2u : 1u;
+      for (const uint32_t r : ramps)
+        for (unsigned h = 0; h < halves; ++h) emitRampHold(r, h);
       B_.CreateRetVoid();
-    } else if (dispatch || hostRampMode) {  // the same regions in ramp mode
-      llvm::Function* decl = dispatch ? M_.getFunction(name + "_ramps") : nullptr;  // the dispatch's declaration
-      if (decl) decl->setName(name + "_ramps_decl");
-      beginFunction(name + "_ramps", llvm::Function::InternalLinkage, maxOperands);
-      llvm::Function* tail = F_;
-      F_->addFnAttr(llvm::Attribute::NoInline);
-      if (decl) {
-        decl->replaceAllUsesWith(F_);
-        decl->eraseFromParent();
-      }
+    }
+    unitHeld_.assign(s_.ramps.size(), 0);
+    for (const uint32_t r : ramps) unitHeld_[r] = 1;
+    const std::vector<std::pair<uint32_t, uint32_t>> spans = rampSpans_;
+    for (size_t q = 0; q < spans.size(); ++q) {
+      beginFunction(name + "_ramp" + std::to_string(q + 1), llvm::Function::InternalLinkage, maxOperands);
       gainTarget_.clear();
       if (vw == 16) stagePairState(true);
-      emitRegions(ctrlEnd, split);  // the param_ramp ops
-      const unsigned halves = vw == 16 ? 2u : 1u;
-      unitHeld_.assign(s_.ramps.size(), 0);
-      for (const uint32_t r : ramps) {
-        for (unsigned h = 0; h < halves; ++h) emitRampHold(r, h);
-        unitHeld_[r] = 1;
-      }
       rampMode_ = true;
-      emitRegions(split, end);
+      emitRegions(spans[q].first, spans[q].second);
       rampMode_ = false;
-      unitHeld_.assign(s_.ramps.size(), 0);
       if (vw == 16) stagePairState(false);
       B_.CreateRetVoid();
-      if (hostRampMode) {  // the host's entry: the Control region, then the ramp-mode body
-        beginFunction(name + "_rampmode", llvm::Function::ExternalLinkage, maxOperands);
-        gainTarget_.clear();
-        emitRegions(st.firstRegion, ctrlEnd);
-        std::vector<Value*> args;
-        for (llvm::Argument& a : F_->args()) args.push_back(&a);
-        llvm::CallInst* call = B_.CreateCall(tail, args);
-        call->setDoesNotThrow();
-        call->setTailCall();
-        B_.CreateRetVoid();
-        res_.rampFunctions[k] = name + "_rampmode";
-      }
     }
+    unitHeld_.assign(s_.ramps.size(), 0);
     voice_ = false;
     vw_ = 8;
+  }
+
+  // PF.3: in a block in which `rampOn` holds (never taken at rest: a cold branch), a call of the ramp-mode function
+  // `fn` (declared here, defined by stageFunction after this one, noinline) with this function's arguments.
+  void emitRampCall(const std::string& fn, Value* rampOn) {
+    llvm::BasicBlock* call = llvm::BasicBlock::Create(C_, "ramp_call", F_);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(C_, "ramp_done", F_);
+    llvm::MDBuilder md(C_);
+    B_.CreateCondBr(rampOn, call, done, md.createBranchWeights(1, 2000));
+    B_.SetInsertPoint(call);
+    emitRampFnCall(fn);
+    B_.CreateBr(done);
+    B_.SetInsertPoint(done);
+  }
+
+  // PF.3: regions [from, to) of the current stage, unit by unit (a memo region, a chain or a region, as emitRegions
+  // groups them). A unit that reads no ramp (no op with a ramped input) computes the same in both modes (it reads only
+  // buffers and patterns) and is emitted once. A maximal span of units that read ramps is emitted as scheduled
+  // (steady_) behind one cold branch per block on `rampOn` to its ramp-mode copy (rampMode_: ramped inputs read from
+  // their ramps' blocks, calls choosing by their own ramps), a function of its own (`<name>_ramp<k>`, rampSpans_):
+  // one big function with both copies took longer in machine code than the two apart (register allocation and
+  // scheduling grow faster than linearly with a function's size). `rampOn` null: every unit as scheduled.
+  void emitUnits(const std::string& name, uint32_t from, uint32_t to, Value* rampOn) {
+    for (uint32_t a = from; a < to;) {
+      const bool reads = rampOn && unitReadsRamps(a);
+      uint32_t b = a;
+      while (b < to && (rampOn && unitReadsRamps(b)) == reads) b = unitLast(b) + 1;
+      if (reads) {
+        rampSpans_.emplace_back(a, b);
+        llvm::BasicBlock* ramp = llvm::BasicBlock::Create(C_, "ramp_units", F_);
+        llvm::BasicBlock* steady = llvm::BasicBlock::Create(C_, "steady_units", F_);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(C_, "units_done", F_);
+        llvm::MDBuilder md(C_);
+        B_.CreateCondBr(rampOn, ramp, steady, md.createBranchWeights(1, 2000));
+        B_.SetInsertPoint(ramp);
+        if (voice_ && vw_ == 16) stagePairState(false);
+        emitRampFnCall(name + "_ramp" + std::to_string(rampSpans_.size()));
+        if (voice_ && vw_ == 16) stagePairState(true);
+        B_.CreateBr(done);
+        B_.SetInsertPoint(steady);
+        gainTarget_.clear();
+        emitRegions(a, b);
+        B_.CreateBr(done);
+        B_.SetInsertPoint(done);
+      } else {
+        emitRegions(a, b);
+      }
+      a = b;
+    }
+  }
+  // A call of ramp-mode function `fn` (declared here) with this function's arguments. Its pointer parameters are
+  // captures(none) (it keeps no copy past its return: only kernel argument blocks on its stack): a call that captured
+  // the stage's noalias arguments would weaken alias analysis in the whole stage function, ramp-free path included
+  // (measured: fm_osc x8's loop spilled more and ran 25 % slower).
+  void emitRampFnCall(const std::string& fn) {
+    llvm::Function* f = llvm::Function::Create(F_->getFunctionType(), llvm::Function::ExternalLinkage, fn, M_);
+    std::vector<Value*> args;
+    for (llvm::Argument& a : F_->args()) args.push_back(&a);
+    llvm::CallInst* c = B_.CreateCall(f, args);
+    c->setDoesNotThrow();
+    for (unsigned a = 0; a < 7; ++a) {
+      f->addParamAttr(a, llvm::Attribute::getWithCaptureInfo(C_, llvm::CaptureInfo::none()));
+      c->addParamAttr(a, llvm::Attribute::getWithCaptureInfo(C_, llvm::CaptureInfo::none()));
+    }
+  }
+  // The last region of the unit that starts at region r (as emitRegions groups them).
+  uint32_t unitLast(uint32_t r) const noexcept {
+    if (!voice_ && memo_[r]) return r;
+    return chainEnd_[r] >= 0 ? static_cast<uint32_t>(chainEnd_[r]) : r;
+  }
+  bool unitReadsRamps(uint32_t r) const noexcept {
+    const uint32_t last = unitLast(r);
+    for (uint32_t q = r; q <= last; ++q)
+      for (uint32_t i = s_.regions[q].firstOp; i < s_.regions[q].firstOp + s_.regions[q].numOps; ++i)
+        if (opReadsRamps(i)) return true;
+    return false;
   }
 
   // Regions [from, to) of the current stage: memo regions, chains, sleeping segments, the cost meter.
@@ -697,8 +756,14 @@ private:
 
   llvm::Function* beginFunction(const std::string& name, llvm::Function::LinkageTypes linkage, uint32_t maxOperands) {
     llvm::FunctionType* ty = llvm::FunctionType::get(
-        void_, {ptr_, ptr_, ptr_, ptr_, ptr_, ptr_, ptr_, i32_, i32_, i32_, i32_}, false);
-    F_ = llvm::Function::Create(ty, linkage, name, M_);
+        void_, {ptr_, ptr_, ptr_, ptr_, ptr_, ptr_, ptr_, i32_, i32_, i32_, i32_, i32_}, false);
+    F_ = M_.getFunction(name);  // declared by a call (emitUnits, emitRampCall), or new
+    if (F_ && F_->isDeclaration()) {
+      F_->setLinkage(linkage);
+      F_->addFnAttr(llvm::Attribute::NoInline);  // ramp-mode code: kept out of the function that calls it
+    } else {
+      F_ = llvm::Function::Create(ty, linkage, name, M_);
+    }
     for (unsigned a = 0; a < 7; ++a) F_->addParamAttr(a, llvm::Attribute::NoAlias);
     for (unsigned a : {1u, 5u, 6u}) F_->addParamAttr(a, llvm::Attribute::ReadOnly);
     F_->addFnAttr(llvm::Attribute::NoUnwind);
@@ -733,7 +798,8 @@ private:
     Value* frames32 = &*arg++;
     group32_ = &*arg++;
     Value* group1_32 = &*arg++;
-    Value* lane32 = &*arg;
+    Value* lane32 = &*arg++;
+    rampArg_ = &*arg;
     llvm::BasicBlock* entry = llvm::BasicBlock::Create(C_, "entry", F_);
     llvm::BasicBlock* start = llvm::BasicBlock::Create(C_, "start", F_);
     B_.SetInsertPoint(entry);
@@ -1105,31 +1171,6 @@ private:
         }
       }
     return out;
-  }
-  // A unit (a region or chain) that reads ramps, behind one branch per block: no ramp moves → `body` as scheduled
-  // (every Spl input a hoisted pattern); one moves → `body` again in ramp mode, where every ramped input is read from
-  // its ramp's block (a resting ramp's block filled with its value first, dsp::paramRampHold) and each kernel call
-  // with ramped inputs picks, by its own ramps, the kernel for its Spl mask without them (what the interpreter does).
-  // TX.smooth: one branch per block on whether any of `ramps` (TX.smooth-fix1: the stage's checked ramps) moved
-  // (either half of a pair); if so, the rest of the stage runs in the ramp-mode function (declared here, defined by
-  // stageFunction) and the stage function returns (a pair function writes its staged voice state back first: the
-  // callee stages its own).
-  llvm::Function* emitRampDispatch(const std::vector<uint32_t>& ramps, const std::string& name, bool unstaged) {
-    Value* any = emitRampsMoving(ramps);
-    llvm::BasicBlock* moving = llvm::BasicBlock::Create(C_, "ramps_moving", F_);
-    llvm::BasicBlock* steady = llvm::BasicBlock::Create(C_, "ramps_steady", F_);
-    llvm::MDBuilder md(C_);
-    B_.CreateCondBr(any, moving, steady, md.createBranchWeights(1, 63));
-    B_.SetInsertPoint(moving);
-    llvm::Function* fn = llvm::Function::Create(F_->getFunctionType(), llvm::Function::ExternalLinkage, name, M_);
-    std::vector<Value*> args;
-    for (llvm::Argument& a : F_->args()) args.push_back(&a);
-    if (voice_ && vw_ == 16 && !unstaged) stagePairState(false);
-    llvm::CallInst* call = B_.CreateCall(fn, args);
-    call->setDoesNotThrow();
-    B_.CreateRetVoid();
-    B_.SetInsertPoint(steady);
-    return fn;
   }
   // i1: some ramp of `ramps` (either half of a pair) is not at rest (each check clears its `active`).
   Value* emitRampsMoving(const std::vector<uint32_t>& ramps) {
@@ -2642,7 +2683,8 @@ private:
   // current function
   bool rampMode_ = false;          // TX.smooth: emitting a unit's copy for a block in which one of its ramps moves
   bool steady_ = false;            // TX.smooth: emitting a stage's code for a block in which every ramp rests
-  std::vector<uint8_t> unitHeld_;  // TX.smooth: per ramp, filled by the ramp-mode function's prologue (stageFunction)
+  std::vector<std::pair<uint32_t, uint32_t>> rampSpans_;  // PF.3: the stage function's ramp-mode spans
+  std::vector<uint8_t> unitHeld_;  // TX.smooth: per ramp, filled by the ramp-mode prologue (stageFunction)
   bool voice_ = false;             // a voice stage's function
   unsigned vw_ = 8;                // its voice width: 1 (scalar lanes), 8 (a group), 16 (a pair)
   std::vector<uint8_t> local_;     // pair functions: per buffer, a value of this stage kept per group (altOff)
@@ -2652,6 +2694,7 @@ private:
   llvm::Instruction* entryTerm_ = nullptr;
   Value *buf_ = nullptr, *aux_ = nullptr, *gstate_ = nullptr, *vstate_ = nullptr, *vstate1_ = nullptr, *ext_ = nullptr,
         *tabArg_ = nullptr;
+  Value* rampArg_ = nullptr;  // i32 argument: the host runs this block in ramp mode (StageFn `ramp`)
   Value *group32_ = nullptr, *frames64_ = nullptr, *group64_ = nullptr, *group1_64_ = nullptr, *lane64_ = nullptr;
   std::map<uint32_t, Value*> framesF_;  // TMM.6: regionFrames(), per oversample factor
   Value* meterOn_ = nullptr;  // i1: this block is metered (T4.5)

@@ -52,7 +52,6 @@ const BinaryIdentity& binaryIdentity();  // computed on the first call (thread-s
 struct Entry {
   std::vector<std::string> stageFunctions;
   std::vector<std::string> pairFunctions;  // per stage: the two-group function's name, or empty (T1b.2)
-  std::vector<std::string> rampFunctions;  // TX.smooth-fix1: per stage, its ramp-mode function, or empty
   uint32_t hostSlots = 0;
   std::vector<uint64_t> fnOffsets;  // pointer-table slots hostSlots… as offsets from BinaryIdentity::base
   Key irHash;                       // hash of the generated IR (zero: not recorded)

@@ -35,25 +35,25 @@ void JitImage::process(e::ProcessContext& ctx) noexcept {  // RT-safe
   const void* const* tab = tab_.data();
   const uint32_t frames = ctx.frames;
   const size_t stride = host_.layout().voiceStride;
-  // TX.smooth-fix1: `ramp` (ImageHost::run) picks the stage's ramp-mode function; at rest its ramp-free code runs.
-  auto fn = [&](uint32_t k, bool ramp) noexcept { return ramp ? rampFns_[k] : fns_[k]; };
+  // TX.smooth-fix1: `ramp` (ImageHost::run) runs the stage in its ramp mode; at rest its ramp-free code runs.
   auto global = [&](uint32_t k, bool ramp) noexcept {
-    fn(k, ramp)(buf, aux, gstate, vstate, nullptr, ext, tab, frames, 0, 0, 0);
+    fns_[k](buf, aux, gstate, vstate, nullptr, ext, tab, frames, 0, 0, 0, ramp ? 1u : 0u);
   };
   if (scalarLanes_) {  // the benchmark baseline: one call per voice lane
     host_.run(ctx, global, [&](uint32_t k, uint32_t gi, bool ramp) noexcept {
-      const StageFn f = fn(k, ramp);
-      for (uint32_t lane = 0; lane < 8; ++lane) f(buf, aux, gstate, vstate + gi * stride, nullptr, ext, tab, frames, gi, 0, lane);
+      const StageFn f = fns_[k];
+      for (uint32_t lane = 0; lane < 8; ++lane)
+        f(buf, aux, gstate, vstate + gi * stride, nullptr, ext, tab, frames, gi, 0, lane, ramp ? 1u : 0u);
     });
     return;
   }
   host_.run(
       ctx, global,
       [&](uint32_t k, uint32_t gi, bool ramp) noexcept {
-        fn(k, ramp)(buf, aux, gstate, vstate + gi * stride, nullptr, ext, tab, frames, gi, 0, 0);
+        fns_[k](buf, aux, gstate, vstate + gi * stride, nullptr, ext, tab, frames, gi, 0, 0, ramp ? 1u : 0u);
       },
       [&](uint32_t k, uint32_t a, uint32_t b) noexcept {
-        pairFns_[k](buf, aux, gstate, vstate + a * stride, vstate + b * stride, ext, tab, frames, a, b, 0);
+        pairFns_[k](buf, aux, gstate, vstate + a * stride, vstate + b * stride, ext, tab, frames, a, b, 0, 0);
         // TX.smooth: a param ramp moves in this block and the pair handed it back (codegen.cpp emitRampBail).
         uint32_t& bail = *reinterpret_cast<uint32_t*>(buf + layout_.memoOff + 1);
         if (bail == 0) return true;

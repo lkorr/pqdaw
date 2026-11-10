@@ -107,7 +107,6 @@ struct GenOptions {
 struct GenResult {
   std::vector<std::string> stageFunctions;  // per Schedule::stages entry
   std::vector<std::string> pairFunctions;   // per Schedule::stages entry: the two-group function, or empty
-  std::vector<std::string> rampFunctions;   // TX.smooth-fix1: per stage, its ramp mode (one group / global), or empty
   uint32_t inlinedOps = 0;   // ops generated inline
   uint32_t calledOps = 0;    // ops that call a dsp kernel or runtime helper
 };
