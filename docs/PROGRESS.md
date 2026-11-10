@@ -337,3 +337,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check (ship, stereo voice): complex 334 ns/frame = 1.60 % (budget 3), +3 st 2.28 %, complexPro 3.26 % (budget 5); pool ≈ 24 MiB per clip player, 16 ms build.
 - Notes/blockers: T6.5b filed (priming burst at Play inside a Complex clip; mono through stereo). Drum timing ±2.5 ms in Complex. Q?-T6.5-a.
 
+## 2026-11-10 · T6.6 · task/T6.6-metronome (merged 1112712b by the orchestrator)
+- Did: engine::Metronome (15 ms click 2 kHz / 1 kHz, beats at ticksToSamples, delayed by the master PDC total, main or cue pair, never offline); count-in (Record + countInBars, exact start frame, Stop cancels); Track Delay → planCompensation (bus latency no longer clamped at 0; re-plan without compile); PDC total in the CPU meter info, "Lat x ms" per strip; control-bar metronome switch + menu (count-in, level, cue); Record / F9.
+- Verified: test_metronome 9 cases (96 000-sample count-in at blocks 64/37/1000, tempo ramp + signature changes, PDC 480 alignment, RtScope), Track Delay ±480 (engine + link, no compile), views by real dispatch; -Affected -Slow 86/88 — pq_tests_timeline (preview two-thread waitFor) and pq_tests_library (indexer wakeup count) failed under load, pass alone (untouched code).
+- Perf / CPU-efficiency check: off = one test per image block; on 10.6 ns per 64-frame block (target 1 µs).
+- Notes/blockers: Q?-T6.6-a. 86 goldens re-recorded (control bar y 26–46; mixer-view two rows per strip).
+

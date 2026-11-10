@@ -776,7 +776,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [ ] **T6.4b Pitch bend on Keys notes under a modulated tuning** (Q?-T6.4-a option B: the tuning node multiplies its Hz by the voice's bend ratio; today a Keys note loses bend while its tuning node is modulated). With TU.1 (both touch the tuning node).
 - [x] **T6.5 Warp engine II: Complex / Complex Pro (signalsmith-stretch)** *(merged 887160e2; Q?-T6.5-a; no allocation (spike clean, no patch); pitch by resampling the stretcher output (exact to 1e-5 ¢); Complex 1.6 %, Pro 3.3 % of a core per stereo voice; drum timing ±2.5 ms (120 ms windows), the ±1 ms bound stays on Beats)* (plan §T6.5). After T6.3.
 - [ ] **T6.5b Complex priming burst** (Q?-T6.5-a): starting playback inside a Complex clip primes ~10k frames in one block (~3 ms of a core per voice, estimated) — several such clips at Play can overrun a small buffer; spread the priming (e.g. prime ahead on a worker at locate, or over several blocks with a short fade-in). Also: mono sources through a stereo stretcher (2× work). Before the M6 review.
-- [ ] **T6.6 Metronome, count-in, Track Delay, latency readouts** (plan §T6.6). After T6.2, T6.4.
+- [x] **T6.6 Metronome, count-in, Track Delay, latency readouts** *(merged 1112712b; Q?-T6.6-a; 86 goldens moved (control bar strip; mixer-view strip rows); level is 4 presets; Record = count-in + play until T6.7)* (plan §T6.6). After T6.2, T6.4.
 - [ ] **T6.7 Recording: audio inputs to WAV, notes, monitoring, punch, takes** (plan §T6.7). After T6.1, T6.4, T6.6.
 - [ ] **T6.8 Warp UI, BPM detection, auto-warp** 👁 (plan §T6.8). After T6.3, T6.5.
 - [ ] **T6.9 Capture MIDI** (plan §T6.9). After T6.4, T6.7.
