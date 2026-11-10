@@ -42,6 +42,18 @@
 //            voice's first grain); Texture jitters P_k by ±flux % · H · r (warpJitter, seeded per clip), unaligned.
 //     Every slice / grain position is anchored at a song sample that depends on the clip alone (its entry, its grain
 //     start), so renders are bit-identical whatever the engine block.
+//     Complex / Complex Pro (T6.5): a phase vocoder (signalsmith-stretch, pq/engine/stretch_pool.h) only stretches
+//            time: it reads the source continuously along the law, unfolded through loop wraps (φ(s) = f(s) + folds ·
+//            loop span in frames), and its output frame y is the analysis centred on φ(t(y)), t(y) = tA + y / r. The
+//            pitch is a resampling of that output at rate r (the windowed sinc; a copy at r = 1): song sample s reads
+//            vocoder frame (s − tA) · r, so the pitch is exact (the library's own transpose estimates each peak's
+//            frequency and was 2 ¢ off at +3 steps of 31-EDO, 8 ¢ at +7 st). The vocoder runs in chunks of
+//            kStretchCell of its frames on a grid fixed by the voice's start (each chunk's input up to
+//            φ(t(chunk end + outputLatency)) + inputLatency), so the rate follows the warp segments and the tempo per
+//            chunk and a render is the same whatever the block. Complex Pro adds formant preservation: the vocoder
+//            shifts the formants by pitchRatio^(−formants %), which the resampling brings back, over a spectral
+//            envelope of order `formantEnvelope`. No free stretcher: the voice plays as Tones (its grain fields are
+//            prepared).
 // The clip PLAYS over [P0, P1) ⊇ body: a crossfade with the previous clip (crossfadeIn, centred on the boundary)
 // starts it early, one with the next clip lets it play on (the source laws simply continue).
 //
@@ -94,10 +106,11 @@ struct ClipSample {
   }
 };
 
-// T6.3: Beats / Tones / Texture are the time-stretch modes (the app plays Complex / Complex Pro as Tones until T6.5).
-enum class ClipWarp : uint8_t { Off, RePitch, Beats, Tones, Texture };
+// T6.3: Beats / Tones / Texture are the time-stretch modes; T6.5 adds Complex / Complex Pro (the phase vocoder).
+enum class ClipWarp : uint8_t { Off, RePitch, Beats, Tones, Texture, Complex, ComplexPro };
+inline constexpr bool clipComplex(ClipWarp w) noexcept { return w == ClipWarp::Complex || w == ClipWarp::ComplexPro; }
 inline constexpr bool clipStretches(ClipWarp w) noexcept {
-  return w == ClipWarp::Beats || w == ClipWarp::Tones || w == ClipWarp::Texture;
+  return w == ClipWarp::Beats || w == ClipWarp::Tones || w == ClipWarp::Texture || clipComplex(w);
 }
 
 // T6.3: one piece of a warped clip's law content tick → source frame: from content tick `content0` on (the first
@@ -120,7 +133,9 @@ struct WarpSettings {
   float envelope = 100.0f;       // Beats: % of each slice's gap at full gain before it fades to the next slice
   double grainSeconds = 0.03;    // Tones / Texture
   float flux = 0.0f;             // Texture: grain position jitter, % of the hop
-  uint32_t seed = 0;             // Texture: the jitter's seed (the app uses the clip id: deterministic per clip)
+  uint32_t seed = 0;             // Texture: the jitter's seed; Complex: the stretcher's (the app uses the clip id)
+  float formants = 100.0f;       // T6.5 Complex Pro: formant preservation, % [0, 100]
+  float formantEnvelope = 128.0f;  // T6.5 Complex Pro: the spectral envelope's order [8, 256] (formant base sr / order)
 };
 
 // One clip as the document lowered it (doc::AudioClipDesc, plain data).
@@ -206,6 +221,10 @@ public:
     uint32_t sliceFirst = 0, sliceCount = 0;  // Beats: sliceContent() / sliceFrame()
     SliceLoop sliceLoop = SliceLoop::Off;
     float envelope = 100.0f;
+    // T6.5 Complex / Complex Pro (the stretcher's settings, pq/engine/stretch_pool.h StretchParams; the grain fields
+    // above are Tones', the fallback when no stretcher is free).
+    double formantFactor = 1.0;    // the vocoder's formant shift: pitchRatio^(−formants) (the resampling adds pitchRatio)
+    double formantBase = 0.0;      // cycles per sample (1 / formantEnvelope); 0 without formant processing
   };
 
   // Not RT-safe. `slots[k]` = clip slot k's clips; `samples` are shared by every slot. Prepares every resampler table

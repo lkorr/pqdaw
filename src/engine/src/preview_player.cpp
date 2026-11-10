@@ -20,6 +20,7 @@ ClipPlayerConfig clipConfig(const PreviewConfig& c) {
   cc.streams = c.streams;
   cc.lookaheadSeconds = 0.0;  // a preview starts where it is asked to: no voice before its start
   cc.declickSeconds = 0.002;
+  cc.stretchVoices = 0;  // T6.5: previews play Off / Re-Pitch only
   return cc;
 }
 

@@ -3,6 +3,7 @@ pq_add_module(pq_engine
     src/asio_convert.cpp
     src/audio_sequence.cpp
     src/clip_player.cpp
+    src/stretch_pool.cpp
     src/asio_device.cpp
     src/audio_device.cpp
     src/automation.cpp
@@ -34,5 +35,8 @@ pq_add_module(pq_engine
     src/voices.cpp
     src/wasapi_device.cpp
   DEPS pq_core pq_dsp pq_media pq_graph pq_tuning
-  PRIVATE_DEPS rtaudio ole32 avrt advapi32 user32
+  PRIVATE_DEPS rtaudio ole32 avrt advapi32 user32 pq_signalsmith
 )
+# T6.5: signalsmith-stretch is third-party code instantiated in this TU alone: its warnings off there (/bigobj: the
+# library's templates exceed MSVC's default section count).
+set_source_files_properties(src/stretch_pool.cpp PROPERTIES COMPILE_OPTIONS "/W0;/bigobj")

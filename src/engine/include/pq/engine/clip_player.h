@@ -38,6 +38,12 @@
 // each grain once, in order (its lag from the grain before: Voice::grainIdx / grainPos), so renders are the same
 // whatever the block.
 //
+// T6.5, Complex / Complex Pro (audio_sequence.h "Complex"): a voice claims a stretcher of the player's StretchPool when
+// it starts (none free: it plays as Tones, counted) and runs its vocoder in chunks of kStretchCell of its own frames
+// into a per-stretcher buffer, which the run reads at the pitch rate (a copy, or the sinc resampler). A pending voice
+// primes in step with the song (output latency + a block before its start), so a clip start costs no burst; a voice
+// started inside a clip (a locate) primes at once (≈ 10k vocoder frames).
+//
 // ---- Sources ----------------------------------------------------------------------------------------------------------
 // A fully resident sample is read in place (its guard frames cover the filter's reach at the edges; reads further out
 // are gathered into a scratch buffer with zeros). A streamed one (media::SamplePool: resident head + disk stream) is
@@ -65,6 +71,7 @@
 // old image keep it alive until their fades end (the timeline holds it: Timeline's audio hazards).
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -72,6 +79,7 @@
 #include "pq/core/time.h"
 #include "pq/engine/audio_sequence.h"
 #include "pq/engine/program_image.h"
+#include "pq/engine/stretch_pool.h"
 #include "pq/media/stream.h"
 
 namespace pq::engine {
@@ -86,6 +94,7 @@ struct ClipPlayerConfig {
   media::StreamPool* streams = nullptr;  // null: frames past a streamed sample's head read as silence
   double lookaheadSeconds = 0.5;    // a clip's voice exists (and claims its stream) this long before it starts
   double declickSeconds = 0.002;    // stop / locate / wrap / swap fades
+  uint32_t stretchVoices = 32;      // T6.5: Complex / Complex Pro voices at once (pq/engine/stretch_pool.h; beyond: Tones)
 };
 
 struct ClipPlayerStats {
@@ -103,6 +112,9 @@ struct ClipPlayerStats {
   uint64_t slicePasses = 0;       // T6.3: Beats slice passes rendered (per run)
   uint64_t sliceClaims = 0;       // T6.3: Beats: next slices' streams claimed ahead
   uint64_t streamRestarts = 0;    // a read left the history: the stream restarted (T6.3 stretch voices, jumps)
+  uint64_t stretchClaims = 0;     // T6.5: Complex / Complex Pro voices that got a stretcher
+  uint64_t stretchFallbacks = 0;  // ... and ones that found none free: played as Tones
+  uint64_t stretchCells = 0;      // vocoder chunks processed (kStretchCell of its output frames each, priming included)
 };
 
 // Offline renders: called before a voice reads `frames` frames that a stream (still) has to deliver; it should block
@@ -137,6 +149,12 @@ public:
   uint32_t liveVoices() const noexcept { return static_cast<uint32_t>(live_.size()); }
   bool anyActive() const noexcept { return !touched_.empty(); }
   const ClipPlayerStats& stats() const noexcept { return stats_; }
+  // T6.5: the Complex / Complex Pro stretchers (null with stretchVoices 0): free count, latency, memory.
+  const StretchPool* stretchPool() const noexcept { return stretch_.get(); }
+  // T6.5: Complex voices run their vocoder in chunks of this many of its output frames, on a grid fixed by the voice's
+  // start (audio_sequence.h "Complex"), into a buffer of kStretchFrames per stretcher.
+  static constexpr uint32_t kStretchCell = 128;
+  static constexpr uint32_t kStretchFrames = 8192;
 
   // Non-RT, while the audio thread does not run (offline renders): see StreamFill. Null removes it.
   void setStreamFill(StreamFill fn, void* user) noexcept {
@@ -189,6 +207,14 @@ private:
     Reader reader2;                    // T6.3 Beats: the other slice's stream
     int64_t grainIdx = INT64_MIN;      // T6.3 Tones / Texture: the last grain positioned
     double grainPos[2] = {0.0, 0.0};   // ... its centre's source frame and the one before (by parity)
+    // T6.5 Complex / Complex Pro: its stretcher (StretchPool::kNone: none, the voice plays as Tones) and the stream it
+    // is fed: input frame k is the unfolded source frame phi0 + dir·k; frames [0, head) are in, those below zeroBelow
+    // (before the clip plays) read as zeros. Its output (the vocoder clock y; song sample t reads y = (t − tA) · pitch
+    // rate) is held in its stretchOut_ buffer: frames [vLo, vHi) (vHi INT64_MIN: not primed).
+    uint32_t stretch = 0xFFFFFFFFu;
+    SampleTime tA = 0;
+    int64_t vLo = 0, vHi = INT64_MIN;
+    int64_t phi0 = 0, head = 0, zeroBelow = 0;
   };
   // T6.3 Beats: one pass of one slice (audio_sequence.h "Beats").
   struct SlicePass {
@@ -243,9 +269,18 @@ private:
   static bool prevPass(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, const SlicePass& p,
                        SlicePass* out) noexcept;
   static int64_t stretchStreamFrame(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, SampleTime s,
-                                    bool* forward) noexcept;
+                                    bool* forward, bool complex) noexcept;
   void claimAhead(Voice& v, const media::SampleView& view, int64_t step) noexcept;  // Q151 item 7
   static void stopReader(Reader& r) noexcept;
+  // T6.5 Complex / Complex Pro.
+  void renderComplex(Voice& v, const media::SampleView& view, SampleTime s, uint32_t n, float* const* out,
+                     const float* env) noexcept;
+  void primeComplex(Voice& v, const media::SampleView& view, SampleTime t0) noexcept;
+  void advanceComplex(Voice& v, const media::SampleView& view, SampleTime upTo) noexcept;  // a pending voice's priming
+  // The vocoder frames [.., last) in the voice's buffer (frames below keepFrom may be dropped to make room).
+  void complexEnsure(Voice& v, const media::SampleView& view, int64_t keepFrom, int64_t last) noexcept;
+  void complexChunk(Voice& v, const media::SampleView& view) noexcept;  // vocoder frames [vHi, vHi + kStretchCell)
+  void complexInput(Voice& v, const media::SampleView& view, int64_t k0, int64_t k1) noexcept;  // → stretchIn_
   float* touch(uint32_t slot) noexcept;  // the slot's channel 0 (channel 1 follows), cleared on its first write
   void seekCursors(SampleTime s) noexcept;
 
@@ -266,6 +301,10 @@ private:
   AlignedBuffer<float> gain_;           // maxBlockFrames: a slice's / grain's gains (T6.3)
   AlignedBuffer<float> corrA_, corrB_;  // Tones' alignment: the previous grain's and the candidates' mono frames
   AlignedBuffer<float> zeros_;          // maxBlockFrames
+  std::unique_ptr<StretchPool> stretch_;  // T6.5 (null: stretchVoices 0)
+  AlignedBuffer<float> stretchOut_;     // stretchVoices × 2 × kStretchFrames: each stretcher's recent output
+  AlignedBuffer<float> stretchIn_;      // 2 × stretchInCap_: a cell's (or a seek's) input, gathered
+  uint32_t stretchInCap_ = 0;
   std::vector<const float*> ptrs_;      // slots × 2
   std::vector<uint8_t> active_;         // slots
   std::vector<uint8_t> touchedFlag_;    // slots

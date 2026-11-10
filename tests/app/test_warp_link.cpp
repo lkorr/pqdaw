@@ -1,6 +1,7 @@
 // T6.3: the warp modes through the playback link (src/app/src/project_link_audio.cpp): a Tones clip transposed +3 steps
 // of a 31-EDO clip tuning renders exactly 3·1200/31 ¢ above its 220 Hz source (the document's Steps resolution reaches
-// the engine's pitch ratio); Complex plays as Tones until T6.5; a Beats clip that slices at transients gets them from
+// the engine's pitch ratio), and so do Complex / Complex Pro (T6.5: the stretch pool's vocoder, resampled to the exact
+// pitch); a Beats clip that slices at transients gets them from
 // the loader thread's analysis, cached in <project>/cache/analysis and in memory, and republishes with them.
 
 #include <doctest/doctest.h>
@@ -130,7 +131,7 @@ std::vector<float> render(ProjectLink& link, uint64_t frames) {
 
 }  // namespace
 
-TEST_CASE("warp link: Tones +3 steps of a 31-EDO clip tuning is 3·1200/31 ¢ above the source; Complex plays as Tones") {
+TEST_CASE("warp link: Tones / Complex / Complex Pro +3 steps of a 31-EDO clip tuning are 3·1200/31 ¢ above the source") {
   Song song("pq_warp_link_tones");
   const SampleRef s = song.sample("sine.wav", static_cast<int64_t>(kRate * 8.0), [](int64_t i) {
     return static_cast<float>(0.5 * std::sin(2.0 * std::numbers::pi * 220.0 * static_cast<double>(i) / kRate));
@@ -146,14 +147,14 @@ TEST_CASE("warp link: Tones +3 steps of a 31-EDO clip tuning is 3·1200/31 ¢ ab
   REQUIRE(desc.clips.size() == 1);
   CHECK(desc.clips[0].pitchRatio == doctest::Approx(std::exp2(3.0 / 31.0)).epsilon(1e-12));
   const double expect = 3.0 * 1200.0 / 31.0;
-  for (const AudioWarp w : {AudioWarp::Tones, AudioWarp::Complex}) {
+  for (const AudioWarp w : {AudioWarp::Tones, AudioWarp::Complex, AudioWarp::ComplexPro}) {
     CAPTURE(static_cast<int>(w));
     song.apply(ops::setWarpMode(*song.store.current(), one, w));
     auto link = song.link();
     const std::vector<float> out = render(*link, static_cast<uint64_t>(kRate * 3.0));
     const double f = peakHz(out, 4800, 65536, 220.0 * std::exp2(3.0 / 31.0));
     const double cents = 1200.0 * std::log2(f / 220.0);
-    MESSAGE("link Tones: ", f, " Hz = ", cents, " cents (expected ", expect, ")");
+    MESSAGE("link warp mode ", static_cast<int>(w), ": ", f, " Hz = ", cents, " cents (expected ", expect, ")");
     CHECK(std::abs(cents - expect) <= 0.5);
   }
 }

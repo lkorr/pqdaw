@@ -40,7 +40,17 @@ void AudioSequenceImage::stretchClip(AudioSequenceImage& img, Clip& c, const Aud
   c.maxRate = c.peakRate = r;
   qs.insert(dsp::sincStretchQ(r));
   for (uint32_t L = 1; L <= dsp::mipLevelFor(r, dsp::kMaxMipLevels); ++L) qs.insert(dsp::sincStretchQ(std::ldexp(r, -static_cast<int>(L))));
-  if (d.warp == ClipWarp::Tones || d.warp == ClipWarp::Texture) {
+  if (clipComplex(d.warp)) {  // T6.5: the stretcher's settings (audio_sequence.h "Complex")
+    c.seed = d.stretch.seed;
+    if (d.warp == ClipWarp::ComplexPro) {
+      const double keep = std::clamp(static_cast<double>(d.stretch.formants), 0.0, 100.0) / 100.0;
+      if (keep > 0.0) {
+        c.formantFactor = std::pow(d.stretch.pitchRatio, -keep);
+        c.formantBase = 1.0 / std::clamp(static_cast<double>(d.stretch.formantEnvelope), 8.0, 256.0);
+      }
+    }
+  }
+  if (d.warp == ClipWarp::Tones || d.warp == ClipWarp::Texture || clipComplex(d.warp)) {
     const double secs = std::clamp(d.stretch.grainSeconds, 0.001, 0.5);
     const auto n = static_cast<uint32_t>(std::max<int64_t>(2, 2 * std::llround(secs * sr / 2.0)));
     c.grain = n;
@@ -59,7 +69,7 @@ void AudioSequenceImage::stretchClip(AudioSequenceImage& img, Clip& c, const Aud
       img.windowAt_.emplace_back(n, c.winFirst);
     }
     const double hr = static_cast<double>(c.hop) * r;
-    if (d.warp == ClipWarp::Tones && hr >= 16.0) {
+    if ((d.warp == ClipWarp::Tones || clipComplex(d.warp)) && hr >= 16.0) {
       c.alignLen = static_cast<uint32_t>(std::min<double>(std::round(hr), kMaxAlignLen));
       c.alignLags = static_cast<uint32_t>(std::min<double>(
           {std::floor(hr / 2.0), std::floor(0.012 * static_cast<double>(fileRate)), static_cast<double>(kMaxAlignLags)}));

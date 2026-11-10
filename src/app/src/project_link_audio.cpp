@@ -69,8 +69,7 @@ bool sameClip(const doc::AudioClipDesc& a, const doc::AudioClipDesc& b) {
          a.markers == b.markers && a.pitchRatio == b.pitchRatio && a.warpParams == b.warpParams;
 }
 
-// The engine's warp mode. T6.5 brings Complex / Complex Pro (signalsmith-stretch); until then they play as Tones (a
-// time-stretch that keeps the clip's pitch and plays its transpose), so their tempo and pitch are already right.
+// The engine's warp mode (T6.5: Complex / Complex Pro are the engine's phase vocoder, pq/engine/stretch_pool.h).
 engine::ClipWarp engineWarp(doc::AudioWarp w) {
   switch (w) {
     case doc::AudioWarp::Off: return engine::ClipWarp::Off;
@@ -78,8 +77,8 @@ engine::ClipWarp engineWarp(doc::AudioWarp w) {
     case doc::AudioWarp::Beats: return engine::ClipWarp::Beats;
     case doc::AudioWarp::Tones: return engine::ClipWarp::Tones;
     case doc::AudioWarp::Texture: return engine::ClipWarp::Texture;
-    case doc::AudioWarp::Complex:
-    case doc::AudioWarp::ComplexPro: return engine::ClipWarp::Tones;  // T6.5
+    case doc::AudioWarp::Complex: return engine::ClipWarp::Complex;
+    case doc::AudioWarp::ComplexPro: return engine::ClipWarp::ComplexPro;
   }
   return engine::ClipWarp::Off;
 }
@@ -155,6 +154,8 @@ engine::AudioClipDesc toEngine(const doc::AudioClipDesc& d, uint32_t sample, boo
   c.stretch.grainSeconds = static_cast<double>(d.warpParams.grainSizeMs) / 1000.0;
   c.stretch.flux = d.warp == doc::AudioWarp::Texture ? d.warpParams.flux : 0.0f;
   c.stretch.seed = d.id.value;
+  c.stretch.formants = d.warpParams.formants;          // T6.5 Complex Pro
+  c.stretch.formantEnvelope = d.warpParams.envelope;
   c.transients = transients;
   c.gain = d.gain;
   c.fadeIn = d.fadeIn;
@@ -541,6 +542,7 @@ Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Proje
   pc.streamBuffers = 2;
   pc.streams = &pool_->streams();
   pc.lookaheadSeconds = cfg_.clipLookaheadSeconds;
+  pc.stretchVoices = 2;  // T6.5: one clip (a Complex one and its fade-out after a swap at most)
   engine::ClipPlayer player(pc);
   player.setStreamFill(&waitFill, pool_.get());
   const bool wasEngaged = engaged_;

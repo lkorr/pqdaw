@@ -678,3 +678,27 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   its result by voice.hz / voice.noteHz (one multiply per lane per sample; a bend becomes a ratio on top of the morph);
   (C) a separate per-voice bend signal. Recommend B with T6.7 or M7's pitch curves.
 - Status: decided (1)–(9) (reversible); the bend question open.
+
+## Q?-T6.5-a · 2026-11-10 · T6.5 · Complex / Complex Pro: what the plan left open
+- **Context**: docs/plans/M6.md "### T6.5" names signalsmith-stretch, the pool, priming and the acceptance; several
+  behaviours had to be chosen.
+- **Choices** (most reversible): (1) **The vocoder only stretches time; the pitch is a sinc resampling of its output**
+  (exact: 1e-5 ¢ measured). signalsmith's own transpose estimates each spectral peak's frequency and was 2 ¢ off at +3
+  steps of 31-EDO, 8 ¢ at +7 st, which fails the ±1 ¢ rule. Cost: the vocoder runs r× as many frames (≈ +28 % at +3 st,
+  2× at +12 st). (2) presetDefault with **split computation** (one interval more latency, primed away): each spectrum's
+  work spreads over its interval, so voices started together do not spike in one block. (3) Complex Pro: the vocoder
+  shifts the formants by pitchRatio^(−Formants %) (the resampling brings them back); Envelope = the formant analysis'
+  fundamental 1 / order cycles per sample (128 → 375 Hz at 48 kHz). (4) Priming: an output latency + a block + the
+  resampler's reach (≈ 10k vocoder frames at 48 kHz). A clip reached by playback primes in step with the song while its
+  voice is pending (no burst); a voice started inside a clip (Play / locate mid-clip) primes at once, ≈ 3 ms of one core
+  per voice in that block (release build estimate from the bench) — several Complex clips under a locate can overrun a
+  small device buffer. Options if it matters: spread a mid-clip prime over the first blocks with the voice silent
+  meanwhile, or prime only the output latency (signalsmith's `outputSeek` trick). (5) Stream claims: the voice's first
+  read is computed exactly (`complexStart`); a loop wrap on a streamed sample restarts its stream (counted, like Tones /
+  Texture). (6) Pool: 32 stereo stretchers per clip player ≈ 24 MiB (estimated from the preset's buffer sizes) + 2 MiB
+  output buffers, 16 ms to build; mono sources run through a stereo stretcher (2× the needed work). (7) Drum onsets under
+  Complex are within ±2.5 ms of the warped grid (2.2 ms measured at 90 BPM; the 120 ms windows smear attacks); the
+  ±1 ms criterion stays Beats'. (8) No local patch of the library: the one bounded growth in `process()`
+  (`peaks.reserve(bands / 2)`, at most one peak per two bands) cannot overflow, as signalsmith-linear's FFT sizes make
+  the band count a multiple of 16; the spike saw no allocation.
+- Status: decided (reversible).

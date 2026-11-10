@@ -335,6 +335,7 @@ pq_add_test(pq_tests_timeline
     engine/test_preview_player.cpp  # T5.10: the browser preview player (cue bus)
     engine/test_warp.cpp  # T6.3: warp markers, Beats, Tones, Texture (tempo / pitch accuracy, block / streaming identity, RtScope)
     engine/test_live_input.cpp  # T6.4: live note input (routing, stamps → frames, held notes, bend, 10k ev/s)
+    engine/test_stretch_pool.cpp  # T6.5: signalsmith-stretch allocation-free (the spike), claims, determinism, latency
   DEPS pq_engine pq_doc)
 
 # T1.10: golden offline renders (tests/golden: patches, committed WAVs, the absolute + spectral comparison helper) on

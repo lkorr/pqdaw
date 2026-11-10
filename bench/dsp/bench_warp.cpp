@@ -6,6 +6,10 @@
 //   warp/tones          Tones, 30 ms grains (aligned: the WSOLA search per grain plus two sinc reads per frame)
 //   warp/texture        Texture, 30 ms grains, Flux 40 (two straight copies per frame)
 //   warp/repitch markers  Re-Pitch through 16 warp markers (reference: the M5 path, segment splits)
+// T6.5 (docs/plans/M6.md T6.5: Complex ≤ 3 %, Complex Pro ≤ 5 % per stereo voice):
+//   warp/complex        Complex, no transpose (the vocoder, its output copied)
+//   warp/complex +3 st  the same transposed (the vocoder runs 1.19× as many frames, then the sinc resampler)
+//   warp/complexPro     Complex Pro +3 st, Formants 100 (the vocoder's formant pass on top)
 // % of a core = ns/frame × 48000 / 1e7.
 #include <cmath>
 #include <cstdint>
@@ -70,6 +74,7 @@ void voiceBench(pq::bench::Context& c, e::ClipWarp warp, double ratio, bool mark
   pc.slots = 1;
   pc.maxBlockFrames = kBlock;
   pc.sampleRate = kSr;
+  pc.stretchVoices = 2;  // T6.5: the playing voice and the one fading after the locate
   e::ClipPlayer player(pc);
   const e::AudioSequenceImage* image = img.value().get();
   pq::SampleTime s = static_cast<pq::SampleTime>(kSr * 2.0);  // past the clip's fade in
@@ -103,4 +108,7 @@ void addWarpBenches(pq::bench::Runner& runner) {
   runner.add("warp/tones", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Tones, 1.0, false); });
   runner.add("warp/texture", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Texture, 1.0, false); });
   runner.add("warp/repitch markers", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::RePitch, 1.0, true); });
+  runner.add("warp/complex", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Complex, 1.0, false); });
+  runner.add("warp/complex +3 st", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Complex, std::exp2(3.0 / 12.0), false); });
+  runner.add("warp/complexPro", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::ComplexPro, std::exp2(3.0 / 12.0), false); });
 }

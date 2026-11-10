@@ -286,3 +286,25 @@ pq_fetch_declare(stb
   SOURCE_SUBDIR  pq-no-cmake
   EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(stb)
+
+# --- signalsmith-stretch + signalsmith-linear (MIT): Complex / Complex Pro time-stretch for pq_engine (T6.5) ---------
+# Header-only. stretch 1.4.0 (2026-09-25) names linear 0.6.4 (2026-09-25) as its dependency (its CMakeLists fetches it
+# by git tag; we pin both tag archives by SHA-256 instead and populate them only, so neither CMakeLists runs).
+# Included by src/engine/src/stretch_pool.cpp alone (SYSTEM, its warnings off for that TU); no local patch (the T6.5
+# spike, tests/engine/test_stretch_pool.cpp, proves process() allocation-free as configured there).
+pq_fetch_declare(signalsmith_stretch
+  URL      https://github.com/Signalsmith-Audio/signalsmith-stretch/archive/refs/tags/1.4.0.tar.gz
+  URL_HASH SHA256=077235709ecf2a358545e3ca7bdf32859f70f5c9afb4493e078bd753c9aff284
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  SOURCE_SUBDIR  pq-no-cmake
+  EXCLUDE_FROM_ALL)
+pq_fetch_declare(signalsmith_linear
+  URL      https://github.com/Signalsmith-Audio/linear/archive/refs/tags/0.6.4.tar.gz
+  URL_HASH SHA256=2cb10d84b96c626255ab46c4aa4c80f64ae532be487063cff6a08903c1445a56
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  SOURCE_SUBDIR  pq-no-cmake
+  EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(signalsmith_stretch signalsmith_linear)
+add_library(pq_signalsmith INTERFACE)
+target_include_directories(pq_signalsmith SYSTEM INTERFACE
+  ${signalsmith_stretch_SOURCE_DIR}/include ${signalsmith_linear_SOURCE_DIR}/include)

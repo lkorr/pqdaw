@@ -8,6 +8,14 @@
 //   - a gain-only edit while playing keeps the voice (seamless: after the 2 ms ramp, bit-identical to a render at the
 //     new gain); streamed (offline blocking fills) == resident bit for bit, every mode
 //   - RtScope over every mode (streamed and resident, swaps, slice claims)
+// T6.5, Complex / Complex Pro (the stretch pool, pq/engine/stretch_pool.h): every test above covers them too (they are
+// in everyMode()), and
+//   - a 220 Hz sine at 0.5× / 2× stays within ±1 ¢ over two consecutive 1.4 s windows; +3 steps of 31-EDO likewise
+//   - sample-aligned (no latency: at the source tempo the output lines up with the source to the frame; silent before
+//     the clip; the first 20 ms within -80 dB of the source); a drum loop's onsets stay within ±2.5 ms of the warped
+//     grid at 90 / 150 BPM (the vocoder smears attacks; Beats keeps them within ±1 ms)
+//   - Complex Pro keeps a vowel's formants at +7 st (shift < 5 %), Complex moves them with the pitch (> 30 %)
+//   - an exhausted pool plays Complex as Tones (counted, identical to a Tones clip, no click); deterministic renders
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -17,6 +25,7 @@
 #include <functional>
 #include <memory>
 #include <numbers>
+#include <string>
 #include <vector>
 
 #include "pq/core/aligned_buffer.h"
@@ -314,8 +323,22 @@ std::vector<e::AudioClipDesc> everyMode() {
   v.push_back(x);
   e::AudioClipDesc t2 = warped(e::ClipWarp::Tones, 6, kPpq * 16, kPpq * 2, 120.0);  // pitch rate 1: straight copies
   v.push_back(t2);
+  // T6.5: Complex looped and transposed (the stream unfolds through the wraps), Complex Pro reversed with formants.
+  e::AudioClipDesc cx = warped(e::ClipWarp::Complex, 7, kPpq * 18, kPpq * 3, 105.0);
+  cx.contentStart = kPpq / 3;
+  cx.loop = {true, kPpq / 2, kPpq * 3 / 2};
+  cx.stretch.pitchRatio = 1.09;
+  v.push_back(cx);
+  e::AudioClipDesc cp = warped(e::ClipWarp::ComplexPro, 8, kPpq * 21, kPpq * 2, 135.0);
+  cp.reverse = true;
+  cp.stretch.pitchRatio = 0.85;
+  cp.stretch.formants = 80.0f;
+  cp.crossfadeIn = kPpq / 8;
+  v.push_back(cp);
   return v;
 }
+
+constexpr Ticks kEveryModeEnd = kPpq * 23;  // the end of everyMode()
 
 float busy(uint32_t c, int64_t i) {
   const double t = static_cast<double>(i) / kSr;
@@ -488,7 +511,7 @@ TEST_CASE("warp: every mode renders bit-identically across engine blocks 64 / 10
     std::vector<std::vector<float>> results;
     for (uint32_t block : {64u, 1000u}) {
       Rig rig(block);
-      if (ramp) rig.tempo({{0, 100.0, pq::TempoCurve::Linear}, {kPpq * 18, 150.0, pq::TempoCurve::Step}});
+      if (ramp) rig.tempo({{0, 100.0, pq::TempoCurve::Linear}, {kEveryModeEnd, 150.0, pq::TempoCurve::Step}});
       else rig.tempo({{0, 128.0, pq::TempoCurve::Step}});
       std::vector<e::AudioClipDesc> clips = all;
       if (only < all.size()) {
@@ -498,7 +521,7 @@ TEST_CASE("warp: every mode renders bit-identically across engine blocks 64 / 10
       rig.audio({{1, clips}}, {s});
       rig.play(0);
       std::vector<float> r;
-      std::vector<float> l = rig.render(static_cast<uint64_t>(rig.map.ticksToSamples(kPpq * 18, kSr)), 0, 0, &r);
+      std::vector<float> l = rig.render(static_cast<uint64_t>(rig.map.ticksToSamples(kEveryModeEnd, kSr)), 0, 0, &r);
       l.insert(l.end(), r.begin(), r.end());
       results.push_back(std::move(l));
     }
@@ -513,7 +536,8 @@ TEST_CASE("warp: every mode renders bit-identically across engine blocks 64 / 10
 
 TEST_CASE("warp: a gain-only edit while playing keeps every stretch voice (seamless)") {
   const e::ClipSample s = makeSample(400000, 2, busy);
-  for (const e::ClipWarp w : {e::ClipWarp::Beats, e::ClipWarp::Tones, e::ClipWarp::Texture}) {
+  for (const e::ClipWarp w : {e::ClipWarp::Beats, e::ClipWarp::Tones, e::ClipWarp::Texture, e::ClipWarp::Complex,
+                             e::ClipWarp::ComplexPro}) {
     CAPTURE(static_cast<int>(w));
     auto clipWith = [&](float gain) {
       e::AudioClipDesc c = warped(w, 1, 0, kPpq * 8, 120.0);
@@ -571,7 +595,7 @@ TEST_CASE("warp: streamed samples render bit-identically to resident ones (offli
       pool.engage();
       rig.play(0);
       std::vector<float> r;
-      out = rig.render(static_cast<uint64_t>(rig.map.ticksToSamples(kPpq * 18, kSr)), 0, 0, &r);
+      out = rig.render(static_cast<uint64_t>(rig.map.ticksToSamples(kEveryModeEnd, kSr)), 0, 0, &r);
       out.insert(out.end(), r.begin(), r.end());
       pool.disengage();
       CHECK(rig.tl->clipPlayer().stats().missingFrames == 0);
@@ -591,7 +615,7 @@ TEST_CASE("warp: streamed samples render bit-identically to resident ones (offli
   fs::remove_all(wav.parent_path(), ec);
 }
 
-TEST_CASE("rt: the warp modes (Re-Pitch markers, Beats, Tones, Texture; streamed, swaps) allocate nothing") {
+TEST_CASE("rt: the warp modes (Re-Pitch markers, Beats, Tones, Texture, Complex, Complex Pro; streamed, swaps) allocate nothing") {
   REQUIRE(pq::alloc_trap::installed());
   const fs::path wav = writeWav("warp_rt.wav", 400000, 2, busy);
   pq::media::PoolConfig pc;
@@ -633,9 +657,292 @@ TEST_CASE("rt: the warp modes (Re-Pitch markers, Beats, Tones, Texture; streamed
     const e::ClipPlayerStats& st = rig.tl->clipPlayer().stats();
     CHECK(st.grains > 0);
     CHECK(st.slicePasses > 0);
+    CHECK(st.stretchCells > 0);  // T6.5: Complex / Complex Pro rendered (streamed and resident)
+    CHECK(st.stretchFallbacks == 0);
     pool.disengage();
   }
   pool.stopDiskThread();
   std::error_code ec;
   fs::remove_all(wav.parent_path(), ec);
+}
+
+// ---- T6.5: Complex / Complex Pro ---------------------------------------------------------------------------------------
+
+namespace {
+
+// A vowel-like source: a 150 Hz harmonic series (to 6 kHz) shaped by formants at 700 / 1200 / 2600 Hz.
+constexpr double kVowelF0 = 150.0;
+double vowelEnvelope(double f) {
+  auto res = [&](double fc, double bw, double a) { return a / std::sqrt(1.0 + ((f - fc) / bw) * ((f - fc) / bw)); };
+  return res(700.0, 110.0, 1.0) + res(1200.0, 140.0, 0.6) + res(2600.0, 220.0, 0.3) + 0.02;
+}
+float vowel(int64_t i) {
+  double y = 0.0;
+  const double t = static_cast<double>(i) / kSr;
+  for (int h = 1; h * kVowelF0 < 6000.0; ++h)
+    y += vowelEnvelope(h * kVowelF0) * std::sin(2.0 * std::numbers::pi * h * kVowelF0 * t + 0.7 * h * h);
+  return static_cast<float>(0.12 * y);
+}
+
+// The formant shift of a render whose fundamental is f0: the factor α that best explains its harmonic amplitudes (to
+// 4 kHz) as the source's envelope moved by α (least squares in log amplitude, a free gain).
+double formantShift(const std::vector<float>& y, size_t from, size_t n, double f0) {
+  std::vector<double> fh, la;
+  for (int h = 1; h * f0 < 4000.0; ++h) {
+    fh.push_back(h * f0);
+    la.push_back(std::log(dtftMag(y, from, n, h * f0) + 1e-9));
+  }
+  double bestA = 1.0, bestE = 1e300;
+  for (double a = 0.7; a <= 2.0; a += 0.0025) {
+    std::vector<double> d(fh.size());
+    double mean = 0.0;
+    for (size_t k = 0; k < fh.size(); ++k) {
+      d[k] = la[k] - std::log(vowelEnvelope(fh[k] / a));
+      mean += d[k];
+    }
+    mean /= static_cast<double>(fh.size());
+    double e = 0.0;
+    for (const double x : d) e += (x - mean) * (x - mean);
+    if (e < bestE) {
+      bestE = e;
+      bestA = a;
+    }
+  }
+  return bestA;
+}
+
+// A ClipPlayer driven directly (its stretch pool size is the ClipPlayer's own config).
+std::vector<std::vector<float>> playDirect(e::ClipPlayer& player, const e::AudioSequenceImage& img, uint32_t slots,
+                                           SampleTime frames, uint32_t block) {
+  std::vector<std::vector<float>> out(slots * 2);
+  for (SampleTime s = 0; s < frames; s += block) {
+    const auto n = static_cast<uint32_t>(std::min<SampleTime>(block, frames - s));
+    player.beginBlock(n);
+    if (s == 0) {
+      player.setImage(&img, 0, true);
+      player.seek(0);
+    }
+    player.play(0, s, n);
+    player.endBlock();
+    for (uint32_t k = 0; k < slots * 2; ++k) {
+      const float* c = player.channels()[k];
+      out[k].insert(out[k].end(), c, c + n);
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("warp: Complex / Complex Pro keep a 220 Hz sine within ±1 ¢ at 0.5× / 2× tempo; +3 steps of 31-EDO") {
+  const e::ClipSample sine = makeSample(static_cast<int64_t>(kSr * 20.0), 1, [](uint32_t, int64_t i) {
+    return static_cast<float>(0.5 * std::sin(2.0 * std::numbers::pi * 220.0 * static_cast<double>(i) / kSr));
+  });
+  struct Case {
+    double bpm;
+    double ratio;
+    double expectCents;
+  };
+  const double steps = 3.0 * 1200.0 / 31.0;
+  for (const e::ClipWarp w : {e::ClipWarp::Complex, e::ClipWarp::ComplexPro})
+  for (const Case k : {Case{60.0, 1.0, 0.0}, Case{240.0, 1.0, 0.0}, Case{60.0, std::exp2(3.0 / 31.0), steps},
+                       Case{240.0, std::exp2(3.0 / 31.0), steps}, Case{120.0, std::exp2(3.0 / 31.0), steps}}) {
+    CAPTURE(static_cast<int>(w));
+    CAPTURE(k.bpm);
+    CAPTURE(k.ratio);
+    Rig rig(128);
+    rig.tempo({{0, k.bpm, pq::TempoCurve::Step}});
+    e::AudioClipDesc c = warped(w, 1, 0, kPpq * 16, 120.0);
+    c.stretch.pitchRatio = k.ratio;
+    rig.audio({{1, {c}}}, {sine});
+    rig.play(0);
+    const std::vector<float> out = rig.render(static_cast<uint64_t>(kSr * 3.2));
+    // Sustained: the pitch over the first and the second half of the window.
+    double worst = 0.0;
+    for (const size_t from : {size_t{4800}, size_t{4800 + 65536}}) {
+      const double f = peakHz(out, from, 65536, 220.0 * k.ratio);
+      const double err = cents(f, 220.0) - k.expectCents;
+      const std::string name = w == e::ClipWarp::Complex ? "Complex" : "Complex Pro";
+      MESSAGE(name, " at ", k.bpm, " BPM, ratio ", k.ratio, ": ", f, " Hz, error ", err, " cents");
+      worst = std::max(worst, std::abs(err));
+    }
+    CHECK(worst <= 1.0);
+    double peak = 0.0;
+    for (size_t i = 4800; i < out.size(); ++i) peak = std::max(peak, static_cast<double>(std::abs(out[i])));
+    CHECK(peak > 0.35);
+    CHECK(peak < 0.65);
+    const e::ClipPlayerStats& st = rig.tl->clipPlayer().stats();
+    CHECK(st.stretchClaims == 1);
+    CHECK(st.stretchFallbacks == 0);
+    CHECK(st.stretchCells > 1000);
+  }
+}
+
+TEST_CASE("warp: Complex is sample-aligned (no latency) and keeps a drum loop's onsets on the warped grid at 90 / 150 BPM") {
+  const e::ClipSample loop = makeSample(kHitFrames * kHits, 1, [](uint32_t, int64_t i) { return drum(i); });
+  const std::vector<float> src = [&] {
+    std::vector<float> v(static_cast<size_t>(kHitFrames * kHits));
+    for (size_t i = 0; i < v.size(); ++i) v[i] = drum(static_cast<int64_t>(i));
+    return v;
+  }();
+  const double srcCentroid = centroid(src, 0, src.size());
+  const float* sch = src.data();
+  const std::vector<double> srcOnsets = pq::media::detectTransients(&sch, 1, static_cast<int64_t>(src.size()), 48000);
+  REQUIRE(srcOnsets.size() == static_cast<size_t>(kHits));
+  for (const double bpm : {120.0, 90.0, 150.0}) {
+    CAPTURE(bpm);
+    Rig rig(256);
+    rig.tempo({{0, bpm, pq::TempoCurve::Step}});
+    // The clip starts at beat 1 (its voice primes before it starts, in step with the song).
+    e::AudioClipDesc c = warped(e::ClipWarp::Complex, 1, kPpq, kPpq * 8, 120.0);
+    rig.audio({{1, {c}}}, {loop});
+    rig.play(0);
+    const SampleTime end = rig.map.ticksToSamples(kPpq * 9, kSr);
+    const std::vector<float> out = rig.render(static_cast<uint64_t>(end));
+    // Silent before the clip starts.
+    const SampleTime s0 = rig.map.ticksToSamples(kPpq, kSr);
+    double before = 0.0;
+    for (SampleTime i = 0; i < s0; ++i) before = std::max(before, static_cast<double>(std::abs(out[static_cast<size_t>(i)])));
+    CHECK(before == 0.0);
+    // Every hit's onset (the transient detector on the output) where the warp puts the source's onset (the same
+    // detector on the source: its own bias cancels). A stretched waveform is not the source's, so its onsets are
+    // compared, not its samples.
+    const float* och = out.data() + s0;
+    const std::vector<double> got = pq::media::detectTransients(&och, 1, static_cast<int64_t>(out.size()) - s0, 48000);
+    double worst = 0.0;
+    int found = 1;
+    for (int h = 1; h < kHits; ++h) {  // the clip's first hit: its start, checked below (the edge declick fades it in)
+      const double srcOn = srcOnsets[static_cast<size_t>(h)];
+      const double expected = static_cast<double>(rig.map.ticksToSamples(kPpq + static_cast<Ticks>(std::llround(srcOn / fptAt(120.0))), kSr) - s0);
+      double best = 1e30;
+      for (const double g : got) best = std::abs(g - expected) < std::abs(best) ? g - expected : best;
+      if (std::abs(best) > 48.0) MESSAGE("hit ", h, ": onset ", best, " samples from ", expected);
+      if (std::abs(best) < 480.0) ++found;
+      worst = std::max(worst, std::abs(best));
+    }
+    MESSAGE("Complex at ", bpm, " BPM: worst onset offset ", worst / 48.0, " ms (", got.size(), " onsets)");
+    CHECK(found == kHits);
+    // ±2.5 ms: the vocoder's 120 ms windows smear attacks by a couple of ms when it stretches (measured 2.2 ms at 90
+    // BPM, 1.7 at 150; Beats is the mode that keeps hits within ±1 ms); 0 at the source tempo.
+    CHECK(worst <= 120.0);
+    const double cen = centroid(out, static_cast<size_t>(s0), out.size());
+    MESSAGE("centroid ", cen, " Hz (source ", srcCentroid, " Hz)");
+    CHECK(std::abs(cen / srcCentroid - 1.0) <= 0.05);
+    if (bpm == 120.0) {  // the source's own tempo: the output lines up with the source to the frame
+      double bestC = -1e300;
+      int bestLag = 0;
+      for (int lag = -64; lag <= 64; ++lag) {
+        double num = 0.0;
+        for (int64_t i = 2000; i < 2 * kHitFrames * 4; ++i) num += out[static_cast<size_t>(s0 + i + lag)] * src[static_cast<size_t>(i)];
+        if (num > bestC) {
+          bestC = num;
+          bestLag = lag;
+        }
+      }
+      MESSAGE("Complex at the source tempo: lag ", bestLag, " frames");
+      CHECK(std::abs(bestLag) <= 1);
+      // The clip's first 20 ms (its first hit) against the source's, past the 2 ms declick.
+      double err = 0.0, ref = 0.0;
+      for (int64_t i = 96; i < 960; ++i) {
+        const double d = out[static_cast<size_t>(s0 + i)] - src[static_cast<size_t>(i)];
+        err += d * d;
+        ref += static_cast<double>(src[static_cast<size_t>(i)]) * src[static_cast<size_t>(i)];
+      }
+      MESSAGE("Complex at the source tempo: the first 20 ms within ", 10.0 * std::log10(err / ref), " dB of the source");
+      CHECK(err < 1e-8 * ref);
+    }
+  }
+}
+
+TEST_CASE("warp: Complex Pro holds a vowel's formants at +7 st (shift < 5 %); Complex moves them with the pitch (> 30 %)") {
+  const e::ClipSample v = makeSample(static_cast<int64_t>(kSr * 6.0), 1, [](uint32_t, int64_t i) { return vowel(i); });
+  const double ratio = std::exp2(7.0 / 12.0);
+  double shift[2] = {0.0, 0.0};
+  for (const e::ClipWarp w : {e::ClipWarp::Complex, e::ClipWarp::ComplexPro}) {
+    Rig rig(256);
+    rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
+    e::AudioClipDesc c = warped(w, 1, 0, kPpq * 8, 120.0);
+    c.stretch.pitchRatio = ratio;
+    rig.audio({{1, {c}}}, {v});
+    rig.play(0);
+    const std::vector<float> out = rig.render(static_cast<uint64_t>(kSr * 3.0));
+    const double f0 = peakHz(out, 24000, 65536, kVowelF0 * ratio);
+    CHECK(std::abs(cents(f0, kVowelF0 * ratio)) <= 1.0);
+    const double a = formantShift(out, 24000, 65536, f0);
+    shift[w == e::ClipWarp::ComplexPro ? 1 : 0] = a;
+    const std::string name = w == e::ClipWarp::ComplexPro ? "Complex Pro" : "Complex";
+    MESSAGE(name, ": formant shift ", (a - 1.0) * 100.0, " %");
+  }
+  // The estimator on the source itself.
+  std::vector<float> src(static_cast<size_t>(kSr * 3.0));
+  for (size_t i = 0; i < src.size(); ++i) src[i] = vowel(static_cast<int64_t>(i));
+  CHECK(std::abs(formantShift(src, 24000, 65536, kVowelF0) - 1.0) < 0.01);
+  CHECK(std::abs(shift[1] - 1.0) < 0.05);
+  CHECK(shift[0] - 1.0 > 0.30);
+}
+
+TEST_CASE("warp: an exhausted stretch pool plays Complex as Tones (counted, no click); renders are deterministic") {
+  const e::ClipSample s = makeSample(400000, 2, busy);
+  auto image = [&](e::ClipWarp second) {
+    e::AudioClipDesc a = warped(e::ClipWarp::Complex, 1, 0, kPpq * 6, 120.0);
+    a.stretch.pitchRatio = 1.05;
+    e::AudioClipDesc b = warped(second, 2, kPpq, kPpq * 4, 97.0);  // starts while the first holds the only stretcher
+    b.stretch.pitchRatio = 0.9;
+    e::AudioBuildOptions o;
+    o.sampleRate = kSr;
+    auto r = e::AudioSequenceImage::build(std::vector<e::AudioTrackDesc>{{1, {a}}, {2, {b}}}, {s},
+                                          tempoMap({{0, 100.0, pq::TempoCurve::Step}}), o);
+    REQUIRE(r.ok());
+    return std::move(r.value());
+  };
+  e::ClipPlayerConfig pc;
+  pc.slots = 2;
+  pc.maxBlockFrames = 1024;
+  pc.sampleRate = kSr;
+  pc.stretchVoices = 1;
+  const SampleTime frames = static_cast<SampleTime>(kSr * 4.0);
+  const auto img = image(e::ClipWarp::Complex);
+  e::ClipPlayer p1(pc);
+  REQUIRE(p1.stretchPool() != nullptr);
+  const auto got = playDirect(p1, *img, 2, frames, 256);
+  CHECK(p1.stats().stretchClaims == 1);
+  CHECK(p1.stats().stretchFallbacks == 1);
+  // The fallback voice is exactly a Tones clip.
+  const auto tonesImg = image(e::ClipWarp::Tones);
+  e::ClipPlayer p2(pc);
+  const auto tones = playDirect(p2, *tonesImg, 2, frames, 256);
+  CHECK(got[2] == tones[2]);
+  CHECK(got[3] == tones[3]);
+  // No click where it starts: the largest step there is no larger than the material's own.
+  const SampleTime b0 = tempoMap({{0, 100.0, pq::TempoCurve::Step}}).ticksToSamples(kPpq, kSr);
+  double stepAtStart = 0.0, stepLater = 0.0;
+  for (SampleTime i = b0 - 64; i < b0 + 480; ++i)
+    stepAtStart = std::max(stepAtStart, static_cast<double>(std::abs(got[2][static_cast<size_t>(i + 1)] - got[2][static_cast<size_t>(i)])));
+  for (SampleTime i = b0 + 480; i < b0 + 48000; ++i)
+    stepLater = std::max(stepLater, static_cast<double>(std::abs(got[2][static_cast<size_t>(i + 1)] - got[2][static_cast<size_t>(i)])));
+  MESSAGE("fallback start: largest step ", stepAtStart, " (later ", stepLater, ")");
+  CHECK(stepAtStart <= stepLater);
+  // The first slot (with the stretcher) renders the same again, in another player and with another block.
+  e::ClipPlayer p3(pc);
+  const auto again = playDirect(p3, *img, 2, frames, 1000);
+  CHECK(again[0] == got[0]);
+  CHECK(again[1] == got[1]);
+  // A 3× stretch (the library randomises phases beyond 2×): deterministic too.
+  e::ClipPlayerConfig pc2 = pc;
+  pc2.stretchVoices = 2;
+  auto slow = [&] {
+    e::AudioClipDesc a = warped(e::ClipWarp::Complex, 5, 0, kPpq * 4, 120.0);
+    e::AudioBuildOptions o;
+    o.sampleRate = kSr;
+    auto r = e::AudioSequenceImage::build(std::vector<e::AudioTrackDesc>{{1, {a}}}, {s}, tempoMap({{0, 40.0, pq::TempoCurve::Step}}), o);
+    REQUIRE(r.ok());
+    e::ClipPlayer p(pc2);
+    return playDirect(p, *r.value(), 1, frames, 256);
+  };
+  CHECK(slow()[0] == slow()[0]);
+  const auto t0 = std::chrono::steady_clock::now();
+  const e::StretchPool pool32(32, kSr);
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  MESSAGE("stretch pool of 32 (the default) at 48 kHz: ", static_cast<double>(pool32.memoryBytes()) / 1048576.0,
+          " MiB (estimated), made in ", ms, " ms");
 }
