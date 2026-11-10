@@ -21,6 +21,7 @@ pq_add_module(pq_media
     src/sample_pool.cpp
     src/waveform.cpp
     src/transients.cpp
+    src/tempo_detect.cpp
   DEPS pq_core pq_dsp
   PRIVATE_DEPS pq_media_codecs
 )

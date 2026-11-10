@@ -54,6 +54,7 @@ pq_add_test(pq_tests_media PERF
     media/test_stream.cpp
     media/test_waveform.cpp
     media/test_transients.cpp  # T6.3: onset detection (labelled fixture F-measure), its disk / memory cache
+    media/test_tempo_detect.cpp  # T6.8: tempo detection (20 labelled loops ±1 BPM), confidence, its caches
   DEPS pq_media pq_engine pq_doc)  # pq_doc: the content hash is checked against doc::fileIdentity
 
 # Child process for the "default handler aborts with a stack trace" test: links the trap, no handler.
