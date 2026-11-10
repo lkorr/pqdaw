@@ -740,3 +740,39 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   (`views::SampleAnalysis`) over the same media caches as the link's Beats job; `project_link.h` was left alone (the
   link keeps its `kTransientJob` bit): on a cold cache both may analyse one file once each.
 - Status: decided (reversible).
+
+## Q?-TU.1-a · 2026-11-10 · TU.1 · Tuning menu rework: what was chosen
+- **Context**: user 2026-11-09 — no giant temperament dropdown; adjusting a tuning must retune sounding notes during
+  the drag, not on release; the MOS colours clash with the DAW.
+- **Choices** (most reversible): (1) **The wheel applies to the document as you go** (no draft / Apply / Cancel): a
+  chart or circle drag is one store gesture (one undo step per drag; Esc mid-drag restores where it started); a click,
+  typed EDO, Scala file or temperament is one command; footer **Revert** (back to the tuning it had when it opened, one
+  step) and **Done**; Esc / Enter / a press outside close and keep. T3.14's view-only tuning preview
+  (`ViewContext::setTuningPreview`, `kTuningPreview`) is deleted; the clip box's Generator box is live the same way.
+  (2) **Targets keep their meaning**: the clip chip edits that clip (a private tuning), a track chip the track, a main
+  tuning (panel, Ctrl+Shift+W without a clip) the main tuning. For a main tuning a generator-only change is
+  `SetTuningParam` (a param write: no compile, automation included); a region hint is kept unless the generator sits
+  at an end of the new region (only there does it change a pitch; that step is a `SetTuningDef` → a new table). A
+  private (clip / track) tuning has no signal node: each step is a `SetClipTuning` / `SetTrackTuning` (Structural, but
+  the patch is unchanged, so no unit compiles; sounding drawn notes retune through the timeline's sequence swap).
+  Option not taken: retarget the clip chip to the main tuning the clip follows (would make every clip edit global).
+  (3) **Temperaments**: a search field ("Temperament…": exact name → chosen; one match → chosen; several → a menu of
+  ≤ 12, exact / prefix / substring order) instead of the 80-item dropdown; the chart's temperament rows still show
+  them at the generator. (4) **Discrete edits during a drag** (EDO Steps box, a MOS size change): applied at each whole
+  step inside one gesture (a new table each: a compile, debounced by the link); held drawn notes retune by the
+  timeline's sequence swap, held live (MIDI / computer keyboard) notes by `LiveInput` moving each held key to the new
+  route image's pitch (keeping its bend). (5) **Colours**: region bands and temperament ranges take the middle row of
+  the theme's clip palette (Live's muted clip colours: `mosDataColour`); the circle's step slices use the piano roll's
+  scale-key colours (`roll.keyLarge / keySmall / keyExtra`, the roll's own `stepClassColours`), so a MOS reads the same
+  in both; `mosChart.*` / `mosCircle.*` tokens retuned to the amber accent, solo blue and text tones; the hardness
+  slider is a Live slider (`control.value` fill, `control.thumb`).
+- **Known limit (not chosen, small)**: a MOS shape change (structural `SetTuningDef` on a main tuning) writes the new
+  generator param at once but the new table arrives with the compile (~50 ms debounce + compile): for that window a
+  sounding Degree note is computed from the old table at the new generator (a short wrong pitch). Options: hold the
+  tuning params until the compile publishes, or publish the table with the params. EDO size changes are not affected
+  (the period param does not change).
+- **T6.4b (Q?-T6.4-a option B)**: already the node's behaviour — `tuning_hz` multiplies by E = hz / hz₀ on every path
+  (constant-per-block and per-sample), and a bent Keys note's voice.hz is its static Hz × the bend, so E is the bend
+  ratio. T6.4's "the bend is lost" was not reproduced; tests now pin it (playback: `a bent Keys note keeps its bend under
+  generator automation`, `tuning live: a panel Generator drag …`). No kernel change.
+- Status: decided (reversible).

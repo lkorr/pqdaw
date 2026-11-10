@@ -1193,3 +1193,24 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   before the clip's start, as in `audio-clip-warp-markers`) — Live instead pins the sample's start; say if you want
   that. Tempo detection was checked on synthetic loops only; please try real loops and report octave errors (:2 / *2
   fix one).
+
+## 2026-11-10 · TU.1 · Tuning menu: live retune, temperament search, DAW colours (👁)
+- What: the MOS wheel (tuning chip, Wheel… in the Tunings panel, Ctrl+Shift+W) now applies every change as you make it:
+  drag the generator in the chart, the hardness slider or a MODMOS dot and the notes that are sounding retune while
+  you drag (one Ctrl+Z per drag; Esc mid-drag puts it back). The footer is **Revert** (the tuning it had when you opened
+  it) and **Done**; the Temperament dropdown is gone — type a name ("meantone", "porc", "magic") in the
+  "Temperament…" field and press Enter (several matches open a short list). The Tunings panel's EDO **Steps** box
+  retunes at each step of a drag (not on release), and the clip box's Generator box is live too. Colours: region bands
+  and temperament bars use Live's muted clip colours, the selected band is outlined in the amber accent, the marker /
+  pill / tonic are amber, the circle's L / s slices use the piano roll's key colours (so the wheel and the roll's
+  gutter match), and the hardness slider looks like the other sliders.
+- Try: put a long note (or hold a MIDI / computer-keyboard key on an armed track) on a track following a MOS main
+  tuning, press Play, open its wheel and drag the generator across the chart; drag the Generator box in the Tunings
+  panel; drag an EDO card's Steps box from 12 upward while a chord sounds; automate the generator and drag it while it
+  plays (the drag takes over, Re-Enable Automation brings the lane back).
+- To judge: whether Revert / Done reads right (Esc now closes and keeps, it no longer discards); the step-slice
+  contrast in the circle (L and s are the roll's key colours at 25 % — s is only a little darker on soft scales); the
+  muted band colours; the search field's place in the header. Clip-chip edits still make that clip's tuning private
+  (Q?-TU.1-a); a MOS *shape* change on a main tuning can sound a short wrong pitch until the recompile lands.
+- Goldens moved (meant to): mos-chart-default, mos-chart-zoomed, mos-circle-5L2s, mos-circle-modmos,
+  mos-wheel-popover, mos-wheel-popover-1.5x.
