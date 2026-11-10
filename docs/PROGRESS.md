@@ -427,3 +427,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker test_capture_drift (±20/±100/±200 ppm × 10 min, jitter, same-clock bit-exact, RtScope), -Affected -Slow 88/88.
 - Perf / CPU-efficiency check: ~4 µs per 480-frame stereo pull while resampling (~0.04 % core); same-clock path two memcpys.
 - Notes/blockers: real two-device hand check in REVIEW.
+
+## 2026-11-10 · PF.4b merged · M6 closed · main
+- Did: merged task/PF.4b-playback-cost (ef7d3d43): RT heap (pq/core/rt_heap.h) for JIT/interp images, host tables and unit packets so placement no longer depends on compile threads; hot fields first in ImageHost / Unit / Voice; shared per-block ProcessContext in runUnit. M6 closed.
+- Verified: worker -Affected -Slow 88/88 on 4b6b4197, no golden moved; ship pq_bench_dsp links.
+- Perf / CPU-efficiency check: audio/64 rate 1 ship 16.3 → 14.0 µs (M5 13.6–13.8), release 16.6 → 14.4; 1 vs 6 JIT threads now equal.
+- Notes/blockers: ~0.3 µs over M5 remains; H3 tempo partly fixed.
