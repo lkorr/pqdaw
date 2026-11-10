@@ -403,3 +403,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow 64/67 after rebase; timeline preview waitFor + playback_s3 wavetable = known flakes, playback_s2 loop-test rig overflow fixed (pump every 64 blocks); the 3 re-run alone 3/3; media 48/48; recording timing tests ×5.
 - Perf / CPU-efficiency check: recorder adds a 256-entry run ring per block, RtScope clean; writer thread no longer blocks stream refills.
 - Notes/blockers: files are `offset` frames shorter (pre-session frames not written); L13 stale-folder recovery still open (T6.x-fix-ui).
+
+## 2026-11-10 · T6.x-fix-warp merged · main
+- Did: merged task/T6.x-fix-warp (9ca6deaf): Complex re-prime from the next read's need (C2), lazy image-sized stretch pool with Tones→Complex retry + fallback count in CPU info (H2, L15), staggered priming (M10), priming at 4×max(1, ratio) (L14), tempo length prior + near-tie confidence (H3 partly), signature-aware N-bar loop (M11), Tones documented monophonic + chord test (M12), M13 bisected (filed PF.4b).
+- Verified: worker -Affected -Slow 76/76 after rebase (one sccache crash retried); ship pq_bench_dsp + pq_bench_playback link. Tempo test's "≥ 18/20 confident" became "confident ≥ 100 BPM 11/11, never confidently wrong" (sub-100 loops are ambiguous half-time; tempo still 20/20 right) — Q?-T6.x-fix-warp-a.
+- Perf / CPU-efficiency check: worst Complex block 16 tracks 9.99 → 3.81 Mcycles; clip player memory without Complex 56.9 → 5.1 MiB; audio/64 rate 1 still 16.8 µs.
+- Notes/blockers: PF.4b filed for the playback regression.
