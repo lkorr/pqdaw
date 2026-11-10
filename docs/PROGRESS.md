@@ -379,3 +379,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker playback T6.9 4/4, timeline live input 15/15 (RtScope), views default 100 %; -Affected after rebase: 90 goldens moved only in the control-bar band (new button) and re-recorded; views SIGSEGV and playback_s3 wavetable timing = known flakes, passed alone.
 - Perf / CPU-efficiency check: note-on = slot write + atomic store; idle block = one relaxed store; reading/planning on the UI thread only.
 - Notes/blockers: Q?-T6.9-a; ~2–3 MB per listening track (estimate); no pickup detection.
+
+## 2026-11-10 · T6.2b merged · main
+- Did: merged task/T6.2b-pdc-leftovers (c2e1174c): per-member internal shift T(t) for merged units (clip delay lines, note delay, automation shift), tap lanes rendered per sample at t − shift, mirrored-tail delay rings read in place, stale "not compensated" comments fixed.
+- Verified: worker pq_tests_project 35/35, -Affected -Slow 76/76, ship pq_bench_dsp links; after re-rebase onto a3af785f: pdc 21/21, playback T6.9+T6.7 10/10, timeline live input 15/15.
+- Perf / CPU-efficiency check: per compensated stereo input @64: 78–80 → 53–61 ns (target 40 not reached; breakdown in Q?-T6.2b-a / worker rdtsc); plan 12 µs @128 tracks; no-latency projects unchanged.
+- Notes/blockers: shared params take the smallest shift; loop-wrap lane start — for the M6 review.
