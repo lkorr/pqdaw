@@ -361,3 +361,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow 87/88 then views goldens (arm column) re-recorded and passing; after re-rebase onto 15963b21: views default 100 %, playback T6.7 + TU.1 live tests 10/10, timeline T6.7 5/5.
 - Perf / CPU-efficiency check: unarmed = one flag test per block; one memcpy per used channel; peaks off the audio thread.
 - Notes/blockers: Q?-T6.7-a; leftovers filed as T6.7b. REVIEW asks for a real ASIO multi-input hand check.
+
+## 2026-11-10 · T6.5b merged · main
+- Did: merged task/T6.5b-complex-priming (6da4365e): Complex/Pro priming at most 4× play rate on a song-time schedule; ClipPlayer::cue primes silent voices at the playhead (stopped / count-in) and the loop start before a wrap, seek() takes them over; an unprimed start is ~70 ms late with a fade-in, then sample-identical; offline renders prime at once; StretchPool mono stretchers.
+- Verified: worker -Affected -Slow 53/55 after rebase, the 2 failures known flakes (timeline preview waitFor 87/87 alone; window selftest gallery segfault under load, passed alone); ship pq_bench_dsp links.
+- Perf / CPU-efficiency check: worst block after mid-clip start 3306 → 392 µs (1 voice), 13283 → 1607 µs (4 voices); mono 316 → 179 ns/frame; stereo steady unchanged.
+- Notes/blockers: Q?-T6.5b-a. ~13.7 MiB extra per clip player for 32 mono stretchers (estimate) — check in the M6 review.
