@@ -766,6 +766,23 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [x] **PF.6 Lowering a 64-track project takes 111–200 ms per structural edit** (found by PF.2; `pq/document` lowering on the UI thread and in the playback link). Profile; make it incremental per track (reuse unchanged tracks' lowered units keyed on their inputs) or otherwise cut it to tens of ms; identical output. *(merged b76cfaf3; ship: wide64 105–121 → 22–25 ms, heavy30 498–509 → 47–65 ms; quadratic wire scans removed; per-track reuse not done (≈60 % of what remains is project-wide))*
 - [ ] **PF.5 Engine: units run on several audio threads** (survey #11; SPEC M12; core structure: design restated to the user before it starts). *Postponed by the user 2026-11-09; design proposed: worker pool, per-block unit dependency graph, bit-identical, single-thread below a work threshold; measure voice-lane utilisation first.*
 
+## M6: Recording, take lanes, Capture MIDI, PDC, metronome, warp (plan: docs/plans/M6.md; user decision 2026-11-09, SPEC §15 "M6"; design approved by the user 2026-11-09)
+Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input modes per track (Keys → Degree, Hz → Cents): every input path works with both.
+- [ ] **T6.1 Document model: monitor/inputs, note input mode, take lanes, punch, record settings, warp markers/modes** (plan §T6.1). Lane B, phase 1.
+- [ ] **T6.2 PDC: units report latency, readers delay their inputs** (plan §T6.2). Lane A, phase 1.
+- [ ] **T6.3 Warp engine I: markers, Re-Pitch with markers, Beats, Tones, Texture** (plan §T6.3). After T6.1.
+- [ ] **T6.4 MIDI input (RtMidi), live notes into tracks, computer MIDI keyboard** (plan §T6.4). After T6.1.
+- [ ] **T6.5 Warp engine II: Complex / Complex Pro (signalsmith-stretch)** (plan §T6.5). After T6.3.
+- [ ] **T6.6 Metronome, count-in, Track Delay, latency readouts** (plan §T6.6). After T6.2, T6.4.
+- [ ] **T6.7 Recording: audio inputs to WAV, notes, monitoring, punch, takes** (plan §T6.7). After T6.1, T6.4, T6.6.
+- [ ] **T6.8 Warp UI, BPM detection, auto-warp** 👁 (plan §T6.8). After T6.3, T6.5.
+- [ ] **T6.9 Capture MIDI** (plan §T6.9). After T6.4, T6.7.
+- [ ] **T6.10 Take lanes and comping in the arrangement** 👁 (plan §T6.10). After T6.1, T6.7.
+- [ ] **T6.11 M6 review** (plan §T6.11).
+
+## TU: Tuning menu rework (user 2026-11-09; after M6)
+- [ ] **TU.1 Tuning menu: no giant temperament dropdown, live retune of sounding notes while dragging (not on release), cleaner UX, MOS colours in the DAW palette** 👁 (user 2026-11-09: "doesnt need a giant dropdown of different temperaments at all … if you adjust the temperament while there are notes playing theyll live tune and change in the moment, not just when you let go … the color scheme of the different MOSes looks out of place").
+
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
 - **M5** (re-scoped by the user 2026-10-30, SPEC §15): **audio tracks + audio clips** (pulled forward from M6: samples dragged in from the browser or Explorer play on the timeline, without warping beyond Re-Pitch), **browser + user library** (index, search, preview, drag in/out, saving presets / user devices / racks). Plan: docs/plans/M5.md. Simpler and Drum Rack follow (M5b) once sample playback exists. 👁

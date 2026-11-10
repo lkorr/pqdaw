@@ -591,3 +591,16 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   visible automated lanes); the follow lane's parameter and pins of unautomated parameters are session view state, like
   TL.2's shown flag. Saving them would need a per-track entry in `ViewState` (document schema).
 - Status: decided (reversible: ArrangementAutomation::lanesFor / pin / unpin / hideLane, automation_edit.cpp).
+
+## Q?-M6-a · 2026-11-10 · M6 plan · The plan's interaction defaults (taken overnight, the user asleep)
+- **Context**: docs/plans/M6.md raised 12 detail questions; the user approved the design and was not available.
+- **Choices** (recommended option each, all reversible): (1) Keys mode = consecutive degrees from key 60 (.kbm wins; option
+  "12-TET nearest" per track). (2) Hz mode source = the key's pitch in the track's tuning (option 12-TET A4 = 440 + bend).
+  (3) Bend moves the sounding voice; stored = note-on identity (Keys drops bend, Hz keeps note-on bend); raw bend kept in
+  the capture buffer for M7. (4) Unsaved projects record into %LOCALAPPDATA%\pqdaw\Unsaved\<session>, moved on first save.
+  (5) One continuous WAV per input per pass. (6) PDC compensates sidechains. (7) Fractional latencies rounded to whole
+  samples. (8) Automation and notes shift with a unit's PDC. (9) Metronome on the main pair (cue optional), never in
+  exports. (10) New clips stay warp Off; pref "Auto-Warp long samples" (off) uses Beats; recordings Off. (11) Complex Pro =
+  Complex + formants + envelope. (12) Computer keyboard: Live's letter rows → consecutive degrees; `M` implemented in M6.
+- Status: decided (reversible; see docs/plans/M6.md "Decisions taken").
+
