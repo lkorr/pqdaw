@@ -949,3 +949,13 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   shared code); (b) shrink the clip player's hot voice state (split Voice into hot / cold parts). Target ≤ M5 (13.7 µs
   ship) not met by this task.
 - Status: open.
+
+## Q?-T6.x-fix-pdc-a · 2026-11-10 · T6.x-fix-pdc · A grown delay line's new delay starts once its history is copied
+- **Context**: M6 review M2: a delay line that outgrows its ring now copies its history over blocks (budget 1024 floats
+  per frame shared by every line, ≥ 2 blocks' frames per line), the old line playing meanwhile. The new delay's 10 ms
+  fade therefore starts when the copy is in: 63 mono lines of 24 064 frames at block 64 take ≈ 23 blocks (31 ms); a
+  stereo −1000 ms Track Delay on 63 tracks ≈ 90 ms.
+- **Options**: (A) start the fade at once and read the old tap from the old line while copying (two lines read per
+  block, more code on the hot path); (B) defer the fade (chosen); (C) a larger budget (more worst-block work).
+- **Choice**: B (the delay of a Track Delay edit is not audible as such; worst block 39–53 µs instead of 1063–1124 µs,
+  release, probe D). Grown rings are ≥ 1.5× the old one, so a drag copies a few times, not at every step.
