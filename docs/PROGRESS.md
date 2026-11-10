@@ -349,3 +349,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: nothing on the audio thread; detection once per file, off-thread, cached; ≤ 64 waveform pieces per view, ≤ 1 transient line per pixel column.
 - Notes/blockers: Q?-T6.8-a. Goldens: new audio-clip-warp-beats / -markers; re-recorded clip-view-audio, audio-prefs(-wasapi), library-prefs, midi-prefs.
 
+
+## 2026-11-10 · TU.1 + T6.4b merged · main
+- Did: merged task/TU.1-tuning-menu (f6ec6e65): tuning menu edits apply live (MOS wheel, clip-box Generator, panel Steps), one undo step per drag, main-tuning generator drags are SetTuningParam (no compile); 80-item temperament dropdown replaced by a search field; MOS colours from the theme; LiveInput retunes held live keys on a new route image. T6.4b: no code change, pinned by a test.
+- Verified: worker -Affected -Slow 88/88 after rebase onto 3db933f6; goldens moved: mos-chart-default/-zoomed, mos-circle-5L2s/-modmos, mos-wheel-popover(-1.5x).
+- Perf / CPU-efficiency check: drag step = one param write; tuning kernel untouched.
+- Notes/blockers: Q?-TU.1-a; private clip tunings don't follow automation or held live MIDI keys (as before).
