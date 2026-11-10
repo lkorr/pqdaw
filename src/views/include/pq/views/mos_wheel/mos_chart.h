@@ -41,8 +41,9 @@
 // size or selection change damages the whole chart. Layout (band rects, EDO markers, temperament rows, label
 // strings) is rebuilt only when the view, the rect, the config or the selected region changes, never per paint.
 // Geometry is logical px through UiScale (crisp primitives on device px), text through the theme's font roles.
-// Colours: theme group `mosChart.*` (surfaces from the Live 12 look, Q47), the explorer's region palette
-// (tuning::kMosPalette) and temperament colours (tuning::temperamentColor) for the data.
+// Colours: theme group `mosChart.*` (surfaces from the Live 12 look, Q47); TU.1: the data (regions, temperament
+// ranges) in the DAW's own palette — mosDataColour below, the theme's muted clip colours — in place of the explorer's
+// saturated PALETTE and temperament colours.
 //
 // UI thread only. Nothing here is RT-safe.
 
@@ -55,9 +56,15 @@
 
 #include "pq/tuning/mos.h"
 #include "pq/tuning/mos_regions.h"
+#include "pq/ui/theme.h"
 #include "pq/ui/widget.h"
 
 namespace pq::views {
+
+// TU.1: data colours of the MOS views from the theme: `index` (a tuning::MosRegion palette index, any integer) picks
+// one of the clip palette's 13 muted mid-row hues; temperamentColour gives temperament i (tuning::temperaments()) one.
+ui::Rgba mosDataColour(const ui::Theme& th, uint32_t index) noexcept;
+ui::Rgba temperamentColour(const ui::Theme& th, int32_t temperament) noexcept;
 
 // The chart's output: one MOS tuning, as the explorer's selection + generator define it.
 struct MosSelection {
@@ -220,7 +227,6 @@ private:
     int32_t temperament;  // index into tuning::temperaments()
     float x1, x2;
     int32_t y, h;
-    ui::Rgba fill, edge, text;
   };
   struct Card {
     std::vector<std::string> lines;
@@ -262,7 +268,7 @@ private:
   void damageGeneratorParts();
   void damageRegionBands(int32_t region);
   void setFirstSizeInternal(int32_t size, bool emitDamage);
-  ui::Rgba regionColor(int32_t region) const noexcept;
+  ui::Rgba regionColor(const ui::Theme& th, int32_t region) const noexcept;
   ui::IRect pillRect(float markerX) const;
   const Labels& labelsOf(int32_t region);
   ui::IRect thumbRect() const noexcept;
@@ -271,7 +277,6 @@ private:
   tuning::MosRegionSet regions_;
   std::vector<tuning::EdoGenerator> edos_;
   std::vector<std::vector<int32_t>> bySize_;  // per-period size → region indices sorted by lowCents
-  std::vector<ui::Rgba> palette_;             // tuning::kMosPalette as colours
   std::vector<Labels> labels_;  // per region, formatted lazily (labelsOf)
 
   double viewMin_ = 0.0, viewMax_ = 1200.0;

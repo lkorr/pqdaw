@@ -24,20 +24,6 @@ namespace tu = pq::tuning;
 
 namespace {
 
-uint32_t hexDigit(char c) noexcept {
-  if (c >= '0' && c <= '9') return static_cast<uint32_t>(c - '0');
-  if (c >= 'a' && c <= 'f') return static_cast<uint32_t>(c - 'a' + 10);
-  if (c >= 'A' && c <= 'F') return static_cast<uint32_t>(c - 'A' + 10);
-  return 0;
-}
-
-// "#rrggbb" or "#rrggbbaa" (the explorer's colour strings).
-Rgba parseColor(std::string_view s) noexcept {
-  auto byte = [&](size_t i) { return hexDigit(s[i]) * 16 + hexDigit(s[i + 1]); };
-  if (s.size() < 7 || s[0] != '#') return rgba(136, 136, 136);
-  return rgba(byte(1), byte(3), byte(5), s.size() >= 9 ? byte(7) : 255u);
-}
-
 // hexA(hex, a): the colour's RGB with alpha a (the explorer ignores any alpha in the string here).
 Rgba alphaOfFloat(Rgba c, float a) noexcept { return setAlpha(c, a); }
 
@@ -86,12 +72,25 @@ tu::MosParams MosSelection::params() const {
   return p;
 }
 
+// --- colours (TU.1) ----------------------------------------------------------------------------------------------
+
+// The middle row of Live's clip palette (theme clipPalette: 14 columns, the 14th grey): muted hues that sit on the
+// DAW's dark surfaces, where the explorer's saturated PALETTE stood out from everything around it.
+ui::Rgba mosDataColour(const ui::Theme& th, uint32_t index) noexcept {
+  constexpr uint32_t kRow = 2, kHues = kClipPaletteColumns - 1;
+  if (th.clipPalette.size() < (kRow + 1) * kClipPaletteColumns) return th.text.secondary;
+  return th.clipPalette[kRow * kClipPaletteColumns + index % kHues];
+}
+
+ui::Rgba temperamentColour(const ui::Theme& th, int32_t temperament) noexcept {
+  // Neighbouring temperaments in the list are often neighbours on the axis: step 5 of 13 hues keeps them apart.
+  return mosDataColour(th, static_cast<uint32_t>(std::max(0, temperament)) * 5u);
+}
+
 // --- construction / config --------------------------------------------------------------------------------------
 
 MosChart::MosChart(std::string name, const MosChartConfig& config) : Widget(std::move(name)), config_(config) {
   setFocusable(true);
-  palette_.reserve(tu::kMosPalette.size());
-  for (const char* c : tu::kMosPalette) palette_.push_back(parseColor(c));
   rebuild();
   viewMin_ = 0.0;
   viewMax_ = viewLimit();
@@ -297,11 +296,11 @@ void MosChart::emit(MosGesture g) {
   if (onChange_) onChange_(selection_, g);
 }
 
-ui::Rgba MosChart::regionColor(int32_t region) const noexcept {
+ui::Rgba MosChart::regionColor(const ui::Theme& th, int32_t region) const noexcept {
   const tu::MosRegion& r = regions_.regions[static_cast<size_t>(region)];
-  const Rgba collapsed = palette_[r.collapsedColor % palette_.size()];
+  const Rgba collapsed = mosDataColour(th, r.collapsedColor);
   if (region != selected_ || !selection_) return collapsed;
-  const Rgba equalized = palette_[r.equalizedColor % palette_.size()];
+  const Rgba equalized = mosDataColour(th, r.equalizedColor);
   const double w = r.highCents - r.lowCents;
   const double genT = equalizedEndLow_ ? (selection_->generatorCents - r.lowCents) / w : (r.highCents - selection_->generatorCents) / w;
   const double soft = std::clamp(1.0 - genT, 0.0, 1.0);
@@ -456,9 +455,7 @@ void MosChart::layoutNow() const {
         const float yL = mcm::kTempTop + static_cast<float>(rows - 1 - b.row) * (mcm::kTempBarH + mcm::kTempBarGap);
         const int32_t y = g.r.y + s.px(yL);
         const int32_t idx = tempMatches_[b.match];
-        const auto colStr = tu::temperamentColor(temps[static_cast<size_t>(idx)].name);
-        const Rgba edge = colStr ? parseColor(*colStr) : rgba(136, 136, 136);
-        tempBars_.push_back({idx, b.x1, b.x2, y, g.r.y + s.px(yL + mcm::kTempBarH) - y, alphaOfFloat(edge, 0.5f), edge, 0});
+        tempBars_.push_back({idx, b.x1, b.x2, y, g.r.y + s.px(yL + mcm::kTempBarH) - y});
       }
     }
   }
@@ -1177,8 +1174,9 @@ void MosChart::paint(PaintContext& ctx) {
   for (const TempBar& b : tempBars_) {
     if (!overlaps(clip, b.x1, static_cast<float>(b.y), b.x2, static_cast<float>(b.y + b.h))) continue;
     const Rect rr{b.x1, static_cast<float>(b.y), b.x2, static_cast<float>(b.y + b.h)};
-    dl.addRectFilled(rr, b.fill);
-    dl.addRectStroke(rr, b.edge);
+    const Rgba edge = temperamentColour(*thp, b.temperament);
+    dl.addRectFilled(rr, alphaOfFloat(edge, 0.45f));
+    dl.addRectStroke(rr, edge);
     if (text && b.x2 - b.x1 > s.exact(35.0f)) {
       const std::string_view name = temps[static_cast<size_t>(b.temperament)].name;
       const int32_t maxW = static_cast<int32_t>(b.x2 - b.x1) - s.px(6.0f);
@@ -1201,7 +1199,7 @@ void MosChart::paint(PaintContext& ctx) {
     const bool isHov = selected_ < 0 && hovered_ == b.region;
     const bool grayed = selected_ >= 0 && !isSel;
     const float alpha = isSel ? 0.85f : grayed ? 0.12f : isHov ? 0.7f : 0.5f;
-    const Rgba base = isSel ? regionColor(selected_) : regionColor(b.region);
+    const Rgba base = isSel ? regionColor(*thp, selected_) : regionColor(*thp, b.region);
     const Rgba col = grayed ? grayedBase : base;
     const Rect rr{b.x1, static_cast<float>(b.y), b.x2, static_cast<float>(b.y + b.h)};
     dl.addRectFilled(rr, alphaOfFloat(col, alpha));

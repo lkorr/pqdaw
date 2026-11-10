@@ -32,8 +32,9 @@
 // Rendering: one widget; the scale model (pitches, steps, colours, labels, title parts) is rebuilt only when the
 // selection, MODMOS, config or rect changes, the JI marker table only when the displayed period or stretch changes;
 // paint emits geometry from the model. Every change damages the whole widget (the whole circle moves). Colours:
-// theme group `mosCircle.*` (surfaces from the Live 12 look, data colours from the explorer) and the explorer's
-// region palette for the step colours. No colour smoothing over time (the explorer's 8/s lerp): the colours are a
+// theme group `mosCircle.*` (TU.1: retuned to the DAW's palette — amber accent, the solo blue, the text tones) and,
+// for the step slices, the piano roll's scale-key colours (roll.keyLarge / keySmall / keyExtra blended by hardness,
+// the same stepClassColours as the roll's gutter), so a MOS looks the same in the wheel and in the roll. No colour smoothing over time (the explorer's 8/s lerp): the colours are a
 // pure function of the generator, so frames are reproducible.
 //
 // UI thread only. Nothing here is RT-safe.
@@ -50,6 +51,7 @@
 #include "pq/tuning/mos_regions.h"
 #include "pq/ui/widget.h"
 #include "pq/views/mos_wheel/mos_chart.h"
+#include "pq/views/piano_roll/row_model.h"
 
 namespace pq::views {
 
@@ -199,7 +201,6 @@ private:
   MosChartConfig config_;
   tuning::MosRegionSet regions_;
   std::vector<tuning::EdoGenerator> edos_;
-  std::vector<ui::Rgba> palette_;
 
   std::optional<MosSelection> sel_;
   int32_t region_ = -1;
@@ -226,6 +227,8 @@ private:
 
   mutable std::vector<ui::Vec2> scratchPts_;  // paint scratch, reused (no allocation per paint once grown)
   mutable std::vector<ui::Rect> scratchRects_;
+  mutable std::vector<roll::StepClass> classScratch_;  // TU.1: the step classes / their colours of this paint
+  mutable std::vector<ui::Rgba> classColours_;
   mutable Stats stats_;
 };
 

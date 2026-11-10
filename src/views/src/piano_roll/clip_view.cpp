@@ -63,7 +63,6 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
 }
 
 ClipView::~ClipView() {
-  if (state_->morphingGenerator() && ctx_.tuningPreview()) ctx_.clearTuningPreview();  // a morph cut short: no trace
   for (std::string_view id : ViewContext::kPianoRollActions) ctx_.clearViewAction(id);
 }
 
@@ -96,7 +95,6 @@ void ClipView::onView(uint32_t bits) {
   }
   if ((bits & view_change::kTool) && s.cornerPanel) s.cornerPanel->markDirty();
   if (bits & view_change::kTool) s.refreshHoverPart();  // Draw Mode shows no edges
-  if (bits & view_change::kTuningPreview) onDocument();  // the MOS wheel's live tuning (T3.14)
 }
 
 void ClipView::paint(PaintContext& ctx) {

@@ -80,7 +80,7 @@ inline constexpr uint32_t kProject = 1u << 3;    // project directory, name or u
 inline constexpr uint32_t kStatus = 1u << 4;     // status line text
 inline constexpr uint32_t kTool = 1u << 5;       // draw mode (B) toggled (T3.11)
 inline constexpr uint32_t kDetailClip = 1u << 6; // the clip shown in the clip view changed (T3.11)
-inline constexpr uint32_t kTuningPreview = 1u << 7;  // the MOS wheel's live tuning preview changed (T3.14)
+// 1u << 7: free (T3.14's tuning preview; TU.1 applies tuning edits to the document as they happen)
 inline constexpr uint32_t kAutomation = 1u << 8;     // automation overridden / re-enabled (T3.15)
 inline constexpr uint32_t kSelection = 1u << 9;      // the selected track changed (T3.x-fix-look: the control bar's chip)
 inline constexpr uint32_t kInfo = 1u << 10;          // the hovered widget's info text changed in place (T3.19: the roll's pitch readout)
@@ -96,8 +96,9 @@ inline constexpr uint32_t kTimeWindow = 1u << 19;    // TL.1: the shared visible
 inline constexpr uint32_t kSampleAnalysis = 1u << 20; // T6.8: a sample's transients / tempo arrived (SampleAnalysis)
 }  // namespace view_change
 
-// What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
-// tuning to it as one command (SetClipTuning / SetTrackTuning with a private tuning, or SetTuningDef).
+// What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel applies its edits to it
+// as they happen (TU.1, mos_wheel.h TuningEdit: SetClipTuning / SetTrackTuning with a private tuning, SetTuningParam /
+// SetTuningDef for a main tuning).
 struct TuningTarget {
   enum class Kind : uint8_t { Clip, Track, Main };
   Kind kind = Kind::Main;
@@ -107,12 +108,6 @@ struct TuningTarget {
   static TuningTarget forClip(doc::ClipRef c) { return {Kind::Clip, c, c.track, {}}; }
   static TuningTarget forTrack(doc::TrackId t) { return {Kind::Track, {}, t, {}}; }
   static TuningTarget forMain(doc::TuningId id) { return {Kind::Main, {}, {}, id}; }
-};
-
-// A tuning shown in place of the target's while the MOS wheel is open (not part of the document, no history).
-struct TuningPreview {
-  TuningTarget target;
-  doc::TuningDef def;
 };
 
 enum class DetailMode : uint8_t { Clip, Device };
@@ -379,18 +374,6 @@ public:
   doc::TrackId selectedTrack() const noexcept { return selectedTrack_; }
   void setSelectedTrack(doc::TrackId t);
 
-  // --- tuning preview (T3.14) ---
-  // The MOS wheel shows its tuning live while it is open: views that resolve a clip's tuning use previewedTuning()
-  // so the target (and everything inheriting from it) draws in the previewed tuning. Notifies kTuningPreview.
-  // Cleared by clearTuningPreview, newProject and openProject.
-  void setTuningPreview(const TuningTarget& target, doc::TuningDef def);
-  void clearTuningPreview();
-  const std::optional<TuningPreview>& tuningPreview() const noexcept { return preview_; }
-  // doc::effectiveTuning with the preview applied, for clip `clip` (id `clipId`; nullptr = the track's own tuning)
-  // on the track at `path`. Without a preview this is exactly doc::effectiveTuning.
-  const doc::TuningDef* previewedTuning(const doc::Project& p, const doc::TrackPath& path, const doc::NoteClip* clip,
-                                        doc::ClipId clipId) const noexcept;
-
   // --- automation override (T3.15, SPEC §9.6) ---
   // A parameter with an automation lane that is changed by hand (a mixer drag, a type-in, the activator) is
   // overridden: its automation is off until "Re-enable Automation" (Live). The context marks it from the document's
@@ -601,7 +584,6 @@ private:
   bool tuningsVisible_ = false;
   bool drawMode_ = false;
   doc::ClipRef detailClip_{};
-  std::optional<TuningPreview> preview_;
   std::vector<doc::ParamRef> overrides_;  // sorted (T3.15)
   std::optional<ShowAutomationRequest> showAutomation_;  // T4.18
   std::string status_;

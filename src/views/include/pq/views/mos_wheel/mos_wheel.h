@@ -1,27 +1,30 @@
 #pragma once
 
-// MOS wheel popover (T3.14, SPEC §4.2): the region chart (mos_chart.h) and the circle (mos_circle.h) linked in one
-// popover, plus an EDO entry, a Scala file pick and temperament presets. It edits the tuning of one target (a clip, a
-// track or a main tuning; TuningTarget in view_context.h):
+// MOS wheel popover (T3.14, SPEC §4.2; TU.1): the region chart (mos_chart.h) and the circle (mos_circle.h) linked in
+// one popover, plus an EDO entry, a Scala file pick and a temperament search. It edits the tuning of one target (a clip,
+// a track or a main tuning; TuningTarget in view_context.h):
 //
-//   ┌ Tuning · Clip "Riff"                 EDO [  ]  [Scala…]  [Temperament ▾] ┐
+//   ┌ Tuning · Clip "Riff"                 EDO [  ]  [Scala…]  [⌕ Temperament   ] ┐
 //   │ ┌ region chart ─────────────────────────────┐ ┌ circle ──────────────────┐ │
 //   │ │                                           │ │                          │ │
 //   │ └───────────────────────────────────────────┘ └──────────────────────────┘ │
-//   └ 5L 2s · 696.8¢ · Mode 4 (Ionian)                         [Cancel] [Apply] ┘
+//   └ 5L 2s · 696.8¢ · Mode 4 (Ionian)                           [Revert] [Done] ┘
 //
-// While it is open every change is a *draft*: the context's tuning preview (ViewContext::setTuningPreview) shows it
-// live in the piano roll (every Live frame of a chart or circle drag), and nothing touches the document. Closing
-// commits the draft as ONE command (one undo step) when it differs from the target's tuning: Apply, Enter, or a press
-// outside the popover (Live's popovers keep what was set). Cancel and Esc close it without a command (no history
-// entry). Esc during a chart or circle drag cancels only the drag (the widgets handle it first).
+// TU.1: every change is applied to the DOCUMENT as it happens (TuningEdit below), so notes that are sounding retune
+// during a drag, not when the popover closes: a chart or circle drag is one store gesture (one undo step per drag, Esc
+// during it restores where it started), a click, a typed EDO, a Scala file or a temperament one command. Revert puts
+// back the tuning the target had when the popover opened (one more undo step); Done, Enter, Esc or a press outside
+// close it and keep what was set.
 //
 // Commands: a clip → SetClipTuning (a private tuning: only that clip changes), a track → SetTrackTuning (private),
-// a main tuning → SetTuningDef. The reference pitch of the target's tuning is kept.
+// a main tuning → SetTuningParam for a generator-only change (a param write: the tuning node retunes every note that
+// follows it with no recompile, automation included) and SetTuningDef otherwise. The reference pitch is kept.
 //
-// Opened from a TuningChip (the clip view's clip box; T3.10's track headers) or the tuning.openMosWheel action
+// The temperament search (TU.1, replaces T3.14's 80-item dropdown): type part of a name and press Enter; one match
+// (or an exact name) is chosen at once, several open a short menu of them. The chart's temperament rows show them too.
+//
+// Opened from a TuningChip (the clip view's clip box; T3.10's headers) or the tuning.openMosWheel action
 // (Ctrl+Shift+W, Q15: the clip in the clip view, else the first main tuning). UI thread only.
-
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -55,6 +58,34 @@ std::string compactTuningLabel(const doc::TuningDef& def);
 // What Ctrl+Shift+W edits: the clip in the clip view, else the first main tuning.
 TuningTarget defaultTuningTarget(const ViewContext& ctx);
 
+// TU.1: applies one target's tuning edits to the document while they happen (see the file comment). A Live step of a
+// drag opens a store gesture on the first one and dispatches the step inside it; Commit dispatches the last value and
+// commits the gesture (one undo step; without a gesture it is a single command); Cancel cancels the gesture (the
+// document as before the drag). For a main tuning a change of the MOS generator alone (the mode carried as
+// SetTuningParam carries it; a region hint that only matters at an exact region boundary is left as it was) is a
+// SetTuningParam: a param write, no compile. UI thread only.
+class TuningEdit {
+public:
+  TuningEdit(ViewContext& ctx, TuningTarget target) : ctx_(ctx), target_(target) {}
+  ~TuningEdit() { finish(); }
+  TuningEdit(const TuningEdit&) = delete;
+  TuningEdit& operator=(const TuningEdit&) = delete;
+
+  // Gives the target `def`. Errors: the target is gone, or the document refused the command (also on the status line).
+  Status apply(const doc::TuningDef& def, MosGesture g, std::string_view label = "Change Tuning");
+  void cancel();   // Cancel of an open drag (no-op without one)
+  void finish();   // commits an open drag (a capture lost, the popover closed)
+  bool dragging() const noexcept { return gesture_; }
+  const TuningTarget& target() const noexcept { return target_; }
+  // The command apply() dispatches for `def` while the target's tuning is `current`.
+  doc::Command command(const doc::TuningDef& current, const doc::TuningDef& def) const;
+
+private:
+  ViewContext& ctx_;
+  TuningTarget target_;
+  bool gesture_ = false;  // this edit's store gesture is open
+};
+
 class MosWheelPopover : public ui::Popover {
 public:
   static constexpr float kWidth = 920.0f, kHeight = 580.0f;  // logical px
@@ -66,21 +97,26 @@ public:
   MosChart& chart() noexcept { return *chart_; }
   MosCircle& circle() noexcept { return *circle_; }
   const TuningTarget& target() const noexcept { return target_; }
-  const doc::TuningDef& original() const noexcept { return original_; }
-  const doc::TuningDef& draft() const noexcept { return draft_; }
+  const doc::TuningDef& original() const noexcept { return original_; }  // the target's tuning when it opened
+  const doc::TuningDef& draft() const noexcept { return draft_; }        // what the wheel shows (last applied)
   bool changed() const noexcept { return !(draft_ == original_); }
 
-  // --- draft (the header controls; tests) ---
+  // --- edits (the header controls; tests): each is applied to the document at once, one undo step ---
   bool chooseEdo(int32_t n);                       // n-EDO of the target's equave (2/1 unless it was another EDO's)
   Status chooseScalaFile(std::string_view pathUtf8);  // reads and parses a .scl file
   void requestScalaFile();                         // asks ViewContext::fileDialogs() (no-op without dialogs)
   bool chooseTemperament(int32_t index);           // tuning::temperaments()[index]: its MOS at the range's centre
+  // The temperament search: the enabled temperaments whose name contains `text` (case-insensitive), an exact name
+  // first, at most `limit`; findTemperament chooses the only / exact match, else opens the menu of them (false: none).
+  static std::vector<int32_t> matchTemperaments(std::string_view text, size_t limit = 12);
+  bool findTemperament(std::string_view text);
   // A MOS by its per-period key and generator (as a click in the chart, then the circle's mode and MODMOS).
   bool chooseMos(tuning::MosKey perPeriodKey, double generatorCents, int32_t modeRotation = 0, std::vector<double> modmos = {});
+  void revert();  // the tuning the target had when the wheel opened (one undo step; no-op when unchanged)
 
-  // --- closing ---
-  void apply();   // commits (if changed) and closes
-  void cancel();  // closes without a command
+  // --- closing (what was set stays) ---
+  void apply();   // closes (Done)
+  void cancel();  // closes too (kept for the shortcut handler; there is nothing left to discard)
 
   bool onKey(const ui::KeyEvent& e) override;
   // Dragging the title band moves the popover (T3.x-fix-look, the M3 review's UI §7: at 920 × 580 it covered the very
@@ -93,17 +129,17 @@ public:
   static std::optional<ui::Vec2> rememberedPosition() noexcept;
   static void forgetPosition() noexcept;
 
-  // Called by the overlay when the popover closes for any reason (openMosWheel wires it): commits unless cancelled.
+  // Called by the overlay when the popover closes for any reason (openMosWheel wires it): ends an open drag.
   void closed();
 
 private:
-  void setDraft(doc::TuningDef def);
+  bool setDraft(doc::TuningDef def, MosGesture g);  // applies it to the document (false: refused)
   void onChart(const std::optional<MosSelection>& sel, MosGesture g);
   void onCircle(const std::optional<MosSelection>& sel, std::span<const double> modmos, MosGesture g);
-  void draftFromCircle();
-  void showDraft();  // chart / circle / fields from the draft (no draft change)
+  bool draftFromCircle(MosGesture g);
+  void showDraft();  // chart / circle / fields from the draft (no document change)
   void focusChart();  // zooms the chart to the selected region (± 1.5 region widths)
-  void commit();
+  void syncFooter();  // summary text, Revert enabled
 
   ViewContext& ctx_;
   TuningTarget target_;
@@ -114,12 +150,12 @@ private:
   ui::Label* title_ = nullptr;
   ui::Label* summary_ = nullptr;
   ui::TextEdit* edo_ = nullptr;
-  ui::Dropdown* presets_ = nullptr;
-  std::vector<int32_t> presetIndex_;  // dropdown item (after the placeholder) → temperaments() index
+  ui::TextEdit* search_ = nullptr;   // the temperament search
+  ui::Button* revert_ = nullptr;
+  std::unique_ptr<TuningEdit> edit_;
   bool moving_ = false;               // a title drag in progress
   ui::Vec2 moveGrab_{};               // pointer − top-left at the press (device px)
-  bool done_ = false;                 // committed or cancelled
-  bool cancelled_ = false;
+  bool done_ = false;                 // closed
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);  // false once destroyed (late dialog callbacks)
 };
 
@@ -162,7 +198,7 @@ private:
   void recheck();  // re-resolves now and repaints only if the text or swatch changed
   ViewContext& ctx_;
   std::optional<TuningTarget> target_;
-  ViewContext::Subscription docSub_, viewSub_;
+  ViewContext::Subscription docSub_;
   mutable std::string text_;
   mutable std::string compact_;  // shown when text_ does not fit (compactTuningLabel)
   mutable ui::Rgba swatch_ = 0;

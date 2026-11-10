@@ -33,6 +33,7 @@
 #include "pq/ui/color.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/widget.h"
+#include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/piano_roll/row_model.h"
 #include "pq/views/view_context.h"
 
@@ -336,9 +337,10 @@ public:
   // The pitch a drawn cell gets: a Degree note on its row, or a Cents note on the overlay.
   tuning::PitchId drawnPitch(const DrawnNote& d) const noexcept;
 
-  // Generator morph from the clip box (a MOS clip): every step previews through the context's tuning preview (the
-  // rows and Degree notes follow at frame rate, nothing is dispatched); end(true) commits the result as ONE
-  // SetClipTuning (one undo step), end(false) restores. Past the current MOS region's ends the generator moves into
+  // Generator morph from the clip box (a MOS clip; TU.1): every step is applied to the document inside one store
+  // gesture (TuningEdit: SetClipTuning of the clip's private tuning), so sounding notes retune during the drag and the
+  // rows and Degree notes follow at frame rate (refresh: in place within an interval); end(true) commits the gesture
+  // (ONE undo step), end(false) cancels it (the document as before). Past the current MOS region's ends the generator moves into
   // the adjacent region (tuning::findAdjacentRegion) carrying the mode (transferModeRotation), as the MOS wheel's
   // chart does.
   bool canMorphGenerator() const noexcept;
@@ -479,6 +481,7 @@ private:
   MorphStats morphStats_;
   std::optional<doc::TuningDef> morphBase_;  // the clip's tuning when the generator morph began
   doc::TuningDef morphDef_;
+  std::unique_ptr<TuningEdit> morphEdit_;    // the morph's live edit (TU.1)
   tuning::MosRegionSet morphRegions_;
   double morphRegionsPeriod_ = 0.0;
   int32_t morphRegionsReps_ = 0, morphRegionsMax_ = 0;

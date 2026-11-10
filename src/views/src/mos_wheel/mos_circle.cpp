@@ -18,6 +18,7 @@
 #include "pq/ui/lines.h"
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
+#include "../piano_roll/roll_widgets.h"
 
 namespace pq::views {
 
@@ -31,32 +32,6 @@ constexpr double kPi = std::numbers::pi;
 constexpr double kInf = std::numeric_limits<double>::infinity();
 // Hardness ticks on the slider (and its snap targets): supersoft 4:3 … superhard 4:1.
 constexpr std::array<double, 7> kHardnessTicks = {4.0 / 3.0, 1.5, 5.0 / 3.0, 2.0, 2.5, 3.0, 4.0};
-
-uint32_t hexDigit(char c) noexcept {
-  if (c >= '0' && c <= '9') return static_cast<uint32_t>(c - '0');
-  if (c >= 'a' && c <= 'f') return static_cast<uint32_t>(c - 'a' + 10);
-  if (c >= 'A' && c <= 'F') return static_cast<uint32_t>(c - 'A' + 10);
-  return 0;
-}
-
-// "#rrggbb" or "#rrggbbaa" (the explorer's colour strings).
-Rgba parseColor(std::string_view s) noexcept {
-  auto byte = [&](size_t i) { return hexDigit(s[i]) * 16 + hexDigit(s[i + 1]); };
-  if (s.size() < 7 || s[0] != '#') return rgba(136, 136, 136);
-  return rgba(byte(1), byte(3), byte(5), s.size() >= 9 ? byte(7) : 255u);
-}
-
-// lerpColor / complementaryColor (index.html 3127–3135): per channel, rounded, opaque.
-Rgba lerpHex(Rgba a, Rgba b, double t) noexcept {
-  auto ch = [&](int shift) {
-    const double x = static_cast<double>((a >> shift) & 0xFFu), y = static_cast<double>((b >> shift) & 0xFFu);
-    return static_cast<uint32_t>(std::clamp(std::lround(x + (y - x) * t), 0L, 255L));
-  };
-  return rgba(ch(0), ch(8), ch(16), 255u);
-}
-Rgba complement(Rgba c) noexcept {
-  return rgba(255u - (c & 0xFFu), 255u - ((c >> 8) & 0xFFu), 255u - ((c >> 16) & 0xFFu), 255u);
-}
 
 std::string fmt(const char* f, double v) {
   char buf[48];
@@ -150,7 +125,9 @@ struct MosCircle::Model {
   std::vector<double> basePitches;         // the rotated, altered scale (one period)
   std::vector<double> pitches, steps, alts;  // displayed (repeated over the equave)
   std::vector<int32_t> origDegs;
-  std::vector<Rgba> sliceColour;
+  std::vector<double> classCents;          // step sizes, largest first (0.01-¢ buckets): the roll's step classes
+  std::vector<uint8_t> sliceClass;         // per slice: its index in classCents
+  double ratio = 1.0;                      // L / s (the hardness the class colours blend by)
   std::vector<std::string> sliceLabel, degreeLabel;
   enum Tone : uint8_t { Tonic, Info, ModeName, Modmos };
   struct Part {
@@ -162,21 +139,17 @@ struct MosCircle::Model {
   std::string mosLabel, pattern;
   bool modPattern = false;
   std::string tempName;
-  Rgba tempColour = 0;
   bool hasModmos = false;
   std::string modStepStr;
   std::optional<tu::MosKey> parent, child;
   std::string parentLabel, childLabel;
   bool eqLow = true;
   double u = 0.0;  // hardness position: 0 equalized … 1 collapsed
-  Rgba sliderColour = 0;
   std::vector<double> extra;  // all-intervals overlay (cents), when shown
 };
 
 MosCircle::MosCircle(std::string name, const MosChartConfig& config) : Widget(std::move(name)), config_(config) {
   setFocusable(true);
-  palette_.reserve(tu::kMosPalette.size());
-  for (const char* c : tu::kMosPalette) palette_.push_back(parseColor(c));
   rebuildRegions();
 }
 
@@ -415,55 +388,22 @@ void MosCircle::ensureModel() const {
       m.origDegs.push_back(orig[i]);
     }
 
-  // Step colours (drawMOSCircle): L in the region colour for this hardness, s toward its complement as the scale
-  // hardens, MODMOS step sizes interpolated between their neighbours.
-  Rgba collapsed = palette_[0], equalized = palette_[0];
-  if (region_ >= 0) {
-    const tu::MosRegion& r = regions_.regions[static_cast<size_t>(region_)];
-    collapsed = palette_[r.collapsedColor % palette_.size()];
-    equalized = palette_[r.equalizedColor % palette_.size()];
-  }
-  const double ratio = m.s > 0.01 ? m.L / m.s : 20.0;
-  const double softness = std::clamp(1.0 - (ratio - 1.0) / 2.0, 0.0, 1.0);
-  const Rgba Lc = lerpHex(collapsed, equalized, softness);
-  const Rgba sc = lerpHex(Lc, complement(Lc), 1.0 - softness);
+  // Step classes (TU.1: coloured at paint like the piano roll's scale keys, stepClassColours: L in roll.keyLarge, s
+  // toward roll.keySmall as the scale hardens, MODMOS sizes between them pulled toward roll.keyExtra).
+  m.ratio = m.s > 0.01 ? m.L / m.s : 20.0;
   auto bucket = [](double v) { return std::round(v * 100.0) / 100.0; };
-  std::vector<double> uniq;
+  std::vector<double>& uniq = m.classCents;
   for (double st : m.steps) {
     const double b = bucket(st);
     if (std::find(uniq.begin(), uniq.end(), b) == uniq.end()) uniq.push_back(b);
   }
   std::sort(uniq.begin(), uniq.end(), std::greater<>());
-  const double bL = bucket(m.L), bS = bucket(m.s);
-  std::vector<std::pair<double, Rgba>> colourOf{{bL, Lc}, {bS, sc}};
-  auto known = [&](double b) -> const Rgba* {
-    for (const auto& [k, c] : colourOf)
-      if (k == b) return &c;
-    return nullptr;
-  };
-  for (double st : uniq) {
-    if (st == bL || st == bS) continue;
-    double above = bL, below = bS;
-    for (double v : uniq) {
-      if (v > st && v < above && known(v)) above = v;
-      if (v < st && v > below && known(v)) below = v;
-    }
-    const Rgba ac = known(above) ? *known(above) : Lc, bc = known(below) ? *known(below) : sc;
-    const double range = above - below;
-    const double t = range > 0.01 ? (st - below) / range : 0.5;
-    const Rgba blend = lerpHex(bc, ac, t);
-    const double pr = below > 0.01 ? st / below : 20.0;
-    const double ps = std::clamp(1.0 - (pr - 1.0) / 2.0, 0.0, 1.0);
-    const Rgba distinct = lerpHex(blend, complement(blend), 0.3);
-    colourOf.emplace_back(st, lerpHex(distinct, blend, ps));
-  }
   static constexpr std::string_view kMid = "MNOPQRTUVWXYZABCDEFGHIJKmno";
   for (double st : m.steps) {
     const double b = bucket(st);
-    const Rgba* c = known(b);
-    m.sliceColour.push_back(c ? *c : rgba(0x50, 0xC8, 0x78));
     const auto it = std::find(uniq.begin(), uniq.end(), b);
     const size_t idx = static_cast<size_t>(it - uniq.begin());
+    m.sliceClass.push_back(static_cast<uint8_t>(std::min<size_t>(idx, 255)));
     if (uniq.size() == 1 || idx == 0) m.sliceLabel.emplace_back("L");
     else if (idx + 1 == uniq.size()) m.sliceLabel.emplace_back("s");
     else m.sliceLabel.emplace_back(idx - 1 < kMid.size() ? std::string(1, kMid[idx - 1]) : "m" + std::to_string(idx - 1));
@@ -529,8 +469,6 @@ void MosCircle::ensureModel() const {
     if (!at.empty()) {
       const tu::Temperament& t = tu::temperaments()[static_cast<size_t>(at.front().index)];
       m.tempName = std::string(t.name);
-      const auto col = tu::temperamentColor(t.name);
-      m.tempColour = col ? parseColor(*col) : rgba(0x50, 0xC8, 0x78);
     }
   }
 
@@ -544,7 +482,6 @@ void MosCircle::ensureModel() const {
   m.eqLow = equalizedLow(S);
   const auto [xL, xS] = exactSteps(gen, m.n, m.P, hint);
   m.u = xL > 0.0 ? std::clamp(1.0 - xS / xL, 0.0, 1.0) : 0.0;
-  m.sliderColour = lerpHex(equalized, collapsed, m.u);
 
   // All-intervals overlay: every interval between two notes of the scale that is not a degree of this mode.
   if (showAll_) {
@@ -1069,12 +1006,12 @@ void MosCircle::paint(PaintContext& ctx) {
       const float fillW = eqLow ? thumbX - tr.x0 : tr.x1 - thumbX;
       if (fillW > px1) {
         const Rect f = eqLow ? Rect{tr.x0, tr.y0, thumbX, tr.y1} : Rect{thumbX, tr.y0, tr.x1, tr.y1};
-        dl.addRoundedRectFilled(f, rr, setAlpha(m.sliderColour, 0.4f));
+        dl.addRoundedRectFilled(f, rr, thp->control.value);
       }
       // Notches at the named hardnesses (4:3 … 4:1), the slider's snap targets.
       for (double t : kHardnessTicks) dl.addVLine(sliderXOfHardness(t), tr.y0 + s.pxf(4.0f), tr.y1 - s.pxf(4.0f), setAlpha(T.dimText, 0.7f), 1.0f);
       const Vec2 tc{thumbX, (tr.y0 + tr.y1) / 2.0f};
-      dl.addCircleFilled(tc, rr + s.exact(2.0f), m.sliderColour);
+      dl.addCircleFilled(tc, rr + s.exact(2.0f), thp->control.thumb);
       dl.addCircleStroke(tc, rr + s.exact(2.0f), T.sliderThumbEdge, s.exact(1.5f));
     }
   }
@@ -1107,6 +1044,13 @@ void MosCircle::paint(PaintContext& ctx) {
   }
   const size_t N = m.pitches.size();
   const bool mdrag = drag_ == Drag::Modmos;
+  {
+    std::vector<roll::StepClass>& cls = classScratch_;
+    cls.clear();
+    for (double c : m.classCents) cls.push_back({c});
+    roll::stepClassColours(*thp, cls, m.ratio, classColours_);
+    if (classColours_.empty()) classColours_.push_back(thp->roll.keyLarge);
+  }
 
   // --- step slices ---
   {
@@ -1114,7 +1058,7 @@ void MosCircle::paint(PaintContext& ctx) {
     std::vector<Vec2>& pts = scratchPts_;
     for (size_t i = 0; i < N; ++i) {
       const double a1 = ang(m.pitches[i]), a2 = ang(m.pitches[i] + m.steps[i]);
-      const Rgba col = m.sliceColour[i];
+      const Rgba col = classColours_[std::min<size_t>(m.sliceClass[i], classColours_.size() - 1)];
       const double sweep = a2 - a1;
       if (sweep > 1e-6) {
         // Convex pieces of ≤ 90°: the centre plus the arc points.
@@ -1270,7 +1214,7 @@ void MosCircle::paint(PaintContext& ctx) {
   }
 
   // --- centre: temperament name, MODMOS steps, reset ---
-  if (!m.tempName.empty()) centred(fStrong, m.tempName, C.x, C.y - rad * 0.15f, m.tempColour);
+  if (!m.tempName.empty()) centred(fStrong, m.tempName, C.x, C.y - rad * 0.15f, T.info);
   if (m.hasModmos) {
     if (text) {
       const TextRun run = ts->shapeTruncated(fSmall, m.modStepStr, static_cast<int32_t>(rad * 1.5f));

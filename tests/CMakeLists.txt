@@ -143,6 +143,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_live_input.cpp  # T6.4: live MIDI input (live == drawn bit for bit in Keys / Hz across tunings, routes, keyboard, MIDI service)
     app/test_metronome_link.cpp  # T6.6: Track Delay ±480 through the link, a delay edit compiles nothing, metronome settings, Record counts in
     app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
+    app/test_tuning_live.cpp  # TU.1: live retune by real dispatch (panel / wheel drags: the held note at every step, 0 compiles; EDO steps; T6.4b bend)
     app/test_eq_link.cpp  # EQ.4b: the EQ displays in the app wiring (the curve after the circuit opens / closes the EQ; the link's lowering)
     app/test_drop_playback.cpp  # T5.7: a dropped file plays at once (the hover preloads it into the pool)
     app/test_clip_export.cpp  # T5.12: clips rendered for drag-out (== the solo render, WAV files; 60-s clip in perf)

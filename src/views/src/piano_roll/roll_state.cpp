@@ -65,7 +65,7 @@ bool RollState::refresh() {
       const int32_t i = doc::findClipIndex(t, ref_.clip);
       if (i >= 0) {
         c = t.clips[static_cast<size_t>(i)].clip;
-        def = ctx.previewedTuning(*cur, *path, c.get(), ref_.clip);  // the MOS wheel preview (T3.14)
+        def = doc::effectiveTuning(*cur, *path, c.get());
       }
     }
   }
@@ -305,14 +305,15 @@ bool RollState::morphInPlace(const doc::TuningDef& def) {
 
 bool RollState::canMorphGenerator() const noexcept {
   return clip_ != nullptr && tuningValid_ && tuningDef_.mos() != nullptr && tuningDef_.mos()->genSequence.empty() &&
-         tuningDef_.mos()->n >= 2 && (morphBase_.has_value() || !ctx.tuningPreview().has_value());
+         tuningDef_.mos()->n >= 2;
 }
 
 void RollState::beginGeneratorMorph() {
   if (morphBase_ || !canMorphGenerator()) return;
-  // The document's tuning (not a preview): what end(false) restores and end(true) compares with.
+  // The document's tuning when the drag began: what end(true) compares with.
   morphBase_ = tuningDef_;
   morphDef_ = tuningDef_;
+  morphEdit_ = std::make_unique<TuningEdit>(ctx, TuningTarget::forClip(ref_));
   const tuning::MosParams& m = *morphDef_.mos();
   const int32_t maxSize = std::max(18, m.n);  // the chart's default size range, or more for a larger MOS
   if (morphRegionsPeriod_ != m.period || morphRegionsReps_ != m.periodsPerEquave || morphRegionsMax_ != maxSize) {
@@ -374,18 +375,16 @@ void RollState::morphGenerator(double g) {
   }
   if (gen == m.generator && morphDef_ == tuningDef_) return;
   m.generator = gen;
-  ctx.setTuningPreview(TuningTarget::forClip(ref_), morphDef_);  // → kTuningPreview → refresh(): the rows follow
+  // TU.1: applied at once (the document event → refresh(): the rows follow; the link retunes sounding notes).
+  if (morphEdit_) (void)morphEdit_->apply(morphDef_, MosGesture::Live, "Change Generator");
 }
 
 void RollState::endGeneratorMorph(bool commit) {
   if (!morphBase_) return;
-  const doc::TuningDef base = std::move(*morphBase_);
   morphBase_.reset();
-  if (ctx.tuningPreview()) ctx.clearTuningPreview();
-  if (commit && !(morphDef_ == base) && clip_) {
-    if (Status s = ctx.store().dispatch(tuningCommand(TuningTarget::forClip(ref_), morphDef_)); !s)
-      ctx.setStatus("Generator: " + s.error().message);
-  }
+  std::unique_ptr<TuningEdit> edit = std::move(morphEdit_);
+  if (edit && commit) edit->finish();  // one undo step (none when nothing moved)
+  else if (edit) edit->cancel();
   (void)refresh();
   markAllDirty();
 }

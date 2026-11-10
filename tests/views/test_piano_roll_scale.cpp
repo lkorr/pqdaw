@@ -319,7 +319,7 @@ TEST_CASE("clip view: background EDO — Up on a Cents note steps on its lines; 
   (void)a;
 }
 
-TEST_CASE("clip view: generator morph across region boundaries keeps Degree notes on their rows; one undo step") {
+TEST_CASE("clip view: generator morph across region boundaries keeps Degree notes on their rows; live, one undo step") {
   Roll r("pianoroll-5L2s");
   const doc::NoteClip* before = &r.clip();
   const size_t h0 = r.history();
@@ -332,8 +332,11 @@ TEST_CASE("clip view: generator morph across region boundaries keeps Degree note
   for (double g = 1200.0 * 18 / 31; g <= 724.0; g += 0.37) {
     r.view->morphGenerator(g);
     r.d.step();
-    CHECK(r.history() == h0);              // nothing dispatched while dragging
-    CHECK(&r.clip() == before);            // the clip itself is untouched (the preview is view state)
+    CHECK(r.history() == h0);              // inside one store gesture: no undo step yet
+    CHECK(r.ctx.store().inGesture());
+    REQUIRE(r.clip().tuning.privateDef != nullptr);  // TU.1: in the document at once (sounding notes retune)
+    const tuning::MosParams* live = r.clip().tuning.privateDef->mos();
+    CHECK((live->n != 7 || std::fabs(live->generator - std::min(g, 1200.0 * 3 / 5)) < 1e-9));
     CHECK(r.checkDegreeNotesOnRows() > 0);  // every visible Degree note sits on its row, every frame
     sizeAfter = r.view->rows().degreesPerEquave();
     ++frames;
@@ -345,7 +348,8 @@ TEST_CASE("clip view: generator morph across region boundaries keeps Degree note
   CHECK(r.view->morphRebuilds() - reb0 < 10u);
   r.view->endGeneratorMorph(true);
   CHECK(r.history() == h0 + 1);                            // one undo step
-  CHECK_FALSE(r.ctx.tuningPreview().has_value());
+  CHECK_FALSE(r.ctx.store().inGesture());
+  CHECK(&r.clip() != before);
   const doc::NoteClip& committed = r.clip();
   REQUIRE(committed.tuning.mode == doc::TuningMode::Private);
   const tuning::MosParams* mp = committed.tuning.privateDef->mos();
@@ -369,19 +373,20 @@ TEST_CASE("clip view: generator morph across region boundaries keeps Degree note
     r.d.step();
     CHECK(r.checkDegreeNotesOnRows() > 0);
   }
-  REQUIRE(r.ctx.tuningPreview().has_value());
-  const tuning::MosParams* pm = r.ctx.tuningPreview()->def.mos();
+  REQUIRE(r.clip().tuning.privateDef != nullptr);
+  const tuning::MosParams* pm = r.clip().tuning.privateDef->mos();
   REQUIRE(pm != nullptr);
   CHECK(pm->n == 7);
   CHECK(pm->generator < 685.0);
   CHECK(pm->region->highCents == doctest::Approx(1200.0 * 4 / 7));
   r.view->endGeneratorMorph(false);
   CHECK(r.history() == h0);
-  CHECK_FALSE(r.ctx.tuningPreview().has_value());
+  CHECK_FALSE(r.ctx.store().inGesture());
+  CHECK(&r.clip() == before);  // the gesture was cancelled: the document as before the drag
   CHECK(r.view->rows().rowOfDegree(4)->cents == doctest::Approx(1200.0 * 18 / 31));
 }
 
-TEST_CASE("clip view: the clip box Generator box morphs on a drag and commits on release (one undo step)") {
+TEST_CASE("clip view: the clip box Generator box applies every drag step live and records one undo step on release") {
   Roll r("pianoroll-5L2s");
   const size_t h0 = r.history();
   const char* path = "main/body/bottom/detail/clip/clip-view/clip-box/generator-row/generator";
@@ -392,14 +397,15 @@ TEST_CASE("clip view: the clip box Generator box morphs on a drag and commits on
   for (int i = 1; i <= 10; ++i) {
     r.d.move({c.x, c.y - 4.0f * static_cast<float>(i)});
     CHECK(r.history() == h0);
+    REQUIRE(r.clip().tuning.privateDef != nullptr);  // TU.1: each step is in the document
+    CHECK(r.clip().tuning.privateDef->mos()->generator == doctest::Approx(1200.0 * 18 / 31 + 2.0 * i).epsilon(1e-6));
   }
-  REQUIRE(r.ctx.tuningPreview().has_value());
-  const double g = r.ctx.tuningPreview()->def.mos()->generator;
+  const double g = r.clip().tuning.privateDef->mos()->generator;
   CHECK(g == doctest::Approx(1200.0 * 18 / 31 + 20.0).epsilon(1e-6));  // 40 px × 0.5 ¢
   CHECK(r.view->rows().rowOfDegree(4)->cents == doctest::Approx(g));
   r.d.up({c.x, c.y - 40.0f});
   CHECK(r.history() == h0 + 1);
-  CHECK_FALSE(r.ctx.tuningPreview().has_value());
+  CHECK_FALSE(r.ctx.store().inGesture());
   CHECK(r.clip().tuning.privateDef->mos()->generator == doctest::Approx(g));
 }
 
@@ -411,14 +417,14 @@ TEST_CASE("clip view: Generator box: Esc cancels the drag, Delete restores the c
   const doc::Snapshot before = r.ctx.doc();
   const size_t h0 = r.history();
   const double g0 = gen->value();
-  // 1. Esc mid-drag: the preview goes, the document and history are unchanged, the box shows the old value.
+  // 1. Esc mid-drag: the drag's live edits are undone (the gesture cancelled), history unchanged, the old value shown.
   const Vec2 c = r.d.center(path);
   r.d.move(c);
   r.d.down(c);
   for (int i = 1; i <= 6; ++i) r.d.move({c.x, c.y - 5.0f * static_cast<float>(i)});
-  REQUIRE(r.ctx.tuningPreview().has_value());
+  CHECK(r.ctx.doc() != before);  // live
   CHECK(r.d.press("Escape") == KeyResult::Widget);
-  CHECK_FALSE(r.ctx.tuningPreview().has_value());
+  CHECK(r.ctx.doc() == before);
   r.d.move({c.x, c.y - 60.0f});  // the rest of the press does nothing
   r.d.up({c.x, c.y - 60.0f});
   CHECK(r.ctx.doc() == before);

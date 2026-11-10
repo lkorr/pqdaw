@@ -4,10 +4,11 @@
 //   L/s = r within 1e-6 (2.0 in 5L 2s is exactly 7\12; the slider snaps to its 2:1 notch) on direct, mirror and
 //   multi-period regions; the parent / child arrows name tuning::findParentMos / tuning::childMoses (the child whose
 //   region holds the generator) and navigate there; the MODMOS dot drag snaps to whole chromas, Esc cancels.
-//   Popover (through the real shell): the clip box's tuning chip opens it for the clip; a chart drag previews the tuning
-//   in the piano roll without touching the document; Apply / Enter / a press outside commits one command (one undo
-//   step) that changes only that clip; Esc cancels with no history entry; EDO entry, Scala file (scripted dialog),
-//   temperament presets, track and main-tuning targets; Ctrl+Shift+W.
+//   Popover (through the real shell; TU.1): the clip box's tuning chip opens it for the clip; every change is in the
+//   document at once (a chart drag step by step inside one store gesture: one undo step per drag, Esc restores where
+//   it started), changing only that clip; Revert; Esc / Enter / a press outside close; EDO entry, Scala file
+//   (scripted dialog), the temperament search; a main tuning's generator drag is Param-only SetTuningParam steps;
+//   track targets; Ctrl+Shift+W.
 //   Goldens: mos-circle-5L2s, mos-circle-modmos, mos-wheel-popover.
 
 #include <doctest/doctest.h>
@@ -369,7 +370,7 @@ struct Wheel {
 
 }  // namespace
 
-TEST_CASE("mos wheel: the clip box chip opens the wheel; a chart drag previews in the roll; Apply commits only that clip") {
+TEST_CASE("mos wheel: the clip box chip opens the wheel; a chart drag retunes the clip live, one undo step per drag") {
   Wheel w;
   CHECK(w.view().rows().degreesPerEquave() == 12);
   auto* chip = dynamic_cast<TuningChip*>(w.d.find("main/body/bottom/detail/clip/clip-view/clip-box/tuning"));
@@ -383,12 +384,19 @@ TEST_CASE("mos wheel: the clip box chip opens the wheel; a chart drag previews i
   const doc::NoteClip* a2Before = w.clip(w.a2);
   const doc::NoteClip* b1Before = w.clip(w.b1);
 
-  // Choose 5L 2s, then drag the generator in the chart: every Live frame previews, nothing is committed.
+  // Choosing 5L 2s applies at once (one undo step), only to A1.
   REQUIRE(p.chooseMos({5, 2}, 696.0));
   w.d.step();
-  CHECK(w.ctx.tuningPreview().has_value());
+  CHECK(w.history() == h0 + 1);
+  REQUIRE(w.tuningOf(w.a1)->mos() != nullptr);
+  CHECK(w.clip(w.a1)->tuning.mode == doc::TuningMode::Private);
+  CHECK(w.clip(w.a2) == a2Before);  // pointer-equal: untouched
+  CHECK(w.clip(w.b1) == b1Before);
   CHECK(w.view().rows().degreesPerEquave() == 7);
   CHECK(chip->text().find("5L 2s") == 0);
+
+  // A chart drag (real pointer events): every step is in the document while the button is down — what the playback
+  // link retunes sounding notes from — inside one store gesture; the release records one undo step.
   MosChart& chart = p.chart();
   const IRect ax = chart.axisRect();
   const float y = static_cast<float>(ax.y) + ax.h / 2.0f;
@@ -396,92 +404,85 @@ TEST_CASE("mos wheel: the clip box chip opens the wheel; a chart drag previews i
   for (const double c : {700.5, 704.0, 708.0}) {
     w.d.move({chart.xOfCents(c), y}, mod::kAlt);
     w.d.step();
-    REQUIRE(w.ctx.tuningPreview().has_value());
-    const tu::MosParams* m = w.ctx.tuningPreview()->def.mos();
+    const tu::MosParams* m = w.tuningOf(w.a1)->mos();
     REQUIRE(m != nullptr);
     CHECK(std::fabs(m->generator - c) < 0.5);
-    CHECK(w.ctx.doc() == before);  // the document is untouched while dragging
-    CHECK(w.history() == h0);
+    CHECK(w.ctx.store().inGesture());
+    CHECK(w.history() == h0 + 1);
+    CHECK(w.view().rows().degreesPerEquave() == 7);
   }
   w.d.up({chart.xOfCents(708.0), y}, PointerButton::Left, mod::kAlt);
-  CHECK(w.ctx.doc() == before);
-  CHECK(w.history() == h0);
-  const doc::TuningDef draft = p.draft();
-  REQUIRE(draft.mos() != nullptr);
+  CHECK_FALSE(w.ctx.store().inGesture());
+  CHECK(w.history() == h0 + 2);
+  CHECK(*w.tuningOf(w.a1) == p.draft());
+  CHECK(w.clip(w.a2) == a2Before);
 
-  // Apply: one command, one undo step, only A1 changes.
-  w.d.click(w.d.center("overlay/mos-wheel/footer/apply"));
+  // Done closes and keeps it; undo steps back one drag, then the choice.
+  w.d.click(w.d.center("overlay/mos-wheel/footer/done"));
   w.d.step();
   CHECK(w.popover() == nullptr);
-  CHECK_FALSE(w.ctx.tuningPreview().has_value());
-  CHECK(w.history() == h0 + 1);
-  REQUIRE(w.tuningOf(w.a1) != nullptr);
-  CHECK(*w.tuningOf(w.a1) == draft);
-  CHECK(w.clip(w.a1)->tuning.mode == doc::TuningMode::Private);
-  CHECK(w.clip(w.a2) == a2Before);  // pointer-equal: untouched
-  CHECK(w.clip(w.b1) == b1Before);
-  CHECK(w.tuningOf(w.a2)->edo() != nullptr);
-  CHECK(w.view().rows().degreesPerEquave() == 7);
+  CHECK(w.history() == h0 + 2);
+  REQUIRE(w.ctx.undo());
+  CHECK(w.tuningOf(w.a1)->mos()->generator == 696.0);
   REQUIRE(w.ctx.undo());
   CHECK(w.ctx.doc() == before);
   CHECK(w.view().rows().degreesPerEquave() == 12);
 }
 
-TEST_CASE("mos wheel: Esc cancels with no history entry; Enter and a press outside commit") {
+TEST_CASE("mos wheel: Esc during a drag restores where it started; Revert; Esc, Enter and a press outside close") {
   Wheel w;
   const doc::Snapshot before = w.ctx.doc();
   const size_t h0 = w.history();
   {
+    // Esc during a circle (hardness) drag cancels the drag's gesture: the document is as before the press.
     MosWheelPopover& p = w.openFromChip();
     REQUIRE(p.chooseMos({5, 2}, 696.0));
-    REQUIRE(p.circle().setHardness(2.5));
-    CHECK(p.changed());
-    w.d.press("Escape");
-    w.d.step();
-    CHECK(w.popover() == nullptr);
-    CHECK(w.ctx.doc() == before);
-    CHECK(w.history() == h0);
-    CHECK_FALSE(w.ctx.tuningPreview().has_value());
-    CHECK(w.view().rows().degreesPerEquave() == 12);
-  }
-  {
-    // Esc during a circle drag cancels only the drag; the popover stays.
-    MosWheelPopover& p = w.openFromChip();
-    REQUIRE(p.chooseMos({5, 2}, 696.0));
+    const doc::Snapshot chosen = w.ctx.doc();
     const IRect sl = p.circle().geometry().slider;
     const float y = static_cast<float>(sl.y) + sl.h / 2.0f;
     w.d.down({static_cast<float>(sl.x) + 2.0f, y});
     w.d.move({static_cast<float>(sl.x) + sl.w * 0.8f, y});
+    w.d.step();
+    CHECK(w.tuningOf(w.a1)->mos()->generator != 696.0);  // live
     w.d.press("Escape");
     w.d.up({static_cast<float>(sl.x) + sl.w * 0.8f, y});
     w.d.step();
     REQUIRE(w.popover() == &p);
-    REQUIRE(p.draft().mos() != nullptr);
+    CHECK(w.ctx.doc() == chosen);
     CHECK(p.draft().mos()->generator == 696.0);
-    w.d.press("Return");  // Enter commits
-    w.d.step();
-    CHECK(w.popover() == nullptr);
     CHECK(w.history() == h0 + 1);
-    CHECK(w.tuningOf(w.a1)->mos() != nullptr);
-  }
-  {
-    // A press outside keeps what was set (one more undo step); opening without changing anything commits nothing.
-    MosWheelPopover& p = w.openFromChip();
-    REQUIRE(p.chooseEdo(31));
-    w.d.click({40.0f, 880.0f});
+    // Revert: the tuning it had when the wheel opened, one more step.
+    CHECK(p.changed());
+    w.d.click(w.d.center("overlay/mos-wheel/footer/revert"));
+    w.d.step();
+    CHECK(w.tuningOf(w.a1)->edo() != nullptr);
+    CHECK_FALSE(p.changed());
+    CHECK(w.history() == h0 + 2);
+    w.d.press("Escape");  // Esc closes; nothing is discarded (there is no draft)
     w.d.step();
     CHECK(w.popover() == nullptr);
     CHECK(w.history() == h0 + 2);
-    REQUIRE(w.tuningOf(w.a1)->edo() != nullptr);
+  }
+  {
+    MosWheelPopover& p = w.openFromChip();
+    REQUIRE(p.chooseEdo(31));
+    w.d.press("Return");
+    w.d.step();
+    CHECK(w.popover() == nullptr);
+    CHECK(w.history() == h0 + 3);
     CHECK(w.tuningOf(w.a1)->edo()->n() == 31u);
+    // Opening and closing without a change records nothing; a press outside closes.
     (void)w.openFromChip();
     w.d.click({40.0f, 880.0f});
     w.d.step();
-    CHECK(w.history() == h0 + 2);
+    CHECK(w.popover() == nullptr);
+    CHECK(w.history() == h0 + 3);
   }
+  while (w.history() > h0) REQUIRE(w.ctx.undo());
+  CHECK(w.ctx.doc() == before);
 }
 
-TEST_CASE("mos wheel: EDO entry, Scala file, temperament presets") {
+TEST_CASE("mos wheel: EDO entry, Scala file, the temperament search (no dropdown)") {
   Wheel w;
   const size_t h0 = w.history();
   SUBCASE("EDO typed into the field") {
@@ -492,10 +493,9 @@ TEST_CASE("mos wheel: EDO entry, Scala file, temperament presets") {
     w.d.press("Return");
     REQUIRE(p.draft().edo() != nullptr);
     CHECK(p.draft().edo()->n() == 22u);
-    CHECK(w.view().rows().degreesPerEquave() == 22);
-    w.d.click(w.d.center("overlay/mos-wheel/footer/apply"));
-    CHECK(w.history() == h0 + 1);
+    CHECK(w.history() == h0 + 1);  // applied at once
     CHECK(w.tuningOf(w.a1)->edo()->n() == 22u);
+    CHECK(w.view().rows().degreesPerEquave() == 22);
   }
   SUBCASE("Scala file through the file dialog") {
     w.dialogs.scalaPath = std::string(PQ_TEST_DATA_DIR) + "/tuning/fixtures/scl/bp_just.scl";
@@ -505,73 +505,116 @@ TEST_CASE("mos wheel: EDO entry, Scala file, temperament presets") {
     REQUIRE(p.draft().scale() != nullptr);
     CHECK(p.draft().scale()->scale.pitches.size() == 13u);
     CHECK(p.draft().referenceHz == p.original().referenceHz);
-    w.d.click(w.d.center("overlay/mos-wheel/footer/apply"));
     CHECK(w.history() == h0 + 1);
     CHECK(w.tuningOf(w.a1)->scale() != nullptr);
     // A missing file changes nothing and says so.
-    MosWheelPopover& q = w.openFromChip();
-    const doc::TuningDef d0 = q.draft();
-    CHECK_FALSE(q.chooseScalaFile("no/such/file.scl").ok());
-    CHECK(q.draft() == d0);
+    const doc::TuningDef d0 = p.draft();
+    CHECK_FALSE(p.chooseScalaFile("no/such/file.scl").ok());
+    CHECK(p.draft() == d0);
+    CHECK(w.history() == h0 + 1);
     w.d.press("Escape");
   }
-  SUBCASE("temperament presets select their MOS at the middle of the range") {
+  SUBCASE("temperaments: typed and found; several matches open a short menu; every preset still reachable") {
+    CHECK(w.d.find("overlay/mos-wheel/header/presets") == nullptr);  // the 80-item dropdown is gone
     MosWheelPopover& p = w.openFromChip();
     const auto temps = tu::temperaments();
     int32_t meantone = -1;
     for (size_t i = 0; i < temps.size(); ++i)
       if (temps[i].name == "Meantone") meantone = static_cast<int32_t>(i);
     REQUIRE(meantone >= 0);
-    REQUIRE(p.chooseTemperament(meantone));
+    // Typed (real key events): an exact name is chosen at once.
+    w.d.click(w.d.center("overlay/mos-wheel/header/temperament"));
+    w.d.type("meantone");
+    w.d.press("Return");
+    w.d.step();
     const tu::MosParams* m = p.draft().mos();
     REQUIRE(m != nullptr);
     CHECK(m->n == 7);
     CHECK(m->generator == doctest::Approx((temps[static_cast<size_t>(meantone)].genLow + temps[static_cast<size_t>(meantone)].genHigh) / 2.0));
     REQUIRE(p.chart().selection().has_value());
     CHECK(p.chart().selection()->key == tu::MosKey{5, 2});
-    // Every enabled preset with a 1200-cent period finds a MOS in the chart (or reports why) without throwing state off.
+    CHECK(w.history() == h0 + 1);
+    CHECK(*w.tuningOf(w.a1) == p.draft());
+    // Matching: case-insensitive, exact first, then prefixes, then the rest; a few letters give a short list.
+    const std::vector<int32_t> mean = MosWheelPopover::matchTemperaments("MEAN");
+    REQUIRE_FALSE(mean.empty());
+    CHECK(std::find(mean.begin(), mean.end(), meantone) != mean.end());
+    CHECK(MosWheelPopover::matchTemperaments("e").size() <= 12u);
+    CHECK(MosWheelPopover::matchTemperaments("zzzz").empty());
+    // Several matches: a menu of them over the wheel; choosing one applies it.
+    ui::OverlayLayer& layer = w.shell->overlay();
+    const std::vector<int32_t> several = MosWheelPopover::matchTemperaments("a");
+    REQUIRE(several.size() > 1);
+    REQUIRE(p.findTemperament("a"));
+    w.d.step();
+    auto* menu = dynamic_cast<ui::Menu*>(layer.top());
+    REQUIRE(menu != nullptr);
+    CHECK(menu->items().size() == several.size());
+    menu->choose(0);
+    w.d.step();
+    CHECK(w.popover() == &p);
+    CHECK(p.chart().selection().has_value());
+    // Every enabled preset is still reachable by name.
     int found = 0;
     for (size_t i = 0; i < temps.size(); ++i)
       if (!temps[i].disabled && p.chooseTemperament(static_cast<int32_t>(i))) ++found;
     CHECK(found > 10);
     w.d.press("Escape");
-    CHECK(w.history() == h0);
   }
 }
 
-TEST_CASE("mos wheel: track and main-tuning targets, the preview follows inheritance, Ctrl+Shift+W") {
+TEST_CASE("mos wheel: a main tuning's generator drag is param writes (no Structural change); track targets; Ctrl+Shift+W") {
   Wheel w;
   const size_t h0 = w.history();
   SUBCASE("track") {
     MosWheelPopover* p = openMosWheel(w.shell->overlay(), w.ctx, TuningTarget::forTrack(w.trackA));
     REQUIRE(p != nullptr);
     REQUIRE(p->chooseMos({5, 2}, 696.0));
-    // A1 and A2 inherit from track A: both preview; B1 does not.
-    const doc::Project& pr = *w.ctx.doc();
-    auto previewed = [&](const doc::ClipRef& r) {
-      const auto path = doc::findTrack(pr, r.track);
-      return w.ctx.previewedTuning(pr, *path, w.clip(r), r.clip);
-    };
-    CHECK(previewed(w.a1)->mos() != nullptr);
-    CHECK(previewed(w.a2)->mos() != nullptr);
-    CHECK(previewed(w.b1)->edo() != nullptr);
+    CHECK(w.history() == h0 + 1);
+    CHECK(doc::findTrackPtr(*w.ctx.doc(), w.trackA)->tuning.mode == doc::TuningMode::Private);
+    CHECK(w.tuningOf(w.a2)->mos() != nullptr);  // A1 and A2 inherit from track A
+    CHECK(w.tuningOf(w.b1)->edo() != nullptr);
     p->apply();
     w.d.step();
     CHECK(w.history() == h0 + 1);
-    CHECK(doc::findTrackPtr(*w.ctx.doc(), w.trackA)->tuning.mode == doc::TuningMode::Private);
-    CHECK(w.tuningOf(w.a2)->mos() != nullptr);
-    CHECK(w.tuningOf(w.b1)->edo() != nullptr);
   }
   SUBCASE("main tuning") {
     const doc::TuningId main = w.ctx.doc()->tunings->front()->id;
     MosWheelPopover* p = openMosWheel(w.shell->overlay(), w.ctx, TuningTarget::forMain(main));
     REQUIRE(p != nullptr);
     CHECK(p->chooseEdo(19));
-    p->apply();
-    w.d.step();
     CHECK(w.history() == h0 + 1);
-    CHECK(w.ctx.doc()->tunings->front()->def.edo()->n() == 19u);
     CHECK(w.tuningOf(w.b1)->edo()->n() == 19u);  // everything inheriting the main tuning
+    REQUIRE(p->chooseMos({5, 2}, 696.0));
+    CHECK(w.history() == h0 + 2);
+    // Drag the generator: every step is ONE Param-only change of MosGenerator (SetTuningParam: the playback link
+    // writes the tuning node's param, no recompile, tests/app/test_tuning_live.cpp); one undo step at the release.
+    std::vector<doc::ChangeSet> changes;
+    auto sub = w.ctx.subscribe([&](const doc::StoreEvent& e) {
+      if (e.kind != doc::StoreEventKind::GestureCommit) changes.push_back(e.changes);
+    });
+    w.d.tree().layoutNow();
+    MosChart& chart = p->chart();
+    const IRect ax = chart.axisRect();
+    const float y = static_cast<float>(ax.y) + ax.h / 2.0f;
+    w.d.down({chart.xOfCents(696.0), y});
+    int steps = 0;
+    for (double c = 697.0; c <= 712.0; c += 1.5) {
+      w.d.move({chart.xOfCents(c), y}, mod::kAlt);
+      w.d.step();
+      ++steps;
+      CHECK(std::fabs(w.ctx.doc()->tunings->front()->def.mos()->generator - c) < 0.3);
+    }
+    w.d.up({chart.xOfCents(712.0), y}, PointerButton::Left, mod::kAlt);
+    REQUIRE(changes.size() >= static_cast<size_t>(steps));
+    for (const doc::ChangeSet& c : changes) {
+      CHECK(c.paramOnly());
+      CHECK_FALSE(c.structural());
+      REQUIRE(c.params.size() == 1u);
+      CHECK(c.params.front().kind == doc::ParamKind::MosGenerator);
+    }
+    CHECK(w.history() == h0 + 3);
+    p->apply();
   }
   SUBCASE("Ctrl+Shift+W toggles the wheel for the clip in the clip view") {
     w.d.press("Ctrl+Shift+W");

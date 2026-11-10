@@ -3,6 +3,7 @@
 #include "pq/views/mos_wheel/mos_wheel.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -132,11 +133,81 @@ TuningTarget defaultTuningTarget(const ViewContext& ctx) {
   return TuningTarget::forMain(p.tunings->empty() ? doc::TuningId{} : p.tunings->front()->id);
 }
 
+// --- live edits (TU.1) ---------------------------------------------------------------------------------------------
+
+namespace {
+
+// For a main tuning: the generator `def` differs from `current` by, when nothing else changes but what
+// SetTuningParam(MosGenerator) changes with it (the mode, carried by transferModeRotation) and a region hint that is
+// not needed (the generator is not at an end of the hint's region, where only the hint decides the degenerate side).
+std::optional<double> generatorOnly(const doc::TuningDef& current, const doc::TuningDef& def) {
+  const tu::MosParams* a = current.mos();
+  const tu::MosParams* b = def.mos();
+  if (!a || !b || current.referenceHz != def.referenceHz || a->generator == b->generator) return std::nullopt;
+  doc::TuningDef c = current;
+  tu::MosParams& m = std::get<tu::MosParams>(c.system);
+  if (m.n > 1 && m.genSequence.empty())
+    m.rotation = tu::transferModeRotation(m.generator, m.n, m.rotation, b->generator, m.n, m.period, m.region ? &*m.region : nullptr);
+  m.generator = b->generator;
+  if (b->region) {
+    constexpr double kEdge = 1e-6;  // buildMOSScale's degenerate window is 1e-6/q ¢: at an end of the hint's region
+    if (std::fabs(b->generator - b->region->lowCents) < kEdge || std::fabs(b->generator - b->region->highCents) < kEdge)
+      return std::nullopt;
+  }
+  m.region = b->region;
+  if (c == def) return b->generator;
+  m.region = a->region;
+  if (c == def) return b->generator;
+  return std::nullopt;
+}
+
+}  // namespace
+
+doc::Command TuningEdit::command(const doc::TuningDef& current, const doc::TuningDef& def) const {
+  if (target_.kind == TuningTarget::Kind::Main)
+    if (const std::optional<double> g = generatorOnly(current, def)) return doc::SetTuningParam{target_.main, doc::ParamKind::MosGenerator, *g};
+  return tuningCommand(target_, def);
+}
+
+Status TuningEdit::apply(const doc::TuningDef& def, MosGesture g, std::string_view label) {
+  doc::DocumentStore& st = ctx_.store();
+  if (g == MosGesture::Cancel) {
+    cancel();
+    return Ok{};
+  }
+  const doc::TuningDef* cur = targetTuning(*ctx_.doc(), target_);
+  if (!cur) {
+    finish();
+    ctx_.setStatus("Tuning: the clip or track no longer exists");
+    return Error{ErrorCode::NotFound, "tuning target not found", {}};
+  }
+  if (g == MosGesture::Live && !gesture_ && !st.inGesture()) gesture_ = st.beginGesture(std::string(label)).ok();
+  Status s = Ok{};
+  if (!(*cur == def)) s = st.dispatch(command(*cur, def));
+  if (!s) ctx_.setStatus("Tuning: " + s.error().message);
+  if (g == MosGesture::Commit) finish();
+  return s;
+}
+
+void TuningEdit::cancel() {
+  if (!gesture_) return;
+  gesture_ = false;
+  if (ctx_.store().inGesture()) (void)ctx_.store().cancelGesture();
+}
+
+void TuningEdit::finish() {
+  if (!gesture_) return;
+  gesture_ = false;
+  if (ctx_.store().inGesture()) (void)ctx_.store().commitGesture();
+}
+
 // --- popover -------------------------------------------------------------------------------------------------------
 
 MosWheelPopover::MosWheelPopover(ViewContext& ctx, const TuningTarget& target)
-    : Popover("mos-wheel"), ctx_(ctx), target_(target) {
+    : Popover("mos-wheel"), ctx_(ctx), target_(target), edit_(std::make_unique<TuningEdit>(ctx, target)) {
   setSize(Length::fixed(kWidth), Length::fixed(kHeight));
+  setPadding({12, 8, 12, 10});
+  setGap(8);
   if (const doc::TuningDef* d = targetTuning(*ctx_.doc(), target_)) original_ = *d;
   draft_ = original_;
 
@@ -147,44 +218,43 @@ MosWheelPopover::MosWheelPopover(ViewContext& ctx, const TuningTarget& target)
     cfg.octaveStretch = m->octaveStretch;
   }
 
-  // Header: title, EDO entry, Scala, temperament presets.
+  // Header: title, EDO entry, Scala, the temperament search.
   auto& header = add<Widget>("header");
   header.setLayout(LayoutKind::Row);
-  header.setHeight(Length::fixed(22));
+  header.setHeight(Length::fixed(24));
   header.setGap(6);
-  title_ = &header.add<Label>("title", "Tuning \xC2\xB7 " + tuningTargetLabel(*ctx_.doc(), target_), FontRoleId::Title, TextTone::Primary);
+  header.setAlign(Align::Start, Align::Center);
+  title_ = &header.add<Label>("title", tuningTargetLabel(*ctx_.doc(), target_), FontRoleId::Title, TextTone::Primary);
+  title_->setWidth(Length::flex(1));
   auto& edoLabel = header.add<Label>("edo-label", "EDO", FontRoleId::Small, TextTone::Secondary, TextAlign::Right);
-  edoLabel.setWidth(Length::fixed(30));
+  edoLabel.setWidth(Length::fixed(28));
   edo_ = &header.add<TextEdit>("edo");
-  edo_->setWidth(Length::fixed(48));
+  edo_->setSize(Length::fixed(44), Length::fixed(20));
   edo_->setPlaceholder("n");
-  edo_->setInfo("EDO", "Type a number of equal divisions of the octave and press Enter.");
+  edo_->setInfo("EDO", "Type a number of equal divisions of the octave and press Enter: sounding notes retune at once.");
   edo_->onCommit = [this](const std::string& t) {
     int32_t n = 0;
     if (std::sscanf(t.c_str(), "%d", &n) == 1 && n >= 1 && n <= 9999) chooseEdo(n);
   };
   auto& scala = header.add<Button>("scala", "Scala\xE2\x80\xA6");
-  scala.setWidth(Length::fixed(64));
+  scala.setSize(Length::fixed(60), Length::fixed(20));
+  scala.setFocusable(false);
   scala.setInfo("Scala File", "Imports a Scala scale (.scl) as this tuning.");
   scala.onClick = [this] { requestScalaFile(); };
-  std::vector<std::string> items{"Temperament\xE2\x80\xA6"};
-  const auto temps = tu::temperaments();
-  for (size_t i = 0; i < temps.size(); ++i) {
-    if (temps[i].disabled) continue;
-    items.emplace_back(temps[i].name);
-    presetIndex_.push_back(static_cast<int32_t>(i));
-  }
-  presets_ = &header.add<Dropdown>("presets", std::move(items), 0);
-  presets_->setWidth(Length::fixed(170));
-  presets_->setInfo("Temperament Presets", "Selects a temperament's MOS with the generator in the middle of its range.");
-  presets_->onChange = [this](int32_t i) {
-    if (i > 0 && static_cast<size_t>(i - 1) < presetIndex_.size()) chooseTemperament(presetIndex_[static_cast<size_t>(i - 1)]);
+  search_ = &header.add<TextEdit>("temperament");
+  search_->setSize(Length::fixed(150), Length::fixed(20));
+  search_->setPlaceholder("Temperament\xE2\x80\xA6");
+  search_->setInfo("Find Temperament", "Type part of a temperament's name (meantone, porcupine, magic\xE2\x80\xA6) and press "
+                                       "Enter: its MOS at the middle of its generator range. Several matches open a short list.");
+  search_->onCommit = [this](const std::string& t) {
+    if (!t.empty() && !findTemperament(t)) ctx_.setStatus("Temperament: no name contains \xE2\x80\x9C" + t + "\xE2\x80\x9D");
   };
 
   // Body: the chart and the circle.
   auto& body = add<Widget>("body");
   body.setLayout(LayoutKind::Row);
-  body.setGap(6);
+  body.setGap(8);
+  body.setHeight(Length::flex(1));
   chart_ = &body.add<MosChart>("chart", cfg);
   circle_ = &body.add<MosCircle>("circle", cfg);
   circle_->setWidth(Length::fixed(kCircleWidth));
@@ -195,31 +265,35 @@ MosWheelPopover::MosWheelPopover(ViewContext& ctx, const TuningTarget& target)
     ctx_.transport().auditionHz(static_cast<float>(hz), 100.0f, 400.0f);
   };
 
-  // Footer: what would be committed, Cancel / Apply.
+  // Footer: what the target plays now, Revert / Done.
   auto& footer = add<Widget>("footer");
   footer.setLayout(LayoutKind::Row);
   footer.setHeight(Length::fixed(22));
   footer.setGap(6);
+  footer.setAlign(Align::Start, Align::Center);
   summary_ = &footer.add<Label>("summary", tuningSummary(draft_), FontRoleId::Small, TextTone::Secondary);
-  auto& cancelBtn = footer.add<Button>("cancel", "Cancel");
-  cancelBtn.setWidth(Length::fixed(64));
-  cancelBtn.onClick = [this] { cancel(); };
-  auto& applyBtn = footer.add<Button>("apply", "Apply");
-  applyBtn.setWidth(Length::fixed(64));
-  applyBtn.onClick = [this] { apply(); };
+  summary_->setWidth(Length::flex(1));
+  revert_ = &footer.add<Button>("revert", "Revert");
+  revert_->setSize(Length::fixed(64), Length::fixed(20));
+  revert_->setFocusable(false);
+  revert_->setInfo("Revert", "Puts back the tuning this had when the wheel opened (one undo step).");
+  revert_->onClick = [this] { revert(); };
+  auto& doneBtn = footer.add<Button>("done", "Done");
+  doneBtn.setSize(Length::fixed(64), Length::fixed(20));
+  doneBtn.setFocusable(false);
+  doneBtn.setInfo("Done", "Closes the wheel. Every change is already applied (Ctrl+Z undoes one drag or click at a time).");
+  doneBtn.onClick = [this] { apply(); };
 
   showDraft();
 }
 
 MosWheelPopover::~MosWheelPopover() {
   *alive_ = false;
-  if (!done_) {
-    done_ = true;
-    ctx_.clearTuningPreview();
-  }
+  done_ = true;
+  edit_->finish();
 }
 
-// The chart, circle and fields showing the draft (no draft change, no preview).
+// The chart, circle and fields showing the draft (no document change).
 void MosWheelPopover::showDraft() {
   if (const tu::MosParams* m = draft_.mos()) {
     // The region of n notes per period containing the generator (the stored region hint first).
@@ -248,7 +322,12 @@ void MosWheelPopover::showDraft() {
     circle_->setModmos({});
     edo_->setText(draft_.edo() ? std::to_string(draft_.edo()->n()) : std::string());
   }
+  syncFooter();
+}
+
+void MosWheelPopover::syncFooter() {
   summary_->setText(tuningSummary(draft_));
+  revert_->setEnabled(changed());
 }
 
 void MosWheelPopover::focusChart() {
@@ -258,52 +337,63 @@ void MosWheelPopover::focusChart() {
   chart_->setView(sel->regionLow - 1.5 * w, sel->regionHigh + 1.5 * w);
 }
 
-void MosWheelPopover::setDraft(doc::TuningDef def) {
-  draft_ = std::move(def);
-  if (changed()) ctx_.setTuningPreview(target_, draft_);
-  else ctx_.clearTuningPreview();
-  summary_->setText(tuningSummary(draft_));
+bool MosWheelPopover::setDraft(doc::TuningDef def, MosGesture g) {
+  if (g == MosGesture::Cancel) {  // the drag's gesture is undone: show the document again
+    edit_->cancel();
+    if (const doc::TuningDef* d = targetTuning(*ctx_.doc(), target_)) draft_ = *d;
+    showDraft();
+    return true;
+  }
+  const bool ok = edit_->apply(def, g).ok();
+  if (ok) draft_ = std::move(def);
+  syncFooter();
+  return ok;
 }
 
-void MosWheelPopover::draftFromCircle() {
+bool MosWheelPopover::draftFromCircle(MosGesture g) {
   const std::optional<tu::MosParams> p = circle_->params();
-  if (!p) {
-    setDraft(original_);
-    return;
-  }
+  if (!p) return false;
   doc::TuningDef d;
   d.system = *p;
-  d.referenceHz = original_.referenceHz;
-  setDraft(std::move(d));
+  d.referenceHz = draft_.referenceHz;
+  return setDraft(std::move(d), g);
 }
 
-void MosWheelPopover::onChart(const std::optional<MosSelection>& sel, MosGesture) {
+void MosWheelPopover::onChart(const std::optional<MosSelection>& sel, MosGesture g) {
+  if (g == MosGesture::Cancel) {
+    (void)setDraft(draft_, g);
+    return;
+  }
   circle_->setSelection(sel);
-  if (sel) draftFromCircle();
-  else setDraft(original_);  // nothing selected: the target keeps its tuning
-  if (sel) edo_->setText({});
+  if (!sel) return;  // nothing selected: the target keeps its tuning
+  edo_->setText({});
+  (void)draftFromCircle(g);
 }
 
-void MosWheelPopover::onCircle(const std::optional<MosSelection>& sel, std::span<const double>, MosGesture) {
+void MosWheelPopover::onCircle(const std::optional<MosSelection>& sel, std::span<const double>, MosGesture g) {
+  if (g == MosGesture::Cancel) {
+    (void)setDraft(draft_, g);
+    return;
+  }
   if (sel) chart_->select(sel->perPeriodKey, sel->generatorCents, sel->modeRotation);
-  draftFromCircle();
+  (void)draftFromCircle(g);
 }
 
 bool MosWheelPopover::chooseEdo(int32_t n) {
   if (n < 1) return false;
   Result<tu::Edo> e = Error{ErrorCode::InvalidArgument, "", {}};
-  const tu::Edo* old = original_.edo();
+  const tu::Edo* old = draft_.edo();
   if (old && old->equaveRatio()) e = tu::Edo::make(static_cast<uint32_t>(n), *old->equaveRatio());
   else if (old) e = tu::Edo::makeCents(static_cast<uint32_t>(n), old->equaveCents());
   else e = tu::Edo::make(static_cast<uint32_t>(n));
   if (!e) return false;
   doc::TuningDef d;
   d.system = *e;
-  d.referenceHz = original_.referenceHz;
+  d.referenceHz = draft_.referenceHz;
+  if (!setDraft(std::move(d), MosGesture::Commit)) return false;
   chart_->clearSelection();
   circle_->setSelection(std::nullopt);
   edo_->setText(std::to_string(n));
-  setDraft(std::move(d));
   return true;
 }
 
@@ -321,15 +411,15 @@ Status MosWheelPopover::chooseScalaFile(std::string_view pathUtf8) {
     ctx_.setStatus("Scala: " + scl.error().message);
     return std::move(scl).error();
   }
-  Result<doc::TuningDef> def = doc::makeScaleDef(std::move(*scl), std::nullopt, original_.referenceHz);
+  Result<doc::TuningDef> def = doc::makeScaleDef(std::move(*scl), std::nullopt, draft_.referenceHz);
   if (!def) {
     ctx_.setStatus("Scala: " + def.error().message);
     return std::move(def).error();
   }
+  if (!setDraft(std::move(*def), MosGesture::Commit)) return Error{ErrorCode::InvalidArgument, "the tuning was refused", {}};
   chart_->clearSelection();
   circle_->setSelection(std::nullopt);
   edo_->setText({});
-  setDraft(std::move(*def));
   return Ok{};
 }
 
@@ -352,8 +442,7 @@ bool MosWheelPopover::chooseMos(tu::MosKey perPeriodKey, double generatorCents, 
   circle_->setModmos(std::move(modmos));
   focusChart();
   edo_->setText({});
-  draftFromCircle();
-  return true;
+  return draftFromCircle(MosGesture::Commit);
 }
 
 bool MosWheelPopover::chooseTemperament(int32_t index) {
@@ -380,9 +469,9 @@ bool MosWheelPopover::chooseTemperament(int32_t index) {
       circle_->setSelection(sel);
       circle_->setModmos({});
       edo_->setText({});
+      search_->setText(std::string(t.name));
       focusChart();
-      draftFromCircle();
-      return true;
+      return draftFromCircle(MosGesture::Commit);
     }
   }
   chart_->setConfig(before);  // back to what the draft is
@@ -392,20 +481,82 @@ bool MosWheelPopover::chooseTemperament(int32_t index) {
   return false;
 }
 
-void MosWheelPopover::commit() {
+std::vector<int32_t> MosWheelPopover::matchTemperaments(std::string_view text, size_t limit) {
+  auto lower = [](std::string_view s) {
+    std::string r(s);
+    for (char& c : r) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return r;
+  };
+  while (!text.empty() && text.front() == ' ') text.remove_prefix(1);
+  while (!text.empty() && text.back() == ' ') text.remove_suffix(1);
+  if (text.empty()) return {};
+  const std::string q = lower(text);
+  std::vector<int32_t> exact, prefix, inside;
+  const auto temps = tu::temperaments();
+  for (size_t i = 0; i < temps.size(); ++i) {
+    if (temps[i].disabled) continue;
+    const std::string n = lower(temps[i].name);
+    const size_t at = n.find(q);
+    if (at == std::string::npos) continue;
+    (n == q ? exact : at == 0 ? prefix : inside).push_back(static_cast<int32_t>(i));
+  }
+  exact.insert(exact.end(), prefix.begin(), prefix.end());
+  exact.insert(exact.end(), inside.begin(), inside.end());
+  if (exact.size() > limit) exact.resize(limit);
+  return exact;
+}
+
+bool MosWheelPopover::findTemperament(std::string_view text) {
+  const std::vector<int32_t> found = matchTemperaments(text);
+  if (found.empty()) return false;
+  const auto temps = tu::temperaments();
+  auto sameName = [](std::string_view a, std::string_view b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+             return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+           });
+  };
+  std::string_view q = text;
+  while (!q.empty() && q.front() == ' ') q.remove_prefix(1);
+  while (!q.empty() && q.back() == ' ') q.remove_suffix(1);
+  if (found.size() == 1 || sameName(temps[static_cast<size_t>(found.front())].name, q)) return chooseTemperament(found.front());
+  std::vector<MenuItem> items;
+  std::shared_ptr<bool> alive = alive_;
+  for (const int32_t i : found)
+    items.push_back(MenuItem::item(std::string(temps[static_cast<size_t>(i)].name), [this, alive, i] {
+      if (*alive) (void)chooseTemperament(i);
+    }));
+  const IRect r = search_->rect();
+  (void)openContextMenu(*search_, {static_cast<float>(r.x), static_cast<float>(r.bottom())}, std::move(items));
+  return true;
+}
+
+void MosWheelPopover::revert() {
   if (!changed()) return;
+  edit_->finish();
   if (!targetTuning(*ctx_.doc(), target_)) {
     ctx_.setStatus("Tuning: the clip or track no longer exists");
     return;
   }
-  if (Status st = ctx_.store().dispatch(tuningCommand(target_, draft_)); !st) ctx_.setStatus("Tuning: " + st.error().message);
+  if (Status st = ctx_.store().dispatch(tuningCommand(target_, original_)); !st) {
+    ctx_.setStatus("Tuning: " + st.error().message);
+    return;
+  }
+  if (const tu::MosParams* m = original_.mos()) {
+    MosChartConfig cfg = chart_->config();
+    cfg.period = m->period;
+    cfg.periodsPerEquave = std::max(1, m->periodsPerEquave);
+    cfg.octaveStretch = m->octaveStretch;
+    chart_->setConfig(cfg);
+    circle_->setConfig(cfg);
+  }
+  draft_ = original_;
+  showDraft();
 }
 
 void MosWheelPopover::closed() {
   if (done_) return;
   done_ = true;
-  if (!cancelled_) commit();
-  ctx_.clearTuningPreview();
+  edit_->finish();
 }
 
 void MosWheelPopover::apply() {
@@ -414,19 +565,11 @@ void MosWheelPopover::apply() {
   else closed();
 }
 
-void MosWheelPopover::cancel() {
-  if (done_) return;
-  cancelled_ = true;
-  apply();
-}
+void MosWheelPopover::cancel() { apply(); }
 
 bool MosWheelPopover::onKey(const KeyEvent& e) {
   if (!e.down) return false;
-  if (e.key == key::kEscape) {
-    cancel();
-    return true;
-  }
-  if (e.key == key::kReturn) {
+  if (e.key == key::kEscape || e.key == key::kReturn) {
     apply();
     return true;
   }
@@ -435,8 +578,9 @@ bool MosWheelPopover::onKey(const KeyEvent& e) {
 
 InfoText MosWheelPopover::info() const {
   return {"MOS Wheel", "Choose a tuning for " + tuningTargetLabel(*ctx_.doc(), target_) +
-                           ": a MOS in the chart and the circle, an EDO, a Scala file or a temperament. The piano roll "
-                           "previews it; Apply, Enter or a click outside commits it (one undo step), Esc cancels."};
+                           ": a MOS in the chart and the circle, an EDO, a Scala file or a temperament. Every change "
+                           "applies at once, so sounding notes retune while you drag (one undo step per drag); Revert "
+                           "puts back the tuning it had when the wheel opened."};
 }
 
 MosWheelPopover* openMosWheel(Widget& from, ViewContext& ctx, const TuningTarget& target, IRect anchor) {
@@ -550,9 +694,6 @@ TuningChip::TuningChip(std::string name, ViewContext& ctx) : Control(std::move(n
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent& e) {
     if (tuningMayChange(e)) recheck();
   });
-  viewSub_ = ctx_.observe([this](uint32_t bits) {
-    if (bits & view_change::kTuningPreview) recheck();
-  });
 }
 
 bool TuningChip::tuningMayChange(const doc::StoreEvent& e) noexcept {
@@ -591,18 +732,15 @@ void TuningChip::refresh() const {
   switch (target_->kind) {
     case TuningTarget::Kind::Clip: {
       std::optional<doc::TrackPath> path;
-      if (const doc::NoteClip* c = findClip(p, target_->clip, path)) def = ctx_.previewedTuning(p, *path, c, target_->clip.clip);
+      if (const doc::NoteClip* c = findClip(p, target_->clip, path)) def = doc::effectiveTuning(p, *path, c);
       break;
     }
     case TuningTarget::Kind::Track:
-      if (const auto path = doc::findTrack(p, target_->track)) def = ctx_.previewedTuning(p, *path, nullptr, {});
+      if (const auto path = doc::findTrack(p, target_->track)) def = doc::effectiveTuning(p, *path, nullptr);
       break;
-    case TuningTarget::Kind::Main: {
-      const auto& pv = ctx_.tuningPreview();
-      if (pv && pv->target.kind == TuningTarget::Kind::Main && pv->target.main == target_->main) def = &pv->def;
-      else if (const doc::TuningSlot* s = doc::findTuning(p, target_->main)) def = &s->def;
+    case TuningTarget::Kind::Main:
+      if (const doc::TuningSlot* s = doc::findTuning(p, target_->main)) def = &s->def;
       break;
-    }
   }
   if (!def) return;
   compact_ = compactTuningLabel(*def);

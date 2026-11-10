@@ -278,28 +278,35 @@ TuningCard::TuningCard(std::string name, TuningsPanel& panel, const doc::TuningS
     ss.decimals = 0;
     ss.dragPixels = 600;
     auto& steps = addRow("steps", std::nullopt, "Steps", ss);
-    steps.box().setInfo("EDO Steps", "Equal divisions of the equave. Drag or type; the size is applied when you let go (one "
-                                     "undo step).");
-    // The size is discrete (a structural change): applied once at the end of the drag or type-in, not per pixel.
+    steps.box().setInfo("EDO Steps", "Equal divisions of the equave. Drag or type: sounding notes retune at each step (one "
+                                     "undo step per drag).");
+    // TU.1: the size is discrete (a new table: a recompile), so a drag applies it at each whole step inside one store
+    // gesture, not per pixel and not only on release; the link's sequence swap retunes sounding notes at once.
     DragBox* sb = &steps.box();
-    sb->onGestureEnd = [c, id, sb] {
+    sb->onGestureBegin = [c] { (void)c->store().beginGesture("Change EDO Steps"); };
+    sb->onChange = [c, id, sb](double v) {
       const doc::TuningSlot* s = slotOf(*c->doc(), id);
       if (!s || !s->def.edo()) return;
       const tu::Edo& old = *s->def.edo();
-      const auto n = static_cast<uint32_t>(std::lround(sb->value()));
+      const auto n = static_cast<uint32_t>(std::lround(v));
       if (n == old.n()) return;
       Result<tu::Edo> e = old.equaveRatio() ? tu::Edo::make(n, *old.equaveRatio()) : tu::Edo::makeCents(n, old.equaveCents());
       if (!e) {
         c->setStatus("Tuning: " + e.error().message);
-        sb->setValue(old.n());
+        if (!sb->inGesture()) sb->setValue(old.n());
         return;
       }
       doc::TuningDef d = s->def;
       d.system = *e;
       if (Status st = c->store().dispatch(doc::SetTuningDef{id, std::move(d)}); !st) c->setStatus("Tuning: " + st.error().message);
     };
-    sb->onGestureCancel = [c, id, sb] {
-      if (const doc::TuningSlot* s = slotOf(*c->doc(), id); s && s->def.edo()) sb->setValue(s->def.edo()->n());
+    sb->onGestureEnd = [c, p] {
+      if (c->store().inGesture()) (void)c->store().commitGesture();
+      p->refreshLater();
+    };
+    sb->onGestureCancel = [c, p] {
+      if (c->store().inGesture()) (void)c->store().cancelGesture();
+      p->refreshLater();
     };
     auto& eq = addRow("equave", doc::ParamKind::TuningEquave, "Equave", range(doc::ParamKind::TuningEquave, 2, "\xC2\xA2", 2400));
     DragBox* eb = &eq.box();
