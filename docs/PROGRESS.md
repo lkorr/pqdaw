@@ -415,3 +415,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker project + timeline default pass; -Affected -Slow 53/54 (ASIO fake-driver flake, 155/155 alone); ship pq_bench_dsp links; each new test failed on the old logic.
 - Perf / CPU-efficiency check: grow switch block 1063–1124 → 39–53 µs, next 400 blocks ≤ 35 µs; no-latency path untouched; pq_bench_pdc ~52–66 ns both (loaded machine).
 - Notes/blockers: none.
+
+## 2026-11-10 · T6.x-fix-ui merged · main
+- Did: merged task/T6.x-fix-ui (334288c7): MOS popover within the workspace (OverlayOptions::within), one mode numbering + M letter, Clip View units/tint/bar numbers, take-lane contrast and dimmed auditioned-away clips, mixer row alignment / In: / Delay / Lat only when non-zero, Hz live notes not retuned by drags, per-table tuning param slots (no third pitch), crashed-run Unsaved recovery dialog, fixtures copied to the build dir, append_results porcelain fix; record latency frozen per session.
+- Verified: worker -Affected -Slow 61/61 on 3b79d344; after re-rebase onto 3c440ba3: timeline 99/99, project pdc 35/35, playback recording link 17/17, L4 test.
+- Perf / CPU-efficiency check: UI-thread-only additions; latency freeze two integer copies per session.
+- Notes/blockers: M7 take split filed as T6.x-fix-ui-b.
