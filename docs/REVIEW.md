@@ -1136,3 +1136,13 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - Try: press knob A then knob B in a band (one lane, B); pin it; press A (B pinned + A below); unpin B.
 - To judge: the pin glyph / its size (13 px); that a just-pinned lane shows no separate follow lane until the next press
   (Q?-TL.5-a). Goldens moved: lane headers gained the pin; panel-window-* now show one sub-lane where two were stacked.
+
+## 2026-11-09 · PF.2 · far-zoom stand-in for tiny group panels
+- What: zoomed out over a whole big project (panels under 6 px across), a group panel is drawn as its plate, its
+  elements' static layers and one swatch per element of its live layer's mean colour (knob arcs, labels averaged),
+  instead of every live primitive (64 tracks: 9 ms → under 1 ms a frame). No golden moved.
+- Look at (8× nearest-neighbour crops of the fitted 64-track project): before
+  C:\Users\Luke\AppData\Local\Temp\claude\C--Users-Luke-Desktop-programming-pqdaw\49ea863e-4f0e-4ff8-ae23-6093af5e19d4\scratchpad\wide0_z.png,
+  after C:\Users\Luke\AppData\Local\Temp\claude\C--Users-Luke-Desktop-programming-pqdaw\49ea863e-4f0e-4ff8-ae23-6093af5e19d4\scratchpad\wideS_z.png.
+- Judge: the speckle of a 4-px panel becomes flat tone patches of the same average colour; whether 6 px is the right
+  threshold (above it the panel is drawn in full; at ~8 px its symbols are still readable, so it stays).

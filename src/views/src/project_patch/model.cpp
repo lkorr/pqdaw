@@ -79,30 +79,87 @@ std::string sendLetter(size_t returnIndex) {
   return s;
 }
 
+// PF.2: what a build derives from the document alone (no layout options): the wires by track and, per track, its main
+// path, stages and racks. Valid while the snapshot it was made from is (ModelCache keeps it with its snapshot and
+// lowering; pointers into the document).
+struct DocDerived {
+  bool indexed = false;
+  std::unordered_map<uint32_t, uint32_t> graphIndex;
+  std::unordered_map<uint32_t, size_t> returnIndex;
+  std::unordered_map<uint32_t, std::vector<std::string>> modulatedParams;
+  std::unordered_map<uint32_t, doc::WireStatus> wireStatus;
+  std::unordered_map<uint32_t, uint32_t> modGraphWire;
+  std::unordered_map<uint32_t, const doc::Track*> trackById;
+  std::unordered_map<const graph::Patch*, std::unordered_set<std::string_view>> paramsOf;  // (patches of the lowering)
+  // The project's wires by track (each wire under the track of its source device and of its target device, once per
+  // track, in wiresOf order): a group's wires are among its track's, so the per-group passes read ~one track's wires
+  // instead of the whole project's.
+  std::unordered_map<uint32_t, std::vector<const doc::Wire*>> trackWires;
+  std::unordered_map<uint32_t, uint32_t> groupOf;  // a grouped device's group (device ids)
+  struct PerTrack {
+    bool made = false;
+    doc::MainPath path;                    // TX.all-free: its main path (doc::mainPath)
+    std::vector<doc::ChainStage> stages;   // TMM.10-fix1: doc::trackStages (empty without a meta block or group)
+    std::vector<doc::RackInfo> racks;      // GU.9: doc::findRacks
+  };
+  std::unordered_map<uint32_t, PerTrack> tracks;
+  // A closed group's block: what is inside it at any depth, the ports its wires cross its edge by (as first added to
+  // the block), the control its main input is added to (addedControl).
+  struct Closed {
+    bool made = false, addedMade = false;
+    std::vector<doc::DeviceId> inner;
+    std::vector<Port> ins, outs;
+    std::string added;
+  };
+  std::unordered_map<uint32_t, Closed> closed;
+  std::optional<doc::MainLinks> mainLinks;      // made once (one pass over the wires)
+  std::optional<doc::VoiceContexts> contexts;  // GU.2: made at the first nested group (is it an instrument group?)
+};
+
 struct Builder {
+  Builder(const doc::Project& project, const doc::LoweredProject& lowered, const doc::DeviceLibrary* lib,
+          const LayoutOptions& options)
+      : p(project), low(lowered), devices(lib), opt(options), derived(pickDerived(options)), graphIndex(derived->graphIndex),
+        returnIndex(derived->returnIndex), modulatedParams(derived->modulatedParams), wireStatus(derived->wireStatus),
+        modGraphWire(derived->modGraphWire), trackById(derived->trackById), paramsOf(derived->paramsOf) {}
+  // PF.2: the document-derived tables of the last build when the snapshot and the lowering are the same ones; the
+  // cache keeps this build's for the next.
+  static std::shared_ptr<DocDerived> pickDerived(const LayoutOptions& o) {
+    ModelCache* mc = o.layoutCache;
+    std::shared_ptr<DocDerived> d;
+    if (mc != nullptr && o.snapshot && o.lowering && mc->snapshot == o.snapshot && mc->lowering == o.lowering && mc->derived)
+      d = std::static_pointer_cast<DocDerived>(mc->derived);
+    else
+      d = std::make_shared<DocDerived>();
+    if (mc != nullptr) {
+      mc->snapshot = o.snapshot;
+      mc->lowering = o.lowering;
+      mc->derived = o.snapshot && o.lowering ? d : nullptr;
+    }
+    return d;
+  }
+
   const doc::Project& p;
   const doc::LoweredProject& low;
   const doc::DeviceLibrary* devices;
   const LayoutOptions& opt;
   ProjectPatch out;
-
-  std::unordered_map<uint32_t, uint32_t> graphIndex;   // track id → graph track
-  std::unordered_map<uint32_t, size_t> returnIndex;    // return track id → its index among the returns
-  std::unordered_map<uint32_t, std::vector<std::string>> modulatedParams;  // device id → params wires drive
-  std::unordered_map<uint32_t, doc::WireStatus> wireStatus;
-  std::unordered_map<uint32_t, uint32_t> modGraphWire;  // doc wire id → graph wire index (cross-track)
-  std::unordered_map<uint32_t, const doc::Track*> trackById;
-  std::unordered_map<const graph::Patch*, std::unordered_set<std::string_view>> paramsOf;
+  // PF.2: what the build derives from the document (and its lowering) alone, shared with the view's ModelCache while
+  // the snapshot and the lowering stay the same (a re-layout: a resize, a nudge, a fold). The tables below are its.
+  std::shared_ptr<DocDerived> derived;
+  std::unordered_map<uint32_t, uint32_t>& graphIndex;   // track id → graph track
+  std::unordered_map<uint32_t, size_t>& returnIndex;    // return track id → its index among the returns
+  std::unordered_map<uint32_t, std::vector<std::string>>& modulatedParams;  // device id → params wires drive
+  std::unordered_map<uint32_t, doc::WireStatus>& wireStatus;
+  std::unordered_map<uint32_t, uint32_t>& modGraphWire;  // doc wire id → graph wire index (cross-track)
+  std::unordered_map<uint32_t, const doc::Track*>& trackById;
+  std::unordered_map<const graph::Patch*, std::unordered_set<std::string_view>>& paramsOf;
   // TMM.10-fix1: the band's stages (doc::trackStages): which meta device the note source reaches.
-  std::vector<doc::ChainStage> bandStages;
-  // TX.all-free: each track's main path (doc::mainPath), by track id.
-  std::unordered_map<uint32_t, doc::MainPath> paths;
+  const std::vector<doc::ChainStage>* bandStages = nullptr;
   // GU.9 (racks.h): a rack's chains off the path (node → the path chain it stacks under, in chain order) — drawn as
   // parallel group capsules under the chain on the path, the shared feed and sum their wires.
   std::unordered_map<uint32_t, uint32_t> stackUnder;
   std::vector<uint32_t> stackOrder;  // those nodes, each after the one it stacks under
-  std::optional<doc::MainLinks> mainLinks;  // made once per build (one pass over the wires)
-  std::optional<doc::VoiceContexts> contexts;  // GU.2: made at the first nested group (is it an instrument group?)
   // TX.groups: each opened group's contents, placed relative to its capsule's top-left (layout() adds the capsule's
   // place, then the nudges).
   struct Capsule {
@@ -110,6 +167,22 @@ struct Builder {
     std::vector<std::pair<uint32_t, graph::Point2>> rel;
   };
   std::vector<Capsule> capsules;
+  // PF.2: whether device `d` is `g` or inside it at any depth (its group chain, as doc::groupContains, by hash).
+  bool within(doc::DeviceId d, doc::DeviceId g) const {
+    uint32_t x = d.value;
+    for (uint32_t depth = 0; depth <= doc::kMaxGroupDepth; ++depth) {
+      if (x == g.value) return true;
+      const auto it = derived->groupOf.find(x);
+      if (it == derived->groupOf.end()) return false;
+      x = it->second;
+    }
+    return false;
+  }
+  const std::vector<const doc::Wire*>& wiresOn(const doc::Track& t) const {
+    static const std::vector<const doc::Wire*> none;
+    const auto it = derived->trackWires.find(t.id.value);
+    return it == derived->trackWires.end() ? none : it->second;
+  }
   bool closedGroup(doc::DeviceId g) const noexcept {
     return !opt.scope.valid() && std::find(opt.closedGroups.begin(), opt.closedGroups.end(), g) != opt.closedGroups.end();
   }
@@ -122,10 +195,31 @@ struct Builder {
   const graph::PatchLibrary* library() const noexcept { return low.graph.library; }
 
   void prepare() {
+    if (derived->indexed) return;  // PF.2: the same snapshot and lowering as the last build
+    derived->indexed = true;
     doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) { trackById.emplace(t.id.value, &t); });
     for (size_t i = 0; i < low.trackIds.size(); ++i) graphIndex[low.trackIds[i].value] = static_cast<uint32_t>(i);
     for (size_t i = 0; i < p.returns.size(); ++i) returnIndex[p.returns[i]->id.value] = i;
     for (const doc::WireState& s : low.wires) wireStatus[s.id.value] = s.status;
+    {
+      auto& trackWires = derived->trackWires;
+      std::unordered_map<uint32_t, uint32_t> trackOf;  // device id → track id
+      for (const auto& [id, t] : trackById)
+        for (const doc::DevicePtr& d : t->devices) {
+          trackOf.emplace(d->id.value, id);
+          if (d->group.valid()) derived->groupOf.emplace(d->id.value, d->group.value);
+        }
+      auto find = [&](doc::DeviceId d) -> uint32_t {
+        if (!d.valid()) return 0xFFFFFFFFu;
+        const auto it = trackOf.find(d.value);
+        return it == trackOf.end() ? 0xFFFFFFFFu : it->second;
+      };
+      for (const doc::Wire& w : doc::wiresOf(p)) {
+        const uint32_t a = w.fromNoteSource() ? 0xFFFFFFFFu : find(w.from), b = find(w.to);
+        if (a != 0xFFFFFFFFu) trackWires[a].push_back(&w);
+        if (b != 0xFFFFFFFFu && b != a) trackWires[b].push_back(&w);
+      }
+    }
     for (const doc::Wire& w : doc::wiresOf(p)) {
       if (statusOf(w.id) == doc::WireStatus::Invalid) continue;
       if (w.toMixer() || w.param.empty()) continue;  // TX.all-free: a main input (kMainPort) or a mixer: no param pin
@@ -241,7 +335,7 @@ struct Builder {
     // TMM.10-fix1: a chain meta device takes notes exactly when the note source reaches its chain input (its stage;
     // unplugged, or after another device, it does not, whatever its kind): the note wire is drawn to it, or not.
     if (doc::isMetaDevice(d))
-      for (const doc::ChainStage& s : bandStages)
+      for (const doc::ChainStage& s : *bandStages)
         if (s.device == &d) n.instrument = s.in == doc::ChainSignal::Notes;
     // The block's description (its name) from the library; its callee from what the graph calls, else the library.
     const doc::DeviceInfo* info = devices != nullptr ? devices->infoOf(d) : nullptr;
@@ -371,35 +465,44 @@ struct Builder {
   // (graph::autoLayout: layers by signal flow left to right -- the In terminal first, the Out last --, a crossing-reducing
   // order, straightened placement, channels between the layers), on a proxy patch of its blocks (their sizes and pin
   // rows) and the wires among them. `rel`: each content's place from the capsule's top-left (TX.cable-look: the wires
-  // among them are hanging cables, so the layouter's routes are not used); the capsule's size and its chain pins' row (the In terminal's) follow. Cost: one small layout per opened
-  // group per rebuild of the model (tens of blocks: microseconds), never per frame.
+  // among them are hanging cables, so the layouter's routes are not used); the capsule's size and its chain pins' row
+  // (the In terminal's) follow. PF.2: the layouter's result is cached by the view (ModelCache) under the exact
+  // bytes of its inputs (`key`), so a re-layout that leaves this group's contents as they were (another block resized,
+  // a nudge elsewhere) does not lay it out again; never per frame.
   void circuitLayout(const doc::Device& g, const doc::Track& t, const std::vector<uint32_t>& kids, Node& c,
                      std::vector<graph::Point2>& rel) {
     const size_t n = kids.size();
-    graph::Patch lp;
-    std::vector<graph::NodeIndex> v(n);
+    // The proxy patch's port counts (as graph::Patch makes them): the In terminal an Input node (1 in, 1 out), the Out
+    // terminal an Output node (1 in), a block a subcircuit of its ports.
+    auto ins = [&](size_t i) -> uint32_t {
+      return i == 0 || i + 1 == n ? 1u : static_cast<uint32_t>(std::min<size_t>(out.nodes[kids[i]].inputs.size(), graph::kMaxPorts));
+    };
+    auto outs = [&](size_t i) -> uint32_t {
+      return i + 1 == n ? 0u : i == 0 ? 1u : static_cast<uint32_t>(std::min<size_t>(out.nodes[kids[i]].outputs.size(), graph::kMaxPorts));
+    };
+    auto inY = [&](const Node& k, uint32_t j) { return j < k.inputs.size() && k.inputs[j].anchored ? k.inputs[j].ay : pinOffset(k, j, true); };
+    // PF.2: the layouter's inputs, serialised (the cache key): sizes, port names and rows, then the wires.
+    std::string key;
+    auto put = [&](const void* data, size_t bytes) { key.append(static_cast<const char*>(data), bytes); };
+    auto putU = [&](uint32_t u) { put(&u, sizeof u); };
+    auto putF = [&](float f) { put(&f, sizeof f); };
+    auto putS = [&](std::string_view sv) {
+      putU(static_cast<uint32_t>(sv.size()));
+      put(sv.data(), sv.size());
+    };
+    putU(static_cast<uint32_t>(n));
     for (size_t i = 0; i < n; ++i) {
       const Node& k = out.nodes[kids[i]];
-      if (i == 0) v[i] = lp.addInput("in", graph::PortType{});
-      else if (i + 1 == n) v[i] = lp.addOutput("out", graph::PortType{});
-      else {
-        graph::SubcircuitRef ref;
-        ref.patch = "block";
-        for (const Port& q : k.inputs) ref.inputs.push_back({q.name, graph::PortType{}, true});
-        for (const Port& q : k.outputs) ref.outputs.push_back({q.name, graph::PortType{}, false});
-        v[i] = lp.addSubcircuit(std::move(ref));
+      const uint32_t ni = ins(i), no = outs(i);
+      putF(k.w), putF(k.h), putU(ni), putU(no);
+      for (uint32_t j = 0; j < ni; ++j) {
+        putF(inY(k, j));
+        if (i != 0 && i + 1 != n) putS(k.inputs[j].name);
       }
-    }
-    graph::LayoutGeometry geo;
-    geo.shape.resize(lp.nodeCount());
-    geo.inPinY.assign(lp.portCount(), 0.0f);
-    geo.outPinY.assign(lp.portCount(), 0.0f);
-    for (size_t i = 0; i < n; ++i) {
-      const Node& k = out.nodes[kids[i]];
-      geo.shape[v[i]] = {k.w, k.h};
-      for (uint32_t j = 0; j < lp.node(v[i]).numInputs; ++j)
-        geo.inPinY[lp.flatInput(v[i], j)] = j < k.inputs.size() && k.inputs[j].anchored ? k.inputs[j].ay : pinOffset(k, j, true);
-      for (uint32_t j = 0; j < lp.node(v[i]).numOutputs; ++j) geo.outPinY[lp.flatOutput(v[i], j)] = pinOffset(k, j, false);
+      for (uint32_t j = 0; j < no; ++j) {
+        putF(pinOffset(k, j, false));
+        if (i != 0 && i + 1 != n) putS(k.outputs[j].name);
+      }
     }
     // The wires among the contents (one into a block inside a nested group counts as into that group).
     auto kidOf = [&](doc::DeviceId d, std::string_view port, bool source) -> int32_t {
@@ -407,13 +510,19 @@ struct Builder {
         if (port != (source ? doc::kGroupInPort : doc::kGroupOutPort)) return -1;
         return source ? 0 : static_cast<int32_t>(n) - 1;
       }
+      if (!d.valid() || !within(d, g.id)) return -1;  // PF.2: most of the track's wires, at once
       for (size_t i = 1; i + 1 < n; ++i) {
         const Node& k = out.nodes[kids[i]];
-        if (k.device == d || (k.group && doc::groupContains(t.devices, k.device, d))) return static_cast<int32_t>(i);
+        if (k.device == d || (k.group && within(d, k.device))) return static_cast<int32_t>(i);
       }
       return -1;
     };
-    for (const doc::Wire& w : doc::wiresOf(p)) {
+    struct Link {
+      uint32_t a, ap, b, bp;
+    };
+    std::vector<Link> links;
+    for (const doc::Wire* wp : wiresOn(t)) {
+      const doc::Wire& w = *wp;
       if (w.fromNoteSource() || statusOf(w.id) == doc::WireStatus::Invalid) continue;
       const int32_t a = kidOf(w.from, w.port, true), b = kidOf(w.to, w.param, false);
       if (a < 0 || b < 0 || a == b) continue;
@@ -426,22 +535,65 @@ struct Builder {
       if (w.port.empty() || ap < 0) ap = 0;
       if (w.param.empty()) bp = kb.mainIn > 0 ? kb.mainIn : 0;
       if (bp < 0) bp = kb.mainIn > 0 ? kb.mainIn : 0;
-      if (static_cast<uint32_t>(ap) >= lp.node(v[ua]).numOutputs || static_cast<uint32_t>(bp) >= lp.node(v[ub]).numInputs) continue;
-      (void)lp.connect(graph::PortRef{v[ua], static_cast<uint16_t>(ap)}, graph::PortRef{v[ub], static_cast<uint16_t>(bp)});
+      if (static_cast<uint32_t>(ap) >= outs(ua) || static_cast<uint32_t>(bp) >= ins(ub)) continue;
+      links.push_back({static_cast<uint32_t>(ua), static_cast<uint32_t>(ap), static_cast<uint32_t>(ub), static_cast<uint32_t>(bp)});
+      putU(links.back().a), putU(links.back().ap), putU(links.back().b), putU(links.back().bp);
     }
-    graph::AutoLayoutOptions lo;
-    lo.layerGap = 20.0f;
-    lo.nodeGap = 20.0f;
-    (void)graph::autoLayout(lp, geo, lo);
+    ModelCache* cache = opt.layoutCache;
+    ModelCache::Entry* entry = nullptr;
+    bool hit = false;
+    if (cache != nullptr) {
+      entry = &cache->entries[g.id.value];
+      entry->used = cache->epoch;
+      hit = entry->key == key && entry->pos.size() == n;
+      ++(hit ? cache->hits : cache->misses);
+    }
+    std::vector<graph::Point2> fresh;
+    std::vector<graph::Point2>& pos = entry != nullptr ? entry->pos : fresh;
+    if (!hit) {
+      graph::Patch lp;
+      std::vector<graph::NodeIndex> v(n);
+      for (size_t i = 0; i < n; ++i) {
+        const Node& k = out.nodes[kids[i]];
+        if (i == 0) v[i] = lp.addInput("in", graph::PortType{});
+        else if (i + 1 == n) v[i] = lp.addOutput("out", graph::PortType{});
+        else {
+          graph::SubcircuitRef ref;
+          ref.patch = "block";
+          for (const Port& q : k.inputs) ref.inputs.push_back({q.name, graph::PortType{}, true});
+          for (const Port& q : k.outputs) ref.outputs.push_back({q.name, graph::PortType{}, false});
+          v[i] = lp.addSubcircuit(std::move(ref));
+        }
+      }
+      graph::LayoutGeometry geo;
+      geo.shape.resize(lp.nodeCount());
+      geo.inPinY.assign(lp.portCount(), 0.0f);
+      geo.outPinY.assign(lp.portCount(), 0.0f);
+      for (size_t i = 0; i < n; ++i) {
+        const Node& k = out.nodes[kids[i]];
+        geo.shape[v[i]] = {k.w, k.h};
+        for (uint32_t j = 0; j < lp.node(v[i]).numInputs; ++j) geo.inPinY[lp.flatInput(v[i], j)] = inY(k, j);
+        for (uint32_t j = 0; j < lp.node(v[i]).numOutputs; ++j) geo.outPinY[lp.flatOutput(v[i], j)] = pinOffset(k, j, false);
+      }
+      for (const Link& l : links)
+        (void)lp.connect(graph::PortRef{v[l.a], static_cast<uint16_t>(l.ap)}, graph::PortRef{v[l.b], static_cast<uint16_t>(l.bp)});
+      graph::AutoLayoutOptions lo;
+      lo.layerGap = 20.0f;
+      lo.nodeGap = 20.0f;
+      (void)graph::autoLayout(lp, geo, lo);
+      pos.clear();
+      for (size_t i = 0; i < n; ++i) pos.push_back({lp.layout(v[i]).x, lp.layout(v[i]).y});
+      if (entry != nullptr) entry->key = std::move(key);
+    }
     float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
     for (size_t i = 0; i < n; ++i) {
-      const graph::NodeLayout& l = lp.layout(v[i]);
+      const graph::Point2 l = pos[i];
       x0 = std::min(x0, l.x), y0 = std::min(y0, l.y);
-      x1 = std::max(x1, l.x + geo.shape[v[i]].w), y1 = std::max(y1, l.y + geo.shape[v[i]].h);
+      x1 = std::max(x1, l.x + out.nodes[kids[i]].w), y1 = std::max(y1, l.y + out.nodes[kids[i]].h);
     }
     const float ox = m::kCapsulePad - x0, oy = m::kCapsuleTitle + m::kCapsulePad - y0;
     rel.clear();
-    for (size_t i = 0; i < n; ++i) rel.push_back({lp.layout(v[i]).x + ox, lp.layout(v[i]).y + oy});
+    for (size_t i = 0; i < n; ++i) rel.push_back({pos[i].x + ox, pos[i].y + oy});
     c.w = roundUp4(std::max(x1 - x0 + 2.0f * m::kCapsulePad, 96.0f));
     c.h = roundUp4(std::max(y1 - y0 + m::kCapsuleTitle + 2.0f * m::kCapsulePad, m::kCapsuleTitle + 48.0f));
     c.pinTop = rel[0].y + pinOffset(out.nodes[kids[0]], 0, false);
@@ -456,14 +608,15 @@ struct Builder {
   // inside: every wire from its In goes into one `add` atom whose only other feed is a value block (the Phase
   // Accumulator: In -> `hz + freq` <- Frequency), while a wire enters that main input. "" when nothing is wired into it
   // (its port stays to be plugged) or the signal does anything else inside (it keeps its pin).
-  std::string addedControl(const doc::Device& g, const Node& c) const {
-    const auto& wires = doc::wiresOf(p);
-    if (std::none_of(wires.begin(), wires.end(), [&](const doc::Wire& w) {
-          return !w.toMixer() && w.to == g.id && w.param.empty() && statusOf(w.id) != doc::WireStatus::Invalid;
+  std::string addedControl(const doc::Device& g, const doc::Track& t, const Node& c) const {
+    const std::vector<const doc::Wire*>& wires = wiresOn(t);  // PF.2: every wire here touches g or a device inside it
+    if (std::none_of(wires.begin(), wires.end(), [&](const doc::Wire* w) {
+          return !w->toMixer() && w->to == g.id && w->param.empty() && statusOf(w->id) != doc::WireStatus::Invalid;
         }))
       return {};
     const doc::Device* sum = nullptr;
-    for (const doc::Wire& w : wires) {
+    for (const doc::Wire* wp : wires) {
+      const doc::Wire& w = *wp;
       if (w.fromNoteSource() || w.from != g.id || w.port != doc::kGroupInPort || statusOf(w.id) == doc::WireStatus::Invalid) continue;
       const doc::Device* d = doc::findDevice(p, w.to).device;
       if (d == nullptr || doc::atomDeviceName(*d) != "add" || (sum != nullptr && sum != d)) return {};
@@ -471,7 +624,8 @@ struct Builder {
     }
     if (sum == nullptr) return {};
     const doc::Device* value = nullptr;
-    for (const doc::Wire& w : wires) {
+    for (const doc::Wire* wp : wires) {
+      const doc::Wire& w = *wp;
       if (w.to != sum->id || statusOf(w.id) == doc::WireStatus::Invalid || (w.from == g.id && w.port == doc::kGroupInPort)) continue;
       const doc::Device* d = w.fromNoteSource() ? nullptr : doc::findDevice(p, w.from).device;
       if (d == nullptr || !doc::isValueDevice(*d) || !(w.port.empty() || w.port == doc::kValueOutput) || value != nullptr) return {};
@@ -491,11 +645,11 @@ struct Builder {
     // A top-level group: its stage says it (the notes reach its In: IG.1-2's rule, no extra pass); a nested one (rare)
     // asks the voice contexts, made once per build at the first nested group.
     if (!g.group.valid()) {
-      for (const doc::ChainStage& s : bandStages)
+      for (const doc::ChainStage& s : *bandStages)
         if (s.device == &g) c.instrument = s.in == doc::ChainSignal::Notes;
     } else {
-      if (!contexts) contexts.emplace(doc::voiceContexts(p));
-      c.instrument = contexts->blockOf(g.id) != nullptr;
+      if (!derived->contexts) derived->contexts.emplace(doc::voiceContexts(p));
+      c.instrument = derived->contexts->blockOf(g.id) != nullptr;
     }
     if (c.instrument) {
       const doc::GroupPolyphony gp = doc::groupPolyphony(g);
@@ -539,76 +693,91 @@ struct Builder {
     };
     if (!c.groupOpen) {
       // Closed: one block holding a miniature of its own contents (each box and wire in its unit square); a nested group
-      // is one box there.
-      std::vector<Node> kids;
-      kids.push_back(terminal(true));
-      for (const doc::Device* d : members) {
-        if (doc::isGroupDevice(*d)) {
-          Node b;
-          b.kind = NodeKind::Device;
-          b.device = d->id;
-          b.title = d->name.empty() ? std::string("Group") : d->name;
-          b.w = m::kClosedGroupW;
-          b.h = m::kClosedGroupH;
-          kids.push_back(std::move(b));
-        } else {
-          kids.push_back(scaled(deviceNode(band, *d, tp)));
+      // is one box there. PF.2: drawn as its panel, it has no miniature (not made).
+      if (!g.hasPanel()) {
+        std::vector<Node> kids;
+        kids.push_back(terminal(true));
+        for (const doc::Device* d : members) {
+          if (doc::isGroupDevice(*d)) {
+            Node b;
+            b.kind = NodeKind::Device;
+            b.device = d->id;
+            b.title = d->name.empty() ? std::string("Group") : d->name;
+            b.w = m::kClosedGroupW;
+            b.h = m::kClosedGroupH;
+            kids.push_back(std::move(b));
+          } else {
+            kids.push_back(scaled(deviceNode(band, *d, tp)));
+          }
         }
-      }
-      kids.push_back(terminal(false));
-      std::vector<const Node*> kp;
-      for (const Node& k : kids) kp.push_back(&k);
-      std::vector<graph::Point2> rel;
-      innerLayout(kp, rel);
-      float x0 = 0.0f, y0 = 0.0f, x1 = c.w, y1 = c.h;
-      for (size_t i = 0; i < kids.size(); ++i) {
-        const graph::Point2 nd = i == 0 || i + 1 == kids.size() ? graph::Point2{0.0f, 0.0f} : nudgeOf(kids[i].device);
-        rel[i].x += nd.x;
-        rel[i].y += nd.y;
-        x0 = std::min(x0, rel[i].x - m::kCapsulePad), y0 = std::min(y0, rel[i].y - m::kCapsulePad);
-        x1 = std::max(x1, rel[i].x + kids[i].w + m::kCapsulePad), y1 = std::max(y1, rel[i].y + kids[i].h + m::kCapsulePad);
-      }
-      const float sw = std::max(1.0f, x1 - x0), sh = std::max(1.0f, y1 - y0);
-      for (size_t i = 0; i < kids.size(); ++i)
-        c.mini.push_back({(rel[i].x - x0) / sw, (rel[i].y - y0) / sh, (rel[i].x + kids[i].w - x0) / sw,
-                          (rel[i].y + kids[i].h - y0) / sh, kids[i].kind == NodeKind::Terminal, kids[i].title});
-      // The box a device of the group stands in: its own, or the nested group's it sits in (any depth).
-      auto kidOf = [&](doc::DeviceId d, std::string_view port, bool source) -> int32_t {
-        if (d == g.id)
-          return port == (source ? doc::kGroupInPort : doc::kGroupOutPort) ? (source ? 0 : static_cast<int32_t>(kids.size()) - 1) : -1;
-        for (size_t i = 1; i + 1 < kids.size(); ++i)
-          if (kids[i].device == d || (doc::isGroupDevice(*members[i - 1]) && doc::groupContains(t.devices, kids[i].device, d)))
-            return static_cast<int32_t>(i);
-        return -1;
-      };
-      for (const doc::Wire& w : doc::wiresOf(p)) {
-        if (w.fromNoteSource() || statusOf(w.id) == doc::WireStatus::Invalid) continue;
-        const int32_t a = kidOf(w.from, w.port, true), b = kidOf(w.to, w.param, false);
-        if (a < 0 || b < 0 || a == b) continue;
-        const Node::MiniBox& ma = c.mini[static_cast<size_t>(a)];
-        const Node::MiniBox& mb = c.mini[static_cast<size_t>(b)];
-        c.miniWires.push_back({ma.x1, (ma.y0 + ma.y1) * 0.5f});
-        c.miniWires.push_back({mb.x0, (mb.y0 + mb.y1) * 0.5f});
+        kids.push_back(terminal(false));
+        std::vector<const Node*> kp;
+        for (const Node& k : kids) kp.push_back(&k);
+        std::vector<graph::Point2> rel;
+        innerLayout(kp, rel);
+        float x0 = 0.0f, y0 = 0.0f, x1 = c.w, y1 = c.h;
+        for (size_t i = 0; i < kids.size(); ++i) {
+          const graph::Point2 nd = i == 0 || i + 1 == kids.size() ? graph::Point2{0.0f, 0.0f} : nudgeOf(kids[i].device);
+          rel[i].x += nd.x;
+          rel[i].y += nd.y;
+          x0 = std::min(x0, rel[i].x - m::kCapsulePad), y0 = std::min(y0, rel[i].y - m::kCapsulePad);
+          x1 = std::max(x1, rel[i].x + kids[i].w + m::kCapsulePad), y1 = std::max(y1, rel[i].y + kids[i].h + m::kCapsulePad);
+        }
+        const float sw = std::max(1.0f, x1 - x0), sh = std::max(1.0f, y1 - y0);
+        for (size_t i = 0; i < kids.size(); ++i)
+          c.mini.push_back({(rel[i].x - x0) / sw, (rel[i].y - y0) / sh, (rel[i].x + kids[i].w - x0) / sw,
+                            (rel[i].y + kids[i].h - y0) / sh, kids[i].kind == NodeKind::Terminal, kids[i].title});
+        // The box a device of the group stands in: its own, or the nested group's it sits in (any depth).
+        auto kidOf = [&](doc::DeviceId d, std::string_view port, bool source) -> int32_t {
+          if (d == g.id)
+            return port == (source ? doc::kGroupInPort : doc::kGroupOutPort) ? (source ? 0 : static_cast<int32_t>(kids.size()) - 1) : -1;
+          if (!d.valid() || !within(d, g.id)) return -1;  // PF.2
+          for (size_t i = 1; i + 1 < kids.size(); ++i)
+            if (kids[i].device == d || (doc::isGroupDevice(*members[i - 1]) && within(d, kids[i].device)))
+              return static_cast<int32_t>(i);
+          return -1;
+        };
+        for (const doc::Wire* wp : wiresOn(t)) {
+          const doc::Wire& w = *wp;
+          if (w.fromNoteSource() || statusOf(w.id) == doc::WireStatus::Invalid) continue;
+          const int32_t a = kidOf(w.from, w.port, true), b = kidOf(w.to, w.param, false);
+          if (a < 0 || b < 0 || a == b) continue;
+          const Node::MiniBox& ma = c.mini[static_cast<size_t>(a)];
+          const Node::MiniBox& mb = c.mini[static_cast<size_t>(b)];
+          c.miniWires.push_back({ma.x1, (ma.y0 + ma.y1) * 0.5f});
+          c.miniWires.push_back({mb.x0, (mb.y0 + mb.y1) * 0.5f});
+        }
       }
       // Everything inside it at any depth (wires to and from them end on the block, as a rack's do) and their ports that
       // cross its edge.
-      for (const doc::Device* d : doc::groupMembersDeep(t.devices, g.id)) c.inner.push_back(d->id);
-      auto inside = [&](doc::DeviceId d) {
-        return d == g.id || std::find(c.inner.begin(), c.inner.end(), d) != c.inner.end();
-      };
-      for (const doc::Wire& w : doc::wiresOf(p)) {
-        if (statusOf(w.id) == doc::WireStatus::Invalid) continue;
-        const bool from = !w.fromNoteSource() && inside(w.from), to = inside(w.to);
-        if (from == to) continue;  // inside (or outside) the group altogether
-        if (to && w.to != g.id) {
-          const std::string key = portKey(c, w.to, w.param);
-          if (c.input(key) < 0) c.inputs.push_back({key, w.param, true});
+      // PF.2: found once per document (DocDerived::closed): the ports it gains here depend on the wires alone.
+      DocDerived::Closed& cd = derived->closed[g.id.value];
+      if (!cd.made) {
+        cd.made = true;
+        const size_t in0 = c.inputs.size(), out0 = c.outputs.size();
+        for (const doc::Device* d : doc::groupMembersDeep(t.devices, g.id)) cd.inner.push_back(d->id);
+        auto inside = [&](doc::DeviceId d) { return d.valid() && within(d, g.id); };  // g or in cd.inner
+        for (const doc::Wire* wp : wiresOn(t)) {
+          const doc::Wire& w = *wp;
+          if (statusOf(w.id) == doc::WireStatus::Invalid) continue;
+          const bool from = !w.fromNoteSource() && inside(w.from), to = inside(w.to);
+          if (from == to) continue;  // inside (or outside) the group altogether
+          if (to && w.to != g.id) {
+            const std::string key = portKey(c, w.to, w.param);
+            if (c.input(key) < 0) c.inputs.push_back({key, w.param, true});
+          }
+          if (from && w.from != g.id) {
+            const std::string key = portKey(c, w.from, w.port);
+            if (c.output(key) < 0) c.outputs.push_back({key, w.port});
+          }
         }
-        if (from && w.from != g.id) {
-          const std::string key = portKey(c, w.from, w.port);
-          if (c.output(key) < 0) c.outputs.push_back({key, w.port});
-        }
+        cd.ins.assign(c.inputs.begin() + static_cast<std::ptrdiff_t>(in0), c.inputs.end());
+        cd.outs.assign(c.outputs.begin() + static_cast<std::ptrdiff_t>(out0), c.outputs.end());
+      } else {
+        c.inputs.insert(c.inputs.end(), cd.ins.begin(), cd.ins.end());
+        c.outputs.insert(c.outputs.end(), cd.outs.begin(), cd.outs.end());
       }
+      c.inner = cd.inner;
       // GU.5: drawn as its panel, a wire into a control inside the group that an element shows ends on that element (no
       // pin: TX.mod-all's anchored port, its key "<name>@<id>" as the panel face answers it). Anchored ports go last, so
       // the pins' rows stay where they were.
@@ -624,7 +793,11 @@ struct Builder {
         // TX.cable-look (the user: the notes "should connect to the frequency component of the phase accumulator, as
         // its supposed to be just adding to the frequency"): the main input lands on the control its signal is added to
         // inside (addedControl), as that control's own wires do. Visual only: the wire still enters the main input.
-        if (const std::string key = addedControl(g, c); !key.empty())
+        if (!cd.addedMade) {
+          cd.addedMade = true;
+          cd.added = addedControl(g, t, c);
+        }
+        if (const std::string& key = cd.added; !key.empty())
           if (const std::optional<LayoutOptions::Anchor> a = opt.controlAnchor(g, key)) {
             Port& q = c.inputs[static_cast<size_t>(c.mainIn)];
             q.anchored = true;
@@ -778,12 +951,18 @@ struct Builder {
       s.h = m::kSumH;
       out.bands[bi].source = addNode(std::move(s));
     }
-    if (!mainLinks) mainLinks.emplace(p);
-    const doc::MainPath& path = paths.emplace(t.id.value, doc::mainPath(t, *mainLinks)).first->second;
-    // (Only a meta block or a group reads its stage: a track without one skips the walk.)
-    bandStages.clear();
-    if (std::any_of(t.devices.begin(), t.devices.end(), [](const doc::DevicePtr& d) { return doc::isMetaDevice(*d) || doc::isGroupDevice(*d); }))
-      bandStages = doc::trackStages(p, t, path);
+    DocDerived::PerTrack& td = derived->tracks[t.id.value];
+    if (!td.made) {  // PF.2: once per document (DocDerived)
+      td.made = true;
+      if (!derived->mainLinks) derived->mainLinks.emplace(p);
+      td.path = doc::mainPath(t, *derived->mainLinks);
+      // (Only a meta block or a group reads its stage: a track without one skips the walk.)
+      if (std::any_of(t.devices.begin(), t.devices.end(), [](const doc::DevicePtr& d) { return doc::isMetaDevice(*d) || doc::isGroupDevice(*d); }))
+        td.stages = doc::trackStages(p, t, td.path);
+      td.racks = doc::findRacks(p, t);
+    }
+    const doc::MainPath& path = td.path;
+    bandStages = &td.stages;
     for (const doc::DevicePtr& d : t.devices) {
       // TX.groups: a member is drawn inside its group's capsule (or, closed, is part of its block).
       if (d->group.valid() && t.deviceIndex(d->group) >= 0) continue;
@@ -797,7 +976,7 @@ struct Builder {
     for (const uint32_t n : out.bands[bi].devices) out.nodes[n].offPath = !path.contains(out.nodes[n].device);  // TX.all-free
     // GU.9: the track-level racks: their chains off the path stack under the one on it; their macros and selector stay
     // on the free row (blocks wired into the chains) but belong to the rack (the Device view's free rack leaves them out).
-    for (const doc::RackInfo& r : doc::findRacks(p, t)) {
+    for (const doc::RackInfo& r : td.racks) {
       if (r.parent.valid()) continue;
       uint32_t anchor = kNone;
       std::vector<uint32_t> rest;
@@ -986,9 +1165,9 @@ struct Builder {
   // where the series was; a nudge puts a block anywhere).
   std::vector<uint32_t> spineBlocks(const Band& b) const {
     std::vector<uint32_t> order;
-    const auto it = paths.find(b.track.value);
-    if (it == paths.end()) return order;
-    for (const doc::Device* d : it->second.blocks)
+    const auto it = derived->tracks.find(b.track.value);
+    if (it == derived->tracks.end() || !it->second.made) return order;
+    for (const doc::Device* d : it->second.path.blocks)
       for (const uint32_t n : b.devices)
         if (out.nodes[n].device == d->id) order.push_back(n);
     return order;
@@ -1537,10 +1716,14 @@ struct Builder {
   }
 
   void run() {
+    ModelCache* mc = opt.layoutCache;
+    if (mc != nullptr) ++mc->epoch;
     prepare();
     for (const doc::TrackPtr& t : p.tracks) buildBand(*t, 0, -1, true);
     for (const doc::TrackPtr& r : p.returns) buildBand(*r, 0, -1, true);
     if (p.master) buildBand(*p.master, 0, -1, true);
+    if (ModelCache* c = opt.layoutCache)  // PF.2: groups gone or closed lose their layouts
+      std::erase_if(c->entries, [&](const auto& e) { return e.second.used != c->epoch; });
     for (uint32_t i = 0; i < out.bands.size(); ++i) outputEdge(i);
     graphEdges();
     layout();
@@ -1679,7 +1862,7 @@ struct Builder {
 
 ProjectPatch buildProjectPatch(const doc::Project& project, const doc::LoweredProject& lowered,
                                const doc::DeviceLibrary* devices, const LayoutOptions& options) {
-  Builder b{project, lowered, devices, options, {}, {}, {}, {}, {}, {}, {}, {}};
+  Builder b{project, lowered, devices, options};
   b.run();
   return std::move(b.out);
 }

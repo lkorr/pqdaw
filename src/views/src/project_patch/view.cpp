@@ -522,7 +522,20 @@ void ProjectPatchView::rebuild() {
   lo.library = devlib != nullptr ? &devlib->library() : &emptyLibrary();
   lo.devices = devlib;
   // A nudge, an opened device or (TL.1) a cable's tap moved: the same graph.
-  if (!lowered_ || (built_ != snap && !tapOnly_) || loweredWith_ != devlib) {
+  // PF.2 (survey #9): the playback link's lowering of this very snapshot when it has handed one over (shown after edits
+  // made while hidden, the link already compiled them): no second lowering here. After an edit while shown the link's
+  // comes a debounce later, so the view lowers itself then (a model of the new document over the old graph would
+  // mismatch for that while).
+  doc::Snapshot sharedFrom;
+  std::shared_ptr<const doc::LoweredProject> shared =
+      ctx_.loweringProvided() ? ctx_.currentLowering(&sharedFrom) : nullptr;
+  const bool needLower = !lowered_ || (built_ != snap && !tapOnly_) || loweredWith_ != devlib;
+  stats_.lastLowerMs = 0.0;
+  if (needLower && shared && sharedFrom == snap) {
+    lowered_ = std::move(shared);
+    loweredWith_ = devlib;
+    ++stats_.sharedLowerings;
+  } else if (needLower) {
     auto low = doc::lower(*snap, lo, lowered_.get());
     if (!low) {
       ctx_.setStatus("Project patch: " + low.error().message);
@@ -531,25 +544,36 @@ void ProjectPatchView::rebuild() {
       lowered_ = std::make_shared<doc::LoweredProject>(std::move(*low));
     }
     loweredWith_ = devlib;
+    stats_.lastLowerMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   }
+  // PF.2: a re-layout of the same document (a resize, a nudge, a fold) skips what only a document change can change
+  // (the song's end, ids gone, groups seen for the first time).
+  const bool sameDoc = built_ == snap;
   built_ = snap;
-  songEnd_ = 8 * kTicksPerWhole;
-  doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) {
-    for (const doc::ClipSlot& c : t.clips) songEnd_ = std::max(songEnd_, c.end());
-  });
+  if (!sameDoc) {
+    songEnd_ = 8 * kTicksPerWhole;
+    doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) {
+      for (const doc::ClipSlot& c : t.clips) songEnd_ = std::max(songEnd_, c.end());
+    });
+  }
   // GU.11: only a group has an inside (it opens as its capsule: closedGroups_); no block expands to a scene of its own.
   std::vector<ExpandedSize> sizes;
   std::vector<InnerScene> inner;
-  std::erase_if(bandExpanded_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
-  if (openBand_.valid() && doc::findTrackPtr(*snap, openBand_) == nullptr) openBand_ = {};
-  if (focus_.valid() && doc::findDevice(*snap, focus_).device == nullptr) focus_ = {};
+  if (!sameDoc) {
+    std::erase_if(bandExpanded_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
+    if (openBand_.valid() && doc::findTrackPtr(*snap, openBand_) == nullptr) openBand_ = {};
+    if (focus_.valid() && doc::findDevice(*snap, focus_).device == nullptr) focus_ = {};
+  }
   LayoutOptions opt;
+  opt.layoutCache = &layoutCache_;
+  opt.snapshot = snap;
+  opt.lowering = lowered_;
   opt.expanded = sizes;
   opt.expandedMixers = expandedMixers_;
   opt.nudges = &ctx_.store().view().patchNudges;
-  std::erase_if(closedGroups_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
+  if (!sameDoc) std::erase_if(closedGroups_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
   // GU.5b: groups seen for the first time start closed when they have a panel (seenGroups_).
-  doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) {
+  if (!sameDoc) doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) {
     for (const doc::DevicePtr& d : t.devices) {
       if (!doc::isGroupDevice(*d)) continue;
       const auto at = std::lower_bound(seenGroups_.begin(), seenGroups_.end(), d->id.value);

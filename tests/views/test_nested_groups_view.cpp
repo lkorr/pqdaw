@@ -182,6 +182,75 @@ TEST_CASE("nested groups view: capsules in capsules — the opened one inside it
   CHECK(u.pp().nodes[u.node(u.ids.wt)].x == doctest::Approx(wx + 40.0f));
 }
 
+// PF.2: an opened group's inner layout is cached across builds (ModelCache). A re-layout elsewhere reuses it; a block
+// inside it resized (view state) or a wire among its contents deleted (the document) lays it out again, exactly as a
+// fresh view of the same project does.
+TEST_CASE("nested groups view (PF.2): an opened group's cached layout follows edits inside it, as a fresh view lays it out") {
+  struct Placed {
+    uint32_t device;
+    uint8_t kind;
+    float x, y, w, h;
+    bool operator<(const Placed& o) const { return device != o.device ? device < o.device : kind < o.kind; }
+    bool operator==(const Placed&) const = default;
+  };
+  // Everything directly in the instrument group's capsule, relative to it.
+  auto inner = [](const Ui& u) {
+    const uint32_t cap = u.node(u.ids.group);
+    const Node& c = u.pp().nodes[cap];
+    std::vector<Placed> v;
+    for (const Node& n : u.pp().nodes)
+      if (n.capsule == cap) v.push_back({n.device.value, static_cast<uint8_t>(n.kind), n.x - c.x, n.y - c.y, n.w, n.h});
+    std::sort(v.begin(), v.end());
+    return v;
+  };
+  Ui a;
+  const std::vector<Placed> before = inner(a);
+  REQUIRE(before.size() >= 4);
+  // A re-layout that does not touch the group (a block of another band nudged): the layout comes from the cache.
+  const uint64_t hits0 = a.view().layoutCache().hits;
+  a.view().nudge(a.ids.fx.value, 0.0f, 30.0f);
+  a.d.step();
+  CHECK(a.view().layoutCache().hits > hits0);
+  CHECK(inner(a) == before);
+  // View state: a block inside the capsule scaled. The layout is made again (a miss), as a fresh view makes it.
+  const uint64_t misses0 = a.view().layoutCache().misses;
+  REQUIRE(a.view().setBlockScale(a.ids.env, 2.0f));
+  a.d.step();
+  CHECK(a.view().layoutCache().misses > misses0);
+  CHECK(inner(a) != before);
+  {
+    Ui b;
+    REQUIRE(b.view().setBlockScale(b.ids.env, 2.0f));
+    b.d.step();
+    CHECK(inner(a) == inner(b));
+  }
+  // The document: a wire among the capsule's contents deleted (both ends directly inside the group).
+  doc::WireId cut;
+  for (const doc::Wire& w : doc::wiresOf(*a.ctx.doc())) {
+    if (w.fromNoteSource() || w.toMixer() || cut.valid()) continue;
+    const doc::Device* from = a.device(w.from);
+    const doc::Device* to = a.device(w.to);
+    if (from != nullptr && to != nullptr && from->group == a.ids.group && to->group == a.ids.group && w.from != w.to) cut = w.id;
+  }
+  REQUIRE(cut.valid());
+  const uint64_t misses1 = a.view().layoutCache().misses;
+  auto e = doc::ops::deleteWires(*a.ctx.doc(), std::vector<doc::WireId>{cut});
+  REQUIRE(e.ok());
+  REQUIRE(a.ctx.store().dispatch(e->command).ok());
+  a.d.step();
+  CHECK(a.view().layoutCache().misses > misses1);
+  {
+    Ui b;
+    REQUIRE(b.view().setBlockScale(b.ids.env, 2.0f));
+    auto eb = doc::ops::deleteWires(*b.ctx.doc(), std::vector<doc::WireId>{cut});
+    REQUIRE(eb.ok());
+    REQUIRE(b.ctx.store().dispatch(eb->command).ok());
+    b.d.step();
+    CHECK(inner(a) == inner(b));
+  }
+  CHECK(checkAgainstGraph(a.pp(), *a.ctx.doc(), *a.view().lowered()) == "");
+}
+
 TEST_CASE("nested groups view: Ctrl+G inside a capsule nests (one step, the wires as they were), Ctrl+Shift+G unnests "
           "(the same document) — real key dispatch") {
   Ui u;

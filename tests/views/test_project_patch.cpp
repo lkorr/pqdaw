@@ -2763,6 +2763,23 @@ TEST_CASE("project patch (TX.resize): 64 tracks — an S-drag step (re-layout + 
                                            << lay[lay.size() / 2] << " ms (" << v.stats().rescales << " rescales, "
                                            << v.canvas().panelCount() << " panels)");
   CHECK(ms[ms.size() / 2] < 1000.0 / 120.0);
+  // PF.2: a structural edit (a device switched off and on): the model and scene after the lowering (nothing of the
+  // last build reused but the opened groups' layouts) stay in the tens of ms. The lowering (pq/document) is reported.
+  std::vector<double> edits, lowers;
+  for (int i = 0; i < 6; ++i) {
+    auto e = doc::ops::setDevicesActive(*u.ctx.doc(), std::vector<doc::DeviceId>{dev}, i % 2 != 0);
+    REQUIRE(e.ok());
+    REQUIRE(u.ctx.store().dispatch(e->command).ok());
+    u.d.step();
+    REQUIRE(v.stats().lastLowerMs > 0.0);
+    edits.push_back(v.stats().lastRebuildMs - v.stats().lastLowerMs);
+    lowers.push_back(v.stats().lastLowerMs);
+  }
+  std::sort(edits.begin(), edits.end());
+  std::sort(lowers.begin(), lowers.end());
+  MESSAGE("64 tracks: structural edit: model + scene median " << edits[edits.size() / 2] << " ms (max " << edits.back()
+                                                               << "), lowering median " << lowers[lowers.size() / 2] << " ms");
+  CHECK(edits[edits.size() / 2] < 50.0);
 }
 
 // ---- TX.block-drag: live block drag, blocks never overlap, tiny resize -------------------------------------------------

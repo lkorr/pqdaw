@@ -587,7 +587,13 @@ bool CableLayer::refresh() {
   std::unordered_set<uint32_t> shownBlocks;
   if (shownTrack != nullptr)
     for (const doc::DevicePtr& d : shownTrack->devices) shownBlocks.insert(d->id.value);
-  for (const doc::Wire& w : doc::wiresOf(p)) {
+  // PF.2: a cable has an end here only on the shown chain (its blocks, its note source): every other wire is skipped
+  // before any lookup — this runs on every layout pass (an S-drag step in the project patch view: 8.5k wires).
+  static const doc::WireList noWires;
+  for (const doc::Wire& w : chain != nullptr ? doc::wiresOf(p) : noWires) {
+    if (!(w.fromNoteSource() ? w.noteSource == shown : shownBlocks.count(w.from.value) != 0) &&
+        !(!w.toMixer() && shownBlocks.count(w.to.value) != 0))
+      continue;
     if (path.isLink(w.id)) continue;
     // GU.9: a rack's own wiring — its chains' feeds and sums, its macros' mappings, its selector — is its frame's (the
     // rows, the macro panel, Map mode), not a cable.

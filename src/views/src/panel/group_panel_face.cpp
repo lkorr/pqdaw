@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <array>
+#include <memory>
+#include <span>
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -281,6 +283,44 @@ ui::TileAtlas* GroupPanelFace::atlas() const noexcept {
   return t != nullptr && t->resources() != nullptr ? t->resources()->tiles : nullptr;
 }
 
+// PF.2: element `e`'s live layer at `scale`, averaged over its rect: each triangle's area times its mean vertex colour
+// (premultiplied), summed over the element's device area (coverage clamped to 1). Remade only when the element, its
+// live key (a value moved; an element that cannot tell keeps its swatch until the scale changes) or the scale by more
+// than a quarter changes: at this size its look is a pixel or two.
+ui::Rgba GroupPanelFace::swatchOf(Element& e, const ElementEnv& env, float scale, Swatch& sw) {
+  const uint64_t key = e.liveKey(*target_);
+  const bool scaleOk = sw.scale > 0.0f && std::fabs(scale / sw.scale - 1.0f) <= 0.25f;
+  if (sw.of == &e && scaleOk && (key == sw.key || key == Element::kAnyChange)) return sw.colour;
+  if (!swatchList_) swatchList_ = std::make_unique<ui::DrawList>();
+  ui::DrawList& dl = *swatchList_;
+  dl.reset(4096, 4096);
+  ui::FacePainter q(dl, {{0.0f, 0.0f}, scale});
+  e.paintLive(q, env);
+  const std::span<const ui::Vertex> v = dl.vertices();
+  const std::span<const uint32_t> ix = dl.indices();
+  double r = 0.0, g = 0.0, b = 0.0, a = 0.0;
+  for (size_t k = 0; k + 2 < ix.size(); k += 3) {
+    const ui::Vertex& p0 = v[ix[k]];
+    const ui::Vertex& p1 = v[ix[k + 1]];
+    const ui::Vertex& p2 = v[ix[k + 2]];
+    const double area = 0.5 * std::fabs(static_cast<double>(p1.pos.x - p0.pos.x) * (p2.pos.y - p0.pos.y) -
+                                        static_cast<double>(p2.pos.x - p0.pos.x) * (p1.pos.y - p0.pos.y));
+    for (const ui::Vertex* q3 : {&p0, &p1, &p2}) {
+      const double w = area / 3.0 * ui::alphaOf(q3->col) / 255.0;
+      r += w * ui::redOf(q3->col), g += w * ui::greenOf(q3->col), b += w * ui::blueOf(q3->col), a += w;
+    }
+  }
+  const Rect rr = e.rect();
+  const double cell = std::max(1e-6, static_cast<double>(rr.x1 - rr.x0) * (rr.y1 - rr.y0) * scale * scale);
+  ui::Rgba col = 0;
+  if (a > 0.0) {
+    const auto ch = [&](double c) { return static_cast<uint32_t>(std::clamp(std::lround(c / a), 0l, 255l)); };
+    col = ui::rgba(ch(r), ch(g), ch(b), static_cast<uint32_t>(std::lround(std::min(1.0, a / cell) * 255.0)));
+  }
+  sw = {&e, scale, key, col};
+  return col;
+}
+
 void GroupPanelFace::paintLive(ui::FacePainter& p, const FaceEnv& env) {
   (void)sync();
   const ui::Theme& th = *env.theme;
@@ -295,6 +335,10 @@ void GroupPanelFace::paintLive(ui::FacePainter& p, const FaceEnv& env) {
   ElementTiles& cache = elementTiles();
   const float sc = p.transform().scale;
   const Vec2 o0 = p.transform().origin;
+  // PF.2: a panel only a few device px across (the project patch zoomed out to a whole project: hundreds of panels
+  // ~4 px wide) is its plate and its elements' static layers (a tile quad each); the live layers (values, text, dots:
+  // ~2k vertices a panel) are below a pixel there.
+  const bool standIn = std::max(ws.x, ws.y) * sc < kStandInPx;
   tilesWanted_ = 0.0f;
   std::vector<int8_t>& memo = freshMemo();
   ElementEnv ee;
@@ -327,11 +371,19 @@ void GroupPanelFace::paintLive(ui::FacePainter& p, const FaceEnv& env) {
         ++stats_.direct;
       }
     }
+    ++stats_.drawn;
+    if (standIn) {  // PF.2: its live layer as one swatch of its mean colour
+      if (swatches_.size() != elements_.size()) swatches_.assign(elements_.size(), {});
+      ee.hovered = ee.focused = false;
+      const ui::Rgba col = swatchOf(e, ee, sc, swatches_[i]);
+      if (ui::alphaOf(col) != 0)
+        p.drawList().addRoundedRectFilled({o.x, o.y, o.x + (r.x1 - r.x0) * sc, o.y + (r.y1 - r.y0) * sc}, 0.0f, col);
+      continue;
+    }
     ui::FacePainter q = p.at({o, sc});
     ee.hovered = hovered_ == static_cast<int32_t>(i);
     ee.focused = focus_ == static_cast<int32_t>(i);
     e.paintLive(q, ee);
-    ++stats_.drawn;
   }
   // GU.5: a mod source's cable on the pointer: a hanging curve from its handle, the control a release wires outlined.
   if (cable_ >= 0 && static_cast<size_t>(cable_) < elements_.size()) {

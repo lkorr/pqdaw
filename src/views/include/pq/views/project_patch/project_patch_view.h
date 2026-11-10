@@ -961,6 +961,8 @@ public:
     uint64_t rebuilds = 0;       // lower + model + scene
     uint64_t repaints = 0;       // document changes that only repainted
     double lastRebuildMs = 0.0;  // the last rebuild's wall time (lower + model + scene)
+    double lastLowerMs = 0.0;    // PF.2: its lowering's part (0: none, or the link's lowering taken)
+    uint64_t sharedLowerings = 0;  // PF.2: rebuilds that took the playback link's lowering instead of lowering
     uint64_t morphFrames = 0;
     double lastMorphPaintMs = 0.0;
     // Re-layouts without a lowering (a lane resize, a fold, a nudge) and the last one's wall time; playhead reads while
@@ -972,6 +974,8 @@ public:
     uint64_t rescales = 0;  // TX.resize: block scale changes (each a re-layout)
   };
   const Stats& stats() const noexcept { return stats_; }
+  // PF.2: what a build keeps for the next (the opened groups' layouts: hits / misses, tests).
+  const ModelCache& layoutCache() const noexcept { return layoutCache_; }
 
   // ---- widget ---------------------------------------------------------------------------------------------------
   void arrange(ui::LayoutPass& pass) override;
@@ -1038,8 +1042,9 @@ private:
   ProjectCanvas* canvas_ = nullptr;
   MeterSource* meters_ = nullptr;
   doc::Snapshot built_;               // the snapshot the model was built from
-  std::shared_ptr<doc::LoweredProject> lowered_;
+  std::shared_ptr<const doc::LoweredProject> lowered_;  // ours, or (PF.2) the playback link's of the same snapshot
   const doc::DeviceLibrary* loweredWith_ = nullptr;
+  ModelCache layoutCache_;  // PF.2
   ProjectPatch patch_;
   ProjectScene scene_;
   bool stale_ = true;

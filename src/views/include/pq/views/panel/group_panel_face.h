@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "pq/document/panel.h"
+#include "pq/ui/draw_list.h"
 #include "pq/ui/widget.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/panel/element.h"
@@ -53,6 +54,10 @@ public:
   FaceShape shape() const noexcept override;
   bool ownsPlate() const noexcept override { return !round_; }
   static constexpr float kCorner = 8.0f;
+  // PF.2: below this size (device px, the panel's longer side) paintLive draws a stand-in: the plate, the elements'
+  // static layers, and for each element's live layer one swatch of its mean colour over its rect (what a pixel or two
+  // of it averages to), remade when its live key or the scale (by a quarter) changes.
+  static constexpr float kStandInPx = 6.0f;
 
   // ---- painting ----
   void paintLive(ui::FacePainter& p, const FaceEnv& env) override;
@@ -159,6 +164,16 @@ private:
   };
   mutable AnyReader any_;
   FaceShape roundShape_;
+  // PF.2: the stand-in's swatches (one per element, by index) and the draw list their live layers are averaged from.
+  struct Swatch {
+    const Element* of = nullptr;
+    float scale = 0.0f;
+    uint64_t key = 0;
+    ui::Rgba colour = 0;
+  };
+  std::vector<Swatch> swatches_;
+  std::unique_ptr<ui::DrawList> swatchList_;
+  ui::Rgba swatchOf(Element& e, const ElementEnv& env, float scale, Swatch& sw);
 };
 
 // GU.5b: the outline a panel takes from its bottom element (Element::outline, in panel units), nullopt: a rounded rect.

@@ -324,7 +324,32 @@ struct ExpandedSize {
   float w = 0, h = 0;  // inner bounds (world units); the frame adds kExpandedPad around and the title strip on top
 };
 
+// PF.2: what a build keeps for the next one, owned by the view (UI thread only).
+//   layouts   opened groups' inner circuit layouts (graph::autoLayout, the costly part of a re-layout). An entry is
+//             keyed by its group and the exact bytes of everything the layouter reads (its contents' roles, sizes,
+//             port names and pin rows, the wires among them), so an edit that changes any of them misses and lays out
+//             again; a build drops the entries it did not use.
+//   derived   the tables derived from the document alone (the wires by track; each track's main path, stages and
+//             racks), reused while LayoutOptions::snapshot and ::lowering are the very ones of the last build (a
+//             resize, a nudge, a fold: view state only); held with them, so the pointers into the document stay valid.
+struct ModelCache {
+  struct Entry {
+    std::string key;                  // the layouter's inputs, serialised
+    std::vector<graph::Point2> pos;   // each content's top-left from the layouter
+    uint64_t used = 0;                // the build that last used it
+  };
+  std::unordered_map<uint32_t, Entry> entries;  // by group device id
+  uint64_t epoch = 0;
+  uint64_t hits = 0, misses = 0;  // layouts reused / made (tests)
+  std::shared_ptr<const void> snapshot, lowering;
+  std::shared_ptr<void> derived;
+};
+
 struct LayoutOptions {
+  // PF.2: the view's cache (null: nothing kept) and what the document-derived part of it is keyed on (the build's
+  // snapshot and lowering; null: not kept).
+  ModelCache* layoutCache = nullptr;
+  std::shared_ptr<const void> snapshot, lowering;
   std::span<const ExpandedSize> expanded;
   std::span<const doc::TrackId> expandedMixers;  // mixer strips shown expanded (one row per send)
   const std::unordered_map<uint32_t, doc::PatchNudge>* nudges = nullptr;  // ViewState::patchNudges
