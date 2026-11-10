@@ -295,7 +295,7 @@ void ViewContext::newProject() {
   projectDir_.clear();
   afterLoad();
   setStatus("New project");
-  if (wasUntitled && unsavedDiscard_) unsavedDiscard_();  // T6.7b: the untitled project's recordings go with it
+  if (wasUntitled && unsavedDiscard_ && !unsavedKept_) unsavedDiscard_();  // T6.7b: the untitled project's recordings go with it
 }
 
 Status ViewContext::openProject(std::string_view dirUtf8) {
@@ -308,7 +308,7 @@ Status ViewContext::openProject(std::string_view dirUtf8) {
   const bool wasUntitled = projectDir_.empty();
   projectDir_ = std::string(dirUtf8);
   afterLoad();
-  if (wasUntitled && unsavedDiscard_) unsavedDiscard_();  // T6.7b
+  if (wasUntitled && unsavedDiscard_ && !unsavedKept_) unsavedDiscard_();  // T6.7b
   if (missing_.empty()) setStatus("Opened " + projectName());  // else the status line says which samples are missing
   return Ok{};
 }
@@ -339,7 +339,10 @@ void ViewContext::moveUnsavedRecordings(std::string_view dirUtf8) {
     if (ec) {  // in use or another volume: a copy (the original stays until the unsaved folder is cleaned)
       ec.clear();
       fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
-      if (ec) continue;
+      if (ec) {  // T6.7b: the saved project keeps referencing the unsaved folder: it must never be deleted
+        unsavedKept_ = true;
+        continue;
+      }
     }
     doc::SampleRef n = r;
     n.path = doc::storedSamplePath(str(to), dirUtf8);
@@ -564,7 +567,7 @@ void ViewContext::requestSaveAs(std::function<void()> then) {
 
 bool ViewContext::confirmQuit(std::function<void()> quitAfterSave) {
   auto leave = [this] {  // T6.7b: an untitled project left behind takes its recordings with it
-    if (projectDir_.empty() && unsavedDiscard_) unsavedDiscard_();
+    if (projectDir_.empty() && unsavedDiscard_ && !unsavedKept_) unsavedDiscard_();
     return true;
   };
   if (!dirty() || !dialogs_) return leave();

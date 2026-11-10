@@ -873,7 +873,8 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   untitled; a session still running then ends WITHOUT a commit. What goes is the whole run's session folder
   `Unsaved\<pid-time>` (one per process, so only that project's), never `Unsaved` itself or another run's; nothing
   cleans folders of earlier crashed runs. A first save whose move AND copy both failed still references the unsaved
-  path; a later untitled discard deletes it (no reference check). (3) The Input Channels preference is removed
+  path: the folder is then KEPT for the rest of the run (`ViewContext::unsavedRecordingsKept`, no discard deletes it;
+  chosen over per-project subfolders as the smaller change), so a saved project never loses a file. (3) The Input Channels preference is removed
   (`AudioSettings::inputChannels`, the settings key, the chooser): inputs open by use. Every audio track with an input
   counts, armed or not (arming or a monitor change must not reopen the driver); any change of the count reopens the
   stream (a short gap), held back while a session runs. (4) WASAPI capture is shared mode only (exclusive capture not

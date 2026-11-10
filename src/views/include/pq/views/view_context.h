@@ -224,8 +224,11 @@ public:
   void setUnsavedRecordingDir(std::string dirUtf8) { unsavedRecordingDir_ = std::move(dirUtf8); }
   // T6.7b: called when an untitled project is discarded — replaced by newProject() / a successful openProject(), or
   // left by a quit confirmQuit() lets go ahead (saved first: the project is titled then, nothing is discarded). The
-  // playback link deletes the unsaved recordings folder there (ProjectLink::discardUnsavedRecordings).
+  // playback link deletes the unsaved recordings folder there (ProjectLink::discardUnsavedRecordings). Once a save left a
+  // reference inside that folder (a recording neither moved nor copied), the hook is never called again in this run:
+  // the folder is kept (unsavedRecordingsKept()).
   void setUnsavedDiscardHook(std::function<void()> fn) { unsavedDiscard_ = std::move(fn); }
+  bool unsavedRecordingsKept() const noexcept { return unsavedKept_; }
   const std::string& projectDir() const noexcept { return projectDir_; }
   std::string projectName() const { return projectNameOf(projectDir_); }
   // The document differs from the last saved/loaded one (pointer comparison: undoing back to it is clean again), or
@@ -567,6 +570,7 @@ private:
   std::string projectDir_;
   std::string unsavedRecordingDir_;  // T6.7
   std::function<void()> unsavedDiscard_;  // T6.7b
+  bool unsavedKept_ = false;              // T6.7b: a saved project references the unsaved folder
   bool lastDirty_ = false;
   bool viewStateDirty_ = false;  // ViewState edited since the last save / load
   doc::ListenerId storeListener_ = 0;

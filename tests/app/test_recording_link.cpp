@@ -617,3 +617,45 @@ TEST_CASE("T6.7b recording: a session still running when its untitled project is
   CHECK(r.link->recordCommits() == 0);
   CHECK(r.track(t).takes.empty());
 }
+
+TEST_CASE("T6.7b recording: a first save that could neither move nor copy a recording keeps the unsaved folder; a later "
+          "untitled discard never deletes what the saved project references") {
+  Rig r;
+  const TrackId t = r.audioTrack(AudioInput{0, 1});
+  r.arm(t);
+  r.start();
+  views::ViewContext ctx(*r.link);
+  ctx.store().reset(r.store.current());  // the context's project: the armed track
+  r.store.unsubscribe(r.sub);
+  r.link->attach(ctx);  // commits go to the context's store now
+  r.link->flush();
+  r.run(10);
+  r.link->record(0);
+  r.run(200);
+  r.link->stop();
+  r.run(4);
+  REQUIRE(r.link->recordCommits() == 1);
+  const Track* tr = findTrackPtr(*ctx.doc(), t);
+  REQUIRE(tr != nullptr);
+  REQUIRE(tr->clips.size() == 1);
+  const SampleRef* ref = findSample(*ctx.doc(), tr->clips[0].audio->sample);
+  REQUIRE(ref != nullptr);
+  const std::string refPath = ref->path;
+  const fs::path wav = fs::path(std::u8string(reinterpret_cast<const char8_t*>(refPath.data()), refPath.size()));
+  REQUIRE(fs::exists(wav));
+  // A directory where the save would put the file: neither the move nor the copy can succeed.
+  const fs::path song = r.dir / "Song";
+  fs::create_directories(song / "samples" / "recorded" / wav.filename());
+  REQUIRE(ctx.saveProjectAs(song.string()).ok());
+  CHECK(ctx.unsavedRecordingsKept());
+  const SampleRef* after = findSample(*ctx.doc(), tr->clips[0].audio->sample);
+  REQUIRE(after != nullptr);
+  CHECK(after->path == refPath);  // still the unsaved file
+  // New → an untitled project; discarding it (New again, quit) keeps the folder the saved project points into.
+  ctx.newProject();
+  ctx.newProject();
+  CHECK(ctx.confirmQuit([] {}));
+  CHECK(fs::exists(wav));
+  r.link->detach();
+  r.sub = r.store.subscribe([&r](const StoreEvent& e) { r.link->onDocumentChange(e); });
+}
