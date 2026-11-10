@@ -391,3 +391,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow 56/56 on cbc70a70 (parallel 4); T6.7b recording cases 5/5 incl. failed-move-then-discard; loopback click 1440 vs measured 1424 frames.
 - Perf / CPU-efficiency check: no inputs = nothing extra; one conversion pass per capture packet + one copy per channel per period; RtScope clean.
 - Notes/blockers: Q?-T6.7b-a; goldens audio-prefs(-wasapi), library-prefs, midi-prefs re-recorded; real mic / ASIO reopen hand checks in REVIEW.
+
+## 2026-11-10 · T6.11 merged · main
+- Did: merged review/M6 (b3c21922): docs/reviews/M6.md + probes in docs/reviews/M6/, 21 ship bench rows (T6.11), hand checks appended to REVIEW. Filed T6.x-fix-rec, -warp, -pdc, -ui.
+- Verified: reviewer release -Full 88/88, 0 warnings; ship pq_bench_dsp/pdc/timeline/playback linked.
+- Perf / CPU-efficiency check: 64 audio tracks at rate 1 regressed 13.7 → ~17 µs per block (M13); stretch pool 56.9 MiB @48 kHz allocated eagerly (L15).
+- Notes/blockers: M6 stays open until C1, C2, H1–H3 are fixed.
