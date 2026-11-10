@@ -373,3 +373,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker pq_tests_views 642/642, test_comping_link (playback) passes, -Affected 45/45 after rebase; new goldens arrangement-takes, arrangement-comp, none moved.
 - Perf / CPU-efficiency check: 8 tracks × 8 takes × 50 clips paint 0.24 ms median (budget 2 ms); folded/take-less tracks add nothing.
 - Notes/blockers: Q?-T6.10-a; take rename from header, lane resize and a promote gesture not built (ops exist).
+
+## 2026-11-10 · T6.9 merged · main
+- Did: merged task/T6.9-capture-midi (247c8d46): engine::CaptureRing per armed/monitored MIDI track, app::planCapture (playing → exact placement; stopped → tempo estimate, looped clip at the marker's bar), ops::captureClip, transport.captureMidi Ctrl+Shift+C + control-bar button.
+- Verified: worker playback T6.9 4/4, timeline live input 15/15 (RtScope), views default 100 %; -Affected after rebase: 90 goldens moved only in the control-bar band (new button) and re-recorded; views SIGSEGV and playback_s3 wavetable timing = known flakes, passed alone.
+- Perf / CPU-efficiency check: note-on = slot write + atomic store; idle block = one relaxed store; reading/planning on the UI thread only.
+- Notes/blockers: Q?-T6.9-a; ~2–3 MB per listening track (estimate); no pickup detection.
