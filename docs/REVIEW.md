@@ -1248,3 +1248,10 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - Inputs by use: with ASIO, set a track's input to In 3 → the driver reopens once (a short gap) with 3 inputs; arming /
   Monitor do not reopen; changing inputs while recording reopens only after Stop.
 - Untitled project with a recording → File → New → "Don't save": `%LOCALAPPDATA%\pqdaw\Unsaved\<pid-time>` is gone.
+
+## 2026-11-10 · T6.11 · M6 review: hand checks only you can do (docs/reviews/M6.md)
+- **ASIO multi-input recording** (your interface, buffer 64): arm 4+ tracks on different inputs, record 2 minutes with a click into one input looped back from an output. Check that each take lines up with the metronome (zoom to samples; Preferences → Record offset should only need a small trim), that a punch region records exactly between the markers, and that loop recording gives one take lane per pass with no gap at the wrap (with punch = loop region the reviewer measured `latency` frames missing per pass, M6).
+- **Save while recording** (C1, do it on a throwaway project): new untitled project, record, press Ctrl+S during the take, stop, then New and Quit. Reopen the saved project: today the take is missing. Confirms the fix later.
+- **Real MIDI controller**: Keys and Hz modes on a 31-EDO track; play, bend, Capture MIDI (Ctrl+Shift+C). Then unplug the controller while holding the pitch wheel off-centre, plug it back in (or another device) and play: today the first notes keep the old bend (L1). Check no stuck notes after unplugging mid-chord.
+- **WASAPI microphone on a different device than the output**, 10+ minutes of continuous recording: listen for a jump or a short silence at some point (clock drift, M7).
+- **Complex clips at 96 kHz** (or a Complex clip transposed −12 st) at buffer 64: listen for clicks / crackle and watch the CPU meter (C2).
