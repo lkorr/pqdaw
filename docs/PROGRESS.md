@@ -397,3 +397,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: reviewer release -Full 88/88, 0 warnings; ship pq_bench_dsp/pdc/timeline/playback linked.
 - Perf / CPU-efficiency check: 64 audio tracks at rate 1 regressed 13.7 → ~17 µs per block (M13); stretch pool 56.9 MiB @48 kHz allocated eagerly (L15).
 - Notes/blockers: M6 stays open until C1, C2, H1–H3 are fixed.
+
+## 2026-11-10 · T6.x-fix-rec merged · main
+- Did: merged task/T6.x-fix-rec (23c16eaa): C1, H1, M4, M5, M6, M8, M9, L1, L2, L11, L16 from docs/reviews/M6.md fixed (see TASKS note).
+- Verified: worker -Affected -Slow 64/67 after rebase; timeline preview waitFor + playback_s3 wavetable = known flakes, playback_s2 loop-test rig overflow fixed (pump every 64 blocks); the 3 re-run alone 3/3; media 48/48; recording timing tests ×5.
+- Perf / CPU-efficiency check: recorder adds a 256-entry run ring per block, RtScope clean; writer thread no longer blocks stream refills.
+- Notes/blockers: files are `offset` frames shorter (pre-session frames not written); L13 stale-folder recovery still open (T6.x-fix-ui).
