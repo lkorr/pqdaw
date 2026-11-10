@@ -15,8 +15,10 @@
 #include <llvm/Transforms/Scalar/LICM.h>
 #include <llvm/Transforms/Scalar/LoopPassManager.h>
 #include <llvm/Transforms/Scalar/LoopRotation.h>
+#include <llvm/Transforms/Scalar/LoopStrengthReduce.h>
 #include <llvm/Transforms/Scalar/SROA.h>
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>
+#include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/MemoryBuffer.h>
@@ -29,6 +31,7 @@
 #include <llvm/Transforms/Utils/Cloning.h>
 #include <llvm/Support/FileSystem.h>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstdlib>
 #include <mutex>
@@ -65,6 +68,12 @@ void initialiseLlvmOnce() {
     llvm::install_bad_alloc_error_handler(&onLlvmBadAlloc);
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
+    // PF.1: no Loop Strength Reduction in the machine-code pipeline: it was 15 % (+ IV Users 3.4 %) of a compile, spent
+    // on the long global stages, where it gained no run time (bench/RESULTS.md "PF.1"). Small functions still get it
+    // from the light IR pipeline (SmallFunctionLsr). LLVM's options are process-wide; only the JIT runs LLVM here.
+    const char* args[] = {"pqdaw", "-disable-lsr"};
+    [[maybe_unused]] const bool parsed = llvm::cl::ParseCommandLineOptions(2, args, "", &llvm::nulls());
+    assert(parsed && "LLVM has no -disable-lsr");
   });
 }
 
@@ -73,6 +82,19 @@ void initialiseLlvmOnce() {
 // which keeps per-sample state (z1, phasor …) in registers across a loop. Measured against LLVM's O2/O3 pipelines
 // (bench/RESULTS.md): the same run time within noise at 3–5× less compile time. InstCombine is left out on purpose:
 // with it the interleaved fused loops ran slower (chain32_fast 4.5 vs 3.8 ns/sample).
+//
+// PF.1: Loop Strength Reduction runs here, on small functions only, instead of in the machine-code pipeline (which runs
+// it on every loop; -disable-lsr, initialiseLlvmOnce). On the long global stages it cost ~15 % of a compile and
+// gained nothing; on small voice loops it still pays (fm_osc x8: 1.15 vs 1.40 ns/voice-sample without it).
+constexpr unsigned kLsrMaxInstructions = 2000;
+struct SmallFunctionLsr : llvm::PassInfoMixin<SmallFunctionLsr> {
+  llvm::FunctionToLoopPassAdaptor lsr = llvm::createFunctionToLoopPassAdaptor(llvm::LoopStrengthReducePass());
+  llvm::PreservedAnalyses run(llvm::Function& f, llvm::FunctionAnalysisManager& fam) {
+    if (f.getInstructionCount() > kLsrMaxInstructions) return llvm::PreservedAnalyses::all();
+    return lsr.run(f, fam);
+  }
+};
+
 llvm::ModulePassManager lightPipeline() {
   llvm::FunctionPassManager fpm;
   fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
@@ -83,6 +105,7 @@ llvm::ModulePassManager lightPipeline() {
   lpm.addPass(llvm::LICMPass(llvm::LICMOptions()));
   fpm.addPass(llvm::createFunctionToLoopPassAdaptor(std::move(lpm), /*UseMemorySSA=*/true));
   fpm.addPass(llvm::SimplifyCFGPass());
+  fpm.addPass(SmallFunctionLsr());
   llvm::ModulePassManager mpm;
   mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
   return mpm;
@@ -245,6 +268,7 @@ Compiler::~Compiler() = default;
 
 Result<std::unique_ptr<Compiler>> Compiler::create(const CompilerConfig& config) {
   if (config.codeGenLevel > 3) return Error{ErrorCode::InvalidArgument, "jit: codeGenLevel must be 0..3", {}};
+  startBinaryIdentity();  // PF.1: hashed while LLJIT is created and the first unit is lowered
   initialiseLlvmOnce();
   auto jtmb = llvm::orc::JITTargetMachineBuilder::detectHost();
   if (!jtmb) return llvmError("detecting the host", jtmb.takeError());

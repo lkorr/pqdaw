@@ -2364,7 +2364,9 @@ TEST_CASE("project patch (TX.mod-all): 32 wires onto knobs — a full frame with
   u.d.advance(1.0);
   REQUIRE(v.canvas().lod() == circuit::CircuitCanvas::Lod::Mid);
   uint32_t legs = 0;
-  for (const circuit::SceneWire& w : v.scene().scene->wires) legs += w.control != UINT32_MAX ? 1 : 0;
+  // The LFO modulation wires only: since TX.cable-look each track's notes cable also ends on a control (the Phase
+  // Accumulator's frequency, the control its main input is added to), but it is a signal path, not modulation.
+  for (const circuit::SceneWire& w : v.scene().scene->wires) legs += w.control != UINT32_MAX && w.style.modulation ? 1 : 0;
   CHECK(legs == 32);
   auto median = [&] {
     std::vector<double> ms;

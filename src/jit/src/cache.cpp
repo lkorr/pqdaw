@@ -21,9 +21,11 @@
 #include <cstring>
 #include <mutex>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 
 #include "pq/jit/cache.h"
+#include "pq/jit/compiler.h"  // startBinaryIdentity
 
 namespace pq::jit {
 
@@ -163,7 +165,11 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
   h.put(s.ops.size());
   for (const g::Op& x : s.ops) {  // not `node` (an identity)
     h.put(x.kind), h.put(x.lanes), h.put(x.kernel), h.put(x.atom), h.put(x.numIn), h.put(x.numOut), h.put(x.channel);
-    h.put(x.splMask), h.put(x.firstOperand), h.put(x.state), h.put(x.resource), h.put(x.valueKind);
+    // PF.1: whether the op has a resource, not which (its per-instance slot: meta frame table, curve, tuning table).
+    // Code generation reads only `resource != kNone` (codegen.cpp pure-unit check); the resource itself reaches the
+    // code through its pointer-table slot (L.opInfo, hashed below, which keeps the ops' aliasing pattern), so units
+    // that differ only in which resources they read share one code (64 tracks of one instrument: one compile).
+    h.put(x.splMask), h.put(x.firstOperand), h.put(x.state), h.put(uint32_t(x.resource != g::kNone)), h.put(x.valueKind);
   }
   h.put(s.operands.size());
   for (const g::Operand& x : s.operands) putOperand(h, x);
@@ -357,6 +363,33 @@ const BinaryIdentity& binaryIdentity() {
   static const BinaryIdentity id = computeIdentity();
   return id;
 }
+
+}  // namespace pq::jit::detail
+
+namespace pq::jit {
+
+// The function-local static in binaryIdentity() makes a compile that asks while the thread hashes wait for that one
+// computation (never a second). The thread is joined at exit (the hash takes milliseconds).
+void startBinaryIdentity() noexcept {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    struct Warmer {
+      std::thread t;
+      ~Warmer() {
+        if (t.joinable()) t.join();
+      }
+    };
+    static Warmer w;
+    try {
+      w.t = std::thread([] { (void)detail::binaryIdentity(); });
+    } catch (...) {  // no thread: the first compile hashes
+    }
+  });
+}
+
+}  // namespace pq::jit
+
+namespace pq::jit::detail {
 
 // ---- Disk entries ----------------------------------------------------------------------------------------------
 
@@ -644,6 +677,12 @@ const BinaryIdentity& binaryIdentity() {
   static const BinaryIdentity id;
   return id;
 }
+
+}  // namespace pq::jit::detail
+namespace pq::jit {
+void startBinaryIdentity() noexcept {}  // nothing to hash off Windows
+}  // namespace pq::jit
+namespace pq::jit::detail {
 std::filesystem::path entryPath(const std::filesystem::path& dir, const Key& key) { return dir / (key.hex() + ".pqjit"); }
 ReadResult readEntry(const std::filesystem::path&, const Key&, bool, Entry&) { return ReadResult::Miss; }
 uint64_t writeEntry(const std::filesystem::path&, const Key&, const Entry&) { return 0; }

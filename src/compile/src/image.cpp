@@ -47,6 +47,7 @@ Result<jit::Compiler*> jitCompiler() {
 }
 
 void setJitCache(const jit::CacheConfig& cache) {
+  jit::startBinaryIdentity();  // PF.1: the app calls this at startup; the hash is ready by the first compile
   {
     std::lock_guard<std::mutex> lock(cacheMutex());
     pendingCache() = cache;

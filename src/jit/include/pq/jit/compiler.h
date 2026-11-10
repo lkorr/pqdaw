@@ -153,6 +153,12 @@ private:
   std::shared_ptr<Session> session_;
 };
 
+// PF.1 (survey #10): starts hashing the executable (part of every cache key; 15–22 ms on pqdaw.exe) on a background
+// thread, once per process, so the first compile does not wait for it (or waits only for the rest). Compiler::create
+// calls it; the app calls it at startup (compile::setJitCache). Not RT-safe; never fails (a thread that cannot be
+// started leaves the hash to the first compile).
+void startBinaryIdentity() noexcept;
+
 // Tests (TMM.13-fix1 L10): what LLVM does when an allocation fails (llvm::report_bad_alloc_error); call it inside a
 // compile, e.g. from CompilerConfig::beforeCompile.
 [[noreturn]] void simulateLlvmOutOfMemory();

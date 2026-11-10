@@ -330,9 +330,15 @@ namespace pq::jit {
 // (no IR, no passes, no instruction selection) and rebuilds the image's memory and pointer table from the current
 // schedule (buildHost), so it is bit-identical to a fresh compile. Key = xxh3-128 of what codegen reads (schedule
 // minus identities: state keys, noise seeds, node indices, diagnostics; T5.x-perf-audio: constants no operand reads, e.g.
-// a clipPlayer's slot, so audio tracks share one code; the HostLayout incl. T1b.2's pair layout; compile options incl. the resolved VoiceCode) + target
+// a clipPlayer's slot, so audio tracks share one code; PF.1: an op's resource slot only as "has a resource" — codegen
+// reaches a resource through its pointer-table slot, L.opInfo, which is keyed — so tracks of one instrument share one
+// code; the HostLayout incl. T1b.2's pair layout; compile options incl. the resolved VoiceCode) + target
 // CPU/features + machine-code level + LLVM version + entry format + a hash of the executable's file (generated code
-// reaches kernels through the pointer table, stored as offsets into this binary; codegen itself is in it). Code is
+// reaches kernels through the pointer table, stored as offsets into this binary; codegen itself is in it; PF.1: hashed
+// once per process on a background thread started by Compiler::create / compile::setJitCache, jit::startBinaryIdentity).
+// PF.1: the machine-code pipeline runs without Loop Strength Reduction (-disable-lsr, set once in compiler.cpp); the
+// light IR pipeline (optLevel 1) runs LSR itself on functions of <= 2000 IR instructions (small voice loops gain from
+// it, the long global stages paid ~15 % of their compile for nothing). Code is
 // shared/stored only when every table slot codegen added points into the executable (else `uncacheable`). Entries:
 // 64-byte header (magic, format, key, payload size + hash) + stage names, table description, stats, object; written to
 // a temporary file and renamed (MoveFileExW); readers share delete; invalid entries are deleted and recompiled;

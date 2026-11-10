@@ -29,6 +29,7 @@
 // eq oversample/none the same track without the EQ (the EQ's cost is the difference); instrument oversample/<n>x — the
 // track without the EQ, its instrument group (3 voices) at n (the region per voice).
 // Release / ship build. Usage: pq_bench_playback [runner options]
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -458,7 +459,15 @@ int main(int argc, char** argv) {
     const std::string name = "mixer/" + std::to_string(k.tracks) + "x" + std::to_string(k.returns) +
                              (k.notes ? " notes" : k.idle ? " silent" : " silent busy") + (k.jit ? " jit" : " interp");
     runner.add(name, [k, name](bench::Context& c) {
+      // PF.1: how many LLVM compiles the project's JIT images took, and the time until every unit is on its final image.
+      auto jc = compile::jitCompiler();
+      const uint64_t compiles0 = k.jit && jc ? (*jc)->counters().compiles : 0;
+      const auto t0 = std::chrono::steady_clock::now();
       Rig rig(k.tracks, k.returns, k.notes, k.jit, k.idle);
+      const double buildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      if (k.jit && jc)
+        std::printf("  %s: %llu JIT compiles, on its final images after %.0f ms\n", name.c_str(),
+                    static_cast<unsigned long long>((*jc)->counters().compiles - compiles0), buildMs);
       const bench::Stats s = c.measure([&] { rig.block(); }, 1, "ns/block");
       std::printf("  %s: %.2f %% of a core (median)\n", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
     });

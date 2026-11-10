@@ -263,3 +263,104 @@ patch V {
   for (const float v : mix[1]) energy += std::fabs(v);
   CHECK(energy > 1.0);
 }
+
+// PF.1: the cache key hashes whether an op has a resource, not its slot (code reaches the resource through its
+// pointer-table slot). Units that differ only in which curve slots they read share one compiled code, each image reads
+// its own curves, and the shared images compute exactly what separately compiled images (and the interpreter) compute.
+// The pattern of which ops share a resource is still keyed (an aliased pair is other code). The slots are numbers no
+// other literal of the unit has: a constant is interned by value, so a slot equal to another literal changes the
+// schedule itself (its constants and op order), which is other code whatever the key hashes.
+TEST_CASE("curve atom: units that differ only in their resource slots share code and each reads its own resource") {
+  auto patchFor = [](int ySlot, int zSlot) {
+    return compileText("patch G {\n  in x : audio\n  out y : audio\n  out z : audio\n  y = curve(x * 2 - 1, 1, " +
+                       std::to_string(ySlot) + ")\n  z = curve(x, 1, " + std::to_string(zSlot) + ")\n}\n");
+  };
+  const Compiled a = patchFor(5, 7), b = patchFor(7, 5), aliased = patchFor(5, 5);
+  Rig rig(exp0(), gainDb());
+  rig.slots = {nullptr, nullptr, nullptr, nullptr, nullptr, rig.a.get(), nullptr, rig.b.get()};  // curves at 5 and 7
+  rig.res.curves = rig.slots;
+  constexpr uint32_t kBlock = 64, kN = 64 * 20;
+  std::vector<float> x(kN);
+  for (uint32_t i = 0; i < kN; ++i) x[i] = static_cast<float>(0.5 + 0.5 * std::sin(i * 0.013));
+  // Renders y and z (in that order) of one image.
+  auto render = [&](const Compiled& c, eng::ProgramImage& img) {
+    const eng::ImageInterface& face = img.io();
+    REQUIRE(face.globalIn.size() == 1);
+    REQUIRE(face.globalOut.size() == 2);
+    std::vector<float> in(kBlock), o0(kBlock), o1(kBlock);
+    const float* inP = in.data();
+    float* outP[2] = {o0.data(), o1.data()};
+    const pq::graph::Patch& P = c.sched.rewritten ? c.sched.rewritten->patch : c.typed.patch;
+    const bool yFirst = P.nodeName(face.globalOut[0].node) == "y";
+    std::vector<float> y, z;
+    for (uint32_t t0 = 0; t0 < kN; t0 += kBlock) {
+      std::copy_n(x.begin() + t0, kBlock, in.begin());
+      eng::ProcessContext ctx;
+      ctx.frames = kBlock;
+      ctx.sampleRate = 48000.0;
+      ctx.sampleTime = t0;
+      ctx.in = &inP;
+      ctx.numIn = 1;
+      ctx.out = outP;
+      ctx.numOut = 2;
+      pq::DenormalGuard dg;
+      img.process(ctx);
+      y.insert(y.end(), (yFirst ? o0 : o1).begin(), (yFirst ? o0 : o1).end());
+      z.insert(z.end(), (yFirst ? o1 : o0).begin(), (yFirst ? o1 : o0).end());
+    }
+    return std::vector<std::vector<float>>{y, z};
+  };
+  jit::CompileOptions o;
+  o.maxBlockFrames = kBlock;
+  o.maxVoiceGroups = 1;
+  o.resources = &rig.res;
+  auto make = [](const jit::CacheConfig& cache) {
+    jit::CompilerConfig cfg;
+    cfg.cache = cache;
+    auto r = jit::Compiler::create(cfg);
+    REQUIRE(r.ok());
+    return std::move(r.value());
+  };
+  jit::CacheConfig verify;  // memory only; every hit regenerates the IR and compares it
+  verify.verify = true;
+  auto shared = make(verify);
+  auto ia = shared->compile(a.sched, o);
+  auto ib = shared->compile(b.sched, o);
+  REQUIRE(ia.ok());
+  REQUIRE(ib.ok());
+  CHECK(shared->counters().compiles == 1);
+  CHECK(shared->counters().memoryHits == 1);
+  CHECK(shared->counters().verified == 1);
+  CHECK(shared->counters().verifyMismatches == 0);
+  auto ic = shared->compile(aliased.sched, o);  // one resource read twice: another pointer-table pattern
+  REQUIRE(ic.ok());
+  CHECK(shared->counters().compiles == 2);
+  // Each against a separate compile (a compiler of its own) and the interpreter: bit-identical.
+  auto separate = make(jit::CacheConfig{});
+  for (const auto* p : {&a, &b, &aliased}) {
+    auto own = separate->compile(p->sched, o);
+    REQUIRE(own.ok());
+    eng::InterpretOptions io;
+    io.maxBlockFrames = kBlock;
+    io.maxVoiceGroups = 1;
+    io.resources = &rig.res;
+    auto interp = eng::buildInterpreted(p->sched, io);
+    REQUIRE(interp.ok());
+    eng::ProgramImage& sharedImg = p == &a ? **ia : p == &b ? **ib : **ic;
+    const auto got = render(*p, sharedImg), want = render(*p, **own), ref = render(*p, **interp);
+    for (size_t k = 0; k < 2; ++k) {
+      CHECK(sameBits(got[k], want[k]));
+      CHECK(sameBits(got[k], ref[k]));
+    }
+  }
+  CHECK(separate->counters().compiles == 3);
+  // Each shared image read its own slots (a: y ← 5, z ← 7; b the other way round), against the curves themselves.
+  const auto ga = render(a, **ia), gb = render(b, **ib);
+  std::vector<float> xs(kN);
+  for (uint32_t i = 0; i < kN; ++i) xs[i] = x[i] * 2.0f - 1.0f;
+  CHECK(worstVs(ga[0], xs, exp0(), 0, kN) <= 4e-6);
+  CHECK(worstVs(ga[1], x, gainDb(), 0, kN) <= 4e-6);
+  CHECK(worstVs(gb[0], xs, gainDb(), 0, kN) <= 4e-6);
+  CHECK(worstVs(gb[1], x, exp0(), 0, kN) <= 4e-6);
+  CHECK(!sameBits(ga[0], gb[0]));
+}
