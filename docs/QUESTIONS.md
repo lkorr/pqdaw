@@ -801,3 +801,18 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   `%LOCALAPPDATA%\pqdaw\Unsaved\<pid-time>`; the first save moves them into the project); a "Record latency offset"
   field in Preferences (the engine takes `Recorder::setManualOffset`, nothing sets it yet).
 - Status: decided (1)–(11) (reversible); the two open items for the orchestrator.
+
+## Q?-T6.5b-a · 2026-11-10 · T6.5b · Complex priming without a burst: what was chosen
+- **Context**: Q?-T6.5-a (4): a voice started inside a Complex clip primed ≈ 10k vocoder frames in one block (measured
+  3.3 ms per voice in release, 13.3 ms for 4). docs/TASKS.md T6.5b left the approach open.
+- **Options**: (a) prime off the audio thread and hand the stretcher over (needs a worker with stream access and a
+  cross-thread pool; still late on a locate while playing); (b) spread the priming over blocks, the voice silent
+  meanwhile; (c) signalsmith's `outputSeek` (less work, still a burst, not the same audio).
+- **Choice** (most reversible): (b) on the audio thread with cueing so the common cases are not late: priming runs at
+  most 4× the playing rate on a song-time schedule; the timeline cues the playhead while stopped / counting in and
+  the loop start before a wrap, so Play and loop wraps start primed and on time. Uncued starts (a locate while playing,
+  Play within ≈ 50 ms of stopping or locating) sound ≈ 70 ms late (pitch rate 1), faded in, then exactly as an on-time
+  start would. Offline renders prime at once. Mono sources get mono stretchers: `stretchMonoVoices` 32 by default
+  (≈ +half the stereo pool's memory, see the T6.5b test's message); the rate (`kStretchPrimeRate` 4) and the pool
+  split are constants to revisit if the CPU meter shows Play spikes or memory matters.
+- Status: decided (reversible).

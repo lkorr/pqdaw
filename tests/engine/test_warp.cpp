@@ -946,3 +946,204 @@ TEST_CASE("warp: an exhausted stretch pool plays Complex as Tones (counted, no c
   MESSAGE("stretch pool of 32 (the default) at 48 kHz: ", static_cast<double>(pool32.memoryBytes()) / 1048576.0,
           " MiB (estimated), made in ", ms, " ms");
 }
+
+// ---- T6.5b: no priming burst; mono stretchers ------------------------------------------------------------------------
+
+namespace {
+
+// N Complex clips (one per slot) over [0, 16 beats) of a stereo source at 120 BPM (its own tempo).
+std::vector<e::AudioTrackDesc> complexTracks(uint32_t n) {
+  std::vector<e::AudioTrackDesc> t;
+  for (uint32_t k = 0; k < n; ++k) {
+    e::AudioClipDesc c = warped(e::ClipWarp::Complex, 1 + k, 0, kPpq * 16, 120.0);
+    c.stretch.pitchRatio = k % 2 == 0 ? 1.0 : 1.09;  // copies and sinc reads
+    t.push_back({1 + k, {c}});
+  }
+  return t;
+}
+
+void command(Rig& rig, e::TransportCommandKind kind, Ticks tick) {
+  e::TransportCommand c;
+  c.kind = kind;
+  c.tick = tick;
+  rig.tl->apply(c);
+}
+
+double rmsOf(const std::vector<float>& x, size_t from, size_t to) {
+  double e = 0.0;
+  for (size_t i = from; i < to; ++i) e += static_cast<double>(x[i]) * x[i];
+  return std::sqrt(e / static_cast<double>(to - from));
+}
+
+// The most vocoder chunks one 256-frame block may run per voice: priming at kStretchPrimeRate × the playing rate (pitch
+// rate ≤ 1.09: ≤ 9 chunks) or the block a voice starts in (a playing block, the priming schedule's step and the
+// resampler's reach: ≤ 13), rounded up.
+constexpr uint64_t kCellsPerVoiceBlock = 16;
+
+}  // namespace
+
+TEST_CASE("T6.5b: Play inside 8 Complex clips never primes in a burst; uncued it starts late, cued on time, same audio") {
+  const e::ClipSample s = makeSample(48000 * 10, 2, busy);
+  constexpr uint32_t kN = 8;
+  const Ticks at = kPpq * 2;  // 1 s into every clip
+  const uint64_t frames = 48000;
+  // Uncued: Play straight into the clips.
+  Rig a(256);
+  a.tempo({{0, 120.0, pq::TempoCurve::Step}});
+  a.audio(complexTracks(kN), {s});
+  a.play(at);
+  std::vector<std::vector<float>> late(kN);
+  for (uint64_t done = 0; done < frames; done += 256) {
+    a.tl->process(a.time, 256);
+    a.time += 256;
+    for (uint32_t k = 0; k < kN; ++k) {
+      const float* c = a.tl->clipPlayer().channels()[k * e::kClipChannels];
+      late[k].insert(late[k].end(), c, c + 256);
+    }
+  }
+  const e::ClipPlayerStats& sa = a.tl->clipPlayer().stats();
+  MESSAGE("uncued Play inside ", kN, " Complex clips: at most ", sa.stretchCellsBlockMax, " vocoder chunks in a block (",
+          sa.stretchLateStarts, " late starts; before T6.5b about 80 per voice in the first block)");
+  CHECK(sa.stretchClaims == kN);
+  CHECK(sa.stretchLateStarts == kN);
+  CHECK(sa.stretchCellsBlockMax <= kN * kCellsPerVoiceBlock);
+  // Cued: stopped at the position for 30 blocks (160 ms), then Play there.
+  Rig b(256);
+  b.tempo({{0, 120.0, pq::TempoCurve::Step}});
+  b.audio(complexTracks(kN), {s});
+  command(b, e::TransportCommandKind::Locate, at);
+  for (int k = 0; k < 30; ++k) {
+    b.tl->process(b.time, 256);
+    b.time += 256;
+  }
+  CHECK(b.tl->clipPlayer().stats().stretchCues == kN);
+  CHECK(b.tl->clipPlayer().anyActive() == false);  // cues are silent
+  b.play(at);
+  std::vector<std::vector<float>> cued(kN);
+  for (uint64_t done = 0; done < frames; done += 256) {
+    b.tl->process(b.time, 256);
+    b.time += 256;
+    for (uint32_t k = 0; k < kN; ++k) {
+      const float* c = b.tl->clipPlayer().channels()[k * e::kClipChannels];
+      cued[k].insert(cued[k].end(), c, c + 256);
+    }
+  }
+  const e::ClipPlayerStats& sb = b.tl->clipPlayer().stats();
+  MESSAGE("cued Play: at most ", sb.stretchCellsBlockMax, " vocoder chunks in a block");
+  CHECK(sb.stretchCuesAdopted == kN);
+  CHECK(sb.stretchLateStarts == 0);
+  CHECK(sb.stretchClaims == kN);  // the cues' claims are the voices'
+  CHECK(sb.stretchCellsBlockMax <= kN * kCellsPerVoiceBlock);
+  for (uint32_t k = 0; k < kN; ++k) {
+    CAPTURE(k);
+    // Cued: sounding from the Play position (past the 2 ms fade in).
+    CHECK(rmsOf(cued[k], 96, 960) > 0.1);
+    // Uncued: silent until its schedule caught up (< 100 ms), then the very same audio as the cued voice (same song
+    // time, same vocoder frames: no wrong-time audio), faded in.
+    size_t first = 0;
+    while (first < late[k].size() && late[k][first] == 0.0f) ++first;
+    MESSAGE("voice ", k, " uncued: starts ", static_cast<double>(first) / 48.0, " ms late");
+    CHECK(first > 0);
+    CHECK(first < 4800);
+    size_t diff = 0;
+    for (size_t i = first + 96; i < late[k].size(); ++i) diff += late[k][i] != cued[k][i] ? 1u : 0u;
+    CHECK(diff == 0);
+    // No click where it starts: no step larger than the material's own.
+    double stepStart = 0.0, stepLater = 0.0;
+    for (size_t i = first; i < first + 96; ++i)
+      stepStart = std::max(stepStart, static_cast<double>(std::abs(late[k][i + 1] - late[k][i])));
+    for (size_t i = first + 960; i < first + 24000; ++i)
+      stepLater = std::max(stepLater, static_cast<double>(std::abs(late[k][i + 1] - late[k][i])));
+    CHECK(stepStart <= stepLater);
+  }
+}
+
+TEST_CASE("T6.5b: a loop wrap into Complex clips starts primed (cued before the wrap), no burst; RtScope") {
+  REQUIRE(pq::alloc_trap::installed());
+  const e::ClipSample s = makeSample(48000 * 10, 2, busy);
+  constexpr uint32_t kN = 4;
+  Rig rig(256);
+  rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
+  rig.audio(complexTracks(kN), {s});
+  e::TransportCommand loop;
+  loop.kind = e::TransportCommandKind::SetLoop;
+  loop.loopEnabled = true;
+  loop.loopStart = kPpq * 2;
+  loop.loopEnd = kPpq * 6;  // 2 s
+  rig.tl->apply(loop);
+  command(rig, e::TransportCommandKind::Locate, kPpq * 4);
+  std::vector<float> out;
+  out.reserve(48000 * 6);
+  uint64_t violations = pq::alloc_trap::countRtViolations([&] {
+    for (int k = 0; k < 20; ++k) {  // stopped: cues
+      rig.tl->process(rig.time, 256);
+      rig.time += 256;
+    }
+  });
+  command(rig, e::TransportCommandKind::Play, kPpq * 4);
+  const SampleTime wrapAt = 48000;  // 1 s to the loop end, then every 2 s
+  for (int k = 0; k < 48000 * 5 / 256; ++k) {
+    violations += pq::alloc_trap::countRtViolations([&] {
+      rig.tl->process(rig.time, 256);
+      rig.time += 256;
+    });
+    const float* c = rig.tl->clipPlayer().channels()[0];
+    out.insert(out.end(), c, c + 256);
+  }
+  CHECK(violations == 0);
+  const e::ClipPlayerStats& st = rig.tl->clipPlayer().stats();
+  MESSAGE("loop: ", st.stretchCuesAdopted, " cues adopted, ", st.stretchLateStarts, " late starts, at most ",
+          st.stretchCellsBlockMax, " chunks in a block");
+  CHECK(rig.tl->stats().loopWraps == 2);
+  CHECK(st.stretchCuesAdopted == kN * 3);  // the Play and two wraps
+  CHECK(st.stretchLateStarts == 0);
+  CHECK(st.stretchCellsBlockMax <= kN * kCellsPerVoiceBlock);
+  CHECK(rmsOf(out, 96, 960) > 0.1);
+  for (const SampleTime w : {wrapAt, wrapAt + 96000})  // sounding right after each wrap (past the fade in)
+    CHECK(rmsOf(out, static_cast<size_t>(w + 96), static_cast<size_t>(w + 960)) > 0.1);
+}
+
+TEST_CASE("T6.5b: a mono source runs a mono stretcher (half the work), the same audio as through a stereo one") {
+  const e::ClipSample v = makeSample(static_cast<int64_t>(kSr * 6.0), 1, [](uint32_t, int64_t i) { return vowel(i); });
+  auto img = [&] {
+    e::AudioClipDesc c = warped(e::ClipWarp::ComplexPro, 1, kPpq, kPpq * 6, 120.0);
+    c.stretch.pitchRatio = std::exp2(5.0 / 12.0);
+    e::AudioClipDesc d = warped(e::ClipWarp::Complex, 2, kPpq, kPpq * 6, 97.0);
+    e::AudioBuildOptions o;
+    o.sampleRate = kSr;
+    auto r = e::AudioSequenceImage::build(std::vector<e::AudioTrackDesc>{{1, {c}}, {2, {d}}}, {v},
+                                          tempoMap({{0, 120.0, pq::TempoCurve::Step}}), o);
+    REQUIRE(r.ok());
+    return std::move(r.value());
+  }();
+  e::ClipPlayerConfig pc;
+  pc.slots = 2;
+  pc.maxBlockFrames = 256;
+  pc.sampleRate = kSr;
+  pc.stretchVoices = 2;
+  pc.stretchMonoVoices = 2;
+  e::ClipPlayer mono(pc);
+  const auto a = playDirect(mono, *img, 2, static_cast<SampleTime>(kSr * 3.0), 256);
+  CHECK(mono.stats().stretchMonoClaims == 2);
+  pc.stretchMonoVoices = 0;  // no mono stretchers: a stereo one, fed the channel twice (as in T6.5)
+  e::ClipPlayer stereo(pc);
+  const auto b = playDirect(stereo, *img, 2, static_cast<SampleTime>(kSr * 3.0), 256);
+  CHECK(stereo.stats().stretchMonoClaims == 0);
+  CHECK(stereo.stats().stretchClaims == 2);
+  CHECK(mono.stats().stretchCells == stereo.stats().stretchCells);
+  const e::StretchPool monoPool(0, kSr, 32);
+  CHECK(monoPool.size() == 32);
+  CHECK(monoPool.availableMono() == 32);
+  MESSAGE("32 mono stretchers (the default): ", static_cast<double>(monoPool.memoryBytes()) / 1048576.0, " MiB (estimated)");
+  for (const uint32_t k : {0u, 2u}) {
+    CAPTURE(k);
+    double peak = 0.0, worst = 0.0;
+    for (size_t i = 0; i < a[k].size(); ++i) {
+      peak = std::max(peak, static_cast<double>(std::abs(b[k][i])));
+      worst = std::max(worst, static_cast<double>(std::abs(a[k][i] - b[k][i])));
+    }
+    MESSAGE("mono vs stereo stretcher: peak ", peak, ", largest difference ", worst);
+    CHECK(peak > 0.1);
+    CHECK(worst == 0.0);
+  }
+}

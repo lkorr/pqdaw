@@ -754,6 +754,8 @@ void Timeline::playBlock(uint32_t from, uint32_t frames) noexcept {  // RT-safe
       }
     }
     clips_->play(f, pos_, len);  // T5.4
+    // T6.5b: the last look-ahead before a loop wrap primes the Complex voices the loop start needs (ClipPlayer::cue).
+    if (loopOn_ && pos_ < loopEndSample_ && loopEndSample_ - s1 <= clips_->cueLead()) clips_->cue(loopStartSample_, len);
     renderAutomation(f, pos_, len, f == 0 && len == frames);
     pushRun(f, len, pos_, TransportRun::Song);  // T6.6: the metronome's beats
     f += len;
@@ -893,9 +895,11 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
       const SampleTime left = countIn_.frames - countIn_.pos;
       const uint32_t n = left >= static_cast<SampleTime>(frames) ? frames : static_cast<uint32_t>(left);
       pushRun(0, n, countIn_.pos, TransportRun::CountIn);
+      clips_->cue(pos_, n);  // T6.5b: the Complex voices the start needs prime during the count-in
       countIn_.pos += n;
       if (countIn_.pos >= countIn_.frames) {
         countIn_.active = false;
+        clips_->seek(pos_);  // T6.5b: adopts the cue
         playing_ = true;
         ++playbackPass_;
         snapshotDirty_ = true;
@@ -913,6 +917,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
       holdValid_ = false;
     } else {
       if (clips_->liveVoices() != 0) clips_->idle(frames);  // T5.4: fades after a stop
+      clips_->cue(pos_, frames);  // T6.5b: Play from here starts the Complex voices primed (ClipPlayer::cue)
       if (!holdValid_) {
         if (automation_.numLanes() != 0) automation_.renderHold(static_cast<double>(resolveTick()), 0, frames, true);
         holdValid_ = true;  // renderHold(wholeBlock) filled whole buffers: nothing to do until something changes

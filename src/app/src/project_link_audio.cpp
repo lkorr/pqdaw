@@ -543,6 +543,7 @@ Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Proje
   pc.streams = &pool_->streams();
   pc.lookaheadSeconds = cfg_.clipLookaheadSeconds;
   pc.stretchVoices = 2;  // T6.5: one clip (a Complex one and its fade-out after a swap at most)
+  pc.stretchMonoVoices = 2;
   engine::ClipPlayer player(pc);
   player.setStreamFill(&waitFill, pool_.get());
   const bool wasEngaged = engaged_;

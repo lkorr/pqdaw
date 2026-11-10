@@ -282,9 +282,9 @@ ClipPlayer::ClipPlayer(const ClipPlayerConfig& config) : cfg_(config) {
   corrB_ = AlignedBuffer<float>(AudioSequenceImage::kMaxAlignLen + 2 * AudioSequenceImage::kMaxAlignLags + 64);
   zeros_ = AlignedBuffer<float>(static_cast<size_t>(cfg_.maxBlockFrames) + 16);
   std::memset(zeros_.data(), 0, sizeof(float) * zeros_.size());
-  if (cfg_.stretchVoices > 0) {  // T6.5
-    stretch_ = std::make_unique<StretchPool>(cfg_.stretchVoices, cfg_.sampleRate);
-    stretchOut_ = AlignedBuffer<float>(static_cast<size_t>(cfg_.stretchVoices) * 2 * kStretchFrames);
+  if (cfg_.stretchVoices + cfg_.stretchMonoVoices > 0) {  // T6.5 (T6.5b: and the mono stretchers)
+    stretch_ = std::make_unique<StretchPool>(cfg_.stretchVoices, cfg_.sampleRate, cfg_.stretchMonoVoices);
+    stretchOut_ = AlignedBuffer<float>(static_cast<size_t>(stretch_->size()) * 2 * kStretchFrames);
     stretchInCap_ = std::max<uint32_t>(32768u, static_cast<uint32_t>(stretch_->latency().seek) + kStretchCell);
     stretchIn_ = AlignedBuffer<float>(static_cast<size_t>(2) * stretchInCap_);
   }
@@ -314,6 +314,7 @@ void ClipPlayer::stopReader(Reader& r) noexcept {  // RT-safe
 
 void ClipPlayer::beginBlock(uint32_t frames) noexcept {  // RT-safe
   frames_ = std::min(frames, cfg_.maxBlockFrames);
+  blockCells_ = 0;
   std::swap(touched_, touchedBefore_);
   touched_.clear();
   for (uint32_t k : touchedBefore_) touchedFlag_[k] = 0;
@@ -330,6 +331,7 @@ float* ClipPlayer::touch(uint32_t slot) noexcept {  // RT-safe
 }
 
 void ClipPlayer::endBlock() noexcept {  // RT-safe
+  stats_.stretchCellsBlockMax = std::max(stats_.stretchCellsBlockMax, blockCells_);
   for (uint32_t k : touchedBefore_)
     if (touchedFlag_[k] == 0) {
       active_[k] = 0;
@@ -348,7 +350,7 @@ void ClipPlayer::endBlock() noexcept {  // RT-safe
 bool ClipPlayer::hasVoice(uint32_t slot, const AudioSequenceImage::Clip* c) const noexcept {  // RT-safe
   for (uint32_t idx : live_) {
     const Voice& v = voices_[idx];
-    if (v.slot == slot && v.clip == c && v.state != State::Releasing) return true;
+    if (v.slot == slot && v.clip == c && v.state != State::Releasing && !v.cue) return true;
   }
   return false;
 }
@@ -381,14 +383,26 @@ void ClipPlayer::startVoice(uint32_t slot, const AudioSequenceImage::Clip& c, Sa
   v.grainIdx = INT64_MIN;
   v.stretch = StretchPool::kNone;
   v.vHi = INT64_MIN;
-  if (clipComplex(c.warp)) {  // T6.5: a stretcher, or Tones when none is free
-    if (stretch_ != nullptr) v.stretch = stretch_->claim(c.seed);
-    if (v.stretch != StretchPool::kNone) ++stats_.stretchClaims;
-    else ++stats_.stretchFallbacks;
+  v.cue = false;
+  if (clipComplex(c.warp)) {  // T6.5: a stretcher, or Tones when none is free (T6.5b: a mono one for a mono source)
+    if (stretch_ != nullptr) v.stretch = stretch_->claim(c.seed, img_->sample(c.sample).view().channels == 1 ? 1u : 2u);
+    if (v.stretch != StretchPool::kNone) {
+      ++stats_.stretchClaims;
+      if (stretch_->channels(v.stretch) == 1) ++stats_.stretchMonoClaims;
+      // T6.5b: its priming schedule starts at its look-ahead (or now, when that has passed: Play, a locate).
+      v.primeFrom = std::max(s0, c.playStart - lookahead_);
+      v.primeBase = complexFirstFrame(c);
+    } else {
+      ++stats_.stretchFallbacks;
+    }
   }
   if (c.playStart >= s0) {
     v.state = State::Pending;
     v.vs = c.playStart;
+  } else if (v.stretch != StretchPool::kNone) {  // T6.5b: inside the clip: pending until primed (gateComplex)
+    v.state = State::Pending;
+    v.vs = s0;
+    v.inLen = declick_;
   } else {  // the playhead is inside the clip (a locate, a wrap, a swap): start here with a fade in
     v.state = State::Playing;
     v.vs = s0;
@@ -453,6 +467,10 @@ void ClipPlayer::releaseVoice(Voice& v) noexcept {  // RT-safe
 void ClipPlayer::releaseAll(uint32_t /*frame*/) noexcept {  // RT-safe
   for (uint32_t i = 0; i < live_.size();) {
     Voice& v = voices_[live_[i]];
+    if (v.cue) {  // T6.5b: a cue waits for its seek (a loop wrap releases, then seeks to the cue)
+      ++i;
+      continue;
+    }
     if (v.state == State::Pending || (v.state == State::Playing && declick_ == 0)) {
       endVoice(i);
       continue;
@@ -476,7 +494,86 @@ void ClipPlayer::seekCursors(SampleTime s) noexcept {  // RT-safe
   }
 }
 
-void ClipPlayer::seek(SampleTime s) noexcept { seekCursors(s); }  // RT-safe
+void ClipPlayer::seek(SampleTime s) noexcept {  // RT-safe
+  if (cueAt_ != INT64_MIN) {  // T6.5b
+    if (s == cueAt_) {
+      // The cue replaces any other voice of its clip that still waits or plays (one made before the cue was primed).
+      for (uint32_t i = 0; i < live_.size();) {
+        const Voice& v = voices_[live_[i]];
+        bool dup = false;
+        if (!v.cue && v.state != State::Releasing)
+          for (uint32_t idx : live_) {
+            const Voice& q = voices_[idx];
+            if (q.cue && q.slot == v.slot && q.clip == v.clip) {
+              dup = true;
+              break;
+            }
+          }
+        if (dup) endVoice(i);
+        else ++i;
+      }
+      for (uint32_t idx : live_) {
+        Voice& v = voices_[idx];
+        if (!v.cue) continue;
+        v.cue = false;
+        v.primeFrom = s;
+        v.primeBase = v.vHi != INT64_MIN ? v.vHi : complexFirstFrame(*v.clip);
+        ++stats_.stretchCuesAdopted;
+      }
+    } else {
+      endCues();
+    }
+    cueAt_ = INT64_MIN;
+    cueScanned_ = false;
+  }
+  seekCursors(s);
+}
+
+void ClipPlayer::endCues() noexcept {  // RT-safe
+  for (uint32_t i = 0; i < live_.size();) {
+    if (voices_[live_[i]].cue) endVoice(i);
+    else ++i;
+  }
+}
+
+void ClipPlayer::cue(SampleTime at, uint32_t frames) noexcept {  // RT-safe
+  if (stretch_ == nullptr || img_ == nullptr) return;
+  if (at != cueAt_) {
+    endCues();
+    cueAt_ = at;
+    cueScanned_ = false;
+  }
+  if (!cueScanned_) {  // once per position (and after a swap): the Complex clips a playback from `at` starts soon
+    cueScanned_ = true;
+    const uint32_t n = std::min(img_->numSlots(), cfg_.slots);
+    for (uint32_t slot = 0; slot < n; ++slot) {
+      const std::span<const AudioSequenceImage::Clip> cl = img_->clips(slot);
+      auto it = std::upper_bound(cl.begin(), cl.end(), at,
+                                 [](SampleTime v, const AudioSequenceImage::Clip& c) noexcept { return v < c.playStart; });
+      auto i = static_cast<size_t>(it - cl.begin());
+      while (i > 0 && cl[i - 1].playEnd > at) --i;
+      for (; i < cl.size() && cl[i].playStart < at + lookahead_; ++i) {
+        const AudioSequenceImage::Clip& c = cl[i];
+        if (!clipComplex(c.warp) || c.sample == AudioSequenceImage::kNoSample || c.playEnd <= at) continue;
+        bool cued = false;
+        for (uint32_t idx : live_) {
+          const Voice& q = voices_[idx];
+          cued = cued || (q.cue && q.slot == slot && q.clip == &c);
+        }
+        if (cued || free_.empty()) continue;
+        const bool mono = img_->sample(c.sample).view().channels == 1;
+        if ((mono ? stretch_->available() : stretch_->available() - stretch_->availableMono()) == 0) continue;
+        startVoice(slot, c, at);
+        voices_[live_.back()].cue = true;
+        ++stats_.stretchCues;
+      }
+    }
+  }
+  for (uint32_t idx : live_) {
+    Voice& v = voices_[idx];
+    if (v.cue) advanceComplex(v, v.img->sample(v.clip->sample).view(), at, frames);
+  }
+}
 
 void ClipPlayer::setImage(const AudioSequenceImage* next, SampleTime s, bool /*playing*/) noexcept {  // RT-safe
   const AudioSequenceImage* prev = img_;
@@ -508,7 +605,8 @@ void ClipPlayer::setImage(const AudioSequenceImage* next, SampleTime s, bool /*p
         v.rampPos = 0;
         v.rampLen = std::max(declick_, 1u);
       }
-      if (v.state == State::Pending) v.vs = match->playStart;  // the start may have moved with the law (a trim)
+      // The start may have moved with the law (a trim); a start inside the clip (T6.5b) stays.
+      if (v.state == State::Pending) v.vs = v.vs == v.clip->playStart ? match->playStart : std::max(v.vs, match->playStart);
       v.clip = match;
       v.img = next;
       ++stats_.kept;
@@ -524,6 +622,7 @@ void ClipPlayer::setImage(const AudioSequenceImage* next, SampleTime s, bool /*p
     if (prev != next) ++prevUsers_;
     ++i;
   }
+  cueScanned_ = false;  // T6.5b: a cue looks for the new image's clips
   seekCursors(s);
 }
 
@@ -550,6 +649,10 @@ void ClipPlayer::play(uint32_t frame, SampleTime s0, uint32_t len) noexcept {  /
   if (img_ != nullptr && (nextStart_ == INT64_MIN || s1 + lookahead_ > nextStart_)) startDue(s0, s1);
   for (uint32_t i = 0; i < live_.size();) {
     Voice& v = voices_[live_[i]];
+    if (v.cue) {  // T6.5b: a cue sounds only once a seek adopts it
+      ++i;
+      continue;
+    }
     bool alive = true;
     if (v.state == State::Releasing) {
       alive = renderVoice(v, frame, len);
@@ -561,12 +664,15 @@ void ClipPlayer::play(uint32_t frame, SampleTime s0, uint32_t len) noexcept {  /
         v.inLen = declick_;
         v.inPos = 0;
       }
+      // T6.5b: a Complex voice about to sound: primed far enough, or its start moves to where it will be.
+      if (v.vs < s1 && v.state == State::Pending && v.stretch != StretchPool::kNone)
+        gateComplex(v, v.img->sample(v.clip->sample).view());
       if (v.vs < s1) {
         const auto off = static_cast<uint32_t>(std::max<SampleTime>(v.vs - s0, 0));
         v.state = State::Playing;
         alive = renderVoice(v, frame + off, len - off);
       } else if (v.stretch != StretchPool::kNone) {  // T6.5: a pending Complex voice primes in step with the song
-        advanceComplex(v, v.img->sample(v.clip->sample).view(), s1);
+        advanceComplex(v, v.img->sample(v.clip->sample).view(), s1, len);
       }
     }
     if (!alive) endVoice(i);
@@ -577,6 +683,10 @@ void ClipPlayer::play(uint32_t frame, SampleTime s0, uint32_t len) noexcept {  /
 void ClipPlayer::idle(uint32_t frames) noexcept {  // RT-safe
   for (uint32_t i = 0; i < live_.size();) {
     Voice& v = voices_[live_[i]];
+    if (v.cue) {  // T6.5b: cues wait
+      ++i;
+      continue;
+    }
     const bool alive = v.state == State::Releasing && renderVoice(v, 0, frames);
     if (!alive) endVoice(i);
     else ++i;
@@ -1450,13 +1560,17 @@ struct ComplexStart {
   int64_t ys = 0, phi0 = 0, zeroBelow = 0, firstFrame = 0;
 };
 
+int64_t primeStart(const AudioSequenceImage::Clip& c, const StretchPool::Latency& lat) noexcept {  // RT-safe
+  return floorDiv(-(lat.output + lat.block + complexReach(c)), kChunk) * kChunk;
+}
+
 ComplexStart complexStart(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, SampleTime t0,
                           const StretchPool::Latency& lat) noexcept {  // RT-safe
   const LoopFrames L = loopFrames(img, c);
   const int64_t dir = c.reverse ? -1 : 1;
   const double r = pitchRateOf(c);
   ComplexStart st;
-  st.ys = floorDiv(-(lat.output + lat.block + complexReach(c)), kChunk) * kChunk;
+  st.ys = primeStart(c, lat);
   st.phi0 = std::llround(unfoldedAt(img, c, L, static_cast<double>(t0) + static_cast<double>(st.ys + lat.output) / r));
   st.zeroBelow = dir * (std::llround(unfoldedFrame(img, c, L, c.playStart)) - st.phi0);
   const int64_t src = foldFrame(st.phi0 + dir * std::max<int64_t>(lat.input - lat.seek, st.zeroBelow), L);
@@ -1483,36 +1597,84 @@ void ClipPlayer::primeComplex(Voice& v, const media::SampleView& view, SampleTim
   const double rate = std::abs(unfoldedAt(*v.img, c, L, q + static_cast<double>(kChunk) / r) - unfoldedAt(*v.img, c, L, q)) /
                       static_cast<double>(kChunk);
   const float* in[2] = {stretchIn_.data(), stretchIn_.data() + (view.channels >= 2 ? stretchInCap_ : 0u)};
-  stretch_->seek(v.stretch, in, lat.seek, rate);
+  stretch_->seek(v.stretch, in, lat.seek, rate);  // a mono stretcher reads in[0] only
   v.head = lat.input;
   v.vLo = v.vHi = st.ys;
 }
 
+int64_t ClipPlayer::complexFirstFrame(const AudioSequenceImage::Clip& c) const noexcept {  // RT-safe
+  return primeStart(c, stretch_->latency());
+}
+
 // A pending voice: its vocoder runs in step with the song from its first chunk's time on (so a clip's start costs no
-// more than its playing), keeping what the first read will need.
-void ClipPlayer::advanceComplex(Voice& v, const media::SampleView& view, SampleTime upTo) noexcept {  // RT-safe
+// more than its playing), keeping what the first read will need; never ahead of its priming schedule (T6.5b: at most
+// kStretchPrimeRate × its playing rate per song sample, so no block does a burst). A cue voice (time stands still,
+// or is elsewhere): up to what its start reads, `frames` × kStretchPrimeRate × its playing rate per call.
+void ClipPlayer::advanceComplex(Voice& v, const media::SampleView& view, SampleTime upTo, uint32_t frames) noexcept {  // RT-safe
   if (view.channels == 0 || view.frames <= 0) return;
   const AudioSequenceImage::Clip& c = *v.clip;
   const double r = pitchRateOf(c);
+  const auto k = static_cast<double>(kStretchPrimeRate);
   if (v.vHi == INT64_MIN) {
-    const StretchPool::Latency& lat = stretch_->latency();
-    const int64_t ys = floorDiv(-(lat.output + lat.block + complexReach(c)), kChunk) * kChunk;
-    if (static_cast<double>(upTo) < static_cast<double>(v.vs) + static_cast<double>(ys + kChunk) / r) return;
+    const int64_t ys = complexFirstFrame(c);
+    if (!v.cue && static_cast<double>(upTo) < static_cast<double>(v.vs) + static_cast<double>(ys + kChunk) / r) return;
     primeComplex(v, view, v.vs);
   }
-  const auto yUpTo = static_cast<int64_t>(std::floor(static_cast<double>(upTo - v.tA) * r));
-  if (yUpTo > v.vHi) complexEnsure(v, view, -complexReach(c), yUpTo);
+  const int64_t reach = complexReach(c);
+  const auto yStart = static_cast<int64_t>(std::floor(static_cast<double>(v.vs - v.tA) * r));
+  int64_t target = 0;
+  if (v.cue) {
+    const auto budget = static_cast<int64_t>(std::ceil(static_cast<double>(frames) * k * r / static_cast<double>(kChunk)));
+    target = std::min(yStart + reach + kChunk, v.vHi + budget * kChunk);
+  } else {
+    target = static_cast<int64_t>(std::floor(static_cast<double>(upTo - v.tA) * r));
+    if (fill_ == nullptr)
+      target = std::min(target, static_cast<int64_t>(std::floor(
+                                    static_cast<double>(v.primeBase) + static_cast<double>(upTo - v.primeFrom) * k * r)));
+  }
+  if (target > v.vHi) complexEnsure(v, view, yStart - reach, target);
+}
+
+// A pending voice due to sound at v.vs. Its first block reads up to a block plus the resampler's reach past y(vs):
+// it sounds at vs if its schedule had reached y(vs) + reach + a chunk by then (the rest is that block's own work, at
+// most (kStretchPrimeRate + 1) × a playing block's); otherwise it starts at the first song sample t whose schedule
+// has, primeBase + (t − primeFrom)·k·r ≥ (t − tA)·r + reach + chunk, faded in. Song-time arithmetic only: the start
+// does not depend on the engine block. Offline renders (a stream fill is set) prime at once instead.
+void ClipPlayer::gateComplex(Voice& v, const media::SampleView& view) noexcept {  // RT-safe
+  if (fill_ != nullptr || view.channels == 0 || view.frames <= 0) return;
+  const AudioSequenceImage::Clip& c = *v.clip;
+  const double r = pitchRateOf(c);
+  const auto k = static_cast<double>(kStretchPrimeRate);
+  const int64_t reach = complexReach(c);
+  if (v.vHi == INT64_MIN) {
+    primeComplex(v, view, v.vs);  // a reset and a seek (an input copy): no vocoder work
+  } else if (static_cast<int64_t>(std::floor(static_cast<double>(v.vs - v.tA) * r)) - reach < v.vLo) {
+    primeComplex(v, view, v.vs);  // its clock left what was primed (a swap moved its start behind): start afresh
+    v.primeFrom = v.vs;
+    v.primeBase = v.vHi;
+  }
+  const double R = static_cast<double>(reach + kChunk);
+  const double tA = static_cast<double>(v.tA), from = static_cast<double>(v.primeFrom);
+  const double base = static_cast<double>(v.primeBase);
+  const double vs = static_cast<double>(v.vs);
+  if (base + (vs - from) * k * r >= (vs - tA) * r + R) return;
+  const double t = (R - base + r * (k * from - tA)) / ((k - 1.0) * r);
+  v.vs = std::max(v.vs + 1, static_cast<SampleTime>(std::ceil(t)));
+  v.inLen = declick_;
+  v.inPos = 0;
+  ++stats_.stretchLateStarts;
 }
 
 void ClipPlayer::complexEnsure(Voice& v, const media::SampleView& view, int64_t keepFrom, int64_t last) noexcept {  // RT-safe
   float* b0 = stretchOut_.data() + static_cast<size_t>(v.stretch) * 2 * kStretchFrames;
   float* b1 = b0 + kStretchFrames;
+  const bool stereo = stretch_->channels(v.stretch) == 2;
   while (v.vHi < last) {
     if (v.vHi + kChunk - v.vLo > kVoc) {  // make room: drop what is below keepFrom
       const int64_t from = std::clamp(keepFrom, v.vLo, v.vHi);
       const auto keep = static_cast<size_t>(v.vHi - from);
       std::memmove(b0, b0 + (from - v.vLo), sizeof(float) * keep);
-      std::memmove(b1, b1 + (from - v.vLo), sizeof(float) * keep);
+      if (stereo) std::memmove(b1, b1 + (from - v.vLo), sizeof(float) * keep);
       v.vLo = from;
       if (v.vHi + kChunk - v.vLo > kVoc) v.vLo = v.vHi;  // a read wider than the buffer (runs are cut to fit): none
     }
@@ -1539,6 +1701,7 @@ void ClipPlayer::complexChunk(Voice& v, const media::SampleView& view) noexcept 
   v.head += inN;
   v.vHi += kChunk;
   ++stats_.stretchCells;
+  ++blockCells_;
 }
 
 // The voice's stream frames [k0, k1) into stretchIn_ (frame k0 at index 0): folded into the file through the loop,

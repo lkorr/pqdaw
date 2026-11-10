@@ -50,16 +50,18 @@ struct StretchPool::Slot {
   uint64_t rng = 0;
 };
 
-StretchPool::StretchPool(uint32_t voices, double sampleRate) {
+StretchPool::StretchPool(uint32_t voices, double sampleRate, uint32_t monoVoices) : stereo_(voices) {
   const auto sr = static_cast<float>(sampleRate >= 1000.0 ? sampleRate : 48000.0);
-  slots_.reserve(voices);
+  slots_.reserve(voices + monoVoices);
   free_.reserve(voices);
-  for (uint32_t i = 0; i < voices; ++i) {
+  freeMono_.reserve(monoVoices);
+  for (uint32_t i = 0; i < voices + monoVoices; ++i) {
     auto slot = std::make_unique<Slot>();
-    slot->s.presetDefault(2, sr, true);
+    slot->s.presetDefault(i < voices ? 2 : 1, sr, true);
     slots_.push_back(std::move(slot));
   }
   for (uint32_t i = voices; i-- > 0;) free_.push_back(i);
+  for (uint32_t i = voices + monoVoices; i-- > voices;) freeMono_.push_back(i);
   // The configuration's buffers (an estimate from the preset's sizes: signalsmith's members are private). Per
   // stretcher: the STFT's input history (block + interval, ×2 with the stashed copy), output (block + window products,
   // ×2), spectra and FFT work buffers (~4 × block complex), and per band (block / 2 + 1, two channels): 2 Band (28 B),
@@ -68,9 +70,12 @@ StretchPool::StretchPool(uint32_t voices, double sampleRate) {
   probe.presetDefault(2, sr, true);
   const auto block = static_cast<size_t>(probe.blockSamples()), interval = static_cast<size_t>(probe.intervalSamples());
   const size_t bands = block / 2 + 1;
-  const size_t floats = 2 * 2 * (block + interval) + 2 * (2 * block + block) + 4 * block * 2 + block + interval +
-                        static_cast<size_t>(probe.outputLatency()) * 2;
-  memory_ = static_cast<size_t>(voices) * (floats * sizeof(float) + bands * 2 * (28 + 12) + bands * 6 * sizeof(float));
+  auto perStretcher = [&](size_t ch) {
+    const size_t floats = ch * 2 * (block + interval) + ch * (2 * block + block) + 4 * block * ch + block + interval +
+                          static_cast<size_t>(probe.outputLatency()) * ch;
+    return floats * sizeof(float) + bands * ch * (28 + 12) + bands * 6 * sizeof(float);
+  };
+  memory_ = static_cast<size_t>(voices) * perStretcher(2) + static_cast<size_t>(monoVoices) * perStretcher(1);
   latency_ = {probe.inputLatency(), probe.outputLatency(), probe.seekLength(), probe.blockSamples()};
 }
 
@@ -84,10 +89,11 @@ StretchPool::Latency StretchPool::latencyFor(double sampleRate) noexcept {  // R
 
 StretchPool::~StretchPool() = default;
 
-uint32_t StretchPool::claim(uint32_t seed) noexcept {  // RT-safe
-  if (free_.empty()) return kNone;
-  const uint32_t i = free_.back();
-  free_.pop_back();
+uint32_t StretchPool::claim(uint32_t seed, uint32_t channels) noexcept {  // RT-safe
+  std::vector<uint32_t>& list = channels == 1 && !freeMono_.empty() ? freeMono_ : free_;
+  if (list.empty()) return kNone;
+  const uint32_t i = list.back();
+  list.pop_back();
   reset(i, seed);
   return i;
 }
@@ -103,7 +109,7 @@ void StretchPool::reset(uint32_t i, uint32_t seed) noexcept {  // RT-safe
 }
 
 void StretchPool::release(uint32_t i) noexcept {  // RT-safe
-  if (i < slots_.size()) free_.push_back(i);
+  if (i < slots_.size()) (i < stereo_ ? free_ : freeMono_).push_back(i);
 }
 
 void StretchPool::setParams(uint32_t i, const StretchParams& p) noexcept {  // RT-safe

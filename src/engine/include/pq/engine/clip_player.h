@@ -39,10 +39,18 @@
 // whatever the block.
 //
 // T6.5, Complex / Complex Pro (audio_sequence.h "Complex"): a voice claims a stretcher of the player's StretchPool when
-// it starts (none free: it plays as Tones, counted) and runs its vocoder in chunks of kStretchCell of its own frames
-// into a per-stretcher buffer, which the run reads at the pitch rate (a copy, or the sinc resampler). A pending voice
-// primes in step with the song (output latency + a block before its start), so a clip start costs no burst; a voice
-// started inside a clip (a locate) primes at once (≈ 10k vocoder frames).
+// it starts (none free: it plays as Tones, counted; a mono source claims a mono stretcher) and runs its vocoder in
+// chunks of kStretchCell of its own frames into a per-stretcher buffer, which the run reads at the pitch rate (a copy,
+// or the sinc resampler). A voice primes (an output latency + a block + the resampler's reach ≈ 10k vocoder frames)
+// before it sounds, and never in a burst (T6.5b): its vocoder runs at most kStretchPrimeRate × its playing rate per
+// song sample, on a schedule anchored in song time (so renders do not depend on the block). A pending voice primes in
+// step with the song from its look-ahead on, so a clip start costs nothing extra. A voice that must sound at once
+// (Play / a locate inside the clip or just before its start, a loop wrap) without being primed starts late instead,
+// at the first sample its schedule has caught up (≈ 70 ms at pitch rate 1), faded in; its output from then on is
+// exactly what it would have been. To avoid that, the timeline CUES: while stopped (and counting in) it calls cue() at
+// the playhead and, while looping, at the loop start for the last look-ahead before the wrap; cue voices claim a
+// stretcher and prime (at the same rate, per block) without sounding, and the seek() to the cue position (Play, the
+// wrap) adopts them, so Play / a wrap starts primed and on time.
 //
 // ---- Sources ----------------------------------------------------------------------------------------------------------
 // A fully resident sample is read in place (its guard frames cover the filter's reach at the edges; reads further out
@@ -95,6 +103,7 @@ struct ClipPlayerConfig {
   double lookaheadSeconds = 0.5;    // a clip's voice exists (and claims its stream) this long before it starts
   double declickSeconds = 0.002;    // stop / locate / wrap / swap fades
   uint32_t stretchVoices = 32;      // T6.5: Complex / Complex Pro voices at once (pq/engine/stretch_pool.h; beyond: Tones)
+  uint32_t stretchMonoVoices = 32;  // T6.5b: ... on mono sources (mono stretchers; beyond: they take stereo ones)
 };
 
 struct ClipPlayerStats {
@@ -115,6 +124,11 @@ struct ClipPlayerStats {
   uint64_t stretchClaims = 0;     // T6.5: Complex / Complex Pro voices that got a stretcher
   uint64_t stretchFallbacks = 0;  // ... and ones that found none free: played as Tones
   uint64_t stretchCells = 0;      // vocoder chunks processed (kStretchCell of its output frames each, priming included)
+  uint64_t stretchCellsBlockMax = 0;  // T6.5b: the most chunks any one block processed (the priming burst bound)
+  uint64_t stretchMonoClaims = 0;     // T6.5b: claims that got a mono stretcher
+  uint64_t stretchLateStarts = 0;     // T6.5b: voices that started late because they were not primed (not cued)
+  uint64_t stretchCues = 0;           // T6.5b: cue voices made (cue()) and adopted by a seek
+  uint64_t stretchCuesAdopted = 0;
 };
 
 // Offline renders: called before a voice reads `frames` frames that a stream (still) has to deliver; it should block
@@ -139,8 +153,15 @@ public:
   const AudioSequenceImage* previousImage() const noexcept { return prevUsers_ != 0 ? prev_ : nullptr; }
   void play(uint32_t frame, SampleTime s0, uint32_t len) noexcept;
   void releaseAll(uint32_t frame) noexcept;
+  // A seek to a cue() position adopts the cue voices (they then play primed); any other position drops them.
   void seek(SampleTime s) noexcept;
   void idle(uint32_t frames) noexcept;
+  // T6.5b: prime the Complex / Complex Pro voices a playback from song sample `at` will need (clips under `at` or
+  // starting within the look-ahead after it), without sounding: `frames` = this block's length (the priming budget).
+  // Called every block while it applies (stopped: the playhead; looping: the loop start before a wrap); a new `at`
+  // drops the old cue. Costs one compare once the cue is primed.
+  void cue(SampleTime at, uint32_t frames) noexcept;
+  SampleTime cueLead() const noexcept { return lookahead_; }  // how long before a wrap the loop start is cued
   void endBlock() noexcept;
 
   const float* const* channels() const noexcept { return ptrs_.data(); }  // [slot · kClipChannels + c]
@@ -155,8 +176,11 @@ public:
   // start (audio_sequence.h "Complex"), into a buffer of kStretchFrames per stretcher.
   static constexpr uint32_t kStretchCell = 128;
   static constexpr uint32_t kStretchFrames = 8192;
+  // T6.5b: a voice primes at most this many times its playing rate (vocoder frames per song sample / pitch rate).
+  static constexpr uint32_t kStretchPrimeRate = 4;
 
-  // Non-RT, while the audio thread does not run (offline renders): see StreamFill. Null removes it.
+  // Non-RT, while the audio thread does not run (offline renders): see StreamFill. Null removes it. While one is set
+  // Complex voices also prime at once, with no per-block budget (T6.5b: nothing to overrun offline; no late starts).
   void setStreamFill(StreamFill fn, void* user) noexcept {
     fill_ = fn;
     fillUser_ = user;
@@ -211,7 +235,12 @@ private:
     // is fed: input frame k is the unfolded source frame phi0 + dir·k; frames [0, head) are in, those below zeroBelow
     // (before the clip plays) read as zeros. Its output (the vocoder clock y; song sample t reads y = (t − tA) · pitch
     // rate) is held in its stretchOut_ buffer: frames [vLo, vHi) (vHi INT64_MIN: not primed).
+    // T6.5b: the priming schedule: by song sample t, frames up to primeBase + (t − primeFrom) · kStretchPrimeRate ·
+    // pitch rate may be computed. cue: a cue voice (cue()), silent until a seek adopts it.
     uint32_t stretch = 0xFFFFFFFFu;
+    SampleTime primeFrom = 0;
+    int64_t primeBase = 0;
+    bool cue = false;
     SampleTime tA = 0;
     int64_t vLo = 0, vHi = INT64_MIN;
     int64_t phi0 = 0, head = 0, zeroBelow = 0;
@@ -276,7 +305,12 @@ private:
   void renderComplex(Voice& v, const media::SampleView& view, SampleTime s, uint32_t n, float* const* out,
                      const float* env) noexcept;
   void primeComplex(Voice& v, const media::SampleView& view, SampleTime t0) noexcept;
-  void advanceComplex(Voice& v, const media::SampleView& view, SampleTime upTo) noexcept;  // a pending voice's priming
+  // A pending voice's priming up to song sample upTo (its schedule); a cue voice's: `frames` worth of budget.
+  void advanceComplex(Voice& v, const media::SampleView& view, SampleTime upTo, uint32_t frames) noexcept;
+  // A pending voice due to sound at v.vs: primes it if needed and moves v.vs to where its schedule allows (faded in).
+  void gateComplex(Voice& v, const media::SampleView& view) noexcept;
+  int64_t complexFirstFrame(const AudioSequenceImage::Clip& c) const noexcept;  // ys: where its priming starts
+  void endCues() noexcept;
   // The vocoder frames [.., last) in the voice's buffer (frames below keepFrom may be dropped to make room).
   void complexEnsure(Voice& v, const media::SampleView& view, int64_t keepFrom, int64_t last) noexcept;
   void complexChunk(Voice& v, const media::SampleView& view) noexcept;  // vocoder frames [vHi, vHi + kStretchCell)
@@ -305,6 +339,9 @@ private:
   AlignedBuffer<float> stretchOut_;     // stretchVoices × 2 × kStretchFrames: each stretcher's recent output
   AlignedBuffer<float> stretchIn_;      // 2 × stretchInCap_: a cell's (or a seek's) input, gathered
   uint32_t stretchInCap_ = 0;
+  SampleTime cueAt_ = INT64_MIN;        // T6.5b: the cue position (INT64_MIN: none)
+  bool cueScanned_ = false;             // ... its voices are made
+  uint64_t blockCells_ = 0;             // vocoder chunks this block
   std::vector<const float*> ptrs_;      // slots × 2
   std::vector<uint8_t> active_;         // slots
   std::vector<uint8_t> touchedFlag_;    // slots
