@@ -40,6 +40,7 @@ namespace pq::app {
 
 class SdlFileDialogs;
 class AudioDeviceManager;
+class MidiInputService;
 
 class ShellApp {
 public:
@@ -89,6 +90,7 @@ private:
   std::unique_ptr<PatchPreview> preview_;
   engine::AudioCallback previewCallback_{};
   std::unique_ptr<AudioDeviceManager> audio_;  // T3.18: the device manager (owns the audio output; Ctrl+, prefs)
+  std::unique_ptr<MidiInputService> midi_;     // T6.4: MIDI input ports (after audio_: closed first)
   std::unique_ptr<PreviewService> browserPreview_;  // T5.10: the browser's preview (the output's cue source)
   std::unique_ptr<library::Indexer> indexer_;      // T5.10: the browser index of the places
   std::unique_ptr<views::ViewContext> ctx_;

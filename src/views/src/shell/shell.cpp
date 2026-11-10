@@ -37,7 +37,12 @@ struct Shell::Impl {
 
 Shell::Shell(UiTree& tree, ViewContext& ctx) : tree_(tree), ctx_(ctx), impl_(std::make_unique<Impl>()) {}
 
-Shell::~Shell() = default;
+Shell::~Shell() {
+  if (tree_.keyListener() == &ctx_.computerKeyboard()) {  // T6.4
+    ctx_.computerKeyboard().releaseAll();
+    tree_.setKeyListener(nullptr);
+  }
+}
 
 Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, const ShellOptions& options) {
   std::unique_ptr<Shell> s(new Shell(tree, ctx));
@@ -113,6 +118,7 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
   Status bound = options.keymap ? ctx.applyKeymap(*options.keymap) : ctx.applyDefaultKeymap();
   if (!bound) return std::move(bound).error();
   tree.setKeymap(&ctx.actions(), &ctx.keymap());
+  tree.setKeyListener(&ctx.computerKeyboard());  // T6.4: the computer MIDI keyboard
   m.info->attachTo(tree);
   tree.layoutNow();
   return s;

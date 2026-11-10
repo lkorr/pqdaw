@@ -27,6 +27,10 @@
 //   releaseAuditions()  AU.voices: the press that auditioned ended (the pointer let go): every sounding audition is
 //                       released now, or at its own end when that comes first (≥ 50 ms after its onset), so a note
 //                       clicked in the piano roll sounds while it is held, at most its own length.
+//   liveKey(equave, step, velocity, on)
+//                       T6.4: the computer MIDI keyboard (`M`): degree `step` (0 … 16) above equave offset `equave`
+//                       (−5 … 5) went down (velocity 1 … 127) or up, into the armed tracks that listen to it (each in its
+//                       own tuning and note input mode). A key-up repeats its key-down's equave and step.
 
 #include <cstdint>
 
@@ -59,6 +63,9 @@ public:
   virtual PlayheadSnapshot playhead() = 0;
   virtual void auditionHz(float hz, float velocity, float durationMs) = 0;
   virtual void releaseAuditions() = 0;
+  virtual void liveKey(int32_t equave, int32_t step, float velocity, bool on) {
+    (void)equave, (void)step, (void)velocity, (void)on;
+  }
 };
 
 }  // namespace pq::views

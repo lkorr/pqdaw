@@ -205,6 +205,23 @@ endblock()
 # Third-party code: silence its warnings instead of patching it.
 target_compile_options(rtaudio PRIVATE /w)
 
+# --- RtMidi (MIT-style, see docs/DEPENDENCIES.md): MIDI input for pq_app (T6.4) -------------------------------
+# GitHub tag archive of 6.0.0 (2023-08-01), SHA-256 pinned. Populated only (its CMake project installs and builds
+# tests): RtMidi.cpp is compiled here as `pq_rtmidi` with the WinMM backend only (__WINDOWS_MM__), warnings off, /MT
+# via CMAKE_MSVC_RUNTIME_LIBRARY. Linked by pq_app only; the engine never includes it (docs/plans/M6.md).
+pq_fetch_declare(rtmidi
+  URL      https://github.com/thestk/rtmidi/archive/refs/tags/6.0.0.tar.gz
+  URL_HASH SHA256=ef7bcda27fee6936b651c29ebe9544c74959d0b1583b716ce80a1c6fea7617f0
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  SOURCE_SUBDIR  pq-no-cmake
+  EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(rtmidi)
+add_library(pq_rtmidi STATIC ${rtmidi_SOURCE_DIR}/RtMidi.cpp)
+target_compile_definitions(pq_rtmidi PUBLIC __WINDOWS_MM__)
+target_include_directories(pq_rtmidi SYSTEM PUBLIC ${rtmidi_SOURCE_DIR})
+target_compile_options(pq_rtmidi PRIVATE /w)
+target_link_libraries(pq_rtmidi PRIVATE winmm)
+
 # --- FreeType (FTL, chosen over GPLv2) : hinted glyph rasterisation for ui text ----------------------------
 # Built static with no optional dependencies: TrueType/CFF hinting and grayscale rendering need none of
 # zlib/bzip2/png/brotli/harfbuzz (those cover compressed fonts, colour emoji and FreeType's own autohinter

@@ -139,6 +139,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_inspect_lifetime.cpp  # T4.x-fix-safety: cost meters and probe taps live as long as the images that write them
     app/test_racks.cpp  # GU.9: racks are parallel groups (renders vs the T4.8 racks' references, interpreter == JIT)
     app/test_audio_tracks.cpp  # T5.3: audio tracks (golden lowering text, clip slot, clip edits compile nothing)
+    app/test_live_input.cpp  # T6.4: live MIDI input (live == drawn bit for bit in Keys / Hz across tunings, routes, keyboard, MIDI service)
     app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
     app/test_eq_link.cpp  # EQ.4b: the EQ displays in the app wiring (the curve after the circuit opens / closes the EQ; the link's lowering)
     app/test_drop_playback.cpp  # T5.7: a dropped file plays at once (the hover preloads it into the pool)
@@ -225,14 +226,16 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_meta_envelope_face.cpp  # TMM.11: the Envelope face (goldens with voices, gestures, scenes, paint cost)
     views/test_meta_wavetable_edit.cpp  # TMM.9: its harmonic editor and draw tools (math, gestures, goldens, paint cost)
     views/test_meta_devices.cpp  # TMM.10: chain meta devices in the Device view (face panels, menus, presets, goldens)
+    views/test_live_input_views.cpp  # T6.4: the computer MIDI keyboard (M) and the mixer strip's input section, by real dispatch
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).
 add_test(NAME pqdaw_idle_shell
   COMMAND pqdaw --project ${PQ_SOURCE_DIR}/tests/views/fixtures/empty --idle-check 10)
 # T0.x-flake: up to 30 s of settling and 3 measurement windows when outside events disturb one.
 # T3.18: its own (empty) settings directory, so the user's saved audio device (an ASIO driver, say) is not opened.
+# T6.4: no MIDI ports either (PQ_NO_MIDI: the user's controller is not opened by a test).
 set_tests_properties(pqdaw_idle_shell PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
-  ENVIRONMENT PQ_SETTINGS_DIR=${CMAKE_CURRENT_BINARY_DIR}/settings_idle_shell)
+  ENVIRONMENT "PQ_SETTINGS_DIR=${CMAKE_CURRENT_BINARY_DIR}/settings_idle_shell;PQ_NO_MIDI=1")
 add_test(NAME pqdaw_screenshot_shell
   COMMAND pqdaw --screenshot shell ${CMAKE_CURRENT_BINARY_DIR}/pqdaw_screenshot_shell.png --project ${PQ_SOURCE_DIR}/tests/views/fixtures/empty)
 # T3.8: the arrangement scene through the real executable.
@@ -331,6 +334,7 @@ pq_add_test(pq_tests_timeline
     engine/test_clip_player.cpp  # T5.4: the clip player, the audio sequence image, streamed reads
     engine/test_preview_player.cpp  # T5.10: the browser preview player (cue bus)
     engine/test_warp.cpp  # T6.3: warp markers, Beats, Tones, Texture (tempo / pitch accuracy, block / streaming identity, RtScope)
+    engine/test_live_input.cpp  # T6.4: live note input (routing, stamps → frames, held notes, bend, 10k ev/s)
   DEPS pq_engine pq_doc)
 
 # T1.10: golden offline renders (tests/golden: patches, committed WAVs, the absolute + spectral comparison helper) on

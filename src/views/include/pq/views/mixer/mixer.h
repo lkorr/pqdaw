@@ -14,7 +14,8 @@
 // Mixer view (ShellSlot::Mixer, toggled with Ctrl+Alt+M; it takes the track area while shown): one vertical strip
 // per visible track (members of folded groups hidden, like the arrangement), then the returns, the master pinned at
 // the right. Strip: name in the track colour, output, tuning, sends, pan, volume box, fader + meter, activator,
-// solo, arm.
+// solo, arm. T6.4: a MIDI track's strip starts with its input section: MIDI From (All Ins / a port / the Computer
+// Keyboard / No Input), the channel and the note input (Keys / Hz, with the key map), Monitor (In / Auto / Off).
 //
 // Automation (T3.15): an automated control carries a small red marker in its corner (grey while the automation is
 // overridden by a hand-made change, ViewContext::automationOverridden), as in Live.
@@ -135,6 +136,11 @@ public:
   ui::DragBox* send(size_t i) const noexcept { return i < sends_.size() ? sends_[i].box : nullptr; }
   doc::TrackId sendTarget(size_t i) const noexcept { return i < sends_.size() ? sends_[i].target : doc::TrackId{}; }
   ui::Control* output() const noexcept { return output_; }
+  // T6.4: a MIDI track's input section (mixer view only; null otherwise).
+  ui::Control* midiIn() const noexcept { return midiIn_; }
+  ui::Control* midiChannel() const noexcept { return channel_; }
+  ui::Control* noteInput() const noexcept { return noteInput_; }
+  ui::Control* monitor() const noexcept { return monitor_; }
   ui::Control* tuningChip() const noexcept { return chip_; }
   ui::Meter* meter() const noexcept { return meter_; }
   const std::string& title() const noexcept { return title_; }
@@ -175,6 +181,7 @@ private:
   ui::Toggle* post_ = nullptr;
   std::vector<SendBox> sends_;
   ui::Control* output_ = nullptr;
+  ui::Control *midiIn_ = nullptr, *channel_ = nullptr, *noteInput_ = nullptr, *monitor_ = nullptr;  // T6.4
   ui::Control* chip_ = nullptr;
   ui::Meter* meter_ = nullptr;
   uint32_t automated_ = 0;   // T3.15

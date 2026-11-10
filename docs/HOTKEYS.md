@@ -40,7 +40,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `track.newReturn` | `Ctrl+Alt+T` | global | Commands for Tracks | implemented (T3.10) |
 | `tuning.openMosWheel` | `Ctrl+Shift+W` | global | — (pqdaw; Q15 provisional) | implemented (T3.14; the MOS wheel for the clip in the clip view, else the first main tuning; pressed again: closes it, keeping the change) |
 | `app.preferences` | `Ctrl+,` | global | Accessing Menus (Options → Preferences) | implemented (T3.18; the preferences window: Audio tab, and the Library tab (T5.x-library-prefs); pressed again: closes it) |
-| `keyboard.toggleComputerMidi` | `M` | global | Key/MIDI Map Commands | M8 (Q15) |
+| `keyboard.toggleComputerMidi` | `M` | global | Key/MIDI Map Commands | implemented (T6.4: the computer MIDI keyboard, below; M8's macro mode will replace its scope when active) |
 | `mapping.toggleMidiMap` | `Ctrl+M` | global | Key/MIDI Map Commands | M8 |
 | `mapping.toggleKeyMap` | `Ctrl+K` | global | Key/MIDI Map Commands | M8 |
 | `arrangement.zoomToSelection` | `Z` | arrangement | Arrangement View Commands | implemented (T3.8; the time selection, T3.9, else the whole arrangement) |
@@ -275,6 +275,20 @@ A device's "Open in Circuit View" (its menu, a double-click on its title, the pr
 | Arrangement clips | drag onto the browser | T5.12: saves them as .pqclip into the folder under the pointer (`Alt`: renders audio clips to WAV) |
 | Arrangement clips | drag out of the window | T5.12: Explorer receives WAV files rendered as the clips play (MIDI clips: M11) |
 | Browser preview | click in the waveform | plays from there (scrub) |
+
+## Computer MIDI keyboard (T6.4, the tree's key listener `views::ComputerKeyboard`, not the keymap)
+
+While `M` has it on, these keys play notes into the armed tracks that listen to All Ins or the Computer Keyboard (each
+track in its own tuning: Keys = degrees, Hz = their Hz). It takes them before every key scope (so the arrangement's `A`,
+`Z`, `X` wait until it is off, as in Live); a focused text field still types them, and keys with `Ctrl`, `Alt`, `Shift`
+or `Win` pass through (`Ctrl+S` saves).
+
+| Keys | What |
+|---|---|
+| `A W S E D F T G Y H U J K O L P ;` | degrees 0 … 16 above the equave offset (consecutive degrees of the track's tuning, not 12-TET keys; a 12-TET key map counts semitones). A release ends the note its press started |
+| `Z` / `X` | equave offset down / up (−5 … +5) |
+| `C` / `V` | velocity −20 / +20 (1 … 127; 100 at start) |
+| `M` | off (every held note ends) |
 
 ## Bug report (T5.x-bugreport, handled by the window loop before the widget tree, not the keymap)
 

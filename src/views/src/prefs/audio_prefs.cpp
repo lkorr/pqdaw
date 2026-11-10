@@ -46,6 +46,8 @@ bool parseAudioDriverType(std::string_view key, AudioDriverType& out) noexcept {
 
 FakeAudioPrefsPort FakeAudioPrefsPort::studio() {
   FakeAudioPrefsPort p;
+  p.midi = {{"Arturia KeyStep 37", true, true, 2.0f}, {"loopMIDI Port", true, false, 2.0f},
+            {"Launchkey 49 MIDI", false, true, 12.0f}};  // T6.4
   Driver asio{AudioDriverType::Asio, {}, {}, {}};
   asio.outputs = {{"Focusrite USB ASIO", "Focusrite USB ASIO", 2, 2, false},
                   {"ASIO4ALL v2", "ASIO4ALL v2", 2, 2, false},
@@ -279,6 +281,12 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx)
     libTab.setInfo("Library", "Where the User Library is, and the folders the browser shows under Places.");
     libTab.onSelect = [this] { showTab(Tab::Library); };
   }
+  {  // T6.4
+    auto& midiTab = tabs.add<TabLabel>("midi", "MIDI");
+    midiTab_ = &midiTab;
+    midiTab.setInfo("MIDI", "MIDI input ports: which ones play into the tracks, and their pitch-bend range.");
+    midiTab.onSelect = [this] { showTab(Tab::Midi); };
+  }
   tabs.selected = &audioTab;
 
   auto& page = body.add<Widget>("audio");
@@ -467,6 +475,7 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx)
   }
 
   if (ctx_) buildLibraryTab(body);
+  buildMidiTab(body);  // T6.4
 
   port_.setListener([alive = alive_, this] {
     if (*alive) refresh();
@@ -596,9 +605,132 @@ void PreferencesWindow::showTab(Tab t) {
   tab_ = t;
   audioPage_->setVisible(t == Tab::Audio);
   if (libraryPage_) libraryPage_->setVisible(t == Tab::Library);
+  midiPage_->setVisible(t == Tab::Midi);
+  if (t == Tab::Midi) updateMidi();
   auto* tabs = static_cast<TabColumn*>(tabs_);
-  tabs->selected = t == Tab::Audio ? static_cast<const Widget*>(audioTab_) : static_cast<const Widget*>(libraryTab_);
+  tabs->selected = t == Tab::Audio     ? static_cast<const Widget*>(audioTab_)
+                   : t == Tab::Library ? static_cast<const Widget*>(libraryTab_)
+                                       : static_cast<const Widget*>(midiTab_);
   tabs->markDirty();
+}
+
+// ---- T6.4: the MIDI tab ----------------------------------------------------------------------------------------------
+
+namespace {
+const float kBendChoices[] = {1, 2, 3, 4, 5, 7, 12, 24, 48};
+std::string bendLabel(float st) {
+  char b[24];
+  std::snprintf(b, sizeof b, "\xC2\xB1%g st", static_cast<double>(st));
+  return b;
+}
+}  // namespace
+
+void PreferencesWindow::buildMidiTab(Widget& body) {
+  auto& page = body.add<Widget>("midi");
+  midiPage_ = &page;
+  page.setLayout(LayoutKind::Column);
+  page.setGap(5);
+  page.setVisible(false);
+  {
+    auto& w = page.add<Widget>("ports-section");
+    w.setLayout(LayoutKind::Column);
+    w.setHeight(Length::fixed(21));
+    w.setGap(0);
+    auto& head = w.add<Widget>("head");
+    head.setLayout(LayoutKind::Row);
+    head.setHeight(Length::fixed(20));
+    head.setGap(8);
+    auto& t = head.add<Label>("title", "MIDI Input Ports", FontRoleId::BodyStrong, TextTone::Primary);
+    t.setWidth(Length::flex());
+    head.add<Label>("track", "Track", FontRoleId::Small, TextTone::Secondary).setWidth(Length::fixed(48));
+    head.add<Label>("bend", "Bend", FontRoleId::Small, TextTone::Secondary).setWidth(Length::fixed(84));
+    w.add<Divider>();
+  }
+  auto& list = page.add<Widget>("ports");
+  midiList_ = &list;
+  list.setLayout(LayoutKind::Column);
+  list.setGap(3);
+  list.setHeight(Length::fixed(kRowHeight));
+  section(page, "keyboard-section", "Computer MIDI Keyboard");
+  const char* info = "With M on, the letter rows play the armed tracks that listen to All Ins or to the Computer Keyboard, "
+                     "in each track's tuning (Keys) or as Hz (Hz).";
+  for (const auto& [name, text] : {std::pair<const char*, const char*>{"keyboard-keys", "M turns it on and off. A W S E D F T G Y H U J K O L P ; "
+                                                                                         "play degrees 0 to 16 of the track's tuning."},
+                                   {"keyboard-shift", "Z / X: an equave down / up.   C / V: velocity \xE2\x88\x92" "20 / +20."}}) {
+    auto& note = page.add<Label>(name, text, FontRoleId::Small, TextTone::Secondary);
+    note.setHeight(Length::fixed(kRowHeight));
+    note.setInfo("Computer MIDI Keyboard", info);
+  }
+  updateMidi();
+}
+
+void PreferencesWindow::updateMidi() {
+  if (!midiList_) return;
+  std::vector<MidiPortEntry> ports = port_.midiInputs();
+  if (ports == midiShown_ && midiList_->childCount() != 0) return;
+  const bool sameNames = ports.size() == midiShown_.size() &&
+                         std::equal(ports.begin(), ports.end(), midiShown_.begin(),
+                                    [](const MidiPortEntry& a, const MidiPortEntry& b) { return a.name == b.name && a.connected == b.connected; });
+  midiShown_ = ports;
+  if (sameNames && !ports.empty() && midiRows_.size() == ports.size()) {  // only the switches changed: no rebuild
+    for (size_t i = 0; i < ports.size(); ++i) {
+      midiRows_[i].track->setOn(ports[i].enabled);
+      int32_t sel = 1;
+      for (int32_t k = 0; k < static_cast<int32_t>(std::size(kBendChoices)); ++k)
+        if (kBendChoices[k] == ports[i].bendSemitones) sel = k;
+      midiRows_[i].bend->setIndex(sel);
+    }
+    return;
+  }
+  midiList_->clearChildren();
+  midiRows_.clear();
+  midiList_->setHeight(Length::fixed(static_cast<float>(std::max<size_t>(ports.size(), 1)) * (kRowHeight + 3.0f)));
+  if (ports.empty()) {
+    auto& r = midiList_->add<Widget>("none");
+    r.setLayout(LayoutKind::Row);
+    r.setHeight(Length::fixed(kRowHeight));
+    r.add<Label>("label", "No MIDI input ports.", FontRoleId::Small, TextTone::Secondary);
+    return;
+  }
+  for (size_t i = 0; i < ports.size(); ++i) {
+    const MidiPortEntry& m = ports[i];
+    auto& r = midiList_->add<Widget>("port" + std::to_string(i));
+    r.setLayout(LayoutKind::Row);
+    r.setHeight(Length::fixed(kRowHeight));
+    r.setGap(8);
+    auto& l = r.add<Label>("name", m.connected ? m.name : m.name + " (not connected)", FontRoleId::Small,
+                           m.connected ? TextTone::Primary : TextTone::Secondary);
+    l.setWidth(Length::flex());
+    auto& t = r.add<Toggle>("track", "Track", ToggleStyle::Accent, m.enabled);
+    t.setWidth(Length::fixed(48));
+    t.setInfo("Track", "On: this port's notes play into the tracks that listen to it (All Ins, or this port by name).");
+    std::vector<std::string> items;
+    int32_t sel = 1;
+    for (int32_t k = 0; k < static_cast<int32_t>(std::size(kBendChoices)); ++k) {
+      items.push_back(bendLabel(kBendChoices[k]));
+      if (kBendChoices[k] == m.bendSemitones) sel = k;
+    }
+    auto& b = r.add<Dropdown>("bend", std::move(items), sel);
+    b.setWidth(Length::fixed(84));
+    b.setInfo("Pitch Bend Range", "How far the pitch wheel bends a held note, in semitones each way (match the controller).");
+    const std::string name = m.name;
+    // The port's listener refreshes the tab (a rebuild may destroy these controls): read first, then apply.
+    t.onToggle = [this, name](bool on) {
+      float bend = 2.0f;
+      for (const MidiRow& row : midiRows_)
+        if (row.name == name) bend = kBendChoices[std::max(0, row.bend->index())];
+      port_.setMidiInput(name, on, bend);
+    };
+    b.onChange = [this, name](int32_t k) {
+      if (k < 0 || k >= static_cast<int32_t>(std::size(kBendChoices))) return;
+      bool on = false;
+      for (const MidiRow& row : midiRows_)
+        if (row.name == name) on = row.track->on();
+      port_.setMidiInput(name, on, kBendChoices[k]);
+    };
+    midiRows_.push_back({m.name, &t, &b});
+  }
+  markDirty();
 }
 
 const std::string& PreferencesWindow::userLibraryText() const {
@@ -641,6 +773,7 @@ void PreferencesWindow::refresh() {
   shown_ = port_.settings();
   rebuildChoosers();
   updateReadouts(true);
+  updateMidi();  // T6.4
 }
 
 void PreferencesWindow::choose(AudioSettings s) {

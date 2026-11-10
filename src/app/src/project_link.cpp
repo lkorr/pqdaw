@@ -429,6 +429,7 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   if (Status s = compileNow(current_); !s.ok()) return s;
   publishTempo(*current_);
   publishSequences(*current_);
+  publishLiveRoutes(*current_, true);  // T6.4
   publishAudio(*current_);
   publishAutomation(*current_);
   if (cfg_.compileThread) worker_ = std::thread([this] { workerMain(); });
@@ -461,6 +462,7 @@ Status ProjectLink::makeEngine() {
   ec.timeline.streams = pool_ != nullptr ? &pool_->streams() : nullptr;
   ec.timeline.sampleReclaimer = &sampleReclaimer_;
   ec.timeline.clipLookaheadSeconds = cfg_.clipLookaheadSeconds;
+  ec.livePorts = livePorts_;  // T6.4: the MIDI service's rings outlive engines (a rate change makes a new one)
   auto eng = engine::Engine::create(ec);
   if (!eng.ok()) return eng.error();
   engine_ = std::move(eng.value());
@@ -555,6 +557,7 @@ Status ProjectLink::setSampleRate(double rate) {
   const Status compiled = compileNow(current_, ctx_ != nullptr && ctx_->doc() == current_ ? ctx_->docSerial() : 0);
   publishTempo(*current_);
   publishSequences(*current_);
+  publishLiveRoutes(*current_, true);  // T6.4: the new engine has no routes yet
   lastAudio_ = nullptr;
   publishAudio(*current_, true);  // T5.4: the new engine's timeline has no audio image yet
   publishAutomation(*current_);
@@ -1051,6 +1054,9 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   if (reset || c.has(doc::kChangeTimeline)) publishTempo(p);
   if (reset || compile || c.has(doc::kChangeSequence)) publishSequences(p);
   else if (c.has(doc::kChangeParam) && !c.tunings.empty()) publishSequences(p, true);  // static pitches only
+  // T6.4: arm / monitor (Param), MIDI input and note input (Meta), tunings, slots: the live routes (published only when
+  // one changed).
+  if (reset || compile || c.has(doc::kChangeParam) || c.has(doc::kChangeMeta)) publishLiveRoutes(p, reset);
   // T5.4: audio clips (edits are runtime data, never a compile); a tuning param can move a Steps transpose, a tempo
   // edit the clips' samples. Published only when something an audio track plays changed.
   if (reset || compile || relocated || c.has(doc::kChangeSequence) || c.has(doc::kChangeTimeline) ||

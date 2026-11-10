@@ -293,3 +293,32 @@ TEST_CASE("render: audio-prefs-wasapi (WASAPI exclusive, idle stream) matches th
 TEST_CASE("render: library-prefs (the Library tab: location, three Places, one selected) matches the golden image") {
   checkGolden("library-prefs");
 }
+
+TEST_CASE("prefs: the MIDI tab lists the ports (connected and remembered); Track and Bend apply at once") {
+  Prefs p;
+  PreferencesWindow& w = p.open();
+  w.showTab(PreferencesWindow::Tab::Midi);
+  CHECK(w.tab() == PreferencesWindow::Tab::Midi);
+  p.d.step();
+  REQUIRE(w.midiRows().size() == 3);
+  CHECK(w.midiRows()[0].name == "Arturia KeyStep 37");
+  CHECK(w.midiRows()[0].track->on());
+  CHECK_FALSE(w.midiRows()[1].track->on());
+  // Through real dispatch: a click on loopMIDI's Track switch turns it on.
+  const IRect r = w.midiRows()[1].track->rect();
+  p.d.click({static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + r.h / 2)});
+  CHECK(p.port.midi[1].enabled);
+  CHECK(w.midiRows()[1].track->on());
+  // The bend range: ±12 st on the first port.
+  p.pick(w.midiRows()[0].bend, p.itemIndex(w.midiRows()[0].bend, "\xC2\xB1" "12 st"));
+  CHECK(p.port.midi[0].bendSemitones == 12.0f);
+  CHECK(p.port.midi[0].enabled);
+  // A port that went away disappears on the next refresh (the listener).
+  p.port.midi.pop_back();
+  p.port.listener();
+  CHECK(w.midiRows().size() == 2);
+}
+
+TEST_CASE("render: midi-prefs (the MIDI tab: a port on, one off, one not connected) matches the golden image") {
+  checkGolden("midi-prefs");
+}

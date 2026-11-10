@@ -19,7 +19,17 @@ struct AudioBlock {
   // Frames delivered by this callback's source before the first frame of this block (device frames for a
   // device callback, engine frames for a BlockAdapter engine callback). int64 so it never wraps (SPEC §13).
   int64_t frameTime = 0;
+  // T6.4: the host clock (qpcNow100ns) when the device callback that delivers this block started (0: unknown, e.g.
+  // offline renders), and the device frame of that callback at which this block's first output frame plays (a
+  // BlockAdapter's i-th direct block: i · blockFrames; FIFO mode: where its output starts). Live input maps MIDI
+  // timestamps to engine time with it (pq/engine/live_input.h).
+  int64_t hostTime = 0;
+  int32_t hostOffset = 0;
 };
+
+// QueryPerformanceCounter in 100 ns units (the time base WASAPI uses for its QPC positions, and the stamp of live MIDI
+// input). A user-mode counter read (no syscall on current Windows); CallbackRunner reads it once per device callback.
+uint64_t qpcNow100ns() noexcept;
 
 // Called on the audio thread once per block. It must write all numOut × frames output samples (nothing is
 // zeroed for it) and must be RT-safe: no allocation, locks, syscalls or I/O. A plain function pointer plus a

@@ -382,7 +382,7 @@ private:
   uint64_t commandsPosted_ = 0;  // commands drained from the post() ring
   // Sequencer.
   uint32_t numTracks_ = 0;
-  uint32_t nextInstance_ = 1;    // event note ids: unique across tracks (wraps after 2^32 notes, skipping 0)
+  uint32_t nextInstance_ = 1;    // event note ids: unique across tracks (wrap below 0xE0000000, skipping 0: T6.4)
   std::vector<TrackState> tracks_;
   std::vector<Ticks> next_;      // per track: min(next note-on, next note-off) — the per-track fast path
   SampleTime minNextSample_ = INT64_MAX;  // ticksToSamples(min over tracks of next_) — the per-block fast path

@@ -657,6 +657,8 @@ KeyResult UiTree::dispatchKey(const KeyEvent& e) {
   }
   // M4 review M6 / L2: Esc goes first to the widget holding the pointer (it cancels its drag), wherever the focus is.
   if (captured_ && e.down && e.key == key::kEscape && captured_->enabled() && captured_->onKey(e)) return KeyResult::Widget;
+  // T6.4: a release the key listener claims (a key it holds down) goes to it first.
+  if (keyListener_ && !e.down && keyListener_->onTreeKey(e)) return KeyResult::Widget;
   // 1. The focused widget, then its ancestors. A focused text field claims printable keys outright.
   Widget* f = focus_;
   if (f) {
@@ -665,6 +667,8 @@ KeyResult UiTree::dispatchKey(const KeyEvent& e) {
     for (Widget* w = f->parent_; w; w = w->parent_)
       if (w->enabled() && w->onKey(e)) return KeyResult::Widget;
   }
+  // T6.4: the key listener (the computer MIDI keyboard) before every key scope.
+  if (keyListener_ && e.down && keyListener_->onTreeKey(e)) return KeyResult::Widget;
   // Key releases and lone modifier presses are never chords.
   if (!e.down || isModifierKey(e.key)) return KeyResult::Unhandled;
   KeyResult r = KeyResult::Unhandled;

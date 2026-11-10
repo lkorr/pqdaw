@@ -93,6 +93,17 @@
 // Automation lanes whose param belongs to a compensated unit are shifted by that unit's A_u
 // (AutomationLaneDesc::shiftFrames): when the shifts change, the automation image is republished on the UI thread
 // (posted with setUiPoster's poster; flush() and playhead() pick it up too). outputLatency() is the master's total.
+//
+// ---- Live input (T6.4; src/app/src/project_link_input.cpp) ---------------------------------------------------------
+// The link owns the live input's producer rings (engine::LivePorts: the MIDI service pushes into them; every engine the
+// link makes consumes them) and builds the engine's LiveRouteImage from the document: every MIDI track that listens
+// (Monitor In, or Auto while armed) and has an event slot gets its sources (MidiInput All = every open port and the
+// computer keyboard; Port = that port by name, doc::kComputerKeyboardPort = the keyboard), its channel, and its pitch
+// tables — doc::buildInputPitchMap (resolved in the node table's definition, as lowerTrack resolves drawn notes) lowered
+// to engine::LivePitch exactly as lowerTrack lowers a drawn note (node index, Degree / Reference), the keyboard's table
+// from InputPitchMap::pitchForDegree. Rebuilt (per-track tables cached on the track's tuning definition, its node table
+// and its NoteInput) on a Reset, a structural / Meta / Param change, a port list change and a new engine; published
+// only when a route changed. liveKey (TransportPort) stamps the computer keyboard's notes into its ring.
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -433,6 +444,16 @@ public:
   views::PlayheadSnapshot playhead() override;
   void auditionHz(float hz, float velocity, float durationMs) override;
   void releaseAuditions() override;
+  void liveKey(int32_t equave, int32_t step, float velocity, bool on) override;  // T6.4: the computer keyboard
+
+  // ---- Live input (T6.4; see the file comment) ----
+  // UI thread: the MIDI service's open ports (index = engine::LivePorts port, at most kLivePorts; "" = unused) and
+  // their pitch-bend ranges in semitones (0: 2). The routes are rebuilt.
+  void setLivePorts(std::vector<std::string> names, std::vector<float> bendSemitones);
+  const std::shared_ptr<engine::LivePorts>& livePorts() const noexcept { return livePorts_; }
+  // The tracks the last published route image listens with (tests).
+  uint32_t liveRouteTracks() const noexcept { return liveTracks_; }
+  uint64_t liveRoutePublishes() const noexcept { return livePublishes_; }
 
   // ---- views::MeterSource (UI thread) ----
   // True while the engine runs (it never sleeps while playing), and afterwards until every meter the views read has decayed
@@ -493,6 +514,7 @@ private:
   void writeLinked(const std::string& key, float value);
   // onlyIfChanged: publish only when a track's description changed (after a tuning param change).
   void publishSequences(const doc::Project& p, bool onlyIfChanged = false);
+  void publishLiveRoutes(const doc::Project& p, bool force = false);  // T6.4 (project_link_input.cpp)
   engine::TrackSequenceDesc lowerTrack(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t);
   std::vector<const void*> sequenceKey(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t,
                                        std::vector<EntryPtr>* tables = nullptr) const;
@@ -633,6 +655,24 @@ private:
   double diskReported_ = -1e9;
   std::unique_ptr<doc::DeviceLibrary> devices_;
   std::vector<doc::DeviceId> missingReported_;   // UI thread: devices the status line named as missing
+  // T6.4: live input (declared before engine_: every engine the link makes consumes these rings).
+  std::shared_ptr<engine::LivePorts> livePorts_ = std::make_shared<engine::LivePorts>();
+  std::array<std::string, engine::kLivePorts> livePortNames_;
+  std::array<float, engine::kLiveSources> liveBend_{};
+  struct LiveCacheEntry {
+    const void* def = nullptr;    // the effective TuningDef (keeps its address: `from` holds it)
+    const void* table = nullptr;  // the node table entry its static Hz resolve in (null: none)
+    doc::NoteInput input;
+    std::vector<doc::TuningId> signals;
+    doc::Snapshot from;
+    EntryPtr held;
+    std::vector<engine::LivePitch> keys, keyboard;
+  };
+  std::unordered_map<uint32_t, LiveCacheEntry> liveCache_;  // track id (UI thread)
+  std::vector<uint64_t> liveRouteKey_;                      // what the published image routes (UI thread)
+  const void* liveEngine_ = nullptr;                        // the engine it was published to
+  uint32_t liveTracks_ = 0;
+  uint64_t livePublishes_ = 0;
   std::unique_ptr<engine::Engine> engine_;
   std::unique_ptr<engine::ProjectCompiler> compiler_;
   std::shared_ptr<const doc::LoweredProject> lowered_;  // compile path (EQ.4b: shared with the response displays)

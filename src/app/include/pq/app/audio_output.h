@@ -131,6 +131,9 @@ public:
   // DeviceFactory::backgroundSuspendSeconds in the background with the engine asleep; coming back to the foreground
   // restarts a suspended stream at once (its pre-roll then runs while the user reaches for Play). Any thread.
   void setForeground(bool foreground);
+  // T6.4: while on (a MIDI input port is open), the stream is not suspended in the background either: a note played
+  // into a backgrounded pqdaw must sound. Any thread.
+  void setKeepRunning(bool on);
 
   OutputStatus status() const;
   OutputConfig config() const;
@@ -237,6 +240,7 @@ private:
   // Test tone: written by any thread, read by the audio thread (relaxed: a tone change may take one block).
   std::atomic<bool> toneOn_{false};
   std::atomic<const engine::AudioCallback*> extra_{nullptr};
+  std::atomic<bool> keepRunning_{false};  // T6.4
   std::atomic<uint32_t> inExtra_{0};  // the audio thread is inside the extra source (setExtraSource's handshake)
   std::atomic<const engine::AudioCallback*> cue_{nullptr};  // T5.10
   std::atomic<uint32_t> inCue_{0};

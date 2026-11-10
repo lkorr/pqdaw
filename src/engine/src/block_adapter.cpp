@@ -30,8 +30,10 @@ bool BlockAdapter::prepare(AudioCallback engine, uint32_t numIn, uint32_t numOut
   return true;
 }
 
-void BlockAdapter::runEngine(const float* const* in, float* const* out) noexcept {  // RT-safe
-  const AudioBlock block{in, numIn_, out, numOut_, blockFrames_, engineTime_};
+void BlockAdapter::runEngine(const float* const* in, float* const* out, int64_t hostTime,
+                             int32_t hostOffset) noexcept {  // RT-safe
+  // T6.4: the device callback's host clock, and where this block's output starts in that callback's frames.
+  const AudioBlock block{in, numIn_, out, numOut_, blockFrames_, engineTime_, hostTime, hostOffset};
   engine_.fn(engine_.user, block);
   engineTime_ += blockFrames_;
 }
@@ -45,7 +47,7 @@ void BlockAdapter::process(const AudioBlock& device) noexcept {  // RT-safe
       for (uint32_t off = 0; off < device.frames; off += blockFrames_) {
         for (uint32_t c = 0; c < numIn_; ++c) in[c] = device.in[c] + off;
         for (uint32_t c = 0; c < numOut_; ++c) out[c] = device.out[c] + off;
-        runEngine(in, out);
+        runEngine(in, out, device.hostTime, static_cast<int32_t>(off));
       }
       return;
     }
@@ -70,7 +72,7 @@ void BlockAdapter::processFifo(const AudioBlock& device) noexcept {  // RT-safe
     pos_ += n;
     offset += n;
     if (pos_ == blockFrames_) {
-      runEngine(inFifo_, outFifo_);
+      runEngine(inFifo_, outFifo_, device.hostTime, static_cast<int32_t>(offset));  // its output plays from `offset`
       pos_ = 0;
     }
   }

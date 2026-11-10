@@ -645,7 +645,7 @@ void Timeline::playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t
       heapPush(tr, Sounding{offTick(on, std::min(on + n.length, c.passEnd)), tr.order++, on, nextInstance_, n.id, n.hz,
                             std::clamp(n.releaseVelocity, 0.0f, 127.0f) * (1.0f / 127.0f), n.ratio, n.harmonic,
                             n.pitch});
-      if (++nextInstance_ == 0) nextInstance_ = 1;
+      if (++nextInstance_ >= 0xE0000000u) nextInstance_ = 1;  // T6.4: live notes (0xE…) and auditions (0xF…) above
     }
     ++c.note;
     computeNextOn(c);

@@ -40,6 +40,15 @@
 //   │         │   └─────────────────────────────────────────────────┘            │
 //   │         │   [Add Folder…] [Remove]                                         │
 //
+// T6.4: a MIDI tab (Live's Link, Tempo & MIDI → MIDI Ports): every input port the system shows or the settings remember,
+// with its "Track" switch (its notes reach the tracks that listen) and its pitch-bend range:
+//
+//   │ MIDI    │ MIDI Input Ports                          Track   Bend           │
+//   │         │   Arturia KeyStep 37                       [On]   [±2 st ▾]      │
+//   │         │   loopMIDI Port                            [Off]  [±2 st ▾]      │
+//   │         │   Launchkey 49 (not connected)             [On]   [±12 st ▾]     │
+//   │         │ Computer MIDI Keyboard: M (A W S E D … play degrees; Z / X equave; C / V velocity)
+//
 // Browse… and Add Folder… open the folder picker (FileDialogs::chooseFolder). The location applies at once
 // (Library::changeUserLibrary: the browser's User Library place re-points and re-indexes; saves go there) and the app
 // keeps it in the settings file; the Samples Folder likewise (Library::changeSamplesFolder; shown: the default
@@ -114,6 +123,15 @@ struct AudioSettings {
   bool operator==(const AudioSettings&) const = default;
 };
 
+// T6.4: one MIDI input port (Preferences → MIDI).
+struct MidiPortEntry {
+  std::string name;
+  bool connected = false;        // the system shows it now (else: remembered from the settings)
+  bool enabled = false;          // "Track": its notes reach the tracks
+  float bendSemitones = 2.0f;    // pitch-bend range
+  bool operator==(const MidiPortEntry&) const = default;
+};
+
 // What is running now.
 struct AudioStatus {
   enum class State : uint8_t {
@@ -155,6 +173,11 @@ public:
   virtual bool openControlPanel() = 0;
   // Called on the UI thread whenever status or device lists changed (null removes it).
   virtual void setListener(std::function<void()> fn) = 0;
+  // T6.4: MIDI input ports (connected and remembered); the strip's MIDI From chooser lists them too.
+  virtual std::vector<MidiPortEntry> midiInputs() { return {}; }
+  virtual void setMidiInput(const std::string& name, bool enabled, float bendSemitones) {
+    (void)name, (void)enabled, (void)bendSemitones;
+  }
 };
 
 // A scripted port: device lists, capabilities and a status set by the test or scene; apply() records the settings
@@ -173,6 +196,7 @@ public:
   bool tone = false;
   float toneDb = -36.0f, toneHz = 440.0f;
   std::vector<AudioSettings> applied;  // every apply()
+  std::vector<MidiPortEntry> midi;     // T6.4
   int panels = 0;
   std::function<void()> listener;
 
@@ -218,6 +242,15 @@ public:
     return true;
   }
   void setListener(std::function<void()> fn) override { listener = std::move(fn); }
+  std::vector<MidiPortEntry> midiInputs() override { return midi; }
+  void setMidiInput(const std::string& name, bool enabled, float bendSemitones) override {
+    for (MidiPortEntry& m : midi)
+      if (m.name == name) {
+        m.enabled = enabled;
+        m.bendSemitones = bendSemitones;
+      }
+    if (listener) listener();
+  }
 
   const Driver* find(AudioDriverType t) const {
     for (const Driver& d : drivers)
@@ -265,8 +298,9 @@ public:
   ui::DragBox* toneFrequency() const noexcept { return toneHz_; }
   ui::Button* hardwareSetup() const noexcept { return panel_; }
 
-  // T5.x-library-prefs: the tabs (0 Audio, 1 Library) and the Library tab's controls (null without a context).
-  enum class Tab : uint8_t { Audio, Library };
+  // T5.x-library-prefs: the tabs (0 Audio, 1 Library, 2 MIDI: T6.4) and the Library tab's controls (null without a
+  // context).
+  enum class Tab : uint8_t { Audio, Library, Midi };
   void showTab(Tab t);
   Tab tab() const noexcept { return tab_; }
   ui::Button* browseUserLibrary() const noexcept { return browse_; }
@@ -275,6 +309,13 @@ public:
   ui::Button* addFolder() const noexcept { return addFolder_; }
   ui::Button* removeFolder() const noexcept { return removeFolder_; }
   const std::string& userLibraryText() const;
+  // T6.4: the MIDI tab's rows (one per port of AudioPrefsPort::midiInputs, rebuilt by refresh()).
+  struct MidiRow {
+    std::string name;
+    ui::Toggle* track = nullptr;
+    ui::Dropdown* bend = nullptr;
+  };
+  const std::vector<MidiRow>& midiRows() const noexcept { return midiRows_; }
   // The selected row of the Places list (-1 none).
   int32_t selectedFolder() const noexcept;
   void selectFolder(int32_t row);
@@ -289,6 +330,8 @@ private:
   void sendTone();
   void buildLibraryTab(ui::Widget& body);
   void updateLibrary();
+  void buildMidiTab(ui::Widget& body);
+  void updateMidi();
 
   AudioPrefsPort& port_;
   AudioSettings shown_;
@@ -310,6 +353,10 @@ private:
   ui::Label *audioTab_ = nullptr, *libraryTab_ = nullptr, *userLibrary_ = nullptr, *samplesFolder_ = nullptr;
   ui::Button *browse_ = nullptr, *browseSamples_ = nullptr, *addFolder_ = nullptr, *removeFolder_ = nullptr;
   ui::Widget* folderList_ = nullptr;
+  ui::Label* midiTab_ = nullptr;          // T6.4
+  ui::Widget *midiPage_ = nullptr, *midiList_ = nullptr;
+  std::vector<MidiPortEntry> midiShown_;
+  std::vector<MidiRow> midiRows_;
   ViewContext::Subscription librarySub_;
   uint32_t timer_ = 0;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);

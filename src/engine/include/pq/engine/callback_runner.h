@@ -31,7 +31,8 @@ public:
     RtScope rt;
     DenormalGuard denormals;
     const uint64_t t0 = readTsc();
-    const AudioBlock block{in, numIn_, out, numOut_, frames, frameTime_};
+    // T6.4: the host clock of this callback (live MIDI input maps its timestamps to engine time with it).
+    const AudioBlock block{in, numIn_, out, numOut_, frames, frameTime_, static_cast<int64_t>(qpcNow100ns()), 0};
     cb_.fn(cb_.user, block);
     frameTime_ += frames;
     stats_.record(t0, readTsc(), frames, inputOverflow, outputUnderflow);

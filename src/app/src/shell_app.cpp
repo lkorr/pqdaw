@@ -1,5 +1,7 @@
 #include "shell_app.h"
 
+#include "pq/app/midi_input.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -262,6 +264,20 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     // change, refreshes the preferences window).
     app->audio_->setUiNotify([](void* self) { pushUser(static_cast<ShellApp*>(self)->userEvent_, kAudioChanged); }, app.get());
     app->ctx_->setAudioPrefs(app->audio_.get());
+    // T6.4: MIDI input ports (RtMidi, WinMM) into the link's live input rings; Preferences → MIDI through the manager.
+    // While a port is open the output does not suspend in the background. $PQ_NO_MIDI=1 (test runs of the exe) opens
+    // none: a WinMM input port is exclusive, and a test must not take the user's controller.
+    const char* noMidi = std::getenv("PQ_NO_MIDI");
+    if (noMidi == nullptr || *noMidi == '\0' || *noMidi == '0') {
+      const std::string settingsPath = userSettingsPath();
+      app->midi_ = std::make_unique<MidiInputService>(
+          *app->link_, makeWinMmSource(), loadMidiSettings(settingsPath),
+          [settingsPath](const std::vector<MidiPortSetting>& v) { (void)saveMidiSettings(settingsPath, v); });
+      AudioOutput* out = &app->audio_->output();
+      app->midi_->setOpenListener([out](bool on) { out->setKeepRunning(on); });
+      app->audio_->setMidi(app->midi_.get());
+      app->midi_->refresh();
+    }
     // T4.4: the circuit editor's patch preview plays through the same device, attached only while it plays.
     PreviewConfig pc;
     pc.sampleRate = app->link_->engine().config().sampleRate;
@@ -386,6 +402,8 @@ ShellApp::~ShellApp() {
   }
   browserPreview_.reset();
   indexer_.reset();
+  if (audio_) audio_->setMidi(nullptr);
+  midi_.reset();   // T6.4: the ports close (no callback pushes into the link's rings afterwards)
   audio_.reset();  // the device stops calling the engine (and the preview)
   if (link_) link_->detach();
 }
@@ -610,6 +628,7 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
     }
     case SDL_EVENT_WINDOW_FOCUS_LOST:
       if (shell_) shell_->cancelInteraction();
+      if (ctx_) ctx_->computerKeyboard().releaseAll();  // T6.4: its key-ups go to another window now
       if (audio_) audio_->output().setForeground(false);  // AU.stream: the stream may suspend after a long background idle
       return false;
     case SDL_EVENT_WINDOW_MINIMIZED:

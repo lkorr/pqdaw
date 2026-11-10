@@ -46,7 +46,7 @@ private:
   static void onDevice(void* self, const AudioBlock& block) noexcept {  // RT-safe
     static_cast<BlockAdapter*>(self)->process(block);
   }
-  void runEngine(const float* const* in, float* const* out) noexcept;
+  void runEngine(const float* const* in, float* const* out, int64_t hostTime, int32_t hostOffset) noexcept;
   void processFifo(const AudioBlock& device) noexcept;
 
   AudioCallback engine_{};

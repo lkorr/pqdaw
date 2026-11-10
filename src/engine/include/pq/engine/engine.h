@@ -8,6 +8,9 @@
 //   param ring              UI → audio project-param writes (a knob, a fader, a mute: no recompile, SPEC §2)
 //   audition ring           UI → audio one-off notes on an instrument slot (the piano roll's click preview), and
 //                           releaseAuditions() (the press ended), in order
+//   live input (T6.4)       MIDI ports and the computer keyboard → notes of the routed slots (live_input.h), drained
+//                           at the start of every block, merged into a slot's events after the timeline's and the
+//                           auditions'
 //   idle gate               see below
 //
 // ---- Threads ---------------------------------------------------------------------------------------------------
@@ -21,7 +24,8 @@
 // across device reopens; a device block's frameTime is not used (T3.17-fix1).
 //
 // ---- Per block (process) ------------------------------------------------------------------------------------
-// 1. Drain the param ring into the project param block and the audition ring into the audition slots.
+// 1. Drain the param ring into the project param block and the audition ring into the audition slots; the live
+//    input drains its rings (anything arriving counts as activity: it wakes a sleeping engine).
 // 2. Idle gate: while asleep the block is silence and nothing runs (no units, no timeline). The engine falls asleep
 //    after `sleepAfterMs` of quiet blocks — transport stopped, ProjectProgram::quiet() (no fades, nothing queued, no
 //    live voice in any unit, and no tail in progress: every unit's sleepable regions asleep, T1.x-silence, so a
@@ -31,7 +35,8 @@
 //    Off with EngineConfig::sleepAfterMs = 0 (offline renders).
 // 3. ProjectProgram::process: per image block the hook (Timeline::process: transport, automation → project params,
 //    note events), then every unit; an instrument unit's events come from slotSource(k) = the timeline's track k
-//    plus the audition notes of slot k.
+//    plus the audition notes of slot k plus the live notes routed to slot k (T6.4). The gate also waits while live
+//    notes are held or queued.
 //
 // ---- Offline (SPEC §9.8 "same Program, deterministic") -----------------------------------------------------------
 // renderOffline drives process() from a loop at a fixed device block, chunk by chunk into an AudioSink, under
@@ -45,6 +50,7 @@
 #include "pq/core/result.h"
 #include "pq/core/spsc_ring.h"
 #include "pq/engine/audio_block.h"
+#include "pq/engine/live_input.h"
 #include "pq/engine/offline_render.h"
 #include "pq/engine/project_compile.h"
 #include "pq/engine/project_program.h"
@@ -64,6 +70,10 @@ struct EngineConfig {
   float sleepAfterMs = 250.0f;      // idle gate (0: never sleep)
   bool idleUnits = true;            // ProjectConfig::idleUnits
   TimelineConfig timeline;          // sampleRate / maxBlockFrames / maxTracks are set from the fields above
+  // T6.4: live input. `livePorts` are the producer rings (shared with the app's MIDI service; null: the engine makes
+  // its own); live.sampleRate / maxSlots are set from the fields above.
+  std::shared_ptr<LivePorts> livePorts;
+  LiveInputConfig live;
 };
 
 struct EngineStats {
@@ -90,6 +100,8 @@ public:
   ProjectProgram* program() noexcept { return program_.get(); }
   Timeline& timeline() noexcept { return *timeline_; }
   const EngineConfig& config() const noexcept { return cfg_; }
+  // T6.4: the live input (publish its routes, set its latency, read its record tap on the UI thread; see live_input.h).
+  LiveInput& liveInput() noexcept { return *live_; }
 
   // ---- UI thread (one producer) ----
   // The pushes are wait-free SPSC; each then calls wake() (and so the wake hook, which may take a lock): UI thread.
@@ -177,6 +189,7 @@ private:
   EngineConfig cfg_;
   std::unique_ptr<Timeline> timeline_;
   std::unique_ptr<ProjectProgram> program_;
+  std::unique_ptr<LiveInput> live_;  // T6.4
   // Param writes (UI → audio). M4: a chain of rings; the producer pushes to the newest, the audio thread drains each
   // ring before following its `next`. collect() frees the rings the audio thread has left.
   struct ParamRing {

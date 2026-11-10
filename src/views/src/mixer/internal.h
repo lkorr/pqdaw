@@ -48,6 +48,11 @@ public:
 
   // --- output chooser ---
   void openOutputMenu(ui::Widget& chooser, doc::TrackId id);
+  // --- T6.4: a MIDI track's input section (mixer view): MIDI From, channel, note input (Keys / Hz), Monitor ---
+  void openMidiInMenu(ui::Widget& chooser, doc::TrackId id);
+  void openChannelMenu(ui::Widget& chooser, doc::TrackId id);
+  void openNoteInputMenu(ui::Widget& chooser, doc::TrackId id);
+  void openMonitorMenu(ui::Widget& chooser, doc::TrackId id);
 
   // --- meters ---
   void addStrip(MixerStrip* s);
@@ -122,6 +127,11 @@ private:
 std::string tuningShortName(const doc::TuningDef& d);
 // The output chooser's text for a track.
 std::string outputLabel(const doc::Project& p, const doc::Track& t);
+// T6.4: the input section's chooser texts.
+std::string midiInLabel(const doc::MidiInput& in);
+std::string channelLabel(const doc::MidiInput& in);
+std::string noteInputLabel(const doc::NoteInput& in);
+std::string monitorLabel(doc::MonitorMode m);
 // T3.14's tuning chip for a track (a left click opens the MOS wheel for the track), plus a right-click menu that
 // assigns the track a main tuning or Inherit (the wheel only commits private tunings).
 class TrackTuningChip : public TuningChip {

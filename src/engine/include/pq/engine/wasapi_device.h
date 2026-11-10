@@ -136,8 +136,6 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
-// QueryPerformanceCounter in 100 ns units (the time base WASAPI uses for its QPC positions). Not RT-unsafe (a
-// user-mode counter read), but kept out of the engine's hot path; used by measurement code.
-uint64_t qpcNow100ns() noexcept;
+// qpcNow100ns(): declared in pq/engine/audio_block.h (T6.4: also the live MIDI input's clock).
 
 }  // namespace pq::engine

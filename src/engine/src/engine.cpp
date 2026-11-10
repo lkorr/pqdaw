@@ -43,6 +43,10 @@ Engine::Engine(const EngineConfig& config)
   tc.maxBlockFrames = cfg_.blockFrames;
   tc.maxTracks = cfg_.maxSlots;
   timeline_ = std::make_unique<Timeline>(tc);
+  LiveInputConfig lc = cfg_.live;
+  lc.sampleRate = cfg_.sampleRate;
+  lc.maxSlots = cfg_.maxSlots;
+  live_ = std::make_unique<LiveInput>(lc, cfg_.livePorts);
   for (uint32_t k = 0; k < cfg_.maxSlots; ++k) slots_.push_back({this, k});
   paramRings_.push_back(std::make_unique<ParamRing>(std::bit_ceil(std::max(cfg_.paramRing, 2u))));
   paramProducer_ = paramConsumer_ = paramRings_.back().get();
@@ -119,6 +123,7 @@ void Engine::collect() {
   const ParamRing* reading = paramConsumed_.load(std::memory_order_acquire);
   while (paramRings_.size() > 1 && paramRings_.front().get() != reading) paramRings_.erase(paramRings_.begin());
   timeline_->collect();
+  live_->collect(audioStopped());
   if (program_) program_->collect();
 }
 
@@ -171,6 +176,7 @@ void Engine::onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer
     }
     ++i;
   }
+  e.live_->emit(s.slot, sampleTime, frames, out);  // T6.4: live notes routed to this slot
 }
 
 void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
@@ -224,6 +230,16 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
           Audition{ar.slot, 0xF0000000u | nextAuditionId_, ar.hz, ar.velocity, block.frameTime + ar.frames, false, block.frameTime};
     }
   }
+  {  // T6.4: live input (MIDI ports, the computer keyboard)
+    LiveInput::Block lb;
+    lb.start = block.frameTime;
+    lb.frames = block.frames;
+    lb.hostTime = block.hostTime;
+    lb.hostOffset = block.hostOffset;
+    lb.playing = timeline_->playing();
+    lb.songSample = timeline_->songSample();
+    if (live_->process(lb)) activity = true;
+  }
   const uint32_t w = wake_.load(std::memory_order_acquire);
   if (w != seenWake_) {
     seenWake_ = w;
@@ -244,7 +260,7 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
   }
   program_->process(block);
   if (sleepFrames_ == 0) return;
-  bool quiet = !activity && numAuditions_ == 0 && !timeline_->playing() && program_->quiet();
+  bool quiet = !activity && numAuditions_ == 0 && live_->idle() && !timeline_->playing() && program_->quiet();
   if (quiet)
     for (uint32_t c = 0; c < block.numOut && quiet; ++c)
       for (uint32_t f = 0; f < block.frames; ++f)

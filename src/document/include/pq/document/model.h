@@ -470,6 +470,8 @@ struct AudioInput {
 // A MIDI track's note input: every port (the computer keyboard included), one port by name, or none; `channel` 0 = all,
 // 1 … 16 one channel.
 enum class MidiInputKind : uint8_t { All, Port, None };
+// T6.4: the port name that means the computer MIDI keyboard (`M`).
+inline constexpr std::string_view kComputerKeyboardPort = "Computer Keyboard";
 struct MidiInput {
   MidiInputKind kind = MidiInputKind::All;
   std::string port;     // Port only (non-empty): the port's name

@@ -6,6 +6,7 @@
 
 #include "../common/paint.h"
 #include "internal.h"
+#include "pq/views/prefs/audio_prefs.h"
 
 namespace pq::views {
 
@@ -174,6 +175,120 @@ void MixerController::openOutputMenu(Widget& chooser, doc::TrackId id) {
     m->setMinWidthPx(chooser.rect().w);
 }
 
+// ---- T6.4: the input section (MIDI tracks, mixer view) -----------------------------------------------------------------
+
+namespace {
+Menu* openUnder(Widget& chooser, std::vector<MenuItem> items) {
+  Menu* m = openContextMenu(chooser, {static_cast<float>(chooser.rect().x), static_cast<float>(chooser.rect().bottom())},
+                            std::move(items));
+  if (m) m->setMinWidthPx(chooser.rect().w);
+  return m;
+}
+}  // namespace
+
+void MixerController::openMidiInMenu(Widget& chooser, doc::TrackId id) {
+  const doc::Track* t = doc::findTrackPtr(*ctx.doc(), id);
+  if (!t) return;
+  const doc::MidiInput cur = t->mixer.midiIn;
+  ViewContext* c = &ctx;
+  auto pick = [c, id, cur](doc::MidiInputKind kind, std::string port) {
+    return [c, id, cur, kind, port] {
+      doc::MidiInput in{kind, kind == doc::MidiInputKind::Port ? port : std::string(), cur.channel};
+      if (Status s = c->store().dispatch(doc::SetTrackMidiInput{id, in}); !s) c->setStatus("MIDI From: " + s.error().message);
+    };
+  };
+  std::vector<MenuItem> items;
+  MenuItem all = MenuItem::item("All Ins", pick(doc::MidiInputKind::All, {}));
+  all.checked = cur.kind == doc::MidiInputKind::All;
+  items.push_back(std::move(all));
+  std::vector<std::string> ports{std::string(doc::kComputerKeyboardPort)};
+  if (AudioPrefsPort* prefs = ctx.audioPrefs())
+    for (const MidiPortEntry& m : prefs->midiInputs())
+      if (m.connected || m.enabled) ports.push_back(m.name);
+  if (cur.kind == doc::MidiInputKind::Port && std::find(ports.begin(), ports.end(), cur.port) == ports.end())
+    ports.push_back(cur.port);  // a port that is not connected now stays visible (and chosen)
+  for (const std::string& name : ports) {
+    MenuItem m = MenuItem::item(name, pick(doc::MidiInputKind::Port, name));
+    m.checked = cur.kind == doc::MidiInputKind::Port && cur.port == name;
+    items.push_back(std::move(m));
+  }
+  items.push_back(MenuItem::sep());
+  MenuItem none = MenuItem::item("No Input", pick(doc::MidiInputKind::None, {}));
+  none.checked = cur.kind == doc::MidiInputKind::None;
+  items.push_back(std::move(none));
+  (void)openUnder(chooser, std::move(items));
+}
+
+void MixerController::openChannelMenu(Widget& chooser, doc::TrackId id) {
+  const doc::Track* t = doc::findTrackPtr(*ctx.doc(), id);
+  if (!t) return;
+  const doc::MidiInput cur = t->mixer.midiIn;
+  ViewContext* c = &ctx;
+  std::vector<MenuItem> items;
+  for (uint8_t ch = 0; ch <= 16; ++ch) {
+    doc::MidiInput in = cur;
+    in.channel = ch;
+    MenuItem m = MenuItem::item(ch == 0 ? std::string("All Channels") : "Channel " + std::to_string(ch), [c, id, in] {
+      if (Status s = c->store().dispatch(doc::SetTrackMidiInput{id, in}); !s) c->setStatus("MIDI channel: " + s.error().message);
+    });
+    m.checked = cur.channel == ch;
+    items.push_back(std::move(m));
+  }
+  (void)openUnder(chooser, std::move(items));
+}
+
+void MixerController::openNoteInputMenu(Widget& chooser, doc::TrackId id) {
+  const doc::Track* t = doc::findTrackPtr(*ctx.doc(), id);
+  if (!t) return;
+  const doc::NoteInput cur = t->noteInput;
+  ViewContext* c = &ctx;
+  auto set = [c, id](doc::NoteInput in) {
+    return [c, id, in] {
+      if (Status s = c->store().dispatch(doc::SetNoteInput{id, in}); !s) c->setStatus("Note input: " + s.error().message);
+    };
+  };
+  std::vector<MenuItem> items;
+  doc::NoteInput keys = cur, hz = cur;
+  keys.mode = doc::NoteInputMode::Keys;
+  hz.mode = doc::NoteInputMode::Hz;
+  MenuItem k = MenuItem::item("Keys (degrees of the tuning)", set(keys));
+  k.checked = cur.mode == doc::NoteInputMode::Keys;
+  items.push_back(std::move(k));
+  MenuItem h = MenuItem::item("Hz (raw pitch)", set(hz));
+  h.checked = cur.mode == doc::NoteInputMode::Hz;
+  items.push_back(std::move(h));
+  items.push_back(MenuItem::sep());
+  const std::pair<doc::InputKeyMap, const char*> maps[] = {
+      {doc::InputKeyMap::Tuning, "Key map: the tuning's (.kbm, else consecutive)"},
+      {doc::InputKeyMap::Consecutive, "Key map: consecutive degrees"},
+      {doc::InputKeyMap::TwelveTetNearest, "Key map: nearest to 12-TET"},
+      {doc::InputKeyMap::TwelveTetHz, "Key map: 12-TET Hz (A4 = 440)"}};
+  for (const auto& [map, label] : maps) {
+    doc::NoteInput in = cur;
+    in.keyMap = map;
+    MenuItem m = MenuItem::item(label, set(in));
+    m.checked = cur.keyMap == map;
+    items.push_back(std::move(m));
+  }
+  (void)openUnder(chooser, std::move(items));
+}
+
+void MixerController::openMonitorMenu(Widget& chooser, doc::TrackId id) {
+  const doc::Track* t = doc::findTrackPtr(*ctx.doc(), id);
+  if (!t) return;
+  ViewContext* c = &ctx;
+  std::vector<MenuItem> items;
+  for (const doc::MonitorMode m : {doc::MonitorMode::In, doc::MonitorMode::Auto, doc::MonitorMode::Off}) {
+    const char* label = m == doc::MonitorMode::In ? "Monitor In (always)" : m == doc::MonitorMode::Auto ? "Monitor Auto (while armed)" : "Monitor Off";
+    MenuItem it = MenuItem::item(label, [c, id, m] {
+      if (Status s = c->store().dispatch(doc::SetTrackMonitor{id, m}); !s) c->setStatus("Monitor: " + s.error().message);
+    });
+    it.checked = t->mixer.monitor == m;
+    items.push_back(std::move(it));
+  }
+  (void)openUnder(chooser, std::move(items));
+}
+
 void MixerController::addStrip(MixerStrip* s) { strips_.push_back(s); }
 
 void MixerController::removeStrip(MixerStrip* s) noexcept { std::erase(strips_, s); }
@@ -216,6 +331,7 @@ void MixerStrip::build(doc::TrackKind kind) {
   activator_ = solo_ = arm_ = post_ = nullptr;
   sends_.clear();
   output_ = nullptr;
+  midiIn_ = channel_ = noteInput_ = monitor_ = nullptr;
   chip_ = nullptr;
   meter_ = nullptr;
   MixerController* ctl = ctl_.get();
@@ -281,6 +397,26 @@ void MixerStrip::build(doc::TrackKind kind) {
         (void)ctl->apply(doc::ops::setReturnSendsPreFader(*ctl->ctx.doc(), id_, !on), "Pre/Post");
         resyncToggles();
       };
+    }
+    if (kind == doc::TrackKind::Midi && layout_ == StripLayout::Vertical) {  // T6.4: the input section
+      auto& in = add<Chooser>("midi-in");
+      in.setInfo("MIDI From", "Where this track's notes come from while it is armed (or Monitor In): All Ins (every "
+                              "MIDI port and the computer keyboard), one port, or none.");
+      in.onOpen = [this, ctl](Widget& self) { ctl->openMidiInMenu(self, id_); };
+      midiIn_ = &in;
+      auto& ch = add<Chooser>("midi-channel");
+      ch.setInfo("MIDI Channel", "All channels, or one MIDI channel of the input.");
+      ch.onOpen = [this, ctl](Widget& self) { ctl->openChannelMenu(self, id_); };
+      channel_ = &ch;
+      auto& mode = add<Chooser>("note-input");
+      mode.setInfo("Note Input", "Keys: incoming keys are degrees of the track's tuning (they follow it, tuning "
+                                 "automation included). Hz: they are raw pitches (the key's Hz, kept exactly).");
+      mode.onOpen = [this, ctl](Widget& self) { ctl->openNoteInputMenu(self, id_); };
+      noteInput_ = &mode;
+      auto& mon = add<Chooser>("monitor");
+      mon.setInfo("Monitor", "In: always hear the input. Auto: hear it while the track is armed. Off: never.");
+      mon.onOpen = [this, ctl](Widget& self) { ctl->openMonitorMenu(self, id_); };
+      monitor_ = &mon;
     }
     auto& out = add<Chooser>("output");
     out.onOpen = [this, ctl](Widget& self) { ctl->openOutputMenu(self, id_); };
@@ -380,6 +516,10 @@ void MixerStrip::bind(const doc::Project& p, const doc::Track& t) {
   if (post_) post_->setOn(!doc::ops::returnSendsPreFader(p, t.id));
   syncSends(p, t);
   if (output_) static_cast<Chooser*>(output_)->setText(mixer::outputLabel(p, t));
+  if (midiIn_) static_cast<Chooser*>(midiIn_)->setText(mixer::midiInLabel(t.mixer.midiIn));  // T6.4
+  if (channel_) static_cast<Chooser*>(channel_)->setText(mixer::channelLabel(t.mixer.midiIn));
+  if (noteInput_) static_cast<Chooser*>(noteInput_)->setText(mixer::noteInputLabel(t.noteInput));
+  if (monitor_) static_cast<Chooser*>(monitor_)->setText(mixer::monitorLabel(t.mixer.monitor));
   if (chip_) {
     static_cast<TrackTuningChip*>(chip_)->setTrack(t.id);
   }
@@ -492,6 +632,10 @@ void MixerStrip::arrangeVertical(LayoutPass& pass) {
     put(pass, w, r, 4, y, W - 8, B);
     y += B + G;
   };
+  row(midiIn_);  // T6.4: the input section first (Live's In/Out), then the output
+  row(channel_);
+  row(noteInput_);
+  row(monitor_);
   row(output_);
   row(chip_);
   for (const SendBox& sb : sends_) row(sb.box);

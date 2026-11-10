@@ -14,6 +14,7 @@
 //     "views": { "circuitShowInactive": false },         (T4.15: views::ViewPrefs)
 //     "library": { "folders": ["C:\\Samples"], "userLibrary": "D:\\pqdaw User Library",   (T5.10, T5.x-library-prefs)
 //                  "samplesFolder": "E:\\Samples" }                                         (T5.x-samples-folder)
+//     "midi": { "inputs": [ { "name": "Arturia KeyStep 37", "enabled": true, "bend": 2 } ] }     (T6.4)
 //   }
 //
 // Saving keeps every other top-level key (later settings sections), writes a temporary file, flushes it and
@@ -26,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "pq/app/midi_input.h"
 #include "pq/core/result.h"
 #include "pq/views/prefs/audio_prefs.h"
 #include "pq/views/view_context.h"
@@ -63,6 +65,11 @@ Status saveUserLibrarySetting(const std::string& path, const std::string& rootUt
 // T5.x-samples-folder: the Samples folder chosen in Preferences → Library ({"samplesFolder": "E:\\…"}); "" = none.
 std::string loadSamplesFolderSetting(const std::string& path);
 Status saveSamplesFolderSetting(const std::string& path, const std::string& rootUtf8);
+
+// T6.4: the "midi" section: the MIDI input ports the user has seen, each with its Track switch and bend range (Preferences
+// → MIDI). Lenient (a missing file or section: none; an entry without a name is skipped).
+std::vector<MidiPortSetting> loadMidiSettings(const std::string& path);
+Status saveMidiSettings(const std::string& path, const std::vector<MidiPortSetting>& ports);
 
 // T5.10: where the browser keeps its index and tags.json: $PQ_LIBRARY_DIR, else <settings dir>/library when
 // $PQ_SETTINGS_DIR is set (test runs of the exe never touch the user's %LOCALAPPDATA%), else

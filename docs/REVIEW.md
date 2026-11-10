@@ -1146,3 +1146,19 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   after C:\Users\Luke\AppData\Local\Temp\claude\C--Users-Luke-Desktop-programming-pqdaw\49ea863e-4f0e-4ff8-ae23-6093af5e19d4\scratchpad\wideS_z.png.
 - Judge: the speckle of a 4-px panel becomes flat tone patches of the same average colour; whether 6 px is the right
   threshold (above it the panel is drawn in full; at ~8 px its symbols are still readable, so it stays).
+
+## 2026-11-10 · T6.4 · MIDI input, computer MIDI keyboard 👁
+- What: MIDI controllers (RtMidi, WinMM) play armed MIDI tracks live, in each track's tuning (Keys) or as raw Hz (Hz);
+  `M` turns the computer keyboard on (A W S E D … ; = degrees 0 … 16, Z / X equave, C / V velocity). Preferences → MIDI
+  lists the ports (Track switch, bend range). The mixer view's MIDI strips gained MIDI From / channel / Keys-Hz /
+  Monitor choosers. Goldens moved: `mixer-view` (the input section), `audio-prefs`, `audio-prefs-wasapi`,
+  `library-prefs` (the MIDI tab label); new `midi-prefs`.
+- Try with a real controller: plug it in (or start pqdaw with it connected), check Preferences → MIDI shows it with
+  Track on; arm a MIDI track (a 31-EDO track, then a MOS track whose generator is automated while you hold a key: the
+  held note glides with the tuning in Keys, stays put in Hz); play fast runs (timing should feel like Live: constant,
+  about one buffer of latency, no flamming between notes); pitch wheel (±2 st default; try ±12 in the prefs); sustain
+  pedal; unplug the controller while holding keys (notes must stop); set a track's MIDI From to the controller only and a
+  channel. Computer keyboard: `M`, hold A then press X and release A (A's note ends), C / V velocity, `M` again while
+  holding keys (all stop); typing in the browser search while M is on types letters.
+- To judge: the strip's four new rows (they shorten the fader); "Mon Auto" wording; whether new ports should default to
+  on (Q?-T6.4-a 3); real-device timing jitter (WinMM's callback jitter is what remains; QPC stamps + a constant period).

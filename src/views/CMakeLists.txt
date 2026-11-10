@@ -25,6 +25,7 @@
 # which is included below once it exists.
 set(PQ_VIEWS_SOURCES
   src/view_context.cpp
+  src/computer_keyboard.cpp
   src/view_scenes.cpp
   src/waveforms.cpp
   src/file_probes.cpp

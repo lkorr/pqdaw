@@ -143,6 +143,16 @@ public:
 // Tree-wide notifications for things that are not one widget's business: the overlay layer (tooltips) and
 // the info view. Called on the UI thread from dispatch; observers must not add or remove observers from the
 // callback.
+// T6.4: a whole-tree key listener (the computer MIDI keyboard): it sees key presses after the focused widget and its
+// ancestors declined them (a focused text field still types) and before any key scope, and every key release before
+// anything else (a release the listener claims — a key it holds down — must never be swallowed by a text field
+// focused meanwhile). Returns true when it took the key.
+class KeyListener {
+public:
+  virtual ~KeyListener() = default;
+  virtual bool onTreeKey(const KeyEvent& e) = 0;
+};
+
 class TreeObserver {
 public:
   virtual ~TreeObserver() = default;
@@ -609,6 +619,9 @@ public:
   // binding's action id now; ids with no registered action are kept unresolved and do nothing.
   void setKeymap(const ActionRegistry* actions, const Keymap* keymap);
   // Modal scopes (macro mode, a modal dialog) are consulted before the focus chain, newest first.
+  // T6.4: the tree's key listener (null: none); it must outlive the tree or be reset.
+  void setKeyListener(KeyListener* l) noexcept { keyListener_ = l; }
+  KeyListener* keyListener() const noexcept { return keyListener_; }
   void pushModalScope(ScopeId s) noexcept;
   void removeModalScope(ScopeId s) noexcept;
   const ActionRegistry* actions() const noexcept { return actions_; }
@@ -716,6 +729,7 @@ private:
   static constexpr uint32_t kMaxModalScopes = 8;
   ScopeId modal_[kMaxModalScopes] = {};
   uint32_t modalCount_ = 0;
+  KeyListener* keyListener_ = nullptr;  // T6.4
 
   Stats stats_;
 };

@@ -29,9 +29,11 @@ tuning::PitchId freezeHz(double hz, double referenceHz) noexcept {
 
 tuning::PitchId freezeHz(double hz, const TuningDef& def) noexcept { return freezeHz(hz, def.referenceHz); }
 
-InputPitch InputPitchMap::resolved(const tuning::PitchId& id) const {
+InputPitch InputPitchMap::resolved(const tuning::PitchId& id) const { return resolvedIn(*play_, id); }
+
+InputPitch InputPitchMap::resolvedIn(const tuning::Tuning& t, const tuning::PitchId& id) const {
   // The drawn note's resolution (resolveTrackPitches → ClipResolver for an identity naming no note).
-  const NotePitch np = resolvePitch(id, *tuning_, signal_);
+  const NotePitch np = resolvePitch(id, t, signal_);
   InputPitch out;
   out.id = id;
   if (!np.hz) return out;
@@ -51,13 +53,13 @@ InputPitch InputPitchMap::hzPitch(double hz) const {
 }
 
 InputPitch InputPitchMap::keysPitch(const tuning::PitchId& degree) const {
-  const InputPitch k = resolved(degree);
-  if (input_.mode == NoteInputMode::Keys || !k.mapped) return k;
-  return hzPitch(k.hz);  // Hz mode: that degree's Hz, frozen
+  if (input_.mode == NoteInputMode::Keys) return resolved(degree);
+  const InputPitch k = resolvedIn(*tuning_, degree);  // Hz mode: that degree's Hz in the document's tuning, frozen
+  return k.mapped ? hzPitch(k.hz) : k;
 }
 
 std::optional<tuning::PitchId> InputPitchMap::nearestDegree(double hz) const {
-  const InputPitch c = resolved(freezeHz(hz, referenceHz_));
+  const InputPitch c = resolvedIn(*tuning_, freezeHz(hz, referenceHz_));
   if (!c.mapped || std::isnan(c.noteDegree)) return std::nullopt;
   return degreeId(static_cast<int64_t>(std::llround(static_cast<double>(c.noteDegree))), size_);
 }
@@ -69,15 +71,17 @@ InputPitch InputPitchMap::twelveTet(int64_t key, double bendCents) const {
   const std::optional<tuning::PitchId> d = nearestDegree(hz);
   if (!d) return {};
   if (input_.mode == NoteInputMode::Keys) return resolved(*d);
-  const InputPitch k = resolved(*d);
+  const InputPitch k = resolvedIn(*tuning_, *d);
   return k.mapped ? hzPitch(k.hz * std::exp2(bendCents / 1200.0)) : k;
 }
 
 InputPitch InputPitchMap::atNoteOn(uint8_t key, double bendCents) const {
   const InputPitch& k = at(key);
   if (input_.mode == NoteInputMode::Keys || !k.mapped || bendCents == 0.0 || !std::isfinite(bendCents)) return k;
-  // Hz mode: the key's (unbent) Hz with the bend frozen in. A 12-TET key map recomputes from the key (same Hz).
-  return hzPitch(k.hz * std::exp2(bendCents / 1200.0));
+  // Hz mode: the key's (unbent) Hz with the bend frozen in. The entry's identity is that Hz frozen (its `hz` is the
+  // static Hz in play_, which differs only while the node table lags the document).
+  const double keyHz = referenceHz_ * std::exp2(k.id.cents() / 1200.0);
+  return hzPitch(keyHz * std::exp2(bendCents / 1200.0));
 }
 
 InputPitch InputPitchMap::pitchForDegree(int64_t d) const {
@@ -89,7 +93,8 @@ InputPitch InputPitchMap::pitchForDegree(int64_t d) const {
   return id ? keysPitch(*id) : InputPitch{};
 }
 
-Result<InputPitchMapPtr> buildInputPitchMap(const Project& p, TrackId track, const NoteInput& input) {
+Result<InputPitchMapPtr> buildInputPitchMap(const Project& p, TrackId track, const NoteInput& input,
+                                            std::shared_ptr<const tuning::Tuning> signalTuning) {
   const std::optional<TrackPath> path = findTrack(p, track);
   if (!path) return Error{ErrorCode::NotFound, "buildInputPitchMap: no such track", {}};
   if (trackAt(p, *path).kind != TrackKind::Midi) return Error{ErrorCode::InvalidArgument, "only MIDI tracks take note input", {}};
@@ -102,6 +107,7 @@ Result<InputPitchMapPtr> buildInputPitchMap(const Project& p, TrackId track, con
   map->tuning_ = std::make_shared<const tuning::Tuning>(std::move(built.value()));
   map->referenceHz_ = eff.def->referenceHz;
   map->signal_ = eff.main.valid() && hasTuningSignal(*eff.def) ? eff.main : TuningId{};  // as resolveTrackPitches
+  map->play_ = map->signal_.valid() && signalTuning ? std::move(signalTuning) : map->tuning_;
   map->size_ = degreesPerEquave(*map->tuning_);
   const ScaleDef* scale = eff.def->scale();
   const bool kbm = input.keyMap == InputKeyMap::Tuning && scale != nullptr && scale->mapping.has_value();

@@ -868,6 +868,16 @@ void ViewContext::registerGlobalActions() {
   };
   add("transport.playStop", [this] { togglePlay(); });
   add("transport.continue", [this] { continuePlayback(); });
+  // T6.4: the computer MIDI keyboard (Live's M).
+  add("keyboard.toggleComputerMidi", [this] { computerKeyboard_.setActive(!computerKeyboard_.active()); });
+  computerKeyboard_.onChanged = [this](const ComputerKeyboard& k) {
+    if (!k.active()) {
+      setStatus("Computer MIDI Keyboard off");
+      return;
+    }
+    setStatus("Computer MIDI Keyboard on: equave " + std::string(k.equave() > 0 ? "+" : "") + std::to_string(k.equave()) +
+              ", velocity " + std::to_string(k.velocity()) + " (A W S E D \xE2\x80\xA6 play degrees, Z / X equave, C / V velocity)");
+  };
   // Disabled while there is nothing to undo or a gesture is running: the chord then falls through (Q27), so a
   // text field's own Ctrl+Z handling (none yet) would get it.
   add("edit.undo", [this] { (void)undo(); }, [this] { return store_.history().canUndo() && !store_.inGesture(); });

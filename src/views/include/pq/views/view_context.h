@@ -40,6 +40,7 @@
 #include "pq/document/store.h"
 #include "pq/ui/actions.h"
 #include "pq/ui/keymap_file.h"
+#include "pq/views/computer_keyboard.h"
 #include "pq/views/transport_port.h"
 
 namespace pq {
@@ -310,6 +311,9 @@ public:
 
   // --- transport ---
   TransportPort& transport() noexcept { return transport_; }
+  // T6.4: the computer MIDI keyboard (`M`: action keyboard.toggleComputerMidi; the Shell makes it the tree's key
+  // listener). Its state changes name themselves in the status line.
+  ComputerKeyboard& computerKeyboard() noexcept { return computerKeyboard_; }
   bool playing() { return transport_.playhead().playing; }
   // Space: stop if playing, else play from the start marker. Shift+Space: continue from the stop position.
   void togglePlay();
@@ -544,6 +548,7 @@ private:
   void guardUnsaved(std::function<void()> proceed);
 
   TransportPort& transport_;
+  ComputerKeyboard computerKeyboard_{transport_};  // T6.4
   doc::DocumentStore store_;
   doc::Snapshot saved_;  // the snapshot last saved or loaded (dirty() compares pointers)
   std::string projectDir_;

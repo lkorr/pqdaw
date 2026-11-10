@@ -655,3 +655,26 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   directory by content hash (project_link.h belongs to other lanes in this phase); a ProjectLink member would be cleaner
   once the file is free. (9) Detector: banded log flux, threshold 5 × the median flux above the local mean.
 - Status: decided (reversible).
+## Q?-T6.4-a · 2026-11-10 · T6.4 · Live input details the plan left open
+- **Context**: docs/plans/M6.md "### T6.4" fixes the pieces; these behaviours had to be chosen.
+- **Choices** (most reversible): (1) A track listens while Monitor In, or Monitor Auto and armed (T6.1's Auto = arm;
+  T6.7 adds the transport). (2) All Ins = every open port and the computer keyboard; "Computer Keyboard" is a port name.
+  (3) A port seen for the first time is on (Live's default for a new controller); remembered ports stay listed
+  "(not connected)". (4) While any port is open the audio output does not suspend in the background (a MIDI note into a
+  backgrounded pqdaw must sound; waking a suspended stream from the MIDI thread would take a lock). (5) The engine
+  handles sustain (CC 64: note-offs wait for the pedal), All Notes Off / All Sound Off (CC 123 / 120); other CCs,
+  aftertouch and program changes are drained and ignored until M7 / M11. (6) Stamps older than 1 s when drained (rings
+  filled while the device was stopped) play only their note-offs. (7) The computer keyboard uses layout keys (an AZERTY
+  user's A is A), consecutive degrees 0 … 16 (a 12-TET key map: semitones), equave offset −5 … +5, velocity steps of 20;
+  Shift chords pass through; releases are taken before a focused text field (no stuck note). It is a tree key listener
+  (`ui::KeyListener`), not the plan's modal scope: scopes never see key releases. (8) The strip's input
+  section (MIDI From, channel, Keys / Hz with the key map, Monitor) is in the mixer view only; the arrangement header
+  keeps its two lines. (9) `LiveNoteRecord::songSample` is block-accurate across a loop wrap (engineTime is exact);
+  T6.7 maps engine time to song time itself.
+- **Open (not chosen, needs the user)**: pitch bend in Keys mode moves the voice through `voice.hz`; a tuning node whose
+  params are being modulated (generator automation running, a live tuning edit not yet recompiled) computes a Degree
+  note's Hz from its degree and ignores `voice.hz`, so the bend is not heard on such notes then (Hz-mode notes and
+  unmodulated tunings bend). Options: (A) leave it (bends during tuning automation are rare); (B) `tuning_hz` multiplies
+  its result by voice.hz / voice.noteHz (one multiply per lane per sample; a bend becomes a ratio on top of the morph);
+  (C) a separate per-voice bend signal. Recommend B with T6.7 or M7's pitch curves.
+- Status: decided (1)–(9) (reversible); the bend question open.

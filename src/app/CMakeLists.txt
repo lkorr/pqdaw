@@ -14,6 +14,8 @@ pq_add_module(pq_app
     src/project_link_cost.cpp
     src/project_link_latency.cpp
     src/project_link_audio.cpp
+    src/project_link_input.cpp
+    src/midi_input.cpp
     src/face_voices.cpp
     src/audio_output.cpp
     src/audio_manager.cpp
@@ -28,7 +30,7 @@ pq_add_module(pq_app
     src/bug_reporter.cpp
     src/build_info.cpp
   DEPS pq_core pq_ui pq_ui_scenes pq_views pq_doc pq_engine pq_compile nlohmann_json::nlohmann_json
-  PRIVATE_DEPS SDL3::SDL3-static ole32 shell32)
+  PRIVATE_DEPS SDL3::SDL3-static ole32 shell32 pq_rtmidi)
 target_compile_options(pq_app PRIVATE /external:W0)
 
 # T5.x-bugreport: the commit (and dirty state, preset) the executable was built from, for the bug report's build line.

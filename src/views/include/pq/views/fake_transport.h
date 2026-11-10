@@ -13,7 +13,7 @@ namespace pq::views {
 
 class FakeTransport final : public TransportPort {
 public:
-  enum class Call : uint8_t { Play, Stop, Continue, Locate, SetLoop, Audition, ReleaseAuditions };
+  enum class Call : uint8_t { Play, Stop, Continue, Locate, SetLoop, Audition, ReleaseAuditions, LiveKey };
   struct Record {
     Call call;
     Ticks tick = 0;          // Play: from; Locate: the target
@@ -21,6 +21,8 @@ public:
     float hz = 0.0f;         // Audition
     float velocity = 0.0f;   // Audition
     float durationMs = 0.0f; // Audition
+    int32_t equave = 0, step = 0;  // LiveKey (T6.4); velocity above, `on` below
+    bool on = false;
   };
 
   void play(Ticks from) override {
@@ -57,6 +59,14 @@ public:
     calls.push_back(r);
   }
   void releaseAuditions() override { calls.push_back({Call::ReleaseAuditions, state_.tick, {}}); }
+  void liveKey(int32_t equave, int32_t step, float velocity, bool on) override {
+    Record r{Call::LiveKey, state_.tick, {}};
+    r.equave = equave;
+    r.step = step;
+    r.velocity = velocity;
+    r.on = on;
+    calls.push_back(r);
+  }
 
   // Test control: the position a running transport would report next.
   void setPlayheadTick(Ticks t) noexcept {

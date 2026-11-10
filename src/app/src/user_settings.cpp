@@ -218,6 +218,38 @@ Status saveUserLibrarySetting(const std::string& path, const std::string& rootUt
   return saveSection(path, "library", json(rootUtf8), "userLibrary");
 }
 
+std::vector<MidiPortSetting> loadMidiSettings(const std::string& path) {  // T6.4
+  std::vector<MidiPortSetting> out;
+  std::ifstream in(utf8Path(path), std::ios::binary);
+  if (!in) return out;
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const json root = json::parse(ss.str(), nullptr, false);
+  if (root.is_discarded() || !root.is_object()) return out;
+  const auto midi = root.find("midi");
+  if (midi == root.end() || !midi->is_object()) return out;
+  const auto inputs = midi->find("inputs");
+  if (inputs == midi->end() || !inputs->is_array()) return out;
+  for (const json& v : *inputs) {
+    if (!v.is_object()) continue;
+    const auto name = v.find("name");
+    if (name == v.end() || !name->is_string() || name->get<std::string>().empty()) continue;
+    MidiPortSetting s;
+    s.name = name->get<std::string>();
+    if (const auto f = v.find("enabled"); f != v.end() && f->is_boolean()) s.enabled = f->get<bool>();
+    if (const auto f = v.find("bend"); f != v.end() && f->is_number() && f->get<double>() > 0.0 && f->get<double>() <= 96.0)
+      s.bendSemitones = f->get<float>();
+    out.push_back(std::move(s));
+  }
+  return out;
+}
+
+Status saveMidiSettings(const std::string& path, const std::vector<MidiPortSetting>& ports) {
+  json a = json::array();
+  for (const MidiPortSetting& s : ports) a.push_back({{"name", s.name}, {"enabled", s.enabled}, {"bend", s.bendSemitones}});
+  return saveSection(path, "midi", std::move(a), "inputs");
+}
+
 std::string loadSamplesFolderSetting(const std::string& path) {
   const json f = libraryField(path, "samplesFolder");
   return f.is_string() ? f.get<std::string>() : std::string();

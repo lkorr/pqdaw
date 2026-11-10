@@ -1,5 +1,6 @@
 // The audio device manager (T3.18): pq/app/audio_manager.h describes it.
 #include "pq/app/audio_manager.h"
+#include "pq/app/midi_input.h"
 
 #include <algorithm>
 #include <cmath>
@@ -119,6 +120,7 @@ bool AudioDeviceManager::poll() {
     seenHardware_ = st.hardwareChanges;
     deviceCache_.clear();
     asioCache_.reset();
+    if (midi_ != nullptr) midi_->refresh();  // T6.4: a USB controller came or went
     changed = true;
   }
   // The device runs at another rate than the engine (an ASIO driver changed its clock, or kept its own): follow it.
@@ -135,6 +137,16 @@ bool AudioDeviceManager::poll() {
   }
   if (changed && listener_) listener_();
   return changed;
+}
+
+std::vector<views::MidiPortEntry> AudioDeviceManager::midiInputs() {  // T6.4
+  return midi_ != nullptr ? midi_->ports() : std::vector<views::MidiPortEntry>{};
+}
+
+void AudioDeviceManager::setMidiInput(const std::string& name, bool enabled, float bendSemitones) {
+  if (midi_ == nullptr) return;
+  midi_->setPort(name, enabled, bendSemitones);
+  if (listener_) listener_();
 }
 
 void AudioDeviceManager::open(const views::AudioSettings& s) {

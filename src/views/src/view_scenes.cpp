@@ -495,6 +495,15 @@ Status setupLibraryPrefs(Shell& shell) {
   return Ok{};
 }
 
+// T6.4: the MIDI tab (three ports: one on, one off, one remembered but not connected).
+Status setupMidiPrefs(Shell& shell) {
+  if (Status s = openAudioPrefs(shell, false); !s) return s;
+  PreferencesWindow* w = openPreferencesWindow(shell.overlay());
+  if (!w) return Error{ErrorCode::NotFound, "midi-prefs: no window", {}};
+  w->showTab(PreferencesWindow::Tab::Midi);
+  return Ok{};
+}
+
 // ---- T3.19: menu bar, Tunings panel, ratio notes ------------------------------------------------------------------
 
 // T3.19: the menu bar's Create menu open over the empty project (Insert MIDI / Return Track, Insert MIDI Clip, New
@@ -2943,6 +2952,7 @@ constexpr SceneEntry kScenes[] = {
     {"audio-prefs", 1280, 800, setupAudioPrefs},
     {"audio-prefs-wasapi", 1280, 800, setupAudioPrefsWasapi},
     {"library-prefs", 1280, 800, setupLibraryPrefs},
+    {"midi-prefs", 1280, 800, setupMidiPrefs},
     {"menu-bar", 1280, 800, setupMenuBar},
     {"tunings-panel", 1280, 800, setupTuningsPanel},
     {"pianoroll-ratios", 1280, 800, setupPianoRollRatios},

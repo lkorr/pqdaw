@@ -36,6 +36,8 @@
 
 namespace pq::app {
 
+class MidiInputService;
+
 struct ManagerHooks {
   DeviceFactory factory;  // devices for the stream (and for WASAPI enumeration, through create(Backend::Wasapi))
   // Device lists per backend (null: a fresh device's enumerate()); ASIO driver names (null: the registry).
@@ -85,6 +87,11 @@ public:
   bool testTone() override { return output_->testTone(); }
   bool openControlPanel() override;
   void setListener(std::function<void()> fn) override { listener_ = std::move(fn); }
+  // T6.4: MIDI input ports (Preferences → MIDI), through the app's MidiInputService (none: no ports). A hardware change
+  // re-enumerates them too.
+  void setMidi(MidiInputService* midi) noexcept { midi_ = midi; }
+  std::vector<views::MidiPortEntry> midiInputs() override;
+  void setMidiInput(const std::string& name, bool enabled, float bendSemitones) override;
 
 private:
   static void onOutput(void* self);
@@ -97,6 +104,7 @@ private:
   views::AudioSettings settings_;
   uint32_t cliDeviceIndex_;
   std::unique_ptr<AudioOutput> output_;
+  MidiInputService* midi_ = nullptr;  // T6.4
   std::function<void()> listener_;
   // Set on the UI thread while the output's threads may already call onOutput (T3.17-fix1, M3 review L12).
   std::mutex notifyMutex_;

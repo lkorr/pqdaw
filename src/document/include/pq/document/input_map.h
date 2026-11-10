@@ -56,8 +56,10 @@ public:
   int64_t degreesPerEquave() const noexcept { return size_; }
 
 private:
-  friend Result<std::shared_ptr<const InputPitchMap>> buildInputPitchMap(const Project&, TrackId, const NoteInput&);
-  InputPitch resolved(const tuning::PitchId& id) const;
+  friend Result<std::shared_ptr<const InputPitchMap>> buildInputPitchMap(const Project&, TrackId, const NoteInput&,
+                                                                          std::shared_ptr<const tuning::Tuning>);
+  InputPitch resolved(const tuning::PitchId& id) const;                          // in play_ (what sounds)
+  InputPitch resolvedIn(const tuning::Tuning& t, const tuning::PitchId& id) const;
   InputPitch keysPitch(const tuning::PitchId& degreeId) const;  // the mode applied to a Degree identity
   InputPitch hzPitch(double hz) const;                          // a frozen Hz
   std::optional<tuning::PitchId> nearestDegree(double hz) const;
@@ -65,7 +67,8 @@ private:
 
   std::array<InputPitch, kKeys> keys_{};
   NoteInput input_;
-  std::shared_ptr<const tuning::Tuning> tuning_;
+  std::shared_ptr<const tuning::Tuning> tuning_;  // the document's definition: the keys' Hz
+  std::shared_ptr<const tuning::Tuning> play_;    // where the static Hz is resolved (T6.4: the playback link's node table)
   double referenceHz_ = tuning::kDefaultReferenceHz;
   TuningId signal_;
   int64_t size_ = 0;
@@ -74,7 +77,12 @@ using InputPitchMapPtr = std::shared_ptr<const InputPitchMap>;
 
 // The map of MIDI track `track` with input settings `input` (its own Track::noteInput in the second form). Errors:
 // NotFound (no such track), InvalidArgument (not a MIDI track), the tuning's build error (a dangling reference).
-Result<InputPitchMapPtr> buildInputPitchMap(const Project& p, TrackId track, const NoteInput& input);
+// T6.4: `signalTuning` (optional) = ResolveOptions::signalTuning's answer for the track's main tuning when it has a signal:
+// the tuning the playback link resolves drawn notes' static Hz in (its node table's definition, which can lag the
+// document after a live tuning edit). Entries resolve their static Hz there, exactly as the drawn notes do; the keys'
+// Hz (Hz mode, the 12-TET maps) still come from the document's definition. Ignored for a track without a signal.
+Result<InputPitchMapPtr> buildInputPitchMap(const Project& p, TrackId track, const NoteInput& input,
+                                            std::shared_ptr<const tuning::Tuning> signalTuning = nullptr);
 Result<InputPitchMapPtr> buildInputPitchMap(const Project& p, TrackId track);
 
 // A frequency as an exact Cents identity of tuning `def` (cents above its reference pitch): the Hz world's notes.

@@ -123,6 +123,17 @@ void AudioOutput::hardwareChanged() {
   notify();
 }
 
+void AudioOutput::setKeepRunning(bool on) {  // T6.4
+  keepRunning_.store(on, std::memory_order_relaxed);
+  if (on) {
+    {
+      std::lock_guard lock(mutex_);
+      wakeRequest_ = true;  // a suspended stream restarts
+    }
+    cv_.notify_all();
+  }
+}
+
 void AudioOutput::setForeground(bool foreground) {
   {
     std::lock_guard lock(mutex_);
@@ -352,6 +363,8 @@ void AudioOutput::onStreamChanged(void* self, const engine::StreamInfo& info) {
                                   info.bufferFrames);
     o.engineOuts_ = std::max(outs, 1u);
   }
+  // T6.4: live notes play one device period (plus the adapter's FIFO) after their stamp: a constant latency.
+  eng.liveInput().setLatency(info.bufferFrames + o.adapter_.latencyFrames());
   const bool mismatch = info.sampleRate != engineRate || !prepared;
   o.silence_.store(mismatch, std::memory_order_relaxed);
   {
@@ -513,6 +526,7 @@ bool AudioOutput::openDevice(const OutputConfig& c) {
           dev->close();
         } else {
           engineOuts_ = outs;
+          eng.liveInput().setLatency(si.bufferFrames + adapter_.latencyFrames());  // T6.4: one device period
           std::optional<engine::DeviceInfo> asioInfo;
           if (c.backend == engine::Backend::Asio)  // only the open driver is queried while a stream is open
             if (auto list = dev->enumerate(); list.ok())
@@ -727,6 +741,7 @@ void AudioOutput::controlMain() {
     // window in the background.
     if (foreground_ || wakeRequest_ || toneOn_.load(std::memory_order_relaxed) ||
         extra_.load(std::memory_order_relaxed) != nullptr || cue_.load(std::memory_order_relaxed) != nullptr ||
+        keepRunning_.load(std::memory_order_relaxed) ||
         !engine_.load()->asleep()) {
       wakeRequest_ = false;
       wasIdle = false;

@@ -329,6 +329,28 @@ std::string tuningShortName(const doc::TuningDef& d) {
   return "Scale";
 }
 
+// T6.4: the input section's chooser texts.
+std::string midiInLabel(const doc::MidiInput& in) {
+  switch (in.kind) {
+    case doc::MidiInputKind::All: return "All Ins";
+    case doc::MidiInputKind::None: return "No Input";
+    case doc::MidiInputKind::Port: return in.port;
+  }
+  return {};
+}
+std::string channelLabel(const doc::MidiInput& in) {
+  return in.channel == 0 ? std::string("All Ch") : "Ch " + std::to_string(in.channel);
+}
+std::string noteInputLabel(const doc::NoteInput& in) { return in.mode == doc::NoteInputMode::Hz ? "Hz" : "Keys"; }
+std::string monitorLabel(doc::MonitorMode m) {
+  switch (m) {
+    case doc::MonitorMode::In: return "Mon In";
+    case doc::MonitorMode::Auto: return "Mon Auto";
+    case doc::MonitorMode::Off: return "Mon Off";
+  }
+  return {};
+}
+
 std::string outputLabel(const doc::Project& p, const doc::Track& t) {
   switch (t.mixer.output.kind) {
     case doc::OutputKind::Default: {
