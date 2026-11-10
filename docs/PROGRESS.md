@@ -289,3 +289,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check (ship, interleaved): 64x8 notes jit 130 → 6 compiles, 7.1–10.1 → 0.62–0.85 s, 193.8 → 134.7 µs/block; fixture per-unit JIT 8175 → 6471 ms; run-time rows within noise (render ≤ 1.3 %).
 - Notes/blockers: a slot equal to a literal in the unit doesn't share (constants are deduped by value); the 2000-instruction cutoff tuned on one fixture + two microbenchmarks.
 
+## 2026-11-09 · PF.6 · task/PF.6-lowering
+- Did: lowering linear in the project: per-track wire index, wires grouped per input once, per-lowering lookups (wires by target, devices by id, literal value blocks, call signatures), wire-planner cycle check without per-wire clears; new pq_bench_lower (wide64, heavy30); ARCHITECTURE Lowering cost note.
+- Verified: -Affected -Slow after rebase 88/88; new test_lower_incremental.cpp (7 edits, incremental == fresh field by field); whole-lowering digest identical before / after on both fixtures (release + ship).
+- Perf / CPU-efficiency check (ship): wide64 105–121 → 22–25 ms; heavy30 498–509 → 47–65 ms; was lowerSites (all wires per track per input), makeCallees, paramDriven, findDevice.
+- Notes/blockers: per-track reuse not done; remaining time mostly project-wide (engine / group expansion 9 ms, wire planning 8, main paths 7, routing 7); next: shared indexes (~5 ms), cache native-engine expansions by meta::expansionKey.
+
