@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "playback_fixture.h"
@@ -221,6 +222,46 @@ TEST_CASE("live input: a live note sounds exactly as the same note drawn (Keys a
         else CHECK(std::fabs(moved) < 0.5);
       }
     }
+}
+
+// T6.4b (Q?-T6.4-a option B): a bent Keys note keeps its bend while its tuning node is modulated (a generator lane
+// moving under the held note): out Hz = the tuned Hz of the drawn (unbent) note × the bend ratio, at every point of the
+// sweep, and the bend still glides in and out.
+TEST_CASE("live input: a bent Keys note keeps its bend under generator automation (T6.4b)") {
+  constexpr uint32_t kBlocks = 48000 / kBlock;  // 1 s, the note held throughout; the lane moves 700 → 720 ¢ meanwhile
+  constexpr uint8_t kKey = 64;
+  for (const NoteInputMode mode : {NoteInputMode::Keys, NoteInputMode::Hz}) {
+    CAPTURE(mode == NoteInputMode::Keys ? "Keys" : "Hz");
+    LiveFixture live(Case::MosAutomated, mode);
+    auto map = buildInputPitchMap(*live.store.current(), live.track);
+    REQUIRE(map.ok());
+    LiveFixture drawn(Case::MosAutomated, mode);
+    drawn.drawNote((*map)->at(kKey).id, 4 * kPpq);
+    auto linkD = makeLink(drawn.store.current());
+    const std::vector<float> d = run(*linkD, kBlocks, [](uint32_t) {});
+    auto linkL = makeLink(live.store.current());
+    linkL->setLivePorts({"Test Port"}, {2.0f});  // ±2 semitones
+    auto& ports = *linkL->livePorts();
+    // Full-scale up (+200 ¢) from block 0, a quarter-range down (−100 ¢) at 0.5 s.
+    const std::vector<float> l = run(*linkL, kBlocks, [&](uint32_t b) {
+      if (b == 0) {
+        REQUIRE(ports.push(0, midi(0, 0xE0, 0x7F, 0x7F)));  // 16383 → +199.98 ¢
+        REQUIRE(ports.push(0, midi(0, 0x90, kKey, 100)));
+      }
+      if (b == 24000 / kBlock) REQUIRE(ports.push(0, midi(0, 0xE0, 0x00, 0x20)));  // 4096 → −100 ¢
+    });
+    const double up = 200.0 * (16383.0 - 8192.0) / 8192.0, down = -100.0;
+    for (const auto& [from, to, cents] : {std::tuple{0.05, 0.12, up}, std::tuple{0.30, 0.40, up},
+                                          std::tuple{0.60, 0.70, down}, std::tuple{0.85, 0.95, down}}) {
+      CAPTURE(from);
+      const double bent = 1200.0 * std::log2(hzBetween(l, from, to) / hzBetween(d, from, to));
+      CHECK(std::fabs(bent - cents) < 0.05);
+    }
+    // The sweep is heard in Keys (the tuned Hz moves), not in Hz mode.
+    const double moved = 1200.0 * std::log2(hzBetween(d, 0.85, 0.95) / hzBetween(d, 0.05, 0.12));
+    if (mode == NoteInputMode::Keys) CHECK(std::fabs(moved) > 2.0);
+    else CHECK(std::fabs(moved) < 0.5);
+  }
 }
 
 TEST_CASE("live input: an unmapped .kbm key plays nothing; the computer keyboard plays degrees in each track's world") {
