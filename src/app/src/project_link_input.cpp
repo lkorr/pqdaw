@@ -189,9 +189,10 @@ const engine::CaptureRing* ProjectLink::captureRing(doc::TrackId id) const {  //
 bool ProjectLink::captureMidi(Ticks insertMarker) {  // UI thread
   doc::DocumentStore* store = ctx_ != nullptr ? &ctx_->store() : recordStore_;
   if (store == nullptr) return false;
-  const doc::Project& p = *store->current();
-  const views::PlayheadSnapshot ph = playhead();
+  const views::PlayheadSnapshot ph = playhead();  // first: it may commit a recording session (a new snapshot)
   const bool playing = ph.playing && !ph.countingIn;
+  const doc::Snapshot snap = store->current();
+  const doc::Project& p = *snap;
   // The listening tracks (those the routes have a table for), each from its last capture on.
   struct Read {
     uint32_t id;
