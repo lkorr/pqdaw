@@ -9,24 +9,25 @@
 namespace pq::doc {
 
 AudioTrackDesc lowerAudioTrack(const Project& p, const TrackPath& path, const AudioLowerOptions& options) {
-  const Track& t = trackAt(p, path);
+  const Track& track = trackAt(p, path);
   AudioTrackDesc out;
-  out.id = t.id;
-  if (t.kind != TrackKind::Audio) return out;
+  out.id = track.id;
+  if (track.kind != TrackKind::Audio) return out;
+  const std::vector<ClipSlot>& clips = playedClips(track);  // T6.1: the audition take's, else the main lane's
   const TempoMap& tempo = p.timeline->tempoMap;
-  out.clips.reserve(t.clips.size());
+  out.clips.reserve(clips.size());
   const ClipSlot* prev = nullptr;  // the last clip lowered (its audible part ends at or before this one's start)
-  for (size_t i = 0; i < t.clips.size(); ++i) {
-    const ClipSlot& sl = t.clips[i];
+  for (size_t i = 0; i < clips.size(); ++i) {
+    const ClipSlot& sl = clips[i];
     if (!sl.audio) continue;
     const AudioClip& c = *sl.audio;
     // M5 review H7: clips never sound on top of each other. Commands keep an audio track free of overlaps, but a tempo
     // increase lengthens warp-Off clips (they keep their seconds) and a file may hold overlaps: a clip ends where the
     // next one starts, and one the next covers from its start does not play.
     Ticks cut = 0;
-    if (i + 1 < t.clips.size() && t.clips[i + 1].start() < c.start + std::max<Ticks>(c.length, 1)) {
-      if (t.clips[i + 1].start() <= c.start) continue;
-      cut = t.clips[i + 1].start();
+    if (i + 1 < clips.size() && clips[i + 1].start() < c.start + std::max<Ticks>(c.length, 1)) {
+      if (clips[i + 1].start() <= c.start) continue;
+      cut = clips[i + 1].start();
     }
     const SampleRef* sample = findSample(p, c.sample);
     const double rate = sample != nullptr ? sample->rate : 48000.0;
@@ -49,6 +50,9 @@ AudioTrackDesc lowerAudioTrack(const Project& p, const TrackPath& path, const Au
       d.contentStart = c.contentStart;
       d.loop = contentLoop(c);
       d.framesPerTick = framesPerContentTick(rate, c.sourceBpm);
+      d.markers = c.markers;  // T6.1
+      d.pitchRatio = audioPitchRatio(p, path, c);
+      d.warpParams = c.warpParams;
     }
     d.gain = c.gainDb <= kMinClipGainDb ? 0.0f : std::pow(10.0f, std::min(c.gainDb, kMaxClipGainDb) / 20.0f);
     d.fadeIn = std::clamp<Ticks>(c.fadeIn.length, 0, d.length);
@@ -58,7 +62,7 @@ AudioTrackDesc lowerAudioTrack(const Project& p, const TrackPath& path, const Au
     d.cutEnd = cut;
     // The crossfade with the left neighbour that reaches this clip's start (commands keep it only while it does), at
     // most either clip's audible length.
-    if (c.crossfadeIn > 0 && prev != nullptr && prev == &t.clips[i - 1] && prev->end() >= c.start)
+    if (c.crossfadeIn > 0 && prev != nullptr && prev == &clips[i - 1] && prev->end() >= c.start)
       d.crossfadeIn = std::min({c.crossfadeIn, cut > 0 ? cut - c.start : d.length, std::max<Ticks>(c.start - prev->start(), 1)});
     out.clips.push_back(d);
     prev = &sl;
@@ -81,7 +85,7 @@ std::optional<double> sourceFrameAt(const AudioClipDesc& c, const TempoMap& temp
     const auto span = static_cast<double>(c.loop.end - c.loop.start);
     pos = static_cast<double>(c.loop.start) + std::fmod(pos - static_cast<double>(c.loop.end), span);
   }
-  return pos * c.framesPerTick;
+  return warpFrameAt(c.markers, c.framesPerTick, pos);  // T6.1: through the warp markers
 }
 
 }  // namespace pq::doc

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include "edit_common.h"
 #include "pq/tuning/rational.h"
@@ -161,8 +162,71 @@ EditResult setAudioClipCrossfade(const Project& p, ClipRef clip, Ticks length) {
 EditResult setAudioClipLoop(const Project& p, ClipRef clip, ClipLoop loop) {
   PQ_DOC_TRY(checkLoop(loop));
   return editAudioClips(p, std::span<const ClipRef>(&clip, 1), "Clip Loop", [&](const ClipFound&, AudioClip& c) -> Status {
-    if (c.warp != AudioWarp::RePitch) return invalid("only Re-Pitch clips loop");
+    if (!isWarped(c.warp)) return invalid("only warped clips loop");
     c.loop = loop;
+    return ok();
+  });
+}
+
+// ---- Warp markers and modes (T6.1; model.h WarpMarker, audio_clip.h warpFrameAt) ----------------------------------
+
+namespace {
+Status needWarped(const AudioClip& c) {
+  return isWarped(c.warp) ? ok() : invalid("warp markers belong to warped clips (warp is Off)");
+}
+}  // namespace
+
+EditResult setWarpMode(const Project& p, std::span<const ClipRef> clips, AudioWarp warp) {
+  if (static_cast<uint8_t>(warp) > static_cast<uint8_t>(kLastAudioWarp)) return invalid("unknown warp mode");
+  return editAudioClips(p, clips, "Clip Warp", [&](const ClipFound&, AudioClip& c) {
+    c = withWarp(*p.timeline, c, warp, c.sourceBpm, sampleRate(p, c.sample));
+    return ok();
+  });
+}
+
+EditResult setAudioClipWarpParams(const Project& p, std::span<const ClipRef> clips, WarpParams params) {
+  PQ_DOC_TRY(checkWarpParams(params));
+  return editAudioClips(p, clips, "Warp Settings", [&](const ClipFound&, AudioClip& c) {
+    c.warpParams = params;
+    return ok();
+  });
+}
+
+EditResult addWarpMarker(const Project& p, ClipRef clip, Ticks content) {
+  PQ_DOC_TRY(checkTick(content, "warp marker"));
+  return editAudioClips(p, std::span<const ClipRef>(&clip, 1), "Add Warp Marker", [&](const ClipFound&, AudioClip& c) -> Status {
+    PQ_DOC_TRY(needWarped(c));
+    if (c.markers.size() >= kMaxWarpMarkers) return invalid("too many warp markers");
+    const auto it = std::lower_bound(c.markers.begin(), c.markers.end(), content,
+                                     [](const WarpMarker& m, Ticks t) { return m.content < t; });
+    if (it != c.markers.end() && it->content == content) return ok();  // already one there: nothing changes
+    // Pinned where the source plays now: the law (and every other marker's song time) is unchanged.
+    const WarpMarker m{warpFrameAt(c, sampleRate(p, c.sample), static_cast<double>(content)), content};
+    c.markers.insert(it, m);
+    return checkWarpMarkers(c.markers);  // a frame equal to a neighbour's (rounding) is refused, never stored
+  });
+}
+
+EditResult moveWarpMarker(const Project& p, ClipRef clip, size_t index, Ticks content) {
+  PQ_DOC_TRY(checkTick(content, "warp marker"));
+  return editAudioClips(p, std::span<const ClipRef>(&clip, 1), "Move Warp Marker", [&](const ClipFound&, AudioClip& c) -> Status {
+    PQ_DOC_TRY(needWarped(c));
+    if (index >= c.markers.size()) return notFound("no such warp marker");
+    // It keeps its source frame (the audio around it stretches); the others keep their content ticks, so their song
+    // times stay. It stays strictly between its neighbours.
+    Ticks lo = std::numeric_limits<Ticks>::min(), hi = std::numeric_limits<Ticks>::max();
+    if (index > 0) lo = c.markers[index - 1].content + 1;
+    if (index + 1 < c.markers.size()) hi = c.markers[index + 1].content - 1;
+    c.markers[index].content = std::clamp(content, lo, hi);
+    return ok();
+  });
+}
+
+EditResult removeWarpMarker(const Project& p, ClipRef clip, size_t index) {
+  return editAudioClips(p, std::span<const ClipRef>(&clip, 1), "Delete Warp Marker", [&](const ClipFound&, AudioClip& c) -> Status {
+    PQ_DOC_TRY(needWarped(c));
+    if (index >= c.markers.size()) return notFound("no such warp marker");
+    c.markers.erase(c.markers.begin() + static_cast<std::ptrdiff_t>(index));
     return ok();
   });
 }

@@ -133,6 +133,8 @@ bool isTrackParam(ParamKind k) noexcept {
     case ParamKind::TrackMute:
     case ParamKind::TrackSolo:
     case ParamKind::TrackSend:
+    case ParamKind::TrackArm:      // T6.1
+    case ParamKind::TrackMonitor:  // T6.1
       return true;
     default:
       return false;
@@ -140,7 +142,10 @@ bool isTrackParam(ParamKind k) noexcept {
 }
 
 // T4.18: device params and wire amounts are automatable too (lanes on the device's track).
-bool isAutomatable(ParamKind k) noexcept { return k != ParamKind::TrackSolo && k != ParamKind::MetaParam; }  // TMM.3: not MetaParam (MM)
+bool isAutomatable(ParamKind k) noexcept {
+  return k != ParamKind::TrackSolo && k != ParamKind::MetaParam && k != ParamKind::TrackArm &&  // TMM.3, T6.1
+         k != ParamKind::TrackMonitor;
+}  // TMM.3: not MetaParam (MM)
 
 bool isAutomatable(const ParamRef& r) noexcept {
   if (!isAutomatable(r.kind)) return false;
@@ -520,6 +525,8 @@ ParamRange paramRange(ParamKind k) noexcept {
     case ParamKind::DeviceParam: return {-1e30, 1e30};  // the device patch's own range applies (DeviceCatalog)
     case ParamKind::WireAmount: return {-1.0, 1.0};
     case ParamKind::MetaParam: return {-1e30, 1e30};  // TMM.3: the meta type's own range applies
+    case ParamKind::TrackArm: return {0.0, 1.0};       // T6.1
+    case ParamKind::TrackMonitor: return {0.0, 2.0};   // T6.1: MonitorMode
   }
   return {};
 }
@@ -592,18 +599,45 @@ std::optional<tuning::Rational> virtualFundamental(const NoteClip& c, int64_t ow
   return tuning::Rational(1, D);
 }
 
-bool operator==(const Track& a, const Track& b) noexcept {
-  if (a.id != b.id || a.kind != b.kind || a.name != b.name || a.colour != b.colour || !(a.tuning == b.tuning) ||
-      !(a.mixer == b.mixer) || a.active != b.active)
-    return false;
-  if (!deepEqList(a.children, b.children) || !deepEqList(a.lanes, b.lanes) || !deepEqList(a.devices, b.devices))
-    return false;
-  if (a.clips.size() != b.clips.size()) return false;
-  for (size_t i = 0; i < a.clips.size(); ++i)
-    if (a.clips[i].id != b.clips[i].id || !deepEq(a.clips[i].clip, b.clips[i].clip) ||
-        !deepEq(a.clips[i].audio, b.clips[i].audio))
+namespace {
+bool sameSlots(const std::vector<ClipSlot>& a, const std::vector<ClipSlot>& b) noexcept {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i)
+    if (a[i].id != b[i].id || a[i].take != b[i].take || !deepEq(a[i].clip, b[i].clip) || !deepEq(a[i].audio, b[i].audio))
       return false;
   return true;
+}
+}  // namespace
+
+bool operator==(const TakeLane& a, const TakeLane& b) noexcept {
+  return a.id == b.id && a.name == b.name && sameSlots(a.clips, b.clips);
+}
+
+bool operator==(const Track& a, const Track& b) noexcept {
+  if (a.id != b.id || a.kind != b.kind || a.name != b.name || a.colour != b.colour || !(a.tuning == b.tuning) ||
+      !(a.mixer == b.mixer) || a.active != b.active || a.noteInput != b.noteInput || a.auditionTake != b.auditionTake)
+    return false;
+  if (!deepEqList(a.children, b.children) || !deepEqList(a.lanes, b.lanes) || !deepEqList(a.devices, b.devices) ||
+      !deepEqList(a.takes, b.takes))
+    return false;
+  return sameSlots(a.clips, b.clips);
+}
+
+const TakeLane* Track::takeLane(LaneId lane) const noexcept {
+  const int32_t i = takeIndex(lane);
+  return i < 0 ? nullptr : takes[static_cast<size_t>(i)].get();
+}
+
+int32_t Track::takeIndex(LaneId lane) const noexcept {
+  if (!lane.valid()) return -1;
+  for (size_t i = 0; i < takes.size(); ++i)
+    if (takes[i]->id == lane) return static_cast<int32_t>(i);
+  return -1;
+}
+
+const std::vector<ClipSlot>& playedClips(const Track& t) noexcept {
+  if (const TakeLane* l = t.takeLane(t.auditionTake)) return l->clips;
+  return t.clips;
 }
 
 Track makeTrack(TrackId id, TrackKind kind, std::string name) {
@@ -629,7 +663,8 @@ bool operator==(const Project& a, const Project& b) noexcept {
   return deepEq(a.timeline, b.timeline) && deepEq(a.locators, b.locators) && a.loop == b.loop &&
          (a.tunings == b.tunings || (a.tunings && b.tunings && deepEqList(*a.tunings, *b.tunings))) &&
          deepEqList(a.tracks, b.tracks) && deepEqList(a.returns, b.returns) && deepEq(a.master, b.master) &&
-         (a.wires == b.wires || wiresOf(a) == wiresOf(b)) && (a.samples == b.samples || samplesOf(a) == samplesOf(b));
+         (a.wires == b.wires || wiresOf(a) == wiresOf(b)) && (a.samples == b.samples || samplesOf(a) == samplesOf(b)) &&
+         a.punch == b.punch && a.record == b.record;
 }
 
 const SampleList& samplesOf(const Project& p) noexcept {
@@ -707,10 +742,17 @@ uint32_t maxEntityId(const Project& p) {
       see(l->id.value);
       for (const Breakpoint& b : l->points) see(b.id.value);
     }
-    for (const ClipSlot& c : t.clips) {
-      see(c.id.value);
-      if (c.clip)
-        for (const Note& n : c.clip->notes) see(n.id.value);
+    auto seeClips = [&](const std::vector<ClipSlot>& clips) {
+      for (const ClipSlot& c : clips) {
+        see(c.id.value);
+        if (c.clip)
+          for (const Note& n : c.clip->notes) see(n.id.value);
+      }
+    };
+    seeClips(t.clips);
+    for (const TakeLanePtr& l : t.takes) {  // T6.1
+      see(l->id.value);
+      seeClips(l->clips);
     }
   });
   return m;

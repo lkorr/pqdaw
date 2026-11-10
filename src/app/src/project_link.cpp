@@ -149,8 +149,9 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
     return e != nullptr && (*e)->built ? &*(*e)->built : nullptr;
   };
   auto pitches = doc::resolveTrackPitches(p, track.id, ro);
-  for (size_t ci = 0; ci < track.clips.size(); ++ci) {
-    const doc::NoteClip& c = *track.clips[ci].clip;
+  const std::vector<doc::ClipSlot>& clips = doc::playedClips(track);  // T6.1: the audition take's, else the main lane
+  for (size_t ci = 0; ci < clips.size(); ++ci) {
+    const doc::NoteClip& c = *clips[ci].clip;
     engine::ClipDesc cd;
     cd.id = c.id.value;
     cd.start = c.start;
@@ -215,7 +216,7 @@ std::vector<const void*> ProjectLink::sequenceKey(const doc::Project& p, const d
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(id.value)));
   key.push_back(nullptr);  // separator
   std::lock_guard lock(mutex_);
-  for (const doc::ClipSlot& c : t.clips) {
+  for (const doc::ClipSlot& c : doc::playedClips(t)) {  // T6.1
     const doc::EffectiveTuning e = doc::effectiveTuningRef(p, path, c.clip.get());
     const void* k = e.def;
     if (e.main.valid() && e.def != nullptr && doc::hasTuningSignal(*e.def))

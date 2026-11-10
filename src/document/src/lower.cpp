@@ -836,6 +836,8 @@ enum Fixed : uint32_t {
   // TX.pan-laws: the True Stereo law's 2×2 matrix (gainStages)
   kStPos = 100, kStNegPan, kStNeg, kStThP, kStThN, kStCosPIn, kStLL, kStLR, kStCosNIn, kStRR, kStRL, kStDirect,
   kStCross, kStL, kStR, kStSwap, kStGain, kStSum,
+  // T6.1: an audio track's input and its monitor gate (x = clips·(1 − monitor) + track.in·monitor)
+  kMonitor = 124, kTrackIn, kMonNot, kMonClips, kMonSum,
   kLiteralPool = 256,  // T4.1: device setting literals take ids kLiteralPool … kEntityNodeBase − 1 (per track)
 };
 // Per entity (nodeIdFor): a tuning node's nodes, a send's nodes.
@@ -3083,6 +3085,20 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
       x = ir.konst(0.0, kC0);
       width = graph::kWidthMono;
     }
+    // T6.1: with an input, the monitor gate crossfades the clips and the input (runtime param "<id>:monitor", smoothed
+    // like every mixer gain: switching is click-free, a settled gate costs a multiply-add per sample and channel).
+    if (!n.track->mixer.audioIn.none()) {
+      const PortRef mon = ir.param("monitor", 0.0, 0.0, 1.0, kMonitor);
+      const PortRef time = ir.konst(static_cast<double>(o.smoothingMs) * 1e-3, kCTime);
+      const PortRef in = ir.atom("track.in", {}, kTrackIn);
+      if (clipSlot != graph::kNone) {
+        const PortRef clips = ir.atom("gain", {x, ir.atom("sub", {ir.konst(1.0, kC1), mon}, kMonNot), time}, kMonClips);
+        x = ir.atom("gain_add", {clips, in, mon, time}, kMonSum);
+      } else {
+        x = ir.atom("gain", {in, mon, time}, kMonSum);
+        width = graph::kWidthStereo;
+      }
+    }
   } else if (n.kind == Kind::Midi) {
     // IG.1-2 (lower.h "Voice contexts"): the path starts at the notes — a voice context at its head plays them (its
     // output from there on), a meta module there reads the newest note; anything else hears silence.
@@ -3237,6 +3253,8 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
     add("sendGate", a == nullptr || a->sends ? 1.0f : 0.0f, std::nullopt);
     add("mute", t.mixer.mute ? 1.0f : 0.0f, ParamRef::track(ParamKind::TrackMute, t.id));
   }
+  if (n.kind == Kind::Audio && !t.mixer.audioIn.none())  // T6.1: the monitor gate (its ref: the monitor switch)
+    add("monitor", monitorGate(t.mixer), ParamRef::track(ParamKind::TrackMonitor, t.id));
   if (n.kind == Kind::Return)
     for (const SendLink& l : pl.sends) {
       if (l.to != index) continue;
@@ -3508,11 +3526,21 @@ uint64_t patchHash(const graph::Patch& p) noexcept {
 
 std::string patchText(const LoweredPatch& p) { return graph::print(p.patch); }
 
+float monitorGate(const Mixer& m) noexcept {
+  switch (m.monitor) {
+    case MonitorMode::In: return 1.0f;
+    case MonitorMode::Off: return 0.0f;
+    case MonitorMode::Auto: break;
+  }
+  return m.arm ? 1.0f : 0.0f;
+}
+
 std::string paramKey(const ParamRef& ref) {
   switch (ref.kind) {
     case ParamKind::TrackVolume: return std::to_string(ref.owner) + ":volume";
     case ParamKind::TrackPan: return std::to_string(ref.owner) + ":pan";
     case ParamKind::TrackMute: return std::to_string(ref.owner) + ":mute";  // T3.17-fix3: its lane plays
+    case ParamKind::TrackMonitor: return std::to_string(ref.owner) + ":monitor";  // T6.1: the gate it sets
     case ParamKind::TrackSend: return std::to_string(ref.owner) + ":send:" + std::to_string(ref.target);
     // The tuning node's params (T2.6-fix1).
     case ParamKind::TuningReference: return "tuning:" + std::to_string(ref.owner) + ":reference";
@@ -3635,6 +3663,8 @@ out.wires = withLinks(wp.states, *cables, pl);
     pt.maxVoices = polyphony;  // T4.12-fix1 / IG.1-2: the voice contexts' voice count (0: the link's default)
     pt.steal = steal;          // IG.1-2: an instrument group's stealing (−1: the link's)
     if (voices && pt.eventSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
+    if (n.kind == Kind::Audio && !n.track->mixer.audioIn.none())  // T6.1
+      out.audioInputs.push_back(AudioInputBinding{n.track->id, n.track->mixer.audioIn});
     out.graph.tracks.push_back(std::move(pt));
     addParams(pl, i, aud, out.params, lib, wp, devs[i]);
   }

@@ -218,27 +218,28 @@ ClipSlot ClipEditor::bounded(const ClipSlot& c, Ticks s, Ticks e) const {
   if (c.audio) {
     auto a = std::make_shared<const AudioClip>(
         audioWithBounds(*p_->timeline, *c.audio, s, e, rateOf(*c.audio), ratioOf(*c.audio)));
-    return ClipSlot{c.id, nullptr, std::move(a)};
+    return ClipSlot{c.id, nullptr, std::move(a), c.take};  // T6.1: a piece keeps its provenance
   }
-  return ClipSlot{c.id, std::make_shared<const NoteClip>(withBounds(*c.clip, s, e)), nullptr};
+  return ClipSlot{c.id, std::make_shared<const NoteClip>(withBounds(*c.clip, s, e)), nullptr, c.take};
 }
 
 std::pair<ClipSlot, ClipSlot> ClipEditor::split(const ClipSlot& c, Ticks t, ClipId rightId, IdSource& ids) const {
   if (c.audio) {
     auto [l, r] = splitAudioAt(*p_->timeline, *c.audio, t, rightId, rateOf(*c.audio), ratioOf(*c.audio));
-    return {ClipSlot{l.id, nullptr, std::make_shared<const AudioClip>(std::move(l))},
-            ClipSlot{r.id, nullptr, std::make_shared<const AudioClip>(std::move(r))}};
+    return {ClipSlot{l.id, nullptr, std::make_shared<const AudioClip>(std::move(l)), c.take},
+            ClipSlot{r.id, nullptr, std::make_shared<const AudioClip>(std::move(r)), c.take}};
   }
   auto [l, r] = splitClipAt(*c.clip, t, rightId, ids);
-  return {ClipSlot{l.id, std::make_shared<const NoteClip>(std::move(l)), nullptr},
-          ClipSlot{r.id, std::make_shared<const NoteClip>(std::move(r)), nullptr}};
+  return {ClipSlot{l.id, std::make_shared<const NoteClip>(std::move(l)), nullptr, c.take},
+          ClipSlot{r.id, std::make_shared<const NoteClip>(std::move(r)), nullptr, c.take}};
 }
 
 ClipSlot ClipEditor::moved(const ClipSlot& c, Ticks start) const {
-  if (c.audio) return ClipSlot{c.id, nullptr, std::make_shared<const AudioClip>(audioMovedTo(*p_->timeline, *c.audio, start))};
+  if (c.audio)
+    return ClipSlot{c.id, nullptr, std::make_shared<const AudioClip>(audioMovedTo(*p_->timeline, *c.audio, start)), c.take};
   NoteClip n = withNotes(*c.clip, c.clip->notes);
   n.start = start;
-  return ClipSlot{c.id, std::make_shared<const NoteClip>(std::move(n)), nullptr};
+  return ClipSlot{c.id, std::make_shared<const NoteClip>(std::move(n)), nullptr, c.take};
 }
 
 void ClipEditor::clearRange(Ticks a, Ticks b, IdSource& ids, std::span<const ClipId> keep) {
@@ -286,7 +287,7 @@ void ClipEditor::emit(Batch& removes, Batch& updates, Batch& adds) const {
       removes.commands.push_back(RemoveClip{{tid, before[i].id}});
       ++i;
     } else if (i == before.size() || after[j].id < before[i].id) {
-      adds.commands.push_back(AddClip{tid, after[j].slot->clip, after[j].slot->audio});
+      adds.commands.push_back(AddClip{tid, after[j].slot->clip, after[j].slot->audio, after[j].slot->take});
       ++j;
     } else if (after[j].slot->audio) {  // T5.3: an audio clip is replaced whole
       if (before[i].slot->audio != after[j].slot->audio && !(*before[i].slot->audio == *after[j].slot->audio))
@@ -305,7 +306,7 @@ void ClipEditor::emit(Batch& removes, Batch& updates, Batch& adds) const {
             updates.commands.push_back(SetClipBounds{{tid, n.id}, n.start, n.length, n.contentStart});
         } else {
           removes.commands.push_back(RemoveClip{{tid, o.id}});
-          adds.commands.push_back(AddClip{tid, after[j].slot->clip, nullptr});
+          adds.commands.push_back(AddClip{tid, after[j].slot->clip, nullptr, after[j].slot->take});
         }
       }
       ++i;

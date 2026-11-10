@@ -11,8 +11,10 @@
 //            reverse  f = contentStartFrame + (seconds - (tau - startSeconds)) * speed
 //            speed = sample rate * rateRatio (source frames per second); exact in seconds, so a tempo edit never moves
 //            what plays at a given time of the clip.
-//   RePitch  o = (ticks at tau) - start (reverse: length - o); content tick c = clipContentAt(contentStart, loop, o)
-//            (pq/core/clip_time.h, loop folded), f = c * framesPerTick. Speed follows the tempo: tempo / sourceBpm.
+//   warped   (RePitch and T6.1's time-stretch modes) o = (ticks at tau) - start (reverse: length - o); content tick
+//            c = clipContentAt(contentStart, loop, o) (pq/core/clip_time.h, loop folded), f = warpFrameAt(markers,
+//            framesPerTick, c) (audio_clip.h: through the warp markers, else c * framesPerTick). RePitch's speed (and
+//            pitch) follows the source rate; the time-stretch modes keep the source's pitch times pitchRatio.
 // Gain at offset o (ticks into the clip): gain * fadeIn(o) * fadeOut(length - o) * crossfade (equal-power, over the
 // window centred on a boundary between two adjacent clips: [start - crossfadeIn / 2, start + crossfadeIn - crossfadeIn / 2)
 // of the right clip; the left clip plays on past its end through the window, the right one starts early). Edge declick
@@ -44,11 +46,14 @@ struct AudioClipDesc {
   double seconds = 0.0;            // the clip's duration
   double contentStartFrame = 0.0;  // the source frame at the clip start (forward)
   double speed = 0.0;              // source frames per second (rate * rateRatio)
-  double rateRatio = 1.0;          // transpose x detune (Off; 1 for RePitch)
-  // RePitch.
+  double rateRatio = 1.0;          // transpose x detune (Off; 1 for every warped mode)
+  // Warped (every mode but Off).
   Ticks contentStart = 0;
   ContentLoop loop;
-  double framesPerTick = 0.0;      // source frames per content tick (framesPerContentTick)
+  double framesPerTick = 0.0;      // source frames per content tick of the implied segment (framesPerContentTick)
+  std::vector<WarpMarker> markers; // T6.1: the clip's warp markers (empty: the implied segment)
+  double pitchRatio = 1.0;         // T6.1: the time-stretch modes' pitch shift (transpose x detune; 1 for RePitch)
+  WarpParams warpParams;           // T6.1: the time-stretch modes' settings
   // Envelope.
   float gain = 1.0f;               // linear; 0 at kMinClipGainDb
   Ticks fadeIn = 0, fadeOut = 0;   // clamped: fadeIn <= length, fadeOut <= length - fadeIn
@@ -72,7 +77,8 @@ struct AudioLowerOptions {
   std::function<bool(SampleId)> available;
 };
 
-// The audio sequence of the audio track at `path` (an empty one for any other track).
+// The audio sequence of the audio track at `path` (an empty one for any other track): T6.1: its played clips (its
+// audition take's, else its main lane: model.h playedClips).
 AudioTrackDesc lowerAudioTrack(const Project& p, const TrackPath& path, const AudioLowerOptions& options = {});
 
 // The source position (fractional frames) clip `c` plays at song time `tau` seconds, by the laws above; nullopt

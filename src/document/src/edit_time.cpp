@@ -87,15 +87,13 @@ void openGap(ClipEditor& ed, Ticks at, Ticks len, IdSource& ids) {
 
 void editClips(const Project& p, const TimeEdit& te, IdSource& ids, Batch& out) {
   ClipEdits ed(p);
-  forEachTrack(p, [&](const Track& t, const Track*) {
-    if ((t.kind != TrackKind::Midi && t.kind != TrackKind::Audio) || t.clips.empty()) return;  // T5.3: audio too
-    const Ticks from = te.a;
-    // Clips are sorted by start; anything ending at or before `from` is untouched. A quick check on the last clips
-    // avoids creating editors for tracks that end before the edit.
-    const bool touched =
-        std::any_of(t.clips.rbegin(), t.clips.rend(), [&](const ClipSlot& s) { return s.end() > from; });
-    if (!touched) return;
-    ClipEditor& e = ed.editor(t);
+  Batch takes;  // T6.1: take lanes move with their track (each one changed is replaced whole, after the main lanes)
+  // Clips are sorted by start; anything ending at or before `te.a` is untouched. A quick check on the last clips
+  // avoids creating editors for tracks (and take lanes) that end before the edit.
+  auto touched = [&](const std::vector<ClipSlot>& clips) {
+    return std::any_of(clips.rbegin(), clips.rend(), [&](const ClipSlot& s) { return s.end() > te.a; });
+  };
+  auto edit = [&](ClipEditor& e) {
     switch (te.op) {
       case TimeOp::Insert: openGap(e, te.a, te.len, ids); break;
       case TimeOp::Delete: {
@@ -117,8 +115,29 @@ void editClips(const Project& p, const TimeEdit& te, IdSource& ids, Batch& out) 
         break;
       }
     }
+  };
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    if (t.kind != TrackKind::Midi && t.kind != TrackKind::Audio) return;  // T5.3: audio too
+    if (touched(t.clips)) edit(ed.editor(t));
+    for (size_t i = 0; i < t.takes.size(); ++i) {
+      const TakeLane& lane = *t.takes[i];
+      if (!touched(lane.clips)) continue;
+      Track view = t;  // the lane's clips as a track's (its path and tuning are the track's)
+      view.clips = lane.clips;
+      ClipEditor e(p, view);
+      edit(e);
+      auto moved = std::make_shared<TakeLane>(lane);
+      moved->clips = std::move(e.clips());
+      std::sort(moved->clips.begin(), moved->clips.end(), [](const ClipSlot& a, const ClipSlot& b) {
+        return a.start() != b.start() ? a.start() < b.start() : a.id < b.id;
+      });
+      takes.commands.push_back(RemoveTakeLane{t.id, lane.id});
+      takes.commands.push_back(AddTakeLane{t.id, std::move(moved), static_cast<uint32_t>(i)});
+      if (t.auditionTake == lane.id) takes.commands.push_back(SetAuditionTake{t.id, lane.id});
+    }
   });
   ed.emit(out);
+  for (Command& c : takes.commands) out.commands.push_back(std::move(c));
 }
 
 // ---- Locators, loop ----------------------------------------------------------------------------------------------
@@ -145,6 +164,19 @@ void editLoop(const Project& p, const TimeEdit& te, Batch& out) {
     l.end = l.end > te.cut() ? l.end + te.len : l.end;
   if (l.end <= l.start) l.end = l.start + len;
   if (!(l == p.loop)) out.commands.push_back(SetLoop{l});
+}
+
+// T6.1: the punch region moves as the loop does (the same rule for its two ends).
+void editPunch(const Project& p, const TimeEdit& te, Batch& out) {
+  PunchRegion r = p.punch;
+  const Ticks len = r.out - r.in;
+  r.in = te.map(r.in);
+  if (te.op == TimeOp::Delete)
+    r.out = r.out < te.a ? r.out : (r.out <= te.b ? te.a : r.out - te.len);
+  else
+    r.out = r.out > te.cut() ? r.out + te.len : r.out;
+  if (r.out <= r.in) r.out = r.in + len;
+  if (r != p.punch) out.commands.push_back(SetPunch{r});
 }
 
 // ---- Tempo -------------------------------------------------------------------------------------------------------
@@ -345,6 +377,7 @@ EditResult timeEdit(const Project& p, IdSource& ids, const TimeEdit& te, std::st
   });
   editLocators(p, te, b);
   editLoop(p, te, b);
+  editPunch(p, te, b);  // T6.1
   editTempo(p, te, b);
   editSignatures(p, te, b);
   return e;

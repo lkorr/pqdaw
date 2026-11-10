@@ -514,7 +514,7 @@ TEST_CASE("audio: fixtures/audio — save → load is deep-equal with every fiel
   RichAudio f;
   Result<std::string> text = serializeProject(f.doc(), f.store.view());
   REQUIRE_MESSAGE(text.ok(), (text.ok() ? std::string() : text.error().message));
-  CHECK(text->rfind("{\n  \"schemaVersion\": 21,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": " + std::to_string(kSchemaVersion) + ",", 0) == 0);
   const std::string path = fixturePath("audio/project.pqd");
   if (std::getenv("PQ_UPDATE_FIXTURES")) {
     std::ofstream(path, std::ios::binary) << *text;
@@ -552,7 +552,7 @@ TEST_CASE("audio: strict reader errors name the path") {
   Result<LoadedProject> r = broken(sample, "\"sample\": 999");
   REQUIRE_FALSE(r.ok());
   CHECK(r.error().message.find("$.tracks[1].clips[0].sample: unknown sample id 999") == 0);
-  CHECK_FALSE(broken("\"warp\": \"off\"", "\"warp\": \"beats\"").ok());
+  CHECK_FALSE(broken("\"warp\": \"off\"", "\"warp\": \"sideways\"").ok());  // T6.1: "beats" is a mode now
   CHECK_FALSE(broken("\"kind\": \"audio\", \"id\"", "\"kind\": \"midi\", \"id\"").ok());
   CHECK_FALSE(broken("\"transpose\": {\"cents\"", "\"transpose\": {\"steps\": 1, \"cents\"").ok());
   CHECK_FALSE(broken("\"seconds\": ", "\"seconds\": -").ok());

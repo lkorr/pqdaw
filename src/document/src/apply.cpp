@@ -91,6 +91,8 @@ bool pathLess(const TrackPath& a, const TrackPath& b) {
 void collectIds(const Track& t, ChangeSet& cs) {
   cs.tracks.push_back(t.id);
   for (const ClipSlot& c : t.clips) cs.clips.push_back(c.id);
+  for (const TakeLanePtr& l : t.takes)  // T6.1
+    for (const ClipSlot& c : l->clips) cs.clips.push_back(c.id);
   for (const LanePtr& l : t.lanes) cs.lanes.push_back(l->id);
   forEachDeviceIn(t.devices, [&](const Device& d) { cs.devices.push_back(d.id); });
   for (const TrackPtr& c : t.children) collectIds(*c, cs);
@@ -166,6 +168,53 @@ void cleanupAfterRemoval(Project& np, const std::vector<TrackId>& removed, Chang
   }, cs);
 }
 
+// T6.1: every clip slot of a track: its main lane, then its take lanes.
+template <class F>
+void forEachClipSlot(const Track& t, F&& f) {
+  for (const ClipSlot& sl : t.clips) f(sl);
+  for (const TakeLanePtr& l : t.takes)
+    for (const ClipSlot& sl : l->clips) f(sl);
+}
+
+bool clipLess(const ClipSlot& a, const ClipSlot& b) {
+  return a.start() != b.start() ? a.start() < b.start() : a.id < b.id;
+}
+
+// One clip list of a track of kind `kind` (its main lane or a take lane): slots matching their clips, of the kind,
+// valid, sorted by (start, id). The clip ids go to `ids`.
+Status checkClipList(const Project& p, TrackKind kind, const std::vector<ClipSlot>& clips, std::vector<uint32_t>& ids) {
+  if (!clips.empty() && kind != TrackKind::Midi && kind != TrackKind::Audio)
+    return invalid("only MIDI and audio tracks hold clips");
+  for (size_t i = 0; i < clips.size(); ++i) {
+    const ClipSlot& c = clips[i];
+    if (kind == TrackKind::Audio) {  // T5.3
+      if (c.clip || !c.audio || c.audio->id != c.id) return invalid("an audio track's clip slot must hold its audio clip");
+      PQ_DOC_TRY(checkAudioClip(p, *c.audio));
+    } else {
+      if (c.audio || !c.clip || c.clip->id != c.id) return invalid("clip slot does not match its clip");
+      PQ_DOC_TRY(checkClip(p, *c.clip));
+    }
+    if (i > 0 && !clipLess(clips[i - 1], c)) return invalid("clips must be sorted");
+    ids.push_back(c.id.value);
+  }
+  return ok();
+}
+
+// T6.1: a take lane for track `t`: its id unused on the track, its clips valid, their ids unique among themselves (the
+// caller checks them against the project's). Clip ids go to `ids`.
+Status checkTakeLane(const Project& p, const Track& t, const TakeLane& lane, std::vector<uint32_t>& ids) {
+  if (!lane.id.valid()) return invalid("take lane has no id");
+  if (t.takeIndex(lane.id) >= 0) return invalid("take lane id already on this track");
+  for (const LanePtr& l : t.lanes)
+    if (l->id == lane.id) return invalid("take lane id already in use");
+  const size_t first = ids.size();
+  PQ_DOC_TRY(checkClipList(p, t.kind, lane.clips, ids));
+  std::vector<uint32_t> mine(ids.begin() + static_cast<std::ptrdiff_t>(first), ids.end());
+  std::sort(mine.begin(), mine.end());
+  if (std::adjacent_find(mine.begin(), mine.end()) != mine.end()) return invalid("duplicate clip id in take lane");
+  return ok();
+}
+
 // Validates a track subtree that is about to be inserted. `topLevelKinds` = whether the root is a return.
 Status checkSubtree(const Project& p, const Track& t, std::vector<uint32_t>& ids) {
   if (!t.id.valid()) return invalid("track has no id");
@@ -173,8 +222,6 @@ Status checkSubtree(const Project& p, const Track& t, std::vector<uint32_t>& ids
   ids.push_back(t.id.value);
   if (t.kind == TrackKind::Master) return invalid("a project has exactly one master track");
   if (!t.children.empty() && t.kind != TrackKind::Group) return invalid("only groups have child tracks");
-  if (!t.clips.empty() && t.kind != TrackKind::Midi && t.kind != TrackKind::Audio)
-    return invalid("only MIDI and audio tracks hold clips");
   PQ_DOC_TRY(checkVolume(t.mixer.volumeDb));
   PQ_DOC_TRY(checkParamValue(ParamKind::TrackPan, t.mixer.pan));
   if (!t.mixer.sends.empty() && !trackHasSends(t.kind)) return invalid("this track has no sends");
@@ -188,18 +235,24 @@ Status checkSubtree(const Project& p, const Track& t, std::vector<uint32_t>& ids
     if (!g || g->kind != TrackKind::Group) return invalid("output target must be a group track");
   }
   PQ_DOC_TRY(checkAssignment(p, t.tuning));
-  for (size_t i = 0; i < t.clips.size(); ++i) {
-    const ClipSlot& c = t.clips[i];
-    if (t.kind == TrackKind::Audio) {  // T5.3
-      if (c.clip || !c.audio || c.audio->id != c.id) return invalid("an audio track's clip slot must hold its audio clip");
-      PQ_DOC_TRY(checkAudioClip(p, *c.audio));
-    } else {
-      if (c.audio || !c.clip || c.clip->id != c.id) return invalid("clip slot does not match its clip");
-      PQ_DOC_TRY(checkClip(p, *c.clip));
+  PQ_DOC_TRY(checkRecordInputs(t.kind, t.mixer));  // T6.1
+  PQ_DOC_TRY(checkNoteInput(t.noteInput));
+  std::vector<uint32_t> clipIds;  // T6.1: the main lane's and every take lane's, unique on the track
+  PQ_DOC_TRY(checkClipList(p, t.kind, t.clips, clipIds));
+  if (!t.takes.empty() && t.kind != TrackKind::Midi && t.kind != TrackKind::Audio)
+    return invalid("only MIDI and audio tracks have take lanes");
+  {
+    Track partial = t;  // each take lane is checked against the ones before it
+    partial.takes.clear();
+    for (const TakeLanePtr& l : t.takes) {
+      if (!l) return invalid("null take lane");
+      PQ_DOC_TRY(checkTakeLane(p, partial, *l, clipIds));
+      partial.takes.push_back(l);
     }
-    if (i > 0 && std::pair(t.clips[i - 1].start(), t.clips[i - 1].id) >= std::pair(c.start(), c.id))
-      return invalid("clips must be sorted");
   }
+  if (t.auditionTake.valid() && t.takeIndex(t.auditionTake) < 0) return invalid("the audition take is not a take lane");
+  std::sort(clipIds.begin(), clipIds.end());
+  if (std::adjacent_find(clipIds.begin(), clipIds.end()) != clipIds.end()) return invalid("duplicate clip id on track");
   for (const LanePtr& l : t.lanes) {
     if (!l || !l->id.valid()) return invalid("lane has no id");
     PQ_DOC_TRY(checkLaneParam(p, t, l->param, l->paramName));
@@ -236,9 +289,6 @@ Result<Loc> locate(const Project& p, TrackId id) {
   return Loc{*path, &trackAt(p, *path)};
 }
 
-bool clipLess(const ClipSlot& a, const ClipSlot& b) {
-  return a.start() != b.start() ? a.start() < b.start() : a.id < b.id;
-}
 void insertClipSorted(std::vector<ClipSlot>& v, ClipSlot s) {
   v.insert(std::upper_bound(v.begin(), v.end(), s, clipLess), std::move(s));
 }
@@ -456,12 +506,191 @@ Res apply_(const Snapshot& s, const SetTrackSolo& c, ChangeSet& cs) {
       [&](Track& t) { t.mixer.solo = c.solo; }, false);
 }
 
+// T6.1: Param (the monitor gate of an audio track follows the arm while its monitor is Auto).
 Res apply_(const Snapshot& s, const SetTrackArm& c, ChangeSet& cs) {
   Result<Loc> loc = locate(*s, c.track);
   if (!loc) return std::move(loc).error();
-  if (loc->track->kind != TrackKind::Midi) return invalid("only MIDI tracks can be armed");
-  if (loc->track->mixer.arm == c.arm) return s;
-  return editTrack(s, loc->path, cs, kChangeMeta, [&](Track& t) { t.mixer.arm = c.arm; return ok(); });
+  if (loc->track->kind != TrackKind::Midi && loc->track->kind != TrackKind::Audio)
+    return invalid("only MIDI and audio tracks can be armed");
+  return setMixerParam(
+      s, c.track, ParamKind::TrackArm, cs, [&](const Track& t) { return t.mixer.arm == c.arm; },
+      [&](Track& t) { t.mixer.arm = c.arm; }, false);
+}
+
+// ---- Recording inputs (T6.1) ---------------------------------------------------------------------------------------
+
+Result<Loc> locateRecordable(const Project& p, TrackId id) {
+  Result<Loc> loc = locate(p, id);
+  if (loc && loc->track->kind != TrackKind::Midi && loc->track->kind != TrackKind::Audio)
+    return invalid("only MIDI and audio tracks record");
+  return loc;
+}
+
+Res apply_(const Snapshot& s, const SetTrackMonitor& c, ChangeSet& cs) {
+  if (static_cast<uint8_t>(c.mode) > static_cast<uint8_t>(MonitorMode::Off)) return invalid("unknown monitor mode");
+  Result<Loc> loc = locateRecordable(*s, c.track);
+  if (!loc) return std::move(loc).error();
+  return setMixerParam(
+      s, c.track, ParamKind::TrackMonitor, cs, [&](const Track& t) { return t.mixer.monitor == c.mode; },
+      [&](Track& t) { t.mixer.monitor = c.mode; }, false);
+}
+
+Res apply_(const Snapshot& s, const SetTrackAudioInput& c, ChangeSet& cs) {
+  Result<Loc> loc = locate(*s, c.track);
+  if (!loc) return std::move(loc).error();
+  if (loc->track->kind != TrackKind::Audio) return invalid("only audio tracks have an audio input");
+  Mixer m = loc->track->mixer;
+  m.audioIn = c.input;
+  PQ_DOC_TRY(checkRecordInputs(loc->track->kind, m));
+  if (loc->track->mixer.audioIn == c.input) return s;
+  return editTrack(s, loc->path, cs, kChangeStructural, [&](Track& t) { t.mixer.audioIn = c.input; return ok(); });
+}
+
+Res apply_(const Snapshot& s, const SetTrackMidiInput& c, ChangeSet& cs) {
+  Result<Loc> loc = locate(*s, c.track);
+  if (!loc) return std::move(loc).error();
+  if (loc->track->kind != TrackKind::Midi) return invalid("only MIDI tracks have a MIDI input");
+  Mixer m = loc->track->mixer;
+  m.midiIn = c.input;
+  PQ_DOC_TRY(checkRecordInputs(loc->track->kind, m));
+  if (loc->track->mixer.midiIn == c.input) return s;
+  return editTrack(s, loc->path, cs, kChangeMeta, [&](Track& t) { t.mixer.midiIn = c.input; return ok(); });
+}
+
+Res apply_(const Snapshot& s, const SetTrackDelay& c, ChangeSet& cs) {
+  if (!finiteIn(c.ms, -kMaxTrackDelayMs, kMaxTrackDelayMs)) return invalid("track delay out of range");
+  Result<Loc> loc = locate(*s, c.track);
+  if (!loc) return std::move(loc).error();
+  if (loc->track->kind == TrackKind::Master) return invalid("the master has no track delay");
+  if (loc->track->mixer.trackDelayMs == c.ms) return s;
+  return editTrack(s, loc->path, cs, kChangeMeta, [&](Track& t) { t.mixer.trackDelayMs = c.ms; return ok(); });
+}
+
+Res apply_(const Snapshot& s, const SetNoteInput& c, ChangeSet& cs) {
+  PQ_DOC_TRY(checkNoteInput(c.input));
+  Result<Loc> loc = locate(*s, c.track);
+  if (!loc) return std::move(loc).error();
+  if (loc->track->kind != TrackKind::Midi) return invalid("only MIDI tracks take note input");
+  if (loc->track->noteInput == c.input) return s;
+  return editTrack(s, loc->path, cs, kChangeMeta, [&](Track& t) { t.noteInput = c.input; return ok(); });
+}
+
+Res apply_(const Snapshot& s, const SetPunch& c, ChangeSet& cs) {
+  PQ_DOC_TRY(checkPunch(c.punch));
+  if (s->punch == c.punch) return s;
+  auto np = copyOf(s);
+  np->punch = c.punch;
+  cs.mark(kChangeMeta);
+  return Snapshot(std::move(np));
+}
+
+Res apply_(const Snapshot& s, const SetRecordSettings& c, ChangeSet& cs) {
+  PQ_DOC_TRY(checkRecordSettings(c.settings));
+  if (s->record == c.settings) return s;
+  auto np = copyOf(s);
+  np->record = c.settings;
+  cs.mark(kChangeMeta);
+  return Snapshot(std::move(np));
+}
+
+// ---- Take lanes (T6.1) ---------------------------------------------------------------------------------------------
+
+Res apply_(const Snapshot& s, const AddTakeLane& c, ChangeSet& cs) {
+  if (!c.lane) return invalid("no take lane");
+  Result<Loc> loc = locateRecordable(*s, c.track);
+  if (!loc) return std::move(loc).error();
+  const Track& tr = *loc->track;
+  if (c.index != kAppend && c.index > tr.takes.size()) return invalid("take lane index out of range");
+  std::vector<uint32_t> ids;
+  PQ_DOC_TRY(checkTakeLane(*s, tr, *c.lane, ids));
+  // Every clip id is new (project-wide: one id counter for every entity).
+  std::unordered_set<uint32_t> used;
+  forEachTrack(*s, [&](const Track& t, const Track*) {
+    forEachClipSlot(t, [&](const ClipSlot& sl) { used.insert(sl.id.value); });
+  });
+  for (const uint32_t id : ids)
+    if (used.count(id) != 0) return invalid("clip id already in use");
+  auto lane = std::make_shared<TakeLane>(*c.lane);
+  for (ClipSlot& sl : lane->clips)
+    if (sl.audio) sl.audio = syncedPtr(*s->timeline, *sl.audio);  // an Off clip's length; its start stays: still sorted
+  auto np = copyOf(s);
+  Track& t = mutableTrack(*np, loc->path);
+  t.takes.insert(c.index == kAppend ? t.takes.end() : t.takes.begin() + c.index, TakeLanePtr(std::move(lane)));
+  cs.mark(kChangeMeta);
+  cs.tracks.push_back(c.track);
+  for (const ClipSlot& sl : c.lane->clips) cs.clips.push_back(sl.id);
+  return Snapshot(std::move(np));
+}
+
+struct TakeLoc {
+  Loc loc;
+  size_t index = 0;
+};
+Result<TakeLoc> locateTake(const Project& p, TrackId track, LaneId lane) {
+  Result<Loc> loc = locateRecordable(p, track);
+  if (!loc) return std::move(loc).error();
+  const int32_t i = loc->track->takeIndex(lane);
+  if (i < 0) return notFound("take lane not found on this track");
+  return TakeLoc{*loc, static_cast<size_t>(i)};
+}
+
+Res apply_(const Snapshot& s, const RemoveTakeLane& c, ChangeSet& cs) {
+  Result<TakeLoc> at = locateTake(*s, c.track, c.lane);
+  if (!at) return std::move(at).error();
+  const bool auditioned = at->loc.track->auditionTake == c.lane;
+  for (const ClipSlot& sl : at->loc.track->takes[at->index]->clips) cs.clips.push_back(sl.id);
+  auto np = copyOf(s);
+  Track& t = mutableTrack(*np, at->loc.path);
+  t.takes.erase(t.takes.begin() + static_cast<std::ptrdiff_t>(at->index));
+  if (auditioned) t.auditionTake = LaneId{};
+  cs.mark(auditioned ? kChangeSequence : kChangeMeta);
+  cs.tracks.push_back(c.track);
+  return Snapshot(std::move(np));
+}
+
+Res apply_(const Snapshot& s, const RenameTakeLane& c, ChangeSet& cs) {
+  Result<TakeLoc> at = locateTake(*s, c.track, c.lane);
+  if (!at) return std::move(at).error();
+  if (at->loc.track->takes[at->index]->name == c.name) return s;
+  auto np = copyOf(s);
+  Track& t = mutableTrack(*np, at->loc.path);
+  auto lane = std::make_shared<TakeLane>(*t.takes[at->index]);
+  lane->name = c.name;
+  t.takes[at->index] = std::move(lane);
+  cs.mark(kChangeMeta);
+  cs.tracks.push_back(c.track);
+  return Snapshot(std::move(np));
+}
+
+Res apply_(const Snapshot& s, const SetAuditionTake& c, ChangeSet& cs) {
+  Result<Loc> loc = locateRecordable(*s, c.track);
+  if (!loc) return std::move(loc).error();
+  if (c.lane.valid() && loc->track->takeIndex(c.lane) < 0) return notFound("take lane not found on this track");
+  if (loc->track->auditionTake == c.lane) return s;
+  for (const ClipSlot& sl : playedClips(*loc->track)) cs.clips.push_back(sl.id);
+  auto np = copyOf(s);
+  Track& t = mutableTrack(*np, loc->path);
+  t.auditionTake = c.lane;
+  for (const ClipSlot& sl : playedClips(t)) cs.clips.push_back(sl.id);
+  cs.mark(kChangeSequence);
+  cs.tracks.push_back(c.track);
+  return Snapshot(std::move(np));
+}
+
+Res apply_(const Snapshot& s, const PromoteTake& c, ChangeSet& cs) {
+  Result<TakeLoc> at = locateTake(*s, c.track, c.lane);
+  if (!at) return std::move(at).error();
+  auto np = copyOf(s);
+  Track& t = mutableTrack(*np, at->loc.path);
+  auto lane = std::make_shared<TakeLane>(*t.takes[at->index]);
+  std::swap(lane->clips, t.clips);
+  for (const ClipSlot& sl : t.clips) cs.clips.push_back(sl.id);
+  for (const ClipSlot& sl : lane->clips) cs.clips.push_back(sl.id);
+  t.takes[at->index] = std::move(lane);
+  t.auditionTake = LaneId{};
+  cs.mark(kChangeSequence);
+  cs.tracks.push_back(c.track);
+  return Snapshot(std::move(np));
 }
 
 // Finds the send to `target` in a sorted send list (nullptr = implicit default send).
@@ -642,8 +871,9 @@ Res editClip(const Snapshot& s, const ClipRef& r, ChangeSet& cs, ChangeFlag flag
   Track& t = mutableTrack(*np, loc->path);
   const auto i = static_cast<size_t>(loc->index);
   if ((*nc)->start != (*loc->clip)->start) {
+    ClipSlot moved{r.clip, std::move(*nc), nullptr, t.clips[i].take};
     t.clips.erase(t.clips.begin() + static_cast<std::ptrdiff_t>(i));
-    insertClipSorted(t.clips, ClipSlot{r.clip, std::move(*nc)});
+    insertClipSorted(t.clips, std::move(moved));
   } else {
     t.clips[i].clip = std::move(*nc);
   }
@@ -684,8 +914,9 @@ Res editAudio(const Snapshot& s, const ClipRef& r, ChangeSet& cs, ChangeFlag fla
   const auto i = static_cast<size_t>(loc->index);
   auto nc = std::make_shared<const AudioClip>(std::move(c));
   if (nc->start != slot.audio->start) {
+    ClipSlot moved{r.clip, nullptr, std::move(nc), t.clips[i].take};
     t.clips.erase(t.clips.begin() + static_cast<std::ptrdiff_t>(i));
-    insertClipSorted(t.clips, ClipSlot{r.clip, nullptr, std::move(nc)});
+    insertClipSorted(t.clips, std::move(moved));
   } else {
     t.clips[i].audio = std::move(nc);
   }
@@ -718,7 +949,7 @@ Res apply_(const Snapshot& s, const AddClip& c, ChangeSet& cs) {
     if (findClipIndex(*loc->track, c.audio->id) >= 0) return invalid("clip id already on this track");
     auto np = copyOf(s);
     Track& t = mutableTrack(*np, loc->path);
-    insertClipSorted(t.clips, ClipSlot{c.audio->id, nullptr, syncedPtr(*s->timeline, *c.audio)});
+    insertClipSorted(t.clips, ClipSlot{c.audio->id, nullptr, syncedPtr(*s->timeline, *c.audio), c.take});
     cs.mark(kChangeSequence);
     cs.tracks.push_back(c.track);
     cs.clips.push_back(c.audio->id);
@@ -732,7 +963,7 @@ Res apply_(const Snapshot& s, const AddClip& c, ChangeSet& cs) {
   if (findClipIndex(*loc->track, c.clip->id) >= 0) return invalid("clip id already on this track");
   auto np = copyOf(s);
   Track& t = mutableTrack(*np, loc->path);
-  insertClipSorted(t.clips, ClipSlot{c.clip->id, c.clip});
+  insertClipSorted(t.clips, ClipSlot{c.clip->id, c.clip, nullptr, c.take});
   cs.mark(kChangeSequence);
   cs.tracks.push_back(c.track);
   cs.clips.push_back(c.clip->id);
@@ -846,8 +1077,9 @@ Res apply_(const Snapshot& s, const SetAudioClip& c, ChangeSet& cs) {
 bool sampleUsed(const Project& p, SampleId id) {
   bool used = false;
   forEachTrack(p, [&](const Track& t, const Track*) {
-    for (const ClipSlot& sl : t.clips)
+    forEachClipSlot(t, [&](const ClipSlot& sl) {  // T6.1: take lanes too
       if (sl.audio && sl.audio->sample == id) used = true;
+    });
   });
   return used;
 }
@@ -894,6 +1126,21 @@ bool resyncAudioClips(Project& np, ChangeSet& cs, SampleId only = {}) {
       if (!copy) copy = t;
       copy->clips[i].audio = std::make_shared<const AudioClip>(std::move(c));
       cs.clips.push_back(sl.id);
+    }
+    for (size_t k = 0; k < t.takes.size(); ++k) {  // T6.1: take lanes keep their Off clips' seconds too
+      std::shared_ptr<TakeLane> lane;
+      for (size_t i = 0; i < t.takes[k]->clips.size(); ++i) {
+        const ClipSlot& sl = t.takes[k]->clips[i];
+        if (!sl.audio || sl.audio->warp != AudioWarp::Off || (only.valid() && sl.audio->sample != only)) continue;
+        AudioClip c = syncedClip(tl, *sl.audio);
+        if (c == *sl.audio) continue;
+        if (!lane) lane = std::make_shared<TakeLane>(*t.takes[k]);
+        lane->clips[i].audio = std::make_shared<const AudioClip>(std::move(c));
+        cs.clips.push_back(sl.id);
+      }
+      if (!lane) continue;
+      if (!copy) copy = t;
+      copy->takes[k] = std::move(lane);
     }
     if (!copy) return std::nullopt;
     any = true;
@@ -1265,8 +1512,9 @@ Res apply_(const Snapshot& s, const RemoveTuning& c, ChangeSet& cs) {
   auto uses = [&](const TuningAssignment& a) { return a.mode == TuningMode::Main && a.main == c.tuning; };
   forEachTrack(*s, [&](const Track& t, const Track*) {
     if (uses(t.tuning)) used = true;
-    for (const ClipSlot& cl : t.clips)
+    forEachClipSlot(t, [&](const ClipSlot& cl) {  // T6.1: take lanes too
       if (uses(slotTuning(cl))) used = true;
+    });
   });
   if (used) return invalid("tuning is still used by a track or clip");
   auto np = copyOf(s);
@@ -2019,6 +2267,8 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Add Track", "Delete Track", "Move Track", "Rename Track", "Track Colour", "Set Volume", "Set Pan",
     "Pan Law", "Mute", "Solo", "Arm", "Set Send", "Send Pre/Post", "Set Output", "Activate Track", "Track Tuning",
     "Group Tracks", "Ungroup Tracks",
+    "Monitor", "Audio Input", "MIDI Input", "Track Delay", "Note Input", "Punch", "Record Settings",
+    "Add Take Lane", "Delete Take Lane", "Rename Take Lane", "Audition Take", "Promote Take",
     "Add Clip", "Delete Clip", "Move Clip", "Resize Clip", "Clip Loop", "Clip Tuning", "Rename Clip",
     "Clip Colour", "Clip Signature", "Activate Clip", "Clip Fundamental", "Edit Audio Clip", "Add Sample",
     "Delete Sample", "Edit Sample",

@@ -58,11 +58,43 @@ struct SetTrackPan { TrackId track; float pan = 0.0f; };          // Param (Trac
 struct SetTrackPanMode { TrackId track; PanMode mode = PanMode::Balance; };
 struct SetTrackMute { TrackId track; bool mute = false; };        // Param (TrackMute), Q15
 struct SetTrackSolo { TrackId track; bool solo = false; };        // Param (TrackSolo): gains via effectiveAudible
-struct SetTrackArm { TrackId track; bool arm = false; };          // Meta until recording/monitoring exist (M5)
+// T6.1: Param (TrackArm; the monitor gate follows it). MIDI and audio tracks.
+struct SetTrackArm { TrackId track; bool arm = false; };
 struct SetSendLevel { TrackId track; TrackId target; float db = kMinVolumeDb; };  // Param (TrackSend)
 struct SetSendPreFader { TrackId track; TrackId target; bool preFader = false; }; // Structural (tap point moves)
 struct SetTrackOutput { TrackId track; Output output; };          // Structural (routing)
 struct SetTrackActive { TrackId track; bool active = true; };     // Structural (Q15: deactivate = DCE + recompile)
+// ---- Recording inputs (T6.1; model.h "Recording inputs", "Note input") -----------------------------------------
+// Param (TrackMonitor): the monitor gate's value. MIDI and audio tracks.
+struct SetTrackMonitor { TrackId track; MonitorMode mode = MonitorMode::Auto; };
+// An audio track's input. Structural (the track's patch reads `track.in` only while it has one; the channels are what
+// the engine binds, LoweredProject::audioInputs).
+struct SetTrackAudioInput { TrackId track; AudioInput input; };
+// A MIDI track's note input (port / channel). Meta (the app's MIDI router reads it; no engine work).
+struct SetTrackMidiInput { TrackId track; MidiInput input; };
+// Track Delay in ms (Mixer::trackDelayMs). Meta until T6.6 plays it. Not on the master.
+struct SetTrackDelay { TrackId track; float ms = 0.0f; };
+// How incoming keys become notes (Track::noteInput). Meta (the input map is rebuilt off-thread). MIDI tracks.
+struct SetNoteInput { TrackId track; NoteInput input; };
+// Meta. The punch region (Project::punch) and the record settings (Project::record; T6.6 adds the engine's values).
+struct SetPunch { PunchRegion punch; };
+struct SetRecordSettings { RecordSettings settings; };
+
+// ---- Take lanes (T6.1; model.h "Take lanes") -----------------------------------------------------------------------
+// Adds take lane `lane` (its id and its clips' ids pre-allocated and unused; clips of the track's kind, valid, sorted
+// by (start, id); Off audio clips are synced to the tempo map) at `index` of the track's takes (kAppend: last). Meta:
+// a take that is not auditioned is never lowered.
+struct AddTakeLane { TrackId track; TakeLanePtr lane; uint32_t index = kAppend; };
+// Removes a take lane (with its clips). Meta; Sequence too when it was the audition take (the main lane plays again).
+struct RemoveTakeLane { TrackId track; LaneId lane; };
+struct RenameTakeLane { TrackId track; LaneId lane; std::string name; };  // Meta
+// Sequence: which lane the track plays (invalid: the main lane). A take's clips replace the main lane's in the
+// sequences (playedClips); nothing compiles.
+struct SetAuditionTake { TrackId track; LaneId lane; };
+// Sequence: take `lane`'s clips become the main lane and the main lane's clips take its place in the take lane (the
+// lane keeps its id, name and position; the audition take is reset to the main lane).
+struct PromoteTake { TrackId track; LaneId lane; };
+
 // Structural: changes which tuning node feeds the track's voices.
 struct SetTrackTuning { TrackId track; TuningAssignment tuning; };
 // Structural. Wraps `tracks` (main tree, any parents, none an ancestor of another) in the empty Group `group`,
@@ -75,7 +107,8 @@ struct UngroupTracks { TrackId group; };
 // T5.3: exactly one of `clip` (a note clip: the track must be Midi) and `audio` (an audio clip: the track must be Audio,
 // its sample in the table; an Off clip's length is re-derived from the tempo map) is set. Audio commands also drop the
 // crossfades their edit leaves without an adjacent left neighbour (model.h AudioClip::crossfadeIn).
-struct AddClip { TrackId track; ClipPtr clip; AudioClipPtr audio; };  // Sequence
+// T6.1: `take` = the slot's provenance (ClipSlot::take; display only).
+struct AddClip { TrackId track; ClipPtr clip; AudioClipPtr audio; LaneId take; };  // Sequence
 struct RemoveClip { ClipRef clip; };                              // Sequence (either kind)
 // Sequence. Moves to `start` on `toTrack` (may be the same track; another track of the same kind). Either kind.
 struct MoveClip { ClipRef clip; TrackId toTrack; Ticks start = 0; };
@@ -243,6 +276,8 @@ using CommandVariant = std::variant<
     AddTrack, RemoveTrack, MoveTrack, RenameTrack, SetTrackColour, SetTrackVolume, SetTrackPan, SetTrackPanMode,
     SetTrackMute, SetTrackSolo, SetTrackArm, SetSendLevel, SetSendPreFader, SetTrackOutput, SetTrackActive, SetTrackTuning,
     GroupTracks, UngroupTracks,
+    SetTrackMonitor, SetTrackAudioInput, SetTrackMidiInput, SetTrackDelay, SetNoteInput, SetPunch, SetRecordSettings,
+    AddTakeLane, RemoveTakeLane, RenameTakeLane, SetAuditionTake, PromoteTake,
     AddClip, RemoveClip, MoveClip, SetClipBounds, SetClipLoop, SetClipTuning, RenameClip, SetClipColour,
     SetClipSignature, SetClipActive, SetClipFundamental, SetAudioClip, AddSample, RemoveSample, SetSample,
     AddNotes, RemoveNotes, UpdateNotes, MoveNote, ResizeNote, SetNoteProperty,

@@ -28,6 +28,26 @@ EffectiveTuning refOf(const Project& p, const TuningAssignment& a) noexcept {
   return {};
 }
 
+// How an identity follows a tuning signal on its own (T2.6-fix3; a Ratio anchored to a note follows that note instead:
+// ClipResolver): Degree → Degree; Cents and a reference-anchored Ratio → Reference; anything else Static.
+PitchFollow ownFollow(const tuning::PitchId& p) noexcept {
+  switch (p.kind()) {
+    case tuning::PitchKind::Degree: return PitchFollow::Degree;
+    case tuning::PitchKind::Cents: return PitchFollow::Reference;
+    case tuning::PitchKind::Ratio:
+      return p.anchorKind() == tuning::AnchorKind::Reference ? PitchFollow::Reference : PitchFollow::Static;
+    case tuning::PitchKind::Harmonic: break;
+  }
+  return PitchFollow::Static;
+}
+
+// resolveHzDouble, and nullopt for a pitch that does not survive float32 (the engine's Hz: not a playable note).
+std::optional<double> playableHz(const tuning::PitchId& p, const tuning::Tuning& t, const tuning::ResolveContext& rc) {
+  std::optional<double> hz = tuning::resolveHzDouble(p, t, rc);
+  if (hz && !(*hz >= static_cast<double>(FLT_MIN) && *hz <= static_cast<double>(FLT_MAX))) hz.reset();
+  return hz;
+}
+
 // Anchored Ratio notes refer to other notes of the clip by id; anchors chain (a note anchored to an anchored note).
 // Memoised depth-first resolution, bounded like the playback lowering (8 links), cycles unresolved. With `signal`
 // (the clip follows a tuning signal) each note also gets how it follows it (PitchFollow, T2.6-fix3): a chain of note
@@ -59,20 +79,17 @@ public:
     const tuning::PitchId& p = notes_[i]->pitch;
     tuning::ResolveContext rc;
     Resolved r;
+    r.follow = ownFollow(p);
     bool resolvable = true;
     switch (p.kind()) {
       case tuning::PitchKind::Degree:
-        r.follow = PitchFollow::Degree;
         r.degree = p.degree();
         r.equave = p.equave();
         break;
       case tuning::PitchKind::Cents:
-        r.follow = PitchFollow::Reference;
         break;
       case tuning::PitchKind::Ratio:
-        if (p.anchorKind() == tuning::AnchorKind::Reference) {
-          r.follow = PitchFollow::Reference;
-        } else if (p.anchorKind() == tuning::AnchorKind::Note) {
+        if (p.anchorKind() == tuning::AnchorKind::Note) {
           const auto it = std::lower_bound(byId_.begin(), byId_.end(), std::pair<uint32_t, uint32_t>{p.anchorId(), 0});
           if (it == byId_.end() || it->first != p.anchorId()) {
             resolvable = false;
@@ -89,9 +106,7 @@ public:
       case tuning::PitchKind::Harmonic:
         break;
     }
-    if (resolvable) r.hz = tuning::resolveHzDouble(p, t_, rc);
-    // A pitch that does not survive float32 (the engine's Hz) is not a playable note.
-    if (r.hz && !(*r.hz >= static_cast<double>(FLT_MIN) && *r.hz <= static_cast<double>(FLT_MAX))) r.hz.reset();
+    if (resolvable) r.hz = playableHz(p, t_, rc);
     if (!r.hz || !signal_) r.follow = PitchFollow::Static;
     out_[i] = r;
     state_[i] = 2;
@@ -107,13 +122,16 @@ private:
   std::vector<Resolved> out_;
 };
 
-// Degrees per equave of a tuning (0: none).
+}  // namespace
+
 int64_t degreesPerEquave(const tuning::Tuning& t) noexcept {
   if (const tuning::Edo* e = t.edo()) return static_cast<int64_t>(e->n());
   if (const tuning::Mos* m = t.mos()) return m->size();
   if (const tuning::Scale* s = t.scale()) return s->size();
   return 0;
 }
+
+namespace {
 
 // NotePitch::keyDegree: a Degree identity's absolute degree; any other pitch's position between the two degrees around
 // it, linear in log frequency (the tuning's degrees rise monotonically). Bounded: a pitch more than 64 degrees from the
@@ -148,6 +166,21 @@ std::optional<double> keyDegreeOf(const tuning::PitchId& p, double hz, const tun
 }
 
 }  // namespace
+
+NotePitch resolvePitch(const tuning::PitchId& p, const tuning::Tuning& t, TuningId signal) {
+  NotePitch np;
+  if (p.kind() == tuning::PitchKind::Ratio && p.anchorKind() != tuning::AnchorKind::Reference) return np;  // needs anchors
+  np.hz = playableHz(p, t, {});
+  if (!np.hz) return np;
+  np.follow = signal.valid() ? ownFollow(p) : PitchFollow::Static;
+  if (np.follow != PitchFollow::Static) np.signal = signal;
+  if (p.kind() == tuning::PitchKind::Degree) {
+    np.degree = p.degree();
+    np.equave = p.equave();
+  }
+  np.keyDegree = keyDegreeOf(p, *np.hz, t);
+  return np;
+}
 
 EffectiveTuning effectiveTuningRef(const Project& p, const TrackPath& path, const NoteClip* clip) noexcept {
   if (clip && clip->tuning.mode != TuningMode::Inherit) return refOf(p, clip->tuning);
@@ -184,10 +217,11 @@ Result<TrackPitches> resolveTrackPitches(const Project& p, TrackId id, const Res
   const Track& track = trackAt(p, *path);
   TrackPitches out;
   out.track = id;
-  out.clips.reserve(track.clips.size());
+  const std::vector<ClipSlot>& clips = playedClips(track);  // T6.1: the audition take's, else the main lane's
+  out.clips.reserve(clips.size());
   std::unordered_map<const TuningDef*, std::optional<tuning::Tuning>> built;  // clips share their track's tuning
-  for (const ClipSlot& slot : track.clips) {
-    if (!slot.clip) {  // T5.3: an audio clip has no notes (keeps out.clips aligned with track.clips)
+  for (const ClipSlot& slot : clips) {
+    if (!slot.clip) {  // T5.3: an audio clip has no notes (keeps out.clips aligned with the played clips)
       out.clips.push_back(ClipPitches{});
       out.clips.back().clip = slot.id;
       continue;

@@ -604,3 +604,20 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   Complex + formants + envelope. (12) Computer keyboard: Live's letter rows → consecutive degrees; `M` implemented in M6.
 - Status: decided (reversible; see docs/plans/M6.md "Decisions taken").
 
+
+## Q?-T6.1-a · 2026-11-10 · T6.1 · Details of the recording document model the plan left open
+- **Context**: docs/plans/M6.md "### T6.1" names the fields and ops; a few shapes and classes had to be chosen.
+- **Choices** (most reversible): (1) `InputKeyMap` = Tuning (the .kbm when the tuning has one, else consecutive degrees
+  from key 60) | Consecutive (ignores a .kbm) | TwelveTetNearest | TwelveTetHz, instead of the plan's
+  TuningSteps | Kbm | …: "the .kbm wins" needs no separate value, and a user can still ignore one. (2) Hz-mode keys are
+  Cents identities resolved exactly as a drawn Cents note (`resolvePitch`): with a main tuning that has a signal they
+  follow its *reference* (PitchFollow::Reference), not the plan's static `PitchSource{}` — otherwise the monitored note
+  and its recording would differ under reference automation. Static would be a one-line change in input_map.cpp.
+  (3) Two commands, `SetTrackAudioInput` (Structural) and `SetTrackMidiInput` (Meta), instead of one `SetTrackInput`.
+  `track.in` has no channel input, so the channels are not an IR constant: they travel in `LoweredProject::audioInputs`
+  (a channel change recompiles nothing that differs; the IR is shared). (4) Until T6.7 the monitor gate's Auto = the
+  arm (the engine refines it with the transport). (5) `SetRecordSettings` and `SetTrackDelay` are Meta until T6.6 gives
+  the metronome / track delay engine values. (6) `PromoteTake` swaps the take's clips with the main lane's (the lane
+  keeps its id, name and place). (7) Comp crossfade default `ops::kCompCrossfade` = kPpq / 32 (≈ 16 ms at 120 BPM).
+  (8) Time edits move take lanes (replaced whole) and the punch region like the loop.
+- Status: decided (reversible).

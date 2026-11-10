@@ -77,7 +77,15 @@ struct ResolveOptions {
 };
 
 // Errors: NotFound (no such track). A clip whose tuning does not build (a dangling reference) has every note
-// unresolved.
+// unresolved. T6.1: the track's PLAYED clips (model.h playedClips: its audition take's, else its main lane), in order.
 Result<TrackPitches> resolveTrackPitches(const Project& p, TrackId track, const ResolveOptions& options = {});
+
+// T6.1 (pq/document/input_map.h): one identity that names no other note, resolved exactly as resolveTrackPitches
+// resolves a note of a clip in tuning `t` whose clip follows main tuning `signal`'s signal (invalid: static) — so a live
+// note sounds as the same note drawn. A Ratio anchored to a note or a JI fundamental, a Harmonic, or a pitch outside
+// float32: unresolved (`note` is left invalid).
+NotePitch resolvePitch(const tuning::PitchId& pitch, const tuning::Tuning& t, TuningId signal);
+// Degrees per equave of a built tuning (0: none).
+int64_t degreesPerEquave(const tuning::Tuning& t) noexcept;
 
 }  // namespace pq::doc

@@ -1,0 +1,26 @@
+patch Audio46 {
+  param monitor = 0 [0..1]
+  param volume = 0 [-70..6]
+  param pan = 0 [-1..1]
+  param gate = 1 [0..1]
+  param sendGate = 1 [0..1]
+  param mute = 0 [0..1]
+  out out : real audio global stereo
+
+  _n3 = 0.002
+  _n5 = 1
+  _n8 = gain_add(gain(clipPlayer(2), _n5 - monitor, _n3), track.in, monitor, _n3)
+  _n11 = 0
+  _n15 = volume <= -70 ? _n11 : db_to_gain(volume)
+  _n17 = min(_n5, _n5 - pan)
+  _n19 = min(_n5, _n5 + pan)
+  _n24 = mute < 0.5
+  _n26 = _n24 ? sendGate : _n11
+  _n27 = _n15 * (_n24 ? gate : _n11)
+  _n33 = _n15 * _n26
+  out = gain(_n8, (_n17 * _n27, _n19 * _n27), _n3)
+
+  export post = gain(_n8, (_n17 * _n33, _n19 * _n33), _n3)
+  export pre = gain(_n8, (_n17 * _n26, _n19 * _n26), _n3)
+
+}

@@ -429,6 +429,7 @@ pq_add_test(pq_tests_document
     document/test_virtual_fundamental.cpp
     document/test_devices.cpp  # T4.1: device chains (commands, builders, catalog, lowering)
     document/test_audio.cpp    # T5.3: audio tracks + clips (commands, builders, warp laws, file)
+    document/test_recording.cpp  # T6.1: recording model (inputs, monitor gate, input map, take lanes, comping, warp markers, file)
     document/test_samples.cpp  # T5.8: project samples (resolve, relink, collect all and save)
     document/test_library_files.cpp  # T5.11: user-library files, hot-swap, library clips
     document/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes (rules, following, file, lowering)

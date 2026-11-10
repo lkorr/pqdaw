@@ -110,10 +110,10 @@ TEST_CASE("serialize errors: syntax") {
 }
 
 TEST_CASE("serialize errors: structure, types and ranges") {
-  expectError(replaced(minimalText(), "  \"schemaVersion\": 21,\n", ""), "$: missing key \"schemaVersion\"");
-  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 21", "\"schemaVersion\": \"3\"")).code ==
+  expectError(replaced(minimalText(), "  \"schemaVersion\": 22,\n", ""), "$: missing key \"schemaVersion\"");
+  CHECK(expectFail(replaced(minimalText(), "\"schemaVersion\": 22", "\"schemaVersion\": \"3\"")).code ==
         pq::ErrorCode::Type);
-  expectError(replaced(minimalText(), "\"schemaVersion\": 21", "\"schemaVersion\": \"3\""),
+  expectError(replaced(minimalText(), "\"schemaVersion\": 22", "\"schemaVersion\": \"3\""),
               "$.schemaVersion: expected an integer, found a string");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"bogus\": 1,"), "$.bogus: unknown key");
   expectError(replaced(minimalText(), "\"tracks\": [],", "\"tracks\": [], \"tracks\": [],"), "$.tracks: duplicate key");
@@ -212,7 +212,7 @@ TEST_CASE("serialize errors: tracks, clips, notes, lanes and references") {
   expectDomError([](json& d) { d["tracks"][2]["children"] = json::array(); },
                  "$.tracks[2].children: only groups have child tracks");
   expectDomError([](json& d) { d["returns"][0]["kind"] = "midi"; }, "$.returns[0].kind: must be \"return\" here");
-  expectDomError([](json& d) { d["returns"][0]["mixer"]["arm"] = true; }, "$.returns[0].mixer: only MIDI tracks can be armed");
+  expectDomError([](json& d) { d["returns"][0]["mixer"]["arm"] = true; }, "$.returns[0].mixer: only MIDI and audio tracks can be armed");
   expectDomError([](json& d) { d["tracks"][0]["lanes"][1]["param"] = d["tracks"][0]["lanes"][0]["param"]; },
                  "$.tracks[0].lanes[1].param: this parameter already has an automation lane");
   expectDomError([](json& d) { d["tracks"][0]["lanes"][0]["param"]["kind"] = "trackSolo"; },

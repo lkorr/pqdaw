@@ -23,6 +23,7 @@ pq_add_module(pq_doc
     src/edit_mixer.cpp
     src/edit_tunings.cpp
     src/edit_audio.cpp
+    src/edit_takes.cpp
     src/edit_devices.cpp
     src/edit_racks.cpp
     src/edit_eq.cpp
@@ -43,6 +44,7 @@ pq_add_module(pq_doc
     src/lower.cpp
     src/group_response.cpp
     src/pitch_resolve.cpp
+    src/input_map.cpp
   # nlohmann/json: schema migrations (generic DOM transforms of old project files); the public header names
   # nlohmann::json in MigrationFn.
   # pq_graph: project → graph lowering (lower.h, T3.17).

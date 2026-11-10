@@ -35,6 +35,13 @@ Status checkFundamental(const ClipFundamental& f);  // T3.6-fix1: lock > 0; step
 // T5.3: an audio clip's own fields and its sample (in the project's table); its Off length is not checked (commands
 // derive it: audio_clip.h syncedClip).
 Status checkAudioClip(const Project& p, const AudioClip& c);
+// T6.1.
+Status checkWarpMarkers(const std::vector<WarpMarker>& m);
+Status checkWarpParams(const WarpParams& w);
+Status checkRecordInputs(TrackKind kind, const Mixer& m);  // arm, monitor, audio / MIDI input, track delay
+Status checkNoteInput(const NoteInput& n);
+Status checkPunch(const PunchRegion& r);
+Status checkRecordSettings(const RecordSettings& r);
 // T5.3: a sample table entry's own fields (id, non-empty path, frames >= 1, rate in (0, 10 MHz], 1 to 1024 channels).
 Status checkSampleRef(const SampleRef& r);
 // Breakpoint ids valid and unique, ticks bounded, values in the parameter's range, curves in [-1, 1].

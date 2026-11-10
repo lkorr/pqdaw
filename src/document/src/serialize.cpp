@@ -57,7 +57,14 @@ constexpr std::array<std::string_view, 5> kKnobCurveNames = {"default", "linear"
 constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "audioEffect"};
 constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
 constexpr std::array<std::string_view, 3> kAnchorNames = {"reference", "note", "jiFundamental"};
-constexpr std::array<std::string_view, 2> kWarpNames = {"off", "rePitch"};  // T5.3
+constexpr std::array<std::string_view, 7> kWarpNames = {"off",     "rePitch", "beats",     "tones",  // T5.3, T6.1
+                                                        "texture", "complex", "complexPro"};
+// T6.1 (schema 22).
+constexpr std::array<std::string_view, 3> kBeatsLoopNames = {"off", "forward", "backForward"};
+constexpr std::array<std::string_view, 3> kMonitorNames = {"auto", "in", "off"};
+constexpr std::array<std::string_view, 3> kMidiInputNames = {"all", "port", "none"};
+constexpr std::array<std::string_view, 2> kNoteInputModeNames = {"keys", "hz"};
+constexpr std::array<std::string_view, 4> kKeyMapNames = {"tuning", "consecutive", "twelveTetNearest", "twelveTetHz"};
 
 // T5.3: a 64-bit content hash as 16 lower-case hex digits (JSON integers stop at int64 in many readers).
 std::string hashText(uint64_t h) {
@@ -194,6 +201,32 @@ public:
     track(PathSeg(&root, "master"), *p.master);
     wires(PathSeg(&root, "wires"), wiresOf(p));
     samples(PathSeg(&root, "samples"), samplesOf(p));
+    if (p.punch != PunchRegion{}) {  // T6.1 (schema 22): written only when not the default
+      w_.key("punch");
+      w_.beginObject(false);
+      w_.key("in");
+      w_.integer(p.punch.in);
+      w_.key("out");
+      w_.integer(p.punch.out);
+      w_.key("enabled");
+      w_.boolean(p.punch.enabled);
+      w_.endObject();
+    }
+    if (p.record != RecordSettings{}) {
+      w_.key("record");
+      w_.beginObject(false);
+      w_.key("countInBars");
+      w_.integer(p.record.countInBars);
+      w_.key("metronome");
+      w_.boolean(p.record.metronome);
+      w_.key("metronomeDb");
+      w_.number(PathSeg(&root, "record"), p.record.metronomeDb);
+      w_.key("overdub");
+      w_.boolean(p.record.overdub);
+      w_.key("recordQuantize");
+      w_.integer(p.record.recordQuantize);
+      w_.endObject();
+    }
     viewState(p, view);
     w_.endObject();
     out_ += "\n";
@@ -449,6 +482,38 @@ private:
     w_.boolean(m.solo);
     w_.key("arm");
     w_.boolean(m.arm);
+    // T6.1 (schema 22): written only when not the default.
+    if (m.monitor != MonitorMode::Auto) {
+      w_.key("monitor");
+      w_.string(mx, kMonitorNames[static_cast<size_t>(m.monitor)]);
+    }
+    if (!m.audioIn.none()) {
+      w_.key("audioIn");
+      w_.beginObject(false);
+      w_.key("first");
+      w_.integer(m.audioIn.firstChannel);
+      w_.key("channels");
+      w_.integer(m.audioIn.channels);
+      w_.endObject();
+    }
+    if (!(m.midiIn == MidiInput{})) {
+      const PathSeg mi(&mx, "midiIn");
+      w_.key("midiIn");
+      w_.beginObject(false);
+      w_.key("kind");
+      w_.string(mi, kMidiInputNames[static_cast<size_t>(m.midiIn.kind)]);
+      if (m.midiIn.kind == MidiInputKind::Port) {
+        w_.key("port");
+        w_.string(PathSeg(&mi, "port"), m.midiIn.port);
+      }
+      w_.key("channel");
+      w_.integer(m.midiIn.channel);
+      w_.endObject();
+    }
+    if (m.trackDelayMs != 0.0f) {
+      w_.key("trackDelayMs");
+      w_.number(PathSeg(&mx, "trackDelayMs"), m.trackDelayMs);
+    }
     const PathSeg sends(&mx, "sends");
     w_.key("sends");
     w_.beginArray(false);
@@ -492,12 +557,39 @@ private:
     if (t.kind == TrackKind::Midi || t.kind == TrackKind::Audio || !t.clips.empty()) {
       const PathSeg clips(&at, "clips");
       w_.key("clips");
+      clipArray(clips, t.clips);
+    }
+    // T6.1 (schema 22): written only when not the default.
+    if (t.noteInput != NoteInput{}) {
+      w_.key("noteInput");
+      w_.beginObject(false);
+      w_.key("mode");
+      w_.string(at, kNoteInputModeNames[static_cast<size_t>(t.noteInput.mode)]);
+      w_.key("keyMap");
+      w_.string(at, kKeyMapNames[static_cast<size_t>(t.noteInput.keyMap)]);
+      w_.endObject();
+    }
+    if (!t.takes.empty()) {
+      const PathSeg takes(&at, "takes");
+      w_.key("takes");
       w_.beginArray(true);
-      for (size_t i = 0; i < t.clips.size(); ++i) {
-        if (t.clips[i].audio) audioClip(PathSeg(&clips, i), *t.clips[i].audio);  // T5.3
-        else clip(PathSeg(&clips, i), *t.clips[i].clip);
+      for (size_t i = 0; i < t.takes.size(); ++i) {
+        const TakeLane& l = *t.takes[i];
+        const PathSeg el(&takes, i);
+        w_.beginObject(true);
+        w_.key("id");
+        w_.integer(l.id.value);
+        w_.key("name");
+        w_.string(PathSeg(&el, "name"), l.name);
+        w_.key("clips");
+        clipArray(PathSeg(&el, "clips"), l.clips);
+        w_.endObject();
       }
       w_.endArray();
+    }
+    if (t.auditionTake.valid()) {
+      w_.key("auditionTake");
+      w_.integer(t.auditionTake.value);
     }
     if (t.kind == TrackKind::Group || !t.children.empty()) trackList(PathSeg(&at, "children"), "children", t.children);
     w_.endObject();
@@ -905,10 +997,24 @@ private:
     w_.endObject();
   }
 
-  void clip(const PathSeg& at, const NoteClip& c) {
+  // A clip list (a track's main lane or a take lane; T6.1: a slot's provenance as the clip's "take").
+  void clipArray(const PathSeg& at, const std::vector<ClipSlot>& clips) {
+    w_.beginArray(true);
+    for (size_t i = 0; i < clips.size(); ++i) {
+      if (clips[i].audio) audioClip(PathSeg(&at, i), *clips[i].audio, clips[i].take);  // T5.3
+      else clip(PathSeg(&at, i), *clips[i].clip, clips[i].take);
+    }
+    w_.endArray();
+  }
+
+  void clip(const PathSeg& at, const NoteClip& c, LaneId take = {}) {
     w_.beginObject(true);
     w_.key("id");
     w_.integer(c.id.value);
+    if (take.valid()) {  // T6.1
+      w_.key("take");
+      w_.integer(take.value);
+    }
     w_.key("name");
     w_.string(PathSeg(&at, "name"), c.name);
     w_.key("colour");
@@ -975,12 +1081,16 @@ private:
 
   // T5.3: an audio clip, tagged "kind": "audio", one line; every field written (the derived Off length too, which the
   // reader re-derives from the tempo map).
-  void audioClip(const PathSeg& at, const AudioClip& c) {
+  void audioClip(const PathSeg& at, const AudioClip& c, LaneId take = {}) {
     w_.beginObject(false);
     w_.key("kind");
     w_.string(at, "audio");
     w_.key("id");
     w_.integer(c.id.value);
+    if (take.valid()) {  // T6.1
+      w_.key("take");
+      w_.integer(take.value);
+    }
     w_.key("name");
     w_.string(PathSeg(&at, "name"), c.name);
     w_.key("colour");
@@ -1049,6 +1159,39 @@ private:
     assignment(PathSeg(&at, "tuning"), c.tuning);
     w_.key("active");
     w_.boolean(c.active);
+    if (!c.markers.empty()) {  // T6.1 (schema 22): [[sourceFrame, contentTick], …]
+      const PathSeg ms(&at, "markers");
+      w_.key("markers");
+      w_.beginArray(false);
+      for (size_t i = 0; i < c.markers.size(); ++i) {
+        w_.beginArray(false);
+        w_.number(PathSeg(&ms, i), c.markers[i].sourceFrame);
+        w_.integer(c.markers[i].content);
+        w_.endArray();
+      }
+      w_.endArray();
+    }
+    if (c.warpParams != WarpParams{}) {
+      const PathSeg wp(&at, "warpParams");
+      const WarpParams& w = c.warpParams;
+      w_.key("warpParams");
+      w_.beginObject(false);
+      w_.key("granulation");
+      w_.integer(w.beatsGranulation);
+      w_.key("beatsLoop");
+      w_.string(wp, kBeatsLoopNames[static_cast<size_t>(w.beatsLoop)]);
+      w_.key("beatsEnvelope");
+      w_.number(wp, w.beatsEnvelope);
+      w_.key("grainSizeMs");
+      w_.number(wp, w.grainSizeMs);
+      w_.key("flux");
+      w_.number(wp, w.flux);
+      w_.key("formants");
+      w_.number(wp, w.formants);
+      w_.key("envelope");
+      w_.number(wp, w.envelope);
+      w_.endObject();
+    }
     w_.endObject();
   }
 
@@ -1319,8 +1462,9 @@ public:
     // GU.1: "valuesInUnits" and "legacyCurves" exist only in what migration 19 → 20 hands the decoder (never written).
     static constexpr std::string_view K[] = {"schemaVersion", "timeline", "loop",    "locators", "tunings",
                                              "tracks",        "returns",  "master",  "view",     "wires", "samples",
-                                             "valuesInUnits", "legacyCurves"};
-    enum { kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster, kView, kWires, kSamples, kUnits, kLegacy };
+                                             "valuesInUnits", "legacyCurves", "punch", "record"};
+    enum { kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster, kView, kWires, kSamples, kUnits, kLegacy,
+           kPunch, kRecord };
     auto np = std::make_shared<Project>();
     LoadedProject out;
     Members m(r_, root, K);
@@ -1344,6 +1488,8 @@ public:
         case kWires: np->wires = wireList(at); break;
         case kSamples: np->samples = sampleList(at); break;
         case kUnits: valuesInUnits_ = r_.readBool(at); break;
+        case kPunch: np->punch = punch(at); break;      // T6.1
+        case kRecord: np->record = record(at); break;  // T6.1
         case kLegacy: {
           r_.beginArray(at);
           for (size_t i = 0; r_.nextElement(at); ++i) {
@@ -1869,11 +2015,13 @@ private:
   }
 
   TrackPtr track(const PathSeg& at, TrackList list, uint32_t depth) {
-    static constexpr std::string_view K[] = {"id",     "kind",  "name",  "colour", "active",  "tuning",
-                                             "mixer", "lanes", "clips", "children", "devices"};
-    enum { kId, kKind, kName, kColour, kActive, kTuning, kMixer, kLanes, kClips, kChildren, kDevices };
+    static constexpr std::string_view K[] = {"id",      "kind",      "name",  "colour",       "active",
+                                             "tuning",  "mixer",     "lanes", "clips",        "children",
+                                             "devices", "noteInput", "takes", "auditionTake"};
+    enum { kId, kKind, kName, kColour, kActive, kTuning, kMixer, kLanes, kClips, kChildren, kDevices, kNoteInput, kTakes,
+           kAudition };
     auto t = std::make_shared<Track>();
-    std::array<size_t, 11> pos{};
+    std::array<size_t, std::size(K)> pos{};
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
       const PathSeg f(&at, K[static_cast<size_t>(k)]);
@@ -1894,6 +2042,9 @@ private:
           t->children = trackArray(f, TrackList::Main, depth + 1);
           break;
         case kDevices: t->devices = devices(f); break;
+        case kNoteInput: t->noteInput = noteInput(f); break;  // T6.1
+        case kTakes: t->takes = takeLanes(f); break;
+        case kAudition: t->auditionTake = LaneId{ref(f)}; break;
       }
       pos[static_cast<size_t>(k)] = r_.valueStart();
     }
@@ -1938,7 +2089,19 @@ private:
         kind != TrackKind::Audio)
       failKey(kTuning, "only MIDI, audio and group tracks have a tuning");
     const Mixer& mx = t->mixer;
-    if (mx.arm && kind != TrackKind::Midi) failKey(kMixer, "only MIDI tracks can be armed");
+    if (Status s = detail::checkRecordInputs(kind, mx); !s) failKey(kMixer, s.error().message);  // T6.1
+    if (m.has(kNoteInput) && kind != TrackKind::Midi) failKey(kNoteInput, "only MIDI tracks take note input");
+    if (m.has(kTakes) && kind != TrackKind::Midi && kind != TrackKind::Audio)
+      failKey(kTakes, "only MIDI and audio tracks have take lanes");
+    for (const TakeLanePtr& l : t->takes)
+      for (const ClipSlot& c : l->clips)
+        if ((kind == TrackKind::Audio) != c.isAudio())
+          failKey(kTakes, kind == TrackKind::Audio ? "an audio track holds audio clips only" : "a MIDI track holds note clips only");
+    for (size_t i = 0; i < t->takes.size(); ++i)
+      for (size_t j = 0; j < i; ++j)
+        if (t->takes[i]->id == t->takes[j]->id) failKey(kTakes, "two take lanes with one id");
+    if (t->auditionTake.valid() && t->takeIndex(t->auditionTake) < 0)
+      failKey(kAudition, "the audition take is not a take lane of this track");
     if (!mx.sends.empty() && !detail::trackHasSends(kind)) failKey(kMixer, "this track has no sends");
     if (kind == TrackKind::Master) {
       if (!t->active) failKey(kActive, "the master track cannot be deactivated");
@@ -2441,7 +2604,8 @@ private:
   }
 
   Mixer mixer(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"volumeDb", "pan", "mute", "solo", "arm", "sends", "output", "panMode"};
+    static constexpr std::string_view K[] = {"volumeDb", "pan",     "mute",    "solo",   "arm",         "sends",
+                                             "output",   "panMode", "monitor", "audioIn", "midiIn", "trackDelayMs"};
     Mixer mx;
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
@@ -2468,10 +2632,157 @@ private:
           mx.panMode = *pm;
           break;
         }
+        case 8: mx.monitor = static_cast<MonitorMode>(name(f, kMonitorNames, "monitor mode")); break;  // T6.1
+        case 9: {
+          static constexpr std::string_view A[] = {"first", "channels"};
+          Members am(r_, f, A);
+          for (int q; (q = am.next()) >= 0;) {
+            const PathSeg g(&f, A[static_cast<size_t>(q)]);
+            const int64_t v = r_.readInt(g);
+            if (q == 0) {
+              if (v < 0 || v >= kMaxInputChannels) r_.failValue(g, "input channel out of range");
+              mx.audioIn.firstChannel = static_cast<uint16_t>(v);
+            } else {
+              if (v < 1 || v > 2) r_.failValue(g, "an audio input has 1 or 2 channels");
+              mx.audioIn.channels = static_cast<uint8_t>(v);
+            }
+          }
+          am.require({0, 1});
+          break;
+        }
+        case 10: {
+          static constexpr std::string_view I[] = {"kind", "port", "channel"};
+          Members im(r_, f, I);
+          for (int q; (q = im.next()) >= 0;) {
+            const PathSeg g(&f, I[static_cast<size_t>(q)]);
+            if (q == 0) mx.midiIn.kind = static_cast<MidiInputKind>(name(g, kMidiInputNames, "MIDI input"));
+            if (q == 1) mx.midiIn.port = str(g);
+            if (q == 2) {
+              const int64_t v = r_.readInt(g);
+              if (v < 0 || v > 16) r_.failValue(g, "MIDI channel out of range (0 = all, 1 … 16)");
+              mx.midiIn.channel = static_cast<uint8_t>(v);
+            }
+          }
+          im.require({0, 2});
+          break;
+        }
+        case 11: mx.trackDelayMs = r_.readFloat(f); break;
       }
     }
     m.require({0, 1, 2, 3, 4, 5, 6});
     return mx;
+  }
+
+  // ---- T6.1 (schema 22) ----
+  NoteInput noteInput(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"mode", "keyMap"};
+    NoteInput n;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) n.mode = static_cast<NoteInputMode>(name(f, kNoteInputModeNames, "note input mode"));
+      else n.keyMap = static_cast<InputKeyMap>(name(f, kKeyMapNames, "key map"));
+    }
+    m.require({0, 1});
+    return n;
+  }
+
+  std::vector<TakeLanePtr> takeLanes(const PathSeg& at) {
+    std::vector<TakeLanePtr> v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      static constexpr std::string_view K[] = {"id", "name", "clips"};
+      auto lane = std::make_shared<TakeLane>();
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        if (k == 0) lane->id = LaneId{defineId(f)};
+        if (k == 1) lane->name = str(f);
+        if (k == 2) lane->clips = clips(f);
+      }
+      m.require({0, 1, 2});
+      v.push_back(std::move(lane));
+    }
+    return v;
+  }
+
+  PunchRegion punch(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"in", "out", "enabled"};
+    PunchRegion r;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) r.in = tick(f);
+      if (k == 1) r.out = tick(f);
+      if (k == 2) r.enabled = r_.readBool(f);
+    }
+    m.require({0, 1, 2});
+    checkAt(at, m.start(), detail::checkPunch(r));
+    return r;
+  }
+
+  RecordSettings record(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"countInBars", "metronome", "metronomeDb", "overdub", "recordQuantize"};
+    RecordSettings r;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0: {
+          const int64_t v = r_.readInt(f);
+          if (v != 0 && v != 1 && v != 2 && v != 4) r_.failValue(f, "count-in is 0, 1, 2 or 4 bars");
+          r.countInBars = static_cast<uint8_t>(v);
+          break;
+        }
+        case 1: r.metronome = r_.readBool(f); break;
+        case 2: r.metronomeDb = r_.readFloat(f); break;
+        case 3: r.overdub = r_.readBool(f); break;
+        case 4: r.recordQuantize = r_.readInt(f); break;
+      }
+    }
+    m.require({0, 1, 2, 3, 4});
+    checkAt(at, m.start(), detail::checkRecordSettings(r));
+    return r;
+  }
+
+  // [[sourceFrame, contentTick], …]
+  std::vector<WarpMarker> warpMarkers(const PathSeg& at) {
+    std::vector<WarpMarker> v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      WarpMarker w;
+      r_.beginArray(el);
+      if (!r_.nextElement(el)) r_.failHere(el, "a warp marker is [sourceFrame, contentTick]", ErrorCode::InvalidArgument);
+      w.sourceFrame = r_.readDouble(el);
+      if (!r_.nextElement(el)) r_.failHere(el, "a warp marker is [sourceFrame, contentTick]", ErrorCode::InvalidArgument);
+      w.content = tick(el);
+      if (r_.nextElement(el)) r_.failHere(el, "a warp marker is [sourceFrame, contentTick]", ErrorCode::InvalidArgument);
+      v.push_back(w);
+    }
+    return v;
+  }
+
+  WarpParams warpParams(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"granulation", "beatsLoop", "beatsEnvelope", "grainSizeMs",
+                                             "flux",        "formants",  "envelope"};
+    WarpParams w;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0: w.beatsGranulation = r_.readInt(f); break;
+        case 1: w.beatsLoop = static_cast<BeatsLoop>(name(f, kBeatsLoopNames, "Beats loop")); break;
+        case 2: w.beatsEnvelope = r_.readFloat(f); break;
+        case 3: w.grainSizeMs = r_.readFloat(f); break;
+        case 4: w.flux = r_.readFloat(f); break;
+        case 5: w.formants = r_.readFloat(f); break;
+        case 6: w.envelope = r_.readFloat(f); break;
+      }
+    }
+    m.require({0, 1, 2, 3, 4, 5, 6});
+    return w;
   }
 
   std::vector<Send> sends(const PathSeg& at) {
@@ -2626,8 +2937,10 @@ private:
         "id",     "name",    "colour", "start",  "length",  "contentStart", "loop",   "signature", "tuning",
         "active", "notes",   "fundamental",
         "kind",   "sample",  "warp",   "contentStartFrame", "seconds", "sourceBpm", "gainDb", "transpose",
-        "detuneCents", "reverse", "fadeIn", "fadeOut", "crossfadeIn"};
-    enum { kKind = 12, kSample, kWarp, kFrame, kSeconds, kBpm, kGain, kTranspose, kDetune, kReverse, kFadeIn, kFadeOut, kXfade };
+        "detuneCents", "reverse", "fadeIn", "fadeOut", "crossfadeIn", "markers", "warpParams", "take"};
+    enum { kKind = 12, kSample, kWarp, kFrame, kSeconds, kBpm, kGain, kTranspose, kDetune, kReverse, kFadeIn, kFadeOut, kXfade,
+           kMarkers, kWarpParams, kTake };
+    LaneId take;  // T6.1: the slot's provenance (either kind)
     NoteClip note;  // the fields both kinds have are read into it (T5.x-perf-audio: on the stack, not the heap)
     NoteClip* c = &note;
     AudioClip a;
@@ -2654,6 +2967,9 @@ private:
         case kFadeIn: a.fadeIn = fade(f); break;
         case kFadeOut: a.fadeOut = fade(f); break;
         case kXfade: a.crossfadeIn = r_.readInt(f); break;
+        case kMarkers: a.markers = warpMarkers(f); break;       // T6.1
+        case kWarpParams: a.warpParams = warpParams(f); break;  // T6.1
+        case kTake: take = LaneId{ref(f)}; break;               // T6.1
         case 0: c->id = ClipId{defineId(f)}; break;
         case 1: c->name = str(f); break;
         case 2: c->colour = colour(f); break;
@@ -2697,11 +3013,11 @@ private:
       }
     }
     if (!audio) {
-      for (int k = kSample; k <= kXfade; ++k)
+      for (int k = kSample; k <= kWarpParams; ++k)
         if (m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only audio clips have this key");
       m.require({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
       const ClipId id = note.id;
-      return ClipSlot{id, std::make_shared<const NoteClip>(std::move(note)), nullptr};
+      return ClipSlot{id, std::make_shared<const NoteClip>(std::move(note)), nullptr, take};
     }
     for (int k : {7, 10, 11})
       if (m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only note clips have this key");
@@ -2716,7 +3032,8 @@ private:
     a.loop = c->loop;
     a.tuning = c->tuning;
     a.active = c->active;
-    return ClipSlot{a.id, nullptr, std::make_shared<const AudioClip>(std::move(a))};
+    const ClipId id = a.id;
+    return ClipSlot{id, nullptr, std::make_shared<const AudioClip>(std::move(a)), take};
   }
 
   // T5.3: {"cents": x} | {"steps": n} | {"ratio": "n/d"} (exactly one).
@@ -2955,17 +3272,24 @@ private:
       if (!automated.insert(l.param).second)
         json::fail(PathSeg(&la, "param"), "this parameter already has an automation lane");
     }
-    const PathSeg clips(&at, "clips");
-    for (size_t i = 0; i < t.clips.size(); ++i) {
-      const PathSeg cl(&clips, i);
-      if (const AudioClip* a = t.clips[i].audio.get()) {  // T5.3
-        if (!findSample(p, a->sample))
-          json::fail(PathSeg(&cl, "sample"), "unknown sample id " + std::to_string(a->sample.value));
-        if (Status s = detail::checkAudioClip(p, *a); !s) json::fail(cl, s.error().message);
-        continue;
+    auto checkClips = [&](const PathSeg& clips, const std::vector<ClipSlot>& list) {
+      for (size_t i = 0; i < list.size(); ++i) {
+        const PathSeg cl(&clips, i);
+        if (const AudioClip* a = list[i].audio.get()) {  // T5.3
+          if (!findSample(p, a->sample))
+            json::fail(PathSeg(&cl, "sample"), "unknown sample id " + std::to_string(a->sample.value));
+          if (Status s = detail::checkAudioClip(p, *a); !s) json::fail(cl, s.error().message);
+          continue;
+        }
+        if (Status s = detail::checkAssignment(p, list[i].clip->tuning); !s)
+          json::fail(PathSeg(&cl, "tuning"), s.error().message);
       }
-      if (Status s = detail::checkAssignment(p, t.clips[i].clip->tuning); !s)
-        json::fail(PathSeg(&cl, "tuning"), s.error().message);
+    };
+    checkClips(PathSeg(&at, "clips"), t.clips);
+    const PathSeg takes(&at, "takes");  // T6.1
+    for (size_t i = 0; i < t.takes.size(); ++i) {
+      const PathSeg el(&takes, i);
+      checkClips(PathSeg(&el, "clips"), t.takes[i]->clips);
     }
   }
 
@@ -3001,6 +3325,20 @@ private:
         const PathSeg notes(&cl, "notes");
         if (t.clips[i].clip)
           for (const Note& n : t.clips[i].clip->notes) see(n.id.value, notes);
+      }
+      const PathSeg takes(&at, "takes");  // T6.1
+      for (size_t i = 0; i < t.takes.size(); ++i) {
+        const PathSeg tl(&takes, i);
+        see(t.takes[i]->id.value, tl);
+        const PathSeg tc(&tl, "clips");
+        for (size_t j = 0; j < t.takes[i]->clips.size(); ++j) {
+          const ClipSlot& c = t.takes[i]->clips[j];
+          const PathSeg cl(&tc, j);
+          see(c.id.value, cl);
+          const PathSeg notes(&cl, "notes");
+          if (c.clip)
+            for (const Note& n : c.clip->notes) see(n.id.value, notes);
+        }
       }
       const PathSeg kids(&at, "children");
       for (size_t i = 0; i < t.children.size(); ++i) self(self, PathSeg(&kids, i), *t.children[i]);
@@ -3741,6 +4079,13 @@ Status migrateAddPanels(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 21 → 22 (T6.1, docs/plans/M6.md): recording inputs, note input, take lanes, punch, record settings, warp markers and
+// the time-stretch modes are new keys whose absence is their default; nothing to convert.
+Status migrateAddRecording(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -3762,6 +4107,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {18, migrateAddInstrumentGroups},
     {19, migrateKnobPositions},
     {20, migrateAddPanels},
+    {21, migrateAddRecording},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

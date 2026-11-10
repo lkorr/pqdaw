@@ -89,7 +89,7 @@ EditResult setTracksActive(const Project& p, std::span<const TrackId> tracks, bo
 EditResult toggleTracksActive(const Project& p, std::span<const TrackId> tracks);
 
 // ---- Mixer (T3.10) -----------------------------------------------------------------------------------------------
-// Mute and solo are Param edits (Q15: the track activator is the mute, no recompile); arm is Meta (Q26).
+// Mute and solo are Param edits (Q15: the track activator is the mute, no recompile); T6.1: so is arm (the monitor gate).
 
 // The track activator (Live's numbered button) = mute. The master has none (refused).
 EditResult setTracksMute(const Project& p, std::span<const TrackId> tracks, bool mute);
@@ -100,7 +100,7 @@ EditResult toggleTracksMute(const Project& p, std::span<const TrackId> tracks);
 // other track (main tree and returns); on a soloed track it unsolos just that track. `additive` (Ctrl-click) toggles
 // only this track. The master is refused. What solo does to the sound is pq/document/audibility.h.
 EditResult soloTrack(const Project& p, TrackId track, bool additive);
-// The arm button, same exclusive / additive rule over the MIDI tracks (Live's Exclusive Arm).
+// The arm button, same exclusive / additive rule over the MIDI and audio tracks (Live's Exclusive Arm).
 EditResult armTrack(const Project& p, TrackId track, bool additive);
 // A return's Pre/Post switch (Live): every other track's send to `ret` taps before or after its fader (Structural:
 // the tap point moves). Tracks without a send (the master) are skipped.
@@ -191,8 +191,42 @@ EditResult setAudioClipFades(const Project& p, ClipRef clip, AudioFade fadeIn, A
 // The crossfade with the clip ending exactly at this clip's start (0 removes it; clamped to both clips' lengths).
 // Refused (InvalidArgument) when there is no such adjacent clip.
 EditResult setAudioClipCrossfade(const Project& p, ClipRef clip, Ticks length);
-// A Re-Pitch clip's loop brace in content ticks (warp Off clips have none: InvalidArgument).
+// A warped clip's loop brace in content ticks (warp Off clips have none: InvalidArgument).
 EditResult setAudioClipLoop(const Project& p, ClipRef clip, ClipLoop loop);
+// T6.1: the warp mode (model.h AudioWarp), each clip keeping its source BPM, its song-time placement and the audio at
+// its start (audio_clip.h withWarp: Off ↔ warped converts the start marker through the markers; between warped modes
+// only the mode changes). One step for all the clips.
+EditResult setWarpMode(const Project& p, std::span<const ClipRef> clips, AudioWarp warp);
+// T6.1: the time-stretch modes' settings (InvalidArgument out of range: model.h WarpParams).
+EditResult setAudioClipWarpParams(const Project& p, std::span<const ClipRef> clips, WarpParams params);
+// T6.1: warp markers of a warped clip (an Off clip: InvalidArgument). Adding pins content tick `content` to the source
+// frame it plays now (nothing sounds different; a marker already there: no change). Moving marker `index` to content
+// tick `content` keeps its source frame (the audio between its neighbours stretches) and clamps it strictly between
+// them. Removing drops it. Every other marker keeps its content tick, so its song time stays exactly.
+EditResult addWarpMarker(const Project& p, ClipRef clip, Ticks content);
+EditResult moveWarpMarker(const Project& p, ClipRef clip, size_t index, Ticks content);
+EditResult removeWarpMarker(const Project& p, ClipRef clip, size_t index);
+
+// ---- Take lanes and comping (T6.1; model.h "Take lanes") ------------------------------------------------------------
+// One undo step each. Take lanes live on MIDI and audio tracks.
+
+// A take lane after the track's others holding copies of `clips` (fresh clip and note ids; of the track's kind),
+// named `name` ("" → "Take <n>"). A recording pass ends with one (T6.7). Edit::clips = the lane's clips.
+EditResult addTakeLane(const Project& p, IdSource& ids, TrackId track, std::span<const ClipSlot> clips,
+                       std::string name = {});
+EditResult removeTakeLane(const Project& p, TrackId track, LaneId lane);
+EditResult renameTakeLane(const Project& p, TrackId track, LaneId lane, std::string name);
+// Plays take `lane` instead of the main lane (invalid: the main lane again). A Sequence change: nothing compiles.
+EditResult setAuditionTake(const Project& p, TrackId track, LaneId lane);
+// The take's clips become the main lane, the main lane's clips the take (PromoteTake).
+EditResult promoteTake(const Project& p, TrackId track, LaneId lane);
+// Comping: copies what take `lane` plays in [t0, t1) into the main lane as ordinary clips (fresh ids, ClipSlot::take =
+// `lane`), cutting what the main lane had there (trimmed / split as any overwrite). Every note and every source frame
+// keeps its absolute time; the take is unchanged (non-destructive). On an audio track each region edge where two clips
+// now meet gets a crossfade of `crossfade` ticks (centred, clamped to both clips; 0: none). Edit::clips = the pieces.
+inline constexpr Ticks kCompCrossfade = kPpq / 32;  // ≈ 16 ms at 120 BPM
+EditResult compRegion(const Project& p, IdSource& ids, TrackId track, LaneId lane, Ticks t0, Ticks t1,
+                      Ticks crossfade = kCompCrossfade);
 
 // ---- Notes -----------------------------------------------------------------------------------------------------
 
@@ -295,6 +329,8 @@ EditResult addMainTuning(const Project& p, IdSource& ids, std::string name, Tuni
 EditResult removeMainTuning(const Project& p, TuningId tuning, TuningId replacement = {});
 
 // ---- Time selection (all tracks) ------------------------------------------------------------------------------
+// T6.1: take lanes are edited exactly as their track's main lane (a changed lane is replaced whole in the same step),
+// and the punch region moves as the loop does.
 
 // Ctrl+I: inserts `length` ticks of silence at `at`. Clips across `at` are split; clips, automation (exactly: the
 // envelope holds its value through the gap), locators, the loop, tempo points and time-signature changes after `at`

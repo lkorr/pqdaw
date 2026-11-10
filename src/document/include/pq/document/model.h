@@ -130,6 +130,10 @@ enum class ParamKind : uint8_t {
   // a runtime param "dev<id>:<path>.<name>". Not automatable or macro-mappable in MM (docs/plans/MM.md). A chain-level
   // meta device's params are its DeviceParams.
   MetaParam,
+  // T6.1: a track's record arm (0/1) and monitor switch (MonitorMode as a number), owner = track. Not automatable; both
+  // set the monitor gate "<id>:monitor" of an audio track with an input (lower.h "Signal flow": Audio).
+  TrackArm,
+  TrackMonitor,
 };
 
 struct ParamRef {
@@ -283,7 +287,44 @@ using SampleList = std::vector<SampleRef>;  // sorted by id
 //            content tick 0 = source frame 0, one content quarter = 60 / sourceBpm seconds of source (the frame of
 //            content tick c is c * rate * 60 / (sourceBpm * kPpq)); playback speed (and pitch) follows tempo / sourceBpm.
 //            Transpose and detune do not apply (as in Live, which greys them out in Re-Pitch).
-enum class AudioWarp : uint8_t { Off, RePitch };
+//   Beats, Tones, Texture, Complex, ComplexPro (T6.1; their engines are T6.3 / T6.5): WARPED like RePitch — `length`,
+//            `contentStart` and `loop` in content ticks, the same source law content tick → source frame (audio_clip.h
+//            warpFrameAt: the markers, else one segment at sourceBpm) — but the source is TIME-STRETCHED: its pitch does
+//            not follow the tempo, and the transpose and detune apply (as in Live). WarpParams tune them.
+// Every warped mode may carry warp markers (AudioClip::markers).
+enum class AudioWarp : uint8_t { Off, RePitch, Beats, Tones, Texture, Complex, ComplexPro };
+inline constexpr AudioWarp kLastAudioWarp = AudioWarp::ComplexPro;
+// Every mode but Off: the clip's time is content ticks (it follows the tempo).
+inline constexpr bool isWarped(AudioWarp w) noexcept { return w != AudioWarp::Off; }
+// Whether the transpose and detune play in this mode (Off and the time-stretch modes; never RePitch).
+inline constexpr bool warpTransposes(AudioWarp w) noexcept { return w != AudioWarp::RePitch; }
+// T6.1: a warp marker pins content tick `content` to source frame `sourceFrame` (fractional). A clip's markers are
+// strictly increasing in both; between two markers the source is read linearly, before the first and after the last
+// at the slope of the nearest segment (a lone marker: at sourceBpm through it). None: one implied segment through
+// (frame 0, tick 0) at sourceBpm (M5's law).
+struct WarpMarker {
+  double sourceFrame = 0.0;
+  Ticks content = 0;
+  friend constexpr bool operator==(const WarpMarker&, const WarpMarker&) noexcept = default;
+};
+inline constexpr size_t kMaxWarpMarkers = 4096;
+// T6.1: Beats' loop of a slice shorter than its gap (Live's "Transient Loop Mode").
+enum class BeatsLoop : uint8_t { Off, Forward, BackForward };
+// T6.1: the settings of the time-stretch modes (each reads only its own; all are kept, so a mode switch loses none).
+struct WarpParams {
+  Ticks beatsGranulation = kPpq / 4;  // Beats' "Preserve": slices on this grid (0: at transients); [0, kTicksPerWhole]
+  BeatsLoop beatsLoop = BeatsLoop::Forward;
+  float beatsEnvelope = 100.0f;       // Beats: the fade of each slice, [0, 100]
+  float grainSizeMs = 30.0f;          // Tones / Texture: [kMinGrainMs, kMaxGrainMs]
+  float flux = 0.0f;                  // Texture: grain randomness, [0, 100]
+  float formants = 100.0f;            // Complex Pro: formant preservation in %, [0, 100]
+  float envelope = 128.0f;            // Complex Pro: spectral envelope order, [kMinWarpEnvelope, kMaxWarpEnvelope]
+  friend constexpr bool operator==(const WarpParams&, const WarpParams&) noexcept = default;
+};
+inline constexpr float kMinGrainMs = 1.0f;
+inline constexpr float kMaxGrainMs = 500.0f;
+inline constexpr float kMinWarpEnvelope = 8.0f;
+inline constexpr float kMaxWarpEnvelope = 256.0f;
 // The transpose of an audio clip (plan: cents, steps of the clip's tuning, or an exact ratio).
 enum class TransposeUnit : uint8_t { Cents, Steps, Ratio };
 inline constexpr double kMaxTransposeCents = 4800.0;  // +-48 semitones (a resolved Steps transpose is clamped to it)
@@ -322,13 +363,14 @@ struct AudioClip {
   // and the duration in seconds (> 0).
   double contentStartFrame = 0.0;
   double seconds = 1.0;
-  // RePitch: the start marker and the loop brace in content ticks (as NoteClip), and the tempo of the source.
+  // Warped (every mode but Off): the start marker and the loop brace in content ticks (as NoteClip), and the tempo of
+  // the source (the slope of the implied segment and of a lone marker).
   Ticks contentStart = 0;
   ClipLoop loop;
   double sourceBpm = 120.0;  // [kMinBpm, kMaxBpm]
   float gainDb = 0.0f;       // [kMinClipGainDb, kMaxClipGainDb]; at the floor: silence
-  AudioTranspose transpose;  // Off only
-  float detuneCents = 0.0f;  // Off only; [-kMaxDetuneCents, kMaxDetuneCents]
+  AudioTranspose transpose;  // every mode but RePitch (warpTransposes)
+  float detuneCents = 0.0f;  // every mode but RePitch; [-kMaxDetuneCents, kMaxDetuneCents]
   bool reverse = false;
   AudioFade fadeIn, fadeOut;  // the lowering clamps them to the clip (fadeIn first)
   // A crossfade with the clip that ends exactly at `start` on the same track: its length in ticks, centred on the
@@ -339,6 +381,9 @@ struct AudioClip {
   Ticks crossfadeIn = 0;
   TuningAssignment tuning;  // the tuning of a Steps transpose (Inherit = the track's)
   bool active = true;
+  // T6.1: warp markers (WarpMarker above; kept, unused, while the clip is Off) and the time-stretch settings.
+  std::vector<WarpMarker> markers;
+  WarpParams warpParams;
   friend bool operator==(const AudioClip& a, const AudioClip& b) noexcept = default;
 };
 using AudioClipPtr = std::shared_ptr<const AudioClip>;
@@ -351,6 +396,8 @@ struct ClipSlot {
   ClipId id;
   ClipPtr clip;
   AudioClipPtr audio;
+  // T6.1: the take lane this clip was comped from (ops::compRegion; display only, never lowered), or invalid.
+  LaneId take;
 
   bool isAudio() const noexcept { return audio != nullptr; }
   Ticks start() const noexcept { return audio ? audio->start : clip->start; }
@@ -407,13 +454,43 @@ struct PanMatrix {
 };
 PanMatrix panMatrix(PanMode m, double p) noexcept;
 
+// ---- Recording inputs (T6.1; docs/plans/M6.md) ------------------------------------------------------------------
+// What a track hears while it monitors (Live's Monitor switch): Auto = its input while it is armed (the engine refines
+// it with the transport in T6.7: armed and stopped or recording), In = always its input, Off = never (its clips).
+enum class MonitorMode : uint8_t { Auto, In, Off };
+// An audio track's input: `channels` (0 = none, 1 = mono, 2 = a stereo pair) device input channels from `firstChannel`
+// (0-based). The lowering reads it as `track.in` (lower.h "Signal flow": Audio); the engine binds those channels.
+inline constexpr uint32_t kMaxInputChannels = 256;
+struct AudioInput {
+  uint16_t firstChannel = 0;  // firstChannel + channels <= kMaxInputChannels
+  uint8_t channels = 0;
+  bool none() const noexcept { return channels == 0; }
+  friend constexpr bool operator==(const AudioInput&, const AudioInput&) noexcept = default;
+};
+// A MIDI track's note input: every port (the computer keyboard included), one port by name, or none; `channel` 0 = all,
+// 1 … 16 one channel.
+enum class MidiInputKind : uint8_t { All, Port, None };
+struct MidiInput {
+  MidiInputKind kind = MidiInputKind::All;
+  std::string port;     // Port only (non-empty): the port's name
+  uint8_t channel = 0;  // [0, 16]
+  friend bool operator==(const MidiInput&, const MidiInput&) = default;
+};
+inline constexpr float kMaxTrackDelayMs = 1000.0f;  // Mixer::trackDelayMs in [−kMaxTrackDelayMs, kMaxTrackDelayMs]
+
 struct Mixer {
   float volumeDb = 0.0f;
   float pan = 0.0f;
   PanMode panMode = PanMode::Balance;  // TX.pan-laws: a structural choice (a recompile of the track)
   bool mute = false;
   bool solo = false;
-  bool arm = false;
+  bool arm = false;  // T6.1: MIDI and audio tracks; a Param (ParamKind::TrackArm: the monitor gate follows it)
+  // T6.1: monitoring and inputs (above). `audioIn` on audio tracks only, `midiIn` on MIDI tracks only.
+  MonitorMode monitor = MonitorMode::Auto;
+  AudioInput audioIn;
+  MidiInput midiIn;
+  // T6.1: Live's Track Delay in ms (positive: later); stored here, played by T6.6 (Meta until then).
+  float trackDelayMs = 0.0f;
   // Every track implicitly has a send to every return (Ableton); only sends that differ from the default
   // (kMinVolumeDb, post-fader) are stored, sorted by target id, so equal mixers compare equal.
   std::vector<Send> sends;
@@ -821,6 +898,39 @@ const NoteOutput* findNoteOutput(std::string_view port) noexcept;
 struct Track;
 using TrackPtr = std::shared_ptr<const Track>;
 
+// ---- Note input (T6.1; docs/plans/M6.md "The two note worlds"; pq/document/input_map.h) -----------------------------
+// How a MIDI track turns incoming keys (a MIDI port, the computer keyboard) into note identities:
+//   Keys  the key is a DEGREE of the track's tuning (PitchKind::Degree): it follows tuning signals and MOS morphs.
+//   Hz    the key is a FREQUENCY (PitchKind::Cents, frozen at note-on): for instruments built on voice.hz.
+// Which degree / frequency a key gives (InputKeyMap):
+//   Tuning            the tuning's Scala .kbm when it carries one, else consecutive degrees from key 60 (= degree 0,
+//                     equave 0). The default.
+//   Consecutive       consecutive degrees from key 60, a .kbm or not.
+//   TwelveTetNearest  the degree nearest to the key's 12-TET pitch (key 69 = 440 Hz).
+//   TwelveTetHz       Hz mode: the key's 12-TET pitch itself (440 · 2^((k − 69)/12)); Keys mode: as TwelveTetNearest.
+// In Hz mode the first three give the Hz of that degree in the track's tuning.
+enum class NoteInputMode : uint8_t { Keys, Hz };
+enum class InputKeyMap : uint8_t { Tuning, Consecutive, TwelveTetNearest, TwelveTetHz };
+struct NoteInput {
+  NoteInputMode mode = NoteInputMode::Keys;
+  InputKeyMap keyMap = InputKeyMap::Tuning;
+  friend constexpr bool operator==(const NoteInput&, const NoteInput&) noexcept = default;
+};
+
+// ---- Take lanes (T6.1; docs/plans/M6.md "Decisions taken") ------------------------------------------------------------
+// A recording pass appends one take lane under its track (Track::takes, in display order). The track's own clips are
+// the MAIN lane, the comp: ops::compRegion copies a region of a take into it as ordinary clips (ClipSlot::take names
+// the take). A take lane is never lowered unless it is the track's audition take (Track::auditionTake): then its clips
+// play instead of the main lane's (playedClips; a Sequence change, no compile). Its clips are of the track's kind,
+// sorted by (start, id), their ids unique in the project like every clip's.
+struct TakeLane {
+  LaneId id;
+  std::string name;
+  std::vector<ClipSlot> clips;
+};
+bool operator==(const TakeLane& a, const TakeLane& b) noexcept;
+using TakeLanePtr = std::shared_ptr<const TakeLane>;
+
 struct Track {
   TrackId id;
   TrackKind kind = TrackKind::Midi;
@@ -836,9 +946,20 @@ struct Track {
   // path is the wires (model.h "Modulation wires", main_path.h), never this order; the order only says where a block
   // nobody has placed is drawn and which block a tie goes to. Rack chains (inside racks) keep their list order.
   std::vector<DevicePtr> devices;
+  // T6.1: how incoming keys become notes (MIDI tracks; Meta).
+  NoteInput noteInput;
+  // T6.1: take lanes (MIDI and audio tracks), in display order, and the one that plays instead of the main lane
+  // (invalid: the main lane).
+  std::vector<TakeLanePtr> takes;
+  LaneId auditionTake;
   // Index of the device in `devices`, or −1.
   int32_t deviceIndex(DeviceId device) const noexcept;
+  // T6.1: the take lane `id` (nullptr: none) and its index in `takes` (−1: none).
+  const TakeLane* takeLane(LaneId id) const noexcept;
+  int32_t takeIndex(LaneId id) const noexcept;
 };
+// T6.1: the clips a track plays — its audition take's, else its own (the main lane). The sequences are lowered from it.
+const std::vector<ClipSlot>& playedClips(const Track& t) noexcept;
 bool operator==(const Track& a, const Track& b) noexcept;
 
 // A track with no blocks and no wires (it plays nothing: ops::createTrack wires its source to its mixer, a MIDI track
@@ -869,6 +990,28 @@ struct LoopRegion {
   friend constexpr bool operator==(const LoopRegion&, const LoopRegion&) noexcept = default;
 };
 
+// T6.1: the punch-in / punch-out region (Live's): while enabled, recording writes only inside [in, out). 0 <= in < out.
+struct PunchRegion {
+  Ticks in = 0;
+  Ticks out = 4 * kTicksPerWhole;
+  bool enabled = false;
+  friend constexpr bool operator==(const PunchRegion&, const PunchRegion&) noexcept = default;
+};
+
+// T6.1: the project's record settings (Meta; the metronome's on / level reach the engine as values in T6.6).
+//   countInBars      0, 1, 2 or 4 bars of count-in before recording starts
+//   metronome        the click on; metronomeDb its level ([kMinVolumeDb, kMaxVolumeDb])
+//   overdub          note recording merges into the main-lane clip under it instead of making a take
+//   recordQuantize   recorded note starts snap to this grid (ticks; 0: off), [0, kTicksPerWhole]
+struct RecordSettings {
+  uint8_t countInBars = 0;
+  bool metronome = false;
+  float metronomeDb = -6.0f;
+  bool overdub = false;
+  Ticks recordQuantize = 0;
+  friend constexpr bool operator==(const RecordSettings&, const RecordSettings&) noexcept = default;
+};
+
 // ---- Project ---------------------------------------------------------------------------------------------------
 
 using TuningList = std::vector<TuningSlotPtr>;
@@ -884,6 +1027,8 @@ struct Project {
   TrackPtr master;
   std::shared_ptr<const WireList> wires;  // T4.7: modulation wires, sorted by id (null: none)
   std::shared_ptr<const SampleList> samples;  // T5.3: the sample table, sorted by id (null: none)
+  PunchRegion punch;      // T6.1
+  RecordSettings record;  // T6.1
 };
 // Deep equality (pointer-equal subtrees are not descended into).
 bool operator==(const Project& a, const Project& b) noexcept;

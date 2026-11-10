@@ -86,7 +86,7 @@ Status checkAudioClip(const Project& p, const AudioClip& c) {
   PQ_DOC_TRY(checkTick(c.start, "clip start"));
   PQ_DOC_TRY(checkLength(c.length, "clip length"));
   if (!findSample(p, c.sample)) return notFound("unknown sample id " + std::to_string(c.sample.value));
-  if (c.warp != AudioWarp::Off && c.warp != AudioWarp::RePitch) return invalid("unknown warp mode");
+  if (static_cast<uint8_t>(c.warp) > static_cast<uint8_t>(kLastAudioWarp)) return invalid("unknown warp mode");
   if (!std::isfinite(c.contentStartFrame) || std::abs(c.contentStartFrame) > 9.0e15)
     return invalid("content start frame out of range");
   if (!finiteIn(c.seconds, 1e-9, 1.0e8)) return invalid("clip duration must be positive (seconds)");
@@ -114,7 +114,74 @@ Status checkAudioClip(const Project& p, const AudioClip& c) {
     if (!finiteIn(f->curve, -1.0, 1.0)) return invalid("fade curve must be in [-1, 1]");
   }
   if (c.crossfadeIn < 0 || c.crossfadeIn > kMaxTicks) return invalid("crossfade length out of range");
+  PQ_DOC_TRY(checkWarpMarkers(c.markers));
+  PQ_DOC_TRY(checkWarpParams(c.warpParams));
   return checkAssignment(p, c.tuning);
+}
+
+// T6.1 (model.h WarpMarker): strictly increasing in both coordinates, finite, bounded.
+Status checkWarpMarkers(const std::vector<WarpMarker>& m) {
+  if (m.size() > kMaxWarpMarkers) return invalid("too many warp markers");
+  for (size_t i = 0; i < m.size(); ++i) {
+    if (!std::isfinite(m[i].sourceFrame) || std::abs(m[i].sourceFrame) > 9.0e15)
+      return invalid("warp marker frame out of range");
+    PQ_DOC_TRY(checkTick(m[i].content, "warp marker"));
+    if (i > 0 && !(m[i - 1].sourceFrame < m[i].sourceFrame && m[i - 1].content < m[i].content))
+      return invalid("warp markers must increase strictly in source frame and content tick");
+  }
+  return ok();
+}
+
+Status checkWarpParams(const WarpParams& w) {
+  if (w.beatsGranulation < 0 || w.beatsGranulation > kTicksPerWhole) return invalid("Beats granulation out of range");
+  if (static_cast<uint8_t>(w.beatsLoop) > static_cast<uint8_t>(BeatsLoop::BackForward)) return invalid("unknown Beats loop");
+  if (!finiteIn(w.beatsEnvelope, 0.0, 100.0)) return invalid("Beats envelope out of range");
+  if (!finiteIn(w.grainSizeMs, kMinGrainMs, kMaxGrainMs)) return invalid("grain size out of range");
+  if (!finiteIn(w.flux, 0.0, 100.0)) return invalid("flux out of range");
+  if (!finiteIn(w.formants, 0.0, 100.0)) return invalid("formants out of range");
+  if (!finiteIn(w.envelope, kMinWarpEnvelope, kMaxWarpEnvelope)) return invalid("envelope out of range");
+  return ok();
+}
+
+// T6.1 (model.h "Recording inputs").
+Status checkRecordInputs(TrackKind kind, const Mixer& m) {
+  if (m.arm && kind != TrackKind::Midi && kind != TrackKind::Audio) return invalid("only MIDI and audio tracks can be armed");
+  if (static_cast<uint8_t>(m.monitor) > static_cast<uint8_t>(MonitorMode::Off)) return invalid("unknown monitor mode");
+  if (m.monitor != MonitorMode::Auto && kind != TrackKind::Midi && kind != TrackKind::Audio)
+    return invalid("only MIDI and audio tracks monitor an input");
+  if (m.audioIn.channels > 2) return invalid("an audio input is mono or a stereo pair");
+  if (!m.audioIn.none() && uint32_t{m.audioIn.firstChannel} + m.audioIn.channels > kMaxInputChannels)
+    return invalid("audio input channel out of range");
+  if (!m.audioIn.none() && kind != TrackKind::Audio) return invalid("only audio tracks have an audio input");
+  if (m.audioIn.none() && m.audioIn.firstChannel != 0) return invalid("no audio input: its first channel must be 0");
+  if (static_cast<uint8_t>(m.midiIn.kind) > static_cast<uint8_t>(MidiInputKind::None)) return invalid("unknown MIDI input");
+  if ((m.midiIn.kind == MidiInputKind::Port) == m.midiIn.port.empty())
+    return invalid("a MIDI input names a port exactly when it is one port");
+  if (m.midiIn.channel > 16) return invalid("MIDI channel out of range (0 = all, 1 … 16)");
+  if (!(m.midiIn == MidiInput{}) && kind != TrackKind::Midi) return invalid("only MIDI tracks have a MIDI input");
+  if (!finiteIn(m.trackDelayMs, -kMaxTrackDelayMs, kMaxTrackDelayMs)) return invalid("track delay out of range");
+  return ok();
+}
+
+Status checkNoteInput(const NoteInput& n) {
+  if (static_cast<uint8_t>(n.mode) > static_cast<uint8_t>(NoteInputMode::Hz)) return invalid("unknown note input mode");
+  if (static_cast<uint8_t>(n.keyMap) > static_cast<uint8_t>(InputKeyMap::TwelveTetHz)) return invalid("unknown key map");
+  return ok();
+}
+
+Status checkPunch(const PunchRegion& r) {
+  PQ_DOC_TRY(checkTick(r.in, "punch in"));
+  PQ_DOC_TRY(checkTick(r.out, "punch out"));
+  if (r.in < 0 || r.out <= r.in) return invalid("punch region must satisfy 0 <= in < out");
+  return ok();
+}
+
+Status checkRecordSettings(const RecordSettings& r) {
+  if (r.countInBars != 0 && r.countInBars != 1 && r.countInBars != 2 && r.countInBars != 4)
+    return invalid("count-in is 0, 1, 2 or 4 bars");
+  PQ_DOC_TRY(checkVolume(r.metronomeDb));
+  if (r.recordQuantize < 0 || r.recordQuantize > kTicksPerWhole) return invalid("record quantize out of range");
+  return ok();
 }
 
 Status checkSampleRef(const SampleRef& r) {

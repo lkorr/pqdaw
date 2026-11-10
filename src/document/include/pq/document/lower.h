@@ -96,7 +96,11 @@
 //                 b = max(−pan, 0)·π/2 (one smoothed 2×2 matrix per sample), and pl = pr = 1. The law is structural
 //                 (SetTrackPanMode recompiles that track; the exports stay, so nothing else does).
 //   Audio         (T5.3) x = clipPlayer(clip: <slot>) (LowerOptions::clipSlotOf; global stereo audio: the engine's player of
-//                 that slot's audio sequence, audio_sequence.h; a mono sample is duplicated) → its audio effects →
+//                 that slot's audio sequence, audio_sequence.h; a mono sample is duplicated). T6.1: with an input
+//                 (Mixer::audioIn) x = gain(clips, 1 − monitor) + gain(track.in, monitor), `monitor` a runtime param
+//                 "<id>:monitor" (monitorGate; ParamRef TrackMonitor), both gains smoothed (click-free); the engine binds
+//                 the input's device channels to `track.in` (LoweredProject::audioInputs; a mono input is duplicated).
+//                 Without an input no `track.in`, no gate: nothing is paid. Then → its audio effects →
 //                 its pan law and the same three stages as a MIDI track (sends, groups, solo, mute and
 //                 audibility as for MIDI tracks). Its role is graph::TrackRole::Audio (no voices, no event slot). The
 //                 clips themselves are not in the graph: an audio clip edit (gain, fades, transpose, reverse, warp,
@@ -147,7 +151,7 @@
 // One LoweredParam per (track, patch param) with a stable string key (a device param "dev<device id>:<name>", T4.1;
 // a wire's amount "wire<wire id>:amount" (patch name w<wire id>, on the target's track), T4.7;
 // "<track id>:volume", ":pan", ":gate",
-// ":sendGate", ":mute"; a send "<sender id>:send:<return id>", a param `send<sender id>` of the RETURN's patch; a
+// ":sendGate", ":mute", T6.1 ":monitor" (an audio track with an input); a send "<sender id>:send:<return id>", a param `send<sender id>` of the RETURN's patch; a
 // tuning node's params "tuning:<tuning id>:reference", ":equave", ":generator", ":period", ":stretch" (patch names
 // tref<i>, tper<i>, tgen<i>, tst<i> for node i), one entry per track that follows the tuning, all with the same key)
 // that the app maps to a project param slot that never moves, and the current value; `ref` is the document ParamRef
@@ -488,6 +492,15 @@ struct DelayedSend {
   TrackId from, to;
 };
 
+// T6.1: an audio track whose patch reads `track.in`, and the device input channels the engine binds to it (T6.7).
+struct AudioInputBinding {
+  TrackId track;
+  AudioInput input;
+};
+// The value of an audio track's monitor gate "<id>:monitor" (lower.h "Signal flow": Audio): In 1, Off 0, Auto the arm.
+// T6.7's engine refines Auto with the transport (armed and stopped or recording).
+float monitorGate(const Mixer& m) noexcept;
+
 struct LoweredProject {
   std::vector<std::shared_ptr<const LoweredPatch>> patches;  // per graph track
   std::vector<TrackId> trackIds;                              // per graph track
@@ -500,6 +513,7 @@ struct LoweredProject {
   std::vector<WireState> wires;                               // T4.7: every wire of the project, in id order
   std::vector<ModulationTap> taps;                            // T4.7: one per modulated param (also graph.taps)
   std::vector<CurveSite> curves;                              // GU.1: one per driven control (its `curve` atom's slot)
+  std::vector<AudioInputBinding> audioInputs;                 // T6.1: the audio tracks reading `track.in`
   // The combined library graph.library points into when the lowering added patches of its own (the native engines'
   // expansions, block patches LowerOptions::library lacks); null: graph.library is LowerOptions::library.
   std::shared_ptr<const graph::PatchLibrary> userLibrary;

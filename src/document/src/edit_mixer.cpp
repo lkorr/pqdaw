@@ -68,7 +68,7 @@ EditResult soloTrack(const Project& p, TrackId track, bool additive) {
 EditResult armTrack(const Project& p, TrackId track, bool additive) {
   const Track* t = findTrackPtr(p, track);
   if (!t) return notFound("track not found");
-  if (t->kind != TrackKind::Midi) return invalid("only MIDI tracks can be armed");
+  if (t->kind != TrackKind::Midi && t->kind != TrackKind::Audio) return invalid("only MIDI and audio tracks can be armed");
   const bool on = !t->mixer.arm;
   Edit e = makeEdit(on ? "Arm" : "Disarm");
   e.tracks.push_back(track);

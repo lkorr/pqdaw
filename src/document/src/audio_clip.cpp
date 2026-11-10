@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <span>
 
 #include "pq/tuning/rational.h"
 #include "pq/tuning/tuning.h"
@@ -50,6 +51,20 @@ TrackPtr syncedTrack(const Timeline& tl, const TrackPtr& t) {
     if (!copy) copy = *t;
     copy->clips[i].audio = std::make_shared<const AudioClip>(std::move(c));
   }
+  for (size_t k = 0; k < t->takes.size(); ++k) {  // T6.1: take lanes (an Off clip's start stays: still sorted)
+    std::shared_ptr<TakeLane> lane;
+    for (size_t i = 0; i < t->takes[k]->clips.size(); ++i) {
+      const ClipSlot& sl = t->takes[k]->clips[i];
+      if (!sl.audio) continue;
+      AudioClip c = syncedClip(tl, *sl.audio);
+      if (c == *sl.audio) continue;
+      if (!lane) lane = std::make_shared<TakeLane>(*t->takes[k]);
+      lane->clips[i].audio = std::make_shared<const AudioClip>(std::move(c));
+    }
+    if (!lane) continue;
+    if (!copy) copy = *t;
+    copy->takes[k] = std::move(lane);
+  }
   for (size_t i = 0; i < t->children.size(); ++i) {
     TrackPtr k = syncedTrack(tl, t->children[i]);
     if (k == t->children[i]) continue;
@@ -65,6 +80,43 @@ TrackPtr syncedTrack(const Timeline& tl, const TrackPtr& t) {
 
 double framesPerContentTick(double rate, double sourceBpm) noexcept {
   return rate * 60.0 / (sourceBpm * static_cast<double>(kPpq));
+}
+
+namespace {
+// The segment of a marker list (size ≥ 2) a coordinate falls in: the index i of its left marker, i + 1 < size; before
+// the first marker the first segment, after the last the last one. `key` reads a marker's coordinate.
+template <class Key>
+size_t warpSegment(std::span<const WarpMarker> m, double x, Key key) noexcept {
+  const auto it = std::upper_bound(m.begin(), m.end(), x, [&](double v, const WarpMarker& w) { return v < key(w); });
+  const auto i = static_cast<size_t>(it - m.begin());
+  return std::clamp<size_t>(i == 0 ? 0 : i - 1, 0, m.size() - 2);
+}
+double contentOf(const WarpMarker& w) noexcept { return static_cast<double>(w.content); }
+double frameOf(const WarpMarker& w) noexcept { return w.sourceFrame; }
+}  // namespace
+
+double warpFrameAt(std::span<const WarpMarker> m, double fpt, double content) noexcept {  // RT-safe
+  if (m.empty()) return content * fpt;
+  if (m.size() == 1) return m[0].sourceFrame + (content - contentOf(m[0])) * fpt;
+  const size_t i = warpSegment(m, content, contentOf);
+  const double slope = (m[i + 1].sourceFrame - m[i].sourceFrame) / (contentOf(m[i + 1]) - contentOf(m[i]));
+  return m[i].sourceFrame + (content - contentOf(m[i])) * slope;
+}
+
+double warpContentAt(std::span<const WarpMarker> m, double fpt, double frame) noexcept {  // RT-safe
+  if (m.empty()) return frame / fpt;
+  if (m.size() == 1) return contentOf(m[0]) + (frame - m[0].sourceFrame) / fpt;
+  const size_t i = warpSegment(m, frame, frameOf);
+  const double slope = (contentOf(m[i + 1]) - contentOf(m[i])) / (m[i + 1].sourceFrame - m[i].sourceFrame);
+  return contentOf(m[i]) + (frame - m[i].sourceFrame) * slope;
+}
+
+double warpFrameAt(const AudioClip& c, double rate, double content) noexcept {
+  return warpFrameAt(c.markers, framesPerContentTick(rate, c.sourceBpm), content);
+}
+
+double warpContentAt(const AudioClip& c, double rate, double frame) noexcept {
+  return warpContentAt(c.markers, framesPerContentTick(rate, c.sourceBpm), frame);
 }
 
 const TuningDef* audioClipTuning(const Project& p, const TrackPath& path, const AudioClip& c) noexcept {
@@ -95,6 +147,11 @@ double transposeCents(const AudioTranspose& t, const tuning::Tuning* tun) {
 
 double audioRateRatio(const Project& p, const TrackPath& path, const AudioClip& c) {
   if (c.warp != AudioWarp::Off) return 1.0;
+  return audioPitchRatio(p, path, c);
+}
+
+double audioPitchRatio(const Project& p, const TrackPath& path, const AudioClip& c) {
+  if (!warpTransposes(c.warp)) return 1.0;
   double cents = 0.0;
   if (c.transpose.unit == TransposeUnit::Steps) {
     if (const TuningDef* def = audioClipTuning(p, path, c))
@@ -154,24 +211,26 @@ AudioClip audioMovedTo(const Timeline& timeline, AudioClip c, Ticks start) {
 AudioClip withWarp(const Timeline& timeline, const AudioClip& c, AudioWarp warp, double sourceBpm, double rate) {
   if (warp == c.warp && (warp == AudioWarp::Off || sourceBpm == c.sourceBpm)) return c;
   AudioClip n = c;
-  if (warp == AudioWarp::RePitch) {
-    if (c.warp == AudioWarp::RePitch) {
-      // A new source tempo: the start marker keeps its frame (content ticks scale with the tempo), the length stays.
-      const double f = static_cast<double>(clipContentAt(c.contentStart, contentLoop(c), 0)) *
-                       framesPerContentTick(rate, c.sourceBpm);
-      n.contentStart = static_cast<Ticks>(std::llround(f / framesPerContentTick(rate, sourceBpm)));
-      n.loop.enabled = false;
+  if (isWarped(warp)) {
+    if (isWarped(c.warp)) {
+      if (sourceBpm != c.sourceBpm) {
+        // A new source tempo: the start marker keeps its frame (the implied slope changes; markers keep theirs), the
+        // length in ticks stays.
+        const double f = warpFrameAt(c, rate, static_cast<double>(clipContentAt(c.contentStart, contentLoop(c), 0)));
+        n.sourceBpm = sourceBpm;
+        n.contentStart = static_cast<Ticks>(std::llround(warpContentAt(n, rate, f)));
+        n.loop.enabled = false;
+      }
     } else {
-      n.contentStart = static_cast<Ticks>(std::llround(c.contentStartFrame / framesPerContentTick(rate, sourceBpm)));
+      n.sourceBpm = sourceBpm;  // T6.1: through the markers (kept from an earlier warped life), else the implied segment
+      n.contentStart = static_cast<Ticks>(std::llround(warpContentAt(n, rate, c.contentStartFrame)));
       n.loop.enabled = false;
     }
-    n.sourceBpm = sourceBpm;
-    n.warp = AudioWarp::RePitch;
+    n.warp = warp;  // between warped modes only the mode changes: content ticks and placement stay
     return n;
   }
   const TempoMap& m = timeline.tempoMap;
-  n.contentStartFrame = static_cast<double>(clipContentAt(c.contentStart, contentLoop(c), 0)) *
-                        framesPerContentTick(rate, c.sourceBpm);
+  n.contentStartFrame = warpFrameAt(c, rate, static_cast<double>(clipContentAt(c.contentStart, contentLoop(c), 0)));
   n.seconds = m.ticksToSeconds(clipEnd(c)) - m.ticksToSeconds(c.start);
   n.warp = AudioWarp::Off;
   return syncedClip(timeline, std::move(n));

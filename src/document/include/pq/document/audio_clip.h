@@ -8,10 +8,12 @@
 // Time of an Off clip is seconds: tau(t) = the tempo map's ticksToSeconds(t). Its source position at song time tau is
 //   forward   contentStartFrame + (tau - tau(start)) * rate * k
 //   reverse   contentStartFrame + (seconds - (tau - tau(start))) * rate * k     (the window read backwards)
-// with rate = the sample's rate and k = audioRateRatio (transpose x detune). A RePitch clip maps arrangement ticks to
-// content ticks exactly as a note clip does (pq/core/clip_time.h: start marker, loop) and content tick c to source
-// frame c * framesPerContentTick(rate, sourceBpm); reverse mirrors the offset (o -> length - o).
+// with rate = the sample's rate and k = audioRateRatio (transpose x detune). A WARPED clip (RePitch and T6.1's
+// time-stretch modes: model.h isWarped) maps arrangement ticks to content ticks exactly as a note clip does
+// (pq/core/clip_time.h: start marker, loop) and content tick c to source frame warpFrameAt(c): through its warp markers,
+// else c * framesPerContentTick(rate, sourceBpm); reverse mirrors the offset (o -> length - o).
 
+#include <span>
 #include <utility>
 
 #include "pq/core/clip_time.h"
@@ -32,14 +34,25 @@ AudioClip syncedClip(const Timeline& timeline, AudioClip c);
 // A track subtree with every warp-Off clip synced to `timeline` (the same pointer when nothing changes; clips re-sorted).
 TrackPtr syncedTrack(const Timeline& timeline, const TrackPtr& t);
 
-// Source frames per content tick of a RePitch clip (the sample's rate at sourceBpm).
+// Source frames per content tick of a warped clip's implied segment (the sample's rate at sourceBpm).
 double framesPerContentTick(double rate, double sourceBpm) noexcept;
+// T6.1: the source frame (fractional) at content tick `content` of a warped clip: piecewise linear through `markers`
+// (model.h WarpMarker: strictly increasing), before the first / after the last at the nearest segment's slope, a lone
+// marker at `fpt` (framesPerContentTick) through it, no marker at `fpt` through (0, 0). RT-safe (a binary search).
+double warpFrameAt(std::span<const WarpMarker> markers, double fpt, double content) noexcept;
+// The inverse: the content tick (fractional) at which source frame `frame` plays. RT-safe.
+double warpContentAt(std::span<const WarpMarker> markers, double fpt, double frame) noexcept;
+// The same for a clip (its markers, fpt at its sourceBpm and the sample's `rate`).
+double warpFrameAt(const AudioClip& c, double rate, double content) noexcept;
+double warpContentAt(const AudioClip& c, double rate, double frame) noexcept;
 
 // The tuning a clip's Steps transpose resolves in: the clip's own assignment, else its track's effective tuning.
 const TuningDef* audioClipTuning(const Project& p, const TrackPath& path, const AudioClip& c) noexcept;
-// The transpose x detune speed ratio of an Off clip (1 for RePitch). Steps: hz(degree n) / hz(degree 0) of the
+// The transpose x detune speed ratio of an Off clip (1 for every warped mode). Steps: hz(degree n) / hz(degree 0) of the
 // clip's tuning (1 when it cannot be resolved). The whole ratio is clamped to +-kMaxTransposeCents (+ the detune).
 double audioRateRatio(const Project& p, const TrackPath& path, const AudioClip& c);
+// T6.1: the same ratio as a PITCH shift: Off and the time-stretch modes (warpTransposes), 1 for RePitch.
+double audioPitchRatio(const Project& p, const TrackPath& path, const AudioClip& c);
 double transposeCents(const AudioTranspose& t, const tuning::Tuning* tuning);  // Steps without a tuning: 0
 
 // The clip with new arrangement bounds [s, e) (e > s), every source position keeping its absolute time: the left edge
@@ -53,9 +66,10 @@ std::pair<AudioClip, AudioClip> splitAudioAt(const Timeline& timeline, const Aud
                                              double rate, double ratio);
 // The clip moved to `start` (Off: its length re-derived there).
 AudioClip audioMovedTo(const Timeline& timeline, AudioClip c, Ticks start);
-// The clip switched to `warp` with the audio at its start kept: Off -> RePitch takes `sourceBpm` (the start marker
-// becomes the nearest content tick, the length in ticks stays, the loop off); RePitch -> Off keeps the start marker's
-// frame and the clip's current duration in seconds.
+// The clip switched to `warp` with the audio at its start kept and its song-time placement unchanged: Off -> warped takes
+// `sourceBpm` (the start marker becomes the content tick of its frame through the markers, the length in ticks stays,
+// the loop off); warped -> Off keeps the start marker's frame and the clip's current duration in seconds; between
+// warped modes only the mode changes (a new `sourceBpm` keeps the start marker's frame). Markers are always kept.
 AudioClip withWarp(const Timeline& timeline, const AudioClip& c, AudioWarp warp, double sourceBpm, double rate);
 
 }  // namespace pq::doc

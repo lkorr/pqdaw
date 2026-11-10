@@ -105,7 +105,103 @@ std::vector<Case> cases() {
                [](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.params == std::vector<ParamRef>{ParamRef::track(ParamKind::TrackSolo, f.drums)});
                }});
-  c.push_back({"SetTrackArm", [](Fixture& f) -> Command { return SetTrackArm{f.bass, true}; }, M, noCheck});
+  // T6.1: arm is a Param (the monitor gate follows it).
+  c.push_back({"SetTrackArm", [](Fixture& f) -> Command { return SetTrackArm{f.bass, true}; }, P,
+               [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::track(ParamKind::TrackArm, f.bass)});
+                 CHECK(f.track(f.bass).mixer.arm);
+               }});
+  // ---- T6.1: recording inputs, note input, punch, record settings, take lanes
+  c.push_back({"SetTrackMonitor (Param)", [](Fixture& f) -> Command { return SetTrackMonitor{f.bass, MonitorMode::In}; }, P,
+               [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.params == std::vector<ParamRef>{ParamRef::track(ParamKind::TrackMonitor, f.bass)});
+                 CHECK(f.track(f.bass).mixer.monitor == MonitorMode::In);
+               }});
+  static TrackId audioT;
+  auto withAudio = [](Fixture& f) {
+    audioT = f.store.ids().track();
+    REQUIRE(f.store.dispatch(AddTrack{makeTrackPtr(audioT, TrackKind::Audio, "Audio"), {}, kAppend}).ok());
+  };
+  c.push_back({"SetTrackAudioInput (Structural: the patch reads track.in)", [withAudio](Fixture& f) -> Command {
+                 withAudio(f);
+                 return SetTrackAudioInput{audioT, AudioInput{2, 2}};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.tracks == std::vector<TrackId>{audioT});
+                 CHECK(f.track(audioT).mixer.audioIn == AudioInput{2, 2});
+               }});
+  c.push_back({"SetTrackMidiInput (Meta)", [](Fixture& f) -> Command {
+                 return SetTrackMidiInput{f.bass, MidiInput{MidiInputKind::Port, "Keystation", 3}};
+               }, M, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.tracks == std::vector<TrackId>{f.bass});
+                 CHECK(f.track(f.bass).mixer.midiIn.port == "Keystation");
+               }});
+  c.push_back({"SetTrackDelay (Meta until T6.6)", [](Fixture& f) -> Command { return SetTrackDelay{f.bass, -12.5f}; }, M,
+               [](Fixture& f, const ChangeSet&) { CHECK(f.track(f.bass).mixer.trackDelayMs == -12.5f); }});
+  c.push_back({"SetNoteInput (Meta)", [](Fixture& f) -> Command {
+                 return SetNoteInput{f.bass, NoteInput{NoteInputMode::Hz, InputKeyMap::TwelveTetHz}};
+               }, M, [](Fixture& f, const ChangeSet&) {
+                 CHECK(f.track(f.bass).noteInput == NoteInput{NoteInputMode::Hz, InputKeyMap::TwelveTetHz});
+               }});
+  c.push_back({"SetPunch (Meta)", [](Fixture&) -> Command {
+                 return SetPunch{PunchRegion{4 * pq::kPpq, 8 * pq::kPpq, true}};
+               }, M, [](Fixture& f, const ChangeSet&) { CHECK(f.doc().punch.enabled); }});
+  c.push_back({"SetRecordSettings (Meta)", [](Fixture&) -> Command {
+                 return SetRecordSettings{RecordSettings{2, true, -12.0f, true, pq::kPpq / 4}};
+               }, M, [](Fixture& f, const ChangeSet&) { CHECK(f.doc().record.countInBars == 2); }});
+  static LaneId takeL;
+  static ClipId takeClip;
+  auto takeLane = [](Fixture& f) {
+    IdSource& ids = f.store.ids();
+    auto l = std::make_shared<TakeLane>();
+    l->id = takeL = ids.lane();
+    l->name = "Take 1";
+    ClipPtr c = makeClip(ids, 0, pq::kTicksPerWhole, {makeNote(ids, 0, 3), makeNote(ids, pq::kPpq, 5)}, "T");
+    takeClip = c->id;
+    l->clips.push_back(ClipSlot{c->id, c, nullptr});
+    return TakeLanePtr(std::move(l));
+  };
+  auto withTake = [takeLane](Fixture& f) { REQUIRE(f.store.dispatch(AddTakeLane{f.lead, takeLane(f)}).ok()); };
+  c.push_back({"AddTakeLane (Meta: an unheard take is never lowered)", [takeLane](Fixture& f) -> Command {
+                 return AddTakeLane{f.lead, takeLane(f)};
+               }, M, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.tracks == std::vector<TrackId>{f.lead});
+                 CHECK(cs.clips == std::vector<ClipId>{takeClip});
+                 REQUIRE(f.track(f.lead).takes.size() == 1);
+                 CHECK(f.track(f.lead).takes[0]->id == takeL);
+               }});
+  c.push_back({"RenameTakeLane (Meta)", [withTake](Fixture& f) -> Command {
+                 withTake(f);
+                 return RenameTakeLane{f.lead, takeL, "Best"};
+               }, M, [](Fixture& f, const ChangeSet&) { CHECK(f.track(f.lead).takes[0]->name == "Best"); }});
+  c.push_back({"SetAuditionTake (Sequence: the take plays instead of the main lane)", [withTake](Fixture& f) -> Command {
+                 withTake(f);
+                 return SetAuditionTake{f.lead, takeL};
+               }, Q, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.tracks == std::vector<TrackId>{f.lead});
+                 CHECK(contains(cs.clips, takeClip));
+                 CHECK(contains(cs.clips, f.clipA));
+                 REQUIRE(playedClips(f.track(f.lead)).size() == 1);
+                 CHECK(playedClips(f.track(f.lead))[0].id == takeClip);
+               }});
+  c.push_back({"RemoveTakeLane (Meta when not auditioned)", [withTake](Fixture& f) -> Command {
+                 withTake(f);
+                 return RemoveTakeLane{f.lead, takeL};
+               }, M, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.clips == std::vector<ClipId>{takeClip});
+                 CHECK(f.track(f.lead).takes.empty());
+               }});
+  c.push_back({"PromoteTake (Sequence: the take becomes the main lane)", [withTake](Fixture& f) -> Command {
+                 withTake(f);
+                 return PromoteTake{f.lead, takeL};
+               }, Q, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(contains(cs.clips, takeClip));
+                 const Track& t = f.track(f.lead);
+                 REQUIRE(t.clips.size() == 1);
+                 CHECK(t.clips[0].id == takeClip);
+                 REQUIRE(t.takes.size() == 1);
+                 CHECK(t.takes[0]->id == takeL);
+                 CHECK(t.takes[0]->clips.size() == 2);  // A and B
+               }});
   c.push_back({"SetSendLevel", [](Fixture& f) -> Command { return SetSendLevel{f.bass, f.reverb, -6.0f}; }, P,
                [](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.params == std::vector<ParamRef>{ParamRef::track(ParamKind::TrackSend, f.bass, f.reverb)});
@@ -756,6 +852,12 @@ TEST_CASE("commands: no-op commands keep the snapshot and record nothing") {
       RenameClip{{f.lead, f.clipA}, "A"},
       Batch{"nothing", {SetTrackPan{f.lead, 0.0f}}},
       SetTrackPanMode{f.lead, PanMode::Balance},  // TX.pan-laws: the default
+      SetTrackMonitor{f.lead, MonitorMode::Auto},  // T6.1: the defaults
+      SetTrackMidiInput{f.lead, MidiInput{}},
+      SetNoteInput{f.lead, NoteInput{}},
+      SetAuditionTake{f.lead, LaneId{}},
+      SetPunch{PunchRegion{}},
+      SetRecordSettings{RecordSettings{}},
   };
   for (const Command& c : noops) {
     CAPTURE(std::string(label(c)));
@@ -777,6 +879,21 @@ TEST_CASE("commands: invalid commands fail and leave the document untouched") {
       SetTrackMute{f.master, true},                                   // master has no mute
       SetSendLevel{f.lead, f.lead, 0.0f},                             // send to a non-return
       SetTrackArm{f.drums, true},                                     // groups cannot be armed
+      SetTrackMonitor{f.drums, MonitorMode::In},                      // T6.1: groups do not monitor
+      SetTrackAudioInput{f.bass, AudioInput{0, 2}},                   //        a MIDI track has no audio input
+      SetTrackMidiInput{f.bass, MidiInput{MidiInputKind::Port, "", 0}},  //     a port without a name
+      SetTrackMidiInput{f.bass, MidiInput{MidiInputKind::All, "", 17}},  //     channel 17
+      SetTrackDelay{f.bass, 2000.0f},
+      SetNoteInput{f.drums, NoteInput{}},                             //        not a MIDI track
+      SetPunch{PunchRegion{10, 10, true}},
+      SetRecordSettings{RecordSettings{3, false, 0.0f, false, 0}},    //        count-in 3 bars
+      RemoveTakeLane{f.lead, LaneId{4242}},
+      SetAuditionTake{f.lead, LaneId{4242}},
+      PromoteTake{f.lead, LaneId{4242}},
+      AddTakeLane{f.lead, std::make_shared<const TakeLane>(TakeLane{LaneId{}, "no id", {}})},
+      AddTakeLane{f.lead, std::make_shared<const TakeLane>(TakeLane{f.leadVolLane, "automation lane's id", {}})},
+      AddTakeLane{f.lead, std::make_shared<const TakeLane>(TakeLane{ids.lane(), "clip id in use",
+                                                                    {ClipSlot{f.clipA, f.track(f.lead).clips[0].clip, nullptr}}})},
       SetTrackPanMode{TrackId{9999}, PanMode::Linear},                // TX.pan-laws: unknown track
       SetTrackPanMode{f.lead, static_cast<PanMode>(9)},               //              unknown law
       RemoveTrack{f.master},

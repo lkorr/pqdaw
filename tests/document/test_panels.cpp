@@ -261,7 +261,7 @@ TEST_CASE("panels: save / load round trip (schema 21); a schema-20 file migrates
   d.edit(ops::setPanelElement(d.doc(), d.g, styled));
   auto text = serializeProject(d.doc());
   REQUIRE(text.ok());
-  CHECK(text->rfind("{\n  \"schemaVersion\": 21,", 0) == 0);
+  CHECK(text->rfind("{\n  \"schemaVersion\": " + std::to_string(kSchemaVersion) + ",", 0) == 0);
   CHECK(text->find("\"panel\": {") != std::string::npos);
   auto back = parseProject(*text);
   REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
@@ -278,7 +278,7 @@ TEST_CASE("panels: save / load round trip (schema 21); a schema-20 file migrates
     }());
     REQUIRE(plain.ok());
     std::string old = *plain;
-    old.replace(old.find("\"schemaVersion\": 21"), 19, "\"schemaVersion\": 20");
+    old.replace(old.find("\"schemaVersion\": " + std::to_string(kSchemaVersion)), 19, "\"schemaVersion\": 20");
     auto m = parseProject(old);
     REQUIRE_MESSAGE(m.ok(), (m.ok() ? std::string() : m.error().message));
     CHECK(m->fileSchemaVersion == 20);

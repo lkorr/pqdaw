@@ -100,7 +100,14 @@ namespace pq::doc {
 // ("valuesInUnits", "legacyCurves": never written) and parseProject converts the decoded model with
 // LoadOptions::devices (knob_positions.h: the nearest-position rule through each param's curve); without the library a
 // file with values to convert is refused (Unsupported). Presets older than 20 holding params are refused (no library).
-inline constexpr int32_t kSchemaVersion = 21;
+// 21 = group panels (GU.3). 22 = recording (T6.1, docs/plans/M6.md): a track's "mixer" may carry "monitor" ("in" | "off";
+// absent: "auto"), "audioIn" {"first", "channels"}, "midiIn" {"kind": "all" | "port" | "none", "port"?, "channel"},
+// "trackDelayMs"; a MIDI track "noteInput" {"mode": "keys" | "hz", "keyMap"}; a MIDI or audio track "takes" [{"id",
+// "name", "clips"}] and "auditionTake" (a take lane id); a clip "take" (its comp provenance); an audio clip the warp modes
+// "beats" | "tones" | "texture" | "complex" | "complexPro", "markers" [[sourceFrame, contentTick], …] and "warpParams";
+// the project "punch" {"in", "out", "enabled"} and "record" {"countInBars", "metronome", "metronomeDb", "overdub",
+// "recordQuantize"}. Each is written only when it differs from its default; migration 21 → 22 changes nothing.
+inline constexpr int32_t kSchemaVersion = 22;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader
