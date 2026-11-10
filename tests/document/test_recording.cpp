@@ -536,7 +536,7 @@ TEST_CASE("recording: save -> load is deep-equal with every new field set, byte-
   REQUIRE(r.store.dispatch(SetTrackDelay{r.audio, -7.25f}).ok());
   REQUIRE(r.store.dispatch(SetNoteInput{r.midi, NoteInput{NoteInputMode::Hz, InputKeyMap::TwelveTetNearest}}).ok());
   REQUIRE(r.store.dispatch(SetPunch{PunchRegion{kBar, 3 * kBar, true}}).ok());
-  REQUIRE(r.store.dispatch(SetRecordSettings{RecordSettings{4, true, -9.5f, true, kPpq / 4}}).ok());
+  REQUIRE(r.store.dispatch(SetRecordSettings{RecordSettings{4, true, -9.5f, true, kPpq / 4, true}}).ok());  // T6.6: cue
   AudioClip a = r.audioClip(0, 1.9, 123.5);
   REQUIRE(r.store.dispatch(AddClip{r.audio, nullptr, std::make_shared<const AudioClip>(a)}).ok());
   const ClipRef ac{r.audio, a.id};

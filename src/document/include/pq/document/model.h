@@ -1010,9 +1010,9 @@ struct RecordSettings {
   uint8_t countInBars = 0;
   bool metronome = false;
   float metronomeDb = -6.0f;
-  bool metronomeCue = false;
   bool overdub = false;
   Ticks recordQuantize = 0;
+  bool metronomeCue = false;  // T6.6 (last: positional initialisers keep their meaning)
   friend constexpr bool operator==(const RecordSettings&, const RecordSettings&) noexcept = default;
 };
 

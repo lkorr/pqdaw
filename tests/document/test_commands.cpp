@@ -135,7 +135,7 @@ std::vector<Case> cases() {
                  CHECK(cs.tracks == std::vector<TrackId>{f.bass});
                  CHECK(f.track(f.bass).mixer.midiIn.port == "Keystation");
                }});
-  c.push_back({"SetTrackDelay (Meta until T6.6)", [](Fixture& f) -> Command { return SetTrackDelay{f.bass, -12.5f}; }, M,
+  c.push_back({"SetTrackDelay (Meta)", [](Fixture& f) -> Command { return SetTrackDelay{f.bass, -12.5f}; }, M,
                [](Fixture& f, const ChangeSet&) { CHECK(f.track(f.bass).mixer.trackDelayMs == -12.5f); }});
   c.push_back({"SetNoteInput (Meta)", [](Fixture& f) -> Command {
                  return SetNoteInput{f.bass, NoteInput{NoteInputMode::Hz, InputKeyMap::TwelveTetHz}};
