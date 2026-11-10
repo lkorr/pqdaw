@@ -781,7 +781,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [ ] **T6.7b Recording leftovers** (Q?-T6.7-a): a Preferences → Recording manual record-offset field driving `Recorder::setManualOffset`; delete the unsaved-recordings folder when an untitled project is discarded; WASAPI capture input (today only ASIO inputs record); inputs follow the ASIO input count in Preferences rather than the max used. After T6.10 (Preferences).
 - [x] **T6.8 Warp UI, BPM detection, auto-warp** 👁 *(merged feeca5c7; Q?-T6.8-a; REVIEW: marker drag feel, mode rows; tempo detection tested on synthetic loops only (20/20); Warp as N-Bar Loop assumes 4/4; cold-cache analysis can run twice (link + views))* (plan §T6.8). After T6.3, T6.5.
 - [ ] **T6.9 Capture MIDI** (plan §T6.9). After T6.4, T6.7.
-- [ ] **T6.10 Take lanes and comping in the arrangement** 👁 (plan §T6.10). After T6.1, T6.7.
+- [x] **T6.10 Take lanes and comping in the arrangement** 👁 *(merged 5b04d78e; Q?-T6.10-a; take lanes under the track (fold hides), header audition/delete, swipe-comp / click-swap / Up-Down / Esc, one undo step each, audition is a Sequence change (0 compiles), unused take parts veiled; paint 8×8×50 0.24 ms median; not built: rename from header, lane resize, promote gesture)* (plan §T6.10). After T6.1, T6.7.
 - [ ] **T6.11 M6 review** (plan §T6.11).
 
 ## TU: Tuning menu rework (user 2026-11-09; after M6)

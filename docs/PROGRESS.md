@@ -367,3 +367,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow 53/55 after rebase, the 2 failures known flakes (timeline preview waitFor 87/87 alone; window selftest gallery segfault under load, passed alone); ship pq_bench_dsp links.
 - Perf / CPU-efficiency check: worst block after mid-clip start 3306 → 392 µs (1 voice), 13283 → 1607 µs (4 voices); mono 316 → 179 ns/frame; stereo steady unchanged.
 - Notes/blockers: Q?-T6.5b-a. ~13.7 MiB extra per clip player for 32 mono stretchers (estimate) — check in the M6 review.
+
+## 2026-11-10 · T6.10 merged · main
+- Did: merged task/T6.10-comping (5b04d78e): take lanes in the arrangement (headers with audition / delete, fold), arrangement::Comper (swipe → ops::compRegion snapped to grid, click-swap, Up/Down, Esc), audition via setAuditionTake (no compile), veil on take parts the main lane doesn't use; song end counts take clips.
+- Verified: worker pq_tests_views 642/642, test_comping_link (playback) passes, -Affected 45/45 after rebase; new goldens arrangement-takes, arrangement-comp, none moved.
+- Perf / CPU-efficiency check: 8 tracks × 8 takes × 50 clips paint 0.24 ms median (budget 2 ms); folded/take-less tracks add nothing.
+- Notes/blockers: Q?-T6.10-a; take rename from header, lane resize and a promote gesture not built (ops exist).
