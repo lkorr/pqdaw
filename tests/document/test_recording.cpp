@@ -403,6 +403,91 @@ TEST_CASE("recording: warp markers — adding pins the frame playing now (nothin
   CHECK_FALSE(ops::moveWarpMarker(r.doc(), c, 0, 0).ok());
 }
 
+TEST_CASE("recording: T6.8 warp commands — slide keeps the content tick, Warp From Here, Warp as N-Bar Loop, auto-warp; "
+          "each one step") {
+  Rec r;
+  const AudioClip a0 = r.audioClip(kBar, 1.9, 1000.0);
+  REQUIRE(r.store.dispatch(AddClip{r.audio, nullptr, std::make_shared<const AudioClip>(a0)}).ok());
+  const ClipRef c{r.audio, a0.id};
+  const std::span<const ClipRef> one(&c, 1);
+  auto clip = [&]() -> const AudioClip& { return *r.track(r.audio).clips.at(0).audio; };
+  const size_t h0 = r.store.history().cursor();
+  CHECK_FALSE(ops::warpFromHere(r.doc(), c, kPpq, 100.0).ok());  // Off: no markers
+
+  // Auto-warp: Off → Beats at 100 BPM, the length re-derived so the clip plays to the file's end (2 s of source at 100
+  // BPM = 3.333 quarters).
+  commit(r.store, ops::autoWarpClips(r.doc(), one, AudioWarp::Beats, 100.0));
+  CHECK(r.store.history().cursor() == h0 + 1);
+  CHECK(clip().warp == AudioWarp::Beats);
+  CHECK(clip().sourceBpm == 100.0);
+  const double fpt = framesPerContentTick(48000.0, 100.0);
+  CHECK(static_cast<double>(clip().contentStart + clip().length) * fpt == doctest::Approx(96000.0).epsilon(1e-4));
+  CHECK(warpFrameAt(clip(), 48000.0, static_cast<double>(clip().contentStart)) == doctest::Approx(1000.0).epsilon(1e-3));
+  const AudioClip warped = clip();
+  CHECK(ops::autoWarpClips(r.doc(), one, AudioWarp::Tones, 90.0)->empty());  // a warped clip is left alone
+
+  // Slide: the marker keeps its content tick, its frame moves, clamped strictly between its neighbours.
+  commit(r.store, ops::addWarpMarker(r.doc(), c, clip().contentStart + kPpq / 2));
+  commit(r.store, ops::addWarpMarker(r.doc(), c, clip().contentStart + kPpq));
+  commit(r.store, ops::addWarpMarker(r.doc(), c, clip().contentStart + 2 * kPpq));
+  const std::vector<WarpMarker> m = clip().markers;
+  size_t h = r.store.history().cursor();
+  commit(r.store, ops::slideWarpMarker(r.doc(), c, 1, m[1].sourceFrame + 500.0));
+  CHECK(r.store.history().cursor() == h + 1);
+  CHECK(clip().markers[1].content == m[1].content);
+  CHECK(clip().markers[1].sourceFrame == m[1].sourceFrame + 500.0);
+  CHECK(clip().markers[0] == m[0]);
+  CHECK(clip().markers[2] == m[2]);
+  commit(r.store, ops::slideWarpMarker(r.doc(), c, 1, m[2].sourceFrame + 1e6));
+  CHECK(clip().markers[1].sourceFrame < m[2].sourceFrame);
+  CHECK(clip().markers[1].sourceFrame > m[2].sourceFrame - 1e-6);
+  commit(r.store, ops::slideWarpMarker(r.doc(), c, 0, -5000.0));
+  CHECK(clip().markers[0].sourceFrame == 0.0);
+  CHECK_FALSE(ops::slideWarpMarker(r.doc(), c, 7, 10.0).ok());
+
+  // Warp From Here at the second marker, 132 BPM: earlier markers kept, later ones dropped, one beat later at 132.
+  const std::vector<WarpMarker> m1 = clip().markers;
+  h = r.store.history().cursor();
+  commit(r.store, ops::warpFromHere(r.doc(), c, m1[1].content, 132.0));
+  CHECK(r.store.history().cursor() == h + 1);
+  REQUIRE(clip().markers.size() == 3);
+  CHECK(clip().markers[0] == m1[0]);
+  CHECK(clip().markers[1] == m1[1]);
+  CHECK(clip().markers[2].content == m1[1].content + kPpq);
+  CHECK(clip().markers[2].sourceFrame == doctest::Approx(m1[1].sourceFrame + 48000.0 * 60.0 / 132.0));
+  // Past the last marker the slope is the last segment's: 132 BPM on.
+  const double f4 = warpFrameAt(clip(), 48000.0, static_cast<double>(m1[1].content + 4 * kPpq));
+  CHECK(f4 == doctest::Approx(m1[1].sourceFrame + 4.0 * 48000.0 * 60.0 / 132.0));
+  // At a point before every marker: a lone marker, and the source BPM becomes the tempo.
+  const double atStart = warpFrameAt(clip(), 48000.0, static_cast<double>(clip().contentStart));
+  commit(r.store, ops::warpFromHere(r.doc(), c, clip().contentStart, 96.0));
+  REQUIRE(clip().markers.size() == 1);
+  CHECK(clip().sourceBpm == 96.0);
+  CHECK(clip().markers[0].sourceFrame == atStart);  // where the start played
+
+  // Warp as a 1-bar loop: the region the clip plays becomes exactly one bar, looped; the region's start frame stays.
+  const double a = warpFrameAt(clip(), 48000.0, static_cast<double>(clip().contentStart));
+  const double b = warpFrameAt(clip(), 48000.0, static_cast<double>(clip().contentStart + clip().length));
+  h = r.store.history().cursor();
+  commit(r.store, ops::warpAsLoop(r.doc(), c, 1));
+  CHECK(r.store.history().cursor() == h + 1);
+  CHECK(clip().loop.enabled);
+  CHECK(clip().loop.end - clip().loop.start == kTicksPerWhole);
+  CHECK(warpFrameAt(clip(), 48000.0, static_cast<double>(clip().loop.start)) == doctest::Approx(a));
+  CHECK(warpFrameAt(clip(), 48000.0, static_cast<double>(clip().loop.end)) == doctest::Approx(b));
+  CHECK(clip().length == kTicksPerWhole);
+  CHECK_FALSE(ops::warpAsLoop(r.doc(), c, 1000).ok());  // 1000 bars of 1.6 s: far below 20 BPM
+
+  // An Off clip warps as a loop in the given mode, its window spanning the bars.
+  commit(r.store, ops::setWarpMode(r.doc(), one, AudioWarp::Off));
+  const double w0 = clip().contentStartFrame, w1 = w0 + clip().seconds * 48000.0;
+  commit(r.store, ops::warpAsLoop(r.doc(), c, 1, AudioWarp::Tones));
+  CHECK(clip().warp == AudioWarp::Tones);
+  CHECK(warpFrameAt(clip(), 48000.0, static_cast<double>(clip().loop.start)) == doctest::Approx(w0));
+  CHECK(warpFrameAt(clip(), 48000.0, static_cast<double>(clip().loop.end)) == doctest::Approx(w1));
+  (void)warped;
+}
+
 TEST_CASE("recording: the warp law through markers is piecewise linear and invertible") {
   const std::vector<WarpMarker> m = {{1000.0, 100}, {5000.0, 300}, {5500.0, 1300}};
   const double fpt = 2.0;

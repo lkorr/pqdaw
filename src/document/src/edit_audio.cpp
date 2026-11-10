@@ -231,4 +231,100 @@ EditResult removeWarpMarker(const Project& p, ClipRef clip, size_t index) {
   });
 }
 
+// ---- Warp commands of the audio clip view (T6.8) -------------------------------------------------------------------
+
+namespace {
+// A new length for clip `c` on `t`, kept short of the next clip on the track (these commands never overwrite).
+Ticks lengthBeforeNext(const Track& t, const AudioClip& c, Ticks want) {
+  Ticks len = std::max<Ticks>(1, want);
+  for (const ClipSlot& s : t.clips)
+    if (s.id != c.id && s.start() > c.start) len = std::min(len, s.start() - c.start);
+  return len;
+}
+}  // namespace
+
+EditResult slideWarpMarker(const Project& p, ClipRef clip, size_t index, double sourceFrame) {
+  if (!std::isfinite(sourceFrame)) return invalid("warp marker frame must be finite");
+  return editAudioClips(p, std::span<const ClipRef>(&clip, 1), "Slide Warp Marker", [&](const ClipFound&, AudioClip& c) -> Status {
+    PQ_DOC_TRY(needWarped(c));
+    if (index >= c.markers.size()) return notFound("no such warp marker");
+    // Strictly between the neighbours: the closest representable frames inside (a fraction of a frame off them).
+    double lo = 0.0, hi = std::numeric_limits<double>::max();
+    if (index > 0) lo = std::nextafter(c.markers[index - 1].sourceFrame, hi);
+    if (index + 1 < c.markers.size()) hi = std::nextafter(c.markers[index + 1].sourceFrame, 0.0);
+    if (!(lo <= hi)) return ok();  // no room: unchanged
+    c.markers[index].sourceFrame = std::clamp(sourceFrame, lo, hi);
+    return checkWarpMarkers(c.markers);
+  });
+}
+
+EditResult warpFromHere(const Project& p, ClipRef clip, Ticks content, double bpm) {
+  PQ_DOC_TRY(checkTick(content, "warp marker"));
+  if (!(bpm >= kMinBpm && bpm <= kMaxBpm)) return invalid("tempo out of range");
+  return editAudioClips(p, std::span<const ClipRef>(&clip, 1), "Warp From Here", [&](const ClipFound&, AudioClip& c) -> Status {
+    PQ_DOC_TRY(needWarped(c));
+    const double rate = sampleRate(p, c.sample);
+    const double frame = warpFrameAt(c, rate, static_cast<double>(content));
+    std::vector<WarpMarker> m;
+    for (const WarpMarker& k : c.markers)
+      if (k.content < content) m.push_back(k);
+    const bool lone = m.empty();
+    if (!lone && !(m.back().sourceFrame < frame)) return invalid("Warp From Here: the source runs backwards there");
+    m.push_back({frame, content});
+    if (lone) {
+      c.sourceBpm = bpm;  // a lone marker reads at the source BPM on both sides
+    } else {
+      m.push_back({frame + framesPerContentTick(rate, bpm) * static_cast<double>(kPpq), content + kPpq});
+    }
+    c.markers = std::move(m);
+    return checkWarpMarkers(c.markers);
+  });
+}
+
+EditResult warpAsLoop(const Project& p, ClipRef clip, int32_t bars, AudioWarp offMode) {
+  if (bars < 1 || bars > 1024) return invalid("bars out of range");
+  if (!isWarped(offMode)) return invalid("Warp as Loop needs a warped mode");
+  return editAudioClips(p, std::span<const ClipRef>(&clip, 1), "Warp as Loop", [&](const ClipFound& f, AudioClip& c) -> Status {
+    const double rate = sampleRate(p, c.sample);
+    double a = 0.0, b = 0.0;  // the source region, frames
+    if (!isWarped(c.warp)) {
+      a = c.contentStartFrame;
+      b = a + c.seconds * rate * audioRateRatio(p, f.path, c);
+      c = withWarp(*p.timeline, c, offMode, c.sourceBpm, rate);
+    } else {
+      const bool looped = c.loop.enabled && c.loop.end > c.loop.start;
+      const Ticks c0 = looped ? c.loop.start : c.contentStart, c1 = looped ? c.loop.end : c.contentStart + c.length;
+      a = warpFrameAt(c, rate, static_cast<double>(c0));
+      b = warpFrameAt(c, rate, static_cast<double>(c1));
+    }
+    if (!(b > a)) return invalid("Warp as Loop: the clip plays no source");
+    const Ticks len = static_cast<Ticks>(bars) * kTicksPerWhole;
+    // sourceBpm so that `len` content ticks span b − a frames: fpt = (b − a) / len = rate · 60 / (bpm · kPpq).
+    const double bpm = rate * 60.0 * static_cast<double>(len) / ((b - a) * static_cast<double>(kPpq));
+    if (!(bpm >= kMinBpm && bpm <= kMaxBpm)) return invalid("Warp as Loop: the tempo would be out of range");
+    c.sourceBpm = bpm;
+    c.contentStart = static_cast<Ticks>(std::llround(a / framesPerContentTick(rate, bpm)));
+    c.markers = {WarpMarker{a, c.contentStart}};  // lone: exact through the region's start at sourceBpm
+    c.loop = {true, c.contentStart, c.contentStart + len};
+    c.length = lengthBeforeNext(*f.track, c, len);
+    return ok();
+  });
+}
+
+EditResult autoWarpClips(const Project& p, std::span<const ClipRef> clips, AudioWarp warp, double bpm) {
+  if (!isWarped(warp)) return invalid("auto-warp needs a warped mode");
+  if (!(bpm >= kMinBpm && bpm <= kMaxBpm)) return invalid("tempo out of range");
+  return editAudioClips(p, clips, "Auto-Warp", [&](const ClipFound& f, AudioClip& c) -> Status {
+    if (isWarped(c.warp)) return ok();
+    const SampleRef* s = findSample(p, c.sample);
+    const double rate = s != nullptr ? s->rate : 48000.0;
+    c = withWarp(*p.timeline, c, warp, bpm, rate);
+    if (s != nullptr && !c.reverse) {
+      const auto end = static_cast<Ticks>(std::floor(warpContentAt(c, rate, static_cast<double>(s->frames))));
+      c.length = lengthBeforeNext(*f.track, c, end - c.contentStart);
+    }
+    return ok();
+  });
+}
+
 }  // namespace pq::doc::ops

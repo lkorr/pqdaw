@@ -206,6 +206,24 @@ EditResult setAudioClipWarpParams(const Project& p, std::span<const ClipRef> cli
 EditResult addWarpMarker(const Project& p, ClipRef clip, Ticks content);
 EditResult moveWarpMarker(const Project& p, ClipRef clip, size_t index, Ticks content);
 EditResult removeWarpMarker(const Project& p, ClipRef clip, size_t index);
+// T6.8 (the audio clip view): Ctrl-drag of a marker — marker `index` pinned to source frame `sourceFrame` with its
+// content tick kept (the audio under it slides), clamped strictly between its neighbours' frames and to >= 0.
+EditResult slideWarpMarker(const Project& p, ClipRef clip, size_t index, double sourceFrame);
+// T6.8: Live's "Warp From Here": the markers before content tick `content` stay, one sits at `content` (where the
+// source plays now), the later ones go, and from there on the source is read at `bpm` (a second marker one beat later;
+// with no earlier marker the clip's source BPM becomes `bpm`, so the whole clip follows it). An Off clip:
+// InvalidArgument. `bpm` in [kMinBpm, kMaxBpm].
+EditResult warpFromHere(const Project& p, ClipRef clip, Ticks content, double bpm);
+// T6.8: "Warp as N-Bar Loop": the source the clip plays now (its loop brace when looping, else from its start for its
+// length; an Off clip: its window) becomes exactly `bars` bars of 4/4 — the markers replaced by one at the region's
+// start, the source BPM set so the region spans the bars, the loop on over it, the clip `bars` bars long (kept short of
+// the next clip on the track: these commands never overwrite). An Off clip
+// switches to `offMode` (a warped mode) first. InvalidArgument when the tempo would leave [kMinBpm, kMaxBpm].
+EditResult warpAsLoop(const Project& p, ClipRef clip, int32_t bars, AudioWarp offMode = AudioWarp::Beats);
+// T6.8: auto-warp (a long sample dropped with the "Auto-Warp long samples" preference on): each warp-Off clip switched
+// to `warp` at source tempo `bpm`, its length re-derived so it still plays to the file's end (short of the next clip).
+// Warped clips are left alone. One step.
+EditResult autoWarpClips(const Project& p, std::span<const ClipRef> clips, AudioWarp warp, double bpm);
 
 // ---- Take lanes and comping (T6.1; model.h "Take lanes") ------------------------------------------------------------
 // One undo step each. Take lanes live on MIDI and audio tracks.
