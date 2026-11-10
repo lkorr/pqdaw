@@ -40,6 +40,15 @@
 //   LivePorts::push(port)          that port's producer thread (one per port); wait-free
 //   publish, collect, setLatency, popRecord, setRecording   the UI thread (one)
 //   process, emit                  the audio thread (Engine::process / onSlot). RT-safe.
+//   CaptureRing::read, engineNow   the UI thread (any one reader)
+//
+// ---- Capture MIDI (T6.9) ----------------------------------------------------------------------------------------------
+// Every listening track keeps what it played, always (no Record needed): its LiveTrackDesc::capture ring (owned by the
+// app, allocated off the audio thread the first time the track listens, shared with every route image that routes to
+// it) gets one CapturedNote per note-on the track played, written in place by the audio thread (onNoteOn; the note-off
+// stamps its end into the same slot, whatever was re-routed between: a held note keeps its ring while the current image
+// still routes its (source, channel) to its slot, else it ends uncaptured). The ring is overwritten oldest first; the
+// reader copies a range and drops what the writer overwrote meanwhile (sequence numbers, seqlock style).
 
 #include <array>
 #include <atomic>
@@ -112,6 +121,56 @@ struct LivePitch {
   bool mapped() const noexcept { return hz > 0.0f; }
 };
 
+// ---- Capture MIDI (T6.9; see "Capture MIDI" above) ----
+inline constexpr uint32_t kCaptureNotes = 32768;   // per track: 64k events (each note's on and off), …
+inline constexpr double kCaptureSeconds = 600.0;   // … of which the reader keeps the last 10 minutes
+inline constexpr int64_t kCaptureOpen = std::numeric_limits<int64_t>::max();  // the end of a note still held
+
+// One captured note as the reader copies it out.
+struct CapturedNote {
+  uint64_t seq = 0;          // its sequence number in the ring (0, 1, …)
+  int64_t engineTime = 0;    // the note-on: when it played (engine samples; as LiveNoteRecord::engineTime)
+  int64_t songSample = -1;   // the transport's song sample then (-1: stopped; as LiveNoteRecord::songSample)
+  int64_t endTime = kCaptureOpen;  // the note-off's engine time (kCaptureOpen: still held)
+  float velocity = 0.0f;     // 1 … 127
+  float release = 0.0f;      // release velocity 0 … 127 (once ended)
+  float bendCents = 0.0f;    // the source's pitch bend at the note-on (Hz mode freezes it: InputPitchMap::atNoteOn)
+  tuning::PitchId id;        // the key's identity on the track (LivePitch::id: Keys a Degree, Hz a frozen Cents)
+  RawMidi raw;               // the note-on as received (port, channel, key, velocity, stamp)
+};
+
+class CaptureRing {
+public:
+  explicit CaptureRing(uint32_t capacity = kCaptureNotes);  // allocates (off the audio thread); a power of two
+  CaptureRing(const CaptureRing&) = delete;
+  CaptureRing& operator=(const CaptureRing&) = delete;
+  // Audio thread (the one writer). A note-on; returns its sequence number. RT-safe.
+  uint64_t begin(int64_t engineTime, int64_t songSample, float velocity, float bendCents, const tuning::PitchId& id,
+                 const RawMidi& raw) noexcept;
+  // Audio thread: note `seq` ended at `engineTime` (nothing when it was overwritten already). RT-safe.
+  void end(uint64_t seq, int64_t engineTime, float release) noexcept;
+  // Notes begun so far (any thread).
+  uint64_t written() const noexcept { return written_.load(std::memory_order_acquire); }
+  uint32_t capacity() const noexcept { return mask_ + 1; }
+  // The reader (one at a time): appends the notes with sequence numbers in [from, written()) that are still in the ring
+  // (older ones were overwritten), in order. Not RT code (appends to `out`).
+  void read(uint64_t from, std::vector<CapturedNote>& out) const;
+
+private:
+  struct Slot {
+    int64_t engineTime = 0, songSample = -1;
+    std::atomic<int64_t> end{kCaptureOpen};  // stored (release) after `release`
+    std::atomic<float> release{0.0f};
+    float velocity = 0.0f, bendCents = 0.0f;
+    tuning::PitchId id;
+    RawMidi raw;
+  };
+  std::unique_ptr<Slot[]> slots_;
+  uint32_t mask_ = 0;
+  std::atomic<uint64_t> written_{0};
+  std::atomic<uint64_t> begun_{0};  // notes whose writing started (written_ + 1 while one is being written)
+};
+
 struct LiveTrackDesc {
   uint32_t slot = 0;                   // instrument event slot
   bool hzMode = false;                 // doc::NoteInputMode::Hz (informational: the table already holds the mode)
@@ -119,6 +178,7 @@ struct LiveTrackDesc {
   uint8_t channel = 0;                 // 0: every channel; 1 … 16: that MIDI channel only (the keyboard is channel 1)
   std::vector<LivePitch> keys;         // 128 entries (MIDI keys)
   std::vector<LivePitch> keyboard;     // kKeyboardKeys entries (empty: the keyboard plays nothing here)
+  std::shared_ptr<CaptureRing> capture;  // T6.9: where the track's notes are captured (null: nowhere)
 };
 struct LiveRouteDesc {
   std::vector<LiveTrackDesc> tracks;
@@ -131,6 +191,7 @@ public:
     uint32_t slot;
     const LivePitch* keys;      // 128
     const LivePitch* keyboard;  // kKeyboardKeys, or null
+    CaptureRing* capture;       // T6.9: the track's capture ring, or null (the image keeps it alive)
   };
   // Off the audio thread (allocates). Errors: a track with a key table that is not 128 entries, a keyboard table of the
   // wrong size, a channel > 16.
@@ -148,12 +209,14 @@ private:
     uint32_t begin = 0, end = 0;
   };
   std::vector<std::vector<LivePitch>> tables_;  // per track: 128 keys then the keyboard's
+  std::vector<std::shared_ptr<CaptureRing>> captures_;  // T6.9: the tracks' capture rings (kept alive while routed)
   std::vector<Target> targetList_;
   std::array<Range, kLiveSources * kLiveChannels> ranges_{};
   std::array<float, kLiveSources> bendCents_{};
 };
 
-// A note the live input played, for recording (T6.7) and Capture MIDI (T6.9): written only while setRecording(true).
+// A note the live input played, for recording (T6.7): written only while setRecording(true). (Capture MIDI, T6.9, has
+// its own always-on per-track rings: CaptureRing.)
 struct LiveNoteRecord {
   enum class Kind : uint8_t { On, Off };
   Kind kind = Kind::On;
@@ -227,6 +290,8 @@ public:
   const LiveInputStats& stats() const noexcept { return stats_; }  // audio thread (or after it)
   // Engine time of host time `stamp` (the filter's current map; before any host time: blockStart). Audio thread.
   int64_t engineTimeOf(int64_t stamp) const noexcept;
+  // T6.9: the engine time at the end of the last block process() saw (any thread; relaxed).
+  int64_t engineNow() const noexcept { return now_.load(std::memory_order_relaxed); }
 
 private:
   struct Held {
@@ -234,6 +299,8 @@ private:
     bool sustained;  // released while the sustain pedal was down: the note-off waits for the pedal
     uint32_t slot, noteId;
     float hz;        // the key's unbent static Hz (a bend moves the voice from it)
+    CaptureRing* capture;  // T6.9: the ring its note-on went to (null: none), and its sequence number there
+    uint64_t captureSeq;
   };
   struct Pending {
     int64_t time;
@@ -253,6 +320,7 @@ private:
               const RawMidi& m, const Block& b) noexcept;
   void updateClock(const Block& b) noexcept;
   void retuneHeld(const LiveRouteImage& img, const Block& b) noexcept;
+  void recaptureHeld(const LiveRouteImage* img) noexcept;
 
   LiveInputConfig cfg_;
   std::shared_ptr<LivePorts> ports_;
@@ -269,6 +337,7 @@ private:
   std::vector<Retired> retired_;                 // UI thread
   std::atomic<uint32_t> latency_{0};
   std::atomic<bool> recording_{false};
+  std::atomic<int64_t> now_{0};
   SpscRing<LiveNoteRecord> record_;
   // Audio thread.
   std::vector<Held> held_;

@@ -7,7 +7,9 @@
 #include <utility>
 #include <vector>
 
+#include "pq/app/midi_capture.h"
 #include "pq/app/project_link.h"
+#include "pq/document/edit_ops.h"
 #include "pq/document/input_map.h"
 #include "pq/document/lower.h"
 #include "pq/document/pitch_resolve.h"
@@ -130,14 +132,21 @@ void ProjectLink::publishLiveRoutes(const doc::Project& p, bool force) {  // UI 
     td.channel = m.midiIn.channel;
     td.keys = entry.keys;
     td.keyboard = entry.keyboard;
+    // T6.9: Capture MIDI's ring, allocated the first time the track listens (here, off the audio thread).
+    CaptureState& cs = capture_[t.id.value];
+    if (!cs.ring) cs.ring = std::make_shared<engine::CaptureRing>(engine::kCaptureNotes);
+    td.capture = cs.ring;
     desc.tracks.push_back(std::move(td));
     key.insert(key.end(), {t.id.value, slot, sources, m.midiIn.channel, reinterpret_cast<uintptr_t>(entry.def),
                            reinterpret_cast<uintptr_t>(entry.table), static_cast<uint64_t>(t.noteInput.mode),
-                           static_cast<uint64_t>(t.noteInput.keyMap), signals.size()});
+                           static_cast<uint64_t>(t.noteInput.keyMap), signals.size(),
+                           reinterpret_cast<uintptr_t>(cs.ring.get())});
     for (const doc::TuningId s : signals) key.push_back(s.value);
     next.emplace(t.id.value, std::move(entry));
   };
   eachMidi(p.tracks, doc::TrackPath{}, visit);
+  // T6.9: a deleted track's ring goes (the engine lets go of it once the image without it is current).
+  std::erase_if(capture_, [&](const auto& kv) { return doc::findTrackPtr(p, doc::TrackId{kv.first}) == nullptr; });
   for (uint32_t i = 0; i < engine::kLiveSources; ++i) {
     desc.bendSemitones[i] = liveBend_[i];
     key.push_back(static_cast<uint64_t>(std::lround(liveBend_[i] * 1000.0f)));
@@ -168,6 +177,68 @@ void ProjectLink::liveKey(int32_t equave, int32_t step, float velocity, bool on)
   m.d2 = static_cast<uint8_t>(std::clamp(std::lround(velocity), on ? 1l : 0l, 127l));
   (void)livePorts_->push(engine::kLiveKeyboard, m);  // a full ring releases the keyboard's notes (no stuck note)
   engine_->wake();  // a sleeping engine runs the next block (and restarts a suspended stream)
+}
+
+// ---- T6.9: Capture MIDI ------------------------------------------------------------------------------------------
+
+const engine::CaptureRing* ProjectLink::captureRing(doc::TrackId id) const {  // UI thread
+  const auto it = capture_.find(id.value);
+  return it == capture_.end() ? nullptr : it->second.ring.get();
+}
+
+bool ProjectLink::captureMidi(Ticks insertMarker) {  // UI thread
+  doc::DocumentStore* store = ctx_ != nullptr ? &ctx_->store() : recordStore_;
+  if (store == nullptr) return false;
+  const doc::Project& p = *store->current();
+  const views::PlayheadSnapshot ph = playhead();
+  const bool playing = ph.playing && !ph.countingIn;
+  // The listening tracks (those the routes have a table for), each from its last capture on.
+  struct Read {
+    uint32_t id;
+    uint64_t written;
+    std::vector<engine::CapturedNote> notes;
+    doc::InputPitchMapPtr hzMap;
+  };
+  std::vector<Read> reads;
+  for (const auto& [id, entry] : liveCache_) {
+    const auto it = capture_.find(id);
+    const doc::Track* t = doc::findTrackPtr(p, doc::TrackId{id});
+    if (it == capture_.end() || !it->second.ring || t == nullptr) continue;
+    Read r{id, it->second.ring->written(), {}, nullptr};
+    it->second.ring->read(it->second.mark, r.notes);
+    if (r.notes.empty()) continue;
+    if (t->noteInput.mode == doc::NoteInputMode::Hz) {
+      auto m = doc::buildInputPitchMap(p, t->id);
+      if (m.ok()) r.hzMap = m.value();
+    }
+    reads.push_back(std::move(r));
+  }
+  std::sort(reads.begin(), reads.end(), [](const Read& a, const Read& b) { return a.id < b.id; });  // a stable order
+  std::vector<CaptureTrack> tracks;
+  for (const Read& r : reads) tracks.push_back({doc::TrackId{r.id}, r.notes, r.hzMap});
+  CaptureTiming timing;
+  timing.sampleRate = cfg_.sampleRate;
+  timing.now = engine_->liveInput().engineNow();
+  timing.noteBack = int64_t{engine_->liveInput().latency()} + engine_->recorder().outputLatency();
+  timing.pdc = outputLatency();
+  timing.playing = playing;
+  timing.insertMarker = insertMarker;
+  timing.loop = loopSent_ && loop_.enabled;
+  timing.loopStart = loop_.start;
+  timing.loopEnd = loop_.end;
+  const CapturePlan plan = planCapture(p, tracks, timing);
+  if (plan.clips.empty()) return false;
+  auto e = doc::ops::captureClip(p, store->ids(), plan.clips, plan.bpm);
+  if (!e.ok()) {
+    setError("capture: " + e.error().message);
+    return false;
+  }
+  if (Status st = store->dispatch(e->command); !st.ok()) {
+    setError("capture: " + st.error().message);
+    return false;
+  }
+  for (const Read& r : reads) capture_[r.id].mark = r.written;  // "since the last capture"
+  return true;
 }
 
 }  // namespace pq::app

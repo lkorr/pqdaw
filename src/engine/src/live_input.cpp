@@ -28,12 +28,78 @@ bool LivePorts::push(uint32_t port, const RawMidi& m) noexcept {  // RT-safe (wa
   return ok;
 }
 
+// ---- CaptureRing (T6.9) --------------------------------------------------------------------------------------------
+
+CaptureRing::CaptureRing(uint32_t capacity) {
+  const uint32_t cap = std::bit_ceil(std::max(capacity, 2u));
+  slots_ = std::make_unique<Slot[]>(cap);
+  mask_ = cap - 1;
+}
+
+uint64_t CaptureRing::begin(int64_t engineTime, int64_t songSample, float velocity, float bendCents,
+                            const tuning::PitchId& id, const RawMidi& raw) noexcept {  // RT-safe
+  const uint64_t seq = written_.load(std::memory_order_relaxed);  // the only writer
+  begun_.store(seq + 1, std::memory_order_relaxed);  // seqlock: a reader that sees what follows sees this
+  std::atomic_thread_fence(std::memory_order_release);
+  Slot& s = slots_[seq & mask_];
+  s.engineTime = engineTime;
+  s.songSample = songSample;
+  s.velocity = velocity;
+  s.bendCents = bendCents;
+  s.id = id;
+  s.raw = raw;
+  s.release.store(0.0f, std::memory_order_relaxed);
+  s.end.store(kCaptureOpen, std::memory_order_relaxed);
+  written_.store(seq + 1, std::memory_order_release);
+  return seq;
+}
+
+void CaptureRing::end(uint64_t seq, int64_t engineTime, float release) noexcept {  // RT-safe
+  if (written_.load(std::memory_order_relaxed) - seq > mask_ + 1u) return;  // overwritten by a later note
+  Slot& s = slots_[seq & mask_];
+  s.release.store(release, std::memory_order_relaxed);
+  s.end.store(std::max(engineTime, s.engineTime + 1), std::memory_order_release);
+}
+
+void CaptureRing::read(uint64_t from, std::vector<CapturedNote>& out) const {
+  const uint64_t cap = uint64_t{mask_} + 1;
+  const uint64_t w = written_.load(std::memory_order_acquire);
+  const uint64_t lo = std::max(from, w > cap ? w - cap : 0);
+  if (lo >= w) return;
+  const size_t first = out.size();
+  out.reserve(first + static_cast<size_t>(w - lo));
+  for (uint64_t q = lo; q < w; ++q) {
+    const Slot& s = slots_[q & mask_];
+    CapturedNote n;
+    n.seq = q;
+    n.endTime = s.end.load(std::memory_order_acquire);
+    n.release = s.release.load(std::memory_order_relaxed);
+    n.engineTime = s.engineTime;
+    n.songSample = s.songSample;
+    n.velocity = s.velocity;
+    n.bendCents = s.bendCents;
+    n.id = s.id;
+    n.raw = s.raw;
+    out.push_back(n);
+  }
+  // Seqlock-style validation: the writer may have overwritten the oldest slots while they were copied (writing note q
+  // overwrites q − cap): only notes from (the notes begun now) − cap on are whole.
+  std::atomic_thread_fence(std::memory_order_acquire);
+  const uint64_t b = begun_.load(std::memory_order_relaxed);
+  const uint64_t keep = b > cap ? b - cap : 0;
+  size_t drop = 0;
+  while (first + drop < out.size() && out[first + drop].seq < keep) ++drop;
+  out.erase(out.begin() + static_cast<std::ptrdiff_t>(first), out.begin() + static_cast<std::ptrdiff_t>(first + drop));
+}
+
 // ---- LiveRouteImage ----------------------------------------------------------------------------------------------
 
 Result<std::unique_ptr<const LiveRouteImage>> LiveRouteImage::build(const LiveRouteDesc& desc) {
   auto img = std::unique_ptr<LiveRouteImage>(new LiveRouteImage());
   img->tables_.reserve(desc.tracks.size());
+  img->captures_.reserve(desc.tracks.size());
   for (const LiveTrackDesc& t : desc.tracks) {
+    img->captures_.push_back(t.capture);
     if (t.keys.size() != 128) return Error{ErrorCode::InvalidArgument, "live route: a key table must have 128 entries", {}};
     if (!t.keyboard.empty() && t.keyboard.size() != kKeyboardKeys)
       return Error{ErrorCode::InvalidArgument, "live route: a keyboard table has the wrong size", {}};
@@ -52,7 +118,7 @@ Result<std::unique_ptr<const LiveRouteImage>> LiveRouteImage::build(const LiveRo
         const LiveTrackDesc& t = desc.tracks[i];
         if ((t.sources & (1u << s)) == 0 || (t.channel != 0 && t.channel != c + 1)) continue;
         const LivePitch* keys = img->tables_[i].data();
-        img->targetList_.push_back({t.slot, keys, t.keyboard.empty() ? nullptr : keys + 128});
+        img->targetList_.push_back({t.slot, keys, t.keyboard.empty() ? nullptr : keys + 128, t.capture.get()});
       }
       r.end = static_cast<uint32_t>(img->targetList_.size());
     }
@@ -146,6 +212,7 @@ void LiveInput::releaseHeld(uint32_t i, float releaseVelocity, int64_t time, con
   const Held h = held_[i];
   if (queue(time, h.slot, engine::noteOff(0, h.noteId, releaseVelocity), true)) ++stats_.noteOffs;
   if (m != nullptr) record(LiveNoteRecord::Kind::Off, h.slot, time, releaseVelocity * 127.0f, nullptr, *m, b);
+  if (h.capture != nullptr) h.capture->end(h.captureSeq, time, releaseVelocity * 127.0f);  // T6.9
   held_[i] = held_[--numHeld_];
 }
 
@@ -194,8 +261,12 @@ void LiveInput::onNoteOn(const RawMidi& m, int64_t time, const LiveRouteImage& i
     e.tuning = p->tuning;
     e.noteDegree = p->noteDegree;
     (void)queue(time, t.slot, e, false);
+    // T6.9: Capture MIDI: always, into the track's ring.
+    const uint64_t seq = t.capture != nullptr ? t.capture->begin(time, b.playing ? b.songSample + (time - b.start) : -1,
+                                                                 static_cast<float>(m.d2), bend, p->id, m)
+                                              : 0;
     held_[numHeld_++] = Held{static_cast<uint8_t>(src), static_cast<uint8_t>(ch), static_cast<uint8_t>(key), false, t.slot,
-                             id, p->hz};
+                             id, p->hz, t.capture, seq};
     ++stats_.noteOns;
     record(LiveNoteRecord::Kind::On, t.slot, time, static_cast<float>(m.d2), p, m, b);
   }
@@ -224,6 +295,23 @@ void LiveInput::retuneHeld(const LiveRouteImage& img, const Block& b) noexcept {
       h.hz = p->hz;
       ++stats_.retuned;
     }
+  }
+}
+
+// T6.9: a new image: each held note's ring is the one the image routes its (source, channel) to its slot with, if that
+// is the ring its note-on went to; else none (its track stopped listening: the ring may be freed with the old image).
+void LiveInput::recaptureHeld(const LiveRouteImage* img) noexcept {  // RT-safe
+  for (uint32_t i = 0; i < numHeld_; ++i) {
+    Held& h = held_[i];
+    if (h.capture == nullptr) continue;
+    CaptureRing* keep = nullptr;
+    if (img != nullptr)
+      for (const LiveRouteImage::Target& t : img->targets(h.source, h.channel))
+        if (t.slot == h.slot && t.capture == h.capture) {
+          keep = h.capture;
+          break;
+        }
+    h.capture = keep;
   }
 }
 
@@ -288,6 +376,7 @@ bool LiveInput::process(const Block& b) noexcept {  // RT-safe
   const uint64_t epoch = epoch_.load(std::memory_order_acquire);
   const LiveRouteImage* img = current_.load(std::memory_order_acquire);
   blockStart_ = b.start;
+  now_.store(b.start + static_cast<int64_t>(b.frames), std::memory_order_relaxed);  // T6.9
   // Events emitted, or due before this block and never asked for (no unit ran their slot), are done.
   if (numPending_ != 0) {
     uint32_t o = 0, offs = 0;
@@ -308,6 +397,7 @@ bool LiveInput::process(const Block& b) noexcept {  // RT-safe
   bool retuned = false;
   if (img != seenRoute_) {
     seenRoute_ = img;
+    if (numHeld_ != 0) recaptureHeld(img);  // T6.9: before the old image (and maybe a ring) can be freed
     if (img != nullptr && numHeld_ != 0) {
       const uint32_t before = numPending_;
       retuneHeld(*img, b);

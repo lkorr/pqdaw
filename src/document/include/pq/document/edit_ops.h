@@ -117,6 +117,21 @@ bool toggleFolded(ViewState& view, TrackId track);  // returns the new state
 // Ctrl+Shift+M: an empty looped clip over [start, end) on a MIDI track (overwriting what was there).
 EditResult insertEmptyClip(const Project& p, IdSource& ids, TrackId track, Ticks start, Ticks end,
                            std::string name = {});
+// T6.9 Capture MIDI: ONE undo step ("Capture MIDI"). Per entry a note clip [start, start + length) on its MIDI track
+// (overwriting what lies under it, as placeClip), its `notes` in content ticks (fresh ids), looped over its whole
+// length when `loop`. `bpm` (optional): the song tempo becomes it first (the first tempo point, as the control bar's
+// tempo box) — only for a project without any clip (main or take lanes), else InvalidArgument (the app infers it from
+// what was played while stopped). Errors: unknown / non-MIDI tracks, invalid notes, an empty list.
+struct CapturedClip {
+  TrackId track;
+  Ticks start = 0, length = kTicksPerWhole;
+  bool loop = false;
+  std::vector<Note> notes;
+};
+EditResult captureClip(const Project& p, IdSource& ids, std::span<const CapturedClip> clips,
+                       std::optional<double> bpm = std::nullopt);
+// True when any track has a clip (main lane or a take lane).
+bool projectHasClips(const Project& p) noexcept;
 EditResult deleteClips(const Project& p, std::span<const ClipRef> clips);
 
 struct ClipMove {

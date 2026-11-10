@@ -614,6 +614,11 @@ void ViewContext::record() {  // T6.6; T6.7: while playing it records from the p
   notify(view_change::kTransport);
 }
 
+void ViewContext::captureMidi() {  // T6.9
+  if (!transport_.captureMidi(startMarker_)) setStatus("Capture MIDI: nothing was played on an armed or monitored track");
+  else setStatus("Captured MIDI");
+}
+
 void ViewContext::stopButton() {
   if (transport_.playhead().playing) {
     transport_.stop();
@@ -866,6 +871,7 @@ void ViewContext::registerGlobalActions() {
   add("transport.playStop", [this] { togglePlay(); });
   add("transport.continue", [this] { continuePlayback(); });
   add("transport.record", [this] { record(); });  // T6.6 / T6.7: Record (F9)
+  add("transport.captureMidi", [this] { captureMidi(); });  // T6.9: Capture MIDI (Ctrl+Shift+C)
   // T6.4: the computer MIDI keyboard (Live's M).
   add("keyboard.toggleComputerMidi", [this] { computerKeyboard_.setActive(!computerKeyboard_.active()); });
   computerKeyboard_.onChanged = [this](const ComputerKeyboard& k) {

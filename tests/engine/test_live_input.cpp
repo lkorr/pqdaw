@@ -1,7 +1,7 @@
 // T6.4: live note input in the engine (pq/engine/live_input.h): routing per (port, channel), the stamp → frame map
 // (exact at any block size, smoothed under callback jitter), held notes (re-routes, sustain, retrigger, All Notes Off,
 // ring overflow), pitch bend, the computer keyboard's table, the record tap, 10k events/s for 60 s without a drop or a
-// stuck note, the Engine merge (timeline + auditions + live), and RtScope cleanliness.
+// stuck note, the Engine merge (timeline + auditions + live), and RtScope cleanliness; T6.9: the capture rings.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -514,4 +514,101 @@ TEST_CASE("live input: an idle block costs a load, not a ring scan (CPU)") {
   MESSAGE("idle LiveInput::process: " << ns << " ns per block (17 sources, 2 routed tracks)");
   CHECK(ns < 500.0);  // loose (a shared, loaded machine); the target is <= 20 ns optimised
   CHECK(r.in->stats().messages == 0);
+}
+
+// T6.9: Capture MIDI's ring, written by the audio thread (RtScope: no allocation on the capture-write path).
+TEST_CASE("live input: capture rings keep every note a listening track plays, always (RtScope on the write path)") {
+  Rig r;
+  auto ring = std::make_shared<e::CaptureRing>(8);
+  auto t = track(3, 1u);
+  t.capture = ring;
+  r.in->publish(image({t, track(4, 1u)}));  // slot 4 listens too, without a ring
+  r.push(msg(0, 0x90, 64, 100));
+  r.block(64, {3, 4});  // RtScope inside
+  {
+    // While the transport runs: the note-on's song sample (block-accurate, as the record tap's).
+    e::LiveInput::Block b;
+    b.start = r.now;
+    b.frames = 64;
+    b.playing = true;
+    b.songSample = 1000;
+    r.push(msg(0, 0x91, 67, 80));
+    r.push(msg(0, 0x80, 64, 30));  // ends the first note
+    pq::RtScope rt;
+    r.in->process(b);
+  }
+  r.now += 64;
+  CHECK(r.in->engineNow() == 128);
+  std::vector<e::CapturedNote> got;
+  ring->read(0, got);
+  REQUIRE(got.size() == 2);
+  CHECK(got[0].seq == 0);
+  CHECK(got[0].engineTime == 0);
+  CHECK(got[0].songSample == -1);  // stopped
+  CHECK(got[0].endTime == 64);
+  CHECK(got[0].release == doctest::Approx(30.0f));
+  CHECK(got[0].velocity == 100.0f);
+  CHECK(got[0].id == pitchOf(64).id);
+  CHECK(got[0].raw.d1 == 64);
+  CHECK(got[1].engineTime == 64);
+  CHECK(got[1].songSample == 1000);
+  CHECK(got[1].endTime == e::kCaptureOpen);  // still held
+  CHECK(got[1].raw.status == 0x91);
+  CHECK(ring->written() == 2);
+  // Read from a mark: only what came after.
+  got.clear();
+  ring->read(1, got);
+  REQUIRE(got.size() == 1);
+  CHECK(got[0].seq == 1);
+  // The track stops listening while its note is held: the note-off no longer reaches the ring (the image that kept it
+  // alive may be freed), and nothing breaks.
+  r.in->publish(image({track(4, 1u)}));
+  r.block(64, {3, 4});
+  r.push(msg(0, 0x81, 67, 0));
+  r.block(64, {3, 4});
+  r.in->collect(false);
+  got.clear();
+  ring->read(1, got);
+  REQUIRE(got.size() == 1);
+  CHECK(got[0].endTime == e::kCaptureOpen);
+  // Overwrite: a ring of 8 keeps the last 8 notes.
+  r.in->publish(image({t}));
+  for (int i = 0; i < 12; ++i) {
+    r.push(msg(0, 0x90, static_cast<uint8_t>(40 + i), 90));
+    r.push(msg(0, 0x80, static_cast<uint8_t>(40 + i), 90));
+    r.block(64, {3});
+  }
+  got.clear();
+  ring->read(0, got);
+  REQUIRE(got.size() == 8);
+  CHECK(got.front().seq == ring->written() - 8);
+  CHECK(got.back().raw.d1 == 51);
+  for (const e::CapturedNote& n : got) CHECK(n.endTime == n.engineTime + 1);  // on and off in one block: 1 frame long
+}
+
+TEST_CASE("live input: a capture ring read while the audio side writes keeps only whole notes") {
+  e::CaptureRing ring(64);
+  std::atomic<bool> stop{false};
+  std::thread writer([&] {
+    RawMidi m;
+    for (int64_t i = 0; !stop.load(std::memory_order_relaxed); ++i) {
+      m.d1 = static_cast<uint8_t>(i & 127);
+      m.stamp = i;
+      const uint64_t q = ring.begin(i, i * 2, 1.0f, 0.0f, pq::tuning::PitchId::fromCents(static_cast<double>(i)), m);
+      ring.end(q, i + 5, 0.0f);
+    }
+  });
+  for (int k = 0; k < 2000; ++k) {
+    std::vector<e::CapturedNote> got;
+    ring.read(0, got);
+    for (const e::CapturedNote& n : got) {
+      REQUIRE(n.engineTime == static_cast<int64_t>(n.seq));
+      REQUIRE(n.songSample == 2 * n.engineTime);
+      REQUIRE(n.raw.stamp == n.engineTime);
+      REQUIRE(n.id.cents() == static_cast<double>(n.engineTime));
+      REQUIRE((n.endTime == e::kCaptureOpen || n.endTime == n.engineTime + 5));
+    }
+  }
+  stop = true;
+  writer.join();
 }

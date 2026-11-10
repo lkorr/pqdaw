@@ -36,6 +36,11 @@
 //                       recording from `from` (the armed tracks' inputs: audio to WAV, notes; punch, loop takes).
 //                       Playing: recording starts where the playhead is. Recording: recording ends, playback goes on
 //                       (the session is committed as one undo step). Default: play(from).
+//   captureMidi(insertMarker)
+//                       T6.9: Capture MIDI (Ctrl+Shift+C): what the listening tracks played without recording becomes
+//                       clips (one undo step): playing, at the song ticks it was played against; stopped, at the bar
+//                       of `insertMarker`, looped, the tempo inferred from it (set when the project has no clips).
+//                       False: nothing to capture. Default: false.
 //   outputLatencyMs()   T6.6: how late the output is behind the transport (the PDC total), ms. Default 0.
 //   trackLatencyMs(id)  T6.6: how late track `id`'s output is (its compensated latency, Track Delay included), ms.
 //   audioInputChannels()   T6.7: the open device's input channels (the strips' input chooser). Default 0.
@@ -108,6 +113,10 @@ public:
     (void)equave, (void)step, (void)velocity, (void)on;
   }
   virtual void record(Ticks from) { play(from); }
+  virtual bool captureMidi(Ticks insertMarker) {
+    (void)insertMarker;
+    return false;
+  }
   virtual double outputLatencyMs() { return 0.0; }
   virtual uint32_t audioInputChannels() { return 0; }
   virtual bool recordingOverlay(RecordingOverlay& out) {

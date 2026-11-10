@@ -831,3 +831,22 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   nothing. (6) Take lane height is fixed (34 px, `kTakeLaneHeight`); no resize, no rename in the header yet (the
   document has `renameTakeLane`), no promote gesture (`promoteTake` exists) — not asked for by the plan.
 - Status: decided (reversible).
+
+## Q?-T6.9-a · 2026-11-10 · T6.9 · Capture MIDI: what the plan left open
+- **Context**: docs/plans/M6.md "### T6.9" fixes the buffer, the two modes and the acceptance; these had to be chosen.
+- **Choices** (most reversible): (1) The ring is written by the audio thread itself (`engine::CaptureRing` per track,
+  referenced by the route image), not drained from the T6.7 record tap on the UI thread: the tap is a 4096-entry ring
+  that the UI polls only while it repaints, so a stopped, idle window would lose a long jam. 32768 notes per track
+  (= 64k on/off events, ≈ 2.6 MB), allocated when the track first listens, kept while the track exists; a track's notes
+  are captured only while it still listens (armed / monitored) when Capture is pressed. (2) A phrase ends at a silence
+  of ≥ 2 bars between a note's END and the next note-on, measured at the song tempo at the insert marker. (3) The mode
+  follows the transport: playing → only notes played while it ran; stopped → the last phrase, placed at its song ticks
+  when it was played wholly while the transport ran, else the tempo path. (4) Stopped: the first note-on is the clip's
+  downbeat (a pickup is not detected); length = round((last onset − first onset + 1 beat) / bar), at least 1 bar; a
+  note past the loop end stays in the clip (unheard); the inferred tempo is rounded to 0.01 BPM and set (first tempo
+  point) only in a project without clips (main or take lanes); with clips the notes keep their real time at the song
+  tempo; fewer than 4 onsets: no inference, the song tempo. (5) Playing: the clip spans the phrase's whole bars,
+  unlooped, overwriting what lies under it (no overdub merge); loop passes overlap on the same ticks. (6) Every
+  listening track is captured in the same undo step; a track's "since the last capture" mark moves even when its notes
+  are later undone (a second press does not bring back what an undo removed).
+- Status: decided (1)–(6) (reversible).

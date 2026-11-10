@@ -91,6 +91,51 @@ EditResult insertEmptyClip(const Project& p, IdSource& ids, TrackId track, Ticks
   return e;
 }
 
+bool projectHasClips(const Project& p) noexcept {
+  bool any = false;
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    if (!t.clips.empty()) any = true;
+    for (const auto& lane : t.takes)
+      if (!lane->clips.empty()) any = true;
+  });
+  return any;
+}
+
+EditResult captureClip(const Project& p, IdSource& ids, std::span<const CapturedClip> clips, std::optional<double> bpm) {
+  if (clips.empty()) return invalid("nothing to capture");
+  Edit e = makeEdit("Capture MIDI");
+  if (bpm) {
+    if (!(*bpm >= kMinBpm && *bpm <= kMaxBpm)) return invalid("tempo out of range");
+    if (projectHasClips(p)) return invalid("the tempo follows a capture only in a project without clips");
+    std::vector<TempoPoint> pts = p.timeline->tempo;
+    pts.front().bpm = *bpm;
+    batchOf(e).commands.push_back(SetTempoMap{std::move(pts)});
+  }
+  ClipEdits ed(p);
+  for (const CapturedClip& cc : clips) {
+    PQ_DOC_TRY(checkRange(cc.start, cc.start + cc.length));
+    Result<ClipEditor*> te = ed.editor(cc.track);
+    if (!te) return std::move(te).error();
+    if ((*te)->track().kind != TrackKind::Midi) return invalid("MIDI clips live on MIDI tracks");
+    std::vector<Note> notes = cc.notes;
+    for (Note& n : notes) n.id = ids.note();
+    auto seq = NoteSeq::fromNotes(std::move(notes));
+    if (!seq) return std::move(seq).error();
+    NoteClip c;
+    c.id = ids.clip();
+    c.colour = (*te)->track().colour;
+    c.start = cc.start;
+    c.length = cc.length;
+    c.loop = ClipLoop{cc.loop, 0, cc.length};
+    c.notes = std::move(*seq);
+    (*te)->clearRange(cc.start, cc.start + cc.length, ids);
+    (*te)->add(ClipSlot{c.id, std::make_shared<const NoteClip>(std::move(c)), nullptr});
+    e.clips.push_back({cc.track, (*te)->clips().back().id});
+  }
+  ed.emit(batchOf(e));
+  return e;
+}
+
 EditResult deleteClips(const Project& p, std::span<const ClipRef> clips) {
   Edit e = makeEdit(clips.size() == 1 ? "Delete Clip" : "Delete Clips");
   std::vector<ClipId> done;

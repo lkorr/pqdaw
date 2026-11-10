@@ -212,6 +212,27 @@ TEST_CASE("shell + T6.6: metronome switch and menu, Record / F9 with the count-i
   CHECK(f.shell->infoBody().find("12.5 ms behind") != std::string::npos);
 }
 
+TEST_CASE("shell + T6.9: Capture MIDI by Ctrl+Shift+C and the control bar's button, at the start marker") {
+  Fixture f;
+  const char* kCapture = "main/control-bar/capture-midi";
+  REQUIRE(f.d.find(kCapture) != nullptr);
+  // The button sits right of Record, the same size.
+  CHECK(f.d.rect(kCapture).x > f.d.rect("main/control-bar/record").x);
+  CHECK(f.d.rect(kCapture).w == f.d.rect("main/control-bar/record").w);
+  f.ctx.setStartMarker(3 * kTicksPerWhole);
+  CHECK(f.d.press("Ctrl+Shift+C") == KeyResult::Action);
+  REQUIRE(f.port.last(FakeTransport::Call::CaptureMidi) != nullptr);
+  CHECK(f.port.last(FakeTransport::Call::CaptureMidi)->tick == 3 * kTicksPerWhole);
+  CHECK(f.ctx.status() == "Captured MIDI");
+  f.port.captures = false;  // nothing played: the status line says so
+  f.d.click(f.d.center(kCapture));
+  CHECK(f.port.count(FakeTransport::Call::CaptureMidi) == 2);
+  CHECK(f.ctx.status().find("nothing was played") != std::string::npos);
+  CHECK(f.d.tree().focus() != f.d.find(kCapture));  // not focusable: Space stays the transport's
+  f.d.move(f.d.center(kCapture));
+  CHECK(f.shell->infoTitle() == "Capture MIDI (Ctrl+Shift+C)");
+}
+
 TEST_CASE("shell: undo / redo hotkeys go through the History") {
   Fixture f;
   doc::DocumentStore& store = f.ctx.store();

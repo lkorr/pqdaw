@@ -14,7 +14,7 @@ namespace pq::views {
 
 class FakeTransport final : public TransportPort {
 public:
-  enum class Call : uint8_t { Play, Stop, Continue, Locate, SetLoop, Audition, ReleaseAuditions, LiveKey, Record };
+  enum class Call : uint8_t { Play, Stop, Continue, Locate, SetLoop, Audition, ReleaseAuditions, LiveKey, Record, CaptureMidi };
   struct Record {
     Call call;
     Ticks tick = 0;          // Play, Record: from; Locate: the target
@@ -82,6 +82,10 @@ public:
     calls.push_back(r);
   }
 
+  bool captureMidi(Ticks insertMarker) override {  // T6.9: `captures` says whether there was something to capture
+    calls.push_back({Call::CaptureMidi, insertMarker, {}});
+    return captures;
+  }
   double outputLatencyMs() override { return latencyMs; }  // T6.6
   uint32_t audioInputChannels() override { return inputs; }  // T6.7
   bool recordingOverlay(RecordingOverlay& out) override {   // T6.7: `overlay` whenever its revision moved
@@ -128,6 +132,7 @@ public:
   uint32_t inputs = 0;                                     // T6.7: audioInputChannels
   RecordingOverlay overlay;                                // T6.7: what recordingOverlay hands out (bump its revision)
   uint64_t overlayReads = 0;
+  bool captures = true;                                    // T6.9: what captureMidi returns
 
 private:
   PlayheadSnapshot state_{};

@@ -134,6 +134,14 @@
 // from the record tap (Keys: the map's Degree; Hz: the frozen Cents, a note-on bend frozen through
 // InputPitchMap::atNoteOn); RecordSettings::recordQuantize snaps starts. recordDir(): <project>/samples/recorded, or
 // for an untitled project LinkConfig::unsavedDir (default %LOCALAPPDATA%/pqdaw/Unsaved/<session>/samples/recorded).
+//
+// ---- Capture MIDI (T6.9; project_link_input.cpp, pq/app/midi_capture.h) ----------------------------------------------
+// Every MIDI track the live routes listen with gets an engine::CaptureRing (kCaptureNotes notes, allocated here the
+// first time the track listens, kept while the track exists; a Reset drops them all) in its LiveTrackDesc: the engine
+// writes each note the track plays into it, always (no Record needed). captureMidi(insertMarker) (TransportPort; the
+// command transport.captureMidi) reads every listening track's ring from its last capture on, plans the clips
+// (planCapture: Record's placement while playing, the inferred tempo while stopped), dispatches them as ONE undo step
+// (doc::ops::captureClip, to the attached ViewContext's store or setRecordStore's) and marks the notes captured.
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -478,6 +486,7 @@ public:
   void auditionHz(float hz, float velocity, float durationMs) override;
   void releaseAuditions() override;
   void liveKey(int32_t equave, int32_t step, float velocity, bool on) override;  // T6.4: the computer keyboard
+  bool captureMidi(Ticks insertMarker) override;  // T6.9: see "Capture MIDI" in the file comment
   // T6.6 / T6.7: Record (see "Recording" in the file comment).
   void record(Ticks from) override;
   double outputLatencyMs() override;                 // T6.6: outputLatency() in ms
@@ -491,6 +500,8 @@ public:
   // The tracks the last published route image listens with (tests).
   uint32_t liveRouteTracks() const noexcept { return liveTracks_; }
   uint64_t liveRoutePublishes() const noexcept { return livePublishes_; }
+  // T6.9: track `id`'s capture ring (null: it never listened). UI thread.
+  const engine::CaptureRing* captureRing(doc::TrackId id) const;
 
   // ---- views::MeterSource (UI thread) ----
   // True while the engine runs (it never sleeps while playing), and afterwards until every meter the views read has decayed
@@ -713,6 +724,11 @@ private:
     std::vector<engine::LivePitch> keys, keyboard;
   };
   std::unordered_map<uint32_t, LiveCacheEntry> liveCache_;  // track id (UI thread)
+  struct CaptureState {  // T6.9: a track's capture ring and how far Capture MIDI took its notes
+    std::shared_ptr<engine::CaptureRing> ring;
+    uint64_t mark = 0;
+  };
+  std::unordered_map<uint32_t, CaptureState> capture_;  // track id (UI thread)
   std::vector<uint64_t> liveRouteKey_;                      // what the published image routes (UI thread)
   const void* liveEngine_ = nullptr;                        // the engine it was published to
   uint32_t liveTracks_ = 0;

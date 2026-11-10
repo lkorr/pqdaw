@@ -11,6 +11,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `transport.playStop` | `Space` | global | Transport | implemented (T3.7) |
 | `transport.continue` | `Shift+Space` | global | Transport | implemented (T3.7) |
 | `transport.record` | `F9` | global | Transport | implemented (T6.6: the Record button: count-in (the metronome menu) then play from the start marker; a press while counting in cancels; capturing inputs is T6.7) |
+| `transport.captureMidi` | `Ctrl+Shift+C` | global | Transport | implemented (T6.9: Capture MIDI, also the control bar's button: what the armed / monitored MIDI tracks played without recording becomes a clip, one undo step; playing: at the song ticks it was played on; stopped: tempo inferred, looped at the insert marker's bar) |
 | `edit.undo` | `Ctrl+Z` | global | Editing | implemented (T3.7) |
 | `edit.redo` | `Ctrl+Shift+Z` | global | Editing | implemented (T3.7) |
 | `edit.redo` | `Ctrl+Y` | global | Editing | implemented (T3.7) |

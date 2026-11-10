@@ -1066,6 +1066,7 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   else if (c.has(doc::kChangeParam) && !c.tunings.empty()) publishSequences(p, true);  // static pitches only
   // T6.4: arm / monitor (Param), MIDI input and note input (Meta), tunings, slots: the live routes (published only when
   // one changed).
+  if (reset) capture_.clear();  // T6.9: another project's notes are not this one's
   if (reset || compile || c.has(doc::kChangeParam) || c.has(doc::kChangeMeta)) publishLiveRoutes(p, reset);
   if (reset || structural || c.has(doc::kChangeMeta)) syncRecording(p);  // T6.6: metronome, Track Delay
   // T6.7: monitor gates, capture channels, punch (arm / monitor are params, inputs structural, punch Meta).

@@ -24,7 +24,7 @@ namespace pq::views::shell {
 // down). Not focusable: Space must keep reaching the global play/stop action after a click.
 class TransportButton : public ui::Control {
 public:
-  enum class Icon : uint8_t { Play, Stop, Record, Loop, Metronome, Menu };  // Metronome, Menu (▾): T6.6
+  enum class Icon : uint8_t { Play, Stop, Record, Capture, Loop, Metronome, Menu };  // Metronome, Menu (▾): T6.6; Capture: T6.9
   TransportButton(std::string name, Icon icon);
   std::function<void()> onPress;
   std::function<void()> onContext;  // T6.6: a right press (null: ignored)
@@ -121,6 +121,7 @@ private:
   TransportButton* play_ = nullptr;
   TransportButton* stop_ = nullptr;
   TransportButton* record_ = nullptr;
+  TransportButton* capture_ = nullptr;  // T6.9: Capture MIDI
   TransportButton* loop_ = nullptr;
   TransportButton* metronome_ = nullptr;      // T6.6
   TransportButton* metronomeMenu_ = nullptr;  // T6.6: ▾

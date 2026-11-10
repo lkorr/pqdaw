@@ -143,6 +143,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_live_input.cpp  # T6.4: live MIDI input (live == drawn bit for bit in Keys / Hz across tunings, routes, keyboard, MIDI service)
     app/test_metronome_link.cpp  # T6.6: Track Delay ±480 through the link, a delay edit compiles nothing, metronome settings, Record counts in
     app/test_recording_link.cpp  # T6.7: recording through the link (audio bit-exact + latency placement, loop takes, punch, Keys / Hz notes, overdub)
+    app/test_capture_link.cpp  # T6.9: Capture MIDI through the link (playing ±1 ms, stopped 97 BPM loop, Keys / Hz identities, Ctrl+Shift+C by key dispatch)
     app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
     app/test_tuning_live.cpp  # TU.1: live retune by real dispatch (panel / wheel drags: the held note at every step, 0 compiles; EDO steps; T6.4b bend)
     app/test_comping_link.cpp  # T6.10: a take auditioned from its header (real dispatch) plays through the link, 0 compiles

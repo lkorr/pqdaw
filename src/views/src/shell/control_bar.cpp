@@ -153,6 +153,21 @@ void TransportButton::paint(PaintContext& ctx) {
       break;
     }
     case Icon::Record: ctx.dl.addCircleFilled({cx, cy}, s * 0.45f, ink); break;
+    case Icon::Capture: {  // T6.9: a clip's outline holding three notes at different pitches (piano-roll bars)
+      const float h = std::round(s * 0.5f), w = std::round(s * 0.7f), t = std::max(1.0f, std::floor(ctx.scale.exact(1.0f)));
+      const float x0 = std::round(cx - w), y0 = std::round(cy - h), x1 = x0 + 2 * w, y1 = y0 + 2 * h;
+      ctx.dl.addRectFilled({x0, y0, x1, y0 + t}, ink);
+      ctx.dl.addRectFilled({x0, y1 - t, x1, y1}, ink);
+      ctx.dl.addRectFilled({x0, y0, x0 + t, y1}, ink);
+      ctx.dl.addRectFilled({x1 - t, y0, x1, y1}, ink);
+      const float nh = std::max(2.0f, std::round(s * 0.2f)), iw = x1 - x0 - 4 * t;
+      const float xs[3] = {x0 + 2 * t, x0 + 2 * t + iw * 0.36f, x0 + 2 * t + iw * 0.66f};
+      const float ws[3] = {iw * 0.3f, iw * 0.26f, iw * 0.34f};
+      const float ys[3] = {cy + h * 0.3f, cy - h * 0.15f, cy - h * 0.6f};
+      for (int i = 0; i < 3; ++i)
+        ctx.dl.addRectFilled({std::round(xs[i]), std::round(ys[i]), std::round(xs[i] + ws[i]), std::round(ys[i]) + nh}, ink);
+      break;
+    }
     case Icon::Loop: {
       // A loop arrow: an open ring with an arrowhead, like Live's loop switch.
       const float rad = s * 0.42f, t = std::max(1.0f, ctx.scale.exact(1.5f));
@@ -427,6 +442,14 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
                                              "recording: stops recording (playback goes on). Lit while counting in "
                                              "(a press then cancels) and while recording.");
   record_->onPress = [this] { ctx_.record(); };
+  // T6.9: Capture MIDI (Live keeps it beside Arrangement Record).
+  capture_ = &sized(add<TransportButton>("capture-midi", TransportButton::Icon::Capture), 28);
+  capture_->setInfo("Capture MIDI (Ctrl+Shift+C)", "Turns what you just played on the armed or monitored MIDI tracks into a "
+                                                 "clip, without having recorded it. Playing: the notes since the last "
+                                                 "capture (or the last phrase) where you played them. Stopped: a looped "
+                                                 "clip at the insert marker's bar, the tempo taken from your playing (it "
+                                                 "becomes the song tempo while the project has no clips).");
+  capture_->onPress = [this] { ctx_.captureMidi(); };
   gap(*this, 10);
 
   // Loop switch, loop start and length.

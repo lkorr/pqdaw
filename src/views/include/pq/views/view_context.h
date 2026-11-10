@@ -331,6 +331,9 @@ public:
   // (TransportPort::record); counting in: cancels it (stop). While playing it does nothing yet: capturing inputs and
   // punching in on the fly is T6.7 (the status line says so).
   void record();
+  // T6.9: Capture MIDI (Ctrl+Shift+C, the control bar's button): TransportPort::captureMidi at the start marker (the
+  // insert marker); the status line says when nothing was played.
+  void captureMidi();
   // The stop button: stops; when already stopped, returns the start marker to the beginning (Live).
   void stopButton();
   Ticks startMarker() const noexcept { return startMarker_; }
@@ -528,7 +531,7 @@ public:
   static constexpr std::string_view kBrowserActions[] = {"browser.search"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
   static constexpr std::string_view kGlobalActions[] = {
-      "transport.playStop", "transport.continue", "transport.record", "edit.undo", "edit.redo", "file.new",
+      "transport.playStop", "transport.continue", "transport.record", "transport.captureMidi", "edit.undo", "edit.redo", "file.new",
       "file.open",          "file.save",          "file.saveAs", "view.toggleClipDevice", "view.toggleDetail",
       "edit.toggleDrawMode", "grid.narrow",        "grid.widen",  "grid.toggleTriplet", "grid.toggleSnap",
       "grid.toggleFixed",   "view.toggleTunings", "file.collectAllAndSave", "file.relinkSamples",
