@@ -421,3 +421,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow 61/61 on 3b79d344; after re-rebase onto 3c440ba3: timeline 99/99, project pdc 35/35, playback recording link 17/17, L4 test.
 - Perf / CPU-efficiency check: UI-thread-only additions; latency freeze two integer copies per session.
 - Notes/blockers: M7 take split filed as T6.x-fix-ui-b.
+
+## 2026-11-10 · T6.x-fix-ui-b merged · main
+- Did: merged task/T6.x-fix-ui-b (73f8b9fd): CaptureFifo holds the capture→play delay measured after priming using QPC play times; drift past 0.5 ms engages a PI-controlled 64-tap sinc resampler; driftReserve added to the WASAPI capture target.
+- Verified: worker test_capture_drift (±20/±100/±200 ppm × 10 min, jitter, same-clock bit-exact, RtScope), -Affected -Slow 88/88.
+- Perf / CPU-efficiency check: ~4 µs per 480-frame stereo pull while resampling (~0.04 % core); same-clock path two memcpys.
+- Notes/blockers: real two-device hand check in REVIEW.
