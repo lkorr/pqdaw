@@ -29,6 +29,14 @@
 //                         keeps the lanes it was prepared with: the new one gets its own; its voices and state restart).
 //                         On error the compiler keeps its previous project.
 // Every layout this driver makes carries ProjectLayout::busKey.
+// T6.2 (PDC): each compiled unit records the latency it reports per bus it writes (graph::pathLatency) and which
+// buses it reads through audio wires (CompiledUnit::outLatency / compensatedKeys); latencies() hands them to
+// engine::planCompensation. Inside a MERGED unit (sidechain / modulation / SCC merges) the audio wires into each member
+// track are aligned at compose time: a first front end (compose → infer → optimise) locates each internal wire's
+// source and its path latency; when the wires into a track arrive at different latencies, the unit is composed again
+// with a `latency` node on each early wire (graph::composeUnit's wireDelay) — only misaligned merged units pay that.
+// Modulation wires are never delayed. A member's own sources (its clips, voices) are not delayed to meet a later
+// sidechain (QUESTIONS Q?-T6.2-a).
 // Front-end and build times are reported per unit (CompiledUnit), measured with the steady clock.
 
 #include <cstdint>
@@ -41,6 +49,7 @@
 
 #include "pq/core/result.h"
 #include "pq/engine/interpreter.h"
+#include "pq/engine/latency_plan.h"
 #include "pq/engine/program_image.h"
 #include "pq/engine/project_program.h"
 #include "pq/engine/voices.h"
@@ -121,6 +130,11 @@ struct CompiledUnit {
   std::vector<std::string> inKeys;          // per root `in` ordinal: its bus key
   std::vector<std::pair<uint32_t, std::string>> busNumbers;  // (k of a `bus<k>` name in the schedule, its bus key)
   std::vector<uint32_t> busRemap;           // k of a `bus<k>` name → the current bus index (empty: identity)
+  // T6.2 (PDC; derived, never part of `key`: PF.1's cache key is the program's alone). The latency it reports per bus
+  // it writes (graph::pathLatency of `typed` at its `out bus<k>`), and the buses it reads through Audio / Sidechain
+  // wires (the program delays those; modulation reads stay undelayed), by bus key.
+  std::vector<std::pair<std::string, double>> outLatency;
+  std::vector<std::string> compensatedKeys;
 };
 
 struct ProjectBuild {
@@ -169,6 +183,9 @@ public:
   // See the file comment. `dirtyTracks`: indices into graph.tracks whose patch changed.
   Result<TopologyBuild> rebuild(const graph::ProjectGraph& graph, std::span<const uint32_t> dirtyTracks,
                                 const UnitBackend* backend = nullptr);
+  // T6.2: per unit of the current partition (layout order), what engine::planCompensation needs: the latency of each
+  // bus it writes and the buses it reads through audio wires (current bus indices). O(units · buses).
+  std::vector<UnitLatency> latencies() const;
   // The project params units link to (ProjectParamLink::track indexes the graph passed next).
   void setParamLinks(std::vector<ProjectParamLink> links) { opt_.paramLinks = std::move(links); }
   // T4.4-fix1: the inspected tracks from the next compile on (update() with the track dirty recompiles its unit).

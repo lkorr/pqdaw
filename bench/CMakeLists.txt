@@ -93,6 +93,8 @@ pq_add_bench(pq_bench_hot_swap SOURCES engine/bench_hot_swap.cpp DEPS pq_engine)
 pq_add_bench(pq_bench_timeline SOURCES engine/bench_timeline.cpp DEPS pq_engine)
 # T2.6: per-voice pitch cost of tuning as a signal (the tuning_hz kernel; a tuned track through the VoiceEngine).
 pq_add_bench(pq_bench_tuning_signal SOURCES engine/bench_tuning_signal.cpp DEPS pq_engine)
+# T6.2: plugin-delay compensation: one compensated input's cost per block, the plan at 128 tracks.
+pq_add_bench(pq_bench_pdc SOURCES engine/bench_pdc.cpp DEPS pq_engine)
 # T1.x-arch1: per-track compile units on the 30-track fixture (compile, per-unit vs whole, one-track edits).
 pq_add_bench(pq_bench_project SOURCES engine/bench_project.cpp DEPS pq_jit)
 # T1b.5: the interpreter -> JIT live swap (background compiler, Instant swaps) on the 30-track fixture.

@@ -861,6 +861,12 @@ doc::ParamRange ProjectLink::laneRange(const doc::Project& p, const doc::Automat
 
 void ProjectLink::publishAutomation(const doc::Project& p) {
   std::vector<engine::AutomationLaneDesc> lanes;
+  std::vector<uint32_t> shift;  // T6.2: per param slot, its unit's compensation
+  {
+    std::lock_guard lock(mutex_);
+    shift = paramShift_;
+  }
+  shiftsChanged_.store(false, std::memory_order_release);
   std::vector<uint32_t> automatedSlots;
   std::array<uint8_t, kTuningTables> tapped{};  // L18
   std::string inert;  // lanes on a tuning without a signal: nothing follows them (T3.17-fix3, M3 review M3)
@@ -884,6 +890,7 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
       d.tap = liveTap(p, lane->param, &table);  // T2.6-fix2: a tuning param drives its node per sample
       if (d.tap != nullptr && table < kTuningTables) tapped[table] = 1;
       d.perSample = false;              // every other consumer reads the param (one value per block)
+      d.shiftFrames = s < shift.size() ? shift[s] : 0u;  // T6.2
       // T4.18: device params, macros, chain volumes / pans and wire amounts are read at block rate like the mixer's
       // (their consumers smooth what moves: `gain` stages, the patches' own smoothing). Values are clamped to the
       // param's range (a device's from its patch: the document does not know it).
@@ -1229,6 +1236,7 @@ void ProjectLink::flush() {
       bool drained = true;
       (void)drainDeferred(drained);
     }
+    takeLatencyShifts();  // T6.2 (compiled on the calling thread: the UI thread)
     return;
   }
   std::unique_lock lock(mutex_);
@@ -1332,6 +1340,7 @@ Status ProjectLink::drainDeferred(bool& drained) {
       if (!info.ok()) return fail(info.error());
       meterBus_ = std::move(d.meterMap);
       tapBus_ = std::move(d.tapMap);
+      pendingLatency_.reset();  // T6.2: made for the layout this one replaces (d.latency follows)
       ++layoutSerial_;
       ++stats_.topologyChanges;
     } else {
@@ -1345,6 +1354,10 @@ Status ProjectLink::drainDeferred(bool& drained) {
         ++stats_.unitPublishes;
         d.units.erase(d.units.begin());
       }
+    }
+    if (d.latency) {  // T6.2: the plan of this result, for the layout just published
+      if (Status st = applyLatency(*d.latency); !st.ok()) return fail(st.error());
+      d.latency.reset();
     }
     deferred_.pop_front();
   }
@@ -1363,7 +1376,12 @@ Status ProjectLink::drainDeferred(bool& drained) {
     }
     parked_.erase(parked_.begin() + static_cast<std::ptrdiff_t>(i));
   }
-  anyDeferred_.store(!parked_.empty(), std::memory_order_release);
+  if (pendingLatency_) {  // T6.2: a plan that found no room earlier
+    const LatencyJob job = std::move(*pendingLatency_);
+    pendingLatency_.reset();
+    (void)applyLatency(job);
+  }
+  anyDeferred_.store(!parked_.empty() || pendingLatency_.has_value(), std::memory_order_release);
   drained = true;  // every compile result is in (parked JIT images are optional: the interpreted ones play)
   engine_->wake();
   return Ok{};
@@ -1829,6 +1847,18 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
     for (uint32_t u = 0; u < b.value().images.size(); ++u)
       if (auto pub = prog.value()->publish(u, std::move(b.value().images[u])); !pub.ok()) return fail(pub.error());
     compiledUnits = static_cast<uint32_t>(b.value().images.size());
+    {  // T6.2: the first plan (a new program: nothing sent before)
+      LatencyJob job = planLatency();
+      lastPlan_.reset();
+      pendingLatency_.reset();
+      if (!job.plan.none()) {
+        if (Status st = prog.value()->setCompensation(job.plan); !st.ok()) return fail(st.error());
+        lastPlan_ = job.plan;
+      }
+      std::lock_guard lock(mutex_);
+      if (paramShift_ != job.shift) shiftsChanged_.store(true, std::memory_order_release);
+      paramShift_ = std::move(job.shift);
+    }
     {
       std::lock_guard lock(mutex_);
       meterBus_ = meterMap(b.value().layout);
@@ -1877,6 +1907,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
       }
     }
     if (d.topology || !d.units.empty()) {
+      d.latency = planLatency();  // T6.2
       const bool queued = !deferred_.empty();
       // M3: a topology still waiting for JIT images is published interpreted now: this result supersedes it (its
       // schedules may no longer be the compiler's, so their JIT images might never come).
@@ -2198,6 +2229,7 @@ views::PlayheadSnapshot ProjectLink::playhead() {
   }
   if (fresh) ++reportSeq_;
   collectIdle();
+  takeLatencyShifts();  // T6.2
   views::PlayheadSnapshot s;
   if (report_.commands >= commandsPosted_) {
     s.playing = report_.playing;

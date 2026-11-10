@@ -33,8 +33,15 @@ TEST_CASE("kernel map: every registry atom is lowered to a matching kernel or ex
     ++kernels;
     REQUIRE(static_cast<uint32_t>(m.kernel) < dsp::kAtomCount);
     const dsp::KernelInfo& info = dsp::kernelInfo(m.kernel);
-    CHECK(std::string_view(info.name) == sig.name);
-    CHECK(registryAtomOf(m.kernel) == id);
+    // T6.2: an alias runs another atom's kernel (`latency` = the delay line's); that kernel keeps its own atom.
+    const bool alias = sig.name == "latency";
+    if (alias) {
+      CHECK(m.kernel == dsp::Atom::DelayLinear);
+      CHECK(registryAtomOf(m.kernel) == atomId("delay"));
+    } else {
+      CHECK(std::string_view(info.name) == sig.name);
+      CHECK(registryAtomOf(m.kernel) == id);
+    }
 
     // Inputs: one ArgMap per registry spec; kernel inputs are the Input/InputSeconds ones, numbered in order.
     REQUIRE(m.args.size() == sig.inputs.size());
@@ -84,7 +91,9 @@ TEST_CASE("kernel map: every registry atom is lowered to a matching kernel or ex
     CHECK(dsp::findKernel(m.kernel, 8, info.splRequired) != nullptr);
   }
   CHECK(kernels + elsewhere == reg.size());
-  CHECK(kernels == dsp::kAtomCount - 8);  // every kernel but the 6 split feedback kernels, the block fill and param_ramp
+  // Every kernel but the 6 split feedback kernels, the block fill and param_ramp; T6.2: plus `latency`, an alias atom
+  // of the delay line's kernel.
+  CHECK(kernels == dsp::kAtomCount - 8 + 1);
 }
 
 TEST_CASE("kernel map: the atoms without a kernel are exactly the structural, engine and const ones") {

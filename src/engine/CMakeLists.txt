@@ -22,6 +22,7 @@ pq_add_module(pq_engine
     src/program_host.cpp
     src/project_program.cpp
     src/project_compile.cpp
+    src/latency_plan.cpp
     src/rtaudio_device.cpp
     src/sample_convert.cpp
     src/sequence.cpp

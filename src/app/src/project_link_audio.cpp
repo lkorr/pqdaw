@@ -455,6 +455,7 @@ Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Proje
 Result<engine::RenderStats> ProjectLink::renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink,
                                                         uint32_t blockFrames) {
   flush();
+  takeLatencyShifts();  // T6.2: automation shifted for the compensation the render plays with
   (void)waitForSamples();
   (void)waitForMetaTables();  // TMM.5: meta modules' tables still building (deterministic, like block-filled streams)
   engine::ClipPlayer& clips = engine_->timeline().clipPlayer();

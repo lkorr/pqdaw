@@ -26,6 +26,7 @@ ResponseKind z1(ResponseArgs& a) noexcept;        // z
 ResponseKind delayLinear(ResponseArgs& a) noexcept;   // z^n ((1 − f) + f z), the kernel's clamps
 ResponseKind delayCubic(ResponseArgs& a) noexcept;    // the 4-point Hermite taps
 ResponseKind delayAllpass(ResponseArgs& a) noexcept;  // z^n (c + z) / (1 + c z)
+ResponseKind latency(ResponseArgs& a) noexcept;       // T6.2: the delay line's linear read at `frames` (samples)
 ResponseKind gain(ResponseArgs& a) noexcept;      // x · g, settled
 ResponseKind gainAdd(ResponseArgs& a) noexcept;   // acc + x · g, settled
 // TX.group-oversample: an oversample region's half-band converters (dsp::os::halfBandResponse at the BASE-rate ω: the

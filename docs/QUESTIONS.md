@@ -621,3 +621,15 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   keeps its id, name and place). (7) Comp crossfade default `ops::kCompCrossfade` = kPpq / 32 (≈ 16 ms at 120 BPM).
   (8) Time edits move take lanes (replaced whole) and the punch region like the loop.
 - Status: decided (reversible).
+
+## Q?-T6.2-a · 2026-11-10 · T6.2 · What PDC does not delay yet: clips of a compensated unit, a merged member's own sources
+- **Context**: T6.2 delays a unit's input buses, its note events and its automation by A_u. Two sources are not
+  shifted: (1) the clip players a compensated unit reads (an audio track that also receives a mixer cable from a late
+  track: its clips play on time, its cable input A_u late); (2) inside a merged unit (sidechain), a member's own
+  sources (its clips, voices) when its sidechain / cable input arrives later (a latent kick sidechaining a bass: the key
+  is late against the bass). Both need per-source delays beside the bus ones.
+- **Options**: (A) leave as is (rare: (1) needs a cable into an audio track; (2) a latent sidechain source); (B) delay
+  `ProcessContext::clipIn` per compensated unit through the same reader-owned lines (one line per clip slot it reads);
+  for (2) shift the member's event slot / clip slot by its track's internal target T(t) and add T(t) to its bus inputs;
+  (C) Live-like: delay the whole member track.
+- **Choice**: A for now (most reversible; both are additive later). Revisit with T6.6's latency readouts.

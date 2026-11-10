@@ -12,6 +12,7 @@
 
 #include "crossfade.h"
 #include "pq/core/tap_ring.h"
+#include "pq/engine/latency_plan.h"
 
 namespace pq::engine {
 
@@ -29,6 +30,11 @@ struct ProjectProgram::Packet {
   std::vector<std::pair<uint32_t, uint32_t>> paramMap;    // (new slot, previous packet's slot), equal keys
   std::vector<std::pair<uint32_t, uint32_t>> paramLinks;  // (slot, project param)
   std::vector<const float*> inPtrs;                       // per global in slot: a bus channel or zeros
+  std::vector<uint16_t> inChannel;                        // T6.2: per global in slot: its bus channel
+  std::vector<const float*> inLive;                       // T6.2: per global in slot as a compensated block reads it
+  std::vector<DelayLine*> inLine;                         // T6.2: per global in slot: its delay line (null: none) …
+  std::vector<DelayLine*> storeLine;                      // … per inStores entry …
+  uint64_t lineSeq = 0;                                   // … under the plan with this sequence (0: not mapped yet)
   std::vector<float*> outPtrs;                            // per global out slot: a bus channel or null
   std::vector<float*> fadePtrs;                           // the same into `scratch` (while this packet fades out)
   AlignedBuffer<float> scratch;
@@ -52,6 +58,58 @@ struct ProjectProgram::Packet {
   std::vector<BusStore*> outStores;                       // the distinct buses it produces
   std::vector<uint32_t> outStoreOf;                       // per global out slot: index into outStores, or kNone
   std::vector<uint8_t> outStoreSilent;                    // scratch, per outStores entry
+};
+
+// T6.2: one compensated input of a reader unit (see the header's "Plugin-delay compensation").
+struct ProjectProgram::DelayLine {
+  DelayLine(std::shared_ptr<BusStore> b, uint16_t w, uint32_t frames, uint32_t stride)
+      : bus(std::move(b)), width(w), size(frames), mask(frames - 1),
+        ring(static_cast<size_t>(w) * frames), out(static_cast<size_t>(w) * stride * 2) {}
+  std::shared_ptr<BusStore> bus;  // the input bus (kept alive while a plan names the line)
+  uint16_t width;
+  uint32_t size, mask;            // ring frames (a power of two ≥ the largest tap + one block)
+  AlignedBuffer<float> ring;      // width × size, zeroed
+  AlignedBuffer<float> out;       // width × stride: the delayed block; then width × stride of fade scratch
+  DelayLine* prev = nullptr;      // a smaller line this one replaces: its history is copied at the switch (once)
+  // Audio thread.
+  bool copied = false;
+  bool active = false;            // false: bypassed (delay 0, no fade): the reader reads the bus; the ring is stale
+  bool outSilent = true;          // the last block read only zeros (the reader then reads the program's zeros)
+  uint32_t write = 0;             // ring frame of the next block's frame 0
+  uint32_t delay = 0, from = 0;   // the tap, and the tap it fades from
+  uint32_t fadePos = 0, fadeLen = 0;
+  uint64_t silentRun = uint64_t{1} << 62;  // trailing frames of the ring known to be zero
+};
+
+// T6.2: a voice unit's notes, `delay` frames late (preallocated FIFO; time order kept).
+struct ProjectProgram::EventDelay {
+  explicit EventDelay(uint32_t capacity) : items(capacity) {}
+  struct Item {
+    int64_t at;
+    NoteEvent e;
+  };
+  std::vector<Item> items;  // ring
+  uint32_t head = 0, count = 0;
+  int64_t lastAt = std::numeric_limits<int64_t>::min();
+  uint64_t dropped = 0;
+};
+
+struct ProjectProgram::Compensation {
+  uint64_t seq = 0;
+  uint64_t topoSeq = 0;  // the topology it was made for (the audio thread takes it once it runs that one)
+  struct Line {
+    DelayLine* line;
+    uint32_t delay;      // its target tap (0: fade out, then bypass)
+  };
+  struct Entry {
+    Unit* unit = nullptr;
+    std::vector<Line> lines;
+    EventDelay* events = nullptr;
+    uint32_t eventDelay = 0;
+  };
+  std::vector<Entry> entries;
+  std::vector<std::shared_ptr<DelayLine>> owned;        // its lines (and the ones they copy their history from)
+  std::vector<std::shared_ptr<EventDelay>> ownedEvents;
 };
 
 struct ProjectProgram::Unit {
@@ -80,6 +138,9 @@ struct ProjectProgram::Unit {
   // T1.x-silence: what its image reported after the last block it ran (ProcessContext::dormant / tailsDone).
   bool dormant = false;
   bool tailsDone = true;
+  // T6.2: its entry in the plan the audio thread runs (valid while compSeq is that plan's sequence).
+  const Compensation::Entry* compEntry = nullptr;
+  uint64_t compSeq = 0;
 };
 
 // A bus: `width` planar channels of `stride` floats at fixed addresses for its whole life (shared by every topology
@@ -212,6 +273,7 @@ ProjectProgram::ProjectProgram(const ProjectConfig& config, ProjectLayout layout
   }
   reader_ = *reclaimer_.registerReader();
   silence_ = static_cast<float>(std::pow(10.0, static_cast<double>(cfg_.silenceDb) / 20.0));
+  fadeFrames10ms_ = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(0.01 * cfg_.sampleRate)));
   for (size_t b = 0; b < layout_.busWidth.size(); ++b)
     stores_.push_back(std::make_shared<BusStore>(layout_.busWidth[b], stride_,
                                                  layout_.busKey.empty() ? std::string() : layout_.busKey[b],
@@ -245,6 +307,8 @@ ProjectProgram::ProjectProgram(const ProjectConfig& config, ProjectLayout layout
 ProjectProgram::~ProjectProgram() {
   for (Topology* t : topoInflight_) delete t;
   topoInflight_.clear();
+  for (Compensation* c : compInflight_) delete c;
+  compInflight_.clear();
   units_.clear();    // each Unit frees its in-flight packets
   zombies_.clear();
   // reclaimer_'s destructor frees the retired packets, units and topologies.
@@ -272,6 +336,7 @@ Result<std::unique_ptr<ProjectProgram::Packet>> ProjectProgram::makePacket(
   const float* zeros = zeros_.data();
 
   for (const BusRef& r : ui.in) {
+    p->inChannel.push_back(r.bus == kNoBus ? uint16_t{0} : r.channel);
     if (r.bus == kNoBus) {
       p->inPtrs.push_back(zeros);
       continue;
@@ -312,7 +377,10 @@ Result<std::unique_ptr<ProjectProgram::Packet>> ProjectProgram::makePacket(
     if (r.bus != kNoBus && std::find(p->inStores.begin(), p->inStores.end(), stores[r.bus].get()) == p->inStores.end())
       p->inStores.push_back(stores[r.bus].get());
   for (const BusRef& r : ui.in) p->inStoreOf.push_back(r.bus != kNoBus ? stores[r.bus].get() : nullptr);
+  p->inLive = p->inPtrs;
+  p->inLine.assign(p->inPtrs.size(), nullptr);
   p->inSilent.assign(ui.in.size(), 0);
+  p->storeLine.assign(p->inStores.size(), nullptr);
   p->outSilent.assign(ui.out.size(), 0);
   for (const BusRef& r : ui.out) {
     if (r.bus == kNoBus) {
@@ -667,6 +735,13 @@ bool ProjectProgram::computeQuiet() const noexcept {
     if (U.voices && U.voices->liveVoices() > 0) return false;
     if (!U.tailsDone) return false;  // T1.x-silence: a reverb or delay tail is still ringing out
   }
+  if (comp_ != nullptr)  // T6.2: audio or notes still held in a delay
+    for (const Compensation::Entry& e : comp_->entries) {
+      for (const Compensation::Line& l : e.lines)
+        if (l.line->active && (l.line->fadeLen != 0 || l.line->silentRun < static_cast<uint64_t>(l.line->delay) + lastFrames_))
+          return false;
+      if (e.events != nullptr && e.events->count > 0) return false;
+    }
   return true;
 }
 
@@ -715,6 +790,106 @@ bool ProjectProgram::topologyPending() const {
   return !topoInflight_.empty() && topoInflight_.back()->seq > topoCurrent_.load(std::memory_order_acquire);
 }
 
+Status ProjectProgram::setCompensation(const CompensationPlan& plan) {
+  std::lock_guard lock(mutex_);
+  collectLocked();
+  const auto numUnits = static_cast<uint32_t>(units_.size());
+  if (plan.delays.size() != numUnits || plan.unitLatency.size() != numUnits)
+    return projectError(ErrorCode::InvalidArgument, "compensation: the plan is not for the published layout");
+  for (uint32_t u = 0; u < numUnits; ++u)
+    for (const InputDelay& d : plan.delays[u]) {
+      if (d.bus >= stores_.size() || layout_.busProducer[d.bus] >= u)
+        return projectError(ErrorCode::InvalidArgument, "compensation: unit " + std::to_string(u) + " delays a bus it cannot read");
+      if (d.frames > (1u << 26))
+        return projectError(ErrorCode::InvalidArgument, "compensation: a delay above 2^26 frames");
+    }
+  outputLatency_.store(plan.total, std::memory_order_release);
+  if (compInflight_.size() >= 6) return projectError(ErrorCode::Overflow, "compensation: too many plans pending");
+  auto c = std::make_unique<Compensation>();
+  c->seq = nextCompSeq_;
+  c->topoSeq = nextTopoSeq_ - 1;  // the last published topology
+  const Compensation* last = compLast_;
+  for (uint32_t u = 0; u < numUnits; ++u) {
+    Unit* U = units_[u].get();
+    const Compensation::Entry* prev = nullptr;
+    if (last != nullptr)
+      for (const Compensation::Entry& e : last->entries)
+        if (e.unit == U) prev = &e;
+    Compensation::Entry e;
+    e.unit = U;
+    auto prevLine = [&](const BusStore* b) -> const Compensation::Line* {
+      if (prev != nullptr)
+        for (const Compensation::Line& l : prev->lines)
+          if (l.line->bus.get() == b) return &l;
+      return nullptr;
+    };
+    auto keep = [&](DelayLine* l) {
+      for (const auto& sp : last->owned)
+        if (sp.get() == l) c->owned.push_back(sp);
+    };
+    for (const InputDelay& d : plan.delays[u]) {
+      const std::shared_ptr<BusStore>& store = stores_[d.bus];
+      const Compensation::Line* pl = prevLine(store.get());
+      const uint32_t need = d.frames + stride_;
+      if (pl != nullptr && pl->line->size >= need) {  // the same line: its history and taps carry over
+        keep(pl->line);
+        e.lines.push_back({pl->line, d.frames});
+        continue;
+      }
+      // A new line (or a larger one copying the old one's history at the switch).
+      const uint32_t frames = std::bit_ceil(std::max(need, pl != nullptr ? pl->delay + stride_ : 0u));
+      auto line = std::make_shared<DelayLine>(store, store->width, frames, stride_);
+      if (pl != nullptr) {
+        line->prev = pl->line;
+        keep(pl->line);
+      }
+      e.lines.push_back({line.get(), d.frames});
+      c->owned.push_back(std::move(line));
+    }
+    if (prev != nullptr)  // a line the plan drops fades to 0 first (then it is bypassed, and the next plan forgets it)
+      for (const Compensation::Line& l : prev->lines)
+        if (l.delay != 0 && std::none_of(e.lines.begin(), e.lines.end(),
+                                         [&](const Compensation::Line& x) { return x.line->bus == l.line->bus; })) {
+          keep(l.line);
+          e.lines.push_back({l.line, 0u});
+        }
+    // A unit's event delay stays once made (events it holds must still come out, note-offs above all).
+    if (U->cfg.voices && (plan.unitLatency[u] > 0 || (prev != nullptr && prev->events != nullptr))) {
+      e.eventDelay = plan.unitLatency[u];
+      if (prev != nullptr && prev->events != nullptr) {
+        e.events = prev->events;
+        for (const auto& sp : last->ownedEvents)
+          if (sp.get() == e.events) c->ownedEvents.push_back(sp);
+      } else {
+        auto ed = std::make_shared<EventDelay>(std::max(cfg_.eventCapacity, 64u) * 4);
+        e.events = ed.get();
+        c->ownedEvents.push_back(std::move(ed));
+      }
+    }
+    if (!e.lines.empty() || e.events != nullptr) c->entries.push_back(std::move(e));
+  }
+  if (c->entries.empty() && (last == nullptr || last->entries.empty())) return Ok{};  // nothing runs, nothing to stop
+  Compensation* raw = c.get();
+  compInflight_.push_back(raw);
+  if (!compRing_.tryPush(raw)) {
+    compInflight_.pop_back();
+    return projectError(ErrorCode::Overflow, "compensation: too many plans pending");
+  }
+  c.release();
+  compLast_ = raw;
+  ++nextCompSeq_;
+  return Ok{};
+}
+
+bool ProjectProgram::compensating(uint32_t unit, uint32_t bus) const noexcept {  // RT-safe
+  if (comp_ == nullptr || unit >= units_.size() || bus >= topo_->stores.size()) return false;
+  const Unit& U = *units_[unit];
+  if (U.compSeq != comp_->seq || U.compEntry == nullptr) return false;
+  for (const Compensation::Line& l : U.compEntry->lines)
+    if (l.line->bus.get() == topo_->stores[bus].get() && l.line->active) return true;
+  return false;
+}
+
 void ProjectProgram::collectLocked() {
   for (auto& up : units_) {
     Unit& U = *up;
@@ -734,6 +909,14 @@ void ProjectProgram::collectLocked() {
     ++k;
   }
   topoInflight_.erase(topoInflight_.begin(), topoInflight_.begin() + static_cast<std::ptrdiff_t>(k));
+  // T6.2: plans older than the one the audio thread runs are no longer read (a plan it dropped unused is older too).
+  const uint64_t compNow = compCurrent_.load(std::memory_order_acquire);
+  k = 0;
+  while (k < compInflight_.size() && compInflight_[k]->seq < compNow) {
+    reclaimer_.retire(compInflight_[k], [](void* q) noexcept { delete static_cast<Compensation*>(q); });
+    ++k;
+  }
+  compInflight_.erase(compInflight_.begin(), compInflight_.begin() + static_cast<std::ptrdiff_t>(k));
   // Zombies: gone once a later topology is current, or dead in the current one.
   const Topology* cur = nullptr;
   for (const Topology* t : topoInflight_)
@@ -873,21 +1056,188 @@ void ProjectProgram::maybeSwitchTopology() noexcept {  // RT-safe
   topoCurrent_.store(t.seq, std::memory_order_release);
 }
 
+void ProjectProgram::maybeSwitchCompensation() noexcept {  // RT-safe
+  for (;;) {
+    if (compPending_ == nullptr && !compRing_.tryPop(compPending_)) return;
+    Compensation& c = *compPending_;
+    if (c.topoSeq > topo_->seq) return;  // made for a topology the audio thread has not switched to yet
+    if (c.topoSeq == topo_->seq) {
+      for (const Compensation::Entry& e : c.entries) {
+        e.unit->compEntry = &e;
+        e.unit->compSeq = c.seq;
+        for (const Compensation::Line& l : e.lines) {
+          DelayLine& L = *l.line;
+          // A new line of a unit that has not played yet (the first plan of a program) starts at its tap: nothing to
+          // fade from.
+          if (L.prev == nullptr && !L.active && L.delay == 0 && (e.unit->cur == nullptr || stats_.blocks == 0)) {
+            L.delay = l.delay;
+            L.active = l.delay != 0;
+            continue;
+          }
+          if (L.prev == nullptr || L.copied) continue;
+          // A larger ring replacing a line: its history, taps and fade, frame for frame (once; bounded by the ring).
+          const DelayLine& P = *L.prev;
+          L.copied = true;
+          L.active = P.active;
+          L.write = P.write;
+          L.delay = P.delay;
+          L.from = P.from;
+          L.fadePos = P.fadePos;
+          L.fadeLen = P.fadeLen;
+          L.silentRun = P.silentRun;
+          L.outSilent = P.outSilent;
+          if (!P.active) continue;
+          for (uint16_t ch = 0; ch < std::min(L.width, P.width); ++ch) {
+            const float* src = P.ring.data() + static_cast<size_t>(ch) * P.size;
+            float* dst = L.ring.data() + static_cast<size_t>(ch) * L.size;
+            for (uint32_t k = 0; k < P.size; ++k) {
+              const uint32_t frame = P.write - P.size + k;
+              dst[frame & L.mask] = src[frame & P.mask];
+            }
+          }
+        }
+      }
+      comp_ = compPending_;
+      compCurrent_.store(c.seq, std::memory_order_release);
+    }
+    // (A plan for an older topology is dropped unused: its units may be gone.)
+    compPending_ = nullptr;
+  }
+}
+
+void ProjectProgram::runLine(DelayLine& L, uint32_t target, uint32_t frames) noexcept {  // RT-safe
+  if (L.fadeLen == 0 && target != L.delay) {
+    if (!L.active) {  // a bypassed line's ring is stale: zeros from here (bounded by the ring)
+      std::memset(L.ring.data(), 0, sizeof(float) * L.ring.size());
+      L.silentRun = uint64_t{1} << 62;
+    }
+    L.from = L.delay;
+    L.delay = target;
+    L.fadePos = 0;
+    L.fadeLen = fadeFrames10ms_;
+    L.active = true;
+  }
+  if (!L.active) return;
+  const BusStore& b = *L.bus;
+  const uint32_t w0 = L.write;
+  const uint32_t at = w0 & L.mask, first = std::min(frames, L.size - at);
+  if (b.silent) {
+    if (L.silentRun < L.size)
+      for (uint16_t c = 0; c < L.width; ++c) {
+        float* r = L.ring.data() + static_cast<size_t>(c) * L.size;
+        std::memset(r + at, 0, sizeof(float) * first);
+        std::memset(r, 0, sizeof(float) * (frames - first));
+      }
+    if (L.silentRun < (uint64_t{1} << 62)) L.silentRun += frames;
+  } else {
+    for (uint16_t c = 0; c < L.width; ++c) {
+      float* r = L.ring.data() + static_cast<size_t>(c) * L.size;
+      const float* x = b.data.data() + static_cast<size_t>(c) * b.stride;
+      std::memcpy(r + at, x, sizeof(float) * first);
+      std::memcpy(r, x + first, sizeof(float) * (frames - first));
+    }
+    L.silentRun = 0;
+  }
+  L.write = w0 + frames;
+  const uint32_t maxTap = std::max(L.delay, L.fadeLen != 0 ? L.from : 0u);
+  L.outSilent = L.silentRun >= static_cast<uint64_t>(maxTap) + frames;
+  if (!L.outSilent) {
+    auto tap = [&](uint16_t c, uint32_t d, float* dst) noexcept {
+      const float* r = L.ring.data() + static_cast<size_t>(c) * L.size;
+      const uint32_t i = (w0 - d) & L.mask, n = std::min(frames, L.size - i);
+      std::memcpy(dst, r + i, sizeof(float) * n);
+      std::memcpy(dst + n, r, sizeof(float) * (frames - n));
+    };
+    for (uint16_t c = 0; c < L.width; ++c) {
+      float* o = L.out.data() + static_cast<size_t>(c) * stride_;
+      tap(c, L.delay, o);
+      if (L.fadeLen != 0) {  // from the old tap to the new one (ProgramHost's linear fade)
+        float* from = L.out.data() + static_cast<size_t>(L.width + c) * stride_;
+        tap(c, L.from, from);
+        crossfade(o, from, o, frames, L.fadePos, L.fadeLen);
+      }
+    }
+  }
+  if (L.fadeLen != 0) {
+    L.fadePos += frames;
+    if (L.fadePos >= L.fadeLen) {
+      L.fadeLen = 0;
+      if (L.delay == 0) L.active = false;  // faded out: bypassed from the next block on
+    }
+  }
+}
+
+void ProjectProgram::delayEvents(Unit& U, EventDelay& d, uint32_t delay, uint32_t frames, int64_t time) noexcept {  // RT-safe
+  const EventList in = U.eventBuf.list();
+  if (delay == 0 && d.count == 0) return;  // nothing held: the events pass as they are
+  const auto cap = static_cast<uint32_t>(d.items.size());
+  for (uint32_t i = 0; i < in.count; ++i) {
+    if (d.count == cap) {
+      ++d.dropped;
+      continue;
+    }
+    // Time order is kept (a shorter delay than the held events' never moves an event before them).
+    const int64_t at = std::max(d.lastAt, time + static_cast<int64_t>(in.events[i].frame) + delay);
+    d.items[(d.head + d.count) % cap] = {at, in.events[i]};
+    ++d.count;
+    d.lastAt = at;
+  }
+  U.eventBuf.clear();
+  const int64_t end = time + frames;
+  while (d.count > 0 && d.items[d.head].at < end) {
+    NoteEvent e = d.items[d.head].e;
+    e.frame = static_cast<uint32_t>(std::max<int64_t>(0, d.items[d.head].at - time));
+    U.eventBuf.push(e);
+    d.head = (d.head + 1) % cap;
+    --d.count;
+  }
+}
+
 bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t time) noexcept {  // RT-safe
   if (U.fadeFrom == nullptr) trySwap(U, s);
   Packet* p = U.cur;
   if (p == nullptr) return false;  // no image yet: its buses keep reading zeros
   Packet* old = U.fadeFrom;
+  // T6.2: this unit's compensation (its delay lines run first, in its own slot: see the header).
+  const Compensation::Entry* ce = comp_ != nullptr && U.compSeq == comp_->seq ? U.compEntry : nullptr;
+  if (ce != nullptr)
+    for (const Compensation::Line& l : ce->lines) runLine(*l.line, l.delay, frames);
   if (U.voices) {
     U.eventBuf.clear();
     if (s.events.fn != nullptr) s.events.fn(s.events.user, time, frames, U.eventBuf);
+    if (ce != nullptr && ce->events != nullptr) delayEvents(U, *ce->events, ce->eventDelay, frames, time);
   }
+  // T6.2: the packets' slot → delay line maps, rebuilt when the plan changed (O(slots · lines), once per plan): every
+  // other block costs one lookup per slot.
+  auto mapLines = [&](Packet& q) noexcept {
+    if (q.lineSeq == comp_->seq) return;
+    q.lineSeq = comp_->seq;
+    auto lineOf = [&](const BusStore* b) noexcept -> DelayLine* {
+      for (const Compensation::Line& l : ce->lines)
+        if (l.line->bus.get() == b) return l.line;
+      return nullptr;
+    };
+    for (size_t k = 0; k < q.inStoreOf.size(); ++k) q.inLine[k] = q.inStoreOf[k] != nullptr ? lineOf(q.inStoreOf[k]) : nullptr;
+    for (size_t k = 0; k < q.inStores.size(); ++k) q.storeLine[k] = lineOf(q.inStores[k]);
+  };
+  if (ce != nullptr) {
+    mapLines(*p);
+    if (old != nullptr) mapLines(*old);
+  }
+  // Whether a bus (through its delay line, if one runs) reads silent for this unit.
+  auto silentVia = [](const BusStore* b, const DelayLine* l) noexcept {
+    return l != nullptr && l->active ? l->outSilent : b->silent;
+  };
   if (cfg_.idleUnits) {
     // Idle units (see the header): bit-exact skip of a unit that would change nothing — proven by the compiler
     // (idleAfterBlocks: settled gains only), or reported by its image after its last block (T1.x-silence: dormant,
     // every sleepable region asleep, nothing else keeping state, outputs silent).
     bool quiet = old == nullptr && (!U.voices || (U.voices->liveVoices() == 0 && U.eventBuf.list().count == 0));
-    for (const BusStore* b : p->inStores) quiet = quiet && b->silent;
+    if (ce != nullptr) {
+      for (size_t k = 0; k < p->inStores.size(); ++k) quiet = quiet && silentVia(p->inStores[k], p->storeLine[k]);
+    } else {
+      for (const BusStore* b : p->inStores) quiet = quiet && b->silent;
+    }
     for (uint32_t k : p->clipSlots) quiet = quiet && cfg_.clipActive[k] == 0;  // T5.4: no audio from its clips
     // M4 review L1: the links are compared only when a param may have changed since they were last read.
     if (p->linkedGen != blockGen_) {
@@ -926,7 +1276,23 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     for (const auto& [slot, param] : p->paramLinks) p->params[slot] = params_[param];
     p->paramsGen = blockGen_;
   }
-  for (size_t k = 0; k < p->inStoreOf.size(); ++k) p->inSilent[k] = p->inStoreOf[k] == nullptr || p->inStoreOf[k]->silent;
+  // T6.2: a compensated input reads its delay line's block (or the zeros, once the line reads only silence).
+  auto live = [&](Packet& q) noexcept {
+    for (size_t k = 0; k < q.inPtrs.size(); ++k) {
+      const DelayLine* l = q.inLine[k];
+      q.inLive[k] = l == nullptr || !l->active ? q.inPtrs[k]
+                    : l->outSilent           ? zeros_.data()
+                                             : l->out.data() + static_cast<size_t>(q.inChannel[k]) * stride_;
+    }
+  };
+  if (ce != nullptr) {
+    live(*p);
+    if (old != nullptr) live(*old);
+    for (size_t k = 0; k < p->inStoreOf.size(); ++k)
+      p->inSilent[k] = p->inStoreOf[k] == nullptr || silentVia(p->inStoreOf[k], p->inLine[k]);
+  } else {
+    for (size_t k = 0; k < p->inStoreOf.size(); ++k) p->inSilent[k] = p->inStoreOf[k] == nullptr || p->inStoreOf[k]->silent;
+  }
   ProcessContext ctx;
   ctx.frames = frames;
   ctx.inSilent = p->inSilent.data();
@@ -934,7 +1300,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   ctx.sampleRate = cfg_.sampleRate;
   ctx.sampleTime = time;
   ctx.transport = transport_;
-  ctx.in = p->inPtrs.data();
+  ctx.in = ce != nullptr ? p->inLive.data() : p->inPtrs.data();
   ctx.numIn = static_cast<uint32_t>(p->inPtrs.size());
   ctx.out = p->outPtrs.data();
   ctx.numOut = static_cast<uint32_t>(p->outPtrs.size());
@@ -947,7 +1313,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   if (old != nullptr) {
     for (const auto& [slot, param] : old->paramLinks) old->params[slot] = params_[param];
     fctx = ctx;
-    fctx.in = old->inPtrs.data();
+    fctx.in = ce != nullptr ? old->inLive.data() : old->inPtrs.data();
     fctx.numIn = static_cast<uint32_t>(old->inPtrs.size());
     fctx.out = old->fadePtrs.data();
     fctx.numOut = static_cast<uint32_t>(old->fadePtrs.size());
@@ -1000,6 +1366,7 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
         cfg_.hook.fn == nullptr ? 0 : cfg_.hook.paramWrites != nullptr ? *cfg_.hook.paramWrites : ++hookGen_;
     blockGen_ = paramGen_ + hookWrites;
     maybeSwitchTopology();
+    if (compPending_ != nullptr || !compRing_.emptyApprox()) maybeSwitchCompensation();  // T6.2
     Topology& t = *topo_;
     uint32_t fading = 0;
     for (size_t i = 0; i < t.order.size(); ++i) {

@@ -22,6 +22,7 @@ constexpr ArgMap kPulse[] = {{U::InputSeconds, 0}};                             
 constexpr ArgMap kTimer[] = {{U::Input, 0}, {U::InputSeconds, 1}};                      // trig, dur
 constexpr ArgMap kZ1[] = {{U::Input, 0}, {U::InitZ1, 0}};                               // x, init
 constexpr ArgMap kDelay[] = {{U::Input, 0}, {U::InputSeconds, 1}, {U::InitMaxDelaySeconds, 0}};  // x, time, max
+constexpr ArgMap kLatency[] = {{U::Input, 0}, {U::Input, 1}};                          // x, frames (samples)
 constexpr ArgMap kWavetable[] = {{U::Input, 0}, {U::Resource, 0}};                      // phase, table
 constexpr ArgMap kShaper[] = {{U::Input, 0}, {U::Resource, 0}};                         // x, table
 constexpr ArgMap kCurve[] = {{U::Input, 0}, {U::Input, 1}, {U::Resource, 0}};           // x, convert, slot (GU.1)
@@ -60,6 +61,7 @@ constexpr Special kSpecial[] = {
     {"delay", kDelay},
     {"delay_cubic", kDelay},
     {"delay_allpass", kDelay},
+    {"latency", kLatency},
     {"wavetable", kWavetable},
     {"shaper", kShaper},
     {"curve", kCurve},
@@ -77,6 +79,19 @@ constexpr Special kSpecial[] = {
     {"gain", kGain},
     {"gain_add", kGainAdd},
     {"svf", kSvf},
+};
+
+// Atoms that run another atom's kernel (they differ in what they mean to the compiler, not in what runs). The kernel
+// keeps its own registry atom (registryAtomOf).
+struct Alias {
+  std::string_view atom;
+  dsp::Atom kernel;
+  std::string_view note;
+};
+constexpr Alias kAlias[] = {
+    // T6.2: the delay line's linear read at time = frames (already samples); the ring is ceil(frames) (the scheduler
+    // reads the const); the frames are the latency the path reports (pq/graph/latency.h).
+    {"latency", dsp::Atom::DelayLinear, "the delay line's kernel at a constant time of `frames` samples"},
 };
 
 struct NoKernel {
@@ -129,7 +144,13 @@ Table build() {
       }
     }
     if (handled) continue;
-    for (uint32_t k = 0; k < dsp::kAtomCount; ++k) {
+    for (const Alias& al : kAlias)
+      if (sig.name == al.atom) {
+        m.lowering = Lowering::Kernel;
+        m.kernel = al.kernel;
+        m.note = al.note;
+      }
+    for (uint32_t k = 0; k < dsp::kAtomCount && m.lowering != Lowering::Kernel; ++k) {
       if (sig.name == dsp::kernelInfo(static_cast<dsp::Atom>(k)).name) {
         m.lowering = Lowering::Kernel;
         m.kernel = static_cast<dsp::Atom>(k);
@@ -144,6 +165,7 @@ Table build() {
     m.args = std::span<const ArgMap>(kPlain, sig.inputs.size() <= std::size(kPlain) ? sig.inputs.size() : 0);
     for (const Special& s : kSpecial)
       if (s.atom == sig.name) m.args = s.args;
+    if (!m.note.empty()) continue;  // an alias
     if (sig.name == "eq" || sig.name == "ne") m.note = "real operands only; bool eq/ne are rewritten by infer()";
     else if (sig.name == "pulse" || sig.name == "timer" || sig.name.starts_with("delay"))
       m.note = "durations in seconds are multiplied by sr by the compiler (kernels take samples)";

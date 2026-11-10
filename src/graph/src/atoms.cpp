@@ -6,6 +6,7 @@
 #include <cstdlib>
 
 #include "pq/dsp/atom_state.h"
+#include "latency_rules.h"
 #include "response_rules.h"
 
 namespace pq::graph {
@@ -97,6 +98,8 @@ constexpr PortSpec pPulse[] = {{"period", kR, true, 0.0f}};
 
 constexpr PortSpec pZ1[] = {{"x", kAny, false, 0.0f, true}, {"init", kRConst, true, 0.0f}};
 constexpr PortSpec pDelay[] = {{"x", kR, false, 0.0f, true}, {"time", kR}, {"max", kRConst}};
+// T6.2: a pure delay of `frames` samples (at the node's rate) that REPORTS its latency (plugin-delay compensation).
+constexpr PortSpec pLatency[] = {{"x", kR, false, 0.0f, true}, {"frames", kRConst}};
 constexpr PortSpec pSampleHold[] = {{"x", kR}, {"trig", kB}};
 constexpr PortSpec pLatch[] = {{"x", kAny}, {"enable", kB}};
 
@@ -257,6 +260,11 @@ const AtomSignature kAtoms[] = {
      "delay line, allpass-interpolated read (≥ 1.5 samples)", rules::delayAllpass},
     {"delay_cubic", C::Memory, pDelay, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
      "delay line, cubic read (≥ 2 samples)", rules::delayCubic},
+    // T6.2: the delay line's kernel (linear read at a constant time: exact at whole samples), and the frames are
+    // reported as the path's latency (pq/graph/latency.h). optimise() makes it a wire below half a sample.
+    {"latency", C::Memory, pLatency, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
+     "pure delay of frames samples that reports its latency (plugin-delay compensation; a lookahead)",
+     rules::latency, 0, latency_rules::frames},
     {"samplehold", C::Memory, pSampleHold, pOutR, sizeof(dsp::SampleHoldState), kStateful | kBroadcast, 0, {},
      "x sampled on each rising edge of trig"},
     {"latch", C::Memory, pLatch, pOutAny, sizeof(dsp::LatchState), kStateful, 0, {},
@@ -375,9 +383,11 @@ const AtomSignature kAtoms[] = {
 
     // Oversample region converters (TMM.6; compiler-inserted, never written in text).
     {"oversample_up", C::Structure, pOversampleR, pOutRAudio, sizeof(dsp::OversampleState), kStateful | kInternal, 0, {},
-     "×factor upsampling into an oversample region (polyphase IIR half-bands)", rules::oversampleUp},
+     "×factor upsampling into an oversample region (polyphase IIR half-bands)", rules::oversampleUp, 0,
+     latency_rules::converter},
     {"oversample_down", C::Structure, pOversampleR, pOutRAudio, sizeof(dsp::OversampleState), kStateful | kInternal, 0,
-     {}, "×factor decimation out of an oversample region (polyphase IIR half-bands)", rules::oversampleDown},
+     {}, "×factor decimation out of an oversample region (polyphase IIR half-bands)", rules::oversampleDown, 0,
+     latency_rules::converter},
     {"oversample_phase", C::Structure, pOversampleR, pOutRAudio, sizeof(dsp::OversamplePhaseState),
      kStateful | kInternal, 0, {}, "×factor phase upsampling (unwrapped linear interpolation)"},
     {"oversample_hold", C::Structure, pOversampleB, pOutBAudio, 0, kInternal, 0, {},

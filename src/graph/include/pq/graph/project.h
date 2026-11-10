@@ -153,8 +153,11 @@ struct UnitPatch {
 // busTypes[k]: the type of bus k as its producer compiled it (busType()); every bus the unit reads must be known
 // (compile producers first: unit order guarantees it). A root `in bus<k>` is declared with that kind and width as an
 // AUDIO-rate global signal, so a consumer never has to be recompiled because its producer's rate changed.
+// T6.2 (plugin-delay compensation inside a merged unit): `wireDelay` (empty, or per graph.wires entry) inserts a
+// `latency(value, round(frames))` node on that wire's contribution when ≥ 0.5 (engine::ProjectCompiler aligns the audio
+// arriving at each member track: pq/engine/project_compile.h).
 Result<UnitPatch> composeUnit(const ProjectGraph& graph, const ProjectPartition& partition, uint32_t unit,
-                              std::span<const PortType> busTypes);
+                              std::span<const PortType> busTypes, std::span<const double> wireDelay = {});
 // The inferred type of the value arriving at root `out bus<k>` of a typed unit (kind Infer if it has no such out).
 PortType busType(const TypedPatch& typed, uint32_t bus);
 // "bus<k>" → k, or kNone.

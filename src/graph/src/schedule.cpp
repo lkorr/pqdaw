@@ -1742,6 +1742,14 @@ private:
   uint32_t maxDelayFramesOf(NodeIndex n) const {
     double v = 0;
     Unit u = Unit::None;
+    // T6.2: a `latency` node runs the delay line's kernel at time = frames (samples): its ring is ceil(frames); the
+    // frames must be a constant (kNone: reported).
+    static const AtomId latencyAtom = atomId("latency");
+    if (P().node(n).atom == latencyAtom) {
+      if (!constInputQuiet(n, 1, v, u)) return kNone;
+      const double frames = std::ceil(std::max(v, 1.0));
+      return frames >= 0 && frames <= static_cast<double>(1u << 30) ? static_cast<uint32_t>(frames) : kNone;
+    }
     const uint32_t maxInput = 2;
     if (!constInputQuiet(n, maxInput, v, u)) return 0;
     const double frames = u == Unit::smp ? std::ceil(v) : std::ceil(v * opt_.sampleRate * factor_[n]);

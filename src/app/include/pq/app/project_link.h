@@ -85,6 +85,14 @@
 // the playhead when it is located while stopped (and at the loop start) so Play starts with data ready, and offline
 // renders install a blocking fill (SamplePool::waitFilled) so they never depend on disk speed. diskUnderruns() feeds
 // the control bar's disk indicator (AudioPrefsPort::diskUnderruns); the status line names a burst.
+//
+// ---- Plugin-delay compensation (T6.2; src/app/src/project_link_latency.cpp) -----------------------------------------
+// Every compile result carries a compensation plan (engine::planCompensation of the compiler's unit latencies,
+// ProjectCompiler::latencies()), handed to the program right after that result's images / topology are published
+// (ProjectProgram::setCompensation; skipped when it equals the last one, so a project without latency never makes one).
+// Automation lanes whose param belongs to a compensated unit are shifted by that unit's A_u
+// (AutomationLaneDesc::shiftFrames): when the shifts change, the automation image is republished on the UI thread
+// (posted with setUiPoster's poster; flush() and playhead() pick it up too). outputLatency() is the master's total.
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -268,6 +276,8 @@ public:
   engine::AudioCallback callback() noexcept { return engine_->callback(); }
   engine::Engine& engine() noexcept { return *engine_; }
   const LinkStats& stats() const noexcept { return stats_; }  // read after flush() (written by the compile path)
+  // T6.2: how late the output is behind the transport (the master's compensated latency, frames). Any thread.
+  uint32_t outputLatency() const noexcept;
   // The last error any path reported (compile, sequence build, tuning tables). Any thread (T3.17-fix1, M3 review
   // L12: the compile worker and the UI thread both write it).
   std::string lastError() const;
@@ -521,6 +531,14 @@ private:
   Status compileNow(const doc::Snapshot& s, uint64_t serial = 0);
   // EQ.4b: a compile's lowering to the attached context (UI thread: directly without a compile thread, else posted).
   void handLowering(const doc::Snapshot& s, uint64_t serial, const std::shared_ptr<const doc::LoweredProject>& lowered);
+  // T6.2 (project_link_latency.cpp): a compile's compensation plan and the automation shift per param slot.
+  struct LatencyJob {
+    engine::CompensationPlan plan;
+    std::vector<uint32_t> shift;
+  };
+  LatencyJob planLatency() const;                // compile path (compileMutex_), after the compiler's build
+  Status applyLatency(const LatencyJob& job);    // compile path, after the publishes it belongs to
+  void takeLatencyShifts();                      // UI thread: republishes automation when the shifts changed
   // A compile's result for the program, published in order (compileMutex_).
   struct Deferred {
     bool topology = false;
@@ -531,6 +549,7 @@ private:
     // M4 review M3 (topology): schedules of continued heavy units whose JIT image replaces the interpreted one in
     // topo.units before the topology is published; drainDeferred stops at it while any is waited for.
     std::vector<std::shared_ptr<const graph::Schedule>> waiting;
+    std::optional<LatencyJob> latency;               // T6.2: applied after the publishes above
   };
   // M4 review M1: a JIT image waiting for room (compileMutex_).
   struct ParkedJit {
@@ -765,6 +784,12 @@ private:
   mutable std::mutex errorMutex_;
   std::string lastError_;
 
+  // T6.2: the last plan handed to the program (compileMutex_), the automation shift per param slot (mutex_), and a
+  // flag for the UI thread (takeLatencyShifts).
+  std::optional<engine::CompensationPlan> lastPlan_;
+  std::optional<LatencyJob> pendingLatency_;  // a plan the program had no room for yet (compileMutex_)
+  std::vector<uint32_t> paramShift_;
+  std::atomic<bool> shiftsChanged_{false};
   // T1b.5. compileMutex_ serialises the compile path's use of compiler_ / program publishes with JIT deliveries.
   std::mutex compileMutex_;
   std::deque<Deferred> deferred_;                 // compileMutex_; see drainDeferred

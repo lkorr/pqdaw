@@ -822,6 +822,8 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
     if (!reports_.tryPush(r)) ++stats_.droppedReports;
     reportPending_ = false;
   }
+  blockSong_ = pos_;  // T6.2: frame 0 of this block (shifted lanes)
+  blockPlaying_ = playing_;
   if (frames != 0) {
     if (playing_) {
       playBlock(frames);
@@ -848,7 +850,10 @@ void Timeline::writeAutomatedParams(std::span<float> params) noexcept {  // RT-s
   for (uint32_t l = 0; l < n; ++l) {
     const uint32_t t = automation_.target(l);
     if (t < params.size()) {  // M4 review L1: only a changed value counts as a write (a held lane changes nothing)
-      const float v = automation_.buffer(l)[0];
+      float v = automation_.buffer(l)[0];
+      if (lanes[l].shift != 0 && blockPlaying_)  // T6.2: its target is compensated: the value of shift frames ago
+        v = static_cast<float>(automation_.image()->valueAt(
+            l, tempo_->tempo().samplesToTicks(blockSong_ - static_cast<SampleTime>(lanes[l].shift), cfg_.sampleRate)));
       changed |= std::bit_cast<uint32_t>(params[t]) != std::bit_cast<uint32_t>(v);
       params[t] = v;
     }

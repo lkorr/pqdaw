@@ -73,6 +73,12 @@ constexpr uint32_t stagesOf(uint32_t factor) noexcept {
   return factor >= 16 ? 4u : factor >= 8 ? 3u : factor >= 4 ? 2u : factor >= 2 ? 1u : 0u;
 }
 constexpr bool validFactor(uint32_t n) noexcept { return n == 1 || n == 2 || n == 4 || n == 8 || n == 16; }
+// T6.2 (PDC): the up + down converters' group delay at DC in base-rate samples (the table above; the same at every
+// rate; tests/dsp/test_oversample.cpp measures it). The latency a path through one region gains (pq/graph/latency.h:
+// half on each converter). RT-safe.
+constexpr double roundTripLatency(uint32_t factor) noexcept {
+  return factor == 2 ? 3.62 : factor == 4 ? 4.74 : factor == 8 ? 5.17 : factor == 16 ? 5.31 : 0.0;
+}
 
 // TX.group-oversample: the converters' frequency responses at a base-rate frequency ω (radians per base sample), as the
 // kernels compute them (the float32-rounded coefficients), for the analytic response through a region

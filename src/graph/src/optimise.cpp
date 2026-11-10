@@ -128,7 +128,7 @@ struct WNode {
 struct Atoms {
   AtomId add, sub, mul, div, neg, pow, abs, min, max, muladd, and_, or_, xor_, not_, select, mux, channel, pack, sr;
   AtomId phasor, gateToReal, noise, sineHz, sine, sin, tanh, fastTanh, sign, counter, floor, frac, clip,
-      exp, sqrt, fastExp, fastSqrt, voiceSum, gain, gainAdd;
+      exp, sqrt, fastExp, fastSqrt, voiceSum, gain, gainAdd, latency;
   Atoms() {
     add = atomId("add"); sub = atomId("sub"); mul = atomId("mul"); div = atomId("div"); neg = atomId("neg");
     pow = atomId("pow"); abs = atomId("abs"); min = atomId("min"); max = atomId("max"); muladd = atomId("muladd");
@@ -140,6 +140,7 @@ struct Atoms {
     floor = atomId("floor"); frac = atomId("frac"); clip = atomId("clip"); exp = atomId("exp");
     sqrt = atomId("sqrt"); fastExp = atomId("fast_exp"); fastSqrt = atomId("fast_sqrt");
     voiceSum = atomId("voice_sum"); gain = atomId("gain"); gainAdd = atomId("gain_add");
+    latency = atomId("latency");
   }
 };
 
@@ -674,6 +675,14 @@ private:
       return;
     }
     if (!isPure(sig)) {
+      // T6.2: a `latency` of less than half a sample is a wire (the delay line's kernel reads at least 1 sample).
+      if (nodes_[n].atom == a_.latency) {
+        float f = 0.0f;
+        if (lit(n, 1, f) && f < 0.5f && replaceNode(n, in(n, 0))) {
+          ++st_.simplified;
+          return;
+        }
+      }
       // A smoothed gain that starts at a literal target is that (pure) multiply (T4.x-fix-dsp): rewritten here, it
       // goes on as the pure atom it became.
       if ((nodes_[n].atom == a_.gain || nodes_[n].atom == a_.gainAdd) && simplify(n)) return;

@@ -144,6 +144,17 @@ ResponseKind delayLinear(ResponseArgs& a) noexcept {
   return ResponseKind::Exact;
 }
 
+ResponseKind latency(ResponseArgs& a) noexcept {
+  // The delay line's kernel at time = frames (samples), its ring sized to ceil(frames): d = max(frames, 1).
+  if (a.numInputs < 2 || a.signal[1] != 0 || a.known[1] == 0) return ResponseKind::Unavailable;
+  const float d = std::isnan(a.value[1]) ? 1.0f : std::max(a.value[1], 1.0f);
+  const float fl = std::floor(d);
+  const double f = d - fl;
+  g(a, 0, 0) = zPow(a.z, static_cast<uint32_t>(fl)) * ((1.0 - f) + f * a.z);
+  a.dependsOnOmega = true;
+  return ResponseKind::Exact;
+}
+
 ResponseKind delayCubic(ResponseArgs& a) noexcept {
   float d = 0.0f;
   if (!delaySamples(a, 2.0f, d)) return ResponseKind::Unavailable;

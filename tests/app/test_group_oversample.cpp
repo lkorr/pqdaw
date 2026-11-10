@@ -569,3 +569,25 @@ TEST_CASE("TX.group-oversample (measure): an audio-rate cutoff sweep (a band-pas
   CHECK(db[1] < db[0] - 10.0);
   CHECK(db[2] <= db[1] + 1.0);
 }
+
+TEST_CASE("TX.group-oversample + T6.2: the link compensates an oversampled group (its latency reported, the master "
+          "late by it); turning it off removes the plan") {
+  Doc d;
+  EqBandOptions o;
+  o.freqHz = 3000.0;
+  const DeviceId band = d.insert(eqBandBlocks(d.store.ids(), o), 1);
+  app::LinkConfig c;
+  c.compileThread = false;
+  c.jit = false;
+  auto made = app::ProjectLink::create(c, d.store.current());
+  REQUIRE_MESSAGE(made.ok(), (made.ok() ? std::string() : made.error().message));
+  std::unique_ptr<app::ProjectLink> link = std::move(made.value());
+  [[maybe_unused]] const ListenerId sub = d.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  CHECK(link->outputLatency() == 0);  // nothing reports latency: no plan
+  d.oversample(band, 2);  // 4×: 4.74 samples, to the nearest sample
+  link->flush();
+  CHECK(link->outputLatency() == 5);
+  d.oversample(band, 0);
+  link->flush();
+  CHECK(link->outputLatency() == 0);
+}

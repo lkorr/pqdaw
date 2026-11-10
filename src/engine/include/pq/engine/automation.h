@@ -45,6 +45,10 @@ struct AutomationLaneDesc {
   // false: only the frame-0 value is rendered (the param is all any consumer reads): one value per lane per block
   // instead of a buffer nobody reads. Lanes with a tap always render per sample.
   bool perSample = true;
+  // T6.2 (PDC): the lane's target sits behind this many frames of compensation (its unit's A_u, latency_plan.h): while
+  // the transport plays, Timeline::writeAutomatedParams writes the lane's value at the song sample this many frames
+  // before the block's frame 0. Lanes with a tap (audio-rate consumers) are not shifted.
+  uint32_t shiftFrames = 0;
 };
 
 class AutomationImage {
@@ -55,6 +59,7 @@ public:
     uint32_t begin, end;  // into points()
     const float** tap;    // AutomationLaneDesc::tap
     bool perSample;       // AutomationLaneDesc::perSample || tap
+    uint32_t shift;       // T6.2: AutomationLaneDesc::shiftFrames (0 with a tap)
   };
 
   // Off the audio thread (allocates). Points are stably sorted by tick. Errors: a non-finite value or curve.

@@ -59,6 +59,17 @@ struct PortSpec {
   bool delayed = false;
 };
 
+// T6.2 (PDC, pq/graph/latency.h): what a path through one node of an atom gains, in BASE-rate samples. `value[i]` is
+// input i's constant value where `known[i]` (a literal after optimise()); `factor` is the oversample factor of the
+// region the node runs in (1 outside one).
+struct LatencyArgs {
+  uint32_t numInputs = 0;
+  const double* value = nullptr;
+  const uint8_t* known = nullptr;
+  uint32_t factor = 1;
+};
+using LatencyRule = double (*)(const LatencyArgs& a) noexcept;
+
 struct AtomSignature {
   std::string_view name;
   AtomCategory category;
@@ -78,6 +89,10 @@ struct AtomSignature {
   ResponseRule response = nullptr;
   // EQ.1b: bytes of scratch the response rule keeps between the calls of one evaluation (ResponseArgs::cache).
   uint32_t responseCacheBytes = 0;
+  // T6.2: the latency this atom REPORTS (pq/graph/latency.h; null: 0). Only what the plugin-delay compensation must
+  // align: the `latency` atom's frames, an oversample region's half-band converters. z1 and delay lines are effects and
+  // report nothing.
+  LatencyRule latency = nullptr;
 
   bool has(uint32_t flag) const noexcept { return (flags & flag) != 0; }
   // Number of fixed (non-repeating) input/output ports.

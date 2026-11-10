@@ -9,7 +9,9 @@
 
 #include "pq/dsp/atoms.h"
 #include "pq/graph/infer.h"
+#include "pq/graph/latency.h"
 #include "pq/graph/optimise.h"
+#include "pq/graph/patch_file.h"
 
 namespace pq::engine {
 
@@ -211,20 +213,88 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   using namespace graph;
   const auto t0 = std::chrono::steady_clock::now();
   const std::string who = "unit '" + partition_.units[u].name + "': ";
-  auto up = composeUnit(g, partition_, u, busTypes_);
-  if (!up.ok()) return up.error();
-  InferOptions io;
-  io.library = &up.value().library;
-  io.voiceContext = up.value().voices;
-  auto infd = inferDetailed(up.value().patch, io);
-  if (!infd.ok()) {
-    auto again = infer(up.value().patch, io);  // the formatted message
-    return compileError(again.ok() ? ErrorCode::Type : again.error().code, who + (again.ok() ? std::string("infer") : again.error().message));
+  // compose → infer → optimise; `probes` (optional) locates values in the result (T6.2: the internal wires' sources).
+  // The unit patch stays at one address while its typed patch is used (TypedPatch::instances point into it).
+  auto front = [&](std::span<const double> wireDelay, std::span<const ProbeTarget> probes,
+                   std::vector<ProbePoint>* points) -> Result<std::pair<std::unique_ptr<UnitPatch>, TypedPatch>> {
+    auto composed = composeUnit(g, partition_, u, busTypes_, wireDelay);
+    if (!composed.ok()) return composed.error();
+    auto up = std::make_unique<UnitPatch>(std::move(composed.value()));
+    InferOptions io;
+    io.library = &up->library;
+    io.voiceContext = up->voices;
+    io.probes = probes;
+    auto infd = inferDetailed(up->patch, io);
+    if (!infd.ok()) {
+      auto again = infer(up->patch, io);  // the formatted message
+      return compileError(again.ok() ? ErrorCode::Type : again.error().code, who + (again.ok() ? std::string("infer") : again.error().message));
+    }
+    OptimiseOptions oo;
+    oo.sampleRate = opt_.sampleRate;
+    std::vector<uint32_t> valueMap;
+    if (points != nullptr) oo.valueMap = &valueMap;
+    auto opt = optimise(std::move(infd.typed), oo);
+    if (!opt.ok()) return compileError(opt.error().code, who + opt.error().message);
+    if (points != nullptr) *points = probePoints(opt.value().patch, infd.probeSources, valueMap);
+    return std::pair<std::unique_ptr<UnitPatch>, TypedPatch>(std::move(up), std::move(opt.value()));
+  };
+  // T6.2 (PDC inside a merged unit): the audio wires into each member track arrive aligned. Each Audio / Sidechain
+  // wire's source has a latency (a member's port: the unit's path latency to it; a bus: 0, the program aligns the
+  // buses the unit reads); the wires into one track are delayed to the latest of them (wireDelay). Modulation wires
+  // are not (SPEC §15 2026-10-24). Only a unit with an internal source pays the probes, and only a misaligned one a
+  // second front end.
+  std::vector<uint32_t> intoUnit, internalSrc;  // wire indices: Audio / Sidechain into u; those from a member of u
+  for (uint32_t wi = 0; wi < g.wires.size(); ++wi) {
+    const ProjectWire& w = g.wires[wi];
+    if (w.kind == WireKind::Modulation || w.to.track >= partition_.unitOf.size() || partition_.unitOf[w.to.track] != u) continue;
+    intoUnit.push_back(wi);
+    if (w.from.track < partition_.unitOf.size() && partition_.unitOf[w.from.track] == u) internalSrc.push_back(wi);
   }
-  OptimiseOptions oo;
-  oo.sampleRate = opt_.sampleRate;
-  auto opt = optimise(std::move(infd.typed), oo);
-  if (!opt.ok()) return compileError(opt.error().code, who + opt.error().message);
+  std::vector<ProbeTarget> probes;
+  std::vector<ProbePoint> points;
+  for (uint32_t wi : internalSrc) {
+    const ProjectPort& from = g.wires[wi].from;
+    const SubcircuitRef sig = subcircuitSignature(*g.tracks[from.track].patch);
+    ProbeTarget t;
+    t.node = NodeId{g.tracks[from.track].id};
+    for (uint16_t o = 0; o < sig.outputs.size(); ++o)
+      if (sig.outputs[o].name == from.port) t.output = o;
+    probes.push_back(std::move(t));
+  }
+  auto fe = front({}, probes, probes.empty() ? nullptr : &points);
+  if (!fe.ok()) return fe.error();
+  if (!internalSrc.empty()) {
+    const std::vector<double> lat = pathLatency(fe.value().second);
+    std::vector<double> arrive(g.wires.size(), 0.0);  // per wire: its source's latency (a bus: 0)
+    for (size_t k = 0; k < internalSrc.size(); ++k) {
+      const ProbePoint& pp = points[k];
+      const PortType& t = pp.node != kNone ? fe.value().second.outputType(pp.node, pp.output) : PortType{};
+      arrive[internalSrc[k]] = pp.node != kNone && t.kind == Kind::Real ? lat[pp.node] : 0.0;
+    }
+    std::vector<double> target(g.tracks.size(), 0.0);
+    for (uint32_t wi : intoUnit) target[g.wires[wi].to.track] = std::max(target[g.wires[wi].to.track], arrive[wi]);
+    std::vector<double> wireDelay(g.wires.size(), 0.0);
+    bool any = false;
+    for (uint32_t wi : intoUnit) {
+      const double d = std::round(target[g.wires[wi].to.track] - arrive[wi]);
+      // A bool or optimised-away source cannot take a `latency` node: only real values arrive late (or early).
+      const auto in = std::find(internalSrc.begin(), internalSrc.end(), wi);
+      bool real = in == internalSrc.end() || points[in - internalSrc.begin()].node != kNone;
+      if (in == internalSrc.end())
+        for (uint32_t b = 0; b < partition_.buses.size(); ++b)
+          if (partition_.buses[b].source == g.wires[wi].from) real = busTypes_[b].kind == Kind::Real;
+      if (d >= 1.0 && real) {
+        wireDelay[wi] = d;
+        any = true;
+      }
+    }
+    if (any) {
+      fe = front(wireDelay, {}, nullptr);
+      if (!fe.ok()) return fe.error();
+    }
+  }
+  const UnitPatch& upv = *fe.value().first;
+  Result<TypedPatch> opt(std::move(fe.value().second));
   ScheduleOptions so;
   so.sampleRate = opt_.sampleRate;
   so.visualMode = opt_.visualMode;
@@ -236,27 +306,42 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   CompiledUnit cu;
   for (const Diagnostic& d : sr.schedule.warnings) cu.warnings.push_back(d.message);
   cu.ops = static_cast<uint32_t>(sr.schedule.ops.size());
-  cu.inBus = up.value().inBus;
+  cu.inBus = upv.inBus;
   // IG.1-2: a unit whose notes are only read (the newest note, a reduced note output: voice terminals, no per-voice
   // processing) may schedule no voice stage at all: it then runs as a plain unit (its notes reach it reduced anyway).
-  cu.voices = up.value().voices && std::any_of(sr.schedule.stages.begin(), sr.schedule.stages.end(),
+  cu.voices = upv.voices && std::any_of(sr.schedule.stages.begin(), sr.schedule.stages.end(),
                                                [](const graph::Stage& st) { return st.poly == graph::Poly::Voice; });
   cu.maxVoices = cu.voices ? polyphonyOf(opt_, g, partition_.units[u]) : 0u;
   cu.steal = cu.voices ? stealOf(g, partition_.units[u]) : -1;
   for (uint32_t t : partition_.units[u].tracks) cu.memberIds.push_back(g.tracks[t].id);
   std::sort(cu.memberIds.begin(), cu.memberIds.end());
-  for (uint32_t b : up.value().inBus) {
+  for (uint32_t b : upv.inBus) {
     cu.inKeys.push_back(busKeys_[b]);
     cu.inTypes.push_back(busTypes_[b]);
     cu.readKeys.push_back(busKeys_[b]);
     cu.busNumbers.emplace_back(b, busKeys_[b]);
   }
-  for (uint32_t b : up.value().outBus) {
+  for (uint32_t b : upv.outBus) {
     cu.writeKeys.push_back(busKeys_[b]);
     cu.busNumbers.emplace_back(b, busKeys_[b]);
   }
   std::sort(cu.readKeys.begin(), cu.readKeys.end());
   std::sort(cu.writeKeys.begin(), cu.writeKeys.end());
+  {  // T6.2: the latency it reports per bus it writes, and the buses whose reads the program compensates
+    const TypedPatch& tp = opt.value();
+    const std::vector<double> lat = pathLatency(tp);
+    for (NodeIndex n = 0; n < tp.patch.nodeCount(); ++n) {
+      if (tp.patch.node(n).kind != NodeKind::Output) continue;
+      const uint32_t b = parseBusName(tp.patch.nodeName(n));
+      if (b < busKeys_.size()) cu.outLatency.emplace_back(busKeys_[b], arrivalLatency(tp, lat, n));
+    }
+    for (const ProjectWire& w : g.wires) {
+      if (w.kind == WireKind::Modulation || partition_.unitOf[w.to.track] != u || partition_.unitOf[w.from.track] == u) continue;
+      const std::string k = busKey(g, w.from);
+      if (std::find(cu.compensatedKeys.begin(), cu.compensatedKeys.end(), k) == cu.compensatedKeys.end())
+        cu.compensatedKeys.push_back(k);
+    }
+  }
   cu.idleAfterBlocks = idleAfterBlocks(opt.value(), opt_.maxBlockFrames, globalRampFrames(sr.schedule));
   const uint64_t salt = std::bit_cast<uint64_t>(opt_.sampleRate) ^ (uint64_t{opt_.maxBlockFrames} << 1) ^
                         (uint64_t{voiceGroupsOf(cu)} << 33) ^ (uint64_t{cu.maxVoices} << 45);
@@ -337,6 +422,22 @@ Result<UnitImage> ProjectCompiler::makeImage(uint32_t u, const UnitBackend& back
   if (!img.ok()) return compileError(img.error().code, "unit '" + partition_.units[u].name + "': " + img.error().message);
   cu.buildMs = msSince(t0);
   return bind(u, std::move(img.value()));
+}
+
+std::vector<UnitLatency> ProjectCompiler::latencies() const {
+  std::vector<UnitLatency> out(units_.size());
+  auto index = [&](const std::string& key) -> uint32_t {
+    for (uint32_t b = 0; b < busKeys_.size(); ++b)
+      if (busKeys_[b] == key) return b;
+    return kNoBus;
+  };
+  for (uint32_t u = 0; u < units_.size(); ++u) {
+    for (const auto& [key, frames] : units_[u].outLatency)
+      if (const uint32_t b = index(key); b != kNoBus) out[u].out.emplace_back(b, frames);
+    for (const std::string& key : units_[u].compensatedKeys)
+      if (const uint32_t b = index(key); b != kNoBus) out[u].compensated.push_back(b);
+  }
+  return out;
 }
 
 uint32_t ProjectCompiler::unitOf(const graph::Schedule* s) const noexcept {

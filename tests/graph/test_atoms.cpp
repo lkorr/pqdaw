@@ -61,6 +61,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "curve",
       // EQ.1: the state-variable filter cascade (the filter / EQ core).
       "svf",
+      // T6.2: a pure delay that reports its latency (plugin-delay compensation).
+      "latency",
   };
   for (const char* n : names) {
     CAPTURE(n);

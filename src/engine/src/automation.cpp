@@ -55,7 +55,7 @@ Result<std::unique_ptr<AutomationImage>> AutomationImage::build(std::span<const 
     if (!std::isfinite(l.emptyValue))
       return Error{ErrorCode::InvalidArgument, "AutomationImage: lane " + std::to_string(l.target) + ": bad value", {}};
     Lane lane{l.target, l.emptyValue, static_cast<uint32_t>(img->points_.size()), 0, l.tap,
-              l.perSample || l.tap != nullptr};
+              l.perSample || l.tap != nullptr, l.tap != nullptr ? 0u : l.shiftFrames};
     for (const AutomationPoint& p : l.points) {
       if (!std::isfinite(p.value) || !std::isfinite(p.curve))
         return Error{ErrorCode::InvalidArgument,

@@ -319,6 +319,7 @@ pq_add_test(pq_tests_project
   SOURCES
     engine/test_project.cpp
     engine/test_project_silence.cpp  # T1.x-silence: dormant units, silent buses, the engine's gate waits for tails
+    engine/test_pdc.cpp  # T6.2: plugin-delay compensation (reported latency, the plan, reader-owned delay lines)
   DEPS pq_engine)
 
 # T3.16: the engine timeline (transport, note sequencer, automation renderer), with the VoiceEngine and renderOffline.

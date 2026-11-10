@@ -26,5 +26,6 @@ pq_add_module(pq_graph
     src/param_curve.cpp
     src/response_rules.cpp
     src/response.cpp
+    src/latency.cpp
   DEPS pq_core pq_dsp
 )

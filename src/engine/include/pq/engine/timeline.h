@@ -51,7 +51,9 @@
 // into a param block for param-rate consumers, and for a lane with an audio-rate consumer (AutomationLaneDesc::tap,
 // T2.6-fix2) its buffer into the tap while the block moves (null while it is constant, and when the image is
 // replaced or the timeline destroyed); automation(lane) is the audio-rate buffer. Lanes without a tap and with
-// AutomationLaneDesc::perSample false render only their frame-0 value.
+// AutomationLaneDesc::perSample false render only their frame-0 value. T6.2: a lane with shiftFrames (its target unit
+// is compensated by that many frames, pq/engine/latency_plan.h) writes its value at frame 0's song sample minus the
+// shift while playing (evaluated per block: one evalAutomation per shifted lane).
 //
 // ---- Audio clips (T5.4) -------------------------------------------------------------------------------------------
 // The timeline owns the clip player (pq/engine/clip_player.h) and plays it on the same runs as the notes: every run of
@@ -308,6 +310,8 @@ private:
   void refreshNext(uint32_t track) noexcept;
 
   TimelineConfig cfg_;
+  SampleTime blockSong_ = 0;   // T6.2: the song sample of the current block's frame 0 (shifted automation lanes)
+  bool blockPlaying_ = false;
   // Publication.
   std::atomic<SequenceImage*> pubSeq_{nullptr};
   std::atomic<AutomationImage*> pubAuto_{nullptr};

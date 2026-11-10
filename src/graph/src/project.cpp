@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <bit>
 #include <charconv>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <numeric>
@@ -342,7 +343,7 @@ Result<ProjectPartition> wholeProject(const ProjectGraph& g) {
 }
 
 Result<UnitPatch> composeUnit(const ProjectGraph& g, const ProjectPartition& part, uint32_t unitIndex,
-                              std::span<const PortType> busTypes) {
+                              std::span<const PortType> busTypes, std::span<const double> wireDelay) {
   if (unitIndex >= part.units.size()) return projectError(ErrorCode::InvalidArgument, "no unit " + std::to_string(unitIndex));
   const ProjectUnit& unit = part.units[unitIndex];
   UnitPatch up;
@@ -414,12 +415,23 @@ Result<UnitPatch> composeUnit(const ProjectGraph& g, const ProjectPartition& par
   // Wires into members, summed per target port in wire order.
   std::map<std::pair<uint32_t, std::string>, std::vector<PortRef>> targets;
   std::vector<std::pair<uint32_t, std::string>> targetOrder;
-  for (const ProjectWire& w : g.wires) {
+  const AtomId latency = atomId("latency");
+  for (size_t wi = 0; wi < g.wires.size(); ++wi) {
+    const ProjectWire& w = g.wires[wi];
     if (part.unitOf[w.to.track] != unitIndex) continue;
     const auto key = std::make_pair(w.to.track, w.to.port);
     auto& list = targets[key];
     if (list.empty()) targetOrder.push_back(key);
-    list.push_back(valueOf(w.from));
+    PortRef v = valueOf(w.from);
+    // T6.2: a wire whose arrival is earlier than the other audio into its track (wireDelay) gets a `latency` node.
+    if (wi < wireDelay.size() && wireDelay[wi] >= 0.5) {
+      const NodeIndex l = P.addAtom(latency);
+      const NodeIndex c = P.addConst(Constant::real(std::round(wireDelay[wi])));
+      P.connect(v, PortRef{l, 0});
+      P.connect(PortRef{c, 0}, PortRef{l, 1});
+      v = PortRef{l, 0};
+    }
+    list.push_back(v);
   }
   const AtomId add = atomId("add");
   for (const auto& key : targetOrder) {

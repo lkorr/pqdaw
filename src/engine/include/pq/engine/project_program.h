@@ -75,6 +75,24 @@
 // projectParams(), an adopted larger block, or a BlockHook whose paramWrites counter moved): a silent project with
 // no param activity costs one compare of a generation per unit instead of one per link.
 // Unit indices in every accessor are those of the last PUBLISHED layout.
+//
+// ---- Plugin-delay compensation (T6.2; the plan: pq/engine/latency_plan.h) ------------------------------------------
+// setCompensation(plan) (non-RT, serialised with publish) hands the program a plan for its last published layout. The
+// delay belongs to the READER: unit u's delayed input bus b gets a delay line (`width` channels, a power-of-two ring
+// of at least delay + one block, preallocated here) that runs in u's own slot of the block, before u's image: it
+// pushes the bus's block into the ring (one copy per channel) and reads the block `delay` frames old into its own
+// buffer (one copy per channel), which the image reads in place of the bus (ProcessContext::in). No new edge between
+// units, no state shared between them (PF.5's parallel units need no change). A unit with A_u > 0 that plays notes
+// gets them `unitLatency` frames late (a preallocated event delay; Timeline lanes are shifted by the app).
+// The audio thread takes a plan at an image-block boundary, once it runs the topology the plan was made for (a plan
+// for an older topology is dropped unused). A changed delay crossfades from the old tap to the new one over 10 ms
+// (one more read per channel during the fade); a delay line that a new plan drops fades to 0 first, then stops. A line
+// whose input bus has been silent (ProjectProgram's silence flags) for the last delay + block frames reads silence:
+// it reports its block silent and costs no copy once its ring is all zeros, so idle units stay idle. Lines of the
+// same (reader, bus) carry over from plan to plan (their history and taps); one whose ring is too small for a new
+// delay is replaced by a larger one that copies the history over at the switch (once, bounded by the ring).
+// A project without latency publishes no plan (CompensationPlan::none()): no line exists and a unit's only cost is
+// one pointer compare per block (output bit-identical to a program that never heard of PDC).
 
 #include <atomic>
 #include <cstdint>
@@ -205,6 +223,8 @@ struct TopologyInfo {
   bool zombiesDropped = false;      // no order kept the removed units feeding their readers (see above)
 };
 
+struct CompensationPlan;  // pq/engine/latency_plan.h
+
 class ProjectProgram {
 public:
   // Non-RT. Errors: an invalid layout (no units, a bus without a valid producer, an output bus that does not exist,
@@ -227,6 +247,14 @@ public:
   Result<TopologyInfo> publishTopology(ProjectLayout layout, std::vector<TopologyUnit> units);
   // Non-RT: a published topology the audio thread has not switched to yet.
   bool topologyPending() const;
+  // T6.2 (see "Plugin-delay compensation"). Non-RT (serialised with publish). The plan must be for the last published
+  // layout (one entry per unit; buses of it). Errors: a plan of another layout (InvalidArgument), a delay ring above
+  // 2^26 frames (InvalidArgument), too many plans pending (Overflow: retry after a block).
+  Status setCompensation(const CompensationPlan& plan);
+  // The plan's total (CompensationPlan::total) of the last setCompensation: how late the output is. Any thread.
+  uint32_t outputLatency() const noexcept { return outputLatency_.load(std::memory_order_acquire); }
+  // Audio thread (tests): a delay line of the current plan reads unit `unit`'s input bus `bus` (of the topology it runs).
+  bool compensating(uint32_t unit, uint32_t bus) const noexcept;
   // Non-RT: publish(unit, …) would not be refused for lack of room (no topology pending, the unit's ring not full).
   // A refused publish destroys the image it was given: wait for this first.
   bool canPublish(uint32_t unit) const;
@@ -290,6 +318,9 @@ private:
   struct BusStore;
   struct Slot;
   struct Topology;
+  struct DelayLine;
+  struct EventDelay;
+  struct Compensation;
   ProjectProgram(const ProjectConfig& config, ProjectLayout layout);
   static void onBlock(void* self, const AudioBlock& b) noexcept { static_cast<ProjectProgram*>(self)->process(b); }
 
@@ -304,6 +335,9 @@ private:
   void trySwap(Unit& u, const Slot& s) noexcept;
   void install(Unit& u, const Slot& s, Packet* p) noexcept;
   void maybeSwitchTopology() noexcept;
+  void maybeSwitchCompensation() noexcept;                      // T6.2
+  void runLine(DelayLine& l, uint32_t target, uint32_t frames) noexcept;
+  void delayEvents(Unit& u, EventDelay& d, uint32_t delay, uint32_t frames, int64_t time) noexcept;
   float unitPeak(const Slot& s) const noexcept;
   bool computeQuiet() const noexcept;
   bool runUnit(Unit& u, const Slot& s, uint32_t frames, int64_t time) noexcept;  // true: it ran two images (a fade)
@@ -340,7 +374,17 @@ private:
   SpscRing<Topology*> topoRing_{4};
   std::atomic<uint64_t> topoCurrent_{0};            // sequence of the topology the audio thread runs
   std::atomic<uint32_t> meterGen_{0};               // readMeters() requests a restart of the accumulation
+  // T6.2: compensation plans (non-RT side: mutex_; the ring hands them over).
+  std::vector<Compensation*> compInflight_;         // published and not retired (owned), in sequence order
+  Compensation* compLast_ = nullptr;                // the last published (mutex_)
+  uint64_t nextCompSeq_ = 1;
+  SpscRing<Compensation*> compRing_{8};
+  std::atomic<uint64_t> compCurrent_{0};            // sequence of the plan the audio thread runs
+  std::atomic<uint32_t> outputLatency_{0};
+  uint32_t fadeFrames10ms_ = 1;
   // Audio thread.
+  Compensation* comp_ = nullptr;
+  Compensation* compPending_ = nullptr;             // popped, waiting for its topology
   Topology* topo_ = nullptr;
   Topology* topoPending_ = nullptr;                 // popped, waiting for fades / queued packets
   uint32_t lastFrames_ = 0;
