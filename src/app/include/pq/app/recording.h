@@ -60,6 +60,14 @@ struct RecordingResult {
   std::vector<std::string> errors;              // files that could not be written
 };
 
+// T6.7b: deletes `target` and everything under it, but only when it is safe: `root` and `target` absolute, `target`
+// strictly inside `root` (lexically, after normalisation: no "..", not `root` itself), `root` at least two levels below
+// its drive / share root, and neither `target` nor anything on the way from `root` to it a symbolic link or junction (a
+// link inside `target` is removed as a link, never followed). Returns the entries removed (0 when refused or absent);
+// `why` gets the reason for a refusal or a failure (files in use are left).
+uint64_t removeUnsavedFolder(const std::filesystem::path& target, const std::filesystem::path& root,
+                             std::string* why = nullptr);
+
 class RecordingService {
 public:
   static constexpr uint32_t kPeakFrames = 256;  // file frames per waveform bucket

@@ -289,11 +289,13 @@ void ViewContext::afterLoad() {
 }
 
 void ViewContext::newProject() {
+  const bool wasUntitled = projectDir_.empty();
   store_.reset(doc::makeDefaultProject(store_.ids()));
   store_.view() = {};
   projectDir_.clear();
   afterLoad();
   setStatus("New project");
+  if (wasUntitled && unsavedDiscard_) unsavedDiscard_();  // T6.7b: the untitled project's recordings go with it
 }
 
 Status ViewContext::openProject(std::string_view dirUtf8) {
@@ -303,8 +305,10 @@ Status ViewContext::openProject(std::string_view dirUtf8) {
     setStatus("Could not open " + std::string(dirUtf8) + ": " + s.error().message);
     return s;
   }
+  const bool wasUntitled = projectDir_.empty();
   projectDir_ = std::string(dirUtf8);
   afterLoad();
+  if (wasUntitled && unsavedDiscard_) unsavedDiscard_();  // T6.7b
   if (missing_.empty()) setStatus("Opened " + projectName());  // else the status line says which samples are missing
   return Ok{};
 }
@@ -559,10 +563,14 @@ void ViewContext::requestSaveAs(std::function<void()> then) {
 }
 
 bool ViewContext::confirmQuit(std::function<void()> quitAfterSave) {
-  if (!dirty() || !dialogs_) return true;
+  auto leave = [this] {  // T6.7b: an untitled project left behind takes its recordings with it
+    if (projectDir_.empty() && unsavedDiscard_) unsavedDiscard_();
+    return true;
+  };
+  if (!dirty() || !dialogs_) return leave();
   switch (dialogs_->askSaveChanges(projectName())) {
     case SaveChoice::Cancel: return false;
-    case SaveChoice::Discard: return true;
+    case SaveChoice::Discard: return leave();
     case SaveChoice::Save:
       if (!projectDir_.empty()) return saveProject().ok();
       requestSaveAs(std::move(quitAfterSave));

@@ -105,6 +105,7 @@ struct FakeHardware {
   std::vector<std::string> asioDrivers{"Fake ASIO", "Other ASIO"};
   std::set<std::string> present{"", "{a}", "{b}", "Fake ASIO"};
   bool manual = false;  // devices do not start a thread (the test calls processBlock)
+  uint32_t asioInputs = 4;  // T6.7b: the fake ASIO driver's inputs (a stream opens at most these)
   int opens = 0;
   std::vector<engine::StreamConfig> configs;
   FakeDevice* current = nullptr;
@@ -170,8 +171,10 @@ Result<std::vector<engine::DeviceInfo>> FakeDevice::enumerate() {
   return hw_.wasapi;
 }
 
-Result<engine::StreamInfo> FakeDevice::open(const engine::StreamConfig& c, engine::AudioCallback cb) {
+Result<engine::StreamInfo> FakeDevice::open(const engine::StreamConfig& cIn, engine::AudioCallback cb) {
   std::string name;
+  engine::StreamConfig c = cIn;
+  uint32_t deviceIns = 0;  // T6.7b: inputs are bounded by the device, like the real backends
   {
     std::lock_guard lock(hw_.m);
     const std::string id = c.outputEndpointId;
@@ -179,8 +182,16 @@ Result<engine::StreamInfo> FakeDevice::open(const engine::StreamConfig& c, engin
     name = id.empty() ? std::string("Speakers (Fake USB)") : id;
     for (const engine::DeviceInfo& d : hw_.wasapi)
       if (d.endpointId == id) name = d.name;
+    if (backend_ == engine::Backend::Asio) {
+      deviceIns = hw_.asioInputs;
+    } else if (c.inputChannels > 0) {
+      for (const engine::DeviceInfo& d : hw_.wasapi)
+        if (d.inputChannels > 0 && (c.inputEndpointId.empty() ? d.isDefaultInput : d.endpointId == c.inputEndpointId))
+          deviceIns = d.inputChannels;
+    }
+    c.inputChannels = std::min(c.inputChannels, deviceIns);
     ++hw_.opens;
-    hw_.configs.push_back(c);
+    hw_.configs.push_back(cIn);
     hw_.current = this;
   }
   auto r = dev_.open(c, cb);
@@ -190,6 +201,7 @@ Result<engine::StreamInfo> FakeDevice::open(const engine::StreamConfig& c, engin
   si.outputDeviceName = name;
   si.latencyFrames = c.bufferFrames;
   si.inputLatencyFrames = c.inputChannels > 0 ? c.bufferFrames : 0;
+  si.inputDeviceChannels = deviceIns;
   return si;
 }
 
@@ -269,7 +281,7 @@ TEST_CASE("settings: round trip; other sections are kept; invalid fields fall ba
   s.outputDevice = s.outputName = "Focusrite USB ASIO";
   s.sampleRate = 96000;
   s.bufferFrames = 64;
-  s.inputChannels = 2;
+  s.inputDevice = "{c}";
   s.outputChannels = 4;
   { std::ofstream(path) << R"({"schemaVersion": 1, "look": {"zoom": 125}, "audio": {"driver": "wasapi-shared"}})"; }
   REQUIRE(saveAudioSettings(path, s).ok());
@@ -303,6 +315,7 @@ TEST_CASE("settings: the view prefs section (T4.15) round-trips next to the audi
   v.circuitShowInactive = true;
   v.freeRackOpen = true;  // TX.free-rack: the Device view's free-device rack, expanded and its height
   v.freeRackHeight = 260.0f;
+  v.recordOffsetMs = -3.25f;  // T6.7b: Preferences → Record
   REQUIRE(saveViewPrefs(path, v).ok());
   CHECK(loadViewPrefs(path) == v);
   REQUIRE(loadAudioSettings(path).ok());
@@ -311,6 +324,8 @@ TEST_CASE("settings: the view prefs section (T4.15) round-trips next to the audi
   CHECK(loadViewPrefs(path) == v);  // and the views section the audio save
   { std::ofstream(path) << R"({"views": {"circuitShowInactive": "yes"}})"; }
   CHECK_FALSE(loadViewPrefs(path).circuitShowInactive);  // the wrong type keeps the default
+  { std::ofstream(path) << R"({"views": {"recordOffsetMs": 1000}})"; }
+  CHECK(loadViewPrefs(path).recordOffsetMs == views::ViewPrefs::kMaxRecordOffsetMs);  // clamped
   { std::ofstream(path) << "not json"; }
   CHECK_FALSE(loadViewPrefs(path).circuitShowInactive);
 }
@@ -395,10 +410,9 @@ TEST_CASE("manager: switching driver type, device, rate and buffer while playing
     n.driver = AudioDriverType::Asio;
     n.outputDevice = "Fake ASIO";
     n.bufferFrames = 64;
-    n.inputChannels = 2;
-    step(n, "ASIO, duplex");
-    CHECK(hw.lastConfig().inputChannels == 2);
-    CHECK(m.status().inputChannels == 2);
+    step(n, "ASIO");
+    CHECK(hw.lastConfig().inputChannels == 0);  // T6.7b: no track uses an input
+    CHECK(m.status().inputChannels == 0);
   }
   CHECK(link->stats().compiles == compiles0);  // a device change compiles nothing
   CHECK(link->engine().config().sampleRate == 48000.0);
@@ -416,7 +430,6 @@ TEST_CASE("manager: switching driver type, device, rate and buffer while playing
     n.sampleRate = 44100;
     n.driver = AudioDriverType::WasapiShared;
     n.outputDevice.clear();
-    n.inputChannels = 0;
     n.bufferFrames = 512;
     step(n, "everything at once, back to WASAPI shared at 44.1 kHz");
     CHECK(link->engine().config().sampleRate == 44100.0);
@@ -427,6 +440,95 @@ TEST_CASE("manager: switching driver type, device, rate and buffer while playing
   REQUIRE(saved.ok());
   CHECK(saved->settings == m.settings());
   CHECK(saved->settings.sampleRate == 44100);
+}
+
+TEST_CASE("manager T6.7b: the stream opens the inputs the tracks use (bounded by the device), reopens only when that "
+          "changes and never while recording; the strips see the device's inputs") {
+  FakeHardware hw;
+  const fs::path dir = tempDir("inputs");
+  doc::DocumentStore store{playback_fixture::unwiredDefaultProject()};
+  LinkConfig lc;
+  lc.compileThread = false;
+  lc.sleepAfterMs = 0.0f;
+  lc.unsavedDir = (fs::path(dir) / "recorded").string();
+  auto made = ProjectLink::create(lc, store.current());
+  REQUIRE_MESSAGE(made.ok(), (made.ok() ? std::string() : made.error().message));
+  std::unique_ptr<ProjectLink> link = std::move(made.value());
+  link->setRecordStore(&store);
+  const doc::ListenerId sub = store.subscribe([&](const doc::StoreEvent& e) { link->onDocumentChange(e); });
+  AudioSettings s;
+  s.driver = AudioDriverType::Asio;
+  s.outputDevice = "Fake ASIO";
+  AudioDeviceManager m(*link, s, hw.hooks((fs::path(dir) / "settings.json").string()));
+  REQUIRE(waitUntil(m, [&] { return runningWith(m, s); }));
+  CHECK(hw.lastConfig().inputChannels == 0);  // no track uses an input
+  CHECK(link->audioInputChannels() == 4);     // the strips list the driver's 4 inputs
+  auto opensSettle = [&](int opens0, double wait = 3.0) {  // waits for a reopen (if any) to finish
+    (void)waitUntil(m, [&] { return hw.openCount() > opens0 && runningWith(m, s); }, wait);
+    return hw.openCount() - opens0;
+  };
+  // An audio track on input 3: 3 inputs open.
+  auto t = doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Audio);
+  REQUIRE(t.ok());
+  REQUIRE(store.dispatch(t->command).ok());
+  const doc::TrackId id = t->tracks.at(0);
+  int opens0 = hw.openCount();
+  REQUIRE(store.dispatch(doc::SetTrackAudioInput{id, doc::AudioInput{2, 1}}).ok());
+  CHECK(opensSettle(opens0) == 1);
+  CHECK(hw.lastConfig().inputChannels == 3);
+  CHECK(m.status().inputChannels == 3);
+  // Inputs 7/8 on a 4-input driver: bounded to 4.
+  opens0 = hw.openCount();
+  REQUIRE(store.dispatch(doc::SetTrackAudioInput{id, doc::AudioInput{6, 2}}).ok());
+  CHECK(opensSettle(opens0) == 1);
+  CHECK(hw.lastConfig().inputChannels == 4);
+  // Arming, the monitor, or a change that keeps the count: no reopen.
+  opens0 = hw.openCount();
+  auto armed = doc::ops::armTrack(*store.current(), id, true);
+  REQUIRE(armed.ok());
+  REQUIRE(store.dispatch(armed->command).ok());
+  REQUIRE(store.dispatch(doc::SetTrackMonitor{id, doc::MonitorMode::In}).ok());
+  REQUIRE(store.dispatch(doc::SetTrackAudioInput{id, doc::AudioInput{3, 1}}).ok());
+  CHECK(opensSettle(opens0, 0.3) == 0);
+  // While recording, a change waits for the session's end.
+  opens0 = hw.openCount();
+  REQUIRE(store.dispatch(doc::SetTrackAudioInput{id, doc::AudioInput{1, 1}}).ok());  // 2 inputs from now
+  CHECK(opensSettle(opens0) == 1);
+  link->record(0);
+  REQUIRE(link->recordingActive());
+  opens0 = hw.openCount();
+  REQUIRE(store.dispatch(doc::SetTrackAudioInput{id, doc::AudioInput{0, 1}}).ok());
+  CHECK(opensSettle(opens0, 0.3) == 0);
+  CHECK(hw.lastConfig().inputChannels == 2);
+  link->stop();
+  REQUIRE(waitUntil(m, [&] {
+    (void)link->playhead();  // the UI's poll: the session ends and commits
+    return !link->recordingActive();
+  }));
+  CHECK(opensSettle(opens0) == 1);
+  CHECK(hw.lastConfig().inputChannels == 1);
+  // WASAPI: inputs only with an input device; then bounded by its channels (2).
+  opens0 = hw.openCount();
+  REQUIRE(store.dispatch(doc::SetTrackAudioInput{id, doc::AudioInput{2, 2}}).ok());  // 4 used
+  CHECK(opensSettle(opens0) == 1);
+  AudioSettings w;
+  w.driver = AudioDriverType::WasapiShared;
+  s = w;
+  m.apply(w);
+  REQUIRE(waitUntil(m, [&] { return runningWith(m, w) && hw.lastConfig().outputEndpointId.empty(); }));
+  CHECK(hw.lastConfig().inputChannels == 0);
+  w.inputDevice = "{c}";
+  s = w;
+  opens0 = hw.openCount();
+  m.apply(w);
+  // The first open asks for 4 (the endpoint's channels are not known yet); the device opens 2 and tells: then 2.
+  REQUIRE(waitUntil(m, [&] {
+    return hw.lastConfig().inputEndpointId == "{c}" && hw.lastConfig().inputChannels == 2 && runningWith(m, w) &&
+           m.status().inputChannels == 2;
+  }));
+  CHECK(hw.openCount() - opens0 <= 2);
+  CHECK(link->audioInputChannels() == 2);
+  store.unsubscribe(sub);
 }
 
 TEST_CASE("manager: the settings persist across restarts") {
@@ -513,7 +615,6 @@ TEST_CASE("manager: device lists and capabilities from the scripted list; lists 
   auto caps = m.capabilities(ex);
   CHECK(caps.bufferSizes.front() == 144);  // the exclusive minimum period
   CHECK(caps.sampleRates == std::vector<uint32_t>{44100, 48000, 96000});
-  CHECK_FALSE(caps.inputSupported);
   // Hot-plug: a new endpoint appears; the lists are stale until the next hardware-change event.
   {
     std::lock_guard lock(hw.m);

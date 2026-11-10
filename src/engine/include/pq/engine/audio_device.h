@@ -14,7 +14,7 @@ namespace pq::engine {
 
 enum class Backend : uint8_t {
   Null,           // NullDevice: no hardware; driven manually or by a timer thread (tests, offline use)
-  Wasapi,         // our WASAPI backend (WasapiDevice): event-driven, exclusive and shared, output only
+  Wasapi,         // our WASAPI backend (WasapiDevice): event-driven, exclusive and shared; shared capture (T6.7b)
   RtAudioWasapi,  // RtAudio WASAPI (shared mode only; kept for comparison and for input streams)
   Asio,           // our ASIO host (AsioDevice, T0.6-fix2): registered ASIO drivers, duplex
 };
@@ -62,7 +62,8 @@ struct StreamConfig {
                                  // endpoint id, Backend::Asio driver name
   uint32_t outputChannels = 2;
   uint32_t inputDevice = kDefaultDevice;
-  uint32_t inputChannels = 0;  // 0 = output-only stream
+  uint32_t inputChannels = 0;  // 0 = output-only stream; ASIO / WASAPI: at most the device's (fewer open, T6.7b)
+  std::string inputEndpointId;  // T6.7b, Backend::Wasapi: the capture endpoint (empty: the default capture endpoint)
   // 0 = the output device's preferred rate. On WASAPI shared mode, any other rate makes RtAudio resample with
   // Media Foundation on the audio thread, which allocates per callback: StreamInfo::backendResampling says so.
   uint32_t sampleRate = 0;
@@ -81,8 +82,12 @@ struct StreamInfo {
   uint32_t latencyFrames = 0;      // output latency as the backend can tell before running (0 if unknown);
                                    // WASAPI measures the real figure while running: CallbackStats meanQueueFrames;
                                    // ASIO: the driver's getLatencies() output figure
-  uint32_t inputLatencyFrames = 0; // ASIO: the driver's input latency (0 if unknown / no input)
+  uint32_t inputLatencyFrames = 0; // input latency (0 if unknown / no input): ASIO the driver's figure; WASAPI capture
+                                   // the capture stream's latency + its period + the capture FIFO's target (T6.7b)
+  uint32_t inputDeviceChannels = 0;  // T6.7b: the input device's channels, whatever opened (ASIO: the driver's
+                                     // inputs; WASAPI: the capture endpoint's; 0 unknown / none)
   bool backendResampling = false;  // the backend converts sample rate on the audio thread (not RT-safe)
+  std::string inputError;          // T6.7b: why the requested inputs could not open (the stream runs output-only)
   // Backend::Wasapi only:
   ShareMode shareMode = ShareMode::Shared;
   SampleFormat deviceFormat = SampleFormat::Float32;  // the device buffer's interleaved format

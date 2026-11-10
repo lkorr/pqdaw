@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <shlobj.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -56,7 +57,6 @@ std::string audioSettingsJson(const views::AudioSettings& s) {
   a["inputName"] = s.inputName;
   a["sampleRate"] = s.sampleRate;
   a["bufferFrames"] = s.bufferFrames;
-  a["inputChannels"] = s.inputChannels;
   a["outputChannels"] = s.outputChannels;
   a["cueOutput"] = s.cueOutput;  // T5.10
   return a.dump(2, ' ', false, json::error_handler_t::replace);  // never throws on a bad driver-name byte
@@ -95,7 +95,6 @@ Result<LoadedAudioSettings> loadAudioSettings(const std::string& path) {
   str("inputName", s.inputName);
   num("sampleRate", s.sampleRate, 8000, 768000);
   num("bufferFrames", s.bufferFrames, 16, 8192);
-  num("inputChannels", s.inputChannels, 0, 64);
   num("outputChannels", s.outputChannels, 1, 64);
   num("cueOutput", s.cueOutput, 0, 31);  // T5.10
   return out;
@@ -181,6 +180,9 @@ views::ViewPrefs loadViewPrefs(const std::string& path) {
     for (uint8_t w = 1; w <= static_cast<uint8_t>(doc::kLastAudioWarp); ++w)
       if (m == kWarpNames[w]) prefs.defaultWarpMode = static_cast<doc::AudioWarp>(w);
   }
+  // T6.7b: Preferences → Record.
+  if (const auto f = it->find("recordOffsetMs"); f != it->end() && f->is_number())
+    prefs.recordOffsetMs = std::clamp(f->get<float>(), -views::ViewPrefs::kMaxRecordOffsetMs, views::ViewPrefs::kMaxRecordOffsetMs);
   return prefs;
 }
 
@@ -193,6 +195,7 @@ Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   v["freeRackHeight"] = prefs.freeRackHeight;
   v["autoWarpLongSamples"] = prefs.autoWarpLongSamples;  // T6.8
   v["defaultWarpMode"] = kWarpNames[static_cast<size_t>(prefs.defaultWarpMode)];
+  v["recordOffsetMs"] = prefs.recordOffsetMs;  // T6.7b
   return saveSection(path, "views", std::move(v));
 }
 

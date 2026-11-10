@@ -200,7 +200,9 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     app->ctx_ = std::make_unique<views::ViewContext>(*app->transport_);
   // T4.15: view preferences (the circuit editor's Inactive toggle), saved whenever they change.
   app->ctx_->setViewPrefs(loadViewPrefs(userSettingsPath()));
-  app->ctx_->setViewPrefsListener([](const views::ViewPrefs& p) {
+  if (app->link_) app->link_->setRecordOffsetMs(app->ctx_->viewPrefs().recordOffsetMs);  // T6.7b
+  app->ctx_->setViewPrefsListener([link = app->link_.get()](const views::ViewPrefs& p) {
+    if (link != nullptr) link->setRecordOffsetMs(p.recordOffsetMs);  // T6.7b: Preferences → Record
     if (Status s = saveViewPrefs(userSettingsPath(), p); !s.ok()) std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
   });
   app->dialogs_ = std::make_unique<SdlFileDialogs>(window, app->userEvent_);

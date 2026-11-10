@@ -13,7 +13,7 @@ class RtLog;
 
 namespace pq::engine {
 
-// Our own WASAPI output backend (T0.6-fix1, review finding H1). <windows.h>/COM headers stay in the .cpp.
+// Our own WASAPI backend (T0.6-fix1, review finding H1; T6.7b: shared capture input). <windows.h>/COM headers stay in the .cpp.
 //
 // Stream setup (open(), control thread):
 // - Exclusive: IAudioClient::Initialize(EXCLUSIVE, EVENTCALLBACK) with period = buffer duration = the requested
@@ -25,8 +25,11 @@ namespace pq::engine {
 //   [min, max] and rounded to its fundamental period (low-latency shared periods where the driver offers them),
 //   in the mix format. A rate other than the mix rate uses AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM: the conversion
 //   then runs in the Windows audio engine's process, not on our thread.
-// - Output only: StreamConfig::inputChannels > 0 returns ErrorCode::Unsupported (Backend::RtAudioWasapi does
-//   input until duplex is added; docs/QUESTIONS.md).
+// - T6.7b, input: StreamConfig::inputChannels > 0 also opens a shared-mode CAPTURE client on inputEndpointId (empty:
+//   the default capture endpoint; a render endpoint is captured in loopback — what it plays), at the stream rate (the
+//   mix rate natively, another through AUTOCONVERTPCM), polled — no event of its own. At most the endpoint's channels
+//   open (StreamInfo::inputChannels; inputDeviceChannels = the endpoint's). An endpoint that cannot open leaves the
+//   stream output-only and says why in StreamInfo::inputError (the output is never lost for an input).
 //
 // Audio thread (start()): joins MMCSS "Pro Audio" and COM (MTA) once, pre-fills the endpoint buffer by running
 // the callback, starts the client, then per device event: one WaitForSingleObject (with a timeout of 4 periods),
@@ -34,6 +37,17 @@ namespace pq::engine {
 // CallbackRunner once per period (planar float scratch → one SIMD conversion pass into the device buffer: no
 // ring, no extra copies), ReleaseBuffer. The callback always sees exactly bufferFrames frames, so BlockAdapter
 // runs in direct mode when bufferFrames is a multiple of the engine block.
+//
+// T6.7b, input on the audio thread: each wake first drains every capture packet (GetNextPacketSize / GetBuffer /
+// ReleaseBuffer, at most 64) into a CaptureFifo (pq/engine/capture_fifo.h: planar rings, converted in one pass), then
+// every render period pulls its `period` input frames from it: a constant delay of one capture packet + one period
+// (primed), re-primed after an underflow, dropped back to it when the capture clock runs ahead (two devices: drift; the
+// frames lost are CallbackStats::inputDrops). Alignment: each pull knows the capture time (QPC) of its first input
+// frame and the render clock (IAudioClock::GetPosition's QPC) the play time of its first output frame; their
+// difference, averaged since the FIFO primed, is CallbackStats::roundTripFrames — what the app's record latency uses
+// (AudioOutput hands it to engine::Recorder). Before it is measured, StreamInfo::inputLatencyFrames is the estimate
+// (capture stream latency + a packet + the reserve). A failed capture call (the input device removed) turns capture
+// off: the inputs read silence, the output keeps running.
 //
 // RT safety: nothing on the per-event path allocates through operator new (the whole wake is inside an RtScope,
 // so the allocation trap covers our code). The trap cannot see allocations inside the WASAPI calls themselves

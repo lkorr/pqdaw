@@ -50,6 +50,10 @@ public:
     int64_t maxQueueFrames = -1;
     double meanQueueFrames = -1;    // mean of the above: the output latency measured on the device clock
     uint64_t restarts = 0;          // stream restarts to recover from an underrun (WASAPI exclusive)
+    // T6.7b: a backend whose input and output run on separate clocks (WASAPI capture + render) measures the round trip:
+    // frames from a sound reaching the input to the output frame the callback sees it next to (−1: not measured).
+    int64_t roundTripFrames = -1;
+    uint64_t inputDrops = 0;        // T6.7b: input frames dropped (a capture FIFO over its bound) or replaced by silence
     uint64_t xruns() const noexcept { return inputOverflows + outputUnderflows; }
   };
 
@@ -94,6 +98,10 @@ public:
   }
 
   void recordRestart() noexcept { bump(restarts_); }  // RT-safe
+  // T6.7b: the measured round trip (−1: unknown) and dropped input frames. RT-safe.
+  void setRoundTrip(int64_t frames) noexcept { roundTrip_.store(frames, std::memory_order_relaxed); }
+  int64_t roundTripNow() const noexcept { return roundTrip_.load(std::memory_order_relaxed); }  // RT-safe, any thread
+  void setInputDrops(uint64_t frames) noexcept { inputDrops_.store(frames, std::memory_order_relaxed); }
   // Input overflows + output underflows so far, without a snapshot (AU.stream: the output's cold-start pre-roll
   // reads it on the audio thread). RT-safe, any thread.
   uint64_t xrunsNow() const noexcept {  // RT-safe
@@ -133,6 +141,8 @@ private:
   std::atomic<uint64_t> restarts_{0};
   std::atomic<int64_t> queueSum_{0};
   std::atomic<uint64_t> queueCount_{0};
+  std::atomic<int64_t> roundTrip_{-1};  // T6.7b
+  std::atomic<uint64_t> inputDrops_{0};
 };
 
 }  // namespace pq::engine

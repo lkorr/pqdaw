@@ -864,3 +864,23 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   largest; (C) per-shift copies of the tap and of the tuning tables' live inputs (a unit's images bind the copy of its
   shift: a recompile whenever a unit's A_u changes, or a program-side indirection).
 - **Choice**: A (most reversible; C only if a compensated tuning consumer turns up in practice).
+
+## Q?-T6.7b-a · 2026-11-10 · T6.7b · Recording leftovers: what was chosen
+- **Context**: docs/TASKS.md T6.7b (Q?-T6.7-a's open items + WASAPI capture + inputs by use) left these open.
+- **Choices** (most reversible): (1) The manual record offset is in ms (±100, 0.01 steps; Live's unit), on a new
+  Preferences tab "Record"; frames = round(ms · rate / 1000), kept across a rate change; positive moves recordings
+  earlier. (2) "Discarded" = New or Open replacing an untitled project, or a quit that confirmQuit lets go ahead while
+  untitled; a session still running then ends WITHOUT a commit. What goes is the whole run's session folder
+  `Unsaved\<pid-time>` (one per process, so only that project's), never `Unsaved` itself or another run's; nothing
+  cleans folders of earlier crashed runs. A first save whose move AND copy both failed still references the unsaved
+  path; a later untitled discard deletes it (no reference check). (3) The Input Channels preference is removed
+  (`AudioSettings::inputChannels`, the settings key, the chooser): inputs open by use. Every audio track with an input
+  counts, armed or not (arming or a monitor change must not reopen the driver); any change of the count reopens the
+  stream (a short gap), held back while a session runs. (4) WASAPI capture is shared mode only (exclusive capture not
+  built), polled on the render thread (no capture event); a render endpoint as input is captured in loopback (used by
+  the opt-in test); an input endpoint that cannot open leaves the stream output-only with a status message rather than
+  losing the output. (5) Alignment: the FIFO's delay is measured, not assumed — the round trip from the capture packets'
+  QPC times and the render clock's QPC position, averaged since the FIFO primed, replaces the input-latency estimate
+  in the recorder. Loopback on the dev machine: measured 1424 vs observed 1440 frames (0.33 ms); a real microphone
+  round trip is only checkable by hand (REVIEW).
+- Status: decided (1)–(5) (reversible).

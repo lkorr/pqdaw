@@ -377,6 +377,34 @@ TEST_CASE("audio clip warp: the Warp preferences tab sets ViewPrefs through its 
   CHECK(f.ctx.viewPrefs().defaultWarpMode == doc::AudioWarp::Complex);
 }
 
+TEST_CASE("T6.7b: the Record preferences tab sets ViewPrefs::recordOffsetMs (typed, clamped to +-100 ms)") {
+  Fixture f;
+  FakeAudioPrefsPort port = FakeAudioPrefsPort::studio();
+  PreferencesWindow* w = openPreferences(f.shell->overlay(), port, &f.ctx);
+  REQUIRE(w != nullptr);
+  f.d.tree().layoutNow();
+  Widget* tab = w->find("body/tabs/record");
+  REQUIRE(tab != nullptr);
+  f.d.click(mid(tab->rect()));
+  f.d.tree().layoutNow();
+  CHECK(w->tab() == PreferencesWindow::Tab::Record);
+  DragBox* box = w->recordOffsetBox();
+  REQUIRE(box != nullptr);
+  CHECK(box->value() == 0.0);
+  auto type = [&](const char* text) {
+    f.d.doubleClick(mid(box->rect()));
+    REQUIRE(box->editing());
+    f.d.type(text);  // the type-in opens with its text selected
+    f.d.press("Enter");
+  };
+  type("2.5");
+  CHECK(f.ctx.viewPrefs().recordOffsetMs == doctest::Approx(2.5f));
+  type("-1.25");
+  CHECK(f.ctx.viewPrefs().recordOffsetMs == doctest::Approx(-1.25f));
+  type("500");
+  CHECK(f.ctx.viewPrefs().recordOffsetMs == doctest::Approx(100.0f));
+}
+
 namespace {
 
 void checkGolden(const char* scene) {

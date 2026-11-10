@@ -466,11 +466,12 @@ Status openAudioPrefs(Shell& shell, bool wasapi) {
     s.driver = AudioDriverType::WasapiExclusive;
     s.outputDevice = "{0.0.0.00000000}.{a}";
     s.outputName = "Speakers (Focusrite USB Audio)";
-    s.inputChannels = 0;
+    s.inputDevice.clear();
     s.bufferFrames = 192;
     port.apply(s);
     port.applied.clear();
     port.running.deviceName = s.outputName;
+    port.running.inputChannels = 0;  // no input device: no inputs open
     port.running.inputLatencyMs = 0.0;
     port.running.outputLatencyMs = 8.0;
     port.running.state = AudioStatus::State::Suspended;

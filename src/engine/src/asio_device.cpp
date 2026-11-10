@@ -553,8 +553,7 @@ struct AsioDevice::Impl {
     int32_t ni = 0, no = 0;
     if (asio::Status s = d->getChannels(&ni, &no); s != asio::kOk)
       return Error{ErrorCode::Device, std::string("ASIO getChannels failed: ") + statusText(s)};
-    if (cfg.outputChannels > static_cast<uint32_t>(std::max(0, no)) ||
-        cfg.inputChannels > static_cast<uint32_t>(std::max(0, ni)))
+    if (cfg.outputChannels > static_cast<uint32_t>(std::max(0, no)))
       return Error{ErrorCode::InvalidArgument, "ASIO driver '" + entry.name + "' has " + std::to_string(no) +
                                                    " outputs and " + std::to_string(ni) + " inputs; " +
                                                    std::to_string(cfg.outputChannels) + " out / " +
@@ -588,7 +587,8 @@ struct AsioDevice::Impl {
     det.driverInputs = static_cast<uint32_t>(std::max(0, ni));
     det.driverOutputs = static_cast<uint32_t>(std::max(0, no));
 
-    const uint32_t nIn = cfg.inputChannels, nOut = cfg.outputChannels;
+    // T6.7b: inputs are bounded by the driver's (the app asks for what the tracks use; StreamInfo says what opened).
+    const uint32_t nIn = std::min(cfg.inputChannels, static_cast<uint32_t>(std::max(0, ni))), nOut = cfg.outputChannels;
     int32_t inTypes[kMaxChannels] = {}, outTypes[kMaxChannels] = {};
     for (uint32_t k = 0; k < nIn + nOut; ++k) {
       const bool isIn = k < nIn;
@@ -675,6 +675,7 @@ struct AsioDevice::Impl {
     si.sampleRate = static_cast<uint32_t>(rate + 0.5);
     si.bufferFrames = bufferFrames;
     si.inputChannels = nIn;
+    si.inputDeviceChannels = static_cast<uint32_t>(std::max(0, ni));  // T6.7b
     si.outputChannels = nOut;
     si.latencyFrames = static_cast<uint32_t>(std::max(0, outLat));
     si.inputLatencyFrames = static_cast<uint32_t>(std::max(0, inLat));

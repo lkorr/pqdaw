@@ -118,7 +118,8 @@ TEST_CASE("prefs: ASIO shows one device and Hardware Setup; WASAPI input and out
   CHECK(static_cast<Label*>(w.find("body/audio/output/label"))->text() == "Audio Output Device");
   CHECK(w.find("body/audio/input")->visible());
   CHECK_FALSE(w.find("body/audio/hardware")->visible());
-  CHECK_FALSE(w.inputChannelsChooser()->enabled());  // WASAPI input opens with recording (M6)
+  CHECK(w.inputChooser()->enabled());  // T6.7b: WASAPI shared capture
+  CHECK(w.find("body/audio/channels/inputs") == nullptr);  // T6.7b: the inputs the tracks use open, no count to pick
   CHECK(w.bufferChooser()->items().front() == "144 Samples");  // the exclusive-mode list of this device
 }
 
@@ -137,12 +138,9 @@ TEST_CASE("prefs: each chooser applies exactly its choice, once") {
   REQUIRE(p.port.applied.size() == 3);
   CHECK(p.port.applied[2].bufferFrames == 128);
   CHECK(p.port.applied[2].sampleRate == 96000);
-  p.pick(w.inputChannelsChooser(), p.itemIndex(w.inputChannelsChooser(), "No inputs"));
-  REQUIRE(p.port.applied.size() == 4);
-  CHECK(p.port.applied[3].inputChannels == 0);
   // Choosing what is already chosen applies nothing.
   p.pick(w.bufferChooser(), p.itemIndex(w.bufferChooser(), "128 Samples"));
-  CHECK(p.port.applied.size() == 4);
+  CHECK(p.port.applied.size() == 3);
   // The status line follows the port (FakeAudioPrefsPort reports the applied settings as running).
   CHECK(w.statusText().find("96000 Hz") != std::string::npos);
   CHECK(w.statusText().find("128 samples") != std::string::npos);

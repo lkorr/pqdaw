@@ -918,7 +918,25 @@ public:
   RecordingService& recording() noexcept { return *recording_; }
   std::string recordDir() const;
   std::string unsavedRecordDir() const;  // where an untitled project records
+  // T6.7b: the untitled project was discarded (ViewContext's unsaved-discard hook: New / Open / quit): a session still
+  // running ends without a commit, then this run's unsaved recordings folder is deleted — the session folder
+  // %LOCALAPPDATA%/pqdaw/Unsaved/<session> (LinkConfig::unsavedDir when set: that folder), and only through
+  // removeUnsavedFolder's guard. Returns the entries removed. UI thread.
+  uint64_t discardUnsavedRecordings();
   uint64_t recordCommits() const noexcept { return recordCommits_; }
+  // T6.7b: the manual record offset (Preferences → Record, ViewPrefs::recordOffsetMs): ms, signed; the engine's recorder
+  // gets it in frames at the current rate (kept across a sample-rate change). UI thread.
+  void setRecordOffsetMs(double ms);
+  double recordOffsetMs() const noexcept { return recordOffsetMs_; }
+  // T6.7b: the device inputs the tracks use — max over the audio tracks with an input (armed or not, active or not: an
+  // arm or a monitor change must not reopen the device) of firstChannel + channels; the audio device manager opens that
+  // many (bounded by the device). The listener runs on the UI thread when it changes, and once more when a recording
+  // session ends (a reopen is held back while one runs: recordingActive()).
+  uint32_t usedAudioInputs() const noexcept { return inputsUsed_; }
+  void setInputUseListener(std::function<void()> fn) { inputUseFn_ = std::move(fn); }
+  bool recordingActive() const noexcept { return recording_ && recording_->active(); }
+  // T6.7b: the input channels the device has (whatever the stream opened): the strips' input chooser lists them.
+  void setAvailableInputs(uint32_t n) noexcept { availableInputs_ = n; }
   uint32_t audioInputChannels() override;                        // views::TransportPort
   bool recordingOverlay(views::RecordingOverlay& out) override;  // views::TransportPort
 
@@ -934,6 +952,10 @@ private:
   std::vector<uint64_t> monitorKey_;  // what the published MonitorImage was built from
   std::optional<doc::PunchRegion> punchSent_;
   uint64_t recordCommits_ = 0;
+  double recordOffsetMs_ = 0.0;  // T6.7b
+  uint32_t inputsUsed_ = 0;       // T6.7b: usedAudioInputs()
+  uint32_t availableInputs_ = 0;
+  std::function<void()> inputUseFn_;
   RecordingService::Live recLive_;    // the overlay's copy
   uint64_t overlayRevision_ = 0;
   int64_t overlaySongEnd_ = 0;

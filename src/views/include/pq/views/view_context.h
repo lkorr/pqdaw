@@ -160,6 +160,10 @@ struct ViewPrefs {
   // auto-warp or a warp command (never Off or Re-Pitch-less: any warped mode).
   bool autoWarpLongSamples = false;
   doc::AudioWarp defaultWarpMode = doc::AudioWarp::Beats;
+  // T6.7b (Preferences → Record): the manual record offset, ms, signed, within ±kMaxRecordOffsetMs. Added to the record
+  // latency (engine::Recorder::setManualOffset, in frames at the engine's rate): positive = recorded audio moves earlier.
+  float recordOffsetMs = 0.0f;
+  static constexpr float kMaxRecordOffsetMs = 100.0f;
   bool operator==(const ViewPrefs&) const = default;
 };
 
@@ -218,6 +222,10 @@ public:
   // of an untitled project moves every sample file under it into <project>/samples/recorded (a copy when a move is
   // refused) and stores them project-relative.
   void setUnsavedRecordingDir(std::string dirUtf8) { unsavedRecordingDir_ = std::move(dirUtf8); }
+  // T6.7b: called when an untitled project is discarded — replaced by newProject() / a successful openProject(), or
+  // left by a quit confirmQuit() lets go ahead (saved first: the project is titled then, nothing is discarded). The
+  // playback link deletes the unsaved recordings folder there (ProjectLink::discardUnsavedRecordings).
+  void setUnsavedDiscardHook(std::function<void()> fn) { unsavedDiscard_ = std::move(fn); }
   const std::string& projectDir() const noexcept { return projectDir_; }
   std::string projectName() const { return projectNameOf(projectDir_); }
   // The document differs from the last saved/loaded one (pointer comparison: undoing back to it is clean again), or
@@ -558,6 +566,7 @@ private:
   doc::Snapshot saved_;  // the snapshot last saved or loaded (dirty() compares pointers)
   std::string projectDir_;
   std::string unsavedRecordingDir_;  // T6.7
+  std::function<void()> unsavedDiscard_;  // T6.7b
   bool lastDirty_ = false;
   bool viewStateDirty_ = false;  // ViewState edited since the last save / load
   doc::ListenerId storeListener_ = 0;

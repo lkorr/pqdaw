@@ -49,6 +49,8 @@ void CallbackStats::reset(uint32_t bufferFrames, uint32_t sampleRate) {
   maxLateness_.store(0, std::memory_order_relaxed);
   minQueue_.store(-1, std::memory_order_relaxed);
   maxQueue_.store(-1, std::memory_order_relaxed);
+  roundTrip_.store(-1, std::memory_order_relaxed);  // T6.7b
+  inputDrops_.store(0, std::memory_order_relaxed);
 }
 
 CallbackStats::Snapshot CallbackStats::snapshot() const {
@@ -58,6 +60,8 @@ CallbackStats::Snapshot CallbackStats::snapshot() const {
   s.inputOverflows = inputOverflows_.load(std::memory_order_relaxed);
   s.outputUnderflows = outputUnderflows_.load(std::memory_order_relaxed);
   s.deadlineMisses = deadlineMisses_.load(std::memory_order_relaxed);
+  s.roundTripFrames = roundTrip_.load(std::memory_order_relaxed);  // T6.7b
+  s.inputDrops = inputDrops_.load(std::memory_order_relaxed);
   s.periodUs = periodUs_;
   const double total = static_cast<double>(totalTicks_.load(std::memory_order_relaxed)) / ticksPerUs_;
   s.meanDurationUs = s.callbacks ? total / static_cast<double>(s.callbacks) : 0.0;

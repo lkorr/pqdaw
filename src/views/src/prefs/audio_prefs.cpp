@@ -66,7 +66,6 @@ FakeAudioPrefsPort FakeAudioPrefsPort::studio() {
   shared.caps.sampleRates = {48000};
   shared.caps.bufferSizes = {128, 256, 480, 512, 1024};
   shared.caps.maxOutputChannels = 2;
-  shared.caps.inputSupported = false;
   Driver exclusive = shared;
   exclusive.type = AudioDriverType::WasapiExclusive;
   exclusive.caps.sampleRates = {44100, 48000, 88200, 96000};
@@ -77,7 +76,6 @@ FakeAudioPrefsPort FakeAudioPrefsPort::studio() {
   p.current.outputName = "Focusrite USB ASIO";
   p.current.sampleRate = 48000;
   p.current.bufferFrames = 64;
-  p.current.inputChannels = 2;
   p.current.outputChannels = 2;
   p.running.state = AudioStatus::State::Running;
   p.running.deviceName = "Focusrite USB ASIO";
@@ -238,7 +236,6 @@ void fitToCaps(AudioPrefsPort& port, AudioSettings& s) {
     const auto up = std::lower_bound(c.bufferSizes.begin(), c.bufferSizes.end(), s.bufferFrames);
     s.bufferFrames = up != c.bufferSizes.end() ? *up : c.bufferSizes.back();
   }
-  if (!c.inputSupported) s.inputChannels = 0;
   if (c.maxOutputChannels > 0) s.outputChannels = std::min(s.outputChannels, std::max(c.maxOutputChannels, 1u));
 }
 
@@ -293,6 +290,10 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx)
     warpTab_ = &warpTab;
     warpTab.setInfo("Warp", "Auto-warp of long samples, and the warp mode a clip gets when it is warped.");
     warpTab.onSelect = [this] { showTab(Tab::Warp); };
+    auto& recTab = tabs.add<TabLabel>("record", "Record");  // T6.7b
+    recordTab_ = &recTab;
+    recTab.setInfo("Record", "The record latency offset: moves recorded audio to line up with what was played.");
+    recTab.onSelect = [this] { showTab(Tab::Record); };
   }
   tabs.selected = &audioTab;
 
@@ -343,8 +344,8 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx)
     inputRow_ = &r;
     input_ = &r.add<Dropdown>("chooser", std::vector<std::string>{}, 0);
     input_->setWidth(Length::fixed(kControlWidth));
-    input_->setInfo("Audio Input Device", "The device recording reads from (WASAPI). Inputs are opened from M6 "
-                                          "(recording); until then the choice is kept for later.");
+    input_->setInfo("Audio Input Device", "The device the tracks' inputs read from (WASAPI shared capture, aligned "
+                                          "with the output). The stream opens the inputs the tracks use.");
     input_->onChange = [this](int32_t i) {
       if (i < 0 || static_cast<size_t>(i) >= inputs_.size()) return;
       AudioSettings s = shown_;
@@ -362,16 +363,8 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx)
     panel_->onClick = [this] { (void)port_.openControlPanel(); };
   }
   {
-    auto& r = row(page, "channels", "Input / Output Channels");
-    inChannels_ = &r.add<Dropdown>("inputs", std::vector<std::string>{}, 0);
-    inChannels_->setWidth(Length::fixed(156));
-    inChannels_->setInfo("Input Channels", "How many of the device's inputs the stream opens (from input 1).");
-    inChannels_->onChange = [this](int32_t i) {
-      if (i < 0 || static_cast<size_t>(i) >= inCounts_.size()) return;
-      AudioSettings s = shown_;
-      s.inputChannels = inCounts_[static_cast<size_t>(i)];
-      choose(std::move(s));
-    };
+    // T6.7b: no input count: the stream opens the inputs the tracks use (AudioPrefsPort's implementation).
+    auto& r = row(page, "channels", "Output Channels");
     outChannels_ = &r.add<Dropdown>("outputs", std::vector<std::string>{}, 0);
     outChannels_->setWidth(Length::fixed(156));
     outChannels_->setInfo("Output Channels", "How many of the device's outputs the stream opens. The master plays on "
@@ -484,6 +477,7 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx)
   if (ctx_) buildLibraryTab(body);
   buildMidiTab(body);  // T6.4
   if (ctx_) buildWarpTab(body);  // T6.8
+  if (ctx_) buildRecordTab(body);  // T6.7b
 
   port_.setListener([alive = alive_, this] {
     if (*alive) refresh();
@@ -611,16 +605,19 @@ void PreferencesWindow::updateLibrary() {
 void PreferencesWindow::showTab(Tab t) {
   if (t == Tab::Library && !libraryPage_) return;
   if (t == Tab::Warp && !warpPage_) return;
+  if (t == Tab::Record && !recordPage_) return;
   tab_ = t;
   audioPage_->setVisible(t == Tab::Audio);
   if (libraryPage_) libraryPage_->setVisible(t == Tab::Library);
   midiPage_->setVisible(t == Tab::Midi);
   if (warpPage_) warpPage_->setVisible(t == Tab::Warp);
+  if (recordPage_) recordPage_->setVisible(t == Tab::Record);
   if (t == Tab::Midi) updateMidi();
   auto* tabs = static_cast<TabColumn*>(tabs_);
   tabs->selected = t == Tab::Audio     ? static_cast<const Widget*>(audioTab_)
                    : t == Tab::Library ? static_cast<const Widget*>(libraryTab_)
                    : t == Tab::Warp    ? static_cast<const Widget*>(warpTab_)
+                   : t == Tab::Record  ? static_cast<const Widget*>(recordTab_)
                                        : static_cast<const Widget*>(midiTab_);
   tabs->markDirty();
 }
@@ -669,6 +666,45 @@ void PreferencesWindow::updateWarp() {
   const ViewPrefs& p = ctx_->viewPrefs();
   autoWarp_->setOn(p.autoWarpLongSamples);
   defaultWarp_->setIndex(std::max(0, static_cast<int32_t>(p.defaultWarpMode) - 1));
+}
+
+// ---- T6.7b: the Record tab ------------------------------------------------------------------------------------------
+// ViewPrefs::recordOffsetMs (the app hands it to the playback link and keeps it in the settings file).
+
+void PreferencesWindow::buildRecordTab(Widget& body) {
+  auto& page = body.add<Widget>("record");
+  recordPage_ = &page;
+  page.setLayout(LayoutKind::Column);
+  page.setGap(5);
+  page.setVisible(false);
+  section(page, "record-section", "Recording");
+  auto& r = row(page, "record-offset", "Record Latency Offset");
+  ValueSpec vs;
+  vs.min = -ViewPrefs::kMaxRecordOffsetMs;
+  vs.max = ViewPrefs::kMaxRecordOffsetMs;
+  vs.def = 0.0;
+  vs.step = 0.01;
+  vs.keyStep = 0.1;
+  vs.decimals = 2;
+  vs.unit = "ms";
+  vs.dragPixels = 2000.0;
+  recordOffset_ = &r.add<DragBox>("offset", vs);
+  recordOffset_->setWidth(Length::fixed(96));
+  recordOffset_->setInfo("Record Latency Offset",
+                         "Added to the latency the driver reports when recorded audio is placed (−100 … "
+                         "100 ms). Positive moves recordings earlier, negative later. Measure it by recording a click "
+                         "played out and back in.");
+  recordOffset_->onChange = [this](double v) {
+    ViewPrefs p = ctx_->viewPrefs();
+    p.recordOffsetMs = static_cast<float>(v);
+    ctx_->setViewPrefs(p);
+  };
+  updateRecord();
+}
+
+void PreferencesWindow::updateRecord() {
+  if (!ctx_ || !recordOffset_) return;
+  if (!recordOffset_->inGesture()) recordOffset_->setValue(ctx_->viewPrefs().recordOffsetMs);
 }
 
 // ---- T6.4: the MIDI tab ----------------------------------------------------------------------------------------------
@@ -908,16 +944,6 @@ void PreferencesWindow::rebuildChoosers() {
     for (uint32_t b : buffers_) items.push_back(std::to_string(b) + " Samples");
     buffer_->setItems(std::move(items), indexOf(buffers_, shown_.bufferFrames));
   }
-  inCounts_.assign(1, 0);
-  if (caps_.inputSupported)
-    for (uint32_t n = 1; n <= caps_.maxInputChannels; ++n) inCounts_.push_back(n);
-  if (std::find(inCounts_.begin(), inCounts_.end(), shown_.inputChannels) == inCounts_.end()) inCounts_.push_back(shown_.inputChannels);
-  {
-    std::vector<std::string> items;
-    for (uint32_t n : inCounts_) items.push_back(n == 0 ? std::string("No inputs") : std::to_string(n) + (n == 1 ? " input" : " inputs"));
-    inChannels_->setItems(std::move(items), indexOf(inCounts_, shown_.inputChannels));
-  }
-  inChannels_->setEnabled(caps_.inputSupported);
   outCounts_.clear();
   const uint32_t maxOut = std::max<uint32_t>(caps_.maxOutputChannels, 1);
   outCounts_.push_back(std::min<uint32_t>(2, maxOut));

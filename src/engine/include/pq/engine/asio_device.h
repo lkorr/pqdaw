@@ -86,7 +86,8 @@ uint32_t asioChooseBufferFrames(int32_t minSize, int32_t maxSize, int32_t prefer
 // AsioDevice that tries to load one gets ErrorCode::Device. Device ids are 1-based positions in the driver
 // list; StreamConfig::outputEndpointId may name the driver instead (the registry name, case-insensitive).
 // kDefaultDevice = the first driver in the list that loads. The stream's channels are the driver's first
-// outputChannels outputs and first inputChannels inputs (duplex on one driver; inputDevice is ignored).
+// outputChannels outputs and first inputChannels inputs, at most the driver's (T6.7b: StreamInfo::inputChannels says how
+// many opened; duplex on one driver; inputDevice is ignored).
 // shareMode is ignored (ASIO drivers are exclusive by nature).
 class AsioDevice final : public AudioDevice {
 public:

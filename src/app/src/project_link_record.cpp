@@ -99,7 +99,36 @@ std::string ProjectLink::unsavedRecordDir() const {
   return pathUtf8(u8path(base) / "pqdaw" / "Unsaved" / sessionName() / "samples" / "recorded");
 }
 
-uint32_t ProjectLink::audioInputChannels() { return engine_->recorder().deviceInputs(); }
+uint64_t ProjectLink::discardUnsavedRecordings() {  // UI thread
+  if (recording_ && recording_->active()) {  // the session belongs to the discarded project: no commit
+    if (playhead().recording) postTransport({engine::TransportCommandKind::RecordOff, false, 0, 0, 0});
+    const RecordingResult dropped = recording_->finish();
+    (void)dropped;
+    if (inputUseFn_) inputUseFn_();
+  }
+  std::filesystem::path target, root;
+  if (!cfg_.unsavedDir.empty()) {
+    target = u8path(cfg_.unsavedDir).lexically_normal();
+    if (!target.has_filename()) target = target.parent_path();  // a trailing separator
+    root = target.parent_path();
+  } else {
+    std::string base = envUtf8(L"LOCALAPPDATA");
+    if (base.empty()) base = pathUtf8(std::filesystem::temp_directory_path());
+    root = u8path(base) / "pqdaw" / "Unsaved";
+    target = root / sessionName();
+  }
+  std::string why;
+  const uint64_t n = removeUnsavedFolder(target, root, &why);
+  if (!why.empty()) setError("unsaved recordings: " + why);
+  return n;
+}
+
+uint32_t ProjectLink::audioInputChannels() { return std::max(availableInputs_, engine_->recorder().deviceInputs()); }
+
+void ProjectLink::setRecordOffsetMs(double ms) {  // UI thread
+  recordOffsetMs_ = std::isfinite(ms) ? ms : 0.0;
+  if (engine_) engine_->recorder().setManualOffset(static_cast<int32_t>(std::lround(recordOffsetMs_ * cfg_.sampleRate / 1000.0)));
+}
 
 std::vector<engine::UnitInput> ProjectLink::unitInputs(const doc::LoweredProject& lp) const {  // compile path
   const graph::ProjectPartition& part = compiler_->partition();
@@ -118,8 +147,10 @@ void ProjectLink::syncRecordInputs(const doc::Project& p, bool force) {  // UI t
   auto img = std::make_shared<engine::MonitorImage>();
   std::vector<uint64_t> key;
   std::vector<uint16_t> channels;
+  uint32_t used = 0;  // T6.7b
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
     if (t.kind != doc::TrackKind::Audio || t.mixer.audioIn.none()) return;
+    used = std::max<uint32_t>(used, uint32_t{t.mixer.audioIn.firstChannel} + t.mixer.audioIn.channels);
     const uint32_t param = paramSlot(std::to_string(t.id.value) + ":monitor");
     if (param == kNoSlot) return;
     engine::MonitorEntry e;
@@ -142,6 +173,10 @@ void ProjectLink::syncRecordInputs(const doc::Project& p, bool force) {  // UI t
   channels.erase(std::unique(channels.begin(), channels.end()), channels.end());
   recording_->prepareChannels(std::move(channels));
   engine_->recorder().collect(engine_->audioStopped());
+  if (used != inputsUsed_) {  // T6.7b: the device manager opens what the tracks use
+    inputsUsed_ = used;
+    if (inputUseFn_) inputUseFn_();
+  }
   if (force || !punchSent_ || *punchSent_ != p.punch) {
     engine::TransportCommand c{engine::TransportCommandKind::SetPunch, false, 0, 0, 0};
     c.punchEnabled = p.punch.enabled;
@@ -226,6 +261,7 @@ void ProjectLink::pollRecording() {  // UI thread
 
 void ProjectLink::finishRecording() {  // UI thread
   RecordingResult r = recording_->finish();
+  if (inputUseFn_) inputUseFn_();  // T6.7b: an input reopen held back during the session may go now
   for (const std::string& e : r.errors) setError("recording: " + e);
   doc::DocumentStore* store = ctx_ != nullptr ? &ctx_->store() : recordStore_;
   if (store == nullptr || r.passes.empty()) return;  // nothing to commit to (the files stay on disk)

@@ -14,6 +14,11 @@
 //                           the same way and saves it
 //   hot-plug                the output reopens a lost device or falls back to silence; a hardware change marks the
 //                           device lists stale (re-enumerated the next time the window asks)
+//   inputs (T6.7b)          the stream opens the inputs the tracks use (ProjectLink::usedAudioInputs: max used input
+//                           + 1), bounded by the device (ASIO: the open driver's inputs; WASAPI: the capture endpoint's
+//                           channels; none without an input device). A change reopens the stream — never while a
+//                           recording session runs (the link reports again when it ends). The device's input count
+//                           goes to the link (setAvailableInputs) for the strips' input chooser.
 //
 // Threads: everything here runs on the UI thread. The output notifies from its own threads through the hook given
 // to setUiNotify (the app posts an SDL event); the UI thread then calls poll().
@@ -54,7 +59,9 @@ public:
   static views::AudioSettings startupSettings(const CliOptions& o, const std::string& path,
                                               std::vector<std::string>* warnings = nullptr);
   // The output configuration for `s` (rate = s.sampleRate). `deviceIndex`: a numeric --device id, if any.
-  static OutputConfig outputConfigFor(const views::AudioSettings& s, uint32_t deviceIndex = engine::kDefaultDevice);
+  // `inputs`: the input channels to open (WASAPI: only with an input device).
+  static OutputConfig outputConfigFor(const views::AudioSettings& s, uint32_t deviceIndex = engine::kDefaultDevice,
+                                      uint32_t inputs = 0);
 
   // Starts the output on `link`'s engine (which must already run at initial.sampleRate). `link` must outlive the
   // manager.
@@ -93,8 +100,14 @@ public:
   std::vector<views::MidiPortEntry> midiInputs() override;
   void setMidiInput(const std::string& name, bool enabled, float bendSemitones) override;
 
+  // T6.7b: the inputs the stream should open now (the link's used count, bounded by the device when it is known), and
+  // the device's input channels (0 unknown / none).
+  uint32_t wantedInputs();
+  uint32_t deviceInputs();
+
 private:
   static void onOutput(void* self);
+  void onInputUse();  // T6.7b: the link's used inputs changed (or a session ended)
   void open(const views::AudioSettings& s);  // rate change if needed, then reconfigure
   const std::vector<engine::DeviceInfo>& devices(engine::Backend b);
   void save();
@@ -115,6 +128,8 @@ private:
   uint64_t seenHardware_ = 0, seenRevision_ = 0;
   uint64_t rateChanges_ = 0;
   std::string lastError_;
+  bool opening_ = false;
+  uint32_t requestedInputs_ = 0;  // T6.7b: wantedInputs() at the last open (what was asked for)  // T6.7b: inside open() (a link callback during a rate change does not reopen)
   // cpuLoad's previous sample
   uint64_t loadOpens_ = ~0ull, loadCallbacks_ = 0;
   double loadBusyUs_ = 0.0;

@@ -16,7 +16,7 @@
 //   │        │   Hardware Setup            [Hardware Setup]                     │  (ASIO: the driver's panel)
 //   │        │   Audio Input Device        [Microphone (USB)              ▾]     │  (WASAPI: separate devices)
 //   │        │   Audio Output Device       [Speakers (Focusrite USB)      ▾]     │
-//   │        │   Input Channels            [Off ▾]   Output Channels [2 ▾]      │
+//   │        │   Output Channels           [2 ▾]                                │  (inputs: what the tracks use)
 //   │        │ Sample Rate                                                      │
 //   │        │   In/Out Sample Rate        [48000 ▾]                            │
 //   │        │ Latency                                                          │
@@ -55,6 +55,12 @@
 //   │ Warp    │ Warping                                                          │
 //   │         │   Auto-Warp Long Samples    [Off]                                │
 //   │         │   Default Warp Mode         [Beats          ▾]                   │
+//
+// T6.7b: a Record tab (with a ViewContext; Live's Record, Warp & Launch → Record): ViewPrefs::recordOffsetMs, the manual
+// record offset added to the measured record latency (the playback link hands it to engine::Recorder::setManualOffset):
+//
+//   │ Record  │ Recording                                                        │
+//   │         │   Record Latency Offset     [0.00 ms]                            │
 //
 // Browse… and Add Folder… open the folder picker (FileDialogs::chooseFolder). The location applies at once
 // (Library::changeUserLibrary: the browser's User Library place re-points and re-indexes; saves go there) and the app
@@ -110,7 +116,6 @@ struct AudioDeviceCaps {
   std::vector<uint32_t> bufferSizes;
   uint32_t maxInputChannels = 0, maxOutputChannels = 2;
   bool hasControlPanel = false;  // ASIO: "Hardware Setup"
-  bool inputSupported = true;    // false: the driver type cannot open inputs yet (WASAPI input arrives with M6)
   bool operator==(const AudioDeviceCaps&) const = default;
 };
 
@@ -122,7 +127,7 @@ struct AudioSettings {
   std::string outputName, inputName;  // display names of the two (shown while the device is not connected)
   uint32_t sampleRate = 48000;
   uint32_t bufferFrames = 256;
-  uint32_t inputChannels = 0;   // 0 = no input
+  // T6.7b: no input count: the app opens the inputs the tracks use (max used input + 1, bounded by the device).
   uint32_t outputChannels = 2;  // the master plays on outputs 1/2; further outputs get silence
   // T5.10: where the browser's preview plays ("Cue Out"): 0 = with the master on outputs 1/2; k >= 1 = outputs 2k+1 /
   // 2k+2 (when the stream opens that many outputs; else 1/2).
@@ -231,7 +236,6 @@ public:
     running.state = AudioStatus::State::Running;
     running.sampleRate = s.sampleRate;
     running.bufferFrames = s.bufferFrames;
-    running.inputChannels = s.inputChannels;
     running.outputChannels = s.outputChannels;
     ++running.revision;
     if (listener) listener();
@@ -297,7 +301,6 @@ public:
   ui::Dropdown* inputChooser() const noexcept { return input_; }
   ui::Dropdown* rateChooser() const noexcept { return rate_; }
   ui::Dropdown* bufferChooser() const noexcept { return buffer_; }
-  ui::Dropdown* inputChannelsChooser() const noexcept { return inChannels_; }
   ui::Dropdown* outputChannelsChooser() const noexcept { return outChannels_; }
   ui::Dropdown* cueChooser() const noexcept { return cue_; }  // T5.10
   ui::Toggle* toneToggle() const noexcept { return tone_; }
@@ -307,7 +310,7 @@ public:
 
   // T5.x-library-prefs: the tabs (0 Audio, 1 Library, 2 MIDI: T6.4) and the Library tab's controls (null without a
   // context).
-  enum class Tab : uint8_t { Audio, Library, Midi, Warp };  // Warp: T6.8 (with a context)
+  enum class Tab : uint8_t { Audio, Library, Midi, Warp, Record };  // Warp: T6.8, Record: T6.7b (with a context)
   void showTab(Tab t);
   Tab tab() const noexcept { return tab_; }
   ui::Button* browseUserLibrary() const noexcept { return browse_; }
@@ -326,6 +329,8 @@ public:
   // T6.8: the Warp tab's controls (null without a context).
   ui::Toggle* autoWarpToggle() const noexcept { return autoWarp_; }
   ui::Dropdown* defaultWarpChooser() const noexcept { return defaultWarp_; }
+  // T6.7b: the Record tab's offset box (ms; null without a context).
+  ui::DragBox* recordOffsetBox() const noexcept { return recordOffset_; }
   // The selected row of the Places list (-1 none).
   int32_t selectedFolder() const noexcept;
   void selectFolder(int32_t row);
@@ -344,6 +349,8 @@ private:
   void updateMidi();
   void buildWarpTab(ui::Widget& body);  // T6.8
   void updateWarp();
+  void buildRecordTab(ui::Widget& body);  // T6.7b
+  void updateRecord();
 
   AudioPrefsPort& port_;
   AudioSettings shown_;
@@ -351,9 +358,9 @@ private:
   AudioStatus status_;
   std::vector<AudioDriverType> drivers_;
   std::vector<AudioDeviceEntry> outputs_, inputs_;
-  std::vector<uint32_t> rates_, buffers_, inCounts_, outCounts_;
+  std::vector<uint32_t> rates_, buffers_, outCounts_;
   ui::Dropdown *driver_ = nullptr, *output_ = nullptr, *input_ = nullptr, *rate_ = nullptr, *buffer_ = nullptr,
-               *inChannels_ = nullptr, *outChannels_ = nullptr, *cue_ = nullptr;
+               *outChannels_ = nullptr, *cue_ = nullptr;
   ui::Widget *outputRow_ = nullptr, *inputRow_ = nullptr, *panelRow_ = nullptr;
   ui::Label *outputLabel_ = nullptr, *statusLabel_ = nullptr, *latency_ = nullptr, *cpu_ = nullptr;
   ui::Button* panel_ = nullptr;
@@ -373,6 +380,9 @@ private:
   ui::Widget* warpPage_ = nullptr;
   ui::Toggle* autoWarp_ = nullptr;
   ui::Dropdown* defaultWarp_ = nullptr;
+  ui::Label* recordTab_ = nullptr;  // T6.7b
+  ui::Widget* recordPage_ = nullptr;
+  ui::DragBox* recordOffset_ = nullptr;
   ViewContext::Subscription librarySub_;
   uint32_t timer_ = 0;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);

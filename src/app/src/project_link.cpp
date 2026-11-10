@@ -565,6 +565,7 @@ Status ProjectLink::setSampleRate(double rate) {
   publishLiveRoutes(*current_, true);  // T6.4: the new engine has no routes yet
   syncRecording(*current_);            // T6.6: nor a metronome setting
   recording_->bind(engine_.get());     // T6.7: the new engine's recorder (capture rings, monitors, punch)
+  setRecordOffsetMs(recordOffsetMs_);  // T6.7b: in frames at the new rate
   syncRecordInputs(*current_, true);
   lastAudio_ = nullptr;
   publishAudio(*current_, true);  // T5.4: the new engine's timeline has no audio image yet
@@ -611,6 +612,7 @@ void ProjectLink::attach(views::ViewContext& ctx) {
   // EQ.4b: the response displays read this link's lowerings (ViewContext::setLowering) instead of lowering themselves.
   ctx.setLoweringProvided(true);
   ctx.setUnsavedRecordingDir(unsavedRecordDir());  // T6.7: moved into the project on its first save
+  ctx.setUnsavedDiscardHook([this] { (void)discardUnsavedRecordings(); });  // T6.7b
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onDocumentChange(e); });
   // "Re-enable Automation" and hand-made overrides (T3.15) change which lanes play (T3.17-fix3, M3 review M4).
   observer_ = ctx.observe([this](uint32_t what) {
@@ -638,6 +640,7 @@ void ProjectLink::detach() {
   observer_ = views::ViewContext::Subscription();
   sub_ = views::ViewContext::Subscription();
   if (ctx_ != nullptr) ctx_->setLoweringProvided(false);
+  if (ctx_ != nullptr) ctx_->setUnsavedDiscardHook({});  // T6.7b
   ctx_ = nullptr;
 }
 

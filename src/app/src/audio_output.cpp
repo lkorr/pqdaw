@@ -283,6 +283,16 @@ void AudioOutput::onDevice(void* self, const engine::AudioBlock& b) noexcept {  
     silence();
     return;
   }
+  // T6.7b: a backend that measures its input's round trip (WASAPI capture: two clocks): the record latency follows it.
+  // The round trip is device in → device out; each path also passes the adapter's FIFO.
+  if (o.engineIns_ != 0)
+    if (const engine::CallbackStats* st = o.devStats_.load(std::memory_order_relaxed); st != nullptr)
+      if (const int64_t rt = st->roundTripNow(); rt >= 0 && rt != o.lastRoundTrip_) {
+        o.lastRoundTrip_ = rt;
+        const int64_t in = rt + 2 * int64_t{o.recAdapter_} - o.recOut_;
+        o.engine_.load(std::memory_order_relaxed)->recorder().setDeviceLatency(static_cast<uint32_t>(std::max<int64_t>(0, in)),
+                                                                               o.recOut_);
+      }
   engine::AudioBlock e = b;
   // T6.7: the device's inputs (ASIO duplex) reach the engine: the tracks' `track.in`, recording.
   const float* ins[engine::kMaxChannels] = {};
@@ -494,13 +504,17 @@ void AudioOutput::publish(OutputStatus::State s, std::string message, bool notif
   {
     std::lock_guard lock(mutex_);
     status_.state = s;
-    status_.message = std::move(message);
+    status_.message = message.empty() ? inputNote_ : std::move(message);  // T6.7b: an input that did not open
     ++status_.revision;
   }
   if (notifyUi) notify();
 }
 
 void AudioOutput::openFallback(const OutputConfig& c, std::string why) {
+  {
+    std::lock_guard lock(mutex_);
+    inputNote_.clear();  // T6.7b
+  }
   engine::Engine& eng = *engine_.load();
   auto null = std::make_unique<engine::NullDevice>();
   engine::StreamConfig sc;
@@ -559,7 +573,9 @@ bool AudioOutput::openDevice(const OutputConfig& c) {
       sc.outputDevice = c.deviceIndex;
       sc.outputEndpointId = c.device;
       sc.outputChannels = std::max(c.outputChannels, 1u);
-      sc.inputChannels = c.backend == engine::Backend::Asio ? c.inputChannels : 0;  // WASAPI input: M6
+      sc.inputChannels = c.inputChannels;  // T6.7b: ASIO duplex, WASAPI shared capture (bounded by the device)
+      sc.inputEndpointId = c.inputDevice;
+      if (c.backend == engine::Backend::Wasapi && c.inputDevice.empty()) sc.inputChannels = 0;
       sc.sampleRate = c.sampleRate;
       sc.bufferFrames = c.bufferFrames;
       sc.shareMode = c.shareMode;
@@ -575,6 +591,11 @@ bool AudioOutput::openDevice(const OutputConfig& c) {
           eng.liveInput().setLatency(si.bufferFrames + adapter_.latencyFrames());  // T6.4: one device period
           eng.recorder().setDeviceLatency(si.inputLatencyFrames + adapter_.latencyFrames(),  // T6.7
                                           (si.latencyFrames > 0 ? si.latencyFrames : si.bufferFrames) + adapter_.latencyFrames());
+          // T6.7b: a measured round trip (WASAPI capture) replaces the input figure once the audio thread has it.
+          recOut_ = (si.latencyFrames > 0 ? si.latencyFrames : si.bufferFrames) + adapter_.latencyFrames();
+          recAdapter_ = adapter_.latencyFrames();
+          lastRoundTrip_ = -1;
+          if (!si.inputError.empty()) std::printf("pqdaw: audio input: %s\n", si.inputError.c_str());
           std::optional<engine::DeviceInfo> asioInfo;
           if (c.backend == engine::Backend::Asio)  // only the open driver is queried while a stream is open
             if (auto list = dev->enumerate(); list.ok())
@@ -596,6 +617,7 @@ bool AudioOutput::openDevice(const OutputConfig& c) {
             status_.adapterLatencyFrames = adapter_.latencyFrames();
             status_.rateMismatch = si.sampleRate != engineRate;
             status_.asioInfo = std::move(asioInfo);
+            inputNote_ = si.inputError.empty() ? std::string() : "input: " + si.inputError;  // T6.7b
             ++status_.opens;
           }
           publish(OutputStatus::State::Suspended, {});

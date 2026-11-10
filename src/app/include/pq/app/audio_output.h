@@ -67,7 +67,10 @@ struct OutputConfig {
   uint32_t deviceIndex = engine::kDefaultDevice;  // the backend's numeric id (--device <n>), or its default
   uint32_t sampleRate = 48000;
   uint32_t bufferFrames = 256;
-  uint32_t inputChannels = 0;  // ASIO duplex: the engine's inputs (T6.7: the tracks' inputs, recording)
+  // The engine's inputs (T6.7: the tracks' inputs, recording; T6.7b: what the tracks use, bounded by the device): ASIO
+  // duplex on the driver; WASAPI from the capture endpoint `inputDevice` (empty: no input).
+  uint32_t inputChannels = 0;
+  std::string inputDevice;  // T6.7b: WASAPI capture endpoint id
   uint32_t outputChannels = 2;  // the master plays on outputs 1/2, the rest get silence
   bool operator==(const OutputConfig&) const = default;
 };
@@ -195,6 +198,11 @@ private:
   engine::BlockAdapter adapter_;
   uint32_t engineOuts_ = 2;  // channels the adapter / engine produce (≤ 2); the device's others are zeroed
   uint32_t engineIns_ = 0;   // T6.7: the device's input channels handed to the engine (≤ kMaxChannels)
+  // T6.7b: the record latency's output part and the adapter FIFO (control thread, before start); the last measured round
+  // trip the recorder got (audio thread); why the stream's inputs did not open (mutex_).
+  uint32_t recOut_ = 0, recAdapter_ = 0;
+  int64_t lastRoundTrip_ = -1;
+  std::string inputNote_;
   AlignedBuffer<float> zeroIn_{16384};  // T6.7: an input the device did not deliver this block reads silence
   // T6.6: a device with 4 or more outputs also runs the engine's click pair (Engine::setClickPair): two more adapter
   // channels into clickBuf_ (clickCap_ frames each), added into the cue pair while the metronome plays on it.

@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <random>
 #include <string>
@@ -22,7 +23,9 @@
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
 #include "pq/document/input_map.h"
+#include "pq/app/recording.h"
 #include "pq/media/wav_file.h"
+#include "pq/views/view_context.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -213,6 +216,45 @@ TEST_CASE("T6.7 recording: an audio input, monitored and recorded bit for bit, l
       r.run(2);
     }
   }
+}
+
+TEST_CASE("T6.7b recording: the manual record offset (Preferences, ms) moves the take by exactly its frames") {
+  // Device latency 256; offsets +2.5 ms = +120 frames, -1 ms = -48 frames, 0. The file is the same in every case; only
+  // the take's placement in it moves by the offset.
+  for (const double ms : {0.0, 2.5, -1.0}) {
+    CAPTURE(ms);
+    Rig r;
+    const TrackId t = r.audioTrack(AudioInput{0, 1});
+    r.arm(t);
+    r.start();
+    r.link->flush();
+    r.link->engine().recorder().setDeviceLatency(128, 128);
+    r.link->setRecordOffsetMs(ms);
+    r.run(10);
+    r.link->record(0);
+    const int64_t e0 = r.time;
+    r.run(1500);
+    r.link->stop();
+    r.run(4);
+    REQUIRE(r.link->recordCommits() == 1);
+    const Track& tr = r.track(t);
+    REQUIRE(tr.clips.size() == 1);
+    const AudioClip& c = *tr.clips[0].audio;
+    const int64_t off = 256 + std::llround(ms * 48.0);
+    CHECK(r.link->engine().recorder().latencyOffset(0) == off);
+    CHECK(c.start == 0);
+    CHECK(c.contentStartFrame == static_cast<double>(off));
+    CHECK(std::llround(c.seconds * kRate) == 96000 - off);
+    const media::WavData w = readTake(r, c);
+    REQUIRE(w.frames() == 96000);
+    CHECK(w.channels[0][static_cast<size_t>(off)] == source(0, e0 + off));  // song sample 0 plays that frame
+  }
+  // A sample-rate change keeps the offset in ms (its frames follow the rate).
+  Rig r;
+  r.start();
+  r.link->setRecordOffsetMs(2.5);
+  REQUIRE(r.link->setSampleRate(96000.0).ok());
+  CHECK(r.link->engine().recorder().latencyOffset(0) == 240);
 }
 
 TEST_CASE("T6.7 recording: 4 loop passes make 4 take lanes (contiguous regions of one file), the last also in main") {
@@ -482,4 +524,96 @@ TEST_CASE("T6.7 recording: 16 mono inputs for 10 minutes at 4x real time drop no
   }
   MESSAGE("16 inputs x 10 min at 4x real time: " << std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()
                                                   << " s, dropped " << r.link->engine().recorder().droppedFrames());
+}
+
+TEST_CASE("T6.7b recording: removeUnsavedFolder deletes only a folder strictly inside its root") {
+  std::random_device rd;
+  const fs::path base = fs::temp_directory_path() / ("pq_t67b_guard_" + std::to_string(rd()));
+  const fs::path root = base / "pqdaw" / "Unsaved";
+  const fs::path session = root / "123-456";
+  fs::create_directories(session / "samples" / "recorded");
+  { std::ofstream(session / "samples" / "recorded" / "a.wav") << "x"; }
+  fs::create_directories(root / "999-1");  // another run's folder
+  { std::ofstream(root / "999-1" / "b.wav") << "y"; }
+  { std::ofstream(base / "keep.txt") << "z"; }
+  std::string why;
+  CHECK(app::removeUnsavedFolder(fs::path("relative/x"), root, &why) == 0);  // relative
+  CHECK(app::removeUnsavedFolder(root, root, &why) == 0);                    // the root itself
+  CHECK(app::removeUnsavedFolder(root / "123-456" / ".." / "..", root, &why) == 0);  // out of it
+  CHECK(app::removeUnsavedFolder(base, root, &why) == 0);                    // above it
+  CHECK(app::removeUnsavedFolder(fs::path("C:/x/y"), fs::path("C:/x"), &why) == 0);  // a root next to the drive's
+  CHECK(fs::exists(session / "samples" / "recorded" / "a.wav"));
+  CHECK(app::removeUnsavedFolder(session, root, &why) == 4);  // the folder, samples, recorded, a.wav
+  CHECK(why.empty());
+  CHECK_FALSE(fs::exists(session));
+  CHECK(fs::exists(root / "999-1" / "b.wav"));
+  CHECK(fs::exists(base / "keep.txt"));
+  CHECK(app::removeUnsavedFolder(session, root, &why) == 0);  // gone: nothing to do
+  std::error_code ec;
+  fs::remove_all(base, ec);
+}
+
+TEST_CASE("T6.7b recording: discarding an untitled project deletes its unsaved recordings; a titled one keeps them") {
+  Rig r;
+  const TrackId t = r.audioTrack(AudioInput{0, 1});
+  r.arm(t);
+  r.start();
+  r.link->flush();
+  fs::create_directories(r.dir);
+  { std::ofstream(r.dir / "neighbour.txt") << "keep"; }
+  REQUIRE(fs::exists(r.dir / "neighbour.txt"));
+  const fs::path rec = r.dir / "recorded";
+  auto wavs = [&] {
+    size_t n = 0;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(rec, ec)) n += e.path().extension() == ".wav" ? 1 : 0;
+    return n;
+  };
+  // A finished session, then New on the untitled project through a ViewContext: the folder goes.
+  r.run(10);
+  r.link->record(0);
+  r.run(200);
+  r.link->stop();
+  r.run(4);
+  REQUIRE(r.link->recordCommits() == 1);
+  REQUIRE(wavs() == 1);
+  {
+    views::ViewContext ctx(*r.link);
+    r.store.unsubscribe(r.sub);
+    r.link->attach(ctx);
+    REQUIRE(ctx.projectDir().empty());
+    ctx.newProject();
+    CHECK_FALSE(fs::exists(rec));
+    CHECK(fs::exists(r.dir / "neighbour.txt"));
+    // A titled project's New keeps the folder (its recordings are not that project's).
+    fs::create_directories(rec);
+    { std::ofstream(rec / "x.wav") << "x"; }
+    REQUIRE(ctx.saveProjectAs((r.dir / "Song").string()).ok());
+    ctx.newProject();
+    CHECK(fs::exists(rec / "x.wav"));
+    // Untitled again: quitting (nothing to save) discards it.
+    CHECK(ctx.confirmQuit([] {}));
+    CHECK_FALSE(fs::exists(rec));
+    CHECK(fs::exists(r.dir / "Song"));
+    r.link->detach();
+    r.sub = r.store.subscribe([&r](const StoreEvent& e) { r.link->onDocumentChange(e); });
+  }
+}
+
+TEST_CASE("T6.7b recording: a session still running when its untitled project is discarded ends without a commit") {
+  Rig r;
+  const TrackId t = r.audioTrack(AudioInput{0, 1});
+  r.arm(t);
+  r.start();
+  r.link->flush();
+  r.run(10);
+  r.link->record(0);
+  r.run(300);
+  REQUIRE(r.link->recording().active());
+  CHECK(r.link->discardUnsavedRecordings() >= 2);  // the folder and the session's WAV
+  CHECK_FALSE(r.link->recording().active());
+  CHECK_FALSE(fs::exists(r.dir / "recorded"));
+  r.run(10);
+  CHECK(r.link->recordCommits() == 0);
+  CHECK(r.track(t).takes.empty());
 }

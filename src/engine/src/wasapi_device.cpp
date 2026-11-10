@@ -23,6 +23,7 @@
 #include "pq/core/rt_log.h"
 #include "pq/core/rt_scope.h"
 #include "pq/engine/callback_runner.h"
+#include "pq/engine/capture_fifo.h"
 #include "pq/engine/sample_convert.h"
 #include "pq/engine/stream_trace.h"
 #include "pq/engine/underrun_tracker.h"
@@ -232,6 +233,20 @@ struct WasapiDevice::Impl {
   AlignedBuffer<float> scratch;
   float* out[kMaxChannels] = {};
 
+  // T6.7b: shared-mode capture, polled on the audio thread before each render (see wasapi_device.h).
+  ComPtr<IMMDevice> capDevice;
+  ComPtr<IAudioClient> capClient;
+  ComPtr<IAudioCaptureClient> capture;
+  uint32_t numIn = 0;
+  uint32_t capChannels = 0;  // channels in a capture packet
+  SampleFormat capFormat = SampleFormat::Float32;
+  bool captureOk = false;    // audio thread: false after a capture call failed (the inputs then read silence)
+  CaptureFifo fifo;
+  AlignedBuffer<float> inScratch;
+  float* in[kMaxChannels] = {};
+  double rtMean = 0.0;  // audio thread: the round trip averaged since the FIFO last primed
+  uint32_t rtCount = 0;
+
   CallbackRunner runner;
   std::atomic<bool> running{false};
   std::atomic<bool> threadAlive{false};
@@ -239,12 +254,23 @@ struct WasapiDevice::Impl {
   RtLog* rtLog = nullptr;  // optional diagnostics ring (set before start())
 
   void threadMain() noexcept;
-  void renderPeriods(BYTE* data, uint32_t periods, bool& pendingUnderrun) noexcept;
+  // `firstFrame`: the stream frame of data's first frame; `posFrames` / `posQpc`: the render clock's position and its
+  // QPC time (posQpc 0: unknown, no round-trip measurement).
+  void renderPeriods(BYTE* data, uint32_t periods, bool& pendingUnderrun, int64_t firstFrame = 0, int64_t posFrames = 0,
+                     uint64_t posQpc = 0) noexcept;
+  void drainCapture() noexcept;  // T6.7b
+  Status openCapture(const StreamConfig& config, IMMDeviceEnumerator* en, StreamInfo& info);  // at `rate`
   void setThreadError(std::string text) {
     std::lock_guard lock(errorMutex);
     threadErrorText = std::move(text);
   }
   void release() noexcept {
+    capture.Reset();  // T6.7b
+    capClient.Reset();
+    capDevice.Reset();
+    inScratch = AlignedBuffer<float>();
+    for (auto& p : in) p = nullptr;
+    numIn = 0;
     clock.Reset();
     render.Reset();
     client.Reset();
@@ -354,10 +380,6 @@ Result<StreamInfo> WasapiDevice::open(const StreamConfig& config, AudioCallback 
   if (config.outputChannels > kMaxChannels || config.inputChannels > kMaxChannels)
     return Error{ErrorCode::InvalidArgument, "WasapiDevice: too many channels"};
   if (config.bufferFrames == 0) return Error{ErrorCode::InvalidArgument, "WasapiDevice: bufferFrames must be >= 1"};
-  if (config.inputChannels > 0)
-    return Error{ErrorCode::Unsupported,
-                 "WasapiDevice: input streams are not implemented yet (output only); use the RtAudio WASAPI backend "
-                 "(--backend rtaudio) for input"};
 
   const HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   m.comOwned = SUCCEEDED(comHr);
@@ -505,16 +527,27 @@ Result<StreamInfo> WasapiDevice::open(const StreamConfig& config, AudioCallback 
   const size_t stride = (static_cast<size_t>(m.period) + 15u) & ~size_t{15};
   m.scratch = AlignedBuffer<float>(stride * std::max<uint32_t>(m.numOut, 1));
   for (uint32_t c = 0; c < kMaxChannels; ++c) m.out[c] = c < m.numOut ? m.scratch.data() + stride * c : nullptr;
-  m.runner.prepare(cb, 0, m.numOut, m.period, rate);
-  m.open = true;
 
   StreamInfo info;
+  if (config.inputChannels > 0)  // T6.7b: a capture endpoint that cannot open leaves the output running without it
+    if (Status st = m.openCapture(config, (*en).Get(), info); !st.ok()) {
+      m.capture.Reset();
+      m.capClient.Reset();
+      m.capDevice.Reset();
+      m.numIn = 0;
+      info.inputDeviceChannels = 0;
+      info.inputLatencyFrames = 0;
+      info.inputError = st.error().message;
+    }
+  m.runner.prepare(cb, m.numIn, m.numOut, m.period, rate);
+  m.open = true;
+
   info.backend = Backend::Wasapi;
   info.outputDeviceName = friendlyName(m.device.Get());
   info.outputEndpointId = endpointIdOf(m.device.Get());
   info.sampleRate = rate;
   info.bufferFrames = m.period;
-  info.inputChannels = 0;
+  info.inputChannels = m.numIn;
   info.outputChannels = m.numOut;
   info.shareMode = config.shareMode;
   info.deviceFormat = m.format;
@@ -530,9 +563,105 @@ Result<StreamInfo> WasapiDevice::open(const StreamConfig& config, AudioCallback 
   return info;
 }
 
-void WasapiDevice::Impl::renderPeriods(BYTE* data, uint32_t periods, bool& pendingUnderrun) noexcept {  // RT-safe
+// T6.7b: the capture endpoint (StreamConfig::inputEndpointId, else the default capture endpoint; a render endpoint is
+// captured in loopback: what it plays). Shared mode, polled (no event), a 100 ms buffer; at the stream rate (the mix
+// rate natively, another rate through AUTOCONVERTPCM). Control thread, from open().
+Status WasapiDevice::Impl::openCapture(const StreamConfig& config, IMMDeviceEnumerator* en, StreamInfo& info) {
+  HRESULT hr = S_OK;
+  if (!config.inputEndpointId.empty()) {
+    hr = en->GetDevice(toWide(config.inputEndpointId).c_str(), &capDevice);
+    if (FAILED(hr)) return Error{ErrorCode::NotFound, "no input endpoint with id " + config.inputEndpointId};
+  } else {
+    hr = en->GetDefaultAudioEndpoint(eCapture, eConsole, &capDevice);
+    if (FAILED(hr)) return Error{ErrorCode::NotFound, "no default input device"};
+  }
+  const bool loopback = flowOf(capDevice.Get()) == eRender;
+  hr = capDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &capClient);
+  if (FAILED(hr)) return comError("input: cannot activate the audio client", hr);
+  CoTaskFormat mix;
+  hr = capClient->GetMixFormat(&mix.p);
+  if (FAILED(hr)) return comError("input: GetMixFormat", hr);
+  capChannels = mix.p->nChannels;
+  const bool atMixRate = rate == mix.p->nSamplesPerSec;
+  WAVEFORMATEXTENSIBLE fmt = makeFormat(SampleFormat::Float32, rate, capChannels);
+  if (atMixRate) {
+    if (!formatOf(mix.p, capFormat)) return Error{ErrorCode::Unsupported, "input: the mix format is not float32/int PCM"};
+  } else {
+    capFormat = SampleFormat::Float32;
+  }
+  const DWORD flags = (loopback ? AUDCLNT_STREAMFLAGS_LOOPBACK : 0u) |
+                      (atMixRate ? 0u : AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY);
+  hr = capClient->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 1'000'000 /* 100 ms */, 0,
+                             atMixRate ? mix.p : &fmt.Format, nullptr);
+  if (FAILED(hr)) return comError("input: shared Initialize", hr);
+  hr = capClient->GetService(IID_PPV_ARGS(&capture));
+  if (FAILED(hr)) return comError("input: IAudioCaptureClient", hr);
+  UINT32 capBuffer = 0;
+  capClient->GetBufferSize(&capBuffer);
+  REFERENCE_TIME defPeriod = 0, minPeriod = 0, capLatency = 0;
+  capClient->GetDevicePeriod(&defPeriod, &minPeriod);
+  capClient->GetStreamLatency(&capLatency);
+  const uint32_t capPeriod = std::max<uint32_t>(1, hnsToFramesCeil(defPeriod, rate));
+  numIn = std::min({config.inputChannels, capChannels, kMaxChannels});
+  // The jitter reserve: one capture packet and one render period; the bound above it one more of each.
+  const uint32_t target = capPeriod + period;
+  fifo.prepare(numIn, 2 * capBuffer + 4 * (capPeriod + period), target, target + capPeriod + period, rate);
+  const size_t stride = (static_cast<size_t>(period) + 15u) & ~size_t{15};
+  inScratch = AlignedBuffer<float>(stride * numIn);
+  for (uint32_t c = 0; c < kMaxChannels; ++c) in[c] = c < numIn ? inScratch.data() + stride * c : nullptr;
+  info.inputDeviceChannels = capChannels;
+  // Until it is measured (CallbackStats::roundTripFrames): the capture engine's latency, a packet, and the reserve.
+  info.inputLatencyFrames = hnsToFramesCeil(capLatency, rate) + capPeriod + target;
+  return Ok{};
+}
+
+// T6.7b: every capture packet the endpoint holds into the FIFO (bounded: at most 64 packets per wake). A failed call
+// (the input device was removed) turns capture off; the output keeps running and the inputs read silence. RT-safe.
+void WasapiDevice::Impl::drainCapture() noexcept {
+  for (int k = 0; k < 64 && captureOk; ++k) {
+    UINT32 next = 0;
+    if (FAILED(capture->GetNextPacketSize(&next))) {
+      captureOk = false;
+      break;
+    }
+    if (next == 0) break;
+    BYTE* data = nullptr;
+    UINT32 frames = 0;
+    DWORD flags = 0;
+    UINT64 devPos = 0, qpc = 0;
+    if (FAILED(capture->GetBuffer(&data, &frames, &flags, &devPos, &qpc))) {
+      captureOk = false;
+      break;
+    }
+    const bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+    const bool timed = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) == 0;
+    fifo.push(silent ? nullptr : data, capFormat, capChannels, frames, timed ? qpc : 0);
+    if (FAILED(capture->ReleaseBuffer(frames))) {
+      captureOk = false;
+      break;
+    }
+  }
+  if (!captureOk) fifo.reset();
+}
+
+void WasapiDevice::Impl::renderPeriods(BYTE* data, uint32_t periods, bool& pendingUnderrun, int64_t firstFrame,
+                                       int64_t posFrames, uint64_t posQpc) noexcept {  // RT-safe
   for (uint32_t k = 0; k < periods; ++k) {
-    runner.run(nullptr, out, period, false, pendingUnderrun);
+    if (numIn != 0) {  // T6.7b: this period's input frames, and the round trip they make with its output
+      const uint64_t qpcIn = fifo.pull(in, period);
+      if (!fifo.primed()) {
+        rtCount = 0;
+      } else if (qpcIn != 0 && posQpc != 0) {
+        const double frame = static_cast<double>(firstFrame + static_cast<int64_t>(k) * period);
+        const double tPlay = static_cast<double>(posQpc) + (frame - static_cast<double>(posFrames)) * 1e7 / rate;
+        const double d = (tPlay - static_cast<double>(qpcIn)) * rate / 1e7;
+        rtCount = std::min<uint32_t>(rtCount + 1, 1024);
+        rtMean += (d - rtMean) / rtCount;
+        runner.mutableStats().setRoundTrip(std::max<int64_t>(0, std::llround(rtMean)));
+      }
+      runner.mutableStats().setInputDrops(fifo.dropped() + fifo.underflows() * period);
+    }
+    runner.run(numIn != 0 ? in : nullptr, out, period, false, pendingUnderrun);
     {  // AU.stream: the flight recorder (output 1's peak / first / last sample)
       const float* o = out[0];
       float peak = 0;
@@ -578,10 +707,18 @@ void WasapiDevice::Impl::threadMain() noexcept {
     }
     written = prefill;
   }
-  const HRESULT hrStart = client->Start();
+  HRESULT hrStart = S_OK;
+  if (capClient) {  // T6.7b: capture first, so its first packet is there by the render's first wake
+    fifo.reset();
+    rtCount = 0;
+    captureOk = true;
+    hrStart = capClient->Start();
+  }
+  if (SUCCEEDED(hrStart)) hrStart = client->Start();
   startHr.store(hrStart);
   SetEvent(startedEvent);  // start() may now return; nothing below touches startHr/startedEvent
   if (FAILED(hrStart)) {
+    if (capClient) capClient->Stop();
     if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
     threadAlive.store(false, std::memory_order_release);
     return;
@@ -625,6 +762,8 @@ void WasapiDevice::Impl::threadMain() noexcept {
       }
       UINT64 pos = 0, posQpc = 0;
       if (SUCCEEDED(clock->GetPosition(&pos, &posQpc))) w.position = static_cast<int64_t>(pos * rate / clockFreq);
+      else posQpc = 0;
+      if (capClient && captureOk) drainCapture();  // T6.7b
       const UnderrunTracker::Outcome o = tracker.onWake(w);
       runner.recordWake(o.latenessFrames, o.queueFrames, timedOut);
       pendingUnderrun = pendingUnderrun || o.newEpisode;
@@ -644,7 +783,7 @@ void WasapiDevice::Impl::threadMain() noexcept {
           failedCall = "GetBuffer";
           break;
         }
-        renderPeriods(data, frames / period, pendingUnderrun);
+        renderPeriods(data, frames / period, pendingUnderrun, written, w.position, posQpc);
         if (HRESULT hr = render->ReleaseBuffer(frames, 0); FAILED(hr)) {
           failure = hr;
           failedCall = "ReleaseBuffer";
@@ -693,6 +832,7 @@ void WasapiDevice::Impl::threadMain() noexcept {
   }
   if (stallTimer) CloseHandle(stallTimer);
   client->Stop();
+  if (capClient) capClient->Stop();  // T6.7b
   if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
   if (FAILED(failure)) setThreadError(std::string("WASAPI ") + failedCall + " failed: " + hrText(failure));
   threadAlive.store(false, std::memory_order_release);
@@ -702,6 +842,7 @@ Status WasapiDevice::prepareRestart() {
   Impl& m = *impl_;
   if (!m.open || m.threadAlive.load(std::memory_order_acquire) || !m.needsReset) return Ok{};
   if (HRESULT hr = m.client->Reset(); FAILED(hr)) return comError("WasapiDevice: Reset after stop", hr);
+  if (m.capClient) (void)m.capClient->Reset();  // T6.7b
   m.needsReset = false;
   return Ok{};
 }
@@ -713,6 +854,7 @@ Status WasapiDevice::start() {
     return Error{ErrorCode::InvalidArgument, "WasapiDevice: already started (stop() first)"};
   if (m.needsReset) {
     if (HRESULT hr = m.client->Reset(); FAILED(hr)) return comError("WasapiDevice: Reset before restart", hr);
+    if (m.capClient) (void)m.capClient->Reset();  // T6.7b: drop what was captured while stopped
     m.needsReset = false;
   }
   m.startedEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);

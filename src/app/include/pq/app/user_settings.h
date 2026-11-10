@@ -9,7 +9,7 @@
 //       "driver": "asio" | "wasapi-shared" | "wasapi-exclusive",
 //       "outputDevice": "Focusrite USB ASIO",  "outputName": "Focusrite USB ASIO",
 //       "inputDevice": "",                      "inputName": "",
-//       "sampleRate": 48000, "bufferFrames": 64, "inputChannels": 2, "outputChannels": 2
+//       "sampleRate": 48000, "bufferFrames": 64, "outputChannels": 2   (inputs: what the tracks use, T6.7b)
 //     },
 //     "views": { "circuitShowInactive": false },         (T4.15: views::ViewPrefs)
 //     "library": { "folders": ["C:\\Samples"], "userLibrary": "D:\\pqdaw User Library",   (T5.10, T5.x-library-prefs)

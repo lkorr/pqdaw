@@ -1238,3 +1238,13 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - The speaker auditions a take in place of the main lane (blue, main lane grey) — check it switches instantly while
   playing, with no glitch or recompile pause. × deletes a take lane.
 - Goldens: `arrangement-takes`, `arrangement-comp` (tests/views/golden). Does the veil read clearly as "not used"?
+
+## 2026-11-10 · T6.7b · Recording leftovers (hand check)
+- WASAPI input (real hardware only; the tests use a fake device and a loopback capture): Preferences → Audio → WASAPI
+  shared, pick an Audio Input Device (e.g. the interface's "Analogue 1 + 2"), set an audio track's input to In 1 and
+  arm it: the status line shows the stream with 1 input; record a click played out of the speakers into a mic (or a
+  cable output → input) against the metronome — the recorded click should sit on the beat within ~1 ms. If it is
+  consistently early / late, Preferences → Record → Record Latency Offset corrects it (positive = earlier).
+- Inputs by use: with ASIO, set a track's input to In 3 → the driver reopens once (a short gap) with 3 inputs; arming /
+  Monitor do not reopen; changing inputs while recording reopens only after Stop.
+- Untitled project with a recording → File → New → "Don't save": `%LOCALAPPDATA%\pqdaw\Unsaved\<pid-time>` is gone.

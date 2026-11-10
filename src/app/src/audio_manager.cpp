@@ -71,7 +71,7 @@ views::AudioSettings AudioDeviceManager::startupSettings(const CliOptions& o, co
   return s;
 }
 
-OutputConfig AudioDeviceManager::outputConfigFor(const views::AudioSettings& s, uint32_t deviceIndex) {
+OutputConfig AudioDeviceManager::outputConfigFor(const views::AudioSettings& s, uint32_t deviceIndex, uint32_t inputs) {
   OutputConfig c;
   c.backend = backendOf(s.driver);
   c.shareMode = s.driver == AudioDriverType::WasapiExclusive ? engine::ShareMode::Exclusive : engine::ShareMode::Shared;
@@ -79,7 +79,9 @@ OutputConfig AudioDeviceManager::outputConfigFor(const views::AudioSettings& s, 
   c.deviceIndex = s.outputDevice.empty() ? deviceIndex : engine::kDefaultDevice;
   c.sampleRate = s.sampleRate;
   c.bufferFrames = s.bufferFrames;
-  c.inputChannels = s.driver == AudioDriverType::Asio ? s.inputChannels : 0;
+  const bool asio = s.driver == AudioDriverType::Asio;
+  c.inputDevice = asio ? std::string() : s.inputDevice;
+  c.inputChannels = asio || !s.inputDevice.empty() ? inputs : 0;
   c.outputChannels = std::max(s.outputChannels, 1u);
   return c;
 }
@@ -87,15 +89,18 @@ OutputConfig AudioDeviceManager::outputConfigFor(const views::AudioSettings& s, 
 AudioDeviceManager::AudioDeviceManager(ProjectLink& link, const views::AudioSettings& initial, ManagerHooks hooks,
                                        uint32_t cliDeviceIndex)
     : link_(link), hooks_(std::move(hooks)), settings_(initial), cliDeviceIndex_(cliDeviceIndex) {
-  OutputConfig c = outputConfigFor(settings_, cliDeviceIndex_);
+  OutputConfig c = outputConfigFor(settings_, cliDeviceIndex_, wantedInputs());
+  requestedInputs_ = wantedInputs();
   c.sampleRate = engineRate(link_);
   settings_.sampleRate = c.sampleRate;
   output_ = std::make_unique<AudioOutput>(link_.engine(), c, hooks_.factory);
   output_->setCuePair(settings_.cueOutput);
   output_->setNotify(&AudioDeviceManager::onOutput, this);
+  link_.setInputUseListener([this] { onInputUse(); });  // T6.7b
 }
 
 AudioDeviceManager::~AudioDeviceManager() {
+  link_.setInputUseListener({});
   output_->setNotify(nullptr, nullptr);
   output_.reset();
 }
@@ -110,6 +115,34 @@ void AudioDeviceManager::onOutput(void* self) {  // the output's threads (never 
   auto& m = *static_cast<AudioDeviceManager*>(self);
   std::lock_guard lock(m.notifyMutex_);
   if (m.uiNotify_) m.uiNotify_(m.uiNotifyUser_);
+}
+
+// ---- T6.7b: inputs ----------------------------------------------------------------------------------------------
+
+uint32_t AudioDeviceManager::deviceInputs() {
+  // What the open stream's input device has (ASIO: the driver's inputs; WASAPI: the capture endpoint's channels), known
+  // once a stream of this backend opened. No device enumeration here (WASAPI's probes every format).
+  if (!output_ || (settings_.driver != AudioDriverType::Asio && settings_.inputDevice.empty())) return 0;
+  const OutputStatus st = output_->status();
+  const bool asio = settings_.driver == AudioDriverType::Asio;
+  if (st.state == OutputStatus::State::Fallback || st.state == OutputStatus::State::Closed) return 0;
+  if ((st.stream.backend == engine::Backend::Asio) != asio) return 0;
+  return std::min(st.stream.inputDeviceChannels, engine::kMaxChannels);
+}
+
+uint32_t AudioDeviceManager::wantedInputs() {
+  const uint32_t used = std::min(link_.usedAudioInputs(), engine::kMaxChannels);
+  if (settings_.driver != AudioDriverType::Asio && settings_.inputDevice.empty()) return 0;
+  const uint32_t have = deviceInputs();
+  return have > 0 ? std::min(used, have) : used;  // unknown: the device bounds it when it opens
+}
+
+void AudioDeviceManager::onInputUse() {  // UI thread (the link's syncRecordInputs / end of a session)
+  if (opening_ || link_.recordingActive()) return;
+  const uint32_t want = wantedInputs();
+  if (want == requestedInputs_) return;  // (the output's config() follows a reconfigure asynchronously)
+  std::printf("pqdaw: audio: the tracks use %u input%s: reopening\n", want, want == 1 ? "" : "s");
+  open(settings_);
 }
 
 bool AudioDeviceManager::poll() {
@@ -135,6 +168,10 @@ bool AudioDeviceManager::poll() {
     save();
     changed = true;
   }
+  if (changed) {  // T6.7b: the strips list the device's inputs; a bound learnt from the opened driver may differ
+    link_.setAvailableInputs(std::max(deviceInputs(), st.stream.inputChannels));
+    onInputUse();
+  }
   if (changed && listener_) listener_();
   return changed;
 }
@@ -150,6 +187,7 @@ void AudioDeviceManager::setMidiInput(const std::string& name, bool enabled, flo
 }
 
 void AudioDeviceManager::open(const views::AudioSettings& s) {
+  opening_ = true;
   if (s.sampleRate != engineRate(link_)) {
     output_->close();  // the old engine is not called again
     if (Status st = link_.setSampleRate(s.sampleRate); !st.ok()) {
@@ -160,16 +198,17 @@ void AudioDeviceManager::open(const views::AudioSettings& s) {
     }
     output_->rebind(link_.engine());
   }
-  OutputConfig c = outputConfigFor(s, cliDeviceIndex_);
+  requestedInputs_ = wantedInputs();
+  OutputConfig c = outputConfigFor(s, cliDeviceIndex_, requestedInputs_);
   c.sampleRate = engineRate(link_);  // what the engine actually runs at (a failed rebuild kept the old rate)
   settings_.sampleRate = c.sampleRate;
   output_->reconfigure(c);
+  opening_ = false;
 }
 
 void AudioDeviceManager::apply(const views::AudioSettings& in) {
   views::AudioSettings s = in;
   s.outputChannels = std::max(s.outputChannels, 1u);
-  if (s.driver != AudioDriverType::Asio) s.inputChannels = 0;  // WASAPI input opens with recording (M6)
   const OutputStatus st = output_->status();
   const bool noDevice = st.state == OutputStatus::State::Fallback || st.state == OutputStatus::State::Closed;
   if (s == settings_ && !noDevice) return;
@@ -272,7 +311,6 @@ views::AudioDeviceCaps AudioDeviceManager::capabilities(const views::AudioSettin
     }
     return c;  // a driver that is not open yet: the window offers the common values (one driver per process)
   }
-  c.inputSupported = false;  // WASAPI input opens with recording (M6)
   const engine::DeviceInfo* dev = nullptr;
   for (const engine::DeviceInfo& d : devices(engine::Backend::Wasapi))
     if (d.outputChannels > 0 && (s.outputDevice.empty() ? d.isDefaultOutput : d.endpointId == s.outputDevice)) dev = &d;

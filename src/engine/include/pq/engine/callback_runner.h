@@ -45,6 +45,7 @@ public:
 
   // The backend restarted the device stream to recover from an underrun. RT-safe.
   void recordRestart() noexcept { stats_.recordRestart(); }  // RT-safe
+  CallbackStats& mutableStats() noexcept { return stats_; }  // T6.7b: the backend's own measurements (round trip)
 
   const CallbackStats& stats() const noexcept { return stats_; }
   uint32_t numIn() const noexcept { return numIn_; }

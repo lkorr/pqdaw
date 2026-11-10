@@ -5,7 +5,49 @@
 #include <cmath>
 #include <system_error>
 
+#include <windows.h>
+
 namespace pq::app {
+
+// T6.7b: the guarded delete of an unsaved recordings folder (see the header).
+uint64_t removeUnsavedFolder(const std::filesystem::path& target, const std::filesystem::path& root, std::string* why) {
+  namespace fs = std::filesystem;
+  auto refuse = [why](std::string r) {
+    if (why != nullptr) *why = std::move(r);
+    return uint64_t{0};
+  };
+  auto parts = [](const fs::path& p) {
+    size_t n = 0;
+    for (const fs::path& e : p)
+      if (!e.empty() && e != ".") ++n;
+    return n;
+  };
+  if (!root.is_absolute() || !target.is_absolute()) return refuse("not an absolute path");
+  fs::path r = root.lexically_normal(), t = target.lexically_normal();
+  if (!r.has_filename()) r = r.parent_path();  // "C:/a/b/" → "C:/a/b"
+  if (!t.has_filename()) t = t.parent_path();
+  if (parts(r.relative_path()) < 2) return refuse("the root is too close to the drive root: " + r.string());
+  const fs::path rel = t.lexically_relative(r);
+  if (rel.empty() || parts(rel) == 0) return refuse("not inside the unsaved folder");
+  for (const fs::path& e : rel)
+    if (e == "..") return refuse("not inside the unsaved folder");
+  // No link on the way down (a junction or symbolic link could lead anywhere).
+  fs::path walk = r;
+  for (const fs::path& e : rel) {
+    walk /= e;
+    const DWORD a = GetFileAttributesW(walk.c_str());
+    if (a == INVALID_FILE_ATTRIBUTES) return refuse("");  // absent: nothing to delete
+    if ((a & FILE_ATTRIBUTE_REPARSE_POINT) != 0) return refuse("a link on the way: " + walk.string());
+  }
+  std::error_code ec;
+  const std::uintmax_t n = fs::remove_all(t, ec);
+  if (ec) {
+    if (why != nullptr) *why = ec.message();
+    return n == static_cast<std::uintmax_t>(-1) ? 0 : n;
+  }
+  if (why != nullptr) why->clear();
+  return n;
+}
 
 RecordingService::RecordingService(media::SamplePool* pool) : pool_(pool) {
   if (pool_ != nullptr) pool_->setDiskClient(&RecordingService::diskClient, this);
