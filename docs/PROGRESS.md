@@ -409,3 +409,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow 76/76 after rebase (one sccache crash retried); ship pq_bench_dsp + pq_bench_playback link. Tempo test's "≥ 18/20 confident" became "confident ≥ 100 BPM 11/11, never confidently wrong" (sub-100 loops are ambiguous half-time; tempo still 20/20 right) — Q?-T6.x-fix-warp-a.
 - Perf / CPU-efficiency check: worst Complex block 16 tracks 9.99 → 3.81 Mcycles; clip player memory without Complex 56.9 → 5.1 MiB; audio/64 rate 1 still 16.8 µs.
 - Notes/blockers: PF.4b filed for the playback regression.
+
+## 2026-11-10 · T6.x-fix-pdc merged · main
+- Did: merged task/T6.x-fix-pdc (c73ccd71): M1 loop-wrap shifted lanes from the previous pass, M2 grown lines copied in memcpy spans over blocks (no fresh-ring clear), M3 mid-fade lines carried forward, L6/L7 plan sent with/after each topology and stale lines dropped (PF.5-safe), L9 sorted click queue, L10 note-offs never dropped, L12 atomic recorder stats.
+- Verified: worker project + timeline default pass; -Affected -Slow 53/54 (ASIO fake-driver flake, 155/155 alone); ship pq_bench_dsp links; each new test failed on the old logic.
+- Perf / CPU-efficiency check: grow switch block 1063–1124 → 39–53 µs, next 400 blocks ≤ 35 µs; no-latency path untouched; pq_bench_pdc ~52–66 ns both (loaded machine).
+- Notes/blockers: none.
