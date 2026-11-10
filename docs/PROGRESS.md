@@ -319,3 +319,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: pq_bench_pdc (release) 86 ns per compensated stereo input per block (target 40; 166 before caching the slot → line map; rest is ring memory traffic); plan 12 µs @128 tracks; no latency = one pointer compare per unit per block.
 - Notes/blockers: T6.2b filed (clip players in compensated units, tap automation lanes, per-input cost, stale comments). Q?-T6.2-a.
 
+## 2026-11-10 · T6.3 · task/T6.3-warp-1 (merged 9fc2db89 by the orchestrator)
+- Did: engine ClipWarp += Beats/Tones/Texture; WarpSegments + settings + transients on AudioClipDesc; Re-Pitch through markers (grid cells split at segments; M5 single segment bit-identical); Beats (grid/transient slices, 2 ms crossfades, Off/Fwd/BackFwd, Envelope); Tones = WSOLA-aligned Hann grains; Texture = Hann OLA + seeded Flux; dsp/warp.* AVX2; media/transients.* (band log-flux, cached in <project>/cache/analysis). Complex / Complex Pro play as Tones until T6.5.
+- Verified: new tests timeline warp 8/8, transients 2/2, dsp warp 4/4, playback link 2/2 (Beats ±0.15 ms, centroid 1.6 %, Tones 0.004 ¢, 31-EDO +3 exact, blocks 64 vs 1000 and streamed vs resident bit-identical, RtScope clean); -Affected -Slow 87/88: pq_tests_document "save+load ≤ 20 ms" timing check at 22 ms under 100 % CPU (document untouched; 17.8/28.1/18.0 on reruns — load-sensitive). Ship pq_bench_dsp links.
+- Perf / CPU-efficiency check (ship, per stereo voice): beats 1.48 ns/frame (0.007 %), +3 st 14.3 ns, tones 30.1 ns (0.14 %, target 0.6), texture 1.41 ns, repitch markers 13.7 ns.
+- Notes/blockers: Q?-T6.3-a. The wavetable save+load timing assertion is load-sensitive (should carry the `perf` label).
+
