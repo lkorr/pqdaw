@@ -12,6 +12,7 @@
 
 #include "crossfade.h"
 #include "pq/core/tap_ring.h"
+#include "pq/core/rt_heap.h"
 #include "pq/engine/latency_plan.h"
 
 namespace pq::engine {
@@ -19,47 +20,50 @@ namespace pq::engine {
 using detail::crossfade;
 using detail::peakAbs;
 
-struct ProjectProgram::Packet {
+// PF.4b: built on a compile thread (JIT delivery): on the RT heap, with its tables (pq/core/rt_heap.h).
+struct ProjectProgram::Packet : RtHeapObject {
+  template <class T>
+  using Table = RtTable<T>;
   uint64_t seq = 0;
-  std::vector<std::shared_ptr<const void>> keepAlive;     // UnitImage::keepAlive (destroyed after the image)
+  Table<std::shared_ptr<const void>> keepAlive{rtHeap()};  // UnitImage::keepAlive (destroyed after the image)
   std::unique_ptr<ProgramImage> image;
   TransferPlan plan;                                      // from the unit's previous packet (empty for the first)
   SwapMode mode = SwapMode::Auto;
   uint32_t fadeFrames = 1;
-  std::vector<float> params;                              // indexed by io().params
-  std::vector<std::pair<uint32_t, uint32_t>> paramMap;    // (new slot, previous packet's slot), equal keys
-  std::vector<std::pair<uint32_t, uint32_t>> paramLinks;  // (slot, project param)
-  std::vector<const float*> inPtrs;                       // per global in slot: a bus channel or zeros
-  std::vector<uint16_t> inChannel;                        // T6.2: per global in slot: its bus channel
-  std::vector<const float*> inLive;                       // T6.2: per global in slot as a compensated block reads it
-  std::vector<DelayLine*> inLine;                         // T6.2: per global in slot: its delay line (null: none) …
-  std::vector<DelayLine*> storeLine;                      // … per inStores entry …
-  std::vector<uint32_t> compSlots;                        // … the global in slots that have one (numCompSlots of them) …
+  Table<float> params{rtHeap()};                          // indexed by io().params
+  Table<std::pair<uint32_t, uint32_t>> paramMap{rtHeap()};  // (new slot, previous packet's slot), equal keys
+  Table<std::pair<uint32_t, uint32_t>> paramLinks{rtHeap()};  // (slot, project param)
+  Table<const float*> inPtrs{rtHeap()};                   // per global in slot: a bus channel or zeros
+  Table<uint16_t> inChannel{rtHeap()};                    // T6.2: per global in slot: its bus channel
+  Table<const float*> inLive{rtHeap()};                   // T6.2: per global in slot as a compensated block reads it
+  Table<DelayLine*> inLine{rtHeap()};                     // T6.2: per global in slot: its delay line (null: none) …
+  Table<DelayLine*> storeLine{rtHeap()};                  // … per inStores entry …
+  Table<uint32_t> compSlots{rtHeap()};                    // … the global in slots that have one (numCompSlots of them) …
   uint32_t numCompSlots = 0;
   uint64_t lineSeq = 0;                                   // … under the plan with this sequence (0: not mapped yet)
-  std::vector<float*> outPtrs;                            // per global out slot: a bus channel or null
-  std::vector<float*> fadePtrs;                           // the same into `scratch` (while this packet fades out)
+  Table<float*> outPtrs{rtHeap()};                        // per global out slot: a bus channel or null
+  Table<float*> fadePtrs{rtHeap()};                       // the same into `scratch` (while this packet fades out)
   AlignedBuffer<float> scratch;
   struct FadeLane {
     float* bus;                                           // written by the new image, faded in place
     const float* old;                                     // the previous packet's scratch for the same channel
   };
-  std::vector<FadeLane> fade;                             // when this packet replaces the previous one
+  Table<FadeLane> fade{rtHeap()};                         // when this packet replaces the previous one
   std::unique_ptr<VoiceBinding> binding;                  // voice units
   // Idle units (see the header).
   uint32_t idleAfter = 0;                                 // UnitImage::idleAfterBlocks
-  std::vector<float> linked;                              // the linked params' values in the last block
+  Table<float> linked{rtHeap()};                          // the linked params' values in the last block
   uint64_t linkedGen = ~uint64_t{0};                      // the param generation `linked` was read at (L1)
   uint64_t paramsGen = ~uint64_t{0};                      // the generation `params` was last written at (T5.x-perf-audio)
   uint32_t paramsNeeded = 0;                              // 1 + the highest project param it links (M4)
-  std::vector<const BusStore*> inStores;                  // the distinct buses it reads
-  std::vector<uint32_t> clipSlots;                        // T5.4: the clip slots it reads (io().clipSlots)
+  Table<const BusStore*> inStores{rtHeap()};              // the distinct buses it reads
+  Table<uint32_t> clipSlots{rtHeap()};                    // T5.4: the clip slots it reads (io().clipSlots)
   // Silence (T1.x-silence): ProcessContext::inSilent / outSilent and the buses behind them.
-  std::vector<const BusStore*> inStoreOf;                 // per global in slot (null: reads zeros)
-  std::vector<uint8_t> inSilent, outSilent;               // per global in / out slot
-  std::vector<BusStore*> outStores;                       // the distinct buses it produces
-  std::vector<uint32_t> outStoreOf;                       // per global out slot: index into outStores, or kNone
-  std::vector<uint8_t> outStoreSilent;                    // scratch, per outStores entry
+  Table<const BusStore*> inStoreOf{rtHeap()};             // per global in slot (null: reads zeros)
+  Table<uint8_t> inSilent{rtHeap()}, outSilent{rtHeap()};  // per global in / out slot
+  Table<BusStore*> outStores{rtHeap()};                   // the distinct buses it produces
+  Table<uint32_t> outStoreOf{rtHeap()};                   // per global out slot: index into outStores, or kNone
+  Table<uint8_t> outStoreSilent{rtHeap()};                // scratch, per outStores entry
 };
 
 // T6.2: delay rings are a whole number of these frames.
@@ -180,11 +184,29 @@ struct ProjectProgram::Compensation {
   std::vector<std::shared_ptr<EventDelay>> ownedEvents;
 };
 
-struct ProjectProgram::Unit {
+struct ProjectProgram::Unit {  // (128-aligned: its ring)
   explicit Unit(uint32_t pending) : ring(pending) {}
   ~Unit() {
     for (Packet* p : inflight) delete p;
   }
+  // Audio thread, read by every block's runUnit (PF.4b: together, on the unit's first cache line).
+  Packet* cur = nullptr;
+  Packet* fadeFrom = nullptr;
+  std::unique_ptr<VoiceEngine> voices;
+  // T6.2: its entry in the plan the audio thread runs (valid while compSeq is that plan's sequence).
+  const Compensation::Entry* compEntry = nullptr;
+  uint64_t compSeq = 0;
+  uint32_t fadePos = 0, fadeLen = 0;
+  uint32_t quietBlocks = 0;  // consecutive blocks with silent inputs, no voice, no event and unchanged params
+  // T6.7: its track input (setUnitInputs): first | channels << 16 (0: none).
+  std::atomic<uint32_t> input{0};
+  bool idle = false;         // skipped last block (its bus channels are zero)
+  // T1.x-silence: what its image reported after the last block it ran (ProcessContext::dormant / tailsDone).
+  bool dormant = false;
+  bool tailsDone = true;
+  // Audio thread, colder.
+  EventBuffer eventBuf{1};
+  UnitStats stats;
   UnitLayout cfg;
   // Non-RT (ProjectProgram::mutex_).
   std::vector<Packet*> inflight;     // published, not yet retired, in sequence order (owned)
@@ -194,23 +216,6 @@ struct ProjectProgram::Unit {
   // Hand-over.
   SpscRing<Packet*> ring;
   std::atomic<uint64_t> retiredThrough{0};
-  // Audio thread.
-  Packet* cur = nullptr;
-  Packet* fadeFrom = nullptr;
-  uint32_t fadePos = 0, fadeLen = 0;
-  EventBuffer eventBuf{1};
-  std::unique_ptr<VoiceEngine> voices;
-  UnitStats stats;
-  uint32_t quietBlocks = 0;  // consecutive blocks with silent inputs, no voice, no event and unchanged params
-  bool idle = false;         // skipped last block (its bus channels are zero)
-  // T1.x-silence: what its image reported after the last block it ran (ProcessContext::dormant / tailsDone).
-  bool dormant = false;
-  bool tailsDone = true;
-  // T6.2: its entry in the plan the audio thread runs (valid while compSeq is that plan's sequence).
-  const Compensation::Entry* compEntry = nullptr;
-  uint64_t compSeq = 0;
-  // T6.7: its track input (setUnitInputs): first | channels << 16 (0: none).
-  std::atomic<uint32_t> input{0};
 };
 
 // A bus: `width` planar channels of `stride` floats at fixed addresses for its whole life (shared by every topology
@@ -450,8 +455,9 @@ Result<std::unique_ptr<ProjectProgram::Packet>> ProjectProgram::makePacket(
     if (slot >= io.params.size() || param >= reservedParams_)
       return projectError(ErrorCode::InvalidArgument, who + "a param link is out of range");
   for (const auto& [slot, param] : ui.paramLinks) p->paramsNeeded = std::max(p->paramsNeeded, param + 1);
-  p->paramLinks = std::move(ui.paramLinks);
-  p->keepAlive = std::move(ui.keepAlive);
+  p->paramLinks.assign(ui.paramLinks.begin(), ui.paramLinks.end());
+  p->keepAlive.assign(std::make_move_iterator(ui.keepAlive.begin()), std::make_move_iterator(ui.keepAlive.end()));
+  ui.keepAlive.clear();
   p->idleAfter = ui.idleAfterBlocks;
   for (uint32_t k : io.clipSlots)  // T5.4
     if (k < cfg_.numClipSlots) p->clipSlots.push_back(k);
@@ -1616,13 +1622,11 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
       if (p->inLine[k]->active) p->inSilent[k] = p->inLine[k]->outSilent;
     }
   }
-  ProcessContext ctx;
-  ctx.frames = frames;
+  // PF.4b: the block's shared fields are in unitCtx_ already (process()); this unit's are set here, and every field an
+  // image or a voice engine writes is reset.
+  ProcessContext& ctx = unitCtx_;
   ctx.inSilent = p->inSilent.data();
   ctx.outSilent = p->outSilent.data();
-  ctx.sampleRate = cfg_.sampleRate;
-  ctx.sampleTime = time;
-  ctx.transport = transport_;
   ctx.in = ce != nullptr ? p->inLive.data() : p->inPtrs.data();
   ctx.numIn = static_cast<uint32_t>(p->inPtrs.size());
   ctx.out = p->outPtrs.data();
@@ -1631,13 +1635,21 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   ctx.numParams = static_cast<uint32_t>(p->params.size());
   ctx.paramsUnchanged = paramsSame && !U.voices;  // a voice engine's images get their own contexts
   ctx.clipIn = clipLines ? ce->clipIn.data() : cfg_.clipIn;  // T5.4 (T6.2b: delayed)
-  ctx.numClipSlots = cfg_.clipIn != nullptr ? cfg_.numClipSlots : 0u;
   ctx.trackIn = trackIn;  // T6.7
-  ctx.numTrackIn = 2;
-  ProcessContext fctx;
-  if (old != nullptr) {
+  ctx.events = nullptr;
+  ctx.voices = nullptr;
+  ctx.tailsDone = false;
+  ctx.dormant = false;
+  if (old == nullptr) {  // PF.4b: no fade context to build (a ProcessContext is ~4 cache lines of stores)
+    if (U.voices) {
+      ctx.events = &U.eventBuf.list();
+      U.voices->process(ctx, nullptr);
+    } else {
+      p->image->process(ctx);
+    }
+  } else {
     for (const auto& [slot, param] : old->paramLinks) old->params[slot] = params_[param];
-    fctx = ctx;
+    ProcessContext fctx = ctx;
     fctx.in = ce != nullptr ? old->inLive.data() : old->inPtrs.data();
     fctx.numIn = static_cast<uint32_t>(old->inPtrs.size());
     fctx.out = old->fadePtrs.data();
@@ -1647,13 +1659,11 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     fctx.paramsUnchanged = false;
     fctx.inSilent = nullptr;
     fctx.outSilent = nullptr;
-  }
-  if (U.voices) {
-    ctx.events = &U.eventBuf.list();
-    U.voices->process(ctx, old != nullptr ? &fctx : nullptr);
-  } else {
-    p->image->process(ctx);
-    if (old != nullptr) {
+    if (U.voices) {
+      ctx.events = &U.eventBuf.list();
+      U.voices->process(ctx, &fctx);
+    } else {
+      p->image->process(ctx);
       TapWriteMute mute;  // TMM.13-fix1 L3: only the incoming image writes analysis taps during the fade
       old->image->process(fctx);
     }
@@ -1695,6 +1705,12 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
     blockGen_ = paramGen_ + hookWrites;
     maybeSwitchTopology();
     if (compPending_ != nullptr || !compRing_.emptyApprox()) maybeSwitchCompensation();  // T6.2
+    unitCtx_.frames = n;  // PF.4b: what every unit's context shares this block (runUnit sets the rest)
+    unitCtx_.sampleRate = cfg_.sampleRate;
+    unitCtx_.sampleTime = time;
+    unitCtx_.transport = transport_;
+    unitCtx_.numClipSlots = cfg_.clipIn != nullptr ? cfg_.numClipSlots : 0u;
+    unitCtx_.numTrackIn = 2;
     Topology& t = *topo_;
     uint32_t fading = 0;
     for (size_t i = 0; i < t.order.size(); ++i) {

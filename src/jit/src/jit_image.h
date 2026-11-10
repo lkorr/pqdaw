@@ -97,7 +97,7 @@ private:
   std::unordered_map<const void*, uint32_t> index_;
 };
 
-class JitImage final : public engine::ProgramImage {
+class JitImage final : public engine::ProgramImage, public RtHeapObject {  // PF.4b: on the RT heap
 public:
   JitImage() = default;
   ~JitImage() override;
@@ -116,10 +116,11 @@ public:
   // ---- built by buildHost() / Compiler ----
   engine::host::ImageHost host_;
   HostLayout layout_;
-  std::vector<StageFn> fns_;                 // per Schedule::stages entry (set by the Compiler)
-  std::vector<StageFn> pairFns_;             // per stage: the two-group function, or null (T1b.2)
-  bool scalarLanes_ = false;                 // the scalar baseline: voice stages run once per lane
-  std::vector<const void*> tab_;
+  // PF.4b: on the RT heap, with the host's tables.
+  RtTable<StageFn> fns_{rtHeap()};      // per Schedule::stages entry (set by the Compiler)
+  RtTable<StageFn> pairFns_{rtHeap()};  // per stage: the two-group function, or null (T1b.2)
+  bool scalarLanes_ = false;            // the scalar baseline: voice stages run once per lane
+  RtTable<const void*> tab_{rtHeap()};
   // Releases the machine code (set by the Compiler; runs in the destructor, off the audio thread).
   std::shared_ptr<void> codeOwner_;
 };

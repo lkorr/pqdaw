@@ -563,12 +563,12 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
   auto attach = [&](const std::shared_ptr<SharedCode>& code, Source source) -> Result<std::unique_ptr<engine::ProgramImage>> {
     std::vector<const void*>& t = tab.ptrs();
     t.insert(t.end(), code->fnSlots.begin(), code->fnSlots.end());
-    image->fns_ = code->fns;
-    image->pairFns_ = code->pairFns;
+    image->fns_.assign(code->fns.begin(), code->fns.end());
+    image->pairFns_.assign(code->pairFns.begin(), code->pairFns.end());
     image->scalarLanes_ = go.scalarLanes;
     detail::finishPairs(*image, schedule);
     image->host_.setMeterUnits(detail::meterUnits(schedule, image->layout_, go));  // T4.5
-    image->tab_ = std::move(t);
+    image->tab_.assign(t.begin(), t.end());
     image->codeOwner_ = std::make_shared<ImageCode>(session_, code);
     st.source = source;
     st.objectBytes = code->objectBytes;

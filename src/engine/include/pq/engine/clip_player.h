@@ -247,36 +247,39 @@ private:
     bool aheadValid = false;
     SampleTime pass = INT64_MIN;  // T6.3 Beats: the entry sample of the slice pass this reader serves
   };
-  struct Voice {
+  // PF.4b: what every block of a plain (RePitch / Off) voice reads comes first, so it sits on the voice's first two
+  // cache lines (cue, stretch and takeover are read for every voice; the stretch modes' state is cold).
+  struct alignas(64) Voice {
     const AudioSequenceImage* img = nullptr;
     const AudioSequenceImage::Clip* clip = nullptr;
+    SampleTime vs = 0;                 // song sample of the voice's next output frame (its own clock once releasing)
+    SampleTime lastWrap = INT64_MIN;   // RePitch loops: the last wrap at or before vs (declick)
+    SampleTime nextWrap = INT64_MAX;   // ... and the next one the last run saw coming
     uint32_t slot = 0;
     State state = State::Pending;
-    SampleTime vs = 0;                 // song sample of the voice's next output frame (its own clock once releasing)
+    bool cue = false;                  // T6.5b: a cue voice (cue()), silent until a seek adopts it
     uint32_t inPos = 0, inLen = 0;     // a start in the middle of the clip: fade in
     uint32_t relPos = 0, relLen = 0;   // releasing: fade out
     float gainFrom = 1.0f;             // a swap that changed the gain: ramp from gainFrom over rampLen
     uint32_t rampPos = 0, rampLen = 0;
-    SampleTime lastWrap = INT64_MIN;   // RePitch loops: the last wrap at or before vs (declick)
-    SampleTime nextWrap = INT64_MAX;   // ... and the next one the last run saw coming
-    Reader reader;
-    Reader reader2;                    // T6.3 Beats: the other slice's stream
-    int64_t grainIdx = INT64_MIN;      // T6.3 Tones / Texture: the last grain positioned
-    double grainPos[2] = {0.0, 0.0};   // ... its centre's source frame and the one before (by parity)
-    // T6.5 Complex / Complex Pro: its stretcher (StretchPool::kNone: none, the voice plays as Tones) and the stream it
-    // is fed: input frame k is the unfolded source frame phi0 + dir·k; frames [0, head) are in, those below zeroBelow
-    // (before the clip plays) read as zeros. Its output (the vocoder clock y; song sample t reads y = (t − tA) · pitch
-    // rate) is held in its stretchOut_ buffer: frames [vLo, vHi) (vHi INT64_MIN: not primed).
-    // T6.5b: the priming schedule: by song sample t, frames up to primeBase + (t − primeFrom) · kStretchPrimeRate ·
-    // pitch rate may be computed. cue: a cue voice (cue()), silent until a seek adopts it.
+    // T6.5 Complex / Complex Pro: its stretcher (StretchPool::kNone: none, the voice plays as Tones); see below.
     uint32_t stretch = 0xFFFFFFFFu;
     // T6.x-fix-warp (H2): a Complex voice playing as Tones that got a stretcher later: `takeover` is the voice index
     // that will replace it (it fades out where that one starts); the replacement's `replaces` points back. kNone: none.
     uint32_t takeover = 0xFFFFFFFFu, replaces = 0xFFFFFFFFu;
+    Reader reader;
+    Reader reader2;                    // T6.3 Beats: the other slice's stream
+    int64_t grainIdx = INT64_MIN;      // T6.3 Tones / Texture: the last grain positioned
+    double grainPos[2] = {0.0, 0.0};   // ... its centre's source frame and the one before (by parity)
+    // T6.5 Complex / Complex Pro: the stream its stretcher is fed: input frame k is the unfolded source frame
+    // phi0 + dir·k; frames [0, head) are in, those below zeroBelow (before the clip plays) read as zeros. Its output
+    // (the vocoder clock y; song sample t reads y = (t − tA) · pitch rate) is held in its stretchOut_ buffer: frames
+    // [vLo, vHi) (vHi INT64_MIN: not primed).
+    // T6.5b: the priming schedule: by song sample t, frames up to primeBase + (t − primeFrom) · kStretchPrimeRate ·
+    // pitch rate may be computed.
     SampleTime soundFrom = 0;          // the song sample it started sounding at (Pending → Playing)
     SampleTime primeFrom = 0;
     int64_t primeBase = 0;
-    bool cue = false;
     SampleTime tA = 0;
     int64_t vLo = 0, vHi = INT64_MIN;
     int64_t phi0 = 0, head = 0, zeroBelow = 0;

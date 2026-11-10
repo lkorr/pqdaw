@@ -438,6 +438,9 @@ private:
   bool quiet_ = false;                              // computeQuiet() at the end of the last process()
   float silence_ = 0.0f;
   TransportSnapshot transport_;
+  // PF.4b: the units' ProcessContext (audio thread): what every unit shares is set once per block (process()), the
+  // rest per unit (runUnit), instead of a fresh context per unit.
+  ProcessContext unitCtx_;
   ProjectStats stats_;
 };
 

@@ -11,6 +11,7 @@ pq_add_test(pq_tests_core
     core/test_result.cpp
     core/test_alloc_trap.cpp
     core/test_aligned_buffer.cpp
+    core/test_rt_heap.cpp  # PF.4b
     core/test_spsc_ring.cpp
     core/test_mpsc_queue.cpp
     core/test_fixed_pool.cpp

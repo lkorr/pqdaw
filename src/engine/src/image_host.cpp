@@ -296,11 +296,13 @@ Status ImageHost::build(const g::Schedule& s, const BuildOptions& o) {
     return Error{ErrorCode::InvalidArgument, who_ + ": maxBlockFrames must be in [1, 2^20], maxVoiceGroups in [1, 1024]", {}};
   L_.maxBlock = o.maxBlockFrames;
   L_.groups = o.maxVoiceGroups;
+  extGroups_ = o.maxVoiceGroups;
   resources_ = o.resources;
   stateLayout_ = s.state;
   io_.backend = o.backend;
   io_.sampleRate = s.sampleRate;
   io_.maxBlockFrames = o.maxBlockFrames;
+  maxFrames_ = o.maxBlockFrames;
   io_.maxVoiceGroups = o.maxVoiceGroups;
   io_.params = s.params;
   io_.voiceTailFrames = s.sleep.voiceTailFrames;
@@ -333,8 +335,8 @@ Status ImageHost::build(const g::Schedule& s, const BuildOptions& o) {
   extBits_.assign(s.externals.size(), 0);
   extChanged_.assign(s.externals.size(), 0);
   if (anyRamps_) {
-    rampParams_ = s.rampParams;
-    rampExts_ = s.rampExternals;
+    rampParams_.assign(s.rampParams.begin(), s.rampParams.end());
+    rampExts_.assign(s.rampExternals.begin(), s.rampExternals.end());
     for (uint32_t k = 0; k < K; ++k) {
       const g::RampStage& rs = s.rampStages[k];
       rampStage_[k] = rs.ramps ? 1 : 0;
@@ -348,7 +350,7 @@ Status ImageHost::build(const g::Schedule& s, const BuildOptions& o) {
     std::sort(rampWatch_.begin(), rampWatch_.end());
     rampWatch_.erase(std::unique(rampWatch_.begin(), rampWatch_.end()), rampWatch_.end());
   }
-  meterFlag_ = reinterpret_cast<uint32_t*>(auxMem_.data() + L_.meterFlagOff);
+  meterFlag_ = reinterpret_cast<uint32_t*>(auxMem_ + L_.meterFlagOff);
   *meterFlag_ = 0;
   meterUnits_.resize(numRegions_);
   for (uint32_t r = 0; r < numRegions_; ++r) meterUnits_[r] = r;
@@ -579,7 +581,6 @@ bool ImageHost::layoutMemory(const g::Schedule& s, uint32_t extraBufFloats) {
   numRegions_ = static_cast<uint32_t>(s.regions.size());
   off += roundUp(std::max<uint32_t>(numRegions_, 1u) * 4u, kFloatAlign);
   L_.bufFloats = std::max<uint32_t>(off, kFloatAlign);
-  bufMem_ = AlignedBuffer<float>(L_.bufFloats);
   uint32_t aux = 0;
   L_.paramOff = aux;
   aux += static_cast<uint32_t>(s.params.size()) * 8;
@@ -599,8 +600,18 @@ bool ImageHost::layoutMemory(const g::Schedule& s, uint32_t extraBufFloats) {
   L_.zeroOff = aux;
   aux += B * 8;
   L_.auxFloats = aux;
-  auxMem_ = AlignedBuffer<float>(aux);
-  float* auxp = auxMem_.data();
+  // State: global arena, then one block per voice group.
+  const g::StateLayout& SL = s.state;
+  L_.globalStateBytes = roundUp(SL.globalBytes, 64);
+  L_.voiceStride = roundUp(SL.voiceBytes, 64);
+  const size_t stateBytes = static_cast<size_t>(L_.globalStateBytes) + static_cast<size_t>(L_.voiceStride) * G;
+  const size_t stateFloats = std::max<size_t>(stateBytes / 4, 16);
+  // PF.4b: buf, aux and state in one zeroed block on the RT heap.
+  mem_ = RtHeapArray<float>(L_.bufFloats + roundUp(aux, kFloatAlign) + stateFloats);
+  bufMem_ = mem_.data();
+  auxMem_ = bufMem_ + L_.bufFloats;
+  stateMem_ = auxMem_ + roundUp(aux, kFloatAlign);
+  float* auxp = auxMem_;
   zeros_ = auxp + L_.zeroOff;
   for (size_t i = 0; i < s.params.size(); ++i) {
     const g::ParamSlot& p = s.params[i];
@@ -616,12 +627,6 @@ bool ImageHost::layoutMemory(const g::Schedule& s, uint32_t extraBufFloats) {
   }
   for (size_t i = 0; i < s.constants.size(); ++i)
     for (uint32_t l = 0; l < 8; ++l) auxp[L_.constOff + i * 8 + l] = s.constants[i].value;
-  // State: global arena, then one block per voice group.
-  const g::StateLayout& SL = s.state;
-  L_.globalStateBytes = roundUp(SL.globalBytes, 64);
-  L_.voiceStride = roundUp(SL.voiceBytes, 64);
-  const size_t stateBytes = static_cast<size_t>(L_.globalStateBytes) + static_cast<size_t>(L_.voiceStride) * G;
-  stateMem_ = AlignedBuffer<float>(std::max<size_t>(stateBytes / 4, 16));
   // TX.smooth-fix1: the ramp side table, a separate allocation (global part, then one block per voice group).
   L_.sideGlobalBytes = roundUp(SL.sideGlobalBytes, 64);
   L_.sideVoiceStride = roundUp(SL.sideVoiceBytes, 64);
@@ -676,7 +681,7 @@ bool ImageHost::externals(const g::Schedule& s) {
   };
   addSlots(gIn, io_.globalIn);
   addSlots(vIn, io_.voiceIn);
-  float* auxp = auxMem_.data();
+  float* auxp = auxMem_;
   for (uint32_t x = 0; x < s.externals.size(); ++x) {
     const g::External& ex = s.externals[x];
     ExtRun r;
@@ -812,10 +817,10 @@ const ReduceInfo* ImageHost::reduceInfoB(uint32_t op) const noexcept {
 }
 
 float* ImageHost::resolve(const g::Operand& o, uint32_t gi) noexcept {
-  float* auxp = auxMem_.data();
+  float* auxp = auxMem_;
   switch (o.kind) {
     case g::Operand::Kind::Buffer:
-      return bufMem_.data() + L_.bufOff[o.index] + (bufPerGroup_[o.index] ? static_cast<size_t>(gi) * L_.bufSize[o.index] : 0u);
+      return bufMem_ + L_.bufOff[o.index] + (bufPerGroup_[o.index] ? static_cast<size_t>(gi) * L_.bufSize[o.index] : 0u);
     case g::Operand::Kind::Param: return auxp + L_.paramOff + static_cast<size_t>(o.index) * 8;
     case g::Operand::Kind::Const: return auxp + L_.constOff + static_cast<size_t>(o.index) * 8;
     default: return zeros_;
@@ -993,7 +998,7 @@ void ImageHost::probeGroup(const StageRun& st, uint32_t gi, uint32_t frames, boo
     const float* x = nullptr;
     if (p.buffer != g::kNone) {
       x = second && p.alt != nullptr ? p.alt
-                                     : bufMem_.data() + L_.bufOff[p.buffer] +
+                                     : bufMem_ + L_.bufOff[p.buffer] +
                                            (bufPerGroup_[p.buffer] ? static_cast<size_t>(gi) * L_.bufSize[p.buffer] : 0u);
     } else if (p.ext != g::kNone) {
       x = extPtr_[static_cast<size_t>(p.ext) * G + gi];
@@ -1090,7 +1095,7 @@ bool ImageHost::sleepLayout(const g::Schedule& s, SleepMode mode) {
     segs_.clear();
     return true;
   }
-  float* auxp = auxMem_.data();
+  float* auxp = auxMem_;
   for (uint32_t gi = 0; gi < plan.segments.size(); ++gi) {
     const g::SleepSegment& sg = plan.segments[gi];
     if (sg.stage >= s.stages.size() || s.stages[sg.stage].poly != g::Poly::Global) return fail("sleep segment outside a global stage");
@@ -1472,7 +1477,7 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
   const uint32_t frames = ctx.frames;
   metering_ = false;
   if (frames == 0) return false;
-  if (frames > io_.maxBlockFrames) {
+  if (frames > maxFrames_) {
     ++rejected_;
     zeroOutputs(ctx);
     return false;
@@ -1534,7 +1539,7 @@ void ImageHost::decideRamps() noexcept {  // RT-safe
   // The global param-rate externals the ramps follow (transport.bpm, …): one value per block, compared bitwise.
   bool extsChanged = false;
   for (const uint32_t x : rampWatch_) {
-    const uint32_t bits = std::bit_cast<uint32_t>(extPtr_[static_cast<size_t>(x) * L_.groups][0]);
+    const uint32_t bits = std::bit_cast<uint32_t>(extPtr_[static_cast<size_t>(x) * extGroups_][0]);
     extChanged_[x] = bits != extBits_[x] ? 1 : 0;
     extsChanged = extsChanged || bits != extBits_[x];
     extBits_[x] = bits;
@@ -1557,7 +1562,7 @@ void ImageHost::decideRamps() noexcept {  // RT-safe
 }
 
 void ImageHost::resolveExternals(const ProcessContext& ctx, uint32_t frames) noexcept {  // RT-safe
-  const uint32_t G = L_.groups;
+  const uint32_t G = extGroups_;
   // Engine data → the pointer table.
   const VoiceTable* vt = ctx.voices;
   voices_ = vt;

@@ -64,6 +64,7 @@
 #include <vector>
 
 #include "pq/core/aligned_buffer.h"
+#include "pq/core/rt_heap.h"
 #include "pq/core/result.h"
 #include "pq/dsp/kernel.h"
 #include "pq/dsp/tables.h"
@@ -161,10 +162,10 @@ public:
 
   // ---- build-time accessors (not RT code) ----
   const Layout& layout() const noexcept { return L_; }
-  float* buf() noexcept { return bufMem_.data(); }
-  float* aux() noexcept { return auxMem_.data(); }
+  float* buf() noexcept { return bufMem_; }
+  float* aux() noexcept { return auxMem_; }
   float* zeros() const noexcept { return zeros_; }
-  std::byte* globalState() noexcept { return reinterpret_cast<std::byte*>(stateMem_.data()); }
+  std::byte* globalState() noexcept { return reinterpret_cast<std::byte*>(stateMem_); }
   std::byte* voiceState(uint32_t group) noexcept {
     return globalState() + L_.globalStateBytes + static_cast<size_t>(group) * L_.voiceStride;
   }
@@ -235,12 +236,12 @@ public:
   bool bindInspect(const InspectBinding& b);
   const CostMeter* boundMeter() const noexcept { return meter_; }
   // Build time: per schedule region, the first region of the unit its time is counted in (default: itself).
-  void setMeterUnits(std::vector<uint32_t> units) { meterUnits_ = std::move(units); }
+  void setMeterUnits(const std::vector<uint32_t>& units) { meterUnits_.assign(units.begin(), units.end()); }
   uint32_t numRegions() const noexcept { return numRegions_; }
   // This block is metered (after begin()). RT-safe.
   bool metering() const noexcept { return metering_; }
   // Per region: [2r] cycles, [2r + 1] how many times it was timed (this block).
-  uint64_t* regionCycles() noexcept { return reinterpret_cast<uint64_t*>(bufMem_.data() + L_.meterOff); }
+  uint64_t* regionCycles() noexcept { return reinterpret_cast<uint64_t*>(bufMem_ + L_.meterOff); }
   void addRegionCycles(uint32_t region, uint64_t cycles) noexcept {  // RT-safe
     uint64_t* c = regionCycles() + 2 * static_cast<size_t>(region);
     c[0] += cycles;
@@ -260,7 +261,7 @@ public:
   // Voice groups of this block's voice table that the image has records for (after begin()).
   uint32_t groups() const noexcept { return groups_; }
   float* extPtr(uint32_t ext, uint32_t group) const noexcept {  // RT-safe
-    return extPtr_[static_cast<size_t>(ext) * L_.groups + group];
+    return extPtr_[static_cast<size_t>(ext) * extGroups_ + group];
   }
   float* const* extTable() const noexcept { return extPtr_.data(); }  // RT-safe: [ext · maxVoiceGroups + group]
   // Runs every stage (after a successful begin()): global(k, ramp) for global stage k, voice(k, g, ramp) for voice
@@ -400,77 +401,97 @@ private:
   void tapLayout(const graph::Schedule& s);
   void tapMasks(const VoiceTable* vt) noexcept;
 
+  // PF.4b: the image's tables and its buf / aux / state block are on the RT heap (pq/core/rt_heap.h).
+  template <class T>
+  using Table = RtTable<T>;
+
+  // ---- PF.4b: what every block of a plain image reads (begin, run, sleepReports), together: 7 cache lines, not 15
+  // spread over the 2 KiB of this object (64 units' images otherwise crowd the L2 cache). Then the rest, colder.
+  const VoiceTable* voices_ = nullptr;
+  float* zeros_ = nullptr;  // maxBlock · 8 zeros (absent inputs)
+  float* bufMem_ = nullptr;  // in mem_
+  float* auxMem_ = nullptr;
+  CostMeter* meter_ = nullptr;
+  uint32_t* meterFlag_ = nullptr;          // in aux
+  uint64_t paramsChangedMask_ = ~uint64_t{0};
+  uint32_t maxFrames_ = 0;                 // io_.maxBlockFrames
+  uint32_t extGroups_ = 1;                 // L_.groups (extPtr_ rows)
+  uint32_t groups_ = 0;
+  uint32_t firstGlobalOut_ = 0;
+  uint32_t firstGlobalProbe_ = 0, numGlobalProbes_ = 0;
+  SleepMode sleepMode_ = SleepMode::On;    // Sleep (T1.x-silence)
+  bool firstBlock_ = true;
+  bool paramsChanged_ = true;
+  bool dormantCapable_ = false;
+  bool anyRamps_ = false;                  // TX.smooth-fix1: param ramps (below)
+  bool planSegments_ = false;              // the schedule has sleep segments (whatever the mode)
+  bool meterActivated_ = false;            // activate() done for meterKey_ (first block after the bind)
+  bool metering_ = false;
+  RunCtx run_;
+  SleepStats sleepStats_;
+  Table<ExtRun> exts_{rtHeap()};
+  Table<float*> extPtr_{rtHeap()};
+  Table<StageRun> stages_{rtHeap()};
+  Table<uint32_t> stageSegFirst_{rtHeap()};  // per stage + 1 sentinel: its first segment (segments in stage order)
+  Table<OutCopy> outs_{rtHeap()};            // voice stage copies (via StageRun), then the global ones
+  Table<SegRun> segs_{rtHeap()};
+  Table<const float*> globalRampRem_{rtHeap()};  // TX.smooth: lane 0's frames left of each global param ramp
+  Table<VoiceTap*> voiceTaps_{rtHeap()};     // TMM.2 (tapLayout)
+  // ---- colder: params (read when they change), ramps, voice stages, special ops, build-time data.
+  Table<ParamRun> params_{rtHeap()};
+  Table<uint32_t> paramBits_{rtHeap()};      // per param: lane 0 of its pattern in the previous block
+  Table<uint8_t> paramChanged_{rtHeap()};    // per param: changed this block (all of them in the first block)
+  // TX.smooth-fix1: param ramps, per stage (decideRamps): has ramps, ramp mode this block, frames of ramp mode left,
+  // a ramp's length, its static ramps' params (into rampParams_).
+  Table<uint8_t> rampStage_{rtHeap()};
+  Table<uint8_t> rampOn_{rtHeap()};
+  Table<uint32_t> rampLeft_{rtHeap()};
+  Table<uint32_t> rampFrames_{rtHeap()};
+  Table<uint32_t> rampFirst_{rtHeap()};
+  Table<uint32_t> rampCount_{rtHeap()};
+  Table<uint32_t> rampParams_{rtHeap()};
+  // ... and the global param-rate externals they follow (into rampExts_), every such external once (rampWatch_), and
+  // per external lane 0 of its value in the previous block / changed this block.
+  Table<uint32_t> rampExtFirst_{rtHeap()};
+  Table<uint32_t> rampExtCount_{rtHeap()};
+  Table<uint32_t> rampExts_{rtHeap()};
+  Table<uint32_t> rampWatch_{rtHeap()};
+  Table<uint32_t> extBits_{rtHeap()};
+  Table<uint8_t> extChanged_{rtHeap()};
+  RunCtx runB_;                              // a pair's second group (T1b.2)
+  Table<ReduceInfo> reduceInfos_{rtHeap()};  // fixed addresses (reserved once): records point at them
+  Table<ReduceInfo> reduceInfosB_{rtHeap()}; // per reducer, reading runB_ (fixed addresses, reserved once)
+  Table<SendInfo> sendInfos_{rtHeap()};
+  Table<uint32_t> opInfo_{rtHeap()};         // per op: index into reduceInfos_ / sendInfos_, or kNone
+  Table<graph::OpKind> opKind_{rtHeap()};
+  Table<uint8_t> bufPerGroup_{rtHeap()};     // per buffer: Buffer::perGroup
+  Table<ReduceInit> reduceInits_{rtHeap()};
+  Table<uint32_t> outBuffer_{rtHeap()};      // per outs_ entry: its source buffer if that is not per-group, else kNone
+  Table<uint32_t> opStage_{rtHeap()};        // per op: its Schedule::stages index
+  Table<uint8_t> pairable_{rtHeap()};        // per stage
+  Table<SegSource> segSources_{rtHeap()};
+  Table<SegState> segStates_{rtHeap()};
+  Table<uint32_t> segParams_{rtHeap()};
+  Table<uint32_t> regionSeg_{rtHeap()};        // per Schedule::regions entry
+  Table<uint32_t> regionFillFirst_{rtHeap()};  // per region + 1 sentinel: into fills_
+  Table<FillRun> fills_{rtHeap()};
+  float* stateMem_ = nullptr;
+  RtHeapArray<float> mem_;                 // buf, aux, state
+  uint64_t rejected_ = 0;
+  AlignedBuffer<float> sideMem_;            // the ramp side table (graph::StateEntry::side)
+  // Inspection (T4.5).
+  Table<ProbeRun> probes_{rtHeap()};  // voice probes grouped by stage (StageRun::firstProbe), then the global ones
+  AlignedBuffer<float> probeScratch_;
+  uint32_t numRegions_ = 0;
+  Table<uint32_t> meterUnits_{rtHeap()};
+  uint32_t meterKey_ = 0;
+  uint64_t meterT0_ = 0;
   std::string who_ = "image";
   Error err_;
   Layout L_;
   const Resources* resources_ = nullptr;
   graph::StateLayout stateLayout_;
   ImageInterface io_;
-  AlignedBuffer<float> bufMem_, auxMem_, stateMem_;
-  float* zeros_ = nullptr;  // maxBlock · 8 zeros (absent inputs)
-  std::vector<ParamRun> params_;
-  std::vector<ExtRun> exts_;
-  std::vector<float*> extPtr_;
-  std::vector<ReduceInfo> reduceInfos_;  // fixed addresses (reserved once): records point at them
-  std::vector<SendInfo> sendInfos_;
-  std::vector<uint32_t> opInfo_;         // per op: index into reduceInfos_ / sendInfos_, or kNone
-  std::vector<graph::OpKind> opKind_;
-  std::vector<uint8_t> bufPerGroup_;     // per buffer: Buffer::perGroup
-  std::vector<ReduceInit> reduceInits_;
-  std::vector<OutCopy> outs_;            // voice stage copies (via StageRun), then the global ones
-  std::vector<uint32_t> outBuffer_;      // per outs_ entry: its source buffer if that is not per-group, else kNone
-  std::vector<uint32_t> opStage_;        // per op: its Schedule::stages index
-  uint32_t firstGlobalOut_ = 0;
-  std::vector<StageRun> stages_;
-  RunCtx run_;
-  RunCtx runB_;                          // a pair's second group (T1b.2)
-  std::vector<ReduceInfo> reduceInfosB_; // per reducer, reading runB_ (fixed addresses, reserved once)
-  std::vector<uint8_t> pairable_;        // per stage
-  uint32_t groups_ = 0;
-  const VoiceTable* voices_ = nullptr;
-  uint64_t rejected_ = 0;
-  // Sleep (T1.x-silence).
-  SleepMode sleepMode_ = SleepMode::On;
-  std::vector<SegRun> segs_;
-  std::vector<SegSource> segSources_;
-  std::vector<SegState> segStates_;
-  std::vector<uint32_t> segParams_;
-  std::vector<uint32_t> stageSegFirst_;    // per stage + 1 sentinel: its first segment (segments are in stage order)
-  std::vector<uint32_t> regionSeg_;        // per Schedule::regions entry
-  std::vector<uint32_t> regionFillFirst_;  // per region + 1 sentinel: into fills_
-  std::vector<FillRun> fills_;
-  std::vector<uint32_t> paramBits_;        // per param: lane 0 of its pattern in the previous block
-  std::vector<uint8_t> paramChanged_;      // per param: changed this block (all of them in the first block)
-  bool firstBlock_ = true;
-  bool paramsChanged_ = true;
-  uint64_t paramsChangedMask_ = ~uint64_t{0};
-  bool dormantCapable_ = false;
-  std::vector<const float*> globalRampRem_;  // TX.smooth: lane 0's frames left of each global param ramp
-  // TX.smooth-fix1: param ramps, per stage (decideRamps): has ramps, ramp mode this block, frames of ramp mode left,
-  // a ramp's length, its static ramps' params (into rampParams_).
-  bool anyRamps_ = false;
-  std::vector<uint8_t> rampStage_, rampOn_;
-  std::vector<uint32_t> rampLeft_, rampFrames_, rampFirst_, rampCount_, rampParams_;
-  // ... and the global param-rate externals they follow (into rampExts_), every such external once (rampWatch_), and
-  // per external lane 0 of its value in the previous block / changed this block.
-  std::vector<uint32_t> rampExtFirst_, rampExtCount_, rampExts_, rampWatch_, extBits_;
-  std::vector<uint8_t> extChanged_;
-  AlignedBuffer<float> sideMem_;            // the ramp side table (graph::StateEntry::side)
-  bool planSegments_ = false;              // the schedule has sleep segments (whatever the mode)
-  SleepStats sleepStats_;
-  // Inspection (T4.5).
-  std::vector<ProbeRun> probes_;           // voice probes grouped by stage (StageRun::firstProbe), then the global ones
-  uint32_t firstGlobalProbe_ = 0, numGlobalProbes_ = 0;
-  AlignedBuffer<float> probeScratch_;
-  uint32_t numRegions_ = 0;
-  std::vector<uint32_t> meterUnits_;
-  CostMeter* meter_ = nullptr;
-  uint32_t meterKey_ = 0;
-  bool meterActivated_ = false;  // activate() done for meterKey_ (first block after the bind)
-  bool metering_ = false;
-  uint64_t meterT0_ = 0;
-  uint32_t* meterFlag_ = nullptr;          // in aux
-  std::vector<VoiceTap*> voiceTaps_;       // TMM.2 (tapLayout)
 };
 
 inline void ImageHost::setRun(RunCtx& rc, const VoiceTable* vt, uint32_t gi) const noexcept {  // RT-safe

@@ -155,7 +155,7 @@ struct Site {
   uint32_t group = 0;
 };
 
-class InterpretedImage final : public ProgramImage {
+class InterpretedImage final : public ProgramImage, public RtHeapObject {  // PF.4b: on the RT heap
 public:
   void process(ProcessContext& ctx) noexcept override;  // RT-safe
   const g::StateLayout& stateLayout() const noexcept override { return host_.stateLayout(); }
