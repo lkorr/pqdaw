@@ -984,3 +984,17 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   recorder takes the device latencies once per session); marking a discontinuity on a WASAPI drop / underflow needs a
   segment split in the writer and the commit — not small, left open.
 - Status: decided (1)–(7) (reversible).
+
+## Q?-T6.x-fix-ui-b-a · 2026-11-10 · T6.x-fix-ui-b · WASAPI capture drift: resample, not split
+- **Context**: docs/reviews/M6.md M7: two WASAPI devices drift (±50 ppm normal), so `CaptureFifo` dropped a packet's
+  worth or inserted silence every few minutes. Options: split the take at each event (writer + commit change, the
+  take still has holes), or track the drift with a fractional resampler (no event at all).
+- **Choice**: the resampler, inside `CaptureFifo` (the device passes each period's play time). It holds the measured
+  round trip (play − capture time, from QPC stamps: no packet-phase sawtooth) at its value 0.5 s after priming; while
+  the filtered error stays ≤ 0.5 ms the FIFO stays a bit-exact copy (one clock, or no timestamps), past it the read
+  goes through the High windowed sinc (64 taps) at a PI-loop ratio (4 s, critically damped, ±1000 ppm clamp). Cost:
+  ≈ 4 µs per 480-frame stereo pull (check preset) = 0.04 % of a core. The target gains `driftReserve` (64 frames +
+  1 ms: 2.3 ms more input latency at 48 kHz) because the packet phase slips a whole packet below the primed fill.
+  Beyond ±1000 ppm or a stall beyond the reserve the old drop / underflow remains, still unmarked in the take
+  (reversible: a split could be added for that rare case).
+- Status: decided (reversible).

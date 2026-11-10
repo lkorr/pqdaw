@@ -603,8 +603,9 @@ Status WasapiDevice::Impl::openCapture(const StreamConfig& config, IMMDeviceEnum
   capClient->GetStreamLatency(&capLatency);
   const uint32_t capPeriod = std::max<uint32_t>(1, hnsToFramesCeil(defPeriod, rate));
   numIn = std::min({config.inputChannels, capChannels, kMaxChannels});
-  // The jitter reserve: one capture packet and one render period; the bound above it one more of each.
-  const uint32_t target = capPeriod + period;
+  // The jitter reserve: one capture packet and one render period, plus what the drift loop needs (T6.x-fix-ui-b:
+  // CaptureFifo::driftReserve); the bound above it one more packet and period.
+  const uint32_t target = capPeriod + period + CaptureFifo::driftReserve(rate);
   fifo.prepare(numIn, 2 * capBuffer + 4 * (capPeriod + period), target, target + capPeriod + period, rate);
   const size_t stride = (static_cast<size_t>(period) + 15u) & ~size_t{15};
   inScratch = AlignedBuffer<float>(stride * numIn);
@@ -648,12 +649,16 @@ void WasapiDevice::Impl::renderPeriods(BYTE* data, uint32_t periods, bool& pendi
                                        int64_t posFrames, uint64_t posQpc) noexcept {  // RT-safe
   for (uint32_t k = 0; k < periods; ++k) {
     if (numIn != 0) {  // T6.7b: this period's input frames, and the round trip they make with its output
-      const uint64_t qpcIn = fifo.pull(in, period);
+      // When this period's first frame plays (render clock → QPC): the FIFO's drift loop holds the round trip on it.
+      double tPlay = 0.0;
+      if (posQpc != 0) {
+        const double frame = static_cast<double>(firstFrame + static_cast<int64_t>(k) * period);
+        tPlay = static_cast<double>(posQpc) + (frame - static_cast<double>(posFrames)) * 1e7 / rate;
+      }
+      const uint64_t qpcIn = fifo.pull(in, period, tPlay > 0.0 ? static_cast<uint64_t>(tPlay + 0.5) : 0);
       if (!fifo.primed()) {
         rtCount = 0;
       } else if (qpcIn != 0 && posQpc != 0) {
-        const double frame = static_cast<double>(firstFrame + static_cast<int64_t>(k) * period);
-        const double tPlay = static_cast<double>(posQpc) + (frame - static_cast<double>(posFrames)) * 1e7 / rate;
         const double d = (tPlay - static_cast<double>(qpcIn)) * rate / 1e7;
         rtCount = std::min<uint32_t>(rtCount + 1, 1024);
         rtMean += (d - rtMean) / rtCount;

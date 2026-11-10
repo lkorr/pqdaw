@@ -40,11 +40,13 @@ namespace pq::engine {
 //
 // T6.7b, input on the audio thread: each wake first drains every capture packet (GetNextPacketSize / GetBuffer /
 // ReleaseBuffer, at most 64) into a CaptureFifo (pq/engine/capture_fifo.h: planar rings, converted in one pass), then
-// every render period pulls its `period` input frames from it: a constant delay of one capture packet + one period
-// (primed), re-primed after an underflow, dropped back to it when the capture clock runs ahead (two devices: drift; the
-// frames lost are CallbackStats::inputDrops). Alignment: each pull knows the capture time (QPC) of its first input
-// frame and the render clock (IAudioClock::GetPosition's QPC) the play time of its first output frame; their
-// difference, averaged since the FIFO primed, is CallbackStats::roundTripFrames — what the app's record latency uses
+// every render period pulls its `period` input frames from it: a constant delay of one capture packet + one period +
+// the drift reserve (primed). Alignment: each pull knows the capture time (QPC) of its first input frame and the render
+// clock (IAudioClock::GetPosition's QPC) the play time of its first output frame; the FIFO is handed that play time and
+// holds their difference constant (T6.x-fix-ui-b: two devices drift; past 0.5 ms of drift it reads through a windowed
+// sinc at a ratio a PI loop sets, so nothing is dropped or inserted; one clock stays a bit-exact copy). An underflow
+// (re-primed) or a capture clock beyond the reserve (dropped back) remain the last resort (CallbackStats::inputDrops).
+// The difference, averaged since the FIFO primed, is CallbackStats::roundTripFrames — what the app's record latency uses
 // (AudioOutput hands it to engine::Recorder). Before it is measured, StreamInfo::inputLatencyFrames is the estimate
 // (capture stream latency + a packet + the reserve). A failed capture call (the input device removed) turns capture
 // off: the inputs read silence, the output keeps running.

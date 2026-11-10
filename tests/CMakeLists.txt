@@ -313,6 +313,7 @@ pq_add_test(pq_tests_engine PERF
     engine/test_null_device.cpp
     engine/test_rtaudio_device.cpp
     engine/test_wasapi.cpp
+    engine/test_capture_drift.cpp  # T6.x-fix-ui-b: the capture FIFO's drift loop (M6 review M7)
     engine/test_asio.cpp
     engine/test_rt_log_device.cpp
     engine/test_interpreter.cpp
