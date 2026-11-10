@@ -325,3 +325,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check (ship, per stereo voice): beats 1.48 ns/frame (0.007 %), +3 st 14.3 ns, tones 30.1 ns (0.14 %, target 0.6), texture 1.41 ns, repitch markers 13.7 ns.
 - Notes/blockers: Q?-T6.3-a. The wavetable save+load timing assertion is load-sensitive (should carry the `perf` label).
 
+## 2026-11-10 · T6.4 · task/T6.4-midi-input (merged c65fe531 by the orchestrator)
+- Did: RtMidi 6.0.0 (WinMM, pinned, pq_rtmidi, pq_app only); engine LiveInput (16 port rings + keyboard ring, QPC stamps scheduled one period late with a clock filter, held-note routing so note-offs reach their slot, bend 2 ms glide, sustain, All Notes Off, overflow/stale handling, record tap); ProjectLink route image from arm/monitor/MIDI From/note mode, no compile, pitches via buildInputPitchMap (same tuning table as lowerTrack); MidiInputService (enumerate, hot-plug, ANO on close, prefs); Preferences MIDI tab; mixer-view MIDI From/channel/Keys-Hz/Monitor; `M` computer keyboard.
+- Verified: live == drawn max diff 0 in Keys and Hz across 12-EDO, 31-EDO, 5L2s + generator automation, .kbm; exact frames at blocks 1…1024; 10k ev/s × 60 s 0 drops / 0 stuck, RtScope clean; -Affected -Slow 88/88 after rebase (first try lost to an sccache server crash).
+- Perf / CPU-efficiency check: idle 4.6 ns per block; per event one lookup + one push; callback lock- and allocation-free; ±1 ms jitter → worst 13 frames.
+- Notes/blockers: Q?-T6.4-a; T6.4b filed (bend lost on Keys notes under a modulated tuning). Goldens: mixer-view, audio-prefs(-wasapi), library-prefs re-recorded; midi-prefs new.
+
