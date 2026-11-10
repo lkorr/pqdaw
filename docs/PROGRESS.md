@@ -355,3 +355,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow 88/88 after rebase onto 3db933f6; goldens moved: mos-chart-default/-zoomed, mos-circle-5L2s/-modmos, mos-wheel-popover(-1.5x).
 - Perf / CPU-efficiency check: drag step = one param write; tuning kernel untouched.
 - Notes/blockers: Q?-TU.1-a; private clip tunings don't follow automation or held live MIDI keys (as before).
+
+## 2026-11-10 · T6.7 merged · main
+- Did: merged task/T6.7-recording (de14edc6): engine::Recorder (lock-free rings, punch shifted by record latency, monitor gates In/Off/Auto), ASIO inputs into `track.in` via setUnitInputs (no compile), RecordingService writes WAVs on the disk thread, ops::commitRecording (take lane per pass, last pass in main, MIDI overdub merge, one undo step), Record/F9 records, live overlay, input chooser + Monitor + audio arm button.
+- Verified: worker -Affected -Slow 87/88 then views goldens (arm column) re-recorded and passing; after re-rebase onto 15963b21: views default 100 %, playback T6.7 + TU.1 live tests 10/10, timeline T6.7 5/5.
+- Perf / CPU-efficiency check: unarmed = one flag test per block; one memcpy per used channel; peaks off the audio thread.
+- Notes/blockers: Q?-T6.7-a; leftovers filed as T6.7b. REVIEW asks for a real ASIO multi-input hand check.
