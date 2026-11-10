@@ -301,3 +301,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check (ship): fixture IR 384k → 260k; per-unit JIT 5579–6647 → 3899–3907 ms; largest unit 231 → 163 ms; at-rest run time equal, moving +0.5 %.
 - Notes/blockers: voice stage IR unchanged (every unit reads a ramp); all-param chains ~5 % slower to compile; one-function variant compiled 15 % slower (rejected).
 
+## 2026-11-10 · PF.4 · task/PF.4-parallel-jit
+- Did: BackgroundCompiler worker pool (min(6, cores − 2), below-normal priority, PQ_JIT_THREADS / LinkConfig::jitThreads), edited unit first, refinements last, one worker per schedule; per-compile LLVM context + leased target machine, SimpleCompiler + addObjectFile; same-key compiles wait and share; modules ≥ 3000 IR instructions split into 2 objects (parallel only when idle); disk cache format 4. FastISel quick image rejected (stack probes > 4 KiB frames on stock devices).
+- Verified: -Affected -Slow 88/88; ship pq_bench_dsp links; swap / cache / pool / live-JIT / AOT tests 10× each, 0 failures; cache bytes identical at 1 and 6 threads; split images == interpreter bit for bit.
+- Perf / CPU-efficiency check (ship): 30-track cold open first images 3.49 → 0.80–0.91 s, final 7.31 → 1.65–1.84 s (6 threads); largest unit 163 → 113 ms; 64x8 final 484–489 → 350–375 ms; steady state 382.5 → 383 µs/block (equal); peak RAM 234 / 258 / 322 / 364 MB at 1 / 2 / 4 / 6 threads.
+- Notes/blockers: quick first image barely beats the final on big units (111.5 vs 112.7 ms); an LLVM OOM in one compile could leave locks held for concurrent compiles.
+
