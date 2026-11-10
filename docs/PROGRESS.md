@@ -331,3 +331,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: idle 4.6 ns per block; per event one lookup + one push; callback lock- and allocation-free; ±1 ms jitter → worst 13 frames.
 - Notes/blockers: Q?-T6.4-a; T6.4b filed (bend lost on Keys notes under a modulated tuning). Goldens: mixer-view, audio-prefs(-wasapi), library-prefs re-recorded; midi-prefs new.
 
+## 2026-11-10 · T6.5 · task/T6.5-complex (merged 887160e2 by the orchestrator)
+- Did: signalsmith-stretch 1.4.0 + signalsmith-linear 0.6.4 (MIT, pinned, unpatched); engine::StretchPool (32 stereo, built off-thread, lock-free claim, Tones fallback counted and click-free, per-claim reseed → deterministic); ClipWarp Complex / ComplexPro; stretcher does time only, pitch by resampling its output (signalsmith's transpose was 2–8 ¢ off); latency primed away → sample-aligned, 0 to PDC; Pro = formant preservation + Envelope.
+- Verified: RtScope spike 10k blocks clean; pq_tests_timeline 58/58 (220 Hz within 1e-5 ¢ at 0.5×/2× and +3 steps of 31-EDO, source tempo aligned to the frame, Pro formant shift 0.75 % vs 49.75 %, blocks and streamed/resident identical); -Affected -Slow 88/88 after rebase; ship pq_bench_dsp links.
+- Perf / CPU-efficiency check (ship, stereo voice): complex 334 ns/frame = 1.60 % (budget 3), +3 st 2.28 %, complexPro 3.26 % (budget 5); pool ≈ 24 MiB per clip player, 16 ms build.
+- Notes/blockers: T6.5b filed (priming burst at Play inside a Complex clip; mono through stereo). Drum timing ±2.5 ms in Complex. Q?-T6.5-a.
+
