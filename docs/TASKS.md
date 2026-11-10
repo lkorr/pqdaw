@@ -768,7 +768,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 
 ## M6: Recording, take lanes, Capture MIDI, PDC, metronome, warp (plan: docs/plans/M6.md; user decision 2026-11-09, SPEC §15 "M6"; design approved by the user 2026-11-09)
 Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input modes per track (Keys → Degree, Hz → Cents): every input path works with both.
-- [ ] **T6.1 Document model: monitor/inputs, note input mode, take lanes, punch, record settings, warp markers/modes** (plan §T6.1). Lane B, phase 1.
+- [x] **T6.1 Document model: monitor/inputs, note input mode, take lanes, punch, record settings, warp markers/modes** *(merged 9ee53c10; Q?-T6.1-a: key maps Tuning/Consecutive/12-TET nearest/12-TET Hz, Hz-mode notes resolve like drawn Cents notes, two input commands; new warp modes play as Re-Pitch until T6.3/T6.5)* (plan §T6.1). Lane B, phase 1.
 - [ ] **T6.2 PDC: units report latency, readers delay their inputs** (plan §T6.2). Lane A, phase 1.
 - [ ] **T6.3 Warp engine I: markers, Re-Pitch with markers, Beats, Tones, Texture** (plan §T6.3). After T6.1.
 - [ ] **T6.4 MIDI input (RtMidi), live notes into tracks, computer MIDI keyboard** (plan §T6.4). After T6.1.

@@ -307,3 +307,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check (ship): 30-track cold open first images 3.49 → 0.80–0.91 s, final 7.31 → 1.65–1.84 s (6 threads); largest unit 163 → 113 ms; 64x8 final 484–489 → 350–375 ms; steady state 382.5 → 383 µs/block (equal); peak RAM 234 / 258 / 322 / 364 MB at 1 / 2 / 4 / 6 threads.
 - Notes/blockers: quick first image barely beats the final on big units (111.5 vs 112.7 ms); an LLVM OOM in one compile could leave locks held for concurrent compiles.
 
+## 2026-11-10 · T6.1 · task/T6.1-doc-model (merged 9ee53c10 by the orchestrator)
+- Did: Mixer monitor (Auto/In/Off; arm + monitor are Params, arm on audio tracks), audio/MIDI inputs, track delay; audio input lowers `gain(clips, 1−mon) + gain(track.in, mon)`; `Track::noteInput` + `input_map.h` (128 entries, Keys/Hz, one `resolvePitch` shared with resolveTrackPitches); take lanes (audition, promote, compRegion), punch, record settings; warp modes + markers + WarpParams; schema 22.
+- Verified: pq_tests_document 206/206; -Affected default tier all pass except pq_tests_views, which hit the known NVIDIA SIGSEGV flake 3× in different GPU tests, then 618/618.
+- Perf / CPU-efficiency check: arm/monitor = param writes, no compile (patch object shared, tested); input map build 7.2 µs (target 50); unheard takes never lowered; no input → no track.in, no gate.
+- Notes/blockers: app plays new warp modes as Re-Pitch until T6.3/T6.5; metronome / track delay stored but Meta until T6.6. Q?-T6.1-a.
+
