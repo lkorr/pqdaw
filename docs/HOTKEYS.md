@@ -56,6 +56,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `arrangement.deselect` | `Escape` | arrangement | — (pqdaw; Live has no binding) | implemented (T4.16b; drops the clip, time and breakpoint selection, the tracks stay; a running drag is cancelled first by the view) |
 | `arrangement.trackUp` | `Up` | arrangement | Commands for Tracks | implemented (T3.x-fix-look; selects the track above, scrolled into view. T4.17: with clips selected (not a range), moves them to the nearest track above that takes every one of them — MIDI clips onto MIDI tracks, audio clips onto audio tracks, groups skipped — same start, one undo step) |
 | `arrangement.trackDown` | `Down` | arrangement | Commands for Tracks | implemented (T3.x-fix-look; selects the track below. T4.17: with clips selected, moves them down as Up does) |
+| (T6.10) `Up` / `Down` with a comp selection | — | arrangement | Comping | the comp selection's range comped from the take above / below (before clips and the track selection; breakpoints still first); see "Take lanes and comping" below |
 | `arrangement.markerHome` | `Home` | arrangement | Arrangement View Commands | implemented (T4.17: the insert marker to the arrangement's start, scrolled into view; the selected tracks stay) |
 | `arrangement.markerEnd` | `End` | arrangement | Arrangement View Commands | implemented (T4.17: the insert marker to the end of the last clip) |
 | `arrangement.pointsUpFine` | `Shift+Up` | arrangement | Automation (fine) | implemented (T4.17: the selected breakpoints' value up by a thousandth of the lane's range, one undo step) |
@@ -299,6 +300,18 @@ or `Win` pass through (`Ctrl+S` saves).
 | Control bar, Record (`F9`) | click while stopped / counting in / playing | count-in then play / cancel the count-in / nothing yet (T6.7) |
 | Control bar, CPU meter | hover | the info view adds the plugin delay compensation total |
 | Mixer view strip, Track Delay | drag (`Shift`: fine), double-click to type, `Delete` | ms, −1000 … 1000; 0 |
+
+## Take lanes and comping (T6.10, handled by the arrangement's take lanes, not the keymap)
+
+| Where | Gesture | What |
+|---|---|---|
+| Track header, ▼ / ▶ (a track with takes) | click | shows / hides the track's take lanes (view state, not undoable) |
+| Take lane | drag across | comps that range (snapped to the grid) into the main lane: the take's material there, the main lane's cut; audio edges get short crossfades. One undo step; the range becomes the comp selection. `Esc` cancels the drag |
+| Take lane | click | swaps this take in for the main-lane clip under the click (its whole span; in a gap of the main lane, this take's clip within the gap). One undo step |
+| Arrangement, a comp selection | `Up` / `Down` | the same range from the take above / below that has something there (one undo step each); `Esc` drops the comp selection (then `Up` / `Down` step the tracks again) |
+| Take lane header, speaker | click | auditions the take: it plays instead of the main lane (lit; the main lane draws grey); again: the main lane. No recompile; one undo step |
+| Take lane header, × | click | deletes the take lane (one undo step) |
+| Take lane header | click elsewhere | selects the track |
 
 ## Bug report (T5.x-bugreport, handled by the window loop before the widget tree, not the keymap)
 

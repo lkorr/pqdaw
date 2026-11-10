@@ -815,4 +815,19 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   start would. Offline renders prime at once. Mono sources get mono stretchers: `stretchMonoVoices` 32 by default
   (≈ +half the stereo pool's memory, see the T6.5b test's message); the rate (`kStretchPrimeRate` 4) and the pool
   split are constants to revisit if the CPU meter shows Play spikes or memory matters.
+
+## Q?-T6.10-a · 2026-11-10 · T6.10 · Take lanes and comping: what the plan left open
+- **Context**: docs/plans/M6.md "### T6.10" names the gestures; their exact rules and the look had to be chosen.
+- **Choices** (most reversible): (1) Take lanes are shown by default (a recording's takes appear at once, as in Live); the
+  track's existing fold triangle hides them, stored in `TrackView::folded` (which only groups used) — no new view-state
+  field. (2) The comp highlight is a veil (theme `automation.veil`) over every part of a take the main lane does NOT take
+  from it, read from the main lane's `ClipSlot::take`; an auditioned take is never veiled; the main lane draws grey while
+  the track auditions a take. Fresh takes added without a comp are therefore all veiled. (3) A click on a take swaps in
+  the WHOLE main-lane clip under the click (Live's region = the comp segment); in a gap of the main lane, the take clip
+  under the click clipped to the gap; a click on a region the take already supplies only selects it. (4) Up / Down skip
+  takes that have nothing in the range (comping silence in is a swipe on an empty part, not a key); with no take that
+  way, nothing happens (status line). Breakpoint selections keep the arrow keys first, then the comp selection, then
+  clips / tracks. (5) A swipe snaps both ends to the grid (Off: exact ticks); one narrower than a grid cell comps
+  nothing. (6) Take lane height is fixed (34 px, `kTakeLaneHeight`); no resize, no rename in the header yet (the
+  document has `renameTakeLane`), no promote gesture (`promoteTake` exists) — not asked for by the plan.
 - Status: decided (reversible).

@@ -77,7 +77,10 @@ void TrackHeader::bind(const ArrangementRow& row, std::span<const ArrangementRow
     selected_ = sel;
     changed = true;
   }
-  fold_->setVisible(group_);
+  // T6.10: a MIDI / audio track with take lanes folds them with the same triangle.
+  const bool foldable = group_ || (!row.bottom && !t.takes.empty());
+  if (fold_->visible() != foldable) changed = true;
+  fold_->setVisible(foldable);
   static_cast<arrangement::FoldButton*>(fold_)->setTrack(id_, folded_);
   // T3.15: the parameter chooser (automation mode) and the lanes toggle (automation mode, or lanes shown; not for
   // the pinned returns / master, whose envelopes show only over their rows).
@@ -133,7 +136,7 @@ void TrackHeader::arrange(LayoutPass& pass) {
   }
   // The chip section: the name column's second line (Live leaves it empty), when the row is tall enough.
   const int32_t cy = t.bottom() + s.px(3.0f), ch = s.px(am::kChipHeight);
-  const int32_t cx = t.x + (group_ ? s.px(18.0f) : s.px(6.0f));
+  const int32_t cx = t.x + (fold_->visible() ? s.px(18.0f) : s.px(6.0f));
   const int32_t cw = std::max(0, std::min(s.px(am::kChipWidth), t.right() - s.px(4.0f) - cx));
   // T3.15: in automation mode the parameter chooser goes under the chip, or takes the chip's line when the row has
   // room for only one of them (Live's header shows its choosers there).
@@ -147,7 +150,7 @@ void TrackHeader::arrange(LayoutPass& pass) {
   if (chooser_->visible() != chooser) chooser_->setVisible(chooser);
   if (chooser) pass.place(*chooser_, {cx, both ? cy + ch + s.px(3.0f) : cy, std::max(cw, std::min(s.px(am::kChipWidth), t.right() - s.px(4.0f) - cx)), qh});
   if (rename_) {
-    const int32_t padL = group_ ? s.px(18.0f) : s.px(2.0f);
+    const int32_t padL = fold_->visible() ? s.px(18.0f) : s.px(2.0f);
     pass.place(*rename_, {t.x + padL, t.y + 1, std::max(0, t.w - padL - s.px(2.0f)), std::max(0, t.h - 2)});
   }
 }
@@ -176,7 +179,7 @@ void TrackHeader::paint(PaintContext& ctx) {
   if (rename_) return;  // the text field draws the name
   const Rgba text = view_.model().clipTextColour(th, fill);
   if (const ThemeFonts* f = ctx.res.uiFonts) {
-    const int32_t padL = group_ ? ctx.scale.px(18.0f) : ctx.scale.px(6.0f);
+    const int32_t padL = fold_->visible() ? ctx.scale.px(18.0f) : ctx.scale.px(6.0f);
     const int32_t padR = lanesToggle_->visible() ? ctx.scale.px(18.0f) : ctx.scale.px(4.0f);  // T3.15: the lanes toggle
     paint::text(ctx, f->bodyStrong, t, name_, text, TextAlign::Left, padL, padR);
   }
@@ -283,7 +286,7 @@ namespace arrangement {
 
 FoldButton::FoldButton(ArrangementView& view) : Control("fold"), view_(view) {
   setCursor(Cursor::Pointer);  // T4.16a
-  setInfo("Fold / Unfold Group", "Shows or hides the tracks inside this group.");
+  setInfo("Fold / Unfold", "Shows or hides the tracks inside this group, or this track's take lanes.");
   setCursor(Cursor::Pointer);  // T4.16b
 }
 

@@ -415,16 +415,27 @@ bool buildAudioTiles(LaneCanvas& canvas, ArrangementView& view, TileAtlas& tiles
   const auto first = std::upper_bound(rows.begin(), rows.end(), localTop,
                                       [](int32_t y, const ArrangementRow& row) { return y < row.y + row.h; });
   ViewContext& ctx = view.context();
-  for (auto it = first; it != rows.end() && it->y < localBottom; ++it) {
-    if (it->group || it->track->kind != doc::TrackKind::Audio || it->track->clips.empty()) continue;
+  // The track rows' clips, then (T6.10) the take lanes' (strip: the row, its clips, their index, the lane's height).
+  using Strip = Model::AudioStrip;
+  std::vector<Strip>& strips = m.audioStrips;
+  strips.clear();
+  for (auto it = first; it != rows.end() && it->y < localBottom; ++it)
+    if (!it->group && it->track->kind == doc::TrackKind::Audio && !it->track->clips.empty())
+      strips.push_back({&*it, &it->track->clips, &m.clips(*it->track), it->h});
+  const auto takes = view.takeRows();
+  for (auto it = std::upper_bound(takes.begin(), takes.end(), localTop, [](int32_t y, const TakeLaneRow& r) { return y < r.y + r.h; });
+       it != takes.end() && it->y < localBottom; ++it)
+    if (rows[static_cast<size_t>(it->row)].track->kind == doc::TrackKind::Audio && !it->take->clips.empty())
+      strips.push_back({&rows[static_cast<size_t>(it->row)], &it->take->clips, &m.clips(*it->take), it->h});
+  for (const Strip& st : strips) {
+    const ArrangementRow* it = st.row;
     // The body as paintAudioClip computes it: [top + titleH, bottom − 1) of the clip's [y + 1, y + h − 1).
-    const int32_t bodyH = it->h - 3 - titleH;
+    const int32_t bodyH = st.h - 3 - titleH;
     if (bodyH < 3) continue;
-    const doc::Track& t = *it->track;
-    const ClipIndex& ix = m.clips(t);
+    const ClipIndex& ix = *st.ix;
     const auto [a, b] = ix.visible(from, to);
     for (size_t j = a; j < b; ++j) {
-      const doc::AudioClipPtr& clip = t.clips[j].audio;
+      const doc::AudioClipPtr& clip = (*st.clips)[j].audio;
       if (!clip || !ctx.sampleAvailable(clip->sample)) continue;
       const media::WaveformOverview* ov = ctx.waveforms().overview(clip->sample);
       if (!ov) continue;

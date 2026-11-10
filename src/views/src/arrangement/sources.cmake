@@ -13,5 +13,6 @@ set(PQ_VIEWS_ARRANGEMENT_SOURCES
   src/arrangement/model.cpp
   src/arrangement/overview.cpp
   src/arrangement/ruler.cpp
+  src/arrangement/takes.cpp  # T6.10: take lanes and comping
   src/arrangement/track_header.cpp
   src/arrangement/tracks.cpp)

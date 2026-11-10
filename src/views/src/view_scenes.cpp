@@ -40,6 +40,7 @@
 #include "pq/views/prefs/audio_prefs.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/tunings/tunings_panel.h"
+#include "pq/document/audio_clip.h"
 #include "pq/document/devices.h"
 #include "pq/document/lower.h"
 #include "pq/document/edit_ops.h"
@@ -721,6 +722,92 @@ Status setupArrangementAudio(Shell& shell) {
   });
   if (!ref.clip.valid()) return Error{ErrorCode::NotFound, "arrangement-audio: needs the audio fixture", {}};
   a->selectClips(std::span<const doc::ClipRef>(&ref, 1), false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// T6.10: take lanes on the audio fixture (tests/views/fixtures/audio): a new audio track "Takes" with three takes of
+// beat.wav (each 1.6 s from bar 1.25, reading 8000 frames further in than the one above) and two note takes on Keys.
+// `comp`: four regions comped from the three audio takes (the last the comp selection's neighbour), half a bar of the
+// Keys' second take comped in (the comp selection). Otherwise Keys auditions its second take (lit, main lane grey).
+Status setupArrangementTakes(Shell& shell, bool comp) {
+  ArrangementView* a = arrangementOf(shell);
+  if (!a) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
+  ViewContext& ctx = shell.context();
+  doc::DocumentStore& st = ctx.store();
+  const doc::Project& p0 = *ctx.doc();
+  doc::SampleId beat{};
+  if (p0.samples)
+    for (const doc::SampleRef& s : *p0.samples)
+      if (s.displayName == "beat") beat = s.id;
+  doc::TrackId keys{}, lost{};
+  doc::forEachTrack(p0, [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Keys") keys = t.id;
+    if (t.name == "Lost") lost = t.id;
+  });
+  if (!beat.valid() || !keys.valid() || !lost.valid()) return Error{ErrorCode::NotFound, "arrangement-takes: needs the audio fixture", {}};
+  auto run = [&](const doc::ops::EditResult& e) -> Status {
+    if (!e) return e.error();
+    return st.dispatch(e->command);
+  };
+  const Ticks bar = kTicksPerWhole;
+  auto t = doc::ops::createTrack(*ctx.doc(), st.ids(), doc::TrackKind::Audio, lost, "Takes", doc::Colour{0x46A5E8});
+  if (Status s = run(t); !s) return s;
+  const doc::TrackId takes = t->tracks.at(0);
+  std::vector<doc::LaneId> audioLanes;
+  for (int k = 0; k < 3; ++k) {
+    doc::AudioClip c;
+    c.id = st.ids().clip();
+    c.name = "beat";
+    c.colour = doc::Colour{0x46A5E8};
+    c.start = bar / 4;
+    c.sample = beat;
+    c.seconds = 1.6;
+    c.contentStartFrame = 8000.0 * k;
+    c = doc::syncedClip(*ctx.doc()->timeline, c);
+    const doc::ClipSlot slot{c.id, nullptr, std::make_shared<const doc::AudioClip>(std::move(c))};
+    if (Status s = run(doc::ops::addTakeLane(*ctx.doc(), st.ids(), takes, std::span<const doc::ClipSlot>(&slot, 1))); !s) return s;
+    audioLanes.push_back(doc::findTrackPtr(*ctx.doc(), takes)->takes.back()->id);
+  }
+  std::vector<doc::LaneId> noteLanes;
+  for (int k = 0; k < 2; ++k) {
+    std::vector<doc::Note> notes;
+    for (int i = 0; i < 8; ++i) {
+      doc::Note n;
+      n.id = st.ids().note();
+      n.start = i * bar / 8;
+      n.length = bar / 16 + k * bar / 32;
+      n.pitch = tuning::PitchId::fromDegree(k == 0 ? (i * 2) % 7 : 7 - (i * 3) % 8, 0);
+      n.velocity = 100.0f;
+      notes.push_back(n);
+    }
+    auto seq = doc::NoteSeq::fromNotes(std::move(notes));
+    if (!seq) return seq.error();
+    doc::NoteClip c;
+    c.id = st.ids().clip();
+    c.name = k == 0 ? "take 1" : "take 2";
+    c.colour = doc::Colour{0x7BC47F};
+    c.start = 0;
+    c.length = bar;
+    c.loop.end = bar;
+    c.notes = std::move(*seq);
+    const doc::ClipSlot slot{c.id, std::make_shared<const doc::NoteClip>(std::move(c)), nullptr};
+    if (Status s = run(doc::ops::addTakeLane(*ctx.doc(), st.ids(), keys, std::span<const doc::ClipSlot>(&slot, 1))); !s) return s;
+    noteLanes.push_back(doc::findTrackPtr(*ctx.doc(), keys)->takes.back()->id);
+  }
+  a->setTimeView(-0.1 * static_cast<double>(bar), 450.0 / static_cast<double>(bar));
+  shell.tree().layoutNow();
+  if (comp) {
+    const Ticks q = bar / 8;
+    const std::pair<int, std::pair<Ticks, Ticks>> regions[] = {
+        {0, {2 * q, 4 * q}}, {1, {4 * q, 6 * q}}, {2, {6 * q, 7 * q}}, {1, {7 * q, bar / 4 + (bar * 4) / 5}}};
+    for (const auto& [k, r] : regions)
+      if (!a->comp(takes, audioLanes[static_cast<size_t>(k)], r.first, r.second))
+        return Error{ErrorCode::Unknown, "arrangement-comp: a comp failed", {}};
+    if (!a->comp(keys, noteLanes[1], bar / 2, bar)) return Error{ErrorCode::Unknown, "arrangement-comp: the note comp failed", {}};
+  } else if (!a->auditionTake(keys, noteLanes[1])) {
+    return Error{ErrorCode::Unknown, "arrangement-takes: audition failed", {}};
+  }
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -3063,6 +3150,8 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-hover", 1280, 800, setupPianoRollHover},      // T4.16b: --project tests/views/fixtures/pianoroll-12edo
     {"arrangement-audio", 1280, 800, setupArrangementAudio},  // T5.6: --project tests/views/fixtures/audio
     {"clip-view-audio", 1280, 800, setupClipViewAudio},        // T5.6: the same --project
+    {"arrangement-takes", 1280, 800, [](Shell& s) { return setupArrangementTakes(s, false); }},  // T6.10: the same --project
+    {"arrangement-comp", 1280, 800, [](Shell& s) { return setupArrangementTakes(s, true); }},    // T6.10
     {"audio-clip-warp-beats", 1280, 800, [](Shell& s) { return setupAudioClipWarp(s, false); }},   // T6.8: the same --project
     {"audio-clip-warp-markers", 1280, 800, [](Shell& s) { return setupAudioClipWarp(s, true); }},  // T6.8
     {"browser-panel", 1280, 800, setupBrowserPanel},           // T5.10: the same --project (its samples as the User Library)

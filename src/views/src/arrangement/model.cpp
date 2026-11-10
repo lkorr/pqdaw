@@ -20,22 +20,35 @@ std::pair<size_t, size_t> ClipIndex::visible(Ticks from, Ticks to) const noexcep
   return {a, std::max(a, b)};
 }
 
-const ClipIndex& Model::clips(const doc::Track& t) {
-  ClipIndex& ix = clipIndex_[t.id.value];
-  if (ix.track == &t) return ix;
-  ix.track = &t;
-  const size_t n = t.clips.size();
+namespace {
+
+void buildIndex(ClipIndex& ix, const void* node, const std::vector<doc::ClipSlot>& clips) {
+  ix.node = node;
+  const size_t n = clips.size();
   ix.start.resize(n);
   ix.end.resize(n);
   ix.maxEnd.resize(n);
   Ticks m = INT64_MIN;
   for (size_t i = 0; i < n; ++i) {
-    const doc::ClipSlot& c = t.clips[i];  // T5.3: audio clips too (their bounds; drawing them is T5.6)
+    const doc::ClipSlot& c = clips[i];  // T5.3: audio clips too
     ix.start[i] = c.start();
     ix.end[i] = c.end();
     m = std::max(m, ix.end[i]);
     ix.maxEnd[i] = m;
   }
+}
+
+}  // namespace
+
+const ClipIndex& Model::clips(const doc::Track& t) {
+  ClipIndex& ix = clipIndex_[t.id.value];
+  if (ix.node != &t) buildIndex(ix, &t, t.clips);
+  return ix;
+}
+
+const ClipIndex& Model::clips(const doc::TakeLane& l) {
+  ClipIndex& ix = takeIndex_[l.id.value];
+  if (ix.node != &l) buildIndex(ix, &l, l.clips);
   return ix;
 }
 
@@ -221,27 +234,36 @@ void Model::afterDocumentChange(size_t clipsInProject) {
   // The caches hold entries for clips/tracks that may no longer exist; drop them once they clearly outgrow the
   // project (keeps memory bounded without a sweep per edit).
   if (previews_.size() > 2 * clipsInProject + 256 || clipIndex_.size() > 2 * rows.size() + 256 ||
-      audio_.size() > 2 * clipsInProject + 256) {
+      audio_.size() > 2 * clipsInProject + 256 || takeIndex_.size() > 2 * takeRows.size() + 256) {
     std::unordered_set<const doc::NoteClip*> live;
     std::unordered_set<const doc::AudioClip*> liveAudio;
-    std::unordered_set<uint32_t> liveTracks;
+    std::unordered_set<uint32_t> liveTracks, liveTakes;
     live.reserve(clipsInProject);
     doc::forEachTrack(*shown, [&](const doc::Track& tr, const doc::Track*) {
       liveTracks.insert(tr.id.value);
-      for (const doc::ClipSlot& s : tr.clips) {
-        if (s.clip) live.insert(s.clip.get());
-        if (s.audio) liveAudio.insert(s.audio.get());
+      auto see = [&](const std::vector<doc::ClipSlot>& v) {
+        for (const doc::ClipSlot& s : v) {
+          if (s.clip) live.insert(s.clip.get());
+          if (s.audio) liveAudio.insert(s.audio.get());
+        }
+      };
+      see(tr.clips);
+      for (const doc::TakeLanePtr& l : tr.takes) {  // T6.10
+        liveTakes.insert(l->id.value);
+        see(l->clips);
       }
     });
     std::erase_if(audio_, [&](const auto& kv) { return !liveAudio.contains(kv.first); });
     std::erase_if(previews_, [&](const auto& kv) { return !live.contains(kv.first); });
     recountNotes();
     std::erase_if(clipIndex_, [&](const auto& kv) { return !liveTracks.contains(kv.first); });
+    std::erase_if(takeIndex_, [&](const auto& kv) { return !liveTakes.contains(kv.first); });
   }
 }
 
 void Model::clear() {
   clipIndex_.clear();
+  takeIndex_.clear();
   previews_.clear();
   audio_.clear();
   cachedNotes_ = 0;

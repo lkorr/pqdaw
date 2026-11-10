@@ -1227,3 +1227,14 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   arrangement-audio, clip-view-audio, browser-panel, browser-search, browser-hotswap, device-meta-scope,
   device-meta-spectrogram, device-meta-spectrum). Mixer view: an audio strip shows "Audio From" and "Monitor".
 - To judge: the overlay's tint / waveform contrast; whether the Record button should blink while recording (it is lit).
+
+## 2026-11-10 · T6.10 · Take lanes and comping 👁
+- Loop-record a few passes on an audio or MIDI track (or open a project with takes): each pass is a take lane under the
+  track, with a header (name, speaker, ×). The ▼ in the track's title bar folds them away.
+- Drag across a take: that range replaces the main lane there (short crossfades on audio); the parts of each take the
+  main lane uses stay bright, the rest is veiled. Click a take to swap it in for the whole main-lane clip under the click.
+- After a comp or a click, `Up` / `Down` pull the same range from the take above / below; `Esc` drops that selection.
+  Each step is one Ctrl+Z.
+- The speaker auditions a take in place of the main lane (blue, main lane grey) — check it switches instantly while
+  playing, with no glitch or recompile pause. × deletes a take lane.
+- Goldens: `arrangement-takes`, `arrangement-comp` (tests/views/golden). Does the veil read clearly as "not used"?

@@ -61,7 +61,7 @@ private:
 // sorted by start (the document keeps them so); maxEnd is the running maximum of the ends, so the first clip that
 // reaches past a tick is a binary search even if clips overlapped.
 struct ClipIndex {
-  const doc::Track* track = nullptr;
+  const void* node = nullptr;  // the track (or, T6.10, the take lane) snapshot it was built from
   std::vector<Ticks> start, end, maxEnd;
   // Index range of the clips meeting [from, to).
   std::pair<size_t, size_t> visible(Ticks from, Ticks to) const noexcept;
@@ -228,6 +228,7 @@ public:
   // T3.15: the automation lanes shown under the rows (in row order), and every lane of the project by parameter
   // (sorted by ParamRef; rebuilt with the rows).
   std::vector<AutomationLaneRow> laneRows;
+  std::vector<TakeLaneRow> takeRows;  // T6.10: the take lanes shown under the rows (in row order)
   struct LaneEntry {
     doc::ParamRef param;
     doc::TrackId owner;
@@ -247,6 +248,8 @@ public:
 
   // The clip index of a track (by id; rebuilt when the track pointer changed).
   const ClipIndex& clips(const doc::Track& t);
+  // T6.10: the clip index of a take lane (by lane id; rebuilt when the lane pointer changed).
+  const ClipIndex& clips(const doc::TakeLane& l);
   // The preview of a clip resolved in `tuning` (cached by clip pointer + tuning), or nullptr when it is not cached and
   // this paint's build budget is spent (buildsDeferred is then set).
   Preview* preview(const doc::ClipPtr& clip, const doc::TuningDef* tuning);
@@ -311,11 +314,20 @@ public:
   std::vector<RectOut> deferredRects;
   std::vector<uint16_t> usedRows;
   std::vector<const doc::Track*> members;  // a group's member tracks (group summaries)
+  // T6.10: buildAudioTiles' scratch (the visible audio strips: track rows and take lanes).
+  struct AudioStrip {
+    const ArrangementRow* row;
+    const std::vector<doc::ClipSlot>* clips;
+    const ClipIndex* ix;
+    int32_t h;
+  };
+  std::vector<AudioStrip> audioStrips;
 
 private:
   const tuning::Tuning* tuningFor(const doc::TuningDef* def);
 
   std::unordered_map<uint32_t, ClipIndex> clipIndex_;            // by raw track id
+  std::unordered_map<uint32_t, ClipIndex> takeIndex_;            // T6.10: by raw take lane id
   std::unordered_map<const doc::NoteClip*, Preview> previews_;
   std::unordered_map<const doc::AudioClip*, AudioLayout> audio_;  // T5.6
   uint64_t paintSerial_ = 0;
@@ -917,6 +929,74 @@ public:
 
 private:
   ArrangementView& view_;
+};
+
+// ---- Take lanes and comping (T6.10, takes.cpp) -------------------------------------------------------------------
+
+// The take lanes' gestures and paint: a press in a take lane is its (before the automation and the clip editor); a drag
+// is a swipe (the snapped range comped in on release), a click swaps the region under it in. Keeps the comp selection.
+class Comper {
+public:
+  explicit Comper(ArrangementView& view);
+  bool pointer(const ui::PointerEvent& e);  // true: a take lane's press, or the gesture after it
+  bool dragging() const noexcept { return press_.has_value(); }
+  void abortDrag();
+  ui::Cursor cursorAt(ui::Vec2 p) const;  // over a take lane (Inherit elsewhere)
+  const std::optional<ArrangementView::CompSelection>& selection() const noexcept { return sel_; }
+  void clearSelection();
+  bool comp(doc::TrackId track, doc::LaneId lane, Ticks t0, Ticks t1);
+  bool step(int32_t dir);
+  bool audition(doc::TrackId track, doc::LaneId lane);
+  bool remove(doc::TrackId track, doc::LaneId lane);
+  void removeLater(doc::TrackId track, doc::LaneId lane);  // from a take header's own handler (it may go)
+  void runPending();
+  void afterDocumentChange();
+  // The take lanes' background (under the grid), then (after the rows) their separators, clips, veils, the swipe and
+  // the comp selection, for the take lanes meeting the painted part.
+  void paintBackgrounds(ui::PaintContext& ctx, const ui::IRect& canvas) const;
+  void paint(LanePaint& lp, int32_t localTop, int32_t localBottom);
+
+private:
+  struct Press {
+    int32_t take = -1;  // takeRows() index
+    doc::TrackId track;
+    doc::LaneId lane;
+    ui::Vec2 at{};
+    Ticks tick = 0;
+    Ticks a = 0, b = 0;  // the swipe's snapped range (a == b: none yet)
+    bool moved = false;
+  };
+  Ticks snap(Ticks t) const noexcept;
+  void damageTake(int32_t take, Ticks a, Ticks b) const;
+  void damageSelection() const;
+  bool swapAt(const Press& p);
+  ArrangementView& view_;
+  std::optional<Press> press_;
+  std::optional<ArrangementView::CompSelection> sel_;
+  std::optional<std::pair<doc::TrackId, doc::LaneId>> pendingRemove_;
+  std::vector<TickRange> usedScratch_;  // paint scratch: one lane's comp spans
+};
+
+// A take lane's header: its name, audition (a speaker: lit while the take plays instead of the main lane) and delete
+// (×). A click elsewhere selects the track.
+class TakeHeader : public ui::Control {
+public:
+  TakeHeader(std::string name, ArrangementView& view);
+  void bind(const TakeLaneRow& take, uint16_t depth, bool auditioned);
+  const TakeLaneRow& take() const noexcept { return take_; }
+  ui::IRect auditionRect() const noexcept;
+  ui::IRect deleteRect() const noexcept;
+  bool auditioned() const noexcept { return auditioned_; }
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+  ui::Cursor cursorAt(ui::Vec2 p) const override;
+
+private:
+  ArrangementView& view_;
+  TakeLaneRow take_;
+  uint16_t depth_ = 0;
+  std::string label_;
+  bool auditioned_ = false;
 };
 
 // A filler (panel background) above the header column.

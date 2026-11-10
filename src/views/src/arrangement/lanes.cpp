@@ -2,6 +2,7 @@
 // (grid, clips with their cached note previews, group summaries, playhead) — one virtualised widget for all rows.
 
 #include <algorithm>
+#include <chrono>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -234,6 +235,10 @@ void TrackStack::arrange(LayoutPass& pass) {
   const auto& laneHeaders = view_.laneHeaderWidgets();
   for (size_t i = 0; i < laneHeaders.size() && i < lanes.size(); ++i)
     pass.place(*laneHeaders[i], {hx, r.y + lanes[i].y, hdr, lanes[i].h});
+  const auto takes = view_.takeRows();  // T6.10
+  const auto& takeHeaders = view_.takeHeaderWidgets();
+  for (size_t i = 0; i < takeHeaders.size() && i < takes.size(); ++i)
+    pass.place(*takeHeaders[i], {hx, r.y + takes[i].y, hdr, takes[i].h});
 }
 
 void TrackStack::paint(PaintContext& ctx) {
@@ -318,6 +323,24 @@ bool LaneCanvas::buildAhead() {
         if (!f(*it, clip, bodyH)) return false;
       }
     }
+    // T6.10: the take lanes' clips (drawn from the same caches, at the take lane's body height).
+    const auto takes = view_.takeRows();
+    for (auto it = std::upper_bound(takes.begin(), takes.end(), localTop, [](int32_t y, const TakeLaneRow& r) { return y < r.y + r.h; });
+         it != takes.end() && it->y < localBottom; ++it) {
+      const int32_t bodyH = it->h - 3 - titleH;
+      if (bodyH < 3 || it->take->clips.empty()) continue;
+      const ArrangementRow& row = rows[static_cast<size_t>(it->row)];
+      const ClipIndex& ix = m.clips(*it->take);
+      const auto [a, b] = ix.visible(from, to);
+      for (size_t j = a; j < b; ++j) {
+        const doc::ClipPtr& clip = it->take->clips[j].clip;
+        if (!clip || clip->notes.empty()) continue;
+        const float w = X(ix.end[j]) - X(ix.start[j]);
+        if (w < minW) continue;
+        if (view_.zooming() && w < am::kZoomPreviewMinPxPerNote * static_cast<float>(clip->notes.size())) continue;
+        if (!f(row, clip, bodyH)) return false;
+      }
+    }
     return true;
   };
   m.beginPaint(previewBudget_);
@@ -355,8 +378,11 @@ bool LaneCanvas::onPointer(const PointerEvent& e) {
   if (e.type != PointerType::Wheel) {
     mods_ = static_cast<Mods>(e.mods & mod::kChordMask);
     if (e.type != PointerType::Leave) pointer_ = e.pos;
+    // T6.10: a take lane's press (and its swipe) first; any other press drops the comp selection.
+    bool handled = view_.comper().pointer(e);
+    if (!handled && e.type == PointerType::Down) view_.comper().clearSelection();
     // T3.15: automation lanes and, in automation mode, the envelopes over the rows take their presses first.
-    bool handled = view_.automation().pointer(e);
+    if (!handled) handled = view_.automation().pointer(e);
     if (!handled) {
       if (e.type == PointerType::Down) view_.automation().clearSelection();
       handled = view_.editor().pointer(e);  // selection and drags (T3.9)
@@ -382,6 +408,7 @@ bool LaneCanvas::onPointer(const PointerEvent& e) {
 // Capture lost without a release (a popup, the view hidden, the window losing focus): both editors drop their drag
 // (T3.x-fix-edit: the automation drag used to keep following the pointer, M3 review L19).
 void LaneCanvas::onCaptureLost() {
+  view_.comper().abortDrag();
   view_.editor().abortDrag();
   view_.automation().abortDrag();
 }
@@ -396,7 +423,7 @@ void LaneCanvas::onHoverChanged(bool hovered) {
 void LaneCanvas::updateHover() {
   ArrangementAutomation& au = view_.automation();
   Editor& ed = view_.editor();
-  if (!pointer_ || au.dragging() || ed.dragging()) return;
+  if (!pointer_ || au.dragging() || ed.dragging() || view_.comper().dragging()) return;
   // The automation takes the press first where it would (onPointer's order): then no clip part is highlighted.
   if (au.hoverAt(*pointer_, mods_)) ed.clearHover();
   else ed.hoverAt(*pointer_);
@@ -412,6 +439,7 @@ void LaneCanvas::modsChanged(Mods m) {
 Cursor LaneCanvas::cursorAt(Vec2 p) const {
   const ArrangementAutomation& au = view_.automation();
   const Editor& ed = view_.editor();
+  if (const Cursor c = view_.comper().cursorAt(p); c != Cursor::Inherit && !ed.dragging() && !au.dragging()) return c;  // T6.10
   if (ed.dragging() && !au.dragging()) return ed.cursorAt(p);
   if (const std::optional<Cursor> c = au.cursorAt(p, mods_)) return *c;
   return ed.cursorAt(p);
@@ -884,7 +912,15 @@ void LaneCanvas::paint(PaintContext& ctx) {
   // A frame may paint the canvas once per damage rect (UiTree::paint over rects): the "last paint" stats, the preview
   // build budget and the cache's paint serial count frames, not passes.
   const bool newFrame = ctx.frame != paintFrame_ || ctx.frame == 0;
+  const auto paintStart = std::chrono::steady_clock::now();
+  struct PaintTimer {  // T6.10: Stats::lanesPaintMs (tests)
+    double& out;
+    std::chrono::steady_clock::time_point t0;
+    ~PaintTimer() { out = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); }
+  } paintTimer{m.stats.lanesPaintMs, paintStart};
   if (newFrame) {
+    m.stats.takeRowsPainted = 0;
+    m.stats.takeClipsPainted = 0;
     m.stats.rowsPainted = 0;
     m.stats.clipsPainted = 0;
     m.stats.noteRectsEmitted = 0;
@@ -936,6 +972,7 @@ void LaneCanvas::paint(PaintContext& ctx) {
   // across every visible row.
   dl.addRectFilled(c.toRect(), th.arrangement.lane);
   view_.automation().paintLaneBackgrounds(ctx, r);  // T3.15: automation lanes a shade darker, under the grid
+  view_.comper().paintBackgrounds(ctx, r);            // T6.10: take lanes too
   const Editor& ed = view_.editor();
   if (!ed.selection().tracks.empty())
     for (auto it = first; it != last; ++it)
@@ -957,7 +994,7 @@ void LaneCanvas::paint(PaintContext& ctx) {
     if (t.clips.empty()) continue;
     const ClipIndex& ix = m.clips(t);
     const auto [a, b] = ix.visible(lp.from, lp.to);
-    const bool active = rowActive(rows, *it);
+    const bool active = rowActive(rows, *it) && !t.auditionTake.valid();  // T6.10: an auditioned take plays instead
     const Editor::HoverPart& hp = ed.hoverPart();
     const bool hoverRow = !ed.dragging() && hp.ref.clip.valid() && hp.ref.track == it->id;
     for (size_t j = a; j < b; ++j) {
@@ -982,6 +1019,7 @@ void LaneCanvas::paint(PaintContext& ctx) {
                             ed.selected(t.clips[j].id) || (hoverRow && t.clips[j].id == hp.ref.clip));
   }
   flushTiles(lp);
+  view_.comper().paint(lp, localTop, localBottom);  // T6.10: take lanes (their clips, veils, comp selection)
   // T6.7: the recording overlay over the rows' clips.
   if (view_.recording().active)
     for (auto it = first; it != last; ++it)

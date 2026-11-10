@@ -72,6 +72,7 @@ ArrangementView::ArrangementView(ViewContext& ctx)
       editor_(std::make_unique<arrangement::Editor>(*this)),
       automation_(std::make_unique<ArrangementAutomation>(*this)),
       fileDrop_(std::make_unique<arrangement::FileDrop>(*this)) {
+  comper_ = std::make_unique<arrangement::Comper>(*this);
   setLayout(LayoutKind::Custom);
   setClipChildren(true);
   setFocusable(true);
@@ -109,6 +110,18 @@ const doc::Snapshot& ArrangementView::shown() const noexcept { return model_->sh
 std::span<const ArrangementRow> ArrangementView::rows() const noexcept { return model_->rows; }
 std::span<const ArrangementRow> ArrangementView::bottomRows() const noexcept { return model_->bottomRows; }
 std::span<const AutomationLaneRow> ArrangementView::laneRows() const noexcept { return model_->laneRows; }
+std::span<const TakeLaneRow> ArrangementView::takeRows() const noexcept { return model_->takeRows; }
+const std::optional<ArrangementView::CompSelection>& ArrangementView::compSelection() const noexcept { return comper_->selection(); }
+bool ArrangementView::comp(doc::TrackId track, doc::LaneId lane, Ticks t0, Ticks t1) { return comper_->comp(track, lane, t0, t1); }
+bool ArrangementView::stepComp(int32_t dir) { return comper_->step(dir); }
+bool ArrangementView::auditionTake(doc::TrackId track, doc::LaneId lane) { return comper_->audition(track, lane); }
+bool ArrangementView::deleteTake(doc::TrackId track, doc::LaneId lane) { return comper_->remove(track, lane); }
+
+bool ArrangementView::takesFolded(doc::TrackId id) const noexcept {
+  const auto& tracks = ctx_.store().view().tracks;
+  const auto it = tracks.find(id);
+  return it != tracks.end() && it->second.folded;
+}
 Widget* ArrangementView::reenableButton() const noexcept { return reenable_; }
 IRect ArrangementView::bottomRect() const noexcept { return bottom_->visible() ? bottom_->rect() : IRect{}; }
 const ArrangementView::Stats& ArrangementView::stats() const noexcept { return model_->stats; }
@@ -202,18 +215,25 @@ void ArrangementView::registerActions() {
   edit("arrangement.extendLeft", [ed] { ed->extendTime(-1); }, {});
   edit("arrangement.extendRight", [ed] { ed->extendTime(1); }, {});
   edit("arrangement.deselect",
-       [ed, au] {
+       [ed, au, cp = comper_.get()] {
          au->clearSelection();
+         cp->clearSelection();  // T6.10
          (void)ed->deselect();
        },
-       [ed, au] { return au->hasSelection() || !ed->selection().clips.empty() || ed->selection().time.has_value(); });
+       [ed, au, cp = comper_.get()] {
+         return au->hasSelection() || cp->selection().has_value() || !ed->selection().clips.empty() || ed->selection().time.has_value();
+       });
   // T4.17: with clips selected, Up / Down move them to the neighbouring track that takes them (Live).
-  edit("arrangement.trackUp", [ed, au] {
+  // T6.10: with a comp selection, Up / Down comp its range from the take above / below.
+  arrangement::Comper* const cp = comper_.get();
+  edit("arrangement.trackUp", [ed, au, cp] {
     if (!au->selectedPoints().empty()) (void)au->nudgeSelected(0, 1.0);  // T4.17: the selected breakpoints' value
+    else if (cp->selection()) (void)cp->step(-1);
     else ed->clipsNudgeable() ? (void)ed->moveClipsRows(-1) : ed->stepTrack(-1);
   }, {});
-  edit("arrangement.trackDown", [ed, au] {
+  edit("arrangement.trackDown", [ed, au, cp] {
     if (!au->selectedPoints().empty()) (void)au->nudgeSelected(0, -1.0);
+    else if (cp->selection()) (void)cp->step(1);
     else ed->clipsNudgeable() ? (void)ed->moveClipsRows(1) : ed->stepTrack(1);
   }, {});
   edit("arrangement.markerHome", [ed] { ed->markerTo(false); }, {});  // T4.17
@@ -245,7 +265,10 @@ bool ArrangementView::duplicateTime() { return editor_->duplicateTime(); }
 bool ArrangementView::deleteTime() { return editor_->deleteTime(); }
 bool ArrangementView::loopSelection() { return editor_->loopSelection(); }
 bool ArrangementView::toggleActive() { return editor_->toggleActive(); }
-void ArrangementView::selectTrack(doc::TrackId id, Mods mods) { editor_->selectTrack(id, mods); }
+void ArrangementView::selectTrack(doc::TrackId id, Mods mods) {
+  comper_->clearSelection();  // T6.10: a header click ends comping (Up / Down step the tracks again)
+  editor_->selectTrack(id, mods);
+}
 bool ArrangementView::newTrack(doc::TrackKind kind) { return editor_->newTrack(kind); }
 bool ArrangementView::groupSelection() { return editor_->groupSelection(); }
 bool ArrangementView::ungroupSelection() { return editor_->ungroupSelection(); }
@@ -310,6 +333,11 @@ bool ArrangementView::onKey(const KeyEvent& e) {
     if (tree() && tree()->captured()) tree()->releaseCapture();
     return true;
   }
+  if (e.down && e.key == key::kEscape && comper_->dragging()) {  // T6.10: a swipe
+    comper_->abortDrag();
+    if (tree() && tree()->captured()) tree()->releaseCapture();
+    return true;
+  }
   if (e.down && e.key == key::kEscape && editor_->dragging()) {
     editor_->abortDrag();
     if (tree() && tree()->captured()) tree()->releaseCapture();
@@ -360,6 +388,7 @@ void ArrangementView::onDocument(const doc::StoreEvent& e) {
   rebuildRows(lanesUnchanged);
   if (automationOnly) automation_->damageLanes(c.lanes);
   editor_->afterDocumentChange(e);
+  comper_->afterDocumentChange();
 }
 
 void ArrangementView::onViewChange(uint32_t bits) {
@@ -406,6 +435,7 @@ void ArrangementView::rebuildRows(bool lanesUnchanged) {
   });
   std::sort(m.laneIndex.begin(), m.laneIndex.end(), [](const Model::LaneEntry& a, const Model::LaneEntry& b) { return a.param < b.param; });
   m.laneRows.clear();
+  m.takeRows.clear();
   std::vector<doc::ParamRef> laneParams;
   double cum = 0.0;  // logical px
   size_t clipCount = 0;
@@ -422,6 +452,7 @@ void ArrangementView::rebuildRows(bool lanesUnchanged) {
     void operator()(const std::vector<doc::TrackPtr>& list, int32_t parent, uint16_t depth, const doc::TuningDef* inherited) {
       for (const doc::TrackPtr& t : list) {
         clipCount += t->clips.size();
+        for (const doc::TakeLanePtr& l : t->takes) clipCount += l->clips.size();
         const auto it = vs.tracks.find(t->id);
         const doc::TrackView tv = it != vs.tracks.end() ? it->second : doc::TrackView{};
         ArrangementRow r;
@@ -430,12 +461,29 @@ void ArrangementView::rebuildRows(bool lanesUnchanged) {
         r.parent = parent;
         r.depth = depth;
         r.group = t->kind == doc::TrackKind::Group;
-        r.folded = r.group && tv.folded;
         r.tuning = assignmentDef(p, t->tuning, inherited);
         const double h = tv.height > 0 ? std::max<double>(tv.height, am::kMinTrackHeight) : am::kTrackHeight;
         r.y = s.px(static_cast<float>(cum));
         cum += h;
         r.h = s.px(static_cast<float>(cum)) - r.y;
+        // T6.10: the take lanes (unless folded: TrackView::folded of a MIDI / audio track), then the automation lanes.
+        r.folded = r.group ? tv.folded : (!t->takes.empty() && tv.folded);
+        r.firstTake = static_cast<uint32_t>(m.takeRows.size());
+        if (!r.group && !r.folded)
+          for (size_t k = 0; k < t->takes.size(); ++k) {
+            TakeLaneRow tr;
+            tr.track = t->id;
+            tr.row = static_cast<int32_t>(rows.size());
+            tr.index = static_cast<uint32_t>(k);
+            tr.lane = t->takes[k]->id;
+            tr.take = t->takes[k].get();
+            tr.y = s.px(static_cast<float>(cum));
+            cum += am::kTakeLaneHeight;
+            tr.h = s.px(static_cast<float>(cum)) - tr.y;
+            m.takeRows.push_back(tr);
+          }
+        r.takeCount = static_cast<uint32_t>(m.takeRows.size()) - r.firstTake;
+        r.takesH = s.px(static_cast<float>(cum)) - (r.y + r.h);
         // T3.15: the automation lanes shown under the track.
         v.automation_->lanesFor(p, *t, laneParams);
         r.firstLane = static_cast<uint32_t>(m.laneRows.size());
@@ -464,6 +512,7 @@ void ArrangementView::rebuildRows(bool lanesUnchanged) {
     void countHidden(const std::vector<doc::TrackPtr>& list) {
       for (const doc::TrackPtr& t : list) {
         clipCount += t->clips.size();
+        for (const doc::TakeLanePtr& l : t->takes) clipCount += l->clips.size();
         countHidden(t->children);
       }
     }
@@ -501,6 +550,8 @@ void ArrangementView::rebuildRows(bool lanesUnchanged) {
     Ticks end = 8 * kTicksPerWhole;
     doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
       if (!t.clips.empty()) end = std::max(end, model_->clips(t).maxEnd.back());
+      for (const doc::TakeLanePtr& l : t.takes)  // T6.10: takes reach as far as they go
+        if (!l->clips.empty()) end = std::max(end, model_->clips(*l).maxEnd.back());
     });
     end = std::max(end, p.loop.end);
     if (p.locators && !p.locators->empty()) end = std::max(end, p.locators->back().tick);
@@ -592,6 +643,19 @@ void ArrangementView::syncHeaders() {
   for (size_t i = 0; i < laneHeaders_.size(); ++i) {
     const AutomationLaneRow& lr = model_->laneRows[i];
     laneHeaders_[i]->bind(lr, lr.row >= 0 ? model_->rows[static_cast<size_t>(lr.row)].depth : uint16_t{0});
+  }
+  // T6.10: one header per take lane.
+  while (takeHeaders_.size() > model_->takeRows.size()) {
+    arrangement::TakeHeader* h = takeHeaders_.back();
+    takeHeaders_.pop_back();
+    (void)stack_->removeChild(*h);
+  }
+  while (takeHeaders_.size() < model_->takeRows.size())
+    takeHeaders_.push_back(&stack_->add<arrangement::TakeHeader>("take[" + std::to_string(takeHeaders_.size()) + "]", *this));
+  for (size_t i = 0; i < takeHeaders_.size(); ++i) {
+    const TakeLaneRow& tr = model_->takeRows[i];
+    const ArrangementRow& row = model_->rows[static_cast<size_t>(tr.row)];
+    takeHeaders_[i]->bind(tr, row.depth, row.track->auditionTake == tr.lane);
   }
 }
 
@@ -889,6 +953,25 @@ IRect ArrangementView::laneRect(size_t i) const noexcept {
   return {lr.x, stack_->rect().y + l.y, lr.w, l.h};
 }
 
+IRect ArrangementView::takeRect(size_t i) const noexcept {
+  if (i >= model_->takeRows.size()) return {};
+  const TakeLaneRow& l = model_->takeRows[i];
+  const IRect lr = lanes_->rect();
+  return {lr.x, stack_->rect().y + l.y, lr.w, l.h};
+}
+
+int32_t ArrangementView::takeAt(float deviceY) const noexcept {
+  const auto& takes = model_->takeRows;
+  if (takes.empty()) return -1;
+  const IRect sv = scroll_->rect();
+  if (deviceY < static_cast<float>(sv.y) || deviceY >= static_cast<float>(sv.bottom())) return -1;
+  const float local = deviceY - static_cast<float>(stack_->rect().y);
+  const auto it = std::upper_bound(takes.begin(), takes.end(), local,
+                                   [](float y, const TakeLaneRow& r) { return y < static_cast<float>(r.y + r.h); });
+  if (it == takes.end() || local < static_cast<float>(it->y)) return -1;
+  return static_cast<int32_t>(it - takes.begin());
+}
+
 IRect ArrangementView::pinnedRowRect(size_t i) const noexcept {
   if (i >= model_->bottomRows.size() || bottom_->childCount() == 0) return {};
   const ArrangementRow& row = model_->bottomRows[i];
@@ -1025,7 +1108,10 @@ void ArrangementView::onTimer(uint32_t id) {
   readPlayhead();
 }
 
-void ArrangementView::onFrame(double) { automation_->runPending(); }
+void ArrangementView::onFrame(double) {
+  automation_->runPending();
+  comper_->runPending();  // T6.10: a take lane deleted from its own header
+}
 
 // T6.7: the live recording overlay. The rows of tracks whose regions changed are damaged from the earliest changed x
 // on (a growing region repaints only its new columns' part of the row and whatever moved).

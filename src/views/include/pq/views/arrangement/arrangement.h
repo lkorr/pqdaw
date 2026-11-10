@@ -90,6 +90,24 @@
 //   T3.15 (automation lanes): automation() (pq/views/arrangement/automation.h), laneRows() / laneRect() (lanes under
 //         their track: ArrangementRow::lanesH), the header's paramChooser() / lanesToggle(), A = automation mode.
 //
+// Take lanes and comping (T6.10; src/arrangement/takes.cpp; the document side is pq/document/edit_ops.h "Take lanes"):
+//   rows        a MIDI or audio track's take lanes (doc::Track::takes) sit right under its row, above its automation
+//               lanes (takeRows(); ArrangementRow::takesH). The fold triangle of a track that has takes hides / shows
+//               them (TrackView::folded, view state); folded or empty, a track costs nothing for them. Each take lane has
+//               a header (name, audition, delete) in the header column.
+//   look        a take's clips are drawn as the track's (the same note-preview / waveform caches and tiles); the parts
+//               the main lane does NOT take from it are veiled (theme automation.veil), so the bright parts show which
+//               take supplies each part of the main lane (an auditioned take is not veiled). The comp selection (the last
+//               comped region) is outlined.
+//   gestures    a drag (swipe) over a take lane comps that range (snapped to the grid) into the main lane:
+//               doc::ops::compRegion (copy, cut what was there, short crossfades on audio), one undo step. A click on a
+//               take swaps that take in over the main-lane clip under the click (its whole span; in a gap of the main
+//               lane, the take clip's span within the gap). Either becomes the comp selection; Up / Down then comp the
+//               same range from the take above / below (takes with nothing there are skipped), one undo step each; Esc
+//               or a press elsewhere drops it. Audition (the header's speaker) plays that take instead of the main lane
+//               (doc::ops::setAuditionTake: a Sequence change, nothing compiles); the main lane's clips draw inactive
+//               meanwhile. Delete (×) removes the take lane (one undo step).
+//
 // UI thread only. Nothing here is RT-safe.
 
 #include <cstdint>
@@ -126,6 +144,8 @@ class Overview;
 class TrackStack;
 class BottomTracks;
 class LaneHeader;
+class TakeHeader;
+class Comper;
 class ReenableButton;
 class EditSurface;
 class ArrangementSurface;
@@ -155,6 +175,7 @@ inline constexpr float kTitleHeight = 20.0f;      // track header title bar
 inline constexpr float kClipTitleHeight = 14.0f;  // clip title strip
 inline constexpr float kGroupIndent = 7.0f;       // header indent per group level
 inline constexpr float kDropArea = 40.0f;         // empty lane space below the last track
+inline constexpr float kTakeLaneHeight = 34.0f;   // T6.10: a take lane (title strip + a body for the preview)
 inline constexpr float kRulerLabelMinPx = 44.0f;  // minimum spacing of ruler labels
 // Zoom limits (logical px per tick): 1 px per 16 bars of 4/4 … 2000 px per sixteenth.
 inline constexpr double kMinPxPerTick = 1.0 / (16.0 * static_cast<double>(kTicksPerWhole));
@@ -199,9 +220,25 @@ struct ArrangementRow {
   bool bottom = false;                // a return or the master (pinned at the bottom, ArrangementView::bottomRows)
   // T3.15: the automation lanes shown under the track (below y + h): laneRows()[firstLane, firstLane + laneCount),
   // lanesH device px in all. rowAt() and the clip editing see only the track's own lane (y … y + h).
+  // T6.10: lanesH covers everything under the row: its take lanes first (takeRows()[firstTake, firstTake + takeCount),
+  // takesH device px), then its automation lanes.
   int32_t lanesH = 0;
   uint32_t firstLane = 0;
   uint32_t laneCount = 0;
+  int32_t takesH = 0;
+  uint32_t firstTake = 0;
+  uint32_t takeCount = 0;
+};
+
+// T6.10: one take lane shown under its track's row (y from the top of the track content, as ArrangementRow::y).
+struct TakeLaneRow {
+  doc::TrackId track;
+  int32_t row = -1;                     // the track's row index (ArrangementView::rows())
+  uint32_t index = 0;                   // its index in doc::Track::takes
+  doc::LaneId lane;
+  const doc::TakeLane* take = nullptr;  // valid while ArrangementView::shown() is the snapshot it came from
+  int32_t y = 0;
+  int32_t h = 0;                        // device px (the bottom pixel row is the separator)
 };
 
 // A track header (display only in T3.8: colour, name, group indent and fold). T3.10 fills mixerSection().
@@ -434,6 +471,32 @@ public:
   // TX.lane-edit: the other surfaces (the lane windows) repaint too (automation mode, a chosen parameter).
   void rowsChanged();
 
+  // ---- take lanes and comping (T6.10) -------------------------------------------------------------------------
+  std::span<const TakeLaneRow> takeRows() const noexcept;
+  // Device rect of a take lane (window coordinates; may lie outside the visible viewport); the take lane at a device y
+  // (window coordinates; −1: none).
+  ui::IRect takeRect(size_t takeIndex) const noexcept;
+  int32_t takeAt(float deviceY) const noexcept;
+  // Whether a track's take lanes are hidden (its fold triangle; view state).
+  bool takesFolded(doc::TrackId id) const noexcept;
+  // The comp selection: the region last comped (or swapped in) from `lane` on `track`; Up / Down move it between takes.
+  struct CompSelection {
+    doc::TrackId track;
+    doc::LaneId lane;
+    TickRange range{};
+  };
+  const std::optional<CompSelection>& compSelection() const noexcept;
+  // Each one undo step (false: nothing happened, the reason in the status line). comp: ops::compRegion of [t0, t1) from
+  // `lane`, which becomes the comp selection; stepComp: the selection's range from the take above (−1) / below (+1)
+  // that has something there; auditionTake: plays `lane` instead of the main lane (the auditioned lane again, or an
+  // invalid id: the main lane); deleteTake: removes the lane.
+  bool comp(doc::TrackId track, doc::LaneId lane, Ticks t0, Ticks t1);
+  bool stepComp(int32_t dir);
+  bool auditionTake(doc::TrackId track, doc::LaneId lane);
+  bool deleteTake(doc::TrackId track, doc::LaneId lane);
+  const std::vector<arrangement::TakeHeader*>& takeHeaderWidgets() const noexcept { return takeHeaders_; }
+  arrangement::Comper& comper() const noexcept { return *comper_; }
+
   // ---- transport ---------------------------------------------------------------------------------------------
   // The playhead tick last read from the port while playing (nullopt when stopped).
   const std::optional<Ticks>& playhead() const noexcept { return playhead_; }
@@ -464,6 +527,10 @@ public:
     // T5.6, last lanes paint: audio clips whose waveform was drawn directly (no tile) and the columns they drew.
     uint32_t wavesDirect = 0;
     uint32_t waveColumns = 0;
+    // T6.10, last lanes paint: take lanes and take clips drawn, and the wall time of the last LaneCanvas::paint (ms).
+    uint32_t takeRowsPainted = 0;
+    uint32_t takeClipsPainted = 0;
+    double lanesPaintMs = 0.0;
   };
   const Stats& stats() const noexcept;
   size_t previewCacheSize() const noexcept;
@@ -536,6 +603,8 @@ private:
   std::vector<TrackHeader*> headers_;
   std::vector<TrackHeader*> bottomHeaders_;
   std::vector<arrangement::LaneHeader*> laneHeaders_;  // T3.15: one per laneRows() entry
+  std::vector<arrangement::TakeHeader*> takeHeaders_;  // T6.10: one per takeRows() entry
+  std::unique_ptr<arrangement::Comper> comper_;        // T6.10
   arrangement::ReenableButton* reenable_ = nullptr;     // T3.15: above the headers, shown while automation is overridden
   arrangement::BottomTracks* bottom_ = nullptr;
   HeaderDecorator decorator_;
