@@ -216,19 +216,29 @@ public:
   Status openProject(std::string_view dirUtf8);
   // Saves to projectDir(). Fails for an untitled project (use saveProjectAs).
   Status saveProject();
-  // Saves to `dirUtf8` (created if needed); the project is then titled `dirUtf8`.
+  // Saves to `dirUtf8` (created if needed); the project is then titled `dirUtf8`. M6 review H1: a target inside the
+  // unsaved-recordings root is refused (InvalidArgument).
   Status saveProjectAs(std::string_view dirUtf8);
-  // T6.7 (Q?-M6-a item 4): where an untitled project's recordings go (the playback link's unsaved folder). The first save
-  // of an untitled project moves every sample file under it into <project>/samples/recorded (a copy when a move is
-  // refused) and stores them project-relative.
-  void setUnsavedRecordingDir(std::string dirUtf8) { unsavedRecordingDir_ = std::move(dirUtf8); }
-  // T6.7b: called when an untitled project is discarded — replaced by newProject() / a successful openProject(), or
-  // left by a quit confirmQuit() lets go ahead (saved first: the project is titled then, nothing is discarded). The
-  // playback link deletes the unsaved recordings folder there (ProjectLink::discardUnsavedRecordings). Once a save left a
-  // reference inside that folder (a recording neither moved nor copied), the hook is never called again in this run:
-  // the folder is kept (unsavedRecordingsKept()).
-  void setUnsavedDiscardHook(std::function<void()> fn) { unsavedDiscard_ = std::move(fn); }
-  bool unsavedRecordingsKept() const noexcept { return unsavedKept_; }
+  // T6.7 / T6.7b / M6 review C1, H1: recordings of untitled projects (the playback link provides them).
+  //   Every untitled document records into its OWN folder: `current` for the one there now (when untitled), fresh() for
+  //   each new one (newProject). The first save of an untitled project moves EVERY file in its folder into
+  //   <project>/samples/recorded (a copy when a move is refused; a file still being recorded stays: it is moved when its
+  //   take is committed) and remaps every snapshot of the history that references one (DocumentStore::relocateSamples).
+  //   An untitled document discarded — replaced by newProject() / a successful openProject(), or left by a quit
+  //   confirmQuit() lets go ahead — has its folder deleted through discard(dir), unless unsavedFolderInUse(dir).
+  struct UnsavedRecordings {
+    std::string root;                                  // every untitled folder lies inside it
+    std::string current;                               // the folder of the document attached now (if untitled)
+    std::function<std::string()> fresh;                // a new untitled document's folder
+    std::function<void(const std::string&)> discard;   // deletes a discarded untitled document's folder
+  };
+  void setUnsavedRecordings(UnsavedRecordings u);
+  const std::string& unsavedRecordingDir() const noexcept { return unsavedRecordingDir_; }
+  // The last line of defence before a discard deletes `dir` (M6 review C1 / H1): true when the project directory lies
+  // inside it, when any project this context saved referenced a file inside it, or (`includeStore`: the store no
+  // longer holds the discarded document) when the store's current snapshot, its undo / redo history or the last saved
+  // snapshot references one.
+  bool unsavedFolderInUse(std::string_view dirUtf8, bool includeStore) const;
   const std::string& projectDir() const noexcept { return projectDir_; }
   std::string projectName() const { return projectNameOf(projectDir_); }
   // The document differs from the last saved/loaded one (pointer comparison: undoing back to it is clean again), or
@@ -542,7 +552,7 @@ public:
   static constexpr std::string_view kBrowserActions[] = {"browser.search"};
   // Ids of the global actions this context registers (also in docs/HOTKEYS.md).
   static constexpr std::string_view kGlobalActions[] = {
-      "transport.playStop", "transport.continue", "transport.record", "transport.captureMidi", "edit.undo", "edit.redo", "file.new",
+      "transport.playStop", "transport.continue", "transport.record", "transport.captureMidi", "transport.panic", "edit.undo", "edit.redo", "file.new",
       "file.open",          "file.save",          "file.saveAs", "view.toggleClipDevice", "view.toggleDetail",
       "edit.toggleDrawMode", "grid.narrow",        "grid.widen",  "grid.toggleTriplet", "grid.toggleSnap",
       "grid.toggleFixed",   "view.toggleTunings", "file.collectAllAndSave", "file.relinkSamples",
@@ -561,16 +571,17 @@ private:
   void declareViewActions(std::span<const std::string_view> ids);
   // Asks about unsaved changes; runs `proceed` when it may go ahead (possibly after an asynchronous save-as).
   void guardUnsaved(std::function<void()> proceed);
-  void moveUnsavedRecordings(std::string_view dirUtf8);  // T6.7
+  void moveUnsavedRecordings(std::string_view dirUtf8);  // T6.7 / M6 review C1
+  void discardUnsaved(const std::string& dir, bool includeStore);  // T6.7b / C1: the checks, then unsaved_.discard
 
   TransportPort& transport_;
   ComputerKeyboard computerKeyboard_{transport_};  // T6.4
   doc::DocumentStore store_;
   doc::Snapshot saved_;  // the snapshot last saved or loaded (dirty() compares pointers)
   std::string projectDir_;
-  std::string unsavedRecordingDir_;  // T6.7
-  std::function<void()> unsavedDiscard_;  // T6.7b
-  bool unsavedKept_ = false;              // T6.7b: a saved project references the unsaved folder
+  std::string unsavedRecordingDir_;  // T6.7 / C1: the current untitled document's folder
+  UnsavedRecordings unsaved_;        // T6.7b / C1
+  std::vector<std::string> savedUnsavedRefs_;  // C1: absolute paths inside unsaved_.root that a save wrote
   bool lastDirty_ = false;
   bool viewStateDirty_ = false;  // ViewState edited since the last save / load
   doc::ListenerId storeListener_ = 0;

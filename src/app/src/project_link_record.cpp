@@ -20,6 +20,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/input_map.h"
 #include "pq/document/samples.h"
+#include "pq/media/probe.h"
 
 namespace pq::app {
 
@@ -89,38 +90,48 @@ std::pair<int64_t, size_t> songAt(const std::vector<RecordingPass>& passes, int6
 std::string ProjectLink::recordDir() const {
   const std::string pdir = ctx_ != nullptr ? ctx_->projectDir() : cfg_.projectDir;
   if (!pdir.empty()) return pathUtf8(u8path(pdir) / "samples" / "recorded");
-  return unsavedRecordDir();
+  return unsavedDir_;
 }
 
-std::string ProjectLink::unsavedRecordDir() const {
-  if (!cfg_.unsavedDir.empty()) return cfg_.unsavedDir;
+std::string ProjectLink::unsavedRoot() const {
+  if (!cfg_.unsavedDir.empty()) return pathUtf8(u8path(cfg_.unsavedDir).lexically_normal());
   std::string base = envUtf8(L"LOCALAPPDATA");
   if (base.empty()) base = pathUtf8(std::filesystem::temp_directory_path());
-  return pathUtf8(u8path(base) / "pqdaw" / "Unsaved" / sessionName() / "samples" / "recorded");
+  return pathUtf8(u8path(base) / "pqdaw" / "Unsaved");
 }
 
-uint64_t ProjectLink::discardUnsavedRecordings() {  // UI thread
-  if (recording_ && recording_->active()) {  // the session belongs to the discarded project: no commit
+std::string ProjectLink::unsavedBase() const {
+  if (!cfg_.unsavedDir.empty()) return unsavedRoot();
+  return pathUtf8(u8path(unsavedRoot()) / sessionName());
+}
+
+std::string ProjectLink::freshUnsavedDir() {  // UI thread
+  unsavedDir_ = pathUtf8(u8path(unsavedBase()) / std::to_string(++unsavedSerial_));
+  return unsavedDir_;
+}
+
+uint64_t ProjectLink::discardUnsavedRecordings(const std::string& dir) {  // UI thread
+  if (dir.empty()) return 0;
+  if (ctx_ != nullptr && ctx_->unsavedFolderInUse(dir, false)) {  // C1 / H1: the last line of defence, here too
+    setError("unsaved recordings: kept " + dir + " (a project uses it)");
+    return 0;
+  }
+  if (dir == unsavedDir_ && recording_ && recording_->active()) {
+    // The session belongs to the discarded project: it ends without a commit.
     if (playhead().recording) postTransport({engine::TransportCommandKind::RecordOff, false, 0, 0, 0});
     const RecordingResult dropped = recording_->finish();
     (void)dropped;
     if (inputUseFn_) inputUseFn_();
   }
-  std::filesystem::path target, root;
-  if (!cfg_.unsavedDir.empty()) {
-    target = u8path(cfg_.unsavedDir).lexically_normal();
-    if (!target.has_filename()) target = target.parent_path();  // a trailing separator
-    root = target.parent_path();
-  } else {
-    std::string base = envUtf8(L"LOCALAPPDATA");
-    if (base.empty()) base = pathUtf8(std::filesystem::temp_directory_path());
-    root = u8path(base) / "pqdaw" / "Unsaved";
-    target = root / sessionName();
-  }
   std::string why;
-  const uint64_t n = removeUnsavedFolder(target, root, &why);
+  const uint64_t n = removeUnsavedFolder(u8path(dir), u8path(unsavedBase()), &why);
   if (!why.empty()) setError("unsaved recordings: " + why);
   return n;
+}
+
+bool ProjectLink::insideUnsaved(const std::filesystem::path& p) const {
+  const std::filesystem::path rel = p.lexically_normal().lexically_relative(u8path(unsavedRoot()).lexically_normal());
+  return !rel.empty() && *rel.begin() != "..";
 }
 
 uint32_t ProjectLink::audioInputChannels() { return std::max(availableInputs_, engine_->recorder().deviceInputs()); }
@@ -199,6 +210,7 @@ void ProjectLink::record(Ticks from) {  // UI thread
   std::vector<RecordingTrack> tracks;
   const std::filesystem::path dir = u8path(recordDir());
   const std::string when = stamp();
+  std::vector<std::filesystem::path> taken;  // M6 review L11: two tracks of one session never share a file
   doc::forEachTrack(*current_, [&](const doc::Track& t, const doc::Track*) {
     if (!t.mixer.arm || !t.active) return;
     RecordingTrack rt;
@@ -209,7 +221,9 @@ void ProjectLink::record(Ticks from) {  // UI thread
       const std::string base = safeName(t.name) + " " + when + " " + inputLabel(t.mixer.audioIn);
       std::filesystem::path path = dir / u8path(base + ".wav");
       std::error_code ec;
-      for (int n = 2; std::filesystem::exists(path, ec); ++n) path = dir / u8path(base + " (" + std::to_string(n) + ").wav");
+      for (int n = 2; std::filesystem::exists(path, ec) || std::find(taken.begin(), taken.end(), path) != taken.end(); ++n)
+        path = dir / u8path(base + " (" + std::to_string(n) + ").wav");
+      taken.push_back(path);
       rt.path = path;
       tracks.push_back(std::move(rt));
     } else if (t.kind == doc::TrackKind::Midi) {
@@ -242,6 +256,10 @@ void ProjectLink::record(Ticks from) {  // UI thread
 void ProjectLink::pollRecording() {  // UI thread
   if (!recording_ || !recording_->active()) return;
   recording_->pollNotes();
+  for (const std::string& e : recording_->takeErrors()) {  // M6 review M8: a write error is shown while recording
+    setError("recording: " + e);
+    if (ctx_ != nullptr) ctx_->setStatus("Recording: " + e);
+  }
   if (report_.commands < recordCommand_) return;  // the Record command is not taken yet
   if (!report_.recording) {
     finishRecording();
@@ -269,7 +287,6 @@ void ProjectLink::finishRecording() {  // UI thread
   const TempoMap& tm = p.timeline->tempoMap;
   const double sr = r.sampleRate;
   const uint32_t pdc = outputLatency();
-  const int64_t off = engine_->recorder().latencyOffset(pdc);
   const int64_t noteBack = int64_t{engine_->liveInput().latency()} + engine_->recorder().outputLatency();
   const std::string pdir = ctx_ != nullptr ? ctx_->projectDir() : cfg_.projectDir;
   const size_t np = r.passes.size();
@@ -288,16 +305,41 @@ void ProjectLink::finishRecording() {  // UI thread
     out.track = rt.track;
     if (rt.audio) {
       std::error_code ec;
-      if (r.fileFrames <= 0) {
+      if (r.fileFrames <= 0 || rt.frames <= 0) {
         std::filesystem::remove(rt.path, ec);
         continue;
       }
+      // M6 review C1 (path A): a take recorded while untitled, into a project titled since (saved during the take),
+      // goes into that project like the first save's move (a copy when a move is refused).
+      std::filesystem::path path = rt.path;
+      if (!pdir.empty() && insideUnsaved(path)) {
+        const std::filesystem::path dir = u8path(pdir) / "samples" / "recorded";
+        std::filesystem::create_directories(dir, ec);
+        std::filesystem::path to = dir / path.filename();
+        for (int n = 2; std::filesystem::exists(to, ec); ++n)
+          to = dir / u8path(pathUtf8(path.stem()) + " (" + std::to_string(n) + ")" + pathUtf8(path.extension()));
+        ec.clear();
+        std::filesystem::rename(path, to, ec);
+        if (ec) {
+          ec.clear();
+          std::filesystem::copy_file(path, to, ec);
+          if (!ec) std::filesystem::remove(path, ec);
+        }
+        if (!ec || std::filesystem::exists(to)) path = to;
+        else setError("recording: could not move " + pathUtf8(rt.path) + " into the project: " + ec.message());
+      }
+      // M6 review M8: the frames the file holds, as read back from it (a write error or RF64 included).
+      const Result<media::SampleInfo> info = media::probe(path);
+      if (!info.ok()) {
+        setError("recording: " + info.error().message);
+        continue;
+      }
       const uint32_t ch = std::max<uint32_t>(1, std::min<uint32_t>(rt.input.channels, 2));
-      const int64_t frames = r.fileFrames;
+      const auto frames = static_cast<int64_t>(info.value().frames);
       doc::SampleProbeFn probe = [&](std::string_view) -> Result<doc::SampleProbe> {
         return doc::SampleProbe{frames, sr, ch};
       };
-      auto ref = doc::makeSampleRef(store->ids(), pathUtf8(rt.path), pdir, probe);
+      auto ref = doc::makeSampleRef(store->ids(), pathUtf8(path), pdir, probe);
       if (!ref.ok()) {
         setError("recording: " + ref.error().message);
         continue;
@@ -305,17 +347,9 @@ void ProjectLink::finishRecording() {  // UI thread
       for (size_t k = 0; k < np; ++k) {
         const RecordingPass& ps = r.passes[k];
         if (ps.audio1 <= ps.audio0) continue;
-        const RecordingPass* prev = k > 0 ? &r.passes[k - 1] : nullptr;
-        const RecordingPass* next = k + 1 < np ? &r.passes[k + 1] : nullptr;
-        // A loop wrap with the file running on: the boundary stays on the loop point (see the file comment).
-        const bool inContig = prev != nullptr && prev->audio1 == prev->songEnd && ps.audio0 == ps.songStart &&
-                              prev->file0 + (prev->audio1 - prev->audio0) == ps.file0;
-        const bool outContig = next != nullptr && ps.audio1 == ps.songEnd && next->audio0 == next->songStart &&
-                               ps.file0 + (ps.audio1 - ps.audio0) == next->file0;
-        int64_t ts = inContig ? ps.audio0 : ps.audio0 - off;
-        int64_t cf = inContig ? ps.file0 + off : ps.file0;
-        int64_t te = outContig ? ps.audio1 : ps.audio1 - off;
-        if (cf < 0) ts -= cf, cf = 0;
+        // The pass's frames are what was played against song samples [audio0, audio1) (engine::Recorder "Capture").
+        int64_t ts = ps.audio0, cf = ps.file0;
+        int64_t te = ps.audio1;
         if (ts < 0) cf -= ts, ts = 0;
         const auto [tick, past] = tickAt(ts);
         ts += past;
@@ -341,7 +375,6 @@ void ProjectLink::finishRecording() {  // UI thread
         size_t pass, index;
       };
       std::map<std::tuple<uint8_t, uint8_t, uint8_t>, Held> held;
-      std::optional<doc::InputPitchMapPtr> map;  // Hz mode with a note-on bend: the map's atNoteOn
       std::vector<Ticks> passStart(np), passEnd(np);
       std::vector<uint8_t> inside(np, 1);  // the pass overlaps the punch region
       for (size_t k = 0; k < np; ++k) {
@@ -371,14 +404,7 @@ void ProjectLink::finishRecording() {  // UI thread
           if (start >= passEnd[k]) continue;
           if (q > 0) start = std::clamp<Ticks>(static_cast<Ticks>(std::llround(static_cast<double>(start) / q)) * q,
                                               passStart[k], passEnd[k] - 1);
-          tuning::PitchId pitch = n.pitch.id;
-          if (t->noteInput.mode == doc::NoteInputMode::Hz && n.bendCents != 0.0f && n.raw.port != engine::kLiveKeyboard) {
-            if (!map) {
-              auto m = doc::buildInputPitchMap(p, t->id);
-              map = m.ok() ? m.value() : nullptr;
-            }
-            if (*map) pitch = (*map)->atNoteOn(n.raw.d1, n.bendCents).id;
-          }
+          const tuning::PitchId pitch = doc::playedIdentity(n.pitch.id, n.bendCents);  // M6 review M4 / M5
           doc::Note note;
           note.start = start - passStart[k];
           note.length = passEnd[k] - start;  // until its note-off (held at the end: to the pass end)
@@ -447,7 +473,6 @@ bool ProjectLink::recordingOverlay(views::RecordingOverlay& out) {  // UI thread
   const doc::Project& p = *current_;
   const TempoMap& tm = p.timeline->tempoMap;
   const double sr = cfg_.sampleRate;
-  const int64_t off = engine_->recorder().latencyOffset(outputLatency());
   auto ticks = [&](int64_t s) { return static_cast<Ticks>(std::llround(tm.samplesToTicks(std::max<int64_t>(0, s), sr))); };
   if (out.session != recLive_.session) out.peaks.clear();
   out.session = recLive_.session;
@@ -469,8 +494,8 @@ bool ProjectLink::recordingOverlay(views::RecordingOverlay& out) {  // UI thread
       views::RecordingOverlay::Region g;
       g.trackId = recLive_.audioTracks[i].value;
       g.audio = true;
-      g.start = g.audioStart = ticks(ps.audio0 - off);
-      g.end = std::max(g.start + 1, ticks(ps.audio1 - off));
+      g.start = g.audioStart = ticks(ps.audio0);
+      g.end = std::max(g.start + 1, ticks(ps.audio1));
       g.peakList = static_cast<uint32_t>(i);
       g.peak0 = static_cast<uint32_t>(ps.file0 / RecordingService::kPeakFrames);
       g.peakCount = static_cast<uint32_t>((ps.audio1 - ps.audio0) / RecordingService::kPeakFrames);

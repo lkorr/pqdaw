@@ -431,7 +431,8 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   publishTempo(*current_);
   publishSequences(*current_);
   publishLiveRoutes(*current_, true);  // T6.4
-  recording_ = std::make_unique<RecordingService>(pool_.get());  // T6.7
+  (void)freshUnsavedDir();  // M6 review C1: the first untitled document's folder
+  recording_ = std::make_unique<RecordingService>();  // T6.7 (its own writer thread: M6 review M9)
   recording_->bind(engine_.get());
   syncRecordInputs(*current_, true);
   publishAudio(*current_);
@@ -611,8 +612,10 @@ void ProjectLink::attach(views::ViewContext& ctx) {
   ctx_ = &ctx;
   // EQ.4b: the response displays read this link's lowerings (ViewContext::setLowering) instead of lowering themselves.
   ctx.setLoweringProvided(true);
-  ctx.setUnsavedRecordingDir(unsavedRecordDir());  // T6.7: moved into the project on its first save
-  ctx.setUnsavedDiscardHook([this] { (void)discardUnsavedRecordings(); });  // T6.7b
+  // T6.7 / M6 review C1: the untitled document's recordings folder (moved into the project on its first save), a fresh
+  // one per New, and the delete when an untitled document is discarded.
+  ctx.setUnsavedRecordings({unsavedRoot(), unsavedDir_, [this] { return freshUnsavedDir(); },
+                            [this](const std::string& dir) { (void)discardUnsavedRecordings(dir); }});
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onDocumentChange(e); });
   // "Re-enable Automation" and hand-made overrides (T3.15) change which lanes play (T3.17-fix3, M3 review M4).
   observer_ = ctx.observe([this](uint32_t what) {
@@ -640,7 +643,7 @@ void ProjectLink::detach() {
   observer_ = views::ViewContext::Subscription();
   sub_ = views::ViewContext::Subscription();
   if (ctx_ != nullptr) ctx_->setLoweringProvided(false);
-  if (ctx_ != nullptr) ctx_->setUnsavedDiscardHook({});  // T6.7b
+  if (ctx_ != nullptr) ctx_->setUnsavedRecordings({});  // T6.7b
   ctx_ = nullptr;
 }
 

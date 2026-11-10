@@ -41,6 +41,9 @@
 //                       clips (one undo step): playing, at the song ticks it was played against; stopped, at the bar
 //                       of `insertMarker`, looped, the tempo inferred from it (set when the project has no clips).
 //                       False: nothing to capture. Default: false.
+//   panic()             M6 review L16 (transport.panic, Ctrl+Shift+Space): all notes off on every instrument slot,
+//                       every held live note released, every live source's pitch bend and sustain reset. Default:
+//                       nothing.
 //   outputLatencyMs()   T6.6: how late the output is behind the transport (the PDC total), ms. Default 0.
 //   trackLatencyMs(id)  T6.6: how late track `id`'s output is (its compensated latency, Track Delay included), ms.
 //   audioInputChannels()   T6.7: the open device's input channels (the strips' input chooser). Default 0.
@@ -117,6 +120,7 @@ public:
     (void)insertMarker;
     return false;
   }
+  virtual void panic() {}
   virtual double outputLatencyMs() { return 0.0; }
   virtual uint32_t audioInputChannels() { return 0; }
   virtual bool recordingOverlay(RecordingOverlay& out) {

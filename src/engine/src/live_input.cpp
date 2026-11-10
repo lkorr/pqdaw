@@ -233,7 +233,12 @@ void LiveInput::releaseSource(uint32_t source, int64_t time, const Block& b) noe
       releaseHeld(i, 0.5f, time, nullptr, b);
       ++stats_.overflowReleases;
     }
-  for (uint32_t c = 0; c < kLiveChannels; ++c) sustain_[source * kLiveChannels + c] = 0;
+  // M6 review L1: its controllers are unknown now (messages were lost, or the port went away and its index may come
+  // back as another device): the pedal up and the wheel centred.
+  for (uint32_t c = 0; c < kLiveChannels; ++c) {
+    sustain_[source * kLiveChannels + c] = 0;
+    bendCents_[source * kLiveChannels + c] = 0.0f;
+  }
 }
 
 void LiveInput::onNoteOn(const RawMidi& m, int64_t time, const LiveRouteImage& img, const Block& b) noexcept {  // RT-safe
@@ -300,7 +305,9 @@ void LiveInput::retuneHeld(const LiveRouteImage& img, const Block& b) noexcept {
 
 // T6.9: a new image: each held note's ring is the one the image routes its (source, channel) to its slot with, if that
 // is the ring its note-on went to; else none (its track stopped listening: the ring may be freed with the old image).
-void LiveInput::recaptureHeld(const LiveRouteImage* img) noexcept {  // RT-safe
+// M6 review L2: a note dropped from its ring ends there at `time` first (the ring is alive until the old image goes),
+// so it is not left open (a later Capture would stretch it to "now").
+void LiveInput::recaptureHeld(const LiveRouteImage* img, int64_t time) noexcept {  // RT-safe
   for (uint32_t i = 0; i < numHeld_; ++i) {
     Held& h = held_[i];
     if (h.capture == nullptr) continue;
@@ -311,6 +318,7 @@ void LiveInput::recaptureHeld(const LiveRouteImage* img) noexcept {  // RT-safe
           keep = h.capture;
           break;
         }
+    if (keep == nullptr) h.capture->end(h.captureSeq, time, 64.0f);
     h.capture = keep;
   }
 }
@@ -361,6 +369,11 @@ void LiveInput::handle(const RawMidi& m, int64_t time, bool stale, const LiveRou
         if (!down)
           for (uint32_t i = numHeld_; i-- > 0;)
             if (held_[i].source == src && held_[i].channel == ch && held_[i].sustained) releaseHeld(i, 0.5f, time, &m, b);
+      } else if (m.d1 == 121) {  // M6 review L1: Reset All Controllers: the wheel centred, the pedal up
+        bend(src, ch, 0.0f, time);
+        sustain_[src * kLiveChannels + ch] = 0;
+        for (uint32_t i = numHeld_; i-- > 0;)
+          if (held_[i].source == src && held_[i].channel == ch && held_[i].sustained) releaseHeld(i, 0.5f, time, &m, b);
       } else if (m.d1 == 120 || m.d1 == 123) {  // All Sound Off / All Notes Off: every held note of the channel
         sustain_[src * kLiveChannels + ch] = 0;
         for (uint32_t i = numHeld_; i-- > 0;)
@@ -390,6 +403,14 @@ bool LiveInput::process(const Block& b) noexcept {  // RT-safe
     numPendingOffs_ = offs;
   }
   updateClock(b);
+  bool panicked = false;
+  if (const uint32_t pr = panicReq_.load(std::memory_order_acquire); pr != panicSeen_) {  // L16
+    panicSeen_ = pr;
+    panicked = true;
+    for (uint32_t i = numHeld_; i-- > 0;) releaseHeld(i, 0.5f, b.start, nullptr, b);
+    sustain_.fill(0);
+    bendCents_.fill(0.0f);
+  }
   // TU.1: a new route image (a tuning edit that needs a new table: an EDO size, a MOS shape) gives a held key a new
   // pitch: the note moves there at the block start (a Pitch event that also carries the new identity, as the
   // timeline retunes a sounding drawn note on a sequence swap), keeping its bend. Continuous edits never get here:
@@ -397,7 +418,7 @@ bool LiveInput::process(const Block& b) noexcept {  // RT-safe
   bool retuned = false;
   if (img != seenRoute_) {
     seenRoute_ = img;
-    if (numHeld_ != 0) recaptureHeld(img);  // T6.9: before the old image (and maybe a ring) can be freed
+    if (numHeld_ != 0) recaptureHeld(img, b.start);  // T6.9: before the old image (and maybe a ring) can be freed
     if (img != nullptr && numHeld_ != 0) {
       const uint32_t before = numPending_;
       retuneHeld(*img, b);
@@ -411,7 +432,7 @@ bool LiveInput::process(const Block& b) noexcept {  // RT-safe
   const uint64_t activity = ports_->activity();
   if (activity == seenActivity_) {
     done_.store(epoch, std::memory_order_release);
-    return retuned;
+    return retuned || panicked;
   }
   seenActivity_ = activity;
   for (uint32_t s = 0; s < kLiveSources; ++s) {

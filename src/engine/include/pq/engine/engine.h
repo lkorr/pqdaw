@@ -101,6 +101,7 @@ struct EngineStats {
   uint64_t paramWrites = 0;
   uint64_t auditions = 0;
   uint64_t auditionOffs = 0;    // audition note-offs sent
+  uint64_t panics = 0;          // M6 review L16: panic() requests taken
 };
 
 class Engine {
@@ -144,6 +145,10 @@ public:
   // when that comes first; a note always sounds for kAuditionMinMs at least (a click is still heard). In order with
   // audition(): one requested before this call is released by it.
   bool releaseAuditions() noexcept;
+  // M6 review L16 (transport.panic): at the next block every slot gets an AllNotesOff (its voices release), every held
+  // live note is released and every live source's pitch bend and sustain pedal are reset (LiveInput::requestPanic), and
+  // the auditions end. Wakes the engine.
+  void panic() noexcept;
   static constexpr double kAuditionMinMs = 50.0;
   // After a publish (and inside post / setParam / audition). Calls the wake hook, if any: never call it from the
   // audio thread.
@@ -251,6 +256,9 @@ private:
   uint32_t numAuditions_ = 0;
   uint32_t nextAuditionId_ = 0;
   uint32_t seenWake_ = 0;
+  std::atomic<uint32_t> panicReq_{0};  // L16: requests (UI) / the one taken (audio thread)
+  uint32_t panicSeen_ = 0;
+  bool panicNow_ = false;              // this block sends AllNotesOff to every slot
   uint64_t quietFrames_ = 0;
   uint64_t sleepFrames_ = 0;
   int64_t nextTime_ = 0;  // engine time of the next block (its own count of frames: monotonic)

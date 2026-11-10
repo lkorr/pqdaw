@@ -14,7 +14,7 @@ namespace pq::views {
 
 class FakeTransport final : public TransportPort {
 public:
-  enum class Call : uint8_t { Play, Stop, Continue, Locate, SetLoop, Audition, ReleaseAuditions, LiveKey, Record, CaptureMidi };
+  enum class Call : uint8_t { Play, Stop, Continue, Locate, SetLoop, Audition, ReleaseAuditions, LiveKey, Record, CaptureMidi, Panic };
   struct Record {
     Call call;
     Ticks tick = 0;          // Play, Record: from; Locate: the target
@@ -86,6 +86,7 @@ public:
     calls.push_back({Call::CaptureMidi, insertMarker, {}});
     return captures;
   }
+  void panic() override { calls.push_back({Call::Panic, 0, {}}); }  // M6 review L16
   double outputLatencyMs() override { return latencyMs; }  // T6.6
   uint32_t audioInputChannels() override { return inputs; }  // T6.7
   bool recordingOverlay(RecordingOverlay& out) override {   // T6.7: `overlay` whenever its revision moved

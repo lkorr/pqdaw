@@ -1,13 +1,17 @@
 // T6.7: recording through the playback link (pq/app/project_link.h "Recording"): an armed audio track's input is
 // monitored (Auto, stopped) and recorded to a WAV bit for bit, its take placed so every input frame plays on the song
 // sample it was played against (record latency 0 / 256 / 1000 frames, with and without a PDC total of 480, checked on
-// the clip and in a render); 4 loop passes → 4 take lanes (contiguous regions of one file) + the last in the main lane;
-// punch records exactly [in, out) and ends by itself; notes in both note worlds (Keys: the map's Degree; Hz: the frozen
-// Cents, a note-on bend within 0.001 cent) on 31-EDO and a MOS; overdub merges, no overdub makes takes; one undo step
-// per session; RtScope over the recording blocks.
+// the clip and in a render); 4 loop passes → 4 take lanes (contiguous regions of one file, each the whole loop, with
+// and without the punch = the loop: M6 review M6) + the last in the main lane; punch records exactly [in, out) and ends
+// by itself; notes in both note worlds (Keys: the map's Degree; Hz: the frozen Cents, a note-on bend within 0.001 cent)
+// on 31-EDO and a MOS, kept as played across a mode / tuning change before Stop (M4 / M5); overdub merges, no overdub
+// makes takes; one undo step per session; RtScope over the recording blocks. Two same-named tracks on one input write
+// two files (L11). Untitled projects' recordings (C1 / H1): a folder per untitled document, a take saved while
+// recording, record / undo / Save As / redo, Save As into the unsaved folder refused, an opened project inside it.
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -182,21 +186,21 @@ TEST_CASE("T6.7 recording: an audio input, monitored and recorded bit for bit, l
       CHECK(tr.clips[0].take == tr.takes[0]->id);
       REQUIRE(tr.takes[0]->clips.size() == 1);
       CHECK(tr.takes[0]->clips[0].audio->contentStartFrame == c.contentStartFrame);
-      // The file: every frame captured, bit for bit (frame f = the input at engine time e0 + f, song sample f).
+      // The file: what was played, bit for bit: frame f was played against song sample f and captured `offset` later
+      // (the input at engine time e0 + offset + f); the frames captured before were played before the take began, and
+      // the last `offset` played before Stop were not captured yet.
+      const int64_t off = int64_t{lat} + (pdc ? 480 : 0);
       const media::WavData w = readTake(r, c);
       REQUIRE(w.numChannels() == 1);
-      REQUIRE(w.frames() == 192000);
-      for (int64_t f = 0; f < 192000; ++f)
-        if (w.channels[0][f] != source(0, e0 + f)) FAIL("file frame " << f << " differs");
-      // The take: file frame f was played against song sample f − offset: the clip starts on sample 0 with the frame
-      // `offset` (what was played at song 0), and ends `offset` before the last captured frame.
-      const int64_t off = int64_t{lat} + (pdc ? 480 : 0);
+      REQUIRE(static_cast<int64_t>(w.frames()) == 192000 - off);
+      for (int64_t f = 0; f < 192000 - off; ++f)
+        if (w.channels[0][f] != source(0, e0 + off + f)) FAIL("file frame " << f << " differs");
       CHECK(c.start == 0);
       CHECK(r.sampleAt(c.start) == 0);
-      CHECK(c.contentStartFrame == static_cast<double>(off));
+      CHECK(c.contentStartFrame == 0.0);
       CHECK(std::llround(c.seconds * kRate) == 192000 - off);
       // A render: the track plays its take with the input muted (Monitor Off): output frame k (PDC total late) is
-      // file frame k + offset, times the track's constant gain.
+      // file frame k, times the track's constant gain.
       r.dispatch(SetTrackMonitor{t, MonitorMode::Off});
       r.silentInput = true;
       REQUIRE(r.link->waitForSamples());  // the new file is loaded into the pool (a load plays silence until then)
@@ -206,11 +210,11 @@ TEST_CASE("T6.7 recording: an audio input, monitored and recorded bit for bit, l
       r.run(2000, &out);
       const size_t lag = pdc ? 480 : 0;
       const size_t ref = 50000;
-      const double g = out[ref + lag] / w.channels[0][ref + off];
+      const double g = out[ref + lag] / w.channels[0][ref];
       CHECK(std::fabs(g) > 0.3);
       double worst = 0.0;
-      for (size_t k = 2000; k + lag < out.size() && k + off < w.frames() && k < 120000; ++k)
-        worst = std::max(worst, std::fabs(out[k + lag] - g * w.channels[0][k + off]));
+      for (size_t k = 2000; k + lag < out.size() && k < w.frames() && k < 120000; ++k)
+        worst = std::max(worst, std::fabs(out[k + lag] - g * w.channels[0][k]));
       CHECK(worst < 1e-6);
       r.link->stop();
       r.run(2);
@@ -243,11 +247,11 @@ TEST_CASE("T6.7b recording: the manual record offset (Preferences, ms) moves the
     const int64_t off = 256 + std::llround(ms * 48.0);
     CHECK(r.link->engine().recorder().latencyOffset(0) == off);
     CHECK(c.start == 0);
-    CHECK(c.contentStartFrame == static_cast<double>(off));
+    CHECK(c.contentStartFrame == 0.0);
     CHECK(std::llround(c.seconds * kRate) == 96000 - off);
     const media::WavData w = readTake(r, c);
-    REQUIRE(w.frames() == 96000);
-    CHECK(w.channels[0][static_cast<size_t>(off)] == source(0, e0 + off));  // song sample 0 plays that frame
+    REQUIRE(static_cast<int64_t>(w.frames()) == 96000 - off);
+    CHECK(w.channels[0][0] == source(0, e0 + off));  // song sample 0 plays the frame captured `off` later
   }
   // A sample-rate change keeps the offset in ms (its frames follow the rate).
   Rig r;
@@ -258,9 +262,12 @@ TEST_CASE("T6.7b recording: the manual record offset (Preferences, ms) moves the
 }
 
 TEST_CASE("T6.7 recording: 4 loop passes make 4 take lanes (contiguous regions of one file), the last also in main") {
+  for (const bool punch : {false, true}) {  // M6 review M6: the punch = the loop region keeps every pass whole too
+  CAPTURE(punch);
   Rig r;
   const TrackId t = r.audioTrack(AudioInput{1, 1});  // device input 2
   r.arm(t);
+  if (punch) r.dispatch(SetPunch{PunchRegion{0, 4 * kPpq, true}});
   r.start();
   r.link->flush();
   r.link->engine().recorder().setDeviceLatency(128, 128);
@@ -277,7 +284,7 @@ TEST_CASE("T6.7 recording: 4 loop passes make 4 take lanes (contiguous regions o
   REQUIRE(tr.clips.size() == 1);
   const AudioClip& main = *tr.clips[0].audio;
   CHECK(tr.clips[0].take == tr.takes[3]->id);
-  double cf = 256.0;
+  double cf = 0.0;
   for (size_t k = 0; k < 4; ++k) {
     CAPTURE(k);
     CHECK(tr.takes[k]->name == "Take " + std::to_string(k + 1));
@@ -287,19 +294,22 @@ TEST_CASE("T6.7 recording: 4 loop passes make 4 take lanes (contiguous regions o
     CHECK(c.start == 0);             // every pass covers the loop from its start
     CHECK(c.contentStartFrame == cf);  // contiguous: each take begins where the one before ended
     const int64_t len = std::llround(c.seconds * kRate);
-    CHECK(len == (k < 3 ? 96000 : 96000 - 256));  // the last ends `offset` before the last captured frame
+    // Every pass whole; the last ends `offset` early (what was played then is captured after Stop).
+    CHECK(len == (k < 3 ? 96000 : 96000 - 256));
     cf += static_cast<double>(len);
   }
   CHECK(main.contentStartFrame == tr.takes[3]->clips[0].audio->contentStartFrame);
   CHECK(main.seconds == tr.takes[3]->clips[0].audio->seconds);
+  CHECK(r.link->engine().recorder().droppedFrames() == 0);
   const media::WavData w = readTake(r, main);
-  REQUIRE(w.frames() == 4 * 96000);
-  for (int64_t f = 0; f < 4 * 96000; ++f)
-    if (w.channels[0][f] != source(1, e0 + f)) FAIL("file frame " << f << " differs");
+  REQUIRE(w.frames() == 4 * 96000 - 256);
+  for (int64_t f = 0; f < 4 * 96000 - 256; ++f)
+    if (w.channels[0][f] != source(1, e0 + 256 + f)) FAIL("file frame " << f << " differs");
   // One undo step takes the whole session back.
   REQUIRE(r.store.undo());
   CHECK(r.track(t).takes.empty());
   CHECK(r.track(t).clips.empty());
+  }
 }
 
 TEST_CASE("T6.7 recording: punch records exactly [in, out) of what was played, and ends by itself") {
@@ -553,7 +563,45 @@ TEST_CASE("T6.7b recording: removeUnsavedFolder deletes only a folder strictly i
   fs::remove_all(base, ec);
 }
 
-TEST_CASE("T6.7b recording: discarding an untitled project deletes its unsaved recordings; a titled one keeps them") {
+namespace {
+
+fs::path u8p(const std::string& s) { return fs::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size())); }
+
+size_t wavsIn(const fs::path& dir) {
+  size_t n = 0;
+  std::error_code ec;
+  for (const auto& e : fs::directory_iterator(dir, ec)) n += e.path().extension() == ".wav" ? 1 : 0;
+  return n;
+}
+
+// A ViewContext on the rig's link (the app's wiring: commits go to the context's store; its untitled folders are the
+// link's). The rig's own store holds the starting document.
+struct Attached {
+  Rig& r;
+  views::ViewContext ctx;
+  explicit Attached(Rig& rig) : r(rig), ctx(*rig.link) {
+    ctx.store().reset(r.store.current());
+    r.store.unsubscribe(r.sub);
+    r.link->attach(ctx);
+  }
+  ~Attached() {
+    r.link->detach();
+    r.sub = r.store.subscribe([this](const StoreEvent& e) { r.link->onDocumentChange(e); });
+  }
+  const SampleRef& sampleOf(TrackId t) const {
+    const Track* tr = findTrackPtr(*ctx.doc(), t);
+    REQUIRE(tr != nullptr);
+    REQUIRE_FALSE(tr->clips.empty());
+    REQUIRE(tr->clips[0].audio != nullptr);
+    const SampleRef* s = findSample(*ctx.doc(), tr->clips[0].audio->sample);
+    REQUIRE(s != nullptr);
+    return *s;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("T6.7b recording: discarding an untitled project deletes its own folder only; each untitled document gets a fresh one") {
   Rig r;
   const TrackId t = r.audioTrack(AudioInput{0, 1});
   r.arm(t);
@@ -561,42 +609,42 @@ TEST_CASE("T6.7b recording: discarding an untitled project deletes its unsaved r
   r.link->flush();
   fs::create_directories(r.dir);
   { std::ofstream(r.dir / "neighbour.txt") << "keep"; }
-  REQUIRE(fs::exists(r.dir / "neighbour.txt"));
-  const fs::path rec = r.dir / "recorded";
-  auto wavs = [&] {
-    size_t n = 0;
-    std::error_code ec;
-    for (const auto& e : fs::directory_iterator(rec, ec)) n += e.path().extension() == ".wav" ? 1 : 0;
-    return n;
-  };
-  // A finished session, then New on the untitled project through a ViewContext: the folder goes.
+  // A finished session (into the first untitled document's folder), then New on it through a ViewContext: it goes.
   r.run(10);
   r.link->record(0);
   r.run(200);
   r.link->stop();
   r.run(4);
   REQUIRE(r.link->recordCommits() == 1);
-  REQUIRE(wavs() == 1);
+  const fs::path first = u8p(r.link->unsavedRecordDir());
+  REQUIRE(wavsIn(first) == 1);
   {
-    views::ViewContext ctx(*r.link);
-    r.store.unsubscribe(r.sub);
-    r.link->attach(ctx);
-    REQUIRE(ctx.projectDir().empty());
-    ctx.newProject();
-    CHECK_FALSE(fs::exists(rec));
+    Attached a(r);
+    REQUIRE(a.ctx.projectDir().empty());
+    CHECK(a.ctx.unsavedRecordingDir() == r.link->unsavedRecordDir());
+    a.ctx.newProject();
+    CHECK_FALSE(fs::exists(first));
     CHECK(fs::exists(r.dir / "neighbour.txt"));
-    // A titled project's New keeps the folder (its recordings are not that project's).
-    fs::create_directories(rec);
-    { std::ofstream(rec / "x.wav") << "x"; }
-    REQUIRE(ctx.saveProjectAs((r.dir / "Song").string()).ok());
-    ctx.newProject();
-    CHECK(fs::exists(rec / "x.wav"));
-    // Untitled again: quitting (nothing to save) discards it.
-    CHECK(ctx.confirmQuit([] {}));
-    CHECK_FALSE(fs::exists(rec));
-    CHECK(fs::exists(r.dir / "Song"));
-    r.link->detach();
-    r.sub = r.store.subscribe([&r](const StoreEvent& e) { r.link->onDocumentChange(e); });
+    // The new untitled document has a folder of its own (M6 review C1).
+    const fs::path second = u8p(a.ctx.unsavedRecordingDir());
+    CHECK(second != first);
+    CHECK(a.ctx.unsavedRecordingDir() == r.link->unsavedRecordDir());
+    fs::create_directories(second);
+    { std::ofstream(second / "x.wav") << "x"; }
+    // Its first save moves every file of its folder into the project (referenced or not); the empty folder goes.
+    REQUIRE(a.ctx.saveProjectAs((r.dir / "Song").string()).ok());
+    CHECK(fs::exists(r.dir / "Song" / "samples" / "recorded" / "x.wav"));
+    CHECK_FALSE(fs::exists(second));
+    // A titled project's New discards nothing; the next untitled document gets a third folder.
+    a.ctx.newProject();
+    const fs::path third = u8p(a.ctx.unsavedRecordingDir());
+    CHECK(third != second);
+    fs::create_directories(third);
+    { std::ofstream(third / "y.wav") << "y"; }
+    // Untitled again: quitting (nothing to save) discards its folder, and only that.
+    CHECK(a.ctx.confirmQuit([] {}));
+    CHECK_FALSE(fs::exists(third));
+    CHECK(fs::exists(r.dir / "Song" / "samples" / "recorded" / "x.wav"));
   }
 }
 
@@ -610,24 +658,21 @@ TEST_CASE("T6.7b recording: a session still running when its untitled project is
   r.link->record(0);
   r.run(300);
   REQUIRE(r.link->recording().active());
-  CHECK(r.link->discardUnsavedRecordings() >= 2);  // the folder and the session's WAV
+  const fs::path folder = u8p(r.link->unsavedRecordDir());
+  CHECK(r.link->discardUnsavedRecordings(r.link->unsavedRecordDir()) >= 2);  // the folder and the session's WAV
   CHECK_FALSE(r.link->recording().active());
-  CHECK_FALSE(fs::exists(r.dir / "recorded"));
+  CHECK_FALSE(fs::exists(folder));
   r.run(10);
   CHECK(r.link->recordCommits() == 0);
   CHECK(r.track(t).takes.empty());
 }
 
-TEST_CASE("T6.7b recording: a first save that could neither move nor copy a recording keeps the unsaved folder; a later "
-          "untitled discard never deletes what the saved project references") {
+TEST_CASE("T6.7b recording: a first save that could neither move nor copy a recording pins the folder; no discard deletes it") {
   Rig r;
   const TrackId t = r.audioTrack(AudioInput{0, 1});
   r.arm(t);
   r.start();
-  views::ViewContext ctx(*r.link);
-  ctx.store().reset(r.store.current());  // the context's project: the armed track
-  r.store.unsubscribe(r.sub);
-  r.link->attach(ctx);  // commits go to the context's store now
+  Attached a(r);
   r.link->flush();
   r.run(10);
   r.link->record(0);
@@ -635,27 +680,190 @@ TEST_CASE("T6.7b recording: a first save that could neither move nor copy a reco
   r.link->stop();
   r.run(4);
   REQUIRE(r.link->recordCommits() == 1);
-  const Track* tr = findTrackPtr(*ctx.doc(), t);
-  REQUIRE(tr != nullptr);
-  REQUIRE(tr->clips.size() == 1);
-  const SampleRef* ref = findSample(*ctx.doc(), tr->clips[0].audio->sample);
-  REQUIRE(ref != nullptr);
-  const std::string refPath = ref->path;
-  const fs::path wav = fs::path(std::u8string(reinterpret_cast<const char8_t*>(refPath.data()), refPath.size()));
+  const std::string refPath = a.sampleOf(t).path;
+  const fs::path wav = u8p(refPath);
+  const std::string folder = r.link->unsavedRecordDir();
   REQUIRE(fs::exists(wav));
-  // A directory where the save would put the file: neither the move nor the copy can succeed.
+  // A file where the save's samples/recorded folder would go: neither the move nor the copy can succeed.
   const fs::path song = r.dir / "Song";
-  fs::create_directories(song / "samples" / "recorded" / wav.filename());
-  REQUIRE(ctx.saveProjectAs(song.string()).ok());
-  CHECK(ctx.unsavedRecordingsKept());
-  const SampleRef* after = findSample(*ctx.doc(), tr->clips[0].audio->sample);
-  REQUIRE(after != nullptr);
-  CHECK(after->path == refPath);  // still the unsaved file
-  // New → an untitled project; discarding it (New again, quit) keeps the folder the saved project points into.
-  ctx.newProject();
-  ctx.newProject();
-  CHECK(ctx.confirmQuit([] {}));
+  fs::create_directories(song / "samples");
+  { std::ofstream(song / "samples" / "recorded") << "in the way"; }
+  REQUIRE(a.ctx.saveProjectAs(song.string()).ok());
+  CHECK(a.sampleOf(t).path == refPath);  // still the unsaved file
+  CHECK(a.ctx.unsavedFolderInUse(folder, false));  // the saved project pins it
+  CHECK(r.link->discardUnsavedRecordings(folder) == 0);  // the link's last line of defence too
+  a.ctx.newProject();
+  a.ctx.newProject();
+  CHECK(a.ctx.confirmQuit([] {}));
   CHECK(fs::exists(wav));
-  r.link->detach();
-  r.sub = r.store.subscribe([&r](const StoreEvent& e) { r.link->onDocumentChange(e); });
+}
+
+// M6 review C1 path A (probe_unsaved_delete A): the WAV's path was fixed in the untitled folder at Record; the project
+// is saved while it records, so the take is committed into a titled project.
+TEST_CASE("M6 review C1: a take still recording when the untitled project is saved goes into the project; New + quit keep it") {
+  Rig r;
+  const TrackId t = r.audioTrack(AudioInput{0, 1});
+  r.arm(t);
+  r.start();
+  Attached a(r);
+  r.link->flush();
+  r.run(10);
+  r.link->record(0);
+  r.run(300);
+  const fs::path song = r.dir / "SongA";
+  REQUIRE(a.ctx.saveProjectAs(song.string()).ok());  // its file is being written: it stays until the commit
+  r.run(300);
+  r.link->stop();
+  r.run(4);
+  REQUIRE(r.link->recordCommits() == 1);
+  const SampleRef ref = a.sampleOf(t);  // a copy: the snapshot goes with New
+  CHECK_FALSE(isAbsoluteSamplePath(ref.path));  // in the project, project-relative
+  const fs::path wav = song / u8p(ref.path);
+  REQUIRE(fs::exists(wav));
+  auto w = media::readWav(wav);
+  REQUIRE(w.ok());
+  CHECK(static_cast<int64_t>(w.value().frames()) == ref.frames);
+  REQUIRE(a.ctx.saveProject().ok());
+  a.ctx.newProject();
+  CHECK(a.ctx.confirmQuit([] {}));
+  CHECK(fs::exists(wav));
+  // The saved project plays it from the project folder.
+  REQUIRE(a.ctx.openProject(song.string()).ok());
+  CHECK(a.sampleOf(t).path == ref.path);
+}
+
+// M6 review C1 path B (probe_unsaved_delete B): the take's snapshot was not current at the first save.
+TEST_CASE("M6 review C1: record, undo, Save As, redo, Save: the redone take is in the project; New + quit keep it") {
+  Rig r;
+  const TrackId t = r.audioTrack(AudioInput{0, 1});
+  r.arm(t);
+  r.start();
+  Attached a(r);
+  r.link->flush();
+  r.run(10);
+  r.link->record(0);
+  r.run(300);
+  r.link->stop();
+  r.run(4);
+  REQUIRE(r.link->recordCommits() == 1);
+  const fs::path unsaved = u8p(a.sampleOf(t).path);
+  REQUIRE(a.ctx.undo());
+  const fs::path song = r.dir / "SongB";
+  REQUIRE(a.ctx.saveProjectAs(song.string()).ok());
+  REQUIRE(a.ctx.redo());
+  const SampleRef ref = a.sampleOf(t);
+  CHECK_FALSE(isAbsoluteSamplePath(ref.path));  // the redo snapshot was remapped too
+  const fs::path wav = song / u8p(ref.path);
+  CHECK(fs::exists(wav));
+  CHECK_FALSE(fs::exists(unsaved));
+  REQUIRE(a.ctx.saveProject().ok());
+  a.ctx.newProject();
+  CHECK(a.ctx.confirmQuit([] {}));
+  CHECK(fs::exists(wav));
+}
+
+// M6 review H1 (probe_unsaved_delete C): a project inside the unsaved folders would be deleted with them.
+TEST_CASE("M6 review H1: Save As inside the unsaved root is refused; a project opened from inside an untitled folder keeps it") {
+  Rig r;
+  r.start();
+  Attached a(r);
+  const fs::path root = u8p(r.link->unsavedRoot());
+  CHECK_FALSE(a.ctx.saveProjectAs((root / "SongC").string()).ok());
+  CHECK_FALSE(a.ctx.saveProjectAs(root.string()).ok());
+  CHECK_FALSE(a.ctx.saveProjectAs((u8p(a.ctx.unsavedRecordingDir()) / "Deep" / "SongC").string()).ok());
+  std::string upper = (root / "SongD").string();
+  for (char& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  CHECK_FALSE(a.ctx.saveProjectAs(upper).ok());  // Windows paths ignore case
+  CHECK_FALSE(fs::exists(root / "SongC"));
+  CHECK(a.ctx.projectDir().empty());
+  // A project copied by hand into the untitled document's folder and opened from there: the Open discards the
+  // untitled document, but its folder now holds the open project: kept.
+  REQUIRE(a.ctx.saveProjectAs((r.dir / "Elsewhere").string()).ok());
+  a.ctx.newProject();
+  const fs::path folder = u8p(a.ctx.unsavedRecordingDir());
+  fs::create_directories(folder);
+  fs::copy(r.dir / "Elsewhere", folder / "Inside", fs::copy_options::recursive);
+  REQUIRE(a.ctx.openProject((folder / "Inside").string()).ok());
+  CHECK(fs::exists(folder / "Inside"));
+  CHECK(a.ctx.unsavedFolderInUse(folder.string(), true));
+}
+
+// M6 review L11 (probe_record_link 2): same name, same input, same second.
+TEST_CASE("M6 review L11: two armed tracks with the same name on one input record two files") {
+  Rig r;
+  const TrackId a = r.audioTrack(AudioInput{0, 1});
+  const TrackId b = r.audioTrack(AudioInput{0, 1});
+  r.dispatch(RenameTrack{a, "Vox"});
+  r.dispatch(RenameTrack{b, "Vox"});
+  r.arm(a);
+  r.arm(b);
+  r.start();
+  r.link->flush();
+  r.run(10);
+  r.link->record(0);
+  r.run(1500);
+  r.link->stop();
+  r.run(4);
+  REQUIRE(r.link->recordCommits() == 1);
+  const AudioClip& ca = *r.track(a).clips.at(0).audio;
+  const AudioClip& cb = *r.track(b).clips.at(0).audio;
+  const SampleRef& sa = r.sampleOf(ca);
+  const SampleRef& sb = r.sampleOf(cb);
+  CHECK(sa.path != sb.path);
+  const media::WavData wa = readTake(r, ca);
+  const media::WavData wb = readTake(r, cb);
+  CHECK(wa.frames() == 96000);
+  CHECK(wb.frames() == 96000);
+  CHECK(wa.channels[0] == wb.channels[0]);
+}
+
+// M6 review M4 / M5 at the record commit: a note keeps the identity it was played with, whatever the track's note
+// input mode or its tuning is when the session ends.
+TEST_CASE("M6 review M4 / M5: recorded notes keep their played identity across a mode and a tuning change before Stop") {
+  for (const NoteInputMode mode : {NoteInputMode::Hz, NoteInputMode::Keys}) {
+    CAPTURE(static_cast<int>(mode));
+    Rig r;
+    const TrackId t = midiTrack(r, World::Edo31, mode);
+    r.start();
+    r.link->setLivePorts({"Port"}, {2.0f});
+    r.link->flush();
+    r.silentInput = true;
+    r.run(10);
+    auto before = buildInputPitchMap(*r.store.current(), t);
+    REQUIRE(before.ok());
+    const uint8_t k1 = 78;
+    const InputPitch played = (*before)->at(k1);
+    REQUIRE(played.mapped);
+    engine::LivePorts& ports = *r.link->livePorts();
+    r.link->record(0);
+    REQUIRE(ports.push(0, midi(0xE0, 0, 0x50)));  // +50 cents
+    r.run(2);
+    REQUIRE(ports.push(0, midi(0x90, k1, 100)));
+    r.run(100);
+    REQUIRE(ports.push(0, midi(0x80, k1, 40)));
+    REQUIRE(ports.push(0, midi(0xE0, 0, 0x40)));
+    r.run(20);
+    // Before Stop: the other note world, and another tuning (12-EDO).
+    r.dispatch(SetNoteInput{t, NoteInput{mode == NoteInputMode::Hz ? NoteInputMode::Keys : NoteInputMode::Hz, InputKeyMap::Tuning}});
+    TuningId tid;
+    for (const auto& s : *r.store.current()->tunings)
+      if (s->name == "t") tid = s->id;
+    r.dispatch(SetTuningDef{tid, TuningDef{}});
+    r.run(20);
+    r.link->stop();
+    r.run(4);
+    REQUIRE(r.link->recordCommits() == 1);
+    const Track& tr = r.track(t);
+    REQUIRE(tr.clips.size() == 1);
+    const std::vector<Note> notes(tr.clips[0].clip->notes.begin(), tr.clips[0].clip->notes.end());
+    REQUIRE(notes.size() == 1);
+    if (mode == NoteInputMode::Keys) {
+      CHECK(notes[0].pitch == played.id);  // the key's degree, the bend not frozen in
+    } else {
+      REQUIRE(notes[0].pitch.kind() == tuning::PitchKind::Cents);
+      CHECK(notes[0].pitch.cents() == played.id.cents() + 50.0);  // exactly what the note-on played
+      const double want = 1200.0 * std::log2(played.hz * std::exp2(50.0 / 1200.0) / worldDef(World::Edo31).referenceHz);
+      CHECK(std::fabs(notes[0].pitch.cents() - want) < 0.001);
+    }
+  }
 }

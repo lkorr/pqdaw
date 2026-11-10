@@ -186,6 +186,10 @@ const engine::CaptureRing* ProjectLink::captureRing(doc::TrackId id) const {  //
   return it == capture_.end() ? nullptr : it->second.ring.get();
 }
 
+void ProjectLink::panic() {  // UI thread (M6 review L16)
+  if (engine_) engine_->panic();
+}
+
 bool ProjectLink::captureMidi(Ticks insertMarker) {  // UI thread
   doc::DocumentStore* store = ctx_ != nullptr ? &ctx_->store() : recordStore_;
   if (store == nullptr) return false;
@@ -198,25 +202,20 @@ bool ProjectLink::captureMidi(Ticks insertMarker) {  // UI thread
     uint32_t id;
     uint64_t written;
     std::vector<engine::CapturedNote> notes;
-    doc::InputPitchMapPtr hzMap;
   };
   std::vector<Read> reads;
   for (const auto& [id, entry] : liveCache_) {
     const auto it = capture_.find(id);
     const doc::Track* t = doc::findTrackPtr(p, doc::TrackId{id});
     if (it == capture_.end() || !it->second.ring || t == nullptr) continue;
-    Read r{id, it->second.ring->written(), {}, nullptr};
+    Read r{id, it->second.ring->written(), {}};
     it->second.ring->read(it->second.mark, r.notes);
     if (r.notes.empty()) continue;
-    if (t->noteInput.mode == doc::NoteInputMode::Hz) {
-      auto m = doc::buildInputPitchMap(p, t->id);
-      if (m.ok()) r.hzMap = m.value();
-    }
     reads.push_back(std::move(r));
   }
   std::sort(reads.begin(), reads.end(), [](const Read& a, const Read& b) { return a.id < b.id; });  // a stable order
   std::vector<CaptureTrack> tracks;
-  for (const Read& r : reads) tracks.push_back({doc::TrackId{r.id}, r.notes, r.hzMap});
+  for (const Read& r : reads) tracks.push_back({doc::TrackId{r.id}, r.notes});
   CaptureTiming timing;
   timing.sampleRate = cfg_.sampleRate;
   timing.now = engine_->liveInput().engineNow();

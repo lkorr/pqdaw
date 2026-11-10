@@ -10,7 +10,10 @@
 // the OS) whenever that many frames were written since the last patch, so a process killed mid-take leaves a readable
 // file holding everything up to the last patch (the recorder: one second). A reader ignores the bytes after the
 // patched data size (parseWav: unknown trailing chunks are skipped).
-// Reading: 32-bit float and 16/24/32-bit integer PCM (plain or extensible); unknown chunks are skipped. Samples are
+// M6 review M8 (long recordings): enableRf64() before open() reserves a 28-byte JUNK chunk after "WAVE"; once the file
+// passes 4 GiB (RIFF's 32-bit sizes) the header becomes RF64 (EBU Tech 3306: "RF64", 32-bit sizes 0xFFFFFFFF, the
+// real ones in the ds64 chunk written over the JUNK chunk) instead of write() failing. pq/media/probe.h reads it.
+// Reading: RIFF and RF64; 32-bit float and 16/24/32-bit integer PCM (plain or extensible); unknown chunks are skipped. Samples are
 // returned planar as float (integers scaled to [−1, 1)).
 // T5.1: moved from engine to media (pq/engine/wav_file.h forwards here). This whole-file reader stays the golden /
 // render path; general decoding (every format, seeking, metadata) is pq/media/decoder.h.
@@ -56,6 +59,9 @@ public:
   WavWriter(const WavWriter&) = delete;
   WavWriter& operator=(const WavWriter&) = delete;
 
+  // M6 review M8: before open(): past `aboveRiffBytes` (the RIFF size; tests pass a small one) the file becomes RF64.
+  void enableRf64(uint64_t aboveRiffBytes = 0xFFFFFFFFull) noexcept { rf64Above_ = aboveRiffBytes; }
+  bool isRf64() const noexcept { return isRf64_; }
   // `patchEveryFrames` (T6.7): > 0 patches the header every that many frames written (see the file comment).
   Status open(const std::filesystem::path& path, uint32_t numChannels, uint32_t sampleRate,
               uint64_t patchEveryFrames = 0);
@@ -80,6 +86,9 @@ private:
   uint64_t patchEvery_ = 0;     // T6.7
   uint64_t patched_ = 0;
   std::vector<float> interleaved_;
+  uint64_t rf64Above_ = 0;      // M8: 0 = plain RIFF only
+  bool isRf64_ = false;
+  void writeSizes();
 };
 
 }  // namespace pq::media

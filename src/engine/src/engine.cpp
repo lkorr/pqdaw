@@ -95,6 +95,12 @@ bool Engine::releaseAuditions() noexcept {  // UI thread (wait-free push + wake 
   return ok;
 }
 
+void Engine::panic() noexcept {  // UI thread (wait-free + wake hook)
+  live_->requestPanic();
+  panicReq_.fetch_add(1, std::memory_order_release);
+  wake();
+}
+
 bool Engine::setParam(uint32_t index, float value) noexcept {  // UI thread (wait-free push + wake hook)
   if (!paramProducer_->ring.tryPush(ParamWrite{index, value})) {
     droppedParams_.fetch_add(1, std::memory_order_relaxed);
@@ -158,6 +164,11 @@ void Engine::audioOnline() noexcept {  // RT-safe
 void Engine::onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept {  // RT-safe
   const SlotSource& s = *static_cast<const SlotSource*>(slot);
   Engine& e = *s.engine;
+  if (e.panicNow_) {  // L16: first, so the block's own note-ons still start
+    NoteEvent all;
+    all.kind = NoteEventKind::AllNotesOff;
+    out.push(all);
+  }
   const EventSource tl = e.timeline_->eventSource(s.slot);
   tl.fn(tl.user, sampleTime, frames, out);
   // Auditions of this slot: the note-on at the first block after the request, the note-off at its time.
@@ -242,6 +253,15 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
       paramConsumer_ = next;
       paramConsumed_.store(next, std::memory_order_release);
     }
+  }
+  // L16: a panic: every slot's voices get an AllNotesOff this block (onSlot), the auditions end now.
+  const uint32_t panic = panicReq_.load(std::memory_order_acquire);
+  panicNow_ = panic != panicSeen_;
+  if (panicNow_) {
+    panicSeen_ = panic;
+    ++stats_.panics;
+    activity = true;
+    for (uint32_t i = 0; i < numAuditions_; ++i) auditions_[i].offTime = std::min(auditions_[i].offTime, block.frameTime);
   }
   AuditionRequest ar;
   while (auditionIn_.tryPop(ar)) {

@@ -5,6 +5,7 @@
     {"scope": "global", "keys": "Shift+Space", "action": "transport.continue", "status": "implemented", "task": "T3.7"},
     {"scope": "global", "keys": "F9", "action": "transport.record", "status": "implemented", "task": "T6.6"},
     {"scope": "global", "keys": "Ctrl+Shift+C", "action": "transport.captureMidi", "status": "implemented", "task": "T6.9"},
+    {"scope": "global", "keys": "Ctrl+Shift+Space", "action": "transport.panic", "status": "implemented", "task": "T6.x-fix-rec"},
     {"scope": "global", "keys": "Ctrl+Z", "action": "edit.undo", "status": "implemented", "task": "T3.7"},
     {"scope": "global", "keys": "Ctrl+Shift+Z", "action": "edit.redo", "status": "implemented", "task": "T3.7"},
     {"scope": "global", "keys": "Ctrl+Y", "action": "edit.redo", "status": "implemented", "task": "T3.7"},

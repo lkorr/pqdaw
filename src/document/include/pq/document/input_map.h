@@ -37,6 +37,15 @@ struct InputPitch {
   bool mapped = false;                       // false: the key plays nothing
 };
 
+// M6 review M4 / M5: the identity a live note stores, from what was kept at its note-on — the map's identity then and
+// the source's pitch bend then (the record tap / the capture ring): a Cents identity (Hz mode) gets the bend added,
+// which is exactly the pitch the note-on played; any other kind (Keys mode's Degree) stays the key's identity (the bend
+// moved only the voice). Never re-read from the tuning or the track's note input mode as they are now.
+inline tuning::PitchId playedIdentity(const tuning::PitchId& id, double bendCents) noexcept {
+  if (id.kind() != tuning::PitchKind::Cents || bendCents == 0.0 || !std::isfinite(bendCents)) return id;
+  return tuning::PitchId::fromCents(id.cents() + bendCents);
+}
+
 class InputPitchMap {
 public:
   static constexpr uint32_t kKeys = 128;

@@ -560,9 +560,11 @@ TEST_CASE("live input: capture rings keep every note a listening track plays, al
   ring->read(1, got);
   REQUIRE(got.size() == 1);
   CHECK(got[0].seq == 1);
-  // The track stops listening while its note is held: the note-off no longer reaches the ring (the image that kept it
-  // alive may be freed), and nothing breaks.
+  // The track stops listening while its note is held: the note ends in the ring at that block (M6 review L2: never
+  // left open, which a later Capture would stretch to "now"); its note-off no longer reaches the ring (the image that
+  // kept it alive may be freed), and nothing breaks.
   r.in->publish(image({track(4, 1u)}));
+  const int64_t unrouted = r.now;
   r.block(64, {3, 4});
   r.push(msg(0, 0x81, 67, 0));
   r.block(64, {3, 4});
@@ -570,7 +572,7 @@ TEST_CASE("live input: capture rings keep every note a listening track plays, al
   got.clear();
   ring->read(1, got);
   REQUIRE(got.size() == 1);
-  CHECK(got[0].endTime == e::kCaptureOpen);
+  CHECK(got[0].endTime == unrouted);
   // Overwrite: a ring of 8 keeps the last 8 notes.
   r.in->publish(image({t}));
   for (int i = 0; i < 12; ++i) {
@@ -611,4 +613,105 @@ TEST_CASE("live input: a capture ring read while the audio side writes keeps onl
   }
   stop = true;
   writer.join();
+}
+
+// M6 review L1 (probe_input_ids §4): a port's bend outlives neither the port nor a Reset All Controllers.
+TEST_CASE("live input: a closed port (All Notes Off + Reset All Controllers), an overflow or CC 121 centres the bend") {
+  Rig r(64);
+  e::LiveRouteDesc d;
+  d.tracks = {track(1, 1u)};
+  d.bendSemitones[0] = 2.0f;
+  auto img = e::LiveRouteImage::build(d);
+  REQUIRE(img.ok());
+  r.in->publish(std::move(img.value()));
+  // Device A: the wheel at full +200 cents, then unplugged (MidiInputService::close: CC 123 and CC 121 per channel).
+  r.push(msg(0, 0xE0, 127, 127));
+  (void)r.block(64, {1});
+  for (uint8_t ch = 0; ch < 16; ++ch) {
+    r.push(msg(0, static_cast<uint8_t>(0xB0 | ch), 123, 0));
+    r.push(msg(0, static_cast<uint8_t>(0xB0 | ch), 121, 0));
+  }
+  (void)r.block(64, {1});
+  // Device B at the same index: its first A4 is unbent (it was 493.9 Hz).
+  r.push(msg(0, 0x90, 69, 100));
+  auto ev = r.block(64, {1});
+  REQUIRE(ev[1].size() == 1);
+  CHECK(ev[1][0].hz == doctest::Approx(440.0f));
+  // CC 121 while a note is held under a bend: the note glides back to its key, the next note-on is unbent.
+  r.push(msg(0, 0xE0, 0, 0x60));
+  (void)r.block(64, {1});
+  r.push(msg(0, 0xB0, 121, 0));
+  ev = r.block(64, {1});
+  REQUIRE(ev[1].size() == 1);
+  CHECK(ev[1][0].kind == e::NoteEventKind::Pitch);
+  CHECK(ev[1][0].hz == doctest::Approx(440.0f));
+  r.push(msg(0, 0x80, 69, 0));
+  // An overflow (messages lost: the wheel's state is unknown) releases the port's notes and centres its wheel.
+  r.push(msg(0, 0xE0, 0, 0x60));
+  (void)r.block(64, {1});
+  for (int i = 0; i < 100; ++i) (void)r.ports->push(0, msg(0, 0xB0, 1, static_cast<uint8_t>(i)));
+  REQUIRE(r.ports->overflows(0) > 0);
+  (void)r.block(64, {1});
+  r.push(msg(0, 0x90, 57, 100));
+  ev = r.block(64, {1});
+  REQUIRE(ev[1].size() == 1);
+  CHECK(ev[1][0].hz == doctest::Approx(220.0f));
+}
+
+// M6 review L16: transport.panic reaches the engine as Engine::panic.
+TEST_CASE("live input: Engine::panic sends AllNotesOff to every slot, releases held live notes, centres every bend") {
+  e::EngineConfig ec;
+  ec.sampleRate = kSr;
+  ec.blockFrames = 64;
+  ec.maxSlots = 4;
+  ec.sleepAfterMs = 10.0f;
+  ec.live.clockHz = kSr;
+  auto eng = e::Engine::create(ec);
+  REQUIRE(eng.ok());
+  e::Engine& en = **eng;
+  en.liveInput().publish(image({track(2, 1u)}));
+  e::ProjectConfig pc = en.projectConfig();
+  float l[64], rr[64];
+  float* outs[2] = {l, rr};
+  auto run = [&] {
+    pq::RtScope rt;
+    e::AudioBlock b{nullptr, 0, outs, 2, 64, 0, 0, 0};
+    en.process(b);
+  };
+  auto events = [&](uint32_t slot) {
+    e::EventBuffer buf(64);
+    {
+      pq::RtScope rt;
+      pc.eventSources[slot].fn(pc.eventSources[slot].user, en.time() - 64, 64, buf);
+    }
+    return std::vector<e::NoteEvent>(buf.list().events, buf.list().events + buf.size());
+  };
+  REQUIRE(en.liveInput().ports().push(0, msg(0, 0xE0, 0, 0x60)));  // a bend
+  REQUIRE(en.liveInput().ports().push(0, msg(0, 0x90, 69, 127)));  // a held note (a stuck one, say)
+  run();
+  REQUIRE(events(2).size() == 1);
+  CHECK(en.liveInput().heldNotes() == 1);
+  en.panic();
+  run();
+  CHECK(en.stats().panics == 1);
+  CHECK(en.liveInput().heldNotes() == 0);
+  for (uint32_t s = 0; s < 4; ++s) {
+    CAPTURE(s);
+    const std::vector<e::NoteEvent> ev = events(s);
+    REQUIRE_FALSE(ev.empty());
+    CHECK(ev[0].kind == e::NoteEventKind::AllNotesOff);
+    CHECK(ev[0].frame == 0);
+    if (s == 2) {  // the held live note's own note-off too
+      REQUIRE(ev.size() == 2);
+      CHECK(ev[1].kind == e::NoteEventKind::NoteOff);
+    }
+  }
+  // One block only; the bend is centred: the next A4 is unbent.
+  REQUIRE(en.liveInput().ports().push(0, msg(0, 0x90, 69, 127)));
+  run();
+  const std::vector<e::NoteEvent> ev = events(2);
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].kind == e::NoteEventKind::NoteOn);
+  CHECK(ev[0].hz == doctest::Approx(440.0f));
+  CHECK(events(1).empty());
 }

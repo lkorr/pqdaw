@@ -398,3 +398,46 @@ TEST_CASE("T6.9 capture: Ctrl+Shift+C through the window's key dispatch captures
   ctx.reset();
   link.reset();
 }
+
+// M6 review M4 / M5 (probe_input_ids §2, §3): Capture stores what was played — the tuning or the track's note input
+// mode changed between playing and Capture must not change a captured identity.
+TEST_CASE("M6 review M4 / M5: captured notes keep their played identity across a tuning change and a mode switch") {
+  for (const NoteInputMode mode : {NoteInputMode::Hz, NoteInputMode::Keys}) {
+    CAPTURE(static_cast<int>(mode));
+    Rig r;
+    const TrackId t = midiTrack(r.store, World::Edo31, mode);
+    r.start();
+    r.run(10);
+    auto before = buildInputPitchMap(*r.store.current(), t);
+    REQUIRE(before.ok());
+    const uint8_t k1 = 78;
+    const InputPitch played = (*before)->at(k1);
+    REQUIRE(played.mapped);
+    r.push(midi(0xE0, 0, 0x50));  // +50 cents
+    r.run(2);
+    r.push(midi(0x90, k1, 100));
+    r.run(50);
+    r.push(midi(0x80, k1, 40));
+    r.push(midi(0xE0, 0, 0x40));
+    r.run(10);
+    // Between playing and Capture: 12-EDO instead of 31-EDO (M4), and the other note world (M5).
+    TuningId tid;
+    for (const auto& s : *r.store.current()->tunings)
+      if (s->name == "t") tid = s->id;
+    REQUIRE(r.store.dispatch(SetTuningDef{tid, TuningDef{}}).ok());
+    REQUIRE(r.store.dispatch(SetNoteInput{t, NoteInput{mode == NoteInputMode::Hz ? NoteInputMode::Keys : NoteInputMode::Hz,
+                                                       InputKeyMap::Tuning}}).ok());
+    r.run(10);
+    REQUIRE(r.link->captureMidi(0));
+    const Track& tr = r.track(t);
+    REQUIRE(tr.clips.size() == 1);
+    const std::vector<Note> notes = r.notesOf(tr.clips[0]);
+    REQUIRE(notes.size() == 1);
+    if (mode == NoteInputMode::Keys) {
+      CHECK(notes[0].pitch == played.id);  // still the key's degree (was a bent Cents after the switch)
+    } else {
+      REQUIRE(notes[0].pitch.kind() == tuning::PitchKind::Cents);
+      CHECK(notes[0].pitch.cents() == played.id.cents() + 50.0);  // was −551.6 cents off after the tuning change
+    }
+  }
+}

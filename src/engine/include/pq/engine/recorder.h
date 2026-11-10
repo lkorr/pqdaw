@@ -2,19 +2,28 @@
 
 // The recorder (T6.7; docs/plans/M6.md "### T6.7"): the audio thread's side of recording — device inputs captured into
 // lock-free rings with the song time of every frame — and of input monitoring (the monitor gate of every audio track
-// that has an input). The app's RecordingService (pq/app/recording.h) drains the rings on the sample pool's disk
+// that has an input). The app's RecordingService (pq/app/recording.h) drains the rings on its own writer
 // thread into WAV files and commits takes to the document.
 //
 // ---- Capture ------------------------------------------------------------------------------------------------------
-// While the timeline records (Timeline::recording(): a Record command, until Stop / RecordOff / Play), every SONG run
-// the transport plays in an image block (Timeline::runs; count-in runs are not recorded) becomes one CaptureSegment
-// {engine time, song sample, frames, the captured sub-range, session} in the segment ring — the song-time map of the
-// session, which note recording reads too (a MIDI-only session pushes segments without audio). The captured sub-range is
-// the run ∩ the capture window: everything, or, with the punch on, the song samples [punchIn + offset, punchOut +
-// offset) — offset = the record latency (below), so what is kept is exactly what was PLAYED in [punchIn, punchOut).
+// While the timeline records (Timeline::recording(): a Record command, until Stop / RecordOff / Play) the segment ring
+// gets two kinds of CaptureSegment:
+//   Run    every SONG run the transport plays in an image block (Timeline::runs; count-in runs are not recorded):
+//          {engine time, song sample, frames, session} — the song-time map of the session, which note recording reads
+//          too (a MIDI-only session pushes only these).
+//   Audio  input frames, placed on what was PLAYED when they were captured (M6 review M6): the frame captured at engine
+//          time t was played against the song sample the transport played at engine time t − offset (the record
+//          latency, below; a negative total counts as 0). The recorder keeps the session's recent runs (contiguous ones
+//          merged, kPlayedRuns of them) and maps the block's captured interval [time − offset, time + frames − offset)
+//          through them, so frames that arrive after a loop wrap or a locate go with the pass that played them. A piece
+//          is kept when its played song samples lie in the capture window: everything, or with the punch on
+//          [punchIn, punchOut). {engine time and song sample it was PLAYED at, frames, session, capture set}. Played
+//          time only moves forward: a frame is placed once (an offset that grows does not repeat frames; one that
+//          shrinks leaves a gap the writer fills with silence). Frames played before the session started (the first
+//          offset frames captured) or in a count-in belong to nothing and are not kept.
 // The captured frames of every channel of the capture set (CaptureSet: the device input channels the armed tracks use,
 // rings allocated off the audio thread — by the app on first arm) are copied into that channel's FloatRing: ONE copy
-// per used channel per run. A ring (or the segment ring) without room for the run drops it whole for every channel
+// per used channel per piece. A ring (or the segment ring) without room for a piece drops it whole for every channel
 // (the segment says how many frames: the writer writes silence there, so the file stays aligned to song time; counted
 // in overflows()), and never blocks. Nothing armed (no capture set) and not recording: one flag test per image block.
 //
@@ -33,11 +42,12 @@
 //
 // ---- Threads ------------------------------------------------------------------------------------------------------
 //   setCapture, setMonitors, setDeviceLatency, setManualOffset, collect      one non-RT thread (the UI thread)
-//   popSegment and the CaptureSet's rings' pop side                           one consumer thread (the disk thread)
+//   popSegment and the CaptureSet's rings' pop side                           one consumer thread (the recording writer)
 //   beginBlock, capture, monitor                                               the audio thread. RT-safe.
 // Images (capture sets, monitor images) are published by pointer swap; a replaced one is freed by collect() once the
 // audio thread has passed a block since (or at once while it does not run).
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -74,16 +84,16 @@ private:
   alignas(64) std::atomic<uint64_t> tail_{0};
 };
 
-// One song run of a recording session (see "Capture").
+// One entry of the segment ring (see "Capture").
 struct CaptureSegment {
-  int64_t engineTime = 0;   // engine frame of the run's first frame
-  int64_t songSample = 0;   // its song sample
-  uint32_t frames = 0;      // run length
-  uint32_t audioFrom = 0;   // the captured part: run frames [audioFrom, audioFrom + audioLen)
-  uint32_t audioLen = 0;
-  uint32_t dropped = 0;     // audioLen when the rings had no room (nothing pushed: the writer writes silence), else 0
+  enum Kind : uint8_t { Run, Audio };
+  Kind kind = Run;
+  int64_t engineTime = 0;   // Run: engine frame of its first frame; Audio: the engine frame its first frame was PLAYED at
+  int64_t songSample = 0;   // the song sample of that frame (Audio: the one it was played against)
+  uint32_t frames = 0;      // run length / captured frames
+  uint32_t dropped = 0;     // Audio: = frames when the rings had no room (nothing pushed: the writer writes silence)
   uint32_t session = 0;     // Timeline::recordSession()
-  uint32_t captureSet = 0;  // CaptureSet::serial() of the set the audio went to (0: none)
+  uint32_t captureSet = 0;  // Audio: CaptureSet::serial() of the set the frames went to
 };
 
 // The device input channels being captured and their rings (built off the audio thread).
@@ -126,7 +136,8 @@ struct RecorderStats {
 
 class Recorder {
 public:
-  static constexpr uint32_t kSegmentRing = 1u << 15;  // ≈ 43 s of 64-frame blocks at 48 kHz before the consumer reads
+  static constexpr uint32_t kSegmentRing = 1u << 15;  // ≈ 21 s of 64-frame blocks at 48 kHz (a Run + an Audio each)
+  static constexpr uint32_t kPlayedRuns = 256;        // the session's recent played runs (contiguous ones merged)
 
   Recorder();
   ~Recorder();
@@ -169,8 +180,8 @@ public:
     return ch < numInNow_ && in_ != nullptr && in_[ch] != nullptr ? in_[ch] + (time - blockTime_) : nullptr;
   }
   uint32_t inputs() const noexcept { return numInNow_; }
-  // One image block at engine time `time`: captures the song runs the timeline played in it while it records. `pdc`:
-  // ProjectProgram::outputLatency(). RT-safe.
+  // One image block at engine time `time`: the song runs the timeline played in it, and the block's input frames placed
+  // on what was played (see "Capture"), while it records. `pdc`: ProjectProgram::outputLatency(). RT-safe.
   void capture(const Timeline& timeline, int64_t time, uint32_t frames, uint32_t pdc) noexcept;
   // Writes the monitor gates for this image block into `params`; true when one changed. RT-safe.
   bool monitor(const Timeline& timeline, std::span<float> params) noexcept;
@@ -200,6 +211,14 @@ private:
   std::atomic<uint64_t> dropped_{0};
   SpscRing<CaptureSegment> segments_;
   // Audio thread.
+  struct Played {
+    int64_t engine = 0, song = 0, len = 0;
+  };
+  std::array<Played, kPlayedRuns> played_{};  // ring: the newest at playedHead_ − 1
+  uint32_t playedHead_ = 0, playedCount_ = 0;
+  uint32_t playedSession_ = 0;
+  int64_t attributed_ = INT64_MIN;  // played engine time up to which captured frames were placed
+  void pushPiece(CaptureSet* set, int64_t engine, int64_t song, int64_t n, int64_t off, uint32_t session) noexcept;
   const float* const* in_ = nullptr;
   uint32_t numInNow_ = 0;
   int64_t blockTime_ = 0;

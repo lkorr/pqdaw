@@ -89,53 +89,93 @@ void Recorder::beginBlock(const AudioBlock& device) noexcept {  // RT-safe
   if (numIn_.load(std::memory_order_relaxed) != numInNow_) numIn_.store(numInNow_, std::memory_order_relaxed);
 }
 
+void Recorder::pushPiece(CaptureSet* set, int64_t engine, int64_t song, int64_t n, int64_t off,
+                         uint32_t session) noexcept {  // RT-safe
+  CaptureSegment s;
+  s.kind = CaptureSegment::Audio;
+  s.engineTime = engine;
+  s.songSample = song;
+  s.frames = static_cast<uint32_t>(n);
+  s.session = session;
+  s.captureSet = set->serial();
+  if (segments_.sizeApprox() >= segments_.capacity()) {  // no room for the segment: the piece is lost whole
+    ++stats_.droppedSegments;
+    stats_.droppedFrames += s.frames;
+    dropped_.fetch_add(s.frames, std::memory_order_relaxed);
+    return;
+  }
+  const std::span<const uint16_t> chans = set->channels();
+  bool room = true;
+  for (size_t i = 0; i < chans.size() && room; ++i) room = set->ring(i).space() >= s.frames;
+  if (room) {
+    const int64_t at = engine + off;  // captured now: inside this device block
+    for (size_t i = 0; i < chans.size(); ++i) (void)set->ring(i).push(input(chans[i], at), s.frames);
+    stats_.capturedFrames += s.frames;
+  } else {
+    s.dropped = s.frames;
+    stats_.droppedFrames += s.frames;
+    dropped_.fetch_add(s.frames, std::memory_order_relaxed);
+  }
+  (void)segments_.tryPush(s);
+  ++stats_.segments;
+}
+
 void Recorder::capture(const Timeline& tl, int64_t time, uint32_t frames, uint32_t pdc) noexcept {  // RT-safe
-  (void)frames;
   if (!tl.recording()) return;
-  CaptureSet* set = capture_.ptr.load(std::memory_order_acquire);
-  const int64_t off = latencyOffset(pdc);
-  const RecordWindow w = tl.recordWindow();
-  const int64_t lo = w.punch ? w.in + off : INT64_MIN;
-  const int64_t hi = w.punch ? w.out + off : INT64_MAX;
+  const uint32_t session = tl.recordSession();
+  if (session != playedSession_) {  // a new session: nothing played before it is recorded
+    playedSession_ = session;
+    playedCount_ = 0;
+    attributed_ = INT64_MIN;
+  }
+  // The runs: the session's time map, and the played history (contiguous runs merged).
   for (const TransportRun& r : tl.runs()) {
     if (r.kind != TransportRun::Song || r.len == 0) continue;
     CaptureSegment s;
     s.engineTime = time + r.frame;
     s.songSample = r.pos;
     s.frames = r.len;
-    s.session = tl.recordSession();
-    const int64_t len = r.len;
-    const int64_t a = std::clamp<int64_t>(lo == INT64_MIN ? 0 : lo - r.pos, 0, len);
-    const int64_t b = std::clamp<int64_t>(hi == INT64_MAX ? len : hi - r.pos, a, len);
-    s.audioFrom = static_cast<uint32_t>(a);
-    if (set != nullptr && b > a) {
-      s.audioLen = static_cast<uint32_t>(b - a);
-      s.captureSet = set->serial();
+    s.session = session;
+    if (segments_.sizeApprox() >= segments_.capacity()) {
+      ++stats_.droppedSegments;  // the run is lost to the time map
+    } else {
+      (void)segments_.tryPush(s);
+      ++stats_.segments;
     }
-    if (segments_.sizeApprox() >= segments_.capacity()) {  // no room for the segment: the run is lost whole
-      ++stats_.droppedSegments;
-      if (s.audioLen != 0) {
-        stats_.droppedFrames += s.audioLen;
-        dropped_.fetch_add(s.audioLen, std::memory_order_relaxed);
-      }
-      continue;
+    Played* last = playedCount_ != 0 ? &played_[(playedHead_ + kPlayedRuns - 1) % kPlayedRuns] : nullptr;
+    if (last != nullptr && last->engine + last->len == s.engineTime && last->song + last->len == s.songSample) {
+      last->len += r.len;
+    } else {
+      played_[playedHead_] = Played{s.engineTime, s.songSample, r.len};
+      playedHead_ = (playedHead_ + 1) % kPlayedRuns;
+      playedCount_ = std::min(playedCount_ + 1, kPlayedRuns);  // full: the oldest goes
     }
-    if (s.audioLen != 0) {
-      const std::span<const uint16_t> chans = set->channels();
-      bool room = true;
-      for (size_t i = 0; i < chans.size() && room; ++i) room = set->ring(i).space() >= s.audioLen;
-      if (room) {
-        const int64_t at = s.engineTime + s.audioFrom;
-        for (size_t i = 0; i < chans.size(); ++i) (void)set->ring(i).push(input(chans[i], at), s.audioLen);
-        stats_.capturedFrames += s.audioLen;
-      } else {
-        s.dropped = s.audioLen;
-        stats_.droppedFrames += s.audioLen;
-        dropped_.fetch_add(s.audioLen, std::memory_order_relaxed);
-      }
-    }
-    (void)segments_.tryPush(s);
-    ++stats_.segments;
+  }
+  // This block's input frames, on what was played `off` frames earlier (M6 review M6: across a wrap too).
+  CaptureSet* set = capture_.ptr.load(std::memory_order_acquire);
+  const int64_t off = std::max<int64_t>(0, latencyOffset(pdc));
+  const int64_t from = std::max(time - off, attributed_);
+  const int64_t to = time + static_cast<int64_t>(frames) - off;
+  attributed_ = std::max(attributed_, to);
+  if (set == nullptr || from >= to) return;
+  const RecordWindow w = tl.recordWindow();
+  const int64_t lo = w.punch ? w.in : INT64_MIN;
+  const int64_t hi = w.punch ? w.out : INT64_MAX;
+  // Oldest first (played order). Runs that ended before `from` are never needed again.
+  while (playedCount_ != 0) {
+    const Played& p = played_[(playedHead_ + kPlayedRuns - playedCount_) % kPlayedRuns];
+    if (p.engine + p.len > from) break;
+    --playedCount_;
+  }
+  for (uint32_t k = playedCount_; k > 0; --k) {
+    const Played& p = played_[(playedHead_ + kPlayedRuns - k) % kPlayedRuns];
+    if (p.engine >= to) break;
+    const int64_t e0 = std::max(from, p.engine), e1 = std::min(to, p.engine + p.len);
+    if (e0 >= e1) continue;
+    const int64_t s0 = p.song + (e0 - p.engine);
+    const int64_t a = std::max(s0, lo), b = std::min(s0 + (e1 - e0), hi);
+    if (a >= b) continue;
+    pushPiece(set, e0 + (a - s0), a, b - a, off, session);
   }
 }
 

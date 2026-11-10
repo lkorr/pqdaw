@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cwctype>
 #include <thread>
 
 #include "pq/document/serialize.h"
@@ -290,12 +291,14 @@ void ViewContext::afterLoad() {
 
 void ViewContext::newProject() {
   const bool wasUntitled = projectDir_.empty();
+  const std::string oldUnsaved = unsavedRecordingDir_;
   store_.reset(doc::makeDefaultProject(store_.ids()));
   store_.view() = {};
   projectDir_.clear();
   afterLoad();
   setStatus("New project");
-  if (wasUntitled && unsavedDiscard_ && !unsavedKept_) unsavedDiscard_();  // T6.7b: the untitled project's recordings go with it
+  if (wasUntitled) discardUnsaved(oldUnsaved, true);  // T6.7b: the untitled project's recordings go with it
+  unsavedRecordingDir_ = unsaved_.fresh ? unsaved_.fresh() : std::string();  // C1: its own folder
 }
 
 Status ViewContext::openProject(std::string_view dirUtf8) {
@@ -308,7 +311,7 @@ Status ViewContext::openProject(std::string_view dirUtf8) {
   const bool wasUntitled = projectDir_.empty();
   projectDir_ = std::string(dirUtf8);
   afterLoad();
-  if (wasUntitled && unsavedDiscard_ && !unsavedKept_) unsavedDiscard_();  // T6.7b
+  if (wasUntitled) discardUnsaved(unsavedRecordingDir_, true);  // T6.7b
   if (missing_.empty()) setStatus("Opened " + projectName());  // else the status line says which samples are missing
   return Ok{};
 }
@@ -319,40 +322,136 @@ Status ViewContext::saveProject() {
   return saveProjectAs(std::string(projectDir_));
 }
 
-// T6.7: an untitled project's recordings into the project it is first saved as (see setUnsavedRecordingDir).
+// ---- untitled projects' recordings (T6.7, T6.7b; M6 review C1 / H1) ----------------------------------------------
+
+namespace {
+
+std::filesystem::path u8Path(std::string_view s) {
+  return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+}
+
+std::string u8Str(const std::filesystem::path& p) {
+  const std::u8string u = p.generic_u8string();
+  return std::string(reinterpret_cast<const char*>(u.data()), u.size());
+}
+
+// A comparable form of a path: absolute, normal, backslashes, lower case (Windows paths ignore case), no trailing slash.
+std::wstring pathKey(std::string_view p) {
+  std::error_code ec;
+  std::wstring w = std::filesystem::absolute(u8Path(p), ec).lexically_normal().wstring();
+  std::replace(w.begin(), w.end(), L'/', L'\\');
+  for (wchar_t& c : w) c = static_cast<wchar_t>(std::towlower(c));
+  while (w.size() > 3 && w.back() == L'\\') w.pop_back();
+  return w;
+}
+
+// `p` lies inside `root` (lexically, ignoring case), or is `root` itself when `orEqual`.
+bool pathInside(std::string_view p, std::string_view root, bool orEqual) {
+  const std::wstring a = pathKey(p), r = pathKey(root);
+  if (a == r) return orEqual;
+  return a.size() > r.size() && a.compare(0, r.size(), r) == 0 && a[r.size()] == L'\\';
+}
+
+}  // namespace
+
+void ViewContext::setUnsavedRecordings(UnsavedRecordings u) {
+  unsaved_ = std::move(u);
+  unsavedRecordingDir_ = projectDir_.empty() ? unsaved_.current : std::string();
+}
+
+bool ViewContext::unsavedFolderInUse(std::string_view dirUtf8, bool includeStore) const {
+  if (!projectDir_.empty() && pathInside(projectDir_, dirUtf8, true)) return true;  // H1
+  for (const std::string& p : savedUnsavedRefs_)
+    if (pathInside(p, dirUtf8, false)) return true;
+  if (!includeStore) return false;
+  auto refs = [&](const doc::Snapshot& s) {
+    if (!s) return false;
+    for (const doc::SampleRef& r : doc::samplesOf(*s))
+      if (doc::isAbsoluteSamplePath(r.path) && pathInside(r.path, dirUtf8, false)) return true;
+    return false;
+  };
+  if (refs(store_.current()) || refs(saved_)) return true;
+  for (const doc::History::Entry& e : store_.history().entries())
+    if (refs(e.before) || refs(e.after)) return true;
+  return false;
+}
+
+void ViewContext::discardUnsaved(const std::string& dir, bool includeStore) {
+  if (dir.empty() || !unsaved_.discard) return;
+  if (unsavedFolderInUse(dir, includeStore)) {  // the last line of defence: a reference survives, the folder stays
+    setStatus("Kept the unsaved recordings folder " + dir + ": a project still uses a file in it");
+    return;
+  }
+  unsaved_.discard(dir);
+}
+
+// T6.7 / C1: an untitled project's recordings into the project it is first saved as: every file of its folder, and
+// every snapshot (current, undo, redo) that references one is remapped.
 void ViewContext::moveUnsavedRecordings(std::string_view dirUtf8) {
   namespace fs = std::filesystem;
-  auto u8 = [](std::string_view s) { return fs::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size())); };
-  auto str = [](const fs::path& p) {
-    const std::u8string u = p.generic_u8string();
-    return std::string(reinterpret_cast<const char*>(u.data()), u.size());
+  std::error_code ec;
+  const fs::path from = u8Path(unsavedRecordingDir_);
+  if (!fs::is_directory(from, ec)) return;
+  // The samples any snapshot references inside the folder (one entry per id).
+  std::vector<doc::SampleRef> refs;
+  auto collect = [&](const doc::Snapshot& s) {
+    if (!s) return;
+    for (const doc::SampleRef& r : doc::samplesOf(*s))
+      if (doc::isAbsoluteSamplePath(r.path) && pathInside(r.path, unsavedRecordingDir_, false) &&
+          std::none_of(refs.begin(), refs.end(), [&](const doc::SampleRef& x) { return x.id == r.id; }))
+        refs.push_back(r);
   };
-  const std::string root = str(u8(unsavedRecordingDir_)) + "/";
-  std::vector<doc::SampleRef> moved;
-  for (const doc::SampleRef& r : doc::samplesOf(*store_.current())) {
-    if (!doc::isAbsoluteSamplePath(r.path) || !str(u8(r.path)).starts_with(root)) continue;
-    const fs::path from = u8(r.path);
-    const fs::path to = u8(dirUtf8) / "samples" / "recorded" / from.filename();
-    std::error_code ec;
-    fs::create_directories(to.parent_path(), ec);
-    fs::rename(from, to, ec);
-    if (ec) {  // in use or another volume: a copy (the original stays until the unsaved folder is cleaned)
-      ec.clear();
-      fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
-      if (ec) {  // T6.7b: the saved project keeps referencing the unsaved folder: it must never be deleted
-        unsavedKept_ = true;
-        continue;
-      }
-    }
-    doc::SampleRef n = r;
-    n.path = doc::storedSamplePath(str(to), dirUtf8);
-    moved.push_back(std::move(n));
+  collect(store_.current());
+  for (const doc::History::Entry& e : store_.history().entries()) {
+    collect(e.before);
+    collect(e.after);
   }
-  if (!moved.empty()) store_.relocateSamples(moved);
+  const fs::path toDir = u8Path(dirUtf8) / "samples" / "recorded";
+  fs::create_directories(toDir, ec);
+  std::vector<std::pair<std::wstring, std::string>> moved;  // old path's key → the stored path in the project
+  std::vector<fs::path> files;
+  for (const fs::directory_entry& e : fs::directory_iterator(from, ec))
+    if (e.is_regular_file(ec)) files.push_back(e.path());
+  for (const fs::path& src : files) {
+    const std::wstring key = pathKey(u8Str(src));
+    const bool referenced = std::any_of(refs.begin(), refs.end(), [&](const doc::SampleRef& r) { return pathKey(r.path) == key; });
+    fs::path to = toDir / src.filename();
+    for (int n = 2; fs::exists(to, ec); ++n)
+      to = toDir / u8Path(u8Str(src.stem()) + " (" + std::to_string(n) + ")" + u8Str(src.extension()));
+    ec.clear();
+    fs::rename(src, to, ec);
+    if (ec) {
+      // In use or another volume. A file still being recorded is open (the move is refused) and nothing references it
+      // yet: it stays, and its take is moved when it is committed (ProjectLink::finishRecording). A referenced one is
+      // copied; when even that fails the project keeps pointing into the folder, which a save then pins.
+      if (!referenced) continue;
+      ec.clear();
+      fs::copy_file(from / src.filename(), to, ec);
+      if (ec) continue;
+    }
+    moved.emplace_back(key, doc::storedSamplePath(u8Str(to), dirUtf8));
+  }
+  std::vector<doc::SampleRef> updated;
+  for (const doc::SampleRef& r : refs) {
+    const std::wstring key = pathKey(r.path);
+    for (const auto& [k, stored] : moved)
+      if (k == key) {
+        doc::SampleRef n = r;
+        n.path = stored;
+        updated.push_back(std::move(n));
+        break;
+      }
+  }
+  if (!updated.empty()) store_.relocateSamples(updated);
+  fs::remove(from, ec);  // gone when empty (a file left in it keeps it)
 }
 
 Status ViewContext::saveProjectAs(std::string_view dirUtf8) {
   if (dirUtf8.empty()) return Error{ErrorCode::InvalidArgument, "save: empty project directory", {}};
+  if (!unsaved_.root.empty() && pathInside(dirUtf8, unsaved_.root, true)) {  // M6 review H1
+    setStatus("Could not save " + std::string(dirUtf8) + ": that folder holds unsaved recordings and may be deleted");
+    return Error{ErrorCode::InvalidArgument, "save: a project cannot be saved inside the unsaved recordings folder", {}};
+  }
   if (projectDir_ != dirUtf8 && !projectDir_.empty()) {
     // T5.8: a project-relative sample stays where it is: saved elsewhere, the project references it by its absolute path
     // (Collect All and Save copies it into the new project).
@@ -370,6 +469,9 @@ Status ViewContext::saveProjectAs(std::string_view dirUtf8) {
     setStatus("Could not save " + std::string(dirUtf8) + ": " + s.error().message);
     return s;
   }
+  if (!unsaved_.root.empty())  // C1: a saved project still pointing into an unsaved folder pins it
+    for (const doc::SampleRef& r : doc::samplesOf(*store_.current()))
+      if (doc::isAbsoluteSamplePath(r.path) && pathInside(r.path, unsaved_.root, false)) savedUnsavedRefs_.push_back(r.path);
   const bool renamed = projectDir_ != dirUtf8;
   projectDir_ = std::string(dirUtf8);
   saved_ = store_.current();
@@ -567,7 +669,7 @@ void ViewContext::requestSaveAs(std::function<void()> then) {
 
 bool ViewContext::confirmQuit(std::function<void()> quitAfterSave) {
   auto leave = [this] {  // T6.7b: an untitled project left behind takes its recordings with it
-    if (projectDir_.empty() && unsavedDiscard_ && !unsavedKept_) unsavedDiscard_();
+    if (projectDir_.empty()) discardUnsaved(unsavedRecordingDir_, false);  // the store still holds that document
     return true;
   };
   if (!dirty() || !dialogs_) return leave();
@@ -883,6 +985,10 @@ void ViewContext::registerGlobalActions() {
   add("transport.continue", [this] { continuePlayback(); });
   add("transport.record", [this] { record(); });  // T6.6 / T6.7: Record (F9)
   add("transport.captureMidi", [this] { captureMidi(); });  // T6.9: Capture MIDI (Ctrl+Shift+C)
+  add("transport.panic", [this] {  // M6 review L16: all notes off, bends reset (Ctrl+Shift+Space)
+    transport_.panic();
+    setStatus("Panic: all notes off");
+  });
   // T6.4: the computer MIDI keyboard (Live's M).
   add("keyboard.toggleComputerMidi", [this] { computerKeyboard_.setActive(!computerKeyboard_.active()); });
   computerKeyboard_.onChanged = [this](const ComputerKeyboard& k) {

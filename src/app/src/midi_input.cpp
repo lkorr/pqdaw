@@ -134,6 +134,8 @@ void MidiInputService::close(Open& o) {
     m.status = static_cast<uint8_t>(0xB0 | ch);
     m.d1 = 123;
     (void)link_.livePorts()->push(o.index, m);
+    m.d1 = 121;  // M6 review L1: and its wheel centred (a device reusing the index starts clean)
+    (void)link_.livePorts()->push(o.index, m);
   }
 }
 

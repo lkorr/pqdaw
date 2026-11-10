@@ -126,15 +126,22 @@
 // playhead passes the punch-out (+ the record latency) without a loop, and its end (the report says the transport no
 // longer records, after the Record command was taken), which commits it: ONE undo step (doc::ops::commitRecording):
 // per pass of each track a take lane, the last pass also in the main lane (MIDI with overdub: merged into the main
-// lane). Audio takes: warp Off clips of the session's file; a pass covers what was PLAYED: its captured song range
-// shifted by the record latency (engine::Recorder::latencyOffset), except at a loop wrap where the file runs on: there
-// the take boundary stays on the loop point and its file frames are those `offset` later, so consecutive takes are
-// contiguous regions of one file. Each clip starts on the tick whose sample is exactly its first sample (the file frame
+// lane). Audio takes: warp Off clips of the session's file; a pass's take is exactly the input frames PLAYED in it (the
+// recorder places every captured frame on the song sample played record-latency earlier, across loop wraps too:
+// engine::Recorder "Capture"), so consecutive loop takes are contiguous regions of one file and each covers its pass;
+// the frames of the last `offset` before Stop are not captured. Its length is the file's as probed back (a write error
+// shortens it; > 4 GiB is RF64). Each clip starts on the tick whose sample is exactly its first sample (the file frame
 // there is whole: sample-exact copies). Notes: a note's song sample = the song time the transport played at its stamp
 // (engine time − the live latency − the output latency, through the session's runs) minus the PDC total; identities
-// from the record tap (Keys: the map's Degree; Hz: the frozen Cents, a note-on bend frozen through
-// InputPitchMap::atNoteOn); RecordSettings::recordQuantize snaps starts. recordDir(): <project>/samples/recorded, or
-// for an untitled project LinkConfig::unsavedDir (default %LOCALAPPDATA%/pqdaw/Unsaved/<session>/samples/recorded).
+// from the record tap's stored id and the note-on bend (doc::playedIdentity: a Degree stays the key's degree, a Cents
+// id gets the bend added; never re-read from the tuning or the track's mode now: M6 review M4 / M5);
+// RecordSettings::recordQuantize snaps starts. WAV names are unique within a session (M6 review L11).
+// recordDir(): <project>/samples/recorded, or for an untitled project its own folder (M6 review C1): every untitled
+// document — at start, and each New — gets a fresh <base>/<n> (base: %LOCALAPPDATA%/pqdaw/Unsaved/<pid-time>, or
+// LinkConfig::unsavedDir), handed to the attached ViewContext (views::ViewContext::UnsavedRecordings), which moves its
+// files into the project at the first save and asks discardUnsavedRecordings(dir) to delete it when the untitled document
+// is discarded. A take still recording into it when the project became titled (saved during the take) is moved into the
+// project when it is committed.
 //
 // ---- Capture MIDI (T6.9; project_link_input.cpp, pq/app/midi_capture.h) ----------------------------------------------
 // Every MIDI track the live routes listen with gets an engine::CaptureRing (kCaptureNotes notes, allocated here the
@@ -488,6 +495,7 @@ public:
   void releaseAuditions() override;
   void liveKey(int32_t equave, int32_t step, float velocity, bool on) override;  // T6.4: the computer keyboard
   bool captureMidi(Ticks insertMarker) override;  // T6.9: see "Capture MIDI" in the file comment
+  void panic() override;                          // M6 review L16: engine::Engine::panic
   // T6.6 / T6.7: Record (see "Recording" in the file comment).
   void record(Ticks from) override;
   double outputLatencyMs() override;                 // T6.6: outputLatency() in ms
@@ -917,12 +925,14 @@ public:
   void setRecordStore(doc::DocumentStore* store) noexcept { recordStore_ = store; }
   RecordingService& recording() noexcept { return *recording_; }
   std::string recordDir() const;
-  std::string unsavedRecordDir() const;  // where an untitled project records
-  // T6.7b: the untitled project was discarded (ViewContext's unsaved-discard hook: New / Open / quit): a session still
-  // running ends without a commit, then this run's unsaved recordings folder is deleted — the session folder
-  // %LOCALAPPDATA%/pqdaw/Unsaved/<session> (LinkConfig::unsavedDir when set: that folder), and only through
-  // removeUnsavedFolder's guard. Returns the entries removed. UI thread.
-  uint64_t discardUnsavedRecordings();
+  // M6 review C1: where the current untitled document records (see "Recording"); a new one for each untitled document.
+  const std::string& unsavedRecordDir() const noexcept { return unsavedDir_; }
+  std::string unsavedRoot() const;  // every untitled folder lies under it (Save As refuses targets inside it: H1)
+  std::string freshUnsavedDir();    // a new untitled document's folder (becomes unsavedRecordDir()). UI thread.
+  // T6.7b / M6 review C1: an untitled document's folder `dir` was discarded (the ViewContext checked that nothing still
+  // references it): a session recording into it ends without a commit, then the folder is deleted — only through
+  // removeUnsavedFolder's guard (inside this run's base). Returns the entries removed. UI thread.
+  uint64_t discardUnsavedRecordings(const std::string& dir);
   uint64_t recordCommits() const noexcept { return recordCommits_; }
   // T6.7b: the manual record offset (Preferences → Record, ViewPrefs::recordOffsetMs): ms, signed; the engine's recorder
   // gets it in frames at the current rate (kept across a sample-rate change). UI thread.
@@ -941,6 +951,8 @@ public:
   bool recordingOverlay(views::RecordingOverlay& out) override;  // views::TransportPort
 
 private:
+  std::string unsavedBase() const;                                // this run's folder of untitled folders
+  bool insideUnsaved(const std::filesystem::path& p) const;       // lexically inside unsavedRoot()
   void syncRecordInputs(const doc::Project& p, bool force);       // UI thread
   std::vector<engine::UnitInput> unitInputs(const doc::LoweredProject& lp) const;  // compile path (compileMutex_)
   void pollRecording();    // UI thread (playhead())
@@ -957,6 +969,8 @@ private:
   uint32_t availableInputs_ = 0;
   std::function<void()> inputUseFn_;
   RecordingService::Live recLive_;    // the overlay's copy
+  std::string unsavedDir_;             // M6 review C1: the current untitled document's folder
+  uint32_t unsavedSerial_ = 0;
   uint64_t overlayRevision_ = 0;
   int64_t overlaySongEnd_ = 0;
 };

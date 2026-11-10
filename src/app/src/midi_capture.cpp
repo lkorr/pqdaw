@@ -36,19 +36,11 @@ Ticks barCeil(const TimeSigMap& sm, Ticks t) noexcept {
   return f == t ? t : sm.barToTicks(sm.ticksToBarBeat(t).bar + 1);
 }
 
-tuning::PitchId identityOf(const CapturedNote& n, const CaptureTrack& ct) {
-  if (ct.hzMap && n.bendCents != 0.0f && n.raw.port != engine::kLiveKeyboard) {
-    const doc::InputPitch ip = ct.hzMap->atNoteOn(n.raw.d1, n.bendCents);
-    if (ip.mapped) return ip.id;
-  }
-  return n.id;
-}
-
-doc::Note noteOf(const CapturedNote& n, const CaptureTrack& ct, Ticks start, Ticks length) {
+doc::Note noteOf(const CapturedNote& n, Ticks start, Ticks length) {
   doc::Note out;
   out.start = start;
   out.length = std::max<Ticks>(1, length);
-  out.pitch = identityOf(n, ct);
+  out.pitch = doc::playedIdentity(n.id, n.bendCents);  // M6 review M4 / M5
   out.velocity = std::clamp(n.velocity, 1.0f, 127.0f);
   out.releaseVelocity = n.endTime == engine::kCaptureOpen ? 64.0f : std::clamp(n.release, 0.0f, 127.0f);
   return out;
@@ -96,7 +88,7 @@ CapturePlan planCapture(const doc::Project& p, std::span<const CaptureTrack> tra
       const int64_t endSong = song + (endOf(*n, t.now) - n->engineTime);
       const auto s = std::max<Ticks>(0, static_cast<Ticks>(std::llround(tm.samplesToTicks(song, sr))));
       const auto e = std::max<Ticks>(s + 1, static_cast<Ticks>(std::llround(tm.samplesToTicks(endSong, sr))));
-      notes.push_back(noteOf(*n, ct, s, e - s));
+      notes.push_back(noteOf(*n, s, e - s));
       lo = std::min(lo, s);
       hi = std::max(hi, e);
     }
@@ -146,7 +138,7 @@ CapturePlan planCapture(const doc::Project& p, std::span<const CaptureTrack> tra
     for (const CapturedNote* n : stopped[i].notes) {
       const Ticks s = ticksAfter(n->engineTime - t0);
       const Ticks e = ticksAfter(endOf(*n, t.now) - t0);
-      notes[i].push_back(noteOf(*n, *stopped[i].track, s, e - s));
+      notes[i].push_back(noteOf(*n, s, e - s));
       lastOnset = std::max(lastOnset, s);
     }
   const int64_t bars = std::max<int64_t>(1, std::llround(static_cast<double>(lastOnset + beat) / static_cast<double>(bar)));

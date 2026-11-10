@@ -701,20 +701,7 @@ void SamplePool::diskMain() {
     // prefetch held after Stop) with a full ring cannot advance: it needs no polling (engage() and new claims wake
     // the thread), so the thread sleeps without a timeout again instead of waking at 500 Hz.
     busy = diskPass();
-    {  // T6.7: the disk client (the recording writer)
-      std::lock_guard lock(clientMutex_);
-      if (clientFn_ != nullptr && clientFn_(clientUser_)) busy = true;
-    }
   }
-}
-
-void SamplePool::setDiskClient(bool (*fn)(void*), void* user) {
-  {
-    std::lock_guard lock(clientMutex_);
-    clientFn_ = fn;
-    clientUser_ = user;
-  }
-  if (fn != nullptr && wakeEvent_ != nullptr) SetEvent(wakeEvent_);
 }
 
 bool SamplePool::diskPass() {

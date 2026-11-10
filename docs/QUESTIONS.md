@@ -803,7 +803,8 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
 - **Open (not built)**: deleting an untitled project's recordings folder when the project is discarded (the files stay in
   `%LOCALAPPDATA%\pqdaw\Unsaved\<pid-time>`; the first save moves them into the project); a "Record latency offset"
   field in Preferences (the engine takes `Recorder::setManualOffset`, nothing sets it yet).
-- Status: decided (1)–(11) (reversible); the two open items for the orchestrator.
+- Status: decided (1)–(11) (reversible); the two open items for the orchestrator. (2) and (11) superseded by
+  Q?-T6.x-fix-rec-a (frames placed on what was played; the writer's own thread).
 
 ## Q?-T6.5b-a · 2026-11-10 · T6.5b · Complex priming without a burst: what was chosen
 - **Context**: Q?-T6.5-a (4): a voice started inside a Complex clip primed ≈ 10k vocoder frames in one block (measured
@@ -884,4 +885,23 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   QPC times and the render clock's QPC position, averaged since the FIFO primed, replaces the input-latency estimate
   in the recorder. Loopback on the dev machine: measured 1424 vs observed 1440 frames (0.33 ms); a real microphone
   round trip is only checkable by hand (REVIEW).
+- Status: decided (1)–(5) (reversible). (2)'s one folder per run and `unsavedRecordingsKept` superseded by
+  Q?-T6.x-fix-rec-a / M6 review C1 (a folder per untitled document, saved references pin it).
+
+## Q?-T6.x-fix-rec-a · 2026-11-10 · T6.x-fix-rec · Recording / input review fixes: what was chosen
+- **Context**: docs/reviews/M6.md C1, H1, M4–M6, M8, M9, L1, L2, L11, L16 named the faults and suggested fixes; these
+  details were open.
+- **Choices** (most reversible): (1) M6: instead of widening the punch window across the wrap, the recorder places
+  every captured frame on the song sample PLAYED `offset` earlier (a short history of the session's runs), so any jump
+  (loop wrap, locate) is handled and the commit needs no latency arithmetic. Consequences: a take's file no longer
+  starts with the `offset` frames captured before the session began (they were played before it; the first take
+  started `offset` early or in pre-roll), so files are `offset` frames shorter and clips start at content frame 0; a
+  negative total offset (a large negative manual offset) counts as 0; an offset that shrinks mid-session leaves a gap
+  written as silence. (2) M8: RF64 (a JUNK chunk reserved at open becomes ds64), not a roll-over to a second file; the
+  commit takes each file's frames from `media::probe`. (3) M9: the writer has its own thread (condition variable, 2 ms
+  polls while a session runs); `SamplePool::setDiskClient` is deleted. (4) C1: folders are
+  `Unsaved\<pid-time>\<n>` (WAVs directly inside); stale folders of crashed runs are still never cleaned (L13). The
+  "last saved project" check is every path a save of this context wrote inside `Unsaved` (pinned for the run) plus the
+  store's snapshots after a New / Open. (5) L16: `transport.panic` on Ctrl+Shift+Space (Live has none), an
+  AllNotesOff (voices release) rather than AllSoundOff (fast fade); the transport keeps playing.
 - Status: decided (1)–(5) (reversible).

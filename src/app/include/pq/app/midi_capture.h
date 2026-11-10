@@ -17,8 +17,9 @@
 //   the song tempo stays and the notes keep their real time at it. The first note-on (of all tracks) is the clip's first
 //   downbeat; the clip goes to the bar of the insert marker, looped, its length the phrase rounded to bars
 //   (round((last onset − first onset + one beat) / bar), at least 1).
-// Identities: the route table's (Keys: the key's Degree; Hz: its Hz frozen as Cents, a note-on pitch bend frozen in
-// through InputPitchMap::atNoteOn, as Record does). A note still held ends at `now`.
+// Identities: what the ring kept at the note-on (doc::playedIdentity: Keys the key's Degree; Hz its frozen Cents plus
+// the note-on bend, as Record does; never the tuning or the track's mode as they are at Capture). A note still held
+// ends at `now`.
 
 #include <cstdint>
 #include <optional>
@@ -46,7 +47,6 @@ struct CaptureTiming {
 struct CaptureTrack {
   doc::TrackId track;
   std::span<const engine::CapturedNote> notes;  // in sequence order (CaptureRing::read)
-  doc::InputPitchMapPtr hzMap;                  // Hz mode: the track's map (freezes a note-on bend); null: Keys
 };
 
 struct CapturePlan {

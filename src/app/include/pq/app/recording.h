@@ -1,24 +1,33 @@
 #pragma once
 
 // The recording service (T6.7; docs/plans/M6.md "### T6.7"): the non-RT side of recording. The engine's recorder
-// (pq/engine/recorder.h) pushes the song runs of a session and the captured input frames into lock-free rings; this
-// service drains them on the sample pool's disk thread (SamplePool::setDiskClient, every 2 ms while a session runs)
-// into one 32-bit float WAV per recorded audio track (its input's 1 or 2 channels; crash-safe: the header is patched
-// every second, media::WavWriter), keeps the session's song-time map (consecutive runs merged; a loop wrap or a locate
-// starts a new PASS) and the live waveform (min / max per kPeakFrames file frames), and buffers the live notes the
-// engine's record tap reports for the session's MIDI tracks (pollNotes, UI thread). finish() (UI thread) drains what is
-// left, closes the files and returns the passes, the files and the notes; the playback link turns them into takes
-// (pq/app/project_link.h "Recording").
+// (pq/engine/recorder.h) pushes the song runs of a session and the captured input frames (placed on what was played)
+// into lock-free rings; this service drains them on its OWN writer thread (M6 review M9: not the sample pool's disk
+// thread, so a slow disk never stalls clip-stream refills; every 2 ms while a session runs, asleep otherwise) into one
+// 32-bit float WAV per recorded audio track (its input's 1 or 2 channels; crash-safe: the header is patched every
+// second, media::WavWriter; past 4 GiB the file becomes RF64, M6 review M8), keeps the session's song-time map
+// (consecutive runs merged; a loop wrap or a locate starts a new PASS; each pass's audio is the file range of the
+// frames PLAYED in it, a gap inside a pass written as silence) and the live waveform (min / max per kPeakFrames file
+// frames), and buffers the live notes the engine's record tap reports for the session's MIDI tracks (pollNotes, UI
+// thread). A write error is reported at once (takeErrors) and that track's file stops there. finish() (UI thread)
+// drains what is left, closes the files and returns the passes, the files and the notes; the playback link turns them
+// into takes (pq/app/project_link.h "Recording").
 //
-// Threads: begin / pollNotes / finish / overlay copies on the UI thread; pump on the disk thread (or the UI thread:
-// both under one mutex, never held by the audio thread). Idle (no session): the disk client returns at once.
+// Threads and locks: begin / pollNotes / takeErrors / finish / live on the UI thread; pump on the writer thread (or
+// the UI thread in tests: setWriterThread(false)). The file I/O runs under ioMutex_ (the writer thread; the UI thread
+// only in begin / finish / bind / prepareChannels); what the UI reads (passes, frame count, peaks, notes, errors) is
+// under a second mutex that is never held across a write, so live() / pollNotes() never wait for the disk (M9). Idle
+// (no session): the writer thread sleeps on a condition variable.
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "pq/core/result.h"
@@ -26,7 +35,6 @@
 #include "pq/engine/engine.h"
 #include "pq/engine/live_input.h"
 #include "pq/engine/recorder.h"
-#include "pq/media/sample_pool.h"
 #include "pq/media/wav_file.h"
 
 namespace pq::app {
@@ -37,11 +45,13 @@ struct RecordingTrack {
   bool audio = false;
   doc::AudioInput input;         // audio: the device channels
   std::filesystem::path path;    // audio: the WAV written
+  int64_t frames = 0;            // audio, in the result: the frames its file holds (a write error stops it early)
   uint32_t slot = 0xFFFFFFFFu;   // MIDI: the track's event slot (its live notes)
 };
 
 // A pass: song samples [songStart, songEnd) the transport played without a jump, starting at engine time
-// engineStart; its captured part [audio0, audio1) (song samples; empty: nothing captured) is file frames [file0, …).
+// engineStart; the input frames PLAYED against its song samples [audio0, audio1) (empty: none) are file frames
+// [file0, file0 + audio1 − audio0) (contiguous: a pass's frames are written together, a gap as silence).
 struct RecordingPass {
   int64_t songStart = 0, songEnd = 0;
   int64_t engineStart = 0;
@@ -54,10 +64,10 @@ struct RecordingResult {
   double sampleRate = 48000.0;
   std::vector<RecordingTrack> tracks;
   std::vector<RecordingPass> passes;
-  int64_t fileFrames = 0;                       // frames in every audio file
+  int64_t fileFrames = 0;                       // frames the session wrote (each file: RecordingTrack::frames)
   std::vector<engine::LiveNoteRecord> notes;    // the session's live notes (MIDI tracks' slots), in arrival order
   uint64_t droppedFrames = 0;                   // frames written as silence (the rings were full)
-  std::vector<std::string> errors;              // files that could not be written
+  std::vector<std::string> errors;              // write errors takeErrors() has not returned yet
 };
 
 // T6.7b: deletes `target` and everything under it, but only when it is safe: `root` and `target` absolute, `target`
@@ -73,12 +83,13 @@ public:
   static constexpr uint32_t kPeakFrames = 256;  // file frames per waveform bucket
   static constexpr double kRingSeconds = 4.0;    // capture ring per input channel
 
-  // `pool`: its disk thread runs pump() (null: pump() only from the UI thread, e.g. tests without a disk thread).
-  explicit RecordingService(media::SamplePool* pool);
-  ~RecordingService();
+  RecordingService();   // starts the writer thread
+  ~RecordingService();  // a running session is finished first, then the thread stops
   RecordingService(const RecordingService&) = delete;
   RecordingService& operator=(const RecordingService&) = delete;
 
+  // Tests: false stops the writer thread (pump() is then called by hand); true starts it again. UI thread.
+  void setWriterThread(bool on);
   // UI thread: the engine whose recorder is drained (a sample-rate change makes a new one). Not during a session.
   void bind(engine::Engine* e);
   // UI thread: the device input channels the armed audio tracks use (sorted, distinct). A changed set gets new rings
@@ -91,9 +102,11 @@ public:
   bool active() const noexcept { return active_; }
   // UI thread: pops the engine's record tap (call it often: the tap is a 4096-entry ring).
   void pollNotes();
+  // UI thread: the write errors since the last call (M8: reported while the session runs, not only at its end).
+  std::vector<std::string> takeErrors();
   // UI thread: drains what is left, closes the files, ends the session.
   RecordingResult finish();
-  // Disk thread (or UI): drains the segments and their frames. True: a session runs (poll again).
+  // Writer thread (or the UI thread in tests): drains the segments and their frames. True: a session runs.
   bool pump();
 
   // ---- The live overlay (UI thread; append-only during a session) ----
@@ -113,39 +126,56 @@ private:
     RecordingTrack track;
     media::WavWriter wav;
     std::vector<int32_t> ringIndex;  // per file channel: index into the capture set's channels (−1: silence)
-    std::vector<float> peaks;        // the live waveform
     float peakMin = 0.0f, peakMax = 0.0f;
   };
-  static bool diskClient(void* self) { return static_cast<RecordingService*>(self)->pump(); }
-  bool pumpLocked();  // mutex_ held
-  void addRun(const engine::CaptureSegment& s, int64_t fileFrame);
+  bool pumpLocked();                                                  // ioMutex_ held
+  void addRun(const engine::CaptureSegment& s);                       // ioMutex_ held
+  void addAudio(const engine::CaptureSegment& s, bool inRings);       // ioMutex_ held
+  // Writes `n` frames to every writer — the capture set's channels from scratch_ (planar, `stride` frames per channel)
+  // starting at frame `from`, or silence — and adds them to the live peaks. ioMutex_ held.
+  void writeFrames(bool fromRings, uint32_t stride, uint32_t from, uint32_t n);
+  void startThread();
+  void stopThread();
+  void writerMain();
 
-  media::SamplePool* pool_;
   engine::Engine* engine_ = nullptr;
   std::vector<uint16_t> channels_;
   std::vector<uint16_t> wantChannels_;
-  std::shared_ptr<engine::CaptureSet> set_;
   uint32_t nextSerial_ = 1;
   bool active_ = false;  // UI thread's view
   uint32_t liveSession_ = 0;
+  size_t errorsTaken_ = 0;  // UI thread
 
-  mutable std::mutex mutex_;  // everything below
+  // The writer thread.
+  std::thread thread_;
+  std::mutex wakeMutex_;
+  std::condition_variable wake_;
+  bool stop_ = false;                 // wakeMutex_
+  std::atomic<bool> pumping_{false};  // a session runs: the thread polls every 2 ms
+
+  std::mutex ioMutex_;  // the writer side: everything down to mutex_
+  std::shared_ptr<engine::CaptureSet> set_;
   bool running_ = false;
   bool sessionKnown_ = false;
   uint32_t session_ = 0;
   double rate_ = 48000.0;
   std::vector<std::unique_ptr<Writer>> writers_;
   std::vector<RecordingTrack> tracks_;
+  std::vector<float> scratch_;  // planar: capture-set channels × frames
+  std::vector<float> zeros_;
+  std::vector<std::vector<float>> newPeaks_;  // per writer: peaks finished in this pump, published under mutex_
+  uint32_t peakFill_ = 0;
+  int64_t lastEngineEnd_ = INT64_MIN, lastSongEnd_ = INT64_MIN;
+  std::vector<uint32_t> noteSlots_;
+
+  mutable std::mutex mutex_;  // what the UI reads; never held across a write
   std::vector<RecordingPass> passes_;
   int64_t fileFrames_ = 0;
   uint64_t dropped_ = 0;
   std::vector<std::string> errors_;
-  std::vector<float> scratch_;    // planar: capture-set channels × frames
-  std::vector<float> zeros_;
-  uint32_t peakFill_ = 0;
-  int64_t lastEngineEnd_ = INT64_MIN, lastSongEnd_ = INT64_MIN;
+  std::vector<doc::TrackId> audioTracks_;
+  std::vector<std::vector<float>> peaks_;  // per writer: min, max per kPeakFrames frames
   std::vector<engine::LiveNoteRecord> notes_;
-  std::vector<uint32_t> noteSlots_;
 };
 
 }  // namespace pq::app

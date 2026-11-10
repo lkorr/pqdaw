@@ -270,6 +270,9 @@ public:
   bool popRecord(LiveNoteRecord& out) noexcept { return record_.tryPop(out); }
   LivePorts& ports() noexcept { return *ports_; }
   const std::shared_ptr<LivePorts>& sharedPorts() const noexcept { return ports_; }
+  // M6 review L16: at the next process() every held note is released (note-offs; capture notes end) and every
+  // source's pitch bend and sustain pedal are reset. Any thread (Engine::panic).
+  void requestPanic() noexcept { panicReq_.fetch_add(1, std::memory_order_release); }
 
   // ---- Audio thread ----
   struct Block {
@@ -320,7 +323,7 @@ private:
               const RawMidi& m, const Block& b) noexcept;
   void updateClock(const Block& b) noexcept;
   void retuneHeld(const LiveRouteImage& img, const Block& b) noexcept;
-  void recaptureHeld(const LiveRouteImage* img) noexcept;
+  void recaptureHeld(const LiveRouteImage* img, int64_t time) noexcept;
 
   LiveInputConfig cfg_;
   std::shared_ptr<LivePorts> ports_;
@@ -338,6 +341,8 @@ private:
   std::atomic<uint32_t> latency_{0};
   std::atomic<bool> recording_{false};
   std::atomic<int64_t> now_{0};
+  std::atomic<uint32_t> panicReq_{0};  // L16
+  uint32_t panicSeen_ = 0;             // audio thread
   SpscRing<LiveNoteRecord> record_;
   // Audio thread.
   std::vector<Held> held_;
