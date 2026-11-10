@@ -94,7 +94,10 @@ std::string formatTranspose(const doc::AudioTranspose& t) {
   char buf[48];
   switch (t.unit) {
     case doc::TransposeUnit::Steps: std::snprintf(buf, sizeof buf, "%d", t.steps); break;
-    case doc::TransposeUnit::Cents: std::snprintf(buf, sizeof buf, "%gc", t.cents); break;
+    case doc::TransposeUnit::Cents:  // M6 review L19: "0 st" / "+7 st" for whole semitones, else "386.3 ¢"
+      if (t.cents == std::round(t.cents / 100.0) * 100.0) std::snprintf(buf, sizeof buf, "%g st", t.cents / 100.0);
+      else std::snprintf(buf, sizeof buf, "%g \xC2\xA2", t.cents);
+      break;
     case doc::TransposeUnit::Ratio:
       std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(t.ratio.num()), static_cast<long long>(t.ratio.den()));
       break;
@@ -370,7 +373,9 @@ void SampleDisplay::paint(PaintContext& ctx) {
   }
   xa = std::clamp(std::round(xa), wx0, wx1);
   xb = std::clamp(std::round(xb), wx0, wx1);
-  if (xb > xa) dl.addRectFilled({xa, wy0, xb, wy1}, lerp(colour, rgba(30, 30, 30), 0.30f));
+  // M6 review L19: a dark tint of the clip colour (a full-colour slab outweighed the arrangement); the waveform in
+  // the clip colour over it.
+  if (xb > xa) dl.addRectFilled({xa, wy0, xb, wy1}, lerp(th->surface.sunken, colour, 0.22f));
   // Warped: the content's beat grid (bars brighter), where beats are at least 4 px apart.
   if (isWarped) {
     double a0 = 0, a1 = 1;
@@ -393,7 +398,7 @@ void SampleDisplay::paint(PaintContext& ctx) {
     WaveformDraw d;
     // M5 review UI 2: the sample at unity (the clip gain is a readout in the corner).
     d.gain = 1.0f;
-    d.colour = lerp(colour, rgba(0, 0, 0), 0.72f);
+    d.colour = lerp(colour, th->text.primary, 0.12f);
     // One piece per segment of the warp law: [0, first marker), between markers, [last marker, end) — each linear in
     // content, so drawn stretched into its x range.
     double cuts[2 + 64];
@@ -420,6 +425,12 @@ void SampleDisplay::paint(PaintContext& ctx) {
   } else {
     paint::text(ctx, font, w, "Loading waveform\xE2\x80\xA6", th->text.secondary, TextAlign::Center, 8, 8);
   }
+  // Outside the played region the waveform is veiled (it is drawn in the clip colour everywhere).
+  {
+    const Rgba veil = withAlpha(th->surface.sunken, 150);
+    if (xa > wx0) dl.addRectFilled({wx0, wy0, xa, wy1}, veil);
+    if (xb < wx1) dl.addRectFilled({std::max(xb, wx0), wy0, wx1, wy1}, veil);
+  }
   // The sample's transients: faint lines (one per pixel column at most).
   if (const SampleAnalysisResult* an = v_.ctx_.sampleAnalysis().get(c.sample); an && an->transients) {
     const Rgba tc = withAlpha(th->text.primary, 46);
@@ -430,6 +441,43 @@ void SampleDisplay::paint(PaintContext& ctx) {
       last = x;
       dl.addRectFilled({x, wy0, x + 1.0f, wy1}, tc);
       if (st.h > 0) dl.addRectFilled({x, static_cast<float>(st.bottom() - st.h / 3), x + 1.0f, static_cast<float>(st.bottom())}, tc);
+    }
+  }
+  // M6 review L19: numbers on the axis at the top of the waveform — warped: content bars (1 = content tick 0, as the
+  // grid's bar lines); Off: seconds of the file. Every 1, 2, 4, … so labels stay ≥ 36 px apart.
+  if (font != kNoFont && ctx.res.text && w.h > 0) {
+    const Rgba numCol = withAlpha(th->text.primary, 170);
+    const float minGap = static_cast<float>(ctx.scale.px(36.0f));
+    const int32_t lh = ctx.res.text->metrics(font).lineHeight, pad = ctx.scale.px(3.0f);
+    char num[24];
+    auto label = [&](float x, const char* t) {
+      if (x < wx0 - 0.5f || x >= wx1 - static_cast<float>(pad)) return;
+      paint::text(ctx, font, {static_cast<int32_t>(x), w.y + pad / 2, w.right() - static_cast<int32_t>(x), lh}, t, numCol,
+                  TextAlign::Left, pad, 0);
+    };
+    if (isWarped) {
+      double a0 = 0, a1 = 1;
+      axis(a0, a1);
+      const double pxPerBar = static_cast<double>(w.w) / (a1 - a0) * static_cast<double>(kTicksPerWhole);
+      int64_t every = 1;
+      while (pxPerBar * static_cast<double>(every) < minGap && every < (int64_t{1} << 30)) every *= 2;
+      int64_t first = static_cast<int64_t>(std::ceil(a0 / static_cast<double>(kTicksPerWhole)));
+      if (const int64_t rem = ((first % every) + every) % every; rem != 0) first += every - rem;  // a multiple of every
+      for (int64_t bar = first; static_cast<double>(bar * kTicksPerWhole) <= a1; bar += every) {
+        std::snprintf(num, sizeof num, "%lld", static_cast<long long>(bar + 1));
+        label(std::round(xOfContent(static_cast<double>(bar * kTicksPerWhole))), num);
+      }
+    } else {
+      const double secs = frames() / std::max(1.0, rate());
+      const double pxPerSec = static_cast<double>(w.w) / std::max(1e-9, secs);
+      double every = 0.25;
+      while (pxPerSec * every < minGap && every < 1e6) every *= 2.0;
+      for (double t = 0.0; t <= secs; t += every) {
+        std::snprintf(num, sizeof num, "%gs", t);
+        const float x = std::round(xOf(t * rate()));
+        dl.addRectFilled({x, wy0, x + 1.0f, wy0 + static_cast<float>(lh)}, withAlpha(th->text.primary, 60));
+        label(x, num);
+      }
     }
   }
   // Region edges.
@@ -770,7 +818,17 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   detune_->setInfo("Detune", "Fine pitch in cents (±50). Every warp mode but Re-Pitch.");
   bindGesture(*detune_, "Clip Detune", [this](double v) { (void)setDetune(static_cast<float>(v)); });
 
-  reverse_ = &row("reverse-row", "Reverse").add<Toggle>("reverse", "Rev");
+  // M6 review L19: a switch names itself (as Live's Rev. and Loop), no row label repeating it.
+  auto toggleRow = [&rowParent](const char* name, const char* control, const char* text) -> Toggle& {
+    Widget& w = rowParent->add<Widget>(name);
+    w.setLayout(LayoutKind::Row);
+    w.setHeight(Length::fixed(20));
+    w.setPadding({0, 2, 0, 0});
+    Toggle& t = w.add<Toggle>(control, text);
+    w.add<Widget>("rest").setWidth(Length::flex(1));
+    return t;
+  };
+  reverse_ = &toggleRow("reverse-row", "reverse", "Reverse");
   reverse_->setWidth(Length::fixed(84));
   reverse_->setInfo("Reverse", "Plays the clip backwards (the file is not changed).");
   reverse_->onToggle = [this](bool on) { (void)setReverse(on); };
@@ -809,7 +867,7 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
     double_->setInfo("Double Tempo", "The source tempo × 2.");
     double_->onClick = [this] { (void)scaleSourceBpm(2.0); };
   }
-  loop_ = &row("loop-row", "Loop").add<Toggle>("loop", "Loop");
+  loop_ = &toggleRow("loop-row", "loop", "Loop");
   loop_->setWidth(Length::fixed(84));
   loop_->setInfo("Loop", "Warped clips: repeats the part under the loop brace.");
   loop_->onToggle = [this](bool on) { (void)setLoopEnabled(on); };
@@ -888,9 +946,11 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   eo.dragPixels = 400.0;
   eo.keyStep = 1.0;
   eo.decimals = 0;
+  eo.unit = "bins";  // M6 review L19: a count, not Beats' "Envelope" percentage
   envOrderRow_ = &row("env-order-row", "Envelope");
   envOrder_ = &box(*envOrderRow_, "env-order", eo);
-  envOrder_->setInfo("Envelope", "Complex Pro: the detail of the spectral envelope the formants follow (low: smooth).");
+  envOrder_->setInfo("Envelope", "Complex Pro: the detail of the spectral envelope the formants follow, in frequency bins "
+                                 "(low: smooth).");
   paramGesture(*envOrder_, "Warp Settings", [](doc::WarpParams& p, double v) { p.envelope = static_cast<float>(v); });
 
   // The Sample column's controls one width (the chooser fits "Complex Pro").

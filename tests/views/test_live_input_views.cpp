@@ -17,6 +17,7 @@
 #include "pq/views/prefs/audio_prefs.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
+#include "../../src/views/src/mixer/internal.h"
 #include "views_test_util.h"
 
 using namespace pq;
@@ -216,4 +217,48 @@ TEST_CASE("mixer view + T6.6: Track Delay (type-in, drag, Delete) and the strip'
   f.d.press("Delete");
   f.d.step();
   CHECK(f.track("Piano").mixer.trackDelayMs == 0.0f);
+}
+
+TEST_CASE("mixer view (M6 review L21): sends, pan and volume line up across track, group, return and master strips; "
+          "\"In: Keys\"; the latency row only while a latency is not zero") {
+  Fixture f;
+  MixerView* mixer = findMixer(*f.shell);
+  REQUIRE(mixer != nullptr);
+  mixer->setShown(true);
+  f.d.tree().layoutNow();
+  MixerStrip* piano = mixer->strip(f.track("Piano").id);
+  MixerStrip* keys = mixer->strip(f.track("Keys").id);    // a group
+  MixerStrip* ret = mixer->strip(f.track("B Delay").id);  // a return: no send to itself
+  MixerStrip* master = mixer->strip(f.ctx.doc()->master->id);
+  REQUIRE((piano && keys && ret && master));
+  CHECK(static_cast<mixer::Chooser*>(piano->noteInput())->text() == "In: Keys");
+  for (MixerStrip* s : {keys, ret, master}) {
+    CHECK(s->pan()->rect().y == piano->pan()->rect().y);
+    CHECK(s->volume()->rect().y == piano->volume()->rect().y);
+  }
+  // Send A: the same row on the track, the group and the B return.
+  REQUIRE(piano->sendCount() == 2);
+  for (MixerStrip* s : {keys, ret}) {
+    bool found = false;
+    for (size_t i = 0; i < s->sendCount(); ++i)
+      if (s->sendTarget(i) == piano->sendTarget(0)) {
+        CHECK(s->send(i)->rect().y == piano->send(0)->rect().y);
+        found = true;
+      }
+    CHECK(found);
+  }
+  // No latency anywhere: no latency row.
+  CHECK_FALSE(piano->latency()->visible());
+  const int32_t panY = piano->pan()->rect().y;
+  // A latency on one track: the row appears on every strip (the others' cell empty), everything below moves together.
+  f.port.trackLatency = {{f.track("Piano").id.value, 2.5}};
+  REQUIRE(f.ctx.store().dispatch(doc::SetTrackDelay{f.track("Piano").id, -1.0f}).ok());
+  f.d.step();
+  f.d.tree().layoutNow();
+  CHECK(piano->latency()->visible());
+  CHECK(piano->latency()->text() == "Lat 2.5 ms");
+  CHECK(keys->latency()->text().empty());
+  CHECK(piano->pan()->rect().y > panY);
+  CHECK(master->pan()->rect().y == piano->pan()->rect().y);
+  CHECK(ret->pan()->rect().y == piano->pan()->rect().y);
 }

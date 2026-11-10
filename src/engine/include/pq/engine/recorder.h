@@ -32,6 +32,8 @@
 // audio output sets them per open stream) + the master's PDC total (ProjectProgram::outputLatency, read per block) +
 // the manual offset (setManualOffset: prefs, signed). An input frame captured at song sample s was played against song
 // sample s − offset. noteOffset() = output latency + PDC: what a live note's player heard (notes have no input path).
+// M6 review M7: capture uses the device latencies as they were when the session started (a measured WASAPI round trip
+// that moves mid-take does not move the take); a setDeviceLatency during a session counts from the next one.
 //
 // ---- Monitoring -----------------------------------------------------------------------------------------------------
 // MonitorImage (immutable, built by the app): per audio track with an input, its monitor gate's project param slot, its
@@ -223,6 +225,7 @@ private:
   uint32_t playedHead_ = 0, playedCount_ = 0;
   uint32_t playedSession_ = 0;
   int64_t attributed_ = INT64_MIN;  // played engine time up to which captured frames were placed
+  uint32_t sessionIn_ = 0, sessionOut_ = 0;  // M6 review M7: the device latencies frozen at the session's start
   void pushPiece(CaptureSet* set, int64_t engine, int64_t song, int64_t n, int64_t off, uint32_t session) noexcept;
   const float* const* in_ = nullptr;
   uint32_t numInNow_ = 0;

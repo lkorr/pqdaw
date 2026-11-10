@@ -111,7 +111,10 @@ std::string tuningSummary(const doc::TuningDef& def) {
     std::string s = tu::mosDisplayLabel({nL * reps, nS * reps});
     std::snprintf(buf, sizeof buf, " \xC2\xB7 %.2f\xC2\xA2", m->generator);
     s += buf;
-    if (m->rotation != 0) s += " \xC2\xB7 mode " + std::to_string(m->rotation);
+    // L18: the circle header's numbering (genchain / brightness order, "Mode 3"), not the step rotation.
+    if (m->rotation != 0)
+      if (const auto gmn = tu::computeGmn(m->generator, m->n, m->rotation, m->period, m->region ? &hint : nullptr))
+        s += " \xC2\xB7 " + tu::gmnLabel(*gmn);
     if (tu::hasModmos(m->modmos)) s += " \xC2\xB7 MODMOS";
     return s;
   }
@@ -604,6 +607,8 @@ MosWheelPopover* openMosWheel(Widget& from, ViewContext& ctx, const TuningTarget
     o.anchor = anchor;
     o.placement = Placement::Below;
   }
+  // L17: kept inside the panels (below the control bar, above the status bar) wherever it fits.
+  if (UiTree* tree = layer->tree()) o.within = tree->find("main/body");
   o.onClosed = [raw] { raw->closed(); };
   layer->open(std::move(pop), std::move(o));
   return raw;

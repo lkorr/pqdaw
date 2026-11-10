@@ -615,7 +615,9 @@ void ProjectLink::attach(views::ViewContext& ctx) {
   // T6.7 / M6 review C1: the untitled document's recordings folder (moved into the project on its first save), a fresh
   // one per New, and the delete when an untitled document is discarded.
   ctx.setUnsavedRecordings({unsavedRoot(), unsavedDir_, [this] { return freshUnsavedDir(); },
-                            [this](const std::string& dir) { (void)discardUnsavedRecordings(dir); }});
+                            [this](const std::string& dir) { (void)discardUnsavedRecordings(dir); },
+                            [this] { return staleRecordings(); },  // M6 review L13
+                            [this](const std::string& dir) { return discardStaleRecordings(dir); }});
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onDocumentChange(e); });
   // "Re-enable Automation" and hand-made overrides (T3.15) change which lanes play (T3.17-fix3, M3 review M4).
   observer_ = ctx.observe([this](uint32_t what) {
@@ -648,6 +650,15 @@ void ProjectLink::detach() {
 }
 
 // ---- Slots ------------------------------------------------------------------------------------------------------
+
+std::string ProjectLink::paramSlotKey(const doc::Project& p, const std::string& key) const {
+  if (!key.starts_with("tuning:")) return key;
+  const doc::TuningSlot* ts = doc::findTuning(p, doc::TuningId{static_cast<uint32_t>(std::strtoul(key.c_str() + 7, nullptr, 10))});
+  if (ts == nullptr) return key;
+  std::lock_guard lock(mutex_);
+  const EntryPtr* e = tuningEntry(ts->id, ts->def);
+  return e != nullptr ? key + "#t" + std::to_string((*e)->slot) : key;  // no table: static pitches, one slot
+}
 
 uint32_t ProjectLink::slotForParam(const std::string& key) {
   std::lock_guard lock(mutex_);
@@ -743,7 +754,7 @@ void ProjectLink::applyParams(const doc::Project& p, bool forceAll) {
   if (forceAll && engine_->paramRingCapacity() < params.size() + 1024)
     engine_->growParamRing(static_cast<uint32_t>(params.size() + 1024));
   for (const doc::LoweredParam& lp : params) {
-    const uint32_t s = slotForParam(lp.key);
+    const uint32_t s = slotForParam(paramSlotKey(p, lp.key));  // L4: a tuning param per table
     if (s == kNone) continue;
     coverSlot(s);
     if (automated_[s]) continue;  // automation owns an automated param
@@ -901,7 +912,7 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
         if (const doc::TuningSlot* ts = doc::findTuning(p, doc::TuningId{lane->param.owner});
             ts != nullptr && !doc::hasTuningSignal(ts->def) && inert.empty())
           inert = ts->name;
-      const uint32_t s = slotForParam(key);
+      const uint32_t s = slotForParam(paramSlotKey(p, key));  // L4: a tuning param per table
       if (s == kNone) continue;
       engine::AutomationLaneDesc d;
       d.target = s;
@@ -1828,7 +1839,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
   if (!metaFresh_.empty() && tables_) (void)tables_->waitFor(metaFresh_, 2.0);
   std::vector<engine::ProjectParamLink> links;
   for (const doc::LoweredParam& p : lp.params) {
-    const uint32_t slot = slotForParam(p.key);
+    const uint32_t slot = slotForParam(paramSlotKey(*s, p.key));  // L4: the slots of this compile's tables
     if (slot != kNone) links.push_back({p.track, p.name, slot});
   }
   compiler_->setParamLinks(std::move(links));

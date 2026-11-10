@@ -63,6 +63,19 @@ class AppendResults(unittest.TestCase):
         finally:
             os.remove(inside)
 
+    def test_porcelain_keeps_its_leading_space(self):
+        # M6 review L23: git() stripped the first line's leading space, so " M bench/RESULTS.md" read as
+        # "ench/RESULTS.md" and a second append in one session was refused as dirty.
+        class Done:
+            stdout = " M bench/RESULTS.md\n M bench/other.csv\n"
+        real = ar.subprocess.run
+        ar.subprocess.run = lambda *a, **k: Done()
+        try:
+            status = ar.git("status", "--porcelain")
+        finally:
+            ar.subprocess.run = real
+        self.assertEqual(ar.dirty_paths(status, {"bench/RESULTS.md", "bench/other.csv"}), [])
+
     def test_load_above_25_percent_needs_indicative(self):
         p = self.csv(["s,b,patch32/jit x8,ns/sample,72,70,75,76,15,67.0,CPU,release,ship,lower"])
         with self.assertRaises(SystemExit) as e:

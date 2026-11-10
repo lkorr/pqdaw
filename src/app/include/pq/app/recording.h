@@ -23,6 +23,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -77,6 +78,22 @@ struct RecordingResult {
 // `why` gets the reason for a refusal or a failure (files in use are left).
 uint64_t removeUnsavedFolder(const std::filesystem::path& target, const std::filesystem::path& root,
                              std::string* why = nullptr);
+
+// M6 review L13: the Unsaved session folder of a run that ended without cleaning up (a crash, a killed process), and
+// the takes in it.
+struct StaleUnsavedSession {
+  std::filesystem::path dir;                // <root>/<pid>-<unix time>
+  std::vector<std::filesystem::path> wavs;  // every .wav under it, sorted
+  uint64_t bytes = 0;                       // their total size
+  int64_t started = 0;                      // the session's start (unix seconds, from its name)
+};
+// Session folders directly under `root` named "<pid>-<unix time>", other than `own`, whose process is gone (`alive`
+// false; default processAlive) and that hold at least one .wav. Oldest first. Reads only (never deletes).
+std::vector<StaleUnsavedSession> findStaleUnsaved(const std::filesystem::path& root, std::string_view own,
+                                                  const std::function<bool(uint32_t pid, int64_t started)>& alive = {});
+// True while process `pid` runs and was created within a few minutes before `started` (a reused pid is another
+// process); a process this user cannot query counts as alive.
+bool processAlive(uint32_t pid, int64_t started);
 
 class RecordingService {
 public:

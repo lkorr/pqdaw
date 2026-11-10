@@ -2,7 +2,7 @@
 // and WASAPI endpoints): Ctrl+, opens and closes it (disabled without a port); every chooser applies its choice at
 // once (one apply per choice, the right AudioSettings); ASIO shows one device + Hardware Setup, WASAPI input and
 // output devices; a device that is not connected stays visible; the readouts follow the port; a closed window leaves
-// no timers (it costs nothing); the goldens audio-prefs / audio-prefs-wasapi.
+// no timers (it costs nothing); the goldens audio-prefs / audio-prefs-wasapi, library-, midi-, warp-, record-prefs.
 #include <doctest/doctest.h>
 
 #include <limits>
@@ -320,3 +320,7 @@ TEST_CASE("prefs: the MIDI tab lists the ports (connected and remembered); Track
 TEST_CASE("render: midi-prefs (the MIDI tab: a port on, one off, one not connected) matches the golden image") {
   checkGolden("midi-prefs");
 }
+
+TEST_CASE("render: warp-prefs (the Warp tab at its defaults) matches the golden image") { checkGolden("warp-prefs"); }
+
+TEST_CASE("render: record-prefs (the Record tab at its defaults) matches the golden image") { checkGolden("record-prefs"); }

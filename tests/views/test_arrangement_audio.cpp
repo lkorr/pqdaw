@@ -338,6 +338,11 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   CHECK_FALSE(parseTranspose("abc").has_value());
   CHECK_FALSE(parseTranspose("0/2").has_value());
   CHECK(formatTranspose(*parseTranspose("3/2")) == "3/2");
+  // M6 review L19: cents read as semitones when whole ("0 st", not "0c"), else with the cent sign; both parse back.
+  CHECK(formatTranspose(doc::AudioTranspose{}) == "0 st");
+  CHECK(formatTranspose(*parseTranspose("-700c")) == "-7 st");
+  CHECK(formatTranspose(*parseTranspose("386.3c")) == "386.3 \xC2\xA2");
+  for (const char* t : {"0 st", "-7 st", "386.3 \xC2\xA2"}) CHECK(formatTranspose(*parseTranspose(t)) == t);
   CHECK(sourceBpmFor(0.0, 1.5) == doctest::Approx(160.0));  // one bar of 4/4 in 1.5 s
   CHECK(sourceBpmFor(98.0, 1.5) == 98.0);
   // M6 review M11: Warp as N-Bar Loop's count in the clip's signature, any whole number with a detected tempo.

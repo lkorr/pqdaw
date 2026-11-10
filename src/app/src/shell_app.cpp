@@ -21,6 +21,7 @@
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/project_patch/project_patch_view.h"
+#include "pq/views/shell/recover_recordings.h"
 #include "pq/app/audio_manager.h"
 #include "pq/app/user_settings.h"
 #include "pq/app/pipeline_cache.h"
@@ -245,6 +246,7 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     }
     if (!o.project.empty()) std::printf("pqdaw: project sequences and params to the engine in %.1f ms (units compile on the worker)\n", msSinceMainEntry() - t1);
     if (views::MixerView* mixer = views::findMixer(*app->shell_)) mixer->setMeterSource(app->link_.get());
+    (void)views::offerRecordingRecovery(*app->shell_);  // M6 review L13: takes an earlier (crashed) run left behind
     if (auto* patch = views::findProjectPatch(*app->shell_)) {  // T4.13: wire readouts and the CPU cost labels
       patch->setMeterSource(app->link_.get());
       patch->setCostSource(app->link_.get());

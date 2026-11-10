@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <system_error>
 
 #include <windows.h>
@@ -48,6 +50,57 @@ uint64_t removeUnsavedFolder(const std::filesystem::path& target, const std::fil
   }
   if (why != nullptr) why->clear();
   return n;
+}
+
+bool processAlive(uint32_t pid, int64_t started) {
+  HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (h == nullptr) return GetLastError() == ERROR_ACCESS_DENIED;  // exists, but not ours to ask: leave it alone
+  FILETIME created{}, exited{}, kernel{}, user{};
+  DWORD code = 0;
+  bool alive = GetExitCodeProcess(h, &code) != 0 && code == STILL_ACTIVE;
+  if (alive && GetProcessTimes(h, &created, &exited, &kernel, &user) != 0) {
+    const uint64_t t = (static_cast<uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
+    const auto createdUnix = static_cast<int64_t>(t / 10000000ull) - 11644473600ll;  // FILETIME: 100 ns since 1601
+    alive = started >= createdUnix - 5 && started <= createdUnix + 600;  // the session is named once the link starts
+  }
+  CloseHandle(h);
+  return alive;
+}
+
+std::vector<StaleUnsavedSession> findStaleUnsaved(const std::filesystem::path& root, std::string_view own,
+                                                  const std::function<bool(uint32_t, int64_t)>& alive) {
+  namespace fs = std::filesystem;
+  std::vector<StaleUnsavedSession> out;
+  std::error_code ec;
+  for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    if (!it->is_directory(ec) || it->is_symlink(ec)) continue;
+    const std::string name = it->path().filename().string();
+    if (name == own) continue;
+    unsigned long pid = 0;
+    long long started = 0;
+    char tail = 0;
+    if (std::sscanf(name.c_str(), "%lu-%lld%c", &pid, &started, &tail) != 2) continue;  // not a session folder
+    if (alive ? alive(static_cast<uint32_t>(pid), started) : processAlive(static_cast<uint32_t>(pid), started)) continue;
+    StaleUnsavedSession s;
+    s.dir = it->path();
+    s.started = started;
+    std::error_code wec;
+    for (fs::recursive_directory_iterator w(s.dir, fs::directory_options::none, wec), wend; !wec && w != wend;
+         w.increment(wec)) {
+      if (!w->is_regular_file(wec)) continue;
+      std::string ext = w->path().extension().string();
+      for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      if (ext != ".wav") continue;
+      s.wavs.push_back(w->path());
+      std::error_code sec;
+      if (const std::uintmax_t n = w->file_size(sec); !sec) s.bytes += static_cast<uint64_t>(n);
+    }
+    if (s.wavs.empty()) continue;
+    std::sort(s.wavs.begin(), s.wavs.end());
+    out.push_back(std::move(s));
+  }
+  std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.started < b.started; });
+  return out;
 }
 
 RecordingService::RecordingService() { startThread(); }

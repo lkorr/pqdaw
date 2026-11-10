@@ -6,6 +6,7 @@
 #include <doctest/doctest.h>
 
 #include <filesystem>
+#include <process.h>  // _getpid
 #include <string>
 #include <string_view>
 #include <vector>
@@ -63,7 +64,25 @@ inline uint32_t paintDamage(ui::UiTree& tree, ui::DrawList& dl, const ui::PaintR
   return n;
 }
 
-inline std::string fixtureDir(std::string_view name) { return std::string(PQ_TEST_DATA_DIR) + "/views/fixtures/" + std::string(name); }
+// The checked-in fixture (tests that compare it with the builder that makes it, and PQ_UPDATE_FIXTURES=1 rewrites).
+inline std::string fixtureSourceDir(std::string_view name) {
+  return std::string(PQ_TEST_DATA_DIR) + "/views/fixtures/" + std::string(name);
+}
+// A fresh copy of the fixture in the build tree (the test's working directory, one folder per process: shards run in
+// parallel), refreshed at every call, for tests that open it: a save, an autosave or a recording then writes the copy,
+// never the checked-in file (M6 review L23: a -Full run left tests/views/fixtures/mixer/project.pqd modified).
+inline std::string fixtureDir(std::string_view name) {
+  namespace fs = std::filesystem;
+  const fs::path from = fs::path(fixtureSourceDir(name));
+  if (std::error_code missing; !fs::exists(from, missing)) return fixtureSourceDir(name);  // a test of a missing one
+  const fs::path to = fs::current_path() / "fixture_copies" / std::to_string(_getpid()) / fs::path(std::string(name));
+  std::error_code ec;
+  fs::remove_all(to, ec);
+  fs::create_directories(to.parent_path(), ec);
+  fs::copy(from, to, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+  REQUIRE_MESSAGE(!ec, "fixture copy " << from.string() << " -> " << to.string() << ": " << ec.message());
+  return to.generic_string();
+}
 
 // Two MIDI tracks (one inside a group), a clip with notes of several pitch kinds, a changed tempo, signature and loop,
 // a locator, view state (fold / height). Every edit through the store (history entries).

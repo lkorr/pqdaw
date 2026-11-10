@@ -35,7 +35,8 @@ set(PQ_VIEWS_SOURCES
   src/shell/control_bar.cpp
   src/shell/menu_bar.cpp
   src/shell/panels.cpp
-  src/shell/default_content.cpp)
+  src/shell/default_content.cpp
+  src/shell/recover_recordings.cpp)
 foreach(sub arrangement audio_clip browser mixer piano_roll mos_wheel prefs tunings circuit devices device_chain project_patch bug_report meta panel)
   include(${CMAKE_CURRENT_SOURCE_DIR}/src/${sub}/sources.cmake OPTIONAL)
   string(TOUPPER ${sub} _sub)

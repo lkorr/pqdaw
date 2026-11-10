@@ -43,6 +43,10 @@ struct OverlayOptions {
   Placement placement = Placement::Below;
   bool dismissOnOutsideClick = true;
   bool takeFocus = true;            // focus the popup on open, restore the previous focus on close
+  // T6.x-fix-ui (L17): when set, the popup is placed inside this widget's rect on each axis where it fits there (a
+  // panel kept off the control bar and the status bar); on an axis where it doesn't, inside the whole layer. The
+  // widget must outlive the popup (a shell region).
+  const Widget* within = nullptr;
   std::function<void()> onClosed;   // called once when the popup closes, for any reason
   // Pointer moves and presses outside every popup while this one is open (T3.19: a menu bar switches menus as the
   // pointer moves over its titles, and a press on its own title closes the menu instead of reopening it). Return true

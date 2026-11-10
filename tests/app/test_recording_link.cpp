@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <ctime>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -30,6 +31,8 @@
 #include "pq/app/recording.h"
 #include "pq/media/wav_file.h"
 #include "pq/views/view_context.h"
+
+#include <windows.h>  // GetCurrentProcessId (L13)
 
 using namespace pq;
 using namespace pq::doc;
@@ -563,6 +566,38 @@ TEST_CASE("T6.7b recording: removeUnsavedFolder deletes only a folder strictly i
   CHECK(app::removeUnsavedFolder(session, root, &why) == 0);  // gone: nothing to do
   std::error_code ec;
   fs::remove_all(base, ec);
+}
+
+TEST_CASE("M6 review L13: findStaleUnsaved lists only ended sessions' folders with takes, and deletes nothing") {
+  std::random_device rd;
+  const fs::path root = fs::temp_directory_path() / ("pq_l13_stale_" + std::to_string(rd())) / "Unsaved";
+  auto take = [](const fs::path& f) {
+    fs::create_directories(f.parent_path());
+    std::ofstream(f, std::ios::binary) << "RIFFxxxx";
+  };
+  take(root / "111-1000" / "1" / "Audio 1.wav");                  // ended (C1 layout)
+  take(root / "111-1000" / "2" / "Audio 2.WAV");
+  take(root / "222-900" / "samples" / "recorded" / "old.wav");    // ended (the T6.7 layout), older
+  fs::create_directories(root / "333-1100" / "1");                // ended, but no takes: not offered
+  take(root / "444-1200" / "1" / "live.wav");                     // still running
+  take(root / "555-1300" / "1" / "own.wav");                      // this run
+  take(root / "notasession" / "x.wav");                           // not a session folder
+  take(root / "666-1400x" / "x.wav");
+  const auto alive = [](uint32_t pid, int64_t) { return pid == 444; };
+  const std::vector<app::StaleUnsavedSession> stale = app::findStaleUnsaved(root, "555-1300", alive);
+  REQUIRE(stale.size() == 2);
+  CHECK(stale[0].dir.filename() == "222-900");  // oldest first
+  CHECK(stale[0].started == 900);
+  CHECK(stale[1].dir.filename() == "111-1000");
+  CHECK(stale[1].wavs.size() == 2);
+  CHECK(stale[1].bytes == 16);
+  CHECK(fs::exists(root / "333-1100"));  // nothing was touched
+  CHECK(fs::exists(root / "111-1000" / "1" / "Audio 1.wav"));
+  // The real check: this process is alive, a session named after it is not offered.
+  CHECK(app::processAlive(GetCurrentProcessId(), static_cast<int64_t>(std::time(nullptr))));
+  CHECK_FALSE(app::processAlive(GetCurrentProcessId(), 1000));  // a pid reused by another process
+  std::error_code ec;
+  fs::remove_all(root.parent_path(), ec);
 }
 
 namespace {

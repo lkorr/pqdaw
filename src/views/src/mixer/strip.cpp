@@ -340,9 +340,21 @@ bool MixerController::pollMeters() {
       s->meter()->setLevels(levels_[k++]);
       s->refreshLatency();  // T6.6: a compile after an edit changes it while the engine runs
     }
+  if (updateLatencyRow())
+    for (MixerStrip* s : strips_)
+      if (s->layoutKind() == StripLayout::Vertical) s->invalidateArrange();
   ++stats.polls;
   stats.metersUpdated += k;
   return source->live();
+}
+
+bool MixerController::updateLatencyRow() {
+  bool any = false;
+  for (const MixerStrip* s : strips_)
+    if (s->layoutKind() == StripLayout::Vertical && s->hasLatency()) any = true;
+  if (any == rows.latency) return false;
+  rows.latency = any;
+  return true;
 }
 
 // --- MixerStrip --------------------------------------------------------------------------------------------------------
@@ -497,9 +509,24 @@ void MixerStrip::refreshLatency() {  // T6.6
   const double ms = ctl_->ctx.transport().trackLatencyMs(id_.value);
   if (ms == latencyShown_) return;
   latencyShown_ = ms;
+  if (std::abs(ms) < 0.05) {  // M6 review L21: nothing to say (the info text explains the row)
+    latencyShown_ = 0.0;
+    latency_->setText("");
+    return;
+  }
   char buf[48];
-  std::snprintf(buf, sizeof buf, "Lat %.1f ms", std::abs(ms) < 0.05 ? 0.0 : ms);
+  std::snprintf(buf, sizeof buf, "Lat %.1f ms", ms);
   latency_->setText(buf);
+}
+
+int32_t MixerStrip::ioRowCount() const noexcept {
+  int32_t n = 0;
+  for (const Widget* w : {static_cast<const Widget*>(midiIn_), static_cast<const Widget*>(audioIn_),
+                          static_cast<const Widget*>(channel_), static_cast<const Widget*>(noteInput_),
+                          static_cast<const Widget*>(monitor_), static_cast<const Widget*>(output_),
+                          static_cast<const Widget*>(chip_)})
+    if (w) ++n;
+  return n;
 }
 
 void MixerStrip::resyncToggles() {
@@ -702,6 +729,9 @@ void MixerStrip::arrangeVertical(LayoutPass& pass) {
     put(pass, w, r, 4, y, W - 8, B);
     y += B + G;
   };
+  // M6 review L21: the rows are shared by every strip of the view (MixerController::rows), so sends, pan and volume
+  // line up across track, group, return and master strips; a strip without a control leaves its cell empty.
+  const MixerController::VerticalRows& plan = ctl_->rows;
   row(midiIn_);  // T6.4: the input section first (Live's In/Out), then the output
   row(audioIn_);  // T6.7
   row(channel_);
@@ -709,9 +739,21 @@ void MixerStrip::arrangeVertical(LayoutPass& pass) {
   row(monitor_);
   row(output_);
   row(chip_);
-  row(delay_);  // T6.6
-  row(latency_);
-  for (const SendBox& sb : sends_) row(sb.box);
+  y = 24.0f + static_cast<float>(std::max(plan.io, ioRowCount())) * (B + G);
+  if (delay_) row(delay_);  // T6.6 (the master has none: an empty cell)
+  else y += B + G;
+  if (latency_ && latency_->visible() != plan.latency) latency_->setVisible(plan.latency);
+  if (plan.latency) {
+    if (latency_) row(latency_);
+    else y += B + G;
+  }
+  for (const doc::TrackId ret : plan.returns) {  // one row per return: a strip's own return (or none) stays empty
+    const auto it = std::find_if(sends_.begin(), sends_.end(), [ret](const SendBox& sb) { return sb.target == ret; });
+    if (it != sends_.end()) row(it->box);
+    else y += B + G;
+  }
+  for (const SendBox& sb : sends_)  // a send to a return the plan does not know yet (before the next sync)
+    if (std::find(plan.returns.begin(), plan.returns.end(), sb.target) == plan.returns.end()) row(sb.box);
   row(pan_);
   row(volume_);
   const float buttonsY = H - 4 - B;

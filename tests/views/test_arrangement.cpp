@@ -71,7 +71,7 @@ TEST_CASE("arrangement: the fixture project is what buildArrangementProject make
   views::test::buildArrangementProject(store);
   auto text = doc::serializeProject(*store.current(), store.view());
   REQUIRE(text.ok());
-  const std::string dir = views::test::fixtureDir("arrangement");
+  const std::string dir = views::test::fixtureSourceDir("arrangement");
   if (const char* u = std::getenv("PQ_UPDATE_FIXTURES"); u && *u == '1') REQUIRE(doc::saveProject(dir, store).ok());
   std::string file = readText(dir + "/project.pqd");
   std::erase(file, '\r');  // git may check text files out with CRLF

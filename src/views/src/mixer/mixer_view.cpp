@@ -137,6 +137,14 @@ void MixerView::sync() {
     m.bind(p, *p.master);
     strips_.push_back(&m);
   }
+  // M6 review L21: the rows every strip shares (sends / pan / volume aligned across strip kinds).
+  MixerController::VerticalRows& rows = ctl_->rows;
+  rows.io = 0;
+  for (const MixerStrip* st : strips_) rows.io = std::max(rows.io, st->ioRowCount());
+  rows.returns.clear();
+  for (const doc::TrackPtr& r : p.returns) rows.returns.push_back(r->id);
+  (void)ctl_->updateLatencyRow();
+  for (MixerStrip* st : strips_) st->invalidateArrange();
   row_->invalidateArrange();
   scroll_->invalidateArrange();
   markDirty();

@@ -10,6 +10,9 @@
 //   edo steps   the Steps box dragged 12 → 15 → 18 on an EDO main tuning: a new table per whole step (discrete: a
 //               compile each), the held drawn note retuned at every step with no gap in the sound, then a held live
 //               Keys note likewise (LiveInput moves held keys to a new route image's pitch)
+//   hz input    M6 review L3: a held live Hz-input note keeps its Hz through a Generator drag (a raw pitch)
+//   mos shape   M6 review L4: a MOS size + generator change (a new table): until the compile publishes, the held note
+//               keeps the old pitch (old table, old params); then the new one; never a third pitch in between
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -117,9 +120,10 @@ struct LiveApp {
     link.reset();
   }
 
-  // Renders `seconds` of audio (the left channel).
-  std::vector<float> run(double seconds) {
-    link->flush();  // a structural change compiles here (the app's worker does it after its debounce)
+  // Renders `seconds` of audio (the left channel). `compile` false: without compiling first, as the audio thread plays
+  // while the app's worker compiles (M6 review L4).
+  std::vector<float> run(double seconds, bool compile = true) {
+    if (compile) link->flush();  // a structural change compiles here (the app's worker does it after its debounce)
     engine::Engine& e = link->engine();
     const auto blocks = static_cast<uint32_t>(std::lround(seconds * kRate / kBlock));
     std::vector<float> out(static_cast<size_t>(blocks) * kBlock);
@@ -353,3 +357,63 @@ TEST_CASE("tuning live: the Steps box dragged 12 -> 15 swaps a table per whole s
   CHECK(a.link->engine().liveInput().stats().retuned == retuned + moved);
 }
 
+
+TEST_CASE("tuning live: a held Hz-input live note keeps its Hz through a Generator drag (M6 review L3)") {
+  LiveApp a(mosDef(700.0));
+  a.link->setLivePorts({"Port"}, {2.0f});
+  REQUIRE(a.ctx->store().dispatch(SetNoteInput{a.track, NoteInput{NoteInputMode::Hz, InputKeyMap::Tuning}}).ok());
+  const Track* t = findTrackPtr(*a.ctx->doc(), a.track);
+  REQUIRE(a.ctx->store().dispatch(SetClipActive{ClipRef{a.track, t->clips.front().id}, false}).ok());
+  constexpr uint8_t kKey = 64;
+  auto map = buildInputPitchMap(*a.ctx->doc(), a.track);
+  REQUIRE(map.ok());
+  REQUIRE((*map)->at(kKey).mapped);
+  const double keyHz = (*map)->at(kKey).hz;
+  engine::RawMidi on;
+  on.port = 0;
+  on.status = 0x90;
+  on.d1 = kKey;
+  on.d2 = 100;
+  REQUIRE(a.link->livePorts()->push(0, on));
+  (void)a.run(0.1);
+  CHECK(std::fabs(cents(hzOfTail(a.run(0.12), 0.08), keyHz)) < 0.05);
+  const uint64_t retuned = a.link->engine().liveInput().stats().retuned;
+  ui::DragBox& gen = a.card().row(ParamKind::MosGenerator)->box();
+  const ui::Vec2 c = centre(gen.rect());
+  a.d.move(c);
+  a.d.down(c);
+  for (int i = 1; i <= 4; ++i) {
+    a.d.move({c.x, c.y - 10.0f * static_cast<float>(i)});  // +5 ¢ of generator per step: the key's map moves
+    CHECK(std::fabs(cents(hzOfTail(a.run(0.12), 0.08), keyHz)) < 0.05);  // the note does not
+  }
+  a.d.up({c.x, c.y - 40.0f});
+  CHECK(a.ctx->doc()->tunings->front()->def.mos()->generator > 715.0);
+  auto moved = buildInputPitchMap(*a.ctx->doc(), a.track);
+  REQUIRE(moved.ok());
+  CHECK(std::fabs(cents((*moved)->at(kKey).hz, keyHz)) > 1.0);  // a new note-on would sound elsewhere
+  CHECK(a.link->engine().liveInput().stats().retuned == retuned);
+}
+
+TEST_CASE("tuning live: a MOS size + generator change sounds the old pitch until the compile, then the new one; no third "
+          "pitch (M6 review L4)") {
+  LiveApp a(mosDef(700.0));  // 5L 2s at 700 ¢, the held drawn note on degree 4
+  (void)a.run(0.2);
+  const double oldHz = a.expectedHz();
+  CHECK(std::fabs(cents(hzOfTail(a.run(0.12), 0.08), oldHz)) < 0.05);
+  // 7@700 -> 5@710 in one command (the wheel's click on another region): a new table, so a compile.
+  TuningDef next = a.ctx->doc()->tunings->front()->def;
+  tuning::MosParams m = *next.mos();
+  m.n = 5;
+  m.generator = 710.0;
+  m.region.reset();
+  next.system = m;
+  REQUIRE(a.ctx->store().dispatch(SetTuningDef{a.tuning, next}).ok());
+  const double newHz = a.expectedHz();
+  REQUIRE(std::fabs(cents(newHz, oldHz)) > 5.0);
+  // The audio thread plays on while the worker compiles: the old pitch (before: the old table at the new generator,
+  // a pitch that is neither, up to 540 ¢ off).
+  const std::vector<float> waiting = a.run(0.15, false);
+  CHECK(std::fabs(cents(hzOfTail(waiting, 0.12), oldHz)) < 0.05);
+  // Published: straight to the new pitch.
+  CHECK(std::fabs(cents(hzOfTail(a.run(0.12), 0.08), newHz)) < 0.05);
+}

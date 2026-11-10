@@ -300,6 +300,7 @@ private:
   struct Held {
     uint8_t source, channel, key;
     bool sustained;  // released while the sustain pedal was down: the note-off waits for the pedal
+    bool raw;        // M6 review L3: an Hz-input note (a raw pitch, not a degree): never retuned while held
     uint32_t slot, noteId;
     float hz;        // the key's unbent static Hz (a bend moves the voice from it)
     CaptureRing* capture;  // T6.9: the ring its note-on went to (null: none), and its sequence number there

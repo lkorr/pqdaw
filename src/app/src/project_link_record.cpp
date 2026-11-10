@@ -129,6 +129,35 @@ uint64_t ProjectLink::discardUnsavedRecordings(const std::string& dir) {  // UI 
   return n;
 }
 
+std::vector<views::ViewContext::StaleRecordings> ProjectLink::staleRecordings() const {  // UI thread
+  std::vector<views::ViewContext::StaleRecordings> out;
+  for (const StaleUnsavedSession& s : findStaleUnsaved(u8path(unsavedRoot()), sessionName())) {
+    views::ViewContext::StaleRecordings r;
+    r.dir = pathUtf8(s.dir);
+    for (const std::filesystem::path& w : s.wavs) r.files.push_back(pathUtf8(w));
+    r.bytes = s.bytes;
+    r.started = s.started;
+    out.push_back(std::move(r));
+  }
+  return out;
+}
+
+bool ProjectLink::discardStaleRecordings(const std::string& dir) {  // UI thread
+  const std::filesystem::path root = u8path(unsavedRoot()).lexically_normal(), d = u8path(dir).lexically_normal();
+  if (d.parent_path() != root) return false;  // only a session folder itself
+  const std::string name = pathUtf8(d.filename());
+  unsigned long pid = 0;
+  long long started = 0;
+  char tail = 0;
+  if (name == sessionName() || std::sscanf(name.c_str(), "%lu-%lld%c", &pid, &started, &tail) != 2 ||
+      processAlive(static_cast<uint32_t>(pid), started))
+    return false;  // this run's, not a session folder, or its run is still going
+  std::string why;
+  const uint64_t n = removeUnsavedFolder(d, root, &why);
+  if (!why.empty()) setError("unsaved recordings: " + why);
+  return n > 0;
+}
+
 bool ProjectLink::insideUnsaved(const std::filesystem::path& p) const {
   const std::filesystem::path rel = p.lexically_normal().lexically_relative(u8path(unsavedRoot()).lexically_normal());
   return !rel.empty() && *rel.begin() != "..";

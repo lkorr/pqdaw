@@ -959,3 +959,27 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   block, more code on the hot path); (B) defer the fade (chosen); (C) a larger budget (more worst-block work).
 - **Choice**: B (the delay of a Track Delay edit is not audible as such; worst block 39–53 µs instead of 1063–1124 µs,
   release, probe D). Grown rings are ≥ 1.5× the old one, so a drag copies a few times, not at every step.
+
+## Q?-T6.x-fix-ui-a · 2026-11-10 · T6.x-fix-ui · M6 UI review fixes: what was chosen
+- **Context**: docs/reviews/M6.md L3, L4, L13, L17–L23, M7 named the faults and suggested fixes; these details were open.
+- **Choices** (most reversible): (1) L3: held live **Hz-input** notes never retune (raw pitches, like drawn Hz notes and
+  their recorded identity); Keys notes still follow every new route image (a Generator drag publishes one per step).
+  (2) L4: the app keys a tuning param's project slot per node table (`"tuning:<id>:<name>#t<table>"`), so a MOS
+  size + generator change keeps the old table AND the old params until the compiled image swaps in (the held note goes
+  straight from the old pitch to the new; ~50 ms + compile of the old pitch instead of a third one). (3) L13: stale
+  `Unsaved\<pid-time>` folders (process gone, by pid + creation time) with .wav files are offered at start in a small
+  popover: Open as Project (a new untitled project: the takes are MOVED into its own Unsaved folder, one after another
+  on an audio track "Recovered", one undo step), Show in Explorer, Discard (the only delete), Later. Empty stale
+  folders are left alone. (4) L19: transpose shows "0 st" / "+7 st" for whole semitones, else "386.3 ¢"; Complex Pro's
+  Envelope shows "128 bins"; Reverse / Loop are self-named switches without a row label; the waveform's region tint is
+  `surface.sunken` 22 % toward the clip colour with the waveform in the clip colour (outside the region veiled); bar
+  numbers (warped) / seconds (Off) along the top of the waveform; the 200-px column is the shell's Info View (kept:
+  it now says "Point at anything to read what it does." while nothing is hovered, instead of looking empty). (5) L20:
+  the auditioned-away main lane keeps its track colours under a 150/255 `surface.background` dim (grey read as missing);
+  take names in `text.primary`; the comp veil 1.5× automation's alpha. (6) L21: the mixer view's rows are shared by all
+  strips (`MixerController::rows`: the most I/O rows any strip has, the Delay row, a latency row only while any strip's
+  latency is non-zero, one send row per return), so sends / pan / volume line up and the master's pan / volume too;
+  "Delay" is written in the field (the unit dropped when the strip is too narrow). (7) M7: only the latency freeze (the
+  recorder takes the device latencies once per session); marking a discontinuity on a WASAPI drop / underflow needs a
+  segment split in the writer and the commit — not small, left open.
+- Status: decided (1)–(7) (reversible).

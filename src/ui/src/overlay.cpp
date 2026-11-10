@@ -227,7 +227,13 @@ void OverlayLayer::arrange(LayoutPass& pass) {
   const IRect vp = rect();
   for (const Entry& e : entries_) {
     const ISize sz = e.popup->contentExtent({vp.w, vp.h});
-    pass.place(*e.popup, placeRect(vp, e.options.anchor, e.options.placement, sz));
+    IRect area = vp;
+    if (e.options.within != nullptr) {
+      const IRect in = intersect(vp, e.options.within->rect());  // per axis: only where the popup fits
+      if (sz.w <= in.w) area.x = in.x, area.w = in.w;
+      if (sz.h <= in.h) area.y = in.y, area.h = in.h;
+    }
+    pass.place(*e.popup, placeRect(area, e.options.anchor, e.options.placement, sz));
   }
   if (tooltip_) {
     const ISize sz = tooltip_->contentExtent({vp.w, vp.h});

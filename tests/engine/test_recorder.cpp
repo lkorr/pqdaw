@@ -3,7 +3,7 @@
 // run; an Audio segment per captured piece), the punch window [in, out) of what was played for record latencies (device
 // in + out + PDC + manual) 0 / 256 / 1000 + 480, at block sizes that do not divide anything; M6 review M6: with a loop
 // (and the punch = the loop) every pass gets the frames played at its end that arrive after the wrap; overflow drops
-// whole pieces (counted, the segment says so) and never blocks; Record `here`, RecordOff and Stop; the monitor gates
+// whole pieces (counted, the segment says so) and never blocks; M6 review M7: the device latency is frozen per session; Record `here`, RecordOff and Stop; the monitor gates
 // (In / Off / Auto with the transport); RtScope on the audio side. M6 review M8: a WAV past its RIFF limit becomes RF64.
 #include <doctest/doctest.h>
 
@@ -197,6 +197,41 @@ TEST_CASE("T6.7 recorder: the punch keeps what was played in [in, out), captured
       CHECK(n == 48000);
     }
   }
+}
+
+TEST_CASE("M6 review M7: a device latency that changes during a session (WASAPI round trip) moves nothing until the next") {
+  Rig r;
+  const uint16_t chans[2] = {0, 1};
+  auto set = std::make_shared<e::CaptureSet>(chans, 1u << 18, 1);
+  r.rec.setCapture(set);
+  r.rec.setDeviceLatency(128, 128);
+  r.tl.apply(cmd(e::TransportCommandKind::Record, 0));
+  const int64_t start = r.time;
+  for (int i = 0; i < 40; ++i) {
+    if (i == 20) r.rec.setDeviceLatency(128 + 1440, 128);  // a re-primed round trip: +30 ms
+    r.block(500);
+  }
+  Captured cap = drain(r, *set);
+  int64_t n = 0, nextSong = 0;
+  size_t at = 0;
+  for (const e::CaptureSegment& s : cap.segs)
+    for (uint32_t i = 0; i < s.frames; ++i, ++at, ++n) {
+      REQUIRE(s.songSample + i == nextSong++);  // contiguous: no gap, no repeat
+      REQUIRE(s.songSample + i == s.engineTime + i - start);
+      REQUIRE(cap.frames[0][at] == source(0, s.engineTime + i + 256));  // one offset, the session's
+    }
+  CHECK(n == 40 * 500 - 256);
+  // The next session takes the new latency.
+  r.tl.apply(cmd(e::TransportCommandKind::Stop));
+  r.block(500);
+  (void)drain(r, *set);
+  r.tl.apply(cmd(e::TransportCommandKind::Record, 0));
+  const int64_t start2 = r.time;
+  for (int i = 0; i < 10; ++i) r.block(500);
+  cap = drain(r, *set);
+  REQUIRE_FALSE(cap.segs.empty());
+  CHECK(cap.segs.front().engineTime == start2);
+  CHECK(cap.frames[0].front() == source(0, start2 + 1696));
 }
 
 TEST_CASE("T6.7 recorder: overflow drops whole runs (counted), Record here / RecordOff / Stop, sessions") {

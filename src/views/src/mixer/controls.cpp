@@ -266,7 +266,8 @@ LiveBox::LiveBox(std::string name, Kind kind, std::string letter)
     case Kind::Delay:
       setInfo("Track Delay", "Shifts this track in time against the others, in milliseconds (-1000 to 1000). Positive "
                              "plays it later; negative plays it earlier (the other tracks are delayed instead, so the "
-                             "whole output gets that much later). Delete for 0.");
+                             "whole output gets that much later). Delete for 0. The track's own latency (its devices') "
+                             "shows under this field while it is not zero.");
       break;
   }
 }
@@ -311,6 +312,17 @@ void LiveBox::paint(PaintContext& ctx) {
                 ctx.scale.px(2.0f), 0);
     paint::text(ctx, f->numeric, {r.x + lw, r.y, r.w - lw, r.h}, valueText(), ink, TextAlign::Center, 0, ctx.scale.px(2.0f));
     return;
+  }
+  if (kind_ == Kind::Delay && ctx.res.text) {  // M6 review L21: named in the field ("Delay   0.0 ms") where it fits
+    std::string val = valueText();
+    const int32_t pad = ctx.scale.px(3.0f), label = ctx.res.text->measure(f->small, "Delay");
+    // In a narrow strip the unit goes first ("Delay -12.5"; the info text says milliseconds).
+    if (label + ctx.res.text->measure(f->numeric, val) + 3 * pad > r.w && val.ends_with(" ms")) val.resize(val.size() - 3);
+    if (label + ctx.res.text->measure(f->numeric, val) + 3 * pad <= r.w) {
+      paint::text(ctx, f->small, r, "Delay", withAlpha(m.fieldText, 170), TextAlign::Left, pad, 0);
+      paint::text(ctx, f->numeric, r, val, ink, TextAlign::Right, 0, pad);
+      return;
+    }
   }
   paint::text(ctx, f->numeric, r, valueText(), ink, TextAlign::Center, ctx.scale.px(2.0f), ctx.scale.px(2.0f));
 }
@@ -371,7 +383,8 @@ std::string midiInLabel(const doc::MidiInput& in) {
 std::string channelLabel(const doc::MidiInput& in) {
   return in.channel == 0 ? std::string("All Ch") : "Ch " + std::to_string(in.channel);
 }
-std::string noteInputLabel(const doc::NoteInput& in) { return in.mode == doc::NoteInputMode::Hz ? "Hz" : "Keys"; }
+// M6 review L21: "In:" so the chooser does not read as a track named Keys.
+std::string noteInputLabel(const doc::NoteInput& in) { return in.mode == doc::NoteInputMode::Hz ? "In: Hz" : "In: Keys"; }
 std::string monitorLabel(doc::MonitorMode m) {
   switch (m) {
     case doc::MonitorMode::In: return "Mon In";

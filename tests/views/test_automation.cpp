@@ -133,7 +133,7 @@ TEST_CASE("automation: the fixture project is what buildAutomationProject makes"
   views::test::buildAutomationProject(store);
   auto text = doc::serializeProject(*store.current(), store.view());
   REQUIRE(text.ok());
-  const std::string dir = views::test::fixtureDir("automation");
+  const std::string dir = views::test::fixtureSourceDir("automation");
   if (const char* u = std::getenv("PQ_UPDATE_FIXTURES"); u && *u == '1') REQUIRE(doc::saveProject(dir, store).ok());
   std::string file = readText(dir + "/project.pqd");
   std::erase(file, '\r');

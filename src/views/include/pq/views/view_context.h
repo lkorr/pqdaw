@@ -211,6 +211,8 @@ public:
   // --- project I/O (explicit paths) ---
   // New default project; history cleared; the project becomes untitled. Stops the transport.
   void newProject();
+  // Asks about unsaved changes; runs `proceed` when it may go ahead (possibly after an asynchronous save-as).
+  void guardUnsaved(std::function<void()> proceed);
   // Loads `dirUtf8` (doc::openProject: history cleared, view state from the file). On failure nothing changes and
   // the error is returned (and shown in the status line). Stops the transport.
   Status openProject(std::string_view dirUtf8);
@@ -226,13 +228,29 @@ public:
   //   take is committed) and remaps every snapshot of the history that references one (DocumentStore::relocateSamples).
   //   An untitled document discarded — replaced by newProject() / a successful openProject(), or left by a quit
   //   confirmQuit() lets go ahead — has its folder deleted through discard(dir), unless unsavedFolderInUse(dir).
+  // M6 review L13: the folder of an earlier run that ended without cleaning up (a crash), with its takes.
+  struct StaleRecordings {
+    std::string dir;                 // UTF-8
+    std::vector<std::string> files;  // its .wav files (UTF-8, absolute)
+    uint64_t bytes = 0;
+    int64_t started = 0;             // that run's start (unix seconds)
+  };
   struct UnsavedRecordings {
     std::string root;                                  // every untitled folder lies inside it
     std::string current;                               // the folder of the document attached now (if untitled)
     std::function<std::string()> fresh;                // a new untitled document's folder
     std::function<void(const std::string&)> discard;   // deletes a discarded untitled document's folder
+    std::function<std::vector<StaleRecordings>()> findStale;  // L13: earlier runs' folders (reads only)
+    std::function<bool(const std::string&)> discardStale;     // L13: deletes one of them (the user chose Discard)
   };
   void setUnsavedRecordings(UnsavedRecordings u);
+  // M6 review L13: earlier runs' recordings, offered at start (views::offerRecordingRecovery). Nothing is deleted
+  // unless the user chooses Discard. recoverStaleRecordings moves the takes into a new untitled document's own folder
+  // (so its first save moves them into the project, as any recording) and places them one after another on a new
+  // audio track; the emptied folder goes. False (status line says why) when nothing could be recovered.
+  std::vector<StaleRecordings> staleRecordings() const;
+  bool recoverStaleRecordings(const StaleRecordings& s);
+  bool discardStaleRecordings(const StaleRecordings& s);
   const std::string& unsavedRecordingDir() const noexcept { return unsavedRecordingDir_; }
   // The last line of defence before a discard deletes `dir` (M6 review C1 / H1): true when the project directory lies
   // inside it, when any project this context saved referenced a file inside it, or (`includeStore`: the store no
@@ -569,8 +587,6 @@ private:
   void finishCollect();   // T5.8: the UI-thread end of a collect (relocate, save, status)
   void registerGlobalActions();
   void declareViewActions(std::span<const std::string_view> ids);
-  // Asks about unsaved changes; runs `proceed` when it may go ahead (possibly after an asynchronous save-as).
-  void guardUnsaved(std::function<void()> proceed);
   void moveUnsavedRecordings(std::string_view dirUtf8);  // T6.7 / M6 review C1
   void discardUnsaved(const std::string& dir, bool includeStore);  // T6.7b / C1: the checks, then unsaved_.discard
 

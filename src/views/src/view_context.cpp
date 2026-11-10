@@ -17,6 +17,7 @@
 #include "pq/views/file_probes.h"
 #include "pq/views/panel/group_responses.h"
 #include "pq/views/sample_analysis.h"
+#include "pq/views/sample_drop.h"
 #include "pq/views/waveforms.h"
 
 namespace pq::views {
@@ -383,6 +384,82 @@ void ViewContext::discardUnsaved(const std::string& dir, bool includeStore) {
     return;
   }
   unsaved_.discard(dir);
+}
+
+// ---- M6 review L13: recordings of earlier runs that ended without cleaning up ------------------------------------------
+
+std::vector<ViewContext::StaleRecordings> ViewContext::staleRecordings() const {
+  return unsaved_.findStale ? unsaved_.findStale() : std::vector<StaleRecordings>{};
+}
+
+bool ViewContext::recoverStaleRecordings(const StaleRecordings& s) {
+  namespace fs = std::filesystem;
+  if (!projectDir_.empty() || unsavedRecordingDir_.empty()) {
+    setStatus("Recover recordings: only into a new, untitled project");
+    return false;
+  }
+  std::error_code ec;
+  const fs::path to = u8Path(unsavedRecordingDir_);
+  fs::create_directories(to, ec);
+  if (ec) {
+    setStatus("Recover recordings: " + ec.message());
+    return false;
+  }
+  // Moved (a rename on the same volume), never copied and deleted: the files are the user's only copy.
+  std::vector<std::string> moved;
+  for (const std::string& f : s.files) {
+    const fs::path from = u8Path(f);
+    fs::path dest = to / from.filename();
+    for (int k = 2; fs::exists(dest, ec) && k < 1000; ++k)
+      dest = to / fs::path(from.stem().u8string() + u8" " + fs::path(std::to_string(k)).u8string() + from.extension().u8string());
+    std::error_code mec;
+    fs::rename(from, dest, mec);
+    if (!mec) moved.push_back(u8Str(dest));
+  }
+  if (moved.empty()) {
+    setStatus("Recover recordings: no take could be moved out of " + s.dir);
+    return false;
+  }
+  (void)probes_->request(moved);
+  (void)probes_->wait(moved, std::chrono::milliseconds(5000));
+  std::vector<ProbedFile> audio;
+  for (ProbedFile& f : probes_->snapshot(moved))
+    if (f.state == ProbedFile::State::Ready) audio.push_back(std::move(f));
+  bool ok = false;
+  if (!audio.empty()) {
+    SampleDropTarget target;
+    target.kind = SampleDropTarget::Kind::AtEnd;
+    const SampleDropPlan plan = planSampleDrop(*doc(), target, audio, 0, true);
+    auto e = sampleDropEdit(*doc(), store_.ids(), plan, audio, {}, projectDir_);
+    if (e.ok()) {  // one undo step: the drop, then the track named "Recovered"
+      doc::Batch b{"Recover Recordings", {}};
+      b.commands.push_back(e->command);
+      doc::ChangeSet changes;
+      if (!e->tracks.empty())
+        if (Result<doc::Snapshot> after = doc::apply(doc(), e->command, changes); after.ok())
+          if (auto r = doc::ops::renameTrack(**after, e->tracks.front(), "Recovered"); r.ok()) b.commands.push_back(r->command);
+      ok = store_.dispatch(doc::Command{std::move(b)}).ok();
+    }
+  }
+  // The folder without its takes: gone when nothing else is left in it (nothing of the user's is deleted).
+  bool left = false;
+  for (fs::recursive_directory_iterator it(u8Path(s.dir), ec), end; !ec && it != end && !left; it.increment(ec))
+    left = it->is_regular_file(ec);
+  if (!left && unsaved_.discardStale) (void)unsaved_.discardStale(s.dir);
+  setStatus(ok ? "Recovered " + std::to_string(audio.size()) + " recording(s) from an earlier session"
+               : "Recover recordings: the takes were moved to " + unsavedRecordingDir_ + " but could not be read");
+  return ok;
+}
+
+bool ViewContext::discardStaleRecordings(const StaleRecordings& s) {
+  if (!unsaved_.discardStale) return false;
+  if (unsavedFolderInUse(s.dir, true)) {  // C1's last line of defence: a project of this run uses a file in it
+    setStatus("Kept " + s.dir + ": a project uses a file in it");
+    return false;
+  }
+  const bool done = unsaved_.discardStale(s.dir);
+  setStatus(done ? "Discarded the recordings of an earlier session" : "Could not delete " + s.dir);
+  return done;
 }
 
 // T6.7 / C1: an untitled project's recordings into the project it is first saved as: every file of its folder, and

@@ -982,6 +982,7 @@ void LaneCanvas::paint(PaintContext& ctx) {
   paintGrid(lp, static_cast<float>(c.y), static_cast<float>(c.bottom()));
 
   // 3. Row separators, clips, group summaries.
+  bool anyAuditioned = false;
   for (auto it = first; it != last; ++it) {
     ++m.stats.rowsPainted;
     const float y0 = static_cast<float>(r.y + it->y), y1 = static_cast<float>(r.y + it->y + it->h);
@@ -994,7 +995,10 @@ void LaneCanvas::paint(PaintContext& ctx) {
     if (t.clips.empty()) continue;
     const ClipIndex& ix = m.clips(t);
     const auto [a, b] = ix.visible(lp.from, lp.to);
-    const bool active = rowActive(rows, *it) && !t.auditionTake.valid();  // T6.10: an auditioned take plays instead
+    // T6.10: while a take is auditioned it plays instead of the main lane; M6 review L20: the main lane keeps its
+    // colours, dimmed after the tiles below (grey read as a missing or deactivated clip).
+    const bool active = rowActive(rows, *it);
+    anyAuditioned = anyAuditioned || t.auditionTake.valid();
     const Editor::HoverPart& hp = ed.hoverPart();
     const bool hoverRow = !ed.dragging() && hp.ref.clip.valid() && hp.ref.track == it->id;
     for (size_t j = a; j < b; ++j) {
@@ -1019,6 +1023,22 @@ void LaneCanvas::paint(PaintContext& ctx) {
                             ed.selected(t.clips[j].id) || (hoverRow && t.clips[j].id == hp.ref.clip));
   }
   flushTiles(lp);
+  if (anyAuditioned) {
+    const Rgba dim = withAlpha(th.surface.background, 150);
+    for (auto it = first; it != last; ++it) {
+      if (it->group || !it->track->auditionTake.valid()) continue;
+      const doc::Track& t = *it->track;
+      const ClipIndex& ix = m.clips(t);
+      const auto [a, b] = ix.visible(lp.from, lp.to);
+      const float y0 = static_cast<float>(r.y + it->y) + 1.0f, y1 = static_cast<float>(r.y + it->y + it->h) - 1.0f;
+      for (size_t j = a; j < b; ++j) {
+        const doc::ClipSlot& slot = t.clips[j];
+        const float x0 = std::max(cx0, std::floor(lp.X(static_cast<double>(slot.start()))));
+        const float x1 = std::min(cx1, std::floor(lp.X(static_cast<double>(slot.end()))));
+        if (x1 > x0 && y1 > y0) dl.addRectFilled({x0, y0, x1, y1}, dim);
+      }
+    }
+  }
   view_.comper().paint(lp, localTop, localBottom);  // T6.10: take lanes (their clips, veils, comp selection)
   // T6.7: the recording overlay over the rows' clips.
   if (view_.recording().active)

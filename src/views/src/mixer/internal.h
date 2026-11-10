@@ -55,6 +55,16 @@ public:
   void openMonitorMenu(ui::Widget& chooser, doc::TrackId id);
   void openAudioInMenu(ui::Widget& chooser, doc::TrackId id);  // T6.7
 
+  // --- M6 review L21: the mixer view's shared rows, so send / pan / volume line up across track, group, return and
+  // master strips (a strip leaves the cells it has no control for empty). Set by MixerView::sync.
+  struct VerticalRows {
+    int32_t io = 0;                      // input / output / tuning rows: the most any strip has
+    bool latency = false;                // the latency row: shown while any strip's latency is not zero
+    std::vector<doc::TrackId> returns;   // one send row per return, in order
+  } rows;
+  // Recomputes `rows.latency` from the vertical strips; true when it changed (the strips need a new arrange).
+  bool updateLatencyRow();
+
   // --- meters ---
   void addStrip(MixerStrip* s);
   void removeStrip(MixerStrip* s) noexcept;

@@ -145,8 +145,12 @@ public:
   // T6.6 (mixer view, every track but the master): Track Delay and the track's latency readout.
   ui::DragBox* trackDelay() const noexcept { return delay_; }
   ui::Label* latency() const noexcept { return latency_; }
-  // Re-reads the latency readout from the transport (bind and the meter poll call it).
+  // Re-reads the latency readout from the transport (bind and the meter poll call it). M6 review L21: the readout
+  // shows only a latency that is not zero ("Lat 5.3 ms"); the row is there while any strip shows one.
   void refreshLatency();
+  bool hasLatency() const noexcept { return latencyShown_ != 0.0 && latencyShown_ != -1.0; }
+  // The mixer view's input / output / tuning rows this strip fills (M6 review L21: the rest stay empty).
+  int32_t ioRowCount() const noexcept;
   ui::Control* tuningChip() const noexcept { return chip_; }
   ui::Meter* meter() const noexcept { return meter_; }
   const std::string& title() const noexcept { return title_; }

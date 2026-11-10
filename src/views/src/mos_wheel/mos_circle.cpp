@@ -399,12 +399,25 @@ void MosCircle::ensureModel() const {
   }
   std::sort(uniq.begin(), uniq.end(), std::greater<>());
   static constexpr std::string_view kMid = "MNOPQRTUVWXYZABCDEFGHIJKmno";
+  // Letters: with MODMOS (M6 review L18), L and s keep the MOS's own step sizes and every altered size is M, N, …
+  // (largest first), so a raised 7th reads "L s L L s M s" and not as a renamed L; colours stay by size class.
+  std::vector<double> altered;
+  if (m.hasModmos)
+    for (double b : uniq)
+      if (std::fabs(b - rot.L) >= 0.5 && std::fabs(b - rot.s) >= 0.5) altered.push_back(b);
   for (double st : m.steps) {
     const double b = bucket(st);
     const auto it = std::find(uniq.begin(), uniq.end(), b);
     const size_t idx = static_cast<size_t>(it - uniq.begin());
     m.sliceClass.push_back(static_cast<uint8_t>(std::min<size_t>(idx, 255)));
-    if (uniq.size() == 1 || idx == 0) m.sliceLabel.emplace_back("L");
+    if (m.hasModmos) {
+      const auto at = std::find(altered.begin(), altered.end(), b);
+      if (at == altered.end()) m.sliceLabel.emplace_back(std::fabs(b - rot.L) < 0.5 ? "L" : "s");
+      else {
+        const size_t k = static_cast<size_t>(at - altered.begin());
+        m.sliceLabel.emplace_back(k < kMid.size() ? std::string(1, kMid[k]) : "m" + std::to_string(k));
+      }
+    } else if (uniq.size() == 1 || idx == 0) m.sliceLabel.emplace_back("L");
     else if (idx + 1 == uniq.size()) m.sliceLabel.emplace_back("s");
     else m.sliceLabel.emplace_back(idx - 1 < kMid.size() ? std::string(1, kMid[idx - 1]) : "m" + std::to_string(idx - 1));
   }
@@ -437,26 +450,20 @@ void MosCircle::ensureModel() const {
   if (const auto mode = tu::modeName(S.perPeriodKey, gen, S.modeRotation, m.P, &hint)) m.title.push_back({"  " + std::string(*mode), Model::ModeName, 2});
   if (m.hasModmos) m.title.push_back({"  MODMOS", Model::Modmos, 3});
 
-  // Step pattern ("LLsLLLs"; with MODMOS: the altered steps as L / s / cents).
+  // Step pattern ("LLsLLLs"; with MODMOS (M6 review L18): every step lettered as its slice on the wheel, the
+  // altered sizes M, N, … between L and s, so "L s L L s M s" reads like the circle).
   if (m.hasModmos) {
     m.modPattern = true;
     std::string p;
-    for (size_t i = 0; i < static_cast<size_t>(m.n); ++i) {
+    for (size_t i = 0; i < static_cast<size_t>(m.n) && i < m.sliceLabel.size(); ++i) {
       if (i) p += ' ';
-      const double st = steps[i];
-      if (std::fabs(st - rot.L) < 0.5) p += 'L';
-      else if (std::fabs(st - rot.s) < 0.5) p += 's';
-      else p += tu::js::toFixed(tu::stretchCents(st, config_.octaveStretch), 0);
+      p += m.sliceLabel[i];
     }
     m.pattern = p;
-    // Centre text (the explorer compares against the altered scale's own L and s there).
-    std::string c;
-    for (size_t i = 0; i < m.steps.size(); ++i) {
+    std::string c;  // centre text: every step of the equave
+    for (size_t i = 0; i < m.sliceLabel.size(); ++i) {
       if (i) c += ' ';
-      const double st = m.steps[i];
-      if (std::fabs(st - m.L) < 0.5) c += 'L';
-      else if (std::fabs(st - m.s) < 0.5) c += 's';
-      else c += tu::js::toFixed(tu::stretchCents(st, config_.octaveStretch), 0);
+      c += m.sliceLabel[i];
     }
     m.modStepStr = c;
   } else {
@@ -618,6 +625,11 @@ std::span<const double> MosCircle::displayPitches() const {
 std::span<const std::string> MosCircle::stepLabels() const {
   ensureModel();
   return model_->sliceLabel;
+}
+
+std::string MosCircle::stepPatternText() const {
+  ensureModel();
+  return model_->pattern;
 }
 
 std::string MosCircle::titleText() const {
@@ -1058,7 +1070,12 @@ void MosCircle::paint(PaintContext& ctx) {
     std::vector<Vec2>& pts = scratchPts_;
     for (size_t i = 0; i < N; ++i) {
       const double a1 = ang(m.pitches[i]), a2 = ang(m.pitches[i] + m.steps[i]);
-      const Rgba col = classColours_[std::min<size_t>(m.sliceClass[i], classColours_.size() - 1)];
+      const size_t ci = std::min<size_t>(m.sliceClass[i], classColours_.size() - 1);
+      const Rgba col = classColours_[ci];
+      // M6 review L22: the fill's opacity also steps with the class (L 0.34 → s 0.18), so L / s / M read apart even
+      // where the theme's key colours are close.
+      const size_t nc = classColours_.size();
+      const float fillA = nc > 1 ? 0.34f - 0.16f * static_cast<float>(ci) / static_cast<float>(nc - 1) : 0.25f;
       const double sweep = a2 - a1;
       if (sweep > 1e-6) {
         // Convex pieces of ≤ 90°: the centre plus the arc points.
@@ -1069,7 +1086,7 @@ void MosCircle::paint(PaintContext& ctx) {
           pts.clear();
           pts.push_back(C);
           for (uint32_t k = 0; k <= segs; ++k) pts.push_back(at(b1 + (b2 - b1) * k / segs, rad));
-          dl.addConvexPolyFilled(pts, setAlpha(col, 0.25f));
+          dl.addConvexPolyFilled(pts, setAlpha(col, fillA));
         }
         segment(dl, C, at(a1, rad), setAlpha(col, 0.6f), px1);
         segment(dl, C, at(a2, rad), setAlpha(col, 0.6f), px1);

@@ -291,7 +291,8 @@ void Comper::paint(LanePaint& lp, int32_t localTop, int32_t localBottom) {
   flushTiles(lp);
   // The veil: every part of a take clip the main lane does not take from this lane (the bright parts are the comp; an
   // auditioned take is bright all over: it is what plays).
-  const Rgba veil = th.automation.veil;
+  // M6 review L20: half as opaque again as automation's veil (it read subtle at a glance).
+  const Rgba veil = withAlpha(th.automation.veil, std::min(255u, alphaOf(th.automation.veil) * 3u / 2u));
   auto colX = [&](Ticks t) { return std::clamp(std::round(lp.X(static_cast<double>(t))), cx0, cx1); };
   std::vector<TickRange>& used = usedScratch_;
   for (auto it = first; it != last; ++it) {
@@ -403,11 +404,12 @@ void TakeHeader::paint(PaintContext& ctx) {
   dl.addRectFilled({x0, y0, x1, y1 - 1.0f}, th.automation.laneHeader);
   dl.addRectFilled({x0, y1 - 1.0f, x1, y1}, th.arrangement.separator);
   const IRect ar = auditionRect(), dr = deleteRect();
-  // Name: indented under the track's title (one group level deeper), up to the buttons.
+  // Name: indented under the track's title (one group level deeper), up to the buttons; in the primary text colour
+  // (M6 review L20: the lane-header grey read dim on the take header).
   if (const ThemeFonts* f = ctx.res.uiFonts) {
     const int32_t indent = ctx.scale.px(am::kGroupIndent * static_cast<float>(depth_ + 1));
     const IRect line{r.x + indent, r.y + ctx.scale.px(3.0f), std::max(0, ar.x - r.x - indent - ctx.scale.px(4.0f)), ctx.scale.px(14.0f)};
-    paint::text(ctx, f->small, line, label_, auditioned_ ? th.text.primary : th.automation.laneHeaderText, TextAlign::Left, ctx.scale.px(4.0f), 0);
+    paint::text(ctx, f->small, line, label_, th.text.primary, TextAlign::Left, ctx.scale.px(4.0f), 0);
   }
   // Audition: a speaker, lit (the solo colour) while this take plays instead of the main lane.
   if (!ar.empty()) {

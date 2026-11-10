@@ -146,6 +146,8 @@ public:
   // Step letters per slice ("L", "s", "M", …) and the title parts as drawn (tests, info).
   std::span<const std::string> stepLabels() const;
   std::string titleText() const;
+  // The step pattern between the mode buttons ("LLsLLLs"; with MODMOS "L s L L s M s", lettered as stepLabels).
+  std::string stepPatternText() const;
 
   struct Stats {
     uint64_t models = 0;  // scale model rebuilds

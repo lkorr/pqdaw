@@ -506,6 +506,17 @@ Status setupMidiPrefs(Shell& shell) {
   return Ok{};
 }
 
+// M6 review L22: the Warp tab (T6.8) and the Record tab (T6.7b) at their defaults.
+Status setupPrefsTab(Shell& shell, PreferencesWindow::Tab tab, const char* scene) {
+  if (Status s = openAudioPrefs(shell, false); !s) return s;
+  PreferencesWindow* w = openPreferencesWindow(shell.overlay());
+  if (!w) return Error{ErrorCode::NotFound, std::string(scene) + ": no window", {}};
+  w->showTab(tab);
+  return Ok{};
+}
+Status setupWarpPrefs(Shell& shell) { return setupPrefsTab(shell, PreferencesWindow::Tab::Warp, "warp-prefs"); }
+Status setupRecordPrefs(Shell& shell) { return setupPrefsTab(shell, PreferencesWindow::Tab::Record, "record-prefs"); }
+
 // ---- T3.19: menu bar, Tunings panel, ratio notes ------------------------------------------------------------------
 
 // T3.19: the menu bar's Create menu open over the empty project (Insert MIDI / Return Track, Insert MIDI Clip, New
@@ -3083,6 +3094,8 @@ constexpr SceneEntry kScenes[] = {
     {"audio-prefs-wasapi", 1280, 800, setupAudioPrefsWasapi},
     {"library-prefs", 1280, 800, setupLibraryPrefs},
     {"midi-prefs", 1280, 800, setupMidiPrefs},
+    {"warp-prefs", 1280, 800, setupWarpPrefs},
+    {"record-prefs", 1280, 800, setupRecordPrefs},
     {"menu-bar", 1280, 800, setupMenuBar},
     {"tunings-panel", 1280, 800, setupTuningsPanel},
     {"pianoroll-ratios", 1280, 800, setupPianoRollRatios},

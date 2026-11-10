@@ -1,10 +1,14 @@
 // T6.7: the views' side of recording, through real dispatch — an audio strip's input chooser (none, mono inputs, stereo
 // pairs; channels the device lacks marked; one structural undo step) and its arm button; the arrangement's live
 // recording overlay (read with the playhead while recording, painted over the rows, dropped when the session ends).
+// M6 review L13: a crashed run's takes offered at start (Open as Project / Show in Explorer / Discard / Later).
 #include <doctest/doctest.h>
 
+#include <filesystem>
 #include <memory>
+#include <random>
 #include <string>
+#include <vector>
 
 #include "pq/document/edit_ops.h"
 #include "pq/ui/controls.h"
@@ -13,6 +17,7 @@
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
+#include "pq/views/shell/recover_recordings.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
 #include "views_test_util.h"
@@ -146,4 +151,128 @@ TEST_CASE("T6.7 arrangement: the live recording overlay is read while recording 
   f.d.advance(0.3);
   CHECK_FALSE(view->recording().active);
   f.d.step();
+}
+
+// ---- M6 review L13: recordings of a crashed run, offered at start ----------------------------------------------------
+
+namespace {
+
+namespace fs = std::filesystem;
+
+std::string u8s(const fs::path& p) {
+  const std::u8string u = p.u8string();
+  return {reinterpret_cast<const char*>(u.data()), u.size()};
+}
+
+// An untitled context whose Unsaved root (a temp folder) holds an ended session "111-1000" with two takes; the hooks
+// behave like ProjectLink's (the folder is listed while it holds .wav files; discardStale deletes it and counts).
+struct Stale {
+  FakeTransport port;
+  ViewContext ctx{port};
+  TestDriver d{1280, 800};
+  std::unique_ptr<Shell> shell;
+  fs::path root, session;
+  int fresh = 0, discards = 0;
+  Stale() {
+    root = fs::temp_directory_path() / ("pq_l13_views_" + std::to_string(std::random_device{}())) / "Unsaved";
+    session = root / "111-1000";
+    fs::create_directories(session / "1");
+    for (const char* f : {"beat.wav", "vox.wav"})
+      fs::copy_file(fs::path(views::test::fixtureDir("audio")) / "samples" / f, session / "1" / f);
+    ViewContext::UnsavedRecordings u;
+    u.root = u8s(root);
+    u.current = u8s(root / "222-2000" / "1");
+    u.fresh = [this] { return u8s(root / "222-2000" / std::to_string(2 + fresh++)); };
+    u.discard = [](const std::string&) {};
+    u.findStale = [this] {
+      std::vector<ViewContext::StaleRecordings> v;
+      std::error_code ec;
+      if (!fs::exists(session, ec)) return v;
+      ViewContext::StaleRecordings s;
+      s.dir = u8s(session);
+      for (const auto& e : fs::recursive_directory_iterator(session, ec))
+        if (e.path().extension() == ".wav") s.files.push_back(u8s(e.path()));
+      s.started = 1000;
+      if (!s.files.empty()) v.push_back(std::move(s));
+      return v;
+    };
+    u.discardStale = [this](const std::string& dir) {
+      ++discards;
+      std::error_code ec;
+      return fs::remove_all(fs::path(std::u8string(dir.begin(), dir.end())), ec) > 0;
+    };
+    ctx.setUnsavedRecordings(std::move(u));
+    auto s = Shell::create(d.tree(), ctx);
+    REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
+    shell = std::move(*s);
+    d.tree().layoutNow();
+  }
+  ~Stale() {
+    d.tree().setRoot(std::make_unique<Widget>());
+    std::error_code ec;
+    fs::remove_all(root.parent_path(), ec);
+  }
+  RecoverRecordingsPopover* popover() const { return dynamic_cast<RecoverRecordingsPopover*>(shell->overlay().top()); }
+  void click(const char* button) {
+    d.click(d.center(std::string("overlay/recover-recordings/buttons/") + button));
+    d.step();
+  }
+};
+
+}  // namespace
+
+TEST_CASE("M6 review L13: a crashed run's takes are offered at start; Open as Project places them in a new project") {
+  Stale f;
+  RecoverRecordingsPopover* p = offerRecordingRecovery(*f.shell);
+  REQUIRE(p != nullptr);
+  f.d.step();
+  CHECK(p->rect().y >= f.d.find("main/body")->rect().y);  // over the workspace, not the control bar
+  CHECK(p->current().files.size() == 2);
+  f.click("open");
+  CHECK(f.popover() == nullptr);
+  const doc::Track* rec = nullptr;
+  doc::forEachTrack(*f.ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Recovered") rec = &t;
+  });
+  REQUIRE(rec != nullptr);
+  CHECK(rec->kind == doc::TrackKind::Audio);
+  CHECK(rec->clips.size() == 2);
+  CHECK(rec->clips[0].audio->start + rec->clips[0].audio->length <= rec->clips[1].audio->start);  // one after another
+  CHECK(f.ctx.store().history().cursor() == 1);  // one undo step
+  // Moved into the new untitled project's own folder (its first save moves them on); the emptied folder went.
+  const fs::path into(std::u8string(f.ctx.unsavedRecordingDir().begin(), f.ctx.unsavedRecordingDir().end()));
+  CHECK(fs::exists(into / "beat.wav"));
+  CHECK(fs::exists(into / "vox.wav"));
+  CHECK_FALSE(fs::exists(f.session));
+  CHECK(f.discards == 1);
+  CHECK(offerRecordingRecovery(*f.shell) == nullptr);  // nothing left to offer
+}
+
+TEST_CASE("M6 review L13: Discard deletes the folder; Later and Esc keep it (offered again)") {
+  {
+    Stale f;
+    const doc::Snapshot before = f.ctx.doc();
+    REQUIRE(offerRecordingRecovery(*f.shell) != nullptr);
+    f.d.step();
+    f.click("later");
+    CHECK(f.popover() == nullptr);
+    CHECK(f.discards == 0);
+    CHECK(fs::exists(f.session / "1" / "beat.wav"));
+    REQUIRE(offerRecordingRecovery(*f.shell) != nullptr);  // the next start
+    f.d.step();
+    f.d.press("Escape");
+    f.d.step();
+    CHECK(f.popover() == nullptr);
+    CHECK(fs::exists(f.session / "1" / "beat.wav"));
+    // Show in Explorer changes nothing (the scene's dialogs are none here: the popover just stays).
+    REQUIRE(offerRecordingRecovery(*f.shell) != nullptr);
+    f.d.step();
+    f.click("reveal");
+    CHECK(f.popover() != nullptr);
+    f.click("discard");
+    CHECK(f.popover() == nullptr);
+    CHECK(f.discards == 1);
+    CHECK_FALSE(fs::exists(f.session));
+    CHECK(f.ctx.doc() == before);  // the document untouched
+  }
 }

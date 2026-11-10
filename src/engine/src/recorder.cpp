@@ -127,6 +127,11 @@ void Recorder::capture(const Timeline& tl, int64_t time, uint32_t frames, uint32
     playedSession_ = session;
     playedCount_ = 0;
     attributed_ = INT64_MIN;
+    // M6 review M7: the device latencies stay what they were when the session started. A WASAPI capture device's
+    // measured round trip follows clock drift and re-primes; following it mid-take would jump the placement (a gap or
+    // a repeat in the file) where one constant offset for the whole file is what the commit assumes.
+    sessionIn_ = inLatency_.load(std::memory_order_relaxed);
+    sessionOut_ = outLatency_.load(std::memory_order_relaxed);
   }
   // The runs: the session's time map, and the played history (contiguous runs merged).
   for (const TransportRun& r : tl.runs()) {
@@ -153,7 +158,7 @@ void Recorder::capture(const Timeline& tl, int64_t time, uint32_t frames, uint32
   }
   // This block's input frames, on what was played `off` frames earlier (M6 review M6: across a wrap too).
   CaptureSet* set = capture_.ptr.load(std::memory_order_acquire);
-  const int64_t off = std::max<int64_t>(0, latencyOffset(pdc));
+  const int64_t off = std::max<int64_t>(0, int64_t{sessionIn_} + sessionOut_ + pdc + manual_.load(std::memory_order_relaxed));
   const int64_t from = std::max(time - off, attributed_);
   const int64_t to = time + static_cast<int64_t>(frames) - off;
   attributed_ = std::max(attributed_, to);

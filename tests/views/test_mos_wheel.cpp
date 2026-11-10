@@ -8,7 +8,7 @@
 //   document at once (a chart drag step by step inside one store gesture: one undo step per drag, Esc restores where
 //   it started), changing only that clip; Revert; Esc / Enter / a press outside close; EDO entry, Scala file
 //   (scripted dialog), the temperament search; a main tuning's generator drag is Param-only SetTuningParam steps;
-//   track targets; Ctrl+Shift+W.
+//   track targets; Ctrl+Shift+W; the popover stays inside the panels (L17).
 //   Goldens: mos-circle-5L2s, mos-circle-modmos, mos-wheel-popover.
 
 #include <doctest/doctest.h>
@@ -281,6 +281,31 @@ TEST_CASE("mos circle: MODMOS dot drag snaps to whole chromas; Esc and a right c
   t.c->onAudition = [&](double c) { heard = c; };
   t.d.click(t.c->dotPos(0));
   CHECK(heard == 0.0);
+}
+
+TEST_CASE("mos circle: a MODMOS step pattern letters the altered step as the wheel does (no cents); M6 review L18") {
+  Circle t;
+  t.set(selectionFor({5, 2}, 700.0, 2), {0, 0, 0, 0, 0, 0, 1});  // the mos-circle-modmos scene: a raised 7th
+  // Before: "L s L L s 300 s" (cents for the altered step), and the wheel's slices renamed the plain L steps.
+  CHECK(t.c->stepPatternText() == "L s L L s M s");
+  const auto labels = t.c->stepLabels();
+  std::string joined;
+  for (size_t i = 0; i < labels.size() && i < 7; ++i) joined += (i ? " " : "") + labels[i];
+  CHECK(joined == "L s L L s M s");
+}
+
+TEST_CASE("mos wheel: the summary's mode number is the circle header's (genchain order), not the rotation; L18") {
+  doc::TuningDef def;
+  tu::MosParams m;
+  m.generator = 700.0;
+  m.n = 7;
+  m.rotation = 1;
+  def.system = m;
+  const std::string sum = tuningSummary(def);
+  const auto gmn = tu::computeGmn(700.0, 7, 1, 1200.0);
+  REQUIRE(gmn.has_value());
+  CHECK(sum.find(tu::gmnLabel(*gmn)) != std::string::npos);
+  CHECK(sum.find("mode 1") == std::string::npos);
 }
 
 TEST_CASE("mos circle: step labels, title and the all-intervals toggle") {
@@ -650,6 +675,33 @@ TEST_CASE("mos wheel: reopening a MOS tuning shows it in the chart and the circl
   CHECK(q.circle().modmos().size() == 7u);
   CHECK_FALSE(q.changed());
   w.d.press("Escape");
+}
+
+TEST_CASE("mos wheel: the popover never covers the control bar or the status bar (L17), also when dragged up") {
+  Wheel w;
+  MosWheelPopover::forgetPosition();
+  const IRect bar = w.d.find("main/control-bar")->rect();
+  const IRect body = w.d.find("main/body")->rect();
+  // Anchored at the top of the window (the golden scene's anchor, y 36): placed below the control bar instead.
+  MosWheelPopover* p = openMosWheel(w.shell->overlay(), w.ctx, TuningTarget::forClip(w.a1), {600, 36, 1, 1});
+  REQUIRE(p != nullptr);
+  w.d.step();
+  CHECK(p->rect().y >= bar.bottom());
+  CHECK(p->rect().bottom() <= body.bottom());
+  // The title band dragged to the top of the window (real pointer events): it stops at the workspace's top edge.
+  const Vec2 grab{static_cast<float>(p->rect().x + 200), static_cast<float>(p->rect().y + 10)};
+  w.d.down(grab);
+  w.d.move({grab.x, 2.0f});
+  w.d.up({grab.x, 2.0f});
+  w.d.step();
+  CHECK(p->rect().y == body.y);
+  // Reopened at the remembered (dragged) position: still clear of the control bar.
+  w.d.press("Escape");
+  w.d.step();
+  MosWheelPopover& q = w.openFromChip();
+  CHECK(q.rect().y >= bar.bottom());
+  w.d.press("Escape");
+  MosWheelPopover::forgetPosition();
 }
 
 // ---- goldens ----------------------------------------------------------------------------------------------------------

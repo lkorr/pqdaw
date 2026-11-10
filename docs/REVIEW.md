@@ -1255,3 +1255,12 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **Real MIDI controller**: Keys and Hz modes on a 31-EDO track; play, bend, Capture MIDI (Ctrl+Shift+C). Then unplug the controller while holding the pitch wheel off-centre, plug it back in (or another device) and play: today the first notes keep the old bend (L1). Check no stuck notes after unplugging mid-chord.
 - **WASAPI microphone on a different device than the output**, 10+ minutes of continuous recording: listen for a jump or a short silence at some point (clock drift, M7).
 - **Complex clips at 96 kHz** (or a Complex clip transposed −12 st) at buffer 64: listen for clicks / crackle and watch the CPU meter (C2).
+
+## 2026-11-10 · T6.x-fix-ui (M6 review UI fixes) — please look at
+- **MOS wheel** (Ctrl+Shift+W, or a clip's tuning chip): it never covers the control bar any more, also when dragged up. A MODMOS (raise a degree with the dot) reads "L s L L s M s" under the mode buttons and in the centre, the slices say the same; the footer's "Mode 3" matches the header. L / s slices are a little more apart in opacity.
+- **Capture MIDI button**: new glyph (an arrow turning back over three notes). Does it read as "get back what I played", and is it distinct enough from Loop?
+- **Audio Clip View**: "0 st" / "0 ¢", "Reverse" / "Loop" switches without row labels, Complex Pro's Envelope in "bins", a dark clip-colour tint behind a clip-coloured waveform (outside the played part veiled), bar numbers (warped) / seconds (Off) at the top of the waveform. The Info View column on the left now shows a hint when nothing is hovered.
+- **Take lanes**: audition a take — the main lane stays in its colour, dimmed (no longer the missing-sample grey); take names brighter; the comp veil a little stronger.
+- **Mixer** (Ctrl+Alt+M): sends, pan and volume line up across track, group, return and master strips; "In: Keys"; "Delay" in the delay field; the latency row appears only when some track has latency.
+- **Crash recovery**: record into an untitled project, kill pqdaw in Task Manager, start it again: a "Recordings from an earlier session" box offers Open as Project / Show in Explorer / Discard / Later. Nothing is deleted unless you choose Discard.
+- **Tuning, by ear**: hold a note on a 5L 2s main tuning and click another MOS size in the wheel (e.g. 2L 3s): the note should go straight from the old pitch to the new one, no odd pitch in between (L4). A held note played in Hz input mode keeps its pitch while you drag the Generator (L3).

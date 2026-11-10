@@ -47,7 +47,8 @@ RESULTS_REL = "bench/RESULTS.md"
 
 def git(*args):
     try:
-        return subprocess.run(["git", "-C", REPO, *args], capture_output=True, text=True, check=True).stdout.strip()
+        # rstrip only: `status --porcelain` lines start with a space (" M path"); M6 review L23 (a strip() ate it)
+        return subprocess.run(["git", "-C", REPO, *args], capture_output=True, text=True, check=True).stdout.rstrip()
     except (OSError, subprocess.CalledProcessError):
         return None
 

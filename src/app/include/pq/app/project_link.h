@@ -664,6 +664,12 @@ private:
   static void beforeJit(void* self, const engine::BackgroundJob& job);
   void workerMain();
   uint32_t slotForParam(const std::string& key);  // allocates (mutex_); grows the engine's param block (M4)
+  // M6 review L4: the slot key of lowered param `key` in project `p`. A tuning param ("tuning:<id>:<name>") gets one
+  // slot per node table ("…#t<table>"): an edit that needs a new table (a MOS size with its generator) writes the new
+  // values into the new table's slots, which only the images compiled with that table read, so the playing image
+  // keeps its table AND its params until the new one is published: no third pitch in between (Q?-TU.1-a). An edit
+  // that keeps the table (a Generator drag) writes the slots the playing image reads, at once. Locks mutex_.
+  std::string paramSlotKey(const doc::Project& p, const std::string& key) const;
   // UI thread (M4): written_ / automated_ cover slot s, and the engine's param ring the slots in use.
   void coverSlot(uint32_t s);
   // UI thread: writes `value` to slot `s` (no automation, unchanged values skipped); false: the ring was full.
@@ -937,6 +943,11 @@ public:
   // references it): a session recording into it ends without a commit, then the folder is deleted — only through
   // removeUnsavedFolder's guard (inside this run's base). Returns the entries removed. UI thread.
   uint64_t discardUnsavedRecordings(const std::string& dir);
+  // M6 review L13: the Unsaved session folders of earlier runs that ended without cleaning up (findStaleUnsaved under
+  // unsavedRoot(), this run's excluded), and the delete of one the user chose to discard: only a direct child of
+  // unsavedRoot() named like a session whose process is gone, through removeUnsavedFolder's guard. UI thread.
+  std::vector<views::ViewContext::StaleRecordings> staleRecordings() const;
+  bool discardStaleRecordings(const std::string& dir);
   uint64_t recordCommits() const noexcept { return recordCommits_; }
   // T6.7b: the manual record offset (Preferences → Record, ViewPrefs::recordOffsetMs): ms, signed; the engine's recorder
   // gets it in frames at the current rate (kept across a sample-rate change). UI thread.

@@ -49,10 +49,22 @@ void InfoView::paint(PaintContext& ctx) {
   ctx.dl.addRectFilled(r.toRect(), th->surface.panel);
   const ThemeFonts* f = ctx.res.uiFonts;
   TextSystem* ts = ctx.res.text;
-  if (!f || !ts || (title_.empty() && body_.empty())) return;
+  if (!f || !ts) return;
   const int32_t pad = ctx.scale.px(8);
-  ctx.dl.pushClip(r.toRect());
   int32_t y = r.y + ctx.scale.px(6);
+  if (title_.empty() && body_.empty()) {
+    // M6 review L19: nothing pointed at (the pointer outside the window, a fresh start) — say what the column is for
+    // instead of leaving an empty panel beside the detail view.
+    const int32_t h = ts->metrics(f->bodyStrong).lineHeight, lh = ts->metrics(f->small).lineHeight;
+    ctx.dl.pushClip(r.toRect());
+    paint::text(ctx, f->bodyStrong, {r.x, y, r.w, h}, "Info", th->text.disabled, TextAlign::Left, pad, pad);
+    y += h + ctx.scale.px(4);
+    paint::text(ctx, f->small, {r.x, y, r.w, lh}, "Point at anything to read", th->text.disabled, TextAlign::Left, pad, pad);
+    paint::text(ctx, f->small, {r.x, y + lh, r.w, lh}, "what it does.", th->text.disabled, TextAlign::Left, pad, pad);
+    ctx.dl.popClip();
+    return;
+  }
+  ctx.dl.pushClip(r.toRect());
   if (!title_.empty()) {
     const int32_t h = ts->metrics(f->bodyStrong).lineHeight;
     paint::text(ctx, f->bodyStrong, {r.x, y, r.w, h}, title_, th->text.primary, TextAlign::Left, pad, pad);

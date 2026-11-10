@@ -270,8 +270,8 @@ void LiveInput::onNoteOn(const RawMidi& m, int64_t time, const LiveRouteImage& i
     const uint64_t seq = t.capture != nullptr ? t.capture->begin(time, b.playing ? b.songSample + (time - b.start) : -1,
                                                                  static_cast<float>(m.d2), bend, p->id, m)
                                               : 0;
-    held_[numHeld_++] = Held{static_cast<uint8_t>(src), static_cast<uint8_t>(ch), static_cast<uint8_t>(key), false, t.slot,
-                             id, p->hz, t.capture, seq};
+    held_[numHeld_++] = Held{static_cast<uint8_t>(src), static_cast<uint8_t>(ch), static_cast<uint8_t>(key), false,
+                             p->id.kind() != tuning::PitchKind::Degree, t.slot, id, p->hz, t.capture, seq};
     ++stats_.noteOns;
     record(LiveNoteRecord::Kind::On, t.slot, time, static_cast<float>(m.d2), p, m, b);
   }
@@ -280,6 +280,7 @@ void LiveInput::onNoteOn(const RawMidi& m, int64_t time, const LiveRouteImage& i
 void LiveInput::retuneHeld(const LiveRouteImage& img, const Block& b) noexcept {  // RT-safe
   for (uint32_t i = 0; i < numHeld_; ++i) {
     Held& h = held_[i];
+    if (h.raw) continue;  // M6 review L3: an Hz note is its key's Hz, as a drawn Hz note: a tuning edit leaves it
     const LivePitch* p = nullptr;
     for (const LiveRouteImage::Target& t : img.targets(h.source, h.channel)) {
       if (t.slot != h.slot) continue;
@@ -287,7 +288,8 @@ void LiveInput::retuneHeld(const LiveRouteImage& img, const Block& b) noexcept {
       else p = &t.keys[h.key & 127u];
       break;
     }
-    if (p == nullptr || !p->mapped() || p->hz == h.hz) continue;  // unrouted now (its note-off still comes) or unmoved
+    // Unrouted now (its note-off still comes), unmoved, or an Hz entry now (the track switched to Hz input).
+    if (p == nullptr || !p->mapped() || p->hz == h.hz || p->id.kind() != tuning::PitchKind::Degree) continue;
     const float bend = bendCents_[h.source * kLiveChannels + h.channel];
     const float ratio = bend != 0.0f ? std::exp2(bend * (1.0f / 1200.0f)) : 1.0f;
     NoteEvent e = engine::notePitch(0, h.noteId, p->hz * ratio);
@@ -411,10 +413,11 @@ bool LiveInput::process(const Block& b) noexcept {  // RT-safe
     sustain_.fill(0);
     bendCents_.fill(0.0f);
   }
-  // TU.1: a new route image (a tuning edit that needs a new table: an EDO size, a MOS shape) gives a held key a new
-  // pitch: the note moves there at the block start (a Pitch event that also carries the new identity, as the
-  // timeline retunes a sounding drawn note on a sequence swap), keeping its bend. Continuous edits never get here:
-  // they keep the image (the tuning node retunes from its params).
+  // TU.1: a new route image gives a held Keys note its key's new pitch: the note moves there at the block start (a
+  // Pitch event that also carries the new identity, as the timeline retunes a sounding drawn note on a sequence swap),
+  // keeping its bend. Every tuning edit publishes a new image, a Generator drag step included (the image's key holds
+  // the definition); a note whose key kept its Hz is left alone. M6 review L3: held Hz-input notes are never moved
+  // (raw pitches, like drawn Hz notes and their recorded identity).
   bool retuned = false;
   if (img != seenRoute_) {
     seenRoute_ = img;
