@@ -232,8 +232,8 @@ int main(int argc, char** argv) {
           rig.send(PointerType::Move, {chart.xOfCents(cents), y}, mod::kAlt);
           rig.frame();
         },
-        1, "ns/frame", "(chart drag → circle + roll preview, ~3000 notes)");
-    std::printf("  roll rows %u, preview %s\n", static_cast<unsigned>(view->rows().size()), ctx.tuningPreview() ? "on" : "off");
+        1, "ns/frame", "(chart drag → circle + live document edit + roll, ~3000 notes)");
+    std::printf("  roll rows %u, store gesture %s\n", static_cast<unsigned>(view->rows().size()), ctx.store().inGesture() ? "open" : "closed");
     rig.send(PointerType::Up, {chart.xOfCents(696.0), y});
     pop->cancel();
     rig.frame();

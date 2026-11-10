@@ -18,6 +18,7 @@
 #include "pq/ui/text.h"
 #include "pq/ui/widget.h"
 #include "pq/views/fake_transport.h"
+#include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/piano_roll/clip_view.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
@@ -122,8 +123,9 @@ int morphBench(const PaintResources& res, SceneTextures& tex) {
                                                      : g0 + 1e-3 * static_cast<double>(i % 50);
                                  doc::TuningDef d = def;
                                  d.system = p;
-                                 ctx.setTuningPreview(target, std::move(d));
-                                 if (!paint) return;  // the clip view's refresh alone (observer → retune / rebuild)
+                                 // TU.1: a morph frame is a document change (the wheel / Generator box apply live).
+                                 (void)ctx.store().dispatch(tuningCommand(target, std::move(d)));
+                                 if (!paint) return;  // the clip view's refresh alone (store event → retune / rebuild)
                                  now += 1.0 / 144.0;
                                  tree.update(now);
                                  const IRect box = bounds(tree.damage().rects());
@@ -145,7 +147,6 @@ int morphBench(const PaintResources& res, SceneTextures& tex) {
   frameBench("pianoroll.morph refresh only (no paint): in place", false, false);
   frameBench("pianoroll.morph refresh only (no paint): rebuild", true, false);
   tree.update(now + 1.0);
-  ctx.clearTuningPreview();
   tree.setRoot(std::make_unique<Widget>());
   return 0;
 }
