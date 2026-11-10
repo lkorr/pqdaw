@@ -763,7 +763,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 - [ ] **PF.2 Project patch: re-layout linear in the project, far zoom cheap, one lowering** (survey #2, #3, #9; perf tests "64-track full paint < 2 ms" and "S-drag step" pass again).
 - [ ] **PF.3 JIT: the ramp-mode copy compiles only what reads ramps** (survey #6). After PF.1.
 - [ ] **PF.4 JIT: units compile in parallel; one unit's functions in parallel; FastISel for the quick first image** (survey #5, #7, #8; bit-identical quick vs final output). After PF.3.
-- [ ] **PF.5 Engine: units run on several audio threads** (survey #11; SPEC M12; core structure: design restated to the user before it starts).
+- [ ] **PF.5 Engine: units run on several audio threads** (survey #11; SPEC M12; core structure: design restated to the user before it starts). *Postponed by the user 2026-11-09; design proposed: worker pool, per-block unit dependency graph, bit-identical, single-thread below a work threshold; measure voice-lane utilisation first.*
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
