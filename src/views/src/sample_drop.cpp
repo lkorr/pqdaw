@@ -6,6 +6,7 @@
 
 #include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
+#include "pq/views/sample_analysis.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views {
@@ -133,12 +134,58 @@ Result<doc::ops::Edit> sampleDropEdit(const doc::Project& p, doc::IdSource& ids,
   return out;
 }
 
+namespace {
+
+// T6.8: auto-warp of the dropped clips (the "Auto-Warp long samples" preference): a sample longer than
+// kAutoWarpSeconds whose tempo is known — its tempo tag or name, else a detection of confidence >= kAutoWarpConfidence,
+// which may arrive later from the analysis worker — is switched to the default warp mode at that tempo. Dispatched
+// with the drop's coalescing key: when nothing happened in between it joins the drop's undo step.
+constexpr double kAutoWarpSeconds = 8.0;
+constexpr float kAutoWarpConfidence = 0.6f;
+
+void autoWarpOne(ViewContext& ctx, doc::ClipRef ref, const doc::AudioClipPtr& dropped, double bpm, uint64_t key) {
+  const doc::Project& p = *ctx.doc();
+  const doc::Track* t = doc::findTrackPtr(p, ref.track);
+  if (!t) return;
+  const int32_t i = doc::findClipIndex(*t, ref.clip);
+  if (i < 0 || t->clips[static_cast<size_t>(i)].audio != dropped) return;  // edited (or gone) since the drop: left alone
+  auto e = doc::ops::autoWarpClips(p, std::span<const doc::ClipRef>(&ref, 1), ctx.viewPrefs().defaultWarpMode, bpm);
+  if (!e || e->empty()) return;
+  if (Status s = ctx.store().dispatchCoalescing(e->command, key); !s) ctx.setStatus("Auto-Warp: " + s.error().message);
+}
+
+}  // namespace
+
 Result<std::vector<doc::ClipRef>> dropSamples(ViewContext& ctx, const SampleDropTarget& target,
                                               std::span<const ProbedFile> audio, Ticks at, bool oneTrack) {
   const SampleDropPlan plan = planSampleDrop(*ctx.doc(), target, audio, at, oneTrack);
   auto e = sampleDropEdit(*ctx.doc(), ctx.store().ids(), plan, audio, ctx.sampleResolutions(), ctx.projectDir());
   if (!e) return std::move(e).error();
-  if (Status s = ctx.store().dispatch(e->command); !s) return std::move(s).error();
+  static uint64_t dropCount = 0;
+  const uint64_t key = 0x5444524F50000000ull + ++dropCount;  // "TDROP" + n: this drop's coalescing run
+  if (Status s = ctx.store().dispatchCoalescing(e->command, key); !s) return std::move(s).error();
+  if (ctx.viewPrefs().autoWarpLongSamples && doc::isWarped(ctx.viewPrefs().defaultWarpMode)) {
+    for (const doc::ClipRef& ref : e->clips) {
+      const doc::Project& p = *ctx.doc();
+      const doc::Track* t = doc::findTrackPtr(p, ref.track);
+      const int32_t i = t ? doc::findClipIndex(*t, ref.clip) : -1;
+      if (i < 0 || !t->clips[static_cast<size_t>(i)].audio) continue;
+      const doc::AudioClipPtr clip = t->clips[static_cast<size_t>(i)].audio;
+      const doc::SampleRef* s = doc::findSample(p, clip->sample);
+      if (!s || !(s->rate > 0.0) || static_cast<double>(s->frames) / s->rate <= kAutoWarpSeconds) continue;
+      double fileBpm = 0.0;  // the tempo tag or name of the file it came from
+      for (const ProbedFile& f : audio)
+        if (f.contentHash == s->contentHash && f.frames == s->frames) fileBpm = f.bpm;
+      if (fileBpm >= kMinBpm && fileBpm <= kMaxBpm) {
+        autoWarpOne(ctx, ref, clip, fileBpm, key);
+        continue;
+      }
+      ctx.sampleAnalysis().whenAnalysed(clip->sample, [&ctx, ref, clip, key](const SampleAnalysisResult* a) {
+        if (a && a->tempo && a->tempo->estimate.bpm > 0.0 && a->tempo->estimate.confidence >= kAutoWarpConfidence)
+          autoWarpOne(ctx, ref, clip, a->tempo->estimate.bpm, key);
+      });
+    }
+  }
   return std::move(e->clips);
 }
 

@@ -51,6 +51,7 @@ namespace pq::views {
 
 class AudioPrefsPort;  // pq/views/prefs/audio_prefs.h
 class Waveforms;       // pq/views/waveforms.h (T5.5)
+class SampleAnalysis;  // pq/views/sample_analysis.h (T6.8)
 class FileProbes;      // pq/views/file_probes.h (T5.7)
 class Library;         // pq/views/browser/library.h (T5.10)
 class ModulationSource;  // pq/views/device_chain/wiring.h (T4.7)
@@ -92,6 +93,7 @@ inline constexpr uint32_t kShowAutomation = 1u << 16; // T4.18: a view asked to 
 inline constexpr uint32_t kAnalysis = 1u << 17;      // TX.spectrum: new analysis taps exist (displays without a feed look again)
 inline constexpr uint32_t kResponses = 1u << 18;     // EQ.4b: the app's lowering of the current structure arrived (the response displays draw again)
 inline constexpr uint32_t kTimeWindow = 1u << 19;    // TL.1: the shared visible time range (TimeWindow) moved or zoomed
+inline constexpr uint32_t kSampleAnalysis = 1u << 20; // T6.8: a sample's transients / tempo arrived (SampleAnalysis)
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel popover commits its
@@ -158,6 +160,11 @@ struct ViewPrefs {
   // is a resize handle).
   bool freeRackOpen = false;
   float freeRackHeight = 200.0f;
+  // T6.8 (Preferences → Warp; Q?-M6-a item 10): a dropped sample longer than 8 s is warped when its tempo is known (a
+  // tempo tag or name, else a detection of confidence >= 0.6); the mode used whenever a clip gets warped from Off by
+  // auto-warp or a warp command (never Off or Re-Pitch-less: any warped mode).
+  bool autoWarpLongSamples = false;
+  doc::AudioWarp defaultWarpMode = doc::AudioWarp::Beats;
   bool operator==(const ViewPrefs&) const = default;
 };
 
@@ -459,6 +466,9 @@ public:
   Waveforms& waveforms() noexcept { return *waveforms_; }
   // Waveforms calls this when an overview arrived or grew (notifies kWaveforms).
   void waveformsChanged() { notify(view_change::kWaveforms); }
+  // --- sample analysis (T6.8; pq/views/sample_analysis.h): transients and tempo per project sample ---
+  SampleAnalysis& sampleAnalysis() noexcept { return *sampleAnalysis_; }
+  void sampleAnalysisChanged() { notify(view_change::kSampleAnalysis); }
 
   // --- drops (T5.7; pq/views/file_probes.h, pq/views/sample_drop.h) ---
   // What dragged files are, probed off the UI thread while they hover.
@@ -606,6 +616,7 @@ private:
   std::string resolvedDir_;                              // and the project directory it was resolved in
   UiPoster post_;
   std::unique_ptr<Waveforms> waveforms_;  // T5.5
+  std::unique_ptr<SampleAnalysis> sampleAnalysis_;  // T6.8
   std::unique_ptr<FileProbes> probes_;    // T5.7
   std::unique_ptr<Library> library_;      // T5.10
   SamplePreloader preload_;

@@ -797,6 +797,48 @@ Status setupClipViewAudio(Shell& shell) {
   return Ok{};
 }
 
+// T6.8: the audio Clip View on the first Drums clip (beat.wav: four kicks and hats, 2 s) warped. `markers`: Beats with
+// Preserve = Transients (the mode rows, the faint transients, the beat grid on the content axis); else Complex Pro with
+// three warp markers, the middle one moved half a beat later (the waveform stretched before it, squeezed after).
+Status setupAudioClipWarp(Shell& shell, bool markers) {
+  ViewContext& ctx = shell.context();
+  doc::ClipRef ref{};
+  doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Drums" && !t.clips.empty() && !ref.clip.valid()) ref = {t.id, t.clips[0].id};
+  });
+  if (!ref.clip.valid()) return Error{ErrorCode::NotFound, "audio-clip-warp: needs the audio fixture", {}};
+  const std::span<const doc::ClipRef> one(&ref, 1);
+  auto apply = [&](const doc::ops::EditResult& e) -> Status {
+    if (!e) return e.error();
+    return ctx.store().dispatch(e->command);
+  };
+  if (Status st = apply(doc::ops::setAudioClipWarp(*ctx.doc(), one, markers ? doc::AudioWarp::ComplexPro : doc::AudioWarp::Beats,
+                                                   120.0));
+      !st)
+    return st;
+  auto clip = [&]() -> const doc::AudioClip& {
+    const doc::Track* t = doc::findTrackPtr(*ctx.doc(), ref.track);
+    return *t->clips[static_cast<size_t>(doc::findClipIndex(*t, ref.clip))].audio;
+  };
+  if (!markers) {
+    doc::WarpParams w = clip().warpParams;
+    w.beatsGranulation = 0;
+    if (Status st = apply(doc::ops::setAudioClipWarpParams(*ctx.doc(), one, w)); !st) return st;
+  } else {
+    const Ticks c0 = clip().contentStart;
+    for (const Ticks t : {c0 + kPpq, c0 + 2 * kPpq, c0 + 3 * kPpq})
+      if (Status st = apply(doc::ops::addWarpMarker(*ctx.doc(), ref, t)); !st) return st;
+    if (Status st = apply(doc::ops::moveWarpMarker(*ctx.doc(), ref, 1, c0 + 2 * kPpq + kPpq / 2)); !st) return st;
+  }
+  if (ArrangementView* a = arrangementOf(shell)) a->selectClips(one, true);
+  ctx.setDetailClip(ref);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Clip);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(440.0f);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // T4.16b: the pointer resting on the end of an unselected note: the note brightened, its end marked.
 Status setupPianoRollHover(Shell& shell) {
   if (Status s = openFirstClip(shell); !s) return s;
@@ -3021,6 +3063,8 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-hover", 1280, 800, setupPianoRollHover},      // T4.16b: --project tests/views/fixtures/pianoroll-12edo
     {"arrangement-audio", 1280, 800, setupArrangementAudio},  // T5.6: --project tests/views/fixtures/audio
     {"clip-view-audio", 1280, 800, setupClipViewAudio},        // T5.6: the same --project
+    {"audio-clip-warp-beats", 1280, 800, [](Shell& s) { return setupAudioClipWarp(s, false); }},   // T6.8: the same --project
+    {"audio-clip-warp-markers", 1280, 800, [](Shell& s) { return setupAudioClipWarp(s, true); }},  // T6.8
     {"browser-panel", 1280, 800, setupBrowserPanel},           // T5.10: the same --project (its samples as the User Library)
     {"browser-search", 1280, 800, setupBrowserSearch},         // T5.10
     {"browser-hotswap", 1280, 800, setupBrowserHotSwap},       // T5.11: the same --project

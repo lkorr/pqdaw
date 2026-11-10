@@ -28,6 +28,7 @@ set(PQ_VIEWS_SOURCES
   src/computer_keyboard.cpp
   src/view_scenes.cpp
   src/waveforms.cpp
+  src/sample_analysis.cpp
   src/file_probes.cpp
   src/sample_drop.cpp
   src/shell/shell.cpp

@@ -29,6 +29,7 @@
 #include "pq/views/panel/style_schemas.h"
 #include "pq/app/clip_export.h"
 #include "pq/app/os_drag.h"
+#include "pq/views/sample_analysis.h"
 #include "pq/views/waveforms.h"
 
 namespace pq::app {
@@ -210,6 +211,7 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   });
   // T5.5: waveform overviews go to the project's cache/ folder, or (an untitled project) per user (LRU 1 GiB).
   app->ctx_->waveforms().setProjectCache(true);
+  app->ctx_->sampleAnalysis().setProjectCache(true);  // T6.8: <project>/cache/analysis, shared with the link's Beats job
   if (const std::string dir = localCacheDir(); !dir.empty())
     app->ctx_->waveforms().setSharedCacheDir(std::filesystem::path(std::u8string(dir.begin(), dir.end())) / "waveforms");
   if (!o.project.empty()) {

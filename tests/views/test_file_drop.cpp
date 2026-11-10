@@ -51,6 +51,31 @@ std::string makeWav(const fs::path& dir, const std::string& name, double seconds
   return u8(p);
 }
 
+// T6.8: a drum loop (kick on 1 and 3, snare on 2 and 4, 8th hats) of `seconds` at `bpm`, stereo float.
+std::string makeLoopWav(const fs::path& dir, const std::string& name, double bpm, double seconds, uint32_t rate = 48000) {
+  const auto n = static_cast<size_t>(std::llround(seconds * rate));
+  std::vector<std::vector<float>> ch(2, std::vector<float>(n, 0.0f));
+  const double beat = 60.0 / bpm;
+  uint32_t rng = 7u;
+  for (int k = 0; k * beat * 0.5 < seconds; ++k) {  // 8th notes
+    const auto s0 = static_cast<size_t>((k * beat * 0.5 + 0.01) * rate);
+    const bool onBeat = k % 2 == 0, kick = onBeat && (k / 2) % 2 == 0, snare = onBeat && !kick;
+    for (size_t i = s0; i < std::min(n, s0 + static_cast<size_t>(0.3 * rate)); ++i) {
+      const double t = static_cast<double>(i - s0) / rate;
+      rng = rng * 1664525u + 1013904223u;
+      const double noise = static_cast<double>(rng >> 8) / 8388608.0 - 1.0;
+      double v = 0.12 * noise * std::exp(-t / 0.012);
+      if (kick) v += 0.9 * std::exp(-t * 14.0) * std::sin(2.0 * 3.14159265358979 * 55.0 * t);
+      if (snare) v += 0.5 * noise * std::exp(-t / 0.06);
+      ch[0][i] += static_cast<float>(v);
+      ch[1][i] += static_cast<float>(v);
+    }
+  }
+  const fs::path p = dir / name;
+  REQUIRE(media::writeWav(p, ch, rate).ok());
+  return u8(p);
+}
+
 struct Fixture {
   FakeTransport port;
   ViewContext ctx{port};
@@ -407,4 +432,47 @@ TEST_CASE("file drop: 100 files probed and committed within 300 ms" * doctest::t
     REQUIRE(f.ctx.undo());
   }
   CHECK(best <= 300.0);
+}
+
+TEST_CASE("file drop: auto-warp (T6.8) — off by default; on, a long loop warps at its detected tempo in the drop's "
+          "undo step, a tempo in its name wins, short files stay Off, the default mode is used") {
+  Fixture f("autowarp");
+  const std::string loop = makeLoopWav(f.dir, "Groove.wav", 100.0, 9.6);
+  const std::string named = makeLoopWav(f.dir, "Break 96bpm.wav", 100.0, 9.6);
+  const std::string shortLoop = makeLoopWav(f.dir, "Short.wav", 100.0, 4.8);
+  // Off by default: the clip keeps its own speed.
+  size_t h = f.history();
+  CHECK(f.dropFiles({loop}, f.at(f.audio, 0)) == DropEffect::Copy);
+  CHECK(f.clip(f.track(f.audio), 0).warp == doc::AudioWarp::Off);
+  REQUIRE(f.ctx.undo());
+  CHECK(f.history() == h);
+
+  ViewPrefs p = f.ctx.viewPrefs();
+  p.autoWarpLongSamples = true;
+  f.ctx.setViewPrefs(p);
+  CHECK(f.dropFiles({loop}, f.at(f.audio, 0)) == DropEffect::Copy);
+  const doc::AudioClip& a = f.clip(f.track(f.audio), 0);
+  CHECK(a.warp == doc::AudioWarp::Beats);
+  CHECK(std::abs(a.sourceBpm - 100.0) <= 1.0);
+  // The clip still plays the whole file (its length re-derived in content).
+  const double fpt = doc::framesPerContentTick(48000.0, a.sourceBpm);
+  CHECK(static_cast<double>(a.contentStart + a.length) * fpt == doctest::Approx(9.6 * 48000.0).epsilon(2e-3));
+  CHECK(f.history() == h + 1);  // the drop and its auto-warp: one step
+  REQUIRE(f.ctx.undo());
+  CHECK(f.track(f.audio).clips.empty());
+
+  // The tempo in the name wins over the detection.
+  CHECK(f.dropFiles({named}, f.at(f.audio, 0)) == DropEffect::Copy);
+  CHECK(f.clip(f.track(f.audio), 0).warp == doc::AudioWarp::Beats);
+  CHECK(f.clip(f.track(f.audio), 0).sourceBpm == 96.0);
+  REQUIRE(f.ctx.undo());
+  // 8 s or shorter: Off.
+  CHECK(f.dropFiles({shortLoop}, f.at(f.audio, 0)) == DropEffect::Copy);
+  CHECK(f.clip(f.track(f.audio), 0).warp == doc::AudioWarp::Off);
+  REQUIRE(f.ctx.undo());
+  // The default warp mode.
+  p.defaultWarpMode = doc::AudioWarp::Complex;
+  f.ctx.setViewPrefs(p);
+  CHECK(f.dropFiles({loop}, f.at(f.audio, 0)) == DropEffect::Copy);
+  CHECK(f.clip(f.track(f.audio), 0).warp == doc::AudioWarp::Complex);
 }

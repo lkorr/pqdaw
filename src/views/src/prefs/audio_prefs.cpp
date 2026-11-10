@@ -9,6 +9,7 @@
 
 #include "../common/paint.h"
 #include "pq/ui/theme.h"
+#include "pq/views/audio_clip/audio_clip_view.h"  // T6.8: kWarpModeNames
 #include "pq/views/browser/library.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
@@ -287,6 +288,12 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx)
     midiTab.setInfo("MIDI", "MIDI input ports: which ones play into the tracks, and their pitch-bend range.");
     midiTab.onSelect = [this] { showTab(Tab::Midi); };
   }
+  if (ctx_) {  // T6.8
+    auto& warpTab = tabs.add<TabLabel>("warp", "Warp");
+    warpTab_ = &warpTab;
+    warpTab.setInfo("Warp", "Auto-warp of long samples, and the warp mode a clip gets when it is warped.");
+    warpTab.onSelect = [this] { showTab(Tab::Warp); };
+  }
   tabs.selected = &audioTab;
 
   auto& page = body.add<Widget>("audio");
@@ -476,6 +483,7 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx)
 
   if (ctx_) buildLibraryTab(body);
   buildMidiTab(body);  // T6.4
+  if (ctx_) buildWarpTab(body);  // T6.8
 
   port_.setListener([alive = alive_, this] {
     if (*alive) refresh();
@@ -602,16 +610,65 @@ void PreferencesWindow::updateLibrary() {
 
 void PreferencesWindow::showTab(Tab t) {
   if (t == Tab::Library && !libraryPage_) return;
+  if (t == Tab::Warp && !warpPage_) return;
   tab_ = t;
   audioPage_->setVisible(t == Tab::Audio);
   if (libraryPage_) libraryPage_->setVisible(t == Tab::Library);
   midiPage_->setVisible(t == Tab::Midi);
+  if (warpPage_) warpPage_->setVisible(t == Tab::Warp);
   if (t == Tab::Midi) updateMidi();
   auto* tabs = static_cast<TabColumn*>(tabs_);
   tabs->selected = t == Tab::Audio     ? static_cast<const Widget*>(audioTab_)
                    : t == Tab::Library ? static_cast<const Widget*>(libraryTab_)
+                   : t == Tab::Warp    ? static_cast<const Widget*>(warpTab_)
                                        : static_cast<const Widget*>(midiTab_);
   tabs->markDirty();
+}
+
+// ---- T6.8: the Warp tab ----------------------------------------------------------------------------------------------
+// ViewPrefs::autoWarpLongSamples and ::defaultWarpMode (the app keeps them in the settings file).
+
+void PreferencesWindow::buildWarpTab(Widget& body) {
+  auto& page = body.add<Widget>("warp");
+  warpPage_ = &page;
+  page.setLayout(LayoutKind::Column);
+  page.setGap(5);
+  page.setVisible(false);
+  section(page, "warp-section", "Warping");
+  {
+    auto& r = row(page, "auto-warp", "Auto-Warp Long Samples");
+    autoWarp_ = &r.add<Toggle>("toggle", "On");
+    autoWarp_->setWidth(Length::fixed(84));
+    autoWarp_->setInfo("Auto-Warp Long Samples", "A dropped sample longer than 8 s is warped to the song tempo when its tempo "
+                                                 "is known: from its tempo tag or file name, else detected (when the "
+                                                 "detection is confident). Off: new clips keep their own speed.");
+    autoWarp_->onToggle = [this](bool on) {
+      ViewPrefs p = ctx_->viewPrefs();
+      p.autoWarpLongSamples = on;
+      ctx_->setViewPrefs(p);
+    };
+  }
+  {
+    auto& r = row(page, "default-warp", "Default Warp Mode");
+    std::vector<std::string> modes;
+    for (uint8_t w = 1; w <= static_cast<uint8_t>(doc::kLastAudioWarp); ++w) modes.push_back(kWarpModeNames[w]);
+    defaultWarp_ = &r.add<Dropdown>("chooser", std::move(modes), 1);
+    defaultWarp_->setWidth(Length::fixed(140));
+    defaultWarp_->setInfo("Default Warp Mode", "The mode auto-warp and Warp as Loop give a clip that was not warped.");
+    defaultWarp_->onChange = [this](int32_t i) {
+      ViewPrefs p = ctx_->viewPrefs();
+      p.defaultWarpMode = static_cast<doc::AudioWarp>(std::clamp<int32_t>(i + 1, 1, static_cast<int32_t>(doc::kLastAudioWarp)));
+      ctx_->setViewPrefs(p);
+    };
+  }
+  updateWarp();
+}
+
+void PreferencesWindow::updateWarp() {
+  if (!ctx_ || !autoWarp_) return;
+  const ViewPrefs& p = ctx_->viewPrefs();
+  autoWarp_->setOn(p.autoWarpLongSamples);
+  defaultWarp_->setIndex(std::max(0, static_cast<int32_t>(p.defaultWarpMode) - 1));
 }
 
 // ---- T6.4: the MIDI tab ----------------------------------------------------------------------------------------------

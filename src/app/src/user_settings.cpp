@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
@@ -151,6 +152,12 @@ Status saveAudioSettings(const std::string& path, const views::AudioSettings& s)
   return saveSection(path, "audio", json::parse(audioSettingsJson(s)));
 }
 
+namespace {
+// T6.8: the default warp mode in the settings file (the project file's names, serialize.cpp).
+constexpr const char* kWarpNames[] = {"off", "rePitch", "beats", "tones", "texture", "complex", "complexPro"};
+static_assert(std::size(kWarpNames) == static_cast<size_t>(doc::kLastAudioWarp) + 1);
+}  // namespace
+
 views::ViewPrefs loadViewPrefs(const std::string& path) {
   views::ViewPrefs prefs;
   std::ifstream in(utf8Path(path), std::ios::binary);
@@ -167,6 +174,13 @@ views::ViewPrefs loadViewPrefs(const std::string& path) {
   // TX.free-rack: the Device view's free-device rack.
   if (const auto f = it->find("freeRackOpen"); f != it->end() && f->is_boolean()) prefs.freeRackOpen = f->get<bool>();
   if (const auto f = it->find("freeRackHeight"); f != it->end() && f->is_number()) prefs.freeRackHeight = f->get<float>();
+  // T6.8: Preferences → Warp.
+  if (const auto f = it->find("autoWarpLongSamples"); f != it->end() && f->is_boolean()) prefs.autoWarpLongSamples = f->get<bool>();
+  if (const auto f = it->find("defaultWarpMode"); f != it->end() && f->is_string()) {
+    const std::string m = f->get<std::string>();
+    for (uint8_t w = 1; w <= static_cast<uint8_t>(doc::kLastAudioWarp); ++w)
+      if (m == kWarpNames[w]) prefs.defaultWarpMode = static_cast<doc::AudioWarp>(w);
+  }
   return prefs;
 }
 
@@ -177,6 +191,8 @@ Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   v["dragOut24Bit"] = prefs.dragOut24Bit;
   v["freeRackOpen"] = prefs.freeRackOpen;  // TX.free-rack
   v["freeRackHeight"] = prefs.freeRackHeight;
+  v["autoWarpLongSamples"] = prefs.autoWarpLongSamples;  // T6.8
+  v["defaultWarpMode"] = kWarpNames[static_cast<size_t>(prefs.defaultWarpMode)];
   return saveSection(path, "views", std::move(v));
 }
 

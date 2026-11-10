@@ -1171,3 +1171,25 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - Mixer view strips (not the master): a Track Delay box ("0.0 ms") and a "Lat 0.0 ms" readout under the tuning chip.
 - 86 goldens re-recorded: every full-window scene moved only in the control bar (y 26–46), plus mixer-view (the strips'
   two new rows).
+
+## 2026-11-10 · T6.8 · Warp UI, tempo detection, auto-warp 👁
+- What: the audio Clip View's Warp chooser lists all seven modes (Off, Re-Pitch, Beats, Tones, Texture, Complex,
+  Complex Pro) with each mode's settings under Loop (Beats: Preserve / Loop Mode / Envelope; Tones: Grain Size;
+  Texture: Grain Size / Flux; Complex Pro: Formants / Envelope), :2 / *2 under BPM. A warped clip is drawn in its own
+  beats (the waveform stretched between warp markers, a beat grid), with a strip of yellow warp markers under the ruler
+  and faint lines at the sample's transients. Preferences → Warp: Auto-Warp Long Samples (off) and Default Warp Mode
+  (Beats). The arrangement's clip badge names the mode ("Beats 120", "Pro 96", …) instead of "RP" for every warped mode.
+  Goldens: new `audio-clip-warp-beats`, `audio-clip-warp-markers`; moved `clip-view-audio` (strip, grid, :2 / *2 row),
+  `audio-prefs`, `audio-prefs-wasapi`, `library-prefs`, `midi-prefs` (the Warp tab label).
+- Try: drop a drum loop, set Warp to Beats; double-click the waveform near a hit (the marker snaps onto the transient
+  within ~5 px), drag a marker left / right (the audio between its neighbours stretches; 1/16 snap, Shift free), Ctrl-drag
+  a marker (the audio slides under it), click + Delete or double-click a marker to remove it, Esc mid-drag; right-click →
+  Warp From Here, Warp as N-Bar Loop. Turn Auto-Warp on and drop a loop longer than 8 s (it should come in warped at
+  its tempo; one Ctrl+Z takes the drop back). Switch modes on a vocal (Complex Pro, change Formants while transposed).
+- To judge: **marker drag feel** — the view's axis is frozen while you drag (it re-fits on release, so the view can jump
+  when the sample's ends move), the 1/16 snap of content time, whether the snap should rather pull to transients as
+  Live's does; the yellow pin size (9 px); the mode rows' order and labels; the transient lines' faintness; the
+  extrapolation before the first / after the last marker (the nearest segment's slope: the sample's start can land
+  before the clip's start, as in `audio-clip-warp-markers`) — Live instead pins the sample's start; say if you want
+  that. Tempo detection was checked on synthetic loops only; please try real loops and report octave errors (:2 / *2
+  fix one).

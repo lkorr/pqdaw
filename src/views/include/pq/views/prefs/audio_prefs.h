@@ -49,6 +49,13 @@
 //   │         │   Launchkey 49 (not connected)             [On]   [±12 st ▾]     │
 //   │         │ Computer MIDI Keyboard: M (A W S E D … play degrees; Z / X equave; C / V velocity)
 //
+// T6.8: a Warp tab (with a ViewContext; Live's Record, Warp & Launch → Warp): ViewPrefs::autoWarpLongSamples and
+// ::defaultWarpMode, applied at once, kept by the app in its settings file:
+//
+//   │ Warp    │ Warping                                                          │
+//   │         │   Auto-Warp Long Samples    [Off]                                │
+//   │         │   Default Warp Mode         [Beats          ▾]                   │
+//
 // Browse… and Add Folder… open the folder picker (FileDialogs::chooseFolder). The location applies at once
 // (Library::changeUserLibrary: the browser's User Library place re-points and re-indexes; saves go there) and the app
 // keeps it in the settings file; the Samples Folder likewise (Library::changeSamplesFolder; shown: the default
@@ -300,7 +307,7 @@ public:
 
   // T5.x-library-prefs: the tabs (0 Audio, 1 Library, 2 MIDI: T6.4) and the Library tab's controls (null without a
   // context).
-  enum class Tab : uint8_t { Audio, Library, Midi };
+  enum class Tab : uint8_t { Audio, Library, Midi, Warp };  // Warp: T6.8 (with a context)
   void showTab(Tab t);
   Tab tab() const noexcept { return tab_; }
   ui::Button* browseUserLibrary() const noexcept { return browse_; }
@@ -316,6 +323,9 @@ public:
     ui::Dropdown* bend = nullptr;
   };
   const std::vector<MidiRow>& midiRows() const noexcept { return midiRows_; }
+  // T6.8: the Warp tab's controls (null without a context).
+  ui::Toggle* autoWarpToggle() const noexcept { return autoWarp_; }
+  ui::Dropdown* defaultWarpChooser() const noexcept { return defaultWarp_; }
   // The selected row of the Places list (-1 none).
   int32_t selectedFolder() const noexcept;
   void selectFolder(int32_t row);
@@ -332,6 +342,8 @@ private:
   void updateLibrary();
   void buildMidiTab(ui::Widget& body);
   void updateMidi();
+  void buildWarpTab(ui::Widget& body);  // T6.8
+  void updateWarp();
 
   AudioPrefsPort& port_;
   AudioSettings shown_;
@@ -357,6 +369,10 @@ private:
   ui::Widget *midiPage_ = nullptr, *midiList_ = nullptr;
   std::vector<MidiPortEntry> midiShown_;
   std::vector<MidiRow> midiRows_;
+  ui::Label* warpTab_ = nullptr;  // T6.8
+  ui::Widget* warpPage_ = nullptr;
+  ui::Toggle* autoWarp_ = nullptr;
+  ui::Dropdown* defaultWarp_ = nullptr;
   ViewContext::Subscription librarySub_;
   uint32_t timer_ = 0;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);

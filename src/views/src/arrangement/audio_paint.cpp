@@ -119,7 +119,8 @@ bool buildAudioTile(TileAtlas& tiles, AudioLayout& L, const media::WaveformOverv
   return true;
 }
 
-// The badge text of a clip: transpose / detune (warp Off), warp, reverse, gain.
+// The badge text of a clip: the warp mode and source tempo (T6.8), transpose / detune (every mode but Re-Pitch),
+// reverse, gain.
 std::string badgeText(const doc::AudioClip& c) {
   std::string s;
   char buf[48];
@@ -127,7 +128,12 @@ std::string badgeText(const doc::AudioClip& c) {
     if (!s.empty()) s += "  ";
     s += t;
   };
-  if (c.warp == doc::AudioWarp::Off) {
+  if (doc::isWarped(c.warp)) {  // T6.8: the mode and the source tempo ("RP 120", "Beats 120", ...)
+    static constexpr const char* kShort[] = {"", "RP", "Beats", "Tones", "Texture", "Complex", "Pro"};
+    std::snprintf(buf, sizeof buf, "%s %.0f", kShort[static_cast<size_t>(c.warp)], c.sourceBpm);
+    add(buf);
+  }
+  if (doc::warpTransposes(c.warp)) {  // Off and the time-stretch modes play the transpose
     switch (c.transpose.unit) {
       case doc::TransposeUnit::Cents:
         if (c.transpose.cents != 0.0) {
@@ -155,9 +161,6 @@ std::string badgeText(const doc::AudioClip& c) {
       std::snprintf(buf, sizeof buf, "%+.0f c", static_cast<double>(c.detuneCents));
       add(buf);
     }
-  } else {
-    std::snprintf(buf, sizeof buf, "RP %.0f", c.sourceBpm);
-    add(buf);
   }
   if (c.reverse) add("Rev");
   if (c.gainDb != 0.0f) {

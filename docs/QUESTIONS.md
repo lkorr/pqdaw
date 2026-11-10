@@ -718,3 +718,25 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
 - **Open**: a plan change applies one image block after the hook reads `outputLatency()`, so the first click after a
   latency change may be off by the change once.
 - Status: decided (reversible).
+
+## Q?-T6.8-a · 2026-11-10 · T6.8 · Warp UI, tempo detection, auto-warp: what the plan left open
+- **Context**: docs/plans/M6.md "### T6.8" names the controls, the detector and auto-warp; several behaviours had to be
+  chosen.
+- **Choices** (most reversible): (1) **Octave choice**: the IOI comb alone ties a tempo with half of it (a back-beat
+  repeats every two beats), so a log-normal prior (σ 0.8 octave) is centred on the median spacing of the loud hits
+  (onsets ≥ 0.2 of the strongest RMS rise), not on a fixed 120 BPM (fixed centres missed 2–4 of the 20 loops, which
+  changed with the jitter seed); 20/20 on the synthetic set over 7 seeds. Real recordings are untested: :2 / *2 next to
+  BPM fix an octave error. (2) Auto-warp's detection may arrive after the drop: it is dispatched with the drop's
+  coalescing key (one undo step when nothing happened in between, else its own), and skipped when the clip changed
+  meanwhile. Tag / name tempo wins over detection. (3) Auto-warp and Warp as N-Bar Loop re-derive the clip's length
+  (the whole file; N bars) but never past the next clip on the track. Bars are 4/4 (content time has no signature).
+  (4) Warp From Here uses the detected tempo (confidence ≥ 0.6) else the clip's source BPM; with no earlier marker it
+  sets the source BPM (the whole clip follows). (5) Marker drags snap to the 1/16 content grid (Shift: free), not to
+  transients; double-click snaps a new marker to a transient within 5 px. The display's axis is frozen during a marker
+  drag. (6) The waveform of a warped clip is drawn on the content axis with T6.1's law, so before the first / after the
+  last marker the sample follows the nearest segment's slope (Live pins the sample's start instead). (7) "Default Warp
+  Mode" applies when a clip is warped from Off by auto-warp or Warp as Loop; the chooser itself picks its mode; switching
+  from Off seeds the BPM from tag / name, else the detection, else the length. (8) The views run their own analysis job
+  (`views::SampleAnalysis`) over the same media caches as the link's Beats job; `project_link.h` was left alone (the
+  link keeps its `kTransientJob` bit): on a cold cache both may analyse one file once each.
+- Status: decided (reversible).

@@ -14,6 +14,7 @@
 #include "pq/views/devices/analysis.h"
 #include "pq/views/file_probes.h"
 #include "pq/views/panel/group_responses.h"
+#include "pq/views/sample_analysis.h"
 #include "pq/views/waveforms.h"
 
 namespace pq::views {
@@ -65,6 +66,7 @@ std::string projectNameOf(std::string_view dir) {
 
 ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   waveforms_ = std::make_unique<Waveforms>(*this);
+  sampleAnalysis_ = std::make_unique<SampleAnalysis>(*this);  // T6.8
   probes_ = std::make_unique<FileProbes>(*this);
   saved_ = store_.current();
   storeListener_ = store_.subscribe([this](const doc::StoreEvent& e) { onStoreEvent(e); });
@@ -101,6 +103,7 @@ ViewContext::~ViewContext() {
   library_.reset();        // T5.10: unsubscribes from this context first
   collectWorker_.reset();  // joins a running copy
   waveforms_.reset();      // joins its workers
+  sampleAnalysis_.reset();  // T6.8: joins its worker
   probes_.reset();         // T5.7: joins the probe workers
   store_.unsubscribe(storeListener_);
 }
@@ -280,6 +283,7 @@ void ViewContext::afterLoad() {
   transport_.locate(0);
   syncLoop();
   waveforms_->clear();  // T5.5: another project (its own cache folder)
+  sampleAnalysis_->clear();  // T6.8
   refreshSamples();
   notify(view_change::kProject | view_change::kTransport);
 }
@@ -374,6 +378,7 @@ void ViewContext::refreshSamples(bool relocate) {
   else if (before != 0)
     setStatus("All samples found");
   waveforms_->samplesResolved();  // T5.5: overviews of files that changed are dropped
+  sampleAnalysis_->samplesResolved();  // T6.8
   notify(view_change::kSamples);  // T5.4: the playback link follows which samples can play
 }
 

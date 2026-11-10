@@ -1,28 +1,42 @@
 #pragma once
 
-// The audio Clip View (T5.6, SPEC §9.4): the detail view's clip panel when the clip shown (ViewContext::detailClip) is
-// an audio clip; the piano roll (ClipView) covers the same slot for note clips. Live's audio clip view, simplified:
+// The audio Clip View (T5.6, SPEC §9.4; T6.8 warping): the detail view's clip panel when the clip shown
+// (ViewContext::detailClip) is an audio clip; the piano roll (ClipView) covers the same slot for note clips. Live's
+// audio clip view, simplified:
 //
 //   audio-box (left)                         | sample (right)
-//   name, file, rate · bits · channels · s   | ruler strip: start marker, Re-Pitch loop brace
-//   Gain, Transpose, Detune, Reverse         | the whole sample's waveform (clip gain applied), the clip's region lit
-//   Warp (Off / Re-Pitch), BPM, Loop         |
-//   Fade In, Fade Out                        |
+//   name, file, rate · bits · channels · s   | ruler strip: start marker, loop brace
+//   Clip: Gain, Transpose, Detune, Reverse,  | warp strip (warped clips): the warp markers
+//         Fade In, Fade Out                  | the sample's waveform: an Off clip's whole file on a frame axis; a warped
+//   Sample: Warp (7 modes), BPM, :2 / *2,    |   clip's on its CONTENT axis (beats of the clip, each segment between
+//         Loop, the mode's settings          |   markers stretched as it plays), with the beat grid; the clip's region
+//                                            |   lit, faint lines at the sample's transients (SampleAnalysis)
 //
 // Edits (each one undo step; drags and box drags are one store gesture, so the clip follows live and plays the change):
 //   Gain       dB box (−inf … +24)                         ops::setAudioClipGain
 //   Transpose  typed: "7" = 7 steps of the clip's tuning, "700c" = cents, "+7st" = semitones, "3/2" = a ratio
-//                                                           ops::setAudioClipTranspose (warp Off only: greyed in Re-Pitch)
-//   Detune     cents box (±50)                             ops::setAudioClipDetune (warp Off only)
+//                                                           ops::setAudioClipTranspose (every mode but Re-Pitch)
+//   Detune     cents box (±50)                             ops::setAudioClipDetune (every mode but Re-Pitch)
 //   Reverse    toggle                                      ops::setAudioClipsReverse
-//   Warp       Off / Re-Pitch; switching to Re-Pitch seeds the BPM from the file's tempo tag or name, else from its
-//              length as a whole number of 4/4 bars (sourceBpmFor)   ops::setAudioClipWarp
-//   BPM        the Re-Pitch source tempo                   ops::setAudioClipWarp
-//   Loop       Re-Pitch loop on / off                      ops::setAudioClipLoop
+//   Warp       Off / Re-Pitch / Beats / Tones / Texture / Complex / Complex Pro. From Off the BPM is seeded from the
+//              file's tempo tag or name, else its detected tempo (confidence >= 0.6), else its length as a whole
+//              number of 4/4 bars (sourceBpmFor)          ops::setAudioClipWarp
+//   BPM, :2 *2 the source tempo (halved / doubled)         ops::setAudioClipWarp
+//   Loop       loop on / off                               ops::setAudioClipLoop
+//   mode rows  Beats: Preserve (Transients, 1/4 … 1/32), Loop Mode (Off / Forward / Back-Fwd), Envelope; Tones: Grain;
+//              Texture: Grain, Flux; Complex Pro: Formants, Envelope   ops::setAudioClipWarpParams
 //   Fade In / Fade Out  milliseconds at the clip's tempo   ops::setAudioClipFades
-//   start marker  drag in the ruler strip (Off: the source frame at the clip start; Re-Pitch: the content start,
+//   start marker  drag in the ruler strip (Off: the source frame at the clip start; warped: the content start,
 //              snapped to 1/16 notes, Shift: free)          SetAudioClip
-//   loop brace    Re-Pitch: drag its ends or the whole brace (1/16 notes, Shift: free)   ops::setAudioClipLoop
+//   loop brace    warped: drag its ends or the whole brace (1/16 notes, Shift: free)   ops::setAudioClipLoop
+//   warp markers  (warped clips) double-click the waveform or the strip: add one (at a transient within reach, else
+//              where clicked); double-click a marker: remove it; drag a marker: move it in content time, its source
+//              frame kept, so the audio around it stretches (1/16 notes, Shift: free); Ctrl-drag: slide the source
+//              under it (its content tick kept); click selects, Delete removes the selected one; Esc cancels a drag.
+//              ops::addWarpMarker / moveWarpMarker / slideWarpMarker / removeWarpMarker
+//   right-click   Warp From Here (at the marker or point: markers after it go, the source reads at the detected tempo
+//              from there), Warp as N-Bar Loop (N the power of two nearest the detected tempo, else 120 BPM), Delete
+//              Warp Marker.  ops::warpFromHere / warpAsLoop (an Off clip warps in the "Default warp mode" preference)
 //
 // UI thread only.
 
@@ -35,6 +49,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
 #include "pq/ui/controls.h"
+#include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
@@ -51,6 +66,11 @@ std::string formatTranspose(const doc::AudioTranspose& t);
 // The source tempo a clip switching to Re-Pitch starts from: the file's tempo (acid chunk, file name) when known,
 // else the tempo at which the file's duration is a whole number of 4/4 bars (the nearest to 120 BPM).
 double sourceBpmFor(double fileBpm, double durationSeconds);
+// T6.8: the bars of "Warp as N-Bar Loop" for a region of `seconds`: the power of two (1 … 64) whose tempo is nearest
+// (in octaves) to `bpm` (> 0: the detected tempo), else to 120 BPM.
+int32_t loopBarsFor(double seconds, double bpm);
+// T6.8: the warp chooser's items, index = doc::AudioWarp.
+inline constexpr const char* kWarpModeNames[] = {"Off", "Re-Pitch", "Beats", "Tones", "Texture", "Complex", "Complex Pro"};
 
 class AudioClipView : public ui::Widget {
 public:
@@ -68,14 +88,29 @@ public:
   bool setReverse(bool on);
   bool setWarp(doc::AudioWarp warp);
   bool setSourceBpm(double bpm);
+  bool scaleSourceBpm(double factor);  // T6.8: :2 / *2
   bool setLoopEnabled(bool on);
   bool setFadesMs(double inMs, double outMs);
+  bool setWarpParams(const doc::WarpParams& p);  // T6.8
+  // T6.8: the warp commands (also the context menu's). `content`: a content tick of the clip.
+  bool warpFromHere(Ticks content);
+  bool warpAsLoop();
+  bool removeWarpMarker(size_t index);
+  // The tempo the warp commands use: the sample's detected tempo when confident (>= 0.6), else 0.
+  double detectedBpm();
 
   // --- geometry (device px; tests script pointer input with these) ---
   ui::IRect sampleRect() const noexcept;    // the waveform
   ui::IRect rulerRect() const noexcept;     // the strip above it (marker, brace)
   float xOfFrame(double frame) const noexcept;
   double startMarkerFrame() const noexcept;  // where the start marker is drawn
+  // T6.8: the warp strip (warped clips; empty otherwise), x of a content tick (warped) and of warp marker i.
+  ui::IRect warpStripRect() const noexcept;
+  float xOfContent(double content) const noexcept;
+  float warpMarkerX(size_t i) const noexcept;
+  int32_t selectedWarpMarker() const noexcept;  // −1: none
+  // Opens the sample's context menu at device position `at` (what a right-click there does).
+  ui::Menu* openSampleMenu(ui::Vec2 at);
   ui::Widget& box() noexcept { return *box_; }
 
   void paint(ui::PaintContext& ctx) override;
@@ -114,7 +149,13 @@ private:
   ui::Toggle* reverse_ = nullptr;
   ui::Dropdown* warp_ = nullptr;
   ui::DragBox* bpm_ = nullptr;
+  ui::Button *halve_ = nullptr, *double_ = nullptr;  // T6.8
   ui::Toggle* loop_ = nullptr;
+  // T6.8: the mode rows (shown for their mode) and their controls.
+  ui::Widget *preserveRow_ = nullptr, *beatsLoopRow_ = nullptr, *beatsEnvRow_ = nullptr, *grainRow_ = nullptr,
+             *fluxRow_ = nullptr, *formantsRow_ = nullptr, *envOrderRow_ = nullptr;
+  ui::Dropdown *preserve_ = nullptr, *beatsLoop_ = nullptr;
+  ui::DragBox *beatsEnv_ = nullptr, *grain_ = nullptr, *flux_ = nullptr, *formants_ = nullptr, *envOrder_ = nullptr;
   ui::DragBox* fadeIn_ = nullptr;
   ui::DragBox* fadeOut_ = nullptr;
 };

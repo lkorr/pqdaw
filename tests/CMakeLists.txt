@@ -180,6 +180,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_arrangement_editing.cpp
     views/test_arrangement_tiles.cpp
     views/test_arrangement_audio.cpp  # T5.6: audio clips in the arrangement, the audio clip view, goldens, perf
+    views/test_audio_clip_warp.cpp  # T6.8: warp modes and settings, warp markers, warp commands, Warp prefs tab (real dispatch), goldens
     views/test_piano_roll.cpp
     views/test_piano_roll_scale.cpp
     views/test_mos_chart.cpp

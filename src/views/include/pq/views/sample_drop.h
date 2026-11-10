@@ -63,6 +63,10 @@ Result<doc::ops::Edit> sampleDropEdit(const doc::Project& p, doc::IdSource& ids,
                                       std::string_view projectDir);
 
 // Plans, builds and dispatches the drop (one undo step). The created clips are returned (selected by the caller).
+// T6.8: with ViewPrefs::autoWarpLongSamples, each dropped clip of a sample longer than 8 s whose tempo is known (its
+// tempo tag or name, else a detection of confidence >= 0.6 from SampleAnalysis, possibly arriving later) switches to
+// ViewPrefs::defaultWarpMode at that tempo (ops::autoWarpClips), in the drop's undo step when nothing happened in
+// between (Store::dispatchCoalescing); a clip edited before the detection arrives is left alone.
 Result<std::vector<doc::ClipRef>> dropSamples(ViewContext& ctx, const SampleDropTarget& target,
                                               std::span<const ProbedFile> audio, Ticks at, bool oneTrack);
 

@@ -476,7 +476,7 @@ TEST_CASE("recording: T6.8 warp commands — slide keeps the content tick, Warp 
   CHECK(warpFrameAt(clip(), 48000.0, static_cast<double>(clip().loop.start)) == doctest::Approx(a));
   CHECK(warpFrameAt(clip(), 48000.0, static_cast<double>(clip().loop.end)) == doctest::Approx(b));
   CHECK(clip().length == kTicksPerWhole);
-  CHECK_FALSE(ops::warpAsLoop(r.doc(), c, 1000).ok());  // 1000 bars of 1.6 s: far below 20 BPM
+  CHECK_FALSE(ops::warpAsLoop(r.doc(), c, 1000).ok());  // 1000 bars in a few seconds: far above kMaxBpm
 
   // An Off clip warps as a loop in the given mode, its window spanning the bars.
   commit(r.store, ops::setWarpMode(r.doc(), one, AudioWarp::Off));
