@@ -743,8 +743,8 @@ DevicePtr makeInstrumentGroup(DeviceId id);
 // exponent, 0 … kMaxGroupOversample: 1× / 2× / 4× / 8×. The lowering puts every device inside the group (at any depth)
 // into one oversample region of the track patch (PATCH_LANGUAGE §2.3): its atoms see sr = N·sr, wires across the
 // group's edge go through the region's half-band converters. Nested oversampled groups share the OUTERMOST one's region
-// at the largest factor of the nest (regions do not nest). Latency: the half-bands' group delay (not reported, no PDC
-// until M6), groupOversampleLatency.
+// at the largest factor of the nest (regions do not nest). Latency: the half-bands' group delay,
+// groupOversampleLatency; reported by the converters and compensated by the project's PDC (T6.2, to the nearest sample).
 inline constexpr std::string_view kGroupOversample = "oversample";
 inline constexpr uint32_t kMaxGroupOversample = 3;  // 8×
 uint32_t groupOversampleFactor(const Device& group) noexcept;  // 1, 2, 4 or 8 (1: not a group, or not set)

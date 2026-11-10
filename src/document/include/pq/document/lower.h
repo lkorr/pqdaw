@@ -433,7 +433,8 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // another: it stays outside and runs at its own factor (its wires to the members cross down and up). A feedback loop
 // through the group's edge (a member's output back into the group from outside) is refused by the compiler (a loop
 // must be entirely inside a region or outside it). Instrument groups: the region runs per voice (8 voice lanes per
-// converter). Latency: groupOversampleLatency (not compensated: no PDC).
+// converter). Latency: groupOversampleLatency, reported by the converters and compensated by the project's PDC (to the
+// nearest sample; pq/graph/latency.h, pq/engine/latency_plan.h).
 enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused };
 // (TX.all-free-fix1's Cycle — a cable into another track's mixer closing a cycle between tracks — is gone: TX.cross-track
 // lowers that loop with its z⁻¹.)

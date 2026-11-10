@@ -26,7 +26,9 @@
 // 20 kHz; DC is the same at every rate):
 //   48 kHz    ×2 3.62 / 4.58 / 12.5    ×4 4.74 / 5.76 / 13.9    ×8 5.17 / 6.19 / 14.3    ×16 5.31 / 6.33 / 14.5
 //   44.1 kHz  ×2 3.62 / 4.80 / 19.2    ×4 4.74 / 5.99 / 20.6    ×8 5.17 / 6.42 / 21.1    ×16 5.31 / 6.56 / 21.2
-// The region does not report it as latency (no PDC): like Saturator HQ's half-bands, it is part of the sound.
+// dsp reports nothing itself: graph::pathLatency counts a region's converters (half the round trip at DC each, the
+// latency rules of oversample_up / _down) and the project's PDC compensates it to the nearest sample (T6.2); what is
+// left (the phase away from DC) is part of the sound. Saturator HQ's internal half-bands report nothing.
 //
 // ---- Phase, bool -----------------------------------------------------------------------------------------------
 //   phase  a phase (any real, normally 0..1 with wraps) by unwrapped linear interpolation: d = x[k] − x[k−1] taken

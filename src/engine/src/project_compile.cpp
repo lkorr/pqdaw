@@ -263,6 +263,7 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   }
   auto fe = front({}, probes, probes.empty() ? nullptr : &points);
   if (!fe.ok()) return fe.error();
+  std::vector<double> target(g.tracks.size(), 0.0);  // per member track: the latest audio arriving into it (T6.2b: T(t))
   if (!internalSrc.empty()) {
     const std::vector<double> lat = pathLatency(fe.value().second);
     std::vector<double> arrive(g.wires.size(), 0.0);  // per wire: its source's latency (a bus: 0)
@@ -271,7 +272,6 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
       const PortType& t = pp.node != kNone ? fe.value().second.outputType(pp.node, pp.output) : PortType{};
       arrive[internalSrc[k]] = pp.node != kNone && t.kind == Kind::Real ? lat[pp.node] : 0.0;
     }
-    std::vector<double> target(g.tracks.size(), 0.0);
     for (uint32_t wi : intoUnit) target[g.wires[wi].to.track] = std::max(target[g.wires[wi].to.track], arrive[wi]);
     std::vector<double> wireDelay(g.wires.size(), 0.0);
     bool any = false;
@@ -341,6 +341,35 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
       if (std::find(cu.compensatedKeys.begin(), cu.compensatedKeys.end(), k) == cu.compensatedKeys.end())
         cu.compensatedKeys.push_back(k);
     }
+    // T6.2b: the unit's sources. Every clip slot its patch plays (a clipPlayer's constant), shifted by T of the member
+    // whose patch plays it (the lowering puts a track's clipPlayer at its patch's top level; elsewhere: 0).
+    const AtomId clipAtom = atomId("clipPlayer");
+    auto slotOf = [&](const Patch& p, const Adjacency& adj, NodeIndex n) -> uint32_t {
+      const WireIndex w = adj.driver[p.flatInput(n, 0)];
+      if (w == kNone || p.node(p.wire(w).from.node).kind != NodeKind::Const) return kNone;
+      const double v = p.constant(p.wire(w).from.node).value();
+      return v >= 0.0 && v < 4294967295.0 ? static_cast<uint32_t>(v) : kNone;
+    };
+    std::vector<std::pair<uint32_t, double>> memberSlot;  // (slot, T) from the members' own patches
+    for (uint32_t t : partition_.units[u].tracks) {
+      const Patch& tp2 = *g.tracks[t].patch;
+      const Adjacency adj = tp2.adjacency();
+      for (NodeIndex n = 0; n < tp2.nodeCount(); ++n)
+        if (tp2.node(n).kind == NodeKind::Atom && tp2.node(n).atom == clipAtom)
+          if (const uint32_t s = slotOf(tp2, adj, n); s != kNone) memberSlot.emplace_back(s, target[t]);
+      if (target[t] >= 0.5) cu.trackShift.emplace_back(g.tracks[t].id, target[t]);
+    }
+    const Adjacency adj = tp.patch.adjacency();
+    for (NodeIndex n = 0; n < tp.patch.nodeCount(); ++n) {
+      if (tp.patch.node(n).kind != NodeKind::Atom || tp.patch.node(n).atom != clipAtom) continue;
+      const uint32_t s = slotOf(tp.patch, adj, n);
+      if (s == kNone || std::any_of(cu.clipShift.begin(), cu.clipShift.end(), [&](const auto& x) { return x.first == s; })) continue;
+      double shift = 0.0;
+      for (const auto& [ms, mt] : memberSlot)
+        if (ms == s) shift = std::max(shift, mt);
+      cu.clipShift.emplace_back(s, shift);
+    }
+    if (partition_.units[u].voiceTrack != kNone) cu.eventShift = target[partition_.units[u].voiceTrack];
   }
   cu.idleAfterBlocks = idleAfterBlocks(opt.value(), opt_.maxBlockFrames, globalRampFrames(sr.schedule));
   const uint64_t salt = std::bit_cast<uint64_t>(opt_.sampleRate) ^ (uint64_t{opt_.maxBlockFrames} << 1) ^
@@ -436,6 +465,9 @@ std::vector<UnitLatency> ProjectCompiler::latencies() const {
       if (const uint32_t b = index(key); b != kNoBus) out[u].out.emplace_back(b, frames);
     for (const std::string& key : units_[u].compensatedKeys)
       if (const uint32_t b = index(key); b != kNoBus) out[u].compensated.push_back(b);
+    out[u].clips = units_[u].clipShift;  // T6.2b
+    out[u].eventShift = units_[u].eventShift;
+    out[u].trackShift = units_[u].trackShift;
   }
   return out;
 }

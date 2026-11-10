@@ -1,7 +1,9 @@
 // T6.2: plugin-delay compensation costs (release / ship).
 //   pdc/inputs   64 stereo sine tracks into a master, one of them latency(x, 480): the master reads the 63 others through
 //                delay lines. ns per block with the plan vs the same program without it; the difference / 63 is what one
-//                compensated stereo input costs per 64-frame block (plan: ≤ 40 ns).
+//                compensated stereo input costs per 64-frame block (plan: ≤ 40 ns). T6.2b: also with the late track
+//                only 64 frames late ("short"): the same work per line on a history that stays in L1 / L2, which
+//                separates the lines' own cost from the cache misses of a 480-frame history (63 × 2 × 480 floats).
 //   pdc/plan     planCompensation on a 128-track layout (8 groups of 16, a return, the master; every 4th track late):
 //                µs per plan (plan: ≤ 50 µs).
 #include <algorithm>
@@ -38,6 +40,11 @@ patch ToneLate {
   x = sine(phasor(110Hz))
   out = latency((x, x * 0.5), 480)
 }
+patch ToneLate64 {
+  out out : audio global stereo
+  x = sine(phasor(110Hz))
+  out = latency((x, x * 0.5), 64)
+}
 patch Sum {
   in  in : audio global stereo
   out out : audio global stereo
@@ -45,7 +52,7 @@ patch Sum {
 }
 )";
 
-std::unique_ptr<e::ProjectProgram> build(const g::PatchFile& f, bool compensate) {
+std::unique_ptr<e::ProjectProgram> build(const g::PatchFile& f, bool compensate, const char* late = "ToneLate") {
   g::ProjectGraph gr;
   auto patch = [&](const char* n) {
     for (const g::Patch& p : f.patches)
@@ -54,7 +61,7 @@ std::unique_ptr<e::ProjectProgram> build(const g::PatchFile& f, bool compensate)
   };
   gr.tracks.push_back({1, "Master", patch("Sum"), g::TrackRole::Master, g::kNone});
   for (uint32_t k = 0; k < 64; ++k) {
-    gr.tracks.push_back({k + 2, "T" + std::to_string(k), patch(k == 17 ? "ToneLate" : "Tone"), g::TrackRole::Audio, g::kNone});
+    gr.tracks.push_back({k + 2, "T" + std::to_string(k), patch(k == 17 ? late : "Tone"), g::TrackRole::Audio, g::kNone});
     gr.wires.push_back({{k + 1, "out"}, {0, "in"}, g::WireKind::Audio});
   }
   gr.output = {0, "out"};
@@ -86,8 +93,9 @@ int main(int argc, char** argv) {
     return 1;
   }
   r.add("pdc/inputs", [&](pq::bench::Context& c) {
-    for (const bool comp : {false, true}) {
-      auto prog = build(file.value(), comp);
+    for (const int mode : {0, 1, 2}) {
+      const bool comp = mode != 0;
+      auto prog = build(file.value(), comp, mode == 2 ? "ToneLate64" : "ToneLate");
       if (!prog) return;
       std::vector<float> l(kBlock), rr(kBlock);
       float* outs[2] = {l.data(), rr.data()};
@@ -103,7 +111,7 @@ int main(int argc, char** argv) {
             prog->process(ab);
             t += kBlock;
           },
-          1, "ns/block", comp ? "63 compensated" : "no plan");
+          1, "ns/block", mode == 0 ? "no plan" : mode == 1 ? "63 compensated" : "63 compensated short");
     }
   });
   r.add("pdc/plan", [&](pq::bench::Context& c) {

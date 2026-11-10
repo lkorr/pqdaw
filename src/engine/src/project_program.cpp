@@ -34,6 +34,8 @@ struct ProjectProgram::Packet {
   std::vector<const float*> inLive;                       // T6.2: per global in slot as a compensated block reads it
   std::vector<DelayLine*> inLine;                         // T6.2: per global in slot: its delay line (null: none) …
   std::vector<DelayLine*> storeLine;                      // … per inStores entry …
+  std::vector<uint32_t> compSlots;                        // … the global in slots that have one (numCompSlots of them) …
+  uint32_t numCompSlots = 0;
   uint64_t lineSeq = 0;                                   // … under the plan with this sequence (0: not mapped yet)
   std::vector<float*> outPtrs;                            // per global out slot: a bus channel or null
   std::vector<float*> fadePtrs;                           // the same into `scratch` (while this packet fades out)
@@ -60,22 +62,50 @@ struct ProjectProgram::Packet {
   std::vector<uint8_t> outStoreSilent;                    // scratch, per outStores entry
 };
 
-// T6.2: one compensated input of a reader unit (see the header's "Plugin-delay compensation").
+// T6.2: delay rings are a whole number of these frames.
+constexpr uint32_t kRingGrain = 64;
+
+// T6.2b: one channel's block into a delay ring, inline (a block is a few hundred bytes: the CRT's call and size
+// dispatch cost as much as the copy).
+static inline void copyBlock(float* d, const float* s, uint32_t n) noexcept {  // RT-safe
+  uint32_t i = 0;
+  for (; i + 16 <= n; i += 16) {
+    const __m256 a = _mm256_loadu_ps(s + i), b = _mm256_loadu_ps(s + i + 8);
+    _mm256_storeu_ps(d + i, a);
+    _mm256_storeu_ps(d + i + 8, b);
+  }
+  for (; i < n; ++i) d[i] = s[i];
+}
+
+// T6.2: one compensated input of a reader unit (see the header's "Plugin-delay compensation"); T6.2b: or one of its
+// clip slots (bus null, `clip` the slot: ProjectConfig::clipIn / clipActive).
+// The ring of each channel is `size` frames plus a MIRROR of its first `mirror` (= stride ≥ any block) frames after
+// them, kept equal by every write: a tap of up to `mirror` frames is always contiguous, so the reader's image reads it
+// in place (outBase) and a steady line costs one copy per channel per block (the push). Only during a delay change's
+// fade does the line write a block (`fade`: the crossfade of the two taps).
 struct ProjectProgram::DelayLine {
-  DelayLine(std::shared_ptr<BusStore> b, uint16_t w, uint32_t frames, uint32_t stride)
-      : bus(std::move(b)), width(w), size(frames), mask(frames - 1),
-        ring(static_cast<size_t>(w) * frames), out(static_cast<size_t>(w) * stride * 2) {}
-  std::shared_ptr<BusStore> bus;  // the input bus (kept alive while a plan names the line)
+  DelayLine(std::shared_ptr<BusStore> b, uint32_t clipSlot, uint16_t w, uint32_t frames, uint32_t stride)
+      : bus(std::move(b)), clip(clipSlot), width(w), size(frames), mirror(stride),
+        ring(static_cast<size_t>(w) * (frames + stride)), fade(static_cast<size_t>(w) * stride) {}
+  std::shared_ptr<BusStore> bus;  // the input bus (kept alive while a plan names the line); null: a clip slot's line
+  uint32_t clip;                  // T6.2b: the clip slot (kNoSlot: a bus line)
   uint16_t width;
-  uint32_t size, mask;            // ring frames (a power of two ≥ the largest tap + one block)
-  AlignedBuffer<float> ring;      // width × size, zeroed
-  AlignedBuffer<float> out;       // width × stride: the delayed block; then width × stride of fade scratch
+  uint32_t size;                  // ring frames (≥ the largest tap + one block; a multiple of kRingGrain: as small as the
+                                  // delay allows, so the history the readers touch stays in cache)
+  uint32_t mirror;                // frames mirrored after the ring (the program's stride)
+  AlignedBuffer<float> ring;      // width × (size + mirror), zeroed
+  AlignedBuffer<float> fade;      // width × stride: the crossfaded block while a delay change fades
   DelayLine* prev = nullptr;      // a smaller line this one replaces: its history is copied at the switch (once)
+  bool sameSource(const DelayLine& o) const noexcept { return bus == o.bus && clip == o.clip; }
+  float* chan(uint16_t c) noexcept { return ring.data() + static_cast<size_t>(c) * (size + mirror); }
+  // Audio thread: where the reader reads channel c of the delayed block (valid after runLine, while not outSilent).
+  const float* outBase = nullptr;
+  size_t outStride = 0;
   // Audio thread.
   bool copied = false;
   bool active = false;            // false: bypassed (delay 0, no fade): the reader reads the bus; the ring is stale
   bool outSilent = true;          // the last block read only zeros (the reader then reads the program's zeros)
-  uint32_t write = 0;             // ring frame of the next block's frame 0
+  uint32_t write = 0;             // ring frame of the next block's frame 0 (< size)
   uint32_t delay = 0, from = 0;   // the tap, and the tap it fades from
   uint32_t fadePos = 0, fadeLen = 0;
   uint64_t silentRun = uint64_t{1} << 62;  // trailing frames of the ring known to be zero
@@ -103,9 +133,12 @@ struct ProjectProgram::Compensation {
   };
   struct Entry {
     Unit* unit = nullptr;
-    std::vector<Line> lines;
+    std::vector<Line> lines;     // bus lines and (T6.2b) clip slot lines
     EventDelay* events = nullptr;
     uint32_t eventDelay = 0;
+    // T6.2b: with clip lines, the clip table its images read (ProcessContext::clipIn; numClipSlots · 2, refreshed for
+    // the unit's slots each block on the audio thread). Empty: no clip line, the images read the program's.
+    mutable std::vector<const float*> clipIn;
   };
   std::vector<Entry> entries;
   std::vector<std::shared_ptr<DelayLine>> owned;        // its lines (and the ones they copy their history from)
@@ -381,6 +414,7 @@ Result<std::unique_ptr<ProjectProgram::Packet>> ProjectProgram::makePacket(
   for (const BusRef& r : ui.in) p->inStoreOf.push_back(r.bus != kNoBus ? stores[r.bus].get() : nullptr);
   p->inLive = p->inPtrs;
   p->inLine.assign(p->inPtrs.size(), nullptr);
+  p->compSlots.assign(p->inPtrs.size(), 0u);
   p->inSilent.assign(ui.in.size(), 0);
   p->storeLine.assign(p->inStores.size(), nullptr);
   p->outSilent.assign(ui.out.size(), 0);
@@ -805,8 +839,12 @@ Status ProjectProgram::setCompensation(const CompensationPlan& plan) {
   std::lock_guard lock(mutex_);
   collectLocked();
   const auto numUnits = static_cast<uint32_t>(units_.size());
-  if (plan.delays.size() != numUnits || plan.unitLatency.size() != numUnits)
+  if (plan.delays.size() != numUnits || plan.unitLatency.size() != numUnits || plan.clipDelays.size() != numUnits ||
+      plan.eventDelay.size() != numUnits)
     return projectError(ErrorCode::InvalidArgument, "compensation: the plan is not for the published layout");
+  for (uint32_t u = 0; u < numUnits; ++u)
+    for (const SourceDelay& d : plan.clipDelays[u])
+      if (d.frames > (1u << 26)) return projectError(ErrorCode::InvalidArgument, "compensation: a delay above 2^26 frames");
   for (uint32_t u = 0; u < numUnits; ++u)
     for (const InputDelay& d : plan.delays[u]) {
       if (d.bus >= stores_.size() || layout_.busProducer[d.bus] >= u)
@@ -828,45 +866,52 @@ Status ProjectProgram::setCompensation(const CompensationPlan& plan) {
         if (e.unit == U) prev = &e;
     Compensation::Entry e;
     e.unit = U;
-    auto prevLine = [&](const BusStore* b) -> const Compensation::Line* {
+    auto prevLine = [&](const BusStore* b, uint32_t clip) -> const Compensation::Line* {
       if (prev != nullptr)
         for (const Compensation::Line& l : prev->lines)
-          if (l.line->bus.get() == b) return &l;
+          if (l.line->bus.get() == b && l.line->clip == clip) return &l;
       return nullptr;
     };
     auto keep = [&](DelayLine* l) {
       for (const auto& sp : last->owned)
         if (sp.get() == l) c->owned.push_back(sp);
     };
-    for (const InputDelay& d : plan.delays[u]) {
-      const std::shared_ptr<BusStore>& store = stores_[d.bus];
-      const Compensation::Line* pl = prevLine(store.get());
-      const uint32_t need = d.frames + stride_;
+    // A bus (store) or a clip slot (null store) delayed by `delay`.
+    auto addLine = [&](const std::shared_ptr<BusStore>& store, uint32_t clip, uint16_t width, uint32_t delay) {
+      const Compensation::Line* pl = prevLine(store.get(), clip);
+      const uint32_t need = delay + stride_;
       if (pl != nullptr && pl->line->size >= need) {  // the same line: its history and taps carry over
         keep(pl->line);
-        e.lines.push_back({pl->line, d.frames});
-        continue;
+        e.lines.push_back({pl->line, delay});
+        return;
       }
       // A new line (or a larger one copying the old one's history at the switch).
-      const uint32_t frames = std::bit_ceil(std::max(need, pl != nullptr ? pl->delay + stride_ : 0u));
-      auto line = std::make_shared<DelayLine>(store, store->width, frames, stride_);
+      const uint32_t frames = (std::max(need, pl != nullptr ? pl->delay + stride_ : 0u) + kRingGrain - 1) / kRingGrain * kRingGrain;
+      auto line = std::make_shared<DelayLine>(store, clip, width, frames, stride_);
       if (pl != nullptr) {
         line->prev = pl->line;
         keep(pl->line);
       }
-      e.lines.push_back({line.get(), d.frames});
+      e.lines.push_back({line.get(), delay});
       c->owned.push_back(std::move(line));
-    }
+    };
+    for (const InputDelay& d : plan.delays[u]) addLine(stores_[d.bus], kNoSlot, stores_[d.bus]->width, d.frames);
+    // T6.2b: its clip slots (a program without clip players has nothing to delay).
+    if (cfg_.clipIn != nullptr && cfg_.clipActive != nullptr)
+      for (const SourceDelay& d : plan.clipDelays[u])
+        if (d.slot < cfg_.numClipSlots) addLine(nullptr, d.slot, static_cast<uint16_t>(kClipChannels), d.frames);
     if (prev != nullptr)  // a line the plan drops fades to 0 first (then it is bypassed, and the next plan forgets it)
       for (const Compensation::Line& l : prev->lines)
         if (l.delay != 0 && std::none_of(e.lines.begin(), e.lines.end(),
-                                         [&](const Compensation::Line& x) { return x.line->bus == l.line->bus; })) {
+                                         [&](const Compensation::Line& x) { return x.line->sameSource(*l.line); })) {
           keep(l.line);
           e.lines.push_back({l.line, 0u});
         }
+    if (std::any_of(e.lines.begin(), e.lines.end(), [](const Compensation::Line& l) { return l.line->bus == nullptr; }))
+      e.clipIn.assign(static_cast<size_t>(cfg_.numClipSlots) * kClipChannels, nullptr);
     // A unit's event delay stays once made (events it holds must still come out, note-offs above all).
-    if (U->cfg.voices && (plan.unitLatency[u] > 0 || (prev != nullptr && prev->events != nullptr))) {
-      e.eventDelay = plan.unitLatency[u];
+    if (U->cfg.voices && (plan.eventDelay[u] > 0 || (prev != nullptr && prev->events != nullptr))) {
+      e.eventDelay = plan.eventDelay[u];
       if (prev != nullptr && prev->events != nullptr) {
         e.events = prev->events;
         for (const auto& sp : last->ownedEvents)
@@ -1087,10 +1132,10 @@ void ProjectProgram::maybeSwitchCompensation() noexcept {  // RT-safe
           }
           if (L.prev == nullptr || L.copied) continue;
           // A larger ring replacing a line: its history, taps and fade, frame for frame (once; bounded by the ring).
-          const DelayLine& P = *L.prev;
+          DelayLine& P = *L.prev;
           L.copied = true;
           L.active = P.active;
-          L.write = P.write;
+          L.write = 0;  // the history ends just before frame 0 of the larger ring (laid out below)
           L.delay = P.delay;
           L.from = P.from;
           L.fadePos = P.fadePos;
@@ -1099,12 +1144,14 @@ void ProjectProgram::maybeSwitchCompensation() noexcept {  // RT-safe
           L.outSilent = P.outSilent;
           if (!P.active) continue;
           for (uint16_t ch = 0; ch < std::min(L.width, P.width); ++ch) {
-            const float* src = P.ring.data() + static_cast<size_t>(ch) * P.size;
-            float* dst = L.ring.data() + static_cast<size_t>(ch) * L.size;
+            const float* src = P.chan(ch);
+            float* dst = L.chan(ch);
+            // P's frames oldest first (from its write position) → the last P.size frames of L (L.size > P.size).
             for (uint32_t k = 0; k < P.size; ++k) {
-              const uint32_t frame = P.write - P.size + k;
-              dst[frame & L.mask] = src[frame & P.mask];
+              const uint32_t from = P.write + k < P.size ? P.write + k : P.write + k - P.size;
+              dst[L.size - P.size + k] = src[from];
             }
+            std::memcpy(dst + L.size, dst, sizeof(float) * L.mirror);  // the mirror
           }
         }
       }
@@ -1129,44 +1176,57 @@ void ProjectProgram::runLine(DelayLine& L, uint32_t target, uint32_t frames) noe
     L.active = true;
   }
   if (!L.active) return;
-  const BusStore& b = *L.bus;
-  const uint32_t w0 = L.write;
-  const uint32_t at = w0 & L.mask, first = std::min(frames, L.size - at);
-  if (b.silent) {
+  // Its source: a bus, or (T6.2b) a clip slot of the timeline's clip player.
+  const float* const* clipCh = L.bus == nullptr ? cfg_.clipIn + static_cast<size_t>(L.clip) * kClipChannels : nullptr;
+  const bool silent = L.bus != nullptr ? L.bus->silent : cfg_.clipActive[L.clip] == 0;
+  // Push: [at, at + first) and the wrapped [0, rest); what lands below `mirror` is written to the mirror too.
+  const uint32_t at = L.write, first = std::min(frames, L.size - at), rest = frames - first;
+  const uint32_t mirrored = at < L.mirror ? std::min(first, L.mirror - at) : 0u;
+  if (silent) {
     if (L.silentRun < L.size)
       for (uint16_t c = 0; c < L.width; ++c) {
-        float* r = L.ring.data() + static_cast<size_t>(c) * L.size;
+        float* r = L.chan(c);
         std::memset(r + at, 0, sizeof(float) * first);
-        std::memset(r, 0, sizeof(float) * (frames - first));
+        if (mirrored != 0) std::memset(r + L.size + at, 0, sizeof(float) * mirrored);
+        if (rest != 0) {
+          std::memset(r, 0, sizeof(float) * rest);
+          std::memset(r + L.size, 0, sizeof(float) * rest);
+        }
       }
     if (L.silentRun < (uint64_t{1} << 62)) L.silentRun += frames;
   } else {
     for (uint16_t c = 0; c < L.width; ++c) {
-      float* r = L.ring.data() + static_cast<size_t>(c) * L.size;
-      const float* x = b.data.data() + static_cast<size_t>(c) * b.stride;
-      std::memcpy(r + at, x, sizeof(float) * first);
-      std::memcpy(r, x + first, sizeof(float) * (frames - first));
+      float* r = L.chan(c);
+      const float* x = L.bus != nullptr ? L.bus->data.data() + static_cast<size_t>(c) * L.bus->stride
+                       : clipCh[c] != nullptr ? clipCh[c]
+                                              : zeros_.data();
+      copyBlock(r + at, x, first);
+      if (mirrored != 0) copyBlock(r + L.size + at, x, mirrored);
+      if (rest != 0) {
+        copyBlock(r, x + first, rest);
+        copyBlock(r + L.size, x + first, rest);
+      }
     }
     L.silentRun = 0;
   }
-  L.write = w0 + frames;
+  L.write = rest != 0 || at + frames == L.size ? rest : at + frames;
   const uint32_t maxTap = std::max(L.delay, L.fadeLen != 0 ? L.from : 0u);
   L.outSilent = L.silentRun >= static_cast<uint64_t>(maxTap) + frames;
   if (!L.outSilent) {
-    auto tap = [&](uint16_t c, uint32_t d, float* dst) noexcept {
-      const float* r = L.ring.data() + static_cast<size_t>(c) * L.size;
-      const uint32_t i = (w0 - d) & L.mask, n = std::min(frames, L.size - i);
-      std::memcpy(dst, r + i, sizeof(float) * n);
-      std::memcpy(dst + n, r, sizeof(float) * (frames - n));
-    };
-    for (uint16_t c = 0; c < L.width; ++c) {
-      float* o = L.out.data() + static_cast<size_t>(c) * stride_;
-      tap(c, L.delay, o);
-      if (L.fadeLen != 0) {  // from the old tap to the new one (ProgramHost's linear fade)
-        float* from = L.out.data() + static_cast<size_t>(L.width + c) * stride_;
-        tap(c, L.from, from);
-        crossfade(o, from, o, frames, L.fadePos, L.fadeLen);
+    // Read: the tap is contiguous (the mirror), so the reader reads the ring in place; a fade writes its blend.
+    // (taps ≤ size − one block: no wrap below 0 after one add)
+    const uint32_t i = at >= L.delay ? at - L.delay : at + L.size - L.delay;
+    if (L.fadeLen == 0) {
+      L.outBase = L.ring.data() + i;
+      L.outStride = static_cast<size_t>(L.size) + L.mirror;
+    } else {  // from the old tap to the new one (ProgramHost's linear fade)
+      const uint32_t j = at >= L.from ? at - L.from : at + L.size - L.from;
+      for (uint16_t c = 0; c < L.width; ++c) {
+        const float* r = L.chan(c);
+        crossfade(L.fade.data() + static_cast<size_t>(c) * stride_, r + j, r + i, frames, L.fadePos, L.fadeLen);
       }
+      L.outBase = L.fade.data();
+      L.outStride = stride_;
     }
   }
   if (L.fadeLen != 0) {
@@ -1228,7 +1288,12 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
         if (l.line->bus.get() == b) return l.line;
       return nullptr;
     };
-    for (size_t k = 0; k < q.inStoreOf.size(); ++k) q.inLine[k] = q.inStoreOf[k] != nullptr ? lineOf(q.inStoreOf[k]) : nullptr;
+    q.numCompSlots = 0;
+    for (size_t k = 0; k < q.inStoreOf.size(); ++k) {
+      q.inLine[k] = q.inStoreOf[k] != nullptr ? lineOf(q.inStoreOf[k]) : nullptr;  // (clip lines have no store)
+      q.inLive[k] = q.inPtrs[k];
+      if (q.inLine[k] != nullptr) q.compSlots[q.numCompSlots++] = static_cast<uint32_t>(k);
+    }
     for (size_t k = 0; k < q.inStores.size(); ++k) q.storeLine[k] = lineOf(q.inStores[k]);
   };
   if (ce != nullptr) {
@@ -1249,6 +1314,18 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   auto silentVia = [](const BusStore* b, const DelayLine* l) noexcept {
     return l != nullptr && l->active ? l->outSilent : b->silent;
   };
+  // T6.2b: a clip slot's line in this unit's plan entry (null: the slot is not delayed), and whether the slot reads
+  // silent for it.
+  const bool clipLines = ce != nullptr && !ce->clipIn.empty();
+  auto clipLine = [&](uint32_t k) noexcept -> const DelayLine* {
+    for (const Compensation::Line& l : ce->lines)
+      if (l.line->bus == nullptr && l.line->clip == k) return l.line->active ? l.line : nullptr;
+    return nullptr;
+  };
+  auto clipSilent = [&](uint32_t k) noexcept {
+    const DelayLine* l = clipLines ? clipLine(k) : nullptr;
+    return l != nullptr ? l->outSilent : cfg_.clipActive[k] == 0;
+  };
   if (cfg_.idleUnits) {
     // Idle units (see the header): bit-exact skip of a unit that would change nothing — proven by the compiler
     // (idleAfterBlocks: settled gains only), or reported by its image after its last block (T1.x-silence: dormant,
@@ -1259,7 +1336,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     } else {
       for (const BusStore* b : p->inStores) quiet = quiet && b->silent;
     }
-    for (uint32_t k : p->clipSlots) quiet = quiet && cfg_.clipActive[k] == 0;  // T5.4: no audio from its clips
+    for (uint32_t k : p->clipSlots) quiet = quiet && clipSilent(k);  // T5.4: no audio from its clips (T6.2b: delayed)
     // M4 review L1: the links are compared only when a param may have changed since they were last read.
     if (p->linkedGen != blockGen_) {
       p->linkedGen = blockGen_;
@@ -1297,22 +1374,39 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     for (const auto& [slot, param] : p->paramLinks) p->params[slot] = params_[param];
     p->paramsGen = blockGen_;
   }
-  // T6.2: a compensated input reads its delay line's block (or the zeros, once the line reads only silence).
+  // T6.2: a compensated input reads its delay line's block (or the zeros, once the line reads only silence); the other
+  // slots keep their bus (mapLines). O(compensated slots).
   auto live = [&](Packet& q) noexcept {
-    for (size_t k = 0; k < q.inPtrs.size(); ++k) {
+    for (uint32_t i = 0; i < q.numCompSlots; ++i) {
+      const uint32_t k = q.compSlots[i];
       const DelayLine* l = q.inLine[k];
-      q.inLive[k] = l == nullptr || !l->active ? q.inPtrs[k]
-                    : l->outSilent           ? zeros_.data()
-                                             : l->out.data() + static_cast<size_t>(q.inChannel[k]) * stride_;
+      q.inLive[k] = !l->active    ? q.inPtrs[k]
+                    : l->outSilent ? zeros_.data()
+                                   : l->outBase + static_cast<size_t>(q.inChannel[k]) * l->outStride;
     }
   };
+  // T6.2b: the clip table of a unit with delayed clip slots: its slots' channels as the lines read them.
+  auto liveClips = [&](const Packet& q) noexcept {
+    for (uint32_t k : q.clipSlots) {
+      const DelayLine* l = clipLine(k);
+      for (uint32_t c = 0; c < kClipChannels; ++c) {
+        const size_t i = static_cast<size_t>(k) * kClipChannels + c;
+        ce->clipIn[i] = l == nullptr ? cfg_.clipIn[i] : l->outSilent ? zeros_.data() : l->outBase + c * l->outStride;
+      }
+    }
+  };
+  if (clipLines) {
+    liveClips(*p);
+    if (old != nullptr) liveClips(*old);
+  }
+  for (size_t k = 0; k < p->inStoreOf.size(); ++k) p->inSilent[k] = p->inStoreOf[k] == nullptr || p->inStoreOf[k]->silent;
   if (ce != nullptr) {
     live(*p);
     if (old != nullptr) live(*old);
-    for (size_t k = 0; k < p->inStoreOf.size(); ++k)
-      p->inSilent[k] = p->inStoreOf[k] == nullptr || silentVia(p->inStoreOf[k], p->inLine[k]);
-  } else {
-    for (size_t k = 0; k < p->inStoreOf.size(); ++k) p->inSilent[k] = p->inStoreOf[k] == nullptr || p->inStoreOf[k]->silent;
+    for (uint32_t i = 0; i < p->numCompSlots; ++i) {
+      const uint32_t k = p->compSlots[i];
+      if (p->inLine[k]->active) p->inSilent[k] = p->inLine[k]->outSilent;
+    }
   }
   ProcessContext ctx;
   ctx.frames = frames;
@@ -1328,7 +1422,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   ctx.params = p->params.data();
   ctx.numParams = static_cast<uint32_t>(p->params.size());
   ctx.paramsUnchanged = paramsSame && !U.voices;  // a voice engine's images get their own contexts
-  ctx.clipIn = cfg_.clipIn;  // T5.4
+  ctx.clipIn = clipLines ? ce->clipIn.data() : cfg_.clipIn;  // T5.4 (T6.2b: delayed)
   ctx.numClipSlots = cfg_.clipIn != nullptr ? cfg_.numClipSlots : 0u;
   ctx.trackIn = trackIn;  // T6.7
   ctx.numTrackIn = 2;

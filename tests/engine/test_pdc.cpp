@@ -112,6 +112,29 @@ patch Inst {
   out out : audio global mono
   out = gate_to_real(voice.gate) + x
 }
+
+patch Quiet {
+  out out : audio global mono
+  out = sine(phasor(100Hz)) * 0
+}
+
+patch ClipTrack {
+  in  x : audio global mono = 0
+  out out : audio global mono
+  out = channel(clipPlayer(0), 0) + x
+}
+
+patch ClipKeyed {
+  in  key : audio global mono = 0
+  out out : audio global mono
+  out = channel(clipPlayer(0), 0) + key
+}
+
+patch InstKeyed {
+  in  key : audio global mono = 0
+  out out : audio global mono
+  out = gate_to_real(voice.gate) + key
+}
 )";
 
 struct Lib {
@@ -155,19 +178,41 @@ eng::ProjectCompileOptions options() {
   return o;
 }
 
+// T6.2b: clip slot 0 as the timeline's clip player hands it to the program (ProjectConfig::clipIn / clipActive): unit
+// impulses on both channels at the song frames `at`, the slot active only in blocks that have one.
+struct ClipFeed {
+  std::vector<int64_t> at;
+  std::vector<float> l = std::vector<float>(kBlock), r = std::vector<float>(kBlock);
+  const float* ptrs[2] = {l.data(), r.data()};
+  uint8_t active[1] = {0};
+  void fill(int64_t t, uint32_t n) {
+    std::fill(l.begin(), l.end(), 0.0f);
+    std::fill(r.begin(), r.end(), 0.0f);
+    active[0] = 0;
+    for (const int64_t a : at)
+      if (a >= t && a < t + n) {
+        l[static_cast<size_t>(a - t)] = r[static_cast<size_t>(a - t)] = 1.0f;
+        active[0] = 1;
+      }
+  }
+};
+
 struct Rig {
   std::unique_ptr<eng::ProjectCompiler> compiler;
   std::unique_ptr<eng::ProjectProgram> program;
   std::vector<std::unique_ptr<eng::NoteListSource>> notes;
   eng::CompensationPlan plan;
+  ClipFeed* clips = nullptr;
   int64_t time = 0;
   uint64_t rtViolations = 0;
 };
 
 // Builds and starts the project; `compensate` false: no plan (what main did before T6.2).
 std::unique_ptr<Rig> makeRig(const graph::ProjectGraph& g, bool compensate = true, bool whole = false,
-                             std::vector<std::vector<eng::TimedNote>> notes = {}, std::vector<int32_t> offset = {}) {
+                             std::vector<std::vector<eng::TimedNote>> notes = {}, std::vector<int32_t> offset = {},
+                             ClipFeed* clips = nullptr) {
   auto r = std::make_unique<Rig>();
+  r->clips = clips;
   r->compiler = std::make_unique<eng::ProjectCompiler>(options());
   auto b = whole ? r->compiler->buildWhole(g) : r->compiler->build(g);
   REQUIRE_MESSAGE(b.ok(), (b.ok() ? "" : b.error().message));
@@ -175,6 +220,11 @@ std::unique_ptr<Rig> makeRig(const graph::ProjectGraph& g, bool compensate = tru
   pc.sampleRate = kSr;
   pc.maxBlockFrames = kBlock;
   pc.numOut = 1;
+  if (clips != nullptr) {
+    pc.clipIn = clips->ptrs;
+    pc.clipActive = clips->active;
+    pc.numClipSlots = 1;
+  }
   for (auto& n : notes) {
     r->notes.push_back(std::make_unique<eng::NoteListSource>(n));
     pc.eventSources.push_back(r->notes.back()->source());
@@ -199,6 +249,7 @@ std::vector<float> render(Rig& r, uint32_t frames) {
     ab.numOut = 1;
     ab.frames = n;
     ab.frameTime = r.time;
+    if (r.clips != nullptr) r.clips->fill(r.time, n);
     r.rtViolations += pq::alloc_trap::countRtViolations([&] {
       pq::DenormalGuard dg;
       r.program->process(ab);
@@ -575,4 +626,197 @@ TEST_CASE("pdc + T6.6: Track Delay as a unit offset: +10 ms plays the track 480 
     CHECK(r->program->outputLatency() == static_cast<uint32_t>(std::max(0, -d)));
     CHECK(r->rtViolations == 0);
   }
+}
+
+// ---- T6.2b: the sources of a compensated unit (clip players, notes) and of a merged member; tap automation ----------
+
+TEST_CASE("pdc (T6.2b): the plan delays a unit's clip slots and notes by A_u plus their member's internal shift") {
+  eng::ProjectLayout l;
+  l.units.resize(3);
+  l.busWidth = {1, 1, 1};
+  l.busProducer = {0, 1, 2};
+  l.outputBus = 2;
+  std::vector<eng::UnitLatency> u(3);
+  u[0].out = {{0, 100.0}};
+  u[0].clips = {{4, 0.0}};      // its own clips: A_0 = 0, nothing to delay
+  u[1].out = {{1, 480.0}};
+  u[1].compensated = {0};
+  u[1].clips = {{5, 0.0}, {6, 380.0}};  // a merged unit: slot 6's member waits 380 for a sidechain inside
+  u[1].eventShift = 380.0;
+  u[2].compensated = {1};
+  const eng::CompensationPlan p = eng::planCompensation(l, u);
+  CHECK(p.clipDelays[0].empty());
+  CHECK(p.clipDelays[1] == std::vector<eng::SourceDelay>{{5, 100}, {6, 480}});
+  CHECK(p.eventDelay[0] == 0);
+  CHECK(p.eventDelay[1] == 480);
+  CHECK(p.unitLatency[1] == 100);
+  CHECK(p.arrival[1] == 100.0);
+  CHECK(p.clipDelays[2].empty());
+  CHECK(p.total == 580);
+  // Only an internal shift (no input bus late): still a plan.
+  std::vector<eng::UnitLatency> z(3);
+  z[1].clips = {{6, 380.0}};
+  const eng::CompensationPlan q = eng::planCompensation(l, z);
+  CHECK(!q.none());
+  CHECK(q.clipDelays[1] == std::vector<eng::SourceDelay>{{6, 380}});
+  CHECK(!q.sameAs(eng::planCompensation(l, std::vector<eng::UnitLatency>(3))));
+}
+
+TEST_CASE("pdc (T6.2b): a compensated audio track's own clips play A_u late, aligned with its late cable input") {
+  // c plays clip slot 0 and reads a (100 late) through a mixer cable: its A_u is 100, its clip comes 100 late with it.
+  G g;
+  const uint32_t a = g.add("ImpulseLate100"), c = g.add("ClipTrack"), m = g.add("Sum", graph::TrackRole::Master);
+  g.wire(a, "out", c, "x");
+  g.wire(c, "out", m, "in");
+  g.g.output = {m, "out"};
+  ClipFeed feed;
+  feed.at = {0, 1000};
+  auto uncomp = makeRig(g.g, false, false, {}, {}, &feed);
+  const auto before = nonzero(render(*uncomp, 2048));
+  REQUIRE(before.size() == 3);  // the clip at 0 and 1000, the cable's impulse at 100
+  CHECK(before[0].first == 0);
+  CHECK(before[1].first == 100);
+  feed.at = {0, 1000};
+  auto r = makeRig(g.g, true, false, {}, {}, &feed);
+  REQUIRE(r->plan.clipDelays.size() == 3);
+  CHECK(r->plan.clipDelays[1] == std::vector<eng::SourceDelay>{{0, 100}});
+  const auto after = nonzero(render(*r, 2048));
+  REQUIRE(after.size() == 2);
+  CHECK(after[0].first == 100);
+  CHECK(after[0].second == 2.0f);  // the clip and the cable together
+  CHECK(after[1].first == 1100);
+  CHECK(after[1].second == 1.0f);
+  CHECK(r->rtViolations == 0);  // RtScope: a clip delay line and the plan's switch
+}
+
+TEST_CASE("pdc (T6.2b): a merged member's own clip waits for a later sidechain inside its unit") {
+  // a (480 late) keys c through a sidechain (one merged unit); c's own clip at 0 must meet a's impulse.
+  G g;
+  const uint32_t a = g.add("ImpulseLate"), c = g.add("ClipKeyed"), m = g.add("Sum", graph::TrackRole::Master);
+  g.wire(a, "out", c, "key", W::Sidechain);
+  g.wire(c, "out", m, "in");
+  g.g.output = {m, "out"};
+  ClipFeed feed;
+  feed.at = {0};
+  auto uncomp = makeRig(g.g, false, false, {}, {}, &feed);
+  const auto before = nonzero(render(*uncomp, 2048));
+  REQUIRE(before.size() == 2);  // main before T6.2b: the clip on time, the key 480 late
+  CHECK(before[0].first == 0);
+  CHECK(before[1].first == 480);
+  auto r = makeRig(g.g, true, false, {}, {}, &feed);
+  CHECK(r->plan.total == 480);
+  const auto after = nonzero(render(*r, 2048));
+  REQUIRE(after.size() == 1);
+  CHECK(after[0].first == 480);
+  CHECK(after[0].second == 2.0f);
+  CHECK(r->rtViolations == 0);
+  auto whole = makeRig(g.g, true, true, {}, {}, &feed);
+  const auto w = nonzero(render(*whole, 2048));
+  REQUIRE(w.size() == 1);
+  CHECK(w[0] == after[0]);
+}
+
+TEST_CASE("pdc (T6.2b): a merged instrument's notes wait for a later sidechain inside its unit") {
+  G g;
+  const uint32_t a = g.add("ImpulseLate"), inst = g.add("InstKeyed", graph::TrackRole::Instrument, 0),
+                 m = g.add("Sum", graph::TrackRole::Master);
+  g.wire(a, "out", inst, "key", W::Sidechain);
+  g.wire(inst, "out", m, "in");
+  g.g.output = {m, "out"};
+  const std::vector<std::vector<eng::TimedNote>> notes = {{{0, 1200, 220.0f, 0.8f, 0.5f}}};
+  auto onsetOf = [](const std::vector<float>& y) {
+    for (size_t i = 0; i < y.size(); ++i)
+      if (y[i] != 0.0f) return i;
+    return y.size();
+  };
+  auto uncomp = makeRig(g.g, false, false, notes);
+  const std::vector<float> y0 = render(*uncomp, 2048);
+  CHECK(onsetOf(y0) == 0);
+  CHECK(y0[480] == 2.0f);
+  auto r = makeRig(g.g, true, false, notes);
+  const std::vector<float> y = render(*r, 2048);
+  CHECK(onsetOf(y) == 480);
+  CHECK(y[480] == 2.0f);  // the gate and the key's impulse together
+  CHECK(y[481] == 1.0f);
+  CHECK(r->rtViolations == 0);
+}
+
+TEST_CASE("pdc (T6.2b): an audio-rate (tap) lane of a compensated unit is rendered shiftFrames earlier, per sample") {
+  // The tuning node's live inputs read a lane's buffer through its tap: the step must land shift samples later, on the
+  // exact sample (not at a block boundary).
+  eng::TimelineConfig tc;
+  tc.sampleRate = kSr;
+  tc.maxBlockFrames = kBlock;
+  eng::Timeline tl(tc);
+  const pq::Ticks X = pq::kPpq;  // 24000 samples at 120 BPM
+  const float* taps[2] = {nullptr, nullptr};
+  std::vector<eng::AutomationLaneDesc> lanes(2);
+  for (uint32_t l = 0; l < 2; ++l) {
+    lanes[l].target = l;
+    lanes[l].tap = &taps[l];
+    lanes[l].points = {{0, 0.0f, 0.0f}, {X, 0.0f, 0.0f}, {X, 1.0f, 0.0f}};
+  }
+  lanes[1].shiftFrames = 250;  // not a multiple of the block
+  auto img = eng::AutomationImage::build(lanes);
+  REQUIRE(img.ok());
+  REQUIRE(tl.publishAutomation(std::move(img.value())).ok());
+  eng::TransportCommand play;
+  play.kind = eng::TransportCommandKind::Play;
+  play.tick = 0;
+  tl.apply(play);
+  std::vector<float> params(2, -1.0f);
+  int64_t first[2] = {-1, -1};
+  uint64_t rt = 0;
+  for (int64_t t = 0; t < 30000; t += kBlock) {
+    rt += pq::alloc_trap::countRtViolations([&] {
+      tl.process(t, kBlock);
+      tl.writeAutomatedParams(params);
+    });
+    for (uint32_t l = 0; l < 2; ++l)
+      for (uint32_t i = 0; i < kBlock && first[l] < 0; ++i) {
+        const float v = taps[l] != nullptr ? taps[l][i] : params[l];
+        if (v == 1.0f) first[l] = t + i;
+      }
+  }
+  CHECK(first[0] == 24000);
+  CHECK(first[1] == 24000 + 250);
+  CHECK(rt == 0);
+}
+
+TEST_CASE("pdc (T6.2b): a delay that outgrows its ring moves to a larger one with its history, mid-fade exact") {
+  // The group delays a's bus by 64, then by 100 (the 128-frame ring is replaced by a 192-frame one at the switch, its
+  // history copied): the 10-ms crossfade reads the old tap from the copied history, sample for sample.
+  G g;
+  const uint32_t a = g.add("Sine"), q = g.add("Quiet"), grp = g.add("Sum", graph::TrackRole::Group),
+                 m = g.add("Sum", graph::TrackRole::Master);
+  g.wire(a, "out", grp, "in");
+  g.wire(q, "out", grp, "in");
+  g.wire(grp, "out", m, "in");
+  g.g.output = {m, "out"};
+  auto ref = makeRig(g.g, false);
+  const std::vector<float> s = render(*ref, 6400);  // a's sine as the master plays it undelayed
+  auto r = makeRig(g.g, false);
+  const graph::ProjectPartition& part = r->compiler->partition();
+  const uint32_t uq = part.unitOf[q];
+  auto planWith = [&](double late) {  // q's bus reported `late` frames late: the group delays a's by that much
+    std::vector<eng::UnitLatency> lat = r->compiler->latencies();
+    for (auto& [bus, frames] : lat[uq].out) frames = late;
+    return eng::planCompensation(r->program->layout(), lat);
+  };
+  REQUIRE(r->program->setCompensation(planWith(64.0)).ok());
+  const std::vector<float> y0 = render(*r, 4800);
+  for (size_t n = 64; n < y0.size(); ++n) REQUIRE(y0[n] == s[n - 64]);
+  REQUIRE(r->program->setCompensation(planWith(100.0)).ok());
+  const std::vector<float> y = render(*r, 1600);
+  const uint32_t len = 480;  // 10 ms
+  const float inv = 1.0f / static_cast<float>(len);
+  double err = 0.0;
+  for (size_t f = 0; f < y.size(); ++f) {
+    const size_t n = 4800 + f;
+    const float from = s[n - 64], to = s[n - 100];
+    const float want = f + 1 < len ? from + static_cast<float>(f + 1) * inv * (to - from) : to;
+    err = std::max(err, static_cast<double>(std::fabs(y[f] - want)));
+  }
+  CHECK(err <= 1e-6);
+  CHECK(r->rtViolations == 0);
 }

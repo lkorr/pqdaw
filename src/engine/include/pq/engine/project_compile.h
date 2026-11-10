@@ -35,8 +35,9 @@
 // track are aligned at compose time: a first front end (compose → infer → optimise) locates each internal wire's
 // source and its path latency; when the wires into a track arrive at different latencies, the unit is composed again
 // with a `latency` node on each early wire (graph::composeUnit's wireDelay) — only misaligned merged units pay that.
-// Modulation wires are never delayed. A member's own sources (its clips, voices) are not delayed to meet a later
-// sidechain (QUESTIONS Q?-T6.2-a).
+// Modulation wires are never delayed. T6.2b: a member's own sources wait for that audio too: its internal shift T(t)
+// (the latest arrival into it; 0 in a unit of one track) is reported per clip slot it plays and for the instrument's
+// notes (CompiledUnit::clipShift / eventShift), and the program delays them by A_u + T(t) (latency_plan.h).
 // Front-end and build times are reported per unit (CompiledUnit), measured with the steady clock.
 
 #include <cstdint>
@@ -135,6 +136,11 @@ struct CompiledUnit {
   // wires (the program delays those; modulation reads stay undelayed), by bus key.
   std::vector<std::pair<std::string, double>> outLatency;
   std::vector<std::string> compensatedKeys;
+  // T6.2b: its sources (UnitLatency::clips / eventShift / trackShift): (clip slot, T of its member), T of the
+  // instrument member, (track id, T) of the members with T > 0.
+  std::vector<std::pair<uint32_t, double>> clipShift;
+  double eventShift = 0.0;
+  std::vector<std::pair<uint32_t, double>> trackShift;
 };
 
 struct ProjectBuild {

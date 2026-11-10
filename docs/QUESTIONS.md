@@ -633,6 +633,9 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   for (2) shift the member's event slot / clip slot by its track's internal target T(t) and add T(t) to its bus inputs;
   (C) Live-like: delay the whole member track.
 - **Choice**: A for now (most reversible; both are additive later). Revisit with T6.6's latency readouts.
+- **Resolved by T6.2b**: B. A unit's clip slots are delayed by A_u + T(member) through clip delay lines, its notes by
+  A_u + T(voice track), its members' automation by A_u + T(t) (ARCHITECTURE "Plugin-delay compensation"). The bus
+  inputs already carry T(t) through compose's `wireDelay`. Live audio input (`track.in`) stays undelayed.
 
 ## Q?-T6.3-a · 2026-11-10 · T6.3 · Warp engine I: what the plan left open
 - **Context**: docs/plans/M6.md "### T6.3" names the modes and the acceptance; several behaviours had to be chosen.
@@ -850,3 +853,14 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   listening track is captured in the same undo step; a track's "since the last capture" mark moves even when its notes
   are later undone (a second press does not bring back what an undo removed).
 - Status: decided (1)–(6) (reversible).
+
+## Q?-T6.2b-a · 2026-11-10 · T6.2b · One automation lane read by units with different compensation (a tuning's generator)
+- **Context**: T6.2b shifts automation lanes per sample, taps included, by their track's S(t) = A_u + T(t). A project
+  param that several tracks read (a tuning's generator / period / stretch / reference: one lane, one tap, the same
+  TuningLiveInputs for every tuning node using that tuning) can sit in units with different shifts; one lane has one
+  shift.
+- **Options**: (A) the smallest of the shifts (instruments are leaves, A_u = 0 in nearly every project: their notes
+  and tuning stay exact; a compensated unit reading the tuning hears its change up to the difference early); (B) the
+  largest; (C) per-shift copies of the tap and of the tuning tables' live inputs (a unit's images bind the copy of its
+  shift: a recompile whenever a unit's A_u changes, or a program-side indirection).
+- **Choice**: A (most reversible; C only if a compensated tuning consumer turns up in practice).

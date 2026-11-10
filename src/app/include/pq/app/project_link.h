@@ -90,7 +90,8 @@
 // Every compile result carries a compensation plan (engine::planCompensation of the compiler's unit latencies,
 // ProjectCompiler::latencies()), handed to the program right after that result's images / topology are published
 // (ProjectProgram::setCompensation; skipped when it equals the last one, so a project without latency never makes one).
-// Automation lanes whose param belongs to a compensated unit are shifted by that unit's A_u
+// Automation lanes whose param belongs to a compensated unit are shifted by that unit's A_u plus its track's internal
+// shift (T6.2b; a param several tracks read, like a tuning's, by the smallest; taps too)
 // (AutomationLaneDesc::shiftFrames): when the shifts change, the automation image is republished on the UI thread
 // (posted with setUiPoster's poster; flush() and playhead() pick it up too). outputLatency() is the master's total.
 // T6.6: Track Delay (Mixer::trackDelayMs, d frames = round(ms · rate / 1000)) is the plan's unitOffset of the track's

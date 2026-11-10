@@ -729,7 +729,7 @@ doc::Panel inspectorPanel(doc::DeviceId group, float width, bool polyphony) {
     }
     y += 4.0f;
   }
-  // TX.group-oversample: every group's oversampling, the menu's items with their latency (not compensated).
+  // TX.group-oversample: every group's oversampling, the menu's items with their latency (compensated by PDC).
   title("OVERSAMPLE");
   doc::PanelElement& os = add("menu", kPad, w - 2.0f * kPad, 18.0f,
                               {doc::settingBinding(group, std::string(doc::groupOversampleSetting().name))});

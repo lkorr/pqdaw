@@ -79,14 +79,17 @@
 // ---- Plugin-delay compensation (T6.2; the plan: pq/engine/latency_plan.h) ------------------------------------------
 // setCompensation(plan) (non-RT, serialised with publish) hands the program a plan for its last published layout. The
 // delay belongs to the READER: unit u's delayed input bus b gets a delay line (`width` channels, a power-of-two ring
-// of at least delay + one block, preallocated here) that runs in u's own slot of the block, before u's image: it
-// pushes the bus's block into the ring (one copy per channel) and reads the block `delay` frames old into its own
-// buffer (one copy per channel), which the image reads in place of the bus (ProcessContext::in). No new edge between
-// units, no state shared between them (PF.5's parallel units need no change). A unit with A_u > 0 that plays notes
-// gets them `unitLatency` frames late (a preallocated event delay; Timeline lanes are shifted by the app).
+// of at least delay + one block plus a mirror of its first block's worth of frames, preallocated here) that runs in
+// u's own slot of the block, before u's image: it pushes the bus's block into the ring (one copy per channel), and
+// the image reads the block `delay` frames old IN PLACE in the ring (ProcessContext::in; the mirror makes every tap
+// contiguous). No new edge between units, no state shared between them (PF.5's parallel units need no change).
+// T6.2b: the unit's own sources follow: each clip slot it plays (CompensationPlan::clipDelays: A_u plus its member's
+// internal shift) gets a line of the same kind on ProjectConfig::clipIn / clipActive, and the unit's images read a
+// clip table of their own (ProcessContext::clipIn); a voice unit gets its notes `eventDelay` frames late (a
+// preallocated event delay). Timeline lanes are shifted by the app.
 // The audio thread takes a plan at an image-block boundary, once it runs the topology the plan was made for (a plan
 // for an older topology is dropped unused). A changed delay crossfades from the old tap to the new one over 10 ms
-// (one more read per channel during the fade); a delay line that a new plan drops fades to 0 first, then stops. A line
+// (two reads and a write per channel during the fade); a delay line that a new plan drops fades to 0 first, then stops. A line
 // whose input bus has been silent (ProjectProgram's silence flags) for the last delay + block frames reads silence:
 // it reports its block silent and costs no copy once its ring is all zeros, so idle units stay idle. Lines of the
 // same (reader, bus) carry over from plan to plan (their history and taps); one whose ring is too small for a new

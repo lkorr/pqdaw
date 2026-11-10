@@ -55,7 +55,7 @@ Result<std::unique_ptr<AutomationImage>> AutomationImage::build(std::span<const 
     if (!std::isfinite(l.emptyValue))
       return Error{ErrorCode::InvalidArgument, "AutomationImage: lane " + std::to_string(l.target) + ": bad value", {}};
     Lane lane{l.target, l.emptyValue, static_cast<uint32_t>(img->points_.size()), 0, l.tap,
-              l.perSample || l.tap != nullptr, l.tap != nullptr ? 0u : l.shiftFrames};
+              l.perSample || l.tap != nullptr, l.shiftFrames};
     for (const AutomationPoint& p : l.points) {
       if (!std::isfinite(p.value) || !std::isfinite(p.curve))
         return Error{ErrorCode::InvalidArgument,
@@ -66,6 +66,7 @@ Result<std::unique_ptr<AutomationImage>> AutomationImage::build(std::span<const 
     const auto b = img->points_.begin() + lane.begin, e = img->points_.begin() + lane.end;
     auto byTick = [](const AutomationPoint& x, const AutomationPoint& y) noexcept { return x.tick < y.tick; };
     if (!std::is_sorted(b, e, byTick)) std::stable_sort(b, e, byTick);
+    if (lane.shift != 0) img->shifted_.push_back(static_cast<uint32_t>(img->lanes_.size()));  // T6.2b
     img->lanes_.push_back(lane);
   }
   return img;
@@ -136,75 +137,94 @@ void AutomationRenderer::render(const TickSpan& ticks, uint32_t frame, uint32_t 
   bool allConst = wholeBlock;
   double holdUntil = std::numeric_limits<double>::infinity();
   const double* exact = ticks.perSample;  // fetched on first need
+  const auto lanes = n != 0 ? image_->lanes() : std::span<const AutomationImage::Lane>{};
   for (uint32_t l = 0; l < n; ++l) {
-    // A block-rate lane (AutomationLaneDesc::perSample false) is read at frame 0 only: later runs of the block skip
-    // it, and its value paths below compute one sample (cnt), the same value the per-sample paths give frame 0.
-    const bool blockRate = !image_->lanes()[l].perSample;
-    if (blockRate && frame != 0) continue;
-    const uint32_t cnt = blockRate ? 1u : len;
-    const auto pts = image_->points(l);
-    if (pts.empty()) {
-      fillConst(l, image_->lanes()[l].emptyValue, frame, len, wholeBlock);
-      continue;
-    }
-    LaneState& st = lanes_[l];
-    int64_t c = seekCursor(pts, st.cursor, t0);
-    const int64_t np = static_cast<int64_t>(pts.size());
-    const bool crosses = c + 1 < np && static_cast<double>(pts[static_cast<size_t>(c + 1)].tick) <= tLast + margin;
-    // Constant: before the first point, after the last, or on a flat segment.
-    if (!crosses && (c < 0 || c + 1 >= np || pts[static_cast<size_t>(c)].value == pts[static_cast<size_t>(c + 1)].value)) {
-      st.cursor = c;
-      fillConst(l, pts[static_cast<size_t>(c < 0 ? 0 : c)].value, frame, len, wholeBlock);
-      if (c + 1 < np) holdUntil = std::min(holdUntil, static_cast<double>(pts[static_cast<size_t>(c + 1)].tick));
-      continue;
-    }
-    allConst = false;
-    float* out = buf_.data() + static_cast<size_t>(l) * stride_ + frame;
-    st.constValid = 0;
-    if (!crosses && ticks.perSample == nullptr) {
-      // One segment a → b and a constant tempo: x is linear in the sample index.
-      const AutomationPoint& a = pts[static_cast<size_t>(c)];
-      const AutomationPoint& b = pts[static_cast<size_t>(c + 1)];
-      const double ta = static_cast<double>(a.tick);
-      const double inv = 1.0 / static_cast<double>(b.tick - a.tick);
-      const double va = a.value, dv = static_cast<double>(b.value) - a.value;
-      const double k = kAutomationCurveK * a.curve;
-      if (std::abs(k) < kAutomationLinearK) {
-        for (uint32_t i = 0; i < cnt; ++i) out[i] = static_cast<float>(va + dv * ((ticks.first + ticks.step * i - ta) * inv));
-      } else if (std::abs(k) >= kGeometricMinK) {
-        // e^{k·x(i)} = e^{k·x0} · (e^{k·dx})^i; relative error ≤ len · ulp, far below 1e-6 of the segment.
-        const double x0 = (ticks.first - ta) * inv;
-        const double r = std::exp(k * ticks.step * inv);
-        const double scale = dv / std::expm1(k);
-        double e = std::exp(k * x0);
-        for (uint32_t i = 0; i < cnt; ++i) {
-          out[i] = static_cast<float>(va + scale * (e - 1.0));
-          e *= r;
-        }
-      } else {
-        for (uint32_t i = 0; i < cnt; ++i) {
-          const double x = (ticks.first + ticks.step * i - ta) * inv;
-          out[i] = static_cast<float>(va + dv * automationShape(x, a.curve));
-        }
-      }
-      st.cursor = c;
-      continue;
-    }
-    // General case (a breakpoint inside the run, or a ramping tempo): the law per sample, at exact ticks.
-    if (exact == nullptr && ticks.exact != nullptr) {
-      ticks.exact(ticks.user, exact_.data(), len);
-      exact = exact_.data();
-    }
-    for (uint32_t i = 0; i < cnt; ++i) {
-      const double t = exact != nullptr ? exact[i] : ticks.at(i);
-      while (c + 1 < np && static_cast<double>(pts[static_cast<size_t>(c + 1)].tick) <= t) ++c;
-      out[i] = static_cast<float>(valueWithCursor(pts, c, t));
-    }
-    st.cursor = c;
+    if (lanes[l].shift != 0) continue;  // T6.2b: renderLane, at its own samples
+    if (!renderOne(l, ticks, frame, len, wholeBlock, margin, exact, holdUntil)) allConst = false;
   }
   allConst_ = allConst;
   holdUntil_ = holdUntil;
   lastTick_ = tLast;
+}
+
+void AutomationRenderer::renderLane(uint32_t lane, const TickSpan& ticks, uint32_t frame, uint32_t len,
+                                    bool wholeBlock) noexcept {  // RT-safe
+  if (len == 0 || lane >= numLanes()) return;
+  const double tLast = ticks.at(len - 1);
+  const double margin = ticks.perSample != nullptr ? 0.0 : 1e-6 + 1e-12 * std::abs(tLast);
+  const double* exact = ticks.perSample;
+  double holdUntil = 0.0;
+  (void)renderOne(lane, ticks, frame, len, wholeBlock, margin, exact, holdUntil);
+}
+
+bool AutomationRenderer::renderOne(uint32_t l, const TickSpan& ticks, uint32_t frame, uint32_t len, bool wholeBlock,
+                                   double margin, const double*& exact, double& holdUntil) noexcept {  // RT-safe
+  // A block-rate lane (AutomationLaneDesc::perSample false) is read at frame 0 only: later runs of the block skip
+  // it, and its value paths below compute one sample (cnt), the same value the per-sample paths give frame 0.
+  const bool blockRate = !image_->lanes()[l].perSample;
+  if (blockRate && frame != 0) return true;
+  const uint32_t cnt = blockRate ? 1u : len;
+  const auto pts = image_->points(l);
+  if (pts.empty()) {
+    fillConst(l, image_->lanes()[l].emptyValue, frame, len, wholeBlock);
+    return true;
+  }
+  const double t0 = ticks.at(0);
+  const double tLast = ticks.at(len - 1);
+  LaneState& st = lanes_[l];
+  int64_t c = seekCursor(pts, st.cursor, t0);
+  const int64_t np = static_cast<int64_t>(pts.size());
+  const bool crosses = c + 1 < np && static_cast<double>(pts[static_cast<size_t>(c + 1)].tick) <= tLast + margin;
+  // Constant: before the first point, after the last, or on a flat segment.
+  if (!crosses && (c < 0 || c + 1 >= np || pts[static_cast<size_t>(c)].value == pts[static_cast<size_t>(c + 1)].value)) {
+    st.cursor = c;
+    fillConst(l, pts[static_cast<size_t>(c < 0 ? 0 : c)].value, frame, len, wholeBlock);
+    if (c + 1 < np) holdUntil = std::min(holdUntil, static_cast<double>(pts[static_cast<size_t>(c + 1)].tick));
+    return true;
+  }
+  float* out = buf_.data() + static_cast<size_t>(l) * stride_ + frame;
+  st.constValid = 0;
+  if (!crosses && ticks.perSample == nullptr) {
+    // One segment a → b and a constant tempo: x is linear in the sample index.
+    const AutomationPoint& a = pts[static_cast<size_t>(c)];
+    const AutomationPoint& b = pts[static_cast<size_t>(c + 1)];
+    const double ta = static_cast<double>(a.tick);
+    const double inv = 1.0 / static_cast<double>(b.tick - a.tick);
+    const double va = a.value, dv = static_cast<double>(b.value) - a.value;
+    const double k = kAutomationCurveK * a.curve;
+    if (std::abs(k) < kAutomationLinearK) {
+      for (uint32_t i = 0; i < cnt; ++i) out[i] = static_cast<float>(va + dv * ((ticks.first + ticks.step * i - ta) * inv));
+    } else if (std::abs(k) >= kGeometricMinK) {
+      // e^{k·x(i)} = e^{k·x0} · (e^{k·dx})^i; relative error ≤ len · ulp, far below 1e-6 of the segment.
+      const double x0 = (ticks.first - ta) * inv;
+      const double r = std::exp(k * ticks.step * inv);
+      const double scale = dv / std::expm1(k);
+      double e = std::exp(k * x0);
+      for (uint32_t i = 0; i < cnt; ++i) {
+        out[i] = static_cast<float>(va + scale * (e - 1.0));
+        e *= r;
+      }
+    } else {
+      for (uint32_t i = 0; i < cnt; ++i) {
+        const double x = (ticks.first + ticks.step * i - ta) * inv;
+        out[i] = static_cast<float>(va + dv * automationShape(x, a.curve));
+      }
+    }
+    st.cursor = c;
+    return false;
+  }
+  // General case (a breakpoint inside the run, or a ramping tempo): the law per sample, at exact ticks.
+  if (exact == nullptr && ticks.exact != nullptr) {
+    ticks.exact(ticks.user, exact_.data(), len);
+    exact = exact_.data();
+  }
+  for (uint32_t i = 0; i < cnt; ++i) {
+    const double t = exact != nullptr ? exact[i] : ticks.at(i);
+    while (c + 1 < np && static_cast<double>(pts[static_cast<size_t>(c + 1)].tick) <= t) ++c;
+    out[i] = static_cast<float>(valueWithCursor(pts, c, t));
+  }
+  st.cursor = c;
+  return false;
 }
 
 }  // namespace pq::engine

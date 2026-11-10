@@ -789,6 +789,21 @@ void Timeline::renderAutomation(uint32_t frame, SampleTime s0, uint32_t len, boo
   const double tB = tm.samplesToTicks(s0 + len, sr);
   lastTickSample_ = s0 + len;
   lastTickValue_ = tB;
+  automation_.render(tickSpan(s0, len, tA, tB), frame, len, wholeBlock);
+  // T6.2 / T6.2b: the lanes of compensated targets, at the song samples `shift` frames earlier (per sample: their taps
+  // too). Two tick conversions per shifted lane per run.
+  const AutomationImage& img = *automation_.image();
+  for (const uint32_t l : img.shiftedLanes()) {
+    if (l >= automation_.numLanes()) break;
+    const SampleTime s = s0 - static_cast<SampleTime>(img.lanes()[l].shift);
+    automation_.renderLane(l, tickSpan(s, len, tm.samplesToTicks(s, sr), tm.samplesToTicks(s + len, sr)), frame, len,
+                           wholeBlock);
+  }
+}
+
+TickSpan Timeline::tickSpan(SampleTime s0, uint32_t len, double tA, double tB) noexcept {  // RT-safe
+  const TempoMap& tm = tempo_->tempo();
+  const double sr = cfg_.sampleRate;
   TickSpan ts;
   ts.first = tA;
   if (tempo_->constantBetween(tA, tB)) {
@@ -803,7 +818,7 @@ void Timeline::renderAutomation(uint32_t frame, SampleTime s0, uint32_t len, boo
     for (uint32_t i = 0; i < len; ++i) tickBuf_[i] = tm.samplesToTicks(s0 + i, sr);
     ts.perSample = tickBuf_.data();
   }
-  automation_.render(ts, frame, len, wholeBlock);
+  return ts;
 }
 
 void Timeline::computeSnapshot() noexcept {  // RT-safe
@@ -887,8 +902,6 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
     if (!reports_.tryPush(r)) ++stats_.droppedReports;
     reportPending_ = false;
   }
-  blockSong_ = pos_;  // T6.2: frame 0 of this block (shifted lanes)
-  blockPlaying_ = playing_;
   if (frames != 0) {
     uint32_t from = 0;
     if (countIn_.active) {  // T6.6: count frames in; the transport starts at the frame where the bars end
@@ -938,10 +951,7 @@ void Timeline::writeAutomatedParams(std::span<float> params) noexcept {  // RT-s
   for (uint32_t l = 0; l < n; ++l) {
     const uint32_t t = automation_.target(l);
     if (t < params.size()) {  // M4 review L1: only a changed value counts as a write (a held lane changes nothing)
-      float v = automation_.buffer(l)[0];
-      if (lanes[l].shift != 0 && blockPlaying_)  // T6.2: its target is compensated: the value of shift frames ago
-        v = static_cast<float>(automation_.image()->valueAt(
-            l, tempo_->tempo().samplesToTicks(blockSong_ - static_cast<SampleTime>(lanes[l].shift), cfg_.sampleRate)));
+      const float v = automation_.buffer(l)[0];  // (a shifted lane's buffer is rendered shifted: renderAutomation)
       changed |= std::bit_cast<uint32_t>(params[t]) != std::bit_cast<uint32_t>(v);
       params[t] = v;
     }

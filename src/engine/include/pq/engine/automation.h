@@ -46,8 +46,8 @@ struct AutomationLaneDesc {
   // instead of a buffer nobody reads. Lanes with a tap always render per sample.
   bool perSample = true;
   // T6.2 (PDC): the lane's target sits behind this many frames of compensation (its unit's A_u, latency_plan.h): while
-  // the transport plays, Timeline::writeAutomatedParams writes the lane's value at the song sample this many frames
-  // before the block's frame 0. Lanes with a tap (audio-rate consumers) are not shifted.
+  // the transport plays, the timeline renders the lane at the song samples this many frames earlier
+  // (AutomationRenderer::renderLane), so its param and (T6.2b) its tap's buffer are shifted alike, per sample.
   uint32_t shiftFrames = 0;
 };
 
@@ -59,7 +59,7 @@ public:
     uint32_t begin, end;  // into points()
     const float** tap;    // AutomationLaneDesc::tap
     bool perSample;       // AutomationLaneDesc::perSample || tap
-    uint32_t shift;       // T6.2: AutomationLaneDesc::shiftFrames (0 with a tap)
+    uint32_t shift;       // T6.2: AutomationLaneDesc::shiftFrames
   };
 
   // Off the audio thread (allocates). Points are stably sorted by tick. Errors: a non-finite value or curve.
@@ -67,6 +67,8 @@ public:
 
   // RT-safe accessors.
   std::span<const Lane> lanes() const noexcept { return lanes_; }
+  // T6.2b: the lanes with a shift (rendered one by one at their own samples), ascending.
+  std::span<const uint32_t> shiftedLanes() const noexcept { return shifted_; }
   uint32_t numLanes() const noexcept { return static_cast<uint32_t>(lanes_.size()); }
   std::span<const AutomationPoint> points(uint32_t lane) const noexcept {
     return {points_.data() + lanes_[lane].begin, points_.data() + lanes_[lane].end};
@@ -79,6 +81,7 @@ public:
 private:
   std::vector<Lane> lanes_;
   std::vector<AutomationPoint> points_;
+  std::vector<uint32_t> shifted_;
 };
 
 // The ticks of a run of consecutive samples: tick(i) = first + step · i under a constant tempo (exact up to
@@ -106,8 +109,10 @@ public:
   // Audio thread: render `image` from now on (null: no lanes). Cursors re-seek, constant caches reset. RT-safe.
   void attach(const AutomationImage* image) noexcept;
   // Frames [frame, frame + len) of the block, whose samples have the ticks `ticks` (frame + len ≤ maxBlockFrames).
-  // `wholeBlock`: this run is the whole block. RT-safe.
+  // `wholeBlock`: this run is the whole block. Lanes with a shift are left to renderLane. RT-safe.
   void render(const TickSpan& ticks, uint32_t frame, uint32_t len, bool wholeBlock) noexcept;
+  // T6.2b: one lane (a shifted one: its own ticks), the same paths as render(). RT-safe.
+  void renderLane(uint32_t lane, const TickSpan& ticks, uint32_t frame, uint32_t len, bool wholeBlock) noexcept;
   // Every lane constant at its value at `tick` for frames [frame, frame + len) (transport stopped). RT-safe.
   void renderHold(double tick, uint32_t frame, uint32_t len, bool wholeBlock) noexcept;
 
@@ -128,6 +133,9 @@ private:
     uint8_t pad_[3];
   };
   void fillConst(uint32_t lane, float v, uint32_t frame, uint32_t len, bool wholeBlock) noexcept;
+  // One lane of a run: true when its values are one constant through it (holdUntil: its next point, if any).
+  bool renderOne(uint32_t l, const TickSpan& ticks, uint32_t frame, uint32_t len, bool wholeBlock, double margin,
+                 const double*& exact, double& holdUntil) noexcept;
 
   const AutomationImage* image_ = nullptr;
   uint32_t maxLanes_ = 0, maxBlock_ = 0;

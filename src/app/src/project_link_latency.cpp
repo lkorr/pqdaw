@@ -41,15 +41,31 @@ ProjectLink::LatencyJob ProjectLink::planLatency(const doc::LoweredProject& lp) 
     }
   }
   LatencyJob job;
-  job.plan = engine::planCompensation(layout, compiler_->latencies(), offset);
+  const std::vector<engine::UnitLatency> lat = compiler_->latencies();
+  job.plan = engine::planCompensation(layout, lat, offset);
   job.inputs = unitInputs(lp);  // T6.7: the units' track inputs
+  // A param's lane is shifted by its track's S(t) = A_u + T(t) (T6.2b: T > 0 in a merged unit whose member waits for a
+  // later sidechain inside it; latency_plan.h). A project param several tracks read (a tuning's generator: one lane, one
+  // tap for every tuning node) takes the smallest of their shifts (QUESTIONS Q?-T6.2b-a).
+  std::vector<uint8_t> seen;
+  bool any = false;
   for (const engine::ProjectParamLink& l : compiler_->options().paramLinks) {
-    if (l.track >= part.unitOf.size() || part.unitOf[l.track] >= job.plan.unitLatency.size()) continue;
-    const uint32_t a = job.plan.unitLatency[part.unitOf[l.track]];
-    if (a == 0) continue;
-    if (job.shift.size() <= l.projectParam) job.shift.resize(l.projectParam + 1, 0);
-    job.shift[l.projectParam] = a;
+    if (l.track >= part.unitOf.size() || part.unitOf[l.track] >= job.plan.arrival.size()) continue;
+    const uint32_t u = part.unitOf[l.track];
+    double t = 0.0;
+    if (u < lat.size() && l.track < lp.trackIds.size())
+      for (const auto& [id, shift] : lat[u].trackShift)
+        if (id == lp.trackIds[l.track].value) t = shift;
+    const auto a = static_cast<uint32_t>(std::max(0L, std::lround(job.plan.arrival[u] + t)));
+    if (job.shift.size() <= l.projectParam) {
+      job.shift.resize(l.projectParam + 1, 0);
+      seen.resize(l.projectParam + 1, 0);
+    }
+    job.shift[l.projectParam] = seen[l.projectParam] != 0 ? std::min(job.shift[l.projectParam], a) : a;
+    seen[l.projectParam] = 1;
   }
+  for (const uint32_t a : job.shift) any = any || a != 0;
+  if (!any) job.shift.clear();  // no shift anywhere: the lanes stay as they are
   return job;
 }
 

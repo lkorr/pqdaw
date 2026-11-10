@@ -193,7 +193,7 @@ struct SettingSpec {
 // glide, steal.
 std::span<const SettingSpec> groupSettings() noexcept;
 // TX.group-oversample: every group's `oversample` (model.h "Oversampled groups"): a choice 1× / 2× / 4× / 8×, each with
-// its converters' latency at DC in base-rate samples (groupOversampleLatency; not compensated).
+// its converters' latency at DC in base-rate samples (groupOversampleLatency; the project's PDC compensates it).
 const SettingSpec& groupOversampleSetting() noexcept;
 // A group setting by name: the polyphony's and `oversample` (null: none).
 const SettingSpec* groupSetting(std::string_view name) noexcept;

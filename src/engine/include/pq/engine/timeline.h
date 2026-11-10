@@ -63,8 +63,10 @@
 // T2.6-fix2) its buffer into the tap while the block moves (null while it is constant, and when the image is
 // replaced or the timeline destroyed); automation(lane) is the audio-rate buffer. Lanes without a tap and with
 // AutomationLaneDesc::perSample false render only their frame-0 value. T6.2: a lane with shiftFrames (its target unit
-// is compensated by that many frames, pq/engine/latency_plan.h) writes its value at frame 0's song sample minus the
-// shift while playing (evaluated per block: one evalAutomation per shifted lane).
+// is compensated by that many frames, pq/engine/latency_plan.h) is rendered while playing at the song samples that
+// many frames earlier (AutomationRenderer::renderLane; T6.2b: per sample, so a tap's buffer is shifted too); while
+// stopped it holds the playhead's value like every lane. A run after a loop wrap renders the shifted lane from the loop
+// start minus the shift (not the end of the previous pass a delay line would replay).
 //
 // ---- Audio clips (T5.4) -------------------------------------------------------------------------------------------
 // The timeline owns the clip player (pq/engine/clip_player.h) and plays it on the same runs as the notes: every run of
@@ -368,6 +370,8 @@ private:
   void refreshMinNext() noexcept;
   void playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t len, Ticks t0, Ticks t1) noexcept;
   void renderAutomation(uint32_t frame, SampleTime s0, uint32_t len, bool wholeBlock) noexcept;
+  // The ticks of song samples [s0, s0 + len) (tA, tB: those of s0 and s0 + len) for the automation renderer.
+  TickSpan tickSpan(SampleTime s0, uint32_t len, double tA, double tB) noexcept;
   void computeSnapshot() noexcept;
   // Event output.
   bool pushEvent(uint32_t track, const NoteEvent& e) noexcept;
@@ -379,8 +383,6 @@ private:
   void refreshNext(uint32_t track) noexcept;
 
   TimelineConfig cfg_;
-  SampleTime blockSong_ = 0;   // T6.2: the song sample of the current block's frame 0 (shifted automation lanes)
-  bool blockPlaying_ = false;
   // Publication.
   std::atomic<SequenceImage*> pubSeq_{nullptr};
   std::atomic<AutomationImage*> pubAuto_{nullptr};
