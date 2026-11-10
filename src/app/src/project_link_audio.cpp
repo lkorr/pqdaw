@@ -1,21 +1,29 @@
 // T5.4: audio clips through the playback link (pq/app/project_link.h "Audio clips"): the sample pool and its loader,
-// the audio sequence images, prefetch and the disk indicator.
+// the audio sequence images, prefetch and the disk indicator. T6.3: the warp modes (markers → engine::WarpSegments,
+// Beats / Tones / Texture settings) and the transient analysis Beats slices at (on the loader thread, cached by content
+// hash in <project>/cache/analysis and in memory: media::loadOrDetectTransients).
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 
 #include "pq/app/project_link.h"
 #include "pq/dsp/resample.h"
 #include "pq/engine/clip_player.h"
+#include "pq/media/transients.h"
 
 namespace pq::app {
 
 namespace {
 
 constexpr uint32_t kNone = 0xFFFFFFFFu;
+// T6.3: a loader job (mipQueue_) with this bit analyses the sample's transients instead of building mips (the link's
+// declaration is shared with other lanes, so the job kind travels in the levels word).
+constexpr uint32_t kTransientJob = 0x80000000u;
 
 // Every active audio track with its path (main tree; deactivated groups hide their members).
 template <class F>
@@ -57,7 +65,47 @@ bool sameClip(const doc::AudioClipDesc& a, const doc::AudioClipDesc& b) {
          a.rateRatio == b.rateRatio && a.contentStart == b.contentStart && a.loop.enabled == b.loop.enabled &&
          a.loop.start == b.loop.start && a.loop.end == b.loop.end && a.framesPerTick == b.framesPerTick &&
          a.gain == b.gain && a.fadeIn == b.fadeIn && a.fadeOut == b.fadeOut && a.fadeInCurve == b.fadeInCurve &&
-         a.fadeOutCurve == b.fadeOutCurve && a.crossfadeIn == b.crossfadeIn && a.cutEnd == b.cutEnd;
+         a.fadeOutCurve == b.fadeOutCurve && a.crossfadeIn == b.crossfadeIn && a.cutEnd == b.cutEnd &&
+         a.markers == b.markers && a.pitchRatio == b.pitchRatio && a.warpParams == b.warpParams;
+}
+
+// The engine's warp mode. T6.5 brings Complex / Complex Pro (signalsmith-stretch); until then they play as Tones (a
+// time-stretch that keeps the clip's pitch and plays its transpose), so their tempo and pitch are already right.
+engine::ClipWarp engineWarp(doc::AudioWarp w) {
+  switch (w) {
+    case doc::AudioWarp::Off: return engine::ClipWarp::Off;
+    case doc::AudioWarp::RePitch: return engine::ClipWarp::RePitch;
+    case doc::AudioWarp::Beats: return engine::ClipWarp::Beats;
+    case doc::AudioWarp::Tones: return engine::ClipWarp::Tones;
+    case doc::AudioWarp::Texture: return engine::ClipWarp::Texture;
+    case doc::AudioWarp::Complex:
+    case doc::AudioWarp::ComplexPro: return engine::ClipWarp::Tones;  // T6.5
+  }
+  return engine::ClipWarp::Off;
+}
+
+// The analysis cache directory of each queued transient job (by content hash): set on the UI thread when the job is
+// queued, taken by the loader.
+std::mutex gAnalysisDirsMutex;
+std::unordered_map<uint64_t, std::filesystem::path> gAnalysisDirs;
+
+void putAnalysisDir(uint64_t hash, std::filesystem::path dir) {
+  std::lock_guard lock(gAnalysisDirsMutex);
+  gAnalysisDirs[hash] = std::move(dir);
+}
+
+std::filesystem::path takeAnalysisDir(uint64_t hash) {
+  std::lock_guard lock(gAnalysisDirsMutex);
+  const auto it = gAnalysisDirs.find(hash);
+  if (it == gAnalysisDirs.end()) return {};
+  std::filesystem::path d = std::move(it->second);
+  gAnalysisDirs.erase(it);
+  return d;
+}
+
+// Beats with granulation 0 slices at the sample's transients.
+bool wantsTransients(const doc::AudioClipDesc& d) {
+  return d.warp == doc::AudioWarp::Beats && d.warpParams.beatsGranulation == 0;
 }
 
 bool sameKey(const std::vector<std::pair<uint32_t, doc::AudioTrackDesc>>& a,
@@ -73,13 +121,14 @@ bool sameKey(const std::vector<std::pair<uint32_t, doc::AudioTrackDesc>>& a,
   return true;
 }
 
-engine::AudioClipDesc toEngine(const doc::AudioClipDesc& d, uint32_t sample, bool playable) {
+engine::AudioClipDesc toEngine(const doc::AudioClipDesc& d, uint32_t sample, bool playable,
+                               std::span<const double> transients = {}) {
   engine::AudioClipDesc c;
   c.id = d.id.value;
   c.sample = sample;
   c.start = d.start;
   c.length = d.length;
-  c.warp = d.warp == doc::AudioWarp::Off ? engine::ClipWarp::Off : engine::ClipWarp::RePitch;
+  c.warp = engineWarp(d.warp);
   c.reverse = d.reverse;
   c.playable = playable;
   c.contentStartFrame = d.contentStartFrame;
@@ -87,6 +136,26 @@ engine::AudioClipDesc toEngine(const doc::AudioClipDesc& d, uint32_t sample, boo
   c.contentStart = d.contentStart;
   c.loop = d.loop;
   c.framesPerTick = d.framesPerTick;
+  // T6.3: the warp markers as the law's segments (doc::warpFrameAt: a lone marker at framesPerTick through it; else
+  // between neighbours, the first and last segments extended).
+  const std::vector<doc::WarpMarker>& m = d.markers;
+  if (m.size() == 1) {
+    c.segments.push_back({m[0].content, m[0].sourceFrame, d.framesPerTick});
+  } else {
+    for (size_t i = 0; i + 1 < m.size(); ++i)
+      c.segments.push_back({m[i].content, m[i].sourceFrame,
+                            (m[i + 1].sourceFrame - m[i].sourceFrame) / static_cast<double>(m[i + 1].content - m[i].content)});
+  }
+  c.stretch.pitchRatio = d.pitchRatio;
+  c.stretch.granulation = d.warpParams.beatsGranulation;
+  c.stretch.sliceLoop = d.warpParams.beatsLoop == doc::BeatsLoop::Off       ? engine::SliceLoop::Off
+                        : d.warpParams.beatsLoop == doc::BeatsLoop::Forward ? engine::SliceLoop::Forward
+                                                                            : engine::SliceLoop::BackForward;
+  c.stretch.envelope = d.warpParams.beatsEnvelope;
+  c.stretch.grainSeconds = static_cast<double>(d.warpParams.grainSizeMs) / 1000.0;
+  c.stretch.flux = d.warp == doc::AudioWarp::Texture ? d.warpParams.flux : 0.0f;
+  c.stretch.seed = d.id.value;
+  c.transients = transients;
   c.gain = d.gain;
   c.fadeIn = d.fadeIn;
   c.fadeOut = d.fadeOut;
@@ -138,7 +207,7 @@ void ProjectLink::requestMips(const media::SampleRef& s, uint32_t levels) {
   {
     std::lock_guard lock(loadMutex_);
     for (const auto& [q, l] : mipQueue_)
-      if (q == s && l >= levels) return;
+      if (q == s && (l & kTransientJob) == (levels & kTransientJob) && (l & ~kTransientJob) >= (levels & ~kTransientJob)) return;
     mipQueue_.emplace_back(s, levels);
     ++loadsPending_;
   }
@@ -162,6 +231,34 @@ void ProjectLink::loaderMain() {
         mipLevels = mipQueue_.front().second;
         mipQueue_.pop_front();
       }
+    }
+    if (mipSample != nullptr && (mipLevels & kTransientJob) != 0) {  // T6.3: transients, then a republish
+      media::TransientRequest tr;
+      tr.path = mipSample->path();
+      tr.contentHash = mipSample->contentHash();
+      tr.frames = mipSample->view().frames;
+      const media::SampleView view = mipSample->view();
+      if (!view.streamed()) tr.resident = &view;
+      tr.cacheDir = takeAnalysisDir(tr.contentHash);
+      if (!media::loadOrDetectTransients(tr)) {  // a failure leaves the Beats clip on its 1/16 grid (not retried)
+        auto none = std::make_shared<media::Transients>();
+        none->contentHash = tr.contentHash;
+        none->frames = tr.frames;
+        media::transientCache().put(std::move(none));
+      }
+      mipSample.reset();
+      std::function<void(std::function<void()>)> post;
+      {
+        std::lock_guard lock(loadMutex_);
+        --loadsPending_;
+        post = post_;
+      }
+      samplesArrived_.store(true, std::memory_order_release);
+      loadCv_.notify_all();
+      if (post) post([alive = std::weak_ptr<int>(alive_), this] {
+        if (alive.lock()) takeLoadedSamples();
+      });
+      continue;
     }
     if (mipSample != nullptr) {  // no republish: the player reads PooledSample::mips() itself
       (void)pool_->buildMips(*mipSample, mipLevels);
@@ -234,6 +331,24 @@ void ProjectLink::publishAudio(const doc::Project& p, bool force) {
   };
   doc::AudioLowerOptions lo;
   lo.available = [&](doc::SampleId id) { return !pathOf(id).empty(); };
+  // T6.3: the transients Beats clips slice at (kept alive until the build copied them), analysed on the loader.
+  std::vector<media::TransientsPtr> transients;
+  std::set<uint32_t> asked;
+  const std::string& pdir = ctx_ != nullptr ? ctx_->projectDir() : cfg_.projectDir;
+  auto transientsOf = [&](uint32_t si) -> std::span<const double> {
+    const media::SampleRef& ref = samples[si].pooled;
+    if (ref == nullptr) return {};
+    if (media::TransientsPtr t = media::transientCache().find(ref->contentHash(), ref->view().frames)) {
+      samplesKey.push_back(t.get());  // their arrival changes the image
+      transients.push_back(t);
+      return t->onsets;
+    }
+    if (asked.insert(si).second) {
+      putAnalysisDir(ref->contentHash(), pdir.empty() ? std::filesystem::path() : pathFromUtf8(pdir) / "cache" / "analysis");
+      requestMips(ref, kTransientJob);
+    }
+    return {};
+  };
   forEachAudio(p, [&](const doc::TrackPath& path, const doc::Track& t) {
     const uint32_t slot = slotForTrack(t.id);
     if (slot == kNone) return;
@@ -284,7 +399,8 @@ void ProjectLink::publishAudio(const doc::Project& p, bool force) {
         }
         si = ix->second;
       }
-      et.clips.push_back(toEngine(d, si == kNone ? 0u : si, d.playable && si != kNone));
+      const std::span<const double> tr = si != kNone && wantsTransients(d) ? transientsOf(si) : std::span<const double>();
+      et.clips.push_back(toEngine(d, si == kNone ? 0u : si, d.playable && si != kNone, tr));
     }
     if (slots.size() <= slot) slots.resize(slot + 1);
     key.emplace_back(slot, e.desc);
@@ -395,7 +511,9 @@ Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Proje
   if (d == nullptr) return Error{ErrorCode::NotFound, "renderClip: the clip did not lower", {}};
   engine::AudioTrackDesc one;
   one.id = t.id.value;
-  one.clips.push_back(toEngine(*d, 0, d->playable));
+  media::TransientsPtr tr = wantsTransients(*d) ? media::transientCache().find((*sample)->contentHash(), (*sample)->view().frames)
+                                                : nullptr;
+  one.clips.push_back(toEngine(*d, 0, d->playable, tr != nullptr ? std::span<const double>(tr->onsets) : std::span<const double>()));
   one.clips.back().crossfadeIn = 0;
   std::vector<engine::ClipSample> samples(1);
   samples[0].pooled = *sample;

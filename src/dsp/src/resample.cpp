@@ -233,6 +233,14 @@ void sincResample(const SincTable& t, const float* const* in, uint32_t channels,
   else resampleImpl<1>(t, in, pos, step, frames, env, gain, out);
 }
 
+namespace {
+// a·b + c rounded once, as the 8-wide body computes it (T6.3: overlapping grains add copies onto each other, and a
+// frame must sum the same whether a call reaches it in its body or its tail).
+inline float fused(float a, float b, float c) noexcept {
+  return _mm_cvtss_f32(_mm_fmadd_ss(_mm_set_ss(a), _mm_set_ss(b), _mm_set_ss(c)));
+}
+}  // namespace
+
 void gainCopy(const float* const* in, uint32_t channels, int64_t first, int32_t dir, uint32_t frames,
               const float* env, float gain, float* const* out) noexcept {  // RT-safe
   const uint32_t ch = channels >= 2 ? 2u : 1u;
@@ -247,14 +255,14 @@ void gainCopy(const float* const* in, uint32_t channels, int64_t first, int32_t 
         const __m256 g = env != nullptr ? _mm256_loadu_ps(env + i) : g8;
         _mm256_storeu_ps(o + i, _mm256_fmadd_ps(_mm256_loadu_ps(x + i), g, _mm256_loadu_ps(o + i)));
       }
-      for (; i < frames; ++i) o[i] += x[i] * (env != nullptr ? env[i] : gain);
+      for (; i < frames; ++i) o[i] = fused(x[i], env != nullptr ? env[i] : gain, o[i]);
     } else {
       for (; i + 8 <= frames; i += 8) {  // x[−i − 7 … −i], reversed
         const __m256 v = _mm256_permutevar8x32_ps(_mm256_loadu_ps(x - static_cast<int64_t>(i) - 7), rev);
         const __m256 g = env != nullptr ? _mm256_loadu_ps(env + i) : g8;
         _mm256_storeu_ps(o + i, _mm256_fmadd_ps(v, g, _mm256_loadu_ps(o + i)));
       }
-      for (; i < frames; ++i) o[i] += x[-static_cast<int64_t>(i)] * (env != nullptr ? env[i] : gain);
+      for (; i < frames; ++i) o[i] = fused(x[-static_cast<int64_t>(i)], env != nullptr ? env[i] : gain, o[i]);
     }
   }
 }

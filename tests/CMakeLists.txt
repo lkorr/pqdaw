@@ -53,6 +53,7 @@ pq_add_test(pq_tests_media PERF
     media/test_malformed.cpp
     media/test_stream.cpp
     media/test_waveform.cpp
+    media/test_transients.cpp  # T6.3: onset detection (labelled fixture F-measure), its disk / memory cache
   DEPS pq_media pq_engine pq_doc)  # pq_doc: the content hash is checked against doc::fileIdentity
 
 # Child process for the "default handler aborts with a stack trace" test: links the trap, no handler.
@@ -142,6 +143,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_eq_link.cpp  # EQ.4b: the EQ displays in the app wiring (the curve after the circuit opens / closes the EQ; the link's lowering)
     app/test_drop_playback.cpp  # T5.7: a dropped file plays at once (the hover preloads it into the pool)
     app/test_clip_export.cpp  # T5.12: clips rendered for drag-out (== the solo render, WAV files; 60-s clip in perf)
+    app/test_warp_link.cpp  # T6.3: warp modes through the link (Tones in 31-EDO steps, Complex as Tones, Beats transients analysed and cached)
     app/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes reach the DSP, click-free, idle when stopped
     app/test_meta_link.cpp  # TMM.3: meta modules through the link (a nested freq drag compiles nothing; chain instrument)
     app/test_scope_link.cpp  # TX.scope: the Oscilloscope through the link (its tap: beat, note, signal; pass-through)
@@ -328,6 +330,7 @@ pq_add_test(pq_tests_timeline
     engine/test_timeline.cpp
     engine/test_clip_player.cpp  # T5.4: the clip player, the audio sequence image, streamed reads
     engine/test_preview_player.cpp  # T5.10: the browser preview player (cue bus)
+    engine/test_warp.cpp  # T6.3: warp markers, Beats, Tones, Texture (tempo / pitch accuracy, block / streaming identity, RtScope)
   DEPS pq_engine pq_doc)
 
 # T1.10: golden offline renders (tests/golden: patches, committed WAVs, the absolute + spectral comparison helper) on
@@ -375,6 +378,7 @@ pq_add_test(pq_tests_stdlib SHARDS 4 SLOW_SHARDS 4
 pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias proof and slow-modulation cases (≈ 20 – 30 s each)
   SOURCES
     dsp/test_atoms_math_logic.cpp
+    dsp/test_warp_kernels.cpp  # T6.3: the warp kernels (Hann OLA, anchored ramps, best lag, jitter)
     dsp/test_atoms_memory_gen.cpp
     dsp/test_phasor_drift.cpp
     dsp/test_tables.cpp

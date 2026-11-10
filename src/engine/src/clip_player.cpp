@@ -4,17 +4,19 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <numbers>
 
 #include "pq/core/automation_curve.h"
 #include "pq/dsp/resample.h"
+#include "pq/dsp/warp.h"
 
 namespace pq::engine {
 
 namespace {
 
 constexpr int64_t kOne = dsp::kFixedOne;
-constexpr uint32_t kMaxPieces = 64;  // a run: up to maxBlock / kRePitchGrid + 1 cells, plus loop wraps
+constexpr uint32_t kMaxPieces = 128;  // a run: up to maxBlock / kRePitchGrid + 1 cells, plus loop wraps and segment changes
 constexpr uint32_t kNone = 0xFFFFFFFFu;
 constexpr int64_t kSlack = 8;  // history frames kept below what the filter needs (rounding of re-anchored rates)
 
@@ -31,6 +33,25 @@ double foldContent(double p, const ContentLoop& l) noexcept {  // RT-safe
   return static_cast<double>(l.start) + std::fmod(p - static_cast<double>(l.end), span);
 }
 
+bool sameSegments(const AudioSequenceImage& ia, const AudioSequenceImage::Clip& a, const AudioSequenceImage& ib,
+                  const AudioSequenceImage::Clip& b) noexcept {  // RT-safe
+  const std::span<const WarpSegment> x = ia.segments(a), y = ib.segments(b);
+  if (x.size() != y.size()) return false;
+  for (size_t i = 0; i < x.size(); ++i)
+    if (!(x[i] == y[i])) return false;
+  return true;
+}
+
+bool sameSlices(const AudioSequenceImage& ia, const AudioSequenceImage::Clip& a, const AudioSequenceImage& ib,
+                const AudioSequenceImage::Clip& b) noexcept {  // RT-safe
+  const std::span<const double> x = ia.sliceContent(a), y = ib.sliceContent(b);
+  const std::span<const double> fx = ia.sliceFrame(a), fy = ib.sliceFrame(b);
+  if (x.size() != y.size()) return false;
+  for (size_t i = 0; i < x.size(); ++i)
+    if (x[i] != y[i] || fx[i] != fy[i]) return false;
+  return true;
+}
+
 // Same source law (a swap keeps the voice): positions equal at s, same step / content mapping, same sample.
 bool sameLaw(const AudioSequenceImage& ia, const AudioSequenceImage::Clip& a, const AudioSequenceImage& ib,
              const AudioSequenceImage::Clip& b, SampleTime s) noexcept {  // RT-safe
@@ -39,6 +60,13 @@ bool sameLaw(const AudioSequenceImage& ia, const AudioSequenceImage::Clip& a, co
     return false;
   if (a.warp == ClipWarp::Off)
     return a.step == b.step && lawAt(a.anchor, s - a.bodyStart, a.step) == lawAt(b.anchor, s - b.bodyStart, b.step);
+  if (!sameSegments(ia, a, ib, b)) return false;
+  if (clipStretches(a.warp))  // T6.3: grains and slices are anchored on the clip's own samples
+    return a.bodyStart == b.bodyStart && a.start == b.start && a.length == b.length &&
+           a.contentStart == b.contentStart && a.loop.enabled == b.loop.enabled && a.loop.start == b.loop.start &&
+           a.loop.end == b.loop.end && a.pitchStep == b.pitchStep && a.grain == b.grain && a.alignLags == b.alignLags &&
+           a.alignLen == b.alignLen && a.jitter == b.jitter && a.seed == b.seed && a.sliceLoop == b.sliceLoop &&
+           a.envelope == b.envelope && a.playStart == b.playStart && sameSlices(ia, a, ib, b);
   return a.start == b.start && a.contentStart == b.contentStart && a.loop.enabled == b.loop.enabled &&
          a.loop.start == b.loop.start && a.loop.end == b.loop.end && a.framesPerTick == b.framesPerTick &&
          (!a.reverse || a.length == b.length) && ia.repitchOffset(a, s) == ib.repitchOffset(b, s);
@@ -72,8 +100,7 @@ struct RePitchCell {
   SampleTime g = 0;   // the cell's first song sample
   double pA = 0.0;    // unfolded content position (ticks) at g
   double dp = 0.0;    // per song sample
-  int64_t base = 0;   // 32.32 source frame of the folded pA
-  int64_t step = 0;   // 32.32 per song sample
+  double qA = 0.0;    // pA folded
   int64_t m0 = 0;     // folds of pA
 };
 
@@ -91,10 +118,49 @@ RePitchCell rePitchCell(const AudioSequenceImage& img, const AudioSequenceImage:
   k.pA = static_cast<double>(c.contentStart) + (c.reverse ? L - oA : oA);
   const double pB = static_cast<double>(c.contentStart) + (c.reverse ? L - oB : oB);
   k.dp = (pB - k.pA) / static_cast<double>(kRePitchGrid);
-  k.step = toFixed(k.dp * c.framesPerTick);
-  k.base = toFixed(foldContent(k.pA, c.loop) * c.framesPerTick);
+  k.qA = foldContent(k.pA, c.loop);
   k.m0 = foldCount(k.pA, c.loop);
   return k;
+}
+
+// T6.3: the warp segment of folded content q (the last with content0 ≤ q, else the first). RT-safe.
+uint32_t segIndex(std::span<const WarpSegment> g, double q) noexcept {
+  uint32_t lo = 1, hi = static_cast<uint32_t>(g.size());
+  while (lo < hi) {
+    const uint32_t mid = (lo + hi) / 2;
+    if (static_cast<double>(g[mid].content0) <= q) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo - 1;
+}
+
+// The folded content at t of a cell whose fold count there is m. RT-safe.
+double cellContent(const RePitchCell& k, const AudioSequenceImage::Clip& c, SampleTime t, int64_t m) noexcept {
+  const double span = c.looped ? static_cast<double>(c.loop.end - c.loop.start) : 0.0;
+  return k.qA + static_cast<double>(t - k.g) * k.dp - static_cast<double>(m - k.m0) * span;
+}
+
+// The first sample in [t + 1, limit) where the content (fold count m throughout) leaves segment `seg`; limit when
+// none. RT-safe.
+SampleTime nextSegChange(const RePitchCell& k, const AudioSequenceImage::Clip& c, std::span<const WarpSegment> g,
+                         SampleTime t, int64_t m, uint32_t seg, SampleTime limit) noexcept {
+  if (g.size() < 2 || k.dp == 0.0 || t + 1 >= limit) return limit;
+  const double span = c.looped ? static_cast<double>(c.loop.end - c.loop.start) : 0.0;
+  const double shift = static_cast<double>(m - k.m0) * span;
+  double j = 0.0;
+  if (k.dp > 0.0) {
+    if (seg + 1 >= g.size()) return limit;
+    j = std::ceil((static_cast<double>(g[seg + 1].content0) + shift - k.qA) / k.dp);
+  } else {
+    if (seg == 0) return limit;
+    j = std::floor((k.qA - shift - static_cast<double>(g[seg].content0)) / -k.dp) + 1.0;
+  }
+  const double rel = static_cast<double>(limit - k.g);
+  SampleTime x = j >= rel ? limit : k.g + static_cast<SampleTime>(std::max(j, 0.0));
+  if (x <= t) x = t + 1;
+  while (x > t + 1 && segIndex(g, cellContent(k, c, x - 1, m)) != seg) --x;
+  while (x < limit && segIndex(g, cellContent(k, c, x, m)) == seg) ++x;
+  return x;
 }
 
 int64_t cellFolds(const RePitchCell& k, const AudioSequenceImage::Clip& c, SampleTime t) noexcept {  // RT-safe
@@ -130,7 +196,8 @@ uint32_t repitchPieces(const AudioSequenceImage& img, const AudioSequenceImage::
                        SampleTime horizon, int64_t* pos, int64_t* step, uint32_t* at, bool* wrap,
                        SampleTime* wrapAfter) noexcept {  // RT-safe
   const SampleTime end = s + n;
-  const int64_t spanF = c.looped ? toFixed(static_cast<double>(c.loop.end - c.loop.start) * c.framesPerTick) : 0;
+  const std::span<const WarpSegment> segs = img.segments(c);
+  const bool multi = segs.size() > 1;
   RePitchCell k = rePitchCell(img, c, s);
   // The fold count of the sample before the run, by its own cell's law (a wrap may fall on the run's first frame).
   int64_t prevM = 0;
@@ -144,11 +211,20 @@ uint32_t repitchPieces(const AudioSequenceImage& img, const AudioSequenceImage::
     if (t >= k.g + kRePitchGrid) k = rePitchCell(img, c, t);
     const SampleTime cellEnd = std::min(k.g + kRePitchGrid, end);
     const int64_t m = cellFolds(k, c, t);
-    const SampleTime next = count + 1 == kMaxPieces ? end : nextFoldChange(k, c, t, m, cellEnd);
+    const bool last = count + 1 == kMaxPieces;
+    const SampleTime nextFold = last ? end : nextFoldChange(k, c, t, m, cellEnd);
+    // T6.3: the segment the piece reads in; it ends where the content leaves it (the law is linear inside).
+    const uint32_t sg = multi ? segIndex(segs, cellContent(k, c, t, m)) : 0;
+    const SampleTime next = multi && !last ? nextSegChange(k, c, segs, t, m, sg, nextFold) : nextFold;
+    const WarpSegment& w = segs[sg];
+    // The segment's law at the cell start (extrapolated): exact for the one implied segment as M5's base.
+    const int64_t base = toFixed(w.frame0 + (k.qA - static_cast<double>(w.content0)) * w.framesPerTick);
+    const int64_t st = toFixed(k.dp * w.framesPerTick);
+    const int64_t spanF = c.looped ? toFixed(static_cast<double>(c.loop.end - c.loop.start) * w.framesPerTick) : 0;
     at[count] = static_cast<uint32_t>(t - s);
-    pos[count] = static_cast<int64_t>(static_cast<uint64_t>(k.base) + static_cast<uint64_t>(t - k.g) * static_cast<uint64_t>(k.step) -
+    pos[count] = static_cast<int64_t>(static_cast<uint64_t>(base) + static_cast<uint64_t>(t - k.g) * static_cast<uint64_t>(st) -
                                       static_cast<uint64_t>(m - k.m0) * static_cast<uint64_t>(spanF));
-    step[count] = k.step;
+    step[count] = st;
     wrap[count] = c.looped && m != prevM;
     ++count;
     prevM = m;  // the count of the piece's last sample (constant over the piece)
@@ -200,6 +276,9 @@ ClipPlayer::ClipPlayer(const ClipPlayerConfig& config) : cfg_(config) {
   scratch_ = AlignedBuffer<float>(static_cast<size_t>(2) * cfg_.historyFrames);
   out_ = AlignedBuffer<float>(static_cast<size_t>(cfg_.slots) * kClipChannels * cfg_.maxBlockFrames);
   env_ = AlignedBuffer<float>(cfg_.maxBlockFrames);
+  gain_ = AlignedBuffer<float>(static_cast<size_t>(cfg_.maxBlockFrames) + 16);
+  corrA_ = AlignedBuffer<float>(AudioSequenceImage::kMaxAlignLen + 64);
+  corrB_ = AlignedBuffer<float>(AudioSequenceImage::kMaxAlignLen + 2 * AudioSequenceImage::kMaxAlignLags + 64);
   zeros_ = AlignedBuffer<float>(static_cast<size_t>(cfg_.maxBlockFrames) + 16);
   std::memset(zeros_.data(), 0, sizeof(float) * zeros_.size());
   ptrs_.assign(static_cast<size_t>(cfg_.slots) * kClipChannels, zeros_.data());
@@ -212,7 +291,10 @@ ClipPlayer::ClipPlayer(const ClipPlayerConfig& config) : cfg_(config) {
 }
 
 ClipPlayer::~ClipPlayer() {
-  for (uint32_t idx : live_) stopReader(voices_[idx].reader);
+  for (uint32_t idx : live_) {
+    stopReader(voices_[idx].reader);
+    stopReader(voices_[idx].reader2);
+  }
 }
 
 void ClipPlayer::stopReader(Reader& r) noexcept {  // RT-safe
@@ -284,6 +366,12 @@ void ClipPlayer::startVoice(uint32_t slot, const AudioSequenceImage::Clip& c, Sa
   v.reader.buf = kNone;
   v.reader.started = false;
   v.reader.aheadValid = false;
+  v.reader.pass = INT64_MIN;
+  v.reader2.buf = kNone;
+  v.reader2.started = false;
+  v.reader2.aheadValid = false;
+  v.reader2.pass = INT64_MIN;
+  v.grainIdx = INT64_MIN;
   if (c.playStart >= s0) {
     v.state = State::Pending;
     v.vs = c.playStart;
@@ -304,6 +392,7 @@ void ClipPlayer::startVoice(uint32_t slot, const AudioSequenceImage::Clip& c, Sa
       r.lo = r.hi = st->frame;
       r.off = st->dir == media::Direction::Forward ? 0u : cfg_.historyFrames;
       r.started = true;
+      if (c.warp == ClipWarp::Beats) r.pass = passAt(*img_, c, v.vs).T;  // the slice the claim is for
     }
   }
   live_.push_back(idx);
@@ -313,10 +402,13 @@ void ClipPlayer::startVoice(uint32_t slot, const AudioSequenceImage::Clip& c, Sa
 void ClipPlayer::endVoice(uint32_t i) noexcept {  // RT-safe
   const uint32_t idx = live_[i];
   Voice& v = voices_[idx];
-  stopReader(v.reader);
-  if (v.reader.buf != kNone) freeBuffers_.push_back(v.reader.buf);
-  v.reader.buf = kNone;
-  v.reader.started = false;
+  for (Reader* r : {&v.reader, &v.reader2}) {
+    stopReader(*r);
+    if (r->buf != kNone) freeBuffers_.push_back(r->buf);
+    r->buf = kNone;
+    r->started = false;
+    r->pass = INT64_MIN;
+  }
   if (prevUsers_ != 0 && v.img == prev_ && v.img != img_) --prevUsers_;
   v.img = nullptr;
   v.clip = nullptr;
@@ -494,6 +586,10 @@ uint32_t ClipPlayer::pieces(Voice& v, SampleTime s, uint32_t n, Piece* out, Samp
 
 void ClipPlayer::renderRun(Voice& v, uint32_t frame, SampleTime s, uint32_t n) noexcept {  // RT-safe
   const AudioSequenceImage::Clip& c = *v.clip;
+  if (clipStretches(c.warp)) {
+    renderStretch(v, frame, s, n);
+    return;
+  }
   const media::SampleView& view = v.img->sample(c.sample).view();
   Piece pc[kMaxPieces];
   SampleTime wrapAfter = INT64_MAX;
@@ -556,12 +652,12 @@ void ClipPlayer::renderRun(Voice& v, uint32_t frame, SampleTime s, uint32_t n) n
   float* out[2] = {ch0 + frame, ch0 + cfg_.maxBlockFrames + frame};
   for (uint32_t k = 0; k < np; ++k) {
     float* o[2] = {out[0] + pc[k].at, out[1] + pc[k].at};
-    read(v, view, pc[k], o, env != nullptr ? env + pc[k].at : nullptr, c.gain);
+    read(v, v.reader, view, pc[k], o, env != nullptr ? env + pc[k].at : nullptr, c.gain, kSlack);
   }
 }
 
-void ClipPlayer::read(Voice& v, const media::SampleView& sampleView, const Piece& piece, float* const* out,
-                      const float* env, float gain) noexcept {  // RT-safe
+void ClipPlayer::read(Voice& v, Reader& r, const media::SampleView& sampleView, const Piece& piece, float* const* out,
+                      const float* env, float gain, int64_t keep) noexcept {  // RT-safe
   // Q151 item 1: faster than rate 2, a fully resident sample with decimated copies is read on the level L that brings
   // the rate to rate / 2^L ≤ 2 (media::SampleMips: frame m of level L is the sample at 2^L·m, so the 32.32 position and
   // step scale by 2^−L): the cost of a +12 st read at most.
@@ -584,7 +680,9 @@ void ClipPlayer::read(Voice& v, const media::SampleView& sampleView, const Piece
                                   : &dsp::sincTableAtLeast(dsp::ResampleQuality::High,
                                                            dsp::sincStretchQ(static_cast<double>(p.step) / 4294967296.0));
   const uint32_t ch = std::min<uint32_t>(view.channels, 2);
-  const int64_t cap = static_cast<int64_t>(cfg_.historyFrames) - 2 * kSlack;
+  // T6.3: a stretch voice keeps `keep` frames behind its reads and may read a quarter of the history ahead (ensure).
+  const int64_t hist = static_cast<int64_t>(cfg_.historyFrames);
+  const int64_t cap = hist - 2 * kSlack - (keep > kSlack ? keep + hist / 4 : 0);
   // Frames one output frame of the run advances, and the filter's extra reach.
   const double rate = std::abs(static_cast<double>(p.step)) / 4294967296.0;
   const int64_t extra = copy ? 1 : static_cast<int64_t>(tb->taps) + 2;
@@ -598,9 +696,9 @@ void ClipPlayer::read(Voice& v, const media::SampleView& sampleView, const Piece
       first = p.step > 0 ? i0 : i0 - n + 1;
       last = first + n;
     } else {
-      const dsp::SincReach r = dsp::sincReach(*tb, pos, p.step, n);
-      first = r.first;
-      last = r.last;
+      const dsp::SincReach rc = dsp::sincReach(*tb, pos, p.step, n);
+      first = rc.first;
+      last = rc.last;
     }
     float* o[2] = {out[0] + done, out[1] + done};
     const float* e = env != nullptr ? env + done : nullptr;
@@ -608,27 +706,9 @@ void ClipPlayer::read(Voice& v, const media::SampleView& sampleView, const Piece
     if (last <= 0 || first >= view.frames) continue;  // entirely outside the file: silence
     if (copy) stats_.copyFrames += n;
     else stats_.sincFrames += n;
-    const float* base[2] = {view.data[0], view.data[ch == 2 ? 1 : 0]};
+    const float* base[2] = {nullptr, nullptr};
     int64_t baseFrame = 0;
-    const int64_t G = media::kSampleGuardFrames;
-    const int64_t limit = view.streamed() ? view.residentFrames : view.frames + G;
-    if (!(first >= -G && last <= limit)) {
-      const ClipSample& cs = v.img->sample(v.clip->sample);
-      if (view.streamed() && cs.pooled != nullptr && cfg_.streams != nullptr) {
-        if (!ensure(v, view, first, last, p.step > 0, base, &baseFrame)) continue;
-      } else {  // gather what the file has into the scratch buffer, zeros around it
-        const int64_t avail = view.streamed() ? view.residentFrames : view.frames;
-        const int64_t a = std::max<int64_t>(first, 0), b = std::min<int64_t>(last, avail);
-        for (uint32_t c = 0; c < ch; ++c) {
-          float* dst = scratch_.data() + static_cast<size_t>(c) * cfg_.historyFrames;
-          std::memset(dst, 0, sizeof(float) * static_cast<size_t>(last - first));
-          if (b > a) std::memcpy(dst + (a - first), view.data[c] + a, sizeof(float) * static_cast<size_t>(b - a));
-        }
-        base[0] = scratch_.data();
-        base[1] = scratch_.data() + (ch == 2 ? cfg_.historyFrames : 0u);
-        baseFrame = first;
-      }
-    }
+    if (!source(v, r, view, first, last, p.step > 0, keep, base, &baseFrame)) continue;
     if (copy) {
       dsp::gainCopy(base, ch, (pos >> 32) - baseFrame, p.step > 0 ? 1 : -1, n, e, gain, o);
     } else {
@@ -637,9 +717,35 @@ void ClipPlayer::read(Voice& v, const media::SampleView& sampleView, const Piece
   }
 }
 
-bool ClipPlayer::ensure(Voice& v, const media::SampleView& view, int64_t first, int64_t last, bool forward,
-                        const float** base, int64_t* baseFrame) noexcept {  // RT-safe
-  Reader& r = v.reader;
+bool ClipPlayer::source(Voice& v, Reader& r, const media::SampleView& view, int64_t first, int64_t last, bool forward,
+                        int64_t keep, const float** base, int64_t* baseFrame) noexcept {  // RT-safe
+  const uint32_t ch = std::min<uint32_t>(view.channels, 2);
+  base[0] = view.data[0];
+  base[1] = view.data[ch == 2 ? 1 : 0];
+  *baseFrame = 0;
+  const int64_t G = media::kSampleGuardFrames;
+  const int64_t limit = view.streamed() ? view.residentFrames : view.frames + G;
+  if (first >= -G && last <= limit) return true;
+  const ClipSample& cs = v.img->sample(v.clip->sample);
+  if (view.streamed() && cs.pooled != nullptr && cfg_.streams != nullptr)
+    return ensure(v, r, view, first, last, forward, keep, base, baseFrame);
+  // Gather what the file has into the scratch buffer, zeros around it.
+  if (last - first > static_cast<int64_t>(cfg_.historyFrames)) return false;
+  const int64_t avail = view.streamed() ? view.residentFrames : view.frames;
+  const int64_t a = std::max<int64_t>(first, 0), b = std::min<int64_t>(last, avail);
+  for (uint32_t c = 0; c < ch; ++c) {
+    float* dst = scratch_.data() + static_cast<size_t>(c) * cfg_.historyFrames;
+    std::memset(dst, 0, sizeof(float) * static_cast<size_t>(last - first));
+    if (b > a) std::memcpy(dst + (a - first), view.data[c] + a, sizeof(float) * static_cast<size_t>(b - a));
+  }
+  base[0] = scratch_.data();
+  base[1] = scratch_.data() + (ch == 2 ? cfg_.historyFrames : 0u);
+  *baseFrame = first;
+  return true;
+}
+
+bool ClipPlayer::ensure(Voice& v, Reader& r, const media::SampleView& view, int64_t first, int64_t last, bool forward,
+                        int64_t keep, const float** base, int64_t* baseFrame) noexcept {  // RT-safe
   if (r.buf == kNone) {
     if (freeBuffers_.empty()) {
       ++stats_.noHistory;
@@ -653,6 +759,21 @@ bool ClipPlayer::ensure(Voice& v, const media::SampleView& view, int64_t first, 
   const uint32_t cap = cfg_.historyFrames;
   const uint32_t ch = std::min<uint32_t>(view.channels, 2);
   float* b[2] = {history_.data() + static_cast<size_t>(r.buf) * 2 * cap, history_.data() + (static_cast<size_t>(r.buf) * 2 + 1) * cap};
+  auto serve = [&]() noexcept {
+    base[0] = b[0] + r.off;
+    base[1] = ch == 2 ? b[1] + r.off : b[0] + r.off;
+    *baseFrame = r.lo;
+    return true;
+  };
+  // T6.3: what the history holds is served in either direction (grains and slice loops read back and forth).
+  if (r.started && first >= r.lo && last <= r.hi) return serve();
+  const int64_t need = last - first;
+  if (need > static_cast<int64_t>(cap)) return false;
+  // A stretch voice (keep > kSlack) reads through forward gaps of up to a quarter of the history; what it keeps behind
+  // shrinks when a request is large, so the window always fits.
+  int64_t gap = keep > kSlack ? static_cast<int64_t>(cap) / 4 : 0;
+  if (need + gap > static_cast<int64_t>(cap)) gap = 0;
+  const int64_t keepN = std::clamp<int64_t>(std::min<int64_t>(keep, static_cast<int64_t>(cap) - need - gap), 0, keep);
   auto put = [&](const media::FrameSpan& sp, float* const* dst) noexcept {
     uint32_t w = 0;
     for (uint32_t i = 0; i < sp.pieces; ++i) {
@@ -673,8 +794,9 @@ bool ClipPlayer::ensure(Voice& v, const media::SampleView& view, int64_t first, 
     return true;
   };
   if (forward) {
-    if (!r.started || r.dir != media::Direction::Forward || first < r.lo || first > r.hi) {
+    if (!r.started || r.dir != media::Direction::Forward || first < r.lo || first > r.hi + gap) {
       if (!adopt(media::Direction::Forward, first >= r.aheadFrame && first - r.aheadFrame <= cap / 2)) {
+        if (r.started) ++stats_.streamRestarts;
         r.cursor.start(*cfg_.streams, sample, first, media::Direction::Forward);
         r.lo = r.hi = first;
       }
@@ -682,27 +804,28 @@ bool ClipPlayer::ensure(Voice& v, const media::SampleView& view, int64_t first, 
       r.off = 0;
       r.started = true;
     }
-    const int64_t keep = std::max(r.lo, first - kSlack);
+    const int64_t keepFrom = std::clamp(first - keepN, r.lo, r.hi);
     if (static_cast<int64_t>(r.off) + (r.hi - r.lo) + std::max<int64_t>(last - r.hi, 0) > cap) {
-      const int64_t count = r.hi - keep;
+      const int64_t count = r.hi - keepFrom;
       for (uint32_t c = 0; c < ch; ++c)
-        std::memmove(b[c], b[c] + r.off + (keep - r.lo), sizeof(float) * static_cast<size_t>(count));
+        std::memmove(b[c], b[c] + r.off + (keepFrom - r.lo), sizeof(float) * static_cast<size_t>(count));
       r.off = 0;
-      r.lo = keep;
+      r.lo = keepFrom;
     }
     while (r.hi < last) {
       const auto k = static_cast<uint32_t>(std::min<int64_t>(last - r.hi, media::kMaxSpanFrames));
       if (fill_ != nullptr && r.cursor.streaming()) {
-        const int64_t need = r.hi + k - std::max(r.hi, view.residentFrames);
-        if (need > 0) fill_(fillUser_, r.cursor.stream(), need);
+        const int64_t needF = r.hi + k - std::max(r.hi, view.residentFrames);
+        if (needF > 0) fill_(fillUser_, r.cursor.stream(), needF);
       }
       float* dst[2] = {b[0] + r.off + (r.hi - r.lo), b[1] + r.off + (r.hi - r.lo)};
       put(r.cursor.next(k), dst);
       r.hi += k;
     }
   } else {
-    if (!r.started || r.dir != media::Direction::Reverse || last > r.hi || last < r.lo) {
+    if (!r.started || r.dir != media::Direction::Reverse || last > r.hi || last < r.lo - gap) {
       if (!adopt(media::Direction::Reverse, last <= r.aheadFrame && r.aheadFrame - last <= cap / 2)) {
+        if (r.started) ++stats_.streamRestarts;
         r.cursor.start(*cfg_.streams, sample, last, media::Direction::Reverse);
         r.lo = r.hi = last;
       }
@@ -710,7 +833,7 @@ bool ClipPlayer::ensure(Voice& v, const media::SampleView& view, int64_t first, 
       r.off = cap;
       r.started = true;
     }
-    const int64_t keepTo = std::min(r.hi, last + kSlack);
+    const int64_t keepTo = std::clamp(last + keepN, r.lo, r.hi);
     if (static_cast<int64_t>(r.off) < std::max<int64_t>(r.lo - first, 0)) {
       const int64_t count = keepTo - r.lo;
       for (uint32_t c = 0; c < ch; ++c)
@@ -721,8 +844,8 @@ bool ClipPlayer::ensure(Voice& v, const media::SampleView& view, int64_t first, 
     while (r.lo > first) {
       const auto k = static_cast<uint32_t>(std::min<int64_t>(r.lo - first, media::kMaxSpanFrames));
       if (fill_ != nullptr && r.cursor.streaming() && r.lo > view.residentFrames) {
-        const int64_t need = r.lo - std::max(r.lo - k, view.residentFrames);
-        if (need > 0) fill_(fillUser_, r.cursor.stream(), need);
+        const int64_t needF = r.lo - std::max(r.lo - k, view.residentFrames);
+        if (needF > 0) fill_(fillUser_, r.cursor.stream(), needF);
       }
       float* dst[2] = {b[0] + r.off - k, b[1] + r.off - k};
       put(r.cursor.next(k), dst);
@@ -730,10 +853,7 @@ bool ClipPlayer::ensure(Voice& v, const media::SampleView& view, int64_t first, 
       r.lo -= k;
     }
   }
-  base[0] = b[0] + r.off;
-  base[1] = ch == 2 ? b[1] + r.off : b[0] + r.off;
-  *baseFrame = r.lo;
-  return true;
+  return serve();
 }
 
 // Q151 item 7: the next pass of a looped RePitch voice whose wrap is near (renderRun: within the look-ahead). After a
@@ -752,10 +872,10 @@ void ClipPlayer::claimAhead(Voice& v, const media::SampleView& view, int64_t ste
   const bool fwd = step > 0;
   int64_t frame = 0;
   if (fwd) {
-    frame = static_cast<int64_t>(std::floor(static_cast<double>(c.loop.start) * c.framesPerTick)) -
+    frame = static_cast<int64_t>(std::floor(v.img->frameAtContent(c, static_cast<double>(c.loop.start)))) -
             static_cast<int64_t>(tb.center) - 2 * kSlack;
   } else {
-    frame = static_cast<int64_t>(std::floor(static_cast<double>(c.loop.end) * c.framesPerTick)) -
+    frame = static_cast<int64_t>(std::floor(v.img->frameAtContent(c, static_cast<double>(c.loop.end)))) -
             static_cast<int64_t>(tb.center) + 1 + static_cast<int64_t>(tb.taps) + 2 * kSlack;
   }
   frame = std::clamp<int64_t>(frame, 0, view.frames);
@@ -772,6 +892,13 @@ std::optional<ClipPlayer::StreamStart> ClipPlayer::streamStart(const AudioSequen
                                                               uint32_t blockFrames) noexcept {  // RT-safe
   if (c.sample == AudioSequenceImage::kNoSample || s >= c.playEnd) return std::nullopt;
   const SampleTime vs = std::max(s, c.playStart);
+  if (clipStretches(c.warp)) {
+    bool fwd = true;
+    StreamStart out;
+    out.frame = stretchStreamFrame(img, c, vs, &fwd);
+    out.dir = fwd ? media::Direction::Forward : media::Direction::Reverse;
+    return out;
+  }
   int64_t pos = 0, step = 0;
   if (c.warp == ClipWarp::Off) {
     pos = lawAt(c.anchor, vs - c.bodyStart, c.step);
@@ -797,6 +924,463 @@ std::optional<ClipPlayer::StreamStart> ClipPlayer::streamStart(const AudioSequen
     out.frame = step > 0 ? r.first : r.last;
   }
   return out;
+}
+
+
+// ---- T6.3: the time-stretch modes (audio_sequence.h "Beats, Tones, Texture") -------------------------------------------
+
+namespace {
+
+// How many loop spans p is folded by when a position exactly on a fold boundary belongs to the pass below it (a
+// reverse clip's passes are (entry, exit]). RT-safe.
+int64_t foldCountBelow(double p, const ContentLoop& l) noexcept {
+  if (!contentLooped(l) || p <= static_cast<double>(l.end)) return 0;
+  return static_cast<int64_t>(std::ceil((p - static_cast<double>(l.end)) / static_cast<double>(l.end - l.start)));
+}
+
+// A 32.32 source position; at pitch rate 1 on a whole frame (a slice / grain then reads as a straight copy). RT-safe.
+int64_t stretchFixed(double x, int64_t pitchStep) noexcept {
+  return pitchStep == kOne ? static_cast<int64_t>(std::llround(x)) * kOne : toFixed(x);
+}
+
+int64_t floorDiv(int64_t a, int64_t b) noexcept {  // RT-safe; b > 0
+  return a >= 0 ? a / b : -((-a + b - 1) / b);
+}
+
+constexpr double kContentEps = 1e-6;  // ticks: "just before" a slice boundary
+
+// A gain factor clamp(base + (t − t0)·dg, 0, 1) (pq/dsp/warp.h: anchored on a sample, so block independent).
+struct Ramp {
+  SampleTime t0;
+  float base, dg;
+};
+
+int32_t rampIndex(SampleTime t, SampleTime t0) noexcept {  // RT-safe
+  return static_cast<int32_t>(std::clamp<SampleTime>(t - t0, -(SampleTime{1} << 30), SampleTime{1} << 30));
+}
+
+}  // namespace
+
+const float* ClipPlayer::stretchEnvelope(Voice& v, SampleTime s, uint32_t n) noexcept {  // RT-safe
+  const AudioSequenceImage::Clip& c = *v.clip;
+  const bool flat = s >= c.flatStart && s + n <= c.flatEnd && v.inLen == 0 && v.state != State::Releasing && v.rampLen == 0;
+  const float* env = nullptr;
+  if (!flat) {
+    float* e = env_.data();
+    for (uint32_t i = 0; i < n; ++i) {
+      float g = staticShape(c, s + i);
+      g *= v.rampLen != 0 ? v.gainFrom + (c.gain - v.gainFrom) *
+                                             std::min(1.0f, static_cast<float>(v.rampPos + i + 1) / static_cast<float>(v.rampLen))
+                          : c.gain;
+      if (v.inLen != 0) g *= std::min(1.0f, static_cast<float>(v.inPos + i) / static_cast<float>(v.inLen));
+      if (v.state == State::Releasing) g *= static_cast<float>(v.relLen - v.relPos - i) / static_cast<float>(v.relLen);
+      e[i] = g;
+    }
+    env = e;
+  }
+  if (v.inLen != 0) {
+    v.inPos += n;
+    if (v.inPos >= v.inLen) v.inLen = v.inPos = 0;
+  }
+  if (v.rampLen != 0) {
+    v.rampPos += n;
+    if (v.rampPos >= v.rampLen) v.rampLen = v.rampPos = 0;
+  }
+  return env;
+}
+
+void ClipPlayer::renderStretch(Voice& v, uint32_t frame, SampleTime s, uint32_t n) noexcept {  // RT-safe
+  const AudioSequenceImage::Clip& c = *v.clip;
+  const media::SampleView& view = v.img->sample(c.sample).view();
+  const float* env = stretchEnvelope(v, s, n);
+  if (view.channels == 0 || view.frames <= 0) return;
+  float* ch0 = touch(v.slot);
+  float* out[2] = {ch0 + frame, ch0 + cfg_.maxBlockFrames + frame};
+  if (c.warp == ClipWarp::Beats) renderSlices(v, view, s, n, out, env);
+  else renderGrains(v, view, s, n, out, env);
+}
+
+// ---- Tones / Texture ----------------------------------------------------------------------------------------------
+
+void ClipPlayer::renderGrains(Voice& v, const media::SampleView& view, SampleTime s, uint32_t n, float* const* out,
+                              const float* env) noexcept {  // RT-safe
+  const AudioSequenceImage::Clip& c = *v.clip;
+  const auto H = static_cast<int64_t>(c.hop), N = static_cast<int64_t>(c.grain);
+  const SampleTime g0 = c.bodyStart - H;  // grain k covers [g0 + k·H, g0 + k·H + N)
+  const int64_t kLo = floorDiv(s - g0 - N, H) + 1;
+  const int64_t kHi = floorDiv(s + n - 1 - g0, H);
+  const int64_t dir = c.reverse ? -1 : 1;
+  const int64_t step = dir * c.pitchStep;
+  const double hr = static_cast<double>(H) * c.pitchRate;
+  const float* win = v.img->window(c);
+  const int64_t keep = static_cast<int64_t>(cfg_.historyFrames) / 2;
+  for (int64_t k = kLo; k <= kHi; ++k) {
+    const double P = grainCentre(v, view, k);
+    const SampleTime gk = g0 + k * H;
+    const SampleTime a = std::max(s, gk), b = std::min(s + n, gk + N);
+    if (a >= b) continue;
+    // The grain reads P + dir·(t − C_k)·r: anchored at its first sample (it depends on the grain alone).
+    const double a0 = P - static_cast<double>(dir) * hr;
+    const int64_t anchor = c.alignLags != 0 ? toFixed(a0) : stretchFixed(a0, c.pitchStep);
+    Piece p;
+    p.at = static_cast<uint32_t>(a - s);
+    p.frames = static_cast<uint32_t>(b - a);
+    p.pos = static_cast<int64_t>(static_cast<uint64_t>(anchor) + static_cast<uint64_t>(a - gk) * static_cast<uint64_t>(step));
+    p.step = step;
+    p.wrap = false;
+    float* gb = gain_.data() + p.at;
+    dsp::warpWindowGain(win + (a - gk), env != nullptr ? env + p.at : nullptr, c.gain, gb, p.frames);
+    float* o[2] = {out[0] + p.at, out[1] + p.at};
+    read(v, v.reader, view, p, o, gb, c.gain, keep);
+  }
+}
+
+// The source frame grain k is centred on: the warp law at its centre (Texture: jittered), Tones: moved by the lag that
+// continues grain k − 1. Grains are positioned once, in order (the voice keeps the last two).
+double ClipPlayer::grainCentre(Voice& v, const media::SampleView& view, int64_t k) noexcept {  // RT-safe
+  if (v.grainIdx != INT64_MIN && k <= v.grainIdx && k >= v.grainIdx - 1) return v.grainPos[k & 1];
+  const AudioSequenceImage::Clip& c = *v.clip;
+  const int64_t from = v.grainIdx != INT64_MIN && k > v.grainIdx && k - v.grainIdx <= 64 ? v.grainIdx + 1 : k;
+  for (int64_t j = from; j <= k; ++j) {
+    const SampleTime centre = c.bodyStart + j * static_cast<int64_t>(c.hop);
+    double P = v.img->warpFrame(c, centre);
+    if (c.jitter > 0.0) P += dsp::warpJitter(c.seed, j) * c.jitter;
+    const int64_t q = std::llround(P);
+    // Tones: fractional (an aligned grain continues the one before to a fraction of a frame); Texture: whole frames.
+    P = c.alignLags != 0 && v.grainIdx == j - 1 ? alignGrain(v, view, v.grainPos[(j - 1) & 1], q) : static_cast<double>(q);
+    v.grainPos[j & 1] = P;
+    v.grainIdx = j;
+    ++stats_.grains;
+  }
+  return v.grainPos[k & 1];
+}
+
+// Tones (WSOLA): the centre near p whose overlap with grain k − 1 (centred at prev) continues its waveform best: the
+// mono sum of the source over the overlap, compared at a coarse stride (≈ 12 kHz) over ±alignLags, then refined frame
+// by frame around the best coarse lag.
+double ClipPlayer::alignGrain(Voice& v, const media::SampleView& view, double prev, int64_t p) noexcept {  // RT-safe
+  const AudioSequenceImage::Clip& c = *v.clip;
+  const int64_t dir = c.reverse ? -1 : 1;
+  const auto hr = static_cast<int64_t>(std::llround(static_cast<double>(c.hop) * c.pitchRate));
+  const auto Lc = static_cast<int64_t>(c.alignLen), D = static_cast<int64_t>(c.alignLags);
+  const int64_t prevI = std::llround(prev);
+  // The match is between whole frames: the exact continuation is prev + dir·H·r, so the fractions are added back.
+  const double fix = (prev - static_cast<double>(prevI)) +
+                     static_cast<double>(dir) * (static_cast<double>(c.hop) * c.pitchRate - static_cast<double>(hr));
+  // Grain k − 1 reads [prev, prev + hr) over the overlap (reverse: below prev), grain k [p − hr, p) (reverse: above p).
+  const int64_t refStart = (dir > 0 ? prevI : prevI - hr) + (hr - Lc) / 2;
+  const int64_t candStart = (dir > 0 ? p - hr : p) + (hr - Lc) / 2;
+  const auto stride = static_cast<int64_t>(std::clamp<uint32_t>(view.sampleRate / 12000u, 1u, 8u));
+  const int64_t Dc = D / stride * stride;
+  const auto refN = static_cast<uint32_t>(Lc / stride);
+  const auto lags = static_cast<uint32_t>(2 * Dc / stride + 1);
+  const uint32_t ch = std::min<uint32_t>(view.channels, 2);
+  const int64_t keep = static_cast<int64_t>(cfg_.historyFrames) / 2;
+  const float* base[2] = {nullptr, nullptr};
+  int64_t bf = 0;
+  const auto pd = static_cast<double>(p);
+  if (refN < 4) return pd;
+  if (!source(v, v.reader, view, refStart, refStart + (refN - 1) * stride + 1, dir > 0, keep, base, &bf)) return pd;
+  dsp::warpMonoDecimate(base, ch, refStart - bf, static_cast<uint32_t>(stride), refN, corrA_.data());
+  const int64_t cFirst = candStart - Dc;
+  const uint32_t candN = refN + lags - 1;
+  if (!source(v, v.reader, view, cFirst, cFirst + (static_cast<int64_t>(candN) - 1) * stride + 1, dir > 0, keep, base, &bf))
+    return pd;
+  dsp::warpMonoDecimate(base, ch, cFirst - bf, static_cast<uint32_t>(stride), candN, corrB_.data());
+  int64_t d = static_cast<int64_t>(dsp::warpBestLag(corrA_.data(), corrB_.data(), refN, lags, static_cast<uint32_t>(Dc / stride))) *
+                  stride - Dc;
+  // Frame by frame around it (a frame further each way, so the parabola has both neighbours), then the fraction.
+  const int64_t lo = std::max(-D, d - stride), hi = std::min(D, d + stride);
+  const auto len = static_cast<uint32_t>(Lc);
+  const double coarse = pd + static_cast<double>(d) + fix;
+  if (!source(v, v.reader, view, refStart, refStart + Lc, dir > 0, keep, base, &bf)) return coarse;
+  dsp::warpMonoDecimate(base, ch, refStart - bf, 1, len, corrA_.data());
+  const auto fineN = static_cast<uint32_t>(Lc + (hi - lo));
+  if (!source(v, v.reader, view, candStart + lo, candStart + lo + fineN, dir > 0, keep, base, &bf)) return coarse;
+  dsp::warpMonoDecimate(base, ch, candStart + lo - bf, 1, fineN, corrB_.data());
+  double frac = 0.0;
+  d = lo + static_cast<int64_t>(dsp::warpBestLag(corrA_.data(), corrB_.data(), len, static_cast<uint32_t>(hi - lo + 1),
+                                                 static_cast<uint32_t>(d - lo), &frac));
+  return pd + static_cast<double>(d) + frac + fix;
+}
+
+// ---- Beats -----------------------------------------------------------------------------------------------------------
+
+ClipPlayer::SlicePass ClipPlayer::passFromU(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c,
+                                            double u) noexcept {  // RT-safe
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  const double cs = static_cast<double>(c.contentStart), len = static_cast<double>(c.length);
+  const double span = c.looped ? static_cast<double>(c.loop.end - c.loop.start) : 0.0;
+  // Forward passes are [entry, exit), reverse ones (entry, exit] (their first sample is the exit).
+  const int64_t m = c.reverse ? foldCountBelow(u, c.loop) : foldCount(u, c.loop);
+  const double q = u - static_cast<double>(m) * span;
+  const std::span<const double> B = img.sliceContent(c), Fr = img.sliceFrame(c);
+  const auto S = static_cast<int64_t>(B.size());
+  const int64_t j = (c.reverse ? std::lower_bound(B.begin(), B.end(), q) : std::upper_bound(B.begin(), B.end(), q)) - B.begin() - 1;
+  const double shift = static_cast<double>(m) * span;
+  SlicePass p;
+  // The forward-time bounds in this pass (unfolded), clamped to the clip's content.
+  double entryU = j >= 0 ? B[static_cast<size_t>(j)] + shift : -kInf;
+  double Fentry = j >= 0 ? Fr[static_cast<size_t>(j)] : 0.0;
+  const bool low = entryU <= cs;  // the slice reaches the content start
+  if (low) {
+    entryU = cs;
+    Fentry = img.frameAtContent(c, cs - shift);
+  }
+  const bool hasExit = j + 1 < S;
+  double exitU = hasExit ? B[static_cast<size_t>(j + 1)] + shift : kInf;
+  const double Fexit = hasExit ? Fr[static_cast<size_t>(j + 1)] : kInf;
+  p.entryU = entryU;
+  p.exitU = exitU;
+  if (!c.reverse) {
+    if (low) {  // the clip's first slice: from where the clip starts playing (a crossfade starts it early)
+      p.T = c.playStart;
+      p.F = img.warpFrame(c, c.playStart);
+      p.fadeIn = false;
+    } else {
+      p.T = img.sampleAtOffset(c, entryU - cs);
+      p.F = Fentry;
+      p.fadeIn = true;
+    }
+    p.next = hasExit ? img.sampleAtOffset(c, exitU - cs) : INT64_MAX;
+    p.L = hasExit ? Fexit - p.F : kInf;
+    p.dir = 1;
+  } else {
+    if (exitU >= cs + len) {  // the clip's first slice in reverse time
+      p.T = c.playStart;
+      p.F = img.warpFrame(c, c.playStart);
+      p.fadeIn = false;
+    } else {
+      p.T = img.sampleAtOffset(c, len - (exitU - cs));
+      p.F = Fexit;
+      p.fadeIn = true;
+    }
+    p.next = low ? INT64_MAX : img.sampleAtOffset(c, len - (entryU - cs));
+    p.L = p.F - Fentry;
+    p.dir = -1;
+  }
+  if (p.fadeIn && p.T <= c.playStart) {
+    p.T = c.playStart;
+    p.fadeIn = false;
+  }
+  if (p.next != INT64_MAX && p.next <= p.T) p.next = p.T + 1;
+  if (!(p.L >= 0.0)) p.L = 0.0;
+  return p;
+}
+
+ClipPlayer::SlicePass ClipPlayer::nextPass(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c,
+                                           const SlicePass& p) noexcept {  // RT-safe
+  return passFromU(img, c, c.reverse ? p.entryU : p.exitU);
+}
+
+bool ClipPlayer::prevPass(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, const SlicePass& p,
+                          SlicePass* out) noexcept {  // RT-safe
+  if (!p.fadeIn) return false;
+  *out = passFromU(img, c, c.reverse ? p.exitU + kContentEps : p.entryU - kContentEps);
+  return out->T < p.T;
+}
+
+ClipPlayer::SlicePass ClipPlayer::passAt(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c,
+                                         SampleTime s) noexcept {  // RT-safe
+  const double cs = static_cast<double>(c.contentStart), len = static_cast<double>(c.length);
+  double u = img.contentAt(c, s);
+  u = c.reverse ? std::min(u, cs + len) : std::max(u, cs);
+  SlicePass p = passFromU(img, c, u);
+  // The content ↔ sample conversions round: settle on the pass whose [T, next) holds s.
+  for (int i = 0; i < 8; ++i) {
+    SlicePass q;
+    if (s < p.T && prevPass(img, c, p, &q)) p = q;
+    else if (p.next != INT64_MAX && s >= p.next) p = nextPass(img, c, p);
+    else break;
+  }
+  return p;
+}
+
+ClipPlayer::Reader& ClipPlayer::passReader(Voice& v, const SlicePass& p, SampleTime /*s*/) noexcept {  // RT-safe
+  if (v.reader.pass == p.T) return v.reader;
+  if (v.reader2.pass == p.T) return v.reader2;
+  // The reader of the oldest pass (the one before the pass still fading out has ended).
+  Reader& r = v.reader.pass == INT64_MIN ? v.reader
+              : v.reader2.pass == INT64_MIN ? v.reader2
+              : (v.reader.pass < v.reader2.pass ? v.reader : v.reader2);
+  r.pass = p.T;
+  return r;
+}
+
+void ClipPlayer::renderSlices(Voice& v, const media::SampleView& view, SampleTime s, uint32_t n, float* const* out,
+                              const float* env) noexcept {  // RT-safe
+  const AudioSequenceImage& img = *v.img;
+  const AudioSequenceImage::Clip& c = *v.clip;
+  if (c.sliceCount == 0) return;
+  const SampleTime X = img.sliceFadeFrames();
+  SlicePass p = passAt(img, c, s);
+  SlicePass q;
+  if (s < p.T + X && prevPass(img, c, p, &q)) renderPass(v, view, q, s, n, out, env);  // still fading out
+  for (uint32_t guard = 0; guard < 4096; ++guard) {
+    renderPass(v, view, p, s, n, out, env);
+    if (p.next == INT64_MAX || p.next >= s + n) break;
+    p = nextPass(img, c, p);
+  }
+  claimSlice(v, view, p, s + n);
+}
+
+void ClipPlayer::renderPass(Voice& v, const media::SampleView& view, const SlicePass& p, SampleTime s, uint32_t n,
+                            float* const* out, const float* env) noexcept {  // RT-safe
+  const AudioSequenceImage::Clip& c = *v.clip;
+  const SampleTime Xi = v.img->sliceFadeFrames();
+  const auto X = static_cast<float>(Xi);
+  const SampleTime audEnd = p.next == INT64_MAX ? INT64_MAX : p.next + Xi;
+  const SampleTime a0 = std::max(s, p.T), b0 = std::min(s + n, audEnd);
+  if (a0 >= b0) return;
+  ++stats_.slicePasses;
+  const double r = c.pitchRate;
+  const int64_t step = p.dir * c.pitchStep;
+  const bool finite = std::isfinite(p.L);
+  const double tE = finite ? p.L / r : 0.0;  // the natural end, output frames after T
+  const double Lh = 0.5 * p.L;
+  const double lam = finite ? Lh / r : 0.0;
+  // A slice the next one cuts before (or within the crossfade of) its natural end plays on naturally through its
+  // fade-out: at the source's own tempo the two read the same frames there, so the crossfade is seamless.
+  const SampleTime natEnd0 = finite ? p.T + static_cast<SampleTime>(std::ceil(tE)) : INT64_MAX;
+  const bool cut = !finite || (p.next != INT64_MAX && natEnd0 >= p.next - Xi);
+  const bool loops = !cut && c.sliceLoop != SliceLoop::Off && lam >= 2.0 * static_cast<double>(Xi);
+  const SampleTime natEnd = cut ? INT64_MAX : natEnd0;
+  Reader& rd = passReader(v, p, s);
+  const int64_t keep = static_cast<int64_t>(cfg_.historyFrames) / 2;
+  const float envGd = c.envelope < 100.0f && p.next != INT64_MAX
+                          ? std::max(1.0f, static_cast<float>(p.next - p.T) * (1.0f - c.envelope / 100.0f))
+                          : 0.0f;
+  // Renders [a, b) reading from 32.32 `pos` by `st`, with the pass's gains and `extra` ramps.
+  auto emit = [&](SampleTime a, SampleTime b, int64_t pos, int64_t st, const Ramp* extra, int nExtra) noexcept {
+    const auto len = static_cast<uint32_t>(b - a);
+    Ramp rs[8];
+    int nr = 0;
+    auto add = [&](Ramp q) noexcept {
+      const float first = dsp::rampValue(q.base, q.dg, rampIndex(a, q.t0));
+      const float last = dsp::rampValue(q.base, q.dg, rampIndex(b - 1, q.t0));
+      if (std::min(first, last) >= 1.0f) return true;   // 1 over the piece: no factor
+      if (std::max(first, last) <= 0.0f) return false;  // 0 over the piece: silent
+      rs[nr++] = q;
+      return true;
+    };
+    bool audible = true;
+    if (p.fadeIn) audible = audible && add({p.T, 0.5f / X, 1.0f / X});
+    if (p.next != INT64_MAX) audible = audible && add({p.next, (X - 0.5f) / X, -1.0f / X});
+    if (envGd > 0.0f) audible = audible && add({p.next, 0.0f, -1.0f / envGd});
+    for (int i = 0; i < nExtra; ++i) audible = audible && add(extra[i]);
+    if (!audible) return;
+    const auto at = static_cast<uint32_t>(a - s);
+    const float* g = env != nullptr ? env + at : nullptr;
+    if (nr > 0) {
+      float* gb = gain_.data() + at;
+      dsp::warpRampGain(rs[0].base, rs[0].dg, rampIndex(a, rs[0].t0), g, c.gain, gb, len);
+      for (int i = 1; i < nr; ++i) dsp::warpRampMul(rs[i].base, rs[i].dg, rampIndex(a, rs[i].t0), gb, len);
+      g = gb;
+    }
+    Piece pc;
+    pc.at = at;
+    pc.frames = len;
+    pc.pos = pos;
+    pc.step = st;
+    pc.wrap = false;
+    float* o[2] = {out[0] + at, out[1] + at};
+    read(v, rd, view, pc, o, g, c.gain, keep);
+  };
+  // The natural part: from F at the pitch rate, anchored at the entry.
+  {
+    const SampleTime a = a0, b = std::min(b0, natEnd);
+    if (a < b) {
+      const int64_t pos = static_cast<int64_t>(static_cast<uint64_t>(stretchFixed(p.F, c.pitchStep)) +
+                                               static_cast<uint64_t>(a - p.T) * static_cast<uint64_t>(step));
+      Ramp ex[1];
+      int ne = 0;
+      // Off: fade out into the natural end; Forward: declick into the first loop jump.
+      if (!cut && (!loops || c.sliceLoop == SliceLoop::Forward))
+        ex[ne++] = {p.T, static_cast<float>((tE - 0.5) / static_cast<double>(Xi)), -1.0f / X};
+      emit(a, b, pos, step, ex, ne);
+    }
+  }
+  if (!loops) return;
+  // Loop iterations over the slice's second half: iteration i starts tE + i·λ after the entry.
+  const double from = std::max(0.0, std::floor((static_cast<double>(a0 - p.T) - tE) / lam));
+  for (auto i = static_cast<int64_t>(from); i < static_cast<int64_t>(from) + 64; ++i) {
+    const double ti0 = tE + static_cast<double>(i) * lam, ti1 = tE + static_cast<double>(i + 1) * lam;
+    const SampleTime t0 = p.T + static_cast<SampleTime>(std::ceil(ti0)), t1 = p.T + static_cast<SampleTime>(std::ceil(ti1));
+    if (t0 >= b0) break;
+    const SampleTime a = std::max(a0, t0), b = std::min(b0, t1);
+    if (a >= b) continue;
+    const double frac = std::ceil(ti0) - ti0;  // output frames between the iteration's start and its first sample
+    double off = Lh + frac * r;
+    int64_t st = step;
+    if (c.sliceLoop == SliceLoop::BackForward && (i & 1) == 0) {  // even iterations run back from the end
+      off = p.L - frac * r;
+      st = -step;
+    }
+    const int64_t anchor = stretchFixed(p.F + static_cast<double>(p.dir) * off, c.pitchStep);
+    const int64_t pos = static_cast<int64_t>(static_cast<uint64_t>(anchor) + static_cast<uint64_t>(a - t0) * static_cast<uint64_t>(st));
+    Ramp ex[2];
+    int ne = 0;
+    if (c.sliceLoop == SliceLoop::Forward) {  // declick both sides of each jump
+      ex[ne++] = {t0, static_cast<float>((static_cast<double>(t0 - p.T) - ti0 + 0.5) / static_cast<double>(Xi)), 1.0f / X};
+      ex[ne++] = {t0, static_cast<float>((ti1 - static_cast<double>(t0 - p.T) - 0.5) / static_cast<double>(Xi)), -1.0f / X};
+    }
+    emit(a, b, pos, st, ex, ne);
+  }
+}
+
+// A streamed Beats voice: the next slice's stream is claimed on the idle reader `lookaheadSeconds` before it starts
+// (once the slice before the current one has faded out), so the jump finds its frames fetched.
+void ClipPlayer::claimSlice(Voice& v, const media::SampleView& view, const SlicePass& cur, SampleTime runEnd) noexcept {  // RT-safe
+  if (!view.streamed() || cfg_.streams == nullptr || cur.next == INT64_MAX || cur.next - runEnd > lookahead_) return;
+  const AudioSequenceImage::Clip& c = *v.clip;
+  const ClipSample& cs = v.img->sample(c.sample);
+  if (cs.pooled == nullptr || runEnd < cur.T + static_cast<SampleTime>(v.img->sliceFadeFrames())) return;
+  const SlicePass np = nextPass(*v.img, c, cur);
+  if (v.reader.pass == np.T || v.reader2.pass == np.T) return;
+  Reader& r = v.reader.pass == cur.T ? v.reader2 : v.reader;
+  if (r.buf == kNone) {
+    if (freeBuffers_.empty()) return;
+    r.buf = freeBuffers_.back();
+    freeBuffers_.pop_back();
+  }
+  const dsp::SincTable& tb = dsp::sincTableAtLeast(dsp::ResampleQuality::High, dsp::sincStretchQ(c.pitchRate));
+  const int64_t reach = static_cast<int64_t>(tb.taps) + 2 * kSlack;
+  const bool fwd = np.dir > 0;
+  int64_t frame = fwd ? static_cast<int64_t>(std::floor(np.F)) - reach : static_cast<int64_t>(std::ceil(np.F)) + reach;
+  frame = std::clamp<int64_t>(frame, 0, view.frames);
+  r.aheadValid = false;
+  r.ahead.stop();
+  r.cursor.start(*cfg_.streams, *cs.pooled, frame, fwd ? media::Direction::Forward : media::Direction::Reverse);
+  r.dir = fwd ? media::Direction::Forward : media::Direction::Reverse;
+  r.lo = r.hi = frame;
+  r.off = fwd ? 0u : cfg_.historyFrames;
+  r.started = true;
+  r.pass = np.T;
+  ++stats_.sliceClaims;
+}
+
+// Where a stretch voice's stream starts at s: a little before the first frame its slice / grains read there.
+int64_t ClipPlayer::stretchStreamFrame(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, SampleTime s,
+                                       bool* forward) noexcept {  // RT-safe
+  const dsp::SincTable& tb = dsp::sincTableAtLeast(dsp::ResampleQuality::High, dsp::sincStretchQ(c.pitchRate));
+  const double reach = static_cast<double>(tb.taps) + 2.0 * static_cast<double>(kSlack);
+  const bool fwd = !c.reverse;
+  *forward = fwd;
+  double lo = 0.0, hi = 0.0;
+  if (c.warp == ClipWarp::Beats) {
+    const SlicePass p = passAt(img, c, s);
+    const double off = std::isfinite(p.L) ? std::min(static_cast<double>(s - p.T) * c.pitchRate, p.L)
+                                          : static_cast<double>(s - p.T) * c.pitchRate;
+    lo = hi = p.F + static_cast<double>(p.dir) * std::max(off, 0.0);
+  } else {
+    const double P = img.warpFrame(c, s);
+    const double spread = 2.0 * static_cast<double>(c.hop) * c.pitchRate + static_cast<double>(c.alignLags) + c.jitter;
+    lo = P - spread;
+    hi = P + spread;
+  }
+  const int64_t frames = img.sample(c.sample).view().frames;
+  const auto f = fwd ? static_cast<int64_t>(std::floor(lo - reach)) : static_cast<int64_t>(std::ceil(hi + reach));
+  return std::clamp<int64_t>(f, 0, frames);
 }
 
 }  // namespace pq::engine

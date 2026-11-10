@@ -633,3 +633,25 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   for (2) shift the member's event slot / clip slot by its track's internal target T(t) and add T(t) to its bus inputs;
   (C) Live-like: delay the whole member track.
 - **Choice**: A for now (most reversible; both are additive later). Revisit with T6.6's latency readouts.
+
+## Q?-T6.3-a · 2026-11-10 · T6.3 · Warp engine I: what the plan left open
+- **Context**: docs/plans/M6.md "### T6.3" names the modes and the acceptance; several behaviours had to be chosen.
+- **Choices** (most reversible): (1) Beats slices at the grid (`beatsGranulation`, at least 1/128) or, at 0, at the
+  sample's transients, always plus every warp marker and the loop's ends; until the analysis exists the clip uses the
+  1/16 grid (a failed analysis is not retried). (2) A slice the next one cuts before its natural end (or within the 2 ms
+  crossfade) reads on naturally through its fade-out (seamless at the source tempo); one that ends first stops with a
+  fade (Off), loops its second half forward with 2 ms declicks (Forward), or back and forth (BackForward); loop regions
+  shorter than 4 ms count as Off. (3) Beats "Envelope" < 100 = the slice holds that share of its gap, then fades
+  linearly to 0 at the next slice. (4) **Tones is WSOLA, not plain OLA**: plain overlap-add shifts a stationary tone's
+  frequency by (phase step per hop) / hop (a 220 Hz sine at 0.5× read 0.7 ¢ off with whole-frame alignment and up to
+  tens of Hz without), so each grain is moved (±min(H·r/2, 12 ms)) to continue the one before, to a fraction of a
+  frame; Texture stays plain OLA with Flux jitter ±flux %·H·r (seed = clip id). (5) Grains are anchored on the clip's
+  body start (hop N/2, Hann); Tones' alignment chains from the voice's first grain, so a locate or a non-gain edit
+  restarts the chain (a different, equally valid alignment). (6) Complex / Complex Pro play as Tones until T6.5.
+  (7) Streamed samples: a stretch voice keeps half its history behind its reads; Beats claims the next slice's stream
+  ahead on a second reader; jumps beyond the history restart the stream (real time may read late frames as silence,
+  counted; offline renders are exact). Grains of hundreds of ms at large ratios on streamed (> 3 min) files can hit
+  that. (8) The transient job travels on the link's loader queue with a job bit in the levels word, and its cache
+  directory by content hash (project_link.h belongs to other lanes in this phase); a ProjectLink member would be cleaner
+  once the file is free. (9) Detector: banded log flux, threshold 5 × the median flux above the local mean.
+- Status: decided (reversible).

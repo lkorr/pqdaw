@@ -29,6 +29,14 @@
 // that of a read at rate ≤ 2); the envelope is one constant gain over its flat middle, else one per-frame buffer
 // computed for the run.
 // The block is split at clip boundaries and loop wraps, never tested per sample.
+// T6.3, the time-stretch modes (audio_sequence.h "Beats, Tones, Texture"): a Beats voice renders the slice passes
+// under the run (the one sounding, the one fading out behind it, the ones starting), each as linear reads at the pitch
+// rate with its gains (fade in, Envelope, the 2 ms crossfade, a loop's declick: pq/dsp/warp.h ramps) fused into the
+// read; a Tones / Texture voice renders the grains under the run (Hann window × the clip envelope per grain, one read
+// each). At pitch rate 1 a slice or Texture grain starts on a whole source frame, so it is a straight copy (a Tones grain
+// continues the one before to a fraction of a frame: resampled). Tones positions
+// each grain once, in order (its lag from the grain before: Voice::grainIdx / grainPos), so renders are the same
+// whatever the block.
 //
 // ---- Sources ----------------------------------------------------------------------------------------------------------
 // A fully resident sample is read in place (its guard frames cover the filter's reach at the edges; reads further out
@@ -38,7 +46,12 @@
 // RePitch voice jumps back at every wrap: `lookaheadSeconds` before a wrap it claims a second cursor at the loop's
 // other end (a little before the first frame the filter will need there), which the disk thread fills meanwhile, and
 // the wrap adopts it (T5.x-perf-audio, Q151 item 7: the wrap used to claim a fresh stream and underrun). Loops inside
-// the resident head need neither. Frames the
+// the resident head need neither. T6.3: a time-stretch voice reads back and forth inside its history (it keeps half
+// the buffer behind the newest read, so grains and slice loops find their frames there; a forward gap of up to a
+// quarter is read through); a Beats voice has two readers and claims the next slice's stream on the idle one
+// `lookaheadSeconds` before the slice starts (the loop-wrap pre-claim generalised to "next slice"). A jump that leaves
+// the history restarts the stream (an offline render waits for it; in real time its frames may come late, counted).
+// Frames the
 // disk thread has not delivered read as silence (counted: media::StreamPool::underruns, ClipPlayerStats::missingFrames).
 // Offline renders install a StreamFill that blocks until the stream has the frames (SamplePool::waitFilled), so a
 // render never depends on disk speed.
@@ -86,6 +99,10 @@ struct ClipPlayerStats {
   uint64_t loopClaims = 0;        // looped RePitch voices on streamed samples: next loop passes claimed ahead (Q151)
   uint64_t loopAdopts = 0;        // ... and taken over at their wrap
   uint64_t mipFrames = 0;         // output frames read from a sample's decimated copies (Q151 item 1)
+  uint64_t grains = 0;            // T6.3: Tones / Texture grains positioned (aligned: Tones)
+  uint64_t slicePasses = 0;       // T6.3: Beats slice passes rendered (per run)
+  uint64_t sliceClaims = 0;       // T6.3: Beats: next slices' streams claimed ahead
+  uint64_t streamRestarts = 0;    // a read left the history: the stream restarted (T6.3 stretch voices, jumps)
 };
 
 // Offline renders: called before a voice reads `frames` frames that a stream (still) has to deliver; it should block
@@ -154,6 +171,7 @@ private:
     int64_t aheadFrame = 0;
     media::Direction aheadDir = media::Direction::Forward;
     bool aheadValid = false;
+    SampleTime pass = INT64_MIN;  // T6.3 Beats: the entry sample of the slice pass this reader serves
   };
   struct Voice {
     const AudioSequenceImage* img = nullptr;
@@ -168,6 +186,19 @@ private:
     SampleTime lastWrap = INT64_MIN;   // RePitch loops: the last wrap at or before vs (declick)
     SampleTime nextWrap = INT64_MAX;   // ... and the next one the last run saw coming
     Reader reader;
+    Reader reader2;                    // T6.3 Beats: the other slice's stream
+    int64_t grainIdx = INT64_MIN;      // T6.3 Tones / Texture: the last grain positioned
+    double grainPos[2] = {0.0, 0.0};   // ... its centre's source frame and the one before (by parity)
+  };
+  // T6.3 Beats: one pass of one slice (audio_sequence.h "Beats").
+  struct SlicePass {
+    SampleTime T = 0;          // entry
+    SampleTime next = 0;       // the next pass's entry (INT64_MAX: none before the clip ends)
+    double F = 0.0;            // source frame at T
+    double L = 0.0;            // natural length in source frames (+inf: to the clip's end)
+    double entryU = 0.0, exitU = 0.0;  // the forward-time unfolded content bounds of the slice in this pass
+    int dir = 1;
+    bool fadeIn = true;        // false: the clip's own first slice (no pass before it)
   };
   // One contiguous piece of source positions for a run of output frames.
   // Trivial (no member initialisers): a run's Piece array lives on the audio thread's stack and must not be zeroed
@@ -187,9 +218,32 @@ private:
   bool renderVoice(Voice& v, uint32_t frame, uint32_t len) noexcept;
   void renderRun(Voice& v, uint32_t frame, SampleTime s, uint32_t n) noexcept;
   uint32_t pieces(Voice& v, SampleTime s, uint32_t n, Piece* out, SampleTime* nextWrap) noexcept;
-  void read(Voice& v, const media::SampleView& view, const Piece& p, float* const* out, const float* env, float gain) noexcept;
-  bool ensure(Voice& v, const media::SampleView& view, int64_t first, int64_t last, bool forward, const float** base,
-              int64_t* baseFrame) noexcept;
+  void read(Voice& v, Reader& r, const media::SampleView& view, const Piece& p, float* const* out, const float* env,
+            float gain, int64_t keep) noexcept;
+  // The frames [first, last) of the clip's source: base[c] + (f − *baseFrame) is frame f. Resident: in place (or
+  // gathered with zeros into the scratch buffer); streamed: through reader r (ensure). False: nothing to read.
+  bool source(Voice& v, Reader& r, const media::SampleView& view, int64_t first, int64_t last, bool forward, int64_t keep,
+              const float** base, int64_t* baseFrame) noexcept;
+  bool ensure(Voice& v, Reader& r, const media::SampleView& view, int64_t first, int64_t last, bool forward, int64_t keep,
+              const float** base, int64_t* baseFrame) noexcept;
+  // T6.3, the time-stretch modes.
+  const float* stretchEnvelope(Voice& v, SampleTime s, uint32_t n) noexcept;  // null: flat (the clip gain)
+  void renderStretch(Voice& v, uint32_t frame, SampleTime s, uint32_t n) noexcept;
+  void renderGrains(Voice& v, const media::SampleView& view, SampleTime s, uint32_t n, float* const* out, const float* env) noexcept;
+  double grainCentre(Voice& v, const media::SampleView& view, int64_t k) noexcept;
+  double alignGrain(Voice& v, const media::SampleView& view, double prev, int64_t p) noexcept;
+  void renderSlices(Voice& v, const media::SampleView& view, SampleTime s, uint32_t n, float* const* out, const float* env) noexcept;
+  void renderPass(Voice& v, const media::SampleView& view, const SlicePass& p, SampleTime s, uint32_t n, float* const* out,
+                  const float* env) noexcept;
+  Reader& passReader(Voice& v, const SlicePass& p, SampleTime s) noexcept;
+  void claimSlice(Voice& v, const media::SampleView& view, const SlicePass& current, SampleTime runEnd) noexcept;
+  static SlicePass passFromU(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, double u) noexcept;
+  static SlicePass passAt(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, SampleTime s) noexcept;
+  static SlicePass nextPass(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, const SlicePass& p) noexcept;
+  static bool prevPass(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, const SlicePass& p,
+                       SlicePass* out) noexcept;
+  static int64_t stretchStreamFrame(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, SampleTime s,
+                                    bool* forward) noexcept;
   void claimAhead(Voice& v, const media::SampleView& view, int64_t step) noexcept;  // Q151 item 7
   static void stopReader(Reader& r) noexcept;
   float* touch(uint32_t slot) noexcept;  // the slot's channel 0 (channel 1 follows), cleared on its first write
@@ -209,6 +263,8 @@ private:
   AlignedBuffer<float> scratch_;        // 2 × historyFrames: gathered resident reads
   AlignedBuffer<float> out_;            // slots × 2 × maxBlockFrames
   AlignedBuffer<float> env_;            // maxBlockFrames
+  AlignedBuffer<float> gain_;           // maxBlockFrames: a slice's / grain's gains (T6.3)
+  AlignedBuffer<float> corrA_, corrB_;  // Tones' alignment: the previous grain's and the candidates' mono frames
   AlignedBuffer<float> zeros_;          // maxBlockFrames
   std::vector<const float*> ptrs_;      // slots × 2
   std::vector<uint8_t> active_;         // slots

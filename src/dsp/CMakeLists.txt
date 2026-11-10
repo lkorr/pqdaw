@@ -28,5 +28,6 @@ pq_add_module(pq_dsp
     src/svf_design.cpp
     src/curve.cpp
     src/fft_mixed.cpp
+    src/warp.cpp
   DEPS pq_core
 )
