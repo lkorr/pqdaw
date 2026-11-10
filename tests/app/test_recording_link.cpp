@@ -114,6 +114,8 @@ struct Rig {
       block();
       if (out != nullptr) out->insert(out->end(), l.begin(), l.end());
       if ((b & 15) == 15) (void)link->playhead();  // the UI's poll: notes, punch-out, the end of a session
+      if ((b & 63) == 63) (void)link->recording().pump();  // the rig runs far faster than real time: drain here too,
+                                                           // or a loaded machine lets the 4-s rings overflow
       if ((b & 255) == 255) link->collect();
     }
     (void)link->playhead();
