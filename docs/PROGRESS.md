@@ -283,3 +283,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: per group one track's wires instead of all 8.5k; far-zoom vertices 774k → 70k per frame.
 - Notes/blockers: lowering 111–200 ms per structural edit remains (PF.6); after an edit while shown the view lowers itself (the link's lowering arrives ≥ 50 ms later); the shared-lowering path has no test (no link in views tests).
 
+## 2026-11-09 · PF.1 · task/PF.1-jit-share
+- Did: cache key hashes "has a resource", not the slot (codegen never bakes it; new bit-identity test vs separate compiles + interpreter, fails on the old key); `-disable-lsr` in the machine pipeline, IR-level LSR kept on functions ≤ 2000 instructions; executable hash on a background thread at startup; TX.mod-all counts modulation wires only.
+- Verified: -Affected -Slow after rebase 48/48; ship pq_bench_dsp links; rows in bench/RESULTS.md.
+- Perf / CPU-efficiency check (ship, interleaved): 64x8 notes jit 130 → 6 compiles, 7.1–10.1 → 0.62–0.85 s, 193.8 → 134.7 µs/block; fixture per-unit JIT 8175 → 6471 ms; run-time rows within noise (render ≤ 1.3 %).
+- Notes/blockers: a slot equal to a literal in the unit doesn't share (constants are deduped by value); the 2000-instruction cutoff tuned on one fixture + two microbenchmarks.
+
