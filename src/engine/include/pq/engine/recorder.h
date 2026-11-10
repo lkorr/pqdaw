@@ -187,7 +187,12 @@ public:
   bool monitor(const Timeline& timeline, std::span<float> params) noexcept;
   // A gate was open in the last monitor() (the engine's idle gate then stays awake: the input must be heard).
   bool monitoring() const noexcept { return monitoring_; }
-  const RecorderStats& stats() const noexcept { return stats_; }
+  // A snapshot, from any thread (M6 review L12: the counters are relaxed atomics only the audio thread writes).
+  RecorderStats stats() const noexcept {
+    auto get = [](const std::atomic<uint64_t>& a) noexcept { return a.load(std::memory_order_relaxed); };
+    return RecorderStats{get(stats_.segments), get(stats_.capturedFrames), get(stats_.droppedFrames),
+                         get(stats_.droppedSegments), get(stats_.monitorWrites)};
+  }
 
 private:
   template <class T>
@@ -223,7 +228,13 @@ private:
   uint32_t numInNow_ = 0;
   int64_t blockTime_ = 0;
   bool monitoring_ = false;
-  RecorderStats stats_;
+  struct Counters {
+    std::atomic<uint64_t> segments{0}, capturedFrames{0}, droppedFrames{0}, droppedSegments{0}, monitorWrites{0};
+  };
+  static void bump(std::atomic<uint64_t>& a, uint64_t n = 1) noexcept {  // RT-safe: one writer, no locked RMW
+    a.store(a.load(std::memory_order_relaxed) + n, std::memory_order_relaxed);
+  }
+  Counters stats_;
 };
 
 }  // namespace pq::engine

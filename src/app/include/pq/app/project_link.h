@@ -899,6 +899,7 @@ private:
   // T6.2: the last plan handed to the program (compileMutex_), the automation shift per param slot (mutex_), and a
   // flag for the UI thread (takeLatencyShifts).
   std::optional<engine::CompensationPlan> lastPlan_;
+  bool planStale_ = false;  // M6 review L6: a topology was published since lastPlan_ was sent: the next plan goes out
   std::optional<LatencyJob> pendingLatency_;  // a plan the program had no room for yet (compileMutex_)
   std::vector<uint32_t> paramShift_;
   std::atomic<bool> shiftsChanged_{false};

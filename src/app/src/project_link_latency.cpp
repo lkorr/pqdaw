@@ -77,8 +77,10 @@ Status ProjectLink::applyLatency(const LatencyJob& job) {  // compile path (comp
     std::lock_guard lock(mutex_);  // T6.6: the strips' readouts
     busLatency_ = job.plan.busLatency;
   }
-  // A project without latency never makes a plan; an unchanged plan is not sent again.
-  const bool same = lastPlan_ ? lastPlan_->sameAs(job.plan) : job.plan.none();
+  // A project without latency never makes a plan; an unchanged plan is not sent again — unless a topology came in
+  // between (M6 review L6: a plan queued for the older one may have been dropped unused, and equal indices name other
+  // buses; for a program without a plan an empty one costs nothing).
+  const bool same = !planStale_ && (lastPlan_ ? lastPlan_->sameAs(job.plan) : job.plan.none());
   if (!same) {
     // Plans the audio thread has not taken yet (a stopped output) stay queued in the program up to its limit; past it
     // the newest plan waits here and drainDeferred hands it over later (never an error: nothing is lost but time).
@@ -90,6 +92,7 @@ Status ProjectLink::applyLatency(const LatencyJob& job) {  // compile path (comp
       return st;
     } else {
       lastPlan_ = job.plan;
+      planStale_ = false;
       pendingLatency_.reset();
     }
   }

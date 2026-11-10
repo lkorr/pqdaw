@@ -105,18 +105,29 @@ struct alignas(128) ProjectProgram::DelayLine {
   uint16_t width;
   bool active = false;            // false: bypassed (delay 0, no fade): the reader reads the bus; the ring is stale
   bool outSilent = true;          // the last block read only zeros (the reader then reads the program's zeros)
-  bool copied = false;
+  // M6 review M2: while its history is copied from a smaller line (`copySrc`, over several blocks), that line plays
+  // and this one only takes the pushes. The history's oldest-first frame `copyDone` of copySrc's ring from `copyFrom`.
+  DelayLine* copySrc = nullptr;
+  uint32_t copyFrom = 0, copyDone = 0;
   // Cold.
   std::shared_ptr<BusStore> bus;  // the input bus (kept alive while a plan names the line); null: a clip slot's line
   AlignedBuffer<float> fade;      // width × stride: the crossfaded block while a delay change fades
-  DelayLine* prev = nullptr;      // a smaller line this one replaces: its history is copied at the switch (once)
+  DelayLine* prev = nullptr;      // a smaller line this one replaces (immutable): its history is copied (once)
+  // Written by the audio thread, read by setCompensation (non-RT): the history is in (prev is no longer read), and
+  // the line is active (M6 review M3: a dropped line is carried forward while it still fades).
+  std::atomic<bool> copied{false};
+  std::atomic<bool> live{false};
+  void setActive(bool v) noexcept {  // RT-safe
+    active = v;
+    live.store(v, std::memory_order_release);
+  }
   bool sameSource(const DelayLine& o) const noexcept { return bus == o.bus && clip == o.clip; }
   float* chan(uint16_t c) noexcept { return ring.data() + static_cast<size_t>(c) * (size + mirror); }
 };
 
 // T6.2: a voice unit's notes, `delay` frames late (preallocated FIFO; time order kept).
 struct ProjectProgram::EventDelay {
-  explicit EventDelay(uint32_t capacity) : items(capacity) {}
+  explicit EventDelay(uint32_t capacity) : items(capacity), droppedIds(capacity) {}
   struct Item {
     int64_t at;
     NoteEvent e;
@@ -125,6 +136,27 @@ struct ProjectProgram::EventDelay {
   uint32_t head = 0, count = 0;
   int64_t lastAt = std::numeric_limits<int64_t>::min();
   uint64_t dropped = 0;
+  // M6 review L10: the notes whose note-on was dropped (their offs are dropped too, and take no room): a ring.
+  std::vector<uint32_t> droppedIds;
+  uint32_t numDroppedIds = 0, nextDroppedId = 0;
+  void dropOn(uint32_t id) noexcept {  // RT-safe
+    const auto cap = static_cast<uint32_t>(droppedIds.size());
+    if (numDroppedIds < cap) {
+      droppedIds[numDroppedIds++] = id;
+    } else {
+      droppedIds[nextDroppedId] = id;
+      nextDroppedId = (nextDroppedId + 1) % cap;
+    }
+  }
+  bool forgetDropped(uint32_t id) noexcept {  // RT-safe: true when the note's on was dropped
+    for (uint32_t k = 0; k < numDroppedIds; ++k)
+      if (droppedIds[k] == id) {
+        droppedIds[k] = droppedIds[--numDroppedIds];
+        nextDroppedId = 0;
+        return true;
+      }
+    return false;
+  }
 };
 
 struct ProjectProgram::Compensation {
@@ -717,6 +749,49 @@ Result<TopologyInfo> ProjectProgram::publishTopology(ProjectLayout layout, std::
         }
   t->output = layout.outputBus != kNoBus ? stores[layout.outputBus].get() : nullptr;
   t->seq = nextTopoSeq_;
+  // M6 review L7: the running plan, for this topology, without the lines that read a bus no image of their unit reads
+  // here (or one whose writers do not all run before it): taken in the same block as the topology, so no line reads a
+  // bus outside the run order's edges (PF.5) until the link's plan for this layout arrives. Dropping them is
+  // inaudible: nothing reads them. A unit that is gone loses its entry.
+  std::unique_ptr<Compensation> pruned;
+  if (compLast_ != nullptr && !compLast_->entries.empty() && compInflight_.size() < 6) {
+    std::vector<uint32_t> pos(total, kNoUnit);
+    for (uint32_t k = 0; k < order.size(); ++k) pos[order[k]] = k;
+    pruned = std::make_unique<Compensation>();
+    pruned->seq = nextCompSeq_;
+    pruned->topoSeq = t->seq;
+    auto keep = [&](const void* x) {
+      for (const auto& sp : compLast_->owned)
+        if (sp.get() == x && std::none_of(pruned->owned.begin(), pruned->owned.end(), [&](const auto& o) { return o.get() == x; }))
+          pruned->owned.push_back(sp);
+      for (const auto& sp : compLast_->ownedEvents)
+        if (sp.get() == x) pruned->ownedEvents.push_back(sp);
+    };
+    for (const Compensation::Entry& e : compLast_->entries) {
+      uint32_t i = 0;
+      while (i < n && (units[i].from == kNoUnit || unitPtr[i] != e.unit)) ++i;  // (a continued unit: alive)
+      if (i == n || pos[i] == kNoUnit) continue;  // removed
+      Compensation::Entry ne;
+      ne.unit = e.unit;
+      ne.events = e.events;
+      ne.eventDelay = e.eventDelay;
+      ne.clipIn = e.clipIn;
+      if (e.events != nullptr) keep(e.events);
+      for (const Compensation::Line& l : e.lines) {
+        const BusStore* b = l.line->bus.get();
+        bool ok = b == nullptr;  // a clip slot's line reads no bus
+        if (!ok && reads[i].count(b) != 0) {
+          ok = true;
+          for (uint32_t w = 0; w < total && ok; ++w)
+            if (writes[w].count(b) != 0 && (pos[w] == kNoUnit || pos[w] >= pos[i])) ok = false;
+        }
+        if (!ok) continue;
+        for (DelayLine* x = l.line; x != nullptr; x = x->copied.load(std::memory_order_acquire) ? nullptr : x->prev) keep(x);
+        ne.lines.push_back(l);
+      }
+      if (!ne.lines.empty() || ne.events != nullptr) pruned->entries.push_back(std::move(ne));
+    }
+  }
 
   // Commit (nothing below fails): packets join their units' in-flight lists, units and buses become the published
   // layout, the topology goes to the audio thread.
@@ -746,6 +821,11 @@ Result<TopologyInfo> ProjectProgram::publishTopology(ProjectLayout layout, std::
   ownChannels_ = std::move(own);
   stores_ = std::move(stores);
   layout_ = std::move(layout);
+  if (pruned && compRing_.tryPush(pruned.get())) {  // before the topology: the audio thread takes both in one block
+    compInflight_.push_back(pruned.get());
+    compLast_ = pruned.release();
+    ++nextCompSeq_;
+  }
   topoInflight_.push_back(guard.release());
   if (!topoRing_.tryPush(t)) {  // cannot happen: at most one topology is pending
     topoInflight_.pop_back();
@@ -790,7 +870,8 @@ bool ProjectProgram::computeQuiet() const noexcept {
   if (comp_ != nullptr)  // T6.2: audio or notes still held in a delay
     for (const Compensation::Entry& e : comp_->entries) {
       for (const Compensation::Line& l : e.lines)
-        if (l.line->active && (l.line->fadeLen != 0 || l.line->silentRun < static_cast<uint64_t>(l.line->delay) + lastFrames_))
+        if (l.line->copySrc != nullptr ||
+            (l.line->active && (l.line->fadeLen != 0 || l.line->silentRun < static_cast<uint64_t>(l.line->delay) + lastFrames_)))
           return false;
       if (e.events != nullptr && e.events->count > 0) return false;
     }
@@ -851,6 +932,13 @@ void ProjectProgram::setUnitInputs(std::span<const UnitInput> perUnit) {  // non
   }
 }
 
+bool ProjectProgram::readsLocked(const Unit& U, const BusStore* bus) const {
+  if (bus == nullptr) return true;
+  for (const Packet* p : U.inflight)
+    if (std::find(p->inStores.begin(), p->inStores.end(), bus) != p->inStores.end()) return true;
+  return false;
+}
+
 Status ProjectProgram::setCompensation(const CompensationPlan& plan) {
   std::lock_guard lock(mutex_);
   collectLocked();
@@ -888,9 +976,12 @@ Status ProjectProgram::setCompensation(const CompensationPlan& plan) {
           if (l.line->bus.get() == b && l.line->clip == clip) return &l;
       return nullptr;
     };
+    // A line the plan names, and (M6 review M2) the lines it still copies its history from.
     auto keep = [&](DelayLine* l) {
-      for (const auto& sp : last->owned)
-        if (sp.get() == l) c->owned.push_back(sp);
+      for (DelayLine* x = l; x != nullptr; x = x->copied.load(std::memory_order_acquire) ? nullptr : x->prev)
+        for (const auto& sp : last->owned)
+          if (sp.get() == x && std::none_of(c->owned.begin(), c->owned.end(), [&](const auto& o) { return o.get() == x; }))
+            c->owned.push_back(sp);
     };
     // A bus (store) or a clip slot (null store) delayed by `delay`.
     auto addLine = [&](const std::shared_ptr<BusStore>& store, uint32_t clip, uint16_t width, uint32_t delay) {
@@ -901,8 +992,10 @@ Status ProjectProgram::setCompensation(const CompensationPlan& plan) {
         e.lines.push_back({pl->line, delay});
         return;
       }
-      // A new line (or a larger one copying the old one's history at the switch).
-      const uint32_t frames = (std::max(need, pl != nullptr ? pl->delay + stride_ : 0u) + kRingGrain - 1) / kRingGrain * kRingGrain;
+      // A new line (or a larger one copying the old one's history at the switch). M6 review M2: a line that grows
+      // grows by half at least, so a Track Delay drag copies its history a few times, not at every step.
+      const uint32_t grown = pl != nullptr ? std::max(pl->delay + stride_, pl->line->size + pl->line->size / 2) : 0u;
+      const uint32_t frames = (std::max(need, grown) + kRingGrain - 1) / kRingGrain * kRingGrain;
       auto line = std::make_shared<DelayLine>(store, clip, width, frames, stride_);
       if (pl != nullptr) {
         line->prev = pl->line;
@@ -916,10 +1009,14 @@ Status ProjectProgram::setCompensation(const CompensationPlan& plan) {
     if (cfg_.clipIn != nullptr && cfg_.clipActive != nullptr)
       for (const SourceDelay& d : plan.clipDelays[u])
         if (d.slot < cfg_.numClipSlots) addLine(nullptr, d.slot, static_cast<uint16_t>(kClipChannels), d.frames);
-    if (prev != nullptr)  // a line the plan drops fades to 0 first (then it is bypassed, and the next plan forgets it)
+    // A line the plan drops fades to 0 first (then it is bypassed, and a later plan forgets it). M6 review M3: also a
+    // line an earlier plan dropped while it still fades (or has not started to), so a second plan within the fade
+    // (a Track Delay drag) does not jump to the bus. M6 review L7: only while an image of the unit reads its bus (a
+    // line never reads a bus its unit does not: no edge PF.5 would not see).
+    if (prev != nullptr)
       for (const Compensation::Line& l : prev->lines)
-        if (l.delay != 0 && std::none_of(e.lines.begin(), e.lines.end(),
-                                         [&](const Compensation::Line& x) { return x.line->sameSource(*l.line); })) {
+        if ((l.delay != 0 || l.line->live.load(std::memory_order_acquire)) && readsLocked(*U, l.line->bus.get()) &&
+            std::none_of(e.lines.begin(), e.lines.end(), [&](const Compensation::Line& x) { return x.line->sameSource(*l.line); })) {
           keep(l.line);
           e.lines.push_back({l.line, 0u});
         }
@@ -1143,32 +1240,33 @@ void ProjectProgram::maybeSwitchCompensation() noexcept {  // RT-safe
           // fade from.
           if (L.prev == nullptr && !L.active && L.delay == 0 && (e.unit->cur == nullptr || stats_.blocks == 0)) {
             L.delay = l.delay;
-            L.active = l.delay != 0;
+            L.setActive(l.delay != 0);
             continue;
           }
-          if (L.prev == nullptr || L.copied) continue;
-          // A larger ring replacing a line: its history, taps and fade, frame for frame (once; bounded by the ring).
-          DelayLine& P = *L.prev;
-          L.copied = true;
-          L.active = P.active;
-          L.write = 0;  // the history ends just before frame 0 of the larger ring (laid out below)
-          L.delay = P.delay;
-          L.from = P.from;
-          L.fadePos = P.fadePos;
-          L.fadeLen = P.fadeLen;
-          L.silentRun = P.silentRun;
-          L.outSilent = P.outSilent;
-          if (!P.active) continue;
-          for (uint16_t ch = 0; ch < std::min(L.width, P.width); ++ch) {
-            const float* src = P.chan(ch);
-            float* dst = L.chan(ch);
-            // P's frames oldest first (from its write position) → the last P.size frames of L (L.size > P.size).
-            for (uint32_t k = 0; k < P.size; ++k) {
-              const uint32_t from = P.write + k < P.size ? P.write + k : P.write + k - P.size;
-              dst[L.size - P.size + k] = src[from];
+          if (L.prev == nullptr || L.copySrc != nullptr || L.copied.load(std::memory_order_relaxed)) continue;
+          // A larger ring replacing a line: its history, taps and fade (M6 review M2: the history over the next blocks,
+          // runLine / copyStep). The line that plays now: the one it replaces, or, while that one still copies its
+          // own history, the one that one copies from (a second growth within the copy).
+          DelayLine* P = L.prev;
+          while (P->prev != nullptr && !P->copied.load(std::memory_order_relaxed)) {
+            if (P->copySrc != nullptr) {
+              P = P->copySrc;
+              break;
             }
-            std::memcpy(dst + L.size, dst, sizeof(float) * L.mirror);  // the mirror
+            P = P->prev;  // never ran (its plan was dropped unused): what it would have replaced
           }
+          L.write = 0;  // the history ends just before frame 0 of the larger ring (laid out by copyStep)
+          if (!P->active || P->silentRun >= P->size) {  // nothing to copy: bypassed, or only zeros (L's ring is zeros)
+            adoptLine(L, *P);
+            L.silentRun = uint64_t{1} << 62;
+            L.copied.store(true, std::memory_order_release);
+            continue;
+          }
+          L.copySrc = P;
+          L.copyFrom = P->write;
+          L.copyDone = 0;
+          L.silentRun = P->silentRun;
+          L.setActive(P->active);  // (the reader reads P's block through L meanwhile)
         }
       }
       comp_ = compPending_;
@@ -1179,19 +1277,18 @@ void ProjectProgram::maybeSwitchCompensation() noexcept {  // RT-safe
   }
 }
 
-void ProjectProgram::runLine(DelayLine& L, uint32_t target, uint32_t frames) noexcept {  // RT-safe
-  if (L.fadeLen == 0 && target != L.delay) {
-    if (!L.active) {  // a bypassed line's ring is stale: zeros from here (bounded by the ring)
-      std::memset(L.ring.data(), 0, sizeof(float) * L.ring.size());
-      L.silentRun = uint64_t{1} << 62;
-    }
-    L.from = L.delay;
-    L.delay = target;
-    L.fadePos = 0;
-    L.fadeLen = fadeFrames10ms_;
-    L.active = true;
-  }
-  if (!L.active) return;
+// A larger line takes over the state of the line it replaces (its history is in, or there is none).
+void ProjectProgram::adoptLine(DelayLine& L, const DelayLine& P) noexcept {  // RT-safe
+  L.setActive(P.active);
+  L.delay = P.delay;
+  L.from = P.from;
+  L.fadePos = P.fadePos;
+  L.fadeLen = P.fadeLen;
+  L.outSilent = P.outSilent;
+}
+
+// The push half of runLine: this block of the line's source into its ring (and mirror).
+void ProjectProgram::pushLine(DelayLine& L, uint32_t frames) noexcept {  // RT-safe
   // Its source: a bus, or (T6.2b) a clip slot of the timeline's clip player.
   const float* const* clipCh = L.src == nullptr ? cfg_.clipIn + static_cast<size_t>(L.clip) * kClipChannels : nullptr;
   const bool silent = L.src != nullptr ? *L.srcSilent : cfg_.clipActive[L.clip] == 0;
@@ -1226,6 +1323,78 @@ void ProjectProgram::runLine(DelayLine& L, uint32_t target, uint32_t frames) noe
     L.silentRun = 0;
   }
   L.write = rest != 0 || at + frames == L.size ? rest : at + frames;
+}
+
+// M6 review M2: one block of a grown line's history copy. The history (copySrc's ring, oldest first from copyFrom)
+// lands at the end of L's ring, before frame 0 where L's pushes started at the switch. Each block copies at least
+// twice its frames (so the copy stays ahead of copySrc's pushes, which overwrite its oldest frames, and of L's, which
+// overwrite the slots below the history), more while the block's budget (kCopyFloatsPerFrame per frame, shared by every
+// line) lasts. True: the history is in and L took copySrc's state (it plays from this block on). False: copySrc played
+// this block, L took the push, the reader reads copySrc's block through L.
+bool ProjectProgram::copyStep(DelayLine& L, uint32_t frames) noexcept {  // RT-safe
+  DelayLine& P = *L.copySrc;
+  if (copyBlockSeq_ != stats_.blocks) {  // the first copy of this block
+    copyBlockSeq_ = stats_.blocks;
+    copyLeft_ = static_cast<uint64_t>(frames) * kCopyFloatsPerFrame;
+    copyThisBlock_ = 0;
+  }
+  if (P.active) {
+    const uint32_t left = P.size - L.copyDone;
+    const uint64_t budget = copyLeft_ / std::max<uint16_t>(L.width, 1);
+    const auto n = static_cast<uint32_t>(std::min<uint64_t>(left, std::max<uint64_t>(2ull * frames, budget)));
+    const uint32_t s0 = L.copyFrom + L.copyDone < P.size ? L.copyFrom + L.copyDone : L.copyFrom + L.copyDone - P.size;
+    const uint32_t a = std::min(n, P.size - s0), b = n - a;  // two spans of P's ring
+    const uint32_t d0 = L.size - P.size + L.copyDone;
+    for (uint16_t ch = 0; ch < std::min(L.width, P.width); ++ch) {
+      const float* src = P.chan(ch);
+      float* dst = L.chan(ch);
+      std::memcpy(dst + d0, src + s0, sizeof(float) * a);
+      if (b != 0) std::memcpy(dst + d0 + a, src, sizeof(float) * b);
+      if (d0 < L.mirror)  // (a history that starts inside the mirrored frames)
+        std::memcpy(dst + L.size + d0, dst + d0, sizeof(float) * (std::min(d0 + n, L.mirror) - d0));
+    }
+    const uint64_t floats = static_cast<uint64_t>(n) * L.width;
+    copyLeft_ -= std::min(copyLeft_, floats);
+    copyThisBlock_ += floats;
+    stats_.lineCopyFloats += floats;
+    stats_.lineCopyBlockMax = std::max(stats_.lineCopyBlockMax, copyThisBlock_);
+    L.copyDone += n;
+  }
+  // Done (or copySrc was bypassed meanwhile: L is too, and its ring is cleared when it starts again).
+  if (!P.active || L.copyDone >= P.size) {
+    adoptLine(L, P);
+    L.copySrc = nullptr;
+    L.copied.store(true, std::memory_order_release);
+    ++stats_.lineCopies;
+    return true;
+  }
+  runLine(P, P.delay, frames);  // (P copies nothing: it is the line that plays)
+  pushLine(L, frames);
+  L.setActive(P.active);
+  L.outSilent = P.outSilent;
+  L.outBase = P.outBase;
+  L.outStride = P.outStride;
+  return false;
+}
+
+void ProjectProgram::runLine(DelayLine& L, uint32_t target, uint32_t frames) noexcept {  // RT-safe
+  if (L.copySrc != nullptr && !copyStep(L, frames)) return;  // M6 review M2: its history is still being copied
+  if (L.fadeLen == 0 && target != L.delay) {
+    // A bypassed line's ring is stale: zeros from here (bounded by the ring), unless it holds only zeros already (a
+    // fresh ring, or one that was silent through its whole length: M6 review M2).
+    if (!L.active) {
+      if (L.silentRun < L.size) std::memset(L.ring.data(), 0, sizeof(float) * L.ring.size());
+      L.silentRun = uint64_t{1} << 62;
+    }
+    L.from = L.delay;
+    L.delay = target;
+    L.fadePos = 0;
+    L.fadeLen = fadeFrames10ms_;
+    L.setActive(true);
+  }
+  if (!L.active) return;
+  const uint32_t at = L.write;
+  pushLine(L, frames);
   const uint32_t maxTap = std::max(L.delay, L.fadeLen != 0 ? L.from : 0u);
   L.outSilent = L.silentRun >= static_cast<uint64_t>(maxTap) + frames;
   if (!L.outSilent) {
@@ -1249,7 +1418,7 @@ void ProjectProgram::runLine(DelayLine& L, uint32_t target, uint32_t frames) noe
     L.fadePos += frames;
     if (L.fadePos >= L.fadeLen) {
       L.fadeLen = 0;
-      if (L.delay == 0) L.active = false;  // faded out: bypassed from the next block on
+      if (L.delay == 0) L.setActive(false);  // faded out: bypassed from the next block on
     }
   }
 }
@@ -1259,13 +1428,36 @@ void ProjectProgram::delayEvents(Unit& U, EventDelay& d, uint32_t delay, uint32_
   if (delay == 0 && d.count == 0) return;  // nothing held: the events pass as they are
   const auto cap = static_cast<uint32_t>(d.items.size());
   for (uint32_t i = 0; i < in.count; ++i) {
+    const NoteEvent& ev = in.events[i];
+    const bool off = ev.kind == NoteEventKind::NoteOff || ev.kind == NoteEventKind::AllNotesOff ||
+                     ev.kind == NoteEventKind::AllSoundOff;
+    // M6 review L10: the off of a note whose on was dropped is dropped too (it would take the room of a held note's).
+    if (ev.kind == NoteEventKind::NoteOff && d.numDroppedIds != 0 && d.forgetDropped(ev.noteId)) continue;
     if (d.count == cap) {
+      // Full. An off takes the place of the newest held event that is not one (a note-on, which then never sounds,
+      // or a pitch change): an off is never dropped while anything else is held. Anything else is dropped.
+      bool room = false;
+      if (off)
+        for (uint32_t k = d.count; k-- > 0;) {
+          const NoteEvent& h = d.items[(d.head + k) % cap].e;
+          if (h.kind == NoteEventKind::NoteOff || h.kind == NoteEventKind::AllNotesOff || h.kind == NoteEventKind::AllSoundOff)
+            continue;
+          if (h.kind == NoteEventKind::NoteOn) d.dropOn(h.noteId);
+          for (uint32_t m = k; m + 1 < d.count; ++m) d.items[(d.head + m) % cap] = d.items[(d.head + m + 1) % cap];
+          --d.count;
+          room = true;
+          break;
+        }
       ++d.dropped;
-      continue;
+      ++stats_.eventDelayDrops;
+      if (!room) {
+        if (ev.kind == NoteEventKind::NoteOn) d.dropOn(ev.noteId);
+        continue;
+      }
     }
     // Time order is kept (a shorter delay than the held events' never moves an event before them).
-    const int64_t at = std::max(d.lastAt, time + static_cast<int64_t>(in.events[i].frame) + delay);
-    d.items[(d.head + d.count) % cap] = {at, in.events[i]};
+    const int64_t at = std::max(d.lastAt, time + static_cast<int64_t>(ev.frame) + delay);
+    d.items[(d.head + d.count) % cap] = {at, ev};
     ++d.count;
     d.lastAt = at;
   }

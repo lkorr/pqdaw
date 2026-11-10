@@ -410,3 +410,23 @@ TEST_CASE("metronome: cost while a click sounds (render + schedule per 64-frame 
   CHECK(m.stats().clicks == static_cast<uint64_t>(kBlocks * 64 / 24000 + 1));
   CHECK(ns < 1000.0);
 }
+
+TEST_CASE("metronome (M6 review L9): after the latency drops, every beat still clicks (the queue stays in time order)") {
+  // 120 BPM, latency 30000 until engine time 60000, then 0: beat 2 (song 48000) is queued at 78000, beat 3 (song 72000)
+  // at 72000, before it. Before the fix render() stopped at the queued 78000 click and beat 3's was lost.
+  e::Metronome m(kSr);
+  auto tm = tempo({{0, 120.0, pq::TempoCurve::Step}});
+  const e::CountInState countIn;
+  std::vector<float> out(130000, 0.0f);
+  for (int64_t t = 0; t + 64 <= static_cast<int64_t>(out.size()); t += 64) {
+    const e::TransportRun run{0, 64, t, e::TransportRun::Song};
+    m.schedule(t, std::span<const e::TransportRun>(&run, 1), *tm, countIn, kSr, t < 60000 ? 30000u : 0u, true);
+    float* ch[1] = {out.data() + t};
+    m.render(t, 64, ch, 1);
+  }
+  const auto c = clicks(out);
+  const std::vector<int64_t> want = {30000, 54000, 72000, 78000, 96000, 120000};
+  REQUIRE(c.size() == want.size());
+  for (size_t k = 0; k < c.size(); ++k) CHECK(c[k].frame == want[k]);
+  CHECK(m.stats().dropped == 0);
+}

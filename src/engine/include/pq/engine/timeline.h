@@ -65,8 +65,10 @@
 // AutomationLaneDesc::perSample false render only their frame-0 value. T6.2: a lane with shiftFrames (its target unit
 // is compensated by that many frames, pq/engine/latency_plan.h) is rendered while playing at the song samples that
 // many frames earlier (AutomationRenderer::renderLane; T6.2b: per sample, so a tap's buffer is shifted too); while
-// stopped it holds the playhead's value like every lane. A run after a loop wrap renders the shifted lane from the loop
-// start minus the shift (not the end of the previous pass a delay line would replay).
+// stopped it holds the playhead's value like every lane. After a loop wrap the frames whose song sample minus the shift
+// lies before the loop start are rendered at the end of the previous pass (pos − shift + loop length, again while the
+// passes go back that far: M6 review M1) — what the unit's delay lines replay then; before the first wrap since the
+// playback started, at pos − shift as everywhere.
 //
 // ---- Audio clips (T5.4) -------------------------------------------------------------------------------------------
 // The timeline owns the clip player (pq/engine/clip_player.h) and plays it on the same runs as the notes: every run of
@@ -453,6 +455,7 @@ private:
   // every playback and every loop repeat decides anew, and a given seed and command sequence (an offline render)
   // decides the same way every time.
   uint64_t playbackPass_ = 0;
+  uint64_t loopWrapsInRun_ = 0;  // M6 review M1: loop wraps since the playback started (Play, Continue, a locate)
   // A note's off tick: at least one sample after its on sample (M3 review L4: a note shorter than a sample rounded its
   // off onto its on sample and never sounded).
   Ticks offTick(Ticks on, Ticks off) const noexcept;

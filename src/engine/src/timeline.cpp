@@ -258,6 +258,7 @@ void Timeline::apply(const TransportCommand& cmd) noexcept {  // RT-safe
       locate(cmd.tick);
       playing_ = true;
       ++playbackPass_;
+      loopWrapsInRun_ = 0;
       break;
     case TransportCommandKind::RecordOff:  // T6.7
       recording_ = false;
@@ -279,12 +280,14 @@ void Timeline::apply(const TransportCommand& cmd) noexcept {  // RT-safe
       if (!playing_) {
         seekPending_ = true;
         ++playbackPass_;
+        loopWrapsInRun_ = 0;
       }
       playing_ = true;
       break;
     case TransportCommandKind::Locate:
       locate(cmd.tick);
       if (playing_) ++playbackPass_;
+      loopWrapsInRun_ = 0;
       break;
     case TransportCommandKind::SetLoop:
       loopEnabled_ = cmd.loopEnabled;
@@ -784,6 +787,7 @@ void Timeline::playBlock(uint32_t from, uint32_t frames) noexcept {  // RT-safe
     if (wrap) {
       ++stats_.loopWraps;
       ++playbackPass_;
+      ++loopWrapsInRun_;
       pos_ = loopStartSample_;
       nextTick_ = loopStart_;
       tickLazy_ = false;
@@ -814,12 +818,30 @@ void Timeline::renderAutomation(uint32_t frame, SampleTime s0, uint32_t len, boo
   automation_.render(tickSpan(s0, len, tA, tB), frame, len, wholeBlock);
   // T6.2 / T6.2b: the lanes of compensated targets, at the song samples `shift` frames earlier (per sample: their taps
   // too). Two tick conversions per shifted lane per run.
+  // M6 review M1: after a loop wrap, the frames whose shifted sample lies before the loop start take it from the end
+  // of the pass the delay lines replay then (a run splits at most once per pass it reaches back).
   const AutomationImage& img = *automation_.image();
+  const SampleTime loopLen = loopEndSample_ - loopStartSample_;
   for (const uint32_t l : img.shiftedLanes()) {
     if (l >= automation_.numLanes()) break;
-    const SampleTime s = s0 - static_cast<SampleTime>(img.lanes()[l].shift);
-    automation_.renderLane(l, tickSpan(s, len, tm.samplesToTicks(s, sr), tm.samplesToTicks(s + len, sr)), frame, len,
-                           wholeBlock);
+    const auto shift = static_cast<SampleTime>(img.lanes()[l].shift);
+    if (loopWrapsInRun_ == 0 || !loopOn_ || s0 - shift >= loopStartSample_) {
+      const SampleTime s = s0 - shift;
+      automation_.renderLane(l, tickSpan(s, len, tm.samplesToTicks(s, sr), tm.samplesToTicks(s + len, sr)), frame, len,
+                             wholeBlock);
+      continue;
+    }
+    for (uint32_t i = 0; i < len;) {
+      SampleTime s = s0 + i - shift;
+      for (uint64_t back = 0; s < loopStartSample_ && back < loopWrapsInRun_; ++back) s += loopLen;
+      // Up to the end of that pass (s < loopEnd after a step back), or to the loop start of this one.
+      const SampleTime room = s0 + i - shift < loopStartSample_ ? std::min(loopEndSample_ - s, loopStartSample_ - (s0 + i - shift))
+                                                               : static_cast<SampleTime>(len - i);
+      const auto n = static_cast<uint32_t>(std::min<SampleTime>(room, len - i));
+      automation_.renderLane(l, tickSpan(s, n, tm.samplesToTicks(s, sr), tm.samplesToTicks(s + n, sr)), frame + i, n,
+                             wholeBlock && n == len);
+      i += n;
+    }
   }
 }
 
@@ -937,6 +959,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
         clips_->seek(pos_);  // T6.5b: adopts the cue
         playing_ = true;
         ++playbackPass_;
+        loopWrapsInRun_ = 0;
         snapshotDirty_ = true;
         reportPending_ = true;
         from = n;

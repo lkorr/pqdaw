@@ -47,7 +47,11 @@ void Metronome::push(int64_t time, bool accent) noexcept {  // RT-safe
     ++stats_.dropped;
     return;
   }
-  queue_[tail_ % kMaxClicks] = Click{time, accent};
+  // Sorted by time (M6 review L9: after the latency drops, a new click can come before queued ones; render() stops at
+  // the first one past the block). In order, as nearly always: one compare.
+  uint32_t i = tail_;
+  for (; i != head_ && queue_[(i - 1) % kMaxClicks].time > time; --i) queue_[i % kMaxClicks] = queue_[(i - 1) % kMaxClicks];
+  queue_[i % kMaxClicks] = Click{time, accent};
   ++tail_;
   ++stats_.clicks;
   if (accent) ++stats_.accents;

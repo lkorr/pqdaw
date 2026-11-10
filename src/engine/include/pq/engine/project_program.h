@@ -92,8 +92,16 @@
 // (two reads and a write per channel during the fade); a delay line that a new plan drops fades to 0 first, then stops. A line
 // whose input bus has been silent (ProjectProgram's silence flags) for the last delay + block frames reads silence:
 // it reports its block silent and costs no copy once its ring is all zeros, so idle units stay idle. Lines of the
-// same (reader, bus) carry over from plan to plan (their history and taps); one whose ring is too small for a new
-// delay is replaced by a larger one that copies the history over at the switch (once, bounded by the ring).
+// same (reader, bus) carry over from plan to plan (their history and taps), and so does a dropped line while it still
+// fades (M6 review M3: a second plan within the fade keeps fading it), as long as an image of its unit reads its bus.
+// A line whose ring is too small for a new delay is replaced by a larger one (at least 1.5x the old ring) that copies
+// the history over the next blocks (M6 review M2: twice the block's frames per line, more within a budget of
+// kCopyFloatsPerFrame floats per frame shared by every line; the old line plays meanwhile, the new delay's fade starts
+// once the copy is in; ProjectStats::lineCopies / lineCopyFloats / lineCopyBlockMax). A fresh ring is not cleared
+// (it is zero). publishTopology() also hands over the running plan without the lines no image of their unit reads in
+// the new topology (M6 review L7), taken in the same block as the topology.
+// A voice unit's event delay (a ring of 4 · max(eventCapacity, 64) events) drops note-ons when full, never the off of a
+// note it holds (an off takes the newest held on's place; the off of a dropped on is dropped: M6 review L10).
 // A project without latency publishes no plan (CompensationPlan::none()): no line exists and a unit's only cost is
 // one pointer compare per block (output bit-identical to a program that never heard of PDC).
 //
@@ -214,6 +222,12 @@ struct ProjectStats {
   uint64_t topologySwitches = 0;
   uint64_t topologyWaitBlocks = 0;  // image blocks a pending topology waited for fades / queued packets
   uint64_t zombieRuns = 0;          // unit runs of removed units after a switch
+  // T6.2 / M6 review M2, L10: delay lines that grew and copied their history, the floats copied (all, and the most in
+  // one image block), and notes an event delay could not hold.
+  uint64_t lineCopies = 0;
+  uint64_t lineCopyFloats = 0;
+  uint64_t lineCopyBlockMax = 0;
+  uint64_t eventDelayDrops = 0;
 };
 
 inline constexpr uint32_t kNoUnit = 0xFFFFFFFFu;
@@ -351,12 +365,16 @@ private:
                                              const SwapPolicy& policy, PublishInfo& info);
   std::unique_ptr<Unit> makeUnit(const UnitLayout& cfg);
   void collectLocked();
+  bool readsLocked(const Unit& u, const BusStore* bus) const;  // an image of u not retired yet reads the bus (null: yes)
   // RT.
   void trySwap(Unit& u, const Slot& s) noexcept;
   void install(Unit& u, const Slot& s, Packet* p) noexcept;
   void maybeSwitchTopology() noexcept;
   void maybeSwitchCompensation() noexcept;                      // T6.2
   void runLine(DelayLine& l, uint32_t target, uint32_t frames) noexcept;
+  void pushLine(DelayLine& l, uint32_t frames) noexcept;
+  bool copyStep(DelayLine& l, uint32_t frames) noexcept;        // M6 review M2
+  static void adoptLine(DelayLine& l, const DelayLine& from) noexcept;
   void delayEvents(Unit& u, EventDelay& d, uint32_t delay, uint32_t frames, int64_t time) noexcept;
   float unitPeak(const Slot& s) const noexcept;
   bool computeQuiet() const noexcept;
@@ -412,6 +430,11 @@ private:
   Topology* topo_ = nullptr;
   Topology* topoPending_ = nullptr;                 // popped, waiting for fades / queued packets
   uint32_t lastFrames_ = 0;
+  // M6 review M2: the history copies of grown delay lines share this budget per image block.
+  static constexpr uint64_t kCopyFloatsPerFrame = 1024;
+  uint64_t copyBlockSeq_ = ~uint64_t{0};            // the block copyLeft_ belongs to (stats_.blocks)
+  uint64_t copyLeft_ = 0;
+  uint64_t copyThisBlock_ = 0;
   bool quiet_ = false;                              // computeQuiet() at the end of the last process()
   float silence_ = 0.0f;
   TransportSnapshot transport_;

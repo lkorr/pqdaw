@@ -99,8 +99,8 @@ void Recorder::pushPiece(CaptureSet* set, int64_t engine, int64_t song, int64_t 
   s.session = session;
   s.captureSet = set->serial();
   if (segments_.sizeApprox() >= segments_.capacity()) {  // no room for the segment: the piece is lost whole
-    ++stats_.droppedSegments;
-    stats_.droppedFrames += s.frames;
+    bump(stats_.droppedSegments);
+    bump(stats_.droppedFrames, s.frames);
     dropped_.fetch_add(s.frames, std::memory_order_relaxed);
     return;
   }
@@ -110,14 +110,14 @@ void Recorder::pushPiece(CaptureSet* set, int64_t engine, int64_t song, int64_t 
   if (room) {
     const int64_t at = engine + off;  // captured now: inside this device block
     for (size_t i = 0; i < chans.size(); ++i) (void)set->ring(i).push(input(chans[i], at), s.frames);
-    stats_.capturedFrames += s.frames;
+    bump(stats_.capturedFrames, s.frames);
   } else {
     s.dropped = s.frames;
-    stats_.droppedFrames += s.frames;
+    bump(stats_.droppedFrames, s.frames);
     dropped_.fetch_add(s.frames, std::memory_order_relaxed);
   }
   (void)segments_.tryPush(s);
-  ++stats_.segments;
+  bump(stats_.segments);
 }
 
 void Recorder::capture(const Timeline& tl, int64_t time, uint32_t frames, uint32_t pdc) noexcept {  // RT-safe
@@ -137,10 +137,10 @@ void Recorder::capture(const Timeline& tl, int64_t time, uint32_t frames, uint32
     s.frames = r.len;
     s.session = session;
     if (segments_.sizeApprox() >= segments_.capacity()) {
-      ++stats_.droppedSegments;  // the run is lost to the time map
+      bump(stats_.droppedSegments);  // the run is lost to the time map
     } else {
       (void)segments_.tryPush(s);
-      ++stats_.segments;
+      bump(stats_.segments);
     }
     Played* last = playedCount_ != 0 ? &played_[(playedHead_ + kPlayedRuns - 1) % kPlayedRuns] : nullptr;
     if (last != nullptr && last->engine + last->len == s.engineTime && last->song + last->len == s.songSample) {
@@ -203,7 +203,7 @@ bool Recorder::monitor(const Timeline& tl, std::span<float> params) noexcept {  
     if (params[e.param] != v) {
       params[e.param] = v;
       changed = true;
-      ++stats_.monitorWrites;
+      bump(stats_.monitorWrites);
     }
   }
   return changed;

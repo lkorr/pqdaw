@@ -12,7 +12,8 @@
 // Latency: a click is queued at its beat's engine time plus `latency` (ProjectProgram::outputLatency, the master's
 // PDC total), so it sounds together with what the project plays on that beat.
 // Sound: a 15 ms decaying sine (2 kHz on the accent, 1 kHz otherwise), precomputed per sample rate at construction;
-// rendering adds the table times the level. Clicks may overlap (fast tempos); the queue holds kMaxClicks.
+// rendering adds the table times the level. Clicks may overlap (fast tempos); the queue holds kMaxClicks, kept in time
+// order (a click queued after the latency dropped goes before the later ones: M6 review L9).
 // Cost: with the metronome off and no count-in, Engine tests one flag per image block and one per device block;
 // a sounding click costs one multiply-add per frame and channel.
 //

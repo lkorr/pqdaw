@@ -1375,6 +1375,7 @@ Status ProjectLink::drainDeferred(bool& drained) {
       meterBus_ = std::move(d.meterMap);
       tapBus_ = std::move(d.tapMap);
       pendingLatency_.reset();  // T6.2: made for the layout this one replaces (d.latency follows)
+      planStale_ = true;        // M6 review L6: sent even when it equals the last one by indices (those were the old layout's)
       ++layoutSerial_;
       ++stats_.topologyChanges;
     } else {
@@ -1885,6 +1886,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
       LatencyJob job = planLatency(lp);
       prog.value()->setUnitInputs(job.inputs);  // T6.7
       lastPlan_.reset();
+      planStale_ = false;
       pendingLatency_.reset();
       if (!job.plan.none()) {
         if (Status st = prog.value()->setCompensation(job.plan); !st.ok()) return fail(st.error());
