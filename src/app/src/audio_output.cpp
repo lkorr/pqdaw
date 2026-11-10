@@ -201,6 +201,8 @@ void AudioOutput::setExtraSource(const engine::AudioCallback* cb) {
 bool AudioOutput::prepareAdapter(uint32_t deviceIns, uint32_t deviceOuts, uint32_t blockFrames,
                                  uint32_t deviceFrames) {  // control thread
   engineIns_ = std::min(deviceIns, engine::kMaxChannels);  // T6.7: the inputs reach the engine (tracks, recording)
+  if (engineIns_ != 0 && zeroIn_.size() < deviceFrames) zeroIn_ = AlignedBuffer<float>(deviceFrames);  // silence for a
+  // block the device delivers without its inputs
   engineOuts_ = std::max(std::min<uint32_t>(deviceOuts, 2), 1u);
   clickOuts_ = deviceOuts >= 4 ? 2u : 0u;  // T6.6: a cue pair exists
   if (clickOuts_ != 0) {

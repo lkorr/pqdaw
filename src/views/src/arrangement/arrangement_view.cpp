@@ -1030,7 +1030,11 @@ void ArrangementView::onFrame(double) { automation_->runPending(); }
 // T6.7: the live recording overlay. The rows of tracks whose regions changed are damaged from the earliest changed x
 // on (a growing region repaints only its new columns' part of the row and whatever moved).
 void ArrangementView::readRecording() {
-  RecordingOverlay before = recording_;
+  // What the damage compares (not the waveform: it can be large, and only grows with the regions).
+  RecordingOverlay before;
+  before.active = recording_.active;
+  before.regions = recording_.regions;
+  before.notes = recording_.notes;
   if (!ctx_.transport().recordingOverlay(recording_)) return;
   UiTree* tr = tree();
   if (!tr) return;
