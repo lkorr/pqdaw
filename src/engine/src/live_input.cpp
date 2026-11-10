@@ -201,6 +201,32 @@ void LiveInput::onNoteOn(const RawMidi& m, int64_t time, const LiveRouteImage& i
   }
 }
 
+void LiveInput::retuneHeld(const LiveRouteImage& img, const Block& b) noexcept {  // RT-safe
+  for (uint32_t i = 0; i < numHeld_; ++i) {
+    Held& h = held_[i];
+    const LivePitch* p = nullptr;
+    for (const LiveRouteImage::Target& t : img.targets(h.source, h.channel)) {
+      if (t.slot != h.slot) continue;
+      if (h.source == kLiveKeyboard) p = t.keyboard != nullptr && h.key < kKeyboardKeys ? &t.keyboard[h.key] : nullptr;
+      else p = &t.keys[h.key & 127u];
+      break;
+    }
+    if (p == nullptr || !p->mapped() || p->hz == h.hz) continue;  // unrouted now (its note-off still comes) or unmoved
+    const float bend = bendCents_[h.source * kLiveChannels + h.channel];
+    const float ratio = bend != 0.0f ? std::exp2(bend * (1.0f / 1200.0f)) : 1.0f;
+    NoteEvent e = engine::notePitch(0, h.noteId, p->hz * ratio);
+    e.flags = kNoteEventRetune;
+    e.degree = p->degree;
+    e.equave = p->equave;
+    e.tuning = p->tuning;
+    e.noteDegree = p->noteDegree;
+    if (queue(b.start, h.slot, e, false)) {
+      h.hz = p->hz;
+      ++stats_.retuned;
+    }
+  }
+}
+
 void LiveInput::bend(uint32_t source, uint32_t channel, float cents, int64_t time) noexcept {  // RT-safe
   float& cur = bendCents_[source * kLiveChannels + channel];
   if (cur == cents) return;
@@ -275,6 +301,19 @@ bool LiveInput::process(const Block& b) noexcept {  // RT-safe
     numPendingOffs_ = offs;
   }
   updateClock(b);
+  // TU.1: a new route image (a tuning edit that needs a new table: an EDO size, a MOS shape) gives a held key a new
+  // pitch: the note moves there at the block start (a Pitch event that also carries the new identity, as the
+  // timeline retunes a sounding drawn note on a sequence swap), keeping its bend. Continuous edits never get here:
+  // they keep the image (the tuning node retunes from its params).
+  bool retuned = false;
+  if (img != seenRoute_) {
+    seenRoute_ = img;
+    if (img != nullptr && numHeld_ != 0) {
+      const uint32_t before = numPending_;
+      retuneHeld(*img, b);
+      retuned = numPending_ != before;
+    }
+  }
   const uint32_t latency = latency_.load(std::memory_order_relaxed);
   const int64_t latest = b.start + latency + b.frames;  // a stamp from the future plays no later than this
   bool any = false;
@@ -282,7 +321,7 @@ bool LiveInput::process(const Block& b) noexcept {  // RT-safe
   const uint64_t activity = ports_->activity();
   if (activity == seenActivity_) {
     done_.store(epoch, std::memory_order_release);
-    return false;
+    return retuned;
   }
   seenActivity_ = activity;
   for (uint32_t s = 0; s < kLiveSources; ++s) {

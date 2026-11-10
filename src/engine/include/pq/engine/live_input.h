@@ -184,6 +184,7 @@ struct LiveInputStats {
   uint64_t lateEvents = 0;    // events that came after their time (played at frame 0)
   uint64_t overflowReleases = 0;  // held notes released because their port's ring overflowed
   uint64_t recordDrops = 0;   // LiveNoteRecords lost to a full record ring
+  uint64_t retuned = 0;       // TU.1: held notes moved to a new route image's pitch (a tuning that needed a new table)
 };
 
 class LiveInput {
@@ -251,6 +252,7 @@ private:
   void record(LiveNoteRecord::Kind kind, uint32_t slot, int64_t time, float velocity, const LivePitch* pitch,
               const RawMidi& m, const Block& b) noexcept;
   void updateClock(const Block& b) noexcept;
+  void retuneHeld(const LiveRouteImage& img, const Block& b) noexcept;
 
   LiveInputConfig cfg_;
   std::shared_ptr<LivePorts> ports_;
@@ -277,6 +279,7 @@ private:
   std::array<uint8_t, kLiveSources * kLiveChannels> sustain_{};  // pedal down per (source, channel)
   std::array<uint64_t, kLiveSources> seenOverflow_{};
   uint64_t seenActivity_ = 0;
+  const LiveRouteImage* seenRoute_ = nullptr;  // TU.1: the image of the last block (a new one retunes held notes)
   uint32_t nextNote_ = 0;
   // Clock filter: engine time anchorTime_ ↔ host time anchorHost_ (double: sub-tick).
   bool anchored_ = false;
