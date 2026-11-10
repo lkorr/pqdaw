@@ -193,12 +193,17 @@ std::shared_ptr<const Cables> cablesOf(const Project& p, const graph::PatchLibra
   if (wires.empty()) return c;
   WireList rest;
   rest.reserve(wires.size());
+  // PF.6: every device by id once (findDevice per device walks the whole project).
+  std::unordered_map<uint32_t, const Device*> byId;
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    for (const DevicePtr& d : t.devices) byId.emplace(d->id.value, d.get());
+  });
   std::unordered_map<uint32_t, MainPorts> ports;
   auto portsOf = [&](DeviceId id) -> const MainPorts& {
     auto it = ports.find(id.value);
     if (it == ports.end()) {
-      const DeviceLoc l = findDevice(p, id);
-      it = ports.emplace(id.value, l.device != nullptr ? lowerPortsOf(*l.device, lib, devices) : MainPorts{}).first;
+      const auto d = id.valid() ? byId.find(id.value) : byId.end();
+      it = ports.emplace(id.value, d != byId.end() ? lowerPortsOf(*d->second, lib, devices) : MainPorts{}).first;
     }
     return it->second;
   };
@@ -317,10 +322,21 @@ using MetaSlotOf = std::function<uint32_t(DeviceId, std::string_view, uint32_t)>
 
 bool addsAfterLaw(const Wire& w, const Device& d);  // TX.knob-curves (below)
 
+// PF.6: a project's wires by target device id (a mixer wire under its `to` as well; users filter).
+using WiresTo = std::unordered_map<uint32_t, std::vector<const Wire*>>;
+WiresTo wiresByTarget(const Project& p) {
+  WiresTo out;
+  out.reserve(wiresOf(p).size());
+  for (const Wire& w : wiresOf(p)) out[w.to.value].push_back(&w);
+  return out;
+}
+
 // TMM.3: expanding a project's meta modules (lower.h "Meta modules").
 class MetaExpander {
 public:
-  MetaExpander(const Project& p, UserCallees& u, const MetaSlotOf* slotOf) : p_(p), u_(u), slotOf_(slotOf) {}
+  // PF.6: `wiresTo`: the project's wires by target device id (makeCallees: built once, not scanned per device / param).
+  MetaExpander(const Project& p, UserCallees& u, const MetaSlotOf* slotOf, const WiresTo& wiresTo)
+      : p_(p), u_(u), slotOf_(slotOf), wiresTo_(wiresTo) {}
 
   MetaPatches& patches() {
     if (!u_.meta) {
@@ -356,8 +372,8 @@ public:
     // Travel wire never targets an input).
     std::vector<uint8_t> wired(type->inputs.size(), 0);
     bool anyWired = false;
-    for (const Wire& w : wiresOf(p_))
-      if (w.to == d.id && !w.travels())
+    for (const Wire* wp : into(d.id))
+      if (const Wire& w = *wp; !w.travels())
         if (const int32_t i = type->inputIndex(w.param); i >= 0 && type->inputs[static_cast<size_t>(i)].kind == graph::Kind::Real) {
           wired[static_cast<size_t>(i)] = 1;
           anyWired = true;
@@ -372,9 +388,13 @@ private:
     const ParamRef ref = ParamRef::device(d.id, name);
     for (const LanePtr& l : t.lanes)
       if (l->param == ref) return true;
-    for (const Wire& w : wiresOf(p_))
-      if (w.to == d.id && w.param == name) return true;
+    for (const Wire* w : into(d.id))
+      if (w->param == name) return true;
     return false;
+  }
+  std::span<const Wire* const> into(DeviceId d) const noexcept {
+    const auto it = wiresTo_.find(d.value);
+    return it != wiresTo_.end() ? std::span<const Wire* const>(it->second) : std::span<const Wire* const>();
   }
 
   const graph::Patch* expandInstance(const Device& d, const Track& t, const std::string& path, const meta::Type& type,
@@ -422,6 +442,7 @@ private:
   const Project& p_;
   UserCallees& u_;
   const MetaSlotOf* slotOf_;
+  const WiresTo& wiresTo_;
 };
 
 // TX.all-free: `p` is the project as lowered (Cables::q), `cables` its main paths.
@@ -432,7 +453,8 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
   u.callees.cables = std::move(cables);
   if (base == nullptr) return u;
   // TMM.3: meta modules — the native engines.
-  MetaExpander ex(p, u, metaSlotOf);
+  const WiresTo wiresTo = wiresByTarget(p);  // PF.6
+  MetaExpander ex(p, u, metaSlotOf, wiresTo);
   std::shared_ptr<const meta::Prelude> prelude;
   bool staged = false;  // TMM.10-fix1: every chain meta device's stage, computed at the first one met
   // TX.groups-fix1: a group's stage decides what it plays (Callees::groupCallee) and whether it takes the notes.
@@ -458,18 +480,24 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
     // GU.2: its members at any depth (a nested group is a member that runs per note because its parent does).
     const std::vector<const Device*> members = groupMembersDeep(c.home->devices, c.block->id);
     std::unordered_set<uint32_t> once;
+    std::unordered_set<uint32_t> memberIds;
+    memberIds.reserve(members.size());
+    for (const Device* m : members) memberIds.insert(m->id.value);
     auto inside = [&](const Wire& w) {
       if (w.fromNoteSource()) return w.noteSource == c.source;
       if (w.from == c.block->id) return w.port == kGroupInPort;
-      return std::any_of(members.begin(), members.end(), [&](const Device* m) { return m->id == w.from; });
+      return memberIds.count(w.from.value) != 0;
     };
     for (bool changed = true; changed;) {
       changed = false;
       for (const Device* m : members) {
         if (once.count(m->id.value) != 0) continue;
         bool any = false, all = true;
-        for (const Wire& w : wiresOf(p)) {
-          if (w.toMixer() || w.to != m->id || !inside(w)) continue;
+        const auto in = wiresTo.find(m->id.value);
+        if (in == wiresTo.end()) continue;
+        for (const Wire* wp : in->second) {  // PF.6: its own inputs only
+          const Wire& w = *wp;
+          if (w.toMixer() || !inside(w)) continue;
           // GU.9: a nested group's Out terminal is fed by its own members (what it gives, not what it takes).
           if (w.param == kGroupOutPort && isGroupDevice(*m)) continue;
           any = true;
@@ -1483,6 +1511,23 @@ struct WirePlan {
   // EQ.3: wires whose source was a mux block with a literal index, rewritten to start at the picked input's source (the
   // LWires point here; a deque: the addresses stay when the plan is moved).
   std::deque<Wire> folded;
+  // PF.6: per plan node, the indices into `wires` (ascending: id order) of the wires into it / out of it, so a track's
+  // patch looks at its own wires only (not every wire of the project per track, per group, per param).
+  std::vector<std::vector<uint32_t>> into, outOf;
+  // PF.6: each callee's call signature, made once per lowering (not per device instance: it builds the callee's
+  // adjacency). Keyed by the callee, which outlives the lowering's use of the plan.
+  mutable std::unordered_map<const graph::Patch*, graph::SubcircuitRef> signatures;
+  const graph::SubcircuitRef& signature(const graph::Patch& callee) const {
+    auto it = signatures.find(&callee);
+    if (it == signatures.end()) it = signatures.emplace(&callee, graph::subcircuitSignature(callee)).first;
+    return it->second;
+  }
+  std::span<const uint32_t> wiresInto(uint32_t node) const noexcept {
+    return node < into.size() ? std::span<const uint32_t>(into[node]) : std::span<const uint32_t>();
+  }
+  std::span<const uint32_t> wiresOutOf(uint32_t node) const noexcept {
+    return node < outOf.size() ? std::span<const uint32_t>(outOf[node]) : std::span<const uint32_t>();
+  }
 };
 
 // IG.1-2: the export a voice context's output crosses to its home's path under (a remote placeholder reads it).
@@ -1610,27 +1655,43 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     adj[devOut(r.host, r.hostDev, 0)].push_back(devOut(r.home, r.homeDev, 0));
     if (r.host != r.home) tadj[r.host].push_back(r.home);
   }
-  std::vector<uint8_t> seen;
+  // PF.6: what a point reaches, marked with a generation (no clearing of every point per wire); `stopAt`: stop once
+  // that point is reached (the marks are then partial: only "reached stopAt" is known).
+  struct Marks {
+    std::vector<uint32_t> m;
+    uint32_t gen = 0;
+    void reset(size_t n) {
+      if (m.size() != n || ++gen == 0) {
+        m.assign(n, 0);
+        gen = 1;
+      }
+    }
+    bool operator[](size_t i) const noexcept { return m[i] == gen; }
+  };
+  Marks seen;
   std::vector<uint32_t> stack;
-  auto reach = [&](const std::vector<std::vector<uint32_t>>& g, uint32_t from, std::vector<uint8_t>& mark) {
-    mark.assign(g.size(), 0);
+  auto reach = [&](const std::vector<std::vector<uint32_t>>& g, uint32_t from, Marks& mark, uint32_t stopAt = graph::kNone) {
+    mark.reset(g.size());
     stack.assign(1, from);
-    mark[from] = 1;
+    mark.m[from] = mark.gen;
+    if (from == stopAt) return true;
     while (!stack.empty()) {
       const uint32_t v = stack.back();
       stack.pop_back();
       for (uint32_t w : g[v])
-        if (!mark[w]) {
-          mark[w] = 1;
+        if (mark.m[w] != mark.gen) {
+          mark.m[w] = mark.gen;
+          if (w == stopAt) return true;
           stack.push_back(w);
         }
     }
+    return false;
   };
   // TMM.10-fix2: the plan node of each track (a note source's wires start at their track's node).
   std::unordered_map<uint32_t, uint32_t> nodeOfTrack;
   for (uint32_t n = 0; n < nodes; ++n)
     if (pl.nodes[n].track != nullptr) nodeOfTrack.emplace(pl.nodes[n].track->id.value, n);
-  std::vector<uint8_t> fwd, back;
+  Marks fwd, back;
   // Whether a wire from plan node `from` to plan node `to` would close a track cycle through two instrument tracks (the
   // partition could not run it: one voice table per unit, Q84; per-sample voices across two contexts are IG.3).
   auto twoInstruments = [&](uint32_t from, uint32_t to) {
@@ -1873,9 +1934,9 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
         }
         tadj[lw.fromNode].push_back(lw.toNode);
       }
-      reach(adj, to, seen);
-      lw.delayed = seen[from] != 0;
+      lw.delayed = reach(adj, to, seen, from);
       if (lw.delayed) {
+        reach(adj, to, seen);  // (voiceLoop reads all `to` reaches)
         if (voiceLoop(from, to)) {
           refuse(st);
           continue;
@@ -2001,9 +2062,9 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     // A delay-free cycle: the target reaches the source.
     const uint32_t from = lw.fromTrack ? nodeBase[lw.fromNode] : devOut(lw.fromNode, lw.fromDev, lw.fromPort);
     const uint32_t to = devIn(lw.toNode, lw.toDev, point);
-    reach(adj, to, seen);
-    lw.delayed = seen[from] != 0;
+    lw.delayed = reach(adj, to, seen, from);
     if (lw.delayed) {
+      reach(adj, to, seen);  // (voiceLoop reads all `to` reaches)
       // TMM.13-fix1 H3 / IG.1-2: across a voice sum (a single-signal path back into the voices: IG.3).
       if (voiceLoop(from, to) || (lw.reduce && voicePoint[to] == 1)) {
         refuse(st);
@@ -2020,13 +2081,21 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     std::stable_sort(wp.states.begin(), wp.states.end(), [](const WireState& a, const WireState& b) { return a.id < b.id; });
     std::stable_sort(wp.wires.begin(), wp.wires.end(), [](const LWire& a, const LWire& b) { return a.wire->id < b.wire->id; });
   }
+  wp.into.resize(pl.nodes.size());
+  wp.outOf.resize(pl.nodes.size());
+  for (uint32_t i = 0; i < wp.wires.size(); ++i) {
+    const LWire& w = wp.wires[i];
+    if (w.toNode < wp.into.size()) wp.into[w.toNode].push_back(i);
+    if (w.fromNode < wp.outOf.size()) wp.outOf[w.fromNode].push_back(i);
+  }
   return wp;
 }
 // A device's call node: named d<id>, NodeId nodeIdFor(Device, id, 0); the settings the user set become literals at
 // their `real const` inputs; params stay unconnected (runtime params d<id>__<name>, linked by the app).
 // EQ.3: a const input a value block's wire sets (WirePlan::constFeeds) takes that value instead of a setting.
 graph::NodeIndex callDevice(Ir& ir, const LDev& d, const WirePlan* wp) {
-  const graph::NodeIndex c = ir.call(graph::subcircuitSignature(*d.callee), nodeIdFor(NodeRole::Device, d.device->id.value, 0));
+  const graph::NodeIndex c = ir.call(wp != nullptr ? wp->signature(*d.callee) : graph::subcircuitSignature(*d.callee),
+                                     nodeIdFor(NodeRole::Device, d.device->id.value, 0));
   graph::Patch& p = ir.patch();
   p.setNodeName(c, "d" + std::to_string(d.device->id.value));
   const std::vector<std::pair<std::string, double>>* feeds = nullptr;
@@ -2281,8 +2350,8 @@ PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
   auto feeder = [&](uint32_t dev, auto match) -> const LWire* {
     const LWire* one = nullptr;
     uint32_t count = 0;
-    for (const LWire& w : b.wp->wires)
-      if (w.toNode == b.node && w.toDev == dev && w.input && !w.outGlobal && match(w)) {  // (per-note terms)
+    for (const uint32_t wi : b.wp->wiresInto(b.node))
+      if (const LWire& w = b.wp->wires[wi]; w.toDev == dev && w.input && !w.outGlobal && match(w)) {  // (per-note terms)
         ++count;
         one = &w;
       }
@@ -2298,8 +2367,8 @@ PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
   bool allEnd = true;
   {
     std::vector<const LWire*> heads;
-    for (const LWire& w : b.wp->wires)
-      if (w.toNode == b.node && w.toDev == k && w.input && !w.outGlobal && w.wire->param == kGroupOutPort) heads.push_back(&w);
+    for (const uint32_t wi : b.wp->wiresInto(b.node))
+      if (const LWire& w = b.wp->wires[wi]; w.toDev == k && w.input && !w.outGlobal && w.wire->param == kGroupOutPort) heads.push_back(&w);
     if (heads.empty()) allEnd = false;
     for (const LWire* in : heads) {
       if (in->fromNode != b.node || in->notes != nullptr || in->delayed || in->fromTrack) in = nullptr;
@@ -2334,8 +2403,9 @@ PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
   }
   if (!ended) end.dones.clear();
   bool voiceTerms = false;
-  for (const LWire& w : b.wp->wires) {
-    if (w.toNode != b.node || w.toDev != k || w.toMixer || w.wire->param != kGroupOutPort) continue;
+  for (const uint32_t wi : b.wp->wiresInto(b.node)) {
+    const LWire& w = b.wp->wires[wi];
+    if (w.toDev != k || w.toMixer || w.wire->param != kGroupOutPort) continue;
     voiceTerms = voiceTerms || !w.outGlobal;
   }
   PortRef v = y;
@@ -2349,8 +2419,10 @@ PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
     if (voiceTerms) v = b.ir.atom("mul", {y, env}, tid(7));
     end.ramp = b.ir.atom("and", {b.ir.atom("not", {gate}, tid(8)), b.ir.atom("le", {env, b.c0()}, tid(9))}, tid(10));
   }
-  const bool globals = std::any_of(b.wp->wires.begin(), b.wp->wires.end(), [&](const LWire& w) {
-    return w.toNode == b.node && w.toDev == k && w.outGlobal;
+  const std::span<const uint32_t> into = b.wp->wiresInto(b.node);
+  const bool globals = std::any_of(into.begin(), into.end(), [&](uint32_t wi) {
+    const LWire& w = b.wp->wires[wi];
+    return w.toDev == k && w.outGlobal;
   });
   // (No per-note term: nothing to sum — Out is its single-signal terms, added to −0, exact.)
   PortRef x = voiceTerms ? b.ir.atom("voice_sum", {v}, sid(0)) : b.ir.konst(-0.0, kCFreeZero);
@@ -2487,8 +2559,8 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     }
     return s;
   };
-  for (const LWire& w : wp.wires)
-    if (w.fromNode == node && w.toNode != node) ir.exportPort("m" + std::to_string(w.wire->id.value), source(w), wid(w, kWExport));
+  for (const uint32_t wi : wp.wiresOutOf(node))
+    if (const LWire& w = wp.wires[wi]; w.toNode != node) ir.exportPort("m" + std::to_string(w.wire->id.value), source(w), wid(w, kWExport));
 
   // A wire's signal where its target is (this patch): built here, or arriving across tracks; through a z1 when it
   // closes a delay-free loop.
@@ -2503,21 +2575,42 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
   // chain's signal, when the chain feeds it) plus every wire into it, in id order; an input nothing drove takes the
   // wires alone (a free device's placeholder zero goes).
   {
-    std::vector<std::pair<uint32_t, uint16_t>> done;  // (device, pin) already summed
-    for (size_t i = 0; i < wp.wires.size(); ++i) {
-      const LWire& f = wp.wires[i];
-      if (f.toNode != node || !f.input || f.toMixer) continue;  // (TX.all-free: the mixer's wires are buildPatch's)
-      const std::pair<uint32_t, uint16_t> key{f.toDev, static_cast<uint16_t>(f.toPin | (f.outGlobal ? 0x8000u : 0u))};
-      if (std::find(done.begin(), done.end(), key) != done.end()) continue;
-      done.push_back(key);
+    // PF.6: the node's input wires grouped by target (device, pin) in id order, and the single-signal terms by device
+    // (one pass, not a scan of the node's wires per input).
+    const std::span<const uint32_t> into = wp.wiresInto(node);  // this node's wires only (id order)
+    std::unordered_map<uint64_t, std::vector<uint32_t>> byPin;  // (device, pin) → positions in `into`
+    std::unordered_map<uint32_t, std::vector<uint32_t>> globalsTo;  // device → positions of its outGlobal wires
+    for (uint32_t i = 0; i < into.size(); ++i) {
+      const LWire& w = wp.wires[into[i]];
+      if (w.outGlobal) globalsTo[w.toDev].push_back(i);
+      else if (w.input && !w.toMixer) byPin[(static_cast<uint64_t>(w.toDev) << 16) | w.toPin].push_back(i);
+    }
+    std::vector<std::pair<uint32_t, uint16_t>> done;  // (device, pin) of the single-signal sums made
+    // PF.6: the patch's wires by target pin, made at the first input (instead of a scan of the patch per input). Wires
+    // added below go to new nodes or to inputs already summed, so the index stays exact for the inputs still to come.
+    bool indexed = false;
+    std::unordered_map<uint64_t, std::vector<graph::WireIndex>> wiresAt;
+    auto pinKey = [](PortRef r) { return (static_cast<uint64_t>(r.node) << 16) | r.port; };
+    for (uint32_t i = 0; i < into.size(); ++i) {
+      const LWire& f = wp.wires[into[i]];
+      if (!f.input || f.toMixer) continue;  // (TX.all-free: the mixer's wires are buildPatch's)
+      const std::vector<uint32_t>* group = nullptr;  // the (device, pin)'s wires, when `f` is its first
+      if (f.outGlobal) {
+        const std::pair<uint32_t, uint16_t> key{f.toDev, f.toPin};
+        if (std::find(done.begin(), done.end(), key) != done.end()) continue;
+        done.push_back(key);
+      } else {
+        group = &byPin.at((static_cast<uint64_t>(f.toDev) << 16) | f.toPin);
+        if (group->front() != i) continue;  // summed at its first wire
+      }
       const PortRef pin{b.calls[f.toDev], f.toPin};
       // IG.1-2: the single-signal terms into an instrument group's Out: added once after the voices' sum (playGroup).
       if (f.outGlobal) {
         PortRef gsum = kPending;
         bool gfirst = true;
-        for (size_t j = i; j < wp.wires.size(); ++j) {
-          const LWire& w = wp.wires[j];
-          if (w.toNode != node || !w.outGlobal || w.toDev != f.toDev) continue;
+        for (const uint32_t j : globalsTo.at(f.toDev)) {
+          if (j < i) continue;
+          const LWire& w = wp.wires[into[j]];
           const PortRef src = arriving(w);
           gsum = gsum.node == graph::kNone ? src : ir.atom("add", {gsum, src}, wid(w, gfirst ? kWTerm : kWSum));
           gfirst = false;
@@ -2528,20 +2621,30 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       if (pin.node == graph::kNone) continue;
       graph::Patch& p = ir.patch();
       PortRef sum = kPending;
-      for (graph::WireIndex x = 0; x < p.wireCount() && pin.node != graph::kNone; ++x)
-        if (p.wire(x).to == pin) {
-          const PortRef from = p.wire(x).from;
-          p.disconnect(x);
-          if (!(from == b.freeZero)) sum = from;
-          break;
-        }
+      // The pin's first wire (the lowest index), taken off: what the input read before.
+      if (!indexed) {
+        indexed = true;
+        for (graph::WireIndex x = 0; x < p.wireCount(); ++x) wiresAt[pinKey(p.wire(x).to)].push_back(x);
+      }
+      if (const auto at = wiresAt.find(pinKey(pin)); at != wiresAt.end() && !at->second.empty()) {
+        auto first = std::min_element(at->second.begin(), at->second.end());
+        const graph::WireIndex x = *first;
+        const graph::WireIndex last = p.wireCount() - 1;
+        const PortRef moved = p.wire(last).to;
+        const PortRef from = p.wire(x).from;
+        p.disconnect(x);  // (the last wire takes its index)
+        at->second.erase(first);
+        if (last != x)
+          if (const auto m = wiresAt.find(pinKey(moved)); m != wiresAt.end())
+            std::replace(m->second.begin(), m->second.end(), last, x);
+        if (!(from == b.freeZero)) sum = from;
+      }
       // TX.groups-fix1: chain links first (Wire::chain: a grouped series' link is what the chain gave the input), then
       // the other wires in id order.
       bool first = true;
       for (const bool chainPass : {true, false})
-        for (size_t j = i; j < wp.wires.size(); ++j) {
-          const LWire& w = wp.wires[j];
-          if (w.toNode != node || !w.input || w.toMixer || w.toDev != f.toDev || w.toPin != f.toPin || w.outGlobal) continue;
+        for (const uint32_t j : *group) {
+          const LWire& w = wp.wires[into[j]];
           if (w.wire->chain != chainPass) continue;
           const PortRef src = arriving(w);
           sum = sum.node == graph::kNone ? src : ir.atom("add", {sum, src}, wid(w, first ? kWTerm : kWSum));
@@ -2566,9 +2669,10 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     sites.push_back(std::move(s));
     return sites.back();
   };
-  sites.reserve(wp.wires.size());
-  for (const LWire& w : wp.wires) {
-    if (w.toNode != node || w.input) continue;  // TX.patching: inputs were summed above
+  sites.reserve(wp.wiresInto(node).size());
+  for (const uint32_t wi : wp.wiresInto(node)) {
+    const LWire& w = wp.wires[wi];
+    if (w.input) continue;  // TX.patching: inputs were summed above
     siteOf(w.toDev, td[w.toDev].callee->nodeName(w.paramNode)).wires.push_back(&w);
   }
   // GU.1: every real param of a lowered device that an automation lane drives (its curve atom after the knob).
@@ -3044,8 +3148,9 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
   // track's own signal; through a z1 when it closes a loop). Nothing: silence.
   {
     PortRef y = devs.complete ? x : kPending;
-    for (const LWire& w : wp.wires) {
-      if (w.toNode != index || !w.toMixer) continue;
+    for (const uint32_t wi : wp.wiresInto(index)) {
+      const LWire& w = wp.wires[wi];
+      if (!w.toMixer) continue;
       auto wid = [&](uint32_t k) { return nodeIdFor(NodeRole::Wire, w.wire->id.value, k); };
       PortRef src;
       if (w.fromNode != index) {  // TX.all-free-fix1: from another track (a send-like route): every channel, summed voices
@@ -3083,8 +3188,8 @@ bool paramDriven(const Plan& pl, const TrackDevs& td, uint32_t dev, std::string_
   const LDev& d = td[dev];
   if (d.callee == nullptr) return false;
   if (pl.laneOf(d.device->id, name) != 0) return true;
-  for (const LWire& w : wp.wires)
-    if (w.toNode == node && w.toDev == dev && !w.input && d.callee->nodeName(w.paramNode) == name) return true;
+  for (const uint32_t wi : wp.wiresInto(node))
+    if (const LWire& w = wp.wires[wi]; w.toDev == dev && !w.input && d.callee->nodeName(w.paramNode) == name) return true;
   return false;
 }
 
@@ -3094,8 +3199,8 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
   const Track& t = *n.track;
   const std::string id = std::to_string(t.id.value);
   // T4.7: the amount of every wire into this track (a param of the target's patch).
-  for (const LWire& w : wp.wires)
-    if (w.toNode == index && w.wire->travels()) {  // TX.patching: an added wire has no amount
+  for (const uint32_t wi : wp.wiresInto(index))
+    if (const LWire& w = wp.wires[wi]; w.wire->travels()) {  // TX.patching: an added wire has no amount
       const std::string wid = std::to_string(w.wire->id.value);
       out.push_back(LoweredParam{"wire" + wid + ":amount", index, "w" + wid, static_cast<float>(w.wire->amount),
                                  ParamRef::wireAmount(w.wire->id)});
@@ -3224,13 +3329,21 @@ namespace {
 // GU.f4: what lowersAsLiteral reads of a project, indexed once (plan() asks it of every value block).
 struct LiteralIndex {
   std::unordered_map<uint32_t, std::vector<const Wire*>> from;  // device id → the wires out of it
+  std::unordered_map<uint32_t, std::vector<const Wire*>> into;  // PF.6: device id → the wires into it
   std::unordered_set<uint32_t> driven;                          // devices a wire goes into
   std::unordered_set<uint32_t> laned;                           // devices with a lane on their `value`
   std::unordered_map<uint32_t, const Device*> devices;
   explicit LiteralIndex(const Project& p) {
+    const size_t wires = wiresOf(p).size();
+    from.reserve(wires);
+    driven.reserve(wires);
+    into.reserve(wires);
     for (const Wire& w : wiresOf(p)) {
       if (w.from.valid()) from[w.from.value].push_back(&w);
-      if (w.to.valid()) driven.insert(w.to.value);
+      if (w.to.valid()) {
+        driven.insert(w.to.value);
+        into[w.to.value].push_back(&w);
+      }
     }
     const uint32_t valueHash = deviceParamHash(kValueParam);
     forEachTrack(p, [&](const Track& t, const Track*) {
@@ -3238,6 +3351,33 @@ struct LiteralIndex {
         if (l->param.kind == ParamKind::DeviceParam && l->param.target == valueHash) laned.insert(l->param.owner);
       for (const DevicePtr& d : t.devices) devices.emplace(d->id.value, d.get());
     });
+    // PF.6: the devices whose output reaches a choice's index through active atom blocks (literalIn's walk, once for
+    // the whole project): a wire into an active mux / demux `index` or select `cond` marks its source; a marked active
+    // atom block marks every device wired into it.
+    std::vector<uint32_t> stack;
+    auto mark = [&](uint32_t id) {
+      if (choosing.insert(id).second) stack.push_back(id);
+    };
+    for (const Wire& w : wiresOf(p)) {
+      if (!w.from.valid() || !w.to.valid() || w.toMixer()) continue;
+      const Device* t = activeAtom(w.to.value);
+      if (t == nullptr) continue;
+      const std::string_view atom = atomDeviceName(*t);
+      if (((atom == "mux" || atom == "demux") && w.param == "index") || (atom == "select" && w.param == "cond")) mark(w.from.value);
+    }
+    while (!stack.empty()) {
+      const uint32_t at = stack.back();
+      stack.pop_back();
+      if (activeAtom(at) == nullptr) continue;  // the walk passes through active atom blocks only
+      if (const auto in = into.find(at); in != into.end())
+        for (const Wire* w : in->second)
+          if (w->from.valid() && !w->toMixer()) mark(w->from.value);
+    }
+  }
+  std::unordered_set<uint32_t> choosing;  // PF.6: see above
+  const Device* activeAtom(uint32_t id) const {
+    const auto t = devices.find(id);
+    return t != devices.end() && t->second->active && isAtomDevice(*t->second) ? t->second : nullptr;
   }
 };
 
@@ -3259,24 +3399,8 @@ bool literalIn(const LiteralIndex& ix, const Device& d) {
   if (c == nullptr || !(c->step > 0.0 || c->min == c->max)) return false;
   if (ix.driven.count(d.id.value) != 0 || ix.laned.count(d.id.value) != 0) return false;  // driven
   if (feedsConstIn(ix, d)) return true;  // EQ.3: a structural input's value
-  // Forward through atom blocks to a choice's index (each block visited once: bounded by the block count).
-  std::vector<uint32_t> stack{d.id.value};
-  std::unordered_set<uint32_t> seen{d.id.value};
-  while (!stack.empty()) {
-    const uint32_t at = stack.back();
-    stack.pop_back();
-    const auto out = ix.from.find(at);
-    if (out == ix.from.end()) continue;
-    for (const Wire* w : out->second) {
-      if (!w->to.valid() || w->toMixer()) continue;
-      const auto t = ix.devices.find(w->to.value);
-      if (t == ix.devices.end() || !t->second->active || !isAtomDevice(*t->second)) continue;
-      const std::string_view atom = atomDeviceName(*t->second);
-      if (((atom == "mux" || atom == "demux") && w->param == "index") || (atom == "select" && w->param == "cond")) return true;
-      if (seen.insert(w->to.value).second) stack.push_back(w->to.value);
-    }
-  }
-  return false;
+  // Forward through atom blocks to a choice's index (LiteralIndex::choosing: that walk, made once).
+  return ix.choosing.count(d.id.value) != 0;
 }
 
 std::unordered_set<uint32_t> literalValueBlocks(const Project& p) {
@@ -3457,23 +3581,23 @@ Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const Lowe
   if (!p.master) return Error{ErrorCode::InvalidArgument, "lower: the project has no master", {}};
   if (o.library == nullptr) return Error{ErrorCode::InvalidArgument, "lower: no device library", {}};
   // TX.all-free: the main paths, and the project as lowered (its other wires by name; lower.h "The main path").
-  std::shared_ptr<const Cables> cables = cablesOf(p, o.library, o.devices);
+std::shared_ptr<const Cables> cables = cablesOf(p, o.library, o.devices);
   const Project& q = cables->q;
-  UserCallees uc = makeCallees(q, cables, o.library, true, &o.metaSlotOf);  // TMM.3 meta modules
+UserCallees uc = makeCallees(q, cables, o.library, true, &o.metaSlotOf);  // TMM.3 meta modules
   const Callees* lib = &uc.callees;
-  const Plan pl = plan(q, &o.tuningTableOf, lib);
-  const AudibilityMap aud = computeAudibility(q, AudibilityOptions{true});
+const Plan pl = plan(q, &o.tuningTableOf, lib);
+const AudibilityMap aud = computeAudibility(q, AudibilityOptions{true});
   LoweredProject out;
   out.graph.library = lib->lib;
   out.userLibrary = std::move(uc.combined);
   out.deviceErrors = std::move(uc.errors);
   out.metaPatches = std::move(uc.meta);
   out.metaResources = std::move(uc.metaResources);
-  const std::vector<TrackDevs> devs = allDevices(pl, lib, &out.missingDevices);
-  PortDeps deps(lib->lib);
-  const WirePlan wp = planWires(q, pl, devs, deps, lib);  // T4.7
-  const OsRegions os = oversampledGroups(q);  // TX.group-oversample
-  out.wires = withLinks(wp.states, *cables, pl);
+const std::vector<TrackDevs> devs = allDevices(pl, lib, &out.missingDevices);
+PortDeps deps(lib->lib);
+const WirePlan wp = planWires(q, pl, devs, deps, lib);  // T4.7
+const OsRegions os = oversampledGroups(q);  // TX.group-oversample
+out.wires = withLinks(wp.states, *cables, pl);
   std::unordered_map<uint32_t, std::shared_ptr<const LoweredPatch>> prev;  // track id → its previous patch
   if (previous != nullptr)
     for (size_t j = 0; j < previous->trackIds.size(); ++j) prev.emplace(previous->trackIds[j].value, previous->patches[j]);
