@@ -8,11 +8,13 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <memory>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "playback_fixture.h"
@@ -436,4 +438,48 @@ TEST_CASE("T6.7 recording: overdub merges notes into the main lane's clip; witho
       CHECK(tr.clips[0].take == tr.takes[1]->id);
     }
   }
+}
+
+// The plan's throughput check (perf: wall-clock, disk-bound; run with -Perf): 16 armed mono inputs at 48 kHz, engine
+// blocks of 64, 10 minutes of audio paced at 4× real time (the disk thread must keep up with 4× the real rate), the
+// writer on the sample pool's disk thread as in the app → no dropped frame, every file whole.
+TEST_CASE("T6.7 recording: 16 mono inputs for 10 minutes at 4x real time drop nothing" * doctest::test_suite("perf")) {
+  Rig r;
+  std::vector<TrackId> tracks;
+  for (uint16_t c = 0; c < 16; ++c) tracks.push_back(r.audioTrack(AudioInput{c, 1}));
+  for (TrackId t : tracks) r.arm(t);
+  r.start();
+  r.link->flush();
+  // 16 inputs: the rig's two source channels repeated.
+  std::vector<std::vector<float>> in(16, std::vector<float>(kBlock));
+  const float* ins[16];
+  for (uint32_t c = 0; c < 16; ++c) ins[c] = in[c].data();
+  float* outs[2] = {r.l.data(), r.r.data()};
+  r.link->record(0);
+  const uint64_t blocks = 10ull * 60 * 48000 / kBlock;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (uint64_t b = 0; b < blocks; ++b) {
+    for (uint32_t c = 0; c < 16; ++c)
+      for (uint32_t f = 0; f < kBlock; ++f) in[c][f] = source(c & 1u, r.time + f);
+    r.link->engine().process(engine::AudioBlock{ins, 16, outs, 2, kBlock, r.time});
+    r.time += kBlock;
+    if ((b & 63) == 63) {
+      (void)r.link->playhead();
+      // 4× real time: block b ends at (b + 1) · 64 / 48000 / 4 s.
+      const auto due = t0 + std::chrono::duration<double>(static_cast<double>(b + 1) * kBlock / 48000.0 / 4.0);
+      std::this_thread::sleep_until(std::chrono::time_point_cast<std::chrono::steady_clock::duration>(due));
+    }
+  }
+  CHECK(r.link->engine().recorder().droppedFrames() == 0);
+  r.link->stop();
+  r.run(4);
+  REQUIRE(r.link->recordCommits() == 1);
+  for (TrackId t : tracks) {
+    const Track& tr = r.track(t);
+    REQUIRE(tr.clips.size() == 1);
+    const SampleRef& s = r.sampleOf(*tr.clips[0].audio);
+    CHECK(s.frames == static_cast<int64_t>(blocks * kBlock));
+  }
+  MESSAGE("16 inputs x 10 min at 4x real time: " << std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()
+                                                  << " s, dropped " << r.link->engine().recorder().droppedFrames());
 }

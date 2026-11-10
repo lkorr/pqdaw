@@ -1214,3 +1214,16 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   (Q?-TU.1-a); a MOS *shape* change on a main tuning can sound a short wrong pitch until the recompile lands.
 - Goldens moved (meant to): mos-chart-default, mos-chart-zoomed, mos-circle-5L2s, mos-circle-modmos,
   mos-wheel-popover, mos-wheel-popover-1.5x.
+
+## 2026-11-10 · T6.7 · Recording (👁 + a hand check)
+- **Real ASIO multi-input** (cannot be tested here): with an ASIO interface, Preferences → Audio inputs ≥ 2; add audio
+  tracks, mixer view → "Audio From" = In 1, In 2 (or In 1/2), arm them. Stopped: the inputs are heard (Monitor Auto).
+  Record (F9) with a click track or a hand clap against the metronome: the recorded clap should sit on the beat (the
+  record latency = the driver's reported in + out latency + PDC; a driver that misreports shows a constant offset).
+  Loop 2 bars, record 3 passes: 3 take lanes, the last in the main lane, files under <project>/samples/recorded.
+- Arrangement while recording: the armed tracks show a red-tinted region growing with the playhead, a waveform for
+  audio, note bars for MIDI; at Stop it is replaced by the committed clips (one Ctrl+Z removes the whole take).
+- Audio tracks now have the arm button in their headers and strips (8 goldens re-recorded for that column only:
+  arrangement-audio, clip-view-audio, browser-panel, browser-search, browser-hotswap, device-meta-scope,
+  device-meta-spectrogram, device-meta-spectrum). Mixer view: an audio strip shows "Audio From" and "Monitor".
+- To judge: the overlay's tint / waveform contrast; whether the Record button should blink while recording (it is lit).

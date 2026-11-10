@@ -381,6 +381,12 @@ std::string monitorLabel(doc::MonitorMode m) {
   return {};
 }
 
+std::string audioInLabel(const doc::AudioInput& in) {  // T6.7
+  if (in.none()) return "No Input";
+  const std::string a = std::to_string(in.firstChannel + 1);
+  return in.channels == 1 ? "In " + a : "In " + a + "/" + std::to_string(in.firstChannel + 2);
+}
+
 std::string outputLabel(const doc::Project& p, const doc::Track& t) {
   switch (t.mixer.output.kind) {
     case doc::OutputKind::Default: {

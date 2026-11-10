@@ -83,6 +83,13 @@ public:
   }
 
   double outputLatencyMs() override { return latencyMs; }  // T6.6
+  uint32_t audioInputChannels() override { return inputs; }  // T6.7
+  bool recordingOverlay(RecordingOverlay& out) override {   // T6.7: `overlay` whenever its revision moved
+    ++overlayReads;
+    if (out.revision == overlay.revision) return false;
+    out = overlay;
+    return true;
+  }
   double trackLatencyMs(uint32_t trackId) override {
     for (const auto& [id, ms] : trackLatency)
       if (id == trackId) return ms;
@@ -118,6 +125,9 @@ public:
   TransportLoop loop{};
   double latencyMs = 0.0;                                  // T6.6: what outputLatencyMs reports
   std::vector<std::pair<uint32_t, double>> trackLatency;   // T6.6: trackLatencyMs per track id
+  uint32_t inputs = 0;                                     // T6.7: audioInputChannels
+  RecordingOverlay overlay;                                // T6.7: what recordingOverlay hands out (bump its revision)
+  uint64_t overlayReads = 0;
 
 private:
   PlayheadSnapshot state_{};

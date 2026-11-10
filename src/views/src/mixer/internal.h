@@ -53,6 +53,7 @@ public:
   void openChannelMenu(ui::Widget& chooser, doc::TrackId id);
   void openNoteInputMenu(ui::Widget& chooser, doc::TrackId id);
   void openMonitorMenu(ui::Widget& chooser, doc::TrackId id);
+  void openAudioInMenu(ui::Widget& chooser, doc::TrackId id);  // T6.7
 
   // --- meters ---
   void addStrip(MixerStrip* s);
@@ -132,6 +133,8 @@ std::string midiInLabel(const doc::MidiInput& in);
 std::string channelLabel(const doc::MidiInput& in);
 std::string noteInputLabel(const doc::NoteInput& in);
 std::string monitorLabel(doc::MonitorMode m);
+// T6.7: an audio track's input ("No Input", "In 3", "In 1/2").
+std::string audioInLabel(const doc::AudioInput& in);
 // T3.14's tuning chip for a track (a left click opens the MOS wheel for the track), plus a right-click menu that
 // assigns the track a main tuning or Inherit (the wheel only commits private tunings).
 class TrackTuningChip : public TuningChip {

@@ -900,6 +900,7 @@ public:
   void setRecordStore(doc::DocumentStore* store) noexcept { recordStore_ = store; }
   RecordingService& recording() noexcept { return *recording_; }
   std::string recordDir() const;
+  std::string unsavedRecordDir() const;  // where an untitled project records
   uint64_t recordCommits() const noexcept { return recordCommits_; }
   uint32_t audioInputChannels() override;                        // views::TransportPort
   bool recordingOverlay(views::RecordingOverlay& out) override;  // views::TransportPort

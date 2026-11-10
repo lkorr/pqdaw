@@ -214,6 +214,10 @@ public:
   Status saveProject();
   // Saves to `dirUtf8` (created if needed); the project is then titled `dirUtf8`.
   Status saveProjectAs(std::string_view dirUtf8);
+  // T6.7 (Q?-M6-a item 4): where an untitled project's recordings go (the playback link's unsaved folder). The first save
+  // of an untitled project moves every sample file under it into <project>/samples/recorded (a copy when a move is
+  // refused) and stores them project-relative.
+  void setUnsavedRecordingDir(std::string dirUtf8) { unsavedRecordingDir_ = std::move(dirUtf8); }
   const std::string& projectDir() const noexcept { return projectDir_; }
   std::string projectName() const { return projectNameOf(projectDir_); }
   // The document differs from the last saved/loaded one (pointer comparison: undoing back to it is clean again), or
@@ -543,12 +547,14 @@ private:
   void declareViewActions(std::span<const std::string_view> ids);
   // Asks about unsaved changes; runs `proceed` when it may go ahead (possibly after an asynchronous save-as).
   void guardUnsaved(std::function<void()> proceed);
+  void moveUnsavedRecordings(std::string_view dirUtf8);  // T6.7
 
   TransportPort& transport_;
   ComputerKeyboard computerKeyboard_{transport_};  // T6.4
   doc::DocumentStore store_;
   doc::Snapshot saved_;  // the snapshot last saved or loaded (dirty() compares pointers)
   std::string projectDir_;
+  std::string unsavedRecordingDir_;  // T6.7
   bool lastDirty_ = false;
   bool viewStateDirty_ = false;  // ViewState edited since the last save / load
   doc::ListenerId storeListener_ = 0;

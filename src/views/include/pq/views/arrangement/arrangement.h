@@ -437,6 +437,9 @@ public:
   // ---- transport ---------------------------------------------------------------------------------------------
   // The playhead tick last read from the port while playing (nullopt when stopped).
   const std::optional<Ticks>& playhead() const noexcept { return playhead_; }
+  // T6.7: the running recording session as the lanes draw it (TransportPort::recordingOverlay, read with the playhead
+  // while recording; its regions on the recorded tracks' rows, without touching the document).
+  const RecordingOverlay& recording() const noexcept { return recording_; }
   // Locates (the ruler click): start marker + port.locate, `tick` snapped when the grid snaps.
   void locateAt(Ticks tick, bool snapToGrid = true);
 
@@ -553,6 +556,8 @@ private:
   bool follow_ = true;
   std::optional<Ticks> playhead_;
   uint32_t playheadTimer_ = 0;
+  RecordingOverlay recording_;  // T6.7
+  void readRecording();         // T6.7: the overlay, damaging the rows whose regions changed
   bool zooming_ = false;
   uint32_t settleTimer_ = 0;
 };

@@ -610,6 +610,7 @@ void ProjectLink::attach(views::ViewContext& ctx) {
   ctx_ = &ctx;
   // EQ.4b: the response displays read this link's lowerings (ViewContext::setLowering) instead of lowering themselves.
   ctx.setLoweringProvided(true);
+  ctx.setUnsavedRecordingDir(unsavedRecordDir());  // T6.7: moved into the project on its first save
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onDocumentChange(e); });
   // "Re-enable Automation" and hand-made overrides (T3.15) change which lanes play (T3.17-fix3, M3 review M4).
   observer_ = ctx.observe([this](uint32_t what) {

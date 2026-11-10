@@ -817,6 +817,63 @@ void paintGroupSummary(LanePaint& lp, const doc::Track& group, float top, float 
 
 }  // namespace
 
+// T6.7: the live recording overlay on one row: each region of the running session (arm-red tint, a top edge), an
+// audio region's waveform from the session's peaks (one min / max column per device pixel), the notes played so far
+// (by pitch between the row's lowest and highest). Nothing of it is document state.
+void paintRecording(LanePaint& lp, const ArrangementRow& row, float top, float bottom) {
+  const RecordingOverlay& ov = lp.view.recording();
+  if (!ov.active) return;
+  DrawList& dl = lp.ctx.dl;
+  const float cx0 = static_cast<float>(lp.c.x), cx1 = static_cast<float>(lp.c.right());
+  const Rgba arm = lp.th.accent.arm;
+  const float edge = static_cast<float>(std::max(1, lp.ctx.scale.px(2.0f)));
+  for (const RecordingOverlay::Region& g : ov.regions) {
+    if (g.trackId != row.id.value) continue;
+    const float rx0 = std::floor(lp.X(static_cast<double>(g.start))), rx1 = std::floor(lp.X(static_cast<double>(g.end)));
+    const float x0 = std::max(cx0, rx0), x1 = std::min(cx1, rx1);
+    if (x1 <= x0) continue;
+    dl.addRectFilled({x0, top, x1, bottom}, withAlpha(arm, 46));
+    dl.addRectFilled({x0, top, x1, top + edge}, arm);
+    if (!g.audio || g.peakList >= ov.peaks.size() || g.peakCount == 0 || g.end <= g.audioStart) continue;
+    const std::vector<float>& pk = ov.peaks[g.peakList];
+    const float mid = 0.5f * (top + edge + bottom), half = 0.5f * (bottom - top - edge) - 1.0f;
+    const double span = static_cast<double>(g.end - g.audioStart);
+    for (float x = x0; x < x1; x += 1.0f) {
+      const double t0 = lp.origin + (static_cast<double>(x) - lp.r.x) / lp.k, t1 = t0 + 1.0 / lp.k;
+      const double f0 = (t0 - static_cast<double>(g.audioStart)) / span, f1 = (t1 - static_cast<double>(g.audioStart)) / span;
+      if (f1 <= 0.0 || f0 >= 1.0) continue;
+      const auto b0 = static_cast<size_t>(g.peak0 + std::clamp(f0, 0.0, 1.0) * g.peakCount);
+      const size_t b1 = std::max(b0 + 1, static_cast<size_t>(g.peak0 + std::clamp(f1, 0.0, 1.0) * g.peakCount));
+      float lo = 0.0f, hi = 0.0f;
+      for (size_t b = b0; b < b1 && 2 * b + 1 < pk.size(); ++b) {
+        lo = std::min(lo, pk[2 * b]);
+        hi = std::max(hi, pk[2 * b + 1]);
+      }
+      if (hi <= lo) continue;
+      dl.addRectFilled({x, mid - std::min(hi, 1.0f) * half, x + 1.0f, std::max(mid - std::max(lo, -1.0f) * half, mid - std::min(hi, 1.0f) * half + 1.0f)},
+                       withAlpha(arm, 220));
+    }
+  }
+  double lo = 0.0, hi = 0.0;
+  for (const RecordingOverlay::Note& n : ov.notes)
+    if (n.trackId == row.id.value && n.hz > 0.0) {
+      lo = lo == 0.0 ? n.hz : std::min(lo, n.hz);
+      hi = std::max(hi, n.hz);
+    }
+  if (lo <= 0.0) return;
+  const float nh = std::max(2.0f, std::floor((bottom - top - edge) / 24.0f));
+  const double range = hi > lo ? std::log2(hi / lo) : 1.0;
+  for (const RecordingOverlay::Note& n : ov.notes) {
+    if (n.trackId != row.id.value || !(n.hz > 0.0)) continue;
+    const float x0 = std::max(cx0, std::floor(lp.X(static_cast<double>(n.start))));
+    const float x1 = std::min(cx1, std::max(x0 + 1.0f, std::floor(lp.X(static_cast<double>(n.start + n.length)))));
+    if (x1 <= x0) continue;
+    const double f = hi > lo ? std::log2(n.hz / lo) / range : 0.5;
+    const float y = std::floor(bottom - 2.0f - nh - static_cast<float>(f) * (bottom - top - edge - 4.0f - nh));
+    dl.addRectFilled({x0, y, x1, y + nh}, arm);
+  }
+}
+
 void LaneCanvas::paint(PaintContext& ctx) {
   const Theme* thp = ctx.res.theme;
   if (!thp) return;
@@ -925,6 +982,11 @@ void LaneCanvas::paint(PaintContext& ctx) {
                             ed.selected(t.clips[j].id) || (hoverRow && t.clips[j].id == hp.ref.clip));
   }
   flushTiles(lp);
+  // T6.7: the recording overlay over the rows' clips.
+  if (view_.recording().active)
+    for (auto it = first; it != last; ++it)
+      if (!it->group)
+        paintRecording(lp, *it, static_cast<float>(r.y + it->y) + 1.0f, static_cast<float>(r.y + it->y + it->h) - 2.0f);
 
   // 3b. Editing (T3.9): the time selection (lighter over the selected rows; the insert marker a line), then the
   // clips being dragged, drawn at their target.

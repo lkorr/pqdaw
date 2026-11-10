@@ -138,6 +138,7 @@ public:
   ui::Control* output() const noexcept { return output_; }
   // T6.4: a MIDI track's input section (mixer view only; null otherwise).
   ui::Control* midiIn() const noexcept { return midiIn_; }
+  ui::Control* audioIn() const noexcept { return audioIn_; }  // T6.7: an audio track's input chooser
   ui::Control* midiChannel() const noexcept { return channel_; }
   ui::Control* noteInput() const noexcept { return noteInput_; }
   ui::Control* monitor() const noexcept { return monitor_; }
@@ -187,6 +188,7 @@ private:
   std::vector<SendBox> sends_;
   ui::Control* output_ = nullptr;
   ui::Control *midiIn_ = nullptr, *channel_ = nullptr, *noteInput_ = nullptr, *monitor_ = nullptr;  // T6.4
+  ui::Control* audioIn_ = nullptr;  // T6.7
   ui::DragBox* delay_ = nullptr;  // T6.6
   ui::Label* latency_ = nullptr;
   double latencyShown_ = -1.0;

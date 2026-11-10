@@ -290,6 +290,34 @@ void MixerController::openMonitorMenu(Widget& chooser, doc::TrackId id) {
   (void)openUnder(chooser, std::move(items));
 }
 
+// T6.7: an audio track's input: none, one device channel (mono), or a pair (stereo). The device's channel count from
+// the transport (at least 2 are offered, so a track can be set up before a device with inputs is open; channels the
+// device does not have are marked).
+void MixerController::openAudioInMenu(Widget& chooser, doc::TrackId id) {
+  const doc::Track* t = doc::findTrackPtr(*ctx.doc(), id);
+  if (!t) return;
+  const doc::AudioInput cur = t->mixer.audioIn;
+  ViewContext* c = &ctx;
+  const uint32_t have = ctx.transport().audioInputChannels();
+  const uint32_t n = std::max<uint32_t>({have, 2u, static_cast<uint32_t>(cur.firstChannel + cur.channels)});
+  auto item = [&](doc::AudioInput in) {
+    std::string label = mixer::audioInLabel(in);
+    if (!in.none() && static_cast<uint32_t>(in.firstChannel + in.channels) > have) label += " (not available)";
+    MenuItem m = MenuItem::item(label, [c, id, in] {
+      if (Status s = c->store().dispatch(doc::SetTrackAudioInput{id, in}); !s) c->setStatus("Audio From: " + s.error().message);
+    });
+    m.checked = cur == in;
+    return m;
+  };
+  std::vector<MenuItem> items;
+  items.push_back(item(doc::AudioInput{}));
+  items.push_back(MenuItem::sep());
+  for (uint32_t ch = 0; ch < n; ++ch) items.push_back(item(doc::AudioInput{static_cast<uint16_t>(ch), 1}));
+  items.push_back(MenuItem::sep());
+  for (uint32_t ch = 0; ch + 1 < n; ch += 2) items.push_back(item(doc::AudioInput{static_cast<uint16_t>(ch), 2}));
+  (void)openUnder(chooser, std::move(items));
+}
+
 void MixerController::addStrip(MixerStrip* s) { strips_.push_back(s); }
 
 void MixerController::removeStrip(MixerStrip* s) noexcept { std::erase(strips_, s); }
@@ -335,7 +363,7 @@ void MixerStrip::build(doc::TrackKind kind) {
   activator_ = solo_ = arm_ = post_ = nullptr;
   sends_.clear();
   output_ = nullptr;
-  midiIn_ = channel_ = noteInput_ = monitor_ = nullptr;
+  midiIn_ = channel_ = noteInput_ = monitor_ = audioIn_ = nullptr;
   delay_ = nullptr;
   latency_ = nullptr;
   latencyShown_ = -1.0;
@@ -390,7 +418,7 @@ void MixerStrip::build(doc::TrackKind kind) {
       (void)ctl->apply(doc::ops::soloTrack(*ctl->ctx.doc(), id_, additive), "Solo");
       resyncToggles();
     };
-    if (kind == doc::TrackKind::Midi) {
+    if (kind == doc::TrackKind::Midi || kind == doc::TrackKind::Audio) {  // T6.7: audio tracks record too
       arm_ = &add<LiveToggle>("arm", LiveToggle::Kind::Arm);
       arm_->onToggle = [this, ctl](bool) {
         const bool additive = (static_cast<LiveToggle*>(arm_)->pressMods() & mod::kCtrl) != 0;
@@ -422,6 +450,19 @@ void MixerStrip::build(doc::TrackKind kind) {
       noteInput_ = &mode;
       auto& mon = add<Chooser>("monitor");
       mon.setInfo("Monitor", "In: always hear the input. Auto: hear it while the track is armed. Off: never.");
+      mon.onOpen = [this, ctl](Widget& self) { ctl->openMonitorMenu(self, id_); };
+      monitor_ = &mon;
+    }
+    if (kind == doc::TrackKind::Audio && layout_ == StripLayout::Vertical) {  // T6.7: an audio track's input
+      auto& in = add<Chooser>("audio-in");
+      in.setInfo("Audio From", "The audio input this track hears (Monitor) and records while armed: one input of the "
+                               "audio device (mono), a pair (stereo), or none. Inputs come from an ASIO device's input "
+                               "channels (Preferences: Audio).");
+      in.onOpen = [this, ctl](Widget& self) { ctl->openAudioInMenu(self, id_); };
+      audioIn_ = &in;
+      auto& mon = add<Chooser>("monitor");
+      mon.setInfo("Monitor", "In: always hear the input. Auto: hear it while the track is armed, unless the track "
+                             "plays a clip while the transport plays without recording. Off: never.");
       mon.onOpen = [this, ctl](Widget& self) { ctl->openMonitorMenu(self, id_); };
       monitor_ = &mon;
     }
@@ -543,6 +584,7 @@ void MixerStrip::bind(const doc::Project& p, const doc::Track& t) {
   syncSends(p, t);
   if (output_) static_cast<Chooser*>(output_)->setText(mixer::outputLabel(p, t));
   if (midiIn_) static_cast<Chooser*>(midiIn_)->setText(mixer::midiInLabel(t.mixer.midiIn));  // T6.4
+  if (audioIn_) static_cast<Chooser*>(audioIn_)->setText(mixer::audioInLabel(t.mixer.audioIn));  // T6.7
   if (channel_) static_cast<Chooser*>(channel_)->setText(mixer::channelLabel(t.mixer.midiIn));
   if (noteInput_) static_cast<Chooser*>(noteInput_)->setText(mixer::noteInputLabel(t.noteInput));
   if (monitor_) static_cast<Chooser*>(monitor_)->setText(mixer::monitorLabel(t.mixer.monitor));
@@ -661,6 +703,7 @@ void MixerStrip::arrangeVertical(LayoutPass& pass) {
     y += B + G;
   };
   row(midiIn_);  // T6.4: the input section first (Live's In/Out), then the output
+  row(audioIn_);  // T6.7
   row(channel_);
   row(noteInput_);
   row(monitor_);

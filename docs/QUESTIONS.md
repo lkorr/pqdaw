@@ -776,3 +776,28 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   ratio. T6.4's "the bend is lost" was not reproduced; tests now pin it (playback: `a bent Keys note keeps its bend under
   generator automation`, `tuning live: a panel Generator drag …`). No kernel change.
 - Status: decided (reversible).
+
+## Q?-T6.7-a · 2026-11-10 · T6.7 · Recording details the plan left open
+- **Context**: docs/plans/M6.md "### T6.7" fixes capture, writer, commit and the acceptance; these behaviours had to be
+  chosen.
+- **Choices** (most reversible): (1) Every pass makes a take lane, a single pass too, and the last pass is also copied
+  into the main lane (`ops::commitRecording`); ONE undo step per session (Record → Stop / Record again / punch-out), not
+  per loop pass. (2) Latency at loop wraps: a take covers what was PLAYED (its captured range − the record latency), but
+  where the file runs on across a wrap the boundary stays on the loop point and that take's file frames start `offset`
+  later, so loop takes are contiguous regions of one file and each covers the loop exactly; the first take loses the
+  `offset` frames captured before the start, the last take ends `offset` before the last captured frame. (3) The live
+  waveform's min / max per 256 frames is computed by the writer on the disk thread (the plan put it on the audio
+  thread): the audio thread does one copy per channel and nothing else. (4) One WAV per armed audio track (two tracks
+  on the same input write two files). (5) A punch-out without a loop ends the session by itself (RecordOff once the
+  playhead passed punch-out + latency; playback goes on) and commits it then. (6) Record while playing records from
+  the playhead (no count-in); Record while recording = RecordOff. (7) Notes: a note belongs to the pass of its note-on;
+  one up to a 32nd before its pass start snaps onto it, earlier ones are dropped; a note held at the end ends with its
+  pass. (8) Overdub with no clip under a note: a new clip spanning the recorded range inside that gap of the main lane.
+  (9) Monitor Auto's "no clip under the playhead" = no clip of the track sounding in that block (`ClipPlayer::active`).
+  (10) Inputs: the device opens the input count the audio preferences set (ASIO only; WASAPI capture is not built), not
+  the plan's "max used". (11) The writer runs as the sample pool's disk client (`SamplePool::setDiskClient`), not a
+  queue of its own.
+- **Open (not built)**: deleting an untitled project's recordings folder when the project is discarded (the files stay in
+  `%LOCALAPPDATA%\pqdaw\Unsaved\<pid-time>`; the first save moves them into the project); a "Record latency offset"
+  field in Preferences (the engine takes `Recorder::setManualOffset`, nothing sets it yet).
+- Status: decided (1)–(11) (reversible); the two open items for the orchestrator.

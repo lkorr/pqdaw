@@ -89,6 +89,10 @@ std::pair<int64_t, size_t> songAt(const std::vector<RecordingPass>& passes, int6
 std::string ProjectLink::recordDir() const {
   const std::string pdir = ctx_ != nullptr ? ctx_->projectDir() : cfg_.projectDir;
   if (!pdir.empty()) return pathUtf8(u8path(pdir) / "samples" / "recorded");
+  return unsavedRecordDir();
+}
+
+std::string ProjectLink::unsavedRecordDir() const {
   if (!cfg_.unsavedDir.empty()) return cfg_.unsavedDir;
   std::string base = envUtf8(L"LOCALAPPDATA");
   if (base.empty()) base = pathUtf8(std::filesystem::temp_directory_path());

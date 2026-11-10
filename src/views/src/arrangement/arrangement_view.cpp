@@ -979,6 +979,7 @@ void ArrangementView::refreshTransport() {
   ruler_->markDirty();  // start marker
   ++model_->stats.playheadReads;
   const PlayheadSnapshot ph = ctx_.transport().playhead();
+  if (ph.recording || recording_.active) readRecording();  // T6.7: a session starting or ending
   if (ph.playing) {
     if (!playhead_ || *playhead_ != ph.tick) {
       if (playhead_) damagePlayheadColumn(*playhead_);
@@ -1026,9 +1027,51 @@ void ArrangementView::onTimer(uint32_t id) {
 
 void ArrangementView::onFrame(double) { automation_->runPending(); }
 
+// T6.7: the live recording overlay. The rows of tracks whose regions changed are damaged from the earliest changed x
+// on (a growing region repaints only its new columns' part of the row and whatever moved).
+void ArrangementView::readRecording() {
+  RecordingOverlay before = recording_;
+  if (!ctx_.transport().recordingOverlay(recording_)) return;
+  UiTree* tr = tree();
+  if (!tr) return;
+  const IRect lv = lanesViewport();
+  const auto rs = rows();
+  auto damageRow = [&](uint32_t trackId, double fromTick) {
+    for (const ArrangementRow& row : rs) {
+      if (row.id.value != trackId) continue;
+      const IRect lr = lanes_->rect();
+      const int32_t x0 = std::max(lv.x, static_cast<int32_t>(std::floor(xOfTick(fromTick))) - 1);
+      const IRect box{x0, lr.y + row.y, lv.right() - x0, row.h};
+      const IRect vis = intersect(box, lv);
+      if (!vis.empty()) tr->damage().add(vis.toRect());
+    }
+  };
+  // A region that is new, gone or changed damages its row from its start (or its old end when it only grew).
+  const size_t n = std::max(before.regions.size(), recording_.regions.size());
+  for (size_t i = 0; i < n; ++i) {
+    const RecordingOverlay::Region* a = i < before.regions.size() ? &before.regions[i] : nullptr;
+    const RecordingOverlay::Region* b = i < recording_.regions.size() ? &recording_.regions[i] : nullptr;
+    if (a && b && a->trackId == b->trackId && a->start == b->start) {
+      if (a->end != b->end || a->peakCount != b->peakCount) damageRow(b->trackId, static_cast<double>(std::min(a->end, b->end)) - 1.0);
+      continue;
+    }
+    if (a) damageRow(a->trackId, static_cast<double>(a->start));
+    if (b) damageRow(b->trackId, static_cast<double>(b->start));
+  }
+  for (size_t i = 0; i < recording_.notes.size(); ++i) {  // new notes, and held ones that grew
+    const RecordingOverlay::Note& nn = recording_.notes[i];
+    if (i >= before.notes.size()) damageRow(nn.trackId, static_cast<double>(nn.start));
+    else if (before.notes[i].length != nn.length)
+      damageRow(nn.trackId, static_cast<double>(nn.start + std::min(nn.length, before.notes[i].length)) - 1.0);
+  }
+  if (before.active && !recording_.active)  // the session ended: its clips come with the document change
+    for (const RecordingOverlay::Region& g : before.regions) damageRow(g.trackId, static_cast<double>(g.start));
+}
+
 void ArrangementView::readPlayhead() {
   ++model_->stats.playheadReads;
   const PlayheadSnapshot ph = ctx_.transport().playhead();
+  if (ph.recording || recording_.active) readRecording();  // T6.7
   if (!ph.playing) {
     refreshTransport();
     return;

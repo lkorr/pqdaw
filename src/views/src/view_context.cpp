@@ -1,6 +1,7 @@
 #include "pq/views/view_context.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <atomic>
 #include <cassert>
 #include <cctype>
@@ -314,6 +315,35 @@ Status ViewContext::saveProject() {
   return saveProjectAs(std::string(projectDir_));
 }
 
+// T6.7: an untitled project's recordings into the project it is first saved as (see setUnsavedRecordingDir).
+void ViewContext::moveUnsavedRecordings(std::string_view dirUtf8) {
+  namespace fs = std::filesystem;
+  auto u8 = [](std::string_view s) { return fs::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size())); };
+  auto str = [](const fs::path& p) {
+    const std::u8string u = p.generic_u8string();
+    return std::string(reinterpret_cast<const char*>(u.data()), u.size());
+  };
+  const std::string root = str(u8(unsavedRecordingDir_)) + "/";
+  std::vector<doc::SampleRef> moved;
+  for (const doc::SampleRef& r : doc::samplesOf(*store_.current())) {
+    if (!doc::isAbsoluteSamplePath(r.path) || !str(u8(r.path)).starts_with(root)) continue;
+    const fs::path from = u8(r.path);
+    const fs::path to = u8(dirUtf8) / "samples" / "recorded" / from.filename();
+    std::error_code ec;
+    fs::create_directories(to.parent_path(), ec);
+    fs::rename(from, to, ec);
+    if (ec) {  // in use or another volume: a copy (the original stays until the unsaved folder is cleaned)
+      ec.clear();
+      fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+      if (ec) continue;
+    }
+    doc::SampleRef n = r;
+    n.path = doc::storedSamplePath(str(to), dirUtf8);
+    moved.push_back(std::move(n));
+  }
+  if (!moved.empty()) store_.relocateSamples(moved);
+}
+
 Status ViewContext::saveProjectAs(std::string_view dirUtf8) {
   if (dirUtf8.empty()) return Error{ErrorCode::InvalidArgument, "save: empty project directory", {}};
   if (projectDir_ != dirUtf8 && !projectDir_.empty()) {
@@ -328,6 +358,7 @@ Status ViewContext::saveProjectAs(std::string_view dirUtf8) {
       }
     store_.relocateSamples(abs);
   }
+  if (projectDir_.empty() && !unsavedRecordingDir_.empty()) moveUnsavedRecordings(dirUtf8);  // T6.7
   if (Status s = doc::saveProject(dirUtf8, store_); !s) {
     setStatus("Could not save " + std::string(dirUtf8) + ": " + s.error().message);
     return s;
