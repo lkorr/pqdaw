@@ -47,11 +47,11 @@ CompensationPlan planCompensation(const ProjectLayout& layout, std::span<const U
       double frames = 0.0;
       for (const auto& [ob, f] : ul.out)
         if (ob == b) frames = f;
-      plan.busLatency[b] = std::max(0.0, a + frames + offset);
+      plan.busLatency[b] = a + frames + offset;  // T6.6: negative with a negative offset (a positive Track Delay)
     }
   }
   if (layout.outputBus != kNoBus && layout.outputBus < numBuses)
-    plan.total = static_cast<uint32_t>(std::lround(plan.busLatency[layout.outputBus]));
+    plan.total = static_cast<uint32_t>(std::lround(std::max(0.0, plan.busLatency[layout.outputBus])));
   return plan;
 }
 

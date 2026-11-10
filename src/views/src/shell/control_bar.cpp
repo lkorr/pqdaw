@@ -105,6 +105,10 @@ void TransportButton::setOn(bool on) {
 }
 
 bool TransportButton::onPointer(const PointerEvent& e) {
+  if (e.button == PointerButton::Right && onContext) {  // T6.6
+    if (e.type == PointerType::Down) onContext();
+    return e.type == PointerType::Down || e.type == PointerType::Up;
+  }
   if (e.button != PointerButton::Left) return false;
   if (e.type == PointerType::Down) {
     setPressed(true);
@@ -160,6 +164,23 @@ void TransportButton::paint(PaintContext& ctx) {
       ctx.dl.addTriangleFilled({ex - hs, ey - hs * 0.9f}, {ex + hs * 0.9f, ey + hs * 0.25f}, {ex - hs * 0.6f, ey + hs}, ink);
       break;
     }
+    case Icon::Metronome: {  // T6.6: a metronome's body (a trapezoid) with its pendulum leaning right
+      const float h = s * 0.5f, top = s * 0.12f, base = s * 0.4f;
+      const Vec2 body[4] = {{cx - top, cy - h}, {cx + top, cy - h}, {cx + base, cy + h}, {cx - base, cy + h}};
+      ctx.dl.addConvexPolyFilled(body, ink);
+      const float t = std::max(1.0f, ctx.scale.exact(1.25f));
+      const Vec2 p0{cx, cy + h * 0.55f}, p1{cx + s * 0.38f, cy - h * 0.95f};
+      const float dx = p1.x - p0.x, dy = p1.y - p0.y, len = std::sqrt(dx * dx + dy * dy);
+      const float nx = -dy / len * t * 0.5f, ny = dx / len * t * 0.5f;
+      const Vec2 rod[4] = {{p0.x + nx, p0.y + ny}, {p1.x + nx, p1.y + ny}, {p1.x - nx, p1.y - ny}, {p0.x - nx, p0.y - ny}};
+      ctx.dl.addConvexPolyFilled(rod, fill);  // cut into the body in the button's colour
+      break;
+    }
+    case Icon::Menu: {  // T6.6: a small down arrow
+      const float a = std::max(2.0f, std::floor(static_cast<float>(r.h) * 0.17f));  // the button is narrow: by its height
+      ctx.dl.addTriangleFilled({cx - a, cy - a * 0.5f}, {cx + a, cy - a * 0.5f}, {cx, cy + a * 0.6f}, ink);
+      break;
+    }
   }
 }
 
@@ -186,10 +207,6 @@ void PositionDisplay::paint(PaintContext& ctx) {
 
 CpuMeter::CpuMeter(ViewContext& ctx) : Control("cpu"), ctx_(ctx) {
   setFocusable(false);
-  setInfo("CPU Load Meter", "How much of the audio callback's time the engine uses while it plays (the share of each "
-                            "audio buffer spent computing it). It updates twice a second during playback. It reads "
-                            "DISK for two seconds when the disk could not deliver a streamed sample in time (that part "
-                            "played silence).");
   if (AudioPrefsPort* port = ctx_.audioPrefs()) underruns_ = port->diskUnderruns();
 }
 
@@ -216,6 +233,17 @@ void CpuMeter::poll() {
     disk_ = disk;
     markDirty();
   }
+}
+
+ui::InfoText CpuMeter::info() const {  // T6.6: the PDC total, read when hovered
+  const double ms = ctx_.transport().outputLatencyMs();
+  char buf[112];
+  std::snprintf(buf, sizeof buf, " Plugin delay compensation: the output is %.1f ms behind the transport.", ms);
+  infoBody_ = "How much of the audio callback's time the engine uses while it plays (the share of each audio buffer "
+              "spent computing it). It updates twice a second during playback. It reads DISK for two seconds when the "
+              "disk could not deliver a streamed sample in time (that part played silence).";
+  infoBody_ += buf;
+  return {"CPU Load Meter", infoBody_};
 }
 
 void CpuMeter::transportChanged() {
@@ -360,6 +388,25 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
     return setSig(ctx_.doc()->timeline->signatures.front().sig.numerator, kDenominators[std::clamp(static_cast<int>(v), 0, 4)]);
   });
 
+  gap(*this, 8);
+  // T6.6: the metronome (Live keeps it beside the signature): a click toggles it; the arrow or a right click opens its
+  // menu (count-in, level, cue output).
+  metronome_ = &sized(add<TransportButton>("metronome", TransportButton::Icon::Metronome), 24);
+  metronome_->setInfo("Metronome", "Turns the click on or off: it plays on every beat while the transport runs, accented "
+                                   "on the first beat of each bar, in time with what you hear. Right-click or use the "
+                                   "arrow beside it for the count-in, its level and the output it plays on. Exports "
+                                   "never contain it.");
+  metronome_->onPress = [this] {
+    doc::RecordSettings r = ctx_.doc()->record;
+    r.metronome = !r.metronome;
+    if (Status s = ctx_.store().dispatch(doc::SetRecordSettings{r}); !s) ctx_.setStatus(s.error().message);
+  };
+  metronome_->onContext = [this] { openMetronomeMenu(); };
+  metronomeMenu_ = &sized(add<TransportButton>("metronome-menu", TransportButton::Icon::Menu), 12);
+  metronomeMenu_->setInfo("Metronome Options", "Count-in before recording (none, 1, 2 or 4 bars), the click's level and "
+                                               "whether it plays on the cue output.");
+  metronomeMenu_->onPress = [this] { openMetronomeMenu(); };
+
   spring(*this);
 
   // Position and transport (centre).
@@ -374,8 +421,10 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
   stop_->setInfo("Stop", "Stops playback (Space). Press again while stopped to return the start marker to the beginning.");
   stop_->onPress = [this] { ctx_.stopButton(); };
   record_ = &sized(add<TransportButton>("record", TransportButton::Icon::Record), 28);
-  record_->setInfo("Arrangement Record", "Recording arrives with milestone M6.");
-  record_->setEnabled(false);
+  record_->setInfo("Arrangement Record", "Counts in (the metronome menu's Count-In) and starts playback from the start "
+                                        "marker; lit while counting in, and a press then cancels. Capturing audio and "
+                                        "notes is not built yet (M6, T6.7): nothing is recorded.");
+  record_->onPress = [this] { ctx_.record(); };
   gap(*this, 10);
 
   // Loop switch, loop start and length.
@@ -499,13 +548,60 @@ void ControlBar::refreshDocument() {
     }
     if (!ctx_.playing()) position_->setText(formatPosition(p.timeline->sigMap, ctx_.startMarker()));
   }
+  metronome_->setOn(p.record.metronome);  // T6.6
+}
+
+std::string ControlBar::positionText(const PlayheadSnapshot& ph) const {
+  if (ph.countingIn && ph.countInBeatsPerBar != 0 && ph.countInBeats != 0) {  // T6.6: "-1. 3. 1" (bars to go)
+    const uint32_t bpb = ph.countInBeatsPerBar, beat = std::min(ph.countInBeat, ph.countInBeats - 1);
+    const uint32_t bars = ph.countInBeats / bpb, bar = beat / bpb;
+    char buf[48];
+    std::snprintf(buf, sizeof buf, "-%u. %u. 1", bars - bar, beat % bpb + 1);
+    return buf;
+  }
+  return formatPosition(ctx_.doc()->timeline->sigMap, ph.playing ? ph.tick : ctx_.startMarker());
+}
+
+void ControlBar::openMetronomeMenu() {  // T6.6
+  ViewContext* c = &ctx_;
+  const doc::RecordSettings cur = ctx_.doc()->record;
+  auto set = [c](auto edit) {
+    return [c, edit] {
+      doc::RecordSettings r = c->doc()->record;
+      edit(r);
+      if (Status s = c->store().dispatch(doc::SetRecordSettings{r}); !s) c->setStatus("Metronome: " + s.error().message);
+    };
+  };
+  std::vector<MenuItem> items;
+  for (const uint8_t bars : {uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{4}}) {
+    const std::string label =
+        bars == 0 ? std::string("Count-In: None") : "Count-In: " + std::to_string(bars) + (bars == 1 ? " Bar" : " Bars");
+    MenuItem it = MenuItem::item(label, set([bars](doc::RecordSettings& r) { r.countInBars = bars; }));
+    it.checked = cur.countInBars == bars;
+    items.push_back(std::move(it));
+  }
+  items.push_back(MenuItem::sep());
+  for (const float db : {-18.0f, -12.0f, -6.0f, 0.0f}) {
+    char label[32];
+    std::snprintf(label, sizeof label, "Level %.0f dB", static_cast<double>(db));
+    MenuItem it = MenuItem::item(label, set([db](doc::RecordSettings& r) { r.metronomeDb = db; }));
+    it.checked = cur.metronomeDb == db;
+    items.push_back(std::move(it));
+  }
+  items.push_back(MenuItem::sep());
+  MenuItem cue = MenuItem::item("Play on Cue Output", set([](doc::RecordSettings& r) { r.metronomeCue = !r.metronomeCue; }));
+  cue.checked = cur.metronomeCue;
+  items.push_back(std::move(cue));
+  (void)openContextMenu(*metronomeMenu_,
+                        {static_cast<float>(metronome_->rect().x), static_cast<float>(metronomeMenu_->rect().bottom())},
+                        std::move(items));
 }
 
 void ControlBar::refreshTransport() {
   const PlayheadSnapshot ph = ctx_.transport().playhead();
-  play_->setOn(ph.playing);
-  const Ticks t = ph.playing ? ph.tick : ctx_.startMarker();
-  position_->setText(formatPosition(ctx_.doc()->timeline->sigMap, t));
+  play_->setOn(ph.playing && !ph.countingIn);
+  record_->setOn(ph.countingIn);  // T6.6
+  position_->setText(positionText(ph));
   if (ph.playing && timer_ == 0) schedulePositionTimer(ph.tick);
   if (!ph.playing && timer_ != 0) {
     cancelTimer(timer_);
@@ -530,7 +626,9 @@ void ControlBar::onTimer(uint32_t id) {
     refreshTransport();
     return;
   }
-  position_->setText(formatPosition(ctx_.doc()->timeline->sigMap, ph.tick));
+  position_->setText(positionText(ph));
+  record_->setOn(ph.countingIn);  // T6.6
+  play_->setOn(!ph.countingIn);
   schedulePositionTimer(ph.tick);
 }
 

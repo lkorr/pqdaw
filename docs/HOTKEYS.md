@@ -10,7 +10,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 |---|---|---|---|---|
 | `transport.playStop` | `Space` | global | Transport | implemented (T3.7) |
 | `transport.continue` | `Shift+Space` | global | Transport | implemented (T3.7) |
-| `transport.record` | `F9` | global | Transport | M6 (recording) |
+| `transport.record` | `F9` | global | Transport | implemented (T6.6: the Record button: count-in (the metronome menu) then play from the start marker; a press while counting in cancels; capturing inputs is T6.7) |
 | `edit.undo` | `Ctrl+Z` | global | Editing | implemented (T3.7) |
 | `edit.redo` | `Ctrl+Shift+Z` | global | Editing | implemented (T3.7) |
 | `edit.redo` | `Ctrl+Y` | global | Editing | implemented (T3.7) |
@@ -289,6 +289,16 @@ or `Win` pass through (`Ctrl+S` saves).
 | `Z` / `X` | equave offset down / up (−5 … +5) |
 | `C` / `V` | velocity −20 / +20 (1 … 127; 100 at start) |
 | `M` | off (every held note ends) |
+
+## Metronome and Track Delay (T6.6, handled by the controls, not the keymap)
+
+| Where | Gesture | What |
+|---|---|---|
+| Control bar, metronome | click | metronome on / off (one undo step) |
+| Control bar, metronome | right-click, or click the ▾ beside it | Count-In None / 1 / 2 / 4 Bars, Level −18 / −12 / −6 / 0 dB, Play on Cue Output |
+| Control bar, Record (`F9`) | click while stopped / counting in / playing | count-in then play / cancel the count-in / nothing yet (T6.7) |
+| Control bar, CPU meter | hover | the info view adds the plugin delay compensation total |
+| Mixer view strip, Track Delay | drag (`Shift`: fine), double-click to type, `Delete` | ms, −1000 … 1000; 0 |
 
 ## Bug report (T5.x-bugreport, handled by the window loop before the widget tree, not the keymap)
 

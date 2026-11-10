@@ -140,6 +140,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_racks.cpp  # GU.9: racks are parallel groups (renders vs the T4.8 racks' references, interpreter == JIT)
     app/test_audio_tracks.cpp  # T5.3: audio tracks (golden lowering text, clip slot, clip edits compile nothing)
     app/test_live_input.cpp  # T6.4: live MIDI input (live == drawn bit for bit in Keys / Hz across tunings, routes, keyboard, MIDI service)
+    app/test_metronome_link.cpp  # T6.6: Track Delay ±480 through the link, a delay edit compiles nothing, metronome settings, Record counts in
     app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
     app/test_eq_link.cpp  # EQ.4b: the EQ displays in the app wiring (the curve after the circuit opens / closes the EQ; the link's lowering)
     app/test_drop_playback.cpp  # T5.7: a dropped file plays at once (the hover preloads it into the pool)
@@ -336,6 +337,7 @@ pq_add_test(pq_tests_timeline
     engine/test_warp.cpp  # T6.3: warp markers, Beats, Tones, Texture (tempo / pitch accuracy, block / streaming identity, RtScope)
     engine/test_live_input.cpp  # T6.4: live note input (routing, stamps → frames, held notes, bend, 10k ev/s)
     engine/test_stretch_pool.cpp  # T6.5: signalsmith-stretch allocation-free (the spike), claims, determinism, latency
+    engine/test_metronome.cpp  # T6.6: metronome beats (ramps, signatures, PDC), count-in, the click pair, offline
   DEPS pq_engine pq_doc)
 
 # T1.10: golden offline renders (tests/golden: patches, committed WAVs, the absolute + spectral comparison helper) on

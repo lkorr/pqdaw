@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include "../common/paint.h"
 #include "internal.h"
@@ -307,7 +308,10 @@ bool MixerController::pollMeters() {
   source->read(ids_, levels_);
   size_t k = 0;
   for (MixerStrip* s : strips_)
-    if (wanted(s)) s->meter()->setLevels(levels_[k++]);
+    if (wanted(s)) {
+      s->meter()->setLevels(levels_[k++]);
+      s->refreshLatency();  // T6.6: a compile after an edit changes it while the engine runs
+    }
   ++stats.polls;
   stats.metersUpdated += k;
   return source->live();
@@ -332,6 +336,9 @@ void MixerStrip::build(doc::TrackKind kind) {
   sends_.clear();
   output_ = nullptr;
   midiIn_ = channel_ = noteInput_ = monitor_ = nullptr;
+  delay_ = nullptr;
+  latency_ = nullptr;
+  latencyShown_ = -1.0;
   chip_ = nullptr;
   meter_ = nullptr;
   MixerController* ctl = ctl_.get();
@@ -425,6 +432,15 @@ void MixerStrip::build(doc::TrackKind kind) {
     if (layout_ == StripLayout::Vertical && (kind == doc::TrackKind::Midi || kind == doc::TrackKind::Group)) {
       chip_ = &add<TrackTuningChip>(ctl->ctx, ctl_);
     }
+    if (layout_ == StripLayout::Vertical) {  // T6.6: Track Delay and the latency readout
+      delay_ = &add<LiveBox>("track-delay", LiveBox::Kind::Delay);
+      valueHooks(*delay_, "Track Delay");
+      delay_->onChange = [this, ctl](double ms) { ctl->change(doc::SetTrackDelay{id_, static_cast<float>(ms)}); };
+      latency_ = &add<Label>("latency", "", FontRoleId::Small, TextTone::Secondary, TextAlign::Center);
+      latency_->setInfo("Track Latency", "How late this track's output is behind the transport: the latency of its "
+                                         "devices and of what it receives (Track Delay not included). The other tracks "
+                                         "are delayed to match the latest one, so everything stays in time.");
+    }
   }
   meter_ = &add<Meter>("meter");
   meter_->setInfo("Track Meter", "Peak and RMS level of the track's output (PQ Meter style). Click to reset the clip lamps.");
@@ -433,6 +449,16 @@ void MixerStrip::build(doc::TrackKind kind) {
     ctl_->source->resetClip(id_);
     ctl_->pollMeters();
   };
+}
+
+void MixerStrip::refreshLatency() {  // T6.6
+  if (!latency_) return;
+  const double ms = ctl_->ctx.transport().trackLatencyMs(id_.value);
+  if (ms == latencyShown_) return;
+  latencyShown_ = ms;
+  char buf[48];
+  std::snprintf(buf, sizeof buf, "Lat %.1f ms", std::abs(ms) < 0.05 ? 0.0 : ms);
+  latency_->setText(buf);
 }
 
 void MixerStrip::resyncToggles() {
@@ -520,6 +546,8 @@ void MixerStrip::bind(const doc::Project& p, const doc::Track& t) {
   if (channel_) static_cast<Chooser*>(channel_)->setText(mixer::channelLabel(t.mixer.midiIn));
   if (noteInput_) static_cast<Chooser*>(noteInput_)->setText(mixer::noteInputLabel(t.noteInput));
   if (monitor_) static_cast<Chooser*>(monitor_)->setText(mixer::monitorLabel(t.mixer.monitor));
+  if (delay_ && !delay_->inGesture()) delay_->setValue(t.mixer.trackDelayMs);  // T6.6
+  refreshLatency();
   if (chip_) {
     static_cast<TrackTuningChip*>(chip_)->setTrack(t.id);
   }
@@ -638,6 +666,8 @@ void MixerStrip::arrangeVertical(LayoutPass& pass) {
   row(monitor_);
   row(output_);
   row(chip_);
+  row(delay_);  // T6.6
+  row(latency_);
   for (const SendBox& sb : sends_) row(sb.box);
   row(pan_);
   row(volume_);

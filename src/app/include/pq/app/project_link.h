@@ -93,6 +93,14 @@
 // Automation lanes whose param belongs to a compensated unit are shifted by that unit's A_u
 // (AutomationLaneDesc::shiftFrames): when the shifts change, the automation image is republished on the UI thread
 // (posted with setUiPoster's poster; flush() and playhead() pick it up too). outputLatency() is the master's total.
+// T6.6: Track Delay (Mixer::trackDelayMs, d frames = round(ms · rate / 1000)) is the plan's unitOffset of the track's
+// unit, negated: a positive delay makes the track's output d frames EARLY in the plan, so its reader delays it by d
+// (the track plays d later, the total is unchanged); a negative one makes it |d| late, so every other input of its
+// readers is delayed instead (the track plays |d| earlier against them; the total grows by |d|). A merged unit takes
+// its members' delay of the largest magnitude. A Track Delay edit is Meta: no compile, the compile path plans again
+// (replanLatency, after the worker / flush drains). trackLatencyMs: the track's own latency (L of its out bus in the
+// plan last handed over, without its Track Delay).
+// The metronome (on, level, cue pair) and count-in follow RecordSettings (syncRecording; record() posts the count-in).
 //
 // ---- Live input (T6.4; src/app/src/project_link_input.cpp) ---------------------------------------------------------
 // The link owns the live input's producer rings (engine::LivePorts: the MIDI service pushes into them; every engine the
@@ -445,6 +453,11 @@ public:
   void auditionHz(float hz, float velocity, float durationMs) override;
   void releaseAuditions() override;
   void liveKey(int32_t equave, int32_t step, float velocity, bool on) override;  // T6.4: the computer keyboard
+  // T6.6: Record = the project's count-in (RecordSettings::countInBars), then play from `from`. Nothing is recorded
+  // until T6.7 (engine::TransportCommandKind::Record).
+  void record(Ticks from) override;
+  double outputLatencyMs() override;                 // T6.6: outputLatency() in ms
+  double trackLatencyMs(uint32_t trackId) override;  // T6.6: the track's own latency, ms (see above)
 
   // ---- Live input (T6.4; see the file comment) ----
   // UI thread: the MIDI service's open ports (index = engine::LivePorts port, at most kLivePorts; "" = unused) and
@@ -558,9 +571,15 @@ private:
     engine::CompensationPlan plan;
     std::vector<uint32_t> shift;
   };
-  LatencyJob planLatency() const;                // compile path (compileMutex_), after the compiler's build
+  // `lp`: the lowering the compiler just built (its trackIds name the partition's tracks: Track Delay, T6.6).
+  LatencyJob planLatency(const doc::LoweredProject& lp);  // compile path (compileMutex_), after the build
   Status applyLatency(const LatencyJob& job);    // compile path, after the publishes it belongs to
   void takeLatencyShifts();                      // UI thread: republishes automation when the shifts changed
+  // T6.6 (project_link_latency.cpp), UI thread: the metronome's settings (RecordSettings) into the engine, and the
+  // tracks' Track Delay: when one changed, the compile path plans again without a compile (latencyReplan_, picked up
+  // by drainDeferred).
+  void syncRecording(const doc::Project& p);
+  void replanLatency();  // compileMutex_ held, nothing deferred: a new plan for the current layout (Track Delay)
   // A compile's result for the program, published in order (compileMutex_).
   struct Deferred {
     bool topology = false;
@@ -830,6 +849,11 @@ private:
   std::optional<LatencyJob> pendingLatency_;  // a plan the program had no room for yet (compileMutex_)
   std::vector<uint32_t> paramShift_;
   std::atomic<bool> shiftsChanged_{false};
+  // T6.6 (mutex_): Track Delay per track id (ms; tracks without one are absent), a replan it asks for, and the per-bus
+  // latencies of the last plan handed over (frames) for the strips' readouts.
+  std::unordered_map<uint32_t, float> trackDelayMs_;
+  bool latencyReplan_ = false;
+  std::vector<double> busLatency_;
   // T1b.5. compileMutex_ serialises the compile path's use of compiler_ / program publishes with JIT deliveries.
   std::mutex compileMutex_;
   std::deque<Deferred> deferred_;                 // compileMutex_; see drainDeferred

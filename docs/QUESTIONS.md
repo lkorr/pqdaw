@@ -701,4 +701,20 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   ±1 ms criterion stays Beats'. (8) No local patch of the library: the one bounded growth in `process()`
   (`peaks.reserve(bands / 2)`, at most one peak per two bands) cannot overflow, as signalsmith-linear's FFT sizes make
   the band count a multiple of 16; the spike saw no allocation.
+
+## Q?-T6.6-a · 2026-11-10 · T6.6 · Metronome / count-in / Track Delay details the plan left open
+- **Context**: docs/plans/M6.md "### T6.6"; these behaviours had to be chosen.
+- **Choices** (most reversible): (1) The app counts in on Record only (Live); the engine also honours
+  `countInBars` on Play. (2) Count-in length = N bars of the signature at the start tick at the tempo there; a count-in
+  is reported as playing (Space / Stop cancel it) and the position display reads "-bars. beat. 1". (3) Record while
+  playing does nothing until T6.7 (status line says so). (4) The cue routing is a project setting
+  (`RecordSettings::metronomeCue`, the metronome menu), played on Preferences' cue pair; devices with < 4 outputs or
+  cue pair 1/2 play it on the main pair. (5) Level is chosen from −18 / −12 / −6 / 0 dB in the metronome menu (no
+  continuous control yet). (6) Track Delay → plan offset −d: positive delays the track, negative delays everything else
+  (`planCompensation` no longer clamps L(b) at 0). A merged unit takes its members' largest-magnitude delay (members
+  cannot be shifted separately inside one image). (7) The strip readout is the track's own latency (Track Delay not
+  included); the PDC total is in the CPU meter's info text. (8) The click is a precomputed 15 ms table (2 kHz accent,
+  1 kHz × 0.7 beat, τ 3 ms, 2 ms fade-out), not a user sound.
+- **Open**: a plan change applies one image block after the hook reads `outputLatency()`, so the first click after a
+  latency change may be off by the change once.
 - Status: decided (reversible).

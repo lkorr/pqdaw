@@ -5,6 +5,7 @@
 // (setPlayheadTick) or a request moves it. Header-only, UI thread.
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "pq/views/transport_port.h"
@@ -13,10 +14,10 @@ namespace pq::views {
 
 class FakeTransport final : public TransportPort {
 public:
-  enum class Call : uint8_t { Play, Stop, Continue, Locate, SetLoop, Audition, ReleaseAuditions, LiveKey };
+  enum class Call : uint8_t { Play, Stop, Continue, Locate, SetLoop, Audition, ReleaseAuditions, LiveKey, Record };
   struct Record {
     Call call;
-    Ticks tick = 0;          // Play: from; Locate: the target
+    Ticks tick = 0;          // Play, Record: from; Locate: the target
     TransportLoop loop{};    // SetLoop
     float hz = 0.0f;         // Audition
     float velocity = 0.0f;   // Audition
@@ -31,9 +32,16 @@ public:
     state_.tick = from;
     ++state_.sequence;
   }
+  void record(Ticks from) override {  // T6.6
+    calls.push_back({Call::Record, from, {}});
+    state_.playing = true;
+    state_.tick = from;
+    ++state_.sequence;
+  }
   void stop() override {
     calls.push_back({Call::Stop, state_.tick, {}});
     state_.playing = false;
+    state_.countingIn = false;
     ++state_.sequence;
   }
   void continuePlayback() override {
@@ -68,7 +76,22 @@ public:
     calls.push_back(r);
   }
 
+  double outputLatencyMs() override { return latencyMs; }  // T6.6
+  double trackLatencyMs(uint32_t trackId) override {
+    for (const auto& [id, ms] : trackLatency)
+      if (id == trackId) return ms;
+    return 0.0;
+  }
+
   // Test control: the position a running transport would report next.
+  // T6.6: a running count-in (beat of beats, beatsPerBar); beats 0 ends it.
+  void setCountIn(uint32_t beat, uint32_t beats, uint32_t beatsPerBar) noexcept {
+    state_.countingIn = beats != 0;
+    state_.countInBeat = beat;
+    state_.countInBeats = beats;
+    state_.countInBeatsPerBar = beatsPerBar;
+    ++state_.sequence;
+  }
   void setPlayheadTick(Ticks t) noexcept {
     state_.tick = t;
     ++state_.sequence;
@@ -87,6 +110,8 @@ public:
 
   std::vector<Record> calls;
   TransportLoop loop{};
+  double latencyMs = 0.0;                                  // T6.6: what outputLatencyMs reports
+  std::vector<std::pair<uint32_t, double>> trackLatency;   // T6.6: trackLatencyMs per track id
 
 private:
   PlayheadSnapshot state_{};

@@ -24,6 +24,7 @@
 #include "pq/graph/latency.h"
 #include "pq/graph/optimise.h"
 #include "pq/graph/parse.h"
+#include "pq/graph/project.h"
 
 namespace graph = pq::graph;
 namespace eng = pq::engine;
@@ -45,6 +46,11 @@ patch ImpulseLate {
   param frames = 480 [0..100000]
   out out : audio global mono
   out = latency(pulse(), 480)
+}
+
+patch Impulse100 {
+  out out : audio global mono
+  out = pulse() * 0.25
 }
 
 patch ImpulseLate100 {
@@ -160,7 +166,7 @@ struct Rig {
 
 // Builds and starts the project; `compensate` false: no plan (what main did before T6.2).
 std::unique_ptr<Rig> makeRig(const graph::ProjectGraph& g, bool compensate = true, bool whole = false,
-                             std::vector<std::vector<eng::TimedNote>> notes = {}) {
+                             std::vector<std::vector<eng::TimedNote>> notes = {}, std::vector<int32_t> offset = {}) {
   auto r = std::make_unique<Rig>();
   r->compiler = std::make_unique<eng::ProjectCompiler>(options());
   auto b = whole ? r->compiler->buildWhole(g) : r->compiler->build(g);
@@ -177,7 +183,7 @@ std::unique_ptr<Rig> makeRig(const graph::ProjectGraph& g, bool compensate = tru
   REQUIRE(prog.ok());
   r->program = std::move(prog.value());
   for (uint32_t u = 0; u < b.value().images.size(); ++u) REQUIRE(r->program->publish(u, std::move(b.value().images[u])).ok());
-  r->plan = eng::planCompensation(b.value().layout, r->compiler->latencies());
+  r->plan = eng::planCompensation(b.value().layout, r->compiler->latencies(), offset);
   if (compensate && !r->plan.none()) REQUIRE(r->program->setCompensation(r->plan).ok());
   return r;
 }
@@ -544,4 +550,29 @@ TEST_CASE("pdc: latency passes through feedback loops (an envelope's z1 before a
   const char* text = "patch P {\n in x : audio\n out y : audio\n a = latency(x, 32)\n l = z1(l * 0.5 + a)\n"
                      " oversample(2) {\n  y = tanh(l)\n }\n}\n";
   CHECK(outLatency(typedOf(text)) == doctest::Approx(32.0 + 3.62));
+}
+
+TEST_CASE("pdc + T6.6: Track Delay as a unit offset: +10 ms plays the track 480 later, -10 ms 480 earlier (others late)") {
+  // ProjectLink maps Track Delay d frames to unitOffset = -d (pq/app/project_link.h "Plugin-delay compensation").
+  G g;
+  const uint32_t a = g.add("Impulse"), b = g.add("Impulse100"), m = g.add("Sum", graph::TrackRole::Master);
+  g.wire(a, "out", m, "in");
+  g.wire(b, "out", m, "in");
+  g.g.output = {m, "out"};
+  for (const int32_t d : {480, -480}) {
+    CAPTURE(d);
+    const auto part = graph::partitionProject(g.g);
+    REQUIRE(part.ok());
+    std::vector<int32_t> offset(part.value().units.size(), 0);
+    offset[part.value().unitOf[a]] = -d;
+    auto r = makeRig(g.g, true, false, {}, offset);
+    const auto hits = nonzero(render(*r, 4096));
+    REQUIRE(hits.size() == 2);
+    // a's impulse (1) and b's (0.25) are told apart by their values.
+    int64_t ta = -1, tb = -1;
+    for (const auto& [i, v] : hits) (v == 1.0f ? ta : tb) = static_cast<int64_t>(i);
+    CHECK(ta - tb == d);
+    CHECK(r->program->outputLatency() == static_cast<uint32_t>(std::max(0, -d)));
+    CHECK(r->rtViolations == 0);
+  }
 }

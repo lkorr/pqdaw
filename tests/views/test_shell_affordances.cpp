@@ -113,7 +113,9 @@ TEST_CASE("shell affordances: control bar, menu bar, splitters and status line")
   CHECK(f.atPath("main/control-bar/play") == Cursor::Pointer);
   CHECK(f.atPath("main/control-bar/stop") == Cursor::Pointer);
   CHECK(f.atPath("main/control-bar/loop") == Cursor::Pointer);
-  CHECK(f.atPath("main/control-bar/record") == Cursor::Arrow);  // disabled until M6
+  CHECK(f.atPath("main/control-bar/record") == Cursor::Pointer);  // T6.6: count-in + play (capture: T6.7)
+  CHECK(f.atPath("main/control-bar/metronome") == Cursor::Pointer);
+  CHECK(f.atPath("main/control-bar/metronome-menu") == Cursor::Pointer);
   CHECK(f.atPath("main/control-bar/position") == Cursor::Arrow);  // a readout
   CHECK(f.atPath("main/control-bar/tuning") == Cursor::Pointer);  // opens the MOS wheel
   CHECK(f.atPath("main/control-bar/cpu") == Cursor::Arrow);

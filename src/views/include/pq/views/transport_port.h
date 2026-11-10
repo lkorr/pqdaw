@@ -31,6 +31,11 @@
 //                       T6.4: the computer MIDI keyboard (`M`): degree `step` (0 … 16) above equave offset `equave`
 //                       (−5 … 5) went down (velocity 1 … 127) or up, into the armed tracks that listen to it (each in its
 //                       own tuning and note input mode). A key-up repeats its key-down's equave and step.
+//   record(from)        T6.6: the Record button: the project's count-in (RecordSettings::countInBars; the transport
+//                       holds at `from` meanwhile and playhead() reports countingIn), then playback from `from`.
+//                       Capturing inputs is T6.7; until then Record records nothing. Default: play(from).
+//   outputLatencyMs()   T6.6: how late the output is behind the transport (the PDC total), ms. Default 0.
+//   trackLatencyMs(id)  T6.6: how late track `id`'s output is (its compensated latency, Track Delay included), ms.
 
 #include <cstdint>
 
@@ -49,6 +54,10 @@ struct PlayheadSnapshot {
   bool playing = false;
   Ticks tick = 0;          // playing: the current position; stopped: where continuePlayback() resumes
   uint64_t sequence = 0;   // increases with every new report, so a view can skip unchanged snapshots
+  // T6.6: a count-in runs (playing is true, tick is where playback will start): beat countInBeat (0-based) of
+  // countInBeats, countInBeatsPerBar per bar.
+  bool countingIn = false;
+  uint32_t countInBeat = 0, countInBeats = 0, countInBeatsPerBar = 0;
   friend constexpr bool operator==(const PlayheadSnapshot&, const PlayheadSnapshot&) noexcept = default;
 };
 
@@ -65,6 +74,12 @@ public:
   virtual void releaseAuditions() = 0;
   virtual void liveKey(int32_t equave, int32_t step, float velocity, bool on) {
     (void)equave, (void)step, (void)velocity, (void)on;
+  }
+  virtual void record(Ticks from) { play(from); }
+  virtual double outputLatencyMs() { return 0.0; }
+  virtual double trackLatencyMs(uint32_t trackId) {
+    (void)trackId;
+    return 0.0;
   }
 };
 

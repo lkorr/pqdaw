@@ -141,6 +141,11 @@ public:
   ui::Control* midiChannel() const noexcept { return channel_; }
   ui::Control* noteInput() const noexcept { return noteInput_; }
   ui::Control* monitor() const noexcept { return monitor_; }
+  // T6.6 (mixer view, every track but the master): Track Delay and the track's latency readout.
+  ui::DragBox* trackDelay() const noexcept { return delay_; }
+  ui::Label* latency() const noexcept { return latency_; }
+  // Re-reads the latency readout from the transport (bind and the meter poll call it).
+  void refreshLatency();
   ui::Control* tuningChip() const noexcept { return chip_; }
   ui::Meter* meter() const noexcept { return meter_; }
   const std::string& title() const noexcept { return title_; }
@@ -182,6 +187,9 @@ private:
   std::vector<SendBox> sends_;
   ui::Control* output_ = nullptr;
   ui::Control *midiIn_ = nullptr, *channel_ = nullptr, *noteInput_ = nullptr, *monitor_ = nullptr;  // T6.4
+  ui::DragBox* delay_ = nullptr;  // T6.6
+  ui::Label* latency_ = nullptr;
+  double latencyShown_ = -1.0;
   ui::Control* chip_ = nullptr;
   ui::Meter* meter_ = nullptr;
   uint32_t automated_ = 0;   // T3.15

@@ -106,7 +106,7 @@ namespace pq::doc {
 // "name", "clips"}] and "auditionTake" (a take lane id); a clip "take" (its comp provenance); an audio clip the warp modes
 // "beats" | "tones" | "texture" | "complex" | "complexPro", "markers" [[sourceFrame, contentTick], …] and "warpParams";
 // the project "punch" {"in", "out", "enabled"} and "record" {"countInBars", "metronome", "metronomeDb", "overdub",
-// "recordQuantize"}. Each is written only when it differs from its default; migration 21 → 22 changes nothing.
+// "recordQuantize", optional "metronomeCue" (T6.6)}. Each is written only when it differs from its default; migration 21 → 22 changes nothing.
 inline constexpr int32_t kSchemaVersion = 22;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 

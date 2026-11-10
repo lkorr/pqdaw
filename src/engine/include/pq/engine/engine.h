@@ -11,6 +11,8 @@
 //   live input (T6.4)       MIDI ports and the computer keyboard → notes of the routed slots (live_input.h), drained
 //                           at the start of every block, merged into a slot's events after the timeline's and the
 //                           auditions'
+//   metronome (T6.6)        the click (pq/engine/metronome.h): scheduled from the timeline's runs in the block hook,
+//                           mixed after the project's output (see "Per block" 4)
 //   idle gate               see below
 //
 // ---- Threads ---------------------------------------------------------------------------------------------------
@@ -37,6 +39,13 @@
 //    note events), then every unit; an instrument unit's events come from slotSource(k) = the timeline's track k
 //    plus the audition notes of slot k plus the live notes routed to slot k (T6.4). The gate also waits while live
 //    notes are held or queued.
+// 4. T6.6: the metronome. The engine's block hook runs the timeline's, then (metronome on, or a count-in running, and
+//    not rendering offline) queues the clicks of that image block's runs at beat + ProjectProgram::outputLatency().
+//    After the program, queued clicks are added into the main pair (outputs 0 / 1), or — when the owner set
+//    setClickPair(true) for this device block and it has numOut + 2 channels — written into channels numOut and
+//    numOut + 1 (the click pair: zeroed, then the clicks; the app's audio output adds it into the cue pair). Off and
+//    idle: one flag per image block, one per device block. The gate stays awake while a count-in runs or clicks wait.
+//    Offline renders (renderOffline) never click.
 //
 // ---- Offline (SPEC §9.8 "same Program, deterministic") -----------------------------------------------------------
 // renderOffline drives process() from a loop at a fixed device block, chunk by chunk into an AudioSink, under
@@ -51,6 +60,7 @@
 #include "pq/core/spsc_ring.h"
 #include "pq/engine/audio_block.h"
 #include "pq/engine/live_input.h"
+#include "pq/engine/metronome.h"
 #include "pq/engine/offline_render.h"
 #include "pq/engine/project_compile.h"
 #include "pq/engine/project_program.h"
@@ -102,6 +112,11 @@ public:
   const EngineConfig& config() const noexcept { return cfg_; }
   // T6.4: the live input (publish its routes, set its latency, read its record tap on the UI thread; see live_input.h).
   LiveInput& liveInput() noexcept { return *live_; }
+  // T6.6: the metronome (its settings from any thread; see metronome.h).
+  Metronome& metronome() noexcept { return *metronome_; }
+  // T6.6, audio thread (the device's owner, before each device block it runs through the engine): channels numOut,
+  // numOut + 1 of the blocks are the click pair (the cue output) instead of nothing. RT-safe.
+  void setClickPair(bool on) noexcept { clickPair_ = on; }
 
   // ---- UI thread (one producer) ----
   // The pushes are wait-free SPSC; each then calls wake() (and so the wake hook, which may take a lock): UI thread.
@@ -185,11 +200,18 @@ private:
   explicit Engine(const EngineConfig& config);
   static void onBlock(void* self, const AudioBlock& b) noexcept { static_cast<Engine*>(self)->process(b); }
   static void onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept;
+  static void onHook(void* self, int64_t sampleTime, uint32_t frames, TransportSnapshot& transport,
+                     std::span<float> params) noexcept;  // T6.6: the timeline's hook, then the metronome
+  void mixClicks(const AudioBlock& block) noexcept;     // T6.6
 
   EngineConfig cfg_;
   std::unique_ptr<Timeline> timeline_;
   std::unique_ptr<ProjectProgram> program_;
   std::unique_ptr<LiveInput> live_;  // T6.4
+  std::unique_ptr<Metronome> metronome_;  // T6.6
+  BlockHook timelineHook_{};              // T6.6: the timeline's own hook (onHook calls it)
+  bool clickPair_ = false;                // T6.6: audio thread
+  bool offline_ = false;                  // T6.6: renderOffline is running (no clicks)
   // Param writes (UI → audio). M4: a chain of rings; the producer pushes to the newest, the audio thread drains each
   // ring before following its `next`. collect() frees the rings the audio thread has left.
   struct ParamRing {

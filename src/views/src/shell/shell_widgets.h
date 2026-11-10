@@ -24,9 +24,10 @@ namespace pq::views::shell {
 // down). Not focusable: Space must keep reaching the global play/stop action after a click.
 class TransportButton : public ui::Control {
 public:
-  enum class Icon : uint8_t { Play, Stop, Record, Loop };
+  enum class Icon : uint8_t { Play, Stop, Record, Loop, Metronome, Menu };  // Metronome, Menu (▾): T6.6
   TransportButton(std::string name, Icon icon);
   std::function<void()> onPress;
+  std::function<void()> onContext;  // T6.6: a right press (null: ignored)
   void setOn(bool on);
   bool on() const noexcept { return on_; }
 
@@ -59,6 +60,8 @@ public:
   explicit CpuMeter(ViewContext& ctx);
   void paint(ui::PaintContext& ctx) override;
   void onTimer(uint32_t id) override;
+  // T6.6: the info text ends with the plugin delay compensation total (read from the transport when hovered).
+  ui::InfoText info() const override;
   // The transport started or stopped (the control bar forwards view_change::kTransport).
   void transportChanged();
   const std::string& text() const noexcept { return text_; }
@@ -73,6 +76,7 @@ private:
   uint64_t underruns_ = 0;
   double diskUntil_ = 0.0;
   bool disk_ = false;
+  mutable std::string infoBody_;  // T6.6
 };
 
 // "1. 1. 1": bar, beat, sixteenth (1-based, Live's position display) at tick t.
@@ -98,6 +102,9 @@ public:
   void refreshTransport();
   const std::string& positionText() const noexcept { return position_->text(); }
   const std::string& cpuText() const noexcept { return cpu_->text(); }
+  // T6.6: the position display's text for a playhead (a count-in shows "-bars. beat. 1" before the start).
+  std::string positionText(const PlayheadSnapshot& ph) const;
+  void openMetronomeMenu();  // T6.6: count-in, level, cue output (the ▾ beside the metronome; a right click on it)
 
 private:
   void schedulePositionTimer(Ticks tick);
@@ -115,6 +122,8 @@ private:
   TransportButton* stop_ = nullptr;
   TransportButton* record_ = nullptr;
   TransportButton* loop_ = nullptr;
+  TransportButton* metronome_ = nullptr;      // T6.6
+  TransportButton* metronomeMenu_ = nullptr;  // T6.6: ▾
   ui::DragBox* loopStart_ = nullptr;
   ui::DragBox* loopLength_ = nullptr;
   ui::Label* grid_ = nullptr;

@@ -1,7 +1,7 @@
 // T6.4: the views' side of live input, through real dispatch — the computer MIDI keyboard (M toggles it; the letter rows
 // send TransportPort::liveKey, a release ends what its press started, Z / X / C / V, repeats and command chords pass, a
 // focused text field keeps its keys) and the mixer view's input section (MIDI From, channel, Keys / Hz, Monitor: one
-// undo step each, never structural).
+// undo step each, never structural); T6.6: the strip's Track Delay and latency readout.
 #include <doctest/doctest.h>
 
 #include <memory>
@@ -182,4 +182,38 @@ TEST_CASE("mixer view: a MIDI strip's input section edits MIDI From, channel, no
   CHECK(f.track("Piano").mixer.monitor == doc::MonitorMode::In);
   CHECK(f.ctx.store().history().cursor() == h0 + 4);
   CHECK_FALSE(f.ctx.store().history().entries().back().changes.structural());
+}
+
+TEST_CASE("mixer view + T6.6: Track Delay (type-in, drag, Delete) and the strip's latency readout; none on the master") {
+  Fixture f;
+  MixerView* mixer = findMixer(*f.shell);
+  REQUIRE(mixer != nullptr);
+  mixer->setShown(true);
+  f.d.tree().layoutNow();
+  const doc::TrackId piano = f.track("Piano").id;
+  f.port.trackLatency = {{piano.value, 2.5}};
+  MixerStrip* s = mixer->strip(piano);
+  REQUIRE(s != nullptr);
+  REQUIRE(s->trackDelay() != nullptr);
+  REQUIRE(s->latency() != nullptr);
+  CHECK(mixer->strip(f.track("A Reverb").id)->trackDelay() != nullptr);  // returns have one too
+  CHECK(mixer->strip(f.ctx.doc()->master->id)->trackDelay() == nullptr);
+  CHECK(s->trackDelay()->valueText() == "0.0 ms");
+  // The readout reads the transport when the strip is bound (and on the meter poll).
+  REQUIRE(f.ctx.store().dispatch(doc::SetTrackDelay{piano, -12.5f}).ok());
+  f.d.step();
+  CHECK(s->trackDelay()->valueText() == "-12.5 ms");
+  CHECK(s->latency()->text() == "Lat 2.5 ms");
+  // A drag: one undo step, Meta (no compile).
+  const size_t h0 = f.ctx.store().history().cursor();
+  const Vec2 c = f.centre(*s->trackDelay());
+  f.d.drag(c, {c.x, c.y - 20.0f});
+  CHECK(f.track("Piano").mixer.trackDelayMs > -12.5f);
+  CHECK(f.ctx.store().history().cursor() == h0 + 1);
+  CHECK_FALSE(f.ctx.store().history().entries().back().changes.structural());
+  // Delete: back to 0.
+  f.d.click(c);
+  f.d.press("Delete");
+  f.d.step();
+  CHECK(f.track("Piano").mixer.trackDelayMs == 0.0f);
 }

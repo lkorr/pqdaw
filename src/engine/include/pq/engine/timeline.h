@@ -21,6 +21,12 @@
 // from before it, the block is split at that sample — the wrap frame — and continues at ticksToSamples(start); ticks
 // after firstTickAtOrAfterSample(loop end sample) (they round onto the wrap sample) are not played. A playhead
 // already past the loop end plays on. Any number of wraps per block (a loop shorter than a block).
+// Count-in (T6.6): Play / Record with countInBars = N > 0 locates to `tick` and holds there (playing() false,
+// countingIn() true) for N bars of the signature at `tick` at the tempo at `tick` — frames = llround(N · beats per bar ·
+// beat length in seconds · rate) — and the transport starts at exactly the frame where those bars end (inside a block:
+// the frames before it hold, the frames from it play). Stop cancels it (the position stays at `tick`), Continue cancels
+// it and plays, Locate moves where it will start. The block in which it ends describes frame 0 in its snapshot (still
+// stopped); the next block's snapshot is playing.
 // A new tempo map keeps the musical position (the next tick to play) and recomputes the sample position from it.
 // The ProcessContext snapshot (TransportSnapshot) describes frame 0 of the block: beat = fractional ticks / PPQ
 // (quarter notes), bpm at that tick, beatsPerFrame = bpm / 60 / sr while playing, beatsPerBar and barStartBeat from
@@ -120,6 +126,9 @@ enum class TransportCommandKind : uint8_t {
   Continue,  // play from the held position
   Locate,    // move to `tick` (playing or not)
   SetLoop,   // arrangement loop [loopStart, loopEnd), on when loopEnabled and loopEnd > loopStart
+  // T6.6: the record entry point. Plays from `tick` like Play (after the count-in when countInBars > 0). Recording
+  // itself (inputs to WAV / notes, punch, takes) is T6.7: until then Record is count-in + play, nothing is captured.
+  Record,
 };
 
 struct TransportCommand {
@@ -127,6 +136,28 @@ struct TransportCommand {
   bool loopEnabled = false;
   Ticks tick = 0;
   Ticks loopStart = 0, loopEnd = 0;
+  // T6.6: Play / Record: this many bars of count-in first (0: none). See "Count-in" above.
+  uint8_t countInBars = 0;
+};
+
+// T6.6: what the transport played in one process() call, as runs of consecutive samples (the metronome reads them,
+// pq/engine/metronome.h). A Song run plays song samples [pos, pos + len) at block frames [frame, frame + len) (a loop
+// wrap starts a new run); a CountIn run counts in frames [pos, pos + len) of the count-in at those block frames.
+struct TransportRun {
+  enum Kind : uint8_t { Song, CountIn };
+  uint32_t frame = 0, len = 0;
+  SampleTime pos = 0;
+  Kind kind = Song;
+};
+
+// T6.6: the count-in in progress (Timeline::countIn): `frames` long, `beats` clicks, beat k at frame
+// llround(k · beatFrames) of it, an accent every `beatsPerBar` beats.
+struct CountInState {
+  bool active = false;
+  SampleTime frames = 0;
+  double beatFrames = 0.0;
+  uint32_t beats = 0, beatsPerBar = 0;
+  SampleTime pos = 0;  // frames counted so far
 };
 
 // What the UI hears back (lossy: when the ring is full the report is dropped; the UI keeps the newest it polled).
@@ -139,6 +170,10 @@ struct TransportReport {
   uint64_t commands = 0;       // commands taken from post() so far (T3.17: the UI knows which of its commands this
                                // report already reflects)
   bool playing = false;
+  // T6.6: a count-in is running (playing is false; tick is where the transport will start): the beat it is on
+  // (0-based, of countInBeats), with countInBeatsPerBar beats per bar.
+  bool countingIn = false;
+  uint32_t countInBeat = 0, countInBeats = 0, countInBeatsPerBar = 0;
 };
 
 struct TimelineConfig {
@@ -174,6 +209,8 @@ struct TimelineStats {
   uint64_t sequenceSwaps = 0, automationSwaps = 0, tempoSwaps = 0, audioSwaps = 0;
   uint64_t loopWraps = 0;
   uint64_t droppedReports = 0;
+  uint64_t droppedRuns = 0;        // T6.6: runs beyond kMaxRuns in one block (a loop shorter than a block / 16)
+  uint64_t countIns = 0;           // T6.6: count-ins started
 };
 
 class Timeline {
@@ -236,6 +273,12 @@ public:
 
   // Audio-thread state (tests, inspection). RT-safe.
   bool playing() const noexcept { return playing_; }
+  // T6.6: the count-in (active while it runs: the transport is held, playing() false) and the runs the last process()
+  // played (song runs while playing, a count-in run while counting in; empty while stopped).
+  bool countingIn() const noexcept { return countIn_.active; }
+  const CountInState& countIn() const noexcept { return countIn_; }
+  std::span<const TransportRun> runs() const noexcept { return {runs_, numRuns_}; }
+  static constexpr uint32_t kMaxRuns = 16;
   Ticks position() const noexcept;                         // the next tick to play
   SampleTime songSample() const noexcept { return pos_; }  // its sample
   uint32_t soundingNotes(uint32_t track) const noexcept { return tracks_[track].heapSize; }
@@ -294,7 +337,9 @@ private:
   void seek(uint32_t track, Ticks t) noexcept;
   void setupPass0(Cursor& c) noexcept;
   void computeNextOn(Cursor& c) noexcept;
-  void playBlock(uint32_t frames) noexcept;
+  void playBlock(uint32_t from, uint32_t frames) noexcept;  // plays block frames [from, frames)
+  void startCountIn(Ticks tick, uint32_t bars) noexcept;    // T6.6
+  void pushRun(uint32_t frame, uint32_t len, SampleTime pos, TransportRun::Kind kind) noexcept;
   Ticks resolveTick() noexcept;                       // nextTick_, computing it from pos_ when lazy
   void refreshMinNext() noexcept;
   void playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t len, Ticks t0, Ticks t1) noexcept;
@@ -358,6 +403,9 @@ private:
   bool reportPending_ = true;
   bool holdValid_ = false;       // stopped: the automation buffers hold the values at the playhead
   uint64_t paramWrites_ = 0;      // bumped by writeAutomatedParams when it changed a param (BlockHook::paramWrites)
+  CountInState countIn_;         // T6.6
+  TransportRun runs_[kMaxRuns];  // T6.6: the runs of the current block
+  uint32_t numRuns_ = 0;
   bool loopEnabled_ = false, loopOn_ = false;
   Ticks loopStart_ = 0, loopEnd_ = 0;
   SampleTime loopStartSample_ = 0, loopEndSample_ = 0;

@@ -47,6 +47,8 @@ Engine::Engine(const EngineConfig& config)
   lc.sampleRate = cfg_.sampleRate;
   lc.maxSlots = cfg_.maxSlots;
   live_ = std::make_unique<LiveInput>(lc, cfg_.livePorts);
+  metronome_ = std::make_unique<Metronome>(cfg_.sampleRate);
+  timelineHook_ = timeline_->blockHook();
   for (uint32_t k = 0; k < cfg_.maxSlots; ++k) slots_.push_back({this, k});
   paramRings_.push_back(std::make_unique<ParamRing>(std::bit_ceil(std::max(cfg_.paramRing, 2u))));
   paramProducer_ = paramConsumer_ = paramRings_.back().get();
@@ -67,7 +69,7 @@ ProjectConfig Engine::projectConfig() noexcept {
   pc.sampleRate = cfg_.sampleRate;
   pc.maxBlockFrames = cfg_.blockFrames;
   pc.numOut = cfg_.numOut;
-  pc.hook = timeline_->blockHook();
+  pc.hook = {&Engine::onHook, this, timelineHook_.paramWrites};  // T6.6: the timeline's hook + the metronome
   pc.numProjectParams = cfg_.numProjectParams;
   pc.idleUnits = cfg_.idleUnits;
   pc.clipIn = timeline_->clipPlayer().channels();  // T5.4
@@ -179,6 +181,29 @@ void Engine::onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer
   e.live_->emit(s.slot, sampleTime, frames, out);  // T6.4: live notes routed to this slot
 }
 
+void Engine::onHook(void* self, int64_t sampleTime, uint32_t frames, TransportSnapshot& transport,
+                    std::span<float> params) noexcept {  // RT-safe
+  Engine& e = *static_cast<Engine*>(self);
+  e.timelineHook_.fn(e.timelineHook_.user, sampleTime, frames, transport, params);
+  const std::span<const TransportRun> runs = e.timeline_->runs();  // empty while stopped
+  if (runs.empty() || e.offline_) return;
+  const bool song = e.metronome_->enabled();
+  if (!song && runs.front().kind != TransportRun::CountIn) return;  // off, no count-in: nothing to click
+  e.metronome_->schedule(sampleTime, runs, e.timeline_->tempoImage(), e.timeline_->countIn(), e.cfg_.sampleRate,
+                         e.program_ ? e.program_->outputLatency() : 0u, song);
+}
+
+void Engine::mixClicks(const AudioBlock& block) noexcept {  // RT-safe
+  const uint32_t main = std::min(cfg_.numOut, block.numOut);
+  if (clickPair_ && block.numOut >= main + 2) {  // the cue pair: always written whole while it is routed here
+    float* pair[2] = {block.out[main], block.out[main + 1]};
+    for (float* ch : pair) std::memset(ch, 0, sizeof(float) * block.frames);
+    if (metronome_->pending()) metronome_->render(block.frameTime, block.frames, pair, 2);
+    return;
+  }
+  if (metronome_->pending()) metronome_->render(block.frameTime, block.frames, block.out, main);
+}
+
 void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
   ++stats_.blocks;
   // The engine's own time base (T3.17-fix1, M3 review M15b): monotonic whatever the device does (a reopened device
@@ -258,9 +283,15 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
     asleep_.store(false, std::memory_order_relaxed);
     ++stats_.wakes;
   }
-  program_->process(block);
+  {
+    AudioBlock main = block;  // the program plays the main channels; the click pair (if any) is the engine's
+    main.numOut = std::min(block.numOut, cfg_.numOut);
+    program_->process(main);
+  }
+  if (clickPair_ || metronome_->pending()) mixClicks(block);  // T6.6
   if (sleepFrames_ == 0) return;
-  bool quiet = !activity && numAuditions_ == 0 && live_->idle() && !timeline_->playing() && program_->quiet();
+  bool quiet = !activity && numAuditions_ == 0 && live_->idle() && !timeline_->playing() && !timeline_->countingIn() &&
+               !metronome_->pending() && program_->quiet();
   if (quiet)
     for (uint32_t c = 0; c < block.numOut && quiet; ++c)
       for (uint32_t f = 0; f < block.frames; ++f)
@@ -287,7 +318,11 @@ Result<RenderStats> Engine::renderOffline(uint64_t frames, AudioSink& sink, uint
   loop.startFrame = nextTime_;  // informational: process() keeps its own time base (engine time continues)
   loop.between = [](void* self, int64_t) { static_cast<Engine*>(self)->collect(); };
   loop.user = this;
-  return detail::runRenderLoop(loop, sink);
+  offline_ = true;  // T6.6: an offline render never clicks
+  metronome_->clear();
+  auto r = detail::runRenderLoop(loop, sink);
+  offline_ = false;
+  return r;
 }
 
 }  // namespace pq::engine

@@ -1162,3 +1162,12 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   holding keys (all stop); typing in the browser search while M is on types letters.
 - To judge: the strip's four new rows (they shorten the fader); "Mon Auto" wording; whether new ports should default to
   on (Q?-T6.4-a 3); real-device timing jitter (WinMM's callback jitter is what remains; QPC stamps + a constant period).
+
+## 2026-11-10 · T6.6 · Metronome, count-in, Track Delay (👁)
+- Control bar: a metronome switch (drawn metronome icon) and a ▾ beside the signature; the menu holds Count-In
+  None / 1 / 2 / 4 Bars, Level −18 / −12 / −6 / 0 dB and Play on Cue Output. Record is enabled: count-in then play
+  (nothing is captured until T6.7); lit while counting in, the position reads "-1. 3. 1". Hover the CPU meter for the PDC
+  total. Check: the icon reads as a metronome at 1x; the ▾ is small.
+- Mixer view strips (not the master): a Track Delay box ("0.0 ms") and a "Lat 0.0 ms" readout under the tuning chip.
+- 86 goldens re-recorded: every full-window scene moved only in the control bar (y 26–46), plus mixer-view (the strips'
+  two new rows).

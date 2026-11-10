@@ -426,6 +426,7 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   reportWires(*current_);
   updateTuningTables(*current_);  // T2.6-fix1: before the first lowering names their indices
   applyParams(*current_, true);
+  syncRecording(*current_);  // T6.6: before the first plan (Track Delay)
   if (Status s = compileNow(current_); !s.ok()) return s;
   publishTempo(*current_);
   publishSequences(*current_);
@@ -558,6 +559,7 @@ Status ProjectLink::setSampleRate(double rate) {
   publishTempo(*current_);
   publishSequences(*current_);
   publishLiveRoutes(*current_, true);  // T6.4: the new engine has no routes yet
+  syncRecording(*current_);            // T6.6: nor a metronome setting
   lastAudio_ = nullptr;
   publishAudio(*current_, true);  // T5.4: the new engine's timeline has no audio image yet
   publishAutomation(*current_);
@@ -1057,6 +1059,7 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   // T6.4: arm / monitor (Param), MIDI input and note input (Meta), tunings, slots: the live routes (published only when
   // one changed).
   if (reset || compile || c.has(doc::kChangeParam) || c.has(doc::kChangeMeta)) publishLiveRoutes(p, reset);
+  if (reset || structural || c.has(doc::kChangeMeta)) syncRecording(p);  // T6.6: metronome, Track Delay
   // T5.4: audio clips (edits are runtime data, never a compile); a tuning param can move a Steps transpose, a tempo
   // edit the clips' samples. Published only when something an audio track plays changed.
   if (reset || compile || relocated || c.has(doc::kChangeSequence) || c.has(doc::kChangeTimeline) ||
@@ -1190,6 +1193,7 @@ void ProjectLink::workerMain() {
           std::lock_guard compileLock(compileMutex_);
           bool drained = true;
           if (anyDeferred_.load(std::memory_order_acquire)) (void)drainDeferred(drained);
+          replanLatency();  // T6.6: a Track Delay edit
           if (engine::ProjectProgram* program = engine_->program()) program->collect();
         }
         lock.lock();
@@ -1241,6 +1245,7 @@ void ProjectLink::flush() {
       std::lock_guard compileLock(compileMutex_);
       bool drained = true;
       (void)drainDeferred(drained);
+      replanLatency();  // T6.6: a Track Delay edit
     }
     takeLatencyShifts();  // T6.2 (compiled on the calling thread: the UI thread)
     return;
@@ -1250,6 +1255,11 @@ void ProjectLink::flush() {
   cv_.notify_all();
   cv_.wait(lock, [&] { return quit_ || (!pending_ && !busy_); });
   flushNow_ = false;
+  if (latencyReplan_) {  // T6.6: a Track Delay edit is planned before flush() returns
+    lock.unlock();
+    std::lock_guard compileLock(compileMutex_);
+    replanLatency();
+  }
 }
 
 void ProjectLink::handLowering(const doc::Snapshot& s, uint64_t serial, const std::shared_ptr<const doc::LoweredProject>& lowered) {
@@ -1854,7 +1864,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
       if (auto pub = prog.value()->publish(u, std::move(b.value().images[u])); !pub.ok()) return fail(pub.error());
     compiledUnits = static_cast<uint32_t>(b.value().images.size());
     {  // T6.2: the first plan (a new program: nothing sent before)
-      LatencyJob job = planLatency();
+      LatencyJob job = planLatency(lp);
       lastPlan_.reset();
       pendingLatency_.reset();
       if (!job.plan.none()) {
@@ -1864,6 +1874,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
       std::lock_guard lock(mutex_);
       if (paramShift_ != job.shift) shiftsChanged_.store(true, std::memory_order_release);
       paramShift_ = std::move(job.shift);
+      busLatency_ = job.plan.busLatency;  // T6.6
     }
     {
       std::lock_guard lock(mutex_);
@@ -1913,7 +1924,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
       }
     }
     if (d.topology || !d.units.empty()) {
-      d.latency = planLatency();  // T6.2
+      d.latency = planLatency(lp);  // T6.2
       const bool queued = !deferred_.empty();
       // M3: a topology still waiting for JIT images is published interpreted now: this result supersedes it (its
       // schedules may no longer be the compiler's, so their JIT images might never come).
@@ -2190,6 +2201,16 @@ void ProjectLink::play(Ticks from) {
   optimistic_ = {true, from, 0};
 }
 
+void ProjectLink::record(Ticks from) {  // T6.6: count-in + play (recording itself is T6.7)
+  if (!playhead().playing) prefetchAt(from);
+  engageDisk(true);
+  engine::TransportCommand c{engine::TransportCommandKind::Record, false, from, 0, 0};
+  c.countInBars = current_ ? current_->record.countInBars : 0;
+  postTransport(c);
+  optimistic_ = {true, from, 0};
+  optimistic_.countingIn = c.countInBars > 0;
+}
+
 void ProjectLink::stop() {
   const views::PlayheadSnapshot now = playhead();
   postTransport({engine::TransportCommandKind::Stop, false, 0, 0, 0});
@@ -2238,11 +2259,18 @@ views::PlayheadSnapshot ProjectLink::playhead() {
   takeLatencyShifts();  // T6.2
   views::PlayheadSnapshot s;
   if (report_.commands >= commandsPosted_) {
-    s.playing = report_.playing;
+    s.playing = report_.playing || report_.countingIn;  // T6.6: a count-in is the transport running
     s.tick = report_.tick;
+    if (report_.countingIn) {
+      s.countingIn = true;
+      s.countInBeat = report_.countInBeat;
+      s.countInBeats = report_.countInBeats;
+      s.countInBeatsPerBar = report_.countInBeatsPerBar;
+    }
   } else {  // the audio thread has not taken the last command yet: show what it will do
     s.playing = optimistic_.playing;
     s.tick = optimistic_.tick;
+    s.countingIn = optimistic_.countingIn;
   }
   s.sequence = reportSeq_;
   return s;

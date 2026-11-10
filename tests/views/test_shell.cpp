@@ -18,6 +18,7 @@
 #include "pq/views/view_scenes.h"
 #include "../ui/golden_check.h"
 #include "views_test_util.h"
+#include "../../src/views/src/shell/shell_widgets.h"
 
 using namespace pq;
 using namespace pq::ui;
@@ -137,6 +138,69 @@ TEST_CASE("shell: Space / Shift+Space call the transport port") {
   CHECK(f.port.calls.back().call == FakeTransport::Call::Stop);
   f.d.click(f.d.center("main/control-bar/stop"));  // stopped: back to the beginning
   CHECK(f.port.calls.back().call == FakeTransport::Call::Locate);
+}
+
+TEST_CASE("shell + T6.6: metronome switch and menu, Record / F9 with the count-in readout, the PDC total on hover") {
+  Fixture f;
+  const char* kMetronome = "main/control-bar/metronome";
+  const char* kMetronomeMenu = "main/control-bar/metronome-menu";
+  auto& met = f.get<shell::TransportButton>(kMetronome);
+  CHECK_FALSE(met.on());
+  f.d.click(f.d.center(kMetronome));  // one undo step
+  CHECK(f.ctx.doc()->record.metronome);
+  CHECK(met.on());
+  CHECK(f.ctx.undo());
+  CHECK_FALSE(f.ctx.doc()->record.metronome);
+  CHECK_FALSE(met.on());
+  // The arrow opens the menu: count-in, level, cue output.
+  f.d.click(f.d.center(kMetronomeMenu));
+  auto* menu = dynamic_cast<Menu*>(f.shell->overlay().top());
+  REQUIRE(menu != nullptr);
+  auto item = [&](std::string_view label) {
+    for (size_t i = 0; i < menu->items().size(); ++i)
+      if (menu->items()[i].label == label) return static_cast<int32_t>(i);
+    FAIL("no item " << label);
+    return 0;
+  };
+  CHECK(menu->items()[static_cast<size_t>(item("Count-In: None"))].checked);
+  CHECK(menu->items()[static_cast<size_t>(item("Level -6 dB"))].checked);
+  menu->choose(item("Count-In: 2 Bars"));
+  CHECK(f.ctx.doc()->record.countInBars == 2);
+  // A right click on the metronome opens the same menu.
+  f.d.click(f.d.center(kMetronome), mod::kNone, PointerButton::Right);
+  menu = dynamic_cast<Menu*>(f.shell->overlay().top());
+  REQUIRE(menu != nullptr);
+  CHECK(menu->items()[static_cast<size_t>(item("Count-In: 2 Bars"))].checked);
+  menu->choose(item("Play on Cue Output"));
+  CHECK(f.ctx.doc()->record.metronomeCue);
+  CHECK_FALSE(f.ctx.doc()->record.metronome);  // a right click does not toggle it
+  // Record (the button and F9): the transport's record from the start marker.
+  f.port.calls.clear();
+  f.d.click(f.d.center("main/control-bar/record"));
+  REQUIRE(f.port.last(FakeTransport::Call::Record) != nullptr);
+  CHECK(f.port.last(FakeTransport::Call::Record)->tick == 0);
+  // While the transport counts in: the position reads the bars to go and the beat; Record is lit; a press cancels.
+  f.port.setCountIn(5, 8, 4);  // 2 bars of 4/4, on beat 6
+  f.d.advance(0.2);            // the position timer (the transport runs) reads it
+  CHECK(f.shell->positionText() == "-1. 2. 1");
+  CHECK(f.get<shell::TransportButton>("main/control-bar/record").on());
+  CHECK_FALSE(f.get<shell::TransportButton>("main/control-bar/play").on());
+  f.d.press("F9");
+  CHECK(f.port.calls.back().call == FakeTransport::Call::Stop);
+  CHECK_FALSE(f.port.playhead().countingIn);
+  // Stopped: F9 records again.
+  f.d.press("F9");
+  CHECK(f.port.calls.back().call == FakeTransport::Call::Record);
+  // Playing (not counting in): Record does nothing yet (T6.7), and says so.
+  const size_t n = f.port.calls.size();
+  f.d.press("F9");
+  CHECK(f.port.calls.size() == n);
+  CHECK(f.ctx.status().find("T6.7") != std::string::npos);
+  // The CPU meter's info adds the PDC total.
+  f.port.latencyMs = 12.5;
+  f.d.move(f.d.center("main/control-bar/cpu"));
+  CHECK(f.shell->infoTitle() == "CPU Load Meter");
+  CHECK(f.shell->infoBody().find("12.5 ms behind") != std::string::npos);
 }
 
 TEST_CASE("shell: undo / redo hotkeys go through the History") {

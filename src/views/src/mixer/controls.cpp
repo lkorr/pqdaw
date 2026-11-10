@@ -233,6 +233,29 @@ LiveBox::LiveBox(std::string name, Kind kind, std::string letter)
       formatter = [](double p) { return formatPan(p); };
       parser = [](std::string_view t) { return parsePan(t); };
       break;
+    case Kind::Delay:  // T6.6: Track Delay, ms (doc::kMaxTrackDelayMs either way)
+      s.min = -static_cast<double>(doc::kMaxTrackDelayMs);
+      s.max = static_cast<double>(doc::kMaxTrackDelayMs);
+      s.def = 0.0;
+      s.step = 0.1;
+      s.decimals = 1;
+      s.dragPixels = 4000.0;  // 0.5 ms per logical px (Shift: fine)
+      s.keyStep = 1.0;
+      formatter = [](double ms) {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%.1f ms", std::abs(ms) < 0.05 ? 0.0 : ms);
+        return std::string(buf);
+      };
+      parser = [](std::string_view t) -> std::optional<double> {
+        std::string clean;
+        for (char c : t)
+          if (c != ' ' && c != 'm' && c != 's') clean += c;
+        double v = 0.0;
+        const auto r = std::from_chars(clean.data(), clean.data() + clean.size(), v);
+        if (clean.empty() || r.ec != std::errc{} || r.ptr != clean.data() + clean.size()) return std::nullopt;
+        return v;
+      };
+      break;
   }
   setSpec(s);
   setValue(s.def);
@@ -240,6 +263,11 @@ LiveBox::LiveBox(std::string name, Kind kind, std::string letter)
     case Kind::Volume: setInfo("Track Volume", "Drag up / down (Shift: fine), double-click to type a value, Delete for 0 dB."); break;
     case Kind::Pan: setInfo("Track Panning", "Drag up / down (Shift: fine), double-click to type (e.g. 25L), Delete for centre."); break;
     case Kind::Send: setInfo("Send", "How much of this track goes to the return track. Delete for -inf."); break;
+    case Kind::Delay:
+      setInfo("Track Delay", "Shifts this track in time against the others, in milliseconds (-1000 to 1000). Positive "
+                             "plays it later; negative plays it earlier (the other tracks are delayed instead, so the "
+                             "whole output gets that much later). Delete for 0.");
+      break;
   }
 }
 
@@ -258,7 +286,9 @@ void LiveBox::paint(PaintContext& ctx) {
   const IRect in = paint::inset(r, 1);
   const double n = normalized();
   if (!in.empty()) {
-    if (kind_ == Kind::Pan) {
+    if (kind_ == Kind::Delay) {
+      // T6.6: no bar (a delay is not a level)
+    } else if (kind_ == Kind::Pan) {
       // A thin bar along the bottom edge from the centre to the value (T3.x-fix-look, M3 review L17: the full-height
       // fill and centre marker struck through the text, "C" and "12R" read as "Ȼ" / "1▌R"); the text stays clean.
       const int32_t mid = in.x + in.w / 2;

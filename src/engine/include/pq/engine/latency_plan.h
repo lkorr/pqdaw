@@ -47,8 +47,10 @@ struct CompensationPlan {
   bool sameAs(const CompensationPlan& o) const noexcept;
 };
 
-// `unitOffset` (empty, or per unit): frames added to everything the unit produces (T6.6's Track Delay). Units whose
-// latencies are missing count as 0. Not RT-safe (allocates).
+// `unitOffset` (empty, or per unit): frames added to everything the unit produces (T6.6's Track Delay, negated). A
+// negative offset can make L(b) negative: the bus is early, so its reader delays it by −L(b) more (A_u starts at 0, so
+// no reader is ever early: delays and totals stay ≥ 0). Units whose latencies are missing count as 0. Not RT-safe
+// (allocates).
 CompensationPlan planCompensation(const ProjectLayout& layout, std::span<const UnitLatency> units,
                                   std::span<const int32_t> unitOffset = {});
 

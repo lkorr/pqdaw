@@ -72,11 +72,13 @@ struct SetTrackMonitor { TrackId track; MonitorMode mode = MonitorMode::Auto; };
 struct SetTrackAudioInput { TrackId track; AudioInput input; };
 // A MIDI track's note input (port / channel). Meta (the app's MIDI router reads it; no engine work).
 struct SetTrackMidiInput { TrackId track; MidiInput input; };
-// Track Delay in ms (Mixer::trackDelayMs). Meta until T6.6 plays it. Not on the master.
+// Track Delay in ms (Mixer::trackDelayMs). Meta: the link plans compensation again without a compile (T6.6). Not on
+// the master.
 struct SetTrackDelay { TrackId track; float ms = 0.0f; };
 // How incoming keys become notes (Track::noteInput). Meta (the input map is rebuilt off-thread). MIDI tracks.
 struct SetNoteInput { TrackId track; NoteInput input; };
-// Meta. The punch region (Project::punch) and the record settings (Project::record; T6.6 adds the engine's values).
+// Meta. The punch region (Project::punch) and the record settings (Project::record; T6.6: the link sets the engine's
+// metronome from them, Record reads the count-in).
 struct SetPunch { PunchRegion punch; };
 struct SetRecordSettings { RecordSettings settings; };
 

@@ -223,6 +223,13 @@ void Timeline::apply(const TransportCommand& cmd) noexcept {  // RT-safe
   };
   switch (cmd.kind) {
     case TransportCommandKind::Play:
+    case TransportCommandKind::Record:  // T6.6: recording itself is T6.7; until then Record = (count-in +) play
+      if (cmd.countInBars > 0) {
+        locate(cmd.tick);
+        startCountIn(cmd.tick, cmd.countInBars);
+        break;
+      }
+      countIn_.active = false;
       locate(cmd.tick);
       playing_ = true;
       ++playbackPass_;
@@ -230,8 +237,10 @@ void Timeline::apply(const TransportCommand& cmd) noexcept {  // RT-safe
     case TransportCommandKind::Stop:
       if (playing_) releasePending_ = true;
       playing_ = false;
+      countIn_.active = false;  // T6.6: cancels a count-in (the position stays where it would have started)
       break;
     case TransportCommandKind::Continue:
+      countIn_.active = false;
       if (!playing_) {
         seekPending_ = true;
         ++playbackPass_;
@@ -252,6 +261,31 @@ void Timeline::apply(const TransportCommand& cmd) noexcept {  // RT-safe
   snapshotDirty_ = true;
   holdValid_ = false;
   reportPending_ = true;
+}
+
+void Timeline::startCountIn(Ticks tick, uint32_t bars) noexcept {  // RT-safe
+  // The transport holds at `tick` (located by the caller) for `bars` bars of the signature there, at the tempo there.
+  if (playing_) releasePending_ = true;
+  playing_ = false;
+  const TimeSignature sig = tempo_->signatures().signatureAt(tick);
+  const double bpm = tempo_->tempo().bpmAt(tick);
+  const double quarters = static_cast<double>(bars) * static_cast<double>(ticksPerBar(sig)) / static_cast<double>(kPpq);
+  const double exact = quarters * 60.0 / bpm * cfg_.sampleRate;
+  countIn_.active = true;
+  countIn_.frames = std::max<SampleTime>(1, std::llround(exact));
+  countIn_.beats = bars * static_cast<uint32_t>(sig.numerator);
+  countIn_.beatsPerBar = static_cast<uint32_t>(sig.numerator);
+  countIn_.beatFrames = exact / static_cast<double>(countIn_.beats);
+  countIn_.pos = 0;
+  ++stats_.countIns;
+}
+
+void Timeline::pushRun(uint32_t frame, uint32_t len, SampleTime pos, TransportRun::Kind kind) noexcept {  // RT-safe
+  if (numRuns_ == kMaxRuns) {
+    ++stats_.droppedRuns;
+    return;
+  }
+  runs_[numRuns_++] = TransportRun{frame, len, pos, kind};
 }
 
 void Timeline::drainCommands() noexcept {  // RT-safe
@@ -675,11 +709,11 @@ void Timeline::refreshMinNext() noexcept {  // RT-safe; O(tracks), only after so
   minNextDirty_ = false;
 }
 
-void Timeline::playBlock(uint32_t frames) noexcept {  // RT-safe
+void Timeline::playBlock(uint32_t from, uint32_t frames) noexcept {  // RT-safe
   const TempoMap& tm = tempo_->tempo();
   const double sr = cfg_.sampleRate;
   const bool notes = seq_ != nullptr && numTracks_ != 0;
-  for (uint32_t f = 0; f < frames;) {
+  for (uint32_t f = from; f < frames;) {
     uint32_t len = frames - f;
     const bool wrap = loopOn_ && pos_ < loopEndSample_ && pos_ + len >= loopEndSample_;
     if (wrap) len = static_cast<uint32_t>(loopEndSample_ - pos_);
@@ -703,6 +737,7 @@ void Timeline::playBlock(uint32_t frames) noexcept {  // RT-safe
     }
     clips_->play(f, pos_, len);  // T5.4
     renderAutomation(f, pos_, len, f == 0 && len == frames);
+    pushRun(f, len, pos_, TransportRun::Song);  // T6.6: the metronome's beats
     f += len;
     if (wrap) {
       ++stats_.loopWraps;
@@ -794,6 +829,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
     anyEvents_ = false;
   }
   clips_->beginBlock(frames);
+  numRuns_ = 0;
   drainCommands();
   pickUpImages();
   if (releasePending_) {
@@ -809,7 +845,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
     computeSnapshot();
     snapshotDirty_ = false;
   }
-  if (reportPending_ || (playing_ && framesSinceReport_ >= cfg_.reportEveryFrames)) {
+  if (reportPending_ || ((playing_ || countIn_.active) && framesSinceReport_ >= cfg_.reportEveryFrames)) {
     framesSinceReport_ = 0;
     TransportReport r;
     r.block = stats_.blocks;
@@ -819,14 +855,41 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
     r.loopWraps = stats_.loopWraps;
     r.playing = playing_;
     r.commands = commandsPosted_;
+    if (countIn_.active) {  // T6.6
+      r.countingIn = true;
+      r.countInBeats = countIn_.beats;
+      r.countInBeatsPerBar = countIn_.beatsPerBar;
+      r.countInBeat = std::min(countIn_.beats - 1,
+                               static_cast<uint32_t>(static_cast<double>(countIn_.pos) / countIn_.beatFrames));
+    }
     if (!reports_.tryPush(r)) ++stats_.droppedReports;
     reportPending_ = false;
   }
   blockSong_ = pos_;  // T6.2: frame 0 of this block (shifted lanes)
   blockPlaying_ = playing_;
   if (frames != 0) {
+    uint32_t from = 0;
+    if (countIn_.active) {  // T6.6: count frames in; the transport starts at the frame where the bars end
+      const SampleTime left = countIn_.frames - countIn_.pos;
+      const uint32_t n = left >= static_cast<SampleTime>(frames) ? frames : static_cast<uint32_t>(left);
+      pushRun(0, n, countIn_.pos, TransportRun::CountIn);
+      countIn_.pos += n;
+      if (countIn_.pos >= countIn_.frames) {
+        countIn_.active = false;
+        playing_ = true;
+        ++playbackPass_;
+        snapshotDirty_ = true;
+        reportPending_ = true;
+        from = n;
+        if (from > 0) {  // the frames before the start hold, as while stopped
+          if (clips_->liveVoices() != 0) clips_->idle(from);
+          if (!holdValid_ && automation_.numLanes() != 0)
+            automation_.renderHold(static_cast<double>(resolveTick()), 0, from, false);
+        }
+      }
+    }
     if (playing_) {
-      playBlock(frames);
+      playBlock(from, frames);
       holdValid_ = false;
     } else {
       if (clips_->liveVoices() != 0) clips_->idle(frames);  // T5.4: fades after a stop

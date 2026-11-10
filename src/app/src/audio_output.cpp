@@ -198,6 +198,16 @@ void AudioOutput::setExtraSource(const engine::AudioCallback* cb) {
   cv_.notify_all();
 }
 
+bool AudioOutput::prepareAdapter(uint32_t deviceOuts, uint32_t blockFrames, uint32_t deviceFrames) {  // control thread
+  engineOuts_ = std::max(std::min<uint32_t>(deviceOuts, 2), 1u);
+  clickOuts_ = deviceOuts >= 4 ? 2u : 0u;  // T6.6: a cue pair exists
+  if (clickOuts_ != 0) {
+    clickCap_ = std::max<uint32_t>(deviceFrames, 4096);
+    clickBuf_ = AlignedBuffer<float>(static_cast<size_t>(clickCap_) * 2);
+  }
+  return adapter_.prepare({&AudioOutput::onEngine, this}, 0, engineOuts_ + clickOuts_, blockFrames, deviceFrames);
+}
+
 void AudioOutput::setCueSource(const engine::AudioCallback* cb) {
   cue_.store(cb);
   while (inCue_.load() != 0) std::this_thread::yield();  // a callback still using the previous source finishes
@@ -273,8 +283,34 @@ void AudioOutput::onDevice(void* self, const engine::AudioBlock& b) noexcept {  
   e.in = nullptr;  // inputs are opened (ASIO duplex) but not read before recording (M6)
   e.numIn = 0;
   e.numOut = outs;
-  o.adapter_.process(e);
   for (uint32_t c = outs; c < b.numOut; ++c) std::memset(b.out[c], 0, sizeof(float) * b.frames);
+  if (o.clickOuts_ == 0) {
+    o.adapter_.process(e);
+  } else {  // T6.6: the engine's click pair, into the cue pair while the metronome plays there
+    engine::Engine& eng = *o.engine_.load(std::memory_order_relaxed);
+    const uint32_t first = 2 * o.cuePair_.load(std::memory_order_relaxed);
+    const bool cue = eng.metronome().cue() && first >= 2 && first + 2 <= b.numOut;
+    float* click[2] = {o.clickBuf_.data(), o.clickBuf_.data() + o.clickCap_};
+    for (uint32_t off = 0; off < b.frames; off += o.clickCap_) {  // one pass unless the device block is huge
+      const uint32_t n = std::min(o.clickCap_, b.frames - off);
+      float* ptrs[engine::kMaxChannels];
+      for (uint32_t c = 0; c < outs; ++c) ptrs[c] = b.out[c] + off;
+      ptrs[outs] = click[0];
+      ptrs[outs + 1] = click[1];
+      engine::AudioBlock sub = e;
+      sub.out = ptrs;
+      sub.numOut = outs + 2;
+      sub.frames = n;
+      sub.frameTime = b.frameTime + off;
+      eng.setClickPair(cue);
+      o.adapter_.process(sub);
+      if (cue)
+        for (uint32_t c = 0; c < 2; ++c) {
+          float* dst = b.out[first + c] + off;
+          for (uint32_t f = 0; f < n; ++f) dst[f] += click[c][f];
+        }
+    }
+  }
   // T5.10: the cue source at the device's buffer, into its output pair (announced as in setExtraSource's handshake).
   o.inCue_.store(1);
   if (const engine::AudioCallback* cue = o.cue_.load()) {
@@ -356,13 +392,11 @@ void AudioOutput::onStreamChanged(void* self, const engine::StreamInfo& info) {
   auto& o = *static_cast<AudioOutput*>(self);
   engine::Engine& eng = *o.engine_.load();
   const uint32_t engineRate = static_cast<uint32_t>(std::lround(eng.config().sampleRate));
-  const uint32_t outs = std::min<uint32_t>(info.outputChannels, 2);
+  const uint32_t outs = std::max(std::min<uint32_t>(info.outputChannels, 2), 1u);
+  const uint32_t clickOuts = info.outputChannels >= 4 ? 2u : 0u;
   bool prepared = true;
-  if (outs != o.engineOuts_ || info.bufferFrames != o.status().stream.bufferFrames) {
-    prepared = o.adapter_.prepare({&AudioOutput::onEngine, &o}, 0, std::max(outs, 1u), eng.config().blockFrames,
-                                  info.bufferFrames);
-    o.engineOuts_ = std::max(outs, 1u);
-  }
+  if (outs != o.engineOuts_ || clickOuts != o.clickOuts_ || info.bufferFrames != o.status().stream.bufferFrames)
+    prepared = o.prepareAdapter(info.outputChannels, eng.config().blockFrames, info.bufferFrames);
   // T6.4: live notes play one device period (plus the adapter's FIFO) after their stamp: a constant latency.
   eng.liveInput().setLatency(info.bufferFrames + o.adapter_.latencyFrames());
   const bool mismatch = info.sampleRate != engineRate || !prepared;
@@ -459,9 +493,8 @@ void AudioOutput::openFallback(const OutputConfig& c, std::string why) {
   sc.sampleRate = c.sampleRate;
   sc.bufferFrames = 256;
   silence_.store(false, std::memory_order_relaxed);
-  engineOuts_ = 2;
   auto opened = null->open(sc, {&AudioOutput::onDevice, this});
-  if (!opened || !adapter_.prepare({&AudioOutput::onEngine, this}, 0, 2, eng.config().blockFrames, 256)) {
+  if (!opened || !prepareAdapter(2, eng.config().blockFrames, 256)) {
     std::fprintf(stderr, "pqdaw: audio unavailable: playback is silent and does not advance\n");
     fallback_ = true;
     {
@@ -520,12 +553,10 @@ bool AudioOutput::openDevice(const OutputConfig& c) {
         why = opened.error().message;
       } else {
         const engine::StreamInfo& si = *opened;
-        const uint32_t outs = std::max(std::min<uint32_t>(si.outputChannels, 2), 1u);
-        if (!adapter_.prepare({&AudioOutput::onEngine, this}, 0, outs, block, si.bufferFrames)) {
+        if (!prepareAdapter(si.outputChannels, block, si.bufferFrames)) {
           why = "invalid stream configuration";
           dev->close();
         } else {
-          engineOuts_ = outs;
           eng.liveInput().setLatency(si.bufferFrames + adapter_.latencyFrames());  // T6.4: one device period
           std::optional<engine::DeviceInfo> asioInfo;
           if (c.backend == engine::Backend::Asio)  // only the open driver is queried while a stream is open

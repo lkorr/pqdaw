@@ -221,6 +221,10 @@ public:
       w_.boolean(p.record.metronome);
       w_.key("metronomeDb");
       w_.number(PathSeg(&root, "record"), p.record.metronomeDb);
+      if (p.record.metronomeCue) {  // T6.6 (optional: false when absent)
+        w_.key("metronomeCue");
+        w_.boolean(true);
+      }
       w_.key("overdub");
       w_.boolean(p.record.overdub);
       w_.key("recordQuantize");
@@ -2723,7 +2727,8 @@ private:
   }
 
   RecordSettings record(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"countInBars", "metronome", "metronomeDb", "overdub", "recordQuantize"};
+    static constexpr std::string_view K[] = {"countInBars", "metronome", "metronomeDb", "overdub", "recordQuantize",
+                                             "metronomeCue"};
     RecordSettings r;
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
@@ -2739,6 +2744,7 @@ private:
         case 2: r.metronomeDb = r_.readFloat(f); break;
         case 3: r.overdub = r_.readBool(f); break;
         case 4: r.recordQuantize = r_.readInt(f); break;
+        case 5: r.metronomeCue = r_.readBool(f); break;
       }
     }
     m.require({0, 1, 2, 3, 4});

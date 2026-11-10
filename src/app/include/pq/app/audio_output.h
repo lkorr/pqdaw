@@ -49,6 +49,7 @@
 #include <string>
 #include <thread>
 
+#include "pq/core/aligned_buffer.h"
 #include "pq/core/result.h"
 #include "pq/engine/audio_device.h"
 #include "pq/engine/block_adapter.h"
@@ -193,6 +194,14 @@ private:
   std::unique_ptr<engine::AudioDevice> device_;
   engine::BlockAdapter adapter_;
   uint32_t engineOuts_ = 2;  // channels the adapter / engine produce (≤ 2); the device's others are zeroed
+  // T6.6: a device with 4 or more outputs also runs the engine's click pair (Engine::setClickPair): two more adapter
+  // channels into clickBuf_ (clickCap_ frames each), added into the cue pair while the metronome plays on it.
+  uint32_t clickOuts_ = 0;
+  uint32_t clickCap_ = 0;
+  AlignedBuffer<float> clickBuf_;
+  // T6.6: prepares adapter_ for a device with `deviceOuts` outputs and `deviceFrames` frames (engineOuts_, the click
+  // pair). Control thread (or AsioDevice's, the driver stopped).
+  bool prepareAdapter(uint32_t deviceOuts, uint32_t blockFrames, uint32_t deviceFrames);
   bool fallback_ = false;
   std::atomic<bool> silence_{false};  // rate mismatch: the engine is not run
   std::atomic<bool> streamRunning_{false};

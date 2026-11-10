@@ -1000,15 +1000,17 @@ struct PunchRegion {
   friend constexpr bool operator==(const PunchRegion&, const PunchRegion&) noexcept = default;
 };
 
-// T6.1: the project's record settings (Meta; the metronome's on / level reach the engine as values in T6.6).
+// T6.1: the project's record settings (Meta; T6.6: the link hands the metronome's settings to the engine).
 //   countInBars      0, 1, 2 or 4 bars of count-in before recording starts
 //   metronome        the click on; metronomeDb its level ([kMinVolumeDb, kMaxVolumeDb])
+//   metronomeCue     T6.6: the click plays on the output's cue pair (Preferences: Cue Output) instead of the main pair
 //   overdub          note recording merges into the main-lane clip under it instead of making a take
 //   recordQuantize   recorded note starts snap to this grid (ticks; 0: off), [0, kTicksPerWhole]
 struct RecordSettings {
   uint8_t countInBars = 0;
   bool metronome = false;
   float metronomeDb = -6.0f;
+  bool metronomeCue = false;
   bool overdub = false;
   Ticks recordQuantize = 0;
   friend constexpr bool operator==(const RecordSettings&, const RecordSettings&) noexcept = default;

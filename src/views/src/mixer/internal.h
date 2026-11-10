@@ -100,7 +100,7 @@ private:
 // A Live number box: the value as a bar (volume and sends from the left, pan from the centre) under the number.
 class LiveBox : public ui::DragBox {
 public:
-  enum class Kind : uint8_t { Volume, Pan, Send };
+  enum class Kind : uint8_t { Volume, Pan, Send, Delay };  // Delay: T6.6's Track Delay (ms, no bar)
   LiveBox(std::string name, Kind kind, std::string letter = {});
   void paint(ui::PaintContext& ctx) override;
 
