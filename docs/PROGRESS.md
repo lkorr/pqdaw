@@ -476,3 +476,7 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Did: ff-merged task/AR.1-automation-recording (691fa66e): one touch-recording mechanism in ViewContext::onStoreEvent for every automatable param while Arrangement Record + Automation Arm; held = override (heard live), thinned per param range, committed with the take in one "Record" undo step at Stop; Automation Arm button (on by default). 92 control-bar goldens re-recorded (diffs confined to the bar row).
 - Verified (worker): -Affected after rebase onto TU.3: 44/45 then pq_tests_views 1/1 after the bar goldens.
 - Notes: lanes written at Stop, not live. Removed fixture_copies/ (test output committed by KB.3 / TU.3) and git-ignored it.
+
+## 2026-11-11 · TU.2b merged · main
+- Did: ff-merged task/TU.2b-wheel-followups (db59bcda): MOS chart back to the explorer palette (shared mos_palette.h with the circle); hardware MIDI-in notes light the circle (per-port SPSC rings, UI-side drain mapped through the live routes); default tuning "Tuning A".
+- Verified (worker): -Affected after rebase, 4 exes failed on old "12-EDO" fixtures/goldens, fixed, re-run 4/4; 62 goldens re-recorded (chips / chart).
