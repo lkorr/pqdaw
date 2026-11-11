@@ -486,18 +486,28 @@ TEST_CASE("project patch: the layout mirrors the arrangement (lane order, groups
       CHECK(n.y + n.h <= b.y + b.h);
       if (k > 0) CHECK(n.x >= pp.nodes[chain[k - 1]].x + pp.nodes[chain[k - 1]].w);
     }
-    const Node& mix = pp.nodes[b.mixer];
-    if (b.kind == doc::TrackKind::Midi || b.kind == doc::TrackKind::Group) mainEnd = std::max(mainEnd, mix.x + mix.w);
+    // TL.7: the chains' staircase is of their blocks (every unplaced mixer sits at the lanes' right end, checked below).
+    float chainEnd = pp.nodes[b.source].kind == NodeKind::Lane ? -1e30f : pp.nodes[b.source].x + pp.nodes[b.source].w;
+    for (const uint32_t d : b.devices) chainEnd = std::max(chainEnd, pp.nodes[d].x + pp.nodes[d].w);
+    if (b.kind == doc::TrackKind::Midi || b.kind == doc::TrackKind::Group) mainEnd = std::max(mainEnd, chainEnd);
     if (b.kind == doc::TrackKind::Return) {
       retStart = std::min(retStart, pp.nodes[b.source].x);
-      retEnd = std::max(retEnd, mix.x + mix.w);
+      retEnd = std::max(retEnd, chainEnd);
     }
-    // A group's own chain starts right of its members' mixers; its container holds them.
+    // TL.7: its mixer at the lanes' right end (the master's Out after it), level with its main path.
+    {
+      const Node& mix = pp.nodes[b.mixer];
+      const float right = b.output != kNone ? pp.nodes[b.output].x + pp.nodes[b.output].w : mix.x + mix.w;
+      CHECK(right == doctest::Approx(pp.laneX1 + metrics::kLaneInset - 12.0f));
+      CHECK(mix.x >= chainEnd + metrics::kNodeGap - 0.01f);
+    }
+    // A group's own chain starts right of its members' chains; its container holds them.
     if (b.kind == doc::TrackKind::Group && b.lastMember != kNone) {
       const uint32_t gi = static_cast<uint32_t>(&b - pp.bands.data());
       for (uint32_t c = gi + 1; c <= b.lastMember; ++c) {
-        const Node& m = pp.nodes[pp.bands[c].mixer];
-        CHECK(pp.nodes[b.source].x > m.x + m.w);
+        float memberEnd = -1e30f;
+        for (const uint32_t d : pp.bands[c].devices) memberEnd = std::max(memberEnd, pp.nodes[d].x + pp.nodes[d].w);
+        CHECK(pp.nodes[b.source].x > memberEnd);
         CHECK(pp.bands[c].x0 >= b.cx0);
         CHECK(pp.bands[c].y + pp.bands[c].h <= b.cy1);
       }
@@ -523,13 +533,20 @@ TEST_CASE("project patch: nudges are view state — not undoable, saved with the
   CHECK(u.ctx.dirty());      // but saved
   CHECK(u.pp().bands[u.pp().bandOf(keys.id)].y == doctest::Approx(by + 20.0f));
   CHECK(u.pp().nodes[u.pp().nodeOf(pathAt(*u.ctx.doc(), keys, 1))].x == doctest::Approx(sx + 48.0f));
-  // TX.mixer-look: the (unplaced) mixer stays the band's top-right block: the Saturator nudged into its column pushes it
-  // right, a gap past the Saturator (it was a gap past it before, so by the same 48).
+  // TX.mixer-look: the (unplaced) mixer stays the band's rightmost block — TL.7: at the lanes' right end, so the
+  // Saturator nudged 48 right stays left of it and it does not move; nudged past it, it pushes the mixer (and the lanes).
   {
     const Node& sn = u.pp().nodes[u.pp().nodeOf(pathAt(*u.ctx.doc(), keys, 1))];
     const float mx1 = u.pp().nodes[u.pp().bands[u.pp().bandOf(keys.id)].mixer].x;
     CHECK(mx1 == doctest::Approx(std::max(mx, sn.x + sn.w + metrics::kNodeGap)));
-    CHECK(mx1 > mx);
+    CHECK(mx1 == doctest::Approx(mx));
+    const float far = std::round(mx - sx);  // past the mixer's old x
+    u.view().nudge(pathAt(*u.ctx.doc(), keys, 1).value, far, 0.0f);
+    const Node& sn2 = u.pp().nodes[u.pp().nodeOf(pathAt(*u.ctx.doc(), keys, 1))];
+    const Node& m2 = u.pp().nodes[u.pp().bands[u.pp().bandOf(keys.id)].mixer];
+    CHECK(m2.x == doctest::Approx(sn2.x + sn2.w + metrics::kNodeGap));
+    CHECK(m2.x + m2.w == doctest::Approx(u.pp().laneX1 + metrics::kLaneInset - 12.0f));
+    u.view().nudge(pathAt(*u.ctx.doc(), keys, 1).value, -far, 0.0f);  // back to +48
   }
   // Saved and loaded with the project.
   const std::string dir = pq::views::test::tempDir("project_patch_nudges");
@@ -562,14 +579,22 @@ TEST_CASE("project patch: nudges are view state — not undoable, saved with the
 // opening the band ----------------------------------------------------------------------------------------------------
 
 namespace {
-// Every band's mixer at its top (under the title strip), right of every other block of the band (its main path, the
-// row under it, wherever their nudges put them): the band's top-right block.
+// Every band's mixer right of every other block of the band (its main path, the row under it, wherever their nudges put
+// them) — TL.7: at the lanes' right end (the master's Out after it), its input level with the band's main path (the
+// spine: its main-path blocks' main pins) and never over the title strip.
 void checkMixersTopRight(const ProjectPatch& pp) {
   for (const Band& b : pp.bands) {
     if (b.mixer == kNone) continue;
     CAPTURE(b.name);
     const Node& m = pp.nodes[b.mixer];
-    CHECK(m.y == doctest::Approx(b.y + metrics::kTitle));
+    CHECK(m.y >= b.y + metrics::kTitle - 0.01f);
+    for (const uint32_t d : b.devices)
+      if (!pp.nodes[d].offPath && pp.nodes[d].capsule == kNone && !pp.nodes[d].folded) {
+        CHECK(m.y + pinOffset(m, 0) == doctest::Approx(pp.nodes[d].y + pinOffset(pp.nodes[d], 0)));
+        break;
+      }
+    const float right = b.output != kNone ? pp.nodes[b.output].x + pp.nodes[b.output].w : m.x + m.w;
+    CHECK(right == doctest::Approx(pp.laneX1 + metrics::kLaneInset - 12.0f));
     CHECK(m.x + m.w <= b.x1);
     auto leftOf = [&](uint32_t n) {
       if (n != kNone && pp.nodes[n].capsule == kNone) CHECK(pp.nodes[n].x + pp.nodes[n].w + metrics::kNodeGap <= m.x + 0.01f);
@@ -2479,8 +2504,8 @@ TEST_CASE("project patch (TX.resize): S + drag scales a block uniformly — clam
     CHECK(n.scale == doctest::Approx(1.5f));
     CHECK(n.w == doctest::Approx(n0.w * 1.5f));
     CHECK(n.h == doctest::Approx(n0.h * 1.5f));
-    CHECK(n.x == doctest::Approx(n0.x));  // its top-left kept
-    CHECK(n.y == doctest::Approx(n0.y));
+    CHECK(n.x == doctest::Approx(n0.x));  // its left kept, its main pin on the band's spine (TL.7: the spine is at least
+    CHECK(n.y + pinOffset(n, 0) == doctest::Approx(n0.y + pinOffset(n0, 0)));  // the mixer's pin row down: unmoved)
     // Its pins' rows and its anchors in proportion; the chain's spine through its main pin (straight chain wires).
     CHECK(pinOffset(n, 0) == doctest::Approx(pinOffset(n0, 0) * 1.5f));
     const int32_t k = n.input("warp"), k0 = n0.input("warp");

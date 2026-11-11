@@ -847,7 +847,7 @@ struct Wire {
   bool single = false;
   // TL.1 (SPEC §15 2026-11-08 "track lanes in the circuit view"): a SOURCE wire's cable leaves its track's lane (the
   // project patch view's band lane) at this x: world units from the band's left edge (band-local, so it travels with the
-  // band). None: under the block it feeds. View only — never lowered, a Meta change (SetWireTap).
+  // band). None: TL.7 the lane's left end. View only — never lowered, a Meta change (SetWireTap).
   std::optional<float> tap;  // |tap| ≤ kMaxWireTap
   bool travels() const noexcept { return law == WireLaw::Travel; }
   bool adds() const noexcept { return law != WireLaw::Travel; }  // Add or Units: no amount

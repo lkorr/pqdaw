@@ -16,7 +16,7 @@
 //              block, no pins) with the outputs the track's signal leaves by: a MIDI track's `notes` (wired to the
 //              instrument, per voice) and its note outputs (doc::kNoteOutputs: Hz, gate, velocity), an audio track's
 //              `out` (its clip player). Each cable from it leaves the lane's TOP EDGE at its own x (doc::Wire::tap,
-//              band-local; none: under the block it feeds: Edge::tapX). Group, return, master: a summing node (Σ) whose
+//              band-local; none: TL.7 at the lane's left end: Edge::tapX). Group, return, master: a summing node (Σ) whose
 //              one input is every Audio wire routed into the track (several wires into one port sum,
 //              graph::ProjectWire), on the spine as before.
 //   device     one block per device of the track (the call `d<id>` of the track patch, NodeId nodeIdFor(Device, id, 0));
@@ -224,8 +224,8 @@ struct Edge {
   // target pin, or an anchored param's control centre (n.x + ax, n.y + ay) — and hangs between them (cables.h).
   std::vector<graph::Point2> points;
   uint32_t net = 0;                     // wires into one summing input share a net (junction dots on the bus)
-  // TL.1: from a lane (NodeKind::Lane): where the cable leaves its top edge (world x; doc::Wire::tap, else under the
-  // block it feeds), and whether the wire pins it (Wire::tap set).
+  // TL.1: from a lane (NodeKind::Lane): where the cable leaves its top edge (world x; doc::Wire::tap, else TL.7 at the
+  // lane's left end), and whether the wire pins it (Wire::tap set).
   float tapX = 0.0f;
   bool tapPinned = false;
 };

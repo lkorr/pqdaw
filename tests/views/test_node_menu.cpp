@@ -29,6 +29,7 @@
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
 #include "pq/ui/test_driver.h"
+#include "pq/views/circuit/cables.h"
 #include "pq/views/circuit/circuit_editor.h"
 #include "pq/views/circuit/node_catalog.h"
 #include "pq/views/circuit/node_menu.h"
@@ -1635,6 +1636,119 @@ TEST_CASE("node menu: opening it with the full catalog is fast (within a 60 Hz f
 #if PQ_OPTIMIZED
   CHECK(worst <= 16.0);
 #endif
+}
+
+// ---- TL.7 (user 2026-11-09: "an empty track will basically just have a long cable stretch out … then you can clearly
+// just fit in modules and audio effects inbetween") --------------------------------------------------------------------
+
+TEST_CASE("TL.7: an empty audio track is one long, nearly straight cable from its lane's left end to its mixer at the "
+          "right end; Z on it inserts an effect between them; a MIDI lane's cable leaves right of its port chips") {
+  Ui u;
+  doc::DocumentStore& st = u.ctx.store();
+  auto made = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Audio, u.bass, "Loop");
+  REQUIRE(made.ok());
+  REQUIRE(st.dispatch(made->command).ok());
+  const doc::TrackId loop = made->tracks.at(0);
+  u.view().sync();
+  u.d.tree().layoutNow();
+  const ProjectPatch& pp = u.pp();
+  const uint32_t bi = pp.bandOf(loop);
+  REQUIRE(bi != kNone);
+  const Band& b = pp.bands[bi];
+  REQUIRE(b.source != kNone);
+  REQUIRE(pp.nodes[b.source].kind == NodeKind::Lane);
+  REQUIRE(b.mixer != kNone);
+  const Node& m = pp.nodes[b.mixer];
+  // The mixer: at the lanes' right end, its input on the band's spine (nothing else on it: its own pin row sets it).
+  CHECK(m.x + m.w == doctest::Approx(pp.laneX1 + metrics::kLaneInset - 12.0f));
+  CHECK(m.y + pinOffset(m, 0) == doctest::Approx(b.y + metrics::kTitle + std::max(metrics::kPinTop, pinOffset(m, 0))));
+  // The one cable: from the lane's left end into the mixer.
+  uint32_t cable = kNone;
+  for (uint32_t i = 0; i < pp.edges.size(); ++i)
+    if (pp.edges[i].from == b.source) {
+      CHECK(cable == kNone);
+      cable = i;
+    }
+  REQUIRE(cable != kNone);
+  const Edge& e = pp.edges[cable];
+  CHECK(e.to == b.mixer);
+  CHECK(e.cable);
+  CHECK(e.tapX == doctest::Approx(pp.laneX0 + 12.0f));
+  REQUIRE(e.points.size() == 2);
+  const graph::Point2 a = e.points.front(), z = e.points.back();
+  const float chord = std::hypot(z.x - a.x, z.y - a.y);
+  CHECK(chord > 600.0f);  // it stretches across
+  // Nearly straight: its rest shape hangs a few tens of world units at most.
+  const uint32_t n = cablePointCount(chord);
+  std::vector<graph::Point2> rest(n);
+  cableRest(a, z, n, rest.data());
+  float sag = 0.0f;
+  for (const graph::Point2 q : rest) sag = std::max(sag, std::fabs((q.x - a.x) * (z.y - a.y) - (q.y - a.y) * (z.x - a.x)) / chord);
+  CHECK(sag < 45.0f);
+  CHECK(sag < 0.06f * chord);
+
+  // Z over that cable (real dispatch): an effect on the track's main path, between the lane's left end and the mixer.
+  {
+    const Band bb = b;  // (the view may rebuild its model below)
+    const ui::IRect r = u.view().canvas().rect();
+    const double span = static_cast<double>(bb.x1 + 40.0f - (bb.x0 - 40.0f));
+    CircuitCanvas::View v;
+    v.zoom = std::min({1.0, static_cast<double>(r.w) / span, static_cast<double>(r.h) / static_cast<double>(bb.h + 80.0f)});
+    v.x = bb.x0 - 40.0f;
+    v.y = bb.y - 40.0f;
+    u.view().canvas().setView(v);
+    u.d.tree().layoutNow();
+    u.d.step();
+  }
+  const size_t h0 = u.history();
+  u.d.move(u.onCable(cable));
+  u.d.keyDown('z');
+  u.d.keyUp('z');
+  u.view().sync();
+  CHECK(u.history() == h0 + 1);
+  const std::vector<doc::DeviceId> list = u.path(loop);
+  REQUIRE(list.size() == 1);
+  REQUIRE(u.device(list[0]) != nullptr);
+  CHECK(u.device(list[0])->name == "VCA");
+  {
+    const ProjectPatch& q = u.pp();
+    const Band& lb = q.bands[q.bandOf(loop)];
+    const Node& vca = q.nodes[u.node(list[0])];
+    const Node& mx = q.nodes[lb.mixer];
+    CHECK(vca.x > q.laneX0);
+    CHECK(vca.x + vca.w < mx.x);
+    CHECK(mx.x + mx.w == doctest::Approx(q.laneX1 + metrics::kLaneInset - 12.0f));  // the mixer stayed at the end
+    CHECK(vca.y >= lb.y + metrics::kTitle);  // in its band (Z places it where the cable was, on the pointer)
+    CHECK(vca.y + vca.h <= lb.laneY);
+    // The lane's cable now into the VCA, still from the lane's left end.
+    bool found = false;
+    for (const Edge& f : q.edges)
+      if (f.from == lb.source) {
+        CHECK(f.to == u.node(list[0]));
+        CHECK(f.tapX == doctest::Approx(q.laneX0 + 12.0f));
+        found = true;
+      }
+    CHECK(found);
+  }
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  REQUIRE(u.ctx.undo());
+
+  // A MIDI lane: its notes cable leaves just right of its port chips (a press on a chip still starts a new cable).
+  {
+    const ProjectPatch& q = u.pp();
+    const Band& kb = q.bands[q.bandOf(u.keys)];
+    float chips = q.laneX0;
+    for (size_t port = 0; port < std::size(kLanePortLabels); ++port)
+      if (const LaneRect c = lanePortChip(q, kb, port); c.x1 > c.x0) chips = std::max(chips, c.x1);
+    REQUIRE(chips > q.laneX0);
+    bool found = false;
+    for (const Edge& f : q.edges)
+      if (f.from == kb.source && f.kind == EdgeKind::Notes) {
+        CHECK(f.tapX == doctest::Approx(chips + 12.0f));
+        found = true;
+      }
+    CHECK(found);
+  }
 }
 
 TEST_CASE("render: project-node-menu matches the golden image") {

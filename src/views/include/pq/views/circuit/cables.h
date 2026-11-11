@@ -4,13 +4,21 @@
 // between two ports, for the circuit canvas (pq/views/circuit/circuit_canvas.h draws them; the project patch view's scene
 // marks which wires are cables).
 //
-//   rest shape  cableRest(): the static solve — a uniform, inextensible rope of length chord × kCableSlack hanging under
-//               gravity between its two ends is a catenary, and its shape depends only on the chord's angle (an
-//               inextensible rope's equilibrium does not depend on the strength of gravity or on the scale). So the
-//               catenaries of a unit chord are solved once (double precision, 1° apart from straight up to straight
-//               down, kRestTablePoints points at equal arc length each) and a cable's rest shape is a table lookup:
-//               two neighbouring angles blended, resampled to its point count, scaled, rotated into place, ends exact.
-//               Deterministic, so goldens show it, and ~n multiply-adds per cable.
+//   rest shape  cableRest(): the static solve — a uniform, inextensible rope of length chord × slack hanging under
+//               gravity between its two ends is a catenary, and its shape depends only on the chord's angle and the
+//               slack (an inextensible rope's equilibrium does not depend on the strength of gravity or on the scale).
+//               So the catenaries of a unit chord are solved once (double precision, 1° apart from straight up to
+//               straight down × kSlackLevels slacks from straight to kCableSlack, kRestTablePoints points at equal arc
+//               length each) and a cable's rest shape is a table lookup: four neighbouring (angle, slack) shapes
+//               blended, resampled to its point count, scaled, rotated into place, ends exact. Deterministic, so
+//               goldens show it, and ~n multiply-adds per cable; nothing is solved on a paint path.
+//   tension     cableSlack() (TL.7, user 2026-11-09: "long cable stretches should [not] dangle/hang so low"): the
+//               slack falls with the chord, slack(D) = 1 + (kCableSlack − 1) / (1 + (D / kCableTightChord)²). For a
+//               shallow catenary sag ≈ D·√(3(slack − 1)/8), so sag(D) ≈ 0.15·D / √(1 + (D / kCableTightChord)²):
+//               a short cable droops as before (≈ 15 % of its chord), the sag grows ever slower with length and
+//               saturates at ≈ 0.15 × kCableTightChord ≈ 39 world units — a band-wide cable is a nearly straight line
+//               with a shallow hang. The table is laid out in √(slack − 1) (the sag's own measure), so its levels are
+//               evenly spaced in sag and the blend between them is close to exact.
 //   motion      CableSim: one rope per cable, Verlet integration at a fixed kCableStep with damping, its ends pinned to
 //               the ports, length constraints (no segment longer than the rest shape's: it does not stretch, a cable
 //               rather than an elastic string, but it may go slack) and gravity's restoring force about the hanging shape: each point is pulled
@@ -35,7 +43,9 @@
 
 namespace pq::views::circuit {
 
-inline constexpr float kCableSlack = 1.06f;          // rest length / chord: a 6 % droop (sag ≈ 0.15 × the chord level)
+inline constexpr float kCableSlack = 1.06f;          // a short cable's rest length / chord: a 6 % droop (sag ≈ 0.15 × chord)
+inline constexpr float kCableTightChord = 260.0f;    // the chord past which a cable tightens (cableSlack)
+inline constexpr uint32_t kSlackLevels = 9;          // tabulated slacks: √(slack − 1) evenly from 0 to √(kCableSlack − 1)
 inline constexpr uint32_t kCableMinPoints = 12, kCableMaxPoints = 24;
 inline constexpr uint32_t kRestTablePoints = 33;     // per tabulated catenary
 inline constexpr double kCableStep = 1.0 / 120.0;    // the simulation's fixed time step
@@ -53,10 +63,19 @@ inline constexpr uint32_t kCableIterations = 3;      // constraint passes per st
 // The point count of a cable whose chord is `chord` world units long (kCableMinPoints … kCableMaxPoints).
 uint32_t cablePointCount(float chord) noexcept;
 
+// TL.7: a cable's slack (rest length / chord) for a chord `chord` world units long: kCableSlack for a short one, falling
+// toward 1 as it grows (see "tension" above).
+float cableSlack(float chord) noexcept;
+
 // The rest shape (static solve): `n` (≥ 2) points from `a` to `b` at equal arc length along the hanging rope of length
-// |b − a| × slack (slack ≥ 1; kCableSlack's table is cached, another slack is solved directly). out[0] == a and
-// out[n − 1] == b exactly. Straight up / down chords hang as a narrow loop under the lower end (as a slack rope does).
-void cableRest(graph::Point2 a, graph::Point2 b, uint32_t n, graph::Point2* out, float slack = kCableSlack) noexcept;
+// |b − a| × cableSlack(|b − a|). out[0] == a and out[n − 1] == b exactly. Straight up / down chords hang as a narrow
+// loop under the lower end (as a slack rope does).
+void cableRest(graph::Point2 a, graph::Point2 b, uint32_t n, graph::Point2* out) noexcept;
+// … with a given slack (from the table, clamped to 1 … kCableSlack).
+void cableRest(graph::Point2 a, graph::Point2 b, uint32_t n, graph::Point2* out, float slack) noexcept;
+// … solved directly in double precision, any slack ≥ 1 (n ≤ 4 × kCableMaxPoints): the table's reference (tests; never
+// on a paint path).
+void cableRestSolved(graph::Point2 a, graph::Point2 b, uint32_t n, graph::Point2* out, float slack) noexcept;
 
 class CableSim {
 public:

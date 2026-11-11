@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <numbers>
+#include <vector>
 
 namespace pq::views::circuit {
 
@@ -59,24 +60,106 @@ void solveCatenary(double phi, double slack, uint32_t m, double* xs, double* ys)
   xs[m - 1] = h, ys[m - 1] = sv;
 }
 
+// The slack of table level l: √(slack − 1) evenly from 0 (straight) to √(kCableSlack − 1).
+constexpr double kSagMax = 0.24494897427831780982;  // √(kCableSlack − 1) = √0.06
+double levelSlack(uint32_t l) {
+  const double w = kSagMax * static_cast<double>(l) / static_cast<double>(kSlackLevels - 1);
+  return 1.0 + w * w;
+}
+
+// TL.7: [level][angle][point] — the unit catenaries over the angles × the slack levels (≈ 54k points, ≈ 0.4 MB).
 struct RestTable {
-  std::array<float, kAngles * kRestTablePoints> x{}, y{};
-  RestTable() {
+  std::vector<float> x, y;
+  RestTable() : x(size_t{kSlackLevels} * kAngles * kRestTablePoints), y(x.size()) {
     double xs[kRestTablePoints], ys[kRestTablePoints];
-    for (uint32_t k = 0; k < kAngles; ++k) {
-      const double phi = (static_cast<double>(k) - 90.0) * std::numbers::pi / 180.0;
-      solveCatenary(phi, kCableSlack, kRestTablePoints, xs, ys);
-      for (uint32_t j = 0; j < kRestTablePoints; ++j) {
-        x[k * kRestTablePoints + j] = static_cast<float>(xs[j]);
-        y[k * kRestTablePoints + j] = static_cast<float>(ys[j]);
+    for (uint32_t l = 0; l < kSlackLevels; ++l)
+      for (uint32_t k = 0; k < kAngles; ++k) {
+        const double phi = (static_cast<double>(k) - 90.0) * std::numbers::pi / 180.0;
+        if (l == 0) {  // straight (a taut rope's catenary parameter is unbounded: the line itself)
+          for (uint32_t j = 0; j < kRestTablePoints; ++j) {
+            const double t = static_cast<double>(j) / static_cast<double>(kRestTablePoints - 1);
+            xs[j] = t * std::cos(phi), ys[j] = t * std::sin(phi);
+          }
+        } else {
+          solveCatenary(phi, levelSlack(l), kRestTablePoints, xs, ys);
+        }
+        const size_t at = (size_t{l} * kAngles + k) * kRestTablePoints;
+        for (uint32_t j = 0; j < kRestTablePoints; ++j) {
+          x[at + j] = static_cast<float>(xs[j]);
+          y[at + j] = static_cast<float>(ys[j]);
+        }
       }
-    }
   }
 };
 
 const RestTable& restTable() {
-  static const RestTable table;  // thread-safe one-time init (≈ 6k points)
+  static const RestTable table;  // thread-safe one-time init
   return table;
+}
+
+// Ends exact: the blend of neighbouring chords misses b by a hair; spread the error along the rope.
+void pinEnds(Point2 a, Point2 b, uint32_t n, Point2* out) noexcept {
+  const float inv = 1.0f / static_cast<float>(n - 1);
+  const float ex = b.x - out[n - 1].x, ey = b.y - out[n - 1].y;
+  for (uint32_t i = 1; i < n; ++i) {
+    const float w = static_cast<float>(i) * inv;
+    out[i].x += ex * w;
+    out[i].y += ey * w;
+  }
+  out[0] = a;
+  out[n - 1] = b;
+}
+
+// Degenerate chords: false when the caller should go on (D > 0).
+bool trivial(Point2 a, Point2 b, uint32_t n, Point2* out, float D) noexcept {
+  if (n == 0) return true;
+  if (n == 1) {
+    out[0] = a;
+    return true;
+  }
+  if (D < 1e-4f) {
+    for (uint32_t i = 0; i < n; ++i) out[i] = a;
+    out[n - 1] = b;
+    return true;
+  }
+  return false;
+}
+
+// From the table: fw = the slack level as a fraction (0 … kSlackLevels − 1).
+void tableRest(Point2 a, Point2 b, uint32_t n, Point2* out, float D, float fw) noexcept {
+  const RestTable& t = restTable();
+  const float dx = b.x - a.x, dy = b.y - a.y;
+  const float sx = dx < 0.0f ? -D : D;  // mirrored when b is left of a
+  const float phiDeg = std::atan2(dy, std::fabs(dx)) * (180.0f / std::numbers::pi_v<float>) + 90.0f;
+  const float fk = std::clamp(phiDeg, 0.0f, static_cast<float>(kAngles - 1));
+  const uint32_t k0 = std::min(static_cast<uint32_t>(fk), kAngles - 2);
+  const float tk = fk - static_cast<float>(k0);
+  fw = std::clamp(fw, 0.0f, static_cast<float>(kSlackLevels - 1));
+  const uint32_t l0 = std::min(static_cast<uint32_t>(fw), kSlackLevels - 2);
+  const float tl = fw - static_cast<float>(l0);
+  // The four corner weights (angle × level).
+  const float w00 = (1.0f - tk) * (1.0f - tl), w01 = tk * (1.0f - tl), w10 = (1.0f - tk) * tl, w11 = tk * tl;
+  const size_t r00 = (size_t{l0} * kAngles + k0) * kRestTablePoints, r01 = r00 + kRestTablePoints;
+  const size_t r10 = r00 + size_t{kAngles} * kRestTablePoints, r11 = r10 + kRestTablePoints;
+  const float* X = t.x.data();
+  const float* Y = t.y.data();
+  const float scale = static_cast<float>(kRestTablePoints - 1) / static_cast<float>(n - 1);
+  for (uint32_t i = 0; i < n; ++i) {
+    const float u = static_cast<float>(i) * scale;
+    const uint32_t j = std::min(static_cast<uint32_t>(u), kRestTablePoints - 2);
+    const float f = u - static_cast<float>(j);
+    auto at = [&](const float* T) {
+      const float c00 = T[r00 + j] * w00 + T[r01 + j] * w01 + T[r10 + j] * w10 + T[r11 + j] * w11;
+      const float c01 = T[r00 + j + 1] * w00 + T[r01 + j + 1] * w01 + T[r10 + j + 1] * w10 + T[r11 + j + 1] * w11;
+      return c00 + (c01 - c00) * f;
+    };
+    out[i] = {a.x + at(X) * sx, a.y + at(Y) * D};
+  }
+  pinEnds(a, b, n, out);
+}
+
+float levelOf(float slack) noexcept {
+  return std::sqrt(std::max(0.0f, slack - 1.0f)) / static_cast<float>(kSagMax) * static_cast<float>(kSlackLevels - 1);
 }
 
 }  // namespace
@@ -86,58 +169,40 @@ uint32_t cablePointCount(float chord) noexcept {
   return std::clamp(static_cast<uint32_t>(n), kCableMinPoints, kCableMaxPoints);
 }
 
-void cableRest(Point2 a, Point2 b, uint32_t n, Point2* out, float slack) noexcept {
-  if (n == 0) return;
-  if (n == 1) {
-    out[0] = a;
-    return;
-  }
+float cableSlack(float chord) noexcept {
+  const float r = std::max(0.0f, chord) / kCableTightChord;
+  return 1.0f + (kCableSlack - 1.0f) / (1.0f + r * r);
+}
+
+void cableRest(Point2 a, Point2 b, uint32_t n, Point2* out) noexcept {
   const float dx = b.x - a.x, dy = b.y - a.y;
   const float D = std::sqrt(dx * dx + dy * dy);
-  const float inv = 1.0f / static_cast<float>(n - 1);
-  if (D < 1e-4f) {
-    for (uint32_t i = 0; i < n; ++i) out[i] = a;
-    out[n - 1] = b;
-    return;
+  if (trivial(a, b, n, out, D)) return;
+  // √(slack − 1) = √(kCableSlack − 1) / √(1 + r²): the level without a square root of the slack.
+  const float r = D / kCableTightChord;
+  tableRest(a, b, n, out, D, static_cast<float>(kSlackLevels - 1) / std::sqrt(1.0f + r * r));
+}
+
+void cableRest(Point2 a, Point2 b, uint32_t n, Point2* out, float slack) noexcept {
+  const float dx = b.x - a.x, dy = b.y - a.y;
+  const float D = std::sqrt(dx * dx + dy * dy);
+  if (trivial(a, b, n, out, D)) return;
+  tableRest(a, b, n, out, D, levelOf(std::min(slack, kCableSlack)));
+}
+
+void cableRestSolved(Point2 a, Point2 b, uint32_t n, Point2* out, float slack) noexcept {
+  const float dx = b.x - a.x, dy = b.y - a.y;
+  const float D = std::sqrt(dx * dx + dy * dy);
+  if (trivial(a, b, n, out, D)) return;
+  const float sx = dx < 0.0f ? -D : D;
+  double xs[kCableMaxPoints * 4], ys[kCableMaxPoints * 4];
+  const uint32_t m = std::min<uint32_t>(n, kCableMaxPoints * 4);
+  solveCatenary(std::atan2(static_cast<double>(dy), std::fabs(static_cast<double>(dx))), slack, m, xs, ys);
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint32_t j = std::min(i, m - 1);
+    out[i] = {a.x + static_cast<float>(xs[j]) * sx, a.y + static_cast<float>(ys[j]) * D};
   }
-  const float sx = dx < 0.0f ? -D : D;  // mirrored when b is left of a
-  if (slack != kCableSlack) {  // not tabulated: solved directly (tests; never on a paint path)
-    double xs[kCableMaxPoints * 4], ys[kCableMaxPoints * 4];
-    const uint32_t m = std::min<uint32_t>(n, kCableMaxPoints * 4);
-    solveCatenary(std::atan2(static_cast<double>(dy), std::fabs(static_cast<double>(dx))), slack, m, xs, ys);
-    for (uint32_t i = 0; i < n; ++i) {
-      const uint32_t j = std::min(i, m - 1);
-      out[i] = {a.x + static_cast<float>(xs[j]) * sx, a.y + static_cast<float>(ys[j]) * D};
-    }
-  } else {
-    const RestTable& t = restTable();
-    const float phiDeg = std::atan2(dy, std::fabs(dx)) * (180.0f / std::numbers::pi_v<float>) + 90.0f;
-    const float fk = std::clamp(phiDeg, 0.0f, static_cast<float>(kAngles - 1));
-    const uint32_t k0 = std::min(static_cast<uint32_t>(fk), kAngles - 2);
-    const float tk = fk - static_cast<float>(k0);
-    const float* x0 = &t.x[k0 * kRestTablePoints];
-    const float* y0 = &t.y[k0 * kRestTablePoints];
-    const float* x1 = x0 + kRestTablePoints;
-    const float* y1 = y0 + kRestTablePoints;
-    const float scale = static_cast<float>(kRestTablePoints - 1) * inv;
-    for (uint32_t i = 0; i < n; ++i) {
-      const float u = static_cast<float>(i) * scale;
-      const uint32_t j = std::min(static_cast<uint32_t>(u), kRestTablePoints - 2);
-      const float f = u - static_cast<float>(j);
-      const float xa = x0[j] + (x0[j + 1] - x0[j]) * f, xb = x1[j] + (x1[j + 1] - x1[j]) * f;
-      const float ya = y0[j] + (y0[j + 1] - y0[j]) * f, yb = y1[j] + (y1[j + 1] - y1[j]) * f;
-      out[i] = {a.x + (xa + (xb - xa) * tk) * sx, a.y + (ya + (yb - ya) * tk) * D};
-    }
-  }
-  // The blend of two neighbouring chords misses b by a hair: spread the error along the rope so both ends are exact.
-  const float ex = b.x - out[n - 1].x, ey = b.y - out[n - 1].y;
-  for (uint32_t i = 1; i < n; ++i) {
-    const float w = static_cast<float>(i) * inv;
-    out[i].x += ex * w;
-    out[i].y += ey * w;
-  }
-  out[0] = a;
-  out[n - 1] = b;
+  pinEnds(a, b, n, out);
 }
 
 // ---- CableSim ---------------------------------------------------------------------------------------------------------

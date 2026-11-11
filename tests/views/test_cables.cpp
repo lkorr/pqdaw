@@ -136,8 +136,9 @@ std::string fixture() { return views::test::fixtureDir("meta-cables"); }
 
 TEST_CASE("cables: the rest shape is the hanging rope — exact ends, its length, its sag, mirrored, any angle") {
   std::vector<Point2> p(32);
-  // Level: a catenary of 1.06 × the chord sags ≈ 0.15 of it, lowest in the middle, symmetric.
-  circuit::cableRest({100, 50}, {500, 50}, 32, p.data());
+  // Level: a catenary of 1.06 × the chord sags ≈ 0.15 of it, lowest in the middle, symmetric (the table's slackest
+  // level, as a short cable hangs; TL.7: a 400-unit one hangs tauter, below).
+  circuit::cableRest({100, 50}, {500, 50}, 32, p.data(), circuit::kCableSlack);
   CHECK(p.front() == Point2{100, 50});
   CHECK(p.back() == Point2{500, 50});
   CHECK(ropeLength(p) == doctest::Approx(400.0f * circuit::kCableSlack).epsilon(0.01));
@@ -153,7 +154,7 @@ TEST_CASE("cables: the rest shape is the hanging rope — exact ends, its length
   for (size_t i = 0; i + 1 < p.size(); ++i) CHECK(dist(p[i], p[i + 1]) == doctest::Approx(400.0f * circuit::kCableSlack / 31.0f).epsilon(0.04));
   // Mirrored: b left of a is the same rope traced the other way.
   std::vector<Point2> m(32);
-  circuit::cableRest({500, 50}, {100, 50}, 32, m.data());
+  circuit::cableRest({500, 50}, {100, 50}, 32, m.data(), circuit::kCableSlack);
   for (size_t i = 0; i < m.size(); ++i) {
     CHECK(m[i].x == doctest::Approx(p[p.size() - 1 - i].x).epsilon(1e-3));
     CHECK(m[i].y == doctest::Approx(p[p.size() - 1 - i].y).epsilon(1e-3));
@@ -164,7 +165,7 @@ TEST_CASE("cables: the rest shape is the hanging rope — exact ends, its length
     const Point2 A{0, 0}, B{r * std::cos(a), r * std::sin(a)};
     for (const uint32_t n : {12u, 20u, 32u}) {
       std::vector<Point2> q(n);
-      circuit::cableRest(A, B, n, q.data());
+      circuit::cableRest(A, B, n, q.data(), circuit::kCableSlack);
       CHECK(q.front() == A);
       CHECK(q.back() == B);
       for (const Point2 x : q) {
@@ -177,7 +178,7 @@ TEST_CASE("cables: the rest shape is the hanging rope — exact ends, its length
       else CHECK(ropeLength(q) >= r - 0.01f);
     }
   }
-  // Another slack is solved directly: tauter, less sag.
+  // Another slack (the table's levels between): tauter, less sag.
   std::vector<Point2> t(32);
   circuit::cableRest({100, 50}, {500, 50}, 32, t.data(), 1.01f);
   float lowT = 0.0f;
@@ -185,6 +186,89 @@ TEST_CASE("cables: the rest shape is the hanging rope — exact ends, its length
   CHECK(lowT < 0.5f * low);
   CHECK(circuit::cablePointCount(0.0f) == circuit::kCableMinPoints);
   CHECK(circuit::cablePointCount(10000.0f) == circuit::kCableMaxPoints);
+}
+
+// ---- TL.7: tension ------------------------------------------------------------------------------------------------
+
+namespace {
+float sagOf(const std::vector<Point2>& p) {  // the farthest point from the chord
+  const Point2 a = p.front(), b = p.back();
+  const float cx = b.x - a.x, cy = b.y - a.y, cl = std::hypot(cx, cy);
+  float s = 0.0f;
+  for (const Point2 q : p) s = std::max(s, std::fabs((q.x - a.x) * cy - (q.y - a.y) * cx) / cl);
+  return s;
+}
+}  // namespace
+
+TEST_CASE("cables: TL.7 tension — slack falls with the chord, short cables hang as before, a long one is nearly straight") {
+  // The slack: kCableSlack at zero length, falling smoothly toward 1.
+  CHECK(circuit::cableSlack(0.0f) == doctest::Approx(circuit::kCableSlack));
+  float last = circuit::cableSlack(0.0f);
+  for (float d = 10.0f; d <= 4000.0f; d += 10.0f) {
+    const float s = circuit::cableSlack(d);
+    CHECK(s <= last);
+    CHECK(s >= 1.0f);
+    last = s;
+  }
+  // The sag grows with the chord (sub-linearly), short cables ≈ today's 6 % droop, a band-wide one a shallow hang.
+  float lastSag = 0.0f;
+  for (float d = 20.0f; d <= 2400.0f; d *= 1.2f) {
+    const uint32_t n = circuit::cablePointCount(d);
+    std::vector<Point2> p(n);
+    circuit::cableRest({0, 0}, {d, 0}, n, p.data());
+    const float sag = sagOf(p);
+    CHECK(sag >= lastSag - 0.05f);
+    CHECK(sag <= 0.16f * d);
+    lastSag = sag;
+  }
+  CHECK(lastSag < 42.0f);
+  for (const float d : {40.0f, 80.0f}) {
+    std::vector<Point2> now(16), before(16);
+    circuit::cableRest({0, 0}, {d, 0}, 16, now.data());
+    circuit::cableRest({0, 0}, {d, 0}, 16, before.data(), circuit::kCableSlack);
+    CHECK(sagOf(now) == doctest::Approx(sagOf(before)).epsilon(0.08));
+  }
+  for (const float d : {1000.0f, 1400.0f}) {
+    std::vector<Point2> p(24);
+    circuit::cableRest({0, 0}, {d, 0}, 24, p.data());
+    CHECK(sagOf(p) < 0.045f * d);  // nearly straight
+    CHECK(sagOf(p) > 10.0f);       // a hang, still a cable
+  }
+  // The table (2-D: angle × slack) agrees with the direct solve: on its levels, between them, at any angle.
+  float worst = 0.0f;
+  for (int deg = -85; deg <= 85; deg += 17)
+    for (const float slack : {1.0005f, 1.003f, 1.0094f, 1.02f, 1.037f, 1.05f, 1.06f}) {
+      const float r = 500.0f, ang = static_cast<float>(deg) * 3.14159265f / 180.0f;
+      const Point2 A{10, 20}, B{10 + r * std::cos(ang), 20 + r * std::sin(ang)};
+      std::vector<Point2> t(24), d(24);
+      circuit::cableRest(A, B, 24, t.data(), slack);
+      circuit::cableRestSolved(A, B, 24, d.data(), slack);
+      for (size_t i = 0; i < t.size(); ++i) worst = std::max(worst, std::hypot(t[i].x - d[i].x, t[i].y - d[i].y));
+    }
+  CHECK(worst < 0.01f * 500.0f);  // within 1 % of the chord
+  // The length's default is the table at cableSlack(D).
+  std::vector<Point2> x(20), y(20);
+  circuit::cableRest({0, 0}, {700, 90}, 20, x.data());
+  circuit::cableRest({0, 0}, {700, 90}, 20, y.data(), circuit::cableSlack(std::hypot(700.0f, 90.0f)));
+  for (size_t i = 0; i < x.size(); ++i) CHECK(std::hypot(x[i].x - y[i].x, x[i].y - y[i].y) < 0.05f);
+}
+
+TEST_CASE("cables: TL.7 a long cable's rope is the tight rest shape (its segment limit, its swing settles on it)") {
+  CableSim sim;
+  const CableSim::Spec specs[1] = {{1, {0, 0}, {1200, 0}}};
+  sim.sync(specs);
+  std::vector<Point2> rest(sim.points(0).begin(), sim.points(0).end());
+  CHECK(sagOf(rest) < 45.0f);
+  sim.setEnds(0, {0, -60}, {1200, 0});
+  double t = 0.0;
+  while (sim.awake() && t < 3.0) {
+    (void)sim.advance(1.0 / 144.0);
+    t += 1.0 / 144.0;
+  }
+  CHECK(t <= 2.0);
+  std::vector<Point2> want(sim.points(0).size());
+  circuit::cableRest({0, -60}, {1200, 0}, static_cast<uint32_t>(want.size()), want.data());
+  for (size_t i = 0; i < want.size(); ++i) CHECK(dist(sim.points(0)[i], want[i]) < 1e-4f);
 }
 
 // ---- the simulation --------------------------------------------------------------------------------------------------

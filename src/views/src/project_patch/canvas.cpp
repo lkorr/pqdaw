@@ -2481,7 +2481,7 @@ ui::InfoText ProjectCanvas::info() const {
       if (const doc::NoteOutput* o = doc::findNoteOutput(n.outputs[port].name)) infoTitle_ += ": " + std::string(o->label);
     if (h.kind == LaneEdgeHit::Kind::Tap)
       return {infoTitle_, "Where this cable leaves the track's lane: drag it along the lane's top edge to move it (one undo step); "
-                          "double-click puts it back under the block it feeds."};
+                          "double-click puts it back at the lane's left end."};
     if (b.kind == doc::TrackKind::Midi)
       return {infoTitle_,
               "The track's note source: its lane, in Hz. Drag up from the lane's top edge for a cable of its notes (into an "
@@ -2755,7 +2755,7 @@ bool ProjectCanvas::laneEdgePointer(const ui::PointerEvent& e) {
       laneH0_ = v.subLanes()[h.sub].h;
       return true;
     case LaneEdgeHit::Kind::Tap:
-      if (e.clickCount >= 2) {  // back under the block it feeds
+      if (e.clickCount >= 2) {  // back to the default (TL.7: the lane's left end)
         (void)v.setCableTap(pp.edges[h.edge].wire, std::nullopt);
         return true;
       }

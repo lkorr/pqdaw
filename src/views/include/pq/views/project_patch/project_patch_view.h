@@ -32,7 +32,7 @@
 //              a panel's, a value block, the mixer's volume / pan / sends) adds its parameter's, a bottom edge resizes one;
 //              the arrangement's ArrangementAutomation draws and edits their envelopes (subLanes(), below).
 //   lane cables (TL.1) every cable from a track's own signal leaves its lane's TOP EDGE at its own x, saved on the wire
-//              (doc::Wire::tap; default: under the block it feeds). Drag a cable's lane end along the edge to move it
+//              (doc::Wire::tap; default: TL.7 the lane's left end). Drag a cable's lane end along the edge to move it
 //              (one undo step); drag up from anywhere else on the top edge to start a new cable from there — a MIDI
 //              lane's port chips at the edge's left end (notes, Hz, gate, vel) start a cable of that output (the old Notes
 //              node's outputs), the rest of the edge the notes (an audio lane: its audio).
@@ -569,7 +569,7 @@ public:
   bool bandFolded(doc::TrackId track) const noexcept;
   void setBandFolded(doc::TrackId track, bool folded);
   void setAllFolded(bool folded);
-  // A lane cable's tap: where it leaves its lane's top edge (world x; nullopt: back under the block it feeds). One undo
+  // A lane cable's tap: where it leaves its lane's top edge (world x; nullopt: back to the default, the lane's left end). One undo
   // step (doc::SetWireTap).
   bool setCableTap(doc::WireId wire, std::optional<float> worldX);
   // The time ruler over the lanes (the arrangement's Ruler on the lanes' axis; null: none made).

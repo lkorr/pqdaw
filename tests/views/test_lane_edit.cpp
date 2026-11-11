@@ -1019,6 +1019,16 @@ TEST_CASE("lane edit (TL.3): the automation wire from a pressed control to its s
   // The mixer's pan knob: a wire from its rim to the pan's sub-lane.
   {
     const Node& mx = v.patch().nodes[v.patch().bands[v.patch().bandOf(keys)].mixer];
+    {  // TL.7: the mixer sits at the lanes' right end: centre the view on it (same zoom)
+      ProjectCanvas& c = v.canvas();
+      circuit::CircuitCanvas::View cv = c.view();
+      const IRect r = c.rect();
+      const double us = static_cast<double>(c.deviceScale()) / cv.zoom;
+      cv.x = static_cast<double>(mx.x + 27.0f * mx.scale) - static_cast<double>(r.w) * 0.5 / (cv.zoom * us);
+      cv.y = static_cast<double>(mx.y + 45.0f * mx.scale) - static_cast<double>(r.h) * 0.5 / (cv.zoom * us);
+      c.setView(cv);
+      u.d.tree().layoutNow();
+    }
     const Vec2 pan = v.canvas().toDevice({mx.x + 27.0f * mx.scale, mx.y + 45.0f * mx.scale});
     u.d.click(pan);
     u.d.step();

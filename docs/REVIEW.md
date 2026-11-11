@@ -1288,3 +1288,13 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   high = green/yellow). Same with the computer keyboard (`M`, on the track whose clip the wheel edits), clicking notes
   in the piano roll, and clicking the tonic. Does it read as clean as the explorer? Brightness / halo size OK?
 - Not lit: MIDI keys from a hardware controller (no UI-side feed of them exists yet).
+
+## 2026-11-10 · TL.7 · The mixer at the band's right edge, lane cables from the left end, tighter cables 👁
+- **Empty track**: add an audio track in the circuit view: one long cable from the lane's left end up to the mixer at
+  the right end, nearly straight. Hover it and press Z (or Shift-drag a block onto it, or Tab): the effect lands between.
+- **Mixers**: every unplaced mixer sits at the lanes' right end, its input level with the band's blocks; drag one and it
+  stays where you put it. Routes from the mixers now run down the right edge; a group's / return's Σ stays where its
+  chain starts (so a member's route comes back left to it) — say if you'd rather the group / return chains moved too.
+- **MIDI lanes**: the notes / Hz / gate / vel cables leave just right of the port chips, side by side.
+- **Tension**: short cables droop as before; long ones (LFO across bands, the empty-track cable) are almost straight with
+  a shallow hang (≈ 40 units at most). Check device-view cables still look right.

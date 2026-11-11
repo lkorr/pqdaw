@@ -1211,9 +1211,10 @@ struct Builder {
     return x - m::kNodeGap;
   }
 
-  // TX.mixer-look: after the nudges, a band's mixer stays its top-right block — where the user placed it (PatchNudge::
+  // TX.mixer-look: after the nudges, a band's mixer stays its rightmost block — where the user placed it (PatchNudge::
   // mixerPlaced: from the band's top-left corner, so it travels with the band and nothing else moves it), else pushed
-  // right of any block placed past it. The master's Out follows its mixer (level with the mixer's output).
+  // right of any block placed past it (and TL.7: alignMixers() then takes it to the lanes' right end). The master's Out
+  // follows its mixer (level with the mixer's output).
   void placeMixer(Band& b) {
     if (b.mixer == kNone) return;
     Node& mx = out.nodes[b.mixer];
@@ -1292,6 +1293,7 @@ struct Builder {
       float pinTop = m::kPinTop;
       for (const uint32_t d : b.devices)
         if (!out.nodes[d].offPath) pinTop = std::max(pinTop, spineOf(out.nodes[d]));
+      if (b.mixer != kNone) pinTop = std::max(pinTop, spineOf(out.nodes[b.mixer]));  // TL.7: the mixer on the spine too
       const float spine = y + m::kTitle + pinTop;
       float bottom = y + m::kTitle + m::kSumH;
       auto place = [&](uint32_t n) {
@@ -1309,10 +1311,11 @@ struct Builder {
         out.nodes[d].y = roundUp4(above.y + above.h + m::kFreeRowGap);
         bottom = std::max(bottom, out.nodes[d].y + out.nodes[d].h);
       }
-      // TX.mixer-look: the mixer at the band's top (under its title strip), the master's Out level with its output.
+      // TL.7: the mixer level with the band's main path (its input on the spine: the main cable runs straight into
+      // it), the master's Out level with its output.
       if (b.mixer != kNone) {
         Node& mx = out.nodes[b.mixer];
-        mx.y = y + m::kTitle;
+        mx.y = spine - spineOf(mx);
         bottom = std::max(bottom, mx.y + mx.h);
         if (b.output != kNone) {
           Node& o = out.nodes[b.output];
@@ -1439,6 +1442,7 @@ struct Builder {
       reach(b.output);
     }
     placeLanes();
+    alignMixers();  // TL.7
     // Group containers: the group's band and its members' (inner groups first: they nest).
     for (uint32_t i = static_cast<uint32_t>(out.bands.size()); i-- > 0;) {
       Band& b = out.bands[i];
@@ -1500,30 +1504,61 @@ struct Builder {
     }
   }
 
-  // TL.1: where each cable from a lane leaves its top edge (world x): its wire's tap (band-local), else under the block
-  // it feeds, below where it plugs in (several unpinned cables into one block spread kTapSpread apart; a plug may sit on
-  // a port chip: a press there slides the cable); within the lane.
+  // TL.7 (user 2026-11-09: "the mixer module to by default always be at the rightmost part of the audio effect lane"):
+  // a mixer the user has not placed ends at the right end of the lanes' common width (with the master's Out after it),
+  // so every band's main path runs from its lane's left end across to its mixer. Never left of where placeMixer put it
+  // (a block placed past it widened the lanes: it is at their end already). Its drag-grow rest x (Band::mixerX0) is
+  // this place, so a block dragged past it pushes it as the layout would.
+  void alignMixers() {
+    if (!lanes()) return;
+    for (Band& b : out.bands) {
+      if (b.mixer == kNone || !b.mixerFollows) continue;
+      Node& mx = out.nodes[b.mixer];
+      const float right = b.output != kNone ? out.nodes[b.output].x + out.nodes[b.output].w : mx.x + mx.w;
+      // The band's right edge stays the lanes' (placeLanes: laneX1 + kLaneInset; reach: a block's right + 12).
+      const float dx = std::max(0.0f, out.laneX1 + m::kLaneInset - 12.0f - right);
+      b.mixerX0 = mx.x + dx;
+      if (dx == 0.0f) continue;
+      mx.x += dx;
+      if (b.output != kNone) out.nodes[b.output].x += dx;
+    }
+  }
+
+  // TL.1: where each cable from a lane leaves its top edge (world x): its wire's tap (band-local), else (TL.7, user
+  // 2026-11-09: "the cable that comes out of the audio lane, to connect to the leftmost part, which then stretches
+  // across") at the lane's LEFT end — an audio lane's kTapLeft in, a MIDI lane's just right of its port chips (a press
+  // on a chip still starts a new cable of that output, not a slide); several unpinned cables side by side kTapSpread
+  // apart in output order (notes, then Hz, gate, vel: the per-note outputs' cables never share a spot); within the lane.
   void taps() {
-    constexpr float kTapSpread = 12.0f;
-    std::unordered_map<uint64_t, std::pair<uint32_t, uint32_t>> under;  // (lane, block) → (cables, placed so far)
-    auto keyOf = [](const Edge& e) { return (uint64_t{e.from} << 32) | e.to; };
-    for (const Edge& e : out.edges)
-      if (out.nodes[e.from].kind == NodeKind::Lane && !e.tapPinned) ++under[keyOf(e)].first;
-    for (Edge& e : out.edges) {
+    constexpr float kTapSpread = 12.0f, kTapLeft = 12.0f;
+    std::vector<uint32_t> order;  // the unpinned cables from lanes, by (lane, output, edge)
+    for (uint32_t i = 0; i < out.edges.size(); ++i) {
+      Edge& e = out.edges[i];
       const Node& a = out.nodes[e.from];
       if (a.kind != NodeKind::Lane || a.band >= out.bands.size()) continue;
-      const Band& b = out.bands[a.band];
-      const Node& t = out.nodes[e.to];
-      // Under where it plugs in: an anchored param's control, a pin on the block's edge (an orbiting port: the block's
-      // middle, its angle is settled from the cables after this).
-      float x = t.x + t.w * 0.5f;
-      if (e.toPort < t.inputs.size() && t.inputs[e.toPort].anchored) x = t.x + t.inputs[e.toPort].ax;
-      else if (e.toPort < t.inputs.size() && !portOrbits(t, e.toPort, true)) x = inputEntry(t, e.toPort).x + 16.0f;
-      if (e.tapPinned) x = b.x0 + e.tapX;
       if (!e.tapPinned) {
-        auto& [n, k] = under[keyOf(e)];
-        x += kTapSpread * (static_cast<float>(k++) - 0.5f * static_cast<float>(n - 1));
+        order.push_back(i);
+        continue;
       }
+      const float x = out.bands[a.band].x0 + e.tapX;
+      e.tapX = std::clamp(x, out.laneX0 + 4.0f, std::max(out.laneX0 + 4.0f, out.laneX1 - 4.0f));
+    }
+    std::stable_sort(order.begin(), order.end(), [&](uint32_t x, uint32_t y) {
+      const Edge &ex = out.edges[x], &ey = out.edges[y];
+      return ex.from != ey.from ? ex.from < ey.from : ex.fromPort < ey.fromPort;
+    });
+    uint32_t lane = kNone, k = 0;
+    float x0 = 0.0f;
+    for (const uint32_t i : order) {
+      Edge& e = out.edges[i];
+      if (e.from != lane) {
+        lane = e.from, k = 0;
+        x0 = out.laneX0 + kTapLeft;
+        const Band& b = out.bands[out.nodes[lane].band];
+        for (size_t port = 0; port < std::size(kLanePortLabels); ++port)
+          if (const LaneRect c = lanePortChip(out, b, port); c.x1 > c.x0) x0 = std::max(x0, c.x1 + kTapLeft);
+      }
+      const float x = x0 + kTapSpread * static_cast<float>(k++);
       e.tapX = std::clamp(x, out.laneX0 + 4.0f, std::max(out.laneX0 + 4.0f, out.laneX1 - 4.0f));
     }
   }
