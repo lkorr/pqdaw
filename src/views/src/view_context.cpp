@@ -976,6 +976,19 @@ doc::ClipRef ViewContext::liveEditedClip() const noexcept {
   return detailVisible_ && detailMode_ == DetailMode::Clip ? detailClip_ : doc::ClipRef{};
 }
 
+void ViewContext::audition(float hz, float velocity, float durationMs, doc::ClipRef clip, std::optional<int64_t> degree) {
+  transport_.auditionHz(hz, velocity, durationMs);
+  lastAudition_ = {lastAudition_.serial + 1, static_cast<double>(hz), durationMs, clip, degree, false};
+  notify(view_change::kLiveNotes);
+}
+
+void ViewContext::releaseAuditions() {
+  transport_.releaseAuditions();
+  if (lastAudition_.serial == 0 || lastAudition_.released) return;
+  lastAudition_.released = true;
+  notify(view_change::kLiveNotes);
+}
+
 Ticks ViewContext::liveClipAt() {
   const PlayheadSnapshot ph = transport_.playhead();
   return ph.playing ? ph.tick : startMarker_;
@@ -1137,6 +1150,7 @@ void ViewContext::registerGlobalActions() {
   // T6.4: the computer MIDI keyboard (Live's M).
   add("keyboard.toggleComputerMidi", [this] { computerKeyboard_.setActive(!computerKeyboard_.active()); });
   computerKeyboard_.layoutSource = [this] { return keyboardLayout(); };  // KB.1
+  computerKeyboard_.onNotes = [this](const ComputerKeyboard&) { notify(view_change::kLiveNotes); };  // TU.2
   computerKeyboard_.onChanged = [this](const ComputerKeyboard& k) {
     notify(view_change::kKeyboard);  // KB.1: the control bar's button
     if (!k.active()) {

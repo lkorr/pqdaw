@@ -38,6 +38,7 @@
 #include <utility>
 #include <vector>
 
+#include "../common/voice_colour.h"
 #include "elements_internal.h"
 
 namespace pq::views::panel {
@@ -1073,25 +1074,8 @@ private:
 
 // ==== orbit ==========================================================================================================
 
-// TMM.17: a voice's colour by its frequency (a log-frequency spectrum: red below 100 Hz … yellow from 1 kHz up) and its
-// orbit's scale (1.25× at 20 Hz down to 0.25× at 10 kHz).
-struct HueStop {
-  float log2Hz;
-  Rgba colour;
-};
-constexpr HueStop kHues[] = {
-    {4.9069f, ui::hex(0xE83434)}, {6.4094f, ui::hex(0xF0405A)}, {7.4919f, ui::hex(0xB054EC)}, {8.7814f, ui::hex(0x5078FF)},
-    {9.2761f, ui::hex(0x28C4EC)}, {9.6795f, ui::hex(0x58DE78)}, {10.0362f, ui::hex(0xFCDC40)},
-};
-Rgba voiceColour(double hz) noexcept {
-  constexpr size_t n = std::size(kHues);
-  if (!(hz > 0.0)) return kHues[0].colour;
-  const float l = static_cast<float>(std::log2(hz));
-  if (l <= kHues[0].log2Hz) return kHues[0].colour;
-  for (size_t i = 1; i < n; ++i)
-    if (l < kHues[i].log2Hz) return ui::lerp(kHues[i - 1].colour, kHues[i].colour, (l - kHues[i - 1].log2Hz) / (kHues[i].log2Hz - kHues[i - 1].log2Hz));
-  return kHues[n - 1].colour;
-}
+// TMM.17: a voice's colour by its frequency (common/voice_colour.h, shared with the MOS circle) and its orbit's scale
+// (1.25× at 20 Hz down to 0.25× at 10 kHz).
 constexpr float kOrbitMax = 1.25f, kOrbitMin = 0.25f;
 constexpr double kLowHz = 20.0, kHighHz = 10000.0;
 float orbitScale(double hz) noexcept {
@@ -1184,7 +1168,7 @@ private:
       const FaceVoice& fv = voices_[v];
       const double inc = static_cast<double>(fv.increment);
       const double hz = fv.rate > 0.0f ? std::fabs(inc - std::round(inc)) * static_cast<double>(fv.rate) : 0.0;
-      col[v] = voiceColour(hz);
+      col[v] = views::voiceColour(hz);
       rad[v] = orbitR() * orbitScale(hz);
     }
     p.beginGlow();

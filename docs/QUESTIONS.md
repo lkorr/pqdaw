@@ -1030,3 +1030,11 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   clip their notes were played in; (b) record into the open clip; (c) leave it. Suggest (a). Hz-mode notes (Cents
   identities) are unaffected.
 - Status: open.
+
+## Q?-TU.2-a · Revert the MOS chart's colours too?
+- Context: TU.2 reverted the circle (explorer palette, theme `mosCircle.*`); TU.1 also moved the region chart to the
+  clip palette (`mosDataColour`, `mosChart.*` retune). The explorer's chart bands and its circle share one palette, so
+  now the circle's L colour no longer matches its region's band in the chart.
+- Options: (a) revert the chart as well (`kMosPalette`, `temperamentColor`, pre-TU.1 `mosChart.*`); (b) keep it.
+- Chosen: (b) for now (the request named the circle; reverting the chart is one small follow-up).
+- Status: open.

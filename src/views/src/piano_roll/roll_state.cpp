@@ -1528,7 +1528,7 @@ void RollState::audition(const tuning::PitchId& p, float velocity, Ticks content
     const std::optional<double> c = centsOf(p);
     if (!c) return;
     const double hz = tuning_.referenceHz() * std::exp2(*c / 1200.0);
-    ctx.transport().auditionHz(static_cast<float>(hz), velocity, 300.0f);
+    ctx.audition(static_cast<float>(hz), velocity, 300.0f, ref_, auditionDegree(p));
     return;
   }
   const std::optional<double> hz = tuning::resolveHzDouble(p, tuning_, rc);
@@ -1540,13 +1540,22 @@ void RollState::audition(const tuning::PitchId& p, float velocity, Ticks content
     const TempoMap& tm = snap_->timeline->tempoMap;
     ms = 1000.0 * (tm.ticksToSeconds(at + length) - tm.ticksToSeconds(at));
   }
-  ctx.transport().auditionHz(static_cast<float>(*hz), velocity, static_cast<float>(std::clamp(ms, 50.0, 2000.0)));
+  ctx.audition(static_cast<float>(*hz), velocity, static_cast<float>(std::clamp(ms, 50.0, 2000.0)), ref_, auditionDegree(p));
+}
+
+// TU.2: the auditioned pitch's absolute degree in the clip's tuning (the MOS circle lights it): a Degree identity's own,
+// else the nearest degree of what it resolves to (doc::resolvePitch's keyDegree); nullopt when it does not resolve.
+std::optional<int64_t> RollState::auditionDegree(const tuning::PitchId& p) const {
+  if (p.kind() == tuning::PitchKind::Degree) return int64_t{p.equave()} * doc::degreesPerEquave(tuning_) + p.degree();
+  const doc::NotePitch np = doc::resolvePitch(p, tuning_, doc::TuningId{});
+  if (!np.keyDegree) return std::nullopt;
+  return static_cast<int64_t>(std::llround(*np.keyDegree));
 }
 
 void RollState::releaseAudition() {
   if (!auditionHeld) return;
   auditionHeld = false;
-  ctx.transport().releaseAuditions();
+  ctx.releaseAuditions();
 }
 
 // --- repaint ---------------------------------------------------------------------------------------------

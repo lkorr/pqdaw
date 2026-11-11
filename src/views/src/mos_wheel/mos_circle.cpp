@@ -18,7 +18,7 @@
 #include "pq/ui/lines.h"
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
-#include "../piano_roll/roll_widgets.h"
+#include "../common/voice_colour.h"
 
 namespace pq::views {
 
@@ -32,6 +32,39 @@ constexpr double kPi = std::numbers::pi;
 constexpr double kInf = std::numeric_limits<double>::infinity();
 // Hardness ticks on the slider (and its snap targets): supersoft 4:3 … superhard 4:1.
 constexpr std::array<double, 7> kHardnessTicks = {4.0 / 3.0, 1.5, 5.0 / 3.0, 2.0, 2.5, 3.0, 4.0};
+
+uint32_t hexDigit(char c) noexcept {
+  if (c >= '0' && c <= '9') return static_cast<uint32_t>(c - '0');
+  if (c >= 'a' && c <= 'f') return static_cast<uint32_t>(c - 'a' + 10);
+  if (c >= 'A' && c <= 'F') return static_cast<uint32_t>(c - 'A' + 10);
+  return 0;
+}
+
+// "#rrggbb" or "#rrggbbaa" (the explorer's colour strings).
+Rgba parseColor(std::string_view s) noexcept {
+  auto byte = [&](size_t i) { return hexDigit(s[i]) * 16 + hexDigit(s[i + 1]); };
+  if (s.size() < 7 || s[0] != '#') return rgba(136, 136, 136);
+  return rgba(byte(1), byte(3), byte(5), s.size() >= 9 ? byte(7) : 255u);
+}
+
+// lerpColor / complementaryColor (index.html 3127–3135): per channel, rounded, opaque.
+Rgba lerpHex(Rgba a, Rgba b, double t) noexcept {
+  auto ch = [&](int shift) {
+    const double x = static_cast<double>((a >> shift) & 0xFFu), y = static_cast<double>((b >> shift) & 0xFFu);
+    return static_cast<uint32_t>(std::clamp(std::lround(x + (y - x) * t), 0L, 255L));
+  };
+  return rgba(ch(0), ch(8), ch(16), 255u);
+}
+Rgba complement(Rgba c) noexcept {
+  return rgba(255u - (c & 0xFFu), 255u - ((c >> 8) & 0xFFu), 255u - ((c >> 16) & 0xFFu), 255u);
+}
+
+// TU.2: the explorer's lit-note envelope (SYNTH defaults: attack 15 ms, decay 100 ms, sustain 1, release 1.5 s).
+constexpr double kGlowAttack = 0.015, kGlowDecay = 0.1, kGlowRelease = 1.5;
+constexpr float kGlowSustain = 1.0f;
+// The explorer's colour smoothing rate (1 − e^(−8·dt)) and when a colour counts as arrived (channel units).
+constexpr double kSmoothRate = 8.0;
+constexpr float kSmoothEpsilon = 0.5f;
 
 std::string fmt(const char* f, double v) {
   char buf[48];
@@ -125,9 +158,10 @@ struct MosCircle::Model {
   std::vector<double> basePitches;         // the rotated, altered scale (one period)
   std::vector<double> pitches, steps, alts;  // displayed (repeated over the equave)
   std::vector<int32_t> origDegs;
-  std::vector<double> classCents;          // step sizes, largest first (0.01-¢ buckets): the roll's step classes
-  std::vector<uint8_t> sliceClass;         // per slice: its index in classCents
-  double ratio = 1.0;                      // L / s (the hardness the class colours blend by)
+  // TU.2: step colours (drawMOSCircle): per slice its class's rank (0 = L, 1 = s, 2 + i = the i-th other size,
+  // largest first: the explorer's smoothing keys), per rank its target colour.
+  std::vector<uint8_t> sliceRank;
+  std::vector<Rgba> rankTarget;
   std::vector<std::string> sliceLabel, degreeLabel;
   enum Tone : uint8_t { Tonic, Info, ModeName, Modmos };
   struct Part {
@@ -139,17 +173,21 @@ struct MosCircle::Model {
   std::string mosLabel, pattern;
   bool modPattern = false;
   std::string tempName;
+  Rgba tempColour = 0;
   bool hasModmos = false;
   std::string modStepStr;
   std::optional<tu::MosKey> parent, child;
   std::string parentLabel, childLabel;
   bool eqLow = true;
   double u = 0.0;  // hardness position: 0 equalized … 1 collapsed
+  Rgba sliderColour = 0;
   std::vector<double> extra;  // all-intervals overlay (cents), when shown
 };
 
 MosCircle::MosCircle(std::string name, const MosChartConfig& config) : Widget(std::move(name)), config_(config) {
   setFocusable(true);
+  palette_.reserve(tu::kMosPalette.size());
+  for (const char* c : tu::kMosPalette) palette_.push_back(parseColor(c));
   rebuildRegions();
 }
 
@@ -187,6 +225,7 @@ int32_t MosCircle::findRegion(const MosSelection& s) const noexcept {
 void MosCircle::invalidate() {
   modelDirty_ = true;
   markDirty();
+  kick();  // TU.2: the colours ease toward the new model's
 }
 
 void MosCircle::setSelection(const std::optional<MosSelection>& sel) {
@@ -388,16 +427,54 @@ void MosCircle::ensureModel() const {
       m.origDegs.push_back(orig[i]);
     }
 
-  // Step classes (TU.1: coloured at paint like the piano roll's scale keys, stepClassColours: L in roll.keyLarge, s
-  // toward roll.keySmall as the scale hardens, MODMOS sizes between them pulled toward roll.keyExtra).
-  m.ratio = m.s > 0.01 ? m.L / m.s : 20.0;
+  // Step colours (drawMOSCircle; TU.2 restores them): L in the region colour for this hardness, s toward its
+  // complement as the scale hardens, MODMOS step sizes interpolated between their neighbours and pushed apart.
+  Rgba collapsed = palette_[0], equalized = palette_[0];
+  if (region_ >= 0) {
+    const tu::MosRegion& r = regions_.regions[static_cast<size_t>(region_)];
+    collapsed = palette_[r.collapsedColor % palette_.size()];
+    equalized = palette_[r.equalizedColor % palette_.size()];
+  }
+  const double ratio = m.s > 0.01 ? m.L / m.s : 20.0;
+  const double softness = std::clamp(1.0 - (ratio - 1.0) / 2.0, 0.0, 1.0);
+  const Rgba Lc = lerpHex(collapsed, equalized, softness);
+  const Rgba sc = lerpHex(Lc, complement(Lc), 1.0 - softness);
   auto bucket = [](double v) { return std::round(v * 100.0) / 100.0; };
-  std::vector<double>& uniq = m.classCents;
+  std::vector<double> uniq;
   for (double st : m.steps) {
     const double b = bucket(st);
     if (std::find(uniq.begin(), uniq.end(), b) == uniq.end()) uniq.push_back(b);
   }
   std::sort(uniq.begin(), uniq.end(), std::greater<>());
+  const double bL = bucket(m.L), bS = bucket(m.s);
+  std::vector<std::pair<double, Rgba>> colourOf{{bL, Lc}, {bS, sc}};
+  auto known = [&](double b) -> const Rgba* {
+    for (const auto& [k, c] : colourOf)
+      if (k == b) return &c;
+    return nullptr;
+  };
+  std::vector<double> modSteps;  // the other sizes, largest first (their smoothing ranks 2, 3, …)
+  for (double st : uniq) {
+    if (st == bL || st == bS) continue;
+    modSteps.push_back(st);
+    double above = bL, below = bS;
+    for (double v : uniq) {
+      if (v > st && v < above && known(v)) above = v;
+      if (v < st && v > below && known(v)) below = v;
+    }
+    const Rgba ac = known(above) ? *known(above) : Lc, bc = known(below) ? *known(below) : sc;
+    const double range = above - below;
+    const double t = range > 0.01 ? (st - below) / range : 0.5;
+    const Rgba blend = lerpHex(bc, ac, t);
+    const double pr = below > 0.01 ? st / below : 20.0;
+    const double ps = std::clamp(1.0 - (pr - 1.0) / 2.0, 0.0, 1.0);
+    const Rgba distinct = lerpHex(blend, complement(blend), 0.3);
+    colourOf.emplace_back(st, lerpHex(distinct, blend, ps));
+  }
+  m.rankTarget.assign(2 + modSteps.size(), Lc);
+  m.rankTarget[1] = known(bS) ? *known(bS) : sc;  // L == s (equalized): the explorer's map keeps s's entry
+  m.rankTarget[0] = bL == bS ? m.rankTarget[1] : Lc;
+  for (size_t i = 0; i < modSteps.size(); ++i) m.rankTarget[2 + i] = *known(modSteps[i]);
   static constexpr std::string_view kMid = "MNOPQRTUVWXYZABCDEFGHIJKmno";
   // Letters: with MODMOS (M6 review L18), L and s keep the MOS's own step sizes and every altered size is M, N, …
   // (largest first), so a raised 7th reads "L s L L s M s" and not as a renamed L; colours stay by size class.
@@ -409,7 +486,11 @@ void MosCircle::ensureModel() const {
     const double b = bucket(st);
     const auto it = std::find(uniq.begin(), uniq.end(), b);
     const size_t idx = static_cast<size_t>(it - uniq.begin());
-    m.sliceClass.push_back(static_cast<uint8_t>(std::min<size_t>(idx, 255)));
+    {
+      const size_t mi = static_cast<size_t>(std::find(modSteps.begin(), modSteps.end(), b) - modSteps.begin());
+      const size_t rank = b == bS ? 1 : b == bL ? 0 : 2 + mi;
+      m.sliceRank.push_back(static_cast<uint8_t>(std::min<size_t>(rank, m.rankTarget.size() - 1)));
+    }
     if (m.hasModmos) {
       const auto at = std::find(altered.begin(), altered.end(), b);
       if (at == altered.end()) m.sliceLabel.emplace_back(std::fabs(b - rot.L) < 0.5 ? "L" : "s");
@@ -476,6 +557,8 @@ void MosCircle::ensureModel() const {
     if (!at.empty()) {
       const tu::Temperament& t = tu::temperaments()[static_cast<size_t>(at.front().index)];
       m.tempName = std::string(t.name);
+      const auto col = tu::temperamentColor(t.name);
+      m.tempColour = col ? parseColor(*col) : rgba(0x50, 0xC8, 0x78);
     }
   }
 
@@ -489,6 +572,7 @@ void MosCircle::ensureModel() const {
   m.eqLow = equalizedLow(S);
   const auto [xL, xS] = exactSteps(gen, m.n, m.P, hint);
   m.u = xL > 0.0 ? std::clamp(1.0 - xS / xL, 0.0, 1.0) : 0.0;
+  m.sliderColour = lerpHex(equalized, collapsed, m.u);
 
   // All-intervals overlay: every interval between two notes of the scale that is not a degree of this mode.
   if (showAll_) {
@@ -615,6 +699,15 @@ double MosCircle::hardnessAtSliderX(float x, bool snap) const {
 int32_t MosCircle::degreeCount() const {
   ensureModel();
   return model_->valid ? static_cast<int32_t>(model_->pitches.size()) : 0;
+}
+
+Rgba MosCircle::sliceColour(int32_t slice) const {
+  ensureModel();
+  const Model& m = *model_;
+  if (!m.valid || slice < 0 || static_cast<size_t>(slice) >= m.sliceRank.size()) return 0;
+  syncSmooth();
+  const Smooth& c = smooth_[m.sliceRank[static_cast<size_t>(slice)]];
+  return rgba(static_cast<uint32_t>(std::lround(c.r)), static_cast<uint32_t>(std::lround(c.g)), static_cast<uint32_t>(std::lround(c.b)));
 }
 
 std::span<const double> MosCircle::displayPitches() const {
@@ -905,6 +998,148 @@ InfoText MosCircle::info() const {
           "parent or child MOS; drag a dot to alter it (MODMOS)."};
 }
 
+// --- motion (TU.2) -------------------------------------------------------------------------------------------------
+
+void MosCircle::kick() {
+  if (!animating_) lastFrame_ = -1.0;  // the first frame only takes the time: easing starts from what is on screen
+  animating_ = true;
+  requestFrame();  // once per frame however often it is asked (the tree dedups); none outside a tree
+}
+
+void MosCircle::syncSmooth() const {
+  ensureModel();
+  const Model& m = *model_;
+  const size_t n = m.rankTarget.size();
+  smooth_.resize(n);  // ranks past the model's are dropped (the explorer deletes unused keys)
+  for (size_t r = 0; r < n; ++r) {
+    Smooth& c = smooth_[r];
+    if (c.set) continue;
+    const Rgba t = m.rankTarget[r];
+    c = {static_cast<float>(t & 0xFFu), static_cast<float>((t >> 8) & 0xFFu), static_cast<float>((t >> 16) & 0xFFu), true};
+  }
+}
+
+bool MosCircle::stepSmooth(float rate) {
+  syncSmooth();
+  const Model& m = *model_;
+  bool moving = false;
+  for (size_t r = 0; r < smooth_.size(); ++r) {
+    Smooth& c = smooth_[r];
+    const Rgba t = m.rankTarget[r];
+    const float tr = static_cast<float>(t & 0xFFu), tg = static_cast<float>((t >> 8) & 0xFFu), tb = static_cast<float>((t >> 16) & 0xFFu);
+    c.r += (tr - c.r) * rate;
+    c.g += (tg - c.g) * rate;
+    c.b += (tb - c.b) * rate;
+    if (std::fabs(tr - c.r) < kSmoothEpsilon && std::fabs(tg - c.g) < kSmoothEpsilon && std::fabs(tb - c.b) < kSmoothEpsilon) {
+      c.r = tr, c.g = tg, c.b = tb;
+    } else {
+      moving = true;
+    }
+  }
+  return moving;
+}
+
+void MosCircle::noteOn(uint64_t id, int64_t degree, double hz, double holdSeconds) {
+  std::erase_if(glows_, [id](const Glow& g) { return g.id == id; });
+  Glow g;
+  g.id = id;
+  g.rawDegree = degree;
+  g.colour = voiceColour(hz);
+  g.hold = holdSeconds;
+  glows_.push_back(g);
+  kick();
+}
+
+void MosCircle::noteOff(uint64_t id) {
+  for (Glow& g : glows_)
+    if (g.id == id && g.held) {
+      g.held = false;
+      g.releasePending = true;
+      kick();
+    }
+}
+
+void MosCircle::notesOff() {
+  for (Glow& g : glows_)
+    if (g.held) {
+      g.held = false;
+      g.releasePending = true;
+    }
+  if (!glows_.empty()) kick();
+}
+
+bool MosCircle::noteHeld(uint64_t id) const noexcept {
+  for (const Glow& g : glows_)
+    if (g.id == id) return g.held;
+  return false;
+}
+
+float MosCircle::glowOf(int32_t degree) const noexcept {
+  return degree >= 0 && static_cast<size_t>(degree) < glowLevel_.size() ? glowLevel_[static_cast<size_t>(degree)] : 0.0f;
+}
+
+Rgba MosCircle::glowColourOf(int32_t degree) const noexcept {
+  return degree >= 0 && static_cast<size_t>(degree) < glowColour_.size() ? glowColour_[static_cast<size_t>(degree)] : 0;
+}
+
+// _envForGlow / getGlowState: per degree the brightest of its notes' envelopes; finished notes are dropped.
+bool MosCircle::stepGlows(double now) {
+  const int32_t n = degreeCount();
+  glowLevel_.assign(static_cast<size_t>(std::max(0, n)), 0.0f);
+  glowColour_.assign(glowLevel_.size(), 0);
+  for (Glow& g : glows_) {
+    if (g.start < 0.0) g.start = now;
+    if (g.held && g.hold > 0.0 && now - g.start >= g.hold) {
+      g.held = false;
+      g.releasePending = true;
+    }
+    if (g.releasePending) {
+      g.releasePending = false;
+      g.releaseStart = now;
+      g.releaseLevel = g.lastEnv > 0.0f ? g.lastEnv : kGlowSustain;
+    }
+  }
+  std::erase_if(glows_, [&](Glow& g) {
+    const double el = now - g.start;
+    float env;
+    if (el < kGlowAttack) env = static_cast<float>(el / kGlowAttack);
+    else if (el < kGlowAttack + kGlowDecay) env = 1.0f - (1.0f - kGlowSustain) * static_cast<float>((el - kGlowAttack) / kGlowDecay);
+    else env = kGlowSustain;
+    if (!g.held) {
+      const double t = (now - g.releaseStart) / kGlowRelease;
+      if (t >= 1.0) return true;
+      // The perceptual brightness of the audio's exponential decay, tapered to zero over the tail.
+      env = g.releaseLevel * static_cast<float>(std::pow(std::pow(0.001, t), 0.3) * (1.0 - t * t));
+    }
+    if (g.held) g.lastEnv = env;
+    if (!g.held && env < 0.005f) return true;
+    if (n > 0) {
+      const size_t d = static_cast<size_t>(((g.rawDegree % n) + n) % n);
+      if (env > glowLevel_[d]) {
+        glowLevel_[d] = env;
+        glowColour_[d] = g.colour;
+      }
+    }
+    return false;
+  });
+  return !glows_.empty();
+}
+
+void MosCircle::onFrame(double now) {
+  if (!animating_) return;
+  const double dt = lastFrame_ >= 0.0 ? std::clamp(now - lastFrame_, 0.0, 0.25) : 0.0;
+  lastFrame_ = now;
+  const bool hadGlow = std::any_of(glowLevel_.begin(), glowLevel_.end(), [](float v) { return v > 0.0f; });
+  const bool easing = stepSmooth(dt > 0.0 ? static_cast<float>(1.0 - std::exp(-kSmoothRate * dt)) : 0.0f);
+  const bool glowing = stepGlows(now);
+  if (easing || glowing || hadGlow) markDirty();
+  if (easing || glowing) {
+    requestFrame();
+  } else {
+    animating_ = false;  // settled: this frame's damage draws the final state, no more frames
+  }
+}
+
 // --- paint ---------------------------------------------------------------------------------------------------------
 
 void MosCircle::paint(PaintContext& ctx) {
@@ -1018,12 +1253,12 @@ void MosCircle::paint(PaintContext& ctx) {
       const float fillW = eqLow ? thumbX - tr.x0 : tr.x1 - thumbX;
       if (fillW > px1) {
         const Rect f = eqLow ? Rect{tr.x0, tr.y0, thumbX, tr.y1} : Rect{thumbX, tr.y0, tr.x1, tr.y1};
-        dl.addRoundedRectFilled(f, rr, thp->control.value);
+        dl.addRoundedRectFilled(f, rr, setAlpha(m.sliderColour, 0.4f));
       }
       // Notches at the named hardnesses (4:3 … 4:1), the slider's snap targets.
       for (double t : kHardnessTicks) dl.addVLine(sliderXOfHardness(t), tr.y0 + s.pxf(4.0f), tr.y1 - s.pxf(4.0f), setAlpha(T.dimText, 0.7f), 1.0f);
       const Vec2 tc{thumbX, (tr.y0 + tr.y1) / 2.0f};
-      dl.addCircleFilled(tc, rr + s.exact(2.0f), thp->control.thumb);
+      dl.addCircleFilled(tc, rr + s.exact(2.0f), m.sliderColour);
       dl.addCircleStroke(tc, rr + s.exact(2.0f), T.sliderThumbEdge, s.exact(1.5f));
     }
   }
@@ -1056,13 +1291,11 @@ void MosCircle::paint(PaintContext& ctx) {
   }
   const size_t N = m.pitches.size();
   const bool mdrag = drag_ == Drag::Modmos;
-  {
-    std::vector<roll::StepClass>& cls = classScratch_;
-    cls.clear();
-    for (double c : m.classCents) cls.push_back({c});
-    roll::stepClassColours(*thp, cls, m.ratio, classColours_);
-    if (classColours_.empty()) classColours_.push_back(thp->roll.keyLarge);
-  }
+  syncSmooth();
+  auto rankColour = [&](size_t rank) {
+    const Smooth& c = smooth_[rank];
+    return rgba(static_cast<uint32_t>(std::lround(c.r)), static_cast<uint32_t>(std::lround(c.g)), static_cast<uint32_t>(std::lround(c.b)));
+  };
 
   // --- step slices ---
   {
@@ -1070,12 +1303,7 @@ void MosCircle::paint(PaintContext& ctx) {
     std::vector<Vec2>& pts = scratchPts_;
     for (size_t i = 0; i < N; ++i) {
       const double a1 = ang(m.pitches[i]), a2 = ang(m.pitches[i] + m.steps[i]);
-      const size_t ci = std::min<size_t>(m.sliceClass[i], classColours_.size() - 1);
-      const Rgba col = classColours_[ci];
-      // M6 review L22: the fill's opacity also steps with the class (L 0.34 → s 0.18), so L / s / M read apart even
-      // where the theme's key colours are close.
-      const size_t nc = classColours_.size();
-      const float fillA = nc > 1 ? 0.34f - 0.16f * static_cast<float>(ci) / static_cast<float>(nc - 1) : 0.25f;
+      const Rgba col = rankColour(m.sliceRank[i]);
       const double sweep = a2 - a1;
       if (sweep > 1e-6) {
         // Convex pieces of ≤ 90°: the centre plus the arc points.
@@ -1086,7 +1314,7 @@ void MosCircle::paint(PaintContext& ctx) {
           pts.clear();
           pts.push_back(C);
           for (uint32_t k = 0; k <= segs; ++k) pts.push_back(at(b1 + (b2 - b1) * k / segs, rad));
-          dl.addConvexPolyFilled(pts, setAlpha(col, fillA));
+          dl.addConvexPolyFilled(pts, setAlpha(col, 0.25f));
         }
         segment(dl, C, at(a1, rad), setAlpha(col, 0.6f), px1);
         segment(dl, C, at(a2, rad), setAlpha(col, 0.6f), px1);
@@ -1217,11 +1445,34 @@ void MosCircle::paint(PaintContext& ctx) {
     const bool altered = std::fabs(alt) > 0.01;
     const Rgba altCol = alt > 0 ? T.altUp : T.altDown;
     const bool tonic = i == 0 || boundaryDeg;
-    const Rgba lineCol = tonic ? T.tonic : altered ? altCol : T.spoke;
-    const Rgba dotCol = tonic ? T.tonic : altered ? altCol : T.dot;
-    const Rgba labelCol = tonic ? T.tonic : altered ? altCol : T.degreeText;
-    segment(dl, C, p, setAlpha(lineCol, 0.53f), px1);
-    const float dr = s.exact(hoverDot_ == static_cast<int32_t>(i) || (mdrag && m.origDegs[i] == mdrag_.origDeg) ? 6.5f : mcc::kDotR);
+    Rgba lineCol = tonic ? T.tonic : altered ? altCol : T.spoke;
+    Rgba dotCol = tonic ? T.tonic : altered ? altCol : T.dot;
+    Rgba labelCol = tonic ? T.tonic : altered ? altCol : T.degreeText;
+    // TU.2: a lit degree (the explorer's glow): a soft halo along the spoke and round the dot in the note's colour,
+    // the spoke, dot and label tinted toward it, the dot grown 5 → 9 px.
+    const float glow = i < glowLevel_.size() ? glowLevel_[i] : 0.0f;
+    const bool lit = glow > 0.003f;
+    if (lit) {
+      const Rgba gc = glowColour_[i];
+      dl.setBlend(BlendMode::Additive);
+      const float len = std::sqrt((p.x - C.x) * (p.x - C.x) + (p.y - C.y) * (p.y - C.y));
+      const float br = s.exact(13.0f * glow + 2.0f);
+      const int blobs = std::max(2, static_cast<int>(len / std::max(1.0f, br * 0.6f)));
+      const Rgba bc = setAlpha(gc, 0.16f * glow);
+      for (int k = 1; k <= blobs; ++k) {
+        const float t = static_cast<float>(k) / static_cast<float>(blobs);
+        dl.addBlob({C.x + (p.x - C.x) * t, C.y + (p.y - C.y) * t}, br, bc);
+      }
+      dl.addBlob(p, s.exact(24.0f * glow + 4.0f), setAlpha(gc, 0.7f * glow));
+      dl.setBlend(BlendMode::Alpha);
+      segment(dl, C, p, setAlpha(gc, glow), s.exact(1.0f + 2.5f * glow));
+      lineCol = lerpHex(lineCol, gc, glow);
+      dotCol = lerpHex(dotCol, gc, glow);
+      labelCol = lerpHex(labelCol, gc, glow);
+    }
+    segment(dl, C, p, setAlpha(lineCol, lit ? 0.5f + 0.5f * glow : 0.53f), px1);
+    const float baseR = hoverDot_ == static_cast<int32_t>(i) || (mdrag && m.origDegs[i] == mdrag_.origDeg) ? 6.5f : mcc::kDotR;
+    const float dr = s.exact(baseR + 4.0f * glow);
     dl.addCircleFilled(p, dr, dotCol);
     dl.addCircleStroke(p, dr, T.dotEdge, s.exact(1.5f));
     if (i > 0) {
@@ -1231,7 +1482,7 @@ void MosCircle::paint(PaintContext& ctx) {
   }
 
   // --- centre: temperament name, MODMOS steps, reset ---
-  if (!m.tempName.empty()) centred(fStrong, m.tempName, C.x, C.y - rad * 0.15f, T.info);
+  if (!m.tempName.empty()) centred(fStrong, m.tempName, C.x, C.y - rad * 0.15f, m.tempColour);
   if (m.hasModmos) {
     if (text) {
       const TextRun run = ts->shapeTruncated(fSmall, m.modStepStr, static_cast<int32_t>(rad * 1.5f));

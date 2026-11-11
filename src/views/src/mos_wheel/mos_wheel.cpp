@@ -13,6 +13,7 @@
 #include <sstream>
 
 #include "../common/paint.h"
+#include "circle_notes.h"
 #include "pq/tuning/mos_data.h"
 #include "pq/tuning/scala.h"
 #include "pq/ui/overlay.h"
@@ -266,6 +267,7 @@ MosWheelPopover::MosWheelPopover(ViewContext& ctx, const TuningTarget& target)
   circle_->onAudition = [this](double cents) {
     const double hz = draft_.referenceHz * std::exp2(cents / 1200.0);
     ctx_.transport().auditionHz(static_cast<float>(hz), 100.0f, 400.0f);
+    circle_->noteOn(CircleNotes::auditionId(0), 0, hz, 0.4);  // TU.2: the tonic lights as it sounds
   };
 
   // Footer: what the target plays now, Revert / Done.
@@ -288,6 +290,11 @@ MosWheelPopover::MosWheelPopover(ViewContext& ctx, const TuningTarget& target)
   doneBtn.onClick = [this] { apply(); };
 
   showDraft();
+  notes_ = std::make_unique<CircleNotes>(ctx_, target_, *circle_, *this);
+}
+
+void MosWheelPopover::onFrame(double now) {
+  if (notes_) notes_->frame(now);
 }
 
 MosWheelPopover::~MosWheelPopover() {

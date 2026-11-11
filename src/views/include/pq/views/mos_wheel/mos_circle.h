@@ -32,10 +32,23 @@
 // Rendering: one widget; the scale model (pitches, steps, colours, labels, title parts) is rebuilt only when the
 // selection, MODMOS, config or rect changes, the JI marker table only when the displayed period or stretch changes;
 // paint emits geometry from the model. Every change damages the whole widget (the whole circle moves). Colours:
-// theme group `mosCircle.*` (TU.1: retuned to the DAW's palette — amber accent, the solo blue, the text tones) and,
-// for the step slices, the piano roll's scale-key colours (roll.keyLarge / keySmall / keyExtra blended by hardness,
-// the same stepClassColours as the roll's gutter), so a MOS looks the same in the wheel and in the roll. No colour smoothing over time (the explorer's 8/s lerp): the colours are a
-// pure function of the generator, so frames are reproducible.
+// theme group `mosCircle.*` (surfaces from the Live 12 look, data colours from the explorer) and the explorer's
+// region palette for the step colours (TU.2: back from TU.1's piano-roll key colours): L in the region's colour for
+// this hardness (collapsed ↔ equalized by softness), s toward its complement as the scale hardens, MODMOS sizes
+// between their neighbours pushed apart.
+//
+// Motion (TU.2, the explorer's drawMOSCircle / getGlowState):
+//   - Colour smoothing: each step class (L, s, the MODMOS sizes by rank) eases toward its colour at the explorer's
+//     rate (1 − e^(−8·dt)), so a generator drag or a mode change morphs the colours instead of snapping. A class
+//     seen for the first time takes its colour at once (a fresh circle paints its final colours: goldens are exact).
+//   - Lit notes: noteOn(id, degree, hz) lights degree `degree mod degreeCount()` in the colour of `hz` (voiceColour,
+//     the Phase Accumulator's frequency colours) with the explorer's synth envelope (attack 15 ms, decay 100 ms to
+//     sustain 1; after noteOff a 1.5 s release that follows the audio's perceptual decay): the spoke and the dot
+//     glow (additive), the dot grows 5 → 9 px and its line and label tint toward the colour. A degree several notes
+//     light shows the brightest.
+//   Both run from onFrame (the tree's frame clock): frames are requested only while a colour still eases or a glow
+//   is alive; the last frame damages once more and stops (no idle repaint loop). A note's onset and release are
+//   stamped at the first frame after the call.
 //
 // UI thread only. Nothing here is RT-safe.
 
@@ -51,7 +64,6 @@
 #include "pq/tuning/mos_regions.h"
 #include "pq/ui/widget.h"
 #include "pq/views/mos_wheel/mos_chart.h"
-#include "pq/views/piano_roll/row_model.h"
 
 namespace pq::views {
 
@@ -149,6 +161,22 @@ public:
   // The step pattern between the mode buttons ("LLsLLLs"; with MODMOS "L s L L s M s", lettered as stepLabels).
   std::string stepPatternText() const;
 
+  // --- lit notes (TU.2; see the file comment) ---
+  // A note sounds: `degree` is any degree index of the tuning the circle shows (wrapped by degreeCount()), `hz` its
+  // frequency (its colour). The same `id` again restarts that note. `holdSeconds` > 0: it releases by itself that long
+  // after its onset (an audition).
+  void noteOn(uint64_t id, int64_t degree, double hz, double holdSeconds = 0.0);
+  void noteOff(uint64_t id);  // its release starts (no-op for an unknown or released id)
+  void notesOff();            // every held note releases
+  bool noteHeld(uint64_t id) const noexcept;
+  // Displayed degree i's glow (0 … 1) and colour at the last frame.
+  float glowOf(int32_t degree) const noexcept;
+  ui::Rgba glowColourOf(int32_t degree) const noexcept;
+  // A colour still eases or a glow is alive: frames are requested.
+  bool animating() const noexcept { return animating_; }
+  // The colour step slice i shows now (smoothed; tests).
+  ui::Rgba sliceColour(int32_t slice) const;
+
   struct Stats {
     uint64_t models = 0;  // scale model rebuilds
     uint64_t jiBuilds = 0;
@@ -163,6 +191,7 @@ public:
   bool onKey(const ui::KeyEvent& e) override;
   void onCaptureLost() override;
   void onHoverChanged(bool hovered) override;
+  void onFrame(double now) override;
   ui::InfoText info() const override;
   // T4.16a: the mode / step buttons, the parent / child arrows, the toggles and the tonic (audition) Pointer; the
   // hardness slider ResizeEW; a degree's dot Move (drags its MODMOS alteration); during a drag the drag's cursor.
@@ -203,6 +232,7 @@ private:
   MosChartConfig config_;
   tuning::MosRegionSet regions_;
   std::vector<tuning::EdoGenerator> edos_;
+  std::vector<ui::Rgba> palette_;  // tuning::kMosPalette as colours
 
   std::optional<MosSelection> sel_;
   int32_t region_ = -1;
@@ -229,9 +259,35 @@ private:
 
   mutable std::vector<ui::Vec2> scratchPts_;  // paint scratch, reused (no allocation per paint once grown)
   mutable std::vector<ui::Rect> scratchRects_;
-  mutable std::vector<roll::StepClass> classScratch_;  // TU.1: the step classes / their colours of this paint
-  mutable std::vector<ui::Rgba> classColours_;
   mutable Stats stats_;
+
+  // TU.2: colour smoothing — per step-class rank (Model::sliceRank) the colour shown now (RGB, 0 … 255 as floats).
+  struct Smooth {
+    float r = 0, g = 0, b = 0;
+    bool set = false;
+  };
+  mutable std::vector<Smooth> smooth_;
+  void syncSmooth() const;      // after a model rebuild: unused ranks dropped, new ones at their target
+  bool stepSmooth(float rate);  // eases every rank by `rate`; true while one still differs
+  // TU.2: lit notes.
+  struct Glow {
+    uint64_t id = 0;
+    int64_t rawDegree = 0;       // as given (re-wrapped when the degree count changes)
+    ui::Rgba colour = 0;
+    double start = -1.0;         // frame time of the onset (−1: stamped at the next frame)
+    double releaseStart = -1.0;  // frame time the release began
+    double hold = 0.0;           // > 0: releases by itself this long after the onset
+    float releaseLevel = 1.0f, lastEnv = 0.0f;
+    bool held = true;
+    bool releasePending = false;  // noteOff before the onset was stamped
+  };
+  std::vector<Glow> glows_;
+  std::vector<float> glowLevel_;  // per displayed degree, from the last frame
+  std::vector<ui::Rgba> glowColour_;
+  bool stepGlows(double now);     // envelopes at `now`; true while a glow is alive
+  void kick();                    // requests frames (no-op while animating)
+  bool animating_ = false;
+  double lastFrame_ = -1.0;
 };
 
 }  // namespace pq::views

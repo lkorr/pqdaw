@@ -1276,3 +1276,15 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   shift the equave, Home / End the velocity. Try Continuous from the menu.
 - **Arm on select**: with nothing armed, clicking a MIDI track lights its arm button and `M` + keys play it; arming a
   track by hand stops it.
+
+## 2026-11-10 · TU.2 · MOS circle: the explorer's colours back, smooth colour morphing, notes light up 👁
+- **Colours**: open the MOS wheel (Ctrl+Shift+W or a clip's tuning chip) on a 5L 2s: the slices, slider, tonic, JI
+  ticks and arrows are the mos-explorer's again (region colour for L, s toward its complement as it hardens).
+- **Morphing**: drag the hardness slider or the chart's generator, or click ◀ gen ▶: the slice colours glide to the new
+  ones (about a quarter second) instead of snapping, and stop moving once they arrive.
+- **Notes light up**: with the wheel open on a clip, press Play: each note of that clip (and of any clip playing in the
+  same tuning) lights its degree while it sounds — spoke and dot glow and the dot grows — then fades over ~1.5 s after
+  it ends. The colour follows the note's frequency like the Phase Accumulator's dots (low = red/violet, ~440 Hz blue,
+  high = green/yellow). Same with the computer keyboard (`M`, on the track whose clip the wheel edits), clicking notes
+  in the piano roll, and clicking the tonic. Does it read as clean as the explorer? Brightness / halo size OK?
+- Not lit: MIDI keys from a hardware controller (no UI-side feed of them exists yet).

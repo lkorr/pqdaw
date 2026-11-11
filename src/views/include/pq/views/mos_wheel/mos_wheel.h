@@ -23,6 +23,9 @@
 // The temperament search (TU.1, replaces T3.14's 80-item dropdown): type part of a name and press Enter; one match
 // (or an exact name) is chosen at once, several open a short menu of them. The chart's temperament rows show them too.
 //
+// TU.2: the notes that sound in the target's tuning (playback, the computer keyboard, the piano roll's auditions, a click
+// on the tonic) light their degree on the circle (src/mos_wheel/circle_notes.h; MosCircle::noteOn).
+//
 // Opened from a TuningChip (the clip view's clip box; T3.10's headers) or the tuning.openMosWheel action
 // (Ctrl+Shift+W, Q15: the clip in the clip view, else the first main tuning). UI thread only.
 #include <cstdint>
@@ -44,6 +47,8 @@
 #include "pq/views/view_context.h"
 
 namespace pq::views {
+
+class CircleNotes;  // TU.2: what lights the circle (src/mos_wheel/circle_notes.h)
 
 // The target's current tuning (nullptr when the target no longer exists).
 const doc::TuningDef* targetTuning(const doc::Project& p, const TuningTarget& target);
@@ -125,6 +130,7 @@ public:
   // T4.16a: the move cursor over the title band (what a press there does) and during the move.
   ui::Cursor cursorAt(ui::Vec2 pos) const override;
   ui::InfoText info() const override;
+  void onFrame(double now) override;  // TU.2: follows the playhead for the circle's lit notes while playing
   // Where the next wheel opens (logical px from the window's top-left; none: centred / under its chip).
   static std::optional<ui::Vec2> rememberedPosition() noexcept;
   static void forgetPosition() noexcept;
@@ -153,6 +159,7 @@ private:
   ui::TextEdit* search_ = nullptr;   // the temperament search
   ui::Button* revert_ = nullptr;
   std::unique_ptr<TuningEdit> edit_;
+  std::unique_ptr<CircleNotes> notes_;  // TU.2
   bool moving_ = false;               // a title drag in progress
   ui::Vec2 moveGrab_{};               // pointer − top-left at the press (device px)
   bool done_ = false;                 // closed

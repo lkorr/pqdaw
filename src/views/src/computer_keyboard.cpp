@@ -114,12 +114,18 @@ void ComputerKeyboard::setScaleMode(ScaleMode m) {
 }
 
 void ComputerKeyboard::releaseAll() {
+  if (held_.empty()) return;
   for (const Held& h : held_) transport_.liveKey(h.equave, h.step, 64.0f, false);
   held_.clear();
+  notes();
 }
 
 void ComputerKeyboard::changed() {
   if (onChanged) onChanged(*this);
+}
+
+void ComputerKeyboard::notes() {
+  if (onNotes) onNotes(*this);
 }
 
 bool ComputerKeyboard::onTreeKey(const ui::KeyEvent& e) {
@@ -129,6 +135,7 @@ bool ComputerKeyboard::onTreeKey(const ui::KeyEvent& e) {
     if (it == held_.end()) return false;
     transport_.liveKey(it->equave, it->step, 64.0f, false);
     held_.erase(it);
+    notes();
     return true;
   }
   if (!active_ || (e.mods & (ui::mod::kCtrl | ui::mod::kAlt | ui::mod::kSuper | ui::mod::kShift)) != 0) return false;
@@ -151,6 +158,7 @@ bool ComputerKeyboard::onTreeKey(const ui::KeyEvent& e) {
       if (const std::optional<KeyNote> s = stepOf(*n, equave_, lay)) {
         held_.push_back({e.key, s->equave, s->degree});
         transport_.liveKey(s->equave, s->degree, static_cast<float>(velocity_), true);
+        notes();
       }
       return true;  // out of range: the key is still the keyboard's (no view action)
     }

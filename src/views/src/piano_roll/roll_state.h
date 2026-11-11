@@ -419,6 +419,7 @@ public:
 
   // --- audition ---
   void audition(const tuning::PitchId& p, float velocity, Ticks contentStart, Ticks length);
+  std::optional<int64_t> auditionDegree(const tuning::PitchId& p) const;  // TU.2 (roll_state.cpp)
   // AU.voices: the press that auditioned ended (pointer up, capture lost): its notes stop sounding (released now, at
   // most their own length). Only after a press that auditioned (auditionHeld).
   void releaseAudition();

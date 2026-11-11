@@ -2,4 +2,5 @@
 set(PQ_VIEWS_MOS_WHEEL_SOURCES
   src/mos_wheel/mos_chart.cpp
   src/mos_wheel/mos_circle.cpp
-  src/mos_wheel/mos_wheel.cpp)
+  src/mos_wheel/mos_wheel.cpp
+  src/mos_wheel/circle_notes.cpp)  # TU.2: the circle's lit notes

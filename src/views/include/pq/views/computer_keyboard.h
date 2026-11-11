@@ -43,6 +43,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -99,18 +100,23 @@ public:
   // Every held note ends now (the window lost the keyboard, the keyboard was turned off).
   void releaseAll();
   uint32_t heldKeys() const noexcept { return static_cast<uint32_t>(held_.size()); }
+  // TU.2: the notes held now — (equave, step) as sent to TransportPort::liveKey, by the key that holds it.
+  struct Held {
+    ui::Key key;
+    int32_t equave, step;
+  };
+  std::span<const Held> held() const noexcept { return held_; }
 
   bool onTreeKey(const ui::KeyEvent& e) override;
 
   // Called after the state changed (on/off, equave, velocity, scale mode): the status line and the control bar.
   std::function<void(const ComputerKeyboard&)> onChanged;
+  // TU.2: called after a note started or ended (held() changed): displays that light the notes played (the MOS circle).
+  std::function<void(const ComputerKeyboard&)> onNotes;
 
 private:
-  struct Held {
-    ui::Key key;
-    int32_t equave, step;
-  };
   void changed();
+  void notes();
   TransportPort& transport_;
   bool active_ = false;
   int32_t equave_ = 0;

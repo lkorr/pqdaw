@@ -371,6 +371,19 @@ Status setupMosCircleModmos(Shell& shell) {
   return Ok{};
 }
 
+// TU.2: 5L 2s at 18\31 with four notes sounding (held through the settle frames: full glow), each lit in the colour
+// of its frequency: the tonic at 130 Hz (violet), degree 2 at 330 Hz (blue), degree 4 at 620 Hz (cyan), degree 5 an
+// octave up at 1400 Hz (yellow).
+Status setupMosCircleLit(Shell& shell) {
+  MosCircle* c = openMosCircle(shell, {5, 2}, 18.0 * 1200.0 / 31.0, 0, {});
+  if (!c) return Error{ErrorCode::NotFound, "mos-circle-lit: no overlay or no 5L 2s region", {}};
+  c->noteOn(1, 0, 130.0);
+  c->noteOn(2, 2, 330.0);
+  c->noteOn(3, 4, 620.0);
+  c->noteOn(4, 7 + 5, 1400.0);
+  return Ok{};
+}
+
 // T3.14: a MIDI track with a 12-EDO melody in the clip view and the MOS wheel open for that clip (from the clip box's
 // tuning chip target), 5L 2s at 18\31 chosen: the roll behind shows the live preview (7 rows per octave).
 Status setupMosWheelPopover(Shell& shell) {
@@ -3085,6 +3098,7 @@ constexpr SceneEntry kScenes[] = {
     {"mos-chart-zoomed", 800, 600, setupMosChartZoomed},
     {"mos-circle-5L2s", 440, 560, setupMosCircle5L2s},
     {"mos-circle-modmos", 440, 560, setupMosCircleModmos},
+    {"mos-circle-lit", 440, 560, setupMosCircleLit},
     {"mos-wheel-popover", 1600, 900, setupMosWheelPopover},
     {"tracks-mixer", 1280, 800, setupTracksMixer},
     {"mixer-view", 1280, 800, setupMixerView},

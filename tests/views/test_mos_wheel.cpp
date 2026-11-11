@@ -9,7 +9,10 @@
 //   it started), changing only that clip; Revert; Esc / Enter / a press outside close; EDO entry, Scala file
 //   (scripted dialog), the temperament search; a main tuning's generator drag is Param-only SetTuningParam steps;
 //   track targets; Ctrl+Shift+W; the popover stays inside the panels (L17).
-//   Goldens: mos-circle-5L2s, mos-circle-modmos, mos-wheel-popover.
+//   TU.2: the explorer's step colours ease to a new generator's and the frames stop once settled; a note-on lights its
+//   degree in its frequency's colour and a note-off fades it; the popover lights the notes of playback, the computer
+//   keyboard and auditions in the target's tuning.
+//   Goldens: mos-circle-5L2s, mos-circle-modmos, mos-circle-lit, mos-wheel-popover.
 
 #include <doctest/doctest.h>
 
@@ -292,6 +295,95 @@ TEST_CASE("mos circle: a MODMOS step pattern letters the altered step as the whe
   std::string joined;
   for (size_t i = 0; i < labels.size() && i < 7; ++i) joined += (i ? " " : "") + labels[i];
   CHECK(joined == "L s L L s M s");
+}
+
+TEST_CASE("mos circle (TU.2): the step colours ease toward a new generator's, then the frames stop") {
+  // 18\31 (L/s = 3:2) and 714¢ (L/s ≈ 7.6) in the same 5L 2s region.
+  const MosSelection soft = selectionFor({5, 2}, 18.0 * 1200.0 / 31.0), hard = selectionFor({5, 2}, 714.0);
+  Circle fresh;
+  fresh.set(hard);
+  const auto labels = fresh.c->stepLabels();
+  const int32_t sIdx = static_cast<int32_t>(std::find(labels.begin(), labels.end(), "s") - labels.begin());
+  REQUIRE(labels[0] == "L");
+  REQUIRE(static_cast<size_t>(sIdx) < labels.size());
+  const Rgba hardL = fresh.c->sliceColour(0), hardS = fresh.c->sliceColour(sIdx);
+
+  Circle t;
+  t.set(soft);
+  t.d.advance(0.5);
+  CHECK_FALSE(t.c->animating());
+  const Rgba softL = t.c->sliceColour(0), softS = t.c->sliceColour(sIdx);
+  // The explorer's palette: s is L pushed toward its complement as the scale hardens, so they differ more when hard.
+  auto dist = [](Rgba a, Rgba b) {
+    int d = 0;
+    for (int sh : {0, 8, 16}) d += std::abs(static_cast<int>((a >> sh) & 0xFF) - static_cast<int>((b >> sh) & 0xFF));
+    return d;
+  };
+  CHECK(dist(hardL, hardS) > dist(softL, softS));
+  REQUIRE(dist(softL, hardL) + dist(softS, hardS) > 60);
+
+  // A new generator: the colours start where they were and ease over frames (1 − e^(−8·dt)) to a fresh circle's.
+  t.c->setSelection(hard);
+  CHECK(t.c->sliceColour(0) == softL);
+  CHECK(t.c->animating());
+  t.d.step();
+  t.d.advance(0.1);
+  const Rgba midL = t.c->sliceColour(0);
+  CHECK(midL != softL);
+  CHECK(midL != hardL);
+  CHECK(dist(midL, hardL) < dist(softL, hardL));
+  t.d.advance(2.0);
+  CHECK(t.c->sliceColour(0) == hardL);
+  CHECK(t.c->sliceColour(sIdx) == hardS);
+  CHECK_FALSE(t.c->animating());
+  // Settled: no frame request, nothing damaged, nothing drawn.
+  const uint64_t frames = t.d.framesDrawn(), paints = t.c->stats().paints;
+  t.d.advance(1.0);
+  CHECK(t.d.framesDrawn() == frames);
+  CHECK(t.c->stats().paints == paints);
+  CHECK_FALSE(t.d.tree().needsFrame());
+}
+
+TEST_CASE("mos circle (TU.2): a note-on lights its degree in its frequency's colour; a note-off fades it, then frames stop") {
+  Circle t;
+  t.set(selectionFor({5, 2}, 696.0));
+  t.d.advance(0.5);
+  REQUIRE(t.c->degreeCount() == 7);
+  CHECK(t.c->glowOf(2) == 0.0f);
+
+  t.c->noteOn(7, 2 + 7, 1400.0);  // degree 2 an equave up: wrapped onto degree 2
+  t.c->noteOn(8, -3, 20.0);       // degree 4 an equave down
+  t.d.advance(0.2);
+  CHECK(t.c->glowOf(2) == doctest::Approx(1.0f));
+  CHECK(t.c->glowOf(4) == doctest::Approx(1.0f));
+  CHECK(t.c->glowOf(1) == 0.0f);
+  CHECK(t.c->glowColourOf(2) == hex(0xFCDC40));  // ≥ 1050 Hz: yellow (the Phase Accumulator's colours)
+  CHECK(t.c->glowColourOf(4) == hex(0xE83434));  // ≤ 30 Hz: red
+  CHECK(t.c->noteHeld(7));
+  // Held: it stays lit (sustain 1) and keeps animating.
+  t.d.advance(1.0);
+  CHECK(t.c->glowOf(2) == doctest::Approx(1.0f));
+  CHECK(t.c->animating());
+
+  // Release: the explorer's 1.5 s fade (the audio's perceptual decay, tapered), only on that degree.
+  t.c->noteOff(7);
+  CHECK_FALSE(t.c->noteHeld(7));
+  t.d.advance(0.75);
+  const float mid = t.c->glowOf(2);
+  CHECK(mid > 0.1f);
+  CHECK(mid < 0.5f);
+  CHECK(t.c->glowOf(4) == doctest::Approx(1.0f));
+  t.c->notesOff();
+  t.d.advance(1.0);
+  CHECK(t.c->glowOf(2) == 0.0f);
+  CHECK(t.c->glowOf(4) < 0.5f);
+  t.d.advance(1.0);
+  CHECK(t.c->glowOf(4) == 0.0f);
+  CHECK_FALSE(t.c->animating());
+  const uint64_t frames = t.d.framesDrawn();
+  t.d.advance(1.0);
+  CHECK(t.d.framesDrawn() == frames);
+  CHECK_FALSE(t.d.tree().needsFrame());
 }
 
 TEST_CASE("mos wheel: the summary's mode number is the circle header's (genchain order), not the rotation; L18") {
@@ -677,6 +769,63 @@ TEST_CASE("mos wheel: reopening a MOS tuning shows it in the chart and the circl
   w.d.press("Escape");
 }
 
+TEST_CASE("mos wheel (TU.2): the clip playing, the computer keyboard and a roll audition light the circle's degrees") {
+  Wheel w;
+  MosWheelPopover& p = w.openFromChip();
+  REQUIRE(p.chooseMos({5, 2}, 696.0));
+  w.d.step();
+  MosCircle& c = p.circle();
+  REQUIRE(c.degreeCount() == 7);
+
+  // The computer keyboard into the auto-armed track A, whose live clip is A1 (the clip view's): 'd' = degree 2.
+  w.ctx.setSelectedTrack(w.trackA);
+  REQUIRE(w.ctx.autoArmTrack() == w.trackA);
+  ComputerKeyboard& kb = w.ctx.computerKeyboard();
+  kb.setActive(true);
+  KeyEvent k;
+  k.key = 'd';
+  REQUIRE(kb.onTreeKey(k));
+  w.d.advance(0.2);
+  CHECK(c.glowOf(2) == doctest::Approx(1.0f));
+  CHECK(c.glowOf(0) == 0.0f);
+  k.down = false;
+  REQUIRE(kb.onTreeKey(k));
+  w.d.advance(2.0);
+  CHECK(c.glowOf(2) == 0.0f);
+  kb.setActive(false);
+
+  // An audition of A1's degree 4 (the roll's ViewContext::audition) lights it for its length; B1's (12-EDO) does not.
+  w.ctx.audition(440.0f, 100.0f, 300.0f, w.a1, 4);
+  w.d.advance(0.1);
+  CHECK(c.glowOf(4) == doctest::Approx(1.0f));
+  w.ctx.releaseAuditions();
+  w.d.advance(2.0);
+  CHECK(c.glowOf(4) == 0.0f);
+  w.ctx.audition(440.0f, 100.0f, 300.0f, w.b1, 4);
+  w.d.advance(0.1);
+  CHECK(c.glowOf(4) == 0.0f);
+
+  // Playback: A1's notes are degrees 0, 2, 4 on beats 1, 2, 3; each lights while the playhead is in it.
+  w.ctx.play();
+  REQUIRE(w.port.playhead().playing);
+  w.port.setPlayheadTick(kPpq + kPpq / 2);
+  w.d.advance(0.2);
+  CHECK(c.glowOf(2) == doctest::Approx(1.0f));
+  CHECK(c.glowOf(0) == 0.0f);
+  CHECK(c.glowOf(4) == 0.0f);
+  w.port.setPlayheadTick(2 * kPpq + kPpq / 4);
+  w.d.advance(0.3);
+  CHECK(c.glowOf(4) == doctest::Approx(1.0f));
+  CHECK(c.glowOf(2) > 0.0f);  // releasing
+  CHECK(c.glowOf(2) < 1.0f);
+  w.ctx.stopButton();
+  w.d.advance(2.0);
+  CHECK(c.glowOf(4) == 0.0f);
+  CHECK(c.glowOf(2) == 0.0f);
+  CHECK_FALSE(c.animating());
+  w.d.press("Escape");
+}
+
 TEST_CASE("mos wheel: the popover never covers the control bar or the status bar (L17), also when dragged up") {
   Wheel w;
   MosWheelPopover::forgetPosition();
@@ -731,6 +880,10 @@ void checkGolden(const char* scene, float scale = 1.0f, const char* suffix = "")
 TEST_CASE("render: mos-circle-5L2s (18\\31, Lydian root) matches the golden image") { checkGolden("mos-circle-5L2s"); }
 
 TEST_CASE("render: mos-circle-modmos (7\\12 Aeolian, raised 7th) matches the golden image") { checkGolden("mos-circle-modmos"); }
+
+TEST_CASE("render: mos-circle-lit (5L 2s, four notes sounding in their frequency colours) matches the golden image") {
+  checkGolden("mos-circle-lit");
+}
 
 TEST_CASE("render: mos-wheel-popover (clip wheel over the roll preview) matches the golden image") { checkGolden("mos-wheel-popover"); }
 

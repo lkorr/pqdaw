@@ -96,6 +96,8 @@ inline constexpr uint32_t kResponses = 1u << 18;     // EQ.4b: the app's lowerin
 inline constexpr uint32_t kTimeWindow = 1u << 19;    // TL.1: the shared visible time range (TimeWindow) moved or zoomed
 inline constexpr uint32_t kSampleAnalysis = 1u << 20; // T6.8: a sample's transients / tempo arrived (SampleAnalysis)
 inline constexpr uint32_t kKeyboard = 1u << 21;       // KB.1: the computer keyboard's state, or the auto-armed track
+inline constexpr uint32_t kLiveNotes = 1u << 22;      // TU.2: a note the UI plays started or ended (the computer
+                                                      // keyboard's held(), an audition: lastAudition())
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel applies its edits to it
@@ -385,6 +387,19 @@ public:
   // What a track's arm button shows: armed by hand, or auto-armed.
   bool armShown(const doc::Track& t) const noexcept { return t.mixer.arm || (autoArm_.valid() && t.id == autoArm_); }
   bool playing() { return transport_.playhead().playing; }
+  // TU.2: an audition from a view (TransportPort::auditionHz) that displays may light (kLiveNotes; the MOS circle):
+  // the clip whose note it plays and the note's absolute degree in that clip's tuning (nullopt: none / not on one).
+  struct Audition {
+    uint64_t serial = 0;  // 0: none yet
+    double hz = 0.0;
+    float durationMs = 0.0f;
+    doc::ClipRef clip{};
+    std::optional<int64_t> degree;
+    bool released = false;  // releaseAuditions() since
+  };
+  void audition(float hz, float velocity, float durationMs, doc::ClipRef clip = {}, std::optional<int64_t> degree = {});
+  void releaseAuditions();  // TransportPort::releaseAuditions, and lastAudition().released
+  const Audition& lastAudition() const noexcept { return lastAudition_; }
   // Space: stop if playing, else play from the start marker. Shift+Space: continue from the stop position.
   void togglePlay();
   // The Play button: plays from the start marker; TL.4: while playing too (restarts there: a lane click while playing
@@ -617,6 +632,7 @@ private:
 
   TransportPort& transport_;
   ComputerKeyboard computerKeyboard_{transport_};  // T6.4
+  Audition lastAudition_;                           // TU.2
   doc::DocumentStore store_;
   doc::Snapshot saved_;  // the snapshot last saved or loaded (dirty() compares pointers)
   std::string projectDir_;
