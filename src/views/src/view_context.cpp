@@ -13,6 +13,7 @@
 
 #include "pq/document/pitch_resolve.h"
 #include "pq/document/serialize.h"
+#include "pq/views/arrangement/automation.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/devices/analysis.h"
 #include "pq/views/file_probes.h"
@@ -232,9 +233,19 @@ void ViewContext::onStoreEvent(const doc::StoreEvent& e) {
   if (e.kind == doc::StoreEventKind::Reset) {
     overridesChanged = !overrides_.empty();
     overrides_.clear();
+    autoTakes_.clear();  // AR.1
   } else {
-    if (e.kind == doc::StoreEventKind::Dispatch && e.changes.has(doc::kChangeParam))
+    // AR.1: while recording with Automation Arm on, a Param change is a touch (recordTouch); a gesture's end releases.
+    const bool paramChange = e.kind == doc::StoreEventKind::Dispatch && e.changes.has(doc::kChangeParam);
+    const std::optional<Ticks> rec = paramChange ? recordTick(*e.after) : std::nullopt;
+    if (e.kind == doc::StoreEventKind::GestureCommit || e.kind == doc::StoreEventKind::GestureCancel)
+      overridesChanged = releaseTouches(e.kind == doc::StoreEventKind::GestureCancel);
+    if (paramChange)
       for (const doc::ParamRef& r : e.changes.params) {
+        if (rec && recordTouch(e, r, *rec)) {
+          overridesChanged = true;
+          continue;
+        }
         const auto it = std::lower_bound(overrides_.begin(), overrides_.end(), r);
         if ((it == overrides_.end() || !(*it == r)) && automated(*e.after, r)) {
           overrides_.insert(it, r);
@@ -1045,6 +1056,123 @@ void ViewContext::setStatus(std::string text) {
 }
 
 // --- automation override (T3.15) ---------------------------------------------------------------------------
+
+// ---- automation recording (AR.1) ----------------------------------------------------------------------------------
+
+std::optional<Ticks> ViewContext::recordTick(const doc::Project& p) {
+  if (!p.record.automationArm) return std::nullopt;
+  const std::optional<Ticks> t = transport_.recordingTick();
+  if (!t || (p.punch.enabled && (*t < p.punch.in || *t >= p.punch.out))) return std::nullopt;
+  return t;
+}
+
+double ViewContext::recordTolerance(const doc::Project& p, const doc::ParamRef& r, const doc::DeviceLibrary* lib) noexcept {
+  switch (r.kind) {
+    case doc::ParamKind::TrackVolume:
+    case doc::ParamKind::TrackSend: return 0.1;
+    case doc::ParamKind::TrackPan: return 0.005;
+    case doc::ParamKind::TuningReference: return 0.01;
+    case doc::ParamKind::TuningEquave:
+    case doc::ParamKind::MosGenerator:
+    case doc::ParamKind::MosPeriod:
+    case doc::ParamKind::MosStretch: return 0.05;
+    case doc::ParamKind::DeviceParam:
+    case doc::ParamKind::WireAmount: {
+      const doc::ParamRange g = editRange(p, r, lib);
+      return std::isfinite(g.max - g.min) ? 0.002 * (g.max - g.min) : 0.0;
+    }
+    default: return 0.0;
+  }
+}
+
+// A Param change while recording: a sample of the parameter's touch (a new touch when none is held). False when `r`
+// cannot have a lane (it is then an ordinary hand-made change).
+bool ViewContext::recordTouch(const doc::StoreEvent& e, const doc::ParamRef& r, Ticks tick) {
+  if (!paramValid(*e.after, r)) return false;
+  const doc::DeviceLibrary* lib = deviceLibrary();
+  auto it = std::find_if(autoTakes_.begin(), autoTakes_.end(), [&](const AutoTake& t) { return t.rec.param == r; });
+  if (it == autoTakes_.end()) {
+    AutoTake t;
+    t.rec.param = r;
+    t.rec.paramName = doc::deviceParamNameOf(*e.after, lib, r);
+    t.rec.before = currentParamValue(*e.before, r, lib);
+    t.rec.tolerance = recordTolerance(*e.after, r, lib);
+    // A tuning parameter's new lane: on the selected track, else the master (any track may hold it).
+    const doc::Track* home = selectedTrack_.valid() ? doc::findTrackPtr(*e.after, selectedTrack_) : nullptr;
+    if (home == nullptr) home = e.after->master.get();
+    if (home != nullptr) t.rec.home = home->id;
+    autoTakes_.push_back(std::move(t));
+    it = autoTakes_.end() - 1;
+  }
+  const bool held = store_.inGesture();
+  if (!it->open) {
+    doc::ops::RecordedTouch touch;
+    touch.latch = !held;
+    it->rec.touches.push_back(std::move(touch));
+    it->open = held;
+    // The hand's value plays while touched: the lane is overridden (a gesture's touch until its release, a latch until
+    // the session ends).
+    const auto o = std::lower_bound(overrides_.begin(), overrides_.end(), r);
+    if ((o == overrides_.end() || !(*o == r)) && automated(*e.after, r)) {
+      overrides_.insert(o, r);
+      it->overrode = held;
+    }
+  }
+  doc::ops::RecordedTouch& touch = it->rec.touches.back();
+  const auto v = static_cast<float>(currentParamValue(*e.after, r, lib));
+  touch.samples.push_back(doc::Breakpoint{tick, v, 0.0f, {}});
+  touch.end = std::max(touch.end, tick);
+  return true;
+}
+
+// A gesture ended: its touches are released (`cancel`, Esc: dropped) and the lanes they overrode play again. True when
+// an override was lifted.
+bool ViewContext::releaseTouches(bool cancel) {
+  bool lifted = false;
+  std::optional<Ticks> now;
+  bool asked = false;
+  for (AutoTake& t : autoTakes_) {
+    if (!t.open) continue;
+    t.open = false;
+    if (cancel) {
+      t.rec.touches.pop_back();
+    } else {
+      if (!asked) {
+        now = recordTick(*store_.current());
+        asked = true;
+      }
+      doc::ops::RecordedTouch& touch = t.rec.touches.back();
+      if (now) touch.end = std::max(touch.end, *now);
+    }
+    if (t.overrode) {
+      t.overrode = false;
+      if (const auto o = std::lower_bound(overrides_.begin(), overrides_.end(), t.rec.param);
+          o != overrides_.end() && *o == t.rec.param) {
+        overrides_.erase(o);
+        lifted = true;
+      }
+    }
+  }
+  std::erase_if(autoTakes_, [](const AutoTake& t) { return t.rec.touches.empty(); });
+  return lifted;
+}
+
+std::vector<doc::ops::RecordedAutomation> ViewContext::takeRecordedAutomation(std::optional<Ticks> end) {
+  std::vector<doc::ops::RecordedAutomation> out;
+  bool lifted = false;
+  for (AutoTake& t : autoTakes_) {
+    if (t.open && end && !t.rec.touches.empty()) t.rec.touches.back().end = std::max(t.rec.touches.back().end, *end);
+    if (const auto o = std::lower_bound(overrides_.begin(), overrides_.end(), t.rec.param);
+        o != overrides_.end() && *o == t.rec.param) {
+      overrides_.erase(o);
+      lifted = true;
+    }
+    out.push_back(std::move(t.rec));
+  }
+  autoTakes_.clear();
+  if (lifted) notify(view_change::kAutomation);
+  return out;
+}
 
 bool ViewContext::automationOverridden(const doc::ParamRef& p) const noexcept {
   return std::binary_search(overrides_.begin(), overrides_.end(), p);

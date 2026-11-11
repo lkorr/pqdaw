@@ -260,7 +260,9 @@ void ProjectLink::record(Ticks from) {  // UI thread
       if (rt.slot != kNoSlot) tracks.push_back(std::move(rt));
     }
   });
-  if (!tracks.empty())
+  // AR.1: with Automation Arm on a session runs without an armed track too (its passes place the automation's end).
+  const bool automation = ctx_ != nullptr && current_ && current_->record.automationArm;
+  if (!tracks.empty() || automation)
     if (Status st = recording_->begin(std::move(tracks), cfg_.sampleRate); !st.ok()) {
       setError("recording: " + st.error().message);
       if (ctx_ != nullptr) ctx_->setStatus("Recording failed: " + st.error().message);
@@ -311,6 +313,14 @@ void ProjectLink::finishRecording() {  // UI thread
   if (inputUseFn_) inputUseFn_();  // T6.7b: an input reopen held back during the session may go now
   for (const std::string& e : r.errors) setError("recording: " + e);
   doc::DocumentStore* store = ctx_ != nullptr ? &ctx_->store() : recordStore_;
+  // AR.1: the touches recorded meanwhile (always taken: a session that recorded nothing drops them).
+  std::vector<doc::ops::RecordedAutomation> automation;
+  if (ctx_ != nullptr && store == &ctx_->store()) {
+    std::optional<Ticks> end;
+    if (!r.passes.empty() && store->current())
+      end = static_cast<Ticks>(std::llround(store->current()->timeline->tempoMap.samplesToTicks(r.passes.back().songEnd, r.sampleRate)));
+    automation = ctx_->takeRecordedAutomation(end);
+  }
   if (store == nullptr || r.passes.empty()) return;  // nothing to commit to (the files stay on disk)
   const doc::Project& p = *store->current();
   const TempoMap& tm = p.timeline->tempoMap;
@@ -471,13 +481,15 @@ void ProjectLink::finishRecording() {  // UI thread
     }
     commit.tracks.push_back(std::move(out));
   }
-  if (commit.tracks.empty()) return;
+  commit.automation = std::move(automation);
+  if (commit.tracks.empty() && commit.automation.empty()) return;
   doc::ops::EditResult e = doc::ops::commitRecording(p, store->ids(), commit);
   if (!e.ok()) {
     setError("recording: " + e.error().message);
     if (ctx_ != nullptr) ctx_->setStatus("Recording could not be committed: " + e.error().message);
     return;
   }
+  if (e.value().empty()) return;  // AR.1: touches that wrote nothing
   if (Status st = store->dispatch(e.value().command); !st.ok()) {
     setError("recording: " + st.error().message);
     return;

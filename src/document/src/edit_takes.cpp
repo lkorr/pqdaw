@@ -1,6 +1,7 @@
 // Take lanes and comping (T6.1): pq/document/edit_ops.h "Take lanes"; model.h "Take lanes".
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include "edit_common.h"
@@ -24,7 +25,85 @@ Result<const TakeLane*> takeOf(const Track& t, LaneId lane) {
   return l;
 }
 
+
+// AR.1: `a`'s touches written over `base` (the lane's points; `fresh`: nothing was written to it yet, so an empty lane
+// takes `before` up to the first touch). See RecordedTouch.
+Points writeTouches(Points base, const RecordedAutomation& a, IdSource& ids) {
+  bool wrote = false;
+  for (const RecordedTouch& t : a.touches) {
+    std::vector<Breakpoint> s;
+    s.reserve(t.samples.size());
+    for (Breakpoint b : t.samples) {
+      if (!std::isfinite(b.value)) continue;
+      b.tick = std::max<Ticks>(b.tick, s.empty() ? Ticks{0} : s.back().tick);
+      if (!s.empty() && b.tick == s.back().tick) s.back().value = b.value;  // one tick: the last value counts
+      else s.push_back(b);
+    }
+    if (s.empty()) continue;
+    s = thinAutomation(s, a.tolerance);
+    const uint32_t firstNew = ids.peek();
+    const Ticks t0 = s.front().tick;
+    const float last = s.back().value;
+    Points r;
+    if (!base.empty()) r = envBefore(base, t0, ids, true);
+    else if (!wrote) r.push_back(Breakpoint{t0, static_cast<float>(a.before), 0.0f, ids.breakpoint()});
+    for (Breakpoint b : s) {
+      b.curve = 0.0f;
+      b.id = ids.breakpoint();
+      r.push_back(b);
+    }
+    Ticks t1 = std::max(t.end, s.back().tick);
+    bool resume = !base.empty();
+    if (t.latch) {  // held up to the lane's next point after it (none: for good)
+      const auto next = std::upper_bound(base.begin(), base.end(), t0, [](Ticks v, const Breakpoint& b) { return v < b.tick; });
+      resume = next != base.end();
+      t1 = resume ? next->tick : s.back().tick;
+    }
+    if (t1 > s.back().tick) r.push_back(Breakpoint{t1, last, 0.0f, ids.breakpoint()});
+    if (resume) append(r, envFrom(base, t1, ids));
+    simplify(r, firstNew, ids);
+    base = std::move(r);
+    wrote = true;
+  }
+  std::sort(base.begin(), base.end(), pointLess);
+  return base;
+}
+
 }  // namespace
+
+std::vector<Breakpoint> thinAutomation(std::span<const Breakpoint> s, double tolerance) {
+  const size_t n = s.size();
+  if (n <= 2) return {s.begin(), s.end()};
+  std::vector<uint8_t> keep(n, 0);
+  keep[0] = keep[n - 1] = 1;
+  std::vector<std::pair<size_t, size_t>> todo{{0, n - 1}};
+  while (!todo.empty()) {
+    const auto [a, b] = todo.back();
+    todo.pop_back();
+    if (b <= a + 1) continue;
+    const double ta = static_cast<double>(s[a].tick), span = static_cast<double>(s[b].tick) - ta;
+    const double va = s[a].value, dv = static_cast<double>(s[b].value) - va;
+    double worst = -1.0;
+    size_t at = a;
+    for (size_t i = a + 1; i < b; ++i) {
+      const double x = span > 0.0 ? (static_cast<double>(s[i].tick) - ta) / span : 0.0;
+      const double d = std::fabs(static_cast<double>(s[i].value) - (va + dv * x));
+      if (d > worst) {
+        worst = d;
+        at = i;
+      }
+    }
+    if (worst > tolerance) {
+      keep[at] = 1;
+      todo.push_back({a, at});
+      todo.push_back({at, b});
+    }
+  }
+  std::vector<Breakpoint> out;
+  for (size_t i = 0; i < n; ++i)
+    if (keep[i] != 0) out.push_back(s[i]);
+  return out;
+}
 
 EditResult addTakeLane(const Project& p, IdSource& ids, TrackId track, std::span<const ClipSlot> clips, std::string name) {
   Result<const Track*> t = takeTrack(p, track);
@@ -283,6 +362,42 @@ EditResult commitRecording(const Project& p, IdSource& ids, const RecordingCommi
     ed.add(std::move(inMain));
   }
   main.emit(b);
+  // AR.1: the automation written while recording, a parameter at a time, each checked on a scratch document: a
+  // parameter that cannot have a lane (its device or tuning went meanwhile) is left out, the take still commits.
+  Snapshot scratch(Snapshot{}, &p);  // non-owning: p outlives this call
+  for (const RecordedAutomation& a : commit.automation) {
+    if (a.touches.empty() || !isAutomatable(a.param)) continue;
+    const Track* home = nullptr;
+    const AutomationLane* lane = nullptr;
+    forEachTrack(*scratch, [&](const Track& t, const Track*) {
+      for (const LanePtr& l : t.lanes)
+        if (lane == nullptr && l->param == a.param) {
+          home = &t;
+          lane = l.get();
+        }
+    });
+    Batch mine;
+    if (lane != nullptr) {
+      emitLaneDiff(mine, home->id, *lane, writeTouches(lane->points, a, ids));
+    } else {
+      TrackId at = a.home;
+      if (isTrackParam(a.param.kind)) at = TrackId{a.param.owner};
+      else if (isDeviceParamKind(a.param.kind)) at = laneHome(*scratch, a.param) ? laneHome(*scratch, a.param)->id : TrackId{};
+      if (!at.valid() || findTrackPtr(*scratch, at) == nullptr) continue;
+      auto l = std::make_shared<AutomationLane>();
+      l->id = ids.lane();
+      l->param = a.param;
+      l->paramName = a.paramName;
+      l->points = writeTouches({}, a, ids);
+      mine.commands.push_back(AddAutomationLane{at, std::move(l)});
+    }
+    if (mine.commands.empty()) continue;
+    ChangeSet cs;
+    Result<Snapshot> next = apply(scratch, mine, cs);
+    if (!next) continue;
+    scratch = std::move(next).value();
+    for (Command& c : mine.commands) b.commands.push_back(std::move(c));
+  }
   return e;
 }
 

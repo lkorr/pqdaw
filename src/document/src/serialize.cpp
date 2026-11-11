@@ -234,6 +234,10 @@ public:
       w_.boolean(p.record.overdub);
       w_.key("recordQuantize");
       w_.integer(p.record.recordQuantize);
+      if (!p.record.automationArm) {  // AR.1 (optional: on when absent)
+        w_.key("automationArm");
+        w_.boolean(false);
+      }
       w_.endObject();
     }
     viewState(p, view);
@@ -2730,7 +2734,7 @@ private:
 
   RecordSettings record(const PathSeg& at) {
     static constexpr std::string_view K[] = {"countInBars", "metronome", "metronomeDb", "overdub", "recordQuantize",
-                                             "metronomeCue"};
+                                             "metronomeCue", "automationArm"};
     RecordSettings r;
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
@@ -2747,6 +2751,7 @@ private:
         case 3: r.overdub = r_.readBool(f); break;
         case 4: r.recordQuantize = r_.readInt(f); break;
         case 5: r.metronomeCue = r_.readBool(f); break;
+        case 6: r.automationArm = r_.readBool(f); break;
       }
     }
     m.require({0, 1, 2, 3, 4});

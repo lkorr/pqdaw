@@ -1001,6 +1001,7 @@ struct PunchRegion {
 //   metronomeCue     T6.6: the click plays on the output's cue pair (Preferences: Cue Output) instead of the main pair
 //   overdub          note recording merges into the main-lane clip under it instead of making a take
 //   recordQuantize   recorded note starts snap to this grid (ticks; 0: off), [0, kTicksPerWhole]
+//   automationArm    AR.1 (Live's Automation Arm): while recording, moving an automatable parameter writes its lane
 struct RecordSettings {
   uint8_t countInBars = 0;
   bool metronome = false;
@@ -1008,6 +1009,7 @@ struct RecordSettings {
   bool overdub = false;
   Ticks recordQuantize = 0;
   bool metronomeCue = false;  // T6.6 (last: positional initialisers keep their meaning)
+  bool automationArm = true;  // AR.1 (after metronomeCue for the same reason)
   friend constexpr bool operator==(const RecordSettings&, const RecordSettings&) noexcept = default;
 };
 

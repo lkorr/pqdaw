@@ -19,6 +19,7 @@
 #include "pq/document/main_path.h"
 #include "pq/views/devices/device_model.h"
 #include "pq/core/automation_curve.h"
+#include "pq/document/automation_curve.h"
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/controls.h"
@@ -366,4 +367,114 @@ TEST_CASE("render: device-knob-curves matches the golden image") {
   ImageDiff diff;
   CHECK(pq::ui::test::matchesGolden("device-knob-curves", *img, *ref, true, &diff));
   MESSAGE("device-knob-curves: " << pq::ui::test::describe(diff));
+}
+
+// AR.1 (docs/plans/TU.md "AR.1"): while recording with Automation Arm on, a knob drag is a touch — its values at the
+// record tick, the lane overridden while held and playing again on release; the touches committed as the link does
+// (doc::ops::commitRecording) write the lane. Esc drops the touch; Automation Arm off (its control-bar button) or not
+// recording: an ordinary hand-made change.
+TEST_CASE("AR.1 automation recording (views): a knob drag while recording is a touch written into its lane at the "
+          "record ticks; release resumes the lane; Esc, Automation Arm off and not recording write nothing") {
+  Ui u;
+  const doc::ParamRef sustain = doc::ParamRef::device(u.filter, "sustain");  // (a plain control: the attack has a wire)
+  u.addLane(sustain, "sustain", {{0.0, 0.1f}, {4.0, 0.9f}});
+  u.view().revealDevice(u.filter);
+  u.d.tree().layoutNow();
+  u.d.step();
+  const std::optional<IRect> knob = u.view().controlRect(u.filter, "sustain");
+  REQUIRE(knob.has_value());
+  const Vec2 c = mid(*knob);
+  // A drag of the knob: down at c, moves to the given offsets with the record playhead at the given ticks, then up.
+  auto drag = [&](std::vector<std::pair<float, Ticks>> steps, Ticks releaseAt) {
+    u.d.tree().layoutNow();
+    const std::optional<IRect> k = u.view().controlRect(u.filter, "sustain");  // (the lanes shown may move the view)
+    REQUIRE(k.has_value());
+    const Vec2 c = mid(*k);
+    u.d.move(c);
+    u.d.down(c);
+    for (const auto& [dy, tick] : steps) {
+      u.port.setPlayheadTick(tick);
+      u.d.move({c.x, c.y - dy});
+    }
+    u.port.setPlayheadTick(releaseAt);
+    u.d.up({c.x, c.y - steps.back().first});
+    u.d.step();
+  };
+  REQUIRE(u.ctx.doc()->record.automationArm);  // on by default
+
+  // Not recording: an ordinary hand-made change (it overrides the lane), nothing recorded.
+  drag({{8.0f, kBar}}, kBar);
+  CHECK_FALSE(u.ctx.recordingAutomation());
+  CHECK(u.ctx.automationOverridden(sustain));
+  u.ctx.reenableAutomation();
+  REQUIRE(u.ctx.undo());
+
+  // Recording: the drag's values at the record ticks; held: overridden; released: the lane plays again.
+  u.ctx.record();
+  REQUIRE(u.port.playhead().recording);
+  u.d.move(c);
+  u.d.down(c);
+  u.port.setPlayheadTick(kBar / 2);
+  u.d.move({c.x, c.y - 10.0f});
+  CHECK(u.ctx.recordingAutomation());
+  CHECK(u.ctx.automationOverridden(sustain));  // the hand's value plays while held
+  u.port.setPlayheadTick(kBar);
+  u.d.move({c.x, c.y - 30.0f});
+  u.port.setPlayheadTick(kBar + kBar / 2);
+  u.d.up({c.x, c.y - 30.0f});
+  u.d.step();
+  CHECK_FALSE(u.ctx.automationOverridden(sustain));  // released: the lane plays again
+  const double hand = currentParamValue(*u.ctx.doc(), sustain, &library());
+
+  // Esc during a second drag drops that touch (the first stays).
+  u.d.move(c);
+  u.d.down(c);
+  u.port.setPlayheadTick(2 * kBar);
+  u.d.move({c.x, c.y + 20.0f});
+  u.d.press("Escape");
+  u.d.up({c.x, c.y + 20.0f});
+  u.d.step();
+  CHECK_FALSE(u.ctx.automationOverridden(sustain));
+
+  std::vector<doc::ops::RecordedAutomation> rec = u.ctx.takeRecordedAutomation(3 * kBar);
+  REQUIRE(rec.size() == 1);
+  const doc::ops::RecordedAutomation& a = rec[0];
+  CHECK(a.param == sustain);
+  CHECK(a.paramName == "sustain");
+  CHECK(a.tolerance > 0.0);
+  REQUIRE(a.touches.size() == 1);
+  const doc::ops::RecordedTouch& t = a.touches[0];
+  CHECK_FALSE(t.latch);
+  REQUIRE(t.samples.size() == 2);
+  CHECK(t.samples[0].tick == kBar / 2);
+  CHECK(t.samples[1].tick == kBar);
+  CHECK(t.samples[1].value > t.samples[0].value);
+  CHECK(t.samples[1].value == doctest::Approx(hand).epsilon(1e-6));
+  CHECK(t.end == kBar + kBar / 2);
+
+  // Committed as the link does at Stop: the lane holds the drag over [bar 1.5, bar 2.5), the old envelope around it.
+  const std::vector<doc::Breakpoint> old = u.lane(sustain)->points;
+  doc::ops::RecordingCommit commit;
+  commit.automation = std::move(rec);
+  u.run(doc::ops::commitRecording(*u.ctx.doc(), u.ctx.store().ids(), commit));
+  const doc::AutomationLane* l = u.lane(sustain);
+  REQUIRE(l != nullptr);
+  CHECK(doc::automationValueAt(l->points, kBar / 4) == doctest::Approx(doc::automationValueAt(old, kBar / 4)));
+  CHECK(doc::automationValueAt(l->points, kBar / 2) == doctest::Approx(t.samples[0].value));
+  CHECK(doc::automationValueAt(l->points, kBar) == doctest::Approx(t.samples[1].value));
+  CHECK(doc::automationValueBefore(l->points, kBar + kBar / 2) == doctest::Approx(t.samples[1].value));
+  CHECK(doc::automationValueAt(l->points, 3 * kBar) == doctest::Approx(doc::automationValueAt(old, 3 * kBar)));
+
+  // Automation Arm off (the control bar's button): the same drag is an ordinary change while recording.
+  Widget* arm = u.d.find("main/control-bar/automation-arm");
+  REQUIRE(arm != nullptr);
+  u.d.click(mid(arm->rect()));
+  CHECK_FALSE(u.ctx.doc()->record.automationArm);
+  const size_t hArm = u.history();
+  drag({{-25.0f, 3 * kBar}}, 3 * kBar);  // down (the first drag may have reached the top)
+  CHECK(u.history() == hArm + 1);
+  CHECK_FALSE(u.ctx.recordingAutomation());
+  CHECK(u.ctx.automationOverridden(sustain));
+  u.d.click(mid(arm->rect()));
+  CHECK(u.ctx.doc()->record.automationArm);
 }

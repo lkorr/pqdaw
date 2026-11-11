@@ -632,7 +632,7 @@ TEST_CASE("recording: save -> load is deep-equal with every new field set, byte-
   REQUIRE(r.store.dispatch(SetTrackDelay{r.audio, -7.25f}).ok());
   REQUIRE(r.store.dispatch(SetNoteInput{r.midi, NoteInput{NoteInputMode::Hz, InputKeyMap::TwelveTetNearest}}).ok());
   REQUIRE(r.store.dispatch(SetPunch{PunchRegion{kBar, 3 * kBar, true}}).ok());
-  REQUIRE(r.store.dispatch(SetRecordSettings{RecordSettings{4, true, -9.5f, true, kPpq / 4, true}}).ok());  // T6.6: cue
+  REQUIRE(r.store.dispatch(SetRecordSettings{RecordSettings{4, true, -9.5f, true, kPpq / 4, true, false}}).ok());  // T6.6: cue; AR.1: arm off
   AudioClip a = r.audioClip(0, 1.9, 123.5);
   REQUIRE(r.store.dispatch(AddClip{r.audio, nullptr, std::make_shared<const AudioClip>(a)}).ok());
   const ClipRef ac{r.audio, a.id};
@@ -729,4 +729,186 @@ TEST_CASE("recording: time edits move take lanes with their track (the audition 
   // Deleting across the take splits it as it would a clip of the main lane.
   commit(r.store, ops::deleteTime(r.doc(), ids, 3 * kBar, 3 * kBar + kBar / 2));
   CHECK(r.track(r.midi).takes.at(0)->clips.size() == 2);
+}
+
+// ---- AR.1: automation written while recording (doc::ops::RecordingCommit::automation) ----------------------------------
+
+namespace {
+
+ops::RecordedTouch touch(std::vector<std::pair<Ticks, float>> samples, Ticks end, bool latch = false) {
+  ops::RecordedTouch t;
+  for (const auto& [tick, v] : samples) t.samples.push_back(Breakpoint{tick, v, 0.0f, {}});
+  t.end = end;
+  t.latch = latch;
+  return t;
+}
+
+const AutomationLane* laneOf(const Project& p, const ParamRef& r) {
+  const AutomationLane* out = nullptr;
+  forEachTrack(p, [&](const Track& t, const Track*) {
+    for (const LanePtr& l : t.lanes)
+      if (l->param == r) out = l.get();
+  });
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("AR.1 recording: a touch overwrites the lane over [first sample, release], the envelope resumes there; one "
+          "undo step with the take") {
+  Rec r;
+  IdSource& ids = r.store.ids();
+  const ParamRef vol = ParamRef::track(ParamKind::TrackVolume, r.midi);
+  auto lane = std::make_shared<AutomationLane>();
+  lane->id = ids.lane();
+  lane->param = vol;
+  lane->points = {{0, -10.0f, 0.0f, ids.breakpoint()}, {4 * kBar, -20.0f, 0.0f, ids.breakpoint()}};
+  REQUIRE(r.store.dispatch(AddAutomationLane{r.midi, lane}).ok());
+  const size_t h0 = r.store.history().cursor();
+
+  ops::RecordingCommit c;
+  ops::RecordedTrack rt;
+  rt.track = r.midi;
+  rt.passes.push_back(slotOf(doctest_fixture::makeClip(ids, 0, 4 * kBar, {doctest_fixture::makeNote(ids, 0, 3)})));
+  c.tracks.push_back(rt);
+  ops::RecordedAutomation a;
+  a.param = vol;
+  a.before = -10.0;
+  a.tolerance = 0.1;
+  a.touches.push_back(touch({{kBar, -3.0f}, {kBar + kPpq, -2.0f}, {kBar + 2 * kPpq, -1.0f}}, 2 * kBar));
+  c.automation.push_back(a);
+  commit(r.store, ops::commitRecording(r.doc(), ids, c));
+  CHECK(r.store.history().cursor() == h0 + 1);
+
+  const AutomationLane* l = laneOf(r.doc(), vol);
+  REQUIRE(l != nullptr);
+  CHECK(l->id == lane->id);  // the existing lane, not a new one
+  auto at = [&](Ticks t) { return automationValueAt(l->points, t); };
+  auto before = [&](Ticks t) { return automationValueBefore(l->points, t); };
+  CHECK(at(kBar / 2) == doctest::Approx(-10.0 - 10.0 * 0.5 / 4.0));  // untouched before the touch
+  CHECK(before(kBar) == doctest::Approx(-12.5));                     // the old envelope up to it
+  CHECK(at(kBar) == doctest::Approx(-3.0));                          // then the hand's values
+  CHECK(at(kBar + kPpq) == doctest::Approx(-2.0));
+  CHECK(at(kBar + 2 * kPpq) == doctest::Approx(-1.0));
+  CHECK(before(2 * kBar) == doctest::Approx(-1.0));  // held until the release
+  CHECK(at(2 * kBar) == doctest::Approx(-15.0));     // the old envelope again from there
+  CHECK(at(3 * kBar) == doctest::Approx(-17.5));
+  CHECK(r.track(r.midi).takes.size() == 1);
+
+  REQUIRE(r.store.undo());  // the take and the automation in one step
+  CHECK(r.track(r.midi).takes.empty());
+  REQUIRE(laneOf(r.doc(), vol) != nullptr);
+  CHECK(laneOf(r.doc(), vol)->points == lane->points);
+}
+
+TEST_CASE("AR.1 recording: a parameter without a lane gets one (its old value up to the touch, the last value held "
+          "after); a tuning param's lane on the given track; one that cannot have a lane is left out") {
+  Rec r;
+  IdSource& ids = r.store.ids();
+  const ParamRef pan = ParamRef::track(ParamKind::TrackPan, r.audio);
+  ops::RecordingCommit c;
+  ops::RecordedAutomation a;
+  a.param = pan;
+  a.before = 0.0;
+  a.tolerance = 0.005;
+  a.touches.push_back(touch({{kBar, 0.25f}, {kBar + kPpq, 0.5f}}, kBar + 2 * kPpq));
+  a.touches.push_back(touch({{3 * kBar, -0.5f}}, 3 * kBar + kPpq));  // a second touch later: overwrites from there
+  c.automation.push_back(a);
+  // The MOS generator of the first tuning (made a MOS so it has one).
+  const TuningId tid = r.doc().tunings->front()->id;
+  TuningDef mos;
+  tuning::MosParams m;
+  m.n = 7;
+  m.period = 1200.0;
+  m.generator = 700.0;
+  mos.system = m;
+  REQUIRE(r.store.dispatch(SetTuningDef{tid, mos}).ok());
+  ops::RecordedAutomation g;
+  g.param = ParamRef::tuning(ParamKind::MosGenerator, tid);
+  g.home = r.audio;  // any track may hold it
+  g.before = 700.0;
+  g.tolerance = 0.05;
+  g.touches.push_back(touch({{0, 702.0f}, {kPpq, 705.0f}}, kPpq));
+  c.automation.push_back(g);
+  ops::RecordedAutomation gone;  // a device param of no device
+  gone.param = ParamRef::device(DeviceId{999999}, "gain");
+  gone.paramName = "gain";
+  gone.touches.push_back(touch({{0, 0.5f}}, 0));
+  c.automation.push_back(gone);
+  commit(r.store, ops::commitRecording(r.doc(), ids, c));
+
+  const AutomationLane* l = laneOf(r.doc(), pan);
+  REQUIRE(l != nullptr);
+  CHECK(r.track(r.audio).lanes.size() == 2);  // pan and the generator
+  CHECK(automationValueAt(l->points, 0) == doctest::Approx(0.0));
+  CHECK(automationValueBefore(l->points, kBar) == doctest::Approx(0.0));
+  CHECK(automationValueAt(l->points, kBar) == doctest::Approx(0.25));
+  CHECK(automationValueAt(l->points, 2 * kBar) == doctest::Approx(0.5));  // held after the release (no envelope after)
+  CHECK(automationValueAt(l->points, 3 * kBar) == doctest::Approx(-0.5));
+  CHECK(automationValueAt(l->points, 3 * kBar + kPpq) == doctest::Approx(0.5));  // the envelope so far resumes
+  const AutomationLane* gl = laneOf(r.doc(), g.param);
+  REQUIRE(gl != nullptr);
+  CHECK(automationValueAt(gl->points, kPpq / 2) == doctest::Approx(703.5));
+  CHECK(automationValueAt(gl->points, 4 * kBar) == doctest::Approx(705.0));
+  CHECK(laneOf(r.doc(), gone.param) == nullptr);
+}
+
+TEST_CASE("AR.1 recording: a latch (one edit outside a gesture) holds up to the lane's next point") {
+  Rec r;
+  IdSource& ids = r.store.ids();
+  const ParamRef mute = ParamRef::track(ParamKind::TrackMute, r.midi);
+  auto lane = std::make_shared<AutomationLane>();
+  lane->id = ids.lane();
+  lane->param = mute;
+  lane->points = {{0, 1.0f, 0.0f, ids.breakpoint()}, {2 * kBar, 1.0f, 0.0f, ids.breakpoint()},
+                  {2 * kBar, 0.0f, 0.0f, ids.breakpoint()}};
+  REQUIRE(r.store.dispatch(AddAutomationLane{r.midi, lane}).ok());
+  ops::RecordingCommit c;
+  ops::RecordedAutomation a;
+  a.param = mute;
+  a.before = 1.0;
+  a.touches.push_back(touch({{kBar / 2, 0.0f}}, kBar / 2, true));
+  c.automation.push_back(a);
+  commit(r.store, ops::commitRecording(r.doc(), ids, c));
+  const AutomationLane* l = laneOf(r.doc(), mute);
+  REQUIRE(l != nullptr);
+  CHECK(automationValueAt(l->points, kBar / 4) == doctest::Approx(1.0));
+  CHECK(automationValueAt(l->points, kBar / 2) == doctest::Approx(0.0));
+  CHECK(automationValueBefore(l->points, 2 * kBar) == doctest::Approx(0.0));  // held up to the next point
+  CHECK(automationValueAt(l->points, 3 * kBar) == doctest::Approx(0.0));
+}
+
+TEST_CASE("AR.1 recording: thinning keeps the fewest points within the tolerance (a noisy ramp: its ends; a V: three)") {
+  std::vector<Breakpoint> ramp, vee;
+  for (int i = 0; i <= 200; ++i) {
+    const auto t = static_cast<Ticks>(i * 10);
+    ramp.push_back(Breakpoint{t, static_cast<float>(i * 0.5 + ((i % 2) != 0 ? 0.02 : -0.02)), 0.0f, {}});
+    vee.push_back(Breakpoint{t, static_cast<float>(std::abs(i - 120)), 0.0f, {}});
+  }
+  const auto r = ops::thinAutomation(ramp, 0.05);
+  CHECK(r.size() == 2);
+  const auto v = ops::thinAutomation(vee, 0.05);
+  REQUIRE(v.size() == 3);
+  CHECK(v[1].tick == 1200);
+  // Every sample stays within the tolerance of the thinned polyline.
+  for (const Breakpoint& b : ramp) CHECK(std::fabs(automationValueAt(r, b.tick) - b.value) <= 0.05 + 1e-4);
+  CHECK(ops::thinAutomation(ramp, 0.0).size() > 100);  // no tolerance: every bend stays
+
+  // Through the commit: a 200-sample drag becomes a handful of points.
+  Rec rec;
+  ops::RecordingCommit c;
+  ops::RecordedAutomation a;
+  a.param = ParamRef::track(ParamKind::TrackVolume, rec.audio);
+  a.before = 0.0;
+  a.tolerance = 0.1;
+  ops::RecordedTouch t;
+  for (const Breakpoint& b : ramp) t.samples.push_back(Breakpoint{b.tick + kBar, b.value * -0.1f, 0.0f, {}});
+  t.end = kBar + 2000;
+  a.touches.push_back(t);
+  c.automation.push_back(a);
+  commit(rec.store, ops::commitRecording(rec.doc(), rec.store.ids(), c));
+  const AutomationLane* l = laneOf(rec.doc(), a.param);
+  REQUIRE(l != nullptr);
+  CHECK(l->points.size() <= 4);
+  CHECK(automationValueAt(l->points, kBar + 1000) == doctest::Approx(-5.0).epsilon(0.01));
 }

@@ -128,7 +128,7 @@ void TransportButton::paint(PaintContext& ctx) {
   const VisualState v = visualState();
   const IRect r = rect();
   Rgba onCol = th->accent.primary;
-  if (icon_ == Icon::Record) onCol = th->accent.arm;
+  if (icon_ == Icon::Record || icon_ == Icon::Automation) onCol = th->accent.arm;  // AR.1: Live lights it red
   // On the window-coloured control bar the switches are panel-coloured (Live's transport; Q107.1 option B).
   Rgba fill = v.disabled ? th->surface.panel : on_ ? onCol : th->surface.panel;
   if (!v.disabled) {
@@ -206,6 +206,21 @@ void TransportButton::paint(PaintContext& ctx) {
         const float bx = std::round(x0 + kw * static_cast<float>(k) - bw * 0.5f);
         ctx.dl.addRectFilled({bx, y0, bx + bw, y0 + bh}, ink);
       }
+      break;
+    }
+    case Icon::Automation: {  // AR.1: an envelope — a line through three breakpoints (rising, then falling)
+      const float t = std::max(1.0f, ctx.scale.exact(1.25f));
+      const Vec2 p[4] = {{cx - s * 0.75f, cy + s * 0.4f}, {cx - s * 0.2f, cy - s * 0.4f}, {cx + s * 0.25f, cy + s * 0.1f},
+                         {cx + s * 0.75f, cy - s * 0.3f}};
+      for (int k = 0; k < 3; ++k) {  // each segment a thin quad (as the metronome's rod)
+        const float dx = p[k + 1].x - p[k].x, dy = p[k + 1].y - p[k].y, len = std::sqrt(dx * dx + dy * dy);
+        const float nx = -dy / len * t * 0.5f, ny = dx / len * t * 0.5f;
+        const Vec2 q[4] = {{p[k].x + nx, p[k].y + ny}, {p[k + 1].x + nx, p[k + 1].y + ny},
+                           {p[k + 1].x - nx, p[k + 1].y - ny}, {p[k].x - nx, p[k].y - ny}};
+        ctx.dl.addConvexPolyFilled(q, ink);
+      }
+      const float d = std::max(1.5f, std::round(s * 0.16f));
+      for (int k = 1; k < 3; ++k) ctx.dl.addCircleFilled(p[k], d, ink);
       break;
     }
     case Icon::Menu: {  // T6.6: a small down arrow
@@ -468,6 +483,19 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
                                              "recording: stops recording (playback goes on). Lit while counting in "
                                              "(a press then cancels) and while recording.");
   record_->onPress = [this] { ctx_.record(); };
+  // AR.1: Automation Arm (Live keeps it beside Arrangement Record): on, moving a parameter while recording records it.
+  automationArm_ = &sized(add<TransportButton>("automation-arm", TransportButton::Icon::Automation), 28);
+  automationArm_->setInfo("Automation Arm", "While on (lit), moving any automatable control while Arrangement Record runs "
+                                            "records it into that parameter's automation lane at the playhead: a knob, "
+                                            "fader, macro, cable amount or tuning value is written for as long as you "
+                                            "hold it, and on release the lane's automation plays again. The lane is made "
+                                            "when there is none. Recording plus its automation is one undo step. Off: "
+                                            "recording leaves automation alone.");
+  automationArm_->onPress = [this] {
+    doc::RecordSettings r = ctx_.doc()->record;
+    r.automationArm = !r.automationArm;
+    if (Status s = ctx_.store().dispatch(doc::SetRecordSettings{r}); !s) ctx_.setStatus(s.error().message);
+  };
   // T6.9: Capture MIDI (Live keeps it beside Arrangement Record).
   capture_ = &sized(add<TransportButton>("capture-midi", TransportButton::Icon::Capture), 28);
   capture_->setInfo("Capture MIDI (Ctrl+Shift+C)", "Turns what you just played on the armed or monitored MIDI tracks into a "
@@ -676,6 +704,7 @@ void ControlBar::refreshDocument() {
     if (!ctx_.playing()) position_->setText(formatPosition(p.timeline->sigMap, ctx_.startMarker()));
   }
   metronome_->setOn(p.record.metronome);  // T6.6
+  automationArm_->setOn(p.record.automationArm);  // AR.1
 }
 
 std::string ControlBar::positionText(const PlayheadSnapshot& ph) const {

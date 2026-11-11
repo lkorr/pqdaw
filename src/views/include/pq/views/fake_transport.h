@@ -65,6 +65,10 @@ public:
     loop = l;
   }
   PlayheadSnapshot playhead() override { return state_; }
+  std::optional<Ticks> recordingTick() override {  // AR.1
+    if (!state_.recording || state_.countingIn) return std::nullopt;
+    return state_.tick;
+  }
   void auditionHz(float hz, float velocity, float durationMs) override {
     Record r{Call::Audition, state_.tick, {}};
     r.hz = hz;

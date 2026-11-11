@@ -268,15 +268,44 @@ EditResult compRegion(const Project& p, IdSource& ids, TrackId track, LaneId lan
 // becomes a take lane ("Take <n>", after the track's others) and the LAST pass is also copied into the main lane
 // (overwriting what lies under it; ClipSlot::take = its lane). `overdub` (MIDI tracks): no take lanes — every note goes
 // into the main-lane clip under its start (content ticks), and notes under no clip into a new clip per gap between the
-// main lane's clips (spanning the recorded passes' range within the gap, and those notes). Errors: unknown tracks, clips of the wrong kind.
+// main lane's clips (spanning the recorded passes' range within the gap, and those notes). AR.1: `automation` (below) is
+// written in the same step. Errors: unknown tracks, clips of the wrong kind, a parameter that cannot have a lane.
 struct RecordedTrack {
   TrackId track;
   std::vector<ClipSlot> passes;
   bool overdub = false;
 };
+// AR.1 (docs/plans/TU.md "AR.1"): automation written while recording (Automation Arm on), committed in the same "Record"
+// step. One touch of a parameter: its values at song ticks in the order they were set (`samples`: tick, value; ids
+// ignored; ticks never decrease; on one tick the last value counts). A touch held by a gesture (a knob drag) ends at
+// `end` (its release, >= the last sample): it overwrites the lane over [first sample, end], the existing envelope
+// plays again from `end`. A `latch` touch (one edit outside a gesture: a click, a typed value) holds its value up to the
+// lane's next point after it (none: for good). The samples are thinned first: the fewest that keep the touch's
+// polyline within `tolerance` (the parameter's unit) of every sample.
+struct RecordedTouch {
+  std::vector<Breakpoint> samples;
+  Ticks end = 0;
+  bool latch = false;
+};
+// One parameter's touches, in the order they happened (a later touch overwrites an earlier one where they overlap, as
+// loop passes do). The lane is the parameter's existing one (wherever it is), else a new lane on its home: a track
+// param's own track, a device / wire param's laneHome, a tuning param's `home` (any track); a new lane holds `before`
+// (the value before the first touch) up to the first touch. `paramName`: a DeviceParam's name (AutomationLane::paramName).
+struct RecordedAutomation {
+  ParamRef param;
+  std::string paramName;
+  TrackId home;
+  double before = 0.0;
+  double tolerance = 0.0;
+  std::vector<RecordedTouch> touches;
+};
+// The fewest of `samples` (ticks increasing) whose polyline stays within `tolerance` of every sample (Ramer–Douglas–
+// Peucker on the value axis; the first and last always kept). tolerance <= 0 keeps every value change.
+std::vector<Breakpoint> thinAutomation(std::span<const Breakpoint> samples, double tolerance);
 struct RecordingCommit {
   std::vector<SampleRef> samples;
   std::vector<RecordedTrack> tracks;
+  std::vector<RecordedAutomation> automation;  // AR.1
 };
 EditResult commitRecording(const Project& p, IdSource& ids, const RecordingCommit& commit);
 

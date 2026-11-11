@@ -35,6 +35,7 @@
 
 #include "pq/core/grid.h"
 #include "pq/core/result.h"
+#include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/document/samples.h"
@@ -477,6 +478,23 @@ public:
   std::span<const doc::ParamRef> automationOverrides() const noexcept { return overrides_; }
   void overrideAutomation(const doc::ParamRef& p);
   void reenableAutomation();
+  // --- automation recording (AR.1, docs/plans/TU.md "AR.1") ---
+  // While the transport records (TransportPort::recordingTick: not counting in; inside the punch region when punch is
+  // on) and the project's Automation Arm is on (RecordSettings::automationArm), every hand-made change of an automatable
+  // parameter — from any control: whatever dispatches a Param change — is a TOUCH: its values are kept at the record
+  // tick. A touch inside a gesture (a knob drag) lasts until the gesture commits (released; Esc drops it); a change
+  // outside one (a click, a typed value) latches. While a touch is held its lane is overridden (the hand's value plays,
+  // through the engine's live-param path), and on release the lane plays again. Nothing is written to the document
+  // while recording: the playback link takes the touches when the session ends (takeRecordedAutomation) and commits
+  // them with the take as one undo step ("Record"; doc::ops::RecordingCommit::automation). Undo / redo never touch.
+  bool recordingAutomation() const noexcept { return !autoTakes_.empty(); }
+  // The touches so far (open ones end at `end`, the session's last tick, when given), each recorded parameter's override
+  // lifted (its lane plays what was written); the context forgets them.
+  std::vector<doc::ops::RecordedAutomation> takeRecordedAutomation(std::optional<Ticks> end = std::nullopt);
+  // The thinning tolerance of a recorded parameter (its unit): 0.1 dB, pan 0.005, cents 0.05, reference 0.01 Hz, a
+  // device / wire param 0.2 % of its range, 0 for the activator (exact steps).
+  static double recordTolerance(const doc::Project& p, const doc::ParamRef& r, const doc::DeviceLibrary* lib) noexcept;
+
   // T4.18: "Show Automation" (a knob's context menu): asks the arrangement to show `p`'s lane under `track` (the
   // device's track). Notifies kShowAutomation; the arrangement takes the request (takeShowAutomation) and shows it.
   struct ShowAutomationRequest {
@@ -687,6 +705,16 @@ private:
   bool drawMode_ = false;
   doc::ClipRef detailClip_{};
   std::vector<doc::ParamRef> overrides_;  // sorted (T3.15)
+  // AR.1: one per parameter touched while recording.
+  struct AutoTake {
+    doc::ops::RecordedAutomation rec;
+    bool open = false;      // its last touch is held by a gesture
+    bool overrode = false;  // that touch overrode the lane (lifted on release)
+  };
+  std::vector<AutoTake> autoTakes_;
+  std::optional<Ticks> recordTick(const doc::Project& p);
+  bool recordTouch(const doc::StoreEvent& e, const doc::ParamRef& r, Ticks tick);
+  bool releaseTouches(bool cancel);
   std::optional<ShowAutomationRequest> showAutomation_;  // T4.18
   std::string status_;
   TransportLoop loopSent_{};

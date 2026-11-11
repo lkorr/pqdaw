@@ -1318,3 +1318,16 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   "Default"), or the control bar chip's Project Default submenu (with no track selected its list sets it directly).
 - Chips now always show a colour dot; a name that does not say what the tuning is gets its short form ("Tuning B ·
   5L 2s"). Is the right-click menu discoverable enough, or should a left click open it (and the wheel move to an item)?
+
+## 2026-11-10 · AR.1 · Automation recording for every automatable parameter 👁
+- **Automation Arm**: a new button right of Record in the control bar (an envelope icon, lit red = on; on by default,
+  saved with the project). Hover it for the info text.
+- **Try**: arm a MIDI track, press Record, play a few notes and meanwhile drag the Tunings panel's Generator (or the MOS
+  wheel's chart, a device knob, a mixer fader / pan / send, a macro, a cable amount). Release, then Stop. The parameter
+  now has an automation lane holding what you did (a tuning's lane lands on the selected track), and the knob / generator
+  moves by itself when you play it back. Ctrl+Z once removes the take and the automation together.
+- **Touch**: while you hold a control over existing automation you hear your hand; on release the lane plays again (its
+  old shape resumes after the point you let go). A single click / typed value latches until the lane's next point.
+- **Arm off**: the same pass records only the notes. Not recording: edits behave as before (they override the lane).
+- Known limits: the recorded automation appears in the lane at Stop, not live while recording (with loop recording the
+  next pass still plays the old automation; the knob's static value is its own undo step before "Record").

@@ -25,7 +25,8 @@ namespace pq::views::shell {
 class TransportButton : public ui::Control {
 public:
   // Metronome, Menu (▾): T6.6; Capture: T6.9; Keyboard: KB.1 (the computer MIDI keyboard)
-  enum class Icon : uint8_t { Play, Stop, Record, Capture, Loop, Metronome, Menu, Keyboard };
+  // Automation: AR.1 (Automation Arm)
+  enum class Icon : uint8_t { Play, Stop, Record, Capture, Loop, Metronome, Menu, Keyboard, Automation };
   TransportButton(std::string name, Icon icon);
   std::function<void()> onPress;
   std::function<void()> onContext;  // T6.6: a right press (null: ignored)
@@ -128,6 +129,7 @@ private:
   TransportButton* stop_ = nullptr;
   TransportButton* record_ = nullptr;
   TransportButton* capture_ = nullptr;  // T6.9: Capture MIDI
+  TransportButton* automationArm_ = nullptr;  // AR.1: Automation Arm
   TransportButton* loop_ = nullptr;
   TransportButton* metronome_ = nullptr;      // T6.6
   TransportButton* metronomeMenu_ = nullptr;  // T6.6: ▾

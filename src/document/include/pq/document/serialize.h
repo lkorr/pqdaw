@@ -106,7 +106,7 @@ namespace pq::doc {
 // "name", "clips"}] and "auditionTake" (a take lane id); a clip "take" (its comp provenance); an audio clip the warp modes
 // "beats" | "tones" | "texture" | "complex" | "complexPro", "markers" [[sourceFrame, contentTick], …] and "warpParams";
 // the project "punch" {"in", "out", "enabled"} and "record" {"countInBars", "metronome", "metronomeDb", "overdub",
-// "recordQuantize", optional "metronomeCue" (T6.6)}. Each is written only when it differs from its default; migration 21 → 22 changes nothing.
+// "recordQuantize", optional "metronomeCue" (T6.6), optional "automationArm" (AR.1: written only when false)}. Each is written only when it differs from its default; migration 21 → 22 changes nothing.
 // TU.3 (no version bump, no conversion: there are no user projects): a tuning assignment is "inherit" or {"main": id}
 // (private tunings are gone: a file holding {"private": …} does not load); the project's "defaultTuning" (a tuning id)
 // is written only when it is not the first tuning (absent: the first).

@@ -2279,7 +2279,7 @@ void ProjectLink::setLoop(const views::TransportLoop& loop) {
   }
 }
 
-views::PlayheadSnapshot ProjectLink::playhead() {
+bool ProjectLink::drainReports() {
   engine::TransportReport r;
   bool fresh = false;
   while (engine_->timeline().poll(r)) {
@@ -2287,6 +2287,17 @@ views::PlayheadSnapshot ProjectLink::playhead() {
     fresh = true;
   }
   if (fresh) ++reportSeq_;
+  return fresh;
+}
+
+std::optional<Ticks> ProjectLink::recordingTick() {  // AR.1: never commits (safe inside a document notification)
+  (void)drainReports();
+  if (report_.commands < commandsPosted_ || !report_.recording || report_.countingIn) return std::nullopt;
+  return report_.tick;
+}
+
+views::PlayheadSnapshot ProjectLink::playhead() {
+  (void)drainReports();
   collectIdle();
   takeLatencyShifts();  // T6.2
   pollRecording();      // T6.7: notes, punch-out, the end of a session (its commit)

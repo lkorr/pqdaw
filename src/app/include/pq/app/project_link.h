@@ -146,6 +146,10 @@
 // files into the project at the first save and asks discardUnsavedRecordings(dir) to delete it when the untitled document
 // is discarded. A take still recording into it when the project became titled (saved during the take) is moved into the
 // project when it is committed.
+// AR.1: with Automation Arm on (RecordSettings::automationArm) a session begins even with no armed track, and its commit
+// also writes the attached ViewContext's recorded touches (ViewContext::takeRecordedAutomation, the open ones ending at
+// the session's last tick) into their lanes, in the same undo step. recordingTick() is report_'s tick while the engine
+// records (the song position hand-made changes are written at: what the engine plays now).
 //
 // ---- Capture MIDI (T6.9; project_link_input.cpp, pq/app/midi_capture.h) ----------------------------------------------
 // Every MIDI track the live routes listen with gets an engine::CaptureRing (kCaptureNotes notes, allocated here the
@@ -510,6 +514,7 @@ public:
   void panic() override;                          // M6 review L16: engine::Engine::panic
   // T6.6 / T6.7: Record (see "Recording" in the file comment).
   void record(Ticks from) override;
+  std::optional<Ticks> recordingTick() override;  // AR.1: see "Recording" in the file comment
   double outputLatencyMs() override;                 // T6.6: outputLatency() in ms
   double trackLatencyMs(uint32_t trackId) override;  // T6.6: the track's own latency, ms (see above)
 
@@ -1012,6 +1017,7 @@ private:
   bool insideUnsaved(const std::filesystem::path& p) const;       // lexically inside unsavedRoot()
   void syncRecordInputs(const doc::Project& p, bool force);       // UI thread
   std::vector<engine::UnitInput> unitInputs(const doc::LoweredProject& lp) const;  // compile path (compileMutex_)
+  bool drainReports();     // UI thread: the engine's transport reports into report_ (true: a new one)
   void pollRecording();    // UI thread (playhead())
   void finishRecording();  // UI thread: the session's commit
   std::unique_ptr<RecordingService> recording_;

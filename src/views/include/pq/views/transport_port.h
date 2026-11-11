@@ -55,6 +55,7 @@
 //                       updated (its waveform appended). Default: false.
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "pq/core/time.h"
@@ -120,6 +121,9 @@ public:
   }
   virtual void setAutoArm(uint32_t trackId) { (void)trackId; }
   virtual void record(Ticks from) { play(from); }
+  // AR.1: the song tick the transport records at now (nullopt: not recording, or counting in). Unlike playhead() it
+  // never commits anything (a session's end), so it is safe inside a document notification.
+  virtual std::optional<Ticks> recordingTick() { return std::nullopt; }
   virtual bool captureMidi(Ticks insertMarker) {
     (void)insertMarker;
     return false;
