@@ -466,3 +466,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: real-dispatch nested test (0.75×, nested 0.5×0.75, no history entry, Esc, reset) + save/load; pq_tests_views passed; no goldens moved.
 - Perf / CPU-efficiency check: only groups with scale ≠ 1, after the cached inner layout; nothing per frame.
 - Notes/blockers: Q?-TX.group-resize-a (closed and opened sizes are one value).
+
+## 2026-11-10 · TU.3 merged · main
+- Did: ff-merged task/TU.3-shared-tunings (e9fcb3a5): private tunings deleted; Project::defaultTuning + SetDefaultTuning; every tuning control edits the named tuning its target resolves to (no recompile for generator edits from a clip / track); one chip menu (Inherit, project tunings, New Tuning, wheel, library, hot-swap); clip files carry their tuning.
+- Verified (worker): -Affected 45/45 after rebase onto ac7328de; 8 goldens re-recorded (chip colour dot, wheel title).
+- Notes: Q?-TU.3-a (default tuning named "12-EDO") overruled → TU.2b.
