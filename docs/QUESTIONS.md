@@ -1016,3 +1016,17 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
 - **Range**: the engine's keyboard table went from 17 steps × equaves ±5 to 36 steps × ±3 (one key byte) so Continuous
   plays its 35 keys above A in any tuning without wrapping; notes past ±3 equaves play nothing.
 - Status: decided (reversible).
+
+## Q?-KB.2-a · 2026-11-10 · KB.2 · What "the clip open" is; recordings into a new clip keep the track's tuning
+- **Open clip**: the clip view's clip counts only while the detail view is shown in Clip mode
+  (`ViewContext::liveEditedClip`); hidden, or in Device mode, the track falls back to its clip under the playhead /
+  start marker. Alternative: the selected clip (`detailClip`) whatever the detail view shows. Chosen: shown only
+  (reversible, one line).
+- **Recording mismatch (open, not fixed)**: live Keys notes store Degree identities of the live clip's tuning. Record
+  (non-overdub) makes NEW clips with an Inherit tuning (the track's); overdub puts notes under no clip into new Inherit
+  clips; Capture MIDI likewise. So a take played in a 22-EDO clip's tuning on a 12-EDO track records degrees that
+  replay in 12-EDO. Also: with a clip open that is not the one under the playhead, overdub writes into the playhead's
+  clip, which may be in another tuning. Options: (a) recorded / captured clips copy the tuning assignment of the live
+  clip their notes were played in; (b) record into the open clip; (c) leave it. Suggest (a). Hz-mode notes (Cents
+  identities) are unaffected.
+- Status: open.
