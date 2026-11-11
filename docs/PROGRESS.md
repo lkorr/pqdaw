@@ -445,3 +445,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Did: ff-merged task/KB.2-live-clip-tuning (5b38e03e): doc::liveClip (the clip view's clip on that track, else the clip under the playhead / start marker, else the track) decides the computer keyboard's layout and the live note tables (keyboard + hardware MIDI).
 - Verified (worker): -Affected 45/45; pq_tests_views KB* 6/6; pq_tests_playback "live input*" 7/7.
 - Notes: Q?-KB.2-a: recorded / captured notes into a new clip inherit the track's tuning (mismatch when played in a retuned clip); proposed fix: new clips copy the live clip's tuning.
+
+## 2026-11-10 · TU.2 merged · main
+- Did: ff-merged task/TU.2-mos-circle-look (12f3268f): explorer region palette back on the MOS circle (pre-TU.1 theme, L22 opacity step undone), colour easing at the explorer's 8/s rate (frames only while easing), notes light their degree (explorer envelope, Phase Accumulator Hz colour, shared voice_colour.h) from playback, the computer keyboard, roll auditions.
+- Verified (worker): pq_tests_views default tier 100 % after rebase; goldens mos-circle-5L2s (= pre-TU.1), mos-circle-modmos, mos-wheel-popover(-1.5x) re-recorded, mos-circle-lit new.
+- Notes: hardware MIDI-in doesn't light (no UI feed); chart colours still TU.1's (Q?-TU.2-a) → TU.2b.
