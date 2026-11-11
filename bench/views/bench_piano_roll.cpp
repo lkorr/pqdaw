@@ -64,7 +64,8 @@ int morphBench(const PaintResources& res, SceneTextures& tex) {
   def.system = mp;
   auto t = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi);
   if (!t || !st.dispatch(t->command)) return 1;
-  if (!st.dispatch(doc::SetTrackTuning{t->tracks[0], doc::TuningAssignment::privateTuning(def)})) return 1;
+  // TU.3: the project's default tuning is the bench's tuning (no private tunings); the track inherits it.
+  if (!st.dispatch(doc::SetTuningDef{st.current()->defaultTuning, def})) return 1;
   const Ticks bars = 8;
   auto c = doc::ops::insertEmptyClip(*st.current(), st.ids(), t->tracks[0], 0, bars * kTicksPerWhole);
   if (!c || !st.dispatch(c->command)) return 1;
@@ -124,7 +125,7 @@ int morphBench(const PaintResources& res, SceneTextures& tex) {
                                  doc::TuningDef d = def;
                                  d.system = p;
                                  // TU.1: a morph frame is a document change (the wheel / Generator box apply live).
-                                 (void)ctx.store().dispatch(tuningCommand(target, std::move(d)));
+                                 (void)ctx.store().dispatch(tuningCommand(*ctx.doc(), target, std::move(d)));
                                  if (!paint) return;  // the clip view's refresh alone (store event → retune / rebuild)
                                  now += 1.0 / 144.0;
                                  tree.update(now);
@@ -170,7 +171,8 @@ int main() {
   if (!t || !st.dispatch(t->command)) return 1;
   doc::TuningDef def;
   def.system = *tuning::Edo::make(31);
-  if (!st.dispatch(doc::SetTrackTuning{t->tracks[0], doc::TuningAssignment::privateTuning(def)})) return 1;
+  // TU.3: the project's default tuning is the bench's tuning (no private tunings); the track inherits it.
+  if (!st.dispatch(doc::SetTuningDef{st.current()->defaultTuning, def})) return 1;
   const Ticks bars = 1000;
   auto c = doc::ops::insertEmptyClip(*st.current(), st.ids(), t->tracks[0], 0, bars * kTicksPerWhole);
   if (!c || !st.dispatch(c->command)) return 1;
