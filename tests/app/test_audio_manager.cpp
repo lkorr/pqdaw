@@ -44,6 +44,8 @@
 #include "pq/engine/asio_device.h"
 #include "pq/engine/null_device.h"
 #include "pq/engine/stream_trace.h"
+#include "pq/document/edit_ops.h"
+#include "pq/ui/controls.h"
 
 using namespace pq;
 using namespace pq::app;
@@ -720,6 +722,85 @@ TEST_CASE("manager: the stream keeps running while the app is in the foreground;
   link->play(0);
   REQUIRE(waitUntil(m, [&] { return m.status().state == views::AudioStatus::State::Running; }));
   CHECK(advances(*link));
+}
+
+// KB.3: the user's "after the DAW stops for a few seconds, playing the keyboard shows no audio in the mixer". The views
+// poll the link's meters only while live() and stop once the engine sleeps; only the transport re-armed them. Through the
+// real link + AudioOutput on the fake device's real-time thread: the poll the views make (read, then live()) stops; a
+// computer-keyboard key then notifies the views exactly once (setSignalNotify → the shell's kSignal), live() is true at
+// once (before the audio thread has run a block), and the track's meter lights; released, the meter falls to the floor
+// and live() ends. The same after the background suspend (the key restarts the stream), and no held peak survives it.
+TEST_CASE("KB.3: a keyboard note after the engine slept, or after the stream suspended, lights the track meter; the meter "
+          "falls back to silence after") {
+  FakeHardware hw;
+  const fs::path dir = tempDir("kb3");
+  doc::DocumentStore store{playback_fixture::unwiredDefaultProject()};
+  const doc::TrackId track = store.ids().track();
+  {
+    doc::Batch b{"kb3", {}};
+    b.commands.push_back(doc::AddTrack{playback_fixture::track(track, doc::TrackKind::Midi, "Keys"), {}, doc::kAppend});
+    (void)playback_fixture::instrument(b, store.ids(), track, store.ids().device());
+    REQUIRE(store.dispatch(b).ok());
+    playback_fixture::wireSeries(store);
+    auto arm = doc::ops::armTrack(*store.current(), track, false);
+    REQUIRE(arm.ok());
+    REQUIRE(store.dispatch(arm->command).ok());
+  }
+  LinkConfig c;
+  c.compileThread = false;
+  c.sleepAfterMs = 50.0f;
+  auto made = ProjectLink::create(c, store.current());
+  REQUIRE_MESSAGE(made.ok(), (made.ok() ? std::string() : made.error().message));
+  ProjectLink& link = *made.value();
+  std::atomic<int> notified{0};
+  link.setSignalNotify([](void* u) { static_cast<std::atomic<int>*>(u)->fetch_add(1); }, &notified);
+  ManagerHooks hooks = hw.hooks((dir / "settings.json").string());
+  hooks.factory.backgroundSuspendSeconds = 0.3;
+  AudioDeviceManager m(link, AudioSettings{}, hooks);
+  REQUIRE(waitUntil(m, [&] { return m.status().state == views::AudioStatus::State::Running; }));
+  const doc::TrackId ids[1] = {track};
+  constexpr float kMeterFloorDb = -60.0f;  // ui::signal_theme::kMeterFloorDb (theme.h clashes with the Windows headers here)
+  ui::MeterLevels lv[1];
+  auto peakDb = [&] {  // one poll of the views (MixerController::pollMeters)
+    link.read(ids, lv);
+    return std::max(lv[0].peakDb[0], lv[0].peakDb[1]);
+  };
+  auto viewsStop = [&] { return waitUntil(m, [&] { return (void)peakDb(), !link.live(); }, 15.0); };
+  auto keySounds = [&](const char* when) {
+    INFO(when);
+    notified = 0;
+    link.liveKey(1, 0, 100.0f, true);
+    CHECK(notified.load() == 1);  // the views re-arm their polls
+    CHECK(link.live());          // and keep polling until the audio thread has woken the engine
+    CHECK(waitUntil(m, [&] { return peakDb() > -48.0f; }, 5.0));
+    link.liveKey(1, 2, 100.0f, true);  // while the polls run: no second notify
+    CHECK(notified.load() == 1);
+    link.liveKey(1, 0, 0.0f, false);
+    link.liveKey(1, 2, 0.0f, false);
+    REQUIRE(viewsStop());  // the release decays, the engine sleeps, the meter falls below the floor
+    CHECK(peakDb() <= kMeterFloorDb);
+    CHECK(link.engine().asleep());
+  };
+
+  // The user's case: stopped for a few seconds (the engine asleep, the stream running in the foreground).
+  link.play(0);
+  REQUIRE(advances(link));
+  link.stop();
+  REQUIRE(viewsStop());
+  keySounds("engine asleep, stream running");
+  CHECK(m.output().suspensions() == 0);
+
+  // In the background, after the suspend: the key restarts the stream (pre-roll included) and the meter lights.
+  m.output().setForeground(false);
+  REQUIRE(waitUntil(m, [&] { return m.status().state == views::AudioStatus::State::Suspended; }, 15.0));
+  CHECK_FALSE(link.live());
+  keySounds("stream suspended");
+  // Suspended again: no peak held from before (the views' last poll and any later one read the floor).
+  REQUIRE(waitUntil(m, [&] { return m.status().state == views::AudioStatus::State::Suspended; }, 15.0));
+  CHECK(m.output().suspensions() == 2);
+  CHECK(peakDb() <= kMeterFloorDb);
+  CHECK_FALSE(link.live());
+  link.setSignalNotify(nullptr, nullptr);
 }
 
 // ---- ASIO driver requests through the real AsioDevice -----------------------------------------------------------------

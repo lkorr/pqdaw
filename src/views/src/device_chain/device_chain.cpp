@@ -778,6 +778,10 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
     if (bits & view_change::kModulation) refreshRings();
     if (bits & view_change::kAnalysis)  // TX.spectrum: a device's analysis tap appeared: its displays and face look again
       wakeFaces();
+    if (bits & view_change::kSignal) {  // KB.3: the engine is active again: the panels and the modulation rings poll
+      wakeFaces();
+      if (!ringsPolling()) pollRings();
+    }
     if (bits & view_change::kResponses) {  // EQ.4b: the compile of a new structure arrived: the response displays draw it
       std::vector<panel::PanelHost*> hs;
       for (const auto& [id, f] : impl_->all) f->hosts(hs);

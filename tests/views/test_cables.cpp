@@ -586,6 +586,37 @@ TEST_CASE("cables: hit tests follow the hanging curve (within 4 px), not the cho
   CHECK(checkedControl >= 1);
 }
 
+// KB.3: a live key while stopped (no transport change): the link's kSignal re-arms the cable glow's poll.
+TEST_CASE("cables (KB.3): a signal wake while stopped re-arms the glow poll") {
+  Ui u;
+  REQUIRE(u.d.enableGpu().ok());
+  FixedMeterSource meters;
+  u.view().setMeterSource(&meters);
+  doc::TrackId track;
+  for (const auto& b : u.pp().bands)
+    if (b.name == "Keys") track = b.track;
+  REQUIRE(track.value != 0);
+  u.view().focusBand(track, false);
+  u.d.advance(0.5);
+  CHECK_FALSE(u.canvas().cableGlowPolling());
+  ui::MeterLevels l;
+  l.peakDb[0] = l.peakDb[1] = -6.0f;
+  meters.set(track, l);
+  meters.setLive(true);
+  u.d.advance(0.2);
+  CHECK_FALSE(u.canvas().cableGlowPolling());  // nothing re-armed it until KB.3
+  u.ctx.signalWaking();
+  CHECK(u.canvas().cableGlowPolling());
+  const uint64_t polls0 = u.canvas().stats().cableGlowPolls;
+  u.d.advance(0.5);
+  CHECK(u.canvas().stats().cableGlowPolls - polls0 >= 10);
+  meters.setLive(false);
+  meters.set(track, ui::MeterLevels{});
+  u.d.advance(2.0);
+  CHECK_FALSE(u.canvas().cableGlowPolling());
+  u.view().setMeterSource(nullptr);
+}
+
 TEST_CASE("cables: a playing source lights its cable (≤ 30 Hz while live); silence: no polls, no repaints") {
   Ui u;
   REQUIRE(u.d.enableGpu().ok());

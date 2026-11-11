@@ -6,10 +6,12 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -560,6 +562,51 @@ TEST_CASE("live input: the MIDI service opens enabled ports, stamps and pushes, 
     CHECK(saved[0] == app::MidiPortSetting{"Pads", true, 12.0f});
   }
   CHECK(opened == 0);
+}
+
+// KB.3: a MIDI-in note while the engine sleeps (the views' meter polls stopped) notifies the views once, from the MIDI
+// callback (no allocation there: RtScope), and live() holds until the audio thread has drained the note.
+TEST_CASE("live input (KB.3): a MIDI note into a sleeping engine re-arms the views' signal polls, once") {
+  LiveFixture f(Case::Edo12, NoteInputMode::Keys);
+  LinkConfig c;
+  c.compileThread = false;
+  c.sleepAfterMs = 20.0f;
+  c.jit = false;
+  auto made = ProjectLink::create(c, f.store.current());
+  REQUIRE(made.ok());
+  ProjectLink& link = *made.value();
+  link.flush();
+  engine::Engine& e = link.engine();
+  float l[kBlock], r[kBlock];
+  float* outs[2] = {l, r};
+  auto block = [&] { e.process(engine::AudioBlock{nullptr, 0, outs, 2, kBlock, 0, 0, 0}); };
+  auto src = std::make_unique<FakeSource>();
+  FakeSource* fake = src.get();
+  fake->names = {"Keys 49"};
+  int notified = 0;
+  {
+    app::MidiInputService svc(link, std::move(src), {});
+    svc.refresh();  // the routes publish (a wake)
+    for (int b = 0; b < 400 && !e.asleep(); ++b) block();
+    REQUIRE(e.asleep());
+    (void)link.live();  // the views' poll sees the last activity (the publish) …
+    std::this_thread::sleep_for(std::chrono::duration<double>(ProjectLink::kSignalWakeSeconds + 0.1));  // … and its grace ends
+    REQUIRE_FALSE(link.live());  // the views stop polling here
+    link.setSignalNotify([](void* u) { ++*static_cast<int*>(u); }, &notified);
+    FakeSource::Port* p = fake->port("Keys 49");
+    REQUIRE(p != nullptr);
+    const uint8_t on[3] = {0x90, 69, 100}, off[3] = {0x80, 69, 0};
+    {
+      RtScope rt;
+      p->cb(p->user, on, 3);
+      p->cb(p->user, off, 3);
+    }
+    CHECK(notified == 1);
+    CHECK(link.live());  // before the audio thread ran: the polls keep going
+    block();
+    CHECK_FALSE(e.asleep());  // the note woke it
+  }
+  link.setSignalNotify(nullptr, nullptr);
 }
 
 TEST_CASE("live input: the WinMM source enumerates without opening anything") {

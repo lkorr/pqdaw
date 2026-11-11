@@ -102,7 +102,7 @@ MidiInputService::~MidiInputService() {
   if (anyOpen_ && onOpen_) onOpen_(false);
 }
 
-// The port's callback thread: stamp, push. Wait-free; nothing else.
+// The port's callback thread: stamp, push, tell the link (KB.3). Wait-free but for the link's one post per idle edge.
 void MidiInputService::onMessage(void* user, const uint8_t* bytes, size_t size) noexcept {
   const auto& c = *static_cast<const Open::Ctx*>(user);
   const uint8_t status = bytes[0];
@@ -114,6 +114,7 @@ void MidiInputService::onMessage(void* user, const uint8_t* bytes, size_t size) 
   m.d1 = size > 1 ? static_cast<uint8_t>(bytes[1] & 0x7F) : 0;
   m.d2 = size > 2 ? static_cast<uint8_t>(bytes[2] & 0x7F) : 0;
   (void)c.rings->push(c.index, m);  // a full ring: counted, and the engine releases this port's notes
+  c.link->signalActivity();          // KB.3: meters stopped while the engine slept poll again
 }
 
 MidiPortSetting& MidiInputService::settingFor(const std::string& name) {
@@ -166,7 +167,7 @@ void MidiInputService::refresh() {
     Open o;
     o.name = name;
     o.index = index;
-    o.ctx = std::make_unique<Open::Ctx>(Open::Ctx{link_.livePorts().get(), static_cast<uint8_t>(index)});
+    o.ctx = std::make_unique<Open::Ctx>(Open::Ctx{link_.livePorts().get(), static_cast<uint8_t>(index), &link_});
     auto port = source_->open(name, &MidiInputService::onMessage, o.ctx.get());
     if (!port.ok()) {
       lastError_ = port.error().message;

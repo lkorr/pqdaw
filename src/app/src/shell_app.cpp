@@ -38,7 +38,10 @@ namespace pq::app {
 namespace {
 
 // Codes of the shell's SDL user event (SDL_UserEvent::code).
-enum : int32_t { kDialogResult = 1, kIdleStart = 2, kIdleEnd = 3, kAudioChanged = 4, kRunOnUi = 5, kOsDrag = 6, kBugScript = 7 };
+enum : int32_t {
+  kDialogResult = 1, kIdleStart = 2, kIdleEnd = 3, kAudioChanged = 4, kRunOnUi = 5, kOsDrag = 6, kBugScript = 7,
+  kSignalWake = 8  // KB.3: ProjectLink::setSignalNotify (any thread) → ViewContext::signalWaking
+};
 
 // File dialogs run their callback on another thread on some platforms: results are posted to the UI thread as a
 // user event carrying the path (owned by the event until delivered) and the request id.
@@ -233,6 +236,10 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
       pushUser(type, kRunOnUi, new std::function<void()>(std::move(fn)));
     });
     app->link_->attach(*app->ctx_);
+    // KB.3: engine activity after the meters went quiet (a key, MIDI in) re-arms them; posted from the producer's
+    // thread (the MIDI callback's too: no allocation here).
+    app->link_->setSignalNotify([](void* self) { pushUser(static_cast<ShellApp*>(self)->userEvent_, kSignalWake); },
+                                app.get());
     app->ctx_->setDeviceLibrary(&app->link_->devices());  // T4.1: the device view's catalog (one load per process)
     app->ctx_->setModulationSource(app->link_.get());  // T4.7: the modulated knobs' live rings
     {  // TX.spectrum: the device displays' spectra and measured responses read the link's analysis taps
@@ -530,6 +537,7 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
       }
       case kOsDrag: drainOsDrags(); break;
       case kBugScript: runBugScriptStep(); break;
+      case kSignalWake: ctx_->signalWaking(); break;
       case kAudioChanged:
         if (audio_) audio_->poll();
         syncPreviewRate();

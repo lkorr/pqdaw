@@ -6,7 +6,9 @@
 // open port calls a plain callback on the source's own thread with one complete message (no running status). The
 // service's callback does exactly two things: stamp the message with the host clock (engine::qpcNow100ns) and push a
 // 16-byte engine::RawMidi into that port's SPSC ring (engine::LivePorts, owned by the ProjectLink and consumed by the
-// engine). SysEx, MIDI clock and other system messages are ignored. No lock, no allocation on that path.
+// engine), then tells the link (ProjectLink::signalActivity, KB.3: two atomics; only the first message after the
+// views' signal polls stopped calls the link's notify, which posts one event to the UI thread so the meters re-arm).
+// SysEx, MIDI clock and other system messages are ignored. No lock, no allocation on that path but that one post.
 //
 // MidiInputService (UI thread) keeps the user's port settings (Preferences → MIDI: a port's "Track" switch, its pitch-bend
 // range; persisted in the user settings file, "midi" section), enumerates the source's ports, opens the enabled ones
@@ -88,6 +90,7 @@ private:
     struct Ctx {
       engine::LivePorts* rings;
       uint8_t index;
+      ProjectLink* link;  // KB.3: signalActivity
     };
     std::unique_ptr<Ctx> ctx;      // the callback's user pointer (stable address)
   };

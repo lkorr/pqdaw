@@ -55,7 +55,7 @@ MixerView::MixerView(ViewContext& ctx, std::shared_ptr<MixerController> controll
     if (shown()) sync();
   });
   viewSub_ = ctx_.observe([this](uint32_t bits) {
-    if (bits & view_change::kTransport) wakeMeters();
+    if (bits & (view_change::kTransport | view_change::kSignal)) wakeMeters();  // KB.3: a key / MIDI note while stopped
     if (bits & (view_change::kAutomation | view_change::kKeyboard)) {  // T3.15: automation markers; KB.1: auto-arm
       stale_ = true;
       if (shown()) sync();

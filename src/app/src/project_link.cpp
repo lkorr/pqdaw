@@ -471,6 +471,7 @@ Status ProjectLink::makeEngine() {
   auto eng = engine::Engine::create(ec);
   if (!eng.ok()) return eng.error();
   engine_ = std::move(eng.value());
+  engine_->setWakeListener(&ProjectLink::onEngineWake, this);  // KB.3: the signal displays re-arm on any activity
   engine::ProjectCompileOptions co;
   co.sampleRate = cfg_.sampleRate;
   co.maxBlockFrames = cfg_.blockFrames;
@@ -2330,7 +2331,31 @@ void ProjectLink::releaseAuditions() { engine_->releaseAuditions(); }
 
 // ---- Meters (UI thread) -----------------------------------------------------------------------------------------
 
-bool ProjectLink::live() const noexcept { return !engine_->asleep() || metersLit_; }  // asleep ⇒ stopped
+bool ProjectLink::live() const noexcept { return signalLive(metersLit_); }  // asleep ⇒ stopped
+
+// KB.3: live while the engine runs, `lit` holds, or within kSignalWakeSeconds of the last activity seen. Before it says
+// "not live" (the caller stops polling) it arms the notify, then looks at the activity once more: an activity racing with
+// this call is either seen here or sees signalIdle_ set and notifies (both sides seq_cst).
+bool ProjectLink::signalLive(bool lit) const noexcept {  // UI thread
+  const double now = nowSeconds();
+  auto seen = [&] {
+    const uint64_t a = signalActivity_.load(std::memory_order_seq_cst);
+    if (a == signalSeen_) return false;
+    signalSeen_ = a;
+    signalUntil_ = now + kSignalWakeSeconds;
+    return true;
+  };
+  (void)seen();
+  if (!engine_->asleep() || lit || now < signalUntil_) return true;
+  signalIdle_.store(true, std::memory_order_seq_cst);
+  return seen();
+}
+
+void ProjectLink::signalActivity() noexcept {  // any thread
+  signalActivity_.fetch_add(1, std::memory_order_seq_cst);
+  if (!signalIdle_.load(std::memory_order_seq_cst) || !signalIdle_.exchange(false, std::memory_order_seq_cst)) return;
+  if (auto fn = signalNotify_.load(std::memory_order_acquire)) fn(signalNotifyUser_.load(std::memory_order_relaxed));
+}
 
 void ProjectLink::readLevels(int who, std::span<const uint32_t> buses, std::span<engine::BusLevel> out) {
   engine::ProjectProgram* program = engine_->program();
@@ -2377,7 +2402,7 @@ void ProjectLink::readLevels(int who, std::span<const uint32_t> buses, std::span
   }
 }
 
-bool ProjectLink::modulationLive() const noexcept { return !engine_->asleep(); }
+bool ProjectLink::modulationLive() const noexcept { return signalLive(false); }
 
 void ProjectLink::readModulation(std::span<const views::ModTarget> targets, std::span<views::ModSweep> out) noexcept {
   const size_t n = std::min(targets.size(), out.size());

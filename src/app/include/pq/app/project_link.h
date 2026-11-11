@@ -527,7 +527,23 @@ public:
   // ---- views::MeterSource (UI thread) ----
   // True while the engine runs (it never sleeps while playing), and afterwards until every meter the views read has decayed
   // to the floor (T3.17-fix1, M3 review L13: the meters' last poll after a stop shows them falling, not frozen lit).
+  // KB.3: also for kSignalWakeSeconds after any engine activity (signalActivity), so a poll made before the audio thread
+  // has woken the engine (a block away; a suspended stream's restart + pre-roll: ≤ ~1.4 s) keeps polling.
   bool live() const noexcept override;
+  // ---- KB.3: signal displays re-arm on engine activity ----
+  // The views poll meters / cable glow / faces / cost labels only while the engine is live and stop when it sleeps; only
+  // the transport used to re-arm them, so a computer-keyboard or MIDI note (or an audition) after a stop played with the
+  // meters dark. Every engine wake() (Engine::setWakeListener) and every MIDI-in message (MidiInputService) calls
+  // signalActivity: the first one after a live() / modulationLive() / costLive() returned false calls the notify
+  // (`fn(user)`, once per such edge; the shell posts an SDL event and its handler calls ViewContext::signalWaking, the
+  // views' view_change::kSignal). Any thread (the MIDI callback's: two atomics, the notify only on that edge); `fn` must
+  // be thread-safe. Null: none.
+  static constexpr double kSignalWakeSeconds = 2.0;
+  void setSignalNotify(void (*fn)(void*), void* user) noexcept {
+    signalNotifyUser_.store(user, std::memory_order_relaxed);
+    signalNotify_.store(fn, std::memory_order_release);
+  }
+  void signalActivity() noexcept;
   void read(std::span<const doc::TrackId> ids, std::span<ui::MeterLevels> out) noexcept override;
   void resetClip(doc::TrackId id) noexcept override;
 
@@ -906,6 +922,15 @@ private:
   std::vector<doc::WireId> wiresReported_;  // delayed / refused wires the status line last named
   double lastMeterRead_ = 0.0;
   bool metersLit_ = false;  // a meter read last time is above its floor (live() keeps the views polling)
+  // KB.3 (signalActivity / signalLive): activity_ is bumped by any thread; the rest belongs to the UI thread's live().
+  bool signalLive(bool lit) const noexcept;
+  static void onEngineWake(void* self) noexcept { static_cast<ProjectLink*>(self)->signalActivity(); }
+  std::atomic<uint64_t> signalActivity_{0};
+  mutable std::atomic<bool> signalIdle_{false};  // a live() returned false since the last notify: the next activity notifies
+  std::atomic<void (*)(void*)> signalNotify_{nullptr};
+  std::atomic<void*> signalNotifyUser_{nullptr};
+  mutable uint64_t signalSeen_ = 0;       // UI thread
+  mutable double signalUntil_ = 0.0;      // UI thread: live until then (kSignalWakeSeconds after the last activity seen)
   double lastCollect_ = 0.0;
 
   // Compile worker (cv_ with mutex_).

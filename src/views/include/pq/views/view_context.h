@@ -81,7 +81,9 @@ inline constexpr uint32_t kProject = 1u << 3;    // project directory, name or u
 inline constexpr uint32_t kStatus = 1u << 4;     // status line text
 inline constexpr uint32_t kTool = 1u << 5;       // draw mode (B) toggled (T3.11)
 inline constexpr uint32_t kDetailClip = 1u << 6; // the clip shown in the clip view changed (T3.11)
-// 1u << 7: free (T3.14's tuning preview; TU.1 applies tuning edits to the document as they happen)
+inline constexpr uint32_t kSignal = 1u << 7;    // KB.3: the engine is active again (a key, MIDI in, an audition): the
+                                                // signal polls that stopped while it slept (meters, cable glow, faces,
+                                                // cost labels, modulation rings) re-arm
 inline constexpr uint32_t kAutomation = 1u << 8;     // automation overridden / re-enabled (T3.15)
 inline constexpr uint32_t kSelection = 1u << 9;      // the selected track changed (T3.x-fix-look: the control bar's chip)
 inline constexpr uint32_t kInfo = 1u << 10;          // the hovered widget's info text changed in place (T3.19: the roll's pitch readout)
@@ -327,6 +329,9 @@ public:
   std::shared_ptr<const doc::LoweredProject> currentLowering(doc::Snapshot* from = nullptr) const;
   // The app, after a compile made new taps: displays waiting for their device's feed look again (notifies kAnalysis).
   void analysisTapsChanged() { notify(view_change::kAnalysis); }
+  // KB.3: the playback link saw engine activity after its signal sources went quiet (ProjectLink::setSignalNotify,
+  // posted to the UI thread by the shell).
+  void signalWaking() { notify(view_change::kSignal); }
   // T5.x-one-circuit (SPEC §15 2026-10-31: the whole project is one circuit): every "Open in Circuit View" (a device's
   // menu and title double-click, view.trackCircuit, the device editor's Track button) opens the project patch view
   // with `track`'s band opened, framed on `device` when one is given (a device inside a rack: its box in the rack's

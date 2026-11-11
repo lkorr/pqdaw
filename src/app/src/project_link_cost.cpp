@@ -66,7 +66,7 @@ void ProjectLink::setCostMetering(bool on) {
   if (!on) cost_->deviceNs.clear();
 }
 
-bool ProjectLink::costLive() const noexcept { return !engine_->asleep(); }
+bool ProjectLink::costLive() const noexcept { return signalLive(false); }  // KB.3: and just after activity
 
 void ProjectLink::readDeviceCosts(std::span<const doc::DeviceId> devices, std::span<float> out) {
   for (float& f : out) f = -1.0f;

@@ -543,6 +543,41 @@ TEST_CASE("mixer: meters poll the MeterSource only while it is live, in one batc
   f.mixer->setMeterSource(nullptr);
 }
 
+// KB.3: the meters stop polling while the engine sleeps; a key or a MIDI note while stopped (no transport change) makes
+// the link post view_change::kSignal (ViewContext::signalWaking), and the poll runs again until the source goes quiet.
+TEST_CASE("mixer (KB.3): a signal wake while stopped re-arms the stopped meter poll; quiet again, it stops") {
+  Fixture f;
+  FixedMeterSource src;
+  f.mixer->setMeterSource(&src);
+  f.d.advance(0.5);
+  const uint64_t r0 = src.reads();
+  f.d.advance(0.5);
+  CHECK(src.reads() == r0);  // not live: stopped
+  MeterLevels loud;
+  loud.rmsDb[0] = loud.rmsDb[1] = -10.0f;
+  loud.peakDb[0] = loud.peakDb[1] = -3.0f;
+  src.set(f.track("Drums").id, loud);
+  src.setLive(true);  // the engine woke from a live key: nothing re-armed the poll until KB.3
+  f.d.advance(0.3);
+  CHECK(src.reads() == r0);
+  f.ctx.signalWaking();
+  f.d.advance(0.5);
+  CHECK(src.reads() >= r0 + 10);  // ~30 Hz again
+  CHECK(f.strip("Drums").meter()->levels() == loud);
+  f.ctx.signalWaking();  // already polling: no second timer (the rate stays ~30 Hz)
+  const uint64_t r1 = src.reads();
+  f.d.advance(0.5);
+  CHECK(src.reads() - r1 <= 20);
+  src.setLive(false);
+  src.set(f.track("Drums").id, MeterLevels{});
+  f.d.advance(0.2);
+  const uint64_t r2 = src.reads();
+  f.d.advance(1.0);
+  CHECK(src.reads() == r2);  // quiet: stopped, the last read showed the silence
+  CHECK(f.strip("Drums").meter()->levels() == MeterLevels{});
+  f.mixer->setMeterSource(nullptr);
+}
+
 TEST_CASE("mixer: a click on a meter's clip lamps resets them (they latch, as in Live; T4.16-fix1)") {
   Fixture f;
   FixedMeterSource src;

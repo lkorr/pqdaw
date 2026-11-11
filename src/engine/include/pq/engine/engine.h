@@ -156,12 +156,19 @@ public:
   void wake() noexcept {
     wake_.fetch_add(1, std::memory_order_release);
     if (auto fn = wakeHook_.load(std::memory_order_acquire)) fn(wakeUser_.load(std::memory_order_relaxed));
+    if (auto fn = wakeListener_.load(std::memory_order_acquire)) fn(wakeListenerUser_.load(std::memory_order_relaxed));
   }
   // Non-RT: called on the producer's thread by every wake() (T3.17: the audio output restarts an idle device).
   // fn must be thread-safe and return quickly; null removes it.
   void setWakeHook(void (*fn)(void*), void* user) noexcept {
     wakeUser_.store(user, std::memory_order_relaxed);
     wakeHook_.store(fn, std::memory_order_release);
+  }
+  // KB.3: a second hook every wake() calls after the wake hook, on the same thread: the app's signal displays (meters,
+  // cable glow, faces) re-arm their polls, which stop while the engine sleeps. Same contract as setWakeHook.
+  void setWakeListener(void (*fn)(void*), void* user) noexcept {
+    wakeListenerUser_.store(user, std::memory_order_relaxed);
+    wakeListener_.store(fn, std::memory_order_release);
   }
   bool asleep() const noexcept { return asleep_.load(std::memory_order_relaxed); }
   uint64_t droppedParams() const noexcept { return droppedParams_.load(std::memory_order_relaxed); }  // ring full
@@ -248,6 +255,8 @@ private:
   std::atomic<uint32_t> wake_{0};
   std::atomic<void (*)(void*)> wakeHook_{nullptr};
   std::atomic<void*> wakeUser_{nullptr};
+  std::atomic<void (*)(void*)> wakeListener_{nullptr};  // KB.3
+  std::atomic<void*> wakeListenerUser_{nullptr};
   std::atomic<bool> asleep_{false};
   std::atomic<uint64_t> droppedParams_{0};
   static constexpr uint8_t kAudioUnknown = 0, kAudioRunning = 1, kAudioStopped = 2;

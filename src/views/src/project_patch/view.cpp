@@ -74,6 +74,10 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
     if (bits & view_change::kTimeWindow) timeWindowChanged();  // TL.1: zoomed / scrolled here or in the arrangement
     if ((bits & view_change::kWaveforms) && shown()) damageLanes();  // an overview arrived or grew: the lanes only
     if (bits & view_change::kAnalysis) wakeFaces();  // TX.spectrum: a Spectrum face's tap appeared
+    if (bits & view_change::kSignal) {  // KB.3: the engine is active again (a key, MIDI in): the glow, faces, costs poll
+      wakeFaces();
+      if (costSource_ != nullptr && showCosts_ && shown() && !costTimer_) pollCosts();
+    }
     if (bits & view_change::kResponses) {  // EQ.4b: the response displays on its panels draw the new structure
       canvas_->markDirty();
       for (panel::PanelWindow* w : windows_) w->markDirty();
