@@ -22,6 +22,17 @@
         "equave": "2/1",
         "referenceHz": 261.626
       }
+    },
+    {
+      "id": 55,
+      "name": "Tuning B",
+      "colour": "#80A040",
+      "def": {
+        "kind": "edo",
+        "n": 19,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
     }
   ],
   "tracks": [
@@ -143,14 +154,7 @@
       "lanes": [],
       "devices": [],
       "clips": [
-        {"kind": "audio", "id": 54, "name": "re-pitched", "colour": "#808080", "start": 887040, "length": 729610, "sample": 50, "warp": "rePitch", "contentStartFrame": 0.0, "seconds": 2.0, "contentStart": 0, "loop": {"enabled": true, "start": 221760, "end": 665280}, "sourceBpm": 87.5, "gainDb": 0.0, "transpose": {"steps": -5}, "detuneCents": 0.0, "reverse": false, "fadeIn": {"length": 0, "curve": 0.0}, "fadeOut": {"length": 0, "curve": 0.0}, "crossfadeIn": 0, "tuning": {
-            "private": {
-              "kind": "edo",
-              "n": 19,
-              "equave": "2/1",
-              "referenceHz": 261.626
-            }
-          }, "active": false}
+        {"kind": "audio", "id": 54, "name": "re-pitched", "colour": "#808080", "start": 887040, "length": 729610, "sample": 50, "warp": "rePitch", "contentStartFrame": 0.0, "seconds": 2.0, "contentStart": 0, "loop": {"enabled": true, "start": 221760, "end": 665280}, "sourceBpm": 87.5, "gainDb": 0.0, "transpose": {"steps": -5}, "detuneCents": 0.0, "reverse": false, "fadeIn": {"length": 0, "curve": 0.0}, "fadeOut": {"length": 0, "curve": 0.0}, "crossfadeIn": 0, "tuning": {"main": 55}, "active": false}
       ]
     }
   ],

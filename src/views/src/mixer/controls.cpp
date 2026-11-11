@@ -365,12 +365,6 @@ void Chooser::paint(PaintContext& ctx) {
 
 // --- labels -----------------------------------------------------------------------------------------------------------
 
-std::string tuningShortName(const doc::TuningDef& d) {
-  if (const tuning::Edo* e = d.edo()) return std::to_string(e->n()) + "-EDO";
-  if (const tuning::MosParams* m = d.mos()) return std::to_string(m->n * std::max(1, m->periodsPerEquave)) + "-MOS";
-  return "Scale";
-}
-
 // T6.4: the input section's chooser texts.
 std::string midiInLabel(const doc::MidiInput& in) {
   switch (in.kind) {

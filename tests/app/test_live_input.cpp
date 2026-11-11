@@ -306,7 +306,7 @@ TEST_CASE("live input: an unmapped .kbm key plays nothing; the computer keyboard
 }
 
 TEST_CASE("live input (KB.2): the keyboard's and MIDI keys' tables play the track's live clip's tuning") {
-  // A 12-EDO track (Keys) with clip A [0, 4) bars in a private 22-EDO and clip B [4, 8) inheriting; a ViewContext on the
+  // A 12-EDO track (Keys) with clip A [0, 4) bars in a named 22-EDO and clip B [4, 8) inheriting; a ViewContext on the
   // link (the clip view's clip and the start marker come from it, as in the app).
   LiveFixture f(Case::Edo12, NoteInputMode::Keys);
   constexpr Ticks kBar = kTicksPerWhole;
@@ -316,7 +316,9 @@ TEST_CASE("live input (KB.2): the keyboard's and MIDI keys' tables play the trac
   REQUIRE(f.store.dispatch(AddClip{f.track, cb}).ok());
   TuningDef edo22;
   edo22.system = tuning::Edo::make(22).value();
-  REQUIRE(f.store.dispatch(SetClipTuning{{f.track, ca->id}, TuningAssignment::privateTuning(edo22)}).ok());
+  const TuningId t22 = f.store.ids().tuning();  // TU.3: a named tuning
+  REQUIRE(f.store.dispatch(AddTuning{TuningSlot{t22, "Tuning B", Colour{0x808080}, edo22}}).ok());
+  REQUIRE(f.store.dispatch(SetClipTuning{{f.track, ca->id}, TuningAssignment::mainTuning(t22)}).ok());
   auto link = makeLink(f.store.current());
   views::ViewContext ctx(*link);
   ctx.store().reset(f.store.current());
@@ -395,7 +397,7 @@ TEST_CASE("live input (KB.2): the keyboard's and MIDI keys' tables play the trac
   publishes = link->liveRoutePublishes();
   (void)link->playhead();
   CHECK(link->liveRoutePublishes() == publishes);
-  REQUIRE(ctx.store().dispatch(SetClipTuning{{f.track, cb->id}, TuningAssignment::privateTuning(edo22)}).ok());
+  REQUIRE(ctx.store().dispatch(SetClipTuning{{f.track, cb->id}, TuningAssignment::mainTuning(t22)}).ok());
   CHECK(keyboardHz() == hz22);
   link->stop();
 }

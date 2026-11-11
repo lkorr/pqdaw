@@ -1306,3 +1306,15 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   S + double-click (or Reset Size) gives it its own size. Not an undo step (saved with the project, like block sizes).
 - The same stored size is the group's block / panel size when closed (Q?-TX.group-resize-a): close a shrunk group and it
   stays small — say if the open and closed sizes should be separate.
+
+## 2026-11-10 · TU.3 · Tunings are shared project objects 👁
+- **Linked edits**: two tracks on the same tuning (or both inheriting the default): open the MOS wheel from one track's
+  or clip's chip and change it — the other track retunes too. The wheel title says which tuning you edit
+  ("Clip “Riff” · Tuning B").
+- **Picking**: right-click any tuning chip (clip box, track header, mixer strip, control bar): Inherit (it names what
+  it inherits), every project tuning with its colour dot and summary, **New Tuning** (a copy of the current one as
+  "Tuning C", assigned there — the way to give one clip / track its own tuning), then MOS Wheel… and the library items.
+- **Project default**: right-click a card in the Tunings panel → Set as Project Default (the card then reads
+  "Default"), or the control bar chip's Project Default submenu (with no track selected its list sets it directly).
+- Chips now always show a colour dot; a name that does not say what the tuning is gets its short form ("Tuning B ·
+  5L 2s"). Is the right-click menu discoverable enough, or should a left click open it (and the wheel move to an item)?

@@ -88,39 +88,6 @@ std::string_view MixerController::activatorLabel(const doc::Snapshot& s, doc::Tr
   return (it != labels_.end() && it->first == id.value) ? std::string_view(it->second) : std::string_view{};
 }
 
-void MixerController::openTuningMenu(Widget& chip, doc::TrackId id) {
-  const doc::Project& p = *ctx.doc();
-  const doc::Track* t = doc::findTrackPtr(p, id);
-  if (!t) return;
-  ViewContext* c = &ctx;
-  auto assign = [c, id](doc::TuningAssignment a) {
-    return [c, id, a = std::move(a)] {
-      if (Status s = c->store().dispatch(doc::SetTrackTuning{id, a}); !s) c->setStatus("Tuning: " + s.error().message);
-    };
-  };
-  std::vector<MenuItem> items;
-  MenuItem inherit = MenuItem::item("Inherit", assign(doc::TuningAssignment::inherit()));
-  inherit.checked = t->tuning.mode == doc::TuningMode::Inherit;
-  items.push_back(std::move(inherit));
-  if (p.tunings)
-    for (const doc::TuningSlotPtr& slot : *p.tunings) {
-      MenuItem m = MenuItem::item(slot->name, assign(doc::TuningAssignment::mainTuning(slot->id)));
-      m.checked = t->tuning.mode == doc::TuningMode::Main && t->tuning.main == slot->id;
-      items.push_back(std::move(m));
-    }
-  if (t->tuning.mode == doc::TuningMode::Private && t->tuning.privateDef) {
-    MenuItem m = MenuItem::item("Private: " + mixer::tuningShortName(*t->tuning.privateDef));
-    m.checked = true;
-    m.enabled = false;
-    items.push_back(std::move(m));
-  }
-  items.push_back(MenuItem::sep());
-  items.push_back(MenuItem::item("MOS Wheel…", [c, w = &chip, id] {
-    (void)openMosWheel(*w, *c, TuningTarget::forTrack(id), w->rect());
-  }));
-  (void)openContextMenu(chip, {static_cast<float>(chip.rect().x), static_cast<float>(chip.rect().bottom())}, std::move(items));
-}
-
 void MixerController::openOutputMenu(Widget& chooser, doc::TrackId id) {
   const doc::Project& p = *ctx.doc();
   const auto path = doc::findTrack(p, id);
@@ -646,14 +613,6 @@ void MixerStrip::bind(const doc::Project& p, const doc::Track& t) {
 }
 
 namespace mixer {
-
-bool TrackTuningChip::onPointer(const PointerEvent& e) {
-  if (e.button == PointerButton::Right && target()) {
-    if (e.type == PointerType::Down) ctl_->openTuningMenu(*this, target()->track);
-    return true;
-  }
-  return TuningChip::onPointer(e);
-}
 
 void bindHeaderChip(Widget& section, const std::shared_ptr<MixerController>& ctl, const doc::Project&, const doc::Track& t) {
   if (t.kind != doc::TrackKind::Midi && t.kind != doc::TrackKind::Group) {

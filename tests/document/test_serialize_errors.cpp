@@ -195,8 +195,10 @@ TEST_CASE("serialize errors: tracks, clips, notes, lanes and references") {
                  "$.tracks[0].clips[0].signature: invalid time signature");
   expectDomError([](json& d) { d["tracks"][0]["clips"][0]["tuning"] = {{"main", 999}}; },
                  "$.tracks[0].clips[0].tuning: main tuning not found");
-  expectDomError([](json& d) { d["tracks"][0]["tuning"] = {{"main", 1}, {"private", json::object()}}; },
-                 "$.tracks[0].tuning.private: missing key \"kind\"");
+  // TU.3: private tunings are gone; a file holding one does not load.
+  expectDomError([](json& d) { d["tracks"][0]["tuning"] = {{"private", json::object()}}; },
+                 "$.tracks[0].tuning.private: unknown key");
+  expectDomError([](json& d) { d["defaultTuning"] = 999; }, "$.defaultTuning: no tuning with this id");
   expectDomError([](json& d) { d["tracks"][0]["mixer"]["sends"][0]["levelDb"] = -70.0; d["tracks"][0]["mixer"]["sends"][0]["preFader"] = false; },
                  "$.tracks[0].mixer.sends[0]: a send at the default (-70 dB, post-fader) is implicit and must not be stored");
   expectDomError([](json& d) { d["tracks"][0]["mixer"]["sends"][0]["target"] = d["tracks"][2]["id"]; },

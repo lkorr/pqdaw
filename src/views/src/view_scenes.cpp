@@ -409,6 +409,10 @@ Status setupMosWheelPopover(Shell& shell) {
   }
   if (!run(doc::ops::addNotes(*store.current(), store.ids(), c->clips[0], notes)))
     return Error{ErrorCode::Unknown, "mos-wheel-popover: addNotes failed", {}};
+  // TU.3: the clip on its own named tuning (what the wheel then edits), as "New Tuning" in its chip's menu leaves it.
+  const auto tb = run(doc::ops::addMainTuning(*store.current(), store.ids(), "Tuning B", doc::TuningDef{}, doc::Colour{0x8FC24A}));
+  if (!tb || !store.dispatch(doc::SetClipTuning{c->clips[0], doc::TuningAssignment::mainTuning(tb->tunings[0])}).ok())
+    return Error{ErrorCode::Unknown, "mos-wheel-popover: the clip's tuning failed", {}};
   if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(640.0f);
   ctx.setDetailClip(c->clips[0]);
   shell.tree().layoutNow();

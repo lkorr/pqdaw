@@ -796,11 +796,12 @@ ClipBoxPanel::ClipBoxPanel(RollState& s) : Widget("clip-box"), s_(s) {
   gen_ = &genRow_->add<DragBox>("generator", ps);
   gen_->setWidth(Length::fixed(64));
   gen_->setInfo("Generator", "Drag to morph the MOS: rows and notes follow live, past a region's end the next MOS is "
-                             "taken (as in the MOS wheel). Releasing commits it to this clip (one undo step).");
+                             "taken (as in the MOS wheel). It edits the clip's named tuning: every clip and track on "
+                             "it follows. Releasing commits it (one undo step).");
   gen_->onGestureBegin = [this] { s_.beginGeneratorMorph(); };
   gen_->onChange = [this](double v) { s_.morphGenerator(v); };
   // T3.x-fix-edit (M3 review M12b, Q92.6): release commits and hands the keys back to the notes (Up / Down then
-  // transpose notes instead of nudging the generator by 0.1 ¢ per key, each a structural SetClipTuning); Esc during
+  // transpose notes instead of nudging the generator by 0.1 ¢ per key, each a tuning edit); Esc during
   // the drag restores the document's tuning and records nothing.
   gen_->onGestureEnd = [this] {
     s_.endGeneratorMorph(true);

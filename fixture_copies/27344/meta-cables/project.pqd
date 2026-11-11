@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 21,
+  "timeline": {
+    "tempo": [
+      {"tick": 0, "bpm": 120.0, "curve": "step"}
+    ],
+    "signatures": [
+      {"bar": 0, "numerator": 4, "denominator": 4}
+    ]
+  },
+  "loop": {"start": 0, "end": 443520, "enabled": true},
+  "locators": [],
+  "tunings": [
+    {
+      "id": 1,
+      "name": "12-EDO",
+      "colour": "#5E9BD6",
+      "def": {
+        "kind": "edo",
+        "n": 12,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": 3,
+      "kind": "midi",
+      "name": "1 MIDI",
+      "colour": "#90A815",
+      "active": true,
+      "tuning": "inherit",
+      "mixer": {"volumeDb": 0.0, "pan": 0.0, "panMode": "constantPower", "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+      "lanes": [],
+      "devices": [
+        {
+          "id": 6,
+          "patch": "Group",
+          "kind": "audioEffect",
+          "name": "Phase Accumulator",
+          "group": 29,
+          "panel": {
+            "size": [120.0, 120.0],
+            "elements": [
+              {"id": 1, "kind": "shape", "rect": [12.0, 16.0, 96.0, 96.0], "style": {"fill": "body", "shape": "circle", "stroke": "frame", "thickness": 1.25}},
+              {"id": 2, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 35, "name": "value"}], "style": {"drag": "vertical", "hitFrom": 140.0, "hitTo": 246.0, "start": 150.0, "sweep": 90.0, "ticks": "100|1000|10000"}},
+              {"id": 3, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 37, "name": "value"}], "style": {"drag": "diagonal", "hitFrom": 246.0, "hitTo": 299.0, "start": 252.0, "sweep": 40.0, "ticks": "1|2|3"}},
+              {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 38, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-3600|-2400|-1200|0|1200|2400|3600"}},
+              {"id": 5, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 36, "name": "value"}], "style": {"drag": "horizontal", "hitFrom": 43.0, "hitTo": 140.0, "start": 130.0, "sweep": -80.0, "ticks": "0.25|0.5|0.75"}},
+              {"id": 6, "kind": "orbit", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "signal", "device": 45, "name": "out"}, {"kind": "control", "device": 37, "name": "value"}]}
+            ]
+          }
+        },
+        {"id": 35, "patch": "Value", "kind": "audioEffect", "name": "Frequency", "group": 6, "params": {"value": 0.0}, "curves": {
+            "value": {"min": 0.0, "max": 20000.0, "unit": "hz", "mode": "signed", "preset": "exp0", "presetArg": 14.0, "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["exp", 9.704060527839234]]}
+          }},
+        {"id": 36, "patch": "Value", "kind": "audioEffect", "name": "Phase", "group": 6, "params": {"value": 0.0}, "curves": {
+            "value": {"min": 0.0, "max": 1.0, "mode": "wrap", "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 37, "patch": "Value", "kind": "audioEffect", "name": "Amplitude", "group": 6, "params": {"value": 0.25}, "curves": {
+            "value": {"min": 0.0, "max": 4.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 38, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 6, "params": {"value": 0.5}, "curves": {
+            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0]]}
+          }},
+        {"id": 39, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 6, "params": {"value": 1.0}, "curves": {
+            "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
+          }},
+        {"id": 40, "patch": "atom:add", "kind": "audioEffect", "name": "hz + freq", "group": 6},
+        {"id": 41, "patch": "atom:cents_to_hz", "kind": "audioEffect", "name": "2^(pitch/1200)", "group": 6},
+        {"id": 42, "patch": "atom:mul", "kind": "audioEffect", "name": "× ratio", "group": 6},
+        {"id": 43, "patch": "atom:phasor", "kind": "audioEffect", "name": "phasor", "group": 6},
+        {"id": 44, "patch": "atom:add", "kind": "audioEffect", "name": "+ phase", "group": 6},
+        {"id": 45, "patch": "atom:frac", "kind": "audioEffect", "name": "frac", "group": 6},
+        {"id": 46, "patch": "atom:mul", "kind": "audioEffect", "name": "× amp", "group": 6},
+        {"id": 29, "patch": "Group", "kind": "audioEffect"},
+        {
+          "id": 13,
+          "patch": "meta:wavetable",
+          "kind": "audioEffect",
+          "group": 29,
+          "params": {"fold": 0.2533332407474518},
+          "meta": {
+            "": {"type": "wavetable", "version": 1, "data": {"keyframes": [{"cycle": {"$f32": "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"}, "pos": 0.0}]}}
+          }
+        },
+        {
+          "id": 16,
+          "patch": "Group",
+          "kind": "audioEffect",
+          "name": "VCA",
+          "group": 29,
+          "panel": {
+            "size": [120.0, 120.0],
+            "elements": [
+              {"id": 1, "kind": "dial", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 60, "name": "value"}]}
+            ]
+          }
+        },
+        {"id": 60, "patch": "Value", "kind": "audioEffect", "name": "Value", "group": 16, "params": {"value": 0.2999999999999993}, "curves": {
+            "value": {"min": -20000.0, "max": 20000.0, "preset": "vca", "presetArg": 0.4, "points": [[0.0, 0.0], [0.15933993186052609, 0.4975], [0.22444275249618398, 0.49975], [0.3, 0.499975], [0.7, 0.500025], [0.7755572475038062, 0.50025], [0.8406600681394728, 0.5025], [1.0, 1.0]], "shapes": [["joined", -5.260070106008916], ["joined", -2.1491499126674336], ["joined", -2.4942675338597775], ["linear", 0.0], ["joined", 2.4942675338594538], ["joined", 2.149149912667722], ["joined", 5.260070106008952]]}
+          }},
+        {"id": 61, "patch": "atom:mul", "kind": "audioEffect", "name": "×", "group": 16},
+        {
+          "id": 14,
+          "patch": "meta:envelope",
+          "kind": "audioEffect",
+          "group": 29,
+          "params": {"attack": 0.31448495388031},
+          "meta": {
+            "": {"type": "envelope", "version": 1}
+          }
+        },
+        {
+          "id": 22,
+          "patch": "meta:oscilloscope",
+          "kind": "audioEffect",
+          "group": 29,
+          "meta": {
+            "": {"type": "oscilloscope", "version": 1, "data": {}}
+          }
+        }
+      ],
+      "clips": [
+        {
+          "id": 5,
+          "name": "",
+          "colour": "#90A815",
+          "start": 0,
+          "length": 1774080,
+          "contentStart": 0,
+          "loop": {"enabled": true, "start": 0, "end": 1774080},
+          "signature": {"numerator": 4, "denominator": 4},
+          "tuning": "inherit",
+          "active": true,
+          "notes": [
+            {"id": 10, "start": 0, "length": 55440, "pitch": {"degree": 9, "equave": -1}, "velocity": 100.0},
+            {"id": 11, "start": 166320, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 12, "start": 388080, "length": 55440, "pitch": {"degree": 8, "equave": -1}, "velocity": 100.0}
+          ]
+        }
+      ]
+    }
+  ],
+  "returns": [],
+  "master": {
+    "id": 2,
+    "kind": "master",
+    "name": "Master",
+    "colour": "#808080",
+    "active": true,
+    "tuning": "inherit",
+    "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": false, "solo": false, "arm": false, "sends": [], "output": "default"},
+    "lanes": [],
+    "devices": []
+  },
+  "wires": [
+    {"id": 17, "from": 14, "port": "out", "to": 16, "param": "x"},
+    {"id": 20, "from": 16, "port": "y", "to": 35, "param": "value"},
+    {"id": 23, "notes": 3, "port": "", "to": 29, "param": ""},
+    {"id": 27, "from": 29, "port": "", "mixer": 3, "param": ""},
+    {"id": 28, "notes": 2, "port": "", "mixer": 2, "param": ""},
+    {"id": 30, "from": 29, "port": "input", "to": 6, "param": "x", "chain": true},
+    {"id": 31, "from": 6, "port": "y", "to": 13, "param": "x", "chain": true},
+    {"id": 32, "from": 13, "port": "out", "to": 14, "param": "in", "chain": true},
+    {"id": 33, "from": 14, "port": "out", "to": 22, "param": "in", "chain": true},
+    {"id": 34, "from": 22, "port": "out", "to": 29, "param": "output", "chain": true},
+    {"id": 47, "from": 6, "port": "input", "to": 40, "param": "a"},
+    {"id": 48, "from": 35, "port": "y", "to": 40, "param": "b"},
+    {"id": 49, "from": 38, "port": "y", "to": 41, "param": "cents"},
+    {"id": 50, "from": 39, "port": "y", "to": 41, "param": "ref"},
+    {"id": 51, "from": 40, "port": "out", "to": 42, "param": "a"},
+    {"id": 52, "from": 41, "port": "out", "to": 42, "param": "b"},
+    {"id": 53, "from": 42, "port": "out", "to": 43, "param": "hz"},
+    {"id": 54, "from": 43, "port": "out", "to": 44, "param": "a"},
+    {"id": 55, "from": 36, "port": "y", "to": 44, "param": "b"},
+    {"id": 56, "from": 44, "port": "out", "to": 45, "param": "x"},
+    {"id": 57, "from": 37, "port": "y", "to": 46, "param": "a"},
+    {"id": 58, "from": 45, "port": "out", "to": 46, "param": "b"},
+    {"id": 59, "from": 46, "port": "out", "to": 6, "param": "output"},
+    {"id": 62, "from": 16, "port": "input", "to": 61, "param": "a"},
+    {"id": 63, "from": 60, "port": "y", "to": 61, "param": "b"},
+    {"id": 64, "from": 61, "port": "out", "to": 16, "param": "output"}
+  ],
+  "view": {
+    "tracks": [],
+    "lanes": [],
+    "patch": [
+      {"id": 6, "dx": -35.0, "dy": 7.0},
+      {"id": 16, "dx": 4.0, "dy": 0.0}
+    ]
+  }
+}

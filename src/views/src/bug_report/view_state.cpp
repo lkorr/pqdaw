@@ -263,7 +263,8 @@ std::string describeProject(Shell& shell) {
   if (sel.valid()) {
     if (auto path = doc::findTrack(p, sel)) out += "- tuning of the selected track (t" + std::to_string(sel.value) + "): " + tuningText(doc::effectiveTuning(p, *path)) + "\n";
   } else if (p.tunings && !p.tunings->empty()) {
-    out += "- default tuning: \"" + (*p.tunings)[0]->name + "\", " + tuningText(&(*p.tunings)[0]->def) + "\n";
+    if (const doc::TuningSlot* d = doc::defaultTuningOf(p))
+      out += "- default tuning: \"" + d->name + "\", " + tuningText(&d->def) + "\n";
   }
   return out;
 }

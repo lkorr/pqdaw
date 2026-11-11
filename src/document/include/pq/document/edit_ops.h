@@ -375,7 +375,8 @@ double ratioSnapTolerance(const tuning::Tuning& t, double cents) noexcept;
 // A new main tuning at the end of the list (one AddTuning; Structural: a new tuning signal). Edit::tunings = its id.
 EditResult addMainTuning(const Project& p, IdSource& ids, std::string name, TuningDef def, Colour colour);
 // Removes a main tuning in one step: every track and clip assigned to it (TuningMode::Main) is reassigned to
-// `replacement` (invalid: the first other main tuning) first, then RemoveTuning (which drops its automation lanes).
+// `replacement` (invalid: the first other main tuning) first, and so is the project default when it was this one
+// (SetDefaultTuning), then RemoveTuning (which drops its automation lanes).
 // Refused for the last main tuning. Edit::tunings = {replacement}, Edit::tracks = the reassigned tracks (and clips'
 // tracks).
 EditResult removeMainTuning(const Project& p, TuningId tuning, TuningId replacement = {});

@@ -2,7 +2,7 @@
 
 // Projects for the serialization tests (T3.5), built through commands so they satisfy the model's invariants:
 //   richProject: the doc_fixture project plus one of every entity kind, every PitchId kind and anchor kind, every
-//                tuning kind (incl. private tunings, a MOS with MODMOS/generator sequence/region, a Scala scale
+//                tuning kind (a MOS with MODMOS/generator sequence/region, a Scala scale
 //                with a ratio beyond int64 and a .kbm), every ParamKind lane, nested groups, every output kind,
 //                non-default note fields and number edge cases (-0.0, denormals, extreme exponents), view state, and
 //                every MIDI track's instrument (a Wavetable engine in an instrument group).
@@ -72,12 +72,14 @@ struct RichProject : Fixture {
     b.commands.push_back(SetTrackArm{lead, true});
     b.commands.push_back(SetTrackActive{kick, false});
     b.commands.push_back(SetTrackColour{lead, Colour{0xFF00A0}});
-    // Tunings: main Scala on the group, private EDO (cents equave) on a track, private MOS on a clip.
+    // Tunings: main Scala on the group, an EDO (cents equave) on a track, a MOS on a clip (TU.3: named tunings).
     b.commands.push_back(SetTrackTuning{drums, TuningAssignment::mainTuning(tScale)});
     TuningDef stretched;
     stretched.system = pq::tuning::Edo::makeCents(19, 1200.0 / 3.0 * 3.0000001).value();
     stretched.referenceHz = 432.1;
-    b.commands.push_back(SetTrackTuning{innerMidi, TuningAssignment::privateTuning(stretched)});
+    const TuningId tStretched = ids.tuning();
+    b.commands.push_back(AddTuning{TuningSlot{tStretched, "Tuning E", Colour{0x40A080}, stretched}});
+    b.commands.push_back(SetTrackTuning{innerMidi, TuningAssignment::mainTuning(tStretched)});
     pq::tuning::MosParams mos;
     mos.generator = 1.0 / 3.0 * 2100.0;
     mos.n = 7;
@@ -89,7 +91,9 @@ struct RichProject : Fixture {
     TuningDef priv;
     priv.system = mos;
     priv.referenceHz = 261.6255653005986;
-    b.commands.push_back(SetClipTuning{{kick, clipK}, TuningAssignment::privateTuning(priv)});
+    const TuningId tPriv = ids.tuning();
+    b.commands.push_back(AddTuning{TuningSlot{tPriv, "Tuning F", Colour{0xA04080}, priv}});
+    b.commands.push_back(SetClipTuning{{kick, clipK}, TuningAssignment::mainTuning(tPriv)});
     b.commands.push_back(SetClipTuning{{lead, clipB}, TuningAssignment::mainTuning(tMos)});
     TuningDef equave3;
     equave3.system = pq::tuning::Edo::make(13, pq::tuning::Rational{3}).value();

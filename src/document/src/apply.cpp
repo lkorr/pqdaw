@@ -1508,6 +1508,7 @@ Res apply_(const Snapshot& s, const RemoveTuning& c, ChangeSet& cs) {
   const int32_t i = tuningIndex(*s, c.tuning);
   if (i < 0) return notFound("tuning not found");
   if (s->tunings->size() == 1) return invalid("a project needs at least one main tuning");
+  if (s->defaultTuning == c.tuning) return invalid("tuning is the project's default");
   bool used = false;
   auto uses = [&](const TuningAssignment& a) { return a.mode == TuningMode::Main && a.main == c.tuning; };
   forEachTrack(*s, [&](const Track& t, const Track*) {
@@ -1648,6 +1649,17 @@ Res apply_(const Snapshot& s, const SetTuningParam& c, ChangeSet& cs) {
   cs.tunings.push_back(c.tuning);
   cs.params.push_back(ParamRef::tuning(c.param, c.tuning));
   return Snapshot(withSlot(s, static_cast<size_t>(i), std::move(n)));
+}
+
+Res apply_(const Snapshot& s, const SetDefaultTuning& c, ChangeSet& cs) {
+  if (!findTuning(*s, c.tuning)) return notFound("tuning not found");
+  if (s->defaultTuning == c.tuning) return s;
+  auto np = copyOf(s);
+  np->defaultTuning = c.tuning;
+  cs.mark(kChangeStructural);  // every top-level Inherit track (and what inherits from it) changes tuning node
+  cs.tunings.push_back(s->defaultTuning);
+  cs.tunings.push_back(c.tuning);
+  return Snapshot(std::move(np));
 }
 
 // ---- Devices (T4.1) -----------------------------------------------------------------------------
@@ -2276,6 +2288,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Add Automation Lane", "Delete Automation Lane", "Add Breakpoints", "Delete Breakpoints", "Edit Breakpoints",
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",
+    "Default Tuning",
     "Add Device", "Delete Device", "Move Device", "Activate Device", "Device Parameter", "Device Setting",
     "Rename Device", "Device Group", "Knob Curve", "Edit Panel",
     "Add Wire", "Delete Wire", "Wire Amount", "Wire Reducer", "Cable Signal", "Move Cable",

@@ -32,6 +32,17 @@
         "equave": "2/1",
         "referenceHz": 261.626
       }
+    },
+    {
+      "id": 221,
+      "name": "22-EDO",
+      "colour": "#B57CE6",
+      "def": {
+        "kind": "edo",
+        "n": 22,
+        "equave": "2/1",
+        "referenceHz": 261.626
+      }
     }
   ],
   "tracks": [
@@ -127,7 +138,7 @@
       ],
       "clips": [
         {
-          "id": 221,
+          "id": 222,
           "name": "Beat",
           "colour": "#EF7B7B",
           "start": 0,
@@ -138,14 +149,14 @@
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 222, "start": 0, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-            {"id": 223, "start": 110880, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 224, "start": 221760, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-            {"id": 225, "start": 332640, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 226, "start": 443520, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-            {"id": 227, "start": 554400, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
-            {"id": 228, "start": 665280, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
-            {"id": 229, "start": 776160, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0}
+            {"id": 223, "start": 0, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 224, "start": 110880, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 225, "start": 221760, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 226, "start": 332640, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 227, "start": 443520, "length": 55440, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+            {"id": 228, "start": 554400, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0},
+            {"id": 229, "start": 665280, "length": 55440, "pitch": {"degree": 2, "equave": 0}, "velocity": 100.0},
+            {"id": 230, "start": 776160, "length": 55440, "pitch": {"degree": 6, "equave": 0}, "velocity": 100.0}
           ]
         }
       ]
@@ -242,7 +253,7 @@
       ],
       "clips": [
         {
-          "id": 230,
+          "id": 231,
           "name": "Bass",
           "colour": "#E68632",
           "start": 0,
@@ -253,14 +264,14 @@
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 231, "start": 0, "length": 110880, "pitch": {"degree": 0, "equave": -1}, "velocity": 100.0},
-            {"id": 232, "start": 110880, "length": 110880, "pitch": {"degree": 5, "equave": -1}, "velocity": 100.0},
-            {"id": 233, "start": 221760, "length": 110880, "pitch": {"degree": 1, "equave": -1}, "velocity": 100.0},
-            {"id": 234, "start": 332640, "length": 110880, "pitch": {"degree": 6, "equave": -1}, "velocity": 100.0},
-            {"id": 235, "start": 443520, "length": 110880, "pitch": {"degree": 2, "equave": -1}, "velocity": 100.0},
-            {"id": 236, "start": 554400, "length": 110880, "pitch": {"degree": 7, "equave": -1}, "velocity": 100.0},
-            {"id": 237, "start": 665280, "length": 110880, "pitch": {"degree": 3, "equave": -1}, "velocity": 100.0},
-            {"id": 238, "start": 776160, "length": 110880, "pitch": {"degree": 8, "equave": -1}, "velocity": 100.0}
+            {"id": 232, "start": 0, "length": 110880, "pitch": {"degree": 0, "equave": -1}, "velocity": 100.0},
+            {"id": 233, "start": 110880, "length": 110880, "pitch": {"degree": 5, "equave": -1}, "velocity": 100.0},
+            {"id": 234, "start": 221760, "length": 110880, "pitch": {"degree": 1, "equave": -1}, "velocity": 100.0},
+            {"id": 235, "start": 332640, "length": 110880, "pitch": {"degree": 6, "equave": -1}, "velocity": 100.0},
+            {"id": 236, "start": 443520, "length": 110880, "pitch": {"degree": 2, "equave": -1}, "velocity": 100.0},
+            {"id": 237, "start": 554400, "length": 110880, "pitch": {"degree": 7, "equave": -1}, "velocity": 100.0},
+            {"id": 238, "start": 665280, "length": 110880, "pitch": {"degree": 3, "equave": -1}, "velocity": 100.0},
+            {"id": 239, "start": 776160, "length": 110880, "pitch": {"degree": 8, "equave": -1}, "velocity": 100.0}
           ]
         }
       ]
@@ -368,7 +379,7 @@
           ],
           "clips": [
             {
-              "id": 239,
+              "id": 240,
               "name": "Chords",
               "colour": "#46A5E8",
               "start": 0,
@@ -379,18 +390,18 @@
               "tuning": "inherit",
               "active": true,
               "notes": [
-                {"id": 240, "start": 0, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 241, "start": 0, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 242, "start": 0, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
-                {"id": 243, "start": 887040, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
-                {"id": 244, "start": 887040, "length": 776160, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
-                {"id": 245, "start": 887040, "length": 776160, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
-                {"id": 246, "start": 1774080, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 247, "start": 1774080, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
-                {"id": 248, "start": 1774080, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
-                {"id": 249, "start": 2661120, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
-                {"id": 250, "start": 2661120, "length": 776160, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
-                {"id": 251, "start": 2661120, "length": 776160, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0}
+                {"id": 241, "start": 0, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 242, "start": 0, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 243, "start": 0, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 244, "start": 887040, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 245, "start": 887040, "length": 776160, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+                {"id": 246, "start": 887040, "length": 776160, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0},
+                {"id": 247, "start": 1774080, "length": 776160, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 248, "start": 1774080, "length": 776160, "pitch": {"degree": 4, "equave": 0}, "velocity": 100.0},
+                {"id": 249, "start": 1774080, "length": 776160, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 250, "start": 2661120, "length": 776160, "pitch": {"degree": 5, "equave": 0}, "velocity": 100.0},
+                {"id": 251, "start": 2661120, "length": 776160, "pitch": {"degree": 9, "equave": 0}, "velocity": 100.0},
+                {"id": 252, "start": 2661120, "length": 776160, "pitch": {"degree": 12, "equave": 0}, "velocity": 100.0}
               ]
             }
           ]
@@ -401,14 +412,7 @@
           "name": "Pad",
           "colour": "#BB86F0",
           "active": true,
-          "tuning": {
-            "private": {
-              "kind": "edo",
-              "n": 22,
-              "equave": "2/1",
-              "referenceHz": 261.626
-            }
-          },
+          "tuning": {"main": 221},
           "mixer": {"volumeDb": 0.0, "pan": 0.0, "mute": true, "solo": false, "arm": false, "sends": [{"target": 219, "levelDb": -70.0, "preFader": true}], "output": "default"},
           "lanes": [],
           "devices": [
@@ -494,7 +498,7 @@
           ],
           "clips": [
             {
-              "id": 252,
+              "id": 253,
               "name": "Pad 22",
               "colour": "#BB86F0",
               "start": 1774080,
@@ -505,9 +509,9 @@
               "tuning": "inherit",
               "active": true,
               "notes": [
-                {"id": 253, "start": 0, "length": 1774080, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
-                {"id": 254, "start": 0, "length": 1774080, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
-                {"id": 255, "start": 0, "length": 1774080, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0}
+                {"id": 254, "start": 0, "length": 1774080, "pitch": {"degree": 0, "equave": 0}, "velocity": 100.0},
+                {"id": 255, "start": 0, "length": 1774080, "pitch": {"degree": 7, "equave": 0}, "velocity": 100.0},
+                {"id": 256, "start": 0, "length": 1774080, "pitch": {"degree": 13, "equave": 0}, "velocity": 100.0}
               ]
             }
           ]
@@ -606,7 +610,7 @@
       ],
       "clips": [
         {
-          "id": 256,
+          "id": 257,
           "name": "Hook",
           "colour": "#16B293",
           "start": 3548160,
@@ -617,18 +621,18 @@
           "tuning": "inherit",
           "active": true,
           "notes": [
-            {"id": 257, "start": 0, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 258, "start": 221760, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 259, "start": 443520, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 260, "start": 665280, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
-            {"id": 261, "start": 887040, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 262, "start": 1108800, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 263, "start": 1330560, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 264, "start": 1552320, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
-            {"id": 265, "start": 1774080, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
-            {"id": 266, "start": 1995840, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
-            {"id": 267, "start": 2217600, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
-            {"id": 268, "start": 2439360, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
+            {"id": 258, "start": 0, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 259, "start": 221760, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 260, "start": 443520, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 261, "start": 665280, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 262, "start": 887040, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 263, "start": 1108800, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 264, "start": 1330560, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 265, "start": 1552320, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0},
+            {"id": 266, "start": 1774080, "length": 166320, "pitch": {"degree": 0, "equave": 1}, "velocity": 100.0},
+            {"id": 267, "start": 1995840, "length": 166320, "pitch": {"degree": 3, "equave": 1}, "velocity": 100.0},
+            {"id": 268, "start": 2217600, "length": 166320, "pitch": {"degree": 6, "equave": 1}, "velocity": 100.0},
+            {"id": 269, "start": 2439360, "length": 166320, "pitch": {"degree": 9, "equave": 1}, "velocity": 100.0}
           ]
         }
       ]

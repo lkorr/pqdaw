@@ -21,6 +21,7 @@
 #include "pq/ui/image.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/fake_transport.h"
+#include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/piano_roll/clip_view.h"
 #include "pq/views/piano_roll/row_model.h"
 #include "pq/views/shell/shell.h"
@@ -87,6 +88,12 @@ struct Roll {
     const int32_t i = doc::findClipIndex(*t, ref.clip);
     REQUIRE(i >= 0);
     return *t->clips[static_cast<size_t>(i)].clip;
+  }
+  // TU.3: the named tuning the clip resolves to (what the Generator box and the morph edit; here the default 5L 2s).
+  const doc::TuningDef& tuningDef() const {
+    const doc::TuningDef* def = doc::effectiveTuning(*ctx.doc(), *doc::findTrack(*ctx.doc(), ref.track), &clip());
+    REQUIRE(def != nullptr);
+    return *def;
   }
   size_t history() const { return ctx.store().history().cursor(); }
   IRect area() const { return d.find("main/body/bottom/detail/clip/clip-view/notes")->rect(); }
@@ -322,6 +329,7 @@ TEST_CASE("clip view: background EDO — Up on a Cents note steps on its lines; 
 TEST_CASE("clip view: generator morph across region boundaries keeps Degree notes on their rows; live, one undo step") {
   Roll r("pianoroll-5L2s");
   const doc::NoteClip* before = &r.clip();
+  const doc::Snapshot snap0 = r.ctx.doc();
   const size_t h0 = r.history();
   CHECK(r.checkDegreeNotesOnRows() > 5);
   const uint64_t lin0 = r.view->morphLinearFrames(), reb0 = r.view->morphRebuilds();
@@ -334,8 +342,8 @@ TEST_CASE("clip view: generator morph across region boundaries keeps Degree note
     r.d.step();
     CHECK(r.history() == h0);              // inside one store gesture: no undo step yet
     CHECK(r.ctx.store().inGesture());
-    REQUIRE(r.clip().tuning.privateDef != nullptr);  // TU.1: in the document at once (sounding notes retune)
-    const tuning::MosParams* live = r.clip().tuning.privateDef->mos();
+    CHECK(r.ctx.doc() != snap0);  // TU.1: in the document at once (sounding notes retune)
+    const tuning::MosParams* live = r.tuningDef().mos();
     CHECK((live->n != 7 || std::fabs(live->generator - std::min(g, 1200.0 * 3 / 5)) < 1e-9));
     CHECK(r.checkDegreeNotesOnRows() > 0);  // every visible Degree note sits on its row, every frame
     sizeAfter = r.view->rows().degreesPerEquave();
@@ -349,16 +357,18 @@ TEST_CASE("clip view: generator morph across region boundaries keeps Degree note
   r.view->endGeneratorMorph(true);
   CHECK(r.history() == h0 + 1);                            // one undo step
   CHECK_FALSE(r.ctx.store().inGesture());
-  CHECK(&r.clip() != before);
-  const doc::NoteClip& committed = r.clip();
-  REQUIRE(committed.tuning.mode == doc::TuningMode::Private);
-  const tuning::MosParams* mp = committed.tuning.privateDef->mos();
+  // TU.3: the clip's named tuning (the default) was edited; the clip itself and its assignment are untouched.
+  CHECK(&r.clip() == before);
+  CHECK(r.clip().tuning.mode == doc::TuningMode::Inherit);
+  const doc::TuningDef committed = r.tuningDef();
+  CHECK(committed == doc::defaultTuningOf(*r.ctx.doc())->def);
+  const tuning::MosParams* mp = committed.mos();
   REQUIRE(mp != nullptr);
   CHECK(mp->n == sizeAfter);
   CHECK(r.view->rows().degreesPerEquave() == sizeAfter);
   CHECK(r.checkDegreeNotesOnRows() > 0);
   // The rows are the committed tuning's pitches.
-  auto built = doc::buildTuning(*committed.tuning.privateDef);
+  auto built = doc::buildTuning(committed);
   REQUIRE(built.ok());
   for (const PitchRow& row : r.view->rows().rows()) CHECK(row.cents == doctest::Approx(degreeCents(*built, row.degree)));
   r.d.press("Ctrl+Z");
@@ -373,16 +383,17 @@ TEST_CASE("clip view: generator morph across region boundaries keeps Degree note
     r.d.step();
     CHECK(r.checkDegreeNotesOnRows() > 0);
   }
-  REQUIRE(r.clip().tuning.privateDef != nullptr);
-  const tuning::MosParams* pm = r.clip().tuning.privateDef->mos();
+  const tuning::MosParams* pm = r.tuningDef().mos();
   REQUIRE(pm != nullptr);
   CHECK(pm->n == 7);
   CHECK(pm->generator < 685.0);
-  CHECK(pm->region->highCents == doctest::Approx(1200.0 * 4 / 7));
+  // TU.3: the default tuning's generator is a param write (SetTuningParam, TU.1's named-tuning path: the region hint is
+  // left as it was, it only decides an exact region end); the scale it builds is the 2L 5s past the equalized end.
+  CHECK(tuningSummary(r.tuningDef()).rfind("2L 5s", 0) == 0);
   r.view->endGeneratorMorph(false);
   CHECK(r.history() == h0);
   CHECK_FALSE(r.ctx.store().inGesture());
-  CHECK(&r.clip() == before);  // the gesture was cancelled: the document as before the drag
+  CHECK(r.ctx.doc() == snap0);  // the gesture was cancelled: the document as before the drag
   CHECK(r.view->rows().rowOfDegree(4)->cents == doctest::Approx(1200.0 * 18 / 31));
 }
 
@@ -397,16 +408,16 @@ TEST_CASE("clip view: the clip box Generator box applies every drag step live an
   for (int i = 1; i <= 10; ++i) {
     r.d.move({c.x, c.y - 4.0f * static_cast<float>(i)});
     CHECK(r.history() == h0);
-    REQUIRE(r.clip().tuning.privateDef != nullptr);  // TU.1: each step is in the document
-    CHECK(r.clip().tuning.privateDef->mos()->generator == doctest::Approx(1200.0 * 18 / 31 + 2.0 * i).epsilon(1e-6));
+    REQUIRE(r.tuningDef().mos() != nullptr);  // TU.1: each step is in the document
+    CHECK(r.tuningDef().mos()->generator == doctest::Approx(1200.0 * 18 / 31 + 2.0 * i).epsilon(1e-6));
   }
-  const double g = r.clip().tuning.privateDef->mos()->generator;
+  const double g = r.tuningDef().mos()->generator;
   CHECK(g == doctest::Approx(1200.0 * 18 / 31 + 20.0).epsilon(1e-6));  // 40 px × 0.5 ¢
   CHECK(r.view->rows().rowOfDegree(4)->cents == doctest::Approx(g));
   r.d.up({c.x, c.y - 40.0f});
   CHECK(r.history() == h0 + 1);
   CHECK_FALSE(r.ctx.store().inGesture());
-  CHECK(r.clip().tuning.privateDef->mos()->generator == doctest::Approx(g));
+  CHECK(r.tuningDef().mos()->generator == doctest::Approx(g));
 }
 
 TEST_CASE("clip view: Generator box: Esc cancels the drag, Delete restores the committed value, the keys return to the notes (M12b)") {
@@ -438,12 +449,12 @@ TEST_CASE("clip view: Generator box: Esc cancels the drag, Delete restores the c
   // 3. After a committed drag the keys go back to the note area: Up transposes notes, not the generator.
   r.d.drag(c, {c.x, c.y - 20.0f}, 5);
   CHECK(r.history() == h0 + 1);
-  const double g1 = r.clip().tuning.privateDef->mos()->generator;
+  const double g1 = r.tuningDef().mos()->generator;
   const Widget* notes = r.d.find("main/body/bottom/detail/clip/clip-view/notes");
   CHECK(r.d.tree().focus() == notes);
   r.d.press("Ctrl+A");
   r.d.press("Up");
-  CHECK(r.clip().tuning.privateDef->mos()->generator == doctest::Approx(g1));  // unchanged: the notes moved
+  CHECK(r.tuningDef().mos()->generator == doctest::Approx(g1));  // unchanged: the notes moved
   CHECK(r.history() == h0 + 2);
 }
 

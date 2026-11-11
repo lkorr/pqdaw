@@ -295,8 +295,10 @@ std::optional<KN> play(Fixture& f, Key k) {
   return KN{v[before].equave, v[before].step};
 }
 
-void setPrivateTuning(Fixture& f, std::string_view track, doc::TuningDef def) {
-  REQUIRE(f.ctx.store().dispatch(doc::SetTrackTuning{f.track(track).id, doc::TuningAssignment::privateTuning(std::move(def))}).ok());
+// TU.3: the track on a new named tuning with `def`.
+void setOwnTuning(Fixture& f, std::string_view track, doc::TuningDef def) {
+  const doc::TuningId id = test::addTuning(f.ctx.store(), std::move(def));
+  REQUIRE(f.ctx.store().dispatch(doc::SetTrackTuning{f.track(track).id, doc::TuningAssignment::mainTuning(id)}).ok());
 }
 
 }  // namespace
@@ -399,7 +401,7 @@ TEST_CASE("KB.1 computer keyboard: other sizes play the mos-explorer layout (1Ro
     m.generator = 18.0 * 1200.0 / 31.0;
     doc::TuningDef def;
     def.system = m;
-    setPrivateTuning(f, "Pad", def);
+    setOwnTuning(f, "Pad", def);
     CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 7});
     CHECK(play(f, 'j') == KN{0, 6});
     CHECK(play(f, 'k') == KN{0, 7});  // past the equave: degree 7 = the next equave's tonic (equave · 7 + 7)
@@ -456,7 +458,8 @@ TEST_CASE("KB.2 computer keyboard: plays its track's live clip's tuning (the cli
   const doc::ClipId a = addClip(100 * kBar), b = addClip(104 * kBar);
   doc::TuningDef edo22;
   edo22.system = tuning::Edo::make(22).value();
-  REQUIRE(f.ctx.store().dispatch(doc::SetClipTuning{{drums, a}, doc::TuningAssignment::privateTuning(edo22)}).ok());
+  const doc::TuningId t22 = test::addTuning(f.ctx.store(), edo22);  // TU.3: a named tuning
+  REQUIRE(f.ctx.store().dispatch(doc::SetClipTuning{{drums, a}, doc::TuningAssignment::mainTuning(t22)}).ok());
   // Nothing open, the start marker over no clip of these: the track's 12-EDO.
   CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{true, 12});
   f.d.press("M");
@@ -485,7 +488,7 @@ TEST_CASE("KB.2 computer keyboard: plays its track's live clip's tuning (the cli
     CHECK(f.ctx.keyboardLayout().piano);
     // B open and retuned to 22-EDO: the keyboard follows the clip's tuning change.
     f.ctx.setDetailClip({drums, b});
-    REQUIRE(f.ctx.store().dispatch(doc::SetClipTuning{{drums, b}, doc::TuningAssignment::privateTuning(edo22)}).ok());
+    REQUIRE(f.ctx.store().dispatch(doc::SetClipTuning{{drums, b}, doc::TuningAssignment::mainTuning(t22)}).ok());
     CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});
   }
   SUBCASE("(2) closed: the clip under the start marker, stopped; under the playhead, playing") {
@@ -507,7 +510,7 @@ TEST_CASE("KB.2 computer keyboard: plays its track's live clip's tuning (the cli
     CHECK(f.ctx.keyboardLayout().piano);
   }
   SUBCASE("(3) no live clip: the track's own tuning") {
-    REQUIRE(f.ctx.store().dispatch(doc::SetTrackTuning{drums, doc::TuningAssignment::privateTuning(edo22)}).ok());
+    REQUIRE(f.ctx.store().dispatch(doc::SetTrackTuning{drums, doc::TuningAssignment::mainTuning(t22)}).ok());
     CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});
     f.ctx.setStartMarker(105 * kBar);  // B inherits it now
     CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});

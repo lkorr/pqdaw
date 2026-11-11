@@ -88,8 +88,9 @@ public:
   bool showHarmonics() const noexcept;
   void setShowHarmonics(bool on);
   void setOverlayEdo(uint32_t n);
-  // Live generator morph of a MOS clip (what the clip box's Generator box does): previews every step through the
-  // context's tuning preview, end(true) commits one SetClipTuning (one undo step), end(false) restores.
+  // Live generator morph of a MOS clip (what the clip box's Generator box does): applies every step to the
+  // document inside one store gesture (TU.3: edits of the clip's NAMED tuning, SetTuningParam / SetTuningDef, so every
+  // clip and track on it follows), end(true) commits it (one undo step), end(false) restores.
   void beginGeneratorMorph();
   void morphGenerator(double generatorCents);
   void endGeneratorMorph(bool commit);

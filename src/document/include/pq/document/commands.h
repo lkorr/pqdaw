@@ -173,8 +173,8 @@ struct UpdateLocator { Locator locator; };                         // Meta (move
 
 // ---- Main tunings ----------------------------------------------------------------------------------------------
 struct AddTuning { TuningSlot slot; };                             // Structural (a new tuning signal node)
-// Structural. Rejected while a track or clip uses the tuning, or if it is the last one; lanes automating it are
-// removed with it.
+// Structural. Rejected while a track or clip uses the tuning, while it is the project's default, or if it is the last
+// one; lanes automating it are removed with it.
 struct RemoveTuning { TuningId tuning; };
 struct RenameTuning { TuningId tuning; std::string name; };        // Meta
 struct SetTuningColour { TuningId tuning; Colour colour; };        // Meta
@@ -186,6 +186,8 @@ struct SetTuningColour { TuningId tuning; Colour colour; };        // Meta
 struct SetTuningDef { TuningId tuning; TuningDef def; };
 // Param. Sets one continuous parameter (the ParamKind must be a tuning param that applies to the tuning's kind).
 struct SetTuningParam { TuningId tuning; ParamKind param = ParamKind::TuningReference; double value = 0.0; };
+// TU.3. Structural: the project's default tuning (Project::defaultTuning), what a top-level Inherit resolves to.
+struct SetDefaultTuning { TuningId tuning; };
 
 // ---- Devices (T4.1; QUESTIONS Q129) -----------------------------------------------------------------------
 // TX.all-free: a track's devices are BLOCKS (a set: Track::devices) wired by cables; these commands add, remove and move
@@ -285,7 +287,7 @@ using CommandVariant = std::variant<
     AddNotes, RemoveNotes, UpdateNotes, MoveNote, ResizeNote, SetNoteProperty,
     AddAutomationLane, RemoveAutomationLane, AddBreakpoints, RemoveBreakpoints, UpdateBreakpoints,
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
-    AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam,
+    AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam, SetDefaultTuning,
     AddDevice, RemoveDevice, MoveDevice, SetDeviceActive, SetDeviceParam, SetDeviceSetting, RenameDevice,
     SetDeviceGroup, SetParamCurve, SetGroupPanel, AddWire, RemoveWire, SetWireAmount, SetWireReducer, SetWireSignal, SetWireTap,
     AddMetaInstance, RemoveMetaInstance, RenameMetaInstance, SetMetaParam, SetMetaSetting, SetMetaData,

@@ -124,7 +124,6 @@ const TuningDef* audioClipTuning(const Project& p, const TrackPath& path, const 
     case TuningMode::Main:
       if (const TuningSlot* s = findTuning(p, c.tuning.main)) return &s->def;
       return nullptr;
-    case TuningMode::Private: return c.tuning.privateDef.get();
     case TuningMode::Inherit: break;
   }
   return effectiveTuning(p, path);

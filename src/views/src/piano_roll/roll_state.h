@@ -338,7 +338,7 @@ public:
   tuning::PitchId drawnPitch(const DrawnNote& d) const noexcept;
 
   // Generator morph from the clip box (a MOS clip; TU.1): every step is applied to the document inside one store
-  // gesture (TuningEdit: SetClipTuning of the clip's private tuning), so sounding notes retune during the drag and the
+  // gesture (TuningEdit; TU.3: SetTuningParam / SetTuningDef of the clip's named tuning), so sounding notes retune during the drag and the
   // rows and Degree notes follow at frame rate (refresh: in place within an interval); end(true) commits the gesture
   // (ONE undo step), end(false) cancels it (the document as before). Past the current MOS region's ends the generator moves into
   // the adjacent region (tuning::findAdjacentRegion) carrying the mode (transferModeRotation), as the MOS wheel's

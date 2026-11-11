@@ -142,7 +142,9 @@ TEST_CASE("warp link: Tones / Complex / Complex Pro +3 steps of a 31-EDO clip tu
   song.apply(ops::setAudioClipTranspose(*song.store.current(), one, AudioTranspose{TransposeUnit::Steps, 0.0, 3, {1}}));
   TuningDef d;
   d.system = *tuning::Edo::make(31);
-  REQUIRE(song.store.dispatch(SetClipTuning{c, TuningAssignment::privateTuning(d)}).ok());
+  const TuningId t31 = song.store.ids().tuning();  // TU.3: a named tuning
+  REQUIRE(song.store.dispatch(AddTuning{TuningSlot{t31, "Tuning B", Colour{0x808080}, d}}).ok());
+  REQUIRE(song.store.dispatch(SetClipTuning{c, TuningAssignment::mainTuning(t31)}).ok());
   const AudioTrackDesc desc = lowerAudioTrack(*song.store.current(), *findTrack(*song.store.current(), song.track));
   REQUIRE(desc.clips.size() == 1);
   CHECK(desc.clips[0].pitchRatio == doctest::Approx(std::exp2(3.0 / 31.0)).epsilon(1e-12));

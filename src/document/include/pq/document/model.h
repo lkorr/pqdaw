@@ -87,22 +87,17 @@ struct TuningSlot {
 bool operator==(const TuningSlot& a, const TuningSlot& b) noexcept;
 using TuningSlotPtr = std::shared_ptr<const TuningSlot>;
 
-// Which tuning a track or clip uses.
+// Which tuning a track or clip uses (TU.3: every tuning is a named project tuning; there are no private ones).
 //   Inherit: a clip uses its track's tuning; a track uses its parent group's, and a top-level track the project's
-//            first main tuning.
-//   Main:    a named main tuning (`main`).
-//   Private: an unnamed tuning owned by this track/clip (`privateDef`).
-enum class TuningMode : uint8_t { Inherit, Main, Private };
+//            default tuning (Project::defaultTuning).
+//   Main:    a named project tuning (`main`).
+enum class TuningMode : uint8_t { Inherit, Main };
 struct TuningAssignment {
   TuningMode mode = TuningMode::Inherit;
   TuningId main;
-  std::shared_ptr<const TuningDef> privateDef;
 
   static TuningAssignment inherit() { return {}; }
-  static TuningAssignment mainTuning(TuningId id) { return {TuningMode::Main, id, nullptr}; }
-  static TuningAssignment privateTuning(TuningDef def) {
-    return {TuningMode::Private, TuningId{}, std::make_shared<const TuningDef>(std::move(def))};
-  }
+  static TuningAssignment mainTuning(TuningId id) { return {TuningMode::Main, id}; }
 };
 bool operator==(const TuningAssignment& a, const TuningAssignment& b) noexcept;
 
@@ -1023,7 +1018,8 @@ using LocatorList = std::vector<Locator>;
 
 struct Project {
   std::shared_ptr<const Timeline> timeline;
-  std::shared_ptr<const TuningList> tunings;    // never empty (the first is the default for Inherit)
+  std::shared_ptr<const TuningList> tunings;    // never empty
+  TuningId defaultTuning;                       // TU.3: one of `tunings`; what a top-level Inherit resolves to
   std::shared_ptr<const LocatorList> locators;  // sorted by (tick, id)
   LoopRegion loop;
   std::vector<TrackPtr> tracks;   // the track tree (Midi + Audio + Group, nested)
@@ -1072,6 +1068,8 @@ const Track* findTrackPtr(const Project& p, TrackId id) noexcept;
 const Track* parentOf(const Project& p, const TrackPath& path) noexcept;
 
 const TuningSlot* findTuning(const Project& p, TuningId id) noexcept;
+// TU.3: the project's default tuning (what a top-level Inherit resolves to; nullptr only in an invalid project).
+const TuningSlot* defaultTuningOf(const Project& p) noexcept;
 // Index of the clip in track.clips, or −1.
 int32_t findClipIndex(const Track& t, ClipId id) noexcept;
 // The track holding device `id` (nullptr: none) and the device.

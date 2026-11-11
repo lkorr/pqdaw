@@ -56,11 +56,14 @@ Result<TuningFile> parseTuning(std::string_view text, std::string_view fileName 
 
 struct ClipFile {
   std::string name;
-  ClipSlot clip;                  // exactly one of clip.clip / clip.audio
+  ClipSlot clip;                  // exactly one of clip.clip / clip.audio; its tuning assignment is Inherit
   std::optional<SampleRef> sample;  // an audio clip's sample (its id = clip.audio->sample)
+  // TU.3: the definition of the named tuning the clip was assigned to (file key "tuning"), so its pitches survive the
+  // move to another project: loading assigns the project's tuning with this definition, or adds one (library_load).
+  std::optional<TuningDef> tuning;
 };
-// A clip assigned to a main tuning is written with that tuning as a private one (the file has no main tunings), so its
-// pitches survive the move to another project; `p` resolves it (nullptr: Main assignments become Inherit).
+// A clip assigned to a named tuning is written Inherit with that tuning's definition in ClipFile::tuning (the file has
+// no project tunings); `p` resolves it (nullptr: the assignment is dropped).
 Result<std::string> serializeClip(const ClipFile& f, const Project* p = nullptr);
 Result<ClipFile> parseClip(std::string_view text, std::string_view fileName = {});
 

@@ -125,6 +125,7 @@ struct MenuItem {
   bool enabled = true;
   bool checked = false;
   bool separator = false;
+  Rgba swatch = 0;                   // TU.3: a colour dot in the gutter (alpha 0: none), e.g. a tuning's colour
 
   static MenuItem item(std::string label, std::function<void()> onChoose = {}, std::string shortcut = {});
   static MenuItem sub(std::string label, std::vector<MenuItem> items);

@@ -15,10 +15,36 @@
 #include "pq/document/store.h"
 #include "pq/ui/damage.h"
 #include "pq/ui/draw_list.h"
+#include "pq/ui/overlay.h"
+#include "pq/ui/test_driver.h"
 #include "pq/ui/widget.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views::test {
+
+// TU.3: a new named tuning with `def` (there are no private tunings), one undo step. Returns its id.
+inline doc::TuningId addTuning(doc::DocumentStore& store, doc::TuningDef def, std::string name = "Tuning X") {
+  const doc::TuningId id = store.ids().tuning();
+  REQUIRE(store.dispatch(doc::AddTuning{doc::TuningSlot{id, std::move(name), doc::Colour{0x8080C0}, std::move(def)}}).ok());
+  return id;
+}
+
+// TU.3: a real left click on the item of the menu on top of `layer` whose label starts with `label` (REQUIREs both).
+inline void clickMenuItem(ui::TestDriver& d, ui::OverlayLayer& layer, std::string_view label) {
+  INFO("menu item " << label);
+  d.tree().layoutNow();
+  auto* m = dynamic_cast<ui::Menu*>(layer.top());
+  REQUIRE(m != nullptr);
+  for (size_t i = 0; i < m->items().size(); ++i)
+    if (m->items()[i].label.rfind(label, 0) == 0) {
+      REQUIRE(m->selectable(static_cast<int32_t>(i)));
+      const ui::IRect r = m->itemRect(static_cast<int32_t>(i));
+      d.click({static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)});
+      d.step();
+      return;
+    }
+  FAIL("no menu item " << label);
+}
 
 // Dialogs that answer immediately with preset values (as if the user picked them).
 struct ScriptedDialogs final : FileDialogs {

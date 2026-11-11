@@ -43,8 +43,6 @@ const TuningDef* defOf(const Project& p, const TuningAssignment& a) noexcept {
       const TuningSlot* s = findTuning(p, a.main);
       return s ? &s->def : nullptr;
     }
-    case TuningMode::Private:
-      return a.privateDef.get();
     case TuningMode::Inherit:
       break;
   }
@@ -121,7 +119,6 @@ bool operator==(const TuningAssignment& a, const TuningAssignment& b) noexcept {
   switch (a.mode) {
     case TuningMode::Inherit: return true;
     case TuningMode::Main: return a.main == b.main;
-    case TuningMode::Private: return deepEq(a.privateDef, b.privateDef);
   }
   return false;
 }
@@ -662,6 +659,7 @@ bool operator==(const Project& a, const Project& b) noexcept {
   if (&a == &b) return true;
   return deepEq(a.timeline, b.timeline) && deepEq(a.locators, b.locators) && a.loop == b.loop &&
          (a.tunings == b.tunings || (a.tunings && b.tunings && deepEqList(*a.tunings, *b.tunings))) &&
+         a.defaultTuning == b.defaultTuning &&
          deepEqList(a.tracks, b.tracks) && deepEqList(a.returns, b.returns) && deepEq(a.master, b.master) &&
          (a.wires == b.wires || wiresOf(a) == wiresOf(b)) && (a.samples == b.samples || samplesOf(a) == samplesOf(b)) &&
          a.punch == b.punch && a.record == b.record;
@@ -713,6 +711,7 @@ Snapshot makeDefaultProject(IdSource& ids, bool wireMaster) {
   slot.id = ids.tuning();
   slot.name = "12-EDO";
   slot.colour = Colour{0x5E9BD6};
+  p->defaultTuning = slot.id;
   p->tunings = std::make_shared<const TuningList>(TuningList{std::make_shared<const TuningSlot>(std::move(slot))});
   p->locators = std::make_shared<const LocatorList>();
   p->master = std::make_shared<const Track>(makeTrack(ids.track(), TrackKind::Master, "Master"));
@@ -795,6 +794,8 @@ const TuningSlot* findTuning(const Project& p, TuningId id) noexcept {
   return nullptr;
 }
 
+const TuningSlot* defaultTuningOf(const Project& p) noexcept { return findTuning(p, p.defaultTuning); }
+
 int32_t findClipIndex(const Track& t, ClipId id) noexcept {
   for (size_t i = 0; i < t.clips.size(); ++i)
     if (t.clips[i].id == id) return static_cast<int32_t>(i);
@@ -832,7 +833,8 @@ const TuningDef* effectiveTuning(const Project& p, const TrackPath& path, const 
     if (at.list != TrackList::Main) break;
     at = at.parent();
   }
-  return p.tunings->empty() ? nullptr : &p.tunings->front()->def;
+  const TuningSlot* d = defaultTuningOf(p);
+  return d ? &d->def : nullptr;
 }
 
 }  // namespace pq::doc

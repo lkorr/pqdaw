@@ -428,7 +428,8 @@ TEST_CASE("roll: row label modes (Auto = ratios for a just Scala scale), ratio n
   REQUIRE(parsed.ok());
   auto def = doc::makeScaleDef(std::move(*parsed), std::nullopt);
   REQUIRE(def.ok());
-  REQUIRE(u.ctx.store().dispatch(doc::SetClipTuning{u.riff, doc::TuningAssignment::privateTuning(*def)}).ok());
+  const doc::TuningId just = views::test::addTuning(u.ctx.store(), *def, "Just");  // TU.3: a named tuning
+  REQUIRE(u.ctx.store().dispatch(doc::SetClipTuning{u.riff, doc::TuningAssignment::mainTuning(just)}).ok());
   v.setRowLabels(roll::RowLabels::Auto);
   CHECK(v.rows().labelMode() == roll::RowLabels::Ratio);
   CHECK(labelOf(1) == "9/8");
@@ -558,6 +559,50 @@ TEST_CASE("tunings panel: reference is a Param edit, an exact 3/1 equave (13ed3)
   u.d.step();
   CHECK(u.panel().cardCount() == 2);
   CHECK(doc::findTrackPtr(*u.ctx.doc(), u.bass)->tuning == doc::TuningAssignment::mainTuning(B));
+}
+
+TEST_CASE("tunings panel (TU.3): a card's menu sets the project default; the control bar's chip follows it and sets it too; "
+          "removing the default hands it on") {
+  Ui u;
+  doc::TuningDef d;
+  d.system = tu::Edo::make(19).value();
+  REQUIRE(u.ctx.store().dispatch(doc::ops::addMainTuning(*u.ctx.doc(), u.ctx.store().ids(), "Tuning B", d, {})->command).ok());
+  const doc::TuningId A = u.ctx.doc()->tunings->front()->id, B = u.ctx.doc()->tunings->back()->id;
+  u.ctx.setTuningsVisible(true);
+  u.ctx.setSelectedTrack({});
+  u.d.step();
+  CHECK(u.panel().card(A)->usage().rfind("Default", 0) == 0);
+  CHECK(u.panel().card(B)->usage() == "Not assigned");
+  auto* barChip = dynamic_cast<TuningChip*>(u.d.find("main/control-bar/tuning"));
+  REQUIRE(barChip != nullptr);
+  REQUIRE(barChip->target().has_value());
+  CHECK(barChip->target()->kind == TuningTarget::Kind::Project);
+  CHECK(barChip->text() == "12-EDO");
+  // Right-click the card (real dispatch) → Set as Project Default: one undo step; Bass (Inherit) now plays in B.
+  size_t h = u.history();
+  u.panel().reveal(B);
+  u.d.step();
+  const IRect card = u.panel().card(B)->rect();
+  u.d.click({static_cast<float>(card.right()) - 6.0f, static_cast<float>(card.bottom()) - 4.0f}, mod::kNone, PointerButton::Right);
+  views::test::clickMenuItem(u.d, u.shell->overlay(), "Set as Project Default");
+  CHECK(u.history() == h + 1);
+  CHECK(u.ctx.doc()->defaultTuning == B);
+  CHECK(doc::effectiveTuning(*u.ctx.doc(), *doc::findTrack(*u.ctx.doc(), u.bass))->edo()->n() == 19u);
+  CHECK(u.panel().card(B)->usage().rfind("Default", 0) == 0);
+  CHECK(u.panel().card(A)->usage() == "Not assigned");
+  CHECK(barChip->text() == "Tuning B \xC2\xB7 19");
+  // The control bar's chip: right-click → its own list sets the default back (no track selected: the project's).
+  h = u.history();
+  u.d.click(u.d.center("main/control-bar/tuning"), mod::kNone, PointerButton::Right);
+  views::test::clickMenuItem(u.d, u.shell->overlay(), "12-EDO");
+  CHECK(u.history() == h + 1);
+  CHECK(u.ctx.doc()->defaultTuning == A);
+  // Removing the default tuning hands the default to the replacement in the same undo step.
+  REQUIRE(u.panel().removeTuning(A));
+  CHECK(u.ctx.doc()->defaultTuning == B);
+  CHECK(doc::findTuning(*u.ctx.doc(), A) == nullptr);
+  REQUIRE(u.ctx.undo());
+  CHECK(u.ctx.doc()->defaultTuning == A);
 }
 
 TEST_CASE("tunings panel: hidden it does no work; Create > New Main Tuning is greyed only without the panel") {

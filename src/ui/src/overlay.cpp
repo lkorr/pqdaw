@@ -575,6 +575,11 @@ void Menu::paint(PaintContext& ctx) {
       seg({x, y + 0.5f * u}, {x + 3.0f * u, y + 3.5f * u});
       seg({x + 3.0f * u, y + 3.5f * u}, {x + 9.0f * u, y - 3.5f * u});
     }
+    if ((it.swatch >> 24) != 0) {  // right of the tick, inside the gutter
+      const float dot = ctx.scale.exact(3.5f);
+      ctx.dl.addCircleFilled({static_cast<float>(ir.x + m.gutter) - ctx.scale.exact(4.5f), static_cast<float>(ir.y) + 0.5f * static_cast<float>(ir.h)},
+                             dot, ok ? it.swatch : th->text.disabled);
+    }
     if (f) {
       const int32_t rightPad = m.right + (it.submenu.empty() ? 0 : m.arrow);
       if (!it.shortcut.empty())

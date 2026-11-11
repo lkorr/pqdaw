@@ -20,8 +20,6 @@ EffectiveTuning refOf(const Project& p, const TuningAssignment& a) noexcept {
       const TuningSlot* s = findTuning(p, a.main);
       return s ? EffectiveTuning{&s->def, a.main} : EffectiveTuning{};
     }
-    case TuningMode::Private:
-      return {a.privateDef.get(), TuningId{}};
     case TuningMode::Inherit:
       break;
   }
@@ -191,9 +189,8 @@ EffectiveTuning effectiveTuningRef(const Project& p, const TrackPath& path, cons
     if (at.list != TrackList::Main) break;
     at = at.parent();
   }
-  if (p.tunings->empty()) return {};
-  const TuningSlot& first = *p.tunings->front();
-  return {&first.def, first.id};
+  const TuningSlot* d = defaultTuningOf(p);
+  return d ? EffectiveTuning{&d->def, d->id} : EffectiveTuning{};
 }
 
 LiveClip liveClip(const Track& t, ClipId edited, Ticks at) noexcept {

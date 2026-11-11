@@ -461,7 +461,9 @@ TEST_CASE("audio: Steps transposes resolve in the clip's tuning and follow its d
   CHECK(f.lowered(f.audio).clips.at(0).rateRatio == doctest::Approx(std::exp2(700.0 / 1200.0)));
   TuningDef d;
   d.system = *tuning::Edo::make(31);
-  REQUIRE(f.store.dispatch(SetClipTuning{r, TuningAssignment::privateTuning(d)}).ok());
+  const TuningId t31 = f.store.ids().tuning();  // TU.3: a named tuning
+  REQUIRE(f.store.dispatch(AddTuning{TuningSlot{t31, "Tuning B", {}, d}}).ok());
+  REQUIRE(f.store.dispatch(SetClipTuning{r, TuningAssignment::mainTuning(t31)}).ok());
   CHECK(f.store.lastChanges().sequenceOnly());
   CHECK(f.lowered(f.audio).clips.at(0).rateRatio == doctest::Approx(std::exp2(7.0 / 31.0)));
 }
@@ -502,7 +504,9 @@ struct RichAudio : AudioProject {
     commit(store, ops::setAudioClipTranspose(doc(), three, AudioTranspose{TransposeUnit::Steps, 0.0, -5, {1}}));
     TuningDef d;
     d.system = *tuning::Edo::make(19);
-    REQUIRE(store.dispatch(SetClipTuning{c, TuningAssignment::privateTuning(d)}).ok());
+    const TuningId t19 = ids.tuning();  // TU.3: a named tuning
+    REQUIRE(store.dispatch(AddTuning{TuningSlot{t19, "Tuning B", Colour{0x80A040}, d}}).ok());
+    REQUIRE(store.dispatch(SetClipTuning{c, TuningAssignment::mainTuning(t19)}).ok());
     REQUIRE(store.dispatch(SetClipActive{c, false}).ok());
     REQUIRE(store.dispatch(RenameClip{c, "re-pitched"}).ok());
   }

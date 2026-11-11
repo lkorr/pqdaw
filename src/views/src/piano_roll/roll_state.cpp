@@ -10,6 +10,7 @@
 
 #include "../common/drag.h"
 #include "pq/document/commands.h"
+#include "pq/document/pitch_resolve.h"
 #include "pq/tuning/ji.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
@@ -59,13 +60,16 @@ bool RollState::refresh() {
   }
   doc::ClipPtr c;
   const doc::TuningDef* def = nullptr;
+  doc::TuningId tuningId;
   if (ref_.clip.valid()) {
     if (const std::optional<doc::TrackPath> path = doc::findTrack(*cur, ref_.track)) {
       const doc::Track& t = doc::trackAt(*cur, *path);
       const int32_t i = doc::findClipIndex(t, ref_.clip);
       if (i >= 0) {
         c = t.clips[static_cast<size_t>(i)].clip;
-        def = doc::effectiveTuning(*cur, *path, c.get());
+        const doc::EffectiveTuning e = doc::effectiveTuningRef(*cur, *path, c.get());
+        def = e.def;
+        tuningId = e.main;
       }
     }
   }
@@ -97,12 +101,8 @@ bool RollState::refresh() {
     }
   }
   if (def && (snapChanged || changed || morphed)) {
-    std::string name = "Private Tuning";
-    for (const doc::TuningSlotPtr& slot : *cur->tunings)
-      if (slot->def == *def) {
-        name = slot->name;
-        break;
-      }
+    std::string name;  // TU.3: the named tuning the clip resolves to
+    if (const doc::TuningSlot* slot = doc::findTuning(*cur, tuningId)) name = slot->name;
     if (name != tuningName_) {
       tuningName_ = std::move(name);
       changed = true;

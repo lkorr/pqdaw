@@ -103,12 +103,13 @@ inline void buildArrangementProject(doc::DocumentStore& store) {
   run(store, doc::ops::setTracksColour(*store.current(), std::vector{keys}, doc::Colour{0x8499F0}), "colour");
   run(store, doc::ops::setTracksColour(*store.current(), std::vector{pads}, doc::Colour{0xDDC5F5}), "colour");
   run(store, doc::ops::setTracksColour(*store.current(), std::vector{fx}, doc::Colour{0x6FE697}), "colour");
-  // Strings play in 31-EDO (a private tuning): their Degree notes resolve there.
+  // Strings play in 31-EDO (TU.3: a second named tuning): their Degree notes resolve there.
   {
     auto edo = tuning::Edo::make(31);
     must(edo.ok(), "31-EDO");
-    dispatch(store, doc::SetTrackTuning{strings, doc::TuningAssignment::privateTuning(doc::TuningDef{*edo, tuning::kDefaultReferenceHz})},
-             "tuning");
+    const doc::TuningId t31 = store.ids().tuning();
+    dispatch(store, doc::AddTuning{{t31, "31-EDO", doc::Colour{0xE0A63A}, doc::TuningDef{*edo, tuning::kDefaultReferenceHz}}}, "tuning");
+    dispatch(store, doc::SetTrackTuning{strings, doc::TuningAssignment::mainTuning(t31)}, "tuning");
   }
 
   // Drums: a one-bar beat looped over 8 bars, a 16th fill, then a two-bar beat looped to bar 17.

@@ -315,10 +315,14 @@ TEST_CASE("user library: tunings save to the library and hot-swap onto a track")
   const size_t h0 = l.history();
   b.select(0);
   CHECK(l.history() == h0 + 1);
+  // TU.3: the hot-swap gives the track's NAMED tuning (Keys inherits the default) that definition; the assignment stays.
   const doc::Track& k = l.track(l.keys);
-  REQUIRE(k.tuning.mode == doc::TuningMode::Private);
-  REQUIRE(k.tuning.privateDef->edo() != nullptr);
-  CHECK(k.tuning.privateDef->edo()->n() == 31);
+  CHECK(k.tuning.mode == doc::TuningMode::Inherit);
+  const doc::TuningDef* kd = doc::effectiveTuning(*l.ctx.doc(), *doc::findTrack(*l.ctx.doc(), l.keys));
+  REQUIRE(kd != nullptr);
+  REQUIRE(kd->edo() != nullptr);
+  CHECK(kd->edo()->n() == 31);
+  CHECK(kd == &doc::defaultTuningOf(*l.ctx.doc())->def);
   // Without a hot-swap target, Enter adds it as a new main tuning.
   b.setHotSwap({});
   const size_t tunings = l.ctx.doc()->tunings->size();

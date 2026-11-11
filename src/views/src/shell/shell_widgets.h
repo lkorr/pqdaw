@@ -146,7 +146,7 @@ private:
   ui::DragBox* loopLength_ = nullptr;
   ui::Label* grid_ = nullptr;
   CpuMeter* cpu_ = nullptr;
-  ui::Widget* tuningChip_ = nullptr;  // TuningChip (mos_wheel.h) of the selected track, else the first main tuning
+  ui::Widget* tuningChip_ = nullptr;  // TuningChip (mos_wheel.h) of the selected track, else the project default
   const void* timeline_ = nullptr;  // the timeline node the controls were last read from
   doc::LoopRegion loopShown_{};
   bool loopShownValid_ = false;

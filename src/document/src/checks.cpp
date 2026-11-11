@@ -48,9 +48,6 @@ Status checkAssignment(const Project& p, const TuningAssignment& a) {
     case TuningMode::Main:
       if (!findTuning(p, a.main)) return notFound("main tuning not found");
       return ok();
-    case TuningMode::Private:
-      if (!a.privateDef) return invalid("private tuning without a definition");
-      return checkTuningDef(*a.privateDef);
   }
   return invalid("bad tuning mode");
 }

@@ -51,13 +51,14 @@ inline void buildMixerProject(doc::DocumentStore& store) {
   dispatch(store, doc::SetSendLevel{lead, reverb, -20.0f}, "send");
   run(store, doc::ops::setReturnSendsPreFader(*store.current(), delay, true), "pre");
   dispatch(store, doc::SetTrackOutput{lead, doc::Output{doc::OutputKind::Track, keys}}, "output");
-  // Tunings: Bass on the 31-EDO main tuning, Pad a private 22-EDO, the rest inherit 12-EDO.
+  // Tunings: Bass on the 31-EDO main tuning, Pad on a third, 22-EDO (TU.3: named tunings only), the rest inherit 12-EDO.
   dispatch(store, doc::SetTrackTuning{bass, doc::TuningAssignment::mainTuning(t31)}, "tuning");
   {
     auto edo22 = tuning::Edo::make(22);
     must(edo22.ok(), "22-EDO");
-    dispatch(store, doc::SetTrackTuning{pad, doc::TuningAssignment::privateTuning(doc::TuningDef{*edo22, tuning::kDefaultReferenceHz})},
-             "tuning");
+    const doc::TuningId t22 = store.ids().tuning();
+    dispatch(store, doc::AddTuning{{t22, "22-EDO", doc::Colour{0xB57CE6}, doc::TuningDef{*edo22, tuning::kDefaultReferenceHz}}}, "tuning");
+    dispatch(store, doc::SetTrackTuning{pad, doc::TuningAssignment::mainTuning(t22)}, "tuning");
   }
 
   // A few clips so the lanes are not empty.

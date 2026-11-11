@@ -430,6 +430,7 @@ struct Wheel {
   views::test::ScriptedDialogs dialogs;
   doc::TrackId trackA, trackB;
   doc::ClipRef a1, a2, b1;
+  doc::TuningId tA1;  // TU.3: A1's own named tuning ("Tuning B", 12-EDO); A2 and B1 inherit the default 12-EDO
 
   Wheel() {
     doc::DocumentStore& st = ctx.store();
@@ -450,6 +451,8 @@ struct Wheel {
       notes[static_cast<size_t>(i)].pitch = tu::PitchId::fromDegree(i * 2, 0);
     }
     run(doc::ops::addNotes(*st.current(), st.ids(), a1, notes));
+    tA1 = views::test::addTuning(st, doc::TuningDef{}, "Tuning B");
+    REQUIRE(st.dispatch(doc::SetClipTuning{a1, doc::TuningAssignment::mainTuning(tA1)}).ok());
     ctx.setFileDialogs(&dialogs);
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
@@ -492,7 +495,7 @@ TEST_CASE("mos wheel: the clip box chip opens the wheel; a chart drag retunes th
   CHECK(w.view().rows().degreesPerEquave() == 12);
   auto* chip = dynamic_cast<TuningChip*>(w.d.find("main/body/bottom/detail/clip/clip-view/clip-box/tuning"));
   REQUIRE(chip != nullptr);
-  CHECK(chip->text() == "12-EDO");
+  CHECK(chip->text() == "Tuning B \xC2\xB7 12");  // TU.3: the chip names the clip's named tuning (and what it is)
   MosWheelPopover& p = w.openFromChip();
   CHECK(p.target().kind == TuningTarget::Kind::Clip);
   CHECK(p.target().clip.clip == w.a1.clip);
@@ -501,16 +504,18 @@ TEST_CASE("mos wheel: the clip box chip opens the wheel; a chart drag retunes th
   const doc::NoteClip* a2Before = w.clip(w.a2);
   const doc::NoteClip* b1Before = w.clip(w.b1);
 
-  // Choosing 5L 2s applies at once (one undo step), only to A1.
+  // Choosing 5L 2s applies at once (one undo step) to A1's named tuning: only A1 is on it.
   REQUIRE(p.chooseMos({5, 2}, 696.0));
   w.d.step();
   CHECK(w.history() == h0 + 1);
   REQUIRE(w.tuningOf(w.a1)->mos() != nullptr);
-  CHECK(w.clip(w.a1)->tuning.mode == doc::TuningMode::Private);
+  CHECK(doc::findTuning(*w.ctx.doc(), w.tA1)->def.mos() != nullptr);  // TU.3: the shared tuning was edited
+  CHECK(w.clip(w.a1)->tuning == doc::TuningAssignment::mainTuning(w.tA1));
   CHECK(w.clip(w.a2) == a2Before);  // pointer-equal: untouched
   CHECK(w.clip(w.b1) == b1Before);
+  CHECK(w.tuningOf(w.b1)->edo() != nullptr);
   CHECK(w.view().rows().degreesPerEquave() == 7);
-  CHECK(chip->text().find("5L 2s") == 0);
+  CHECK(chip->text() == "Tuning B \xC2\xB7 5L 2s");
 
   // A chart drag (real pointer events): every step is in the document while the button is down — what the playback
   // link retunes sounding notes from — inside one store gesture; the release records one undo step.
@@ -544,6 +549,81 @@ TEST_CASE("mos wheel: the clip box chip opens the wheel; a chart drag retunes th
   REQUIRE(w.ctx.undo());
   CHECK(w.ctx.doc() == before);
   CHECK(w.view().rows().degreesPerEquave() == 12);
+}
+
+TEST_CASE("mos wheel (TU.3): a chip's menu picks a named tuning or a New Tuning; the wheel edits the shared tuning, so "
+          "every linked track and clip changes with it") {
+  Wheel w;
+  auto* chip = dynamic_cast<TuningChip*>(w.d.find("main/body/bottom/detail/clip/clip-view/clip-box/tuning"));
+  REQUIRE(chip != nullptr);
+  const size_t h0 = w.history();
+  auto menuAt = [&](TuningChip& c) {
+    w.d.click(w.d.center("main/body/bottom/detail/clip/clip-view/clip-box/tuning"), mod::kNone, PointerButton::Right);
+    w.d.step();
+    auto* m = dynamic_cast<Menu*>(w.shell->overlay().top());
+    REQUIRE(m != nullptr);
+    (void)c;
+    return m;
+  };
+  // The menu lists Inherit (naming what it resolves to), every project tuning with its colour and summary, New Tuning.
+  {
+    Menu* m = menuAt(*chip);
+    std::vector<std::string> labels;
+    for (const MenuItem& it : m->items()) labels.push_back(it.label);
+    REQUIRE(labels.size() >= 4u);
+    CHECK(labels[0] == "Inherit (12-EDO)");
+    CHECK(labels[1] == "12-EDO");
+    CHECK(labels[2] == "Tuning B");
+    CHECK(labels[3] == "New Tuning");
+    CHECK(m->items()[2].checked);  // A1's assignment
+    CHECK_FALSE(m->items()[0].checked);
+    CHECK((m->items()[1].swatch >> 24) != 0u);
+    CHECK(m->items()[2].shortcut == "12-EDO");  // the summary (its name differs)
+    w.d.press("Escape");
+  }
+  // Picking 12-EDO (a real click) links A1 to the default, as B1 is: one undo step.
+  (void)menuAt(*chip);
+  views::test::clickMenuItem(w.d, w.shell->overlay(), "12-EDO");
+  CHECK(w.history() == h0 + 1);
+  CHECK(w.clip(w.a1)->tuning == doc::TuningAssignment::mainTuning(w.ctx.doc()->defaultTuning));
+  CHECK(chip->text() == "12-EDO");
+  // The wheel now edits 12-EDO: B1 (another track, inheriting the default) and A2 change with A1.
+  {
+    MosWheelPopover& p = w.openFromChip();
+    REQUIRE(p.chooseEdo(19));
+    w.d.press("Return");
+    w.d.step();
+  }
+  CHECK(w.history() == h0 + 2);
+  CHECK(w.tuningOf(w.a1)->edo()->n() == 19u);
+  CHECK(w.tuningOf(w.a2)->edo()->n() == 19u);
+  CHECK(w.tuningOf(w.b1)->edo()->n() == 19u);
+  CHECK(doc::findTuning(*w.ctx.doc(), w.tA1)->def.edo()->n() == 12u);  // Tuning B is no longer A1's
+  // New Tuning: a copy of the current one under the next letter, assigned to A1, one undo step; editing it changes A1
+  // alone.
+  const size_t tunings = w.ctx.doc()->tunings->size();
+  (void)menuAt(*chip);
+  views::test::clickMenuItem(w.d, w.shell->overlay(), "New Tuning");
+  CHECK(w.history() == h0 + 3);
+  REQUIRE(w.ctx.doc()->tunings->size() == tunings + 1);
+  const doc::TuningSlot& added = *w.ctx.doc()->tunings->back();
+  CHECK(added.name == "Tuning C");
+  CHECK(added.def.edo()->n() == 19u);
+  CHECK(w.clip(w.a1)->tuning == doc::TuningAssignment::mainTuning(added.id));
+  CHECK(chip->text() == "Tuning C \xC2\xB7 19");
+  {
+    MosWheelPopover& p = w.openFromChip();
+    REQUIRE(p.chooseEdo(31));
+    w.d.press("Return");
+    w.d.step();
+  }
+  CHECK(w.tuningOf(w.a1)->edo()->n() == 31u);
+  CHECK(w.tuningOf(w.b1)->edo()->n() == 19u);
+  // Inherit: back to the track's tuning.
+  (void)menuAt(*chip);
+  views::test::clickMenuItem(w.d, w.shell->overlay(), "Inherit");
+  CHECK(w.clip(w.a1)->tuning.mode == doc::TuningMode::Inherit);
+  CHECK(w.tuningOf(w.a1)->edo()->n() == 19u);
 }
 
 TEST_CASE("mos wheel: Esc during a drag restores where it started; Revert; Esc, Enter and a press outside close") {
@@ -688,9 +768,13 @@ TEST_CASE("mos wheel: a main tuning's generator drag is param writes (no Structu
     REQUIRE(p != nullptr);
     REQUIRE(p->chooseMos({5, 2}, 696.0));
     CHECK(w.history() == h0 + 1);
-    CHECK(doc::findTrackPtr(*w.ctx.doc(), w.trackA)->tuning.mode == doc::TuningMode::Private);
-    CHECK(w.tuningOf(w.a2)->mos() != nullptr);  // A1 and A2 inherit from track A
-    CHECK(w.tuningOf(w.b1)->edo() != nullptr);
+    // TU.3: track A inherits the default tuning, so the edit is the default's: track B (linked to it) changes too,
+    // A1 (its own tuning) does not; nobody's assignment changes.
+    CHECK(doc::findTrackPtr(*w.ctx.doc(), w.trackA)->tuning.mode == doc::TuningMode::Inherit);
+    CHECK(doc::defaultTuningOf(*w.ctx.doc())->def.mos() != nullptr);
+    CHECK(w.tuningOf(w.a2)->mos() != nullptr);
+    CHECK(w.tuningOf(w.b1)->mos() != nullptr);
+    CHECK(w.tuningOf(w.a1)->edo() != nullptr);
     p->apply();
     w.d.step();
     CHECK(w.history() == h0 + 1);
@@ -746,9 +830,9 @@ TEST_CASE("mos wheel: a main tuning's generator drag is param writes (no Structu
     CHECK(w.popover() == nullptr);
     CHECK(w.history() == h0 + 1);
     CHECK(w.tuningOf(w.a1)->edo()->n() == 17u);
-    // Without a clip in the clip view: the first main tuning.
+    // Without a clip in the clip view: the project's default tuning.
     w.ctx.setDetailClip({});
-    CHECK(defaultTuningTarget(w.ctx).kind == TuningTarget::Kind::Main);
+    CHECK(defaultTuningTarget(w.ctx).kind == TuningTarget::Kind::Project);
   }
 }
 

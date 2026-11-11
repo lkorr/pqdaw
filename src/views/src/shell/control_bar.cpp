@@ -537,8 +537,10 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
 
   // Right: the selected track's tuning (tunings are first-class: a chip like the header's), the CPU meter and the grid.
   auto& chip = sized(add<TuningChip>("tuning", ctx_), 132, 17);
-  chip.setInfo("Tuning of the Selected Track", "The tuning the selected track plays in (with no track selected: the "
-                                               "project's first main tuning). Click to open the MOS wheel for it.");
+  chip.setInfo("Tuning of the Selected Track", "The named tuning the selected track plays in (with no track selected: the "
+                                               "project's default tuning). Click: the MOS wheel edits it. Right-click: "
+                                               "choose the track's tuning, or the project's default (Project Default).");
+  chip.setOffersProjectDefault(true);  // TU.3
   tuningChip_ = &chip;
   gap(*this, 6);
   cpu_ = &sized(add<CpuMeter>(ctx_), 64, 17);
@@ -592,8 +594,7 @@ void ControlBar::refreshTuningChip() {
   const doc::Project& p = *ctx_.doc();
   const doc::TrackId t = ctx_.selectedTrack();
   if (t.valid() && doc::findTrackPtr(p, t)) chip.setTarget(TuningTarget::forTrack(t));
-  else if (p.tunings && !p.tunings->empty()) chip.setTarget(TuningTarget::forMain(p.tunings->front()->id));
-  else chip.setTarget(std::nullopt);
+  else chip.setTarget(TuningTarget::forProject());  // TU.3: the project's default tuning
 }
 
 // KB.1: lit while on; the readout "E+1 V100" while on; the tooltip and info name the layout of the keyboard's track.

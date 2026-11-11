@@ -107,6 +107,9 @@ namespace pq::doc {
 // "beats" | "tones" | "texture" | "complex" | "complexPro", "markers" [[sourceFrame, contentTick], …] and "warpParams";
 // the project "punch" {"in", "out", "enabled"} and "record" {"countInBars", "metronome", "metronomeDb", "overdub",
 // "recordQuantize", optional "metronomeCue" (T6.6)}. Each is written only when it differs from its default; migration 21 → 22 changes nothing.
+// TU.3 (no version bump, no conversion: there are no user projects): a tuning assignment is "inherit" or {"main": id}
+// (private tunings are gone: a file holding {"private": …} does not load); the project's "defaultTuning" (a tuning id)
+// is written only when it is not the first tuning (absent: the first).
 inline constexpr int32_t kSchemaVersion = 22;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 

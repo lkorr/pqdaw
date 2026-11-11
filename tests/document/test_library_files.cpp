@@ -118,7 +118,8 @@ TEST_CASE("library files: tunings and clips round-trip exactly") {
     CHECK(back.def == def);
   }
 
-  // A note clip (its main tuning becomes a private one) and an audio clip with its sample.
+  // A note clip (TU.3: its named tuning's definition travels as the file's "tuning"; the clip is written Inherit) and an
+  // audio clip with its sample.
   Lib l;
   NoteClip c;
   c.id = ClipId{5};
@@ -137,8 +138,10 @@ TEST_CASE("library files: tunings and clips round-trip exactly") {
   const ClipFile back = must(parseClip(must(serializeClip(cf, &l.doc()))));
   REQUIRE(back.clip.clip);
   NoteClip expect = c;
-  expect.tuning = TuningAssignment::privateTuning((*l.doc().tunings)[0]->def);
+  expect.tuning = TuningAssignment::inherit();
   CHECK(*back.clip.clip == expect);
+  REQUIRE(back.tuning.has_value());
+  CHECK(*back.tuning == (*l.doc().tunings)[0]->def);
 
   AudioClip a;
   a.id = ClipId{6};

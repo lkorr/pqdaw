@@ -26,6 +26,7 @@
 #include "pq/document/serialize.h"
 #include "pq/engine/wav_file.h"
 #include "pq/tuning/mos_tuning.h"
+#include "pq/tuning/scala.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -316,8 +317,14 @@ TEST_CASE("tuning lowering: tracks following a main tuning signal get a tuning n
   CHECK(patchOf(shaped.value(), f.mos) != patchOf(again.value(), f.mos));
   CHECK(patchOf(shaped.value(), f.lead) == patchOf(again.value(), f.lead));
 
-  // A private tuning, a Scala tuning or a MODMOS has no node: static pitches.
-  REQUIRE(f.store.dispatch(SetTrackTuning{f.lead, TuningAssignment::privateTuning(TuningDef{})}).ok());
+  // A Scala tuning or a MODMOS has no node: static pitches (TU.3: there are no private tunings; a named Scala tuning).
+  auto scl = pq::tuning::parseScl("! s.scl\nTwo\n 2\n 386.3\n 2/1\n", "s.scl");
+  REQUIRE(scl.ok());
+  auto sdef = makeScaleDef(std::move(*scl), std::nullopt);
+  REQUIRE(sdef.ok());
+  const TuningId tScala = f.store.ids().tuning();
+  REQUIRE(f.store.dispatch(AddTuning{TuningSlot{tScala, "Scala", Colour{0x808080}, *sdef}}).ok());
+  REQUIRE(f.store.dispatch(SetTrackTuning{f.lead, TuningAssignment::mainTuning(tScala)}).ok());
   auto priv = lower(*f.snap(), lo, &shaped.value());
   REQUIRE(priv.ok());
   CHECK(tuningNodes(patchOf(priv.value(), f.lead)).empty());

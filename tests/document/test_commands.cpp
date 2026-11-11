@@ -12,6 +12,7 @@
 #include "../meta/meta_test_type.h"
 #include "doc_fixture.h"
 #include "pq/document/meta.h"
+#include "pq/document/pitch_resolve.h"
 #include "pq/meta/envelope.h"
 
 using namespace pq::doc;
@@ -442,6 +443,12 @@ std::vector<Case> cases() {
                  CHECK(contains(cs.lanes, f.bassGenLane));
                  CHECK(contains(cs.tracks, f.bass));
                  CHECK(f.track(f.bass).lanes.empty());
+               }});
+  c.push_back({"SetDefaultTuning (TU.3)", [](Fixture& f) -> Command { return SetDefaultTuning{f.tScale}; }, S,
+               [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(f.doc().defaultTuning == f.tScale);
+                 CHECK(contains(cs.tunings, f.tScale));
+                 CHECK(contains(cs.tunings, f.t12));
                }});
   c.push_back({"RenameTuning", [](Fixture& f) -> Command { return RenameTuning{f.t31, "31"}; }, M, noCheck});
   c.push_back({"SetTuningColour", [](Fixture& f) -> Command { return SetTuningColour{f.t31, Colour{2}}; }, M,
@@ -1011,11 +1018,20 @@ TEST_CASE("commands: effective tuning follows clip > track > group > project def
   CHECK(effectiveTuning(p, pathOf(f.kick)) == &findTuning(p, f.t12)->def);  // Inherit → default
   REQUIRE(f.store.dispatch(SetTrackTuning{f.drums, TuningAssignment::mainTuning(f.tMos)}).ok());
   CHECK(effectiveTuning(f.doc(), pathOf(f.kick)) == &findTuning(f.doc(), f.tMos)->def);  // via the group
-  TuningDef priv;
-  priv.system = pq::tuning::Edo::make(22).value();
-  REQUIRE(f.store.dispatch(SetClipTuning{{f.lead, f.clipB}, TuningAssignment::privateTuning(priv)}).ok());
+  TuningDef edo22;
+  edo22.system = pq::tuning::Edo::make(22).value();
+  const TuningId t22 = f.store.ids().tuning();
+  REQUIRE(f.store.dispatch(AddTuning{TuningSlot{t22, "Tuning E", {}, edo22}}).ok());
+  REQUIRE(f.store.dispatch(SetClipTuning{{f.lead, f.clipB}, TuningAssignment::mainTuning(t22)}).ok());
   const TuningDef* d = effectiveTuning(f.doc(), pathOf(f.lead), &f.clip(f.lead, f.clipB));
   REQUIRE(d);
   CHECK(d->edo()->n() == 22);
   CHECK(buildTuning(*d).ok());
+  // TU.3: the project default is explicit; a top-level Inherit follows it, and it cannot be removed while default.
+  REQUIRE(f.store.dispatch(SetTrackTuning{f.drums, TuningAssignment::inherit()}).ok());
+  REQUIRE(f.store.dispatch(SetDefaultTuning{t22}).ok());
+  CHECK(effectiveTuning(f.doc(), pathOf(f.kick)) == &findTuning(f.doc(), t22)->def);
+  CHECK(effectiveTuningRef(f.doc(), pathOf(f.kick)).main == t22);
+  CHECK_FALSE(f.store.dispatch(RemoveTuning{t22}).ok());
+  CHECK_FALSE(f.store.dispatch(SetDefaultTuning{TuningId{999999}}).ok());
 }

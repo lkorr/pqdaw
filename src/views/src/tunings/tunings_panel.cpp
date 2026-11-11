@@ -406,7 +406,7 @@ TuningCard::TuningCard(std::string name, TuningsPanel& panel, const doc::TuningS
 
 bool TuningCard::onPointer(const PointerEvent& e) {
   if (e.type != PointerType::Down || e.button != PointerButton::Right) return false;
-  openTuningLibraryMenu(*this, panel_.context(), TuningTarget::forMain(id_), e.pos);
+  openTuningMenu(*this, panel_.context(), TuningTarget::forMain(id_), e.pos);
   return true;
 }
 
@@ -465,7 +465,8 @@ void TuningCard::refresh(const doc::Project& p, const doc::TuningSlot& slot, siz
           a.mode == doc::TuningMode::Main && a.main == id_)
         ++clips;
   });
-  std::string u = index == 0 ? "Default" : "";
+  (void)index;
+  std::string u = id_ == p.defaultTuning ? "Default" : "";  // TU.3: the project's explicit default
   auto part = [&](uint32_t n, const char* one, const char* many) {
     if (!n) return;
     if (!u.empty()) u += u == "Default" ? " \xC2\xB7 " : ", ";
@@ -589,13 +590,18 @@ void TuningsPanel::onFrame(double) {
   else stale_ = staleFull_ = true;
 }
 
-doc::TuningId TuningsPanel::addTuning() {
-  const doc::Project& p = *ctx_.doc();
+doc::Colour nextTuningColour(const ui::Widget& w, const doc::Project& p) {
   doc::Colour colour{0x808080};
-  if (const PaintResources* res = tree() ? tree()->resources() : nullptr; res && res->theme && !res->theme->clipPalette.empty()) {
+  if (const PaintResources* res = w.tree() ? w.tree()->resources() : nullptr; res && res->theme && !res->theme->clipPalette.empty()) {
     const size_t n = std::min<size_t>(res->theme->clipPalette.size(), kClipPaletteColumns - 1);
     colour.rgb = paint::rgbOf(res->theme->clipPalette[(p.tunings->size() * 3 + 2) % n]);
   }
+  return colour;
+}
+
+doc::TuningId TuningsPanel::addTuning() {
+  const doc::Project& p = *ctx_.doc();
+  const doc::Colour colour = nextTuningColour(*this, p);
   doc::TuningDef def;  // 12-EDO at C3
   const auto e = doc::ops::addMainTuning(p, ctx_.store().ids(), nextTuningName(p), std::move(def), colour);
   if (!e) {

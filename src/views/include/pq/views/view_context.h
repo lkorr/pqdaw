@@ -102,11 +102,12 @@ inline constexpr uint32_t kLiveNotes = 1u << 22;      // TU.2: a note the UI pla
                                                       // keyboard's held(), an audition: lastAudition())
 }  // namespace view_change
 
-// What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel applies its edits to it
-// as they happen (TU.1, mos_wheel.h TuningEdit: SetClipTuning / SetTrackTuning with a private tuning, SetTuningParam /
-// SetTuningDef for a main tuning).
+// What a tuning control is about (T3.14; TU.3): one clip, one track, a named tuning, or the project's default. Every
+// tuning is a named project tuning, so an EDIT always edits the named tuning the target resolves to (mos_wheel.h
+// targetTuningId: SetTuningParam / SetTuningDef), and every clip and track linked to it changes with it; what the
+// target CHOOSES is its assignment (a clip's / track's Inherit or tuning; the project's default tuning).
 struct TuningTarget {
-  enum class Kind : uint8_t { Clip, Track, Main };
+  enum class Kind : uint8_t { Clip, Track, Main, Project };
   Kind kind = Kind::Main;
   doc::ClipRef clip{};   // Kind::Clip
   doc::TrackId track{};  // Kind::Track (and the clip's track for Kind::Clip)
@@ -114,6 +115,7 @@ struct TuningTarget {
   static TuningTarget forClip(doc::ClipRef c) { return {Kind::Clip, c, c.track, {}}; }
   static TuningTarget forTrack(doc::TrackId t) { return {Kind::Track, {}, t, {}}; }
   static TuningTarget forMain(doc::TuningId id) { return {Kind::Main, {}, {}, id}; }
+  static TuningTarget forProject() { return {Kind::Project, {}, {}, {}}; }
 };
 
 enum class DetailMode : uint8_t { Clip, Device };

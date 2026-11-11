@@ -40,7 +40,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `track.newMidi` | `Ctrl+Shift+T` | global | Commands for Tracks | implemented (T3.10; after the last selected track; Live 12's chord since T3.x-fix-look, user confirmed 2026-10-24: was Ctrl+T) |
 | `track.newAudio` | `Ctrl+T` | global | Commands for Tracks | implemented (T5.3; after the last selected track, empty chain; also in the track context menu and Create menu) |
 | `track.newReturn` | `Ctrl+Alt+T` | global | Commands for Tracks | implemented (T3.10) |
-| `tuning.openMosWheel` | `Ctrl+Shift+W` | global | — (pqdaw; Q15 provisional) | implemented (T3.14; the MOS wheel for the clip in the clip view, else the first main tuning; pressed again: closes it, keeping the change) |
+| `tuning.openMosWheel` | `Ctrl+Shift+W` | global | — (pqdaw; Q15 provisional) | implemented (T3.14; the MOS wheel for the clip in the clip view, else the project's default tuning (TU.3: it edits the named tuning the clip resolves to); pressed again: closes it, keeping the change) |
 | `app.preferences` | `Ctrl+,` | global | Accessing Menus (Options → Preferences) | implemented (T3.18; the preferences window: Audio tab, and the Library tab (T5.x-library-prefs); pressed again: closes it) |
 | `keyboard.toggleComputerMidi` | `M` | global | Key/MIDI Map Commands | implemented (T6.4: the computer MIDI keyboard, below; M8's macro mode will replace its scope when active) |
 | `mapping.toggleMidiMap` | `Ctrl+M` | global | Key/MIDI Map Commands | M8 |

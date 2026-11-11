@@ -33,7 +33,6 @@ double cellTicks(const GridDivision& d, TimeSignature sig) noexcept {
 
 // The tuning a clip's notes resolve in: its override, else the track's.
 const doc::TuningDef* clipTuning(const ArrangementRow& row, const doc::NoteClip& clip, const doc::Project& p) {
-  if (clip.tuning.mode == doc::TuningMode::Private && clip.tuning.privateDef) return clip.tuning.privateDef.get();
   if (clip.tuning.mode != doc::TuningMode::Inherit)
     if (const doc::TuningSlot* s = doc::findTuning(p, clip.tuning.main)) return &s->def;
   return row.tuning;

@@ -194,6 +194,11 @@ public:
       w_.endObject();
     }
     w_.endArray();
+    // TU.3: written only when it is not the first tuning (the default's default).
+    if (!p.tunings->empty() && p.defaultTuning != p.tunings->front()->id) {
+      w_.key("defaultTuning");
+      w_.integer(p.defaultTuning.value);
+    }
 
     trackList(PathSeg(&root, "tracks"), "tracks", p.tracks);
     trackList(PathSeg(&root, "returns"), "returns", p.returns);
@@ -281,6 +286,10 @@ public:
     if (f.clip.audio) audioClip(at, *f.clip.audio);
     else clip(at, *f.clip.clip);
     if (f.sample) samples(PathSeg(&root, "samples"), SampleList{*f.sample});
+    if (f.tuning) {
+      w_.key("tuning");
+      tuningDef(PathSeg(&root, "tuning"), *f.tuning);
+    }
     w_.endObject();
     out_ += "\n";
   }
@@ -434,13 +443,6 @@ private:
         w_.beginObject(false);
         w_.key("main");
         w_.integer(a.main.value);
-        w_.endObject();
-        return;
-      case TuningMode::Private:
-        if (!a.privateDef) json::fail(at, "private tuning without a definition");
-        w_.beginObject(true);
-        w_.key("private");
-        tuningDef(PathSeg(&at, "private"), *a.privateDef);
         w_.endObject();
         return;
     }
@@ -1466,9 +1468,9 @@ public:
     // GU.1: "valuesInUnits" and "legacyCurves" exist only in what migration 19 → 20 hands the decoder (never written).
     static constexpr std::string_view K[] = {"schemaVersion", "timeline", "loop",    "locators", "tunings",
                                              "tracks",        "returns",  "master",  "view",     "wires", "samples",
-                                             "valuesInUnits", "legacyCurves", "punch", "record"};
+                                             "valuesInUnits", "legacyCurves", "punch", "record", "defaultTuning"};
     enum { kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster, kView, kWires, kSamples, kUnits, kLegacy,
-           kPunch, kRecord };
+           kPunch, kRecord, kDefaultTuning };
     auto np = std::make_shared<Project>();
     LoadedProject out;
     Members m(r_, root, K);
@@ -1494,6 +1496,7 @@ public:
         case kUnits: valuesInUnits_ = r_.readBool(at); break;
         case kPunch: np->punch = punch(at); break;      // T6.1
         case kRecord: np->record = record(at); break;  // T6.1
+        case kDefaultTuning: np->defaultTuning = TuningId{ref(at)}; break;  // TU.3
         case kLegacy: {
           r_.beginArray(at);
           for (size_t i = 0; r_.nextElement(at); ++i) {
@@ -1516,6 +1519,9 @@ public:
     }
     m.require({kVer, kTimeline, kLoop, kLocators, kTunings, kTracks, kReturns, kMaster});
     r_.expectEnd(root);
+    // TU.3: absent = the first tuning.
+    if (!m.has(kDefaultTuning)) np->defaultTuning = np->tunings->front()->id;
+    else if (!findTuning(*np, np->defaultTuning)) json::fail(PathSeg(&root, "defaultTuning"), "no tuning with this id");
     // T5.3: warp-Off lengths are derived from the tempo map (whatever the file says).
     for (std::vector<TrackPtr>* list : {&np->tracks, &np->returns})
       for (TrackPtr& t : *list) t = syncedTrack(*np->timeline, t);
@@ -1616,7 +1622,7 @@ public:
   }
   ClipFile clipFile() {
     const PathSeg root;
-    static constexpr std::string_view K[] = {"format", "schemaVersion", "name", "clip", "samples"};
+    static constexpr std::string_view K[] = {"format", "schemaVersion", "name", "clip", "samples", "tuning"};
     ClipFile out;
     std::shared_ptr<const SampleList> table;
     Members m(r_, root, K);
@@ -1625,6 +1631,7 @@ public:
       if (k < 3) libraryKey(k, f, "pqclip", out.name);
       if (k == 3) out.clip = clip(f);
       if (k == 4) table = sampleList(f);
+      if (k == 5) out.tuning = tuningDef(f);  // TU.3
     }
     m.require({0, 1, 2, 3});
     const PathSeg clipAt(&root, "clip");
@@ -1635,9 +1642,9 @@ public:
     } else if (table) {
       json::fail(PathSeg(&root, "samples"), "only audio clips carry a sample");
     }
-    // The clip file has no main tunings.
+    // The clip file has no project tunings (its tuning's definition is the file's "tuning").
     const TuningAssignment& ta = out.clip.audio ? out.clip.audio->tuning : out.clip.clip->tuning;
-    if (ta.mode == TuningMode::Main) json::fail(PathSeg(&clipAt, "tuning"), "a clip file has no main tunings");
+    if (ta.mode != TuningMode::Inherit) json::fail(PathSeg(&clipAt, "tuning"), "a clip file has no project tunings");
     finishLibrary(root);
     return out;
   }
@@ -1994,19 +2001,14 @@ private:
 
   TuningAssignment assignment(const PathSeg& at) {
     if (r_.peek() == Reader::Kind::String) {
-      if (str(at) != "inherit") r_.failValue(at, "tuning must be \"inherit\", {\"main\": id} or {\"private\": {...}}");
+      if (str(at) != "inherit") r_.failValue(at, "tuning must be \"inherit\" or {\"main\": id}");
       return TuningAssignment::inherit();
     }
-    static constexpr std::string_view K[] = {"main", "private"};
+    static constexpr std::string_view K[] = {"main"};  // TU.3: no private tunings
     TuningAssignment a;
     Members m(r_, at, K);
-    for (int k; (k = m.next()) >= 0;) {
-      const PathSeg f(&at, K[static_cast<size_t>(k)]);
-      if (k == 0) a = TuningAssignment::mainTuning(TuningId{ref(f)});
-      if (k == 1) a = TuningAssignment::privateTuning(tuningDef(f));
-    }
-    if (m.has(0) == m.has(1))
-      json::fail(at, "needs exactly one of \"main\" and \"private\"", ErrorCode::InvalidArgument, m.start());
+    while (m.next() >= 0) a = TuningAssignment::mainTuning(TuningId{ref(PathSeg(&at, K[0]))});
+    m.require({0});
     return a;
   }
 
@@ -4244,11 +4246,11 @@ Result<T> decodeLibrary(std::string_view text, std::string_view fileName, F&& f)
   }
 }
 
-// A clip's Main tuning as a private one (the file has no main tunings).
-TuningAssignment portable(const TuningAssignment& a, const Project* p) {
-  if (a.mode != TuningMode::Main) return a;
+// TU.3: a clip's named tuning as its definition (the file has no project tunings); the clip itself is written Inherit.
+std::optional<TuningDef> portable(const TuningAssignment& a, const Project* p) {
+  if (a.mode != TuningMode::Main) return std::nullopt;
   const TuningSlot* s = p ? findTuning(*p, a.main) : nullptr;
-  return s ? TuningAssignment::privateTuning(s->def) : TuningAssignment::inherit();
+  return s ? std::optional<TuningDef>(s->def) : std::nullopt;
 }
 
 }  // namespace
@@ -4275,16 +4277,18 @@ Result<std::string> serializeClip(const ClipFile& f, const Project* p) {
   if (g.clip.audio) {
     if (!g.sample || g.sample->id != g.clip.audio->sample)
       return Error{ErrorCode::InvalidArgument, "$.samples: an audio clip needs its sample", {}};
-    if (g.clip.audio->tuning.mode == TuningMode::Main) {
+    if (g.clip.audio->tuning.mode != TuningMode::Inherit) {
       AudioClip a = *g.clip.audio;
-      a.tuning = portable(a.tuning, p);
+      g.tuning = portable(a.tuning, p);
+      a.tuning = TuningAssignment::inherit();
       g.clip.audio = std::make_shared<const AudioClip>(std::move(a));
     }
   } else if (!g.clip.clip) {
     return Error{ErrorCode::InvalidArgument, "$.clip: no clip", {}};
-  } else if (g.clip.clip->tuning.mode == TuningMode::Main) {
+  } else if (g.clip.clip->tuning.mode != TuningMode::Inherit) {
     NoteClip c = withNotes(*g.clip.clip, g.clip.clip->notes);
-    c.tuning = portable(c.tuning, p);
+    g.tuning = portable(c.tuning, p);
+    c.tuning = TuningAssignment::inherit();
     g.clip.clip = std::make_shared<const NoteClip>(std::move(c));
   }
   if (!g.clip.audio) g.sample.reset();

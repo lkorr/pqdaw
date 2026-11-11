@@ -1047,3 +1047,10 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   strict reader): the closed and opened sizes independent.
 - **Choice**: (1), the most reversible (no format change; splitting it later is one new field). Reversible: model.cpp
   `storedScale` / `scaleCapsule`.
+
+## Q?-TU.3-a · The default tuning's name and the "A, B, C" letters
+Context: TU.3 asks for tunings "named A, B, C…". New tunings are named "Tuning B", "Tuning C", … (nextTuningName), but
+the default project's first tuning keeps its name "12-EDO" (renaming it to "Tuning A" changes the control bar chip in
+every shell golden and the minimal fixture). Letters are not shown separately (a positional letter would shift when a
+tuning is removed). Options: (a) keep as is; (b) default project tuning named "Tuning A" (re-record every shell golden);
+(c) store a letter per tuning and show it as a badge on chips / cards. Choice: (a), the most reversible.

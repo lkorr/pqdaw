@@ -44,6 +44,8 @@ class TuningsPanel;
 
 // "Tuning B", "Tuning C", …: the first "Tuning <letter>" no main tuning is named yet.
 std::string nextTuningName(const doc::Project& p);
+// The colour a new tuning gets: the theme's clip palette (from `w`'s tree), stepping with the number of tunings.
+doc::Colour nextTuningColour(const ui::Widget& w, const doc::Project& p);
 
 // One row "Label  [value box]" of a card: a continuous parameter or the EDO size. Paints a red dot before the label
 // when the parameter is automated; right-click opens its menu (Show Automation Lane).

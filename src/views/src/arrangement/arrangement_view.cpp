@@ -54,7 +54,6 @@ const doc::TuningDef* assignmentDef(const doc::Project& p, const doc::TuningAssi
       const doc::TuningSlot* s = doc::findTuning(p, a.main);
       return s ? &s->def : inherited;
     }
-    case doc::TuningMode::Private: return a.privateDef ? a.privateDef.get() : inherited;
   }
   return inherited;
 }
@@ -426,7 +425,8 @@ void ArrangementView::rebuildRows(bool lanesUnchanged) {
   const UiScale s = tree() ? tree()->uiScale() : UiScale{};
   rowsScale_ = s.factor;
   const doc::ViewState& vs = ctx_.store().view();
-  const doc::TuningDef* projectDef = (p.tunings && !p.tunings->empty()) ? &p.tunings->front()->def : nullptr;
+  const doc::TuningSlot* projectSlot = p.tunings ? doc::defaultTuningOf(p) : nullptr;  // TU.3: the explicit default
+  const doc::TuningDef* projectDef = projectSlot ? &projectSlot->def : nullptr;
 
   m.rows.clear();
   // T3.15: every lane of the project by parameter, then the lanes shown under each row.

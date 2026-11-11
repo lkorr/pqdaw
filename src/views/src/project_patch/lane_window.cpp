@@ -44,7 +44,6 @@ namespace {
 // The tuning a clip's notes resolve in: its override, else its track's (as the arrangement resolves it, so both views
 // key the shared preview cache alike).
 const doc::TuningDef* clipTuning(const doc::TuningDef* track, const doc::NoteClip& clip, const doc::Project& p) {
-  if (clip.tuning.mode == doc::TuningMode::Private && clip.tuning.privateDef) return clip.tuning.privateDef.get();
   if (clip.tuning.mode != doc::TuningMode::Inherit)
     if (const doc::TuningSlot* s = doc::findTuning(p, clip.tuning.main)) return &s->def;
   return track;

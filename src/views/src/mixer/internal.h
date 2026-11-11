@@ -43,9 +43,6 @@ public:
   // snapshot.
   std::string_view activatorLabel(const doc::Snapshot& s, doc::TrackId id);
 
-  // --- tuning chip ---
-  void openTuningMenu(ui::Widget& chip, doc::TrackId id);
-
   // --- output chooser ---
   void openOutputMenu(ui::Widget& chooser, doc::TrackId id);
   // --- T6.4: a MIDI track's input section (mixer view): MIDI From, channel, note input (Keys / Hz), Monitor ---
@@ -134,8 +131,6 @@ private:
   std::string text_;
 };
 
-// A short name for a tuning definition ("12-EDO", "5L 2s", "Scale").
-std::string tuningShortName(const doc::TuningDef& d);
 // The output chooser's text for a track.
 std::string outputLabel(const doc::Project& p, const doc::Track& t);
 // T6.4: the input section's chooser texts.
@@ -145,13 +140,12 @@ std::string noteInputLabel(const doc::NoteInput& in);
 std::string monitorLabel(doc::MonitorMode m);
 // T6.7: an audio track's input ("No Input", "In 3", "In 1/2").
 std::string audioInLabel(const doc::AudioInput& in);
-// T3.14's tuning chip for a track (a left click opens the MOS wheel for the track), plus a right-click menu that
-// assigns the track a main tuning or Inherit (the wheel only commits private tunings).
+// T3.14's tuning chip for a track (a left click opens the MOS wheel for the track's named tuning; TU.3: the right-click
+// menu, choosing a tuning / Inherit / New Tuning, is TuningChip's).
 class TrackTuningChip : public TuningChip {
 public:
   TrackTuningChip(ViewContext& ctx, std::shared_ptr<MixerController> ctl) : TuningChip("tuning", ctx), ctl_(std::move(ctl)) {}
-  void setTrack(doc::TrackId id) { setTarget(TuningTarget::forTrack(id)); }
-  bool onPointer(const ui::PointerEvent& e) override;
+  void setTrack(doc::TrackId id) { setTarget(TuningTarget::forTrack(id)); }  // TU.3: the menu is TuningChip's
 
 private:
   std::shared_ptr<MixerController> ctl_;

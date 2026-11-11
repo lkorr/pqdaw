@@ -1,11 +1,11 @@
 #pragma once
 
 // Main tunings model, resolution side (T2.7, SPEC §3.2): which tuning a track's notes play in and what each note
-// sounds at. Named project tunings, track/clip assignment with Inherit / Main / Private, and the per-tuning reference
+// sounds at. Named project tunings, track/clip assignment with Inherit / Main (TU.3: no private tunings), and the per-tuning reference
 // pitch live in model.h (T3.4); this is the one place that turns an assignment into note pitches, so the playback
 // lowering (T3.17) and tests agree on it:
 //   - effectiveTuningRef: the tuning a track (and optionally one of its clips) uses, following Inherit up the group
-//     chain to the project's first main tuning, plus WHICH main tuning that is (none for a private tuning);
+//     chain to the project's default tuning (Project::defaultTuning), plus WHICH main tuning that is;
 //   - resolveTrackPitches: every note of every clip of a track, resolved in its clip's effective tuning: the static
 //     Hz (double; resolveHzDouble, a Ratio anchored to another note of the clip follows that note), and for a note
 //     in a main tuning with an audio-rate linear form (EDO, MOS without MODMOS / generator sequence:
@@ -28,7 +28,7 @@ namespace pq::doc {
 
 struct EffectiveTuning {
   const TuningDef* def = nullptr;  // nullptr only for a dangling Main reference (commands never produce one)
-  TuningId main;                   // the main tuning `def` belongs to; invalid for a private tuning
+  TuningId main;                   // the main tuning `def` belongs to
 };
 EffectiveTuning effectiveTuningRef(const Project& p, const TrackPath& path, const NoteClip* clip = nullptr) noexcept;
 

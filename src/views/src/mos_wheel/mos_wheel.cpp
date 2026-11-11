@@ -21,6 +21,9 @@
 #include "pq/ui/theme.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/browser/library_load.h"
+#include "pq/document/edit_ops.h"
+#include "pq/document/pitch_resolve.h"
+#include "pq/views/tunings/tunings_panel.h"
 
 namespace pq::views {
 
@@ -43,49 +46,48 @@ std::string quoted(std::string_view s) { return "\xE2\x80\x9C" + std::string(s) 
 
 }  // namespace
 
-const doc::TuningDef* targetTuning(const doc::Project& p, const TuningTarget& t) {
+doc::TuningId targetTuningId(const doc::Project& p, const TuningTarget& t) {
   switch (t.kind) {
     case TuningTarget::Kind::Clip: {
       std::optional<doc::TrackPath> path;
       const doc::NoteClip* c = findClip(p, t.clip, path);
-      return c ? doc::effectiveTuning(p, *path, c) : nullptr;
+      return c ? doc::effectiveTuningRef(p, *path, c).main : doc::TuningId{};
     }
     case TuningTarget::Kind::Track: {
       const std::optional<doc::TrackPath> path = doc::findTrack(p, t.track);
-      return path ? doc::effectiveTuning(p, *path, nullptr) : nullptr;
+      return path ? doc::effectiveTuningRef(p, *path, nullptr).main : doc::TuningId{};
     }
-    case TuningTarget::Kind::Main: {
-      const doc::TuningSlot* slot = doc::findTuning(p, t.main);
-      return slot ? &slot->def : nullptr;
-    }
+    case TuningTarget::Kind::Main: return doc::findTuning(p, t.main) ? t.main : doc::TuningId{};
+    case TuningTarget::Kind::Project: return p.defaultTuning;
   }
-  return nullptr;
+  return {};
 }
 
-doc::Command tuningCommand(const TuningTarget& t, doc::TuningDef def) {
-  switch (t.kind) {
-    case TuningTarget::Kind::Clip: return doc::SetClipTuning{t.clip, doc::TuningAssignment::privateTuning(std::move(def))};
-    case TuningTarget::Kind::Track: return doc::SetTrackTuning{t.track, doc::TuningAssignment::privateTuning(std::move(def))};
-    case TuningTarget::Kind::Main: break;
-  }
-  return doc::SetTuningDef{t.main, std::move(def)};
+const doc::TuningDef* targetTuning(const doc::Project& p, const TuningTarget& t) {
+  const doc::TuningSlot* slot = doc::findTuning(p, targetTuningId(p, t));
+  return slot ? &slot->def : nullptr;
+}
+
+doc::Command tuningCommand(const doc::Project& p, const TuningTarget& t, doc::TuningDef def) {
+  return doc::SetTuningDef{targetTuningId(p, t), std::move(def)};
 }
 
 std::string tuningTargetLabel(const doc::Project& p, const TuningTarget& t) {
+  const doc::TuningSlot* slot = doc::findTuning(p, targetTuningId(p, t));
+  const std::string_view name = slot ? std::string_view(slot->name) : std::string_view("?");
   switch (t.kind) {
     case TuningTarget::Kind::Clip: {
       std::optional<doc::TrackPath> path;
       const doc::NoteClip* c = findClip(p, t.clip, path);
-      return "Clip " + quoted(c && !c->name.empty() ? std::string_view(c->name) : std::string_view("MIDI Clip"));
+      return "Clip " + quoted(c && !c->name.empty() ? std::string_view(c->name) : std::string_view("MIDI Clip")) +
+             " \xC2\xB7 " + std::string(name);
     }
     case TuningTarget::Kind::Track: {
       const doc::Track* tr = doc::findTrackPtr(p, t.track);
-      return "Track " + quoted(tr ? std::string_view(tr->name) : std::string_view("?"));
+      return "Track " + quoted(tr ? std::string_view(tr->name) : std::string_view("?")) + " \xC2\xB7 " + std::string(name);
     }
-    case TuningTarget::Kind::Main: {
-      const doc::TuningSlot* slot = doc::findTuning(p, t.main);
-      return "Main tuning " + quoted(slot ? std::string_view(slot->name) : std::string_view("?"));
-    }
+    case TuningTarget::Kind::Main: return "Main tuning " + quoted(name);
+    case TuningTarget::Kind::Project: return "Project default \xC2\xB7 " + std::string(name);
   }
   return {};
 }
@@ -133,8 +135,148 @@ TuningTarget defaultTuningTarget(const ViewContext& ctx) {
     std::optional<doc::TrackPath> path;
     if (findClip(*ctx.doc(), c, path)) return TuningTarget::forClip(c);
   }
+  return TuningTarget::forProject();
+}
+
+// --- choosing (TU.3) -----------------------------------------------------------------------------------------------
+
+namespace {
+
+std::optional<doc::Command> assignCommand(const TuningTarget& t, doc::TuningId id) {
+  const doc::TuningAssignment a = id.valid() ? doc::TuningAssignment::mainTuning(id) : doc::TuningAssignment::inherit();
+  switch (t.kind) {
+    case TuningTarget::Kind::Clip: return doc::Command{doc::SetClipTuning{t.clip, a}};
+    case TuningTarget::Kind::Track: return doc::Command{doc::SetTrackTuning{t.track, a}};
+    case TuningTarget::Kind::Project:
+      if (id.valid()) return doc::Command{doc::SetDefaultTuning{id}};
+      break;
+    case TuningTarget::Kind::Main: break;
+  }
+  return std::nullopt;
+}
+
+// The target's own assignment: the clip's / track's (invalid: Inherit), the project's default; nullopt for a main tuning
+// or a target that is gone.
+std::optional<doc::TuningId> assignedTuning(const doc::Project& p, const TuningTarget& t) {
+  auto idOf = [](const doc::TuningAssignment& a) { return a.mode == doc::TuningMode::Main ? a.main : doc::TuningId{}; };
+  switch (t.kind) {
+    case TuningTarget::Kind::Clip: {
+      std::optional<doc::TrackPath> path;
+      if (const doc::NoteClip* c = findClip(p, t.clip, path)) return idOf(c->tuning);
+      return std::nullopt;
+    }
+    case TuningTarget::Kind::Track:
+      if (const doc::Track* tr = doc::findTrackPtr(p, t.track)) return idOf(tr->tuning);
+      return std::nullopt;
+    case TuningTarget::Kind::Project: return p.defaultTuning;
+    case TuningTarget::Kind::Main: break;
+  }
+  return std::nullopt;
+}
+
+std::string titleOf(std::string_view what, const Error& e) { return std::string(what) + ": " + e.message; }
+
+}  // namespace
+
+Status assignTuning(ViewContext& ctx, const TuningTarget& target, doc::TuningId id) {
+  const std::optional<doc::Command> c = assignCommand(target, id);
+  if (!c) return Error{ErrorCode::InvalidArgument, "this target chooses no tuning", {}};
+  Status s = ctx.store().dispatch(*c);
+  if (!s) ctx.setStatus(titleOf("Tuning", s.error()));
+  return s;
+}
+
+doc::TuningId newTuningFor(const Widget& from, ViewContext& ctx, const TuningTarget& target) {
   const doc::Project& p = *ctx.doc();
-  return TuningTarget::forMain(p.tunings->empty() ? doc::TuningId{} : p.tunings->front()->id);
+  const doc::TuningDef* cur = targetTuning(p, target);
+  if (!cur) {
+    ctx.setStatus("New Tuning: the clip or track no longer exists");
+    return {};
+  }
+  auto e = doc::ops::addMainTuning(p, ctx.store().ids(), nextTuningName(p), *cur, nextTuningColour(from, p));
+  if (!e) {
+    ctx.setStatus(titleOf("New Tuning", e.error()));
+    return {};
+  }
+  const doc::TuningId id = e->tunings.front();
+  doc::Batch b{"New Tuning", {e->command}};
+  if (std::optional<doc::Command> a = assignCommand(target, id)) b.commands.push_back(std::move(*a));
+  if (Status s = ctx.store().dispatch(doc::Command{std::move(b)}); !s) {
+    ctx.setStatus(titleOf("New Tuning", s.error()));
+    return {};
+  }
+  return id;
+}
+
+std::vector<MenuItem> tuningMenuItems(Widget& from, ViewContext& ctx, const TuningTarget& target, bool projectDefault) {
+  const doc::Project& p = *ctx.doc();
+  ViewContext* c = &ctx;
+  Widget* w = &from;
+  auto swatchOf = [](const doc::TuningSlot& s) {
+    return rgba((s.colour.rgb >> 16) & 0xFFu, (s.colour.rgb >> 8) & 0xFFu, s.colour.rgb & 0xFFu);
+  };
+  // One item per project tuning: the dot, its name, its summary on the right (where a shortcut goes).
+  auto tuningItems = [&](const TuningTarget& t, std::optional<doc::TuningId> checked) {
+    std::vector<MenuItem> out;
+    for (const doc::TuningSlotPtr& slot : *p.tunings) {
+      const doc::TuningId id = slot->id;
+      MenuItem m = MenuItem::item(slot->name, [c, t, id] { (void)assignTuning(*c, t, id); });
+      if (const std::string sum = tuningSummary(slot->def); sum != slot->name) m.shortcut = sum;
+      m.swatch = swatchOf(*slot);
+      m.checked = checked && *checked == id;
+      out.push_back(std::move(m));
+    }
+    return out;
+  };
+  std::vector<MenuItem> items;
+  const std::optional<doc::TuningId> assigned = assignedTuning(p, target);
+  if (target.kind == TuningTarget::Kind::Main) {
+    const doc::TuningId id = target.main;
+    MenuItem d = MenuItem::item("Set as Project Default", [c, id] { (void)assignTuning(*c, TuningTarget::forProject(), id); });
+    d.checked = p.defaultTuning == id;
+    items.push_back(std::move(d));
+  } else {
+    if (target.kind == TuningTarget::Kind::Clip || target.kind == TuningTarget::Kind::Track) {
+      // Inherit names what it resolves to: the track's (a clip) or the group's / project default's (a track).
+      std::string inheritLabel = "Inherit";
+      if (const std::optional<doc::TrackPath> path = doc::findTrack(p, target.track)) {
+        doc::TuningId up;
+        if (target.kind == TuningTarget::Kind::Clip) {
+          up = doc::effectiveTuningRef(p, *path, nullptr).main;
+        } else if (const doc::Track* parent = doc::parentOf(p, *path)) {
+          up = doc::effectiveTuningRef(p, *doc::findTrack(p, parent->id), nullptr).main;
+        } else {
+          up = p.defaultTuning;
+        }
+        if (const doc::TuningSlot* s = doc::findTuning(p, up)) inheritLabel += " (" + s->name + ")";
+      }
+      MenuItem inh = MenuItem::item(std::move(inheritLabel), [c, target] { (void)assignTuning(*c, target, {}); });
+      inh.checked = assigned && !assigned->valid();
+      items.push_back(std::move(inh));
+    }
+    for (MenuItem& m : tuningItems(target, assigned)) items.push_back(std::move(m));
+  }
+  items.push_back(MenuItem::item("New Tuning", [c, w, target] { (void)newTuningFor(*w, *c, target); }));
+  if (projectDefault && target.kind != TuningTarget::Kind::Project)
+    items.push_back(MenuItem::sub("Project Default", tuningItems(TuningTarget::forProject(), p.defaultTuning)));
+  items.push_back(MenuItem::sep());
+  items.push_back(MenuItem::item("MOS Wheel\xE2\x80\xA6", [c, w, target] { (void)openMosWheel(*w, *c, target, w->rect()); }));
+  items.push_back(MenuItem::item("Save to Library", [c, target] {
+    auto r = saveTuningToLibrary(*c, target);
+    c->setStatus(r ? "Tuning saved: " + *r : "Save to Library: " + r.error().message);
+  }));
+  items.push_back(MenuItem::item("Hot-Swap Tuning\xE2\x80\xA6", [c, target] {
+    HotSwapTarget t;
+    t.kind = HotSwapTarget::Kind::Tuning;
+    t.tuning = target;
+    t.label = tuningTargetLabel(*c->doc(), target);
+    if (!c->library().requestHotSwap(t)) c->setStatus("Hot-Swap needs the browser");
+  }));
+  return items;
+}
+
+void openTuningMenu(Widget& from, ViewContext& ctx, const TuningTarget& target, Vec2 at, bool projectDefault) {
+  (void)openContextMenu(from, at, tuningMenuItems(from, ctx, target, projectDefault));
 }
 
 // --- live edits (TU.1) ---------------------------------------------------------------------------------------------
@@ -168,9 +310,9 @@ std::optional<double> generatorOnly(const doc::TuningDef& current, const doc::Tu
 }  // namespace
 
 doc::Command TuningEdit::command(const doc::TuningDef& current, const doc::TuningDef& def) const {
-  if (target_.kind == TuningTarget::Kind::Main)
-    if (const std::optional<double> g = generatorOnly(current, def)) return doc::SetTuningParam{target_.main, doc::ParamKind::MosGenerator, *g};
-  return tuningCommand(target_, def);
+  const doc::TuningId id = targetTuningId(*ctx_.doc(), target_);  // TU.3: always the shared named tuning
+  if (const std::optional<double> g = generatorOnly(current, def)) return doc::SetTuningParam{id, doc::ParamKind::MosGenerator, *g};
+  return doc::SetTuningDef{id, def};
 }
 
 Status TuningEdit::apply(const doc::TuningDef& def, MosGesture g, std::string_view label) {
@@ -547,7 +689,7 @@ void MosWheelPopover::revert() {
     ctx_.setStatus("Tuning: the clip or track no longer exists");
     return;
   }
-  if (Status st = ctx_.store().dispatch(tuningCommand(target_, original_)); !st) {
+  if (Status st = ctx_.store().dispatch(tuningCommand(*ctx_.doc(), target_, original_)); !st) {
     ctx_.setStatus("Tuning: " + st.error().message);
     return;
   }
@@ -699,7 +841,8 @@ void installMosWheel(Shell& shell) { shell.slot(ShellSlot::ClipDetail).add<MosWh
 
 TuningChip::TuningChip(std::string name, ViewContext& ctx) : Control(std::move(name)), ctx_(ctx) {
   setFocusable(false);
-  setInfo("Tuning", "The clip's tuning. Click to open the MOS wheel (Ctrl+Shift+W): MOS, EDO, Scala or a temperament.");
+  setInfo("Tuning", "The named tuning this follows. Click: the MOS wheel (Ctrl+Shift+W) edits it, and every track and clip "
+                    "on it changes too. Right-click: choose another tuning, Inherit, or New Tuning (a copy of this one).");
   // T3.x-fix-paint (M3 review M12a): a chip repaints only when what it shows changed. Most document events cannot
   // change a resolved tuning (a mixer drag is a Param event per frame: before, every chip of every header repainted
   // on each one, so a volume drag cost O(tracks)); the rest re-resolve and compare.
@@ -740,30 +883,15 @@ void TuningChip::refresh() const {
   hasSwatch_ = false;
   if (!target_) return;
   const doc::Project& p = *ctx_.doc();
-  const doc::TuningDef* def = nullptr;
-  switch (target_->kind) {
-    case TuningTarget::Kind::Clip: {
-      std::optional<doc::TrackPath> path;
-      if (const doc::NoteClip* c = findClip(p, target_->clip, path)) def = doc::effectiveTuning(p, *path, c);
-      break;
-    }
-    case TuningTarget::Kind::Track:
-      if (const auto path = doc::findTrack(p, target_->track)) def = doc::effectiveTuning(p, *path, nullptr);
-      break;
-    case TuningTarget::Kind::Main:
-      if (const doc::TuningSlot* s = doc::findTuning(p, target_->main)) def = &s->def;
-      break;
-  }
-  if (!def) return;
-  compact_ = compactTuningLabel(*def);
-  for (const doc::TuningSlotPtr& slot : *p.tunings)
-    if (slot->def == *def) {
-      text_ = slot->name;
-      swatch_ = rgba((slot->colour.rgb >> 16) & 0xFFu, (slot->colour.rgb >> 8) & 0xFFu, slot->colour.rgb & 0xFFu);
-      hasSwatch_ = true;
-      return;
-    }
-  text_ = tuningSummary(*def);
+  const doc::TuningSlot* slot = doc::findTuning(p, targetTuningId(p, *target_));
+  if (!slot) return;
+  compact_ = compactTuningLabel(slot->def);
+  text_ = slot->name;
+  // TU.3: what an EDO / MOS tuning is, unless its name already says it ("31-EDO", "Tuning B: 22edo"): "Tuning B · 5L 2s"
+  // (a Scala scale's name is its own description).
+  if (!slot->def.scale() && text_.find(compact_) == std::string::npos) text_ += " \xC2\xB7 " + compact_;
+  swatch_ = rgba((slot->colour.rgb >> 16) & 0xFFu, (slot->colour.rgb >> 8) & 0xFFu, slot->colour.rgb & 0xFFu);
+  hasSwatch_ = true;
 }
 
 // "12", "31" (an EDO's size), "5L 2s" (a MOS's family, tuningSummary's first part), "Scala": what fits a narrow chip.
@@ -812,27 +940,9 @@ void TuningChip::paint(PaintContext& ctx) {
   }
 }
 
-// T5.11: the chip's library menu (right-click): save the tuning to the User Library; hot-swap it from the browser.
-void openTuningLibraryMenu(Widget& from, ViewContext& ctx, const TuningTarget& target, Vec2 at) {
-  ViewContext* c = &ctx;
-  std::vector<MenuItem> items;
-  items.push_back(MenuItem::item("Save to Library", [c, target] {
-    auto r = saveTuningToLibrary(*c, target);
-    c->setStatus(r ? "Tuning saved: " + *r : "Save to Library: " + r.error().message);
-  }));
-  items.push_back(MenuItem::item("Hot-Swap Tuning\xE2\x80\xA6", [c, target] {
-    HotSwapTarget t;
-    t.kind = HotSwapTarget::Kind::Tuning;
-    t.tuning = target;
-    t.label = tuningTargetLabel(*c->doc(), target);
-    if (!c->library().requestHotSwap(t)) c->setStatus("Hot-Swap needs the browser");
-  }));
-  (void)openContextMenu(from, at, std::move(items));
-}
-
 bool TuningChip::onPointer(const PointerEvent& e) {
   if (e.type == PointerType::Down && e.button == PointerButton::Right && target_) {
-    openTuningLibraryMenu(*this, ctx_, *target_, e.pos);
+    openMenu(e.pos);
     return true;
   }
   if (e.type == PointerType::Down && e.button == PointerButton::Left && target_) {
@@ -857,6 +967,10 @@ bool TuningChip::onKey(const KeyEvent& e) {
 
 void TuningChip::open() {
   if (target_) (void)openMosWheel(*this, ctx_, *target_, rect());
+}
+
+void TuningChip::openMenu(Vec2 at) {
+  if (target_) openTuningMenu(*this, ctx_, *target_, at, projectDefault_);
 }
 
 }  // namespace pq::views

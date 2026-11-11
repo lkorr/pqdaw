@@ -87,13 +87,11 @@ TEST_CASE("serialize: the rich project covers every entity, pitch, anchor, tunin
     for (const LanePtr& l : t.lanes) paramKinds.insert(static_cast<int>(l->param.kind));
     for (const ClipSlot& c : t.clips) {
       modes.insert(static_cast<int>(c.clip->tuning.mode));
-      if (c.clip->tuning.privateDef) tuningKinds.insert(static_cast<int>(c.clip->tuning.privateDef->system.index()));
       for (const Note& n : c.clip->notes) {
         pitchKinds.insert(static_cast<int>(n.pitch.kind()));
         if (n.pitch.kind() == pq::tuning::PitchKind::Ratio) anchorKinds.insert(static_cast<int>(n.pitch.anchorKind()));
       }
     }
-    if (t.tuning.privateDef) tuningKinds.insert(static_cast<int>(t.tuning.privateDef->system.index()));
   });
   for (const TuningSlotPtr& s : *p.tunings) tuningKinds.insert(static_cast<int>(s->def.system.index()));
   CHECK(pitchKinds.size() == 4);
@@ -102,7 +100,7 @@ TEST_CASE("serialize: the rich project covers every entity, pitch, anchor, tunin
   CHECK(tuningKinds.size() == 3);
   CHECK(trackKinds.size() == 4);  // midi, group, return, master (audio is not supported until M6)
   CHECK(outputKinds.size() == 4);
-  CHECK(modes.size() == 3);
+  CHECK(modes.size() == 2);  // Inherit, Main (TU.3: no private tunings)
   CHECK(p.locators->size() == 3);
 }
 

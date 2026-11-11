@@ -16,6 +16,7 @@
 #include "pq/views/browser/library.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
+#include "pq/views/tunings/tunings_panel.h"
 
 namespace pq::views {
 
@@ -249,7 +250,7 @@ Result<std::string> loadTuningItem(ViewContext& ctx, std::string_view path, cons
   if (!t) return std::move(t).error();
   if (target != nullptr) {
     if (targetTuning(p, *target) == nullptr) return Error{ErrorCode::NotFound, "the tuning's owner is gone", {}};
-    if (Status s = ctx.store().dispatch(tuningCommand(*target, t->def)); !s) return std::move(s).error();
+    if (Status s = ctx.store().dispatch(tuningCommand(p, *target, t->def)); !s) return std::move(s).error();
     return tuningTargetLabel(*ctx.doc(), *target) + ": " + t->name;
   }
   const doc::Colour colour = t->colour;  // a .scl: the default grey (the panel's swatch recolours it)
@@ -301,6 +302,27 @@ Result<doc::ClipRef> loadClipItem(ViewContext& ctx, std::string_view path, doc::
   auto placed = doc::ops::placeClip(*snap, ids, track, clip, std::max<Ticks>(0, start), newSample);
   if (!placed) return std::move(placed).error();
   batch.commands.push_back(placed->command);
+  // TU.3: the clip's tuning travels as a definition; it plays in the project's tuning with that definition, else in a
+  // new named tuning (unless the track it lands on already resolves to that definition: then it simply inherits).
+  if (f->tuning) {
+    const std::optional<doc::TrackPath> at = doc::findTrack(*snap, track);
+    const doc::TuningDef* trackDef = at ? doc::effectiveTuning(*snap, *at) : nullptr;
+    if (!trackDef || !(*trackDef == *f->tuning)) {
+      doc::TuningId id;
+      for (const doc::TuningSlotPtr& s : *snap->tunings)
+        if (s->def == *f->tuning) {
+          id = s->id;
+          break;
+        }
+      if (!id.valid()) {
+        auto added = doc::ops::addMainTuning(*snap, ids, nextTuningName(*snap), *f->tuning, doc::Colour{0x808080});
+        if (!added) return std::move(added).error();
+        id = added->tunings.front();
+        batch.commands.push_back(added->command);
+      }
+      batch.commands.push_back(doc::SetClipTuning{placed->clips.at(0), doc::TuningAssignment::mainTuning(id)});
+    }
+  }
   if (Status s = ctx.store().dispatch(doc::Command{std::move(batch)}); !s) return std::move(s).error();
   return placed->clips.at(0);
 }
@@ -325,11 +347,10 @@ Result<std::string> saveTuningToLibrary(ViewContext& ctx, const TuningTarget& ta
   doc::TuningFile f;
   f.def = *def;
   f.name = tuningSummary(*def);
-  if (target.kind == TuningTarget::Kind::Main)
-    if (const doc::TuningSlot* s = doc::findTuning(p, target.main)) {
-      f.name = s->name;
-      f.colour = s->colour;
-    }
+  if (const doc::TuningSlot* s = doc::findTuning(p, targetTuningId(p, target))) {  // TU.3: always a named tuning
+    f.name = s->name;
+    f.colour = s->colour;
+  }
   auto path = ctx.library().saveTuning(f);
   if (path) ctx.library().pendingRename = *path;
   return path;

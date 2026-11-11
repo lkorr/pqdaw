@@ -51,6 +51,7 @@ EditResult removeMainTuning(const Project& p, TuningId tuning, TuningId replacem
       }
     if (touched) e.tracks.push_back(t.id);
   });
+  if (p.defaultTuning == tuning) b.commands.push_back(SetDefaultTuning{replacement});  // TU.3
   b.commands.push_back(RemoveTuning{tuning});
   e.tunings.push_back(replacement);
   return e;

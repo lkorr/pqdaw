@@ -1,8 +1,9 @@
 #pragma once
 
 // MOS wheel popover (T3.14, SPEC §4.2; TU.1): the region chart (mos_chart.h) and the circle (mos_circle.h) linked in
-// one popover, plus an EDO entry, a Scala file pick and a temperament search. It edits the tuning of one target (a clip,
-// a track or a main tuning; TuningTarget in view_context.h):
+// one popover, plus an EDO entry, a Scala file pick and a temperament search. It edits the named tuning one target
+// resolves to (a clip, a track, a main tuning or the project default; TuningTarget in view_context.h; TU.3: every
+// clip and track linked to that tuning changes with it):
 //
 //   ┌ Tuning · Clip "Riff"                 EDO [  ]  [Scala…]  [⌕ Temperament   ] ┐
 //   │ ┌ region chart ─────────────────────────────┐ ┌ circle ──────────────────┐ │
@@ -16,9 +17,10 @@
 // back the tuning the target had when the popover opened (one more undo step); Done, Enter, Esc or a press outside
 // close it and keep what was set.
 //
-// Commands: a clip → SetClipTuning (a private tuning: only that clip changes), a track → SetTrackTuning (private),
-// a main tuning → SetTuningParam for a generator-only change (a param write: the tuning node retunes every note that
-// follows it with no recompile, automation included) and SetTuningDef otherwise. The reference pitch is kept.
+// Commands (TU.3: the same for every target, on targetTuningId): SetTuningParam for a generator-only change (a param
+// write: the tuning node retunes every note that follows it with no recompile, automation included) and SetTuningDef
+// otherwise. The reference pitch is kept. To give one clip or track a tuning of its own, pick "New Tuning" in its chip's
+// menu first (a copy, assigned to it), then edit.
 //
 // The temperament search (TU.1, replaces T3.14's 80-item dropdown): type part of a name and press Enter; one match
 // (or an exact name) is chosen at once, several open a short menu of them. The chart's temperament rows show them too.
@@ -27,7 +29,7 @@
 // on the tonic) light their degree on the circle (src/mos_wheel/circle_notes.h; MosCircle::noteOn).
 //
 // Opened from a TuningChip (the clip view's clip box; T3.10's headers) or the tuning.openMosWheel action
-// (Ctrl+Shift+W, Q15: the clip in the clip view, else the first main tuning). UI thread only.
+// (Ctrl+Shift+W, Q15: the clip in the clip view, else the project's default tuning). UI thread only.
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -52,16 +54,34 @@ class CircleNotes;  // TU.2: what lights the circle (src/mos_wheel/circle_notes.
 
 // The target's current tuning (nullptr when the target no longer exists).
 const doc::TuningDef* targetTuning(const doc::Project& p, const TuningTarget& target);
-// The command that gives `target` the tuning `def` (see the file comment).
-doc::Command tuningCommand(const TuningTarget& target, doc::TuningDef def);
-// "Clip “Riff”", "Track “Bass”", "Main tuning “12-EDO”".
+// TU.3: the named tuning the target resolves to (a clip / track: its chain clip → track → groups → project default; a
+// main tuning: itself; the project: its default). Invalid when the target no longer exists.
+doc::TuningId targetTuningId(const doc::Project& p, const TuningTarget& target);
+// The command that gives the target's named tuning the definition `def` (SetTuningDef on targetTuningId).
+doc::Command tuningCommand(const doc::Project& p, const TuningTarget& target, doc::TuningDef def);
+// "Clip “Riff” · 12-EDO", "Track “Bass” · Tuning B", "Main tuning “12-EDO”", "Project default · 12-EDO": the target and
+// (TU.3) the named tuning an edit changes.
 std::string tuningTargetLabel(const doc::Project& p, const TuningTarget& target);
 // One line describing a tuning: "31-EDO", "5L 2s · 696.77¢ · Mode 4", "Scala: <description>".
 std::string tuningSummary(const doc::TuningDef& def);
 // The shortest label of a tuning, for narrow chips: "12" (12-EDO), "5L 2s", "Scala" (T3.x-fix-look).
 std::string compactTuningLabel(const doc::TuningDef& def);
-// What Ctrl+Shift+W edits: the clip in the clip view, else the first main tuning.
+// What Ctrl+Shift+W edits: the clip in the clip view, else the project's default tuning.
 TuningTarget defaultTuningTarget(const ViewContext& ctx);
+
+// TU.3: what a target CHOOSES. Gives `target` the named tuning `id` (invalid: Inherit) as one undo step: SetClipTuning /
+// SetTrackTuning, the project's SetDefaultTuning (Inherit is not one of its choices); a main tuning chooses nothing.
+Status assignTuning(ViewContext& ctx, const TuningTarget& target, doc::TuningId id);
+// "New Tuning": adds the next "Tuning <letter>" (nextTuningName, the palette's next colour) as a copy of the target's
+// current tuning and assigns it to the target (a main-tuning target: a copy only), one undo step. Invalid on failure
+// (the reason on the status line). `from` supplies the theme's palette (any widget of the tree).
+doc::TuningId newTuningFor(const ui::Widget& from, ViewContext& ctx, const TuningTarget& target);
+// The menu of a tuning chip (TU.3): Inherit (a clip / track), the project's tunings (each with its colour dot, name and
+// summary on the right; checked: the target's assignment), New Tuning; then MOS Wheel…, Save to Library and Hot-Swap
+// Tuning…. A main-tuning target lists Set as Project Default instead of the tunings. `projectDefault` adds a "Project
+// Default" submenu of the tunings (the control bar's chip).
+std::vector<ui::MenuItem> tuningMenuItems(ui::Widget& from, ViewContext& ctx, const TuningTarget& target, bool projectDefault = false);
+void openTuningMenu(ui::Widget& from, ViewContext& ctx, const TuningTarget& target, ui::Vec2 at, bool projectDefault = false);
 
 // TU.1: applies one target's tuning edits to the document while they happen (see the file comment). A Live step of a
 // drag opens a store gesture on the first one and dispatches the step inside it; Commit dispatches the last value and
@@ -175,13 +195,11 @@ MosWheelPopover* openMosWheelPopover(const ui::Widget& w);
 // Installs the tuning.openMosWheel action handler (Ctrl+Shift+W). One line in installDefaultContent.
 void installMosWheel(Shell& shell);
 
-// T5.11: "Save to Library" and "Hot-Swap Tuning…" for `target` (a tuning chip's and a tunings-panel card's right-click).
-void openTuningLibraryMenu(ui::Widget& from, ViewContext& ctx, const TuningTarget& target, ui::Vec2 at);
-
-// A tuning chip: a colour swatch (the main tuning's colour; none for a private tuning) and the tuning's name. A
-// click opens the MOS wheel for its target; T5.11: a right-click offers Save to Library and Hot-Swap Tuning… (the
-// browser lists the library's tunings; selecting one gives the target that tuning). The text follows the document and
-// the live preview.
+// A tuning chip: a colour swatch and the name of the named tuning its target resolves to (TU.3; followed by its compact
+// label when the name does not contain it, for an EDO / MOS: "Tuning B · 5L 2s"). A click opens the MOS
+// wheel for its target (editing that shared tuning); a right-click opens tuningMenuItems (choose a tuning, Inherit, New
+// Tuning; T5.11: Save to Library and Hot-Swap Tuning…, the browser lists the library's tunings and selecting one gives
+// the target's tuning that definition). The text follows the document and the live preview.
 class TuningChip : public ui::Control {
 public:
   TuningChip(std::string name, ViewContext& ctx);
@@ -195,6 +213,9 @@ public:
   // T4.16a: the pointer hand while a click opens the wheel (a target is set).
   ui::Cursor cursorAt(ui::Vec2 pos) const override { return target_ ? ui::Cursor::Pointer : Control::cursorAt(pos); }
   void open();
+  void openMenu(ui::Vec2 at);  // the right-click menu (tuningMenuItems)
+  // The control bar's chip: its menu also sets the project's default tuning (a "Project Default" submenu).
+  void setOffersProjectDefault(bool on) noexcept { projectDefault_ = on; }
 
   // Whether a document event can change what a chip shows (a tuning, an assignment, the tree: Structural; tuning
   // params). Param / Sequence / Automation / Timeline / Meta events of tracks cannot.
@@ -211,6 +232,7 @@ private:
   mutable ui::Rgba swatch_ = 0;
   mutable bool hasSwatch_ = false;
   mutable bool stale_ = true;
+  bool projectDefault_ = false;
 };
 
 }  // namespace pq::views

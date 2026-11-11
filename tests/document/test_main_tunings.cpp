@@ -1,5 +1,5 @@
 // T2.7: the main tunings model — named project tunings, track / clip assignment and override (Inherit through
-// groups, Main, Private), per-tuning reference pitch, note resolution through the assignment (doc::resolveTrackPitches),
+// groups, Main; TU.3: no private tunings, an explicit project default), per-tuning reference pitch, note resolution through the assignment (doc::resolveTrackPitches),
 // re-resolution on reassignment and on tuning edits, and the JSON round trip of all of it.
 
 #include <doctest/doctest.h>
@@ -32,15 +32,15 @@ Note pitched(IdSource& ids, pq::Ticks start, PitchId pitch) {
 }
 
 // tunings: 12-EDO (default, 261.626 Hz), A = 5L2s MOS (mode 1, stretch 1.5, 440 Hz), B = 22-EDO (300 Hz),
-//          C = a Scala scale (static pitches only)
+//          C = a Scala scale (static pitches only), D = 17-EDO (200 Hz)
 // tracks:  G (group, Inherit) > T1 (MIDI, Inherit): clip X (Inherit; every pitch kind, anchors, a broken anchor,
 //          an anchor cycle), clip Y (override: Main B)
 //          T2 (MIDI, Main A): clip Z (degrees)
-//          T3 (MIDI, Private 17-EDO at 200 Hz): clip W (degrees)
+//          T3 (MIDI, Main D): clip W (degrees)
 //          T4 (MIDI, Main C): clip V (degrees)
 struct Project4 {
   DocumentStore store;
-  TuningId t12, tA, tB, tC;
+  TuningId t12, tA, tB, tC, tD;
   TrackId g, t1, t2, t3, t4;
   ClipId x, y, z, w, v;
   NoteId n0, nAnchored, nBroken, nCycle1, nCycle2;
@@ -51,6 +51,7 @@ struct Project4 {
     tA = ids.tuning();
     tB = ids.tuning();
     tC = ids.tuning();
+    tD = ids.tuning();
     g = ids.track();
     t1 = ids.track();
     t2 = ids.track();
@@ -76,10 +77,11 @@ struct Project4 {
     b.commands.push_back(AddTrack{makeTrackPtr(t3, TrackKind::Midi, "T3"), {}, kAppend});
     b.commands.push_back(AddTrack{makeTrackPtr(t4, TrackKind::Midi, "T4"), {}, kAppend});
     b.commands.push_back(SetTrackTuning{t2, TuningAssignment::mainTuning(tA)});
-    TuningDef priv;
-    priv.system = pq::tuning::Edo::make(17).value();
-    priv.referenceHz = 200.0;
-    b.commands.push_back(SetTrackTuning{t3, TuningAssignment::privateTuning(priv)});
+    TuningSlot sd{tD, "D: 17-EDO", Colour{0x2244AA}, {}};
+    sd.def.system = pq::tuning::Edo::make(17).value();
+    sd.def.referenceHz = 200.0;
+    b.commands.push_back(AddTuning{sd});
+    b.commands.push_back(SetTrackTuning{t3, TuningAssignment::mainTuning(tD)});
     b.commands.push_back(SetTrackTuning{t4, TuningAssignment::mainTuning(tC)});
 
     std::vector<Note> xn;
@@ -250,15 +252,14 @@ TrackPitches resolve(const Project& p, TrackId t) {
 
 }  // namespace
 
-TEST_CASE("main tunings: every note resolves in its clip's effective tuning (Inherit, Main, Private, override)") {
+TEST_CASE("main tunings: every note resolves in its clip's effective tuning (Inherit, Main, override)") {
   Project4 f;
   const Project& p = f.doc();
-  // T1 inherits from G, which inherits the project's first main tuning; clip Y overrides with B.
+  // T1 inherits from G, which inherits the project's default tuning; clip Y overrides with B.
   checkClip(p, resolve(p, f.t1), f.t1, f.x, defOf(p, f.t12), f.t12, f.nBroken, f.nCycle1, f.nCycle2);
   checkClip(p, resolve(p, f.t1), f.t1, f.y, defOf(p, f.tB), f.tB);
   checkClip(p, resolve(p, f.t2), f.t2, f.z, defOf(p, f.tA), f.tA);  // a MOS main tuning: Degree notes follow it
-  const TuningDef& priv = *findTrackPtr(p, f.t3)->tuning.privateDef;
-  checkClip(p, resolve(p, f.t3), f.t3, f.w, priv, TuningId{});  // private: static pitches, at its own reference
+  checkClip(p, resolve(p, f.t3), f.t3, f.w, defOf(p, f.tD), f.tD);  // an EDO main tuning at its own reference
   checkClip(p, resolve(p, f.t4), f.t4, f.v, defOf(p, f.tC), f.tC);  // a Scala main tuning: no signal
   // Per-tuning reference: degree 0 sounds at each tuning's own reference.
   CHECK(*resolve(p, f.t2).clips[0].notes[3].hz == doctest::Approx(440.0).epsilon(1e-12));
@@ -297,15 +298,15 @@ TEST_CASE("main tunings: reassigning a track re-resolves all its notes; tuning e
   REQUIRE(f.store.dispatch(SetTrackTuning{f.g, TuningAssignment::mainTuning(f.tB)}).ok());
   checkClip(f.doc(), resolve(f.doc(), f.t1), f.t1, f.x, defOf(f.doc(), f.tB), f.tB, f.nBroken, f.nCycle1, f.nCycle2);
 
-  // A private clip override: static pitches in its own tuning, no signal.
-  TuningDef priv;
-  priv.system = pq::tuning::Edo::make(5).value();
-  priv.referenceHz = 100.0;
-  REQUIRE(f.store.dispatch(SetClipTuning{{f.t1, f.x}, TuningAssignment::privateTuning(priv)}).ok());
+  // A clip override with a new named tuning (TU.3): the clip follows it at its own reference.
+  TuningSlot e{f.store.ids().tuning(), "E: 5-EDO", Colour{0x888888}, {}};
+  e.def.system = pq::tuning::Edo::make(5).value();
+  e.def.referenceHz = 100.0;
+  REQUIRE(f.store.dispatch(AddTuning{e}).ok());
+  REQUIRE(f.store.dispatch(SetClipTuning{{f.t1, f.x}, TuningAssignment::mainTuning(e.id)}).ok());
   {
     const Project& p = f.doc();
-    const NoteClip& cx = clipOf(p, f.t1, f.x);
-    checkClip(p, resolve(p, f.t1), f.t1, f.x, *cx.tuning.privateDef, TuningId{}, f.nBroken, f.nCycle1, f.nCycle2);
+    checkClip(p, resolve(p, f.t1), f.t1, f.x, defOf(p, e.id), e.id, f.nBroken, f.nCycle1, f.nCycle2);
   }
 
   // Editing main tuning A's reference re-resolves T2 (which follows A): every degree scales by 450 / 440.
@@ -317,7 +318,7 @@ TEST_CASE("main tunings: reassigning a track re-resolves all its notes; tuning e
     CHECK(*z1.clips[0].notes[i].hz / *z0.clips[0].notes[i].hz == doctest::Approx(450.0 / 440.0).epsilon(1e-14));
 
   // Undo restores the old assignments and so the old pitches.
-  for (int i = 0; i < 5; ++i) REQUIRE(f.store.undo());
+  for (int i = 0; i < 6; ++i) REQUIRE(f.store.undo());
   const TrackPitches restored = resolve(f.doc(), f.t1);
   REQUIRE(restored.clips.size() == before.clips.size());
   for (size_t c = 0; c < restored.clips.size(); ++c)
@@ -330,26 +331,29 @@ TEST_CASE("main tunings: reassigning a track re-resolves all its notes; tuning e
 TEST_CASE("main tunings: the JSON round trip keeps tunings, references, assignments and every resolved pitch") {
   Project4 f;
   REQUIRE(f.store.dispatch(SetTuningParam{f.tA, ParamKind::MosGenerator, 701.955}).ok());
+  REQUIRE(f.store.dispatch(SetDefaultTuning{f.tB}).ok());  // TU.3: written as "defaultTuning" (not the first)
   const Project& p = f.doc();
   const auto text = serializeProject(p);
   REQUIRE(text.ok());
+  CHECK(text->find("\"defaultTuning\": " + std::to_string(f.tB.value)) != std::string::npos);
   const auto loaded = parseProject(text.value());
   REQUIRE_MESSAGE(loaded.ok(), (loaded.ok() ? std::string() : loaded.error().message));
   const Project& q = *loaded.value().project;
   CHECK(q == p);
   // Named tunings with their references, in order.
-  REQUIRE(q.tunings->size() == 4);
+  REQUIRE(q.tunings->size() == 5);
+  CHECK(q.defaultTuning == f.tB);
   CHECK((*q.tunings)[1]->name == "A: 5L2s");
   CHECK((*q.tunings)[1]->def.referenceHz == 440.0);
   CHECK((*q.tunings)[1]->def.mos()->generator == 701.955);
   CHECK((*q.tunings)[2]->def.referenceHz == 300.0);
-  // Assignments: Inherit (G, T1, clip X), Main (T2, T4, clip Y), Private (T3).
+  // Assignments: Inherit (G, T1, clip X), Main (T2, T3, T4, clip Y).
   CHECK(findTrackPtr(q, f.g)->tuning.mode == TuningMode::Inherit);
   CHECK(findTrackPtr(q, f.t1)->tuning.mode == TuningMode::Inherit);
   CHECK(findTrackPtr(q, f.t2)->tuning == TuningAssignment::mainTuning(f.tA));
   CHECK(clipOf(q, f.t1, f.y).tuning == TuningAssignment::mainTuning(f.tB));
-  CHECK(findTrackPtr(q, f.t3)->tuning.mode == TuningMode::Private);
-  CHECK(findTrackPtr(q, f.t3)->tuning.privateDef->referenceHz == 200.0);
+  CHECK(findTrackPtr(q, f.t3)->tuning == TuningAssignment::mainTuning(f.tD));
+  CHECK(effectiveTuningRef(q, *findTrack(q, f.g)).main == f.tB);  // the default
   // Every track resolves identically after the round trip (exact doubles), and the text is stable.
   for (TrackId t : {f.t1, f.t2, f.t3, f.t4}) {
     const TrackPitches a = resolve(p, t), b = resolve(q, t);
