@@ -454,3 +454,15 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 ## 2026-11-10 · KB.3 merged · main
 - Did: ff-merged task/KB.3-meters-after-idle (31c74d9d, rebased by the orchestrator onto TU.2, clean): Engine::setWakeListener + MIDI-in → ProjectLink::signalActivity → view_change::kSignal re-arms meters, cable glow, faces, cost labels, modulation rings; live() holds 2 s after activity.
 - Verified: worker -Affected -Slow 88/88 before the rebase; after it pq_tests_views default tier 1/1 (orchestrator).
+
+## 2026-11-10 · TL.7 · task/TL.7-mixer-right
+- Did: unplaced mixers at the lanes' right end, level with the main path (mixer pin joins the spine; blocks sit 24 lower); placed mixers stay. Lane default taps at the left end (audio 12 in; MIDI right of the port chips; several 12 apart: notes/Hz/gate/vel). Slack 1 + 0.06/(1+(D/260)²): short cables ≈ 15 % sag, long ones ≤ ~40 units. Rest table angle × 9 slack levels, no solve on paint paths; automation wire unchanged. ARCHITECTURE updated.
+- Verified: new real-dispatch TL.7 tests (empty audio track tap / mixer / sag < 45, Z inserts a VCA, MIDI tap), tension tests (monotone, short within 8 %, table vs solve within 1 %); orchestrator after rebase onto fd1c7d93: pq_tests_views default tier passed; 46 goldens re-recorded (bands, cables).
+- Perf / CPU-efficiency check: rest shape a 4-corner table blend (≈ 2× multiply-adds, no allocation, 0.4 MB table built once); layout additions O(bands + lane edges). S-drag step perf A/B under 2 other agents' builds: quiet rounds main 7.0 / 7.9 ms vs branch 7.4 / 7.6 ms; loaded rounds 7–77 ms on both, no clear regression.
+- Notes/blockers: group / return / master Σ stay where their chains start (member routes run back left; REVIEW asks).
+
+## 2026-11-10 · TX.group-resize · task/TL.7-mixer-right
+- Did: S-drag on an opened group's frame stores its nudge scale; contents laid out at their sizes then scaled (members, terminals, spacing); nested compose; Shift steps, Esc, S+double-click / Reset Size. Fixed atom pin rows ignoring scale; a project opened while the patch view is shown now re-lays out on view_change::kProject.
+- Verified: real-dispatch nested test (0.75×, nested 0.5×0.75, no history entry, Esc, reset) + save/load; pq_tests_views passed; no goldens moved.
+- Perf / CPU-efficiency check: only groups with scale ≠ 1, after the cached inner layout; nothing per frame.
+- Notes/blockers: Q?-TX.group-resize-a (closed and opened sizes are one value).
