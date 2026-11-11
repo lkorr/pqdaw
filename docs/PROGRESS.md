@@ -450,3 +450,7 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Did: ff-merged task/TU.2-mos-circle-look (12f3268f): explorer region palette back on the MOS circle (pre-TU.1 theme, L22 opacity step undone), colour easing at the explorer's 8/s rate (frames only while easing), notes light their degree (explorer envelope, Phase Accumulator Hz colour, shared voice_colour.h) from playback, the computer keyboard, roll auditions.
 - Verified (worker): pq_tests_views default tier 100 % after rebase; goldens mos-circle-5L2s (= pre-TU.1), mos-circle-modmos, mos-wheel-popover(-1.5x) re-recorded, mos-circle-lit new.
 - Notes: hardware MIDI-in doesn't light (no UI feed); chart colours still TU.1's (Q?-TU.2-a) → TU.2b.
+
+## 2026-11-10 · KB.3 merged · main
+- Did: ff-merged task/KB.3-meters-after-idle (31c74d9d, rebased by the orchestrator onto TU.2, clean): Engine::setWakeListener + MIDI-in → ProjectLink::signalActivity → view_change::kSignal re-arms meters, cable glow, faces, cost labels, modulation rings; live() holds 2 s after activity.
+- Verified: worker -Affected -Slow 88/88 before the rebase; after it pq_tests_views default tier 1/1 (orchestrator).
