@@ -82,6 +82,7 @@ public:
     calls.push_back(r);
   }
 
+  void setAutoArm(uint32_t trackId) override { autoArm = trackId; }  // KB.1
   bool captureMidi(Ticks insertMarker) override {  // T6.9: `captures` says whether there was something to capture
     calls.push_back({Call::CaptureMidi, insertMarker, {}});
     return captures;
@@ -134,6 +135,7 @@ public:
   RecordingOverlay overlay;                                // T6.7: what recordingOverlay hands out (bump its revision)
   uint64_t overlayReads = 0;
   bool captures = true;                                    // T6.9: what captureMidi returns
+  uint32_t autoArm = 0;                                    // KB.1: the last setAutoArm
 
 private:
   PlayheadSnapshot state_{};

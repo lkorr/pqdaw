@@ -498,6 +498,9 @@ public:
   void auditionHz(float hz, float velocity, float durationMs) override;
   void releaseAuditions() override;
   void liveKey(int32_t equave, int32_t step, float velocity, bool on) override;  // T6.4: the computer keyboard
+  // KB.1: the auto-armed MIDI track (Live's arm on select; 0: none): it listens and records as if armed.
+  void setAutoArm(uint32_t trackId) override;
+  uint32_t autoArm() const noexcept { return autoArm_; }
   bool captureMidi(Ticks insertMarker) override;  // T6.9: see "Capture MIDI" in the file comment
   void panic() override;                          // M6 review L16: engine::Engine::panic
   // T6.6 / T6.7: Record (see "Recording" in the file comment).
@@ -576,6 +579,7 @@ private:
   // onlyIfChanged: publish only when a track's description changed (after a tuning param change).
   void publishSequences(const doc::Project& p, bool onlyIfChanged = false);
   void publishLiveRoutes(const doc::Project& p, bool force = false);  // T6.4 (project_link_input.cpp)
+  bool armed(const doc::Track& t) const noexcept;  // KB.1: armed by hand, or the auto-armed MIDI track
   engine::TrackSequenceDesc lowerTrack(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t);
   std::vector<const void*> sequenceKey(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t,
                                        std::vector<EntryPtr>* tables = nullptr) const;
@@ -751,6 +755,7 @@ private:
   std::vector<uint64_t> liveRouteKey_;                      // what the published image routes (UI thread)
   const void* liveEngine_ = nullptr;                        // the engine it was published to
   uint32_t liveTracks_ = 0;
+  uint32_t autoArm_ = 0;  // KB.1: setAutoArm
   uint64_t livePublishes_ = 0;
   std::unique_ptr<engine::Engine> engine_;
   std::unique_ptr<engine::ProjectCompiler> compiler_;

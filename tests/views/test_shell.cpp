@@ -4,6 +4,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <ostream>
@@ -483,4 +484,98 @@ TEST_CASE("render: shell over tests/views/fixtures/empty matches the golden imag
   ImageDiff d;
   CHECK(pq::ui::test::matchesGolden("shell", *img, *ref, true, &d));
   MESSAGE("shell: " << pq::ui::test::describe(d));
+}
+
+TEST_CASE("shell + KB.1: the computer keyboard button at the top right (click, M, its menu, the readout and tooltip)") {
+  Fixture f;
+  const std::string kKb = "main/control-bar/computer-keyboard";
+  auto& btn = f.get<shell::TransportButton>(kKb);
+  auto& readout = f.get<Label>("main/control-bar/keyboard-readout");
+  ComputerKeyboard& kb = f.ctx.computerKeyboard();
+  CHECK_FALSE(btn.on());
+  CHECK(readout.text().empty());
+  CHECK(btn.tooltip() == "Computer MIDI Keyboard (M): Piano (12 degrees)");
+  CHECK(btn.info().body.find("W E T Y U O P") != std::string::npos);
+  // At the right end of the bar (right of the grid readout).
+  const IRect bar = f.get<Widget>("main/control-bar").rect();
+  CHECK(btn.rect().right() > f.get<Widget>("main/control-bar/grid").rect().right());
+  CHECK(bar.right() - f.get<Widget>("main/control-bar/computer-keyboard-menu").rect().right() <= 12);
+  // A click: on (the same state as M), lit, the readout.
+  f.d.click(f.d.center(kKb));
+  CHECK(kb.active());
+  CHECK(btn.on());
+  CHECK(readout.text() == "E0 V100");
+  f.d.press("M");
+  CHECK_FALSE(kb.active());
+  CHECK_FALSE(btn.on());
+  CHECK(readout.text().empty());
+  f.d.press("M");
+  CHECK(btn.on());
+  // The arrow: 1Row / Continuous, Equave ▸, Velocity ▸.
+  f.d.click(f.d.center(kKb + "-menu"));
+  auto* menu = dynamic_cast<Menu*>(f.shell->overlay().top());
+  REQUIRE(menu != nullptr);
+  auto item = [&](Menu* m, std::string_view label) {
+    for (size_t i = 0; i < m->items().size(); ++i)
+      if (m->items()[i].label == label) return static_cast<int32_t>(i);
+    FAIL("no item " << label);
+    return 0;
+  };
+  CHECK(menu->items()[static_cast<size_t>(item(menu, "1Row (a row per equave)"))].checked);
+  menu->choose(item(menu, "Continuous (consecutive degrees)"));
+  CHECK(kb.scaleMode() == ComputerKeyboard::ScaleMode::Continuous);
+  // A right click on the button opens it too (and does not toggle).
+  f.d.click(f.d.center(kKb), mod::kNone, PointerButton::Right);
+  menu = dynamic_cast<Menu*>(f.shell->overlay().top());
+  REQUIRE(menu != nullptr);
+  CHECK(kb.active());
+  CHECK(menu->items()[static_cast<size_t>(item(menu, "Continuous (consecutive degrees)"))].checked);
+  menu->setHighlighted(item(menu, "Equave 0"));
+  Menu* sub = menu->openSubmenu();
+  REQUIRE(sub != nullptr);
+  sub->choose(item(sub, "+2"));
+  CHECK(kb.equave() == 2);
+  f.d.click(f.d.center(kKb + "-menu"));
+  menu = dynamic_cast<Menu*>(f.shell->overlay().top());
+  REQUIRE(menu != nullptr);
+  menu->setHighlighted(item(menu, "Velocity 100"));
+  sub = menu->openSubmenu();
+  REQUIRE(sub != nullptr);
+  sub->choose(item(sub, "60"));
+  CHECK(kb.velocity() == 60);
+  CHECK(readout.text() == "E+2 V60");
+}
+
+TEST_CASE("render KB.1: the control bar's right end with the computer keyboard off and on matches the goldens") {
+  Fixture f;
+  REQUIRE(f.d.enableGpu().ok());
+  const IRect bar = f.get<Widget>("main/control-bar").rect();
+  const IRect chip = f.get<Widget>("main/control-bar/tuning").rect();
+  auto crop = [&](const Image& img) {
+    Image out;
+    out.width = static_cast<uint32_t>(bar.right() - chip.x + 4);
+    out.height = static_cast<uint32_t>(bar.h);
+    out.rgba.resize(size_t{out.width} * out.height * 4);
+    for (uint32_t y = 0; y < out.height; ++y)
+      for (uint32_t x = 0; x < out.width; ++x) {
+        const uint8_t* s = img.pixel(static_cast<uint32_t>(chip.x - 4) + x, static_cast<uint32_t>(bar.y) + y);
+        std::copy(s, s + 4, out.pixel(x, y));
+      }
+    return out;
+  };
+  for (const bool on : {false, true}) {
+    f.ctx.computerKeyboard().setActive(on);
+    if (on) f.ctx.computerKeyboard().setEquave(1);
+    f.d.step();
+    auto img = f.d.render();
+    REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+    const Image part = crop(*img);
+    const std::string name = on ? "control-bar-keyboard-on" : "control-bar-keyboard-off";
+    auto ref = readPng(std::string(PQ_TEST_DATA_DIR) + "/views/golden/" + name + ".png");
+    if (!ref) (void)writePng(name + ".actual.png", part);
+    REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
+    ImageDiff d;
+    CHECK(pq::ui::test::matchesGolden(name, part, *ref, true, &d));
+    MESSAGE(name << ": " << pq::ui::test::describe(d));
+  }
 }

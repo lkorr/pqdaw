@@ -659,16 +659,20 @@ KeyResult UiTree::dispatchKey(const KeyEvent& e) {
   if (captured_ && e.down && e.key == key::kEscape && captured_->enabled() && captured_->onKey(e)) return KeyResult::Widget;
   // T6.4: a release the key listener claims (a key it holds down) goes to it first.
   if (keyListener_ && !e.down && keyListener_->onTreeKey(e)) return KeyResult::Widget;
-  // 1. The focused widget, then its ancestors. A focused text field claims printable keys outright.
   Widget* f = focus_;
+  // KB.1: a press goes to the key listener (the computer MIDI keyboard) before the focused widget, so a focused canvas
+  // cannot eat its notes (F fit, S, P…); a focused text-entry widget keeps every key (it is asked after it, below).
+  const bool typing = f && f->enabled() && f->acceptsTextInput();
+  if (keyListener_ && e.down && !typing && keyListener_->onTreeKey(e)) return KeyResult::Widget;
+  // 1. The focused widget, then its ancestors. A focused text field claims printable keys outright.
   if (f) {
     if (f->enabled() && f->onKey(e)) return KeyResult::Widget;
     if (f->acceptsTextInput() && isPrintableKey(e)) return KeyResult::TextSwallowed;
     for (Widget* w = f->parent_; w; w = w->parent_)
       if (w->enabled() && w->onKey(e)) return KeyResult::Widget;
   }
-  // T6.4: the key listener (the computer MIDI keyboard) before every key scope.
-  if (keyListener_ && e.down && keyListener_->onTreeKey(e)) return KeyResult::Widget;
+  // T6.4: with a text field focused, the keys it left (non-printable, unhandled) to the key listener before every scope.
+  if (keyListener_ && e.down && typing && keyListener_->onTreeKey(e)) return KeyResult::Widget;
   // Key releases and lone modifier presses are never chords.
   if (!e.down || isModifierKey(e.key)) return KeyResult::Unhandled;
   KeyResult r = KeyResult::Unhandled;

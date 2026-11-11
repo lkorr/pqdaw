@@ -143,9 +143,9 @@ public:
 // Tree-wide notifications for things that are not one widget's business: the overlay layer (tooltips) and
 // the info view. Called on the UI thread from dispatch; observers must not add or remove observers from the
 // callback.
-// T6.4: a whole-tree key listener (the computer MIDI keyboard): it sees key presses after the focused widget and its
-// ancestors declined them (a focused text field still types) and before any key scope, and every key release before
-// anything else (a release the listener claims — a key it holds down — must never be swallowed by a text field
+// T6.4: a whole-tree key listener (the computer MIDI keyboard): KB.1: it sees key presses before the focused widget
+// (a focused canvas must not eat a note key), except while a text-entry widget has the focus: then after the focus
+// chain declined them (the field still types) and before any key scope; and every key release before anything else (a release the listener claims — a key it holds down — must never be swallowed by a text field
 // focused meanwhile). Returns true when it took the key.
 class KeyListener {
 public:

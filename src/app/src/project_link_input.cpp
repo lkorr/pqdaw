@@ -13,8 +13,14 @@
 #include "pq/document/input_map.h"
 #include "pq/document/lower.h"
 #include "pq/document/pitch_resolve.h"
+#include "pq/views/computer_keyboard.h"
 
 namespace pq::app {
+
+// KB.1: the views' keyboard sends (equave, step) in the engine table's range.
+static_assert(views::ComputerKeyboard::kSteps == engine::kKeyboardSteps);
+static_assert(views::ComputerKeyboard::kMinEquave == engine::kKeyboardMinEquave &&
+              views::ComputerKeyboard::kMaxEquave == engine::kKeyboardMaxEquave);
 
 namespace {
 
@@ -69,7 +75,7 @@ void ProjectLink::publishLiveRoutes(const doc::Project& p, bool force) {  // UI 
   std::unordered_map<uint32_t, LiveCacheEntry> next;
   auto visit = [&](const doc::TrackPath& path, const doc::Track& t) {
     const doc::Mixer& m = t.mixer;
-    const bool listens = m.monitor == doc::MonitorMode::In || (m.monitor == doc::MonitorMode::Auto && m.arm);
+    const bool listens = m.monitor == doc::MonitorMode::In || (m.monitor == doc::MonitorMode::Auto && armed(t));
     if (!listens || m.midiIn.kind == doc::MidiInputKind::None) return;
     uint32_t sources = 0;
     if (m.midiIn.kind == doc::MidiInputKind::All) {
@@ -114,7 +120,7 @@ void ProjectLink::publishLiveRoutes(const doc::Project& p, bool force) {  // UI 
       entry.keys.reserve(doc::InputPitchMap::kKeys);
       for (uint32_t k = 0; k < doc::InputPitchMap::kKeys; ++k)
         entry.keys.push_back(livePitch(im.at(static_cast<uint8_t>(k)), signals));
-      // The computer keyboard: degrees 0 … 16 above each equave offset (a 12-TET key map counts semitones from key 60).
+      // The computer keyboard: degrees 0 … 35 above each equave offset (KB.1) (a 12-TET key map counts semitones from key 60).
       const bool twelve = t.noteInput.keyMap == doc::InputKeyMap::TwelveTetNearest ||
                           t.noteInput.keyMap == doc::InputKeyMap::TwelveTetHz;
       const int64_t size = twelve ? 12 : std::max<int64_t>(im.degreesPerEquave(), 1);
@@ -164,6 +170,16 @@ void ProjectLink::publishLiveRoutes(const doc::Project& p, bool force) {  // UI 
   liveEngine_ = engine_.get();
   liveTracks_ = static_cast<uint32_t>(desc.tracks.size());
   ++livePublishes_;
+}
+
+void ProjectLink::setAutoArm(uint32_t trackId) {  // UI thread (KB.1)
+  if (trackId == autoArm_) return;
+  autoArm_ = trackId;
+  if (current_) publishLiveRoutes(*current_, false);  // the route key changes when the listening set does
+}
+
+bool ProjectLink::armed(const doc::Track& t) const noexcept {
+  return t.mixer.arm || (autoArm_ != 0 && t.id.value == autoArm_ && t.kind == doc::TrackKind::Midi);
 }
 
 void ProjectLink::liveKey(int32_t equave, int32_t step, float velocity, bool on) {  // UI thread

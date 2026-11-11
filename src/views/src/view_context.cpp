@@ -11,6 +11,7 @@
 #include <cwctype>
 #include <thread>
 
+#include "pq/document/pitch_resolve.h"
 #include "pq/document/serialize.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/devices/analysis.h"
@@ -247,6 +248,7 @@ void ViewContext::onStoreEvent(const doc::StoreEvent& e) {
     }
   }
   if (overridesChanged) notify(view_change::kAutomation);
+  syncAutoArm();  // KB.1: a track armed or disarmed by hand, the selected track deleted or another kind
   const bool d = dirty();
   if (d != lastDirty_) {
     lastDirty_ = d;
@@ -916,6 +918,58 @@ void ViewContext::setSelectedTrack(doc::TrackId t) {
   if (t == selectedTrack_) return;
   selectedTrack_ = t;
   notify(view_change::kSelection);
+  syncAutoArm();
+}
+
+// --- KB.1: the computer keyboard's track, layout and Live's arm on select ---------------------------------
+
+void ViewContext::syncAutoArm() {
+  const doc::Project& p = *store_.current();
+  doc::TrackId want;
+  if (const doc::Track* sel = selectedTrack_.valid() ? doc::findTrackPtr(p, selectedTrack_) : nullptr;
+      sel && sel->kind == doc::TrackKind::Midi) {
+    bool anyArmed = false;
+    doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) { anyArmed = anyArmed || t.mixer.arm; });
+    if (!anyArmed) want = sel->id;
+  }
+  if (want == autoArm_) return;
+  autoArm_ = want;
+  transport_.setAutoArm(want.value);
+  notify(view_change::kKeyboard);  // the arm buttons
+}
+
+doc::TrackId ViewContext::keyboardTrack() const {
+  if (autoArm_.valid()) return autoArm_;
+  const doc::Project& p = *store_.current();
+  const doc::Track* sel = selectedTrack_.valid() ? doc::findTrackPtr(p, selectedTrack_) : nullptr;
+  if (sel && sel->kind == doc::TrackKind::Midi && sel->mixer.arm) return sel->id;
+  doc::TrackId first;
+  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+    if (!first.valid() && t.kind == doc::TrackKind::Midi && t.mixer.arm) first = t.id;
+  });
+  if (first.valid()) return first;
+  return sel && sel->kind == doc::TrackKind::Midi ? sel->id : doc::TrackId{};
+}
+
+ComputerKeyboard::Layout ViewContext::keyboardLayout() {
+  const doc::TrackId id = keyboardTrack();
+  if (!id.valid()) return {};
+  const doc::Project& p = *store_.current();
+  const std::optional<doc::TrackPath> path = doc::findTrack(p, id);
+  if (!path) return {};
+  const doc::Track& t = doc::trackAt(p, *path);
+  // A 12-TET key map counts semitones (ProjectLink's keyboard table): the piano layout whatever the tuning.
+  if (t.noteInput.keyMap == doc::InputKeyMap::TwelveTetNearest || t.noteInput.keyMap == doc::InputKeyMap::TwelveTetHz)
+    return {};
+  const doc::TuningDef* def = doc::effectiveTuning(p, *path);
+  if (!def) return {};
+  if (!keyboardDef_ || !(*keyboardDef_ == *def)) {  // built once per definition (a key press compares, no build)
+    Result<tuning::Tuning> built = doc::buildTuning(*def);
+    keyboardDef_ = *def;
+    keyboardDegrees_ = built.ok() ? doc::degreesPerEquave(*built) : 0;
+  }
+  if (keyboardDegrees_ <= 0 || keyboardDegrees_ == 12) return {};
+  return {false, static_cast<int32_t>(std::min<int64_t>(keyboardDegrees_, int64_t{1} << 20))};
 }
 
 // --- layout ---------------------------------------------------------------------------------------------
@@ -1068,13 +1122,18 @@ void ViewContext::registerGlobalActions() {
   });
   // T6.4: the computer MIDI keyboard (Live's M).
   add("keyboard.toggleComputerMidi", [this] { computerKeyboard_.setActive(!computerKeyboard_.active()); });
+  computerKeyboard_.layoutSource = [this] { return keyboardLayout(); };  // KB.1
   computerKeyboard_.onChanged = [this](const ComputerKeyboard& k) {
+    notify(view_change::kKeyboard);  // KB.1: the control bar's button
     if (!k.active()) {
       setStatus("Computer MIDI Keyboard off");
       return;
     }
-    setStatus("Computer MIDI Keyboard on: equave " + std::string(k.equave() > 0 ? "+" : "") + std::to_string(k.equave()) +
-              ", velocity " + std::to_string(k.velocity()) + " (A W S E D \xE2\x80\xA6 play degrees, Z / X equave, C / V velocity)");
+    const ComputerKeyboard::Layout l = keyboardLayout();
+    setStatus("Computer MIDI Keyboard on: " + ComputerKeyboard::layoutName(l, k.scaleMode()) + ", equave " +
+              std::string(k.equave() > 0 ? "+" : "") + std::to_string(k.equave()) + ", velocity " +
+              std::to_string(k.velocity()) +
+              (l.piano ? " (Z / X equave, C / V velocity)" : " (Page Up / Down equave, Home / End velocity)"));
   };
   // Disabled while there is nothing to undo or a gesture is running: the chord then falls through (Q27), so a
   // text field's own Ctrl+Z handling (none yet) would get it.

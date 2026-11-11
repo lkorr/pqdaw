@@ -1265,3 +1265,14 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **Crash recovery**: record into an untitled project, kill pqdaw in Task Manager, start it again: a "Recordings from an earlier session" box offers Open as Project / Show in Explorer / Discard / Later. Nothing is deleted unless you choose Discard.
 - **Tuning, by ear**: hold a note on a 5L 2s main tuning and click another MOS size in the wheel (e.g. 2L 3s): the note should go straight from the old pitch to the new one, no odd pitch in between (L4). A held note played in Hz input mode keeps its pitch while you drag the Generator (L3).
 - **WASAPI capture from a second device (T6.x-fix-ui-b, M7)**: WASAPI output on one device (e.g. laptop speakers), input on another (a USB mic); record a steady tone or a metronome into an armed track for 10+ minutes. The take should have no jumps or silent gaps anywhere, and its clicks should stay lined up with the grid from start to end (within ~1 ms). Same-device input/output should behave exactly as before.
+
+## 2026-11-10 · KB.1 · The computer keyboard plays the tuning's layout, takes its keys first, has a button 👁
+- **Button**: top right of the control bar, a small piano icon (lit while on, same as `M`); beside it `E+1 V100` while
+  on; hover: the layout ("Piano (12 degrees)" / "1Row (22 degrees)"); right-click or ▾: 1Row / Continuous, Equave,
+  Velocity.
+- **Keys first**: open the patch view or a circuit, click its canvas, press `M`, then `F` / `S` / `P`: notes, no fit.
+- **Layouts**: select a 12-EDO MIDI track: A S D F … = white keys, W E T Y U O P black (as the piano roll's rows). Select
+  a 22-EDO or a MOS track: home row = degrees from A, Z row an equave down, Q row up, number row two up; Page Up / Down
+  shift the equave, Home / End the velocity. Try Continuous from the menu.
+- **Arm on select**: with nothing armed, clicking a MIDI track lights its arm button and `M` + keys play it; arming a
+  track by hand stops it.

@@ -94,6 +94,7 @@ inline constexpr uint32_t kAnalysis = 1u << 17;      // TX.spectrum: new analysi
 inline constexpr uint32_t kResponses = 1u << 18;     // EQ.4b: the app's lowering of the current structure arrived (the response displays draw again)
 inline constexpr uint32_t kTimeWindow = 1u << 19;    // TL.1: the shared visible time range (TimeWindow) moved or zoomed
 inline constexpr uint32_t kSampleAnalysis = 1u << 20; // T6.8: a sample's transients / tempo arrived (SampleAnalysis)
+inline constexpr uint32_t kKeyboard = 1u << 21;       // KB.1: the computer keyboard's state, or the auto-armed track
 }  // namespace view_change
 
 // What a tuning edit applies to (T3.14): one clip, one track, or a main tuning. The MOS wheel applies its edits to it
@@ -359,6 +360,19 @@ public:
   // T6.4: the computer MIDI keyboard (`M`: action keyboard.toggleComputerMidi; the Shell makes it the tree's key
   // listener). Its state changes name themselves in the status line.
   ComputerKeyboard& computerKeyboard() noexcept { return computerKeyboard_; }
+  // KB.1: the track whose tuning lays out the computer keyboard: the auto-armed track, else the selected track when it
+  // is an armed MIDI track, else the first armed MIDI track (document order), else the selected MIDI track; invalid:
+  // none (several armed tracks in different tunings each play in their own tuning, through this one's layout).
+  doc::TrackId keyboardTrack() const;
+  // Its layout (ComputerKeyboard::layoutSource): the piano layout for 12 degrees per equave or a 12-TET key map, else
+  // the scale layout over the tuning's degrees per equave. The built tuning is cached on its definition.
+  ComputerKeyboard::Layout keyboardLayout();
+  // KB.1: Live's arm on select (its default "Auto-Arm"): while no track is armed by hand, the selected MIDI track is
+  // auto-armed — it listens to its input and records as if armed (TransportPort::setAutoArm), and its arm button is
+  // lit; not document state, not undoable. Arming any track by hand ends it (clicking the lit button arms by hand).
+  doc::TrackId autoArmTrack() const noexcept { return autoArm_; }
+  // What a track's arm button shows: armed by hand, or auto-armed.
+  bool armShown(const doc::Track& t) const noexcept { return t.mixer.arm || (autoArm_.valid() && t.id == autoArm_); }
   bool playing() { return transport_.playhead().playing; }
   // Space: stop if playing, else play from the start marker. Shift+Space: continue from the stop position.
   void togglePlay();
@@ -628,6 +642,11 @@ private:
   bool detailVisible_ = false;  // T3.x-fix-look: collapsed until a clip is shown in it (Live)
   bool detailAuto_ = true;       // no explicit show / hide yet: the first detail clip opens the detail view
   doc::TrackId selectedTrack_{};
+  doc::TrackId autoArm_{};  // KB.1: autoArmTrack
+  void syncAutoArm();
+  // KB.1: keyboardLayout's cache (the definition its tuning was built from, its degrees per equave).
+  std::optional<doc::TuningDef> keyboardDef_;
+  int64_t keyboardDegrees_ = 0;
   DetailMode detailMode_ = DetailMode::Clip;
   bool browserVisible_ = false;
   bool tuningsVisible_ = false;

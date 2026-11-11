@@ -69,11 +69,14 @@ inline constexpr uint32_t kLivePorts = 16;                // MIDI input ports
 inline constexpr uint32_t kLiveKeyboard = kLivePorts;     // the computer keyboard's source index
 inline constexpr uint32_t kLiveSources = kLivePorts + 1;  // ports + the keyboard
 inline constexpr uint32_t kLiveChannels = 16;
-// The computer keyboard (T6.4: Live's letter rows): 17 steps (degrees 0 … 16 above the equave offset) at equave
-// offsets kKeyboardMinEquave … kKeyboardMaxEquave. A keyboard event's key byte is keyboardKey(equave, step).
-inline constexpr int32_t kKeyboardSteps = 17;
-inline constexpr int32_t kKeyboardMinEquave = -5, kKeyboardMaxEquave = 5;
+// The computer keyboard (T6.4: Live's letter rows; KB.1: the mos-explorer layouts too): 36 steps (degrees 0 … 35 above
+// the equave offset: Continuous mode's 35 keys above A without wrapping, in any tuning) at equave offsets
+// kKeyboardMinEquave … kKeyboardMaxEquave (7 × 36 = 252 keys: one byte). A keyboard event's key byte is
+// keyboardKey(equave, step).
+inline constexpr int32_t kKeyboardSteps = 36;
+inline constexpr int32_t kKeyboardMinEquave = -3, kKeyboardMaxEquave = 3;
 inline constexpr uint32_t kKeyboardKeys = static_cast<uint32_t>((kKeyboardMaxEquave - kKeyboardMinEquave + 1) * kKeyboardSteps);
+static_assert(kKeyboardKeys <= 256, "a keyboard key is one byte (RawMidi::d1)");
 constexpr uint8_t keyboardKey(int32_t equave, int32_t step) noexcept {
   return static_cast<uint8_t>((equave - kKeyboardMinEquave) * kKeyboardSteps + step);
 }

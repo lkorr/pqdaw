@@ -407,6 +407,30 @@ TEST_CASE("widgets: key routing precedence") {
     CHECK(R.draw == 0);
     CHECK(R.globalB == 1);
   }
+  SUBCASE("KB.1: the key listener takes presses before the focused widget, after a focused text field") {
+    struct Listener final : KeyListener {
+      int presses = 0, releases = 0;
+      bool onTreeKey(const KeyEvent& e) override {
+        if (e.key != 'x' && e.key != key::kPageUp) return false;
+        (e.down ? presses : releases)++;
+        return true;
+      }
+    } l;
+    d.tree().setKeyListener(&l);
+    d.tree().setFocus(&clip);
+    CHECK(d.press("X") == KeyResult::Widget);  // the listener, not the focused widget
+    CHECK(l.presses == 1);
+    CHECK(l.releases == 1);
+    CHECK(clip.keys == 0);
+    CHECK(d.press("K") == KeyResult::Widget);  // a key the listener declines: the focus chain as before
+    CHECK(arrangement.keys == 1);
+    d.tree().setFocus(&name);  // a text field keeps its printable keys …
+    CHECK(d.press("X") == KeyResult::TextSwallowed);
+    CHECK(l.presses == 1);
+    CHECK(d.press("PageUp") == KeyResult::Widget);  // … and leaves the rest to the listener
+    CHECK(l.presses == 2);
+    d.tree().setKeyListener(nullptr);
+  }
   SUBCASE("auto-repeat fires only repeatable actions; lone modifiers are never chords") {
     d.tree().setFocus(&clip);
     CHECK(d.keyDown('b', mod::kNone, true) == KeyResult::Action);

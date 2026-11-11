@@ -28,9 +28,12 @@
 //                       released now, or at its own end when that comes first (≥ 50 ms after its onset), so a note
 //                       clicked in the piano roll sounds while it is held, at most its own length.
 //   liveKey(equave, step, velocity, on)
-//                       T6.4: the computer MIDI keyboard (`M`): degree `step` (0 … 16) above equave offset `equave`
-//                       (−5 … 5) went down (velocity 1 … 127) or up, into the armed tracks that listen to it (each in its
+//                       T6.4: the computer MIDI keyboard (`M`): degree `step` (0 … 35, KB.1) above equave offset `equave`
+//                       (−3 … 3) went down (velocity 1 … 127) or up, into the armed tracks that listen to it (each in its
 //                       own tuning and note input mode). A key-up repeats its key-down's equave and step.
+//   setAutoArm(trackId)  KB.1: Live's arm on select: the MIDI track (document id; 0: none) that listens and records as if
+//                       armed while no track is armed by hand (ViewContext keeps it: the selected MIDI track then).
+//                       Not document state, not undoable. Default: nothing.
 //   record(from)        T6.6 / T6.7: the Record button (F9). Stopped: the project's count-in (RecordSettings::countInBars;
 //                       the transport holds at `from` meanwhile and playhead() reports countingIn), then playback and
 //                       recording from `from` (the armed tracks' inputs: audio to WAV, notes; punch, loop takes).
@@ -115,6 +118,7 @@ public:
   virtual void liveKey(int32_t equave, int32_t step, float velocity, bool on) {
     (void)equave, (void)step, (void)velocity, (void)on;
   }
+  virtual void setAutoArm(uint32_t trackId) { (void)trackId; }
   virtual void record(Ticks from) { play(from); }
   virtual bool captureMidi(Ticks insertMarker) {
     (void)insertMarker;

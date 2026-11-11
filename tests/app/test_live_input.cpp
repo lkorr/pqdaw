@@ -361,6 +361,12 @@ TEST_CASE("live input: routes follow arm (exclusive / additive), monitor and MID
   apply(SetTrackArm{a, false});
   apply(SetTrackArm{b, false});  // nothing armed
   CHECK(link->liveRouteTracks() == 0);
+  // KB.1: the auto-armed track (Live's arm on select) listens as if armed (B, monitor Auto); 0 ends it.
+  link->setAutoArm(b.value);
+  CHECK(link->liveRouteTracks() == 1);
+  CHECK(link->autoArm() == b.value);
+  link->setAutoArm(0);
+  CHECK(link->liveRouteTracks() == 0);
   apply(SetTrackMonitor{a, MonitorMode::In});
   CHECK(link->liveRouteTracks() == 1);
   // An edit that changes no route publishes nothing.

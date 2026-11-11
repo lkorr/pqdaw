@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -28,6 +29,7 @@
 #include "pq/ui/test_driver.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/circuit_editor.h"
+#include "pq/views/computer_keyboard.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/panel/group_panel_face.h"
@@ -3374,4 +3376,79 @@ TEST_CASE("project patch (TL.4): the mixer face is 2x by default and S-drag resi
   u.d.doubleClick(u.centre(mixer()));
   u.d.keyUp('s');
   CHECK(v.mixerScale(keys) == metrics::kMixerScale);
+}
+
+TEST_CASE("KB.1: with the computer keyboard on, every note key plays whichever main view has the focus (real dispatch)") {
+  Ui u;
+  ComputerKeyboard& kb = u.ctx.computerKeyboard();
+  const doc::TrackId keys = u.track("Keys").id;
+  auto clip = doc::ops::insertEmptyClip(*u.ctx.doc(), u.ctx.store().ids(), keys, 0, kTicksPerWhole, "Riff");
+  REQUIRE(clip.ok());
+  REQUIRE(u.ctx.store().dispatch(clip->command).ok());
+  u.arrangement().selectTrack(keys, mod::kNone);  // auto-armed (nothing is armed by hand): its layout
+  u.d.press("M");
+  REQUIRE(kb.active());
+  const ComputerKeyboard::Layout layout = u.ctx.keyboardLayout();
+  std::vector<Key> notes;
+  for (const char c : std::string_view("abcdefghijklmnopqrstuvwxyz0123456789-=[]\\;',./"))
+    if (ComputerKeyboard::noteOf(static_cast<Key>(c), layout, kb.scaleMode())) notes.push_back(static_cast<Key>(c));
+  REQUIRE(notes.size() >= 17);
+  CHECK(std::find(notes.begin(), notes.end(), Key{'f'}) != notes.end());
+  auto liveKeys = [&] {
+    return std::count_if(u.port.calls.begin(), u.port.calls.end(),
+                         [](const FakeTransport::Record& r) { return r.call == FakeTransport::Call::LiveKey; });
+  };
+  auto playAll = [&](const char* where, Widget* focus) {
+    REQUIRE_MESSAGE(focus != nullptr, where);
+    u.d.tree().setFocus(focus);
+    REQUIRE_MESSAGE(u.d.tree().focus() == focus, where);
+    const size_t h = u.history();
+    const auto n0 = liveKeys();
+    for (const Key k : notes) {
+      CHECK_MESSAGE(u.d.keyDown(k) == KeyResult::Widget, where << ": " << static_cast<char>(k));
+      u.d.keyUp(k);
+    }
+    CHECK_MESSAGE(liveKeys() == n0 + 2 * static_cast<std::ptrdiff_t>(notes.size()), where);
+    CHECK_MESSAGE(u.history() == h, where);  // no view edited anything with them
+    CHECK_MESSAGE(u.d.tree().focus() == focus, where);
+  };
+  playAll("arrangement", &u.arrangement());
+  // The project patch view: F would fit, S / P / 0 … are its keys; the view stays where it is.
+  u.show();
+  ProjectPatchView& v = u.view();
+  const circuit::CircuitCanvas::View before = v.canvas().view();
+  playAll("project patch view", &v.canvas());
+  CHECK(v.canvas().view() == before);
+  // The circuit editor (a band opened in place): F would go back to the project.
+  REQUIRE(v.openCircuit(keys, u.onPath("Keys", 0), false));
+  u.d.advance(0.5);
+  REQUIRE(v.openedBand() == keys);
+  const circuit::CircuitCanvas::View inBand = v.canvas().view();
+  playAll("circuit editor", &v.canvas());
+  CHECK(v.openedBand() == keys);
+  CHECK(v.canvas().view() == inBand);
+  v.setShown(false, false);
+  u.d.tree().layoutNow();
+  // The piano roll of the clip, then the device chain.
+  u.ctx.setDetailClip(clip->clips[0]);
+  u.ctx.setDetailVisible(true);
+  u.ctx.setDetailMode(DetailMode::Clip);
+  u.d.tree().layoutNow();
+  playAll("piano roll", u.d.find("main/body/bottom/detail/clip/clip-view/notes"));
+  u.ctx.setDetailMode(DetailMode::Device);
+  u.d.tree().layoutNow();
+  Widget* chain = nullptr;
+  std::function<void(Widget&)> findChain = [&](Widget& w) {
+    if (!chain && dynamic_cast<DeviceChainView*>(&w)) chain = &w;
+    for (size_t i = 0; i < w.childCount() && !chain; ++i) findChain(w.child(i));
+  };
+  findChain(u.shell->slot(ShellSlot::DeviceDetail));
+  playAll("device chain", chain);
+  // Off: the keys are the views' again (F fits the focused patch view, no note).
+  u.d.press("M");
+  REQUIRE_FALSE(kb.active());
+  const auto n0 = liveKeys();
+  u.d.keyDown('a');
+  u.d.keyUp('a');
+  CHECK(liveKeys() == n0);
 }

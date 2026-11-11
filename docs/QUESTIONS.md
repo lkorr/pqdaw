@@ -998,3 +998,21 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   Beyond ±1000 ppm or a stall beyond the reserve the old drop / underflow remains, still unmarked in the take
   (reversible: a split could be added for that rare case).
 - Status: decided (reversible).
+
+## Q?-KB.1-a · 2026-11-10 · KB.1 · Arm on select, the keyboard's layout track, the shift keys
+- **Context**: KB.1 asks for Live's arm-on-select so `M` + keys play the selected track, and a layout per tuning.
+  Options for arming: (a) a document edit (arm the selected track, disarm the last) — every selection would be an undo
+  step and dirty the project; (b) Live's Auto-Arm: a transient "auto-armed" track outside the document.
+- **Choice**: (b). While no track is armed by hand, the selected MIDI track is auto-armed (`ViewContext::autoArmTrack`,
+  `TransportPort::setAutoArm`): it listens and records as if armed, its arm button is lit; arming any track by hand
+  ends it (clicking the lit button arms that track by hand). Groups, audio and return tracks are never auto-armed.
+  The track whose tuning lays out the keys: the auto-armed one, else the selected armed one, else the first armed MIDI
+  track (document order), else the selected MIDI track. Other armed tracks in other tunings still play, each in its own
+  tuning, through that layout's (equave, step).
+- **Shift keys**: piano layout keeps Live's Z / X (equave) and C / V (velocity); in the scale layout every letter and the
+  number row are notes, so Page Down / Page Up move the equave and End / Home the velocity (both work in both layouts).
+  `M` stays the toggle, so the bottom row's M key plays nothing in the scale layout. Keys are matched by character (as
+  T6.4), not by physical position.
+- **Range**: the engine's keyboard table went from 17 steps × equaves ±5 to 36 steps × ±3 (one key byte) so Continuous
+  plays its 35 keys above A in any tuning without wrapping; notes past ±3 equaves play nothing.
+- Status: decided (reversible).

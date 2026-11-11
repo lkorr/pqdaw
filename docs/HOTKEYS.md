@@ -279,19 +279,44 @@ A device's "Open in Circuit View" (its menu, a double-click on its title, the pr
 | Arrangement clips | drag out of the window | T5.12: Explorer receives WAV files rendered as the clips play (MIDI clips: M11) |
 | Browser preview | click in the waveform | plays from there (scrub) |
 
-## Computer MIDI keyboard (T6.4, the tree's key listener `views::ComputerKeyboard`, not the keymap)
+## Computer MIDI keyboard (T6.4, KB.1; the tree's key listener `views::ComputerKeyboard`, not the keymap)
 
-While `M` has it on, these keys play notes into the armed tracks that listen to All Ins or the Computer Keyboard (each
-track in its own tuning: Keys = degrees, Hz = their Hz). It takes them before every key scope (so the arrangement's `A`,
-`Z`, `X` wait until it is off, as in Live); a focused text field still types them, and keys with `Ctrl`, `Alt`, `Shift`
-or `Win` pass through (`Ctrl+S` saves).
+While `M` (or the keyboard button at the control bar's top right) has it on, these keys play notes into the armed MIDI
+tracks that listen to All Ins or the Computer Keyboard, each track in its own tuning (Keys = degrees, Hz = their Hz).
+With no track armed by hand, the selected MIDI track is armed automatically (Live's arm on select). It takes its keys
+before the focused view (a focused patch canvas no longer eats `F`, `S`, `P`…) and before every key scope; a focused
+text field still types them, and keys with `Ctrl`, `Alt`, `Shift` or `Win` pass through (`Ctrl+S` saves).
+
+The layout follows the tuning of the keyboard's track (the auto-armed one, else the selected armed one, else the first
+armed one):
+
+**12 degrees per equave (or a 12-TET key map): Live's piano layout.** The white keys are the degrees the piano roll draws
+white (0 2 4 5 7 9 11).
 
 | Keys | What |
 |---|---|
-| `A W S E D F T G Y H U J K O L P ;` | degrees 0 … 16 above the equave offset (consecutive degrees of the track's tuning, not 12-TET keys; a 12-TET key map counts semitones). A release ends the note its press started |
-| `Z` / `X` | equave offset down / up (−5 … +5) |
-| `C` / `V` | velocity −20 / +20 (1 … 127; 100 at start) |
-| `M` | off (every held note ends) |
+| `A S D F G H J K L ;` | the white degrees 0 2 4 5 7 9 11 12 14 16 above the equave offset |
+| `W E T Y U O P` | the black degrees 1 3 6 8 10 13 15 |
+| `Z` / `X` (or `Page Down` / `Page Up`) | equave offset down / up (−3 … +3) |
+| `C` / `V` (or `End` / `Home`) | velocity −20 / +20 (1 … 127; 100 at start) |
+
+**Any other size (a MOS, an EDO, a scale): the mos-explorer's keyboard** over the tuning's degrees per equave. Every
+letter is a note here, so the shift keys are the navigation cluster.
+
+| Keys | 1Row (default) | Continuous (the button's menu) |
+|---|---|---|
+| `A S D F G H J K L ; '` | degrees 0 … 10 | degrees 0 … 10 |
+| `Q W E R T Y U I O P [ ] \` | degrees 0 … 12 an equave up | degrees 11 … 23 |
+| `1 2 3 4 5 6 7 8 9 0 - =` | degrees 0 … 11 two equaves up | degrees 24 … 35 |
+| `Z X C V B N , . /` | degrees 0 … 9 an equave down (`M`'s place stays the toggle) | `/` = 1 below `A`, `.` 2, `,` 3, `N` 5 … `Z` 10 below |
+| `Page Down` / `Page Up` | equave offset down / up (−3 … +3) | same |
+| `End` / `Home` | velocity −20 / +20 | same |
+
+| Keys | What |
+|---|---|
+| `M` | on / off (every held note ends); the control bar's keyboard button is the same switch (right-click or ▾: 1Row / Continuous, Equave, Velocity) |
+
+A release ends the note its press started. A note outside the keyboard's range (equave ±3) plays nothing.
 
 ## Metronome and Track Delay (T6.6, handled by the controls, not the keymap)
 

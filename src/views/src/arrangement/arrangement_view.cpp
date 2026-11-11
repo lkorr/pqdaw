@@ -400,6 +400,7 @@ void ArrangementView::onViewChange(uint32_t bits) {
   }
   // T5.6: an overview arrived or grew, or a sample was found / lost (the missing overlay): the audio clips repaint.
   if (bits & (view_change::kWaveforms | view_change::kSamples)) lanes_->markDirty();
+  if (bits & view_change::kKeyboard) syncHeaders();  // KB.1: the auto-armed track's arm button
   if (bits & view_change::kShowAutomation)  // T4.18: a knob's "Show Automation"
     if (const auto r = ctx_.takeShowAutomation()) automation_->showParam(r->track, r->param);
   if (bits & view_change::kAutomation) {

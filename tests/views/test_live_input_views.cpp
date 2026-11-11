@@ -5,8 +5,10 @@
 #include <doctest/doctest.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "pq/document/edit_ops.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
@@ -14,6 +16,7 @@
 #include "pq/views/computer_keyboard.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
+#include "pq/views/piano_roll/row_model.h"
 #include "pq/views/prefs/audio_prefs.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
@@ -55,6 +58,12 @@ struct Fixture {
       if (r.call == FakeTransport::Call::LiveKey) v.push_back(r);
     return v;
   }
+  // KB.1: arms `name` exclusively (Live's exclusive arm: the fixture's armed Bass is disarmed).
+  void armOnly(std::string_view name) {
+    auto e = doc::ops::armTrack(*ctx.doc(), track(name).id, false);
+    REQUIRE(e.ok());
+    REQUIRE(ctx.store().dispatch(e->command).ok());
+  }
   Vec2 centre(const Widget& w) const {
     const IRect r = w.rect();
     return {static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)};
@@ -78,6 +87,7 @@ struct Fixture {
 
 TEST_CASE("computer keyboard: M toggles it; letters play degrees, a release ends its own note, Z X C V move it") {
   Fixture f;
+  f.armOnly("Drums");  // KB.1: the keyboard plays the armed 12-EDO track: Live's piano layout
   ComputerKeyboard& kb = f.ctx.computerKeyboard();
   f.d.keyDown('a');  // off: no note
   f.d.keyUp('a');
@@ -128,6 +138,7 @@ TEST_CASE("computer keyboard: M toggles it; letters play degrees, a release ends
 
 TEST_CASE("computer keyboard: a focused text field keeps its letters; the release of a held key still ends its note") {
   Fixture f;
+  f.armOnly("Drums");  // KB.1: the keyboard plays the armed 12-EDO track: Live's piano layout
   ComputerKeyboard& kb = f.ctx.computerKeyboard();
   kb.setActive(true);
   f.d.keyDown('d');  // step 4, before the field has the focus
@@ -261,4 +272,225 @@ TEST_CASE("mixer view (M6 review L21): sends, pan and volume line up across trac
   CHECK(piano->pan()->rect().y > panY);
   CHECK(master->pan()->rect().y == piano->pan()->rect().y);
   CHECK(ret->pan()->rect().y == piano->pan()->rect().y);
+}
+
+// ---- KB.1: the layout follows the keyboard track's tuning; arm on select ------------------------------------------
+
+namespace {
+
+using KN = ComputerKeyboard::KeyNote;
+
+// Presses and releases `k` (real dispatch); the note it played (equave, step), or nullopt when it played none.
+std::optional<KN> play(Fixture& f, Key k) {
+  const size_t before = f.keys().size();
+  f.d.keyDown(k);
+  f.d.keyUp(k);
+  const auto v = f.keys();
+  if (v.size() == before) return std::nullopt;
+  REQUIRE(v.size() == before + 2);  // its note-on and the note-off of the release
+  CHECK(v[before].on);
+  CHECK_FALSE(v[before + 1].on);
+  CHECK(v[before + 1].equave == v[before].equave);
+  CHECK(v[before + 1].step == v[before].step);
+  return KN{v[before].equave, v[before].step};
+}
+
+void setPrivateTuning(Fixture& f, std::string_view track, doc::TuningDef def) {
+  REQUIRE(f.ctx.store().dispatch(doc::SetTrackTuning{f.track(track).id, doc::TuningAssignment::privateTuning(std::move(def))}).ok());
+}
+
+}  // namespace
+
+TEST_CASE("KB.1 computer keyboard: 12 degrees per equave play Live's piano layout on the rows the piano roll draws white") {
+  Fixture f;
+  f.armOnly("Drums");  // 12-EDO (the project's first main tuning, inherited)
+  ComputerKeyboard& kb = f.ctx.computerKeyboard();
+  CHECK(f.ctx.keyboardTrack() == f.track("Drums").id);
+  CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{true, 12});
+  // The white keys are exactly the degrees the piano roll marks natural for this tuning (kRowNatural), the upper row's
+  // the others.
+  const std::vector<uint8_t> natural = roll::defaultHighlightScale(tuning::Tuning{});  // 12-EDO
+  REQUIRE(natural.size() == 12);
+  f.d.press("M");
+  REQUIRE(kb.active());
+  int32_t last = -1;
+  for (const char c : std::string_view("asdfghjkl;")) {
+    const auto n = play(f, static_cast<Key>(c));
+    REQUIRE(n.has_value());
+    CHECK(n->equave == 0);
+    CHECK(n->degree > last);  // ascending
+    CHECK(natural[static_cast<size_t>(n->degree % 12)] == 1);
+    last = n->degree;
+  }
+  for (const char c : std::string_view("wetyuop")) {
+    const auto n = play(f, static_cast<Key>(c));
+    REQUIRE(n.has_value());
+    CHECK(natural[static_cast<size_t>(n->degree % 12)] == 0);
+  }
+  CHECK(play(f, 'f') == KN{0, 5});
+  CHECK(play(f, 'k') == KN{0, 12});
+  CHECK_FALSE(play(f, 'r').has_value());  // no black key between E and F
+  CHECK_FALSE(play(f, 'q').has_value());
+  // Z / X / C / V shift (no notes here), the navigation keys too.
+  f.d.press("Z");
+  CHECK(kb.equave() == -1);
+  CHECK(play(f, 'a') == KN{-1, 0});
+  f.d.press("PageUp");
+  f.d.press("PageUp");
+  CHECK(kb.equave() == 1);
+  f.d.press("V");
+  CHECK(kb.velocity() == 120);
+  f.d.press("End");
+  CHECK(kb.velocity() == 100);
+}
+
+TEST_CASE("KB.1 computer keyboard: other sizes play the mos-explorer layout (1Row default, Continuous): 22-EDO, 5L 2s, 31-EDO") {
+  Fixture f;
+  ComputerKeyboard& kb = f.ctx.computerKeyboard();
+  f.armOnly("Pad");  // a private 22-EDO
+  CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});
+  f.d.press("M");
+  REQUIRE(kb.active());
+  CHECK(kb.scaleMode() == ComputerKeyboard::ScaleMode::OneRow);
+  SUBCASE("1Row over 22-EDO: home row = degrees, the bottom row an equave down, the upper one up, the number row two up") {
+    CHECK(play(f, 'a') == KN{0, 0});
+    CHECK(play(f, 'f') == KN{0, 3});
+    CHECK(play(f, '\'') == KN{0, 10});
+    CHECK(play(f, 'z') == KN{-1, 0});
+    CHECK(play(f, ',') == KN{-1, 7});  // M's place is the toggle
+    CHECK(play(f, '/') == KN{-1, 9});
+    CHECK(play(f, 'q') == KN{1, 0});
+    CHECK(play(f, '\\') == KN{1, 12});
+    CHECK(play(f, '1') == KN{2, 0});
+    CHECK(play(f, '=') == KN{2, 11});
+    // Every letter is a note: the navigation keys shift.
+    f.d.press("PageDown");
+    CHECK(kb.equave() == -1);
+    CHECK(play(f, 'x') == KN{-2, 1});
+    f.d.press("Home");
+    CHECK(kb.velocity() == 120);
+    CHECK(play(f, 'a') == KN{-1, 0});
+    CHECK(f.keys()[f.keys().size() - 2].velocity == 120.0f);
+    f.d.press("PageDown");
+    f.d.press("PageDown");
+    CHECK(kb.equave() == -3);
+    CHECK_FALSE(play(f, 'z').has_value());  // equave −4: out of range, no note (and no view action)
+    // M still toggles (off: every held note ends).
+    f.d.keyDown('a');
+    CHECK(kb.heldKeys() == 1);
+    f.d.press("M");
+    CHECK_FALSE(kb.active());
+    CHECK(kb.heldKeys() == 0);
+  }
+  SUBCASE("Continuous over 22-EDO: 35 consecutive degrees from A up, the bottom row below A") {
+    kb.setScaleMode(ComputerKeyboard::ScaleMode::Continuous);
+    CHECK(play(f, 'a') == KN{0, 0});
+    CHECK(play(f, '\'') == KN{0, 10});
+    CHECK(play(f, 'q') == KN{0, 11});
+    CHECK(play(f, '\\') == KN{0, 23});
+    CHECK(play(f, '1') == KN{0, 24});
+    CHECK(play(f, '=') == KN{0, 35});
+    CHECK(play(f, '/') == KN{-1, 21});  // one below A
+    CHECK(play(f, 'z') == KN{-1, 12});  // ten below A
+  }
+  SUBCASE("a 7-note MOS (5L 2s in 31-EDO): 1Row and Continuous over its 7 degrees") {
+    tuning::MosParams m;
+    m.n = 7;
+    m.generator = 18.0 * 1200.0 / 31.0;
+    doc::TuningDef def;
+    def.system = m;
+    setPrivateTuning(f, "Pad", def);
+    CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 7});
+    CHECK(play(f, 'j') == KN{0, 6});
+    CHECK(play(f, 'k') == KN{0, 7});  // past the equave: degree 7 = the next equave's tonic (equave · 7 + 7)
+    CHECK(play(f, 'b') == KN{-1, 4});
+    kb.setScaleMode(ComputerKeyboard::ScaleMode::Continuous);
+    CHECK(play(f, '/') == KN{-1, 6});
+    CHECK(play(f, 'z') == KN{-2, 4});  // ten below A = −2 equaves + 4
+  }
+  SUBCASE("31-EDO (Bass): Continuous below A wraps into the equave below") {
+    f.armOnly("Bass");
+    CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 31});
+    kb.setScaleMode(ComputerKeyboard::ScaleMode::Continuous);
+    CHECK(play(f, '/') == KN{-1, 30});
+    CHECK(play(f, '=') == KN{0, 35});
+  }
+}
+
+TEST_CASE("KB.1 computer keyboard: a 12-TET key map plays the piano layout; several armed tracks: the selected one's") {
+  Fixture f;
+  // Bass (31-EDO) and Drums (12-EDO) both armed: the selected armed track lays it out, else the first armed one.
+  auto both = doc::ops::armTrack(*f.ctx.doc(), f.track("Drums").id, true);
+  REQUIRE(both.ok());
+  REQUIRE(f.ctx.store().dispatch(both->command).ok());
+  CHECK(f.track("Bass").mixer.arm);
+  CHECK(f.ctx.keyboardTrack() == f.track("Drums").id);  // first in document order
+  CHECK(f.ctx.keyboardLayout().piano);
+  f.ctx.setSelectedTrack(f.track("Bass").id);
+  CHECK(f.ctx.keyboardTrack() == f.track("Bass").id);
+  CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 31});
+  doc::NoteInput in = f.track("Bass").noteInput;
+  in.keyMap = doc::InputKeyMap::TwelveTetNearest;
+  REQUIRE(f.ctx.store().dispatch(doc::SetNoteInput{f.track("Bass").id, in}).ok());
+  CHECK(f.ctx.keyboardLayout().piano);
+}
+
+TEST_CASE("KB.1 arm on select: the selected MIDI track is auto-armed while no track is armed by hand") {
+  Fixture f;
+  // A click on a header's empty part (real dispatch) selects its track.
+  auto clickHeader = [&](std::string_view name) {
+    const doc::TrackId id = f.track(name).id;
+    for (size_t i = 0; i < 16; ++i) {
+      auto* h = dynamic_cast<TrackHeader*>(f.d.find("main/body/top/track-area/arrangement/tracks/track[" + std::to_string(i) + "]"));
+      if (!h || h->trackId() != id) continue;
+      const IRect r = h->rect();
+      for (int y = r.y + 2; y < r.bottom() - 2; y += 2)
+        for (int x = r.x + 2; x < r.right() - 2; x += 4)
+          if (f.d.tree().hitTest({static_cast<float>(x), static_cast<float>(y)}) == h) {
+            f.d.click({static_cast<float>(x), static_cast<float>(y)});
+            REQUIRE(f.ctx.selectedTrack() == id);
+            return;
+          }
+    }
+    FAIL("no clickable header for " << name);
+  };
+  // The fixture's Bass is armed by hand: selecting another track arms nothing.
+  clickHeader("Drums");
+  CHECK_FALSE(f.ctx.autoArmTrack().valid());
+  CHECK(f.port.autoArm == 0);
+  // Disarm it (the strip's arm button): Drums, selected, is auto-armed now.
+  MixerView* mixer = findMixer(*f.shell);
+  REQUIRE(mixer != nullptr);
+  mixer->setShown(true);
+  f.d.tree().layoutNow();
+  f.d.click(f.centre(*mixer->strip(f.track("Bass").id)->arm()));
+  CHECK_FALSE(f.track("Bass").mixer.arm);
+  CHECK(f.ctx.autoArmTrack() == f.track("Drums").id);
+  CHECK(f.port.autoArm == f.track("Drums").id.value);
+  f.d.step();
+  CHECK(mixer->strip(f.track("Drums").id)->arm()->on());  // lit while auto-armed
+  CHECK_FALSE(f.track("Drums").mixer.arm);                // not document state
+  CHECK_FALSE(mixer->strip(f.track("Bass").id)->arm()->on());
+  CHECK(f.ctx.keyboardTrack() == f.track("Drums").id);  // M + keys play it without arming by hand
+  mixer->setShown(false);
+  f.d.tree().layoutNow();
+  // Another MIDI track selected: it follows; a group: none.
+  clickHeader("Lead");
+  CHECK(f.ctx.autoArmTrack() == f.track("Lead").id);
+  CHECK(f.port.autoArm == f.track("Lead").id.value);
+  clickHeader("Keys");
+  CHECK_FALSE(f.ctx.autoArmTrack().valid());
+  CHECK(f.port.autoArm == 0);
+  clickHeader("Lead");
+  // Clicking the lit arm button arms the track by hand; then selection arms nothing else.
+  mixer->setShown(true);
+  f.d.tree().layoutNow();
+  f.d.click(f.centre(*mixer->strip(f.track("Lead").id)->arm()));
+  CHECK(f.track("Lead").mixer.arm);
+  CHECK_FALSE(f.ctx.autoArmTrack().valid());
+  mixer->setShown(false);
+  f.d.tree().layoutNow();
+  clickHeader("Drums");
+  CHECK_FALSE(f.ctx.autoArmTrack().valid());
+  CHECK(f.ctx.keyboardTrack() == f.track("Lead").id);  // the armed track plays (and lays out the keys)
 }

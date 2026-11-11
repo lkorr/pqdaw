@@ -24,7 +24,8 @@ namespace pq::views::shell {
 // down). Not focusable: Space must keep reaching the global play/stop action after a click.
 class TransportButton : public ui::Control {
 public:
-  enum class Icon : uint8_t { Play, Stop, Record, Capture, Loop, Metronome, Menu };  // Metronome, Menu (▾): T6.6; Capture: T6.9
+  // Metronome, Menu (▾): T6.6; Capture: T6.9; Keyboard: KB.1 (the computer MIDI keyboard)
+  enum class Icon : uint8_t { Play, Stop, Record, Capture, Loop, Metronome, Menu, Keyboard };
   TransportButton(std::string name, Icon icon);
   std::function<void()> onPress;
   std::function<void()> onContext;  // T6.6: a right press (null: ignored)
@@ -106,10 +107,14 @@ public:
   // T6.6: the position display's text for a playhead (a count-in shows "-bars. beat. 1" before the start).
   std::string positionText(const PlayheadSnapshot& ph) const;
   void openMetronomeMenu();  // T6.6: count-in, level, cue output (the ▾ beside the metronome; a right click on it)
+  // KB.1: the computer MIDI keyboard's menu (the ▾ beside its button; a right click on it): 1Row / Continuous, equave,
+  // velocity.
+  void openKeyboardMenu();
 
 private:
   void schedulePositionTimer(Ticks tick);
   void refreshTuningChip();
+  void refreshKeyboard();  // KB.1: the button's light, readout and tooltip
   template <class MakeCommand>
   void bindGesture(ui::ValueControl& c, const char* label, MakeCommand make);
 
@@ -126,6 +131,17 @@ private:
   TransportButton* loop_ = nullptr;
   TransportButton* metronome_ = nullptr;      // T6.6
   TransportButton* metronomeMenu_ = nullptr;  // T6.6: ▾
+  TransportButton* keyboard_ = nullptr;      // KB.1: the computer MIDI keyboard (M)
+  TransportButton* keyboardMenu_ = nullptr;  // KB.1: ▾
+  ui::Label* keyboardReadout_ = nullptr;     // KB.1: equave and velocity while on
+  struct KeyboardShown {  // KB.1: what the button shows (refreshKeyboard skips an unchanged state)
+    ComputerKeyboard::Layout layout;
+    ComputerKeyboard::ScaleMode mode;
+    bool on;
+    int32_t equave, velocity;
+    friend bool operator==(const KeyboardShown&, const KeyboardShown&) = default;
+  };
+  std::optional<KeyboardShown> keyboardShown_;
   ui::DragBox* loopStart_ = nullptr;
   ui::DragBox* loopLength_ = nullptr;
   ui::Label* grid_ = nullptr;

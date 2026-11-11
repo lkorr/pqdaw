@@ -241,7 +241,7 @@ void ProjectLink::record(Ticks from) {  // UI thread
   const std::string when = stamp();
   std::vector<std::filesystem::path> taken;  // M6 review L11: two tracks of one session never share a file
   doc::forEachTrack(*current_, [&](const doc::Track& t, const doc::Track*) {
-    if (!t.mixer.arm || !t.active) return;
+    if (!armed(t) || !t.active) return;  // KB.1: the auto-armed MIDI track records too (Live)
     RecordingTrack rt;
     rt.track = t.id;
     if (t.kind == doc::TrackKind::Audio && !t.mixer.audioIn.none()) {
@@ -515,7 +515,7 @@ bool ProjectLink::recordingOverlay(views::RecordingOverlay& out) {  // UI thread
   // Which tracks record: the audio tracks of the files, the MIDI tracks of the notes' slots (any armed MIDI track).
   std::vector<uint32_t> midi;
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
-    if (t.kind == doc::TrackKind::Midi && t.mixer.arm && t.active) midi.push_back(t.id.value);
+    if (t.kind == doc::TrackKind::Midi && armed(t) && t.active) midi.push_back(t.id.value);
   });
   for (const RecordingPass& ps : recLive_.passes) {
     for (size_t i = 0; i < recLive_.audioTracks.size(); ++i) {

@@ -194,6 +194,20 @@ void TransportButton::paint(PaintContext& ctx) {
       ctx.dl.addConvexPolyFilled(rod, fill);  // cut into the body in the button's colour
       break;
     }
+    case Icon::Keyboard: {  // KB.1: a piano octave seen from above: four white keys, two black ones between them
+      const float t = std::max(1.0f, std::round(ctx.scale.exact(1.0f)));
+      const float w = std::round(s * 0.8f), h = std::round(s * 0.55f);
+      const float x0 = std::round(cx - w), y0 = std::round(cy - h), x1 = x0 + 2 * w, y1 = y0 + 2 * h;
+      ctx.dl.addRectStroke({x0, y0, x1, y1}, ink, t);
+      const float kw = (x1 - x0) / 4.0f;
+      for (int k = 1; k < 4; ++k) ctx.dl.addVLine(std::round(x0 + kw * static_cast<float>(k)), y0, y1, ink, t);
+      const float bw = std::max(2.0f, std::round(kw * 0.6f)), bh = std::round((y1 - y0) * 0.58f);
+      for (int k = 1; k < 3; ++k) {
+        const float bx = std::round(x0 + kw * static_cast<float>(k) - bw * 0.5f);
+        ctx.dl.addRectFilled({bx, y0, bx + bw, y0 + bh}, ink);
+      }
+      break;
+    }
     case Icon::Menu: {  // T6.6: a small down arrow
       const float a = std::max(2.0f, std::floor(static_cast<float>(r.h) * 0.17f));  // the button is narrow: by its height
       ctx.dl.addTriangleFilled({cx - a, cy - a * 0.5f}, {cx + a, cy - a * 0.5f}, {cx, cy + a * 0.6f}, ink);
@@ -533,8 +547,27 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
   grid_->setInfo("Grid", "The editing grid of the arrangement and the clip view. Ctrl+1 / Ctrl+2 make it narrower / "
                          "wider, Ctrl+3 triplet, Ctrl+4 snap, Ctrl+5 fixed or adaptive; right-click an editor for "
                          "the grid menu.");
+  // KB.1: the computer MIDI keyboard (Live keeps its switch at the top right): a click toggles it (the same state as M);
+  // the arrow or a right click opens its menu; while on, the readout beside it shows the equave offset and velocity.
+  gap(*this, 6);
+  keyboardReadout_ = &sized(add<Label>("keyboard-readout", "", FontRoleId::Small, TextTone::Secondary, TextAlign::Right), 52);
+  keyboardReadout_->setHittable(false);
+  gap(*this, 4);
+  keyboard_ = &sized(add<TransportButton>("computer-keyboard", TransportButton::Icon::Keyboard), 24);
+  keyboard_->onPress = [this] {
+    ComputerKeyboard& k = ctx_.computerKeyboard();
+    k.setActive(!k.active());
+  };
+  keyboard_->onContext = [this] { openKeyboardMenu(); };
+  keyboardMenu_ = &sized(add<TransportButton>("computer-keyboard-menu", TransportButton::Icon::Menu), 12);
+  keyboardMenu_->setInfo("Computer MIDI Keyboard Options", "The layout for tunings that are not 12 degrees per equave "
+                                                           "(1Row or Continuous), the equave offset and the velocity.");
+  keyboardMenu_->onPress = [this] { openKeyboardMenu(); };
 
-  docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) { refreshDocument(); });
+  docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) {
+    refreshDocument();
+    refreshKeyboard();  // KB.1: the keyboard track's tuning may have changed size
+  });
   viewSub_ = ctx_.observe([this](uint32_t what) {
     if (what & view_change::kTransport) {
       refreshTransport();
@@ -542,10 +575,12 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
     }
     if (what & view_change::kGrid) grid_->setText(ctx_.gridLabel());
     if (what & (view_change::kSelection | view_change::kProject)) refreshTuningChip();
+    if (what & (view_change::kSelection | view_change::kProject | view_change::kKeyboard)) refreshKeyboard();
   });
   refreshDocument();
   refreshTransport();
   refreshTuningChip();
+  refreshKeyboard();
   grid_->setText(ctx_.gridLabel());
 }
 
@@ -556,6 +591,57 @@ void ControlBar::refreshTuningChip() {
   if (t.valid() && doc::findTrackPtr(p, t)) chip.setTarget(TuningTarget::forTrack(t));
   else if (p.tunings && !p.tunings->empty()) chip.setTarget(TuningTarget::forMain(p.tunings->front()->id));
   else chip.setTarget(std::nullopt);
+}
+
+// KB.1: lit while on; the readout "E+1 V100" while on; the tooltip and info name the layout of the keyboard's track.
+void ControlBar::refreshKeyboard() {
+  const ComputerKeyboard& k = ctx_.computerKeyboard();
+  const ComputerKeyboard::Layout l = ctx_.keyboardLayout();
+  const KeyboardShown shown{l, k.scaleMode(), k.active(), k.equave(), k.velocity()};
+  if (keyboardShown_ && *keyboardShown_ == shown) return;  // most document edits change none of it
+  keyboardShown_ = shown;
+  keyboard_->setOn(k.active());
+  std::string readout;
+  if (k.active())
+    readout = "E" + std::string(k.equave() > 0 ? "+" : "") + std::to_string(k.equave()) + " V" + std::to_string(k.velocity());
+  keyboardReadout_->setText(readout);
+  const std::string name = ComputerKeyboard::layoutName(l, k.scaleMode());
+  keyboard_->setTooltip("Computer MIDI Keyboard (M): " + name);
+  keyboard_->setInfo("Computer MIDI Keyboard (M): " + name,
+                     "Plays the armed MIDI tracks (the selected one is armed while no track is armed by hand) from the "
+                     "computer keyboard, in the layout of their tuning. " +
+                         ComputerKeyboard::layoutKeys(l, k.scaleMode()) +
+                         " Right-click or use the arrow beside it for the layout mode, equave and velocity.");
+}
+
+void ControlBar::openKeyboardMenu() {  // KB.1
+  ComputerKeyboard& k = ctx_.computerKeyboard();
+  std::vector<MenuItem> items;
+  using Mode = ComputerKeyboard::ScaleMode;
+  for (const auto& [label, mode] : {std::pair{"1Row (a row per equave)", Mode::OneRow},
+                                    std::pair{"Continuous (consecutive degrees)", Mode::Continuous}}) {
+    MenuItem it = MenuItem::item(label, [&k, mode] { k.setScaleMode(mode); });
+    it.checked = k.scaleMode() == mode;
+    items.push_back(std::move(it));
+  }
+  items.push_back(MenuItem::sep());
+  std::vector<MenuItem> equaves;
+  for (int32_t e = ComputerKeyboard::kMaxEquave; e >= ComputerKeyboard::kMinEquave; --e) {
+    MenuItem it = MenuItem::item((e > 0 ? "+" : "") + std::to_string(e), [&k, e] { k.setEquave(e); });
+    it.checked = k.equave() == e;
+    equaves.push_back(std::move(it));
+  }
+  items.push_back(MenuItem::sub("Equave " + std::string(k.equave() > 0 ? "+" : "") + std::to_string(k.equave()), std::move(equaves)));
+  std::vector<MenuItem> velocities;
+  for (const int32_t v : {127, 120, 100, 80, 60, 40, 20, 1}) {
+    MenuItem it = MenuItem::item(std::to_string(v), [&k, v] { k.setVelocity(v); });
+    it.checked = k.velocity() == v;
+    velocities.push_back(std::move(it));
+  }
+  items.push_back(MenuItem::sub("Velocity " + std::to_string(k.velocity()), std::move(velocities)));
+  (void)openContextMenu(*keyboardMenu_,
+                        {static_cast<float>(keyboard_->rect().x), static_cast<float>(keyboardMenu_->rect().bottom())},
+                        std::move(items));
 }
 
 ControlBar::~ControlBar() = default;
