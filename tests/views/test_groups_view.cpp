@@ -226,6 +226,40 @@ TEST_CASE("groups view: wiring inside a capsule and across it, a block dragged o
   CHECK(doc::findDevice(*u.ctx.doc(), u.ids.pa2).device != nullptr);  // it had left the group
 }
 
+// TX.group-resize: an opened group's factor is saved with the project (its nudge's "scale", as a block's) and laid out
+// at it when loaded: its members at the factor.
+TEST_CASE("groups view (TX.group-resize): an opened group's scale is saved and loaded with the project") {
+  Ui u;
+  u.show();
+  const doc::DeviceId sel[3] = {u.ids.pa1, u.ids.wt, u.ids.pa2};
+  REQUIRE(u.view().groupDevices(sel));
+  u.d.step();
+  const doc::DeviceId g = u.groupOf(u.ids.wt);
+  REQUIRE(g.valid());
+  REQUIRE(u.pp().nodes[u.node(g)].groupOpen);
+  const float w0 = u.pp().nodes[u.node(u.ids.wt)].w;
+  REQUIRE(u.view().setBlockScale(g, 0.6f));
+  CHECK(u.pp().nodes[u.node(u.ids.wt)].w == doctest::Approx(w0 * 0.6f));
+  CHECK(u.pp().nodes[u.node(u.ids.wt)].scale == doctest::Approx(0.6f));
+  const std::string dir = pq::views::test::tempDir("group_resize_save");
+  REQUIRE(u.ctx.saveProjectAs(dir).ok());
+  {
+    FakeTransport t2;
+    ViewContext other(t2);
+    const auto opened = other.openProject(dir);
+    REQUIRE_MESSAGE(opened.ok(), (opened.ok() ? std::string() : opened.error().message));
+    REQUIRE(other.store().view().patchNudges.count(g.value) == 1);
+    CHECK(other.store().view().patchNudges.at(g.value).scale == doctest::Approx(0.6f));
+  }
+  REQUIRE(u.view().setBlockScale(g, 1.0f));
+  CHECK(u.pp().nodes[u.node(u.ids.wt)].w == doctest::Approx(w0));
+  REQUIRE(u.ctx.openProject(dir).ok());  // (no sync here: the view lays it out with the loaded view state itself)
+  CHECK(u.view().blockScale(g) == doctest::Approx(0.6f));
+  CHECK(u.pp().nodes[u.node(g)].groupOpen);
+  CHECK(u.pp().nodes[u.node(u.ids.wt)].scale == doctest::Approx(0.6f));  // (a project opened while the view is shown:
+  CHECK(u.pp().nodes[u.node(u.ids.wt)].w == doctest::Approx(w0 * 0.6f));     // laid out with its loaded view state)
+}
+
 TEST_CASE("groups view: the Device view shows the group as one device; its panel is the embedded circuit, edited in place") {
   Ui u;
   const doc::DeviceId sel[3] = {u.ids.pa1, u.ids.wt, u.ids.pa2};

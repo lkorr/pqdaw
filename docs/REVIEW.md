@@ -1298,3 +1298,11 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **MIDI lanes**: the notes / Hz / gate / vel cables leave just right of the port chips, side by side.
 - **Tension**: short cables droop as before; long ones (LFO across bands, the empty-track cable) are almost straight with
   a shallow hang (≈ 40 units at most). Check device-view cables still look right.
+
+## 2026-11-10 · TX.group-resize · S-drag shrinks / grows an opened group and everything in it 👁
+- Open a group (or an instrument group) in the circuit view, hold S over its frame (not on a block inside): ⤡ and
+  "Resize group" in the info. Drag up-left: the frame, its blocks, their spacing, faces, panels and cables shrink
+  together; a nested group inside scales too (composed with its own size). Shift steps 25 %; Esc mid-drag restores;
+  S + double-click (or Reset Size) gives it its own size. Not an undo step (saved with the project, like block sizes).
+- The same stored size is the group's block / panel size when closed (Q?-TX.group-resize-a): close a shrunk group and it
+  stays small — say if the open and closed sizes should be separate.

@@ -423,6 +423,112 @@ TEST_CASE("nested groups view: Save as Group Preset (the block menu), then the n
   CHECK(u.device(atom.front())->patch == "atom:tanh");
 }
 
+// TX.group-resize (user 2026-11-09: "you should be able to shrink them holding s and shrinking them will comparatively
+// shrink everything else within it"): S + drag on an opened group's frame scales the group and everything in it, one
+// factor composed with each member's own (a nested group's contents too); view state, not undoable; Esc restores; S +
+// double-click resets; saved with the project.
+TEST_CASE("nested groups view (TX.group-resize): S-drag on an opened group's frame scales it and its contents; Esc, "
+          "S + double-click") {
+  Ui u;
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& cv = v.canvas();
+  v.focusBand(u.ids.bass, false);
+  u.d.tree().layoutNow();
+  u.d.step();
+  REQUIRE(v.setBlockScale(u.ids.tone, 0.5f));  // the nested group's own factor (composes with its parent's)
+  struct Snap {
+    float satX, satW, satH, satScale, toneX, toneW, utilW, utilScale, fxW, fxH;
+  };
+  auto snap = [&] {
+    const ProjectPatch& pp = u.pp();
+    const Node &sat = pp.nodes[u.node(u.ids.sat)], &tone = pp.nodes[u.node(u.ids.tone)], &util = pp.nodes[u.node(u.ids.util)];
+    const Node& fx = pp.nodes[u.node(u.ids.fx)];
+    REQUIRE(fx.group);
+    REQUIRE(fx.groupOpen);
+    REQUIRE(tone.groupOpen);
+    CHECK(sat.capsule == u.node(u.ids.fx));
+    CHECK(util.capsule == u.node(u.ids.tone));
+    return Snap{sat.x, sat.w, sat.h, sat.scale, tone.x, tone.w, util.w, util.scale, fx.w, fx.h};
+  };
+  // A point on the group's frame (inside it, on none of its contents), in device px.
+  auto frame = [&] {
+    const Node& fx = u.pp().nodes[u.node(u.ids.fx)];
+    for (float y = fx.y + 2.0f; y < fx.y + fx.h; y += 2.0f)
+      for (float x = fx.x + 2.0f; x < fx.x + fx.w; x += 2.0f)
+        if (const Vec2 p = u.dev({x, y}); cv.nodeAt(p) == u.node(u.ids.fx)) return p;
+    FAIL("no frame point");
+    return Vec2{};
+  };
+  const Snap s0 = snap();
+  CHECK(s0.utilScale == doctest::Approx(0.5f));
+  const size_t h0 = u.history();
+  // S held over the frame: ⤡ and the group's hint.
+  Vec2 p = frame();
+  u.d.keyDown('s');
+  u.d.move(p);
+  CHECK(u.d.tree().cursor() == Cursor::ResizeNWSE);
+  CHECK(std::string(cv.info().title) == "Resize group");
+  // Up-left by a quarter of its diagonal: 0.75×.
+  const float z = cv.deviceScale();
+  const Vec2 to{p.x - 0.25f * s0.fxW * z, p.y - 0.25f * s0.fxH * z};
+  u.d.down(p);
+  CHECK(cv.drag() == ProjectCanvas::Drag::Resize);
+  for (int i = 1; i <= 4; ++i) u.d.move({p.x + (to.x - p.x) * static_cast<float>(i) / 4.0f, p.y + (to.y - p.y) * static_cast<float>(i) / 4.0f});
+  u.d.up(to);
+  u.d.keyUp('s');
+  u.d.step();
+  const float k = v.blockScale(u.ids.fx);
+  CHECK(k == doctest::Approx(0.75f).epsilon(0.02));
+  CHECK(u.history() == h0);  // view state: no undo step …
+  CHECK(u.ctx.dirty());      // … but saved
+  const Snap s1 = snap();
+  // Every member's size and their distances by the factor (a nested group's contents composed with its own).
+  CHECK(s1.satW == doctest::Approx(s0.satW * k).epsilon(0.01));
+  CHECK(s1.satH == doctest::Approx(s0.satH * k).epsilon(0.01));
+  CHECK(s1.satScale == doctest::Approx(s0.satScale * k));
+  CHECK(s1.utilW == doctest::Approx(s0.utilW * k).epsilon(0.01));
+  CHECK(s1.utilScale == doctest::Approx(0.5f * k));
+  CHECK(s1.toneX - s1.satX == doctest::Approx((s0.toneX - s0.satX) * k).epsilon(0.02));
+  CHECK(s1.fxW < s0.fxW);
+  CHECK(s1.fxH < s0.fxH);
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *v.lowered()) == "");
+  // Esc during a drag: back to the factor at the press.
+  p = frame();
+  u.d.keyDown('s');
+  u.d.move(p);
+  u.d.down(p);
+  u.d.move({p.x + 60.0f, p.y + 40.0f});
+  u.d.move({p.x + 120.0f, p.y + 80.0f});
+  CHECK(v.blockScale(u.ids.fx) > k);
+  u.d.press("Escape");
+  u.d.up({p.x + 120.0f, p.y + 80.0f});
+  u.d.keyUp('s');
+  u.d.step();
+  CHECK(v.blockScale(u.ids.fx) == doctest::Approx(k));
+  CHECK(u.pp().nodes[u.node(u.ids.sat)].w == doctest::Approx(s1.satW));
+  // (Saved and loaded: groups view (TX.group-resize) — this fixture's grouped series does not pass the strict reader.)
+  // S + double-click on the frame: its own size again (the nested group keeps its own factor).
+  ProjectCanvas& cv2 = u.view().canvas();
+  p = [&] {
+    const Node& fx = u.pp().nodes[u.node(u.ids.fx)];
+    for (float y = fx.y + 2.0f; y < fx.y + fx.h; y += 2.0f)
+      for (float x = fx.x + 2.0f; x < fx.x + fx.w; x += 2.0f)
+        if (const Vec2 q = cv2.toDevice({x, y}); cv2.nodeAt(q) == u.node(u.ids.fx)) return q;
+    FAIL("no frame point");
+    return Vec2{};
+  }();
+  u.d.keyDown('s');
+  u.d.move(p);
+  u.d.doubleClick(p);
+  u.d.keyUp('s');
+  u.d.step();
+  CHECK(u.view().blockScale(u.ids.fx) == 1.0f);
+  const Snap s2 = snap();
+  CHECK(s2.satW == doctest::Approx(s0.satW));
+  CHECK(s2.utilScale == doctest::Approx(0.5f));
+  CHECK(s2.toneX - s2.satX == doctest::Approx(s0.toneX - s0.satX).epsilon(0.01));
+}
+
 TEST_CASE("render: project-patch-nested matches the golden image") {
   uint32_t w = 0, h = 0;
   viewSceneDefaultSize("project-patch-nested", w, h);

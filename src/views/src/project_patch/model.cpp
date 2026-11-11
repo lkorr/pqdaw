@@ -248,18 +248,61 @@ struct Builder {
 
   // TX.resize: a closed device block at its stored scale (ViewState::patchNudges' scale): its rect, its pins' rows
   // (pinOffset) and its controls' anchors all `scale` times their own (what is drawn on it follows: SceneNode::scale).
-  // An opened device keeps its size (its frame holds the atoms at the canvas's zoom).
+  // An opened device keeps its size (its frame holds the atoms at the canvas's zoom). TX.group-resize: an opened group's
+  // stored scale scales its contents instead (scaleCapsule).
   Node scaled(Node n) const {
-    if (n.expanded || (n.group && n.groupOpen) || opt.nudges == nullptr || opt.nudges->empty()) return n;
-    const auto it = opt.nudges->find(n.device.value);
-    if (it == opt.nudges->end() || it->second.scale == 1.0f || !std::isfinite(it->second.scale)) return n;
-    const float k = std::clamp(it->second.scale, doc::kMinPatchScale, doc::kMaxPatchScale);
-    n.scale = k;
+    if (n.expanded || (n.group && n.groupOpen)) return n;
+    if (const float k = storedScale(n.device); k != 1.0f) scaleBy(n, k);
+    return n;
+  }
+  // A device's stored scale (its nudge's; 1: none), clamped.
+  float storedScale(doc::DeviceId d) const {
+    if (opt.nudges == nullptr || opt.nudges->empty()) return 1.0f;
+    const auto it = opt.nudges->find(d.value);
+    if (it == opt.nudges->end() || it->second.scale == 1.0f || !std::isfinite(it->second.scale)) return 1.0f;
+    return std::clamp(it->second.scale, doc::kMinPatchScale, doc::kMaxPatchScale);
+  }
+  // Node `n` `k` times its size, composed with its own scale: its rect, its pins' rows (pinOffset follows Node::scale;
+  // an atom block's symbol rows and stubs here), its anchors.
+  static void scaleBy(Node& n, float k) {
+    n.scale *= k;
     n.w *= k;
     n.h *= k;
     for (Port& q : n.inputs)
       if (q.anchored) q.ax *= k, q.ay *= k, q.aclear *= k;
-    return n;
+    if (n.symbol) {
+      auto sp = std::make_shared<circuit::SymbolSpec>(*n.symbol);
+      sp->w *= k;
+      sp->h *= k;
+      for (circuit::PinSpec& q : sp->inputs) q.y *= k, q.stub *= k;
+      for (circuit::PinSpec& q : sp->outputs) q.y *= k, q.stub *= k;
+      n.symbol = std::move(sp);
+    }
+  }
+  // TX.group-resize (user 2026-11-09: "shrinking them will comparatively shrink everything else within it"): opened
+  // capsule `node`'s contents `k` times their size and their distances from its top-left inside its title strip and
+  // pad (its frame follows them; the strip and pad stay, as at any size): each member and terminal scaled (scaleBy,
+  // composed with its own scale), a nested opened group's contents with it (any depth; an opened device keeps its size).
+  // After circuitLayout, so the layouter (and its PF.2 cache) sees the contents at their own sizes.
+  void scaleCapsule(uint32_t node, float k) {
+    Capsule* cap = nullptr;
+    for (Capsule& c : capsules)
+      if (c.node == node) cap = &c;
+    if (cap == nullptr || cap->rel.empty()) return;
+    const float ox = m::kCapsulePad, oy = m::kCapsuleTitle + m::kCapsulePad;
+    float x1 = 0.0f, y1 = 0.0f;
+    for (auto& [kid, r] : cap->rel) {
+      r = {ox + (r.x - ox) * k, oy + (r.y - oy) * k};
+      Node& kn = out.nodes[kid];
+      if (kn.group && kn.groupOpen) scaleCapsule(kid, k);
+      else if (!kn.expanded) scaleBy(kn, k);
+      x1 = std::max(x1, r.x + out.nodes[kid].w);
+      y1 = std::max(y1, r.y + out.nodes[kid].h);
+    }
+    Node& c = out.nodes[node];
+    c.w = roundUp4(std::max(x1 + m::kCapsulePad, 2.0f * m::kCapsulePad + 8.0f));
+    c.h = roundUp4(std::max(y1 + m::kCapsulePad, oy + m::kCapsulePad + 8.0f));
+    c.pinTop = cap->rel.front().second.y + pinOffset(out.nodes[cap->rel.front().first], 0, false);
   }
 
   uint32_t addNode(Node n) {
@@ -850,6 +893,7 @@ struct Builder {
       else if (i + 1 == kids.size()) cn.groupOut = kids[i];
       else cn.members.push_back(kids[i]);
     }
+    if (const float k = storedScale(g.id); k != 1.0f) scaleCapsule(ci, k);  // TX.group-resize
     return ci;
   }
 

@@ -135,6 +135,8 @@ struct Node {
   float x = 0, y = 0, w = 0, h = 0;  // world rect
   // TX.resize: a device block's uniform scale (doc::PatchNudge::scale; 1 for every other node and an opened device): w, h,
   // the pins' rows (pinOffset) and the anchors (Port::ax / ay) are already scaled; its face or panel is drawn at it.
+  // TX.group-resize: inside an opened group whose own scale is not 1 (an opened group's nudge scale scales its contents,
+  // its capsule keeps 1), times that group's (and each enclosing opened group's): a terminal's too.
   float scale = 1.0f;
   // TX.groups (doc::Device "Groups"): a group device is a CAPSULE. Opened (`groupOpen`, the default): the block is the
   // capsule's frame around its contents — `members` (free device blocks placed freely inside) and its two terminal nodes
@@ -436,7 +438,7 @@ inline float pinOffset(const Node& n, size_t i) noexcept {
     case NodeKind::Lane: return 0.0f;
     case NodeKind::Device:  // TX.resize; TX.groups: an opened group's chain pins at its inner spine
       return ((n.pinTop > 0.0f ? n.pinTop : metrics::kPinTop) + metrics::kPinPitch * static_cast<float>(i)) * n.scale;
-    case NodeKind::Terminal: return metrics::kTerminalH * 0.5f;
+    case NodeKind::Terminal: return metrics::kTerminalH * 0.5f * n.scale;  // TX.group-resize: scaled with its group
     case NodeKind::Mixer:  // TX.mixer-look: in / out under the header; a send's pin level with its row (TL.4: scaled)
       return (i == 0 ? metrics::kPinTop : metrics::kMixerSendTop + metrics::kPinPitch * static_cast<float>(i - 1)) * n.scale;
     default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);

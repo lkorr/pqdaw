@@ -680,7 +680,8 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       dl.addRectStroke(r, th.circuit.selected, std::max(1.0f, std::round(us)));
       if (ctx.res.uiFonts != nullptr && ctx.res.text != nullptr) {
         char buf[16];
-        std::snprintf(buf, sizeof buf, "%d %%", static_cast<int>(std::lround(n.scale * 100.0f)));
+        const float k = resizeTrack_.valid() ? n.scale : view_.blockScale(resizeDevice_);  // TX.group-resize: a group's factor
+        std::snprintf(buf, sizeof buf, "%d %%", static_cast<int>(std::lround(k * 100.0f)));
         const ui::FontId font = ctx.res.uiFonts->small;
         const int32_t tw = ctx.res.text->shape(font, buf).advance;
         const int32_t pad = static_cast<int32_t>(5.0f * us), lh = static_cast<int32_t>(std::round(15.0f * us));
@@ -752,7 +753,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       drag_ = Drag::Resize;
       resizeDevice_ = mixer ? doc::DeviceId{} : n.device;
       resizeTrack_ = mixer ? pp.bands[n.band].track : doc::TrackId{};
-      resizeK0_ = n.scale;
+      resizeK0_ = mixer ? n.scale : v.blockScale(n.device);  // TX.group-resize: an opened group's is its contents' factor
       resizeW0_ = n.w;
       resizeH0_ = n.h;
       press_ = last_ = e.pos;
@@ -1319,7 +1320,8 @@ uint32_t ProjectCanvas::resizableAt(Vec2 pos) const {
   if (node == kNone) return kNone;
   const Node& n = view_.patch().nodes[node];
   if (n.kind == NodeKind::Mixer) return node;  // TL.4: a mixer face resizes as a block
-  return n.kind == NodeKind::Device && !n.expanded && !(n.group && n.groupOpen) ? node : kNone;  // TX.groups: a capsule is its contents' size
+  // TX.group-resize: an opened group by its frame (its contents are hit first) scales everything in it.
+  return n.kind == NodeKind::Device && !n.expanded ? node : kNone;
 }
 
 ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
@@ -2454,10 +2456,19 @@ void ProjectCanvas::endSplice(bool apply, Vec2 pos) {
 }
 
 ui::InfoText ProjectCanvas::info() const {
-  if (drag_ == Drag::Resize || (drag_ == Drag::None && resizeHeld() && resizableAt(pointer_) != kNone))  // TX.resize
+  if (drag_ == Drag::Resize || (drag_ == Drag::None && resizeHeld() && resizableAt(pointer_) != kNone)) {  // TX.resize
+    const ProjectPatch& pp = view_.patch();
+    const uint32_t at = drag_ == Drag::Resize ? (resizeTrack_.valid() ? kNone : pp.nodeOf(resizeDevice_)) : resizableAt(pointer_);
+    if (at != kNone && at < pp.nodes.size() && pp.nodes[at].group && pp.nodes[at].groupOpen)  // TX.group-resize
+      return {"Resize group",
+              "S-drag on the group's frame scales it and everything in it (0.05x to 3x; Shift: steps of 25 %): its blocks, "
+              "their places and their cables in proportion. S + double-click (or Reset Size in its menu) gives it its own "
+              "size. Esc cancels the drag."};
     return {"Resize block",
             "S-drag scales the block (0.05x to 3x; Shift: steps of 25 %); everything on it in proportion, the blocks after it "
-            "make room. S + double-click (or Reset Size in its menu) gives it its own size. Esc cancels the drag."};
+            "make room. S + double-click (or Reset Size in its menu) gives it its own size. On an opened group's frame: the "
+            "group and everything in it. Esc cancels the drag."};
+  }
   if (ui::InfoText t; faceInfo(t)) return t;  // TMM.4
   const ProjectPatchView::Readout& ro = view_.readout();
   if (ro.edge != kNone) {

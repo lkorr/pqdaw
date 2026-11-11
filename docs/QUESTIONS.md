@@ -1038,3 +1038,12 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
 - Options: (a) revert the chart as well (`kMosPalette`, `temperamentColor`, pre-TU.1 `mosChart.*`); (b) keep it.
 - Chosen: (b) for now (the request named the circle; reverting the chart is one small follow-up).
 - Status: open.
+
+## Q?-TX.group-resize-a · 2026-11-10 · TX.group-resize · Where an opened group's scale lives
+- **Context**: S-drag on an opened group's frame scales its contents. A group already has a stored scale: its nudge's
+  `PatchNudge::scale`, which sizes it when closed (its block / panel, TX.resize).
+- **Options**: (1) the same `scale`: closed it sizes the block / panel, opened it scales the contents — one value, no file
+  change, a group shrunk while open opens and closes at a matching size; (2) a separate `groupScale` on the nudge (file key,
+  strict reader): the closed and opened sizes independent.
+- **Choice**: (1), the most reversible (no format change; splitting it later is one new field). Reversible: model.cpp
+  `storedScale` / `scaleCapsule`.

@@ -68,6 +68,7 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
   canvas_->cableSignalLive = [this] { return cableSignalLive(); };
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent& e) { onDocument(e); });
   viewSub_ = ctx_.observe([this](uint32_t bits) {
+    if ((bits & view_change::kProject) && stale_ && shown()) sync();  // a project opened: laid out with its view state
     if (bits & view_change::kTransport) refreshTransport();
     if (bits & view_change::kAutomation) refreshAutomation();  // TL.6: overridden / re-enabled
     else if ((bits & view_change::kTransport) && !autoControls_.empty()) applyAutomation();  // TL.6: played, located
@@ -677,6 +678,9 @@ void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
     fitted_ = false;
     stale_ = true;
     if (shown()) sync();
+    // A loaded project's view state (its nudges, scales, folds) lands after the reset (doc::openProject): the next sync
+    // lays out with it.
+    stale_ = true;
     return;
   }
   const doc::ChangeSet& c = e.changes;
