@@ -149,7 +149,7 @@ TEST_CASE("serialize errors: structure, types and ranges") {
               "$.tunings[0].def.generator: does not apply to a tuning of kind \"edo\"");
   expectError(replaced(minimalText(), "\"kind\": \"edo\"", "\"kind\": \"ji\""),
               "$.tunings[0].def.kind: kind must be \"edo\", \"mos\" or \"scale\"");
-  expectError(replaced(minimalText(), "{\"id\": 1, \"name\": \"12-EDO\", \"colour\": \"#5E9BD6\",\n     \"def\": {\"kind\": \"edo\", \"n\": 12, \"equave\": \"2/1\", \"referenceHz\": 261.626}}", ""),
+  expectError(replaced(minimalText(), "{\"id\": 1, \"name\": \"Tuning A\", \"colour\": \"#5E9BD6\",\n     \"def\": {\"kind\": \"edo\", \"n\": 12, \"equave\": \"2/1\", \"referenceHz\": 261.626}}", ""),
               "$.tunings: a project needs at least one main tuning");
   expectError(replaced(minimalText(), "\"kind\": \"master\"", "\"kind\": \"midi\""), "$.master.kind: must be \"master\" here");
   expectError(replaced(minimalText(), "\"kind\": \"master\"", "\"kind\": \"audio\""), "$.master.kind: must be \"master\" here");

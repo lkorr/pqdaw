@@ -13,7 +13,7 @@
   "tunings": [
     {
       "id": 1,
-      "name": "12-EDO",
+      "name": "Tuning A",
       "colour": "#5E9BD6",
       "def": {
         "kind": "edo",
