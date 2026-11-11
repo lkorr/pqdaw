@@ -567,7 +567,7 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
 - Status: decided (reversible: project_patch/lane_edit.cpp showControlAutomation, ArrangementAutomation::showParam).
 - **User 2026-11-09:** option 1, one follow lane per track (TL.5).
 
-## Q240 · 2026-11-09 · TL.4 · 2026-11-09 · TL.4 · A click while playing, the Play button while playing, the mixer size's undo
+## Q240 · 2026-11-09 · TL.4 · A click while playing, the Play button while playing, the mixer size's undo
 - **Context**: TL.4 (docs/plans/TL.md TL.4 3, 5). Q238 (2) kept a lane click while playing to the insert marker only; the
   user's report ("click bar 4, press Play, it stays behind") and the plan's rule say the click moves where the next Play
   starts. The Play button did nothing while playing. The plan asks the mixer resize to be "saved, one undo step"; a
@@ -580,7 +580,7 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   blocks and mixers together.
 - Status: decided (reversible: editing.cpp Editor::placeStart, view_context.cpp ViewContext::play, view.cpp setMixerScale).
 
-## Q241 · 2026-11-09 · TL.5 · 2026-11-09 · TL.5 · Pin semantics of the follow lane, and what is saved
+## Q241 · 2026-11-09 · TL.5 · Pin semantics of the follow lane, and what is saved
 - **Context**: TL.5 (Q239 option 1): one follow lane per track; pinning keeps a parameter as a lane. Undefined: what the
   follow lane shows right after its parameter is pinned, what Hide does on each kind, what is saved.
 - **Choices**: (1) While the follow lane's parameter is pinned they are one lane (the pinned one; the next press re-points

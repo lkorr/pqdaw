@@ -433,3 +433,10 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow 88/88 on 4b6b4197, no golden moved; ship pq_bench_dsp links.
 - Perf / CPU-efficiency check: audio/64 rate 1 ship 16.3 → 14.0 µs (M5 13.6–13.8), release 16.6 → 14.4; 1 vs 6 JIT threads now equal.
 - Notes/blockers: ~0.3 µs over M5 remains; H3 tempo partly fixed.
+
+## 2026-11-10 · KB.1 · task/KB.1-computer-keys
+- Did: ui_tree gives presses to the computer keyboard before the focused widget (text fields excepted); layout by the playing track's tuning: 12 degrees → Live's piano layout (white keys where the piano roll draws white), else mos-explorer 1Row (default) / Continuous; control-bar keyboard button (lit, "E+1 V100", menu: 1Row / Continuous, equave, velocity); Live's arm on select (unsaved, not undoable); engine key range 17 × ±5 → 36 × ±3.
+- Verified: real-dispatch tests (17 note keys with each main view focused, F doesn't fit; 12-EDO, 22-EDO, 5L 2s in 31-EDO, 31-EDO; button + menu; arm on select; live routes); -Affected after rebase 36/36; goldens: 2 new control-bar-keyboard-{off,on}, 92 full-window re-recorded (control bar row shift + lit arm button).
+- Perf / CPU-efficiency check: UI thread only; tuning rebuilt only when its definition changes; button repaints on change; engine key table 187 → 252 entries per listening track, built on cache miss.
+- Notes/blockers: Q?-KB.1-a; M stays the toggle so its MOS bottom-row position plays nothing; keys matched by character, not physical position.
+
