@@ -435,6 +435,85 @@ TEST_CASE("KB.1 computer keyboard: a 12-TET key map plays the piano layout; seve
   CHECK(f.ctx.keyboardLayout().piano);
 }
 
+// KB.2: two note clips on the 12-EDO Drums track far right of the fixture's clips: A [100, 104) bars retuned to a private
+// 22-EDO (as the clip box's tuning menu does: SetClipTuning), B [104, 108) inheriting the track's 12-EDO.
+TEST_CASE("KB.2 computer keyboard: plays its track's live clip's tuning (the clip view's clip, else the one under the "
+          "start marker / playhead, else the track's)") {
+  Fixture f;
+  f.armOnly("Drums");
+  const doc::TrackId drums = f.track("Drums").id;
+  constexpr Ticks kBar = 4 * kPpq;
+  auto addClip = [&](Ticks start) {
+    doc::NoteClip c;
+    c.id = f.ctx.store().ids().clip();
+    c.name = "live";
+    c.start = start;
+    c.length = 4 * kBar;
+    const doc::ClipId id = c.id;
+    REQUIRE(f.ctx.store().dispatch(doc::AddClip{drums, std::make_shared<const doc::NoteClip>(std::move(c))}).ok());
+    return id;
+  };
+  const doc::ClipId a = addClip(100 * kBar), b = addClip(104 * kBar);
+  doc::TuningDef edo22;
+  edo22.system = tuning::Edo::make(22).value();
+  REQUIRE(f.ctx.store().dispatch(doc::SetClipTuning{{drums, a}, doc::TuningAssignment::privateTuning(edo22)}).ok());
+  // Nothing open, the start marker over no clip of these: the track's 12-EDO.
+  CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{true, 12});
+  f.d.press("M");
+  REQUIRE(f.ctx.computerKeyboard().active());
+  CHECK(play(f, 'f') == KN{0, 5});  // the piano layout
+
+  SUBCASE("(1) the clip open in the clip view, wherever the start marker is") {
+    f.ctx.setStartMarker(105 * kBar);  // over B
+    f.ctx.setDetailClip({drums, a});
+    f.ctx.setDetailMode(DetailMode::Clip);
+    CHECK(f.ctx.liveEditedClip().clip == a);
+    CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});
+    CHECK(play(f, 'f') == KN{0, 3});  // 1Row over 22 degrees
+    CHECK(play(f, 'q') == KN{1, 0});
+    // Closing the clip view: the start marker's clip (B, 12-EDO).
+    f.ctx.setDetailVisible(false);
+    CHECK_FALSE(f.ctx.liveEditedClip().clip.valid());
+    CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{true, 12});
+    CHECK(play(f, 'f') == KN{0, 5});
+    // The device view shows no clip: the same.
+    f.ctx.setDetailMode(DetailMode::Device);
+    CHECK(f.ctx.keyboardLayout().piano);
+    // Another track's clip open: this track's live clip is its own (B under the marker).
+    f.ctx.setDetailMode(DetailMode::Clip);
+    f.ctx.setDetailClip({f.track("Bass").id, a});
+    CHECK(f.ctx.keyboardLayout().piano);
+    // B open and retuned to 22-EDO: the keyboard follows the clip's tuning change.
+    f.ctx.setDetailClip({drums, b});
+    REQUIRE(f.ctx.store().dispatch(doc::SetClipTuning{{drums, b}, doc::TuningAssignment::privateTuning(edo22)}).ok());
+    CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});
+  }
+  SUBCASE("(2) closed: the clip under the start marker, stopped; under the playhead, playing") {
+    f.ctx.setStartMarker(101 * kBar);  // over A
+    CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});
+    CHECK(play(f, 'f') == KN{0, 3});
+    f.ctx.setStartMarker(104 * kBar);  // B's first tick: B
+    CHECK(f.ctx.keyboardLayout().piano);
+    f.ctx.setStartMarker(104 * kBar - 1);  // A's last tick
+    CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});
+    // Playing: the playhead decides, not the start marker.
+    f.port.play(106 * kBar);
+    CHECK(f.ctx.keyboardLayout().piano);
+    f.port.locate(102 * kBar);
+    CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});
+    f.port.stop();
+    // A deactivated clip plays nothing: the track's tuning.
+    REQUIRE(f.ctx.store().dispatch(doc::SetClipActive{{drums, a}, false}).ok());
+    CHECK(f.ctx.keyboardLayout().piano);
+  }
+  SUBCASE("(3) no live clip: the track's own tuning") {
+    REQUIRE(f.ctx.store().dispatch(doc::SetTrackTuning{drums, doc::TuningAssignment::privateTuning(edo22)}).ok());
+    CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});
+    f.ctx.setStartMarker(105 * kBar);  // B inherits it now
+    CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});
+  }
+}
+
 TEST_CASE("KB.1 arm on select: the selected MIDI track is auto-armed while no track is armed by hand") {
   Fixture f;
   // A click on a header's empty part (real dispatch) selects its track.

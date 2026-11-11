@@ -3,7 +3,8 @@
 // Live note input → note identities (T6.1; docs/plans/M6.md "The two note worlds"; model.h "Note input").
 //
 // Every incoming key — a MIDI port's note, the computer keyboard's — becomes a note through ONE map per MIDI track, built
-// off the audio thread from the track's effective tuning (pitch_resolve.h effectiveTuningRef) and its NoteInput:
+// off the audio thread from the track's effective tuning (pitch_resolve.h effectiveTuningRef; KB.2: its live clip's,
+// pitch_resolve.h liveClip) and its NoteInput:
 //   Keys  key → a Degree identity: by the tuning's .kbm (tuning::mapKey; an unmapped key plays nothing), else
 //         consecutive degrees from key 60 (= degree 0, equave 0), or the degree nearest the key's 12-TET pitch.
 //   Hz    key → that degree's Hz in the tuning (or the key's 12-TET Hz), frozen as a Cents identity (freezeHz): exact,
@@ -66,7 +67,8 @@ public:
 
 private:
   friend Result<std::shared_ptr<const InputPitchMap>> buildInputPitchMap(const Project&, TrackId, const NoteInput&,
-                                                                          std::shared_ptr<const tuning::Tuning>);
+                                                                          std::shared_ptr<const tuning::Tuning>,
+                                                                          const NoteClip*);
   InputPitch resolved(const tuning::PitchId& id) const;                          // in play_ (what sounds)
   InputPitch resolvedIn(const tuning::Tuning& t, const tuning::PitchId& id) const;
   InputPitch keysPitch(const tuning::PitchId& degreeId) const;  // the mode applied to a Degree identity
@@ -90,8 +92,12 @@ using InputPitchMapPtr = std::shared_ptr<const InputPitchMap>;
 // the tuning the playback link resolves drawn notes' static Hz in (its node table's definition, which can lag the
 // document after a live tuning edit). Entries resolve their static Hz there, exactly as the drawn notes do; the keys'
 // Hz (Hz mode, the 12-TET maps) still come from the document's definition. Ignored for a track without a signal.
+// KB.2: `clip` (optional, one of the track's clips: its live clip, pitch_resolve.h liveClip) = the clip whose effective
+// tuning the map plays in (effectiveTuningRef(p, path, clip)) instead of the track's; `signalTuning` is then that main
+// tuning's.
 Result<InputPitchMapPtr> buildInputPitchMap(const Project& p, TrackId track, const NoteInput& input,
-                                            std::shared_ptr<const tuning::Tuning> signalTuning = nullptr);
+                                            std::shared_ptr<const tuning::Tuning> signalTuning = nullptr,
+                                            const NoteClip* clip = nullptr);
 Result<InputPitchMapPtr> buildInputPitchMap(const Project& p, TrackId track);
 
 // A frequency as an exact Cents identity of tuning `def` (cents above its reference pitch): the Hz world's notes.

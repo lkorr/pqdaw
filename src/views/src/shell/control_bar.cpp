@@ -575,7 +575,10 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
     }
     if (what & view_change::kGrid) grid_->setText(ctx_.gridLabel());
     if (what & (view_change::kSelection | view_change::kProject)) refreshTuningChip();
-    if (what & (view_change::kSelection | view_change::kProject | view_change::kKeyboard)) refreshKeyboard();
+    // KB.2: the layout follows the keyboard track's live clip (the clip view's clip, the start marker / playhead).
+    if (what & (view_change::kSelection | view_change::kProject | view_change::kKeyboard | view_change::kDetailClip |
+                view_change::kLayout | view_change::kTransport))
+      refreshKeyboard();
   });
   refreshDocument();
   refreshTransport();

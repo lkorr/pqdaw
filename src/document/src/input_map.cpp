@@ -94,11 +94,11 @@ InputPitch InputPitchMap::pitchForDegree(int64_t d) const {
 }
 
 Result<InputPitchMapPtr> buildInputPitchMap(const Project& p, TrackId track, const NoteInput& input,
-                                            std::shared_ptr<const tuning::Tuning> signalTuning) {
+                                            std::shared_ptr<const tuning::Tuning> signalTuning, const NoteClip* clip) {
   const std::optional<TrackPath> path = findTrack(p, track);
   if (!path) return Error{ErrorCode::NotFound, "buildInputPitchMap: no such track", {}};
   if (trackAt(p, *path).kind != TrackKind::Midi) return Error{ErrorCode::InvalidArgument, "only MIDI tracks take note input", {}};
-  const EffectiveTuning eff = effectiveTuningRef(p, *path);
+  const EffectiveTuning eff = effectiveTuningRef(p, *path, clip);
   if (eff.def == nullptr) return Error{ErrorCode::NotFound, "buildInputPitchMap: the track's tuning was not found", {}};
   Result<tuning::Tuning> built = buildTuning(*eff.def);
   if (!built) return std::move(built).error();

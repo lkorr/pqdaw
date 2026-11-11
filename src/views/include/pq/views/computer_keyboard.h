@@ -4,10 +4,12 @@
 // layout follows the target track's tuning, the control bar's keyboard button).
 //
 // While on, the letter rows play notes into the armed tracks that listen to it (each track in its own tuning and note
-// input mode: Keys = degrees of its tuning, Hz = their Hz; ProjectLink builds the tables). A note is (equave, step):
-// degree `step` above equave offset `equave` of each listening track's tuning (TransportPort::liveKey). The LAYOUT —
-// which key plays which (equave, step) — follows the target track (layoutSource: ViewContext::keyboardLayout, the
-// auto-armed / selected armed / first armed MIDI track):
+// input mode: Keys = degrees of its tuning, Hz = their Hz; ProjectLink builds the tables). KB.2: a track's tuning here
+// is that of its live clip (doc::liveClip): the clip open in the clip view when it is on the track, else its clip under
+// the playhead (stopped: the start marker), else the track's own tuning — MIDI keys from a port play in it too. A note
+// is (equave, step): degree `step` above equave offset `equave` of each listening track's tuning
+// (TransportPort::liveKey). The LAYOUT — which key plays which (equave, step) — follows the target track's (layoutSource:
+// ViewContext::keyboardLayout, the auto-armed / selected armed / first armed MIDI track):
 //
 //   Piano (a tuning of exactly 12 degrees per equave, or a 12-TET key map; Live's layout): the white keys are the
 //   degrees the piano roll draws white for a 12-degree tuning (0 2 4 5 7 9 11), the upper row the black ones:

@@ -110,9 +110,13 @@
 // computer keyboard; Port = that port by name, doc::kComputerKeyboardPort = the keyboard), its channel, and its pitch
 // tables — doc::buildInputPitchMap (resolved in the node table's definition, as lowerTrack resolves drawn notes) lowered
 // to engine::LivePitch exactly as lowerTrack lowers a drawn note (node index, Degree / Reference), the keyboard's table
-// from InputPitchMap::pitchForDegree. Rebuilt (per-track tables cached on the track's tuning definition, its node table
-// and its NoteInput) on a Reset, a structural / Meta / Param change, a port list change and a new engine; published
-// only when a route changed. liveKey (TransportPort) stamps the computer keyboard's notes into its ring.
+// from InputPitchMap::pitchForDegree. KB.2: a track's tables play in the tuning of its live clip (doc::liveClip: the
+// clip open in the clip view when it is on the track, else its clip under the playhead — stopped: the start marker —
+// else the track's own tuning), as the keyboard's layout does (ViewContext::liveClipOf). Rebuilt (per-track tables
+// cached on the effective tuning definition, its node table and its NoteInput) on a Reset, a structural / Meta / Param /
+// Sequence change, a port list change, a new engine, and when the clip view's clip changes or the playhead / start
+// marker leaves the span its live clips were resolved for (checked on playhead() and the view's detail / layout /
+// transport notifications: two comparisons); published only when a route changed. liveKey (TransportPort) stamps the computer keyboard's notes into its ring.
 //
 // ---- Recording (T6.7; src/app/src/project_link_record.cpp, pq/app/recording.h) --------------------------------------
 // Inputs: every audio track with an input reads its device channels through `track.in` (ProjectProgram::setUnitInputs
@@ -157,6 +161,7 @@
 #include <functional>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -756,6 +761,12 @@ private:
   const void* liveEngine_ = nullptr;                        // the engine it was published to
   uint32_t liveTracks_ = 0;
   uint32_t autoArm_ = 0;  // KB.1: setAutoArm
+  // KB.2: what the published routes' live clips were resolved from (publishLiveRoutes): the clip view's clip and the
+  // span of the playhead / start marker over which every listening track's live clip stays (doc::LiveClip::from / to).
+  doc::ClipRef liveEdited_{};
+  Ticks liveFrom_ = std::numeric_limits<Ticks>::min(), liveTo_ = std::numeric_limits<Ticks>::max();
+  Ticks liveClipAt() const noexcept;  // the playhead while playing, else the start marker (ViewContext::liveClipAt)
+  void followLiveClips();             // re-publishes when the clip view's clip or the position left the span
   uint64_t livePublishes_ = 0;
   std::unique_ptr<engine::Engine> engine_;
   std::unique_ptr<engine::ProjectCompiler> compiler_;

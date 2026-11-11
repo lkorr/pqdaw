@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -30,6 +31,20 @@ struct EffectiveTuning {
   TuningId main;                   // the main tuning `def` belongs to; invalid for a private tuning
 };
 EffectiveTuning effectiveTuningRef(const Project& p, const TrackPath& path, const NoteClip* clip = nullptr) noexcept;
+
+// KB.2: the clip whose tuning a MIDI track's live input (the computer keyboard and MIDI keys alike) plays in, its "live
+// clip": (1) `edited` (the note clip open in the clip view) when it is one of the track's note clips; else (2) the
+// track's active note clip under `at` (the playhead; stopped: the start marker), of the played clips (playedClips), the
+// one starting last where clips overlap; else none: the track's own tuning (effectiveTuningRef(p, path, clip) with
+// clip == nullptr). [from, to) is the span of `at` over which the answer stays the same (case 1: all of it), so a
+// caller following the playhead re-resolves only when it leaves the span. The ONE rule: the keyboard's layout
+// (ViewContext::keyboardLayout) and the live pitch tables (ProjectLink::publishLiveRoutes) both ask it. O(clips).
+struct LiveClip {
+  const NoteClip* clip = nullptr;  // null: the track's own tuning
+  ClipId id;
+  Ticks from = std::numeric_limits<Ticks>::min(), to = std::numeric_limits<Ticks>::max();
+};
+LiveClip liveClip(const Track& t, ClipId edited, Ticks at) noexcept;
 
 // True if the tuning has an audio-rate linear form (T2.6): EDO, or MOS without MODMOS alterations or a generator
 // sequence. Scale tunings and MODMOS play static pitches (QUESTIONS Q100).

@@ -1,6 +1,7 @@
 // T6.4: live input, the link's side (pq/app/project_link.h "Live input").
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -69,7 +70,26 @@ void ProjectLink::setLivePorts(std::vector<std::string> names, std::vector<float
   publishLiveRoutes(*current_, true);
 }
 
+Ticks ProjectLink::liveClipAt() const noexcept {  // UI thread (KB.2): as playhead() reports the transport
+  const bool taken = report_.commands >= commandsPosted_;
+  const bool playing = taken ? report_.playing || report_.countingIn : optimistic_.playing;
+  if (playing) return taken ? report_.tick : optimistic_.tick;
+  return ctx_ != nullptr ? ctx_->startMarker() : 0;
+}
+
+void ProjectLink::followLiveClips() {  // UI thread (KB.2)
+  if (!current_) return;
+  const doc::ClipRef e = ctx_ != nullptr ? ctx_->liveEditedClip() : doc::ClipRef{};
+  const Ticks at = liveClipAt();
+  if (e.track == liveEdited_.track && e.clip == liveEdited_.clip && at >= liveFrom_ && at < liveTo_) return;
+  publishLiveRoutes(*current_, false);
+}
+
 void ProjectLink::publishLiveRoutes(const doc::Project& p, bool force) {  // UI thread
+  // KB.2: each track's live clip, from the clip view's clip and the playhead / start marker.
+  const doc::ClipRef edited = ctx_ != nullptr ? ctx_->liveEditedClip() : doc::ClipRef{};
+  const Ticks at = liveClipAt();
+  Ticks spanFrom = std::numeric_limits<Ticks>::min(), spanTo = std::numeric_limits<Ticks>::max();
   engine::LiveRouteDesc desc;
   std::vector<uint64_t> key;
   std::unordered_map<uint32_t, LiveCacheEntry> next;
@@ -91,8 +111,11 @@ void ProjectLink::publishLiveRoutes(const doc::Project& p, bool force) {  // UI 
     if (sources == 0) return;  // its port is not open
     const uint32_t slot = slotForTrack(t.id);
     if (slot == kNoSlot) return;
-    // The tables: cached on the definition the track's notes resolve in, its node table and its note input.
-    const doc::EffectiveTuning eff = doc::effectiveTuningRef(p, path);
+    // The tables: cached on the definition its live clip's notes resolve in (KB.2), its node table and its note input.
+    const doc::LiveClip live = doc::liveClip(t, edited.track == t.id ? edited.clip : doc::ClipId{}, at);
+    spanFrom = std::max(spanFrom, live.from);
+    spanTo = std::min(spanTo, live.to);
+    const doc::EffectiveTuning eff = doc::effectiveTuningRef(p, path, live.clip);
     if (eff.def == nullptr) return;
     EntryPtr table;
     if (eff.main.valid() && doc::hasTuningSignal(*eff.def)) {
@@ -108,7 +131,7 @@ void ProjectLink::publishLiveRoutes(const doc::Project& p, bool force) {  // UI 
     } else {
       std::shared_ptr<const tuning::Tuning> play;
       if (table) play = std::shared_ptr<const tuning::Tuning>(table, &*table->built);  // held by the entry
-      auto map = doc::buildInputPitchMap(p, t.id, t.noteInput, std::move(play));
+      auto map = doc::buildInputPitchMap(p, t.id, t.noteInput, std::move(play), live.clip);
       if (!map.ok()) return;
       const doc::InputPitchMap& im = **map;
       entry.def = eff.def;
@@ -158,6 +181,9 @@ void ProjectLink::publishLiveRoutes(const doc::Project& p, bool force) {  // UI 
     key.push_back(static_cast<uint64_t>(std::lround(liveBend_[i] * 1000.0f)));
   }
   liveCache_ = std::move(next);
+  liveEdited_ = edited;
+  liveFrom_ = spanFrom;
+  liveTo_ = spanTo;
   if (!force && key == liveRouteKey_ && liveEngine_ == engine_.get()) return;
   auto img = engine::LiveRouteImage::build(desc);
   if (!img.ok()) {

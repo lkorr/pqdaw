@@ -282,12 +282,14 @@ A device's "Open in Circuit View" (its menu, a double-click on its title, the pr
 ## Computer MIDI keyboard (T6.4, KB.1; the tree's key listener `views::ComputerKeyboard`, not the keymap)
 
 While `M` (or the keyboard button at the control bar's top right) has it on, these keys play notes into the armed MIDI
-tracks that listen to All Ins or the Computer Keyboard, each track in its own tuning (Keys = degrees, Hz = their Hz).
+tracks that listen to All Ins or the Computer Keyboard, each track in its own tuning (Keys = degrees, Hz = their Hz):
+the tuning of the clip open in the clip view when it is on that track, else of its clip under the playhead (stopped:
+under the start marker), else the track's own tuning. MIDI keys from a port play in the same tuning.
 With no track armed by hand, the selected MIDI track is armed automatically (Live's arm on select). It takes its keys
 before the focused view (a focused patch canvas no longer eats `F`, `S`, `P`…) and before every key scope; a focused
 text field still types them, and keys with `Ctrl`, `Alt`, `Shift` or `Win` pass through (`Ctrl+S` saves).
 
-The layout follows the tuning of the keyboard's track (the auto-armed one, else the selected armed one, else the first
+The layout follows that tuning for the keyboard's track (the auto-armed one, else the selected armed one, else the first
 armed one):
 
 **12 degrees per equave (or a 12-TET key map): Live's piano layout.** The white keys are the degrees the piano roll draws

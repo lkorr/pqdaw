@@ -36,6 +36,7 @@
 #include "pq/core/grid.h"
 #include "pq/core/result.h"
 #include "pq/document/model.h"
+#include "pq/document/pitch_resolve.h"
 #include "pq/document/samples.h"
 #include "pq/document/store.h"
 #include "pq/ui/actions.h"
@@ -365,8 +366,18 @@ public:
   // none (several armed tracks in different tunings each play in their own tuning, through this one's layout).
   doc::TrackId keyboardTrack() const;
   // Its layout (ComputerKeyboard::layoutSource): the piano layout for 12 degrees per equave or a 12-TET key map, else
-  // the scale layout over the tuning's degrees per equave. The built tuning is cached on its definition.
+  // the scale layout over the degrees per equave of the tuning its live clip plays in (KB.2: liveClipOf). The built
+  // tuning is cached on its definition.
   ComputerKeyboard::Layout keyboardLayout();
+  // KB.2: the note clip open in the clip view — detailClip() while the detail view is shown in Clip mode — else an
+  // invalid ref. A track's live input plays in the tuning of this clip when it is on that track (doc::liveClip).
+  doc::ClipRef liveEditedClip() const noexcept;
+  // KB.2: where a track's live clip is looked up when no edited clip is on it: the playhead while playing, else the
+  // start marker (where Play starts).
+  Ticks liveClipAt();
+  // KB.2: track `t`'s live clip (doc::liveClip with the two above): the ProjectLink resolves the same from the same
+  // state (its own playhead report while playing) for the live pitch tables.
+  doc::LiveClip liveClipOf(const doc::Track& t);
   // KB.1: Live's arm on select (its default "Auto-Arm"): while no track is armed by hand, the selected MIDI track is
   // auto-armed — it listens to its input and records as if armed (TransportPort::setAutoArm), and its arm button is
   // lit; not document state, not undoable. Arming any track by hand ends it (clicking the lit button arms by hand).

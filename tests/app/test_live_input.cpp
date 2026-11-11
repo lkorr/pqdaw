@@ -303,6 +303,101 @@ TEST_CASE("live input: an unmapped .kbm key plays nothing; the computer keyboard
   }
 }
 
+TEST_CASE("live input (KB.2): the keyboard's and MIDI keys' tables play the track's live clip's tuning") {
+  // A 12-EDO track (Keys) with clip A [0, 4) bars in a private 22-EDO and clip B [4, 8) inheriting; a ViewContext on the
+  // link (the clip view's clip and the start marker come from it, as in the app).
+  LiveFixture f(Case::Edo12, NoteInputMode::Keys);
+  constexpr Ticks kBar = kTicksPerWhole;
+  const ClipPtr ca = playback_fixture::clip(f.store.ids(), 0, 4 * kBar, {}, "A");
+  const ClipPtr cb = playback_fixture::clip(f.store.ids(), 4 * kBar, 4 * kBar, {}, "B");
+  REQUIRE(f.store.dispatch(AddClip{f.track, ca}).ok());
+  REQUIRE(f.store.dispatch(AddClip{f.track, cb}).ok());
+  TuningDef edo22;
+  edo22.system = tuning::Edo::make(22).value();
+  REQUIRE(f.store.dispatch(SetClipTuning{{f.track, ca->id}, TuningAssignment::privateTuning(edo22)}).ok());
+  auto link = makeLink(f.store.current());
+  views::ViewContext ctx(*link);
+  ctx.store().reset(f.store.current());
+  link->attach(ctx);
+  struct Detach {
+    ProjectLink& l;
+    ~Detach() { l.detach(); }  // before the context goes
+  } detach{*link};
+  link->setLivePorts({"Port"}, {2.0f});
+  engine::LiveInput& in = link->engine().liveInput();
+  in.setRecording(true);
+  auto blocks = [&](uint32_t n) {  // runs the engine without touching the transport
+    float l[kBlock], r[kBlock];
+    float* outs[2] = {l, r};
+    for (uint32_t b = 0; b < n; ++b) {
+      RtScope rt;
+      link->engine().process(engine::AudioBlock{nullptr, 0, outs, 2, kBlock, 0, 0, 0});
+    }
+  };
+  // What the keyboard's (equave 0, step 3) and MIDI key 63 play now, and what they should in clip `c`'s tuning (want).
+  auto keyboardHz = [&] {
+    link->liveKey(0, 3, 100.0f, true);
+    blocks(2);
+    engine::LiveNoteRecord rec;
+    REQUIRE(in.popRecord(rec));
+    CHECK(rec.pitch.id == tuning::PitchId::fromDegree(3, 0));
+    link->liveKey(0, 3, 0.0f, false);
+    blocks(1);
+    for (engine::LiveNoteRecord off; in.popRecord(off);) {}
+    return rec.pitch.hz;
+  };
+  auto midiHz = [&] {
+    REQUIRE(link->livePorts()->push(0, midi(0, 0x90, 63, 100)));
+    blocks(2);
+    engine::LiveNoteRecord rec;
+    REQUIRE(in.popRecord(rec));
+    REQUIRE(link->livePorts()->push(0, midi(0, 0x80, 63, 0)));
+    blocks(1);
+    for (engine::LiveNoteRecord off; in.popRecord(off);) {}
+    return rec.pitch.hz;
+  };
+  auto want = [&](ClipId c, int64_t degree) {  // invalid: the track's own tuning
+    const Track& t = *findTrackPtr(*ctx.doc(), f.track);
+    const int32_t i = findClipIndex(t, c);
+    const NoteClip* clip = i >= 0 ? t.clips[static_cast<size_t>(i)].clip.get() : nullptr;
+    auto map = buildInputPitchMap(*ctx.doc(), f.track, t.noteInput, nullptr, clip);
+    REQUIRE(map.ok());
+    return static_cast<float>((*map)->pitchForDegree(degree).hz);
+  };
+  const float hz22 = want(ca->id, 3), hz12 = want(ClipId{}, 3);
+  REQUIRE(hz22 != hz12);
+  // Stopped, nothing open, the start marker (0) over A: 22-EDO (the keyboard and MIDI key 63 = degree 3 alike).
+  CHECK(keyboardHz() == hz22);
+  CHECK(midiHz() == hz22);
+  // The marker over B: 12-EDO; moving it inside B publishes nothing.
+  ctx.setStartMarker(5 * kBar);
+  CHECK(keyboardHz() == hz12);
+  CHECK(midiHz() == hz12);
+  uint64_t publishes = link->liveRoutePublishes();
+  ctx.setStartMarker(6 * kBar);
+  CHECK(link->liveRoutePublishes() == publishes);
+  // A open in the clip view: 22-EDO wherever the marker is; closed again: B's 12-EDO.
+  ctx.setDetailClip({f.track, ca->id});
+  ctx.setDetailMode(views::DetailMode::Clip);
+  CHECK(keyboardHz() == hz22);
+  ctx.setDetailVisible(false);
+  CHECK(keyboardHz() == hz12);
+  // Playing from 0 (over A) with the marker over B: the playhead decides (playhead() re-resolves when it crosses).
+  link->play(0);
+  (void)link->playhead();
+  CHECK(keyboardHz() == hz22);
+  link->locate(5 * kBar);
+  (void)link->playhead();
+  CHECK(keyboardHz() == hz12);
+  // Polling while the playhead stays inside B publishes nothing; B retuned while under the playhead: its new tuning.
+  publishes = link->liveRoutePublishes();
+  (void)link->playhead();
+  CHECK(link->liveRoutePublishes() == publishes);
+  REQUIRE(ctx.store().dispatch(SetClipTuning{{f.track, cb->id}, TuningAssignment::privateTuning(edo22)}).ok());
+  CHECK(keyboardHz() == hz22);
+  link->stop();
+}
+
 TEST_CASE("live input: routes follow arm (exclusive / additive), monitor and MIDI From, without a compile") {
   DocumentStore store{playback_fixture::unwiredDefaultProject()};
   IdSource& ids = store.ids();

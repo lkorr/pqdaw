@@ -961,7 +961,7 @@ ComputerKeyboard::Layout ViewContext::keyboardLayout() {
   // A 12-TET key map counts semitones (ProjectLink's keyboard table): the piano layout whatever the tuning.
   if (t.noteInput.keyMap == doc::InputKeyMap::TwelveTetNearest || t.noteInput.keyMap == doc::InputKeyMap::TwelveTetHz)
     return {};
-  const doc::TuningDef* def = doc::effectiveTuning(p, *path);
+  const doc::TuningDef* def = doc::effectiveTuning(p, *path, liveClipOf(t).clip);  // KB.2: its live clip's tuning
   if (!def) return {};
   if (!keyboardDef_ || !(*keyboardDef_ == *def)) {  // built once per definition (a key press compares, no build)
     Result<tuning::Tuning> built = doc::buildTuning(*def);
@@ -970,6 +970,20 @@ ComputerKeyboard::Layout ViewContext::keyboardLayout() {
   }
   if (keyboardDegrees_ <= 0 || keyboardDegrees_ == 12) return {};
   return {false, static_cast<int32_t>(std::min<int64_t>(keyboardDegrees_, int64_t{1} << 20))};
+}
+
+doc::ClipRef ViewContext::liveEditedClip() const noexcept {
+  return detailVisible_ && detailMode_ == DetailMode::Clip ? detailClip_ : doc::ClipRef{};
+}
+
+Ticks ViewContext::liveClipAt() {
+  const PlayheadSnapshot ph = transport_.playhead();
+  return ph.playing ? ph.tick : startMarker_;
+}
+
+doc::LiveClip ViewContext::liveClipOf(const doc::Track& t) {
+  const doc::ClipRef e = liveEditedClip();
+  return doc::liveClip(t, e.track == t.id ? e.clip : doc::ClipId{}, liveClipAt());
 }
 
 // --- layout ---------------------------------------------------------------------------------------------

@@ -196,6 +196,31 @@ EffectiveTuning effectiveTuningRef(const Project& p, const TrackPath& path, cons
   return {&first.def, first.id};
 }
 
+LiveClip liveClip(const Track& t, ClipId edited, Ticks at) noexcept {
+  LiveClip out;
+  if (edited.valid())
+    for (const ClipSlot& s : t.clips)
+      if (s.id == edited && s.clip) {
+        out.clip = s.clip.get();
+        out.id = s.id;
+        return out;  // case (1): wherever the playhead is
+      }
+  // Case (2): the answer only changes where a clip starts or ends, so its span runs between the nearest boundaries.
+  for (const ClipSlot& s : playedClips(t)) {
+    if (!s.clip || !s.clip->active) continue;
+    const Ticks a = s.start(), b = s.end();
+    if (a <= at && at < b) {  // sorted by (start, id): a later one starts at or after this one
+      out.clip = s.clip.get();
+      out.id = s.id;
+    }
+    for (const Ticks edge : {a, b}) {
+      if (edge <= at) out.from = std::max(out.from, edge);
+      else out.to = std::min(out.to, edge);
+    }
+  }
+  return out;
+}
+
 bool hasTuningSignal(const TuningDef& def) noexcept {
   // T2.6-fix4 (M3 review L9): a definition whose continuous values the node's params cannot hold (outside
   // paramRange, which the program clamps them to) plays static pitches instead of a node that would play others.

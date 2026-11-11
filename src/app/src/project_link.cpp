@@ -626,6 +626,9 @@ void ProjectLink::attach(views::ViewContext& ctx) {
       ++resolution_;
       publishAudio(*current_);
     }
+    // KB.2: the clip view's clip (shown / hidden / another) or the start marker may move a track's live clip.
+    if ((what & (views::view_change::kDetailClip | views::view_change::kLayout | views::view_change::kTransport)) != 0)
+      followLiveClips();
   });
   if (ctx.doc() != current_) {  // follow the context's document
     const doc::ChangeSet none;
@@ -1085,7 +1088,10 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   // T6.4: arm / monitor (Param), MIDI input and note input (Meta), tunings, slots: the live routes (published only when
   // one changed).
   if (reset) capture_.clear();  // T6.9: another project's notes are not this one's
-  if (reset || compile || c.has(doc::kChangeParam) || c.has(doc::kChangeMeta)) publishLiveRoutes(p, reset);
+  // KB.2: Sequence: a clip moved, added or removed under the playhead / start marker (tables cached: no rebuild when
+  // the live clip's tuning stays).
+  if (reset || compile || c.has(doc::kChangeParam) || c.has(doc::kChangeMeta) || c.has(doc::kChangeSequence))
+    publishLiveRoutes(p, reset);
   if (reset || structural || c.has(doc::kChangeMeta)) syncRecording(p);  // T6.6: metronome, Track Delay
   // T6.7: monitor gates, capture channels, punch (arm / monitor are params, inputs structural, punch Meta).
   if (reset || structural || c.has(doc::kChangeParam) || c.has(doc::kChangeMeta) || c.has(doc::kChangeTimeline))
@@ -2283,6 +2289,7 @@ views::PlayheadSnapshot ProjectLink::playhead() {
   collectIdle();
   takeLatencyShifts();  // T6.2
   pollRecording();      // T6.7: notes, punch-out, the end of a session (its commit)
+  followLiveClips();    // KB.2: the playhead crossed into another clip (two comparisons while it stays)
   views::PlayheadSnapshot s;
   if (report_.commands >= commandsPosted_) {
     s.playing = report_.playing || report_.countingIn;  // T6.6: a count-in is the transport running
