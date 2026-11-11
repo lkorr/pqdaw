@@ -316,7 +316,7 @@ TEST_CASE("automation: lanes show and hide under a track; the chooser offers mix
   REQUIRE(find(doc::ParamKind::TrackSend, "Mixer") != nullptr);
   REQUIRE(find(doc::ParamKind::MosGenerator, "5L 2s") != nullptr);
   CHECK(find(doc::ParamKind::MosGenerator, "5L 2s")->elsewhere);
-  CHECK(find(doc::ParamKind::TuningEquave, "12-EDO") != nullptr);
+  CHECK(find(doc::ParamKind::TuningEquave, "Tuning A") != nullptr);
   CHECK(find(doc::ParamKind::MosStretch, "5L 2s") != nullptr);
   CHECK(paramName(*f.ctx.doc(), find(doc::ParamKind::MosGenerator, "5L 2s")->param) == "5L 2s: Generator");
 

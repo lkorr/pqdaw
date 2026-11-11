@@ -577,7 +577,7 @@ TEST_CASE("tunings panel (TU.3): a card's menu sets the project default; the con
   REQUIRE(barChip != nullptr);
   REQUIRE(barChip->target().has_value());
   CHECK(barChip->target()->kind == TuningTarget::Kind::Project);
-  CHECK(barChip->text() == "12-EDO");
+  CHECK(barChip->text() == "Tuning A \xC2\xB7 12");
   // Right-click the card (real dispatch) → Set as Project Default: one undo step; Bass (Inherit) now plays in B.
   size_t h = u.history();
   u.panel().reveal(B);
@@ -594,7 +594,7 @@ TEST_CASE("tunings panel (TU.3): a card's menu sets the project default; the con
   // The control bar's chip: right-click → its own list sets the default back (no track selected: the project's).
   h = u.history();
   u.d.click(u.d.center("main/control-bar/tuning"), mod::kNone, PointerButton::Right);
-  views::test::clickMenuItem(u.d, u.shell->overlay(), "12-EDO");
+  views::test::clickMenuItem(u.d, u.shell->overlay(), "Tuning A");
   CHECK(u.history() == h + 1);
   CHECK(u.ctx.doc()->defaultTuning == A);
   // Removing the default tuning hands the default to the replacement in the same undo step.

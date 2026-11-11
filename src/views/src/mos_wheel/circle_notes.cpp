@@ -28,11 +28,13 @@ CircleNotes::CircleNotes(ViewContext& ctx, const TuningTarget& target, MosCircle
   viewSub_ = ctx_.observe([this](uint32_t bits) { onView(bits); });
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) { playDirty_ = true; });
   auditionSeen_ = ctx_.lastAudition().serial;  // an audition from before the wheel opened is not shown
+  ctx_.transport().listenMidiNotes(true);
   syncKeyboard();
+  syncMidi();
   onView(view_change::kTransport);
 }
 
-CircleNotes::~CircleNotes() = default;
+CircleNotes::~CircleNotes() { ctx_.transport().listenMidiNotes(false); }
 
 const tuning::Tuning* CircleNotes::targetTuning() {
   const doc::TuningDef* def = views::targetTuning(*ctx_.doc(), target_);
@@ -59,6 +61,7 @@ void CircleNotes::onView(uint32_t bits) {
   if (bits & view_change::kLiveNotes) {
     syncKeyboard();
     syncAudition();
+    syncMidi();
   }
   if ((bits & view_change::kTransport) && ctx_.playing() && !polling_) {
     polling_ = true;
@@ -93,6 +96,34 @@ void CircleNotes::syncKeyboard() {
       }
   }
   apply(scratch_, keysLit_);
+}
+
+// --- hardware MIDI in (TU.2b) ----------------------------------------------------------------------------------
+
+void CircleNotes::syncMidi() {
+  scratch_.clear();
+  const std::span<const LiveMidiNote> notes = ctx_.transport().liveMidiNotes();
+  if (!notes.empty()) {
+    const doc::Project& p = *ctx_.doc();
+    const doc::TuningDef* def = views::targetTuning(p, target_);
+    // Per note its track's live tuning (a handful of held notes: the lookups are cheap; one track per run of notes).
+    uint32_t lastTrack = 0;
+    bool lastPlays = false;
+    for (const LiveMidiNote& n : notes) {
+      if (!def || !std::isfinite(n.noteDegree) || !(n.hz > 0.0f)) continue;
+      if (n.trackId != lastTrack) {
+        lastTrack = n.trackId;
+        lastPlays = false;
+        const std::optional<doc::TrackPath> path = doc::findTrack(p, doc::TrackId{n.trackId});
+        if (path) {
+          const doc::Track& t = doc::trackAt(p, *path);
+          lastPlays = doc::effectiveTuning(p, *path, ctx_.liveClipOf(t).clip) == def;
+        }
+      }
+      if (lastPlays) scratch_.push_back({midiId(n), std::llround(n.noteDegree), static_cast<double>(n.hz)});
+    }
+  }
+  apply(scratch_, midiLit_);
 }
 
 // --- auditions -------------------------------------------------------------------------------------------------

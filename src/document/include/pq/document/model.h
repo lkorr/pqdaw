@@ -1037,7 +1037,7 @@ bool operator==(const Project& a, const Project& b) noexcept;
 
 using Snapshot = std::shared_ptr<const Project>;
 
-// 120 BPM, 4/4, one main tuning "12-EDO", a master track wired from its input to its mixer (TX.all-free; `wireMaster`
+// 120 BPM, 4/4, one main tuning "Tuning A" (12-EDO), a master track wired from its input to its mixer (TX.all-free; `wireMaster`
 // false: unwired, for builders that reproduce an older file's ids and wire every track at the end with
 // ops::wireSeries, as the schema 16 → 17 migration does), no other tracks. Ids are drawn from `ids`.
 Snapshot makeDefaultProject(IdSource& ids, bool wireMaster = true);

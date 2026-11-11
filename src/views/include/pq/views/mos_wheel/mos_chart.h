@@ -41,9 +41,9 @@
 // size or selection change damages the whole chart. Layout (band rects, EDO markers, temperament rows, label
 // strings) is rebuilt only when the view, the rect, the config or the selected region changes, never per paint.
 // Geometry is logical px through UiScale (crisp primitives on device px), text through the theme's font roles.
-// Colours: theme group `mosChart.*` (surfaces from the Live 12 look, Q47); TU.1: the data (regions, temperament
-// ranges) in the DAW's own palette — mosDataColour below, the theme's muted clip colours — in place of the explorer's
-// saturated PALETTE and temperament colours.
+// Colours: theme group `mosChart.*` (surfaces from the Live 12 look, Q47), the explorer's region palette
+// (tuning::kMosPalette) and temperament colours (tuning::temperamentColor) for the data — TU.2b: back from TU.1's clip
+// palette, the same palette as the circle (mos_palette.h), so a circle's L colour is its band's colour here.
 //
 // UI thread only. Nothing here is RT-safe.
 
@@ -56,15 +56,9 @@
 
 #include "pq/tuning/mos.h"
 #include "pq/tuning/mos_regions.h"
-#include "pq/ui/theme.h"
 #include "pq/ui/widget.h"
 
 namespace pq::views {
-
-// TU.1: data colours of the MOS views from the theme: `index` (a tuning::MosRegion palette index, any integer) picks
-// one of the clip palette's 13 muted mid-row hues; temperamentColour gives temperament i (tuning::temperaments()) one.
-ui::Rgba mosDataColour(const ui::Theme& th, uint32_t index) noexcept;
-ui::Rgba temperamentColour(const ui::Theme& th, int32_t temperament) noexcept;
 
 // The chart's output: one MOS tuning, as the explorer's selection + generator define it.
 struct MosSelection {
@@ -173,6 +167,9 @@ public:
   const std::optional<MosSelection>& selection() const noexcept { return selection_; }
   int32_t selectedRegion() const noexcept { return selected_; }  // index into regionSet().regions, −1 = none
   int32_t hoveredRegion() const noexcept { return hovered_; }
+  // Region i's band colour before alpha: its collapsed palette colour; the selected region's moves toward its
+  // equalized colour as the generator nears the equalized end (drawMOS).
+  ui::Rgba regionColour(int32_t region) const noexcept;
   bool dragging() const noexcept { return drag_ != Drag::None; }
 
   using ChangeFn = std::function<void(const std::optional<MosSelection>&, MosGesture)>;
@@ -227,6 +224,7 @@ private:
     int32_t temperament;  // index into tuning::temperaments()
     float x1, x2;
     int32_t y, h;
+    ui::Rgba fill, edge;  // the explorer's temperament colour (edge) at alpha 0.5 (fill)
   };
   struct Card {
     std::vector<std::string> lines;
@@ -268,7 +266,6 @@ private:
   void damageGeneratorParts();
   void damageRegionBands(int32_t region);
   void setFirstSizeInternal(int32_t size, bool emitDamage);
-  ui::Rgba regionColor(const ui::Theme& th, int32_t region) const noexcept;
   ui::IRect pillRect(float markerX) const;
   const Labels& labelsOf(int32_t region);
   ui::IRect thumbRect() const noexcept;

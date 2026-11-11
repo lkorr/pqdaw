@@ -7,7 +7,7 @@
   "loop": {"start": 0, "end": 3548160, "enabled": false},
   "locators": [],
   "tunings": [
-    {"id": 1, "name": "12-EDO", "colour": "#5E9BD6",
+    {"id": 1, "name": "Tuning A", "colour": "#5E9BD6",
      "def": {"kind": "edo", "n": 12, "equave": "2/1", "referenceHz": 261.626}}
   ],
   "tracks": [],

@@ -105,6 +105,8 @@ public:
       if (id == trackId) return ms;
     return 0.0;
   }
+  void listenMidiNotes(bool on) override { midiListeners += on ? 1 : -1; }  // TU.2b
+  std::span<const LiveMidiNote> liveMidiNotes() override { return midiNotes; }
 
   // Test control: the position a running transport would report next.
   // T6.6: a running count-in (beat of beats, beatsPerBar); beats 0 ends it.
@@ -140,6 +142,8 @@ public:
   uint64_t overlayReads = 0;
   bool captures = true;                                    // T6.9: what captureMidi returns
   uint32_t autoArm = 0;                                    // KB.1: the last setAutoArm
+  int32_t midiListeners = 0;                               // TU.2b: listenMidiNotes(true) − (false)
+  std::vector<LiveMidiNote> midiNotes;                     // TU.2b: what liveMidiNotes hands out
 
 private:
   PlayheadSnapshot state_{};

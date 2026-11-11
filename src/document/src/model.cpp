@@ -709,7 +709,7 @@ Snapshot makeDefaultProject(IdSource& ids, bool wireMaster) {
   p->timeline = std::make_shared<const Timeline>();
   TuningSlot slot;
   slot.id = ids.tuning();
-  slot.name = "12-EDO";
+  slot.name = "Tuning A";  // TU.2b: "tunings you define, A, B, C, D" (Q?-TU.3-a); New Tuning names the next letter
   slot.colour = Colour{0x5E9BD6};
   p->defaultTuning = slot.id;
   p->tunings = std::make_shared<const TuningList>(TuningList{std::make_shared<const TuningSlot>(std::move(slot))});

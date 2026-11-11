@@ -11,8 +11,10 @@
 //     auto-armed) MIDI track that listens to it plays in that tuning (its live clip's, doc::liveClip);
 //   - auditions: a note clicked or drawn in the piano roll (ViewContext::audition), when its clip plays in that tuning,
 //     for its audition length or until the press ends.
-// MIDI keys from a port are not shown: no UI-side feed of them exists (the engine's live input reports notes only
-// while recording, and Capture MIDI's rings are its own).
+//   - hardware MIDI in (TU.2b): the notes TransportPort::liveMidiNotes() holds (the app's UI-side feed off the MIDI
+//     callback, routed as the engine routes them), on a track whose live clip plays in that tuning, at their degree
+//     (LiveMidiNote::noteDegree; none with a 12-TET Hz key map) and Hz. The feed runs only while a CircleNotes
+//     listens (TransportPort::listenMidiNotes).
 // UI thread only.
 
 #include <cstdint>
@@ -42,6 +44,9 @@ public:
   // Ids of the notes lit (tests): one per sounding playback note, held key, audition.
   static uint64_t keyId(uint32_t key) noexcept { return (uint64_t{1} << 56) | key; }
   static uint64_t auditionId(uint64_t serial) noexcept { return (uint64_t{3} << 56) | (serial & ((uint64_t{1} << 56) - 1)); }
+  static uint64_t midiId(const LiveMidiNote& n) noexcept {
+    return (uint64_t{4} << 56) | (uint64_t{n.trackId} << 24) | (uint64_t{n.port} << 16) | (uint64_t{n.channel} << 8) | n.key;
+  }
 
 private:
   struct PlayNote {
@@ -64,6 +69,7 @@ private:
   void onView(uint32_t bits);
   void syncKeyboard();
   void syncAudition();
+  void syncMidi();
   void rebuildPlayback();
   void pollPlayback(Ticks tick);
   void stopPlayback();
@@ -81,6 +87,7 @@ private:
   std::optional<tuning::Tuning> built_;
 
   std::vector<uint64_t> keysLit_;
+  std::vector<uint64_t> midiLit_;
   uint64_t auditionSeen_ = 0;
   bool auditionReleased_ = true;
 

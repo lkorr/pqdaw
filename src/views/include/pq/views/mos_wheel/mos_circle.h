@@ -232,7 +232,6 @@ private:
   MosChartConfig config_;
   tuning::MosRegionSet regions_;
   std::vector<tuning::EdoGenerator> edos_;
-  std::vector<ui::Rgba> palette_;  // tuning::kMosPalette as colours
 
   std::optional<MosSelection> sel_;
   int32_t region_ = -1;

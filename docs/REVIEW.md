@@ -1331,3 +1331,14 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **Arm off**: the same pass records only the notes. Not recording: edits behave as before (they override the lane).
 - Known limits: the recorded automation appears in the lane at Stop, not live while recording (with loop recording the
   next pass still plays the old automation; the knob's static value is its own undo step before "Record").
+## 2026-11-11 · TU.2b · MOS wheel follow-ups
+- **Region chart colours**: the bands and temperament ranges are the mos-explorer's colours again (TU.1's muted clip
+  palette reverted, as TU.2 did for the circle), and the chart's surfaces (`mosChart.*`: EDO labels, marker, band
+  text) are back to their pre-TU.1 values. The circle's L slice is its region's band colour in the chart (collapsed
+  when hard, moving to the equalized colour toward L = s).
+- **MIDI keyboard lights the circle**: a hardware MIDI note on a listening (armed / auto-armed / Monitor In) track
+  whose live clip plays in the wheel's tuning lights its degree in its frequency colour, as the computer keyboard
+  does. Try: open the wheel on a clip, play your controller.
+- **Default tuning name**: a new project's tuning is "Tuning A"; New Tuning names the next free letter (Tuning B, C, …).
+  By TU.3's chip rule the control bar reads "Tuning A · 12" and the narrow track-header / mixer chips only "12" (they
+  used to read "12-EDO"): is "12" too terse there? (Q?-TU.2b-a)

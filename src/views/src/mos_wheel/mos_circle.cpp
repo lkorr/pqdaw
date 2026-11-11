@@ -19,6 +19,7 @@
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
 #include "../common/voice_colour.h"
+#include "mos_palette.h"
 
 namespace pq::views {
 
@@ -32,20 +33,6 @@ constexpr double kPi = std::numbers::pi;
 constexpr double kInf = std::numeric_limits<double>::infinity();
 // Hardness ticks on the slider (and its snap targets): supersoft 4:3 … superhard 4:1.
 constexpr std::array<double, 7> kHardnessTicks = {4.0 / 3.0, 1.5, 5.0 / 3.0, 2.0, 2.5, 3.0, 4.0};
-
-uint32_t hexDigit(char c) noexcept {
-  if (c >= '0' && c <= '9') return static_cast<uint32_t>(c - '0');
-  if (c >= 'a' && c <= 'f') return static_cast<uint32_t>(c - 'a' + 10);
-  if (c >= 'A' && c <= 'F') return static_cast<uint32_t>(c - 'A' + 10);
-  return 0;
-}
-
-// "#rrggbb" or "#rrggbbaa" (the explorer's colour strings).
-Rgba parseColor(std::string_view s) noexcept {
-  auto byte = [&](size_t i) { return hexDigit(s[i]) * 16 + hexDigit(s[i + 1]); };
-  if (s.size() < 7 || s[0] != '#') return rgba(136, 136, 136);
-  return rgba(byte(1), byte(3), byte(5), s.size() >= 9 ? byte(7) : 255u);
-}
 
 // lerpColor / complementaryColor (index.html 3127–3135): per channel, rounded, opaque.
 Rgba lerpHex(Rgba a, Rgba b, double t) noexcept {
@@ -186,8 +173,6 @@ struct MosCircle::Model {
 
 MosCircle::MosCircle(std::string name, const MosChartConfig& config) : Widget(std::move(name)), config_(config) {
   setFocusable(true);
-  palette_.reserve(tu::kMosPalette.size());
-  for (const char* c : tu::kMosPalette) palette_.push_back(parseColor(c));
   rebuildRegions();
 }
 
@@ -429,11 +414,11 @@ void MosCircle::ensureModel() const {
 
   // Step colours (drawMOSCircle; TU.2 restores them): L in the region colour for this hardness, s toward its
   // complement as the scale hardens, MODMOS step sizes interpolated between their neighbours and pushed apart.
-  Rgba collapsed = palette_[0], equalized = palette_[0];
+  Rgba collapsed = mos_palette::region(0), equalized = collapsed;
   if (region_ >= 0) {
     const tu::MosRegion& r = regions_.regions[static_cast<size_t>(region_)];
-    collapsed = palette_[r.collapsedColor % palette_.size()];
-    equalized = palette_[r.equalizedColor % palette_.size()];
+    collapsed = mos_palette::region(r.collapsedColor);
+    equalized = mos_palette::region(r.equalizedColor);
   }
   const double ratio = m.s > 0.01 ? m.L / m.s : 20.0;
   const double softness = std::clamp(1.0 - (ratio - 1.0) / 2.0, 0.0, 1.0);
@@ -557,8 +542,7 @@ void MosCircle::ensureModel() const {
     if (!at.empty()) {
       const tu::Temperament& t = tu::temperaments()[static_cast<size_t>(at.front().index)];
       m.tempName = std::string(t.name);
-      const auto col = tu::temperamentColor(t.name);
-      m.tempColour = col ? parseColor(*col) : rgba(0x50, 0xC8, 0x78);
+      m.tempColour = mos_palette::temperament(t.name).value_or(rgba(0x50, 0xC8, 0x78));
     }
   }
 

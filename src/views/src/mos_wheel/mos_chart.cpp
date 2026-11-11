@@ -12,6 +12,7 @@
 
 #include "../common/labels.h"
 #include "../common/paint.h"
+#include "mos_palette.h"
 #include "pq/tuning/mos_data.h"
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
@@ -70,21 +71,6 @@ tu::MosParams MosSelection::params() const {
   p.rotation = modeRotation;
   p.region = hint();
   return p;
-}
-
-// --- colours (TU.1) ----------------------------------------------------------------------------------------------
-
-// The middle row of Live's clip palette (theme clipPalette: 14 columns, the 14th grey): muted hues that sit on the
-// DAW's dark surfaces, where the explorer's saturated PALETTE stood out from everything around it.
-ui::Rgba mosDataColour(const ui::Theme& th, uint32_t index) noexcept {
-  constexpr uint32_t kRow = 2, kHues = kClipPaletteColumns - 1;
-  if (th.clipPalette.size() < (kRow + 1) * kClipPaletteColumns) return th.text.secondary;
-  return th.clipPalette[kRow * kClipPaletteColumns + index % kHues];
-}
-
-ui::Rgba temperamentColour(const ui::Theme& th, int32_t temperament) noexcept {
-  // Neighbouring temperaments in the list are often neighbours on the axis: step 5 of 13 hues keeps them apart.
-  return mosDataColour(th, static_cast<uint32_t>(std::max(0, temperament)) * 5u);
 }
 
 // --- construction / config --------------------------------------------------------------------------------------
@@ -296,11 +282,11 @@ void MosChart::emit(MosGesture g) {
   if (onChange_) onChange_(selection_, g);
 }
 
-ui::Rgba MosChart::regionColor(const ui::Theme& th, int32_t region) const noexcept {
+ui::Rgba MosChart::regionColour(int32_t region) const noexcept {
   const tu::MosRegion& r = regions_.regions[static_cast<size_t>(region)];
-  const Rgba collapsed = mosDataColour(th, r.collapsedColor);
+  const Rgba collapsed = mos_palette::region(r.collapsedColor);
   if (region != selected_ || !selection_) return collapsed;
-  const Rgba equalized = mosDataColour(th, r.equalizedColor);
+  const Rgba equalized = mos_palette::region(r.equalizedColor);
   const double w = r.highCents - r.lowCents;
   const double genT = equalizedEndLow_ ? (selection_->generatorCents - r.lowCents) / w : (r.highCents - selection_->generatorCents) / w;
   const double soft = std::clamp(1.0 - genT, 0.0, 1.0);
@@ -455,7 +441,8 @@ void MosChart::layoutNow() const {
         const float yL = mcm::kTempTop + static_cast<float>(rows - 1 - b.row) * (mcm::kTempBarH + mcm::kTempBarGap);
         const int32_t y = g.r.y + s.px(yL);
         const int32_t idx = tempMatches_[b.match];
-        tempBars_.push_back({idx, b.x1, b.x2, y, g.r.y + s.px(yL + mcm::kTempBarH) - y});
+        const Rgba edge = mos_palette::temperament(temps[static_cast<size_t>(idx)].name).value_or(rgba(136, 136, 136));
+        tempBars_.push_back({idx, b.x1, b.x2, y, g.r.y + s.px(yL + mcm::kTempBarH) - y, alphaOfFloat(edge, 0.5f), edge});
       }
     }
   }
@@ -1174,9 +1161,8 @@ void MosChart::paint(PaintContext& ctx) {
   for (const TempBar& b : tempBars_) {
     if (!overlaps(clip, b.x1, static_cast<float>(b.y), b.x2, static_cast<float>(b.y + b.h))) continue;
     const Rect rr{b.x1, static_cast<float>(b.y), b.x2, static_cast<float>(b.y + b.h)};
-    const Rgba edge = temperamentColour(*thp, b.temperament);
-    dl.addRectFilled(rr, alphaOfFloat(edge, 0.45f));
-    dl.addRectStroke(rr, edge);
+    dl.addRectFilled(rr, b.fill);
+    dl.addRectStroke(rr, b.edge);
     if (text && b.x2 - b.x1 > s.exact(35.0f)) {
       const std::string_view name = temps[static_cast<size_t>(b.temperament)].name;
       const int32_t maxW = static_cast<int32_t>(b.x2 - b.x1) - s.px(6.0f);
@@ -1199,7 +1185,7 @@ void MosChart::paint(PaintContext& ctx) {
     const bool isHov = selected_ < 0 && hovered_ == b.region;
     const bool grayed = selected_ >= 0 && !isSel;
     const float alpha = isSel ? 0.85f : grayed ? 0.12f : isHov ? 0.7f : 0.5f;
-    const Rgba base = isSel ? regionColor(*thp, selected_) : regionColor(*thp, b.region);
+    const Rgba base = isSel ? regionColour(selected_) : regionColour(b.region);
     const Rgba col = grayed ? grayedBase : base;
     const Rect rr{b.x1, static_cast<float>(b.y), b.x2, static_cast<float>(b.y + b.h)};
     dl.addRectFilled(rr, alphaOfFloat(col, alpha));

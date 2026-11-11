@@ -88,14 +88,14 @@ TEST_CASE("look: the control bar shows the selected track's tuning, else the fir
   Shellf f("mixer");
   auto* chip = dynamic_cast<TuningChip*>(f.d.find("main/control-bar/tuning"));
   REQUIRE(chip != nullptr);
-  CHECK(chip->text() == "12-EDO");  // nothing selected: the project's first main tuning
+  CHECK(chip->text() == "Tuning A \xC2\xB7 12");  // nothing selected: the project's first main tuning
   f.arr->selectTrack(f.track("Bass").id, mod::kNone);
   CHECK(f.ctx.selectedTrack() == f.track("Bass").id);
   CHECK(chip->text() == "31-EDO");
   f.arr->selectTrack(f.track("Pad").id, mod::kNone);
   CHECK(chip->text() == "22-EDO");  // a private tuning: its summary
   f.arr->clearSelection();
-  CHECK(chip->text() == "12-EDO");
+  CHECK(chip->text() == "Tuning A \xC2\xB7 12");
 }
 
 TEST_CASE("look: the CPU meter polls the audio port only while playing; a stopped session has no timer") {

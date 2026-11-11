@@ -115,6 +115,7 @@ void MidiInputService::onMessage(void* user, const uint8_t* bytes, size_t size) 
   m.d2 = size > 2 ? static_cast<uint8_t>(bytes[2] & 0x7F) : 0;
   (void)c.rings->push(c.index, m);  // a full ring: counted, and the engine releases this port's notes
   c.link->signalActivity();          // KB.3: meters stopped while the engine slept poll again
+  c.link->feedMidiNote(c.index, m);  // TU.2b: the views' note feed (nothing while no view listens)
 }
 
 MidiPortSetting& MidiInputService::settingFor(const std::string& name) {
@@ -137,6 +138,8 @@ void MidiInputService::close(Open& o) {
     (void)link_.livePorts()->push(o.index, m);
     m.d1 = 121;  // M6 review L1: and its wheel centred (a device reusing the index starts clean)
     (void)link_.livePorts()->push(o.index, m);
+    m.d1 = 123;  // TU.2b: the views' note feed lets go of its notes too (the port's thread is gone: this is its producer)
+    link_.feedMidiNote(o.index, m);
   }
 }
 

@@ -12,12 +12,15 @@
 //   TU.2: the explorer's step colours ease to a new generator's and the frames stop once settled; a note-on lights its
 //   degree in its frequency's colour and a note-off fades it; the popover lights the notes of playback, the computer
 //   keyboard and auditions in the target's tuning.
+//   TU.2b: the chart's band colours are the circle's L colours (one explorer palette); hardware MIDI-in notes
+//   (TransportPort::liveMidiNotes) light the circle when their track plays in the target's tuning.
 //   Goldens: mos-circle-5L2s, mos-circle-modmos, mos-circle-lit, mos-wheel-popover.
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 #include <string>
 #include <vector>
@@ -386,6 +389,53 @@ TEST_CASE("mos circle (TU.2): a note-on lights its degree in its frequency's col
   CHECK_FALSE(t.d.tree().needsFrame());
 }
 
+TEST_CASE("mos chart (TU.2b): a region's band colour is the circle's L colour (one explorer palette)") {
+  MosChart chart("chart", smallConfig());
+  auto dist = [](Rgba a, Rgba b) {
+    int d = 0;
+    for (int sh : {0, 8, 16}) d = std::max(d, std::abs(static_cast<int>((a >> sh) & 0xFF) - static_cast<int>((b >> sh) & 0xFF)));
+    return d;
+  };
+  int checked = 0;
+  std::vector<Rgba> seen;
+  const auto& regions = chart.regionSet().regions;
+  for (size_t i = 0; i < regions.size(); ++i) {
+    const tu::MosRegion& r = regions[i];
+    if (r.isMirror || r.perPeriodSize < 3 || r.perPeriodSize > 9) continue;
+    INFO("region " << r.key.nL << "L " << r.key.nS << "s, " << r.lowCents << "-" << r.highCents);
+    const double mid = (r.lowCents + r.highCents) / 2.0;
+    REQUIRE(chart.select(r.perPeriodKey, mid));
+    const int32_t idx = chart.selectedRegion();
+    REQUIRE(idx >= 0);
+    const std::optional<double> hardGen = generatorForHardnessIn(*chart.selection(), 4.0);
+    const std::optional<double> eqGen = generatorForHardnessIn(*chart.selection(), 1.0001);
+    REQUIRE(hardGen);
+    REQUIRE(eqGen);
+    auto lColour = [&](double gen) {
+      REQUIRE(chart.select(r.perPeriodKey, gen));
+      REQUIRE(chart.selectedRegion() == idx);
+      Circle c;
+      c.set(*chart.selection());
+      const auto labels = c.c->stepLabels();
+      const auto l = std::find(labels.begin(), labels.end(), "L");
+      REQUIRE(l != labels.end());
+      return c.c->sliceColour(static_cast<int32_t>(l - labels.begin()));
+    };
+    // Collapsed (L/s ≥ 3): the circle's L is the region's collapsed colour, which the chart paints the band in.
+    const Rgba hardL = lColour(*hardGen);
+    chart.clearSelection();
+    CHECK(chart.regionColour(idx) == hardL);
+    // Near equalized (L/s → 1): both move to the equalized colour (the chart by the generator's place in the region).
+    const Rgba eqL = lColour(*eqGen);
+    CHECK(dist(chart.regionColour(idx), eqL) <= 2);
+    chart.clearSelection();
+    if (std::find(seen.begin(), seen.end(), hardL) == seen.end()) seen.push_back(hardL);
+    ++checked;
+  }
+  CHECK(checked >= 8);
+  CHECK(seen.size() >= 4);  // the explorer's palette: regions in several colours, not one theme colour
+}
+
 TEST_CASE("mos wheel: the summary's mode number is the circle header's (genchain order), not the rotation; L18") {
   doc::TuningDef def;
   tu::MosParams m;
@@ -571,8 +621,8 @@ TEST_CASE("mos wheel (TU.3): a chip's menu picks a named tuning or a New Tuning;
     std::vector<std::string> labels;
     for (const MenuItem& it : m->items()) labels.push_back(it.label);
     REQUIRE(labels.size() >= 4u);
-    CHECK(labels[0] == "Inherit (12-EDO)");
-    CHECK(labels[1] == "12-EDO");
+    CHECK(labels[0] == "Inherit (Tuning A)");
+    CHECK(labels[1] == "Tuning A");
     CHECK(labels[2] == "Tuning B");
     CHECK(labels[3] == "New Tuning");
     CHECK(m->items()[2].checked);  // A1's assignment
@@ -581,13 +631,13 @@ TEST_CASE("mos wheel (TU.3): a chip's menu picks a named tuning or a New Tuning;
     CHECK(m->items()[2].shortcut == "12-EDO");  // the summary (its name differs)
     w.d.press("Escape");
   }
-  // Picking 12-EDO (a real click) links A1 to the default, as B1 is: one undo step.
+  // Picking Tuning A (a real click) links A1 to the default, as B1 is: one undo step.
   (void)menuAt(*chip);
-  views::test::clickMenuItem(w.d, w.shell->overlay(), "12-EDO");
+  views::test::clickMenuItem(w.d, w.shell->overlay(), "Tuning A");
   CHECK(w.history() == h0 + 1);
   CHECK(w.clip(w.a1)->tuning == doc::TuningAssignment::mainTuning(w.ctx.doc()->defaultTuning));
-  CHECK(chip->text() == "12-EDO");
-  // The wheel now edits 12-EDO: B1 (another track, inheriting the default) and A2 change with A1.
+  CHECK(chip->text() == "Tuning A \xC2\xB7 12");
+  // The wheel now edits Tuning A: B1 (another track, inheriting the default) and A2 change with A1.
   {
     MosWheelPopover& p = w.openFromChip();
     REQUIRE(p.chooseEdo(19));
@@ -908,6 +958,49 @@ TEST_CASE("mos wheel (TU.2): the clip playing, the computer keyboard and a roll 
   CHECK(c.glowOf(2) == 0.0f);
   CHECK_FALSE(c.animating());
   w.d.press("Escape");
+}
+
+// TU.2b: a hardware MIDI-in note (the app's feed: TransportPort::liveMidiNotes, view_change::kLiveNotes) lights its
+// degree when its track plays in the wheel's tuning, at its own Hz; a note on a track in another tuning does not.
+TEST_CASE("mos wheel (TU.2b): hardware MIDI-in notes light the circle's degrees") {
+  Wheel w;
+  CHECK(w.port.midiListeners == 0);
+  MosWheelPopover& p = w.openFromChip();
+  CHECK(w.port.midiListeners == 1);  // the feed runs only while the circle listens
+  REQUIRE(p.chooseMos({5, 2}, 696.0));
+  w.d.step();
+  MosCircle& c = p.circle();
+  REQUIRE(c.degreeCount() == 7);
+
+  // Track A (live clip A1, the wheel's tuning): key degree 9 = degree 2 of the next equave; track B (12-EDO): degree 4.
+  LiveMidiNote a{w.trackA.value, 0, 0, 69, 9.0f, 2000.0f};
+  LiveMidiNote b{w.trackB.value, 0, 0, 64, 4.0f, 329.6f};
+  w.port.midiNotes = {a, b};
+  w.ctx.liveMidiNotesChanged();
+  w.d.advance(0.2);
+  CHECK(c.glowOf(2) == doctest::Approx(1.0f));
+  CHECK(c.glowOf(4) == 0.0f);
+  CHECK(c.glowColourOf(2) == hex(0xFCDC40));  // its own Hz: ≥ 1050 Hz is yellow
+  // A second key on A; then the first released.
+  LiveMidiNote a2{w.trackA.value, 0, 0, 60, 0.0f, 261.6f};
+  w.port.midiNotes = {a, a2};
+  w.ctx.liveMidiNotesChanged();
+  w.d.advance(0.2);
+  CHECK(c.glowOf(0) == doctest::Approx(1.0f));
+  w.port.midiNotes = {a2};
+  w.ctx.liveMidiNotesChanged();
+  w.d.advance(2.0);
+  CHECK(c.glowOf(2) == 0.0f);
+  CHECK(c.glowOf(0) == doctest::Approx(1.0f));
+  // No degree (a 12-TET Hz key map): nothing lit.
+  w.port.midiNotes = {LiveMidiNote{w.trackA.value, 0, 0, 62, std::numeric_limits<float>::quiet_NaN(), 293.7f}};
+  w.ctx.liveMidiNotesChanged();
+  w.d.advance(2.0);
+  CHECK(c.glowOf(0) == 0.0f);
+  CHECK_FALSE(c.animating());
+  w.d.press("Escape");
+  w.d.step();
+  CHECK(w.port.midiListeners == 0);
 }
 
 TEST_CASE("mos wheel: the popover never covers the control bar or the status bar (L17), also when dragged up") {

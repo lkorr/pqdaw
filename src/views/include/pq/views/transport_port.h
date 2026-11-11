@@ -53,9 +53,17 @@
 //   recordingOverlay(out)  T6.7: what the running (or last) recording session made so far, for the arrangement's
 //                       live overlay: false when nothing changed since `out` was filled (out.revision), else `out` is
 //                       updated (its waveform appended). Default: false.
+//   listenMidiNotes(on) / liveMidiNotes()
+//                       TU.2b: the hardware MIDI-in notes held now on the tracks that listen (displays that light
+//                       notes: the MOS circle). listenMidiNotes(true) / (false) are counted: while any listener is on,
+//                       the MIDI callback also feeds the UI's own note ring and the app hands its notes over
+//                       (ViewContext::liveMidiNotesChanged, view_change::kLiveNotes); off, the callback skips it.
+//                       Default: none.
 
 #include <cstdint>
+#include <limits>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "pq/core/time.h"
@@ -105,6 +113,15 @@ struct RecordingOverlay {
   std::vector<Note> notes;
 };
 
+// TU.2b: a hardware MIDI-in note held on one listening track (one per track a message reaches).
+struct LiveMidiNote {
+  uint32_t trackId = 0;
+  uint8_t port = 0, channel = 0, key = 0;  // the source: MIDI port index, channel 0 … 15, key
+  float noteDegree = std::numeric_limits<float>::quiet_NaN();  // absolute degree in the track's live tuning (NaN: none)
+  float hz = 0.0f;                                             // what it sounds at (before pitch bend)
+  friend constexpr bool operator==(const LiveMidiNote&, const LiveMidiNote&) noexcept = default;
+};
+
 class TransportPort {
 public:
   virtual ~TransportPort() = default;
@@ -139,6 +156,8 @@ public:
     (void)trackId;
     return 0.0;
   }
+  virtual void listenMidiNotes(bool on) { (void)on; }                   // TU.2b
+  virtual std::span<const LiveMidiNote> liveMidiNotes() { return {}; }  // TU.2b
 };
 
 }  // namespace pq::views

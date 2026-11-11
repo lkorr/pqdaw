@@ -100,7 +100,8 @@ inline constexpr uint32_t kTimeWindow = 1u << 19;    // TL.1: the shared visible
 inline constexpr uint32_t kSampleAnalysis = 1u << 20; // T6.8: a sample's transients / tempo arrived (SampleAnalysis)
 inline constexpr uint32_t kKeyboard = 1u << 21;       // KB.1: the computer keyboard's state, or the auto-armed track
 inline constexpr uint32_t kLiveNotes = 1u << 22;      // TU.2: a note the UI plays started or ended (the computer
-                                                      // keyboard's held(), an audition: lastAudition())
+                                                      // keyboard's held(), an audition: lastAudition()); TU.2b:
+                                                      // or a hardware MIDI-in note (TransportPort::liveMidiNotes)
 }  // namespace view_change
 
 // What a tuning control is about (T3.14; TU.3): one clip, one track, a named tuning, or the project's default. Every
@@ -332,6 +333,8 @@ public:
   std::shared_ptr<const doc::LoweredProject> currentLowering(doc::Snapshot* from = nullptr) const;
   // The app, after a compile made new taps: displays waiting for their device's feed look again (notifies kAnalysis).
   void analysisTapsChanged() { notify(view_change::kAnalysis); }
+  // TU.2b: the app, after TransportPort::liveMidiNotes() changed (notifies kLiveNotes).
+  void liveMidiNotesChanged() { notify(view_change::kLiveNotes); }
   // KB.3: the playback link saw engine activity after its signal sources went quiet (ProjectLink::setSignalNotify,
   // posted to the UI thread by the shell).
   void signalWaking() { notify(view_change::kSignal); }

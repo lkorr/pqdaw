@@ -154,6 +154,8 @@ void ProjectLink::publishLiveRoutes(const doc::Project& p, bool force) {  // UI 
         entry.keyboard.push_back(livePitch(im.pitchForDegree(d), signals));
       }
     }
+    entry.sources = sources;  // TU.2b: drainMidiNotes routes as this image does
+    entry.channel = m.midiIn.channel;
     engine::LiveTrackDesc td;
     td.slot = slot;
     td.hzMode = t.noteInput.mode == doc::NoteInputMode::Hz;
@@ -219,6 +221,78 @@ void ProjectLink::liveKey(int32_t equave, int32_t step, float velocity, bool on)
   m.d2 = static_cast<uint8_t>(std::clamp(std::lround(velocity), on ? 1l : 0l, 127l));
   (void)livePorts_->push(engine::kLiveKeyboard, m);  // a full ring releases the keyboard's notes (no stuck note)
   engine_->wake();  // a sleeping engine runs the next block (and restarts a suspended stream)
+}
+
+// ---- TU.2b: the UI's MIDI-in note feed ----------------------------------------------------------------------------
+
+void ProjectLink::feedMidiNote(uint32_t port, const engine::RawMidi& m) noexcept {  // RT-safe: the port's thread
+  if (!midiFeedOn_.load(std::memory_order_acquire)) return;
+  const uint8_t kind = m.status & 0xF0;
+  if (kind != 0x80 && kind != 0x90 && !(kind == 0xB0 && (m.d1 == 120 || m.d1 == 123))) return;
+  (void)midiFeed_->push(port, m);  // full: counted; the drain then drops this port's held notes
+  // seq_cst with drainMidiNotes' store: a message pushed after a drain began is either drained by it or notifies.
+  if (!midiFeedIdle_.load(std::memory_order_seq_cst) || !midiFeedIdle_.exchange(false, std::memory_order_seq_cst)) return;
+  if (auto fn = midiNotify_.load(std::memory_order_acquire)) fn(midiNotifyUser_.load(std::memory_order_relaxed));
+}
+
+void ProjectLink::discardMidiNotes() noexcept {  // UI thread
+  engine::RawMidi m;
+  for (uint32_t p = 0; p < engine::kLivePorts; ++p) {
+    while (midiFeed_->ring(p).tryPop(m)) {
+    }
+    midiOverflow_[p] = midiFeed_->overflows(p);
+  }
+}
+
+void ProjectLink::listenMidiNotes(bool on) {  // UI thread
+  midiListeners_ = std::max(0, midiListeners_ + (on ? 1 : -1));
+  const bool want = midiListeners_ > 0;
+  if (want == midiFeedOn_.load(std::memory_order_relaxed)) return;
+  if (want) {
+    discardMidiNotes();  // nothing from before
+    midiFeedIdle_.store(true, std::memory_order_seq_cst);
+    midiFeedOn_.store(true, std::memory_order_release);
+  } else {
+    midiFeedOn_.store(false, std::memory_order_release);
+    discardMidiNotes();
+    midiHeld_.clear();  // nobody listens: no notification
+  }
+}
+
+void ProjectLink::drainMidiNotes() {  // UI thread
+  midiFeedIdle_.store(true, std::memory_order_seq_cst);
+  bool changed = false;
+  engine::RawMidi m;
+  for (uint32_t p = 0; p < engine::kLivePorts; ++p) {
+    if (const uint64_t o = midiFeed_->overflows(p); o != midiOverflow_[p]) {  // lost messages: no stuck lit note
+      midiOverflow_[p] = o;
+      changed |= std::erase_if(midiHeld_, [p](const views::LiveMidiNote& n) { return n.port == p; }) != 0;
+    }
+    while (midiFeed_->ring(p).tryPop(m)) changed |= routeMidiNote(m);
+  }
+  if (changed && ctx_ != nullptr) ctx_->liveMidiNotesChanged();
+}
+
+bool ProjectLink::routeMidiNote(const engine::RawMidi& m) {  // UI thread
+  const uint8_t kind = m.status & 0xF0, ch = m.status & 0x0F, port = m.port, key = m.d1 & 0x7F;
+  if (kind == 0xB0) {  // All Notes Off / All Sound Off: the channel's notes
+    return std::erase_if(midiHeld_, [&](const views::LiveMidiNote& n) { return n.port == port && n.channel == ch; }) != 0;
+  }
+  // A note-on of a held key restarts it; a note-off ends it on every track.
+  bool changed = std::erase_if(midiHeld_, [&](const views::LiveMidiNote& n) {
+                   return n.port == port && n.channel == ch && n.key == key;
+                 }) != 0;
+  if (kind != 0x90 || m.d2 == 0) return changed;
+  for (const auto& [id, e] : liveCache_) {
+    if (port >= engine::kLivePorts || !((e.sources >> port) & 1u)) continue;
+    if (e.channel != 0 && e.channel != ch + 1) continue;
+    if (key >= e.keys.size()) continue;
+    const engine::LivePitch& lp = e.keys[key];
+    if (!lp.mapped()) continue;  // the key plays nothing there
+    midiHeld_.push_back({id, port, ch, key, lp.noteDegree, lp.hz});
+    changed = true;
+  }
+  return changed;
 }
 
 // ---- T6.9: Capture MIDI ------------------------------------------------------------------------------------------

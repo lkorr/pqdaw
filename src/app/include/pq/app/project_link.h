@@ -117,6 +117,14 @@
 // Sequence change, a port list change, a new engine, and when the clip view's clip changes or the playhead / start
 // marker leaves the span its live clips were resolved for (checked on playhead() and the view's detail / layout /
 // transport notifications: two comparisons); published only when a route changed. liveKey (TransportPort) stamps the computer keyboard's notes into its ring.
+// TU.2b: the UI's own MIDI-in note feed (TransportPort::listenMidiNotes / liveMidiNotes; the MOS circle lights them; the
+// engine reports live notes only while recording). While a view listens, the MIDI service's callback also calls
+// feedMidiNote: note on / off and All Notes / Sound Off go into a second set of per-port SPSC rings (256 messages
+// each; nothing else: no routing, no allocation; the notify (setMidiNoteNotify) only on the first message after a
+// drain). The shell's posted event calls drainMidiNotes on the UI thread: it routes each message as the published
+// routes do (the same per-track sources, channel and 128-key tables: liveCache_), keeps the held notes per (track,
+// port, channel, key) and notifies the views (ViewContext::liveMidiNotesChanged). A ring that overflowed drops its
+// port's held notes (as the engine does); a closed port's All Notes Off reaches it too. No audio-thread work.
 //
 // ---- Recording (T6.7; src/app/src/project_link_record.cpp, pq/app/recording.h) --------------------------------------
 // Inputs: every audio track with an input reads its device channels through `track.in` (ProjectProgram::setUnitInputs
@@ -511,6 +519,8 @@ public:
   void setAutoArm(uint32_t trackId) override;
   uint32_t autoArm() const noexcept { return autoArm_; }
   bool captureMidi(Ticks insertMarker) override;  // T6.9: see "Capture MIDI" in the file comment
+  void listenMidiNotes(bool on) override;          // TU.2b: see "Live input" in the file comment
+  std::span<const views::LiveMidiNote> liveMidiNotes() override { return midiHeld_; }
   void panic() override;                          // M6 review L16: engine::Engine::panic
   // T6.6 / T6.7: Record (see "Recording" in the file comment).
   void record(Ticks from) override;
@@ -528,6 +538,15 @@ public:
   uint64_t liveRoutePublishes() const noexcept { return livePublishes_; }
   // T6.9: track `id`'s capture ring (null: it never listened). UI thread.
   const engine::CaptureRing* captureRing(doc::TrackId id) const;
+  // TU.2b: the UI's MIDI-in note feed (see the file comment). feedMidiNote: the MIDI callback (port `port`'s thread);
+  // wait-free, nothing while no view listens. setMidiNoteNotify: called (any thread) on the first message after a
+  // drain; must be thread-safe. drainMidiNotes: UI thread.
+  void feedMidiNote(uint32_t port, const engine::RawMidi& m) noexcept;  // RT-safe
+  void setMidiNoteNotify(void (*fn)(void*), void* user) noexcept {
+    midiNotifyUser_.store(user, std::memory_order_relaxed);
+    midiNotify_.store(fn, std::memory_order_release);
+  }
+  void drainMidiNotes();
 
   // ---- views::MeterSource (UI thread) ----
   // True while the engine runs (it never sleeps while playing), and afterwards until every meter the views read has decayed
@@ -771,8 +790,21 @@ private:
     doc::Snapshot from;
     EntryPtr held;
     std::vector<engine::LivePitch> keys, keyboard;
+    uint32_t sources = 0;  // TU.2b: the route's sources and channel (as LiveTrackDesc) at the last publish
+    uint8_t channel = 0;
   };
   std::unordered_map<uint32_t, LiveCacheEntry> liveCache_;  // track id (UI thread)
+  // TU.2b: the UI's MIDI-in note feed (see the file comment).
+  bool routeMidiNote(const engine::RawMidi& m);  // UI thread: true when midiHeld_ changed
+  void discardMidiNotes() noexcept;              // UI thread: empties the rings
+  std::unique_ptr<engine::LivePorts> midiFeed_ = std::make_unique<engine::LivePorts>(256);
+  std::atomic<bool> midiFeedOn_{false};
+  std::atomic<bool> midiFeedIdle_{true};  // drained since the last notify: the next message notifies
+  std::atomic<void (*)(void*)> midiNotify_{nullptr};
+  std::atomic<void*> midiNotifyUser_{nullptr};
+  int32_t midiListeners_ = 0;                              // UI thread
+  std::array<uint64_t, engine::kLivePorts> midiOverflow_{};  // UI thread: the rings' overflow counts seen
+  std::vector<views::LiveMidiNote> midiHeld_;              // UI thread
   struct CaptureState {  // T6.9: a track's capture ring and how far Capture MIDI took its notes
     std::shared_ptr<engine::CaptureRing> ring;
     uint64_t mark = 0;

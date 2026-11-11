@@ -611,6 +611,93 @@ TEST_CASE("live input (KB.3): a MIDI note into a sleeping engine re-arms the vie
   link.setSignalNotify(nullptr, nullptr);
 }
 
+// TU.2b: the views' MIDI-in note feed. Messages injected through the real callback (no allocation there: RtScope) reach
+// the link's UI ring only while a view listens, notify once per burst, and the UI thread's drain routes them as the
+// engine's routes do: the listening track, the key's degree and Hz in its tuning, channel filters, note-off, a closed
+// port's All Notes Off.
+TEST_CASE("live input (TU.2b): MIDI-in notes reach the views' feed from the callback, routed to the listening track") {
+  LiveFixture f(Case::Edo12, NoteInputMode::Keys);
+  auto link = makeLink(f.store.current());
+  auto src = std::make_unique<FakeSource>();
+  FakeSource* fake = src.get();
+  fake->names = {"Keys 49"};
+  int notified = 0;
+  link->setMidiNoteNotify([](void* u) { ++*static_cast<int*>(u); }, &notified);
+  {
+    app::MidiInputService svc(*link, std::move(src), {});
+    svc.refresh();
+    REQUIRE(link->liveRouteTracks() == 1);
+    FakeSource::Port* p = fake->port("Keys 49");
+    REQUIRE(p != nullptr);
+    const uint8_t on[3] = {0x90, 69, 100}, off[3] = {0x80, 69, 0}, on2[3] = {0x91, 72, 90}, zeroOn[3] = {0x91, 72, 0};
+    const uint8_t cc[3] = {0xB0, 1, 64};
+
+    // Nobody listens: the callback skips the feed.
+    {
+      RtScope rt;
+      p->cb(p->user, on, 3);
+    }
+    link->drainMidiNotes();
+    CHECK(notified == 0);
+    CHECK(link->liveMidiNotes().empty());
+    p->cb(p->user, off, 3);
+
+    link->listenMidiNotes(true);
+    link->listenMidiNotes(true);  // counted: two listeners
+    {
+      RtScope rt;
+      p->cb(p->user, on, 3);
+      p->cb(p->user, cc, 3);  // not a note: not fed
+      p->cb(p->user, on2, 3);
+    }
+    CHECK(notified == 1);  // one post per burst
+    CHECK(link->liveMidiNotes().empty());  // nothing until the UI thread drains
+    link->drainMidiNotes();
+    {
+      const auto notes = link->liveMidiNotes();
+      REQUIRE(notes.size() == 2);
+      CHECK(notes[0].trackId == f.track.value);
+      CHECK(notes[0].port == 0);
+      CHECK(notes[0].channel == 0);
+      CHECK(notes[0].key == 69);
+      CHECK(notes[0].noteDegree == 9.0f);  // 12-EDO from key 60 = degree 0
+      CHECK(notes[0].hz == doctest::Approx(440.0f).epsilon(1e-4));
+      CHECK(notes[1].channel == 1);
+      CHECK(notes[1].noteDegree == 12.0f);
+    }
+    // The next message after a drain notifies again; a note-off (and a zero-velocity note-on) end their keys.
+    {
+      RtScope rt;
+      p->cb(p->user, off, 3);
+      p->cb(p->user, zeroOn, 3);
+    }
+    CHECK(notified == 2);
+    link->drainMidiNotes();
+    CHECK(link->liveMidiNotes().empty());
+
+    // MIDI From on channel 2 only: a channel-1 note reaches no track.
+    {
+      const Snapshot before = f.store.current();
+      REQUIRE(f.store.dispatch(SetTrackMidiInput{f.track, MidiInput{MidiInputKind::All, "", 2}}).ok());
+      link->onDocumentChange(StoreEvent{StoreEventKind::Dispatch, before, f.store.current(), f.store.lastChanges()});
+    }
+    p->cb(p->user, on, 3);
+    p->cb(p->user, on2, 3);
+    link->drainMidiNotes();
+    REQUIRE(link->liveMidiNotes().size() == 1);
+    CHECK(link->liveMidiNotes()[0].key == 72);
+
+    // Unplugged: the port's All Notes Off reaches the feed too.
+    fake->names = {};
+    svc.refresh();
+    link->drainMidiNotes();
+    CHECK(link->liveMidiNotes().empty());
+    link->listenMidiNotes(false);
+    link->listenMidiNotes(false);
+  }
+  link->setMidiNoteNotify(nullptr, nullptr);
+}
+
 TEST_CASE("live input: the WinMM source enumerates without opening anything") {
   // Opening a port would take the user's controller (a WinMM input is exclusive): only the list is read here.
   auto src = app::makeWinMmSource();

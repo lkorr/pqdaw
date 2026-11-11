@@ -1037,7 +1037,8 @@ Q1–Q218 are in docs/archive/QUESTIONS-Q1-Q218.md (grep it by number or keyword
   now the circle's L colour no longer matches its region's band in the chart.
 - Options: (a) revert the chart as well (`kMosPalette`, `temperamentColor`, pre-TU.1 `mosChart.*`); (b) keep it.
 - Chosen: (b) for now (the request named the circle; reverting the chart is one small follow-up).
-- Status: open.
+- Status: resolved by TU.2b: (a) — the chart back to kMosPalette / temperamentColor / pre-TU.1 `mosChart.*`, one palette
+  with the circle (mos_palette.h).
 
 ## Q?-TX.group-resize-a · 2026-11-10 · TX.group-resize · Where an opened group's scale lives
 - **Context**: S-drag on an opened group's frame scales its contents. A group already has a stored scale: its nudge's
@@ -1054,3 +1055,11 @@ the default project's first tuning keeps its name "12-EDO" (renaming it to "Tuni
 every shell golden and the minimal fixture). Letters are not shown separately (a positional letter would shift when a
 tuning is removed). Options: (a) keep as is; (b) default project tuning named "Tuning A" (re-record every shell golden);
 (c) store a letter per tuning and show it as a badge on chips / cards. Choice: (a), the most reversible.
+Resolution: user 2026-11-10 (orchestrator, from the request): Tuning A — (b): the default project's tuning is named
+"Tuning A"; New Tuning keeps naming the next free letter (TU.2b).
+
+## Q?-TU.2b-a · Narrow chips show only "12" for the default tuning
+Context: with the default tuning named "Tuning A", TU.3's chip rule gives the control bar "Tuning A · 12" and the
+narrow chips (track headers, mixer strips, compactTuningLabel) just "12" where they read "12-EDO" before. Options:
+(a) keep TU.3's rule; (b) narrow chips show the name's letter plus the label ("A · 12"); (c) show "12-EDO" (the
+summary) in narrow chips. Choice: (a), no rule change (reversible: TuningChip's narrow text).

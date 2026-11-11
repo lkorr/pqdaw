@@ -7,7 +7,9 @@
 // service's callback does exactly two things: stamp the message with the host clock (engine::qpcNow100ns) and push a
 // 16-byte engine::RawMidi into that port's SPSC ring (engine::LivePorts, owned by the ProjectLink and consumed by the
 // engine), then tells the link (ProjectLink::signalActivity, KB.3: two atomics; only the first message after the
-// views' signal polls stopped calls the link's notify, which posts one event to the UI thread so the meters re-arm).
+// views' signal polls stopped calls the link's notify, which posts one event to the UI thread so the meters re-arm),
+// and TU.2b: hands note messages to the link's UI note feed (ProjectLink::feedMidiNote: one more ring push while a view
+// listens; its notify posts one event per burst).
 // SysEx, MIDI clock and other system messages are ignored. No lock, no allocation on that path but that one post.
 //
 // MidiInputService (UI thread) keeps the user's port settings (Preferences → MIDI: a port's "Track" switch, its pitch-bend
