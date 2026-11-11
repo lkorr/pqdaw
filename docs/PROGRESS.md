@@ -440,3 +440,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: UI thread only; tuning rebuilt only when its definition changes; button repaints on change; engine key table 187 → 252 entries per listening track, built on cache miss.
 - Notes/blockers: Q?-KB.1-a; M stays the toggle so its MOS bottom-row position plays nothing; keys matched by character, not physical position.
 
+
+## 2026-11-10 · KB.2 merged · main
+- Did: ff-merged task/KB.2-live-clip-tuning (5b38e03e): doc::liveClip (the clip view's clip on that track, else the clip under the playhead / start marker, else the track) decides the computer keyboard's layout and the live note tables (keyboard + hardware MIDI).
+- Verified (worker): -Affected 45/45; pq_tests_views KB* 6/6; pq_tests_playback "live input*" 7/7.
+- Notes: Q?-KB.2-a: recorded / captured notes into a new clip inherit the track's tuning (mismatch when played in a retuned clip); proposed fix: new clips copy the live clip's tuning.
