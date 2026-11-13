@@ -1397,7 +1397,7 @@ midi_export.cpp (`exportMidiClips`). The MCM + RPN 0 setup is repeated at tick 0
 imported alone still plays as MPE. MPE keeps the ±48 member range (orchestrator); the round trip holds within 0.3 ¢.
 Status: open.
 
-## Q?-DY.6-a · the Limiter's Link M-S against the ceiling, and its defaults
+## Q266 · 2026-11-13 · DY.6 · the Limiter's Link M-S against the ceiling, and its defaults
 Context: DY.6 asks for Link Stereo / L-R / M-S (M/S = the EQ's matrix) and no output sample over the ceiling. Limiting M
 and S each to the ceiling does not bound L = M + S, R = M − S (up to +6 dB when both peak together); only a coupled gain
 can, and the plan names no defaults.

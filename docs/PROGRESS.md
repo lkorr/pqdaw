@@ -625,3 +625,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): pq_tests_document midi export 7/7 (MPE worst 0.2927 ¢; Degrees / .kbm identical through MF.2 import), pq_tests_app drag-out 1/1, pq_tests_views menu 1/1; -Affected 45/45 (before DY.5 landed; merged with a QUESTIONS append conflict only).
 - Notes: Q265.
 
+## 2026-11-13 · DY.6 merged · main
+- Did: merged task/DY.6-limiter (d68381c8): module:limiter (atom blocks: gain, linked |x| or truepeak detector 7 frames behind, window max → follow → window mean → db gain on latency(x, 6, la), safety clip; Link Stereo / L-R / M-S; lookahead 1.5 / 3 / 6 ms); shared Follower (Auto release) used by the Compressor too (golden unchanged); panel 228×156; tests/app/dynamics_fixture.h shared.
+- Verified (worker): test_limiter_module 6/6 (peak −0.999999 dB vs ceiling −1 dB without the clip at every lookahead; True Peak −0.88 dB true peak; latency 78 / 150 / 294; release within 0.00014 dB; L-R untouched channel bit-identical; interp == JIT); after rebase pq_tests_playback 4/4, views 1/1, document 1/1 on re-run (MF.1 parse-timing under load). Golden limiter-panel new.
+- Perf: ship 9.1 ns per stereo sample (default), 12.0 with True Peak; fast_gain_to_db / fast_db_to_gain instead of the exact pair (13 ns).
+- Notes: Q266. REVIEW entry.
+
