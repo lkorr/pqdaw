@@ -1236,3 +1236,18 @@ the progress or the result); (c) refuse to close while exporting (modal). Choice
 playing / editing go on meanwhile (it renders on a private link); Cancel is one click when wanted. Reversible: the
 window's close button and `ExportHost::watch` are the only places.
 Status: open.
+
+## Q?-FZ.2-a · The freeze key, the render document and the cache file names
+Context: D3 keys a render by (rate, tempo map, tunings, the frozen part's patch hash); Q252 adds what feeds it. A patch
+hash needs a lowering (a library, slots); the plan names the file `cache/freeze/<track id>.wav`.
+Options: (a) hash the lowered patches of F and its feeders; (b) hash the RENDER DOCUMENT (F, the MIDI / audio tracks
+whose blocks or notes feed F's blocks, their ancestors as empty containers, the samples their clips play; everything F's
+own contribution cannot depend on cleared: names, colours, mixers, mixer lanes, loop, locators) as `serializeProject`
+writes it, with the tempo map and tunings hashed apart for diagnosis; (c) the whole project.
+Choice: (b) — library-free, cheap (a document compare decides "unchanged"), and the render document is exactly what is
+rendered. A cable from a group's / return's / master's block or source (a sum of tracks, F's own output possibly in it)
+falls back to (c). Consequences: the whole tuning list is in the key (editing a tuning F does not play re-renders it);
+chance notes freeze one draw (the render link's seed); the WAV is content-named `<id>-<content key>.wav` (a re-render
+never overwrites a file the pool may stream; the superseded one is deleted when replaced, best effort) with `<id>.json`
+holding the key. Reversible: `freezeDocument` / `planFreeze` and the file names are one place each.
+Status: open.
