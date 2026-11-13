@@ -46,6 +46,7 @@ struct WireStyle {
   bool poly = false;        // per voice: doubled line
   bool modulation = false;  // an audio-rate signal into a parameter: dashed
   bool notes = false;       // TMM.13-fix2 (M10): the note source's (notes into a chain, its outputs' wires): wireNotes
+  bool error = false;       // WI.2: cut from the compile (a type error blamed on it): the theme's error colour
   bool operator==(const WireStyle&) const = default;
 };
 

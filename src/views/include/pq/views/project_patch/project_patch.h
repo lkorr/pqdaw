@@ -214,6 +214,9 @@ struct Edge {
   uint32_t graphWire = kNone;           // the ProjectGraph wire it is (route, send, cross-track modulation)
   doc::WireId wire;                     // Modulation: the document wire
   doc::WireStatus status = doc::WireStatus::Lowered;  // Modulation (Inactive / Refused ones are drawn dim)
+  // WI.2: the playback link cut the wire from its compile (ViewContext::wireError; status Refused): drawn in the error
+  // colour, the message in its readout. Any kind with a wire (a cut main-path link is a Chain edge).
+  bool typeError = false;
   bool silent = false;                  // Send: its level is −∞ (lowered, plays nothing)
   bool delayed = false;                 // an automatic 1-sample delay (a delayed send or wire)
   bool pre = false;                     // Send: pre-fader

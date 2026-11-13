@@ -102,6 +102,7 @@ inline constexpr uint32_t kKeyboard = 1u << 21;       // KB.1: the computer keyb
 inline constexpr uint32_t kLiveNotes = 1u << 22;      // TU.2: a note the UI plays started or ended (the computer
                                                       // keyboard's held(), an audition: lastAudition()); TU.2b:
                                                       // or a hardware MIDI-in note (TransportPort::liveMidiNotes)
+inline constexpr uint32_t kWireErrors = 1u << 23;     // WI.2: the wires the playback link cut from its compile changed
 }  // namespace view_change
 
 // What a tuning control is about (T3.14; TU.3): one clip, one track, a named tuning, or the project's default. Every
@@ -353,6 +354,12 @@ public:
   uint64_t docSerial() const noexcept { return docSerial_; }
   void setLowering(uint64_t serial, doc::Snapshot from, std::shared_ptr<const doc::LoweredProject> lowered);
   std::shared_ptr<const doc::LoweredProject> currentLowering(doc::Snapshot* from = nullptr) const;
+  // WI.2 (ARCHITECTURE "Cut wires"): the wires the playback link cut from its last compile — their signal failed type
+  // inference — with the compiler's message (UI thread; notifies kWireErrors). The cable views draw them Refused / Type
+  // (doc::WireRefusal::Type: the error colour, the message as tooltip / readout). wireError: null when `w` is not cut.
+  void setWireErrors(std::vector<std::pair<doc::WireId, std::string>> errors);
+  const std::string* wireError(doc::WireId w) const noexcept;
+  bool anyWireErrors() const noexcept { return !wireErrors_.empty(); }
   // The app, after a compile made new taps: displays waiting for their device's feed look again (notifies kAnalysis).
   void analysisTapsChanged() { notify(view_change::kAnalysis); }
   // TU.2b: the app, after TransportPort::liveMidiNotes() changed (notifies kLiveNotes).
@@ -711,6 +718,7 @@ private:
   uint64_t loweringSerial_ = 0;                       // EQ.4b: the app's lowering (setLowering)
   doc::Snapshot loweringFrom_;
   std::shared_ptr<const doc::LoweredProject> lowering_;
+  std::vector<std::pair<doc::WireId, std::string>> wireErrors_;  // WI.2: by wire id
   std::unique_ptr<GroupResponses> responses_;         // EQ.4
   std::function<std::shared_ptr<TapRing>(doc::DeviceId, std::string_view)> signalTapOf_;  // GU.7
   FaceVoices faceVoices_;  // GU.7

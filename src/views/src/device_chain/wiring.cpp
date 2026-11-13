@@ -181,11 +181,12 @@ public:
   }
   doc::WireId wire() const noexcept { return wire_; }
   uint64_t key() const noexcept { return key_; }
-  void setLook(uint8_t rate, doc::WireStatus status, bool selected) {
-    if (rate == rate_ && status == status_ && selected == selected_) return;
+  void setLook(uint8_t rate, doc::WireStatus status, bool selected, bool typeError) {
+    if (rate == rate_ && status == status_ && selected == selected_ && typeError == typeError_) return;
     rate_ = rate;
     status_ = status;
     selected_ = selected;
+    typeError_ = typeError;
     markDirty();
   }
   void amountChanged() { markDirty(); }
@@ -198,7 +199,7 @@ public:
       const ui::Vec2 c{static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)};
       const float rad = 0.5f * static_cast<float>(std::min(r.w, r.h)) - ctx.scale.exact(0.5f);
       const float alpha = layer_.mode() == CableMode::Fade ? 0.4f : 1.0f;
-      const ui::Rgba col = roleColour(th, rate_);
+      const ui::Rgba col = typeError_ ? th->code.error : roleColour(th, rate_);  // WI.2: a cut link: red
       ctx.dl.addCircleFilled(c, rad, ui::withAlpha(ui::lerp(th->surface.raised, col, hovered() ? 0.6f : 0.3f), static_cast<uint32_t>(240 * alpha)));
       ctx.dl.addCircleStroke(c, rad, ui::withAlpha(hovered() ? th->accent.focus : col, static_cast<uint32_t>(230 * alpha)), ctx.scale.exact(1.0f));
       return;
@@ -209,7 +210,7 @@ public:
     const ui::Vec2 c{static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)};
     const float rad = 0.5f * static_cast<float>(std::min(r.w, r.h)) - ctx.scale.exact(1.0f);
     const bool off = status_ == doc::WireStatus::Inactive || status_ == doc::WireStatus::Invalid || status_ == doc::WireStatus::Refused;
-    const ui::Rgba col = off ? th->text.disabled : roleColour(th, rate_);
+    const ui::Rgba col = typeError_ ? th->code.error : off ? th->text.disabled : roleColour(th, rate_);  // WI.2: cut: red
     const float alpha = layer_.mode() == CableMode::Fade ? 0.4f : 1.0f;
     ctx.dl.addCircleFilled(c, rad, ui::withAlpha(ui::lerp(th->surface.raised, col, 0.25f), static_cast<uint32_t>(240 * alpha)));
     if (w->travels()) {
@@ -327,7 +328,12 @@ public:
         case doc::WireStatus::Delayed: tip_ += "  (closes a loop: delayed by 1 sample)"; break;
         case doc::WireStatus::Inactive: tip_ += "  (an end is switched off)"; break;
         case doc::WireStatus::Invalid: tip_ += "  (the device has no such port)"; break;
-        case doc::WireStatus::Refused: tip_ += "  (not played: a loop the engine cannot run, through two instrument tracks or the voices' sum)"; break;
+        case doc::WireStatus::Refused:
+          if (const std::string* e = typeError_ ? ctx_.wireError(wire_) : nullptr)  // WI.2: the compiler's message
+            tip_ += "  (not played: " + *e + ")";
+          else
+            tip_ += "  (not played: a loop the engine cannot run, through two instrument tracks or the voices' sum)";
+          break;
         default: break;
       }
     }
@@ -398,6 +404,7 @@ private:
   uint64_t key_ = 0;
   uint8_t rate_ = 1;
   doc::WireStatus status_ = doc::WireStatus::Lowered;
+  bool typeError_ = false;  // WI.2
   bool selected_ = false;
   bool dragging_ = false, moved_ = false, ownGesture_ = false;
   float startY_ = 0.0f;
@@ -432,7 +439,9 @@ CableLayer::CableLayer(ViewContext& ctx, Shell& shell)
   setHittable(false);  // the pointer passes through, except on badges (and while a cable is dragged)
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onStore(e); });
   observer_ = ctx.observe([this](uint32_t bits) {
-    if (bits & (view_change::kDevices | view_change::kSelection | view_change::kDetailClip | view_change::kLayout)) refresh();
+    if (bits & (view_change::kDevices | view_change::kSelection | view_change::kDetailClip | view_change::kLayout |
+                view_change::kWireErrors))  // WI.2: the link cut (or restored) a wire
+      refresh();
   });
   shell.tree().addObserver(this);
   rebuildStatus();
@@ -559,6 +568,9 @@ bool CableLayer::refresh() {
   };
   // TX.free-rack: the chain's own signal path first (series audio, the notes into the first device), under the wires.
   const doc::TrackId shown = chain != nullptr ? chain->track() : doc::TrackId{};
+  // TX.all-free: the shown track's main path (its links are the chain's cables).
+  const doc::Track* shownTrack = shown.valid() ? doc::findTrackPtr(p, shown) : nullptr;
+  const doc::MainPath path = shownTrack != nullptr ? doc::mainPath(p, *shownTrack) : doc::MainPath{};
   if (chain != nullptr)
     for (const DeviceChainView::ChainLink& k : chain->chainLinks()) {
       Cable c;
@@ -576,12 +588,17 @@ bool CableLayer::refresh() {
       const std::string src = k.from.valid() ? deviceName(ctx_, p, k.from) : (k.rate == 2 ? std::string("Notes") : std::string("Audio clips"));
       c.label = src + " \xE2\x86\x92 " + deviceName(ctx_, p, k.to) + (k.input.empty() || k.input == "in" ? std::string() : " " + k.input) +
                 (k.rate == 2 ? "  \xC2\xB7  notes / voices (the chain)" : "  \xC2\xB7  audio (the chain)");
+      // WI.2: a link the playback link cut (a path break: what follows it is not heard).
+      if (const int32_t at = ctx_.anyWireErrors() ? path.indexOf(k.to) : -1; at >= 0 && static_cast<size_t>(at) < path.links.size())
+        if (const std::string* e = ctx_.wireError(path.links[static_cast<size_t>(at)])) {
+          c.status = doc::WireStatus::Refused;
+          c.typeError = true;
+          c.label += "  (not played: " + *e + ")";
+        }
       place(c, kLinkBadge);
       next.push_back(std::move(c));
     }
   // TX.all-free: the shown track's main path is drawn above (chainLinks): its links are not drawn again.
-  const doc::Track* shownTrack = shown.valid() ? doc::findTrackPtr(p, shown) : nullptr;
-  const doc::MainPath path = shownTrack != nullptr ? doc::mainPath(p, *shownTrack) : doc::MainPath{};
   // The shown track's blocks: a main link touching none of them (nor its source or mixer) is never drawn here, and is
   // skipped before any lookup (a project has one per block).
   std::unordered_set<uint32_t> shownBlocks;
@@ -640,6 +657,10 @@ bool CableLayer::refresh() {
     c.da = ea ? static_cast<uint8_t>(ea->dir) : 0;
     c.db = eb ? static_cast<uint8_t>(eb->dir) : 0;
     c.status = statusOf(w.id);
+    if (ctx_.wireError(w.id) != nullptr) {  // WI.2: cut from the compile
+      c.status = doc::WireStatus::Refused;
+      c.typeError = true;
+    }
     c.rate = from.device != nullptr ? exportRate(*from.device, ctx_.deviceLibrary(), port) : 2;
     if (c.input && c.rate == 0) c.rate = 1;  // TX.free-rack: into an input it is a signal path (heard as audio)
     c.role = w.fromNoteSource() ? 2 : (c.input ? 1 : 0);  // M10: notes amber, a signal path blue, modulation mint
@@ -674,7 +695,8 @@ bool CableLayer::refresh() {
   bool moved = false;
   ui::Damage& dmg = tree()->damage();
   auto same = [](const Cable& x, const Cable& y) {
-    return x.a.x == y.a.x && x.a.y == y.a.y && x.b.x == y.b.x && x.b.y == y.b.y && x.status == y.status && x.rate == y.rate && x.role == y.role &&
+    return x.a.x == y.a.x && x.a.y == y.a.y && x.b.x == y.b.x && x.b.y == y.b.y && x.status == y.status && x.typeError == y.typeError &&
+           x.rate == y.rate && x.role == y.role &&
            x.aDocked == y.aDocked && x.bDocked == y.bDocked && x.da == y.da && x.db == y.db && x.through == y.through &&
            x.t0.x == y.t0.x && x.t0.y == y.t0.y && x.t1.x == y.t1.x && x.tucked == y.tucked;
   };
@@ -713,7 +735,7 @@ bool CableLayer::refresh() {
       impl_->badges.push_back(b);
       badgesChanged = true;
     }
-    b->setLook(c.role, c.status, c.wire.valid() && c.wire == selected_);
+    b->setLook(c.role, c.status, c.wire.valid() && c.wire == selected_, c.typeError);
     if (!(b->rect() == c.badge)) badgesChanged = true;
   }
   if (badgesChanged) invalidateArrange();
@@ -753,7 +775,7 @@ void CableLayer::paint(ui::PaintContext& ctx) {
     cablePoints(c.a, c.da, c.b, c.db, s, pts);
     const bool off = c.status == doc::WireStatus::Inactive || c.status == doc::WireStatus::Invalid ||
                      c.status == doc::WireStatus::Refused;
-    ui::Rgba col = off ? th->text.disabled : roleColour(th, c.role);
+    ui::Rgba col = c.typeError ? th->code.error : off ? th->text.disabled : roleColour(th, c.role);  // WI.2: cut: red
     const bool hot = c.key == hoverKey_;  // T4.16c: its badge is hovered
     const bool sel = c.wire.valid() && c.wire == selected_;
     if (sel || hot) col = ui::lerp(col, ui::rgba(255, 255, 255), sel ? 0.35f : 0.25f);

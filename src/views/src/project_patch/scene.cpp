@@ -92,6 +92,7 @@ SymbolSpec specOf(const Node& n) {
 WireStyle styleOf(const Edge& e) {
   WireStyle w;
   w.rate = WireRate::Audio;
+  w.error = e.typeError;  // WI.2
   switch (e.kind) {
     case EdgeKind::Notes:
       w.poly = true;

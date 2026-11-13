@@ -643,6 +643,13 @@ void ProjectLink::attach(views::ViewContext& ctx) {
     }
     if (low) ctx.setLowering(ctx.docSerial(), current_, std::move(low));  // (the context's document, compiled already)
   }
+  std::vector<std::pair<doc::WireId, std::string>> errors;  // WI.2: the wires the last compile cut
+  {
+    std::lock_guard lock(cutMutex_);
+    for (const auto& [w, c] : cut_) errors.emplace_back(doc::WireId{w}, c.message);
+    cutPosted_ = cut_;
+  }
+  ctx.setWireErrors(std::move(errors));
 }
 
 void ProjectLink::detach() {
@@ -1080,6 +1087,25 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   if (structural) {
     reportMissingDevices(p);
     reportWires(p);
+  }
+  if (structural) {  // WI.2: a cut wire is tried again once it is gone or an edit touched the track of either end
+    std::lock_guard lock(cutMutex_);
+    if (reset) {
+      cut_.clear();  // (ids restart per project)
+      cutReset_ = true;
+    } else {
+      auto in = [](const auto& v, uint32_t id) {
+        return std::find_if(v.begin(), v.end(), [&](const auto& x) { return x.value == id; }) != v.end();
+      };
+      for (auto it = cut_.begin(); it != cut_.end();)
+        if (in(c.wires, it->first) || in(c.tracks, it->second.from.value) || in(c.tracks, it->second.to.value) ||
+            doc::findWire(p, doc::WireId{it->first}) == nullptr)
+          it = cut_.erase(it);
+        else
+          ++it;
+      for (const doc::TrackId t : c.tracks) cutTouched_.push_back(t.value);
+      for (const doc::WireId w : c.wires) cutTouched_.push_back(w.value);
+    }
   }
   const bool compile = structural || newTables || sendsChanged;
   if (reset || structural || c.has(doc::kChangeParam)) applyParams(p, reset);
@@ -1775,6 +1801,85 @@ uint32_t ProjectLink::metaSlotsInUse() const {
   return static_cast<uint32_t>(metaIds_.size());
 }
 
+// WI.2 (ARCHITECTURE "Cut wires"): the wires the last compile's blamed edges (ProjectCompiler::lastTypeFailures: a
+// consumer and a source node of a track patch) stand for, by lp.wireEnds — every wire whose connection is exactly that
+// edge (several wires summed into one input are blamed as a whole) — else a blamed node of a wire's own (NodeRole::Wire,
+// lower.h nodeEntity): that wire, or for a node of a modulated param's site every wire into that param. New ones go into
+// `cut` (and `added`); true when there was one. Not RT; error path only.
+bool ProjectLink::cutBlamed(const doc::Project& p, const doc::LoweredProject& lp, CutSet& cut,
+                            std::vector<uint32_t>& added) const {
+  const std::vector<engine::UnitTypeFailure>& fails = compiler_->lastTypeFailures();
+  if (fails.empty()) return false;
+  auto trackOf = [&](doc::DeviceId d) {
+    const doc::DeviceLoc l = doc::findDevice(p, d);
+    return l.track != nullptr ? l.track->id : doc::TrackId{};
+  };
+  bool any = false;
+  std::vector<doc::WireId> ws;
+  for (size_t i = 0; i < fails.size(); ++i) {
+    const engine::UnitTypeFailure& f = fails[i];
+    bool repeat = false;  // a cascade names one edge many times
+    for (size_t j = 0; j < i && !repeat; ++j)
+      repeat = fails[j].track == f.track && fails[j].consumer == f.consumer && fails[j].source == f.source;
+    if (repeat) continue;
+    ws.clear();
+    for (const doc::WireEnd& e : lp.wireEnds)
+      if (e.track == f.track && e.from == f.source && e.to == f.consumer) ws.push_back(e.wire);
+    for (const uint32_t node : {f.source, f.consumer}) {
+      uint32_t entity = 0, slot = 0;
+      if (!ws.empty() || !doc::nodeEntity(node, entity, slot)) continue;
+      if (slot >= doc::kEntityNodeSlots)  // a modulated param's site (kWTarget slots, keyed by its first wire)
+        for (const doc::WireEnd& e : lp.wireEnds)
+          if (e.entity == entity && std::find(ws.begin(), ws.end(), e.wire) == ws.end()) ws.push_back(e.wire);
+      if (ws.empty() && doc::findWire(p, doc::WireId{entity}) != nullptr) ws.push_back(doc::WireId{entity});
+    }
+    for (const doc::WireId w : ws) {
+      const doc::Wire* x = doc::findWire(p, w);
+      if (x == nullptr || cut.count(w.value) != 0) continue;
+      CutWire c;
+      c.message = f.message;  // the diagnostic's own words: no "patch 'pqUnit': " prefix, no call path inside the unit
+      if (c.message.starts_with("patch '"))
+        if (const size_t k = c.message.find("': "); k != std::string::npos) c.message.erase(0, k + 3);
+      if (const size_t k = c.message.find(" inside '"); k != std::string::npos) c.message.erase(k);
+      c.from = x->fromNoteSource() ? x->noteSource : trackOf(x->from);
+      c.to = x->toMixer() ? x->mixer : trackOf(x->to);
+      cut.emplace(w.value, std::move(c));
+      added.push_back(w.value);
+      any = true;
+    }
+  }
+  return any;
+}
+
+std::string ProjectLink::wireError(doc::WireId w) const {
+  std::lock_guard lock(cutMutex_);
+  const auto it = cut_.find(w.value);
+  return it != cut_.end() ? it->second.message : std::string();
+}
+
+void ProjectLink::handWireErrors(const CutSet& cut, std::string status) {
+  std::vector<std::pair<doc::WireId, std::string>> errors;
+  errors.reserve(cut.size());
+  for (const auto& [w, c] : cut) errors.emplace_back(doc::WireId{w}, c.message);
+  auto give = [this, errors = std::move(errors), status = std::move(status)]() mutable {
+    if (ctx_ == nullptr) return;
+    ctx_->setWireErrors(std::move(errors));
+    if (!status.empty()) ctx_->setStatus(status);
+  };
+  if (!cfg_.compileThread) {  // compiled on the UI thread (flush, init, a rate change)
+    give();
+    return;
+  }
+  std::function<void(std::function<void()>)> post;
+  {
+    std::lock_guard lock(loadMutex_);
+    post = post_;
+  }
+  if (post) post([alive = std::weak_ptr<int>(alive_), give = std::move(give)]() mutable {
+    if (alive.lock()) give();
+  });
+}
+
 Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
   std::lock_guard compileLock(compileMutex_);  // vs the JIT worker's deliveries (compiler_, program publishes)
   {
@@ -1808,21 +1913,44 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
     std::lock_guard lock(mutex_);
     if (std::exchange(metaReset_, false)) resetMetaSlotsLocked();  // TMM.13-fix1 H2: a new document
   }
-  metaTouched_.clear();
   lo.metaSlotOf = [this](doc::DeviceId d, std::string_view path, uint32_t index) { return metaSlotFor(d, path, index); };
-  curveTouched_.clear();  // GU.1: the control curves' slots (syncCurveSlots below)
   lo.curveSlotOf = [this](doc::DeviceId d, std::string_view param) { return curveSlotFor(d, param); };
-  auto lowered = doc::lower(*s, lo, lowered_.get());
   auto fail = [&](const Error& e) {
     ++stats_.compileErrors;
     setError(e.message);
     std::fprintf(stderr, "pqdaw: %s\n", e.message.c_str());
     return Status(e);
   };
+  // WI.2 (ARCHITECTURE "Cut wires"): the wires earlier compiles cut (their signal failed type inference) stay out; a
+  // compile that fails with type errors blamed on wires not cut yet cuts them and runs again (at most kCutRounds rounds,
+  // while each finds a new wire), else it fails as before (nothing published; this compile's cuts are dropped). With no
+  // cut the lowering is the plain one (cutWires unset): a clean project pays nothing.
+  constexpr uint32_t kCutRounds = 8;
+  CutSet cut;
+  {
+    std::lock_guard lock(cutMutex_);
+    cut = cut_;
+    cutTouched_.clear();
+    cutReset_ = false;
+  }
+  std::vector<uint32_t> added;  // the wires this compile cut, in the order found
+  std::shared_ptr<const doc::LoweredProject> shared;
+  uint32_t compiledUnits = 0;
+  auto retry = [&](uint32_t round, const doc::LoweredProject& low) {
+    if (round + 1 >= kCutRounds || !cutBlamed(*s, low, cut, added)) return false;
+    ++stats_.typeRetries;
+    return true;
+  };
+  for (uint32_t round = 0;; ++round) {  // (the cut rounds; not indented)
+  metaTouched_.clear();
+  curveTouched_.clear();  // GU.1: the control curves' slots (syncCurveSlots below)
+  lo.cutWires = nullptr;
+  if (!cut.empty()) lo.cutWires = [&cut](doc::WireId w) { return cut.count(w.value) != 0; };
+  auto lowered = doc::lower(*s, lo, lowered_.get());
   if (!lowered.ok()) return fail(lowered.error());
   // EQ.4b: shared (no copy) with the response displays, which get it now: before the build and the publish, so a
   // display draws the new structure as soon as it is lowered, whatever the build costs (or if it fails).
-  const std::shared_ptr<const doc::LoweredProject> shared = std::make_shared<const doc::LoweredProject>(std::move(lowered.value()));
+  shared = std::make_shared<const doc::LoweredProject>(std::move(lowered.value()));
   const doc::LoweredProject& lp = *shared;
   if (serial != 0) handLowering(s, serial, shared);
   metaFresh_.clear();
@@ -1887,10 +2015,13 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
   // audio thread to take earlier images / topologies, because a refused publish would destroy the image; when the
   // output is stopped it queues instead of waiting: T3.17-fix1, M3 review L11).
   engine::ProjectProgram* program = engine_->program();
-  uint32_t compiledUnits = 0;
+  compiledUnits = 0;
   if (program == nullptr) {  // the first program (init): before any audio runs
     auto b = compiler_->build(lp.graph);
-    if (!b.ok()) return fail(b.error());
+    if (!b.ok()) {
+      if (retry(round, lp)) continue;
+      return fail(b.error());
+    }
     metered(b.value().layout);
     auto prog = engine::ProjectProgram::create(engine_->projectConfig(), b.value().layout);
     if (!prog.ok()) return fail(prog.error());
@@ -1934,7 +2065,10 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
     auto upd = compiler_->update(lp.graph, dirty);
     if (!upd.ok() && upd.error().code == ErrorCode::Unsupported) {  // a topology change
       auto tb = compiler_->rebuild(lp.graph, dirty);
-      if (!tb.ok()) return fail(tb.error());
+      if (!tb.ok()) {
+        if (retry(round, lp)) continue;
+        return fail(tb.error());
+      }
       metered(tb.value().layout);
       compiledUnits = tb.value().compiled;
       d.topology = true;
@@ -1954,6 +2088,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
       }
       if (!d.waiting.empty()) ++stats_.heldTopologies;
     } else if (!upd.ok()) {
+      if (retry(round, lp)) continue;
       return fail(upd.error());
     } else {
       for (engine::UnitUpdate& u : upd.value()) {
@@ -1980,10 +2115,38 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
       program->setUnitInputs(unitInputs(lp));  // T6.7: an input change alone compiles nothing that differs
     }
   }
+  break;
+  }  // (the cut rounds)
   if (compiledUnits > 0) ++stats_.compiles;
   stats_.unitCompiles += compiledUnits;
   lowered_ = shared;
   endJob.ok = true;
+  {  // WI.2: keep this compile's cuts unless an edit since it began touched their tracks (that edit's compile re-tries)
+    std::string status;
+    CutSet post;
+    bool same = true;
+    {
+      std::lock_guard lock(cutMutex_);
+      const auto touched = [&](uint32_t id) { return std::find(cutTouched_.begin(), cutTouched_.end(), id) != cutTouched_.end(); };
+      for (const uint32_t w : added) {
+        const CutWire& c = cut.at(w);
+        if (cutReset_ || touched(w) || touched(c.from.value) || touched(c.to.value)) continue;
+        if (cut_.emplace(w, c).second && status.empty()) status = c.message;
+      }
+      stats_.typeCutWires = static_cast<uint32_t>(cut_.size());
+      same = cut_.size() == cutPosted_.size() &&
+             std::equal(cut_.begin(), cut_.end(), cutPosted_.begin(), [](const auto& a, const auto& b) {
+               return a.first == b.first && a.second.message == b.second.message;
+             });
+      if (!same) post = cutPosted_ = cut_;
+    }
+    if (!same) {
+      handWireErrors(post, status.empty() ? std::string()
+                                          : "A wire is not played: " + status +
+                                                (added.size() > 1 ? " (and " + std::to_string(added.size() - 1) + " more)" : "") +
+                                                ". The rest plays.");
+    }
+  }
   engine_->wake();
   wantJit();
   return Ok{};

@@ -212,6 +212,18 @@ void ViewContext::setLowering(uint64_t serial, doc::Snapshot from, std::shared_p
   if (serial >= structuralSerial_) notify(view_change::kResponses);
 }
 
+void ViewContext::setWireErrors(std::vector<std::pair<doc::WireId, std::string>> errors) {
+  std::sort(errors.begin(), errors.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  if (errors == wireErrors_) return;
+  wireErrors_ = std::move(errors);
+  notify(view_change::kWireErrors);
+}
+
+const std::string* ViewContext::wireError(doc::WireId w) const noexcept {
+  const auto it = std::lower_bound(wireErrors_.begin(), wireErrors_.end(), w, [](const auto& e, doc::WireId x) { return e.first < x; });
+  return it != wireErrors_.end() && it->first == w ? &it->second : nullptr;
+}
+
 std::shared_ptr<const doc::LoweredProject> ViewContext::currentLowering(doc::Snapshot* from) const {
   if (!lowering_ || loweringSerial_ < structuralSerial_) return nullptr;
   if (from != nullptr) *from = loweringFrom_;

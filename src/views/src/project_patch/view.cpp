@@ -79,6 +79,10 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
       wakeFaces();
       if (costSource_ != nullptr && showCosts_ && shown() && !costTimer_) pollCosts();
     }
+    if (bits & view_change::kWireErrors) {  // WI.2: the link cut (or restored) a wire: its look
+      stale_ = true;
+      if (shown()) sync();
+    }
     if (bits & view_change::kResponses) {  // EQ.4b: the response displays on its panels draw the new structure
       canvas_->markDirty();
       for (panel::PanelWindow* w : windows_) w->markDirty();
@@ -610,6 +614,12 @@ void ProjectPatchView::rebuild() {
       }
   canvas_->beforeRebuild();  // TX.node-menu-fix1: a gesture's model indices, by identity
   patch_ = buildProjectPatch(*snap, *lowered_, devlib, opt);
+  if (ctx_.anyWireErrors())  // WI.2: the wires the playback link cut from its compile
+    for (Edge& e : patch_.edges)
+      if (e.wire.valid() && ctx_.wireError(e.wire) != nullptr) {
+        e.status = doc::WireStatus::Refused;
+        e.typeError = true;
+      }
   tracksOf_ = nullptr;  // bandTrack's table follows the new bands
   // TL.2: the sub-lanes under their bands' lanes, top to bottom in the order shown (a band without a lane has none).
   subLanes_.clear();
@@ -2485,7 +2495,10 @@ void ProjectPatchView::pollReadout() {
       }
       if (e.delayed) readout_.value += ", z\xE2\x81\xBB\xC2\xB9";
       if (e.status == doc::WireStatus::Inactive) readout_.value += ", inactive";
-      if (e.status == doc::WireStatus::Refused) readout_.value += ", refused (a loop the engine cannot run)";
+      if (const std::string* err = e.typeError ? ctx_.wireError(e.wire) : nullptr)  // WI.2: the compiler's message
+        readout_.value += ", not played: " + *err;
+      else if (e.status == doc::WireStatus::Refused)
+        readout_.value += ", refused (a loop the engine cannot run)";
       if (ModulationSource* src = ctx_.modulationSource(); src != nullptr && w != nullptr) {
         const ModTarget t[1] = {{w->to, w->param}};
         ModSweep s[1];

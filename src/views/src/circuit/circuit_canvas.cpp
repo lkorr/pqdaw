@@ -2121,6 +2121,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
     cpts.push_back(dev[n - 1]);
   };
   auto colourOf = [&](const WireStyle& ws, bool lit) {
+    if (ws.error) return th.code.error;  // WI.2: cut from the compile
     if (ws.boolean) return lit ? C.wireBoolLit : C.wireBool;
     if (ws.rate == WireRate::Const) return C.wireConst;
     if (ws.notes) return C.wireNotes;
@@ -2293,6 +2294,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
 namespace {
 Rgba cableColour(const ui::Theme& th, const WireStyle& ws) noexcept {
   const auto& C = th.circuit;
+  if (ws.error) return th.code.error;  // WI.2
   if (ws.boolean) return C.wireBool;
   if (ws.rate == WireRate::Const) return C.wireConst;
   if (ws.notes) return C.wireNotes;
@@ -2465,6 +2467,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     if (m.wireSel[w]) return C.selected;
     if (m.hover.kind == CanvasHit::Kind::Wire && m.hover.index == w) return C.hover;
     const WireStyle& ws = sc.wires[w].style;
+    if (ws.error) return theme->code.error;  // WI.2: cut from the compile
     if (ws.boolean) return m.wireLit[w] ? C.wireBoolLit : C.wireBool;
     if (ws.rate != WireRate::Const) {  // TMM.13-fix2 (M10): the Device view's palette (const: an off wire stays dim)
       if (ws.notes) return C.wireNotes;

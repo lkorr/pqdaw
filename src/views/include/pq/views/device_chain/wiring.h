@@ -129,6 +129,9 @@ public:
     uint8_t da = 0, db = 0;     // TX.free-rack: which way each end leaves (DeviceChainView::EndDir)
     bool input = false;         // TX.free-rack: it ends on an input (a signal path, not a param)
     doc::WireStatus status = doc::WireStatus::Lowered;
+    // WI.2: the playback link cut it from the compile (ViewContext::wireError: its signal failed type inference; status
+    // Refused): drawn in the error colour, the message in its tooltip.
+    bool typeError = false;
     uint8_t rate = 0;           // 0 param, 1 audio, 2 voice (the source's rate, from the device kind and export)
     uint8_t role = 0;           // TMM.13-fix2 (M10): its colour — 0 modulation (mint), 1 the audio path (blue), 2 notes (amber)
     // TMM.13-fix2 (MM review H6): one end is in the collapsed free-device rack: the cable is drawn only while its badge

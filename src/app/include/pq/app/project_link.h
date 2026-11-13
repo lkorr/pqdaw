@@ -302,6 +302,10 @@ struct LinkStats {
   // instrument tracks), at the last structural change.
   uint32_t delayedWires = 0;
   uint32_t refusedWires = 0;
+  // WI.2 (docs/plans/RB.md D1): wires cut from the compile because type inference blamed their signal (doc::WireRefusal::
+  // Type), after the last compile; and the compile rounds re-run after cutting (0 while every compile is clean).
+  uint32_t typeCutWires = 0;
+  uint64_t typeRetries = 0;
   uint64_t heldForJit = 0;  // T1b.x-perf: unit edits that kept the JIT image playing (LinkConfig::interpretBudget)
   uint64_t heldTopologies = 0;  // M4 review M3: topology changes queued for a continued unit's JIT image
   uint64_t parkedJit = 0;       // M4 review M1: JIT images parked until they could be published
@@ -587,6 +591,9 @@ public:
   void readDeviceCosts(std::span<const doc::DeviceId> devices, std::span<float> nsPerFrame) override;
   // The wires as the last lowering placed them (doc::wireStates; UI thread, after a structural change).
   std::span<const doc::WireState> wireStates() const noexcept { return wireStates_; }
+  // WI.2 (docs/plans/RB.md D1, ARCHITECTURE "Cut wires"): why wire `w` is cut from the compile — the type error the
+  // compiler blamed on it — or "" when it is not. Any thread.
+  std::string wireError(doc::WireId w) const;
 
 private:
   struct TuningTableEntry {
@@ -663,6 +670,15 @@ private:
   Status compileNow(const doc::Snapshot& s, uint64_t serial = 0);
   // EQ.4b: a compile's lowering to the attached context (UI thread: directly without a compile thread, else posted).
   void handLowering(const doc::Snapshot& s, uint64_t serial, const std::shared_ptr<const doc::LoweredProject>& lowered);
+  // WI.2: the cut set (wire id → why and the tracks of its ends: an edit of either re-tries it). compileNow works on a
+  // copy and adds the wires the compiler's blames map to (cutBlamed); onDocumentChange drops entries (cutMutex_).
+  struct CutWire {
+    std::string message;
+    doc::TrackId from, to;
+  };
+  using CutSet = std::map<uint32_t, CutWire>;
+  bool cutBlamed(const doc::Project& p, const doc::LoweredProject& lp, CutSet& cut, std::vector<uint32_t>& added) const;
+  void handWireErrors(const CutSet& cut, std::string status);  // to the attached context (as handLowering)
   // T6.2 (project_link_latency.cpp): a compile's compensation plan and the automation shift per param slot.
   struct LatencyJob {
     engine::CompensationPlan plan;
@@ -956,6 +972,11 @@ private:
   uint64_t levelsSerial_ = 0;
   double lastLevelRead_ = 0.0;
   std::vector<doc::WireState> wireStates_;  // T4.7 (UI thread)
+  mutable std::mutex cutMutex_;  // WI.2: cut_, cutTouched_, cutReset_, cutPosted_
+  CutSet cut_;
+  std::vector<uint32_t> cutTouched_;  // tracks and wires a structural edit touched since the running compile began
+  bool cutReset_ = false;             // … or a Reset (the running compile's new cuts are not kept)
+  CutSet cutPosted_;                  // what the attached views were last given
   std::vector<doc::WireId> wiresReported_;  // delayed / refused wires the status line last named
   double lastMeterRead_ = 0.0;
   bool metersLit_ = false;  // a meter read last time is above its floor (live() keeps the views polling)
