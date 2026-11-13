@@ -1381,7 +1381,7 @@ differ from other meters'). Choice: (a). Over-reading only makes the Limiter lim
 and the test's bound (tests/dsp/test_dynamics.cpp).
 Status: open.
 
-## Q?-MF.3-a · MIDI export choices the plan leaves open
+## Q265 · 2026-11-13 · MF.3 · MIDI export choices the plan leaves open
 Context: MF.3 (docs/plans/DY.md "MF.3") writes clips as SMF in 12edo / MPE / Degrees. Open points: (1) an MPE voice over
 15 reuses the oldest channel — the old note keeps sounding under the new bend, or ends; (2) several clips in one MPE
 file — one channel pool per MTrk or one for the file; (3) a key outside 0 … 127 (or, in Degrees, a degree only an 'x'

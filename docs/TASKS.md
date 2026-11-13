@@ -841,7 +841,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [ ] **DY.6 Limiter module** 👁 (plan §DY.6). After DY.1, DY.3, DY.5.
 - [x] **MF.1 Standard MIDI File reader / writer** *(merged 4f0603ab; Q260; 10 MB file parses in ≈ 21 ms (check), resolveNotes ≈ 155 ms)* (plan §MF.1).
 - [x] **MF.2 MIDI import** *(merged 481a1604; Q263: bent / MTS keys = absolute 12-TET pitch + cents; unmapped .kbm keys kept at 12-TET; clips not looped; MIDI first in a mixed drop)* (plan §MF.2).
-- [ ] **MF.3 MIDI export (12edo, MPE, Degrees)** (plan §MF.3). After MF.1.
+- [x] **MF.3 MIDI export (12edo, MPE, Degrees)** *(merged fa193ed9; Q265; MPE ±48, round trip ≤ 0.3 ¢ (Q260 option i); clip menu Export MIDI ▸ and drag-out write .mid; Alt-drop of a MIDI clip on a browser folder still refused)* (plan §MF.3).
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁

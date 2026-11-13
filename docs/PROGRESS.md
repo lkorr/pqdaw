@@ -620,3 +620,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: ship L1 0.750 ns/sample, L8 4.46 ns/frame, load 13 % (baseline rows).
 - Notes: Q264 (the plan's ±0.2 dB is one-sided in practice).
 
+## 2026-11-13 · MF.3 merged · main
+- Did: merged task/MF.3-midi-export (fa193ed9): doc::exportMidi (format 1; tempo map / signatures track; loops unrolled; resolveClipPitches split out of resolveTrackPitches; modes 12edo, MPE lower zone ±48 with round-robin member channels (oldest stolen past 15), Degrees with .kbm inverse); clip menu Export MIDI ▸ MPE / 12edo / Degrees (ViewPrefs::midiExportMode); app::dragOutClips writes <clip>.mid.
+- Verified (worker): pq_tests_document midi export 7/7 (MPE worst 0.2927 ¢; Degrees / .kbm identical through MF.2 import), pq_tests_app drag-out 1/1, pq_tests_views menu 1/1; -Affected 45/45 (before DY.5 landed; merged with a QUESTIONS append conflict only).
+- Notes: Q265.
+
