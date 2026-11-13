@@ -123,6 +123,7 @@ EditResult captureClip(const Project& p, IdSource& ids, std::span<const Captured
     if (!seq) return std::move(seq).error();
     NoteClip c;
     c.id = ids.clip();
+    c.name = cc.name;
     c.colour = (*te)->track().colour;
     c.start = cc.start;
     c.length = cc.length;

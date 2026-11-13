@@ -497,6 +497,7 @@ pq_add_test(pq_tests_document
     document/test_sidechain.cpp  # DY.2: cross-track cables into signal inputs are Sidechain (params Modulation); cable sources, one-step picks
     document/test_frozen.cpp  # FZ.1: frozen tracks (file, SetTrackFrozen, the apply guard, the lowering from a render slot, captureOwn)
     document/test_midi_file.cpp  # MF.1: SMF reader / writer (running status, sysex, RMID, errors, fuzz, 10 MB), notes (pairing, RPN / MPE bends, MTS, sustain)
+    document/test_midi_import.cpp  # MF.2: MIDI import (Keys / Hz pitch, bends, MTS, tracks, tempo / signatures, ticks, one undo step)
     document/test_flatten.cpp  # FZ.4: Flatten / Bounce to New Track / Consolidate audio ops (one undo step, clip placement, SetTrackKind, round trip)
   DEPS pq_doc)
 

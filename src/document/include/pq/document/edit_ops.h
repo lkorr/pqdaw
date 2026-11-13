@@ -127,6 +127,7 @@ struct CapturedClip {
   Ticks start = 0, length = kTicksPerWhole;
   bool loop = false;
   std::vector<Note> notes;
+  std::string name;  // MF.2: the clip's name (empty: none)
 };
 EditResult captureClip(const Project& p, IdSource& ids, std::span<const CapturedClip> clips,
                        std::optional<double> bpm = std::nullopt);

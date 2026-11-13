@@ -61,6 +61,10 @@ public:
   // through this map's mode — Keys: that degree; Hz: its Hz frozen. With a 12-TET key map, `d` counts semitones from
   // key 60 as a key would. Not RT code (as atNoteOn).
   InputPitch pitchForDegree(int64_t d) const;
+  // MF.2 (MIDI import of a bent / MTS-retuned key): the absolute frequency `hz` through this map's mode — Keys: the
+  // degree of the track's tuning nearest `hz` when within `snapCents` of it, else `hz` frozen (Cents); Hz: `hz` frozen.
+  // `id` is always set (unmapped only when `hz` is not a positive finite number). Not RT code (as atNoteOn).
+  InputPitch atHz(double hz, double snapCents) const;
 
   const NoteInput& input() const noexcept { return input_; }
   int64_t degreesPerEquave() const noexcept { return size_; }

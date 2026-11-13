@@ -93,6 +93,17 @@ InputPitch InputPitchMap::pitchForDegree(int64_t d) const {
   return id ? keysPitch(*id) : InputPitch{};
 }
 
+InputPitch InputPitchMap::atHz(double hz, double snapCents) const {
+  if (!(hz > 0.0) || !std::isfinite(hz)) return {};
+  if (input_.mode == NoteInputMode::Keys) {
+    if (const std::optional<tuning::PitchId> d = nearestDegree(hz)) {
+      const InputPitch k = resolvedIn(*tuning_, *d);
+      if (k.mapped && std::fabs(1200.0 * std::log2(k.hz / hz)) <= snapCents) return resolved(*d);
+    }
+  }
+  return hzPitch(hz);  // its id is set even when it resolves to nothing (resolvedIn)
+}
+
 Result<InputPitchMapPtr> buildInputPitchMap(const Project& p, TrackId track, const NoteInput& input,
                                             std::shared_ptr<const tuning::Tuning> signalTuning, const NoteClip* clip) {
   const std::optional<TrackPath> path = findTrack(p, track);
