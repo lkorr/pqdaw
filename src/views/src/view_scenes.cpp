@@ -11,6 +11,7 @@
 
 #include "pq/dsp/kernel.h"
 #include "pq/graph/inspect.h"
+#include "pq/graph/types.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/offscreen.h"
 #include "pq/ui/renderer.h"
@@ -1346,6 +1347,89 @@ Status setupDeviceWiring(Shell& shell) {
   sweeps.setLive(true);
   v->pollRings();  // one read; then no source: the rings keep it and nothing polls (a still screenshot)
   ctx.setModulationSource(nullptr);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// FZ.3: a scripted freeze source (the playback link's render statuses): a fixed status per track.
+struct SceneFreezeSource {
+  std::vector<std::pair<doc::TrackId, FreezeView>> status;
+  uint64_t gen = 1;
+  FreezeSource source() {
+    return {[this] { return gen; },
+            [this](doc::TrackId t) {
+              for (const auto& [id, v] : status)
+                if (id == t) return v;
+              return FreezeView{};
+            },
+            [](doc::TrackId) { return graph::kNone; }};
+  }
+};
+FreezeView freezeView(FreezeView::State state, float progress = 0.0f, std::string error = {}) {
+  FreezeView v;
+  v.state = state;
+  v.progress = progress;
+  v.error = std::move(error);
+  return v;
+}
+
+// FZ.3: the frozen look in the arrangement (tests/views/fixtures/mixer): Bass frozen with its render playing, the Keys
+// group frozen (its members: Piano's render at 42 %, Pad's failed), the status line after a refused edit (Unfreeze).
+Status setupTracksFrozen(Shell& shell) {
+  if (Status s = setupMixerCommon(shell); !s) return s;
+  ViewContext& ctx = shell.context();
+  const doc::Track* bass = namedTrack(*ctx.doc(), "Bass");
+  const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
+  if (bass == nullptr || keys == nullptr) return Error{ErrorCode::NotFound, "tracks-frozen: no Bass / Keys track", {}};
+  const doc::TrackId ids[2] = {bass->id, keys->id};
+  if (!ctx.setTracksFrozen(ids, true)) return Error{ErrorCode::Unknown, "tracks-frozen: freeze failed", {}};
+  const doc::Track* piano = namedTrack(*ctx.doc(), "Piano");
+  const doc::Track* pad = namedTrack(*ctx.doc(), "Pad");
+  if (piano == nullptr || pad == nullptr) return Error{ErrorCode::NotFound, "tracks-frozen: no Piano / Pad track", {}};
+  static SceneFreezeSource src;
+  src = SceneFreezeSource{};
+  src.status = {{ids[0], freezeView(FreezeView::State::Ready, 1.0f)},
+                {piano->id, freezeView(FreezeView::State::Rendering, 0.42f)},
+                {pad->id, freezeView(FreezeView::State::Failed, 0.0f, "track 4 has no own bus")}};
+  ctx.setFreezeSource(src.source());
+  ctx.refuseFrozen(ids[0]);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// FZ.3: the Device view of a frozen track with one block kept running: "Keys" (its instrument → Saturator → Utility)
+// frozen, the Saturator's output cabled into the Gain of Utility on "Mod" (so it and the instrument feeding it keep
+// running), its render playing.
+Status setupDeviceFrozen(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  if (ctx.deviceLibrary() == nullptr) return Error{ErrorCode::NotFound, "device-frozen: no device library", {}};
+  doc::DocumentStore& store = ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) { return runEdit(store, e); };
+  const auto mod = run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "Mod"));
+  const auto keys = mod ? run(doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, mod->tracks[0], "Keys"))
+                        : std::nullopt;
+  if (!mod || !keys) return Error{ErrorCode::Unknown, "device-frozen: createTrack failed", {}};
+  const doc::TrackId modT = mod->tracks[0], keysT = keys->tracks[0];
+  const auto modUtil = run(doc::ops::addDevice(*store.current(), store.ids(), modT, "module:utility", doc::DeviceKind::AudioEffect));
+  const auto sat = run(doc::ops::addDevice(*store.current(), store.ids(), keysT, "module:saturator", doc::DeviceKind::AudioEffect));
+  const auto util = run(doc::ops::addDevice(*store.current(), store.ids(), keysT, "module:utility", doc::DeviceKind::AudioEffect));
+  if (!modUtil || !sat || !util) return Error{ErrorCode::Unknown, "device-frozen: addDevice failed", {}};
+  const doc::DeviceId gain = memberNamed(*store.current(), modUtil->devices[0], "Gain");
+  if (!run(doc::ops::connectWire(*store.current(), store.ids(), sat->devices[0], std::string(doc::kMainPort), gain,
+                                 std::string(doc::kValueParam))))
+    return Error{ErrorCode::Unknown, "device-frozen: connectWire failed", {}};
+  const doc::TrackId one[1] = {keysT};
+  if (!ctx.setTracksFrozen(one, true)) return Error{ErrorCode::Unknown, "device-frozen: freeze failed", {}};
+  static SceneFreezeSource src;
+  src = SceneFreezeSource{};
+  src.status = {{keysT, freezeView(FreezeView::State::Ready, 1.0f)}};
+  ctx.setFreezeSource(src.source());
+  ctx.setStatus({});
+  ctx.setSelectedTrack(keysT);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  if (findDeviceChain(shell) == nullptr) return Error{ErrorCode::NotFound, "device-frozen: the Device view is not installed", {}};
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -3148,6 +3232,8 @@ constexpr SceneEntry kScenes[] = {
     {"circuit-editor-cost", 1280, 800, nullptr, setupCircuitEditorCost},    // T4.5: --project stdlib/filters/svf.pqp
     {"device-chain", 1280, 800, setupDeviceChain},
     {"device-wiring", 1280, 800, setupDeviceWiring},  // T4.7
+    {"tracks-frozen", 1280, 800, setupTracksFrozen},  // FZ.3: --project tests/views/fixtures/mixer
+    {"device-frozen", 2200, 800, setupDeviceFrozen},  // FZ.3 (wide: the instrument group, Saturator and Utility in view)
     {"eq-circuit-roundtrip", 1280, 800, setupEqCircuitRoundTrip},  // EQ.4b
     {"project-patch-overview", 1280, 800, setupProjectPatchOverview},  // T4.13
     {"project-patch-band", 1280, 800, setupProjectPatchBand},

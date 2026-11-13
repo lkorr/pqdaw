@@ -634,7 +634,10 @@ public:
   // progress; also while a finished file loads), Ready (its render plays), Failed (plays live; `error`). Any thread.
   FreezeStatus freezeStatus(doc::TrackId track) const;
   // Bumps whenever any track's freeze status may have changed (renders queued, progress, results). Any thread.
-  uint64_t freezeGeneration() const noexcept { return freeze_ ? freeze_->generation() : 0; }
+  // FZ.3: also when a render's slot is published or dropped (frozenReady_: Rendering → Ready without a service change).
+  uint64_t freezeGeneration() const noexcept {
+    return (freeze_ ? freeze_->generation() : 0) + frozenReadyGen_.load(std::memory_order_acquire);
+  }
   // The render track `track` plays now (Ready), or nullopt: FZ.4's flatten takes this file. UI thread.
   std::optional<FreezeService::Render> frozenRender(doc::TrackId track) const;
   // The clip slot the track plays its render from (what frozenSlotOf gives the lowering), or kNoSlot (live). Any thread.
@@ -1033,6 +1036,7 @@ private:
   std::unique_ptr<FreezeService> freeze_;
   static constexpr uint32_t kFrozenSlotKey = 0x80000000u;  // trackSlots_ key of track id t's render: t | this
   std::unordered_map<uint32_t, uint32_t> frozenReady_;    // track id → slot | kFrozenMonoBit: frozenSlotOf (mutex_)
+  std::atomic<uint64_t> frozenReadyGen_{0};               // FZ.3: bumps with every change of frozenReady_
   static constexpr uint32_t kFrozenMonoBit = 0x40000000u;  // the render has one channel (LowerOptions::frozenMono)
   struct FrozenPub {  // a render in the published audio image (UI thread)
     FreezeService::Render render;

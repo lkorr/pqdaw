@@ -1260,3 +1260,15 @@ Choice: (a) and (c): one atom, like svf's `mode`; zero history is what a delay l
 ±inf as ±FLT_MAX (a running sum and an envelope never hold a non-finite value). Reversible: kernels_dynamics.cpp's
 input clean-up and initState's zero values; op names would be a parser feature.
 Status: open.
+
+## Q?-FZ.3-a · Freeze UI: what Freeze does to arm, where Unfreeze is offered, what is veiled
+Context: the plan asks for Freeze / Unfreeze in the menus, a disabled arm, an "Unfreeze" offer on a refused edit, and
+frozen devices / lanes not offered for edits; it does not say what happens to a track armed when frozen, nor which
+editors besides the arrangement and the Device view stop offering edits.
+Options: (a) Freeze leaves arm alone (the take is refused at commit); (b) Freeze disarms in the same undo step.
+Unfreeze offer: (c) a hint in the status text; (d) a button on the status line. Piano roll of a frozen clip: (e) veiled
+like the Device view; (f) left as is, its edits refused by apply with the same Unfreeze button.
+Choice: (b), (d) — `StatusAction` on the status line, the generic refusal names the selected frozen track (or the only
+one), else appends "(track menu: Unfreeze Track)" —, (f) for now (the clip view, the take lanes and the project patch
+view's band of a frozen track are not veiled; apply refuses, the status line offers Unfreeze). Flatten is shown
+disabled in both menus until FZ.4. Reversible: `ViewContext::setTracksFrozen` / `setStatus`, one veil class.

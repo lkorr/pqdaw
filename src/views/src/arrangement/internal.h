@@ -494,6 +494,11 @@ public:
   bool deleteTracks();
   bool renameSelection();
   bool setTracksColour(doc::Colour c);
+  // FZ.3: Freeze / Unfreeze the selected tracks (groups: their members; one undo step; ViewContext::setTracksFrozen).
+  // freezeItem: the menus' entry — "Unfreeze Track" when every MIDI / audio track of the selection is frozen, else
+  // "Freeze Track" (disabled without one); Flatten follows it, disabled (FZ.4).
+  bool freezeSelection(bool frozen);
+  void freezeItems(std::vector<ui::MenuItem>& items);
   ui::Menu* openTrackMenu(doc::TrackId id, ui::Vec2 at);
   ui::Widget* openColourPicker(ui::Vec2 at);
   // Selects exactly these tracks (after a track edit).
@@ -575,6 +580,7 @@ private:
   std::vector<doc::TrackId> midiTracks() const;
   // T5.6: the same with audio tracks too (the tracks clips live on).
   std::vector<doc::TrackId> clipTracks() const;
+  bool frozenTrack(doc::TrackId id) const;  // FZ.3: Track::frozen
   // The clip rows (row indices of non-group rows: MIDI and audio tracks).
   std::vector<int32_t> midiRows() const;
   bool dispatch(doc::Batch batch, std::string_view what);

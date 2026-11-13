@@ -43,7 +43,7 @@ const ColorToken kColors[] = {
     PQ_COLOR(menu, fill), PQ_COLOR(menu, border), PQ_COLOR(menu, separator), PQ_COLOR(menu, shadow),
     PQ_COLOR(tooltip, fill), PQ_COLOR(tooltip, border), PQ_COLOR(tooltip, text),
     PQ_COLOR(track, header), PQ_COLOR(track, headerSelected), PQ_COLOR(track, lane), PQ_COLOR(track, laneAlt),
-    PQ_COLOR(track, laneSelected),
+    PQ_COLOR(track, laneSelected), PQ_COLOR(track, frozen),
     PQ_COLOR(clip, text), PQ_COLOR(clip, textLight), PQ_COLOR(clip, border), PQ_COLOR(clip, selectedBorder),
     PQ_COLOR(grid, bar), PQ_COLOR(grid, beat), PQ_COLOR(grid, sub), PQ_COLOR(grid, shade),
     PQ_COLOR(scrollbar, track), PQ_COLOR(scrollbar, thumb), PQ_COLOR(scrollbar, thumbHover),

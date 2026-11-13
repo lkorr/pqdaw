@@ -229,6 +229,9 @@ struct AutomationBand {
 
 class ArrangementAutomation {
 public:
+  // FZ.3: the frozen track a device lane of band `b` belongs to (doc::laneHome; its device lanes are frozen content),
+  // or invalid. Its band is drawn greyed and a press there only explains (ViewContext::refuseFrozen).
+  doc::TrackId frozenLane(const AutomationBand& b) const;
   explicit ArrangementAutomation(ArrangementView& view);
   ~ArrangementAutomation();
   ArrangementAutomation(const ArrangementAutomation&) = delete;

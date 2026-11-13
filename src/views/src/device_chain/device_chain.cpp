@@ -11,7 +11,9 @@
 #include "pq/views/arrangement/automation.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/browser/library_load.h"
+#include "pq/document/commands.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/lower.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/theme.h"
 #include "pq/views/device_chain/wiring.h"
@@ -505,6 +507,7 @@ public:
     }
     if (impl_.view.addSlot()) pass.place(*impl_.view.addSlot(), {x, r.y + pad, pass.px(kAddW), h});
     if (impl_.mapOverlay != nullptr) pass.place(*impl_.mapOverlay, r);  // T4.8: over everything while it is shown
+    if (impl_.frozenVeil != nullptr) pass.place(*impl_.frozenVeil, r);  // FZ.3: over the map overlay too
   }
   void paintOver(ui::PaintContext& ctx) override {
     const DropTarget& d = impl_.drop;
@@ -519,6 +522,99 @@ private:
 };
 
 }  // namespace
+
+// ---- FrozenVeil (FZ.3) --------------------------------------------------------------------------------------------
+
+FrozenVeil::FrozenVeil(DeviceChainView::Impl& impl, bool rack)
+    : Widget(rack ? "frozen-veil-rack" : "frozen-veil"), impl_(impl), rack_(rack) {
+  setHittable(true);
+}
+
+void FrozenVeil::set(doc::TrackId track, std::vector<doc::DeviceId> kept, uint32_t keptFree) {
+  std::sort(kept.begin(), kept.end());
+  if (track == track_ && kept == kept_ && keptFree == keptFree_) return;
+  track_ = track;
+  kept_ = std::move(kept);
+  keptFree_ = keptFree;
+  markDirty();
+}
+
+bool FrozenVeil::kept(doc::DeviceId d) const noexcept { return std::binary_search(kept_.begin(), kept_.end(), d); }
+
+void FrozenVeil::paint(ui::PaintContext& ctx) {
+  const ui::Theme* th = ctx.res.theme;
+  if (th == nullptr) return;
+  ui::DrawList& dl = ctx.dl;
+  const ui::Rgba grey = ui::withAlpha(th->surface.background, 150), frost = ui::withAlpha(th->track.frozen, 40);
+  const float edge = static_cast<float>(std::max(1, ctx.scale.px(2.0f)));
+  auto veil = [&](const ui::IRect& r, bool running) {
+    const ui::IRect v = ui::intersect(r, rect());
+    if (v.empty()) return;
+    const ui::Rect f = v.toRect();
+    if (!running) dl.addRectFilled(f, grey);
+    dl.addRectFilled(f, frost);
+    dl.addRectFilled({f.x0, f.y0, f.x1, std::min(f.y1, f.y0 + edge)}, th->track.frozen);
+  };
+  // A kept block's mark: a "running" pill at its title's right end.
+  auto runningMark = [&](const ui::IRect& r) {
+    if (ctx.res.uiFonts == nullptr || ctx.res.text == nullptr) return;
+    const ui::FontId font = ctx.res.uiFonts->small;
+    constexpr std::string_view kText = "running";
+    const int32_t pad = ctx.scale.px(5.0f), h = ctx.scale.px(14.0f);
+    const int32_t w = ctx.res.text->shape(font, kText).advance + 2 * pad;
+    const ui::IRect pill{r.right() - w - ctx.scale.px(4.0f), r.y + ctx.scale.px(3.0f), w, h};
+    if (pill.x < r.x) return;
+    dl.addRoundedRectFilled(pill.toRect(), 0.5f * static_cast<float>(h), th->track.frozen);
+    paint::text(ctx, font, pill, kText, th->surface.background, ui::TextAlign::Center);
+  };
+  const auto snow = [&](const ui::IRect& r) {  // the snowflake at a veiled area's bottom-left corner
+    const float rad = static_cast<float>(ctx.scale.px(5.0f));
+    paint::snowflake(dl, {static_cast<float>(r.x) + rad + static_cast<float>(ctx.scale.px(4.0f)),
+                          static_cast<float>(r.bottom()) - rad - static_cast<float>(ctx.scale.px(4.0f))},
+                     rad, std::max(1.0f, static_cast<float>(ctx.scale.px(1.0f))), th->track.frozen);
+  };
+  if (rack_) {
+    veil(rect(), false);
+    snow(rect());
+    if (ctx.res.uiFonts != nullptr) {
+      std::string caption(doc::kFrozenRefusal);
+      if (keptFree_ > 0)
+        caption += "  \xC2\xB7  " + std::to_string(keptFree_) + (keptFree_ == 1 ? " block keeps running" : " blocks keep running");
+      const ui::IRect cap{rect().x + ctx.scale.px(22.0f), rect().bottom() - ctx.scale.px(18.0f), std::max(0, rect().w - ctx.scale.px(26.0f)),
+                          ctx.scale.px(16.0f)};
+      paint::text(ctx, ctx.res.uiFonts->small, cap, caption, th->track.frozen, ui::TextAlign::Left);
+    }
+    return;
+  }
+  for (const FrameBase* f : impl_.frames) {
+    const bool running = kept(f->id());
+    veil(f->rect(), running);
+    if (running) runningMark(f->rect());
+    else snow(f->rect());
+  }
+  // Kept blocks inside a rack's or a group's frame: their own mark.
+  for (const auto& [id, f] : impl_.all)
+    if (impl_.frameIndex(doc::DeviceId{id}) < 0 && kept(doc::DeviceId{id})) runningMark(f->rect());
+  if (const ui::Widget* add = impl_.view.addSlot(); add != nullptr && add->visible()) veil(add->rect(), false);
+}
+
+bool FrozenVeil::onPointer(const ui::PointerEvent& e) {
+  if (e.type == ui::PointerType::Wheel) return false;  // the chain (or the rack's canvas) scrolls
+  if (e.type == ui::PointerType::Down) {
+    if (ui::UiTree* t = tree()) t->setFocus(&impl_.view);
+    impl_.ctx().refuseFrozen(track_);
+  }
+  return true;
+}
+
+std::string_view FrozenVeil::tooltip() const {
+  return "Frozen: this track plays its render. Unfreeze it to edit (the status line's Unfreeze, or the track menu).";
+}
+
+ui::InfoText FrozenVeil::info() const {
+  return {"Frozen Track", "The track plays a render of its blocks: they are not edited here. Blocks marked \"running\" "
+                          "still play (their output reaches another track). Unfreeze Track (track menu) to edit."};
+}
 
 // ---- FrameBase ---------------------------------------------------------------------------------------------------
 
@@ -856,6 +952,22 @@ void DeviceChainView::sync(bool force) {
     std::unique_ptr<ui::Widget> o = m.content->removeChild(*m.mapOverlay);
     m.mapOverlay = &m.content->addChild(std::move(o));
   }
+  // FZ.3: a frozen track's blocks under the veil (the last child: over the map overlay too); its kept blocks marked.
+  const bool frozen = t != nullptr && t->frozen;
+  const std::vector<doc::DeviceId> kept = frozen ? doc::frozenKeep(*ctx_.doc(), *t).blocks : std::vector<doc::DeviceId>{};
+  if (frozen) {
+    if (m.frozenVeil == nullptr) {
+      m.frozenVeil = &m.content->add<FrozenVeil>(m, false);
+    } else {  // keep it the last child
+      std::unique_ptr<ui::Widget> o = m.content->removeChild(*m.frozenVeil);
+      m.frozenVeil = static_cast<FrozenVeil*>(&m.content->addChild(std::move(o)));
+    }
+    m.frozenVeil->set(want, kept, 0);
+  } else if (m.frozenVeil != nullptr) {
+    m.retiredFrames.push_back(m.content->removeChild(*m.frozenVeil));  // (a press on it may be dispatching)
+    m.frozenVeil = nullptr;
+    requestFrame();
+  }
   track_ = want;
   m.shown = chain;
   m.shownFrom = ctx_.doc();
@@ -873,6 +985,7 @@ void DeviceChainView::sync(bool force) {
   if (m.freeRack != nullptr) {
     m.freeRack->setVisible(t != nullptr);
     m.freeRack->follow(want);
+    m.freeRack->setFrozen(want, frozen, kept);  // FZ.3
   }
   // The selection keeps only devices shown (any level).
   m.reindex();

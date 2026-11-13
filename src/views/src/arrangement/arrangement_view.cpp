@@ -100,6 +100,7 @@ ArrangementView::ArrangementView(ViewContext& ctx)
 
 ArrangementView::~ArrangementView() {
   if (playheadTimer_) cancelTimer(playheadTimer_);
+  if (freezeTimer_) cancelTimer(freezeTimer_);
   // Park the actions: the registry outlives the view (a rebuilt shell installs a new arrangement over them).
   for (std::string_view id : kActionIds)
     (void)ctx_.actions().set(std::string(id), [] {}, [] { return false; });
@@ -347,7 +348,15 @@ bool ArrangementView::onKey(const KeyEvent& e) {
 
 // --- document and view-state changes --------------------------------------------------------------------
 
+// FZ.3: one poll of the freeze statuses after `delay` s (none while one is pending; nothing without a freeze source).
+void ArrangementView::scheduleFreezePoll(double delay) {
+  if (freezeTimer_ == 0 && ctx_.hasFreezeSource()) freezeTimer_ = requestTimer(delay);
+}
+
 void ArrangementView::onDocument(const doc::StoreEvent& e) {
+  // FZ.3: a structural change may freeze or unfreeze a track: its status is read at the next poll (after the playback
+  // link, which listens after the views, planned its render).
+  if (e.kind == doc::StoreEventKind::Reset || e.changes.structural()) scheduleFreezePoll(0.0);
   if (e.kind == doc::StoreEventKind::Reset) {
     model_->clear();
     zoomStack_.clear();
@@ -400,6 +409,10 @@ void ArrangementView::onViewChange(uint32_t bits) {
   // T5.6: an overview arrived or grew, or a sample was found / lost (the missing overlay): the audio clips repaint.
   if (bits & (view_change::kWaveforms | view_change::kSamples)) lanes_->markDirty();
   if (bits & view_change::kKeyboard) syncHeaders();  // KB.1: the auto-armed track's arm button
+  if (bits & view_change::kFreeze) {  // FZ.3: a frozen track's render status: its header's badge, progress, error
+    syncHeaders();
+    if (ctx_.freezeBusy()) scheduleFreezePoll(0.1);
+  }
   if (bits & view_change::kShowAutomation)  // T4.18: a knob's "Show Automation"
     if (const auto r = ctx_.takeShowAutomation()) automation_->showParam(r->track, r->param);
   if (bits & view_change::kAutomation) {
@@ -1094,6 +1107,12 @@ void ArrangementView::schedulePlayhead() {
 }
 
 void ArrangementView::onTimer(uint32_t id) {
+  if (id == freezeTimer_) {  // FZ.3
+    freezeTimer_ = 0;
+    (void)ctx_.pollFreeze();  // notifies kFreeze when a status changed
+    if (ctx_.freezeBusy()) scheduleFreezePoll(0.1);
+    return;
+  }
   if (id == settleTimer_) {
     settleTimer_ = 0;
     zooming_ = false;

@@ -279,6 +279,12 @@ public:
   bool onPointer(const ui::PointerEvent& e) override;
   void onCaptureLost() override { resizing_ = false; }
   void onFrame(double now) override;
+  // FZ.3: a frozen track's render as the header shows it (ViewContext::freezeStatus): the snowflake badge, the
+  // progress bar while rendering, the error (also the tooltip) when it failed. frozen(): the document's flag.
+  bool frozen() const noexcept { return frozen_; }
+  const FreezeView& freezeShown() const noexcept { return freeze_; }
+  ui::IRect freezeBadgeRect() const noexcept;  // empty: not frozen
+  std::string_view tooltip() const override;
   // T4.16a: ResizeNS over the bottom edge (the height drag) and while resizing; else the arrow (a click selects).
   ui::Cursor cursorAt(ui::Vec2 pos) const override;
   // Whether a press at pos (device px) grabs the bottom edge that resizes the row (kResizeGrab).
@@ -309,6 +315,9 @@ private:
   ui::Control* lanesToggle_ = nullptr;  // T3.15
   bool bottomRow_ = false;
   bool chooserWanted_ = false;          // automation mode: the chooser is laid out when the row has room
+  bool frozen_ = false;                 // FZ.3
+  FreezeView freeze_;
+  std::string tip_;
 };
 
 class ArrangementView : public ui::Widget {
@@ -629,6 +638,8 @@ private:
   void readRecording();         // T6.7: the overlay, damaging the rows whose regions changed
   bool zooming_ = false;
   uint32_t settleTimer_ = 0;
+  uint32_t freezeTimer_ = 0;  // FZ.3: 10 Hz ViewContext::pollFreeze while a frozen track's render is not final
+  void scheduleFreezePoll(double delay);
 };
 
 // Installs the arrangement into ShellSlot::TrackArea (called from installDefaultContent), registers its actions and

@@ -153,6 +153,14 @@ StatusBar::StatusBar(ViewContext& ctx) : Widget("status-bar"), ctx_(ctx) {
   setPadding({8, 3, 4, 3});
   setGap(4);
   setAlign(Align::Start, Align::Center);
+  // FZ.3: the action a message offers ("Unfreeze" after a refused edit of a frozen track), left of the message.
+  action_ = &add<Button>("status-action", "");
+  action_->setSize(Length::fixed(72), Length::fixed(16));
+  action_->setFocusable(false);  // Space stays the transport's
+  action_->setVisible(false);
+  action_->setInfo("Status Action", "Does what the message beside it offers (Unfreeze: the frozen track plays live again "
+                                    "and can be edited; one undo step).");
+  action_->onClick = [this] { ctx_.runStatusAction(); };
   message_ = &add<Label>("message", "", FontRoleId::Small, TextTone::Secondary);
   message_->setSize(Length::flex(1), Length::fixed(16));
   project_ = &add<Label>("project", "", FontRoleId::Small, TextTone::Secondary, TextAlign::Right);
@@ -181,6 +189,9 @@ StatusBar::StatusBar(ViewContext& ctx) : Widget("status-bar"), ctx_(ctx) {
 }
 
 void StatusBar::refresh() {
+  const StatusAction& a = ctx_.statusAction();
+  if (action_->visible() != static_cast<bool>(a)) action_->setVisible(static_cast<bool>(a));
+  if (a && action_->text() != a.label) action_->setText(a.label);
   message_->setText(ctx_.status());
   project_->setText(ctx_.projectName() + (ctx_.dirty() ? " *" : ""));
   clipSel_->setOn(ctx_.detailVisible() && ctx_.detailMode() == DetailMode::Clip);

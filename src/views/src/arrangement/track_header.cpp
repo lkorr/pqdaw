@@ -55,6 +55,25 @@ void TrackHeader::bind(const ArrangementRow& row, std::span<const ArrangementRow
     changed = true;
   }
   if (colour_ != t.colour.rgb || active_ != t.active) changed = true;
+  // FZ.3: the frozen badge and the render's status (cached by the context: no per-header source reads).
+  const FreezeView& fz = view_.context().freezeStatus(row.id);
+  if (frozen_ != t.frozen || !(freeze_ == fz)) {
+    frozen_ = t.frozen;
+    freeze_ = fz;
+    tip_.clear();
+    if (frozen_) {
+      switch (freeze_.state) {
+        case FreezeView::State::Rendering:
+          tip_ = "Frozen: rendering " + std::to_string(static_cast<int>(std::lround(100.0f * freeze_.progress))) +
+                 " % (the track plays live meanwhile)";
+          break;
+        case FreezeView::State::Failed: tip_ = "Freeze failed: " + freeze_.error + " (the track plays live)"; break;
+        case FreezeView::State::Ready: tip_ = "Frozen: the track plays its render (Unfreeze Track to edit it)"; break;
+        case FreezeView::State::None: tip_ = "Frozen (Unfreeze Track to edit it)"; break;
+      }
+    }
+    changed = true;
+  }
   colour_ = t.colour.rgb;
   active_ = t.active;
   // Group stripes: outermost first. Compared, so a group's colour change repaints its members' headers.
@@ -176,14 +195,44 @@ void TrackHeader::paint(PaintContext& ctx) {
   if (t.empty()) return;
   const Rgba fill = titleColour();
   dl.addRectFilled(t.toRect(), fill);
+  // FZ.3: a frozen track's title bar: the snowflake badge at its right end (the error colour when the render failed)
+  // and, while it renders, a progress bar along its bottom edge.
+  const IRect badge = freezeBadgeRect();
+  if (!badge.empty()) {
+    const bool failed = freeze_.state == FreezeView::State::Failed;
+    dl.addRoundedRectFilled(badge.toRect(), static_cast<float>(ctx.scale.px(2.0f)), failed ? th.code.error : th.track.frozen);
+    const float rad = 0.36f * static_cast<float>(std::min(badge.w, badge.h));
+    paint::snowflake(dl, {static_cast<float>(badge.x) + 0.5f * static_cast<float>(badge.w), static_cast<float>(badge.y) + 0.5f * static_cast<float>(badge.h)},
+                     rad, std::max(1.0f, static_cast<float>(ctx.scale.px(1.0f))), th.surface.background);
+    if (freeze_.state == FreezeView::State::Rendering) {
+      const float h = static_cast<float>(std::max(2, ctx.scale.px(2.0f)));
+      const float bx0 = static_cast<float>(t.x), bx1 = static_cast<float>(t.right()), by1 = static_cast<float>(t.bottom());
+      dl.addRectFilled({bx0, by1 - h, bx1, by1}, withAlpha(th.surface.background, 160));
+      const float p = std::clamp(freeze_.progress, 0.0f, 1.0f);
+      if (p > 0.0f) dl.addRectFilled({bx0, by1 - h, bx0 + std::round((bx1 - bx0) * p), by1}, th.track.frozen);
+    }
+  }
   if (rename_) return;  // the text field draws the name
   const Rgba text = view_.model().clipTextColour(th, fill);
   if (const ThemeFonts* f = ctx.res.uiFonts) {
     const int32_t padL = fold_->visible() ? ctx.scale.px(18.0f) : ctx.scale.px(6.0f);
-    const int32_t padR = lanesToggle_->visible() ? ctx.scale.px(18.0f) : ctx.scale.px(4.0f);  // T3.15: the lanes toggle
+    int32_t padR = lanesToggle_->visible() ? ctx.scale.px(18.0f) : ctx.scale.px(4.0f);  // T3.15: the lanes toggle
+    if (!badge.empty()) padR = t.right() - badge.x + ctx.scale.px(3.0f);
     paint::text(ctx, f->bodyStrong, t, name_, text, TextAlign::Left, padL, padR);
   }
 }
+
+IRect TrackHeader::freezeBadgeRect() const noexcept {
+  if (!frozen_) return {};
+  const IRect t = titleRect();
+  const UiScale s = tree() ? tree()->uiScale() : UiScale{};
+  const int32_t side = std::min(t.h - 2 * s.px(2.0f), s.px(13.0f));
+  if (side < s.px(6.0f) || t.w < side + s.px(40.0f)) return {};
+  const int32_t right = t.right() - (lanesToggle_->visible() ? s.px(18.0f) : s.px(3.0f));
+  return {right - side, t.y + (t.h - side) / 2, side, side};
+}
+
+std::string_view TrackHeader::tooltip() const { return tip_; }
 
 bool TrackHeader::onResizeEdge(Vec2 pos) const noexcept {
   const float scale = tree() ? tree()->scale() : 1.0f;

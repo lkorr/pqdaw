@@ -47,6 +47,7 @@
     "track.lane": "#26383F",
     "track.laneAlt": "#223339",
     "track.laneSelected": "#3D4F55",
+    "track.frozen": "#9BDDF5",
     "clip.text": "#000A0F",
     "clip.textLight": "#F2F2F2",
     "clip.border": "#000A0F",

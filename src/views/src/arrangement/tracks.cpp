@@ -95,6 +95,32 @@ bool Editor::setTracksColour(doc::Colour c) {
   return apply(doc::ops::setTracksColour(*ctx_.doc(), sel_.tracks, c), "Track Colour", false);
 }
 
+bool Editor::freezeSelection(bool frozen) {
+  if (sel_.tracks.empty()) return false;
+  return ctx_.setTracksFrozen(sel_.tracks, frozen);
+}
+
+void Editor::freezeItems(std::vector<MenuItem>& items) {
+  const doc::Project& p = *ctx_.doc();
+  uint32_t leaves = 0, frozen = 0;
+  auto walk = [&](auto& self, const doc::Track& t) -> void {
+    if (t.kind == doc::TrackKind::Midi || t.kind == doc::TrackKind::Audio) {
+      ++leaves;
+      if (t.frozen) ++frozen;
+    }
+    for (const doc::TrackPtr& c : t.children) self(self, *c);
+  };
+  for (doc::TrackId id : sel_.tracks)
+    if (const doc::Track* t = doc::findTrackPtr(p, id)) walk(walk, *t);
+  const bool unfreeze = leaves > 0 && frozen == leaves;
+  MenuItem f = MenuItem::item(unfreeze ? "Unfreeze Track" : "Freeze Track", [this, unfreeze] { (void)freezeSelection(!unfreeze); });
+  f.enabled = leaves > 0;
+  items.push_back(std::move(f));
+  MenuItem flat = MenuItem::item("Flatten", {});  // FZ.4: the render becomes the track's audio
+  flat.enabled = false;
+  items.push_back(std::move(flat));
+}
+
 Menu* Editor::openTrackMenu(doc::TrackId id, Vec2 at) {
   auto action = [](std::string label, std::string actionId, std::string keys) {
     MenuItem m = MenuItem::item(std::move(label), {}, std::move(keys));
@@ -116,6 +142,8 @@ Menu* Editor::openTrackMenu(doc::TrackId id, Vec2 at) {
   items.push_back(MenuItem::item("Colour…", [this, at] { (void)openColourPicker(at); }));
   items.push_back(MenuItem::sep());
   items.push_back(action("Open Track Circuit", "view.trackCircuit", "Ctrl+Alt+C"));  // T5.x-circuit-chain
+  items.push_back(MenuItem::sep());
+  freezeItems(items);  // FZ.3
   items.push_back(MenuItem::sep());
   MenuItem del = MenuItem::item("Delete", [this] { (void)deleteTracks(); }, "Delete");
   del.enabled = !master;

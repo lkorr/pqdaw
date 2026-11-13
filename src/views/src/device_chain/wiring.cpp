@@ -417,6 +417,7 @@ private:
 struct CableLayer::Impl {
   std::vector<Badge*> badges;                // one per drawn wire with a badge
   std::vector<doc::WireState> states;        // doc::wireStates of `statesFrom`
+  uint64_t statesFreeze = 0;                 // FZ.3: the ViewContext::freezeSerial they were made at
   doc::Snapshot statesFrom;
   const doc::DeviceLibrary* statesLib = nullptr;  // the library they were planned with
   ui::IRect dragBounds{};                    // what the dragged cable and the target outlines painted
@@ -439,8 +440,10 @@ CableLayer::CableLayer(ViewContext& ctx, Shell& shell)
   setHittable(false);  // the pointer passes through, except on badges (and while a cable is dragged)
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onStore(e); });
   observer_ = ctx.observe([this](uint32_t bits) {
+    if (bits & view_change::kFreeze) rebuildStatus();  // FZ.3: a frozen track's render plays (or stopped playing)
     if (bits & (view_change::kDevices | view_change::kSelection | view_change::kDetailClip | view_change::kLayout |
-                view_change::kWireErrors))  // WI.2: the link cut (or restored) a wire
+                view_change::kWireErrors |  // WI.2: the link cut (or restored) a wire
+                view_change::kFreeze))
       refresh();
   });
   shell.tree().addObserver(this);
@@ -490,11 +493,15 @@ doc::WireId CableLayer::badgeAt(ui::Vec2 pos) const noexcept {
 
 void CableLayer::rebuildStatus() {
   const doc::Snapshot s = ctx_.doc();
-  if (s == impl_->statesFrom && impl_->statesLib == ctx_.deviceLibrary()) return;
+  if (s == impl_->statesFrom && impl_->statesLib == ctx_.deviceLibrary() && impl_->statesFreeze == ctx_.freezeSerial()) return;
   impl_->statesFrom = s;
   impl_->statesLib = ctx_.deviceLibrary();
-  impl_->states = ctx_.deviceLibrary() != nullptr ? doc::wireStates(*s, *ctx_.deviceLibrary())
-                                                  : std::vector<doc::WireState>{};
+  impl_->statesFreeze = ctx_.freezeSerial();
+  // FZ.3: as the playback link lowers them — a frozen track playing its render has its own cables (and those of its
+  // blocks that are not lowered) Inactive.
+  if (ctx_.deviceLibrary() == nullptr) impl_->states.clear();
+  else if (const auto slotOf = ctx_.frozenSlotOf()) impl_->states = doc::wireStates(*s, *ctx_.deviceLibrary(), slotOf);
+  else impl_->states = doc::wireStates(*s, *ctx_.deviceLibrary());
 }
 
 void CableLayer::onStore(const doc::StoreEvent& e) {

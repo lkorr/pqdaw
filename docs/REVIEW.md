@@ -1418,3 +1418,16 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Judge: whether the default folder (the project's folder, else the User Library) is right; whether closing the window
   should cancel the export instead of letting it finish (Q?-EX.2-a); the window's height (some empty space above the
   footer); the readout wording.
+
+## 2026-11-13 · FZ.3 · the freeze UI (task/FZ.3-freeze-ui)
+- Try: right-click a MIDI track's title (or a clip of it) → Freeze Track; watch the header's thin progress bar fill
+  and the snowflake badge; then try to drag one of its clips, turn a knob in its Device view, edit a device lane: nothing
+  moves and the status line says "Frozen: unfreeze to edit" with an [Unfreeze] button — click it. Freeze a group (its
+  tracks freeze), an armed track (it disarms; the arm button turns into an empty ring), Ctrl+Z.
+- Look at: the icy veil and frost line over the frozen clips; the badge (red when the render failed: hover the header for
+  the error); the Device view's veil — greyed blocks with a snowflake, blocks still running (their output is cabled to
+  another track) only frosted with a "running" pill; the free rack's veil caption. Goldens `tracks-frozen`,
+  `device-frozen`.
+- Judge: the strength of the clip tint (theme `track.frozen`, #9BDDF5, veil alpha 104/255) and of the progress bar;
+  whether the piano roll / take lanes / circuit band of a frozen track should be veiled too (Q?-FZ.3-a: today they
+  only refuse); whether Freeze should disarm.

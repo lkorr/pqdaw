@@ -104,7 +104,33 @@ inline constexpr uint32_t kLiveNotes = 1u << 22;      // TU.2: a note the UI pla
                                                       // keyboard's held(), an audition: lastAudition()); TU.2b:
                                                       // or a hardware MIDI-in note (TransportPort::liveMidiNotes)
 inline constexpr uint32_t kWireErrors = 1u << 23;     // WI.2: the wires the playback link cut from its compile changed
+inline constexpr uint32_t kFreeze = 1u << 24;         // FZ.3: a frozen track's render status (or its slot) changed
 }  // namespace view_change
+
+// FZ.3 (docs/plans/RB.md FZ.3): what the views show of a frozen track's render (the playback link's FreezeStatus,
+// pq/app/freeze_service.h, without the app types). None: not frozen, or no freeze source (tests, scenes).
+struct FreezeView {
+  enum class State : uint8_t { None, Rendering, Ready, Failed };
+  State state = State::None;
+  float progress = 0.0f;  // Rendering: 0 … 1
+  std::string error;      // Failed
+  bool operator==(const FreezeView&) const = default;
+};
+// FZ.3: where the views read it (the playback link, ProjectLink::attach). `generation` bumps whenever any status may
+// have changed (renders queued, progress, results, a render's slot published): the context compares it and reads the
+// frozen tracks' statuses only then. `slot`: the clip slot a frozen track plays its render from (graph::kNone: live);
+// the cable views draw that track's dropped wires Inactive (doc::wireStates with frozenSlotOf). Any of them may be null.
+struct FreezeSource {
+  std::function<uint64_t()> generation;
+  std::function<FreezeView(doc::TrackId)> status;
+  std::function<uint32_t(doc::TrackId)> slot;
+};
+// FZ.3: a clickable action the status line offers next to its message (the "Unfreeze" of a refused edit).
+struct StatusAction {
+  std::string label;
+  std::function<void()> run;
+  explicit operator bool() const noexcept { return static_cast<bool>(run); }
+};
 
 // What a tuning control is about (T3.14; TU.3): one clip, one track, a named tuning, or the project's default. Every
 // tuning is a named project tuning, so an EDIT always edits the named tuning the target resolves to (mos_wheel.h
@@ -366,6 +392,28 @@ public:
   void setWireErrors(std::vector<std::pair<doc::WireId, std::string>> errors);
   const std::string* wireError(doc::WireId w) const noexcept;
   bool anyWireErrors() const noexcept { return !wireErrors_.empty(); }
+  // ---- FZ.3: frozen tracks (docs/plans/RB.md D2, D4; model.h "Frozen tracks") ----
+  // The playback link's render statuses (FreezeSource; notifies kFreeze). pollFreeze (UI thread): compares the source's
+  // generation and, when it moved (or the document's frozen tracks changed), reads the frozen tracks' statuses; true
+  // (and kFreeze) when one changed. One atomic read when nothing did. freezeStatus: the cached status (None for a track
+  // that is not frozen). freezeBusy: a frozen track whose render is not final (Rendering, or not reported yet): the
+  // arrangement polls at 10 Hz while it is (progress moves the generation). freezeSerial bumps with every change.
+  void setFreezeSource(FreezeSource source);
+  bool hasFreezeSource() const noexcept { return static_cast<bool>(freezeSource_.status); }
+  bool pollFreeze();
+  const FreezeView& freezeStatus(doc::TrackId track) const noexcept;
+  bool freezeBusy() const noexcept { return freezeBusy_; }
+  uint64_t freezeSerial() const noexcept { return freezeSerial_; }
+  // The source's slot of a frozen track (graph::kNone: live, or no source). Null when nothing is frozen or no source.
+  std::function<uint32_t(doc::TrackId)> frozenSlotOf() const;
+  // Freeze / Unfreeze `tracks` (groups: their MIDI / audio members; doc::SetTrackFrozen) as one undo step ("Freeze
+  // Track" / "Unfreeze Track"); freezing also disarms them (recording into a frozen track is refused at commit). False
+  // (status line) when nothing changed or the command was refused.
+  bool setTracksFrozen(std::span<const doc::TrackId> tracks, bool frozen);
+  // A view did not offer an edit of `track`'s frozen content: the status line says doc::kFrozenRefusal with an
+  // "Unfreeze" action (one undo step). setStatus with a message containing kFrozenRefusal (a command apply refused)
+  // offers the same action for the frozen track it can name: the selected one, or the only frozen track.
+  void refuseFrozen(doc::TrackId track);
   // The app, after a compile made new taps: displays waiting for their device's feed look again (notifies kAnalysis).
   void analysisTapsChanged() { notify(view_change::kAnalysis); }
   // TU.2b: the app, after TransportPort::liveMidiNotes() changed (notifies kLiveNotes).
@@ -617,8 +665,13 @@ public:
   void libraryChanged() { notify(view_change::kLibrary); }
 
   // --- status line ---
+  // FZ.3: `action` (optional) is offered as a button next to the message until the next setStatus.
   void setStatus(std::string text);
+  void setStatus(std::string text, StatusAction action);
   const std::string& status() const noexcept { return status_; }
+  const StatusAction& statusAction() const noexcept { return statusAction_; }
+  // Runs the offered action (the status line's button); the action is dropped first (it may set a new status).
+  void runStatusAction();
 
   // --- actions and keymap ---
   ui::ActionRegistry& actions() noexcept { return actions_; }
@@ -728,6 +781,14 @@ private:
   doc::Snapshot loweringFrom_;
   std::shared_ptr<const doc::LoweredProject> lowering_;
   std::vector<std::pair<doc::WireId, std::string>> wireErrors_;  // WI.2: by wire id
+  // FZ.3: the freeze source and its statuses of the frozen tracks (by id), the generation they were read at.
+  FreezeSource freezeSource_;
+  std::vector<std::pair<uint32_t, FreezeView>> freezeStatus_;
+  uint64_t freezeGen_ = 0;
+  bool freezeDirty_ = true;  // the document's frozen tracks may have changed: read again at the next poll
+  bool freezeBusy_ = false;
+  uint64_t freezeSerial_ = 0;
+  StatusAction statusAction_;
   std::unique_ptr<GroupResponses> responses_;         // EQ.4
   std::function<std::shared_ptr<TapRing>(doc::DeviceId, std::string_view)> signalTapOf_;  // GU.7
   FaceVoices faceVoices_;  // GU.7

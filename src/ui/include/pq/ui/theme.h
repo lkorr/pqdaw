@@ -81,7 +81,8 @@ struct Theme {
     bool operator==(const Tooltip&) const = default;
   } tooltip{};
   struct Track {  // track headers and arrangement lanes (T3.8, T3.10)
-    Rgba header, headerSelected, lane, laneAlt, laneSelected;
+    Rgba header, headerSelected, lane, laneAlt, laneSelected,
+        frozen;  // FZ.3: the icy tint of a frozen track's clips, devices, device lanes and its header badge
     bool operator==(const Track&) const = default;
   } track{};
   struct Clip {  // clip bodies take their fill from clipPalette

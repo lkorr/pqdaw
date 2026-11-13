@@ -264,6 +264,7 @@ public:
 private:
   ViewContext& ctx_;
   ViewContext::Subscription sub_;
+  ui::Button* action_ = nullptr;  // FZ.3: ViewContext::statusAction (hidden without one)
   ui::Label* message_ = nullptr;
   ui::Label* project_ = nullptr;
   ui::Toggle* clipSel_ = nullptr;

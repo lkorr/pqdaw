@@ -739,8 +739,19 @@ bool ArrangementAutomation::pointer(const PointerEvent& e) {
   }
 }
 
+doc::TrackId ArrangementAutomation::frozenLane(const AutomationBand& b) const {
+  if (!doc::isDeviceParamKind(b.param.kind)) return {};
+  const doc::Track* home = doc::laneHome(*view_.shown(), b.param);
+  return home != nullptr && home->frozen ? home->id : doc::TrackId{};
+}
+
 void ArrangementAutomation::press(const PointerEvent& e, const AutomationBand& b) {
   if (drag_.kind != DragKind::None) cancelDrag();
+  // FZ.3: a frozen track's device lane is not offered for edits (doc::apply refuses them anyway).
+  if (const doc::TrackId frozen = frozenLane(b); frozen.valid()) {
+    ctx_.refuseFrozen(frozen);
+    return;
+  }
   if (UiTree* t = view_.tree()) t->setFocus(&geo().widget());
   drag_ = {};
   drag_.surface = &view_.surfaces().current();  // TX.lane-edit: the gesture stays on this surface

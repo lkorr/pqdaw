@@ -499,8 +499,10 @@ void ProjectLink::publishAudio(const doc::Project& p, bool force) {
       if (changed) frozenReady_ = std::move(ready);
     }
     if (!changed) return;
+    frozenReadyGen_.fetch_add(1, std::memory_order_acq_rel);  // FZ.3: the headers' Rendering → Ready
     reportWires(p);
     requestCompile();
+    if (ctx_ != nullptr) (void)ctx_->pollFreeze();
   };
   std::sort(key.begin(), key.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
   if (!force && sameKey(key, audioKey_) && samplesKey == audioSamplesKey_ && fkey == frozenKey_) {
@@ -564,6 +566,7 @@ bool ProjectLink::syncFreeze(bool reset) {
 
 void ProjectLink::takeFreezeResults() {
   if (freeze_ != nullptr && freeze_->takeResults() && current_) publishAudio(*current_);
+  if (ctx_ != nullptr) (void)ctx_->pollFreeze();  // FZ.3: a render finished or failed: the headers show it now
 }
 
 void ProjectLink::requestCompile() {

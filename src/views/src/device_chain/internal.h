@@ -45,6 +45,7 @@ inline constexpr float kAddW = 132.0f;     // the add slot at the end of the cha
 
 class FrameBase;
 class FreeRackPanel;
+class FrozenVeil;  // FZ.3
 
 // Where a dragged device would land (T4.8: a rack's chain list or the chain a rack shows, besides the track's chain).
 struct DropTarget {
@@ -100,6 +101,7 @@ struct DeviceChainView::Impl {
   doc::DeviceId mapRack;
   int32_t mapMacro = -1;
   ui::Widget* mapOverlay = nullptr;
+  device_chain::FrozenVeil* frozenVeil = nullptr;  // FZ.3: over the frames while the shown track is frozen (last child)
 
   explicit Impl(DeviceChainView& v) : view(v) {}
   ViewContext& ctx() const noexcept { return view.ctx_; }
@@ -288,6 +290,31 @@ double playedPosition(const doc::Project& p, doc::DeviceId block, uint32_t depth
 // The macro mapping onto device.param (its rack, the mapping); nullopt: none.
 std::optional<std::pair<doc::RackInfo, doc::RackMapping>> macroMappingOf(const doc::Project& p, doc::DeviceId device,
                                                                          std::string_view param);
+// FZ.3 (docs/plans/RB.md D4): over a frozen track's blocks — the chain's frames and add slot (`rack` false), or the
+// free rack's canvas (`rack` true). Greys them under an icy veil; a kept block (doc::frozenKeep: its output still
+// reaches another track, so it keeps running) gets only a light frost and a "running" mark. Presses do not reach the
+// blocks (the views offer no edit of frozen content; doc::apply is the safety net): one explains in the status line
+// with an Unfreeze action (ViewContext::refuseFrozen). The wheel passes through (the chain scrolls).
+class FrozenVeil final : public ui::Widget {
+public:
+  FrozenVeil(DeviceChainView::Impl& impl, bool rack);
+  void set(doc::TrackId track, std::vector<doc::DeviceId> kept, uint32_t keptFree);
+  doc::TrackId track() const noexcept { return track_; }
+  bool kept(doc::DeviceId d) const noexcept;
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+  ui::Cursor cursorAt(ui::Vec2) const override { return ui::Cursor::Arrow; }
+  std::string_view tooltip() const override;
+  ui::InfoText info() const override;
+
+private:
+  DeviceChainView::Impl& impl_;
+  bool rack_ = false;
+  doc::TrackId track_;
+  std::vector<doc::DeviceId> kept_;  // sorted
+  uint32_t keptFree_ = 0;            // the free rack: how many of its blocks keep running
+};
+
 // T4.8: the map-mode overlay (rack_frame.cpp): over the chain while a rack's Map is on.
 std::unique_ptr<ui::Widget> makeMapOverlay(DeviceChainView::Impl& impl);
 
@@ -303,6 +330,9 @@ public:
   void setBodyHeight(float logicalPx);
   float logicalHeight() const noexcept;  // the tab, and the body and handle while open
   void follow(doc::TrackId track);       // the shown track (its free devices; the count in the tab)
+  // FZ.3: the shown track is frozen (`frozen` its kept blocks): the canvas is veiled (FrozenVeil); else no veil.
+  void setFrozen(doc::TrackId track, bool frozen, const std::vector<doc::DeviceId>& kept);
+  FrozenVeil* frozenVeil() const noexcept { return veil_; }
   void setDropHighlight(bool on);        // a chain device dragged over it
   ui::IRect plusRect() const noexcept;   // the tab's Add Free Device button (device px)
   ui::IRect handleRect() const noexcept; // the resize handle (empty while collapsed)
@@ -323,6 +353,7 @@ private:
   DeviceChainView::Impl& impl_;
   ViewContext& ctx_;
   project_patch::ProjectPatchView* view_ = nullptr;
+  FrozenVeil* veil_ = nullptr;  // FZ.3
   doc::TrackId track_;
   bool open_ = false;
   float height_ = 200.0f;

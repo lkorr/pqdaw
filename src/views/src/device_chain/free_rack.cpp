@@ -117,6 +117,28 @@ void FreeRackPanel::follow(doc::TrackId track) {
   markDirty();
 }
 
+void FreeRackPanel::setFrozen(doc::TrackId track, bool frozen, const std::vector<doc::DeviceId>& kept) {
+  if (!frozen) {
+    if (veil_ != nullptr) {
+      impl_.retiredFrames.push_back(removeChild(*veil_));  // (a press on it may be dispatching)
+      veil_ = nullptr;
+      impl_.view.requestFrame();
+      markDirty();
+    }
+    return;
+  }
+  // The kept blocks of the rack: those it shows (the free ones; the chain's frames mark their own).
+  uint32_t free = 0;
+  for (const doc::DeviceId d : kept)
+    if (impl_.view.inFreeRack(d)) ++free;
+  if (veil_ == nullptr) {
+    veil_ = &add<FrozenVeil>(impl_, true);
+    invalidateArrange();
+  }
+  veil_->set(track, kept, free);
+  veil_->setVisible(open_);
+}
+
 void FreeRackPanel::setDropHighlight(bool on) {
   if (on == highlight_) return;
   highlight_ = on;
@@ -156,6 +178,10 @@ void FreeRackPanel::arrange(ui::LayoutPass& pass) {
   const ui::IRect r = rect();
   const int32_t th = pass.px(DeviceChainView::kRackTabH), hh = pass.px(DeviceChainView::kRackHandleH);
   pass.place(*view_, {r.x + 1, r.y + th, std::max(0, r.w - 2), std::max(0, r.h - th - hh)});
+  if (veil_ != nullptr) {  // FZ.3: over the canvas while it is shown
+    if (veil_->visible() != open_) veil_->setVisible(open_);
+    if (open_) pass.place(*veil_, {r.x + 1, r.y + th, std::max(0, r.w - 2), std::max(0, r.h - th - hh)});
+  }
 }
 
 void FreeRackPanel::paint(ui::PaintContext& ctx) {

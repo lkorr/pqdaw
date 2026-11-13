@@ -214,6 +214,11 @@ void ArrangementAutomation::paintBand(PaintContext& ctx, const AutomationBand& b
         break;
       }
   }
+  // FZ.3: a frozen track's device lane — its envelope plays from the render, not offered for edits: greyed, icy.
+  if (frozenLane(b).valid()) {
+    dl.addRectFilled(vis.toRect(), withAlpha(th.surface.background, 120));
+    dl.addRectFilled(vis.toRect(), withAlpha(th.track.frozen, 36));
+  }
   dl.popClip();
 }
 

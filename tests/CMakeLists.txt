@@ -202,6 +202,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_mos_wheel.cpp
     views/test_automation.cpp
     views/test_audio_prefs.cpp
+    views/test_freeze_views.cpp  # FZ.3: Freeze / Unfreeze Track (real dispatch: menus, a group, arm, a refused drag, the status line's Unfreeze, header status by generation, the Device view's veil), goldens
     views/test_export_window.cpp  # EX.2: the Export Audio window (real dispatch: rows, Export → job, progress, Cancel, selection, settings), golden
     views/test_look.cpp
     views/test_tunings_ui.cpp

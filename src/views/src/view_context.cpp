@@ -12,7 +12,9 @@
 #include <cwctype>
 #include <thread>
 
+#include "pq/document/commands.h"
 #include "pq/document/pitch_resolve.h"
+#include "pq/graph/types.h"
 #include "pq/document/serialize.h"
 #include "pq/views/arrangement/automation.h"
 #include "pq/views/browser/library.h"
@@ -236,6 +238,7 @@ void ViewContext::onStoreEvent(const doc::StoreEvent& e) {
   if (e.kind == doc::StoreEventKind::Reset || e.changes.structural()) {
     ++structural_;  // EQ.4
     structuralSerial_ = docSerial_;
+    freezeDirty_ = true;  // FZ.3: the frozen tracks may have changed (SetTrackFrozen is structural)
   }
   if (e.kind == doc::StoreEventKind::Reset || !(e.before->loop == e.after->loop)) syncLoop();
   // T5.8: the sample table changed (a drop, undo / redo of one): resolve it again (cheap: a file check per entry).
@@ -1039,7 +1042,7 @@ void ViewContext::syncAutoArm() {
   const doc::Project& p = *store_.current();
   doc::TrackId want;
   if (const doc::Track* sel = selectedTrack_.valid() ? doc::findTrackPtr(p, selectedTrack_) : nullptr;
-      sel && sel->kind == doc::TrackKind::Midi) {
+      sel && sel->kind == doc::TrackKind::Midi && !sel->frozen) {  // FZ.3: a frozen track records nothing
     bool anyArmed = false;
     doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) { anyArmed = anyArmed || t.mixer.arm; });
     if (!anyArmed) want = sel->id;
@@ -1151,9 +1154,129 @@ void ViewContext::setTuningsVisible(bool v) {
 }
 
 void ViewContext::setStatus(std::string text) {
-  if (text == status_) return;
+  // FZ.3: a command apply refused for a frozen track offers its Unfreeze when the track is plain to see.
+  if (text.find(doc::kFrozenRefusal) != std::string::npos) {
+    const doc::Project& p = *store_.current();
+    doc::TrackId blame;
+    if (const doc::Track* sel = selectedTrack_.valid() ? doc::findTrackPtr(p, selectedTrack_) : nullptr; sel && sel->frozen) {
+      blame = sel->id;
+    } else {
+      uint32_t n = 0;
+      doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+        if (t.frozen && n++ == 0) blame = t.id;
+      });
+      if (n != 1) blame = {};
+    }
+    if (blame.valid()) {
+      setStatus(std::move(text), StatusAction{"Unfreeze", [this, t = blame] {
+                                                const doc::TrackId one[1] = {t};
+                                                (void)setTracksFrozen(one, false);
+                                              }});
+      return;
+    }
+    if (text.find("Unfreeze Track") == std::string::npos) text += " (track menu: Unfreeze Track)";
+  }
+  setStatus(std::move(text), StatusAction{});
+}
+
+void ViewContext::setStatus(std::string text, StatusAction action) {
+  const bool hadAction = static_cast<bool>(statusAction_);
+  statusAction_ = std::move(action);
+  if (text == status_ && !hadAction && !statusAction_) return;
   status_ = std::move(text);
   notify(view_change::kStatus);
+}
+
+void ViewContext::runStatusAction() {
+  StatusAction a = std::move(statusAction_);
+  statusAction_ = {};
+  notify(view_change::kStatus);
+  if (a.run) a.run();
+}
+
+// ---- FZ.3: frozen tracks ------------------------------------------------------------------------------------
+
+void ViewContext::setFreezeSource(FreezeSource source) {
+  freezeSource_ = std::move(source);
+  freezeDirty_ = true;
+  freezeGen_ = 0;
+  (void)pollFreeze();
+  ++freezeSerial_;
+  notify(view_change::kFreeze);
+}
+
+bool ViewContext::pollFreeze() {
+  const uint64_t gen = freezeSource_.generation ? freezeSource_.generation() : 0;
+  if (!freezeDirty_ && gen == freezeGen_) return false;
+  freezeDirty_ = false;
+  freezeGen_ = gen;
+  std::vector<std::pair<uint32_t, FreezeView>> now;
+  bool busy = false;
+  doc::forEachTrack(*store_.current(), [&](const doc::Track& t, const doc::Track*) {
+    if (!t.frozen) return;
+    FreezeView v = freezeSource_.status ? freezeSource_.status(t.id) : FreezeView{};
+    // Frozen but not reported yet (the link plans it after this document change): poll until it is.
+    busy = busy || (freezeSource_.status && (v.state == FreezeView::State::Rendering || v.state == FreezeView::State::None));
+    now.emplace_back(t.id.value, std::move(v));
+  });
+  std::sort(now.begin(), now.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  freezeBusy_ = busy;
+  if (now == freezeStatus_) return false;
+  freezeStatus_ = std::move(now);
+  ++freezeSerial_;
+  notify(view_change::kFreeze);
+  return true;
+}
+
+const FreezeView& ViewContext::freezeStatus(doc::TrackId track) const noexcept {
+  static const FreezeView kNone;
+  const auto it = std::lower_bound(freezeStatus_.begin(), freezeStatus_.end(), track.value,
+                                   [](const auto& e, uint32_t id) { return e.first < id; });
+  return it != freezeStatus_.end() && it->first == track.value ? it->second : kNone;
+}
+
+std::function<uint32_t(doc::TrackId)> ViewContext::frozenSlotOf() const {
+  if (!freezeSource_.slot || freezeStatus_.empty()) return {};
+  return freezeSource_.slot;
+}
+
+bool ViewContext::setTracksFrozen(std::span<const doc::TrackId> tracks, bool frozen) {
+  const doc::Project& p = *store_.current();
+  doc::Batch b;
+  b.label = frozen ? "Freeze Track" : "Unfreeze Track";
+  std::vector<doc::TrackId> disarm;
+  for (const doc::TrackId id : tracks) {
+    const doc::Track* t = doc::findTrackPtr(p, id);
+    if (t == nullptr || t->kind == doc::TrackKind::Master || t->kind == doc::TrackKind::Return) continue;
+    if (frozen) {  // recording into a frozen track is refused at commit: its members are disarmed in the same step
+      auto walk = [&](auto& self, const doc::Track& m) -> void {
+        if (m.mixer.arm && (m.kind == doc::TrackKind::Midi || m.kind == doc::TrackKind::Audio)) disarm.push_back(m.id);
+        for (const doc::TrackPtr& c : m.children) self(self, *c);
+      };
+      walk(walk, *t);
+    }
+    b.commands.emplace_back(doc::SetTrackFrozen{id, frozen});
+  }
+  if (b.commands.empty()) {
+    setStatus(std::string(frozen ? "Freeze Track" : "Unfreeze Track") + ": only MIDI and audio tracks (or groups of them)");
+    return false;
+  }
+  for (const doc::TrackId id : disarm) b.commands.insert(b.commands.begin(), doc::SetTrackArm{id, false});
+  const doc::Snapshot before = store_.current();
+  if (Status s = store_.dispatch(doc::Command(std::move(b))); !s) {
+    setStatus(std::string(frozen ? "Freeze Track" : "Unfreeze Track") + ": " + s.error().message);
+    return false;
+  }
+  if (store_.current() == before) return false;
+  setStatus(frozen ? "Frozen: the track plays its render (Unfreeze Track to edit it)" : "Unfrozen: the track plays live");
+  return true;
+}
+
+void ViewContext::refuseFrozen(doc::TrackId track) {
+  setStatus(std::string(doc::kFrozenRefusal), StatusAction{"Unfreeze", [this, track] {
+                                                 const doc::TrackId one[1] = {track};
+                                                 (void)setTracksFrozen(one, false);
+                                               }});
 }
 
 // --- automation override (T3.15) ---------------------------------------------------------------------------

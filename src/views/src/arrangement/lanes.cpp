@@ -1038,6 +1038,23 @@ void LaneCanvas::paint(PaintContext& ctx) {
       }
     }
   }
+  // FZ.3: a frozen track's clips under an icy veil (they play from its render and are not offered for edits), with a
+  // frost line along their tops. Over the deferred tiles (flushed above); nothing on rows that are not frozen.
+  for (auto it = first; it != last; ++it) {
+    if (it->group || !it->track->frozen || it->track->clips.empty()) continue;
+    const doc::Track& t = *it->track;
+    const ClipIndex& ix = m.clips(t);
+    const auto [a, b] = ix.visible(lp.from, lp.to);
+    const float y0 = static_cast<float>(r.y + it->y) + 1.0f, y1 = static_cast<float>(r.y + it->y + it->h) - 1.0f;
+    const float frost = static_cast<float>(std::max(1, ctx.scale.px(2.0f)));
+    for (size_t j = a; j < b; ++j) {
+      const float x0 = std::max(cx0, std::floor(lp.X(static_cast<double>(ix.start[j]))));
+      const float x1 = std::min(cx1, std::floor(lp.X(static_cast<double>(ix.end[j]))));
+      if (x1 <= x0 || y1 <= y0) continue;
+      dl.addRectFilled({x0, y0, x1, y1}, withAlpha(th.track.frozen, 104));
+      dl.addRectFilled({x0, y0, x1, std::min(y1, y0 + frost)}, th.track.frozen);
+    }
+  }
   view_.comper().paint(lp, localTop, localBottom);  // T6.10: take lanes (their clips, veils, comp selection)
   // T6.7: the recording overlay over the rows' clips.
   if (view_.recording().active)

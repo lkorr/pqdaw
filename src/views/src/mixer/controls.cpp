@@ -191,13 +191,17 @@ void LiveToggle::paint(PaintContext& ctx) {
     }
     ink = m.activatorText;
   }
-  if (v.pressed) fill = paint::pressOf(fill);
+  if (v.disabled) fill = lerp(m.buttonOff, m.background, 0.6f);  // FZ.3: a frozen track's arm (sunk into the strip)
+  else if (v.pressed) fill = paint::pressOf(fill);
   else if (v.hover) fill = paint::hoverOf(fill);
   frame(ctx.dl, r, fill, m.boxBorder);
   if (kind_ == Kind::Arm) {
     const float rad = std::max(1.5f, std::min(ctx.scale.exact(3.0f), 0.28f * static_cast<float>(std::min(r.w, r.h))));
-    ctx.dl.addCircleFilled({static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)},
-                           rad, on() ? m.activatorText : dim(m.buttonText, 0.35f));
+    const Vec2 c{static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)};
+    if (v.disabled)  // FZ.3: an empty ring: nothing to arm
+      ctx.dl.addCircleStroke(c, rad, dim(m.buttonText, 0.3f), std::max(1.0f, ctx.scale.exact(1.0f)));
+    else
+      ctx.dl.addCircleFilled(c, rad, on() ? m.activatorText : dim(m.buttonText, 0.35f));
     return;
   }
   const std::string_view text = kind_ == Kind::Post ? std::string_view(on() ? "Post" : "Pre") : std::string_view(label_);

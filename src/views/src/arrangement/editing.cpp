@@ -509,6 +509,7 @@ Cursor Editor::cursorAt(Vec2 p) const {
   }
   const Hit h = hitTest(p);
   if (!h.clip) return Cursor::Arrow;  // empty lane space: a drag selects time
+  if (frozenTrack(h.ref.track)) return Cursor::Arrow;  // FZ.3: nothing to drag on a frozen track's clip
   if (h.zone == 0) return Cursor::Move;
   if (h.zone == kZoneGain) return Cursor::ResizeNS;
   if (h.zone == kZoneFadeIn || h.zone == kZoneFadeOut) return Cursor::ResizeEW;
@@ -544,7 +545,7 @@ void Editor::hoverAt(Vec2 p) {
   if (drag_.kind != DragKind::None) return;
   const Hit h = hitTest(p);
   HoverPart hp;
-  if (h.clip && h.zone != 2) {
+  if (h.clip && h.zone != 2 && !frozenTrack(h.ref.track)) {  // FZ.3: no grab highlight on a frozen track's clip
     hp.ref = h.ref;
     hp.zone = static_cast<int8_t>(h.zone);
   }
@@ -606,6 +607,10 @@ void Editor::press(const PointerEvent& e) {
   // T5.6: an audio clip's handles: a drag edits the fade / gain (double-click on the gain handle: 0 dB).
   if (h.clip && h.clip->audio && h.zone >= kZoneFadeIn && e.button == PointerButton::Left) {
     if (!selected(h.ref.clip)) setSelection(selectionOfClips({h.ref}), true);
+    if (frozenTrack(h.ref.track)) {  // FZ.3: no fade / gain edit of a frozen track's clip
+      ctx_.refuseFrozen(h.ref.track);
+      return;
+    }
     if (h.zone == kZoneGain && e.clickCount >= 2) {
       (void)apply(doc::ops::setAudioClipGain(*ctx_.doc(), std::span<const doc::ClipRef>(&h.ref, 1), 0.0f), "Clip Gain", false);
       return;
@@ -696,7 +701,20 @@ void Editor::placeStart(Ticks t) {
   if (!ctx_.transport().playhead().playing) ctx_.transport().locate(t);
 }
 
+bool Editor::frozenTrack(doc::TrackId id) const {
+  const doc::Track* t = doc::findTrackPtr(*ctx_.doc(), id);
+  return t != nullptr && t->frozen;
+}
+
 void Editor::beginClipDrag(DragKind kind, const Hit& h) {
+  // FZ.3: a frozen track's clips are not offered for a move or a trim (doc::apply refuses it anyway): the press
+  // selects, the drag does nothing, the status line says why and offers Unfreeze.
+  for (const doc::ClipRef& r : sel_.clips)
+    if (frozenTrack(r.track)) {
+      ctx_.refuseFrozen(r.track);
+      drag_.kind = DragKind::None;
+      return;
+    }
   drag_.kind = kind;
   drag_.pressRow = h.row;
   drag_.edge = h.zone < 0 ? doc::ops::ClipEdge::Start : doc::ops::ClipEdge::End;
@@ -1520,6 +1538,8 @@ Menu* Editor::openContextMenu(Vec2 at) {
   items.push_back(action("Insert MIDI Clip", "arrangement.insertMidiClip", "Ctrl+Shift+M"));
   items.push_back(action("Loop Selection", "arrangement.loopSelection", "Ctrl+L"));
   items.push_back(action("Deactivate / Activate", "arrangement.toggleActive", "0"));
+  items.push_back(MenuItem::sep());
+  freezeItems(items);  // FZ.3: the selected clips' tracks
   items.push_back(MenuItem::sep());
   items.push_back(action("Insert Time", "arrangement.insertTime", "Ctrl+I"));
   items.push_back(action("Duplicate Time", "arrangement.duplicateTime", "Ctrl+Shift+D"));

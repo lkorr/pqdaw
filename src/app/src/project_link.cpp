@@ -566,6 +566,7 @@ Status ProjectLink::setSampleRate(double rate) {
     tapBus_.clear();
     ++layoutSerial_;
     frozenReady_.clear();  // FZ.2: every render is at the old rate (re-keyed below: live until re-rendered)
+    frozenReadyGen_.fetch_add(1, std::memory_order_acq_rel);
     // TMM.2: a frame table's levels depend on the rate: every slot gets the default at the new one (TMM.5's builder
     // rebuilds the instances' own tables).
     for (MetaSlot& m : metaSlots_) {
@@ -646,6 +647,20 @@ void ProjectLink::attach(views::ViewContext& ctx) {
                             [this] { return staleRecordings(); },  // M6 review L13
                             [this](const std::string& dir) { return discardStaleRecordings(dir); }});
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onDocumentChange(e); });
+  // FZ.3: the frozen tracks' render statuses for the views (polled by the generation: one atomic read when idle).
+  ctx.setFreezeSource({[this] { return freezeGeneration(); },
+                       [this](doc::TrackId t) {
+                         const FreezeStatus s = freezeStatus(t);
+                         views::FreezeView v;
+                         v.state = s.state == FreezeState::Rendering ? views::FreezeView::State::Rendering
+                                   : s.state == FreezeState::Ready   ? views::FreezeView::State::Ready
+                                   : s.state == FreezeState::Failed  ? views::FreezeView::State::Failed
+                                                                     : views::FreezeView::State::None;
+                         v.progress = s.progress;
+                         v.error = s.error;
+                         return v;
+                       },
+                       [this](doc::TrackId t) { return frozenSlot(t); }});
   // "Re-enable Automation" and hand-made overrides (T3.15) change which lanes play (T3.17-fix3, M3 review M4).
   observer_ = ctx.observe([this](uint32_t what) {
     if ((what & views::view_change::kAutomation) != 0 && current_) publishAutomation(*current_);
@@ -682,6 +697,7 @@ void ProjectLink::detach() {
   observer_ = views::ViewContext::Subscription();
   sub_ = views::ViewContext::Subscription();
   if (ctx_ != nullptr) ctx_->setLoweringProvided(false);
+  if (ctx_ != nullptr) ctx_->setFreezeSource({});  // FZ.3
   if (ctx_ != nullptr) ctx_->setUnsavedRecordings({});  // T6.7b
   ctx_ = nullptr;
 }
@@ -1093,6 +1109,7 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
       for (const auto& [id, pub] : frozenPub_) releaseFrozenSlot(id);
       for (const FrozenPub& r : retiring_) releaseFrozenSlot(r.render.track.value);
       frozenReady_.clear();
+      frozenReadyGen_.fetch_add(1, std::memory_order_acq_rel);
     }
     if (reset) {
       frozenPub_.clear();

@@ -64,6 +64,18 @@ inline int32_t text(const ui::PaintContext& ctx, ui::FontId font, const ui::IRec
   return run.advance;
 }
 
+// FZ.3: the frozen mark — a six-armed snowflake of radius `r` (device px), arms `w` px wide, centred on `c`.
+inline void snowflake(ui::DrawList& dl, ui::Vec2 c, float r, float w, ui::Rgba col) {
+  for (int k = 0; k < 3; ++k) {
+    const float a = 1.0471975512f * static_cast<float>(k) + 1.5707963268f;  // 90°, 150°, 210°
+    const float dx = std::cos(a) * r, dy = std::sin(a) * r;
+    const float nx = -std::sin(a) * 0.5f * w, ny = std::cos(a) * 0.5f * w;
+    const ui::Vec2 q[4] = {{c.x - dx + nx, c.y - dy + ny}, {c.x + dx + nx, c.y + dy + ny},
+                           {c.x + dx - nx, c.y + dy - ny}, {c.x - dx - nx, c.y - dy - ny}};
+    dl.addConvexPolyFilled(q, col);
+  }
+}
+
 inline ui::Rgba hoverOf(ui::Rgba c) noexcept { return ui::lerp(c, ui::rgba(255, 255, 255, ui::alphaOf(c)), 0.12f); }
 inline ui::Rgba pressOf(ui::Rgba c) noexcept { return ui::lerp(c, ui::rgba(0, 0, 0, ui::alphaOf(c)), 0.14f); }
 

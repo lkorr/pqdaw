@@ -501,7 +501,10 @@ void MixerStrip::resyncToggles() {
   if (!t) return;
   if (activator_) activator_->setOn(!t->mixer.mute);
   if (solo_) solo_->setOn(t->mixer.solo);
-  if (arm_) arm_->setOn(ctl_->ctx.armShown(*t));  // KB.1: lit while auto-armed too
+  if (arm_) {
+    arm_->setOn(ctl_->ctx.armShown(*t));  // KB.1: lit while auto-armed too
+    arm_->setEnabled(!t->frozen);         // FZ.3: a frozen track records nothing (its commit would be refused)
+  }
   if (post_) post_->setOn(!doc::ops::returnSendsPreFader(*ctl_->ctx.doc(), id_));
 }
 
@@ -573,7 +576,10 @@ void MixerStrip::bind(const doc::Project& p, const doc::Track& t) {
     static_cast<LiveToggle*>(activator_)->setLabel(ctl_->activatorLabel(ctl_->ctx.doc(), t.id));
   }
   if (solo_) solo_->setOn(t.mixer.solo);
-  if (arm_) arm_->setOn(ctl_->ctx.armShown(t));  // KB.1: lit while auto-armed too
+  if (arm_) {
+    arm_->setOn(ctl_->ctx.armShown(t));  // KB.1: lit while auto-armed too
+    arm_->setEnabled(!t.frozen);         // FZ.3: a frozen track records nothing (its commit would be refused)
+  }
   if (post_) post_->setOn(!doc::ops::returnSendsPreFader(p, t.id));
   syncSends(p, t);
   if (output_) static_cast<Chooser*>(output_)->setText(mixer::outputLabel(p, t));
