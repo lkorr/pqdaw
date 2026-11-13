@@ -840,7 +840,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [ ] **DY.5 truepeak atom** (plan §DY.5). After DY.1.
 - [ ] **DY.6 Limiter module** 👁 (plan §DY.6). After DY.1, DY.3, DY.5.
 - [x] **MF.1 Standard MIDI File reader / writer** *(merged 4f0603ab; Q260; 10 MB file parses in ≈ 21 ms (check), resolveNotes ≈ 155 ms)* (plan §MF.1).
-- [ ] **MF.2 MIDI import** (plan §MF.2). After MF.1.
+- [x] **MF.2 MIDI import** *(merged 481a1604; Q263: bent / MTS keys = absolute 12-TET pitch + cents; unmapped .kbm keys kept at 12-TET; clips not looped; MIDI first in a mixed drop)* (plan §MF.2).
 - [ ] **MF.3 MIDI export (12edo, MPE, Degrees)** (plan §MF.3). After MF.1.
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)

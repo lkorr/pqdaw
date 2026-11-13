@@ -608,3 +608,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: defaults ≈ 4–5 ns per stereo sample, RMS + Auto + 10 ms ≈ 12 ns (ship, ~70 % load: indicative; idle re-measure at the audit). Only the chosen path is scheduled.
 - Notes: Q261, Q262. Audio Effects browser list is hard-coded (Utility / Saturator / LFO) in 3 files: Compressor sits under Meta Modules.
 
+## 2026-11-13 · MF.2 merged · main
+- Did: merged task/MF.2-midi-import (481a1604): doc::ops::importMidi (one "Import MIDI" batch: tempo / signatures into a clipless project, createTrack, captureClip; exact int64 ticks; format 0 → one track, format 1 → one per MTrk; plain keys through the track's InputPitchMap, bent / MTS keys via InputPitchMap::atHz: Degree within 0.5 ¢ in Keys mode else Cents); views importMidiFiles used by FileDrop (arrangement and band lanes; .mid + audio = one undo step), loadClipItem and the browser.
+- Verified: worker: pq_tests_document midi import 6/6, pq_tests_views file / lane drop 19/19, user library clips 1/1; its final -Affected was killed for low memory; orchestrator rebased onto DY.4 and re-ran -Affected: 45/45.
+- Perf: 100k notes (⅔ bent) build ≈ 40 ms, dispatch 0.7 ms (check).
+- Notes: Q263. test_file_drop's "refused MIDI" case now expects a broken .mid to report "could not import" (behaviour change, not weakened).
+

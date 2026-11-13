@@ -1354,7 +1354,7 @@ device's control). Defaults: threshold −20 dB, 4:1, knee 6 dB, attack 2 ms, re
 default threshold 0 dB does nothing). Reversible: compressorBlocks only.
 Status: open.
 
-## Q?-MF.2-a · MIDI import choices the plan leaves open
+## Q263 · 2026-11-13 · MF.2 · MIDI import choices the plan leaves open
 Context: MF.2 maps resolved SMF notes onto tracks (docs/plans/DY.md "MF.2", decision 4). Open points: (1) what pitch a
 bent / MTS-retuned key means — the key's live-input pitch plus the offset, or the absolute 12-TET(key) · 2^(cents/1200);
 (2) a plain key the track's .kbm leaves unmapped (live input plays nothing); (3) whether imported clips loop; (4) where a
