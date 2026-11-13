@@ -129,7 +129,14 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
     if (!shownNode(n)) continue;  // TL.1
     // TX.orbit-ports: an orbiting port sits outside the block (a port's width at its scale).
     const float out = n.orbitIn.on || n.orbitOut.on ? 2.0f * (circuit::kOrbitPortR + circuit::kOrbitGap) * n.scale : 0.0f;
-    if (w.x < n.x - reach - out || w.x > n.x + n.w + reach + out || w.y < n.y - reach - out || w.y > n.y + n.h + reach + out) continue;
+    if (w.x < n.x - reach - out || w.x > n.x + n.w + reach + out) continue;
+    // TX.ports-always: a symbol's leads may sit above or below its body (an atom with many inputs, noise_step's ten):
+    // the rows its pins take, so every drawn lead is pressable.
+    float y0 = n.y, y1 = n.y + n.h;
+    if (n.symbol)
+      for (const std::vector<circuit::PinSpec>* pins : {&n.symbol->inputs, &n.symbol->outputs})
+        for (const circuit::PinSpec& q : *pins) y0 = std::min(y0, n.y + q.y), y1 = std::max(y1, n.y + q.y);
+    if (w.y < y0 - reach - out || w.y > y1 + reach + out) continue;
     // TX.block-drag: a small block's pins reach a part of its size (its middle stays its body: it can be grabbed).
     const float nodeReach = n.kind == NodeKind::Device ? std::min(reach, std::max(floorReach, kSmallPinReach * std::min(n.w, n.h))) : reach;
     for (int side = 0; side < 2; ++side) {
@@ -876,7 +883,12 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       // TX.groups: a group's capsule — double-click its title strip to close it; a press on its frame selects the group
       // (an opened capsule is no scene node) and drags or nudges it as a block. A closed group opens only from its menu
       // (Open Group): a double-click on it does nothing, so a module is not opened by accident.
-      if (node != kNone && pp.nodes[node].group) {
+      // TX.ports-always: a port over the capsule (the main ports of a block inside it orbit its outline, off the block) is
+      // the port's.
+      bool portOverCapsule = false;
+      if (node != kNone && pp.nodes[node].group && pp.nodes[node].groupOpen)
+        if (const PinHit pin = pinAt(e.pos); pin.valid() && pin.node != node) portOverCapsule = true;
+      if (node != kNone && pp.nodes[node].group && !portOverCapsule) {
         const Node& n = pp.nodes[node];
         const doc::DeviceId g = n.device;
         if (e.clickCount >= 2 && n.groupOpen) {

@@ -1665,8 +1665,10 @@ struct Builder {
     std::vector<uint32_t> blocks;
     for (uint32_t i = 0; i < out.nodes.size(); ++i) {
       Node& n = out.nodes[i];
-      // GU.5b: a block inside an opened group keeps its pins on its edges (its cables hang from them; TX.cable-look kept this).
-      if (n.kind != NodeKind::Device || n.expanded || (n.group && n.groupOpen) || n.symbol || n.valueKnob || n.capsule != kNone) continue;
+      // TX.ports-always: every closed block, wherever it sits (top level or inside an opened group), a value block's knob
+      // too — its face or panel draws no jacks, so the canvas draws its main ports. Only an atom block's circuit symbol
+      // keeps its pins where the symbol's leads are (the canvas draws them as stubs: visible and hit there).
+      if (n.kind != NodeKind::Device || n.expanded || (n.group && n.groupOpen) || n.symbol) continue;
       n.outline = outlineOf(n);
       if (!n.outline.valid()) continue;
       n.orbitIn.on = n.mainIn >= 0 && static_cast<size_t>(n.mainIn) < n.inputs.size() && !n.inputs[static_cast<size_t>(n.mainIn)].anchored;
