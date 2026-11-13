@@ -390,6 +390,8 @@ public:
   }
 
   GroupResponses* responses() override { return &ctx_.groupResponses(); }
+  const doc::Project* project() const override { return ctx_.doc().get(); }  // DY.2
+  const doc::DeviceLibrary* deviceLibrary() const override { return ctx_.deviceLibrary(); }
 
   bool run(const EditBuilder& build) override {
     if (!build || ctx_.doc() == nullptr) return false;
@@ -620,8 +622,11 @@ private:
       i.valid = true;
       return;
     }
-    // Data / Signal / Panel: shown, not edited by the generic kinds (a Panel binding: the child group's name).
-    i.label = b.kind == doc::BindingKind::Panel ? d->name : b.name;
+    // Data / Signal / Panel / Input: shown, not edited by the generic kinds (a Panel binding: the child group's name; an
+    // Input binding, DY.2: the block's name, with the input's when it is not the main one).
+    i.label = b.kind == doc::BindingKind::Panel ? d->name
+              : b.kind == doc::BindingKind::Input ? (b.name.empty() ? d->name : d->name + " " + b.name)
+                                                  : b.name;
     i.editable = false;
     i.valid = true;
   }

@@ -137,6 +137,11 @@ public:
   // holds at most 32 bands"), the store refuses, or there is no document; an empty edit is true and records nothing.
   using EditBuilder = std::function<doc::ops::EditResult(const doc::Project&, doc::IdSource&)>;
   virtual bool run(const EditBuilder& /*build*/) { return false; }
+  // ---- DY.2: what an element reads of the whole project (the `cablesource` element: the tracks, the wires) ----
+  // The document now (null: none; valid until the next edit — read it, don't keep it) and the device library that
+  // resolves its blocks' ports (null: none).
+  virtual const doc::Project* project() const { return nullptr; }
+  virtual const doc::DeviceLibrary* deviceLibrary() const { return nullptr; }
   // ---- EQ.4: the response displays (response_elements.cpp) ----
   // Groups' analytic responses (prepared once per structural revision, their controls re-read per change), null: none
   // (no document: the displays draw their grid and "no curve").

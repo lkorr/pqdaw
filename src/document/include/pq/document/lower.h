@@ -365,7 +365,13 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // has none: the engine's own end).
 // A cable into ANOTHER TRACK'S MIXER (from a block or a track's own signal) is a send-like route: its every channel (voices
 // summed by its reducer) leaves as `export m<wire>`, arrives as `in m<wire>` (width inferred) and is summed into that
-// mixer; graph::WireKind::Audio between the tracks. TX.cross-track (SPEC §15 2026-11-03 "tracks are not walls"): one that
+// mixer; graph::WireKind::Audio between the tracks. SIDECHAINS (DY.2; SPEC §8, §15): a cable from another track (a
+// block's output, or the track's own signal: a wire from its source with port "", any non-MIDI track) into a block's
+// SIGNAL input (an `in` of its callee that is not a param nor a param's `_add`) is graph::WireKind::Sidechain: every
+// channel leaves as `export m<wire>` and arrives as `in m<wire>` (width inferred; into a meta module's input its mid),
+// the partition merges the tracks (graph/project.h) and the compiler compensates it like audio (pq/engine
+// latency_plan.h: the reader's sources play as late as the latent input). A cable into a param (or `_add`) stays
+// graph::WireKind::Modulation, its first channel, never delayed (SPEC §15 2026-10-24). TX.cross-track (SPEC §15 2026-11-03 "tracks are not walls"): one that
 // closes a cycle between tracks (the target's output reaches the source's track through routing, sends or other
 // cross-track wires) is planned like every wire: Delayed (its z⁻¹, per sample) when the loop is delay-free, Refused only
 // through two instrument tracks or across a voice sum (VoiceLoop). See "Loops between tracks" below.

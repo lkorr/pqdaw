@@ -1495,6 +1495,10 @@ struct LWire {
   // mixer input (toDev / toPin unused; `input` is set: the mixer reads the path's end plus these wires).
   bool fromTrack = false;
   bool toMixer = false;
+  // DY.2 (SPEC §8 sidechain, §15): the target is a SIGNAL input of its callee (the signalInput branch: not a param, not
+  // a `<param>_add` input, not a mixer). Across tracks such a wire is a sidechain (graph::WireKind::Sidechain:
+  // latency-compensated, every channel); into a param it stays modulation (never delayed).
+  bool signalIn = false;
   bool phase = false;  // TX.all-free-fix1: a notes cable into a phase input: the note's phase (phasor of its Hz)
   // IG.1-2: a single-signal term into an instrument group's Out (from a member that runs once, a single-signal cable or
   // from outside): added once after the voices' sum, not per voice.
@@ -1504,6 +1508,8 @@ struct LWire {
   // instance instead of being made per voice (pq/graph/infer.h).
   bool broadcast = false;
 };
+// DY.2: a wire from another track into a signal input (lower.h "Sidechains"): graph::WireKind::Sidechain, every channel.
+bool crossSidechain(const LWire& w) noexcept { return w.fromNode != w.toNode && w.signalIn && !w.toMixer; }
 
 struct WirePlan {
   std::vector<LWire> wires;       // lowered, in id order
@@ -1851,10 +1857,11 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       const auto a = nodeOfTrack.find(w.noteSource.value);
       const uint32_t target = w.toMixer() ? (nodeOfTrack.count(w.mixer.value) ? nodeOfTrack.at(w.mixer.value) : graph::kNone)
                                           : (b != where.end() ? b->second.first : graph::kNone);
-      // TX.all-free-fix1: another track's mixer takes a track's own signal too (a send-like route; not its notes).
+      // TX.all-free-fix1: another track's mixer takes a track's own signal too (a send-like route; not its notes). DY.2:
+      // so does another track's block (its "Pre FX" signal: a sidechain into an input, modulation into a param).
       const bool otherMixer = w.toMixer() && a != nodeOfTrack.end() && target != graph::kNone && target != a->second;
       const bool midi = a != nodeOfTrack.end() && pl.nodes[a->second].kind == Kind::Midi;
-      if (a == nodeOfTrack.end() || target == graph::kNone || (!midi && target != a->second && !otherMixer)) {
+      if (a == nodeOfTrack.end() || target == graph::kNone) {
         inactive();
         continue;
       }
@@ -2013,7 +2020,7 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       lw.paramNode = pp->node;
     } else if (const uint32_t in = signalInput(*dd.callee, w.param); in != graph::kNone) {
       pin = point = in;
-      lw.input = true;
+      lw.input = lw.signalIn = true;
     }
     // A Travel wire goes into a param (never an input). GU.9: from any output too (a macro's value block: a mapping).
     if (w.travels() && sourcePort != graph::kNone && lw.input) sourcePort = graph::kNone;
@@ -2576,10 +2583,13 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     PortRef s;
     auto from = [&] { return outOf(b, w.fromDev, w.fromPort); };
     if (w.fromTrack) {  // TX.all-free: the track's own signal (every channel into an input, else its first)
-      s = w.input ? b.sourceX : ir.atom("channel", {b.sourceX, b.c0()}, wid(w, kWChannel));
+      // (DY.2: into another track only into its mixer or a signal input — a sidechain; a param's `_add` takes the first)
+      const bool all = w.input && (w.fromNode == w.toNode || w.toMixer || w.signalIn);
+      s = all ? b.sourceX : ir.atom("channel", {b.sourceX, b.c0()}, wid(w, kWChannel));
       // Into a meta module's input: its mid, as from any wide source (below); a track's silent source (a return no send
-      // reaches: the constant 0) is mono already.
-      if (w.input && !w.toMixer && isMetaDevice(*td[w.toDev].device) && !td[w.toDev].bypass && !(b.sourceX == b.c0())) {
+      // reaches: the constant 0) is mono already. (Across tracks the target's patch takes the mid: `arriving`.)
+      if (w.input && !w.toMixer && w.fromNode == w.toNode && isMetaDevice(*td[w.toDev].device) && !td[w.toDev].bypass &&
+          !(b.sourceX == b.c0())) {
         const PortRef l = ir.atom("channel", {s, b.c0()}, wid(w, kWMidL));
         const PortRef r = ir.atom("channel", {s, b.c1()}, wid(w, kWMidR));
         s = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
@@ -2589,8 +2599,8 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       else s = ir.atom(w.notes->atom, {}, wid(w, kWNote));
       if (w.notes->boolean) s = ir.atom("gate_to_real", {s}, wid(w, kWNoteReal));
       if (w.phase) s = ir.atom("phasor", {s}, wid(w, kWNotePhase));  // TX.all-free-fix1: the note's phase
-    } else if (w.toMixer) {
-      s = from();  // TX.all-free-fix1: into another track's mixer: every channel
+    } else if (w.toMixer || crossSidechain(w)) {
+      s = from();  // TX.all-free-fix1: into another track's mixer (DY.2: or a signal input there): every channel
     } else if (w.input && w.fromNode == w.toNode) {
       s = from();  // TX.patching: into an input on its own track, every channel
       // TX.groups: a meta module's outputs are mono, so a signal of more channels (or of a width only inference knows:
@@ -2623,8 +2633,23 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
   // closes a delay-free loop.
   auto arriving = [&](const LWire& w) {
     constexpr graph::PortType kAnyGlobal = graph::portType(graph::Kind::Real, graph::Rate::Infer, graph::Poly::Global, graph::kWidthMono);
+    // DY.2: a sidechain (a signal input fed from another track) arrives with every channel, as a mixer route does; into
+    // a meta module's input as its mid (the same-track rule; a mono signal's mid is itself, bit for bit).
+    constexpr graph::PortType kRoute = graph::portType(graph::Kind::Infer, graph::Rate::Audio, graph::Poly::Global, graph::kWidthInfer);
     const std::string id = std::to_string(w.wire->id.value);
-    PortRef src = w.fromNode == node ? source(w) : ir.input("m" + id, b.c0(), wid(w, kWIn), kAnyGlobal);
+    PortRef src;
+    if (w.fromNode == node) {
+      src = source(w);
+    } else if (crossSidechain(w)) {
+      src = ir.input("m" + id, b.c0(), wid(w, kWIn), kRoute);
+      if (isMetaDevice(*td[w.toDev].device) && !td[w.toDev].bypass) {
+        const PortRef l = ir.atom("channel", {src, b.c0()}, wid(w, kWMidL));
+        const PortRef r = ir.atom("channel", {src, b.c1()}, wid(w, kWMidR));
+        src = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
+      }
+    } else {
+      src = ir.input("m" + id, b.c0(), wid(w, kWIn), kAnyGlobal);
+    }
     if (w.delayed) src = ir.atom("z1", {src}, wid(w, kWDelay));  // closes a loop: 1 sample (SPEC §15 2026-10-24)
     return src;
   };
@@ -3952,7 +3977,8 @@ out.wires = withLinks(wp.states, *cables, pl);
     if (w.fromNode != w.toNode) {
       const std::string m = "m" + std::to_string(w.wire->id.value);
       // (TX.all-free-fix1: a cable into another track's mixer is an audio route, as a send is)
-      out.graph.wires.push_back({{w.fromNode, m}, {w.toNode, m}, w.toMixer ? W::Audio : W::Modulation});
+      // (DY.2: into another track's signal input a sidechain — compensated like audio; into a param modulation)
+      out.graph.wires.push_back({{w.fromNode, m}, {w.toNode, m}, w.toMixer ? W::Audio : crossSidechain(w) ? W::Sidechain : W::Modulation});
     }
   // IG.1-2 (lower.h "Voice contexts"): a voice context lowered in its source's patch sends its output to the placeholder
   // on its home's path (an audio route, like a send).

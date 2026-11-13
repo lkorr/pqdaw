@@ -22,8 +22,8 @@ std::string elementName(const PanelElement& e) { return "panel element " + std::
 }  // namespace
 
 std::string_view bindingKindName(BindingKind k) noexcept {
-  static constexpr std::array<std::string_view, kBindingKindCount> kNames = {"none", "control", "setting",
-                                                                             "data", "signal",  "panel"};
+  static constexpr std::array<std::string_view, kBindingKindCount> kNames = {"none",   "control", "setting", "data",
+                                                                             "signal", "panel",   "input"};
   const auto i = static_cast<size_t>(k);
   return i < kNames.size() ? kNames[i] : std::string_view("none");
 }
@@ -37,6 +37,7 @@ Binding settingBinding(DeviceId device, std::string setting, std::string meta) {
 Binding signalBinding(DeviceId device, std::string output) { return Binding{BindingKind::Signal, device, {}, std::move(output)}; }
 Binding panelBinding(DeviceId group) { return Binding{BindingKind::Panel, group, {}, {}}; }
 Binding dataBinding(DeviceId device, std::string meta) { return Binding{BindingKind::Data, device, std::move(meta), {}}; }
+Binding inputBinding(DeviceId device, std::string input) { return Binding{BindingKind::Input, device, {}, std::move(input)}; }
 
 EmbedFit embedFit(float w, float h, float childW, float childH) noexcept {
   EmbedFit f;
@@ -142,6 +143,9 @@ Status checkPanel(const Panel& p) {
           if (!b.device.valid()) return bad(elementName(e) + ": a " + std::string(bindingKindName(b.kind)) + " binding names a block");
           if (!b.name.empty()) return bad(elementName(e) + ": a " + std::string(bindingKindName(b.kind)) + " binding has no name");
           if (b.kind == BindingKind::Panel && !b.meta.empty()) return bad(elementName(e) + ": a panel binding names a group (no meta path)");
+          break;
+        case BindingKind::Input:  // DY.2 (name "": the main input)
+          if (!b.device.valid() || !b.meta.empty()) return bad(elementName(e) + ": an input binding names a block (no meta path)");
           break;
       }
     }

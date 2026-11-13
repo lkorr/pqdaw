@@ -1339,6 +1339,7 @@ void registerGeneric() {
     registerEngineElements(reg);  // GU.7
     registerResponseElements(reg);  // EQ.4
     registerTempoSlider(reg);  // DT.1
+    registerCableSource(reg);  // DY.2
   });
 }
 

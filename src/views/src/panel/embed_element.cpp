@@ -60,6 +60,8 @@ public:
   bool transportPlaying() const override { return t_.transportPlaying(); }
   // EQ.4b: an embedded EQ's displays draw its curves and its band ops edit (they showed "no curve" and did nothing).
   bool run(const EditBuilder& build) override { return t_.run(build); }
+  const doc::Project* project() const override { return t_.project(); }  // DY.2
+  const doc::DeviceLibrary* deviceLibrary() const override { return t_.deviceLibrary(); }
   GroupResponses* responses() override { return t_.responses(); }
 
 private:

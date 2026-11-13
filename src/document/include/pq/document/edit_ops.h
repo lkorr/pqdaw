@@ -656,6 +656,34 @@ EditResult setGroupPolyphony(const Project& p, DeviceId group, const GroupPolyph
 std::vector<WireId> wiresInto(const Project& p, DeviceId device, std::string_view param);
 std::vector<WireId> wiresFrom(const Project& p, DeviceId device, std::string_view port);
 
+// ---- Cable sources (DY.2; SPEC §8 "sidechain"; the panel element `cablesource`, views/src/panel/cable_source.cpp) ----
+// A SIDECHAIN is an ordinary cable from another track into a block's signal input (lower.h "Sidechains": compensated).
+// What a picker offers per track (not the master; not the target's own track), in forEachTrack order:
+//   Pre   the track's own signal before its blocks — a wire from its source with port "" (Wire::noteSource); a MIDI
+//         track's own signal is its notes, so there the main output of its main path's first block (the instrument);
+//   Post  the block feeding the track's mixer (the last block of a complete main path, its main output), when that
+//         differs from Pre.
+// `ends` holds the source end only (noteSource, or from + port kMainPort).
+struct CableSource {
+  TrackId track;
+  bool post = false;
+  Wire ends;
+};
+std::vector<CableSource> cableSources(const Project& p, TrackId except);
+// Whether two wires start at the same source end (device + port, or track source + port).
+bool sameSourceEnd(const Wire& a, const Wire& b) noexcept;
+// The track a wire's source end is on (null: none).
+const Track* sourceTrackOf(const Project& p, const Wire& w) noexcept;
+// The wires from another track into `input`.`param` (`param` as written or as its main port, kMainPort: canonicalWire
+// with `lib`), by id.
+std::vector<WireId> crossTrackWiresInto(const Project& p, const DeviceLibrary* lib, DeviceId input, std::string_view param);
+// ONE undo step ("Cable Source"): every wire from another track into `input`.`param` removed and, with a `source`,
+// a wire from its source end into it connected (Add law, canonicalWire); with `on` (a control: a value block's
+// `value`, `onParam`) it set to 1 when a source is picked, 0 when none. Picking what is already the one source is an
+// empty edit. Refused: the source on `input`'s own track, an unknown device.
+EditResult setCableSource(const Project& p, IdSource& ids, const DeviceLibrary* lib, DeviceId input, std::string param,
+                          const std::optional<Wire>& source, DeviceId on = {}, std::string onParam = {});
+
 // ---- Groups (TX.groups; model.h "Groups"; QUESTIONS Q?-TX.groups-a) ----------------------------------------------
 // Ctrl+G in the circuit (the project patch view): the selected blocks of ONE track become the members of a new group.
 // TX.all-free: blocks on the main path (they must be next to each other on it) are replaced on the path by the group

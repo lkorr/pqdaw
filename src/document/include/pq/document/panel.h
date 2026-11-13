@@ -20,6 +20,8 @@
 //               Data     a block's data (a meta instance's DataValue: harmonic tables, envelope breakpoints; GU.7)
 //               Signal   an output port (displays, mod-source handles): `name` the port
 //               Panel    a whole child panel (`device` a group inside: embedded, GU.6)
+//               Input    an input port a cable reaches (DY.2: the `cablesource` element's target): `name` the input,
+//                        "" (kMainPort) the block's main input
 //
 // Rules (docs/plans/GU.md "Decided"):
 //   - A panel binds only what is inside its group (any depth) or the group itself (its own settings): SetGroupPanel and
@@ -48,9 +50,10 @@ namespace pq::doc {
 struct Device;
 using DevicePtr = std::shared_ptr<const Device>;
 
-enum class BindingKind : uint8_t { None, Control, Setting, Data, Signal, Panel };
-inline constexpr uint32_t kBindingKindCount = 6;
-std::string_view bindingKindName(BindingKind k) noexcept;  // "none", "control", "setting", "data", "signal", "panel"
+enum class BindingKind : uint8_t { None, Control, Setting, Data, Signal, Panel, Input };
+inline constexpr uint32_t kBindingKindCount = 7;
+// "none", "control", "setting", "data", "signal", "panel", "input"
+std::string_view bindingKindName(BindingKind k) noexcept;
 
 struct Binding {
   BindingKind kind = BindingKind::None;
@@ -65,6 +68,7 @@ Binding settingBinding(DeviceId device, std::string setting, std::string meta = 
 Binding signalBinding(DeviceId device, std::string output);
 Binding panelBinding(DeviceId group);  // GU.6: a child group's whole panel (embedded)
 Binding dataBinding(DeviceId device, std::string meta = {});  // GU.7: a native engine's data (and its face's state)
+Binding inputBinding(DeviceId device, std::string input = {});  // DY.2: an input a cable reaches ("": the main input)
 
 // A style field: a number or a text (a theme token, an enum's name, a label).
 struct StyleField {

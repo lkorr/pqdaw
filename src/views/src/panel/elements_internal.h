@@ -80,6 +80,10 @@ void registerResponseElements(void (*reg)(std::string_view kind, std::string_vie
 void registerTempoSlider(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
                                      std::span<const std::string_view> slots, float w, float h, ElementFactory f));
 
+// DY.2: the cable source picker (cable_source.cpp, kind "cablesource").
+void registerCableSource(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
+                                     std::span<const std::string_view> slots, float w, float h, ElementFactory f));
+
 // The curve editor (curve_element.cpp).
 std::span<const StyleSpec> curveElementStyle() noexcept;
 std::unique_ptr<Element> makeCurveElement(const doc::PanelElement& desc);

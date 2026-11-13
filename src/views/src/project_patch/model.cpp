@@ -228,7 +228,9 @@ struct Builder {
     }
     for (size_t gi = 0; gi < low.graph.wires.size(); ++gi) {
       const graph::ProjectWire& gw = low.graph.wires[gi];
-      if (gw.kind == graph::WireKind::Modulation && gw.from.port.size() > 1 && gw.from.port[0] == 'm')
+      // (DY.2: a sidechain — a cable into another track's signal input — is the same document wire's port m<wire>)
+      if ((gw.kind == graph::WireKind::Modulation || gw.kind == graph::WireKind::Sidechain) && gw.from.port.size() > 1 &&
+          gw.from.port[0] == 'm')
         modGraphWire[static_cast<uint32_t>(std::stoul(gw.from.port.substr(1)))] = static_cast<uint32_t>(gi);
     }
   }
@@ -1089,7 +1091,7 @@ struct Builder {
     for (const doc::DelayedSend& d : low.delayedSends) delayed.insert((uint64_t{d.from.value} << 32) | d.to.value);
     for (uint32_t gi = 0; gi < low.graph.wires.size(); ++gi) {
       const graph::ProjectWire& gw = low.graph.wires[gi];
-      if (gw.kind != graph::WireKind::Audio) continue;  // modulation: from the document's wires below
+      if (gw.kind != graph::WireKind::Audio) continue;  // modulation, sidechains (DY.2): from the document's wires below
       const auto fb = bandOfGraph.find(gw.from.track), tb = bandOfGraph.find(gw.to.track);
       if (fb == bandOfGraph.end() || tb == bandOfGraph.end()) continue;
       const Band& from = out.bands[fb->second];
@@ -2033,7 +2035,7 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
       if (e.kind != EdgeKind::Send || a.kind != NodeKind::Mixer || b.kind != NodeKind::Sum ||
           a.outputs[e.fromPort].name != "s" + std::to_string(g.tracks[gw.to.track].id) || e.pre != (gw.from.port == "pre"))
         return what + ": not a send from the mixer's send pin into the return's Σ";
-    } else if (gw.kind == graph::WireKind::Modulation) {
+    } else if (gw.kind == graph::WireKind::Modulation || gw.kind == graph::WireKind::Sidechain) {
       if (e.kind != EdgeKind::Modulation || gw.from.port != "m" + std::to_string(e.wire.value) || gw.to.port != gw.from.port)
         return what + ": not the modulation edge of its wire";
     } else {

@@ -2503,7 +2503,7 @@ private:
 
   Binding panelBinding(const PathSeg& at) {
     static constexpr std::string_view K[] = {"kind", "device", "name", "meta"};
-    static constexpr std::array<std::string_view, 6> kKinds = {"none", "control", "setting", "data", "signal", "panel"};
+    static constexpr std::array<std::string_view, 7> kKinds = {"none", "control", "setting", "data", "signal", "panel", "input"};
     Binding b;
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {

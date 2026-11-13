@@ -45,6 +45,7 @@ ElementChoice defaultElement(const doc::Binding& b, const BoundInfo& info) {
   };
   if (b.kind == doc::BindingKind::Signal) return sized("modsource");
   if (b.kind == doc::BindingKind::Panel) return sized(std::string(doc::kEmbedKind));  // GU.6 (sized by its child's panel)
+  if (b.kind == doc::BindingKind::Input) return sized("cablesource");  // DY.2
   if (info.isSwitch) return sized("toggle");
   if (!info.choices.empty()) return sized("menu");
   if (info.setting) return sized("number");
@@ -929,7 +930,11 @@ private:
     items.push_back(ui::MenuItem::sep());
     const doc::DeviceLibrary* lib = w.ctx_.deviceLibrary();
     for (const doc::Device* d : doc::groupMembersDeep(gl.track->devices, w.group_)) {
-      if (doc::isGroupDevice(*d) || lib == nullptr) continue;
+      if (doc::isGroupDevice(*d)) {  // DY.2: a group inside: its main input (a cable source picker's target)
+        items.push_back(ui::MenuItem::sub(blockName(w.ctx_, *d), {ui::MenuItem::item("Input", bind(doc::inputBinding(d->id)))}));
+        continue;
+      }
+      if (lib == nullptr) continue;
       const graph::Patch* patch = lib->patchOf(*d);
       if (patch == nullptr) continue;
       const devices::DeviceSignature sig = devices::signatureOf(*patch);
@@ -937,6 +942,7 @@ private:
       for (const devices::ParamInfo& pi : sig.params)
         sub.push_back(ui::MenuItem::item(pi.label.empty() ? pi.name : pi.label, bind(doc::controlBinding(d->id, pi.name))));
       for (const devices::ConstInfo& ci : sig.consts) sub.push_back(ui::MenuItem::item(ci.name + " (setting)", bind(doc::settingBinding(d->id, ci.name))));
+      if (!sig.audioIn.empty()) sub.push_back(ui::MenuItem::item("Input " + sig.audioIn, bind(doc::inputBinding(d->id))));  // DY.2
       const graph::SubcircuitRef ref = graph::subcircuitSignature(*patch);
       if (!ref.outputs.empty() && !sub.empty()) sub.push_back(ui::MenuItem::sep());
       for (const graph::SubcircuitPort& o : ref.outputs) sub.push_back(ui::MenuItem::item("Output " + o.name, bind(doc::signalBinding(d->id, o.name))));

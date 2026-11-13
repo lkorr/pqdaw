@@ -8,6 +8,7 @@ set(PQ_VIEWS_PANEL_SOURCES
   src/panel/engine_elements.cpp  # GU.7: the native engines' faces as elements, the meter
   src/panel/response_elements.cpp  # EQ.4: the response and phase displays, the band type chooser
   src/panel/tempo_slider.cpp  # DT.1: the tempo-marked time slider (the Delay Tap's face)
+  src/panel/cable_source.cpp  # DY.2: the cable source picker (a sidechain's source track)
   src/panel/group_responses.cpp  # EQ.4: groups' analytic responses, one lowering per structural revision
   src/panel/group_panel_face.cpp
   src/panel/doc_target.cpp
