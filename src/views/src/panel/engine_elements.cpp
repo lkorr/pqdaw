@@ -117,6 +117,7 @@ public:
     FaceEnv fe;
     fe.theme = env.theme;
     fe.hovered = env.hovered;
+    fe.uiScale = env.uiScale;
     face_->paintLive(q, fe);
     dl.popClip();
   }

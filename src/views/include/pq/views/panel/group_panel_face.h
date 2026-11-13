@@ -88,6 +88,12 @@ public:
   ui::Cursor cursor(int32_t part) const noexcept override;
   void describe(int32_t part, std::string& title, std::string& body) const override;
   bool setHoveredPart(int32_t part) noexcept override;
+  // DT.3: a panel holding an element that stretches (Element::stretchMinWidth) stretches horizontally: from the width
+  // where the narrowest-allowed of them is at its minimum up to kMaxStretchWidth. stretchTo: stretchedPanel below, one
+  // doc::ops::setGroupPanel on the owner (setOwner) through the target.
+  std::optional<StretchRange> stretchX() const override;
+  bool stretchTo(float width) override;
+  static constexpr float kMaxStretchWidth = 2400.0f;
   // GU.5: a wire into a control inside the group ends on the element bound to it. `param` is the closed group's port for
   // that control (project_patch.h: "<name>@<device id>"; a bare name: a param of the group itself, owner()).
   std::string paramAt(ui::Vec2 local) const override;

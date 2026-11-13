@@ -342,6 +342,17 @@ public:
   // Returns whether it changed (the host repaints the face).
   virtual bool setHoveredPart(int32_t part) noexcept;
 
+  // ---- DT.3: horizontal stretch ----
+  // A face that can be WIDENED by a drag of its left or right edge (the host's ↔ zones on its edges; its height stays)
+  // says how wide it may be, face units; nullopt (default): a fixed width. stretchTo makes it `width` wide (clamped to
+  // the range) where the face keeps its size — a group's panel: its document panel, an undoable edit (the host wraps a
+  // drag in one store gesture) — and returns whether it changed. The host reads worldSize() again after it.
+  struct StretchRange {
+    float min = 0.0f, max = 0.0f;
+  };
+  virtual std::optional<StretchRange> stretchX() const { return std::nullopt; }
+  virtual bool stretchTo(float /*width*/) { return false; }
+
   // ---- the face's own clock (TX.panel-faces) ----
   // The host it is drawn in (null: detached).
   virtual void attach(FaceHost* /*host*/) {}

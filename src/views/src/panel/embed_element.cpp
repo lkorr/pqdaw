@@ -95,6 +95,7 @@ public:
     ui::FacePainter q = childPainter(p);
     FaceEnv fe;
     fe.theme = env.theme;
+    fe.uiScale = env.uiScale;
     face_->paintLive(q, fe);
   }
   bool needsPrepare(float px) const noexcept override { return face_ != nullptr && face_->needsPrepare(px * fit().k); }
@@ -190,6 +191,7 @@ public:
     ui::FacePainter q = childPainter(p);
     FaceEnv fe;
     fe.theme = env.theme;
+    fe.uiScale = env.uiScale;
     face_->paintPopup(q, fe);
   }
   void setPopupOverFace(bool on) override {

@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <numeric>
 #include <ostream>
 #include <string>
 
@@ -29,7 +30,8 @@ TEST_CASE("delay tap: the time law — 0 at 0, 500 ms at 0.5, 5 s at 1, monotoni
   }
 }
 
-TEST_CASE("delay tap: note values 1/64T … 1/1. ascending; seconds at 120 and 90 BPM; the 5 s clamp") {
+TEST_CASE("delay tap: note values 1/96 … 3/2 ascending, named as reduced whole-note fractions; seconds at 120 and 90 BPM; "
+          "the 5 s clamp") {
   const auto v = noteValues();
   REQUIRE(v.size() == 21);
   for (size_t i = 1; i < v.size(); ++i) CHECK(v[i].beats > v[i - 1].beats);
@@ -38,18 +40,25 @@ TEST_CASE("delay tap: note values 1/64T … 1/1. ascending; seconds at 120 and 9
   CHECK(v[kNoteValueQuarter].beats * kPpq == kPpq);
   uint32_t straight = 0, dotted = 0, triplet = 0;
   for (const NoteValue& n : v) {
+    // DT.3: the label is the value's reduced fraction of a whole note ("1/12", not "1/8T"; "3/16", not "1/8.").
     const std::string l(n.label);
-    const char want = n.kind == NoteValueKind::Dotted ? '.' : n.kind == NoteValueKind::Triplet ? 'T' : 0;
+    const size_t slash = l.find('/');
+    REQUIRE(slash != std::string::npos);
+    const int num = std::stoi(l.substr(0, slash)), den = std::stoi(l.substr(slash + 1));
+    CHECK(std::gcd(num, den) == 1);
+    CHECK(static_cast<double>(num) / den == doctest::Approx(n.beats / 4.0).epsilon(1e-12));
+    // Dotted values have numerator 3, triplets a denominator divisible by 3, straight ones 1/2^k.
+    if (n.kind == NoteValueKind::Dotted) CHECK(num == 3);
+    if (n.kind == NoteValueKind::Triplet) CHECK(den % 3 == 0);
+    if (n.kind == NoteValueKind::Straight) CHECK((num == 1 && (den & (den - 1)) == 0));
     straight += n.kind == NoteValueKind::Straight ? 1 : 0;
     dotted += n.kind == NoteValueKind::Dotted ? 1 : 0;
     triplet += n.kind == NoteValueKind::Triplet ? 1 : 0;
-    if (want != 0) CHECK(l.back() == want);
-    else CHECK(std::isdigit(static_cast<unsigned char>(l.back())));
   }
   CHECK(straight == 7);
   CHECK(dotted == 7);
   CHECK(triplet == 7);
-  // 1/8. = 0.75 beats: 375 ms at 120, 500 ms at 90; 1/4T = 2/3 beat: 333 ms at 120.
+  // 3/16 = 0.75 beats: 375 ms at 120, 500 ms at 90; 1/6 = 2/3 beat: 333 ms at 120.
   CHECK(noteValueSeconds(12, 120.0) == doctest::Approx(0.375));
   CHECK(noteValueSeconds(12, 90.0) == doctest::Approx(0.5));
   CHECK(noteValueSeconds(11, 120.0) == doctest::Approx(1.0 / 3.0));

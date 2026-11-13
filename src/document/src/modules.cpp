@@ -1438,15 +1438,16 @@ namespace {
 
 using NK = NoteValueKind;
 // Straight s, triplet 2/3 s, dotted 3/2 s for s = 1/64 … 1/1 note (1/16 … 4 beats), in ascending duration: T(n) < S(n) <
-// T(n+1) < D(n) < S(n+1) (4/3 s < 3/2 s).
+// T(n+1) < D(n) < S(n+1) (4/3 s < 3/2 s). DT.3: each named as the reduced fraction of a whole note it lasts ("1/12", not
+// "1/8T"; "3/16", not "1/8.").
 constexpr std::array<NoteValue, 21> kNoteValues = {{
-    {1.0 / 24.0, "1/64T", NK::Triplet}, {1.0 / 16.0, "1/64", NK::Straight}, {1.0 / 12.0, "1/32T", NK::Triplet},
-    {3.0 / 32.0, "1/64.", NK::Dotted},  {1.0 / 8.0, "1/32", NK::Straight},  {1.0 / 6.0, "1/16T", NK::Triplet},
-    {3.0 / 16.0, "1/32.", NK::Dotted},  {1.0 / 4.0, "1/16", NK::Straight},  {1.0 / 3.0, "1/8T", NK::Triplet},
-    {3.0 / 8.0, "1/16.", NK::Dotted},   {1.0 / 2.0, "1/8", NK::Straight},   {2.0 / 3.0, "1/4T", NK::Triplet},
-    {3.0 / 4.0, "1/8.", NK::Dotted},    {1.0, "1/4", NK::Straight},         {4.0 / 3.0, "1/2T", NK::Triplet},
-    {3.0 / 2.0, "1/4.", NK::Dotted},    {2.0, "1/2", NK::Straight},         {8.0 / 3.0, "1/1T", NK::Triplet},
-    {3.0, "1/2.", NK::Dotted},          {4.0, "1/1", NK::Straight},         {6.0, "1/1.", NK::Dotted},
+    {1.0 / 24.0, "1/96", NK::Triplet}, {1.0 / 16.0, "1/64", NK::Straight}, {1.0 / 12.0, "1/48", NK::Triplet},
+    {3.0 / 32.0, "3/128", NK::Dotted}, {1.0 / 8.0, "1/32", NK::Straight},  {1.0 / 6.0, "1/24", NK::Triplet},
+    {3.0 / 16.0, "3/64", NK::Dotted},  {1.0 / 4.0, "1/16", NK::Straight},  {1.0 / 3.0, "1/12", NK::Triplet},
+    {3.0 / 8.0, "3/32", NK::Dotted},   {1.0 / 2.0, "1/8", NK::Straight},   {2.0 / 3.0, "1/6", NK::Triplet},
+    {3.0 / 4.0, "3/16", NK::Dotted},   {1.0, "1/4", NK::Straight},         {4.0 / 3.0, "1/3", NK::Triplet},
+    {3.0 / 2.0, "3/8", NK::Dotted},    {2.0, "1/2", NK::Straight},         {8.0 / 3.0, "2/3", NK::Triplet},
+    {3.0, "3/4", NK::Dotted},          {4.0, "1/1", NK::Straight},         {6.0, "3/2", NK::Dotted},
 }};
 
 }  // namespace
