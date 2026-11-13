@@ -214,6 +214,11 @@ public:
   bool onKey(const ui::KeyEvent& e) override;
   void onCaptureLost() override;
   void onInteractionCancelled() override;
+  // TX.lane-drop: files and browser items dropped onto a band's lane go the arrangement's one drop path
+  // (arrangement::FileDrop on this view's lane surface: the same rules, ghosts and undo step as the arrangement's lanes).
+  ui::DropFeedback dragOver(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
+  void dragLeave() override;
+  ui::DropEffect drop(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods) override;
   ui::InfoText info() const override;
   // T4.16c: what a press would do — M / S Pointer, the volume / pan / send bars ResizeEW, an output pin (wire)
   // Crosshair, a device block or a band's title Move, panning Move; while dragging: a wire Crosshair (NotAllowed where
@@ -925,6 +930,7 @@ public:
   static LaneRect panelButtonRect(const Node& capsule) noexcept;
   void paintPanelLinks(ui::PaintContext& ctx);  // (the canvas's overlay)
   void paintAutomationWire(ui::PaintContext& ctx);  // TL.3 (the canvas's overlay)
+  void paintLaneDrop(ui::PaintContext& ctx);        // TX.lane-drop: a drop's ghost clips over the lanes (the overlay)
 
   // Menus: the band's (add device, focus, reset layout), a block's (delete, (de)activate, open, expand), a wire's.
   ui::Menu* openBandMenu(uint32_t band, ui::Vec2 at);

@@ -9,12 +9,15 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "pq/document/main_path.h"
 #include "pq/document/edit_ops.h"
+#include "pq/media/wav_file.h"
+#include "pq/ui/drag.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
 #include "pq/ui/overlay.h"
@@ -22,6 +25,7 @@
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/project_patch/project_patch_view.h"
+#include "pq/views/sample_drop.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_scenes.h"
 #include "../../src/views/src/project_patch/internal.h"
@@ -1073,6 +1077,184 @@ TEST_CASE("render: project-patch-lane-edit matches the golden image") {
   if (!ref) (void)writePng(std::string(name) + ".actual.png", *img);
   REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
   CHECK(pq::ui::test::matchesGolden(name, *img, *ref, true));
+}
+
+// ---- drops (TX.lane-drop, bug report 2026-11-12_21-28-20) ---------------------------------------------------------------
+// Files and browser items dropped onto a band's lane go the arrangement's one drop path (arrangement::FileDrop on the lane
+// surface): the same rules (sample_drop.h), ghosts and undo step — through the tree's drag dispatch (dragEnter / dragMove /
+// dragDrop: what an Explorer drop and a browser drag both reach), never by calling the drop code.
+
+namespace {
+
+std::string dropWav(std::string_view test, const std::string& name, double seconds) {
+  // One fresh directory per file (tempDir empties the one it names).
+  const std::filesystem::path dir(views::test::tempDir("lane_drop_" + std::string(test) + "_" + name));
+  const auto n = static_cast<size_t>(std::llround(seconds * 48000.0));
+  std::vector<std::vector<float>> ch(2, std::vector<float>(n, 0.0f));
+  for (size_t i = 0; i < n; ++i) ch[0][i] = ch[1][i] = 0.25f * static_cast<float>(std::sin(0.01 * static_cast<double>(i)));
+  const std::filesystem::path p = dir / name;
+  REQUIRE(media::writeWav(p, ch, 48000).ok());
+  const std::u8string s = p.u8string();
+  return std::string(reinterpret_cast<const char*>(s.data()), s.size());
+}
+
+DragPayload samplePayload(std::vector<std::string> paths, DragKind kind = DragKind::BrowserItems) {
+  DragPayload p;
+  p.kind = kind;
+  p.paths = std::move(paths);
+  p.label = "sample";
+  return p;
+}
+
+DropEffect dropAt(Ui& u, std::vector<std::string> paths, Vec2 pos, Mods mods = 0, DragKind kind = DragKind::BrowserItems) {
+  u.d.tree().dragEnter(samplePayload(std::move(paths), kind), {pos.x, pos.y - 3.0f}, mods);
+  (void)u.d.tree().dragMove(pos, mods);
+  return u.d.tree().dragDrop(pos, mods);
+}
+
+// An audio track "Loop" after Mod (empty).
+doc::TrackId addLoopTrack(Ui& u) {
+  doc::DocumentStore& st = u.ctx.store();
+  auto t = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Audio, u.track("Mod").id, "Loop");
+  REQUIRE(t.ok());
+  REQUIRE(st.dispatch(t->command).ok());
+  return t->tracks.at(0);
+}
+
+}  // namespace
+
+TEST_CASE("lane drop: a sample dropped on an audio band's lane lands there at the snapped tick — one undo step; select, delete") {
+  Ui u;
+  const doc::TrackId loop = addLoopTrack(u);
+  u.show();
+  u.frame({"Loop"});
+  const std::string kick = dropWav("audio", "Kick.wav", 0.5);
+  size_t h = u.history();
+  size_t tracks = 0;
+  doc::forEachTrack(*u.ctx.doc(), [&](const doc::Track&, const doc::Track*) { ++tracks; });
+  const Ticks at = 2 * u.bar + u.beat;
+  Vec2 p = u.at("Loop", at);
+  p.x += 1.0f;
+  CHECK(dropAt(u, {kick}, p) == DropEffect::Copy);
+  CHECK(u.history() == h + 1);
+  REQUIRE(u.track("Loop").clips.size() == 1);
+  const doc::ClipSlot& c = u.track("Loop").clips[0];
+  REQUIRE(c.isAudio());
+  CHECK(c.start() == at);
+  CHECK(c.name() == "Kick");
+  CHECK(u.arrangement().clipSelected(c.id));  // selected, as an arrangement drop
+  size_t tracks2 = 0;
+  doc::forEachTrack(*u.ctx.doc(), [&](const doc::Track&, const doc::Track*) { ++tracks2; });
+  CHECK(tracks2 == tracks);
+  // Ctrl + two files (an Explorer drop): one after another on this track, one step.
+  const std::string snare = dropWav("audio", "Snare.wav", 0.25);
+  h = u.history();
+  u.d.tree().layoutNow();  // the drop's selection may have opened the clip view (the canvas shorter)
+  Vec2 q = u.at("Loop", 4 * u.bar);
+  q.x += 1.0f;
+  CHECK(dropAt(u, {kick, snare}, q, mod::kCtrl, DragKind::Files) == DropEffect::Copy);
+  CHECK(u.history() == h + 1);
+  REQUIRE(u.track("Loop").clips.size() == 3);
+  CHECK(u.track("Loop").clips[1].start() == 4 * u.bar);
+  CHECK(u.track("Loop").clips[2].start() == u.track("Loop").clips[1].end());
+  REQUIRE(u.ctx.undo());
+  CHECK(u.track("Loop").clips.size() == 1);
+  // The audio clip is edited in its lane as a MIDI clip in its own: a click selects it, Delete removes it.
+  h = u.history();
+  u.d.tree().layoutNow();
+  u.d.click(u.title("Loop", at + u.beat / 8));
+  CHECK(u.d.press("Delete") == KeyResult::Widget);
+  CHECK(u.history() == h + 1);
+  CHECK(u.track("Loop").clips.empty());
+  REQUIRE(u.ctx.undo());
+  REQUIRE(u.ctx.undo());
+  CHECK(u.track("Loop").clips.empty());
+  (void)loop;
+}
+
+TEST_CASE("lane drop: a sample dropped on a MIDI band's lane makes a new audio track after it (the shared rule)") {
+  Ui u;
+  u.show();
+  u.frame({"Keys"});
+  const std::string kick = dropWav("midi", "Kick.wav", 0.5);
+  const size_t keysClips = u.track("Keys").clips.size();
+  const size_t h = u.history();
+  Vec2 p = u.at("Keys", u.bar);
+  p.x += 1.0f;
+  CHECK(dropAt(u, {kick}, p) == DropEffect::Copy);
+  CHECK(u.history() == h + 1);
+  CHECK(u.track("Keys").clips.size() == keysClips);
+  std::vector<const doc::Track*> order;
+  doc::forEachTrack(*u.ctx.doc(), [&](const doc::Track& t, const doc::Track*) { order.push_back(&t); });
+  size_t ki = order.size();
+  for (size_t i = 0; i < order.size(); ++i)
+    if (order[i]->name == "Keys") ki = i;
+  REQUIRE(ki + 1 < order.size());
+  const doc::Track& made = *order[ki + 1];
+  CHECK(made.kind == doc::TrackKind::Audio);
+  CHECK(made.name == "Kick");
+  REQUIRE(made.clips.size() == 1);
+  CHECK(made.clips[0].start() == u.bar);
+  REQUIRE(u.ctx.undo());
+  CHECK(u.history() == h);
+}
+
+TEST_CASE("lane drop: the master band's lane refuses (NotAllowed); off the lanes no drop") {
+  Ui u;
+  u.show();
+  u.frame({"Master"});
+  const std::string kick = dropWav("master", "Kick.wav", 0.5);
+  const size_t h = u.history();
+  const Vec2 p = u.at("Master", u.bar, 0.5f);
+  u.d.tree().dragEnter(samplePayload({kick}), {p.x, p.y - 3.0f}, 0);
+  (void)u.d.tree().dragMove(p, 0);
+  CHECK(u.d.tree().dropFeedback().effect == DropEffect::None);
+  CHECK(u.arrangement().dropPlan().items.empty());
+  CHECK(u.d.tree().dragDrop(p, 0) == DropEffect::None);
+  CHECK(u.history() == h);
+  CHECK(u.track("Master").clips.empty());
+  // On the canvas outside every lane (left of the lanes' column): not a drop target.
+  const IRect cr = u.view().canvas().rect();
+  const Vec2 off{static_cast<float>(cr.x) + 4.0f, static_cast<float>(cr.y) + 4.0f};
+  REQUIRE(u.body("Master").x0 > off.x);
+  CHECK(dropAt(u, {kick}, off) == DropEffect::None);
+  CHECK(u.history() == h);
+}
+
+TEST_CASE("lane drop: the ghost shows while hovering a lane (on the lane surface), goes off the lanes and on leave") {
+  Ui u;
+  const doc::TrackId loop = addLoopTrack(u);
+  u.show();
+  u.frame({"Loop"});
+  const std::string kick = dropWav("ghost", "Kick.wav", 0.5);
+  ArrangementView& arr = u.arrangement();
+  const size_t h = u.history();
+  Vec2 p = u.at("Loop", u.bar);
+  p.x += 1.0f;
+  u.d.tree().dragEnter(samplePayload({kick}), {p.x, p.y - 3.0f}, 0);
+  (void)u.d.tree().dragMove(p, 0);
+  CHECK(u.d.tree().dropTarget() == &u.view().canvas());
+  CHECK(u.d.tree().dropFeedback().effect == DropEffect::Copy);
+  CHECK(arr.dropHovering());
+  REQUIRE(arr.dropPlan().items.size() == 1);
+  CHECK(arr.dropPlan().target.kind == SampleDropTarget::Kind::OnTrack);
+  CHECK(arr.dropPlan().target.track == loop);
+  CHECK(arr.dropPlan().items[0].start == u.bar);
+  CHECK(arr.dropPlan().newTracks == 0);
+  u.d.step();  // painted (the canvas's overlay) without a fault
+  // Off the lanes: no target, the ghost goes.
+  const IRect cr = u.view().canvas().rect();
+  (void)u.d.tree().dragMove({static_cast<float>(cr.x) + 4.0f, static_cast<float>(cr.y) + 4.0f}, 0);
+  CHECK(u.d.tree().dropTarget() == nullptr);
+  CHECK_FALSE(arr.dropHovering());
+  // Back on it, then the drag leaves the window: gone, nothing dropped.
+  (void)u.d.tree().dragMove(p, 0);
+  CHECK(arr.dropHovering());
+  u.d.tree().dragExit();
+  CHECK_FALSE(arr.dropHovering());
+  u.d.step();
+  CHECK(u.history() == h);
+  CHECK(u.track("Loop").clips.empty());
 }
 
 // ---- wall clock (perf suite: load-sensitive) --------------------------------------------------------------------------

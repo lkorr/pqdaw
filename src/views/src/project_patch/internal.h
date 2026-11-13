@@ -127,6 +127,11 @@ public:
   ui::IRect laneRect(size_t i) const override;
   void damageAll() override;
   std::vector<ui::MenuItem> menuItems() override;
+  // TX.lane-drop: a band's lane (its ruler, clip row and sub-lanes) under the pointer is a drop onto its track (the
+  // master's and a return's are refused by the shared rules); elsewhere on the canvas no drop. New tracks show under
+  // the band, each as tall as its lane's clip row.
+  std::optional<DropSpot> dropSpotAt(ui::Vec2 device) const override;
+  DropInsert dropInsert(const DropSpot& s) const override;
 
   // The band of a row / the row of a band (−1: none); the lane of a row (device px, snapped).
   uint32_t bandOf(int32_t row) const;
