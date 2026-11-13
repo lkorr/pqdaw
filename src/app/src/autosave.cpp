@@ -72,6 +72,12 @@ int64_t fileUnixTime(const fs::path& file) {
   return std::chrono::duration_cast<std::chrono::seconds>(sys.time_since_epoch()).count();
 }
 
+bool autosaveSupersedesOrigin(const AutosaveMeta& m) {
+  if (m.originDir.empty()) return true;
+  const int64_t t = fileUnixTime(u8path(m.originDir) / "project.pqd");
+  return t == 0 || t <= m.savedAt;
+}
+
 Result<AutosaveMeta> readAutosaveMeta(const fs::path& autosaveDir) {
   const fs::path file = autosaveDir / u8path(kAutosaveMetaFileName);
   std::ifstream in(file, std::ios::binary);

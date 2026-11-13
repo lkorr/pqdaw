@@ -9,6 +9,11 @@
 //   Show in Explorer  the folder (the popover stays)
 //   Discard           deletes the folder (the only path that deletes anything)
 //   Later             closes; offered again at the next start
+// AS.2: a session that also left an autosave of the document it was editing (ViewContext::StaleRecordings::autosave)
+// is offered in Recover mode instead: "pqdaw did not close properly. <name>, autosaved hh:mm"
+//   Recover           (after the usual "save changes?") the autosaved document, dirty, with an empty history
+//                     (ViewContext::recoverAutosave: untitled with its takes, or titled as its project folder)
+//   Show in Explorer / Discard (the autosave and the takes) / Later   as above
 // Esc is Later. UI thread only.
 
 #include <string>
@@ -30,6 +35,7 @@ public:
   size_t remaining() const noexcept { return stale_.size(); }
   // The buttons' actions (tests may call them; the buttons do).
   void openAsProject();
+  void recover();  // AS.2
   void reveal();
   void discard();
   void later();
@@ -41,6 +47,9 @@ private:
 
   ViewContext& ctx_;
   std::vector<ViewContext::StaleRecordings> stale_;
+  ui::Label* title_ = nullptr;
+  ui::Button* open_ = nullptr;
+  ui::Button* recover_ = nullptr;
   ui::Label* line1_ = nullptr;
   ui::Label* line2_ = nullptr;
 };

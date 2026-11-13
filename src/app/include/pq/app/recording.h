@@ -26,11 +26,13 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "pq/app/autosave.h"
 #include "pq/core/result.h"
 #include "pq/document/model.h"
 #include "pq/engine/engine.h"
@@ -86,9 +88,13 @@ struct StaleUnsavedSession {
   std::vector<std::filesystem::path> wavs;  // every .wav under it, sorted
   uint64_t bytes = 0;                       // their total size
   int64_t started = 0;                      // the session's start (unix seconds, from its name)
+  // AS.2: its autosave (<dir>/autosave/project.pqd with a readable autosave.json) when autosaveSupersedesOrigin.
+  std::optional<AutosaveMeta> autosave;
 };
 // Session folders directly under `root` named "<pid>-<unix time>", other than `own`, whose process is gone (`alive`
-// false; default processAlive) and that hold at least one .wav. Oldest first. Reads only (never deletes).
+// false; default processAlive) and that hold at least one .wav or an autosave worth offering (AS.2; an autosave older
+// than its origin's project.pqd is ignored, and the folder then counts only for its takes). Oldest first. Reads only
+// (never deletes).
 std::vector<StaleUnsavedSession> findStaleUnsaved(const std::filesystem::path& root, std::string_view own,
                                                   const std::function<bool(uint32_t pid, int64_t started)>& alive = {});
 // True while process `pid` runs and was created within a few minutes before `started` (a reused pid is another

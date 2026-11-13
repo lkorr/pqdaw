@@ -7,7 +7,7 @@
 //                                                     /autosave.json  AutosaveMeta (atomic: tmp + rename)
 //
 // A crash leaves the session folder of a dead process behind (pq/app/recording.h findStaleUnsaved); AS.2 offers its
-// autosave back at the next start. Relative sample paths in the autosave are relative to AutosaveMeta::originDir (the
+// autosave back at the next start (views::RecoverRecordingsPopover's Recover mode, ViewContext::recoverAutosave). Relative sample paths in the autosave are relative to AutosaveMeta::originDir (the
 // project's folder), not to the autosave folder; an untitled document's recordings are referenced by their absolute
 // paths inside its Unsaved recordings folder (AutosaveMeta::recordingsDir). Undo history is not kept.
 //
@@ -61,6 +61,10 @@ struct AutosaveMeta {
 Result<AutosaveMeta> readAutosaveMeta(const std::filesystem::path& autosaveDir);
 // A file's last write time in unix seconds (0 when it does not exist).
 int64_t fileUnixTime(const std::filesystem::path& file);
+// AS.2: an autosave is worth offering back: always for an untitled document; for a saved project only while its
+// origin's project.pqd was not written after the autosave (missing, or last written at or before `savedAt`; a tie
+// offers it: a lost edit costs more than a needless offer).
+bool autosaveSupersedesOrigin(const AutosaveMeta& m);
 
 struct AutosavePolicy {
   double quietSeconds = 10.0;  // written this long after the last change

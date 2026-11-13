@@ -137,15 +137,29 @@ std::vector<views::ViewContext::StaleRecordings> ProjectLink::staleRecordings() 
     for (const std::filesystem::path& w : s.wavs) r.files.push_back(pathUtf8(w));
     r.bytes = s.bytes;
     r.started = s.started;
+    if (s.autosave) {  // AS.2
+      views::ViewContext::StaleAutosave a;
+      a.dir = pathUtf8(s.dir / u8path(std::string(kAutosaveFolderName)));
+      a.originDir = s.autosave->originDir;
+      a.recordingsDir = s.autosave->recordingsDir;
+      a.name = s.autosave->name;
+      a.savedAt = s.autosave->savedAt;
+      r.autosave = std::move(a);
+    }
     out.push_back(std::move(r));
   }
   return out;
 }
 
 bool ProjectLink::discardStaleRecordings(const std::string& dir) {  // UI thread
-  const std::filesystem::path root = u8path(unsavedRoot()).lexically_normal(), d = u8path(dir).lexically_normal();
-  if (d.parent_path() != root) return false;  // only a session folder itself
-  const std::string name = pathUtf8(d.filename());
+  const std::filesystem::path root = u8path(unsavedRoot()).lexically_normal();
+  std::filesystem::path d = u8path(dir).lexically_normal();
+  if (!d.has_filename()) d = d.parent_path();  // a trailing separator
+  // A session folder itself, or (AS.2: its document was recovered) only its autosave folder.
+  const bool autosaveOnly = d.filename() == u8path(std::string(kAutosaveFolderName)) && d.parent_path().parent_path() == root;
+  const std::filesystem::path session = autosaveOnly ? d.parent_path() : d;
+  if (session.parent_path() != root) return false;
+  const std::string name = pathUtf8(session.filename());
   unsigned long pid = 0;
   long long started = 0;
   char tail = 0;

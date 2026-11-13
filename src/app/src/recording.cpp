@@ -95,7 +95,12 @@ std::vector<StaleUnsavedSession> findStaleUnsaved(const std::filesystem::path& r
       std::error_code sec;
       if (const std::uintmax_t n = w->file_size(sec); !sec) s.bytes += static_cast<uint64_t>(n);
     }
-    if (s.wavs.empty()) continue;
+    // AS.2: the autosave of the document that session was editing (a missing or broken autosave.json: takes only).
+    const fs::path autosaveDir = s.dir / fs::path(std::u8string(kAutosaveFolderName.begin(), kAutosaveFolderName.end()));
+    if (std::error_code aec; fs::is_regular_file(autosaveDir / "project.pqd", aec))
+      if (Result<AutosaveMeta> m = readAutosaveMeta(autosaveDir); m.ok() && autosaveSupersedesOrigin(*m))
+        s.autosave = std::move(*m);
+    if (s.wavs.empty() && !s.autosave) continue;
     std::sort(s.wavs.begin(), s.wavs.end());
     out.push_back(std::move(s));
   }

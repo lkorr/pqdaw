@@ -1175,3 +1175,13 @@ Options: (a) a "Saving" section under Preferences → Record; (b) a new File tab
 (c) also autosave view-state-only changes (folds, lane heights). Choice: (a), and view-state-only edits do not trigger a
 write (the next document change writes them along). Reversible: moving the row is one function; (c) is one more compare.
 Status: open.
+
+## Q?-AS.2-a · 2026-11-13 · AS.2 · Takes an untitled autosave does not reference; an outdated autosave's folder
+Context: a crashed untitled session can hold takes recorded after its last autosave (or removed from the document);
+and a titled session's autosave that is older than its origin's project.pqd is not offered (plan), so it never gets a
+Discard button. Options: (a) place unreferenced takes on a "Recovered" track (as L13's Open as Project) / leave them
+unplaced in the new folder; (b) delete an outdated autosave silently at start / keep it (findStaleUnsaved never deletes).
+Choice: (a) place them (one undo step "Recover Recordings"; nothing is hidden). (b) keep it: the folder is offered for
+its takes only (Discard then removes the whole session); a session left with only an outdated autosave stays on disk
+(small; one project.pqd). Reversible: (b) is one `removeUnsavedFolder` call in ProjectLink::staleRecordings.
+Status: open.

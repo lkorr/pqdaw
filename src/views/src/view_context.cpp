@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <cwctype>
 #include <thread>
 
@@ -405,63 +406,140 @@ std::vector<ViewContext::StaleRecordings> ViewContext::staleRecordings() const {
   return unsaved_.findStale ? unsaved_.findStale() : std::vector<StaleRecordings>{};
 }
 
-bool ViewContext::recoverStaleRecordings(const StaleRecordings& s) {
+std::vector<std::pair<std::string, std::string>> ViewContext::moveStaleTakes(const std::vector<std::string>& files,
+                                                                             std::string_view toDir) {
   namespace fs = std::filesystem;
-  if (!projectDir_.empty() || unsavedRecordingDir_.empty()) {
-    setStatus("Recover recordings: only into a new, untitled project");
-    return false;
-  }
+  std::vector<std::pair<std::string, std::string>> moved;
   std::error_code ec;
-  const fs::path to = u8Path(unsavedRecordingDir_);
+  const fs::path to = u8Path(toDir);
   fs::create_directories(to, ec);
-  if (ec) {
-    setStatus("Recover recordings: " + ec.message());
-    return false;
-  }
+  if (ec) return moved;
   // Moved (a rename on the same volume), never copied and deleted: the files are the user's only copy.
-  std::vector<std::string> moved;
-  for (const std::string& f : s.files) {
+  for (const std::string& f : files) {
     const fs::path from = u8Path(f);
     fs::path dest = to / from.filename();
     for (int k = 2; fs::exists(dest, ec) && k < 1000; ++k)
       dest = to / fs::path(from.stem().u8string() + u8" " + fs::path(std::to_string(k)).u8string() + from.extension().u8string());
     std::error_code mec;
     fs::rename(from, dest, mec);
-    if (!mec) moved.push_back(u8Str(dest));
+    if (!mec) moved.emplace_back(f, u8Str(dest));
   }
+  return moved;
+}
+
+size_t ViewContext::placeRecoveredTakes(const std::vector<std::string>& files) {
+  if (files.empty()) return 0;
+  (void)probes_->request(files);
+  (void)probes_->wait(files, std::chrono::milliseconds(5000));
+  std::vector<ProbedFile> audio;
+  for (ProbedFile& f : probes_->snapshot(files))
+    if (f.state == ProbedFile::State::Ready) audio.push_back(std::move(f));
+  if (audio.empty()) return 0;
+  SampleDropTarget target;
+  target.kind = SampleDropTarget::Kind::AtEnd;
+  const SampleDropPlan plan = planSampleDrop(*doc(), target, audio, 0, true);
+  auto e = sampleDropEdit(*doc(), store_.ids(), plan, audio, {}, projectDir_);
+  if (!e.ok()) return 0;
+  // One undo step: the drop, then the track named "Recovered".
+  doc::Batch b{"Recover Recordings", {}};
+  b.commands.push_back(e->command);
+  doc::ChangeSet changes;
+  if (!e->tracks.empty())
+    if (Result<doc::Snapshot> after = doc::apply(doc(), e->command, changes); after.ok())
+      if (auto r = doc::ops::renameTrack(**after, e->tracks.front(), "Recovered"); r.ok()) b.commands.push_back(r->command);
+  return store_.dispatch(doc::Command{std::move(b)}).ok() ? audio.size() : 0;
+}
+
+void ViewContext::dropStaleSession(const StaleRecordings& s) {
+  namespace fs = std::filesystem;
+  if (!unsaved_.discardStale) return;
+  // Anything of the user's left outside the autosave folder (a take that could not be moved) keeps the session.
+  const std::wstring autosaveKey = s.autosave ? pathKey(s.autosave->dir) : std::wstring();
+  bool left = false;
+  std::error_code ec;
+  for (fs::recursive_directory_iterator it(u8Path(s.dir), ec), end; !ec && it != end && !left; it.increment(ec)) {
+    if (!autosaveKey.empty() && it->is_directory(ec) && pathKey(u8Str(it->path())) == autosaveKey) {
+      it.disable_recursion_pending();
+      continue;
+    }
+    left = it->is_regular_file(ec);
+  }
+  if (!left) (void)unsaved_.discardStale(s.dir);
+  else if (s.autosave) (void)unsaved_.discardStale(s.autosave->dir);  // offered later for its takes only
+}
+
+bool ViewContext::recoverStaleRecordings(const StaleRecordings& s) {
+  if (!projectDir_.empty() || unsavedRecordingDir_.empty()) {
+    setStatus("Recover recordings: only into a new, untitled project");
+    return false;
+  }
+  std::vector<std::string> moved;
+  for (auto& [from, to] : moveStaleTakes(s.files, unsavedRecordingDir_)) moved.push_back(std::move(to));
   if (moved.empty()) {
     setStatus("Recover recordings: no take could be moved out of " + s.dir);
     return false;
   }
-  (void)probes_->request(moved);
-  (void)probes_->wait(moved, std::chrono::milliseconds(5000));
-  std::vector<ProbedFile> audio;
-  for (ProbedFile& f : probes_->snapshot(moved))
-    if (f.state == ProbedFile::State::Ready) audio.push_back(std::move(f));
-  bool ok = false;
-  if (!audio.empty()) {
-    SampleDropTarget target;
-    target.kind = SampleDropTarget::Kind::AtEnd;
-    const SampleDropPlan plan = planSampleDrop(*doc(), target, audio, 0, true);
-    auto e = sampleDropEdit(*doc(), store_.ids(), plan, audio, {}, projectDir_);
-    if (e.ok()) {  // one undo step: the drop, then the track named "Recovered"
-      doc::Batch b{"Recover Recordings", {}};
-      b.commands.push_back(e->command);
-      doc::ChangeSet changes;
-      if (!e->tracks.empty())
-        if (Result<doc::Snapshot> after = doc::apply(doc(), e->command, changes); after.ok())
-          if (auto r = doc::ops::renameTrack(**after, e->tracks.front(), "Recovered"); r.ok()) b.commands.push_back(r->command);
-      ok = store_.dispatch(doc::Command{std::move(b)}).ok();
+  const size_t n = placeRecoveredTakes(moved);
+  // The folder without its takes: gone when nothing else is left in it (nothing of the user's is deleted).
+  StaleRecordings takesOnly = s;
+  takesOnly.autosave.reset();
+  dropStaleSession(takesOnly);
+  setStatus(n > 0 ? "Recovered " + std::to_string(n) + " recording(s) from an earlier session"
+                  : "Recover recordings: the takes were moved to " + unsavedRecordingDir_ + " but could not be read");
+  return n > 0;
+}
+
+bool ViewContext::recoverAutosave(const StaleRecordings& s) {
+  if (!s.autosave) return false;
+  const StaleAutosave& a = *s.autosave;
+  doc::LoadOptions lo;
+  lo.devices = devices_ != nullptr ? devices_ : store_.deviceLibrary();
+  Result<doc::LoadedProject> loaded = doc::loadProject(a.dir, lo);
+  if (!loaded) {
+    setStatus("Recover: could not read the autosave of " + a.name + ": " + loaded.error().message);
+    return false;
+  }
+  const bool wasUntitled = projectDir_.empty();
+  const std::string oldUnsaved = unsavedRecordingDir_;
+  store_.reset(loaded->project);  // D6: the history is not kept
+  store_.view() = std::move(loaded->view);
+  projectDir_ = a.originDir;
+  if (wasUntitled) discardUnsaved(oldUnsaved, true);  // T6.7b: the document it replaces
+  std::vector<std::string> unreferenced;
+  if (projectDir_.empty()) {
+    // Untitled: its recordings (absolute paths into the dead session) move into the new document's own folder.
+    unsavedRecordingDir_ = unsaved_.fresh ? unsaved_.fresh() : std::string();
+    if (!unsavedRecordingDir_.empty() && !s.files.empty()) {
+      const auto moved = moveStaleTakes(s.files, unsavedRecordingDir_);
+      const doc::SampleList& refs = doc::samplesOf(*store_.current());  // alive until the relocation below
+      std::vector<doc::SampleRef> updated;
+      for (const auto& [from, to] : moved) {
+        const std::wstring key = pathKey(from);
+        bool referenced = false;
+        for (const doc::SampleRef& r : refs)
+          if (doc::isAbsoluteSamplePath(r.path) && pathKey(r.path) == key) {
+            doc::SampleRef n = r;
+            n.path = doc::storedSamplePath(to, {});
+            updated.push_back(std::move(n));
+            referenced = true;
+          }
+        if (!referenced) unreferenced.push_back(to);
+      }
+      if (!updated.empty()) store_.relocateSamples(updated);  // not an undo step
     }
   }
-  // The folder without its takes: gone when nothing else is left in it (nothing of the user's is deleted).
-  bool left = false;
-  for (fs::recursive_directory_iterator it(u8Path(s.dir), ec), end; !ec && it != end && !left; it.increment(ec))
-    left = it->is_regular_file(ec);
-  if (!left && unsaved_.discardStale) (void)unsaved_.discardStale(s.dir);
-  setStatus(ok ? "Recovered " + std::to_string(audio.size()) + " recording(s) from an earlier session"
-               : "Recover recordings: the takes were moved to " + unsavedRecordingDir_ + " but could not be read");
-  return ok;
+  afterLoad();
+  saved_ = nullptr;  // D6: a recovered document is dirty (nothing on disk holds it)
+  lastDirty_ = true;
+  notify(view_change::kProject);
+  const size_t placed = placeRecoveredTakes(unreferenced);  // takes recorded after the last autosave
+  dropStaleSession(s);
+  char when[16] = "?";
+  const std::time_t t = static_cast<std::time_t>(a.savedAt);
+  if (std::tm tm{}; localtime_s(&tm, &t) == 0) std::strftime(when, sizeof when, "%H:%M", &tm);
+  setStatus("Recovered " + a.name + " (autosaved " + when + ")" +
+            (placed > 0 ? ", " + std::to_string(placed) + " more recording(s) on the track Recovered" : std::string()));
+  return true;
 }
 
 bool ViewContext::discardStaleRecordings(const StaleRecordings& s) {

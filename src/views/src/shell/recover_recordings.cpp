@@ -18,7 +18,8 @@ RecoverRecordingsPopover::RecoverRecordingsPopover(ViewContext& ctx, std::vector
     : Popover("recover-recordings"), ctx_(ctx), stale_(std::move(stale)) {
   setSize(Length::fixed(kWidth), Length::fixed(kHeight));
   setPadding(Insets::all(10));
-  add<Label>("title", "Recordings from an earlier session", FontRoleId::BodyStrong, TextTone::Primary).setHeight(Length::fixed(20));
+  title_ = &add<Label>("title", "", FontRoleId::BodyStrong, TextTone::Primary);
+  title_->setHeight(Length::fixed(20));
   line1_ = &add<Label>("what", "", FontRoleId::Small, TextTone::Secondary);
   line1_->setHeight(Length::fixed(16));
   line2_ = &add<Label>("kept", "", FontRoleId::Small, TextTone::Secondary);
@@ -36,13 +37,18 @@ RecoverRecordingsPopover::RecoverRecordingsPopover(ViewContext& ctx, std::vector
     b.onClick = std::move(fn);
     return &b;
   };
-  button("open", "Open as Project", 116.0f,
-         "A new project with these takes one after another on an audio track (asks to save the current one first). Its "
-         "first save moves them into the project folder.",
-         [this] { openAsProject(); });
+  open_ = button("open", "Open as Project", 116.0f,
+                 "A new project with these takes one after another on an audio track (asks to save the current one "
+                 "first). Its first save moves them into the project folder.",
+                 [this] { openAsProject(); });
+  recover_ = button("recover", "Recover", 80.0f,
+                    "Opens the autosaved document as it was, unsaved (asks to save the current one first). An untitled "
+                    "one gets its recordings back.",
+                    [this] { recover(); });
   button("reveal", "Show in Explorer", 116.0f, "Shows the folder with the takes. Nothing is changed.", [this] { reveal(); });
   row.add<Widget>("gap").setWidth(Length::flex(1));
-  button("discard", "Discard", 70.0f, "Deletes the takes and their folder.", [this] { discard(); });
+  button("discard", "Discard", 70.0f, "Deletes the autosave and the takes of that session, and their folder.",
+         [this] { discard(); });
   button("later", "Later", 60.0f, "Keeps them; they are offered again at the next start.", [this] { later(); });
   showCurrent();
 }
@@ -50,17 +56,38 @@ RecoverRecordingsPopover::RecoverRecordingsPopover(ViewContext& ctx, std::vector
 void RecoverRecordingsPopover::showCurrent() {
   if (stale_.empty()) return;
   const ViewContext::StaleRecordings& s = stale_.front();
-  char when[64] = "an unknown time";
-  const std::time_t t = static_cast<std::time_t>(s.started);
-  std::tm tm{};
-  if (localtime_s(&tm, &t) == 0) std::strftime(when, sizeof when, "%d %b %Y, %H:%M", &tm);
-  char buf[256];
-  std::snprintf(buf, sizeof buf, "pqdaw closed on %s without saving %zu take%s (%.1f MB).", when, s.files.size(),
-                s.files.size() == 1 ? "" : "s", static_cast<double>(s.bytes) / (1024.0 * 1024.0));
-  line1_->setText(buf);
-  line2_->setText(stale_.size() > 1 ? "They are kept until you choose (" + std::to_string(stale_.size() - 1) +
-                                          " more session" + (stale_.size() > 2 ? "s" : "") + " after this)."
-                                    : std::string("They are kept until you choose."));
+  const bool autosave = s.autosave.has_value();
+  open_->setVisible(!autosave);
+  recover_->setVisible(autosave);
+  char buf[320];
+  if (autosave) {  // AS.2
+    title_->setText("pqdaw did not close properly");
+    char when[64] = "at an unknown time";
+    const std::time_t t = static_cast<std::time_t>(s.autosave->savedAt), now = std::time(nullptr);
+    std::tm tm{}, today{};
+    if (localtime_s(&tm, &t) == 0) {
+      const bool sameDay = localtime_s(&today, &now) == 0 && today.tm_yday == tm.tm_yday && today.tm_year == tm.tm_year;
+      std::strftime(when, sizeof when, sameDay ? "%H:%M" : "%d %b %Y, %H:%M", &tm);
+    }
+    std::string takes;
+    if (!s.files.empty())
+      takes = " (" + std::to_string(s.files.size()) + (s.files.size() == 1 ? " take" : " takes") + ")";
+    std::snprintf(buf, sizeof buf, "%s, autosaved %s%s.", s.autosave->name.c_str(), when, takes.c_str());
+    line1_->setText(buf);
+  } else {
+    title_->setText("Recordings from an earlier session");
+    char when[64] = "an unknown time";
+    const std::time_t t = static_cast<std::time_t>(s.started);
+    std::tm tm{};
+    if (localtime_s(&tm, &t) == 0) std::strftime(when, sizeof when, "%d %b %Y, %H:%M", &tm);
+    std::snprintf(buf, sizeof buf, "pqdaw closed on %s without saving %zu take%s (%.1f MB).", when, s.files.size(),
+                  s.files.size() == 1 ? "" : "s", static_cast<double>(s.bytes) / (1024.0 * 1024.0));
+    line1_->setText(buf);
+  }
+  const std::string kept = autosave ? "It is kept until you choose" : "They are kept until you choose";
+  line2_->setText(stale_.size() > 1 ? kept + " (" + std::to_string(stale_.size() - 1) + " more session" +
+                                          (stale_.size() > 2 ? "s" : "") + " after this)."
+                                    : kept + ".");
 }
 
 void RecoverRecordingsPopover::next() {
@@ -85,6 +112,17 @@ void RecoverRecordingsPopover::openAsProject() {
   if (*proceeded) next();  // cancelled at "save changes?" (or a Save As still open): still offered
 }
 
+void RecoverRecordingsPopover::recover() {
+  if (stale_.empty() || !stale_.front().autosave) return;
+  ViewContext* ctx = &ctx_;  // by value, as openAsProject
+  auto proceeded = std::make_shared<bool>(false);
+  ctx_.guardUnsaved([ctx, s = stale_.front(), proceeded] {
+    *proceeded = true;
+    (void)ctx->recoverAutosave(s);
+  });
+  if (*proceeded) next();
+}
+
 void RecoverRecordingsPopover::reveal() {
   if (stale_.empty()) return;
   if (FileDialogs* d = ctx_.fileDialogs()) d->showInExplorer(stale_.front().dir);
@@ -102,6 +140,9 @@ void RecoverRecordingsPopover::later() {
 }
 
 InfoText RecoverRecordingsPopover::info() const {
+  if (!stale_.empty() && stale_.front().autosave)
+    return {"Recover", "An earlier session ended without closing properly; its document was autosaved. Nothing is "
+                       "deleted unless you choose Discard."};
   return {"Recover Recordings", "An earlier session ended without saving its untitled project; these takes were "
                                 "recorded in it. Nothing is deleted unless you choose Discard."};
 }

@@ -241,12 +241,21 @@ public:
   //   take is committed) and remaps every snapshot of the history that references one (DocumentStore::relocateSamples).
   //   An untitled document discarded — replaced by newProject() / a successful openProject(), or left by a quit
   //   confirmQuit() lets go ahead — has its folder deleted through discard(dir), unless unsavedFolderInUse(dir).
-  // M6 review L13: the folder of an earlier run that ended without cleaning up (a crash), with its takes.
+  // M6 review L13: the folder of an earlier run that ended without cleaning up (a crash), with its takes and (AS.2) the
+  // autosave of the document it was editing (pq/app/autosave.h; only one that is newer than its origin's project.pqd).
+  struct StaleAutosave {
+    std::string dir;            // <session>/autosave (UTF-8): project.pqd
+    std::string originDir;      // the project's folder; "" untitled
+    std::string recordingsDir;  // untitled: the folder its recordings were in (inside `dir`'s session)
+    std::string name;           // the display name
+    int64_t savedAt = 0;        // unix seconds
+  };
   struct StaleRecordings {
     std::string dir;                 // UTF-8
     std::vector<std::string> files;  // its .wav files (UTF-8, absolute)
     uint64_t bytes = 0;
     int64_t started = 0;             // that run's start (unix seconds)
+    std::optional<StaleAutosave> autosave;  // AS.2
   };
   struct UnsavedRecordings {
     std::string root;                                  // every untitled folder lies inside it
@@ -254,15 +263,23 @@ public:
     std::function<std::string()> fresh;                // a new untitled document's folder
     std::function<void(const std::string&)> discard;   // deletes a discarded untitled document's folder
     std::function<std::vector<StaleRecordings>()> findStale;  // L13: earlier runs' folders (reads only)
-    std::function<bool(const std::string&)> discardStale;     // L13: deletes one of them (the user chose Discard)
+    std::function<bool(const std::string&)> discardStale;     // L13: deletes one of them (the user chose Discard), or
+                                                              // AS.2: only its autosave folder (<session>/autosave)
   };
   void setUnsavedRecordings(UnsavedRecordings u);
   // M6 review L13: earlier runs' recordings, offered at start (views::offerRecordingRecovery). Nothing is deleted
   // unless the user chooses Discard. recoverStaleRecordings moves the takes into a new untitled document's own folder
   // (so its first save moves them into the project, as any recording) and places them one after another on a new
   // audio track; the emptied folder goes. False (status line says why) when nothing could be recovered.
+  // AS.2 (D6): recoverAutosave replaces the document by `s.autosave`'s (call it through guardUnsaved): history empty,
+  // dirty. Untitled: a new untitled document whose own folder receives every take of the session (moved; the
+  // autosave's references follow them, a take it does not reference is placed on a "Recovered" track as above). Saved
+  // project: titled `originDir` (relative samples resolve there; the session's takes stay for a later offer). The
+  // session's autosave folder goes, and the session folder when nothing else is left. False (status line says why)
+  // when the autosave cannot be read: nothing changes then.
   std::vector<StaleRecordings> staleRecordings() const;
   bool recoverStaleRecordings(const StaleRecordings& s);
+  bool recoverAutosave(const StaleRecordings& s);
   bool discardStaleRecordings(const StaleRecordings& s);
   const std::string& unsavedRecordingDir() const noexcept { return unsavedRecordingDir_; }
   // The last line of defence before a discard deletes `dir` (M6 review C1 / H1): true when the project directory lies
@@ -662,6 +679,11 @@ private:
   void declareViewActions(std::span<const std::string_view> ids);
   void moveUnsavedRecordings(std::string_view dirUtf8);  // T6.7 / M6 review C1
   void discardUnsaved(const std::string& dir, bool includeStore);  // T6.7b / C1: the checks, then unsaved_.discard
+  // L13 / AS.2: moves `files` into `toDir` (renamed on a name clash; never copied); (old, new) UTF-8 per file moved.
+  static std::vector<std::pair<std::string, std::string>> moveStaleTakes(const std::vector<std::string>& files,
+                                                                         std::string_view toDir);
+  size_t placeRecoveredTakes(const std::vector<std::string>& files);  // L13: on a new "Recovered" track; takes placed
+  void dropStaleSession(const StaleRecordings& s);  // AS.2: its autosave folder, and itself when nothing else is left
 
   TransportPort& transport_;
   ComputerKeyboard computerKeyboard_{transport_};  // T6.4

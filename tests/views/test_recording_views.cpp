@@ -5,12 +5,16 @@
 #include <doctest/doctest.h>
 
 #include <filesystem>
+#include <ctime>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
 
 #include "pq/document/edit_ops.h"
+#include "pq/document/samples.h"
+#include "pq/document/serialize.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
@@ -173,6 +177,7 @@ struct Stale {
   std::unique_ptr<Shell> shell;
   fs::path root, session;
   int fresh = 0, discards = 0;
+  std::optional<ViewContext::StaleAutosave> autosave;  // AS.2: listed while <session>/autosave/project.pqd exists
   Stale() {
     root = fs::temp_directory_path() / ("pq_l13_views_" + std::to_string(std::random_device{}())) / "Unsaved";
     session = root / "111-1000";
@@ -193,7 +198,8 @@ struct Stale {
       for (const auto& e : fs::recursive_directory_iterator(session, ec))
         if (e.path().extension() == ".wav") s.files.push_back(u8s(e.path()));
       s.started = 1000;
-      if (!s.files.empty()) v.push_back(std::move(s));
+      if (autosave && fs::exists(session / "autosave" / "project.pqd", ec)) s.autosave = autosave;
+      if (!s.files.empty() || s.autosave) v.push_back(std::move(s));
       return v;
     };
     u.discardStale = [this](const std::string& dir) {
@@ -211,6 +217,17 @@ struct Stale {
     d.tree().setRoot(std::make_unique<Widget>());
     std::error_code ec;
     fs::remove_all(root.parent_path(), ec);
+  }
+  // AS.2: the crashed run's autosave of `p` (as the Autosaver writes it) and its meta.
+  void writeAutosave(const doc::Project& p, const std::string& originDir, const std::string& name) {
+    REQUIRE(doc::saveProject(u8s(session / "autosave"), p).ok());
+    ViewContext::StaleAutosave a;
+    a.dir = u8s(session / "autosave");
+    a.originDir = originDir;
+    if (originDir.empty()) a.recordingsDir = u8s(session / "1");
+    a.name = name;
+    a.savedAt = static_cast<int64_t>(std::time(nullptr));
+    autosave = std::move(a);
   }
   RecoverRecordingsPopover* popover() const { return dynamic_cast<RecoverRecordingsPopover*>(shell->overlay().top()); }
   void click(const char* button) {
@@ -275,4 +292,138 @@ TEST_CASE("M6 review L13: Discard deletes the folder; Later and Esc keep it (off
     CHECK_FALSE(fs::exists(f.session));
     CHECK(f.ctx.doc() == before);  // the document untouched
   }
+}
+
+namespace {
+
+// A sample entry for `file` stored as `stored` (absolute, or relative to the project).
+doc::SampleRef sampleFor(doc::DocumentStore& st, const fs::path& file, std::string stored) {
+  doc::SampleRef r;
+  r.id = st.ids().sample();
+  r.path = std::move(stored);
+  r.size = fs::file_size(file);
+  r.frames = 1000;
+  r.channels = 1;
+  r.displayName = u8s(file.stem());
+  return r;
+}
+
+const doc::Track* trackNamed(const doc::Project& p, std::string_view name) {
+  const doc::Track* found = nullptr;
+  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == name) found = &t;
+  });
+  return found;
+}
+
+}  // namespace
+
+TEST_CASE("AS.2: Recover (through save-changes) restores an untitled autosave and its takes into a new folder") {
+  Stale f;
+  // The crashed run's untitled document used beat.wav (absolute, inside its session); vox.wav came after the autosave.
+  doc::DocumentStore crashed;
+  const fs::path beat = f.session / "1" / "beat.wav";
+  const doc::SampleRef ref = sampleFor(crashed, beat, doc::storedSamplePath(u8s(beat), {}));
+  REQUIRE(crashed.dispatch(doc::AddSample{ref}).ok());
+  f.writeAutosave(*crashed.current(), "", "Untitled");
+  views::test::ScriptedDialogs dlg;
+  f.ctx.setFileDialogs(&dlg);
+  REQUIRE(f.ctx.store().dispatch(doc::AddSample{sampleFor(f.ctx.store(), beat, "C:/elsewhere/x.wav")}).ok());
+  REQUIRE(f.ctx.dirty());
+  const doc::Snapshot before = f.ctx.doc();
+
+  RecoverRecordingsPopover* p = offerRecordingRecovery(*f.shell);
+  REQUIRE(p != nullptr);
+  f.d.step();
+  CHECK(p->current().autosave.has_value());
+  CHECK_FALSE(f.d.find("overlay/recover-recordings/buttons/open")->visible());
+  CHECK(f.d.find("overlay/recover-recordings/buttons/recover")->visible());
+  // "Save changes?" -> Cancel: nothing happens, still offered.
+  dlg.choice = SaveChoice::Cancel;
+  f.click("recover");
+  CHECK(dlg.asks == 1);
+  CHECK(f.popover() == p);
+  CHECK(f.ctx.doc() == before);
+  // -> Don't save: the autosaved document, dirty, its takes moved into the new untitled document's folder.
+  dlg.choice = SaveChoice::Discard;
+  f.click("recover");
+  CHECK(dlg.asks == 2);
+  CHECK(f.popover() == nullptr);
+  CHECK(f.ctx.projectDir().empty());
+  CHECK(f.ctx.dirty());
+  const fs::path into(std::u8string(f.ctx.unsavedRecordingDir().begin(), f.ctx.unsavedRecordingDir().end()));
+  CHECK(into.parent_path().filename() == "222-2000");  // this run's session
+  CHECK(fs::exists(into / "beat.wav"));
+  CHECK(fs::exists(into / "vox.wav"));
+  const doc::SampleRef* got = doc::findSample(*f.ctx.doc(), ref.id);
+  REQUIRE(got != nullptr);
+  CHECK(got->path == doc::storedSamplePath(u8s(into / "beat.wav"), {}));
+  CHECK(doc::samplesOf(*f.ctx.doc()).size() == 2);  // beat + the take placed below (not the replaced document's x)
+  const doc::Track* rec = trackNamed(*f.ctx.doc(), "Recovered");  // vox: not in the autosave, placed as in L13
+  REQUIRE(rec != nullptr);
+  CHECK(rec->clips.size() == 1);
+  CHECK(f.ctx.store().history().cursor() == 1);  // only that placement (the old history is not kept)
+  CHECK(f.ctx.missingSamples().empty());
+  CHECK_FALSE(fs::exists(f.session));  // the emptied session (and its autosave) went
+  CHECK(offerRecordingRecovery(*f.shell) == nullptr);
+  f.ctx.setFileDialogs(nullptr);
+}
+
+TEST_CASE("AS.2: Recover opens a saved project's autosave titled with its folder; the session's takes stay offered") {
+  Stale f;
+  const fs::path song = f.root.parent_path() / "Song";
+  fs::create_directories(song / "samples");
+  fs::copy_file(f.session / "1" / "beat.wav", song / "samples" / "x.wav");
+  doc::DocumentStore crashed;
+  REQUIRE(doc::saveProject(u8s(song), *crashed.current()).ok());  // what was saved before the crash
+  const doc::SampleRef ref = sampleFor(crashed, song / "samples" / "x.wav", "samples/x.wav");
+  REQUIRE(crashed.dispatch(doc::AddSample{ref}).ok());
+  f.writeAutosave(*crashed.current(), u8s(song), "Song");
+
+  REQUIRE(offerRecordingRecovery(*f.shell) != nullptr);
+  f.d.step();
+  f.click("recover");
+  CHECK(f.popover() == nullptr);
+  CHECK(f.ctx.projectDir() == u8s(song));
+  CHECK(f.ctx.projectName() == "Song");
+  CHECK(f.ctx.dirty());
+  CHECK(f.ctx.store().history().cursor() == 0);
+  const doc::SampleRef* got = doc::findSample(*f.ctx.doc(), ref.id);
+  REQUIRE(got != nullptr);
+  CHECK(got->path == "samples/x.wav");  // relative: resolves in the project's folder
+  REQUIRE(f.ctx.sampleResolutions().size() == 1);
+  const std::string& played = f.ctx.sampleResolutions()[0].path;
+  REQUIRE_FALSE(played.empty());
+  CHECK(fs::equivalent(fs::path(std::u8string(played.begin(), played.end())), song / "samples" / "x.wav"));
+  // The autosave went; the session's takes are not this project's: offered again as recordings.
+  CHECK_FALSE(fs::exists(f.session / "autosave"));
+  CHECK(fs::exists(f.session / "1" / "beat.wav"));
+  RecoverRecordingsPopover* p = offerRecordingRecovery(*f.shell);
+  REQUIRE(p != nullptr);
+  f.d.step();
+  CHECK_FALSE(p->current().autosave.has_value());
+  CHECK(f.d.find("overlay/recover-recordings/buttons/open")->visible());
+  f.click("later");
+}
+
+TEST_CASE("AS.2: Later keeps an autosave (offered again); Discard deletes it with the session") {
+  Stale f;
+  doc::DocumentStore crashed;
+  f.writeAutosave(*crashed.current(), "", "Untitled");
+  const doc::Snapshot before = f.ctx.doc();
+  REQUIRE(offerRecordingRecovery(*f.shell) != nullptr);
+  f.d.step();
+  f.click("later");
+  CHECK(f.popover() == nullptr);
+  CHECK(fs::exists(f.session / "autosave" / "project.pqd"));
+  RecoverRecordingsPopover* p = offerRecordingRecovery(*f.shell);
+  REQUIRE(p != nullptr);
+  f.d.step();
+  CHECK(p->current().autosave.has_value());
+  f.click("discard");
+  CHECK(f.popover() == nullptr);
+  CHECK(f.discards == 1);
+  CHECK_FALSE(fs::exists(f.session));
+  CHECK(f.ctx.doc() == before);
+  CHECK_FALSE(f.ctx.dirty());
 }

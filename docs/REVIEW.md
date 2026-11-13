@@ -1386,3 +1386,12 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   The magnifier opens the 1 … 256-sample bar (the block grows); drag it, or click the number and type a count + Enter.
 - Judge: the glide law (two octaves at most, 30 ms … 1 s; Q?-DT.4-a) — too slow / too wild?; the readout shrinking to fit
   ("3.00 ms | 144 smp" gets small at the default width); the micro bar's 1 … 256 range; the two glyphs.
+
+## 2026-11-13 · AS.2 · crash recovery at start 👁
+- Try: open (or start) a project, edit, wait ~10 s (the autosave), kill pqdaw in Task Manager, start it again: a popover
+  "pqdaw did not close properly. <name>, autosaved hh:mm" [Recover] [Show in Explorer] [Discard] [Later]. Recover: the
+  edit is back, the title shows unsaved, undo history empty. Untitled with a recording: the takes come back too (a take
+  recorded after the last autosave lands on a "Recovered" track). Saved project: offered only if you did not save it
+  after the autosave.
+- Judge: the wording (title, "autosaved 14:03", the date shown when not today); whether Recover should also be offered
+  for an older autosave (Q?-AS.2-a); the button widths.

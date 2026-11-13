@@ -1,15 +1,18 @@
 // AS.1: the autosave (pq/app/autosave.h): the policy on a test clock (10 s after the last change, at the latest 60 s
 // after the first unsaved one, never mid-gesture), the files (project.pqd round-trips through loadProject, autosave.json),
 // the delete after Save As / New / an undo to the saved state / the preference off, close() at a clean quit, an
-// untitled document's recordings by absolute path, and the worker thread.
+// untitled document's recordings by absolute path, and the worker thread. AS.2: findStaleUnsaved's autosave sessions.
 
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <random>
 #include <string>
 
 #include "pq/app/autosave.h"
+#include "pq/app/recording.h"
 #include "pq/app/sim_transport.h"
 #include "pq/document/commands.h"
 #include "pq/document/samples.h"
@@ -246,4 +249,74 @@ TEST_CASE("AS.1: the worker thread writes off the caller's thread; latest wins; 
   CHECK(fs::exists(session / "autosave" / "project.pqd"));
   std::error_code ec;
   fs::remove_all(session, ec);
+}
+
+TEST_CASE("AS.2: findStaleUnsaved returns a dead session's autosave with its meta, unless its origin was saved after it") {
+  const fs::path base = freshDir("pq_as2_stale_");
+  const fs::path root = base / "Unsaved", song = base / "Song";
+  doc::DocumentStore store;
+  REQUIRE(doc::saveProject(utf8(song), *store.current()).ok());
+  // An autosave as the Autosaver writes it (savedAt / originMtime filled in by the job).
+  auto autosave = [&](const char* session, std::string origin) {
+    const fs::path s = root / session;
+    Autosaver a{s / "autosave", s, false};
+    AutosaveMeta m;
+    m.originDir = std::move(origin);
+    m.name = m.originDir.empty() ? "Untitled" : "Song";
+    if (m.originDir.empty()) m.recordingsDir = utf8(s / "1");
+    a.submit(store.current(), {}, m);
+    REQUIRE(a.pump());
+    REQUIRE(a.lastError().empty());
+    return readAutosaveMeta(s / "autosave").value();
+  };
+  auto setMtime = [](const fs::path& f, int64_t unix) {
+    fs::last_write_time(f, std::chrono::clock_cast<std::chrono::file_clock>(
+                               std::chrono::sys_seconds{std::chrono::seconds{unix}}));
+  };
+  const AutosaveMeta untitled = autosave("111-1000", "");
+  const AutosaveMeta titled = autosave("222-1100", utf8(song));
+  setMtime(song / "project.pqd", titled.savedAt - 60);  // saved a minute before the crash: the autosave is newer
+  (void)autosave("333-1200", utf8(song));               // ... but this one is older than the file (below)
+  fs::create_directories(root / "444-1300" / "autosave");  // a project.pqd without its autosave.json: not offered
+  std::ofstream(root / "444-1300" / "autosave" / "project.pqd") << "{}";
+  const auto alive = [](uint32_t pid, int64_t) { return pid == 999; };
+
+  // The stale check reads the origin's time now: 333's autosave predates a save made after it.
+  {
+    fs::path meta333 = root / "333-1200" / "autosave";
+    const AutosaveMeta m = readAutosaveMeta(meta333).value();
+    CHECK(autosaveSupersedesOrigin(m));  // the origin (a minute old) is older
+    setMtime(song / "project.pqd", m.savedAt + 30);  // the user saved after that autosave
+    CHECK_FALSE(autosaveSupersedesOrigin(m));
+    setMtime(song / "project.pqd", titled.savedAt - 60);
+  }
+  // Make 333's autosave older than the origin file by rewriting its savedAt.
+  {
+    const fs::path f = root / "333-1200" / "autosave" / std::string(kAutosaveMetaFileName);
+    AutosaveMeta m = readAutosaveMeta(f.parent_path()).value();
+    std::ofstream(f, std::ios::trunc) << "{\"originDir\":\"" << m.originDir << "\",\"recordingsDir\":\"\",\"name\":\"Song\","
+                                      << "\"savedAt\":" << (titled.savedAt - 120) << ",\"originMtime\":0}";
+    REQUIRE(readAutosaveMeta(f.parent_path()).value().savedAt == titled.savedAt - 120);
+  }
+  const std::vector<StaleUnsavedSession> stale = findStaleUnsaved(root, "999-5000", alive);
+  REQUIRE(stale.size() == 2);
+  CHECK(stale[0].dir.filename() == "111-1000");
+  CHECK(stale[0].wavs.empty());
+  REQUIRE(stale[0].autosave.has_value());
+  CHECK(*stale[0].autosave == untitled);
+  CHECK(stale[0].autosave->recordingsDir == utf8(root / "111-1000" / "1"));
+  CHECK(stale[1].dir.filename() == "222-1100");
+  REQUIRE(stale[1].autosave.has_value());
+  CHECK(stale[1].autosave->originDir == utf8(song));
+  CHECK(stale[1].autosave->originMtime > 0);
+  // An outdated autosave next to takes: the session is offered for its takes only.
+  fs::create_directories(root / "333-1200" / "1");
+  std::ofstream(root / "333-1200" / "1" / "take.wav", std::ios::binary) << "RIFF";
+  const std::vector<StaleUnsavedSession> again = findStaleUnsaved(root, "999-5000", alive);
+  REQUIRE(again.size() == 3);
+  CHECK(again[2].dir.filename() == "333-1200");
+  CHECK_FALSE(again[2].autosave.has_value());
+  CHECK(again[2].wavs.size() == 1);
+  std::error_code ec;
+  fs::remove_all(base, ec);
 }
