@@ -1173,6 +1173,10 @@ private:
     assignment(PathSeg(&at, "tuning"), c.tuning);
     w_.key("active");
     w_.boolean(c.active);
+    if (c.noEdgeFade) {  // FZ.x-fix: written only when set (no schema change)
+      w_.key("noEdgeFade");
+      w_.boolean(true);
+    }
     if (!c.markers.empty()) {  // T6.1 (schema 22): [[sourceFrame, contentTick], …]
       const PathSeg ms(&at, "markers");
       w_.key("markers");
@@ -2957,9 +2961,9 @@ private:
         "id",     "name",    "colour", "start",  "length",  "contentStart", "loop",   "signature", "tuning",
         "active", "notes",   "fundamental",
         "kind",   "sample",  "warp",   "contentStartFrame", "seconds", "sourceBpm", "gainDb", "transpose",
-        "detuneCents", "reverse", "fadeIn", "fadeOut", "crossfadeIn", "markers", "warpParams", "take"};
+        "detuneCents", "reverse", "fadeIn", "fadeOut", "crossfadeIn", "markers", "warpParams", "take", "noEdgeFade"};
     enum { kKind = 12, kSample, kWarp, kFrame, kSeconds, kBpm, kGain, kTranspose, kDetune, kReverse, kFadeIn, kFadeOut, kXfade,
-           kMarkers, kWarpParams, kTake };
+           kMarkers, kWarpParams, kTake, kNoEdgeFade };
     LaneId take;  // T6.1: the slot's provenance (either kind)
     NoteClip note;  // the fields both kinds have are read into it (T5.x-perf-audio: on the stack, not the heap)
     NoteClip* c = &note;
@@ -2990,6 +2994,7 @@ private:
         case kMarkers: a.markers = warpMarkers(f); break;       // T6.1
         case kWarpParams: a.warpParams = warpParams(f); break;  // T6.1
         case kTake: take = LaneId{ref(f)}; break;               // T6.1
+        case kNoEdgeFade: a.noEdgeFade = r_.readBool(f); break;  // FZ.x-fix
         case 0: c->id = ClipId{defineId(f)}; break;
         case 1: c->name = str(f); break;
         case 2: c->colour = colour(f); break;
@@ -3033,8 +3038,8 @@ private:
       }
     }
     if (!audio) {
-      for (int k = kSample; k <= kWarpParams; ++k)
-        if (m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only audio clips have this key");
+      for (int k = kSample; k <= kNoEdgeFade; ++k)
+        if (k != kTake && m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only audio clips have this key");
       m.require({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
       const ClipId id = note.id;
       return ClipSlot{id, std::make_shared<const NoteClip>(std::move(note)), nullptr, take};

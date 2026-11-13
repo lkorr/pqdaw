@@ -9,6 +9,8 @@
 //   consolidate  an audio track's clips (gain, a crossfade) over a selection become one clip of its clip player's
 //                render: the track's out bus nulls against the original clips'
 //   stale        an edit of the track while it renders drops the result (no edit, no file)
+// FZ.x-fix: render clips have no edge declick (flatten / bounce null from frame 0, a selection's hard edges included);
+// Flatten keeps the blocks that feed another track (Lead's LFO into Mos: Mos's out bus unchanged).
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -19,6 +21,7 @@
 
 #include "playback_fixture.h"
 #include "pq/app/export_render.h"
+#include "pq/document/lower.h"
 #include "pq/app/project_link.h"
 #include "pq/app/render_edits.h"
 #include "pq/document/samples.h"
@@ -187,23 +190,21 @@ TEST_CASE("FZ.4: Flatten — frozen Lead becomes audio clips of its render, play
   CHECK(s->path == "samples/frozen/Lead.wav");
   CHECK(a.link->freezeStatus(a.f.lead).state == app::FreezeState::None);
 
-  // Lead sounds from song sample 0: the clip at tick 0 has the edge declick there (2 ms, 96 frames at 48 kHz), which
-  // the frozen render's clip has not (QUESTIONS Q?-FZ.4-a); from then on the two are the same.
-  constexpr size_t kDeclick = 96;
+  // Lead sounds from song sample 0: the clip at tick 0 has no edge declick (FZ.x-fix: AudioClip::noEdgeFade), as the
+  // frozen render's clip: the two are the same from frame 0.
+  CHECK(t.clips[0].audio->noEdgeFade);
   const Channels flatMaster = a.bus(0, to);
   const Channels flatLead = a.bus(0, to, a.link->trackOutBus(a.f.lead));
-  const double dbMaster = nullDb(master, flatMaster, kDeclick);
-  const double dbLead = nullDb(lead, flatLead, kDeclick);
-  MESSAGE("flattened vs frozen after the first 2 ms: the master " << dbMaster << " dB, Lead's out " << dbLead
-          << " dB (whole: " << nullDb(master, flatMaster) << " dB); " << t.clips.size() << " clip(s)");
+  const double dbMaster = nullDb(master, flatMaster);
+  const double dbLead = nullDb(lead, flatLead);
+  MESSAGE("flattened vs frozen from frame 0: the master " << dbMaster << " dB, Lead's out " << dbLead << " dB; "
+          << t.clips.size() << " clip(s)");
   CHECK(dbMaster <= -100.0);
   CHECK(dbLead <= -100.0);
-  // Within the first 2 ms Lead's flattened output is its frozen one under the linear declick ramp.
-  bool ramp = true;
+  double first = 0.0;  // the first 2 ms on their own (what the declick ramped)
   for (size_t c = 0; c < lead.size(); ++c)
-    for (size_t k = 0; k < kDeclick; ++k)
-      ramp = ramp && std::fabs(flatLead[c][k]) <= std::fabs(lead[c][k]) * static_cast<float>(k + 1) / static_cast<float>(kDeclick) + 1e-6f;
-  CHECK(ramp);
+    for (size_t k = 0; k < 96; ++k) first = std::max(first, static_cast<double>(std::fabs(flatLead[c][k] - lead[c][k])));
+  CHECK(first <= 1e-5 * std::max(1e-3, static_cast<double>(std::fabs(lead[0][95]))));
 
   // Undo: the frozen MIDI track, exactly; it plays its render again (the cache file stayed).
   REQUIRE(a.ctx->store().undo());
@@ -249,13 +250,13 @@ TEST_CASE("FZ.4: Bounce to New Track — Lead's own render on a new audio track 
   CHECK(n.mixer.sends == a.track(a.f.lead).mixer.sends);
   REQUIRE_FALSE(n.clips.empty());
   CHECK(fs::exists(a.dir / "samples" / "bounced" / "Lead Bounce.wav"));
-  const double db = nullDb(lead, a.bus(0, to, a.link->trackOutBus(n.id)), 96);  // its first 2 ms: the declick at 0
-  MESSAGE("bounced vs Lead's out (after the first 2 ms): " << db << " dB, " << n.clips.size() << " clip(s)");
+  const double db = nullDb(lead, a.bus(0, to, a.link->trackOutBus(n.id)));  // from frame 0: no edge declick
+  MESSAGE("bounced vs Lead's out (from frame 0): " << db << " dB, " << n.clips.size() << " clip(s)");
   CHECK(db <= -100.0);
   REQUIRE(a.ctx->store().undo());
   CHECK(a.ctx->doc() == before);
 
-  // A time selection: exactly that range, one clip over it (its 2 ms edge declicks aside: a cut into sound).
+  // A time selection: exactly that range, one clip over it, cut into sound at both edges (no edge declick).
   a.settle();
   const Ticks s = kBar / 2 + kPpq / 3, e = 3 * kBar / 2;
   const Channels part = a.bus(s, e, a.link->trackOutBus(a.f.lead));
@@ -270,9 +271,9 @@ TEST_CASE("FZ.4: Bounce to New Track — Lead's own render on a new audio track 
   REQUIRE(m.clips.size() == 1);
   CHECK(m.clips[0].start() == s);
   CHECK(m.clips[0].end() == e);
-  const size_t declick = 96 + 1;  // 2 ms at 48 kHz
-  const double dbPart = nullDb(part, a.bus(s, e, a.link->trackOutBus(m.id)), declick, declick);
-  MESSAGE("bounced selection vs Lead's out over it: " << dbPart << " dB (2 ms edges aside)");
+  CHECK(m.clips[0].audio->noEdgeFade);
+  const double dbPart = nullDb(part, a.bus(s, e, a.link->trackOutBus(m.id)));
+  MESSAGE("bounced selection vs Lead's out over it: " << dbPart << " dB (edges included)");
   CHECK(dbPart <= -100.0);
 }
 
@@ -375,6 +376,60 @@ TEST_CASE("FZ.4: Flatten a frozen audio track with a long silence: one clip per 
   const double db = nullDb(frozen, a.bus(0, to, a.link->trackOutBus(tone)));
   MESSAGE("flattened (2 regions) vs frozen: " << db << " dB");
   CHECK(db <= -100.0);
+}
+
+TEST_CASE("FZ.x-fix: Flatten keeps Lead's LFO that modulates Mos: Mos sounds the same, the LFO and its cable stay") {
+  App a("flatten_keep");
+  DocumentStore& st = a.ctx->store();
+  auto setValue = [&](DeviceId group, std::string_view member, double units) {
+    auto e = ops::setDeviceParamValue(a.doc(), playback_fixture::unitsLibrary(), test_blocks::member(a.doc(), group, member),
+                                      std::string(kValueParam), units);
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    a.dispatch(e->command);
+  };
+  // An LFO on Lead (off its path; synced to the song, so its phase is the song's), into the Gain of a Utility on Mos.
+  const DeviceId lfo = test_blocks::addModule(st, a.f.lead, "lfo", ops::kOffPath);
+  setValue(lfo, "Sync", 1.0);
+  setValue(lfo, "Depth", 0.25);
+  const DeviceId util = test_blocks::addModule(st, a.f.mos, "utility");
+  Wire mod;
+  mod.from = lfo;
+  mod.to = test_blocks::member(a.doc(), util, "Gain");
+  mod.param = std::string(kValueParam);
+  REQUIRE(mod.to.valid());
+  auto connected = ops::connect(a.doc(), st.ids(), mod);
+  REQUIRE_MESSAGE(connected.ok(), (connected.ok() ? std::string() : connected.error().message));
+  a.dispatch(connected->command);
+  const WireId cable = connected->wires.at(0);
+  a.dispatch(SetTrackFrozen{a.f.lead, true});
+  REQUIRE(a.link->waitForFreeze());
+  REQUIRE(a.link->freezeStatus(a.f.lead).state == app::FreezeState::Ready);
+  const FrozenKeep keep = frozenKeep(a.doc(), a.track(a.f.lead));
+  REQUIRE_FALSE(keep.blocks.empty());
+  const Ticks to = 2 * kBar;
+  const Channels mos = a.bus(0, to, a.link->trackOutBus(a.f.mos));
+  const Channels master = a.bus(0, to);
+
+  views::RenderEditJob job;
+  job.kind = views::RenderEditJob::Kind::Flatten;
+  job.tracks = {a.f.lead};
+  a.run(job);
+  INFO(a.ctx->status());
+  const Track& t = a.track(a.f.lead);
+  REQUIRE(t.kind == TrackKind::Audio);
+  std::vector<DeviceId> left;
+  for (const DevicePtr& d : t.devices) left.push_back(d->id);
+  CHECK(left == keep.blocks);
+  CHECK(findWire(a.doc(), cable) != nullptr);
+  const double dbMos = nullDb(mos, a.bus(0, to, a.link->trackOutBus(a.f.mos)));
+  const double dbMaster = nullDb(master, a.bus(0, to));
+  MESSAGE("flattened vs frozen: Mos's out " << dbMos << " dB, the master " << dbMaster << " dB");
+  CHECK(dbMos <= -120.0);
+  CHECK(dbMaster <= -100.0);
+  // Without the cable the LFO would not run, and Mos would differ: the null above is the LFO kept, not a no-op.
+  const Channels mosLive = a.bus(0, to, a.link->trackOutBus(a.f.mos));
+  a.dispatch(RemoveWire{cable});
+  CHECK(nullDb(mosLive, a.bus(0, to, a.link->trackOutBus(a.f.mos))) > -60.0);
 }
 
 TEST_CASE("FZ.4: an edit of the track while it renders drops the result: no edit, no file; cancel likewise") {

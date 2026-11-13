@@ -798,10 +798,11 @@ Res apply_(const Snapshot& s, const SetTrackKind& c, ChangeSet& cs) {
   if (!clipKind(t.kind) || !clipKind(c.kind)) return invalid("only MIDI and audio tracks change kind");
   if (t.kind == c.kind) return s;
   if (t.frozen) return invalid("a frozen track cannot change kind");
-  if (!t.devices.empty() || !t.clips.empty() || !t.takes.empty())
-    return invalid("a track changes kind only without blocks, clips or take lanes");
-  for (const Wire& w : wiresOf(*s))
+  if (!t.clips.empty() || !t.takes.empty()) return invalid("a track changes kind only without clips or take lanes");
+  for (const Wire& w : wiresOf(*s)) {
     if (w.noteSource == c.track && w.port != kMainPort) return invalid("a cable leaves the track's note outputs");
+    if (w.noteSource == c.track && !w.toMixer()) return invalid("its source plays a block");  // FZ.x-fix
+  }
   return editTrack(s, loc->path, cs, kChangeStructural, [&](Track& n) {
     n.kind = c.kind;
     n.auditionTake = LaneId{};

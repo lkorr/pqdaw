@@ -2,6 +2,8 @@
 // and Consolidate on audio — each one undo step that undo restores exactly, the clips placed so that song sample k
 // plays file frame k − samples(origin), the flattened track keeping its id, mixer, sends, routing, mixer lanes and the
 // cables from other tracks into its mixer; SetTrackKind's refusals; save / load round-trips with the new samples.
+// FZ.x-fix: the blocks a frozen track keeps running for another track stay; a flatten its notes still play is refused;
+// render clips carry noEdgeFade.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -9,8 +11,10 @@
 #include <string>
 #include <vector>
 
+#include "../support/blocks.h"
 #include "pq/document/commands.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/lower.h"
 #include "pq/document/main_path.h"
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
@@ -85,7 +89,7 @@ TEST_CASE("flatten: a frozen MIDI track becomes an audio track in place, one cli
   d.noteClip(d.keys, 0, bar);
   d.noteClip(d.keys, 3 * bar, bar);
   // Its mixer, a send, a routing, a mixer lane and a device lane; a take lane; a cable from Bass's instrument into its
-  // mixer (another track's: it stays) and one from its notes to Bass's instrument (its source's: it goes).
+  // mixer (another track's: it stays) and one from its notes to Bass's instrument (Flatten refused while it is there).
   d.cmd(SetTrackVolume{d.keys, -6.0f});
   d.cmd(SetTrackPan{d.keys, 0.25f});
   d.cmd(SetSendLevel{d.keys, d.ret, -12.0f});
@@ -126,14 +130,21 @@ TEST_CASE("flatten: a frozen MIDI track becomes an audio track in place, one cli
   notes.to = bassInst;
   notes.param = "gain";
   notes.law = WireLaw::Add;
-  (void)d.must(ops::connect(d.doc(), d.store.ids(), notes));
+  const WireId notesWire = d.must(ops::connect(d.doc(), d.store.ids(), notes)).wires.at(0);
   d.cmd(SetTrackFrozen{d.keys, true});
+  const SampleRef s = d.sample("Keys", 5 * 96000);
+  const ops::RenderRegion regions[] = {{0, bar + pq::kPpq}, {3 * bar, 4 * bar + 2 * pq::kPpq}};
+  // FZ.x-fix: its notes still play Bass: refused (a flattened track has no notes), nothing changed.
+  CHECK_FALSE(ops::flattenable(d.doc(), d.keys).ok());
+  CHECK_FALSE(ops::flattenTrack(d.doc(), d.store.ids(), d.keys, s, regions).ok());
+  d.cmd(SetTrackFrozen{d.keys, false});
+  d.cmd(RemoveWire{notesWire});
+  d.cmd(SetTrackFrozen{d.keys, true});
+  CHECK(ops::flattenable(d.doc(), d.keys).ok());
   const Snapshot before = d.store.current();
   const Track keysBefore = d.track(d.keys);
   const size_t h = d.store.history().cursor();
 
-  const SampleRef s = d.sample("Keys", 5 * 96000);
-  const ops::RenderRegion regions[] = {{0, bar + pq::kPpq}, {3 * bar, 4 * bar + 2 * pq::kPpq}};
   const ops::Edit e = d.must(ops::flattenTrack(d.doc(), d.store.ids(), d.keys, s, regions));
   CHECK(d.store.history().cursor() == h + 1);
   CHECK(d.store.history().entries()[h].label == "Flatten");
@@ -170,6 +181,7 @@ TEST_CASE("flatten: a frozen MIDI track becomes an audio track in place, one cli
     CHECK(c.contentStartFrame == static_cast<double>(tm.ticksToSamples(regions[i].start, kRate)));
     CHECK(c.gainDb == 0.0f);
     CHECK(c.name == "Keys");
+    CHECK(c.noEdgeFade);  // FZ.x-fix: a render clip has no 2 ms edge declick
   }
   d.roundTrips();
   // Undo restores the frozen MIDI track exactly; redo flattens again.
@@ -187,6 +199,12 @@ TEST_CASE("flatten: a frozen audio track keeps its kind; the regions must be sor
   const ops::NewAudioClip nc{aud, 0, src.id, {}};
   d.must(ops::addAudioClips(d.doc(), d.store.ids(), std::span<const SampleRef>(&src, 1), std::span<const ops::NewAudioClip>(&nc, 1)));
   d.cmd(SetTrackFrozen{aud, true});
+  auto saved = [&] {
+    auto text = serializeProject(d.doc());
+    REQUIRE(text.ok());
+    return *text;
+  };
+  CHECK(saved().find("noEdgeFade") == std::string::npos);  // FZ.x-fix: written only when set
   const SampleRef s = d.sample("Vox", 96000);
   const ops::RenderRegion bad[] = {{pq::kPpq, 2 * pq::kPpq}, {0, pq::kPpq}};
   CHECK_FALSE(ops::flattenTrack(d.doc(), d.store.ids(), aud, s, bad).ok());
@@ -200,13 +218,83 @@ TEST_CASE("flatten: a frozen audio track keeps its kind; the regions must be sor
   REQUIRE(t.clips.size() == 1);
   CHECK(audioAt(t, 0).sample == s.id);
   CHECK(audioAt(t, 0).contentStartFrame == 24000.0);  // a beat at 120 BPM
+  CHECK(audioAt(t, 0).noEdgeFade);
+  CHECK(saved().find("noEdgeFade") != std::string::npos);
+  d.roundTrips();
   // Return / master / group tracks cannot be flattened.
   CHECK_FALSE(ops::flattenTrack(d.doc(), d.store.ids(), d.ret, d.sample("x", 10), one).ok());
 }
 
+TEST_CASE("flatten: blocks whose output reaches another track stay, with their cables and lanes (FZ.x-fix)") {
+  Doc d;
+  d.noteClip(d.keys, 0, 4 * pq::kPpq);
+  // An LFO on Keys modulating a utility's Gain on Bass; a cable from the LFO into Keys's own mixer too.
+  const DeviceId lfo = test_blocks::addModule(d.store, d.keys, "lfo", ops::kOffPath);
+  const DeviceId util = test_blocks::addModule(d.store, d.bass, "utility");
+  const DeviceId gain = test_blocks::member(d.doc(), util, "Gain");
+  REQUIRE(gain.valid());
+  Wire mod;
+  mod.from = lfo;
+  mod.to = gain;
+  mod.param = std::string(kValueParam);
+  const WireId cable = d.must(ops::connect(d.doc(), d.store.ids(), mod)).wires.at(0);
+  Wire own;
+  own.from = lfo;
+  own.mixer = d.keys;
+  const WireId ownCable = d.must(ops::connect(d.doc(), d.store.ids(), own)).wires.at(0);
+  const DeviceId inst = mainPath(d.doc(), d.track(d.keys)).blocks.at(0)->id;
+  d.cmd(SetTrackFrozen{d.keys, true});
+  const FrozenKeep k = frozenKeep(d.doc(), d.track(d.keys));
+  REQUIRE_FALSE(k.blocks.empty());
+  CHECK_FALSE(k.source);
+  // The LFO's knob automated: its device lane stays with it.
+  DeviceId knob;
+  for (const DeviceId b : k.blocks)
+    if (const Device* x = findDevice(d.doc(), b).device; x != nullptr && isValueDevice(*x)) knob = x->id;
+  LaneId lane;
+  if (knob.valid()) {
+    AutomationLane l;
+    l.id = lane = d.store.ids().lane();
+    l.param = ParamRef::device(knob, kValueParam);
+    l.paramName = std::string(kValueParam);
+    d.cmd(SetTrackFrozen{d.keys, false});
+    d.cmd(AddAutomationLane{d.keys, std::make_shared<const AutomationLane>(std::move(l))});
+    d.cmd(SetTrackFrozen{d.keys, true});
+  }
+  const Snapshot before = d.store.current();
+  const Track bassBefore = d.track(d.bass);
+
+  const SampleRef s = d.sample("Keys", 96000);
+  const ops::RenderRegion one[] = {{0, 4 * pq::kPpq}};
+  d.must(ops::flattenTrack(d.doc(), d.store.ids(), d.keys, s, one));
+  const Track& t = d.track(d.keys);
+  CHECK(t.kind == TrackKind::Audio);
+  CHECK_FALSE(t.frozen);
+  // Exactly the kept blocks remain (the LFO group and its members), in their order; the instrument went.
+  std::vector<DeviceId> left;
+  for (const DevicePtr& x : t.devices) left.push_back(x->id);
+  CHECK(left == k.blocks);
+  CHECK(findDevice(d.doc(), inst).device == nullptr);
+  // The cable to Bass stays; the one into its own mixer went (it is in the render); Bass is untouched.
+  const WireList& wires = wiresOf(d.doc());
+  CHECK(std::any_of(wires.begin(), wires.end(), [&](const Wire& w) { return w.id == cable; }));
+  CHECK(std::none_of(wires.begin(), wires.end(), [&](const Wire& w) { return w.id == ownCable; }));
+  CHECK(std::count_if(wires.begin(), wires.end(), [&](const Wire& w) { return w.mixer == d.keys; }) == 1);  // source → mixer
+  CHECK(d.track(d.bass) == bassBefore);
+  if (lane.valid()) {
+    REQUIRE(t.lanes.size() == 1);
+    CHECK(t.lanes[0]->id == lane);
+  }
+  // Frozen or flattened, the same blocks run: what reaches Bass is lowered the same way.
+  CHECK(frozenKeep(d.doc(), t).blocks == k.blocks);
+  d.roundTrips();
+  REQUIRE(d.store.undo());
+  CHECK(*d.store.current() == *before);
+}
+
 TEST_CASE("SetTrackKind: MIDI <-> audio only on an empty, unfrozen track") {
   Doc d;
-  CHECK_FALSE(d.store.dispatch(SetTrackKind{d.keys, TrackKind::Audio}).ok());  // its instrument
+  CHECK_FALSE(d.store.dispatch(SetTrackKind{d.keys, TrackKind::Audio}).ok());  // its notes play its instrument
   CHECK_FALSE(d.store.dispatch(SetTrackKind{d.ret, TrackKind::Audio}).ok());
   const TrackId aud = d.must(ops::createTrack(d.doc(), d.store.ids(), TrackKind::Audio, {}, "A")).tracks.at(0);
   CHECK_FALSE(d.store.dispatch(SetTrackKind{aud, TrackKind::Group}).ok());

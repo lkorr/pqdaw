@@ -60,7 +60,7 @@ void waitFill(void* user, media::StreamId id, int64_t frames) {
 // Field by field (doc::AudioClipDesc's defaulted == needs one on pq::ContentLoop, which core does not declare).
 bool sameClip(const doc::AudioClipDesc& a, const doc::AudioClipDesc& b) {
   return a.id == b.id && a.sample == b.sample && a.start == b.start && a.length == b.length && a.warp == b.warp &&
-         a.reverse == b.reverse && a.playable == b.playable && a.startSeconds == b.startSeconds &&
+         a.reverse == b.reverse && a.playable == b.playable && a.declick == b.declick && a.startSeconds == b.startSeconds &&
          a.seconds == b.seconds && a.contentStartFrame == b.contentStartFrame && a.speed == b.speed &&
          a.rateRatio == b.rateRatio && a.contentStart == b.contentStart && a.loop.enabled == b.loop.enabled &&
          a.loop.start == b.loop.start && a.loop.end == b.loop.end && a.framesPerTick == b.framesPerTick &&
@@ -130,6 +130,7 @@ engine::AudioClipDesc toEngine(const doc::AudioClipDesc& d, uint32_t sample, boo
   c.warp = engineWarp(d.warp);
   c.reverse = d.reverse;
   c.playable = playable;
+  c.declick = d.declick;  // FZ.x-fix: a render clip (AudioClip::noEdgeFade)
   c.contentStartFrame = d.contentStartFrame;
   c.speed = d.speed;
   c.contentStart = d.contentStart;

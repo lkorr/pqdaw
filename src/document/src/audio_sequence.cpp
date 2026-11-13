@@ -39,6 +39,7 @@ AudioTrackDesc lowerAudioTrack(const Project& p, const TrackPath& path, const Au
     d.warp = c.warp;
     d.reverse = c.reverse;
     d.playable = c.active && sample != nullptr && (!options.available || options.available(c.sample));
+    d.declick = !c.noEdgeFade;  // FZ.x-fix
     d.startSeconds = tempo.ticksToSeconds(c.start);
     if (c.warp == AudioWarp::Off) {
       d.seconds = c.seconds;

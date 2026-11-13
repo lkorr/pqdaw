@@ -41,6 +41,7 @@ struct AudioClipDesc {
   AudioWarp warp = AudioWarp::Off;
   bool reverse = false;
   bool playable = true;  // active, and its sample available (AudioLowerOptions::available); else silent
+  bool declick = true;   // FZ.x-fix: false for a clip with AudioClip::noEdgeFade (engine AudioClipDesc::declick)
   // Off.
   double startSeconds = 0.0;       // tau(start)
   double seconds = 0.0;            // the clip's duration

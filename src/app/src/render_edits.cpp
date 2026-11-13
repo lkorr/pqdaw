@@ -352,6 +352,10 @@ bool RenderEditService::start(const RenderEditJob& req) {
           ctx_.setStatus("Flatten: " + t->name + " does not play its render yet (freeze it and wait for the render)");
           return false;
         }
+        if (const Status can = doc::ops::flattenable(*snap, id); !can) {  // FZ.x-fix: before rendering anything
+          ctx_.setStatus("Flatten: " + t->name + ": " + can.error().message);
+          return false;
+        }
         it.source = r->path;
         break;
       }

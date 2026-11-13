@@ -376,6 +376,11 @@ struct AudioClip {
   Ticks crossfadeIn = 0;
   TuningAssignment tuning;  // the tuning of a Steps transpose (Inherit = the track's)
   bool active = true;
+  // FZ.x-fix (QUESTIONS Q258): true: no 2 ms edge declick at either end (only its own fades and crossfades; lowered as
+  // AudioClipDesc::declick false). Set on render clips (flatten, bounce, consolidate: edit_ops.h "Render edits"), whose
+  // audio already is what plays there; every edit that copies a clip (split, trim, duplicate, …) keeps it. Saved
+  // "noEdgeFade": true only when set.
+  bool noEdgeFade = false;
   // T6.1: warp markers (WarpMarker above; kept, unused, while the clip is Off) and the time-stretch settings.
   std::vector<WarpMarker> markers;
   WarpParams warpParams;

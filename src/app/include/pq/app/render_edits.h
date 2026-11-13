@@ -22,8 +22,9 @@
 // are made safe and never overwrite (" 2", " 3", …). Files are 32-bit float WAV at the engine rate.
 // REGIONS (renderRegions) of a render whose file frame 0 is song sample samples(origin): the spans where some channel
 // is above kRegionFloor, joined across quiet gaps shorter than kRegionGapSeconds, widened by kRegionPadSeconds on both
-// sides (within the file) and rounded outwards to ticks — so a clip edge's 2 ms declick only ever touches quiet
-// frames and the clips play the render within kRegionFloor of it everywhere.
+// sides (within the file) and rounded outwards to ticks — so a clip edge lies in quiet frames (render clips have no
+// edge declick, FZ.x-fix: AudioClip::noEdgeFade; one moved into sound starts hard) and the clips play the render
+// within kRegionFloor of it everywhere.
 
 #include <atomic>
 #include <cstdint>
@@ -50,7 +51,7 @@ class ProjectLink;
 
 inline constexpr float kRegionFloor = 1.0e-6f;      // −120 dBFS
 inline constexpr double kRegionGapSeconds = 1.0;    // shorter quiet gaps do not split a region
-inline constexpr double kRegionPadSeconds = 0.01;   // quiet kept around each region (≥ the 2 ms edge declick)
+inline constexpr double kRegionPadSeconds = 0.01;   // quiet kept around each region
 
 // The regions of the WAV `file` (above) as tick ranges, its frame 0 at tick `origin` of `tempo` (rate: the file's).
 // Errors: the file cannot be read.

@@ -69,8 +69,9 @@ struct SetTrackActive { TrackId track; bool active = true; };     // Structural 
 struct SetTrackFrozen { TrackId track; bool frozen = true; };
 // FZ.4 (docs/plans/RB.md D5; ops::flattenTrack): Structural. A MIDI track becomes an audio track or back, in place (its
 // id, mixer, sends, routing and lanes stay). Refused unless the track is MIDI or audio and EMPTY of what only one kind
-// holds: no blocks, no clips, no take lanes, and no cable from its source but from its main output (a MIDI track's
-// note outputs "hz", "gate", … do not exist on an audio track). Refused on a frozen track. What only the old kind has
+// holds: no clips, no take lanes, and no cable from its source but its main output into its own mixer (a MIDI track's
+// note outputs "hz", "gate", … do not exist on an audio track; notes and audio play blocks differently). Blocks its
+// source does not play may stay (FZ.x-fix: what Flatten keeps running). Refused on a frozen track. What only the old kind has
 // is reset (an audio track's input; a MIDI track's MIDI input and note input).
 struct SetTrackKind { TrackId track; TrackKind kind = TrackKind::Audio; };
 // ---- Recording inputs (T6.1; model.h "Recording inputs", "Note input") -----------------------------------------

@@ -2,10 +2,12 @@
 // docs/plans/RB.md D5, "### FZ.4". The app renders the WAV; these builders turn it into one undo step.
 
 #include <string>
+#include <unordered_set>
 
 #include "edit_common.h"
 #include "edit_paths.h"
 #include "pq/document/audio_clip.h"
+#include "pq/document/lower.h"
 
 namespace pq::doc::ops {
 
@@ -49,6 +51,7 @@ Result<AudioClip> regionClip(const Project& p, IdSource& ids, const Track& t, co
   c.start = r.start;
   c.sample = s.id;
   c.warp = AudioWarp::Off;
+  c.noEdgeFade = true;  // FZ.x-fix: the render is what plays there (a clip into sound must not ramp in)
   c.contentStartFrame = static_cast<double>(a - o);
   c.seconds = tm.ticksToSeconds(r.end) - tm.ticksToSeconds(r.start);  // its length syncs to exactly `end`
   c = syncedClip(*p.timeline, std::move(c));
@@ -71,22 +74,53 @@ Status addRegions(const Project& p, IdSource& ids, Edit& e, const Track& t, Trac
   return ok();
 }
 
+// FZ.x-fix: the blocks of `t` that keep running after Flatten (frozenKeep: their output reaches another track), as
+// ids; an error when they, or another track, need its own notes / audio (gone once it plays its render).
+Result<std::unordered_set<uint32_t>> flattenKeep(const Project& p, const Track& t) {
+  const FrozenKeep k = frozenKeep(p, t);
+  std::unordered_set<uint32_t> kept;
+  for (const DeviceId d : k.blocks) kept.insert(d.value);
+  bool source = k.source;
+  for (const Wire& w : wiresOf(p))  // a kept instrument group played by its notes (kept for a member's sake)
+    source = source || (w.noteSource == t.id && !w.toMixer() && kept.count(w.to.value) != 0);
+  if (source)
+    return invalid(std::string("its own ") + (t.kind == TrackKind::Midi ? "notes" : "audio") +
+                   " still play another track (a cable from its source, or through its blocks): disconnect it to flatten");
+  return kept;
+}
+
 }  // namespace
+
+Status flattenable(const Project& p, TrackId track) {
+  const Track* t = findTrackPtr(p, track);
+  if (t == nullptr) return notFound("track not found");
+  if (!clipTrack(*t)) return invalid("only MIDI and audio tracks can be flattened");
+  Result<std::unordered_set<uint32_t>> kept = flattenKeep(p, *t);
+  if (!kept) return std::move(kept).error();
+  return ok();
+}
 
 EditResult flattenTrack(const Project& p, IdSource& ids, TrackId track, const SampleRef& sample,
                         std::span<const RenderRegion> regions) {
   const Track* t = findTrackPtr(p, track);
   if (t == nullptr) return notFound("track not found");
   if (!clipTrack(*t)) return invalid("only MIDI and audio tracks can be flattened");
+  Result<std::unordered_set<uint32_t>> kept = flattenKeep(p, *t);
+  if (!kept) return std::move(kept).error();
   Result<bool> add = needsSample(p, sample);
   if (!add) return std::move(add).error();
   Edit e = makeEdit("Flatten");
   Batch& b = batchOf(e);
   if (t->frozen) b.commands.push_back(SetTrackFrozen{track, false});
-  for (const Wire& w : wiresOf(p))  // its source's cables (wherever they go); a fresh main link replaces them below
+  for (const Wire& w : wiresOf(p))  // its source's cables (into its mixer or its blocks to go); a fresh main link below
     if (w.noteSource == track) b.commands.push_back(RemoveWire{w.id});
-  for (const DevicePtr& d : t->devices)  // top-level blocks: a group takes its members (and every block its cables)
-    if (!d->group.valid()) b.commands.push_back(RemoveDevice{d->id});
+  for (const Wire& w : wiresOf(p))  // a kept block's cables into its own mixer: that is in the render
+    if (w.mixer == track && !w.fromNoteSource() && kept->count(w.from.value) != 0) b.commands.push_back(RemoveWire{w.id});
+  // The blocks that do not keep running: each one whose group stays (or none) — a removed group takes its members, and
+  // every removed block its cables.
+  for (const DevicePtr& d : t->devices)
+    if (kept->count(d->id.value) == 0 && (!d->group.valid() || kept->count(d->group.value) != 0))
+      b.commands.push_back(RemoveDevice{d->id});
   for (const TakeLanePtr& l : t->takes) b.commands.push_back(RemoveTakeLane{track, l->id});
   for (const ClipSlot& c : t->clips) b.commands.push_back(RemoveClip{{track, c.id}});
   if (t->kind != TrackKind::Audio) b.commands.push_back(SetTrackKind{track, TrackKind::Audio});
