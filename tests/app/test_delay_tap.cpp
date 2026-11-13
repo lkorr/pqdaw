@@ -12,6 +12,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <ostream>
 #include <memory>
@@ -151,11 +152,11 @@ struct Song {
 struct Player {
   std::unique_ptr<app::ProjectLink> link;
   int64_t t = 0;
-  explicit Player(const Snapshot& s) {
+  explicit Player(const Snapshot& s, bool jit = false) {
     app::LinkConfig c;
     c.compileThread = false;
     c.sleepAfterMs = 0.0f;
-    c.jit = false;
+    c.jit = jit;  // DT.4: the Repitch case renders on both (bit for bit)
     c.idleUnits = false;  // (an audio track without clips is idle: its unit would be skipped)
     c.sampleRate = kRate;
     auto l = app::ProjectLink::create(c, s);
@@ -468,7 +469,7 @@ std::vector<float> idealCrossfade(size_t n, size_t at, double from, double to, s
 // A 220 Hz sine into `make`'s delay, played 0.6 s, then `change` (a document edit), then 0.3 s more. Returns the left
 // channel and the frame where the change takes effect (the first block after the flush).
 template <class Make, class Change>
-std::pair<std::vector<float>, size_t> switchRender(Make make, Change change) {
+std::pair<std::vector<float>, size_t> switchRender(Make make, Change change, bool jit = false) {
   Song s;
   IdSource ids;
   Circuit c(ids);
@@ -478,7 +479,7 @@ std::pair<std::vector<float>, size_t> switchRender(Make make, Change change) {
   make(c, sine);
   s.place(c.set);
   s.tempo(120.0);
-  Player p(s.store.current());
+  Player p(s.store.current(), jit);
   [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { p.link->onDocumentChange(e); });
   std::vector<float> L, R;
   p.run(450, L, R);  // 0.6 s
@@ -534,13 +535,15 @@ TEST_CASE("delay tap: the minimum is 1 sample — Time at 0 delays an impulse by
   }
 }
 
-TEST_CASE("delay tap: a mode switch and a sync step while a sine plays crossfade — no click, unlike the old 20 ms ramp") {
+TEST_CASE("delay tap: in Crossfade, a mode switch and a sync step while a sine plays crossfade — no click, unlike the old "
+          "20 ms ramp") {
   // 375 ms (Time) and 1/4 = 500 ms (Sync at 120 BPM): ms → ♪ moves the delay by 6000 samples. The old behaviour, for
   // the measure: delay_cubic whose time (a value block) the scheduler's param ramp glides there in 20 ms (the read
-  // head running backwards at 5.25×: the click the user heard).
+  // head running backwards at 5.25×: the click the user heard). DT.4: Glide set to Crossfade (DT.2's behaviour).
   constexpr size_t kFade = static_cast<size_t>(kDelayTapFadeSeconds * kRate);
   const double d375 = 0.375 * kRate, d500 = 0.5 * kRate;
   DelayTapOptions o;
+  o.glide = 1;
   o.time = dsp::curvePosition(delayTimeCurve(), dsp::curveOutput(delayTimeCurve(), 0.375), 0.0);
   o.sync = kNoteValueQuarter;
   auto tap = [&](Circuit& c, DeviceId sine) { c.out(c.delayTap(sine, "out", o), kMainPort); };
@@ -604,4 +607,54 @@ TEST_CASE("delay tap: a mode switch and a sync step while a sine plays crossfade
   CHECK(sMode < 1.02 * sModeIdeal + 1e-4);
   CHECK(sSync < 1.02 * sSyncIdeal + 1e-4);
   CHECK(sRamp > 3.0 * sMode);
+}
+
+// ---- DT.4: Repitch (the default) ------------------------------------------------------------------------------------
+
+TEST_CASE("delay tap: Repitch (the default) — a sync step 1/16 → 1/4 while a sine plays bends the pitch, no click, no "
+          "recompile; Glide switches without one; the JIT renders it bit for bit") {
+  // 1/16 = 125 ms → 1/4 = 500 ms at 120 BPM: the read head glides 18000 samples over 0.75 s (delay_fade's Repitch:
+  // N = 2·Δ), the pitch down to 1/4 rate at the middle. switchRender checks no recompile.
+  DelayTapOptions o;
+  o.mode = 1;
+  o.sync = 7;  // 1/16
+  REQUIRE(noteValues()[7].label == "1/16");
+  auto tap = [&](Circuit& c, DeviceId sine) { c.out(c.delayTap(sine, "out", o), kMainPort); };
+  auto step = [](Song& s) { s.set(s.role(DelayRole::Sync), static_cast<double>(kNoteValueQuarter)); };
+  const auto [L, at] = switchRender(tap, step);
+  const auto [J, atJ] = switchRender(tap, step, true);
+  // Interpreter == JIT, bit for bit, through the switch and the glide.
+  REQUIRE(atJ == at);
+  REQUIRE(J.size() == L.size());
+  size_t differ = 0;
+  for (size_t i = 0; i < L.size(); ++i) differ += std::bit_cast<uint32_t>(L[i]) != std::bit_cast<uint32_t>(J[i]);
+  CHECK(differ == 0);
+  // Click-free: over the switch (10 ms before … 60 ms after) the high-pass energy and the largest step stay the steady
+  // sine's (measured over as long a window before it); a crossfade would sum two sines 82.5 periods apart (cancelling
+  // midway) and the old ramp's 20 ms sweep is the click the user heard (the Crossfade case above: > 1000× the energy).
+  const size_t w0 = 480, w1 = 2880, n = w0 + w1;
+  const double e = clickEnergy(L, at - w0, at + w1), eSteady = clickEnergy(L, at - w0 - n, at - w0);
+  const double st = maxStep(L, at - w0, at + w1), stSteady = maxStep(L, at - w0 - n, at - w0);
+  MESSAGE("Repitch sync step: click energy " << e << " (steady sine " << eSteady << "), max |Δ| " << st << " (steady " << stSteady << ")");
+  // What the glide adds is the float read position's rounding (a 2⁻¹¹ … 2⁻⁹-sample grid at 6000 … 24000 samples: an
+  // error ≤ w·2⁻¹⁰ ≈ 3e-5, below −90 dB, white, so it fills the high-pass: a few × the pure sine's tiny energy). A click is
+  // of another order: one step of the read rate (1 → 1/4, a linear glide's start) kinks the sine's slope by 0.75·w, a
+  // third difference of ≈ 0.02 — 4e-4 of energy in one sample, ~400× the steady window's.
+  CHECK(e < 10.0 * eSteady);
+  CHECK(st < 1.02 * stSteady + 1e-4);
+  // The pitch bends: 200 … 300 ms in (the read rate ~0.3 … 0.4), one sine at full level (one head) whose zero crossings
+  // come far slower than 220 Hz's.
+  size_t crossings = 0;
+  double peak = 0.0;
+  for (size_t i = at + 9600; i < at + 14400 && i < L.size(); ++i) {
+    crossings += (L[i - 1] < 0.0f) != (L[i] < 0.0f);
+    peak = std::max(peak, static_cast<double>(std::fabs(L[i])));
+  }
+  MESSAGE("200 … 300 ms into the glide: " << crossings << " zero crossings (220 Hz unbent: 44), peak " << peak);
+  CHECK(crossings < 25);
+  CHECK(peak > 0.95);
+  // Glide → Crossfade is a param write too (switchRender: no recompile), and the output goes on unbroken.
+  auto toCrossfade = [](Song& s) { s.set(s.role(DelayRole::Glide), 1.0); };
+  const auto [X, atX] = switchRender(tap, toCrossfade);
+  CHECK(maxStep(X, atX - w0, atX + w1) < 1.02 * stSteady + 1e-4);
 }
