@@ -1383,3 +1383,4 @@ Choice: (1a), (2b), (3b), (4a), (5a) — the user picked the clip; every note is
 All in src/document/src/midi_export.cpp (`allocateMpe`, the mode switch, the tempo loop) and src/views/src/
 midi_export.cpp (`exportMidiClips`). The MCM + RPN 0 setup is repeated at tick 0 of every clip's MTrk so a track
 imported alone still plays as MPE. MPE keeps the ±48 member range (orchestrator); the round trip holds within 0.3 ¢.
+Status: open.
