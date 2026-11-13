@@ -10,6 +10,7 @@
 #include "pq/dsp/kernel.h"
 #include "pq/dsp/oversample.h"
 #include "pq/dsp/svf_design.h"
+#include "pq/graph/latency.h"
 
 namespace pq::graph::rules {
 
@@ -145,9 +146,15 @@ ResponseKind delayLinear(ResponseArgs& a) noexcept {
 }
 
 ResponseKind latency(ResponseArgs& a) noexcept {
-  // The delay line's kernel at time = frames (samples), its ring sized to ceil(frames): d = max(frames, 1).
+  // The delay line's kernel at time = frames (samples), its ring sized to ceil(frames): d = max(frames, 1). DY.1: a
+  // `time` not folded yet (an un-optimised patch) adds round(time · sr), as optimise() will (latencyFrames).
   if (a.numInputs < 2 || a.signal[1] != 0 || a.known[1] == 0) return ResponseKind::Unavailable;
-  const float d = std::isnan(a.value[1]) ? 1.0f : std::max(a.value[1], 1.0f);
+  float total = a.value[1];
+  if (a.numInputs > 2 && a.known[2] != 0 && a.value[2] != 0.0f) {
+    if (a.signal[2] != 0) return ResponseKind::Unavailable;
+    total = static_cast<float>(latencyFrames(a.value[1], a.value[2], a.sampleRate));
+  }
+  const float d = std::isnan(total) ? 1.0f : std::max(total, 1.0f);
   const float fl = std::floor(d);
   const double f = d - fl;
   g(a, 0, 0) = zPow(a.z, static_cast<uint32_t>(fl)) * ((1.0 - f) + f * a.z);

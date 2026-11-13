@@ -63,6 +63,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "svf",
       // T6.2: a pure delay that reports its latency (plugin-delay compensation).
       "latency",
+      // DY.1: the dynamics atoms (the envelope follower and the sliding max / min / mean).
+      "follow", "window",
   };
   for (const char* n : names) {
     CAPTURE(n);

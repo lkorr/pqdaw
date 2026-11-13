@@ -67,6 +67,8 @@ float opCostWeight(const Schedule& s, uint32_t op) noexcept {
     case Atom::WavetableShape: return 40.0f;  // TMM.8: four antiderivative reads, the ADAA division
     case Atom::Svf: return 8.0f;              // EQ.1: one section at param rate (≈ 2 ns/sample); more stages cost more
     case Atom::NoiseStep: return 4.0f;        // NZ.1: a phase compare per frame; at audio rate the draw (= noise's)
+    case Atom::Follow: return 4.0f;           // DY.1: a 5-cycle recursion per sample (≈ 1.3 ns, bench_atoms)
+    case Atom::Window: return 4.0f;           // DY.1: max / min ≈ 2 compares per sample amortised, mean a double add
     case Atom::DelayLinear: case Atom::DelayCubic: case Atom::DelayAllpass: case Atom::DelayReadLinear:
     case Atom::DelayReadCubic: case Atom::DelayReadAllpass: case Atom::DelayWrite: case Atom::SineHz:
     case Atom::DelayFade: case Atom::DelayReadFade:

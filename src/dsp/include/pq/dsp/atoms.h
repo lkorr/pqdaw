@@ -92,6 +92,22 @@
 //     exactly the atom's output (tested bit-for-bit).
 //   samplehold (x, trig)             on trig edge held = x; output held (initially 0)
 //   latch (x, enable)                 while enable is high held = x; output held (initially 0)
+// Dynamics (DY.1, kernels_dynamics.cpp; docs/plans/DY.md):
+//   follow (x, attack, release)       one-pole envelope: y ← x > y ? y·ra + x·(1 − ra) : y·rr + x·(1 − rr) (one fma
+//                                     each, the select last), r = exp(−1 / max(T, 1e−6)) for a time constant of T
+//                                     SAMPLES (the compiler multiplies seconds by sr): 63 % of a step after T frames;
+//                                     T ≤ 0 or NaN: r = 0, instant. x NaN reads as 0, ±inf as ±FLT_MAX (y stays
+//                                     finite). attack / release Spl: r once per call; Blk: per frame (the same exp, so
+//                                     a ramp's held value gives the same bits). Initially y = 0. Its state decays
+//                                     (hasDecayState): silent input → y → 0.
+//   window (x)                        the extremum or mean of the last L inputs (this frame's included; before the
+//                                     first frame the history is 0): op 0 max, 1 min, 2 mean (StateInit::windowOp),
+//                                     L = StateInit::windowFrames (the compiler: max(1, round(time · sr))). x NaN
+//                                     reads as 0, ±inf as ±FLT_MAX. max / min: van Herk–Gil-Werman, exact (any split
+//                                     of the frames into calls gives the same bits); mean: a running sum in double,
+//                                     recomputed from the ring every L frames (drift-free; bits independent of the
+//                                     calls too), out = float(sum / L). Bounded: ≤ 2 passes over L per L frames.
+//                                     Its state decays (hasDecayState): silent for 2L frames → every value 0.
 // Generators:
 //   phasor (hz, reset)                uint32 phase; output phase/2^32 in [0, 1) (top 24 bits, truncated);
 //                                     increment = round(hz · 2^32 / sr) with hz clamped to [−sr/2, sr/2]
@@ -308,6 +324,8 @@ enum class Atom : uint16_t {
   DelayFade, DelayReadFade,
   // NZ.1: the noise module's stepped random source (see "Generators" above)
   NoiseStep,
+  // DY.1: the dynamics atoms (see "Dynamics" above)
+  Follow, Window,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);
@@ -362,6 +380,8 @@ struct StateInit {
                                  // it per group; 0 in schedules): wavetable_pos / voice_tap write their tap record there
   uint32_t svfSections = kSvfStateSections;  // EQ.1b, svf: the sections its state holds (1 … 64; the compiler gives
                                              // svfSectionCount of its mode / stages consts; the kernel clamps to it)
+  uint32_t windowFrames = 1;     // DY.1, window: L (≥ 1, ≤ windowFramesLimit(lanes); the compiler: round(time · sr))
+  uint32_t windowOp = 0;         // DY.1, window: 0 max, 1 min, 2 mean (others: max)
 };
 
 // Largest delay-line ring a state block may hold: 1 GiB. Keeps every ring float index (frame · lanes) far inside
@@ -373,6 +393,8 @@ inline constexpr size_t kMaxDelayRingBytes = size_t{1} << 30;
 // error naming the node; stateBytes()/initState() clamp to it as a last line of defence, so the ring a state
 // block is sized for is always the ring its kernels address.
 uint32_t maxDelayFramesLimit(uint32_t lanes) noexcept;  // RT-safe
+// DY.1: the largest StateInit::windowFrames (the values and, for 8 lanes, the scratch within kMaxDelayRingBytes).
+uint32_t windowFramesLimit(uint32_t lanes) noexcept;  // RT-safe
 
 // Bytes of state (0 for stateless atoms). For delay lines: header + ring (≤ sizeof(DelayState) + kMaxDelayRingBytes), computed in
 // size_t. svf (EQ.1b): kSvfHeaderBytes + svfSections sections of `lanes` lanes (≤ sizeof(SvfState)). Not RT-relevant.
@@ -423,7 +445,8 @@ SilenceInfo silenceInfo(Atom a) noexcept;  // RT-safe
 // The tail: frames of history a stateful atom keeps (z1 and edge detectors 1; a delay line floor(max) + 3, its
 // oldest tap; stateless atoms and smoothers 0).
 uint32_t silenceTail(Atom a, const StateInit& init) noexcept;  // RT-safe
-// EQ.1b: an atom whose history DECAYS rather than ends (svf: an IIR) is a Memory atom with tail 0 whose state the host
+// EQ.1b: an atom whose history DECAYS rather than ends (svf: an IIR; DY.1: follow, and window, whose values are only
+// all 0 again once a segment / ring wrap has passed) is a Memory atom with tail 0 whose state the host
 // checks instead: decayStateSmall = every state word (of every lane; the host's are global 1-lane blocks) is ≤ eps (NaN:
 // false); decayStateFlush sets those words to exactly 0 (the block's output is then exactly 0 for a silent input) and
 // returns whether one was not 0 yet. False / nothing for other atoms. RT-safe.

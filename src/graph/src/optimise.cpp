@@ -36,6 +36,7 @@
 
 #include "pq/dsp/atoms.h"
 #include "pq/graph/kernel_map.h"
+#include "pq/graph/latency.h"
 #include "fold.h"
 
 namespace pq::graph {
@@ -664,6 +665,24 @@ private:
     return st_.folded + st_.simplified + st_.merged + st_.sunk - before;
   }
 
+  // DY.1: latency(x, frames, time) → latency(x, frames + round(time · sr)) once both are literals and the sample rate
+  // is known (else the scheduler refuses the time). An `smp` literal time is that many samples.
+  void foldLatencyTime(uint32_t n) {
+    if (nodes_[n].nIn < 3 || opt_.sampleRate <= 0.0) return;
+    const uint32_t td = in(n, 2), fd = in(n, 1);
+    if (td == kNone || fd == kNone || nodes_[owner(td)].kind != NodeKind::Const || nodes_[owner(fd)].kind != NodeKind::Const)
+      return;
+    const Constant& tc = consts_[nodes_[owner(td)].payload];
+    const Constant& fc = consts_[nodes_[owner(fd)].payload];
+    const double rate = opt_.sampleRate * tp_.factorOf(nodes_[n].origin.region);
+    const double frames = tc.unit == Unit::smp ? fc.value() + (tc.value() > 0.0 ? std::round(tc.value()) : 0.0)
+                                               : latencyFrames(fc.value(), tc.value(), rate);
+    drv_[nodes_[n].firstIn + 2] = kNone;
+    if (frames != fc.value())
+      drv_[nodes_[n].firstIn + 1] = literal(Constant::real(frames), hashMix(nodes_[n].key, 0x1A7E), nodes_[n].origin);
+    ++st_.simplified;
+  }
+
   void visitAtom(uint32_t n) {
     const AtomSignature& sig = sigOf(nodes_[n].atom);
     for (uint32_t i = 0; i < nodes_[n].nIn; ++i) in(n, i);  // resolve
@@ -676,7 +695,10 @@ private:
     }
     if (!isPure(sig)) {
       // T6.2: a `latency` of less than half a sample is a wire (the delay line's kernel reads at least 1 sample).
+      // DY.1: first its `time` goes into the frames (latencyFrames: whole samples at the node's rate), so the kernel,
+      // the latency rule and the response rule read one number.
       if (nodes_[n].atom == a_.latency) {
+        foldLatencyTime(n);
         float f = 0.0f;
         if (lit(n, 1, f) && f < 0.5f && replaceNode(n, in(n, 0))) {
           ++st_.simplified;

@@ -112,7 +112,12 @@ constexpr PortSpec pDelay[] = {{"x", kR, false, 0.0f, true}, {"time", kR}, {"max
 constexpr PortSpec pDelayFade[] = {{"x", kR, false, 0.0f, true}, {"time", kR}, {"max", kRConst}, {"fade", kRParamBound, true, 0.03f},
                                    {"crossfade", kRParamBound, true, 0.0f}};
 // T6.2: a pure delay of `frames` samples (at the node's rate) that REPORTS its latency (plugin-delay compensation).
-constexpr PortSpec pLatency[] = {{"x", kR, false, 0.0f, true}, {"frames", kRConst}};
+// DY.1: plus `time` seconds, whole samples: total = frames + round(time · sr) (optimise() folds it into frames).
+constexpr PortSpec pLatency[] = {{"x", kR, false, 0.0f, true}, {"frames", kRConst}, {"time", kRConst, true, 0.0f}};
+// DY.1 (pq/dsp/atoms.h "Dynamics"): follow's time constants in seconds (any rate; param rate: once per block);
+// window's length (seconds, const: it sizes the state) and op (0 max, 1 min, 2 mean).
+constexpr PortSpec pFollow[] = {{"x", kR}, {"attack", kR, true, 0.001f}, {"release", kR, true, 0.1f}};
+constexpr PortSpec pWindow[] = {{"x", kR}, {"time", kRConst}, {"op", kRConst, true, 0.0f}};
 constexpr PortSpec pSampleHold[] = {{"x", kR}, {"trig", kB}};
 constexpr PortSpec pLatch[] = {{"x", kAny}, {"enable", kB}};
 
@@ -284,8 +289,15 @@ const AtomSignature kAtoms[] = {
     // T6.2: the delay line's kernel (linear read at a constant time: exact at whole samples), and the frames are
     // reported as the path's latency (pq/graph/latency.h). optimise() makes it a wire below half a sample.
     {"latency", C::Memory, pLatency, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
-     "pure delay of frames samples that reports its latency (plugin-delay compensation; a lookahead)",
+     "pure delay of frames + round(time · sr) samples that reports its latency (plugin-delay compensation; a lookahead)",
      rules::latency, 0, latency_rules::frames},
+    // DY.1: the dynamics atoms (pq/dsp/atoms.h "Dynamics"). follow: nonlinear (attack ≠ release), no response rule.
+    // window: max / min are nonlinear; the mean is a moving average, but its length is a state const the rule does
+    // not see, so neither has one.
+    {"follow", C::Memory, pFollow, pOutR, sizeof(dsp::FollowState), kStateful | kBroadcast, 0, {},
+     "envelope follower: one pole, attack while x rises above it, release while it falls (time constants, s)"},
+    {"window", C::Memory, pWindow, pOutR, sizeof(dsp::WindowState), kStateful | kVariableState | kBroadcast, 0, {},
+     "max / min / mean of the last time seconds of x (op 0 max, 1 min, 2 mean)"},
     {"samplehold", C::Memory, pSampleHold, pOutR, sizeof(dsp::SampleHoldState), kStateful | kBroadcast, 0, {},
      "x sampled on each rising edge of trig"},
     {"latch", C::Memory, pLatch, pOutAny, sizeof(dsp::LatchState), kStateful, 0, {},

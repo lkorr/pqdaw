@@ -34,6 +34,10 @@ enum class ArgUse : uint8_t {
   InitSeed,             // const → dsp::StateInit::seed (mixed with the NodeId by the builder)
   InitMaxDelaySeconds,  // const seconds → dsp::StateInit::maxDelayFrames = ceil(value · sr)
   InitZ1,               // const → dsp::StateInit::z1Init (bool z1: nonzero → boolMask(true))
+  Consumed,             // DY.1: a const the compiler uses by the atom's own rule, never a kernel input: window `time`
+                        // (seconds, or an `smp` literal) and `op` → dsp::StateInit::windowFrames / windowOp (the
+                        // scheduler); latency `time` → folded into its frames by optimise() (latencyFrames in
+                        // pq/graph/latency.h; the scheduler refuses one left non-zero)
 };
 
 struct ArgMap {

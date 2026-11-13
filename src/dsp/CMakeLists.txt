@@ -25,6 +25,7 @@ pq_add_module(pq_dsp
     src/kernels_signal_tap.cpp
     src/kernels_curve.cpp
     src/kernels_svf.cpp
+    src/kernels_dynamics.cpp
     src/svf_design.cpp
     src/kernels_noise_step.cpp
     src/noise_step.cpp

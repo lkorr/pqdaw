@@ -3,7 +3,8 @@
 // T6.2 (SPEC §7.6 "PDC", docs/plans/M6.md T6.2): the latency a patch REPORTS, for plugin-delay compensation.
 //
 // A path's latency is the sum of what the atoms on it report (AtomSignature::latency, in base-rate samples):
-//   latency(x, frames)                frames / the region's factor (a lookahead, a device's reported delay)
+//   latency(x, frames, time)          (frames + round(time · sr)) / the region's factor (a lookahead, a device's
+//                                     reported delay; optimise() folds `time` into the frames: latencyFrames)
 //   oversample_up / oversample_down   half of dsp::os::roundTripLatency(factor) each (2× 3.62, 4× 4.74, 8× 5.17,
 //                                     16× 5.31 samples up + down at DC)
 //   everything else                   0 (z1, delay lines, filters: their delay is the effect, not latency)
@@ -21,6 +22,11 @@
 #include "pq/graph/infer.h"
 
 namespace pq::graph {
+
+// DY.1: the frames a `latency(x, frames, time)` delays by at `rate` (its node's sample rate): frames + round(time ·
+// rate), the time part whole samples (half away from zero; time ≤ 0 or NaN adds 0). optimise() writes this as the
+// node's frames, so the latency rule, the response rule and the kernel all read the same number.
+double latencyFrames(double frames, double timeSeconds, double rate) noexcept;
 
 // Per node of typed.patch: the longest reported latency from a source to its outputs (base-rate samples, ≥ 0).
 std::vector<double> pathLatency(const TypedPatch& typed);

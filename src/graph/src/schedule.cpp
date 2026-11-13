@@ -1618,6 +1618,8 @@ private:
     // Registry inputs → kernel inputs (in kernel order) / init / resource.
     kins_.clear();
     double seed = 0, maxDelay = 0, z1Init = 0;
+    double winTime = 0, winOp = 0;  // DY.1: window's consumed consts
+    Unit winUnit = Unit::None;
     uint32_t resource = kNone;
     for (uint32_t i = 0; i < nd.numInputs; ++i) {
       if (m.args.empty()) break;
@@ -1641,6 +1643,25 @@ private:
         case ArgUse::InitZ1:
           if (!constInput(n, i, z1Init)) return;
           break;
+        case ArgUse::Consumed: {  // DY.1 (kernel_map.h): window time / op; latency time (folded by optimise())
+          double v = 0;
+          Unit u = Unit::None;
+          if (!constInput(n, i, v, &u)) return;
+          if (m.kernel == dsp::Atom::Window) {
+            if (i == 1) {
+              winTime = v;
+              winUnit = u;
+            } else {
+              winOp = v;
+            }
+          } else if (v != 0.0) {
+            report(n, ErrorCode::InvalidArgument,
+                   "the time of " + label(n) +
+                       " was not folded into its frames: optimise() needs the sample rate (OptimiseOptions::sampleRate)");
+            return;
+          }
+          break;
+        }
       }
     }
     std::sort(kins_.begin(), kins_.end(), [](const KIn& a, const KIn& b) { return a.k < b.k; });
@@ -1674,6 +1695,19 @@ private:
           }
         }
         if (m.kernel == dsp::Atom::Svf) init.svfSections = svfSectionsOf(n);  // EQ.1b: the state its consts need
+        if (m.kernel == dsp::Atom::Window) {
+          // DY.1: L = max(1, round(time · sr)) at the node's rate (an `smp` literal: that many frames); op 0 / 1 / 2.
+          const double frames = winUnit == Unit::smp ? std::round(winTime) : std::round(winTime * init.sampleRate);
+          const uint32_t limit = dsp::windowFramesLimit(lanes);
+          if (!(frames <= static_cast<double>(limit))) {
+            report(n, ErrorCode::InvalidArgument,
+                   "the time of " + label(n) + " must be at most " + std::to_string(limit) + " samples for a " +
+                       (lanes == 8 ? "voice" : "mono") + " window");
+            return;
+          }
+          init.windowFrames = frames >= 1.0 ? static_cast<uint32_t>(frames) : 1u;
+          init.windowOp = winOp == 1.0 ? 1u : winOp == 2.0 ? 2u : 0u;
+        }
         if (m.kernel == dsp::Atom::Noise || m.kernel == dsp::Atom::NoiseStep)  // NZ.1: noise_step has no seed const
           init.seed = static_cast<uint32_t>(mix64(tp_->stateKey[n] ^ mix64(ch))) +
                       static_cast<uint32_t>(static_cast<int64_t>(seed));
@@ -1684,7 +1718,9 @@ private:
         tag.kernel = static_cast<uint16_t>(m.kernel);
         tag.lanes = lanes;
         tag.factor = static_cast<uint8_t>(factor_[n]);
-        tag.extra = m.kernel == dsp::Atom::Svf ? init.svfSections : init.maxDelayFrames;
+        tag.extra = m.kernel == dsp::Atom::Svf      ? init.svfSections
+                    : m.kernel == dsp::Atom::Window ? init.windowFrames << 2 | init.windowOp  // DY.1: a new op is new state
+                                                    : init.maxDelayFrames;
         // ≤ sizeof(DelayState) + kMaxDelayRingBytes after the check above, so it fits the uint32 entry size.
         stateIdx = stateEntry(n, static_cast<uint16_t>(ch), tag, static_cast<uint32_t>(dsp::stateBytes(m.kernel, init)), init,
                               lanes == 8 ? Poly::Voice : Poly::Global);

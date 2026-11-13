@@ -73,6 +73,7 @@ Classified classifyAtom(std::string_view name, uint32_t requiredInputs) {
       {"pulse", Symbol::Ic, Glyph::None, "PULSE"},    {"rise", Symbol::Ic, Glyph::None, "RISE"},
       {"fall", Symbol::Ic, Glyph::None, "FALL"},      {"change", Symbol::Ic, Glyph::None, "CHG"},
       {"samplehold", Symbol::Ic, Glyph::None, "S/H"}, {"latch", Symbol::Ic, Glyph::None, "LATCH"},
+      {"follow", Symbol::Ic, Glyph::None, "ENV"},     {"window", Symbol::Ic, Glyph::None, "WIN"},  // DY.1
       {"neg", Symbol::Box, Glyph::None, "-x"},        {"channel", Symbol::Box, Glyph::None, "[ ]"},
       {"pack", Symbol::Box, Glyph::None, "( , )"},
   };

@@ -71,6 +71,8 @@ struct Fixture {
 float gWavetableInc = 0.013f, gWavetableSpread = 0.1f;
 // DT.4: delay_fade's `crossfade` input: 1 Crossfade (DT.2's rows), 0 Repitch (the " (repitch)" rows).
 float gDelayFadeXfade = 1.0f;
+// DY.1: window's length (frames) and op for the " (L …)" rows.
+uint32_t gWindowFrames = 1, gWindowOp = 0;
 
 // Realistic input values per atom/input (frame t, lane l).
 float inputValue(Atom a, uint32_t i, uint32_t t, uint32_t l, bool isBool) {
@@ -109,6 +111,9 @@ float inputValue(Atom a, uint32_t i, uint32_t t, uint32_t l, bool isBool) {
     case Atom::CentsToHz: case Atom::CentsToHzFast: return i == 0 ? 2400.0f * r - 1200.0f : 261.626f;
     case Atom::HzToCents: case Atom::HzToCentsFast: return i == 0 ? 1000.0f * r : 261.626f;
     case Atom::Clip: return i == 0 ? 2.0f * r - 1.0f : i == 1 ? -0.5f : 0.5f;
+    // DY.1: follow's attack 1 ms, release 100 ms (samples at 48 kHz); window: a signal in [−0.8, 0.8].
+    case Atom::Follow: return i == 1 ? 48.0f : i == 2 ? 4800.0f : r;
+    case Atom::Window: return 2.0f * r - 1.0f;
     default: return r;
   }
 }
@@ -146,6 +151,8 @@ TableRow benchAtom(pq::bench::Context& ctx, Fixture& fx, Atom a, uint32_t splMas
     init.lanes = lanes;
     init.maxDelayFrames = 4096;
     init.seed = 7;
+    init.windowFrames = gWindowFrames;
+    init.windowOp = gWindowOp;
     if (pq::dsp::stateBytes(a, init) > fx.state.size() * sizeof(float)) {
       std::printf("state buffer too small for %s\n", info.name);
       std::abort();
@@ -225,7 +232,8 @@ int main(int argc, char** argv) {
     const bool converter = ai >= static_cast<uint32_t>(Atom::OversampleUp) && ai <= static_cast<uint32_t>(Atom::OversampleAny);
     // EQ.1: svf needs its consts as patterns and per-mode / stage rows (bench_svf.cpp).
     // NZ.1: noise_step needs its consts and a configuration per row (bench_noise.cpp).
-    if (!noFixture && !converter && a != Atom::Svf && a != Atom::NoiseStep) add(a, 0, "");
+    // DY.1: window needs its length / op (the " (L …)" rows below).
+    if (!noFixture && !converter && a != Atom::Svf && a != Atom::NoiseStep && a != Atom::Window) add(a, 0, "");
   }
   // Buffer ⊗ param: the second input is a Spl pattern (one vector load per block).
   for (Atom a : {Atom::Add, Atom::Mul, Atom::Div, Atom::Gt, Atom::CentsToHzFast}) add(a, 0b10, " (blk,spl)");
@@ -244,6 +252,21 @@ int main(int argc, char** argv) {
       gDelayFadeXfade = 1.0f;
     });
   add(Atom::SampleReadCubic, 0b11, " (spl rate, spl reset)");
+  // DY.1: follow with param-rate times (the dynamics devices' case; the plain row has audio-rate times: an exp per
+  // frame); window max / mean / min at 1, 10, 100 ms (48 kHz).
+  add(Atom::Follow, 0b110, " (spl attack, spl release)");
+  for (const uint32_t op : {0u, 2u, 1u})
+    for (const uint32_t len : {48u, 480u, 4800u}) {
+      if (op == 1 && len != 480) continue;
+      const std::string suffix = std::string(" (") + (op == 0 ? "max" : op == 1 ? "min" : "mean") + ", L " + std::to_string(len) + ")";
+      runner.add("atom/window" + suffix, [&fx, &rows, op, len, suffix](pq::bench::Context& c) {
+        gWindowFrames = len;
+        gWindowOp = op;
+        rows.push_back(benchAtom(c, fx, Atom::Window, 0, suffix.c_str()));
+        gWindowFrames = 1;
+        gWindowOp = 0;
+      });
+    }
   runner.add("atom/wavetable (steady 1 kHz)", [&fx, &rows](pq::bench::Context& c) {
     gWavetableInc = 1000.0f / 48000.0f;
     gWavetableSpread = 0.0f;

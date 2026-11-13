@@ -391,6 +391,7 @@ pq_add_test(pq_tests_jit PERF SHARDS 4 SLOW_SHARDS 8
     jit/test_jit_frame_table.cpp  # TMM.2: wavetable_pos / voice_tap on both backends (swaps, taps, hot swap, reference)
     jit/test_jit_curve.cpp  # GU.1: the curve atom on both backends (audio / param rate, voices, a feedback loop, swaps)
     jit/test_jit_svf.cpp  # EQ.1: the svf atom on both backends (bit-identical, = svfResponse, audio-rate cutoff)
+    jit/test_jit_dynamics.cpp  # DY.1: follow / window / latency(time) on both backends; latency reported == delayed
     jit/test_jit_wave_live.cpp  # TMM.8: wavetable_live / wavetable_shape in oversample regions on both backends
     jit/test_param_ramps.cpp  # TX.smooth: param ramps, interpreter == JIT under param motion, the ramp's shape
     jit/test_uniform_branch.cpp  # TX.uniform-branch: selects of block-uniform conditions, both backends, with and without
@@ -432,6 +433,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_curve.cpp  # GU.1: control curves (presets vs the old knob laws, the inverse, the curve atom vs evalCurve)
     dsp/test_svf.cpp  # EQ.1: the svf atom (impulse response == svfResponse, lanes, matched vs analog, stability, splits)
     dsp/test_noise_step.cpp  # NZ.1: noise_step (timing, sync, draws, colour design and reference, shaping, lanes, splits)
+    dsp/test_dynamics.cpp  # DY.1: follow (step response, rates, lanes) and window (brute force, block sizes, lane moves)
     support/alias_meter.h  # TMM.1: the reusable alias meter (listed so tests/support maps to its users)
   DEPS pq_dsp)
 

@@ -1,12 +1,13 @@
 // Envelope follower (SPEC §7.2: rectifier + one-pole): the level of a signal, for compressors, gates, ducking and
 // envelope-to-anything modulation.
 //
-//   peak:  e ← |x| + (e − |x|)·c,   RMS:  m ← x² + (m − x²)·c,  e = √m
-//   c = exp(−1 / (time·sr)) with time = attack while the input rises above e (m), release while it falls
+//   peak:  e ← follow(|x|),   RMS:  m ← follow(x²), e = √m
+//   follow: y ← x + (y − x)·c, c = exp(−1 / (time·sr)) with time = attack while the input rises above y, release
+//   while it falls (the `follow` atom, DY.1)
 //
 // `attack` and `release` are time constants: the follower covers 63 % of a step after one, 99 % after 4.6. With
-// attack 0 it tracks peaks instantly. The coefficients run once per block; per sample it is a compare, a select and
-// a multiply-add.
+// attack 0 it tracks peaks instantly. The coefficients run once per block; per sample it is a compare, two
+// multiply-adds and a select.
 patch envfollow {
   in    x       : audio
   param attack  = 1ms   [0ms..1s]  @unit(s) @curve(exp) @label("Attack")
@@ -14,10 +15,7 @@ patch envfollow {
   param rms     = false            @label("RMS")
   out   out : audio
 
-  det  = rms ? x * x : abs(x)
-  ca   = exp(-1 / max(attack * sr, 0.000001))
-  cr   = exp(-1 / max(release * sr, 0.000001))
-  prev = z1(env)
-  env  = det + (prev - det) * (det > prev ? ca : cr)
-  out  = rms ? sqrt(env) : env
+  det = rms ? x * x : abs(x)
+  env = follow(det, attack, release)
+  out = rms ? sqrt(env) : env
 }

@@ -119,6 +119,12 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // run time from KernelArgs::splMask: one function per lane count); dist, lanes consts.
     {"noise_step", 12, 1, false, false, kB1 | kB4, 0, 0x3FFu, (1u << 10) | (1u << 11), sizeof(NoiseStepState),
      Resource::None, false},
+    // DY.1 (kernels_dynamics.cpp): follow: x, attack, release Blk or Spl (attack / release in samples); output 0 may
+    // take an input's buffer (each frame's inputs are read before its output is written). window: x Blk or Spl; its
+    // length and op are state-init consts (StateInit::windowFrames / windowOp); the state is the header (stateBytes adds
+    // the values).
+    {"follow", 3, 1, false, false, 0, 0, kB0 | kB1 | kB2, 0, sizeof(FollowState), Resource::None, true},
+    {"window", 1, 1, false, false, 0, 0, kB0, 0, sizeof(WindowState), Resource::None, true},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -185,6 +191,7 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   if (KernelFn f = findCurveKernel(a, lanes, spec)) return f;
   if (KernelFn f = findSvfKernel(a, lanes, spec)) return f;
   if (KernelFn f = findNoiseStepKernel(a, lanes, spec)) return f;
+  if (KernelFn f = findDynamicsKernel(a, lanes, spec)) return f;
   return findTableKernel(a, lanes, spec);
 }
 
@@ -232,6 +239,10 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     // NZ.1: [8] arrays up to the counter (seeds included: the lane reset writes the same values); counter, base and
     // group are the block's.
     case Atom::NoiseStep: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(NoiseStepState, counter))};
+    // DY.1: follow's envelope; window: every word per lane (its shared values replicated; positions re-aligned by the
+    // 8-lane kernel after a lane reset or move).
+    case Atom::Follow: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(FollowState))};
+    case Atom::Window: return {LaneState::Whole, 0};
     case Atom::OversampleUp:
     case Atom::OversampleDown:
     case Atom::OversamplePhase: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
@@ -296,7 +307,9 @@ SilenceInfo silenceInfo(Atom a) noexcept {  // RT-safe
     case Atom::DelayAllpass:
     case Atom::DelayWrite:
     case Atom::DelayFade:
-    case Atom::Svf: return {R::Memory, i0, 0};  // svf: x; its state decays (hasDecayState)
+    case Atom::Svf:  // svf, follow, window: x; their state decays (hasDecayState)
+    case Atom::Follow:
+    case Atom::Window: return {R::Memory, i0, 0};
     case Atom::Z1Read:
     case Atom::DelayReadLinear:
     case Atom::DelayReadCubic:
@@ -323,19 +336,47 @@ uint32_t silenceTail(Atom a, const StateInit& init) noexcept {  // RT-safe
   return clampMaxDelay(init.maxDelayFrames, ringLanes(init)) + 3u;
 }
 
-bool hasDecayState(Atom a) noexcept { return a == Atom::Svf; }  // RT-safe
+bool hasDecayState(Atom a) noexcept { return a == Atom::Svf || a == Atom::Follow || a == Atom::Window; }  // RT-safe
 
 bool decayStateSmall(Atom a, const void* state, float eps) noexcept {  // RT-safe
-  return a == Atom::Svf && detail::svfStateSmall(state, eps);
+  switch (a) {
+    case Atom::Svf: return detail::svfStateSmall(state, eps);
+    case Atom::Follow: return detail::followStateSmall(state, eps);
+    case Atom::Window: return detail::windowStateSmall(state, eps);
+    default: return false;
+  }
 }
 
 bool decayStateFlush(Atom a, void* state) noexcept {  // RT-safe
-  return a == Atom::Svf && detail::svfStateFlush(state);
+  switch (a) {
+    case Atom::Svf: return detail::svfStateFlush(state);
+    case Atom::Follow: return detail::followStateFlush(state);
+    case Atom::Window: return detail::windowStateFlush(state);
+    default: return false;
+  }
 }
 
 uint32_t maxDelayFramesLimit(uint32_t lanes) noexcept {
   const size_t l = lanes == kGroupLanes ? kGroupLanes : 1u;
   return static_cast<uint32_t>(kMaxDelayRingBytes / sizeof(float) / l) - kRingHeadroom;
+}
+
+uint32_t windowFramesLimit(uint32_t lanes) noexcept {
+  // 8 lanes: L + 1 rows of values and ⌈L / 8⌉ rows of scratch, ≈ 9L floats per lane-row of 8.
+  return lanes == kGroupLanes ? static_cast<uint32_t>(kMaxDelayRingBytes / sizeof(float) / 9u) - 16u
+                              : static_cast<uint32_t>(kMaxDelayRingBytes / sizeof(float)) - 16u;
+}
+
+static uint32_t windowLength(const StateInit& init) noexcept {
+  const uint32_t lanes = init.lanes == kGroupLanes ? kGroupLanes : 1u;
+  const uint32_t hi = windowFramesLimit(lanes);
+  return init.windowFrames < 1 ? 1u : init.windowFrames > hi ? hi : init.windowFrames;
+}
+
+static size_t windowStateBytes(const StateInit& init) noexcept {
+  const size_t len = windowLength(init);
+  const size_t floats = init.lanes == kGroupLanes ? (len + 1) * 8 + (len + 7) / 8 * 8 : len + 1;
+  return (sizeof(WindowState) + floats * sizeof(float) + kStateAlign - 1) / kStateAlign * kStateAlign;
 }
 
 static size_t svfStateBytes(const StateInit& init) noexcept {
@@ -347,6 +388,7 @@ static size_t svfStateBytes(const StateInit& init) noexcept {
 size_t stateBytes(Atom a, const StateInit& init) noexcept {
   if (static_cast<uint32_t>(a) >= kAtomCount) return 0;
   if (a == Atom::Svf) return svfStateBytes(init);
+  if (a == Atom::Window) return windowStateBytes(init);
   const size_t base = kernelInfo(a).stateSize;
   if (!isDelay(a)) return base;
   const uint32_t lanes = ringLanes(init);
@@ -368,6 +410,9 @@ uint32_t rampableInputs(Atom a, uint32_t numIn) noexcept {  // RT-safe
     case Atom::Timer: no |= kB1; break;               // the duration (a count of samples)
     case Atom::DelayFade: no |= kB1; break;           // DT.2: the delay (its head glides / crossfades itself)
     case Atom::DelayReadFade: no |= kB0; break;
+    // DY.1: follow's time constants (a new value takes effect at once: the envelope itself is continuous, so a ramp
+    // would only move the coefficients onto the per-frame path).
+    case Atom::Follow: no |= kB1 | kB2; break;
     // noise_step: the sync grid (a note value), colour (a design: recomputed when it changes), steps (a count), seed.
     case Atom::NoiseStep: no |= kB3 | kB6 | (1u << 8) | (1u << 9); break;
     // tuning_hz: none. Its inputs are pitch identities (degree, equave, the tuning node) and the tuning's values, which
@@ -464,6 +509,22 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
       s.base = mixSeed(init.seed, 0x51ED27u);
       s.group = init.voiceGroup * 0x9E3779B9u;  // voice groups apart (0: one instance)
       s.sampleRate = static_cast<float>(init.sampleRate);
+      break;
+    }
+    case Atom::Window: {  // zero history: values 0 (initState's memset), the empty suffix and prefix NaN
+      auto& s = *static_cast<WindowState*>(state);
+      const uint32_t lanes = init.lanes == kGroupLanes ? kGroupLanes : 1u;
+      const uint32_t len = windowLength(init);
+      const uint32_t op = init.windowOp <= 2 ? init.windowOp : 0u;
+      const float nan = std::numeric_limits<float>::quiet_NaN();
+      for (uint32_t l = 0; l < 8; ++l) {
+        s.prefix[l] = nan;
+        s.length[l] = len;
+        s.op[l] = op;
+        s.lanes[l] = lanes;
+      }
+      float* v = s.values();
+      for (uint32_t l = 0; l < lanes; ++l) v[static_cast<size_t>(len) * lanes + l] = nan;
       break;
     }
     case Atom::Svf: {  // key 0: designed on the first call

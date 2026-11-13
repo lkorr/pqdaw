@@ -61,6 +61,9 @@ float coefficient(Atom atom, uint32_t i, const pq::dsp::KernelInfo& info, std::m
         case 5: return static_cast<float>(std::uniform_int_distribution<int>(1, 20)(rng));  // 17+: the double states
         default: return coin(rng) ? 1.0f : 0.0f;
       }
+    case Atom::Follow:  // DY.1: attack / release in samples (0: instant)
+      if (i >= 1) return std::uniform_real_distribution<float>(0.0f, 200.0f)(rng);
+      break;
     case Atom::Gain:
     case Atom::GainAdd:
       if (i == (atom == Atom::Gain ? 2u : 3u)) return std::uniform_real_distribution<float>(0.0f, 200.0f)(rng);  // time
@@ -158,6 +161,7 @@ TEST_CASE("dsp silence: every declaration holds for its kernel (T1.x-silence)") 
     arity(atom, info, numIn, numOut);
     pq::dsp::StateInit init;
     init.maxDelayFrames = 48;
+    init.windowFrames = 37;  // DY.1: window (op: one per trial below)
     for (uint32_t lanes : {1u, 8u}) {
       init.lanes = lanes;
       const size_t bytes = pq::dsp::stateBytes(atom, init);
@@ -168,6 +172,7 @@ TEST_CASE("dsp silence: every declaration holds for its kernel (T1.x-silence)") 
         INFO("lanes " << lanes << ", spl " << spl);
         for (int trial = 0; trial < 6; ++trial) {
           Run r;
+          init.windowOp = static_cast<uint32_t>(trial % 3);
           if (si.rule == SilenceRule::Memory) {
             // Any history first (random inputs), then silence: the outputs from the tail on are ±0.
             pq::dsp::initState(atom, state.data(), init);

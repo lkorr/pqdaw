@@ -279,6 +279,37 @@ struct alignas(32) SvfState {
 // The header: what stateBytes() adds sections to (kernelInfo(svf).stateSize).
 inline constexpr uint32_t kSvfHeaderBytes = static_cast<uint32_t>(sizeof(SvfState) - sizeof(SvfState::sec));
 static_assert(kSvfHeaderBytes % 32 == 0 && kSvfHeaderBytes == 25 * 32);
+
+// follow (DY.1, kernels_dynamics.cpp): the envelope per lane (every word per lane).
+struct alignas(32) FollowState {
+  float y[8];
+};
+
+// window (DY.1, kernels_dynamics.cpp): a header of per-lane [8] arrays, then the values (stateBytes: L = length).
+// EVERY word is per lane (LaneState::Whole): length, op and layout are replicated, and each lane has its own position,
+// so the VoiceEngine's lane reset (the initial words) and move (another group's words) need no help; the 8-lane
+// kernel re-aligns a lane whose position differs from its group's (kernels_dynamics.cpp windowRealign) before it runs.
+//   max / min (van Herk–Gil-Werman): the time axis is cut into segments of L frames; pos = frames of the current
+//     segment written so far. values[0, pos) hold its raw inputs, values[pos, L) the suffix extrema of the previous
+//     segment (values[j] = max of its inputs j … L − 1), values[L] = NaN (an empty suffix), prefix = the extremum of
+//     the current segment so far (NaN: empty). Out = ext(values[pos + 1], prefix) after the input is added.
+//   mean: values[0, L) is a ring of the last L inputs (values[pos] the oldest), sum (a double, its 32-bit halves in
+//     sumLo / sumHi) their running sum, recomputed from the ring when pos wraps (no drift).
+// Initial state: zero history (values 0, values[L] NaN, prefix NaN, sum 0, pos 0). 8 lanes: values[i·8 + lane] for
+// i ≤ L, then ⌈L / 8⌉ rows of scratch (the re-alignment's); 1 lane: values[i].
+struct alignas(32) WindowState {
+  uint32_t pos[8];
+  float prefix[8];
+  uint32_t sumLo[8];
+  uint32_t sumHi[8];
+  uint32_t length[8];  // L ≥ 1 (StateInit::windowFrames, clamped)
+  uint32_t op[8];      // 0 max, 1 min, 2 mean (StateInit::windowOp, clamped)
+  uint32_t lanes[8];   // 1 or 8: the layout of the values
+  uint32_t pad_[8];
+  float* values() noexcept { return reinterpret_cast<float*>(this + 1); }
+  const float* values() const noexcept { return reinterpret_cast<const float*>(this + 1); }
+};
+
 // noise_step (NZ.1, kernels_noise_step.cpp): everything up to `counter` is [8] arrays reset per voice lane (a note-on
 // restarts the lane: a first value is drawn at its next frame); `counter` (frames this block has run), `base` (the
 // node's seed) and `group` (its voice group's mix) are the group's. A draw at frame t hashes key + (t − origin): the
@@ -332,6 +363,7 @@ static_assert(sizeof(PhasorState) == 64);
 static_assert(sizeof(NoiseState) == 64);
 static_assert(sizeof(WavetableState) == 64);
 static_assert(sizeof(DelayState) == 480);
+static_assert(sizeof(FollowState) == 32 && sizeof(WindowState) == 256);
 static_assert(sizeof(WavetablePosState) == 192);
 static_assert(sizeof(VoiceTapState) == 64);
 static_assert(sizeof(WavetableLiveState) == 672);

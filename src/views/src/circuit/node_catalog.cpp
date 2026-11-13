@@ -91,6 +91,8 @@ std::string_view atomAliases(std::string_view name) noexcept {
       {"phasor", "ramp saw oscillator"}, {"sine_hz", "oscillator sine"}, {"noise", "white random"},
       {"noise_step", "random sample hold drift brown pink coloured noise"},
       {"select", "? ternary switch"}, {"lerp", "mix crossfade interpolate"}, {"samplehold", "s&h sample hold"},
+      {"follow", "envelope follower attack release peak level detector compressor"},  // DY.1
+      {"window", "sliding moving max min mean average rms peak hold lookahead limiter"},
   };
   for (const auto& [n, a] : kAliases)
     if (n == name) return a;

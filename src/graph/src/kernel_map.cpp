@@ -24,7 +24,9 @@ constexpr ArgMap kZ1[] = {{U::Input, 0}, {U::InitZ1, 0}};                       
 constexpr ArgMap kDelay[] = {{U::Input, 0}, {U::InputSeconds, 1}, {U::InitMaxDelaySeconds, 0}};  // x, time, max
 constexpr ArgMap kDelayFade[] = {{U::Input, 0}, {U::InputSeconds, 1}, {U::InitMaxDelaySeconds, 0},   // x, time, max,
                                  {U::InputSeconds, 2}, {U::Input, 3}};                                // fade (DT.2), crossfade (DT.4)
-constexpr ArgMap kLatency[] = {{U::Input, 0}, {U::Input, 1}};                          // x, frames (samples)
+constexpr ArgMap kLatency[] = {{U::Input, 0}, {U::Input, 1}, {U::Consumed, 0}};       // x, frames (samples), time
+constexpr ArgMap kFollow[] = {{U::Input, 0}, {U::InputSeconds, 1}, {U::InputSeconds, 2}};  // x, attack, release (DY.1)
+constexpr ArgMap kWindow[] = {{U::Input, 0}, {U::Consumed, 0}, {U::Consumed, 0}};       // x, time, op (DY.1)
 constexpr ArgMap kWavetable[] = {{U::Input, 0}, {U::Resource, 0}};                      // phase, table
 constexpr ArgMap kShaper[] = {{U::Input, 0}, {U::Resource, 0}};                         // x, table
 constexpr ArgMap kCurve[] = {{U::Input, 0}, {U::Input, 1}, {U::Resource, 0}};           // x, convert, slot (GU.1)
@@ -86,6 +88,8 @@ constexpr Special kSpecial[] = {
     {"gain_add", kGainAdd},
     {"svf", kSvf},
     {"noise_step", kNoiseStep},
+    {"follow", kFollow},
+    {"window", kWindow},
 };
 
 // Atoms that run another atom's kernel (they differ in what they mean to the compiler, not in what runs). The kernel
@@ -98,7 +102,8 @@ struct Alias {
 constexpr Alias kAlias[] = {
     // T6.2: the delay line's linear read at time = frames (already samples); the ring is ceil(frames) (the scheduler
     // reads the const); the frames are the latency the path reports (pq/graph/latency.h).
-    {"latency", dsp::Atom::DelayLinear, "the delay line's kernel at a constant time of `frames` samples"},
+    {"latency", dsp::Atom::DelayLinear,
+     "the delay line's kernel at a constant time of `frames` samples (optimise() folds `time` into them)"},
 };
 
 struct NoKernel {
@@ -174,8 +179,10 @@ Table build() {
       if (s.atom == sig.name) m.args = s.args;
     if (!m.note.empty()) continue;  // an alias
     if (sig.name == "eq" || sig.name == "ne") m.note = "real operands only; bool eq/ne are rewritten by infer()";
-    else if (sig.name == "pulse" || sig.name == "timer" || sig.name.starts_with("delay"))
+    else if (sig.name == "pulse" || sig.name == "timer" || sig.name.starts_with("delay") || sig.name == "follow")
       m.note = "durations in seconds are multiplied by sr by the compiler (kernels take samples)";
+    else if (sig.name == "window")
+      m.note = "time and op set the state (L = max(1, round(time · sr)) frames; the scheduler sizes the ring)";
   }
   return t;
 }

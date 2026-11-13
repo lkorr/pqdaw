@@ -137,8 +137,8 @@ static_assert(sizeof(g::OutputRef) == 24, "graph::OutputRef changed: update code
 static_assert(sizeof(g::StateTag) == 8, "graph::StateTag changed: update codegenDigest");
 // TMM.2: StateInit::voiceGroup is not hashed: schedules always hold 0, the host sets it per voice group when it
 // initialises the state, and the generated code never reads it (the kernels that do are called).
-static_assert(sizeof(dsp::StateInit) == 32, "dsp::StateInit changed: update codegenDigest");
-static_assert(sizeof(g::StateEntry) == 72, "graph::StateEntry changed: update codegenDigest");
+static_assert(sizeof(dsp::StateInit) == 40, "dsp::StateInit changed: update codegenDigest");
+static_assert(sizeof(g::StateEntry) == 80, "graph::StateEntry changed: update codegenDigest");
 static_assert(sizeof(g::StateLayout) == 48, "graph::StateLayout changed: update codegenDigest");
 static_assert(sizeof(g::Schedule) == 624 + sizeof(g::SleepPlan), "graph::Schedule changed: update codegenDigest");
 static_assert(sizeof(g::Branch) == 12, "graph::Branch changed: update codegenDigest");  // TX.uniform-branch
@@ -238,6 +238,7 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
     h.put(x.channel), h.put(x.arena), h.put(x.tag.kernel), h.put(x.tag.lanes), h.put(x.tag.factor), h.put(x.tag.extra), h.put(x.offset);
     h.put(x.side);  // TX.smooth-fix1
     h.put(x.size), h.put(x.init.sampleRate), h.put(x.init.lanes), h.put(x.init.maxDelayFrames), h.put(x.init.z1Init);
+    h.put(x.init.windowFrames), h.put(x.init.windowOp);  // DY.1 (also in tag.extra; hashed as what the host reads)
   }
   h.put(s.state.globalBytes), h.put(s.state.voiceBytes), h.put(s.sampleRate);
   h.put(s.state.sideGlobalBytes), h.put(s.state.sideVoiceBytes);  // TX.smooth-fix1

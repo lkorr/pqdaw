@@ -287,7 +287,8 @@ struct StateTag {
   uint16_t kernel = 0;    // dsp::Atom of the fused kernel (split pairs use the fused atom's tag), or kSolveGuess
   uint8_t lanes = 1;
   uint8_t factor = 1;     // TMM.6: the oversample factor it runs at (a phasor's increment scale depends on it)
-  uint32_t extra = 0;     // delay lines: StateInit::maxDelayFrames (the ring size); svf: StateInit::svfSections; 0 otherwise
+  uint32_t extra = 0;     // delay lines: StateInit::maxDelayFrames (the ring size); svf: StateInit::svfSections; window
+                          // (DY.1): windowFrames << 2 | windowOp; 0 otherwise
   friend bool operator==(const StateTag&, const StateTag&) = default;
 };
 

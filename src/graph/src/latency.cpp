@@ -23,6 +23,11 @@ double converter(const LatencyArgs& a) noexcept {
 
 }  // namespace latency_rules
 
+double latencyFrames(double frames, double timeSeconds, double rate) noexcept {
+  if (!(timeSeconds > 0.0) || !(rate > 0.0)) return frames;
+  return frames + std::round(timeSeconds * rate);
+}
+
 std::vector<double> pathLatency(const TypedPatch& typed) {
   const Patch& p = typed.patch;
   const uint32_t n = p.nodeCount();
