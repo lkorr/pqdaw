@@ -642,3 +642,7 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): pq_tests_media FLAC round trip bit-exact 16/24, pq_tests_app FLAC export == WAV export samples, pq_tests_views export 9/9 and WI.3 2/2; -Affected -Slow 88/88 (retried with 4 build jobs after a low-memory kill).
 - Notes: Q269. All RB and DY tasks are merged; audit next (critique agent + -Full), then M7 after the user's go.
 
+## 2026-11-13 · RB / DY audit · main
+- Did: release-free audit at f1e6a932: `./scripts/build.ps1 -Full` (check preset, default + slow) 88/88, no warnings; independent review docs/reviews/RB-DY.md (0 C / 4 H / 11 M / 14 L; nothing built by the reviewer); idle ship re-measure of the dynamics (cost = row − eq oversample/none, per stereo sample): Compressor peak 5.4 ns, RMS + Auto + 10 ms 10.0 ns, Limiter default 10.4 ns, True Peak 12.5 ns (rows "RB/DY audit" in bench/RESULTS.md).
+- Notes: fixes filed as AU.app / AU.dsp; AU.decide waits on the user (M3, M8, Q261). QUESTIONS hygiene (M11): missing Status lines added (Q246, Q250, Q252, Q254, Q256), Q258's doubled heading fixed. M7 starts only after the AU fixes and the user's go.
+

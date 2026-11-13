@@ -1150,6 +1150,7 @@ Envelope module now outputs its envelope (`in` default 1) where it gave silence.
 pq/document/lower.h "Groups"); (b) a Noise-only rule (a clock "seen" latch at run time); (c) no In → clock wire in the
 Noise module (the user wires the engine's clock inside). Choice: (a): it is what "unwired" means for every engine, and
 it matches the Envelope's own description ("unwired, the envelope itself").
+Status: open.
 
 ## Q247 · 2026-11-12 · DT.4 · Repitch's glide law, the samples threshold, the micro bar's range and toggle
 Context: docs/plans/DT.md "DT.4", kernels_memory.cpp `DelayFade`, tempo_slider.cpp. Choices (each the most reversible
@@ -1200,6 +1201,7 @@ two reachable kinds instead: rate (the Utility's audio into delay_fade's param-b
 from an instrument into an `and` block: a path break). Found on the way and fixed (needed for a cut link to play): an
 `and` / flip-flop block off the path failed its whole track (its bool input got the free zero, a real; an undriven bool
 input of an atom block read a real 0): such inputs are now false.
+Status: open.
 
 ## Q251 · 2026-11-13 · EX.1 · Stems with return / master FX: a fresh link per solo pass instead of solo param writes
 Context: D7 says "include return/master FX = one solo pass per track (param writes only, no recompile)". Measured on the
@@ -1229,6 +1231,7 @@ tempo edit compared against the old track synced the same way). A cable from ano
 nothing until the render is re-made (the block is not lowered; FZ.2's key must cover what feeds the frozen part).
 Consequences: recording into a frozen track is refused at commit (FZ.3 may disable arm); a SetSample that changes the
 rate of a sample a frozen warp-Off clip plays is refused when the re-sync changes that clip. Reversible: one function.
+Status: open.
 
 ## Q253 · 2026-11-13 · EX.2 · Export Audio: closing the window during an export
 Context: the plan does not say what Close / Esc do while a job runs. Options: (a) cancel the export; (b) close the
@@ -1251,6 +1254,7 @@ falls back to (c). Consequences: the whole tuning list is in the key (editing a 
 chance notes freeze one draw (the render link's seed); the WAV is content-named `<id>-<content key>.wav` (a re-render
 never overwrites a file the pool may stream; the superseded one is deleted when replaced, best effort) with `<id>.json`
 holding the key. Reversible: `freezeDocument` / `planFreeze` and the file names are one place each.
+Status: open.
 
 ## Q255 · 2026-11-13 · DY.1 · window's op as a number, and what a window holds before its first frame
 Context: DY.1's `window(x, time, op)`. The language has no symbolic constants for an atom's const input, and a window
@@ -1273,6 +1277,7 @@ Choice: (b), (d) — `StatusAction` on the status line, the generic refusal name
 one), else appends "(track menu: Unfreeze Track)" —, (f) for now (the clip view, the take lanes and the project patch
 view's band of a frozen track are not veiled; apply refuses, the status line offers Unfreeze). Flatten is shown
 disabled in both menus until FZ.4. Reversible: `ViewContext::setTracksFrozen` / `setStatus`, one veil class.
+Status: open.
 
 ## Q257 · 2026-11-13 · DY.2 · what "Pre FX" is on a MIDI track, and what "None" does to the sidechain's On
 Context: DY.2's `cablesource` picker offers per other track "Pre FX" (the plan: Wire::noteSource + kMainPort, the
@@ -1285,7 +1290,7 @@ sidechain off keeps the detector on the module's own input instead of silence (a
 never compress). Audio / group / return tracks use the own-signal wire (a). Pre equal to Post (no blocks after it) is
 offered once, as Pre. Reversible: doc::ops::cableSources and setCableSource (edit_cables.cpp) are the one place.
 Status: open.
-## Q258 · 2026-11-13 · FZ.4 · FZ.4 · Render edits: the song-start declick, what goes with a flattened track, where files go, what a bounce copies
+## Q258 · 2026-11-13 · FZ.4 · Render edits: the song-start declick, what goes with a flattened track, where files go, what a bounce copies
 Context: D5 flattens in place and the acceptance asks flatten / bounce / consolidate to null against what they replace.
 An audio clip gets the 2 ms edge declick at both edges (a frozen render's clip has none: `AudioClipDesc::declick`
 false), the document has no per-clip switch for it, and a clip cannot start before tick 0 without a seek fade. D5 says
