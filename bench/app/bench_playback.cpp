@@ -558,8 +558,7 @@ int main(int argc, char** argv) {
     runner.add(name, [mode, name](bench::Context& c) {
       EqRig rig(-1, 0, -1, mode);
       const bench::Stats s = c.measure([&] { rig.block(); }, 1, "ns/block");
-      std::printf("  %s: %.2f %% of a core (median)
-", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
+      std::printf("  %s: %.2f %% of a core (median)\n", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
     });
   }
   // TX.group-oversample: the instrument group (3 held voices, its region per voice) at 1× … 4× (no EQ).
