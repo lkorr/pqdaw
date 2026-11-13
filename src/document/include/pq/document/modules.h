@@ -369,10 +369,10 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o = {});
 //   det     True Peak off: latency(|src|, 7) — Stereo linked as max(|L|, |R|), else per channel; True Peak on:
 //           latency(truepeak(src), 1) (linked the same way). Both are 7 frames behind src (truepeak's fixed group delay
 //           6, plus 1), so toggling True Peak never changes the audio's delay or the reported latency
-//   r       max(0, gain_to_db(det) − Ceiling) (dB over the ceiling)
+//   r       max(0, fast_gain_to_db(det) − Ceiling) (dB over the ceiling; fast_ errors ≤ ~1e-6 relative)
 //   h       window(r, la, max); g = follow(h, 0, Release) (instant attack; Auto: the Compressor's law, max(follow(h, 0,
 //           rel / 4), follow(h, 0, rel · 4) − 3 dB)); b = window(g, la, mean) — the reduction (dB ≥ 0: the meter's)
-//   out     latency(src, 6, la) · db_to_gain(−b) (M-S: back to (M + S, M − S)), then clip(·, −c, c), c = 10^(Ceiling / 20)
+//   out     latency(src, 6, la) · fast_db_to_gain(−b) (M-S: back to (M + S, M − S)), then clip(·, −c, c), c = 10^(Ceiling / 20)
 // Why the gain alone keeps a sample under the ceiling (Link Stereo / L-R): the output at frame n is src[n − 6 − L], whose
 // det is r[m], m = n − L + 1 (det is 7 frames behind src). h[k] (k = n − L + 1 … n) is a max over r[k − L + 1 … k],
 // which holds r[m] for every such k, and the follower's instant attack keeps g[k] ≥ h[k] ≥ r[m]: b[n], the mean of

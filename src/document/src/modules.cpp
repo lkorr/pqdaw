@@ -1881,10 +1881,12 @@ BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o) {
   const DeviceId tpLat = k.block("latency", "true peak 1", {{"x", tp}});
   k.setting(tpLat, "frames", kLimiterDetectorDelay - 6.0);
   const Sig det = mux(truePeak, Sig{magLat, "out"}, Sig{tpLat, "out"}, "true peak?");
+  // (fast_gain_to_db / fast_db_to_gain: errors ≤ ~1e-6 relative (core/fast_math.h), as small as the float rounding the
+  // clip trims anyway; the exact pair (SVML in double) cost ~4 ns more per stereo sample.)
   // r = max(0, dB(det) − Ceiling); h = window(r, la, max); g = follow(h, 0, Release) (Auto: Follower); b = window(g, la,
   // mean). Why b keeps the delayed sample under the ceiling: modules.h "the Limiter" (the mean of L values, each ≥ r[m]
   // because every max window covering the L frames holds r[m] and the attack is instant, is ≥ r[m]).
-  const Sig over = max(k.k(0.0), sub(k.op("gain_to_db", "det dB", {{"gain", det}}), ceiling, "det dB - ceiling"), "r");
+  const Sig over = max(k.k(0.0), sub(k.op("fast_gain_to_db", "det dB", {{"gain", det}}), ceiling, "det dB - ceiling"), "r");
   const DeviceId hold = k.block("window", "hold (max)", {{"x", over}, {"time", lookahead}});
   k.setting(hold, "op", 0.0);
   const Follower follower(k, k.k(0.0), release, autoRelease);
@@ -1895,7 +1897,7 @@ BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o) {
   // out = latency(src, 6, la) · 10^(−b/20) (M-S: back to (M + S, M − S)), then the safety clip at ±10^(Ceiling/20).
   const DeviceId lat = k.block("latency", "lookahead", {{"x", src}, {"time", lookahead}});
   k.setting(lat, "frames", 6.0);
-  const Sig y = mul(Sig{lat, "out"}, k.op("db_to_gain", "gain", {{"db", k.op("neg", "-GR", {{"x", gr}})}}), "x gain");
+  const Sig y = mul(Sig{lat, "out"}, k.op("fast_db_to_gain", "gain", {{"db", k.op("neg", "-GR", {{"x", gr}})}}), "x gain");
   const Sig yM = channel(y, 0.0, "M'"), yS = channel(y, 1.0, "S'");
   const Sig back = k.op("pack", "(M + S, M - S)", {{"in0", add(yM, yS, "M + S")}, {"in1", sub(yM, yS, "M - S")}});
   const Sig limited = mux(isMs, y, back, "out L/R");
