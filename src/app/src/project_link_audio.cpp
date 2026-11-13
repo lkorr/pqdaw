@@ -936,10 +936,22 @@ public:
 }  // namespace
 
 Result<uint64_t> ProjectLink::settleOffline(Ticks atTick, double minSeconds, double maxSeconds) {
-  flush();
-  takeLatencyShifts();
-  (void)waitForSamples();
-  (void)waitForMetaTables();
+  // Everything the link has to hand the program, taken now. EX.x-fix-settle: also whatever comes in while settling (a
+  // compile deferred until the engine ran — between edits nothing runs on an offline link —, a lowering a finished
+  // sample load asked for): published and settled here, so renderOffline's own flush finds nothing and a pass never
+  // starts on an image it has not settled (a new unit's gains would fade in from silence in its first ~2 ms).
+  auto take = [&] {
+    flush();
+    takeLatencyShifts();
+    (void)waitForSamples();
+    (void)waitForMetaTables();
+  };
+  auto more = [&] {
+    if (anyDeferred_.load(std::memory_order_acquire)) return true;
+    std::lock_guard lock(mutex_);
+    return pending_;
+  };
+  take();
   engine::TransportCommand stopCmd{engine::TransportCommandKind::Stop, false, 0, 0, 0};
   // Stopped at the render's start: the timeline holds every automation lane's value there (the params glide to it).
   engine::TransportCommand locate{engine::TransportCommandKind::Locate, false, atTick, 0, 0};
@@ -954,13 +966,19 @@ Result<uint64_t> ProjectLink::settleOffline(Ticks atTick, double minSeconds, dou
   const auto maxFrames = std::max(minFrames, static_cast<uint64_t>(std::max(0.0, maxSeconds) * rate));
   PeakSink sink;
   sink.channels = engine_->config().numOut;
-  uint64_t done = 0;
+  uint64_t done = 0, from = 0;  // `from`: where the last work taken started settling
   while (done < maxFrames) {
     auto r = engine_->renderOffline(chunk, sink, block, chunk);
     if (!r) return r.error();
     done += chunk;
+    if (more()) {
+      take();
+      from = done;
+      continue;
+    }
     const engine::ProjectProgram* program = engine_->program();
-    if (done >= minFrames && sink.peak <= 1e-6f && program != nullptr && program->quiet() && !program->topologyPending())
+    if (done - from >= minFrames && sink.peak <= 1e-6f && program != nullptr && program->quiet() &&
+        !program->topologyPending())
       break;
   }
   return done;

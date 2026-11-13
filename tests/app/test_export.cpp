@@ -2,8 +2,10 @@
 //   --render   a master export (32f) equals `pqdaw --render` of the same range bit for bit
 //   stems      the top-level stems (post-fader `<id>:out`, captured in one pass) sum to the master within −120 dB, also
 //              with a −10 ms Track Delay (PDC 480: each bus trimmed by its own latency); a muted track's stem is silent
-//   solo       stems through the returns and the master (one solo pass each, a later pass starts from rest) equal the
-//              captured buses that carry them
+//   solo       stems through the returns and the master (one solo pass each, on one link) equal the captured buses
+//              that carry them
+//   settle     EX.x-fix-settle: on one link every pass equals the first bit for bit (an automated volume; a solo pass
+//              after another equals that solo on a fresh link)
 //   loop       render as loop: frame 0 carries the first lap's release; the file is exactly the loop long
 //   PDC        an oversampled (latent) group on Lead: the export lines up with the plain project at lag 0 (the raw
 //              render is 5 frames late)
@@ -184,7 +186,7 @@ TEST_CASE("EX.1: stems (post-fader out buses, one pass) sum to the master within
   }
 }
 
-TEST_CASE("EX.1: stems through the returns and the master: one solo pass per track, each from rest (as the first pass)") {
+TEST_CASE("EX.1: stems through the returns and the master: one solo pass per track on one link, each as the first pass") {
   playback_fixture::Fixture f;
   const fs::path dir = freshDir("solo");
   app::ExportRequest cap = request(f.snap(), kTicksPerWhole, dir / "cap", "");
@@ -206,6 +208,71 @@ TEST_CASE("EX.1: stems through the returns and the master: one solo pass per tra
   const Channels lead = readBack(fileOf(passes, f.lead)).channels;
   const Channels ref = sum({readBack(fileOf(buses, f.lead)).channels, readBack(fileOf(buses, f.echo)).channels});
   CHECK(20.0 * std::log10(std::max(maxDiff(lead, ref), 1e-30) / peakOf(ref)) <= -120.0);
+  fs::remove_all(dir);
+}
+
+namespace {
+
+struct Collect final : engine::AudioSink {
+  Channels ch;
+  Status begin(uint32_t n, uint32_t, uint64_t) override {
+    ch.assign(n, {});
+    return Ok{};
+  }
+  Status write(const float* const* x, uint32_t frames) override {
+    for (size_t c = 0; c < ch.size(); ++c) ch[c].insert(ch[c].end(), x[c], x[c] + frames);
+    return Ok{};
+  }
+  Status end() override { return Ok{}; }
+};
+
+Channels masterPass(app::ProjectLink& link, const Project& p, Ticks to) {
+  Collect out;
+  app::PassSpec spec;
+  spec.from = 0;
+  spec.to = to;
+  spec.targets.push_back(app::PassTarget{engine::kNoBus, &out});
+  auto r = app::renderPass(link, p, spec);
+  REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
+  return out.ch;
+}
+
+std::unique_ptr<app::ProjectLink> offlineLink(const Snapshot& s, const fs::path& dir) {
+  auto l = app::makeOfflineLink(s, 48000.0, dir.string(), 0, false);
+  REQUIRE_MESSAGE(l.ok(), (l.ok() ? std::string() : l.error().message));
+  return std::move(*l);
+}
+
+}  // namespace
+
+TEST_CASE("EX.x-fix-settle: every pass on one link equals the first, bit for bit (automated volume; solo passes)") {
+  playback_fixture::Fixture f;
+  const fs::path dir = freshDir("settle");
+  const Ticks to = kTicksPerWhole;
+  // Grp's volume is automated from tick 0 (−18 dB, rising to 0 dB at beat 2): a pass ends at 0 dB, the next starts
+  // at −18 dB again. Before the fix the second pass faded from 0 dB for ~30 ms (the gain fell asleep mid-ramp in the
+  // settle and kept the previous pass's value).
+  auto link = offlineLink(f.snap(), dir);
+  const Channels first = masterPass(*link, *f.snap(), to);
+  REQUIRE(peakOf(first) > 0.01f);
+  CHECK(maxDiff(first, masterPass(*link, *f.snap(), to)) == 0.0);
+  CHECK(maxDiff(first, masterPass(*link, *f.snap(), to)) == 0.0);
+  // Solo passes on the link (param writes), Lead then Mos: Mos's equals Mos soloed on a fresh link (Q251's bleed).
+  [[maybe_unused]] const ListenerId sub = f.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  auto solo = [&](TrackId t, bool on) {
+    REQUIRE(f.store.dispatch(SetTrackSolo{t, on}).ok());
+    link->flush();
+  };
+  solo(f.lead, true);
+  (void)masterPass(*link, *f.snap(), to);
+  solo(f.lead, false);
+  solo(f.mos, true);
+  const Channels mos = masterPass(*link, *f.snap(), to);
+  const Channels fresh = masterPass(*offlineLink(f.snap(), dir), *f.snap(), to);
+  REQUIRE(peakOf(fresh) > 0.01f);
+  CHECK(maxDiff(mos, fresh) == 0.0);
+  f.store.unsubscribe(sub);
+  link.reset();
   fs::remove_all(dir);
 }
 

@@ -144,11 +144,8 @@ struct App {
     (void)link->waitForSamples();
     link->flush();
   }
-  // Second passes only (QUESTIONS Q251: a link's first pass differs in its first ~26 ms).
-  Channels bus(Ticks from, Ticks to, uint32_t b = engine::kNoBus) {
-    (void)pass(*link, doc(), from, to, b);
-    return pass(*link, doc(), from, to, b);
-  }
+  // One pass (EX.x-fix-settle: every pass starts settled, the first like any other).
+  Channels bus(Ticks from, Ticks to, uint32_t b = engine::kNoBus) { return pass(*link, doc(), from, to, b); }
 };
 
 constexpr Ticks kBar = kTicksPerWhole;  // 4/4

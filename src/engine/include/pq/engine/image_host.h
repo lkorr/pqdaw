@@ -39,6 +39,8 @@
 //                a delay line's last `tail` written frames ≤ ε (the frames written since the last check are scanned,
 //                once the whole span), smoother residuals exactly 0. Quiescent → flushed (the ≤ ε residue set to 0)
 //                and asleep. Asleep with silent sources and unchanged params → stays asleep (state untouched).
+//                A stage in its param-ramp mode (decideRamps) counts as a param change for its segments
+//                (EX.x-fix-settle: a smoother falls asleep at its target, not mid-ramp).
 //                Anything else → awake for the whole block. The backends read regionAsleep (the interpreter) or
 //                the flag word in aux (layout().sleepOff + segment, generated code) per sleepable region and run
 //                it or zero its fill buffers instead (fillRegion), one branch per region per block. ε = kSleepEpsilon

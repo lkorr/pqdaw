@@ -335,35 +335,39 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
   fs::create_directories(folder, ec);
   if (!fs::is_directory(folder, ec)) return Error{ErrorCode::Io, "export: cannot create " + folder.string(), {}};
 
-  // Passes: one with every target, or (stems through the returns and the master) one solo pass per track. A solo pass
-  // runs on a fresh link built with that track soloed: a pass on the link of the previous one would start from its
-  // engine state (its first ~20 ms differ after a solo change: QUESTIONS Q?-EX.1-a). The previous link lives until the
-  // next one is compiled, so its JIT images are shared (the JIT cache's in-memory hits).
+  // Passes: one with every target, or (stems through the returns and the master) one solo pass per track — all on ONE
+  // link: a solo pass is the track's solo written into the export's document (a param write on the link: the gates,
+  // no recompile; D7), then the pass (settled first: QUESTIONS Q251, EX.x-fix-settle).
   const bool soloPasses = rq.what != ExportWhat::Master && rq.includeReturnsMaster;
   const uint32_t passes = soloPasses ? static_cast<uint32_t>(jobs.size()) : 1u;
   uint64_t rangeFrames = 0;
   std::unique_ptr<ProjectLink> link;
+  {
+    auto made = makeOfflineLink(store.current(), static_cast<double>(rq.rate), rq.projectDir, rq.chanceSeed, rq.jit);
+    if (!made) {
+      cleanup();
+      return made.error();
+    }
+    link = std::move(made.value());
+  }
+  const doc::ListenerId listener = store.subscribe([&](const doc::StoreEvent& e) { link->onDocumentChange(e); });
+  struct Unsubscribe {
+    doc::DocumentStore& s;
+    doc::ListenerId id;
+    ~Unsubscribe() { s.unsubscribe(id); }
+  } unsubscribe{store, listener};
+  auto solo = [&](doc::TrackId t, bool on) -> Status {
+    if (auto s = store.dispatch(doc::SetTrackSolo{t, on}); !s) return s;
+    link->flush();
+    return Ok{};
+  };
   for (uint32_t p = 0; p < passes; ++p) {
-    doc::Snapshot doc = store.current();
-    if (soloPasses) {
-      if (auto s = store.dispatch(doc::SetTrackSolo{jobs[p].track, true}); !s) {
+    if (soloPasses)
+      if (auto s = solo(jobs[p].track, true); !s) {
         cleanup();
         return s.error();
       }
-      doc = store.current();
-      if (auto s = store.dispatch(doc::SetTrackSolo{jobs[p].track, false}); !s) {
-        cleanup();
-        return s.error();
-      }
-    }
-    if (p == 0 || soloPasses) {
-      auto made = makeOfflineLink(doc, static_cast<double>(rq.rate), rq.projectDir, rq.chanceSeed, rq.jit);
-      if (!made) {
-        cleanup();
-        return made.error();
-      }
-      link = std::move(made.value());  // the previous pass's link goes after the new one compiled
-    }
+    const doc::Snapshot doc = store.current();
     PassSpec spec;
     spec.from = rq.from;
     spec.to = rq.to;
@@ -395,6 +399,11 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
     if (spec.targets.empty()) continue;  // every track silent
     auto r = renderPass(*link, *doc, spec);
     sinks.clear();  // closed by renderPass (end); the writers go before their files are touched
+    if (soloPasses && r && !r->cancelled)
+      if (auto s = solo(jobs[p].track, false); !s) {
+        cleanup();
+        return s.error();
+      }
     if (!r || r->cancelled) {
       cleanup();
       if (!r) return r.error();

@@ -1307,7 +1307,11 @@ void ImageHost::decideSleep(uint32_t stage, const ProcessContext& ctx, uint32_t 
       const float* p = src.buf != nullptr ? src.buf : extPtr(src.ext, 0);
       silentIn = allSilent(p, src.perFrame == 0 ? 8u : frames * src.perFrame);
     }
-    bool changed = false;
+    // EX.x-fix-settle: while its stage's param ramps move (rampOn_, decideRamps), a smoother there follows a moving
+    // target: awake until the ramps end, so it falls asleep AT its target. (Asleep mid-ramp, a gain kept the target
+    // of the block it fell asleep in, and the next sound faded from there: a stopped locate's automation value
+    // reached it only once the transport played.) A ramp lasts kParamRampSeconds after a change: nothing at rest.
+    bool changed = anyRamps_ && rampOn_[stage] != 0;
     for (uint32_t k = g.firstParam; k < g.firstParam + g.numParams && !changed; ++k) changed = paramChanged_[segParams_[k]] != 0;
     if (!silentIn || changed) {
       if (g.asleep) ++sleepStats_.wakes;

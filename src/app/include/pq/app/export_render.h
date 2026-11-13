@@ -29,9 +29,9 @@
 // (error feedback, h = 1.623, −0.982, 0.109: noise moved above ~10 kHz) for integer formats, quantizes and writes
 // `.part` files; only when all of them are complete are they renamed onto the final names (replacing existing files).
 // A cancel or an error deletes every temp and part file: nothing new is left. Solo is cleared in the export's copy of
-// the document (mute is respected). A stem with master FX is a pass on a fresh private link of the document with that
-// track soloed (Q?-EX.1-a: a solo param write on the previous pass's link left its first ~20 ms depending on that
-// pass's engine state); the previous link lives until the new one has compiled, so the JIT images are shared.
+// the document (mute is respected). A stem with master FX is a pass with that track soloed, all on one link: the solo
+// is a param write (no recompile; D7). Each pass starts settled, so it equals that track rendered as a first pass
+// (QUESTIONS Q251; EX.x-fix-settle: a smoother no longer falls asleep mid-ramp, keeping an earlier pass's gain).
 
 #include <atomic>
 #include <cstdint>

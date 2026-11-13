@@ -122,9 +122,8 @@ TEST_CASE("FZ.2: a frozen track plays its render (master null <= -100 dB, one cl
   [[maybe_unused]] const ListenerId sub = f.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
   const Ticks to = 2 * kTicksPerWhole;  // Lead's clip
   const std::shared_ptr<const LoweredProject> live = link->lastLowering();
-  // (A link's FIRST pass differs from later ones in its first ~26 ms — Grp's automated volume smoother starts from
-  // another state: the history dependence of QUESTIONS Q251 — so the references are second passes, as every pass below.)
-  (void)master(*link, *f.snap(), to);
+  // (EX.x-fix-settle: a link's first pass equals its later ones — Grp's automated volume settles at its start value —
+  // so the references are first passes.)
   const Channels reference = master(*link, *f.snap(), to);
   const Channels leadLive = busOf(*link, *f.snap(), to, link->trackOutBus(f.lead));
 
@@ -201,11 +200,9 @@ TEST_CASE("FZ.2: a tempo edit re-renders while the track plays live; a load reus
   REQUIRE(link->frozenSlot(f.lead) != app::ProjectLink::kNoSlot);
   CHECK(link->freezeService()->stats().started == 2);
   const Ticks to = 2 * kTicksPerWhole;
-  (void)master(*link, *f.snap(), to);  // (a link's first pass: see the first test)
   const Channels played = master(*link, *f.snap(), to);
   {
-    auto plain = makeLink(f.snap(), dir, false);  // the same document, every track live
-    (void)master(*plain, *f.snap(), to);         // (its first pass: see the first test)
+    auto plain = makeLink(f.snap(), dir, false);  // the same document, every track live (its first pass)
     const double db = nullDb(master(*plain, *f.snap(), to), played);
     MESSAGE("re-rendered at 100 BPM vs live: " << db << " dB");
     CHECK(db <= -100.0);
