@@ -23,6 +23,7 @@ struct Options {
   Poly freeRunningPoly = Poly::Voice;  // InferOptions default (T1.3-fix1)
   uint16_t ioChannels = 2;
   std::vector<RootInput> inputs;
+  uint32_t blameDepth = 0;  // WI.1
 };
 
 struct Expect {
@@ -63,6 +64,7 @@ void runCase(Run& r, std::string_view src, const Options& o) {
   opts.freeRunningPoly = o.freeRunningPoly;
   opts.ioChannels = o.ioChannels;
   opts.inputs = o.inputs;
+  opts.blameDepth = o.blameDepth;
   opts.source = SourceText{src, "test.pqp", r.parsed.nodeSpans[0]};
   r.inferred = inferDetailed(r.parsed.file.patches[0], opts);
 }
@@ -633,5 +635,162 @@ TEST_CASE("shared(…): an attribute of the source's node (no node, same NodeIds
                           "patch R { out o : audio\n o = shared(noise(), noise()) }"}) {
     CAPTURE(bad);
     CHECK_FALSE(parseDetailed(bad, "f.pqp").ok());
+  }
+}
+
+// ---- WI.1: blame -------------------------------------------------------------------------------------------------
+
+namespace {
+
+NodeId idOf(const Run& r, std::string_view patch, std::string_view node) {
+  for (const Patch& p : r.parsed.file.patches)
+    if (p.name() == patch) {
+      const auto n = p.findByName(node);
+      REQUIRE(n.has_value());
+      return p.node(*n).id;
+    }
+  FAIL("no patch " << patch);
+  return {};
+}
+
+// The index of the diagnostic whose message holds `fragment`.
+size_t diagWith(const InferResult& r, std::string_view fragment) {
+  for (size_t i = 0; i < r.diagnostics.size(); ++i)
+    if (r.diagnostics[i].message.find(fragment) != std::string::npos) return i;
+  FAIL("no diagnostic with '" << fragment << "'");
+  return 0;
+}
+
+// A unit-like nesting: root → track call `t` → the track patch's nodes (blameDepth 2 cuts there).
+constexpr const char* kTrackWidth =
+    "patch R { in x : audio\n out o : audio\n t = Track(x)\n o = t }\n"
+    "patch Track { in x : audio\n out y : audio\n a = Wide(x)\n b = Dev(a)\n y = b }\n"
+    "patch Wide { in x : audio\n out y : audio stereo\n y = pack(x, x) }\n"
+    "patch Dev { in x : audio\n out y : audio\n y = Inner(x) }\n"
+    "patch Inner { in v : audio mono\n out y : audio\n y = v * 0.5 }";
+
+}  // namespace
+
+TEST_CASE("WI.1 blame: a stereo callee output into a mono bound two levels down names the crossing call nodes") {
+  Options o;
+  o.blameDepth = 2;
+  Run r;
+  runCase(r, kTrackWidth, o);
+  REQUIRE_FALSE(r.inferred.ok());
+  REQUIRE(r.inferred.blames.size() == r.inferred.diagnostics.size());
+  const size_t i = diagWith(r.inferred, "width mismatch: stereo into mono");
+  REQUIRE(r.inferred.blames[i].size() == 1);
+  const TypeBlame& b = r.inferred.blames[i][0];
+  const NodeId t = idOf(r, "R", "t");
+  CHECK(b.consumer == std::vector<NodeId>{t, idOf(r, "Track", "b")});
+  CHECK(b.source == std::vector<NodeId>{t, idOf(r, "Track", "a")});
+
+  // Cut at the track call, the stereo is made inside the consumer's own node (Wide's pack): no edge to blame.
+  o.blameDepth = 1;
+  Run r1;
+  runCase(r1, kTrackWidth, o);
+  REQUIRE(r1.inferred.blames.size() == r1.inferred.diagnostics.size());
+  CHECK(r1.inferred.blames[diagWith(r1.inferred, "width mismatch: stereo into mono")].empty());
+
+  // Off: the same diagnostics, no blames.
+  o.blameDepth = 0;
+  Run r0;
+  runCase(r0, kTrackWidth, o);
+  CHECK(r0.inferred.diagnostics.size() == r.inferred.diagnostics.size());
+  CHECK(r0.inferred.blames.empty());
+}
+
+TEST_CASE("WI.1 blame: a real into a bool input blames the node that brought it; a branching walk blames both") {
+  Options o;
+  o.blameDepth = 2;
+  Run r;
+  runCase(r,
+          "patch R { in x : audio\n out o : audio\n t = Track(x)\n o = t }\n"
+          "patch Track { in x : audio\n out y : audio\n a = Lfo(x)\n c = Lfo(x)\n w = channel(a, 0)\n"
+          " b = Gate(w)\n d = Mix(a, c)\n y = b + d }\n"
+          "patch Lfo { in x : audio\n out y : real\n y = x * 0.5 }\n"
+          "patch Gate { in g : bool\n out y : audio\n y = select(g, 1, 0) }\n"
+          "patch Mix { in p : real\n in q : real\n out y : audio\n y = Gate(select(p > 0, p, q)) }",
+          o);
+  REQUIRE_FALSE(r.inferred.ok());
+  // The real also reaches each Gate's inner select (cascading errors at the same consumers): 4 diagnostics.
+  REQUIRE(r.inferred.diagnostics.size() == 4);
+  REQUIRE(r.inferred.blames.size() == 4);
+  const NodeId t = idOf(r, "R", "t");
+  const std::vector<NodeId> b{t, idOf(r, "Track", "b")}, d{t, idOf(r, "Track", "d")};
+  uint32_t intoB = 0, intoD = 0;
+  for (size_t i = 0; i < 4; ++i) {
+    CAPTURE(r.inferred.diagnostics[i].message);
+    CHECK(r.inferred.diagnostics[i].message.find("kind mismatch: real into bool") != std::string::npos);
+    REQUIRE_FALSE(r.inferred.blames[i].empty());
+    const std::vector<NodeId>& consumer = r.inferred.blames[i][0].consumer;
+    if (consumer == b) {  // the wire-like node w between Lfo a and Gate b
+      ++intoB;
+      REQUIRE(r.inferred.blames[i].size() == 1);
+      CHECK(r.inferred.blames[i][0].source == std::vector<NodeId>{t, idOf(r, "Track", "w")});
+    } else {  // inside Mix, select(p > 0, p, q) passes both of its real inputs on: a and c
+      ++intoD;
+      CHECK(consumer == d);
+      REQUIRE(r.inferred.blames[i].size() == 2);
+      CHECK(r.inferred.blames[i][0].source == std::vector<NodeId>{t, idOf(r, "Track", "a")});
+      CHECK(r.inferred.blames[i][1].source == std::vector<NodeId>{t, idOf(r, "Track", "c")});
+      CHECK(r.inferred.blames[i][1].consumer == d);
+    }
+  }
+  CHECK(intoB == 2);
+  CHECK(intoD == 2);
+}
+
+TEST_CASE("WI.1 blame: an event into an audio bound; a root input's bad connection comes from outside") {
+  Options o;
+  o.blameDepth = 1;
+  o.inputs = {RootInput{true, portType(Kind::Real, Rate::Event, Poly::Global, kWidthMono)}};
+  Run r;
+  runCase(r,
+          "patch R { in e : real\n out o : real\n a = Pass(e)\n b = Aud(a)\n o = b }\n"
+          "patch Pass { in x : real\n out y : real\n y = x }\n"
+          "patch Aud { in x : audio\n out y : audio\n y = x * 2 }",
+          o);
+  REQUIRE_FALSE(r.inferred.ok());
+  REQUIRE(r.inferred.blames.size() == r.inferred.diagnostics.size());
+  const size_t i = diagWith(r.inferred, "rate mismatch: event into audio input 'x'");
+  REQUIRE(r.inferred.blames[i].size() == 1);
+  CHECK(r.inferred.blames[i][0].consumer == std::vector<NodeId>{idOf(r, "R", "b")});
+  CHECK(r.inferred.blames[i][0].source == std::vector<NodeId>{idOf(r, "R", "a")});
+
+  Options w;
+  w.blameDepth = 2;
+  w.inputs = {RootInput{true, portType(Kind::Real, Rate::Audio, Poly::Global, kWidthStereo)}};
+  Run r2;
+  runCase(r2, "patch R { in x : audio mono\n out o : audio\n o = x }", w);
+  REQUIRE(r2.inferred.diagnostics.size() == 1);
+  REQUIRE(r2.inferred.blames.size() == 1);
+  REQUIRE(r2.inferred.blames[0].size() == 1);
+  CHECK(r2.inferred.blames[0][0].consumer == std::vector<NodeId>{idOf(r2, "R", "x")});
+  CHECK(r2.inferred.blames[0][0].source.empty());
+}
+
+TEST_CASE("WI.1 blame: a clean infer is unchanged by blameDepth (equal TypedPatch, no blames)") {
+  const char* src =
+      "patch R { in x : audio\n out o : audio\n t = Track(x)\n o = t }\n"
+      "patch Track { in x : audio\n out y : audio\n a = Dev(x)\n b = Dev(a)\n y = a + b }\n"
+      "patch Dev { in x : audio\n out y : audio\n s = z1(s + (x - s) * 0.1)\n y = s }";
+  Options o;
+  Run off, on;
+  runCase(off, src, o);
+  o.blameDepth = 2;
+  runCase(on, src, o);
+  REQUIRE(off.inferred.ok());
+  REQUIRE(on.inferred.ok());
+  CHECK(on.inferred.blames.empty());
+  const TypedPatch& a = off.inferred.typed;
+  const TypedPatch& b = on.inferred.typed;
+  CHECK(a.patch == b.patch);
+  CHECK(a.types == b.types);
+  CHECK(a.stateKey == b.stateKey);
+  REQUIRE(a.origin.size() == b.origin.size());
+  for (size_t n = 0; n < a.origin.size(); ++n) {
+    CHECK(a.origin[n].instance == b.origin[n].instance);
+    CHECK(a.origin[n].node == b.origin[n].node);
   }
 }

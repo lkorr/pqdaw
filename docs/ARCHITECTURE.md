@@ -169,6 +169,9 @@ namespace pq::graph {
   // sources (stateful, inputs global and ≤ param rate) that feed voice processing are per-voice
   // (InferOptions::freeRunningPoly = Voice, decided after the fixpoint; per-voice phasor/sine_hz get reset =
   // voice.trigger); `shared(expr)` in text sets Node::shared (an attribute, no node) and keeps its cone global.
+  // WI.1: InferOptions::blameDepth > 0 fills InferResult::blames (parallel to diagnostics): per bound error of the
+  // final check, up to 4 TypeBlame{consumer, source} edges — NodeId call paths cut at blameDepth, found by walking
+  // upstream only through inputs carrying the offending field until the cut path changes. Error path only.
   Result<TypedPatch> infer(const Patch&, const InferOptions&);
   // pq/graph/optimise.h (T1.4). Durations → samples (`· sr` inserted, TypedPatch::durationsInSamples), then a
   // fixpoint of constant folding (by the atom's own dsp kernel as Control regions run it: 8 lanes, lane 0; never
@@ -426,6 +429,9 @@ namespace pq::engine {
     void process(const AudioBlock&) noexcept;  // audio thread (an AudioCallback); swaps at image-block boundaries
   };
   class ProjectCompiler; // T1.x-arch1 (project_compile.h): ProjectGraph → per-track units → UnitImages; update() per edit
+                         // (all or nothing: a failed update keeps every unit's previous compile). WI.1:
+                         // lastTypeFailures() = UnitTypeFailure{track, consumer, source NodeIds in the track patch,
+                         // message} per blamed edge of the last failed compile (infer at blameDepth 2)
   class ProjectProgram { // T1.x-arch1 (project_program.h): N units in dependency order through bus buffers
   public:
     Result<PublishInfo> publish(uint32_t unit, UnitImage, const SwapPolicy& = {});  // non-RT: swaps only that unit

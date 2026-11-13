@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace pq::graph {
@@ -152,6 +153,7 @@ public:
       locateProbes(r);
     }
     r.diagnostics = std::move(diags_);
+    r.blames = std::move(blames_);
     return r;
   }
 
@@ -190,6 +192,7 @@ private:
       d.code = code;
       diags_.push_back(std::move(d));
     }
+    if (opt_.blameDepth > 0) blames_.emplace_back();  // WI.1: parallel to diags_ (filled by blame())
   }
 
   // Report a problem with FNode f once (conflicts can be found again on every re-evaluation).
@@ -539,6 +542,7 @@ private:
     t.poly = actual.poly != Poly::Infer ? actual.poly : decl.poly != Poly::Infer ? decl.poly : Poly::Global;
     t.width = actual.width != kWidthInfer ? actual.width : decl.width != kWidthInfer ? decl.width : kWidthMono;
     const std::string what = "the engine's connection to " + root_.describe(n);
+    const size_t before = diags_.size();
     if (actual.kind != Kind::Infer && actual.kind != decl.kind)
       report(0, n, ErrorCode::Type, "kind mismatch: " + std::string(toText(actual.kind)) + " into " +
                                         std::string(toText(decl.kind)) + ": " + what);
@@ -550,6 +554,9 @@ private:
     if (decl.width != kWidthInfer && t.width != kWidthMono && t.width != decl.width)
       report(0, n, ErrorCode::Type, "width mismatch: " + widthText(t.width) + " into " + widthText(decl.width) + ": " +
                                         what);
+    // WI.1: the value comes from outside the patch: no source inside it.
+    if (opt_.blameDepth > 0)
+      for (size_t i = before; i < diags_.size(); ++i) blames_[i].push_back(TypeBlame{blamePath(0, n), {}});
     return t;
   }
 
@@ -923,32 +930,95 @@ private:
           const FNode& s = fnodes_[outOwner_[d]];
           return std::string(insts_[s.inst].patch->describe(s.src));
         };
+        const size_t before = diags_.size();
+        // WI.1: a reported error (not one deduplicated or past kMaxDiagnostics) is blamed on the edges it crossed.
+        auto blameIf = [&](Offence off) {
+          if (opt_.blameDepth > 0 && diags_.size() > before) blame(f, p, off, b);
+        };
         if (b.kind == Kind::Bool && t.kind == Kind::Real) {  // (a bool into a real input converts: emit)
           reportPort(f, ErrorCode::Type, "kind mismatch: real into bool " + inPortText(f, i) + ", from " + from() +
                                              " (convert with a comparison)");
+          blameIf(Offence::Kind);
           continue;
         }
         if (b.rate != Rate::Infer && ((b.rate == Rate::Event) != (t.rate == Rate::Event))) {
           reportPort(f, ErrorCode::Type, "rate mismatch: " + std::string(toText(t.rate)) + " into " +
                                              std::string(toText(b.rate)) + " " + inPortText(f, i));
+          blameIf(Offence::Event);
           continue;
         }
         if (b.rate != Rate::Infer && t.rate > b.rate) {
           reportPort(f, ErrorCode::Type, "rate " + std::string(toText(t.rate)) + " exceeds the declared bound " +
                                              std::string(toText(b.rate)) + " of " + inPortText(f, i) + ", from " +
                                              from());
+          blameIf(Offence::Rate);
           continue;
         }
         if (b.width != kWidthInfer && t.width != kWidthMono && t.width != b.width) {
           reportPort(f, ErrorCode::Type, "width mismatch: " + widthText(t.width) + " into " + widthText(b.width) +
                                              " " + inPortText(f, i) + ", from " + from());
+          blameIf(Offence::Width);
           continue;
         }
-        if (b.poly == Poly::Global && t.poly == Poly::Voice && !opt_.implicitVoiceSum)
+        if (b.poly == Poly::Global && t.poly == Poly::Voice && !opt_.implicitVoiceSum) {
           reportPort(f, ErrorCode::Type, "a per-voice signal into global " + inPortText(f, i) + ", from " + from() +
                                              " needs an explicit reducer (voice_sum, voice_last, voice_highest, "
                                              "voice_lowest, voice_loudest)");
+          blameIf(Offence::Voice);
+        }
       }
+    }
+  }
+
+  // ---- WI.1: blame (only on the error path) ---------------------------------------------------------------------
+
+  enum class Offence : uint8_t { Kind, Event, Rate, Width, Voice };
+
+  // The NodeIds of the call path to node n of instance inst (call nodes from the root, then n), cut at blameDepth.
+  std::vector<NodeId> blamePath(uint32_t inst, NodeIndex n) const {
+    std::vector<NodeId> path{insts_[inst].patch->node(n).id};
+    for (; inst != 0; inst = insts_[inst].parent)
+      path.push_back(insts_[insts_[inst].parent].patch->node(insts_[inst].callNode).id);
+    std::reverse(path.begin(), path.end());
+    if (path.size() > opt_.blameDepth) path.resize(opt_.blameDepth);
+    return path;
+  }
+
+  // Whether a value of type x carries what made `bad` fail `bound`.
+  static bool carries(const PortType& x, Offence off, const PortType& bad, const PortType& bound) noexcept {
+    switch (off) {
+      case Offence::Kind: return x.kind == Kind::Real;
+      case Offence::Event: return (x.rate == Rate::Event) == (bad.rate == Rate::Event);
+      case Offence::Rate: return x.rate != Rate::Event && x.rate > bound.rate;
+      case Offence::Width: return x.width == bad.width;
+      case Offence::Voice: return x.poly == Poly::Voice;
+    }
+    return false;
+  }
+
+  // Fills blames_.back() for the error at in-port p of FNode f (TypeBlame in infer.h): upstream from p's driver
+  // through the nodes inside the consumer's cut path, along inputs that carry the offence; each node outside it is a
+  // source. Bounded by a visited set (each FNode once) and kMaxBlamesPerDiagnostic.
+  void blame(uint32_t f, uint32_t p, Offence off, const PortType& bound) {
+    const FNode& fn = fnodes_[f];
+    std::vector<TypeBlame>& out = blames_.back();
+    const std::vector<NodeId> consumer = blamePath(fn.inst, fn.src);
+    const PortType bad = outT_[inDrv_[p]];
+    std::unordered_set<uint32_t> seen;
+    std::vector<uint32_t> stack{inDrv_[p]};
+    while (!stack.empty() && out.size() < kMaxBlamesPerDiagnostic) {
+      const uint32_t s = outOwner_[stack.back()];
+      stack.pop_back();
+      if (!seen.insert(s).second) continue;
+      const FNode& sn = fnodes_[s];
+      std::vector<NodeId> path = blamePath(sn.inst, sn.src);
+      if (path != consumer) {
+        if (std::none_of(out.begin(), out.end(), [&](const TypeBlame& tb) { return tb.source == path; }))
+          out.push_back(TypeBlame{consumer, std::move(path)});
+        continue;
+      }
+      for (uint32_t q = sn.firstIn + sn.nIn; q-- > sn.firstIn;)  // reversed: the first input is walked first
+        if (const uint32_t d = inDrv_[q]; d != kNone && carries(outT_[d], off, bad, bound)) stack.push_back(d);
     }
   }
 
@@ -1328,6 +1398,7 @@ private:
   const Patch& root_;
   const InferOptions& opt_;
   std::vector<Diagnostic> diags_;
+  std::vector<std::vector<TypeBlame>> blames_;  // WI.1: parallel to diags_ when InferOptions::blameDepth > 0
   std::unordered_map<const Patch*, CalleeInfo> callees_;
   std::vector<Inst> insts_;
   std::vector<const Patch*> active_;  // instantiation stack (recursion check)

@@ -473,6 +473,108 @@ patch Ref {
   }
 }
 
+TEST_CASE("WI.1: a type error is blamed on the track-patch edge; a failed update keeps every unit's previous compile") {
+  const char* text = R"(
+patch Good {
+  out out : audio global mono
+  out = sine(phasor(440Hz)) * 0.1
+}
+patch Good2 {
+  out out : audio global mono
+  out = sine(phasor(440Hz)) * 0.2
+}
+patch Bad {
+  out out : audio global mono
+  a = Wide()
+  b = Mono(a)
+  out = channel(b, 0)
+}
+patch Wide {
+  out y : audio stereo
+  s = sine(phasor(220Hz))
+  y = pack(s, s)
+}
+patch Mono {
+  in  x : audio
+  out y : audio
+  y = Inner(x)
+}
+patch Inner {
+  in  v : audio mono
+  out y : audio
+  y = v * 0.5
+}
+patch Sum {
+  in  a : audio global mono = 0
+  in  b : audio global mono = 0
+  out out : audio global mono
+  out = a + b
+}
+)";
+  auto parsed = graph::parse(text, "blame.pqp");
+  REQUIRE(parsed.ok());
+  const graph::PatchFile& f = parsed.value();
+  graph::PatchLibrary lib;
+  lib.add(f);
+  const graph::Patch& bad = *f.find("Bad");
+  const uint32_t idA = bad.node(*bad.findByName("a")).id.value, idB = bad.node(*bad.findByName("b")).id.value;
+  graph::ProjectGraph g;
+  g.library = &lib;
+  g.tracks.push_back({1, "A", f.find("Good"), graph::TrackRole::Audio, graph::kNone});
+  g.tracks.push_back({2, "B", f.find("Good"), graph::TrackRole::Audio, graph::kNone});
+  g.tracks.push_back({3, "Sum", f.find("Sum"), graph::TrackRole::Master, graph::kNone});
+  g.wires.push_back({{0, "out"}, {2, "a"}, graph::WireKind::Audio});
+  g.wires.push_back({{1, "out"}, {2, "b"}, graph::WireKind::Audio});
+  g.output = {2, "out"};
+
+  {  // build: Error unchanged (Type), the failure names track B's edge a → b
+    graph::ProjectGraph gb = g;
+    gb.tracks[1].patch = &bad;
+    eng::ProjectCompiler c(compileOptions());
+    auto b = c.build(gb);
+    REQUIRE_FALSE(b.ok());
+    CHECK(b.error().code == pq::ErrorCode::Type);
+    REQUIRE(c.lastTypeFailures().size() == 1);
+    const eng::UnitTypeFailure& tf = c.lastTypeFailures()[0];
+    CHECK(tf.track == 1);
+    CHECK(tf.consumer == idB);
+    CHECK(tf.source == idA);
+    CHECK(tf.message.find("width mismatch: stereo into mono") != std::string::npos);
+  }
+
+  eng::ProjectCompiler c(compileOptions());
+  REQUIRE(c.build(g).ok());
+  CHECK(c.lastTypeFailures().empty());
+  // The edit compiles the earlier unit first (good), then the later one (bad).
+  const uint32_t lo = c.partition().unitOf[0] < c.partition().unitOf[1] ? 0u : 1u, hi = 1u - lo;
+  const uint32_t uLo = c.partition().unitOf[lo];
+  const graph::Schedule* before = c.unit(uLo).schedule.get();
+  const uint64_t keyBefore = c.unit(uLo).key;
+  g.tracks[lo].patch = f.find("Good2");
+  g.tracks[hi].patch = &bad;
+  const uint32_t both[] = {0, 1};
+  auto upd = c.update(g, both);
+  REQUIRE_FALSE(upd.ok());
+  CHECK(upd.error().code == pq::ErrorCode::Type);
+  REQUIRE(c.lastTypeFailures().size() == 1);
+  CHECK(c.lastTypeFailures()[0].track == hi);
+  CHECK(c.lastTypeFailures()[0].consumer == idB);
+  CHECK(c.lastTypeFailures()[0].source == idA);
+  // The good unit's new compile was never published: the compiler still holds what runs.
+  CHECK(c.unit(uLo).schedule.get() == before);
+  CHECK(c.unit(uLo).key == keyBefore);
+  CHECK(c.unitOf(before) == uLo);
+  // Fixed: the next update recompiles the good unit again and returns its image (not "unchanged"); failures cleared.
+  g.tracks[hi].patch = f.find("Good");
+  auto again = c.update(g, both);
+  REQUIRE_MESSAGE(again.ok(), (again.ok() ? "" : again.error().message));
+  CHECK(c.lastTypeFailures().empty());
+  bool loImage = false;
+  for (const eng::UnitUpdate& u : again.value())
+    if (u.unit == uLo) loImage = !u.unchanged && u.image.image != nullptr;
+  CHECK(loImage);
+}
+
 TEST_CASE("project program: publish validates bindings; a unit without an image reads silence") {
   auto proj = project_fixture::makeProject({2, 1, -1, -1});
   REQUIRE(proj != nullptr);

@@ -16,6 +16,8 @@
 //                         reported `unchanged` without an image. If the edit changed the topology — a different
 //                         partition, a bus whose kind/width changed, or (T4.12-fix1) an instrument unit's polyphony —
 //                         it returns ErrorCode::Unsupported: rebuild the project (T3.17 does a project-level swap then).
+//                         On any error (WI.1) every unit keeps its previous compile (none of the new images was
+//                         returned, so the program still runs the old ones).
 //   bind(unit, image)     binds another image of a unit's current schedule (the JIT image compiled in the background
 //                         after the interpreter one was published: T1b.5's live swap uses exactly this).
 //   rebuild(graph, dirty) a topology edit (T3.17: tracks added or removed, re-routing, merges): re-partitions and
@@ -163,6 +165,16 @@ struct UnitUpdate {
   UnitImage image;                 // when !unchanged
 };
 
+// WI.1: a unit's type error blamed on one edge inside a track patch (graph::TypeBlame at blameDepth 2: the unit root's
+// track call, whose NodeId is the track id, then a node of the track patch). `consumer` is the track-patch node whose
+// input refused the value, `source` the track-patch node it came from (0: from outside the track patch — the unit
+// root: another track's wire or a bus, when the consumer is one of the track patch's own `in`s).
+struct UnitTypeFailure {
+  uint32_t track = graph::kNone;  // index into graph.tracks
+  uint32_t consumer = 0, source = 0;  // raw NodeIds in that track's patch (lowered: document::nodeIdFor)
+  std::string message;            // the diagnostic (unformatted)
+};
+
 // T3.17-fix2 (idle units, pq/engine/project_program.h): whether a unit's outputs are exactly zero while every root
 // input is zero and no voice sounds, and its global state then only settles: every global stateful node is a gain /
 // gain_add with a constant time, and every global out / export is zero by propagation (root inputs and voice_sum are
@@ -205,6 +217,11 @@ public:
   uint32_t unitOf(const graph::Schedule* s) const noexcept;
   uint32_t imageVoiceGroups(uint32_t u) const noexcept;
 
+  // WI.1: the type errors of the last build / buildWhole / update / rebuild, each blamed on an edge of a track patch
+  // (one per blamed edge; a type error with no edge inside a track has none). Cleared when one of them starts; filled
+  // only when a unit fails inference (the returned Error is the same as without it).
+  const std::vector<UnitTypeFailure>& lastTypeFailures() const noexcept { return typeFailures_; }
+
   const graph::ProjectPartition& partition() const noexcept { return partition_; }
   const CompiledUnit& unit(uint32_t u) const noexcept { return units_[u]; }
   uint32_t numUnits() const noexcept { return static_cast<uint32_t>(units_.size()); }
@@ -227,6 +244,7 @@ private:
   std::vector<CompiledUnit> units_;
   std::vector<graph::PortType> busTypes_;
   std::vector<std::string> busKeys_;
+  std::vector<UnitTypeFailure> typeFailures_;
   bool whole_ = false;
 };
 
