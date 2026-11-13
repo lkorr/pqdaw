@@ -542,3 +542,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: clean projects lower with no cut set and never retry (typeRetries == 0 tested); a few wireEnds entries per wire.
 - Notes: Q250. Messages still name atoms by internal label ("atom delay_fade, #0"). REVIEW entry for the red-wire look.
 
+## 2026-11-13 · EX.1 merged · main
+- Did: merged task/EX.1-export-core (fbb26630): Engine::renderOffline bus capture (ProjectProgram::setCapture, preallocated chunk buffers, beforeWrite hook); media::WavWriter streams PCM16/24/32f; app/export_render (runExport, makeOfflineLink, renderPass: PDC trim, loop wrap, tail, normalize, TPDF/shaped dither, cancel); `--render` on the same core.
+- Verified (worker): pq_tests_engine EX.1 2/2 (RtScope), pq_tests_playback EX.1 8/8 (bit-exact vs --render; stems sum to master −141 dB; PDC trim; loop wrap); -Affected -Slow 87/88 (pq_tests_library watcher timing under load, 22/22 alone).
+- Perf: one memcpy per captured channel per block; nothing when no capture; 32f exact-length export renames instead of rewriting.
+- Notes: Q251 (fresh link per solo pass instead of a solo param write).
+

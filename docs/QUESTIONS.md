@@ -1201,7 +1201,7 @@ from an instrument into an `and` block: a path break). Found on the way and fixe
 `and` / flip-flop block off the path failed its whole track (its bool input got the free zero, a real; an undriven bool
 input of an atom block read a real 0): such inputs are now false.
 
-## Q?-EX.1-a · Stems with return / master FX: a fresh link per solo pass instead of solo param writes
+## Q251 · 2026-11-13 · EX.1 · Stems with return / master FX: a fresh link per solo pass instead of solo param writes
 Context: D7 says "include return/master FX = one solo pass per track (param writes only, no recompile)". Measured on the
 playback fixture: a solo pass on the link of the previous pass differs from the same track rendered as the first pass
 for its first ~20 ms (up to −18.6 dB relative; Lead soloed twice in a row is bit-identical, after a Mos pass it is not),
