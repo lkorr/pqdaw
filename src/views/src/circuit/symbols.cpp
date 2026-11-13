@@ -64,6 +64,7 @@ Classified classifyAtom(std::string_view name, uint32_t requiredInputs) {
       {"sine_hz", Symbol::Oscillator, Glyph::Sine, {}},
       {"wavetable", Symbol::Oscillator, Glyph::Table, {}},
       {"noise", Symbol::Oscillator, Glyph::Noise, {}},
+      {"noise_step", Symbol::Oscillator, Glyph::Noise, "S&H"},  // NZ.1
       {"select", Symbol::Mux, Glyph::None, {}},       {"mux", Symbol::Mux, Glyph::None, {}},
       {"demux", Symbol::Mux, Glyph::None, {}},
       {"srff", Symbol::Ic, Glyph::None, "SR"},        {"dff", Symbol::Ic, Glyph::None, "D"},

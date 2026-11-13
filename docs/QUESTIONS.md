@@ -1111,3 +1111,42 @@ reversible found):
 4. **A plate spanning the whole panel widens with it** (the Delay Tap's background); other non-stretching elements keep
    their width, those right of a stretching element move with its end.
 Status: open.
+
+## Q?-NZ.1-a · Fold vs colour: the slope at positive colours and the RMS of coloured uniform noise
+Context (measured, tests/dsp/test_noise_step.cpp, tools/fit/noise_colour.py): the colour filter itself meets the plan
+(±0.418 dB of the slope over 20 Hz … 20 kHz at 48 kHz, unit power gain within 0.105 dB), but the plan's step 3 folds
+its output into [−1, 1]. Coloured noise is near-Gaussian at the drawn RMS (uniform: σ 0.577), so the fold acts on ~8 % of
+steps (uniform) / ~0.3 % (Gaussian σ 1/3); its distortion is broadband, which (1) costs coloured UNIFORM noise up to
+1.1 dB of RMS after the fold (Gaussian: ≤ 0.17 dB, statistical) and (2) fills the low end of blue / violet noise, whose
+own low end is 30–60 dB down: measured after the fold, +3 dB/oct uniform is ~±5.9 dB off its slope, +6 ~±19 dB
+(Gaussian: +4.5 ±4.4 dB, +6 ±11 dB); brown / pink stay within ~±0.8 dB. Options: (a) the plan as written (fold always:
+every output inside the Range); (b) no fold above 0 dB/oct at audio rate (exact slope, but blue / violet uniform then
+exceed ±1 by up to ~3σ, outside the Range); (c) normalise coloured noise to a lower RMS (σ ≈ 0.2) so the fold almost
+never acts (exact slope, in range, but a level drop of up to −9 dB sweeping away from white); (d) a monotone map to
+uniform (erf) instead of the fold (in range, constant RMS, the slope only approximately kept, no walk reflection).
+Choice: (a), the plan's order (reversible: one select in the kernel's step).
+Resolution: user 2026-11-12 — scale, don't fold, for positive colours: colours −6 … 0 keep the reflection fold; above 0
+the cascade's input is scaled by a per-colour bound, 1 / Σ|h| of the unit-power design (a sixth table column,
+tools/fit/noise_colour.py, lowered 2.8 % for the interpolated designs) and 1 / 1.1547 for Gaussian draws, so the output
+can never leave [−1, 1] and no fold runs: the slope is the design's exactly (through the module, measured: +3 ±0.44 dB,
++6 ±0.37 dB over 100 Hz … 16 kHz). Cost in level against white (uniform draws): −5.3 dB at +1, −5.8 at +1.5 (the most),
+−4.85 at +3, −3.83 at +6 dB/oct; Gaussian a further −1.25 dB (the bound is continuous from 0: no jump sweeping through
+white, the drop is over the first ~1 dB/oct).
+
+## Q?-NZ.1-b · On note with Per voice: every note the same pattern, chord notes included
+Context: the plan says On note resets "at each note-on: every note plays the same pattern". With Per voice the lanes
+are seeded apart; resetting each lane to its own seed would give each voice slot its own pattern (a note's pattern
+then depends on which lane it got). Options: (a) On note keys every lane with the node's seed alone (`noise_step`
+lanes 0): every note, chord notes too, plays one pattern; (b) keep lane seeds (patterns differ by voice slot, not by
+note). Choice: (a), the plan's words (reversible: the `lanes` const in pq/meta/noise.cpp).
+
+## Q?-NZ.1-c · A free module's In: unfed groups leave a native engine's input at its default
+Context: a module group's In terminal is wired to its engine's chain input; with nothing reaching the group the In
+gave the engine zero, which for the Noise module's clock means "wired" (the clock overrides the clock setting and
+nothing would ever step). The lowering now makes such a wire Inactive when nothing reaches the group (no wire into its
+main input, or only from an unfed group's In — and only for a FREE group: off its track's path and not an instrument
+group, which the path or its notes feed whether or not a wire names its main input), so the input reads its own default — for every native engine: a free
+Envelope module now outputs its envelope (`in` default 1) where it gave silence. Options: (a) that rule (one place,
+pq/document/lower.h "Groups"); (b) a Noise-only rule (a clock "seen" latch at run time); (c) no In → clock wire in the
+Noise module (the user wires the engine's clock inside). Choice: (a): it is what "unwired" means for every engine, and
+it matches the Envelope's own description ("unwired, the envelope itself").

@@ -1365,3 +1365,14 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   1/5, 1/7, 2/7, 3/7, 5/16 … appear and get labels. Gravity only pulls to markings you can see.
 - Look at: is the default size's tick density right (a few close triplets near 0 are hidden)? Is 2/1 labelled at the
   right end too busy? Is the left-edge drag pleasant (the right edge stays put)? (Q243)
+
+## 2026-11-12 · NZ.1 · the Noise module (task/NZ.1-noise)
+- Look at: tests/views/golden/module-noise-panel.png (default: Rate at its top = plain white noise) and
+  module-noise-panel-sync-trace.png (Sync clock: the note-value menu replaces the Rate knob; Colour −3 = the pink slope
+  line; a random-walk trace with two voices' dots).
+- Try: Add Free Device → Noise, wire its Out to a mixer: white noise. Turn Rate down (a stepped random value), Smooth
+  up (it glides), Colour to −6 (brown: at a slow rate a drifting walk). Clock Sync steps on the song's 1/16 grid;
+  Note draws per note-on (inside an instrument group). Wire a clock into its In: it steps on the clock's rising edges.
+- Judge: the panel's density (eight knobs, four chip rows) and the chip labels (Rate/Sync/Note, Uniform/Gauss,
+  Play/Free/Note, Voice/Shared); whether Rate's and Density's tops should read "every sample" / "continuous" instead
+  of 48.0 kHz / 100.0 kHz; QUESTIONS Q?-NZ.1-a (the fold flattens blue / violet noise's low end).

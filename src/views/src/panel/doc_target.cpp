@@ -123,7 +123,7 @@ public:
       case How::Const:
       case How::MetaSetting: {
         double v = r.def;
-        if (r.how == How::MetaSetting) {
+        if (r.how == How::MetaSetting && !b.meta.empty()) {
           if (const doc::MetaInstance* m = d.metaAt(b.meta))
             if (const doc::DeviceValue* x = m->setting(b.name)) v = x->value;
         } else if (const doc::DeviceValue* x = d.setting(b.name)) {
@@ -594,7 +594,7 @@ private:
         for (const std::string_view c : s->choices) i.choices.emplace_back(c);
         i.isSwitch = s->isSwitch();
         i.steps = s->step > 0.0 ? static_cast<int32_t>(std::lround((s->max - s->min) / s->step)) + 1 : 0;
-      } else if (!b.meta.empty()) {
+      } else if (!b.meta.empty() || doc::isMetaDevice(*d)) {  // NZ.1: a native engine's own settings too (path "")
         const meta::Type* t = metaTypeAt(ctx_, b.device, b.meta);
         const int32_t k = t != nullptr ? t->settingIndex(b.name) : -1;
         if (k < 0) return;

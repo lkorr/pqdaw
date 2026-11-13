@@ -11,6 +11,7 @@
 //   spectrum     the spectrum display
 //   spectrogram  the scrolling spectrogram
 //   meter        a level meter (new): the signal's peak and RMS per channel, from its analysis tap
+//   noise        NZ.1: the Noise engine's display (the output's trace, the voices' dots, the colour's slope line)
 //
 // The face's plain controls are generic elements (the Wavetable's phase slider and fold / warp / sync knobs, the
 // Envelope's amount slider: pq/document/modules.h enginePanel).
@@ -69,6 +70,7 @@ constexpr Section kSections[] = {
     {"scope", "Oscilloscope", "oscilloscope", {0.0f, 0.0f, 260.0f, 160.0f}, true},
     {"spectrum", "Spectrum", "spectrum", {0.0f, 0.0f, 240.0f, 150.0f}, true},
     {"spectrogram", "Spectrogram", "spectrogram", {0.0f, 0.0f, 300.0f, 170.0f}, true},
+    {"noise", "Noise Display", "noise", {0.0f, 0.0f, 220.0f, 44.0f}},  // NZ.1: the trace, the voices, the slope
 };
 const Section* sectionOf(std::string_view kind) noexcept {
   for (const Section& s : kSections)
@@ -379,9 +381,9 @@ std::unique_ptr<Element> makeMeter(const doc::PanelElement& d) { return std::mak
 
 void registerEngineElements(void (*reg)(std::string_view, std::string_view, std::span<const StyleSpec>, std::span<const std::string_view>,
                                         float, float, ElementFactory)) {
-  static_assert(std::size(kSections) == 8);
-  constexpr ElementFactory kMake[] = {&makeSection<0>, &makeSection<1>, &makeSection<2>, &makeSection<3>,
-                                      &makeSection<4>, &makeSection<5>, &makeSection<6>, &makeSection<7>};
+  static_assert(std::size(kSections) == 9);
+  constexpr ElementFactory kMake[] = {&makeSection<0>, &makeSection<1>, &makeSection<2>, &makeSection<3>, &makeSection<4>,
+                                      &makeSection<5>, &makeSection<6>, &makeSection<7>, &makeSection<8>};
   for (size_t i = 0; i < std::size(kSections); ++i) {
     const Section& s = kSections[i];
     reg(s.kind, s.label, {}, s.display ? std::span<const std::string_view>(kSignalSlot) : std::span<const std::string_view>(kEngineSlot),

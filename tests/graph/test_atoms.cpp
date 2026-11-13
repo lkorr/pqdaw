@@ -27,7 +27,7 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
   // PATCH_LANGUAGE §2 and the voice/transport namespaces of §3. Q14 (T1.3) added the kernels' fast_ conversions and
   // muladd, split sampleRead into the kernels' sample_read_* / sample_pos_*, and added the voice reducers (§7.4).
   const char* names[] = {
-      "phasor", "sine", "sine_hz", "wavetable", "noise",
+      "phasor", "sine", "sine_hz", "wavetable", "noise", "noise_step",
       "add", "sub", "mul", "div", "mod", "neg", "min", "max", "clip", "abs", "sign", "floor", "frac",
       "tan", "tanh", "exp", "log", "pow", "sqrt", "sin",
       "fast_tan", "fast_tanh", "fast_exp", "fast_log", "fast_pow", "fast_sqrt", "fast_sin",

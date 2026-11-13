@@ -98,6 +98,34 @@
 //                                     by the phase increment (tables.h)
 //   noise ()                          uniform white noise in [−1, 1): hash(counter + seed[lane]) (lowbias32),
 //                                     independent of block partitioning; lanes use different seeds
+//   noise_step (rate, trig, beat, grid, reset, smooth, colour, density, steps, seed, dist, lanes)
+//                                     NZ.1 (kernels_noise_step.cpp, pq/dsp/noise_step.h; the Noise module's engine):
+//                                     a value DRAWN per step, held or glided between steps. A step happens on a frame
+//                                     where any of: the rate's uint32 phase wraps (rate Hz, phase += round(rate ·
+//                                     2^32/sr): fractional periods exact on average; ≥ sr: every frame; ≤ 0 / NaN:
+//                                     never); trig rises; floor(beat / grid) changes (grid > 0 beats, the sync grid);
+//                                     reset rises; or a lane runs its first frame (a fresh state, a voice's note-on).
+//                                     A step by trig or a first frame puts the rate's phase at 0 (its next step a
+//                                     period later); a rising reset also restarts the lane's stream (from its start)
+//                                     and clears its colour history. The draw at frame t is
+//                                     hash(key + t − origin) (lowbias32, t the state's frame counter, origin the
+//                                     lane's last restart): uniform [−1, 1) (dist 0) or Irwin–Hall 4 at σ = 1/3,
+//                                     |x| ≤ 1.155 (dist 1); key = hash(lane seed ^ voice group) (lanes 1) or the
+//                                     node's seed for every lane (lanes 0), mixed with round(seed). Then per step:
+//                                     colour (dB/oct, −6 … 6: the tilt cascade of noise_step.h on the drawn sequence;
+//                                     0: none), fold into [−1, 1] by reflection (colours > 0: none — the cascade's
+//                                     input is scaled by the design's bound, so it never leaves [−1, 1]: noise_step.h),
+//                                     density (Hz: the step keeps its value
+//                                     with probability density · period / sr, else outputs exactly 0; ≥ 100 kHz:
+//                                     always), steps (round(steps) = N ≥ 2: N levels across [−1, 1]; 1: 0; ≤ 0: off),
+//                                     then a glide from the current output over smooth · period frames (smooth 0 … 1,
+//                                     smoothstep u²(3 − 2u): monotone, never past either value; 0: a jump; exactly
+//                                     the new value once reached). The period: sr / rate where the rate runs, else
+//                                     the frames since the lane's previous step (unknown before one: no glide,
+//                                     density keeps). dist and lanes are consts; colour, steps, seed and grid are not
+//                                     glided (TX.smooth: a colour change recomputes its design, bitwise compared);
+//                                     every input any rate. Output in [−1, 1]. Any split of the frames into calls
+//                                     gives the same bits.
 // Tables:
 //   shaper (x)                        transfer curve (tables.h)
 //   sample_read_linear/_cubic (rate, reset, start, loopStart, loopEnd) → (out, playing)
@@ -273,6 +301,8 @@ enum class Atom : uint16_t {
   Svf,
   // DT.2: the delay line whose read head glides or crossfades (see "Memory" above), and its split read
   DelayFade, DelayReadFade,
+  // NZ.1: the noise module's stepped random source (see "Generators" above)
+  NoiseStep,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);

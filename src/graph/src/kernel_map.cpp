@@ -51,6 +51,9 @@ constexpr ArgMap kGainAdd[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::
 
 constexpr ArgMap kSvf[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // x, cutoff, q, gain,
                            {U::Input, 4}, {U::Input, 5}, {U::Input, 6}};                 // mode, stages, prewarp
+// NZ.1: rate, trig, beat, grid, reset, smooth, colour, density, steps, seed, dist, lanes (all kernel inputs).
+constexpr ArgMap kNoiseStep[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  {U::Input, 4},  {U::Input, 5},
+                                 {U::Input, 6}, {U::Input, 7}, {U::Input, 8}, {U::Input, 9}, {U::Input, 10}, {U::Input, 11}};
 
 struct Special {
   std::string_view atom;
@@ -82,6 +85,7 @@ constexpr Special kSpecial[] = {
     {"gain", kGain},
     {"gain_add", kGainAdd},
     {"svf", kSvf},
+    {"noise_step", kNoiseStep},
 };
 
 // Atoms that run another atom's kernel (they differ in what they mean to the compiler, not in what runs). The kernel

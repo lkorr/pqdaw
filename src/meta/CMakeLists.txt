@@ -6,6 +6,7 @@ pq_add_module(pq_meta
     src/data.cpp
     src/envelope.cpp
     src/expand.cpp
+    src/noise.cpp
     src/registry.cpp
     src/table_builder.cpp
     src/spectrum.cpp
