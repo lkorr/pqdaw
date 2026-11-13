@@ -10,7 +10,8 @@
 //   scope        the oscilloscope (chips, trace, measurement, settings sheet)
 //   spectrum     the spectrum display
 //   spectrogram  the scrolling spectrogram
-//   meter        a level meter (new): the signal's peak and RMS per channel, from its analysis tap
+//   meter        a level meter (new): the signal's peak and RMS per channel, from its analysis tap; DY.3: or a gain-
+//                reduction meter (mode reduction: the signal as dB of reduction, drawn down from the top)
 //   noise        NZ.1: the Noise engine's display (the output's trace, the voices' dots, the colour's slope line)
 //
 // The face's plain controls are generic elements (the Wavetable's phase slider and fold / warp / sync knobs, the
@@ -48,6 +49,60 @@ namespace pq::views::panel {
 using ui::Rect;
 using ui::Rgba;
 using ui::Vec2;
+
+// ---- SignalWindow (elements_internal.h) ----
+
+devices::SpectrumFeed* SignalWindow::feedOf(PanelTarget& t, const doc::Binding* b) {
+  return b != nullptr && b->kind == doc::BindingKind::Signal ? t.signalFeed(*b) : nullptr;
+}
+
+void SignalWindow::acquire(PanelTarget& t, const doc::Binding* b) {
+  if (feed_ != nullptr) return;
+  feed_ = feedOf(t, b);
+  if (feed_ == nullptr) return;
+  feed_->acquire(devices::kWantScope);
+  for (auto& v : buf_) v.assign(kFrames, 0.0f);
+}
+
+void SignalWindow::release() {
+  if (feed_ != nullptr) feed_->release(devices::kWantScope);
+  feed_ = nullptr;
+  end_ = 0;
+  got_ = 0;
+}
+
+bool SignalWindow::poll(PanelTarget& t, const doc::Binding* b) {
+  devices::SpectrumFeed* f = feedOf(t, b);
+  if (f != feed_) {
+    release();
+    if (f != nullptr) acquire(t, b);
+  }
+  if (feed_ == nullptr) return false;
+  bool settled = true;
+  const uint64_t end = feed_->scopeEnd(settled);
+  if (end == end_) return false;
+  end_ = end;
+  const uint32_t n = static_cast<uint32_t>(std::min<uint64_t>(end, kFrames));
+  if (n == 0) return false;
+  float* ch[4] = {buf_[0].data(), buf_[1].data(), buf_[2].data(), buf_[3].data()};
+  got_ = feed_->scopeRead(end - n, n, ch);
+  left_ = feed_->scopeChannels() >= 4 ? 2 : 0;
+  right_ = feed_->scopeChannels() >= 4 ? 3 : 1;
+  return true;
+}
+
+std::span<const float> SignalWindow::channel(int c) const noexcept {
+  const std::vector<float>& v = buf_[c == 0 ? left_ : right_];
+  return {v.data(), std::min<size_t>(got_, v.size())};
+}
+
+VoiceTapReader* SignalWindow::reader(PanelTarget& t, const doc::Binding* b) const {
+  reader_.feed = feedOf(t, b);
+  return reader_.feed != nullptr ? &reader_ : nullptr;
+}
+
+bool SignalWindow::live() const noexcept { return feed_ != nullptr && feed_->live(); }
+bool SignalWindow::Reader::live() const noexcept { return feed != nullptr && feed->live(); }
 
 namespace {
 
@@ -268,26 +323,52 @@ std::unique_ptr<Element> makeSection(const doc::PanelElement& d) {
 
 // ---- meter ----------------------------------------------------------------------------------------------------------
 
-// A level meter: two bars (L, R) of the signal's RMS with its peak as a line, over −60 … 0 dBFS (the top 6 dB warm),
-// from the last 50 ms of the analysis feed's scope history (channels 2 and 3: the tap's signal). Read once per frame
-// while the feed moves.
+// A meter, two bars (L, R) from the last 50 ms of the bound signal's analysis feed (its tap's signal channels), read
+// once per frame while the feed moves. Style `mode`:
+//   level      the RMS as a bar with the peak as a line, over `floor` … 0 dBFS (the top 6 dB warm)
+//   reduction  DY.3: the signal read as dB of gain reduction (≥ 0: a compressor's GR output), its largest value in the
+//              window drawn DOWNWARD from the top over `range` dB (12 / 24 / 48), a tick every quarter of the range
 class Meter final : public Element {
 public:
   using Element::Element;
+  static constexpr std::string_view kModes[] = {"level", "reduction"};
   static constexpr StyleSpec kStyle[] = {
+      {"mode", StyleSpec::Type::Choice, 0, "level", kModes},
       {"floor", StyleSpec::Type::Number, -60.0, {}, {}, -120.0, -6.0},
+      {"range", StyleSpec::Type::Number, 24.0, {}, {}, 12.0, 48.0},
       {"colour", StyleSpec::Type::Token, 0, "signal"},
   };
-  ~Meter() override { release(); }
 
-  uint32_t staticLayerCount() const noexcept override { return 1; }
-  Rgba staticLayerColour(const ui::Theme& th, uint32_t) const noexcept override { return th.face.track; }
-  void paintStatic(ui::FacePainter& p, uint32_t) const override {
-    for (int c = 0; c < 2; ++c) p.roundedRect(bar(c), 1.5f, ui::rgba(255, 255, 255));
+  uint32_t staticLayerCount() const noexcept override { return reduction() ? 2 : 1; }
+  Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
+    return layer == 0 ? th.face.track : th.face.tick;
+  }
+  void paintStatic(ui::FacePainter& p, uint32_t layer) const override {
+    if (layer == 0) {
+      for (int c = 0; c < 2; ++c) p.roundedRect(bar(c), 1.5f, ui::rgba(255, 255, 255));
+      return;
+    }
+    // reduction: a tick every quarter of the range, across both bars
+    const Rect b0 = bar(0), b1 = bar(1);
+    for (int q = 1; q < 4; ++q) {
+      const float y = b0.y0 + (b0.y1 - b0.y0) * static_cast<float>(q) * 0.25f;
+      p.line({b0.x0, y}, {b1.x1, y}, 0.6f, ui::rgba(255, 255, 255));
+    }
   }
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
-    if (env.target != nullptr) acquire(*env.target);
+    if (env.target != nullptr) window_.acquire(*env.target, binding());
+    if (reduction()) {
+      // (the reduction's colour: the value accent unless the style names one)
+      const Rgba col = colour(th, "colour", "value", th.face.value);
+      const double range = rangeDb();
+      for (int c = 0; c < 2; ++c) {
+        const Rect b = bar(c);
+        const float f = static_cast<float>(std::clamp(static_cast<double>(gr_[c]) / range, 0.0, 1.0));
+        if (f > 0.0f) p.roundedRect({b.x0, b.y0, b.x1, b.y0 + (b.y1 - b.y0) * f}, 1.5f, col);
+      }
+      return;
+    }
     const Rgba col = colour(th, "colour", "signal", th.face.signal);
     for (int c = 0; c < 2; ++c) {
       const Rect b = bar(c);
@@ -299,64 +380,35 @@ public:
       }
     }
   }
-  VoiceTapReader* voiceReader(PanelTarget& t) const override {
-    reader_.feed = feedOf(t);
-    return reader_.feed != nullptr ? &reader_ : nullptr;
-  }
+  VoiceTapReader* voiceReader(PanelTarget& t) const override { return window_.reader(t, binding()); }
   bool pollVoices(PanelTarget& t) override {
-    devices::SpectrumFeed* f = feedOf(t);
-    if (f != feed_) {
-      release();
-      if (f != nullptr) acquire(t);
-    }
-    if (feed_ == nullptr) return false;
-    bool settled = true;
-    const uint64_t end = feed_->scopeEnd(settled);
-    if (end == end_) return false;
-    end_ = end;
-    const uint32_t n = static_cast<uint32_t>(std::min<uint64_t>(end, kWindow));
-    if (n == 0) return false;
-    float* ch[4] = {buf_[0].data(), buf_[1].data(), buf_[2].data(), buf_[3].data()};
-    const uint32_t got = feed_->scopeRead(end - n, n, ch);
-    const uint32_t lc = feed_->scopeChannels() >= 4 ? 2 : 0, rc = feed_->scopeChannels() >= 4 ? 3 : 1;
+    if (!window_.poll(t, binding())) return false;
     for (int c = 0; c < 2; ++c) {
-      const float* x = buf_[c == 0 ? lc : rc].data();
+      const std::span<const float> x = window_.channel(c);
       double s = 0.0;
-      float pk = 0.0f;
-      for (uint32_t i = 0; i < got; ++i) {
-        s += static_cast<double>(x[i]) * x[i];
-        pk = std::max(pk, std::fabs(x[i]));
+      float pk = 0.0f, gr = 0.0f;
+      for (const float v : x) {
+        s += static_cast<double>(v) * v;
+        pk = std::max(pk, std::fabs(v));
+        gr = std::max(gr, v);  // (a NaN is skipped)
       }
-      rms_[c] = got > 0 ? static_cast<float>(std::sqrt(s / got)) : 0.0f;
+      rms_[c] = !x.empty() ? static_cast<float>(std::sqrt(s / static_cast<double>(x.size()))) : 0.0f;
       peak_[c] = pk;
+      gr_[c] = gr;
     }
     return true;
   }
-  bool animating() const noexcept override { return feed_ != nullptr && feed_->live(); }
+  bool animating() const noexcept override { return window_.live(); }
+
+  // Tests (a golden's level without a running engine): both bars' values (level: linear RMS = peak; reduction: dB).
+  void show(float a, float b) noexcept {
+    rms_[0] = peak_[0] = gr_[0] = a;
+    rms_[1] = peak_[1] = gr_[1] = b;
+  }
 
 private:
-  static constexpr uint32_t kWindow = 2400;  // 50 ms at 48 kHz
-  struct Reader final : VoiceTapReader {
-    devices::SpectrumFeed* feed = nullptr;
-    uint32_t read(std::span<FaceVoice>) override { return 0; }
-    uint64_t serial() const noexcept override { return 0; }
-    bool live() const noexcept override { return feed != nullptr && feed->live(); }
-  };
-  devices::SpectrumFeed* feedOf(PanelTarget& t) const {
-    const doc::Binding* b = binding();
-    return b != nullptr ? t.signalFeed(*b) : nullptr;
-  }
-  void acquire(PanelTarget& t) {
-    if (feed_ != nullptr) return;
-    feed_ = feedOf(t);
-    if (feed_ != nullptr) feed_->acquire(devices::kWantScope);
-    for (auto& v : buf_) v.assign(kWindow, 0.0f);
-  }
-  void release() {
-    if (feed_ != nullptr) feed_->release(devices::kWantScope);
-    feed_ = nullptr;
-    end_ = 0;
-  }
+  bool reduction() const noexcept { return txt("mode", "level") == "reduction"; }
+  double rangeDb() const noexcept { return std::clamp(num("range", 24.0), 12.0, 48.0); }
   Rect bar(int c) const noexcept {
     const float gap = std::max(1.0f, desc_.w * 0.12f), w = (desc_.w - 3.0f * gap) * 0.5f;
     const float x0 = gap + static_cast<float>(c) * (w + gap);
@@ -368,16 +420,22 @@ private:
     const double dbv = 20.0 * std::log10(static_cast<double>(amp));
     return static_cast<float>(std::clamp((dbv - floor) / -floor, 0.0, 1.0));
   }
-  devices::SpectrumFeed* feed_ = nullptr;
-  mutable Reader reader_;
-  uint64_t end_ = 0;
-  std::array<std::vector<float>, 4> buf_;
-  float rms_[2] = {0.0f, 0.0f}, peak_[2] = {0.0f, 0.0f};
+  SignalWindow window_;
+  float rms_[2] = {0.0f, 0.0f}, peak_[2] = {0.0f, 0.0f}, gr_[2] = {0.0f, 0.0f};
 };
 
 std::unique_ptr<Element> makeMeter(const doc::PanelElement& d) { return std::make_unique<Meter>(d); }
 
 }  // namespace
+
+namespace test {
+bool showMeter(Element& e, float a, float b) {
+  auto* m = dynamic_cast<Meter*>(&e);
+  if (m == nullptr) return false;
+  m->show(a, b);
+  return true;
+}
+}  // namespace test
 
 void registerEngineElements(void (*reg)(std::string_view, std::string_view, std::span<const StyleSpec>, std::span<const std::string_view>,
                                         float, float, ElementFactory)) {

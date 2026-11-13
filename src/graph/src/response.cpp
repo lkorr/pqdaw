@@ -20,38 +20,12 @@ namespace {
 
 using Cx = std::complex<double>;
 
-uint16_t widthOf(const TypedPatch& t, uint32_t flatPort) noexcept {
-  return std::max<uint16_t>(1, t.types[flatPort].width);
-}
-
-// The default an unconnected input reads (its spec's; a variadic atom's repeats use the last spec), in the kernels'
-// domain (bools as masks).
-float inputDefault(const Patch& p, NodeIndex n, uint32_t i) noexcept {
-  const Node& node = p.node(n);
-  if (node.kind != NodeKind::Atom) return 0.0f;
-  const AtomSignature& s = atomSignature(node.atom);
-  if (s.inputs.empty()) return 0.0f;
-  const PortSpec& spec = s.inputs[std::min<size_t>(i, s.inputs.size() - 1)];
-  if (spec.type.kind == Kind::Bool) return dsp::boolMask(spec.defaultValue != 0.0f);
-  return spec.defaultValue;
-}
-
 // Whether registry input `i` of `atom` is a duration the language writes in seconds (the kernel takes samples).
 bool isDuration(AtomId atom, uint32_t i) noexcept {
   const KernelMapping& km = kernelMapping(atom);
   if (km.args.empty()) return false;
   const ArgUse u = km.args[std::min<size_t>(i, km.args.size() - 1)].use;
   return u == ArgUse::InputSeconds || u == ArgUse::InitMaxDelaySeconds;
-}
-
-bool pureKernel(AtomId atom) noexcept {
-  const KernelMapping& km = kernelMapping(atom);
-  if (km.lowering != Lowering::Kernel) return false;
-  const dsp::KernelInfo& ki = dsp::kernelInfo(km.kernel);
-  if (ki.resource != dsp::Resource::None || ki.splRequired != 0 || ki.stateSize != 0) return false;
-  for (const ArgMap& am : km.args)
-    if (am.use != ArgUse::Input) return false;
-  return true;
 }
 
 }  // namespace
@@ -62,102 +36,37 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
   durationsInSamples_ = typed.durationsInSamples;
   const uint32_t nodes = p.nodeCount(), ports = p.portCount();
   if (typed.types.size() != ports) return;
-  const Adjacency adj = p.adjacency();
-  std::vector<NodeIndex> owner(ports, kNone);
-  for (NodeIndex n = 0; n < nodes; ++n)
-    for (uint32_t o = 0; o < p.node(n).numOutputs; ++o) owner[p.flatOutput(n, o)] = n;
-  auto driverPort = [&](NodeIndex n, uint32_t i) -> uint32_t {
-    const WireIndex w = adj.driver[p.flatInput(n, i)];
-    if (w == kNone) return kNone;
-    const Wire& wr = p.wire(w);
-    return p.flatOutput(wr.from.node, wr.from.port);
-  };
-  // The ends as flat output ports. `valid` false: out of range.
-  auto resolve = [&](ResponseEnd e, bool& valid, uint16_t& width) -> uint32_t {
-    valid = e.node < nodes;
-    if (!valid) return kNone;
-    const Node& n = p.node(e.node);
-    if (e.input) {
-      valid = e.port < n.numInputs;
-      if (!valid) return kNone;
-      const uint32_t d = driverPort(e.node, e.port);
-      width = widthOf(typed, d != kNone ? d : p.flatInput(e.node, e.port));
-      return d;
-    }
-    valid = e.port < n.numOutputs;
-    if (!valid) return kNone;
-    const uint32_t f = p.flatOutput(e.node, e.port);
-    width = widthOf(typed, f);
-    return f;
-  };
+  Graph g(typed);
+  const std::vector<NodeIndex>& owner = g.owner;
+  auto driverPort = [&](NodeIndex n, uint32_t i) { return g.driverPort(n, i); };
   bool srcOk = false, sinkOk = false;
-  const uint32_t srcPort = resolve(source, srcOk, srcWidth_);
-  const uint32_t sinkPort = resolve(sink, sinkOk, sinkWidth_);
+  const uint32_t srcPort = g.resolve(source, srcOk, srcWidth_);
+  const uint32_t sinkPort = g.resolve(sink, sinkOk, sinkWidth_);
   if (!srcOk || !sinkOk || srcPort == kNone) return;  // Unavailable
   if (srcPort == sinkPort) {
     identity_ = true;
     prepared_ = ResponseKind::Exact;
     return;
   }
-  const NodeIndex srcNode = owner[srcPort];
-  // TX.mod-bands: the set ports' nodes (setOut[n]: 1 + the set output; 0: none). The source's own node is never cut.
-  std::vector<uint16_t> setOut(nodes, 0);
-  for (const uint32_t f : settable)
-    if (f < ports && owner[f] != kNone && owner[f] != srcNode && setOut[owner[f]] == 0)
-      setOut[owner[f]] = static_cast<uint16_t>(1u + (f - p.flatOutput(owner[f], 0)));
+  // TX.mod-bands: the set ports' nodes (g.setOut[n]: 1 + the set output; 0: none). The source's own node is never cut.
+  g.cut(settable, owner[srcPort]);
 
-  // ---- signal: forward from the source (its own inputs cut) ----
-  std::vector<uint8_t> sig(ports, 0), seen(nodes, 0);
-  std::vector<NodeIndex> work;
-  sig[srcPort] = 1;
-  for (WireIndex w : adj.outgoing(srcNode))
-    if (p.flatOutput(srcNode, p.wire(w).from.port) == srcPort) work.push_back(p.wire(w).to.node);
-  while (!work.empty()) {
-    const NodeIndex n = work.back();
-    work.pop_back();
-    if (n == srcNode || seen[n] != 0 || setOut[n] != 0) continue;  // (a set port's node: its value is given)
-    seen[n] = 1;
-    for (uint32_t o = 0; o < p.node(n).numOutputs; ++o) sig[p.flatOutput(n, o)] = 1;
-    for (WireIndex w : adj.outgoing(n)) work.push_back(p.wire(w).to.node);
-  }
+  // ---- signal: forward from the source (its own inputs cut); relevance: back from the sink through signal ports ----
+  std::vector<uint8_t> sig, rel, relNode;
+  g.signalFrom(srcPort, sig);
   if (sinkPort == kNone || sig[sinkPort] == 0) {
     zero_ = true;
     prepared_ = ResponseKind::Exact;
     return;
   }
-
-  // ---- relevance: back from the sink through signal ports ----
-  std::vector<uint8_t> rel(ports, 0), relNode(nodes, 0);
-  rel[sinkPort] = 1;
-  if (owner[sinkPort] != srcNode) work.push_back(owner[sinkPort]);
-  while (!work.empty()) {
-    const NodeIndex n = work.back();
-    work.pop_back();
-    if (relNode[n] != 0) continue;
-    relNode[n] = 1;
-    for (uint32_t i = 0; i < p.node(n).numInputs; ++i) {
-      const uint32_t d = driverPort(n, i);
-      if (d == kNone || sig[d] == 0 || rel[d] != 0) continue;
-      rel[d] = 1;
-      if (owner[d] != srcNode) work.push_back(owner[d]);
-    }
-  }
+  g.relevantTo(sinkPort, srcPort, sig, rel, relNode);
   for (NodeIndex n = 0; n < nodes; ++n) {
     if (relNode[n] == 0) continue;
     const Node& node = p.node(n);
     if (node.kind != NodeKind::Atom || atomSignature(node.atom).response == nullptr) return;  // Unavailable
   }
-  // TX.group-oversample: the rate each node runs at (log2 of its oversample region's factor; 0: the base rate). The
+  // TX.group-oversample: each node runs at g.rateOf(n) (log2 of its oversample region's factor; 0: the base rate). The
   // converters are evaluated at the base rate (their rules are the half-band cascades at the base omega).
-  const AtomId osUp = atomId("oversample_up"), osDown = atomId("oversample_down");
-  auto rateOf = [&](NodeIndex n) -> uint8_t {
-    if (n >= typed.origin.size() || typed.origin[n].region == 0) return 0;
-    const Node& node = p.node(n);
-    if (node.kind == NodeKind::Atom && (node.atom == osUp || node.atom == osDown)) return 0;
-    const uint16_t r = typed.origin[n].region;
-    const uint32_t f = r <= typed.oversample.size() ? typed.oversample[r - 1u].factor : 1u;
-    return static_cast<uint8_t>(std::min<uint32_t>(kRates - 1u, static_cast<uint32_t>(std::countr_zero(std::max(f, 1u)))));
-  };
 
   // ---- unknowns: one per (relevant port, channel) ----
   std::vector<uint32_t> varBase(ports, kNone);
@@ -165,113 +74,21 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
   for (uint32_t f = 0; f < ports; ++f)
     if (rel[f] != 0) {
       varBase[f] = vars;
-      vars += widthOf(typed, f);
+      vars += g.width(f);
     }
   for (uint16_t s = 0; s < srcWidth_; ++s) srcVar_.push_back(varBase[srcPort] + s);
-  for (uint16_t j = 0; j < sinkWidth_; ++j) sinkVar_.push_back(varBase[sinkPort] + std::min<uint32_t>(j, widthOf(typed, sinkPort) - 1u));
+  for (uint16_t j = 0; j < sinkWidth_; ++j) sinkVar_.push_back(varBase[sinkPort] + std::min<uint32_t>(j, g.width(sinkPort) - 1u));
 
   // ---- control values: what relevant nodes read besides the signal, in dependency order ----
-  ctrlOff_.assign(ports, kNone);
-  ctrlKnown_.assign(ports, 0);
-  std::vector<uint8_t> ctrlState(nodes, 0);  // 0 new, 1 open, 2 emitted
-  std::vector<std::pair<NodeIndex, uint32_t>> stack;
-  auto addCtrlOp = [&](NodeIndex n) {
-    const Node& node = p.node(n);
-    CtrlOp op;
-    op.atom = node.atom;
-    op.rate = rateOf(n);
-    if (setOut[n] != 0) {  // TX.mod-bands: a set port (its inputs are not evaluated)
-      op.kind = OpKind::Set;
-      op.index = static_cast<uint32_t>(setPort_.size());
-      op.setOutput = static_cast<uint16_t>(setOut[n] - 1u);
-      setPort_.push_back(p.flatOutput(n, op.setOutput));
-    } else
-    switch (node.kind) {
-      case NodeKind::Const: {
-        op.kind = OpKind::Const;
-        const Constant& c = p.constant(n);
-        op.constant = c.kind == Kind::Bool ? dsp::boolMask(c.literal != 0.0) : static_cast<float>(c.value());
-        break;
-      }
-      case NodeKind::Param: {
-        op.kind = OpKind::Param;
-        op.index = static_cast<uint32_t>(paramNode_.size());
-        const ParamDecl& d = p.paramDecl(n);
-        paramNode_.push_back(n);
-        paramValue_.push_back(static_cast<float>(d.defaultValue.value()));
-        op.constant = d.kind == Kind::Bool ? 1.0f : 0.0f;  // Param: 1 = a bool (written 0 / 1, read as a mask)
-        break;
-      }
-      case NodeKind::Atom: {
-        const std::string_view name = atomSignature(node.atom).name;
-        if (name == "sr") op.kind = OpKind::Sr;
-        else if (name == "curve") {
-          op.kind = OpKind::Curve;
-          op.index = static_cast<uint32_t>(curveNode_.size());
-          curveNode_.push_back(n);
-        } else if (name == "channel") op.kind = OpKind::Channel;
-        else if (name == "pack") op.kind = OpKind::Pack;
-        else if (pureKernel(node.atom) && node.numInputs <= detail::kMaxFoldPorts &&
-                 node.numOutputs <= detail::kMaxFoldPorts)
-          op.kind = OpKind::Fold;
-        break;
-      }
-      default: break;  // Input, Unknown, Equation …: unknown
-    }
-    op.inBegin = static_cast<uint32_t>(ins_.size());
-    if (op.kind != OpKind::Unknown && op.kind != OpKind::Set)
-      for (uint32_t i = 0; i < node.numInputs; ++i) {
-        InSrc s;
-        s.port = driverPort(n, i);
-        s.def = inputDefault(p, n, i);
-        s.width = s.port != kNone ? widthOf(typed, s.port) : 1;
-        ins_.push_back(s);
-      }
-    op.inCount = static_cast<uint32_t>(ins_.size()) - op.inBegin;
-    op.outBegin = static_cast<uint32_t>(ctrlOuts_.size());
-    for (uint32_t o = 0; o < node.numOutputs; ++o) op.width = std::max(op.width, widthOf(typed, p.flatOutput(n, o)));
-    for (uint32_t o = 0; o < node.numOutputs; ++o) {  // every output holds op.width channels
-      const uint32_t f = p.flatOutput(n, o);
-      ctrlOff_[f] = static_cast<uint32_t>(ctrlVal_.size());
-      ctrlVal_.resize(ctrlVal_.size() + op.width, 0.0f);
-      ctrlOuts_.push_back(f);
-    }
-    op.outCount = node.numOutputs;
-    ops_.push_back(op);
-  };
-  // Whether a node's inputs are evaluated (it is computed from them, so they are needed too).
-  auto computes = [&](NodeIndex n) {
-    const Node& node = p.node(n);
-    if (node.kind != NodeKind::Atom || setOut[n] != 0) return false;
-    const std::string_view name = atomSignature(node.atom).name;
-    return name == "curve" || name == "channel" || name == "pack" || pureKernel(node.atom);
-  };
-  auto needCtrl = [&](NodeIndex root) {
-    if (ctrlState[root] != 0) return;
-    stack.push_back({root, 0});
-    ctrlState[root] = 1;
-    while (!stack.empty()) {
-      auto& [n, next] = stack.back();
-      if (computes(n) && next < p.node(n).numInputs) {
-        const uint32_t d = driverPort(n, next++);
-        if (d != kNone && ctrlState[owner[d]] == 0) {
-          ctrlState[owner[d]] = 1;
-          stack.push_back({owner[d], 0});
-        }
-        continue;
-      }
-      ctrlState[n] = 2;
-      addCtrlOp(n);
-      stack.pop_back();
-    }
-  };
+  beginControls(g);
   for (NodeIndex n = 0; n < nodes; ++n) {
     if (relNode[n] == 0) continue;
     for (uint32_t i = 0; i < p.node(n).numInputs; ++i) {
       const uint32_t d = driverPort(n, i);
-      if (d != kNone && sig[d] == 0) needCtrl(owner[d]);
+      if (d != kNone && sig[d] == 0) needControl(g, owner[d]);
     }
   }
+  endControls();
   // An `smp` literal wired straight into a duration is samples already (optimise()'s rule, QUESTIONS Q35).
   auto smpLiteral = [&](uint32_t port) {
     if (port == kNone) return false;
@@ -293,14 +110,14 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
     for (uint32_t i = 0; i < node.numInputs; ++i) {
       InSrc src;
       src.port = driverPort(n, i);
-      src.def = inputDefault(p, n, i);
-      src.width = src.port != kNone ? widthOf(typed, src.port) : 1;
+      src.def = g.inputDefault(n, i);
+      src.width = src.port != kNone ? g.width(src.port) : 1;
       src.signal = src.port != kNone && sig[src.port] != 0 ? 1 : 0;
       src.toSamples = isDuration(node.atom, i) && !durationsInSamples_ && !smpLiteral(src.port) ? 1 : 0;
       ins_.push_back(src);
     }
     uint16_t width = 1;
-    for (uint32_t o = 0; o < node.numOutputs; ++o) width = std::max(width, widthOf(typed, p.flatOutput(n, o)));
+    for (uint32_t o = 0; o < node.numOutputs; ++o) width = std::max(width, g.width(p.flatOutput(n, o)));
     // `channel`'s index: a const (infer()); read from its literal.
     uint32_t channelIndex = 0;
     if (isChannel) {
@@ -311,7 +128,7 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
     for (uint16_t c = 0; c < width; ++c) {
       Cell cell;
       cell.rule = s.response;
-      cell.rate = rateOf(n);
+      cell.rate = g.rateOf(n);
       usedRates_ |= static_cast<uint8_t>(1u << cell.rate);
       cell.inBegin = inBegin;
       cell.inCount = node.numInputs;
@@ -329,7 +146,7 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
       cells_.push_back(cell);
       for (uint32_t o = 0; o < node.numOutputs; ++o) {
         const uint32_t f = p.flatOutput(n, o);
-        if (rel[f] == 0 || c >= widthOf(typed, f)) continue;
+        if (rel[f] == 0 || c >= g.width(f)) continue;
         const uint32_t v = varBase[f] + c;
         uint32_t packOffset = 0;
         for (uint32_t i = 0; i < node.numInputs; ++i) {
@@ -426,91 +243,7 @@ void LinearResponse::prepare(const TypedPatch& typed, ResponseEnd source, Respon
   cache_.assign(cacheCount, 0.0);
   argKnown_.assign(argCount, 0);
   argSignal_.assign(argCount, 0);
-  curve_.resize(curveNode_.size());
-  curveSet_.assign(curveNode_.size(), 0);
-  setValue_.assign(setPort_.size(), 0.0f);
-  setKnown_.assign(setPort_.size(), 0);
   prepared_ = ResponseKind::Exact;
-}
-
-bool LinearResponse::readControl(const InSrc& s, uint32_t channel, float& v) const noexcept {
-  if (s.port == kNone) {
-    v = s.def;
-    return true;
-  }
-  const uint32_t off = ctrlOff_[s.port];
-  if (off == kNone || ctrlKnown_[s.port] == 0) return false;
-  v = ctrlVal_[off + (s.width == 1 ? 0u : std::min<uint32_t>(channel, s.width - 1u))];
-  return true;
-}
-
-void LinearResponse::runControl(double sampleRate) noexcept {
-  for (const CtrlOp& op : ops_) {
-    bool known = true;
-    const uint32_t f0 = ctrlOuts_[op.outBegin];
-    switch (op.kind) {
-      case OpKind::Const:
-        for (uint32_t k = 0; k < op.outCount; ++k)
-          std::fill_n(ctrlVal_.begin() + ctrlOff_[ctrlOuts_[op.outBegin + k]], op.width, op.constant);
-        break;
-      case OpKind::Param: {
-        const float v = op.constant != 0.0f ? dsp::boolMask(paramValue_[op.index] != 0.0f) : paramValue_[op.index];
-        std::fill_n(ctrlVal_.begin() + ctrlOff_[f0], op.width, v);
-        break;
-      }
-      case OpKind::Sr:  // (inside an oversample region: n·sr)
-        std::fill_n(ctrlVal_.begin() + ctrlOff_[f0], op.width, static_cast<float>(sampleRate * static_cast<double>(1u << op.rate)));
-        break;
-      case OpKind::Curve: {
-        float convert = 1.0f;
-        known = curveSet_[op.index] != 0 && (op.inCount < 2 || readControl(ins_[op.inBegin + 1], 0, convert));
-        for (uint16_t c = 0; known && c < op.width; ++c) {
-          float x = 0.0f;
-          known = readControl(ins_[op.inBegin], c, x);
-          const dsp::Curve& cv = curve_[op.index];
-          ctrlVal_[ctrlOff_[f0] + c] = static_cast<float>(convert != 0.0f ? dsp::evalCurve(cv, x) : dsp::evalCurveUnits(cv, x));
-        }
-        break;
-      }
-      case OpKind::Channel: {
-        float idx = 0.0f, x = 0.0f;
-        known = op.inCount >= 1 && (op.inCount < 2 || readControl(ins_[op.inBegin + 1], 0, idx));
-        const uint32_t i = std::isfinite(idx) && idx > 0.0f ? static_cast<uint32_t>(idx) : 0u;
-        known = known && readControl(ins_[op.inBegin], i, x);
-        ctrlVal_[ctrlOff_[f0]] = x;
-        break;
-      }
-      case OpKind::Pack: {
-        uint32_t c = 0;
-        for (uint32_t k = 0; known && k < op.inCount; ++k) {
-          const InSrc& s = ins_[op.inBegin + k];
-          for (uint16_t j = 0; known && j < s.width && c < op.width; ++j, ++c) known = readControl(s, j, ctrlVal_[ctrlOff_[f0] + c]);
-        }
-        break;
-      }
-      case OpKind::Fold: {
-        float in[detail::kMaxFoldPorts], out[detail::kMaxFoldPorts];
-        for (uint16_t c = 0; known && c < op.width; ++c) {
-          for (uint32_t k = 0; known && k < op.inCount; ++k) known = readControl(ins_[op.inBegin + k], c, in[k]);
-          known = known && detail::foldPureAtom(op.atom, in, op.inCount, out, op.outCount);
-          for (uint32_t k = 0; known && k < op.outCount; ++k) {
-            const uint32_t f = ctrlOuts_[op.outBegin + k];
-            ctrlVal_[ctrlOff_[f] + c] = out[k];
-          }
-        }
-        break;
-      }
-      case OpKind::Set: {  // the given value on the set output; the node's others are unknown
-        known = setKnown_[op.index] != 0;
-        const uint32_t f = ctrlOuts_[op.outBegin + op.setOutput];
-        std::fill_n(ctrlVal_.begin() + ctrlOff_[f], op.width, setValue_[op.index]);
-        for (uint32_t k = 0; k < op.outCount; ++k) ctrlKnown_[ctrlOuts_[op.outBegin + k]] = known && k == op.setOutput ? 1 : 0;
-        continue;
-      }
-      case OpKind::Unknown: known = false; break;
-    }
-    for (uint32_t k = 0; k < op.outCount; ++k) ctrlKnown_[ctrlOuts_[op.outBegin + k]] = known ? 1 : 0;
-  }
 }
 
 ResponseKind LinearResponse::firstCall(uint32_t c, const Point& pt, double sampleRate, bool& dynamic) noexcept {

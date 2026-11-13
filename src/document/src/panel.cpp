@@ -233,7 +233,7 @@ Panel remapPanel(const Panel& p, std::span<const std::pair<DeviceId, DeviceId>> 
 
 ElementTap elementTap(std::string_view kind) noexcept {
   if (kind == "orbit") return ElementTap::Voice;
-  if (kind == "scope" || kind == "spectrum" || kind == "spectrogram" || kind == "meter" || kind == "response")
+  if (kind == "scope" || kind == "spectrum" || kind == "spectrogram" || kind == "meter" || kind == "response" || kind == "transfer")
     return ElementTap::Signal;
   return ElementTap::None;
 }

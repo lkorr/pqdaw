@@ -13,7 +13,8 @@
 // A port value is SIGNAL when it depends on the source (forward from the source; the source's own inputs are cut: its
 // value is the excitation). The RELEVANT part is what is both signal and reaches the sink. Every relevant node is a
 // linear map of its signal inputs given its other inputs (its atom's response rule, pq/graph/response_rule.h), per
-// output channel. Its other inputs are evaluated as CONTROL values: constants, params (setParam), `sr`, and the pure
+// output channel. Its other inputs are evaluated as CONTROL values (graph::ControlEval, pq/graph/control_eval.h, shared
+// with StaticTransfer below): constants, params (setParam), `sr`, and the pure
 // kernels computed from them (the runtime's own kernels, graph's constant folding), `channel` / `pack` / `mux` /
 // `select` of them, and a `curve` atom through the curve the caller gives (setCurve). Anything else that is not signal
 // (another audio input, a stateful atom's output, a solve block's unknown) is UNKNOWN: a rule that needs it (mul by an
@@ -56,47 +57,21 @@
 #include <vector>
 
 #include "pq/dsp/curve.h"
+#include "pq/graph/control_eval.h"
 #include "pq/graph/infer.h"
 #include "pq/graph/response_rule.h"
 
 namespace pq::graph {
 
-// One end of a response: an output port (`input` false: output `port` of `node`) or the value arriving at an input
-// (`input` true: input `port` of `node` — its driver; e.g. a root `out`'s input 0).
-struct ResponseEnd {
-  NodeIndex node = kNone;
-  uint16_t port = 0;
-  bool input = false;
-};
-
-class LinearResponse {
+class LinearResponse : public ControlEval {
 public:
   // Prepares `typed` (copied: the evaluator keeps no reference) from `source` to `sink`. The parameters start at their
   // declared defaults, curve atoms without a curve are unknown. Never fails: invalid ends give status() Unavailable.
   // `settable`: candidate set ports (flat output ports of typed.patch; see "SET PORTS").
   void prepare(const TypedPatch& typed, ResponseEnd source, ResponseEnd sink, std::span<const uint32_t> settable = {});
 
-  // The Param nodes whose values the response depends on (control inputs of relevant nodes, at any depth), in node
-  // order; setParam(i, …) sets paramNodes()[i]. Values in the param's units, as the engine writes them (bools: 0 / 1).
-  std::span<const NodeIndex> paramNodes() const noexcept { return paramNode_; }
-  void setParam(uint32_t i, float value) noexcept { paramValue_[i] = value; }
-  float param(uint32_t i) const noexcept { return paramValue_[i]; }
-  // The `curve` atoms among the control nodes (the GU.1 knob curve of a driven control), in node order; setCurve(i, c)
-  // makes curveNodes()[i] evaluate dsp::evalCurve(c, position) (evalCurveUnits when its `convert` input is 0).
-  std::span<const NodeIndex> curveNodes() const noexcept { return curveNode_; }
-  void setCurve(uint32_t i, const dsp::Curve& c) noexcept {
-    curve_[i] = c;
-    curveSet_[i] = 1;
-  }
-
-  // TX.mod-bands: the set ports the response reads (of prepare's `settable`); setValue(i, …) gives
-  // setPorts()[i] its value (every channel).
-  std::span<const uint32_t> setPorts() const noexcept { return setPort_; }
-  void setValue(uint32_t i, float v) noexcept {
-    setValue_[i] = v;
-    setKnown_[i] = 1;
-  }
-  float value(uint32_t i) const noexcept { return setValue_[i]; }
+  // Params, curves and set ports: ControlEval's API (paramNodes / setParam, curveNodes / setCurve, setPorts / setValue):
+  // the ones the response depends on (control inputs of relevant nodes, at any depth).
 
   uint16_t sourceChannels() const noexcept { return srcWidth_; }
   uint16_t sinkChannels() const noexcept { return sinkWidth_; }
@@ -111,33 +86,11 @@ public:
   ResponseKind evaluate(std::span<const double> hz, double sampleRate, std::span<std::complex<double>> out) noexcept;
 
 private:
-  // A value source of an input: a port's control value / unknown, or a default constant.
-  struct InSrc {
-    uint32_t port = kNone;  // flat output port of the driver; kNone: unconnected (reads `def`)
-    float def = 0.0f;
-    uint16_t width = 1;     // the driver's width (broadcast when 1)
-    uint8_t signal = 0;     // the driver is signal
-    uint8_t toSamples = 0;  // a duration input fed in seconds: · sampleRate
-  };
-  enum class OpKind : uint8_t { Const, Param, Sr, Curve, Channel, Pack, Fold, Set, Unknown };
-  // TX.group-oversample: rates — r = log2 of the oversample region's factor a node runs at (0: the base rate; ×16 is 4).
-  static constexpr uint32_t kRates = 5;
   // One point at every rate: ω / 2^r, its z = e^(−jω/2^r) and e^(jω/2^r) − 1.
   struct Point {
     double omega[kRates] = {};
     std::complex<double> z[kRates] = {};
     std::complex<double> ejw1[kRates] = {};
-  };
-  struct CtrlOp {
-    OpKind kind = OpKind::Unknown;
-    AtomId atom = 0;
-    uint32_t inBegin = 0, inCount = 0;    // into ins_
-    uint32_t outBegin = 0, outCount = 0;  // into ctrlOuts_ (flat output ports)
-    uint16_t width = 1;                   // channels of every output
-    uint32_t index = 0;                   // Param: param index; Curve: curve index; Set: set port index
-    uint16_t setOutput = 0;               // Set: which output is the set port
-    float constant = 0.0f;
-    uint8_t rate = 0;                     // TX.group-oversample: its rate (Sr: 2^rate · sr)
   };
   struct Cell {  // one relevant node at one output channel
     ResponseRule rule = nullptr;
@@ -155,8 +108,6 @@ private:
     uint32_t gain = 0;  // into gain_
   };
 
-  bool readControl(const InSrc& s, uint32_t channel, float& v) const noexcept;
-  void runControl(double sampleRate) noexcept;
   // Gathers the cell's argument values (once per evaluate) and calls its rule.
   ResponseKind firstCall(uint32_t c, const Point& pt, double sampleRate, bool& dynamic) noexcept;
   // Calls a dynamic cell's rule again at another frequency (its arguments as gathered).
@@ -172,21 +123,7 @@ private:
   bool identity_ = false;  // source == sink
   bool zero_ = false;      // the sink is not reached
 
-  // Control values: per flat output port, an offset into ctrlVal_ (kNone: none) and a known flag.
-  std::vector<uint32_t> ctrlOff_;
-  std::vector<float> ctrlVal_;
-  std::vector<uint8_t> ctrlKnown_;  // per flat output port
-  std::vector<CtrlOp> ops_;         // in dependency order
-  std::vector<uint32_t> ctrlOuts_;
-  std::vector<InSrc> ins_;
-  std::vector<NodeIndex> paramNode_;
-  std::vector<float> paramValue_;
-  std::vector<NodeIndex> curveNode_;
-  std::vector<dsp::Curve> curve_;
-  std::vector<uint8_t> curveSet_;
-  std::vector<uint32_t> setPort_;  // TX.mod-bands
-  std::vector<float> setValue_;
-  std::vector<uint8_t> setKnown_;
+  std::vector<InSrc> ins_;  // the cells' inputs
 
   // The linear system.
   std::vector<Cell> cells_;
@@ -210,6 +147,42 @@ private:
   std::vector<uint8_t> argKnown_, argSignal_;
   std::vector<double> cache_;  // EQ.1b: every cell's rule scratch, kept across one evaluate's calls
   uint8_t usedRates_ = 0;      // TX.group-oversample: bit r set — a cell runs at rate r
+};
+
+// DY.3 (docs/plans/DY.md "DY.3"): the STATIC TRANSFER y = f(x) of a memoryless circuit between a source and a sink —
+// a waveshaper's curve, a compressor's gain computer (level dB in, reduction dB out) — from the graph alone, by the
+// control evaluator LinearResponse uses (ControlEval: constants, params, set ports, `curve`, `channel` / `pack` and the
+// pure kernels — the runtime's own 8-lane kernels, so the curve is the one the audio thread computes, bit for bit).
+// The source's value is x on every channel (its node's inputs are cut, its other outputs unknown); the sink's value at
+// each x is y. A sink the source does not reach is a constant curve.
+//
+// Status: Exact, or Unavailable — a node between the source and the sink that is not computed from its inputs here (a
+// stateful atom: z1, a filter, a delay, `follow`; an audio input; a solve block) is on the path (prepare decides), or
+// the sink depends on an unknown value (an LFO's output on a control: evaluate decides; a driven control given as a
+// set port is held, as in LinearResponse), or the ends are invalid.
+//
+// Cost and threads: prepare() allocates (once per structural revision). evaluate() never allocates, locks or throws:
+// the ops that do not depend on the source run once, the rest once per point (one pure kernel call per op and
+// channel). One evaluator is not thread-safe.
+class StaticTransfer : public ControlEval {
+public:
+  void prepare(const TypedPatch& typed, ResponseEnd source, ResponseEnd sink, std::span<const uint32_t> settable = {});
+  ResponseKind status() const noexcept { return prepared_; }
+  uint16_t sinkChannels() const noexcept { return sinkWidth_; }
+  // y at each x: ys[k · sinkChannels() + j] = sink channel j at xs[k] (in the source's units: dB for a gain computer).
+  // ys.size() ≥ xs.size() · sinkChannels(). Unavailable: ys filled with NaN. RT-safe.
+  ResponseKind evaluate(std::span<const float> xs, double sampleRate, std::span<float> ys) noexcept;
+  // Tests: evaluate() calls so far, and the ops one point re-runs (those that depend on the source).
+  uint64_t evaluations() const noexcept { return evaluations_; }
+  uint32_t perPointOps() const noexcept { return static_cast<uint32_t>(ops_.size()) - firstDependent_; }
+
+private:
+  ResponseKind prepared_ = ResponseKind::Unavailable;
+  uint16_t sinkWidth_ = 1;
+  uint32_t sinkPort_ = kNone;
+  bool identity_ = false;         // source == sink
+  uint32_t firstDependent_ = 0;   // ops_[firstDependent_ …] depend on the source
+  uint64_t evaluations_ = 0;
 };
 
 // One-shot convenience (allocates: prepare + evaluate): H of `typed` from `source` to `sink` at `hz`, params at their

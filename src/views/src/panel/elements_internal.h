@@ -11,7 +11,48 @@
 
 #include "pq/views/panel/element.h"
 
+namespace pq::views::devices {
+class SpectrumFeed;
+}
+
 namespace pq::views::panel {
+
+// GU.7 / DY.3: the newest kFrames frames (50 ms at 48 kHz) of a Signal binding's analysis feed (its tap's signal
+// channels), for the meter and the transfer display's live level. The feed is acquired on the first paint (acquire)
+// and released when the element goes (or its binding's feed changes): an element that is never painted costs nothing.
+// UI thread only.
+class SignalWindow {
+public:
+  static constexpr uint32_t kFrames = 2400;
+  SignalWindow() = default;
+  SignalWindow(const SignalWindow&) = delete;
+  SignalWindow& operator=(const SignalWindow&) = delete;
+  ~SignalWindow() { release(); }
+  void acquire(PanelTarget& t, const doc::Binding* b);
+  void release();
+  // Element::pollVoices: reads the newest window when the feed moved (true; channel(0 / 1) then hold frames()
+  // frames); false: nothing new.
+  bool poll(PanelTarget& t, const doc::Binding* b);
+  std::span<const float> channel(int c) const noexcept;
+  // Element::voiceReader / animating.
+  VoiceTapReader* reader(PanelTarget& t, const doc::Binding* b) const;
+  bool live() const noexcept;
+  bool acquired() const noexcept { return feed_ != nullptr; }
+
+private:
+  struct Reader final : VoiceTapReader {
+    devices::SpectrumFeed* feed = nullptr;
+    uint32_t read(std::span<FaceVoice>) override { return 0; }
+    uint64_t serial() const noexcept override { return 0; }
+    bool live() const noexcept override;
+  };
+  static devices::SpectrumFeed* feedOf(PanelTarget& t, const doc::Binding* b);
+  devices::SpectrumFeed* feed_ = nullptr;
+  mutable Reader reader_;
+  uint64_t end_ = 0;
+  uint32_t got_ = 0, left_ = 0, right_ = 1;
+  std::vector<float> buf_[4];
+};
 
 // "a|b|c" → {"a", "b", "c"} ("" → none).
 std::vector<std::string> splitItems(std::string_view s);
@@ -83,6 +124,10 @@ void registerTempoSlider(void (*reg)(std::string_view kind, std::string_view lab
 // DY.2: the cable source picker (cable_source.cpp, kind "cablesource").
 void registerCableSource(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
                                      std::span<const std::string_view> slots, float w, float h, ElementFactory f));
+
+// DY.3: the transfer curve display (transfer_element.cpp, kind "transfer").
+void registerTransferElement(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
+                                         std::span<const std::string_view> slots, float w, float h, ElementFactory f));
 
 // The curve editor (curve_element.cpp).
 std::span<const StyleSpec> curveElementStyle() noexcept;

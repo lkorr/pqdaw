@@ -1,4 +1,4 @@
-// EQ.2: the analytic response of a group (pq/document/group_response.h).
+// EQ.2: the analytic response of a group; DY.3: its static transfer (pq/document/group_response.h).
 
 #include "pq/document/group_response.h"
 
@@ -38,16 +38,16 @@ bool deviceParam(std::string_view n, uint32_t& id, std::string_view& name) noexc
 
 }  // namespace
 
-Status GroupResponse::prepare(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices,
-                              DeviceId group) {
-  GroupResponse* self = this;
-  return prepareMany(project, lowered, devices, std::span<const DeviceId>(&group, 1), std::span<GroupResponse* const>(&self, 1))
+Status GroupEvaluator::prepare(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices,
+                               DeviceId group) {
+  GroupEvaluator* self = this;
+  return prepareMany(project, lowered, devices, std::span<const DeviceId>(&group, 1), std::span<GroupEvaluator* const>(&self, 1))
       .front();
 }
 
-std::vector<Status> GroupResponse::prepareMany(const Project& project, const LoweredProject& lowered,
-                                               const DeviceLibrary& devices, std::span<const DeviceId> groups,
-                                               std::span<GroupResponse* const> out) {
+std::vector<Status> GroupEvaluator::prepareMany(const Project& project, const LoweredProject& lowered,
+                                                const DeviceLibrary& devices, std::span<const DeviceId> groups,
+                                                std::span<GroupEvaluator* const> out) {
   std::vector<Status> st(groups.size(), Status{Ok{}});
   // Each group's track patch and call node (kNone: none).
   struct Where {
@@ -56,8 +56,8 @@ std::vector<Status> GroupResponse::prepareMany(const Project& project, const Low
   };
   std::vector<Where> at(groups.size());
   for (size_t k = 0; k < groups.size(); ++k) {
-    GroupResponse& r = *out[k];
-    r.response_ = graph::LinearResponse{};
+    GroupEvaluator& r = *out[k];
+    r.prepareGraph(graph::TypedPatch{}, {}, {}, {});  // (emptied: Unavailable until finish())
     r.params_.clear();
     r.curves_.clear();
     r.driven_.clear();
@@ -119,7 +119,7 @@ std::vector<Status> GroupResponse::prepareMany(const Project& project, const Low
   return st;
 }
 
-Status GroupResponse::finish(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices,
+Status GroupEvaluator::finish(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices,
                              DeviceId group, const graph::InferResult& inf, uint32_t track, uint32_t inSource,
                              uint32_t outSource) {
   const graph::Patch& flat = inf.typed.patch;
@@ -149,7 +149,8 @@ Status GroupResponse::finish(const Project& project, const LoweredProject& lower
       settable.push_back(flat.flatOutput(n, site.valuePort));
       settableSite.push_back(it->second);
     }
-  response_.prepare(inf.typed, src, sink, settable);
+  prepareGraph(inf.typed, src, sink, settable);
+  graph::ControlEval& ev = controls();
 
   // The params the response reads: device params are re-read by update(); others keep the lowering's value.
   auto calleeDecl = [&](DeviceId d, std::string_view name, graph::ParamDecl& out) {
@@ -161,10 +162,10 @@ Status GroupResponse::finish(const Project& project, const LoweredProject& lower
     out = *decl;
     return true;
   };
-  for (uint32_t i = 0; i < response_.paramNodes().size(); ++i) {
-    const std::string& name = flat.nodeName(response_.paramNodes()[i]);
+  for (uint32_t i = 0; i < ev.paramNodes().size(); ++i) {
+    const std::string& name = flat.nodeName(ev.paramNodes()[i]);
     for (const LoweredParam& lp : lowered.params)
-      if (lp.track == track && lp.name == name) response_.setParam(i, lp.value);
+      if (lp.track == track && lp.name == name) ev.setParam(i, lp.value);
     uint32_t id = 0;
     std::string_view pname;
     if (!deviceParam(name, id, pname)) continue;
@@ -178,8 +179,8 @@ Status GroupResponse::finish(const Project& project, const LoweredProject& lower
     params_.push_back(std::move(c));
   }
   // Driven controls' curve atoms: their slot names the control (LoweredProject::curves).
-  for (uint32_t i = 0; i < response_.curveNodes().size(); ++i) {
-    const graph::NodeIndex n = response_.curveNodes()[i];
+  for (uint32_t i = 0; i < ev.curveNodes().size(); ++i) {
+    const graph::NodeIndex n = ev.curveNodes()[i];
     const auto slotIn = flat.findInput(n, "slot");
     if (!slotIn) continue;
     uint32_t slot = 0;
@@ -198,8 +199,8 @@ Status GroupResponse::finish(const Project& project, const LoweredProject& lower
       break;
     }
   }
-  for (uint32_t i = 0; i < response_.setPorts().size(); ++i) {
-    const auto at = std::find(settable.begin(), settable.end(), response_.setPorts()[i]);
+  for (uint32_t i = 0; i < ev.setPorts().size(); ++i) {
+    const auto at = std::find(settable.begin(), settable.end(), ev.setPorts()[i]);
     if (at == settable.end()) continue;
     const CurveSite& site = lowered.curves[settableSite[static_cast<size_t>(at - settable.begin())]];
     DrivenControl c;
@@ -214,16 +215,17 @@ Status GroupResponse::finish(const Project& project, const LoweredProject& lower
   return Ok{};
 }
 
-void GroupResponse::hold(DrivenControl& c, bool& changed) noexcept {
+void GroupEvaluator::hold(DrivenControl& c, bool& changed) noexcept {
   const double pos = c.live >= 0.0 ? c.live : c.knob;
   const float v = static_cast<float>(dsp::evalCurve(c.curve, pos));
-  if (c.held && response_.value(c.index) == v) return;
+  graph::ControlEval& e = controls();
+  if (c.held && e.value(c.index) == v) return;
   c.held = true;
-  response_.setValue(c.index, v);
+  e.setValue(c.index, v);
   changed = true;
 }
 
-bool GroupResponse::setLive(uint32_t i, double position) noexcept {
+bool GroupEvaluator::setLive(uint32_t i, double position) noexcept {
   if (i >= driven_.size()) return false;
   DrivenControl& c = driven_[i];
   const double live = std::isfinite(position) && position >= 0.0 ? position : -1.0;
@@ -235,15 +237,16 @@ bool GroupResponse::setLive(uint32_t i, double position) noexcept {
   return changed;
 }
 
-void GroupResponse::update(const Project& project) noexcept {
+void GroupEvaluator::update(const Project& project) noexcept {
+  graph::ControlEval& ev = controls();
   bool changed = false;
   for (const Control& c : params_) {
     const DeviceLoc l = findDevice(project, c.device);
     if (l.device == nullptr) continue;
     const double v = c.position ? paramPosition(*l.device, c.param, c.decl) : paramValue(*l.device, c.param, c.decl);
     const float f = static_cast<float>(v);
-    if (response_.param(c.index) == f) continue;
-    response_.setParam(c.index, f);
+    if (ev.param(c.index) == f) continue;
+    ev.setParam(c.index, f);
     changed = true;
   }
   for (Control& c : curves_) {
@@ -253,7 +256,7 @@ void GroupResponse::update(const Project& project) noexcept {
     if (c.curveSet && k == c.curve) continue;
     c.curve = k;
     c.curveSet = true;
-    response_.setCurve(c.index, k);
+    ev.setCurve(c.index, k);
     changed = true;
   }
   for (DrivenControl& c : driven_) {

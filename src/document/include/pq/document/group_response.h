@@ -19,6 +19,9 @@
 // position: the LIVE MODULATED one a display gives (setLive: the ModulationRing's current), else the knob's. So a band
 // an LFO sweeps keeps its curve, drawn where the modulation has it, whatever the modulator is.
 //
+// DY.3: GroupTransfer is the same binding around graph::StaticTransfer (the static curve Out = f(In) of a memoryless
+// group); both share GroupEvaluator (prepare, update, the driven controls).
+//
 // Not RT code (prepare allocates; update reads the project); evaluate() is allocation-free (the UI calls it on every
 // drag).
 
@@ -37,39 +40,41 @@
 
 namespace pq::doc {
 
-class GroupResponse {
+// The document side shared by GroupResponse and GroupTransfer (DY.3): finding and inferring the group's track patch,
+// the evaluator's ends (the group call's In and Out), and re-reading the controls it depends on (params, knob curves,
+// driven controls held as set ports). A derived class owns its graph evaluator (a graph::ControlEval).
+class GroupEvaluator {
 public:
+  virtual ~GroupEvaluator() = default;
   // Errors: the group is not lowered in `lowered` (deactivated, not a group), the track patch does not infer, the In
   // terminal carries nothing (a free group with no wire into it). `devices`: the library `lowered` was made with
   // (the callees' param declarations).
   Status prepare(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices, DeviceId group);
-  // EQ.4: prepare() for several groups at once (out[k] for groups[k]): one inference per track patch, with probes on
-  // every group's In and Out there (a display's EQ, its chains and its 64 bands: one flattening, not 67). Per group its
-  // status.
+  // EQ.4: prepare() for several groups at once (out[k] for groups[k]; any mix of evaluators): one inference per track
+  // patch, with probes on every group's In and Out there (a display's EQ, its chains and its 64 bands: one flattening,
+  // not 67). Per group its status.
   static std::vector<Status> prepareMany(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices,
-                                         std::span<const DeviceId> groups, std::span<GroupResponse* const> out);
+                                         std::span<const DeviceId> groups, std::span<GroupEvaluator* const> out);
   // The controls' current values from `project` (the same structural revision as prepared).
   void update(const Project& project) noexcept;
-  // EQ.4: changes whenever prepare() ran or update() changed a value the response reads (a display re-evaluates only
+  // EQ.4: changes whenever prepare() ran or update() changed a value the evaluator reads (a display re-evaluates only
   // then: a drag on one band leaves the other bands' curves as they are).
   uint64_t stamp() const noexcept { return stamp_; }
-  // H from In channel i to Out channel j at each frequency (graph::LinearResponse::evaluate's layout).
-  graph::ResponseKind evaluate(std::span<const double> hz, double sampleRate,
-                               std::span<std::complex<double>> out) noexcept {
-    return response_.evaluate(hz, sampleRate, out);
-  }
-  uint16_t inChannels() const noexcept { return response_.sourceChannels(); }
-  uint16_t outChannels() const noexcept { return response_.sinkChannels(); }
-  const graph::LinearResponse& response() const noexcept { return response_; }
-  // TX.mod-bands: the driven controls the response reads, as Control bindings (a display looks up their live rings).
+  // TX.mod-bands: the driven controls the evaluator reads, as Control bindings (a display looks up their live rings).
   std::span<const Binding> driven() const noexcept { return drivenBindings_; }
   // The live modulated position of driven()[i] (in [0, 1]); < 0 or NaN: none (the knob's own). Allocation-free; true
-  // when the response changed (its stamp moved).
+  // when the evaluator changed (its stamp moved).
   bool setLive(uint32_t i, double position) noexcept;
+
+protected:
+  // Prepares the evaluator between the ends (a fresh one: it replaces what it held; invalid ends: Unavailable).
+  virtual void prepareGraph(const graph::TypedPatch& typed, graph::ResponseEnd in, graph::ResponseEnd out,
+                            std::span<const uint32_t> settable) = 0;
+  virtual graph::ControlEval& controls() noexcept = 0;
 
 private:
   struct Control {
-    uint32_t index = 0;  // into response_.paramNodes() / curveNodes()
+    uint32_t index = 0;  // into controls().paramNodes() / curveNodes()
     DeviceId device;
     std::string param;
     graph::ParamDecl decl;  // the callee's declaration
@@ -80,7 +85,7 @@ private:
   Status finish(const Project& project, const LoweredProject& lowered, const DeviceLibrary& devices, DeviceId group,
                 const graph::InferResult& inf, uint32_t track, uint32_t inSource, uint32_t outSource);
   struct DrivenControl {
-    uint32_t index = 0;  // into response_.setPorts()
+    uint32_t index = 0;  // into controls().setPorts()
     DeviceId device;
     std::string param;
     graph::ParamDecl decl;
@@ -90,11 +95,53 @@ private:
     bool held = false;   // a value was given
   };
   void hold(DrivenControl& c, bool& changed) noexcept;
-  graph::LinearResponse response_;
   std::vector<Control> params_, curves_;
   std::vector<DrivenControl> driven_;
   std::vector<Binding> drivenBindings_;
   uint64_t stamp_ = 0;
+};
+
+// EQ.2: the analytic frequency response of a group (graph::LinearResponse).
+class GroupResponse final : public GroupEvaluator {
+public:
+  // H from In channel i to Out channel j at each frequency (graph::LinearResponse::evaluate's layout).
+  graph::ResponseKind evaluate(std::span<const double> hz, double sampleRate,
+                               std::span<std::complex<double>> out) noexcept {
+    return response_.evaluate(hz, sampleRate, out);
+  }
+  uint16_t inChannels() const noexcept { return response_.sourceChannels(); }
+  uint16_t outChannels() const noexcept { return response_.sinkChannels(); }
+  const graph::LinearResponse& response() const noexcept { return response_; }
+
+private:
+  void prepareGraph(const graph::TypedPatch& typed, graph::ResponseEnd in, graph::ResponseEnd out,
+                    std::span<const uint32_t> settable) override {
+    response_.prepare(typed, in, out, settable);
+  }
+  graph::ControlEval& controls() noexcept override { return response_; }
+  graph::LinearResponse response_;
+};
+
+// DY.3 (docs/plans/DY.md "DY.3"): the static transfer curve Out = f(In) of a memoryless group (graph::StaticTransfer):
+// a waveshaper's curve (a Saturator curve group), a compressor's gain computer (In = level dB, Out = reduction dB).
+// Unavailable when a stateful atom (z1, a filter, `follow`) is between In and Out.
+class GroupTransfer final : public GroupEvaluator {
+public:
+  // Out channel j at each In value (graph::StaticTransfer::evaluate's layout: ys[k * outChannels() + j]).
+  graph::ResponseKind evaluate(std::span<const float> xs, double sampleRate, std::span<float> ys) noexcept {
+    return transfer_.evaluate(xs, sampleRate, ys);
+  }
+  uint16_t outChannels() const noexcept { return transfer_.sinkChannels(); }
+  graph::ResponseKind status() const noexcept { return transfer_.status(); }
+  const graph::StaticTransfer& transfer() const noexcept { return transfer_; }
+
+private:
+  void prepareGraph(const graph::TypedPatch& typed, graph::ResponseEnd in, graph::ResponseEnd out,
+                    std::span<const uint32_t> settable) override {
+    transfer_.prepare(typed, in, out, settable);
+  }
+  graph::ControlEval& controls() noexcept override { return transfer_; }
+  graph::StaticTransfer transfer_;
 };
 
 }  // namespace pq::doc

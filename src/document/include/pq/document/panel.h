@@ -166,7 +166,8 @@ bool panelBinds(const Panel& p, DeviceId d) noexcept;
 //                                                     sampled since the last read (the phase orbit's dots)
 //   Signal  "scope", "spectrum", "spectrogram",       signal_tap(transport.beat, note, x[0], x[1]): the analysis feed's
 //           "meter", "response" (EQ.4: slot 1 too,    four channels (note: the lowest voice's Hz in a voice context, else 0)
-//           the input spectrum)
+//           the input spectrum), "transfer" (DY.3:
+//           its group's In: the live level's dot)
 // The tap's slot is LowerOptions::metaSlotOf(device, tapPath(kind, port), 0), listed in LoweredProject::metaResources
 // (type "", VoiceTap / SignalTap). Several displays of one output share one tap.
 enum class ElementTap : uint8_t { None, Voice, Signal };

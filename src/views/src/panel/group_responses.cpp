@@ -30,7 +30,8 @@ void GroupResponses::sync() {
     if (low == lowered_) return;
     // Another compile at the same structure (new tables, sends) changes no response: kept, unless some were not
     // prepared (an error: tried again with it).
-    const bool errors = std::any_of(entries_.begin(), entries_.end(), [](const Entry& e) { return !e.error.empty(); });
+    const bool errors = std::any_of(entries_.begin(), entries_.end(), [](const Entry& e) { return !e.error.empty(); }) ||
+                        std::any_of(transfers_.begin(), transfers_.end(), [](const TransferEntry& e) { return !e.error.empty(); });
     if (revision_ == rev && lowered_ && !waiting_ && !errors) {
       lowered_ = std::move(low);
       return;
@@ -39,8 +40,7 @@ void GroupResponses::sync() {
     lowered_ = std::move(low);
     lowerError_.clear();
     waiting_ = false;
-    entries_.clear();
-    series_.clear();
+    clear();
     return;
   }
   // No app (tests, scenes): one lowering of the document here, once per structural revision a display asks at.
@@ -50,8 +50,30 @@ void GroupResponses::sync() {
   lowered_.reset();
   lowerError_.clear();
   lowerTried_ = false;
+  clear();
+}
+
+void GroupResponses::clear() {
   entries_.clear();
   series_.clear();
+  transfers_.clear();
+}
+
+bool GroupResponses::lowerHere() {
+  const doc::Snapshot& snap = ctx_.doc();
+  const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
+  if (!ctx_.loweringProvided() && !lowerTried_ && snap && lib != nullptr) {
+    lowerTried_ = true;
+    doc::LowerOptions lo;
+    lo.library = &lib->library();
+    lo.devices = lib;
+    lo.clipSlotOf = [](doc::TrackId) { return 0u; };
+    auto low = doc::lower(*snap, lo);
+    ++lowerings_;
+    if (low) lowered_ = std::make_shared<const doc::LoweredProject>(std::move(*low));
+    else lowerError_ = low.error().message;
+  }
+  return lowered_ && lib != nullptr && snap;
 }
 
 GroupResponses::Entry* GroupResponses::find(doc::DeviceId g) noexcept {
@@ -67,19 +89,9 @@ void GroupResponses::want(std::span<const doc::DeviceId> groups) {
   for (const doc::DeviceId g : groups)
     if (g.valid() && find(g) == nullptr && std::find(missing.begin(), missing.end(), g) == missing.end()) missing.push_back(g);
   if (missing.empty() || waiting_) return;  // (waiting: prepared once the compile of the new structure is here)
+  const bool lowered = lowerHere();
   const doc::Snapshot& snap = ctx_.doc();
   const doc::DeviceLibrary* lib = ctx_.deviceLibrary();
-  if (!ctx_.loweringProvided() && !lowerTried_ && snap && lib != nullptr) {
-    lowerTried_ = true;
-    doc::LowerOptions lo;
-    lo.library = &lib->library();
-    lo.devices = lib;
-    lo.clipSlotOf = [](doc::TrackId) { return 0u; };
-    auto low = doc::lower(*snap, lo);
-    ++lowerings_;
-    if (low) lowered_ = std::make_shared<const doc::LoweredProject>(std::move(*low));
-    else lowerError_ = low.error().message;
-  }
   const size_t first = entries_.size();
   for (const doc::DeviceId g : missing) {
     Entry e;
@@ -87,12 +99,12 @@ void GroupResponses::want(std::span<const doc::DeviceId> groups) {
     e.response = std::make_unique<doc::GroupResponse>();
     entries_.push_back(std::move(e));
   }
-  if (!lowered_ || lib == nullptr || !snap) {
+  if (!lowered) {
     for (size_t k = first; k < entries_.size(); ++k)
       entries_[k].error = lowerError_.empty() ? std::string("no document or device library") : lowerError_;
     return;
   }
-  std::vector<doc::GroupResponse*> out;
+  std::vector<doc::GroupEvaluator*> out;
   out.reserve(missing.size());
   for (size_t k = first; k < entries_.size(); ++k) out.push_back(entries_[k].response.get());
   const std::vector<Status> st = doc::GroupResponse::prepareMany(*snap, *lowered_, *lib, missing, out);
@@ -240,6 +252,62 @@ const GroupResponses::Curve* GroupResponses::series(doc::DeviceId name, std::spa
   }
   out.version = ++versions_;
   return &out;
+}
+
+doc::GroupTransfer* GroupResponses::transfer(doc::DeviceId group) {
+  sync();
+  TransferEntry* e = nullptr;
+  for (TransferEntry& x : transfers_)
+    if (x.group == group) e = &x;
+  if (e == nullptr) {
+    if (waiting_ || !group.valid()) return nullptr;  // (prepared once the compile of the new structure is here)
+    transfers_.push_back({});
+    e = &transfers_.back();
+    e->group = group;
+    e->transfer = std::make_unique<doc::GroupTransfer>();
+    if (!lowerHere()) {
+      e->error = lowerError_.empty() ? std::string("no document or device library") : lowerError_;
+    } else {
+      const Status st = e->transfer->prepare(*ctx_.doc(), *lowered_, *ctx_.deviceLibrary(), group);
+      if (!st) e->error = st.error().message;
+      else e->updated = ctx_.doc();  // (prepare read the controls of this snapshot)
+    }
+  }
+  if (!e->error.empty()) return nullptr;
+  const doc::Snapshot& snap = ctx_.doc();
+  if (snap && e->updated != snap) {
+    e->transfer->update(*snap);
+    e->updated = snap;
+  }
+  return e->transfer.get();
+}
+
+std::string GroupResponses::whyTransfer(doc::DeviceId group) const {
+  for (const TransferEntry& e : transfers_)
+    if (e.group == group) return e.error;
+  return waiting_ ? "waiting for the compile" : "not asked for";
+}
+
+const GroupResponses::TransferCurve* GroupResponses::transferCurve(doc::DeviceId group, std::span<const float> xs, uint64_t key) {
+  doc::GroupTransfer* t = transfer(group);
+  if (t == nullptr) return nullptr;
+  TransferEntry* e = nullptr;
+  for (TransferEntry& x : transfers_)
+    if (x.group == group) e = &x;
+  const double rate = sampleRate();
+  if (e->curve.version != 0 && e->stamp == t->stamp() && e->key == key && e->points == xs.size() && e->rate == rate)
+    return &e->curve;
+  TransferCurve& c = e->curve;
+  c.out = std::max<uint16_t>(1, t->outChannels());
+  c.y.resize(xs.size() * c.out);
+  c.kind = t->evaluate(xs, rate, c.y);
+  c.version = ++versions_;
+  ++transferEvaluations_;
+  e->stamp = t->stamp();
+  e->key = key;
+  e->points = xs.size();
+  e->rate = rate;
+  return &c;
 }
 
 std::string GroupResponses::why(doc::DeviceId group) const {

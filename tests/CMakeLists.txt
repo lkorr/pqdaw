@@ -237,6 +237,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_circuit_legibility.cpp  # T4.15: node tooltips, inactive branches, recognised constants, goldens
     views/test_device_affordances.cpp  # T4.16c: Device view keys (arrows, Shift, Ctrl, Home / End, chains), cursors, rename
     views/test_eq_displays.cpp  # EQ.4: the response / phase displays and the EQ panel (curve = GroupResponse, real-dispatch gestures, goldens, perf)
+    views/test_transfer_display.cpp  # DY.3: the transfer curve display and the reduction meter (curve = GroupTransfer, eval counts, goldens)
     views/test_reset_default.cpp  # TX.reset-default: a reset goes to a value block's default (Delete, double-click, macros); VCA / EQ Q detents
     views/test_panel_gestures.cpp  # GU.13: one panel system: a leaf's and a group's knob take the same gestures (wheel, type-in, menu, map mode) through real dispatch
     views/test_affordances.cpp  # T4.16b: cursors, hover highlights and editing keys (arrangement, piano roll, automation)
@@ -316,6 +317,7 @@ pq_add_test(pq_tests_graph PERF
     graph/test_probe.cpp
     graph/test_structure.cpp  # T4.15: structural constants, switched-off branches
     graph/test_oversample.cpp  # TMM.6: the oversample(n) region: text, checks, converters, schedule
+    graph/test_static_transfer.cpp  # DY.3: static transfer curves of memoryless circuits (exact vs scalar, stateful -> none)
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks,
@@ -485,6 +487,7 @@ pq_add_test(pq_tests_document
     document/test_blocks.cpp  # GU.2: nested groups (rules, remove / move, nest / unnest), atom + value blocks, block sets, group presets
     document/test_one_hierarchy.cpp  # GU.11: every fixture and module preset holds only blocks, groups and native engines
     document/test_group_response.cpp  # EQ.2: a group's analytic In -> Out response (lowered once, knobs re-read)
+    document/test_group_transfer.cpp  # DY.3: a group's static In -> Out curve (exact vs scalar, z1 -> none, knobs re-read)
     document/test_delay_tap.cpp  # DT.1: the Delay Tap's time law, note values, its group
     document/test_eq_modules.cpp  # EQ.3: the band and EQ modules (roles, const inputs), their ops (one undo step, save / load), the EQ's response matrix
     document/test_panels.cpp  # GU.3: group panels (rules, SetGroupPanel + builders, final pass on delete / move out, save / load, paste remap, presets)

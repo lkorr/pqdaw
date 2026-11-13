@@ -1340,6 +1340,7 @@ void registerGeneric() {
     registerResponseElements(reg);  // EQ.4
     registerTempoSlider(reg);  // DT.1
     registerCableSource(reg);  // DY.2
+    registerTransferElement(reg);  // DY.3
   });
 }
 

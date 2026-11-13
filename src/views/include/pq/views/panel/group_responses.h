@@ -15,6 +15,10 @@
 //              (GroupResponse::prepareMany: one inference per track patch, not one per group).
 //   update     get(group): the response with its controls read from the current snapshot (GroupResponse::update, once
 //              per snapshot per group); its stamp() tells a display whether its curve changed.
+//   transfer   DY.3: a group's static transfer curve (doc::GroupTransfer, the `transfer` display), kept beside the
+//              responses with the same lifetime: prepared the first time a display asks at a structural revision (its
+//              own inference: a transfer display is one per panel, not 67), its controls re-read per snapshot, its curve
+//              re-evaluated only when its stamp moves.
 //
 // UI thread only. Not RT code.
 
@@ -69,6 +73,23 @@ public:
   // the members' channel counts do not chain.
   const Curve* series(doc::DeviceId name, std::span<const doc::DeviceId> members, std::span<const uint8_t> passes,
                       std::span<const double> hz, uint64_t key);
+  // DY.3: `group`'s static transfer at the current document's control values (prepared on first use at this structural
+  // revision); null: none (whyTransfer() says).
+  doc::GroupTransfer* transfer(doc::DeviceId group);
+  std::string whyTransfer(doc::DeviceId group) const;
+  // Its curve at In values `xs` (graph::StaticTransfer::evaluate's layout), cached per group until its transfer changes
+  // (a structural revision, a control it reads) or `key` (the caller's name for xs), the point count or the rate do.
+  // `version` is unique per evaluation. Null: no transfer.
+  struct TransferCurve {
+    graph::ResponseKind kind = graph::ResponseKind::Unavailable;
+    uint16_t out = 1;
+    std::vector<float> y;
+    uint64_t version = 0;
+  };
+  const TransferCurve* transferCurve(doc::DeviceId group, std::span<const float> xs, uint64_t key);
+  // Tests: transfer evaluations so far.
+  uint64_t transferEvaluations() const noexcept { return transferEvaluations_; }
+
   // The current document (null: none) and the rate the displays evaluate at.
   const doc::Snapshot& doc() const;
   double sampleRate() const noexcept;
@@ -92,6 +113,16 @@ private:
     doc::Snapshot updated;        // the snapshot its controls were read from
     Cached cached[kKeys];
   };
+  struct TransferEntry {  // DY.3
+    doc::DeviceId group;
+    std::unique_ptr<doc::GroupTransfer> transfer;
+    std::string error;      // empty: prepared
+    doc::Snapshot updated;  // the snapshot its controls were read from
+    TransferCurve curve;
+    uint64_t stamp = 0, key = 0;
+    size_t points = 0;
+    double rate = 0.0;
+  };
   struct Series {
     doc::DeviceId name;
     std::vector<uint64_t> versions;  // the members' evaluations it was made from (0: passed through)
@@ -99,6 +130,9 @@ private:
     Curve curve;
   };
   void sync();  // a new structural revision: drop what was prepared
+  void clear();
+  // Without an app: the document lowered here (once per structural revision); false: no lowering (lowerError_).
+  bool lowerHere();
   Entry* find(doc::DeviceId g) noexcept;
 
   ViewContext& ctx_;
@@ -109,11 +143,13 @@ private:
   bool waiting_ = false;  // EQ.4b: a structural revision the app's compile has not lowered yet
   std::deque<Entry> entries_;  // (references stay valid while entries are added)
   std::deque<Series> series_;
+  std::deque<TransferEntry> transfers_;  // DY.3
   std::vector<uint64_t> scratchVersions_;
   std::vector<doc::DeviceId> scratchMissing_;
   std::vector<const Curve*> scratchCurves_;
   std::vector<std::complex<double>> scratchH_, scratchNext_;
   uint32_t lowerings_ = 0;
+  uint64_t transferEvaluations_ = 0;
   uint64_t versions_ = 0, uses_ = 0;
 };
 
