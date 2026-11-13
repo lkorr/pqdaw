@@ -823,7 +823,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **AS.1 Autosave to the Unsaved session folder** *(merged 1ac36f9a; Q248: switch in Preferences → Record; view-state-only edits don't write)* (plan §AS.1).
 - [x] **AS.2 Crash recovery at start** *(merged 5defae25; Q249: unreferenced untitled takes go on a "Recovered" track; an autosave older than its project is never offered nor auto-deleted)* (plan §AS.2). After AS.1.
 - [x] **EX.1 Export render core: bus capture, private link, PDC trim, loop wrap, normalize, dither, PCM16/24** *(merged fbb26630; Q251: a stem with return/master FX renders on a fresh private link per track (one link's solo passes bled ~20 ms of the previous pass); `--render` now runs on the same core)* (plan §EX.1).
-- [ ] **EX.2 Export Audio dialog (Ctrl+Shift+R)** 👁 (plan §EX.2). After EX.1.
+- [x] **EX.2 Export Audio dialog (Ctrl+Shift+R)** 👁 *(merged af0c3225; Q253: closing the window lets the export finish, the status line reports it; ExportService thread; choices in ViewPrefs::exportAudio)* (plan §EX.2). After EX.1.
 - [ ] **EX.3 FLAC export (libFLAC, BSD-3)** (plan §EX.3).
 - [x] **FZ.1 Frozen tracks in the document and the lowering** *(merged 86136237; Q252: cables from other tracks are outside input (allowed; the freeze key must cover them); one content check at the end of apply)* (plan §FZ.1).
 - [ ] **FZ.2 Freeze service (cache/freeze renders)** (plan §FZ.2). After EX.1, FZ.1.

@@ -554,3 +554,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: unfrozen projects lower to the same IR; a frozen track with nothing kept = clip player + mixer (IR text checked).
 - Notes: Q252. doc::wireStates / lowerParams don't know slots yet (FZ.2 reads LoweredProject::wires); recording into a frozen track fails at commit (FZ.3: disable arm).
 
+## 2026-11-13 · EX.2 merged · main
+- Did: merged task/EX.2-export-dialog (af0c3225): Export Audio window (ui::Popover over ExportPort; shared prefs form rows moved to prefs/form.h), File → Export Audio… / Ctrl+Shift+R, app ExportService (runExport on its own thread; whole-song tail 10 s), choices remembered in ViewPrefs::exportAudio.
+- Verified (worker): pq_tests_views default tier pass (7 new real-dispatch tests, golden export-audio new, Preferences goldens 0 px), pq_tests_app pass (tiny interpreter export, cancel, mapping, settings).
+- Perf: no window object when closed; ~30 Hz poll only while a job runs.
+- Notes: Q253. REVIEW entry for the hand check.
+
