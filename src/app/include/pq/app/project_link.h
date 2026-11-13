@@ -375,6 +375,20 @@ public:
   // the render loop drives the engine with (0: the engine block).
   Result<engine::RenderStats> renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink,
                                             uint32_t blockFrames = 0);
+  // EX.1 (pq/app/export_render.h): the same render, with `capture`'s buses written to their sinks beside the output
+  // (engine::Engine::renderOffline).
+  Result<engine::RenderStats> renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink,
+                                            uint32_t blockFrames, const engine::BusCapture* capture);
+  // EX.1: with the transport stopped at `atTick`, renders into nothing until the program is quiet (pending images and
+  // plans taken, their crossfades over, no voice, tails done) and the output silent (≤ −120 dBFS): at least
+  // `minSeconds`, at most `maxSeconds`. Gives an offline render from `atTick` a defined start (an export pass after
+  // another, the JIT images in place, automated params already at their values there). Same rules as renderOffline.
+  // Returns the frames rendered.
+  Result<uint64_t> settleOffline(Ticks atTick, double minSeconds, double maxSeconds);
+  // EX.1: the bus of track `id`'s post-fader output ("<id>:out") in the last published layout (engine::kNoBus: none),
+  // and a bus's compensated latency L(b) in frames (T6.2's plan; 0 without one). Any thread but the audio thread.
+  uint32_t trackOutBus(doc::TrackId id) const;
+  double busLatency(uint32_t bus) const;
 
   // T5.12: one audio clip rendered as it plays alone — gain, fades, transpose, reverse, warp, the edge declicks; no
   // crossfade with a neighbour, no track devices, no mixer — through its own clip player (the engine's code, offline:

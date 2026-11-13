@@ -1200,4 +1200,16 @@ two reachable kinds instead: rate (the Utility's audio into delay_fade's param-b
 from an instrument into an `and` block: a path break). Found on the way and fixed (needed for a cut link to play): an
 `and` / flip-flop block off the path failed its whole track (its bool input got the free zero, a real; an undriven bool
 input of an atom block read a real 0): such inputs are now false.
+
+## Q?-EX.1-a · Stems with return / master FX: a fresh link per solo pass instead of solo param writes
+Context: D7 says "include return/master FX = one solo pass per track (param writes only, no recompile)". Measured on the
+playback fixture: a solo pass on the link of the previous pass differs from the same track rendered as the first pass
+for its first ~20 ms (up to −18.6 dB relative; Lead soloed twice in a row is bit-identical, after a Mos pass it is not),
+whatever the settle time (0.05 / 0.5 s stopped) and with idle units off — some param-ramp / gate state only moves while
+playing. Options: (a) param writes on one link, accept the history-dependent first 20 ms; (b) an engine state reset
+(re-init every unit's state arena and voice table: new engine API); (c) a fresh private link per solo pass, built from
+the document with that track soloed, the previous link alive until the new one compiled (the JIT shares the live
+images' code). Choice: (c): exact (each solo pass equals the captured bus that carries it, ≤ −120 dB), no engine API;
+cost one interpreter compile per track (~50 ms on the fixture) and the JIT's, mostly cache hits. Reversible: runExport's
+pass loop is the only place.
 Status: open.

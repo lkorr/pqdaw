@@ -582,6 +582,11 @@ Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Proje
 
 Result<engine::RenderStats> ProjectLink::renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink,
                                                         uint32_t blockFrames) {
+  return renderOffline(fromTick, frames, sink, blockFrames, nullptr);
+}
+
+Result<engine::RenderStats> ProjectLink::renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink,
+                                                        uint32_t blockFrames, const engine::BusCapture* capture) {
   flush();
   takeLatencyShifts();  // T6.2: automation shifted for the compensation the render plays with
   (void)waitForSamples();
@@ -597,12 +602,73 @@ Result<engine::RenderStats> ProjectLink::renderOffline(Ticks fromTick, uint64_t 
     return Error{ErrorCode::Overflow, "playback link: transport ring full", {}};
   }
   ++commandsPosted_;
-  auto r = engine_->renderOffline(frames, sink, blockFrames != 0 ? blockFrames : cfg_.blockFrames);
+  auto r = engine_->renderOffline(frames, sink, blockFrames != 0 ? blockFrames : cfg_.blockFrames, 8192, capture);
   engine::TransportCommand stopCmd{engine::TransportCommandKind::Stop, false, 0, 0, 0};
   if (engine_->post(stopCmd)) ++commandsPosted_;
   clips.setStreamFill(nullptr, nullptr);
   engageDisk(wasEngaged);
   return r;
+}
+
+namespace {
+
+// EX.1: settleOffline's sink: keeps only the last chunk's peak.
+class PeakSink final : public engine::AudioSink {
+public:
+  Status begin(uint32_t, uint32_t, uint64_t) override { return Ok{}; }
+  Status write(const float* const* ch, uint32_t frames) override {
+    peak = 0.0f;
+    for (uint32_t c = 0; c < channels; ++c)
+      for (uint32_t f = 0; f < frames; ++f) peak = std::max(peak, std::fabs(ch[c][f]));
+    return Ok{};
+  }
+  Status end() override { return Ok{}; }
+  uint32_t channels = 0;
+  float peak = 0.0f;
+};
+
+}  // namespace
+
+Result<uint64_t> ProjectLink::settleOffline(Ticks atTick, double minSeconds, double maxSeconds) {
+  flush();
+  takeLatencyShifts();
+  (void)waitForSamples();
+  (void)waitForMetaTables();
+  engine::TransportCommand stopCmd{engine::TransportCommandKind::Stop, false, 0, 0, 0};
+  // Stopped at the render's start: the timeline holds every automation lane's value there (the params glide to it).
+  engine::TransportCommand locate{engine::TransportCommandKind::Locate, false, atTick, 0, 0};
+  if (!engine_->post(stopCmd) || !engine_->post(locate))
+    return Error{ErrorCode::Overflow, "playback link: transport ring full", {}};
+  commandsPosted_ += 2;
+  const double rate = engine_->config().sampleRate;
+  const uint32_t block = cfg_.blockFrames;
+  // Chunks of ~10 ms (whole engine blocks): the test runs between them.
+  const uint32_t chunk = std::max(block, static_cast<uint32_t>(rate * 0.01) / block * block);
+  const auto minFrames = static_cast<uint64_t>(std::max(0.0, minSeconds) * rate);
+  const auto maxFrames = std::max(minFrames, static_cast<uint64_t>(std::max(0.0, maxSeconds) * rate));
+  PeakSink sink;
+  sink.channels = engine_->config().numOut;
+  uint64_t done = 0;
+  while (done < maxFrames) {
+    auto r = engine_->renderOffline(chunk, sink, block, chunk);
+    if (!r) return r.error();
+    done += chunk;
+    const engine::ProjectProgram* program = engine_->program();
+    if (done >= minFrames && sink.peak <= 1e-6f && program != nullptr && program->quiet() && !program->topologyPending())
+      break;
+  }
+  return done;
+}
+
+uint32_t ProjectLink::trackOutBus(doc::TrackId id) const {
+  std::lock_guard lock(mutex_);
+  const auto it = meterBus_.find(id.value);
+  return it != meterBus_.end() ? it->second : engine::kNoBus;
+}
+
+double ProjectLink::busLatency(uint32_t bus) const {
+  std::lock_guard lock(mutex_);
+  return bus < busLatency_.size() ? busLatency_[bus] : 0.0;
 }
 
 }  // namespace pq::app

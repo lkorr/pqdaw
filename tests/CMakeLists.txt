@@ -330,6 +330,7 @@ pq_add_test(pq_tests_engine PERF
     engine/test_hot_swap.cpp
     engine/test_text_edits.cpp
     engine/test_offline_render.cpp
+    engine/test_bus_capture.cpp  # EX.1: Engine::renderOffline captures buses (every frame, output untouched, RtScope)
     engine/test_tuning_signal.cpp
     engine/test_tuning_voices.cpp
     engine/test_silence.cpp

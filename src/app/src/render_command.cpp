@@ -1,10 +1,12 @@
 // --render (T3.17): `pqdaw --project <dir> --render out.wav [--seconds N]`, the project rendered offline through
-// exactly the playback path (ProjectLink → Engine → ProjectProgram + Timeline), deterministic.
+// exactly the playback path (ProjectLink → Engine → ProjectProgram + Timeline), deterministic. EX.1: on the export
+// core's private link (pq/app/export_render.h makeOfflineLink, settleOffline), so it equals a master export.
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 
 #include "pq/app/commands.h"
+#include "pq/app/export_render.h"
 #include "pq/app/project_link.h"
 #include "pq/document/clip_time.h"
 #include "pq/document/serialize.h"
@@ -61,14 +63,16 @@ int runRender(const CliOptions& o) {
                          "(the default is at most %.0f s)\n", seconds, kMaxDefaultRenderSeconds);
     return 1;
   }
-  LinkConfig cfg;
-  cfg.compileThread = false;
-  cfg.sleepAfterMs = 0.0f;  // an offline render never sleeps
-  cfg.chanceSeed = o.seed;  // seeded: the same file and seed render the same way (M3 review M16)
-  cfg.projectDir = o.project;  // T5.4: project-relative sample paths resolve here
-  auto link = ProjectLink::create(cfg, loaded->project);
+  // EX.1: the export core's private link (JIT images waited for) and its settled start: an export of the same range
+  // renders exactly this (bit for bit), and a render no longer depends on when the JIT images arrive.
+  const LinkConfig cfg;
+  auto link = makeOfflineLink(loaded->project, cfg.sampleRate, o.project, o.seed);  // seeded (M3 review M16)
   if (!link) {
     std::fprintf(stderr, "pqdaw: %s\n", link.error().message.c_str());
+    return 1;
+  }
+  if (auto settled = (*link)->settleOffline(0, kSettleMinSeconds, kSettleMaxSeconds); !settled) {
+    std::fprintf(stderr, "pqdaw: %s\n", settled.error().message.c_str());
     return 1;
   }
   const auto frames = static_cast<uint64_t>(std::llround(seconds * cfg.sampleRate));

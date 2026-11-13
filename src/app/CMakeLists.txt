@@ -25,6 +25,7 @@ pq_add_module(pq_app
     src/audio_manager.cpp
     src/user_settings.cpp
     src/render_command.cpp
+    src/export_render.cpp  # EX.1: the export render core (private link, passes, PDC trim, dither)
     src/jit_cache.cpp
     src/patch_preview.cpp
     src/os_drop.cpp
