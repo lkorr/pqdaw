@@ -566,3 +566,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: frozen track = clip player + mixer (43 vs 82 nodes); renders off UI/audio threads.
 - Notes: Q254. A fresh link's first ~26 ms depend on smoother history → EX.x-fix-settle. Self-feeding through a group/return/master falls back to the whole project, untested.
 
+## 2026-11-13 · DY.1 merged · main
+- Did: merged task/DY.1-dynamics-atoms: `follow(x, attack, release)` (retention per block when the times are block-rate, per frame when audio-rate; 1 lane = 8 lanes bit for bit), `window(x, time, op)` (van Herk–Gil-Werman max/min, chunked running-sum mean; L from the const time via ArgUse::Consumed → StateInit), `latency(x, frames, time)` (time folded into frames by optimise(); the scheduler refuses an unfolded time); envfollow.pqp on follow; JIT cache digest covers the new StateInit fields.
+- Verified: worker: pq_tests_dsp / graph / jit (interpreter == JIT, RtScope, latency at 44.1/48/96 kHz) / stdlib envfollow 1.07e−6. Its -Affected -Slow was killed for low memory (two whole-suite runs at once); orchestrator re-ran after the rebase onto FZ.2: -Affected -Slow 88/88; ship link of pq_bench_dsp OK.
+- Perf (ship, indicative, FZ.3 building): follow 1.88–2.29 ns/sample L1, 1.77–8.4 ns/frame L8; window max 0.53–0.78 / 1.7–2.7; mean 1.8 / 3.9–5.9; rows in bench/RESULTS.md.
+- Notes: Q255.
+

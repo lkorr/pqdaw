@@ -1251,7 +1251,7 @@ chance notes freeze one draw (the render link's seed); the WAV is content-named 
 never overwrites a file the pool may stream; the superseded one is deleted when replaced, best effort) with `<id>.json`
 holding the key. Reversible: `freezeDocument` / `planFreeze` and the file names are one place each.
 
-## Q?-DY.1-a · window's op as a number, and what a window holds before its first frame
+## Q255 · 2026-11-13 · DY.1 · window's op as a number, and what a window holds before its first frame
 Context: DY.1's `window(x, time, op)`. The language has no symbolic constants for an atom's const input, and a window
 must say what it reads before L inputs have arrived. Options: op (a) a number 0 max / 1 min / 2 mean, (b) three atoms
 (`window_max` …); history (c) zero (as the delay lines), (d) only the inputs so far (a shorter window at the start).
