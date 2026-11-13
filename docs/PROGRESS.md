@@ -584,3 +584,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: no new runtime code (the PDC ring); the element recomputes text only on snapshot change.
 - Notes: Q257. Master not offered as a sidechain source.
 
+## 2026-11-13 · FZ.4 merged · main
+- Did: merged task/FZ.4-flatten-bounce (04bb751b): SetTrackKind; edit_render.cpp flattenTrack (frozen → audio in place, one warp-Off clip per sounding region, WAV copied from the freeze cache into samples/frozen/), bounceToNewTrack (new audio track below with the source's colour and mixer; source deactivated), consolidateAudio (Ctrl+J over audio tracks); ProjectLink::renderClips; app RenderEditService + views RenderEditPort (status-line progress and Cancel; result dropped if the track changed).
+- Verified (worker): pq_tests_document FZ.4 5/5, pq_tests_views 8/8, pq_tests_playback FZ.4 5/5 (nulls −589…−595 dB; first 2 ms at song start ramped); -Affected 44/45 (library watcher flake, 22/22 alone).
+- Perf: renders off the UI thread, below-normal, one job at a time; renderClips loads only clips sounding in the range.
+- Notes: Q258 → FZ.x-fix (flatten drops kept-running blocks; 2 ms edge fade on render clips). Ctrl+J over MIDI + audio = two undo steps.
+

@@ -1284,7 +1284,7 @@ sidechain off keeps the detector on the module's own input instead of silence (a
 never compress). Audio / group / return tracks use the own-signal wire (a). Pre equal to Post (no blocks after it) is
 offered once, as Pre. Reversible: doc::ops::cableSources and setCableSource (edit_cables.cpp) are the one place.
 Status: open.
-## Q?-FZ.4-a · FZ.4 · Render edits: the song-start declick, what goes with a flattened track, where files go, what a bounce copies
+## Q258 · 2026-11-13 · FZ.4 · FZ.4 · Render edits: the song-start declick, what goes with a flattened track, where files go, what a bounce copies
 Context: D5 flattens in place and the acceptance asks flatten / bounce / consolidate to null against what they replace.
 An audio clip gets the 2 ms edge declick at both edges (a frozen render's clip has none: `AudioClipDesc::declick`
 false), the document has no per-clip switch for it, and a clip cannot start before tick 0 without a seek fade. D5 says
