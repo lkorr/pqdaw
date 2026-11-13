@@ -2,6 +2,8 @@
 // TX.lane-drop: one drop path for every EditSurface — the arrangement's lanes and the project patch view's band lanes
 // hand their drag hooks here with themselves; only the pointer → track / tick mapping and where new tracks show are the
 // surface's (EditSurface::dropSpotAt, axis, dropInsert).
+// MF.2: MIDI files in the same drop are imported at the drop spot (pq/views/midi_import.h): onto the row's MIDI track,
+// else new MIDI tracks after the row (below the tracks: at the end); with audio files, both join one undo step.
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +13,7 @@
 #include "lane_paint.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/file_probes.h"
+#include "pq/views/midi_import.h"
 
 namespace pq::views::arrangement {
 
@@ -37,7 +40,8 @@ void FileDrop::classify(const DragPayload& p) {
   paths_ = p.paths;
   audio_.clear();
   folders_.clear();
-  midi_ = presets_ = others_ = 0;
+  midi_.clear();
+  presets_ = others_ = 0;
   FileProbes& probes = view_.context().fileProbes();
   probes.clear();  // a new session: files may have changed since the last one
   const std::vector<ProbedFile> all = probes.request(paths_);  // starts probing + preloading the audio files
@@ -45,7 +49,7 @@ void FileDrop::classify(const DragPayload& p) {
     switch (f.kind) {
       case ProbedFile::Kind::Audio: audio_.push_back(f.path); break;
       case ProbedFile::Kind::Folder: folders_.push_back(f.path); break;
-      case ProbedFile::Kind::Midi: ++midi_; break;
+      case ProbedFile::Kind::Midi: midi_.push_back(f.path); break;
       case ProbedFile::Kind::Preset: ++presets_; break;
       default: ++others_; break;
     }
@@ -53,9 +57,9 @@ void FileDrop::classify(const DragPayload& p) {
   probes.setListener([this] { probesArrived(); });
   // What cannot be dropped here says so in the status line (once per session).
   std::string why;
-  if (midi_) why = plural(midi_, "MIDI file", "MIDI files") + " skipped: MIDI file import is not available yet";
-  else if (presets_) why = plural(presets_, "preset or device file", "preset or device files") + " skipped: drop presets onto a device chain";
-  else if (others_ && audio_.empty() && folders_.empty()) why = "Only audio files and folders can be dropped here";
+  if (presets_) why = plural(presets_, "preset or device file", "preset or device files") + " skipped: drop presets onto a device chain";
+  else if (others_ && audio_.empty() && midi_.empty() && folders_.empty())
+    why = "Only audio files, MIDI files and folders can be dropped here";
   if (!why.empty()) view_.context().setStatus(why);
 }
 
@@ -149,8 +153,12 @@ DropFeedback FileDrop::over(EditSurface& s, const DragPayload& p, Vec2 pos, Mods
   if (!hovering_ || p.paths != paths_) classify(p);
   hovering_ = true;
   if (audio_.empty()) {
+    plan_ = {};
     damageGhosts();
-    // Folders become browser places; nothing else drops here.
+    // MIDI files import here (not onto returns / the master); folders become browser places.
+    if (!midi_.empty())
+      return target_.kind == SampleDropTarget::Kind::Refused ? DropFeedback{DropEffect::None, Cursor::NotAllowed}
+                                                             : DropFeedback{DropEffect::Copy, Cursor::Arrow};
     return folders_.empty() ? DropFeedback{} : DropFeedback{DropEffect::Link, Cursor::Arrow};
   }
   if (target_.kind == SampleDropTarget::Kind::Refused) {
@@ -194,12 +202,20 @@ DropEffect FileDrop::drop(EditSurface& s, const DragPayload& p, Vec2 pos, Mods m
     uint32_t added = 0;
     for (const std::string& f : folders_) added += ctx.library().addPlace(f) ? 1u : 0u;
     ctx.setBrowserVisible(true);
-    if (audio_.empty()) {
+    if (audio_.empty() && midi_.empty()) {
       ctx.setStatus(added ? plural(added, "folder", "folders") + " added to the browser's Places"
                           : "Already in the browser's Places");
       ctx.fileProbes().setListener(nullptr);
       return DropEffect::Link;
     }
+  }
+  if (audio_.empty()) {  // MIDI files only
+    ctx.fileProbes().setListener(nullptr);
+    std::vector<doc::ClipRef> made;
+    const std::string msg = importMidi(0, made);
+    if (!made.empty()) view_.selectClips(made, true);
+    ctx.setStatus(msg);
+    return made.empty() ? DropEffect::None : DropEffect::Copy;
   }
   FileProbes& probes = ctx.fileProbes();
   if (!probes.ready(audio_)) {
@@ -230,22 +246,46 @@ void FileDrop::commit() {
     }
   }
   if (target_.kind == SampleDropTarget::Kind::Refused || ok.empty()) {
-    if (nFailed) ctx.setStatus("Could not read " + failed + (nFailed > 1 ? " and " + plural(nFailed - 1, "more file", "more files") : ""));
+    std::string msg;
+    if (nFailed) msg = "Could not read " + failed + (nFailed > 1 ? " and " + plural(nFailed - 1, "more file", "more files") : "");
+    if (target_.kind != SampleDropTarget::Kind::Refused && !midi_.empty()) {  // no audio left: the MIDI files still go
+      std::vector<doc::ClipRef> made;
+      const std::string midiMsg = importMidi(0, made);
+      if (!made.empty()) view_.selectClips(made, true);
+      msg = midiMsg + (msg.empty() ? "" : "; " + msg);
+    }
+    if (!msg.empty()) ctx.setStatus(msg);
     return;
   }
   // The target may have gone while the probes ran (an undo in between): fall back to new tracks at the end.
   SampleDropTarget t = target_;
   if (t.kind != SampleDropTarget::Kind::AtEnd && !doc::findTrackPtr(*ctx.doc(), t.track)) t = {SampleDropTarget::Kind::AtEnd, {}};
-  auto r = dropSamples(ctx, t, ok, at_, oneTrack_);
+  // MIDI files of the same drop first, in the samples' undo step (one coalescing run).
+  const uint64_t key = newDropKey();
+  std::vector<doc::ClipRef> made;
+  const std::string midiMsg = midi_.empty() ? std::string() : importMidi(key, made);
+  auto r = dropSamples(ctx, t, ok, at_, oneTrack_, key);
   if (!r) {
-    ctx.setStatus("Drop failed: " + r.error().message);
+    ctx.setStatus("Drop failed: " + r.error().message + (midiMsg.empty() ? "" : "; " + midiMsg));
+    if (!made.empty()) view_.selectClips(made, true);
     return;
   }
-  view_.selectClips(*r, true);
+  made.insert(made.end(), r->begin(), r->end());
+  view_.selectClips(made, true);
   std::string msg = plural(static_cast<uint32_t>(ok.size()), "sample", "samples") + " added";
   if (nFailed) msg += "; could not read " + failed + (nFailed > 1 ? " and " + plural(nFailed - 1, "more", "more") : "");
-  if (midi_) msg += "; " + plural(midi_, "MIDI file", "MIDI files") + " skipped (MIDI import is not available yet)";
+  if (!midiMsg.empty()) msg += "; " + midiMsg;
   ctx.setStatus(msg);
+}
+
+std::string FileDrop::importMidi(uint64_t key, std::vector<doc::ClipRef>& made) {
+  ViewContext& ctx = view_.context();
+  doc::TrackId t = spot_.track;  // gone since (an undo while the probes ran): new tracks at the end
+  if (t.valid() && !doc::findTrackPtr(*ctx.doc(), t)) t = {};
+  auto r = importMidiFiles(ctx, midi_, t, at_, key);
+  if (!r) return "MIDI import failed: " + r.error().message;
+  made.insert(made.end(), r->clips.begin(), r->clips.end());
+  return r->status;
 }
 
 bool FileDrop::autoScroll(Vec2 pos, double dt) {

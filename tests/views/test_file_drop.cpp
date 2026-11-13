@@ -3,6 +3,7 @@
 // track (overwrite), several files (one new track each), Ctrl (one track, one after another), onto MIDI and group tracks
 // (new tracks after them), below the tracks, refused rows, MIDI / preset files (status), folders (browser places),
 // browser items; each drop one undo step; ghosts at probed lengths while hovering; the preloader; 100 files ≤ 300 ms.
+// MF.2: .mid files (built with MF.1's writer) onto a MIDI track, below the tracks, with audio files in one drop.
 
 #include <doctest/doctest.h>
 
@@ -16,6 +17,8 @@
 
 #include "pq/document/audio_clip.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/input_map.h"
+#include "pq/document/midi_file.h"
 #include "pq/media/wav_file.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/arrangement/arrangement.h"
@@ -269,20 +272,20 @@ TEST_CASE("file drop: refused where no clip can go; MIDI and preset files explai
   const Vec2 ret{f.arr->xOfTick(0) + 10.0f, static_cast<float>(bottom.y + bottom.h / 2)};
   CHECK(f.dropFiles({a}, ret) == DropEffect::None);
   CHECK(f.history() == h0);
-  // A MIDI file: refused, the status line says why.
+  // MF.2: a broken MIDI file: offered (MIDI files import), nothing imported, the status line names it.
   const fs::path mid = f.dir / "beat.mid";
   std::ofstream(mid, std::ios::binary) << "MThd";
   DragPayload p;
   p.paths = {u8(mid)};
   f.d.tree().dragEnter(p, f.at(f.audio, 0), 0);
-  CHECK(f.d.tree().dropFeedback().effect == DropEffect::None);
-  CHECK(f.ctx.status().find("MIDI") != std::string::npos);
+  CHECK(f.d.tree().dropFeedback().effect == DropEffect::Copy);
   CHECK(f.d.tree().dragDrop(f.at(f.audio, 0), 0) == DropEffect::None);
   CHECK(f.history() == h0);
-  // Audio + MIDI: the audio lands, the MIDI file is reported as skipped.
+  CHECK(f.ctx.status().find("beat.mid") != std::string::npos);
+  // Audio + the broken MIDI file: the audio lands, the MIDI file is reported.
   CHECK(f.dropFiles({u8(mid), a}, f.at(f.audio, 0)) == DropEffect::Copy);
   CHECK(f.history() == h0 + 1);
-  CHECK(f.ctx.status().find("skipped") != std::string::npos);
+  CHECK(f.ctx.status().find("could not import beat.mid") != std::string::npos);
   // A file that is not audio although named so: reported, nothing added.
   const fs::path bad = f.dir / "broken.wav";
   std::ofstream(bad, std::ios::binary) << "not a wave file at all";
@@ -475,4 +478,86 @@ TEST_CASE("file drop: auto-warp (T6.8) — off by default; on, a long loop warps
   f.ctx.setViewPrefs(p);
   CHECK(f.dropFiles({loop}, f.at(f.audio, 0)) == DropEffect::Copy);
   CHECK(f.clip(f.track(f.audio), 0).warp == doc::AudioWarp::Complex);
+}
+
+namespace {
+
+// A format-1 .mid (PPQ 480): a conductor track (100 BPM, 3/4), "Bass" (keys 40, 43; beats 0 and 1) and "Lead" (key 72,
+// beat 2, two beats).
+std::string makeMid(const fs::path& dir, const std::string& name) {
+  doc::MidiFile file;
+  file.format = 1;
+  file.division.ppq = 480;
+  doc::MidiTrack conductor;
+  conductor.tempo(0, 600000);
+  conductor.timeSignature(0, 3, 4);
+  doc::MidiTrack bass, lead;
+  bass.name("Bass");
+  bass.noteOn(0, 0, 40, 100);
+  bass.noteOff(480, 0, 40);
+  bass.noteOn(480, 0, 43, 90);
+  bass.noteOff(960, 0, 43);
+  lead.name("Lead");
+  lead.noteOn(960, 1, 72, 80);
+  lead.noteOff(1920, 1, 72);
+  file.tracks = {conductor, bass, lead};
+  const std::vector<uint8_t> bytes = doc::writeMidiFile(file);
+  const fs::path p = dir / name;
+  std::ofstream(p, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  return u8(p);
+}
+
+}  // namespace
+
+TEST_CASE("file drop: a .mid onto a MIDI track imports there (the rest on new tracks after it, tempo into a project "
+          "without clips), one undo step; with audio files in one drop: one step for both") {
+  Fixture f("midi");
+  const std::string song = makeMid(f.dir, "song.mid");
+  const size_t h0 = f.history();
+  CHECK(f.dropFiles({song}, f.at(f.midi, 2 * kBar)) == DropEffect::Copy);
+  CHECK(f.history() == h0 + 1);
+  CHECK(f.ctx.status().find("Imported song.mid: 2 tracks, 3 notes") != std::string::npos);
+  CHECK(f.ctx.status().find("tempo and time signatures set") != std::string::npos);
+  const doc::Track& keys = f.track(f.midi);
+  REQUIRE(keys.clips.size() == 1);
+  CHECK(keys.clips[0].start() == 2 * kBar);
+  CHECK(keys.clips[0].clip->name == "Bass");
+  CHECK(keys.clips[0].clip->notes.size() == 2);
+  const auto map = doc::buildInputPitchMap(*f.ctx.doc(), f.midi);
+  REQUIRE(map.ok());
+  CHECK(keys.clips[0].clip->notes.begin()->pitch == (*map)->at(40).id);  // what live input on Keys gives
+  const std::vector<std::string> order = f.names();
+  const auto at = std::find(order.begin(), order.end(), "Keys");
+  REQUIRE(at != order.end());
+  REQUIRE(at + 1 != order.end());
+  CHECK(*(at + 1) == "Lead");
+  CHECK(f.byName("Lead").clips.size() == 1);
+  CHECK(f.ctx.doc()->timeline->tempo.back().bpm == doctest::Approx(100.0));
+  CHECK(f.ctx.doc()->timeline->signatures.size() >= 1);
+  REQUIRE(f.ctx.undo());
+  CHECK(f.history() == h0);
+  CHECK(f.track(f.midi).clips.empty());
+  const std::vector<std::string> undone = f.names();
+  CHECK(std::find(undone.begin(), undone.end(), "Lead") == undone.end());
+
+  // A .mid together with a sample onto the audio track: the sample there, the MIDI tracks new after it; one step.
+  const std::string a = makeWav(f.dir, "Hit.wav", 0.5);
+  CHECK(f.dropFiles({song, a}, f.at(f.audio, 0)) == DropEffect::Copy);
+  CHECK(f.history() == h0 + 1);
+  CHECK(f.track(f.audio).clips.size() == 1);
+  CHECK(f.byName("Bass").clips.size() == 1);
+  CHECK(f.byName("Lead").clips.size() == 1);
+  CHECK(f.ctx.status().find("1 sample added") != std::string::npos);
+  CHECK(f.ctx.status().find("Imported song.mid") != std::string::npos);
+  REQUIRE(f.ctx.undo());
+  CHECK(f.history() == h0);
+  CHECK(f.track(f.audio).clips.empty());
+
+  // Below the tracks: every track new, at the end.
+  CHECK(f.dropFiles({song}, f.belowTracks(0)) == DropEffect::Copy);
+  CHECK(f.history() == h0 + 1);
+  const std::vector<std::string> end = f.names();
+  REQUIRE(end.size() >= 2);
+  CHECK(end[end.size() - 2] == "Bass");
+  CHECK(end.back() == "Lead");
 }

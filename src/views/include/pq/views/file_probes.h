@@ -35,7 +35,7 @@ struct ProbedFile {
     Missing,   // no such file or folder
     Folder,
     Audio,     // a file the media probe reads (by extension; Failed if its headers don't parse)
-    Midi,      // .mid / .midi: import arrives with M11
+    Midi,      // .mid / .midi: imported by the drop (MF.2, pq/views/midi_import.h)
     Preset,    // .pqpreset / .pqdevice: dropped on a device chain (T5.11)
     Tuning,    // .pqtuning / .scl
     Project,   // .pqd

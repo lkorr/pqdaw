@@ -21,6 +21,7 @@
 #include "pq/views/browser/library_load.h"
 #include "pq/views/browser/preview_port.h"
 #include "pq/views/file_probes.h"
+#include "pq/views/midi_import.h"
 #include "pq/views/sample_drop.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/waveforms.h"
@@ -882,6 +883,12 @@ bool BrowserPanel::loadSelection() {
       return t.ok();
     }
     case LibraryItem::Clip: {
+      if (isMidiFilePath(item)) {  // MF.2: the import's own summary (tracks, notes, tempo, what was dropped)
+        const std::string paths[1] = {item};
+        auto m = importMidiFiles(ctx_, paths, ctx_.selectedTrack(), ctx_.startMarker());
+        ctx_.setStatus(m ? m->status : "Could not import " + name + ": " + m.error().message);
+        return m.ok();
+      }
       auto c = loadClipItem(ctx_, item, ctx_.selectedTrack(), ctx_.startMarker());
       ctx_.setStatus(c ? name + " added" : "Could not load the clip: " + c.error().message);
       return c.ok();

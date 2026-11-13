@@ -10,12 +10,14 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "pq/document/main_path.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/midi_file.h"
 #include "pq/media/wav_file.h"
 #include "pq/ui/drag.h"
 #include "pq/ui/gpu.h"
@@ -1197,6 +1199,40 @@ TEST_CASE("lane drop: a sample dropped on a MIDI band's lane makes a new audio t
   CHECK(made.clips[0].start() == u.bar);
   REQUIRE(u.ctx.undo());
   CHECK(u.history() == h);
+}
+
+TEST_CASE("lane drop: a browser .mid item dropped on a MIDI band's lane imports onto that track (MF.2, the shared rule)") {
+  Ui u;
+  u.show();
+  u.frame({"Keys"});
+  doc::MidiFile file;
+  file.division.ppq = 96;
+  doc::MidiTrack t;
+  t.noteOn(0, 0, 60, 100);
+  t.noteOff(96, 0, 60);
+  t.noteOn(96, 0, 67, 100);
+  t.noteOff(192, 0, 67);
+  file.tracks = {t};
+  file.format = 0;
+  const std::filesystem::path dir(views::test::tempDir("lane_drop_midi"));
+  const std::filesystem::path path = dir / "riff.mid";
+  const std::vector<uint8_t> bytes = doc::writeMidiFile(file);
+  std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  const std::u8string p8 = path.u8string();
+  const size_t keysClips = u.track("Keys").clips.size();
+  const size_t h = u.history();
+  Vec2 p = u.at("Keys", u.bar);
+  p.x += 1.0f;
+  CHECK(dropAt(u, {std::string(reinterpret_cast<const char*>(p8.data()), p8.size())}, p) == DropEffect::Copy);
+  CHECK(u.history() == h + 1);
+  const doc::Track& keys = u.track("Keys");
+  const doc::ClipSlot* made = nullptr;
+  for (const doc::ClipSlot& c : keys.clips)
+    if (c.start() == u.bar && c.clip && c.clip->notes.size() == 2) made = &c;
+  CHECK(made != nullptr);
+  REQUIRE(u.ctx.undo());
+  CHECK(u.history() == h);
+  CHECK(u.track("Keys").clips.size() == keysClips);
 }
 
 TEST_CASE("lane drop: the master band's lane refuses (NotAllowed); off the lanes no drop") {

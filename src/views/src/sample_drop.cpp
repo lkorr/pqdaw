@@ -156,13 +156,18 @@ void autoWarpOne(ViewContext& ctx, doc::ClipRef ref, const doc::AudioClipPtr& dr
 
 }  // namespace
 
+uint64_t newDropKey() noexcept {
+  static uint64_t dropCount = 0;
+  return 0x5444524F50000000ull + ++dropCount;  // "TDROP" + n: one drop's coalescing run
+}
+
 Result<std::vector<doc::ClipRef>> dropSamples(ViewContext& ctx, const SampleDropTarget& target,
-                                              std::span<const ProbedFile> audio, Ticks at, bool oneTrack) {
+                                              std::span<const ProbedFile> audio, Ticks at, bool oneTrack,
+                                              uint64_t coalesceKey) {
   const SampleDropPlan plan = planSampleDrop(*ctx.doc(), target, audio, at, oneTrack);
   auto e = sampleDropEdit(*ctx.doc(), ctx.store().ids(), plan, audio, ctx.sampleResolutions(), ctx.projectDir());
   if (!e) return std::move(e).error();
-  static uint64_t dropCount = 0;
-  const uint64_t key = 0x5444524F50000000ull + ++dropCount;  // "TDROP" + n: this drop's coalescing run
+  const uint64_t key = coalesceKey != 0 ? coalesceKey : newDropKey();
   if (Status s = ctx.store().dispatchCoalescing(e->command, key); !s) return std::move(s).error();
   if (ctx.viewPrefs().autoWarpLongSamples && doc::isWarped(ctx.viewPrefs().defaultWarpMode)) {
     for (const doc::ClipRef& ref : e->clips) {

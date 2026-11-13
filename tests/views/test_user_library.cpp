@@ -21,6 +21,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/library_files.h"
 #include "pq/document/main_path.h"
+#include "pq/document/midi_file.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
 #include "pq/meta/wavetable.h"
@@ -375,6 +376,28 @@ TEST_CASE("user library: clips save and load (an audio clip copies its sample); 
   REQUIRE(riff.ok());
   CHECK(l.history() == h0 + 2);
   CHECK(l.ctx.doc()->tracks.size() == tracks + 1);
+  // MF.2: a .mid item is a clip item; loaded onto the audio track it imports onto a new MIDI track after it.
+  {
+    doc::MidiFile mf;
+    mf.format = 0;
+    doc::MidiTrack mt;
+    mt.noteOn(0, 0, 64, 100);
+    mt.noteOff(480, 0, 64);
+    mf.tracks = {mt};
+    const std::vector<uint8_t> bytes = doc::writeMidiFile(mf);
+    const std::string mid = l.path("Clips\\Groove.MID");
+    std::ofstream(fs::path(std::u8string(mid.begin(), mid.end())), std::ios::binary)
+        .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    CHECK(libraryItemOf(mid) == LibraryItem::Clip);
+    auto groove = loadClipItem(l.ctx, mid, l.audio, 0);
+    REQUIRE(groove.ok());
+    CHECK(l.history() == h0 + 3);
+    CHECK(l.ctx.doc()->tracks.size() == tracks + 2);
+    const doc::Track* gt = doc::findTrackPtr(*l.ctx.doc(), groove->track);
+    REQUIRE(gt != nullptr);
+    CHECK(gt->kind == doc::TrackKind::Midi);
+    CHECK(gt->name == "Groove");
+  }
   // Alt (render) without a renderer: refused with a status message, nothing written.
   CHECK(l.browser().saveDroppedClips(p, l.path("Clips"), true).empty());
   // M5 review M18: a different file with the same name and size (another pack's vox.wav) gets its own copy; the

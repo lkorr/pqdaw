@@ -15,6 +15,7 @@
 #include "pq/tuning/scala.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/meta/meta_face.h"
+#include "pq/views/midi_import.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/tunings/tunings_panel.h"
 
@@ -85,7 +86,7 @@ LibraryItem libraryItemOf(std::string_view path) noexcept {
   if (!catalogPatchOf(path).empty()) return LibraryItem::CatalogDevice;
   if (endsWithFolded(path, doc::kPresetExtension)) return LibraryItem::Preset;
   if (endsWithFolded(path, doc::kTuningExtension) || endsWithFolded(path, ".scl")) return LibraryItem::Tuning;
-  if (endsWithFolded(path, doc::kClipExtension)) return LibraryItem::Clip;
+  if (endsWithFolded(path, doc::kClipExtension) || isMidiFilePath(path)) return LibraryItem::Clip;  // MF.2: .mid
   return LibraryItem::None;
 }
 
@@ -260,6 +261,13 @@ Result<std::string> loadTuningItem(ViewContext& ctx, std::string_view path, cons
 }
 
 Result<doc::ClipRef> loadClipItem(ViewContext& ctx, std::string_view path, doc::TrackId track, Ticks start) {
+  if (isMidiFilePath(path)) {  // MF.2: imported (its tracks, tempo when the project has no clips); the first clip
+    const std::string paths[1] = {std::string(path)};
+    auto r = importMidiFiles(ctx, paths, track, std::max<Ticks>(0, start));
+    if (!r) return std::move(r).error();
+    if (r->clips.empty()) return Error{ErrorCode::NotFound, "no notes", {}};
+    return r->clips.front();
+  }
   auto f = ctx.library().readClip(path);
   if (!f) return std::move(f).error();
   doc::IdSource& ids = ctx.store().ids();

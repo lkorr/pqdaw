@@ -67,7 +67,12 @@ Result<doc::ops::Edit> sampleDropEdit(const doc::Project& p, doc::IdSource& ids,
 // tempo tag or name, else a detection of confidence >= 0.6 from SampleAnalysis, possibly arriving later) switches to
 // ViewPrefs::defaultWarpMode at that tempo (ops::autoWarpClips), in the drop's undo step when nothing happened in
 // between (Store::dispatchCoalescing); a clip edited before the detection arrives is left alone.
+// MF.2: `coalesceKey` ≠ 0 dispatches under that key (newDropKey()) instead of a fresh one, so the MIDI files of the same
+// drop (pq/views/midi_import.h, dispatched first with that key) and the samples are one undo step.
 Result<std::vector<doc::ClipRef>> dropSamples(ViewContext& ctx, const SampleDropTarget& target,
-                                              std::span<const ProbedFile> audio, Ticks at, bool oneTrack);
+                                              std::span<const ProbedFile> audio, Ticks at, bool oneTrack,
+                                              uint64_t coalesceKey = 0);
+// A fresh coalescing key for one drop's dispatches.
+uint64_t newDropKey() noexcept;
 
 }  // namespace pq::views

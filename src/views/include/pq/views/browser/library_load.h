@@ -80,7 +80,8 @@ Result<std::string> loadTuningItem(ViewContext& ctx, std::string_view path, cons
 
 // Loads a clip file at `start` onto `track` (a track of the clip's kind), else onto a new track of its kind after
 // `track` (one undo step together). An audio clip's sample joins the project's table (or reuses the entry of the same
-// resolved file).
+// resolved file). MF.2: a .mid / .midi file is imported (pq/views/midi_import.h importMidiFiles: its first track onto
+// `track` when it is a MIDI track, the others on new tracks after it); returns its first clip.
 Result<doc::ClipRef> loadClipItem(ViewContext& ctx, std::string_view path, doc::TrackId track, Ticks start);
 
 // Saves (the Device view's menus): the device as a preset / as its device's default preset. Returns the written path.

@@ -32,6 +32,7 @@ set(PQ_VIEWS_SOURCES
   src/sample_analysis.cpp
   src/file_probes.cpp
   src/sample_drop.cpp
+  src/midi_import.cpp  # MF.2: MIDI files into the project (drops, the browser)
   src/shell/shell.cpp
   src/shell/control_bar.cpp
   src/shell/menu_bar.cpp

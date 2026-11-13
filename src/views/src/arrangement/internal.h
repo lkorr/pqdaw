@@ -687,6 +687,9 @@ private:
   ui::IRect ghostBounds() const;
   void commit();
   void probesArrived();
+  // MF.2: the session's MIDI files at the drop spot (pq/views/midi_import.h; `key` ≠ 0: the drop's coalescing run).
+  // Adds the clips made to `made`; returns the status text.
+  std::string importMidi(uint64_t key, std::vector<doc::ClipRef>& made);
   EditSurface* live() const noexcept;  // surf_ while it is still one of the arrangement's surfaces
 
   ArrangementView& view_;
@@ -695,7 +698,8 @@ private:
   std::vector<std::string> paths_;   // the hovering payload's paths (a new session when they change)
   std::vector<std::string> audio_;   // its audio files, in order
   std::vector<std::string> folders_;
-  uint32_t midi_ = 0, presets_ = 0, others_ = 0;
+  std::vector<std::string> midi_;    // its MIDI files (MF.2), in order
+  uint32_t presets_ = 0, others_ = 0;
   std::vector<ProbedFile> probed_;   // of audio_, refreshed on every move / probe arrival
   SampleDropTarget target_;
   Ticks at_ = 0;
