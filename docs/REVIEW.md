@@ -1350,4 +1350,4 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   zones shrink where markings crowd, so you can stop between them); Shift drags finely without sticking; the magnet
   button (right) turns sticking off. The ms / ♪ switch picks sync: the same slider then steps through the note values
   (the readout says "1/8.  375 ms"), following the tempo. Both lanes and the switch are automatable; changes glide
-  (20 ms), no clicks. Is the magnet glyph readable, and is the sticking strength right? (Q?-DT.1-a 5)
+  (20 ms), no clicks. Is the magnet glyph readable, and is the sticking strength right? (Q242 5)

@@ -1064,7 +1064,7 @@ narrow chips (track headers, mixer strips, compactTuningLabel) just "12" where t
 (a) keep TU.3's rule; (b) narrow chips show the name's letter plus the label ("A · 12"); (c) show "12-EDO" (the
 summary) in narrow chips. Choice: (a), no rule change (reversible: TuningChip's narrow text).
 
-## Q?-DT.1-a · 2026-11-12 · DT.1 · The Delay Tap: the time's units, the glide, the sync table, the minimum, gravity zones
+## Q242 · 2026-11-12 · DT.1 · The Delay Tap: the time's units, the glide, the sync table, the minimum, gravity zones
 Context: docs/plans/DT.md; `pq/document/modules.h` "the Delay Tap", `src/views/src/panel/tempo_slider.cpp`. Choices
 (each the most reversible found):
 1. **Time stored as the knob position, read in SECONDS** (a value block on an Exp0 curve, 0 … 5 s, unit Seconds:

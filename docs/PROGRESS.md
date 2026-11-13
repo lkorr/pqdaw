@@ -480,3 +480,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 ## 2026-11-11 · TU.2b merged · main
 - Did: ff-merged task/TU.2b-wheel-followups (db59bcda): MOS chart back to the explorer palette (shared mos_palette.h with the circle); hardware MIDI-in notes light the circle (per-port SPSC rings, UI-side drain mapped through the live routes); default tuning "Tuning A".
 - Verified (worker): -Affected after rebase, 4 exes failed on old "12-EDO" fixtures/goldens, fixed, re-run 4/4; 62 goldens re-recorded (chips / chart).
+
+## 2026-11-12 · DT.1 merged · main
+- Did: merged task/DT.1-delay-tap (1777d4bb): Delay Tap module (In → delay_cubic 5 s → Out; time on 62.5 ms·(e^(ln81·x)−1), 21-step sync from transport bpm capped at 5 s, ms / ♪ mode as arithmetic so steps never recompile); reusable `temposlider` panel element (note markings at the playhead tempo, gravity 6 px with magnet + Shift bypass, live during playback via Face::frameTick).
+- Verified (worker): -Affected -Slow 87/88 (pq_tests_timeline preview timing flake, 2/2 alone); follow-up pq_tests_views default tier pass (one SIGSEGV first run, not reproduced in 3 solo runs: NVIDIA flake). Goldens new: module-delay-tap-panel, module-delay-tap-sync.
+- Perf: no new kernel; per sample = existing cubic delay + param ramp only while moving; the face does one compare per frame while playing.
+- Notes: Q242. The delay line IS carried across recompiles (state_transfer verified); the worker's earlier "restart" was a test artefact.

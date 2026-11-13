@@ -803,7 +803,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **TU.2b MOS wheel follow-ups**: (1) the MOS region chart back to the explorer's colours too (Q?-TU.2-a: the circle's L colour no longer matches its chart band); (2) hardware MIDI-in notes light the circle (the engine reports live notes only while recording: add a UI-side live-note feed for listening tracks, off the audio thread's existing note path, no per-sample work). 👁 (3) Q?-TU.3-a overruled by the user's own words ("tunings you define, A, B, C, D"): the default project's tuning is "Tuning A" (chips show "Tuning A · 12-EDO" by the TU.3 short-form rule); New Tuning keeps naming the next free letter. *(merged db59bcda; Q?-TU.2b-a: narrow chips read "12")*
 
 ## DT: Delay tap meta module (user 2026-11-12, SPEC §15 "a delay tap meta module"; plan: docs/plans/DT.md)
-- [ ] **DT.1 Delay tap meta module: pure delay, exponential 0–5 s ms slider with tempo markings + gravity (magnet toggle), sync lane, ms / ♪ mode** 👁 (docs/plans/DT.md "DT.1")
+- [x] **DT.1 Delay tap meta module: pure delay, exponential 0–5 s ms slider with tempo markings + gravity (magnet toggle), sync lane, ms / ♪ mode** 👁 *(merged 1777d4bb; Q242: time in seconds on the Exp0 curve, glide = the 20 ms param ramp, sync/mode arithmetic so no recompile; reusable `temposlider` panel element; markings follow the playhead tempo while playing)* (docs/plans/DT.md "DT.1")
 
 ## NZ: Noise module (user 2026-11-12, SPEC §15 "a noise module"; plan: docs/plans/NZ.md)
 - [ ] **NZ.1 Noise module: one output, Rate (0.01 Hz … SR) / Sync / Note / clock input, Smooth, Colour on the drawn sequence, Distribution, Density, Steps, Range, Seed, Restart, Voices** 👁 (docs/plans/NZ.md "NZ.1")
