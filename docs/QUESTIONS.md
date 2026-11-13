@@ -1353,3 +1353,18 @@ the detector hears, Mix included; (e) is what the meter shows, a cable source li
 device's control). Defaults: threshold −20 dB, 4:1, knee 6 dB, attack 2 ms, release 50 ms (it compresses when inserted; Live's
 default threshold 0 dB does nothing). Reversible: compressorBlocks only.
 Status: open.
+
+## Q?-MF.2-a · MIDI import choices the plan leaves open
+Context: MF.2 maps resolved SMF notes onto tracks (docs/plans/DY.md "MF.2", decision 4). Open points: (1) what pitch a
+bent / MTS-retuned key means — the key's live-input pitch plus the offset, or the absolute 12-TET(key) · 2^(cents/1200);
+(2) a plain key the track's .kbm leaves unmapped (live input plays nothing); (3) whether imported clips loop; (4) where a
+mixed drop's MIDI tracks go relative to the audio part's new tracks; (5) tempo before the first tempo event / signature
+when a file has some but not at tick 0.
+Options: (1a) live-input pitch + offset (follows the track's key map); (1b) absolute pitch (the file's own frequencies).
+(2a) drop the note (live input's answer); (2b) keep it at its 12-TET pitch (Degree within 0.5 ¢, else Cents). (3a) not
+looped; (3b) looped over the clip. (4a) MIDI first (onto / after the drop's track), then the samples' tracks; (4b) the
+reverse. (5a) the SMF defaults (120 BPM, 4/4) from the file's start; (5b) the project's.
+Choice: (1b) — MTS and bend files carry absolute pitches, and 31edo MTS files then land on the 31edo degrees; (2b),
+counted in the status line; (3a), as a recorded clip with `loop` off; (4a), one undo step for both (the drop's
+coalescing key); (5a). All in src/document/src/midi_import.cpp (importMidi) except (4) (arrangement/file_drop.cpp commit).
+Status: open.

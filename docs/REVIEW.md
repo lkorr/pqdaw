@@ -1482,3 +1482,15 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Judge: the layout (520 × 182) and the sidechain backdrop; Expand's law (Q?-DY.4-a: slope = ratio below the threshold,
   capped at 70 dB); whether EQ On should be the band group's power switch instead (Q?-DY.4-b); the defaults (it
   compresses when inserted, unlike Live's 0 dB threshold); the Auto release law (max of rel/4 and rel·4 − 3 dB).
+
+## 2026-11-13 · MF.2 · MIDI file import (task/MF.2-midi-import)
+- Try: drag a .mid from Explorer (or the browser) onto a MIDI track in the arrangement or a band lane in the project
+  patch view: its first track lands there at the snapped tick, every other MTrk with notes becomes a new MIDI track
+  after it (named from the file's track names, else the file name), one clip each, ending on a bar line. Drop it into
+  an empty project: the file's tempo and time signatures replace the project's. Drop a .mid together with a .wav: both
+  land, one Ctrl+Z removes both. Double-click / Enter a .mid in the browser: imported onto the selected track.
+- Look at: the status line ("Imported song.mid: 3 tracks, 412 notes; tempo and time signatures set; dropped 37
+  controller changes, 2 mid-note pitch bends"); a microtonal file (MTS or bends) onto a Keys track in its EDO: degree
+  notes, the piano roll shows them on the scale rows; onto an Hz track: Cents notes.
+- Judge: whether new tracks should take the file's channel / program as a hint (they get the default instrument); no
+  ghost clips while a .mid hovers (only the copy cursor); whether a format-0 file with many channels should split.
