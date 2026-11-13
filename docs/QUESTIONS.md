@@ -1304,3 +1304,12 @@ lets Ctrl+Z play the cached render again without a render (the cache stays delet
 warp Off (exact; they no longer follow tempo changes, as recorded takes). Ctrl+J with both MIDI and audio tracks in a
 range makes two undo steps (the MIDI one at once, the audio one when its render lands). Reversible: `regionClip` /
 `renderRegions` (declick), `flattenTrack`'s removal loop, `bounceToNewTrack`'s mixer copy, `runJob`'s folders.
+
+## Q?-DY.3-a · the transfer display's live dot: the group's own In, not a second binding
+Context: the plan's `transfer` element has a dot "at the live input level (Signal binding)". The group is named by a
+binding too. Options: (a) one Signal binding on the group's In (`input`): it names the group and its tap is the level;
+(b) slot 0 names the group (on its `y`, like `response`), slot 1 an optional Signal for the level (any port).
+Choice: (a): for every group a transfer curve makes sense on (a waveshaper; DY.4's Gain Computer, whose In is the level
+in dB) the live x IS its In; one tap, one binding; `dot: 0` hides the dot and acquires no feed (the tap stays while the
+element is placed, like a meter's). Reversible: slots are a list (transfer_element.cpp kSlots; panel.cpp panelTaps).
+Status: open.

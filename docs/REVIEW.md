@@ -1456,3 +1456,16 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   fade-in a flattened clip gets when the track sounds at the very start of the song; whether consolidated audio should
   be warped (it is warp Off: exact, but it no longer follows a tempo change); whether a track's kept-live blocks
   (cabled to another track) should survive Flatten (today they go, with their cables).
+
+## 2026-11-13 · DY.3 · the transfer curve display and the reduction meter (task/DY.3-transfer)
+- Try: in a group's panel editor, add a `transfer` element and bind it to a group's Input (a Saturator curve group,
+  e.g. "Hard Curve"): it draws that group's curve in dB (x = input, y = output, −60 … +6) with the 1:1 diagonal
+  dashed; while audio plays a dot sits on the curve at the live peak level. A group with a z1 / filter inside shows
+  "no static curve". Style `units: db` + `output: reduction` turns a gain computer (In = level dB, Out = reduction dB)
+  into its compression curve — what DY.4's Compressor will show. A `meter` with `mode: reduction` (range 12 / 24 / 48)
+  draws a reduction signal down from the top.
+- Look at: goldens `transfer-saturator` (Hard Curve, dot at −6 dB) and `transfer-reduction` (−24 dB threshold, 4:1,
+  dot at −12 dB, the meter at 9 / 6 dB of 24).
+- Judge: the curve colour (theme `device.curve`, the display's existing curve token) and the dot (ink with a curve
+  ring); whether the rules (every 6 dB) are too dense at 120 units; whether the reduction meter should be one bar for
+  a linked (mono) reduction.
