@@ -631,3 +631,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: ship 9.1 ns per stereo sample (default), 12.0 with True Peak; fast_gain_to_db / fast_db_to_gain instead of the exact pair (13 ns).
 - Notes: Q266. REVIEW entry.
 
+## 2026-11-13 · FZ.x-fix + EX.x-fix-settle merged · main
+- Did: merged task/FZ.x-fix-flatten (5a861327). FZ.x-fix: Flatten keeps the blocks frozenKeep keeps for other tracks (device lanes, cables), refused while the track's own source plays another track; AudioClip::noEdgeFade (saved only when set) on flatten / bounce / consolidate clips. EX.x-fix-settle: the bug was in later passes (a sleeping volume segment froze mid-ramp); the image host keeps a segment awake while its stage's param ramps move; settleOffline settles work arriving during the settle; runExport back to one link with solo param writes (D7).
+- Verified: worker: pq_tests_document flatten 4/4, pq_tests_playback EX / FZ 18 cases (flatten / bounce null from frame 0, automated volume twice on one link bit-identical, solo passes == fresh links); its -Affected -Slow was killed for low memory. Orchestrator after the rebase onto DY.6: -Affected -Slow 62/63, pq_tests_timeline preview-player two-thread timing failed under load, re-run alone (default + slow) 2/2.
+- Perf: one compare per sleep segment per block; stem exports save one compile per track.
+- Notes: Q267, Q268. Live fix too: no stale gain fading in after a locate or a knob move on a silent track.
+

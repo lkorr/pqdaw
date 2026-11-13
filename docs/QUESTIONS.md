@@ -1413,7 +1413,7 @@ frame short for its proof (a window of L includes its own frame), so the detecto
 the latency stays L + 6. Reversible: limiterBlocks (modules.cpp).
 Status: open.
 
-## Q?-FZ.x-fix-a · Flatten with blocks that still feed another track; what a render clip's "no edge fade" means
+## Q267 · 2026-11-13 · FZ.x-fix · Flatten with blocks that still feed another track; what a render clip's "no edge fade" means
 Context: Q258 chose (c) (kept-live blocks removed) and (a) (render clips keep the 2 ms edge declick); FZ.x-fix reverses
 both. Keeping the blocks frozenKeep keeps cannot keep what they need when that is the track's OWN notes / audio (a
 notes cable from its source into another track, a kept instrument group played by its notes): a flattened track has
@@ -1430,7 +1430,7 @@ feeds another track stops then — not in this task's scope. Reversible: `flatte
 (edit_render.cpp), `regionClip`'s flag.
 Status: open.
 
-## Q?-EX.x-fix-settle-a · Which pass was wrong, and what settling now guarantees
+## Q268 · 2026-11-13 · EX.x-fix-settle · Which pass was wrong, and what settling now guarantees
 Context: the task assumed a fresh link's first pass ramps because its smoothers start from defaults. Measured on the
 playback fixture (Grp's volume automated from −18 dB at tick 0): the FIRST pass is right (Grp at −18 dB from frame 0);
 every later pass faded from 0 dB (the previous pass's end) for ~1650 frames. Cause: in the settle, the locate's
