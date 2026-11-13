@@ -839,7 +839,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [ ] **DY.4 Compressor module** 👁 (plan §DY.4). After DY.1–DY.3.
 - [ ] **DY.5 truepeak atom** (plan §DY.5). After DY.1.
 - [ ] **DY.6 Limiter module** 👁 (plan §DY.6). After DY.1, DY.3, DY.5.
-- [ ] **MF.1 Standard MIDI File reader / writer** (plan §MF.1).
+- [x] **MF.1 Standard MIDI File reader / writer** *(merged 4f0603ab; Q260; 10 MB file parses in ≈ 21 ms (check), resolveNotes ≈ 155 ms)* (plan §MF.1).
 - [ ] **MF.2 MIDI import** (plan §MF.2). After MF.1.
 - [ ] **MF.3 MIDI export (12edo, MPE, Degrees)** (plan §MF.3). After MF.1.
 

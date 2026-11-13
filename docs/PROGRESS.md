@@ -596,3 +596,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: Hard Curve 8 ops × 128 points ≈ 37 µs per evaluate (check build), only when a value the curve reads changes.
 - Notes: Q259. REVIEW entry.
 
+## 2026-11-13 · MF.1 merged · main
+- Did: merged task/MF.1-smf (4f0603ab): pq/document/midi_file (parseMidiFile: bounds-checked, running status, sysex, meta, RMID, unknown chunks; writeMidiFile; MidiTrack builders; resolveNotes: FIFO pairing, sustain, RPN 0, MPE zones, MTS 08 01/02/04/07/08/09).
+- Verified (worker): pq_tests_document default tier (12 new cases incl. every-prefix truncation, 600 fuzz mutations, round trips).
+- Perf: 10 MB / 3.7 M events parse ≈ 21 ms (check, idle); resolveNotes ≈ 155 ms.
+- Notes: Q260. MPE at ±48 has 0.59 ¢ bend steps: MF.3's "within 0.01 ¢" can't hold at ±48. The merge commit cfc00c99 carried QUESTIONS.md conflict markers (orchestrator script error); fixed in the next commit.
+
