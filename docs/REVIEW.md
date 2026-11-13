@@ -1523,6 +1523,7 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   pin (circuit view) or, in the Device view, from the Value in the free rack onto the `and` frame's input socket.
 - Look at: over the bool input the cursor is the no-drop sign, the pin (circuit) / socket (Device view) is ringed in the
   error red instead of the accent, the status line says "Wire: a real signal cannot drive a bool input (on / off):
-  compare it first …"; releasing there makes no cable. A gate note output or a comparison's output onto it still wires.
+  compare it first …"; releasing there makes no cable. A bool output (a comparison's, a gate) onto it is not refused
+  (the cable is made; a bool input other than the main one is not compiled yet: the lowering marks such a cable Invalid).
 - Judge: whether the red ring reads as "not here" next to the accent rings of the allowed targets; the message's wording;
   FLAC's 32-bit float handling (switching to 24 rather than greying the row).
