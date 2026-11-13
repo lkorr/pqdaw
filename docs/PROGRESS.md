@@ -530,3 +530,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): pq_tests_graph + pq_tests_project new cases; -Affected default tier pass except the pq_tests_views NVIDIA SIGSEGV (passed alone).
 - Perf: the walk runs only after a type error; a clean infer does no extra work or allocation.
 
+## 2026-11-13 · AS.2 merged · main
+- Did: ff-merged task/AS.2-recovery (5defae25): findStaleUnsaved returns dead sessions with an autosave (offered when untitled, or when it supersedes the origin's project.pqd); the recover popover's Recover mode ([Recover] [Show in Explorer] [Discard] [Later]) restores through guardUnsaved → ViewContext::recoverAutosave (dirty, empty history; untitled takes moved and relinked, unreferenced ones on a "Recovered" track; saved projects reopen under their folder).
+- Verified (worker): pq_tests_app 40/40, pq_tests_views 701/701 (3 new real-click recovery tests). No goldens.
+- Perf: start-up only; one stat + one small JSON read per stale session; takes moved by rename.
+- Notes: Q249. REVIEW entry: kill the app mid-edit, restart, Recover.
+
