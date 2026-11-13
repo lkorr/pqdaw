@@ -1304,6 +1304,7 @@ lets Ctrl+Z play the cached render again without a render (the cache stays delet
 warp Off (exact; they no longer follow tempo changes, as recorded takes). Ctrl+J with both MIDI and audio tracks in a
 range makes two undo steps (the MIDI one at once, the audio one when its render lands). Reversible: `regionClip` /
 `renderRegions` (declick), `flattenTrack`'s removal loop, `bounceToNewTrack`'s mixer copy, `runJob`'s folders.
+<<<<<<< HEAD
 
 ## Q259 · 2026-11-13 · DY.3 · the transfer display's live dot: the group's own In, not a second binding
 Context: the plan's `transfer` element has a dot "at the live input level (Signal binding)". The group is named by a
@@ -1312,4 +1313,21 @@ binding too. Options: (a) one Signal binding on the group's In (`input`): it nam
 Choice: (a): for every group a transfer curve makes sense on (a waveshaper; DY.4's Gain Computer, whose In is the level
 in dB) the live x IS its In; one tap, one binding; `dot: 0` hides the dot and acquires no feed (the tap stays while the
 element is placed, like a meter's). Reversible: slots are a list (transfer_element.cpp kSlots; panel.cpp panelTaps).
+=======
+## Q?-MF.1-a · SMF reading choices the plan leaves open; MPE bend resolution vs MF.3's 0.01 ¢
+Context: MF.1's plan lists the messages to read, not how they combine. MTS has two independent mechanisms (tuning
+programs selected per channel by RPN 3 / 4, filled by 08 01 / 02 / 04 / 07; and per-channel scale / octave offsets,
+08 08 / 09); a format-1 file's tracks share one port's 16 channels; the SMF spec cancels running status after meta and
+sysex events; a sustained key can be re-struck. MF.3's acceptance asks MPE export → import "within 0.01 ¢", but a 14-bit
+bend at the MPE member range of ±48 semitones resolves 4800 / 8192 ≈ 0.59 ¢.
+Options: tuning (a) a channel's offset = its program's key table + its scale / octave offset (additive); (b) the most
+recent mechanism wins. Channel state in formats 0 / 1: (c) shared by all tracks (tracks merged in time, ties by track
+index); (d) per track. Running status: (e) strict (an error after meta / sysex); (f) kept (lenient). Re-strike under the
+pedal: (g) ends the held note; (h) overlaps it. MF.3: (i) compare within 0.3 ¢ (half a step) in MPE mode; (j) export a
+smaller member range (RPN 0 after the MCM; ±1 semitone → 0.012 ¢ steps, ≤ 0.006 ¢ error, and the nearest key is never
+more than 50 ¢ away).
+Choice: (a), (c), (f), (g) — each one function in src/document/src/midi_file.cpp (`keyOffset`, `merged`, `parseTrack`,
+`noteOn`). Format 2 keeps per-track state. MF.3 decides (i) or (j); the reader honours either (RPN 0 on a member sets
+its zone's range).
+>>>>>>> origin/task/MF.1-smf
 Status: open.
